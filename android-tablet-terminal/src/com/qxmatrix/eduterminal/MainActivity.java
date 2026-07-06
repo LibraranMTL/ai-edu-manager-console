@@ -69,8 +69,8 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
     static final int REQUEST_TAKE_PHOTO = 8103;
     static final int REQUEST_SCAN_PAIR = 8104;
     static final int REQUEST_CAPTURE_PAIR_QR = 8105;
-    static final String VERSION_NAME = "0.4.3";
-    static final int VERSION_CODE = 53;
+    static final String VERSION_NAME = "0.4.4";
+    static final int VERSION_CODE = 54;
     static final String UPDATE_MANIFEST_URL = "https://www.greatbg.com/download/edu-manager-version.json";
     static final String USER_AGREEMENT_URL = "https://www.greatbg.com/download/agreement.html";
     static final String PRIVACY_POLICY_URL = "https://www.greatbg.com/download/privacy.html";
@@ -92,6 +92,8 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
     private static final String PREF_API_TOKEN = "api_token";
     private static final String PREF_REMOTE_URL = "remote_url";
     private static final String PREF_CONNECTION_MODE = "connection_mode";
+    private static final String PREF_LAYOUT_MODE = "layout_mode";
+    private static final String PREF_SKIN = "skin";
     private static final String PREF_DEVICE_ID = "device_id";
     private static final String PREF_LAST_CONNECTED_AT = "last_connected_at";
     private static final String CACHE_ARCHIVE_FILES_PREFIX = "archive_files_";
@@ -111,16 +113,22 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
     TextView archiveTitle;
     TextView markdownView;
     ScrollView rootScroll;
+    FrameLayout screenRoot;
+    ImageView skinBackground;
+    LinearLayout contentRoot;
     EditText archiveSearchInput;
     Spinner studentSpinner;
     Spinner archiveCategorySpinner;
     Spinner archiveSpinner;
+    Spinner layoutModeSpinner;
+    Spinner skinSpinner;
     Button saveButton;
     Button testButton;
     Button pasteButton;
     Button scanPairButton;
     Button checkUpdateButton;
     Button copyDiagnosticsButton;
+    Button tailscaleButton;
     Button quickUploadButton;
     Button quickArchiveButton;
     Button quickContactButton;
@@ -143,6 +151,7 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
     TextView privacyLink;
     TextView contactText;
     LinearLayout connectionConfigCard;
+    LinearLayout settingsCard;
     LinearLayout studentCard;
     LinearLayout contactCard;
     LinearLayout archiveCard;
@@ -159,14 +168,20 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
     ArrayAdapter<String> connectionModeAdapter;
     ArrayAdapter<String> archiveCategoryAdapter;
     ArrayAdapter<String> archiveAdapter;
+    ArrayAdapter<String> layoutModeAdapter;
+    ArrayAdapter<String> skinAdapter;
     Student selectedStudent;
     String currentMarkdown = "";
     int selectedArchiveCategory = 1;
     int markdownFontSize = 16;
+    int layoutMode = 0;
+    int skinIndex = 0;
+    boolean suppressPreferenceCallbacks = false;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        loadVisualPrefsOnly();
         setTitle("AI教育管家平板终端");
         buildUi();
         loadPrefs();
@@ -182,12 +197,27 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
 
     private void buildUi() {
         FrameLayout screen = new FrameLayout(this);
+        screenRoot = screen;
+        screen.setBackgroundColor(pageBackgroundColor());
+
+        skinBackground = new ImageView(this);
+        skinBackground.setScaleType(ImageView.ScaleType.CENTER_CROP);
+        skinBackground.setAlpha(isPhoneLayout() ? 0.10f : 0.13f);
+        skinBackground.setImageResource(skinBackgroundResource());
+        screen.addView(skinBackground, new FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT));
+
+        View veil = new View(this);
+        veil.setBackgroundColor(Color.argb(isPhoneLayout() ? 228 : 218, 248, 252, 251));
+        screen.addView(veil, new FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT));
+
         ScrollView scroll = new ScrollView(this);
         rootScroll = scroll;
         LinearLayout root = new LinearLayout(this);
+        contentRoot = root;
         root.setOrientation(LinearLayout.VERTICAL);
-        root.setPadding(dp(18), dp(16), dp(18), dp(22));
-        root.setBackgroundColor(Color.rgb(246, 250, 249));
+        int sidePadding = isPhoneLayout() ? dp(12) : dp(18);
+        root.setPadding(sidePadding, dp(16), sidePadding, dp(22));
+        root.setBackgroundColor(Color.TRANSPARENT);
         scroll.addView(root);
         screen.addView(scroll, new FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT));
 
@@ -230,21 +260,26 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
         copyright.setPadding(0, 0, 0, dp(3));
         brandCopy.addView(copyright);
 
+        LinearLayout legalRow = new LinearLayout(this);
+        legalRow.setOrientation(LinearLayout.HORIZONTAL);
+        legalRow.setGravity(Gravity.CENTER_VERTICAL);
+        legalRow.setPadding(0, 0, 0, dp(14));
         agreementLink = new TextView(this);
         agreementLink.setText("用户协议");
         agreementLink.setTextSize(13);
-        agreementLink.setTextColor(Color.rgb(16, 111, 104));
-        agreementLink.setPadding(0, 0, 0, dp(14));
+        agreementLink.setTextColor(accentColor());
+        agreementLink.setPadding(0, 0, dp(16), 0);
         agreementLink.setOnClickListener(this);
-        brandCopy.addView(agreementLink);
+        legalRow.addView(agreementLink);
 
         privacyLink = new TextView(this);
         privacyLink.setText("隐私政策");
         privacyLink.setTextSize(13);
-        privacyLink.setTextColor(Color.rgb(16, 111, 104));
-        privacyLink.setPadding(0, 0, 0, dp(14));
+        privacyLink.setTextColor(accentColor());
+        privacyLink.setPadding(0, 0, 0, 0);
         privacyLink.setOnClickListener(this);
-        brandCopy.addView(privacyLink);
+        legalRow.addView(privacyLink);
+        brandCopy.addView(legalRow);
 
         LinearLayout quickCard = card();
         root.addView(quickCard);
@@ -300,13 +335,6 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
         pairRow.addView(scanPairButton);
         connectionConfigCard.addView(pairRow);
 
-        LinearLayout maintenanceRow = row();
-        checkUpdateButton = button("检查更新", false);
-        copyDiagnosticsButton = button("复制诊断信息", false);
-        maintenanceRow.addView(checkUpdateButton);
-        maintenanceRow.addView(copyDiagnosticsButton);
-        connectionConfigCard.addView(maintenanceRow);
-
         statusText = new TextView(this);
         statusText.setText("尚未连接主机服务。");
         statusText.setTextColor(Color.rgb(87, 107, 103));
@@ -333,8 +361,47 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
         testButton.setOnClickListener(this);
         pasteButton.setOnClickListener(this);
         scanPairButton.setOnClickListener(this);
+
+        settingsCard = card();
+        root.addView(settingsCard);
+        settingsCard.addView(label("系统设置"));
+        settingsCard.addView(label("页面布局"));
+        layoutModeSpinner = new Spinner(this);
+        layoutModeAdapter = new ArrayAdapter<String>(this, android.R.layout.simple_spinner_item, new ArrayList<String>());
+        layoutModeAdapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
+        layoutModeAdapter.add("自适应");
+        layoutModeAdapter.add("平板横屏");
+        layoutModeAdapter.add("手机竖屏");
+        layoutModeSpinner.setAdapter(layoutModeAdapter);
+        layoutModeSpinner.setSelection(layoutMode);
+        layoutModeSpinner.setOnItemSelectedListener(this);
+        settingsCard.addView(layoutModeSpinner);
+
+        settingsCard.addView(label("界面皮肤"));
+        skinSpinner = new Spinner(this);
+        skinAdapter = new ArrayAdapter<String>(this, android.R.layout.simple_spinner_item, new ArrayList<String>());
+        skinAdapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
+        skinAdapter.add("蓝色系");
+        skinAdapter.add("粉色系");
+        skinAdapter.add("绿色系");
+        skinAdapter.add("紫色系");
+        skinAdapter.add("橙色系");
+        skinSpinner.setAdapter(skinAdapter);
+        skinSpinner.setSelection(skinIndex);
+        skinSpinner.setOnItemSelectedListener(this);
+        settingsCard.addView(skinSpinner);
+
+        LinearLayout maintenanceRow = row();
+        checkUpdateButton = button("检查更新", false);
+        copyDiagnosticsButton = button("复制诊断信息", false);
+        tailscaleButton = button(isTailscaleInstalled() ? "打开 Tailscale" : "下载 Tailscale", false);
+        maintenanceRow.addView(checkUpdateButton);
+        maintenanceRow.addView(copyDiagnosticsButton);
+        maintenanceRow.addView(tailscaleButton);
+        settingsCard.addView(maintenanceRow);
         checkUpdateButton.setOnClickListener(this);
         copyDiagnosticsButton.setOnClickListener(this);
+        tailscaleButton.setOnClickListener(this);
 
         studentCard = card();
         root.addView(studentCard);
@@ -499,6 +566,8 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
             checkForUpdate();
         } else if (view == copyDiagnosticsButton) {
             copyDiagnostics();
+        } else if (view == tailscaleButton) {
+            openTailscaleDownload();
         } else if (view == quickUploadButton) {
             pickMaterial();
         } else if (view == quickArchiveButton) {
@@ -570,7 +639,19 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
 
     @Override
     public void onItemSelected(AdapterView<?> parent, View view, int position, long id) {
-        if (parent == studentSpinner) {
+        if (parent == layoutModeSpinner) {
+            if (!suppressPreferenceCallbacks && layoutMode != position) {
+                layoutMode = position;
+                saveVisualPrefs();
+                recreate();
+            }
+        } else if (parent == skinSpinner) {
+            if (!suppressPreferenceCallbacks && skinIndex != position) {
+                skinIndex = position;
+                saveVisualPrefs();
+                recreate();
+            }
+        } else if (parent == studentSpinner) {
             selectedStudent = position >= 0 && position < students.size() ? students.get(position) : null;
             updateSharedUploadButton();
             updateContactCard();
@@ -1347,7 +1428,13 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
         serverInput.setText(prefs.getString(PREF_SERVER_URL, ""));
         tokenInput.setText(prefs.getString(PREF_API_TOKEN, ""));
         if (remoteInput != null) remoteInput.setText(prefs.getString(PREF_REMOTE_URL, ""));
+        suppressPreferenceCallbacks = true;
+        layoutMode = clamp(prefs.getInt(PREF_LAYOUT_MODE, layoutMode), 0, 2);
+        skinIndex = clamp(prefs.getInt(PREF_SKIN, skinIndex), 0, 4);
+        if (layoutModeSpinner != null) layoutModeSpinner.setSelection(layoutMode);
+        if (skinSpinner != null) skinSpinner.setSelection(skinIndex);
         if (connectionModeSpinner != null) connectionModeSpinner.setSelection(prefs.getInt(PREF_CONNECTION_MODE, 1));
+        suppressPreferenceCallbacks = false;
         updateConnectionSummary("未连接", students.size());
     }
 
@@ -1357,6 +1444,21 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
             .putString(PREF_API_TOKEN, apiToken())
             .putString(PREF_REMOTE_URL, normalizedRemoteUrl())
             .putInt(PREF_CONNECTION_MODE, connectionMode())
+            .putInt(PREF_LAYOUT_MODE, layoutMode)
+            .putInt(PREF_SKIN, skinIndex)
+            .apply();
+    }
+
+    void loadVisualPrefsOnly() {
+        SharedPreferences prefs = getSharedPreferences(PREFS, MODE_PRIVATE);
+        layoutMode = clamp(prefs.getInt(PREF_LAYOUT_MODE, 0), 0, 2);
+        skinIndex = clamp(prefs.getInt(PREF_SKIN, 0), 0, 4);
+    }
+
+    void saveVisualPrefs() {
+        getSharedPreferences(PREFS, MODE_PRIVATE).edit()
+            .putInt(PREF_LAYOUT_MODE, layoutMode)
+            .putInt(PREF_SKIN, skinIndex)
             .apply();
     }
 
@@ -1710,6 +1812,20 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
         openExternalApp(new String[] {"com.tencent.mobileqq", "com.tencent.minihd.qq", "com.tencent.tim"}, "mqq://", "QQ");
     }
 
+    boolean isTailscaleInstalled() {
+        return getPackageManager().getLaunchIntentForPackage("com.tailscale.ipn") != null;
+    }
+
+    void openTailscaleDownload() {
+        Intent launch = getPackageManager().getLaunchIntentForPackage("com.tailscale.ipn");
+        if (launch != null) {
+            launch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            startActivity(launch);
+            return;
+        }
+        openUrl("https://tailscale.com/download/android");
+    }
+
     void openExternalApp(String[] packageNames, String fallbackUri, String appName) {
         try {
             for (int i = 0; i < packageNames.length; i++) {
@@ -1963,7 +2079,7 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
         LinearLayout layout = new LinearLayout(this);
         layout.setOrientation(LinearLayout.VERTICAL);
         layout.setPadding(dp(14), dp(12), dp(14), dp(12));
-        layout.setBackgroundColor(Color.WHITE);
+        layout.setBackgroundColor(Color.argb(238, 255, 255, 255));
         LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(
             LinearLayout.LayoutParams.MATCH_PARENT,
             LinearLayout.LayoutParams.WRAP_CONTENT
@@ -1975,7 +2091,7 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
 
     private LinearLayout row() {
         LinearLayout layout = new LinearLayout(this);
-        layout.setOrientation(LinearLayout.HORIZONTAL);
+        layout.setOrientation(isPhoneLayout() ? LinearLayout.VERTICAL : LinearLayout.HORIZONTAL);
         layout.setPadding(0, dp(8), 0, 0);
         return layout;
     }
@@ -2003,12 +2119,66 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
         Button button = new Button(this);
         button.setText(text);
         button.setAllCaps(false);
-        button.setTextColor(primary ? Color.WHITE : Color.rgb(15, 118, 110));
-        button.setBackgroundColor(primary ? Color.rgb(15, 118, 110) : Color.rgb(232, 247, 244));
-        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(0, dp(48), 1);
-        params.setMargins(0, 0, dp(8), 0);
+        button.setTextColor(primary ? Color.WHITE : accentColor());
+        button.setBackgroundColor(primary ? accentColor() : accentLightColor());
+        LinearLayout.LayoutParams params = isPhoneLayout()
+            ? new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(48))
+            : new LinearLayout.LayoutParams(0, dp(48), 1);
+        params.setMargins(0, 0, isPhoneLayout() ? 0 : dp(8), isPhoneLayout() ? dp(8) : 0);
         button.setLayoutParams(params);
         return button;
+    }
+
+    private boolean isPhoneLayout() {
+        if (layoutMode == 1) return false;
+        if (layoutMode == 2) return true;
+        return getResources().getDisplayMetrics().widthPixels < dp(720);
+    }
+
+    private int accentColor() {
+        switch (skinIndex) {
+            case 1: return Color.rgb(215, 52, 132);
+            case 2: return Color.rgb(46, 150, 91);
+            case 3: return Color.rgb(124, 76, 176);
+            case 4: return Color.rgb(220, 116, 43);
+            default: return Color.rgb(16, 111, 196);
+        }
+    }
+
+    private int accentLightColor() {
+        switch (skinIndex) {
+            case 1: return Color.rgb(255, 232, 243);
+            case 2: return Color.rgb(231, 248, 238);
+            case 3: return Color.rgb(242, 233, 255);
+            case 4: return Color.rgb(255, 240, 224);
+            default: return Color.rgb(232, 244, 255);
+        }
+    }
+
+    private int pageBackgroundColor() {
+        switch (skinIndex) {
+            case 1: return Color.rgb(255, 247, 251);
+            case 2: return Color.rgb(246, 252, 248);
+            case 3: return Color.rgb(250, 247, 255);
+            case 4: return Color.rgb(255, 249, 242);
+            default: return Color.rgb(246, 250, 255);
+        }
+    }
+
+    private int skinBackgroundResource() {
+        switch (skinIndex) {
+            case 1: return R.drawable.skin_pink;
+            case 2: return R.drawable.skin_green;
+            case 3: return R.drawable.skin_purple;
+            case 4: return R.drawable.skin_orange;
+            default: return R.drawable.skin_blue;
+        }
+    }
+
+    private int clamp(int value, int min, int max) {
+        if (value < min) return min;
+        if (value > max) return max;
+        return value;
     }
 
     private int dp(int value) {

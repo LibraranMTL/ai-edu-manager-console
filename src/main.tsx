@@ -116,7 +116,7 @@ type AndroidBridge = {
   downloadAndInstallUpdate?: (apkUrl: string) => boolean;
   scanDownloads?: () => string;
   importDownloadFiles?: (studentName: string, pathsJson: string) => string;
-  openApp?: (app: AgentToolId | 'obsidian') => boolean;
+  openApp?: (app: AgentToolId | 'obsidian' | 'tailscale') => boolean;
   getAppStatus?: () => string;
   syncStudents?: (studentsJson: string) => string;
   selectKnowledgeBaseRoot?: () => string;
@@ -312,6 +312,7 @@ type AgentToolInstallStatus = {
   marvis: AgentToolInstall;
   hohu: AgentToolInstall;
   openclaw: AgentToolInstall;
+  tailscale?: AgentToolInstall;
   anyInstalled: boolean;
   recommendedTool: AgentToolId;
 };
@@ -2246,7 +2247,7 @@ function App() {
     );
   };
 
-  const openExternal = (app: AgentToolId | 'obsidian') => {
+  const openExternal = (app: AgentToolId | 'obsidian' | 'tailscale') => {
     const ok = bridge()?.openApp?.(app);
     if (app === 'qclaw') setQclawOpened((value) => value || Boolean(ok));
     if (app === 'marvis') setMarvisOpened((value) => value || Boolean(ok));
@@ -2254,12 +2255,13 @@ function App() {
     if (app === 'openclaw') setOpenclawOpened((value) => value || Boolean(ok));
     if (app === 'obsidian') setObsidianOpened((value) => value || Boolean(ok));
     if (!bridge()?.openApp) {
-      const urls: Record<AgentToolId | 'obsidian', string> = {
+      const urls: Record<AgentToolId | 'obsidian' | 'tailscale', string> = {
         qclaw: 'qclaw://',
         marvis: 'marvis://',
         hohu: 'https://hohu.ai/',
         openclaw: 'https://openclaw.ai/',
         obsidian: 'obsidian://open',
+        tailscale: 'https://tailscale.com/download/windows',
       };
       window.open(urls[app], '_blank');
     }
@@ -4226,10 +4228,12 @@ function App() {
                     ['Marvis', installStatus?.marvis.installed ? `已安装 ${installStatus.marvis.version ?? ''}` : '未安装'],
                     ['Hohu', installStatus?.hohu.installed ? `已安装 ${installStatus.hohu.version ?? ''}` : '未安装'],
                     ['OpenClaw', installStatus?.openclaw?.installed ? `已安装 ${installStatus.openclaw.version ?? ''}` : '未安装'],
+                    ['Tailscale 软件', installStatus?.tailscale?.installed ? `已安装 ${installStatus.tailscale.version ?? ''}` : '未安装'],
                     ['QClaw 路径', installStatus?.qclaw.exePath || '未检测到'],
                     ['Marvis 路径', installStatus?.marvis.exePath || '未检测到'],
                     ['Hohu 路径', installStatus?.hohu.exePath || '未检测到'],
                     ['OpenClaw 路径', installStatus?.openclaw?.exePath || '未检测到'],
+                    ['Tailscale 路径', installStatus?.tailscale?.exePath || '未检测到'],
                     ['主机服务', hostServiceStatus?.running ? '运行中' : '未启动'],
                     ['服务端口', hostServiceStatus?.port ?? 18777],
                     ['局域网地址', hostServiceStatus?.serverUrl ?? `http://127.0.0.1:${hostServiceStatus?.port ?? 18777}`],
@@ -4258,6 +4262,19 @@ function App() {
                 ? 'QClaw、Marvis、Hohu 和 OpenClaw 将使用同一个本机学生知识库目录。默认根目录为 D:\\学生资料；更换资料根目录后，新建和导入都会写入新目录。'
                 : String(compatibility?.message ?? '在 Android APK 中可查看完整兼容性检测结果。')}
             </div>
+            {isWindows && (
+              <div className="actions">
+                <button className="secondary compact" onClick={refreshInstallStatus}>
+                  重新检测软件
+                </button>
+                <button className="secondary compact" onClick={() => openExternal('tailscale')}>
+                  {installStatus?.tailscale?.installed ? '打开 Tailscale' : '下载 Tailscale'}
+                </button>
+                <button className="secondary compact" onClick={() => bridge()?.openExternalUrl?.('https://tailscale.com/download/windows')}>
+                  Tailscale Windows 下载页
+                </button>
+              </div>
+            )}
             {isWindows && (
               <div className="notice license-panel">
                 <div>

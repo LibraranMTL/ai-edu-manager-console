@@ -1621,16 +1621,64 @@ function findAgentToolInstall(toolId) {
   };
 }
 
+function findTailscaleInstall() {
+  const registryEntries = queryUninstallEntries().filter((entry) => {
+    const haystack = `${entry.DisplayName || ''} ${entry.InstallLocation || ''} ${entry.DisplayIcon || ''}`.toLowerCase();
+    return haystack.includes('tailscale');
+  });
+  const exeNames = ['tailscale-ipn.exe', 'tailscale.exe', 'Tailscale.exe'];
+  const roots = [
+    'C:\\Program Files\\Tailscale',
+    'C:\\Program Files (x86)\\Tailscale',
+    path.join(os.homedir(), 'AppData', 'Local', 'Tailscale'),
+    path.join(os.homedir(), 'AppData', 'Local', 'Programs', 'Tailscale'),
+  ];
+  for (const entry of registryEntries) {
+    const iconExe = normalizeExePath(entry.DisplayIcon);
+    if (iconExe && fs.existsSync(iconExe)) {
+      return {
+        installed: true,
+        version: entry.DisplayVersion || '',
+        exePath: iconExe,
+        installLocation: entry.InstallLocation || path.dirname(iconExe),
+      };
+    }
+    if (entry.InstallLocation) roots.unshift(entry.InstallLocation);
+  }
+  for (const root of Array.from(new Set(roots.filter(Boolean)))) {
+    for (const exeName of exeNames) {
+      const exe = findFile(root, exeName, 4);
+      if (exe) {
+        const entry = registryEntries[0] || {};
+        return {
+          installed: true,
+          version: entry.DisplayVersion || '',
+          exePath: exe,
+          installLocation: entry.InstallLocation || root,
+        };
+      }
+    }
+  }
+  return {
+    installed: registryEntries.length > 0,
+    version: registryEntries[0]?.DisplayVersion || '',
+    exePath: '',
+    installLocation: registryEntries[0]?.InstallLocation || '',
+  };
+}
+
 function getAgentToolInstallStatus() {
   const qclaw = findAgentToolInstall('qclaw');
   const marvis = findAgentToolInstall('marvis');
   const hohu = findAgentToolInstall('hohu');
   const openclaw = findAgentToolInstall('openclaw');
+  const tailscale = findTailscaleInstall();
   return JSON.stringify({
     qclaw,
     marvis,
     hohu,
     openclaw,
+    tailscale,
     anyInstalled: Boolean(qclaw.installed || marvis.installed || hohu.installed || openclaw.installed),
     recommendedTool: qclaw.installed ? 'qclaw' : (openclaw.installed ? 'openclaw' : (hohu.installed ? 'hohu' : (marvis.installed ? 'marvis' : 'qclaw'))),
   });
@@ -1701,6 +1749,15 @@ function openApp(appName) {
       spawn(exe, [], { detached: true, stdio: 'ignore' }).unref();
     } else {
       shell.openExternal('openclaw://').catch(() => shell.openExternal('https://openclaw.ai/').catch(() => {}));
+    }
+    return true;
+  }
+  if (appName === 'tailscale') {
+    const exe = findTailscaleInstall().exePath;
+    if (exe && fs.existsSync(exe)) {
+      spawn(exe, [], { detached: true, stdio: 'ignore' }).unref();
+    } else {
+      shell.openExternal('https://tailscale.com/download/windows').catch(() => {});
     }
     return true;
   }

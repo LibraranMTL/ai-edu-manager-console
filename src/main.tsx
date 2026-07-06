@@ -328,6 +328,7 @@ const updateManifestUrl = [
   'http://www.greatbg.com/download/edu-manager-version.json',
   'http://123.56.83.50/download/edu-manager-version.json',
 ].join('|');
+const userAgreementUrl = 'https://www.greatbg.com/download/agreement.html';
 const initSchemaVersion = 1;
 const defaultStorageConfig: StorageConfig = {
   platform: 'android',
@@ -2405,6 +2406,11 @@ function App() {
     if (!ok) window.open(url, '_blank');
   };
 
+  const openUserAgreement = () => {
+    const ok = bridge()?.openExternalUrl?.(userAgreementUrl);
+    if (!ok) window.open(userAgreementUrl, '_blank', 'noopener,noreferrer');
+  };
+
   const startHostService = () => {
     applyHostServiceResult(bridge()?.startHostService?.());
   };
@@ -2913,7 +2919,12 @@ function App() {
             ))}
           </div>
         </section>
-        <div className="brand-copyright">嘉玛蓝（北京）科技有限公司版权所有</div>
+        <div className="brand-copyright">
+          <span>嘉玛蓝（北京）科技有限公司版权所有</span>
+          <button className="inline-link" type="button" onClick={openUserAgreement}>
+            用户协议 <ExternalLink size={12} />
+          </button>
+        </div>
       </aside>
 
       {sidebarCollapsed && (
@@ -4154,6 +4165,16 @@ function App() {
               {isWindows
                 ? 'QClaw、Marvis、Hohu 和 OpenClaw 将使用同一个本机学生知识库目录。默认根目录为 D:\\学生资料；更换资料根目录后，新建和导入都会写入新目录。'
                 : String(compatibility?.message ?? '在 Android APK 中可查看完整兼容性检测结果。')}
+            </div>
+            <div className="notice legal-notice">
+              <div>
+                <strong>法律与服务条款</strong>
+                <p>继续使用本软件前，请阅读并理解用户协议。商业部署时建议同步配置正式售后、隐私与订阅说明。</p>
+              </div>
+              <button className="secondary compact" onClick={openUserAgreement}>
+                用户协议
+                <ExternalLink size={16} />
+              </button>
             </div>
             {isWindows && (
               <div className="notice">

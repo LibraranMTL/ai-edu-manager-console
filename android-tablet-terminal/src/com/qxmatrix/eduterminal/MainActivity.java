@@ -72,6 +72,7 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
     static final String VERSION_NAME = "0.4.3";
     static final int VERSION_CODE = 53;
     static final String UPDATE_MANIFEST_URL = "https://www.greatbg.com/download/edu-manager-version.json";
+    static final String USER_AGREEMENT_URL = "https://www.greatbg.com/download/agreement.html";
     private static final String[] MATERIAL_MIME_TYPES = new String[] {
         "image/*",
         "application/pdf",
@@ -137,6 +138,7 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
     Button openQQButton;
     Button copyConsultPromptButton;
     Button copyDigestPromptButton;
+    TextView agreementLink;
     TextView contactText;
     LinearLayout connectionConfigCard;
     LinearLayout studentCard;
@@ -223,8 +225,16 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
         copyright.setText("嘉玛蓝（北京）科技有限公司版权所有");
         copyright.setTextSize(12);
         copyright.setTextColor(Color.rgb(104, 121, 117));
-        copyright.setPadding(0, 0, 0, dp(14));
+        copyright.setPadding(0, 0, 0, dp(3));
         brandCopy.addView(copyright);
+
+        agreementLink = new TextView(this);
+        agreementLink.setText("用户协议");
+        agreementLink.setTextSize(13);
+        agreementLink.setTextColor(Color.rgb(16, 111, 104));
+        agreementLink.setPadding(0, 0, 0, dp(14));
+        agreementLink.setOnClickListener(this);
+        brandCopy.addView(agreementLink);
 
         LinearLayout quickCard = card();
         root.addView(quickCard);
@@ -491,6 +501,8 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
             status("请在“联系教育管家”区域打开企业微信或 QQ，并复制咨询提示。");
         } else if (view == connectionSettingsButton) {
             toggleConnectionSettings();
+        } else if (view == agreementLink) {
+            openUserAgreement();
         } else if (view == uploadButton) {
             pickMaterial();
         } else if (view == sharedUploadButton) {
@@ -1730,6 +1742,17 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
         ClipboardManager manager = (ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
         if (manager != null) {
             manager.setPrimaryClip(ClipData.newPlainText(label, text));
+        }
+    }
+
+    void openUserAgreement() {
+        try {
+            Intent intent = new Intent(Intent.ACTION_VIEW, Uri.parse(USER_AGREEMENT_URL));
+            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            startActivity(intent);
+        } catch (Exception error) {
+            copyPlainText("user-agreement", USER_AGREEMENT_URL);
+            toast("已复制用户协议链接。");
         }
     }
 

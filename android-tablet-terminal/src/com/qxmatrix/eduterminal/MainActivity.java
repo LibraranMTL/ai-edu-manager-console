@@ -73,6 +73,7 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
     static final int VERSION_CODE = 53;
     static final String UPDATE_MANIFEST_URL = "https://www.greatbg.com/download/edu-manager-version.json";
     static final String USER_AGREEMENT_URL = "https://www.greatbg.com/download/agreement.html";
+    static final String PRIVACY_POLICY_URL = "https://www.greatbg.com/download/privacy.html";
     private static final String[] MATERIAL_MIME_TYPES = new String[] {
         "image/*",
         "application/pdf",
@@ -139,6 +140,7 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
     Button copyConsultPromptButton;
     Button copyDigestPromptButton;
     TextView agreementLink;
+    TextView privacyLink;
     TextView contactText;
     LinearLayout connectionConfigCard;
     LinearLayout studentCard;
@@ -235,6 +237,14 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
         agreementLink.setPadding(0, 0, 0, dp(14));
         agreementLink.setOnClickListener(this);
         brandCopy.addView(agreementLink);
+
+        privacyLink = new TextView(this);
+        privacyLink.setText("隐私政策");
+        privacyLink.setTextSize(13);
+        privacyLink.setTextColor(Color.rgb(16, 111, 104));
+        privacyLink.setPadding(0, 0, 0, dp(14));
+        privacyLink.setOnClickListener(this);
+        brandCopy.addView(privacyLink);
 
         LinearLayout quickCard = card();
         root.addView(quickCard);
@@ -503,6 +513,8 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
             toggleConnectionSettings();
         } else if (view == agreementLink) {
             openUserAgreement();
+        } else if (view == privacyLink) {
+            openPrivacyPolicy();
         } else if (view == uploadButton) {
             pickMaterial();
         } else if (view == sharedUploadButton) {
@@ -1756,6 +1768,17 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
         }
     }
 
+    void openPrivacyPolicy() {
+        try {
+            Intent intent = new Intent(Intent.ACTION_VIEW, Uri.parse(PRIVACY_POLICY_URL));
+            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            startActivity(intent);
+        } catch (Exception error) {
+            copyPlainText("privacy-policy", PRIVACY_POLICY_URL);
+            toast("已复制隐私政策链接。");
+        }
+    }
+
     void checkForUpdate() {
         status("正在检查平板终端更新...");
         new Thread(new TabletUpdateCheckTask(this)).start();
@@ -2137,7 +2160,17 @@ class ConnectTask implements Runnable {
         try {
             JSONObject health = activity.getJson(base + "/api/health", null);
             activity.markConnectedNow();
-            activity.runOnUiThread(new StatusTask(activity, "主机服务已连接，版本：" + health.optString("version", "未知")));
+            JSONObject license = health.optJSONObject("license");
+            String licenseText = "主机未激活";
+            if (license != null) {
+                String status = license.optString("status", "inactive");
+                if ("active".equals(status)) {
+                    licenseText = "主机已激活：" + license.optString("planLabel", "已授权");
+                } else if ("expired".equals(status)) {
+                    licenseText = "主机授权已过期";
+                }
+            }
+            activity.runOnUiThread(new StatusTask(activity, "主机服务已连接，版本：" + health.optString("version", "未知") + "；" + licenseText));
             activity.runOnUiThread(new ConnectionSummaryTask(activity, "已连接", activity.students.size()));
             activity.runOnUiThread(new StartLoadStudentsTask(activity));
         } catch (Exception error) {

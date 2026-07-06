@@ -156,11 +156,50 @@ button:disabled {
   text-underline-offset: 3px;
 }
 
+.legal-link-group {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
 .legal-notice {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 16px;
+}
+
+.legal-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  justify-content: flex-end;
+}
+
+.license-panel {
+  display: grid;
+  gap: 12px;
+}
+
+.license-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.license-summary span {
+  padding: 6px 10px;
+  color: var(--accent-dark);
+  border: 1px solid var(--accent-border);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.72);
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.license-field {
+  max-width: 760px;
 }
 
 .legal-notice p {

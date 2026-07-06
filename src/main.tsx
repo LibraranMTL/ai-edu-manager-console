@@ -12,6 +12,7 @@ import {
   FileDown,
   FolderOpen,
   Home,
+  KeyRound,
   ListChecks,
   MessageCircle,
   PanelLeftClose,
@@ -99,6 +100,9 @@ type AndroidBridge = {
   takePhoto?: (studentName: string) => boolean;
   initStudentWorkspace?: (studentName: string, agentMd: string, indexMd: string, logMd: string) => string;
   getStorageConfig?: () => string;
+  getLicenseStatus?: () => string;
+  activateLicense?: (code: string) => string;
+  deactivateLicense?: () => string;
   getAgentToolInstallStatus?: () => string;
   openExternalUrl?: (url: string) => boolean;
   getSharedInboxStatus?: () => string;
@@ -206,8 +210,22 @@ type HostServiceStatus = {
   students?: HostStudentStat[];
   todayUploadCount?: number;
   recentUploads?: HostUploadRecord[];
+  license?: LicenseStatus;
   startedAt?: string;
   lastError?: string;
+};
+
+type LicenseStatus = {
+  status: 'inactive' | 'active' | 'expired' | string;
+  active?: boolean;
+  plan?: string;
+  planLabel?: string;
+  expiresAt?: string;
+  studentLimit?: number;
+  deviceLimit?: number;
+  activatedAt?: string;
+  codeHash?: string;
+  message?: string;
 };
 
 type HostStudentStat = {
@@ -329,6 +347,7 @@ const updateManifestUrl = [
   'http://123.56.83.50/download/edu-manager-version.json',
 ].join('|');
 const userAgreementUrl = 'https://www.greatbg.com/download/agreement.html';
+const privacyPolicyUrl = 'https://www.greatbg.com/download/privacy.html';
 const initSchemaVersion = 1;
 const defaultStorageConfig: StorageConfig = {
   platform: 'android',
@@ -1338,6 +1357,9 @@ function App() {
   const [hostTimeline, setHostTimeline] = useState<HostTimelineEvent[]>([]);
   const [studentEditDraft, setStudentEditDraft] = useState<StudentDraft | null>(null);
   const [archiveKeywords, setArchiveKeywords] = useState<ArchiveKeywordConfig>(loadArchiveKeywords);
+  const [licenseStatus, setLicenseStatus] = useState<LicenseStatus | null>(null);
+  const [licenseCodeDraft, setLicenseCodeDraft] = useState('');
+  const [licenseMessage, setLicenseMessage] = useState('');
 
   const selectedStudent = students.find((item) => item.id === selectedId) ?? students[0];
   const selectedTool = getAgentToolProfile(draft.agentTool);
@@ -1437,6 +1459,60 @@ function App() {
     return '待消化';
   };
 
+  const licenseLabel = (license?: LicenseStatus | null) => {
+    if (!license || license.status === 'inactive') return '未激活';
+    if (license.status === 'expired') return '已过期';
+    return `${license.planLabel || license.plan || '已激活'}${license.expiresAt ? ` · 到期 ${new Date(license.expiresAt).toLocaleDateString('zh-CN')}` : ' · 永久'}`;
+  };
+
+  const refreshLicenseStatus = () => {
+    const raw = bridge()?.getLicenseStatus?.();
+    if (!raw) return;
+    try {
+      const result = JSON.parse(raw) as { ok?: boolean; license?: LicenseStatus; message?: string };
+      if (result.license) setLicenseStatus(result.license);
+      if (result.message) setLicenseMessage(result.message);
+    } catch {
+      setLicenseMessage('读取许可证状态失败。');
+    }
+  };
+
+  const activateLicense = () => {
+    if (!licenseCodeDraft.trim()) {
+      setLicenseMessage('请先输入激活码。');
+      return;
+    }
+    const raw = bridge()?.activateLicense?.(licenseCodeDraft);
+    if (!raw) {
+      setLicenseMessage('当前环境不支持许可证激活。');
+      return;
+    }
+    try {
+      const result = JSON.parse(raw) as { ok?: boolean; message?: string; license?: LicenseStatus; status?: HostServiceStatus };
+      if (result.license) setLicenseStatus(result.license);
+      if (result.status) setHostServiceStatus(result.status);
+      setLicenseMessage(result.message || (result.ok ? '激活成功。' : '激活失败。'));
+      if (result.ok) setLicenseCodeDraft('');
+    } catch {
+      setLicenseMessage('许可证激活失败。');
+    }
+  };
+
+  const deactivateLicense = () => {
+    const confirmed = window.confirm('确认移除本机许可证吗？平板终端会显示主机未激活。');
+    if (!confirmed) return;
+    const raw = bridge()?.deactivateLicense?.();
+    if (!raw) return;
+    try {
+      const result = JSON.parse(raw) as { ok?: boolean; message?: string; license?: LicenseStatus; status?: HostServiceStatus };
+      if (result.license) setLicenseStatus(result.license);
+      if (result.status) setHostServiceStatus(result.status);
+      setLicenseMessage(result.message || '已移除本机许可证。');
+    } catch {
+      setLicenseMessage('移除许可证失败。');
+    }
+  };
+
   const syncStudentsToHost = (next: Student[]) => {
     if (!bridge()?.syncStudents) return;
     try {
@@ -1455,6 +1531,7 @@ function App() {
     try {
       const status = JSON.parse(raw) as HostServiceStatus;
       setHostServiceStatus(status);
+      if (status.license) setLicenseStatus(status.license);
       setHostPortDraft(String(status.port || 18777));
       refreshHostUploadRecords();
       refreshHostTimeline();
@@ -1576,6 +1653,7 @@ function App() {
     refreshInstallStatus();
     syncStudentsToHost(students);
     refreshHostServiceStatus();
+    refreshLicenseStatus();
   }, []);
 
   useEffect(() => {
@@ -1620,7 +1698,9 @@ function App() {
     };
     (window as unknown as { onNativeHostServiceChanged?: (payload: string) => void }).onNativeHostServiceChanged = (payload: string) => {
       try {
-        setHostServiceStatus(JSON.parse(payload) as HostServiceStatus);
+        const status = JSON.parse(payload) as HostServiceStatus;
+        setHostServiceStatus(status);
+        if (status.license) setLicenseStatus(status.license);
         refreshHostUploadRecords();
       } catch {
         refreshHostServiceStatus();
@@ -2411,6 +2491,11 @@ function App() {
     if (!ok) window.open(userAgreementUrl, '_blank', 'noopener,noreferrer');
   };
 
+  const openPrivacyPolicy = () => {
+    const ok = bridge()?.openExternalUrl?.(privacyPolicyUrl);
+    if (!ok) window.open(privacyPolicyUrl, '_blank', 'noopener,noreferrer');
+  };
+
   const startHostService = () => {
     applyHostServiceResult(bridge()?.startHostService?.());
   };
@@ -2921,9 +3006,14 @@ function App() {
         </section>
         <div className="brand-copyright">
           <span>嘉玛蓝（北京）科技有限公司版权所有</span>
-          <button className="inline-link" type="button" onClick={openUserAgreement}>
-            用户协议 <ExternalLink size={12} />
-          </button>
+          <span className="legal-link-group">
+            <button className="inline-link" type="button" onClick={openUserAgreement}>
+              用户协议 <ExternalLink size={12} />
+            </button>
+            <button className="inline-link" type="button" onClick={openPrivacyPolicy}>
+              隐私政策 <ExternalLink size={12} />
+            </button>
+          </span>
         </div>
       </aside>
 
@@ -3013,6 +3103,7 @@ function App() {
               <InfoPanel icon={<Bot />} title="Agent 创建" value={`${students.length} 个学生档案`} />
               <InfoPanel icon={<Archive />} title="资料入口" value="原始资料库待同步" />
               <InfoPanel icon={<RefreshCw />} title="当前版本" value={`v${currentVersionName}`} />
+              {isWindows && <InfoPanel icon={<KeyRound />} title="授权状态" value={licenseLabel(licenseStatus || hostServiceStatus?.license)} />}
             </div>
             {isWindows && (
               <section className="panel tool-home-panel">
@@ -3307,7 +3398,7 @@ function App() {
               <div className="panel-heading">
                 <div>
                   <h2>版本检查与更新</h2>
-                <p>{isWindows ? '从 greatbg.com/download 下载新版 Windows 包，并打开下载页面。' : '从 greatbg.com/download 下载新版 APK，并调起安卓系统安装界面。'}</p>
+                <p>{isWindows ? '下载新版 Windows 包，并打开下载页面。' : '从 greatbg.com/download 下载新版 APK，并调起安卓系统安装界面。'}</p>
                 </div>
                 <button className="secondary" onClick={checkUpdate} disabled={checkingUpdate}>
                   <RefreshCw size={18} />
@@ -4129,6 +4220,7 @@ function App() {
               {(isWindows
                 ? [
                     ['存储模式', 'Windows 本机目录'],
+                    ['授权状态', licenseLabel(licenseStatus || hostServiceStatus?.license)],
                     ['学生资料根目录', storageConfig.baseDir],
                     ['QClaw', installStatus?.qclaw.installed ? `已安装 ${installStatus.qclaw.version ?? ''}` : '未安装'],
                     ['Marvis', installStatus?.marvis.installed ? `已安装 ${installStatus.marvis.version ?? ''}` : '未安装'],
@@ -4166,15 +4258,53 @@ function App() {
                 ? 'QClaw、Marvis、Hohu 和 OpenClaw 将使用同一个本机学生知识库目录。默认根目录为 D:\\学生资料；更换资料根目录后，新建和导入都会写入新目录。'
                 : String(compatibility?.message ?? '在 Android APK 中可查看完整兼容性检测结果。')}
             </div>
+            {isWindows && (
+              <div className="notice license-panel">
+                <div>
+                  <strong>许可证授权</strong>
+                  <p>用户付款后获得激活码，在 Windows 主机端激活；平板终端跟随主机授权状态，不单独收费。</p>
+                  <div className="license-summary">
+                    <span>{licenseLabel(licenseStatus || hostServiceStatus?.license)}</span>
+                    <span>学生数：{(licenseStatus || hostServiceStatus?.license)?.studentLimit ?? '-'}</span>
+                    <span>平板设备：{(licenseStatus || hostServiceStatus?.license)?.deviceLimit ?? '-'}</span>
+                  </div>
+                </div>
+                <div className="inline-field license-field">
+                  <input
+                    value={licenseCodeDraft}
+                    onChange={(event) => setLicenseCodeDraft(event.target.value)}
+                    placeholder="输入激活码：AIE-FAMILY-20270706-3-6-随机码-签名"
+                  />
+                  <button className="primary" onClick={activateLicense}>
+                    激活
+                  </button>
+                </div>
+                <div className="actions">
+                  <button className="secondary compact" onClick={refreshLicenseStatus}>
+                    刷新授权
+                  </button>
+                  <button className="secondary compact" onClick={deactivateLicense}>
+                    移除本机许可证
+                  </button>
+                </div>
+                {licenseMessage && <p>{licenseMessage}</p>}
+              </div>
+            )}
             <div className="notice legal-notice">
               <div>
                 <strong>法律与服务条款</strong>
-                <p>继续使用本软件前，请阅读并理解用户协议。商业部署时建议同步配置正式售后、隐私与订阅说明。</p>
+                <p>继续使用本软件前，请阅读并理解用户协议与隐私政策。商业部署时建议同步配置正式售后、隐私与订阅说明。</p>
               </div>
-              <button className="secondary compact" onClick={openUserAgreement}>
-                用户协议
-                <ExternalLink size={16} />
-              </button>
+              <div className="legal-actions">
+                <button className="secondary compact" onClick={openUserAgreement}>
+                  用户协议
+                  <ExternalLink size={16} />
+                </button>
+                <button className="secondary compact" onClick={openPrivacyPolicy}>
+                  隐私政策
+                  <ExternalLink size={16} />
+                </button>
+              </div>
             </div>
             {isWindows && (
               <div className="notice">

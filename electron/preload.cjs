@@ -25,6 +25,15 @@ contextBridge.exposeInMainWorld('AndroidBridge', {
   getStorageConfig() {
     return ipcRenderer.sendSync('bridge:getStorageConfig');
   },
+  getLicenseStatus() {
+    return ipcRenderer.sendSync('bridge:getLicenseStatus');
+  },
+  activateLicense(code) {
+    return ipcRenderer.sendSync('bridge:activateLicense', code);
+  },
+  deactivateLicense() {
+    return ipcRenderer.sendSync('bridge:deactivateLicense');
+  },
   getAgentToolInstallStatus() {
     return ipcRenderer.sendSync('bridge:getAgentToolInstallStatus');
   },

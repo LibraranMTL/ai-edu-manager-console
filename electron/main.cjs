@@ -33,6 +33,7 @@ const studentsPath = () => path.join(app.getPath('userData'), 'students.json');
 const devicesPath = () => path.join(app.getPath('userData'), 'devices.json');
 const uploadRecordsPath = () => path.join(app.getPath('userData'), 'upload-records.json');
 const hostTimelinePath = () => path.join(app.getPath('userData'), 'host-timeline.json');
+const LICENSE_SIGNING_SECRET = 'ai-edu-manager-offline-license-v1';
 let activePairSession = null;
 
 function readSettings() {
@@ -55,6 +56,122 @@ function ensureApiToken() {
     writeSettings(settings);
   }
   return settings.apiToken;
+}
+
+function licenseSignature(payload) {
+  return crypto
+    .createHash('sha256')
+    .update(`${LICENSE_SIGNING_SECRET}|${payload}`)
+    .digest('hex')
+    .slice(0, 12)
+    .toUpperCase();
+}
+
+function normalizeLicenseCode(code) {
+  return String(code || '')
+    .trim()
+    .toUpperCase()
+    .replace(/[—–]/g, '-')
+    .replace(/\s+/g, '');
+}
+
+function planLabel(plan) {
+  const value = String(plan || '').toUpperCase();
+  if (value === 'FAMILY') return '家庭版';
+  if (value === 'PRO') return '专业版';
+  if (value === 'ORG') return '机构版';
+  if (value === 'TRIAL') return '试用版';
+  return value || '未知版本';
+}
+
+function parseLicenseCode(code) {
+  const normalized = normalizeLicenseCode(code);
+  const parts = normalized.split('-');
+  if (parts.length !== 7 || parts[0] !== 'AIE') {
+    return { ok: false, message: '激活码格式不正确。格式：AIE-套餐-到期日-学生数-设备数-随机码-签名。' };
+  }
+  const [, plan, expires, studentLimitRaw, deviceLimitRaw, token, signature] = parts;
+  if (!/^[A-Z0-9]{3,16}$/.test(plan)) return { ok: false, message: '激活码套餐字段不正确。' };
+  if (!(expires === 'PERM' || /^\d{8}$/.test(expires))) return { ok: false, message: '激活码到期日不正确。' };
+  const studentLimit = Number(studentLimitRaw);
+  const deviceLimit = Number(deviceLimitRaw);
+  if (!Number.isInteger(studentLimit) || studentLimit < 1 || studentLimit > 9999) return { ok: false, message: '激活码学生数不正确。' };
+  if (!Number.isInteger(deviceLimit) || deviceLimit < 1 || deviceLimit > 9999) return { ok: false, message: '激活码设备数不正确。' };
+  if (!/^[A-Z0-9]{6,24}$/.test(token)) return { ok: false, message: '激活码随机码不正确。' };
+  const payload = ['AIE', plan, expires, studentLimitRaw, deviceLimitRaw, token].join('|');
+  const expected = licenseSignature(payload);
+  if (signature !== expected) return { ok: false, message: '激活码校验失败，请确认是否复制完整。' };
+  const expiresAt = expires === 'PERM'
+    ? ''
+    : `${expires.slice(0, 4)}-${expires.slice(4, 6)}-${expires.slice(6, 8)}T23:59:59.999+08:00`;
+  if (expiresAt && Date.now() > new Date(expiresAt).getTime()) {
+    return { ok: false, message: '激活码已过期。', expired: true };
+  }
+  return {
+    ok: true,
+    license: {
+      status: 'active',
+      plan,
+      planLabel: planLabel(plan),
+      expiresAt,
+      studentLimit,
+      deviceLimit,
+      token,
+      codeHash: crypto.createHash('sha256').update(normalized).digest('hex'),
+      activatedAt: new Date().toISOString(),
+    },
+  };
+}
+
+function publicLicenseStatus(rawLicense) {
+  const license = rawLicense || readSettings().license || null;
+  if (!license) {
+    return {
+      status: 'inactive',
+      active: false,
+      planLabel: '未激活',
+      message: 'Windows 主机尚未激活。平板终端会跟随主机授权状态。',
+    };
+  }
+  const expiresAt = license.expiresAt || '';
+  const expired = Boolean(expiresAt && Date.now() > new Date(expiresAt).getTime());
+  return {
+    ...license,
+    status: expired ? 'expired' : (license.status || 'active'),
+    active: !expired && (license.status || 'active') === 'active',
+    planLabel: license.planLabel || planLabel(license.plan),
+    expiresAt,
+    codeHash: license.codeHash ? `${license.codeHash.slice(0, 8)}...${license.codeHash.slice(-6)}` : '',
+    message: expired ? '许可证已过期，请续费后重新激活。' : 'Windows 主机已激活，平板终端跟随主机授权。',
+  };
+}
+
+function getLicenseStatus() {
+  return JSON.stringify({ ok: true, license: publicLicenseStatus() });
+}
+
+function activateLicense(code) {
+  const parsed = parseLicenseCode(code);
+  if (!parsed.ok) return JSON.stringify({ ok: false, message: parsed.message, license: publicLicenseStatus() });
+  const settings = readSettings();
+  settings.license = parsed.license;
+  writeSettings(settings);
+  appendHostTimeline({
+    type: 'license_activated',
+    title: 'License activated',
+    detail: `${parsed.license.planLabel} · students ${parsed.license.studentLimit} · devices ${parsed.license.deviceLimit}`,
+  });
+  notify('onNativeHostServiceChanged', getHostServiceStatus());
+  return JSON.stringify({ ok: true, message: '激活成功。平板终端将跟随 Windows 主机授权状态。', license: publicLicenseStatus(parsed.license), status: JSON.parse(getHostServiceStatus()) });
+}
+
+function deactivateLicense() {
+  const settings = readSettings();
+  delete settings.license;
+  writeSettings(settings);
+  appendHostTimeline({ type: 'license_deactivated', title: 'License deactivated', detail: 'Local license was removed.' });
+  notify('onNativeHostServiceChanged', getHostServiceStatus());
+  return JSON.stringify({ ok: true, message: '已移除本机许可证。', license: publicLicenseStatus(), status: JSON.parse(getHostServiceStatus()) });
 }
 
 function readDevices() {
@@ -1793,6 +1910,7 @@ function handleHealth(_request, response) {
     version: APP_VERSION,
     hostName: os.hostname(),
     port: getHostServicePort(),
+    license: publicLicenseStatus(),
   });
 }
 
@@ -2170,6 +2288,7 @@ function getHostServiceStatus() {
     students: hostStudentStats(),
     todayUploadCount,
     recentUploads: readUploadRecords().slice(0, 8),
+    license: publicLicenseStatus(),
     startedAt: hostServiceStartedAt,
     lastError: hostServiceLastError,
   });
@@ -2291,6 +2410,9 @@ ipcMain.on('bridge:getAppStatus', (event) => {
   event.returnValue = JSON.stringify({ qclawOpened, marvisOpened, hohuOpened, openclawOpened, obsidianOpened });
 });
 ipcMain.on('bridge:getStorageConfig', (event) => { event.returnValue = getStorageConfig(); });
+ipcMain.on('bridge:getLicenseStatus', (event) => { event.returnValue = getLicenseStatus(); });
+ipcMain.on('bridge:activateLicense', (event, code) => { event.returnValue = activateLicense(code); });
+ipcMain.on('bridge:deactivateLicense', (event) => { event.returnValue = deactivateLicense(); });
 ipcMain.on('bridge:getAgentToolInstallStatus', (event) => { event.returnValue = getAgentToolInstallStatus(); });
 ipcMain.on('bridge:checkUpdate', (event, manifestUrl, currentVersionCode) => {
   event.returnValue = checkUpdate(manifestUrl, currentVersionCode);

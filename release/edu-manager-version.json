@@ -1,0 +1,16 @@
+{
+  "versionCode": 55,
+  "versionName": "0.4.5",
+  "windowsVersionCode": 55,
+  "windowsVersionName": "0.4.5",
+  "windowsUrl": "https://www.greatbg.com/download/AI-edu-manager-console-Windows-0.4.5.exe",
+  "terminalApkUrl": "https://www.greatbg.com/download/AI-edu-manager-tablet-terminal-0.4.3.apk",
+  "tabletTerminalVersionCode": 53,
+  "tabletTerminalVersionName": "0.4.3",
+  "tabletTerminalApkUrl": "https://www.greatbg.com/download/AI-edu-manager-tablet-terminal-0.4.3.apk",
+  "managerApkUrl": "https://www.greatbg.com/download/edu-manager-android-0.2.3.apk",
+  "managerApkVersionCode": 23,
+  "managerApkVersionName": "0.2.3",
+  "apkUrl": "https://www.greatbg.com/download/AI-edu-manager-tablet-terminal-0.4.3.apk",
+  "notes": "Windows 0.4.5：新增接管已有知识库与绑定已有 Agent 工具能力，支持标准知识库和接管知识库并存；Agent 工具新增 OpenClaw，并同步安装检测、打开状态、初始化指令、Soul 工作规则和资料路径。平板终端 0.4.3 保持不变。"
+}

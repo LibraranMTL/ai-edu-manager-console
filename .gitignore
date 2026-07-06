@@ -1,0 +1,52 @@
+# Dependencies
+node_modules/
+.pnpm-store/
+
+# Frontend and Electron build output
+dist/
+release/**
+!release/
+!release/edu-manager-version.json
+!release/windows/
+!release/windows/edu-manager-version.json
+
+# Android build output and local toolchains
+.android-tools/
+android-lite/build/
+android-tablet-terminal/build/
+android-lite/assets/www/
+
+# Signing keys and generated keystores
+*.keystore
+*.jks
+*.p12
+*.pem
+*.key
+
+# Local app data, caches, logs
+*.log
+logs/
+tmp/
+temp/
+.cache/
+.DS_Store
+Thumbs.db
+
+# IDE and OS local state
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Environment files
+.env
+.env.*
+!.env.example
+
+# Generated packages
+*.apk
+*.aab
+*.exe
+*.zip
+*.7z
+*.rar

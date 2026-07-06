@@ -4,6 +4,9 @@
   "windowsVersionCode": 55,
   "windowsVersionName": "0.4.5",
   "windowsUrl": "https://www.greatbg.com/download/AI-edu-manager-console-Windows-0.4.5.exe",
+  "iosVersionCode": 1,
+  "iosVersionName": "0.4.4",
+  "iosUrl": "https://www.greatbg.com/download/AI-edu-manager-ios-terminal-0.4.4.ipa",
   "terminalApkUrl": "https://www.greatbg.com/download/AI-edu-manager-tablet-terminal-0.4.4.apk",
   "tabletTerminalVersionCode": 54,
   "tabletTerminalVersionName": "0.4.4",
@@ -12,5 +15,5 @@
   "managerApkVersionCode": 23,
   "managerApkVersionName": "0.2.3",
   "apkUrl": "https://www.greatbg.com/download/AI-edu-manager-tablet-terminal-0.4.4.apk",
-  "notes": "Windows 0.4.5：新增 Tailscale 安装检测、打开和下载入口。平板终端 0.4.4：新增版本检查与更新、页面布局选择、五色皮肤和淡化人物背景，并支持检测/下载 Android 版 Tailscale。"
+  "notes": "Windows 0.4.5：新增 Tailscale 安装检测、打开和下载入口。平板终端 0.4.4：新增版本检查与更新、页面布局选择、五色皮肤和淡化人物背景，并支持检测/下载 Android 版 Tailscale。iOS 终端 0.4.4：新增 SwiftUI 版本源码和 iOS 更新通道。"
 }

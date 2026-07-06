@@ -10,6 +10,7 @@ import android.content.Context;
 import android.content.DialogInterface;
 import android.content.Intent;
 import android.content.SharedPreferences;
+import android.content.pm.ActivityInfo;
 import android.database.Cursor;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
@@ -69,8 +70,8 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
     static final int REQUEST_TAKE_PHOTO = 8103;
     static final int REQUEST_SCAN_PAIR = 8104;
     static final int REQUEST_CAPTURE_PAIR_QR = 8105;
-    static final String VERSION_NAME = "0.4.4";
-    static final int VERSION_CODE = 54;
+    static final String VERSION_NAME = "0.4.5";
+    static final int VERSION_CODE = 55;
     static final String UPDATE_MANIFEST_URL = "https://www.greatbg.com/download/edu-manager-version.json";
     static final String USER_AGREEMENT_URL = "https://www.greatbg.com/download/agreement.html";
     static final String PRIVACY_POLICY_URL = "https://www.greatbg.com/download/privacy.html";
@@ -129,6 +130,7 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
     Button checkUpdateButton;
     Button copyDiagnosticsButton;
     Button tailscaleButton;
+    Button settingsToggleButton;
     Button quickUploadButton;
     Button quickArchiveButton;
     Button quickContactButton;
@@ -149,6 +151,7 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
     Button copyDigestPromptButton;
     TextView agreementLink;
     TextView privacyLink;
+    TextView settingsStatusText;
     TextView contactText;
     LinearLayout connectionConfigCard;
     LinearLayout settingsCard;
@@ -156,6 +159,7 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
     LinearLayout contactCard;
     LinearLayout archiveCard;
     boolean connectionSettingsVisible = false;
+    boolean settingsVisible = false;
 
     final List<Student> students = new ArrayList<Student>();
     final List<ArchiveFile> allArchiveFiles = new ArrayList<ArchiveFile>();
@@ -182,6 +186,7 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         loadVisualPrefsOnly();
+        applyRequestedOrientation();
         setTitle("AI教育管家平板终端");
         buildUi();
         loadPrefs();
@@ -289,15 +294,18 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
         quickArchiveButton = button("查看学情档案", false);
         quickContactButton = button("联系教育管家", false);
         connectionSettingsButton = button("连接设置", false);
+        settingsToggleButton = button("系统设置", false);
         quickRow.addView(quickUploadButton);
         quickRow.addView(quickArchiveButton);
         quickRow.addView(quickContactButton);
         quickRow.addView(connectionSettingsButton);
+        quickRow.addView(settingsToggleButton);
         quickCard.addView(quickRow);
         quickUploadButton.setOnClickListener(this);
         quickArchiveButton.setOnClickListener(this);
         quickContactButton.setOnClickListener(this);
         connectionSettingsButton.setOnClickListener(this);
+        settingsToggleButton.setOnClickListener(this);
 
         connectionConfigCard = card();
         root.addView(connectionConfigCard);
@@ -403,6 +411,14 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
         copyDiagnosticsButton.setOnClickListener(this);
         tailscaleButton.setOnClickListener(this);
 
+        settingsStatusText = new TextView(this);
+        settingsStatusText.setText("系统设置已收起。需要更改布局、皮肤或检查更新时点击上方“系统设置”。");
+        settingsStatusText.setTextSize(12);
+        settingsStatusText.setTextColor(Color.rgb(87, 107, 103));
+        settingsStatusText.setPadding(dp(10), dp(8), dp(10), 0);
+        settingsCard.addView(settingsStatusText);
+        settingsCard.setVisibility(View.GONE);
+
         studentCard = card();
         root.addView(studentCard);
         studentCard.addView(label("学生"));
@@ -496,7 +512,9 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
         LinearLayout archiveSearchRow = row();
         archiveSearchInput = input("搜索 Markdown 文件名");
         searchArchiveButton = button("搜索", false);
-        archiveSearchRow.addView(archiveSearchInput, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1));
+        archiveSearchRow.addView(archiveSearchInput, isPhoneLayout()
+            ? new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
+            : new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1));
         archiveSearchRow.addView(searchArchiveButton);
         archiveCard.addView(archiveSearchRow);
         searchArchiveButton.setOnClickListener(this);
@@ -580,6 +598,8 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
             status("请在“联系教育管家”区域打开企业微信或 QQ，并复制咨询提示。");
         } else if (view == connectionSettingsButton) {
             toggleConnectionSettings();
+        } else if (view == settingsToggleButton) {
+            toggleSettings();
         } else if (view == agreementLink) {
             openUserAgreement();
         } else if (view == privacyLink) {
@@ -629,6 +649,19 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
         }
         if (connectionSettingsVisible) {
             scrollToView(connectionConfigCard);
+        }
+    }
+
+    void toggleSettings() {
+        settingsVisible = !settingsVisible;
+        if (settingsCard != null) {
+            settingsCard.setVisibility(settingsVisible ? View.VISIBLE : View.GONE);
+        }
+        if (settingsToggleButton != null) {
+            settingsToggleButton.setText(settingsVisible ? "收起系统设置" : "系统设置");
+        }
+        if (settingsVisible) {
+            scrollToView(settingsCard);
         }
     }
 
@@ -1462,6 +1495,16 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
             .apply();
     }
 
+    void applyRequestedOrientation() {
+        if (layoutMode == 1) {
+            setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE);
+        } else if (layoutMode == 2) {
+            setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_SENSOR_PORTRAIT);
+        } else {
+            setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED);
+        }
+    }
+
     String deviceId() {
         SharedPreferences prefs = getSharedPreferences(PREFS, MODE_PRIVATE);
         String id = prefs.getString(PREF_DEVICE_ID, "");
@@ -1897,6 +1940,8 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
 
     void checkForUpdate() {
         status("正在检查平板终端更新...");
+        if (settingsStatusText != null) settingsStatusText.setText("正在检查平板终端更新...");
+        toast("正在检查更新...");
         new Thread(new TabletUpdateCheckTask(this)).start();
     }
 
@@ -2069,6 +2114,9 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
 
     void status(String message) {
         statusText.setText(message);
+        if (settingsStatusText != null && (message.contains("更新") || message.contains("版本") || message.contains("下载"))) {
+            settingsStatusText.setText(message);
+        }
     }
 
     void toast(String message) {

@@ -51,7 +51,7 @@ try {
   $releaseDir = Join-Path $projectRoot 'release\tablet-terminal'
   $unsignedApk = Join-Path $buildDir 'tablet-terminal-unsigned.apk'
   $alignedApk = Join-Path $buildDir 'tablet-terminal-aligned.apk'
-  $finalApk = Join-Path $releaseDir 'AI-edu-manager-tablet-terminal-0.4.4.apk'
+  $finalApk = Join-Path $releaseDir 'AI-edu-manager-tablet-terminal-0.4.5.apk'
   $keystore = Join-Path $scriptRoot 'debug.keystore'
 
   Remove-Item -LiteralPath $buildDir -Recurse -Force -ErrorAction SilentlyContinue
@@ -131,7 +131,7 @@ try {
 
   $realReleaseDir = Join-Path $realProjectRoot 'release\tablet-terminal'
   New-Item -ItemType Directory -Force -Path $realReleaseDir | Out-Null
-  $realFinalApk = Join-Path $realReleaseDir 'AI-edu-manager-tablet-terminal-0.4.4.apk'
+  $realFinalApk = Join-Path $realReleaseDir 'AI-edu-manager-tablet-terminal-0.4.5.apk'
   Get-Item -LiteralPath $realFinalApk | Format-List FullName,Length,LastWriteTime
 } finally {
   cmd /c "subst $drive /d" | Out-Null

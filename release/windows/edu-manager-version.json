@@ -1,16 +1,16 @@
 {
-  "versionCode": 58,
-  "versionName": "0.4.8",
-  "windowsVersionCode": 55,
-  "windowsVersionName": "0.4.5",
-  "windowsUrl": "https://www.greatbg.com/download/AI-edu-manager-console-Windows-0.4.5.exe",
-  "terminalApkUrl": "https://www.greatbg.com/download/AI-edu-manager-tablet-terminal-0.4.8.apk",
-  "tabletTerminalVersionCode": 58,
-  "tabletTerminalVersionName": "0.4.8",
-  "tabletTerminalApkUrl": "https://www.greatbg.com/download/AI-edu-manager-tablet-terminal-0.4.8.apk",
+  "versionCode": 59,
+  "versionName": "0.4.9",
+  "windowsVersionCode": 56,
+  "windowsVersionName": "0.4.6",
+  "windowsUrl": "https://www.greatbg.com/download/AI-edu-manager-console-Windows-0.4.6.exe",
+  "terminalApkUrl": "https://www.greatbg.com/download/AI-edu-manager-tablet-terminal-0.4.9.apk",
+  "tabletTerminalVersionCode": 59,
+  "tabletTerminalVersionName": "0.4.9",
+  "tabletTerminalApkUrl": "https://www.greatbg.com/download/AI-edu-manager-tablet-terminal-0.4.9.apk",
   "managerApkUrl": "https://www.greatbg.com/download/edu-manager-android-0.2.3.apk",
   "managerApkVersionCode": 23,
   "managerApkVersionName": "0.2.3",
-  "apkUrl": "https://www.greatbg.com/download/AI-edu-manager-tablet-terminal-0.4.8.apk",
-  "notes": "平板终端 0.4.8：恢复应用内下载 APK 并调起系统安装界面的更新流程，下载或安装失败时自动回退到浏览器下载页面。Windows 0.4.5 保持不变。"
+  "apkUrl": "https://www.greatbg.com/download/AI-edu-manager-tablet-terminal-0.4.9.apk",
+  "notes": "Windows 0.4.6 / 平板终端 0.4.9：双端 Markdown 阅读器优化，支持阅读模式与原文模式；优化大量档案文档列表滚动浏览；平板端新增打开 Obsidian 入口。"
 }

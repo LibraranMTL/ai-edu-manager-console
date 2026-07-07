@@ -38,6 +38,8 @@ import android.widget.ScrollView;
 import android.widget.Spinner;
 import android.widget.TextView;
 import android.widget.Toast;
+import android.webkit.WebSettings;
+import android.webkit.WebView;
 
 import org.json.JSONArray;
 import org.json.JSONObject;
@@ -74,8 +76,8 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
     static final int REQUEST_TAKE_PHOTO = 8103;
     static final int REQUEST_SCAN_PAIR = 8104;
     static final int REQUEST_CAPTURE_PAIR_QR = 8105;
-    static final String VERSION_NAME = "0.4.8";
-    static final int VERSION_CODE = 58;
+    static final String VERSION_NAME = "0.4.9";
+    static final int VERSION_CODE = 59;
     static final String UPDATE_MANIFEST_URL = "https://www.greatbg.com/download/edu-manager-version.json";
     static final String USER_AGREEMENT_URL = "https://www.greatbg.com/download/agreement.html";
     static final String PRIVACY_POLICY_URL = "https://www.greatbg.com/download/privacy.html";
@@ -118,10 +120,13 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
     TextView uploadQueueText;
     TextView archiveTitle;
     TextView markdownView;
+    WebView markdownWebView;
     ScrollView rootScroll;
     FrameLayout screenRoot;
     ImageView skinBackground;
     LinearLayout contentRoot;
+    LinearLayout archiveListLayout;
+    ScrollView archiveListScroll;
     EditText archiveSearchInput;
     Spinner studentSpinner;
     Spinner archiveCategorySpinner;
@@ -147,9 +152,11 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
     Button refreshArchiveButton;
     Button copyButton;
     Button searchArchiveButton;
+    Button markdownModeButton;
     Button topButton;
     Button fontSmallButton;
     Button fontLargeButton;
+    Button openObsidianButton;
     Button openWeComButton;
     Button openQQButton;
     Button openQClawButton;
@@ -183,6 +190,7 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
     ArrayAdapter<String> skinAdapter;
     Student selectedStudent;
     String currentMarkdown = "";
+    boolean markdownRendered = true;
     int selectedArchiveCategory = 1;
     int markdownFontSize = 16;
     int layoutMode = 0;
@@ -534,28 +542,38 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
         archiveCard.addView(archiveSearchRow);
         searchArchiveButton.setOnClickListener(this);
 
-        archiveSpinner = new Spinner(this);
-        archiveAdapter = new ArrayAdapter<String>(this, android.R.layout.simple_spinner_item, new ArrayList<String>());
-        archiveAdapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
-        archiveSpinner.setAdapter(archiveAdapter);
-        archiveSpinner.setOnItemSelectedListener(this);
-        archiveCard.addView(archiveSpinner);
+        archiveListLayout = new LinearLayout(this);
+        archiveListLayout.setOrientation(LinearLayout.VERTICAL);
+        archiveListScroll = new ScrollView(this);
+        archiveListScroll.setFillViewport(false);
+        archiveListScroll.setBackgroundColor(Color.argb(245, 250, 253, 252));
+        archiveListScroll.addView(archiveListLayout);
+        archiveCard.addView(archiveListScroll, new LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT,
+            isPhoneLayout() ? dp(230) : dp(280)
+        ));
 
         LinearLayout archiveRow = row();
         refreshArchiveButton = button("刷新档案", false);
         copyButton = button("复制正文", false);
+        markdownModeButton = button("查看原文", false);
         fontSmallButton = button("A-", false);
         fontLargeButton = button("A+", false);
+        openObsidianButton = button("打开 Obsidian", false);
         topButton = button("回到顶部", false);
         archiveRow.addView(refreshArchiveButton);
         archiveRow.addView(copyButton);
+        archiveRow.addView(markdownModeButton);
         archiveRow.addView(fontSmallButton);
         archiveRow.addView(fontLargeButton);
+        archiveRow.addView(openObsidianButton);
         archiveCard.addView(archiveRow);
         refreshArchiveButton.setOnClickListener(this);
         copyButton.setOnClickListener(this);
+        markdownModeButton.setOnClickListener(this);
         fontSmallButton.setOnClickListener(this);
         fontLargeButton.setOnClickListener(this);
+        openObsidianButton.setOnClickListener(this);
         topButton.setOnClickListener(this);
 
         archiveTitle = new TextView(this);
@@ -566,6 +584,18 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
         archiveTitle.setPadding(0, dp(12), 0, dp(6));
         archiveCard.addView(archiveTitle);
 
+        markdownWebView = new WebView(this);
+        WebSettings markdownSettings = markdownWebView.getSettings();
+        markdownSettings.setJavaScriptEnabled(false);
+        markdownSettings.setBuiltInZoomControls(false);
+        markdownSettings.setDisplayZoomControls(false);
+        markdownSettings.setDefaultTextEncodingName("UTF-8");
+        markdownWebView.setBackgroundColor(Color.WHITE);
+        archiveCard.addView(markdownWebView, new LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT,
+            isPhoneLayout() ? dp(420) : dp(520)
+        ));
+
         markdownView = new TextView(this);
         markdownView.setText("连接主机服务后，可在这里查看 Windows 主机中的 Markdown 学情档案。");
         markdownView.setTextSize(markdownFontSize);
@@ -573,7 +603,9 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
         markdownView.setTextColor(Color.rgb(33, 49, 47));
         markdownView.setPadding(dp(12), dp(12), dp(12), dp(12));
         markdownView.setBackgroundColor(Color.WHITE);
+        markdownView.setVisibility(View.GONE);
         archiveCard.addView(markdownView);
+        updateMarkdownDisplay("连接主机服务后，可在这里查看 Windows 主机中的 Markdown 学情档案。");
 
         FrameLayout.LayoutParams topParams = new FrameLayout.LayoutParams(dp(132), dp(48), Gravity.BOTTOM | Gravity.RIGHT);
         topParams.setMargins(0, 0, dp(20), dp(20));
@@ -631,6 +663,10 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
             loadArchiveFiles();
         } else if (view == copyButton) {
             copyMarkdown();
+        } else if (view == markdownModeButton) {
+            markdownRendered = !markdownRendered;
+            markdownModeButton.setText(markdownRendered ? "查看原文" : "阅读模式");
+            updateMarkdownDisplay(currentMarkdown.length() == 0 ? "选择一个 Markdown 文件后，可在这里查看阅读版或原文。" : currentMarkdown);
         } else if (view == searchArchiveButton) {
             applyArchiveCategoryFilter();
         } else if (view == topButton) {
@@ -638,10 +674,12 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
         } else if (view == fontSmallButton) {
             markdownFontSize = Math.max(13, markdownFontSize - 1);
             markdownView.setTextSize(markdownFontSize);
+            updateMarkdownDisplay(currentMarkdown);
             toast("字号：" + markdownFontSize);
         } else if (view == fontLargeButton) {
             markdownFontSize = Math.min(24, markdownFontSize + 1);
             markdownView.setTextSize(markdownFontSize);
+            updateMarkdownDisplay(currentMarkdown);
             toast("字号：" + markdownFontSize);
         } else if (view == openWeComButton) {
             openWeCom();
@@ -651,6 +689,8 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
             openQClaw();
         } else if (view == openMarvisButton) {
             openMarvis();
+        } else if (view == openObsidianButton) {
+            openObsidian();
         } else if (view == copyConsultPromptButton) {
             copyConsultPrompt();
         } else if (view == copyDigestPromptButton) {
@@ -746,11 +786,10 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
         if (selectedStudent == null) {
             allArchiveFiles.clear();
             archiveFiles.clear();
-            archiveAdapter.clear();
-            archiveAdapter.notifyDataSetChanged();
+            renderArchiveFileList();
             archiveTitle.setText("请选择学生。");
-            markdownView.setText("选择学生后可查看该学生的学情档案。");
             currentMarkdown = "";
+            updateMarkdownDisplay("选择学生后可查看该学生的学情档案。");
             return;
         }
         String base = normalizedBaseUrl();
@@ -1894,6 +1933,16 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
         );
     }
 
+    void openObsidian() {
+        openAgentApp(
+            new String[] {"md.obsidian"},
+            "obsidian://",
+            "https://obsidian.md/download",
+            "Obsidian",
+            new String[] {"obsidian", "黑曜石"}
+        );
+    }
+
     boolean isTailscaleInstalled() {
         return getPackageManager().getLaunchIntentForPackage("com.tailscale.ipn") != null;
     }
@@ -2171,12 +2220,11 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
                 }
             }
             archiveTitle.setText("档案读取失败");
-            markdownView.setText(error);
             currentMarkdown = "";
+            updateMarkdownDisplay(error);
             allArchiveFiles.clear();
             archiveFiles.clear();
-            archiveAdapter.clear();
-            archiveAdapter.notifyDataSetChanged();
+            renderArchiveFileList();
             return;
         }
         allArchiveFiles.clear();
@@ -2196,14 +2244,43 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
                 archiveFiles.add(file);
             }
         }
-        archiveAdapter.clear();
-        for (int i = 0; i < archiveFiles.size(); i++) archiveAdapter.add(archiveFiles.get(i).path);
-        archiveAdapter.notifyDataSetChanged();
+        renderArchiveFileList();
         archiveTitle.setText(archiveFiles.size() > 0 ? "请选择档案。" : "暂无 Markdown 档案。");
         if (archiveFiles.size() == 0) {
             markdownView.setText(allArchiveFiles.size() == 0 ? "Windows 主机中还没有该学生的学情分析 Markdown。" : "该分类下暂无 Markdown 档案。");
             currentMarkdown = "";
         }
+    }
+
+    void renderArchiveFileList() {
+        if (archiveListLayout == null) return;
+        archiveListLayout.removeAllViews();
+        if (archiveFiles.size() == 0) {
+            String emptyText = allArchiveFiles.size() == 0 ? "暂无 Markdown 档案。" : "该分类下暂无 Markdown 档案。";
+            archiveListLayout.addView(label(emptyText));
+            updateMarkdownDisplay(emptyText);
+            return;
+        }
+        for (int i = 0; i < archiveFiles.size(); i++) {
+            final ArchiveFile file = archiveFiles.get(i);
+            Button item = button(fileListLabel(file), false);
+            item.setGravity(Gravity.LEFT | Gravity.CENTER_VERTICAL);
+            item.setAllCaps(false);
+            item.setOnClickListener(new ArchiveFileClickListener(this, file));
+            LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            );
+            params.setMargins(0, 0, 0, dp(8));
+            archiveListLayout.addView(item, params);
+        }
+    }
+
+    String fileListLabel(ArchiveFile file) {
+        StringBuilder builder = new StringBuilder();
+        builder.append(file.name == null || file.name.length() == 0 ? "Markdown" : file.name);
+        if (file.path != null && file.path.length() > 0) builder.append("\n").append(file.path);
+        return builder.toString();
     }
 
     int classifyArchiveFile(ArchiveFile file) {
@@ -2223,22 +2300,159 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
             String cached = lookupStudentId.length() == 0 || path == null || path.length() == 0 ? "" : cachedMarkdown(lookupStudentId, path);
             if (cached != null && cached.length() > 0) {
                 currentMarkdown = cached;
-                markdownView.setText(cached);
+                updateMarkdownDisplay(cached);
                 String cacheTime = cacheTimeText(lookupStudentId, path);
                 archiveTitle.setText(title + "（离线缓存" + (cacheTime.length() > 0 ? "：" + cacheTime : "") + "）");
                 status("正文读取失败，已显示最近缓存：" + error);
             } else {
                 markdownView.setText("读取失败：" + error);
                 currentMarkdown = "";
+                updateMarkdownDisplay("读取失败：" + error);
             }
         } else {
             currentMarkdown = content;
+            updateMarkdownDisplay(content.length() == 0 ? "该 Markdown 文件为空。" : content);
             markdownView.setText(content.length() == 0 ? "该 Markdown 文件为空。" : content);
+            updateMarkdownDisplay(content.length() == 0 ? "该 Markdown 文件为空。" : content);
             if (studentId != null && path != null) {
                 String cacheTime = cacheTimeText(studentId, path);
                 if (cacheTime.length() > 0) archiveTitle.setText(title + "（缓存：" + cacheTime + "）");
             }
         }
+    }
+
+    void updateMarkdownDisplay(String markdown) {
+        String value = markdown == null ? "" : markdown;
+        if (markdownView != null) {
+            markdownView.setText(value);
+            markdownView.setTextSize(markdownFontSize);
+            markdownView.setVisibility(markdownRendered ? View.GONE : View.VISIBLE);
+        }
+        if (markdownWebView != null) {
+            markdownWebView.setVisibility(markdownRendered ? View.VISIBLE : View.GONE);
+            if (markdownRendered) {
+                markdownWebView.loadDataWithBaseURL(
+                    "https://local.edu-manager/",
+                    markdownHtml(value),
+                    "text/html",
+                    "UTF-8",
+                    null
+                );
+            }
+        }
+        if (markdownModeButton != null) markdownModeButton.setText(markdownRendered ? "查看原文" : "阅读模式");
+    }
+
+    String markdownHtml(String markdown) {
+        StringBuilder body = new StringBuilder();
+        String[] lines = markdown.replace("\r\n", "\n").replace('\r', '\n').split("\n", -1);
+        boolean inCode = false;
+        boolean inList = false;
+        boolean inTable = false;
+        for (int i = 0; i < lines.length; i++) {
+            String line = lines[i];
+            String trimmed = line.trim();
+            if (trimmed.startsWith("```")) {
+                if (inTable) {
+                    body.append("</tbody></table></div>");
+                    inTable = false;
+                }
+                if (inList) {
+                    body.append("</ul>");
+                    inList = false;
+                }
+                if (inCode) body.append("</code></pre>");
+                else body.append("<pre><code>");
+                inCode = !inCode;
+                continue;
+            }
+            if (inCode) {
+                body.append(escapeHtml(line)).append('\n');
+                continue;
+            }
+            if (trimmed.length() == 0) {
+                if (inTable) {
+                    body.append("</tbody></table></div>");
+                    inTable = false;
+                }
+                if (inList) {
+                    body.append("</ul>");
+                    inList = false;
+                }
+                body.append("<div class=\"space\"></div>");
+                continue;
+            }
+            if (trimmed.startsWith("|") && trimmed.endsWith("|")) {
+                if (inList) {
+                    body.append("</ul>");
+                    inList = false;
+                }
+                if (!inTable) {
+                    body.append("<div class=\"table-wrap\"><table><tbody>");
+                    inTable = true;
+                }
+                String[] cells = trimmed.substring(1, trimmed.length() - 1).split("\\|", -1);
+                boolean separator = true;
+                for (int c = 0; c < cells.length; c++) {
+                    if (!cells[c].trim().matches(":?-{3,}:?")) separator = false;
+                }
+                if (!separator) {
+                    body.append("<tr>");
+                    for (int c = 0; c < cells.length; c++) {
+                        String tag = i > 0 && lines[i - 1].trim().startsWith("|") && lines[i - 1].trim().endsWith("|") ? "td" : "th";
+                        body.append('<').append(tag).append('>').append(inlineMarkdown(cells[c].trim())).append("</").append(tag).append('>');
+                    }
+                    body.append("</tr>");
+                }
+                continue;
+            }
+            if (inTable) {
+                body.append("</tbody></table></div>");
+                inTable = false;
+            }
+            if (trimmed.startsWith("- ") || trimmed.startsWith("* ") || trimmed.startsWith("+ ")) {
+                if (!inList) {
+                    body.append("<ul>");
+                    inList = true;
+                }
+                body.append("<li>").append(inlineMarkdown(trimmed.substring(2))).append("</li>");
+                continue;
+            }
+            if (inList) {
+                body.append("</ul>");
+                inList = false;
+            }
+            if (trimmed.startsWith("### ")) body.append("<h3>").append(inlineMarkdown(trimmed.substring(4))).append("</h3>");
+            else if (trimmed.startsWith("## ")) body.append("<h2>").append(inlineMarkdown(trimmed.substring(3))).append("</h2>");
+            else if (trimmed.startsWith("# ")) body.append("<h1>").append(inlineMarkdown(trimmed.substring(2))).append("</h1>");
+            else if (trimmed.startsWith("> ")) body.append("<blockquote>").append(inlineMarkdown(trimmed.substring(2))).append("</blockquote>");
+            else if (trimmed.matches("-{3,}|\\*{3,}|_{3,}")) body.append("<hr>");
+            else body.append("<p>").append(inlineMarkdown(line)).append("</p>");
+        }
+        if (inCode) body.append("</code></pre>");
+        if (inList) body.append("</ul>");
+        if (inTable) body.append("</tbody></table></div>");
+        return "<!doctype html><html><head><meta charset=\"utf-8\"><style>"
+            + "body{margin:0;padding:14px 14px 34px;background:#fff;color:#21312f;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;font-size:" + markdownFontSize + "px;line-height:1.78;}"
+            + "h1,h2,h3{color:#0f766e;margin:16px 0 8px;line-height:1.32;}h1{font-size:1.7em;}h2{font-size:1.35em;}h3{font-size:1.13em;}p{margin:0 0 10px;}a{color:#0f766e;font-weight:700;}strong{font-weight:800;}em{color:#3c5652;}"
+            + "blockquote{margin:10px 0;padding:10px 12px;border-left:4px solid #7dd3c7;border-radius:10px;background:#eefaf7;color:#49605c;}ul{margin:0 0 12px;padding-left:24px;}li{margin:5px 0;}"
+            + "code{padding:2px 5px;border-radius:6px;background:#e9f4f0;color:#0f5f54;font-family:monospace;}pre{overflow-x:auto;margin:10px 0;padding:12px;border-radius:12px;background:#10201f;color:#e8fff8;}pre code{padding:0;background:transparent;color:inherit;white-space:pre;}"
+            + ".table-wrap{overflow-x:auto;margin:12px 0;}table{min-width:560px;width:100%;border-collapse:collapse;font-size:.92em;}th,td{border:1px solid #d7e7e2;padding:8px;text-align:left;vertical-align:top;}th{background:#edf8f4;color:#0f766e;}hr{border:0;border-top:1px solid #d7e7e2;margin:14px 0;}.space{height:8px;}"
+            + "</style></head><body>" + body.toString() + "</body></html>";
+    }
+
+    String inlineMarkdown(String text) {
+        String value = escapeHtml(text);
+        value = value.replaceAll("`([^`]+)`", "<code>$1</code>");
+        value = value.replaceAll("\\*\\*([^*]+)\\*\\*", "<strong>$1</strong>");
+        value = value.replaceAll("\\*([^*]+)\\*", "<em>$1</em>");
+        value = value.replaceAll("\\[([^\\]]+)\\]\\((https?://[^)\\s]+)\\)", "<a href=\"$2\">$1</a>");
+        return value;
+    }
+
+    String escapeHtml(String value) {
+        if (value == null) return "";
+        return value.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace("\"", "&quot;").replace("'", "&#39;");
     }
 
     void status(String message) {
@@ -2409,6 +2623,21 @@ class Student {
         }
         String base = grade.length() > 0 ? name + " · " + grade : name;
         return base + " · 原始资料 " + rawFileCount + " · 档案 " + archiveFileCount;
+    }
+}
+
+class ArchiveFileClickListener implements View.OnClickListener {
+    private final MainActivity activity;
+    private final ArchiveFile file;
+
+    ArchiveFileClickListener(MainActivity activity, ArchiveFile file) {
+        this.activity = activity;
+        this.file = file;
+    }
+
+    @Override
+    public void onClick(View view) {
+        activity.loadArchiveFile(file);
     }
 }
 

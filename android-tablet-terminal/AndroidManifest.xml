@@ -1,7 +1,7 @@
 ﻿<manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="com.qxmatrix.eduterminal"
-    android:versionCode="58"
-    android:versionName="0.4.8">
+    android:versionCode="59"
+    android:versionName="0.4.9">
 
     <uses-sdk
         android:minSdkVersion="23"
@@ -48,6 +48,7 @@
         <package android:name="com.tencent.jarvis" />
         <package android:name="com.tencent.ai.marvis" />
         <package android:name="com.tencent.aigc.marvis" />
+        <package android:name="md.obsidian" />
         <intent>
             <action android:name="android.intent.action.VIEW" />
             <data android:scheme="wxwork" />
@@ -63,6 +64,10 @@
         <intent>
             <action android:name="android.intent.action.VIEW" />
             <data android:scheme="marvis" />
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.VIEW" />
+            <data android:scheme="obsidian" />
         </intent>
     </queries>
 

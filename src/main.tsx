@@ -340,8 +340,8 @@ type KnowledgeBaseScanResult = {
 const storageKey = 'edu-manager-launcher.students.v2';
 const themeStorageKey = 'edu-manager-launcher.theme.v1';
 const archiveKeywordStorageKey = 'edu-manager-launcher.archive-keywords.v1';
-const currentVersionCode = 55;
-const currentVersionName = '0.4.5';
+const currentVersionCode = 56;
+const currentVersionName = '0.4.6';
 const updateManifestUrl = [
   'https://www.greatbg.com/download/edu-manager-version.json',
   'http://www.greatbg.com/download/edu-manager-version.json',
@@ -1320,6 +1320,7 @@ function App() {
   const [markdownFiles, setMarkdownFiles] = useState<MarkdownFile[]>([]);
   const [selectedMarkdownId, setSelectedMarkdownId] = useState('');
   const [markdownContent, setMarkdownContent] = useState('');
+  const [markdownViewMode, setMarkdownViewMode] = useState<'rendered' | 'source'>('rendered');
   const [markdownMessage, setMarkdownMessage] = useState('');
   const [selectedArchiveCategory, setSelectedArchiveCategory] = useState<ArchiveCategoryId>('report');
   const [inboxMessage, setInboxMessage] = useState('');
@@ -4018,15 +4019,20 @@ function App() {
               <section className="markdown-reader">
                 <div className="reader-toolbar">
                   <span>{selectedMarkdownId ? filteredMarkdownFiles.find((file) => file.id === selectedMarkdownId)?.name ?? 'Markdown 档案' : 'Markdown 档案'}</span>
-                  {!archiveListVisible && (
-                    <button className="secondary compact" onClick={() => setArchiveListVisible(true)}>
-                      <PanelLeftOpen size={16} />
-                      文档列表
+                  <div className="reader-actions">
+                    <button className="secondary compact" onClick={() => setMarkdownViewMode(markdownViewMode === 'rendered' ? 'source' : 'rendered')}>
+                      {markdownViewMode === 'rendered' ? '查看原文' : '阅读模式'}
                     </button>
-                  )}
+                    {!archiveListVisible && (
+                      <button className="secondary compact" onClick={() => setArchiveListVisible(true)}>
+                        <PanelLeftOpen size={16} />
+                        文档列表
+                      </button>
+                    )}
+                  </div>
                 </div>
                 {markdownContent ? (
-                  <MarkdownView content={markdownContent} />
+                  markdownViewMode === 'rendered' ? <MarkdownView content={markdownContent} /> : <pre className="markdown-raw">{markdownContent}</pre>
                 ) : (
                   <div className="empty-state">选择一个 Markdown 文件后，可直接在控制台内查看消化后的学情档案。</div>
                 )}
@@ -4461,14 +4467,87 @@ function StudentToolSelector({ value, onChange }: { value: AgentToolId; onChange
   );
 }
 
+function renderInlineMarkdown(text: string, keyPrefix: string): React.ReactNode[] {
+  const nodes: React.ReactNode[] = [];
+  const pattern = /(`[^`]+`|\*\*[^*]+\*\*|\*[^*]+\*|\[[^\]]+\]\((https?:\/\/[^)\s]+)\))/g;
+  let lastIndex = 0;
+  let match: RegExpExecArray | null;
+  while ((match = pattern.exec(text))) {
+    if (match.index > lastIndex) nodes.push(text.slice(lastIndex, match.index));
+    const token = match[0];
+    const key = `${keyPrefix}-${match.index}`;
+    if (token.startsWith('`')) {
+      nodes.push(<code key={key}>{token.slice(1, -1)}</code>);
+    } else if (token.startsWith('**')) {
+      nodes.push(<strong key={key}>{token.slice(2, -2)}</strong>);
+    } else if (token.startsWith('*')) {
+      nodes.push(<em key={key}>{token.slice(1, -1)}</em>);
+    } else {
+      const label = token.replace(/\]\(.+$/, '').slice(1);
+      const url = match[2];
+      nodes.push(
+        <a href={url} key={key} rel="noreferrer" target="_blank">
+          {label}
+        </a>,
+      );
+    }
+    lastIndex = pattern.lastIndex;
+  }
+  if (lastIndex < text.length) nodes.push(text.slice(lastIndex));
+  return nodes;
+}
+
 function MarkdownView({ content }: { content: string }) {
   const lines = content.split(/\r?\n/);
   const blocks: React.ReactNode[] = [];
   let codeBuffer: string[] = [];
   let inCode = false;
+  let listBuffer: Array<{ ordered: boolean; text: string }> = [];
+  let tableBuffer: string[][] = [];
+
+  const flushList = (key: string) => {
+    if (listBuffer.length === 0) return;
+    const ordered = listBuffer.every((item) => item.ordered);
+    const children = listBuffer.map((item, index) => <li key={`${key}-${index}`}>{renderInlineMarkdown(item.text, `${key}-${index}`)}</li>);
+    blocks.push(ordered ? <ol key={key}>{children}</ol> : <ul key={key}>{children}</ul>);
+    listBuffer = [];
+  };
+
+  const flushTable = (key: string) => {
+    if (tableBuffer.length === 0) return;
+    const rows = tableBuffer.filter((row) => !row.every((cell) => /^:?-{3,}:?$/.test(cell.trim())));
+    if (rows.length > 0) {
+      blocks.push(
+        <div className="md-table-wrap" key={key}>
+          <table>
+            <tbody>
+              {rows.map((row, rowIndex) => (
+                <tr key={`${key}-row-${rowIndex}`}>
+                  {row.map((cell, cellIndex) =>
+                    rowIndex === 0 ? (
+                      <th key={`${key}-${rowIndex}-${cellIndex}`}>{renderInlineMarkdown(cell.trim(), `${key}-${rowIndex}-${cellIndex}`)}</th>
+                    ) : (
+                      <td key={`${key}-${rowIndex}-${cellIndex}`}>{renderInlineMarkdown(cell.trim(), `${key}-${rowIndex}-${cellIndex}`)}</td>
+                    ),
+                  )}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>,
+      );
+    }
+    tableBuffer = [];
+  };
+
+  const flushFlow = (key: string) => {
+    flushList(`${key}-list`);
+    flushTable(`${key}-table`);
+  };
 
   lines.forEach((line, index) => {
     if (line.trim().startsWith('```')) {
+      flushFlow(`flow-${index}`);
       if (inCode) {
         blocks.push(
           <pre className="md-code" key={`code-${index}`}>
@@ -4489,33 +4568,50 @@ function MarkdownView({ content }: { content: string }) {
     }
 
     if (!line.trim()) {
+      flushFlow(`flow-${index}`);
       blocks.push(<div className="md-space" key={`space-${index}`} />);
       return;
     }
 
+    const tableLine = line.trim();
+    if (tableLine.startsWith('|') && tableLine.endsWith('|')) {
+      flushList(`list-before-table-${index}`);
+      tableBuffer.push(tableLine.slice(1, -1).split('|'));
+      return;
+    }
+
+    flushTable(`table-before-${index}`);
+
     if (line.startsWith('# ')) {
-      blocks.push(<h1 key={index}>{line.slice(2)}</h1>);
+      flushList(`list-before-h1-${index}`);
+      blocks.push(<h1 key={index}>{renderInlineMarkdown(line.slice(2), `h1-${index}`)}</h1>);
       return;
     }
     if (line.startsWith('## ')) {
-      blocks.push(<h2 key={index}>{line.slice(3)}</h2>);
+      flushList(`list-before-h2-${index}`);
+      blocks.push(<h2 key={index}>{renderInlineMarkdown(line.slice(3), `h2-${index}`)}</h2>);
       return;
     }
     if (line.startsWith('### ')) {
-      blocks.push(<h3 key={index}>{line.slice(4)}</h3>);
+      flushList(`list-before-h3-${index}`);
+      blocks.push(<h3 key={index}>{renderInlineMarkdown(line.slice(4), `h3-${index}`)}</h3>);
       return;
     }
     if (line.startsWith('> ')) {
-      blocks.push(<blockquote key={index}>{line.slice(2)}</blockquote>);
+      flushList(`list-before-quote-${index}`);
+      blocks.push(<blockquote key={index}>{renderInlineMarkdown(line.slice(2), `quote-${index}`)}</blockquote>);
       return;
     }
-    if (line.startsWith('- ')) {
-      blocks.push(<p className="md-list-line" key={index}>{line}</p>);
+    const listMatch = line.match(/^(\s*)([-*+]|\d+[.)])\s+(.+)$/);
+    if (listMatch) {
+      listBuffer.push({ ordered: /^\d/.test(listMatch[2]), text: listMatch[3] });
       return;
     }
-    blocks.push(<p key={index}>{line}</p>);
+    flushList(`list-before-p-${index}`);
+    blocks.push(<p key={index}>{renderInlineMarkdown(line, `p-${index}`)}</p>);
   });
 
+  flushFlow('tail-flow');
   if (codeBuffer.length > 0) {
     blocks.push(
       <pre className="md-code" key="code-tail">

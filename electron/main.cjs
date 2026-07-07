@@ -19,7 +19,7 @@ let hostServiceLastError = '';
 let todayUploadCount = 0;
 let uploadCountDate = new Date().toISOString().slice(0, 10);
 
-const APP_VERSION = '0.4.5';
+const APP_VERSION = '0.4.6';
 const DEFAULT_HOST_PORT = 18777;
 const MAX_UPLOAD_BYTES = 100 * 1024 * 1024;
 const ALLOWED_UPLOAD_EXTENSIONS = new Set([

@@ -1,16 +1,16 @@
 {
-  "versionCode": 57,
-  "versionName": "0.4.7",
+  "versionCode": 58,
+  "versionName": "0.4.8",
   "windowsVersionCode": 55,
   "windowsVersionName": "0.4.5",
   "windowsUrl": "https://www.greatbg.com/download/AI-edu-manager-console-Windows-0.4.5.exe",
-  "terminalApkUrl": "https://www.greatbg.com/download/AI-edu-manager-tablet-terminal-0.4.7.apk",
-  "tabletTerminalVersionCode": 57,
-  "tabletTerminalVersionName": "0.4.7",
-  "tabletTerminalApkUrl": "https://www.greatbg.com/download/AI-edu-manager-tablet-terminal-0.4.7.apk",
+  "terminalApkUrl": "https://www.greatbg.com/download/AI-edu-manager-tablet-terminal-0.4.8.apk",
+  "tabletTerminalVersionCode": 58,
+  "tabletTerminalVersionName": "0.4.8",
+  "tabletTerminalApkUrl": "https://www.greatbg.com/download/AI-edu-manager-tablet-terminal-0.4.8.apk",
   "managerApkUrl": "https://www.greatbg.com/download/edu-manager-android-0.2.3.apk",
   "managerApkVersionCode": 23,
   "managerApkVersionName": "0.2.3",
-  "apkUrl": "https://www.greatbg.com/download/AI-edu-manager-tablet-terminal-0.4.7.apk",
-  "notes": "平板终端 0.4.7：增强 Marvis/QClaw 本机拉起逻辑，支持按应用名称扫描已安装启动器应用，并补充更多包名和协议兜底。Windows 0.4.5 保持不变。"
+  "apkUrl": "https://www.greatbg.com/download/AI-edu-manager-tablet-terminal-0.4.8.apk",
+  "notes": "平板终端 0.4.8：恢复应用内下载 APK 并调起系统安装界面的更新流程，下载或安装失败时自动回退到浏览器下载页面。Windows 0.4.5 保持不变。"
 }

@@ -24,6 +24,7 @@ import android.os.Bundle;
 import android.os.Environment;
 import android.provider.MediaStore;
 import android.provider.OpenableColumns;
+import android.provider.Settings;
 import android.view.Gravity;
 import android.view.View;
 import android.widget.AdapterView;
@@ -54,6 +55,7 @@ import com.google.zxing.common.HybridBinarizer;
 import java.io.BufferedReader;
 import java.io.File;
 import java.io.FileInputStream;
+import java.io.FileOutputStream;
 import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.io.OutputStream;
@@ -72,11 +74,12 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
     static final int REQUEST_TAKE_PHOTO = 8103;
     static final int REQUEST_SCAN_PAIR = 8104;
     static final int REQUEST_CAPTURE_PAIR_QR = 8105;
-    static final String VERSION_NAME = "0.4.7";
-    static final int VERSION_CODE = 57;
+    static final String VERSION_NAME = "0.4.8";
+    static final int VERSION_CODE = 58;
     static final String UPDATE_MANIFEST_URL = "https://www.greatbg.com/download/edu-manager-version.json";
     static final String USER_AGREEMENT_URL = "https://www.greatbg.com/download/agreement.html";
     static final String PRIVACY_POLICY_URL = "https://www.greatbg.com/download/privacy.html";
+    static final String APK_PROVIDER_AUTHORITY = "com.qxmatrix.eduterminal.apkprovider";
     private static final String[] MATERIAL_MIME_TYPES = new String[] {
         "image/*",
         "application/pdf",
@@ -2047,6 +2050,40 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
         }
     }
 
+    File updateApkFile() {
+        File dir = getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS);
+        if (dir == null) dir = getCacheDir();
+        if (!dir.exists()) dir.mkdirs();
+        return new File(dir, "AI-edu-manager-tablet-terminal-update.apk");
+    }
+
+    void installDownloadedApk(File apkFile, String fallbackUrl) {
+        if (apkFile == null || !apkFile.exists() || apkFile.length() == 0) {
+            status("APK 下载文件不存在，正在打开下载页面。");
+            openUrl(fallbackUrl);
+            return;
+        }
+        try {
+            if (Build.VERSION.SDK_INT >= 26 && !getPackageManager().canRequestPackageInstalls()) {
+                toast("请允许本应用安装未知应用，然后再次点击检查更新。");
+                Intent settings = new Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse("package:" + getPackageName()));
+                settings.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                startActivity(settings);
+                return;
+            }
+            Uri uri = Uri.parse("content://" + APK_PROVIDER_AUTHORITY + "/" + Uri.encode(apkFile.getName()));
+            Intent intent = new Intent(Intent.ACTION_VIEW);
+            intent.setDataAndType(uri, "application/vnd.android.package-archive");
+            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+            startActivity(intent);
+            status("APK 已下载完成，请在系统安装界面确认更新。");
+        } catch (Exception error) {
+            status("调起系统安装失败，正在打开下载页面：" + error.getMessage());
+            openUrl(fallbackUrl);
+        }
+    }
+
     void copyDiagnostics() {
         SharedPreferences prefs = getSharedPreferences(PREFS, MODE_PRIVATE);
         StringBuilder builder = new StringBuilder();
@@ -2928,14 +2965,90 @@ class TabletUpdateCheckTask implements Runnable {
                 json.optString("tabletUrl", json.optString("androidUrl", json.optString("apkUrl", ""))));
             String notes = json.optString("tabletTerminalNotes", json.optString("notes", ""));
             if (versionCode > MainActivity.VERSION_CODE && url.length() > 0) {
-                activity.runOnUiThread(new StatusTask(activity, "发现平板终端新版 " + (versionName.length() > 0 ? versionName : versionCode) + "，正在打开下载地址。" + (notes.length() > 0 ? "\n" + notes : "")));
-                activity.runOnUiThread(new OpenUrlTask(activity, url));
+                activity.runOnUiThread(new StatusTask(activity, "发现平板终端新版 " + (versionName.length() > 0 ? versionName : versionCode) + "，正在应用内下载 APK。" + (notes.length() > 0 ? "\n" + notes : "")));
+                new DownloadApkTask(activity, url).run();
             } else {
                 activity.runOnUiThread(new StatusTask(activity, "当前平板终端已是最新版本 v" + MainActivity.VERSION_NAME + "。"));
             }
         } catch (Exception error) {
             activity.runOnUiThread(new StatusTask(activity, "检查更新失败：" + error.getMessage()));
         }
+    }
+}
+
+class DownloadApkTask implements Runnable {
+    private final MainActivity activity;
+    private final String url;
+
+    DownloadApkTask(MainActivity activity, String url) {
+        this.activity = activity;
+        this.url = url;
+    }
+
+    @Override
+    public void run() {
+        HttpURLConnection connection = null;
+        try {
+            File target = activity.updateApkFile();
+            URL targetUrl = new URL(url);
+            connection = (HttpURLConnection) targetUrl.openConnection();
+            connection.setConnectTimeout(10000);
+            connection.setReadTimeout(30000);
+            connection.setRequestMethod("GET");
+            connection.connect();
+            int code = connection.getResponseCode();
+            if (code < 200 || code >= 300) throw new RuntimeException("HTTP " + code);
+            int total = connection.getContentLength();
+            InputStream input = connection.getInputStream();
+            FileOutputStream output = new FileOutputStream(target);
+            byte[] buffer = new byte[32 * 1024];
+            long downloaded = 0;
+            int lastPercent = -1;
+            try {
+                while (true) {
+                    int read = input.read(buffer);
+                    if (read < 0) break;
+                    output.write(buffer, 0, read);
+                    downloaded += read;
+                    if (total > 0) {
+                        int percent = (int) Math.min(100, downloaded * 100 / total);
+                        if (percent >= lastPercent + 10 || percent == 100) {
+                            lastPercent = percent;
+                            activity.runOnUiThread(new StatusTask(activity, "正在下载新版 APK：" + percent + "%"));
+                        }
+                    } else if (downloaded > 0 && downloaded % (1024 * 1024) < buffer.length) {
+                        activity.runOnUiThread(new StatusTask(activity, "正在下载新版 APK：" + (downloaded / 1024 / 1024) + " MB"));
+                    }
+                }
+            } finally {
+                try { output.close(); } catch (Exception ignored) {}
+                try { input.close(); } catch (Exception ignored) {}
+            }
+            activity.runOnUiThread(new StatusTask(activity, "新版 APK 下载完成，正在打开系统安装界面。"));
+            activity.runOnUiThread(new InstallApkTask(activity, target, url));
+        } catch (Exception error) {
+            activity.runOnUiThread(new StatusTask(activity, "应用内下载失败，正在打开下载页面：" + error.getMessage()));
+            activity.runOnUiThread(new OpenUrlTask(activity, url));
+        } finally {
+            if (connection != null) connection.disconnect();
+        }
+    }
+}
+
+class InstallApkTask implements Runnable {
+    private final MainActivity activity;
+    private final File file;
+    private final String fallbackUrl;
+
+    InstallApkTask(MainActivity activity, File file, String fallbackUrl) {
+        this.activity = activity;
+        this.file = file;
+        this.fallbackUrl = fallbackUrl;
+    }
+
+    @Override
+    public void run() {
+        activity.installDownloadedApk(file, fallbackUrl);
     }
 }
 

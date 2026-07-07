@@ -11,6 +11,8 @@ import android.content.DialogInterface;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.content.pm.ActivityInfo;
+import android.content.pm.PackageManager;
+import android.content.pm.ResolveInfo;
 import android.database.Cursor;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
@@ -70,8 +72,8 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
     static final int REQUEST_TAKE_PHOTO = 8103;
     static final int REQUEST_SCAN_PAIR = 8104;
     static final int REQUEST_CAPTURE_PAIR_QR = 8105;
-    static final String VERSION_NAME = "0.4.6";
-    static final int VERSION_CODE = 56;
+    static final String VERSION_NAME = "0.4.7";
+    static final int VERSION_CODE = 57;
     static final String UPDATE_MANIFEST_URL = "https://www.greatbg.com/download/edu-manager-version.json";
     static final String USER_AGREEMENT_URL = "https://www.greatbg.com/download/agreement.html";
     static final String PRIVACY_POLICY_URL = "https://www.greatbg.com/download/privacy.html";
@@ -1871,19 +1873,21 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
 
     void openQClaw() {
         openAgentApp(
-            new String[] {"com.tencent.qclaw", "com.tencent.qclaw.android", "com.tencent.qclawapp", "com.qclaw.app"},
+            new String[] {"com.tencent.qclaw", "com.tencent.qclaw.android", "com.tencent.qclawapp", "com.qclaw.app", "com.tencent.claw"},
             "qclaw://",
             "https://qclaw.qq.com/",
-            "QClaw"
+            "QClaw",
+            new String[] {"qclaw", "claw", "q爪"}
         );
     }
 
     void openMarvis() {
         openAgentApp(
-            new String[] {"com.tencent.marvis", "com.tencent.marvis.android", "com.tencent.marvisapp", "com.marvis.app"},
+            new String[] {"com.tencent.marvis", "com.tencent.marvis.android", "com.tencent.marvisapp", "com.marvis.app", "com.tencent.jarvis", "com.tencent.ai.marvis", "com.tencent.aigc.marvis"},
             "marvis://",
             "https://marvis.qq.com/",
-            "Marvis"
+            "Marvis",
+            new String[] {"marvis", "马维斯", "瑪維斯", "jarvis", "贾维斯", "騰訊marvis", "腾讯marvis"}
         );
     }
 
@@ -1901,7 +1905,7 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
         openUrl("https://tailscale.com/download/android");
     }
 
-    void openAgentApp(String[] packageNames, String fallbackUri, String downloadUrl, String appName) {
+    void openAgentApp(String[] packageNames, String fallbackUri, String downloadUrl, String appName, String[] labelNeedles) {
         try {
             for (int i = 0; i < packageNames.length; i++) {
                 Intent launch = getPackageManager().getLaunchIntentForPackage(packageNames[i]);
@@ -1910,6 +1914,12 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
                     startActivity(launch);
                     return;
                 }
+            }
+            Intent labelLaunch = findLauncherIntentByLabel(labelNeedles);
+            if (labelLaunch != null) {
+                labelLaunch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                startActivity(labelLaunch);
+                return;
             }
             Intent view = new Intent(Intent.ACTION_VIEW, Uri.parse(fallbackUri));
             view.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
@@ -1922,6 +1932,33 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
         } catch (Exception error) {
             toast("无法打开" + appName + "：" + error.getMessage());
         }
+    }
+
+    Intent findLauncherIntentByLabel(String[] labelNeedles) {
+        if (labelNeedles == null || labelNeedles.length == 0) return null;
+        PackageManager packageManager = getPackageManager();
+        Intent mainIntent = new Intent(Intent.ACTION_MAIN, null);
+        mainIntent.addCategory(Intent.CATEGORY_LAUNCHER);
+        List<ResolveInfo> apps = packageManager.queryIntentActivities(mainIntent, 0);
+        for (int i = 0; i < apps.size(); i++) {
+            ResolveInfo info = apps.get(i);
+            String label = String.valueOf(info.loadLabel(packageManager)).toLowerCase(Locale.ROOT);
+            String packageName = info.activityInfo == null ? "" : String.valueOf(info.activityInfo.packageName).toLowerCase(Locale.ROOT);
+            String activityName = info.activityInfo == null ? "" : String.valueOf(info.activityInfo.name).toLowerCase(Locale.ROOT);
+            String haystack = label + " " + packageName + " " + activityName;
+            for (int n = 0; n < labelNeedles.length; n++) {
+                String needle = labelNeedles[n] == null ? "" : labelNeedles[n].toLowerCase(Locale.ROOT);
+                if (needle.length() > 0 && haystack.contains(needle)) {
+                    Intent launch = packageManager.getLaunchIntentForPackage(info.activityInfo.packageName);
+                    if (launch != null) return launch;
+                    Intent direct = new Intent(Intent.ACTION_MAIN);
+                    direct.addCategory(Intent.CATEGORY_LAUNCHER);
+                    direct.setClassName(info.activityInfo.packageName, info.activityInfo.name);
+                    return direct;
+                }
+            }
+        }
+        return null;
     }
 
     void openExternalApp(String[] packageNames, String fallbackUri, String appName) {

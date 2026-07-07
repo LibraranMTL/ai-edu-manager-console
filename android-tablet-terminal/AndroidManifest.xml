@@ -1,7 +1,7 @@
 ﻿<manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="com.qxmatrix.eduterminal"
-    android:versionCode="55"
-    android:versionName="0.4.5">
+    android:versionCode="56"
+    android:versionName="0.4.6">
 
     <uses-sdk
         android:minSdkVersion="23"
@@ -34,6 +34,14 @@
         <package android:name="com.tencent.mobileqq" />
         <package android:name="com.tencent.minihd.qq" />
         <package android:name="com.tencent.tim" />
+        <package android:name="com.tencent.qclaw" />
+        <package android:name="com.tencent.qclaw.android" />
+        <package android:name="com.tencent.qclawapp" />
+        <package android:name="com.qclaw.app" />
+        <package android:name="com.tencent.marvis" />
+        <package android:name="com.tencent.marvis.android" />
+        <package android:name="com.tencent.marvisapp" />
+        <package android:name="com.marvis.app" />
         <intent>
             <action android:name="android.intent.action.VIEW" />
             <data android:scheme="wxwork" />
@@ -41,6 +49,14 @@
         <intent>
             <action android:name="android.intent.action.VIEW" />
             <data android:scheme="mqq" />
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.VIEW" />
+            <data android:scheme="qclaw" />
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.VIEW" />
+            <data android:scheme="marvis" />
         </intent>
     </queries>
 

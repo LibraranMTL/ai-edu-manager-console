@@ -1,16 +1,16 @@
 {
-  "versionCode": 55,
-  "versionName": "0.4.5",
+  "versionCode": 56,
+  "versionName": "0.4.6",
   "windowsVersionCode": 55,
   "windowsVersionName": "0.4.5",
   "windowsUrl": "https://www.greatbg.com/download/AI-edu-manager-console-Windows-0.4.5.exe",
-  "terminalApkUrl": "https://www.greatbg.com/download/AI-edu-manager-tablet-terminal-0.4.5.apk",
-  "tabletTerminalVersionCode": 55,
-  "tabletTerminalVersionName": "0.4.5",
-  "tabletTerminalApkUrl": "https://www.greatbg.com/download/AI-edu-manager-tablet-terminal-0.4.5.apk",
+  "terminalApkUrl": "https://www.greatbg.com/download/AI-edu-manager-tablet-terminal-0.4.6.apk",
+  "tabletTerminalVersionCode": 56,
+  "tabletTerminalVersionName": "0.4.6",
+  "tabletTerminalApkUrl": "https://www.greatbg.com/download/AI-edu-manager-tablet-terminal-0.4.6.apk",
   "managerApkUrl": "https://www.greatbg.com/download/edu-manager-android-0.2.3.apk",
   "managerApkVersionCode": 23,
   "managerApkVersionName": "0.2.3",
-  "apkUrl": "https://www.greatbg.com/download/AI-edu-manager-tablet-terminal-0.4.5.apk",
-  "notes": "Windows 0.4.5：新增 Tailscale 安装检测、打开和下载入口。平板终端 0.4.5：修复手机竖屏布局切换，系统设置默认折叠，优化检查更新反馈。"
+  "apkUrl": "https://www.greatbg.com/download/AI-edu-manager-tablet-terminal-0.4.6.apk",
+  "notes": "平板终端 0.4.6：联系教育管家模块新增打开 QClaw 和 Marvis 入口，可拉起本机安装的 Agent 工具进行对话。Windows 0.4.5 保持不变。"
 }

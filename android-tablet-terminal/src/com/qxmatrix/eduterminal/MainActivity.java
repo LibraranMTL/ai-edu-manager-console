@@ -70,8 +70,8 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
     static final int REQUEST_TAKE_PHOTO = 8103;
     static final int REQUEST_SCAN_PAIR = 8104;
     static final int REQUEST_CAPTURE_PAIR_QR = 8105;
-    static final String VERSION_NAME = "0.4.5";
-    static final int VERSION_CODE = 55;
+    static final String VERSION_NAME = "0.4.6";
+    static final int VERSION_CODE = 56;
     static final String UPDATE_MANIFEST_URL = "https://www.greatbg.com/download/edu-manager-version.json";
     static final String USER_AGREEMENT_URL = "https://www.greatbg.com/download/agreement.html";
     static final String PRIVACY_POLICY_URL = "https://www.greatbg.com/download/privacy.html";
@@ -147,6 +147,8 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
     Button fontLargeButton;
     Button openWeComButton;
     Button openQQButton;
+    Button openQClawButton;
+    Button openMarvisButton;
     Button copyConsultPromptButton;
     Button copyDigestPromptButton;
     TextView agreementLink;
@@ -476,19 +478,27 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
         LinearLayout contactRow = row();
         openWeComButton = button("打开企业微信", true);
         openQQButton = button("打开 QQ", true);
+        openQClawButton = button("打开 QClaw", false);
+        openMarvisButton = button("打开 Marvis", false);
         copyConsultPromptButton = button("复制咨询提示", false);
         copyDigestPromptButton = button("复制消化提示", false);
         contactRow.addView(openWeComButton);
         contactRow.addView(openQQButton);
+        contactRow.addView(openQClawButton);
+        contactRow.addView(openMarvisButton);
         contactRow.addView(copyConsultPromptButton);
         contactRow.addView(copyDigestPromptButton);
         contactCard.addView(contactRow);
         openWeComButton.setOnClickListener(this);
         openQQButton.setOnClickListener(this);
+        openQClawButton.setOnClickListener(this);
+        openMarvisButton.setOnClickListener(this);
         copyConsultPromptButton.setOnClickListener(this);
         copyDigestPromptButton.setOnClickListener(this);
         openWeComButton.setEnabled(false);
         openQQButton.setEnabled(false);
+        openQClawButton.setEnabled(true);
+        openMarvisButton.setEnabled(true);
         copyConsultPromptButton.setEnabled(false);
         copyDigestPromptButton.setEnabled(false);
 
@@ -632,6 +642,10 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
             openWeCom();
         } else if (view == openQQButton) {
             openQQ();
+        } else if (view == openQClawButton) {
+            openQClaw();
+        } else if (view == openMarvisButton) {
+            openMarvis();
         } else if (view == copyConsultPromptButton) {
             copyConsultPrompt();
         } else if (view == copyDigestPromptButton) {
@@ -1855,6 +1869,24 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
         openExternalApp(new String[] {"com.tencent.mobileqq", "com.tencent.minihd.qq", "com.tencent.tim"}, "mqq://", "QQ");
     }
 
+    void openQClaw() {
+        openAgentApp(
+            new String[] {"com.tencent.qclaw", "com.tencent.qclaw.android", "com.tencent.qclawapp", "com.qclaw.app"},
+            "qclaw://",
+            "https://qclaw.qq.com/",
+            "QClaw"
+        );
+    }
+
+    void openMarvis() {
+        openAgentApp(
+            new String[] {"com.tencent.marvis", "com.tencent.marvis.android", "com.tencent.marvisapp", "com.marvis.app"},
+            "marvis://",
+            "https://marvis.qq.com/",
+            "Marvis"
+        );
+    }
+
     boolean isTailscaleInstalled() {
         return getPackageManager().getLaunchIntentForPackage("com.tailscale.ipn") != null;
     }
@@ -1867,6 +1899,29 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
             return;
         }
         openUrl("https://tailscale.com/download/android");
+    }
+
+    void openAgentApp(String[] packageNames, String fallbackUri, String downloadUrl, String appName) {
+        try {
+            for (int i = 0; i < packageNames.length; i++) {
+                Intent launch = getPackageManager().getLaunchIntentForPackage(packageNames[i]);
+                if (launch != null) {
+                    launch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                    startActivity(launch);
+                    return;
+                }
+            }
+            Intent view = new Intent(Intent.ACTION_VIEW, Uri.parse(fallbackUri));
+            view.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            if (view.resolveActivity(getPackageManager()) != null) {
+                startActivity(view);
+                return;
+            }
+            toast("未检测到本机 " + appName + "，正在打开下载页面。");
+            openUrl(downloadUrl);
+        } catch (Exception error) {
+            toast("无法打开" + appName + "：" + error.getMessage());
+        }
     }
 
     void openExternalApp(String[] packageNames, String fallbackUri, String appName) {

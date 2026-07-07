@@ -26,6 +26,7 @@ import android.provider.MediaStore;
 import android.provider.OpenableColumns;
 import android.provider.Settings;
 import android.view.Gravity;
+import android.view.MotionEvent;
 import android.view.View;
 import android.widget.AdapterView;
 import android.widget.ArrayAdapter;
@@ -125,8 +126,6 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
     FrameLayout screenRoot;
     ImageView skinBackground;
     LinearLayout contentRoot;
-    LinearLayout archiveListLayout;
-    ScrollView archiveListScroll;
     EditText archiveSearchInput;
     Spinner studentSpinner;
     Spinner archiveCategorySpinner;
@@ -542,16 +541,12 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
         archiveCard.addView(archiveSearchRow);
         searchArchiveButton.setOnClickListener(this);
 
-        archiveListLayout = new LinearLayout(this);
-        archiveListLayout.setOrientation(LinearLayout.VERTICAL);
-        archiveListScroll = new ScrollView(this);
-        archiveListScroll.setFillViewport(false);
-        archiveListScroll.setBackgroundColor(Color.argb(245, 250, 253, 252));
-        archiveListScroll.addView(archiveListLayout);
-        archiveCard.addView(archiveListScroll, new LinearLayout.LayoutParams(
-            LinearLayout.LayoutParams.MATCH_PARENT,
-            isPhoneLayout() ? dp(230) : dp(280)
-        ));
+        archiveSpinner = new Spinner(this);
+        archiveAdapter = new ArrayAdapter<String>(this, android.R.layout.simple_spinner_item, new ArrayList<String>());
+        archiveAdapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
+        archiveSpinner.setAdapter(archiveAdapter);
+        archiveSpinner.setOnItemSelectedListener(this);
+        archiveCard.addView(archiveSpinner);
 
         LinearLayout archiveRow = row();
         refreshArchiveButton = button("刷新档案", false);
@@ -591,6 +586,9 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
         markdownSettings.setDisplayZoomControls(false);
         markdownSettings.setDefaultTextEncodingName("UTF-8");
         markdownWebView.setBackgroundColor(Color.WHITE);
+        markdownWebView.setVerticalScrollBarEnabled(true);
+        markdownWebView.setOverScrollMode(View.OVER_SCROLL_IF_CONTENT_SCROLLS);
+        markdownWebView.setOnTouchListener(new NestedScrollTouchGuard(rootScroll));
         archiveCard.addView(markdownWebView, new LinearLayout.LayoutParams(
             LinearLayout.LayoutParams.MATCH_PARENT,
             isPhoneLayout() ? dp(420) : dp(520)
@@ -2253,33 +2251,26 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
     }
 
     void renderArchiveFileList() {
-        if (archiveListLayout == null) return;
-        archiveListLayout.removeAllViews();
+        if (archiveAdapter == null) return;
+        archiveAdapter.clear();
         if (archiveFiles.size() == 0) {
-            String emptyText = allArchiveFiles.size() == 0 ? "暂无 Markdown 档案。" : "该分类下暂无 Markdown 档案。";
-            archiveListLayout.addView(label(emptyText));
+            String emptyText = allArchiveFiles.size() == 0 ? "\u6682\u65e0 Markdown \u6863\u6848\u3002" : "\u8be5\u5206\u7c7b\u4e0b\u6682\u65e0 Markdown \u6863\u6848\u3002";
+            archiveAdapter.add(emptyText);
+            archiveAdapter.notifyDataSetChanged();
             updateMarkdownDisplay(emptyText);
             return;
         }
         for (int i = 0; i < archiveFiles.size(); i++) {
-            final ArchiveFile file = archiveFiles.get(i);
-            Button item = button(fileListLabel(file), false);
-            item.setGravity(Gravity.LEFT | Gravity.CENTER_VERTICAL);
-            item.setAllCaps(false);
-            item.setOnClickListener(new ArchiveFileClickListener(this, file));
-            LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT
-            );
-            params.setMargins(0, 0, 0, dp(8));
-            archiveListLayout.addView(item, params);
+            archiveAdapter.add(fileListLabel(archiveFiles.get(i)));
         }
+        archiveAdapter.notifyDataSetChanged();
     }
 
     String fileListLabel(ArchiveFile file) {
-        StringBuilder builder = new StringBuilder();
-        builder.append(file.name == null || file.name.length() == 0 ? "Markdown" : file.name);
-        if (file.path != null && file.path.length() > 0) builder.append("\n").append(file.path);
+        String name = file.name == null || file.name.length() == 0 ? "Markdown" : file.name;
+        String path = file.path == null ? "" : file.path;
+        StringBuilder builder = new StringBuilder(name);
+        if (path.length() > 0 && !path.equals(name)) builder.append("\n").append(path);
         return builder.toString();
     }
 
@@ -2626,18 +2617,20 @@ class Student {
     }
 }
 
-class ArchiveFileClickListener implements View.OnClickListener {
-    private final MainActivity activity;
-    private final ArchiveFile file;
+class NestedScrollTouchGuard implements View.OnTouchListener {
+    private final ScrollView parent;
 
-    ArchiveFileClickListener(MainActivity activity, ArchiveFile file) {
-        this.activity = activity;
-        this.file = file;
+    NestedScrollTouchGuard(ScrollView parent) {
+        this.parent = parent;
     }
 
     @Override
-    public void onClick(View view) {
-        activity.loadArchiveFile(file);
+    public boolean onTouch(View view, MotionEvent event) {
+        if (parent != null) {
+            int action = event.getActionMasked();
+            parent.requestDisallowInterceptTouchEvent(action != MotionEvent.ACTION_UP && action != MotionEvent.ACTION_CANCEL);
+        }
+        return false;
     }
 }
 

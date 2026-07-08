@@ -80,6 +80,7 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
     static final String VERSION_NAME = "0.4.9";
     static final int VERSION_CODE = 59;
     static final String UPDATE_MANIFEST_URL = "https://www.greatbg.com/download/edu-manager-version.json";
+    static final String TAILSCALE_APK_URL = "https://www.greatbg.com/download/tailscalev1.88.1_nbwe_7273.com.apk";
     static final String USER_AGREEMENT_URL = "https://www.greatbg.com/download/agreement.html";
     static final String PRIVACY_POLICY_URL = "https://www.greatbg.com/download/privacy.html";
     static final String APK_PROVIDER_AUTHORITY = "com.qxmatrix.eduterminal.apkprovider";
@@ -138,6 +139,7 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
     Button scanPairButton;
     Button checkUpdateButton;
     Button copyDiagnosticsButton;
+    Button downloadTailscaleButton;
     Button tailscaleButton;
     Button settingsToggleButton;
     Button quickUploadButton;
@@ -416,13 +418,16 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
         LinearLayout maintenanceRow = row();
         checkUpdateButton = button("检查更新", false);
         copyDiagnosticsButton = button("复制诊断信息", false);
-        tailscaleButton = button(isTailscaleInstalled() ? "打开 Tailscale" : "下载 Tailscale", false);
+        downloadTailscaleButton = button("下载 Tailscale", false);
+        tailscaleButton = button("打开 Tailscale", false);
         maintenanceRow.addView(checkUpdateButton);
         maintenanceRow.addView(copyDiagnosticsButton);
+        maintenanceRow.addView(downloadTailscaleButton);
         maintenanceRow.addView(tailscaleButton);
         settingsCard.addView(maintenanceRow);
         checkUpdateButton.setOnClickListener(this);
         copyDiagnosticsButton.setOnClickListener(this);
+        downloadTailscaleButton.setOnClickListener(this);
         tailscaleButton.setOnClickListener(this);
 
         settingsStatusText = new TextView(this);
@@ -629,8 +634,10 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
             checkForUpdate();
         } else if (view == copyDiagnosticsButton) {
             copyDiagnostics();
-        } else if (view == tailscaleButton) {
+        } else if (view == downloadTailscaleButton) {
             openTailscaleDownload();
+        } else if (view == tailscaleButton) {
+            openTailscaleApp();
         } else if (view == quickUploadButton) {
             pickMaterial();
         } else if (view == quickArchiveButton) {
@@ -1946,13 +1953,18 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
     }
 
     void openTailscaleDownload() {
+        openUrl(TAILSCALE_APK_URL);
+    }
+
+    void openTailscaleApp() {
         Intent launch = getPackageManager().getLaunchIntentForPackage("com.tailscale.ipn");
         if (launch != null) {
             launch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
             startActivity(launch);
             return;
         }
-        openUrl("https://tailscale.com/download/android");
+        toast("未检测到本机 Tailscale，正在打开下载地址。");
+        openTailscaleDownload();
     }
 
     void openAgentApp(String[] packageNames, String fallbackUri, String downloadUrl, String appName, String[] labelNeedles) {

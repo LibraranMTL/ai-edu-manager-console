@@ -25,6 +25,36 @@ contextBridge.exposeInMainWorld('AndroidBridge', {
   getStorageConfig() {
     return ipcRenderer.sendSync('bridge:getStorageConfig');
   },
+  getTemplateCenter(systemTemplatesJson) {
+    return ipcRenderer.sendSync('bridge:getTemplateCenter', systemTemplatesJson);
+  },
+  saveCustomTemplates(templatesJson) {
+    return ipcRenderer.sendSync('bridge:saveCustomTemplates', templatesJson);
+  },
+  restoreSystemTemplates(systemTemplatesJson) {
+    return ipcRenderer.sendSync('bridge:restoreSystemTemplates', systemTemplatesJson);
+  },
+  getAgentCenter(studentId) {
+    return ipcRenderer.sendSync('bridge:getAgentCenter', studentId);
+  },
+  saveAgentMemorySource(studentId, tool, content, mode) {
+    return ipcRenderer.sendSync('bridge:saveAgentMemorySource', studentId, tool, content, mode);
+  },
+  mergeAgentMemory(studentId) {
+    return ipcRenderer.sendSync('bridge:mergeAgentMemory', studentId);
+  },
+  saveUnifiedMemory(studentId, content) {
+    return ipcRenderer.sendSync('bridge:saveUnifiedMemory', studentId, content);
+  },
+  saveAgentSoulSource(studentId, tool, content) {
+    return ipcRenderer.sendSync('bridge:saveAgentSoulSource', studentId, tool, content);
+  },
+  saveUnifiedSoul(studentId, content) {
+    return ipcRenderer.sendSync('bridge:saveUnifiedSoul', studentId, content);
+  },
+  compareAgentSoulSource(studentId, tool) {
+    return ipcRenderer.sendSync('bridge:compareAgentSoulSource', studentId, tool);
+  },
   getLicenseStatus() {
     return ipcRenderer.sendSync('bridge:getLicenseStatus');
   },

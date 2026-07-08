@@ -19,8 +19,9 @@ let hostServiceLastError = '';
 let todayUploadCount = 0;
 let uploadCountDate = new Date().toISOString().slice(0, 10);
 
-const APP_VERSION = '0.4.6';
+const APP_VERSION = '0.5.0';
 const DEFAULT_HOST_PORT = 18777;
+const AGENT_TOOL_IDS = ['qclaw', 'marvis', 'hohu', 'openclaw'];
 const MAX_UPLOAD_BYTES = 100 * 1024 * 1024;
 const ALLOWED_UPLOAD_EXTENSIONS = new Set([
   '.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp',
@@ -245,6 +246,7 @@ function ensureStudentManagerFiles(student) {
       message: '尚未执行资料消化。',
     }, null, 2), 'utf8');
   }
+  ensureAgentCenter(student);
 }
 
 function readStudentMaterials(student) {
@@ -1013,6 +1015,373 @@ function getSummaryDir(studentName) {
   return path.join(getStudentRootDir(cleanName), `${cleanName}学情分析汇总`);
 }
 
+function templateLibraryDir() {
+  return path.join(defaultStudentBaseDir(), '模板库');
+}
+
+function templateSystemDir() {
+  return path.join(templateLibraryDir(), 'system');
+}
+
+function templateCustomDir() {
+  return path.join(templateLibraryDir(), 'custom', 'current');
+}
+
+function templateMetaPath() {
+  return path.join(templateCustomDir(), 'template-meta.json');
+}
+
+function templateFileKeys() {
+  return ['AGENT.md', 'Soul.md', 'Memory.md', 'init-step-1.md', 'init-step-2.md', 'digest-prompt.md', 'consult-prompt.md'];
+}
+
+function parseJsonObject(value) {
+  try {
+    const parsed = JSON.parse(value || '{}');
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function writeTemplateFiles(dir, templates, overwrite) {
+  fs.mkdirSync(dir, { recursive: true });
+  for (const key of templateFileKeys()) {
+    const file = path.join(dir, key);
+    if (!overwrite && fs.existsSync(file)) continue;
+    fs.writeFileSync(file, String(templates[key] || ''), 'utf8');
+  }
+}
+
+function readTemplateFiles(dir) {
+  const templates = {};
+  for (const key of templateFileKeys()) {
+    const file = path.join(dir, key);
+    templates[key] = fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : '';
+  }
+  return templates;
+}
+
+function ensureTemplateLibrary(systemTemplates) {
+  fs.mkdirSync(templateLibraryDir(), { recursive: true });
+  writeTemplateFiles(templateSystemDir(), systemTemplates || {}, true);
+  fs.mkdirSync(templateCustomDir(), { recursive: true });
+}
+
+function getTemplateCenter(systemTemplatesJson) {
+  try {
+    const systemTemplates = parseJsonObject(systemTemplatesJson);
+    ensureTemplateLibrary(systemTemplates);
+    const settings = readSettings();
+    const activeTemplate = settings.activeTemplate === 'custom' ? 'custom' : 'system';
+    return JSON.stringify({
+      ok: true,
+      activeTemplate,
+      templateRoot: templateLibraryDir(),
+      systemPath: templateSystemDir(),
+      customPath: templateCustomDir(),
+      system: readTemplateFiles(templateSystemDir()),
+      custom: readTemplateFiles(templateCustomDir()),
+    });
+  } catch (error) {
+    return JSON.stringify({ ok: false, message: `读取模板库失败：${error.message}` });
+  }
+}
+
+function saveCustomTemplates(templatesJson) {
+  try {
+    const templates = parseJsonObject(templatesJson);
+    ensureTemplateLibrary(templates);
+    writeTemplateFiles(templateCustomDir(), templates, true);
+    fs.writeFileSync(templateMetaPath(), JSON.stringify({
+      version: 1,
+      updatedAt: new Date().toISOString(),
+      keys: templateFileKeys(),
+    }, null, 2), 'utf8');
+    const settings = readSettings();
+    settings.activeTemplate = 'custom';
+    writeSettings(settings);
+    return JSON.stringify({ ok: true, activeTemplate: 'custom', customPath: templateCustomDir(), message: '已保存为当前自定义模板。' });
+  } catch (error) {
+    return JSON.stringify({ ok: false, message: `保存模板失败：${error.message}` });
+  }
+}
+
+function restoreSystemTemplates(systemTemplatesJson) {
+  try {
+    const systemTemplates = parseJsonObject(systemTemplatesJson);
+    ensureTemplateLibrary(systemTemplates);
+    const settings = readSettings();
+    settings.activeTemplate = 'system';
+    writeSettings(settings);
+    return JSON.stringify({ ok: true, activeTemplate: 'system', systemPath: templateSystemDir(), message: '已恢复系统默认模板。' });
+  } catch (error) {
+    return JSON.stringify({ ok: false, message: `恢复默认模板失败：${error.message}` });
+  }
+}
+
+function agentMemoryDir(student) {
+  return path.join(student.rootPath || getStudentRootDir(student.name), 'Agent记忆');
+}
+
+function agentSoulDir(student) {
+  return path.join(student.rootPath || getStudentRootDir(student.name), 'Agent设定');
+}
+
+function agentMemoryUnifiedPath(student) {
+  return path.join(agentMemoryDir(student), 'UnifiedMemory.md');
+}
+
+function agentSoulUnifiedPath(student) {
+  return path.join(agentSoulDir(student), 'UnifiedSoul.md');
+}
+
+function agentSourceDir(baseDir, tool) {
+  return path.join(baseDir, 'sources', AGENT_TOOL_IDS.includes(tool) ? tool : 'qclaw');
+}
+
+function sha1Text(value) {
+  return crypto.createHash('sha1').update(String(value || '')).digest('hex');
+}
+
+function snapshotCurrentFile(file, snapshotsDir) {
+  if (!fs.existsSync(file)) return '';
+  fs.mkdirSync(snapshotsDir, { recursive: true });
+  const target = path.join(snapshotsDir, `${timestampForFilename()}-${path.basename(file)}`);
+  fs.copyFileSync(file, target);
+  return target;
+}
+
+function defaultUnifiedMemory(student) {
+  const cleanName = sanitizeName(student.name);
+  return `# ${cleanName} AI教育管家 UnifiedMemory\n\n## 学生画像\n\n- 姓名：${cleanName}\n- 年级：${student.grade || ''}\n- 学校：${student.school || ''}\n- 当前核心目标：${student.goal || ''}\n\n## 长期观察\n\n- 待补充。\n`;
+}
+
+function defaultUnifiedSoul(student) {
+  const cleanName = sanitizeName(student.name);
+  const agentPath = student.agentPath || path.join(student.rootPath || getStudentRootDir(cleanName), 'AGENT.md');
+  return `# ${cleanName} AI教育管家 UnifiedSoul\n\n你是「${cleanName} AI教育管家」，负责长期维护该学生学情档案，并把零散学习资料沉淀为可追溯、可复用的学情知识库。\n\n## 工作规则\n\n该 Agent 的工作协议使用：${agentPath}\n后续所有学习资料消化都围绕该学生知识库执行。\n`;
+}
+
+function writeJsonFile(file, value) {
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, JSON.stringify(value, null, 2), 'utf8');
+}
+
+function readJsonFile(file, fallback) {
+  try {
+    return JSON.parse(fs.readFileSync(file, 'utf8'));
+  } catch {
+    return fallback;
+  }
+}
+
+function ensureAgentCenter(student) {
+  const memoryDir = agentMemoryDir(student);
+  const soulDir = agentSoulDir(student);
+  fs.mkdirSync(memoryDir, { recursive: true });
+  fs.mkdirSync(soulDir, { recursive: true });
+  for (const tool of AGENT_TOOL_IDS) {
+    fs.mkdirSync(path.join(agentSourceDir(memoryDir, tool), 'snapshots'), { recursive: true });
+    fs.mkdirSync(path.join(agentSourceDir(soulDir, tool), 'snapshots'), { recursive: true });
+  }
+  if (!fs.existsSync(agentMemoryUnifiedPath(student))) {
+    fs.writeFileSync(agentMemoryUnifiedPath(student), defaultUnifiedMemory(student), 'utf8');
+  }
+  if (!fs.existsSync(agentSoulUnifiedPath(student))) {
+    fs.writeFileSync(agentSoulUnifiedPath(student), defaultUnifiedSoul(student), 'utf8');
+  }
+  importExistingAgentFile(student, 'Memory.md', memoryDir, 'current.Memory.md');
+  importExistingAgentFile(student, 'Soul.md', soulDir, 'current.Soul.md');
+  refreshAgentCenterIndexes(student);
+}
+
+function importExistingAgentFile(student, filename, baseDir, currentName) {
+  const tool = AGENT_TOOL_IDS.includes(student.agentTool) ? student.agentTool : 'qclaw';
+  const source = path.join(student.rootPath || getStudentRootDir(student.name), filename);
+  const target = path.join(agentSourceDir(baseDir, tool), currentName);
+  if (fs.existsSync(source) && !fs.existsSync(target)) {
+    fs.copyFileSync(source, target);
+  }
+}
+
+function listSourceEntries(baseDir, currentName, mode) {
+  return AGENT_TOOL_IDS.map((tool) => {
+    const currentPath = path.join(agentSourceDir(baseDir, tool), currentName);
+    const content = fs.existsSync(currentPath) ? fs.readFileSync(currentPath, 'utf8') : '';
+    return {
+      tool,
+      mode,
+      currentPath,
+      lastSyncedAt: fs.existsSync(currentPath) ? fs.statSync(currentPath).mtime.toISOString() : '',
+      hash: content ? sha1Text(content) : '',
+      exists: Boolean(content),
+    };
+  });
+}
+
+function refreshAgentCenterIndexes(student) {
+  const memorySources = listSourceEntries(agentMemoryDir(student), 'current.Memory.md', 'paste');
+  const soulSources = listSourceEntries(agentSoulDir(student), 'current.Soul.md', 'paste');
+  writeJsonFile(path.join(agentMemoryDir(student), 'memory-index.json'), {
+    version: 1,
+    studentId: String(student.id || ''),
+    unifiedMemoryPath: agentMemoryUnifiedPath(student),
+    sources: memorySources,
+    updatedAt: new Date().toISOString(),
+  });
+  writeJsonFile(path.join(agentSoulDir(student), 'soul-index.json'), {
+    version: 1,
+    studentId: String(student.id || ''),
+    unifiedSoulPath: agentSoulUnifiedPath(student),
+    sources: soulSources,
+    updatedAt: new Date().toISOString(),
+  });
+}
+
+function mergeMemoryContents(chunks) {
+  const seenLines = new Set();
+  const merged = ['# 统一学生记忆', '', '## 合并记忆'];
+  const conflicts = [];
+  for (const chunk of chunks) {
+    const lines = String(chunk.content || '').split(/\r?\n/).map((line) => line.trimEnd());
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed || /^#\s/.test(trimmed)) continue;
+      const key = trimmed.replace(/\s+/g, ' ').toLowerCase();
+      if (seenLines.has(key)) continue;
+      seenLines.add(key);
+      if (/冲突|不一致|待确认/.test(trimmed)) conflicts.push(`- [${chunk.tool}] ${trimmed}`);
+      else merged.push(line);
+    }
+  }
+  if (conflicts.length) {
+    merged.push('', '## 待确认冲突', ...conflicts);
+  }
+  return `${merged.join('\n').trim()}\n`;
+}
+
+function getAgentCenter(studentId) {
+  try {
+    const student = findStudentByKey(studentId);
+    if (!student) return JSON.stringify({ ok: false, message: '未找到学生。' });
+    ensureAgentCenter(student);
+    const memoryIndex = readJsonFile(path.join(agentMemoryDir(student), 'memory-index.json'), {});
+    const soulIndex = readJsonFile(path.join(agentSoulDir(student), 'soul-index.json'), {});
+    return JSON.stringify({
+      ok: true,
+      memoryDir: agentMemoryDir(student),
+      soulDir: agentSoulDir(student),
+      unifiedMemoryPath: agentMemoryUnifiedPath(student),
+      unifiedSoulPath: agentSoulUnifiedPath(student),
+      unifiedMemory: fs.readFileSync(agentMemoryUnifiedPath(student), 'utf8'),
+      unifiedSoul: fs.readFileSync(agentSoulUnifiedPath(student), 'utf8'),
+      memoryIndex,
+      soulIndex,
+    });
+  } catch (error) {
+    return JSON.stringify({ ok: false, message: `读取 Agent 中枢失败：${error.message}` });
+  }
+}
+
+function saveAgentMemorySource(studentId, tool, content, mode) {
+  try {
+    const student = findStudentByKey(studentId);
+    if (!student) return JSON.stringify({ ok: false, message: '未找到学生。' });
+    ensureAgentCenter(student);
+    const safeTool = AGENT_TOOL_IDS.includes(tool) ? tool : 'qclaw';
+    const dir = agentSourceDir(agentMemoryDir(student), safeTool);
+    const file = path.join(dir, 'current.Memory.md');
+    const snapshot = snapshotCurrentFile(file, path.join(dir, 'snapshots'));
+    fs.writeFileSync(file, String(content || ''), 'utf8');
+    refreshAgentCenterIndexes(student);
+    return JSON.stringify({ ok: true, currentPath: file, snapshot, hash: sha1Text(content || ''), message: '已保存来源 Memory。' });
+  } catch (error) {
+    return JSON.stringify({ ok: false, message: `保存来源 Memory 失败：${error.message}` });
+  }
+}
+
+function mergeAgentMemory(studentId) {
+  try {
+    const student = findStudentByKey(studentId);
+    if (!student) return JSON.stringify({ ok: false, message: '未找到学生。' });
+    ensureAgentCenter(student);
+    const chunks = [];
+    for (const tool of AGENT_TOOL_IDS) {
+      const file = path.join(agentSourceDir(agentMemoryDir(student), tool), 'current.Memory.md');
+      if (fs.existsSync(file)) chunks.push({ tool, content: fs.readFileSync(file, 'utf8') });
+    }
+    const unified = chunks.length ? mergeMemoryContents(chunks) : defaultUnifiedMemory(student);
+    fs.writeFileSync(agentMemoryUnifiedPath(student), unified, 'utf8');
+    refreshAgentCenterIndexes(student);
+    return JSON.stringify({ ok: true, unifiedMemory: unified, unifiedMemoryPath: agentMemoryUnifiedPath(student), message: `已合并 ${chunks.length} 个来源 Memory。` });
+  } catch (error) {
+    return JSON.stringify({ ok: false, message: `合并统一记忆失败：${error.message}` });
+  }
+}
+
+function saveUnifiedMemory(studentId, content) {
+  try {
+    const student = findStudentByKey(studentId);
+    if (!student) return JSON.stringify({ ok: false, message: '未找到学生。' });
+    ensureAgentCenter(student);
+    fs.writeFileSync(agentMemoryUnifiedPath(student), String(content || ''), 'utf8');
+    refreshAgentCenterIndexes(student);
+    return JSON.stringify({ ok: true, unifiedMemoryPath: agentMemoryUnifiedPath(student), message: '已保存统一记忆。' });
+  } catch (error) {
+    return JSON.stringify({ ok: false, message: `保存统一记忆失败：${error.message}` });
+  }
+}
+
+function saveAgentSoulSource(studentId, tool, content) {
+  try {
+    const student = findStudentByKey(studentId);
+    if (!student) return JSON.stringify({ ok: false, message: '未找到学生。' });
+    ensureAgentCenter(student);
+    const safeTool = AGENT_TOOL_IDS.includes(tool) ? tool : 'qclaw';
+    const dir = agentSourceDir(agentSoulDir(student), safeTool);
+    const file = path.join(dir, 'current.Soul.md');
+    const snapshot = snapshotCurrentFile(file, path.join(dir, 'snapshots'));
+    fs.writeFileSync(file, String(content || ''), 'utf8');
+    refreshAgentCenterIndexes(student);
+    return JSON.stringify({ ok: true, currentPath: file, snapshot, hash: sha1Text(content || ''), message: '已保存来源 Soul 备份。' });
+  } catch (error) {
+    return JSON.stringify({ ok: false, message: `保存来源 Soul 失败：${error.message}` });
+  }
+}
+
+function saveUnifiedSoul(studentId, content) {
+  try {
+    const student = findStudentByKey(studentId);
+    if (!student) return JSON.stringify({ ok: false, message: '未找到学生。' });
+    ensureAgentCenter(student);
+    fs.writeFileSync(agentSoulUnifiedPath(student), String(content || ''), 'utf8');
+    refreshAgentCenterIndexes(student);
+    return JSON.stringify({ ok: true, unifiedSoulPath: agentSoulUnifiedPath(student), message: '已保存统一 Soul。' });
+  } catch (error) {
+    return JSON.stringify({ ok: false, message: `保存统一 Soul 失败：${error.message}` });
+  }
+}
+
+function compareAgentSoulSource(studentId, tool) {
+  try {
+    const student = findStudentByKey(studentId);
+    if (!student) return JSON.stringify({ ok: false, message: '未找到学生。' });
+    ensureAgentCenter(student);
+    const safeTool = AGENT_TOOL_IDS.includes(tool) ? tool : 'qclaw';
+    const sourceFile = path.join(agentSourceDir(agentSoulDir(student), safeTool), 'current.Soul.md');
+    const unified = fs.existsSync(agentSoulUnifiedPath(student)) ? fs.readFileSync(agentSoulUnifiedPath(student), 'utf8') : '';
+    const source = fs.existsSync(sourceFile) ? fs.readFileSync(sourceFile, 'utf8') : '';
+    const unifiedLines = new Set(unified.split(/\r?\n/).map((line) => line.trim()).filter(Boolean));
+    const sourceLines = new Set(source.split(/\r?\n/).map((line) => line.trim()).filter(Boolean));
+    const onlyUnified = Array.from(unifiedLines).filter((line) => !sourceLines.has(line)).slice(0, 80);
+    const onlySource = Array.from(sourceLines).filter((line) => !unifiedLines.has(line)).slice(0, 80);
+    return JSON.stringify({ ok: true, onlyUnified, onlySource, message: onlyUnified.length || onlySource.length ? '检测到差异。' : '未检测到明显差异。' });
+  } catch (error) {
+    return JSON.stringify({ ok: false, message: `对比 Soul 失败：${error.message}` });
+  }
+}
+
 function readStudentsIndex() {
   try {
     const parsed = JSON.parse(fs.readFileSync(studentsPath(), 'utf8'));
@@ -1049,6 +1418,11 @@ function toHostStudent(student) {
   const agentPath = student.agentPath || path.join(rootPath, 'AGENT.md');
   const outputPath = student.outputPath || path.join(rootPath, '输出结果');
   const bindingMode = String(student.agentBindingMode || (agentTool === 'marvis' ? 'mainChat' : 'subAgent'));
+  const memoryDir = path.join(rootPath, 'Agent记忆');
+  const soulDir = path.join(rootPath, 'Agent设定');
+  const memoryConfig = student.memoryConfig && typeof student.memoryConfig === 'object' ? student.memoryConfig : {};
+  const soulConfig = student.soulConfig && typeof student.soulConfig === 'object' ? student.soulConfig : {};
+  const templateProfile = student.templateProfile && typeof student.templateProfile === 'object' ? student.templateProfile : {};
   return {
     id: String(student.id || `${cleanName}-${Date.now()}`),
     name: cleanName,
@@ -1066,6 +1440,20 @@ function toHostStudent(student) {
     summaryPath,
     agentPath,
     outputPath,
+    memoryConfig: {
+      unifiedMemoryPath: memoryConfig.unifiedMemoryPath || path.join(memoryDir, 'UnifiedMemory.md'),
+      lastMergedAt: memoryConfig.lastMergedAt || '',
+      sources: Array.isArray(memoryConfig.sources) ? memoryConfig.sources : [],
+    },
+    soulConfig: {
+      unifiedSoulPath: soulConfig.unifiedSoulPath || path.join(soulDir, 'UnifiedSoul.md'),
+      lastDistributedAt: soulConfig.lastDistributedAt || '',
+      sources: Array.isArray(soulConfig.sources) ? soulConfig.sources : [],
+    },
+    templateProfile: {
+      activeTemplate: templateProfile.activeTemplate === 'custom' ? 'custom' : 'system',
+      customTemplatePath: templateProfile.customTemplatePath || '',
+    },
     adoptedAt: String(student.adoptedAt || ''),
     remoteChannel,
     remoteContact: String(student.remoteContact || ''),
@@ -2467,6 +2855,16 @@ ipcMain.on('bridge:getAppStatus', (event) => {
   event.returnValue = JSON.stringify({ qclawOpened, marvisOpened, hohuOpened, openclawOpened, obsidianOpened });
 });
 ipcMain.on('bridge:getStorageConfig', (event) => { event.returnValue = getStorageConfig(); });
+ipcMain.on('bridge:getTemplateCenter', (event, systemTemplatesJson) => { event.returnValue = getTemplateCenter(systemTemplatesJson); });
+ipcMain.on('bridge:saveCustomTemplates', (event, templatesJson) => { event.returnValue = saveCustomTemplates(templatesJson); });
+ipcMain.on('bridge:restoreSystemTemplates', (event, systemTemplatesJson) => { event.returnValue = restoreSystemTemplates(systemTemplatesJson); });
+ipcMain.on('bridge:getAgentCenter', (event, studentId) => { event.returnValue = getAgentCenter(studentId); });
+ipcMain.on('bridge:saveAgentMemorySource', (event, studentId, tool, content, mode) => { event.returnValue = saveAgentMemorySource(studentId, tool, content, mode); });
+ipcMain.on('bridge:mergeAgentMemory', (event, studentId) => { event.returnValue = mergeAgentMemory(studentId); });
+ipcMain.on('bridge:saveUnifiedMemory', (event, studentId, content) => { event.returnValue = saveUnifiedMemory(studentId, content); });
+ipcMain.on('bridge:saveAgentSoulSource', (event, studentId, tool, content) => { event.returnValue = saveAgentSoulSource(studentId, tool, content); });
+ipcMain.on('bridge:saveUnifiedSoul', (event, studentId, content) => { event.returnValue = saveUnifiedSoul(studentId, content); });
+ipcMain.on('bridge:compareAgentSoulSource', (event, studentId, tool) => { event.returnValue = compareAgentSoulSource(studentId, tool); });
 ipcMain.on('bridge:getLicenseStatus', (event) => { event.returnValue = getLicenseStatus(); });
 ipcMain.on('bridge:activateLicense', (event, code) => { event.returnValue = activateLicense(code); });
 ipcMain.on('bridge:deactivateLicense', (event) => { event.returnValue = deactivateLicense(); });

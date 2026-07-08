@@ -25,7 +25,7 @@ import {
 } from 'lucide-react';
 import './styles.css';
 
-type Section = 'home' | 'init' | 'new' | 'inbox' | 'archive' | 'qa' | 'tasks' | 'settings';
+type Section = 'home' | 'init' | 'new' | 'inbox' | 'archive' | 'qa' | 'memory' | 'soul' | 'tasks' | 'settings';
 type ThemeName = 'blue' | 'pink' | 'green' | 'purple' | 'orange';
 type AgentToolId = 'qclaw' | 'marvis' | 'hohu' | 'openclaw';
 type StorageMode = 'app_private' | 'downloads_export' | 'obsidian_vault';
@@ -44,6 +44,9 @@ type AgentToolProfile = {
   supportsMemorySetting: boolean;
   supportsScheduledTask: boolean;
   supportsSubAgent: boolean;
+  supportsMemoryFile: boolean;
+  supportsMemoryPaste: boolean;
+  supportsSoulPaste: boolean;
   openLabel: string;
   copyTargetLabel: string;
   digestTargetLabel: string;
@@ -88,6 +91,20 @@ type Student = {
   bundleExportedAt?: string;
   lastImportAt?: string;
   lastDigestCommandAt?: string;
+  memoryConfig?: {
+    unifiedMemoryPath: string;
+    lastMergedAt?: string;
+    sources: Array<{ tool: AgentToolId; mode: 'file' | 'paste'; currentPath: string; lastSyncedAt?: string; hash?: string }>;
+  };
+  soulConfig?: {
+    unifiedSoulPath: string;
+    lastDistributedAt?: string;
+    sources: Array<{ tool: AgentToolId; currentPath: string; lastCheckedAt?: string; hash?: string }>;
+  };
+  templateProfile?: {
+    activeTemplate: 'system' | 'custom';
+    customTemplatePath?: string;
+  };
 };
 
 type StudentDraft = Omit<Student, 'id' | 'createdAt' | 'status'>;
@@ -100,6 +117,16 @@ type AndroidBridge = {
   takePhoto?: (studentName: string) => boolean;
   initStudentWorkspace?: (studentName: string, agentMd: string, indexMd: string, logMd: string) => string;
   getStorageConfig?: () => string;
+  getTemplateCenter?: (systemTemplatesJson: string) => string;
+  saveCustomTemplates?: (templatesJson: string) => string;
+  restoreSystemTemplates?: (systemTemplatesJson: string) => string;
+  getAgentCenter?: (studentId: string) => string;
+  saveAgentMemorySource?: (studentId: string, tool: AgentToolId, content: string, mode: 'file' | 'paste') => string;
+  mergeAgentMemory?: (studentId: string) => string;
+  saveUnifiedMemory?: (studentId: string, content: string) => string;
+  saveAgentSoulSource?: (studentId: string, tool: AgentToolId, content: string) => string;
+  saveUnifiedSoul?: (studentId: string, content: string) => string;
+  compareAgentSoulSource?: (studentId: string, tool: AgentToolId) => string;
   getLicenseStatus?: () => string;
   activateLicense?: (code: string) => string;
   deactivateLicense?: () => string;
@@ -340,8 +367,8 @@ type KnowledgeBaseScanResult = {
 const storageKey = 'edu-manager-launcher.students.v2';
 const themeStorageKey = 'edu-manager-launcher.theme.v1';
 const archiveKeywordStorageKey = 'edu-manager-launcher.archive-keywords.v1';
-const currentVersionCode = 56;
-const currentVersionName = '0.4.6';
+const currentVersionCode = 60;
+const currentVersionName = '0.5.0';
 const updateManifestUrl = [
   'https://www.greatbg.com/download/edu-manager-version.json',
   'http://www.greatbg.com/download/edu-manager-version.json',
@@ -368,6 +395,9 @@ const agentToolProfiles: Record<AgentToolId, AgentToolProfile> = {
     supportsMemorySetting: true,
     supportsScheduledTask: true,
     supportsSubAgent: true,
+    supportsMemoryFile: true,
+    supportsMemoryPaste: true,
+    supportsSoulPaste: true,
     openLabel: '打开 QClaw',
     copyTargetLabel: '复制到 QClaw 对话或 Agent 设置中',
     digestTargetLabel: '可粘贴到 QClaw 执行',
@@ -383,6 +413,9 @@ const agentToolProfiles: Record<AgentToolId, AgentToolProfile> = {
     supportsMemorySetting: true,
     supportsScheduledTask: false,
     supportsSubAgent: false,
+    supportsMemoryFile: false,
+    supportsMemoryPaste: true,
+    supportsSoulPaste: true,
     openLabel: '打开 Marvis',
     copyTargetLabel: '复制到 Marvis 对话或人设设置中',
     digestTargetLabel: '可粘贴到 Marvis 对话中手动执行',
@@ -398,6 +431,9 @@ const agentToolProfiles: Record<AgentToolId, AgentToolProfile> = {
     supportsMemorySetting: true,
     supportsScheduledTask: false,
     supportsSubAgent: true,
+    supportsMemoryFile: true,
+    supportsMemoryPaste: true,
+    supportsSoulPaste: true,
     openLabel: '打开 Hohu',
     copyTargetLabel: '复制到 Hohu 子 Agent 或人设设置中',
     digestTargetLabel: '可粘贴到 Hohu 执行，并直接读写本机知识库',
@@ -413,6 +449,9 @@ const agentToolProfiles: Record<AgentToolId, AgentToolProfile> = {
     supportsMemorySetting: true,
     supportsScheduledTask: true,
     supportsSubAgent: true,
+    supportsMemoryFile: true,
+    supportsMemoryPaste: true,
+    supportsSoulPaste: true,
     openLabel: '打开 OpenClaw',
     copyTargetLabel: '复制到 OpenClaw 子 Agent 或角色设定中',
     digestTargetLabel: '可粘贴到 OpenClaw 执行',
@@ -436,6 +475,33 @@ function getAgentToolProfile(value?: AgentToolId) {
 }
 
 type ArchiveKeywordConfig = Record<'summary' | 'report' | 'qa', string>;
+type TemplateKey = 'AGENT.md' | 'Soul.md' | 'Memory.md' | 'init-step-1.md' | 'init-step-2.md' | 'digest-prompt.md' | 'consult-prompt.md';
+type TemplateFiles = Record<TemplateKey, string>;
+type TemplateCenterState = {
+  ok: boolean;
+  activeTemplate: 'system' | 'custom';
+  templateRoot?: string;
+  systemPath?: string;
+  customPath?: string;
+  system?: Partial<TemplateFiles>;
+  custom?: Partial<TemplateFiles>;
+  message?: string;
+};
+type AgentCenterState = {
+  ok: boolean;
+  memoryDir?: string;
+  soulDir?: string;
+  unifiedMemoryPath?: string;
+  unifiedSoulPath?: string;
+  unifiedMemory?: string;
+  unifiedSoul?: string;
+  memoryIndex?: { sources?: Array<{ tool: AgentToolId; currentPath: string; lastSyncedAt?: string; hash?: string; exists?: boolean }> };
+  soulIndex?: { sources?: Array<{ tool: AgentToolId; currentPath: string; lastSyncedAt?: string; lastCheckedAt?: string; hash?: string; exists?: boolean }> };
+  message?: string;
+};
+
+const templateKeys: TemplateKey[] = ['AGENT.md', 'Soul.md', 'Memory.md', 'init-step-1.md', 'init-step-2.md', 'digest-prompt.md', 'consult-prompt.md'];
+let activeTemplateFiles: Partial<TemplateFiles> = {};
 
 const defaultArchiveKeywords: ArchiveKeywordConfig = {
   summary: '摘要库,摘要,summary,digest',
@@ -579,6 +645,20 @@ function loadStudents() {
       agentBindingMode: student.agentBindingMode ?? agentBindingModeForTool(agentToolProfiles[student.agentTool] ? student.agentTool : 'qclaw'),
       agentName: student.agentName ?? '',
       agentNote: student.agentNote ?? '',
+      memoryConfig: student.memoryConfig ?? {
+        unifiedMemoryPath: joinDisplayPath(student.rootPath ?? pathsFor(student.name).root, 'Agent记忆', 'UnifiedMemory.md'),
+        lastMergedAt: '',
+        sources: [],
+      },
+      soulConfig: student.soulConfig ?? {
+        unifiedSoulPath: joinDisplayPath(student.rootPath ?? pathsFor(student.name).root, 'Agent设定', 'UnifiedSoul.md'),
+        lastDistributedAt: '',
+        sources: [],
+      },
+      templateProfile: student.templateProfile ?? {
+        activeTemplate: 'system',
+        customTemplatePath: '',
+      },
       adoptedAt: student.adoptedAt ?? '',
       remoteChannel: student.remoteChannel ?? 'none',
       remoteContact: student.remoteContact ?? '',
@@ -664,7 +744,7 @@ function agentBindingModeForTool(toolId: AgentToolId): AgentBindingMode {
   return getAgentToolProfile(toolId).supportsSubAgent ? 'subAgent' : 'mainChat';
 }
 
-function buildAgentMd(student: StudentDraft) {
+function rawBuildAgentMd(student: StudentDraft) {
   const p = pathsForStudent(student);
   const tool = getAgentToolProfile(student.agentTool);
   return `# ${p.cleanName} 学情分析汇总 Agent Schema
@@ -882,7 +962,7 @@ ${p.root}/
 `;
 }
 
-function buildSoulMd(student: StudentDraft) {
+function rawBuildSoulMd(student: StudentDraft) {
   const p = pathsForStudent(student);
   return `# ${p.cleanName} AI教育管家 Soul
 
@@ -916,7 +996,7 @@ function buildSoulMd(student: StudentDraft) {
 `;
 }
 
-function buildMemoryMd(student: StudentDraft) {
+function rawBuildMemoryMd(student: StudentDraft) {
   const p = pathsForStudent(student);
   return `# ${p.cleanName} AI教育管家 Memory
 
@@ -937,6 +1017,74 @@ function buildMemoryMd(student: StudentDraft) {
 - 涉及升学政策、考试安排、竞赛规则等时间敏感信息，需要写清日期并建议复核。
 - 重要结论应能追溯到原始资料库或明确链接。
 `;
+}
+
+function templateVariables(student: StudentDraft) {
+  const p = pathsForStudent(student);
+  const tool = getAgentToolProfile(student.agentTool);
+  return {
+    studentName: p.cleanName,
+    grade: student.grade || '',
+    school: student.school || '',
+    goal: student.goal || '',
+    agentTool: tool.name,
+    agentName: student.agentName || `${p.cleanName} AI教育管家`,
+    rootPath: p.root,
+    agentPath: p.agent,
+    rawPath: p.raw,
+    summaryPath: p.summary,
+    outputPath: p.output,
+    digestTime: student.digestTime || '21:30',
+  };
+}
+
+function renderTemplateText(template: string, student: StudentDraft) {
+  const vars = templateVariables(student);
+  return String(template || '').replace(/\{\{(\w+)\}\}/g, (match, key: keyof typeof vars) => {
+    const value = vars[key];
+    return value === undefined ? match : String(value);
+  });
+}
+
+function templateFromGenerated(content: string, student: StudentDraft) {
+  const vars = templateVariables(student);
+  let next = content;
+  const replacements: Array<[string, string]> = [
+    [vars.studentName, '{{studentName}}'],
+    [vars.grade, '{{grade}}'],
+    [vars.school, '{{school}}'],
+    [vars.goal, '{{goal}}'],
+    [vars.agentName, '{{agentName}}'],
+    [vars.rootPath, '{{rootPath}}'],
+    [vars.agentPath, '{{agentPath}}'],
+    [vars.rawPath, '{{rawPath}}'],
+    [vars.summaryPath, '{{summaryPath}}'],
+    [vars.outputPath, '{{outputPath}}'],
+    [vars.digestTime, '{{digestTime}}'],
+  ];
+  replacements
+    .filter(([value]) => value)
+    .sort((a, b) => b[0].length - a[0].length)
+    .forEach(([value, token]) => {
+      next = next.split(value).join(token);
+    });
+  next = next.split(getAgentToolProfile(student.agentTool).name).join('{{agentTool}}');
+  return next;
+}
+
+function buildAgentMd(student: StudentDraft) {
+  const template = activeTemplateFiles['AGENT.md'];
+  return template ? renderTemplateText(template, student) : rawBuildAgentMd(student);
+}
+
+function buildSoulMd(student: StudentDraft) {
+  const template = activeTemplateFiles['Soul.md'];
+  return template ? renderTemplateText(template, student) : rawBuildSoulMd(student);
+}
+
+function buildMemoryMd(student: StudentDraft) {
+  const template = activeTemplateFiles['Memory.md'];
+  return template ? renderTemplateText(template, student) : rawBuildMemoryMd(student);
 }
 
 function buildIndexMd(student: StudentDraft) {
@@ -1218,12 +1366,22 @@ function buildInitSteps(student: StudentDraft): Array<{ id: InitStepId; title: s
     prompt: buildToolPrompt(student),
   });
 
+  if (activeTemplateFiles['init-step-1.md'] && rawSteps[0]) {
+    rawSteps[0] = { ...rawSteps[0], prompt: renderTemplateText(activeTemplateFiles['init-step-1.md'] || '', student) };
+  }
+  if (activeTemplateFiles['init-step-2.md'] && rawSteps[1]) {
+    rawSteps[1] = { ...rawSteps[1], prompt: renderTemplateText(activeTemplateFiles['init-step-2.md'] || '', student) };
+  }
+
   return rawSteps.map((step, index) => ({
     ...step,
     title: step.id === 'full' ? step.title : `${index + 1}. ${step.title}`,
   }));
 }
 function buildDigestCommand(student: string | StudentDraft) {
+  if (typeof student !== 'string' && activeTemplateFiles['digest-prompt.md']) {
+    return renderTemplateText(activeTemplateFiles['digest-prompt.md'] || '', student);
+  }
   const p = typeof student === 'string' ? pathsFor(student) : pathsForStudent(student);
   const separator = activeStorageConfig.pathSeparator || '/';
   return `/消化 ${p.cleanName}原始资料库中的新资料
@@ -1249,6 +1407,39 @@ function buildDigestCommand(student: string | StudentDraft) {
 }
 
 如果处理失败，请把 status 写为 "failed"，并在 message 中说明原因。`;
+}
+
+function buildSystemTemplates(): TemplateFiles {
+  const sample: StudentDraft = {
+    ...defaultDraft,
+    name: '{{studentName}}',
+    grade: '{{grade}}',
+    school: '{{school}}',
+    goal: '{{goal}}',
+    agentTool: 'qclaw',
+    agentName: '{{agentName}}',
+    rootPath: '{{rootPath}}',
+    rawPath: '{{rawPath}}',
+    summaryPath: '{{summaryPath}}',
+    agentPath: '{{agentPath}}',
+    outputPath: '{{outputPath}}',
+    digestTime: '{{digestTime}}',
+  };
+  const previousTemplates = activeTemplateFiles;
+  activeTemplateFiles = {};
+  const digestPrompt = buildDigestCommand(sample);
+  activeTemplateFiles = previousTemplates;
+  const folderStep = `请准备学生知识库根目录：\n\n{{rootPath}}\n\n如果该目录已经存在，请保留已有内容，不要删除。`;
+  const agentStep = `请在以下路径创建或覆盖写入 AGENT.md：\n\n{{agentPath}}\n\nAGENT.md 内容如下，请完整写入，不要省略：\n\n\`\`\`markdown\n${rawBuildAgentMd(sample)}\n\`\`\``;
+  return {
+    'AGENT.md': rawBuildAgentMd(sample),
+    'Soul.md': rawBuildSoulMd(sample),
+    'Memory.md': rawBuildMemoryMd(sample),
+    'init-step-1.md': folderStep,
+    'init-step-2.md': agentStep,
+    'digest-prompt.md': digestPrompt,
+    'consult-prompt.md': '/咨询，我想咨询',
+  };
 }
 
 function buildBundle(student: StudentDraft) {
@@ -1362,8 +1553,29 @@ function App() {
   const [licenseStatus, setLicenseStatus] = useState<LicenseStatus | null>(null);
   const [licenseCodeDraft, setLicenseCodeDraft] = useState('');
   const [licenseMessage, setLicenseMessage] = useState('');
+  const [templateCenter, setTemplateCenter] = useState<TemplateCenterState | null>(null);
+  const [templateMessage, setTemplateMessage] = useState('');
+  const [agentCenter, setAgentCenter] = useState<AgentCenterState | null>(null);
+  const [agentCenterMessage, setAgentCenterMessage] = useState('');
+  const [memorySourceTool, setMemorySourceTool] = useState<AgentToolId>('qclaw');
+  const [memorySourceText, setMemorySourceText] = useState('');
+  const [unifiedMemoryText, setUnifiedMemoryText] = useState('');
+  const [soulSourceTool, setSoulSourceTool] = useState<AgentToolId>('qclaw');
+  const [soulSourceText, setSoulSourceText] = useState('');
+  const [unifiedSoulText, setUnifiedSoulText] = useState('');
+  const [soulDiff, setSoulDiff] = useState<{ onlyUnified?: string[]; onlySource?: string[]; message?: string } | null>(null);
 
   const selectedStudent = students.find((item) => item.id === selectedId) ?? students[0];
+  const systemTemplateFiles = useMemo(() => buildSystemTemplates(), []);
+  const currentTemplateFiles = useMemo(() => {
+    if (templateCenter?.activeTemplate === 'custom') {
+      const custom = templateCenter.custom ?? {};
+      const hasCustom = templateKeys.some((key) => Boolean(custom[key]?.trim()));
+      if (hasCustom) return custom;
+    }
+    return {};
+  }, [templateCenter]);
+  activeTemplateFiles = currentTemplateFiles;
   const selectedTool = getAgentToolProfile(draft.agentTool);
   const effectiveDraft: StudentDraft = useMemo(() => {
     const standardPaths = pathsFor(draft.name);
@@ -1643,6 +1855,36 @@ function App() {
     }
   };
 
+  const refreshTemplateCenter = () => {
+    const raw = bridge()?.getTemplateCenter?.(JSON.stringify(systemTemplateFiles));
+    if (!raw) return;
+    try {
+      const result = JSON.parse(raw) as TemplateCenterState;
+      setTemplateCenter(result);
+      if (!result.ok) setTemplateMessage(result.message || '模板库读取失败。');
+    } catch {
+      setTemplateMessage('模板库读取结果解析失败。');
+    }
+  };
+
+  const refreshAgentCenter = (studentId = selectedStudent?.id) => {
+    if (!studentId) return;
+    const raw = bridge()?.getAgentCenter?.(studentId);
+    if (!raw) return;
+    try {
+      const result = JSON.parse(raw) as AgentCenterState;
+      setAgentCenter(result);
+      if (result.ok) {
+        setUnifiedMemoryText(result.unifiedMemory || '');
+        setUnifiedSoulText(result.unifiedSoul || '');
+      } else {
+        setAgentCenterMessage(result.message || '读取 Agent 中枢失败。');
+      }
+    } catch {
+      setAgentCenterMessage('Agent 中枢读取结果解析失败。');
+    }
+  };
+
   useEffect(() => {
     const storageRaw = bridge()?.getStorageConfig?.();
     if (storageRaw) {
@@ -1653,6 +1895,7 @@ function App() {
       }
     }
     refreshInstallStatus();
+    refreshTemplateCenter();
     syncStudentsToHost(students);
     refreshHostServiceStatus();
     refreshLicenseStatus();
@@ -1780,6 +2023,12 @@ function App() {
       cancelled = true;
     };
   }, [hostServiceStatus?.pairPayloadText]);
+
+  useEffect(() => {
+    if (activeSection === 'memory' || activeSection === 'soul' || activeSection === 'qa') {
+      refreshAgentCenter();
+    }
+  }, [activeSection, selectedId]);
 
   useEffect(() => {
     setMarkdownFiles([]);
@@ -1969,6 +2218,20 @@ function App() {
         lastDigestAt: '',
         digestStatus: 'idle',
         digestMessage: '已接管已有知识库，等待上传资料。',
+        memoryConfig: {
+          unifiedMemoryPath: joinDisplayPath(rootPath, 'Agent记忆', 'UnifiedMemory.md'),
+          lastMergedAt: '',
+          sources: [],
+        },
+        soulConfig: {
+          unifiedSoulPath: joinDisplayPath(rootPath, 'Agent设定', 'UnifiedSoul.md'),
+          lastDistributedAt: '',
+          sources: [],
+        },
+        templateProfile: {
+          activeTemplate: templateCenter?.activeTemplate ?? 'system',
+          customTemplatePath: templateCenter?.customPath ?? '',
+        },
       };
       const next = [student, ...students];
       persist(next);
@@ -2004,6 +2267,20 @@ function App() {
       digestStatus: 'idle',
       digestMessage: '知识库已初始化，等待上传资料。',
       bundleExportedAt: exportedOnce ? new Date().toLocaleString('zh-CN') : undefined,
+      memoryConfig: {
+        unifiedMemoryPath: joinDisplayPath(p.root, 'Agent记忆', 'UnifiedMemory.md'),
+        lastMergedAt: '',
+        sources: [],
+      },
+      soulConfig: {
+        unifiedSoulPath: joinDisplayPath(p.root, 'Agent设定', 'UnifiedSoul.md'),
+        lastDistributedAt: '',
+        sources: [],
+      },
+      templateProfile: {
+        activeTemplate: templateCenter?.activeTemplate ?? 'system',
+        customTemplatePath: templateCenter?.customPath ?? '',
+      },
     };
     const initResult = bridge()?.initStudentWorkspace?.(p.cleanName, buildAgentMd(draft), buildIndexMd(draft), buildLogMd(draft));
     if (initResult) {
@@ -2017,6 +2294,15 @@ function App() {
         }
         if (parsed.rawPath) student.rawPath = parsed.rawPath;
         if (parsed.summaryPath) student.summaryPath = parsed.summaryPath;
+        const rootForAgentCenter = student.rootPath || p.root;
+        student.memoryConfig = {
+          ...(student.memoryConfig ?? { sources: [] }),
+          unifiedMemoryPath: joinDisplayPath(rootForAgentCenter, 'Agent记忆', 'UnifiedMemory.md'),
+        };
+        student.soulConfig = {
+          ...(student.soulConfig ?? { sources: [] }),
+          unifiedSoulPath: joinDisplayPath(rootForAgentCenter, 'Agent设定', 'UnifiedSoul.md'),
+        };
       } catch {
         // Keep the generated display path.
       }
@@ -2210,7 +2496,148 @@ function App() {
   };
 
   const copyConsultCommand = async () => {
-    await copyText('/咨询，我想咨询', '已复制咨询提示。');
+    const value = selectedStudent && activeTemplateFiles['consult-prompt.md']
+      ? renderTemplateText(activeTemplateFiles['consult-prompt.md'] || '', selectedStudent)
+      : '/咨询，我想咨询';
+    await copyText(value, '已复制咨询提示。');
+  };
+
+  const saveCurrentTemplates = () => {
+    const stepPrompt = (id: InitStepId) => customStepPrompts[id] ?? initSteps.find((step) => step.id === id)?.prompt ?? '';
+    const templateDraft = templateKeys.reduce((acc, key) => {
+      if (key === 'AGENT.md') acc[key] = templateFromGenerated(buildAgentMd(effectiveDraft), effectiveDraft);
+      else if (key === 'Soul.md') acc[key] = templateFromGenerated(buildSoulMd(effectiveDraft), effectiveDraft);
+      else if (key === 'Memory.md') acc[key] = templateFromGenerated(buildMemoryMd(effectiveDraft), effectiveDraft);
+      else if (key === 'digest-prompt.md') acc[key] = templateFromGenerated(buildDigestCommand(effectiveDraft), effectiveDraft);
+      else if (key === 'consult-prompt.md') acc[key] = activeTemplateFiles[key] || '/咨询，我想咨询';
+      else acc[key] = templateFromGenerated(stepPrompt(key === 'init-step-1.md' ? 'folder' : 'agent'), effectiveDraft);
+      return acc;
+    }, {} as TemplateFiles);
+    const raw = bridge()?.saveCustomTemplates?.(JSON.stringify(templateDraft));
+    if (!raw) {
+      setTemplateMessage('当前环境不支持保存模板。');
+      return;
+    }
+    try {
+      const result = JSON.parse(raw) as TemplateCenterState;
+      setTemplateMessage(result.message || (result.ok ? '已保存模板。' : '保存模板失败。'));
+      refreshTemplateCenter();
+    } catch {
+      setTemplateMessage('保存模板结果解析失败。');
+    }
+  };
+
+  const restoreDefaultTemplates = () => {
+    const raw = bridge()?.restoreSystemTemplates?.(JSON.stringify(systemTemplateFiles));
+    if (!raw) {
+      setTemplateMessage('当前环境不支持恢复默认模板。');
+      return;
+    }
+    try {
+      const result = JSON.parse(raw) as TemplateCenterState;
+      setCustomStepPrompts({});
+      setTemplateMessage(result.message || (result.ok ? '已恢复默认模板。' : '恢复默认模板失败。'));
+      refreshTemplateCenter();
+    } catch {
+      setTemplateMessage('恢复默认模板结果解析失败。');
+    }
+  };
+
+  const saveMemorySource = () => {
+    if (!selectedStudent) return;
+    const raw = bridge()?.saveAgentMemorySource?.(selectedStudent.id, memorySourceTool, memorySourceText, 'paste');
+    if (!raw) {
+      setAgentCenterMessage('当前环境不支持保存来源 Memory。');
+      return;
+    }
+    try {
+      const result = JSON.parse(raw) as { ok?: boolean; message?: string };
+      setAgentCenterMessage(result.message || (result.ok ? '已保存来源 Memory。' : '保存来源 Memory 失败。'));
+      refreshAgentCenter();
+    } catch {
+      setAgentCenterMessage('保存来源 Memory 结果解析失败。');
+    }
+  };
+
+  const mergeMemory = () => {
+    if (!selectedStudent) return;
+    const raw = bridge()?.mergeAgentMemory?.(selectedStudent.id);
+    if (!raw) {
+      setAgentCenterMessage('当前环境不支持合并记忆。');
+      return;
+    }
+    try {
+      const result = JSON.parse(raw) as { ok?: boolean; unifiedMemory?: string; message?: string };
+      if (result.unifiedMemory) setUnifiedMemoryText(result.unifiedMemory);
+      setAgentCenterMessage(result.message || (result.ok ? '已合并统一记忆。' : '合并统一记忆失败。'));
+      refreshAgentCenter();
+    } catch {
+      setAgentCenterMessage('合并记忆结果解析失败。');
+    }
+  };
+
+  const saveUnifiedMemoryText = () => {
+    if (!selectedStudent) return;
+    const raw = bridge()?.saveUnifiedMemory?.(selectedStudent.id, unifiedMemoryText);
+    if (!raw) {
+      setAgentCenterMessage('当前环境不支持保存统一记忆。');
+      return;
+    }
+    try {
+      const result = JSON.parse(raw) as { ok?: boolean; message?: string };
+      setAgentCenterMessage(result.message || (result.ok ? '已保存统一记忆。' : '保存统一记忆失败。'));
+      refreshAgentCenter();
+    } catch {
+      setAgentCenterMessage('保存统一记忆结果解析失败。');
+    }
+  };
+
+  const saveSoulSource = () => {
+    if (!selectedStudent) return;
+    const raw = bridge()?.saveAgentSoulSource?.(selectedStudent.id, soulSourceTool, soulSourceText);
+    if (!raw) {
+      setAgentCenterMessage('当前环境不支持保存来源 Soul。');
+      return;
+    }
+    try {
+      const result = JSON.parse(raw) as { ok?: boolean; message?: string };
+      setAgentCenterMessage(result.message || (result.ok ? '已保存来源 Soul。' : '保存来源 Soul 失败。'));
+      refreshAgentCenter();
+    } catch {
+      setAgentCenterMessage('保存来源 Soul 结果解析失败。');
+    }
+  };
+
+  const saveUnifiedSoulText = () => {
+    if (!selectedStudent) return;
+    const raw = bridge()?.saveUnifiedSoul?.(selectedStudent.id, unifiedSoulText);
+    if (!raw) {
+      setAgentCenterMessage('当前环境不支持保存统一 Soul。');
+      return;
+    }
+    try {
+      const result = JSON.parse(raw) as { ok?: boolean; message?: string };
+      setAgentCenterMessage(result.message || (result.ok ? '已保存统一 Soul。' : '保存统一 Soul 失败。'));
+      refreshAgentCenter();
+    } catch {
+      setAgentCenterMessage('保存统一 Soul 结果解析失败。');
+    }
+  };
+
+  const compareSoulSource = () => {
+    if (!selectedStudent) return;
+    const raw = bridge()?.compareAgentSoulSource?.(selectedStudent.id, soulSourceTool);
+    if (!raw) {
+      setAgentCenterMessage('当前环境不支持 Soul 差异对比。');
+      return;
+    }
+    try {
+      const result = JSON.parse(raw) as { ok?: boolean; onlyUnified?: string[]; onlySource?: string[]; message?: string };
+      setSoulDiff(result);
+      setAgentCenterMessage(result.message || (result.ok ? '已完成差异对比。' : '差异对比失败。'));
+    } catch {
+      setAgentCenterMessage('Soul 差异结果解析失败。');
+    }
   };
 
   const copyStudentProfileUpdatePrompt = async (student: Student) => {
@@ -2939,6 +3366,8 @@ function App() {
     { id: 'inbox' as const, label: '资料收集与处理', icon: FileDown },
     { id: 'archive' as const, label: '查看教育档案', icon: BookOpen },
     { id: 'qa' as const, label: '教育管家问答', icon: MessageCircle },
+    { id: 'memory' as const, label: 'Agent 记忆管理', icon: Clipboard },
+    { id: 'soul' as const, label: 'Agent 设定管理', icon: Bot },
     { id: 'tasks' as const, label: '定时任务', icon: Clock3 },
     { id: 'settings' as const, label: '系统设置', icon: Settings },
   ];
@@ -3039,6 +3468,10 @@ function App() {
                     ? '资料收集与处理'
                   : activeSection === 'qa'
                     ? '教育管家问答'
+                  : activeSection === 'memory'
+                    ? 'Agent 记忆管理'
+                  : activeSection === 'soul'
+                    ? 'Agent 设定管理'
                   : activeSection === 'tasks'
                     ? '定时任务'
                     : activeSection === 'settings'
@@ -3436,6 +3869,18 @@ function App() {
                   </div>
                 ))}
               </div>
+
+              <div className="info-strip">
+                <span>当前模板：{templateCenter?.activeTemplate === 'custom' ? '自定义模板' : '系统默认'}</span>
+                <span>{templateCenter?.templateRoot || '模板库将在 Windows 端自动创建'}</span>
+                <button className="secondary compact" onClick={saveCurrentTemplates}>
+                  保存为当前模板
+                </button>
+                <button className="secondary compact" onClick={restoreDefaultTemplates}>
+                  恢复默认模板
+                </button>
+              </div>
+              {templateMessage && <p className="inline-message">{templateMessage}</p>}
 
               <div className="tool-selector">
                 <span>Agent 工具</span>
@@ -4083,6 +4528,21 @@ function App() {
                 <Clipboard size={18} />
                 复制咨询提示
               </button>
+              <button className="secondary" onClick={() => copyText(unifiedMemoryText || agentCenter?.unifiedMemory || buildMemoryMd(selectedStudent), '已复制统一记忆。')}>
+                <Clipboard size={18} />
+                复制统一记忆
+              </button>
+              <button className="secondary" onClick={() => copyText(unifiedSoulText || agentCenter?.unifiedSoul || buildSoulMd(selectedStudent), '已复制统一 Soul。')}>
+                <Clipboard size={18} />
+                复制统一 Soul
+              </button>
+              <button className="secondary" onClick={() => {
+                refreshAgentCenter(selectedStudent.id);
+                setActiveSection('memory');
+              }}>
+                <RefreshCw size={18} />
+                同步 Agent 记忆
+              </button>
               {selectedStudent.knowledgeBaseMode === 'adopted' && (
                 <>
                   <button className="secondary" onClick={() => copyStudentSoul(selectedStudent)}>
@@ -4174,6 +4634,131 @@ function App() {
                 : `${selectedStudentTool.name} 暂按手动复制资料消化指令执行，后续可由控制台做提醒。`}
             </div>
             {digestMessage && <div className="notice">{digestMessage}</div>}
+          </section>
+        )}
+
+        {!shouldBlockForAgentInstall && activeSection === 'memory' && selectedStudent && (
+          <section className="panel qa-panel">
+            <div className="panel-heading">
+              <div>
+                <h2>Agent 记忆管理</h2>
+                <p>备份不同 Agent 工具里的 Memory，并合并为当前学生的 UnifiedMemory.md。</p>
+              </div>
+              <Clipboard size={22} />
+            </div>
+            <div className="archive-grid">
+              <InfoPanel icon={<UserRound />} title="当前学生" value={selectedStudent.name} />
+              <InfoPanel icon={<FolderOpen />} title="统一记忆文件" value={agentCenter?.unifiedMemoryPath || selectedStudent.memoryConfig?.unifiedMemoryPath || '未生成'} />
+              <InfoPanel icon={<Archive />} title="来源数量" value={`${agentCenter?.memoryIndex?.sources?.filter((item) => item.exists).length ?? 0} 个`} />
+            </div>
+            <div className="form-grid compact-grid">
+              <label>
+                来源 Agent 工具
+                <select value={memorySourceTool} onChange={(event) => setMemorySourceTool(event.target.value as AgentToolId)}>
+                  {agentToolOptions.map((tool) => (
+                    <option value={tool.id} key={tool.id}>{tool.name}</option>
+                  ))}
+                </select>
+              </label>
+              <label>
+                来源能力
+                <input readOnly value={getAgentToolProfile(memorySourceTool).supportsMemoryFile ? '支持文件或粘贴导入' : '建议粘贴导入'} />
+              </label>
+            </div>
+            <label className="wide-field">
+              粘贴来源 Memory
+              <textarea value={memorySourceText} onChange={(event) => setMemorySourceText(event.target.value)} placeholder="从 QClaw / Hohu / Marvis / OpenClaw 复制该学生 Memory 后粘贴到这里。" />
+            </label>
+            <div className="actions compact-actions">
+              <button className="primary" onClick={saveMemorySource}>保存来源 Memory</button>
+              <button className="secondary" onClick={mergeMemory}>合并为 UnifiedMemory.md</button>
+              <button className="secondary" onClick={saveUnifiedMemoryText}>保存统一记忆</button>
+              <button className="secondary" onClick={() => copyText(unifiedMemoryText, '已复制统一记忆。')}>复制统一记忆</button>
+              <button className="secondary" onClick={() => refreshAgentCenter()}>刷新</button>
+            </div>
+            <label className="wide-field">
+              UnifiedMemory.md
+              <textarea className="large-textarea" value={unifiedMemoryText} onChange={(event) => setUnifiedMemoryText(event.target.value)} />
+            </label>
+            <div className="source-list">
+              {(agentCenter?.memoryIndex?.sources ?? []).map((source) => (
+                <div className="source-row" key={source.tool}>
+                  <strong>{getAgentToolProfile(source.tool).name}</strong>
+                  <span>{source.exists ? '已保存' : '未导入'}</span>
+                  <small>{source.currentPath}</small>
+                </div>
+              ))}
+            </div>
+            {agentCenterMessage && <div className="notice">{agentCenterMessage}</div>}
+          </section>
+        )}
+
+        {!shouldBlockForAgentInstall && activeSection === 'soul' && selectedStudent && (
+          <section className="panel qa-panel">
+            <div className="panel-heading">
+              <div>
+                <h2>Agent 设定管理</h2>
+                <p>维护统一 Soul，备份不同工具的人设版本，并对比差异后手动调整。</p>
+              </div>
+              <Bot size={22} />
+            </div>
+            <div className="archive-grid">
+              <InfoPanel icon={<UserRound />} title="当前学生" value={selectedStudent.name} />
+              <InfoPanel icon={<FolderOpen />} title="统一 Soul 文件" value={agentCenter?.unifiedSoulPath || selectedStudent.soulConfig?.unifiedSoulPath || '未生成'} />
+              <InfoPanel icon={<Bot />} title="默认工具" value={selectedStudentTool.name} />
+            </div>
+            <div className="form-grid compact-grid">
+              <label>
+                来源 Agent 工具
+                <select value={soulSourceTool} onChange={(event) => setSoulSourceTool(event.target.value as AgentToolId)}>
+                  {agentToolOptions.map((tool) => (
+                    <option value={tool.id} key={tool.id}>{tool.name}</option>
+                  ))}
+                </select>
+              </label>
+              <label>
+                分发目标
+                <input readOnly value={getAgentToolProfile(soulSourceTool).personaTargetLabel} />
+              </label>
+            </div>
+            <label className="wide-field">
+              粘贴来源 Soul / 人设
+              <textarea value={soulSourceText} onChange={(event) => setSoulSourceText(event.target.value)} placeholder="从对应 Agent 工具复制该学生人设、Soul 或角色设定后粘贴到这里。" />
+            </label>
+            <div className="actions compact-actions">
+              <button className="primary" onClick={saveSoulSource}>保存来源 Soul 备份</button>
+              <button className="secondary" onClick={compareSoulSource}>对比来源与统一 Soul</button>
+              <button className="secondary" onClick={saveUnifiedSoulText}>保存统一 Soul</button>
+              <button className="secondary" onClick={() => copyText(unifiedSoulText, '已复制统一 Soul。')}>复制统一 Soul</button>
+              <button className="secondary" onClick={() => copyStudentWorkRule(selectedStudent)}>复制工作规则</button>
+              <button className="secondary" onClick={() => refreshAgentCenter()}>刷新</button>
+            </div>
+            <label className="wide-field">
+              UnifiedSoul.md
+              <textarea className="large-textarea" value={unifiedSoulText} onChange={(event) => setUnifiedSoulText(event.target.value)} />
+            </label>
+            {soulDiff && (
+              <div className="diff-grid">
+                <div>
+                  <strong>统一 Soul 独有</strong>
+                  <pre>{(soulDiff.onlyUnified ?? []).join('\n') || '无明显差异'}</pre>
+                </div>
+                <div>
+                  <strong>来源 Soul 独有</strong>
+                  <pre>{(soulDiff.onlySource ?? []).join('\n') || '无明显差异'}</pre>
+                </div>
+              </div>
+            )}
+            <div className="source-list">
+              {(agentCenter?.soulIndex?.sources ?? []).map((source) => (
+                <div className="source-row" key={source.tool}>
+                  <strong>{getAgentToolProfile(source.tool).name}</strong>
+                  <span>{source.exists ? '已备份' : '未导入'}</span>
+                  <small>{source.currentPath}</small>
+                </div>
+              ))}
+            </div>
+            {agentCenterMessage && <div className="notice">{agentCenterMessage}</div>}
           </section>
         )}
 

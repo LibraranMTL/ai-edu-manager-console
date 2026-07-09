@@ -19,7 +19,7 @@ let hostServiceLastError = '';
 let todayUploadCount = 0;
 let uploadCountDate = new Date().toISOString().slice(0, 10);
 
-const APP_VERSION = '0.5.1';
+const APP_VERSION = '0.5.2';
 const DEFAULT_HOST_PORT = 18777;
 const AGENT_TOOL_IDS = ['qclaw', 'marvis', 'hohu', 'openclaw'];
 const MAX_UPLOAD_BYTES = 100 * 1024 * 1024;

@@ -956,6 +956,21 @@ select:focus {
   white-space: nowrap;
 }
 
+.ai-scan-box {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid var(--panel-border);
+  border-radius: 16px;
+  background: linear-gradient(135deg, rgba(255, 255, 255, 0.82), var(--accent-soft));
+}
+
+.ai-scan-box textarea {
+  min-height: 112px;
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  font-size: 13px;
+}
+
 .candidate-list {
   display: grid;
   gap: 12px;

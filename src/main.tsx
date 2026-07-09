@@ -370,8 +370,8 @@ type KnowledgeBaseScanResult = {
 const storageKey = 'edu-manager-launcher.students.v2';
 const themeStorageKey = 'edu-manager-launcher.theme.v1';
 const archiveKeywordStorageKey = 'edu-manager-launcher.archive-keywords.v1';
-const currentVersionCode = 61;
-const currentVersionName = '0.5.1';
+const currentVersionCode = 62;
+const currentVersionName = '0.5.2';
 const updateManifestUrl = [
   'https://www.greatbg.com/download/edu-manager-version.json',
   'http://www.greatbg.com/download/edu-manager-version.json',
@@ -751,6 +751,114 @@ function pathsForStudent(student: Pick<Student, 'name'> & Partial<Pick<Student, 
     output,
     index: joinDisplayPath(summary, 'index.md'),
     log: joinDisplayPath(summary, 'log.md'),
+  };
+}
+
+function basenameFromPath(filePath: string) {
+  return String(filePath || '').split(/[\\/]/).filter(Boolean).pop() || '候选文件';
+}
+
+function buildAiAgentScanPrompt(student: Student, targetKind: AgentKnowledgeKind) {
+  const p = pathsForStudent(student);
+  const targetLabel = targetKind === 'soul' ? '人设/Soul/角色设定' : 'Memory/长期记忆';
+  return `请作为本机 Agent 文件扫描助手，帮我查找学生「${student.name}」的 ${targetLabel} 文件候选。
+
+学生信息：
+- 姓名：${student.name}
+- 年级：${student.grade || '待补充'}
+- 学校：${student.school || '待补充'}
+- 当前目标：${student.goal || '待补充'}
+- 当前绑定 Agent 工具：${getAgentToolProfile(student.agentTool).name}
+- Agent 名称或备注：${student.agentName || student.agentNote || `${student.name} AI教育管家`}
+- 知识库根目录：${p.root}
+- AGENT.md：${p.agent}
+- 原始资料库：${p.raw}
+- 学情分析汇总：${p.summary}
+
+请优先扫描这些常见 Agent 工具目录：
+- %USERPROFILE%\\.qclaw
+- %USERPROFILE%\\.openclaw
+- %USERPROFILE%\\.hohu
+- %USERPROFILE%\\.marvis
+- %APPDATA%\\QClaw
+- %APPDATA%\\OpenClaw
+- %APPDATA%\\Hohu
+- %APPDATA%\\Marvis
+- %LOCALAPPDATA%\\QClaw
+- %LOCALAPPDATA%\\OpenClaw
+- %LOCALAPPDATA%\\Hohu
+- %LOCALAPPDATA%\\Marvis
+
+候选文件名包括但不限于：
+- 记忆：MEMORY.md、Memory.md、memory.md、long-term-memory.md、memory.txt
+- 人设：Soul.md、persona.md、role.md、system.md、prompt.md、profile.md
+
+判断标准：
+1. 文件内容或路径包含学生姓名、Agent 名称、知识库根目录、AGENT.md 路径时，优先级最高。
+2. 文件内容提到“原始资料库”“学情分析汇总”“学习资料消化”“教育管家”等关键词时，提高置信度。
+3. 如果不确定，也可以列为低分候选，但必须说明理由。
+
+安全规则：
+- 不要读取或输出 .ssh、密钥、token、浏览器 Profile、Cookie、密码、聊天记录、无关项目源码。
+- 不要输出文件全文，只输出不超过 120 字的 preview。
+- 只返回 JSON，不要输出解释文字，不要使用 Markdown 代码块。
+
+请严格返回以下 JSON 格式：
+{
+  "studentName": "${student.name}",
+  "targetKind": "${targetKind}",
+  "candidates": [
+    {
+      "path": "C:\\\\Users\\\\...\\\\MEMORY.md",
+      "kind": "${targetKind}",
+      "tool": "qclaw",
+      "score": 90,
+      "reasons": ["内容包含学生姓名", "内容包含 AGENT.md 路径"],
+      "preview": "不超过 120 字的摘要预览"
+    }
+  ]
+}
+
+tool 只能使用：qclaw、marvis、hohu、openclaw。
+kind 只能使用：memory、soul。`;
+}
+
+function extractJsonLikeText(value: string) {
+  const text = String(value || '').trim();
+  if (!text) return '';
+  const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  if (fenced?.[1]) return fenced[1].trim();
+  const firstObject = text.indexOf('{');
+  const lastObject = text.lastIndexOf('}');
+  const firstArray = text.indexOf('[');
+  const lastArray = text.lastIndexOf(']');
+  if (firstObject >= 0 && lastObject > firstObject) return text.slice(firstObject, lastObject + 1);
+  if (firstArray >= 0 && lastArray > firstArray) return text.slice(firstArray, lastArray + 1);
+  return text;
+}
+
+function normalizeAiScanCandidate(item: Record<string, unknown>, fallbackKind?: AgentKnowledgeKind): AgentKnowledgeCandidate | null {
+  const filePath = String(item.path || item.filePath || item.absolutePath || item.fullPath || '').trim();
+  if (!filePath) return null;
+  const rawTool = String(item.tool || item.agentTool || item.sourceTool || '').toLowerCase();
+  const tool = agentToolProfiles[rawTool as AgentToolId] ? (rawTool as AgentToolId) : 'qclaw';
+  const rawKind = String(item.kind || item.type || item.category || item.fileType || fallbackKind || '').toLowerCase();
+  const inferredKind = /soul|persona|role|system|prompt|人设|角色/.test(rawKind) ? 'soul' : /memory|记忆/.test(rawKind) ? 'memory' : fallbackKind;
+  if (inferredKind !== 'memory' && inferredKind !== 'soul') return null;
+  const reasons = Array.isArray(item.reasons)
+    ? item.reasons.map((reason) => String(reason)).filter(Boolean)
+    : String(item.reason || item.matchReason || 'AI 工具建议候选').split(/[;；\n]/).map((reason) => reason.trim()).filter(Boolean);
+  const score = Number(item.score || item.confidence || item.priority || 60);
+  return {
+    path: filePath,
+    name: String(item.name || item.fileName || basenameFromPath(filePath)),
+    tool,
+    kind: inferredKind,
+    score: Number.isFinite(score) ? Math.max(0, Math.min(100, score)) : 60,
+    reasons: reasons.length ? reasons : ['AI 工具建议候选'],
+    mtime: typeof item.mtime === 'string' ? item.mtime : typeof item.modifiedAt === 'string' ? item.modifiedAt : '',
+    size: Number(item.size || 0),
+    preview: String(item.preview || item.summary || '').slice(0, 900),
   };
 }
 
@@ -1574,6 +1682,7 @@ function App() {
   const [agentKnowledgeMenuOpen, setAgentKnowledgeMenuOpen] = useState(false);
   const [agentScanCandidates, setAgentScanCandidates] = useState<AgentKnowledgeCandidate[]>([]);
   const [agentScanMessage, setAgentScanMessage] = useState('');
+  const [aiScanResultText, setAiScanResultText] = useState('');
   const [memorySourceTool, setMemorySourceTool] = useState<AgentToolId>('qclaw');
   const [memorySourceText, setMemorySourceText] = useState('');
   const [unifiedMemoryText, setUnifiedMemoryText] = useState('');
@@ -2699,6 +2808,32 @@ function App() {
       refreshAgentCenter();
     } catch {
       setAgentCenterMessage('导入 Agent 文件结果解析失败。');
+    }
+  };
+
+  const copyAiAgentScanPrompt = async (kind: AgentKnowledgeKind) => {
+    if (!selectedStudent) return;
+    await copyText(buildAiAgentScanPrompt(selectedStudent, kind), `已复制 AI ${kind === 'soul' ? '人设' : '记忆'}扫描指令。`);
+  };
+
+  const parseAiAgentScanResult = (fallbackKind: AgentKnowledgeKind) => {
+    try {
+      const parsed = JSON.parse(extractJsonLikeText(aiScanResultText));
+      const list = Array.isArray(parsed) ? parsed : Array.isArray(parsed?.candidates) ? parsed.candidates : [];
+      const candidates = list
+        .map((item: unknown) => normalizeAiScanCandidate((item || {}) as Record<string, unknown>, fallbackKind))
+        .filter(Boolean) as AgentKnowledgeCandidate[];
+      if (!candidates.length) {
+        setAgentScanMessage('未从 AI 扫描结果中解析到有效候选。请确认 JSON 中包含 candidates 数组和 path/kind/tool 字段。');
+        return;
+      }
+      const next = [...candidates, ...agentScanCandidates]
+        .filter((candidate, index, array) => array.findIndex((item) => item.path === candidate.path && item.kind === candidate.kind) === index)
+        .sort((a, b) => b.score - a.score);
+      setAgentScanCandidates(next);
+      setAgentScanMessage(`已导入 AI 扫描结果：${candidates.length} 个候选。请在候选列表中逐项确认后导入。`);
+    } catch (error) {
+      setAgentScanMessage(`AI 扫描结果解析失败：${error instanceof Error ? error.message : 'JSON 格式不正确'}`);
     }
   };
 
@@ -4764,16 +4899,32 @@ function App() {
             <div className="actions compact-actions">
               <button className="primary" onClick={saveMemorySource}>保存来源 Memory</button>
               <button className="secondary" onClick={() => scanAgentKnowledgeFiles('memory')}>扫描 Agent 记忆文件</button>
+              <button className="secondary" onClick={() => copyAiAgentScanPrompt('memory')}>复制 AI 扫描指令</button>
               <button className="secondary" onClick={mergeMemory}>合并为 UnifiedMemory.md</button>
               <button className="secondary" onClick={saveUnifiedMemoryText}>保存统一记忆</button>
               <button className="secondary" onClick={() => copyText(unifiedMemoryText, '已复制统一记忆。')}>复制统一记忆</button>
               <button className="secondary" onClick={() => refreshAgentCenter()}>刷新</button>
             </div>
+            <div className="ai-scan-box">
+              <div className="mini-heading">
+                <strong>AI 辅助扫描</strong>
+                <span>把“AI 扫描指令”复制到 QClaw / Marvis / OpenClaw / Hohu 执行，再把 JSON 结果粘贴回来。</span>
+              </div>
+              <textarea
+                value={aiScanResultText}
+                onChange={(event) => setAiScanResultText(event.target.value)}
+                placeholder='粘贴 AI 返回的 JSON，例如：{"candidates":[{"path":"C:\\Users\\...\\.qclaw\\workspace-agent-xxx\\MEMORY.md","kind":"memory","tool":"qclaw","score":90,"reasons":["内容包含学生姓名"]}]}'
+              />
+              <div className="actions compact-actions">
+                <button className="secondary" onClick={() => parseAiAgentScanResult('memory')}>导入 AI 扫描结果</button>
+                <button className="secondary" onClick={() => setAiScanResultText('')}>清空结果</button>
+              </div>
+            </div>
             {memoryScanCandidates.length > 0 && (
               <div className="candidate-list">
                 <div className="mini-heading">
-                  <strong>扫描到的 Memory 候选</strong>
-                  <span>按学生姓名、Agent 名称、AGENT.md 路径和知识库关键词自动评分。</span>
+                  <strong>Memory 候选</strong>
+                  <span>来自本机自动扫描或 AI 扫描结果；请确认后再导入。</span>
                 </div>
                 {memoryScanCandidates.map((candidate) => (
                   <div className="candidate-row" key={candidate.path}>
@@ -4844,17 +4995,33 @@ function App() {
             <div className="actions compact-actions">
               <button className="primary" onClick={saveSoulSource}>保存来源 Soul 备份</button>
               <button className="secondary" onClick={() => scanAgentKnowledgeFiles('soul')}>扫描 Agent 人设文件</button>
+              <button className="secondary" onClick={() => copyAiAgentScanPrompt('soul')}>复制 AI 扫描指令</button>
               <button className="secondary" onClick={compareSoulSource}>对比来源与统一 Soul</button>
               <button className="secondary" onClick={saveUnifiedSoulText}>保存统一 Soul</button>
               <button className="secondary" onClick={() => copyText(unifiedSoulText, '已复制统一 Soul。')}>复制统一 Soul</button>
               <button className="secondary" onClick={() => copyStudentWorkRule(selectedStudent)}>复制工作规则</button>
               <button className="secondary" onClick={() => refreshAgentCenter()}>刷新</button>
             </div>
+            <div className="ai-scan-box">
+              <div className="mini-heading">
+                <strong>AI 辅助扫描</strong>
+                <span>适合查找工具内部工作区的人设、Soul、系统提示词和角色配置文件。</span>
+              </div>
+              <textarea
+                value={aiScanResultText}
+                onChange={(event) => setAiScanResultText(event.target.value)}
+                placeholder='粘贴 AI 返回的 JSON，例如：{"candidates":[{"path":"C:\\Users\\...\\.qclaw\\workspace-agent-xxx\\Soul.md","kind":"soul","tool":"qclaw","score":90,"reasons":["内容包含 AGENT.md 路径"]}]}'
+              />
+              <div className="actions compact-actions">
+                <button className="secondary" onClick={() => parseAiAgentScanResult('soul')}>导入 AI 扫描结果</button>
+                <button className="secondary" onClick={() => setAiScanResultText('')}>清空结果</button>
+              </div>
+            </div>
             {soulScanCandidates.length > 0 && (
               <div className="candidate-list">
                 <div className="mini-heading">
-                  <strong>扫描到的 Soul / 人设候选</strong>
-                  <span>候选来自 QClaw、OpenClaw、Hohu、Marvis 常见本机配置目录。</span>
+                  <strong>Soul / 人设候选</strong>
+                  <span>来自本机自动扫描或 AI 扫描结果；请确认后再导入。</span>
                 </div>
                 {soulScanCandidates.map((candidate) => (
                   <div className="candidate-row" key={candidate.path}>

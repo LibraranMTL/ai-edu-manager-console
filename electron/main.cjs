@@ -21,9 +21,16 @@ let hostServiceLastError = '';
 let todayUploadCount = 0;
 let uploadCountDate = new Date().toISOString().slice(0, 10);
 
-const APP_VERSION = '0.5.5';
+const APP_VERSION = '0.5.6';
 const DEFAULT_HOST_PORT = 18777;
-const AGENT_TOOL_IDS = ['qclaw', 'marvis', 'hohu', 'openclaw', 'codex', 'claude-code'];
+const AGENT_TOOL_IDS = ['qclaw', 'marvis', 'hohu', 'openclaw', 'codex', 'claude-code', 'chatgpt', 'claude', 'doubao', 'coze', 'fastgpt'];
+const WEB_AGENT_TOOL_URLS = {
+  chatgpt: 'https://chatgpt.com/',
+  claude: 'https://claude.ai/',
+  doubao: 'https://www.doubao.com/',
+  coze: 'https://www.coze.cn/',
+  fastgpt: 'https://fastgpt.in/',
+};
 const MAX_UPLOAD_BYTES = 100 * 1024 * 1024;
 const ALLOWED_UPLOAD_EXTENSIONS = new Set([
   '.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp',
@@ -1679,7 +1686,12 @@ function shouldSkipAgentScanDir(name) {
 
 function inferAgentToolFromPath(filePath) {
   const lower = String(filePath || '').toLowerCase();
-  if (lower.includes('claude')) return 'claude-code';
+  if (lower.includes('claude-code') || lower.includes('.claude')) return 'claude-code';
+  if (lower.includes('chatgpt') || lower.includes('openai')) return 'chatgpt';
+  if (lower.includes('doubao') || lower.includes('豆包')) return 'doubao';
+  if (lower.includes('fastgpt')) return 'fastgpt';
+  if (lower.includes('coze')) return 'coze';
+  if (lower.includes('claude')) return 'claude';
   if (lower.includes('codex')) return 'codex';
   if (lower.includes('openclaw')) return 'openclaw';
   if (lower.includes('marvis')) return 'marvis';
@@ -1690,7 +1702,7 @@ function inferAgentToolFromPath(filePath) {
 
 function inferAgentKnowledgeKind(fileName) {
   const lower = String(fileName || '').toLowerCase();
-  if (/^(agents|agent|claude|claud|codex|qclaw|openclaw|marvis|hohu|rules?)\.(md|txt)$/i.test(lower)) return 'rule';
+  if (/^(agents|agent|claude|claud|qclaw|openclaw|marvis|hohu|rules?)\.(md|txt)$/i.test(lower)) return 'rule';
   if (/(conversation|chat|history|transcript|对话|聊天|会话)/i.test(lower)) return 'conversation';
   if (/^(memory|long[-_ ]?term[-_ ]?memory|memories)\.(md|txt|json)$/.test(lower) || lower.includes('memory')) return 'memory';
   if (/^(soul|persona|role|system|prompt|profile)\.(md|txt|json)$/.test(lower) || /(soul|persona|role|system|人设|角色)/i.test(lower)) return 'soul';
@@ -1728,7 +1740,7 @@ function scoreAgentKnowledgeCandidate(student, filePath, fileName, kind, content
   if (lowerText.includes('agent.md')) add(22, '内容提到 AGENT.md');
   if (/原始资料库|学情分析汇总|学习资料消化|知识库/.test(text)) add(20, '内容包含教育管家知识库关键词');
   if (AGENT_TOOL_IDS.some((tool) => lowerPath.includes(tool))) add(14, '路径命中 Agent 工具目录');
-  if ((kind === 'memory' && lowerName === 'memory.md') || (kind === 'soul' && lowerName === 'soul.md') || (kind === 'rule' && /^(agent|agents|claude|codex)\.md$/.test(lowerName))) add(12, '文件名为标准名称');
+  if ((kind === 'memory' && lowerName === 'memory.md') || (kind === 'soul' && lowerName === 'soul.md') || (kind === 'rule' && /^(agent|agents|claude)\.md$/.test(lowerName))) add(12, '文件名为标准名称');
   if (lowerPath.includes(String(student.name || '').toLowerCase())) add(10, '路径包含学生姓名');
   return { score, reasons };
 }
@@ -2689,6 +2701,7 @@ function getAgentToolInstallStatus() {
   const openclaw = findAgentToolInstall('openclaw');
   const codex = findAgentToolInstall('codex');
   const claudeCode = findAgentToolInstall('claude-code');
+  const webTool = (url, label = '网页入口') => ({ installed: true, version: label, exePath: url, installLocation: url });
   const tailscale = findTailscaleInstall();
   return JSON.stringify({
     qclaw,
@@ -2697,8 +2710,13 @@ function getAgentToolInstallStatus() {
     openclaw,
     codex,
     claudeCode,
+    chatgpt: webTool(WEB_AGENT_TOOL_URLS.chatgpt),
+    claude: webTool(WEB_AGENT_TOOL_URLS.claude),
+    doubao: webTool(WEB_AGENT_TOOL_URLS.doubao),
+    coze: webTool(WEB_AGENT_TOOL_URLS.coze, '平台入口'),
+    fastgpt: webTool(WEB_AGENT_TOOL_URLS.fastgpt, '平台入口'),
     tailscale,
-    anyInstalled: Boolean(qclaw.installed || marvis.installed || hohu.installed || openclaw.installed || codex.installed || claudeCode.installed),
+    anyInstalled: true,
     recommendedTool: qclaw.installed ? 'qclaw' : (openclaw.installed ? 'openclaw' : (hohu.installed ? 'hohu' : (marvis.installed ? 'marvis' : (codex.installed ? 'codex' : (claudeCode.installed ? 'claude-code' : 'qclaw'))))),
   });
 }
@@ -2789,6 +2807,10 @@ function openApp(appName) {
     } else {
       shell.openExternal('https://www.anthropic.com/claude-code').catch(() => {});
     }
+    return true;
+  }
+  if (WEB_AGENT_TOOL_URLS[appName]) {
+    shell.openExternal(WEB_AGENT_TOOL_URLS[appName]).catch(() => {});
     return true;
   }
   if (appName === 'tailscale') {

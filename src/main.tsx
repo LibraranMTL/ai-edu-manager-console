@@ -27,7 +27,18 @@ import './styles.css';
 
 type Section = 'home' | 'init' | 'new' | 'inbox' | 'archive' | 'qa' | 'memory' | 'soul' | 'rules' | 'conversation' | 'tasks' | 'settings';
 type ThemeName = 'blue' | 'pink' | 'green' | 'purple' | 'orange';
-type AgentToolId = 'qclaw' | 'marvis' | 'hohu' | 'openclaw' | 'codex' | 'claude-code';
+type AgentToolId =
+  | 'qclaw'
+  | 'marvis'
+  | 'hohu'
+  | 'openclaw'
+  | 'codex'
+  | 'claude-code'
+  | 'chatgpt'
+  | 'claude'
+  | 'doubao'
+  | 'coze'
+  | 'fastgpt';
 type AgentKnowledgeKind = 'memory' | 'soul' | 'rule' | 'conversation';
 type StorageMode = 'app_private' | 'downloads_export' | 'obsidian_vault';
 type KnowledgeBaseMode = 'standard' | 'adopted';
@@ -367,6 +378,11 @@ type AgentToolInstallStatus = {
   openclaw: AgentToolInstall;
   codex?: AgentToolInstall;
   claudeCode?: AgentToolInstall;
+  chatgpt?: AgentToolInstall;
+  claude?: AgentToolInstall;
+  doubao?: AgentToolInstall;
+  coze?: AgentToolInstall;
+  fastgpt?: AgentToolInstall;
   tailscale?: AgentToolInstall;
   anyInstalled: boolean;
   recommendedTool: AgentToolId;
@@ -395,8 +411,8 @@ type KnowledgeBaseScanResult = {
 const storageKey = 'edu-manager-launcher.students.v2';
 const themeStorageKey = 'edu-manager-launcher.theme.v1';
 const archiveKeywordStorageKey = 'edu-manager-launcher.archive-keywords.v1';
-const currentVersionCode = 65;
-const currentVersionName = '0.5.5';
+const currentVersionCode = 66;
+const currentVersionName = '0.5.6';
 const updateManifestUrl = [
   'https://www.greatbg.com/download/edu-manager-version.json',
   'http://www.greatbg.com/download/edu-manager-version.json',
@@ -581,6 +597,146 @@ const agentToolProfiles: Record<AgentToolId, AgentToolProfile> = {
     digestTargetLabel: '可粘贴到 Claude Code，在学生知识库目录中执行',
     personaTargetLabel: 'Claude Code 项目规则 / CLAUDE.md',
     memoryTargetLabel: 'Claude Code 会话总结',
+  },
+  chatgpt: {
+    id: 'chatgpt',
+    name: 'ChatGPT',
+    category: 'web-app',
+    supportsLocalFiles: false,
+    supportsAgentCreation: false,
+    supportsPersonaSetting: true,
+    supportsMemorySetting: true,
+    supportsScheduledTask: false,
+    supportsSubAgent: false,
+    supportsProjectRules: false,
+    supportsMemoryFile: false,
+    supportsPersonaFile: false,
+    supportsConversationExport: true,
+    supportsMemoryPaste: true,
+    supportsSoulPaste: true,
+    openMode: 'url',
+    ruleFiles: ['AGENT.md'],
+    memoryLocations: [],
+    personaLocations: [],
+    conversationLocations: [],
+    installUrls: { web: 'https://chatgpt.com/' },
+    openLabel: '打开 ChatGPT',
+    copyTargetLabel: '复制到 ChatGPT 对话或 GPT Instructions 中',
+    digestTargetLabel: '可粘贴到 ChatGPT 对话中手动执行',
+    personaTargetLabel: 'ChatGPT GPT Instructions / 自定义指令',
+    memoryTargetLabel: 'ChatGPT 会话总结 / 记忆说明',
+  },
+  claude: {
+    id: 'claude',
+    name: 'Claude',
+    category: 'web-app',
+    supportsLocalFiles: false,
+    supportsAgentCreation: false,
+    supportsPersonaSetting: true,
+    supportsMemorySetting: true,
+    supportsScheduledTask: false,
+    supportsSubAgent: false,
+    supportsProjectRules: false,
+    supportsMemoryFile: false,
+    supportsPersonaFile: false,
+    supportsConversationExport: true,
+    supportsMemoryPaste: true,
+    supportsSoulPaste: true,
+    openMode: 'url',
+    ruleFiles: ['AGENT.md'],
+    memoryLocations: [],
+    personaLocations: [],
+    conversationLocations: [],
+    installUrls: { web: 'https://claude.ai/' },
+    openLabel: '打开 Claude',
+    copyTargetLabel: '复制到 Claude 对话或 Project Instructions 中',
+    digestTargetLabel: '可粘贴到 Claude 对话中手动执行',
+    personaTargetLabel: 'Claude Project Instructions / 角色设定',
+    memoryTargetLabel: 'Claude 会话总结 / 项目知识',
+  },
+  doubao: {
+    id: 'doubao',
+    name: '豆包',
+    category: 'web-app',
+    supportsLocalFiles: false,
+    supportsAgentCreation: false,
+    supportsPersonaSetting: true,
+    supportsMemorySetting: true,
+    supportsScheduledTask: false,
+    supportsSubAgent: false,
+    supportsProjectRules: false,
+    supportsMemoryFile: false,
+    supportsPersonaFile: false,
+    supportsConversationExport: true,
+    supportsMemoryPaste: true,
+    supportsSoulPaste: true,
+    openMode: 'url',
+    ruleFiles: ['AGENT.md'],
+    memoryLocations: [],
+    personaLocations: [],
+    conversationLocations: [],
+    installUrls: { web: 'https://www.doubao.com/' },
+    openLabel: '打开豆包',
+    copyTargetLabel: '复制到豆包对话或智能体设置中',
+    digestTargetLabel: '可粘贴到豆包对话中手动执行',
+    personaTargetLabel: '豆包智能体人设 / 提示词',
+    memoryTargetLabel: '豆包智能体记忆 / 背景资料',
+  },
+  coze: {
+    id: 'coze',
+    name: 'Coze',
+    category: 'platform',
+    supportsLocalFiles: false,
+    supportsAgentCreation: true,
+    supportsPersonaSetting: true,
+    supportsMemorySetting: true,
+    supportsScheduledTask: false,
+    supportsSubAgent: true,
+    supportsProjectRules: false,
+    supportsMemoryFile: false,
+    supportsPersonaFile: false,
+    supportsConversationExport: true,
+    supportsMemoryPaste: true,
+    supportsSoulPaste: true,
+    openMode: 'url',
+    ruleFiles: ['AGENT.md'],
+    memoryLocations: [],
+    personaLocations: [],
+    conversationLocations: [],
+    installUrls: { web: 'https://www.coze.cn/' },
+    openLabel: '打开 Coze',
+    copyTargetLabel: '复制到 Coze Bot 提示词或知识库设置中',
+    digestTargetLabel: '可粘贴到 Coze Bot 对话或工作流中手动执行',
+    personaTargetLabel: 'Coze Bot 人设 / Prompt',
+    memoryTargetLabel: 'Coze Bot 记忆 / 知识库说明',
+  },
+  fastgpt: {
+    id: 'fastgpt',
+    name: 'FastGPT',
+    category: 'platform',
+    supportsLocalFiles: false,
+    supportsAgentCreation: true,
+    supportsPersonaSetting: true,
+    supportsMemorySetting: true,
+    supportsScheduledTask: false,
+    supportsSubAgent: true,
+    supportsProjectRules: false,
+    supportsMemoryFile: false,
+    supportsPersonaFile: false,
+    supportsConversationExport: true,
+    supportsMemoryPaste: true,
+    supportsSoulPaste: true,
+    openMode: 'url',
+    ruleFiles: ['AGENT.md'],
+    memoryLocations: [],
+    personaLocations: [],
+    conversationLocations: [],
+    installUrls: { web: 'https://fastgpt.in/' },
+    openLabel: '打开 FastGPT',
+    copyTargetLabel: '复制到 FastGPT 应用提示词或知识库设置中',
+    digestTargetLabel: '可粘贴到 FastGPT 对话或工作流中手动执行',
+    personaTargetLabel: 'FastGPT 应用系统提示词',
+    memoryTargetLabel: 'FastGPT 应用长期背景 / 知识库说明',
   },
 };
 
@@ -969,6 +1125,8 @@ function buildAiAgentScanPrompt(student: Student, targetKind: AgentKnowledgeKind
 - %LOCALAPPDATA%\\Hohu
 - %LOCALAPPDATA%\\Marvis
 
+如果是 ChatGPT、Claude、豆包、Coze、FastGPT 这类网页或平台工具，请优先查找用户导出的 Markdown/TXT/JSON 对话记录、项目说明、Bot 提示词或知识库说明，不要尝试读取浏览器缓存、Cookie 或账号数据。
+
 候选文件名包括但不限于：
 - 记忆：MEMORY.md、Memory.md、memory.md、long-term-memory.md、memory.txt
 - 人设：Soul.md、persona.md、role.md、system.md、prompt.md、profile.md
@@ -1001,7 +1159,7 @@ function buildAiAgentScanPrompt(student: Student, targetKind: AgentKnowledgeKind
   ]
 }
 
-tool 只能使用：qclaw、marvis、hohu、openclaw、codex、claude-code。
+tool 只能使用：qclaw、marvis、hohu、openclaw、codex、claude-code、chatgpt、claude、doubao、coze、fastgpt。
 kind 只能使用：memory、soul、rule、conversation。`;
 }
 
@@ -1061,7 +1219,7 @@ function normalizeAiScanCandidate(item: Record<string, unknown>, fallbackKind?: 
   const rawKind = String(item.kind || item.type || item.category || item.fileType || fallbackKind || '').toLowerCase();
   const inferredKind =
     /conversation|chat|history|transcript|对话|聊天|会话/.test(rawKind) ? 'conversation'
-      : /rule|agent|agents|claude|codex|规则|指令/.test(rawKind) ? 'rule'
+      : /rule|agent|agents|claude|规则|指令/.test(rawKind) ? 'rule'
       : /soul|persona|role|system|prompt|人设|角色/.test(rawKind) ? 'soul'
       : /memory|记忆/.test(rawKind) ? 'memory'
       : fallbackKind;
@@ -1942,6 +2100,7 @@ function App() {
   const [ruleDiff, setRuleDiff] = useState<{ onlyBase?: string[]; onlyTarget?: string[]; message?: string } | null>(null);
   const [sourceRegistry, setSourceRegistry] = useState<AgentSourceRegistryState | null>(null);
   const [sourceFilter, setSourceFilter] = useState<'all' | 'memory' | 'persona' | 'rule' | 'conversation' | 'extract'>('all');
+  const [sourceToolFilter, setSourceToolFilter] = useState<AgentToolId | 'all'>('all');
   const [conversationCenter, setConversationCenter] = useState<AgentConversationState | null>(null);
   const [conversationTool, setConversationTool] = useState<AgentToolId>('qclaw');
   const [conversationText, setConversationText] = useState('');
@@ -1993,7 +2152,19 @@ function App() {
   const selectedStudentTool = selectedStudent ? getAgentToolProfile(selectedStudent.agentTool) : agentToolProfiles.qclaw;
   const selectedStudentPaths = selectedStudent ? pathsForStudent(selectedStudent) : pathsFor(draft.name);
   const activeAgentTool = activeSection === 'init' || activeSection === 'new' ? selectedTool : selectedStudentTool;
-  const toolOpenState: Record<AgentToolId, boolean> = { qclaw: qclawOpened, marvis: marvisOpened, hohu: hohuOpened, openclaw: openclawOpened, codex: codexOpened, 'claude-code': claudeCodeOpened };
+  const toolOpenState: Record<AgentToolId, boolean> = {
+    qclaw: qclawOpened,
+    marvis: marvisOpened,
+    hohu: hohuOpened,
+    openclaw: openclawOpened,
+    codex: codexOpened,
+    'claude-code': claudeCodeOpened,
+    chatgpt: false,
+    claude: false,
+    doubao: false,
+    coze: false,
+    fastgpt: false,
+  };
   const activeAgentOpened = toolOpenState[activeAgentTool.id];
   const isWindows = storageConfig.platform === 'windows';
   const shouldBlockForAgentInstall = isWindows && installStatus ? !installStatus.anyInstalled : false;
@@ -2003,7 +2174,10 @@ function App() {
   const conversationScanCandidates = agentScanCandidates.filter((candidate) => candidate.kind === 'conversation');
   const ruleFiles = agentRules?.files ?? [];
   const selectedRuleFile = ruleFiles.find((file) => file.fileName === ruleFileName);
-  const filteredSourceRecords = (sourceRegistry?.records ?? []).filter((record) => sourceFilter === 'all' || record.assetType === sourceFilter);
+  const filteredSourceRecords = (sourceRegistry?.records ?? []).filter((record) =>
+    (sourceFilter === 'all' || record.assetType === sourceFilter)
+    && (sourceToolFilter === 'all' || record.tool === sourceToolFilter)
+  );
   const filteredMarkdownFiles = useMemo(
     () =>
       selectedArchiveCategory === 'all'
@@ -2062,6 +2236,10 @@ function App() {
   };
 
   const installForTool = (toolId: AgentToolId): AgentToolInstall | undefined => {
+    const tool = getAgentToolProfile(toolId);
+    if (tool.openMode === 'url') {
+      return { installed: true, version: tool.category === 'platform' ? '平台入口' : '网页入口', exePath: tool.installUrls.web || '' };
+    }
     if (toolId === 'claude-code') return installStatus?.claudeCode;
     return installStatus?.[toolId as 'qclaw' | 'marvis' | 'hohu' | 'openclaw' | 'codex'];
   };
@@ -3394,18 +3572,23 @@ ${conversationText || '（请先粘贴对话历史）'}`;
     if (app === 'codex') setCodexOpened((value) => value || Boolean(ok));
     if (app === 'claude-code') setClaudeCodeOpened((value) => value || Boolean(ok));
     if (app === 'obsidian') setObsidianOpened((value) => value || Boolean(ok));
-    if (!bridge()?.openApp) {
-      const urls: Record<AgentToolId | 'obsidian' | 'tailscale', string> = {
-        qclaw: 'qclaw://',
-        marvis: 'marvis://',
-        hohu: 'https://hohu.ai/',
-        openclaw: 'https://openclaw.ai/',
-        codex: 'https://chatgpt.com/codex',
-        'claude-code': 'https://www.anthropic.com/claude-code',
-        obsidian: 'obsidian://open',
-        tailscale: 'https://tailscale.com/download/windows',
-      };
-      window.open(urls[app], '_blank');
+    const urls: Record<AgentToolId | 'obsidian' | 'tailscale', string> = {
+      qclaw: 'qclaw://',
+      marvis: 'marvis://',
+      hohu: 'https://hohu.ai/',
+      openclaw: 'https://openclaw.ai/',
+      codex: 'https://chatgpt.com/codex',
+      'claude-code': 'https://www.anthropic.com/claude-code',
+      chatgpt: 'https://chatgpt.com/',
+      claude: 'https://claude.ai/',
+      doubao: 'https://www.doubao.com/',
+      coze: 'https://www.coze.cn/',
+      fastgpt: 'https://fastgpt.in/',
+      obsidian: 'obsidian://open',
+      tailscale: 'https://tailscale.com/download/windows',
+    };
+    if (!ok && urls[app]) {
+      bridge()?.openExternalUrl?.(urls[app]) || window.open(urls[app], '_blank');
     }
   };
 
@@ -3641,6 +3824,11 @@ ${conversationText || '（请先粘贴对话历史）'}`;
       openclaw: 'https://openclaw.ai/',
       codex: 'https://chatgpt.com/codex',
       'claude-code': 'https://www.anthropic.com/claude-code',
+      chatgpt: 'https://chatgpt.com/',
+      claude: 'https://claude.ai/',
+      doubao: 'https://www.doubao.com/',
+      coze: 'https://www.coze.cn/',
+      fastgpt: 'https://fastgpt.in/',
     };
     const url = urls[tool];
     const ok = bridge()?.openExternalUrl?.(url);
@@ -4105,6 +4293,10 @@ ${conversationText || '（请先粘贴对话历史）'}`;
           <option value="conversation">对话</option>
           <option value="extract">提取</option>
         </select>
+        <select value={sourceToolFilter} onChange={(event) => setSourceToolFilter(event.target.value as AgentToolId | 'all')}>
+          <option value="all">全部工具</option>
+          {agentToolOptions.map((tool) => <option value={tool.id} key={tool.id}>{tool.name}</option>)}
+        </select>
         <button className="secondary compact" onClick={() => refreshSourceRegistry()}>刷新来源记录</button>
       </div>
       {filteredSourceRecords.length === 0 ? (
@@ -4291,7 +4483,9 @@ ${conversationText || '（请先粘贴对话历史）'}`;
               </select>
             </label>
             <span className={activeAgentOpened ? 'status ok' : 'status warn'}>
-              {activeAgentOpened ? `${activeAgentTool.name} 已打开` : `${activeAgentTool.name} 未打开`}
+              {activeAgentTool.openMode === 'url'
+                ? `${activeAgentTool.name} 网页入口`
+                : activeAgentOpened ? `${activeAgentTool.name} 已打开` : `${activeAgentTool.name} 未打开`}
             </span>
           </div>
         </header>
@@ -4569,7 +4763,7 @@ ${conversationText || '（请先粘贴对话历史）'}`;
               <div className="panel-heading">
                 <div>
                   <h2>Agent 工具控制</h2>
-                  <p>选择默认 Agent 工具，检查打开状态，或下载安装 QClaw、Marvis、Hohu、OpenClaw、Codex、Claude Code。</p>
+                    <p>选择默认 Agent 工具，检查本地工具状态，或打开网页/平台型工具入口。</p>
                 </div>
                 <Bot size={22} />
               </div>
@@ -4593,14 +4787,16 @@ ${conversationText || '（请先粘贴对话历史）'}`;
                         <span>{install?.installed ? `已安装${install.version ? ` ${install.version}` : ''}` : '未检测到安装'}</span>
                         {install?.exePath && <small>{install.exePath}</small>}
                       </div>
-                      <span className={opened ? 'status ok' : 'status warn'}>{opened ? '已打开' : '未打开'}</span>
+                      <span className={tool.openMode === 'url' ? 'status ok' : opened ? 'status ok' : 'status warn'}>
+                        {tool.openMode === 'url' ? (tool.category === 'platform' ? '平台入口' : '网页入口') : opened ? '已打开' : '未打开'}
+                      </span>
                       <div className="agent-status-actions">
                         <button className="primary compact" onClick={() => openExternal(tool.id)}>
                           <ExternalLink size={16} />
                           打开
                         </button>
                         <button className="secondary compact" onClick={() => openToolDownload(tool.id)}>
-                          下载
+                          {tool.openMode === 'url' ? '入口' : '下载'}
                         </button>
                       </div>
                     </article>

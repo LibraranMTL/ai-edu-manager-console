@@ -82,6 +82,9 @@ contextBridge.exposeInMainWorld('AndroidBridge', {
   saveAgentConversationImport(studentId, content, tool, sourcePath) {
     return ipcRenderer.sendSync('bridge:saveAgentConversationImport', studentId, content, tool, sourcePath);
   },
+  selectAgentConversationFiles(studentId, tool) {
+    return ipcRenderer.sendSync('bridge:selectAgentConversationFiles', studentId, tool);
+  },
   saveConversationExtract(studentId, extractJson, tool) {
     return ipcRenderer.sendSync('bridge:saveConversationExtract', studentId, extractJson, tool);
   },

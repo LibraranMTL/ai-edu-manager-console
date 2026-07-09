@@ -162,6 +162,7 @@ type AndroidBridge = {
   getAgentSourceRegistry?: (studentId: string) => string;
   getAgentConversationCenter?: (studentId: string) => string;
   saveAgentConversationImport?: (studentId: string, content: string, tool: AgentToolId, sourcePath?: string) => string;
+  selectAgentConversationFiles?: (studentId: string, tool: AgentToolId) => string;
   saveConversationExtract?: (studentId: string, extractJson: string, tool: AgentToolId) => string;
   openStudentRootDir?: (studentId: string) => string;
   getLicenseStatus?: () => string;
@@ -411,8 +412,8 @@ type KnowledgeBaseScanResult = {
 const storageKey = 'edu-manager-launcher.students.v2';
 const themeStorageKey = 'edu-manager-launcher.theme.v1';
 const archiveKeywordStorageKey = 'edu-manager-launcher.archive-keywords.v1';
-const currentVersionCode = 66;
-const currentVersionName = '0.5.6';
+const currentVersionCode = 67;
+const currentVersionName = '0.5.7';
 const updateManifestUrl = [
   'https://www.greatbg.com/download/edu-manager-version.json',
   'http://www.greatbg.com/download/edu-manager-version.json',
@@ -2603,6 +2604,30 @@ ${conversationText || '（请先粘贴对话历史）'}`;
       }
     } catch {
       setConversationMessage('保存对话历史结果解析失败。');
+    }
+  };
+
+  const importConversationFiles = () => {
+    if (!selectedStudent) return;
+    const raw = bridge()?.selectAgentConversationFiles?.(selectedStudent.id, conversationTool);
+    if (!raw) {
+      setConversationMessage('当前环境不支持选择对话历史文件。');
+      return;
+    }
+    try {
+      const result = JSON.parse(raw) as { ok?: boolean; cancelled?: boolean; message?: string; combinedContent?: string };
+      setConversationMessage(result.message || (result.ok ? '已导入对话历史文件。' : '导入对话历史文件失败。'));
+      if (result.ok) {
+        if (result.combinedContent) {
+          setConversationText((current) => current.trim()
+            ? `${current.trim()}\n\n---\n${result.combinedContent}`
+            : result.combinedContent || '');
+        }
+        refreshConversationCenter(selectedStudent.id);
+        refreshSourceRegistry(selectedStudent.id);
+      }
+    } catch {
+      setConversationMessage('对话历史文件导入结果解析失败。');
     }
   };
 
@@ -6020,6 +6045,7 @@ ${conversationText || '（请先粘贴对话历史）'}`;
             </label>
             <div className="actions compact-actions">
               <button className="primary" onClick={saveConversationImport}>保存对话导入记录</button>
+              <button className="secondary" onClick={importConversationFiles}>导入 .md/.txt/.json</button>
               <button className="secondary" onClick={copyConversationExtractPrompt}>复制 AI 提取指令</button>
               <button className="secondary" onClick={() => copyAiAgentScanPrompt('conversation')}>复制对话文件扫描指令</button>
               <button className="secondary" onClick={() => refreshConversationCenter()}>刷新对话中心</button>

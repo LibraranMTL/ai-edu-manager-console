@@ -21,7 +21,7 @@ let hostServiceLastError = '';
 let todayUploadCount = 0;
 let uploadCountDate = new Date().toISOString().slice(0, 10);
 
-const APP_VERSION = '0.5.6';
+const APP_VERSION = '0.5.7';
 const DEFAULT_HOST_PORT = 18777;
 const AGENT_TOOL_IDS = ['qclaw', 'marvis', 'hohu', 'openclaw', 'codex', 'claude-code', 'chatgpt', 'claude', 'doubao', 'coze', 'fastgpt'];
 const WEB_AGENT_TOOL_URLS = {
@@ -1221,6 +1221,23 @@ function readJsonFile(file, fallback) {
   }
 }
 
+function extractJsonLikeText(value) {
+  const text = String(value || '')
+    .replace(/[“”„‟]/g, '"')
+    .replace(/[‘’‚‛]/g, "'")
+    .trim();
+  if (!text) return '';
+  const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  if (fenced?.[1]) return fenced[1].trim();
+  const firstObject = text.indexOf('{');
+  const lastObject = text.lastIndexOf('}');
+  const firstArray = text.indexOf('[');
+  const lastArray = text.lastIndexOf(']');
+  if (firstObject >= 0 && lastObject > firstObject) return text.slice(firstObject, lastObject + 1);
+  if (firstArray >= 0 && lastArray > firstArray) return text.slice(firstArray, lastArray + 1);
+  return text;
+}
+
 function appendAgentSourceRecord(student, record) {
   try {
     fs.mkdirSync(agentSourceRegistryDir(student), { recursive: true });
@@ -1907,6 +1924,56 @@ function saveAgentConversationImport(studentId, content, tool = 'qclaw', sourceP
   }
 }
 
+function selectAgentConversationFiles(studentId, tool = 'qclaw') {
+  try {
+    const student = findStudentByKey(studentId);
+    if (!student) return JSON.stringify({ ok: false, message: '未找到学生。' });
+    const safeTool = AGENT_TOOL_IDS.includes(tool) ? tool : 'qclaw';
+    const result = dialog.showOpenDialogSync(mainWindow, {
+      title: '选择对话历史文件',
+      properties: ['openFile', 'multiSelections'],
+      filters: [
+        { name: '对话历史文件', extensions: ['md', 'txt', 'json'] },
+        { name: '所有文件', extensions: ['*'] },
+      ],
+    });
+    if (!result || result.length === 0) {
+      return JSON.stringify({ ok: false, cancelled: true, message: '未选择对话历史文件。' });
+    }
+    const imports = [];
+    const combinedParts = [];
+    for (const filePath of result) {
+      try {
+        const stat = fs.statSync(filePath);
+        if (!stat.isFile()) continue;
+        if (stat.size > 5 * 1024 * 1024) {
+          imports.push({ ok: false, sourcePath: filePath, message: '文件超过 5MB，已跳过。' });
+          continue;
+        }
+        const content = fs.readFileSync(filePath, 'utf8');
+        const imported = JSON.parse(saveAgentConversationImport(student.id, content, safeTool, filePath));
+        imports.push({ ...imported, sourcePath: filePath, size: stat.size });
+        if (imported.ok) {
+          combinedParts.push(`\n\n# 来源文件：${path.basename(filePath)}\n\n${content}`);
+        }
+      } catch (error) {
+        imports.push({ ok: false, sourcePath: filePath, message: error.message });
+      }
+    }
+    const successCount = imports.filter((item) => item.ok).length;
+    return JSON.stringify({
+      ok: successCount > 0,
+      imports,
+      combinedContent: combinedParts.join('\n\n---\n'),
+      message: successCount > 0
+        ? `已导入 ${successCount} 个对话历史文件。`
+        : '没有可导入的对话历史文件。',
+    });
+  } catch (error) {
+    return JSON.stringify({ ok: false, message: `选择对话历史文件失败：${error.message}` });
+  }
+}
+
 function appendTextSection(file, title, content) {
   fs.mkdirSync(path.dirname(file), { recursive: true });
   const section = `\n\n## ${title}\n\n${String(content || '').trim()}\n`;
@@ -1921,9 +1988,9 @@ function saveConversationExtract(studentId, extractJson, tool = 'qclaw') {
     ensureAgentCenter(student);
     let parsed = {};
     try {
-      parsed = JSON.parse(String(extractJson || '{}'));
+      parsed = JSON.parse(extractJsonLikeText(extractJson || '{}'));
     } catch {
-      return JSON.stringify({ ok: false, message: '提取结果不是有效 JSON。' });
+      return JSON.stringify({ ok: false, message: '提取结果不是有效 JSON。请确认只粘贴 JSON，或包含 JSON 的代码块。' });
     }
     fs.mkdirSync(agentConversationExtractsDir(student), { recursive: true });
     const extractFile = path.join(agentConversationExtractsDir(student), `${timestampForFilename()}-${safeTool}-extract.json`);
@@ -3560,6 +3627,7 @@ ipcMain.on('bridge:compareAgentRuleFiles', (event, studentId, baseName, targetNa
 ipcMain.on('bridge:getAgentSourceRegistry', (event, studentId) => { event.returnValue = getAgentSourceRegistry(studentId); });
 ipcMain.on('bridge:getAgentConversationCenter', (event, studentId) => { event.returnValue = getAgentConversationCenter(studentId); });
 ipcMain.on('bridge:saveAgentConversationImport', (event, studentId, content, tool, sourcePath) => { event.returnValue = saveAgentConversationImport(studentId, content, tool, sourcePath); });
+ipcMain.on('bridge:selectAgentConversationFiles', (event, studentId, tool) => { event.returnValue = selectAgentConversationFiles(studentId, tool); });
 ipcMain.on('bridge:saveConversationExtract', (event, studentId, extractJson, tool) => { event.returnValue = saveConversationExtract(studentId, extractJson, tool); });
 ipcMain.on('bridge:openStudentRootDir', (event, studentId) => { event.returnValue = openStudentRootDir(studentId); });
 ipcMain.on('bridge:getLicenseStatus', (event) => { event.returnValue = getLicenseStatus(); });

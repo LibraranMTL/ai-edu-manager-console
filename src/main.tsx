@@ -395,8 +395,8 @@ type KnowledgeBaseScanResult = {
 const storageKey = 'edu-manager-launcher.students.v2';
 const themeStorageKey = 'edu-manager-launcher.theme.v1';
 const archiveKeywordStorageKey = 'edu-manager-launcher.archive-keywords.v1';
-const currentVersionCode = 64;
-const currentVersionName = '0.5.4';
+const currentVersionCode = 65;
+const currentVersionName = '0.5.5';
 const updateManifestUrl = [
   'https://www.greatbg.com/download/edu-manager-version.json',
   'http://www.greatbg.com/download/edu-manager-version.json',
@@ -543,7 +543,7 @@ const agentToolProfiles: Record<AgentToolId, AgentToolProfile> = {
     supportsMemoryPaste: true,
     supportsSoulPaste: true,
     openMode: 'cli',
-    ruleFiles: ['AGENTS.md', 'AGENT.md', 'Codex.md'],
+    ruleFiles: ['AGENTS.md', 'AGENT.md'],
     memoryLocations: ['%USERPROFILE%\\.codex'],
     personaLocations: ['%USERPROFILE%\\.codex'],
     conversationLocations: ['%USERPROFILE%\\.codex'],
@@ -972,7 +972,7 @@ function buildAiAgentScanPrompt(student: Student, targetKind: AgentKnowledgeKind
 候选文件名包括但不限于：
 - 记忆：MEMORY.md、Memory.md、memory.md、long-term-memory.md、memory.txt
 - 人设：Soul.md、persona.md、role.md、system.md、prompt.md、profile.md
-- 规则文件：AGENT.md、AGENTS.md、CLAUDE.md、Codex.md、QClaw.md、OpenClaw.md、Marvis.md、Hohu.md、RULES.md
+- 规则文件：AGENT.md、AGENTS.md、CLAUDE.md、QClaw.md、OpenClaw.md、Marvis.md、Hohu.md、RULES.md
 - 对话历史：conversation.md、chat.md、history.json、transcript.txt、session.md、对话.md、聊天记录.md
 
 判断标准：
@@ -1726,8 +1726,16 @@ function buildDigestCommand(student: string | StudentDraft) {
     return renderTemplateText(activeTemplateFiles['digest-prompt.md'] || '', student);
   }
   const p = typeof student === 'string' ? pathsFor(student) : pathsForStudent(student);
+  const tool = typeof student === 'string' ? agentToolProfiles.qclaw : getAgentToolProfile(student.agentTool);
+  const projectRule =
+    tool.id === 'codex'
+      ? `\n请先在学生知识库根目录执行，并优先读取 ${joinDisplayPath(p.root, 'AGENTS.md')} 和 ${p.agent}。\n`
+      : tool.id === 'claude-code'
+        ? `\n请先在学生知识库根目录执行，并优先读取 ${joinDisplayPath(p.root, 'CLAUDE.md')} 和 ${p.agent}。\n`
+        : '';
   const separator = activeStorageConfig.pathSeparator || '/';
   return `/消化 ${p.cleanName}原始资料库中的新资料
+${projectRule}
 
 请读取原始资料库中的新增资料，并将结果写入学情分析汇总。
 
@@ -1750,6 +1758,24 @@ function buildDigestCommand(student: string | StudentDraft) {
 }
 
 如果处理失败，请把 status 写为 "failed"，并在 message 中说明原因。`;
+}
+
+function buildConsultCommand(student: Student) {
+  const tool = getAgentToolProfile(student.agentTool);
+  const p = pathsForStudent(student);
+  if (tool.id === 'codex') {
+    return `/咨询，我想咨询
+
+请在学生知识库目录「${p.root}」中工作，优先读取 AGENTS.md、AGENT.md 和学情分析汇总目录，再回答我的问题。`;
+  }
+  if (tool.id === 'claude-code') {
+    return `/咨询，我想咨询
+
+请在学生知识库目录「${p.root}」中工作，优先读取 CLAUDE.md、AGENT.md 和学情分析汇总目录，再回答我的问题。`;
+  }
+  return activeTemplateFiles['consult-prompt.md']
+    ? renderTemplateText(activeTemplateFiles['consult-prompt.md'] || '', student)
+    : '/咨询，我想咨询';
 }
 
 function buildSystemTemplates(): TemplateFiles {
@@ -3073,9 +3099,7 @@ ${conversationText || '（请先粘贴对话历史）'}`;
   };
 
   const copyConsultCommand = async () => {
-    const value = selectedStudent && activeTemplateFiles['consult-prompt.md']
-      ? renderTemplateText(activeTemplateFiles['consult-prompt.md'] || '', selectedStudent)
-      : '/咨询，我想咨询';
+    const value = selectedStudent ? buildConsultCommand(selectedStudent) : '/咨询，我想咨询';
     await copyText(value, '已复制咨询提示。');
   };
 
@@ -4549,35 +4573,22 @@ ${conversationText || '（请先粘贴对话历史）'}`;
                 </div>
                 <Bot size={22} />
               </div>
-              <div className="tool-selector">
-                <span>默认 Agent 工具</span>
-                <div className="tool-options">
-                  {agentToolOptions.map((baseTool) => {
-                    const tool = getAgentToolProfile(baseTool.id);
-                    return (
-                      <button
-                        className={draft.agentTool === tool.id ? 'tool-option active' : 'tool-option'}
-                        key={tool.id}
-                        onClick={() => {
-                          setDraft({ ...draft, agentTool: tool.id });
-                          setAgentBindingMode(agentBindingModeForTool(tool.id));
-                        }}
-                      >
-                        <strong>{tool.name}</strong>
-                        <small>{tool.supportsScheduledTask ? '支持定时任务' : tool.supportsLocalFiles ? '本机目录可用' : '手动消化资料'}</small>
-                      </button>
-                    );
-                  })}
-                </div>
-              </div>
-              <div className="agent-status-list">
+              <AgentToolCompactSelector
+                value={draft.agentTool}
+                onChange={(toolId) => {
+                  setDraft({ ...draft, agentTool: toolId });
+                  setAgentBindingMode(agentBindingModeForTool(toolId));
+                }}
+                label="默认 Agent 工具"
+              />
+              <div className="agent-status-compact-list">
                 {agentToolOptions.map((baseTool) => {
                   const tool = getAgentToolProfile(baseTool.id);
                   const install = installForTool(tool.id);
                   const opened = toolOpenState[tool.id];
                   return (
-                    <article className="agent-status-card" key={tool.id}>
-                      <div>
+                    <article className="agent-status-line" key={tool.id}>
+                      <div className="agent-status-main">
                         <strong>{tool.name}</strong>
                         <span>{install?.installed ? `已安装${install.version ? ` ${install.version}` : ''}` : '未检测到安装'}</span>
                         {install?.exePath && <small>{install.exePath}</small>}
@@ -4655,28 +4666,14 @@ ${conversationText || '（请先粘贴对话历史）'}`;
               </div>
               {templateMessage && <p className="inline-message">{templateMessage}</p>}
 
-              <div className="tool-selector">
-                <span>Agent 工具</span>
-                <div className="tool-options">
-                  {agentToolOptions.map((baseTool) => {
-                    const tool = getAgentToolProfile(baseTool.id);
-                    return (
-                      <button
-                        className={draft.agentTool === tool.id ? 'tool-option active' : 'tool-option'}
-                        key={tool.id}
-                        onClick={() => {
-                          setDraft({ ...draft, agentTool: tool.id });
-                          setAgentBindingMode(agentBindingModeForTool(tool.id));
-                          setSelectedInitStep('folder');
-                        }}
-                      >
-                        <strong>{tool.name}</strong>
-                        <small>{tool.supportsScheduledTask ? '支持定时任务' : tool.supportsLocalFiles ? '本机目录可用' : '手动消化资料'}</small>
-                      </button>
-                    );
-                  })}
-                </div>
-              </div>
+              <AgentToolCompactSelector
+                value={draft.agentTool}
+                onChange={(toolId) => {
+                  setDraft({ ...draft, agentTool: toolId });
+                  setAgentBindingMode(agentBindingModeForTool(toolId));
+                  setSelectedInitStep('folder');
+                }}
+              />
 
               <div className="tool-selector">
                 <span>创建方式</span>
@@ -5313,6 +5310,22 @@ ${conversationText || '（请先粘贴对话历史）'}`;
                 <Clipboard size={18} />
                 复制统一 Soul
               </button>
+              {selectedStudentTool.supportsProjectRules && (
+                <>
+                  <button className="secondary" onClick={() => generateAgentRule(selectedStudentTool.ruleFiles[0] || 'AGENT.md')}>
+                    <ListChecks size={18} />
+                    生成{selectedStudentTool.ruleFiles[0] || '工具规则'}
+                  </button>
+                  <button className="secondary" onClick={() => {
+                    refreshAgentRules(selectedStudent.id, selectedStudentTool.ruleFiles[0] || 'AGENT.md');
+                    setAgentKnowledgeMenuOpen(true);
+                    setActiveSection('rules');
+                  }}>
+                    <ListChecks size={18} />
+                    编辑工具规则
+                  </button>
+                </>
+              )}
               <button className="secondary" onClick={() => {
                 refreshAgentCenter(selectedStudent.id);
                 setAgentKnowledgeMenuOpen(true);
@@ -5690,7 +5703,6 @@ ${conversationText || '（请先粘贴对话历史）'}`;
               <button className="secondary" onClick={() => openStudentRoot(selectedStudent)}>打开知识库目录</button>
               <button className="secondary" onClick={() => generateAgentRule('AGENTS.md')}>生成 AGENTS.md</button>
               <button className="secondary" onClick={() => generateAgentRule('CLAUDE.md')}>生成 CLAUDE.md</button>
-              <button className="secondary" onClick={() => generateAgentRule('Codex.md')}>生成 Codex.md</button>
               <button className="secondary" onClick={() => generateAgentRule(selectedStudentTool.ruleFiles[0] || 'AGENT.md')}>生成当前工具规则</button>
               <button className="secondary" onClick={compareAgentRule}>对比 AGENT.md</button>
               <button className="secondary" onClick={() => copyAiAgentScanPrompt('rule')}>复制规则 AI 扫描指令</button>
@@ -6154,25 +6166,41 @@ function InfoPanel({ icon, title, value }: { icon: React.ReactNode; title: strin
   );
 }
 
+function AgentToolCompactSelector({
+  value,
+  onChange,
+  label = 'Agent 工具',
+}: {
+  value: AgentToolId;
+  onChange: (value: AgentToolId) => void;
+  label?: string;
+}) {
+  const tool = getAgentToolProfile(value);
+  return (
+    <div className="agent-tool-compact">
+      <label>
+        <span>{label}</span>
+        <select value={value} onChange={(event) => onChange(event.target.value as AgentToolId)}>
+          {agentToolOptions.map((item) => (
+            <option value={item.id} key={item.id}>{item.name}</option>
+          ))}
+        </select>
+      </label>
+      <div className="tool-chip-row">
+        <span>{tool.category}</span>
+        <span>{tool.openMode}</span>
+        <span>{tool.supportsLocalFiles ? '本机目录' : '粘贴/网页'}</span>
+        <span>{tool.supportsProjectRules ? `规则：${tool.ruleFiles[0]}` : '无项目规则'}</span>
+        <span>{tool.supportsScheduledTask ? '支持定时' : '手动执行'}</span>
+      </div>
+    </div>
+  );
+}
+
 function StudentToolSelector({ value, onChange }: { value: AgentToolId; onChange: (value: AgentToolId) => void }) {
   return (
     <div className="student-tool-switch">
-      <span>当前 Agent 工具</span>
-      <div className="tool-options compact-tools">
-        {agentToolOptions.map((baseTool) => {
-          const tool = getAgentToolProfile(baseTool.id);
-          return (
-            <button
-              className={value === tool.id ? 'tool-option active' : 'tool-option'}
-              key={tool.id}
-              onClick={() => onChange(tool.id)}
-            >
-              <strong>{tool.name}</strong>
-              <small>{tool.supportsScheduledTask ? '支持定时任务' : tool.supportsLocalFiles ? '本机目录可用' : '手动消化资料'}</small>
-            </button>
-          );
-        })}
-      </div>
+      <AgentToolCompactSelector value={value} onChange={onChange} label="当前 Agent 工具" />
     </div>
   );
 }

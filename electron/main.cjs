@@ -21,7 +21,7 @@ let hostServiceLastError = '';
 let todayUploadCount = 0;
 let uploadCountDate = new Date().toISOString().slice(0, 10);
 
-const APP_VERSION = '0.5.4';
+const APP_VERSION = '0.5.5';
 const DEFAULT_HOST_PORT = 18777;
 const AGENT_TOOL_IDS = ['qclaw', 'marvis', 'hohu', 'openclaw', 'codex', 'claude-code'];
 const MAX_UPLOAD_BYTES = 100 * 1024 * 1024;
@@ -1482,7 +1482,7 @@ function compareAgentSoulSource(studentId, tool) {
   }
 }
 
-const DEFAULT_AGENT_RULE_FILES = ['AGENT.md', 'AGENTS.md', 'CLAUDE.md', 'Codex.md', 'Claude.md', 'Claud.md', 'QClaw.md', 'OpenClaw.md', 'Marvis.md', 'Hohu.md', 'RULES.md'];
+const DEFAULT_AGENT_RULE_FILES = ['AGENT.md', 'AGENTS.md', 'CLAUDE.md', 'Claude.md', 'Claud.md', 'QClaw.md', 'OpenClaw.md', 'Marvis.md', 'Hohu.md', 'RULES.md'];
 
 function normalizeRuleFileName(fileName) {
   const safe = path.basename(String(fileName || '').trim());
@@ -1591,9 +1591,6 @@ function ruleFileTemplateIntro(student, fileName) {
   }
   if (lower === 'claude.md' || lower === 'claud.md') {
     return `# ${cleanName} 教育管家 Claude Code 规则\n\n本文件用于 Claude Code 在该学生知识库目录中工作。\n\n## 工作规则\n\n该 Agent 的工作协议使用：${p.agent}\n后续所有学习资料消化都围绕该学生知识库执行。\n\n请优先读取 AGENT.md，再处理原始资料库与学情分析汇总。不要移动、删除用户原始资料。\n\n`;
-  }
-  if (lower === 'codex.md') {
-    return `# ${cleanName} 教育管家 Codex 规则\n\n## 项目定位\n\n该目录是学生「${cleanName}」的长期教育知识库。Codex 应作为本地项目型 Agent，在该目录内协助整理、消化、检索和生成学情档案。\n\n## 工作规则\n\n该 Agent 的工作协议使用：${p.agent}\n后续所有学习资料消化都围绕该学生知识库执行。\n\n`;
   }
   return defaultRuleFileContent(student, fileName);
 }

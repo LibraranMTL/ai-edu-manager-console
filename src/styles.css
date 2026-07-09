@@ -510,6 +510,49 @@ h2 {
   font-weight: 800;
 }
 
+.agent-tool-compact {
+  display: grid;
+  gap: 8px;
+  padding: 12px;
+  border: 1px solid var(--panel-border);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.76);
+}
+
+.agent-tool-compact label {
+  display: grid;
+  grid-template-columns: minmax(120px, 180px) minmax(220px, 1fr);
+  align-items: center;
+  gap: 10px;
+  margin: 0;
+}
+
+.agent-tool-compact label span {
+  color: var(--text-muted);
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.agent-tool-compact select {
+  width: 100%;
+}
+
+.tool-chip-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.tool-chip-row span {
+  padding: 5px 8px;
+  border: 1px solid var(--accent-border);
+  border-radius: 999px;
+  background: var(--accent-soft);
+  color: var(--accent-dark);
+  font-size: 12px;
+  font-weight: 800;
+}
+
 .tool-options {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -1182,6 +1225,49 @@ select:focus {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 12px;
+}
+
+.agent-status-compact-list {
+  display: grid;
+  max-height: 320px;
+  overflow: auto;
+  border: 1px solid var(--panel-border);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.7);
+}
+
+.agent-status-line {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--panel-border);
+}
+
+.agent-status-line:last-child {
+  border-bottom: 0;
+}
+
+.agent-status-main {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.agent-status-main strong {
+  color: var(--accent-dark);
+  font-size: 14px;
+}
+
+.agent-status-main span,
+.agent-status-main small {
+  overflow: hidden;
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 700;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .agent-status-card {
@@ -1982,6 +2068,11 @@ pre {
   .status-row {
     justify-content: flex-start;
   }
+
+  .agent-status-line {
+    grid-template-columns: minmax(0, 1fr);
+    align-items: start;
+  }
 }
 
 @media (max-width: 620px) {
@@ -1992,6 +2083,7 @@ pre {
 
   .stepper,
   .tool-options,
+  .agent-tool-compact label,
   .field-grid,
   .form-grid,
   .status-grid,

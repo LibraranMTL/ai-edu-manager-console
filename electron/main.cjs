@@ -19,7 +19,7 @@ let hostServiceLastError = '';
 let todayUploadCount = 0;
 let uploadCountDate = new Date().toISOString().slice(0, 10);
 
-const APP_VERSION = '0.5.2';
+const APP_VERSION = '0.5.3';
 const DEFAULT_HOST_PORT = 18777;
 const AGENT_TOOL_IDS = ['qclaw', 'marvis', 'hohu', 'openclaw'];
 const MAX_UPLOAD_BYTES = 100 * 1024 * 1024;
@@ -1128,6 +1128,10 @@ function agentSoulDir(student) {
   return path.join(student.rootPath || getStudentRootDir(student.name), 'Agent设定');
 }
 
+function agentRulesDir(student) {
+  return path.join(student.rootPath || getStudentRootDir(student.name), 'Agent规则');
+}
+
 function agentMemoryUnifiedPath(student) {
   return path.join(agentMemoryDir(student), 'UnifiedMemory.md');
 }
@@ -1150,6 +1154,14 @@ function snapshotCurrentFile(file, snapshotsDir) {
   const target = path.join(snapshotsDir, `${timestampForFilename()}-${path.basename(file)}`);
   fs.copyFileSync(file, target);
   return target;
+}
+
+function defaultRuleFileContent(student, fileName) {
+  const cleanName = sanitizeName(student.name);
+  const agentPath = student.agentPath || path.join(student.rootPath || getStudentRootDir(cleanName), 'AGENT.md');
+  const lower = String(fileName || '').toLowerCase();
+  if (lower === 'agent.md' && fs.existsSync(agentPath)) return fs.readFileSync(agentPath, 'utf8');
+  return `# ${cleanName} ${fileName}\n\n## 工作规则\n\n该 Agent 的工作协议使用：${agentPath}\n后续所有学习资料消化都围绕该学生知识库执行。\n\n## 规则说明\n\n请将本文件作为该学生智能体的规则性 Markdown 文件维护。若当前 Agent 工具支持多个规则文件，可把本文件内容同步到对应工具的规则、系统提示词或项目指令中。\n`;
 }
 
 function defaultUnifiedMemory(student) {
@@ -1379,6 +1391,91 @@ function compareAgentSoulSource(studentId, tool) {
     return JSON.stringify({ ok: true, onlyUnified, onlySource, message: onlyUnified.length || onlySource.length ? '检测到差异。' : '未检测到明显差异。' });
   } catch (error) {
     return JSON.stringify({ ok: false, message: `对比 Soul 失败：${error.message}` });
+  }
+}
+
+const DEFAULT_AGENT_RULE_FILES = ['AGENT.md', 'Claude.md', 'Claud.md', 'QClaw.md', 'OpenClaw.md', 'Marvis.md', 'Hohu.md', 'RULES.md'];
+
+function normalizeRuleFileName(fileName) {
+  const safe = path.basename(String(fileName || '').trim());
+  if (!/^[^\\/:*?"<>|]+\.md$/i.test(safe)) return '';
+  return safe;
+}
+
+function listAgentRuleFiles(student) {
+  const root = student.rootPath || getStudentRootDir(student.name);
+  const known = new Map();
+  for (const fileName of DEFAULT_AGENT_RULE_FILES) known.set(fileName.toLowerCase(), fileName);
+  try {
+    if (fs.existsSync(root)) {
+      for (const entry of fs.readdirSync(root, { withFileTypes: true })) {
+        if (!entry.isFile() || !/\.md$/i.test(entry.name)) continue;
+        const lower = entry.name.toLowerCase();
+        if (
+          DEFAULT_AGENT_RULE_FILES.map((item) => item.toLowerCase()).includes(lower) ||
+          /(agent|claude|claud|claw|marvis|hohu|rule|rules|system|prompt|指令|规则)/i.test(entry.name)
+        ) known.set(lower, entry.name);
+      }
+    }
+  } catch {
+    // Keep default entries if the directory cannot be listed.
+  }
+  return Array.from(known.values()).map((fileName) => {
+    const filePath = path.join(root, fileName);
+    const exists = fs.existsSync(filePath);
+    const stat = exists ? fs.statSync(filePath) : null;
+    const content = exists ? fs.readFileSync(filePath, 'utf8') : defaultRuleFileContent(student, fileName);
+    return {
+      fileName,
+      path: filePath,
+      exists,
+      size: stat ? stat.size : 0,
+      mtime: stat ? stat.mtime.toISOString() : '',
+      content,
+      hash: content ? sha1Text(content) : '',
+    };
+  });
+}
+
+function getAgentRules(studentId) {
+  try {
+    const student = findStudentByKey(studentId);
+    if (!student) return JSON.stringify({ ok: false, message: '未找到学生。' });
+    fs.mkdirSync(agentRulesDir(student), { recursive: true });
+    return JSON.stringify({
+      ok: true,
+      rootPath: student.rootPath || getStudentRootDir(student.name),
+      rulesDir: agentRulesDir(student),
+      files: listAgentRuleFiles(student),
+      message: '已读取智能体规则文件。',
+    });
+  } catch (error) {
+    return JSON.stringify({ ok: false, message: `读取规则文件失败：${error.message}` });
+  }
+}
+
+function saveAgentRuleFile(studentId, fileName, content) {
+  try {
+    const student = findStudentByKey(studentId);
+    if (!student) return JSON.stringify({ ok: false, message: '未找到学生。' });
+    const safeName = normalizeRuleFileName(fileName);
+    if (!safeName) return JSON.stringify({ ok: false, message: '规则文件名无效，只能保存当前知识库根目录下的 .md 文件。' });
+    const root = student.rootPath || getStudentRootDir(student.name);
+    fs.mkdirSync(root, { recursive: true });
+    fs.mkdirSync(path.join(agentRulesDir(student), 'snapshots'), { recursive: true });
+    const file = path.join(root, safeName);
+    const snapshot = snapshotCurrentFile(file, path.join(agentRulesDir(student), 'snapshots'));
+    fs.writeFileSync(file, String(content || ''), 'utf8');
+    return JSON.stringify({
+      ok: true,
+      fileName: safeName,
+      path: file,
+      snapshot,
+      files: listAgentRuleFiles(student),
+      message: `已保存规则文件 ${safeName}。`,
+    });
+  } catch (error) {
+    return JSON.stringify({ ok: false, message: `保存规则文件失败：${error.message}` });
   }
 }
 
@@ -3056,6 +3153,8 @@ ipcMain.on('bridge:saveUnifiedSoul', (event, studentId, content) => { event.retu
 ipcMain.on('bridge:compareAgentSoulSource', (event, studentId, tool) => { event.returnValue = compareAgentSoulSource(studentId, tool); });
 ipcMain.on('bridge:scanAgentKnowledgeFiles', (event, studentId) => { event.returnValue = scanAgentKnowledgeFiles(studentId); });
 ipcMain.on('bridge:importAgentKnowledgeFile', (event, studentId, filePath, tool, kind) => { event.returnValue = importAgentKnowledgeFile(studentId, filePath, tool, kind); });
+ipcMain.on('bridge:getAgentRules', (event, studentId) => { event.returnValue = getAgentRules(studentId); });
+ipcMain.on('bridge:saveAgentRuleFile', (event, studentId, fileName, content) => { event.returnValue = saveAgentRuleFile(studentId, fileName, content); });
 ipcMain.on('bridge:getLicenseStatus', (event) => { event.returnValue = getLicenseStatus(); });
 ipcMain.on('bridge:activateLicense', (event, code) => { event.returnValue = activateLicense(code); });
 ipcMain.on('bridge:deactivateLicense', (event) => { event.returnValue = deactivateLicense(); });

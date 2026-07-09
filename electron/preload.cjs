@@ -61,6 +61,12 @@ contextBridge.exposeInMainWorld('AndroidBridge', {
   importAgentKnowledgeFile(studentId, filePath, tool, kind) {
     return ipcRenderer.sendSync('bridge:importAgentKnowledgeFile', studentId, filePath, tool, kind);
   },
+  getAgentRules(studentId) {
+    return ipcRenderer.sendSync('bridge:getAgentRules', studentId);
+  },
+  saveAgentRuleFile(studentId, fileName, content) {
+    return ipcRenderer.sendSync('bridge:saveAgentRuleFile', studentId, fileName, content);
+  },
   getLicenseStatus() {
     return ipcRenderer.sendSync('bridge:getLicenseStatus');
   },

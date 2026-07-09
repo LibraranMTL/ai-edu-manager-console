@@ -25,7 +25,7 @@ import {
 } from 'lucide-react';
 import './styles.css';
 
-type Section = 'home' | 'init' | 'new' | 'inbox' | 'archive' | 'qa' | 'memory' | 'soul' | 'tasks' | 'settings';
+type Section = 'home' | 'init' | 'new' | 'inbox' | 'archive' | 'qa' | 'memory' | 'soul' | 'rules' | 'tasks' | 'settings';
 type ThemeName = 'blue' | 'pink' | 'green' | 'purple' | 'orange';
 type AgentToolId = 'qclaw' | 'marvis' | 'hohu' | 'openclaw';
 type AgentKnowledgeKind = 'memory' | 'soul';
@@ -130,6 +130,8 @@ type AndroidBridge = {
   compareAgentSoulSource?: (studentId: string, tool: AgentToolId) => string;
   scanAgentKnowledgeFiles?: (studentId: string) => string;
   importAgentKnowledgeFile?: (studentId: string, filePath: string, tool: AgentToolId, kind: AgentKnowledgeKind) => string;
+  getAgentRules?: (studentId: string) => string;
+  saveAgentRuleFile?: (studentId: string, fileName: string, content: string) => string;
   getLicenseStatus?: () => string;
   activateLicense?: (code: string) => string;
   deactivateLicense?: () => string;
@@ -370,8 +372,8 @@ type KnowledgeBaseScanResult = {
 const storageKey = 'edu-manager-launcher.students.v2';
 const themeStorageKey = 'edu-manager-launcher.theme.v1';
 const archiveKeywordStorageKey = 'edu-manager-launcher.archive-keywords.v1';
-const currentVersionCode = 62;
-const currentVersionName = '0.5.2';
+const currentVersionCode = 63;
+const currentVersionName = '0.5.3';
 const updateManifestUrl = [
   'https://www.greatbg.com/download/edu-manager-version.json',
   'http://www.greatbg.com/download/edu-manager-version.json',
@@ -512,6 +514,22 @@ type AgentKnowledgeCandidate = {
   mtime?: string;
   size?: number;
   preview?: string;
+};
+type AgentRuleFile = {
+  fileName: string;
+  path: string;
+  exists: boolean;
+  size?: number;
+  mtime?: string;
+  content: string;
+  hash?: string;
+};
+type AgentRulesState = {
+  ok: boolean;
+  rootPath?: string;
+  rulesDir?: string;
+  files?: AgentRuleFile[];
+  message?: string;
 };
 
 const templateKeys: TemplateKey[] = ['AGENT.md', 'Soul.md', 'Memory.md', 'init-step-1.md', 'init-step-2.md', 'digest-prompt.md', 'consult-prompt.md'];
@@ -824,7 +842,10 @@ kind 只能使用：memory、soul。`;
 }
 
 function extractJsonLikeText(value: string) {
-  const text = String(value || '').trim();
+  const text = String(value || '')
+    .replace(/[“”„‟]/g, '"')
+    .replace(/[‘’‚‛]/g, "'")
+    .trim();
   if (!text) return '';
   const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
   if (fenced?.[1]) return fenced[1].trim();
@@ -835,6 +856,37 @@ function extractJsonLikeText(value: string) {
   if (firstObject >= 0 && lastObject > firstObject) return text.slice(firstObject, lastObject + 1);
   if (firstArray >= 0 && lastArray > firstArray) return text.slice(firstArray, lastArray + 1);
   return text;
+}
+
+function escapeInvalidBackslashesInJsonStrings(value: string) {
+  let output = '';
+  let inString = false;
+  for (let index = 0; index < value.length; index += 1) {
+    const char = value[index];
+    if (char === '"' && value[index - 1] !== '\\') {
+      inString = !inString;
+      output += char;
+      continue;
+    }
+    if (inString && char === '\\') {
+      const next = value[index + 1] || '';
+      if (!/["\\/bfnrtu]/.test(next)) {
+        output += '\\\\';
+        continue;
+      }
+    }
+    output += char;
+  }
+  return output;
+}
+
+function parseLooseJson(value: string) {
+  const extracted = extractJsonLikeText(value);
+  try {
+    return JSON.parse(extracted);
+  } catch {
+    return JSON.parse(escapeInvalidBackslashesInJsonStrings(extracted));
+  }
 }
 
 function normalizeAiScanCandidate(item: Record<string, unknown>, fallbackKind?: AgentKnowledgeKind): AgentKnowledgeCandidate | null {
@@ -1683,6 +1735,10 @@ function App() {
   const [agentScanCandidates, setAgentScanCandidates] = useState<AgentKnowledgeCandidate[]>([]);
   const [agentScanMessage, setAgentScanMessage] = useState('');
   const [aiScanResultText, setAiScanResultText] = useState('');
+  const [agentRules, setAgentRules] = useState<AgentRulesState | null>(null);
+  const [ruleFileName, setRuleFileName] = useState('AGENT.md');
+  const [ruleContent, setRuleContent] = useState('');
+  const [ruleMessage, setRuleMessage] = useState('');
   const [memorySourceTool, setMemorySourceTool] = useState<AgentToolId>('qclaw');
   const [memorySourceText, setMemorySourceText] = useState('');
   const [unifiedMemoryText, setUnifiedMemoryText] = useState('');
@@ -1735,6 +1791,8 @@ function App() {
   const shouldBlockForAgentInstall = isWindows && installStatus ? !installStatus.anyInstalled : false;
   const memoryScanCandidates = agentScanCandidates.filter((candidate) => candidate.kind === 'memory');
   const soulScanCandidates = agentScanCandidates.filter((candidate) => candidate.kind === 'soul');
+  const ruleFiles = agentRules?.files ?? [];
+  const selectedRuleFile = ruleFiles.find((file) => file.fileName === ruleFileName);
   const filteredMarkdownFiles = useMemo(
     () =>
       selectedArchiveCategory === 'all'
@@ -2013,6 +2071,51 @@ function App() {
     }
   };
 
+  const refreshAgentRules = (studentId = selectedStudent?.id, preferredFileName = ruleFileName) => {
+    if (!studentId) return;
+    const raw = bridge()?.getAgentRules?.(studentId);
+    if (!raw) {
+      setRuleMessage('当前环境不支持规则文件管理。');
+      return;
+    }
+    try {
+      const result = JSON.parse(raw) as AgentRulesState;
+      setAgentRules(result);
+      if (!result.ok) {
+        setRuleMessage(result.message || '读取规则文件失败。');
+        return;
+      }
+      const files = result.files ?? [];
+      const selected = files.find((file) => file.fileName === preferredFileName)
+        || files.find((file) => file.fileName.toLowerCase() === 'agent.md')
+        || files[0];
+      if (selected) {
+        setRuleFileName(selected.fileName);
+        setRuleContent(selected.content || '');
+      }
+      if (result.message) setRuleMessage(result.message);
+    } catch {
+      setRuleMessage('规则文件读取结果解析失败。');
+    }
+  };
+
+  const saveAgentRule = () => {
+    if (!selectedStudent) return;
+    const raw = bridge()?.saveAgentRuleFile?.(selectedStudent.id, ruleFileName, ruleContent);
+    if (!raw) {
+      setRuleMessage('当前环境不支持保存规则文件。');
+      return;
+    }
+    try {
+      const result = JSON.parse(raw) as AgentRulesState & { fileName?: string };
+      if (result.files) setAgentRules(result);
+      setRuleMessage(result.message || (result.ok ? '已保存规则文件。' : '保存规则文件失败。'));
+      if (result.ok) refreshAgentRules(selectedStudent.id, result.fileName || ruleFileName);
+    } catch {
+      setRuleMessage('保存规则文件结果解析失败。');
+    }
+  };
+
   useEffect(() => {
     const storageRaw = bridge()?.getStorageConfig?.();
     if (storageRaw) {
@@ -2156,6 +2259,10 @@ function App() {
     if (activeSection === 'memory' || activeSection === 'soul' || activeSection === 'qa') {
       refreshAgentCenter();
     }
+  }, [activeSection, selectedId]);
+
+  useEffect(() => {
+    if (activeSection === 'rules') refreshAgentRules();
   }, [activeSection, selectedId]);
 
   useEffect(() => {
@@ -2689,6 +2796,7 @@ function App() {
 
   const mergeMemory = () => {
     if (!selectedStudent) return;
+    setAgentCenterMessage('正在合并来源 Memory...');
     const raw = bridge()?.mergeAgentMemory?.(selectedStudent.id);
     if (!raw) {
       setAgentCenterMessage('当前环境不支持合并记忆。');
@@ -2696,7 +2804,7 @@ function App() {
     }
     try {
       const result = JSON.parse(raw) as { ok?: boolean; unifiedMemory?: string; message?: string };
-      if (result.unifiedMemory) setUnifiedMemoryText(result.unifiedMemory);
+      if (typeof result.unifiedMemory === 'string') setUnifiedMemoryText(result.unifiedMemory);
       setAgentCenterMessage(result.message || (result.ok ? '已合并统一记忆。' : '合并统一记忆失败。'));
       refreshAgentCenter();
     } catch {
@@ -2817,8 +2925,12 @@ function App() {
   };
 
   const parseAiAgentScanResult = (fallbackKind: AgentKnowledgeKind) => {
+    if (!aiScanResultText.trim()) {
+      setAgentScanMessage('请先粘贴 AI 扫描结果 JSON。');
+      return;
+    }
     try {
-      const parsed = JSON.parse(extractJsonLikeText(aiScanResultText));
+      const parsed = parseLooseJson(aiScanResultText);
       const list = Array.isArray(parsed) ? parsed : Array.isArray(parsed?.candidates) ? parsed.candidates : [];
       const candidates = list
         .map((item: unknown) => normalizeAiScanCandidate((item || {}) as Record<string, unknown>, fallbackKind))
@@ -3569,6 +3681,7 @@ function App() {
   const knowledgeNavItems = [
     { id: 'memory' as const, label: 'Agent 记忆管理', icon: Clipboard },
     { id: 'soul' as const, label: 'Agent 设定管理', icon: Bot },
+    { id: 'rules' as const, label: '智能体规则文件管理', icon: ListChecks },
   ];
 
   return (
@@ -3607,7 +3720,7 @@ function App() {
           })}
           <div className="nav-group-block">
             <button
-              className={activeSection === 'memory' || activeSection === 'soul' ? 'nav-item nav-group active' : 'nav-item nav-group'}
+              className={activeSection === 'memory' || activeSection === 'soul' || activeSection === 'rules' ? 'nav-item nav-group active' : 'nav-item nav-group'}
               onClick={() => setAgentKnowledgeMenuOpen((value) => !value)}
             >
               <Bot size={19} />
@@ -3698,6 +3811,8 @@ function App() {
                     ? 'Agent 记忆管理'
                   : activeSection === 'soul'
                     ? 'Agent 设定管理'
+                  : activeSection === 'rules'
+                    ? '智能体规则文件管理'
                   : activeSection === 'tasks'
                     ? '定时任务'
                     : activeSection === 'settings'
@@ -5066,6 +5181,89 @@ function App() {
             </div>
             {agentScanMessage && activeSection === 'soul' && <div className="notice muted">{agentScanMessage}</div>}
             {agentCenterMessage && <div className="notice">{agentCenterMessage}</div>}
+          </section>
+        )}
+
+        {!shouldBlockForAgentInstall && activeSection === 'rules' && selectedStudent && (
+          <section className="panel qa-panel">
+            <div className="panel-heading">
+              <div>
+                <h2>智能体规则文件管理</h2>
+                <p>管理当前学生知识库根目录下的 AGENT.md、Claude.md、Claud.md 等规则性 Markdown 文件。</p>
+              </div>
+              <ListChecks size={22} />
+            </div>
+            <div className="archive-grid">
+              <InfoPanel icon={<UserRound />} title="当前学生" value={selectedStudent.name} />
+              <InfoPanel icon={<FolderOpen />} title="知识库根目录" value={agentRules?.rootPath || selectedStudentPaths.root} />
+              <InfoPanel icon={<Archive />} title="规则文件" value={`${ruleFiles.filter((file) => file.exists).length} 个已存在`} />
+            </div>
+            <div className="form-grid compact-grid">
+              <label>
+                规则文件
+                <select
+                  value={ruleFileName}
+                  onChange={(event) => {
+                    const nextName = event.target.value;
+                    const nextFile = ruleFiles.find((file) => file.fileName === nextName);
+                    setRuleFileName(nextName);
+                    setRuleContent(nextFile?.content || '');
+                  }}
+                >
+                  {ruleFiles.map((file) => (
+                    <option value={file.fileName} key={file.fileName}>
+                      {file.fileName}{file.exists ? '' : '（未创建）'}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label>
+                新建或改名为
+                <input
+                  value={ruleFileName}
+                  onChange={(event) => setRuleFileName(event.target.value)}
+                  placeholder="例如 Claude.md / Claud.md / OpenClaw.md"
+                />
+              </label>
+            </div>
+            <div className="notice muted">
+              {selectedRuleFile?.exists
+                ? `当前文件：${selectedRuleFile.path}${selectedRuleFile.mtime ? ` · 更新 ${new Date(selectedRuleFile.mtime).toLocaleString('zh-CN')}` : ''}`
+                : `保存后将在知识库根目录创建：${ruleFileName || '规则文件.md'}`}
+            </div>
+            <label className="wide-field">
+              规则文件内容
+              <textarea className="large-textarea" value={ruleContent} onChange={(event) => setRuleContent(event.target.value)} />
+            </label>
+            <div className="actions compact-actions">
+              <button className="primary" onClick={saveAgentRule}>保存规则文件</button>
+              <button className="secondary" onClick={() => refreshAgentRules()}>刷新规则文件</button>
+              <button className="secondary" onClick={() => copyText(ruleContent, '已复制规则文件内容。')}>复制规则内容</button>
+              <button className="secondary" onClick={() => {
+                setRuleFileName('Claude.md');
+                const existing = ruleFiles.find((file) => file.fileName.toLowerCase() === 'claude.md');
+                setRuleContent(existing?.content || `# ${selectedStudent.name} Claude.md\n\n## 工作规则\n\n该 Agent 的工作协议使用：${selectedStudentPaths.agent}\n后续所有学习资料消化都围绕该学生知识库执行。\n`);
+              }}>
+                准备 Claude.md
+              </button>
+            </div>
+            <div className="source-list">
+              {ruleFiles.map((file) => (
+                <button
+                  className={file.fileName === ruleFileName ? 'source-row source-button active' : 'source-row source-button'}
+                  key={file.fileName}
+                  onClick={() => {
+                    setRuleFileName(file.fileName);
+                    setRuleContent(file.content || '');
+                  }}
+                >
+                  <strong>{file.fileName}</strong>
+                  <span>{file.exists ? '已存在' : '未创建'}</span>
+                  <small>{file.path}</small>
+                </button>
+              ))}
+            </div>
+            {ruleMessage && <div className="notice">{ruleMessage}</div>}
           </section>
         )}
 

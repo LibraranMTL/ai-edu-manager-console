@@ -956,6 +956,17 @@ select:focus {
   white-space: nowrap;
 }
 
+.source-button {
+  width: 100%;
+  cursor: pointer;
+  text-align: left;
+}
+
+.source-button.active {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
 .ai-scan-box {
   display: grid;
   gap: 10px;

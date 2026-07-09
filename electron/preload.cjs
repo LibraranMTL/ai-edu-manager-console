@@ -67,6 +67,27 @@ contextBridge.exposeInMainWorld('AndroidBridge', {
   saveAgentRuleFile(studentId, fileName, content) {
     return ipcRenderer.sendSync('bridge:saveAgentRuleFile', studentId, fileName, content);
   },
+  generateAgentRuleFile(studentId, fileName) {
+    return ipcRenderer.sendSync('bridge:generateAgentRuleFile', studentId, fileName);
+  },
+  compareAgentRuleFiles(studentId, baseName, targetName) {
+    return ipcRenderer.sendSync('bridge:compareAgentRuleFiles', studentId, baseName, targetName);
+  },
+  getAgentSourceRegistry(studentId) {
+    return ipcRenderer.sendSync('bridge:getAgentSourceRegistry', studentId);
+  },
+  getAgentConversationCenter(studentId) {
+    return ipcRenderer.sendSync('bridge:getAgentConversationCenter', studentId);
+  },
+  saveAgentConversationImport(studentId, content, tool, sourcePath) {
+    return ipcRenderer.sendSync('bridge:saveAgentConversationImport', studentId, content, tool, sourcePath);
+  },
+  saveConversationExtract(studentId, extractJson, tool) {
+    return ipcRenderer.sendSync('bridge:saveConversationExtract', studentId, extractJson, tool);
+  },
+  openStudentRootDir(studentId) {
+    return ipcRenderer.sendSync('bridge:openStudentRootDir', studentId);
+  },
   getLicenseStatus() {
     return ipcRenderer.sendSync('bridge:getLicenseStatus');
   },

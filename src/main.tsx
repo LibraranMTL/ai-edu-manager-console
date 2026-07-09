@@ -25,10 +25,10 @@ import {
 } from 'lucide-react';
 import './styles.css';
 
-type Section = 'home' | 'init' | 'new' | 'inbox' | 'archive' | 'qa' | 'memory' | 'soul' | 'rules' | 'tasks' | 'settings';
+type Section = 'home' | 'init' | 'new' | 'inbox' | 'archive' | 'qa' | 'memory' | 'soul' | 'rules' | 'conversation' | 'tasks' | 'settings';
 type ThemeName = 'blue' | 'pink' | 'green' | 'purple' | 'orange';
-type AgentToolId = 'qclaw' | 'marvis' | 'hohu' | 'openclaw';
-type AgentKnowledgeKind = 'memory' | 'soul';
+type AgentToolId = 'qclaw' | 'marvis' | 'hohu' | 'openclaw' | 'codex' | 'claude-code';
+type AgentKnowledgeKind = 'memory' | 'soul' | 'rule' | 'conversation';
 type StorageMode = 'app_private' | 'downloads_export' | 'obsidian_vault';
 type KnowledgeBaseMode = 'standard' | 'adopted';
 type AgentBindingMode = 'subAgent' | 'mainChat';
@@ -39,15 +39,29 @@ type RuntimePlatform = 'android' | 'windows' | 'web' | string;
 type AgentToolProfile = {
   id: AgentToolId;
   name: string;
+  category: 'local-app' | 'local-cli' | 'web-app' | 'platform';
   supportsLocalFiles: boolean;
   supportsAgentCreation: boolean;
   supportsPersonaSetting: boolean;
   supportsMemorySetting: boolean;
   supportsScheduledTask: boolean;
   supportsSubAgent: boolean;
+  supportsProjectRules: boolean;
   supportsMemoryFile: boolean;
+  supportsPersonaFile: boolean;
+  supportsConversationExport: boolean;
   supportsMemoryPaste: boolean;
   supportsSoulPaste: boolean;
+  openMode: 'exe' | 'protocol' | 'cli' | 'url';
+  ruleFiles: string[];
+  memoryLocations: string[];
+  personaLocations: string[];
+  conversationLocations: string[];
+  installUrls: {
+    windows?: string;
+    android?: string;
+    web?: string;
+  };
   openLabel: string;
   copyTargetLabel: string;
   digestTargetLabel: string;
@@ -132,6 +146,13 @@ type AndroidBridge = {
   importAgentKnowledgeFile?: (studentId: string, filePath: string, tool: AgentToolId, kind: AgentKnowledgeKind) => string;
   getAgentRules?: (studentId: string) => string;
   saveAgentRuleFile?: (studentId: string, fileName: string, content: string) => string;
+  generateAgentRuleFile?: (studentId: string, fileName: string) => string;
+  compareAgentRuleFiles?: (studentId: string, baseName: string, targetName: string) => string;
+  getAgentSourceRegistry?: (studentId: string) => string;
+  getAgentConversationCenter?: (studentId: string) => string;
+  saveAgentConversationImport?: (studentId: string, content: string, tool: AgentToolId, sourcePath?: string) => string;
+  saveConversationExtract?: (studentId: string, extractJson: string, tool: AgentToolId) => string;
+  openStudentRootDir?: (studentId: string) => string;
   getLicenseStatus?: () => string;
   activateLicense?: (code: string) => string;
   deactivateLicense?: () => string;
@@ -344,6 +365,8 @@ type AgentToolInstallStatus = {
   marvis: AgentToolInstall;
   hohu: AgentToolInstall;
   openclaw: AgentToolInstall;
+  codex?: AgentToolInstall;
+  claudeCode?: AgentToolInstall;
   tailscale?: AgentToolInstall;
   anyInstalled: boolean;
   recommendedTool: AgentToolId;
@@ -372,8 +395,8 @@ type KnowledgeBaseScanResult = {
 const storageKey = 'edu-manager-launcher.students.v2';
 const themeStorageKey = 'edu-manager-launcher.theme.v1';
 const archiveKeywordStorageKey = 'edu-manager-launcher.archive-keywords.v1';
-const currentVersionCode = 63;
-const currentVersionName = '0.5.3';
+const currentVersionCode = 64;
+const currentVersionName = '0.5.4';
 const updateManifestUrl = [
   'https://www.greatbg.com/download/edu-manager-version.json',
   'http://www.greatbg.com/download/edu-manager-version.json',
@@ -394,15 +417,25 @@ const agentToolProfiles: Record<AgentToolId, AgentToolProfile> = {
   qclaw: {
     id: 'qclaw',
     name: 'QClaw',
+    category: 'local-app',
     supportsLocalFiles: true,
     supportsAgentCreation: true,
     supportsPersonaSetting: true,
     supportsMemorySetting: true,
     supportsScheduledTask: true,
     supportsSubAgent: true,
+    supportsProjectRules: true,
     supportsMemoryFile: true,
+    supportsPersonaFile: true,
+    supportsConversationExport: true,
     supportsMemoryPaste: true,
     supportsSoulPaste: true,
+    openMode: 'exe',
+    ruleFiles: ['AGENT.md', 'QClaw.md'],
+    memoryLocations: ['%USERPROFILE%\\.qclaw', '%APPDATA%\\QClaw', '%LOCALAPPDATA%\\QClaw'],
+    personaLocations: ['%USERPROFILE%\\.qclaw', '%APPDATA%\\QClaw', '%LOCALAPPDATA%\\QClaw'],
+    conversationLocations: ['%USERPROFILE%\\.qclaw'],
+    installUrls: { windows: 'https://qclaw.qq.com/' },
     openLabel: '打开 QClaw',
     copyTargetLabel: '复制到 QClaw 对话或 Agent 设置中',
     digestTargetLabel: '可粘贴到 QClaw 执行',
@@ -412,15 +445,25 @@ const agentToolProfiles: Record<AgentToolId, AgentToolProfile> = {
   marvis: {
     id: 'marvis',
     name: 'Marvis',
+    category: 'local-app',
     supportsLocalFiles: false,
     supportsAgentCreation: false,
     supportsPersonaSetting: true,
     supportsMemorySetting: true,
     supportsScheduledTask: false,
     supportsSubAgent: false,
+    supportsProjectRules: true,
     supportsMemoryFile: false,
+    supportsPersonaFile: false,
+    supportsConversationExport: true,
     supportsMemoryPaste: true,
     supportsSoulPaste: true,
+    openMode: 'exe',
+    ruleFiles: ['AGENT.md', 'Marvis.md'],
+    memoryLocations: ['%USERPROFILE%\\.marvis', '%APPDATA%\\Marvis', '%LOCALAPPDATA%\\Marvis'],
+    personaLocations: ['%USERPROFILE%\\.marvis', '%APPDATA%\\Marvis', '%LOCALAPPDATA%\\Marvis'],
+    conversationLocations: ['%USERPROFILE%\\.marvis'],
+    installUrls: { windows: 'https://marvis.qq.com/' },
     openLabel: '打开 Marvis',
     copyTargetLabel: '复制到 Marvis 对话或人设设置中',
     digestTargetLabel: '可粘贴到 Marvis 对话中手动执行',
@@ -430,15 +473,25 @@ const agentToolProfiles: Record<AgentToolId, AgentToolProfile> = {
   hohu: {
     id: 'hohu',
     name: 'Hohu',
+    category: 'local-app',
     supportsLocalFiles: true,
     supportsAgentCreation: true,
     supportsPersonaSetting: true,
     supportsMemorySetting: true,
     supportsScheduledTask: false,
     supportsSubAgent: true,
+    supportsProjectRules: true,
     supportsMemoryFile: true,
+    supportsPersonaFile: true,
+    supportsConversationExport: true,
     supportsMemoryPaste: true,
     supportsSoulPaste: true,
+    openMode: 'exe',
+    ruleFiles: ['AGENT.md', 'Hohu.md'],
+    memoryLocations: ['%USERPROFILE%\\.hohu', '%APPDATA%\\Hohu', '%LOCALAPPDATA%\\Hohu'],
+    personaLocations: ['%USERPROFILE%\\.hohu', '%APPDATA%\\Hohu', '%LOCALAPPDATA%\\Hohu'],
+    conversationLocations: ['%USERPROFILE%\\.hohu'],
+    installUrls: { windows: 'https://hohu.ai/' },
     openLabel: '打开 Hohu',
     copyTargetLabel: '复制到 Hohu 子 Agent 或人设设置中',
     digestTargetLabel: '可粘贴到 Hohu 执行，并直接读写本机知识库',
@@ -448,20 +501,86 @@ const agentToolProfiles: Record<AgentToolId, AgentToolProfile> = {
   openclaw: {
     id: 'openclaw',
     name: 'OpenClaw',
+    category: 'local-app',
     supportsLocalFiles: true,
     supportsAgentCreation: true,
     supportsPersonaSetting: true,
     supportsMemorySetting: true,
     supportsScheduledTask: true,
     supportsSubAgent: true,
+    supportsProjectRules: true,
     supportsMemoryFile: true,
+    supportsPersonaFile: true,
+    supportsConversationExport: true,
     supportsMemoryPaste: true,
     supportsSoulPaste: true,
+    openMode: 'exe',
+    ruleFiles: ['AGENT.md', 'OpenClaw.md'],
+    memoryLocations: ['%USERPROFILE%\\.openclaw', '%APPDATA%\\OpenClaw', '%LOCALAPPDATA%\\OpenClaw'],
+    personaLocations: ['%USERPROFILE%\\.openclaw', '%APPDATA%\\OpenClaw', '%LOCALAPPDATA%\\OpenClaw'],
+    conversationLocations: ['%USERPROFILE%\\.openclaw'],
+    installUrls: { windows: 'https://openclaw.ai/' },
     openLabel: '打开 OpenClaw',
     copyTargetLabel: '复制到 OpenClaw 子 Agent 或角色设定中',
     digestTargetLabel: '可粘贴到 OpenClaw 执行',
     personaTargetLabel: 'OpenClaw 子 Agent 角色设定',
     memoryTargetLabel: 'OpenClaw 子 Agent 长期记忆',
+  },
+  codex: {
+    id: 'codex',
+    name: 'Codex',
+    category: 'local-cli',
+    supportsLocalFiles: true,
+    supportsAgentCreation: false,
+    supportsPersonaSetting: false,
+    supportsMemorySetting: false,
+    supportsScheduledTask: false,
+    supportsSubAgent: false,
+    supportsProjectRules: true,
+    supportsMemoryFile: false,
+    supportsPersonaFile: false,
+    supportsConversationExport: true,
+    supportsMemoryPaste: true,
+    supportsSoulPaste: true,
+    openMode: 'cli',
+    ruleFiles: ['AGENTS.md', 'AGENT.md', 'Codex.md'],
+    memoryLocations: ['%USERPROFILE%\\.codex'],
+    personaLocations: ['%USERPROFILE%\\.codex'],
+    conversationLocations: ['%USERPROFILE%\\.codex'],
+    installUrls: { windows: 'https://chatgpt.com/codex' },
+    openLabel: '打开 Codex',
+    copyTargetLabel: '复制到 Codex 会话或 AGENTS.md 中',
+    digestTargetLabel: '可粘贴到 Codex，在学生知识库目录中执行',
+    personaTargetLabel: 'Codex 项目说明 / AGENTS.md',
+    memoryTargetLabel: 'Codex 会话总结 / 项目记忆',
+  },
+  'claude-code': {
+    id: 'claude-code',
+    name: 'Claude Code',
+    category: 'local-cli',
+    supportsLocalFiles: true,
+    supportsAgentCreation: false,
+    supportsPersonaSetting: false,
+    supportsMemorySetting: false,
+    supportsScheduledTask: false,
+    supportsSubAgent: false,
+    supportsProjectRules: true,
+    supportsMemoryFile: false,
+    supportsPersonaFile: false,
+    supportsConversationExport: true,
+    supportsMemoryPaste: true,
+    supportsSoulPaste: true,
+    openMode: 'cli',
+    ruleFiles: ['CLAUDE.md', 'AGENT.md'],
+    memoryLocations: ['%USERPROFILE%\\.claude'],
+    personaLocations: ['%USERPROFILE%\\.claude'],
+    conversationLocations: ['%USERPROFILE%\\.claude'],
+    installUrls: { windows: 'https://www.anthropic.com/claude-code' },
+    openLabel: '打开 Claude Code',
+    copyTargetLabel: '复制到 Claude Code 会话或 CLAUDE.md 中',
+    digestTargetLabel: '可粘贴到 Claude Code，在学生知识库目录中执行',
+    personaTargetLabel: 'Claude Code 项目规则 / CLAUDE.md',
+    memoryTargetLabel: 'Claude Code 会话总结',
   },
 };
 
@@ -502,6 +621,35 @@ type AgentCenterState = {
   unifiedSoul?: string;
   memoryIndex?: { sources?: Array<{ tool: AgentToolId; currentPath: string; lastSyncedAt?: string; hash?: string; exists?: boolean }> };
   soulIndex?: { sources?: Array<{ tool: AgentToolId; currentPath: string; lastSyncedAt?: string; lastCheckedAt?: string; hash?: string; exists?: boolean }> };
+  message?: string;
+};
+type AgentSourceRecord = {
+  id: string;
+  assetType: 'rule' | 'memory' | 'persona' | 'conversation' | 'extract';
+  tool: AgentToolId;
+  sourceType: string;
+  sourcePath?: string;
+  targetPath?: string;
+  importedAt?: string;
+  confidence?: number;
+  confirmed?: boolean;
+  notes?: string;
+};
+type AgentSourceRegistryState = {
+  ok: boolean;
+  path?: string;
+  records?: AgentSourceRecord[];
+  message?: string;
+};
+type AgentConversationState = {
+  ok: boolean;
+  conversationDir?: string;
+  importsDir?: string;
+  extractsDir?: string;
+  index?: {
+    imports?: Array<{ path?: string; tool?: AgentToolId; importedAt?: string; size?: number }>;
+    extracts?: Array<{ path?: string; tool?: AgentToolId; importedAt?: string; memoryCount?: number; soulCount?: number; qaCount?: number; todoCount?: number }>;
+  };
   message?: string;
 };
 type AgentKnowledgeCandidate = {
@@ -776,9 +924,19 @@ function basenameFromPath(filePath: string) {
   return String(filePath || '').split(/[\\/]/).filter(Boolean).pop() || '候选文件';
 }
 
-function buildAiAgentScanPrompt(student: Student, targetKind: AgentKnowledgeKind) {
+function buildAiAgentScanPrompt(student: Student, targetKind: AgentKnowledgeKind | 'all', targetTool: AgentToolId | 'all' = student.agentTool) {
   const p = pathsForStudent(student);
-  const targetLabel = targetKind === 'soul' ? '人设/Soul/角色设定' : 'Memory/长期记忆';
+  const targetLabel =
+    targetKind === 'soul'
+      ? '人设/Soul/角色设定'
+      : targetKind === 'rule'
+        ? '规则文件/项目指令'
+      : targetKind === 'conversation'
+        ? '对话历史/聊天导出'
+        : targetKind === 'all'
+          ? '记忆、人设、规则文件、对话历史'
+          : 'Memory/长期记忆';
+  const toolNames = targetTool === 'all' ? agentToolOptions.map((tool) => tool.name).join('、') : getAgentToolProfile(targetTool).name;
   return `请作为本机 Agent 文件扫描助手，帮我查找学生「${student.name}」的 ${targetLabel} 文件候选。
 
 学生信息：
@@ -787,6 +945,7 @@ function buildAiAgentScanPrompt(student: Student, targetKind: AgentKnowledgeKind
 - 学校：${student.school || '待补充'}
 - 当前目标：${student.goal || '待补充'}
 - 当前绑定 Agent 工具：${getAgentToolProfile(student.agentTool).name}
+- 本次优先扫描工具：${toolNames}
 - Agent 名称或备注：${student.agentName || student.agentNote || `${student.name} AI教育管家`}
 - 知识库根目录：${p.root}
 - AGENT.md：${p.agent}
@@ -798,10 +957,13 @@ function buildAiAgentScanPrompt(student: Student, targetKind: AgentKnowledgeKind
 - %USERPROFILE%\\.openclaw
 - %USERPROFILE%\\.hohu
 - %USERPROFILE%\\.marvis
+- %USERPROFILE%\\.codex
+- %USERPROFILE%\\.claude
 - %APPDATA%\\QClaw
 - %APPDATA%\\OpenClaw
 - %APPDATA%\\Hohu
 - %APPDATA%\\Marvis
+- %APPDATA%\\npm
 - %LOCALAPPDATA%\\QClaw
 - %LOCALAPPDATA%\\OpenClaw
 - %LOCALAPPDATA%\\Hohu
@@ -810,6 +972,8 @@ function buildAiAgentScanPrompt(student: Student, targetKind: AgentKnowledgeKind
 候选文件名包括但不限于：
 - 记忆：MEMORY.md、Memory.md、memory.md、long-term-memory.md、memory.txt
 - 人设：Soul.md、persona.md、role.md、system.md、prompt.md、profile.md
+- 规则文件：AGENT.md、AGENTS.md、CLAUDE.md、Codex.md、QClaw.md、OpenClaw.md、Marvis.md、Hohu.md、RULES.md
+- 对话历史：conversation.md、chat.md、history.json、transcript.txt、session.md、对话.md、聊天记录.md
 
 判断标准：
 1. 文件内容或路径包含学生姓名、Agent 名称、知识库根目录、AGENT.md 路径时，优先级最高。
@@ -837,8 +1001,8 @@ function buildAiAgentScanPrompt(student: Student, targetKind: AgentKnowledgeKind
   ]
 }
 
-tool 只能使用：qclaw、marvis、hohu、openclaw。
-kind 只能使用：memory、soul。`;
+tool 只能使用：qclaw、marvis、hohu、openclaw、codex、claude-code。
+kind 只能使用：memory、soul、rule、conversation。`;
 }
 
 function extractJsonLikeText(value: string) {
@@ -895,8 +1059,13 @@ function normalizeAiScanCandidate(item: Record<string, unknown>, fallbackKind?: 
   const rawTool = String(item.tool || item.agentTool || item.sourceTool || '').toLowerCase();
   const tool = agentToolProfiles[rawTool as AgentToolId] ? (rawTool as AgentToolId) : 'qclaw';
   const rawKind = String(item.kind || item.type || item.category || item.fileType || fallbackKind || '').toLowerCase();
-  const inferredKind = /soul|persona|role|system|prompt|人设|角色/.test(rawKind) ? 'soul' : /memory|记忆/.test(rawKind) ? 'memory' : fallbackKind;
-  if (inferredKind !== 'memory' && inferredKind !== 'soul') return null;
+  const inferredKind =
+    /conversation|chat|history|transcript|对话|聊天|会话/.test(rawKind) ? 'conversation'
+      : /rule|agent|agents|claude|codex|规则|指令/.test(rawKind) ? 'rule'
+      : /soul|persona|role|system|prompt|人设|角色/.test(rawKind) ? 'soul'
+      : /memory|记忆/.test(rawKind) ? 'memory'
+      : fallbackKind;
+  if (!inferredKind || !['memory', 'soul', 'rule', 'conversation'].includes(inferredKind)) return null;
   const reasons = Array.isArray(item.reasons)
     ? item.reasons.map((reason) => String(reason)).filter(Boolean)
     : String(item.reason || item.matchReason || 'AI 工具建议候选').split(/[;；\n]/).map((reason) => reason.trim()).filter(Boolean);
@@ -1678,6 +1847,8 @@ function App() {
   const [marvisOpened, setMarvisOpened] = useState(false);
   const [hohuOpened, setHohuOpened] = useState(false);
   const [openclawOpened, setOpenclawOpened] = useState(false);
+  const [codexOpened, setCodexOpened] = useState(false);
+  const [claudeCodeOpened, setClaudeCodeOpened] = useState(false);
   const [obsidianOpened, setObsidianOpened] = useState(false);
   const [checkingUpdate, setCheckingUpdate] = useState(false);
   const [updateInfo, setUpdateInfo] = useState<UpdateInfo | null>(null);
@@ -1733,12 +1904,23 @@ function App() {
   const [agentCenterMessage, setAgentCenterMessage] = useState('');
   const [agentKnowledgeMenuOpen, setAgentKnowledgeMenuOpen] = useState(false);
   const [agentScanCandidates, setAgentScanCandidates] = useState<AgentKnowledgeCandidate[]>([]);
+  const [selectedCandidateKeys, setSelectedCandidateKeys] = useState<string[]>([]);
+  const [aiScanTool, setAiScanTool] = useState<AgentToolId | 'all'>('all');
+  const [aiScanKind, setAiScanKind] = useState<AgentKnowledgeKind | 'all'>('all');
   const [agentScanMessage, setAgentScanMessage] = useState('');
   const [aiScanResultText, setAiScanResultText] = useState('');
   const [agentRules, setAgentRules] = useState<AgentRulesState | null>(null);
   const [ruleFileName, setRuleFileName] = useState('AGENT.md');
   const [ruleContent, setRuleContent] = useState('');
   const [ruleMessage, setRuleMessage] = useState('');
+  const [ruleDiff, setRuleDiff] = useState<{ onlyBase?: string[]; onlyTarget?: string[]; message?: string } | null>(null);
+  const [sourceRegistry, setSourceRegistry] = useState<AgentSourceRegistryState | null>(null);
+  const [sourceFilter, setSourceFilter] = useState<'all' | 'memory' | 'persona' | 'rule' | 'conversation' | 'extract'>('all');
+  const [conversationCenter, setConversationCenter] = useState<AgentConversationState | null>(null);
+  const [conversationTool, setConversationTool] = useState<AgentToolId>('qclaw');
+  const [conversationText, setConversationText] = useState('');
+  const [conversationExtractText, setConversationExtractText] = useState('');
+  const [conversationMessage, setConversationMessage] = useState('');
   const [memorySourceTool, setMemorySourceTool] = useState<AgentToolId>('qclaw');
   const [memorySourceText, setMemorySourceText] = useState('');
   const [unifiedMemoryText, setUnifiedMemoryText] = useState('');
@@ -1785,14 +1967,17 @@ function App() {
   const selectedStudentTool = selectedStudent ? getAgentToolProfile(selectedStudent.agentTool) : agentToolProfiles.qclaw;
   const selectedStudentPaths = selectedStudent ? pathsForStudent(selectedStudent) : pathsFor(draft.name);
   const activeAgentTool = activeSection === 'init' || activeSection === 'new' ? selectedTool : selectedStudentTool;
-  const toolOpenState: Record<AgentToolId, boolean> = { qclaw: qclawOpened, marvis: marvisOpened, hohu: hohuOpened, openclaw: openclawOpened };
+  const toolOpenState: Record<AgentToolId, boolean> = { qclaw: qclawOpened, marvis: marvisOpened, hohu: hohuOpened, openclaw: openclawOpened, codex: codexOpened, 'claude-code': claudeCodeOpened };
   const activeAgentOpened = toolOpenState[activeAgentTool.id];
   const isWindows = storageConfig.platform === 'windows';
   const shouldBlockForAgentInstall = isWindows && installStatus ? !installStatus.anyInstalled : false;
   const memoryScanCandidates = agentScanCandidates.filter((candidate) => candidate.kind === 'memory');
   const soulScanCandidates = agentScanCandidates.filter((candidate) => candidate.kind === 'soul');
+  const ruleScanCandidates = agentScanCandidates.filter((candidate) => candidate.kind === 'rule');
+  const conversationScanCandidates = agentScanCandidates.filter((candidate) => candidate.kind === 'conversation');
   const ruleFiles = agentRules?.files ?? [];
   const selectedRuleFile = ruleFiles.find((file) => file.fileName === ruleFileName);
+  const filteredSourceRecords = (sourceRegistry?.records ?? []).filter((record) => sourceFilter === 'all' || record.assetType === sourceFilter);
   const filteredMarkdownFiles = useMemo(
     () =>
       selectedArchiveCategory === 'all'
@@ -1848,6 +2033,11 @@ function App() {
     if (mode === 'lan_only') return '仅局域网';
     if (mode === 'manual') return '手动输入远程主机地址';
     return '局域网 + Tailscale';
+  };
+
+  const installForTool = (toolId: AgentToolId): AgentToolInstall | undefined => {
+    if (toolId === 'claude-code') return installStatus?.claudeCode;
+    return installStatus?.[toolId as 'qclaw' | 'marvis' | 'hohu' | 'openclaw' | 'codex'];
   };
 
   const uploadStatusLabel = (status?: string) => {
@@ -2025,7 +2215,7 @@ function App() {
       const status = JSON.parse(raw) as AgentToolInstallStatus;
       setInstallStatus(status);
       if (!status.anyInstalled) {
-        setInstallMessage('未检测到 QClaw、Marvis、Hohu 或 OpenClaw，请先下载安装其中一个工具。');
+        setInstallMessage('未检测到 QClaw、Marvis、Hohu、OpenClaw、Codex 或 Claude Code，请先下载安装其中一个工具。');
         return;
       }
       setInstallMessage('');
@@ -2034,6 +2224,8 @@ function App() {
         if (!status.qclaw.installed && status.openclaw?.installed && current.agentTool !== 'openclaw') return { ...current, agentTool: 'openclaw' };
         if (!status.qclaw.installed && !status.openclaw?.installed && status.hohu.installed && current.agentTool !== 'hohu') return { ...current, agentTool: 'hohu' };
         if (!status.qclaw.installed && !status.openclaw?.installed && !status.hohu.installed && status.marvis.installed && current.agentTool !== 'marvis') return { ...current, agentTool: 'marvis' };
+        if (!status.qclaw.installed && !status.openclaw?.installed && !status.hohu.installed && !status.marvis.installed && status.codex?.installed && current.agentTool !== 'codex') return { ...current, agentTool: 'codex' };
+        if (!status.qclaw.installed && !status.openclaw?.installed && !status.hohu.installed && !status.marvis.installed && !status.codex?.installed && status.claudeCode?.installed && current.agentTool !== 'claude-code') return { ...current, agentTool: 'claude-code' };
         return current;
       });
     } catch {
@@ -2099,6 +2291,146 @@ function App() {
     }
   };
 
+  const refreshSourceRegistry = (studentId = selectedStudent?.id) => {
+    if (!studentId) return;
+    const raw = bridge()?.getAgentSourceRegistry?.(studentId);
+    if (!raw) return;
+    try {
+      setSourceRegistry(JSON.parse(raw) as AgentSourceRegistryState);
+    } catch {
+      setAgentCenterMessage('来源记录读取结果解析失败。');
+    }
+  };
+
+  const refreshConversationCenter = (studentId = selectedStudent?.id) => {
+    if (!studentId) return;
+    const raw = bridge()?.getAgentConversationCenter?.(studentId);
+    if (!raw) {
+      setConversationMessage('当前环境不支持对话历史管理。');
+      return;
+    }
+    try {
+      const result = JSON.parse(raw) as AgentConversationState;
+      setConversationCenter(result);
+      if (!result.ok) setConversationMessage(result.message || '读取对话历史失败。');
+    } catch {
+      setConversationMessage('对话历史读取结果解析失败。');
+    }
+  };
+
+  const generateAgentRule = (fileName: string) => {
+    if (!selectedStudent) return;
+    const raw = bridge()?.generateAgentRuleFile?.(selectedStudent.id, fileName);
+    if (!raw) {
+      setRuleMessage('当前环境不支持生成规则模板。');
+      return;
+    }
+    try {
+      const result = JSON.parse(raw) as AgentRulesState & { fileName?: string };
+      if (result.files) setAgentRules(result);
+      setRuleMessage(result.message || (result.ok ? `已生成 ${fileName}。` : `生成 ${fileName} 失败。`));
+      if (result.ok) {
+        refreshAgentRules(selectedStudent.id, fileName);
+        refreshSourceRegistry(selectedStudent.id);
+      }
+    } catch {
+      setRuleMessage('生成规则模板结果解析失败。');
+    }
+  };
+
+  const compareAgentRule = () => {
+    if (!selectedStudent || !ruleFileName) return;
+    const raw = bridge()?.compareAgentRuleFiles?.(selectedStudent.id, 'AGENT.md', ruleFileName);
+    if (!raw) {
+      setRuleMessage('当前环境不支持规则文件对比。');
+      return;
+    }
+    try {
+      const result = JSON.parse(raw) as { ok?: boolean; onlyBase?: string[]; onlyTarget?: string[]; message?: string };
+      setRuleDiff({ onlyBase: result.onlyBase ?? [], onlyTarget: result.onlyTarget ?? [], message: result.message });
+      setRuleMessage(result.message || (result.ok ? '已完成规则文件对比。' : '规则文件对比失败。'));
+    } catch {
+      setRuleMessage('规则文件对比结果解析失败。');
+    }
+  };
+
+  const buildConversationExtractPrompt = (student: Student) => {
+    const p = pathsForStudent(student);
+    return `请从下面的对话历史中提取可沉淀到学生「${student.name}」教育管家的资产。
+
+学生信息：
+- 姓名：${student.name}
+- 年级：${student.grade || '待补充'}
+- 学校：${student.school || '待补充'}
+- 当前目标：${student.goal || '待补充'}
+- 知识库根目录：${p.root}
+- AGENT.md：${p.agent}
+- 学情分析汇总目录：${p.summary}
+
+请只返回 JSON，不要使用 Markdown 代码块。格式：
+{
+  "memoryCandidates": ["适合写入 UnifiedMemory.md 的长期事实或观察"],
+  "soulSuggestions": ["适合写入 UnifiedSoul.md 的人设、工作边界或偏好建议"],
+  "qaHighlights": ["适合写入学情分析汇总/咨询精华库的高价值问答结论"],
+  "todos": ["后续跟进事项"]
+}
+
+对话历史如下：
+${conversationText || '（请先粘贴对话历史）'}`;
+  };
+
+  const saveConversationImport = () => {
+    if (!selectedStudent) return;
+    if (!conversationText.trim()) {
+      setConversationMessage('请先粘贴或输入对话历史。');
+      return;
+    }
+    const raw = bridge()?.saveAgentConversationImport?.(selectedStudent.id, conversationText, conversationTool);
+    if (!raw) {
+      setConversationMessage('当前环境不支持保存对话历史。');
+      return;
+    }
+    try {
+      const result = JSON.parse(raw) as { ok?: boolean; message?: string };
+      setConversationMessage(result.message || (result.ok ? '已保存对话历史。' : '保存对话历史失败。'));
+      if (result.ok) {
+        refreshConversationCenter(selectedStudent.id);
+        refreshSourceRegistry(selectedStudent.id);
+      }
+    } catch {
+      setConversationMessage('保存对话历史结果解析失败。');
+    }
+  };
+
+  const copyConversationExtractPrompt = async () => {
+    if (!selectedStudent) return;
+    await copyText(buildConversationExtractPrompt(selectedStudent), '已复制对话历史提取指令。');
+  };
+
+  const saveConversationExtractResult = () => {
+    if (!selectedStudent) return;
+    if (!conversationExtractText.trim()) {
+      setConversationMessage('请先粘贴 AI 提取结果 JSON。');
+      return;
+    }
+    const raw = bridge()?.saveConversationExtract?.(selectedStudent.id, conversationExtractText, conversationTool);
+    if (!raw) {
+      setConversationMessage('当前环境不支持保存对话提取结果。');
+      return;
+    }
+    try {
+      const result = JSON.parse(raw) as { ok?: boolean; message?: string };
+      setConversationMessage(result.message || (result.ok ? '已写入对话提取资产。' : '保存提取结果失败。'));
+      if (result.ok) {
+        refreshAgentCenter(selectedStudent.id);
+        refreshConversationCenter(selectedStudent.id);
+        refreshSourceRegistry(selectedStudent.id);
+      }
+    } catch {
+      setConversationMessage('对话提取结果解析失败。');
+    }
+  };
+
   const saveAgentRule = () => {
     if (!selectedStudent) return;
     const raw = bridge()?.saveAgentRuleFile?.(selectedStudent.id, ruleFileName, ruleContent);
@@ -2110,7 +2442,10 @@ function App() {
       const result = JSON.parse(raw) as AgentRulesState & { fileName?: string };
       if (result.files) setAgentRules(result);
       setRuleMessage(result.message || (result.ok ? '已保存规则文件。' : '保存规则文件失败。'));
-      if (result.ok) refreshAgentRules(selectedStudent.id, result.fileName || ruleFileName);
+      if (result.ok) {
+        refreshAgentRules(selectedStudent.id, result.fileName || ruleFileName);
+        refreshSourceRegistry(selectedStudent.id);
+      }
     } catch {
       setRuleMessage('保存规则文件结果解析失败。');
     }
@@ -2206,11 +2541,13 @@ function App() {
       const raw = bridge()?.getAppStatus?.();
       if (!raw) return;
       try {
-        const status = JSON.parse(raw) as { qclawOpened?: boolean; marvisOpened?: boolean; hohuOpened?: boolean; openclawOpened?: boolean; obsidianOpened?: boolean };
+        const status = JSON.parse(raw) as { qclawOpened?: boolean; marvisOpened?: boolean; hohuOpened?: boolean; openclawOpened?: boolean; codexOpened?: boolean; claudeCodeOpened?: boolean; obsidianOpened?: boolean };
         setQclawOpened(Boolean(status.qclawOpened));
         setMarvisOpened(Boolean(status.marvisOpened));
         setHohuOpened(Boolean(status.hohuOpened));
         setOpenclawOpened(Boolean(status.openclawOpened));
+        setCodexOpened(Boolean(status.codexOpened));
+        setClaudeCodeOpened(Boolean(status.claudeCodeOpened));
         setObsidianOpened(Boolean(status.obsidianOpened));
       } catch {
         // Ignore bridge JSON parse errors.
@@ -2256,13 +2593,18 @@ function App() {
   }, [hostServiceStatus?.pairPayloadText]);
 
   useEffect(() => {
-    if (activeSection === 'memory' || activeSection === 'soul' || activeSection === 'qa') {
+    if (activeSection === 'memory' || activeSection === 'soul' || activeSection === 'qa' || activeSection === 'conversation') {
       refreshAgentCenter();
+      refreshSourceRegistry();
     }
   }, [activeSection, selectedId]);
 
   useEffect(() => {
-    if (activeSection === 'rules') refreshAgentRules();
+    if (activeSection === 'rules') {
+      refreshAgentRules();
+      refreshSourceRegistry();
+    }
+    if (activeSection === 'conversation') refreshConversationCenter();
   }, [activeSection, selectedId]);
 
   useEffect(() => {
@@ -2902,38 +3244,73 @@ function App() {
     }
     try {
       const result = JSON.parse(raw) as { ok?: boolean; message?: string };
-      const kindLabel = candidate.kind === 'soul' ? 'Soul' : 'Memory';
+      const kindLabel =
+        candidate.kind === 'soul' ? 'Soul'
+          : candidate.kind === 'rule' ? '规则文件'
+          : candidate.kind === 'conversation' ? '对话历史'
+          : 'Memory';
       setAgentCenterMessage(result.message || (result.ok ? `已导入来源 ${kindLabel}。` : `导入来源 ${kindLabel} 失败。`));
       if (result.ok) {
         if (candidate.kind === 'memory') {
           setMemorySourceTool(candidate.tool);
           setMemorySourceText(candidate.preview || '');
-        } else {
+        } else if (candidate.kind === 'soul') {
           setSoulSourceTool(candidate.tool);
           setSoulSourceText(candidate.preview || '');
+        } else if (candidate.kind === 'rule') {
+          refreshAgentRules(selectedStudent.id);
+        } else if (candidate.kind === 'conversation') {
+          refreshConversationCenter(selectedStudent.id);
         }
       }
       refreshAgentCenter();
+      refreshSourceRegistry();
     } catch {
       setAgentCenterMessage('导入 Agent 文件结果解析失败。');
     }
   };
 
-  const copyAiAgentScanPrompt = async (kind: AgentKnowledgeKind) => {
-    if (!selectedStudent) return;
-    await copyText(buildAiAgentScanPrompt(selectedStudent, kind), `已复制 AI ${kind === 'soul' ? '人设' : '记忆'}扫描指令。`);
+  const candidateKey = (candidate: AgentKnowledgeCandidate) => `${candidate.kind}::${candidate.tool}::${candidate.path}`;
+
+  const toggleCandidateSelection = (candidate: AgentKnowledgeCandidate) => {
+    const key = candidateKey(candidate);
+    setSelectedCandidateKeys((current) => current.includes(key) ? current.filter((item) => item !== key) : [...current, key]);
   };
 
-  const parseAiAgentScanResult = (fallbackKind: AgentKnowledgeKind) => {
+  const importSelectedCandidates = async () => {
+    const selected = agentScanCandidates.filter((candidate) => selectedCandidateKeys.includes(candidateKey(candidate)));
+    if (!selected.length) {
+      setAgentScanMessage('请先勾选需要导入的候选。');
+      return;
+    }
+    for (const candidate of selected) importAgentCandidate(candidate);
+    setSelectedCandidateKeys([]);
+    setAgentScanMessage(`已提交导入 ${selected.length} 个候选。`);
+  };
+
+  const copyAiAgentScanPrompt = async (kind: AgentKnowledgeKind | 'all') => {
+    if (!selectedStudent) return;
+    await copyText(buildAiAgentScanPrompt(selectedStudent, kind, aiScanTool), `已复制 AI ${kind === 'soul' ? '人设' : kind === 'rule' ? '规则文件' : kind === 'conversation' ? '对话历史' : '综合'}扫描指令。`);
+  };
+
+  const parseAiAgentScanResult = (fallbackKind: AgentKnowledgeKind | 'all') => {
     if (!aiScanResultText.trim()) {
       setAgentScanMessage('请先粘贴 AI 扫描结果 JSON。');
       return;
     }
     try {
       const parsed = parseLooseJson(aiScanResultText);
-      const list = Array.isArray(parsed) ? parsed : Array.isArray(parsed?.candidates) ? parsed.candidates : [];
+      const list = Array.isArray(parsed)
+        ? parsed
+        : Array.isArray(parsed?.candidates)
+          ? parsed.candidates
+          : Array.isArray(parsed?.results)
+            ? parsed.results
+            : Array.isArray(parsed?.files)
+              ? parsed.files
+              : [];
       const candidates = list
-        .map((item: unknown) => normalizeAiScanCandidate((item || {}) as Record<string, unknown>, fallbackKind))
+        .map((item: unknown) => normalizeAiScanCandidate((item || {}) as Record<string, unknown>, fallbackKind === 'all' ? undefined : fallbackKind))
         .filter(Boolean) as AgentKnowledgeCandidate[];
       if (!candidates.length) {
         setAgentScanMessage('未从 AI 扫描结果中解析到有效候选。请确认 JSON 中包含 candidates 数组和 path/kind/tool 字段。');
@@ -2990,6 +3367,8 @@ function App() {
     if (app === 'marvis') setMarvisOpened((value) => value || Boolean(ok));
     if (app === 'hohu') setHohuOpened((value) => value || Boolean(ok));
     if (app === 'openclaw') setOpenclawOpened((value) => value || Boolean(ok));
+    if (app === 'codex') setCodexOpened((value) => value || Boolean(ok));
+    if (app === 'claude-code') setClaudeCodeOpened((value) => value || Boolean(ok));
     if (app === 'obsidian') setObsidianOpened((value) => value || Boolean(ok));
     if (!bridge()?.openApp) {
       const urls: Record<AgentToolId | 'obsidian' | 'tailscale', string> = {
@@ -2997,10 +3376,27 @@ function App() {
         marvis: 'marvis://',
         hohu: 'https://hohu.ai/',
         openclaw: 'https://openclaw.ai/',
+        codex: 'https://chatgpt.com/codex',
+        'claude-code': 'https://www.anthropic.com/claude-code',
         obsidian: 'obsidian://open',
         tailscale: 'https://tailscale.com/download/windows',
       };
       window.open(urls[app], '_blank');
+    }
+  };
+
+  const openStudentRoot = (student = selectedStudent) => {
+    if (!student) return;
+    const raw = bridge()?.openStudentRootDir?.(student.id);
+    if (!raw) {
+      window.open(student.rootPath || selectedStudentPaths.root, '_blank');
+      return;
+    }
+    try {
+      const result = JSON.parse(raw) as { ok?: boolean; message?: string };
+      setDigestMessage(result.message || (result.ok ? '已打开学生知识库目录。' : '打开学生知识库目录失败。'));
+    } catch {
+      setDigestMessage('打开学生知识库目录结果解析失败。');
     }
   };
 
@@ -3219,6 +3615,8 @@ function App() {
       marvis: 'https://marvis.qq.com/',
       hohu: 'https://hohu.ai/',
       openclaw: 'https://openclaw.ai/',
+      codex: 'https://chatgpt.com/codex',
+      'claude-code': 'https://www.anthropic.com/claude-code',
     };
     const url = urls[tool];
     const ok = bridge()?.openExternalUrl?.(url);
@@ -3668,6 +4066,37 @@ function App() {
     </div>
   );
 
+  const sourceRegistryPanel = (
+    <div className="source-list">
+      <div className="mini-heading">
+        <strong>来源记录</strong>
+        <span>{sourceRegistry?.path || '导入、保存、提取动作会写入 source-registry.json。'}</span>
+      </div>
+      <div className="actions compact-actions">
+        <select value={sourceFilter} onChange={(event) => setSourceFilter(event.target.value as typeof sourceFilter)}>
+          <option value="all">全部来源</option>
+          <option value="memory">记忆</option>
+          <option value="persona">人设</option>
+          <option value="rule">规则</option>
+          <option value="conversation">对话</option>
+          <option value="extract">提取</option>
+        </select>
+        <button className="secondary compact" onClick={() => refreshSourceRegistry()}>刷新来源记录</button>
+      </div>
+      {filteredSourceRecords.length === 0 ? (
+        <div className="notice muted">暂无匹配来源记录。</div>
+      ) : (
+        filteredSourceRecords.slice(0, 12).map((record) => (
+          <div className="source-row" key={record.id}>
+            <strong>{record.assetType} · {getAgentToolProfile(record.tool).name}</strong>
+            <span>{record.sourceType}{record.confidence ? ` · 可信度 ${record.confidence}` : ''}</span>
+            <small>{record.importedAt ? new Date(record.importedAt).toLocaleString('zh-CN') : ''} {record.targetPath || record.sourcePath || record.notes || ''}</small>
+          </div>
+        ))
+      )}
+    </div>
+  );
+
   const navItems = [
     { id: 'home' as const, label: '首页', icon: Home },
     { id: 'init' as const, label: '初始化教育管家', icon: Sparkles },
@@ -3682,6 +4111,7 @@ function App() {
     { id: 'memory' as const, label: 'Agent 记忆管理', icon: Clipboard },
     { id: 'soul' as const, label: 'Agent 设定管理', icon: Bot },
     { id: 'rules' as const, label: '智能体规则文件管理', icon: ListChecks },
+    { id: 'conversation' as const, label: '对话历史导入与提取', icon: MessageCircle },
   ];
 
   return (
@@ -3720,7 +4150,7 @@ function App() {
           })}
           <div className="nav-group-block">
             <button
-              className={activeSection === 'memory' || activeSection === 'soul' || activeSection === 'rules' ? 'nav-item nav-group active' : 'nav-item nav-group'}
+              className={activeSection === 'memory' || activeSection === 'soul' || activeSection === 'rules' || activeSection === 'conversation' ? 'nav-item nav-group active' : 'nav-item nav-group'}
               onClick={() => setAgentKnowledgeMenuOpen((value) => !value)}
             >
               <Bot size={19} />
@@ -3813,6 +4243,8 @@ function App() {
                     ? 'Agent 设定管理'
                   : activeSection === 'rules'
                     ? '智能体规则文件管理'
+                  : activeSection === 'conversation'
+                    ? '对话历史导入与提取'
                   : activeSection === 'tasks'
                     ? '定时任务'
                     : activeSection === 'settings'
@@ -4113,7 +4545,7 @@ function App() {
               <div className="panel-heading">
                 <div>
                   <h2>Agent 工具控制</h2>
-                  <p>选择默认 Agent 工具，检查打开状态，或下载安装 QClaw、Marvis、Hohu、OpenClaw。</p>
+                  <p>选择默认 Agent 工具，检查打开状态，或下载安装 QClaw、Marvis、Hohu、OpenClaw、Codex、Claude Code。</p>
                 </div>
                 <Bot size={22} />
               </div>
@@ -4141,7 +4573,7 @@ function App() {
               <div className="agent-status-list">
                 {agentToolOptions.map((baseTool) => {
                   const tool = getAgentToolProfile(baseTool.id);
-                  const install = installStatus?.[tool.id];
+                  const install = installForTool(tool.id);
                   const opened = toolOpenState[tool.id];
                   return (
                     <article className="agent-status-card" key={tool.id}>
@@ -4855,6 +5287,10 @@ function App() {
                 <Clipboard size={18} />
                 复制资料消化指令
               </button>
+              <button className="secondary" onClick={() => openStudentRoot(selectedStudent)}>
+                <FolderOpen size={18} />
+                打开学生知识库目录
+              </button>
               <button className="secondary" onClick={() => markDigestSubmitted(selectedStudent)}>
                 <CheckCircle2 size={18} />
                 标记已提交消化
@@ -5032,6 +5468,7 @@ function App() {
               />
               <div className="actions compact-actions">
                 <button className="secondary" onClick={() => parseAiAgentScanResult('memory')}>导入 AI 扫描结果</button>
+                <button className="secondary" onClick={importSelectedCandidates}>批量导入勾选候选</button>
                 <button className="secondary" onClick={() => setAiScanResultText('')}>清空结果</button>
               </div>
             </div>
@@ -5043,6 +5480,10 @@ function App() {
                 </div>
                 {memoryScanCandidates.map((candidate) => (
                   <div className="candidate-row" key={candidate.path}>
+                    <label className="checkbox-line">
+                      <input type="checkbox" checked={selectedCandidateKeys.includes(candidateKey(candidate))} onChange={() => toggleCandidateSelection(candidate)} />
+                      <span>勾选导入</span>
+                    </label>
                     <div className="candidate-main">
                       <strong>{candidate.name}</strong>
                       <span>{getAgentToolProfile(candidate.tool).name} · 分数 {candidate.score} · {formatFileSize(candidate.size || 0)}{candidate.mtime ? ` · ${new Date(candidate.mtime).toLocaleString()}` : ''}</span>
@@ -5070,6 +5511,7 @@ function App() {
                 </div>
               ))}
             </div>
+            {sourceRegistryPanel}
             {agentScanMessage && activeSection === 'memory' && <div className="notice muted">{agentScanMessage}</div>}
             {agentCenterMessage && <div className="notice">{agentCenterMessage}</div>}
           </section>
@@ -5129,6 +5571,7 @@ function App() {
               />
               <div className="actions compact-actions">
                 <button className="secondary" onClick={() => parseAiAgentScanResult('soul')}>导入 AI 扫描结果</button>
+                <button className="secondary" onClick={importSelectedCandidates}>批量导入勾选候选</button>
                 <button className="secondary" onClick={() => setAiScanResultText('')}>清空结果</button>
               </div>
             </div>
@@ -5140,6 +5583,10 @@ function App() {
                 </div>
                 {soulScanCandidates.map((candidate) => (
                   <div className="candidate-row" key={candidate.path}>
+                    <label className="checkbox-line">
+                      <input type="checkbox" checked={selectedCandidateKeys.includes(candidateKey(candidate))} onChange={() => toggleCandidateSelection(candidate)} />
+                      <span>勾选导入</span>
+                    </label>
                     <div className="candidate-main">
                       <strong>{candidate.name}</strong>
                       <span>{getAgentToolProfile(candidate.tool).name} · 分数 {candidate.score} · {formatFileSize(candidate.size || 0)}{candidate.mtime ? ` · ${new Date(candidate.mtime).toLocaleString()}` : ''}</span>
@@ -5179,6 +5626,7 @@ function App() {
                 </div>
               ))}
             </div>
+            {sourceRegistryPanel}
             {agentScanMessage && activeSection === 'soul' && <div className="notice muted">{agentScanMessage}</div>}
             {agentCenterMessage && <div className="notice">{agentCenterMessage}</div>}
           </section>
@@ -5239,14 +5687,78 @@ function App() {
               <button className="primary" onClick={saveAgentRule}>保存规则文件</button>
               <button className="secondary" onClick={() => refreshAgentRules()}>刷新规则文件</button>
               <button className="secondary" onClick={() => copyText(ruleContent, '已复制规则文件内容。')}>复制规则内容</button>
-              <button className="secondary" onClick={() => {
-                setRuleFileName('Claude.md');
-                const existing = ruleFiles.find((file) => file.fileName.toLowerCase() === 'claude.md');
-                setRuleContent(existing?.content || `# ${selectedStudent.name} Claude.md\n\n## 工作规则\n\n该 Agent 的工作协议使用：${selectedStudentPaths.agent}\n后续所有学习资料消化都围绕该学生知识库执行。\n`);
-              }}>
-                准备 Claude.md
-              </button>
+              <button className="secondary" onClick={() => openStudentRoot(selectedStudent)}>打开知识库目录</button>
+              <button className="secondary" onClick={() => generateAgentRule('AGENTS.md')}>生成 AGENTS.md</button>
+              <button className="secondary" onClick={() => generateAgentRule('CLAUDE.md')}>生成 CLAUDE.md</button>
+              <button className="secondary" onClick={() => generateAgentRule('Codex.md')}>生成 Codex.md</button>
+              <button className="secondary" onClick={() => generateAgentRule(selectedStudentTool.ruleFiles[0] || 'AGENT.md')}>生成当前工具规则</button>
+              <button className="secondary" onClick={compareAgentRule}>对比 AGENT.md</button>
+              <button className="secondary" onClick={() => copyAiAgentScanPrompt('rule')}>复制规则 AI 扫描指令</button>
             </div>
+            <div className="ai-scan-box">
+              <div className="mini-heading">
+                <strong>规则文件 AI 扫描</strong>
+                <span>支持 candidates / results / files 三种返回字段。</span>
+              </div>
+              <div className="form-grid compact-grid">
+                <label>
+                  扫描工具
+                  <select value={aiScanTool} onChange={(event) => setAiScanTool(event.target.value as AgentToolId | 'all')}>
+                    <option value="all">全部工具</option>
+                    {agentToolOptions.map((tool) => <option value={tool.id} key={tool.id}>{tool.name}</option>)}
+                  </select>
+                </label>
+                <label>
+                  扫描类型
+                  <select value={aiScanKind} onChange={(event) => setAiScanKind(event.target.value as AgentKnowledgeKind | 'all')}>
+                    <option value="all">全部</option>
+                    <option value="memory">记忆</option>
+                    <option value="soul">人设</option>
+                    <option value="rule">规则文件</option>
+                    <option value="conversation">对话历史</option>
+                  </select>
+                </label>
+              </div>
+              <textarea value={aiScanResultText} onChange={(event) => setAiScanResultText(event.target.value)} placeholder='粘贴 AI 返回的 JSON，例如 {"results":[{"path":"D:\\学生资料\\张三知识库\\AGENTS.md","kind":"rule","tool":"codex","score":90}]}' />
+              <div className="actions compact-actions">
+                <button className="secondary" onClick={() => parseAiAgentScanResult(aiScanKind)}>导入 AI 扫描结果</button>
+                <button className="secondary" onClick={importSelectedCandidates}>批量导入勾选候选</button>
+                <button className="secondary" onClick={() => setAiScanResultText('')}>清空结果</button>
+              </div>
+            </div>
+            {ruleScanCandidates.length > 0 && (
+              <div className="candidate-list">
+                <div className="mini-heading">
+                  <strong>规则文件候选</strong>
+                  <span>勾选后可批量导入，导入时会保存到学生知识库根目录并写来源记录。</span>
+                </div>
+                {ruleScanCandidates.map((candidate) => (
+                  <div className="candidate-row" key={candidate.path}>
+                    <label className="checkbox-line">
+                      <input type="checkbox" checked={selectedCandidateKeys.includes(candidateKey(candidate))} onChange={() => toggleCandidateSelection(candidate)} />
+                      <span>{candidate.name}</span>
+                    </label>
+                    <div className="candidate-main">
+                      <span>{getAgentToolProfile(candidate.tool).name} · 分数 {candidate.score}</span>
+                      <small>{candidate.path}</small>
+                    </div>
+                    <button className="secondary compact" onClick={() => importAgentCandidate(candidate)}>导入规则文件</button>
+                  </div>
+                ))}
+              </div>
+            )}
+            {ruleDiff && (
+              <div className="diff-grid">
+                <div>
+                  <strong>AGENT.md 独有</strong>
+                  <pre>{(ruleDiff.onlyBase ?? []).join('\n') || '无明显差异'}</pre>
+                </div>
+                <div>
+                  <strong>{ruleFileName} 独有</strong>
+                  <pre>{(ruleDiff.onlyTarget ?? []).join('\n') || '无明显差异'}</pre>
+                </div>
+              </div>
+            )}
             <div className="source-list">
               {ruleFiles.map((file) => (
                 <button
@@ -5263,7 +5775,96 @@ function App() {
                 </button>
               ))}
             </div>
+            {sourceRegistryPanel}
             {ruleMessage && <div className="notice">{ruleMessage}</div>}
+          </section>
+        )}
+
+        {!shouldBlockForAgentInstall && activeSection === 'conversation' && selectedStudent && (
+          <section className="panel qa-panel">
+            <div className="panel-heading">
+              <div>
+                <h2>对话历史导入与提取</h2>
+                <p>把 QClaw、Marvis、Codex、Claude Code 等工具里的高价值对话提取为长期记忆、人设建议、咨询精华和后续待办。</p>
+              </div>
+              <MessageCircle size={22} />
+            </div>
+            <div className="archive-grid">
+              <InfoPanel icon={<UserRound />} title="当前学生" value={selectedStudent.name} />
+              <InfoPanel icon={<FolderOpen />} title="导入目录" value={conversationCenter?.importsDir || '未读取'} />
+              <InfoPanel icon={<Archive />} title="历史记录" value={`${conversationCenter?.index?.imports?.length ?? 0} 次导入 / ${conversationCenter?.index?.extracts?.length ?? 0} 次提取`} />
+            </div>
+            <div className="form-grid compact-grid">
+              <label>
+                来源 Agent 工具
+                <select value={conversationTool} onChange={(event) => setConversationTool(event.target.value as AgentToolId)}>
+                  {agentToolOptions.map((tool) => <option value={tool.id} key={tool.id}>{tool.name}</option>)}
+                </select>
+              </label>
+              <label>
+                提取目标
+                <input readOnly value="UnifiedMemory / UnifiedSoul / 咨询精华库 / 输出结果待办" />
+              </label>
+            </div>
+            <label className="wide-field">
+              粘贴对话历史
+              <textarea className="large-textarea" value={conversationText} onChange={(event) => setConversationText(event.target.value)} placeholder="粘贴从 Agent 工具导出的会话总结、聊天记录、问答片段或 Markdown/JSON 文本。" />
+            </label>
+            <div className="actions compact-actions">
+              <button className="primary" onClick={saveConversationImport}>保存对话导入记录</button>
+              <button className="secondary" onClick={copyConversationExtractPrompt}>复制 AI 提取指令</button>
+              <button className="secondary" onClick={() => copyAiAgentScanPrompt('conversation')}>复制对话文件扫描指令</button>
+              <button className="secondary" onClick={() => refreshConversationCenter()}>刷新对话中心</button>
+            </div>
+            <label className="wide-field">
+              粘贴 AI 提取结果 JSON
+              <textarea value={conversationExtractText} onChange={(event) => setConversationExtractText(event.target.value)} placeholder='{"memoryCandidates":["..."],"soulSuggestions":["..."],"qaHighlights":["..."],"todos":["..."]}' />
+            </label>
+            <div className="actions compact-actions">
+              <button className="primary" onClick={saveConversationExtractResult}>确认写入教育资产</button>
+              <button className="secondary" onClick={() => setConversationExtractText('')}>清空提取结果</button>
+            </div>
+            {conversationScanCandidates.length > 0 && (
+              <div className="candidate-list">
+                <div className="mini-heading">
+                  <strong>对话历史候选</strong>
+                  <span>可从 AI 扫描结果或本机扫描结果中导入。</span>
+                </div>
+                {conversationScanCandidates.map((candidate) => (
+                  <div className="candidate-row" key={candidate.path}>
+                    <label className="checkbox-line">
+                      <input type="checkbox" checked={selectedCandidateKeys.includes(candidateKey(candidate))} onChange={() => toggleCandidateSelection(candidate)} />
+                      <span>{candidate.name}</span>
+                    </label>
+                    <small>{candidate.path}</small>
+                    <button className="secondary compact" onClick={() => importAgentCandidate(candidate)}>导入对话历史</button>
+                  </div>
+                ))}
+                <button className="secondary" onClick={importSelectedCandidates}>批量导入勾选候选</button>
+              </div>
+            )}
+            <div className="source-list">
+              <div className="mini-heading">
+                <strong>最近导入与提取</strong>
+                <span>{conversationCenter?.conversationDir || ''}</span>
+              </div>
+              {(conversationCenter?.index?.imports ?? []).slice(0, 6).map((item) => (
+                <div className="source-row" key={item.path}>
+                  <strong>导入 · {getAgentToolProfile(item.tool || 'qclaw').name}</strong>
+                  <span>{item.size ? formatFileSize(item.size) : ''}</span>
+                  <small>{item.importedAt ? new Date(item.importedAt).toLocaleString('zh-CN') : ''} {item.path}</small>
+                </div>
+              ))}
+              {(conversationCenter?.index?.extracts ?? []).slice(0, 6).map((item) => (
+                <div className="source-row" key={item.path}>
+                  <strong>提取 · {getAgentToolProfile(item.tool || 'qclaw').name}</strong>
+                  <span>记忆 {item.memoryCount ?? 0} / 人设 {item.soulCount ?? 0} / 问答 {item.qaCount ?? 0}</span>
+                  <small>{item.importedAt ? new Date(item.importedAt).toLocaleString('zh-CN') : ''} {item.path}</small>
+                </div>
+              ))}
+            </div>
+            {sourceRegistryPanel}
+            {conversationMessage && <div className="notice">{conversationMessage}</div>}
           </section>
         )}
 
@@ -5324,11 +5925,15 @@ function App() {
                     ['Marvis', installStatus?.marvis.installed ? `已安装 ${installStatus.marvis.version ?? ''}` : '未安装'],
                     ['Hohu', installStatus?.hohu.installed ? `已安装 ${installStatus.hohu.version ?? ''}` : '未安装'],
                     ['OpenClaw', installStatus?.openclaw?.installed ? `已安装 ${installStatus.openclaw.version ?? ''}` : '未安装'],
+                    ['Codex', installStatus?.codex?.installed ? `已安装 ${installStatus.codex.version ?? ''}` : '未安装'],
+                    ['Claude Code', installStatus?.claudeCode?.installed ? `已安装 ${installStatus.claudeCode.version ?? ''}` : '未安装'],
                     ['Tailscale 软件', installStatus?.tailscale?.installed ? `已安装 ${installStatus.tailscale.version ?? ''}` : '未安装'],
                     ['QClaw 路径', installStatus?.qclaw.exePath || '未检测到'],
                     ['Marvis 路径', installStatus?.marvis.exePath || '未检测到'],
                     ['Hohu 路径', installStatus?.hohu.exePath || '未检测到'],
                     ['OpenClaw 路径', installStatus?.openclaw?.exePath || '未检测到'],
+                    ['Codex 路径', installStatus?.codex?.exePath || '未检测到'],
+                    ['Claude Code 路径', installStatus?.claudeCode?.exePath || '未检测到'],
                     ['Tailscale 路径', installStatus?.tailscale?.exePath || '未检测到'],
                     ['主机服务', hostServiceStatus?.running ? '运行中' : '未启动'],
                     ['服务端口', hostServiceStatus?.port ?? 18777],
@@ -5355,9 +5960,24 @@ function App() {
             </div>
             <div className="notice muted">
               {isWindows
-                ? 'QClaw、Marvis、Hohu 和 OpenClaw 将使用同一个本机学生知识库目录。默认根目录为 D:\\学生资料；更换资料根目录后，新建和导入都会写入新目录。'
+                ? 'QClaw、Marvis、Hohu、OpenClaw、Codex 和 Claude Code 将使用同一个本机学生知识库目录。默认根目录为 D:\\学生资料；更换资料根目录后，新建和导入都会写入新目录。'
                 : String(compatibility?.message ?? '在 Android APK 中可查看完整兼容性检测结果。')}
             </div>
+            {isWindows && (
+              <div className="source-list">
+                <div className="mini-heading">
+                  <strong>Agent 工具适配器</strong>
+                  <span>展示工具能力、规则文件模板和打开方式，后续新增工具只需补配置。</span>
+                </div>
+                {agentToolOptions.map((tool) => (
+                  <div className="source-row" key={tool.id}>
+                    <strong>{tool.name} · {tool.category}</strong>
+                    <span>{tool.openMode} · {tool.supportsScheduledTask ? '支持定时任务' : '手动/外部执行'} · {tool.supportsConversationExport ? '支持对话导出' : '不支持对话导出'}</span>
+                    <small>规则文件：{tool.ruleFiles.join('、')}；记忆：{tool.supportsMemoryFile ? '文件' : '粘贴'}；人设：{tool.supportsPersonaFile ? '文件' : '粘贴'}</small>
+                  </div>
+                ))}
+              </div>
+            )}
             {isWindows && (
               <div className="actions">
                 <button className="secondary compact" onClick={refreshInstallStatus}>

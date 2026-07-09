@@ -5,13 +5,15 @@ const os = require('os');
 const http = require('http');
 const https = require('https');
 const crypto = require('crypto');
-const { spawn, execFileSync } = require('child_process');
+const { spawn, spawnSync, execFileSync } = require('child_process');
 
 let mainWindow;
 let qclawOpened = false;
 let marvisOpened = false;
 let hohuOpened = false;
 let openclawOpened = false;
+let codexOpened = false;
+let claudeCodeOpened = false;
 let obsidianOpened = false;
 let hostServer = null;
 let hostServiceStartedAt = '';
@@ -19,9 +21,9 @@ let hostServiceLastError = '';
 let todayUploadCount = 0;
 let uploadCountDate = new Date().toISOString().slice(0, 10);
 
-const APP_VERSION = '0.5.3';
+const APP_VERSION = '0.5.4';
 const DEFAULT_HOST_PORT = 18777;
-const AGENT_TOOL_IDS = ['qclaw', 'marvis', 'hohu', 'openclaw'];
+const AGENT_TOOL_IDS = ['qclaw', 'marvis', 'hohu', 'openclaw', 'codex', 'claude-code'];
 const MAX_UPLOAD_BYTES = 100 * 1024 * 1024;
 const ALLOWED_UPLOAD_EXTENSIONS = new Set([
   '.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp',
@@ -1132,6 +1134,30 @@ function agentRulesDir(student) {
   return path.join(student.rootPath || getStudentRootDir(student.name), 'Agent规则');
 }
 
+function agentKnowledgeCenterDir(student) {
+  return path.join(student.rootPath || getStudentRootDir(student.name), 'Agent知识管理');
+}
+
+function agentSourceRegistryDir(student) {
+  return path.join(agentKnowledgeCenterDir(student), '来源记录');
+}
+
+function agentSourceRegistryPath(student) {
+  return path.join(agentSourceRegistryDir(student), 'source-registry.json');
+}
+
+function agentConversationDir(student) {
+  return path.join(agentKnowledgeCenterDir(student), '对话历史');
+}
+
+function agentConversationImportsDir(student) {
+  return path.join(agentConversationDir(student), 'imports');
+}
+
+function agentConversationExtractsDir(student) {
+  return path.join(agentConversationDir(student), 'extracts');
+}
+
 function agentMemoryUnifiedPath(student) {
   return path.join(agentMemoryDir(student), 'UnifiedMemory.md');
 }
@@ -1185,6 +1211,50 @@ function readJsonFile(file, fallback) {
     return JSON.parse(fs.readFileSync(file, 'utf8'));
   } catch {
     return fallback;
+  }
+}
+
+function appendAgentSourceRecord(student, record) {
+  try {
+    fs.mkdirSync(agentSourceRegistryDir(student), { recursive: true });
+    const file = agentSourceRegistryPath(student);
+    const existing = readJsonFile(file, { version: 1, records: [] });
+    const records = Array.isArray(existing.records) ? existing.records : [];
+    const now = new Date().toISOString();
+    records.unshift({
+      id: record.id || `${Date.now()}-${Math.random().toString(16).slice(2)}`,
+      studentId: String(student.id || ''),
+      assetType: record.assetType || 'memory',
+      tool: AGENT_TOOL_IDS.includes(record.tool) ? record.tool : 'qclaw',
+      sourceType: record.sourceType || 'manualPaste',
+      sourcePath: record.sourcePath || '',
+      targetPath: record.targetPath || '',
+      importedAt: record.importedAt || now,
+      hash: record.hash || '',
+      confidence: Number.isFinite(Number(record.confidence)) ? Number(record.confidence) : undefined,
+      confirmed: record.confirmed !== false,
+      notes: record.notes || '',
+    });
+    writeJsonFile(file, { version: 1, updatedAt: now, records: records.slice(0, 500) });
+  } catch {
+    // Source registry should never block the primary user action.
+  }
+}
+
+function getAgentSourceRegistry(studentId) {
+  try {
+    const student = findStudentByKey(studentId);
+    if (!student) return JSON.stringify({ ok: false, message: '未找到学生。' });
+    fs.mkdirSync(agentSourceRegistryDir(student), { recursive: true });
+    const registry = readJsonFile(agentSourceRegistryPath(student), { version: 1, records: [] });
+    return JSON.stringify({
+      ok: true,
+      path: agentSourceRegistryPath(student),
+      records: Array.isArray(registry.records) ? registry.records : [],
+      message: '已读取来源记录。',
+    });
+  } catch (error) {
+    return JSON.stringify({ ok: false, message: `读取来源记录失败：${error.message}` });
   }
 }
 
@@ -1306,6 +1376,15 @@ function saveAgentMemorySource(studentId, tool, content, mode) {
     const file = path.join(dir, 'current.Memory.md');
     const snapshot = snapshotCurrentFile(file, path.join(dir, 'snapshots'));
     fs.writeFileSync(file, String(content || ''), 'utf8');
+    appendAgentSourceRecord(student, {
+      assetType: 'memory',
+      tool: safeTool,
+      sourceType: mode === 'file' ? 'fileImport' : 'manualPaste',
+      targetPath: file,
+      hash: sha1Text(content || ''),
+      confidence: mode === 'file' ? 80 : 70,
+      notes: '保存来源 Memory',
+    });
     refreshAgentCenterIndexes(student);
     return JSON.stringify({ ok: true, currentPath: file, snapshot, hash: sha1Text(content || ''), message: '已保存来源 Memory。' });
   } catch (error) {
@@ -1355,6 +1434,15 @@ function saveAgentSoulSource(studentId, tool, content) {
     const file = path.join(dir, 'current.Soul.md');
     const snapshot = snapshotCurrentFile(file, path.join(dir, 'snapshots'));
     fs.writeFileSync(file, String(content || ''), 'utf8');
+    appendAgentSourceRecord(student, {
+      assetType: 'persona',
+      tool: safeTool,
+      sourceType: 'manualPaste',
+      targetPath: file,
+      hash: sha1Text(content || ''),
+      confidence: 70,
+      notes: '保存来源 Soul',
+    });
     refreshAgentCenterIndexes(student);
     return JSON.stringify({ ok: true, currentPath: file, snapshot, hash: sha1Text(content || ''), message: '已保存来源 Soul 备份。' });
   } catch (error) {
@@ -1394,7 +1482,7 @@ function compareAgentSoulSource(studentId, tool) {
   }
 }
 
-const DEFAULT_AGENT_RULE_FILES = ['AGENT.md', 'Claude.md', 'Claud.md', 'QClaw.md', 'OpenClaw.md', 'Marvis.md', 'Hohu.md', 'RULES.md'];
+const DEFAULT_AGENT_RULE_FILES = ['AGENT.md', 'AGENTS.md', 'CLAUDE.md', 'Codex.md', 'Claude.md', 'Claud.md', 'QClaw.md', 'OpenClaw.md', 'Marvis.md', 'Hohu.md', 'RULES.md'];
 
 function normalizeRuleFileName(fileName) {
   const safe = path.basename(String(fileName || '').trim());
@@ -1466,6 +1554,15 @@ function saveAgentRuleFile(studentId, fileName, content) {
     const file = path.join(root, safeName);
     const snapshot = snapshotCurrentFile(file, path.join(agentRulesDir(student), 'snapshots'));
     fs.writeFileSync(file, String(content || ''), 'utf8');
+    appendAgentSourceRecord(student, {
+      assetType: 'rule',
+      tool: student.agentTool || 'qclaw',
+      sourceType: snapshot ? 'manualPaste' : 'manualPaste',
+      targetPath: file,
+      hash: sha1Text(content || ''),
+      confidence: 100,
+      notes: `保存规则文件 ${safeName}`,
+    });
     return JSON.stringify({
       ok: true,
       fileName: safeName,
@@ -1476,6 +1573,63 @@ function saveAgentRuleFile(studentId, fileName, content) {
     });
   } catch (error) {
     return JSON.stringify({ ok: false, message: `保存规则文件失败：${error.message}` });
+  }
+}
+
+function ruleFileTemplateIntro(student, fileName) {
+  const cleanName = sanitizeName(student.name);
+  const p = {
+    root: student.rootPath || getStudentRootDir(cleanName),
+    raw: student.rawPath || getRawDir(cleanName),
+    summary: student.summaryPath || getSummaryDir(cleanName),
+    agent: student.agentPath || path.join(student.rootPath || getStudentRootDir(cleanName), 'AGENT.md'),
+    output: student.outputPath || path.join(student.rootPath || getStudentRootDir(cleanName), '输出结果'),
+  };
+  const lower = String(fileName || '').toLowerCase();
+  if (lower === 'agents.md') {
+    return `# ${cleanName} 教育管家项目说明（AGENTS.md）\n\n本目录是学生「${cleanName}」的 AI 教育管家知识库，供 Codex 或其他本地项目型 Agent 使用。\n\n## 工作规则\n\n- 该 Agent 的工作协议使用：${p.agent}\n- 后续所有学习资料消化都围绕该学生知识库执行。\n- 原始资料库是输入层：${p.raw}\n- 学情分析汇总是知识层：${p.summary}\n- 输出结果是临时交付层：${p.output}\n- 所有新增、修改和总结必须遵守 AGENT.md 中的证据追溯、索引更新和 log 记录规则。\n\n`;
+  }
+  if (lower === 'claude.md' || lower === 'claud.md') {
+    return `# ${cleanName} 教育管家 Claude Code 规则\n\n本文件用于 Claude Code 在该学生知识库目录中工作。\n\n## 工作规则\n\n该 Agent 的工作协议使用：${p.agent}\n后续所有学习资料消化都围绕该学生知识库执行。\n\n请优先读取 AGENT.md，再处理原始资料库与学情分析汇总。不要移动、删除用户原始资料。\n\n`;
+  }
+  if (lower === 'codex.md') {
+    return `# ${cleanName} 教育管家 Codex 规则\n\n## 项目定位\n\n该目录是学生「${cleanName}」的长期教育知识库。Codex 应作为本地项目型 Agent，在该目录内协助整理、消化、检索和生成学情档案。\n\n## 工作规则\n\n该 Agent 的工作协议使用：${p.agent}\n后续所有学习资料消化都围绕该学生知识库执行。\n\n`;
+  }
+  return defaultRuleFileContent(student, fileName);
+}
+
+function generateAgentRuleFile(studentId, fileName) {
+  try {
+    const student = findStudentByKey(studentId);
+    if (!student) return JSON.stringify({ ok: false, message: '未找到学生。' });
+    const safeName = normalizeRuleFileName(fileName);
+    if (!safeName) return JSON.stringify({ ok: false, message: '规则文件名无效。' });
+    const root = student.rootPath || getStudentRootDir(student.name);
+    const agentPath = student.agentPath || path.join(root, 'AGENT.md');
+    const agentContent = fs.existsSync(agentPath) ? fs.readFileSync(agentPath, 'utf8') : defaultRuleFileContent(student, 'AGENT.md');
+    const generated = `${ruleFileTemplateIntro(student, safeName).trim()}\n\n## AGENT.md 基础协议摘录\n\n\`\`\`markdown\n${agentContent.slice(0, 12000)}\n\`\`\`\n`;
+    return saveAgentRuleFile(studentId, safeName, generated);
+  } catch (error) {
+    return JSON.stringify({ ok: false, message: `生成规则模板失败：${error.message}` });
+  }
+}
+
+function compareAgentRuleFiles(studentId, baseName, targetName) {
+  try {
+    const student = findStudentByKey(studentId);
+    if (!student) return JSON.stringify({ ok: false, message: '未找到学生。' });
+    const root = student.rootPath || getStudentRootDir(student.name);
+    const baseFile = path.join(root, normalizeRuleFileName(baseName) || 'AGENT.md');
+    const targetFile = path.join(root, normalizeRuleFileName(targetName) || '');
+    const base = fs.existsSync(baseFile) ? fs.readFileSync(baseFile, 'utf8') : '';
+    const target = fs.existsSync(targetFile) ? fs.readFileSync(targetFile, 'utf8') : '';
+    const baseLines = new Set(base.split(/\r?\n/).map((line) => line.trim()).filter(Boolean));
+    const targetLines = new Set(target.split(/\r?\n/).map((line) => line.trim()).filter(Boolean));
+    const onlyBase = Array.from(baseLines).filter((line) => !targetLines.has(line)).slice(0, 120);
+    const onlyTarget = Array.from(targetLines).filter((line) => !baseLines.has(line)).slice(0, 120);
+    return JSON.stringify({ ok: true, onlyBase, onlyTarget, message: onlyBase.length || onlyTarget.length ? '检测到规则差异。' : '未检测到明显差异。' });
+  } catch (error) {
+    return JSON.stringify({ ok: false, message: `对比规则文件失败：${error.message}` });
   }
 }
 
@@ -1492,12 +1646,14 @@ function agentKnowledgeScanRoots() {
   const home = os.homedir();
   const roaming = process.env.APPDATA || path.join(home, 'AppData', 'Roaming');
   const local = process.env.LOCALAPPDATA || path.join(home, 'AppData', 'Local');
-  const toolNames = ['QClaw', 'OpenClaw', 'Hohu', 'Marvis'];
+  const toolNames = ['QClaw', 'OpenClaw', 'Hohu', 'Marvis', 'Codex', 'Claude'];
   const roots = [
     path.join(home, '.qclaw'),
     path.join(home, '.openclaw'),
     path.join(home, '.hohu'),
     path.join(home, '.marvis'),
+    path.join(home, '.codex'),
+    path.join(home, '.claude'),
   ];
   for (const base of [roaming, local]) {
     for (const toolName of toolNames) roots.push(path.join(base, toolName));
@@ -1526,6 +1682,8 @@ function shouldSkipAgentScanDir(name) {
 
 function inferAgentToolFromPath(filePath) {
   const lower = String(filePath || '').toLowerCase();
+  if (lower.includes('claude')) return 'claude-code';
+  if (lower.includes('codex')) return 'codex';
   if (lower.includes('openclaw')) return 'openclaw';
   if (lower.includes('marvis')) return 'marvis';
   if (lower.includes('hohu')) return 'hohu';
@@ -1535,6 +1693,8 @@ function inferAgentToolFromPath(filePath) {
 
 function inferAgentKnowledgeKind(fileName) {
   const lower = String(fileName || '').toLowerCase();
+  if (/^(agents|agent|claude|claud|codex|qclaw|openclaw|marvis|hohu|rules?)\.(md|txt)$/i.test(lower)) return 'rule';
+  if (/(conversation|chat|history|transcript|对话|聊天|会话)/i.test(lower)) return 'conversation';
   if (/^(memory|long[-_ ]?term[-_ ]?memory|memories)\.(md|txt|json)$/.test(lower) || lower.includes('memory')) return 'memory';
   if (/^(soul|persona|role|system|prompt|profile)\.(md|txt|json)$/.test(lower) || /(soul|persona|role|system|人设|角色)/i.test(lower)) return 'soul';
   return '';
@@ -1571,7 +1731,7 @@ function scoreAgentKnowledgeCandidate(student, filePath, fileName, kind, content
   if (lowerText.includes('agent.md')) add(22, '内容提到 AGENT.md');
   if (/原始资料库|学情分析汇总|学习资料消化|知识库/.test(text)) add(20, '内容包含教育管家知识库关键词');
   if (AGENT_TOOL_IDS.some((tool) => lowerPath.includes(tool))) add(14, '路径命中 Agent 工具目录');
-  if ((kind === 'memory' && lowerName === 'memory.md') || (kind === 'soul' && lowerName === 'soul.md')) add(12, '文件名为标准名称');
+  if ((kind === 'memory' && lowerName === 'memory.md') || (kind === 'soul' && lowerName === 'soul.md') || (kind === 'rule' && /^(agent|agents|claude|codex)\.md$/.test(lowerName))) add(12, '文件名为标准名称');
   if (lowerPath.includes(String(student.name || '').toLowerCase())) add(10, '路径包含学生姓名');
   return { score, reasons };
 }
@@ -1651,7 +1811,7 @@ function importAgentKnowledgeFile(studentId, filePath, tool, kind) {
     const student = findStudentByKey(studentId);
     if (!student) return JSON.stringify({ ok: false, message: '未找到学生。' });
     const safeTool = AGENT_TOOL_IDS.includes(tool) ? tool : inferAgentToolFromPath(filePath);
-    const safeKind = kind === 'soul' ? 'soul' : 'memory';
+    const safeKind = ['soul', 'rule', 'conversation'].includes(kind) ? kind : 'memory';
     if (!filePath || !fs.existsSync(filePath) || !fs.statSync(filePath).isFile()) {
       return JSON.stringify({ ok: false, message: '候选文件不存在或不可读取。' });
     }
@@ -1660,11 +1820,153 @@ function importAgentKnowledgeFile(studentId, filePath, tool, kind) {
       return JSON.stringify({ ok: false, message: '候选文件过大，请手动打开确认后粘贴导入。' });
     }
     const content = fs.readFileSync(filePath, 'utf8');
-    return safeKind === 'soul'
-      ? saveAgentSoulSource(student.id, safeTool, content)
-      : saveAgentMemorySource(student.id, safeTool, content, 'file');
+    if (safeKind === 'soul') return saveAgentSoulSource(student.id, safeTool, content);
+    if (safeKind === 'rule') return saveAgentRuleFile(student.id, path.basename(filePath), content);
+    if (safeKind === 'conversation') return saveAgentConversationImport(student.id, content, safeTool, filePath);
+    return saveAgentMemorySource(student.id, safeTool, content, 'file');
   } catch (error) {
     return JSON.stringify({ ok: false, message: `导入 Agent 文件失败：${error.message}` });
+  }
+}
+
+function conversationIndexPath(student) {
+  return path.join(agentConversationDir(student), 'conversation-index.json');
+}
+
+function refreshConversationIndex(student, entry) {
+  fs.mkdirSync(agentConversationDir(student), { recursive: true });
+  const indexFile = conversationIndexPath(student);
+  const current = readJsonFile(indexFile, { version: 1, imports: [], extracts: [] });
+  if (entry?.type === 'import') current.imports = [entry, ...(Array.isArray(current.imports) ? current.imports : [])].slice(0, 200);
+  if (entry?.type === 'extract') current.extracts = [entry, ...(Array.isArray(current.extracts) ? current.extracts : [])].slice(0, 200);
+  current.updatedAt = new Date().toISOString();
+  writeJsonFile(indexFile, current);
+  return current;
+}
+
+function getAgentConversationCenter(studentId) {
+  try {
+    const student = findStudentByKey(studentId);
+    if (!student) return JSON.stringify({ ok: false, message: '未找到学生。' });
+    fs.mkdirSync(agentConversationImportsDir(student), { recursive: true });
+    fs.mkdirSync(agentConversationExtractsDir(student), { recursive: true });
+    const index = readJsonFile(conversationIndexPath(student), { version: 1, imports: [], extracts: [] });
+    return JSON.stringify({
+      ok: true,
+      conversationDir: agentConversationDir(student),
+      importsDir: agentConversationImportsDir(student),
+      extractsDir: agentConversationExtractsDir(student),
+      index,
+      message: '已读取对话历史中心。',
+    });
+  } catch (error) {
+    return JSON.stringify({ ok: false, message: `读取对话历史失败：${error.message}` });
+  }
+}
+
+function saveAgentConversationImport(studentId, content, tool = 'qclaw', sourcePath = '') {
+  try {
+    const student = findStudentByKey(studentId);
+    if (!student) return JSON.stringify({ ok: false, message: '未找到学生。' });
+    const safeTool = AGENT_TOOL_IDS.includes(tool) ? tool : 'qclaw';
+    fs.mkdirSync(agentConversationImportsDir(student), { recursive: true });
+    const file = path.join(agentConversationImportsDir(student), `${timestampForFilename()}-${safeTool}-conversation.md`);
+    fs.writeFileSync(file, String(content || ''), 'utf8');
+    const hash = sha1Text(content || '');
+    refreshConversationIndex(student, {
+      type: 'import',
+      path: file,
+      sourcePath,
+      tool: safeTool,
+      importedAt: new Date().toISOString(),
+      hash,
+      size: Buffer.byteLength(String(content || ''), 'utf8'),
+    });
+    appendAgentSourceRecord(student, {
+      assetType: 'conversation',
+      tool: safeTool,
+      sourceType: sourcePath ? 'fileImport' : 'manualPaste',
+      sourcePath,
+      targetPath: file,
+      hash,
+      confidence: 70,
+      notes: '导入对话历史',
+    });
+    return JSON.stringify({ ok: true, path: file, message: '已保存对话历史导入记录。' });
+  } catch (error) {
+    return JSON.stringify({ ok: false, message: `保存对话历史失败：${error.message}` });
+  }
+}
+
+function appendTextSection(file, title, content) {
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  const section = `\n\n## ${title}\n\n${String(content || '').trim()}\n`;
+  fs.appendFileSync(file, section, 'utf8');
+}
+
+function saveConversationExtract(studentId, extractJson, tool = 'qclaw') {
+  try {
+    const student = findStudentByKey(studentId);
+    if (!student) return JSON.stringify({ ok: false, message: '未找到学生。' });
+    const safeTool = AGENT_TOOL_IDS.includes(tool) ? tool : 'qclaw';
+    ensureAgentCenter(student);
+    let parsed = {};
+    try {
+      parsed = JSON.parse(String(extractJson || '{}'));
+    } catch {
+      return JSON.stringify({ ok: false, message: '提取结果不是有效 JSON。' });
+    }
+    fs.mkdirSync(agentConversationExtractsDir(student), { recursive: true });
+    const extractFile = path.join(agentConversationExtractsDir(student), `${timestampForFilename()}-${safeTool}-extract.json`);
+    writeJsonFile(extractFile, parsed);
+    const memoryItems = Array.isArray(parsed.memoryCandidates) ? parsed.memoryCandidates : Array.isArray(parsed.memories) ? parsed.memories : [];
+    const soulItems = Array.isArray(parsed.soulSuggestions) ? parsed.soulSuggestions : Array.isArray(parsed.personaSuggestions) ? parsed.personaSuggestions : [];
+    const qaItems = Array.isArray(parsed.qaHighlights) ? parsed.qaHighlights : Array.isArray(parsed.qa) ? parsed.qa : [];
+    const todoItems = Array.isArray(parsed.todos) ? parsed.todos : Array.isArray(parsed.followUps) ? parsed.followUps : [];
+    const changed = [];
+    if (memoryItems.length) {
+      appendTextSection(agentMemoryUnifiedPath(student), `对话提取记忆 ${new Date().toLocaleString('zh-CN')}`, memoryItems.map((item) => `- ${typeof item === 'string' ? item : JSON.stringify(item)}`).join('\n'));
+      changed.push('UnifiedMemory.md');
+    }
+    if (soulItems.length) {
+      appendTextSection(agentSoulUnifiedPath(student), `对话提取人设建议 ${new Date().toLocaleString('zh-CN')}`, soulItems.map((item) => `- ${typeof item === 'string' ? item : JSON.stringify(item)}`).join('\n'));
+      changed.push('UnifiedSoul.md');
+    }
+    if (qaItems.length) {
+      const qaDir = path.join(student.summaryPath || getSummaryDir(student.name), '咨询精华库');
+      fs.mkdirSync(qaDir, { recursive: true });
+      const qaFile = path.join(qaDir, `对话提取-${timestampForFilename()}.md`);
+      fs.writeFileSync(qaFile, `# ${student.name} 对话咨询精华\n\n${qaItems.map((item) => `- ${typeof item === 'string' ? item : JSON.stringify(item)}`).join('\n')}\n`, 'utf8');
+      changed.push(qaFile);
+    }
+    if (todoItems.length) {
+      const todoFile = path.join(student.outputPath || path.join(student.rootPath || getStudentRootDir(student.name), '输出结果'), '待办.md');
+      appendTextSection(todoFile, `对话提取待办 ${new Date().toLocaleString('zh-CN')}`, todoItems.map((item) => `- ${typeof item === 'string' ? item : JSON.stringify(item)}`).join('\n'));
+      changed.push(todoFile);
+    }
+    refreshConversationIndex(student, {
+      type: 'extract',
+      path: extractFile,
+      tool: safeTool,
+      importedAt: new Date().toISOString(),
+      hash: sha1Text(JSON.stringify(parsed)),
+      memoryCount: memoryItems.length,
+      soulCount: soulItems.length,
+      qaCount: qaItems.length,
+      todoCount: todoItems.length,
+    });
+    appendAgentSourceRecord(student, {
+      assetType: 'extract',
+      tool: safeTool,
+      sourceType: 'conversationExtract',
+      targetPath: extractFile,
+      hash: sha1Text(JSON.stringify(parsed)),
+      confidence: 80,
+      notes: `对话提取写入：${changed.join('、')}`,
+    });
+    return JSON.stringify({ ok: true, path: extractFile, changed, message: `已保存提取结果，写入 ${changed.length} 项教育资产。` });
+  } catch (error) {
+    return JSON.stringify({ ok: false, message: `保存对话提取失败：${error.message}` });
   }
 }
 
@@ -1696,7 +1998,7 @@ function toHostStudent(student) {
   const bindingStatus = String(student.remoteBindingStatus || 'unbound').toLowerCase();
   const remoteBindingStatus = ['unbound', 'pending', 'bound'].includes(bindingStatus) ? bindingStatus : 'unbound';
   const tool = String(student.agentTool || 'qclaw').toLowerCase();
-  const agentTool = ['qclaw', 'marvis', 'hohu', 'openclaw'].includes(tool) ? tool : 'qclaw';
+  const agentTool = AGENT_TOOL_IDS.includes(tool) ? tool : 'qclaw';
   const mode = String(student.knowledgeBaseMode || 'standard').toLowerCase() === 'adopted' ? 'adopted' : 'standard';
   const rootPath = student.rootPath || getStudentRootDir(cleanName);
   const rawPath = student.rawPath || getRawDir(cleanName);
@@ -2204,6 +2506,19 @@ function normalizeExePath(value) {
   return match ? match[1] : '';
 }
 
+function findExecutableInPath(names) {
+  for (const name of names) {
+    try {
+      const result = spawnSync('where.exe', [name], { encoding: 'utf8', windowsHide: true });
+      const first = String(result.stdout || '').split(/\r?\n/).map((line) => line.trim()).find(Boolean);
+      if (first && fs.existsSync(first)) return first;
+    } catch {
+      // Ignore PATH lookup failures.
+    }
+  }
+  return '';
+}
+
 function findAgentToolInstall(toolId) {
   const toolMeta = {
     qclaw: {
@@ -2250,10 +2565,39 @@ function findAgentToolInstall(toolId) {
         path.join(os.homedir(), 'AppData', 'Local', 'OpenClaw'),
       ],
     },
+    codex: {
+      displayNeedle: 'codex',
+      exeNames: ['codex.cmd', 'codex.exe', 'codex'],
+      roots: [
+        path.join(os.homedir(), 'AppData', 'Roaming', 'npm'),
+        path.join(os.homedir(), 'AppData', 'Local', 'Programs', 'codex'),
+        path.join(os.homedir(), '.codex'),
+      ],
+    },
+    'claude-code': {
+      displayNeedle: 'claude',
+      exeNames: ['claude.cmd', 'claude.exe', 'claude'],
+      roots: [
+        path.join(os.homedir(), 'AppData', 'Roaming', 'npm'),
+        path.join(os.homedir(), 'AppData', 'Local', 'Programs', 'claude'),
+        path.join(os.homedir(), '.claude'),
+      ],
+    },
   };
   const meta = toolMeta[toolId] || toolMeta.qclaw;
   const displayNeedle = meta.displayNeedle;
   const exeNames = meta.exeNames;
+  if (toolId === 'codex' || toolId === 'claude-code') {
+    const pathExe = findExecutableInPath(exeNames);
+    if (pathExe) {
+      return {
+        installed: true,
+        version: '',
+        exePath: pathExe,
+        installLocation: path.dirname(pathExe),
+      };
+    }
+  }
   const registryEntries = queryUninstallEntries().filter((entry) => {
     const haystack = `${entry.DisplayName || ''} ${entry.InstallLocation || ''} ${entry.DisplayIcon || ''}`.toLowerCase();
     return haystack.includes(displayNeedle);
@@ -2346,15 +2690,19 @@ function getAgentToolInstallStatus() {
   const marvis = findAgentToolInstall('marvis');
   const hohu = findAgentToolInstall('hohu');
   const openclaw = findAgentToolInstall('openclaw');
+  const codex = findAgentToolInstall('codex');
+  const claudeCode = findAgentToolInstall('claude-code');
   const tailscale = findTailscaleInstall();
   return JSON.stringify({
     qclaw,
     marvis,
     hohu,
     openclaw,
+    codex,
+    claudeCode,
     tailscale,
-    anyInstalled: Boolean(qclaw.installed || marvis.installed || hohu.installed || openclaw.installed),
-    recommendedTool: qclaw.installed ? 'qclaw' : (openclaw.installed ? 'openclaw' : (hohu.installed ? 'hohu' : (marvis.installed ? 'marvis' : 'qclaw'))),
+    anyInstalled: Boolean(qclaw.installed || marvis.installed || hohu.installed || openclaw.installed || codex.installed || claudeCode.installed),
+    recommendedTool: qclaw.installed ? 'qclaw' : (openclaw.installed ? 'openclaw' : (hohu.installed ? 'hohu' : (marvis.installed ? 'marvis' : (codex.installed ? 'codex' : (claudeCode.installed ? 'claude-code' : 'qclaw'))))),
   });
 }
 
@@ -2426,6 +2774,26 @@ function openApp(appName) {
     }
     return true;
   }
+  if (appName === 'codex') {
+    codexOpened = true;
+    const exe = findAgentToolInstall('codex').exePath;
+    if (exe && fs.existsSync(exe)) {
+      shell.openPath(defaultStudentBaseDir()).catch(() => {});
+    } else {
+      shell.openExternal('https://chatgpt.com/codex').catch(() => {});
+    }
+    return true;
+  }
+  if (appName === 'claude-code') {
+    claudeCodeOpened = true;
+    const exe = findAgentToolInstall('claude-code').exePath;
+    if (exe && fs.existsSync(exe)) {
+      shell.openPath(defaultStudentBaseDir()).catch(() => {});
+    } else {
+      shell.openExternal('https://www.anthropic.com/claude-code').catch(() => {});
+    }
+    return true;
+  }
   if (appName === 'tailscale') {
     const exe = findTailscaleInstall().exePath;
     if (exe && fs.existsSync(exe)) {
@@ -2442,6 +2810,19 @@ function openExternalUrl(url) {
   if (!url || !/^https?:\/\//i.test(url)) return false;
   shell.openExternal(url).catch(() => {});
   return true;
+}
+
+function openStudentRootDir(studentId) {
+  try {
+    const student = findStudentByKey(studentId);
+    const dir = student?.rootPath || (student ? getStudentRootDir(student.name) : '');
+    if (!dir) return JSON.stringify({ ok: false, message: '未找到学生知识库目录。' });
+    fs.mkdirSync(dir, { recursive: true });
+    shell.openPath(dir).catch(() => {});
+    return JSON.stringify({ ok: true, path: dir, message: '已打开学生知识库目录。' });
+  } catch (error) {
+    return JSON.stringify({ ok: false, message: `打开学生知识库目录失败：${error.message}` });
+  }
 }
 
 function pickArchiveRoot() {
@@ -3138,7 +3519,7 @@ ipcMain.on('bridge:initStudentWorkspace', (event, studentName, agentMd, indexMd,
 ipcMain.on('bridge:openApp', (event, appName) => { event.returnValue = openApp(appName); });
 ipcMain.on('bridge:openExternalUrl', (event, url) => { event.returnValue = openExternalUrl(url); });
 ipcMain.on('bridge:getAppStatus', (event) => {
-  event.returnValue = JSON.stringify({ qclawOpened, marvisOpened, hohuOpened, openclawOpened, obsidianOpened });
+  event.returnValue = JSON.stringify({ qclawOpened, marvisOpened, hohuOpened, openclawOpened, codexOpened, claudeCodeOpened, obsidianOpened });
 });
 ipcMain.on('bridge:getStorageConfig', (event) => { event.returnValue = getStorageConfig(); });
 ipcMain.on('bridge:getTemplateCenter', (event, systemTemplatesJson) => { event.returnValue = getTemplateCenter(systemTemplatesJson); });
@@ -3155,6 +3536,13 @@ ipcMain.on('bridge:scanAgentKnowledgeFiles', (event, studentId) => { event.retur
 ipcMain.on('bridge:importAgentKnowledgeFile', (event, studentId, filePath, tool, kind) => { event.returnValue = importAgentKnowledgeFile(studentId, filePath, tool, kind); });
 ipcMain.on('bridge:getAgentRules', (event, studentId) => { event.returnValue = getAgentRules(studentId); });
 ipcMain.on('bridge:saveAgentRuleFile', (event, studentId, fileName, content) => { event.returnValue = saveAgentRuleFile(studentId, fileName, content); });
+ipcMain.on('bridge:generateAgentRuleFile', (event, studentId, fileName) => { event.returnValue = generateAgentRuleFile(studentId, fileName); });
+ipcMain.on('bridge:compareAgentRuleFiles', (event, studentId, baseName, targetName) => { event.returnValue = compareAgentRuleFiles(studentId, baseName, targetName); });
+ipcMain.on('bridge:getAgentSourceRegistry', (event, studentId) => { event.returnValue = getAgentSourceRegistry(studentId); });
+ipcMain.on('bridge:getAgentConversationCenter', (event, studentId) => { event.returnValue = getAgentConversationCenter(studentId); });
+ipcMain.on('bridge:saveAgentConversationImport', (event, studentId, content, tool, sourcePath) => { event.returnValue = saveAgentConversationImport(studentId, content, tool, sourcePath); });
+ipcMain.on('bridge:saveConversationExtract', (event, studentId, extractJson, tool) => { event.returnValue = saveConversationExtract(studentId, extractJson, tool); });
+ipcMain.on('bridge:openStudentRootDir', (event, studentId) => { event.returnValue = openStudentRootDir(studentId); });
 ipcMain.on('bridge:getLicenseStatus', (event) => { event.returnValue = getLicenseStatus(); });
 ipcMain.on('bridge:activateLicense', (event, code) => { event.returnValue = activateLicense(code); });
 ipcMain.on('bridge:deactivateLicense', (event) => { event.returnValue = deactivateLicense(); });

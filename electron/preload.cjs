@@ -55,6 +55,12 @@ contextBridge.exposeInMainWorld('AndroidBridge', {
   compareAgentSoulSource(studentId, tool) {
     return ipcRenderer.sendSync('bridge:compareAgentSoulSource', studentId, tool);
   },
+  scanAgentKnowledgeFiles(studentId) {
+    return ipcRenderer.sendSync('bridge:scanAgentKnowledgeFiles', studentId);
+  },
+  importAgentKnowledgeFile(studentId, filePath, tool, kind) {
+    return ipcRenderer.sendSync('bridge:importAgentKnowledgeFile', studentId, filePath, tool, kind);
+  },
   getLicenseStatus() {
     return ipcRenderer.sendSync('bridge:getLicenseStatus');
   },

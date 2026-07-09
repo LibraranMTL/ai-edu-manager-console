@@ -28,6 +28,7 @@ import './styles.css';
 type Section = 'home' | 'init' | 'new' | 'inbox' | 'archive' | 'qa' | 'memory' | 'soul' | 'tasks' | 'settings';
 type ThemeName = 'blue' | 'pink' | 'green' | 'purple' | 'orange';
 type AgentToolId = 'qclaw' | 'marvis' | 'hohu' | 'openclaw';
+type AgentKnowledgeKind = 'memory' | 'soul';
 type StorageMode = 'app_private' | 'downloads_export' | 'obsidian_vault';
 type KnowledgeBaseMode = 'standard' | 'adopted';
 type AgentBindingMode = 'subAgent' | 'mainChat';
@@ -127,6 +128,8 @@ type AndroidBridge = {
   saveAgentSoulSource?: (studentId: string, tool: AgentToolId, content: string) => string;
   saveUnifiedSoul?: (studentId: string, content: string) => string;
   compareAgentSoulSource?: (studentId: string, tool: AgentToolId) => string;
+  scanAgentKnowledgeFiles?: (studentId: string) => string;
+  importAgentKnowledgeFile?: (studentId: string, filePath: string, tool: AgentToolId, kind: AgentKnowledgeKind) => string;
   getLicenseStatus?: () => string;
   activateLicense?: (code: string) => string;
   deactivateLicense?: () => string;
@@ -367,8 +370,8 @@ type KnowledgeBaseScanResult = {
 const storageKey = 'edu-manager-launcher.students.v2';
 const themeStorageKey = 'edu-manager-launcher.theme.v1';
 const archiveKeywordStorageKey = 'edu-manager-launcher.archive-keywords.v1';
-const currentVersionCode = 60;
-const currentVersionName = '0.5.0';
+const currentVersionCode = 61;
+const currentVersionName = '0.5.1';
 const updateManifestUrl = [
   'https://www.greatbg.com/download/edu-manager-version.json',
   'http://www.greatbg.com/download/edu-manager-version.json',
@@ -498,6 +501,17 @@ type AgentCenterState = {
   memoryIndex?: { sources?: Array<{ tool: AgentToolId; currentPath: string; lastSyncedAt?: string; hash?: string; exists?: boolean }> };
   soulIndex?: { sources?: Array<{ tool: AgentToolId; currentPath: string; lastSyncedAt?: string; lastCheckedAt?: string; hash?: string; exists?: boolean }> };
   message?: string;
+};
+type AgentKnowledgeCandidate = {
+  path: string;
+  name: string;
+  tool: AgentToolId;
+  kind: AgentKnowledgeKind;
+  score: number;
+  reasons?: string[];
+  mtime?: string;
+  size?: number;
+  preview?: string;
 };
 
 const templateKeys: TemplateKey[] = ['AGENT.md', 'Soul.md', 'Memory.md', 'init-step-1.md', 'init-step-2.md', 'digest-prompt.md', 'consult-prompt.md'];
@@ -1557,6 +1571,9 @@ function App() {
   const [templateMessage, setTemplateMessage] = useState('');
   const [agentCenter, setAgentCenter] = useState<AgentCenterState | null>(null);
   const [agentCenterMessage, setAgentCenterMessage] = useState('');
+  const [agentKnowledgeMenuOpen, setAgentKnowledgeMenuOpen] = useState(false);
+  const [agentScanCandidates, setAgentScanCandidates] = useState<AgentKnowledgeCandidate[]>([]);
+  const [agentScanMessage, setAgentScanMessage] = useState('');
   const [memorySourceTool, setMemorySourceTool] = useState<AgentToolId>('qclaw');
   const [memorySourceText, setMemorySourceText] = useState('');
   const [unifiedMemoryText, setUnifiedMemoryText] = useState('');
@@ -1607,6 +1624,8 @@ function App() {
   const activeAgentOpened = toolOpenState[activeAgentTool.id];
   const isWindows = storageConfig.platform === 'windows';
   const shouldBlockForAgentInstall = isWindows && installStatus ? !installStatus.anyInstalled : false;
+  const memoryScanCandidates = agentScanCandidates.filter((candidate) => candidate.kind === 'memory');
+  const soulScanCandidates = agentScanCandidates.filter((candidate) => candidate.kind === 'soul');
   const filteredMarkdownFiles = useMemo(
     () =>
       selectedArchiveCategory === 'all'
@@ -2640,6 +2659,49 @@ function App() {
     }
   };
 
+  const scanAgentKnowledgeFiles = (kind?: AgentKnowledgeKind) => {
+    if (!selectedStudent) return;
+    const raw = bridge()?.scanAgentKnowledgeFiles?.(selectedStudent.id);
+    if (!raw) {
+      setAgentScanMessage('当前环境不支持扫描 Agent 文件。');
+      return;
+    }
+    try {
+      const result = JSON.parse(raw) as { ok?: boolean; candidates?: AgentKnowledgeCandidate[]; message?: string };
+      setAgentScanCandidates(Array.isArray(result.candidates) ? result.candidates : []);
+      const kindLabel = kind === 'soul' ? '人设' : kind === 'memory' ? '记忆' : '记忆/人设';
+      setAgentScanMessage(result.message || (result.ok ? `已完成 Agent ${kindLabel}文件扫描。` : '扫描 Agent 文件失败。'));
+    } catch {
+      setAgentScanMessage('扫描 Agent 文件结果解析失败。');
+    }
+  };
+
+  const importAgentCandidate = (candidate: AgentKnowledgeCandidate) => {
+    if (!selectedStudent) return;
+    const raw = bridge()?.importAgentKnowledgeFile?.(selectedStudent.id, candidate.path, candidate.tool, candidate.kind);
+    if (!raw) {
+      setAgentCenterMessage('当前环境不支持导入 Agent 文件。');
+      return;
+    }
+    try {
+      const result = JSON.parse(raw) as { ok?: boolean; message?: string };
+      const kindLabel = candidate.kind === 'soul' ? 'Soul' : 'Memory';
+      setAgentCenterMessage(result.message || (result.ok ? `已导入来源 ${kindLabel}。` : `导入来源 ${kindLabel} 失败。`));
+      if (result.ok) {
+        if (candidate.kind === 'memory') {
+          setMemorySourceTool(candidate.tool);
+          setMemorySourceText(candidate.preview || '');
+        } else {
+          setSoulSourceTool(candidate.tool);
+          setSoulSourceText(candidate.preview || '');
+        }
+      }
+      refreshAgentCenter();
+    } catch {
+      setAgentCenterMessage('导入 Agent 文件结果解析失败。');
+    }
+  };
+
   const copyStudentProfileUpdatePrompt = async (student: Student) => {
     const lines = [
       `/更新学生资料 ${student.name}`,
@@ -3366,10 +3428,12 @@ function App() {
     { id: 'inbox' as const, label: '资料收集与处理', icon: FileDown },
     { id: 'archive' as const, label: '查看教育档案', icon: BookOpen },
     { id: 'qa' as const, label: '教育管家问答', icon: MessageCircle },
-    { id: 'memory' as const, label: 'Agent 记忆管理', icon: Clipboard },
-    { id: 'soul' as const, label: 'Agent 设定管理', icon: Bot },
     { id: 'tasks' as const, label: '定时任务', icon: Clock3 },
     { id: 'settings' as const, label: '系统设置', icon: Settings },
+  ];
+  const knowledgeNavItems = [
+    { id: 'memory' as const, label: 'Agent 记忆管理', icon: Clipboard },
+    { id: 'soul' as const, label: 'Agent 设定管理', icon: Bot },
   ];
 
   return (
@@ -3406,6 +3470,33 @@ function App() {
               </button>
             );
           })}
+          <div className="nav-group-block">
+            <button
+              className={activeSection === 'memory' || activeSection === 'soul' ? 'nav-item nav-group active' : 'nav-item nav-group'}
+              onClick={() => setAgentKnowledgeMenuOpen((value) => !value)}
+            >
+              <Bot size={19} />
+              <span>智能体知识管理</span>
+              <span className="nav-chevron">{agentKnowledgeMenuOpen ? '收起' : '展开'}</span>
+            </button>
+            {agentKnowledgeMenuOpen && (
+              <div className="sub-nav-list">
+                {knowledgeNavItems.map((item) => {
+                  const Icon = item.icon;
+                  return (
+                    <button
+                      className={activeSection === item.id ? 'nav-item sub-nav-item active' : 'nav-item sub-nav-item'}
+                      key={item.id}
+                      onClick={() => setActiveSection(item.id)}
+                    >
+                      <Icon size={17} />
+                      <span>{item.label}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+          </div>
         </nav>
 
         <section className="student-rail">
@@ -4538,6 +4629,7 @@ function App() {
               </button>
               <button className="secondary" onClick={() => {
                 refreshAgentCenter(selectedStudent.id);
+                setAgentKnowledgeMenuOpen(true);
                 setActiveSection('memory');
               }}>
                 <RefreshCw size={18} />
@@ -4671,11 +4763,34 @@ function App() {
             </label>
             <div className="actions compact-actions">
               <button className="primary" onClick={saveMemorySource}>保存来源 Memory</button>
+              <button className="secondary" onClick={() => scanAgentKnowledgeFiles('memory')}>扫描 Agent 记忆文件</button>
               <button className="secondary" onClick={mergeMemory}>合并为 UnifiedMemory.md</button>
               <button className="secondary" onClick={saveUnifiedMemoryText}>保存统一记忆</button>
               <button className="secondary" onClick={() => copyText(unifiedMemoryText, '已复制统一记忆。')}>复制统一记忆</button>
               <button className="secondary" onClick={() => refreshAgentCenter()}>刷新</button>
             </div>
+            {memoryScanCandidates.length > 0 && (
+              <div className="candidate-list">
+                <div className="mini-heading">
+                  <strong>扫描到的 Memory 候选</strong>
+                  <span>按学生姓名、Agent 名称、AGENT.md 路径和知识库关键词自动评分。</span>
+                </div>
+                {memoryScanCandidates.map((candidate) => (
+                  <div className="candidate-row" key={candidate.path}>
+                    <div className="candidate-main">
+                      <strong>{candidate.name}</strong>
+                      <span>{getAgentToolProfile(candidate.tool).name} · 分数 {candidate.score} · {formatFileSize(candidate.size || 0)}{candidate.mtime ? ` · ${new Date(candidate.mtime).toLocaleString()}` : ''}</span>
+                      <small>{candidate.path}</small>
+                    </div>
+                    <div className="candidate-reasons">
+                      {(candidate.reasons || ['文件名匹配记忆文件']).slice(0, 4).map((reason) => <span key={reason}>{reason}</span>)}
+                    </div>
+                    {candidate.preview && <pre className="candidate-preview">{candidate.preview}</pre>}
+                    <button className="secondary compact" onClick={() => importAgentCandidate(candidate)}>导入为来源 Memory</button>
+                  </div>
+                ))}
+              </div>
+            )}
             <label className="wide-field">
               UnifiedMemory.md
               <textarea className="large-textarea" value={unifiedMemoryText} onChange={(event) => setUnifiedMemoryText(event.target.value)} />
@@ -4689,6 +4804,7 @@ function App() {
                 </div>
               ))}
             </div>
+            {agentScanMessage && activeSection === 'memory' && <div className="notice muted">{agentScanMessage}</div>}
             {agentCenterMessage && <div className="notice">{agentCenterMessage}</div>}
           </section>
         )}
@@ -4727,12 +4843,35 @@ function App() {
             </label>
             <div className="actions compact-actions">
               <button className="primary" onClick={saveSoulSource}>保存来源 Soul 备份</button>
+              <button className="secondary" onClick={() => scanAgentKnowledgeFiles('soul')}>扫描 Agent 人设文件</button>
               <button className="secondary" onClick={compareSoulSource}>对比来源与统一 Soul</button>
               <button className="secondary" onClick={saveUnifiedSoulText}>保存统一 Soul</button>
               <button className="secondary" onClick={() => copyText(unifiedSoulText, '已复制统一 Soul。')}>复制统一 Soul</button>
               <button className="secondary" onClick={() => copyStudentWorkRule(selectedStudent)}>复制工作规则</button>
               <button className="secondary" onClick={() => refreshAgentCenter()}>刷新</button>
             </div>
+            {soulScanCandidates.length > 0 && (
+              <div className="candidate-list">
+                <div className="mini-heading">
+                  <strong>扫描到的 Soul / 人设候选</strong>
+                  <span>候选来自 QClaw、OpenClaw、Hohu、Marvis 常见本机配置目录。</span>
+                </div>
+                {soulScanCandidates.map((candidate) => (
+                  <div className="candidate-row" key={candidate.path}>
+                    <div className="candidate-main">
+                      <strong>{candidate.name}</strong>
+                      <span>{getAgentToolProfile(candidate.tool).name} · 分数 {candidate.score} · {formatFileSize(candidate.size || 0)}{candidate.mtime ? ` · ${new Date(candidate.mtime).toLocaleString()}` : ''}</span>
+                      <small>{candidate.path}</small>
+                    </div>
+                    <div className="candidate-reasons">
+                      {(candidate.reasons || ['文件名匹配人设文件']).slice(0, 4).map((reason) => <span key={reason}>{reason}</span>)}
+                    </div>
+                    {candidate.preview && <pre className="candidate-preview">{candidate.preview}</pre>}
+                    <button className="secondary compact" onClick={() => importAgentCandidate(candidate)}>导入为来源 Soul</button>
+                  </div>
+                ))}
+              </div>
+            )}
             <label className="wide-field">
               UnifiedSoul.md
               <textarea className="large-textarea" value={unifiedSoulText} onChange={(event) => setUnifiedSoulText(event.target.value)} />
@@ -4758,6 +4897,7 @@ function App() {
                 </div>
               ))}
             </div>
+            {agentScanMessage && activeSection === 'soul' && <div className="notice muted">{agentScanMessage}</div>}
             {agentCenterMessage && <div className="notice">{agentCenterMessage}</div>}
           </section>
         )}

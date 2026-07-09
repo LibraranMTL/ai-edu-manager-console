@@ -236,6 +236,34 @@ button:disabled {
   background: #dff2ed;
 }
 
+.nav-group-block {
+  display: grid;
+  gap: 6px;
+}
+
+.nav-group {
+  width: 100%;
+}
+
+.nav-chevron {
+  margin-left: auto;
+  color: var(--accent-strong);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.sub-nav-list {
+  display: grid;
+  gap: 6px;
+  padding-left: 22px;
+}
+
+.sub-nav-item {
+  min-height: 42px;
+  padding-left: 14px;
+  font-size: 14px;
+}
+
 .student-rail {
   display: flex;
   flex: 1;
@@ -926,6 +954,74 @@ select:focus {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.candidate-list {
+  display: grid;
+  gap: 12px;
+  max-height: 520px;
+  overflow: auto;
+  padding: 10px;
+  border: 1px solid var(--panel-border);
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.58);
+}
+
+.candidate-row {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid var(--panel-border);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.82);
+}
+
+.candidate-main {
+  display: grid;
+  gap: 4px;
+}
+
+.candidate-main strong {
+  color: var(--text-main);
+}
+
+.candidate-main span,
+.candidate-main small {
+  color: var(--text-muted);
+  font-weight: 700;
+}
+
+.candidate-main small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.candidate-reasons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.candidate-reasons span {
+  padding: 4px 8px;
+  border-radius: 999px;
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.candidate-preview {
+  max-height: 150px;
+  overflow: auto;
+  margin: 0;
+  padding: 10px;
+  border: 1px solid var(--panel-border);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.72);
+  color: var(--text-muted);
+  white-space: pre-wrap;
 }
 
 .diff-grid {

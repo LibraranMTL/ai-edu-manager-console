@@ -19,7 +19,7 @@ let hostServiceLastError = '';
 let todayUploadCount = 0;
 let uploadCountDate = new Date().toISOString().slice(0, 10);
 
-const APP_VERSION = '0.5.0';
+const APP_VERSION = '0.5.1';
 const DEFAULT_HOST_PORT = 18777;
 const AGENT_TOOL_IDS = ['qclaw', 'marvis', 'hohu', 'openclaw'];
 const MAX_UPLOAD_BYTES = 100 * 1024 * 1024;
@@ -1379,6 +1379,195 @@ function compareAgentSoulSource(studentId, tool) {
     return JSON.stringify({ ok: true, onlyUnified, onlySource, message: onlyUnified.length || onlySource.length ? '检测到差异。' : '未检测到明显差异。' });
   } catch (error) {
     return JSON.stringify({ ok: false, message: `对比 Soul 失败：${error.message}` });
+  }
+}
+
+const AGENT_KNOWLEDGE_SCAN = {
+  maxDepth: 6,
+  maxFiles: 1200,
+  maxEntries: 12000,
+  maxCandidates: 80,
+  maxReadBytes: 256 * 1024,
+  maxImportBytes: 5 * 1024 * 1024,
+};
+
+function agentKnowledgeScanRoots() {
+  const home = os.homedir();
+  const roaming = process.env.APPDATA || path.join(home, 'AppData', 'Roaming');
+  const local = process.env.LOCALAPPDATA || path.join(home, 'AppData', 'Local');
+  const toolNames = ['QClaw', 'OpenClaw', 'Hohu', 'Marvis'];
+  const roots = [
+    path.join(home, '.qclaw'),
+    path.join(home, '.openclaw'),
+    path.join(home, '.hohu'),
+    path.join(home, '.marvis'),
+  ];
+  for (const base of [roaming, local]) {
+    for (const toolName of toolNames) roots.push(path.join(base, toolName));
+  }
+  return Array.from(new Set(roots)).filter((root) => fs.existsSync(root));
+}
+
+function shouldSkipAgentScanDir(name) {
+  return [
+    '.git',
+    'node_modules',
+    'cache',
+    'code cache',
+    'gpucache',
+    'shadercache',
+    'logs',
+    'log',
+    'tmp',
+    'temp',
+    'crashpad',
+    'blob_storage',
+    'session storage',
+    'service worker',
+  ].includes(String(name || '').toLowerCase());
+}
+
+function inferAgentToolFromPath(filePath) {
+  const lower = String(filePath || '').toLowerCase();
+  if (lower.includes('openclaw')) return 'openclaw';
+  if (lower.includes('marvis')) return 'marvis';
+  if (lower.includes('hohu')) return 'hohu';
+  if (lower.includes('qclaw')) return 'qclaw';
+  return 'qclaw';
+}
+
+function inferAgentKnowledgeKind(fileName) {
+  const lower = String(fileName || '').toLowerCase();
+  if (/^(memory|long[-_ ]?term[-_ ]?memory|memories)\.(md|txt|json)$/.test(lower) || lower.includes('memory')) return 'memory';
+  if (/^(soul|persona|role|system|prompt|profile)\.(md|txt|json)$/.test(lower) || /(soul|persona|role|system|人设|角色)/i.test(lower)) return 'soul';
+  return '';
+}
+
+function readTextPreview(filePath, maxBytes = AGENT_KNOWLEDGE_SCAN.maxReadBytes) {
+  const stat = fs.statSync(filePath);
+  const bytes = Math.min(stat.size, maxBytes);
+  const fd = fs.openSync(filePath, 'r');
+  try {
+    const buffer = Buffer.alloc(bytes);
+    fs.readSync(fd, buffer, 0, bytes, 0);
+    return buffer.toString('utf8').replace(/\u0000/g, '').trim();
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
+function scoreAgentKnowledgeCandidate(student, filePath, fileName, kind, content) {
+  const lowerPath = String(filePath || '').toLowerCase();
+  const lowerName = String(fileName || '').toLowerCase();
+  const text = String(content || '');
+  const lowerText = text.toLowerCase();
+  const reasons = [];
+  let score = 0;
+  const add = (points, reason) => {
+    score += points;
+    reasons.push(reason);
+  };
+  if (student.name && text.includes(student.name)) add(60, `内容包含学生姓名「${student.name}」`);
+  if (student.agentName && text.includes(student.agentName)) add(50, '内容包含 Agent 名称');
+  if (student.rootPath && text.includes(student.rootPath)) add(45, '内容包含知识库根目录');
+  if (student.agentPath && text.includes(student.agentPath)) add(35, '内容包含 AGENT.md 完整路径');
+  if (lowerText.includes('agent.md')) add(22, '内容提到 AGENT.md');
+  if (/原始资料库|学情分析汇总|学习资料消化|知识库/.test(text)) add(20, '内容包含教育管家知识库关键词');
+  if (AGENT_TOOL_IDS.some((tool) => lowerPath.includes(tool))) add(14, '路径命中 Agent 工具目录');
+  if ((kind === 'memory' && lowerName === 'memory.md') || (kind === 'soul' && lowerName === 'soul.md')) add(12, '文件名为标准名称');
+  if (lowerPath.includes(String(student.name || '').toLowerCase())) add(10, '路径包含学生姓名');
+  return { score, reasons };
+}
+
+function walkAgentKnowledgeFiles(root, results, stats, depth = 0) {
+  if (
+    depth > AGENT_KNOWLEDGE_SCAN.maxDepth ||
+    stats.files >= AGENT_KNOWLEDGE_SCAN.maxFiles ||
+    stats.entries >= AGENT_KNOWLEDGE_SCAN.maxEntries
+  ) return;
+  let entries = [];
+  try {
+    entries = fs.readdirSync(root, { withFileTypes: true });
+  } catch {
+    return;
+  }
+  for (const entry of entries) {
+    stats.entries += 1;
+    if (stats.files >= AGENT_KNOWLEDGE_SCAN.maxFiles || stats.entries >= AGENT_KNOWLEDGE_SCAN.maxEntries) return;
+    const fullPath = path.join(root, entry.name);
+    if (entry.isDirectory()) {
+      if (!shouldSkipAgentScanDir(entry.name)) walkAgentKnowledgeFiles(fullPath, results, stats, depth + 1);
+      continue;
+    }
+    if (!entry.isFile()) continue;
+    const kind = inferAgentKnowledgeKind(entry.name);
+    if (!kind) continue;
+    stats.files += 1;
+    results.push({ path: fullPath, name: entry.name, kind });
+  }
+}
+
+function scanAgentKnowledgeFiles(studentId) {
+  try {
+    const student = findStudentByKey(studentId);
+    if (!student) return JSON.stringify({ ok: false, message: '未找到学生。' });
+    const roots = agentKnowledgeScanRoots();
+    const rawCandidates = [];
+    const stats = { files: 0, entries: 0 };
+    for (const root of roots) walkAgentKnowledgeFiles(root, rawCandidates, stats);
+    const candidates = [];
+    for (const item of rawCandidates) {
+      try {
+        const stat = fs.statSync(item.path);
+        if (stat.size > AGENT_KNOWLEDGE_SCAN.maxImportBytes) continue;
+        const preview = readTextPreview(item.path);
+        const scored = scoreAgentKnowledgeCandidate(student, item.path, item.name, item.kind, preview);
+        candidates.push({
+          ...item,
+          tool: inferAgentToolFromPath(item.path),
+          score: scored.score,
+          reasons: scored.reasons,
+          mtime: stat.mtime.toISOString(),
+          size: stat.size,
+          preview: preview.slice(0, 900),
+        });
+      } catch {
+        // Ignore files that disappear or cannot be decoded during scanning.
+      }
+    }
+    candidates.sort((a, b) => b.score - a.score || String(b.mtime).localeCompare(String(a.mtime)));
+    return JSON.stringify({
+      ok: true,
+      scannedRoots: roots,
+      candidates: candidates.slice(0, AGENT_KNOWLEDGE_SCAN.maxCandidates),
+      message: roots.length
+        ? `已扫描 ${roots.length} 个工具目录，找到 ${candidates.length} 个候选记忆/人设文件。`
+        : '未找到常见 Agent 工具目录，可手动粘贴导入。',
+    });
+  } catch (error) {
+    return JSON.stringify({ ok: false, message: `扫描 Agent 记忆文件失败：${error.message}` });
+  }
+}
+
+function importAgentKnowledgeFile(studentId, filePath, tool, kind) {
+  try {
+    const student = findStudentByKey(studentId);
+    if (!student) return JSON.stringify({ ok: false, message: '未找到学生。' });
+    const safeTool = AGENT_TOOL_IDS.includes(tool) ? tool : inferAgentToolFromPath(filePath);
+    const safeKind = kind === 'soul' ? 'soul' : 'memory';
+    if (!filePath || !fs.existsSync(filePath) || !fs.statSync(filePath).isFile()) {
+      return JSON.stringify({ ok: false, message: '候选文件不存在或不可读取。' });
+    }
+    const stat = fs.statSync(filePath);
+    if (stat.size > AGENT_KNOWLEDGE_SCAN.maxImportBytes) {
+      return JSON.stringify({ ok: false, message: '候选文件过大，请手动打开确认后粘贴导入。' });
+    }
+    const content = fs.readFileSync(filePath, 'utf8');
+    return safeKind === 'soul'
+      ? saveAgentSoulSource(student.id, safeTool, content)
+      : saveAgentMemorySource(student.id, safeTool, content, 'file');
+  } catch (error) {
+    return JSON.stringify({ ok: false, message: `导入 Agent 文件失败：${error.message}` });
   }
 }
 
@@ -2865,6 +3054,8 @@ ipcMain.on('bridge:saveUnifiedMemory', (event, studentId, content) => { event.re
 ipcMain.on('bridge:saveAgentSoulSource', (event, studentId, tool, content) => { event.returnValue = saveAgentSoulSource(studentId, tool, content); });
 ipcMain.on('bridge:saveUnifiedSoul', (event, studentId, content) => { event.returnValue = saveUnifiedSoul(studentId, content); });
 ipcMain.on('bridge:compareAgentSoulSource', (event, studentId, tool) => { event.returnValue = compareAgentSoulSource(studentId, tool); });
+ipcMain.on('bridge:scanAgentKnowledgeFiles', (event, studentId) => { event.returnValue = scanAgentKnowledgeFiles(studentId); });
+ipcMain.on('bridge:importAgentKnowledgeFile', (event, studentId, filePath, tool, kind) => { event.returnValue = importAgentKnowledgeFile(studentId, filePath, tool, kind); });
 ipcMain.on('bridge:getLicenseStatus', (event) => { event.returnValue = getLicenseStatus(); });
 ipcMain.on('bridge:activateLicense', (event, code) => { event.returnValue = activateLicense(code); });
 ipcMain.on('bridge:deactivateLicense', (event) => { event.returnValue = deactivateLicense(); });

@@ -31,6 +31,8 @@ logs/
 tmp/
 temp/
 .cache/
+tools/license-admin/license-records.json
+tools/license-admin/license-records-*.csv
 .DS_Store
 Thumbs.db
 

@@ -1,0 +1,133 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>AI教育管家授权管理工具</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <main class="app-shell">
+      <section class="hero">
+        <div>
+          <p class="eyebrow">内部工具</p>
+          <h1>AI教育管家授权管理工具</h1>
+          <p>用于内部生成客户授权码、保存发码记录、查询与导出记录。请勿随客户版主机控制台一起发布。</p>
+        </div>
+        <div class="hero-meta">
+          <span id="versionText">v0.1.0</span>
+          <button id="openRecordsFolderBtn" class="ghost">打开记录目录</button>
+        </div>
+      </section>
+
+      <section class="layout">
+        <form id="issueForm" class="panel">
+          <div class="panel-title">
+            <div>
+              <p class="eyebrow">Issue</p>
+              <h2>生成授权码</h2>
+            </div>
+            <button type="submit" class="primary">生成并复制</button>
+          </div>
+
+          <label>
+            客户名称
+            <input id="customerName" autocomplete="off" placeholder="例如：张三家庭 / 某某机构" />
+          </label>
+
+          <label>
+            联系方式
+            <input id="contact" autocomplete="off" placeholder="微信、手机号或邮箱" />
+          </label>
+
+          <label>
+            订单号
+            <input id="orderNo" autocomplete="off" placeholder="可选：支付宝 / 微信 / 合同编号" />
+          </label>
+
+          <div class="grid-3">
+            <label>
+              套餐
+              <select id="plan">
+                <option value="FAMILY">家庭版</option>
+                <option value="PRO">专业版</option>
+                <option value="ORG">机构版</option>
+                <option value="TRIAL">试用版</option>
+              </select>
+            </label>
+
+            <label>
+              授权学生数
+              <input id="studentLimit" type="number" min="1" max="9999" value="3" />
+            </label>
+
+            <label>
+              授权平板数
+              <input id="deviceLimit" type="number" min="1" max="9999" value="3" />
+            </label>
+          </div>
+
+          <div class="grid-2">
+            <label>
+              到期日期
+              <input id="expiresAt" type="date" />
+            </label>
+            <label class="check-row">
+              <input id="permanent" type="checkbox" checked />
+              永久授权
+            </label>
+          </div>
+
+          <label>
+            备注
+            <textarea id="note" rows="4" placeholder="例如：首年服务、换机补发、续费记录等"></textarea>
+          </label>
+
+          <div class="result-box">
+            <span>最近生成授权码</span>
+            <code id="latestCode">尚未生成</code>
+            <button id="copyLatestBtn" type="button" class="secondary">复制授权码</button>
+          </div>
+        </form>
+
+        <section class="panel records-panel">
+          <div class="panel-title">
+            <div>
+              <p class="eyebrow">Records</p>
+              <h2>发码记录</h2>
+            </div>
+            <div class="actions">
+              <button id="exportCsvBtn" class="secondary">导出 CSV</button>
+              <button id="exportJsonBtn" class="secondary">导出 JSON</button>
+            </div>
+          </div>
+
+          <div class="toolbar">
+            <input id="searchInput" placeholder="搜索客户、联系方式、订单号、授权码或备注" />
+            <button id="refreshBtn" class="ghost">刷新</button>
+          </div>
+
+          <div id="message" class="message" hidden></div>
+
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>客户</th>
+                  <th>套餐</th>
+                  <th>授权</th>
+                  <th>到期</th>
+                  <th>状态</th>
+                  <th>授权码</th>
+                  <th>操作</th>
+                </tr>
+              </thead>
+              <tbody id="recordsBody"></tbody>
+            </table>
+          </div>
+        </section>
+      </section>
+    </main>
+    <script src="./renderer.js"></script>
+  </body>
+</html>

@@ -77,8 +77,8 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
     static final int REQUEST_TAKE_PHOTO = 8103;
     static final int REQUEST_SCAN_PAIR = 8104;
     static final int REQUEST_CAPTURE_PAIR_QR = 8105;
-    static final String VERSION_NAME = "0.4.9";
-    static final int VERSION_CODE = 59;
+    static final String VERSION_NAME = "0.5.1";
+    static final int VERSION_CODE = 61;
     static final String UPDATE_MANIFEST_URL = "https://www.greatbg.com/download/edu-manager-version.json";
     static final String TAILSCALE_APK_URL = "https://www.greatbg.com/download/tailscalev1.88.1_nbwe_7273.com.apk";
     static final String USER_AGREEMENT_URL = "https://www.greatbg.com/download/agreement.html";
@@ -120,6 +120,7 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
     TextView connectionHintText;
     TextView uploadResultText;
     TextView uploadQueueText;
+    TextView digestStatusText;
     TextView archiveTitle;
     TextView markdownView;
     WebView markdownWebView;
@@ -143,6 +144,7 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
     Button tailscaleButton;
     Button settingsToggleButton;
     Button quickUploadButton;
+    Button quickReportButton;
     Button quickArchiveButton;
     Button quickContactButton;
     Button connectionSettingsButton;
@@ -158,6 +160,11 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
     Button fontSmallButton;
     Button fontLargeButton;
     Button openObsidianButton;
+    Button reportProfileButton;
+    Button reportDailyButton;
+    Button reportChangesButton;
+    Button reportStageButton;
+    Button refreshReportsButton;
     Button openWeComButton;
     Button openQQButton;
     Button openQClawButton;
@@ -172,6 +179,7 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
     LinearLayout settingsCard;
     LinearLayout studentCard;
     LinearLayout contactCard;
+    LinearLayout reportCard;
     LinearLayout archiveCard;
     boolean connectionSettingsVisible = false;
     boolean settingsVisible = false;
@@ -306,18 +314,21 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
         root.addView(quickCard);
         quickCard.addView(label("常用操作"));
         LinearLayout quickRow = row();
+        quickReportButton = button("学情报告", false);
         quickUploadButton = button("上传资料到主机", true);
         quickArchiveButton = button("查看学情档案", false);
         quickContactButton = button("联系教育管家", false);
         connectionSettingsButton = button("连接设置", false);
         settingsToggleButton = button("系统设置", false);
         quickRow.addView(quickUploadButton);
+        quickRow.addView(quickReportButton);
         quickRow.addView(quickArchiveButton);
         quickRow.addView(quickContactButton);
         quickRow.addView(connectionSettingsButton);
         quickRow.addView(settingsToggleButton);
         quickCard.addView(quickRow);
         quickUploadButton.setOnClickListener(this);
+        quickReportButton.setOnClickListener(this);
         quickArchiveButton.setOnClickListener(this);
         quickContactButton.setOnClickListener(this);
         connectionSettingsButton.setOnClickListener(this);
@@ -482,6 +493,13 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
         uploadQueueText.setPadding(0, dp(4), 0, 0);
         studentCard.addView(uploadQueueText);
 
+        digestStatusText = new TextView(this);
+        digestStatusText.setText("资料状态：请选择学生。");
+        digestStatusText.setTextSize(12);
+        digestStatusText.setTextColor(Color.rgb(104, 121, 117));
+        digestStatusText.setPadding(0, dp(4), 0, 0);
+        studentCard.addView(digestStatusText);
+
         contactCard = card();
         root.addView(contactCard);
         contactCard.addView(label("联系教育管家"));
@@ -518,6 +536,28 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
         openMarvisButton.setEnabled(true);
         copyConsultPromptButton.setEnabled(false);
         copyDigestPromptButton.setEnabled(false);
+
+        reportCard = card();
+        root.addView(reportCard);
+        reportCard.addView(label("学情报告"));
+        reportCard.addView(label("四份核心报告会从 Windows 主机读取，并支持离线缓存。"));
+        LinearLayout reportRow = row();
+        refreshReportsButton = button("刷新报告", false);
+        reportProfileButton = button("整体画像", true);
+        reportDailyButton = button("每日行动建议", false);
+        reportChangesButton = button("历史变化", false);
+        reportStageButton = button("阶段总结", false);
+        reportRow.addView(refreshReportsButton);
+        reportRow.addView(reportProfileButton);
+        reportRow.addView(reportDailyButton);
+        reportRow.addView(reportChangesButton);
+        reportRow.addView(reportStageButton);
+        reportCard.addView(reportRow);
+        refreshReportsButton.setOnClickListener(this);
+        reportProfileButton.setOnClickListener(this);
+        reportDailyButton.setOnClickListener(this);
+        reportChangesButton.setOnClickListener(this);
+        reportStageButton.setOnClickListener(this);
 
         archiveCard = card();
         root.addView(archiveCard);
@@ -640,6 +680,10 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
             openTailscaleApp();
         } else if (view == quickUploadButton) {
             pickMaterial();
+        } else if (view == quickReportButton) {
+            loadLearningReport("profile");
+            scrollToView(reportCard);
+            status("正在读取学情报告。");
         } else if (view == quickArchiveButton) {
             loadArchiveFiles();
             scrollToView(archiveCard);
@@ -666,6 +710,16 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
             loadStudents();
         } else if (view == refreshArchiveButton) {
             loadArchiveFiles();
+        } else if (view == refreshReportsButton) {
+            loadLearningReports();
+        } else if (view == reportProfileButton) {
+            loadLearningReport("profile");
+        } else if (view == reportDailyButton) {
+            loadLearningReport("daily");
+        } else if (view == reportChangesButton) {
+            loadLearningReport("changes");
+        } else if (view == reportStageButton) {
+            loadLearningReport("stage");
         } else if (view == copyButton) {
             copyMarkdown();
         } else if (view == markdownModeButton) {
@@ -751,6 +805,7 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
         } else if (parent == studentSpinner) {
             selectedStudent = position >= 0 && position < students.size() ? students.get(position) : null;
             updateSharedUploadButton();
+            updateDigestStatusCard();
             updateContactCard();
             loadArchiveFiles();
         } else if (parent == archiveCategorySpinner) {
@@ -809,6 +864,54 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
         String token = apiToken();
         if (base.length() == 0 || token.length() == 0) return;
         new Thread(new LoadArchiveFileTask(this, base, token, selectedStudent.id, file)).start();
+    }
+
+    void loadLearningReports() {
+        if (selectedStudent == null) {
+            status("请先选择学生。");
+            return;
+        }
+        String base = normalizedBaseUrl();
+        String token = apiToken();
+        if (base.length() == 0 || token.length() == 0) {
+            status("请先连接主机。");
+            return;
+        }
+        status("正在同步学情报告...");
+        new Thread(new LoadLearningReportsTask(this, base, token, selectedStudent.id)).start();
+    }
+
+    void loadLearningReport(String reportId) {
+        if (selectedStudent == null) {
+            status("请先选择学生。");
+            return;
+        }
+        String base = normalizedBaseUrl();
+        String token = apiToken();
+        if (base.length() == 0 || token.length() == 0) {
+            status("请先连接主机。");
+            return;
+        }
+        status("正在读取" + reportTitleForId(reportId) + "...");
+        new Thread(new LoadLearningReportTask(this, base, token, selectedStudent.id, reportId)).start();
+    }
+
+    ArchiveFile reportArchiveFile(String reportId) {
+        return new ArchiveFile(reportTitleForId(reportId) + ".md", "学情报告/" + reportFileNameForId(reportId));
+    }
+
+    String reportTitleForId(String reportId) {
+        if ("changes".equals(reportId)) return "历史变化";
+        if ("daily".equals(reportId)) return "每日行动建议";
+        if ("stage".equals(reportId)) return "阶段总结";
+        return "整体画像";
+    }
+
+    String reportFileNameForId(String reportId) {
+        if ("changes".equals(reportId)) return "历史变化.md";
+        if ("daily".equals(reportId)) return "每日行动建议.md";
+        if ("stage".equals(reportId)) return "阶段总结.md";
+        return "整体画像.md";
     }
 
     void pickMaterial() {
@@ -1324,6 +1427,26 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
 
     void setUploadQueueText(String text) {
         if (uploadQueueText != null) uploadQueueText.setText(text);
+    }
+
+    void updateDigestStatusCard() {
+        if (digestStatusText == null) return;
+        if (selectedStudent == null) {
+            digestStatusText.setText("资料状态：请选择学生。");
+            return;
+        }
+        int waiting = selectedStudent.pendingDigestCount + selectedStudent.submittedDigestCount;
+        StringBuilder text = new StringBuilder();
+        text.append("资料状态：已上传 ").append(selectedStudent.rawFileCount);
+        text.append(" · 待消化 ").append(waiting);
+        text.append(" · 已消化 ").append(selectedStudent.processedDigestCount);
+        text.append(" · 档案 ").append(selectedStudent.archiveFileCount);
+        if (selectedStudent.digestMessage.length() > 0) {
+            text.append("\n").append(selectedStudent.digestMessage);
+        } else if (selectedStudent.digestStatus.length() > 0) {
+            text.append("\n状态：").append(selectedStudent.digestStatus);
+        }
+        digestStatusText.setText(text.toString());
     }
 
     void updateConnectionSummary(String state, int studentCount) {
@@ -2211,6 +2334,7 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
         selectedStudent = students.size() > 0 ? students.get(selectedIndex) : null;
         uploadButton.setEnabled(students.size() > 0);
         updateSharedUploadButton();
+        updateDigestStatusCard();
         updateContactCard();
         updateConnectionSummary("已连接", students.size());
         status(students.size() > 0 ? "已读取 " + students.size() + " 个学生。" : "主机服务中还没有学生。");
@@ -2654,6 +2778,11 @@ class ArchiveFile {
         this.name = json.optString("name", json.optString("path", "Markdown"));
         this.path = json.optString("path", name);
     }
+
+    ArchiveFile(String name, String path) {
+        this.name = name;
+        this.path = path;
+    }
 }
 
 class DownloadEntry {
@@ -2950,6 +3079,85 @@ class LoadArchiveFileTask implements Runnable {
             activity.runOnUiThread(new MarkdownResultTask(activity, studentId, file.path, file.name, content, null));
         } catch (Exception error) {
             activity.runOnUiThread(new MarkdownResultTask(activity, studentId, file.path, file.name, "", error.getMessage()));
+        }
+    }
+}
+
+class LoadLearningReportsTask implements Runnable {
+    private final MainActivity activity;
+    private final String base;
+    private final String token;
+    private final String studentId;
+
+    LoadLearningReportsTask(MainActivity activity, String base, String token, String studentId) {
+        this.activity = activity;
+        this.base = base;
+        this.token = token;
+        this.studentId = studentId;
+    }
+
+    @Override
+    public void run() {
+        try {
+            JSONObject json = activity.getJson(base + "/api/students/" + activity.encode(studentId) + "/reports", token);
+            JSONArray array = json.optJSONArray("reports");
+            int count = 0;
+            if (array != null) {
+                for (int i = 0; i < array.length(); i++) {
+                    JSONObject item = array.optJSONObject(i);
+                    if (item == null) continue;
+                    String reportId = item.optString("id", "");
+                    if (reportId.length() == 0) continue;
+                    try {
+                        String url = base + "/api/students/" + activity.encode(studentId) + "/reports/" + activity.encode(reportId);
+                        JSONObject detail = activity.getJson(url, token);
+                        ArchiveFile file = new ArchiveFile(
+                            detail.optString("title", activity.reportTitleForId(reportId)),
+                            "学情报告/" + detail.optString("fileName", activity.reportFileNameForId(reportId))
+                        );
+                        activity.cacheMarkdown(studentId, file, detail.optString("content", ""));
+                        count++;
+                    } catch (Exception ignored) {
+                    }
+                }
+            }
+            activity.runOnUiThread(new StatusTask(activity, "学情报告已同步：" + count + " 份。"));
+        } catch (Exception error) {
+            activity.runOnUiThread(new StatusTask(activity, "学情报告同步失败：" + error.getMessage()));
+        }
+    }
+}
+
+class LoadLearningReportTask implements Runnable {
+    private final MainActivity activity;
+    private final String base;
+    private final String token;
+    private final String studentId;
+    private final String reportId;
+
+    LoadLearningReportTask(MainActivity activity, String base, String token, String studentId, String reportId) {
+        this.activity = activity;
+        this.base = base;
+        this.token = token;
+        this.studentId = studentId;
+        this.reportId = reportId;
+    }
+
+    @Override
+    public void run() {
+        ArchiveFile fallback = activity.reportArchiveFile(reportId);
+        try {
+            String url = base + "/api/students/" + activity.encode(studentId) + "/reports/" + activity.encode(reportId);
+            JSONObject json = activity.getJson(url, token);
+            ArchiveFile file = new ArchiveFile(
+                json.optString("title", activity.reportTitleForId(reportId)),
+                "学情报告/" + json.optString("fileName", activity.reportFileNameForId(reportId))
+            );
+            String content = json.optString("content", "");
+            activity.cacheMarkdown(studentId, file, content);
+            activity.runOnUiThread(new MarkdownResultTask(activity, studentId, file.path, file.name, content, null));
+        } catch (Exception error) {
+            activity.runOnUiThread(new MarkdownResultTask(activity, studentId, fallback.path, fallback.name, "", error.getMessage()));
         }
     }
 }

@@ -1,16 +1,16 @@
 {
-  "versionCode": 59,
-  "versionName": "0.4.9",
-  "windowsVersionCode": 56,
-  "windowsVersionName": "0.4.6",
-  "windowsUrl": "https://www.greatbg.com/download/AI-edu-manager-console-Windows-0.4.6.exe",
-  "terminalApkUrl": "https://www.greatbg.com/download/AI-edu-manager-tablet-terminal-0.4.9.apk",
-  "tabletTerminalVersionCode": 59,
-  "tabletTerminalVersionName": "0.4.9",
-  "tabletTerminalApkUrl": "https://www.greatbg.com/download/AI-edu-manager-tablet-terminal-0.4.9.apk",
+  "versionCode": 61,
+  "versionName": "0.5.1",
+  "windowsVersionCode": 75,
+  "windowsVersionName": "0.6.5",
+  "windowsUrl": "https://www.greatbg.com/download/AI-edu-manager-console-Windows-0.6.5.zip",
+  "terminalApkUrl": "https://www.greatbg.com/download/AI-edu-manager-tablet-terminal-0.5.1.apk",
+  "tabletTerminalVersionCode": 61,
+  "tabletTerminalVersionName": "0.5.1",
+  "tabletTerminalApkUrl": "https://www.greatbg.com/download/AI-edu-manager-tablet-terminal-0.5.1.apk",
   "managerApkUrl": "https://www.greatbg.com/download/edu-manager-android-0.2.3.apk",
   "managerApkVersionCode": 23,
   "managerApkVersionName": "0.2.3",
-  "apkUrl": "https://www.greatbg.com/download/AI-edu-manager-tablet-terminal-0.4.9.apk",
-  "notes": "Windows 0.4.6 / 平板终端 0.4.9：双端 Markdown 阅读器优化，支持阅读模式与原文模式；优化大量档案文档列表滚动浏览；平板端新增打开 Obsidian 入口。"
+  "apkUrl": "https://www.greatbg.com/download/AI-edu-manager-tablet-terminal-0.5.1.apk",
+  "notes": "Windows 0.6.5：新增多资料来源目录管理，可从多个本机目录扫描学习资料并统一导入学生原始资料库，支持重复文件跳过、导入记录追踪和待消化数量联动。平板终端 0.5.1：增加上传、待消化、已消化和档案状态显示。"
 }

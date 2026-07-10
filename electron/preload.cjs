@@ -10,6 +10,18 @@ contextBridge.exposeInMainWorld('AndroidBridge', {
   importFiles(studentName) {
     return ipcRenderer.sendSync('bridge:importFiles', studentName);
   },
+  pickMaterialSourceDir() {
+    return ipcRenderer.sendSync('bridge:pickMaterialSourceDir');
+  },
+  scanMaterialSources(studentId, sourcesJson) {
+    return ipcRenderer.sendSync('bridge:scanMaterialSources', studentId, sourcesJson);
+  },
+  importMaterialSourceFiles(studentId, pathsJson) {
+    return ipcRenderer.sendSync('bridge:importMaterialSourceFiles', studentId, pathsJson);
+  },
+  getMaterialImportRecords(studentId) {
+    return ipcRenderer.sendSync('bridge:getMaterialImportRecords', studentId);
+  },
   initStudentWorkspace(studentName, agentMd, indexMd, logMd) {
     return ipcRenderer.sendSync('bridge:initStudentWorkspace', studentName, agentMd, indexMd, logMd);
   },
@@ -76,6 +88,9 @@ contextBridge.exposeInMainWorld('AndroidBridge', {
   getAgentSourceRegistry(studentId) {
     return ipcRenderer.sendSync('bridge:getAgentSourceRegistry', studentId);
   },
+  rollbackAgentSourceRecord(studentId, recordId) {
+    return ipcRenderer.sendSync('bridge:rollbackAgentSourceRecord', studentId, recordId);
+  },
   getAgentConversationCenter(studentId) {
     return ipcRenderer.sendSync('bridge:getAgentConversationCenter', studentId);
   },
@@ -120,6 +135,15 @@ contextBridge.exposeInMainWorld('AndroidBridge', {
   },
   readMarkdownFile(documentId) {
     return ipcRenderer.sendSync('bridge:readMarkdownFile', documentId);
+  },
+  listLearningReports(studentId) {
+    return ipcRenderer.sendSync('bridge:listLearningReports', studentId);
+  },
+  readLearningReport(studentId, reportId) {
+    return ipcRenderer.sendSync('bridge:readLearningReport', studentId, reportId);
+  },
+  ensureLearningReports(studentId) {
+    return ipcRenderer.sendSync('bridge:ensureLearningReports', studentId);
   },
   syncStudents(studentsJson) {
     return ipcRenderer.sendSync('bridge:syncStudents', studentsJson);

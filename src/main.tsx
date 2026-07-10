@@ -10,6 +10,7 @@ import {
   Clock3,
   ExternalLink,
   FileDown,
+  FileText,
   FolderOpen,
   Home,
   KeyRound,
@@ -25,7 +26,7 @@ import {
 } from 'lucide-react';
 import './styles.css';
 
-type Section = 'home' | 'init' | 'new' | 'inbox' | 'archive' | 'qa' | 'memory' | 'soul' | 'rules' | 'conversation' | 'tasks' | 'settings';
+type Section = 'home' | 'init' | 'new' | 'inbox' | 'reports' | 'archive' | 'qa' | 'memory' | 'soul' | 'rules' | 'conversation' | 'tasks' | 'settings';
 type ThemeName = 'blue' | 'pink' | 'green' | 'purple' | 'orange';
 type AgentToolId =
   | 'qclaw'
@@ -45,6 +46,7 @@ type KnowledgeBaseMode = 'standard' | 'adopted';
 type AgentBindingMode = 'subAgent' | 'mainChat';
 type InitStepId = 'folder' | 'agent' | 'execute' | 'create' | 'soul' | 'memory' | 'schedule' | 'full';
 type ArchiveCategoryId = 'summary' | 'report' | 'qa' | 'other' | 'all';
+type LearningReportId = 'profile' | 'changes' | 'daily' | 'stage';
 type RuntimePlatform = 'android' | 'windows' | 'web' | string;
 
 type AgentToolProfile = {
@@ -78,6 +80,22 @@ type AgentToolProfile = {
   digestTargetLabel: string;
   personaTargetLabel: string;
   memoryTargetLabel: string;
+};
+
+type AgentToolAdapter = {
+  id: AgentToolId;
+  profile: AgentToolProfile;
+  statusKey: keyof AgentToolInstallStatus | 'claudeCode';
+  openedKey?: 'qclawOpened' | 'marvisOpened' | 'hohuOpened' | 'openclawOpened' | 'codexOpened' | 'claudeCodeOpened';
+  canOpenLocally: boolean;
+  getInstall: (status: AgentToolInstallStatus | null) => AgentToolInstall | undefined;
+  isOpened: (openState: Partial<Record<AgentToolId, boolean>>) => boolean;
+  open: (openHandler: (toolId: AgentToolId) => void) => void;
+  buildInitPrompt: (student: StudentDraft) => string;
+  buildDigestCommand: (student: StudentDraft) => string;
+  buildConsultCommand: (student: Student) => string;
+  buildScanPrompt: (student: Student, kind: AgentKnowledgeKind | 'all') => string;
+  primaryRuleFile: () => string;
 };
 
 type Student = {
@@ -117,6 +135,7 @@ type Student = {
   bundleExportedAt?: string;
   lastImportAt?: string;
   lastDigestCommandAt?: string;
+  materialSources?: MaterialSource[];
   memoryConfig?: {
     unifiedMemoryPath: string;
     lastMergedAt?: string;
@@ -133,12 +152,24 @@ type Student = {
   };
 };
 
+type MaterialSource = {
+  id: string;
+  name: string;
+  path: string;
+  enabled: boolean;
+  lastScannedAt?: string;
+};
+
 type StudentDraft = Omit<Student, 'id' | 'createdAt' | 'status'>;
 
 type AndroidBridge = {
   copyText?: (value: string) => void;
   exportTextFile?: (filename: string, content: string) => string;
   importFiles?: (studentName: string) => boolean;
+  pickMaterialSourceDir?: () => string;
+  scanMaterialSources?: (studentId: string, sourcesJson: string) => string;
+  importMaterialSourceFiles?: (studentId: string, pathsJson: string) => string;
+  getMaterialImportRecords?: (studentId: string) => string;
   importImages?: (studentName: string) => boolean;
   takePhoto?: (studentName: string) => boolean;
   initStudentWorkspace?: (studentName: string, agentMd: string, indexMd: string, logMd: string) => string;
@@ -160,6 +191,7 @@ type AndroidBridge = {
   generateAgentRuleFile?: (studentId: string, fileName: string) => string;
   compareAgentRuleFiles?: (studentId: string, baseName: string, targetName: string) => string;
   getAgentSourceRegistry?: (studentId: string) => string;
+  rollbackAgentSourceRecord?: (studentId: string, recordId: string) => string;
   getAgentConversationCenter?: (studentId: string) => string;
   saveAgentConversationImport?: (studentId: string, content: string, tool: AgentToolId, sourcePath?: string) => string;
   selectAgentConversationFiles?: (studentId: string, tool: AgentToolId) => string;
@@ -177,6 +209,9 @@ type AndroidBridge = {
   getArchiveRootStatus?: () => string;
   listMarkdownFiles?: (studentName: string) => string;
   readMarkdownFile?: (documentId: string) => string;
+  listLearningReports?: (studentId: string) => string;
+  readLearningReport?: (studentId: string, reportId: LearningReportId) => string;
+  ensureLearningReports?: (studentId: string) => string;
   checkUpdate?: (manifestUrl: string, currentVersionCode: number) => boolean;
   downloadAndInstallUpdate?: (apkUrl: string) => boolean;
   scanDownloads?: () => string;
@@ -234,6 +269,33 @@ type MarkdownFile = {
   modified?: number;
 };
 
+type LearningReport = {
+  id: LearningReportId;
+  title: string;
+  fileName: string;
+  path: string;
+  absolutePath?: string;
+  exists?: boolean;
+  updatedAt?: string;
+  status?: string;
+  stale?: boolean;
+  staleDays?: number | null;
+  evidenceOk?: boolean;
+  health?: 'ok' | 'warning' | string;
+  warnings?: string[];
+  summary?: string;
+};
+
+type LearningReportHealth = {
+  ok?: boolean;
+  missingCount?: number;
+  draftCount?: number;
+  staleCount?: number;
+  evidenceMissingCount?: number;
+  warnings?: string[];
+  message?: string;
+};
+
 type DownloadCandidate = {
   id: string;
   path: string;
@@ -242,6 +304,28 @@ type DownloadCandidate = {
   modified: number;
   type: string;
   importable: boolean;
+};
+
+type MaterialSourceCandidate = DownloadCandidate & {
+  sourceId: string;
+  sourceName: string;
+  sha1?: string;
+  status?: 'new' | 'imported' | 'failed' | string;
+  reason?: string;
+};
+
+type MaterialImportRecord = {
+  id: string;
+  studentId: string;
+  sourcePath: string;
+  sourceName: string;
+  targetPath: string;
+  fileName: string;
+  fileSize: number;
+  fileHash?: string;
+  importedAt: string;
+  status: string;
+  reason?: string;
 };
 
 type NativeImportResult = {
@@ -389,6 +473,22 @@ type AgentToolInstallStatus = {
   recommendedTool: AgentToolId;
 };
 
+type CandidateImportReview = {
+  candidates: AgentKnowledgeCandidate[];
+  duplicateCount: number;
+  lowScoreCount: number;
+  warnings: string[];
+};
+
+type ConversationExtractPreview = {
+  memoryCandidates: unknown[];
+  soulSuggestions: unknown[];
+  qaHighlights: unknown[];
+  todos: unknown[];
+  raw: Record<string, unknown>;
+  error?: string;
+};
+
 type KnowledgeBaseScanResult = {
   ok?: boolean;
   message?: string;
@@ -399,6 +499,8 @@ type KnowledgeBaseScanResult = {
   outputPath?: string;
   indexPath?: string;
   logPath?: string;
+  reportDir?: string;
+  reportFiles?: Partial<Record<LearningReportId, boolean>>;
   checks?: {
     agentMd?: boolean;
     rawDir?: boolean;
@@ -406,14 +508,16 @@ type KnowledgeBaseScanResult = {
     outputDir?: boolean;
     indexMd?: boolean;
     logMd?: boolean;
+    learningReportDir?: boolean;
+    learningReports?: boolean;
   };
 };
 
 const storageKey = 'edu-manager-launcher.students.v2';
 const themeStorageKey = 'edu-manager-launcher.theme.v1';
 const archiveKeywordStorageKey = 'edu-manager-launcher.archive-keywords.v1';
-const currentVersionCode = 67;
-const currentVersionName = '0.5.7';
+const currentVersionCode = 75;
+const currentVersionName = '0.6.5';
 const updateManifestUrl = [
   'https://www.greatbg.com/download/edu-manager-version.json',
   'http://www.greatbg.com/download/edu-manager-version.json',
@@ -755,6 +859,58 @@ function getAgentToolProfile(value?: AgentToolId) {
   return profile;
 }
 
+function installStatusKeyForTool(toolId: AgentToolId): keyof AgentToolInstallStatus | 'claudeCode' {
+  return toolId === 'claude-code' ? 'claudeCode' : toolId;
+}
+
+function openedKeyForTool(toolId: AgentToolId): AgentToolAdapter['openedKey'] {
+  if (toolId === 'claude-code') return 'claudeCodeOpened';
+  if (['qclaw', 'marvis', 'hohu', 'openclaw', 'codex'].includes(toolId)) return `${toolId}Opened` as AgentToolAdapter['openedKey'];
+  return undefined;
+}
+
+function buildAgentToolAdapter(toolId: AgentToolId): AgentToolAdapter {
+  const profile = getAgentToolProfile(toolId);
+  return {
+    id: profile.id,
+    profile,
+    statusKey: installStatusKeyForTool(profile.id),
+    openedKey: openedKeyForTool(profile.id),
+    canOpenLocally: profile.openMode !== 'url' || Boolean(profile.installUrls.web),
+    getInstall(status) {
+      if (!status) return undefined;
+      const key = installStatusKeyForTool(profile.id);
+      return status[key as keyof AgentToolInstallStatus] as AgentToolInstall | undefined;
+    },
+    isOpened(openState) {
+      if (profile.openMode === 'url') return true;
+      return Boolean(openState[profile.id]);
+    },
+    open(openHandler) {
+      openHandler(profile.id);
+    },
+    buildInitPrompt(student) {
+      return buildToolPrompt({ ...student, agentTool: profile.id });
+    },
+    buildDigestCommand(student) {
+      return buildDigestCommand({ ...student, agentTool: profile.id });
+    },
+    buildConsultCommand(student) {
+      return buildConsultCommand({ ...student, agentTool: profile.id });
+    },
+    buildScanPrompt(student, kind) {
+      return buildAiAgentScanPrompt({ ...student, agentTool: profile.id }, kind, profile.id);
+    },
+    primaryRuleFile() {
+      return profile.ruleFiles[0] || 'AGENT.md';
+    },
+  };
+}
+
+function getAgentToolAdapter(toolId?: AgentToolId) {
+  return buildAgentToolAdapter(toolId ?? 'qclaw');
+}
+
 type ArchiveKeywordConfig = Record<'summary' | 'report' | 'qa', string>;
 type TemplateKey = 'AGENT.md' | 'Soul.md' | 'Memory.md' | 'init-step-1.md' | 'init-step-2.md' | 'digest-prompt.md' | 'consult-prompt.md';
 type TemplateFiles = Record<TemplateKey, string>;
@@ -880,6 +1036,11 @@ function isVisibleArchiveFile(file: MarkdownFile) {
   return !['agent.md', 'soul.md', 'memory.md', 'log.md'].includes(name);
 }
 
+function isLearningReportFile(file: MarkdownFile) {
+  const normalized = `${file.path}/${file.name}`.replace(/\\/g, '/').toLowerCase();
+  return normalized.includes('学情报告/') || normalized.includes('/learning-report/') || normalized.includes('/learning-reports/');
+}
+
 function formatFileSize(size: number) {
   if (!Number.isFinite(size) || size <= 0) return '未知大小';
   if (size < 1024) return `${size} B`;
@@ -909,6 +1070,13 @@ const archiveCategories: Array<{ id: ArchiveCategoryId; label: string }> = [
   { id: 'qa', label: '问答精华' },
   { id: 'other', label: '其他' },
   { id: 'all', label: '全部文件' },
+];
+
+const learningReportDefinitions: Array<{ id: LearningReportId; title: string; fileName: string; description: string }> = [
+  { id: 'profile', title: '整体画像', fileName: '整体画像.md', description: '了解学生当前优势、短板、学习方式和沟通注意点。' },
+  { id: 'daily', title: '每日行动建议', fileName: '每日行动建议.md', description: '给学生、家长、老师的今日行动提醒。' },
+  { id: 'changes', title: '历史变化', fileName: '历史变化.md', description: '查看最近 7 天、30 天和阶段性的能力与习惯变化。' },
+  { id: 'stage', title: '阶段总结', fileName: '阶段总结.md', description: '本阶段进展、问题、证据和下一步建议。' },
 ];
 
 const defaultDraft: StudentDraft = {
@@ -979,6 +1147,7 @@ function loadStudents() {
       lastDigestAt: student.lastDigestAt ?? '',
       digestStatus: student.digestStatus ?? 'idle',
       digestMessage: student.digestMessage ?? '',
+      materialSources: Array.isArray(student.materialSources) ? student.materialSources : [],
       agentBindingMode: student.agentBindingMode ?? agentBindingModeForTool(agentToolProfiles[student.agentTool] ? student.agentTool : 'qclaw'),
       agentName: student.agentName ?? '',
       agentNote: student.agentNote ?? '',
@@ -1044,11 +1213,17 @@ function pathsFor(studentName: string) {
   const root = joinDisplayPath(activeStorageConfig.baseDir, `${cleanName}知识库`);
   const raw = joinDisplayPath(root, `${cleanName}原始资料库`);
   const summary = joinDisplayPath(root, `${cleanName}学情分析汇总`);
+  const reportDir = joinDisplayPath(summary, '学情报告');
   return {
     cleanName,
     root,
     raw,
     summary,
+    reportDir,
+    profileReport: joinDisplayPath(reportDir, '整体画像.md'),
+    changesReport: joinDisplayPath(reportDir, '历史变化.md'),
+    dailyReport: joinDisplayPath(reportDir, '每日行动建议.md'),
+    stageReport: joinDisplayPath(reportDir, '阶段总结.md'),
     agent: joinDisplayPath(root, 'AGENT.md'),
     soul: joinDisplayPath(root, 'Soul.md'),
     memory: joinDisplayPath(root, 'Memory.md'),
@@ -1063,6 +1238,7 @@ function pathsForStudent(student: Pick<Student, 'name'> & Partial<Pick<Student, 
   const root = student.rootPath || standard.root;
   const raw = student.rawPath || standard.raw;
   const summary = student.summaryPath || standard.summary;
+  const reportDir = joinDisplayPath(summary, '学情报告');
   const agent = student.agentPath || joinDisplayPath(root, 'AGENT.md');
   const output = student.outputPath || joinDisplayPath(root, '输出结果');
   return {
@@ -1070,6 +1246,11 @@ function pathsForStudent(student: Pick<Student, 'name'> & Partial<Pick<Student, 
     root,
     raw,
     summary,
+    reportDir,
+    profileReport: joinDisplayPath(reportDir, '整体画像.md'),
+    changesReport: joinDisplayPath(reportDir, '历史变化.md'),
+    dailyReport: joinDisplayPath(reportDir, '每日行动建议.md'),
+    stageReport: joinDisplayPath(reportDir, '阶段总结.md'),
     agent,
     output,
     index: joinDisplayPath(summary, 'index.md'),
@@ -1277,7 +1458,12 @@ ${p.root}/
    ├─ 概念库/
    ├─ 实体库/
    ├─ 综合库/
-   └─ 咨询精华库/
+   ├─ 咨询精华库/
+   └─ 学情报告/
+      ├─ 整体画像.md
+      ├─ 历史变化.md
+      ├─ 每日行动建议.md
+      └─ 阶段总结.md
 \`\`\`
 
 初始化时请创建：
@@ -1289,6 +1475,11 @@ ${p.root}/
 - \`${p.summary}/实体库/\`
 - \`${p.summary}/综合库/\`
 - \`${p.summary}/咨询精华库/\`
+- \`${p.reportDir}/\`
+- \`${p.profileReport}\`
+- \`${p.changesReport}\`
+- \`${p.dailyReport}\`
+- \`${p.stageReport}\`
 - \`${p.root}/输出结果/\`
 
 \`${p.index}\` 初始化为导航页；\`${p.log}\` 初始化为 append-only 时间线。
@@ -1341,6 +1532,7 @@ ${p.root}/
 6. 更新 \`index.md\`
 7. 在 \`log.md\` 追加「消化」记录
 8. 更新 \`${p.root}/.edu-manager/digest-state.json\`，作为控制台和平板端同步消化结果的回执
+9. 如产生对家长、学生或教师有直接价值的结论，更新 \`学情报告/\` 下的四份报告文件
 
 ### 控制台回执格式
 
@@ -1368,7 +1560,28 @@ ${p.root}/
 5. 高频复用答案回写到 \`咨询精华库/\` 或 \`综合库/\`
 6. 更新 \`log.md\`
 
-## 7. 命令约定
+## 7. 学情报告 Protocol
+
+学情报告是面向家长、学生和教师的成果表达层，不替代摘要库、实体库、概念库、综合库和咨询精华库。
+
+完成资料消化、综合分析或咨询沉淀后，如果发现对用户有直接价值的结论，请检查并更新：
+
+- \`${p.profileReport}\`
+- \`${p.changesReport}\`
+- \`${p.dailyReport}\`
+- \`${p.stageReport}\`
+
+写作要求：
+
+1. 面向家长、学生、教师可读，避免内部技术术语。
+2. 每份报告顶部保留更新时间、适用对象、状态。
+3. 结论必须对应学情分析汇总中的依据来源。
+4. “每日行动建议”必须分为：给学生、给家长、给老师。
+5. 不确定判断标注“待观察”，不要写成定论。
+6. 不要删除原有报告内容；判断发生变化时，在“历史变化”或“阶段总结”中说明变化原因。
+7. 当天无新增资料时，也可以根据已有档案更新“每日行动建议”，但要注明依据。
+
+## 8. 命令约定
 
 ### /消化
 
@@ -1399,7 +1612,7 @@ ${p.root}/
 - 能修则修，不能修则标记 \`needs-review\`
 - 在 \`log.md\` 追加「健康检查」记录
 
-## 8. Frontmatter 规范
+## 9. Frontmatter 规范
 
 除 \`index.md\` 和 \`log.md\` 外，其余学情分析汇总页面默认带 YAML frontmatter。
 
@@ -1413,7 +1626,7 @@ ${p.root}/
 - \`source_path\` 或 \`source_url\`
 - \`tags\`
 
-## 9. 写作规范
+## 10. 写作规范
 
 - 先给结论，再展开
 - 明确区分事实、转述、推断
@@ -1437,13 +1650,13 @@ ${p.root}/
 ## 来源
 \`\`\`
 
-## 10. index.md 与 log.md
+## 11. index.md 与 log.md
 
 - \`index.md\` 是导航页，不是随意写的首页
 - \`log.md\` 是 append-only 时间线
 - 每次消化、重要咨询、lint、review、refactor 都应记录
 
-## 11. 不要做的事
+## 12. 不要做的事
 
 - 不要覆盖或改写原始资料库原始图片
 - 不要把没有来源的推断写成确定事实
@@ -1451,16 +1664,16 @@ ${p.root}/
 - 不要更新页面却忘记更新 \`index.md\` 或 \`log.md\`
 - 不要把 \`输出结果/\` 当长期知识主页
 
-## 12. 每日资料消化规则
+## 13. 每日资料消化规则
 
 - ${tool.supportsScheduledTask ? `每天 ${student.digestTime} 由 ${tool.name} 定时任务唤醒本 Agent 执行 \`/消化\`。` : `当前工具 ${tool.name} 暂按手动复制指令执行 \`/消化\`，建议每天 ${student.digestTime} 由用户在控制台复制资料消化指令。`}
 - 只读取 \`${p.raw}\` 中新增或变更的资料。
 - 没有新资料时，在 \`log.md\` 中记录“无新增资料”，不要重复生成摘要。
 - 高影响结论必须能追溯到原始文件、图片或明确链接。
 
-## 13. 极简执行口令
+## 14. 极简执行口令
 
-先读 \`${p.index}\` 和 \`${p.log}\`，再按需读取相关页面；把新资料编译进 \`摘要库 / 实体库 / 概念库 / 综合库 / 咨询精华库\`；最后更新 \`index.md\` 和 \`log.md\`。
+先读 \`${p.index}\` 和 \`${p.log}\`，再按需读取相关页面；把新资料编译进 \`摘要库 / 实体库 / 概念库 / 综合库 / 咨询精华库\`；最后更新 \`index.md\`、\`log.md\` 和必要的 \`学情报告/\` 文件。
 `;
 }
 
@@ -1521,6 +1734,45 @@ function rawBuildMemoryMd(student: StudentDraft) {
 `;
 }
 
+function buildLearningReportTemplate(student: StudentDraft, reportId: LearningReportId) {
+  const today = new Date().toISOString().slice(0, 10);
+  const definitions: Record<LearningReportId, { title: string; type: string; target: string; sections: string[]; paragraph?: string }> = {
+    profile: {
+      title: '整体画像',
+      type: 'learning_profile',
+      target: '家长 / 教师 / 学生',
+      paragraph: '一句话画像',
+      sections: ['一句话画像', '学习优势', '当前短板', '兴趣与动力', '学习习惯与执行力', '适合的学习方式', '家长沟通注意点', '依据来源'],
+    },
+    changes: {
+      title: '历史变化',
+      type: 'learning_change',
+      target: '家长 / 教师',
+      sections: ['最近 7 天变化', '最近 30 天变化', '能力变化', '习惯变化', '问题变化', '目标变化', '依据来源'],
+    },
+    daily: {
+      title: '每日行动建议',
+      type: 'daily_action',
+      target: '学生 / 家长 / 教师',
+      paragraph: '今日重点',
+      sections: ['今日重点', '给学生', '给家长', '给老师', '今日不建议做的事', '观察点', '依据来源'],
+    },
+    stage: {
+      title: '阶段总结',
+      type: 'stage_summary',
+      target: '家长 / 教师',
+      sections: ['本阶段核心进展', '主要问题', '关键证据', '下一阶段目标', '建议行动', '依据来源'],
+    },
+  };
+  const definition = definitions[reportId];
+  const body = definition.sections.map((section) =>
+    section === definition.paragraph
+      ? `## ${section}\n\n待生成。`
+      : `## ${section}\n\n- 待补充。`
+  ).join('\n\n');
+  return `---\ntype: ${definition.type}\ntarget: ${definition.target}\nupdated: ${today}\nstatus: draft\n---\n\n# ${definition.title}\n\n${body}\n`;
+}
+
 function templateVariables(student: StudentDraft) {
   const p = pathsForStudent(student);
   const tool = getAgentToolProfile(student.agentTool);
@@ -1535,6 +1787,11 @@ function templateVariables(student: StudentDraft) {
     agentPath: p.agent,
     rawPath: p.raw,
     summaryPath: p.summary,
+    reportDir: p.reportDir,
+    profileReport: p.profileReport,
+    changesReport: p.changesReport,
+    dailyReport: p.dailyReport,
+    stageReport: p.stageReport,
     outputPath: p.output,
     digestTime: student.digestTime || '21:30',
   };
@@ -1901,13 +2158,16 @@ ${projectRule}
 学生知识库：${p.root}
 原始资料库：${p.raw}
 学情分析汇总：${p.summary}
+学情报告目录：${p.reportDir}
 控制台账本目录：${p.root}${separator}.edu-manager
 
 执行要求：
 1. 只处理尚未消化的新资料，不重复生成已处理资料的摘要。
 2. 处理完成后更新 ${p.index} 和 ${p.log}。
 3. 如果没有新增资料，请在 log.md 中记录“无新增资料”。
-4. 消化完成后，请更新 ${p.root}${separator}.edu-manager${separator}digest-state.json，格式为：
+4. 消化完成后，请检查并更新「学情报告」目录中的四份报告：整体画像.md、历史变化.md、每日行动建议.md、阶段总结.md。
+5. 如果没有足够依据，请保留“待补充”或标注“待观察”，不要编造结论。
+6. 消化完成后，请更新 ${p.root}${separator}.edu-manager${separator}digest-state.json，格式为：
 {
   "status": "completed",
   "lastDigestAt": "YYYY-MM-DDTHH:mm:ss+08:00",
@@ -1997,6 +2257,10 @@ function buildBundle(student: StudentDraft) {
       'agent-memory.md': buildMemoryMd(student),
       [`${p.cleanName}学情分析汇总/index.md`]: buildIndexMd(student),
       [`${p.cleanName}学情分析汇总/log.md`]: buildLogMd(student),
+      [`${p.cleanName}学情分析汇总/学情报告/整体画像.md`]: buildLearningReportTemplate(student, 'profile'),
+      [`${p.cleanName}学情分析汇总/学情报告/历史变化.md`]: buildLearningReportTemplate(student, 'changes'),
+      [`${p.cleanName}学情分析汇总/学情报告/每日行动建议.md`]: buildLearningReportTemplate(student, 'daily'),
+      [`${p.cleanName}学情分析汇总/学情报告/阶段总结.md`]: buildLearningReportTemplate(student, 'stage'),
       'init-prompt.txt': buildToolPrompt(student),
       [`${getAgentToolProfile(student.agentTool).id}-init-prompt.txt`]: buildToolPrompt(student),
     },
@@ -2044,10 +2308,21 @@ function App() {
   const [markdownViewMode, setMarkdownViewMode] = useState<'rendered' | 'source'>('rendered');
   const [markdownMessage, setMarkdownMessage] = useState('');
   const [selectedArchiveCategory, setSelectedArchiveCategory] = useState<ArchiveCategoryId>('report');
+  const [learningReports, setLearningReports] = useState<LearningReport[]>([]);
+  const [selectedLearningReportId, setSelectedLearningReportId] = useState<LearningReportId>('profile');
+  const [learningReportContent, setLearningReportContent] = useState('');
+  const [learningReportViewMode, setLearningReportViewMode] = useState<'rendered' | 'source'>('rendered');
+  const [learningReportMessage, setLearningReportMessage] = useState('');
+  const [learningReportFolder, setLearningReportFolder] = useState('');
+  const [learningReportHealth, setLearningReportHealth] = useState<LearningReportHealth | null>(null);
   const [inboxMessage, setInboxMessage] = useState('');
   const [downloadsMessage, setDownloadsMessage] = useState('');
   const [downloadFiles, setDownloadFiles] = useState<DownloadCandidate[]>([]);
   const [selectedDownloadPaths, setSelectedDownloadPaths] = useState<string[]>([]);
+  const [materialSourceMessage, setMaterialSourceMessage] = useState('');
+  const [materialSourceFiles, setMaterialSourceFiles] = useState<MaterialSourceCandidate[]>([]);
+  const [selectedMaterialSourcePaths, setSelectedMaterialSourcePaths] = useState<string[]>([]);
+  const [materialImportRecords, setMaterialImportRecords] = useState<MaterialImportRecord[]>([]);
   const [sharedInboxCount, setSharedInboxCount] = useState(0);
   const [compatibility, setCompatibility] = useState<Record<string, unknown> | null>(null);
   const [storageConfig, setStorageConfig] = useState<StorageConfig>(activeStorageConfig);
@@ -2106,6 +2381,8 @@ function App() {
   const [conversationTool, setConversationTool] = useState<AgentToolId>('qclaw');
   const [conversationText, setConversationText] = useState('');
   const [conversationExtractText, setConversationExtractText] = useState('');
+  const [conversationExtractPreview, setConversationExtractPreview] = useState<ConversationExtractPreview | null>(null);
+  const [conversationExtractTargets, setConversationExtractTargets] = useState({ memory: true, soul: true, qa: true, todos: true });
   const [conversationMessage, setConversationMessage] = useState('');
   const [memorySourceTool, setMemorySourceTool] = useState<AgentToolId>('qclaw');
   const [memorySourceText, setMemorySourceText] = useState('');
@@ -2114,6 +2391,8 @@ function App() {
   const [soulSourceText, setSoulSourceText] = useState('');
   const [unifiedSoulText, setUnifiedSoulText] = useState('');
   const [soulDiff, setSoulDiff] = useState<{ onlyUnified?: string[]; onlySource?: string[]; message?: string } | null>(null);
+  const [candidateImportReview, setCandidateImportReview] = useState<CandidateImportReview | null>(null);
+  const [expandedSourceRecordId, setExpandedSourceRecordId] = useState('');
 
   const selectedStudent = students.find((item) => item.id === selectedId) ?? students[0];
   const systemTemplateFiles = useMemo(() => buildSystemTemplates(), []);
@@ -2127,6 +2406,7 @@ function App() {
   }, [templateCenter]);
   activeTemplateFiles = currentTemplateFiles;
   const selectedTool = getAgentToolProfile(draft.agentTool);
+  const selectedToolAdapter = getAgentToolAdapter(draft.agentTool);
   const effectiveDraft: StudentDraft = useMemo(() => {
     const standardPaths = pathsFor(draft.name);
     const rootPath = createMode === 'adopted' ? adoptRootPath || standardPaths.root : standardPaths.root;
@@ -2151,8 +2431,10 @@ function App() {
   const draftPaths = bundle.paths;
 
   const selectedStudentTool = selectedStudent ? getAgentToolProfile(selectedStudent.agentTool) : agentToolProfiles.qclaw;
+  const selectedStudentAdapter = selectedStudent ? getAgentToolAdapter(selectedStudent.agentTool) : getAgentToolAdapter('qclaw');
   const selectedStudentPaths = selectedStudent ? pathsForStudent(selectedStudent) : pathsFor(draft.name);
-  const activeAgentTool = activeSection === 'init' || activeSection === 'new' ? selectedTool : selectedStudentTool;
+  const activeAgentAdapter = activeSection === 'init' || activeSection === 'new' ? selectedToolAdapter : selectedStudentAdapter;
+  const activeAgentTool = activeAgentAdapter.profile;
   const toolOpenState: Record<AgentToolId, boolean> = {
     qclaw: qclawOpened,
     marvis: marvisOpened,
@@ -2166,7 +2448,7 @@ function App() {
     coze: false,
     fastgpt: false,
   };
-  const activeAgentOpened = toolOpenState[activeAgentTool.id];
+  const activeAgentOpened = activeAgentAdapter.isOpened(toolOpenState);
   const isWindows = storageConfig.platform === 'windows';
   const shouldBlockForAgentInstall = isWindows && installStatus ? !installStatus.anyInstalled : false;
   const memoryScanCandidates = agentScanCandidates.filter((candidate) => candidate.kind === 'memory');
@@ -2183,7 +2465,7 @@ function App() {
     () =>
       selectedArchiveCategory === 'all'
         ? markdownFiles.filter(isVisibleArchiveFile)
-        : markdownFiles.filter((file) => isVisibleArchiveFile(file) && classifyMarkdownFile(file, archiveKeywords) === selectedArchiveCategory),
+        : markdownFiles.filter((file) => isVisibleArchiveFile(file) && !isLearningReportFile(file) && classifyMarkdownFile(file, archiveKeywords) === selectedArchiveCategory),
     [archiveKeywords, markdownFiles, selectedArchiveCategory],
   );
   const filteredHostUploadRecords = useMemo(() => {
@@ -2507,6 +2789,24 @@ function App() {
     }
   };
 
+  const rollbackSourceRecord = (recordId: string) => {
+    if (!selectedStudent) return;
+    const confirmed = window.confirm('确认撤销这条来源记录吗？\n\n只会从 source-registry.json 中移除登记，不会删除目标文件。');
+    if (!confirmed) return;
+    const raw = bridge()?.rollbackAgentSourceRecord?.(selectedStudent.id, recordId);
+    if (!raw) {
+      setAgentCenterMessage('当前环境不支持撤销来源记录。');
+      return;
+    }
+    try {
+      const result = JSON.parse(raw) as AgentSourceRegistryState;
+      setSourceRegistry({ ok: Boolean(result.ok), path: result.path, records: result.records ?? [], message: result.message });
+      setAgentCenterMessage(result.message || (result.ok ? '已撤销来源记录。' : '撤销来源记录失败。'));
+    } catch {
+      setAgentCenterMessage('撤销来源记录结果解析失败。');
+    }
+  };
+
   const refreshConversationCenter = (studentId = selectedStudent?.id) => {
     if (!studentId) return;
     const raw = bridge()?.getAgentConversationCenter?.(studentId);
@@ -2636,13 +2936,78 @@ ${conversationText || '（请先粘贴对话历史）'}`;
     await copyText(buildConversationExtractPrompt(selectedStudent), '已复制对话历史提取指令。');
   };
 
-  const saveConversationExtractResult = () => {
-    if (!selectedStudent) return;
+  const buildConversationExtractPreview = (text = conversationExtractText): ConversationExtractPreview => {
+    try {
+      const parsed = parseLooseJson(text) as Record<string, unknown>;
+      const memoryCandidates = Array.isArray(parsed.memoryCandidates)
+        ? parsed.memoryCandidates
+        : Array.isArray(parsed.memories)
+          ? parsed.memories
+          : [];
+      const soulSuggestions = Array.isArray(parsed.soulSuggestions)
+        ? parsed.soulSuggestions
+        : Array.isArray(parsed.personaSuggestions)
+          ? parsed.personaSuggestions
+          : [];
+      const qaHighlights = Array.isArray(parsed.qaHighlights)
+        ? parsed.qaHighlights
+        : Array.isArray(parsed.qa)
+          ? parsed.qa
+          : [];
+      const todos = Array.isArray(parsed.todos)
+        ? parsed.todos
+        : Array.isArray(parsed.followUps)
+          ? parsed.followUps
+          : [];
+      return { memoryCandidates, soulSuggestions, qaHighlights, todos, raw: parsed };
+    } catch (error) {
+      return {
+        memoryCandidates: [],
+        soulSuggestions: [],
+        qaHighlights: [],
+        todos: [],
+        raw: {},
+        error: error instanceof Error ? error.message : 'JSON 格式不正确',
+      };
+    }
+  };
+
+  const previewConversationExtractResult = () => {
     if (!conversationExtractText.trim()) {
       setConversationMessage('请先粘贴 AI 提取结果 JSON。');
+      setConversationExtractPreview(null);
+      return null;
+    }
+    const preview = buildConversationExtractPreview();
+    setConversationExtractPreview(preview);
+    if (preview.error) {
+      setConversationMessage(`对话提取结果解析失败：${preview.error}`);
+      return null;
+    }
+    const total = preview.memoryCandidates.length + preview.soulSuggestions.length + preview.qaHighlights.length + preview.todos.length;
+    setConversationMessage(total ? `已解析提取结果：共 ${total} 条候选，请确认写入范围。` : '已解析 JSON，但没有发现可写入的教育资产。');
+    return preview;
+  };
+
+  const saveConversationExtractResult = () => {
+    if (!selectedStudent) return;
+    const preview = conversationExtractPreview && !conversationExtractPreview.error
+      ? conversationExtractPreview
+      : previewConversationExtractResult();
+    if (!preview || preview.error) return;
+    const payload = {
+      ...preview.raw,
+      memoryCandidates: conversationExtractTargets.memory ? preview.memoryCandidates : [],
+      soulSuggestions: conversationExtractTargets.soul ? preview.soulSuggestions : [],
+      qaHighlights: conversationExtractTargets.qa ? preview.qaHighlights : [],
+      todos: conversationExtractTargets.todos ? preview.todos : [],
+    };
+    const selectedCount = payload.memoryCandidates.length + payload.soulSuggestions.length + payload.qaHighlights.length + payload.todos.length;
+    if (!selectedCount) {
+      setConversationMessage('请至少选择一种要写入的教育资产。');
       return;
     }
-    const raw = bridge()?.saveConversationExtract?.(selectedStudent.id, conversationExtractText, conversationTool);
+    const raw = bridge()?.saveConversationExtract?.(selectedStudent.id, JSON.stringify(payload, null, 2), conversationTool);
     if (!raw) {
       setConversationMessage('当前环境不支持保存对话提取结果。');
       return;
@@ -2651,6 +3016,7 @@ ${conversationText || '（请先粘贴对话历史）'}`;
       const result = JSON.parse(raw) as { ok?: boolean; message?: string };
       setConversationMessage(result.message || (result.ok ? '已写入对话提取资产。' : '保存提取结果失败。'));
       if (result.ok) {
+        setConversationExtractPreview(null);
         refreshAgentCenter(selectedStudent.id);
         refreshConversationCenter(selectedStudent.id);
         refreshSourceRegistry(selectedStudent.id);
@@ -2834,6 +3200,7 @@ ${conversationText || '（请先粘贴对话历史）'}`;
       refreshSourceRegistry();
     }
     if (activeSection === 'conversation') refreshConversationCenter();
+    if (activeSection === 'reports' && selectedStudent) refreshLearningReports(selectedStudent);
   }, [activeSection, selectedId]);
 
   useEffect(() => {
@@ -2841,6 +3208,11 @@ ${conversationText || '（请先粘贴对话历史）'}`;
     setSelectedMarkdownId('');
     setMarkdownContent('');
     setMarkdownMessage('');
+    setLearningReports([]);
+    setLearningReportContent('');
+    setLearningReportMessage('');
+    setLearningReportFolder('');
+    setLearningReportHealth(null);
     const student = students.find((item) => item.id === selectedId) ?? students[0];
     setStudentEditDraft(student ? {
       name: student.name,
@@ -2878,6 +3250,12 @@ ${conversationText || '（请先粘贴对话历史）'}`;
   useEffect(() => {
     setCustomStepPrompts({});
   }, [draft, storageConfig]);
+
+  useEffect(() => {
+    if (isWindows && activeSection === 'inbox' && selectedStudent) {
+      refreshMaterialImportRecords(selectedStudent);
+    }
+  }, [activeSection, selectedId]);
 
   const persist = (next: Student[]) => {
     setStudents(next);
@@ -3243,8 +3621,8 @@ ${conversationText || '（请先粘贴对话历史）'}`;
 
   const copyDigestCommand = async (student: Student) => {
     const stamp = new Date().toLocaleString('zh-CN');
-    const tool = getAgentToolProfile(student.agentTool);
-    await copyText(buildDigestCommand(student), `已复制资料消化命令，${tool.digestTargetLabel}。`);
+    const adapter = getAgentToolAdapter(student.agentTool);
+    await copyText(adapter.buildDigestCommand(student), `已复制资料消化命令，${adapter.profile.digestTargetLabel}。`);
     const next = students.map((item) => (item.id === student.id ? { ...item, lastDigestCommandAt: stamp } : item));
     persist(next);
   };
@@ -3302,7 +3680,7 @@ ${conversationText || '（请先粘贴对话历史）'}`;
   };
 
   const copyConsultCommand = async () => {
-    const value = selectedStudent ? buildConsultCommand(selectedStudent) : '/咨询，我想咨询';
+    const value = selectedStudent ? getAgentToolAdapter(selectedStudent.agentTool).buildConsultCommand(selectedStudent) : '/咨询，我想咨询';
     await copyText(value, '已复制咨询提示。');
   };
 
@@ -3504,20 +3882,62 @@ ${conversationText || '（请先粘贴对话历史）'}`;
     setSelectedCandidateKeys((current) => current.includes(key) ? current.filter((item) => item !== key) : [...current, key]);
   };
 
-  const importSelectedCandidates = async () => {
+  const buildCandidateImportReview = (candidates: AgentKnowledgeCandidate[]): CandidateImportReview => {
+    const existingRecords = sourceRegistry?.records ?? [];
+    const duplicateCount = candidates.filter((candidate) =>
+      existingRecords.some((record) => record.sourcePath === candidate.path || record.targetPath === candidate.path)
+    ).length;
+    const lowScoreCount = candidates.filter((candidate) => Number(candidate.score || 0) < 50).length;
+    const sameTargetNames = candidates
+      .map((candidate) => candidate.name)
+      .filter((name, index, array) => array.indexOf(name) !== index);
+    const warnings = [
+      duplicateCount ? `${duplicateCount} 个候选疑似已经导入过` : '',
+      lowScoreCount ? `${lowScoreCount} 个候选置信度低于 50` : '',
+      sameTargetNames.length ? `存在同名候选：${Array.from(new Set(sameTargetNames)).slice(0, 5).join('、')}` : '',
+    ].filter(Boolean);
+    return { candidates, duplicateCount, lowScoreCount, warnings };
+  };
+
+  const reviewSelectedCandidates = () => {
     const selected = agentScanCandidates.filter((candidate) => selectedCandidateKeys.includes(candidateKey(candidate)));
     if (!selected.length) {
       setAgentScanMessage('请先勾选需要导入的候选。');
+      setCandidateImportReview(null);
+      return null;
+    }
+    const review = buildCandidateImportReview(selected);
+    setCandidateImportReview(review);
+    setAgentScanMessage(review.warnings.length
+      ? `请确认后导入：${review.warnings.join('；')}。`
+      : `已选择 ${selected.length} 个候选，可以确认导入。`);
+    return review;
+  };
+
+  const importSelectedCandidates = async (confirmed = false) => {
+    const selected = agentScanCandidates.filter((candidate) => selectedCandidateKeys.includes(candidateKey(candidate)));
+    if (!selected.length) {
+      setAgentScanMessage('请先勾选需要导入的候选。');
+      setCandidateImportReview(null);
+      return;
+    }
+    if (!confirmed) {
+      const review = reviewSelectedCandidates();
+      if (review) setAgentScanMessage('已生成导入预览，请检查冲突提示后点击“确认导入”。');
       return;
     }
     for (const candidate of selected) importAgentCandidate(candidate);
     setSelectedCandidateKeys([]);
+    setCandidateImportReview(null);
     setAgentScanMessage(`已提交导入 ${selected.length} 个候选。`);
   };
 
   const copyAiAgentScanPrompt = async (kind: AgentKnowledgeKind | 'all') => {
     if (!selectedStudent) return;
-    await copyText(buildAiAgentScanPrompt(selectedStudent, kind, aiScanTool), `已复制 AI ${kind === 'soul' ? '人设' : kind === 'rule' ? '规则文件' : kind === 'conversation' ? '对话历史' : '综合'}扫描指令。`);
+    const promptText = aiScanTool === 'all'
+      ? buildAiAgentScanPrompt(selectedStudent, kind, 'all')
+      : getAgentToolAdapter(aiScanTool).buildScanPrompt(selectedStudent, kind);
+    await copyText(promptText, `已复制 AI ${kind === 'soul' ? '人设' : kind === 'rule' ? '规则文件' : kind === 'conversation' ? '对话历史' : '综合'}扫描指令。`);
   };
 
   const parseAiAgentScanResult = (fallbackKind: AgentKnowledgeKind | 'all') => {
@@ -3568,8 +3988,8 @@ ${conversationText || '（请先粘贴对话历史）'}`;
   };
 
   const copyStudentFullInitPrompt = async (student: Student) => {
-    const tool = getAgentToolProfile(student.agentTool);
-    await copyText(buildToolPrompt(student), `已复制 ${tool.name} 完整初始化指令。`);
+    const adapter = getAgentToolAdapter(student.agentTool);
+    await copyText(adapter.buildInitPrompt(student), `已复制 ${adapter.profile.name} 完整初始化指令。`);
   };
 
   const copyStudentSoul = async (student: Student) => {
@@ -3720,6 +4140,118 @@ ${conversationText || '（请先粘贴对话历史）'}`;
     }
   };
 
+  const updateStudentMaterialSources = (studentId: string, updater: (sources: MaterialSource[]) => MaterialSource[]) => {
+    const next = students.map((student) =>
+      student.id === studentId
+        ? { ...student, materialSources: updater(student.materialSources ?? []) }
+        : student,
+    );
+    persist(next);
+  };
+
+  const addMaterialSourceDir = (student: Student) => {
+    const raw = bridge()?.pickMaterialSourceDir?.();
+    if (!raw) {
+      setMaterialSourceMessage('当前环境不支持选择资料来源目录。');
+      return;
+    }
+    try {
+      const result = JSON.parse(raw) as { ok?: boolean; source?: MaterialSource; message?: string };
+      if (!result.ok || !result.source) {
+        setMaterialSourceMessage(result.message || '未添加资料来源目录。');
+        return;
+      }
+      updateStudentMaterialSources(student.id, (sources) => {
+        const exists = sources.some((source) => source.path === result.source?.path);
+        return exists ? sources : [...sources, result.source as MaterialSource];
+      });
+      setMaterialSourceMessage(`已添加资料来源目录：${result.source.name}`);
+    } catch {
+      setMaterialSourceMessage('资料来源目录结果解析失败。');
+    }
+  };
+
+  const toggleMaterialSource = (student: Student, sourceId: string) => {
+    updateStudentMaterialSources(student.id, (sources) =>
+      sources.map((source) => (source.id === sourceId ? { ...source, enabled: !source.enabled } : source)),
+    );
+  };
+
+  const removeMaterialSource = (student: Student, sourceId: string) => {
+    updateStudentMaterialSources(student.id, (sources) => sources.filter((source) => source.id !== sourceId));
+    setMaterialSourceFiles((files) => files.filter((file) => file.sourceId !== sourceId));
+    setSelectedMaterialSourcePaths((paths) => paths.filter((filePath) => !materialSourceFiles.some((file) => file.sourceId === sourceId && file.path === filePath)));
+  };
+
+  const refreshMaterialImportRecords = (student: Student) => {
+    const raw = bridge()?.getMaterialImportRecords?.(student.id);
+    if (!raw) return;
+    try {
+      const result = JSON.parse(raw) as { ok?: boolean; records?: MaterialImportRecord[] };
+      if (result.ok && Array.isArray(result.records)) setMaterialImportRecords(result.records);
+    } catch {
+      // 导入记录只是辅助信息，解析失败不打断主流程。
+    }
+  };
+
+  const scanMaterialSourcesForStudent = (student: Student) => {
+    const sources = student.materialSources ?? [];
+    const raw = bridge()?.scanMaterialSources?.(student.id, JSON.stringify(sources));
+    if (!raw) {
+      setMaterialSourceMessage('当前环境不支持扫描资料来源目录。');
+      return;
+    }
+    try {
+      const result = JSON.parse(raw) as { ok?: boolean; files?: MaterialSourceCandidate[]; scannedAt?: string; message?: string };
+      if (!result.ok) {
+        setMaterialSourceFiles([]);
+        setSelectedMaterialSourcePaths([]);
+        setMaterialSourceMessage(result.message || '扫描资料来源目录失败。');
+        return;
+      }
+      const files = result.files ?? [];
+      setMaterialSourceFiles(files);
+      setSelectedMaterialSourcePaths([]);
+      setMaterialSourceMessage(result.message || (files.length ? `已扫描到 ${files.length} 个资料文件。` : '暂无可导入资料。'));
+      if (result.scannedAt) {
+        updateStudentMaterialSources(student.id, (current) =>
+          current.map((source) => ({ ...source, lastScannedAt: source.enabled ? result.scannedAt : source.lastScannedAt })),
+        );
+      }
+      refreshMaterialImportRecords(student);
+    } catch {
+      setMaterialSourceMessage('资料来源扫描结果解析失败。');
+    }
+  };
+
+  const toggleMaterialSourceFile = (path: string) => {
+    setSelectedMaterialSourcePaths((current) => (current.includes(path) ? current.filter((item) => item !== path) : [...current, path]));
+  };
+
+  const importSelectedMaterialSourceFiles = (student: Student) => {
+    if (selectedMaterialSourcePaths.length === 0) {
+      setMaterialSourceMessage('请先勾选要导入的来源文件。');
+      return;
+    }
+    const raw = bridge()?.importMaterialSourceFiles?.(student.id, JSON.stringify(selectedMaterialSourcePaths));
+    if (!raw) {
+      setMaterialSourceMessage('当前环境不支持导入资料来源文件。');
+      return;
+    }
+    try {
+      const result = JSON.parse(raw) as { ok?: boolean; imported?: number; skipped?: number; failed?: number; message?: string };
+      setMaterialSourceMessage(result.message || (result.ok ? '已导入资料来源文件。' : '导入资料来源文件失败。'));
+      if (result.ok && Number(result.imported ?? 0) > 0) {
+        recordImportedFiles(student.id, Number(result.imported ?? 0));
+        setSelectedMaterialSourcePaths([]);
+        refreshMaterialImportRecords(student);
+        scanMaterialSourcesForStudent(student);
+      }
+    } catch {
+      setMaterialSourceMessage('资料来源导入结果解析失败。');
+    }
+  };
+
   const consumeSharedForStudent = (student: Student) => {
     const raw = bridge()?.consumeSharedImports?.(student.name);
     if (!raw) {
@@ -3781,7 +4313,9 @@ ${conversationText || '（请先粘贴对话历史）'}`;
       const firstVisibleFile =
         selectedArchiveCategory === 'all'
           ? visibleFiles[0]
-          : visibleFiles.find((file) => classifyMarkdownFile(file, archiveKeywords) === selectedArchiveCategory) ?? visibleFiles[0];
+          : visibleFiles.find((file) => !isLearningReportFile(file) && classifyMarkdownFile(file, archiveKeywords) === selectedArchiveCategory)
+            ?? visibleFiles.find((file) => !isLearningReportFile(file))
+            ?? visibleFiles[0];
       setMarkdownFiles(files);
       setMarkdownMessage(visibleFiles.length ? `已加载 ${visibleFiles.length} 个可浏览 Markdown 档案。` : '该学情分析汇总文件夹暂无可浏览 Markdown 文件。');
       if (firstVisibleFile) {
@@ -3828,6 +4362,8 @@ ${conversationText || '（请先粘贴对话历史）'}`;
     { label: '输出结果', status: adoptScanResult?.checks?.outputDir ? '已找到' : adoptPaths.outputPath ? '已指定' : '可创建' },
     { label: 'index.md', status: adoptScanResult?.checks?.indexMd ? '已找到' : '未找到' },
     { label: 'log.md', status: adoptScanResult?.checks?.logMd ? '已找到' : '未找到' },
+    { label: '学情报告目录', status: adoptScanResult?.checks?.learningReportDir ? '已找到' : '可补建' },
+    { label: '四份学情报告', status: adoptScanResult?.checks?.learningReports ? '已找到' : '可补建' },
   ];
 
   const deleteStudent = (student: Student) => {
@@ -3838,6 +4374,84 @@ ${conversationText || '（请先粘贴对话历史）'}`;
     setSelectedId(next[0]?.id ?? '');
     if (next.length === 0) {
       setActiveSection('init');
+    }
+  };
+
+  const refreshLearningReports = (student: Student | undefined = selectedStudent) => {
+    if (!student) return;
+    const raw = bridge()?.listLearningReports?.(student.id);
+    if (!raw) {
+      setLearningReportMessage('当前环境不支持读取学情报告。');
+      return;
+    }
+    try {
+      const result = JSON.parse(raw) as { ok?: boolean; reports?: LearningReport[]; folder?: string; message?: string; health?: LearningReportHealth };
+      if (!result.ok) {
+        setLearningReports([]);
+        setLearningReportContent('');
+        setLearningReportHealth(null);
+        setLearningReportMessage(result.message || '读取学情报告失败。');
+        return;
+      }
+      const reports = result.reports ?? [];
+      setLearningReports(reports);
+      setLearningReportFolder(result.folder || '');
+      setLearningReportHealth(result.health ?? null);
+      setLearningReportMessage(result.message || `已加载 ${reports.length} 份学情报告。`);
+      const nextId = reports.some((report) => report.id === selectedLearningReportId)
+        ? selectedLearningReportId
+        : (reports[0]?.id ?? 'profile');
+      if (reports.length > 0) openLearningReport(nextId as LearningReportId, student);
+    } catch {
+      setLearningReportMessage('学情报告列表解析失败。');
+    }
+  };
+
+  const openLearningReport = (reportId: LearningReportId, student: Student | undefined = selectedStudent) => {
+    if (!student) return;
+    const raw = bridge()?.readLearningReport?.(student.id, reportId);
+    if (!raw) {
+      setLearningReportMessage('当前环境不支持读取学情报告正文。');
+      return;
+    }
+    try {
+      const result = JSON.parse(raw) as LearningReport & { ok?: boolean; content?: string; message?: string };
+      if (!result.ok) {
+        setLearningReportMessage(result.message || '读取学情报告正文失败。');
+        return;
+      }
+      setSelectedLearningReportId(reportId);
+      setLearningReportContent(result.content || '');
+      setLearningReports((current) => {
+        const next = current.some((item) => item.id === result.id)
+          ? current.map((item) => (item.id === result.id ? { ...item, ...result } : item))
+          : [...current, result];
+        return next;
+      });
+      setLearningReportMessage('');
+    } catch {
+      setLearningReportMessage('学情报告正文解析失败。');
+    }
+  };
+
+  const ensureLearningReportTemplates = (student: Student | undefined = selectedStudent) => {
+    if (!student) return;
+    const raw = bridge()?.ensureLearningReports?.(student.id);
+    if (!raw) {
+      setLearningReportMessage('当前环境不支持补建学情报告目录。');
+      return;
+    }
+    try {
+      const result = JSON.parse(raw) as { ok?: boolean; reports?: LearningReport[]; folder?: string; message?: string; health?: LearningReportHealth };
+      setLearningReportMessage(result.message || (result.ok ? '已确认学情报告目录。' : '补建学情报告失败。'));
+      if (result.ok) {
+        setLearningReports(result.reports ?? []);
+        setLearningReportFolder(result.folder || '');
+        setLearningReportHealth(result.health ?? null);
+        refreshLearningReports(student);
+      }
+    } catch {
+      setLearningReportMessage('补建学情报告结果解析失败。');
     }
   };
 
@@ -4323,6 +4937,7 @@ ${conversationText || '（请先粘贴对话历史）'}`;
           {agentToolOptions.map((tool) => <option value={tool.id} key={tool.id}>{tool.name}</option>)}
         </select>
         <button className="secondary compact" onClick={() => refreshSourceRegistry()}>刷新来源记录</button>
+        <button className="secondary compact" onClick={() => copyText(JSON.stringify(sourceRegistry ?? { records: [] }, null, 2), '已复制来源记录 JSON。')}>复制来源记录</button>
       </div>
       {filteredSourceRecords.length === 0 ? (
         <div className="notice muted">暂无匹配来源记录。</div>
@@ -4332,17 +4947,46 @@ ${conversationText || '（请先粘贴对话历史）'}`;
             <strong>{record.assetType} · {getAgentToolProfile(record.tool).name}</strong>
             <span>{record.sourceType}{record.confidence ? ` · 可信度 ${record.confidence}` : ''}</span>
             <small>{record.importedAt ? new Date(record.importedAt).toLocaleString('zh-CN') : ''} {record.targetPath || record.sourcePath || record.notes || ''}</small>
+            <div className="actions compact-actions">
+              <button className="secondary compact" onClick={() => setExpandedSourceRecordId(expandedSourceRecordId === record.id ? '' : record.id)}>
+                {expandedSourceRecordId === record.id ? '收起详情' : '查看详情'}
+              </button>
+              <button className="secondary compact" onClick={() => copyText(JSON.stringify(record, null, 2), '已复制该来源详情。')}>复制详情</button>
+              <button className="danger subtle" onClick={() => rollbackSourceRecord(record.id)}>撤销记录</button>
+            </div>
+            {expandedSourceRecordId === record.id && (
+              <pre className="candidate-preview">{JSON.stringify(record, null, 2)}</pre>
+            )}
           </div>
         ))
       )}
     </div>
   );
 
+  const candidateImportReviewPanel = candidateImportReview ? (
+    <div className="notice import-review">
+      <strong>导入前确认</strong>
+      <span>已选择 {candidateImportReview.candidates.length} 个候选。</span>
+      {candidateImportReview.warnings.length > 0 ? (
+        <ul>
+          {candidateImportReview.warnings.map((warning) => <li key={warning}>{warning}</li>)}
+        </ul>
+      ) : (
+        <p>未发现明显重复或低置信度候选。</p>
+      )}
+      <div className="actions compact-actions">
+        <button className="primary compact" onClick={() => importSelectedCandidates(true)}>确认导入</button>
+        <button className="secondary compact" onClick={() => setCandidateImportReview(null)}>取消</button>
+      </div>
+    </div>
+  ) : null;
+
   const navItems = [
     { id: 'home' as const, label: '首页', icon: Home },
     { id: 'init' as const, label: '初始化教育管家', icon: Sparkles },
     { id: 'new' as const, label: '新建教育智能体', icon: Plus },
     { id: 'inbox' as const, label: '资料收集与处理', icon: FileDown },
+    { id: 'reports' as const, label: '学情报告', icon: FileText },
     { id: 'archive' as const, label: '查看教育档案', icon: BookOpen },
     { id: 'qa' as const, label: '教育管家问答', icon: MessageCircle },
     { id: 'tasks' as const, label: '定时任务', icon: Clock3 },
@@ -4474,6 +5118,8 @@ ${conversationText || '（请先粘贴对话历史）'}`;
                 ? '新建教育智能体'
                 : activeSection === 'archive'
                   ? '查看教育档案'
+                : activeSection === 'reports'
+                  ? '学情报告'
                   : activeSection === 'inbox'
                     ? '资料收集与处理'
                   : activeSection === 'qa'
@@ -4816,7 +5462,7 @@ ${conversationText || '（请先粘贴对话历史）'}`;
                         {tool.openMode === 'url' ? (tool.category === 'platform' ? '平台入口' : '网页入口') : opened ? '已打开' : '未打开'}
                       </span>
                       <div className="agent-status-actions">
-                        <button className="primary compact" onClick={() => openExternal(tool.id)}>
+                        <button className="primary compact" onClick={() => getAgentToolAdapter(tool.id).open(openExternal)}>
                           <ExternalLink size={16} />
                           打开
                         </button>
@@ -5064,7 +5710,7 @@ ${conversationText || '（请先粘贴对话历史）'}`;
                   <CheckCircle2 size={18} />
                   {createMode === 'adopted' ? '确认接管' : '保存学生档案'}
                 </button>
-                <button className="secondary" onClick={() => openExternal(selectedTool.id)}>
+                <button className="secondary" onClick={() => selectedToolAdapter.open(openExternal)}>
                   <ExternalLink size={18} />
                   {selectedTool.openLabel}
                 </button>
@@ -5145,7 +5791,7 @@ ${conversationText || '（请先粘贴对话历史）'}`;
               onChange={changeSelectedStudentTool}
             />
             <div className="actions">
-              <button className="primary" onClick={() => openExternal(selectedStudentTool.id)}>
+              <button className="primary" onClick={() => selectedStudentAdapter.open(openExternal)}>
                 <ExternalLink size={18} />
                 {selectedStudentTool.openLabel}
               </button>
@@ -5201,6 +5847,104 @@ ${conversationText || '（请先粘贴对话历史）'}`;
                 </button>
               )}
             </div>
+            {isWindows && (
+              <section className="material-source-panel">
+                <div className="mini-heading">
+                  <strong>资料来源目录</strong>
+                  <span>来源目录只用于发现资料；导入后统一复制到当前学生原始资料库，Agent 仍只消化原始资料库。</span>
+                </div>
+                <div className="actions">
+                  <button className="secondary" onClick={() => addMaterialSourceDir(selectedStudent)}>
+                    <Plus size={18} />
+                    添加来源目录
+                  </button>
+                  <button className="primary" onClick={() => scanMaterialSourcesForStudent(selectedStudent)} disabled={(selectedStudent.materialSources ?? []).filter((source) => source.enabled).length === 0}>
+                    <RefreshCw size={18} />
+                    扫描全部来源
+                  </button>
+                  <button className="secondary" onClick={() => refreshMaterialImportRecords(selectedStudent)}>
+                    <Archive size={18} />
+                    刷新导入记录
+                  </button>
+                </div>
+                {(selectedStudent.materialSources ?? []).length > 0 ? (
+                  <div className="material-source-list">
+                    {(selectedStudent.materialSources ?? []).map((source) => (
+                      <div className="material-source-item" key={source.id}>
+                        <label>
+                          <input type="checkbox" checked={source.enabled} onChange={() => toggleMaterialSource(selectedStudent, source.id)} />
+                          <span>
+                            <strong>{source.name}</strong>
+                            <small>{source.path}</small>
+                            {source.lastScannedAt && <em>最近扫描：{new Date(source.lastScannedAt).toLocaleString('zh-CN')}</em>}
+                          </span>
+                        </label>
+                        <button className="secondary compact" onClick={() => removeMaterialSource(selectedStudent, source.id)}>删除</button>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="empty-state">尚未添加资料来源目录。可添加 Downloads、截图、微信/QQ 文件或扫描仪输出目录。</div>
+                )}
+                {materialSourceFiles.length > 0 && (
+                  <div className="material-source-results">
+                    <div className="mini-heading">
+                      <strong>待导入文件</strong>
+                      <span>已导入或重复文件会自动标记并默认跳过。</span>
+                    </div>
+                    <div className="download-list material-source-file-list">
+                      {materialSourceFiles.map((file) => (
+                        <label className={file.importable ? 'download-item' : 'download-item disabled'} key={file.id}>
+                          <input
+                            type="checkbox"
+                            checked={selectedMaterialSourcePaths.includes(file.path)}
+                            disabled={!file.importable}
+                            onChange={() => toggleMaterialSourceFile(file.path)}
+                          />
+                          <span>
+                            <strong>{file.name}</strong>
+                            <small>
+                              {file.sourceName} · {file.type} · {formatFileSize(file.size)} · {file.modified ? new Date(file.modified).toLocaleString('zh-CN') : '未知时间'}
+                            </small>
+                            {file.reason && <em>{file.reason}</em>}
+                          </span>
+                        </label>
+                      ))}
+                    </div>
+                    <div className="actions">
+                      <button className="primary" onClick={() => importSelectedMaterialSourceFiles(selectedStudent)} disabled={selectedMaterialSourcePaths.length === 0}>
+                        <FileDown size={18} />
+                        导入选中文件
+                      </button>
+                      <button
+                        className="secondary"
+                        onClick={() => setSelectedMaterialSourcePaths(materialSourceFiles.filter((file) => file.importable).map((file) => file.path))}
+                      >
+                        全选新文件
+                      </button>
+                      <span className="inline-hint">已选 {selectedMaterialSourcePaths.length} 个</span>
+                    </div>
+                  </div>
+                )}
+                {materialImportRecords.length > 0 && (
+                  <div className="material-import-records">
+                    <div className="mini-heading">
+                      <strong>最近导入记录</strong>
+                      <span>记录来源目录、目标文件和导入时间，便于追踪资料来源。</span>
+                    </div>
+                    <div className="record-list compact-record-list">
+                      {materialImportRecords.slice(0, 8).map((record) => (
+                        <div className="record-item" key={record.id}>
+                          <strong>{record.fileName}</strong>
+                          <small>{record.sourceName || '未知来源'} → {record.targetPath || '原始资料库'}</small>
+                          <em>{record.importedAt ? new Date(record.importedAt).toLocaleString('zh-CN') : '未知时间'} · {formatFileSize(record.fileSize)}</em>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </section>
+            )}
             {downloadFiles.length > 0 && (
               <section className="download-scan">
                 <div className="mini-heading">
@@ -5247,6 +5991,92 @@ ${conversationText || '（请先粘贴对话历史）'}`;
             {downloadsMessage && <div className="notice">{downloadsMessage}</div>}
             {importMessage && <div className="notice">{importMessage}</div>}
             {digestMessage && <div className="notice">{digestMessage}</div>}
+          </section>
+        )}
+
+        {!shouldBlockForAgentInstall && activeSection === 'reports' && selectedStudent && (
+          <section className="panel reports-panel">
+            <div className="panel-heading">
+              <div>
+                <h2>{selectedStudent.name} · 学情报告</h2>
+                <p>给家长、学生和教师看的表达层报告；原始证据和完整文件树仍在“查看教育档案”。</p>
+              </div>
+              <FileText size={22} />
+            </div>
+            <div className="archive-grid">
+              <InfoPanel icon={<UserRound />} title="当前学生" value={`${selectedStudent.name} · ${selectedStudent.grade}`} />
+              <InfoPanel icon={<BookOpen />} title="报告目录" value={learningReportFolder || selectedStudentPaths.reportDir} />
+              <InfoPanel icon={<Archive />} title="报告数量" value={`${learningReports.length || learningReportDefinitions.length} 份`} />
+              <InfoPanel icon={<ListChecks />} title="报告提醒" value={learningReportHealth?.message || '刷新后显示报告健康度'} />
+            </div>
+            <div className="actions">
+              <button className="secondary" onClick={() => refreshLearningReports(selectedStudent)}>
+                <RefreshCw size={18} />
+                刷新报告
+              </button>
+              <button className="secondary" onClick={() => ensureLearningReportTemplates(selectedStudent)}>
+                <FileText size={18} />
+                补建报告目录
+              </button>
+              <button className="secondary" onClick={() => openStudentRoot(selectedStudent)}>
+                <FolderOpen size={18} />
+                打开知识库目录
+              </button>
+              <button className="primary" onClick={() => setActiveSection('archive')}>
+                <BookOpen size={18} />
+                查看全部档案
+              </button>
+            </div>
+            <div className="learning-report-layout">
+              <aside className="learning-report-list">
+                {learningReportDefinitions.map((definition) => {
+                  const report = learningReports.find((item) => item.id === definition.id);
+                  return (
+                    <button
+                      className={selectedLearningReportId === definition.id ? 'learning-report-card active' : 'learning-report-card'}
+                      key={definition.id}
+                      onClick={() => openLearningReport(definition.id, selectedStudent)}
+                    >
+                      <strong>{definition.title}</strong>
+                      <span>{definition.description}</span>
+                      <small>{report?.updatedAt ? `更新：${new Date(report.updatedAt).toLocaleString('zh-CN')}` : report?.exists === false ? '模板待创建' : '待读取'}</small>
+                      <em>{report?.status || 'draft'} · {report?.summary || '待生成'}</em>
+                      {report?.warnings && report.warnings.length > 0 ? (
+                        <small className="warning-text">{report.warnings.join('；')}</small>
+                      ) : (
+                        <small className="success-text">{report?.exists ? '报告状态正常' : '等待创建报告模板'}</small>
+                      )}
+                    </button>
+                  );
+                })}
+              </aside>
+              <section className="markdown-reader learning-report-reader">
+                <div className="reader-toolbar">
+                  <span>{learningReports.find((item) => item.id === selectedLearningReportId)?.title ?? '学情报告'}</span>
+                  <div className="reader-actions">
+                    <button className="secondary compact" onClick={() => setLearningReportViewMode(learningReportViewMode === 'rendered' ? 'source' : 'rendered')}>
+                      {learningReportViewMode === 'rendered' ? '查看原文' : '阅读模式'}
+                    </button>
+                    <button className="secondary compact" onClick={() => copyText(learningReportContent, '已复制当前学情报告 Markdown。')} disabled={!learningReportContent}>
+                      <Clipboard size={16} />
+                      复制正文
+                    </button>
+                  </div>
+                </div>
+                {learningReportContent ? (
+                  learningReportViewMode === 'rendered' ? <MarkdownView content={learningReportContent} /> : <pre className="markdown-raw">{learningReportContent}</pre>
+                ) : (
+                  <div className="empty-state">点击左侧报告卡片，可查看整体画像、历史变化、每日行动建议和阶段总结。</div>
+                )}
+              </section>
+            </div>
+            {learningReportHealth?.warnings && learningReportHealth.warnings.length > 0 && (
+              <div className="notice warning-notice">
+                <strong>报告待完善</strong>
+                <p>{learningReportHealth.warnings.join('；')}</p>
+              </div>
+            )}
+            {learningReportMessage && <div className="notice muted">{learningReportMessage}</div>}
           </section>
         )}
 
@@ -5497,7 +6327,7 @@ ${conversationText || '（请先粘贴对话历史）'}`;
               onChange={changeSelectedStudentTool}
             />
             <div className="actions">
-              <button className="primary" onClick={() => openExternal(selectedStudentTool.id)}>
+              <button className="primary" onClick={() => selectedStudentAdapter.open(openExternal)}>
                 <ExternalLink size={18} />
                 {selectedStudentTool.openLabel}
               </button>
@@ -5533,12 +6363,12 @@ ${conversationText || '（请先粘贴对话历史）'}`;
               </button>
               {selectedStudentTool.supportsProjectRules && (
                 <>
-                  <button className="secondary" onClick={() => generateAgentRule(selectedStudentTool.ruleFiles[0] || 'AGENT.md')}>
+                  <button className="secondary" onClick={() => generateAgentRule(selectedStudentAdapter.primaryRuleFile())}>
                     <ListChecks size={18} />
-                    生成{selectedStudentTool.ruleFiles[0] || '工具规则'}
+                    生成{selectedStudentAdapter.primaryRuleFile() || '工具规则'}
                   </button>
                   <button className="secondary" onClick={() => {
-                    refreshAgentRules(selectedStudent.id, selectedStudentTool.ruleFiles[0] || 'AGENT.md');
+                    refreshAgentRules(selectedStudent.id, selectedStudentAdapter.primaryRuleFile());
                     setAgentKnowledgeMenuOpen(true);
                     setActiveSection('rules');
                   }}>
@@ -5736,6 +6566,7 @@ ${conversationText || '（请先粘贴对话历史）'}`;
               UnifiedMemory.md
               <textarea className="large-textarea" value={unifiedMemoryText} onChange={(event) => setUnifiedMemoryText(event.target.value)} />
             </label>
+            {candidateImportReviewPanel}
             <div className="source-list">
               {(agentCenter?.memoryIndex?.sources ?? []).map((source) => (
                 <div className="source-row" key={source.tool}>
@@ -5839,6 +6670,7 @@ ${conversationText || '（请先粘贴对话历史）'}`;
               UnifiedSoul.md
               <textarea className="large-textarea" value={unifiedSoulText} onChange={(event) => setUnifiedSoulText(event.target.value)} />
             </label>
+            {candidateImportReviewPanel}
             {soulDiff && (
               <div className="diff-grid">
                 <div>
@@ -5924,7 +6756,7 @@ ${conversationText || '（请先粘贴对话历史）'}`;
               <button className="secondary" onClick={() => openStudentRoot(selectedStudent)}>打开知识库目录</button>
               <button className="secondary" onClick={() => generateAgentRule('AGENTS.md')}>生成 AGENTS.md</button>
               <button className="secondary" onClick={() => generateAgentRule('CLAUDE.md')}>生成 CLAUDE.md</button>
-              <button className="secondary" onClick={() => generateAgentRule(selectedStudentTool.ruleFiles[0] || 'AGENT.md')}>生成当前工具规则</button>
+              <button className="secondary" onClick={() => generateAgentRule(selectedStudentAdapter.primaryRuleFile())}>生成当前工具规则</button>
               <button className="secondary" onClick={compareAgentRule}>对比 AGENT.md</button>
               <button className="secondary" onClick={() => copyAiAgentScanPrompt('rule')}>复制规则 AI 扫描指令</button>
             </div>
@@ -5992,6 +6824,7 @@ ${conversationText || '（请先粘贴对话历史）'}`;
                 </div>
               </div>
             )}
+            {candidateImportReviewPanel}
             <div className="source-list">
               {ruleFiles.map((file) => (
                 <button
@@ -6052,12 +6885,48 @@ ${conversationText || '（请先粘贴对话历史）'}`;
             </div>
             <label className="wide-field">
               粘贴 AI 提取结果 JSON
-              <textarea value={conversationExtractText} onChange={(event) => setConversationExtractText(event.target.value)} placeholder='{"memoryCandidates":["..."],"soulSuggestions":["..."],"qaHighlights":["..."],"todos":["..."]}' />
+              <textarea
+                value={conversationExtractText}
+                onChange={(event) => {
+                  setConversationExtractText(event.target.value);
+                  setConversationExtractPreview(null);
+                }}
+                placeholder='{"memoryCandidates":["..."],"soulSuggestions":["..."],"qaHighlights":["..."],"todos":["..."]}'
+              />
             </label>
             <div className="actions compact-actions">
-              <button className="primary" onClick={saveConversationExtractResult}>确认写入教育资产</button>
+              <button className="secondary" onClick={previewConversationExtractResult}>解析预览</button>
+              <button className="primary" onClick={saveConversationExtractResult}>确认写入勾选资产</button>
               <button className="secondary" onClick={() => setConversationExtractText('')}>清空提取结果</button>
             </div>
+            {conversationExtractPreview && !conversationExtractPreview.error && (
+              <div className="extract-preview">
+                <div className="mini-heading">
+                  <strong>写入前预览</strong>
+                  <span>取消勾选后，对应内容不会写入文件。</span>
+                </div>
+                {[
+                  ['memory', '长期记忆', conversationExtractPreview.memoryCandidates],
+                  ['soul', '人设建议', conversationExtractPreview.soulSuggestions],
+                  ['qa', '咨询精华', conversationExtractPreview.qaHighlights],
+                  ['todos', '后续待办', conversationExtractPreview.todos],
+                ].map(([key, label, items]) => (
+                  <div className="extract-preview-group" key={String(key)}>
+                    <label className="checkbox-line">
+                      <input
+                        type="checkbox"
+                        checked={conversationExtractTargets[key as keyof typeof conversationExtractTargets]}
+                        onChange={(event) => setConversationExtractTargets((current) => ({ ...current, [key as string]: event.target.checked }))}
+                      />
+                      <span>{String(label)} · {(items as unknown[]).length} 条</span>
+                    </label>
+                    {(items as unknown[]).slice(0, 6).map((item, index) => (
+                      <small key={`${String(key)}-${index}`}>{typeof item === 'string' ? item : JSON.stringify(item)}</small>
+                    ))}
+                  </div>
+                ))}
+              </div>
+            )}
             {conversationScanCandidates.length > 0 && (
               <div className="candidate-list">
                 <div className="mini-heading">
@@ -6077,6 +6946,7 @@ ${conversationText || '（请先粘贴对话历史）'}`;
                 <button className="secondary" onClick={importSelectedCandidates}>批量导入勾选候选</button>
               </div>
             )}
+            {candidateImportReviewPanel}
             <div className="source-list">
               <div className="mini-heading">
                 <strong>最近导入与提取</strong>
@@ -6255,6 +7125,7 @@ ${conversationText || '（请先粘贴对话历史）'}`;
                   </button>
                 </div>
                 {licenseMessage && <p>{licenseMessage}</p>}
+                <p className="muted-text">授权码由内部“AI教育管家授权管理工具”生成，客户版主机端只负责激活和校验。</p>
               </div>
             )}
             <div className="notice legal-notice">
@@ -6464,6 +7335,27 @@ function MarkdownView({ content }: { content: string }) {
   let inCode = false;
   let listBuffer: Array<{ ordered: boolean; text: string }> = [];
   let tableBuffer: string[][] = [];
+  let tableHasHeader = false;
+
+  const normalizeTableLine = (value: string) => value.replace(/\uFEFF/g, '').replace(/｜/g, '|');
+
+  const splitTableRow = (value: string) => {
+    let text = normalizeTableLine(value).trim();
+    if (!text.includes('|')) return null;
+    if (text.startsWith('|')) text = text.slice(1);
+    if (text.endsWith('|')) text = text.slice(0, -1);
+    const cells = text.split('|').map((cell) => cell.trim());
+    return cells.length >= 2 ? cells : null;
+  };
+
+  const isTableSeparatorRow = (row: string[]) =>
+    row.length >= 2 && row.every((cell) => /^:?-{1,}:?$/.test(cell.replace(/\s+/g, '')));
+
+  const hasTableShape = (value: string) => {
+    const text = normalizeTableLine(value).trim();
+    const pipeCount = (text.match(/\|/g) || []).length;
+    return pipeCount >= 2 || (pipeCount >= 1 && (text.startsWith('|') || text.endsWith('|')));
+  };
 
   const flushList = (key: string) => {
     if (listBuffer.length === 0) return;
@@ -6475,29 +7367,50 @@ function MarkdownView({ content }: { content: string }) {
 
   const flushTable = (key: string) => {
     if (tableBuffer.length === 0) return;
-    const rows = tableBuffer.filter((row) => !row.every((cell) => /^:?-{3,}:?$/.test(cell.trim())));
+    const rows = tableBuffer.filter((row) => !isTableSeparatorRow(row));
     if (rows.length > 0) {
+      const maxCells = Math.max(...rows.map((row) => row.length));
+      const normalizedRows = rows.map((row) => [...row, ...Array(Math.max(0, maxCells - row.length)).fill('')]);
+      const headerRows = tableHasHeader ? normalizedRows.slice(0, 1) : [];
+      const bodyRows = tableHasHeader ? normalizedRows.slice(1) : normalizedRows;
+      const columnTemplate = Array(maxCells).fill('minmax(120px, 1fr)').join(' ');
       blocks.push(
         <div className="md-table-wrap" key={key}>
-          <table>
-            <tbody>
-              {rows.map((row, rowIndex) => (
-                <tr key={`${key}-row-${rowIndex}`}>
-                  {row.map((cell, cellIndex) =>
-                    rowIndex === 0 ? (
-                      <th key={`${key}-${rowIndex}-${cellIndex}`}>{renderInlineMarkdown(cell.trim(), `${key}-${rowIndex}-${cellIndex}`)}</th>
-                    ) : (
-                      <td key={`${key}-${rowIndex}-${cellIndex}`}>{renderInlineMarkdown(cell.trim(), `${key}-${rowIndex}-${cellIndex}`)}</td>
-                    ),
-                  )}
-                </tr>
+          <div
+            className="md-table-grid"
+            role="table"
+            style={{ '--md-table-columns': columnTemplate } as React.CSSProperties}
+          >
+            {headerRows.length > 0 ? (
+              <div className="md-table-head-group" role="rowgroup">
+                {headerRows.map((row, rowIndex) => (
+                  <div className="md-table-row md-table-head-row" key={`${key}-head-${rowIndex}`} role="row">
+                    {row.map((cell, cellIndex) => (
+                      <div className="md-table-cell md-table-head" key={`${key}-head-${rowIndex}-${cellIndex}`} role="columnheader">
+                        {renderInlineMarkdown(cell, `${key}-head-${rowIndex}-${cellIndex}`)}
+                      </div>
+                    ))}
+                  </div>
+                ))}
+              </div>
+            ) : null}
+            <div className="md-table-body-group" role="rowgroup">
+              {bodyRows.map((row, rowIndex) => (
+                <div className="md-table-row" key={`${key}-body-${rowIndex}`} role="row">
+                  {row.map((cell, cellIndex) => (
+                    <div className="md-table-cell" key={`${key}-body-${rowIndex}-${cellIndex}`} role="cell">
+                      {renderInlineMarkdown(cell, `${key}-body-${rowIndex}-${cellIndex}`)}
+                    </div>
+                  ))}
+                </div>
               ))}
-            </tbody>
-          </table>
+            </div>
+          </div>
         </div>,
       );
     }
     tableBuffer = [];
+    tableHasHeader = false;
   };
 
   const flushFlow = (key: string) => {
@@ -6505,7 +7418,9 @@ function MarkdownView({ content }: { content: string }) {
     flushTable(`${key}-table`);
   };
 
-  lines.forEach((line, index) => {
+  let index = 0;
+  while (index < lines.length) {
+    const line = lines[index];
     if (line.trim().startsWith('```')) {
       flushFlow(`flow-${index}`);
       if (inCode) {
@@ -6519,25 +7434,53 @@ function MarkdownView({ content }: { content: string }) {
       } else {
         inCode = true;
       }
-      return;
+      index += 1;
+      continue;
     }
 
     if (inCode) {
       codeBuffer.push(line);
-      return;
+      index += 1;
+      continue;
     }
 
     if (!line.trim()) {
       flushFlow(`flow-${index}`);
       blocks.push(<div className="md-space" key={`space-${index}`} />);
-      return;
+      index += 1;
+      continue;
     }
 
-    const tableLine = line.trim();
-    if (tableLine.startsWith('|') && tableLine.endsWith('|')) {
+    const tableCells = splitTableRow(line);
+    const nextLine = lines[index + 1] || '';
+    const nextTableCells = splitTableRow(nextLine);
+    const hasExplicitSeparator = Boolean(nextTableCells && isTableSeparatorRow(nextTableCells));
+    const hasAdjacentPipeRows = Boolean(
+      tableCells &&
+        nextTableCells &&
+        !isTableSeparatorRow(nextTableCells) &&
+        hasTableShape(line) &&
+        hasTableShape(nextLine) &&
+        Math.min(tableCells.length, nextTableCells.length) >= 2,
+    );
+    if (tableCells && (hasExplicitSeparator || hasAdjacentPipeRows)) {
       flushList(`list-before-table-${index}`);
-      tableBuffer.push(tableLine.slice(1, -1).split('|'));
-      return;
+      tableBuffer = [];
+      tableHasHeader = hasExplicitSeparator;
+      tableBuffer.push(tableCells);
+      index += hasExplicitSeparator ? 2 : 1;
+      while (index < lines.length) {
+        const rowCells = splitTableRow(lines[index] || '');
+        if (!rowCells || !hasTableShape(lines[index] || '')) break;
+        if (isTableSeparatorRow(rowCells)) {
+          index += 1;
+          continue;
+        }
+        tableBuffer.push(rowCells);
+        index += 1;
+      }
+      flushTable(`table-${index}`);
+      continue;
     }
 
     flushTable(`table-before-${index}`);
@@ -6545,31 +7488,37 @@ function MarkdownView({ content }: { content: string }) {
     if (line.startsWith('# ')) {
       flushList(`list-before-h1-${index}`);
       blocks.push(<h1 key={index}>{renderInlineMarkdown(line.slice(2), `h1-${index}`)}</h1>);
-      return;
+      index += 1;
+      continue;
     }
     if (line.startsWith('## ')) {
       flushList(`list-before-h2-${index}`);
       blocks.push(<h2 key={index}>{renderInlineMarkdown(line.slice(3), `h2-${index}`)}</h2>);
-      return;
+      index += 1;
+      continue;
     }
     if (line.startsWith('### ')) {
       flushList(`list-before-h3-${index}`);
       blocks.push(<h3 key={index}>{renderInlineMarkdown(line.slice(4), `h3-${index}`)}</h3>);
-      return;
+      index += 1;
+      continue;
     }
     if (line.startsWith('> ')) {
       flushList(`list-before-quote-${index}`);
       blocks.push(<blockquote key={index}>{renderInlineMarkdown(line.slice(2), `quote-${index}`)}</blockquote>);
-      return;
+      index += 1;
+      continue;
     }
     const listMatch = line.match(/^(\s*)([-*+]|\d+[.)])\s+(.+)$/);
     if (listMatch) {
       listBuffer.push({ ordered: /^\d/.test(listMatch[2]), text: listMatch[3] });
-      return;
+      index += 1;
+      continue;
     }
     flushList(`list-before-p-${index}`);
     blocks.push(<p key={index}>{renderInlineMarkdown(line, `p-${index}`)}</p>);
-  });
+    index += 1;
+  }
 
   flushFlow('tail-flow');
   if (codeBuffer.length > 0) {

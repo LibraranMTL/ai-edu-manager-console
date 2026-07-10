@@ -1,6 +1,6 @@
 {
   "name": "edu-manager-launcher",
-  "version": "0.5.7",
+  "version": "0.6.5",
   "private": true,
   "type": "module",
   "main": "electron/main.cjs",
@@ -10,7 +10,9 @@
     "build": "pnpm clean:dist && vite build",
     "preview": "vite preview --host 0.0.0.0",
     "desktop": "electron .",
-    "build:win": "pnpm build && electron-builder --win portable --x64"
+    "build:win": "pnpm build && electron-builder --win portable --x64",
+    "license-admin:desktop": "electron tools/license-admin-app",
+    "build:license-admin": "electron-builder --projectDir tools/license-admin-app --win portable --x64"
   },
   "dependencies": {
     "lucide-react": "^0.468.0",

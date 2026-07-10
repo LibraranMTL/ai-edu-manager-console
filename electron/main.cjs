@@ -21,7 +21,7 @@ let hostServiceLastError = '';
 let todayUploadCount = 0;
 let uploadCountDate = new Date().toISOString().slice(0, 10);
 
-const APP_VERSION = '0.5.7';
+const APP_VERSION = '0.6.5';
 const DEFAULT_HOST_PORT = 18777;
 const AGENT_TOOL_IDS = ['qclaw', 'marvis', 'hohu', 'openclaw', 'codex', 'claude-code', 'chatgpt', 'claude', 'doubao', 'coze', 'fastgpt'];
 const WEB_AGENT_TOOL_URLS = {
@@ -319,6 +319,8 @@ function materialRecordFromUpload(record) {
     uploadedAt: record.uploadedAt || new Date().toISOString(),
     sourceDevice: record.deviceName || record.deviceId || '主机控制台',
     sourceDeviceId: record.deviceId || '',
+    sourcePath: record.sourcePath || '',
+    sourceName: record.sourceName || '',
     status: normalizeUploadStatus(record.status),
     statusUpdatedAt: record.statusUpdatedAt || new Date().toISOString(),
     digestedAt: record.digestedAt || '',
@@ -353,6 +355,252 @@ function sha1File(file) {
   } catch {
     return '';
   }
+}
+
+function isPathInside(parent, child) {
+  try {
+    const relative = path.relative(parent, child);
+    return Boolean(relative) && !relative.startsWith('..') && !path.isAbsolute(relative);
+  } catch {
+    return false;
+  }
+}
+
+function normalizeMaterialSources(sources) {
+  return (Array.isArray(sources) ? sources : [])
+    .map((source, index) => {
+      const sourcePath = String(source?.path || '').trim();
+      if (!sourcePath) return null;
+      return {
+        id: String(source?.id || crypto.createHash('sha1').update(sourcePath).digest('hex').slice(0, 12)),
+        name: String(source?.name || path.basename(sourcePath) || `来源目录 ${index + 1}`),
+        path: sourcePath,
+        enabled: source?.enabled !== false,
+        lastScannedAt: String(source?.lastScannedAt || ''),
+      };
+    })
+    .filter(Boolean);
+}
+
+function pickMaterialSourceDir() {
+  try {
+    const result = dialog.showOpenDialogSync(mainWindow, {
+      title: '选择资料来源目录',
+      properties: ['openDirectory'],
+    });
+    if (!result || !result[0]) return JSON.stringify({ ok: false, message: '未选择资料来源目录。' });
+    const sourcePath = result[0];
+    return JSON.stringify({
+      ok: true,
+      source: {
+        id: crypto.createHash('sha1').update(sourcePath).digest('hex').slice(0, 12),
+        name: path.basename(sourcePath) || sourcePath,
+        path: sourcePath,
+        enabled: true,
+      },
+    });
+  } catch (error) {
+    return JSON.stringify({ ok: false, message: `选择资料来源目录失败：${error.message}` });
+  }
+}
+
+function walkMaterialFiles(root, options = {}) {
+  const maxDepth = Number(options.maxDepth ?? 4);
+  const maxFiles = Number(options.maxFiles ?? 500);
+  const files = [];
+  const stack = [{ dir: root, depth: 0 }];
+  while (stack.length && files.length < maxFiles) {
+    const current = stack.pop();
+    let entries = [];
+    try {
+      entries = fs.readdirSync(current.dir, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const entry of entries) {
+      const fullPath = path.join(current.dir, entry.name);
+      if (entry.isDirectory()) {
+        if (current.depth < maxDepth && !entry.name.startsWith('.') && entry.name !== 'node_modules') {
+          stack.push({ dir: fullPath, depth: current.depth + 1 });
+        }
+        continue;
+      }
+      if (!entry.isFile() || !isAllowedUploadFile(entry.name)) continue;
+      try {
+        const stat = fs.statSync(fullPath);
+        if (stat.size <= 0 || stat.size > MAX_UPLOAD_BYTES) continue;
+        files.push({ path: fullPath, name: entry.name, size: stat.size, modified: stat.mtimeMs });
+      } catch {
+        // Ignore files that disappear during scanning.
+      }
+      if (files.length >= maxFiles) break;
+    }
+  }
+  return files.sort((a, b) => Number(b.modified || 0) - Number(a.modified || 0));
+}
+
+function scanMaterialSources(studentId, sourcesJson) {
+  const student = findStudentByKey(studentId);
+  if (!student) return JSON.stringify({ ok: false, message: '未找到学生。' });
+  try {
+    const parsed = JSON.parse(sourcesJson || '[]');
+    const sources = normalizeMaterialSources(parsed).filter((source) => source.enabled);
+    if (!sources.length) return JSON.stringify({ ok: true, files: [], message: '尚未启用资料来源目录。' });
+    const rawPath = student.rawPath || getRawDir(student.name);
+    const materialHashes = new Set(readStudentMaterials(student).map((item) => String(item.sha1 || '')).filter(Boolean));
+    const uploadHashes = new Set(readUploadRecords().filter((record) => String(record.studentId) === String(student.id)).map((record) => String(record.sha1 || '')).filter(Boolean));
+    const seenPaths = new Set();
+    const files = [];
+    for (const source of sources) {
+      if (!fs.existsSync(source.path)) {
+        files.push({
+          id: source.id,
+          sourceId: source.id,
+          sourceName: source.name,
+          path: source.path,
+          name: source.name,
+          size: 0,
+          modified: 0,
+          type: '目录不可访问',
+          status: 'failed',
+          importable: false,
+          reason: '来源目录不存在或不可访问',
+        });
+        continue;
+      }
+      for (const file of walkMaterialFiles(source.path, { maxDepth: 4, maxFiles: 500 })) {
+        if (seenPaths.has(file.path) || isPathInside(rawPath, file.path)) continue;
+        seenPaths.add(file.path);
+        const sha1 = sha1File(file.path);
+        const imported = Boolean(sha1 && (materialHashes.has(sha1) || uploadHashes.has(sha1)));
+        files.push({
+          id: crypto.createHash('sha1').update(`${source.id}|${file.path}`).digest('hex'),
+          sourceId: source.id,
+          sourceName: source.name,
+          path: file.path,
+          name: file.name,
+          size: file.size,
+          modified: file.modified,
+          type: path.extname(file.name).slice(1).toUpperCase() || '文件',
+          sha1,
+          status: imported ? 'imported' : 'new',
+          importable: !imported,
+          reason: imported ? '已导入，默认跳过' : '',
+        });
+      }
+    }
+    const limited = files.sort((a, b) => Number(b.modified || 0) - Number(a.modified || 0)).slice(0, 200);
+    return JSON.stringify({
+      ok: true,
+      files: limited,
+      scannedAt: new Date().toISOString(),
+      message: limited.length ? `已扫描到 ${limited.length} 个可识别资料文件。` : '来源目录中暂未发现可导入资料文件。',
+    });
+  } catch (error) {
+    return JSON.stringify({ ok: false, message: `扫描资料来源目录失败：${error.message}` });
+  }
+}
+
+function findSourceForPath(sources, filePath) {
+  const normalized = normalizeMaterialSources(sources);
+  return normalized.find((source) => filePath === source.path || isPathInside(source.path, filePath)) || null;
+}
+
+function importMaterialSourceFiles(studentId, pathsJson) {
+  const student = findStudentByKey(studentId);
+  if (!student) return JSON.stringify({ ok: false, imported: 0, skipped: 0, failed: 0, message: '未找到学生。' });
+  try {
+    const paths = JSON.parse(pathsJson || '[]');
+    if (!Array.isArray(paths) || !paths.length) return JSON.stringify({ ok: false, imported: 0, skipped: 0, failed: 0, message: '请先选择要导入的资料文件。' });
+    const rawPath = student.rawPath || getRawDir(student.name);
+    fs.mkdirSync(rawPath, { recursive: true });
+    const existingHashes = new Set(readStudentMaterials(student).map((item) => String(item.sha1 || '')).filter(Boolean));
+    readUploadRecords()
+      .filter((record) => String(record.studentId) === String(student.id))
+      .forEach((record) => {
+        if (record.sha1) existingHashes.add(String(record.sha1));
+      });
+    const saved = [];
+    let skipped = 0;
+    let failed = 0;
+    const sourceList = normalizeMaterialSources(student.materialSources);
+    for (const sourcePath of paths.map((item) => String(item || '')).filter(Boolean)) {
+      try {
+        if (!fs.existsSync(sourcePath)) {
+          failed += 1;
+          continue;
+        }
+        const stat = fs.statSync(sourcePath);
+        assertUploadFileAllowed(path.basename(sourcePath), stat.size);
+        const hash = sha1File(sourcePath);
+        if (hash && existingHashes.has(hash)) {
+          skipped += 1;
+          continue;
+        }
+        const target = uniqueTargetFile(rawPath, path.basename(sourcePath));
+        fs.copyFileSync(sourcePath, target);
+        const source = findSourceForPath(sourceList, sourcePath);
+        const targetHash = sha1File(target);
+        if (targetHash) existingHashes.add(targetHash);
+        saved.push({
+          id: `${Date.now()}-${crypto.randomBytes(4).toString('hex')}`,
+          studentId: String(student.id),
+          studentName: student.name,
+          filename: path.basename(target),
+          size: stat.size,
+          path: target,
+          rawPath,
+          sha1: targetHash,
+          sourcePath,
+          sourceName: source?.name || path.basename(path.dirname(sourcePath)) || '资料来源目录',
+          deviceId: 'admin',
+          deviceName: '主机控制台',
+          uploadedAt: new Date().toISOString(),
+        });
+      } catch {
+        failed += 1;
+      }
+    }
+    if (saved.length) {
+      addUploadRecords(saved);
+      notify('onNativeHostServiceChanged', getHostServiceStatus());
+    }
+    return JSON.stringify({
+      ok: saved.length > 0,
+      imported: saved.length,
+      skipped,
+      failed,
+      records: saved,
+      message: saved.length
+        ? `已导入 ${saved.length} 个文件到「${student.name}原始资料库」${skipped ? `，跳过 ${skipped} 个重复文件` : ''}${failed ? `，${failed} 个文件失败` : ''}。`
+        : skipped
+          ? `没有新文件导入，已跳过 ${skipped} 个重复文件。`
+          : '没有文件被成功导入。',
+    });
+  } catch (error) {
+    return JSON.stringify({ ok: false, imported: 0, skipped: 0, failed: 0, message: `导入资料来源文件失败：${error.message}` });
+  }
+}
+
+function getMaterialImportRecords(studentId) {
+  const records = readUploadRecords()
+    .filter((record) => String(record.studentId) === String(studentId))
+    .map((record) => ({
+      id: String(record.id || ''),
+      studentId: String(record.studentId || ''),
+      sourcePath: record.sourcePath || '',
+      sourceName: record.sourceName || record.deviceName || record.deviceId || '未知来源',
+      targetPath: record.path || '',
+      fileName: record.filename || path.basename(record.path || ''),
+      fileSize: Number(record.size || 0),
+      fileHash: record.sha1 || '',
+      importedAt: record.uploadedAt || '',
+      status: normalizeUploadStatus(record.status),
+      reason: record.sourcePath ? '' : '来自平板上传或手动导入',
+    }))
+    .sort((a, b) => String(b.importedAt || '').localeCompare(String(a.importedAt || '')))
+    .slice(0, 100);
+  return JSON.stringify({ ok: true, records });
 }
 
 function addUploadRecords(records) {
@@ -491,6 +739,26 @@ function normalizeDigestStateStatus(status) {
   return value || 'idle';
 }
 
+function fileContainsAny(file, patterns) {
+  try {
+    if (!fs.existsSync(file)) return false;
+    const text = fs.readFileSync(file, 'utf8');
+    return patterns.some((pattern) => pattern.test(text));
+  } catch {
+    return false;
+  }
+}
+
+function inferDigestCompletedFromSummary(summaryPath, sinceMs) {
+  if (!summaryPath || !sinceMs) return false;
+  const logFile = path.join(summaryPath, 'log.md');
+  const indexFile = path.join(summaryPath, 'index.md');
+  const latest = latestFileMtime([logFile, indexFile]);
+  if (!latest || latest < sinceMs) return false;
+  return fileContainsAny(logFile, [/消化完成|处理完成|已完成|无新增资料|已更新|摘要|沉淀/])
+    || fileContainsAny(indexFile, [/updated|更新|摘要|综合|学情|报告/]);
+}
+
 function syncStudentDigestResult(studentId, options = {}) {
   const student = readStudentsIndex().find((item) => String(item.id) === String(studentId));
   if (!student) return JSON.stringify({ ok: false, message: 'Student not found.' });
@@ -501,6 +769,14 @@ function syncStudentDigestResult(studentId, options = {}) {
   const rawPath = student.rawPath || getRawDir(student.name);
   const summaryPath = student.summaryPath || getSummaryDir(student.name);
   const digestFile = studentDigestStatePath(student);
+  const allRecords = readUploadRecords();
+  const studentRecords = allRecords.filter((record) => String(record.studentId) === String(studentId));
+  const latestSubmittedMs = Math.max(
+    state.digestSubmittedAt ? Date.parse(state.digestSubmittedAt) || 0 : 0,
+    ...studentRecords
+      .filter((record) => ['submitted', 'digesting'].includes(normalizeUploadStatus(record.status)))
+      .map((record) => Date.parse(record.statusUpdatedAt || record.uploadedAt || '') || 0),
+  );
   const latestDigestMs = Math.max(
     state.lastDigestAt ? Date.parse(state.lastDigestAt) || 0 : 0,
     latestFileMtime([
@@ -509,6 +785,8 @@ function syncStudentDigestResult(studentId, options = {}) {
       path.join(summaryPath, 'index.md'),
     ]),
   );
+  const inferredCompleted = inferDigestCompletedFromSummary(summaryPath, latestSubmittedMs);
+  const effectiveDigestStatus = inferredCompleted && digestStatus !== 'failed' ? 'completed' : digestStatus;
   const digestedNames = new Set(
     []
       .concat(Array.isArray(state.digestedFiles) ? state.digestedFiles : [])
@@ -518,17 +796,22 @@ function syncStudentDigestResult(studentId, options = {}) {
   );
   let changed = 0;
   const batchId = state.digestBatchId || `digest-${Date.now()}`;
-  const records = readUploadRecords().map((record) => {
+  const timeoutMs = 4 * 60 * 60 * 1000;
+  const timedOutCount = studentRecords.filter((record) =>
+    ['submitted', 'digesting'].includes(normalizeUploadStatus(record.status))
+    && (Date.now() - (Date.parse(record.statusUpdatedAt || record.uploadedAt || '') || Date.now())) > timeoutMs
+  ).length;
+  const records = allRecords.map((record) => {
     if (String(record.studentId) !== String(studentId) || normalizeUploadStatus(record.status) === 'processed') return record;
     const uploadedMs = record.uploadedAt ? Date.parse(record.uploadedAt) || 0 : 0;
     const nameMatched = digestedNames.size > 0 && digestedNames.has(path.basename(String(record.filename || '')).toLowerCase());
     const timeMatched = latestDigestMs > 0 && uploadedMs > 0 && uploadedMs <= latestDigestMs;
     const submittedMatched = options.forceSubmitted && normalizeUploadStatus(record.status) === 'submitted';
-    if (digestStatus === 'failed') {
+    if (effectiveDigestStatus === 'failed') {
       changed += 1;
       return { ...record, status: 'failed', statusUpdatedAt: now };
     }
-    if (digestStatus === 'completed' && (nameMatched || (digestedNames.size === 0 && timeMatched) || submittedMatched)) {
+    if (effectiveDigestStatus === 'completed' && (nameMatched || (digestedNames.size === 0 && timeMatched) || submittedMatched || inferredCompleted)) {
       changed += 1;
       return { ...record, status: 'processed', statusUpdatedAt: now, digestedAt: state.lastDigestAt || now, digestBatchId: batchId };
     }
@@ -537,17 +820,22 @@ function syncStudentDigestResult(studentId, options = {}) {
   writeUploadRecords(records);
   syncStudentMaterialsFromUploadRecords(student);
   const openCount = records.filter((record) => String(record.studentId) === String(studentId) && isOpenDigestStatus(record.status)).length;
+  const reportHealth = learningReportHealthSummary(LEARNING_REPORTS.map((report) => learningReportRecord(student, report)));
+  const reportReminder = reportHealth.ok ? '学情报告状态正常。' : reportHealth.message;
   const nextState = writeStudentDigestState(student, {
-    status: digestStatus === 'completed' && openCount === 0 ? 'completed' : openCount > 0 ? 'pending' : 'idle',
-    lastDigestAt: digestStatus === 'completed' ? (state.lastDigestAt || (latestDigestMs ? new Date(latestDigestMs).toISOString() : now)) : (state.lastDigestAt || ''),
+    status: effectiveDigestStatus === 'completed' && openCount === 0 ? 'completed' : timedOutCount > 0 ? 'timeout' : openCount > 0 ? 'pending' : 'idle',
+    lastDigestAt: effectiveDigestStatus === 'completed' ? (state.lastDigestAt || (latestDigestMs ? new Date(latestDigestMs).toISOString() : now)) : (state.lastDigestAt || ''),
     digestBatchId: batchId,
     message: changed > 0
-      ? `已同步 QClaw 消化结果，${changed} 份资料标记为已消化。`
+      ? `已同步 QClaw 消化结果，${changed} 份资料标记为已消化。请检查四份学情报告是否已更新。${reportReminder}`
+      : timedOutCount > 0
+        ? `有 ${timedOutCount} 份资料提交消化超过 4 小时未完成。请检查 QClaw 任务、digest-state.json 和 log.md。`
       : openCount > 0
         ? `仍有 ${openCount} 份资料待消化；如 QClaw 已完成，请确认 digest-state.json 或 log.md 已更新。`
         : '暂无待消化资料。',
     rawPath,
     summaryPath,
+    reportHealth,
   });
   appendHostTimeline({
     type: 'digest_synced',
@@ -1024,6 +1312,153 @@ function getSummaryDir(studentName) {
   return path.join(getStudentRootDir(cleanName), `${cleanName}学情分析汇总`);
 }
 
+const LEARNING_REPORTS = [
+  {
+    id: 'profile',
+    title: '整体画像',
+    fileName: '整体画像.md',
+    type: 'learning_profile',
+    target: '家长 / 教师 / 学生',
+    summaryHeading: '一句话画像',
+    sections: ['一句话画像', '学习优势', '当前短板', '兴趣与动力', '学习习惯与执行力', '适合的学习方式', '家长沟通注意点', '依据来源'],
+  },
+  {
+    id: 'changes',
+    title: '历史变化',
+    fileName: '历史变化.md',
+    type: 'learning_change',
+    target: '家长 / 教师',
+    summaryHeading: '最近 7 天变化',
+    sections: ['最近 7 天变化', '最近 30 天变化', '能力变化', '习惯变化', '问题变化', '目标变化', '依据来源'],
+  },
+  {
+    id: 'daily',
+    title: '每日行动建议',
+    fileName: '每日行动建议.md',
+    type: 'daily_action',
+    target: '学生 / 家长 / 教师',
+    summaryHeading: '今日重点',
+    sections: ['今日重点', '给学生', '给家长', '给老师', '今日不建议做的事', '观察点', '依据来源'],
+  },
+  {
+    id: 'stage',
+    title: '阶段总结',
+    fileName: '阶段总结.md',
+    type: 'stage_summary',
+    target: '家长 / 教师',
+    summaryHeading: '本阶段核心进展',
+    sections: ['本阶段核心进展', '主要问题', '关键证据', '下一阶段目标', '建议行动', '依据来源'],
+  },
+];
+
+function learningReportDirForStudent(student) {
+  const summaryPath = student.summaryPath || getSummaryDir(student.name);
+  return path.join(summaryPath, '学情报告');
+}
+
+function learningReportPathForStudent(student, report) {
+  return path.join(learningReportDirForStudent(student), report.fileName);
+}
+
+function learningReportTemplate(student, report) {
+  const today = new Date().toISOString().slice(0, 10);
+  const body = report.sections.map((section) => {
+    if (section === report.summaryHeading) return `## ${section}\n\n待生成。`;
+    return `## ${section}\n\n- 待补充。`;
+  }).join('\n\n');
+  return `---\ntype: ${report.type}\ntarget: ${report.target}\nupdated: ${today}\nstatus: draft\n---\n\n# ${report.title}\n\n${body}\n`;
+}
+
+function ensureLearningReportsForStudent(student) {
+  const reportDir = learningReportDirForStudent(student);
+  fs.mkdirSync(reportDir, { recursive: true });
+  const created = [];
+  for (const report of LEARNING_REPORTS) {
+    const file = learningReportPathForStudent(student, report);
+    if (!fs.existsSync(file)) {
+      fs.writeFileSync(file, learningReportTemplate(student, report), 'utf8');
+      created.push(report.fileName);
+    }
+  }
+  return { reportDir, created };
+}
+
+function frontmatterValue(content, key) {
+  const match = new RegExp(`^${key}:\\s*(.+)$`, 'im').exec(String(content || ''));
+  return match ? match[1].trim() : '';
+}
+
+function extractSectionSummary(content, heading) {
+  const text = String(content || '');
+  const escaped = String(heading || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const match = new RegExp(`##\\s+${escaped}\\s*\\n([\\s\\S]*?)(?=\\n##\\s+|$)`, 'i').exec(text);
+  const raw = (match?.[1] || text.replace(/^---[\s\S]*?---/, '')).trim();
+  const line = raw
+    .split(/\r?\n/)
+    .map((item) => item.replace(/^[-*]\s*/, '').trim())
+    .find((item) => item && !/^待(生成|补充)/.test(item));
+  return (line || '待生成').slice(0, 120);
+}
+
+function reportHasEvidence(content) {
+  const evidence = extractSectionSummary(content, '依据来源');
+  return Boolean(evidence && evidence !== '待生成' && !/^待(生成|补充)/.test(evidence));
+}
+
+function learningReportRecord(student, report) {
+  const file = learningReportPathForStudent(student, report);
+  const exists = fs.existsSync(file);
+  const content = exists ? fs.readFileSync(file, 'utf8') : learningReportTemplate(student, report);
+  const stat = exists ? fs.statSync(file) : null;
+  const status = frontmatterValue(content, 'status') || (/(待生成|待补充)/.test(content) ? 'draft' : 'active');
+  const updatedMs = stat ? stat.mtimeMs : 0;
+  const staleDays = updatedMs ? Math.floor((Date.now() - updatedMs) / (24 * 60 * 60 * 1000)) : null;
+  const evidenceOk = reportHasEvidence(content);
+  const stale = Boolean(staleDays !== null && staleDays >= 14);
+  const warnings = [];
+  if (!exists) warnings.push('报告文件缺失');
+  if (status === 'draft') warnings.push('仍是草稿状态');
+  if (stale) warnings.push(`已 ${staleDays} 天未更新`);
+  if (!evidenceOk) warnings.push('缺少有效依据来源');
+  return {
+    id: report.id,
+    title: report.title,
+    fileName: report.fileName,
+    path: `学情报告/${report.fileName}`,
+    absolutePath: file,
+    exists,
+    updatedAt: stat ? stat.mtime.toISOString() : '',
+    status,
+    stale,
+    staleDays,
+    evidenceOk,
+    health: warnings.length ? 'warning' : 'ok',
+    warnings,
+    summary: extractSectionSummary(content, report.summaryHeading),
+  };
+}
+
+function learningReportHealthSummary(reports) {
+  const missingCount = reports.filter((report) => !report.exists).length;
+  const draftCount = reports.filter((report) => report.status === 'draft').length;
+  const staleCount = reports.filter((report) => report.stale).length;
+  const evidenceMissingCount = reports.filter((report) => !report.evidenceOk).length;
+  const warnings = [];
+  if (missingCount) warnings.push(`${missingCount} 份报告缺失`);
+  if (draftCount) warnings.push(`${draftCount} 份报告仍是草稿`);
+  if (staleCount) warnings.push(`${staleCount} 份报告超过 14 天未更新`);
+  if (evidenceMissingCount) warnings.push(`${evidenceMissingCount} 份报告缺少依据来源`);
+  return {
+    ok: warnings.length === 0,
+    missingCount,
+    draftCount,
+    staleCount,
+    evidenceMissingCount,
+    warnings,
+    message: warnings.length ? `学情报告需要检查：${warnings.join('；')}。` : '学情报告状态正常。',
+  };
+}
+
 function templateLibraryDir() {
   return path.join(defaultStudentBaseDir(), '模板库');
 }
@@ -1189,12 +1624,19 @@ function snapshotCurrentFile(file, snapshotsDir) {
   return target;
 }
 
+function learningReportProtocolText(summaryPath) {
+  const reportDir = path.join(summaryPath || '', '学情报告');
+  return `## 学情报告 Protocol\n\n学情报告是面向家长、学生和教师的成果表达层，不替代摘要库、实体库、概念库、综合库和咨询精华库。\n\n完成资料消化、综合分析或咨询沉淀后，如果发现对用户有直接价值的结论，请检查并更新：\n\n- ${path.join(reportDir, '整体画像.md')}\n- ${path.join(reportDir, '历史变化.md')}\n- ${path.join(reportDir, '每日行动建议.md')}\n- ${path.join(reportDir, '阶段总结.md')}\n\n写作要求：\n\n1. 面向家长、学生、教师可读，避免内部技术术语。\n2. 每份报告顶部保留更新时间、适用对象、状态。\n3. 结论必须对应学情分析汇总中的依据来源。\n4. “每日行动建议”必须分为：给学生、给家长、给老师。\n5. 不确定判断标注“待观察”，不要写成定论。\n6. 不要删除原有报告内容；判断发生变化时，在“历史变化”或“阶段总结”中说明变化原因。\n7. 当天无新增资料时，也可以根据已有档案更新“每日行动建议”，但要注明依据。\n`;
+}
+
 function defaultRuleFileContent(student, fileName) {
   const cleanName = sanitizeName(student.name);
-  const agentPath = student.agentPath || path.join(student.rootPath || getStudentRootDir(cleanName), 'AGENT.md');
+  const rootPath = student.rootPath || getStudentRootDir(cleanName);
+  const summaryPath = student.summaryPath || getSummaryDir(cleanName);
+  const agentPath = student.agentPath || path.join(rootPath, 'AGENT.md');
   const lower = String(fileName || '').toLowerCase();
   if (lower === 'agent.md' && fs.existsSync(agentPath)) return fs.readFileSync(agentPath, 'utf8');
-  return `# ${cleanName} ${fileName}\n\n## 工作规则\n\n该 Agent 的工作协议使用：${agentPath}\n后续所有学习资料消化都围绕该学生知识库执行。\n\n## 规则说明\n\n请将本文件作为该学生智能体的规则性 Markdown 文件维护。若当前 Agent 工具支持多个规则文件，可把本文件内容同步到对应工具的规则、系统提示词或项目指令中。\n`;
+  return `# ${cleanName} ${fileName}\n\n## 工作规则\n\n该 Agent 的工作协议使用：${agentPath}\n后续所有学习资料消化都围绕该学生知识库执行。\n\n${learningReportProtocolText(summaryPath)}\n## 规则说明\n\n请将本文件作为该学生智能体的规则性 Markdown 文件维护。若当前 Agent 工具支持多个规则文件，可把本文件内容同步到对应工具的规则、系统提示词或项目指令中。\n`;
 }
 
 function defaultUnifiedMemory(student) {
@@ -1279,6 +1721,34 @@ function getAgentSourceRegistry(studentId) {
     });
   } catch (error) {
     return JSON.stringify({ ok: false, message: `读取来源记录失败：${error.message}` });
+  }
+}
+
+function rollbackAgentSourceRecord(studentId, recordId) {
+  try {
+    const student = findStudentByKey(studentId);
+    if (!student) return JSON.stringify({ ok: false, message: '未找到学生。' });
+    const file = agentSourceRegistryPath(student);
+    const registry = readJsonFile(file, { version: 1, records: [] });
+    const records = Array.isArray(registry.records) ? registry.records : [];
+    const target = records.find((record) => String(record.id) === String(recordId));
+    if (!target) return JSON.stringify({ ok: false, message: '未找到要撤销的来源记录。' });
+    const nextRecords = records.filter((record) => String(record.id) !== String(recordId));
+    writeJsonFile(file, {
+      ...registry,
+      version: 1,
+      updatedAt: new Date().toISOString(),
+      records: nextRecords,
+    });
+    return JSON.stringify({
+      ok: true,
+      path: file,
+      removed: target,
+      records: nextRecords,
+      message: '已撤销来源记录。目标文件未删除，如需处理请在知识库中手动确认。',
+    });
+  } catch (error) {
+    return JSON.stringify({ ok: false, message: `撤销来源记录失败：${error.message}` });
   }
 }
 
@@ -1611,10 +2081,10 @@ function ruleFileTemplateIntro(student, fileName) {
   };
   const lower = String(fileName || '').toLowerCase();
   if (lower === 'agents.md') {
-    return `# ${cleanName} 教育管家项目说明（AGENTS.md）\n\n本目录是学生「${cleanName}」的 AI 教育管家知识库，供 Codex 或其他本地项目型 Agent 使用。\n\n## 工作规则\n\n- 该 Agent 的工作协议使用：${p.agent}\n- 后续所有学习资料消化都围绕该学生知识库执行。\n- 原始资料库是输入层：${p.raw}\n- 学情分析汇总是知识层：${p.summary}\n- 输出结果是临时交付层：${p.output}\n- 所有新增、修改和总结必须遵守 AGENT.md 中的证据追溯、索引更新和 log 记录规则。\n\n`;
+    return `# ${cleanName} 教育管家项目说明（AGENTS.md）\n\n本目录是学生「${cleanName}」的 AI 教育管家知识库，供 Codex 或其他本地项目型 Agent 使用。\n\n## 工作规则\n\n- 该 Agent 的工作协议使用：${p.agent}\n- 后续所有学习资料消化都围绕该学生知识库执行。\n- 原始资料库是输入层：${p.raw}\n- 学情分析汇总是知识层：${p.summary}\n- 输出结果是临时交付层：${p.output}\n- 所有新增、修改和总结必须遵守 AGENT.md 中的证据追溯、索引更新和 log 记录规则。\n\n${learningReportProtocolText(p.summary)}\n`;
   }
   if (lower === 'claude.md' || lower === 'claud.md') {
-    return `# ${cleanName} 教育管家 Claude Code 规则\n\n本文件用于 Claude Code 在该学生知识库目录中工作。\n\n## 工作规则\n\n该 Agent 的工作协议使用：${p.agent}\n后续所有学习资料消化都围绕该学生知识库执行。\n\n请优先读取 AGENT.md，再处理原始资料库与学情分析汇总。不要移动、删除用户原始资料。\n\n`;
+    return `# ${cleanName} 教育管家 Claude Code 规则\n\n本文件用于 Claude Code 在该学生知识库目录中工作。\n\n## 工作规则\n\n该 Agent 的工作协议使用：${p.agent}\n后续所有学习资料消化都围绕该学生知识库执行。\n\n请优先读取 AGENT.md，再处理原始资料库与学情分析汇总。不要移动、删除用户原始资料。\n\n${learningReportProtocolText(p.summary)}\n`;
   }
   return defaultRuleFileContent(student, fileName);
 }
@@ -2118,6 +2588,7 @@ function toHostStudent(student) {
       activeTemplate: templateProfile.activeTemplate === 'custom' ? 'custom' : 'system',
       customTemplatePath: templateProfile.customTemplatePath || '',
     },
+    materialSources: normalizeMaterialSources(student.materialSources),
     adoptedAt: String(student.adoptedAt || ''),
     remoteChannel,
     remoteContact: String(student.remoteContact || ''),
@@ -2305,6 +2776,7 @@ function initStudentWorkspace(studentName, agentMd, indexMd, logMd) {
     writeTextIfMissing(path.join(summary, 'index.md'), indexMd || '');
     writeTextIfMissing(path.join(summary, 'log.md'), logMd || '');
     const pseudoStudent = { id: cleanName, name: cleanName, rootPath: root, rawPath: raw, summaryPath: summary };
+    ensureLearningReportsForStudent(pseudoStudent);
     ensureStudentManagerFiles(pseudoStudent);
     writeStudentDigestState(pseudoStudent, {
       status: 'idle',
@@ -2375,6 +2847,11 @@ function scanExistingKnowledgeBase(rootPath, studentName) {
     const outputPath = findKnowledgeDir(root, '输出结果', ['输出结果', '输出', 'result']);
     const indexPath = summaryPath ? path.join(summaryPath, 'index.md') : '';
     const logPath = summaryPath ? path.join(summaryPath, 'log.md') : '';
+    const reportDir = summaryPath ? path.join(summaryPath, '学情报告') : '';
+    const reportFiles = Object.fromEntries(LEARNING_REPORTS.map((report) => [
+      report.id,
+      Boolean(reportDir && fs.existsSync(path.join(reportDir, report.fileName))),
+    ]));
     return JSON.stringify({
       ok: true,
       rootPath: root,
@@ -2384,6 +2861,8 @@ function scanExistingKnowledgeBase(rootPath, studentName) {
       outputPath,
       indexPath,
       logPath,
+      reportDir,
+      reportFiles,
       checks: {
         agentMd: fs.existsSync(agentPath),
         rawDir: Boolean(rawPath && fs.existsSync(rawPath)),
@@ -2391,6 +2870,8 @@ function scanExistingKnowledgeBase(rootPath, studentName) {
         outputDir: Boolean(outputPath && fs.existsSync(outputPath)),
         indexMd: Boolean(indexPath && fs.existsSync(indexPath)),
         logMd: Boolean(logPath && fs.existsSync(logPath)),
+        learningReportDir: Boolean(reportDir && fs.existsSync(reportDir)),
+        learningReports: Object.values(reportFiles).every(Boolean),
       },
       message: '已扫描已有知识库目录。',
     });
@@ -2449,6 +2930,7 @@ function ensureAdoptedKnowledgeBase(optionsJson) {
       outputPath,
       knowledgeBaseMode: 'adopted',
     };
+    ensureLearningReportsForStudent(pseudoStudent);
     ensureStudentManagerFiles(pseudoStudent);
     writeStudentDigestState(pseudoStudent, {
       status: 'idle',
@@ -2980,6 +3462,66 @@ function readMarkdownFile(documentId) {
   }
 }
 
+function listLearningReports(studentKey) {
+  try {
+    const student = findStudentByKey(studentKey);
+    if (!student) return JSON.stringify({ ok: false, message: '未找到学生。' });
+    const ensured = ensureLearningReportsForStudent(student);
+    const reports = LEARNING_REPORTS.map((report) => learningReportRecord(student, report));
+    const health = learningReportHealthSummary(reports);
+    return JSON.stringify({
+      ok: true,
+      studentId: String(student.id),
+      folder: ensured.reportDir,
+      reports,
+      health,
+      created: ensured.created,
+      message: ensured.created.length ? `已补建 ${ensured.created.length} 个报告模板。${health.message}` : health.message,
+    });
+  } catch (error) {
+    return JSON.stringify({ ok: false, message: `读取学情报告失败：${error.message}` });
+  }
+}
+
+function readLearningReport(studentKey, reportId) {
+  try {
+    const student = findStudentByKey(studentKey);
+    if (!student) return JSON.stringify({ ok: false, message: '未找到学生。' });
+    ensureLearningReportsForStudent(student);
+    const report = LEARNING_REPORTS.find((item) => item.id === String(reportId));
+    if (!report) return JSON.stringify({ ok: false, message: '未找到报告类型。' });
+    const file = learningReportPathForStudent(student, report);
+    if (!fs.existsSync(file)) fs.writeFileSync(file, learningReportTemplate(student, report), 'utf8');
+    return JSON.stringify({
+      ok: true,
+      ...learningReportRecord(student, report),
+      content: fs.readFileSync(file, 'utf8'),
+    });
+  } catch (error) {
+    return JSON.stringify({ ok: false, message: `读取学情报告正文失败：${error.message}` });
+  }
+}
+
+function ensureLearningReports(studentKey) {
+  try {
+    const student = findStudentByKey(studentKey);
+    if (!student) return JSON.stringify({ ok: false, message: '未找到学生。' });
+    const ensured = ensureLearningReportsForStudent(student);
+    const reports = LEARNING_REPORTS.map((report) => learningReportRecord(student, report));
+    const health = learningReportHealthSummary(reports);
+    return JSON.stringify({
+      ok: true,
+      folder: ensured.reportDir,
+      created: ensured.created,
+      reports,
+      health,
+      message: ensured.created.length ? `已补建：${ensured.created.join('、')}。${health.message}` : health.message,
+    });
+  } catch (error) {
+    return JSON.stringify({ ok: false, message: `补建学情报告失败：${error.message}` });
+  }
+}
+
 function resetUploadCounterIfNeeded() {
   const today = new Date().toISOString().slice(0, 10);
   if (today !== uploadCountDate) {
@@ -3184,6 +3726,50 @@ function handleArchiveFile(request, response, studentId, url) {
   }
 }
 
+function handleLearningReports(request, response, studentId) {
+  if (!requireStudentAccess(request, response, studentId)) return;
+  const student = findStudent(studentId);
+  if (!student) {
+    sendJson(response, 404, { ok: false, message: '未找到学生' });
+    return;
+  }
+  try {
+    const ensured = ensureLearningReportsForStudent(student);
+    const reports = LEARNING_REPORTS.map((report) => learningReportRecord(student, report));
+    sendJson(response, 200, {
+      ok: true,
+      studentId: String(studentId),
+      folder: ensured.reportDir,
+      reports,
+      health: learningReportHealthSummary(reports),
+    });
+  } catch (error) {
+    sendJson(response, 400, { ok: false, message: error.message });
+  }
+}
+
+function handleLearningReportFile(request, response, studentId, reportId) {
+  if (!requireStudentAccess(request, response, studentId)) return;
+  const student = findStudent(studentId);
+  if (!student) {
+    sendJson(response, 404, { ok: false, message: '未找到学生' });
+    return;
+  }
+  try {
+    ensureLearningReportsForStudent(student);
+    const report = LEARNING_REPORTS.find((item) => item.id === String(reportId));
+    if (!report) throw new Error('未找到报告类型。');
+    const file = learningReportPathForStudent(student, report);
+    sendJson(response, 200, {
+      ok: true,
+      ...learningReportRecord(student, report),
+      content: fs.readFileSync(file, 'utf8'),
+    });
+  } catch (error) {
+    sendJson(response, 400, { ok: false, message: error.message });
+  }
+}
+
 function handleDigestStatus(request, response, studentId) {
   if (!requireStudentAccess(request, response, studentId)) return;
   const student = findStudent(studentId);
@@ -3297,13 +3883,28 @@ async function handlePairConfirm(request, response) {
       sendJson(response, 403, { ok: false, message: '配对码无效或已过期。' });
       return;
     }
+    const license = publicLicenseStatus();
+    if (!license.active) {
+      sendJson(response, 402, { ok: false, message: license.message || 'Windows 主机尚未激活，请先在主机端输入授权码。', license });
+      return;
+    }
     const existingStudents = readStudentsIndex();
+    const deviceId = String(body.deviceId || `device-${Date.now()}-${crypto.randomBytes(4).toString('hex')}`);
+    const activeDevices = readDevices().filter((item) => !item.revoked && String(item.id) !== deviceId);
+    if (license.deviceLimit && activeDevices.length >= Number(license.deviceLimit)) {
+      sendJson(response, 403, { ok: false, message: `授权设备数已达上限（${license.deviceLimit} 台）。请在 Windows 主机端撤销旧设备或升级授权。`, license });
+      return;
+    }
+    if (license.studentLimit && existingStudents.length > Number(license.studentLimit)) {
+      sendJson(response, 403, { ok: false, message: `当前学生数 ${existingStudents.length} 已超过授权上限（${license.studentLimit} 位）。请升级授权或减少学生后再绑定。`, license });
+      return;
+    }
     const allowedStudentIds = Array.isArray(body.allowedStudentIds) && body.allowedStudentIds.length
       ? body.allowedStudentIds.map(String).filter((id) => existingStudents.some((student) => String(student.id) === id))
       : existingStudents.map((student) => String(student.id));
     const token = createDeviceToken();
     const device = {
-      id: String(body.deviceId || `device-${Date.now()}-${crypto.randomBytes(4).toString('hex')}`),
+      id: deviceId,
       name: String(body.deviceName || body.name || '平板设备').slice(0, 80),
       tokenHash: hashDeviceToken(token),
       tokenPreview: `${token.slice(0, 7)}...${token.slice(-6)}`,
@@ -3379,6 +3980,16 @@ function handleHostRequest(request, response) {
   const materialMatch = pathname.match(/^\/api\/students\/([^/]+)\/materials$/);
   if (request.method === 'POST' && materialMatch) {
     handleMaterialUpload(request, response, materialMatch[1], url);
+    return;
+  }
+  const reportsMatch = pathname.match(/^\/api\/students\/([^/]+)\/reports$/);
+  if (request.method === 'GET' && reportsMatch) {
+    handleLearningReports(request, response, reportsMatch[1]);
+    return;
+  }
+  const reportFileMatch = pathname.match(/^\/api\/students\/([^/]+)\/reports\/([^/]+)$/);
+  if (request.method === 'GET' && reportFileMatch) {
+    handleLearningReportFile(request, response, reportFileMatch[1], reportFileMatch[2]);
     return;
   }
   const archiveFilesMatch = pathname.match(/^\/api\/students\/([^/]+)\/archive\/files$/);
@@ -3599,6 +4210,10 @@ function downloadAndInstallUpdate(downloadUrl) {
 ipcMain.on('bridge:copyText', (_event, value) => clipboard.writeText(String(value || '')));
 ipcMain.on('bridge:exportTextFile', (event, filename, content) => { event.returnValue = exportTextFile(filename, content); });
 ipcMain.on('bridge:importFiles', (event, studentName) => { event.returnValue = importFiles(studentName); });
+ipcMain.on('bridge:pickMaterialSourceDir', (event) => { event.returnValue = pickMaterialSourceDir(); });
+ipcMain.on('bridge:scanMaterialSources', (event, studentId, sourcesJson) => { event.returnValue = scanMaterialSources(studentId, sourcesJson); });
+ipcMain.on('bridge:importMaterialSourceFiles', (event, studentId, pathsJson) => { event.returnValue = importMaterialSourceFiles(studentId, pathsJson); });
+ipcMain.on('bridge:getMaterialImportRecords', (event, studentId) => { event.returnValue = getMaterialImportRecords(studentId); });
 ipcMain.on('bridge:initStudentWorkspace', (event, studentName, agentMd, indexMd, logMd) => {
   event.returnValue = initStudentWorkspace(studentName, agentMd, indexMd, logMd);
 });
@@ -3625,6 +4240,7 @@ ipcMain.on('bridge:saveAgentRuleFile', (event, studentId, fileName, content) => 
 ipcMain.on('bridge:generateAgentRuleFile', (event, studentId, fileName) => { event.returnValue = generateAgentRuleFile(studentId, fileName); });
 ipcMain.on('bridge:compareAgentRuleFiles', (event, studentId, baseName, targetName) => { event.returnValue = compareAgentRuleFiles(studentId, baseName, targetName); });
 ipcMain.on('bridge:getAgentSourceRegistry', (event, studentId) => { event.returnValue = getAgentSourceRegistry(studentId); });
+ipcMain.on('bridge:rollbackAgentSourceRecord', (event, studentId, recordId) => { event.returnValue = rollbackAgentSourceRecord(studentId, recordId); });
 ipcMain.on('bridge:getAgentConversationCenter', (event, studentId) => { event.returnValue = getAgentConversationCenter(studentId); });
 ipcMain.on('bridge:saveAgentConversationImport', (event, studentId, content, tool, sourcePath) => { event.returnValue = saveAgentConversationImport(studentId, content, tool, sourcePath); });
 ipcMain.on('bridge:selectAgentConversationFiles', (event, studentId, tool) => { event.returnValue = selectAgentConversationFiles(studentId, tool); });
@@ -3644,6 +4260,9 @@ ipcMain.on('bridge:pickArchiveRoot', (event) => { event.returnValue = pickArchiv
 ipcMain.on('bridge:getArchiveRootStatus', (event) => { event.returnValue = getArchiveRootStatus(); });
 ipcMain.on('bridge:listMarkdownFiles', (event, studentName) => { event.returnValue = listMarkdownFiles(studentName); });
 ipcMain.on('bridge:readMarkdownFile', (event, documentId) => { event.returnValue = readMarkdownFile(documentId); });
+ipcMain.on('bridge:listLearningReports', (event, studentId) => { event.returnValue = listLearningReports(studentId); });
+ipcMain.on('bridge:readLearningReport', (event, studentId, reportId) => { event.returnValue = readLearningReport(studentId, reportId); });
+ipcMain.on('bridge:ensureLearningReports', (event, studentId) => { event.returnValue = ensureLearningReports(studentId); });
 ipcMain.on('bridge:syncStudents', (event, studentsJson) => { event.returnValue = syncStudentsIndex(studentsJson); });
 ipcMain.on('bridge:selectKnowledgeBaseRoot', (event) => { event.returnValue = selectKnowledgeBaseRoot(); });
 ipcMain.on('bridge:scanKnowledgeBase', (event, rootPath, studentName) => { event.returnValue = scanExistingKnowledgeBase(rootPath, studentName); });

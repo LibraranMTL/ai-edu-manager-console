@@ -23,7 +23,7 @@ let hostServiceLastError = '';
 let todayUploadCount = 0;
 let uploadCountDate = new Date().toISOString().slice(0, 10);
 
-const APP_VERSION = '0.6.7';
+const APP_VERSION = '0.6.8';
 const DEFAULT_HOST_PORT = 18777;
 const AGENT_TOOL_IDS = ['qclaw', 'marvis', 'hohu', 'openclaw', 'ima.copilot', 'workbuddy', 'codex', 'claude-code', 'chatgpt', 'claude', 'doubao', 'coze', 'fastgpt'];
 const WEB_AGENT_TOOL_URLS = {
@@ -47,6 +47,8 @@ const studentsPath = () => path.join(app.getPath('userData'), 'students.json');
 const devicesPath = () => path.join(app.getPath('userData'), 'devices.json');
 const uploadRecordsPath = () => path.join(app.getPath('userData'), 'upload-records.json');
 const hostTimelinePath = () => path.join(app.getPath('userData'), 'host-timeline.json');
+const assetIndexPath = () => path.join(app.getPath('userData'), 'asset-index.json');
+const projectsPath = () => path.join(app.getPath('userData'), 'projects.json');
 const LICENSE_SIGNING_SECRET = 'ai-edu-manager-offline-license-v1';
 let activePairSession = null;
 
@@ -378,6 +380,199 @@ function sha1File(file) {
   }
 }
 
+function readAssetIndex() {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(assetIndexPath(), 'utf8'));
+    return Array.isArray(parsed.assets) ? parsed.assets : [];
+  } catch {
+    return [];
+  }
+}
+
+function writeAssetIndex(assets) {
+  fs.mkdirSync(path.dirname(assetIndexPath()), { recursive: true });
+  fs.writeFileSync(assetIndexPath(), JSON.stringify({
+    version: 1,
+    updatedAt: new Date().toISOString(),
+    assets: assets.slice(0, 5000),
+  }, null, 2), 'utf8');
+}
+
+function readProjects() {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(projectsPath(), 'utf8'));
+    return Array.isArray(parsed.projects) ? parsed.projects : [];
+  } catch {
+    return [];
+  }
+}
+
+function writeProjects(projects) {
+  fs.mkdirSync(path.dirname(projectsPath()), { recursive: true });
+  fs.writeFileSync(projectsPath(), JSON.stringify({
+    version: 1,
+    updatedAt: new Date().toISOString(),
+    projects,
+  }, null, 2), 'utf8');
+}
+
+function materialTypeForFile(filename) {
+  const ext = path.extname(String(filename || '')).toLowerCase();
+  if (['.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp'].includes(ext)) return 'image';
+  if (ext === '.pdf') return 'pdf';
+  if (['.doc', '.docx'].includes(ext)) return 'word';
+  if (['.xls', '.xlsx', '.csv'].includes(ext)) return 'sheet';
+  if (['.ppt', '.pptx'].includes(ext)) return 'slide';
+  if (['.md', '.txt'].includes(ext)) return 'text';
+  if (ext === '.zip') return 'archive';
+  return ext ? ext.slice(1) : 'file';
+}
+
+function normalizeAssetReference(reference) {
+  if (!reference || typeof reference !== 'object') return null;
+  return {
+    id: String(reference.id || `${Date.now()}-${crypto.randomBytes(3).toString('hex')}`),
+    spaceType: String(reference.spaceType || 'student'),
+    spaceId: String(reference.spaceId || ''),
+    spaceName: String(reference.spaceName || ''),
+    role: String(reference.role || 'raw'),
+    path: String(reference.path || ''),
+    source: String(reference.source || ''),
+    linkedAt: String(reference.linkedAt || new Date().toISOString()),
+  };
+}
+
+function mergeUnique(values) {
+  return Array.from(new Set((values || []).map((value) => String(value || '').trim()).filter(Boolean)));
+}
+
+function upsertAssetFromFile(filePath, context = {}) {
+  if (!filePath || !fs.existsSync(filePath)) return null;
+  const stat = fs.statSync(filePath);
+  if (!stat.isFile()) return null;
+  const sha1 = sha1File(filePath);
+  const now = new Date().toISOString();
+  const assets = readAssetIndex();
+  const existingIndex = sha1
+    ? assets.findIndex((item) => String(item.sha1 || '') === sha1)
+    : assets.findIndex((item) => path.resolve(item.path || '') === path.resolve(filePath));
+  const reference = normalizeAssetReference({
+    id: context.referenceId,
+    spaceType: context.spaceType || 'student',
+    spaceId: context.studentId || context.projectId || context.spaceId || '',
+    spaceName: context.studentName || context.projectName || context.spaceName || '',
+    role: context.role || 'raw',
+    path: filePath,
+    source: context.sourceName || context.uploadSource || '',
+  });
+  const base = existingIndex >= 0 ? assets[existingIndex] : {};
+  const references = [
+    ...(Array.isArray(base.references) ? base.references : []),
+    ...(reference ? [reference] : []),
+  ];
+  const dedupedReferences = Array.from(new Map(references.map((item) => [
+    `${item.spaceType}|${item.spaceId}|${item.role}|${item.path}`,
+    item,
+  ])).values());
+  const linkedStudents = mergeUnique([
+    ...(Array.isArray(base.linkedStudents) ? base.linkedStudents : []),
+    context.studentId || '',
+  ]);
+  const linkedProjects = mergeUnique([
+    ...(Array.isArray(base.linkedProjects) ? base.linkedProjects : []),
+    context.projectId || '',
+  ]);
+  const asset = {
+    assetId: base.assetId || `asset-${(sha1 || crypto.randomBytes(8).toString('hex')).slice(0, 16)}`,
+    filename: path.basename(filePath),
+    sha1,
+    size: stat.size,
+    type: materialTypeForFile(filePath),
+    path: filePath,
+    ownerStudentId: base.ownerStudentId || context.studentId || '',
+    ownerStudentName: base.ownerStudentName || context.studentName || '',
+    linkedStudents,
+    linkedProjects,
+    references: dedupedReferences,
+    sourcePath: context.sourcePath || base.sourcePath || '',
+    sourceName: context.sourceName || base.sourceName || context.deviceName || '主机控制台',
+    uploadedAt: base.uploadedAt || context.uploadedAt || now,
+    updatedAt: now,
+    status: base.status || 'active',
+  };
+  if (existingIndex >= 0) assets[existingIndex] = asset;
+  else assets.unshift(asset);
+  writeAssetIndex(assets);
+  return asset;
+}
+
+function registerAssetsFromUploadRecords(records) {
+  const assets = [];
+  for (const record of records || []) {
+    const asset = upsertAssetFromFile(record.path, {
+      studentId: String(record.studentId || ''),
+      studentName: record.studentName || '',
+      sourcePath: record.sourcePath || '',
+      sourceName: record.sourceName || record.deviceName || '主机控制台',
+      deviceName: record.deviceName || '',
+      uploadedAt: record.uploadedAt || '',
+      referenceId: record.id,
+      role: 'student_raw',
+    });
+    if (asset) assets.push(asset);
+  }
+  return assets;
+}
+
+function assetIndexSummary() {
+  const assets = readAssetIndex();
+  const shaCounts = new Map();
+  assets.forEach((asset) => {
+    if (!asset.sha1) return;
+    shaCounts.set(asset.sha1, (shaCounts.get(asset.sha1) || 0) + 1);
+  });
+  return {
+    ok: true,
+    assets: assets.map((asset) => ({
+      ...asset,
+      duplicateCount: asset.sha1 ? shaCounts.get(asset.sha1) || 1 : 1,
+      referenceCount: Array.isArray(asset.references) ? asset.references.length : 0,
+    })),
+    total: assets.length,
+    duplicateGroups: Array.from(shaCounts.values()).filter((count) => count > 1).length,
+  };
+}
+
+function rebuildAssetIndex() {
+  const existing = readAssetIndex();
+  const next = new Map(existing.map((asset) => [asset.assetId, asset]));
+  const uploadRecords = readUploadRecords();
+  registerAssetsFromUploadRecords(uploadRecords);
+  const students = readStudentsIndex();
+  for (const student of students) {
+    const materials = readStudentMaterials(student);
+    for (const material of materials) {
+      if (material.absolutePath && fs.existsSync(material.absolutePath)) {
+        const asset = upsertAssetFromFile(material.absolutePath, {
+          studentId: String(student.id || ''),
+          studentName: student.name || '',
+          sourcePath: material.sourcePath || '',
+          sourceName: material.sourceName || '学生原始资料库',
+          uploadedAt: material.uploadedAt || '',
+          referenceId: material.id || '',
+          role: 'student_raw',
+        });
+        if (asset) next.set(asset.assetId, asset);
+      }
+    }
+  }
+  readAssetIndex().forEach((asset) => next.set(asset.assetId, asset));
+  writeAssetIndex(Array.from(next.values()).sort((a, b) => String(b.updatedAt || '').localeCompare(String(a.updatedAt || ''))));
+  const summary = assetIndexSummary();
+  appendHostTimeline({ type: 'asset_index_rebuilt', title: 'Asset index rebuilt', detail: `${summary.total} asset(s)` });
+  return JSON.stringify({ ...summary, message: `已补建资产索引，共 ${summary.total} 个资产。` });
+}
+
 function isPathInside(parent, child) {
   try {
     const relative = path.relative(parent, child);
@@ -632,6 +827,7 @@ function addUploadRecords(records) {
     ...record,
   }));
   writeUploadRecords([...stamped, ...readUploadRecords()]);
+  registerAssetsFromUploadRecords(stamped);
   const students = readStudentsIndex();
   const grouped = new Map();
   stamped.forEach((record) => {
@@ -646,7 +842,7 @@ function addUploadRecords(records) {
   appendHostTimeline({
     type: 'materials_uploaded',
     title: 'Materials uploaded',
-    detail: `${stamped.length} file(s) uploaded`,
+    detail: `${stamped.length} file(s) uploaded and indexed`,
     studentId: stamped[0]?.studentId || '',
     studentName: stamped[0]?.studentName || '',
     count: stamped.length,
@@ -941,6 +1137,8 @@ function backupHostData() {
       students: readStudentsIndex(),
       devices: readDevices(),
       uploadRecords: readUploadRecords(),
+      assets: readAssetIndex(),
+      projects: readProjects(),
       timeline: readHostTimeline(),
     };
     const target = path.join(downloadsDir(), `AI-edu-manager-host-backup-${timestampForFilename()}.json`);
@@ -966,6 +1164,8 @@ function restoreHostData() {
     if (Array.isArray(parsed.students)) writeStudentsIndex(parsed.students.map(toHostStudent));
     if (Array.isArray(parsed.devices)) writeDevices(parsed.devices);
     if (Array.isArray(parsed.uploadRecords)) writeUploadRecords(parsed.uploadRecords);
+    if (Array.isArray(parsed.assets)) writeAssetIndex(parsed.assets);
+    if (Array.isArray(parsed.projects)) writeProjects(parsed.projects);
     if (Array.isArray(parsed.timeline)) writeHostTimeline(parsed.timeline);
     appendHostTimeline({ type: 'backup_restored', title: 'Backup restored', detail: result[0] });
     notify('onNativeHostServiceChanged', getHostServiceStatus());
@@ -975,6 +1175,8 @@ function restoreHostData() {
       students: Array.isArray(parsed.students) ? parsed.students.length : 0,
       devices: Array.isArray(parsed.devices) ? parsed.devices.length : 0,
       uploadRecords: Array.isArray(parsed.uploadRecords) ? parsed.uploadRecords.length : 0,
+      assets: Array.isArray(parsed.assets) ? parsed.assets.length : 0,
+      projects: Array.isArray(parsed.projects) ? parsed.projects.length : 0,
       status: JSON.parse(getHostServiceStatus()),
     });
   } catch (error) {
@@ -1002,6 +1204,8 @@ function exportHostLogs() {
       students: readStudentsIndex(),
       devices: readDevices().map(publicDevice),
       uploadRecords: readUploadRecords(),
+      assets: readAssetIndex(),
+      projects: readProjects(),
       timeline: readHostTimeline(),
       paths: {
         userData: app.getPath('userData'),
@@ -1335,6 +1539,201 @@ function getSummaryDir(studentName) {
   return path.join(getStudentRootDir(cleanName), `${cleanName}学情分析汇总`);
 }
 
+function projectsBaseDir() {
+  return path.join(defaultStudentBaseDir(), '学习项目');
+}
+
+function projectKnowledgeRoot(projectName) {
+  return path.join(projectsBaseDir(), `${sanitizeName(projectName)}项目知识库`);
+}
+
+function projectPathsFor(projectName, rootPath) {
+  const cleanName = sanitizeName(projectName || '学习项目');
+  const root = rootPath || projectKnowledgeRoot(cleanName);
+  return {
+    projectRootPath: root,
+    workspacePath: path.join(root, '项目工作空间'),
+    knowledgeRootPath: path.join(root, '项目知识空间'),
+    rawPath: path.join(root, '项目知识空间', `${cleanName}项目原始资料库`),
+    conceptPath: path.join(root, '项目知识空间', '概念库'),
+    entityPath: path.join(root, '项目知识空间', '实体库'),
+    summaryPath: path.join(root, '项目知识空间', '摘要库'),
+    qaPath: path.join(root, '项目知识空间', '问答精华库'),
+    synthesisPath: path.join(root, '项目知识空间', '综合汇总库'),
+    reportPath: path.join(root, '项目知识空间', '项目报告'),
+    contributionPath: path.join(root, '项目知识空间', '知识贡献'),
+    outputPath: path.join(root, '输出结果'),
+    agentPath: path.join(root, 'AGENT.md'),
+  };
+}
+
+function projectAgentTemplate(project, students) {
+  const paths = projectPathsFor(project.name, project.projectRootPath);
+  const studentLines = (students || []).map((student) => `- ${student.name}：${student.rootPath || getStudentRootDir(student.name)}`).join('\n') || '- 暂未绑定学生';
+  return `# ${project.name} 项目教育管家 AGENT.md\n\n## 项目定位\n\n本目录是学习项目「${project.name}」的独立 LLM Wiki 知识空间，用于围绕项目资料进行消化、摘要、概念/实体抽取、问答沉淀和综合分析。\n\n## 绑定学生\n\n${studentLines}\n\n## 项目目录\n\n- 项目工作空间：${paths.workspacePath}\n- 项目原始资料库：${paths.rawPath}\n- 摘要库：${paths.summaryPath}\n- 概念库：${paths.conceptPath}\n- 实体库：${paths.entityPath}\n- 问答精华库：${paths.qaPath}\n- 综合汇总库：${paths.synthesisPath}\n- 项目报告：${paths.reportPath}\n- 知识贡献：${paths.contributionPath}\n\n## 工作规则\n\n1. 所有项目资料消化只围绕本项目知识空间执行，不要直接写入学生主档案。\n2. 只有在用户确认“知识贡献申请”后，才把项目结论发布到学生主档案或成长模型。\n3. 原始资料必须保留来源路径、资产编号或文件名，不要删除、移动用户原始文件。\n4. 每次资料消化后更新项目 index.md 和 log.md。\n5. 如果没有新增资料，请在 log.md 中记录“无新增项目资料”，不要重复生成摘要。\n\n## 可执行命令\n\n- /消化项目资料：读取「${paths.rawPath}」中的新资料，更新项目知识空间。\n- /生成知识贡献申请：基于项目知识空间生成「${path.join(paths.contributionPath, '知识贡献申请.md')}」。\n`;
+}
+
+function normalizeProject(project) {
+  const cleanName = sanitizeName(project.name || '学习项目');
+  const createdAt = project.createdAt || new Date().toISOString();
+  const studentIds = Array.isArray(project.studentIds) ? project.studentIds.map(String) : [];
+  const paths = projectPathsFor(cleanName, project.projectRootPath);
+  return {
+    id: String(project.id || `project-${Date.now()}-${crypto.randomBytes(3).toString('hex')}`),
+    name: cleanName,
+    type: String(project.type || '学习项目'),
+    status: String(project.status || 'active'),
+    studentIds,
+    studentNames: Array.isArray(project.studentNames) ? project.studentNames.map(String) : [],
+    projectRootPath: paths.projectRootPath,
+    workspacePath: paths.workspacePath,
+    knowledgeRootPath: paths.knowledgeRootPath,
+    rawPath: paths.rawPath,
+    summaryPath: paths.summaryPath,
+    agentPath: paths.agentPath,
+    outputPath: paths.outputPath,
+    promotionPath: project.promotionPath || path.join(paths.contributionPath, '知识贡献申请.md'),
+    assetIds: Array.isArray(project.assetIds) ? project.assetIds.map(String) : [],
+    createdAt,
+    updatedAt: project.updatedAt || createdAt,
+  };
+}
+
+function ensureProjectWorkspace(project) {
+  const normalized = normalizeProject(project);
+  const paths = projectPathsFor(normalized.name, normalized.projectRootPath);
+  [
+    projectsBaseDir(),
+    paths.workspacePath,
+    path.join(paths.workspacePath, '资料'),
+    path.join(paths.workspacePath, '进展'),
+    path.join(paths.workspacePath, '团队成员'),
+    path.join(paths.workspacePath, '成果'),
+    paths.knowledgeRootPath,
+    paths.rawPath,
+    paths.conceptPath,
+    paths.entityPath,
+    paths.summaryPath,
+    paths.qaPath,
+    paths.synthesisPath,
+    paths.reportPath,
+    paths.contributionPath,
+    paths.outputPath,
+  ].forEach((dir) => fs.mkdirSync(dir, { recursive: true }));
+  const students = readStudentsIndex().filter((student) => normalized.studentIds.includes(String(student.id)));
+  writeTextIfMissing(paths.agentPath, projectAgentTemplate(normalized, students));
+  writeTextIfMissing(path.join(paths.knowledgeRootPath, 'index.md'), `# ${normalized.name} 项目知识空间\n\n- 项目原始资料库：${paths.rawPath}\n- 综合汇总库：${paths.synthesisPath}\n- 知识贡献：${paths.contributionPath}\n`);
+  writeTextIfMissing(path.join(paths.knowledgeRootPath, 'log.md'), `# ${normalized.name} 项目处理日志\n\n`);
+  return { ...normalized, ...paths };
+}
+
+function getProjects() {
+  const projects = readProjects().map(normalizeProject);
+  return JSON.stringify({ ok: true, projects });
+}
+
+function createProject(optionsJson) {
+  try {
+    const options = JSON.parse(optionsJson || '{}');
+    if (!String(options.name || '').trim()) return JSON.stringify({ ok: false, message: '请填写项目名称。' });
+    const students = readStudentsIndex();
+    const studentIds = Array.isArray(options.studentIds) ? options.studentIds.map(String) : [];
+    const selectedStudents = students.filter((student) => studentIds.includes(String(student.id)));
+    const project = ensureProjectWorkspace(normalizeProject({
+      name: options.name,
+      type: options.type || '学习项目',
+      status: options.status || 'active',
+      studentIds,
+      studentNames: selectedStudents.map((student) => student.name),
+    }));
+    const projects = readProjects().map(normalizeProject);
+    writeProjects([project, ...projects.filter((item) => String(item.id) !== String(project.id))]);
+    appendHostTimeline({ type: 'project_created', title: 'Project created', detail: project.name, count: 1 });
+    return JSON.stringify({ ok: true, project, projects: readProjects().map(normalizeProject), message: `已创建项目知识空间：${project.projectRootPath}` });
+  } catch (error) {
+    return JSON.stringify({ ok: false, message: `创建学习项目失败：${error.message}` });
+  }
+}
+
+function importProjectAssets(projectId, assetIdsJson) {
+  try {
+    const project = readProjects().map(normalizeProject).find((item) => String(item.id) === String(projectId));
+    if (!project) return JSON.stringify({ ok: false, message: '未找到学习项目。' });
+    const assetIds = JSON.parse(assetIdsJson || '[]');
+    if (!Array.isArray(assetIds) || !assetIds.length) return JSON.stringify({ ok: false, message: '请先选择要导入项目知识空间的资产。' });
+    const ensured = ensureProjectWorkspace(project);
+    const assets = readAssetIndex();
+    const imported = [];
+    const skipped = [];
+    for (const assetId of assetIds.map(String)) {
+      const asset = assets.find((item) => String(item.assetId) === assetId);
+      if (!asset || !asset.path || !fs.existsSync(asset.path)) {
+        skipped.push(assetId);
+        continue;
+      }
+      const target = uniqueTargetFile(ensured.rawPath, asset.filename || path.basename(asset.path));
+      fs.copyFileSync(asset.path, target);
+      const linked = upsertAssetFromFile(target, {
+        projectId: project.id,
+        projectName: project.name,
+        sourcePath: asset.path,
+        sourceName: '资产中心',
+        role: 'project_raw',
+        referenceId: `${project.id}-${asset.assetId}`,
+      });
+      if (linked) imported.push(linked.assetId);
+    }
+    const projects = readProjects().map(normalizeProject);
+    const nextProjects = projects.map((item) => String(item.id) === String(project.id)
+      ? { ...item, assetIds: mergeUnique([...(item.assetIds || []), ...assetIds.map(String)]), updatedAt: new Date().toISOString() }
+      : item);
+    writeProjects(nextProjects);
+    appendHostTimeline({ type: 'project_assets_imported', title: 'Project assets imported', detail: project.name, count: imported.length });
+    return JSON.stringify({
+      ok: imported.length > 0,
+      imported: imported.length,
+      skipped: skipped.length,
+      project: nextProjects.find((item) => String(item.id) === String(project.id)),
+      message: imported.length ? `已导入 ${imported.length} 个资产到项目原始资料库。` : '没有资产被导入。',
+    });
+  } catch (error) {
+    return JSON.stringify({ ok: false, message: `导入项目资料失败：${error.message}` });
+  }
+}
+
+function generateProjectPromotion(projectId) {
+  try {
+    const project = readProjects().map(normalizeProject).find((item) => String(item.id) === String(projectId));
+    if (!project) return JSON.stringify({ ok: false, message: '未找到学习项目。' });
+    const ensured = ensureProjectWorkspace(project);
+    const students = readStudentsIndex().filter((student) => ensured.studentIds.includes(String(student.id)));
+    const rawAssets = readAssetIndex().filter((asset) => (asset.references || []).some((ref) => ref.spaceType === 'project' && String(ref.spaceId) === String(ensured.id)));
+    const today = new Date().toISOString().slice(0, 10);
+    const studentTargets = students.map((student) => `- ${student.name}：${student.summaryPath || getSummaryDir(student.name)}；成长模型：${path.join(student.summaryPath || getSummaryDir(student.name), '成长模型')}`).join('\n') || '- 暂未绑定学生';
+    const assetLines = rawAssets.map((asset) => `- [ ] ${asset.filename}（${asset.assetId}，${asset.type}，${asset.path}）`).join('\n') || '- [ ] 待补充项目资料资产。';
+    const content = `---\ntype: project_knowledge_promotion\nproject: ${ensured.name}\ncreated: ${today}\nstatus: draft\n---\n\n# ${ensured.name} 知识贡献申请\n\n## 绑定学生与目标位置\n\n${studentTargets}\n\n## 建议归档文件\n\n${assetLines}\n\n## 建议进入学生主档案的知识\n\n### 摘要\n\n- [ ] 待 AI 从项目摘要库中提取可进入学生主档案的摘要。\n\n### 概念\n\n- [ ] 待 AI 从项目概念库中提取可长期保留的概念。\n\n### 实体\n\n- [ ] 待 AI 从项目实体库中提取关键人物、机构、赛事或作品。\n\n### 问答精华\n\n- [ ] 待 AI 从项目问答精华库中提取可复用问答。\n\n### 综合结论\n\n- [ ] 待 AI 从项目综合汇总库中提取稳定结论。\n\n## 成长证据\n\n- [ ] 能力/兴趣/趋势：待补充。\n- 证据来源：${ensured.knowledgeRootPath}\n- 可信度：待人工确认。\n\n## 忽略项\n\n- [ ] 临时文件、重复文件、草稿或低价值材料。\n\n## 冲突提示\n\n- [ ] 是否与学生主档案已有结论冲突：待检查。\n\n## 人工确认动作\n\n请逐项选择：引用 / 发布 / 吸收 / 跳过。v1 不自动覆盖学生主档案，确认后再由管理员复制到对应学生知识库。\n`;
+    fs.mkdirSync(path.dirname(ensured.promotionPath), { recursive: true });
+    fs.writeFileSync(ensured.promotionPath, content, 'utf8');
+    appendHostTimeline({ type: 'project_promotion_generated', title: 'Project promotion generated', detail: ensured.name, count: rawAssets.length });
+    return JSON.stringify({ ok: true, path: ensured.promotionPath, content, message: `已生成知识贡献申请：${ensured.promotionPath}` });
+  } catch (error) {
+    return JSON.stringify({ ok: false, message: `生成知识贡献申请失败：${error.message}` });
+  }
+}
+
+function listProjectArchiveFiles(projectId) {
+  try {
+    const project = readProjects().map(normalizeProject).find((item) => String(item.id) === String(projectId));
+    if (!project) return JSON.stringify({ ok: false, message: '未找到学习项目。' });
+    const target = project.knowledgeRootPath;
+    const files = [];
+    collectMarkdownFiles(target, target, files, 8);
+    return JSON.stringify({ ok: true, folder: target, files });
+  } catch (error) {
+    return JSON.stringify({ ok: false, message: `读取项目档案失败：${error.message}` });
+  }
+}
+
 const LEARNING_REPORTS = [
   {
     id: 'profile',
@@ -1379,6 +1778,43 @@ function learningReportDirForStudent(student) {
   return path.join(summaryPath, '学情报告');
 }
 
+function growthModelDirForStudent(student) {
+  const summaryPath = student.summaryPath || getSummaryDir(student.name);
+  return path.join(summaryPath, '成长模型');
+}
+
+function ensureGrowthModelForStudent(student) {
+  const dir = growthModelDirForStudent(student);
+  fs.mkdirSync(dir, { recursive: true });
+  const files = [
+    {
+      name: 'index.md',
+      content: `# ${student.name} 成长模型\n\n本目录记录学生能力、兴趣、趋势、证据来源和项目贡献来源。学情报告优先引用这里的稳定结论。\n\n- 能力画像：能力画像.md\n- 成长证据：成长证据.md\n- 项目贡献：项目贡献.md\n`,
+    },
+    {
+      name: '能力画像.md',
+      content: `# ${student.name} 能力画像\n\n## 学术能力\n\n- 待补充。\n\n## 通用能力\n\n- 待补充。\n\n## 兴趣方向\n\n- 待补充。\n\n## 可信度说明\n\n- 每条判断应标注证据来源、项目来源和更新时间。\n`,
+    },
+    {
+      name: '成长证据.md',
+      content: `# ${student.name} 成长证据\n\n| 日期 | 证据 | 来源资料/项目 | 支撑能力 | 可信度 |\n| --- | --- | --- | --- | --- |\n| 待补充 | 待补充 | 待补充 | 待补充 | 待确认 |\n`,
+    },
+    {
+      name: '项目贡献.md',
+      content: `# ${student.name} 项目贡献\n\n记录从学习项目知识空间发布到学生主档案或成长模型的贡献申请。\n\n| 日期 | 项目 | 贡献内容 | 动作 | 来源路径 |\n| --- | --- | --- | --- | --- |\n| 待补充 | 待补充 | 待补充 | 引用/发布/吸收/跳过 | 待补充 |\n`,
+    },
+  ];
+  const created = [];
+  for (const item of files) {
+    const file = path.join(dir, item.name);
+    if (!fs.existsSync(file)) {
+      fs.writeFileSync(file, item.content, 'utf8');
+      created.push(item.name);
+    }
+  }
+  return { dir, created };
+}
+
 function learningReportPathForStudent(student, report) {
   return path.join(learningReportDirForStudent(student), report.fileName);
 }
@@ -1389,12 +1825,14 @@ function learningReportTemplate(student, report) {
     if (section === report.summaryHeading) return `## ${section}\n\n待生成。`;
     return `## ${section}\n\n- 待补充。`;
   }).join('\n\n');
-  return `---\ntype: ${report.type}\ntarget: ${report.target}\nupdated: ${today}\nstatus: draft\n---\n\n# ${report.title}\n\n${body}\n`;
+  const growthDir = growthModelDirForStudent(student);
+  return `---\ntype: ${report.type}\ntarget: ${report.target}\nupdated: ${today}\nstatus: draft\ngrowth_model: ${growthDir}\n---\n\n# ${report.title}\n\n> 本报告属于 Growth Layer 的呈现输出。生成和更新时，请优先读取成长模型、综合汇总库和已确认的项目知识贡献记录。\n\n## 成长证据来源\n\n- 成长模型：${growthDir}\n- 能力画像：${path.join(growthDir, '能力画像.md')}\n- 成长证据：${path.join(growthDir, '成长证据.md')}\n- 项目贡献：${path.join(growthDir, '项目贡献.md')}\n\n## 项目贡献来源\n\n- 待补充已确认的项目知识贡献申请。\n\n${body}\n`;
 }
 
 function ensureLearningReportsForStudent(student) {
   const reportDir = learningReportDirForStudent(student);
   fs.mkdirSync(reportDir, { recursive: true });
+  ensureGrowthModelForStudent(student);
   const created = [];
   for (const report of LEARNING_REPORTS) {
     const file = learningReportPathForStudent(student, report);
@@ -1649,7 +2087,8 @@ function snapshotCurrentFile(file, snapshotsDir) {
 
 function learningReportProtocolText(summaryPath) {
   const reportDir = path.join(summaryPath || '', '学情报告');
-  return `## 学情报告 Protocol\n\n学情报告是面向家长、学生和教师的成果表达层，不替代摘要库、实体库、概念库、综合库和咨询精华库。\n\n完成资料消化、综合分析或咨询沉淀后，如果发现对用户有直接价值的结论，请检查并更新：\n\n- ${path.join(reportDir, '整体画像.md')}\n- ${path.join(reportDir, '历史变化.md')}\n- ${path.join(reportDir, '每日行动建议.md')}\n- ${path.join(reportDir, '阶段总结.md')}\n\n写作要求：\n\n1. 面向家长、学生、教师可读，避免内部技术术语。\n2. 每份报告顶部保留更新时间、适用对象、状态。\n3. 结论必须对应学情分析汇总中的依据来源。\n4. “每日行动建议”必须分为：给学生、给家长、给老师。\n5. 不确定判断标注“待观察”，不要写成定论。\n6. 不要删除原有报告内容；判断发生变化时，在“历史变化”或“阶段总结”中说明变化原因。\n7. 当天无新增资料时，也可以根据已有档案更新“每日行动建议”，但要注明依据。\n`;
+  const growthDir = path.join(summaryPath || '', '成长模型');
+  return `## 学情报告 Protocol\n\n学情报告是 Growth Layer 的成果表达层，不替代摘要库、实体库、概念库、综合库和咨询精华库。更新报告前，应优先读取成长模型、综合汇总库和已确认的项目知识贡献记录。\n\n成长模型位置：\n\n- ${path.join(growthDir, '能力画像.md')}\n- ${path.join(growthDir, '成长证据.md')}\n- ${path.join(growthDir, '项目贡献.md')}\n\n完成资料消化、综合分析或咨询沉淀后，如果发现对用户有直接价值的结论，请检查并更新：\n\n- ${path.join(reportDir, '整体画像.md')}\n- ${path.join(reportDir, '历史变化.md')}\n- ${path.join(reportDir, '每日行动建议.md')}\n- ${path.join(reportDir, '阶段总结.md')}\n\n写作要求：\n\n1. 面向家长、学生、教师可读，避免内部技术术语。\n2. 每份报告顶部保留更新时间、适用对象、状态。\n3. 结论必须对应学情分析汇总、成长模型或项目贡献中的依据来源。\n4. “每日行动建议”必须分为：给学生、给家长、给老师。\n5. 不确定判断标注“待观察”，不要写成定论。\n6. 不要删除原有报告内容；判断发生变化时，在“历史变化”或“阶段总结”中说明变化原因。\n7. 当天无新增资料时，也可以根据已有档案更新“每日行动建议”，但要注明依据。\n`;
 }
 
 function defaultRuleFileContent(student, fileName) {
@@ -3034,15 +3473,33 @@ function importFiles(studentKey) {
     const targetDir = student?.rawPath || getRawDir(cleanName);
     fs.mkdirSync(targetDir, { recursive: true });
     let imported = 0;
+    const saved = [];
     for (const source of result.filePaths) {
       try {
         const target = uniqueFile(targetDir, path.basename(source).replace(/[\\/:*?"<>|]/g, '_'));
         fs.copyFileSync(source, target);
+        const stat = fs.statSync(target);
+        saved.push({
+          id: `${Date.now()}-${crypto.randomBytes(4).toString('hex')}`,
+          studentId: String(student?.id || cleanName),
+          studentName: student?.name || cleanName,
+          filename: path.basename(target),
+          size: stat.size,
+          path: target,
+          rawPath: targetDir,
+          sha1: sha1File(target),
+          sourcePath: source,
+          sourceName: '主机手动导入',
+          deviceId: 'admin',
+          deviceName: '主机控制台',
+          uploadedAt: new Date().toISOString(),
+        });
         imported += 1;
       } catch {
         // Continue copying the rest.
       }
     }
+    if (saved.length) addUploadRecords(saved);
     notify('onNativeImportResult', {
       ok: imported > 0,
       imported,
@@ -3621,6 +4078,22 @@ function ensureLearningReports(studentKey) {
   }
 }
 
+function ensureGrowthModel(studentKey) {
+  try {
+    const student = findStudentByKey(studentKey);
+    if (!student) return JSON.stringify({ ok: false, message: '未找到学生。' });
+    const result = ensureGrowthModelForStudent(student);
+    return JSON.stringify({
+      ok: true,
+      folder: result.dir,
+      created: result.created,
+      message: result.created.length ? `已补建成长模型文件：${result.created.join('、')}` : '成长模型文件已存在。',
+    });
+  } catch (error) {
+    return JSON.stringify({ ok: false, message: `补建成长模型失败：${error.message}` });
+  }
+}
+
 function resetUploadCounterIfNeeded() {
   const today = new Date().toISOString().slice(0, 10);
   if (today !== uploadCountDate) {
@@ -3778,6 +4251,117 @@ function handleStudents(request, response) {
     };
   });
   sendJson(response, 200, { ok: true, students });
+}
+
+function projectAllowed(request, project) {
+  if (!request.authContext || request.authContext.type === 'admin') return true;
+  if (request.authContext.allowedAllStudents) return true;
+  const allowed = new Set(request.authContext.allowedStudentIds || []);
+  return (project.studentIds || []).some((id) => allowed.has(String(id)));
+}
+
+function handleAssets(request, response) {
+  if (!requireAuth(request, response)) return;
+  const summary = assetIndexSummary();
+  const allowedStudentIds = request.authContext.type === 'admin' || request.authContext.allowedAllStudents
+    ? null
+    : new Set(request.authContext.allowedStudentIds || []);
+  const assets = allowedStudentIds
+    ? summary.assets.filter((asset) => (asset.linkedStudents || []).some((id) => allowedStudentIds.has(String(id))))
+    : summary.assets;
+  sendJson(response, 200, { ...summary, assets, total: assets.length });
+}
+
+function handleProjects(request, response) {
+  if (!requireAuth(request, response)) return;
+  const projects = readProjects().map(normalizeProject).filter((project) => projectAllowed(request, project));
+  sendJson(response, 200, { ok: true, projects });
+}
+
+async function handleProjectCreate(request, response) {
+  if (!requireAuth(request, response)) return;
+  if (request.authContext?.type !== 'admin') {
+    sendJson(response, 403, { ok: false, message: '只有 Windows 主机管理员可以新建学习项目。' });
+    return;
+  }
+  try {
+    const body = await parseJsonBody(request);
+    sendJson(response, 200, JSON.parse(createProject(JSON.stringify(body))));
+  } catch (error) {
+    sendJson(response, 400, { ok: false, message: error.message });
+  }
+}
+
+async function handleProjectMaterialUpload(request, response, projectId) {
+  if (!requireAuth(request, response)) return;
+  const project = readProjects().map(normalizeProject).find((item) => String(item.id) === String(projectId));
+  if (!project) {
+    sendJson(response, 404, { ok: false, message: '未找到学习项目。' });
+    return;
+  }
+  if (!projectAllowed(request, project)) {
+    sendJson(response, 403, { ok: false, message: '当前设备没有访问该学习项目的权限。' });
+    return;
+  }
+  try {
+    const ensured = ensureProjectWorkspace(project);
+    const buffer = await readRequestBuffer(request);
+    const files = parseMultipartFiles(buffer, request.headers['content-type'] || '');
+    if (!files.length) throw new Error('没有收到文件。');
+    const saved = [];
+    for (const file of files) {
+      assertUploadFileAllowed(file.filename, file.content.length);
+      const target = uniqueTargetFile(ensured.rawPath, file.filename);
+      fs.writeFileSync(target, file.content);
+      const stat = fs.statSync(target);
+      const asset = upsertAssetFromFile(target, {
+        projectId: ensured.id,
+        projectName: ensured.name,
+        sourceName: request.authContext?.deviceName || '项目上传',
+        role: 'project_raw',
+        uploadedAt: new Date().toISOString(),
+        referenceId: `${ensured.id}-${Date.now()}-${crypto.randomBytes(3).toString('hex')}`,
+      });
+      saved.push({
+        filename: path.basename(target),
+        path: target,
+        size: stat.size,
+        sha1: asset?.sha1 || sha1File(target),
+        assetId: asset?.assetId || '',
+      });
+    }
+    const projects = readProjects().map(normalizeProject);
+    writeProjects(projects.map((item) => String(item.id) === String(ensured.id)
+      ? { ...item, assetIds: mergeUnique([...(item.assetIds || []), ...saved.map((file) => file.assetId)]), updatedAt: new Date().toISOString() }
+      : item));
+    appendHostTimeline({ type: 'project_materials_uploaded', title: 'Project materials uploaded', detail: ensured.name, count: saved.length });
+    sendJson(response, 200, { ok: true, projectId: ensured.id, files: saved, count: saved.length });
+  } catch (error) {
+    sendJson(response, 400, { ok: false, message: `上传项目资料失败：${error.message}` });
+  }
+}
+
+function handleProjectArchiveFiles(request, response, projectId) {
+  if (!requireAuth(request, response)) return;
+  const project = readProjects().map(normalizeProject).find((item) => String(item.id) === String(projectId));
+  if (!project) {
+    sendJson(response, 404, { ok: false, message: '未找到学习项目。' });
+    return;
+  }
+  if (!projectAllowed(request, project)) {
+    sendJson(response, 403, { ok: false, message: '当前设备没有访问该学习项目的权限。' });
+    return;
+  }
+  sendJson(response, 200, JSON.parse(listProjectArchiveFiles(projectId)));
+}
+
+function handleProjectPromotion(request, response, projectId) {
+  if (!requireAuth(request, response)) return;
+  if (request.authContext?.type !== 'admin') {
+    sendJson(response, 403, { ok: false, message: '只有 Windows 主机管理员可以生成知识贡献申请。' });
+    return;
+  }
+  sendJson(response, 200, JSON.parse(generateProjectPromotion(projectId)));
 }
 
 function isPublicArchiveFile(filePath) {
@@ -4081,6 +4665,33 @@ function handleHostRequest(request, response) {
     handleStudents(request, response);
     return;
   }
+  if (request.method === 'GET' && pathname === '/api/assets') {
+    handleAssets(request, response);
+    return;
+  }
+  if (request.method === 'GET' && pathname === '/api/projects') {
+    handleProjects(request, response);
+    return;
+  }
+  if (request.method === 'POST' && pathname === '/api/projects') {
+    handleProjectCreate(request, response);
+    return;
+  }
+  const projectMaterialMatch = pathname.match(/^\/api\/projects\/([^/]+)\/materials$/);
+  if (request.method === 'POST' && projectMaterialMatch) {
+    handleProjectMaterialUpload(request, response, projectMaterialMatch[1]);
+    return;
+  }
+  const projectArchiveFilesMatch = pathname.match(/^\/api\/projects\/([^/]+)\/archive\/files$/);
+  if (request.method === 'GET' && projectArchiveFilesMatch) {
+    handleProjectArchiveFiles(request, response, projectArchiveFilesMatch[1]);
+    return;
+  }
+  const projectPromotionMatch = pathname.match(/^\/api\/projects\/([^/]+)\/promotion$/);
+  if (request.method === 'POST' && projectPromotionMatch) {
+    handleProjectPromotion(request, response, projectPromotionMatch[1]);
+    return;
+  }
   const materialMatch = pathname.match(/^\/api\/students\/([^/]+)\/materials$/);
   if (request.method === 'POST' && materialMatch) {
     handleMaterialUpload(request, response, materialMatch[1], url);
@@ -4332,6 +4943,12 @@ ipcMain.on('bridge:pickMaterialSourceDir', (event) => { licensedIpc(event, '资�
 ipcMain.on('bridge:scanMaterialSources', (event, studentId, sourcesJson) => { licensedIpc(event, '资料来源目录扫描', () => scanMaterialSources(studentId, sourcesJson)); });
 ipcMain.on('bridge:importMaterialSourceFiles', (event, studentId, pathsJson) => { licensedIpc(event, '导入资料', () => importMaterialSourceFiles(studentId, pathsJson)); });
 ipcMain.on('bridge:getMaterialImportRecords', (event, studentId) => { event.returnValue = getMaterialImportRecords(studentId); });
+ipcMain.on('bridge:getAssetIndex', (event) => { event.returnValue = JSON.stringify(assetIndexSummary()); });
+ipcMain.on('bridge:rebuildAssetIndex', (event) => { licensedIpc(event, '资产索引补建', () => rebuildAssetIndex()); });
+ipcMain.on('bridge:getProjects', (event) => { event.returnValue = getProjects(); });
+ipcMain.on('bridge:createProject', (event, optionsJson) => { licensedIpc(event, '学习项目创建', () => createProject(optionsJson)); });
+ipcMain.on('bridge:importProjectAssets', (event, projectId, assetIdsJson) => { licensedIpc(event, '项目资料导入', () => importProjectAssets(projectId, assetIdsJson)); });
+ipcMain.on('bridge:generateProjectPromotion', (event, projectId) => { licensedIpc(event, '知识贡献申请', () => generateProjectPromotion(projectId)); });
 ipcMain.on('bridge:initStudentWorkspace', (event, studentName, agentMd, indexMd, logMd) => {
   licensedIpc(event, '初始化教育管家', () => initStudentWorkspace(studentName, agentMd, indexMd, logMd));
 });
@@ -4381,6 +4998,7 @@ ipcMain.on('bridge:readMarkdownFile', (event, documentId) => { event.returnValue
 ipcMain.on('bridge:listLearningReports', (event, studentId) => { event.returnValue = listLearningReports(studentId); });
 ipcMain.on('bridge:readLearningReport', (event, studentId, reportId) => { event.returnValue = readLearningReport(studentId, reportId); });
 ipcMain.on('bridge:ensureLearningReports', (event, studentId) => { licensedIpc(event, '学情报告模板补建', () => ensureLearningReports(studentId)); });
+ipcMain.on('bridge:ensureGrowthModel', (event, studentId) => { licensedIpc(event, '成长模型补建', () => ensureGrowthModel(studentId)); });
 ipcMain.on('bridge:syncStudents', (event, studentsJson) => { licensedIpc(event, '学生档案同步', () => syncStudentsIndex(studentsJson)); });
 ipcMain.on('bridge:selectKnowledgeBaseRoot', (event) => { licensedIpc(event, '接管已有知识库', () => selectKnowledgeBaseRoot()); });
 ipcMain.on('bridge:scanKnowledgeBase', (event, rootPath, studentName) => { event.returnValue = scanExistingKnowledgeBase(rootPath, studentName); });

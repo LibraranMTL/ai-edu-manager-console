@@ -26,7 +26,7 @@ import {
 } from 'lucide-react';
 import './styles.css';
 
-type Section = 'home' | 'init' | 'new' | 'inbox' | 'reports' | 'archive' | 'qa' | 'memory' | 'soul' | 'rules' | 'conversation' | 'tasks' | 'settings';
+type Section = 'home' | 'init' | 'new' | 'inbox' | 'assets' | 'projects' | 'growth' | 'reports' | 'archive' | 'qa' | 'memory' | 'soul' | 'rules' | 'conversation' | 'tasks' | 'settings';
 type ThemeName = 'blue' | 'pink' | 'green' | 'purple' | 'orange';
 type LanguageCode = 'zh-CN' | 'zh-TW' | 'en' | 'fr' | 'es' | 'ja' | 'ko' | 'vi' | 'ms';
 type AgentToolId =
@@ -163,6 +163,64 @@ type MaterialSource = {
   lastScannedAt?: string;
 };
 
+type AssetRecord = {
+  assetId: string;
+  filename: string;
+  type: string;
+  sha1?: string;
+  size?: number;
+  path: string;
+  ownerStudentId?: string;
+  ownerStudentName?: string;
+  linkedStudents?: string[];
+  linkedProjects?: string[];
+  references?: Array<{
+    id: string;
+    spaceType: string;
+    spaceId: string;
+    spaceName: string;
+    role: string;
+    path: string;
+    source?: string;
+    linkedAt?: string;
+  }>;
+  sourcePath?: string;
+  sourceName?: string;
+  uploadedAt?: string;
+  updatedAt?: string;
+  status?: string;
+  duplicateCount?: number;
+  referenceCount?: number;
+};
+
+type AssetIndexState = {
+  ok?: boolean;
+  assets: AssetRecord[];
+  total?: number;
+  duplicateGroups?: number;
+  message?: string;
+};
+
+type LearningProject = {
+  id: string;
+  name: string;
+  type: string;
+  status: string;
+  studentIds: string[];
+  studentNames?: string[];
+  projectRootPath: string;
+  workspacePath: string;
+  knowledgeRootPath: string;
+  rawPath: string;
+  summaryPath: string;
+  agentPath: string;
+  outputPath?: string;
+  promotionPath?: string;
+  assetIds?: string[];
+  createdAt?: string;
+  updatedAt?: string;
+};
+
 type StudentDraft = Omit<Student, 'id' | 'createdAt' | 'status'>;
 
 type AndroidBridge = {
@@ -173,6 +231,12 @@ type AndroidBridge = {
   scanMaterialSources?: (studentId: string, sourcesJson: string) => string;
   importMaterialSourceFiles?: (studentId: string, pathsJson: string) => string;
   getMaterialImportRecords?: (studentId: string) => string;
+  getAssetIndex?: () => string;
+  rebuildAssetIndex?: () => string;
+  getProjects?: () => string;
+  createProject?: (optionsJson: string) => string;
+  importProjectAssets?: (projectId: string, assetIdsJson: string) => string;
+  generateProjectPromotion?: (projectId: string) => string;
   importImages?: (studentName: string) => boolean;
   takePhoto?: (studentName: string) => boolean;
   initStudentWorkspace?: (studentName: string, agentMd: string, indexMd: string, logMd: string) => string;
@@ -215,6 +279,7 @@ type AndroidBridge = {
   listLearningReports?: (studentId: string) => string;
   readLearningReport?: (studentId: string, reportId: LearningReportId) => string;
   ensureLearningReports?: (studentId: string) => string;
+  ensureGrowthModel?: (studentId: string) => string;
   checkUpdate?: (manifestUrl: string, currentVersionCode: number) => boolean;
   downloadAndInstallUpdate?: (apkUrl: string) => boolean;
   scanDownloads?: () => string;
@@ -522,8 +587,8 @@ const storageKey = 'edu-manager-launcher.students.v2';
 const themeStorageKey = 'edu-manager-launcher.theme.v1';
 const languageStorageKey = 'edu-manager-launcher.language.v1';
 const archiveKeywordStorageKey = 'edu-manager-launcher.archive-keywords.v1';
-const currentVersionCode = 77;
-const currentVersionName = '0.6.7';
+const currentVersionCode = 78;
+const currentVersionName = '0.6.8';
 const updateManifestUrl = [
   'https://www.greatbg.com/download/edu-manager-version.json',
   'http://www.greatbg.com/download/edu-manager-version.json',
@@ -1139,6 +1204,9 @@ const zhCnText = {
   'nav.init': '初始化教育管家',
   'nav.new': '新建教育智能体',
   'nav.inbox': '资料收集与处理',
+  'nav.assets': '文件资产中心',
+  'nav.projects': '学习项目',
+  'nav.growth': '成长模型',
   'nav.reports': '学情报告',
   'nav.archive': '查看教育档案',
   'nav.qa': '教育管家问答',
@@ -2918,6 +2986,18 @@ function App() {
   const [materialSourceFiles, setMaterialSourceFiles] = useState<MaterialSourceCandidate[]>([]);
   const [selectedMaterialSourcePaths, setSelectedMaterialSourcePaths] = useState<string[]>([]);
   const [materialImportRecords, setMaterialImportRecords] = useState<MaterialImportRecord[]>([]);
+  const [assetIndex, setAssetIndex] = useState<AssetIndexState>({ assets: [] });
+  const [assetMessage, setAssetMessage] = useState('');
+  const [assetSearch, setAssetSearch] = useState('');
+  const [assetStudentFilter, setAssetStudentFilter] = useState('all');
+  const [assetDuplicateOnly, setAssetDuplicateOnly] = useState(false);
+  const [projects, setProjects] = useState<LearningProject[]>([]);
+  const [projectMessage, setProjectMessage] = useState('');
+  const [selectedProjectId, setSelectedProjectId] = useState('');
+  const [projectDraft, setProjectDraft] = useState({ name: '', type: '学习项目', studentIds: [] as string[] });
+  const [selectedProjectAssetIds, setSelectedProjectAssetIds] = useState<string[]>([]);
+  const [promotionPreview, setPromotionPreview] = useState('');
+  const [growthMessage, setGrowthMessage] = useState('');
   const [sharedInboxCount, setSharedInboxCount] = useState(0);
   const [compatibility, setCompatibility] = useState<Record<string, unknown> | null>(null);
   const [storageConfig, setStorageConfig] = useState<StorageConfig>(activeStorageConfig);
@@ -3051,7 +3131,7 @@ function App() {
   const isWindows = storageConfig.platform === 'windows';
   const effectiveLicenseStatus = licenseStatus || hostServiceStatus?.license || null;
   const windowsLicenseActive = !isWindows || Boolean(effectiveLicenseStatus?.active);
-  const restrictedSections = new Set<Section>(['init', 'new', 'inbox', 'qa', 'memory', 'soul', 'rules', 'conversation', 'tasks']);
+  const restrictedSections = new Set<Section>(['init', 'new', 'inbox', 'assets', 'projects', 'growth', 'qa', 'memory', 'soul', 'rules', 'conversation', 'tasks']);
   const isLicenseRestrictedSection = isWindows && !windowsLicenseActive && restrictedSections.has(activeSection);
   const licenseRestrictionText = effectiveLicenseStatus?.message || 'Windows 主机尚未激活。未激活状态仅支持首页、系统设置和已有档案/报告的只读浏览。';
   const shouldBlockForAgentInstall = isWindows && installStatus ? !installStatus.anyInstalled : false;
@@ -3091,6 +3171,31 @@ function App() {
         .some((value) => String(value).toLowerCase().includes(keyword));
     });
   }, [hostServiceStatus?.recentUploads, hostUploadDateFilter, hostUploadDeviceFilter, hostUploadRecords, hostUploadSearch, hostUploadStatusFilter, hostUploadStudentFilter]);
+
+  const filteredAssets = useMemo(() => {
+    const keyword = assetSearch.trim().toLowerCase();
+    return (assetIndex.assets ?? []).filter((asset) => {
+      if (assetDuplicateOnly && Number(asset.duplicateCount ?? 1) <= 1) return false;
+      if (assetStudentFilter !== 'all') {
+        const linked = asset.linkedStudents ?? [];
+        if (asset.ownerStudentId !== assetStudentFilter && !linked.includes(assetStudentFilter)) return false;
+      }
+      if (!keyword) return true;
+      return [asset.filename, asset.path, asset.ownerStudentName, asset.sourceName, asset.sha1]
+        .filter(Boolean)
+        .some((value) => String(value).toLowerCase().includes(keyword));
+    });
+  }, [assetDuplicateOnly, assetIndex.assets, assetSearch, assetStudentFilter]);
+
+  const selectedProject = projects.find((project) => project.id === selectedProjectId) ?? projects[0] ?? null;
+  const projectCandidateAssets = useMemo(() => {
+    const selectedAssetIds = new Set(selectedProject?.assetIds ?? []);
+    return filteredAssets.filter((asset) => !selectedAssetIds.has(asset.assetId)).slice(0, 120);
+  }, [filteredAssets, selectedProject?.assetIds]);
+
+  const toggleProjectAsset = (assetId: string) => {
+    setSelectedProjectAssetIds((current) => (current.includes(assetId) ? current.filter((item) => item !== assetId) : [...current, assetId]));
+  };
 
   const hostStudentStat = (student: Student) =>
     hostServiceStatus?.students?.find((item) => String(item.id) === String(student.id));
@@ -3668,6 +3773,8 @@ ${conversationText || '（请先粘贴对话历史）'}`;
     syncStudentsToHost(students);
     refreshHostServiceStatus();
     refreshLicenseStatus();
+    refreshAssets();
+    refreshProjects();
   }, []);
 
   useEffect(() => {
@@ -4896,6 +5003,145 @@ ${conversationText || '（请先粘贴对话历史）'}`;
     }
   };
 
+  const refreshAssets = () => {
+    const raw = bridge()?.getAssetIndex?.();
+    if (!raw) {
+      setAssetMessage('当前环境不支持文件资产中心。');
+      return;
+    }
+    try {
+      const result = JSON.parse(raw) as AssetIndexState;
+      setAssetIndex({ ...result, assets: result.assets ?? [] });
+      setAssetMessage(result.message || `已读取 ${result.assets?.length ?? 0} 个资产。`);
+    } catch {
+      setAssetMessage('资产索引解析失败。');
+    }
+  };
+
+  const rebuildAssets = () => {
+    const raw = bridge()?.rebuildAssetIndex?.();
+    if (!raw) {
+      setAssetMessage('当前环境不支持补建资产索引。');
+      return;
+    }
+    try {
+      const result = JSON.parse(raw) as AssetIndexState;
+      setAssetIndex({ ...result, assets: result.assets ?? [] });
+      setAssetMessage(result.message || '资产索引已补建。');
+    } catch {
+      setAssetMessage('补建资产索引结果解析失败。');
+    }
+  };
+
+  const refreshProjects = () => {
+    const raw = bridge()?.getProjects?.();
+    if (!raw) {
+      setProjectMessage('当前环境不支持学习项目管理。');
+      return;
+    }
+    try {
+      const result = JSON.parse(raw) as { ok?: boolean; projects?: LearningProject[]; message?: string };
+      if (!result.ok) {
+        setProjectMessage(result.message || '读取学习项目失败。');
+        return;
+      }
+      const list = result.projects ?? [];
+      setProjects(list);
+      if (!selectedProjectId && list[0]) setSelectedProjectId(list[0].id);
+      setProjectMessage(result.message || `已读取 ${list.length} 个学习项目。`);
+    } catch {
+      setProjectMessage('学习项目数据解析失败。');
+    }
+  };
+
+  const createLearningProject = () => {
+    if (!projectDraft.name.trim()) {
+      setProjectMessage('请先填写项目名称。');
+      return;
+    }
+    const raw = bridge()?.createProject?.(JSON.stringify(projectDraft));
+    if (!raw) {
+      setProjectMessage('当前环境不支持创建学习项目。');
+      return;
+    }
+    try {
+      const result = JSON.parse(raw) as { ok?: boolean; project?: LearningProject; projects?: LearningProject[]; message?: string };
+      setProjectMessage(result.message || (result.ok ? '学习项目已创建。' : '创建学习项目失败。'));
+      if (result.ok) {
+        const next = result.projects ?? (result.project ? [result.project, ...projects] : projects);
+        setProjects(next);
+        if (result.project) setSelectedProjectId(result.project.id);
+        setProjectDraft({ name: '', type: '学习项目', studentIds: [] });
+      }
+    } catch {
+      setProjectMessage('创建学习项目结果解析失败。');
+    }
+  };
+
+  const importSelectedAssetsToProject = () => {
+    if (!selectedProjectId) {
+      setProjectMessage('请先选择学习项目。');
+      return;
+    }
+    if (!selectedProjectAssetIds.length) {
+      setProjectMessage('请先勾选要导入项目知识空间的资产。');
+      return;
+    }
+    const raw = bridge()?.importProjectAssets?.(selectedProjectId, JSON.stringify(selectedProjectAssetIds));
+    if (!raw) {
+      setProjectMessage('当前环境不支持项目资料导入。');
+      return;
+    }
+    try {
+      const result = JSON.parse(raw) as { ok?: boolean; imported?: number; skipped?: number; project?: LearningProject; message?: string };
+      setProjectMessage(result.message || (result.ok ? '已导入项目资料。' : '项目资料导入失败。'));
+      if (result.project) setProjects((current) => current.map((item) => (item.id === result.project?.id ? result.project : item)));
+      if (result.ok) {
+        setSelectedProjectAssetIds([]);
+        refreshAssets();
+      }
+    } catch {
+      setProjectMessage('项目资料导入结果解析失败。');
+    }
+  };
+
+  const generateSelectedProjectPromotion = () => {
+    if (!selectedProjectId) {
+      setProjectMessage('请先选择学习项目。');
+      return;
+    }
+    const raw = bridge()?.generateProjectPromotion?.(selectedProjectId);
+    if (!raw) {
+      setProjectMessage('当前环境不支持生成知识贡献申请。');
+      return;
+    }
+    try {
+      const result = JSON.parse(raw) as { ok?: boolean; path?: string; content?: string; message?: string };
+      setProjectMessage(result.message || (result.ok ? '已生成知识贡献申请。' : '生成知识贡献申请失败。'));
+      setPromotionPreview(result.content || '');
+    } catch {
+      setProjectMessage('知识贡献申请结果解析失败。');
+    }
+  };
+
+  const ensureSelectedGrowthModel = () => {
+    if (!selectedStudent) {
+      setGrowthMessage('请先选择学生。');
+      return;
+    }
+    const raw = bridge()?.ensureGrowthModel?.(selectedStudent.id);
+    if (!raw) {
+      setGrowthMessage('当前环境不支持成长模型补建。');
+      return;
+    }
+    try {
+      const result = JSON.parse(raw) as { ok?: boolean; folder?: string; created?: string[]; message?: string };
+      setGrowthMessage(result.message || (result.ok ? '成长模型已确认。' : '成长模型补建失败。'));
+    } catch {
+      setGrowthMessage('成长模型补建结果解析失败。');
+    }
+  };
+
   const consumeSharedForStudent = (student: Student) => {
     const raw = bridge()?.consumeSharedImports?.(student.name);
     if (!raw) {
@@ -5650,6 +5896,11 @@ ${conversationText || '（请先粘贴对话历史）'}`;
     { id: 'init' as const, label: t('nav.init'), icon: Sparkles },
     { id: 'new' as const, label: t('nav.new'), icon: Plus },
     { id: 'inbox' as const, label: t('nav.inbox'), icon: FileDown },
+    ...(isWindows ? [
+      { id: 'assets' as const, label: t('nav.assets'), icon: Archive },
+      { id: 'projects' as const, label: t('nav.projects'), icon: FolderOpen },
+      { id: 'growth' as const, label: t('nav.growth'), icon: Sparkles },
+    ] : []),
     { id: 'reports' as const, label: t('nav.reports'), icon: FileText },
     { id: 'archive' as const, label: t('nav.archive'), icon: BookOpen },
     { id: 'qa' as const, label: t('nav.qa'), icon: MessageCircle },
@@ -5668,6 +5919,9 @@ ${conversationText || '（请先粘贴对话历史）'}`;
       init: 'nav.init',
       new: 'nav.new',
       inbox: 'nav.inbox',
+      assets: 'nav.assets',
+      projects: 'nav.projects',
+      growth: 'nav.growth',
       reports: 'nav.reports',
       archive: 'nav.archive',
       qa: 'nav.qa',
@@ -6695,6 +6949,260 @@ ${conversationText || '（请先粘贴对话历史）'}`;
             {downloadsMessage && <div className="notice">{downloadsMessage}</div>}
             {importMessage && <div className="notice">{importMessage}</div>}
             {digestMessage && <div className="notice">{digestMessage}</div>}
+          </section>
+        )}
+
+        {!shouldBlockForAgentInstall && !isLicenseRestrictedSection && isWindows && activeSection === 'assets' && (
+          <section className="panel">
+            <div className="panel-heading">
+              <div>
+                <h2>文件资产中心</h2>
+                <p>底层资产索引只记录文件指纹、路径和引用关系，不改变学生原始资料库的现有文件夹体验。</p>
+              </div>
+              <Archive size={22} />
+            </div>
+            <div className="archive-grid">
+              <InfoPanel icon={<Archive />} title="资产总数" value={`${assetIndex.total ?? assetIndex.assets.length} 个`} />
+              <InfoPanel icon={<ListChecks />} title="重复文件组" value={`${assetIndex.duplicateGroups ?? 0} 组`} />
+              <InfoPanel icon={<UserRound />} title="学生过滤" value={assetStudentFilter === 'all' ? '全部学生' : students.find((student) => student.id === assetStudentFilter)?.name ?? '当前筛选'} />
+            </div>
+            <div className="actions">
+              <button className="secondary" onClick={refreshAssets}>
+                <RefreshCw size={18} />
+                刷新资产
+              </button>
+              <button className="primary" onClick={rebuildAssets}>
+                <Archive size={18} />
+                扫描并补建资产索引
+              </button>
+            </div>
+            <div className="form-grid compact-grid">
+              <label>
+                搜索文件
+                <input value={assetSearch} onChange={(event) => setAssetSearch(event.target.value)} placeholder="文件名、路径、SHA-1、来源" />
+              </label>
+              <label>
+                学生
+                <select value={assetStudentFilter} onChange={(event) => setAssetStudentFilter(event.target.value)}>
+                  <option value="all">全部学生</option>
+                  {students.map((student) => (
+                    <option value={student.id} key={student.id}>{student.name}</option>
+                  ))}
+                </select>
+              </label>
+              <label className="checkbox-line">
+                <input type="checkbox" checked={assetDuplicateOnly} onChange={(event) => setAssetDuplicateOnly(event.target.checked)} />
+                只看重复 SHA-1 文件
+              </label>
+            </div>
+            <div className="download-list asset-list">
+              {filteredAssets.slice(0, 160).map((asset) => (
+                <div className="download-item" key={asset.assetId}>
+                  <span>
+                    <strong>{asset.filename}</strong>
+                    <small>
+                      {asset.ownerStudentName || '未绑定学生'} · {asset.type || 'file'} · {formatFileSize(asset.size ?? 0)} · 引用 {asset.referenceCount ?? asset.references?.length ?? 0} 次
+                    </small>
+                    <small>{asset.path}</small>
+                    {asset.sha1 && <em>SHA-1：{asset.sha1}{Number(asset.duplicateCount ?? 1) > 1 ? ` · 重复 ${asset.duplicateCount} 份` : ''}</em>}
+                  </span>
+                </div>
+              ))}
+              {filteredAssets.length === 0 && <div className="empty-state">暂无资产记录。导入资料、平板上传或点击“扫描并补建资产索引”后会在这里显示。</div>}
+            </div>
+            {filteredAssets.length > 160 && <div className="notice muted">当前仅显示前 160 条资产，可通过搜索、学生过滤或重复文件过滤缩小范围。</div>}
+            {assetMessage && <div className="notice">{assetMessage}</div>}
+          </section>
+        )}
+
+        {!shouldBlockForAgentInstall && !isLicenseRestrictedSection && isWindows && activeSection === 'projects' && (
+          <section className="panel">
+            <div className="panel-heading">
+              <div>
+                <h2>学习项目知识空间</h2>
+                <p>项目独立使用 LLM Wiki 目录消化资料，完成后通过“知识贡献申请”进入学生主档案。</p>
+              </div>
+              <FolderOpen size={22} />
+            </div>
+            <div className="archive-grid">
+              <InfoPanel icon={<FolderOpen />} title="项目数量" value={`${projects.length} 个`} />
+              <InfoPanel icon={<Archive />} title="当前项目资产" value={`${selectedProject?.assetIds?.length ?? 0} 个`} />
+              <InfoPanel icon={<UserRound />} title="绑定学生" value={selectedProject?.studentNames?.join('、') || '未选择项目'} />
+            </div>
+            <section className="material-source-panel">
+              <div className="mini-heading">
+                <strong>新建学习项目</strong>
+                <span>会同时创建用户项目空间和项目知识空间；项目资料默认不污染学生主档案。</span>
+              </div>
+              <div className="form-grid compact-grid">
+                <label>
+                  项目名称
+                  <input value={projectDraft.name} onChange={(event) => setProjectDraft((current) => ({ ...current, name: event.target.value }))} placeholder="例如：AI创意大赛" />
+                </label>
+                <label>
+                  项目类型
+                  <input value={projectDraft.type} onChange={(event) => setProjectDraft((current) => ({ ...current, type: event.target.value }))} placeholder="学习项目 / 竞赛 / 升学 / 学科专题" />
+                </label>
+                <label>
+                  绑定学生
+                  <select
+                    value={projectDraft.studentIds[0] ?? ''}
+                    onChange={(event) => setProjectDraft((current) => ({ ...current, studentIds: event.target.value ? [event.target.value] : [] }))}
+                  >
+                    <option value="">请选择学生</option>
+                    {students.map((student) => (
+                      <option value={student.id} key={student.id}>{student.name}</option>
+                    ))}
+                  </select>
+                </label>
+              </div>
+              <div className="actions">
+                <button className="primary" onClick={createLearningProject}>
+                  <Plus size={18} />
+                  创建项目知识空间
+                </button>
+                <button className="secondary" onClick={refreshProjects}>
+                  <RefreshCw size={18} />
+                  刷新项目
+                </button>
+              </div>
+            </section>
+
+            <div className="learning-report-layout">
+              <aside className="learning-report-list">
+                {projects.map((project) => (
+                  <button
+                    className={selectedProject?.id === project.id ? 'learning-report-card active' : 'learning-report-card'}
+                    key={project.id}
+                    onClick={() => {
+                      setSelectedProjectId(project.id);
+                      setSelectedProjectAssetIds([]);
+                      setPromotionPreview('');
+                    }}
+                  >
+                    <strong>{project.name}</strong>
+                    <span>{project.type} · {project.status}</span>
+                    <small>{project.studentNames?.join('、') || '未绑定学生'}</small>
+                    <em>{project.knowledgeRootPath}</em>
+                  </button>
+                ))}
+                {projects.length === 0 && <div className="empty-state">尚未创建学习项目。</div>}
+              </aside>
+              <section className="markdown-reader">
+                {selectedProject ? (
+                  <>
+                    <div className="reader-toolbar">
+                      <span>{selectedProject.name}</span>
+                      <div className="reader-actions">
+                        <button className="secondary compact" onClick={() => generateSelectedProjectPromotion()}>
+                          生成贡献申请
+                        </button>
+                      </div>
+                    </div>
+                    <div className="archive-grid">
+                      <InfoPanel icon={<FolderOpen />} title="项目根目录" value={selectedProject.projectRootPath} />
+                      <InfoPanel icon={<Archive />} title="项目原始资料库" value={selectedProject.rawPath} />
+                      <InfoPanel icon={<FileText />} title="知识贡献目录" value={selectedProject.promotionPath || '未生成'} />
+                    </div>
+                    <div className="mini-heading">
+                      <strong>从资产中心加入项目</strong>
+                      <span>只建立资产引用并复制到项目原始资料库，不直接合并进学生主档案。</span>
+                    </div>
+                    <div className="download-list project-asset-picker">
+                      {projectCandidateAssets.map((asset) => (
+                        <label className="download-item" key={asset.assetId}>
+                          <input type="checkbox" checked={selectedProjectAssetIds.includes(asset.assetId)} onChange={() => toggleProjectAsset(asset.assetId)} />
+                          <span>
+                            <strong>{asset.filename}</strong>
+                            <small>{asset.ownerStudentName || '未绑定学生'} · {formatFileSize(asset.size ?? 0)}</small>
+                            <small>{asset.path}</small>
+                          </span>
+                        </label>
+                      ))}
+                      {projectCandidateAssets.length === 0 && <div className="empty-state">暂无可加入项目的资产。可先到“文件资产中心”补建索引，或导入学生资料。</div>}
+                    </div>
+                    <div className="actions">
+                      <button className="primary" onClick={importSelectedAssetsToProject} disabled={selectedProjectAssetIds.length === 0}>
+                        <FileDown size={18} />
+                        加入项目知识空间
+                      </button>
+                      <span className="inline-hint">已选 {selectedProjectAssetIds.length} 个</span>
+                    </div>
+                    {promotionPreview && (
+                      <div className="markdown-reader learning-report-reader">
+                        <div className="reader-toolbar">
+                          <span>知识贡献申请预览</span>
+                          <button className="secondary compact" onClick={() => copyText(promotionPreview, '已复制项目知识贡献申请。')}>
+                            <Clipboard size={16} />
+                            复制
+                          </button>
+                        </div>
+                        <MarkdownView content={promotionPreview} />
+                      </div>
+                    )}
+                  </>
+                ) : (
+                  <div className="empty-state">选择或创建一个学习项目后，可绑定资产、生成项目知识贡献申请。</div>
+                )}
+              </section>
+            </div>
+            {projectMessage && <div className="notice">{projectMessage}</div>}
+          </section>
+        )}
+
+        {!shouldBlockForAgentInstall && !isLicenseRestrictedSection && isWindows && activeSection === 'growth' && selectedStudent && (
+          <section className="panel">
+            <div className="panel-heading">
+              <div>
+                <h2>{selectedStudent.name} · 成长模型</h2>
+                <p>Growth Layer 用于沉淀能力、兴趣、趋势和项目证据；学情报告逐步从这里生成。</p>
+              </div>
+              <Sparkles size={22} />
+            </div>
+            <div className="archive-grid">
+              <InfoPanel icon={<UserRound />} title="当前学生" value={`${selectedStudent.name} · ${selectedStudent.grade}`} />
+              <InfoPanel icon={<FolderOpen />} title="知识库目录" value={selectedStudentPaths.root} />
+              <InfoPanel icon={<FileText />} title="学情报告目录" value={selectedStudentPaths.reportDir} />
+            </div>
+            <div className="actions">
+              <button className="primary" onClick={ensureSelectedGrowthModel}>
+                <Sparkles size={18} />
+                补建成长模型
+              </button>
+              <button className="secondary" onClick={() => refreshLearningReports(selectedStudent)}>
+                <RefreshCw size={18} />
+                刷新学情报告
+              </button>
+              <button className="secondary" onClick={() => setActiveSection('reports')}>
+                <FileText size={18} />
+                查看学情报告
+              </button>
+              <button className="secondary" onClick={() => setActiveSection('archive')}>
+                <BookOpen size={18} />
+                查看教育档案
+              </button>
+            </div>
+            <div className="notice muted">
+              成长模型 v1 会在学生知识库下创建“成长模型”目录，并维护 index、能力画像、成长证据和项目贡献四类 Markdown 索引。它不会替换现有综合汇总库，而是作为学情报告的上层来源。
+            </div>
+            <div className="learning-report-layout">
+              <aside className="learning-report-list">
+                {learningReportDefinitions.map((definition) => (
+                  <button className="learning-report-card" key={definition.id} onClick={() => openLearningReport(definition.id, selectedStudent)}>
+                    <strong>{definition.title}</strong>
+                    <span>{definition.description}</span>
+                    <small>报告中会逐步增加成长证据来源和项目贡献来源。</small>
+                  </button>
+                ))}
+              </aside>
+              <section className="markdown-reader">
+                <div className="reader-toolbar">
+                  <span>Growth Layer 工作方式</span>
+                </div>
+                <MarkdownView content={`# ${selectedStudent.name} 成长模型\n\n## 定位\n\n成长模型不是普通摘要文件夹，而是学生能力、兴趣、趋势、证据来源和项目贡献的长期索引。\n\n## 建议维护对象\n\n- 能力画像：记录学生在学科、研究、表达、协作、创造等方面的长期变化。\n- 成长证据：记录每条能力判断对应的原始资料、项目、报告或问答来源。\n- 项目贡献：记录学习项目完成后发布到学生主档案的知识贡献。\n- 学情报告：作为面向家长、学生和教师的呈现层输出。\n\n## 下一步\n\n点击“补建成长模型”后，可让 Agent 围绕成长模型目录持续维护这些索引。`} />
+              </section>
+            </div>
+            {growthMessage && <div className="notice">{growthMessage}</div>}
           </section>
         )}
 

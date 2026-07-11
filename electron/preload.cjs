@@ -22,6 +22,24 @@ contextBridge.exposeInMainWorld('AndroidBridge', {
   getMaterialImportRecords(studentId) {
     return ipcRenderer.sendSync('bridge:getMaterialImportRecords', studentId);
   },
+  getAssetIndex() {
+    return ipcRenderer.sendSync('bridge:getAssetIndex');
+  },
+  rebuildAssetIndex() {
+    return ipcRenderer.sendSync('bridge:rebuildAssetIndex');
+  },
+  getProjects() {
+    return ipcRenderer.sendSync('bridge:getProjects');
+  },
+  createProject(optionsJson) {
+    return ipcRenderer.sendSync('bridge:createProject', optionsJson);
+  },
+  importProjectAssets(projectId, assetIdsJson) {
+    return ipcRenderer.sendSync('bridge:importProjectAssets', projectId, assetIdsJson);
+  },
+  generateProjectPromotion(projectId) {
+    return ipcRenderer.sendSync('bridge:generateProjectPromotion', projectId);
+  },
   initStudentWorkspace(studentName, agentMd, indexMd, logMd) {
     return ipcRenderer.sendSync('bridge:initStudentWorkspace', studentName, agentMd, indexMd, logMd);
   },
@@ -144,6 +162,9 @@ contextBridge.exposeInMainWorld('AndroidBridge', {
   },
   ensureLearningReports(studentId) {
     return ipcRenderer.sendSync('bridge:ensureLearningReports', studentId);
+  },
+  ensureGrowthModel(studentId) {
+    return ipcRenderer.sendSync('bridge:ensureGrowthModel', studentId);
   },
   syncStudents(studentsJson) {
     return ipcRenderer.sendSync('bridge:syncStudents', studentsJson);

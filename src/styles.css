@@ -253,6 +253,16 @@ button:disabled {
   background: #dff2ed;
 }
 
+.nav-item.locked {
+  color: #7a8582;
+  background: rgba(255, 255, 255, 0.54);
+}
+
+.nav-item.locked svg:last-child {
+  margin-left: auto;
+  color: #b45309;
+}
+
 .nav-group-block {
   display: grid;
   gap: 6px;
@@ -613,9 +623,14 @@ h2 {
   color: var(--accent-dark);
 }
 
-.install-gate {
+.install-gate,
+.license-gate {
   display: grid;
   gap: 18px;
+}
+
+.license-gate {
+  border-color: rgba(245, 158, 11, 0.38);
 }
 
 .install-options {

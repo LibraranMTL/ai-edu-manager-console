@@ -21,7 +21,7 @@ let hostServiceLastError = '';
 let todayUploadCount = 0;
 let uploadCountDate = new Date().toISOString().slice(0, 10);
 
-const APP_VERSION = '0.6.5';
+const APP_VERSION = '0.6.6';
 const DEFAULT_HOST_PORT = 18777;
 const AGENT_TOOL_IDS = ['qclaw', 'marvis', 'hohu', 'openclaw', 'codex', 'claude-code', 'chatgpt', 'claude', 'doubao', 'coze', 'fastgpt'];
 const WEB_AGENT_TOOL_URLS = {
@@ -156,6 +156,22 @@ function publicLicenseStatus(rawLicense) {
   };
 }
 
+function licenseRequiredPayload(action = '正式功能') {
+  const license = publicLicenseStatus();
+  if (license.active) return null;
+  return {
+    ok: false,
+    code: 'LICENSE_REQUIRED',
+    license,
+    message: `${license.message || 'Windows 主机尚未激活。'}请先在系统设置中输入授权码后再使用${action}。`,
+  };
+}
+
+function licenseRequiredJson(action) {
+  const payload = licenseRequiredPayload(action);
+  return payload ? JSON.stringify(payload) : null;
+}
+
 function getLicenseStatus() {
   return JSON.stringify({ ok: true, license: publicLicenseStatus() });
 }
@@ -179,6 +195,7 @@ function deactivateLicense() {
   const settings = readSettings();
   delete settings.license;
   writeSettings(settings);
+  if (hostServer) stopHostService();
   appendHostTimeline({ type: 'license_deactivated', title: 'License deactivated', detail: 'Local license was removed.' });
   notify('onNativeHostServiceChanged', getHostServiceStatus());
   return JSON.stringify({ ok: true, message: '已移除本机许可证。', license: publicLicenseStatus(), status: JSON.parse(getHostServiceStatus()) });
@@ -1215,6 +1232,8 @@ function getHostServicePort() {
 }
 
 function setHostServicePort(port) {
+  const locked = licenseRequiredJson('主机服务');
+  if (locked) return locked;
   const nextPort = Number(port);
   if (!Number.isInteger(nextPort) || nextPort < 1024 || nextPort > 65535) {
     return JSON.stringify({ ok: false, message: '端口必须是 1024-65535 之间的数字' });
@@ -3466,7 +3485,10 @@ function listLearningReports(studentKey) {
   try {
     const student = findStudentByKey(studentKey);
     if (!student) return JSON.stringify({ ok: false, message: '未找到学生。' });
-    const ensured = ensureLearningReportsForStudent(student);
+    const license = publicLicenseStatus();
+    const ensured = license.active
+      ? ensureLearningReportsForStudent(student)
+      : { reportDir: learningReportDirForStudent(student), created: [] };
     const reports = LEARNING_REPORTS.map((report) => learningReportRecord(student, report));
     const health = learningReportHealthSummary(reports);
     return JSON.stringify({
@@ -3487,11 +3509,15 @@ function readLearningReport(studentKey, reportId) {
   try {
     const student = findStudentByKey(studentKey);
     if (!student) return JSON.stringify({ ok: false, message: '未找到学生。' });
-    ensureLearningReportsForStudent(student);
+    const license = publicLicenseStatus();
+    if (license.active) ensureLearningReportsForStudent(student);
     const report = LEARNING_REPORTS.find((item) => item.id === String(reportId));
     if (!report) return JSON.stringify({ ok: false, message: '未找到报告类型。' });
     const file = learningReportPathForStudent(student, report);
-    if (!fs.existsSync(file)) fs.writeFileSync(file, learningReportTemplate(student, report), 'utf8');
+    if (!fs.existsSync(file)) {
+      if (!license.active) return JSON.stringify({ ok: false, message: '未激活状态仅支持浏览已存在的学情报告。请激活后补建报告模板。' });
+      fs.writeFileSync(file, learningReportTemplate(student, report), 'utf8');
+    }
     return JSON.stringify({
       ok: true,
       ...learningReportRecord(student, report),
@@ -3618,6 +3644,11 @@ function requireAuth(request, response) {
   const auth = authContext(request);
   if (!auth) {
     sendJson(response, 401, { ok: false, message: 'Unauthorized' });
+    return false;
+  }
+  const locked = licenseRequiredPayload('平板协作服务');
+  if (locked) {
+    sendJson(response, 402, locked);
     return false;
   }
   request.authContext = auth;
@@ -4011,6 +4042,11 @@ function handleHostRequest(request, response) {
 }
 
 function startHostService() {
+  const locked = licenseRequiredJson('主机服务');
+  if (locked) {
+    hostServiceLastError = JSON.parse(locked).message;
+    return JSON.stringify({ ...JSON.parse(getHostServiceStatus()), ok: false, message: hostServiceLastError });
+  }
   if (hostServer) return getHostServiceStatus();
   ensureApiToken();
   const port = getHostServicePort();
@@ -4207,15 +4243,24 @@ function downloadAndInstallUpdate(downloadUrl) {
   return openExternalUrl(downloadUrl);
 }
 
+function licensedIpc(event, action, handler) {
+  const locked = licenseRequiredJson(action);
+  if (locked) {
+    event.returnValue = locked;
+    return;
+  }
+  event.returnValue = handler();
+}
+
 ipcMain.on('bridge:copyText', (_event, value) => clipboard.writeText(String(value || '')));
-ipcMain.on('bridge:exportTextFile', (event, filename, content) => { event.returnValue = exportTextFile(filename, content); });
-ipcMain.on('bridge:importFiles', (event, studentName) => { event.returnValue = importFiles(studentName); });
-ipcMain.on('bridge:pickMaterialSourceDir', (event) => { event.returnValue = pickMaterialSourceDir(); });
-ipcMain.on('bridge:scanMaterialSources', (event, studentId, sourcesJson) => { event.returnValue = scanMaterialSources(studentId, sourcesJson); });
-ipcMain.on('bridge:importMaterialSourceFiles', (event, studentId, pathsJson) => { event.returnValue = importMaterialSourceFiles(studentId, pathsJson); });
+ipcMain.on('bridge:exportTextFile', (event, filename, content) => { licensedIpc(event, '导出初始化文档', () => exportTextFile(filename, content)); });
+ipcMain.on('bridge:importFiles', (event, studentName) => { licensedIpc(event, '导入资料', () => importFiles(studentName)); });
+ipcMain.on('bridge:pickMaterialSourceDir', (event) => { licensedIpc(event, '资料来源目录', () => pickMaterialSourceDir()); });
+ipcMain.on('bridge:scanMaterialSources', (event, studentId, sourcesJson) => { licensedIpc(event, '资料来源目录扫描', () => scanMaterialSources(studentId, sourcesJson)); });
+ipcMain.on('bridge:importMaterialSourceFiles', (event, studentId, pathsJson) => { licensedIpc(event, '导入资料', () => importMaterialSourceFiles(studentId, pathsJson)); });
 ipcMain.on('bridge:getMaterialImportRecords', (event, studentId) => { event.returnValue = getMaterialImportRecords(studentId); });
 ipcMain.on('bridge:initStudentWorkspace', (event, studentName, agentMd, indexMd, logMd) => {
-  event.returnValue = initStudentWorkspace(studentName, agentMd, indexMd, logMd);
+  licensedIpc(event, '初始化教育管家', () => initStudentWorkspace(studentName, agentMd, indexMd, logMd));
 });
 ipcMain.on('bridge:openApp', (event, appName) => { event.returnValue = openApp(appName); });
 ipcMain.on('bridge:openExternalUrl', (event, url) => { event.returnValue = openExternalUrl(url); });
@@ -4224,28 +4269,28 @@ ipcMain.on('bridge:getAppStatus', (event) => {
 });
 ipcMain.on('bridge:getStorageConfig', (event) => { event.returnValue = getStorageConfig(); });
 ipcMain.on('bridge:getTemplateCenter', (event, systemTemplatesJson) => { event.returnValue = getTemplateCenter(systemTemplatesJson); });
-ipcMain.on('bridge:saveCustomTemplates', (event, templatesJson) => { event.returnValue = saveCustomTemplates(templatesJson); });
-ipcMain.on('bridge:restoreSystemTemplates', (event, systemTemplatesJson) => { event.returnValue = restoreSystemTemplates(systemTemplatesJson); });
+ipcMain.on('bridge:saveCustomTemplates', (event, templatesJson) => { licensedIpc(event, '模板管理', () => saveCustomTemplates(templatesJson)); });
+ipcMain.on('bridge:restoreSystemTemplates', (event, systemTemplatesJson) => { licensedIpc(event, '模板管理', () => restoreSystemTemplates(systemTemplatesJson)); });
 ipcMain.on('bridge:getAgentCenter', (event, studentId) => { event.returnValue = getAgentCenter(studentId); });
-ipcMain.on('bridge:saveAgentMemorySource', (event, studentId, tool, content, mode) => { event.returnValue = saveAgentMemorySource(studentId, tool, content, mode); });
-ipcMain.on('bridge:mergeAgentMemory', (event, studentId) => { event.returnValue = mergeAgentMemory(studentId); });
-ipcMain.on('bridge:saveUnifiedMemory', (event, studentId, content) => { event.returnValue = saveUnifiedMemory(studentId, content); });
-ipcMain.on('bridge:saveAgentSoulSource', (event, studentId, tool, content) => { event.returnValue = saveAgentSoulSource(studentId, tool, content); });
-ipcMain.on('bridge:saveUnifiedSoul', (event, studentId, content) => { event.returnValue = saveUnifiedSoul(studentId, content); });
+ipcMain.on('bridge:saveAgentMemorySource', (event, studentId, tool, content, mode) => { licensedIpc(event, '智能体记忆管理', () => saveAgentMemorySource(studentId, tool, content, mode)); });
+ipcMain.on('bridge:mergeAgentMemory', (event, studentId) => { licensedIpc(event, '智能体记忆管理', () => mergeAgentMemory(studentId)); });
+ipcMain.on('bridge:saveUnifiedMemory', (event, studentId, content) => { licensedIpc(event, '智能体记忆管理', () => saveUnifiedMemory(studentId, content)); });
+ipcMain.on('bridge:saveAgentSoulSource', (event, studentId, tool, content) => { licensedIpc(event, '智能体设定管理', () => saveAgentSoulSource(studentId, tool, content)); });
+ipcMain.on('bridge:saveUnifiedSoul', (event, studentId, content) => { licensedIpc(event, '智能体设定管理', () => saveUnifiedSoul(studentId, content)); });
 ipcMain.on('bridge:compareAgentSoulSource', (event, studentId, tool) => { event.returnValue = compareAgentSoulSource(studentId, tool); });
 ipcMain.on('bridge:scanAgentKnowledgeFiles', (event, studentId) => { event.returnValue = scanAgentKnowledgeFiles(studentId); });
-ipcMain.on('bridge:importAgentKnowledgeFile', (event, studentId, filePath, tool, kind) => { event.returnValue = importAgentKnowledgeFile(studentId, filePath, tool, kind); });
+ipcMain.on('bridge:importAgentKnowledgeFile', (event, studentId, filePath, tool, kind) => { licensedIpc(event, '智能体知识导入', () => importAgentKnowledgeFile(studentId, filePath, tool, kind)); });
 ipcMain.on('bridge:getAgentRules', (event, studentId) => { event.returnValue = getAgentRules(studentId); });
-ipcMain.on('bridge:saveAgentRuleFile', (event, studentId, fileName, content) => { event.returnValue = saveAgentRuleFile(studentId, fileName, content); });
-ipcMain.on('bridge:generateAgentRuleFile', (event, studentId, fileName) => { event.returnValue = generateAgentRuleFile(studentId, fileName); });
+ipcMain.on('bridge:saveAgentRuleFile', (event, studentId, fileName, content) => { licensedIpc(event, '智能体规则文件管理', () => saveAgentRuleFile(studentId, fileName, content)); });
+ipcMain.on('bridge:generateAgentRuleFile', (event, studentId, fileName) => { licensedIpc(event, '智能体规则文件管理', () => generateAgentRuleFile(studentId, fileName)); });
 ipcMain.on('bridge:compareAgentRuleFiles', (event, studentId, baseName, targetName) => { event.returnValue = compareAgentRuleFiles(studentId, baseName, targetName); });
 ipcMain.on('bridge:getAgentSourceRegistry', (event, studentId) => { event.returnValue = getAgentSourceRegistry(studentId); });
-ipcMain.on('bridge:rollbackAgentSourceRecord', (event, studentId, recordId) => { event.returnValue = rollbackAgentSourceRecord(studentId, recordId); });
+ipcMain.on('bridge:rollbackAgentSourceRecord', (event, studentId, recordId) => { licensedIpc(event, '智能体知识管理', () => rollbackAgentSourceRecord(studentId, recordId)); });
 ipcMain.on('bridge:getAgentConversationCenter', (event, studentId) => { event.returnValue = getAgentConversationCenter(studentId); });
-ipcMain.on('bridge:saveAgentConversationImport', (event, studentId, content, tool, sourcePath) => { event.returnValue = saveAgentConversationImport(studentId, content, tool, sourcePath); });
-ipcMain.on('bridge:selectAgentConversationFiles', (event, studentId, tool) => { event.returnValue = selectAgentConversationFiles(studentId, tool); });
-ipcMain.on('bridge:saveConversationExtract', (event, studentId, extractJson, tool) => { event.returnValue = saveConversationExtract(studentId, extractJson, tool); });
-ipcMain.on('bridge:openStudentRootDir', (event, studentId) => { event.returnValue = openStudentRootDir(studentId); });
+ipcMain.on('bridge:saveAgentConversationImport', (event, studentId, content, tool, sourcePath) => { licensedIpc(event, '对话历史导入', () => saveAgentConversationImport(studentId, content, tool, sourcePath)); });
+ipcMain.on('bridge:selectAgentConversationFiles', (event, studentId, tool) => { licensedIpc(event, '对话历史导入', () => selectAgentConversationFiles(studentId, tool)); });
+ipcMain.on('bridge:saveConversationExtract', (event, studentId, extractJson, tool) => { licensedIpc(event, '对话历史提取', () => saveConversationExtract(studentId, extractJson, tool)); });
+ipcMain.on('bridge:openStudentRootDir', (event, studentId) => { licensedIpc(event, '打开学生知识库目录', () => openStudentRootDir(studentId)); });
 ipcMain.on('bridge:getLicenseStatus', (event) => { event.returnValue = getLicenseStatus(); });
 ipcMain.on('bridge:activateLicense', (event, code) => { event.returnValue = activateLicense(code); });
 ipcMain.on('bridge:deactivateLicense', (event) => { event.returnValue = deactivateLicense(); });
@@ -4256,46 +4301,46 @@ ipcMain.on('bridge:checkUpdate', (event, manifestUrl, currentVersionCode) => {
 ipcMain.on('bridge:downloadAndInstallUpdate', (event, downloadUrl) => {
   event.returnValue = downloadAndInstallUpdate(downloadUrl);
 });
-ipcMain.on('bridge:pickArchiveRoot', (event) => { event.returnValue = pickArchiveRoot(); });
+ipcMain.on('bridge:pickArchiveRoot', (event) => { licensedIpc(event, '更换资料根目录', () => pickArchiveRoot()); });
 ipcMain.on('bridge:getArchiveRootStatus', (event) => { event.returnValue = getArchiveRootStatus(); });
 ipcMain.on('bridge:listMarkdownFiles', (event, studentName) => { event.returnValue = listMarkdownFiles(studentName); });
 ipcMain.on('bridge:readMarkdownFile', (event, documentId) => { event.returnValue = readMarkdownFile(documentId); });
 ipcMain.on('bridge:listLearningReports', (event, studentId) => { event.returnValue = listLearningReports(studentId); });
 ipcMain.on('bridge:readLearningReport', (event, studentId, reportId) => { event.returnValue = readLearningReport(studentId, reportId); });
-ipcMain.on('bridge:ensureLearningReports', (event, studentId) => { event.returnValue = ensureLearningReports(studentId); });
-ipcMain.on('bridge:syncStudents', (event, studentsJson) => { event.returnValue = syncStudentsIndex(studentsJson); });
-ipcMain.on('bridge:selectKnowledgeBaseRoot', (event) => { event.returnValue = selectKnowledgeBaseRoot(); });
+ipcMain.on('bridge:ensureLearningReports', (event, studentId) => { licensedIpc(event, '学情报告模板补建', () => ensureLearningReports(studentId)); });
+ipcMain.on('bridge:syncStudents', (event, studentsJson) => { licensedIpc(event, '学生档案同步', () => syncStudentsIndex(studentsJson)); });
+ipcMain.on('bridge:selectKnowledgeBaseRoot', (event) => { licensedIpc(event, '接管已有知识库', () => selectKnowledgeBaseRoot()); });
 ipcMain.on('bridge:scanKnowledgeBase', (event, rootPath, studentName) => { event.returnValue = scanExistingKnowledgeBase(rootPath, studentName); });
-ipcMain.on('bridge:ensureAdoptedKnowledgeBase', (event, optionsJson) => { event.returnValue = ensureAdoptedKnowledgeBase(optionsJson); });
+ipcMain.on('bridge:ensureAdoptedKnowledgeBase', (event, optionsJson) => { licensedIpc(event, '接管已有知识库', () => ensureAdoptedKnowledgeBase(optionsJson)); });
 ipcMain.on('bridge:getHostServiceStatus', (event) => { event.returnValue = getHostServiceStatus(); });
 ipcMain.on('bridge:getHostServiceDiagnostics', (event) => { event.returnValue = getHostServiceDiagnostics(); });
-ipcMain.on('bridge:repairHostService', (event) => { event.returnValue = repairHostService(); });
-ipcMain.on('bridge:startHostService', (event) => { event.returnValue = startHostService(); });
+ipcMain.on('bridge:repairHostService', (event) => { licensedIpc(event, '主机服务修复', () => repairHostService()); });
+ipcMain.on('bridge:startHostService', (event) => { licensedIpc(event, '主机服务', () => startHostService()); });
 ipcMain.on('bridge:stopHostService', (event) => { event.returnValue = stopHostService(); });
-ipcMain.on('bridge:setHostServicePort', (event, port) => { event.returnValue = setHostServicePort(port); });
+ipcMain.on('bridge:setHostServicePort', (event, port) => { licensedIpc(event, '主机服务端口设置', () => setHostServicePort(port)); });
 ipcMain.on('bridge:getHostConnectionInfo', (event) => { event.returnValue = getHostConnectionInfo(); });
 ipcMain.on('bridge:getHostDevices', (event) => { event.returnValue = getHostDevices(); });
 ipcMain.on('bridge:getHostUploadRecords', (event) => { event.returnValue = getHostUploadRecords(); });
 ipcMain.on('bridge:exportHostUploadRecords', (event) => { event.returnValue = exportHostUploadRecords(); });
 ipcMain.on('bridge:openHostUploadRecord', (event, recordId) => { event.returnValue = openHostUploadRecord(recordId); });
-ipcMain.on('bridge:clearHostUploadRecords', (event) => { event.returnValue = clearHostUploadRecords(); });
-ipcMain.on('bridge:setHostUploadRecordStatus', (event, recordId, status) => { event.returnValue = setHostUploadRecordStatus(recordId, status); });
-ipcMain.on('bridge:markStudentDigestSubmitted', (event, studentId) => { event.returnValue = markStudentDigestSubmitted(studentId); });
-ipcMain.on('bridge:syncStudentDigestResult', (event, studentId) => { event.returnValue = syncStudentDigestResult(studentId, { forceSubmitted: true }); });
+ipcMain.on('bridge:clearHostUploadRecords', (event) => { licensedIpc(event, '上传记录维护', () => clearHostUploadRecords()); });
+ipcMain.on('bridge:setHostUploadRecordStatus', (event, recordId, status) => { licensedIpc(event, '上传记录状态维护', () => setHostUploadRecordStatus(recordId, status)); });
+ipcMain.on('bridge:markStudentDigestSubmitted', (event, studentId) => { licensedIpc(event, '资料消化任务', () => markStudentDigestSubmitted(studentId)); });
+ipcMain.on('bridge:syncStudentDigestResult', (event, studentId) => { licensedIpc(event, '资料消化结果同步', () => syncStudentDigestResult(studentId, { forceSubmitted: true })); });
 ipcMain.on('bridge:getHostTimeline', (event) => { event.returnValue = getHostTimeline(); });
-ipcMain.on('bridge:backupHostData', (event) => { event.returnValue = backupHostData(); });
-ipcMain.on('bridge:restoreHostData', (event) => { event.returnValue = restoreHostData(); });
-ipcMain.on('bridge:resetHostApiToken', (event) => { event.returnValue = resetHostApiToken(); });
+ipcMain.on('bridge:backupHostData', (event) => { licensedIpc(event, '主机数据备份', () => backupHostData()); });
+ipcMain.on('bridge:restoreHostData', (event) => { licensedIpc(event, '主机数据恢复', () => restoreHostData()); });
+ipcMain.on('bridge:resetHostApiToken', (event) => { licensedIpc(event, '重置 API Token', () => resetHostApiToken()); });
 ipcMain.on('bridge:exportHostLogs', (event) => { event.returnValue = exportHostLogs(); });
-ipcMain.on('bridge:openStudentRawDir', (event, studentId) => { event.returnValue = openStudentRawDir(studentId); });
-ipcMain.on('bridge:migrateStudentWorkspace', (event, studentId, newName) => { event.returnValue = migrateStudentWorkspace(studentId, newName); });
-ipcMain.on('bridge:renameHostDevice', (event, deviceId, name) => { event.returnValue = renameHostDevice(deviceId, name); });
-ipcMain.on('bridge:revokeHostDevice', (event, deviceId) => { event.returnValue = revokeHostDevice(deviceId); });
+ipcMain.on('bridge:openStudentRawDir', (event, studentId) => { licensedIpc(event, '打开原始资料库', () => openStudentRawDir(studentId)); });
+ipcMain.on('bridge:migrateStudentWorkspace', (event, studentId, newName) => { licensedIpc(event, '学生知识库迁移', () => migrateStudentWorkspace(studentId, newName)); });
+ipcMain.on('bridge:renameHostDevice', (event, deviceId, name) => { licensedIpc(event, '设备管理', () => renameHostDevice(deviceId, name)); });
+ipcMain.on('bridge:revokeHostDevice', (event, deviceId) => { licensedIpc(event, '设备管理', () => revokeHostDevice(deviceId)); });
 ipcMain.on('bridge:setHostDeviceStudentAccess', (event, deviceId, studentIdsJson) => {
-  event.returnValue = setHostDeviceStudentAccess(deviceId, studentIdsJson);
+  licensedIpc(event, '设备授权管理', () => setHostDeviceStudentAccess(deviceId, studentIdsJson));
 });
 ipcMain.on('bridge:setHostDeviceAccessMode', (event, deviceId, optionsJson) => {
-  event.returnValue = setHostDeviceAccessMode(deviceId, optionsJson);
+  licensedIpc(event, '设备授权管理', () => setHostDeviceAccessMode(deviceId, optionsJson));
 });
 
 app.whenReady().then(createWindow);

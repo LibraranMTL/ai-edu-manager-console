@@ -165,7 +165,7 @@ type StudentDraft = Omit<Student, 'id' | 'createdAt' | 'status'>;
 type AndroidBridge = {
   copyText?: (value: string) => void;
   exportTextFile?: (filename: string, content: string) => string;
-  importFiles?: (studentName: string) => boolean;
+  importFiles?: (studentName: string) => boolean | string;
   pickMaterialSourceDir?: () => string;
   scanMaterialSources?: (studentId: string, sourcesJson: string) => string;
   importMaterialSourceFiles?: (studentId: string, pathsJson: string) => string;
@@ -516,8 +516,8 @@ type KnowledgeBaseScanResult = {
 const storageKey = 'edu-manager-launcher.students.v2';
 const themeStorageKey = 'edu-manager-launcher.theme.v1';
 const archiveKeywordStorageKey = 'edu-manager-launcher.archive-keywords.v1';
-const currentVersionCode = 75;
-const currentVersionName = '0.6.5';
+const currentVersionCode = 76;
+const currentVersionName = '0.6.6';
 const updateManifestUrl = [
   'https://www.greatbg.com/download/edu-manager-version.json',
   'http://www.greatbg.com/download/edu-manager-version.json',
@@ -2450,6 +2450,11 @@ function App() {
   };
   const activeAgentOpened = activeAgentAdapter.isOpened(toolOpenState);
   const isWindows = storageConfig.platform === 'windows';
+  const effectiveLicenseStatus = licenseStatus || hostServiceStatus?.license || null;
+  const windowsLicenseActive = !isWindows || Boolean(effectiveLicenseStatus?.active);
+  const restrictedSections = new Set<Section>(['init', 'new', 'inbox', 'qa', 'memory', 'soul', 'rules', 'conversation', 'tasks']);
+  const isLicenseRestrictedSection = isWindows && !windowsLicenseActive && restrictedSections.has(activeSection);
+  const licenseRestrictionText = effectiveLicenseStatus?.message || 'Windows 主机尚未激活。未激活状态仅支持首页、系统设置和已有档案/报告的只读浏览。';
   const shouldBlockForAgentInstall = isWindows && installStatus ? !installStatus.anyInstalled : false;
   const memoryScanCandidates = agentScanCandidates.filter((candidate) => candidate.kind === 'memory');
   const soulScanCandidates = agentScanCandidates.filter((candidate) => candidate.kind === 'soul');
@@ -3527,6 +3532,11 @@ ${conversationText || '（请先粘贴对话历史）'}`;
 
   const changeSelectedStudentTool = (toolId: AgentToolId) => {
     if (!selectedStudent) return;
+    if (isWindows && !windowsLicenseActive) {
+      setDigestMessage('未激活状态仅支持只读浏览，激活后可切换学生 Agent 工具。');
+      window.setTimeout(() => setDigestMessage(''), 2600);
+      return;
+    }
     const tool = getAgentToolProfile(toolId);
     const next = students.map((student) =>
       student.id === selectedStudent.id
@@ -3544,6 +3554,11 @@ ${conversationText || '（请先粘贴对话历史）'}`;
 
   const saveSelectedStudentProfile = () => {
     if (!selectedStudent || !studentEditDraft) return;
+    if (isWindows && !windowsLicenseActive) {
+      setDigestMessage('未激活状态仅支持只读浏览，激活后可保存学生资料。');
+      window.setTimeout(() => setDigestMessage(''), 2600);
+      return;
+    }
     const cleanName = sanitizeName(studentEditDraft.name);
     const next = students.map((student) =>
       student.id === selectedStudent.id
@@ -4039,6 +4054,11 @@ ${conversationText || '（请先粘贴对话历史）'}`;
 
   const openStudentRoot = (student = selectedStudent) => {
     if (!student) return;
+    if (isWindows && !windowsLicenseActive) {
+      setDigestMessage('未激活状态仅支持控制台内只读浏览，激活后可打开本机知识库目录。');
+      window.setTimeout(() => setDigestMessage(''), 2600);
+      return;
+    }
     const raw = bridge()?.openStudentRootDir?.(student.id);
     if (!raw) {
       window.open(student.rootPath || selectedStudentPaths.root, '_blank');
@@ -4055,6 +4075,16 @@ ${conversationText || '（请先粘贴对话历史）'}`;
   const importFilesForStudent = (student: Student) => {
     setPendingImportStudentId(student.id);
     const ok = bridge()?.importFiles?.(student.id);
+    if (typeof ok === 'string') {
+      try {
+        const result = JSON.parse(ok) as { ok?: boolean; message?: string };
+        setImportMessage(result.message || (result.ok ? '已导入资料。' : '导入资料失败。'));
+      } catch {
+        setImportMessage('导入资料结果解析失败。');
+      }
+      window.setTimeout(() => setImportMessage(''), 4200);
+      return;
+    }
     if (!ok) {
       setImportMessage('当前环境不支持原生文件导入，请在 Android APK 中使用。');
       window.setTimeout(() => setImportMessage(''), 3600);
@@ -4282,6 +4312,10 @@ ${conversationText || '（请先粘贴对话历史）'}`;
   };
 
   const authorizeArchiveRoot = () => {
+    if (isWindows && !windowsLicenseActive) {
+      setArchiveRootMessage('未激活状态仅支持只读浏览，激活后可更换学生资料根目录。');
+      return;
+    }
     const ok = bridge()?.pickArchiveRoot?.();
     if (!ok) {
       setArchiveRootMessage('当前环境不支持选择学生资料根目录。');
@@ -4367,6 +4401,11 @@ ${conversationText || '（请先粘贴对话历史）'}`;
   ];
 
   const deleteStudent = (student: Student) => {
+    if (isWindows && !windowsLicenseActive) {
+      setDigestMessage('未激活状态仅支持只读浏览，激活后可删除控制台学生记录。');
+      window.setTimeout(() => setDigestMessage(''), 2600);
+      return;
+    }
     const confirmed = window.confirm(`确认从控制台删除「${student.name}」的学生记录吗？\n\n这只删除控制台里的学生列表，不会删除外部 Agent，也不会删除已经导出的资料文件。`);
     if (!confirmed) return;
     const next = students.filter((item) => item.id !== student.id);
@@ -4691,6 +4730,10 @@ ${conversationText || '（请先粘贴对话历史）'}`;
   };
 
   const openStudentRawDir = (student: Student) => {
+    if (isWindows && !windowsLicenseActive) {
+      setHostServiceMessage('未激活状态仅支持控制台内只读浏览，激活后可打开本机原始资料库。');
+      return;
+    }
     const raw = bridge()?.openStudentRawDir?.(student.id);
     if (!raw) {
       setHostServiceMessage('当前环境不支持打开学生原始资料库。');
@@ -4706,6 +4749,11 @@ ${conversationText || '（请先粘贴对话历史）'}`;
 
   const migrateSelectedStudentWorkspace = () => {
     if (!selectedStudent || !studentEditDraft) return;
+    if (isWindows && !windowsLicenseActive) {
+      setDigestMessage('未激活状态仅支持只读浏览，激活后可迁移或重命名知识库目录。');
+      window.setTimeout(() => setDigestMessage(''), 2600);
+      return;
+    }
     const cleanName = sanitizeName(studentEditDraft.name);
     const confirmed = window.confirm(`确认将「${selectedStudent.name}」的本机知识库目录迁移/重命名为「${cleanName}知识库」吗？\n\n这会移动本机目录；建议先确认 QClaw/Marvis/Hohu/OpenClaw 没有正在处理该学生资料。`);
     if (!confirmed) return;
@@ -5022,25 +5070,30 @@ ${conversationText || '（请先粘贴对话历史）'}`;
         <nav className="nav-list">
           {navItems.map((item) => {
             const Icon = item.icon;
+            const locked = isWindows && !windowsLicenseActive && restrictedSections.has(item.id);
             return (
               <button
-                className={activeSection === item.id ? 'nav-item active' : 'nav-item'}
+                className={`${activeSection === item.id ? 'nav-item active' : 'nav-item'}${locked ? ' locked' : ''}`}
                 key={item.id}
                 onClick={() => setActiveSection(item.id)}
+                title={locked ? '该功能需要激活后使用' : item.label}
               >
                 <Icon size={19} />
                 <span>{item.label}</span>
+                {locked && <KeyRound size={15} />}
               </button>
             );
           })}
           <div className="nav-group-block">
             <button
-              className={activeSection === 'memory' || activeSection === 'soul' || activeSection === 'rules' || activeSection === 'conversation' ? 'nav-item nav-group active' : 'nav-item nav-group'}
+              className={`${activeSection === 'memory' || activeSection === 'soul' || activeSection === 'rules' || activeSection === 'conversation' ? 'nav-item nav-group active' : 'nav-item nav-group'}${isWindows && !windowsLicenseActive ? ' locked' : ''}`}
               onClick={() => setAgentKnowledgeMenuOpen((value) => !value)}
+              title={isWindows && !windowsLicenseActive ? '智能体知识管理需要激活后使用' : '智能体知识管理'}
             >
               <Bot size={19} />
               <span>智能体知识管理</span>
               <span className="nav-chevron">{agentKnowledgeMenuOpen ? '收起' : '展开'}</span>
+              {isWindows && !windowsLicenseActive && <KeyRound size={15} />}
             </button>
             {agentKnowledgeMenuOpen && (
               <div className="sub-nav-list">
@@ -5048,12 +5101,14 @@ ${conversationText || '（请先粘贴对话历史）'}`;
                   const Icon = item.icon;
                   return (
                     <button
-                      className={activeSection === item.id ? 'nav-item sub-nav-item active' : 'nav-item sub-nav-item'}
+                      className={`${activeSection === item.id ? 'nav-item sub-nav-item active' : 'nav-item sub-nav-item'}${isWindows && !windowsLicenseActive ? ' locked' : ''}`}
                       key={item.id}
                       onClick={() => setActiveSection(item.id)}
+                      title={isWindows && !windowsLicenseActive ? '该功能需要激活后使用' : item.label}
                     >
                       <Icon size={17} />
                       <span>{item.label}</span>
+                      {isWindows && !windowsLicenseActive && <KeyRound size={14} />}
                     </button>
                   );
                 })}
@@ -5065,7 +5120,7 @@ ${conversationText || '（请先粘贴对话历史）'}`;
         <section className="student-rail">
           <div className="rail-title">
             <span>学生档案</span>
-            <button aria-label="新增学生" onClick={() => setActiveSection('new')}>
+            <button aria-label="新增学生" onClick={() => setActiveSection('new')} title={!windowsLicenseActive ? '激活后可新增学生' : '新增学生'}>
               <Plus size={16} />
             </button>
           </div>
@@ -5195,13 +5250,47 @@ ${conversationText || '（请先粘贴对话历史）'}`;
           </section>
         )}
 
+        {!shouldBlockForAgentInstall && isLicenseRestrictedSection && (
+          <section className="panel license-gate">
+            <div className="panel-heading">
+              <div>
+                <h2>请先激活许可证</h2>
+                <p>{licenseRestrictionText}</p>
+              </div>
+              <KeyRound size={24} />
+            </div>
+            <div className="status-grid">
+              <InfoPanel icon={<KeyRound />} title="当前授权" value={licenseLabel(effectiveLicenseStatus)} />
+              <InfoPanel icon={<BookOpen />} title="未激活可用" value="首页 / 系统设置 / 只读档案" />
+              <InfoPanel icon={<FileDown />} title="正式功能" value="激活后开放" />
+            </div>
+            <div className="notice muted">
+              未激活或许可证过期时，禁止新建学生、初始化知识库、接管目录、导入资料、启动主机服务、绑定平板、写入智能体知识和提交资料消化任务。
+            </div>
+            <div className="actions">
+              <button className="primary" onClick={() => setActiveSection('settings')}>
+                <KeyRound size={18} />
+                去系统设置激活
+              </button>
+              <button className="secondary" onClick={() => setActiveSection('archive')}>
+                <BookOpen size={18} />
+                查看已有档案
+              </button>
+              <button className="secondary" onClick={() => setActiveSection('home')}>
+                <Home size={18} />
+                返回首页
+              </button>
+            </div>
+          </section>
+        )}
+
         {!shouldBlockForAgentInstall && activeSection === 'home' && (
           <>
             <div className="home-grid">
               <InfoPanel icon={<Bot />} title="Agent 创建" value={`${students.length} 个学生档案`} />
               <InfoPanel icon={<Archive />} title="资料入口" value="原始资料库待同步" />
               <InfoPanel icon={<RefreshCw />} title="当前版本" value={`v${currentVersionName}`} />
-              {isWindows && <InfoPanel icon={<KeyRound />} title="授权状态" value={licenseLabel(licenseStatus || hostServiceStatus?.license)} />}
+              {isWindows && <InfoPanel icon={<KeyRound />} title="授权状态" value={licenseLabel(effectiveLicenseStatus)} />}
             </div>
             {isWindows && (
               <section className="panel tool-home-panel">
@@ -5239,7 +5328,7 @@ ${conversationText || '（请先粘贴对话历史）'}`;
                   <div className={students.length > 0 ? 'check-row done' : 'check-row'}>
                     <CheckCircle2 size={17} />
                     <span>1. 创建至少一个学生知识库</span>
-                    <button className="secondary compact" onClick={() => setActiveSection('init')}>去初始化</button>
+                    <button className="secondary compact" onClick={() => setActiveSection('init')} disabled={!windowsLicenseActive}>去初始化</button>
                   </div>
                   <div className={hostServiceStatus?.running ? 'check-row done' : 'check-row'}>
                     <CheckCircle2 size={17} />
@@ -5249,7 +5338,7 @@ ${conversationText || '（请先粘贴对话历史）'}`;
                   <div className={(hostServiceStatus?.devices ?? []).some((device) => !device.revoked) ? 'check-row done' : 'check-row'}>
                     <CheckCircle2 size={17} />
                     <span>3. 平板扫码绑定并授权学生范围</span>
-                    <button className="secondary compact" onClick={copyHostConnectionInfo}>复制连接信息</button>
+                    <button className="secondary compact" onClick={copyHostConnectionInfo} disabled={!windowsLicenseActive}>复制连接信息</button>
                   </div>
                   <div className={(hostUploadRecords.length || hostServiceStatus?.recentUploads?.length || 0) > 0 ? 'check-row done' : 'check-row'}>
                     <CheckCircle2 size={17} />
@@ -5302,7 +5391,13 @@ ${conversationText || '（请先粘贴对话历史）'}`;
                     <strong>{hostServiceStatus?.studentCount ?? students.length} 位</strong>
                   </div>
                 </div>
-                {renderHostPairingPanel()}
+                {!windowsLicenseActive && (
+                  <div className="notice warning-notice">
+                    <strong>主机服务需要激活后使用</strong>
+                    <p>{licenseRestrictionText}</p>
+                  </div>
+                )}
+                {windowsLicenseActive && renderHostPairingPanel()}
                 <div className="actions">
                   <button className="secondary" onClick={refreshHostServiceStatus}>
                     <RefreshCw size={18} />
@@ -5316,14 +5411,14 @@ ${conversationText || '（请先粘贴对话历史）'}`;
                     <Clipboard size={18} />
                     复制诊断信息
                   </button>
-                  <button className="secondary" onClick={repairHostService}>
+                  <button className="secondary" onClick={repairHostService} disabled={!windowsLicenseActive}>
                     <RefreshCw size={18} />
                     修复/重启服务
                   </button>
-                  <button className="primary" onClick={hostServiceStatus?.running ? stopHostService : startHostService}>
+                  <button className="primary" onClick={hostServiceStatus?.running ? stopHostService : startHostService} disabled={!windowsLicenseActive && !hostServiceStatus?.running}>
                     {hostServiceStatus?.running ? '停止服务' : '启动服务'}
                   </button>
-                  <button className="secondary" onClick={copyHostConnectionInfo}>
+                  <button className="secondary" onClick={copyHostConnectionInfo} disabled={!windowsLicenseActive}>
                     <Clipboard size={18} />
                     复制平板连接信息
                   </button>
@@ -5354,7 +5449,7 @@ ${conversationText || '（请先粘贴对话历史）'}`;
                         <FileDown size={16} />
                         导出 CSV
                       </button>
-                      <button className="secondary compact" onClick={clearHostUploadRecords}>
+                      <button className="secondary compact" onClick={clearHostUploadRecords} disabled={!windowsLicenseActive}>
                         清理记录
                       </button>
                     </div>
@@ -5509,7 +5604,7 @@ ${conversationText || '（请先粘贴对话历史）'}`;
           </>
         )}
 
-        {!shouldBlockForAgentInstall && (activeSection === 'init' || activeSection === 'new') && (
+        {!shouldBlockForAgentInstall && !isLicenseRestrictedSection && (activeSection === 'init' || activeSection === 'new') && (
           <div className="setup-grid">
             <section className="panel form-panel">
               <div className="stepper">
@@ -5772,7 +5867,7 @@ ${conversationText || '（请先粘贴对话历史）'}`;
           </div>
         )}
 
-        {!shouldBlockForAgentInstall && activeSection === 'inbox' && selectedStudent && (
+        {!shouldBlockForAgentInstall && !isLicenseRestrictedSection && activeSection === 'inbox' && selectedStudent && (
           <section className="panel inbox-panel">
             <div className="panel-heading">
               <div>
@@ -6014,11 +6109,11 @@ ${conversationText || '（请先粘贴对话历史）'}`;
                 <RefreshCw size={18} />
                 刷新报告
               </button>
-              <button className="secondary" onClick={() => ensureLearningReportTemplates(selectedStudent)}>
+              <button className="secondary" onClick={() => ensureLearningReportTemplates(selectedStudent)} disabled={!windowsLicenseActive}>
                 <FileText size={18} />
                 补建报告目录
               </button>
-              <button className="secondary" onClick={() => openStudentRoot(selectedStudent)}>
+              <button className="secondary" onClick={() => openStudentRoot(selectedStudent)} disabled={!windowsLicenseActive}>
                 <FolderOpen size={18} />
                 打开知识库目录
               </button>
@@ -6027,6 +6122,11 @@ ${conversationText || '（请先粘贴对话历史）'}`;
                 查看全部档案
               </button>
             </div>
+            {!windowsLicenseActive && (
+              <div className="notice warning-notice">
+                未激活状态仅支持浏览已存在的学情报告；补建报告目录和打开本机知识库目录需激活后使用。
+              </div>
+            )}
             <div className="learning-report-layout">
               <aside className="learning-report-list">
                 {learningReportDefinitions.map((definition) => {
@@ -6107,7 +6207,13 @@ ${conversationText || '（请先粘贴对话历史）'}`;
             <StudentToolSelector
               value={selectedStudent.agentTool}
               onChange={changeSelectedStudentTool}
+              disabled={!windowsLicenseActive}
             />
+            {!windowsLicenseActive && (
+              <div className="notice warning-notice">
+                当前为未激活只读浏览模式。可查看已有档案，但不能更换资料根目录、删除学生、编辑学生资料或迁移知识库。
+              </div>
+            )}
             <div className="status-grid">
               <div className="status-card">
                 <span>初始化包版本</span>
@@ -6143,7 +6249,7 @@ ${conversationText || '（请先粘贴对话历史）'}`;
               </div>
             </div>
             <div className="actions">
-              <button className="secondary" onClick={authorizeArchiveRoot}>
+              <button className="secondary" onClick={authorizeArchiveRoot} disabled={!windowsLicenseActive}>
                 <FolderOpen size={18} />
                 {isWindows ? '更换资料根目录' : '授权 Obsidian Vault'}
               </button>
@@ -6159,7 +6265,7 @@ ${conversationText || '（请先粘贴对话历史）'}`;
                 <ExternalLink size={18} />
                 打开 Obsidian
               </button>
-              <button className="secondary danger" onClick={() => deleteStudent(selectedStudent)}>
+              <button className="secondary danger" onClick={() => deleteStudent(selectedStudent)} disabled={!windowsLicenseActive}>
                 删除学生记录
               </button>
             </div>
@@ -6192,16 +6298,16 @@ ${conversationText || '（请先粘贴对话历史）'}`;
                   </label>
                 </div>
                 <div className="actions">
-                  <button className="primary" onClick={saveSelectedStudentProfile}>
+                  <button className="primary" onClick={saveSelectedStudentProfile} disabled={!windowsLicenseActive}>
                     保存学生资料
                   </button>
                   {isWindows && selectedStudent.knowledgeBaseMode !== 'adopted' && (
                     <>
-                      <button className="secondary" onClick={migrateSelectedStudentWorkspace}>
+                      <button className="secondary" onClick={migrateSelectedStudentWorkspace} disabled={!windowsLicenseActive}>
                         <FolderOpen size={18} />
                         迁移/重命名知识库目录
                       </button>
-                      <button className="secondary" onClick={() => openStudentRawDir(selectedStudent)}>
+                      <button className="secondary" onClick={() => openStudentRawDir(selectedStudent)} disabled={!windowsLicenseActive}>
                         <FolderOpen size={18} />
                         打开原始资料库
                       </button>
@@ -6212,7 +6318,7 @@ ${conversationText || '（请先粘贴对话历史）'}`;
                     </>
                   )}
                   {isWindows && selectedStudent.knowledgeBaseMode === 'adopted' && (
-                    <button className="secondary" onClick={() => openStudentRawDir(selectedStudent)}>
+                    <button className="secondary" onClick={() => openStudentRawDir(selectedStudent)} disabled={!windowsLicenseActive}>
                       <FolderOpen size={18} />
                       打开学生原始资料库
                     </button>
@@ -6308,7 +6414,7 @@ ${conversationText || '（请先粘贴对话历史）'}`;
           </section>
         )}
 
-        {!shouldBlockForAgentInstall && activeSection === 'qa' && selectedStudent && (
+        {!shouldBlockForAgentInstall && !isLicenseRestrictedSection && activeSection === 'qa' && selectedStudent && (
           <section className="panel qa-panel">
             <div className="panel-heading">
               <div>
@@ -6479,7 +6585,7 @@ ${conversationText || '（请先粘贴对话历史）'}`;
           </section>
         )}
 
-        {!shouldBlockForAgentInstall && activeSection === 'memory' && selectedStudent && (
+        {!shouldBlockForAgentInstall && !isLicenseRestrictedSection && activeSection === 'memory' && selectedStudent && (
           <section className="panel qa-panel">
             <div className="panel-heading">
               <div>
@@ -6582,7 +6688,7 @@ ${conversationText || '（请先粘贴对话历史）'}`;
           </section>
         )}
 
-        {!shouldBlockForAgentInstall && activeSection === 'soul' && selectedStudent && (
+        {!shouldBlockForAgentInstall && !isLicenseRestrictedSection && activeSection === 'soul' && selectedStudent && (
           <section className="panel qa-panel">
             <div className="panel-heading">
               <div>
@@ -6698,7 +6804,7 @@ ${conversationText || '（请先粘贴对话历史）'}`;
           </section>
         )}
 
-        {!shouldBlockForAgentInstall && activeSection === 'rules' && selectedStudent && (
+        {!shouldBlockForAgentInstall && !isLicenseRestrictedSection && activeSection === 'rules' && selectedStudent && (
           <section className="panel qa-panel">
             <div className="panel-heading">
               <div>
@@ -6846,7 +6952,7 @@ ${conversationText || '（请先粘贴对话历史）'}`;
           </section>
         )}
 
-        {!shouldBlockForAgentInstall && activeSection === 'conversation' && selectedStudent && (
+        {!shouldBlockForAgentInstall && !isLicenseRestrictedSection && activeSection === 'conversation' && selectedStudent && (
           <section className="panel qa-panel">
             <div className="panel-heading">
               <div>
@@ -6972,13 +7078,13 @@ ${conversationText || '（请先粘贴对话历史）'}`;
           </section>
         )}
 
-        {!shouldBlockForAgentInstall && activeSection === 'qa' && !selectedStudent && (
+        {!shouldBlockForAgentInstall && !isLicenseRestrictedSection && activeSection === 'qa' && !selectedStudent && (
           <section className="panel qa-panel">
             <div className="empty-state">请先初始化或新建教育管家，再进入问答模块。</div>
           </section>
         )}
 
-        {!shouldBlockForAgentInstall && activeSection === 'tasks' && (
+        {!shouldBlockForAgentInstall && !isLicenseRestrictedSection && activeSection === 'tasks' && (
           <section className="panel tasks-panel">
             <div className="panel-heading">
               <div>
@@ -7023,7 +7129,7 @@ ${conversationText || '（请先粘贴对话历史）'}`;
               {(isWindows
                 ? [
                     ['存储模式', 'Windows 本机目录'],
-                    ['授权状态', licenseLabel(licenseStatus || hostServiceStatus?.license)],
+                    ['授权状态', licenseLabel(effectiveLicenseStatus)],
                     ['学生资料根目录', storageConfig.baseDir],
                     ['QClaw', installStatus?.qclaw.installed ? `已安装 ${installStatus.qclaw.version ?? ''}` : '未安装'],
                     ['Marvis', installStatus?.marvis.installed ? `已安装 ${installStatus.marvis.version ?? ''}` : '未安装'],
@@ -7101,9 +7207,9 @@ ${conversationText || '（请先粘贴对话历史）'}`;
                   <strong>许可证授权</strong>
                   <p>用户付款后获得激活码，在 Windows 主机端激活；平板终端跟随主机授权状态，不单独收费。</p>
                   <div className="license-summary">
-                    <span>{licenseLabel(licenseStatus || hostServiceStatus?.license)}</span>
-                    <span>学生数：{(licenseStatus || hostServiceStatus?.license)?.studentLimit ?? '-'}</span>
-                    <span>平板设备：{(licenseStatus || hostServiceStatus?.license)?.deviceLimit ?? '-'}</span>
+                    <span>{licenseLabel(effectiveLicenseStatus)}</span>
+                    <span>学生数：{effectiveLicenseStatus?.studentLimit ?? '-'}</span>
+                    <span>平板设备：{effectiveLicenseStatus?.deviceLimit ?? '-'}</span>
                   </div>
                 </div>
                 <div className="inline-field license-field">
@@ -7148,6 +7254,12 @@ ${conversationText || '（请先粘贴对话历史）'}`;
               <div className="notice">
                 <strong>主机服务连接信息</strong>
                 <p>平板端后续可使用 serverUrl 和 API token 上传资料、读取学情分析汇总 Markdown。</p>
+                {!windowsLicenseActive && (
+                  <div className="notice warning-notice">
+                    <strong>未激活状态不可启动主机服务</strong>
+                    <p>{licenseRestrictionText}</p>
+                  </div>
+                )}
                 <div className="form-grid">
                   <label>
                     服务端口
@@ -7168,13 +7280,13 @@ ${conversationText || '（请先粘贴对话历史）'}`;
                 </div>
                 {renderHostPairingPanel()}
                 <div className="actions">
-                  <button className="secondary" onClick={saveHostServicePort}>
+                  <button className="secondary" onClick={saveHostServicePort} disabled={!windowsLicenseActive}>
                     保存端口
                   </button>
-                  <button className="primary" onClick={hostServiceStatus?.running ? stopHostService : startHostService}>
+                  <button className="primary" onClick={hostServiceStatus?.running ? stopHostService : startHostService} disabled={!windowsLicenseActive && !hostServiceStatus?.running}>
                     {hostServiceStatus?.running ? '停止主机服务' : '启动主机服务'}
                   </button>
-                  <button className="secondary" onClick={copyHostConnectionInfo}>
+                  <button className="secondary" onClick={copyHostConnectionInfo} disabled={!windowsLicenseActive}>
                     <Clipboard size={18} />
                     复制平板连接信息
                   </button>
@@ -7263,17 +7375,19 @@ function AgentToolCompactSelector({
   value,
   onChange,
   label = 'Agent 工具',
+  disabled = false,
 }: {
   value: AgentToolId;
   onChange: (value: AgentToolId) => void;
   label?: string;
+  disabled?: boolean;
 }) {
   const tool = getAgentToolProfile(value);
   return (
     <div className="agent-tool-compact">
       <label>
         <span>{label}</span>
-        <select value={value} onChange={(event) => onChange(event.target.value as AgentToolId)}>
+        <select value={value} onChange={(event) => onChange(event.target.value as AgentToolId)} disabled={disabled}>
           {agentToolOptions.map((item) => (
             <option value={item.id} key={item.id}>{item.name}</option>
           ))}
@@ -7290,10 +7404,18 @@ function AgentToolCompactSelector({
   );
 }
 
-function StudentToolSelector({ value, onChange }: { value: AgentToolId; onChange: (value: AgentToolId) => void }) {
+function StudentToolSelector({
+  value,
+  onChange,
+  disabled = false,
+}: {
+  value: AgentToolId;
+  onChange: (value: AgentToolId) => void;
+  disabled?: boolean;
+}) {
   return (
     <div className="student-tool-switch">
-      <AgentToolCompactSelector value={value} onChange={onChange} label="当前 Agent 工具" />
+      <AgentToolCompactSelector value={value} onChange={onChange} label="当前 Agent 工具" disabled={disabled} />
     </div>
   );
 }

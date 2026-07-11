@@ -1,9 +1,9 @@
 {
   "versionCode": 61,
   "versionName": "0.5.1",
-  "windowsVersionCode": 75,
-  "windowsVersionName": "0.6.5",
-  "windowsUrl": "https://www.greatbg.com/download/AI-edu-manager-console-Windows-0.6.5.zip",
+  "windowsVersionCode": 76,
+  "windowsVersionName": "0.6.6",
+  "windowsUrl": "https://www.greatbg.com/download/AI-edu-manager-console-Windows-0.6.6.zip",
   "terminalApkUrl": "https://www.greatbg.com/download/AI-edu-manager-tablet-terminal-0.5.1.apk",
   "tabletTerminalVersionCode": 61,
   "tabletTerminalVersionName": "0.5.1",
@@ -12,5 +12,5 @@
   "managerApkVersionCode": 23,
   "managerApkVersionName": "0.2.3",
   "apkUrl": "https://www.greatbg.com/download/AI-edu-manager-tablet-terminal-0.5.1.apk",
-  "notes": "Windows 0.6.5：新增多资料来源目录管理，可从多个本机目录扫描学习资料并统一导入学生原始资料库，支持重复文件跳过、导入记录追踪和待消化数量联动。平板终端 0.5.1：增加上传、待消化、已消化和档案状态显示。"
+  "notes": "Windows 0.6.6：强化商业授权许可机制，未激活或过期时仅允许首页、系统设置和已有档案/报告只读浏览，禁止新建、初始化、导入、主机服务、平板绑定和智能体知识写入；保留 0.6.5 多资料来源目录能力。平板终端 0.5.1：增加上传、待消化、已消化和档案状态显示。"
 }

@@ -28,11 +28,14 @@ import './styles.css';
 
 type Section = 'home' | 'init' | 'new' | 'inbox' | 'reports' | 'archive' | 'qa' | 'memory' | 'soul' | 'rules' | 'conversation' | 'tasks' | 'settings';
 type ThemeName = 'blue' | 'pink' | 'green' | 'purple' | 'orange';
+type LanguageCode = 'zh-CN' | 'zh-TW' | 'en' | 'fr' | 'es' | 'ja' | 'ko' | 'vi' | 'ms';
 type AgentToolId =
   | 'qclaw'
   | 'marvis'
   | 'hohu'
   | 'openclaw'
+  | 'ima.copilot'
+  | 'workbuddy'
   | 'codex'
   | 'claude-code'
   | 'chatgpt'
@@ -86,7 +89,7 @@ type AgentToolAdapter = {
   id: AgentToolId;
   profile: AgentToolProfile;
   statusKey: keyof AgentToolInstallStatus | 'claudeCode';
-  openedKey?: 'qclawOpened' | 'marvisOpened' | 'hohuOpened' | 'openclawOpened' | 'codexOpened' | 'claudeCodeOpened';
+  openedKey?: 'qclawOpened' | 'marvisOpened' | 'hohuOpened' | 'openclawOpened' | 'imaCopilotOpened' | 'workbuddyOpened' | 'codexOpened' | 'claudeCodeOpened';
   canOpenLocally: boolean;
   getInstall: (status: AgentToolInstallStatus | null) => AgentToolInstall | undefined;
   isOpened: (openState: Partial<Record<AgentToolId, boolean>>) => boolean;
@@ -461,6 +464,8 @@ type AgentToolInstallStatus = {
   marvis: AgentToolInstall;
   hohu: AgentToolInstall;
   openclaw: AgentToolInstall;
+  imaCopilot?: AgentToolInstall;
+  workbuddy?: AgentToolInstall;
   codex?: AgentToolInstall;
   claudeCode?: AgentToolInstall;
   chatgpt?: AgentToolInstall;
@@ -515,9 +520,10 @@ type KnowledgeBaseScanResult = {
 
 const storageKey = 'edu-manager-launcher.students.v2';
 const themeStorageKey = 'edu-manager-launcher.theme.v1';
+const languageStorageKey = 'edu-manager-launcher.language.v1';
 const archiveKeywordStorageKey = 'edu-manager-launcher.archive-keywords.v1';
-const currentVersionCode = 76;
-const currentVersionName = '0.6.6';
+const currentVersionCode = 77;
+const currentVersionName = '0.6.7';
 const updateManifestUrl = [
   'https://www.greatbg.com/download/edu-manager-version.json',
   'http://www.greatbg.com/download/edu-manager-version.json',
@@ -646,6 +652,62 @@ const agentToolProfiles: Record<AgentToolId, AgentToolProfile> = {
     digestTargetLabel: '可粘贴到 OpenClaw 执行',
     personaTargetLabel: 'OpenClaw 子 Agent 角色设定',
     memoryTargetLabel: 'OpenClaw 子 Agent 长期记忆',
+  },
+  'ima.copilot': {
+    id: 'ima.copilot',
+    name: 'ima.copilot',
+    category: 'local-app',
+    supportsLocalFiles: true,
+    supportsAgentCreation: false,
+    supportsPersonaSetting: true,
+    supportsMemorySetting: true,
+    supportsScheduledTask: false,
+    supportsSubAgent: false,
+    supportsProjectRules: true,
+    supportsMemoryFile: true,
+    supportsPersonaFile: true,
+    supportsConversationExport: true,
+    supportsMemoryPaste: true,
+    supportsSoulPaste: true,
+    openMode: 'exe',
+    ruleFiles: ['AGENT.md', 'IMA.md', 'ima.copilot.md'],
+    memoryLocations: ['%USERPROFILE%\\.ima', '%USERPROFILE%\\.ima.copilot', '%APPDATA%\\IMA', '%LOCALAPPDATA%\\IMA', '%APPDATA%\\ima.copilot', '%LOCALAPPDATA%\\ima.copilot'],
+    personaLocations: ['%USERPROFILE%\\.ima', '%USERPROFILE%\\.ima.copilot', '%APPDATA%\\IMA', '%LOCALAPPDATA%\\IMA', '%APPDATA%\\ima.copilot', '%LOCALAPPDATA%\\ima.copilot'],
+    conversationLocations: ['%USERPROFILE%\\.ima', '%USERPROFILE%\\.ima.copilot'],
+    installUrls: { windows: 'https://ima.qq.com/download/', web: 'https://ima.qq.com/' },
+    openLabel: '打开 ima.copilot',
+    copyTargetLabel: '复制到 ima.copilot 对话、人设或知识库说明中',
+    digestTargetLabel: '可粘贴到 ima.copilot 对话中，并围绕本机学生知识库执行',
+    personaTargetLabel: 'ima.copilot 人设 / 技能说明',
+    memoryTargetLabel: 'ima.copilot 长期背景 / 知识库说明',
+  },
+  workbuddy: {
+    id: 'workbuddy',
+    name: 'WorkBuddy',
+    category: 'local-app',
+    supportsLocalFiles: true,
+    supportsAgentCreation: false,
+    supportsPersonaSetting: true,
+    supportsMemorySetting: true,
+    supportsScheduledTask: false,
+    supportsSubAgent: false,
+    supportsProjectRules: true,
+    supportsMemoryFile: true,
+    supportsPersonaFile: true,
+    supportsConversationExport: true,
+    supportsMemoryPaste: true,
+    supportsSoulPaste: true,
+    openMode: 'exe',
+    ruleFiles: ['AGENT.md', 'WorkBuddy.md'],
+    memoryLocations: ['%USERPROFILE%\\.workbuddy', '%APPDATA%\\WorkBuddy', '%LOCALAPPDATA%\\WorkBuddy'],
+    personaLocations: ['%USERPROFILE%\\.workbuddy', '%APPDATA%\\WorkBuddy', '%LOCALAPPDATA%\\WorkBuddy'],
+    conversationLocations: ['%USERPROFILE%\\.workbuddy'],
+    installUrls: { windows: 'https://www.workbuddy.ai/', web: 'https://www.workbuddy.ai/' },
+    openLabel: '打开 WorkBuddy',
+    copyTargetLabel: '复制到 WorkBuddy 对话、Agent 设置或工作区说明中',
+    digestTargetLabel: '可粘贴到 WorkBuddy 执行，并直接读写本机知识库',
+    personaTargetLabel: 'WorkBuddy Agent 人设 / 工作区说明',
+    memoryTargetLabel: 'WorkBuddy 长期记忆 / 背景资料',
   },
   codex: {
     id: 'codex',
@@ -849,7 +911,7 @@ const agentToolOptions = Object.values(agentToolProfiles);
 
 function getAgentToolProfile(value?: AgentToolId) {
   const profile = agentToolProfiles[value ?? 'qclaw'] ?? agentToolProfiles.qclaw;
-  if (activeStorageConfig.platform === 'windows' && (profile.id === 'marvis' || profile.id === 'hohu')) {
+  if (activeStorageConfig.platform === 'windows' && ['marvis', 'hohu', 'ima.copilot', 'workbuddy'].includes(profile.id)) {
     return {
       ...profile,
       supportsLocalFiles: true,
@@ -860,12 +922,14 @@ function getAgentToolProfile(value?: AgentToolId) {
 }
 
 function installStatusKeyForTool(toolId: AgentToolId): keyof AgentToolInstallStatus | 'claudeCode' {
+  if (toolId === 'ima.copilot') return 'imaCopilot';
   return toolId === 'claude-code' ? 'claudeCode' : toolId;
 }
 
 function openedKeyForTool(toolId: AgentToolId): AgentToolAdapter['openedKey'] {
+  if (toolId === 'ima.copilot') return 'imaCopilotOpened';
   if (toolId === 'claude-code') return 'claudeCodeOpened';
-  if (['qclaw', 'marvis', 'hohu', 'openclaw', 'codex'].includes(toolId)) return `${toolId}Opened` as AgentToolAdapter['openedKey'];
+  if (['qclaw', 'marvis', 'hohu', 'openclaw', 'workbuddy', 'codex'].includes(toolId)) return `${toolId}Opened` as AgentToolAdapter['openedKey'];
   return undefined;
 }
 
@@ -1056,6 +1120,516 @@ const themeOptions: Array<{ id: ThemeName; label: string }> = [
   { id: 'orange', label: '橙色系' },
 ];
 
+const languageOptions: Array<{ id: LanguageCode; label: string; nativeLabel: string }> = [
+  { id: 'zh-CN', label: '简体中文', nativeLabel: '简体中文' },
+  { id: 'zh-TW', label: '繁体中文', nativeLabel: '繁體中文' },
+  { id: 'en', label: '英文', nativeLabel: 'English' },
+  { id: 'fr', label: '法文', nativeLabel: 'Français' },
+  { id: 'es', label: '西班牙文', nativeLabel: 'Español' },
+  { id: 'ja', label: '日文', nativeLabel: '日本語' },
+  { id: 'ko', label: '韩文', nativeLabel: '한국어' },
+  { id: 'vi', label: '越南文', nativeLabel: 'Tiếng Việt' },
+  { id: 'ms', label: '马来西亚文', nativeLabel: 'Bahasa Melayu' },
+];
+
+const zhCnText = {
+  'app.name': 'AI教育管家控制台',
+  'app.subtitle': '半自动完成初始文档导出、Agent 工具初始化指令和 Obsidian 查看入口。',
+  'nav.home': '首页',
+  'nav.init': '初始化教育管家',
+  'nav.new': '新建教育智能体',
+  'nav.inbox': '资料收集与处理',
+  'nav.reports': '学情报告',
+  'nav.archive': '查看教育档案',
+  'nav.qa': '教育管家问答',
+  'nav.tasks': '定时任务',
+  'nav.settings': '系统设置',
+  'nav.knowledge': '智能体知识管理',
+  'nav.memory': 'Agent 记忆管理',
+  'nav.soul': 'Agent 设定管理',
+  'nav.rules': '智能体规则文件管理',
+  'nav.conversation': '对话历史导入与提取',
+  'nav.expand': '展开',
+  'nav.collapse': '收起',
+  'sidebar.hide': '隐藏左边栏',
+  'sidebar.show': '显示左边栏',
+  'students.title': '学生档案',
+  'students.add': '新增学生',
+  'student.standard': '标准知识库',
+  'student.adopted': '接管知识库',
+  'settings.title': '系统设置',
+  'settings.description.windows': '默认根目录：D:\\学生资料；可在设置中更换资料根目录，并检测本机 Agent 工具安装状态。',
+  'settings.description.android': '默认使用 App 内置资料库；Downloads 导出与 Obsidian Vault 授权作为备份和高级浏览方式。',
+  'settings.language.title': '界面语言',
+  'settings.language.description': '选择默认界面语言。切换后主导航、系统设置和通用操作会立即显示为所选语言。',
+  'settings.language.select': '默认语言',
+  'settings.theme': '更换皮肤',
+  'settings.storageMode': '存储模式',
+  'settings.licenseStatus': '授权状态',
+  'settings.studentRoot': '学生资料根目录',
+  'settings.agentAdapters': 'Agent 工具适配器',
+  'settings.agentAdapters.desc': '展示工具能力、规则文件模板和打开方式，后续新增工具只需补配置。',
+  'settings.redetect': '重新检测',
+  'settings.redetectSoftware': '重新检测软件',
+  'settings.legal': '法律与服务条款',
+  'settings.legal.desc': '继续使用本软件前，请阅读并理解用户协议与隐私政策。商业部署时建议同步配置正式售后、隐私与订阅说明。',
+  'legal.agreement': '用户协议',
+  'legal.privacy': '隐私政策',
+  'license.activateFirst': '请先激活许可证',
+  'license.available': '未激活可用',
+  'license.goSettings': '去系统设置激活',
+  'license.readOnly': '首页 / 系统设置 / 只读档案',
+  'install.first': '请先安装 Agent 工具',
+  'install.description': 'Windows 版需要先安装至少一个支持的 Agent 工具，控制台才能创建并引导本机教育管家。',
+  'install.download': '下载',
+  'install.redetect': '重新检测',
+  'status.webEntry': '网页入口',
+  'status.opened': '已打开',
+  'status.notOpened': '未打开',
+  'version.current': '当前版本',
+} as const;
+
+type TranslationKey = keyof typeof zhCnText;
+
+const uiTranslations: Record<LanguageCode, Partial<Record<TranslationKey, string>>> = {
+  'zh-CN': zhCnText,
+  'zh-TW': {
+    'app.name': 'AI教育管家控制台',
+    'app.subtitle': '半自動完成初始文件匯出、Agent 工具初始化指令和 Obsidian 查看入口。',
+    'nav.home': '首頁',
+    'nav.init': '初始化教育管家',
+    'nav.new': '新建教育智能體',
+    'nav.inbox': '資料收集與處理',
+    'nav.reports': '學情報告',
+    'nav.archive': '查看教育檔案',
+    'nav.qa': '教育管家問答',
+    'nav.tasks': '定時任務',
+    'nav.settings': '系統設定',
+    'nav.knowledge': '智能體知識管理',
+    'nav.memory': 'Agent 記憶管理',
+    'nav.soul': 'Agent 設定管理',
+    'nav.rules': '智能體規則文件管理',
+    'nav.conversation': '對話歷史匯入與提取',
+    'nav.expand': '展開',
+    'nav.collapse': '收起',
+    'sidebar.hide': '隱藏左邊欄',
+    'sidebar.show': '顯示左邊欄',
+    'students.title': '學生檔案',
+    'students.add': '新增學生',
+    'student.standard': '標準知識庫',
+    'student.adopted': '接管知識庫',
+    'settings.title': '系統設定',
+    'settings.description.windows': '預設根目錄：D:\\學生資料；可在設定中更換資料根目錄，並檢測本機 Agent 工具安裝狀態。',
+    'settings.description.android': '預設使用 App 內建資料庫；Downloads 匯出與 Obsidian Vault 授權作為備份和進階瀏覽方式。',
+    'settings.language.title': '介面語言',
+    'settings.language.description': '選擇預設介面語言。切換後主導覽、系統設定和通用操作會立即顯示為所選語言。',
+    'settings.language.select': '預設語言',
+    'settings.theme': '更換皮膚',
+    'settings.storageMode': '儲存模式',
+    'settings.licenseStatus': '授權狀態',
+    'settings.studentRoot': '學生資料根目錄',
+    'settings.agentAdapters': 'Agent 工具適配器',
+    'settings.agentAdapters.desc': '展示工具能力、規則文件模板和開啟方式，後續新增工具只需補配置。',
+    'settings.redetect': '重新檢測',
+    'settings.redetectSoftware': '重新檢測軟體',
+    'settings.legal': '法律與服務條款',
+    'settings.legal.desc': '繼續使用本軟體前，請閱讀並理解使用者協議與隱私政策。',
+    'legal.agreement': '使用者協議',
+    'legal.privacy': '隱私政策',
+    'license.activateFirst': '請先啟用授權',
+    'license.available': '未啟用可用',
+    'license.goSettings': '前往系統設定啟用',
+    'license.readOnly': '首頁 / 系統設定 / 唯讀檔案',
+    'install.first': '請先安裝 Agent 工具',
+    'install.description': 'Windows 版需要先安裝至少一個支援的 Agent 工具，控制台才能建立並引導本機教育管家。',
+    'install.download': '下載',
+    'install.redetect': '重新檢測',
+    'status.webEntry': '網頁入口',
+    'status.opened': '已開啟',
+    'status.notOpened': '未開啟',
+  },
+  en: {
+    'app.name': 'AI Education Manager Console',
+    'app.subtitle': 'Semi-automated setup for starter documents, Agent initialization prompts, and Obsidian viewing.',
+    'nav.home': 'Home',
+    'nav.init': 'Initialize Manager',
+    'nav.new': 'New Education Agent',
+    'nav.inbox': 'Collect & Process',
+    'nav.reports': 'Learning Reports',
+    'nav.archive': 'Education Archive',
+    'nav.qa': 'Agent Q&A',
+    'nav.tasks': 'Scheduled Tasks',
+    'nav.settings': 'Settings',
+    'nav.knowledge': 'Agent Knowledge',
+    'nav.memory': 'Agent Memory',
+    'nav.soul': 'Agent Persona',
+    'nav.rules': 'Agent Rule Files',
+    'nav.conversation': 'Conversation Import',
+    'nav.expand': 'Expand',
+    'nav.collapse': 'Collapse',
+    'sidebar.hide': 'Hide sidebar',
+    'sidebar.show': 'Show sidebar',
+    'students.title': 'Student Archives',
+    'students.add': 'Add student',
+    'student.standard': 'Standard KB',
+    'student.adopted': 'Adopted KB',
+    'settings.title': 'Settings',
+    'settings.description.windows': 'Default root: D:\\Student Data. You can change the data root and check local Agent installations.',
+    'settings.description.android': 'Uses the built-in app storage by default; Downloads export and Obsidian vault access are advanced backup options.',
+    'settings.language.title': 'Interface Language',
+    'settings.language.description': 'Choose the default UI language. Navigation, settings, and common actions update immediately.',
+    'settings.language.select': 'Default language',
+    'settings.theme': 'Theme',
+    'settings.storageMode': 'Storage mode',
+    'settings.licenseStatus': 'License status',
+    'settings.studentRoot': 'Student data root',
+    'settings.agentAdapters': 'Agent Tool Adapters',
+    'settings.agentAdapters.desc': 'Shows capabilities, rule templates, and opening methods for each Agent tool.',
+    'settings.redetect': 'Check again',
+    'settings.redetectSoftware': 'Recheck software',
+    'settings.legal': 'Legal Terms',
+    'settings.legal.desc': 'Please read the user agreement and privacy policy before continuing.',
+    'legal.agreement': 'User Agreement',
+    'legal.privacy': 'Privacy Policy',
+    'license.activateFirst': 'Activate License First',
+    'license.available': 'Available before activation',
+    'license.goSettings': 'Go to settings',
+    'license.readOnly': 'Home / Settings / read-only archive',
+    'install.first': 'Install an Agent Tool First',
+    'install.description': 'The Windows console needs at least one supported Agent tool installed before creating and guiding a local education manager.',
+    'install.download': 'Download',
+    'install.redetect': 'Check again',
+    'status.webEntry': 'Web entry',
+    'status.opened': 'opened',
+    'status.notOpened': 'not opened',
+    'version.current': 'Current version',
+  },
+  fr: {
+    'app.name': 'Console AI Education Manager',
+    'nav.home': 'Accueil',
+    'nav.init': 'Initialiser',
+    'nav.new': 'Nouvel agent',
+    'nav.inbox': 'Collecte et traitement',
+    'nav.reports': 'Rapports',
+    'nav.archive': 'Dossiers',
+    'nav.qa': 'Questions agent',
+    'nav.tasks': 'Tâches',
+    'nav.settings': 'Paramètres',
+    'nav.knowledge': 'Connaissances agent',
+    'nav.memory': 'Mémoire agent',
+    'nav.soul': 'Profil agent',
+    'nav.rules': 'Fichiers de règles',
+    'nav.conversation': 'Import de conversations',
+    'nav.expand': 'Développer',
+    'nav.collapse': 'Réduire',
+    'sidebar.hide': 'Masquer la barre',
+    'sidebar.show': 'Afficher la barre',
+    'students.title': 'Dossiers élèves',
+    'students.add': 'Ajouter',
+    'student.standard': 'Base standard',
+    'student.adopted': 'Base adoptée',
+    'settings.title': 'Paramètres',
+    'settings.description.windows': 'Racine par défaut : D:\\学生资料. Vous pouvez changer la racine et vérifier les outils Agent locaux.',
+    'settings.description.android': 'Utilise le stockage intégré par défaut ; Downloads et Obsidian sont des options avancées.',
+    'settings.language.title': 'Langue de l’interface',
+    'settings.language.description': 'Choisissez la langue par défaut de l’interface.',
+    'settings.language.select': 'Langue par défaut',
+    'settings.theme': 'Thème',
+    'settings.storageMode': 'Mode de stockage',
+    'settings.licenseStatus': 'Licence',
+    'settings.studentRoot': 'Racine élèves',
+    'settings.agentAdapters': 'Adaptateurs Agent',
+    'settings.agentAdapters.desc': 'Affiche les capacités, modèles de règles et méthodes d’ouverture.',
+    'settings.redetect': 'Revérifier',
+    'settings.redetectSoftware': 'Revérifier les logiciels',
+    'settings.legal': 'Conditions légales',
+    'settings.legal.desc': 'Veuillez lire le contrat utilisateur et la politique de confidentialité avant de continuer.',
+    'legal.agreement': 'Contrat utilisateur',
+    'legal.privacy': 'Politique de confidentialité',
+    'license.activateFirst': 'Activez la licence',
+    'license.available': 'Disponible avant activation',
+    'license.goSettings': 'Aller aux paramètres',
+    'license.readOnly': 'Accueil / Paramètres / lecture seule',
+    'install.first': 'Installez un outil Agent',
+    'install.description': 'La version Windows nécessite au moins un outil Agent pris en charge.',
+    'install.download': 'Télécharger',
+    'install.redetect': 'Revérifier',
+    'status.webEntry': 'Entrée web',
+    'status.opened': 'ouvert',
+    'status.notOpened': 'non ouvert',
+  },
+  es: {
+    'app.name': 'Consola AI Education Manager',
+    'nav.home': 'Inicio',
+    'nav.init': 'Inicializar',
+    'nav.new': 'Nuevo agente',
+    'nav.inbox': 'Recopilar y procesar',
+    'nav.reports': 'Informes',
+    'nav.archive': 'Archivo',
+    'nav.qa': 'Preguntas del agente',
+    'nav.tasks': 'Tareas',
+    'nav.settings': 'Configuración',
+    'nav.knowledge': 'Conocimiento del agente',
+    'nav.memory': 'Memoria del agente',
+    'nav.soul': 'Perfil del agente',
+    'nav.rules': 'Archivos de reglas',
+    'nav.conversation': 'Importar conversaciones',
+    'nav.expand': 'Expandir',
+    'nav.collapse': 'Contraer',
+    'sidebar.hide': 'Ocultar barra',
+    'sidebar.show': 'Mostrar barra',
+    'students.title': 'Archivos de estudiantes',
+    'students.add': 'Añadir',
+    'student.standard': 'Base estándar',
+    'student.adopted': 'Base adoptada',
+    'settings.title': 'Configuración',
+    'settings.description.windows': 'Raíz predeterminada: D:\\学生资料. Puede cambiarla y verificar herramientas Agent locales.',
+    'settings.description.android': 'Usa almacenamiento interno por defecto; Downloads y Obsidian son opciones avanzadas.',
+    'settings.language.title': 'Idioma de la interfaz',
+    'settings.language.description': 'Elija el idioma predeterminado de la interfaz.',
+    'settings.language.select': 'Idioma predeterminado',
+    'settings.theme': 'Tema',
+    'settings.storageMode': 'Modo de almacenamiento',
+    'settings.licenseStatus': 'Licencia',
+    'settings.studentRoot': 'Raíz de estudiantes',
+    'settings.agentAdapters': 'Adaptadores Agent',
+    'settings.agentAdapters.desc': 'Muestra capacidades, plantillas de reglas y métodos de apertura.',
+    'settings.redetect': 'Comprobar de nuevo',
+    'settings.redetectSoftware': 'Revisar software',
+    'settings.legal': 'Términos legales',
+    'settings.legal.desc': 'Lea el acuerdo de usuario y la política de privacidad antes de continuar.',
+    'legal.agreement': 'Acuerdo de usuario',
+    'legal.privacy': 'Política de privacidad',
+    'license.activateFirst': 'Active la licencia',
+    'license.available': 'Disponible antes de activar',
+    'license.goSettings': 'Ir a configuración',
+    'license.readOnly': 'Inicio / Configuración / solo lectura',
+    'install.first': 'Instale una herramienta Agent',
+    'install.description': 'La versión Windows necesita al menos una herramienta Agent compatible.',
+    'install.download': 'Descargar',
+    'install.redetect': 'Comprobar',
+    'status.webEntry': 'Entrada web',
+    'status.opened': 'abierto',
+    'status.notOpened': 'no abierto',
+  },
+  ja: {
+    'app.name': 'AI教育マネージャーコンソール',
+    'nav.home': 'ホーム',
+    'nav.init': '初期化',
+    'nav.new': '新規エージェント',
+    'nav.inbox': '資料収集と処理',
+    'nav.reports': '学習レポート',
+    'nav.archive': '教育アーカイブ',
+    'nav.qa': 'エージェントQ&A',
+    'nav.tasks': '定期タスク',
+    'nav.settings': '設定',
+    'nav.knowledge': 'エージェント知識管理',
+    'nav.memory': 'エージェント記憶',
+    'nav.soul': 'エージェント設定',
+    'nav.rules': 'ルールファイル',
+    'nav.conversation': '会話履歴インポート',
+    'nav.expand': '展開',
+    'nav.collapse': '折りたたむ',
+    'sidebar.hide': 'サイドバーを隠す',
+    'sidebar.show': 'サイドバーを表示',
+    'students.title': '学生アーカイブ',
+    'students.add': '学生を追加',
+    'student.standard': '標準ナレッジベース',
+    'student.adopted': '既存ベース',
+    'settings.title': '設定',
+    'settings.description.windows': '既定ルート：D:\\学生资料。データルート変更とローカルAgent検出ができます。',
+    'settings.description.android': '既定ではアプリ内ストレージを使用します。Downloads と Obsidian は高度なオプションです。',
+    'settings.language.title': '表示言語',
+    'settings.language.description': '既定のUI言語を選択します。',
+    'settings.language.select': '既定の言語',
+    'settings.theme': 'テーマ',
+    'settings.storageMode': '保存モード',
+    'settings.licenseStatus': 'ライセンス状態',
+    'settings.studentRoot': '学生データルート',
+    'settings.agentAdapters': 'Agentツールアダプター',
+    'settings.agentAdapters.desc': '各ツールの機能、ルールテンプレート、起動方法を表示します。',
+    'settings.redetect': '再検出',
+    'settings.redetectSoftware': 'ソフトを再検出',
+    'settings.legal': '法的条項',
+    'settings.legal.desc': '続行前に利用規約とプライバシーポリシーを確認してください。',
+    'legal.agreement': '利用規約',
+    'legal.privacy': 'プライバシーポリシー',
+    'license.activateFirst': 'ライセンスを有効化',
+    'license.available': '有効化前に利用可能',
+    'license.goSettings': '設定へ',
+    'license.readOnly': 'ホーム / 設定 / 読み取り専用',
+    'install.first': 'Agentツールをインストール',
+    'install.description': 'Windows版は対応するAgentツールが少なくとも1つ必要です。',
+    'install.download': 'ダウンロード',
+    'install.redetect': '再検出',
+    'status.webEntry': 'Web入口',
+    'status.opened': '起動済み',
+    'status.notOpened': '未起動',
+  },
+  ko: {
+    'app.name': 'AI 교육 매니저 콘솔',
+    'nav.home': '홈',
+    'nav.init': '초기화',
+    'nav.new': '새 교육 에이전트',
+    'nav.inbox': '자료 수집 및 처리',
+    'nav.reports': '학습 보고서',
+    'nav.archive': '교육 기록',
+    'nav.qa': '에이전트 Q&A',
+    'nav.tasks': '예약 작업',
+    'nav.settings': '설정',
+    'nav.knowledge': '에이전트 지식 관리',
+    'nav.memory': '에이전트 메모리',
+    'nav.soul': '에이전트 설정',
+    'nav.rules': '규칙 파일',
+    'nav.conversation': '대화 가져오기',
+    'nav.expand': '펼치기',
+    'nav.collapse': '접기',
+    'sidebar.hide': '사이드바 숨기기',
+    'sidebar.show': '사이드바 표시',
+    'students.title': '학생 기록',
+    'students.add': '학생 추가',
+    'student.standard': '표준 지식베이스',
+    'student.adopted': '기존 지식베이스',
+    'settings.title': '설정',
+    'settings.description.windows': '기본 루트: D:\\学生资料. 데이터 루트를 변경하고 로컬 Agent 설치를 확인할 수 있습니다.',
+    'settings.description.android': '기본적으로 앱 내 저장소를 사용하며 Downloads와 Obsidian은 고급 옵션입니다.',
+    'settings.language.title': '인터페이스 언어',
+    'settings.language.description': '기본 UI 언어를 선택합니다.',
+    'settings.language.select': '기본 언어',
+    'settings.theme': '스킨',
+    'settings.storageMode': '저장 모드',
+    'settings.licenseStatus': '라이선스 상태',
+    'settings.studentRoot': '학생 자료 루트',
+    'settings.agentAdapters': 'Agent 도구 어댑터',
+    'settings.agentAdapters.desc': '각 도구의 기능, 규칙 템플릿, 실행 방식을 표시합니다.',
+    'settings.redetect': '다시 확인',
+    'settings.redetectSoftware': '소프트웨어 재확인',
+    'settings.legal': '법적 약관',
+    'settings.legal.desc': '계속하기 전에 사용자 계약과 개인정보 처리방침을 확인하세요.',
+    'legal.agreement': '사용자 계약',
+    'legal.privacy': '개인정보 처리방침',
+    'license.activateFirst': '라이선스 활성화',
+    'license.available': '활성화 전 사용 가능',
+    'license.goSettings': '설정으로 이동',
+    'license.readOnly': '홈 / 설정 / 읽기 전용',
+    'install.first': 'Agent 도구 설치',
+    'install.description': 'Windows 버전은 지원되는 Agent 도구가 하나 이상 필요합니다.',
+    'install.download': '다운로드',
+    'install.redetect': '다시 확인',
+    'status.webEntry': '웹 입구',
+    'status.opened': '열림',
+    'status.notOpened': '열리지 않음',
+  },
+  vi: {
+    'app.name': 'Bảng điều khiển AI Education Manager',
+    'nav.home': 'Trang chủ',
+    'nav.init': 'Khởi tạo',
+    'nav.new': 'Tạo Agent',
+    'nav.inbox': 'Thu thập và xử lý',
+    'nav.reports': 'Báo cáo học tập',
+    'nav.archive': 'Hồ sơ học tập',
+    'nav.qa': 'Hỏi đáp Agent',
+    'nav.tasks': 'Tác vụ định kỳ',
+    'nav.settings': 'Cài đặt',
+    'nav.knowledge': 'Quản lý tri thức Agent',
+    'nav.memory': 'Bộ nhớ Agent',
+    'nav.soul': 'Thiết lập Agent',
+    'nav.rules': 'Tệp quy tắc',
+    'nav.conversation': 'Nhập hội thoại',
+    'nav.expand': 'Mở rộng',
+    'nav.collapse': 'Thu gọn',
+    'sidebar.hide': 'Ẩn thanh bên',
+    'sidebar.show': 'Hiện thanh bên',
+    'students.title': 'Hồ sơ học sinh',
+    'students.add': 'Thêm học sinh',
+    'student.standard': 'Kho chuẩn',
+    'student.adopted': 'Kho đã tiếp quản',
+    'settings.title': 'Cài đặt',
+    'settings.description.windows': 'Thư mục gốc mặc định: D:\\学生资料. Có thể đổi thư mục và kiểm tra Agent cục bộ.',
+    'settings.description.android': 'Mặc định dùng bộ nhớ trong ứng dụng; Downloads và Obsidian là tùy chọn nâng cao.',
+    'settings.language.title': 'Ngôn ngữ giao diện',
+    'settings.language.description': 'Chọn ngôn ngữ giao diện mặc định.',
+    'settings.language.select': 'Ngôn ngữ mặc định',
+    'settings.theme': 'Giao diện',
+    'settings.storageMode': 'Chế độ lưu trữ',
+    'settings.licenseStatus': 'Trạng thái bản quyền',
+    'settings.studentRoot': 'Thư mục học sinh',
+    'settings.agentAdapters': 'Bộ thích ứng Agent',
+    'settings.agentAdapters.desc': 'Hiển thị khả năng, mẫu quy tắc và cách mở từng công cụ.',
+    'settings.redetect': 'Kiểm tra lại',
+    'settings.redetectSoftware': 'Kiểm tra phần mềm',
+    'settings.legal': 'Điều khoản pháp lý',
+    'settings.legal.desc': 'Vui lòng đọc thỏa thuận người dùng và chính sách quyền riêng tư trước khi tiếp tục.',
+    'legal.agreement': 'Thỏa thuận người dùng',
+    'legal.privacy': 'Chính sách quyền riêng tư',
+    'license.activateFirst': 'Kích hoạt giấy phép',
+    'license.available': 'Có thể dùng trước kích hoạt',
+    'license.goSettings': 'Tới cài đặt',
+    'license.readOnly': 'Trang chủ / Cài đặt / chỉ đọc',
+    'install.first': 'Cài đặt công cụ Agent',
+    'install.description': 'Bản Windows cần ít nhất một công cụ Agent được hỗ trợ.',
+    'install.download': 'Tải xuống',
+    'install.redetect': 'Kiểm tra lại',
+    'status.webEntry': 'Cổng web',
+    'status.opened': 'đã mở',
+    'status.notOpened': 'chưa mở',
+  },
+  ms: {
+    'app.name': 'Konsol AI Education Manager',
+    'nav.home': 'Laman utama',
+    'nav.init': 'Permulaan',
+    'nav.new': 'Agent baharu',
+    'nav.inbox': 'Kumpul & proses',
+    'nav.reports': 'Laporan pembelajaran',
+    'nav.archive': 'Arkib pendidikan',
+    'nav.qa': 'Soal jawab Agent',
+    'nav.tasks': 'Tugasan berjadual',
+    'nav.settings': 'Tetapan',
+    'nav.knowledge': 'Pengurusan pengetahuan Agent',
+    'nav.memory': 'Memori Agent',
+    'nav.soul': 'Tetapan Agent',
+    'nav.rules': 'Fail peraturan',
+    'nav.conversation': 'Import perbualan',
+    'nav.expand': 'Kembangkan',
+    'nav.collapse': 'Tutup',
+    'sidebar.hide': 'Sembunyikan bar sisi',
+    'sidebar.show': 'Tunjuk bar sisi',
+    'students.title': 'Arkib pelajar',
+    'students.add': 'Tambah pelajar',
+    'student.standard': 'Pangkalan standard',
+    'student.adopted': 'Pangkalan diambil alih',
+    'settings.title': 'Tetapan',
+    'settings.description.windows': 'Akar lalai: D:\\学生资料. Anda boleh menukar akar data dan menyemak Agent setempat.',
+    'settings.description.android': 'Storan aplikasi digunakan secara lalai; Downloads dan Obsidian ialah pilihan lanjutan.',
+    'settings.language.title': 'Bahasa antara muka',
+    'settings.language.description': 'Pilih bahasa UI lalai.',
+    'settings.language.select': 'Bahasa lalai',
+    'settings.theme': 'Tema',
+    'settings.storageMode': 'Mod storan',
+    'settings.licenseStatus': 'Status lesen',
+    'settings.studentRoot': 'Akar data pelajar',
+    'settings.agentAdapters': 'Penyesuai alat Agent',
+    'settings.agentAdapters.desc': 'Memaparkan keupayaan, templat peraturan dan kaedah buka.',
+    'settings.redetect': 'Semak semula',
+    'settings.redetectSoftware': 'Semak perisian',
+    'settings.legal': 'Terma undang-undang',
+    'settings.legal.desc': 'Sila baca perjanjian pengguna dan dasar privasi sebelum meneruskan.',
+    'legal.agreement': 'Perjanjian pengguna',
+    'legal.privacy': 'Dasar privasi',
+    'license.activateFirst': 'Aktifkan lesen',
+    'license.available': 'Tersedia sebelum aktif',
+    'license.goSettings': 'Pergi ke tetapan',
+    'license.readOnly': 'Utama / Tetapan / baca sahaja',
+    'install.first': 'Pasang alat Agent',
+    'install.description': 'Versi Windows memerlukan sekurang-kurangnya satu alat Agent yang disokong.',
+    'install.download': 'Muat turun',
+    'install.redetect': 'Semak semula',
+    'status.webEntry': 'Pintu web',
+    'status.opened': 'dibuka',
+    'status.notOpened': 'belum dibuka',
+  },
+};
+
 const themeSkinImages: Record<ThemeName, string> = {
   blue: './skins/skin-blue.jpg',
   pink: './skins/skin-pink.jpg',
@@ -1190,6 +1764,15 @@ function saveTheme(theme: ThemeName) {
   localStorage.setItem(themeStorageKey, theme);
 }
 
+function loadLanguage() {
+  const value = localStorage.getItem(languageStorageKey) as LanguageCode | null;
+  return languageOptions.some((item) => item.id === value) ? (value as LanguageCode) : 'zh-CN';
+}
+
+function saveLanguage(language: LanguageCode) {
+  localStorage.setItem(languageStorageKey, language);
+}
+
 function today() {
   return new Date().toISOString().slice(0, 10);
 }
@@ -1295,24 +1878,33 @@ function buildAiAgentScanPrompt(student: Student, targetKind: AgentKnowledgeKind
 - %USERPROFILE%\\.openclaw
 - %USERPROFILE%\\.hohu
 - %USERPROFILE%\\.marvis
+- %USERPROFILE%\\.ima
+- %USERPROFILE%\\.ima.copilot
+- %USERPROFILE%\\.workbuddy
 - %USERPROFILE%\\.codex
 - %USERPROFILE%\\.claude
 - %APPDATA%\\QClaw
 - %APPDATA%\\OpenClaw
 - %APPDATA%\\Hohu
 - %APPDATA%\\Marvis
+- %APPDATA%\\IMA
+- %APPDATA%\\ima.copilot
+- %APPDATA%\\WorkBuddy
 - %APPDATA%\\npm
 - %LOCALAPPDATA%\\QClaw
 - %LOCALAPPDATA%\\OpenClaw
 - %LOCALAPPDATA%\\Hohu
 - %LOCALAPPDATA%\\Marvis
+- %LOCALAPPDATA%\\IMA
+- %LOCALAPPDATA%\\ima.copilot
+- %LOCALAPPDATA%\\WorkBuddy
 
 如果是 ChatGPT、Claude、豆包、Coze、FastGPT 这类网页或平台工具，请优先查找用户导出的 Markdown/TXT/JSON 对话记录、项目说明、Bot 提示词或知识库说明，不要尝试读取浏览器缓存、Cookie 或账号数据。
 
 候选文件名包括但不限于：
 - 记忆：MEMORY.md、Memory.md、memory.md、long-term-memory.md、memory.txt
 - 人设：Soul.md、persona.md、role.md、system.md、prompt.md、profile.md
-- 规则文件：AGENT.md、AGENTS.md、CLAUDE.md、QClaw.md、OpenClaw.md、Marvis.md、Hohu.md、RULES.md
+- 规则文件：AGENT.md、AGENTS.md、CLAUDE.md、QClaw.md、OpenClaw.md、Marvis.md、Hohu.md、IMA.md、ima.copilot.md、WorkBuddy.md、RULES.md
 - 对话历史：conversation.md、chat.md、history.json、transcript.txt、session.md、对话.md、聊天记录.md
 
 判断标准：
@@ -1341,7 +1933,7 @@ function buildAiAgentScanPrompt(student: Student, targetKind: AgentKnowledgeKind
   ]
 }
 
-tool 只能使用：qclaw、marvis、hohu、openclaw、codex、claude-code、chatgpt、claude、doubao、coze、fastgpt。
+tool 只能使用：qclaw、marvis、hohu、openclaw、ima.copilot、workbuddy、codex、claude-code、chatgpt、claude、doubao、coze、fastgpt。
 kind 只能使用：memory、soul、rule、conversation。`;
 }
 
@@ -2281,6 +2873,7 @@ function fallbackDownload(filename: string, content: string) {
 function App() {
   const [students, setStudents] = useState<Student[]>(loadStudents);
   const [theme, setTheme] = useState<ThemeName>(loadTheme);
+  const [language, setLanguage] = useState<LanguageCode>(loadLanguage);
   const [draft, setDraft] = useState<StudentDraft>(defaultDraft);
   const [selectedId, setSelectedId] = useState(students[0]?.id ?? '');
   const [activeSection, setActiveSection] = useState<Section>('init');
@@ -2296,6 +2889,8 @@ function App() {
   const [marvisOpened, setMarvisOpened] = useState(false);
   const [hohuOpened, setHohuOpened] = useState(false);
   const [openclawOpened, setOpenclawOpened] = useState(false);
+  const [imaCopilotOpened, setImaCopilotOpened] = useState(false);
+  const [workbuddyOpened, setWorkbuddyOpened] = useState(false);
   const [codexOpened, setCodexOpened] = useState(false);
   const [claudeCodeOpened, setClaudeCodeOpened] = useState(false);
   const [obsidianOpened, setObsidianOpened] = useState(false);
@@ -2394,6 +2989,8 @@ function App() {
   const [candidateImportReview, setCandidateImportReview] = useState<CandidateImportReview | null>(null);
   const [expandedSourceRecordId, setExpandedSourceRecordId] = useState('');
 
+  const t = (key: TranslationKey) => uiTranslations[language]?.[key] ?? zhCnText[key] ?? key;
+
   const selectedStudent = students.find((item) => item.id === selectedId) ?? students[0];
   const systemTemplateFiles = useMemo(() => buildSystemTemplates(), []);
   const currentTemplateFiles = useMemo(() => {
@@ -2440,6 +3037,8 @@ function App() {
     marvis: marvisOpened,
     hohu: hohuOpened,
     openclaw: openclawOpened,
+    'ima.copilot': imaCopilotOpened,
+    workbuddy: workbuddyOpened,
     codex: codexOpened,
     'claude-code': claudeCodeOpened,
     chatgpt: false,
@@ -2528,6 +3127,8 @@ function App() {
     if (tool.openMode === 'url') {
       return { installed: true, version: tool.category === 'platform' ? '平台入口' : '网页入口', exePath: tool.installUrls.web || '' };
     }
+    if (toolId === 'ima.copilot') return installStatus?.imaCopilot;
+    if (toolId === 'workbuddy') return installStatus?.workbuddy;
     if (toolId === 'claude-code') return installStatus?.claudeCode;
     return installStatus?.[toolId as 'qclaw' | 'marvis' | 'hohu' | 'openclaw' | 'codex'];
   };
@@ -2707,17 +3308,19 @@ function App() {
       const status = JSON.parse(raw) as AgentToolInstallStatus;
       setInstallStatus(status);
       if (!status.anyInstalled) {
-        setInstallMessage('未检测到 QClaw、Marvis、Hohu、OpenClaw、Codex 或 Claude Code，请先下载安装其中一个工具。');
+        setInstallMessage('未检测到 QClaw、OpenClaw、WorkBuddy、Hohu、ima.copilot、Marvis、Codex 或 Claude Code，请先下载安装其中一个工具。');
         return;
       }
       setInstallMessage('');
       setDraft((current) => {
         if (status.qclaw.installed && current.agentTool !== 'qclaw') return { ...current, agentTool: 'qclaw' };
         if (!status.qclaw.installed && status.openclaw?.installed && current.agentTool !== 'openclaw') return { ...current, agentTool: 'openclaw' };
-        if (!status.qclaw.installed && !status.openclaw?.installed && status.hohu.installed && current.agentTool !== 'hohu') return { ...current, agentTool: 'hohu' };
-        if (!status.qclaw.installed && !status.openclaw?.installed && !status.hohu.installed && status.marvis.installed && current.agentTool !== 'marvis') return { ...current, agentTool: 'marvis' };
-        if (!status.qclaw.installed && !status.openclaw?.installed && !status.hohu.installed && !status.marvis.installed && status.codex?.installed && current.agentTool !== 'codex') return { ...current, agentTool: 'codex' };
-        if (!status.qclaw.installed && !status.openclaw?.installed && !status.hohu.installed && !status.marvis.installed && !status.codex?.installed && status.claudeCode?.installed && current.agentTool !== 'claude-code') return { ...current, agentTool: 'claude-code' };
+        if (!status.qclaw.installed && !status.openclaw?.installed && status.workbuddy?.installed && current.agentTool !== 'workbuddy') return { ...current, agentTool: 'workbuddy' };
+        if (!status.qclaw.installed && !status.openclaw?.installed && !status.workbuddy?.installed && status.hohu.installed && current.agentTool !== 'hohu') return { ...current, agentTool: 'hohu' };
+        if (!status.qclaw.installed && !status.openclaw?.installed && !status.workbuddy?.installed && !status.hohu.installed && status.imaCopilot?.installed && current.agentTool !== 'ima.copilot') return { ...current, agentTool: 'ima.copilot' };
+        if (!status.qclaw.installed && !status.openclaw?.installed && !status.workbuddy?.installed && !status.hohu.installed && !status.imaCopilot?.installed && status.marvis.installed && current.agentTool !== 'marvis') return { ...current, agentTool: 'marvis' };
+        if (!status.qclaw.installed && !status.openclaw?.installed && !status.workbuddy?.installed && !status.hohu.installed && !status.imaCopilot?.installed && !status.marvis.installed && status.codex?.installed && current.agentTool !== 'codex') return { ...current, agentTool: 'codex' };
+        if (!status.qclaw.installed && !status.openclaw?.installed && !status.workbuddy?.installed && !status.hohu.installed && !status.imaCopilot?.installed && !status.marvis.installed && !status.codex?.installed && status.claudeCode?.installed && current.agentTool !== 'claude-code') return { ...current, agentTool: 'claude-code' };
         return current;
       });
     } catch {
@@ -3141,11 +3744,13 @@ ${conversationText || '（请先粘贴对话历史）'}`;
       const raw = bridge()?.getAppStatus?.();
       if (!raw) return;
       try {
-        const status = JSON.parse(raw) as { qclawOpened?: boolean; marvisOpened?: boolean; hohuOpened?: boolean; openclawOpened?: boolean; codexOpened?: boolean; claudeCodeOpened?: boolean; obsidianOpened?: boolean };
+        const status = JSON.parse(raw) as { qclawOpened?: boolean; marvisOpened?: boolean; hohuOpened?: boolean; openclawOpened?: boolean; imaCopilotOpened?: boolean; workbuddyOpened?: boolean; codexOpened?: boolean; claudeCodeOpened?: boolean; obsidianOpened?: boolean };
         setQclawOpened(Boolean(status.qclawOpened));
         setMarvisOpened(Boolean(status.marvisOpened));
         setHohuOpened(Boolean(status.hohuOpened));
         setOpenclawOpened(Boolean(status.openclawOpened));
+        setImaCopilotOpened(Boolean(status.imaCopilotOpened));
+        setWorkbuddyOpened(Boolean(status.workbuddyOpened));
         setCodexOpened(Boolean(status.codexOpened));
         setClaudeCodeOpened(Boolean(status.claudeCodeOpened));
         setObsidianOpened(Boolean(status.obsidianOpened));
@@ -3528,6 +4133,11 @@ ${conversationText || '（请先粘贴对话历史）'}`;
   const changeTheme = (value: ThemeName) => {
     setTheme(value);
     saveTheme(value);
+  };
+
+  const changeLanguage = (value: LanguageCode) => {
+    setLanguage(value);
+    saveLanguage(value);
   };
 
   const changeSelectedStudentTool = (toolId: AgentToolId) => {
@@ -4029,6 +4639,8 @@ ${conversationText || '（请先粘贴对话历史）'}`;
     if (app === 'marvis') setMarvisOpened((value) => value || Boolean(ok));
     if (app === 'hohu') setHohuOpened((value) => value || Boolean(ok));
     if (app === 'openclaw') setOpenclawOpened((value) => value || Boolean(ok));
+    if (app === 'ima.copilot') setImaCopilotOpened((value) => value || Boolean(ok));
+    if (app === 'workbuddy') setWorkbuddyOpened((value) => value || Boolean(ok));
     if (app === 'codex') setCodexOpened((value) => value || Boolean(ok));
     if (app === 'claude-code') setClaudeCodeOpened((value) => value || Boolean(ok));
     if (app === 'obsidian') setObsidianOpened((value) => value || Boolean(ok));
@@ -4037,6 +4649,8 @@ ${conversationText || '（请先粘贴对话历史）'}`;
       marvis: 'marvis://',
       hohu: 'https://hohu.ai/',
       openclaw: 'https://openclaw.ai/',
+      'ima.copilot': 'https://ima.qq.com/',
+      workbuddy: 'https://www.workbuddy.ai/',
       codex: 'https://chatgpt.com/codex',
       'claude-code': 'https://www.anthropic.com/claude-code',
       chatgpt: 'https://chatgpt.com/',
@@ -4500,6 +5114,8 @@ ${conversationText || '（请先粘贴对话历史）'}`;
       marvis: 'https://marvis.qq.com/',
       hohu: 'https://hohu.ai/',
       openclaw: 'https://openclaw.ai/',
+      'ima.copilot': 'https://ima.qq.com/download/',
+      workbuddy: 'https://www.workbuddy.ai/',
       codex: 'https://chatgpt.com/codex',
       'claude-code': 'https://www.anthropic.com/claude-code',
       chatgpt: 'https://chatgpt.com/',
@@ -5030,27 +5646,46 @@ ${conversationText || '（请先粘贴对话历史）'}`;
   ) : null;
 
   const navItems = [
-    { id: 'home' as const, label: '首页', icon: Home },
-    { id: 'init' as const, label: '初始化教育管家', icon: Sparkles },
-    { id: 'new' as const, label: '新建教育智能体', icon: Plus },
-    { id: 'inbox' as const, label: '资料收集与处理', icon: FileDown },
-    { id: 'reports' as const, label: '学情报告', icon: FileText },
-    { id: 'archive' as const, label: '查看教育档案', icon: BookOpen },
-    { id: 'qa' as const, label: '教育管家问答', icon: MessageCircle },
-    { id: 'tasks' as const, label: '定时任务', icon: Clock3 },
-    { id: 'settings' as const, label: '系统设置', icon: Settings },
+    { id: 'home' as const, label: t('nav.home'), icon: Home },
+    { id: 'init' as const, label: t('nav.init'), icon: Sparkles },
+    { id: 'new' as const, label: t('nav.new'), icon: Plus },
+    { id: 'inbox' as const, label: t('nav.inbox'), icon: FileDown },
+    { id: 'reports' as const, label: t('nav.reports'), icon: FileText },
+    { id: 'archive' as const, label: t('nav.archive'), icon: BookOpen },
+    { id: 'qa' as const, label: t('nav.qa'), icon: MessageCircle },
+    { id: 'tasks' as const, label: t('nav.tasks'), icon: Clock3 },
+    { id: 'settings' as const, label: t('nav.settings'), icon: Settings },
   ];
   const knowledgeNavItems = [
-    { id: 'memory' as const, label: 'Agent 记忆管理', icon: Clipboard },
-    { id: 'soul' as const, label: 'Agent 设定管理', icon: Bot },
-    { id: 'rules' as const, label: '智能体规则文件管理', icon: ListChecks },
-    { id: 'conversation' as const, label: '对话历史导入与提取', icon: MessageCircle },
+    { id: 'memory' as const, label: t('nav.memory'), icon: Clipboard },
+    { id: 'soul' as const, label: t('nav.soul'), icon: Bot },
+    { id: 'rules' as const, label: t('nav.rules'), icon: ListChecks },
+    { id: 'conversation' as const, label: t('nav.conversation'), icon: MessageCircle },
   ];
+  const sectionTitle = (section: Section) => {
+    const map: Record<Section, TranslationKey> = {
+      home: 'nav.home',
+      init: 'nav.init',
+      new: 'nav.new',
+      inbox: 'nav.inbox',
+      reports: 'nav.reports',
+      archive: 'nav.archive',
+      qa: 'nav.qa',
+      memory: 'nav.memory',
+      soul: 'nav.soul',
+      rules: 'nav.rules',
+      conversation: 'nav.conversation',
+      tasks: 'nav.tasks',
+      settings: 'nav.settings',
+    };
+    return t(map[section]);
+  };
 
   return (
     <main
       className={sidebarCollapsed ? 'app-shell sidebar-collapsed' : 'app-shell'}
       data-theme={theme}
+      data-language={language}
       style={{ '--skin-image': `url(${themeSkinImages[theme]})` } as React.CSSProperties}
     >
       <aside className="sidebar">
@@ -5060,9 +5695,9 @@ ${conversationText || '（请先粘贴对话历史）'}`;
           </div>
           <div className="brand-copy">
             <img className="brand-wordmark" src="brand/robogala-wordmark.png" alt="ROBOGALA 群星矩阵" />
-            <span>AI教育管家控制台</span>
+            <span>{t('app.name')}</span>
           </div>
-          <button className="icon-button sidebar-hide-button" onClick={() => setSidebarCollapsed(true)} aria-label="隐藏左边栏" title="隐藏左边栏">
+          <button className="icon-button sidebar-hide-button" onClick={() => setSidebarCollapsed(true)} aria-label={t('sidebar.hide')} title={t('sidebar.hide')}>
             <PanelLeftClose size={18} />
           </button>
         </div>
@@ -5088,11 +5723,11 @@ ${conversationText || '（请先粘贴对话历史）'}`;
             <button
               className={`${activeSection === 'memory' || activeSection === 'soul' || activeSection === 'rules' || activeSection === 'conversation' ? 'nav-item nav-group active' : 'nav-item nav-group'}${isWindows && !windowsLicenseActive ? ' locked' : ''}`}
               onClick={() => setAgentKnowledgeMenuOpen((value) => !value)}
-              title={isWindows && !windowsLicenseActive ? '智能体知识管理需要激活后使用' : '智能体知识管理'}
+              title={isWindows && !windowsLicenseActive ? '智能体知识管理需要激活后使用' : t('nav.knowledge')}
             >
               <Bot size={19} />
-              <span>智能体知识管理</span>
-              <span className="nav-chevron">{agentKnowledgeMenuOpen ? '收起' : '展开'}</span>
+              <span>{t('nav.knowledge')}</span>
+              <span className="nav-chevron">{agentKnowledgeMenuOpen ? t('nav.collapse') : t('nav.expand')}</span>
               {isWindows && !windowsLicenseActive && <KeyRound size={15} />}
             </button>
             {agentKnowledgeMenuOpen && (
@@ -5119,8 +5754,8 @@ ${conversationText || '（请先粘贴对话历史）'}`;
 
         <section className="student-rail">
           <div className="rail-title">
-            <span>学生档案</span>
-            <button aria-label="新增学生" onClick={() => setActiveSection('new')} title={!windowsLicenseActive ? '激活后可新增学生' : '新增学生'}>
+            <span>{t('students.title')}</span>
+            <button aria-label={t('students.add')} onClick={() => setActiveSection('new')} title={!windowsLicenseActive ? '激活后可新增学生' : t('students.add')}>
               <Plus size={16} />
             </button>
           </div>
@@ -5138,7 +5773,7 @@ ${conversationText || '（请先粘贴对话历史）'}`;
                 <span>
                   <strong>{student.name}</strong>
                   <small>
-                    {student.grade} · {getAgentToolProfile(student.agentTool).name} · {student.knowledgeBaseMode === 'adopted' ? '接管知识库' : '标准知识库'}
+                    {student.grade} · {getAgentToolProfile(student.agentTool).name} · {student.knowledgeBaseMode === 'adopted' ? t('student.adopted') : t('student.standard')}
                   </small>
                 </span>
               </button>
@@ -5149,57 +5784,31 @@ ${conversationText || '（请先粘贴对话历史）'}`;
           <span>嘉玛蓝（北京）科技有限公司版权所有</span>
           <span className="legal-link-group">
             <button className="inline-link" type="button" onClick={openUserAgreement}>
-              用户协议 <ExternalLink size={12} />
+              {t('legal.agreement')} <ExternalLink size={12} />
             </button>
             <button className="inline-link" type="button" onClick={openPrivacyPolicy}>
-              隐私政策 <ExternalLink size={12} />
+              {t('legal.privacy')} <ExternalLink size={12} />
             </button>
           </span>
         </div>
       </aside>
 
       {sidebarCollapsed && (
-        <button className="sidebar-reveal" onClick={() => setSidebarCollapsed(false)} aria-label="显示左边栏" title="显示左边栏">
+        <button className="sidebar-reveal" onClick={() => setSidebarCollapsed(false)} aria-label={t('sidebar.show')} title={t('sidebar.show')}>
           <PanelLeftOpen size={18} />
-          <span>显示左边栏</span>
+          <span>{t('sidebar.show')}</span>
         </button>
       )}
 
       <section className="workspace">
         <header className="topbar">
           <div>
-            <h1>
-              {activeSection === 'new'
-                ? '新建教育智能体'
-                : activeSection === 'archive'
-                  ? '查看教育档案'
-                : activeSection === 'reports'
-                  ? '学情报告'
-                  : activeSection === 'inbox'
-                    ? '资料收集与处理'
-                  : activeSection === 'qa'
-                    ? '教育管家问答'
-                  : activeSection === 'memory'
-                    ? 'Agent 记忆管理'
-                  : activeSection === 'soul'
-                    ? 'Agent 设定管理'
-                  : activeSection === 'rules'
-                    ? '智能体规则文件管理'
-                  : activeSection === 'conversation'
-                    ? '对话历史导入与提取'
-                  : activeSection === 'tasks'
-                    ? '定时任务'
-                    : activeSection === 'settings'
-                      ? '系统设置'
-                      : activeSection === 'home'
-                        ? '控制台首页'
-                        : '教育管家初始化'}
-            </h1>
-            <p>半自动完成初始文档导出、Agent 工具初始化指令和 Obsidian 查看入口。</p>
+            <h1>{sectionTitle(activeSection)}</h1>
+            <p>{t('app.subtitle')}</p>
           </div>
           <div className="status-row">
             <label className="theme-picker">
-              更换皮肤
+              {t('settings.theme')}
               <select value={theme} onChange={(event) => changeTheme(event.target.value as ThemeName)}>
                 {themeOptions.map((item) => (
                   <option value={item.id} key={item.id}>
@@ -5210,8 +5819,8 @@ ${conversationText || '（请先粘贴对话历史）'}`;
             </label>
             <span className={activeAgentOpened ? 'status ok' : 'status warn'}>
               {activeAgentTool.openMode === 'url'
-                ? `${activeAgentTool.name} 网页入口`
-                : activeAgentOpened ? `${activeAgentTool.name} 已打开` : `${activeAgentTool.name} 未打开`}
+                ? `${activeAgentTool.name} ${t('status.webEntry')}`
+                : activeAgentOpened ? `${activeAgentTool.name} ${t('status.opened')}` : `${activeAgentTool.name} ${t('status.notOpened')}`}
             </span>
           </div>
         </header>
@@ -5220,8 +5829,8 @@ ${conversationText || '（请先粘贴对话历史）'}`;
           <section className="panel install-gate">
             <div className="panel-heading">
               <div>
-                <h2>请先安装 Agent 工具</h2>
-                <p>Windows 版需要先安装 QClaw、Marvis、Hohu 或 OpenClaw，控制台才能创建并引导本机教育管家。</p>
+                <h2>{t('install.first')}</h2>
+                <p>{t('install.description')}</p>
               </div>
               <Bot size={24} />
             </div>
@@ -5234,7 +5843,7 @@ ${conversationText || '（请先粘贴对话历史）'}`;
                     <span>{tool.supportsScheduledTask ? '推荐默认工具，支持本机目录、Agent 创建和定时资料消化。' : '可使用同一个 Windows 本机知识库目录，资料消化按手动指令执行。'}</span>
                     <button className={tool.id === 'qclaw' ? 'primary' : 'secondary'} onClick={() => openToolDownload(tool.id)}>
                       <ExternalLink size={18} />
-                      下载 {tool.name}
+                      {t('install.download')} {tool.name}
                     </button>
                   </article>
                 );
@@ -5243,7 +5852,7 @@ ${conversationText || '（请先粘贴对话历史）'}`;
             <div className="actions">
               <button className="secondary" onClick={refreshInstallStatus}>
                 <RefreshCw size={18} />
-                重新检测
+                {t('install.redetect')}
               </button>
             </div>
             {installMessage && <div className="notice">{installMessage}</div>}
@@ -5254,14 +5863,14 @@ ${conversationText || '（请先粘贴对话历史）'}`;
           <section className="panel license-gate">
             <div className="panel-heading">
               <div>
-                <h2>请先激活许可证</h2>
+                <h2>{t('license.activateFirst')}</h2>
                 <p>{licenseRestrictionText}</p>
               </div>
               <KeyRound size={24} />
             </div>
             <div className="status-grid">
               <InfoPanel icon={<KeyRound />} title="当前授权" value={licenseLabel(effectiveLicenseStatus)} />
-              <InfoPanel icon={<BookOpen />} title="未激活可用" value="首页 / 系统设置 / 只读档案" />
+              <InfoPanel icon={<BookOpen />} title={t('license.available')} value={t('license.readOnly')} />
               <InfoPanel icon={<FileDown />} title="正式功能" value="激活后开放" />
             </div>
             <div className="notice muted">
@@ -5270,7 +5879,7 @@ ${conversationText || '（请先粘贴对话历史）'}`;
             <div className="actions">
               <button className="primary" onClick={() => setActiveSection('settings')}>
                 <KeyRound size={18} />
-                去系统设置激活
+                {t('license.goSettings')}
               </button>
               <button className="secondary" onClick={() => setActiveSection('archive')}>
                 <BookOpen size={18} />
@@ -6809,7 +7418,7 @@ ${conversationText || '（请先粘贴对话历史）'}`;
             <div className="panel-heading">
               <div>
                 <h2>智能体规则文件管理</h2>
-                <p>管理当前学生知识库根目录下的 AGENT.md、Claude.md、Claud.md 等规则性 Markdown 文件。</p>
+                <p>管理当前学生知识库根目录下的 AGENT.md、AGENTS.md、CLAUDE.md、IMA.md、WorkBuddy.md 等规则性 Markdown 文件。</p>
               </div>
               <ListChecks size={22} />
             </div>
@@ -6842,7 +7451,7 @@ ${conversationText || '（请先粘贴对话历史）'}`;
                 <input
                   value={ruleFileName}
                   onChange={(event) => setRuleFileName(event.target.value)}
-                  placeholder="例如 Claude.md / Claud.md / OpenClaw.md"
+                  placeholder="例如 AGENTS.md / CLAUDE.md / OpenClaw.md / WorkBuddy.md"
                 />
               </label>
             </div>
@@ -7120,21 +7729,39 @@ ${conversationText || '（请先粘贴对话历史）'}`;
           <section className="panel tasks-panel">
             <div className="panel-heading">
               <div>
-                <h2>系统设置</h2>
-                <p>{isWindows ? '默认根目录：D:\\学生资料；可在设置中更换资料根目录，并检测本机 Agent 工具安装状态。' : '默认使用 App 内置资料库；Downloads 导出与 Obsidian Vault 授权作为备份和高级浏览方式。'}</p>
+                <h2>{t('settings.title')}</h2>
+                <p>{isWindows ? t('settings.description.windows') : t('settings.description.android')}</p>
               </div>
               <Settings size={22} />
+            </div>
+            <div className="notice settings-language-panel">
+              <div>
+                <strong>{t('settings.language.title')}</strong>
+                <p>{t('settings.language.description')}</p>
+              </div>
+              <label className="inline-field language-field">
+                <span>{t('settings.language.select')}</span>
+                <select value={language} onChange={(event) => changeLanguage(event.target.value as LanguageCode)}>
+                  {languageOptions.map((item) => (
+                    <option value={item.id} key={item.id}>
+                      {item.nativeLabel} · {item.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
             </div>
             <div className="status-grid">
               {(isWindows
                 ? [
-                    ['存储模式', 'Windows 本机目录'],
-                    ['授权状态', licenseLabel(effectiveLicenseStatus)],
-                    ['学生资料根目录', storageConfig.baseDir],
+                    [t('settings.storageMode'), 'Windows 本机目录'],
+                    [t('settings.licenseStatus'), licenseLabel(effectiveLicenseStatus)],
+                    [t('settings.studentRoot'), storageConfig.baseDir],
                     ['QClaw', installStatus?.qclaw.installed ? `已安装 ${installStatus.qclaw.version ?? ''}` : '未安装'],
                     ['Marvis', installStatus?.marvis.installed ? `已安装 ${installStatus.marvis.version ?? ''}` : '未安装'],
                     ['Hohu', installStatus?.hohu.installed ? `已安装 ${installStatus.hohu.version ?? ''}` : '未安装'],
                     ['OpenClaw', installStatus?.openclaw?.installed ? `已安装 ${installStatus.openclaw.version ?? ''}` : '未安装'],
+                    ['ima.copilot', installStatus?.imaCopilot?.installed ? `已安装 ${installStatus.imaCopilot.version ?? ''}` : '未安装'],
+                    ['WorkBuddy', installStatus?.workbuddy?.installed ? `已安装 ${installStatus.workbuddy.version ?? ''}` : '未安装'],
                     ['Codex', installStatus?.codex?.installed ? `已安装 ${installStatus.codex.version ?? ''}` : '未安装'],
                     ['Claude Code', installStatus?.claudeCode?.installed ? `已安装 ${installStatus.claudeCode.version ?? ''}` : '未安装'],
                     ['Tailscale 软件', installStatus?.tailscale?.installed ? `已安装 ${installStatus.tailscale.version ?? ''}` : '未安装'],
@@ -7142,6 +7769,8 @@ ${conversationText || '（请先粘贴对话历史）'}`;
                     ['Marvis 路径', installStatus?.marvis.exePath || '未检测到'],
                     ['Hohu 路径', installStatus?.hohu.exePath || '未检测到'],
                     ['OpenClaw 路径', installStatus?.openclaw?.exePath || '未检测到'],
+                    ['ima.copilot 路径', installStatus?.imaCopilot?.exePath || '未检测到'],
+                    ['WorkBuddy 路径', installStatus?.workbuddy?.exePath || '未检测到'],
                     ['Codex 路径', installStatus?.codex?.exePath || '未检测到'],
                     ['Claude Code 路径', installStatus?.claudeCode?.exePath || '未检测到'],
                     ['Tailscale 路径', installStatus?.tailscale?.exePath || '未检测到'],
@@ -7176,8 +7805,8 @@ ${conversationText || '（请先粘贴对话历史）'}`;
             {isWindows && (
               <div className="source-list">
                 <div className="mini-heading">
-                  <strong>Agent 工具适配器</strong>
-                  <span>展示工具能力、规则文件模板和打开方式，后续新增工具只需补配置。</span>
+                  <strong>{t('settings.agentAdapters')}</strong>
+                  <span>{t('settings.agentAdapters.desc')}</span>
                 </div>
                 {agentToolOptions.map((tool) => (
                   <div className="source-row" key={tool.id}>
@@ -7191,7 +7820,7 @@ ${conversationText || '（请先粘贴对话历史）'}`;
             {isWindows && (
               <div className="actions">
                 <button className="secondary compact" onClick={refreshInstallStatus}>
-                  重新检测软件
+                  {t('settings.redetectSoftware')}
                 </button>
                 <button className="secondary compact" onClick={() => openExternal('tailscale')}>
                   {installStatus?.tailscale?.installed ? '打开 Tailscale' : '下载 Tailscale'}
@@ -7236,16 +7865,16 @@ ${conversationText || '（请先粘贴对话历史）'}`;
             )}
             <div className="notice legal-notice">
               <div>
-                <strong>法律与服务条款</strong>
-                <p>继续使用本软件前，请阅读并理解用户协议与隐私政策。商业部署时建议同步配置正式售后、隐私与订阅说明。</p>
+                <strong>{t('settings.legal')}</strong>
+                <p>{t('settings.legal.desc')}</p>
               </div>
               <div className="legal-actions">
                 <button className="secondary compact" onClick={openUserAgreement}>
-                  用户协议
+                  {t('legal.agreement')}
                   <ExternalLink size={16} />
                 </button>
                 <button className="secondary compact" onClick={openPrivacyPolicy}>
-                  隐私政策
+                  {t('legal.privacy')}
                   <ExternalLink size={16} />
                 </button>
               </div>
@@ -7351,7 +7980,7 @@ ${conversationText || '（请先粘贴对话历史）'}`;
                 }}
               >
                 <RefreshCw size={18} />
-                重新检测
+                {t('settings.redetect')}
               </button>
             </div>
           </section>

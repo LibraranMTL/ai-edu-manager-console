@@ -1,9 +1,9 @@
 {
   "versionCode": 61,
   "versionName": "0.5.1",
-  "windowsVersionCode": 76,
-  "windowsVersionName": "0.6.6",
-  "windowsUrl": "https://www.greatbg.com/download/AI-edu-manager-console-Windows-0.6.6.zip",
+  "windowsVersionCode": 77,
+  "windowsVersionName": "0.6.7",
+  "windowsUrl": "https://www.greatbg.com/download/AI-edu-manager-console-Windows-0.6.7.zip",
   "terminalApkUrl": "https://www.greatbg.com/download/AI-edu-manager-tablet-terminal-0.5.1.apk",
   "tabletTerminalVersionCode": 61,
   "tabletTerminalVersionName": "0.5.1",
@@ -12,5 +12,5 @@
   "managerApkVersionCode": 23,
   "managerApkVersionName": "0.2.3",
   "apkUrl": "https://www.greatbg.com/download/AI-edu-manager-tablet-terminal-0.5.1.apk",
-  "notes": "Windows 0.6.6：强化商业授权许可机制，未激活或过期时仅允许首页、系统设置和已有档案/报告只读浏览，禁止新建、初始化、导入、主机服务、平板绑定和智能体知识写入；保留 0.6.5 多资料来源目录能力。平板终端 0.5.1：增加上传、待消化、已消化和档案状态显示。"
+  "notes": "Windows 0.6.7：新增 ima.copilot 与 WorkBuddy Agent 工具适配，补充规则文件模板和本机安装检测；系统设置新增界面语言选择，首批支持简体中文、繁体中文、英文、法文、西班牙文、日文、韩文、越南文、马来西亚文。平板终端仍为 0.5.1。"
 }

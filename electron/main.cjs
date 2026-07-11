@@ -12,6 +12,8 @@ let qclawOpened = false;
 let marvisOpened = false;
 let hohuOpened = false;
 let openclawOpened = false;
+let imaCopilotOpened = false;
+let workbuddyOpened = false;
 let codexOpened = false;
 let claudeCodeOpened = false;
 let obsidianOpened = false;
@@ -21,10 +23,12 @@ let hostServiceLastError = '';
 let todayUploadCount = 0;
 let uploadCountDate = new Date().toISOString().slice(0, 10);
 
-const APP_VERSION = '0.6.6';
+const APP_VERSION = '0.6.7';
 const DEFAULT_HOST_PORT = 18777;
-const AGENT_TOOL_IDS = ['qclaw', 'marvis', 'hohu', 'openclaw', 'codex', 'claude-code', 'chatgpt', 'claude', 'doubao', 'coze', 'fastgpt'];
+const AGENT_TOOL_IDS = ['qclaw', 'marvis', 'hohu', 'openclaw', 'ima.copilot', 'workbuddy', 'codex', 'claude-code', 'chatgpt', 'claude', 'doubao', 'coze', 'fastgpt'];
 const WEB_AGENT_TOOL_URLS = {
+  'ima.copilot': 'https://ima.qq.com/',
+  workbuddy: 'https://www.workbuddy.ai/',
   chatgpt: 'https://chatgpt.com/',
   claude: 'https://claude.ai/',
   doubao: 'https://www.doubao.com/',
@@ -1995,7 +1999,8 @@ function compareAgentSoulSource(studentId, tool) {
   }
 }
 
-const DEFAULT_AGENT_RULE_FILES = ['AGENT.md', 'AGENTS.md', 'CLAUDE.md', 'Claude.md', 'Claud.md', 'QClaw.md', 'OpenClaw.md', 'Marvis.md', 'Hohu.md', 'RULES.md'];
+const DEFAULT_AGENT_RULE_FILES = ['AGENT.md', 'AGENTS.md', 'CLAUDE.md', 'QClaw.md', 'OpenClaw.md', 'Marvis.md', 'Hohu.md', 'IMA.md', 'ima.copilot.md', 'WorkBuddy.md', 'RULES.md'];
+const LEGACY_AGENT_RULE_FILES = ['Claude.md', 'Claud.md'];
 
 function normalizeRuleFileName(fileName) {
   const safe = path.basename(String(fileName || '').trim());
@@ -2014,7 +2019,8 @@ function listAgentRuleFiles(student) {
         const lower = entry.name.toLowerCase();
         if (
           DEFAULT_AGENT_RULE_FILES.map((item) => item.toLowerCase()).includes(lower) ||
-          /(agent|claude|claud|claw|marvis|hohu|rule|rules|system|prompt|指令|规则)/i.test(entry.name)
+          LEGACY_AGENT_RULE_FILES.map((item) => item.toLowerCase()).includes(lower) ||
+          /(agent|claude|claud|claw|marvis|hohu|ima|copilot|workbuddy|rule|rules|system|prompt|指令|规则)/i.test(entry.name)
         ) known.set(lower, entry.name);
       }
     }
@@ -2105,6 +2111,12 @@ function ruleFileTemplateIntro(student, fileName) {
   if (lower === 'claude.md' || lower === 'claud.md') {
     return `# ${cleanName} 教育管家 Claude Code 规则\n\n本文件用于 Claude Code 在该学生知识库目录中工作。\n\n## 工作规则\n\n该 Agent 的工作协议使用：${p.agent}\n后续所有学习资料消化都围绕该学生知识库执行。\n\n请优先读取 AGENT.md，再处理原始资料库与学情分析汇总。不要移动、删除用户原始资料。\n\n${learningReportProtocolText(p.summary)}\n`;
   }
+  if (lower === 'ima.md' || lower === 'ima.copilot.md') {
+    return `# ${cleanName} 教育管家 ima.copilot 规则\n\n本文件用于 ima.copilot 围绕该学生知识库进行搜、读、写和资料消化协作。\n\n## 工作规则\n\n该 Agent 的工作协议使用：${p.agent}\n后续所有学习资料消化都围绕该学生知识库执行。\n\n请优先读取 AGENT.md，再处理原始资料库与学情分析汇总。不要移动、删除用户原始资料。\n\n${learningReportProtocolText(p.summary)}\n`;
+  }
+  if (lower === 'workbuddy.md') {
+    return `# ${cleanName} 教育管家 WorkBuddy 规则\n\n本文件用于 WorkBuddy 在该学生知识库目录中执行资料整理、报告生成和后续跟进。\n\n## 工作规则\n\n该 Agent 的工作协议使用：${p.agent}\n后续所有学习资料消化都围绕该学生知识库执行。\n\n请优先读取 AGENT.md，再处理原始资料库与学情分析汇总。不要移动、删除用户原始资料。\n\n${learningReportProtocolText(p.summary)}\n`;
+  }
   return defaultRuleFileContent(student, fileName);
 }
 
@@ -2156,12 +2168,15 @@ function agentKnowledgeScanRoots() {
   const home = os.homedir();
   const roaming = process.env.APPDATA || path.join(home, 'AppData', 'Roaming');
   const local = process.env.LOCALAPPDATA || path.join(home, 'AppData', 'Local');
-  const toolNames = ['QClaw', 'OpenClaw', 'Hohu', 'Marvis', 'Codex', 'Claude'];
+  const toolNames = ['QClaw', 'OpenClaw', 'Hohu', 'Marvis', 'IMA', 'ima.copilot', 'WorkBuddy', 'Codex', 'Claude'];
   const roots = [
     path.join(home, '.qclaw'),
     path.join(home, '.openclaw'),
     path.join(home, '.hohu'),
     path.join(home, '.marvis'),
+    path.join(home, '.ima'),
+    path.join(home, '.ima.copilot'),
+    path.join(home, '.workbuddy'),
     path.join(home, '.codex'),
     path.join(home, '.claude'),
   ];
@@ -2193,6 +2208,8 @@ function shouldSkipAgentScanDir(name) {
 function inferAgentToolFromPath(filePath) {
   const lower = String(filePath || '').toLowerCase();
   if (lower.includes('claude-code') || lower.includes('.claude')) return 'claude-code';
+  if (lower.includes('ima.copilot') || lower.includes('\\ima\\') || lower.includes('/ima/') || lower.includes('.ima')) return 'ima.copilot';
+  if (lower.includes('workbuddy') || lower.includes('work-buddy')) return 'workbuddy';
   if (lower.includes('chatgpt') || lower.includes('openai')) return 'chatgpt';
   if (lower.includes('doubao') || lower.includes('豆包')) return 'doubao';
   if (lower.includes('fastgpt')) return 'fastgpt';
@@ -2208,7 +2225,7 @@ function inferAgentToolFromPath(filePath) {
 
 function inferAgentKnowledgeKind(fileName) {
   const lower = String(fileName || '').toLowerCase();
-  if (/^(agents|agent|claude|claud|qclaw|openclaw|marvis|hohu|rules?)\.(md|txt)$/i.test(lower)) return 'rule';
+  if (/^(agents|agent|claude|claud|qclaw|openclaw|marvis|hohu|ima|ima\.copilot|workbuddy|rules?)\.(md|txt)$/i.test(lower)) return 'rule';
   if (/(conversation|chat|history|transcript|对话|聊天|会话)/i.test(lower)) return 'conversation';
   if (/^(memory|long[-_ ]?term[-_ ]?memory|memories)\.(md|txt|json)$/.test(lower) || lower.includes('memory')) return 'memory';
   if (/^(soul|persona|role|system|prompt|profile)\.(md|txt|json)$/.test(lower) || /(soul|persona|role|system|人设|角色)/i.test(lower)) return 'soul';
@@ -3142,6 +3159,34 @@ function findAgentToolInstall(toolId) {
         path.join(os.homedir(), 'AppData', 'Local', 'OpenClaw'),
       ],
     },
+    'ima.copilot': {
+      displayNeedle: 'ima',
+      exeNames: ['ima.exe', 'IMA.exe', 'ima.copilot.exe', 'ima-copilot.exe', 'imaCopilot.exe', 'TencentIMA.exe'],
+      roots: [
+        'D:\\Program Files\\Tencent\\IMA',
+        'C:\\Program Files\\Tencent\\IMA',
+        'D:\\Program Files\\IMA',
+        'C:\\Program Files\\IMA',
+        'D:\\Program Files\\ima.copilot',
+        'C:\\Program Files\\ima.copilot',
+        path.join(os.homedir(), 'AppData', 'Local', 'Programs', 'IMA'),
+        path.join(os.homedir(), 'AppData', 'Local', 'Programs', 'ima.copilot'),
+        path.join(os.homedir(), 'AppData', 'Local', 'IMA'),
+        path.join(os.homedir(), 'AppData', 'Local', 'ima.copilot'),
+      ],
+    },
+    workbuddy: {
+      displayNeedle: 'workbuddy',
+      exeNames: ['WorkBuddy.exe', 'workbuddy.exe', 'TencentWorkBuddy.exe', 'WorkBuddyLauncher.exe', 'WorkBuddy Launcher.exe'],
+      roots: [
+        'D:\\Program Files\\Tencent\\WorkBuddy',
+        'C:\\Program Files\\Tencent\\WorkBuddy',
+        'D:\\Program Files\\WorkBuddy',
+        'C:\\Program Files\\WorkBuddy',
+        path.join(os.homedir(), 'AppData', 'Local', 'Programs', 'WorkBuddy'),
+        path.join(os.homedir(), 'AppData', 'Local', 'WorkBuddy'),
+      ],
+    },
     codex: {
       displayNeedle: 'codex',
       exeNames: ['codex.cmd', 'codex.exe', 'codex'],
@@ -3164,6 +3209,13 @@ function findAgentToolInstall(toolId) {
   const meta = toolMeta[toolId] || toolMeta.qclaw;
   const displayNeedle = meta.displayNeedle;
   const exeNames = meta.exeNames;
+  const matchesRegistryEntry = (entry) => {
+    const haystack = `${entry.DisplayName || ''} ${entry.InstallLocation || ''} ${entry.DisplayIcon || ''}`.toLowerCase();
+    if (toolId === 'ima.copilot') {
+      return /\bima(\.copilot)?\b|tencent\s*ima|腾讯.*ima/i.test(haystack);
+    }
+    return haystack.includes(displayNeedle);
+  };
   if (toolId === 'codex' || toolId === 'claude-code') {
     const pathExe = findExecutableInPath(exeNames);
     if (pathExe) {
@@ -3175,10 +3227,7 @@ function findAgentToolInstall(toolId) {
       };
     }
   }
-  const registryEntries = queryUninstallEntries().filter((entry) => {
-    const haystack = `${entry.DisplayName || ''} ${entry.InstallLocation || ''} ${entry.DisplayIcon || ''}`.toLowerCase();
-    return haystack.includes(displayNeedle);
-  });
+  const registryEntries = queryUninstallEntries().filter(matchesRegistryEntry);
   const roots = [];
   for (const entry of registryEntries) {
     const iconExe = normalizeExePath(entry.DisplayIcon);
@@ -3267,6 +3316,8 @@ function getAgentToolInstallStatus() {
   const marvis = findAgentToolInstall('marvis');
   const hohu = findAgentToolInstall('hohu');
   const openclaw = findAgentToolInstall('openclaw');
+  const imaCopilot = findAgentToolInstall('ima.copilot');
+  const workbuddy = findAgentToolInstall('workbuddy');
   const codex = findAgentToolInstall('codex');
   const claudeCode = findAgentToolInstall('claude-code');
   const webTool = (url, label = '网页入口') => ({ installed: true, version: label, exePath: url, installLocation: url });
@@ -3276,6 +3327,8 @@ function getAgentToolInstallStatus() {
     marvis,
     hohu,
     openclaw,
+    imaCopilot,
+    workbuddy,
     codex,
     claudeCode,
     chatgpt: webTool(WEB_AGENT_TOOL_URLS.chatgpt),
@@ -3285,7 +3338,7 @@ function getAgentToolInstallStatus() {
     fastgpt: webTool(WEB_AGENT_TOOL_URLS.fastgpt, '平台入口'),
     tailscale,
     anyInstalled: true,
-    recommendedTool: qclaw.installed ? 'qclaw' : (openclaw.installed ? 'openclaw' : (hohu.installed ? 'hohu' : (marvis.installed ? 'marvis' : (codex.installed ? 'codex' : (claudeCode.installed ? 'claude-code' : 'qclaw'))))),
+    recommendedTool: qclaw.installed ? 'qclaw' : (openclaw.installed ? 'openclaw' : (workbuddy.installed ? 'workbuddy' : (hohu.installed ? 'hohu' : (imaCopilot.installed ? 'ima.copilot' : (marvis.installed ? 'marvis' : (codex.installed ? 'codex' : (claudeCode.installed ? 'claude-code' : 'qclaw'))))))),
   });
 }
 
@@ -3354,6 +3407,26 @@ function openApp(appName) {
       spawn(exe, [], { detached: true, stdio: 'ignore' }).unref();
     } else {
       shell.openExternal('openclaw://').catch(() => shell.openExternal('https://openclaw.ai/').catch(() => {}));
+    }
+    return true;
+  }
+  if (appName === 'ima.copilot') {
+    const exe = findAgentToolInstall('ima.copilot').exePath;
+    imaCopilotOpened = true;
+    if (exe && fs.existsSync(exe)) {
+      spawn(exe, [], { detached: true, stdio: 'ignore' }).unref();
+    } else {
+      shell.openExternal('https://ima.qq.com/').catch(() => {});
+    }
+    return true;
+  }
+  if (appName === 'workbuddy') {
+    const exe = findAgentToolInstall('workbuddy').exePath;
+    workbuddyOpened = true;
+    if (exe && fs.existsSync(exe)) {
+      spawn(exe, [], { detached: true, stdio: 'ignore' }).unref();
+    } else {
+      shell.openExternal('https://www.workbuddy.ai/').catch(() => {});
     }
     return true;
   }
@@ -4265,7 +4338,7 @@ ipcMain.on('bridge:initStudentWorkspace', (event, studentName, agentMd, indexMd,
 ipcMain.on('bridge:openApp', (event, appName) => { event.returnValue = openApp(appName); });
 ipcMain.on('bridge:openExternalUrl', (event, url) => { event.returnValue = openExternalUrl(url); });
 ipcMain.on('bridge:getAppStatus', (event) => {
-  event.returnValue = JSON.stringify({ qclawOpened, marvisOpened, hohuOpened, openclawOpened, codexOpened, claudeCodeOpened, obsidianOpened });
+  event.returnValue = JSON.stringify({ qclawOpened, marvisOpened, hohuOpened, openclawOpened, imaCopilotOpened, workbuddyOpened, codexOpened, claudeCodeOpened, obsidianOpened });
 });
 ipcMain.on('bridge:getStorageConfig', (event) => { event.returnValue = getStorageConfig(); });
 ipcMain.on('bridge:getTemplateCenter', (event, systemTemplatesJson) => { event.returnValue = getTemplateCenter(systemTemplatesJson); });

@@ -23,7 +23,7 @@ let hostServiceLastError = '';
 let todayUploadCount = 0;
 let uploadCountDate = new Date().toISOString().slice(0, 10);
 
-const APP_VERSION = '0.7.14';
+const APP_VERSION = '0.7.15';
 const DEFAULT_HOST_PORT = 18777;
 const AGENT_TOOL_IDS = ['qclaw', 'marvis', 'hohu', 'openclaw', 'ima.copilot', 'workbuddy', 'codex', 'claude-code', 'chatgpt', 'claude', 'doubao', 'coze', 'fastgpt'];
 const WEB_AGENT_TOOL_URLS = {
@@ -2878,6 +2878,38 @@ function generateKnowledgeArchitectureReport() {
     const unboundProjects = projects.filter((project) => !project.studentIds.length);
     const projectWithoutAssets = projects.filter((project) => !(project.assetIds || []).length && !(project.stagingItems || []).some((item) => item.promotedAssetId));
     const stalePromotionProjects = projects.filter((project) => ['pending_archive', 'archived'].includes(project.status) && !project.publishedAt);
+    const auditItems = [
+      ...unboundProjects.map((project) => ({
+        id: `unbound-${project.id}`,
+        type: 'unbound_student',
+        severity: 'high',
+        projectId: project.id,
+        projectName: project.name,
+        title: '未绑定学生',
+        message: '项目尚未绑定学生，无法发布到学生成长模型。',
+        suggestedAction: '先绑定学生，再生成贡献申请。',
+      })),
+      ...projectWithoutAssets.map((project) => ({
+        id: `no-assets-${project.id}`,
+        type: 'no_assets',
+        severity: 'medium',
+        projectId: project.id,
+        projectName: project.name,
+        title: '无正式资产',
+        message: '项目没有正式资产引用，也没有已晋升暂存资料。',
+        suggestedAction: '从资产中心加入资料，或把研究暂存资料晋升为正式资产。',
+      })),
+      ...stalePromotionProjects.map((project) => ({
+        id: `stale-promotion-${project.id}`,
+        type: 'stale_promotion',
+        severity: 'medium',
+        projectId: project.id,
+        projectName: project.name,
+        title: '待发布贡献',
+        message: `项目处于 ${reportProjectStatusLabel(project.status)}，但尚未发布到成长模型。`,
+        suggestedAction: '打开归档确认清单，执行归档后发布到成长模型。',
+      })),
+    ];
 
     const projectRows = projects.map((project) => {
       const studentNames = project.studentIds.map((id) => studentsById.get(String(id))?.name || id).join('、') || project.studentNames?.join('、') || '未绑定';
@@ -2898,40 +2930,56 @@ function generateKnowledgeArchitectureReport() {
     ].join('\n') || '| 暂无明显风险 | - | - |';
 
     const nodeLines = new Map();
+    const classLines = new Map();
+    const graphNodes = new Map();
     const edgeLines = [];
-    const addNode = (id, label) => nodeLines.set(id, `  ${id}["${graphLabel(label)}"]`);
+    const addNode = (id, label, className, targetType, targetId) => {
+      nodeLines.set(id, `  ${id}["${graphLabel(label)}"]`);
+      if (className) classLines.set(id, `  class ${id} ${className};`);
+      if (targetType && targetId) graphNodes.set(id, {
+        nodeId: id,
+        type: targetType,
+        entityId: String(targetId),
+        label: String(label),
+      });
+    };
     const addEdge = (from, label, to) => {
       if (edgeLines.length < 180) edgeLines.push(`  ${from} -->|"${graphLabel(label)}"| ${to}`);
     };
     for (const student of students.slice(0, 80)) {
-      addNode(graphNodeId('student', student.id), `学生：${student.name}`);
+      addNode(graphNodeId('student', student.id), `学生：${student.name}`, 'studentNode', 'student', student.id);
     }
     for (const project of projects.slice(0, 80)) {
       const projectNode = graphNodeId('project', project.id);
-      addNode(projectNode, `项目：${project.name}`);
+      addNode(projectNode, `项目：${project.name}`, 'projectNode', 'project', project.id);
       for (const studentId of (project.studentIds || []).slice(0, 12)) {
         const student = studentsById.get(String(studentId));
         const studentNode = graphNodeId('student', studentId);
-        addNode(studentNode, `学生：${student?.name || studentId}`);
+        addNode(studentNode, `学生：${student?.name || studentId}`, 'studentNode', 'student', studentId);
         addEdge(studentNode, '绑定项目', projectNode);
       }
       for (const assetId of (project.assetIds || []).slice(0, 20)) {
         const asset = assetsById.get(String(assetId));
         const assetNode = graphNodeId('asset', assetId);
-        addNode(assetNode, `资产：${asset?.filename || assetId}`);
+        addNode(assetNode, `资产：${asset?.filename || assetId}`, 'assetNode', 'asset', assetId);
         addEdge(projectNode, '引用资产', assetNode);
       }
       if (project.publishedAt || project.status === 'published') {
         const growthNode = graphNodeId('growth', project.id);
-        addNode(growthNode, `成长沉淀：${project.name}`);
+        addNode(growthNode, `成长沉淀：${project.name}`, 'growthNode', 'growth', project.id);
         addEdge(projectNode, '发布贡献', growthNode);
       }
     }
     const mermaid = [
       '```mermaid',
       'graph LR',
+      '  classDef studentNode fill:#e0f2fe,stroke:#0284c7,color:#0f172a;',
+      '  classDef projectNode fill:#fce7f3,stroke:#db2777,color:#3f102b;',
+      '  classDef assetNode fill:#ecfdf5,stroke:#059669,color:#103f2b;',
+      '  classDef growthNode fill:#fef3c7,stroke:#d97706,color:#4a2b05;',
       ...Array.from(nodeLines.values()),
       ...edgeLines,
+      ...Array.from(classLines.values()),
       '```',
     ].join('\n');
 
@@ -3019,6 +3067,8 @@ ${riskRows}
         promotedStagingCount,
         publishedProjects: publishedProjects.length,
       },
+      auditItems,
+      graphNodes: Array.from(graphNodes.values()),
       message: `已生成知识关系图和项目贡献审计索引：${knowledgeGraphReportPath()}`,
     });
   } catch (error) {

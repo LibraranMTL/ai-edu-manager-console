@@ -288,6 +288,24 @@ type PromotionPlan = {
   message?: string;
 };
 
+type ProjectAuditItem = {
+  id: string;
+  type: 'unbound_student' | 'no_assets' | 'stale_promotion' | string;
+  severity: 'high' | 'medium' | 'low' | string;
+  projectId: string;
+  projectName: string;
+  title: string;
+  message: string;
+  suggestedAction?: string;
+};
+
+type KnowledgeGraphNode = {
+  nodeId: string;
+  type: 'student' | 'project' | 'asset' | 'growth' | string;
+  entityId: string;
+  label: string;
+};
+
 type StudentDraft = Omit<Student, 'id' | 'createdAt' | 'status'>;
 
 type AndroidBridge = {
@@ -704,8 +722,8 @@ const storageKey = 'edu-manager-launcher.students.v2';
 const themeStorageKey = 'edu-manager-launcher.theme.v1';
 const languageStorageKey = 'edu-manager-launcher.language.v1';
 const archiveKeywordStorageKey = 'edu-manager-launcher.archive-keywords.v1';
-const currentVersionCode = 94;
-const currentVersionName = '0.7.14';
+const currentVersionCode = 95;
+const currentVersionName = '0.7.15';
 const updateManifestUrl = [
   'https://www.greatbg.com/download/edu-manager-version.json',
   'http://www.greatbg.com/download/edu-manager-version.json',
@@ -3162,6 +3180,9 @@ function App() {
   const [projects, setProjects] = useState<LearningProject[]>([]);
   const [projectMessage, setProjectMessage] = useState('');
   const [knowledgeGraphPreview, setKnowledgeGraphPreview] = useState('');
+  const [knowledgeGraphNodes, setKnowledgeGraphNodes] = useState<KnowledgeGraphNode[]>([]);
+  const [projectAuditItems, setProjectAuditItems] = useState<ProjectAuditItem[]>([]);
+  const [projectAuditFilter, setProjectAuditFilter] = useState<'all' | 'high' | 'medium' | 'unbound_student' | 'no_assets' | 'stale_promotion'>('all');
   const [selectedProjectId, setSelectedProjectId] = useState('');
   const [projectDraft, setProjectDraft] = useState({ name: '', type: '学习项目', studentIds: [] as string[] });
   const [selectedProjectAssetIds, setSelectedProjectAssetIds] = useState<string[]>([]);
@@ -3434,6 +3455,20 @@ function App() {
       .map((item) => item.id);
     return { duplicateCount, actionCount: governanceCandidateIds.length, governanceCandidateIds, promotionCandidateIds };
   }, [projectStagingItems]);
+  const filteredProjectAuditItems = useMemo(() => (
+    projectAuditItems.filter((item) => {
+      if (projectAuditFilter === 'all') return true;
+      if (projectAuditFilter === 'high' || projectAuditFilter === 'medium') return item.severity === projectAuditFilter;
+      return item.type === projectAuditFilter;
+    })
+  ), [projectAuditFilter, projectAuditItems]);
+  const projectAuditStats = useMemo(() => ({
+    high: projectAuditItems.filter((item) => item.severity === 'high').length,
+    medium: projectAuditItems.filter((item) => item.severity === 'medium').length,
+    unbound: projectAuditItems.filter((item) => item.type === 'unbound_student').length,
+    noAssets: projectAuditItems.filter((item) => item.type === 'no_assets').length,
+    stalePromotion: projectAuditItems.filter((item) => item.type === 'stale_promotion').length,
+  }), [projectAuditItems]);
 
   const projectStatusLabel = (status?: string) => {
     if (status === 'draft') return '草稿';
@@ -5511,9 +5546,11 @@ ${conversationText || '（请先粘贴对话历史）'}`;
       return;
     }
     try {
-      const result = JSON.parse(raw) as { ok?: boolean; content?: string; reportPath?: string; auditPath?: string; message?: string };
+      const result = JSON.parse(raw) as { ok?: boolean; content?: string; reportPath?: string; auditPath?: string; auditItems?: ProjectAuditItem[]; graphNodes?: KnowledgeGraphNode[]; message?: string };
       setProjectMessage(result.message || (result.ok ? '已生成知识关系图和项目贡献审计索引。' : '生成知识关系图失败。'));
       if (result.content) setKnowledgeGraphPreview(result.content);
+      setProjectAuditItems(result.auditItems ?? []);
+      setKnowledgeGraphNodes(result.graphNodes ?? []);
     } catch {
       setProjectMessage('知识关系图结果解析失败。');
     }
@@ -5790,27 +5827,85 @@ ${JSON.stringify(items, null, 2)}
     }
   };
 
-  const loadSelectedProjectPromotionPlan = () => {
-    if (!selectedProjectId) {
+  const loadProjectPromotionPlan = (projectId: string) => {
+    if (!projectId) {
       setProjectMessage('请先选择学习项目。');
-      return;
+      return false;
     }
-    const raw = bridge()?.getProjectPromotionPlan?.(selectedProjectId);
+    const raw = bridge()?.getProjectPromotionPlan?.(projectId);
     if (!raw) {
       setProjectMessage('当前环境不支持生成归档确认清单。');
-      return;
+      return false;
     }
     try {
       const result = JSON.parse(raw) as PromotionPlan;
       if (!result.ok) {
         setProjectMessage(result.message || '生成归档确认清单失败。');
-        return;
+        return false;
       }
       setPromotionPlan({ ...result, items: result.items ?? [] });
       setProjectMessage(result.message || '已生成归档确认清单。');
+      return true;
     } catch {
       setProjectMessage('归档确认清单结果解析失败。');
+      return false;
     }
+  };
+
+  const loadSelectedProjectPromotionPlan = () => {
+    if (!selectedProjectId) {
+      setProjectMessage('请先选择学习项目。');
+      return;
+    }
+    loadProjectPromotionPlan(selectedProjectId);
+  };
+
+  const handleProjectAuditAction = (item: ProjectAuditItem) => {
+    setSelectedProjectId(item.projectId);
+    setSelectedProjectAssetIds([]);
+    setSelectedProjectStagingIds([]);
+    setPromotionPreview('');
+    setPromotionPlan(null);
+    setPromotionExecutionSummary('');
+    if (item.type === 'stale_promotion') {
+      loadProjectPromotionPlan(item.projectId);
+      setProjectMessage(`已定位到「${item.projectName}」，并打开归档确认清单。`);
+      return;
+    }
+    if (item.type === 'no_assets') {
+      setProjectMessage(`已定位到「${item.projectName}」。请从资产中心加入资料，或在研究暂存层把候选资料晋升为正式资产。`);
+      return;
+    }
+    if (item.type === 'unbound_student') {
+      setProjectMessage(`已定位到「${item.projectName}」。请在“项目绑定学生”区域勾选至少一个学生。`);
+      return;
+    }
+    setProjectMessage(`已定位到「${item.projectName}」。`);
+  };
+
+  const handleKnowledgeGraphNodeClick = (rawNodeId: string) => {
+    const target = knowledgeGraphNodes.find((node) => rawNodeId.includes(node.nodeId));
+    if (!target) return false;
+    if (target.type === 'student') {
+      setSelectedId(target.entityId);
+      setActiveSection('home');
+      setProjectMessage(`已从关系图定位到学生：${target.label.replace(/^学生：/, '')}`);
+      return true;
+    }
+    if (target.type === 'project' || target.type === 'growth') {
+      setSelectedProjectId(target.entityId);
+      setActiveSection('projects');
+      setProjectMessage(`已从关系图定位到学习项目：${target.label.replace(/^项目：|^成长沉淀：/, '')}`);
+      return true;
+    }
+    if (target.type === 'asset') {
+      const asset = assetIndex.assets.find((item) => item.assetId === target.entityId);
+      setActiveSection('assets');
+      setAssetSearch(asset?.filename || target.entityId);
+      setProjectMessage(`已从关系图定位到文件资产：${asset?.filename || target.label.replace(/^资产：/, '')}`);
+      return true;
+    }
+    return false;
   };
 
   const updatePromotionPlanItemAction = (itemId: string, action: PromotionAction) => {
@@ -8001,12 +8096,54 @@ ${JSON.stringify(items, null, 2)}
                   </button>
                 )}
               </div>
+              {projectAuditItems.length > 0 && (
+                <div className="project-audit-board">
+                  <div className="mini-heading compact-heading">
+                    <strong>可操作审计项</strong>
+                    <span>按风险类型筛选后，可直接定位到对应学习项目继续处理。</span>
+                  </div>
+                  <div className="audit-filter-row">
+                    {[
+                      { key: 'all', label: `全部 ${projectAuditItems.length}` },
+                      { key: 'high', label: `高风险 ${projectAuditStats.high}` },
+                      { key: 'medium', label: `中风险 ${projectAuditStats.medium}` },
+                      { key: 'unbound_student', label: `未绑定学生 ${projectAuditStats.unbound}` },
+                      { key: 'no_assets', label: `无正式资产 ${projectAuditStats.noAssets}` },
+                      { key: 'stale_promotion', label: `待发布贡献 ${projectAuditStats.stalePromotion}` },
+                    ].map((item) => (
+                      <button
+                        className={projectAuditFilter === item.key ? 'chip-button active' : 'chip-button'}
+                        key={item.key}
+                        onClick={() => setProjectAuditFilter(item.key as typeof projectAuditFilter)}
+                      >
+                        {item.label}
+                      </button>
+                    ))}
+                  </div>
+                  <div className="project-audit-list">
+                    {filteredProjectAuditItems.map((item) => (
+                      <div className={`project-audit-card ${item.severity}`} key={item.id}>
+                        <div>
+                          <strong>{item.title}</strong>
+                          <span>{item.projectName}</span>
+                          <small>{item.message}</small>
+                          {item.suggestedAction && <em>{item.suggestedAction}</em>}
+                        </div>
+                        <button className="secondary compact" onClick={() => handleProjectAuditAction(item)}>
+                          定位处理
+                        </button>
+                      </div>
+                    ))}
+                    {filteredProjectAuditItems.length === 0 && <div className="empty-state compact">当前筛选下没有审计项。</div>}
+                  </div>
+                </div>
+              )}
               {knowledgeGraphPreview && (
                 <div className="markdown-reader learning-report-reader">
                   <div className="reader-toolbar">
                     <span>知识关系图与审计索引预览</span>
                   </div>
-                  <MarkdownView content={knowledgeGraphPreview} />
+                  <MarkdownView content={knowledgeGraphPreview} onMermaidNodeClick={handleKnowledgeGraphNodeClick} />
                 </div>
               )}
             </section>
@@ -9899,7 +10036,7 @@ function renderInlineMarkdown(text: string, keyPrefix: string): React.ReactNode[
   return nodes;
 }
 
-function MarkdownView({ content }: { content: string }) {
+function MarkdownView({ content, onMermaidNodeClick }: { content: string; onMermaidNodeClick?: (nodeId: string) => boolean | void }) {
   const lines = content.split(/\r?\n/);
   const blocks: React.ReactNode[] = [];
   let codeBuffer: string[] = [];
@@ -10000,7 +10137,7 @@ function MarkdownView({ content }: { content: string }) {
         const language = codeLanguage.trim().toLowerCase();
         blocks.push(
           language === 'mermaid' ? (
-            <MermaidBlock key={`mermaid-${index}`} source={codeText} />
+          <MermaidBlock key={`mermaid-${index}`} source={codeText} onNodeClick={onMermaidNodeClick} />
           ) : (
             <pre className="md-code" key={`code-${index}`}>
               {codeText}
@@ -10106,7 +10243,7 @@ function MarkdownView({ content }: { content: string }) {
     const language = codeLanguage.trim().toLowerCase();
     blocks.push(
       language === 'mermaid' ? (
-        <MermaidBlock key="mermaid-tail" source={codeText} />
+        <MermaidBlock key="mermaid-tail" source={codeText} onNodeClick={onMermaidNodeClick} />
       ) : (
         <pre className="md-code" key="code-tail">
           {codeText}
@@ -10118,13 +10255,16 @@ function MarkdownView({ content }: { content: string }) {
   return <article className="markdown-content">{blocks}</article>;
 }
 
-function MermaidBlock({ source }: { source: string }) {
+function MermaidBlock({ source, onNodeClick }: { source: string; onNodeClick?: (nodeId: string) => boolean | void }) {
   const renderId = useMemo(() => `mermaid-${Math.random().toString(36).slice(2)}`, []);
   const [result, setResult] = useState<{ loading: boolean; svg: string; error: string }>({
     loading: true,
     svg: '',
     error: '',
   });
+  const [scale, setScale] = useState(1);
+  const [pan, setPan] = useState({ x: 0, y: 0 });
+  const [dragState, setDragState] = useState<{ pointerId: number; startX: number; startY: number; originX: number; originY: number } | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -10186,9 +10326,114 @@ function MermaidBlock({ source }: { source: string }) {
     );
   }
 
+  const clampScale = (nextScale: number) => Math.max(0.45, Math.min(2.4, Number(nextScale.toFixed(2))));
+  const zoomGraph = (delta: number) => setScale((current) => clampScale(current + delta));
+  const resetGraphView = () => {
+    setScale(1);
+    setPan({ x: 0, y: 0 });
+  };
+  const downloadBlob = (blob: Blob, filename: string) => {
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    window.setTimeout(() => URL.revokeObjectURL(url), 500);
+  };
+  const exportSvg = () => {
+    downloadBlob(new Blob([result.svg], { type: 'image/svg+xml;charset=utf-8' }), `knowledge-graph-${Date.now()}.svg`);
+  };
+  const exportPng = () => {
+    const svgBlob = new Blob([result.svg], { type: 'image/svg+xml;charset=utf-8' });
+    const url = URL.createObjectURL(svgBlob);
+    const image = new Image();
+    image.onload = () => {
+      const canvas = document.createElement('canvas');
+      canvas.width = Math.max(image.naturalWidth || image.width || 1200, 1200);
+      canvas.height = Math.max(image.naturalHeight || image.height || 800, 800);
+      const context = canvas.getContext('2d');
+      if (!context) {
+        URL.revokeObjectURL(url);
+        return;
+      }
+      context.fillStyle = '#ffffff';
+      context.fillRect(0, 0, canvas.width, canvas.height);
+      context.drawImage(image, 0, 0);
+      canvas.toBlob((blob) => {
+        if (blob) downloadBlob(blob, `knowledge-graph-${Date.now()}.png`);
+        URL.revokeObjectURL(url);
+      }, 'image/png');
+    };
+    image.onerror = () => URL.revokeObjectURL(url);
+    image.src = url;
+  };
+  const startPan = (event: React.PointerEvent<HTMLDivElement>) => {
+    if (event.button !== 0) return;
+    event.currentTarget.setPointerCapture(event.pointerId);
+    setDragState({
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startY: event.clientY,
+      originX: pan.x,
+      originY: pan.y,
+    });
+  };
+  const movePan = (event: React.PointerEvent<HTMLDivElement>) => {
+    if (!dragState || dragState.pointerId !== event.pointerId) return;
+    setPan({
+      x: dragState.originX + event.clientX - dragState.startX,
+      y: dragState.originY + event.clientY - dragState.startY,
+    });
+  };
+  const endPan = (event: React.PointerEvent<HTMLDivElement>) => {
+    if (!dragState || dragState.pointerId !== event.pointerId) return;
+    event.currentTarget.releasePointerCapture(event.pointerId);
+    setDragState(null);
+  };
+  const handleGraphClick = (event: React.MouseEvent<HTMLDivElement>) => {
+    if (!onNodeClick) return;
+    let element = event.target instanceof Element ? event.target : null;
+    while (element && element !== event.currentTarget) {
+      const elementId = element.getAttribute('id');
+      if (elementId) {
+        const handled = onNodeClick(elementId);
+        if (handled) return;
+      }
+      element = element.parentElement;
+    }
+  };
+
   return (
     <div className="md-mermaid">
-      <div className="md-mermaid-canvas" dangerouslySetInnerHTML={{ __html: result.svg }} />
+      <div className="md-mermaid-toolbar">
+        <span>关系图视图：{Math.round(scale * 100)}%</span>
+        <button type="button" onClick={() => zoomGraph(-0.12)}>缩小</button>
+        <button type="button" onClick={() => zoomGraph(0.12)}>放大</button>
+        <button type="button" onClick={resetGraphView}>重置</button>
+        <button type="button" onClick={exportSvg}>导出 SVG</button>
+        <button type="button" onClick={exportPng}>导出 PNG</button>
+      </div>
+      <div
+        className={dragState ? 'md-mermaid-viewport dragging' : 'md-mermaid-viewport'}
+        onPointerDown={startPan}
+        onPointerMove={movePan}
+        onPointerUp={endPan}
+        onPointerCancel={endPan}
+        onClick={handleGraphClick}
+        onWheel={(event) => {
+          if (!event.ctrlKey && !event.shiftKey) return;
+          event.preventDefault();
+          zoomGraph(event.deltaY > 0 ? -0.08 : 0.08);
+        }}
+      >
+        <div
+          className="md-mermaid-canvas"
+          style={{ transform: `translate(${pan.x}px, ${pan.y}px) scale(${scale})` }}
+          dangerouslySetInnerHTML={{ __html: result.svg }}
+        />
+      </div>
     </div>
   );
 }

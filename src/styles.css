@@ -2367,7 +2367,7 @@ pre {
 
 .markdown-content .md-mermaid {
   width: 100%;
-  overflow: auto;
+  overflow: hidden;
   padding: 14px;
   border: 1px solid #cfe2dc;
   border-radius: 14px;
@@ -2375,13 +2375,67 @@ pre {
   box-shadow: 0 12px 28px rgba(28, 54, 48, 0.08);
 }
 
+.markdown-content .md-mermaid-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.markdown-content .md-mermaid-toolbar span {
+  margin-right: auto;
+  color: #46635e;
+  font-size: 13px;
+  font-weight: 900;
+}
+
+.markdown-content .md-mermaid-toolbar button {
+  border: 1px solid #bcd7d0;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.9);
+  color: #284540;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 900;
+  padding: 6px 10px;
+}
+
+.markdown-content .md-mermaid-toolbar button:hover {
+  border-color: var(--theme-primary);
+  color: var(--theme-primary-strong);
+}
+
+.markdown-content .md-mermaid-viewport {
+  min-height: 320px;
+  max-height: 68vh;
+  overflow: auto;
+  border: 1px solid rgba(188, 215, 208, 0.8);
+  border-radius: 12px;
+  background:
+    linear-gradient(rgba(255, 255, 255, 0.92), rgba(255, 255, 255, 0.92)),
+    radial-gradient(circle at 1px 1px, rgba(98, 189, 174, 0.2) 1px, transparent 0);
+  background-size: auto, 18px 18px;
+  cursor: grab;
+  touch-action: none;
+}
+
+.markdown-content .md-mermaid-viewport.dragging {
+  cursor: grabbing;
+}
+
 .markdown-content .md-mermaid-canvas {
+  display: inline-block;
   min-width: 560px;
+  padding: 18px;
+  transform-origin: 0 0;
+  transition: transform 120ms ease;
 }
 
 .markdown-content .md-mermaid-canvas svg {
   display: block;
-  width: 100%;
+  width: max-content;
+  min-width: 780px;
   max-width: none;
   height: auto;
   margin: 0 auto;
@@ -2444,6 +2498,110 @@ pre {
 
 .markdown-content .md-table-cell:last-child {
   border-right: 0;
+}
+
+.project-audit-board {
+  display: grid;
+  gap: 12px;
+  margin-top: 14px;
+  padding: 14px;
+  border: 1px solid #d8e7e2;
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.72);
+}
+
+.compact-heading {
+  margin-bottom: 0;
+}
+
+.audit-filter-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.chip-button {
+  border: 1px solid #cfe2dc;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.86);
+  color: #46635e;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 900;
+  padding: 8px 12px;
+}
+
+.chip-button.active,
+.chip-button:hover {
+  border-color: var(--theme-primary);
+  background: var(--theme-soft);
+  color: var(--theme-primary-strong);
+}
+
+.project-audit-list {
+  display: grid;
+  gap: 10px;
+  max-height: 360px;
+  overflow: auto;
+  padding-right: 4px;
+}
+
+.project-audit-card {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: center;
+  padding: 12px;
+  border: 1px solid #d8e7e2;
+  border-left-width: 5px;
+  border-radius: 12px;
+  background: #fff;
+  box-shadow: 0 8px 22px rgba(28, 54, 48, 0.06);
+}
+
+.project-audit-card.high {
+  border-left-color: #e11d48;
+}
+
+.project-audit-card.medium {
+  border-left-color: #f59e0b;
+}
+
+.project-audit-card.low {
+  border-left-color: #0ea5e9;
+}
+
+.project-audit-card strong,
+.project-audit-card span,
+.project-audit-card small,
+.project-audit-card em {
+  display: block;
+}
+
+.project-audit-card strong {
+  color: #10201f;
+  font-size: 15px;
+}
+
+.project-audit-card span {
+  margin-top: 3px;
+  color: var(--theme-primary-strong);
+  font-weight: 900;
+}
+
+.project-audit-card small {
+  margin-top: 4px;
+  color: #516a65;
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.project-audit-card em {
+  margin-top: 4px;
+  color: #6f5b2c;
+  font-size: 12px;
+  font-style: normal;
+  font-weight: 800;
 }
 
 .markdown-content .md-table-head {

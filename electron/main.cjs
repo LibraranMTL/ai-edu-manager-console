@@ -23,7 +23,7 @@ let hostServiceLastError = '';
 let todayUploadCount = 0;
 let uploadCountDate = new Date().toISOString().slice(0, 10);
 
-const APP_VERSION = '0.7.18';
+const APP_VERSION = '0.7.19';
 const DEFAULT_HOST_PORT = 18777;
 const AGENT_TOOL_IDS = ['qclaw', 'marvis', 'hohu', 'openclaw', 'ima.copilot', 'workbuddy', 'codex', 'claude-code', 'chatgpt', 'claude', 'doubao', 'coze', 'fastgpt'];
 const WEB_AGENT_TOOL_URLS = {
@@ -2325,6 +2325,81 @@ function projectPathsFor(projectName, rootPath) {
   };
 }
 
+const PROJECT_WORKSPACE_TEMPLATES = [
+  {
+    id: 'general',
+    name: '通用学习项目',
+    description: '适合普通作业、短期专题和轻量研究。',
+    folders: ['资料', '进展', '团队成员', '成果'],
+  },
+  {
+    id: 'subject',
+    name: '学科专题',
+    description: '适合课程学习、错题复盘和阶段总结。',
+    folders: ['课程资料', '作业与反馈', '错题与问题', '阶段总结', '成果'],
+  },
+  {
+    id: 'competition',
+    name: '竞赛 / 活动',
+    description: '适合比赛、活动、作品集和团队协作。',
+    folders: ['赛事规则', '参考资料', '方案设计', '团队协作', '过程记录', '提交成果'],
+  },
+  {
+    id: 'research',
+    name: '研究项目',
+    description: '适合论文、实验、调研和文献综述。',
+    folders: ['文献资料', '研究问题', '数据与实验', '分析过程', '成果论文'],
+  },
+  {
+    id: 'application',
+    name: '升学申请',
+    description: '适合学校申请、文书素材和申请复盘。',
+    folders: ['学校与项目', '申请材料', '文书素材', '推荐与反馈', '结果与复盘'],
+  },
+];
+
+function sanitizeWorkspaceFolderName(value) {
+  return String(value || '')
+    .replace(/[\\/:*?"<>|\x00-\x1F]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 60);
+}
+
+function normalizeWorkspaceFolders(folders) {
+  const source = Array.isArray(folders)
+    ? folders
+    : String(folders || '').split(/\r?\n|[,，;；]/);
+  return mergeUnique(source.map(sanitizeWorkspaceFolderName))
+    .filter((folder) => folder && folder !== '研究暂存')
+    .slice(0, 24);
+}
+
+function projectWorkspaceTemplateFor(templateId) {
+  return PROJECT_WORKSPACE_TEMPLATES.find((template) => template.id === String(templateId || '')) || PROJECT_WORKSPACE_TEMPLATES[0];
+}
+
+function projectWorkspaceFoldersFor(project) {
+  const customFolders = normalizeWorkspaceFolders(project.workspaceFolders);
+  if (customFolders.length) return customFolders;
+  return projectWorkspaceTemplateFor(project.workspaceTemplateId).folders;
+}
+
+function projectWorkspaceIndexTemplate(project) {
+  const paths = projectPathsFor(project.name, project.projectRootPath);
+  const template = projectWorkspaceTemplateFor(project.workspaceTemplateId);
+  const folders = projectWorkspaceFoldersFor(project);
+  const rows = folders.map((folder) => `| ${folder} | ${path.join(paths.workspacePath, folder)} |`).join('\n');
+  return `# ${project.name} 项目工作空间结构\n\n> 本文件描述的是“项目工作空间”的人工项目管理目录结构，不是“项目知识空间”的 LLM Wiki schema。\n\n- 工作空间模板：${project.workspaceTemplateName || template.name}\n- 项目工作空间：${paths.workspacePath}\n- 研究暂存层：${paths.stagingPath}\n- 项目知识空间：${paths.knowledgeRootPath}\n\n## 工作空间文件夹\n\n| 文件夹 | 路径 |\n| --- | --- |\n${rows || '| 暂无 | - |'}\n\n## 边界说明\n\n- 项目工作空间：用于按项目管理习惯收集资料、进展、团队协作、成果等内容。\n- 研究暂存层：用于候选资料收集、AI 初筛、治理和资产晋升。\n- 项目知识空间：固定使用 LLM Wiki 结构，包括项目原始资料库、概念库、实体库、摘要库、问答精华库、综合汇总库、项目报告和知识贡献。\n- 修改本模板只会影响项目工作空间下的文件夹，不会改变项目知识空间目录结构。\n`;
+}
+
+function writeProjectWorkspaceIndex(project) {
+  const normalized = normalizeProject(project);
+  const paths = projectPathsFor(normalized.name, normalized.projectRootPath);
+  fs.mkdirSync(paths.workspacePath, { recursive: true });
+  fs.writeFileSync(path.join(paths.workspacePath, '工作空间结构.md'), projectWorkspaceIndexTemplate(normalized), 'utf8');
+}
+
 function projectAgentTemplate(project, students) {
   const paths = projectPathsFor(project.name, project.projectRootPath);
   const studentLines = (students || []).map((student) => `- ${student.name}：${student.rootPath || getStudentRootDir(student.name)}`).join('\n') || '- 暂未绑定学生';
@@ -2500,6 +2575,8 @@ function normalizeProject(project) {
   const createdAt = project.createdAt || new Date().toISOString();
   const studentIds = Array.isArray(project.studentIds) ? project.studentIds.map(String) : [];
   const paths = projectPathsFor(cleanName, project.projectRootPath);
+  const workspaceTemplate = projectWorkspaceTemplateFor(project.workspaceTemplateId);
+  const workspaceFolders = projectWorkspaceFoldersFor(project);
   const fileDigestState = readProjectDigestState({ ...project, name: cleanName, projectRootPath: paths.projectRootPath });
   const digestState = project.digestState && typeof project.digestState === 'object'
     ? { ...project.digestState, ...fileDigestState }
@@ -2520,6 +2597,9 @@ function normalizeProject(project) {
     summaryPath: paths.summaryPath,
     agentPath: paths.agentPath,
     outputPath: paths.outputPath,
+    workspaceTemplateId: String(project.workspaceTemplateId || workspaceTemplate.id),
+    workspaceTemplateName: String(project.workspaceTemplateName || workspaceTemplate.name),
+    workspaceFolders,
     promotionPath: project.promotionPath || path.join(paths.contributionPath, '知识贡献申请.md'),
     assetIds: Array.isArray(project.assetIds) ? project.assetIds.map(String) : [],
     stagingItems: Array.isArray(project.stagingItems) ? project.stagingItems.map(normalizeProjectStagingItem) : [],
@@ -2534,14 +2614,12 @@ function normalizeProject(project) {
 function ensureProjectWorkspace(project) {
   const normalized = normalizeProject(project);
   const paths = projectPathsFor(normalized.name, normalized.projectRootPath);
+  const workspaceFolderDirs = projectWorkspaceFoldersFor(normalized).map((folder) => path.join(paths.workspacePath, folder));
   [
     projectsBaseDir(),
     paths.workspacePath,
     paths.stagingPath,
-    path.join(paths.workspacePath, '资料'),
-    path.join(paths.workspacePath, '进展'),
-    path.join(paths.workspacePath, '团队成员'),
-    path.join(paths.workspacePath, '成果'),
+    ...workspaceFolderDirs,
     paths.managerPath,
     paths.knowledgeRootPath,
     paths.rawPath,
@@ -2556,6 +2634,7 @@ function ensureProjectWorkspace(project) {
   ].forEach((dir) => fs.mkdirSync(dir, { recursive: true }));
   const students = readStudentsIndex().filter((student) => normalized.studentIds.includes(String(student.id)));
   writeTextIfMissing(paths.agentPath, projectAgentTemplate(normalized, students));
+  writeProjectWorkspaceIndex(normalized);
   writeProjectBindingIndex(normalized);
   writeTextIfMissing(path.join(paths.knowledgeRootPath, 'index.md'), `# ${normalized.name} 项目知识空间\n\n- 项目原始资料库：${paths.rawPath}\n- 综合汇总库：${paths.synthesisPath}\n- 知识贡献：${paths.contributionPath}\n`);
   writeTextIfMissing(path.join(paths.knowledgeRootPath, 'log.md'), `# ${normalized.name} 项目处理日志\n\n`);
@@ -2582,13 +2661,60 @@ function createProject(optionsJson) {
       status: options.status || 'active',
       studentIds,
       studentNames: selectedStudents.map((student) => student.name),
+      workspaceTemplateId: options.workspaceTemplateId || 'general',
+      workspaceFolders: normalizeWorkspaceFolders(options.workspaceFolders),
     }));
     const projects = readProjects().map(normalizeProject);
     writeProjects([project, ...projects.filter((item) => String(item.id) !== String(project.id))]);
     appendHostTimeline({ type: 'project_created', title: 'Project created', detail: project.name, count: 1 });
-    return JSON.stringify({ ok: true, project, projects: readProjects().map(normalizeProject), message: `已创建项目知识空间：${project.projectRootPath}` });
+    return JSON.stringify({ ok: true, project, projects: readProjects().map(normalizeProject), message: `已创建学习项目：${project.projectRootPath}` });
   } catch (error) {
     return JSON.stringify({ ok: false, message: `创建学习项目失败：${error.message}` });
+  }
+}
+
+function applyProjectWorkspaceTemplate(projectId, templateId, foldersJson) {
+  try {
+    const template = projectWorkspaceTemplateFor(templateId);
+    let parsedFolders = [];
+    try {
+      parsedFolders = JSON.parse(foldersJson || '[]');
+    } catch {
+      parsedFolders = [];
+    }
+    const workspaceFolders = normalizeWorkspaceFolders(parsedFolders);
+    const folders = workspaceFolders.length ? workspaceFolders : template.folders;
+    const now = new Date().toISOString();
+    const projects = readProjects().map(normalizeProject);
+    let updated = null;
+    const nextProjects = projects.map((project) => {
+      if (String(project.id) !== String(projectId)) return project;
+      updated = {
+        ...project,
+        workspaceTemplateId: template.id,
+        workspaceTemplateName: template.name,
+        workspaceFolders: folders,
+        updatedAt: now,
+      };
+      return updated;
+    });
+    if (!updated) return JSON.stringify({ ok: false, message: '未找到学习项目。' });
+    const ensured = ensureProjectWorkspace(updated);
+    writeProjects(nextProjects.map((project) => (String(project.id) === String(projectId) ? ensured : project)));
+    appendHostTimeline({
+      type: 'project_workspace_template_applied',
+      title: 'Project workspace template applied',
+      detail: `${ensured.name} -> ${template.name}`,
+      count: folders.length,
+    });
+    return JSON.stringify({
+      ok: true,
+      project: ensured,
+      projects: readProjects().map(normalizeProject),
+      message: `已应用项目工作空间模板：${template.name}，补建 ${folders.length} 个工作空间文件夹。`,
+    });
+  } catch (error) {
+    return JSON.stringify({ ok: false, message: `应用项目工作空间模板失败：${error.message}` });
   }
 }
 
@@ -7670,6 +7796,7 @@ ipcMain.on('bridge:getProjects', (event) => { event.returnValue = getProjects();
 ipcMain.on('bridge:createProject', (event, optionsJson) => { licensedIpc(event, '学习项目创建', () => createProject(optionsJson)); });
 ipcMain.on('bridge:updateProjectStatus', (event, projectId, status) => { licensedIpc(event, '学习项目状态更新', () => updateProjectStatus(projectId, status)); });
 ipcMain.on('bridge:updateProjectStudents', (event, projectId, studentIdsJson) => { licensedIpc(event, '学习项目绑定学生', () => updateProjectStudents(projectId, studentIdsJson)); });
+ipcMain.on('bridge:applyProjectWorkspaceTemplate', (event, projectId, templateId, foldersJson) => { licensedIpc(event, '项目工作空间模板', () => applyProjectWorkspaceTemplate(projectId, templateId, foldersJson)); });
 ipcMain.on('bridge:importProjectAssets', (event, projectId, assetIdsJson) => { licensedIpc(event, '项目资料导入', () => importProjectAssets(projectId, assetIdsJson)); });
 ipcMain.on('bridge:importProjectRawFiles', (event, projectId) => { licensedIpc(event, '项目原始资料导入', () => importProjectRawFiles(projectId)); });
 ipcMain.on('bridge:getProjectDigestCommand', (event, projectId) => { licensedIpc(event, '项目消化指令', () => getProjectDigestCommand(projectId)); });

@@ -239,6 +239,9 @@ type LearningProject = {
   summaryPath: string;
   agentPath: string;
   outputPath?: string;
+  workspaceTemplateId?: string;
+  workspaceTemplateName?: string;
+  workspaceFolders?: string[];
   promotionPath?: string;
   assetIds?: string[];
   stagingItems?: ProjectStagingItem[];
@@ -434,6 +437,7 @@ type AndroidBridge = {
   createProject?: (optionsJson: string) => string;
   updateProjectStatus?: (projectId: string, status: string) => string;
   updateProjectStudents?: (projectId: string, studentIdsJson: string) => string;
+  applyProjectWorkspaceTemplate?: (projectId: string, templateId: string, foldersJson: string) => string;
   importProjectAssets?: (projectId: string, assetIdsJson: string) => string;
   importProjectRawFiles?: (projectId: string) => string;
   getProjectDigestCommand?: (projectId: string) => string;
@@ -847,8 +851,8 @@ const storageKey = 'edu-manager-launcher.students.v2';
 const themeStorageKey = 'edu-manager-launcher.theme.v1';
 const languageStorageKey = 'edu-manager-launcher.language.v1';
 const archiveKeywordStorageKey = 'edu-manager-launcher.archive-keywords.v1';
-const currentVersionCode = 98;
-const currentVersionName = '0.7.18';
+const currentVersionCode = 99;
+const currentVersionName = '0.7.19';
 const updateManifestUrl = [
   'https://www.greatbg.com/download/edu-manager-version.json',
   'http://www.greatbg.com/download/edu-manager-version.json',
@@ -864,6 +868,51 @@ const defaultStorageConfig: StorageConfig = {
   pathSeparator: '/',
 };
 let activeStorageConfig = defaultStorageConfig;
+
+const projectWorkspaceTemplates = [
+  {
+    id: 'general',
+    name: '通用学习项目',
+    description: '适合普通作业、短期专题和轻量研究。',
+    folders: ['资料', '进展', '团队成员', '成果'],
+  },
+  {
+    id: 'subject',
+    name: '学科专题',
+    description: '适合课程学习、错题复盘和阶段总结。',
+    folders: ['课程资料', '作业与反馈', '错题与问题', '阶段总结', '成果'],
+  },
+  {
+    id: 'competition',
+    name: '竞赛 / 活动',
+    description: '适合比赛、活动、作品集和团队协作。',
+    folders: ['赛事规则', '参考资料', '方案设计', '团队协作', '过程记录', '提交成果'],
+  },
+  {
+    id: 'research',
+    name: '研究项目',
+    description: '适合论文、实验、调研和文献综述。',
+    folders: ['文献资料', '研究问题', '数据与实验', '分析过程', '成果论文'],
+  },
+  {
+    id: 'application',
+    name: '升学申请',
+    description: '适合学校申请、文书素材和申请复盘。',
+    folders: ['学校与项目', '申请材料', '文书素材', '推荐与反馈', '结果与复盘'],
+  },
+];
+
+const projectWorkspaceTemplateById = (templateId?: string) =>
+  projectWorkspaceTemplates.find((template) => template.id === templateId) ?? projectWorkspaceTemplates[0];
+
+const projectWorkspaceFoldersText = (folders?: string[]) => (folders?.length ? folders : projectWorkspaceTemplates[0].folders).join('\n');
+
+const parseProjectWorkspaceFolders = (value: string) => Array.from(new Set(
+  value
+    .split(/\r?\n|[,，;；]/)
+    .map((item) => item.trim())
+    .filter((item) => item && item !== '研究暂存'),
+)).slice(0, 24);
 
 const agentToolProfiles: Record<AgentToolId, AgentToolProfile> = {
   qclaw: {
@@ -3321,7 +3370,17 @@ function App() {
   const [projectAuditItems, setProjectAuditItems] = useState<ProjectAuditItem[]>([]);
   const [projectAuditFilter, setProjectAuditFilter] = useState<'all' | 'high' | 'medium' | 'unbound_student' | 'no_assets' | 'stale_promotion'>('all');
   const [selectedProjectId, setSelectedProjectId] = useState('');
-  const [projectDraft, setProjectDraft] = useState({ name: '', type: '学习项目', studentIds: [] as string[] });
+  const [projectDraft, setProjectDraft] = useState({
+    name: '',
+    type: '学习项目',
+    studentIds: [] as string[],
+    workspaceTemplateId: projectWorkspaceTemplates[0].id,
+    workspaceFoldersText: projectWorkspaceFoldersText(projectWorkspaceTemplates[0].folders),
+  });
+  const [projectWorkspaceTemplateEdit, setProjectWorkspaceTemplateEdit] = useState({
+    templateId: projectWorkspaceTemplates[0].id,
+    foldersText: projectWorkspaceFoldersText(projectWorkspaceTemplates[0].folders),
+  });
   const [selectedProjectAssetIds, setSelectedProjectAssetIds] = useState<string[]>([]);
   const [selectedProjectStagingIds, setSelectedProjectStagingIds] = useState<string[]>([]);
   const [projectStagingSearch, setProjectStagingSearch] = useState('');
@@ -3561,6 +3620,10 @@ function App() {
   }, [assetGovernanceStats.issueCount, assetIndex.assets, assetIndex.total]);
 
   const selectedProject = projects.find((project) => project.id === selectedProjectId) ?? projects[0] ?? null;
+  const selectedProjectWorkspaceTemplate = projectWorkspaceTemplateById(selectedProject?.workspaceTemplateId);
+  const selectedProjectWorkspaceFolders = selectedProject?.workspaceFolders?.length
+    ? selectedProject.workspaceFolders
+    : selectedProjectWorkspaceTemplate.folders;
   const selectedAsset = assetIndex.assets.find((asset) => asset.assetId === selectedAssetId) ?? filteredAssets[0] ?? null;
   const duplicateAssetGroups = useMemo(() => {
     const groups = new Map<string, AssetRecord[]>();
@@ -3674,6 +3737,15 @@ function App() {
     if (status === 'sealed') return '已封存';
     return status || '进行中';
   };
+
+  useEffect(() => {
+    if (!selectedProject) return;
+    const template = projectWorkspaceTemplateById(selectedProject.workspaceTemplateId);
+    setProjectWorkspaceTemplateEdit({
+      templateId: template.id,
+      foldersText: projectWorkspaceFoldersText(selectedProject.workspaceFolders?.length ? selectedProject.workspaceFolders : template.folders),
+    });
+  }, [selectedProject?.id, selectedProject?.workspaceTemplateId, selectedProject?.workspaceFolders?.join('|')]);
 
   const projectDigestStatusLabel = (status?: string) => {
     if (status === 'idle') return '无待消化';
@@ -5852,7 +5924,14 @@ ${conversationText || '（请先粘贴对话历史）'}`;
       setProjectMessage('请先填写项目名称。');
       return;
     }
-    const raw = bridge()?.createProject?.(JSON.stringify(projectDraft));
+    const payload = {
+      name: projectDraft.name,
+      type: projectDraft.type,
+      studentIds: projectDraft.studentIds,
+      workspaceTemplateId: projectDraft.workspaceTemplateId,
+      workspaceFolders: parseProjectWorkspaceFolders(projectDraft.workspaceFoldersText),
+    };
+    const raw = bridge()?.createProject?.(JSON.stringify(payload));
     if (!raw) {
       setProjectMessage('当前环境不支持创建学习项目。');
       return;
@@ -5864,10 +5943,37 @@ ${conversationText || '（请先粘贴对话历史）'}`;
         const next = result.projects ?? (result.project ? [result.project, ...projects] : projects);
         setProjects(next);
         if (result.project) setSelectedProjectId(result.project.id);
-        setProjectDraft({ name: '', type: '学习项目', studentIds: [] });
+        setProjectDraft({
+          name: '',
+          type: '学习项目',
+          studentIds: [],
+          workspaceTemplateId: projectWorkspaceTemplates[0].id,
+          workspaceFoldersText: projectWorkspaceFoldersText(projectWorkspaceTemplates[0].folders),
+        });
       }
     } catch {
       setProjectMessage('创建学习项目结果解析失败。');
+    }
+  };
+
+  const applySelectedProjectWorkspaceTemplate = () => {
+    if (!selectedProjectId) {
+      setProjectMessage('请先选择学习项目。');
+      return;
+    }
+    const folders = parseProjectWorkspaceFolders(projectWorkspaceTemplateEdit.foldersText);
+    const raw = bridge()?.applyProjectWorkspaceTemplate?.(selectedProjectId, projectWorkspaceTemplateEdit.templateId, JSON.stringify(folders));
+    if (!raw) {
+      setProjectMessage('当前环境不支持项目工作空间模板。');
+      return;
+    }
+    try {
+      const result = JSON.parse(raw) as { ok?: boolean; project?: LearningProject; projects?: LearningProject[]; message?: string };
+      if (Array.isArray(result.projects)) setProjects(result.projects);
+      if (result.project) setSelectedProjectId(result.project.id);
+      setProjectMessage(result.message || (result.ok ? '已应用项目工作空间模板。' : '项目工作空间模板应用失败。'));
+    } catch {
+      setProjectMessage('项目工作空间模板结果解析失败。');
     }
   };
 
@@ -8616,8 +8722,8 @@ ${JSON.stringify(items, null, 2)}
           <section className="panel">
             <div className="panel-heading">
               <div>
-                <h2>学习项目知识空间</h2>
-                <p>项目独立使用 LLM Wiki 目录消化资料，完成后通过“知识贡献申请”进入学生主档案。</p>
+                <h2>学习项目空间</h2>
+                <p>项目工作空间用于人工管理资料和进展；项目知识空间固定使用 LLM Wiki 目录消化资料，完成后通过“知识贡献申请”进入学生主档案。</p>
               </div>
               <FolderOpen size={22} />
             </div>
@@ -8776,6 +8882,35 @@ ${JSON.stringify(items, null, 2)}
                   项目类型
                   <input value={projectDraft.type} onChange={(event) => setProjectDraft((current) => ({ ...current, type: event.target.value }))} placeholder="学习项目 / 竞赛 / 升学 / 学科专题" />
                 </label>
+                <label>
+                  项目工作空间模板
+                  <select
+                    value={projectDraft.workspaceTemplateId}
+                    onChange={(event) => {
+                      const template = projectWorkspaceTemplateById(event.target.value);
+                      setProjectDraft((current) => ({
+                        ...current,
+                        workspaceTemplateId: template.id,
+                        workspaceFoldersText: projectWorkspaceFoldersText(template.folders),
+                      }));
+                    }}
+                  >
+                    {projectWorkspaceTemplates.map((template) => (
+                      <option value={template.id} key={template.id}>{template.name}</option>
+                    ))}
+                  </select>
+                  <small className="inline-hint">{projectWorkspaceTemplateById(projectDraft.workspaceTemplateId).description}</small>
+                </label>
+                <label className="wide-field">
+                  工作空间文件夹
+                  <textarea
+                    rows={4}
+                    value={projectDraft.workspaceFoldersText}
+                    onChange={(event) => setProjectDraft((current) => ({ ...current, workspaceFoldersText: event.target.value }))}
+                    placeholder="每行一个项目工作空间文件夹"
+                  />
+                  <small className="inline-hint">这里的模板只影响“项目工作空间”。“项目知识空间”仍固定使用项目原始资料库、概念库、实体库、摘要库、问答精华库、综合汇总库等 LLM Wiki schema。</small>
+                </label>
                 <div className="wide-field">
                   <span>绑定学生（可多选）</span>
                   <div className="student-checkbox-list compact">
@@ -8793,7 +8928,7 @@ ${JSON.stringify(items, null, 2)}
               <div className="actions">
                 <button className="primary" onClick={createLearningProject}>
                   <Plus size={18} />
-                  创建项目知识空间
+                  创建学习项目
                 </button>
                 <button className="secondary" onClick={refreshProjects}>
                   <RefreshCw size={18} />
@@ -8865,6 +9000,8 @@ ${JSON.stringify(items, null, 2)}
                     </div>
                     <div className="archive-grid">
                       <InfoPanel icon={<FolderOpen />} title="项目根目录" value={selectedProject.projectRootPath} />
+                      <InfoPanel icon={<FolderOpen />} title="项目工作空间" value={selectedProject.workspacePath} />
+                      <InfoPanel icon={<ListChecks />} title="工作空间模板" value={`${selectedProject.workspaceTemplateName || selectedProjectWorkspaceTemplate.name} · ${selectedProjectWorkspaceFolders.length} 个文件夹`} />
                       <InfoPanel icon={<Archive />} title="项目原始资料库" value={selectedProject.rawPath} />
                       <InfoPanel icon={<FileText />} title="知识贡献目录" value={selectedProject.promotionPath || '未生成'} />
                       <InfoPanel icon={<ListChecks />} title="项目状态" value={projectStatusLabel(selectedProject.status)} />
@@ -8891,6 +9028,50 @@ ${JSON.stringify(items, null, 2)}
                         </div>
                       ))}
                     </div>
+                    <section className="material-source-panel">
+                      <div className="mini-heading">
+                        <strong>项目工作空间模板</strong>
+                        <span>只补建和记录“项目工作空间”的人工目录；不会改变项目知识空间的 LLM Wiki schema。</span>
+                      </div>
+                      <div className="form-grid compact-grid">
+                        <label>
+                          模板
+                          <select
+                            value={projectWorkspaceTemplateEdit.templateId}
+                            onChange={(event) => {
+                              const template = projectWorkspaceTemplateById(event.target.value);
+                              setProjectWorkspaceTemplateEdit({
+                                templateId: template.id,
+                                foldersText: projectWorkspaceFoldersText(template.folders),
+                              });
+                            }}
+                          >
+                            {projectWorkspaceTemplates.map((template) => (
+                              <option value={template.id} key={template.id}>{template.name}</option>
+                            ))}
+                          </select>
+                          <small className="inline-hint">{projectWorkspaceTemplateById(projectWorkspaceTemplateEdit.templateId).description}</small>
+                        </label>
+                        <label className="wide-field">
+                          工作空间文件夹
+                          <textarea
+                            rows={4}
+                            value={projectWorkspaceTemplateEdit.foldersText}
+                            onChange={(event) => setProjectWorkspaceTemplateEdit((current) => ({ ...current, foldersText: event.target.value }))}
+                            placeholder="每行一个项目工作空间文件夹"
+                          />
+                          <small className="inline-hint">
+                            系统会自动保留“研究暂存”作为独立暂存层；这里的文件夹会创建在 {selectedProject.workspacePath} 下。
+                          </small>
+                        </label>
+                      </div>
+                      <div className="actions compact-actions">
+                        <button className="secondary compact" onClick={applySelectedProjectWorkspaceTemplate}>
+                          <FolderOpen size={16} />
+                          应用到项目工作空间
+                        </button>
+                      </div>
+                    </section>
                     {(promotionConflicts.length > 0 || promotionRuns.length > 0) && (
                       <div className="notice muted">
                         贡献审计：冲突提醒 {promotionConflicts.length} 条，执行记录 {promotionRuns.length} 条。重复发布前建议先核对冲突目标文件。

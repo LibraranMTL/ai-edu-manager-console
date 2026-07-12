@@ -55,6 +55,9 @@ contextBridge.exposeInMainWorld('AndroidBridge', {
   updateProjectStudents(projectId, studentIdsJson) {
     return ipcRenderer.sendSync('bridge:updateProjectStudents', projectId, studentIdsJson);
   },
+  applyProjectWorkspaceTemplate(projectId, templateId, foldersJson) {
+    return ipcRenderer.sendSync('bridge:applyProjectWorkspaceTemplate', projectId, templateId, foldersJson);
+  },
   importProjectAssets(projectId, assetIdsJson) {
     return ipcRenderer.sendSync('bridge:importProjectAssets', projectId, assetIdsJson);
   },

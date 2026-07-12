@@ -23,7 +23,7 @@ let hostServiceLastError = '';
 let todayUploadCount = 0;
 let uploadCountDate = new Date().toISOString().slice(0, 10);
 
-const APP_VERSION = '0.7.4';
+const APP_VERSION = '0.7.5';
 const DEFAULT_HOST_PORT = 18777;
 const AGENT_TOOL_IDS = ['qclaw', 'marvis', 'hohu', 'openclaw', 'ima.copilot', 'workbuddy', 'codex', 'claude-code', 'chatgpt', 'claude', 'doubao', 'coze', 'fastgpt'];
 const WEB_AGENT_TOOL_URLS = {
@@ -1682,6 +1682,11 @@ function normalizeProjectStagingItem(item) {
     aiReason: String(item?.aiReason || ''),
     aiScore: item?.aiScore === undefined || item?.aiScore === '' ? '' : Number(item.aiScore),
     aiReviewedAt: String(item?.aiReviewedAt || ''),
+    duplicateCount: Number(item?.duplicateCount || 1),
+    stagingAgeDays: item?.stagingAgeDays === undefined || item?.stagingAgeDays === '' ? '' : Number(item.stagingAgeDays),
+    governanceAction: String(item?.governanceAction || ''),
+    governanceReason: String(item?.governanceReason || ''),
+    governanceReviewedAt: String(item?.governanceReviewedAt || ''),
   };
 }
 
@@ -1697,8 +1702,8 @@ function writeProjectStagingIndex(project) {
     updatedAt: new Date().toISOString(),
     items,
   }, null, 2), 'utf8');
-  const rows = items.map((item) => `| ${item.filename} | ${projectStagingStatusLabel(item.status)} | ${item.type} | ${item.size} | ${item.aiAction || '-'} | ${String(item.aiReason || '').replace(/\|/g, '/')} | ${item.path} |`).join('\n') || '| 暂无 | - | - | - | - | - | - |';
-  fs.writeFileSync(path.join(paths.stagingPath, '研究暂存清单.md'), `# ${normalized.name} 研究暂存清单\n\n> 暂存层用于收集和筛选项目研究资料；未晋升前不会进入正式文件资产中心。\n\n| 文件 | 状态 | 类型 | 大小 | AI建议 | AI理由 | 路径 |\n| --- | --- | --- | ---: | --- | --- | --- |\n${rows}\n`, 'utf8');
+  const rows = items.map((item) => `| ${item.filename} | ${projectStagingStatusLabel(item.status)} | ${item.type} | ${item.size} | ${item.aiAction || '-'} | ${String(item.aiReason || '').replace(/\|/g, '/')} | ${item.governanceAction || '-'} | ${String(item.governanceReason || '').replace(/\|/g, '/')} | ${item.path} |`).join('\n') || '| 暂无 | - | - | - | - | - | - | - | - |';
+  fs.writeFileSync(path.join(paths.stagingPath, '研究暂存清单.md'), `# ${normalized.name} 研究暂存清单\n\n> 暂存层用于收集和筛选项目研究资料；未晋升前不会进入正式文件资产中心。\n\n| 文件 | 状态 | 类型 | 大小 | AI建议 | AI理由 | 治理建议 | 治理理由 | 路径 |\n| --- | --- | --- | ---: | --- | --- | --- | --- | --- |\n${rows}\n`, 'utf8');
 }
 
 function normalizeProject(project) {
@@ -2202,6 +2207,146 @@ function importProjectStagingAiScreening(projectId) {
     });
   } catch (error) {
     return JSON.stringify({ ok: false, message: `导入 AI 初筛结果失败：${error.message}` });
+  }
+}
+
+function analyzeProjectStagingGovernance(projectId) {
+  try {
+    const project = readProjects().map(normalizeProject).find((item) => String(item.id) === String(projectId));
+    if (!project) return JSON.stringify({ ok: false, message: '未找到学习项目。' });
+    const ensured = ensureProjectWorkspace(project);
+    const now = new Date();
+    const nowIso = now.toISOString();
+    const items = (ensured.stagingItems || []).map(normalizeProjectStagingItem);
+    const shaGroups = new Map();
+    const nameSizeGroups = new Map();
+    for (const item of items) {
+      if (item.sha1) {
+        const current = shaGroups.get(item.sha1) || [];
+        current.push(item);
+        shaGroups.set(item.sha1, current);
+      }
+      const nameSizeKey = `${String(item.filename || '').toLowerCase()}::${Number(item.size || 0)}`;
+      if (item.filename && item.size) {
+        const current = nameSizeGroups.get(nameSizeKey) || [];
+        current.push(item);
+        nameSizeGroups.set(nameSizeKey, current);
+      }
+    }
+
+    const statusCounts = {};
+    const nextItems = items.map((item) => {
+      const addedMs = Date.parse(item.addedAt || '');
+      const ageDays = Number.isFinite(addedMs) ? Math.max(0, Math.floor((now.getTime() - addedMs) / 86400000)) : 0;
+      const nameSizeKey = `${String(item.filename || '').toLowerCase()}::${Number(item.size || 0)}`;
+      const duplicateCount = Math.max(
+        item.sha1 ? (shaGroups.get(item.sha1)?.length || 1) : 1,
+        nameSizeGroups.get(nameSizeKey)?.length || 1,
+      );
+      statusCounts[item.status] = (statusCounts[item.status] || 0) + 1;
+      let governanceAction = '保留观察';
+      let governanceReason = '暂无明确治理动作，继续保留在研究暂存层。';
+      if (item.status === 'promoted') {
+        governanceAction = '已晋升，无需处理';
+        governanceReason = '资料已经晋升为正式资产，暂存副本仅用于研究过程追溯。';
+      } else if (item.status === 'discarded') {
+        governanceAction = '建议归档清理';
+        governanceReason = '资料已标记为归档/丢弃，可在项目结束后统一清理或转入低价值资料归档。';
+      } else if (duplicateCount > 1 && !['selected', 'analyzed'].includes(item.status)) {
+        governanceAction = '建议检查重复';
+        governanceReason = `发现 ${duplicateCount} 份疑似重复资料；如内容一致，建议只保留一份候选。`;
+      } else if (item.status === 'collected' && ageDays >= 30) {
+        governanceAction = '建议复核';
+        governanceReason = `已收集 ${ageDays} 天仍未初筛，建议复核是否仍需进入项目分析。`;
+      } else if (item.status === 'screened' && ageDays >= 45) {
+        governanceAction = '建议决定去留';
+        governanceReason = `已初筛 ${ageDays} 天仍未选入分析，建议确认晋升、继续候选或归档。`;
+      } else if (item.status === 'selected') {
+        governanceAction = '建议分析或晋升';
+        governanceReason = '资料已选入分析，可交给 Agent 消化，或在确认后晋升为正式资产。';
+      } else if (item.status === 'analyzed') {
+        governanceAction = '建议晋升';
+        governanceReason = '资料已完成 AI 分析，如支撑项目结论，建议晋升为正式资产。';
+      }
+      return {
+        ...item,
+        duplicateCount,
+        stagingAgeDays: ageDays,
+        governanceAction,
+        governanceReason,
+        governanceReviewedAt: nowIso,
+        updatedAt: nowIso,
+      };
+    });
+
+    const duplicateItems = nextItems.filter((item) => Number(item.duplicateCount || 1) > 1);
+    const cleanupCandidates = nextItems.filter((item) => ['建议归档清理', '建议检查重复', '建议复核', '建议决定去留'].includes(item.governanceAction));
+    const actionCounts = nextItems.reduce((acc, item) => {
+      acc[item.governanceAction] = (acc[item.governanceAction] || 0) + 1;
+      return acc;
+    }, {});
+    const rowsFor = (list) => list.map((item) => `| ${item.filename} | ${projectStagingStatusLabel(item.status)} | ${item.duplicateCount || 1} | ${item.stagingAgeDays || 0} | ${item.governanceAction || '-'} | ${String(item.governanceReason || '').replace(/\|/g, '/')} | ${item.path} |`).join('\n') || '| 暂无 | - | - | - | - | - | - |';
+    const report = `# ${ensured.name} 研究暂存治理建议
+
+更新时间：${now.toLocaleString('zh-CN')}
+
+> 本报告用于识别研究暂存层中的重复资料、长期未处理资料和可归档候选。控制台不会自动删除任何文件；所有清理动作都需要管理员人工确认。
+
+## 总览
+
+| 指标 | 数量 |
+| --- | ---: |
+| 暂存资料总数 | ${nextItems.length} |
+| 重复候选 | ${duplicateItems.length} |
+| 需要治理候选 | ${cleanupCandidates.length} |
+| 已收集 | ${statusCounts.collected || 0} |
+| 已初筛 | ${statusCounts.screened || 0} |
+| 选入分析 | ${statusCounts.selected || 0} |
+| 已分析 | ${statusCounts.analyzed || 0} |
+| 已晋升 | ${statusCounts.promoted || 0} |
+| 已归档/丢弃 | ${statusCounts.discarded || 0} |
+
+## 治理动作分布
+
+${Object.entries(actionCounts).map(([action, count]) => `- ${action}：${count}`).join('\n') || '- 暂无'}
+
+## 重复候选
+
+| 文件 | 状态 | 重复数 | 暂存天数 | 建议 | 理由 | 路径 |
+| --- | --- | ---: | ---: | --- | --- | --- |
+${rowsFor(duplicateItems)}
+
+## 清理/复核候选
+
+| 文件 | 状态 | 重复数 | 暂存天数 | 建议 | 理由 | 路径 |
+| --- | --- | ---: | ---: | --- | --- | --- |
+${rowsFor(cleanupCandidates)}
+
+## 全量治理清单
+
+| 文件 | 状态 | 重复数 | 暂存天数 | 建议 | 理由 | 路径 |
+| --- | --- | ---: | ---: | --- | --- | --- |
+${rowsFor(nextItems)}
+`;
+    fs.writeFileSync(path.join(ensured.stagingPath, '研究暂存治理建议.md'), report, 'utf8');
+    const result = updateProjectRecord(ensured.id, (item) => ({
+      ...item,
+      stagingItems: nextItems,
+      updatedAt: nowIso,
+    }));
+    appendHostTimeline({ type: 'project_staging_governance_analyzed', title: 'Project staging governance analyzed', detail: ensured.name, count: cleanupCandidates.length });
+    return JSON.stringify({
+      ok: true,
+      project: result.project,
+      projects: result.projects,
+      duplicateCount: duplicateItems.length,
+      cleanupCandidateCount: cleanupCandidates.length,
+      reportPath: path.join(ensured.stagingPath, '研究暂存治理建议.md'),
+      content: report,
+      message: `已生成研究暂存治理建议：重复候选 ${duplicateItems.length} 份，需要治理 ${cleanupCandidates.length} 份。`,
+    });
+  } catch (error) {
+    return JSON.stringify({ ok: false, message: `生成研究暂存治理建议失败：${error.message}` });
   }
 }
 
@@ -5703,6 +5848,7 @@ ipcMain.on('bridge:importProjectStagingFiles', (event, projectId) => { licensedI
 ipcMain.on('bridge:updateProjectStagingStatus', (event, projectId, itemIdsJson, status) => { licensedIpc(event, '项目研究暂存状态', () => updateProjectStagingStatus(projectId, itemIdsJson, status)); });
 ipcMain.on('bridge:promoteProjectStagingItems', (event, projectId, itemIdsJson) => { licensedIpc(event, '项目研究暂存晋升', () => promoteProjectStagingItems(projectId, itemIdsJson)); });
 ipcMain.on('bridge:importProjectStagingAiScreening', (event, projectId) => { licensedIpc(event, '项目研究暂存 AI 初筛导入', () => importProjectStagingAiScreening(projectId)); });
+ipcMain.on('bridge:analyzeProjectStagingGovernance', (event, projectId) => { licensedIpc(event, '项目研究暂存治理建议', () => analyzeProjectStagingGovernance(projectId)); });
 ipcMain.on('bridge:generateProjectPromotion', (event, projectId) => { licensedIpc(event, '知识贡献申请', () => generateProjectPromotion(projectId)); });
 ipcMain.on('bridge:getProjectPromotionPlan', (event, projectId) => { licensedIpc(event, '归档确认清单', () => projectPromotionPlan(projectId)); });
 ipcMain.on('bridge:executeProjectPromotionPlan', (event, projectId, planJson) => { licensedIpc(event, '执行归档确认清单', () => executeProjectPromotionPlan(projectId, planJson)); });

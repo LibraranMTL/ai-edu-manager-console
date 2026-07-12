@@ -246,6 +246,11 @@ type ProjectStagingItem = {
   aiReason?: string;
   aiScore?: number | string;
   aiReviewedAt?: string;
+  duplicateCount?: number;
+  stagingAgeDays?: number | string;
+  governanceAction?: string;
+  governanceReason?: string;
+  governanceReviewedAt?: string;
 };
 
 type PromotionAction = 'reference' | 'publish' | 'absorb' | 'skip';
@@ -292,6 +297,7 @@ type AndroidBridge = {
   updateProjectStagingStatus?: (projectId: string, itemIdsJson: string, status: string) => string;
   promoteProjectStagingItems?: (projectId: string, itemIdsJson: string) => string;
   importProjectStagingAiScreening?: (projectId: string) => string;
+  analyzeProjectStagingGovernance?: (projectId: string) => string;
   generateProjectPromotion?: (projectId: string) => string;
   getProjectPromotionPlan?: (projectId: string) => string;
   executeProjectPromotionPlan?: (projectId: string, planJson: string) => string;
@@ -646,8 +652,8 @@ const storageKey = 'edu-manager-launcher.students.v2';
 const themeStorageKey = 'edu-manager-launcher.theme.v1';
 const languageStorageKey = 'edu-manager-launcher.language.v1';
 const archiveKeywordStorageKey = 'edu-manager-launcher.archive-keywords.v1';
-const currentVersionCode = 84;
-const currentVersionName = '0.7.4';
+const currentVersionCode = 85;
+const currentVersionName = '0.7.5';
 const updateManifestUrl = [
   'https://www.greatbg.com/download/edu-manager-version.json',
   'http://www.greatbg.com/download/edu-manager-version.json',
@@ -3289,12 +3295,17 @@ function App() {
     return projectStagingItems.filter((item) => {
       if (projectStagingStatusFilter !== 'all' && item.status !== projectStagingStatusFilter) return false;
       if (!keyword) return true;
-      return [item.filename, item.path, item.sourcePath, item.sha1, item.aiAction, item.aiReason]
+      return [item.filename, item.path, item.sourcePath, item.sha1, item.aiAction, item.aiReason, item.governanceAction, item.governanceReason]
         .filter(Boolean)
         .some((value) => String(value).toLowerCase().includes(keyword));
     });
   }, [projectStagingItems, projectStagingSearch, projectStagingStatusFilter]);
   const selectedProjectStagingItems = projectStagingItems.filter((item) => selectedProjectStagingIds.includes(item.id));
+  const projectStagingGovernanceStats = useMemo(() => {
+    const duplicateCount = projectStagingItems.filter((item) => Number(item.duplicateCount ?? 1) > 1).length;
+    const actionCount = projectStagingItems.filter((item) => item.governanceAction && !String(item.governanceAction).includes('无需处理')).length;
+    return { duplicateCount, actionCount };
+  }, [projectStagingItems]);
 
   const projectStatusLabel = (status?: string) => {
     if (status === 'draft') return '草稿';
@@ -5421,6 +5432,34 @@ ${JSON.stringify(items, null, 2)}
       setProjectMessage(result.message || (result.ok ? 'AI 初筛结果已导入。' : 'AI 初筛结果导入失败。'));
     } catch {
       setProjectMessage('AI 初筛结果解析失败。');
+    }
+  };
+
+  const analyzeProjectStagingGovernance = () => {
+    if (!selectedProjectId) {
+      setProjectMessage('请先选择学习项目。');
+      return;
+    }
+    const raw = bridge()?.analyzeProjectStagingGovernance?.(selectedProjectId);
+    if (!raw) {
+      setProjectMessage('当前环境不支持生成研究暂存治理建议。');
+      return;
+    }
+    try {
+      const result = JSON.parse(raw) as {
+        ok?: boolean;
+        duplicateCount?: number;
+        cleanupCandidateCount?: number;
+        reportPath?: string;
+        project?: LearningProject;
+        projects?: LearningProject[];
+        message?: string;
+      };
+      if (Array.isArray(result.projects)) setProjects(result.projects);
+      if (result.project) setSelectedProjectId(result.project.id);
+      setProjectMessage(result.message || (result.ok ? '已生成研究暂存治理建议。' : '生成研究暂存治理建议失败。'));
+    } catch {
+      setProjectMessage('研究暂存治理建议结果解析失败。');
     }
   };
 
@@ -7712,6 +7751,7 @@ ${JSON.stringify(items, null, 2)}
                         <InfoPanel icon={<Inbox />} title="暂存资料" value={`${projectStagingItems.length} 份`} />
                         <InfoPanel icon={<ListChecks />} title="已选" value={`${selectedProjectStagingItems.length} 份`} />
                         <InfoPanel icon={<FolderOpen />} title="暂存目录" value={selectedProject.stagingPath || `${selectedProject.workspacePath}\\研究暂存`} />
+                        <InfoPanel icon={<Archive />} title="治理候选" value={`${projectStagingGovernanceStats.actionCount} 项`} />
                       </div>
                       <div className="form-grid compact-grid staging-filter-grid">
                         <label>
@@ -7742,6 +7782,9 @@ ${JSON.stringify(items, null, 2)}
                         <button className="secondary compact" onClick={importProjectStagingAiScreening} disabled={projectStagingItems.length === 0}>
                           导入 AI 初筛结果
                         </button>
+                        <button className="secondary compact" onClick={analyzeProjectStagingGovernance} disabled={projectStagingItems.length === 0}>
+                          生成治理建议
+                        </button>
                         <button className="secondary compact" onClick={selectVisibleProjectStagingItems} disabled={filteredProjectStagingItems.length === 0}>
                           选择当前筛选
                         </button>
@@ -7764,7 +7807,7 @@ ${JSON.stringify(items, null, 2)}
                           丢弃/归档
                         </button>
                       </div>
-                      <small className="inline-hint">当前显示 {filteredProjectStagingItems.length} / {projectStagingItems.length} 份；AI 导入只记录建议和理由，不会自动晋升为正式资产。</small>
+                      <small className="inline-hint">当前显示 {filteredProjectStagingItems.length} / {projectStagingItems.length} 份；重复候选 {projectStagingGovernanceStats.duplicateCount} 份；AI 导入和治理建议都不会自动删除或晋升资料。</small>
                       <div className="download-list project-staging-list">
                         {filteredProjectStagingItems.map((item) => (
                           <label className={item.status === 'discarded' ? 'download-item staging-item discarded' : 'download-item staging-item'} key={item.id}>
@@ -7783,6 +7826,12 @@ ${JSON.stringify(items, null, 2)}
                                 </small>
                               )}
                               {item.aiReason && <small className="staging-ai-note">AI理由：{item.aiReason}</small>}
+                              {item.governanceAction && (
+                                <small className="staging-ai-note">
+                                  治理建议：{item.governanceAction}{Number(item.duplicateCount ?? 1) > 1 ? ` · 重复 ${item.duplicateCount} 份` : ''}{item.stagingAgeDays !== undefined && item.stagingAgeDays !== '' ? ` · 暂存 ${item.stagingAgeDays} 天` : ''}
+                                </small>
+                              )}
+                              {item.governanceReason && <small className="staging-ai-note">治理理由：{item.governanceReason}</small>}
                             </span>
                           </label>
                         ))}

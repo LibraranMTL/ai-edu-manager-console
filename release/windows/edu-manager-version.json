@@ -1,9 +1,9 @@
 {
   "versionCode": 61,
   "versionName": "0.5.1",
-  "windowsVersionCode": 84,
-  "windowsVersionName": "0.7.4",
-  "windowsUrl": "https://www.greatbg.com/download/AI-edu-manager-console-Windows-0.7.4.zip",
+  "windowsVersionCode": 85,
+  "windowsVersionName": "0.7.5",
+  "windowsUrl": "https://www.greatbg.com/download/AI-edu-manager-console-Windows-0.7.5.zip",
   "terminalApkUrl": "https://www.greatbg.com/download/AI-edu-manager-tablet-terminal-0.5.1.apk",
   "tabletTerminalVersionCode": 61,
   "tabletTerminalVersionName": "0.5.1",
@@ -12,5 +12,5 @@
   "managerApkVersionCode": 23,
   "managerApkVersionName": "0.2.3",
   "apkUrl": "https://www.greatbg.com/download/AI-edu-manager-tablet-terminal-0.5.1.apk",
-  "notes": "Windows 0.7.4：增强学习项目研究暂存层，支持暂存资料搜索/状态筛选、复制 AI 初筛指令、导入 AI 初筛结果并记录建议与理由；平板终端仍为 0.5.1。"
+  "notes": "Windows 0.7.5：新增学习项目研究暂存治理建议，可识别重复候选、长期未处理资料和可归档清理项，并生成 Markdown 治理报告；平板终端仍为 0.5.1。"
 }

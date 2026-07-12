@@ -40,6 +40,9 @@ contextBridge.exposeInMainWorld('AndroidBridge', {
   generateProjectPromotion(projectId) {
     return ipcRenderer.sendSync('bridge:generateProjectPromotion', projectId);
   },
+  publishProjectPromotion(projectId) {
+    return ipcRenderer.sendSync('bridge:publishProjectPromotion', projectId);
+  },
   initStudentWorkspace(studentName, agentMd, indexMd, logMd) {
     return ipcRenderer.sendSync('bridge:initStudentWorkspace', studentName, agentMd, indexMd, logMd);
   },

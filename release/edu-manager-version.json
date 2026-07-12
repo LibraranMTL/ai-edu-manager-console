@@ -1,9 +1,9 @@
 {
   "versionCode": 61,
   "versionName": "0.5.1",
-  "windowsVersionCode": 78,
-  "windowsVersionName": "0.6.8",
-  "windowsUrl": "https://www.greatbg.com/download/AI-edu-manager-console-Windows-0.6.8.zip",
+  "windowsVersionCode": 79,
+  "windowsVersionName": "0.6.9",
+  "windowsUrl": "https://www.greatbg.com/download/AI-edu-manager-console-Windows-0.6.9.zip",
   "terminalApkUrl": "https://www.greatbg.com/download/AI-edu-manager-tablet-terminal-0.5.1.apk",
   "tabletTerminalVersionCode": 61,
   "tabletTerminalVersionName": "0.5.1",
@@ -12,5 +12,5 @@
   "managerApkVersionCode": 23,
   "managerApkVersionName": "0.2.3",
   "apkUrl": "https://www.greatbg.com/download/AI-edu-manager-tablet-terminal-0.5.1.apk",
-  "notes": "Windows 0.6.8：新增文件资产中心 v1、学习项目知识空间 v1、知识贡献申请模板和 Growth Layer 成长模型索引；平板终端仍为 0.5.1。"
+  "notes": "Windows 0.6.9：新增学习项目知识贡献发布到学生成长模型 v1，并将文件资产中心菜单调整到智能体知识管理之后；平板终端仍为 0.5.1。"
 }

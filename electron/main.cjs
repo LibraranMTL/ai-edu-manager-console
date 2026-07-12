@@ -23,7 +23,7 @@ let hostServiceLastError = '';
 let todayUploadCount = 0;
 let uploadCountDate = new Date().toISOString().slice(0, 10);
 
-const APP_VERSION = '0.6.8';
+const APP_VERSION = '0.6.9';
 const DEFAULT_HOST_PORT = 18777;
 const AGENT_TOOL_IDS = ['qclaw', 'marvis', 'hohu', 'openclaw', 'ima.copilot', 'workbuddy', 'codex', 'claude-code', 'chatgpt', 'claude', 'doubao', 'coze', 'fastgpt'];
 const WEB_AGENT_TOOL_URLS = {
@@ -1718,6 +1718,50 @@ function generateProjectPromotion(projectId) {
     return JSON.stringify({ ok: true, path: ensured.promotionPath, content, message: `已生成知识贡献申请：${ensured.promotionPath}` });
   } catch (error) {
     return JSON.stringify({ ok: false, message: `生成知识贡献申请失败：${error.message}` });
+  }
+}
+
+function publishProjectPromotion(projectId) {
+  try {
+    const projects = readProjects().map(normalizeProject);
+    const project = projects.find((item) => String(item.id) === String(projectId));
+    if (!project) return JSON.stringify({ ok: false, message: '未找到学习项目。' });
+    const ensured = ensureProjectWorkspace(project);
+    const generated = JSON.parse(generateProjectPromotion(projectId));
+    if (!generated.ok && !fs.existsSync(ensured.promotionPath)) return JSON.stringify({ ok: false, message: generated.message || '知识贡献申请不存在，无法发布。' });
+    const promotionPath = generated.path || ensured.promotionPath;
+    const promotionContent = fs.existsSync(promotionPath) ? fs.readFileSync(promotionPath, 'utf8') : generated.content || '';
+    const students = readStudentsIndex().filter((student) => ensured.studentIds.includes(String(student.id)));
+    if (!students.length) return JSON.stringify({ ok: false, message: '该学习项目尚未绑定学生，无法发布到成长模型。' });
+    const today = new Date().toISOString().slice(0, 10);
+    const published = [];
+    for (const student of students) {
+      const growth = ensureGrowthModelForStudent(student);
+      const summaryPath = student.summaryPath || getSummaryDir(student.name);
+      const projectSummaryFile = path.join(summaryPath, '项目贡献汇总.md');
+      const projectLine = `| ${today} | ${ensured.name} | 知识贡献申请已发布，等待 Agent 或管理员逐项整理 | 发布 | ${promotionPath} |`;
+      const evidenceLine = `| ${today} | ${ensured.name} 知识贡献申请已发布 | ${promotionPath} | 待标注 | 待确认 |`;
+      appendTextSection(path.join(growth.dir, '项目贡献.md'), `${ensured.name} 发布记录 ${today}`, `${projectLine}\n\n来源项目知识空间：${ensured.knowledgeRootPath}`);
+      appendTextSection(path.join(growth.dir, '成长证据.md'), `${ensured.name} 成长证据 ${today}`, `${evidenceLine}\n\n请后续由 Agent 根据贡献申请提取具体能力、兴趣、趋势和证据。`);
+      writeTextIfMissing(projectSummaryFile, `# ${student.name} 项目贡献汇总\n\n记录已发布到学生主档案的学习项目知识贡献。\n\n| 日期 | 项目 | 贡献内容 | 动作 | 来源路径 |\n| --- | --- | --- | --- | --- |\n`);
+      fs.appendFileSync(projectSummaryFile, `${projectLine}\n`, 'utf8');
+      published.push({ studentId: student.id, studentName: student.name, growthDir: growth.dir, projectSummaryFile });
+    }
+    const nextProjects = projects.map((item) => String(item.id) === String(ensured.id)
+      ? { ...item, status: 'published', publishedAt: new Date().toISOString(), promotionPath, updatedAt: new Date().toISOString() }
+      : item);
+    writeProjects(nextProjects);
+    appendHostTimeline({ type: 'project_promotion_published', title: 'Project promotion published', detail: ensured.name, count: published.length });
+    return JSON.stringify({
+      ok: true,
+      project: nextProjects.find((item) => String(item.id) === String(ensured.id)),
+      path: promotionPath,
+      content: promotionContent,
+      published,
+      message: `已发布「${ensured.name}」知识贡献到 ${published.length} 个学生的成长模型。`,
+    });
+  } catch (error) {
+    return JSON.stringify({ ok: false, message: `发布知识贡献失败：${error.message}` });
   }
 }
 
@@ -4364,6 +4408,15 @@ function handleProjectPromotion(request, response, projectId) {
   sendJson(response, 200, JSON.parse(generateProjectPromotion(projectId)));
 }
 
+function handleProjectPromotionPublish(request, response, projectId) {
+  if (!requireAuth(request, response)) return;
+  if (request.authContext?.type !== 'admin') {
+    sendJson(response, 403, { ok: false, message: '只有 Windows 主机管理员可以发布知识贡献。' });
+    return;
+  }
+  sendJson(response, 200, JSON.parse(publishProjectPromotion(projectId)));
+}
+
 function isPublicArchiveFile(filePath) {
   const normalized = String(filePath || '').replace(/\\/g, '/').toLowerCase();
   const name = path.basename(normalized);
@@ -4692,6 +4745,11 @@ function handleHostRequest(request, response) {
     handleProjectPromotion(request, response, projectPromotionMatch[1]);
     return;
   }
+  const projectPromotionPublishMatch = pathname.match(/^\/api\/projects\/([^/]+)\/promotion\/publish$/);
+  if (request.method === 'POST' && projectPromotionPublishMatch) {
+    handleProjectPromotionPublish(request, response, projectPromotionPublishMatch[1]);
+    return;
+  }
   const materialMatch = pathname.match(/^\/api\/students\/([^/]+)\/materials$/);
   if (request.method === 'POST' && materialMatch) {
     handleMaterialUpload(request, response, materialMatch[1], url);
@@ -4949,6 +5007,7 @@ ipcMain.on('bridge:getProjects', (event) => { event.returnValue = getProjects();
 ipcMain.on('bridge:createProject', (event, optionsJson) => { licensedIpc(event, '学习项目创建', () => createProject(optionsJson)); });
 ipcMain.on('bridge:importProjectAssets', (event, projectId, assetIdsJson) => { licensedIpc(event, '项目资料导入', () => importProjectAssets(projectId, assetIdsJson)); });
 ipcMain.on('bridge:generateProjectPromotion', (event, projectId) => { licensedIpc(event, '知识贡献申请', () => generateProjectPromotion(projectId)); });
+ipcMain.on('bridge:publishProjectPromotion', (event, projectId) => { licensedIpc(event, '知识贡献发布', () => publishProjectPromotion(projectId)); });
 ipcMain.on('bridge:initStudentWorkspace', (event, studentName, agentMd, indexMd, logMd) => {
   licensedIpc(event, '初始化教育管家', () => initStudentWorkspace(studentName, agentMd, indexMd, logMd));
 });

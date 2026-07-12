@@ -237,6 +237,7 @@ type AndroidBridge = {
   createProject?: (optionsJson: string) => string;
   importProjectAssets?: (projectId: string, assetIdsJson: string) => string;
   generateProjectPromotion?: (projectId: string) => string;
+  publishProjectPromotion?: (projectId: string) => string;
   importImages?: (studentName: string) => boolean;
   takePhoto?: (studentName: string) => boolean;
   initStudentWorkspace?: (studentName: string, agentMd: string, indexMd: string, logMd: string) => string;
@@ -587,8 +588,8 @@ const storageKey = 'edu-manager-launcher.students.v2';
 const themeStorageKey = 'edu-manager-launcher.theme.v1';
 const languageStorageKey = 'edu-manager-launcher.language.v1';
 const archiveKeywordStorageKey = 'edu-manager-launcher.archive-keywords.v1';
-const currentVersionCode = 78;
-const currentVersionName = '0.6.8';
+const currentVersionCode = 79;
+const currentVersionName = '0.6.9';
 const updateManifestUrl = [
   'https://www.greatbg.com/download/edu-manager-version.json',
   'http://www.greatbg.com/download/edu-manager-version.json',
@@ -5124,6 +5125,29 @@ ${conversationText || '（请先粘贴对话历史）'}`;
     }
   };
 
+  const publishSelectedProjectPromotion = () => {
+    if (!selectedProjectId) {
+      setProjectMessage('请先选择学习项目。');
+      return;
+    }
+    const raw = bridge()?.publishProjectPromotion?.(selectedProjectId);
+    if (!raw) {
+      setProjectMessage('当前环境不支持发布知识贡献。');
+      return;
+    }
+    try {
+      const result = JSON.parse(raw) as { ok?: boolean; project?: LearningProject; content?: string; message?: string };
+      setProjectMessage(result.message || (result.ok ? '已发布知识贡献。' : '发布知识贡献失败。'));
+      if (result.content) setPromotionPreview(result.content);
+      if (result.project) setProjects((current) => current.map((item) => (item.id === result.project?.id ? result.project : item)));
+      if (result.ok && selectedStudent) {
+        refreshLearningReports(selectedStudent);
+      }
+    } catch {
+      setProjectMessage('发布知识贡献结果解析失败。');
+    }
+  };
+
   const ensureSelectedGrowthModel = () => {
     if (!selectedStudent) {
       setGrowthMessage('请先选择学生。');
@@ -5897,7 +5921,6 @@ ${conversationText || '（请先粘贴对话历史）'}`;
     { id: 'new' as const, label: t('nav.new'), icon: Plus },
     { id: 'inbox' as const, label: t('nav.inbox'), icon: FileDown },
     ...(isWindows ? [
-      { id: 'assets' as const, label: t('nav.assets'), icon: Archive },
       { id: 'projects' as const, label: t('nav.projects'), icon: FolderOpen },
       { id: 'growth' as const, label: t('nav.growth'), icon: Sparkles },
     ] : []),
@@ -6004,6 +6027,17 @@ ${conversationText || '（请先粘贴对话历史）'}`;
               </div>
             )}
           </div>
+          {isWindows && (
+            <button
+              className={`${activeSection === 'assets' ? 'nav-item active' : 'nav-item'}${!windowsLicenseActive ? ' locked' : ''}`}
+              onClick={() => setActiveSection('assets')}
+              title={!windowsLicenseActive ? '文件资产中心需要激活后使用' : t('nav.assets')}
+            >
+              <Archive size={19} />
+              <span>{t('nav.assets')}</span>
+              {!windowsLicenseActive && <KeyRound size={15} />}
+            </button>
+          )}
         </nav>
 
         <section className="student-rail">
@@ -7096,6 +7130,9 @@ ${conversationText || '（请先粘贴对话历史）'}`;
                       <div className="reader-actions">
                         <button className="secondary compact" onClick={() => generateSelectedProjectPromotion()}>
                           生成贡献申请
+                        </button>
+                        <button className="primary compact" onClick={publishSelectedProjectPromotion}>
+                          发布到成长模型
                         </button>
                       </div>
                     </div>

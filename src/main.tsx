@@ -111,6 +111,8 @@ type Student = {
   name: string;
   grade: string;
   school: string;
+  phone?: string;
+  email?: string;
   goal: string;
   digestTime: string;
   agentTool: AgentToolId;
@@ -240,10 +242,28 @@ type LearningProject = {
   promotionPath?: string;
   assetIds?: string[];
   stagingItems?: ProjectStagingItem[];
+  digestState?: ProjectDigestState;
+  managerPath?: string;
   createdAt?: string;
   updatedAt?: string;
   archivedAt?: string;
   publishedAt?: string;
+};
+
+type ProjectDigestState = {
+  status?: 'idle' | 'pending' | 'submitted' | 'digesting' | 'completed' | 'failed' | string;
+  message?: string;
+  rawPath?: string;
+  digestFile?: string;
+  rawFileCount?: number;
+  pendingCount?: number;
+  submittedCount?: number;
+  lastDigestAt?: string;
+  digestSubmittedAt?: string;
+  digestBatchId?: string;
+  pendingFiles?: Array<{ filename?: string; path?: string; size?: number; sha1?: string }>;
+  digestedFiles?: string[];
+  updatedAt?: string;
 };
 
 type ProjectStagingStatus = 'collected' | 'screened' | 'selected' | 'analyzed' | 'promoted' | 'discarded';
@@ -415,6 +435,10 @@ type AndroidBridge = {
   updateProjectStatus?: (projectId: string, status: string) => string;
   updateProjectStudents?: (projectId: string, studentIdsJson: string) => string;
   importProjectAssets?: (projectId: string, assetIdsJson: string) => string;
+  importProjectRawFiles?: (projectId: string) => string;
+  getProjectDigestCommand?: (projectId: string) => string;
+  markProjectDigestSubmitted?: (projectId: string) => string;
+  syncProjectDigestResult?: (projectId: string) => string;
   importProjectStagingFiles?: (projectId: string) => string;
   updateProjectStagingStatus?: (projectId: string, itemIdsJson: string, status: string) => string;
   promoteProjectStagingItems?: (projectId: string, itemIdsJson: string) => string;
@@ -823,8 +847,8 @@ const storageKey = 'edu-manager-launcher.students.v2';
 const themeStorageKey = 'edu-manager-launcher.theme.v1';
 const languageStorageKey = 'edu-manager-launcher.language.v1';
 const archiveKeywordStorageKey = 'edu-manager-launcher.archive-keywords.v1';
-const currentVersionCode = 97;
-const currentVersionName = '0.7.17';
+const currentVersionCode = 98;
+const currentVersionName = '0.7.18';
 const updateManifestUrl = [
   'https://www.greatbg.com/download/edu-manager-version.json',
   'http://www.greatbg.com/download/edu-manager-version.json',
@@ -1961,6 +1985,8 @@ const defaultDraft: StudentDraft = {
   name: '张三',
   grade: '初二',
   school: '示例学校',
+  phone: '',
+  email: '',
   goal: '建立长期学情档案，持续整理学习资料，并辅助家长做升学与能力发展判断',
   digestTime: '21:30',
   agentTool: 'qclaw',
@@ -1981,6 +2007,8 @@ const seedStudents: Student[] = [
     name: '张三',
     grade: '初二',
     school: '示例学校',
+    phone: '',
+    email: '',
     goal: '金融方向潜力发展与日常学习资料整理',
     digestTime: '21:30',
     agentTool: 'qclaw',
@@ -2715,6 +2743,8 @@ function templateVariables(student: StudentDraft) {
     studentName: p.cleanName,
     grade: student.grade || '',
     school: student.school || '',
+    phone: student.phone || '',
+    email: student.email || '',
     goal: student.goal || '',
     agentTool: tool.name,
     agentName: student.agentName || `${p.cleanName} AI教育管家`,
@@ -2753,6 +2783,8 @@ function templateFromGenerated(content: string, student: StudentDraft) {
     [vars.studentName, '{{studentName}}'],
     [vars.grade, '{{grade}}'],
     [vars.school, '{{school}}'],
+    [vars.phone, '{{phone}}'],
+    [vars.email, '{{email}}'],
     [vars.goal, '{{goal}}'],
     [vars.agentName, '{{agentName}}'],
     [vars.rootPath, '{{rootPath}}'],
@@ -3181,6 +3213,8 @@ function buildBundle(student: StudentDraft) {
       name: p.cleanName,
       grade: student.grade,
       school: student.school,
+      phone: student.phone ?? '',
+      email: student.email ?? '',
       goal: student.goal,
       digestTime: student.digestTime,
       agentTool: getAgentToolProfile(student.agentTool).id,
@@ -3570,6 +3604,36 @@ function App() {
       .map((item) => item.id);
     return { duplicateCount, actionCount: governanceCandidateIds.length, governanceCandidateIds, promotionCandidateIds };
   }, [projectStagingItems]);
+  const projectStagingLifecycleStats = useMemo(() => {
+    const byStatus = projectStagingItems.reduce<Record<string, number>>((acc, item) => {
+      const key = String(item.status || 'collected');
+      acc[key] = (acc[key] || 0) + 1;
+      return acc;
+    }, {});
+    return {
+      collected: byStatus.collected || 0,
+      screened: byStatus.screened || 0,
+      selected: byStatus.selected || 0,
+      analyzed: byStatus.analyzed || 0,
+      promoted: byStatus.promoted || 0,
+      discarded: byStatus.discarded || 0,
+    };
+  }, [projectStagingItems]);
+  const selectedProjectDigestState = selectedProject?.digestState ?? {};
+  const promotionPlanStats = useMemo(() => {
+    const items = promotionPlan?.items ?? [];
+    return items.reduce(
+      (acc, item) => {
+        acc.total += 1;
+        acc[item.action] = (acc[item.action] || 0) + 1;
+        if (item.kind === 'file') acc.files += 1;
+        else if (item.kind === 'growth') acc.growth += 1;
+        else acc.knowledge += 1;
+        return acc;
+      },
+      { total: 0, reference: 0, publish: 0, absorb: 0, skip: 0, files: 0, knowledge: 0, growth: 0 } as Record<string, number>,
+    );
+  }, [promotionPlan]);
   const filteredProjectAuditItems = useMemo(() => (
     projectAuditItems.filter((item) => {
       if (projectAuditFilter === 'all') return true;
@@ -3609,6 +3673,16 @@ function App() {
     if (status === 'published') return '已发布';
     if (status === 'sealed') return '已封存';
     return status || '进行中';
+  };
+
+  const projectDigestStatusLabel = (status?: string) => {
+    if (status === 'idle') return '无待消化';
+    if (status === 'pending') return '待消化';
+    if (status === 'submitted') return '已提交';
+    if (status === 'digesting') return '消化中';
+    if (status === 'completed') return '已完成';
+    if (status === 'failed') return '异常';
+    return status || '未记录';
   };
 
   const projectStagingStatusLabel = (status?: string) => {
@@ -4427,6 +4501,8 @@ ${conversationText || '（请先粘贴对话历史）'}`;
       name: student.name,
       grade: student.grade,
       school: student.school,
+      phone: student.phone ?? '',
+      email: student.email ?? '',
       goal: student.goal,
       digestTime: student.digestTime,
       agentTool: student.agentTool,
@@ -5238,6 +5314,8 @@ ${conversationText || '（请先粘贴对话历史）'}`;
       `姓名：${student.name}`,
       `年级：${student.grade || '待补充'}`,
       `学校：${student.school || '待补充'}`,
+      `联系电话：${student.phone || '待补充'}`,
+      `邮箱：${student.email || '待补充'}`,
       `当前目标：${student.goal || '待补充'}`,
       '',
       '请根据以上最新资料，更新该学生的教育管家背景、学情理解和后续资料消化关注点。不要删除已有学情档案，只在后续分析中采用最新学生信息。',
@@ -5817,6 +5895,92 @@ ${conversationText || '（请先粘贴对话历史）'}`;
       }
     } catch {
       setProjectMessage('项目资料导入结果解析失败。');
+    }
+  };
+
+  const importRawFilesToProject = () => {
+    if (!selectedProjectId) {
+      setProjectMessage('请先选择学习项目。');
+      return;
+    }
+    const raw = bridge()?.importProjectRawFiles?.(selectedProjectId);
+    if (!raw) {
+      setProjectMessage('当前环境不支持直接导入项目原始资料。');
+      return;
+    }
+    try {
+      const result = JSON.parse(raw) as { ok?: boolean; imported?: number; skipped?: number; project?: LearningProject; projects?: LearningProject[]; message?: string };
+      if (Array.isArray(result.projects)) setProjects(result.projects);
+      if (result.project) setSelectedProjectId(result.project.id);
+      setProjectMessage(result.message || (result.ok ? '已导入项目原始资料。' : '项目原始资料导入失败。'));
+      if (result.ok) refreshAssets();
+    } catch {
+      setProjectMessage('项目原始资料导入结果解析失败。');
+    }
+  };
+
+  const copySelectedProjectDigestCommand = () => {
+    if (!selectedProjectId) {
+      setProjectMessage('请先选择学习项目。');
+      return;
+    }
+    const raw = bridge()?.getProjectDigestCommand?.(selectedProjectId);
+    if (!raw) {
+      setProjectMessage('当前环境不支持项目消化指令生成。');
+      return;
+    }
+    try {
+      const result = JSON.parse(raw) as { ok?: boolean; command?: string; message?: string };
+      if (!result.ok || !result.command) {
+        setProjectMessage(result.message || '项目消化指令生成失败。');
+        return;
+      }
+      bridge()?.copyText?.(result.command);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1400);
+      setProjectMessage(result.message || '已复制项目消化指令。');
+    } catch {
+      setProjectMessage('项目消化指令结果解析失败。');
+    }
+  };
+
+  const markSelectedProjectDigestSubmitted = () => {
+    if (!selectedProjectId) {
+      setProjectMessage('请先选择学习项目。');
+      return;
+    }
+    const raw = bridge()?.markProjectDigestSubmitted?.(selectedProjectId);
+    if (!raw) {
+      setProjectMessage('当前环境不支持项目消化提交标记。');
+      return;
+    }
+    try {
+      const result = JSON.parse(raw) as { ok?: boolean; project?: LearningProject; projects?: LearningProject[]; message?: string };
+      if (Array.isArray(result.projects)) setProjects(result.projects);
+      if (result.project) setSelectedProjectId(result.project.id);
+      setProjectMessage(result.message || (result.ok ? '已标记项目消化提交。' : '项目消化提交标记失败。'));
+    } catch {
+      setProjectMessage('项目消化提交结果解析失败。');
+    }
+  };
+
+  const syncSelectedProjectDigestResult = () => {
+    if (!selectedProjectId) {
+      setProjectMessage('请先选择学习项目。');
+      return;
+    }
+    const raw = bridge()?.syncProjectDigestResult?.(selectedProjectId);
+    if (!raw) {
+      setProjectMessage('当前环境不支持项目消化结果同步。');
+      return;
+    }
+    try {
+      const result = JSON.parse(raw) as { ok?: boolean; project?: LearningProject; projects?: LearningProject[]; message?: string };
+      if (Array.isArray(result.projects)) setProjects(result.projects);
+      if (result.project) setSelectedProjectId(result.project.id);
+      setProjectMessage(result.message || (result.ok ? '已同步项目消化结果。' : '项目消化结果同步失败。'));
+    } catch {
+      setProjectMessage('项目消化结果同步解析失败。');
     }
   };
 
@@ -7862,6 +8026,14 @@ ${JSON.stringify(items, null, 2)}
                   <input value={draft.school} onChange={(event) => setDraft({ ...draft, school: event.target.value })} />
                 </label>
                 <label>
+                  联系电话
+                  <input value={draft.phone ?? ''} onChange={(event) => setDraft({ ...draft, phone: event.target.value })} placeholder="家长或学生联系电话" />
+                </label>
+                <label>
+                  邮箱
+                  <input type="email" value={draft.email ?? ''} onChange={(event) => setDraft({ ...draft, email: event.target.value })} placeholder="用于接收报告或联系" />
+                </label>
+                <label>
                   每日消化时间
                   <input type="time" value={draft.digestTime} onChange={(event) => setDraft({ ...draft, digestTime: event.target.value })} />
                 </label>
@@ -8671,6 +8843,18 @@ ${JSON.stringify(items, null, 2)}
                         <button className="secondary compact" onClick={loadSelectedProjectPromotionAudit}>
                           贡献审计
                         </button>
+                        <button className="secondary compact" onClick={importRawFilesToProject}>
+                          直接导入资料
+                        </button>
+                        <button className="secondary compact" onClick={copySelectedProjectDigestCommand}>
+                          复制消化指令
+                        </button>
+                        <button className="secondary compact" onClick={markSelectedProjectDigestSubmitted}>
+                          标记已提交
+                        </button>
+                        <button className="secondary compact" onClick={syncSelectedProjectDigestResult}>
+                          同步消化状态
+                        </button>
                         <button className="primary compact" onClick={executeSelectedProjectPromotionPlan} disabled={!promotionPlan?.items?.length}>
                           执行归档
                         </button>
@@ -8686,7 +8870,17 @@ ${JSON.stringify(items, null, 2)}
                       <InfoPanel icon={<ListChecks />} title="项目状态" value={projectStatusLabel(selectedProject.status)} />
                       <InfoPanel icon={<Clock3 />} title="最近更新" value={selectedProject.updatedAt ? new Date(selectedProject.updatedAt).toLocaleString('zh-CN') : '暂无记录'} />
                       <InfoPanel icon={<UserRound />} title="绑定学生" value={selectedProject.studentNames?.join('、') || '未绑定'} />
+                      <InfoPanel icon={<RefreshCw />} title="消化状态" value={`${projectDigestStatusLabel(selectedProjectDigestState.status)} · 待处理 ${selectedProjectDigestState.pendingCount ?? 0} 份`} />
+                      <InfoPanel icon={<FileText />} title="原始资料数" value={`${selectedProjectDigestState.rawFileCount ?? 0} 份`} />
+                      <InfoPanel icon={<Archive />} title="状态文件" value={selectedProjectDigestState.digestFile || selectedProject.managerPath || '未生成'} />
                     </div>
+                    {selectedProjectDigestState.message && (
+                      <div className="notice muted">
+                        项目消化：{selectedProjectDigestState.message}
+                        {selectedProjectDigestState.lastDigestAt ? ` 最近完成：${new Date(selectedProjectDigestState.lastDigestAt).toLocaleString('zh-CN')}` : ''}
+                        {selectedProjectDigestState.digestSubmittedAt ? ` 提交时间：${new Date(selectedProjectDigestState.digestSubmittedAt).toLocaleString('zh-CN')}` : ''}
+                      </div>
+                    )}
                     <div className="workflow-rail project-workflow">
                       {selectedProjectWorkflowSteps.map((step, index) => (
                         <div className="workflow-step" key={step.title}>
@@ -8777,6 +8971,8 @@ ${JSON.stringify(items, null, 2)}
                         <InfoPanel icon={<ListChecks />} title="已选" value={`${selectedProjectStagingItems.length} 份`} />
                         <InfoPanel icon={<FolderOpen />} title="暂存目录" value={selectedProject.stagingPath || `${selectedProject.workspacePath}\\研究暂存`} />
                         <InfoPanel icon={<Archive />} title="治理候选" value={`${projectStagingGovernanceStats.actionCount} 项`} />
+                        <InfoPanel icon={<ShieldCheck />} title="已晋升/已分析" value={`${projectStagingLifecycleStats.promoted + projectStagingLifecycleStats.analyzed} 份`} />
+                        <InfoPanel icon={<Clock3 />} title="候选/初筛" value={`${projectStagingLifecycleStats.selected + projectStagingLifecycleStats.screened} 份`} />
                       </div>
                       <div className="form-grid compact-grid staging-filter-grid">
                         <label>
@@ -8800,6 +8996,9 @@ ${JSON.stringify(items, null, 2)}
                         <button className="primary compact" onClick={importFilesToProjectStaging}>
                           <FileDown size={16} />
                           导入到研究暂存
+                        </button>
+                        <button className="secondary compact" onClick={importRawFilesToProject}>
+                          直接导入原始资料库
                         </button>
                         <button className="secondary compact" onClick={copyProjectStagingAiScreeningPrompt} disabled={projectStagingItems.length === 0}>
                           复制 AI 初筛指令
@@ -8897,6 +9096,10 @@ ${JSON.stringify(items, null, 2)}
                         <FileDown size={18} />
                         加入项目知识空间
                       </button>
+                      <button className="secondary" onClick={importRawFilesToProject}>
+                        <FileDown size={18} />
+                        本地文件直接导入
+                      </button>
                       <span className="inline-hint">已选 {selectedProjectAssetIds.length} 个</span>
                     </div>
                     {promotionPlan && (
@@ -8909,6 +9112,8 @@ ${JSON.stringify(items, null, 2)}
                           <InfoPanel icon={<ListChecks />} title="清单条目" value={`${promotionPlan.items.length} 项`} />
                           <InfoPanel icon={<UserRound />} title="目标学生" value={promotionPlan.students?.map((student) => student.name).join('、') || '未绑定'} />
                           <InfoPanel icon={<Archive />} title="将执行" value={`${promotionPlan.items.filter((item) => item.action !== 'skip').length} 项`} />
+                          <InfoPanel icon={<FileText />} title="审核动作" value={`引用 ${promotionPlanStats.reference || 0} · 发布 ${promotionPlanStats.publish || 0} · 吸收 ${promotionPlanStats.absorb || 0} · 跳过 ${promotionPlanStats.skip || 0}`} />
+                          <InfoPanel icon={<Sparkles />} title="贡献类型" value={`文件 ${promotionPlanStats.files || 0} · 知识 ${promotionPlanStats.knowledge || 0} · 成长 ${promotionPlanStats.growth || 0}`} />
                         </div>
                         <div className="actions compact-actions">
                           <button className="secondary compact" onClick={() => setPromotionPlanBatchAction('files', 'reference')}>文件全部引用</button>
@@ -9359,7 +9564,7 @@ ${JSON.stringify(items, null, 2)}
               <section className="student-profile-editor">
                 <div className="mini-heading">
                   <strong>学生资料编辑</strong>
-                  <span>用于调整姓名、年级、学校和目标；保存资料不会自动移动本机知识库目录。</span>
+                  <span>用于调整姓名、年级、学校、联系方式和目标；保存资料不会自动移动本机知识库目录。</span>
                 </div>
                 <div className="field-grid">
                   <label>
@@ -9373,6 +9578,14 @@ ${JSON.stringify(items, null, 2)}
                   <label>
                     学校
                     <input value={studentEditDraft.school} onChange={(event) => setStudentEditDraft({ ...studentEditDraft, school: event.target.value })} />
+                  </label>
+                  <label>
+                    联系电话
+                    <input value={studentEditDraft.phone ?? ''} onChange={(event) => setStudentEditDraft({ ...studentEditDraft, phone: event.target.value })} placeholder="家长或学生联系电话" />
+                  </label>
+                  <label>
+                    邮箱
+                    <input type="email" value={studentEditDraft.email ?? ''} onChange={(event) => setStudentEditDraft({ ...studentEditDraft, email: event.target.value })} placeholder="用于接收报告或联系" />
                   </label>
                   <label>
                     每日消化时间

@@ -58,6 +58,18 @@ contextBridge.exposeInMainWorld('AndroidBridge', {
   importProjectAssets(projectId, assetIdsJson) {
     return ipcRenderer.sendSync('bridge:importProjectAssets', projectId, assetIdsJson);
   },
+  importProjectRawFiles(projectId) {
+    return ipcRenderer.sendSync('bridge:importProjectRawFiles', projectId);
+  },
+  getProjectDigestCommand(projectId) {
+    return ipcRenderer.sendSync('bridge:getProjectDigestCommand', projectId);
+  },
+  markProjectDigestSubmitted(projectId) {
+    return ipcRenderer.sendSync('bridge:markProjectDigestSubmitted', projectId);
+  },
+  syncProjectDigestResult(projectId) {
+    return ipcRenderer.sendSync('bridge:syncProjectDigestResult', projectId);
+  },
   importProjectStagingFiles(projectId) {
     return ipcRenderer.sendSync('bridge:importProjectStagingFiles', projectId);
   },

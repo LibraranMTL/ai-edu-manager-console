@@ -1,6 +1,6 @@
 {
   "name": "edu-manager-launcher",
-  "version": "0.7.17",
+  "version": "0.7.18",
   "private": true,
   "type": "module",
   "main": "electron/main.cjs",

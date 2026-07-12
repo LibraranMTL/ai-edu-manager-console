@@ -23,7 +23,7 @@ let hostServiceLastError = '';
 let todayUploadCount = 0;
 let uploadCountDate = new Date().toISOString().slice(0, 10);
 
-const APP_VERSION = '0.7.17';
+const APP_VERSION = '0.7.18';
 const DEFAULT_HOST_PORT = 18777;
 const AGENT_TOOL_IDS = ['qclaw', 'marvis', 'hohu', 'openclaw', 'ima.copilot', 'workbuddy', 'codex', 'claude-code', 'chatgpt', 'claude', 'doubao', 'coze', 'fastgpt'];
 const WEB_AGENT_TOOL_URLS = {
@@ -2308,6 +2308,7 @@ function projectPathsFor(projectName, rootPath) {
   const root = rootPath || projectKnowledgeRoot(cleanName);
   return {
     projectRootPath: root,
+    managerPath: path.join(root, '.edu-manager'),
     workspacePath: path.join(root, '项目工作空间'),
     stagingPath: path.join(root, '项目工作空间', '研究暂存'),
     knowledgeRootPath: path.join(root, '项目知识空间'),
@@ -2405,11 +2406,104 @@ function writeProjectStagingIndex(project) {
   fs.writeFileSync(path.join(paths.stagingPath, '研究暂存清单.md'), `# ${normalized.name} 研究暂存清单\n\n> 暂存层用于收集和筛选项目研究资料；未晋升前不会进入正式文件资产中心。\n\n| 文件 | 状态 | 类型 | 大小 | AI建议 | AI理由 | 治理建议 | 治理理由 | 路径 |\n| --- | --- | --- | ---: | --- | --- | --- | --- | --- |\n${rows}\n`, 'utf8');
 }
 
+function collectProjectRawFiles(rawPath) {
+  const files = [];
+  const walk = (dir) => {
+    if (!dir || !fs.existsSync(dir)) return;
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      const fullPath = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        if (entry.name === '.edu-manager' || entry.name === 'node_modules') continue;
+        walk(fullPath);
+      } else if (entry.isFile()) {
+        const stat = fs.statSync(fullPath);
+        files.push({
+          filename: entry.name,
+          path: fullPath,
+          size: stat.size,
+          mtimeMs: stat.mtimeMs,
+          sha1: sha1File(fullPath),
+        });
+      }
+    }
+  };
+  walk(rawPath);
+  return files.sort((a, b) => String(a.path).localeCompare(String(b.path)));
+}
+
+function projectDigestStatePath(project) {
+  const paths = projectPathsFor(project.name, project.projectRootPath);
+  return path.join(paths.managerPath, 'project-digest-state.json');
+}
+
+function readProjectDigestState(project) {
+  const paths = projectPathsFor(project.name, project.projectRootPath);
+  let parsed = {};
+  try {
+    parsed = JSON.parse(fs.readFileSync(projectDigestStatePath({ ...project, ...paths }), 'utf8'));
+  } catch {
+    parsed = {};
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) parsed = {};
+  const rawFiles = collectProjectRawFiles(paths.rawPath);
+  const lastDigestMs = parsed.lastDigestAt ? Date.parse(parsed.lastDigestAt) : 0;
+  const digested = new Set(Array.isArray(parsed.digestedFiles) ? parsed.digestedFiles.map(String) : []);
+  const pendingFiles = rawFiles.filter((file) => {
+    if (!lastDigestMs && !digested.size) return true;
+    if (digested.has(file.path) || digested.has(file.sha1) || digested.has(file.filename)) return false;
+    return file.mtimeMs > lastDigestMs;
+  });
+  const status = parsed.status || (pendingFiles.length > 0 ? 'pending' : 'idle');
+  return {
+    version: 1,
+    projectId: String(project.id || ''),
+    projectName: String(project.name || ''),
+    status,
+    message: parsed.message || (pendingFiles.length > 0 ? `有 ${pendingFiles.length} 份项目资料待消化。` : '暂无待消化项目资料。'),
+    rawPath: paths.rawPath,
+    digestFile: projectDigestStatePath({ ...project, ...paths }),
+    rawFileCount: rawFiles.length,
+    pendingCount: pendingFiles.length,
+    submittedCount: ['submitted', 'digesting'].includes(status) ? pendingFiles.length : 0,
+    lastDigestAt: parsed.lastDigestAt || '',
+    digestSubmittedAt: parsed.digestSubmittedAt || '',
+    digestBatchId: parsed.digestBatchId || '',
+    pendingFiles: pendingFiles.slice(0, 100).map((file) => ({
+      filename: file.filename,
+      path: file.path,
+      size: file.size,
+      sha1: file.sha1,
+    })),
+    digestedFiles: Array.isArray(parsed.digestedFiles) ? parsed.digestedFiles : [],
+    updatedAt: parsed.updatedAt || '',
+  };
+}
+
+function writeProjectDigestState(project, patch) {
+  const paths = projectPathsFor(project.name, project.projectRootPath);
+  fs.mkdirSync(paths.managerPath, { recursive: true });
+  const current = readProjectDigestState({ ...project, ...paths });
+  const next = {
+    ...current,
+    ...patch,
+    version: 1,
+    projectId: String(project.id || ''),
+    projectName: String(project.name || ''),
+    updatedAt: new Date().toISOString(),
+  };
+  fs.writeFileSync(projectDigestStatePath({ ...project, ...paths }), JSON.stringify(next, null, 2), 'utf8');
+  return readProjectDigestState({ ...project, ...paths, digestState: next });
+}
+
 function normalizeProject(project) {
   const cleanName = sanitizeName(project.name || '学习项目');
   const createdAt = project.createdAt || new Date().toISOString();
   const studentIds = Array.isArray(project.studentIds) ? project.studentIds.map(String) : [];
   const paths = projectPathsFor(cleanName, project.projectRootPath);
+  const fileDigestState = readProjectDigestState({ ...project, name: cleanName, projectRootPath: paths.projectRootPath });
+  const digestState = project.digestState && typeof project.digestState === 'object'
+    ? { ...project.digestState, ...fileDigestState }
+    : fileDigestState;
   return {
     id: String(project.id || `project-${Date.now()}-${crypto.randomBytes(3).toString('hex')}`),
     name: cleanName,
@@ -2418,6 +2512,7 @@ function normalizeProject(project) {
     studentIds,
     studentNames: Array.isArray(project.studentNames) ? project.studentNames.map(String) : [],
     projectRootPath: paths.projectRootPath,
+    managerPath: paths.managerPath,
     workspacePath: paths.workspacePath,
     stagingPath: paths.stagingPath,
     knowledgeRootPath: paths.knowledgeRootPath,
@@ -2428,6 +2523,7 @@ function normalizeProject(project) {
     promotionPath: project.promotionPath || path.join(paths.contributionPath, '知识贡献申请.md'),
     assetIds: Array.isArray(project.assetIds) ? project.assetIds.map(String) : [],
     stagingItems: Array.isArray(project.stagingItems) ? project.stagingItems.map(normalizeProjectStagingItem) : [],
+    digestState,
     createdAt,
     updatedAt: project.updatedAt || createdAt,
     archivedAt: project.archivedAt || '',
@@ -2446,6 +2542,7 @@ function ensureProjectWorkspace(project) {
     path.join(paths.workspacePath, '进展'),
     path.join(paths.workspacePath, '团队成员'),
     path.join(paths.workspacePath, '成果'),
+    paths.managerPath,
     paths.knowledgeRootPath,
     paths.rawPath,
     paths.conceptPath,
@@ -2608,6 +2705,192 @@ function importProjectAssets(projectId, assetIdsJson) {
     });
   } catch (error) {
     return JSON.stringify({ ok: false, message: `导入项目资料失败：${error.message}` });
+  }
+}
+
+function importProjectRawFiles(projectId) {
+  try {
+    const project = readProjects().map(normalizeProject).find((item) => String(item.id) === String(projectId));
+    if (!project) return JSON.stringify({ ok: false, message: '未找到学习项目。' });
+    const ensured = ensureProjectWorkspace(project);
+    const files = dialog.showOpenDialogSync(mainWindow, {
+      title: '导入到项目原始资料库',
+      properties: ['openFile', 'multiSelections'],
+      filters: [
+        { name: '学习资料', extensions: ['jpg', 'jpeg', 'png', 'webp', 'bmp', 'pdf', 'doc', 'docx', 'xls', 'xlsx', 'csv', 'ppt', 'pptx', 'txt', 'md', 'zip'] },
+        { name: '全部文件', extensions: ['*'] },
+      ],
+    });
+    if (!files || !files.length) return JSON.stringify({ ok: false, message: '未选择项目资料。' });
+    const imported = [];
+    const skipped = [];
+    for (const source of files) {
+      if (!source || !fs.existsSync(source)) {
+        skipped.push(source || '');
+        continue;
+      }
+      const stat = fs.statSync(source);
+      if (!stat.isFile()) {
+        skipped.push(source);
+        continue;
+      }
+      const target = uniqueTargetFile(ensured.rawPath, path.basename(source));
+      fs.copyFileSync(source, target);
+      const asset = upsertAssetFromFile(target, {
+        spaceType: 'project',
+        projectId: ensured.id,
+        projectName: ensured.name,
+        sourcePath: source,
+        sourceName: '项目直接导入',
+        role: 'project_raw_direct',
+        referenceId: `${ensured.id}-direct-${sha1File(target) || crypto.randomBytes(4).toString('hex')}`,
+      });
+      if (asset) imported.push(asset.assetId);
+    }
+    if (!imported.length) return JSON.stringify({ ok: false, skipped: skipped.length, message: '没有项目资料被导入。' });
+    const now = new Date().toISOString();
+    const digestState = writeProjectDigestState(ensured, {
+      status: 'pending',
+      message: `有 ${imported.length} 份新项目资料待消化。`,
+    });
+    const result = updateProjectRecord(ensured.id, (item) => ({
+      ...item,
+      assetIds: mergeUnique([...(item.assetIds || []), ...imported]),
+      digestState,
+      updatedAt: now,
+    }));
+    appendHostTimeline({ type: 'project_raw_imported', title: 'Project raw files imported', detail: ensured.name, count: imported.length });
+    return JSON.stringify({
+      ok: true,
+      imported: imported.length,
+      skipped: skipped.length,
+      project: result.project,
+      projects: result.projects,
+      digestState,
+      message: `已导入 ${imported.length} 份资料到项目原始资料库，并标记为待消化。`,
+    });
+  } catch (error) {
+    return JSON.stringify({ ok: false, message: `导入项目原始资料失败：${error.message}` });
+  }
+}
+
+function getProjectDigestCommand(projectId) {
+  try {
+    const project = readProjects().map(normalizeProject).find((item) => String(item.id) === String(projectId));
+    if (!project) return JSON.stringify({ ok: false, message: '未找到学习项目。' });
+    const ensured = ensureProjectWorkspace(project);
+    const state = readProjectDigestState(ensured);
+    const command = `/消化项目资料
+
+请围绕学习项目「${ensured.name}」执行项目资料消化。
+
+项目原始资料库：
+${ensured.rawPath}
+
+项目知识空间：
+${ensured.knowledgeRootPath}
+
+请更新以下目录：
+- 摘要库：${ensured.summaryPath}
+- 概念库：${projectPathsFor(ensured.name, ensured.projectRootPath).conceptPath}
+- 实体库：${projectPathsFor(ensured.name, ensured.projectRootPath).entityPath}
+- 问答精华库：${projectPathsFor(ensured.name, ensured.projectRootPath).qaPath}
+- 综合汇总库：${path.join(ensured.knowledgeRootPath, '综合汇总库')}
+- 项目报告：${path.join(ensured.knowledgeRootPath, '项目报告')}
+
+工作规则：
+1. 只处理本项目资料，不要直接写入学生主档案。
+2. 所有摘要、概念、实体、问答和综合结论都要保留来源文件名或路径。
+3. 完成后更新项目 index.md 和 log.md。
+4. 完成后写入以下状态文件，便于控制台同步：
+${state.digestFile}
+
+状态文件 JSON 格式：
+{
+  "version": 1,
+  "status": "completed",
+  "lastDigestAt": "当前 ISO 时间",
+  "message": "项目资料已消化完成",
+  "digestedFiles": ["已处理文件的完整路径或 SHA-1"]
+}
+
+待消化资料：
+${(state.pendingFiles || []).map((file) => `- ${file.filename}：${file.path}`).join('\n') || '- 暂无待消化资料，请检查项目原始资料库。'}
+`;
+    return JSON.stringify({ ok: true, command, digestState: state, message: '已生成项目资料消化指令。' });
+  } catch (error) {
+    return JSON.stringify({ ok: false, message: `生成项目资料消化指令失败：${error.message}` });
+  }
+}
+
+function markProjectDigestSubmitted(projectId) {
+  try {
+    const project = readProjects().map(normalizeProject).find((item) => String(item.id) === String(projectId));
+    if (!project) return JSON.stringify({ ok: false, message: '未找到学习项目。' });
+    const ensured = ensureProjectWorkspace(project);
+    const now = new Date().toISOString();
+    const state = writeProjectDigestState(ensured, {
+      status: 'submitted',
+      digestSubmittedAt: now,
+      digestBatchId: `project-digest-${timestampForFilename()}`,
+      message: '项目资料消化指令已提交给 Agent，等待完成后同步。',
+    });
+    const result = updateProjectRecord(ensured.id, (item) => ({ ...item, digestState: state, updatedAt: now }));
+    appendHostTimeline({ type: 'project_digest_submitted', title: 'Project digest submitted', detail: ensured.name, count: state.pendingCount || 0 });
+    return JSON.stringify({ ok: true, project: result.project, projects: result.projects, digestState: state, message: state.message });
+  } catch (error) {
+    return JSON.stringify({ ok: false, message: `标记项目消化提交失败：${error.message}` });
+  }
+}
+
+function syncProjectDigestResult(projectId) {
+  try {
+    const project = readProjects().map(normalizeProject).find((item) => String(item.id) === String(projectId));
+    if (!project) return JSON.stringify({ ok: false, message: '未找到学习项目。' });
+    const ensured = ensureProjectWorkspace(project);
+    const paths = projectPathsFor(ensured.name, ensured.projectRootPath);
+    const current = readProjectDigestState(ensured);
+    const logPath = path.join(paths.knowledgeRootPath, 'log.md');
+    const indexPath = path.join(paths.knowledgeRootPath, 'index.md');
+    const logText = [logPath, indexPath].filter((file) => fs.existsSync(file)).map((file) => {
+      try {
+        return fs.readFileSync(file, 'utf8').slice(-12000);
+      } catch {
+        return '';
+      }
+    }).join('\n');
+    const rawFiles = collectProjectRawFiles(paths.rawPath);
+    const hasCompletionSignal = current.status === 'completed' || /消化完成|处理完成|已完成|无新增项目资料|已更新|项目资料已消化|completed/i.test(logText);
+    let nextPatch = {};
+    if (hasCompletionSignal) {
+      nextPatch = {
+        status: 'completed',
+        lastDigestAt: new Date().toISOString(),
+        message: '项目资料消化结果已同步为完成。',
+        digestedFiles: rawFiles.map((file) => file.path),
+      };
+    } else if (current.status === 'submitted' || current.status === 'digesting') {
+      nextPatch = {
+        status: 'digesting',
+        message: '尚未检测到完成标记；请确认 Agent 已更新 log.md 或 project-digest-state.json。',
+      };
+    } else if (current.pendingCount > 0) {
+      nextPatch = {
+        status: 'pending',
+        message: `仍有 ${current.pendingCount} 份项目资料待消化。`,
+      };
+    } else {
+      nextPatch = {
+        status: 'idle',
+        message: '暂无待消化项目资料。',
+      };
+    }
+    const state = writeProjectDigestState(ensured, nextPatch);
+    const result = updateProjectRecord(ensured.id, (item) => ({ ...item, digestState: state, updatedAt: new Date().toISOString() }));
+    appendHostTimeline({ type: 'project_digest_synced', title: 'Project digest synced', detail: `${ensured.name} -> ${state.status}`, count: state.pendingCount || 0 });
+    return JSON.stringify({ ok: true, project: result.project, projects: result.projects, digestState: state, message: state.message });
+  } catch (error) {
+    return JSON.stringify({ ok: false, message: `同步项目消化结果失败：${error.message}` });
   }
 }
 
@@ -5424,6 +5707,8 @@ function toHostStudent(student) {
     name: cleanName,
     grade: String(student.grade || ''),
     school: String(student.school || ''),
+    phone: String(student.phone || ''),
+    email: String(student.email || ''),
     goal: String(student.goal || ''),
     digestTime: String(student.digestTime || '21:30'),
     agentTool,
@@ -7386,6 +7671,10 @@ ipcMain.on('bridge:createProject', (event, optionsJson) => { licensedIpc(event, 
 ipcMain.on('bridge:updateProjectStatus', (event, projectId, status) => { licensedIpc(event, '学习项目状态更新', () => updateProjectStatus(projectId, status)); });
 ipcMain.on('bridge:updateProjectStudents', (event, projectId, studentIdsJson) => { licensedIpc(event, '学习项目绑定学生', () => updateProjectStudents(projectId, studentIdsJson)); });
 ipcMain.on('bridge:importProjectAssets', (event, projectId, assetIdsJson) => { licensedIpc(event, '项目资料导入', () => importProjectAssets(projectId, assetIdsJson)); });
+ipcMain.on('bridge:importProjectRawFiles', (event, projectId) => { licensedIpc(event, '项目原始资料导入', () => importProjectRawFiles(projectId)); });
+ipcMain.on('bridge:getProjectDigestCommand', (event, projectId) => { licensedIpc(event, '项目消化指令', () => getProjectDigestCommand(projectId)); });
+ipcMain.on('bridge:markProjectDigestSubmitted', (event, projectId) => { licensedIpc(event, '项目消化提交标记', () => markProjectDigestSubmitted(projectId)); });
+ipcMain.on('bridge:syncProjectDigestResult', (event, projectId) => { licensedIpc(event, '项目消化结果同步', () => syncProjectDigestResult(projectId)); });
 ipcMain.on('bridge:importProjectStagingFiles', (event, projectId) => { licensedIpc(event, '项目研究暂存导入', () => importProjectStagingFiles(projectId)); });
 ipcMain.on('bridge:updateProjectStagingStatus', (event, projectId, itemIdsJson, status) => { licensedIpc(event, '项目研究暂存状态', () => updateProjectStagingStatus(projectId, itemIdsJson, status)); });
 ipcMain.on('bridge:promoteProjectStagingItems', (event, projectId, itemIdsJson) => { licensedIpc(event, '项目研究暂存晋升', () => promoteProjectStagingItems(projectId, itemIdsJson)); });

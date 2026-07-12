@@ -1,9 +1,9 @@
 {
   "versionCode": 61,
   "versionName": "0.5.1",
-  "windowsVersionCode": 97,
-  "windowsVersionName": "0.7.17",
-  "windowsUrl": "https://www.greatbg.com/download/AI-edu-manager-console-Windows-0.7.17.zip",
+  "windowsVersionCode": 98,
+  "windowsVersionName": "0.7.18",
+  "windowsUrl": "https://www.greatbg.com/download/AI-edu-manager-console-Windows-0.7.18.zip",
   "terminalApkUrl": "https://www.greatbg.com/download/AI-edu-manager-tablet-terminal-0.5.1.apk",
   "tabletTerminalVersionCode": 61,
   "tabletTerminalVersionName": "0.5.1",
@@ -12,5 +12,5 @@
   "managerApkVersionCode": 23,
   "managerApkVersionName": "0.2.3",
   "apkUrl": "https://www.greatbg.com/download/AI-edu-manager-tablet-terminal-0.5.1.apk",
-  "notes": "Windows 0.7.17：新增知识贡献安全回滚、成长模型结构化索引、知识关系图节点筛选、文件资产治理人工决策、所有学生路径批量核对，并调整左侧菜单顺序。平板终端仍为 0.5.1。"
+  "notes": "Windows 0.7.18：完善学习项目资料直接导入、项目资料消化闭环、知识贡献审核统计与研究暂存层状态展示，并在学生基础资料中增加联系电话、邮箱字段。平板终端仍为 0.5.1。"
 }

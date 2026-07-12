@@ -23,7 +23,7 @@ let hostServiceLastError = '';
 let todayUploadCount = 0;
 let uploadCountDate = new Date().toISOString().slice(0, 10);
 
-const APP_VERSION = '0.7.8';
+const APP_VERSION = '0.7.9';
 const DEFAULT_HOST_PORT = 18777;
 const AGENT_TOOL_IDS = ['qclaw', 'marvis', 'hohu', 'openclaw', 'ima.copilot', 'workbuddy', 'codex', 'claude-code', 'chatgpt', 'claude', 'doubao', 'coze', 'fastgpt'];
 const WEB_AGENT_TOOL_URLS = {
@@ -430,6 +430,72 @@ function scanAbsolutePathsInRuleFiles(student) {
     }
   }
   return findings;
+}
+
+function replacementForDetectedPath(student, detectedPath) {
+  const value = String(detectedPath || '').replace(/\//g, '\\').toLowerCase();
+  const rootName = path.basename(student.rootPath || getStudentRootDir(student.name)).toLowerCase();
+  const name = sanitizeName(student.name).toLowerCase();
+  if (value.endsWith('\\agent.md') || value.endsWith('/agent.md')) return '@AGENT_FILE';
+  if (value.includes('原始资料库') || value.includes('raw') || value.includes('materials')) return '@RAW_DIR';
+  if (value.includes('学情分析汇总') || value.includes('summary') || value.includes('report') || value.includes('汇总')) return '@SUMMARY_DIR';
+  if (value.includes('输出结果') || value.includes('output') || value.includes('result')) return '@OUTPUT_DIR';
+  if (value.includes('成长模型') || value.includes('growth')) return '@GROWTH_DIR';
+  if (rootName && value.includes(rootName)) return '@KB_ROOT';
+  if (name && (value.includes(`${name}知识库`.toLowerCase()) || value.includes(`${name}知識庫`.toLowerCase()))) return '@KB_ROOT';
+  return '';
+}
+
+function repairStudentStalePaths(studentId) {
+  try {
+    const student = readStudentsIndex().find((item) => String(item.id) === String(studentId));
+    if (!student) return JSON.stringify({ ok: false, message: '未找到学生。' });
+    const normalized = toHostStudent(student);
+    ensureStudentWorkspaceConfig(normalized);
+    const stalePaths = scanAbsolutePathsInRuleFiles(normalized).filter((item) => item.status !== 'ok');
+    if (!stalePaths.length) return JSON.stringify({ ok: true, changedFiles: [], skipped: [], message: '未检测到需要修复的旧绝对路径。' });
+    const byFile = new Map();
+    const skipped = [];
+    for (const item of stalePaths) {
+      const replacement = replacementForDetectedPath(normalized, item.detectedPath);
+      if (!replacement) {
+        skipped.push({ ...item, reason: '无法确定逻辑路径替换目标' });
+        continue;
+      }
+      if (!byFile.has(item.filePath)) byFile.set(item.filePath, []);
+      byFile.get(item.filePath).push({ ...item, replacement });
+    }
+    const changedFiles = [];
+    for (const [filePath, replacements] of byFile.entries()) {
+      const original = readSmallTextFile(filePath);
+      if (!original) continue;
+      let next = original;
+      for (const item of replacements) {
+        next = next.split(item.detectedPath).join(item.replacement);
+      }
+      if (next === original) continue;
+      const backupPath = `${filePath}.bak-${timestampForFilename()}`;
+      fs.copyFileSync(filePath, backupPath);
+      fs.writeFileSync(filePath, next, 'utf8');
+      changedFiles.push({
+        filePath,
+        backupPath,
+        replacementCount: replacements.length,
+      });
+    }
+    const report = JSON.parse(checkStudentPathHealth(studentId));
+    return JSON.stringify({
+      ok: true,
+      changedFiles,
+      skipped,
+      reportPath: report.reportPath,
+      message: changedFiles.length
+        ? `已备份并修复 ${changedFiles.length} 个规则/设定文件中的旧路径；${skipped.length} 条路径未自动处理。`
+        : `没有可自动修复的旧路径；${skipped.length} 条路径需要人工确认。`,
+    });
+  } catch (error) {
+    return JSON.stringify({ ok: false, message: `修复旧路径失败：${error.message}` });
+  }
 }
 
 function markdownTableCell(value) {
@@ -6367,6 +6433,7 @@ ipcMain.on('bridge:selectAgentConversationFiles', (event, studentId, tool) => { 
 ipcMain.on('bridge:saveConversationExtract', (event, studentId, extractJson, tool) => { licensedIpc(event, '对话历史提取', () => saveConversationExtract(studentId, extractJson, tool)); });
 ipcMain.on('bridge:openStudentRootDir', (event, studentId) => { licensedIpc(event, '打开学生知识库目录', () => openStudentRootDir(studentId)); });
 ipcMain.on('bridge:checkStudentPathHealth', (event, studentId) => { licensedIpc(event, '知识库路径核对', () => checkStudentPathHealth(studentId)); });
+ipcMain.on('bridge:repairStudentStalePaths', (event, studentId) => { licensedIpc(event, '知识库路径修复', () => repairStudentStalePaths(studentId)); });
 ipcMain.on('bridge:getLicenseStatus', (event) => { event.returnValue = getLicenseStatus(); });
 ipcMain.on('bridge:activateLicense', (event, code) => { event.returnValue = activateLicense(code); });
 ipcMain.on('bridge:deactivateLicense', (event) => { event.returnValue = deactivateLicense(); });

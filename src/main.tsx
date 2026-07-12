@@ -342,6 +342,7 @@ type AndroidBridge = {
   saveConversationExtract?: (studentId: string, extractJson: string, tool: AgentToolId) => string;
   openStudentRootDir?: (studentId: string) => string;
   checkStudentPathHealth?: (studentId: string) => string;
+  repairStudentStalePaths?: (studentId: string) => string;
   getLicenseStatus?: () => string;
   activateLicense?: (code: string) => string;
   deactivateLicense?: () => string;
@@ -701,8 +702,8 @@ const storageKey = 'edu-manager-launcher.students.v2';
 const themeStorageKey = 'edu-manager-launcher.theme.v1';
 const languageStorageKey = 'edu-manager-launcher.language.v1';
 const archiveKeywordStorageKey = 'edu-manager-launcher.archive-keywords.v1';
-const currentVersionCode = 88;
-const currentVersionName = '0.7.8';
+const currentVersionCode = 89;
+const currentVersionName = '0.7.9';
 const updateManifestUrl = [
   'https://www.greatbg.com/download/edu-manager-version.json',
   'http://www.greatbg.com/download/edu-manager-version.json',
@@ -4616,6 +4617,36 @@ ${conversationText || '（请先粘贴对话历史）'}`;
     persist(next);
   };
 
+  const buildPathLintCommand = (student: Student) => {
+    const paths = pathsForStudent(student);
+    const tool = getAgentToolProfile(student.agentTool).name;
+    return [
+      '/lint',
+      '',
+      `请对「${student.name} AI教育管家」知识库进行一次定时维护 / lint 检查。`,
+      '',
+      `Agent 工具：${tool}`,
+      `知识库根目录：${paths.root}`,
+      `AGENT.md：${paths.agent}`,
+      `原始资料库：${paths.raw}`,
+      `学情分析汇总：${paths.summary}`,
+      `输出结果：${paths.output}`,
+      `成长模型：${joinDisplayPath(paths.root, '成长模型')}`,
+      `工作空间配置：${joinDisplayPath(paths.root, '.ai-manager', 'pathmap.json')}`,
+      '',
+      '请重点检查：',
+      '1. AGENT.md、AGENTS.md、CLAUDE.md、IMA.md、WorkBuddy.md 等规则文件是否仍包含旧主机绝对路径。',
+      '2. 是否应改用 @KB_ROOT、@RAW_DIR、@SUMMARY_DIR、@OUTPUT_DIR、@AGENT_FILE 等逻辑路径。',
+      '3. 原始资料、摘要、综合汇总、问答精华、学情报告、成长模型之间是否存在断链或重复。',
+      '4. index.md、log.md、贡献记录、资产索引与最近消化结果是否需要维护。',
+      '5. 只生成维护报告和建议；不要移动、删除、覆盖原始资料。若需要修复，请先列出备份方案。',
+    ].join('\n');
+  };
+
+  const copyLintCommand = async (student: Student) => {
+    await copyText(buildPathLintCommand(student), `已复制「${student.name}」定时维护 / lint 指令。`);
+  };
+
   const markDigestSubmitted = (student: Student) => {
     const stamp = new Date().toLocaleString('zh-CN');
     const raw = bridge()?.markStudentDigestSubmitted?.(student.id);
@@ -5050,23 +5081,100 @@ ${conversationText || '（请先粘贴对话历史）'}`;
     }
   };
 
-  const checkSelectedStudentPathHealth = () => {
-    if (!selectedStudent) return;
+  const checkStudentPathHealth = (student: Student, options?: { silent?: boolean }) => {
     if (isWindows && !windowsLicenseActive) {
       setPathHealthMessage('未激活状态仅支持只读浏览，激活后可执行知识库路径核对。');
-      return;
+      return null;
     }
-    const raw = bridge()?.checkStudentPathHealth?.(selectedStudent.id);
+    const raw = bridge()?.checkStudentPathHealth?.(student.id);
     if (!raw) {
       setPathHealthMessage('当前环境不支持知识库路径核对。');
-      return;
+      return null;
     }
     try {
       const result = JSON.parse(raw) as PathHealthReport;
-      setPathHealth(result);
-      setPathHealthMessage(result.message || (result.ok ? '知识库路径核对完成。' : '知识库路径核对发现问题。'));
+      if (!options?.silent || selectedStudent?.id === student.id) {
+        setPathHealth(result);
+        setPathHealthMessage(result.message || (result.ok ? '知识库路径核对完成。' : '知识库路径核对发现问题。'));
+      }
+      return result;
     } catch {
       setPathHealthMessage('知识库路径核对结果解析失败。');
+      return null;
+    }
+  };
+
+  const checkSelectedStudentPathHealth = () => {
+    if (!selectedStudent) return;
+    checkStudentPathHealth(selectedStudent);
+  };
+
+  const buildCurrentHostWorkRules = (student: Student) => {
+    const paths = pathsForStudent(student);
+    return [
+      '## 工作规则',
+      `该 Agent 的工作协议使用：${paths.agent}`,
+      `后续所有学习资料消化都围绕该学生知识库执行。`,
+      '',
+      '## 当前主机路径',
+      `知识库根目录：${paths.root}`,
+      `原始资料库：${paths.raw}`,
+      `学情分析汇总：${paths.summary}`,
+      `输出结果：${paths.output}`,
+      `成长模型：${joinDisplayPath(paths.root, '成长模型')}`,
+      '',
+      '请以以上当前主机路径为准；如果旧设定中存在其他主机的绝对路径，请更新为当前路径或逻辑路径。'
+    ].join('\n');
+  };
+
+  const buildLogicalAgentDraft = (student: Student) => {
+    const tool = getAgentToolProfile(student.agentTool);
+    return [
+      `# ${student.name} AI教育管家`,
+      '',
+      '## 工作规则',
+      '该 Agent 的工作协议使用：@AGENT_FILE',
+      '后续所有学习资料消化都围绕该学生知识库执行。',
+      '',
+      '## 逻辑路径映射',
+      '- @KB_ROOT：学生知识库根目录',
+      '- @AGENT_FILE：@KB_ROOT/AGENT.md',
+      '- @RAW_DIR：学生原始资料库',
+      '- @SUMMARY_DIR：学生学情分析汇总',
+      '- @OUTPUT_DIR：输出结果目录',
+      '- @GROWTH_DIR：成长模型目录',
+      '',
+      '## 知识库目录',
+      '- 原始资料库：@RAW_DIR',
+      '- 资料摘要、概念、实体、问答精华、综合汇总：@SUMMARY_DIR 下对应目录或 Markdown 文件',
+      '- 学情报告与成长证据：@GROWTH_DIR 与 @SUMMARY_DIR/学情报告',
+      '',
+      '## 跨主机同步要求',
+      '不要在规则文件中固定写死某一台电脑的 D:\\、C:\\ 等绝对路径。',
+      '当知识库同步到新主机后，以 @KB_ROOT 和 .ai-manager/pathmap.json 记录的当前主机路径为准。',
+      '',
+      `## Agent 工具`,
+      `当前绑定工具：${tool.name}`,
+    ].join('\n');
+  };
+
+  const repairSelectedStudentStalePaths = () => {
+    if (!selectedStudent) return;
+    if (isWindows && !windowsLicenseActive) {
+      setPathHealthMessage('未激活状态仅支持只读浏览，激活后可修复知识库旧路径。');
+      return;
+    }
+    const raw = bridge()?.repairStudentStalePaths?.(selectedStudent.id);
+    if (!raw) {
+      setPathHealthMessage('当前环境不支持知识库路径修复。');
+      return;
+    }
+    try {
+      const result = JSON.parse(raw) as { ok?: boolean; message?: string; reportPath?: string; changedFiles?: Array<{ filePath: string; backupPath: string; replacementCount: number }>; skipped?: unknown[] };
+      setPathHealthMessage(result.message || (result.ok ? '旧路径修复完成。' : '旧路径修复失败。'));
+      checkStudentPathHealth(selectedStudent, { silent: false });
+    } catch {
+      setPathHealthMessage('知识库路径修复结果解析失败。');
     }
   };
 
@@ -8326,6 +8434,20 @@ ${JSON.stringify(items, null, 2)}
                       复制报告路径
                     </button>
                   )}
+                  <button className="secondary compact" onClick={() => selectedStudent && copyText(buildCurrentHostWorkRules(selectedStudent), '已复制当前主机工作规则。')} disabled={!selectedStudent}>
+                    <Clipboard size={16} />
+                    复制当前主机工作规则
+                  </button>
+                  <button className="secondary compact" onClick={() => selectedStudent && copyText(buildLogicalAgentDraft(selectedStudent), '已复制逻辑路径版 AGENT 草稿。')} disabled={!selectedStudent}>
+                    <FileText size={16} />
+                    复制逻辑路径版 AGENT 草稿
+                  </button>
+                  {(pathHealth?.stalePaths || []).length > 0 && (
+                    <button className="secondary compact" onClick={repairSelectedStudentStalePaths} disabled={!windowsLicenseActive}>
+                      <AlertTriangle size={16} />
+                      备份后修复旧路径
+                    </button>
+                  )}
                 </div>
                 {pathHealthMessage && (
                   <div className={pathHealth?.status === 'error' ? 'notice warning-notice' : 'notice muted'}>
@@ -8355,7 +8477,7 @@ ${JSON.stringify(items, null, 2)}
                     {(pathHealth.stalePaths || []).length > 0 && (
                       <div className="notice warning-notice">
                         <strong>检测到疑似旧主机路径</strong>
-                        <p>建议先更新 Agent 工具中的 Soul / 角色设定 / 长期背景，再决定是否手动修订规则文件。</p>
+                        <p>建议先复制当前主机工作规则更新 Agent 工具中的 Soul / 角色设定 / 长期背景；需要直接修规则文件时，可使用“备份后修复旧路径”。</p>
                         <ul>
                           {(pathHealth.stalePaths || []).slice(0, 6).map((item) => (
                             <li key={`${item.filePath}-${item.detectedPath}`}>
@@ -9209,10 +9331,14 @@ ${JSON.stringify(items, null, 2)}
           <section className="panel tasks-panel">
             <div className="panel-heading">
               <div>
-                <h2>资料消化任务</h2>
-                <p>QClaw 和 OpenClaw 可按初始化指令创建定时任务；Marvis 和 Hohu 暂按手动复制消化指令执行。</p>
+                <h2>定时任务</h2>
+                <p>把日常任务拆为“定时消化”和“定时维护 / lint”：前者处理新资料，后者检查路径、规则、索引和成长模型健康度。</p>
               </div>
               <Settings size={22} />
+            </div>
+            <div className="mini-heading">
+              <strong>定时消化</strong>
+              <span>复制资料消化指令后交给当前 Agent 工具执行；支持标记提交和同步主机上传记录。</span>
             </div>
             <div className="task-list">
               {students.map((student) => (
@@ -9233,6 +9359,33 @@ ${JSON.stringify(items, null, 2)}
                   )}
                 </div>
               ))}
+            </div>
+            <div className="mini-heading">
+              <strong>定时维护 / lint</strong>
+              <span>建议按周执行，用于发现跨主机旧路径、断链、重复摘要、规则文件与索引不一致等问题。</span>
+            </div>
+            <div className="task-list">
+              {students.map((student) => {
+                const paths = pathsForStudent(student);
+                return (
+                  <div className="task-row" key={`${student.id}-lint`}>
+                    <span>{student.name}</span>
+                    <strong>{getAgentToolProfile(student.agentTool).name}</strong>
+                    <small>根目录：{paths.root}</small>
+                    <button className="secondary compact" onClick={() => copyLintCommand(student)}>
+                      复制 lint 指令
+                    </button>
+                    {isWindows && (
+                      <button className="secondary compact" onClick={() => { setSelectedId(student.id); checkStudentPathHealth(student); }} disabled={!windowsLicenseActive}>
+                        检查知识库路径
+                      </button>
+                    )}
+                    <button className="secondary compact" onClick={() => { setSelectedId(student.id); setActiveSection('archive'); }}>
+                      查看教育档案
+                    </button>
+                  </div>
+                );
+              })}
             </div>
           </section>
         )}

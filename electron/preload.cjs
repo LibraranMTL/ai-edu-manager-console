@@ -160,6 +160,9 @@ contextBridge.exposeInMainWorld('AndroidBridge', {
   checkStudentPathHealth(studentId) {
     return ipcRenderer.sendSync('bridge:checkStudentPathHealth', studentId);
   },
+  repairStudentStalePaths(studentId) {
+    return ipcRenderer.sendSync('bridge:repairStudentStalePaths', studentId);
+  },
   getLicenseStatus() {
     return ipcRenderer.sendSync('bridge:getLicenseStatus');
   },

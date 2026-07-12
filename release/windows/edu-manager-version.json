@@ -1,9 +1,9 @@
 {
   "versionCode": 61,
   "versionName": "0.5.1",
-  "windowsVersionCode": 88,
-  "windowsVersionName": "0.7.8",
-  "windowsUrl": "https://www.greatbg.com/download/AI-edu-manager-console-Windows-0.7.8.zip",
+  "windowsVersionCode": 89,
+  "windowsVersionName": "0.7.9",
+  "windowsUrl": "https://www.greatbg.com/download/AI-edu-manager-console-Windows-0.7.9.zip",
   "terminalApkUrl": "https://www.greatbg.com/download/AI-edu-manager-tablet-terminal-0.5.1.apk",
   "tabletTerminalVersionCode": 61,
   "tabletTerminalVersionName": "0.5.1",
@@ -12,5 +12,5 @@
   "managerApkVersionCode": 23,
   "managerApkVersionName": "0.2.3",
   "apkUrl": "https://www.greatbg.com/download/AI-edu-manager-tablet-terminal-0.5.1.apk",
-  "notes": "Windows 0.7.8：新增学生知识库路径核对、.ai-manager 工作空间身份与 pathmap 映射，可识别跨主机同步后 AGENT.md 等规则文件中的旧绝对路径；平板终端仍为 0.5.1。"
+  "notes": "Windows 0.7.9：新增知识库旧主机路径的备份后修复能力，支持复制当前主机工作规则和逻辑路径版 AGENT 草稿；定时任务拆分为定时消化与定时维护/lint。平板终端仍为 0.5.1。"
 }

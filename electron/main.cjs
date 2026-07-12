@@ -23,7 +23,7 @@ let hostServiceLastError = '';
 let todayUploadCount = 0;
 let uploadCountDate = new Date().toISOString().slice(0, 10);
 
-const APP_VERSION = '0.7.15';
+const APP_VERSION = '0.7.16';
 const DEFAULT_HOST_PORT = 18777;
 const AGENT_TOOL_IDS = ['qclaw', 'marvis', 'hohu', 'openclaw', 'ima.copilot', 'workbuddy', 'codex', 'claude-code', 'chatgpt', 'claude', 'doubao', 'coze', 'fastgpt'];
 const WEB_AGENT_TOOL_URLS = {
@@ -282,6 +282,28 @@ function studentWorkspaceMigrationLogPath(student) {
   return path.join(studentAiManagerDir(student), 'migration-log.md');
 }
 
+function studentScheduleLedgerPath(student) {
+  return path.join(studentAiManagerDir(student), 'schedule-ledger.json');
+}
+
+function studentMaintenanceReportPath(student) {
+  return path.join(studentAiManagerDir(student), 'maintenance-report.md');
+}
+
+function growthEvidenceReviewPath(student) {
+  return path.join(growthModelDirForStudent(student), '成长证据审核.json');
+}
+
+function projectPromotionRunLogPath(project) {
+  const paths = projectPathsFor(project.name, project.projectRootPath);
+  return path.join(paths.contributionPath, 'promotion-run-log.json');
+}
+
+function projectPromotionAuditPath(project) {
+  const paths = projectPathsFor(project.name, project.projectRootPath);
+  return path.join(paths.contributionPath, '贡献冲突与回滚记录.md');
+}
+
 function stableWorkspaceId(student) {
   const seed = `${student.id || ''}|${student.name || ''}|${student.rootPath || getStudentRootDir(student.name)}`;
   return `student-kb-${sha1Text(seed).slice(0, 12)}`;
@@ -340,6 +362,67 @@ function ensureStudentWorkspaceConfig(student) {
   };
   fs.writeFileSync(studentWorkspacePathmapPath(normalized), JSON.stringify(pathmap, null, 2), 'utf8');
   return { metadata, pathmap, metadataPath: metadataFile, pathmapPath: studentWorkspacePathmapPath(normalized) };
+}
+
+function resolveStudentLogicalPath(student, targetPath) {
+  try {
+    const normalized = toHostStudent(student);
+    const workspace = ensureStudentWorkspaceConfig(normalized);
+    const resolvedTarget = path.resolve(String(targetPath || ''));
+    const entries = Object.entries(workspace.pathmap.paths || {})
+      .filter(([, value]) => value)
+      .sort((a, b) => String(b[1]).length - String(a[1]).length);
+    for (const [logicalKey, physicalPath] of entries) {
+      const resolvedBase = path.resolve(String(physicalPath || ''));
+      if (!isPathInside(resolvedBase, resolvedTarget)) continue;
+      const relative = path.relative(resolvedBase, resolvedTarget);
+      const logicalPath = relative ? `${logicalKey}/${relative.replace(/\\/g, '/')}` : logicalKey;
+      return {
+        ok: true,
+        workspaceId: workspace.metadata.workspaceId,
+        logicalPath,
+        physicalPath: targetPath,
+        logicalKey,
+        pathmapPath: workspace.pathmapPath,
+      };
+    }
+    return {
+      ok: false,
+      workspaceId: workspace.metadata.workspaceId,
+      logicalPath: '',
+      physicalPath: targetPath,
+      message: '目标路径不在当前学生工作空间路径映射中。',
+      pathmapPath: workspace.pathmapPath,
+    };
+  } catch (error) {
+    return { ok: false, logicalPath: '', physicalPath: targetPath, message: error.message };
+  }
+}
+
+function resolveStudentPathFromLogical(studentId, logicalPath) {
+  try {
+    const student = readStudentsIndex().find((item) => String(item.id) === String(studentId));
+    if (!student) return JSON.stringify({ ok: false, message: '未找到学生。' });
+    const normalized = toHostStudent(student);
+    const workspace = ensureStudentWorkspaceConfig(normalized);
+    const value = String(logicalPath || '').trim();
+    const key = Object.keys(workspace.pathmap.paths || {})
+      .sort((a, b) => b.length - a.length)
+      .find((item) => value === item || value.startsWith(`${item}/`) || value.startsWith(`${item}\\`));
+    if (!key) return JSON.stringify({ ok: false, message: '无法识别逻辑路径。', pathmap: workspace.pathmap });
+    const rest = value.slice(key.length).replace(/^[/\\]+/, '');
+    const physicalPath = rest ? path.join(workspace.pathmap.paths[key], rest) : workspace.pathmap.paths[key];
+    return JSON.stringify({
+      ok: true,
+      workspaceId: workspace.metadata.workspaceId,
+      logicalPath: value,
+      physicalPath,
+      exists: pathExists(physicalPath),
+      pathmapPath: workspace.pathmapPath,
+    });
+  } catch (error) {
+    return JSON.stringify({ ok: false, message: `解析逻辑路径失败：${error.message}` });
+  }
 }
 
 function pathExists(targetPath) {
@@ -781,6 +864,8 @@ function normalizeAssetReference(reference) {
     spaceType: String(reference.spaceType || 'student'),
     spaceId: String(reference.spaceId || ''),
     spaceName: String(reference.spaceName || ''),
+    workspaceId: String(reference.workspaceId || ''),
+    logicalPath: String(reference.logicalPath || ''),
     role: String(reference.role || 'raw'),
     path: String(reference.path || ''),
     source: String(reference.source || ''),
@@ -799,6 +884,14 @@ function upsertAssetFromFile(filePath, context = {}) {
   const sha1 = sha1File(filePath);
   const now = new Date().toISOString();
   const assets = readAssetIndex();
+  let logicalRef = { workspaceId: '', logicalPath: '' };
+  if (context.studentId) {
+    const student = readStudentsIndex().find((item) => String(item.id) === String(context.studentId));
+    if (student) {
+      const resolved = resolveStudentLogicalPath(student, filePath);
+      logicalRef = { workspaceId: resolved.workspaceId || '', logicalPath: resolved.logicalPath || '' };
+    }
+  }
   const existingIndex = sha1
     ? assets.findIndex((item) => String(item.sha1 || '') === sha1)
     : assets.findIndex((item) => path.resolve(item.path || '') === path.resolve(filePath));
@@ -807,6 +900,8 @@ function upsertAssetFromFile(filePath, context = {}) {
     spaceType: context.spaceType || 'student',
     spaceId: context.studentId || context.projectId || context.spaceId || '',
     spaceName: context.studentName || context.projectName || context.spaceName || '',
+    workspaceId: context.workspaceId || logicalRef.workspaceId || '',
+    logicalPath: context.logicalPath || logicalRef.logicalPath || '',
     role: context.role || 'raw',
     path: filePath,
     source: context.sourceName || context.uploadSource || '',
@@ -852,6 +947,17 @@ function upsertAssetFromFile(filePath, context = {}) {
   return asset;
 }
 
+function assetVersionGroups(assets) {
+  const groups = new Map();
+  for (const asset of assets || []) {
+    const key = `${asset.ownerStudentId || 'global'}|${String(asset.filename || '').toLowerCase()}`;
+    const current = groups.get(key) || [];
+    current.push(asset);
+    groups.set(key, current);
+  }
+  return groups;
+}
+
 function registerAssetsFromUploadRecords(records) {
   const assets = [];
   for (const record of records || []) {
@@ -873,6 +979,7 @@ function registerAssetsFromUploadRecords(records) {
 function assetIndexSummary() {
   const assets = readAssetIndex();
   const shaCounts = new Map();
+  const versionGroups = assetVersionGroups(assets);
   assets.forEach((asset) => {
     if (!asset.sha1) return;
     shaCounts.set(asset.sha1, (shaCounts.get(asset.sha1) || 0) + 1);
@@ -883,10 +990,63 @@ function assetIndexSummary() {
       ...asset,
       duplicateCount: asset.sha1 ? shaCounts.get(asset.sha1) || 1 : 1,
       referenceCount: Array.isArray(asset.references) ? asset.references.length : 0,
+      versionCount: (versionGroups.get(`${asset.ownerStudentId || 'global'}|${String(asset.filename || '').toLowerCase()}`) || []).length,
+      versionGroupKey: `${asset.ownerStudentId || 'global'}|${String(asset.filename || '').toLowerCase()}`,
     })),
     total: assets.length,
     duplicateGroups: Array.from(shaCounts.values()).filter((count) => count > 1).length,
   };
+}
+
+function cleanupAssetReferences(assetId) {
+  try {
+    const assets = readAssetIndex();
+    const index = assets.findIndex((asset) => String(asset.assetId) === String(assetId));
+    if (index < 0) return JSON.stringify({ ok: false, message: '未找到资产。' });
+    const asset = assets[index];
+    const references = Array.isArray(asset.references) ? asset.references : [];
+    const before = references.length;
+    const nextReferences = Array.from(new Map(references
+      .filter((ref) => !ref.path || fs.existsSync(ref.path))
+      .map((ref) => [`${ref.spaceType}|${ref.spaceId}|${ref.role}|${ref.path}`, ref])).values());
+    assets[index] = {
+      ...asset,
+      references: nextReferences,
+      linkedStudents: mergeUnique(nextReferences.filter((ref) => ref.spaceType === 'student').map((ref) => ref.spaceId)),
+      linkedProjects: mergeUnique(nextReferences.filter((ref) => ref.spaceType === 'project').map((ref) => ref.spaceId)),
+      updatedAt: new Date().toISOString(),
+      governanceAction: '',
+      governanceReason: '',
+    };
+    writeAssetIndex(assets);
+    appendHostTimeline({ type: 'asset_references_cleaned', title: 'Asset references cleaned', detail: asset.filename, count: before - nextReferences.length });
+    return JSON.stringify({
+      ...assetIndexSummary(),
+      ok: true,
+      removed: before - nextReferences.length,
+      message: `已清理 ${before - nextReferences.length} 条失效或重复引用。`,
+    });
+  } catch (error) {
+    return JSON.stringify({ ok: false, message: `清理资产引用失败：${error.message}` });
+  }
+}
+
+function createAssetVersionSnapshot(assetId) {
+  try {
+    const assets = readAssetIndex();
+    const asset = assets.find((item) => String(item.assetId) === String(assetId));
+    if (!asset) return JSON.stringify({ ok: false, message: '未找到资产。' });
+    const key = `${asset.ownerStudentId || 'global'}|${String(asset.filename || '').toLowerCase()}`;
+    const group = (assetVersionGroups(assets).get(key) || []).sort((a, b) => String(a.uploadedAt || '').localeCompare(String(b.uploadedAt || '')));
+    const report = `# ${asset.filename} 版本关系快照\n\n生成时间：${new Date().toISOString()}\n\n| 序号 | 资产编号 | SHA-1 | 大小 | 路径 | 上传时间 | 引用数 |\n| ---: | --- | --- | ---: | --- | --- | ---: |\n${group.map((item, index) => `| ${index + 1} | ${mdCell(item.assetId)} | ${mdCell(item.sha1 || '-')} | ${Number(item.size || 0)} | ${mdCell(item.path)} | ${mdCell(item.uploadedAt || '-')} | ${Array.isArray(item.references) ? item.references.length : 0} |`).join('\n') || '| 1 | - | - | 0 | - | - | 0 |'}\n\n> 版本快照只记录同学生、同文件名资产之间的关系，不会移动、删除或覆盖任何物理文件。\n`;
+    const file = path.join(app.getPath('userData'), 'asset-version-snapshots', `${safeFilename(asset.filename)}-${timestampForFilename()}.md`);
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, report, 'utf8');
+    appendHostTimeline({ type: 'asset_version_snapshot', title: 'Asset version snapshot', detail: asset.filename, count: group.length });
+    return JSON.stringify({ ok: true, path: file, content: report, count: group.length, message: `已生成 ${group.length} 条版本关系快照。` });
+  } catch (error) {
+    return JSON.stringify({ ok: false, message: `生成版本快照失败：${error.message}` });
+  }
 }
 
 function analyzeAssetGovernance() {
@@ -3266,6 +3426,14 @@ function executeProjectPromotionPlan(projectId, planJson) {
           target = path.join(growth.dir, '成长证据.md');
           appendTextSection(growthDraftFile, `${ensured.name} · ${item.title} · ${today}`, `${item.content}\n\n来源：${item.sourcePath || ensured.knowledgeRootPath}\n动作：成长证据草稿\n状态：待确认`);
           appendTextSection(target, `${ensured.name} · ${item.title} · ${today}`, `${item.content}\n\n来源：${item.sourcePath || ensured.knowledgeRootPath}\n动作：发布\n可信度：待人工确认`);
+          appendGrowthEvidenceCandidate(student, {
+            projectId: ensured.id,
+            projectName: ensured.name,
+            title: item.title,
+            content: item.content,
+            sourcePath: item.sourcePath || ensured.knowledgeRootPath,
+            confidence: '待人工确认',
+          });
         } else if (item.action === 'publish') {
           target = contributionSummaryFile;
           fs.appendFileSync(target, `| ${today} | ${ensured.name} | ${item.title} | 发布 | ${item.sourcePath || ensured.knowledgeRootPath} |\n`, 'utf8');
@@ -3290,6 +3458,12 @@ function executeProjectPromotionPlan(projectId, planJson) {
       ? { ...item, status: 'archived', archivedAt: now, updatedAt: now, promotionPath: ensured.promotionPath }
       : item);
     writeProjects(nextProjects);
+    appendProjectPromotionRun(ensured, {
+      type: 'execute_plan',
+      status: 'completed',
+      results,
+      rollbackHint: '如需撤销，请根据归档执行日志中的目标路径人工回滚；本版本不自动删除已发布内容。',
+    });
     appendHostTimeline({ type: 'project_promotion_plan_executed', title: 'Project promotion plan executed', detail: ensured.name, count: results.length });
     return JSON.stringify({
       ok: true,
@@ -3300,6 +3474,82 @@ function executeProjectPromotionPlan(projectId, planJson) {
     });
   } catch (error) {
     return JSON.stringify({ ok: false, message: `执行归档清单失败：${error.message}` });
+  }
+}
+
+function readProjectPromotionRunLog(project) {
+  const parsed = safeReadJson(projectPromotionRunLogPath(project), {});
+  return {
+    version: 1,
+    updatedAt: parsed.updatedAt || '',
+    runs: Array.isArray(parsed.runs) ? parsed.runs : [],
+  };
+}
+
+function writeProjectPromotionRunLog(project, log) {
+  const file = projectPromotionRunLogPath(project);
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, JSON.stringify({
+    version: 1,
+    updatedAt: new Date().toISOString(),
+    runs: (log.runs || []).slice(0, 120),
+  }, null, 2), 'utf8');
+}
+
+function appendProjectPromotionRun(project, run) {
+  const ensured = ensureProjectWorkspace(project);
+  const log = readProjectPromotionRunLog(ensured);
+  const entry = {
+    id: `promotion-run-${Date.now()}-${crypto.randomBytes(3).toString('hex')}`,
+    projectId: ensured.id,
+    projectName: ensured.name,
+    at: new Date().toISOString(),
+    ...run,
+  };
+  log.runs.unshift(entry);
+  writeProjectPromotionRunLog(ensured, log);
+  return entry;
+}
+
+function getProjectPromotionAudit(projectId) {
+  try {
+    const project = readProjects().map(normalizeProject).find((item) => String(item.id) === String(projectId));
+    if (!project) return JSON.stringify({ ok: false, message: '未找到学习项目。' });
+    const ensured = ensureProjectWorkspace(project);
+    const students = readStudentsIndex().filter((student) => ensured.studentIds.includes(String(student.id)));
+    const conflicts = [];
+    for (const student of students) {
+      const summaryPath = student.summaryPath || getSummaryDir(student.name);
+      const growth = ensureGrowthModelForStudent(student);
+      const targets = [
+        path.join(summaryPath, '项目贡献汇总.md'),
+        path.join(summaryPath, '项目贡献明细.md'),
+        path.join(summaryPath, '项目归档记录.md'),
+        path.join(growth.dir, '项目贡献.md'),
+        path.join(growth.dir, '成长证据.md'),
+      ];
+      for (const target of targets) {
+        if (!fs.existsSync(target)) continue;
+        const content = readSmallTextFile(target, 512 * 1024);
+        if (content.includes(ensured.name)) {
+          conflicts.push({
+            studentId: student.id,
+            studentName: student.name,
+            type: 'existing_project_record',
+            severity: 'medium',
+            target,
+            message: `目标文件已包含「${ensured.name}」记录，重复发布前建议核对。`,
+          });
+        }
+      }
+    }
+    const runLog = readProjectPromotionRunLog(ensured);
+    const report = `# ${ensured.name} 贡献冲突与回滚记录\n\n生成时间：${new Date().toISOString()}\n\n## 冲突预览\n\n| 学生 | 风险 | 目标 | 说明 |\n| --- | --- | --- | --- |\n${conflicts.map((item) => `| ${mdCell(item.studentName)} | ${mdCell(item.severity)} | ${mdCell(item.target)} | ${mdCell(item.message)} |`).join('\n') || '| 暂无 | - | - | - |'}\n\n## 执行记录\n\n| 时间 | 类型 | 状态 | 回滚提示 |\n| --- | --- | --- | --- |\n${runLog.runs.map((run) => `| ${mdCell(run.at)} | ${mdCell(run.type)} | ${mdCell(run.status)} | ${mdCell(run.rollbackHint || '-')} |`).join('\n') || '| 暂无 | - | - | - |'}\n`;
+    fs.mkdirSync(path.dirname(projectPromotionAuditPath(ensured)), { recursive: true });
+    fs.writeFileSync(projectPromotionAuditPath(ensured), report, 'utf8');
+    return JSON.stringify({ ok: true, conflicts, runLog, path: projectPromotionAuditPath(ensured), content: report, message: `发现 ${conflicts.length} 条贡献冲突提醒。` });
+  } catch (error) {
+    return JSON.stringify({ ok: false, message: `读取贡献审计失败：${error.message}` });
   }
 }
 
@@ -3328,6 +3578,14 @@ function publishProjectPromotion(projectId) {
       appendTextSection(path.join(growth.dir, '项目贡献.md'), `${ensured.name} 发布记录 ${today}`, `${projectLine}\n\n来源项目知识空间：${ensured.knowledgeRootPath}`);
       appendTextSection(growthDraftFile, `${ensured.name} 成长证据草稿 ${today}`, `- 来源项目：${ensured.name}\n- 贡献申请：${promotionPath}\n- 暂存治理建议：${path.join(ensured.stagingPath, '研究暂存治理建议.md')}\n- 状态：待 Agent 或管理员从贡献申请中提取具体能力、兴趣、趋势和证据。\n`);
       appendTextSection(path.join(growth.dir, '成长证据.md'), `${ensured.name} 成长证据 ${today}`, `${evidenceLine}\n\n请后续由 Agent 根据贡献申请提取具体能力、兴趣、趋势和证据。`);
+      appendGrowthEvidenceCandidate(student, {
+        projectId: ensured.id,
+        projectName: ensured.name,
+        title: `${ensured.name} 知识贡献申请已发布`,
+        content: `贡献申请：${promotionPath}`,
+        sourcePath: promotionPath,
+        confidence: '待确认',
+      });
       writeTextIfMissing(projectSummaryFile, `# ${student.name} 项目贡献汇总\n\n记录已发布到学生主档案的学习项目知识贡献。\n\n| 日期 | 项目 | 贡献内容 | 动作 | 来源路径 |\n| --- | --- | --- | --- | --- |\n`);
       writeTextIfMissing(projectDetailFile, `# ${student.name} 项目贡献明细\n\n记录项目归档确认清单的逐项处理结果，便于回溯来源、目标和动作。\n\n| 日期 | 项目 | 类型 | 条目 | 动作 | 来源路径 | 目标 |\n| --- | --- | --- | --- | --- | --- | --- |\n`);
       fs.appendFileSync(projectSummaryFile, `${projectLine}\n`, 'utf8');
@@ -3338,6 +3596,12 @@ function publishProjectPromotion(projectId) {
       ? { ...item, status: 'published', publishedAt: new Date().toISOString(), promotionPath, updatedAt: new Date().toISOString() }
       : item);
     writeProjects(nextProjects);
+    appendProjectPromotionRun(ensured, {
+      type: 'publish_promotion',
+      status: 'completed',
+      published,
+      rollbackHint: '如需撤销，请根据项目贡献汇总、项目贡献明细和成长证据审核记录人工标记为驳回或回滚。',
+    });
     appendHostTimeline({ type: 'project_promotion_published', title: 'Project promotion published', detail: ensured.name, count: published.length });
     return JSON.stringify({
       ok: true,
@@ -3448,6 +3712,198 @@ function ensureGrowthModelForStudent(student) {
     }
   }
   return { dir, created };
+}
+
+function readStudentScheduleLedger(student) {
+  const file = studentScheduleLedgerPath(student);
+  const parsed = safeReadJson(file, {});
+  return {
+    version: 1,
+    updatedAt: parsed.updatedAt || '',
+    entries: Array.isArray(parsed.entries) ? parsed.entries : [],
+  };
+}
+
+function writeStudentScheduleLedger(student, ledger) {
+  const file = studentScheduleLedgerPath(student);
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, JSON.stringify({
+    version: 1,
+    updatedAt: new Date().toISOString(),
+    entries: (ledger.entries || []).slice(0, 300),
+  }, null, 2), 'utf8');
+}
+
+function recordScheduledTaskAction(studentId, kind, commandText) {
+  try {
+    const student = readStudentsIndex().find((item) => String(item.id) === String(studentId));
+    if (!student) return JSON.stringify({ ok: false, message: '未找到学生。' });
+    const normalized = toHostStudent(student);
+    ensureStudentWorkspaceConfig(normalized);
+    const now = new Date().toISOString();
+    const day = now.slice(0, 10);
+    const taskKind = String(kind || 'digest');
+    const commandHash = sha1Text(String(commandText || '')).slice(0, 16);
+    const ledger = readStudentScheduleLedger(normalized);
+    const duplicate = ledger.entries.find((entry) => entry.day === day && entry.kind === taskKind && entry.commandHash === commandHash);
+    if (duplicate) {
+      duplicate.lastCopiedAt = now;
+      duplicate.copyCount = Number(duplicate.copyCount || 1) + 1;
+      duplicate.status = 'copied';
+      writeStudentScheduleLedger(normalized, ledger);
+      return JSON.stringify({ ok: true, duplicate: true, ledger, message: '今日同类指令已记录，本次只更新复制次数。' });
+    }
+    ledger.entries.unshift({
+      id: `task-${day}-${taskKind}-${commandHash}`,
+      day,
+      kind: taskKind,
+      commandHash,
+      status: 'copied',
+      copiedAt: now,
+      lastCopiedAt: now,
+      copyCount: 1,
+      studentId: normalized.id,
+      studentName: normalized.name,
+      digestTime: normalized.digestTime,
+    });
+    writeStudentScheduleLedger(normalized, ledger);
+    appendHostTimeline({ type: 'scheduled_task_recorded', title: 'Scheduled task recorded', detail: `${normalized.name} ${taskKind}`, count: 1 });
+    return JSON.stringify({ ok: true, duplicate: false, ledger, message: '已写入定时任务去重账本。' });
+  } catch (error) {
+    return JSON.stringify({ ok: false, message: `写入定时任务账本失败：${error.message}` });
+  }
+}
+
+function getStudentScheduleLedger(studentId) {
+  try {
+    const student = readStudentsIndex().find((item) => String(item.id) === String(studentId));
+    if (!student) return JSON.stringify({ ok: false, message: '未找到学生。' });
+    const normalized = toHostStudent(student);
+    const ledger = readStudentScheduleLedger(normalized);
+    const reportPath = studentMaintenanceReportPath(normalized);
+    return JSON.stringify({
+      ok: true,
+      ledger,
+      reportPath,
+      reportExists: fs.existsSync(reportPath),
+      message: `已读取 ${ledger.entries.length} 条定时任务记录。`,
+    });
+  } catch (error) {
+    return JSON.stringify({ ok: false, message: `读取定时任务账本失败：${error.message}` });
+  }
+}
+
+function generateStudentMaintenanceReport(studentId) {
+  try {
+    const student = readStudentsIndex().find((item) => String(item.id) === String(studentId));
+    if (!student) return JSON.stringify({ ok: false, message: '未找到学生。' });
+    const normalized = toHostStudent(student);
+    const health = JSON.parse(checkStudentPathHealth(studentId));
+    const ledger = readStudentScheduleLedger(normalized);
+    const assets = readAssetIndex().filter((asset) =>
+      String(asset.ownerStudentId || '') === String(normalized.id)
+      || (Array.isArray(asset.linkedStudents) && asset.linkedStudents.includes(String(normalized.id)))
+      || (Array.isArray(asset.references) && asset.references.some((ref) => ref.spaceType === 'student' && String(ref.spaceId) === String(normalized.id)))
+    );
+    const materials = readStudentMaterials(normalized);
+    const openMaterials = materials.filter((item) => isOpenDigestStatus(item.status));
+    const staleAssetRefs = assets.reduce((total, asset) => total + (Array.isArray(asset.references) ? asset.references.filter((ref) => ref.path && !fs.existsSync(ref.path)).length : 0), 0);
+    const recentEntries = ledger.entries.slice(0, 12).map((entry) => `| ${mdCell(entry.day)} | ${mdCell(entry.kind)} | ${mdCell(entry.status)} | ${entry.copyCount || 1} | ${mdCell(entry.lastCopiedAt || entry.copiedAt || '-')} |`).join('\n') || '| 暂无 | - | - | - | - |';
+    const report = `# ${normalized.name} 定时维护报告\n\n生成时间：${new Date().toISOString()}\n\n## 总览\n\n| 项目 | 状态 |\n| --- | --- |\n| 路径健康 | ${mdCell(health.status || 'unknown')} |\n| 路径提醒 | ${mdCell(health.message || '-')} |\n| 待消化资料 | ${openMaterials.length} |\n| 资产记录 | ${assets.length} |\n| 失效资产引用 | ${staleAssetRefs} |\n| 账本记录 | ${ledger.entries.length} |\n\n## 最近定时任务账本\n\n| 日期 | 类型 | 状态 | 复制次数 | 最近复制 |\n| --- | --- | --- | ---: | --- |\n${recentEntries}\n\n## 维护建议\n\n- 若“待消化资料”大于 0，请先执行定时消化，再同步结果。\n- 若“路径健康”为 warning/error，请在知识库路径核对中查看并修复旧主机路径。\n- 若存在失效资产引用，请进入文件资产中心执行治理建议和清理失效引用。\n- 若成长证据草稿长期未确认，请进入 Growth Layer 完成审核。\n`;
+    fs.mkdirSync(path.dirname(studentMaintenanceReportPath(normalized)), { recursive: true });
+    fs.writeFileSync(studentMaintenanceReportPath(normalized), report, 'utf8');
+    appendHostTimeline({ type: 'student_maintenance_report', title: 'Student maintenance report generated', detail: normalized.name, count: openMaterials.length });
+    return JSON.stringify({ ok: true, path: studentMaintenanceReportPath(normalized), content: report, message: `已生成「${normalized.name}」定时维护报告。` });
+  } catch (error) {
+    return JSON.stringify({ ok: false, message: `生成定时维护报告失败：${error.message}` });
+  }
+}
+
+function readGrowthEvidenceReview(student) {
+  const file = growthEvidenceReviewPath(student);
+  const parsed = safeReadJson(file, {});
+  return {
+    version: 1,
+    updatedAt: parsed.updatedAt || '',
+    candidates: Array.isArray(parsed.candidates) ? parsed.candidates : [],
+  };
+}
+
+function writeGrowthEvidenceReview(student, review) {
+  const file = growthEvidenceReviewPath(student);
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, JSON.stringify({
+    version: 1,
+    updatedAt: new Date().toISOString(),
+    candidates: review.candidates || [],
+  }, null, 2), 'utf8');
+}
+
+function appendGrowthEvidenceCandidate(student, candidate) {
+  const normalized = toHostStudent(student);
+  ensureGrowthModelForStudent(normalized);
+  const review = readGrowthEvidenceReview(normalized);
+  const content = String(candidate.content || candidate.title || '').trim();
+  const seed = `${normalized.id}|${candidate.projectId || ''}|${candidate.title || ''}|${content}|${candidate.sourcePath || ''}`;
+  const evidenceId = `evidence-${sha1Text(seed).slice(0, 14)}`;
+  const existing = review.candidates.find((item) => item.id === evidenceId);
+  if (existing) return existing;
+  const item = {
+    id: evidenceId,
+    studentId: normalized.id,
+    studentName: normalized.name,
+    projectId: String(candidate.projectId || ''),
+    projectName: String(candidate.projectName || ''),
+    title: String(candidate.title || '未命名成长证据'),
+    content,
+    sourcePath: String(candidate.sourcePath || ''),
+    status: 'pending',
+    confidence: String(candidate.confidence || '待确认'),
+    ability: String(candidate.ability || '待标注'),
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  };
+  review.candidates.unshift(item);
+  writeGrowthEvidenceReview(normalized, review);
+  return item;
+}
+
+function getGrowthEvidenceReview(studentId) {
+  try {
+    const student = readStudentsIndex().find((item) => String(item.id) === String(studentId));
+    if (!student) return JSON.stringify({ ok: false, message: '未找到学生。' });
+    const normalized = toHostStudent(student);
+    ensureGrowthModelForStudent(normalized);
+    const review = readGrowthEvidenceReview(normalized);
+    return JSON.stringify({ ok: true, review, path: growthEvidenceReviewPath(normalized), message: `已读取 ${review.candidates.length} 条成长证据候选。` });
+  } catch (error) {
+    return JSON.stringify({ ok: false, message: `读取成长证据审核失败：${error.message}` });
+  }
+}
+
+function updateGrowthEvidenceStatus(studentId, evidenceId, status, note = '') {
+  try {
+    const student = readStudentsIndex().find((item) => String(item.id) === String(studentId));
+    if (!student) return JSON.stringify({ ok: false, message: '未找到学生。' });
+    const normalized = toHostStudent(student);
+    ensureGrowthModelForStudent(normalized);
+    const review = readGrowthEvidenceReview(normalized);
+    const nextStatus = ['pending', 'confirmed', 'watching', 'rejected'].includes(String(status)) ? String(status) : 'pending';
+    const item = review.candidates.find((candidate) => String(candidate.id) === String(evidenceId));
+    if (!item) return JSON.stringify({ ok: false, message: '未找到成长证据候选。' });
+    item.status = nextStatus;
+    item.note = String(note || item.note || '');
+    item.updatedAt = new Date().toISOString();
+    writeGrowthEvidenceReview(normalized, review);
+    if (nextStatus === 'confirmed') {
+      const growth = ensureGrowthModelForStudent(normalized);
+      fs.appendFileSync(path.join(growth.dir, '成长证据.md'), `| ${new Date().toISOString().slice(0, 10)} | ${mdCell(item.title)} | ${mdCell(item.sourcePath || item.projectName || '-')} | ${mdCell(item.ability || '待标注')} | ${mdCell(item.confidence || '人工确认')} |\n`, 'utf8');
+    }
+    appendHostTimeline({ type: 'growth_evidence_reviewed', title: 'Growth evidence reviewed', detail: `${normalized.name} ${nextStatus}`, count: 1 });
+    return JSON.stringify({ ok: true, review, message: `已将成长证据标记为：${nextStatus}。` });
+  } catch (error) {
+    return JSON.stringify({ ok: false, message: `更新成长证据状态失败：${error.message}` });
+  }
 }
 
 function learningReportPathForStudent(student, report) {
@@ -6636,6 +7092,8 @@ ipcMain.on('bridge:getMaterialImportRecords', (event, studentId) => { event.retu
 ipcMain.on('bridge:getAssetIndex', (event) => { event.returnValue = JSON.stringify(assetIndexSummary()); });
 ipcMain.on('bridge:rebuildAssetIndex', (event) => { licensedIpc(event, '资产索引补建', () => rebuildAssetIndex()); });
 ipcMain.on('bridge:analyzeAssetGovernance', (event) => { licensedIpc(event, '资产治理建议', () => analyzeAssetGovernance()); });
+ipcMain.on('bridge:cleanupAssetReferences', (event, assetId) => { licensedIpc(event, '资产引用清理', () => cleanupAssetReferences(assetId)); });
+ipcMain.on('bridge:createAssetVersionSnapshot', (event, assetId) => { licensedIpc(event, '资产版本快照', () => createAssetVersionSnapshot(assetId)); });
 ipcMain.on('bridge:generateKnowledgeArchitectureReport', (event) => { licensedIpc(event, '知识关系图生成', () => generateKnowledgeArchitectureReport()); });
 ipcMain.on('bridge:getProjects', (event) => { event.returnValue = getProjects(); });
 ipcMain.on('bridge:createProject', (event, optionsJson) => { licensedIpc(event, '学习项目创建', () => createProject(optionsJson)); });
@@ -6649,6 +7107,7 @@ ipcMain.on('bridge:importProjectStagingAiScreening', (event, projectId) => { lic
 ipcMain.on('bridge:analyzeProjectStagingGovernance', (event, projectId) => { licensedIpc(event, '项目研究暂存治理建议', () => analyzeProjectStagingGovernance(projectId)); });
 ipcMain.on('bridge:generateProjectPromotion', (event, projectId) => { licensedIpc(event, '知识贡献申请', () => generateProjectPromotion(projectId)); });
 ipcMain.on('bridge:getProjectPromotionPlan', (event, projectId) => { licensedIpc(event, '归档确认清单', () => projectPromotionPlan(projectId)); });
+ipcMain.on('bridge:getProjectPromotionAudit', (event, projectId) => { licensedIpc(event, '知识贡献审计', () => getProjectPromotionAudit(projectId)); });
 ipcMain.on('bridge:executeProjectPromotionPlan', (event, projectId, planJson) => { licensedIpc(event, '执行归档确认清单', () => executeProjectPromotionPlan(projectId, planJson)); });
 ipcMain.on('bridge:publishProjectPromotion', (event, projectId) => { licensedIpc(event, '知识贡献发布', () => publishProjectPromotion(projectId)); });
 ipcMain.on('bridge:initStudentWorkspace', (event, studentName, agentMd, indexMd, logMd) => {
@@ -6685,6 +7144,7 @@ ipcMain.on('bridge:saveConversationExtract', (event, studentId, extractJson, too
 ipcMain.on('bridge:openStudentRootDir', (event, studentId) => { licensedIpc(event, '打开学生知识库目录', () => openStudentRootDir(studentId)); });
 ipcMain.on('bridge:checkStudentPathHealth', (event, studentId) => { licensedIpc(event, '知识库路径核对', () => checkStudentPathHealth(studentId)); });
 ipcMain.on('bridge:repairStudentStalePaths', (event, studentId) => { licensedIpc(event, '知识库路径修复', () => repairStudentStalePaths(studentId)); });
+ipcMain.on('bridge:resolveStudentPath', (event, studentId, logicalPath) => { event.returnValue = resolveStudentPathFromLogical(studentId, logicalPath); });
 ipcMain.on('bridge:getLicenseStatus', (event) => { event.returnValue = getLicenseStatus(); });
 ipcMain.on('bridge:activateLicense', (event, code) => { event.returnValue = activateLicense(code); });
 ipcMain.on('bridge:deactivateLicense', (event) => { event.returnValue = deactivateLicense(); });
@@ -6703,6 +7163,8 @@ ipcMain.on('bridge:listLearningReports', (event, studentId) => { event.returnVal
 ipcMain.on('bridge:readLearningReport', (event, studentId, reportId) => { event.returnValue = readLearningReport(studentId, reportId); });
 ipcMain.on('bridge:ensureLearningReports', (event, studentId) => { licensedIpc(event, '学情报告模板补建', () => ensureLearningReports(studentId)); });
 ipcMain.on('bridge:ensureGrowthModel', (event, studentId) => { licensedIpc(event, '成长模型补建', () => ensureGrowthModel(studentId)); });
+ipcMain.on('bridge:getGrowthEvidenceReview', (event, studentId) => { event.returnValue = getGrowthEvidenceReview(studentId); });
+ipcMain.on('bridge:updateGrowthEvidenceStatus', (event, studentId, evidenceId, status, note) => { licensedIpc(event, '成长证据审核', () => updateGrowthEvidenceStatus(studentId, evidenceId, status, note)); });
 ipcMain.on('bridge:syncStudents', (event, studentsJson) => { licensedIpc(event, '学生档案同步', () => syncStudentsIndex(studentsJson)); });
 ipcMain.on('bridge:selectKnowledgeBaseRoot', (event) => { licensedIpc(event, '接管已有知识库', () => selectKnowledgeBaseRoot()); });
 ipcMain.on('bridge:scanKnowledgeBase', (event, rootPath, studentName) => { event.returnValue = scanExistingKnowledgeBase(rootPath, studentName); });
@@ -6722,6 +7184,9 @@ ipcMain.on('bridge:clearHostUploadRecords', (event) => { licensedIpc(event, '上
 ipcMain.on('bridge:setHostUploadRecordStatus', (event, recordId, status) => { licensedIpc(event, '上传记录状态维护', () => setHostUploadRecordStatus(recordId, status)); });
 ipcMain.on('bridge:markStudentDigestSubmitted', (event, studentId) => { licensedIpc(event, '资料消化任务', () => markStudentDigestSubmitted(studentId)); });
 ipcMain.on('bridge:syncStudentDigestResult', (event, studentId) => { licensedIpc(event, '资料消化结果同步', () => syncStudentDigestResult(studentId, { forceSubmitted: true })); });
+ipcMain.on('bridge:recordScheduledTaskAction', (event, studentId, kind, commandText) => { licensedIpc(event, '定时任务账本', () => recordScheduledTaskAction(studentId, kind, commandText)); });
+ipcMain.on('bridge:getStudentScheduleLedger', (event, studentId) => { event.returnValue = getStudentScheduleLedger(studentId); });
+ipcMain.on('bridge:generateStudentMaintenanceReport', (event, studentId) => { licensedIpc(event, '定时维护报告', () => generateStudentMaintenanceReport(studentId)); });
 ipcMain.on('bridge:getHostTimeline', (event) => { event.returnValue = getHostTimeline(); });
 ipcMain.on('bridge:backupHostData', (event) => { licensedIpc(event, '主机数据备份', () => backupHostData()); });
 ipcMain.on('bridge:restoreHostData', (event) => { licensedIpc(event, '主机数据恢复', () => restoreHostData()); });

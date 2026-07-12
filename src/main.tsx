@@ -184,6 +184,8 @@ type AssetRecord = {
     spaceType: string;
     spaceId: string;
     spaceName: string;
+    workspaceId?: string;
+    logicalPath?: string;
     role: string;
     path: string;
     source?: string;
@@ -204,6 +206,8 @@ type AssetRecord = {
   duplicateAssetCount?: number;
   recommendedKeepAssetId?: string;
   governanceReviewedAt?: string;
+  versionCount?: number;
+  versionGroupKey?: string;
 };
 
 type AssetIndexState = {
@@ -299,6 +303,53 @@ type ProjectAuditItem = {
   suggestedAction?: string;
 };
 
+type PromotionConflict = {
+  studentId: string;
+  studentName: string;
+  type: string;
+  severity: string;
+  target: string;
+  message: string;
+};
+
+type PromotionRunRecord = {
+  id: string;
+  at: string;
+  type: string;
+  status: string;
+  rollbackHint?: string;
+};
+
+type GrowthEvidenceCandidate = {
+  id: string;
+  title: string;
+  content?: string;
+  projectName?: string;
+  sourcePath?: string;
+  status: 'pending' | 'confirmed' | 'watching' | 'rejected' | string;
+  ability?: string;
+  confidence?: string;
+  updatedAt?: string;
+};
+
+type GrowthEvidenceReviewState = {
+  candidates: GrowthEvidenceCandidate[];
+};
+
+type ScheduleLedgerEntry = {
+  id: string;
+  day: string;
+  kind: string;
+  status: string;
+  copyCount?: number;
+  lastCopiedAt?: string;
+  copiedAt?: string;
+};
+
+type ScheduleLedgerState = {
+  entries: ScheduleLedgerEntry[];
+};
+
 type KnowledgeGraphNode = {
   nodeId: string;
   type: 'student' | 'project' | 'asset' | 'growth' | string;
@@ -319,6 +370,8 @@ type AndroidBridge = {
   getAssetIndex?: () => string;
   rebuildAssetIndex?: () => string;
   analyzeAssetGovernance?: () => string;
+  cleanupAssetReferences?: (assetId: string) => string;
+  createAssetVersionSnapshot?: (assetId: string) => string;
   generateKnowledgeArchitectureReport?: () => string;
   getProjects?: () => string;
   createProject?: (optionsJson: string) => string;
@@ -332,6 +385,7 @@ type AndroidBridge = {
   analyzeProjectStagingGovernance?: (projectId: string) => string;
   generateProjectPromotion?: (projectId: string) => string;
   getProjectPromotionPlan?: (projectId: string) => string;
+  getProjectPromotionAudit?: (projectId: string) => string;
   executeProjectPromotionPlan?: (projectId: string, planJson: string) => string;
   publishProjectPromotion?: (projectId: string) => string;
   importImages?: (studentName: string) => boolean;
@@ -363,6 +417,7 @@ type AndroidBridge = {
   openStudentRootDir?: (studentId: string) => string;
   checkStudentPathHealth?: (studentId: string) => string;
   repairStudentStalePaths?: (studentId: string) => string;
+  resolveStudentPath?: (studentId: string, logicalPath: string) => string;
   getLicenseStatus?: () => string;
   activateLicense?: (code: string) => string;
   deactivateLicense?: () => string;
@@ -379,6 +434,8 @@ type AndroidBridge = {
   readLearningReport?: (studentId: string, reportId: LearningReportId) => string;
   ensureLearningReports?: (studentId: string) => string;
   ensureGrowthModel?: (studentId: string) => string;
+  getGrowthEvidenceReview?: (studentId: string) => string;
+  updateGrowthEvidenceStatus?: (studentId: string, evidenceId: string, status: string, note?: string) => string;
   checkUpdate?: (manifestUrl: string, currentVersionCode: number) => boolean;
   downloadAndInstallUpdate?: (apkUrl: string) => boolean;
   scanDownloads?: () => string;
@@ -404,6 +461,9 @@ type AndroidBridge = {
   setHostUploadRecordStatus?: (recordId: string, status: string) => string;
   markStudentDigestSubmitted?: (studentId: string) => string;
   syncStudentDigestResult?: (studentId: string) => string;
+  recordScheduledTaskAction?: (studentId: string, kind: string, commandText: string) => string;
+  getStudentScheduleLedger?: (studentId: string) => string;
+  generateStudentMaintenanceReport?: (studentId: string) => string;
   getHostTimeline?: () => string;
   backupHostData?: () => string;
   restoreHostData?: () => string;
@@ -722,8 +782,8 @@ const storageKey = 'edu-manager-launcher.students.v2';
 const themeStorageKey = 'edu-manager-launcher.theme.v1';
 const languageStorageKey = 'edu-manager-launcher.language.v1';
 const archiveKeywordStorageKey = 'edu-manager-launcher.archive-keywords.v1';
-const currentVersionCode = 95;
-const currentVersionName = '0.7.15';
+const currentVersionCode = 96;
+const currentVersionName = '0.7.16';
 const updateManifestUrl = [
   'https://www.greatbg.com/download/edu-manager-version.json',
   'http://www.greatbg.com/download/edu-manager-version.json',
@@ -3192,7 +3252,14 @@ function App() {
   const [promotionPreview, setPromotionPreview] = useState('');
   const [promotionPlan, setPromotionPlan] = useState<PromotionPlan | null>(null);
   const [promotionExecutionSummary, setPromotionExecutionSummary] = useState('');
+  const [promotionAuditPreview, setPromotionAuditPreview] = useState('');
+  const [promotionConflicts, setPromotionConflicts] = useState<PromotionConflict[]>([]);
+  const [promotionRuns, setPromotionRuns] = useState<PromotionRunRecord[]>([]);
   const [growthMessage, setGrowthMessage] = useState('');
+  const [growthEvidenceReview, setGrowthEvidenceReview] = useState<GrowthEvidenceReviewState>({ candidates: [] });
+  const [scheduleLedger, setScheduleLedger] = useState<ScheduleLedgerState>({ entries: [] });
+  const [scheduleMessage, setScheduleMessage] = useState('');
+  const [maintenanceReportPreview, setMaintenanceReportPreview] = useState('');
   const [sharedInboxCount, setSharedInboxCount] = useState(0);
   const [compatibility, setCompatibility] = useState<Record<string, unknown> | null>(null);
   const [storageConfig, setStorageConfig] = useState<StorageConfig>(activeStorageConfig);
@@ -3308,6 +3375,9 @@ function App() {
   useEffect(() => {
     setPathHealth(null);
     setPathHealthMessage('');
+    setGrowthEvidenceReview({ candidates: [] });
+    setScheduleLedger({ entries: [] });
+    setMaintenanceReportPreview('');
   }, [selectedStudent?.id]);
   const activeAgentAdapter = activeSection === 'init' || activeSection === 'new' ? selectedToolAdapter : selectedStudentAdapter;
   const activeAgentTool = activeAgentAdapter.profile;
@@ -4715,7 +4785,9 @@ ${conversationText || '（请先粘贴对话历史）'}`;
   const copyDigestCommand = async (student: Student) => {
     const stamp = new Date().toLocaleString('zh-CN');
     const adapter = getAgentToolAdapter(student.agentTool);
-    await copyText(adapter.buildDigestCommand(student), `已复制资料消化命令，${adapter.profile.digestTargetLabel}。`);
+    const command = adapter.buildDigestCommand(student);
+    await copyText(command, `已复制资料消化命令，${adapter.profile.digestTargetLabel}。`);
+    bridge()?.recordScheduledTaskAction?.(student.id, 'digest', command);
     const next = students.map((item) => (item.id === student.id ? { ...item, lastDigestCommandAt: stamp } : item));
     persist(next);
   };
@@ -4747,7 +4819,9 @@ ${conversationText || '（请先粘贴对话历史）'}`;
   };
 
   const copyLintCommand = async (student: Student) => {
-    await copyText(buildPathLintCommand(student), `已复制「${student.name}」定时维护 / lint 指令。`);
+    const command = buildPathLintCommand(student);
+    await copyText(command, `已复制「${student.name}」定时维护 / lint 指令。`);
+    bridge()?.recordScheduledTaskAction?.(student.id, 'maintenance_lint', command);
   };
 
   const markDigestSubmitted = (student: Student) => {
@@ -5539,6 +5613,44 @@ ${conversationText || '（请先粘贴对话历史）'}`;
     }
   };
 
+  const cleanupSelectedAssetReferences = () => {
+    if (!selectedAsset) {
+      setAssetMessage('请先选择一个资产。');
+      return;
+    }
+    const raw = bridge()?.cleanupAssetReferences?.(selectedAsset.assetId);
+    if (!raw) {
+      setAssetMessage('当前环境不支持资产引用清理。');
+      return;
+    }
+    try {
+      const result = JSON.parse(raw) as AssetIndexState & { removed?: number; message?: string };
+      setAssetIndex({ ...result, assets: result.assets ?? [] });
+      setAssetMessage(result.message || `已清理 ${result.removed ?? 0} 条失效或重复引用。`);
+    } catch {
+      setAssetMessage('资产引用清理结果解析失败。');
+    }
+  };
+
+  const snapshotSelectedAssetVersions = () => {
+    if (!selectedAsset) {
+      setAssetMessage('请先选择一个资产。');
+      return;
+    }
+    const raw = bridge()?.createAssetVersionSnapshot?.(selectedAsset.assetId);
+    if (!raw) {
+      setAssetMessage('当前环境不支持资产版本快照。');
+      return;
+    }
+    try {
+      const result = JSON.parse(raw) as { ok?: boolean; content?: string; message?: string };
+      setAssetMessage(result.message || (result.ok ? '已生成资产版本快照。' : '资产版本快照生成失败。'));
+      if (result.content) setAssetGovernancePreview(result.content);
+    } catch {
+      setAssetMessage('资产版本快照结果解析失败。');
+    }
+  };
+
   const generateKnowledgeArchitectureReport = () => {
     const raw = bridge()?.generateKnowledgeArchitectureReport?.();
     if (!raw) {
@@ -5860,6 +5972,27 @@ ${JSON.stringify(items, null, 2)}
     loadProjectPromotionPlan(selectedProjectId);
   };
 
+  const loadSelectedProjectPromotionAudit = () => {
+    if (!selectedProjectId) {
+      setProjectMessage('请先选择学习项目。');
+      return;
+    }
+    const raw = bridge()?.getProjectPromotionAudit?.(selectedProjectId);
+    if (!raw) {
+      setProjectMessage('当前环境不支持知识贡献审计。');
+      return;
+    }
+    try {
+      const result = JSON.parse(raw) as { ok?: boolean; conflicts?: PromotionConflict[]; runLog?: { runs?: PromotionRunRecord[] }; content?: string; message?: string };
+      setProjectMessage(result.message || (result.ok ? '已生成贡献冲突与回滚记录。' : '贡献审计失败。'));
+      setPromotionConflicts(result.conflicts ?? []);
+      setPromotionRuns(result.runLog?.runs ?? []);
+      if (result.content) setPromotionAuditPreview(result.content);
+    } catch {
+      setProjectMessage('贡献审计结果解析失败。');
+    }
+  };
+
   const handleProjectAuditAction = (item: ProjectAuditItem) => {
     setSelectedProjectId(item.projectId);
     setSelectedProjectAssetIds([]);
@@ -6005,6 +6138,7 @@ ${JSON.stringify(items, null, 2)}
         }
         refreshAssets();
         if (selectedStudent) refreshLearningReports(selectedStudent);
+        loadSelectedProjectPromotionAudit();
       }
     } catch {
       setProjectMessage('执行归档确认清单结果解析失败。');
@@ -6029,8 +6163,47 @@ ${JSON.stringify(items, null, 2)}
       if (result.ok && selectedStudent) {
         refreshLearningReports(selectedStudent);
       }
+      if (result.ok) loadSelectedProjectPromotionAudit();
     } catch {
       setProjectMessage('发布知识贡献结果解析失败。');
+    }
+  };
+
+  const refreshGrowthEvidenceReview = (student = selectedStudent) => {
+    if (!student) {
+      setGrowthMessage('请先选择学生。');
+      return;
+    }
+    const raw = bridge()?.getGrowthEvidenceReview?.(student.id);
+    if (!raw) {
+      setGrowthMessage('当前环境不支持成长证据审核。');
+      return;
+    }
+    try {
+      const result = JSON.parse(raw) as { ok?: boolean; review?: GrowthEvidenceReviewState; message?: string };
+      if (result.review) setGrowthEvidenceReview(result.review);
+      setGrowthMessage(result.message || (result.ok ? '已刷新成长证据候选。' : '成长证据候选读取失败。'));
+    } catch {
+      setGrowthMessage('成长证据审核结果解析失败。');
+    }
+  };
+
+  const updateGrowthEvidence = (candidate: GrowthEvidenceCandidate, status: 'confirmed' | 'watching' | 'rejected') => {
+    if (!selectedStudent) {
+      setGrowthMessage('请先选择学生。');
+      return;
+    }
+    const raw = bridge()?.updateGrowthEvidenceStatus?.(selectedStudent.id, candidate.id, status, '');
+    if (!raw) {
+      setGrowthMessage('当前环境不支持更新成长证据状态。');
+      return;
+    }
+    try {
+      const result = JSON.parse(raw) as { ok?: boolean; review?: GrowthEvidenceReviewState; message?: string };
+      if (result.review) setGrowthEvidenceReview(result.review);
+      setGrowthMessage(result.message || (result.ok ? '成长证据状态已更新。' : '成长证据状态更新失败。'));
+    } catch {
+      setGrowthMessage('成长证据状态更新结果解析失败。');
     }
   };
 
@@ -6047,8 +6220,39 @@ ${JSON.stringify(items, null, 2)}
     try {
       const result = JSON.parse(raw) as { ok?: boolean; folder?: string; created?: string[]; message?: string };
       setGrowthMessage(result.message || (result.ok ? '成长模型已确认。' : '成长模型补建失败。'));
+      if (result.ok) refreshGrowthEvidenceReview(selectedStudent);
     } catch {
       setGrowthMessage('成长模型补建结果解析失败。');
+    }
+  };
+
+  const refreshScheduleLedgerForStudent = (student: Student) => {
+    const raw = bridge()?.getStudentScheduleLedger?.(student.id);
+    if (!raw) {
+      setScheduleMessage('当前环境不支持定时任务账本。');
+      return;
+    }
+    try {
+      const result = JSON.parse(raw) as { ok?: boolean; ledger?: ScheduleLedgerState; message?: string };
+      if (result.ledger) setScheduleLedger(result.ledger);
+      setScheduleMessage(result.message || (result.ok ? '已刷新定时任务账本。' : '定时任务账本读取失败。'));
+    } catch {
+      setScheduleMessage('定时任务账本解析失败。');
+    }
+  };
+
+  const generateMaintenanceReportForStudent = (student: Student) => {
+    const raw = bridge()?.generateStudentMaintenanceReport?.(student.id);
+    if (!raw) {
+      setScheduleMessage('当前环境不支持生成定时维护报告。');
+      return;
+    }
+    try {
+      const result = JSON.parse(raw) as { ok?: boolean; content?: string; message?: string };
+      setScheduleMessage(result.message || (result.ok ? '已生成定时维护报告。' : '定时维护报告生成失败。'));
+      if (result.content) setMaintenanceReportPreview(result.content);
+    } catch {
+      setScheduleMessage('定时维护报告结果解析失败。');
     }
   };
 
@@ -7984,7 +8188,16 @@ ${JSON.stringify(items, null, 2)}
                   <InfoPanel icon={<FileText />} title="资产编号" value={selectedAsset.assetId} />
                   <InfoPanel icon={<Archive />} title="引用次数" value={`${selectedAsset.references?.length ?? selectedAsset.referenceCount ?? 0} 次`} />
                   <InfoPanel icon={<ListChecks />} title="重复数量" value={`${selectedAsset.duplicateCount ?? 1} 份`} />
+                  <InfoPanel icon={<FileText />} title="版本组" value={`${selectedAsset.versionCount ?? 1} 个`} />
                   <InfoPanel icon={<ShieldCheck />} title="治理风险" value={selectedAsset.governanceRisk || '未分析'} />
+                </div>
+                <div className="actions compact-actions">
+                  <button className="secondary compact" onClick={cleanupSelectedAssetReferences}>
+                    清理失效引用
+                  </button>
+                  <button className="secondary compact" onClick={snapshotSelectedAssetVersions}>
+                    生成版本快照
+                  </button>
                 </div>
                 {(selectedAsset.governanceAction || selectedAsset.governanceReason) && (
                   <div className="notice muted">
@@ -7998,6 +8211,8 @@ ${JSON.stringify(items, null, 2)}
                       <span>
                         <strong>{reference.spaceName || reference.spaceId}</strong>
                         <small>{reference.spaceType} · {reference.role} · {reference.source || '未知来源'}</small>
+                        {reference.logicalPath && <small>逻辑路径：{reference.logicalPath}</small>}
+                        {reference.workspaceId && <small>工作空间：{reference.workspaceId}</small>}
                         <small>{reference.path}</small>
                       </span>
                     </div>
@@ -8200,6 +8415,9 @@ ${JSON.stringify(items, null, 2)}
                       setPromotionPreview('');
                       setPromotionPlan(null);
                       setPromotionExecutionSummary('');
+                      setPromotionAuditPreview('');
+                      setPromotionConflicts([]);
+                      setPromotionRuns([]);
                     }}
                   >
                     <strong>{project.name}</strong>
@@ -8221,6 +8439,9 @@ ${JSON.stringify(items, null, 2)}
                         </button>
                         <button className="secondary compact" onClick={loadSelectedProjectPromotionPlan}>
                           归档确认清单
+                        </button>
+                        <button className="secondary compact" onClick={loadSelectedProjectPromotionAudit}>
+                          贡献审计
                         </button>
                         <button className="primary compact" onClick={executeSelectedProjectPromotionPlan} disabled={!promotionPlan?.items?.length}>
                           执行归档
@@ -8248,6 +8469,11 @@ ${JSON.stringify(items, null, 2)}
                         </div>
                       ))}
                     </div>
+                    {(promotionConflicts.length > 0 || promotionRuns.length > 0) && (
+                      <div className="notice muted">
+                        贡献审计：冲突提醒 {promotionConflicts.length} 条，执行记录 {promotionRuns.length} 条。重复发布前建议先核对冲突目标文件。
+                      </div>
+                    )}
                     <div className="form-grid compact-grid">
                       <label>
                         项目状态
@@ -8478,6 +8704,18 @@ ${JSON.stringify(items, null, 2)}
                         <MarkdownView content={promotionPreview} />
                       </div>
                     )}
+                    {promotionAuditPreview && (
+                      <div className="markdown-reader learning-report-reader">
+                        <div className="reader-toolbar">
+                          <span>贡献冲突与回滚记录</span>
+                          <button className="secondary compact" onClick={() => copyText(promotionAuditPreview, '已复制贡献冲突与回滚记录。')}>
+                            <Clipboard size={16} />
+                            复制
+                          </button>
+                        </div>
+                        <MarkdownView content={promotionAuditPreview} />
+                      </div>
+                    )}
                   </>
                 ) : (
                   <div className="empty-state">选择或创建一个学习项目后，可绑定资产、生成项目知识贡献申请。</div>
@@ -8511,6 +8749,10 @@ ${JSON.stringify(items, null, 2)}
                 <RefreshCw size={18} />
                 刷新学情报告
               </button>
+              <button className="secondary" onClick={() => refreshGrowthEvidenceReview(selectedStudent)}>
+                <ListChecks size={18} />
+                刷新证据候选
+              </button>
               <button className="secondary" onClick={() => setActiveSection('reports')}>
                 <FileText size={18} />
                 查看学情报告
@@ -8523,6 +8765,34 @@ ${JSON.stringify(items, null, 2)}
             <div className="notice muted">
               成长模型 v1 会在学生知识库下创建“成长模型”目录，并维护 index、能力画像、成长证据和项目贡献四类 Markdown 索引。它不会替换现有综合汇总库，而是作为学情报告的上层来源。
             </div>
+            <section className="material-source-panel">
+              <div className="mini-heading">
+                <strong>成长证据审核</strong>
+                <span>项目贡献发布后先进入候选证据；确认后写入“成长证据.md”。</span>
+              </div>
+              <div className="archive-grid">
+                <InfoPanel icon={<ListChecks />} title="候选证据" value={`${growthEvidenceReview.candidates.length} 条`} />
+                <InfoPanel icon={<ShieldCheck />} title="已确认" value={`${growthEvidenceReview.candidates.filter((item) => item.status === 'confirmed').length} 条`} />
+                <InfoPanel icon={<Clock3 />} title="待审核" value={`${growthEvidenceReview.candidates.filter((item) => item.status === 'pending').length} 条`} />
+              </div>
+              <div className="download-list">
+                {growthEvidenceReview.candidates.slice(0, 80).map((candidate) => (
+                  <div className="download-item" key={candidate.id}>
+                    <span>
+                      <strong>{candidate.title}</strong>
+                      <small>{candidate.projectName || '未关联项目'} · {candidate.status} · {candidate.confidence || '待确认'}</small>
+                      <small>{candidate.sourcePath || candidate.content || '暂无来源'}</small>
+                    </span>
+                    <div className="inline-actions">
+                      <button className="secondary compact" onClick={() => updateGrowthEvidence(candidate, 'confirmed')}>确认</button>
+                      <button className="secondary compact" onClick={() => updateGrowthEvidence(candidate, 'watching')}>观察</button>
+                      <button className="secondary compact" onClick={() => updateGrowthEvidence(candidate, 'rejected')}>驳回</button>
+                    </div>
+                  </div>
+                ))}
+                {growthEvidenceReview.candidates.length === 0 && <div className="empty-state">暂无候选成长证据。发布项目贡献或执行归档确认清单后会在这里出现。</div>}
+              </div>
+            </section>
             <div className="learning-report-layout">
               <aside className="learning-report-list">
                 {learningReportDefinitions.map((definition) => (
@@ -9667,6 +9937,12 @@ ${JSON.stringify(items, null, 2)}
                     <button className="secondary compact" onClick={() => copyLintCommand(student)}>
                       复制 lint 指令
                     </button>
+                    <button className="secondary compact" onClick={() => refreshScheduleLedgerForStudent(student)}>
+                      查看账本
+                    </button>
+                    <button className="secondary compact" onClick={() => generateMaintenanceReportForStudent(student)} disabled={!windowsLicenseActive}>
+                      生成维护报告
+                    </button>
                     {isWindows && (
                       <button className="secondary compact" onClick={() => { setSelectedId(student.id); checkStudentPathHealth(student); }} disabled={!windowsLicenseActive}>
                         检查知识库路径
@@ -9679,6 +9955,36 @@ ${JSON.stringify(items, null, 2)}
                 );
               })}
             </div>
+            {(scheduleLedger.entries.length > 0 || scheduleMessage) && (
+              <section className="material-source-panel">
+                <div className="mini-heading">
+                  <strong>定时任务去重账本</strong>
+                  <span>同一天、同类型、同指令只保留一条记录，重复复制只增加次数。</span>
+                </div>
+                <div className="download-list">
+                  {scheduleLedger.entries.slice(0, 20).map((entry) => (
+                    <div className="download-item" key={entry.id}>
+                      <span>
+                        <strong>{entry.day} · {entry.kind}</strong>
+                        <small>{entry.status} · 复制 {entry.copyCount ?? 1} 次</small>
+                        <small>最近：{entry.lastCopiedAt || entry.copiedAt || '-'}</small>
+                      </span>
+                    </div>
+                  ))}
+                  {scheduleLedger.entries.length === 0 && <div className="empty-state">暂无账本记录。复制消化或 lint 指令后会自动记录。</div>}
+                </div>
+              </section>
+            )}
+            {maintenanceReportPreview && (
+              <section className="material-source-panel">
+                <div className="mini-heading">
+                  <strong>定时维护报告预览</strong>
+                  <button className="secondary compact" onClick={() => copyText(maintenanceReportPreview, '已复制定时维护报告。')}>复制报告</button>
+                </div>
+                <MarkdownView content={maintenanceReportPreview} />
+              </section>
+            )}
+            {scheduleMessage && <div className="notice">{scheduleMessage}</div>}
           </section>
         )}
 

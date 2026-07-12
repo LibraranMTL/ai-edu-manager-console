@@ -23,7 +23,7 @@ let hostServiceLastError = '';
 let todayUploadCount = 0;
 let uploadCountDate = new Date().toISOString().slice(0, 10);
 
-const APP_VERSION = '0.7.3';
+const APP_VERSION = '0.7.4';
 const DEFAULT_HOST_PORT = 18777;
 const AGENT_TOOL_IDS = ['qclaw', 'marvis', 'hohu', 'openclaw', 'ima.copilot', 'workbuddy', 'codex', 'claude-code', 'chatgpt', 'claude', 'doubao', 'coze', 'fastgpt'];
 const WEB_AGENT_TOOL_URLS = {
@@ -1678,6 +1678,10 @@ function normalizeProjectStagingItem(item) {
     updatedAt: String(item?.updatedAt || now),
     promotedAt: String(item?.promotedAt || ''),
     promotedAssetId: String(item?.promotedAssetId || ''),
+    aiAction: String(item?.aiAction || ''),
+    aiReason: String(item?.aiReason || ''),
+    aiScore: item?.aiScore === undefined || item?.aiScore === '' ? '' : Number(item.aiScore),
+    aiReviewedAt: String(item?.aiReviewedAt || ''),
   };
 }
 
@@ -1693,8 +1697,8 @@ function writeProjectStagingIndex(project) {
     updatedAt: new Date().toISOString(),
     items,
   }, null, 2), 'utf8');
-  const rows = items.map((item) => `| ${item.filename} | ${projectStagingStatusLabel(item.status)} | ${item.type} | ${item.size} | ${item.path} |`).join('\n') || '| 暂无 | - | - | - | - |';
-  fs.writeFileSync(path.join(paths.stagingPath, '研究暂存清单.md'), `# ${normalized.name} 研究暂存清单\n\n> 暂存层用于收集和筛选项目研究资料；未晋升前不会进入正式文件资产中心。\n\n| 文件 | 状态 | 类型 | 大小 | 路径 |\n| --- | --- | --- | ---: | --- |\n${rows}\n`, 'utf8');
+  const rows = items.map((item) => `| ${item.filename} | ${projectStagingStatusLabel(item.status)} | ${item.type} | ${item.size} | ${item.aiAction || '-'} | ${String(item.aiReason || '').replace(/\|/g, '/')} | ${item.path} |`).join('\n') || '| 暂无 | - | - | - | - | - | - |';
+  fs.writeFileSync(path.join(paths.stagingPath, '研究暂存清单.md'), `# ${normalized.name} 研究暂存清单\n\n> 暂存层用于收集和筛选项目研究资料；未晋升前不会进入正式文件资产中心。\n\n| 文件 | 状态 | 类型 | 大小 | AI建议 | AI理由 | 路径 |\n| --- | --- | --- | ---: | --- | --- | --- |\n${rows}\n`, 'utf8');
 }
 
 function normalizeProject(project) {
@@ -2054,6 +2058,150 @@ function promoteProjectStagingItems(projectId, itemIdsJson) {
     });
   } catch (error) {
     return JSON.stringify({ ok: false, message: `晋升暂存资料失败：${error.message}` });
+  }
+}
+
+function parseAiScreeningJson(content) {
+  const repairJsonBackslashes = (value) => String(value || '').replace(/\\(?!["\\/bfnrtu])/g, '\\\\');
+  const normalized = String(content || '')
+    .replace(/^\uFEFF/, '')
+    .replace(/[“”]/g, '"')
+    .replace(/[‘’]/g, "'");
+  const fenced = normalized.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  const candidate = fenced ? fenced[1] : normalized;
+  const firstObject = candidate.indexOf('{');
+  const lastObject = candidate.lastIndexOf('}');
+  const firstArray = candidate.indexOf('[');
+  const lastArray = candidate.lastIndexOf(']');
+  const objectJson = firstObject >= 0 && lastObject > firstObject ? candidate.slice(firstObject, lastObject + 1) : '';
+  const arrayJson = firstArray >= 0 && lastArray > firstArray ? candidate.slice(firstArray, lastArray + 1) : '';
+  const rawAttempts = [candidate.trim(), objectJson.trim(), arrayJson.trim()].filter(Boolean);
+  const attempts = [...rawAttempts, ...rawAttempts.map(repairJsonBackslashes)];
+  let lastError = null;
+  for (const attempt of attempts) {
+    try {
+      return JSON.parse(attempt);
+    } catch (error) {
+      lastError = error;
+    }
+  }
+  throw lastError || new Error('未找到 JSON 内容');
+}
+
+function normalizeAiScreeningStatus(value) {
+  const text = String(value || '').trim().toLowerCase();
+  if (['promote', 'promotion', 'promoted', '晋升', '建议晋升', '正式资产'].includes(text)) return 'selected';
+  if (['select', 'selected', 'analysis', 'analyze', '分析', '选入分析', '采用'].includes(text)) return 'selected';
+  if (['screen', 'screened', '初筛', '已初筛', '候选'].includes(text)) return 'screened';
+  if (['analyzed', '分析完成', '已分析'].includes(text)) return 'analyzed';
+  if (['discard', 'discarded', 'skip', 'ignore', '丢弃', '跳过', '忽略', '低价值'].includes(text)) return 'discarded';
+  if (['collect', 'collected', '收集', '已收集'].includes(text)) return 'collected';
+  return '';
+}
+
+function normalizeAiScreeningAction(value, fallbackStatus) {
+  const text = String(value || '').trim();
+  const lower = text.toLowerCase();
+  if (['select', 'selected', 'promote', 'promotion', 'promoted'].includes(lower)) return '建议选入分析';
+  if (['screen', 'screened'].includes(lower)) return '建议保留候选';
+  if (['discard', 'discarded', 'skip', 'ignore'].includes(lower)) return '建议丢弃/归档';
+  if (['analyzed', 'analysis'].includes(lower)) return '已分析';
+  if (text) return text;
+  if (fallbackStatus === 'selected') return '建议选入分析';
+  if (fallbackStatus === 'discarded') return '建议丢弃/归档';
+  if (fallbackStatus === 'screened') return '建议保留候选';
+  if (fallbackStatus === 'analyzed') return '已分析';
+  return '';
+}
+
+function screeningRecommendationsFromPayload(payload) {
+  if (Array.isArray(payload)) return payload;
+  if (!payload || typeof payload !== 'object') return [];
+  if (Array.isArray(payload.recommendations)) return payload.recommendations;
+  if (Array.isArray(payload.candidates)) return payload.candidates;
+  if (Array.isArray(payload.items)) return payload.items;
+  if (Array.isArray(payload.results)) return payload.results;
+  return [];
+}
+
+function importProjectStagingAiScreening(projectId) {
+  try {
+    const project = readProjects().map(normalizeProject).find((item) => String(item.id) === String(projectId));
+    if (!project) return JSON.stringify({ ok: false, message: '未找到学习项目。' });
+    const ensured = ensureProjectWorkspace(project);
+    const files = dialog.showOpenDialogSync(mainWindow, {
+      title: '导入 AI 初筛结果',
+      properties: ['openFile'],
+      filters: [
+        { name: 'AI 初筛结果', extensions: ['json', 'txt', 'md'] },
+        { name: '全部文件', extensions: ['*'] },
+      ],
+    });
+    if (!files || !files[0]) return JSON.stringify({ ok: false, message: '未选择 AI 初筛结果文件。' });
+    const raw = fs.readFileSync(files[0], 'utf8');
+    const payload = parseAiScreeningJson(raw);
+    const recommendations = screeningRecommendationsFromPayload(payload);
+    if (!recommendations.length) return JSON.stringify({ ok: false, message: 'AI 初筛结果中没有 recommendations / candidates / items / results 数组。' });
+    const now = new Date().toISOString();
+    const byId = new Map();
+    const bySha1 = new Map();
+    const byFilename = new Map();
+    const byPath = new Map();
+    for (const rec of recommendations) {
+      if (!rec || typeof rec !== 'object') continue;
+      const keys = [
+        rec.id,
+        rec.itemId,
+        rec.stagingId,
+      ].filter(Boolean).map(String);
+      keys.forEach((key) => byId.set(key, rec));
+      if (rec.sha1) bySha1.set(String(rec.sha1), rec);
+      if (rec.filename || rec.name) byFilename.set(String(rec.filename || rec.name).toLowerCase(), rec);
+      if (rec.path || rec.sourcePath) {
+        byPath.set(path.resolve(String(rec.path || rec.sourcePath)).toLowerCase(), rec);
+        byPath.set(String(rec.path || rec.sourcePath).toLowerCase(), rec);
+      }
+    }
+    let matched = 0;
+    const nextItems = (ensured.stagingItems || []).map((item) => {
+      const rec = byId.get(item.id)
+        || (item.sha1 ? bySha1.get(item.sha1) : null)
+        || byFilename.get(String(item.filename || '').toLowerCase())
+        || byPath.get(path.resolve(String(item.path || '')).toLowerCase())
+        || byPath.get(String(item.sourcePath || '').toLowerCase());
+      if (!rec) return item;
+      matched += 1;
+      const status = normalizeAiScreeningStatus(rec.status || rec.action || rec.recommendation || rec.decision);
+      const reasons = Array.isArray(rec.reasons) ? rec.reasons.join('；') : '';
+      const reason = String(rec.reason || rec.aiReason || reasons || rec.preview || '').slice(0, 1000);
+      const score = Number(rec.score);
+      return {
+        ...item,
+        status: status || item.status,
+        aiAction: normalizeAiScreeningAction(rec.action || rec.recommendation || rec.decision, status),
+        aiReason: reason,
+        aiScore: rec.score === undefined || rec.score === '' || !Number.isFinite(score) ? item.aiScore : score,
+        aiReviewedAt: now,
+        updatedAt: now,
+      };
+    });
+    const result = updateProjectRecord(ensured.id, (item) => ({
+      ...item,
+      stagingItems: nextItems,
+      updatedAt: now,
+    }));
+    fs.writeFileSync(path.join(ensured.stagingPath, `AI初筛结果-${now.slice(0, 10)}.json`), JSON.stringify(payload, null, 2), 'utf8');
+    appendHostTimeline({ type: 'project_staging_ai_screening_imported', title: 'Project staging AI screening imported', detail: ensured.name, count: matched });
+    return JSON.stringify({
+      ok: matched > 0,
+      matched,
+      total: recommendations.length,
+      project: result.project,
+      projects: result.projects,
+      message: matched > 0 ? `已导入 AI 初筛结果，匹配 ${matched}/${recommendations.length} 份暂存资料。` : 'AI 初筛结果没有匹配到当前项目的暂存资料。',
+    });
+  } catch (error) {
+    return JSON.stringify({ ok: false, message: `导入 AI 初筛结果失败：${error.message}` });
   }
 }
 
@@ -5554,6 +5702,7 @@ ipcMain.on('bridge:importProjectAssets', (event, projectId, assetIdsJson) => { l
 ipcMain.on('bridge:importProjectStagingFiles', (event, projectId) => { licensedIpc(event, '项目研究暂存导入', () => importProjectStagingFiles(projectId)); });
 ipcMain.on('bridge:updateProjectStagingStatus', (event, projectId, itemIdsJson, status) => { licensedIpc(event, '项目研究暂存状态', () => updateProjectStagingStatus(projectId, itemIdsJson, status)); });
 ipcMain.on('bridge:promoteProjectStagingItems', (event, projectId, itemIdsJson) => { licensedIpc(event, '项目研究暂存晋升', () => promoteProjectStagingItems(projectId, itemIdsJson)); });
+ipcMain.on('bridge:importProjectStagingAiScreening', (event, projectId) => { licensedIpc(event, '项目研究暂存 AI 初筛导入', () => importProjectStagingAiScreening(projectId)); });
 ipcMain.on('bridge:generateProjectPromotion', (event, projectId) => { licensedIpc(event, '知识贡献申请', () => generateProjectPromotion(projectId)); });
 ipcMain.on('bridge:getProjectPromotionPlan', (event, projectId) => { licensedIpc(event, '归档确认清单', () => projectPromotionPlan(projectId)); });
 ipcMain.on('bridge:executeProjectPromotionPlan', (event, projectId, planJson) => { licensedIpc(event, '执行归档确认清单', () => executeProjectPromotionPlan(projectId, planJson)); });

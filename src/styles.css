@@ -1734,8 +1734,19 @@ pre {
   max-height: 300px;
 }
 
+.staging-filter-grid {
+  margin: 0;
+}
+
 .staging-item.discarded {
   opacity: 0.68;
+}
+
+.download-item .staging-ai-note {
+  overflow: visible;
+  white-space: normal;
+  text-overflow: clip;
+  line-height: 1.45;
 }
 
 .staging-status-pill {

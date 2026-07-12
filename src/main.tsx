@@ -242,6 +242,10 @@ type ProjectStagingItem = {
   updatedAt?: string;
   promotedAt?: string;
   promotedAssetId?: string;
+  aiAction?: string;
+  aiReason?: string;
+  aiScore?: number | string;
+  aiReviewedAt?: string;
 };
 
 type PromotionAction = 'reference' | 'publish' | 'absorb' | 'skip';
@@ -287,6 +291,7 @@ type AndroidBridge = {
   importProjectStagingFiles?: (projectId: string) => string;
   updateProjectStagingStatus?: (projectId: string, itemIdsJson: string, status: string) => string;
   promoteProjectStagingItems?: (projectId: string, itemIdsJson: string) => string;
+  importProjectStagingAiScreening?: (projectId: string) => string;
   generateProjectPromotion?: (projectId: string) => string;
   getProjectPromotionPlan?: (projectId: string) => string;
   executeProjectPromotionPlan?: (projectId: string, planJson: string) => string;
@@ -641,8 +646,8 @@ const storageKey = 'edu-manager-launcher.students.v2';
 const themeStorageKey = 'edu-manager-launcher.theme.v1';
 const languageStorageKey = 'edu-manager-launcher.language.v1';
 const archiveKeywordStorageKey = 'edu-manager-launcher.archive-keywords.v1';
-const currentVersionCode = 83;
-const currentVersionName = '0.7.3';
+const currentVersionCode = 84;
+const currentVersionName = '0.7.4';
 const updateManifestUrl = [
   'https://www.greatbg.com/download/edu-manager-version.json',
   'http://www.greatbg.com/download/edu-manager-version.json',
@@ -3054,6 +3059,8 @@ function App() {
   const [projectDraft, setProjectDraft] = useState({ name: '', type: '学习项目', studentIds: [] as string[] });
   const [selectedProjectAssetIds, setSelectedProjectAssetIds] = useState<string[]>([]);
   const [selectedProjectStagingIds, setSelectedProjectStagingIds] = useState<string[]>([]);
+  const [projectStagingSearch, setProjectStagingSearch] = useState('');
+  const [projectStagingStatusFilter, setProjectStagingStatusFilter] = useState<'all' | ProjectStagingStatus>('all');
   const [promotionPreview, setPromotionPreview] = useState('');
   const [promotionPlan, setPromotionPlan] = useState<PromotionPlan | null>(null);
   const [promotionExecutionSummary, setPromotionExecutionSummary] = useState('');
@@ -3277,6 +3284,16 @@ function App() {
     return filteredAssets.filter((asset) => !selectedAssetIds.has(asset.assetId)).slice(0, 120);
   }, [filteredAssets, selectedProject?.assetIds]);
   const projectStagingItems = selectedProject?.stagingItems ?? [];
+  const filteredProjectStagingItems = useMemo(() => {
+    const keyword = projectStagingSearch.trim().toLowerCase();
+    return projectStagingItems.filter((item) => {
+      if (projectStagingStatusFilter !== 'all' && item.status !== projectStagingStatusFilter) return false;
+      if (!keyword) return true;
+      return [item.filename, item.path, item.sourcePath, item.sha1, item.aiAction, item.aiReason]
+        .filter(Boolean)
+        .some((value) => String(value).toLowerCase().includes(keyword));
+    });
+  }, [projectStagingItems, projectStagingSearch, projectStagingStatusFilter]);
   const selectedProjectStagingItems = projectStagingItems.filter((item) => selectedProjectStagingIds.includes(item.id));
 
   const projectStatusLabel = (status?: string) => {
@@ -3332,6 +3349,10 @@ function App() {
 
   const toggleProjectStagingItem = (itemId: string) => {
     setSelectedProjectStagingIds((current) => (current.includes(itemId) ? current.filter((item) => item !== itemId) : [...current, itemId]));
+  };
+
+  const selectVisibleProjectStagingItems = () => {
+    setSelectedProjectStagingIds(filteredProjectStagingItems.map((item) => item.id));
   };
 
   const toggleProjectDraftStudent = (studentId: string) => {
@@ -5321,6 +5342,85 @@ ${conversationText || '（请先粘贴对话历史）'}`;
       }
     } catch {
       setProjectMessage('暂存资料晋升结果解析失败。');
+    }
+  };
+
+  const copyProjectStagingAiScreeningPrompt = () => {
+    if (!selectedProject) {
+      setProjectMessage('请先选择学习项目。');
+      return;
+    }
+    if (!projectStagingItems.length) {
+      setProjectMessage('当前项目没有研究暂存资料。');
+      return;
+    }
+    const items = projectStagingItems.map((item) => ({
+      id: item.id,
+      filename: item.filename,
+      path: item.path,
+      sourcePath: item.sourcePath,
+      sha1: item.sha1,
+      type: item.type,
+      size: item.size,
+      currentStatus: item.status,
+    }));
+    const prompt = `请对学习项目「${selectedProject.name}」的研究暂存资料进行初筛。
+
+目标：
+1. 判断哪些资料值得进入正式项目分析范围。
+2. 标记低价值、重复、无关、临时资料。
+3. 给出简洁理由，方便教育管家控制台导入。
+
+请只返回 JSON，不要输出解释文字。格式如下：
+
+{
+  "projectName": "${selectedProject.name}",
+  "recommendations": [
+    {
+      "id": "暂存资料 id",
+      "filename": "文件名",
+      "action": "select | screen | discard | analyzed",
+      "status": "selected | screened | discarded | analyzed",
+      "score": 0,
+      "reason": "为什么这样处理"
+    }
+  ]
+}
+
+状态含义：
+- selected：建议选入项目资料分析范围，后续可晋升为正式资产。
+- screened：保留候选，但暂不进入分析。
+- discarded：低价值、重复或无关，建议归档/丢弃。
+- analyzed：已经被分析使用或可视为已完成 AI 分析。
+
+暂存资料清单：
+
+${JSON.stringify(items, null, 2)}
+`;
+    bridge()?.copyText?.(prompt);
+    setCopied(true);
+    window.setTimeout(() => setCopied(false), 1400);
+    setProjectMessage('已复制 AI 初筛指令。请粘贴给 QClaw / OpenClaw / Hohu 等工具执行，保存返回 JSON 后再导入。');
+  };
+
+  const importProjectStagingAiScreening = () => {
+    if (!selectedProjectId) {
+      setProjectMessage('请先选择学习项目。');
+      return;
+    }
+    const raw = bridge()?.importProjectStagingAiScreening?.(selectedProjectId);
+    if (!raw) {
+      setProjectMessage('当前环境不支持导入 AI 初筛结果。');
+      return;
+    }
+    try {
+      const result = JSON.parse(raw) as { ok?: boolean; matched?: number; total?: number; project?: LearningProject; projects?: LearningProject[]; message?: string };
+      if (Array.isArray(result.projects)) setProjects(result.projects);
+      if (result.project) setSelectedProjectId(result.project.id);
+      if (result.ok) setSelectedProjectStagingIds([]);
+      setProjectMessage(result.message || (result.ok ? 'AI 初筛结果已导入。' : 'AI 初筛结果导入失败。'));
+    } catch {
+      setProjectMessage('AI 初筛结果解析失败。');
     }
   };
 
@@ -7613,10 +7713,40 @@ ${conversationText || '（请先粘贴对话历史）'}`;
                         <InfoPanel icon={<ListChecks />} title="已选" value={`${selectedProjectStagingItems.length} 份`} />
                         <InfoPanel icon={<FolderOpen />} title="暂存目录" value={selectedProject.stagingPath || `${selectedProject.workspacePath}\\研究暂存`} />
                       </div>
+                      <div className="form-grid compact-grid staging-filter-grid">
+                        <label>
+                          搜索暂存资料
+                          <input value={projectStagingSearch} onChange={(event) => setProjectStagingSearch(event.target.value)} placeholder="文件名、路径、AI建议或理由" />
+                        </label>
+                        <label>
+                          状态筛选
+                          <select value={projectStagingStatusFilter} onChange={(event) => setProjectStagingStatusFilter(event.target.value as 'all' | ProjectStagingStatus)}>
+                            <option value="all">全部状态</option>
+                            <option value="collected">已收集</option>
+                            <option value="screened">已初筛</option>
+                            <option value="selected">选入分析</option>
+                            <option value="analyzed">已分析</option>
+                            <option value="promoted">已晋升</option>
+                            <option value="discarded">已归档/丢弃</option>
+                          </select>
+                        </label>
+                      </div>
                       <div className="actions compact-actions">
                         <button className="primary compact" onClick={importFilesToProjectStaging}>
                           <FileDown size={16} />
                           导入到研究暂存
+                        </button>
+                        <button className="secondary compact" onClick={copyProjectStagingAiScreeningPrompt} disabled={projectStagingItems.length === 0}>
+                          复制 AI 初筛指令
+                        </button>
+                        <button className="secondary compact" onClick={importProjectStagingAiScreening} disabled={projectStagingItems.length === 0}>
+                          导入 AI 初筛结果
+                        </button>
+                        <button className="secondary compact" onClick={selectVisibleProjectStagingItems} disabled={filteredProjectStagingItems.length === 0}>
+                          选择当前筛选
+                        </button>
+                        <button className="secondary compact" onClick={() => setSelectedProjectStagingIds([])} disabled={selectedProjectStagingIds.length === 0}>
+                          清空选择
                         </button>
                         <button className="secondary compact" onClick={() => updateSelectedProjectStagingStatus('screened')} disabled={selectedProjectStagingIds.length === 0}>
                           标记初筛
@@ -7634,8 +7764,9 @@ ${conversationText || '（请先粘贴对话历史）'}`;
                           丢弃/归档
                         </button>
                       </div>
+                      <small className="inline-hint">当前显示 {filteredProjectStagingItems.length} / {projectStagingItems.length} 份；AI 导入只记录建议和理由，不会自动晋升为正式资产。</small>
                       <div className="download-list project-staging-list">
-                        {projectStagingItems.map((item) => (
+                        {filteredProjectStagingItems.map((item) => (
                           <label className={item.status === 'discarded' ? 'download-item staging-item discarded' : 'download-item staging-item'} key={item.id}>
                             <input type="checkbox" checked={selectedProjectStagingIds.includes(item.id)} onChange={() => toggleProjectStagingItem(item.id)} />
                             <span>
@@ -7646,12 +7777,20 @@ ${conversationText || '（请先粘贴对话历史）'}`;
                               </small>
                               <small>{item.sourcePath || item.path}</small>
                               {item.promotedAssetId && <small>资产编号：{item.promotedAssetId}</small>}
+                              {item.aiAction && (
+                                <small className="staging-ai-note">
+                                  AI建议：{item.aiAction}{item.aiScore !== undefined && item.aiScore !== '' ? ` · 评分 ${item.aiScore}` : ''}
+                                </small>
+                              )}
+                              {item.aiReason && <small className="staging-ai-note">AI理由：{item.aiReason}</small>}
                             </span>
                           </label>
                         ))}
-                        {projectStagingItems.length === 0 && (
+                        {filteredProjectStagingItems.length === 0 && (
                           <div className="empty-state">
-                            还没有研究暂存资料。可先导入论文、网页快照、截图或候选资料，筛选后再晋升为正式资产。
+                            {projectStagingItems.length === 0
+                              ? '还没有研究暂存资料。可先导入论文、网页快照、截图或候选资料，筛选后再晋升为正式资产。'
+                              : '当前筛选条件下没有暂存资料。'}
                           </div>
                         )}
                       </div>

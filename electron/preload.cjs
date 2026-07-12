@@ -52,6 +52,9 @@ contextBridge.exposeInMainWorld('AndroidBridge', {
   promoteProjectStagingItems(projectId, itemIdsJson) {
     return ipcRenderer.sendSync('bridge:promoteProjectStagingItems', projectId, itemIdsJson);
   },
+  importProjectStagingAiScreening(projectId) {
+    return ipcRenderer.sendSync('bridge:importProjectStagingAiScreening', projectId);
+  },
   generateProjectPromotion(projectId) {
     return ipcRenderer.sendSync('bridge:generateProjectPromotion', projectId);
   },

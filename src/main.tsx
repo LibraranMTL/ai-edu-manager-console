@@ -221,6 +221,29 @@ type LearningProject = {
   updatedAt?: string;
 };
 
+type PromotionAction = 'reference' | 'publish' | 'absorb' | 'skip';
+
+type PromotionPlanItem = {
+  id: string;
+  kind: 'file' | 'knowledge' | 'growth' | string;
+  title: string;
+  sourcePath?: string;
+  assetId?: string;
+  content?: string;
+  action: PromotionAction;
+  defaultAction?: PromotionAction;
+  allowedActions: PromotionAction[];
+  targetHint?: string;
+};
+
+type PromotionPlan = {
+  ok?: boolean;
+  project?: LearningProject;
+  students?: Array<{ id: string; name: string; summaryPath?: string; rawPath?: string }>;
+  items: PromotionPlanItem[];
+  message?: string;
+};
+
 type StudentDraft = Omit<Student, 'id' | 'createdAt' | 'status'>;
 
 type AndroidBridge = {
@@ -237,6 +260,8 @@ type AndroidBridge = {
   createProject?: (optionsJson: string) => string;
   importProjectAssets?: (projectId: string, assetIdsJson: string) => string;
   generateProjectPromotion?: (projectId: string) => string;
+  getProjectPromotionPlan?: (projectId: string) => string;
+  executeProjectPromotionPlan?: (projectId: string, planJson: string) => string;
   publishProjectPromotion?: (projectId: string) => string;
   importImages?: (studentName: string) => boolean;
   takePhoto?: (studentName: string) => boolean;
@@ -588,8 +613,8 @@ const storageKey = 'edu-manager-launcher.students.v2';
 const themeStorageKey = 'edu-manager-launcher.theme.v1';
 const languageStorageKey = 'edu-manager-launcher.language.v1';
 const archiveKeywordStorageKey = 'edu-manager-launcher.archive-keywords.v1';
-const currentVersionCode = 79;
-const currentVersionName = '0.6.9';
+const currentVersionCode = 80;
+const currentVersionName = '0.7.0';
 const updateManifestUrl = [
   'https://www.greatbg.com/download/edu-manager-version.json',
   'http://www.greatbg.com/download/edu-manager-version.json',
@@ -2992,12 +3017,14 @@ function App() {
   const [assetSearch, setAssetSearch] = useState('');
   const [assetStudentFilter, setAssetStudentFilter] = useState('all');
   const [assetDuplicateOnly, setAssetDuplicateOnly] = useState(false);
+  const [selectedAssetId, setSelectedAssetId] = useState('');
   const [projects, setProjects] = useState<LearningProject[]>([]);
   const [projectMessage, setProjectMessage] = useState('');
   const [selectedProjectId, setSelectedProjectId] = useState('');
   const [projectDraft, setProjectDraft] = useState({ name: '', type: '学习项目', studentIds: [] as string[] });
   const [selectedProjectAssetIds, setSelectedProjectAssetIds] = useState<string[]>([]);
   const [promotionPreview, setPromotionPreview] = useState('');
+  const [promotionPlan, setPromotionPlan] = useState<PromotionPlan | null>(null);
   const [growthMessage, setGrowthMessage] = useState('');
   const [sharedInboxCount, setSharedInboxCount] = useState(0);
   const [compatibility, setCompatibility] = useState<Record<string, unknown> | null>(null);
@@ -3189,6 +3216,20 @@ function App() {
   }, [assetDuplicateOnly, assetIndex.assets, assetSearch, assetStudentFilter]);
 
   const selectedProject = projects.find((project) => project.id === selectedProjectId) ?? projects[0] ?? null;
+  const selectedAsset = assetIndex.assets.find((asset) => asset.assetId === selectedAssetId) ?? filteredAssets[0] ?? null;
+  const duplicateAssetGroups = useMemo(() => {
+    const groups = new Map<string, AssetRecord[]>();
+    for (const asset of assetIndex.assets ?? []) {
+      if (!asset.sha1) continue;
+      const current = groups.get(asset.sha1) ?? [];
+      current.push(asset);
+      groups.set(asset.sha1, current);
+    }
+    return Array.from(groups.entries())
+      .map(([sha1, assets]) => ({ sha1, assets }))
+      .filter((group) => group.assets.length > 1)
+      .sort((a, b) => b.assets.length - a.assets.length);
+  }, [assetIndex.assets]);
   const projectCandidateAssets = useMemo(() => {
     const selectedAssetIds = new Set(selectedProject?.assetIds ?? []);
     return filteredAssets.filter((asset) => !selectedAssetIds.has(asset.assetId)).slice(0, 120);
@@ -5125,6 +5166,62 @@ ${conversationText || '（请先粘贴对话历史）'}`;
     }
   };
 
+  const loadSelectedProjectPromotionPlan = () => {
+    if (!selectedProjectId) {
+      setProjectMessage('请先选择学习项目。');
+      return;
+    }
+    const raw = bridge()?.getProjectPromotionPlan?.(selectedProjectId);
+    if (!raw) {
+      setProjectMessage('当前环境不支持生成归档确认清单。');
+      return;
+    }
+    try {
+      const result = JSON.parse(raw) as PromotionPlan;
+      if (!result.ok) {
+        setProjectMessage(result.message || '生成归档确认清单失败。');
+        return;
+      }
+      setPromotionPlan({ ...result, items: result.items ?? [] });
+      setProjectMessage(result.message || '已生成归档确认清单。');
+    } catch {
+      setProjectMessage('归档确认清单结果解析失败。');
+    }
+  };
+
+  const updatePromotionPlanItemAction = (itemId: string, action: PromotionAction) => {
+    setPromotionPlan((current) => {
+      if (!current) return current;
+      return {
+        ...current,
+        items: current.items.map((item) => (item.id === itemId ? { ...item, action } : item)),
+      };
+    });
+  };
+
+  const executeSelectedProjectPromotionPlan = () => {
+    if (!selectedProjectId || !promotionPlan) {
+      setProjectMessage('请先生成归档确认清单。');
+      return;
+    }
+    const raw = bridge()?.executeProjectPromotionPlan?.(selectedProjectId, JSON.stringify({ items: promotionPlan.items }));
+    if (!raw) {
+      setProjectMessage('当前环境不支持执行归档确认清单。');
+      return;
+    }
+    try {
+      const result = JSON.parse(raw) as { ok?: boolean; project?: LearningProject; message?: string; executionLog?: string };
+      setProjectMessage(result.message || (result.ok ? '已执行归档确认清单。' : '执行归档确认清单失败。'));
+      if (result.project) setProjects((current) => current.map((item) => (item.id === result.project?.id ? result.project : item)));
+      if (result.ok) {
+        refreshAssets();
+        if (selectedStudent) refreshLearningReports(selectedStudent);
+      }
+    } catch {
+      setProjectMessage('执行归档确认清单结果解析失败。');
+    }
+  };
+
   const publishSelectedProjectPromotion = () => {
     if (!selectedProjectId) {
       setProjectMessage('请先选择学习项目。');
@@ -7031,7 +7128,7 @@ ${conversationText || '（请先粘贴对话历史）'}`;
             </div>
             <div className="download-list asset-list">
               {filteredAssets.slice(0, 160).map((asset) => (
-                <div className="download-item" key={asset.assetId}>
+                <button className={selectedAsset?.assetId === asset.assetId ? 'download-item active' : 'download-item'} key={asset.assetId} onClick={() => setSelectedAssetId(asset.assetId)}>
                   <span>
                     <strong>{asset.filename}</strong>
                     <small>
@@ -7040,11 +7137,55 @@ ${conversationText || '（请先粘贴对话历史）'}`;
                     <small>{asset.path}</small>
                     {asset.sha1 && <em>SHA-1：{asset.sha1}{Number(asset.duplicateCount ?? 1) > 1 ? ` · 重复 ${asset.duplicateCount} 份` : ''}</em>}
                   </span>
-                </div>
+                </button>
               ))}
               {filteredAssets.length === 0 && <div className="empty-state">暂无资产记录。导入资料、平板上传或点击“扫描并补建资产索引”后会在这里显示。</div>}
             </div>
             {filteredAssets.length > 160 && <div className="notice muted">当前仅显示前 160 条资产，可通过搜索、学生过滤或重复文件过滤缩小范围。</div>}
+            {selectedAsset && (
+              <section className="material-source-panel">
+                <div className="mini-heading">
+                  <strong>资产引用详情</strong>
+                  <span>{selectedAsset.filename}</span>
+                </div>
+                <div className="archive-grid">
+                  <InfoPanel icon={<FileText />} title="资产编号" value={selectedAsset.assetId} />
+                  <InfoPanel icon={<Archive />} title="引用次数" value={`${selectedAsset.references?.length ?? selectedAsset.referenceCount ?? 0} 次`} />
+                  <InfoPanel icon={<ListChecks />} title="重复数量" value={`${selectedAsset.duplicateCount ?? 1} 份`} />
+                </div>
+                <div className="download-list">
+                  {(selectedAsset.references ?? []).map((reference) => (
+                    <div className="download-item" key={reference.id}>
+                      <span>
+                        <strong>{reference.spaceName || reference.spaceId}</strong>
+                        <small>{reference.spaceType} · {reference.role} · {reference.source || '未知来源'}</small>
+                        <small>{reference.path}</small>
+                      </span>
+                    </div>
+                  ))}
+                  {(selectedAsset.references ?? []).length === 0 && <div className="empty-state">该资产暂无引用记录。</div>}
+                </div>
+              </section>
+            )}
+            {duplicateAssetGroups.length > 0 && (
+              <section className="material-source-panel">
+                <div className="mini-heading">
+                  <strong>重复文件分组</strong>
+                  <span>仅做治理提示，不会自动删除物理文件。</span>
+                </div>
+                <div className="download-list">
+                  {duplicateAssetGroups.slice(0, 20).map((group) => (
+                    <div className="download-item" key={group.sha1}>
+                      <span>
+                        <strong>{group.assets.length} 份重复文件</strong>
+                        <small>SHA-1：{group.sha1}</small>
+                        <small>建议保留：{group.assets[0]?.path || '待确认'}</small>
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              </section>
+            )}
             {assetMessage && <div className="notice">{assetMessage}</div>}
           </section>
         )}
@@ -7112,6 +7253,7 @@ ${conversationText || '（请先粘贴对话历史）'}`;
                       setSelectedProjectId(project.id);
                       setSelectedProjectAssetIds([]);
                       setPromotionPreview('');
+                      setPromotionPlan(null);
                     }}
                   >
                     <strong>{project.name}</strong>
@@ -7130,6 +7272,12 @@ ${conversationText || '（请先粘贴对话历史）'}`;
                       <div className="reader-actions">
                         <button className="secondary compact" onClick={() => generateSelectedProjectPromotion()}>
                           生成贡献申请
+                        </button>
+                        <button className="secondary compact" onClick={loadSelectedProjectPromotionPlan}>
+                          归档确认清单
+                        </button>
+                        <button className="primary compact" onClick={executeSelectedProjectPromotionPlan} disabled={!promotionPlan?.items?.length}>
+                          执行归档
                         </button>
                         <button className="primary compact" onClick={publishSelectedProjectPromotion}>
                           发布到成长模型
@@ -7165,6 +7313,37 @@ ${conversationText || '（请先粘贴对话历史）'}`;
                       </button>
                       <span className="inline-hint">已选 {selectedProjectAssetIds.length} 个</span>
                     </div>
+                    {promotionPlan && (
+                      <section className="material-source-panel">
+                        <div className="mini-heading">
+                          <strong>归档确认清单</strong>
+                          <span>逐项选择动作：引用只记录来源；发布写入学生汇总或成长模型；吸收会复制文件到学生原始资料库。</span>
+                        </div>
+                        <div className="archive-grid">
+                          <InfoPanel icon={<ListChecks />} title="清单条目" value={`${promotionPlan.items.length} 项`} />
+                          <InfoPanel icon={<UserRound />} title="目标学生" value={promotionPlan.students?.map((student) => student.name).join('、') || '未绑定'} />
+                          <InfoPanel icon={<Archive />} title="将执行" value={`${promotionPlan.items.filter((item) => item.action !== 'skip').length} 项`} />
+                        </div>
+                        <div className="download-list">
+                          {promotionPlan.items.map((item) => (
+                            <div className="download-item" key={item.id}>
+                              <span>
+                                <strong>{item.title}</strong>
+                                <small>{item.kind} · {item.targetHint || '目标待确认'}</small>
+                                <small>{item.sourcePath || item.assetId || item.content}</small>
+                              </span>
+                              <select value={item.action} onChange={(event) => updatePromotionPlanItemAction(item.id, event.target.value as PromotionAction)}>
+                                {item.allowedActions.map((action) => (
+                                  <option value={action} key={action}>
+                                    {action === 'reference' ? '引用' : action === 'publish' ? '发布' : action === 'absorb' ? '吸收' : '跳过'}
+                                  </option>
+                                ))}
+                              </select>
+                            </div>
+                          ))}
+                        </div>
+                      </section>
+                    )}
                     {promotionPreview && (
                       <div className="markdown-reader learning-report-reader">
                         <div className="reader-toolbar">

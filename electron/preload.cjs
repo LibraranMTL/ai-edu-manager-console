@@ -40,6 +40,12 @@ contextBridge.exposeInMainWorld('AndroidBridge', {
   generateProjectPromotion(projectId) {
     return ipcRenderer.sendSync('bridge:generateProjectPromotion', projectId);
   },
+  getProjectPromotionPlan(projectId) {
+    return ipcRenderer.sendSync('bridge:getProjectPromotionPlan', projectId);
+  },
+  executeProjectPromotionPlan(projectId, planJson) {
+    return ipcRenderer.sendSync('bridge:executeProjectPromotionPlan', projectId, planJson);
+  },
   publishProjectPromotion(projectId) {
     return ipcRenderer.sendSync('bridge:publishProjectPromotion', projectId);
   },

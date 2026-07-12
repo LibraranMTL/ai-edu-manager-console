@@ -23,7 +23,7 @@ let hostServiceLastError = '';
 let todayUploadCount = 0;
 let uploadCountDate = new Date().toISOString().slice(0, 10);
 
-const APP_VERSION = '0.7.1';
+const APP_VERSION = '0.7.2';
 const DEFAULT_HOST_PORT = 18777;
 const AGENT_TOOL_IDS = ['qclaw', 'marvis', 'hohu', 'openclaw', 'ima.copilot', 'workbuddy', 'codex', 'claude-code', 'chatgpt', 'claude', 'doubao', 'coze', 'fastgpt'];
 const WEB_AGENT_TOOL_URLS = {
@@ -1630,6 +1630,27 @@ function projectAgentTemplate(project, students) {
   return `# ${project.name} 项目教育管家 AGENT.md\n\n## 项目定位\n\n本目录是学习项目「${project.name}」的独立 LLM Wiki 知识空间，用于围绕项目资料进行消化、摘要、概念/实体抽取、问答沉淀和综合分析。\n\n## 绑定学生\n\n${studentLines}\n\n## 项目目录\n\n- 项目工作空间：${paths.workspacePath}\n- 项目原始资料库：${paths.rawPath}\n- 摘要库：${paths.summaryPath}\n- 概念库：${paths.conceptPath}\n- 实体库：${paths.entityPath}\n- 问答精华库：${paths.qaPath}\n- 综合汇总库：${paths.synthesisPath}\n- 项目报告：${paths.reportPath}\n- 知识贡献：${paths.contributionPath}\n\n## 工作规则\n\n1. 所有项目资料消化只围绕本项目知识空间执行，不要直接写入学生主档案。\n2. 只有在用户确认“知识贡献申请”后，才把项目结论发布到学生主档案或成长模型。\n3. 原始资料必须保留来源路径、资产编号或文件名，不要删除、移动用户原始文件。\n4. 每次资料消化后更新项目 index.md 和 log.md。\n5. 如果没有新增资料，请在 log.md 中记录“无新增项目资料”，不要重复生成摘要。\n\n## 可执行命令\n\n- /消化项目资料：读取「${paths.rawPath}」中的新资料，更新项目知识空间。\n- /生成知识贡献申请：基于项目知识空间生成「${path.join(paths.contributionPath, '知识贡献申请.md')}」。\n`;
 }
 
+function projectBindingIndexTemplate(project, students) {
+  const paths = projectPathsFor(project.name, project.projectRootPath);
+  const studentLines = (students || []).map((student) => [
+    `## ${student.name}`,
+    '',
+    `- 学生ID：${student.id}`,
+    `- 学生知识库：${student.rootPath || getStudentRootDir(student.name)}`,
+    `- 原始资料库：${student.rawPath || getRawDir(student.name)}`,
+    `- 学情分析汇总：${student.summaryPath || getSummaryDir(student.name)}`,
+  ].join('\n')).join('\n\n') || '暂无绑定学生。';
+  return `# ${project.name} 项目绑定学生\n\n更新时间：${new Date().toLocaleString('zh-CN')}\n\n本文件由控制台生成，用于记录学习项目当前绑定的学生。修改项目绑定学生时会更新本文件；不会自动覆盖 AGENT.md。\n\n## 项目路径\n\n- 项目知识空间：${paths.knowledgeRootPath}\n- 项目原始资料库：${paths.rawPath}\n- 知识贡献目录：${paths.contributionPath}\n\n## 绑定学生\n\n${studentLines}\n`;
+}
+
+function writeProjectBindingIndex(project) {
+  const normalized = normalizeProject(project);
+  const paths = projectPathsFor(normalized.name, normalized.projectRootPath);
+  fs.mkdirSync(paths.knowledgeRootPath, { recursive: true });
+  const students = readStudentsIndex().filter((student) => normalized.studentIds.includes(String(student.id)));
+  fs.writeFileSync(path.join(paths.knowledgeRootPath, '绑定学生.md'), projectBindingIndexTemplate(normalized, students), 'utf8');
+}
+
 function normalizeProject(project) {
   const cleanName = sanitizeName(project.name || '学习项目');
   const createdAt = project.createdAt || new Date().toISOString();
@@ -1681,6 +1702,7 @@ function ensureProjectWorkspace(project) {
   ].forEach((dir) => fs.mkdirSync(dir, { recursive: true }));
   const students = readStudentsIndex().filter((student) => normalized.studentIds.includes(String(student.id)));
   writeTextIfMissing(paths.agentPath, projectAgentTemplate(normalized, students));
+  writeProjectBindingIndex(normalized);
   writeTextIfMissing(path.join(paths.knowledgeRootPath, 'index.md'), `# ${normalized.name} 项目知识空间\n\n- 项目原始资料库：${paths.rawPath}\n- 综合汇总库：${paths.synthesisPath}\n- 知识贡献：${paths.contributionPath}\n`);
   writeTextIfMissing(path.join(paths.knowledgeRootPath, 'log.md'), `# ${normalized.name} 项目处理日志\n\n`);
   return { ...normalized, ...paths };
@@ -1738,6 +1760,48 @@ function updateProjectStatus(projectId, status) {
     return JSON.stringify({ ok: true, project: updated, projects: nextProjects, message: `项目状态已更新为：${nextStatus}` });
   } catch (error) {
     return JSON.stringify({ ok: false, message: `更新项目状态失败：${error.message}` });
+  }
+}
+
+function updateProjectStudents(projectId, studentIdsJson) {
+  try {
+    const parsed = JSON.parse(studentIdsJson || '[]');
+    const requestedIds = Array.isArray(parsed) ? parsed.map(String) : [];
+    const allStudents = readStudentsIndex();
+    const validIds = new Set(allStudents.map((student) => String(student.id)));
+    const studentIds = mergeUnique(requestedIds.filter((id) => validIds.has(id)));
+    const selectedStudents = allStudents.filter((student) => studentIds.includes(String(student.id)));
+    const now = new Date().toISOString();
+    const projects = readProjects().map(normalizeProject);
+    let updated = null;
+    const nextProjects = projects.map((project) => {
+      if (String(project.id) !== String(projectId)) return project;
+      updated = {
+        ...project,
+        studentIds,
+        studentNames: selectedStudents.map((student) => student.name),
+        updatedAt: now,
+      };
+      return updated;
+    });
+    if (!updated) return JSON.stringify({ ok: false, message: '未找到学习项目。' });
+    writeProjects(nextProjects);
+    ensureProjectWorkspace(updated);
+    writeProjectBindingIndex(updated);
+    appendHostTimeline({
+      type: 'project_students_updated',
+      title: 'Project students updated',
+      detail: `${updated.name} -> ${updated.studentNames.join('、') || '未绑定学生'}`,
+      count: updated.studentIds.length,
+    });
+    return JSON.stringify({
+      ok: true,
+      project: normalizeProject(updated),
+      projects: readProjects().map(normalizeProject),
+      message: `项目绑定学生已更新：${updated.studentNames.join('、') || '未绑定学生'}`,
+    });
+  } catch (error) {
+    return JSON.stringify({ ok: false, message: `更新项目绑定学生失败：${error.message}` });
   }
 }
 
@@ -5279,6 +5343,7 @@ ipcMain.on('bridge:rebuildAssetIndex', (event) => { licensedIpc(event, '资产�
 ipcMain.on('bridge:getProjects', (event) => { event.returnValue = getProjects(); });
 ipcMain.on('bridge:createProject', (event, optionsJson) => { licensedIpc(event, '学习项目创建', () => createProject(optionsJson)); });
 ipcMain.on('bridge:updateProjectStatus', (event, projectId, status) => { licensedIpc(event, '学习项目状态更新', () => updateProjectStatus(projectId, status)); });
+ipcMain.on('bridge:updateProjectStudents', (event, projectId, studentIdsJson) => { licensedIpc(event, '学习项目绑定学生', () => updateProjectStudents(projectId, studentIdsJson)); });
 ipcMain.on('bridge:importProjectAssets', (event, projectId, assetIdsJson) => { licensedIpc(event, '项目资料导入', () => importProjectAssets(projectId, assetIdsJson)); });
 ipcMain.on('bridge:generateProjectPromotion', (event, projectId) => { licensedIpc(event, '知识贡献申请', () => generateProjectPromotion(projectId)); });
 ipcMain.on('bridge:getProjectPromotionPlan', (event, projectId) => { licensedIpc(event, '归档确认清单', () => projectPromotionPlan(projectId)); });

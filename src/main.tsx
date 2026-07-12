@@ -261,6 +261,7 @@ type AndroidBridge = {
   getProjects?: () => string;
   createProject?: (optionsJson: string) => string;
   updateProjectStatus?: (projectId: string, status: string) => string;
+  updateProjectStudents?: (projectId: string, studentIdsJson: string) => string;
   importProjectAssets?: (projectId: string, assetIdsJson: string) => string;
   generateProjectPromotion?: (projectId: string) => string;
   getProjectPromotionPlan?: (projectId: string) => string;
@@ -616,8 +617,8 @@ const storageKey = 'edu-manager-launcher.students.v2';
 const themeStorageKey = 'edu-manager-launcher.theme.v1';
 const languageStorageKey = 'edu-manager-launcher.language.v1';
 const archiveKeywordStorageKey = 'edu-manager-launcher.archive-keywords.v1';
-const currentVersionCode = 81;
-const currentVersionName = '0.7.1';
+const currentVersionCode = 82;
+const currentVersionName = '0.7.2';
 const updateManifestUrl = [
   'https://www.greatbg.com/download/edu-manager-version.json',
   'http://www.greatbg.com/download/edu-manager-version.json',
@@ -3292,6 +3293,15 @@ function App() {
     setSelectedProjectAssetIds((current) => (current.includes(assetId) ? current.filter((item) => item !== assetId) : [...current, assetId]));
   };
 
+  const toggleProjectDraftStudent = (studentId: string) => {
+    setProjectDraft((current) => {
+      const next = current.studentIds.includes(studentId)
+        ? current.studentIds.filter((id) => id !== studentId)
+        : [...current.studentIds, studentId];
+      return { ...current, studentIds: next };
+    });
+  };
+
   const hostStudentStat = (student: Student) =>
     hostServiceStatus?.students?.find((item) => String(item.id) === String(student.id));
 
@@ -5285,6 +5295,29 @@ ${conversationText || '（请先粘贴对话历史）'}`;
       setProjectMessage(result.message || (result.ok ? '项目状态已更新。' : '项目状态更新失败。'));
     } catch {
       setProjectMessage('项目状态更新结果解析失败。');
+    }
+  };
+
+  const updateSelectedProjectStudents = (studentIds: string[]) => {
+    if (!selectedProjectId) {
+      setProjectMessage('请先选择学习项目。');
+      return;
+    }
+    const raw = bridge()?.updateProjectStudents?.(selectedProjectId, JSON.stringify(studentIds));
+    if (!raw) {
+      setProjectMessage('当前环境不支持更新项目绑定学生。');
+      return;
+    }
+    try {
+      const result = JSON.parse(raw) as { ok?: boolean; project?: LearningProject; projects?: LearningProject[]; message?: string };
+      if (Array.isArray(result.projects)) setProjects(result.projects);
+      if (result.project) setSelectedProjectId(result.project.id);
+      setPromotionPlan(null);
+      setPromotionPreview('');
+      setPromotionExecutionSummary('');
+      setProjectMessage(result.message || (result.ok ? '项目绑定学生已更新。' : '项目绑定学生更新失败。'));
+    } catch {
+      setProjectMessage('项目绑定学生更新结果解析失败。');
     }
   };
 
@@ -7337,18 +7370,19 @@ ${conversationText || '（请先粘贴对话历史）'}`;
                   项目类型
                   <input value={projectDraft.type} onChange={(event) => setProjectDraft((current) => ({ ...current, type: event.target.value }))} placeholder="学习项目 / 竞赛 / 升学 / 学科专题" />
                 </label>
-                <label>
-                  绑定学生
-                  <select
-                    value={projectDraft.studentIds[0] ?? ''}
-                    onChange={(event) => setProjectDraft((current) => ({ ...current, studentIds: event.target.value ? [event.target.value] : [] }))}
-                  >
-                    <option value="">请选择学生</option>
+                <div className="wide-field">
+                  <span>绑定学生（可多选）</span>
+                  <div className="student-checkbox-list compact">
                     {students.map((student) => (
-                      <option value={student.id} key={student.id}>{student.name}</option>
+                      <label className="student-checkbox" key={student.id}>
+                        <input type="checkbox" checked={projectDraft.studentIds.includes(student.id)} onChange={() => toggleProjectDraftStudent(student.id)} />
+                        <span>{student.name}</span>
+                      </label>
                     ))}
-                  </select>
-                </label>
+                    {students.length === 0 && <div className="empty-state compact">请先创建学生档案。</div>}
+                  </div>
+                  <small className="inline-hint">已选 {projectDraft.studentIds.length} 个学生；项目完成后可分别发布贡献到每个学生主档案。</small>
+                </div>
               </div>
               <div className="actions">
                 <button className="primary" onClick={createLearningProject}>
@@ -7433,6 +7467,27 @@ ${conversationText || '（请先粘贴对话历史）'}`;
                         <input readOnly value={selectedProject.publishedAt ? new Date(selectedProject.publishedAt).toLocaleString('zh-CN') : '尚未发布'} />
                       </label>
                     </div>
+                    <section className="material-source-panel">
+                      <div className="mini-heading">
+                        <strong>项目绑定学生</strong>
+                        <span>学习项目支持绑定多个学生。调整后会同步项目绑定索引，不会覆盖已经手工修改过的 AGENT.md。</span>
+                      </div>
+                      <div className="student-checkbox-list">
+                        {students.map((student) => {
+                          const nextIds = selectedProject.studentIds?.includes(student.id)
+                            ? selectedProject.studentIds.filter((id) => id !== student.id)
+                            : [...(selectedProject.studentIds ?? []), student.id];
+                          return (
+                            <label className="student-checkbox" key={student.id}>
+                              <input type="checkbox" checked={selectedProject.studentIds?.includes(student.id) ?? false} onChange={() => updateSelectedProjectStudents(nextIds)} />
+                              <span>{student.name}</span>
+                            </label>
+                          );
+                        })}
+                        {students.length === 0 && <div className="empty-state compact">暂无学生可绑定。</div>}
+                      </div>
+                      <small className="inline-hint">当前绑定：{selectedProject.studentNames?.join('、') || '未绑定学生'}</small>
+                    </section>
                     <div className="mini-heading">
                       <strong>从资产中心加入项目</strong>
                       <span>只建立资产引用并复制到项目原始资料库，不直接合并进学生主档案。</span>

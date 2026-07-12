@@ -986,6 +986,48 @@ select:focus {
   min-height: 86px;
 }
 
+.student-checkbox-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(128px, 1fr));
+  gap: 8px;
+  max-height: 170px;
+  overflow: auto;
+  padding: 8px;
+  border: 1px solid var(--panel-border);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.68);
+}
+
+.student-checkbox-list.compact {
+  max-height: 132px;
+}
+
+.student-checkbox {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding: 8px 10px;
+  border: 1px solid var(--panel-border);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.78);
+  color: var(--text-main);
+  font-weight: 800;
+}
+
+.student-checkbox input {
+  width: 17px;
+  height: 17px;
+  flex: 0 0 auto;
+}
+
+.student-checkbox span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .info-strip {
   display: flex;
   flex-wrap: wrap;

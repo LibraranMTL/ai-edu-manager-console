@@ -43,6 +43,15 @@ contextBridge.exposeInMainWorld('AndroidBridge', {
   importProjectAssets(projectId, assetIdsJson) {
     return ipcRenderer.sendSync('bridge:importProjectAssets', projectId, assetIdsJson);
   },
+  importProjectStagingFiles(projectId) {
+    return ipcRenderer.sendSync('bridge:importProjectStagingFiles', projectId);
+  },
+  updateProjectStagingStatus(projectId, itemIdsJson, status) {
+    return ipcRenderer.sendSync('bridge:updateProjectStagingStatus', projectId, itemIdsJson, status);
+  },
+  promoteProjectStagingItems(projectId, itemIdsJson) {
+    return ipcRenderer.sendSync('bridge:promoteProjectStagingItems', projectId, itemIdsJson);
+  },
   generateProjectPromotion(projectId) {
     return ipcRenderer.sendSync('bridge:generateProjectPromotion', projectId);
   },

@@ -1730,6 +1730,43 @@ pre {
   font-weight: 700;
 }
 
+.project-staging-list {
+  max-height: 300px;
+}
+
+.staging-item.discarded {
+  opacity: 0.68;
+}
+
+.staging-status-pill {
+  display: inline-flex !important;
+  width: fit-content;
+  margin-right: 6px;
+  padding: 2px 7px;
+  border-radius: 999px;
+  color: var(--accent-dark);
+  background: var(--accent-soft);
+  font-size: 11px !important;
+  font-style: normal;
+  font-weight: 900;
+}
+
+.staging-status-pill.promoted {
+  color: #087f5b;
+  background: rgba(16, 185, 129, 0.14);
+}
+
+.staging-status-pill.discarded {
+  color: #92400e;
+  background: rgba(251, 191, 36, 0.18);
+}
+
+.danger-soft {
+  color: #9f1239 !important;
+  border-color: rgba(244, 63, 94, 0.28) !important;
+  background: rgba(255, 241, 242, 0.78) !important;
+}
+
 .status-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));

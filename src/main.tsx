@@ -13,6 +13,7 @@ import {
   FileText,
   FolderOpen,
   Home,
+  Inbox,
   KeyRound,
   ListChecks,
   MessageCircle,
@@ -210,6 +211,7 @@ type LearningProject = {
   studentNames?: string[];
   projectRootPath: string;
   workspacePath: string;
+  stagingPath?: string;
   knowledgeRootPath: string;
   rawPath: string;
   summaryPath: string;
@@ -217,10 +219,29 @@ type LearningProject = {
   outputPath?: string;
   promotionPath?: string;
   assetIds?: string[];
+  stagingItems?: ProjectStagingItem[];
   createdAt?: string;
   updatedAt?: string;
   archivedAt?: string;
   publishedAt?: string;
+};
+
+type ProjectStagingStatus = 'collected' | 'screened' | 'selected' | 'analyzed' | 'promoted' | 'discarded';
+
+type ProjectStagingItem = {
+  id: string;
+  filename: string;
+  path: string;
+  size?: number;
+  type?: string;
+  sha1?: string;
+  status: ProjectStagingStatus | string;
+  sourceStrategy?: string;
+  sourcePath?: string;
+  addedAt?: string;
+  updatedAt?: string;
+  promotedAt?: string;
+  promotedAssetId?: string;
 };
 
 type PromotionAction = 'reference' | 'publish' | 'absorb' | 'skip';
@@ -263,6 +284,9 @@ type AndroidBridge = {
   updateProjectStatus?: (projectId: string, status: string) => string;
   updateProjectStudents?: (projectId: string, studentIdsJson: string) => string;
   importProjectAssets?: (projectId: string, assetIdsJson: string) => string;
+  importProjectStagingFiles?: (projectId: string) => string;
+  updateProjectStagingStatus?: (projectId: string, itemIdsJson: string, status: string) => string;
+  promoteProjectStagingItems?: (projectId: string, itemIdsJson: string) => string;
   generateProjectPromotion?: (projectId: string) => string;
   getProjectPromotionPlan?: (projectId: string) => string;
   executeProjectPromotionPlan?: (projectId: string, planJson: string) => string;
@@ -617,8 +641,8 @@ const storageKey = 'edu-manager-launcher.students.v2';
 const themeStorageKey = 'edu-manager-launcher.theme.v1';
 const languageStorageKey = 'edu-manager-launcher.language.v1';
 const archiveKeywordStorageKey = 'edu-manager-launcher.archive-keywords.v1';
-const currentVersionCode = 82;
-const currentVersionName = '0.7.2';
+const currentVersionCode = 83;
+const currentVersionName = '0.7.3';
 const updateManifestUrl = [
   'https://www.greatbg.com/download/edu-manager-version.json',
   'http://www.greatbg.com/download/edu-manager-version.json',
@@ -3029,6 +3053,7 @@ function App() {
   const [selectedProjectId, setSelectedProjectId] = useState('');
   const [projectDraft, setProjectDraft] = useState({ name: '', type: '学习项目', studentIds: [] as string[] });
   const [selectedProjectAssetIds, setSelectedProjectAssetIds] = useState<string[]>([]);
+  const [selectedProjectStagingIds, setSelectedProjectStagingIds] = useState<string[]>([]);
   const [promotionPreview, setPromotionPreview] = useState('');
   const [promotionPlan, setPromotionPlan] = useState<PromotionPlan | null>(null);
   const [promotionExecutionSummary, setPromotionExecutionSummary] = useState('');
@@ -3251,6 +3276,8 @@ function App() {
     const selectedAssetIds = new Set(selectedProject?.assetIds ?? []);
     return filteredAssets.filter((asset) => !selectedAssetIds.has(asset.assetId)).slice(0, 120);
   }, [filteredAssets, selectedProject?.assetIds]);
+  const projectStagingItems = selectedProject?.stagingItems ?? [];
+  const selectedProjectStagingItems = projectStagingItems.filter((item) => selectedProjectStagingIds.includes(item.id));
 
   const projectStatusLabel = (status?: string) => {
     if (status === 'draft') return '草稿';
@@ -3260,6 +3287,16 @@ function App() {
     if (status === 'published') return '已发布';
     if (status === 'sealed') return '已封存';
     return status || '进行中';
+  };
+
+  const projectStagingStatusLabel = (status?: string) => {
+    if (status === 'collected') return '已收集';
+    if (status === 'screened') return '已初筛';
+    if (status === 'selected') return '选入分析';
+    if (status === 'analyzed') return '已分析';
+    if (status === 'promoted') return '已晋升';
+    if (status === 'discarded') return '已归档/丢弃';
+    return status || '已收集';
   };
 
   const promotionActionLabel = (action?: PromotionAction | string) => {
@@ -3291,6 +3328,10 @@ function App() {
 
   const toggleProjectAsset = (assetId: string) => {
     setSelectedProjectAssetIds((current) => (current.includes(assetId) ? current.filter((item) => item !== assetId) : [...current, assetId]));
+  };
+
+  const toggleProjectStagingItem = (itemId: string) => {
+    setSelectedProjectStagingIds((current) => (current.includes(itemId) ? current.filter((item) => item !== itemId) : [...current, itemId]));
   };
 
   const toggleProjectDraftStudent = (studentId: string) => {
@@ -5207,6 +5248,79 @@ ${conversationText || '（请先粘贴对话历史）'}`;
       }
     } catch {
       setProjectMessage('项目资料导入结果解析失败。');
+    }
+  };
+
+  const importFilesToProjectStaging = () => {
+    if (!selectedProjectId) {
+      setProjectMessage('请先选择学习项目。');
+      return;
+    }
+    const raw = bridge()?.importProjectStagingFiles?.(selectedProjectId);
+    if (!raw) {
+      setProjectMessage('当前环境不支持项目研究暂存导入。');
+      return;
+    }
+    try {
+      const result = JSON.parse(raw) as { ok?: boolean; imported?: number; project?: LearningProject; projects?: LearningProject[]; message?: string };
+      if (Array.isArray(result.projects)) setProjects(result.projects);
+      if (result.project) setSelectedProjectId(result.project.id);
+      setProjectMessage(result.message || (result.ok ? '已导入研究暂存层。' : '导入研究暂存失败。'));
+      if (result.ok) setSelectedProjectStagingIds([]);
+    } catch {
+      setProjectMessage('研究暂存导入结果解析失败。');
+    }
+  };
+
+  const updateSelectedProjectStagingStatus = (status: ProjectStagingStatus) => {
+    if (!selectedProjectId) {
+      setProjectMessage('请先选择学习项目。');
+      return;
+    }
+    if (!selectedProjectStagingIds.length) {
+      setProjectMessage('请先选择暂存资料。');
+      return;
+    }
+    const raw = bridge()?.updateProjectStagingStatus?.(selectedProjectId, JSON.stringify(selectedProjectStagingIds), status);
+    if (!raw) {
+      setProjectMessage('当前环境不支持研究暂存状态更新。');
+      return;
+    }
+    try {
+      const result = JSON.parse(raw) as { ok?: boolean; project?: LearningProject; projects?: LearningProject[]; message?: string };
+      if (Array.isArray(result.projects)) setProjects(result.projects);
+      if (result.project) setSelectedProjectId(result.project.id);
+      setProjectMessage(result.message || (result.ok ? '暂存资料状态已更新。' : '暂存资料状态更新失败。'));
+    } catch {
+      setProjectMessage('暂存资料状态更新结果解析失败。');
+    }
+  };
+
+  const promoteSelectedProjectStagingItems = () => {
+    if (!selectedProjectId) {
+      setProjectMessage('请先选择学习项目。');
+      return;
+    }
+    if (!selectedProjectStagingIds.length) {
+      setProjectMessage('请先选择要晋升的暂存资料。');
+      return;
+    }
+    const raw = bridge()?.promoteProjectStagingItems?.(selectedProjectId, JSON.stringify(selectedProjectStagingIds));
+    if (!raw) {
+      setProjectMessage('当前环境不支持研究暂存晋升。');
+      return;
+    }
+    try {
+      const result = JSON.parse(raw) as { ok?: boolean; promoted?: number; skipped?: number; project?: LearningProject; projects?: LearningProject[]; message?: string };
+      if (Array.isArray(result.projects)) setProjects(result.projects);
+      if (result.project) setSelectedProjectId(result.project.id);
+      setProjectMessage(result.message || (result.ok ? '暂存资料已晋升。' : '暂存资料晋升失败。'));
+      if (result.ok) {
+        setSelectedProjectStagingIds([]);
+        refreshAssets();
+      }
+    } catch {
+      setProjectMessage('暂存资料晋升结果解析失败。');
     }
   };
 
@@ -7405,6 +7519,7 @@ ${conversationText || '（请先粘贴对话历史）'}`;
                     onClick={() => {
                       setSelectedProjectId(project.id);
                       setSelectedProjectAssetIds([]);
+                      setSelectedProjectStagingIds([]);
                       setPromotionPreview('');
                       setPromotionPlan(null);
                       setPromotionExecutionSummary('');
@@ -7487,6 +7602,59 @@ ${conversationText || '（请先粘贴对话历史）'}`;
                         {students.length === 0 && <div className="empty-state compact">暂无学生可绑定。</div>}
                       </div>
                       <small className="inline-hint">当前绑定：{selectedProject.studentNames?.join('、') || '未绑定学生'}</small>
+                    </section>
+                    <section className="material-source-panel">
+                      <div className="mini-heading">
+                        <strong>研究暂存层</strong>
+                        <span>先收集和筛选项目研究资料；晋升后才会进入正式文件资产中心和项目原始资料库。</span>
+                      </div>
+                      <div className="archive-grid">
+                        <InfoPanel icon={<Inbox />} title="暂存资料" value={`${projectStagingItems.length} 份`} />
+                        <InfoPanel icon={<ListChecks />} title="已选" value={`${selectedProjectStagingItems.length} 份`} />
+                        <InfoPanel icon={<FolderOpen />} title="暂存目录" value={selectedProject.stagingPath || `${selectedProject.workspacePath}\\研究暂存`} />
+                      </div>
+                      <div className="actions compact-actions">
+                        <button className="primary compact" onClick={importFilesToProjectStaging}>
+                          <FileDown size={16} />
+                          导入到研究暂存
+                        </button>
+                        <button className="secondary compact" onClick={() => updateSelectedProjectStagingStatus('screened')} disabled={selectedProjectStagingIds.length === 0}>
+                          标记初筛
+                        </button>
+                        <button className="secondary compact" onClick={() => updateSelectedProjectStagingStatus('selected')} disabled={selectedProjectStagingIds.length === 0}>
+                          选入分析
+                        </button>
+                        <button className="secondary compact" onClick={() => updateSelectedProjectStagingStatus('analyzed')} disabled={selectedProjectStagingIds.length === 0}>
+                          标记已分析
+                        </button>
+                        <button className="primary compact" onClick={promoteSelectedProjectStagingItems} disabled={selectedProjectStagingIds.length === 0}>
+                          晋升为正式资产
+                        </button>
+                        <button className="secondary compact danger-soft" onClick={() => updateSelectedProjectStagingStatus('discarded')} disabled={selectedProjectStagingIds.length === 0}>
+                          丢弃/归档
+                        </button>
+                      </div>
+                      <div className="download-list project-staging-list">
+                        {projectStagingItems.map((item) => (
+                          <label className={item.status === 'discarded' ? 'download-item staging-item discarded' : 'download-item staging-item'} key={item.id}>
+                            <input type="checkbox" checked={selectedProjectStagingIds.includes(item.id)} onChange={() => toggleProjectStagingItem(item.id)} />
+                            <span>
+                              <strong>{item.filename}</strong>
+                              <small>
+                                <em className={`staging-status-pill ${String(item.status || 'collected')}`}>{projectStagingStatusLabel(item.status)}</em>
+                                {item.type || 'file'} · {formatFileSize(item.size ?? 0)}
+                              </small>
+                              <small>{item.sourcePath || item.path}</small>
+                              {item.promotedAssetId && <small>资产编号：{item.promotedAssetId}</small>}
+                            </span>
+                          </label>
+                        ))}
+                        {projectStagingItems.length === 0 && (
+                          <div className="empty-state">
+                            还没有研究暂存资料。可先导入论文、网页快照、截图或候选资料，筛选后再晋升为正式资产。
+                          </div>
+                        )}
+                      </div>
                     </section>
                     <div className="mini-heading">
                       <strong>从资产中心加入项目</strong>

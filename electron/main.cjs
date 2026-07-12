@@ -23,7 +23,7 @@ let hostServiceLastError = '';
 let todayUploadCount = 0;
 let uploadCountDate = new Date().toISOString().slice(0, 10);
 
-const APP_VERSION = '0.7.2';
+const APP_VERSION = '0.7.3';
 const DEFAULT_HOST_PORT = 18777;
 const AGENT_TOOL_IDS = ['qclaw', 'marvis', 'hohu', 'openclaw', 'ima.copilot', 'workbuddy', 'codex', 'claude-code', 'chatgpt', 'claude', 'doubao', 'coze', 'fastgpt'];
 const WEB_AGENT_TOOL_URLS = {
@@ -1610,6 +1610,7 @@ function projectPathsFor(projectName, rootPath) {
   return {
     projectRootPath: root,
     workspacePath: path.join(root, '项目工作空间'),
+    stagingPath: path.join(root, '项目工作空间', '研究暂存'),
     knowledgeRootPath: path.join(root, '项目知识空间'),
     rawPath: path.join(root, '项目知识空间', `${cleanName}项目原始资料库`),
     conceptPath: path.join(root, '项目知识空间', '概念库'),
@@ -1651,6 +1652,51 @@ function writeProjectBindingIndex(project) {
   fs.writeFileSync(path.join(paths.knowledgeRootPath, '绑定学生.md'), projectBindingIndexTemplate(normalized, students), 'utf8');
 }
 
+function projectStagingStatusLabel(status) {
+  if (status === 'collected') return '已收集';
+  if (status === 'screened') return '已初筛';
+  if (status === 'selected') return '选入分析';
+  if (status === 'analyzed') return '已分析';
+  if (status === 'promoted') return '已晋升';
+  if (status === 'discarded') return '已归档/丢弃';
+  return status || '已收集';
+}
+
+function normalizeProjectStagingItem(item) {
+  const now = new Date().toISOString();
+  return {
+    id: String(item?.id || `staging-${Date.now()}-${crypto.randomBytes(3).toString('hex')}`),
+    filename: String(item?.filename || path.basename(String(item?.path || '暂存资料'))),
+    path: String(item?.path || ''),
+    size: Number(item?.size || 0),
+    type: String(item?.type || materialTypeForFile(item?.filename || item?.path || '')),
+    sha1: String(item?.sha1 || ''),
+    status: String(item?.status || 'collected'),
+    sourceStrategy: String(item?.sourceStrategy || 'full_copy'),
+    sourcePath: String(item?.sourcePath || ''),
+    addedAt: String(item?.addedAt || now),
+    updatedAt: String(item?.updatedAt || now),
+    promotedAt: String(item?.promotedAt || ''),
+    promotedAssetId: String(item?.promotedAssetId || ''),
+  };
+}
+
+function writeProjectStagingIndex(project) {
+  const normalized = normalizeProject(project);
+  const paths = projectPathsFor(normalized.name, normalized.projectRootPath);
+  fs.mkdirSync(paths.stagingPath, { recursive: true });
+  const items = (normalized.stagingItems || []).map(normalizeProjectStagingItem);
+  fs.writeFileSync(path.join(paths.stagingPath, 'staging-index.json'), JSON.stringify({
+    version: 1,
+    projectId: normalized.id,
+    projectName: normalized.name,
+    updatedAt: new Date().toISOString(),
+    items,
+  }, null, 2), 'utf8');
+  const rows = items.map((item) => `| ${item.filename} | ${projectStagingStatusLabel(item.status)} | ${item.type} | ${item.size} | ${item.path} |`).join('\n') || '| 暂无 | - | - | - | - |';
+  fs.writeFileSync(path.join(paths.stagingPath, '研究暂存清单.md'), `# ${normalized.name} 研究暂存清单\n\n> 暂存层用于收集和筛选项目研究资料；未晋升前不会进入正式文件资产中心。\n\n| 文件 | 状态 | 类型 | 大小 | 路径 |\n| --- | --- | --- | ---: | --- |\n${rows}\n`, 'utf8');
+}
+
 function normalizeProject(project) {
   const cleanName = sanitizeName(project.name || '学习项目');
   const createdAt = project.createdAt || new Date().toISOString();
@@ -1665,6 +1711,7 @@ function normalizeProject(project) {
     studentNames: Array.isArray(project.studentNames) ? project.studentNames.map(String) : [],
     projectRootPath: paths.projectRootPath,
     workspacePath: paths.workspacePath,
+    stagingPath: paths.stagingPath,
     knowledgeRootPath: paths.knowledgeRootPath,
     rawPath: paths.rawPath,
     summaryPath: paths.summaryPath,
@@ -1672,6 +1719,7 @@ function normalizeProject(project) {
     outputPath: paths.outputPath,
     promotionPath: project.promotionPath || path.join(paths.contributionPath, '知识贡献申请.md'),
     assetIds: Array.isArray(project.assetIds) ? project.assetIds.map(String) : [],
+    stagingItems: Array.isArray(project.stagingItems) ? project.stagingItems.map(normalizeProjectStagingItem) : [],
     createdAt,
     updatedAt: project.updatedAt || createdAt,
     archivedAt: project.archivedAt || '',
@@ -1685,6 +1733,7 @@ function ensureProjectWorkspace(project) {
   [
     projectsBaseDir(),
     paths.workspacePath,
+    paths.stagingPath,
     path.join(paths.workspacePath, '资料'),
     path.join(paths.workspacePath, '进展'),
     path.join(paths.workspacePath, '团队成员'),
@@ -1705,7 +1754,9 @@ function ensureProjectWorkspace(project) {
   writeProjectBindingIndex(normalized);
   writeTextIfMissing(path.join(paths.knowledgeRootPath, 'index.md'), `# ${normalized.name} 项目知识空间\n\n- 项目原始资料库：${paths.rawPath}\n- 综合汇总库：${paths.synthesisPath}\n- 知识贡献：${paths.contributionPath}\n`);
   writeTextIfMissing(path.join(paths.knowledgeRootPath, 'log.md'), `# ${normalized.name} 项目处理日志\n\n`);
-  return { ...normalized, ...paths };
+  const ensured = { ...normalized, ...paths };
+  writeProjectStagingIndex(ensured);
+  return ensured;
 }
 
 function getProjects() {
@@ -1824,6 +1875,7 @@ function importProjectAssets(projectId, assetIdsJson) {
       const target = uniqueTargetFile(ensured.rawPath, asset.filename || path.basename(asset.path));
       fs.copyFileSync(asset.path, target);
       const linked = upsertAssetFromFile(target, {
+        spaceType: 'project',
         projectId: project.id,
         projectName: project.name,
         sourcePath: asset.path,
@@ -1848,6 +1900,160 @@ function importProjectAssets(projectId, assetIdsJson) {
     });
   } catch (error) {
     return JSON.stringify({ ok: false, message: `导入项目资料失败：${error.message}` });
+  }
+}
+
+function updateProjectRecord(projectId, updater) {
+  const projects = readProjects().map(normalizeProject);
+  let updated = null;
+  const nextProjects = projects.map((project) => {
+    if (String(project.id) !== String(projectId)) return project;
+    updated = normalizeProject(updater(project));
+    return updated;
+  });
+  if (!updated) return { projects, project: null };
+  writeProjects(nextProjects);
+  writeProjectStagingIndex(updated);
+  return { projects: nextProjects, project: updated };
+}
+
+function importProjectStagingFiles(projectId) {
+  try {
+    const project = readProjects().map(normalizeProject).find((item) => String(item.id) === String(projectId));
+    if (!project) return JSON.stringify({ ok: false, message: '未找到学习项目。' });
+    const ensured = ensureProjectWorkspace(project);
+    const files = dialog.showOpenDialogSync(mainWindow, {
+      title: '导入到项目研究暂存',
+      properties: ['openFile', 'multiSelections'],
+      filters: [
+        { name: '学习资料', extensions: ['jpg', 'jpeg', 'png', 'webp', 'bmp', 'pdf', 'doc', 'docx', 'xls', 'xlsx', 'csv', 'ppt', 'pptx', 'txt', 'md', 'zip'] },
+        { name: '全部文件', extensions: ['*'] },
+      ],
+    });
+    if (!files || !files.length) return JSON.stringify({ ok: false, message: '未选择暂存资料。' });
+    const now = new Date().toISOString();
+    const imported = [];
+    for (const source of files) {
+      if (!source || !fs.existsSync(source)) continue;
+      const stat = fs.statSync(source);
+      if (!stat.isFile()) continue;
+      const target = uniqueTargetFile(ensured.stagingPath, path.basename(source));
+      fs.copyFileSync(source, target);
+      const sha1 = sha1File(target);
+      imported.push(normalizeProjectStagingItem({
+        id: `staging-${(sha1 || crypto.createHash('sha1').update(`${source}|${target}|${now}`).digest('hex')).slice(0, 12)}-${crypto.randomBytes(3).toString('hex')}`,
+        filename: path.basename(target),
+        path: target,
+        size: stat.size,
+        type: materialTypeForFile(target),
+        sha1,
+        status: 'collected',
+        sourceStrategy: 'full_copy',
+        sourcePath: source,
+        addedAt: now,
+        updatedAt: now,
+      }));
+    }
+    if (!imported.length) return JSON.stringify({ ok: false, message: '没有资料被导入暂存层。' });
+    const result = updateProjectRecord(project.id, (item) => ({
+      ...item,
+      stagingItems: [...(item.stagingItems || []), ...imported],
+      updatedAt: now,
+    }));
+    appendHostTimeline({ type: 'project_staging_imported', title: 'Project staging imported', detail: project.name, count: imported.length });
+    return JSON.stringify({
+      ok: true,
+      imported: imported.length,
+      project: result.project,
+      projects: result.projects,
+      message: `已导入 ${imported.length} 份资料到研究暂存层，暂未进入正式资产中心。`,
+    });
+  } catch (error) {
+    return JSON.stringify({ ok: false, message: `导入研究暂存失败：${error.message}` });
+  }
+}
+
+function updateProjectStagingStatus(projectId, itemIdsJson, status) {
+  try {
+    const allowed = new Set(['collected', 'screened', 'selected', 'analyzed', 'promoted', 'discarded']);
+    const nextStatus = allowed.has(String(status || '')) ? String(status) : 'collected';
+    const itemIds = JSON.parse(itemIdsJson || '[]');
+    if (!Array.isArray(itemIds) || !itemIds.length) return JSON.stringify({ ok: false, message: '请先选择暂存资料。' });
+    const now = new Date().toISOString();
+    const result = updateProjectRecord(projectId, (project) => ({
+      ...project,
+      stagingItems: (project.stagingItems || []).map((item) => itemIds.includes(item.id)
+        ? { ...item, status: nextStatus, updatedAt: now }
+        : item),
+      updatedAt: now,
+    }));
+    if (!result.project) return JSON.stringify({ ok: false, message: '未找到学习项目。' });
+    appendHostTimeline({ type: 'project_staging_status_updated', title: 'Project staging status updated', detail: `${result.project.name} -> ${nextStatus}`, count: itemIds.length });
+    return JSON.stringify({
+      ok: true,
+      updated: itemIds.length,
+      project: result.project,
+      projects: result.projects,
+      message: `已将 ${itemIds.length} 份暂存资料标记为：${projectStagingStatusLabel(nextStatus)}。`,
+    });
+  } catch (error) {
+    return JSON.stringify({ ok: false, message: `更新暂存资料状态失败：${error.message}` });
+  }
+}
+
+function promoteProjectStagingItems(projectId, itemIdsJson) {
+  try {
+    const itemIds = JSON.parse(itemIdsJson || '[]');
+    if (!Array.isArray(itemIds) || !itemIds.length) return JSON.stringify({ ok: false, message: '请先选择要晋升的暂存资料。' });
+    const project = readProjects().map(normalizeProject).find((item) => String(item.id) === String(projectId));
+    if (!project) return JSON.stringify({ ok: false, message: '未找到学习项目。' });
+    const ensured = ensureProjectWorkspace(project);
+    const now = new Date().toISOString();
+    const promoted = [];
+    const skipped = [];
+    const nextItems = (ensured.stagingItems || []).map((item) => {
+      if (!itemIds.includes(item.id)) return item;
+      if (!item.path || !fs.existsSync(item.path)) {
+        skipped.push(item.id);
+        return item;
+      }
+      const target = uniqueTargetFile(ensured.rawPath, item.filename || path.basename(item.path));
+      fs.copyFileSync(item.path, target);
+      const asset = upsertAssetFromFile(target, {
+        spaceType: 'project',
+        projectId: ensured.id,
+        projectName: ensured.name,
+        sourcePath: item.path,
+        sourceName: '研究暂存晋升',
+        role: 'project_raw_promoted',
+        referenceId: `${ensured.id}-${item.id}`,
+      });
+      if (asset) promoted.push(asset.assetId);
+      return {
+        ...item,
+        status: 'promoted',
+        promotedAssetId: asset?.assetId || item.promotedAssetId || '',
+        promotedAt: now,
+        updatedAt: now,
+      };
+    });
+    const result = updateProjectRecord(ensured.id, (item) => ({
+      ...item,
+      stagingItems: nextItems,
+      assetIds: mergeUnique([...(item.assetIds || []), ...promoted]),
+      updatedAt: now,
+    }));
+    appendHostTimeline({ type: 'project_staging_promoted', title: 'Project staging promoted', detail: ensured.name, count: promoted.length });
+    return JSON.stringify({
+      ok: promoted.length > 0,
+      promoted: promoted.length,
+      skipped: skipped.length,
+      project: result.project,
+      projects: result.projects,
+      message: promoted.length ? `已晋升 ${promoted.length} 份暂存资料为正式资产，并复制到项目原始资料库。` : '没有暂存资料被晋升。',
+    });
+  } catch (error) {
+    return JSON.stringify({ ok: false, message: `晋升暂存资料失败：${error.message}` });
   }
 }
 
@@ -5345,6 +5551,9 @@ ipcMain.on('bridge:createProject', (event, optionsJson) => { licensedIpc(event, 
 ipcMain.on('bridge:updateProjectStatus', (event, projectId, status) => { licensedIpc(event, '学习项目状态更新', () => updateProjectStatus(projectId, status)); });
 ipcMain.on('bridge:updateProjectStudents', (event, projectId, studentIdsJson) => { licensedIpc(event, '学习项目绑定学生', () => updateProjectStudents(projectId, studentIdsJson)); });
 ipcMain.on('bridge:importProjectAssets', (event, projectId, assetIdsJson) => { licensedIpc(event, '项目资料导入', () => importProjectAssets(projectId, assetIdsJson)); });
+ipcMain.on('bridge:importProjectStagingFiles', (event, projectId) => { licensedIpc(event, '项目研究暂存导入', () => importProjectStagingFiles(projectId)); });
+ipcMain.on('bridge:updateProjectStagingStatus', (event, projectId, itemIdsJson, status) => { licensedIpc(event, '项目研究暂存状态', () => updateProjectStagingStatus(projectId, itemIdsJson, status)); });
+ipcMain.on('bridge:promoteProjectStagingItems', (event, projectId, itemIdsJson) => { licensedIpc(event, '项目研究暂存晋升', () => promoteProjectStagingItems(projectId, itemIdsJson)); });
 ipcMain.on('bridge:generateProjectPromotion', (event, projectId) => { licensedIpc(event, '知识贡献申请', () => generateProjectPromotion(projectId)); });
 ipcMain.on('bridge:getProjectPromotionPlan', (event, projectId) => { licensedIpc(event, '归档确认清单', () => projectPromotionPlan(projectId)); });
 ipcMain.on('bridge:executeProjectPromotionPlan', (event, projectId, planJson) => { licensedIpc(event, '执行归档确认清单', () => executeProjectPromotionPlan(projectId, planJson)); });

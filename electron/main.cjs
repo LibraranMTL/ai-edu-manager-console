@@ -23,7 +23,7 @@ let hostServiceLastError = '';
 let todayUploadCount = 0;
 let uploadCountDate = new Date().toISOString().slice(0, 10);
 
-const APP_VERSION = '0.7.5';
+const APP_VERSION = '0.7.6';
 const DEFAULT_HOST_PORT = 18777;
 const AGENT_TOOL_IDS = ['qclaw', 'marvis', 'hohu', 'openclaw', 'ima.copilot', 'workbuddy', 'codex', 'claude-code', 'chatgpt', 'claude', 'doubao', 'coze', 'fastgpt'];
 const WEB_AGENT_TOOL_URLS = {
@@ -2350,6 +2350,33 @@ ${rowsFor(nextItems)}
   }
 }
 
+function mdCell(value) {
+  return String(value === undefined || value === null || value === '' ? '-' : value).replace(/\r?\n/g, ' ').replace(/\|/g, '/');
+}
+
+function projectStagingEvidenceItems(project) {
+  return (project.stagingItems || []).map(normalizeProjectStagingItem).filter((item) => (
+    ['selected', 'analyzed', 'promoted'].includes(item.status)
+    || /选入|晋升|分析|采用/.test(`${item.aiAction || ''}${item.governanceAction || ''}`)
+  ));
+}
+
+function stagingEvidenceContent(project, item) {
+  return [
+    `- 项目：${project.name}`,
+    `- 暂存资料：${item.filename}`,
+    `- 暂存状态：${projectStagingStatusLabel(item.status)}`,
+    `- AI建议：${item.aiAction || '待补充'}`,
+    `- AI理由：${item.aiReason || '待补充'}`,
+    `- 治理建议：${item.governanceAction || '待补充'}`,
+    `- 治理理由：${item.governanceReason || '待补充'}`,
+    `- 来源路径：${item.sourcePath || item.path || '-'}`,
+    `- 正式资产编号：${item.promotedAssetId || '尚未晋升'}`,
+    '- 支撑能力：待 Agent 或管理员确认',
+    '- 可信度：待人工确认',
+  ].join('\n');
+}
+
 function generateProjectPromotion(projectId) {
   try {
     const project = readProjects().map(normalizeProject).find((item) => String(item.id) === String(projectId));
@@ -2357,10 +2384,15 @@ function generateProjectPromotion(projectId) {
     const ensured = ensureProjectWorkspace(project);
     const students = readStudentsIndex().filter((student) => ensured.studentIds.includes(String(student.id)));
     const rawAssets = readAssetIndex().filter((asset) => (asset.references || []).some((ref) => ref.spaceType === 'project' && String(ref.spaceId) === String(ensured.id)));
+    const stagingEvidence = projectStagingEvidenceItems(ensured);
+    const governanceItems = (ensured.stagingItems || []).filter((item) => item.governanceAction || item.aiAction).map(normalizeProjectStagingItem);
     const today = new Date().toISOString().slice(0, 10);
     const studentTargets = students.map((student) => `- ${student.name}：${student.summaryPath || getSummaryDir(student.name)}；成长模型：${path.join(student.summaryPath || getSummaryDir(student.name), '成长模型')}`).join('\n') || '- 暂未绑定学生';
     const assetLines = rawAssets.map((asset) => `- [ ] ${asset.filename}（${asset.assetId}，${asset.type}，${asset.path}）`).join('\n') || '- [ ] 待补充项目资料资产。';
-    const content = `---\ntype: project_knowledge_promotion\nproject: ${ensured.name}\ncreated: ${today}\nstatus: draft\n---\n\n# ${ensured.name} 知识贡献申请\n\n## 绑定学生与目标位置\n\n${studentTargets}\n\n## 建议归档文件\n\n${assetLines}\n\n## 建议进入学生主档案的知识\n\n### 摘要\n\n- [ ] 待 AI 从项目摘要库中提取可进入学生主档案的摘要。\n\n### 概念\n\n- [ ] 待 AI 从项目概念库中提取可长期保留的概念。\n\n### 实体\n\n- [ ] 待 AI 从项目实体库中提取关键人物、机构、赛事或作品。\n\n### 问答精华\n\n- [ ] 待 AI 从项目问答精华库中提取可复用问答。\n\n### 综合结论\n\n- [ ] 待 AI 从项目综合汇总库中提取稳定结论。\n\n## 成长证据\n\n- [ ] 能力/兴趣/趋势：待补充。\n- 证据来源：${ensured.knowledgeRootPath}\n- 可信度：待人工确认。\n\n## 忽略项\n\n- [ ] 临时文件、重复文件、草稿或低价值材料。\n\n## 冲突提示\n\n- [ ] 是否与学生主档案已有结论冲突：待检查。\n\n## 人工确认动作\n\n请逐项选择：引用 / 发布 / 吸收 / 跳过。v1 不自动覆盖学生主档案，确认后再由管理员复制到对应学生知识库。\n`;
+    const stagingTable = stagingEvidence.map((item) => `| ${mdCell(item.filename)} | ${mdCell(projectStagingStatusLabel(item.status))} | ${mdCell(item.aiAction)} | ${mdCell(item.governanceAction)} | ${mdCell(item.promotedAssetId || '尚未晋升')} | ${mdCell(item.sourcePath || item.path)} |`).join('\n') || '| 暂无 | - | - | - | - | - |';
+    const governanceTable = governanceItems.map((item) => `| ${mdCell(item.filename)} | ${mdCell(projectStagingStatusLabel(item.status))} | ${mdCell(item.aiReason)} | ${mdCell(item.governanceReason)} | ${mdCell(item.sourcePath || item.path)} |`).join('\n') || '| 暂无 | - | - | - | - |';
+    const growthDraft = stagingEvidence.map((item) => `### ${item.filename}\n\n${stagingEvidenceContent(ensured, item)}`).join('\n\n') || '暂无可自动形成草稿的暂存资料。请先完成 AI 初筛、治理建议或晋升。';
+    const content = `---\ntype: project_knowledge_promotion\nproject: ${ensured.name}\ncreated: ${today}\nstatus: draft\n---\n\n# ${ensured.name} 知识贡献申请\n\n## 绑定学生与目标位置\n\n${studentTargets}\n\n## 建议归档文件\n\n${assetLines}\n\n## 研究暂存证据\n\n| 文件 | 状态 | AI建议 | 治理建议 | 资产编号 | 来源路径 |\n| --- | --- | --- | --- | --- | --- |\n${stagingTable}\n\n## AI 初筛与治理摘要\n\n| 文件 | 状态 | AI理由 | 治理理由 | 来源路径 |\n| --- | --- | --- | --- | --- |\n${governanceTable}\n\n## 建议进入学生主档案的知识\n\n### 摘要\n\n- [ ] 待 AI 从项目摘要库中提取可进入学生主档案的摘要。\n\n### 概念\n\n- [ ] 待 AI 从项目概念库中提取可长期保留的概念。\n\n### 实体\n\n- [ ] 待 AI 从项目实体库中提取关键人物、机构、赛事或作品。\n\n### 问答精华\n\n- [ ] 待 AI 从项目问答精华库中提取可复用问答。\n\n### 综合结论\n\n- [ ] 待 AI 从项目综合汇总库中提取稳定结论。\n\n## 成长证据草稿\n\n${growthDraft}\n\n## 忽略项\n\n- [ ] 临时文件、重复文件、草稿或低价值材料。\n\n## 冲突提示\n\n- [ ] 是否与学生主档案已有结论冲突：待检查。\n\n## 人工确认动作\n\n请逐项选择：引用 / 发布 / 吸收 / 跳过。v1 不自动覆盖学生主档案，确认后再由管理员复制到对应学生知识库。\n`;
     fs.mkdirSync(path.dirname(ensured.promotionPath), { recursive: true });
     fs.writeFileSync(ensured.promotionPath, content, 'utf8');
     appendHostTimeline({ type: 'project_promotion_generated', title: 'Project promotion generated', detail: ensured.name, count: rawAssets.length });
@@ -2377,6 +2409,7 @@ function projectPromotionPlan(projectId) {
     const ensured = ensureProjectWorkspace(project);
     const students = readStudentsIndex().filter((student) => ensured.studentIds.includes(String(student.id)));
     const rawAssets = readAssetIndex().filter((asset) => (asset.references || []).some((ref) => ref.spaceType === 'project' && String(ref.spaceId) === String(ensured.id)));
+    const stagingEvidence = projectStagingEvidenceItems(ensured).slice(0, 80);
     const items = [];
     for (const asset of rawAssets) {
       items.push({
@@ -2411,6 +2444,20 @@ function projectPromotionPlan(projectId) {
         allowedActions: ['publish', 'skip'],
         targetHint: item.targetHint,
         content: `${item.title}：请由 Agent 根据 ${item.sourcePath} 提取稳定内容后写入学生主档案。`,
+      });
+    }
+    for (const item of stagingEvidence) {
+      items.push({
+        id: `staging-growth-${item.id}`,
+        kind: 'growth',
+        title: `成长证据草稿：${item.filename}`,
+        sourcePath: item.sourcePath || item.path || '',
+        assetId: item.promotedAssetId || '',
+        defaultAction: 'publish',
+        action: 'publish',
+        allowedActions: ['publish', 'skip'],
+        targetHint: '学生成长模型 / 成长证据草稿',
+        content: stagingEvidenceContent(ensured, item),
       });
     }
     return JSON.stringify({
@@ -2452,8 +2499,12 @@ function executeProjectPromotionPlan(projectId, planJson) {
       const growth = ensureGrowthModelForStudent(student);
       const archiveRecordFile = path.join(summaryPath, '项目归档记录.md');
       const contributionSummaryFile = path.join(summaryPath, '项目贡献汇总.md');
+      const contributionDetailFile = path.join(summaryPath, '项目贡献明细.md');
+      const growthDraftFile = path.join(growth.dir, '成长证据草稿.md');
       writeTextIfMissing(archiveRecordFile, `# ${student.name} 项目归档记录\n\n| 时间 | 项目 | 条目 | 类型 | 动作 | 来源 | 目标 |\n| --- | --- | --- | --- | --- | --- | --- |\n`);
       writeTextIfMissing(contributionSummaryFile, `# ${student.name} 项目贡献汇总\n\n记录已发布到学生主档案的学习项目知识贡献。\n\n| 日期 | 项目 | 贡献内容 | 动作 | 来源路径 |\n| --- | --- | --- | --- | --- |\n`);
+      writeTextIfMissing(contributionDetailFile, `# ${student.name} 项目贡献明细\n\n记录项目归档确认清单的逐项处理结果，便于回溯来源、目标和动作。\n\n| 日期 | 项目 | 类型 | 条目 | 动作 | 来源路径 | 目标 |\n| --- | --- | --- | --- | --- | --- | --- |\n`);
+      writeTextIfMissing(growthDraftFile, `# ${student.name} 成长证据草稿\n\n本文件收集来自项目知识贡献申请和研究暂存层的候选成长证据，需由 Agent 或管理员确认后再沉淀为稳定成长模型。\n\n`);
       for (const rawItem of items) {
         const item = {
           id: String(rawItem.id || ''),
@@ -2467,6 +2518,7 @@ function executeProjectPromotionPlan(projectId, planJson) {
         if (item.action === 'skip') {
           const line = `| ${now} | ${ensured.name} | ${item.title} | ${item.kind} | 跳过 | ${item.sourcePath || item.assetId || '-'} | - |`;
           fs.appendFileSync(archiveRecordFile, `${line}\n`, 'utf8');
+          fs.appendFileSync(contributionDetailFile, `| ${today} | ${mdCell(ensured.name)} | ${mdCell(item.kind)} | ${mdCell(item.title)} | 跳过 | ${mdCell(item.sourcePath || item.assetId || '-')} | - |\n`, 'utf8');
           fs.appendFileSync(executionLog, `| ${now} | ${student.name} | ${item.title} | ${item.kind} | 跳过 | ${item.sourcePath || item.assetId || '-'} | - |\n`, 'utf8');
           results.push({ studentId: student.id, itemId: item.id, action: 'skip', target: '' });
           continue;
@@ -2490,6 +2542,7 @@ function executeProjectPromotionPlan(projectId, planJson) {
           });
         } else if (item.kind === 'growth' && item.action === 'publish') {
           target = path.join(growth.dir, '成长证据.md');
+          appendTextSection(growthDraftFile, `${ensured.name} · ${item.title} · ${today}`, `${item.content}\n\n来源：${item.sourcePath || ensured.knowledgeRootPath}\n动作：成长证据草稿\n状态：待确认`);
           appendTextSection(target, `${ensured.name} · ${item.title} · ${today}`, `${item.content}\n\n来源：${item.sourcePath || ensured.knowledgeRootPath}\n动作：发布\n可信度：待人工确认`);
         } else if (item.action === 'publish') {
           target = contributionSummaryFile;
@@ -2503,6 +2556,7 @@ function executeProjectPromotionPlan(projectId, planJson) {
         const source = item.sourcePath || item.assetId || ensured.knowledgeRootPath;
         const line = `| ${now} | ${ensured.name} | ${item.title} | ${item.kind} | ${actionLabel} | ${source} | ${target || '-'} |`;
         fs.appendFileSync(archiveRecordFile, `${line}\n`, 'utf8');
+        fs.appendFileSync(contributionDetailFile, `| ${today} | ${mdCell(ensured.name)} | ${mdCell(item.kind)} | ${mdCell(item.title)} | ${mdCell(actionLabel)} | ${mdCell(source)} | ${mdCell(target || '-')} |\n`, 'utf8');
         fs.appendFileSync(executionLog, `| ${now} | ${student.name} | ${item.title} | ${item.kind} | ${actionLabel} | ${source} | ${target || '-'} |\n`, 'utf8');
         if (item.action === 'publish' || item.action === 'absorb') {
           appendTextSection(path.join(growth.dir, '项目贡献.md'), `${ensured.name} · ${item.title} · ${today}`, `- 动作：${actionLabel}\n- 来源：${source}\n- 目标：${target || '-'}\n- 内容：${item.content}`);
@@ -2545,12 +2599,17 @@ function publishProjectPromotion(projectId) {
       const growth = ensureGrowthModelForStudent(student);
       const summaryPath = student.summaryPath || getSummaryDir(student.name);
       const projectSummaryFile = path.join(summaryPath, '项目贡献汇总.md');
+      const projectDetailFile = path.join(summaryPath, '项目贡献明细.md');
+      const growthDraftFile = path.join(growth.dir, '成长证据草稿.md');
       const projectLine = `| ${today} | ${ensured.name} | 知识贡献申请已发布，等待 Agent 或管理员逐项整理 | 发布 | ${promotionPath} |`;
       const evidenceLine = `| ${today} | ${ensured.name} 知识贡献申请已发布 | ${promotionPath} | 待标注 | 待确认 |`;
       appendTextSection(path.join(growth.dir, '项目贡献.md'), `${ensured.name} 发布记录 ${today}`, `${projectLine}\n\n来源项目知识空间：${ensured.knowledgeRootPath}`);
+      appendTextSection(growthDraftFile, `${ensured.name} 成长证据草稿 ${today}`, `- 来源项目：${ensured.name}\n- 贡献申请：${promotionPath}\n- 暂存治理建议：${path.join(ensured.stagingPath, '研究暂存治理建议.md')}\n- 状态：待 Agent 或管理员从贡献申请中提取具体能力、兴趣、趋势和证据。\n`);
       appendTextSection(path.join(growth.dir, '成长证据.md'), `${ensured.name} 成长证据 ${today}`, `${evidenceLine}\n\n请后续由 Agent 根据贡献申请提取具体能力、兴趣、趋势和证据。`);
       writeTextIfMissing(projectSummaryFile, `# ${student.name} 项目贡献汇总\n\n记录已发布到学生主档案的学习项目知识贡献。\n\n| 日期 | 项目 | 贡献内容 | 动作 | 来源路径 |\n| --- | --- | --- | --- | --- |\n`);
+      writeTextIfMissing(projectDetailFile, `# ${student.name} 项目贡献明细\n\n记录项目归档确认清单的逐项处理结果，便于回溯来源、目标和动作。\n\n| 日期 | 项目 | 类型 | 条目 | 动作 | 来源路径 | 目标 |\n| --- | --- | --- | --- | --- | --- | --- |\n`);
       fs.appendFileSync(projectSummaryFile, `${projectLine}\n`, 'utf8');
+      fs.appendFileSync(projectDetailFile, `| ${today} | ${mdCell(ensured.name)} | promotion | 知识贡献申请已发布 | 发布 | ${mdCell(promotionPath)} | ${mdCell(growth.dir)} |\n`, 'utf8');
       published.push({ studentId: student.id, studentName: student.name, growthDir: growth.dir, projectSummaryFile });
     }
     const nextProjects = projects.map((item) => String(item.id) === String(ensured.id)
@@ -2639,7 +2698,7 @@ function ensureGrowthModelForStudent(student) {
   const files = [
     {
       name: 'index.md',
-      content: `# ${student.name} 成长模型\n\n本目录记录学生能力、兴趣、趋势、证据来源和项目贡献来源。学情报告优先引用这里的稳定结论。\n\n- 能力画像：能力画像.md\n- 成长证据：成长证据.md\n- 项目贡献：项目贡献.md\n`,
+      content: `# ${student.name} 成长模型\n\n本目录记录学生能力、兴趣、趋势、证据来源和项目贡献来源。学情报告优先引用这里的稳定结论。\n\n- 能力画像：能力画像.md\n- 成长证据：成长证据.md\n- 成长证据草稿：成长证据草稿.md\n- 项目贡献：项目贡献.md\n`,
     },
     {
       name: '能力画像.md',
@@ -2648,6 +2707,10 @@ function ensureGrowthModelForStudent(student) {
     {
       name: '成长证据.md',
       content: `# ${student.name} 成长证据\n\n| 日期 | 证据 | 来源资料/项目 | 支撑能力 | 可信度 |\n| --- | --- | --- | --- | --- |\n| 待补充 | 待补充 | 待补充 | 待补充 | 待确认 |\n`,
+    },
+    {
+      name: '成长证据草稿.md',
+      content: `# ${student.name} 成长证据草稿\n\n本文件收集来自项目知识贡献申请和研究暂存层的候选成长证据，需由 Agent 或管理员确认后再沉淀为稳定成长模型。\n`,
     },
     {
       name: '项目贡献.md',

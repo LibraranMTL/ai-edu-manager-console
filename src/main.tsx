@@ -652,8 +652,8 @@ const storageKey = 'edu-manager-launcher.students.v2';
 const themeStorageKey = 'edu-manager-launcher.theme.v1';
 const languageStorageKey = 'edu-manager-launcher.language.v1';
 const archiveKeywordStorageKey = 'edu-manager-launcher.archive-keywords.v1';
-const currentVersionCode = 85;
-const currentVersionName = '0.7.5';
+const currentVersionCode = 86;
+const currentVersionName = '0.7.6';
 const updateManifestUrl = [
   'https://www.greatbg.com/download/edu-manager-version.json',
   'http://www.greatbg.com/download/edu-manager-version.json',
@@ -3303,8 +3303,16 @@ function App() {
   const selectedProjectStagingItems = projectStagingItems.filter((item) => selectedProjectStagingIds.includes(item.id));
   const projectStagingGovernanceStats = useMemo(() => {
     const duplicateCount = projectStagingItems.filter((item) => Number(item.duplicateCount ?? 1) > 1).length;
-    const actionCount = projectStagingItems.filter((item) => item.governanceAction && !String(item.governanceAction).includes('无需处理')).length;
-    return { duplicateCount, actionCount };
+    const governanceCandidateIds = projectStagingItems
+      .filter((item) => item.governanceAction && !String(item.governanceAction).includes('无需处理'))
+      .map((item) => item.id);
+    const promotionCandidateIds = projectStagingItems
+      .filter((item) => (
+        ['selected', 'analyzed', 'promoted'].includes(String(item.status))
+        || /选入|晋升|分析|采用/.test(`${item.aiAction || ''}${item.governanceAction || ''}`)
+      ))
+      .map((item) => item.id);
+    return { duplicateCount, actionCount: governanceCandidateIds.length, governanceCandidateIds, promotionCandidateIds };
   }, [projectStagingItems]);
 
   const projectStatusLabel = (status?: string) => {
@@ -3349,7 +3357,7 @@ function App() {
     return [
       `目标学生：${targets}`,
       `将发布：${publishCount} 项；引用：${referenceCount} 项；吸收复制：${copyCount} 个文件；跳过：${skipCount} 项。`,
-      '将写入：学生综合汇总目录的项目归档记录/项目贡献汇总、学生成长模型的项目贡献/成长证据，以及项目知识空间的归档执行日志。',
+      '将写入：学生综合汇总目录的项目归档记录/项目贡献汇总/项目贡献明细、学生成长模型的项目贡献/成长证据/成长证据草稿，以及项目知识空间的归档执行日志。',
       counts.absorb ? '吸收动作会复制物理文件到学生原始资料库，并登记新的资产引用。' : '',
     ].filter(Boolean).join('\n');
   }, [promotionPlan]);
@@ -3364,6 +3372,14 @@ function App() {
 
   const selectVisibleProjectStagingItems = () => {
     setSelectedProjectStagingIds(filteredProjectStagingItems.map((item) => item.id));
+  };
+
+  const selectProjectGovernanceCandidates = () => {
+    setSelectedProjectStagingIds(projectStagingGovernanceStats.governanceCandidateIds);
+  };
+
+  const selectProjectPromotionCandidates = () => {
+    setSelectedProjectStagingIds(projectStagingGovernanceStats.promotionCandidateIds);
   };
 
   const toggleProjectDraftStudent = (studentId: string) => {
@@ -7787,6 +7803,12 @@ ${JSON.stringify(items, null, 2)}
                         </button>
                         <button className="secondary compact" onClick={selectVisibleProjectStagingItems} disabled={filteredProjectStagingItems.length === 0}>
                           选择当前筛选
+                        </button>
+                        <button className="secondary compact" onClick={selectProjectGovernanceCandidates} disabled={projectStagingGovernanceStats.governanceCandidateIds.length === 0}>
+                          选择治理候选
+                        </button>
+                        <button className="secondary compact" onClick={selectProjectPromotionCandidates} disabled={projectStagingGovernanceStats.promotionCandidateIds.length === 0}>
+                          选择待晋升
                         </button>
                         <button className="secondary compact" onClick={() => setSelectedProjectStagingIds([])} disabled={selectedProjectStagingIds.length === 0}>
                           清空选择

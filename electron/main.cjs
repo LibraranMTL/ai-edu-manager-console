@@ -23,7 +23,7 @@ let hostServiceLastError = '';
 let todayUploadCount = 0;
 let uploadCountDate = new Date().toISOString().slice(0, 10);
 
-const APP_VERSION = '0.7.12';
+const APP_VERSION = '0.7.13';
 const DEFAULT_HOST_PORT = 18777;
 const AGENT_TOOL_IDS = ['qclaw', 'marvis', 'hohu', 'openclaw', 'ima.copilot', 'workbuddy', 'codex', 'claude-code', 'chatgpt', 'claude', 'doubao', 'coze', 'fastgpt'];
 const WEB_AGENT_TOOL_URLS = {
@@ -50,6 +50,8 @@ const hostTimelinePath = () => path.join(app.getPath('userData'), 'host-timeline
 const assetIndexPath = () => path.join(app.getPath('userData'), 'asset-index.json');
 const assetGovernanceReportPath = () => path.join(app.getPath('userData'), 'asset-governance-report.md');
 const projectsPath = () => path.join(app.getPath('userData'), 'projects.json');
+const knowledgeGraphReportPath = () => path.join(app.getPath('userData'), 'knowledge-graph-report.md');
+const projectContributionAuditPath = () => path.join(app.getPath('userData'), 'project-contribution-audit.md');
 const LICENSE_SIGNING_SECRET = 'ai-edu-manager-offline-license-v1';
 let activePairSession = null;
 
@@ -2835,6 +2837,193 @@ ${rowsFor(nextItems)}
 
 function mdCell(value) {
   return String(value === undefined || value === null || value === '' ? '-' : value).replace(/\r?\n/g, ' ').replace(/\|/g, '/');
+}
+
+function reportProjectStatusLabel(status) {
+  if (status === 'draft') return '草稿';
+  if (status === 'active') return '进行中';
+  if (status === 'pending_archive') return '待归档';
+  if (status === 'archived') return '已归档';
+  if (status === 'published') return '已发布';
+  if (status === 'sealed') return '已封存';
+  return status || '进行中';
+}
+
+function graphNodeId(prefix, value) {
+  return `${prefix}_${crypto.createHash('sha1').update(String(value || prefix)).digest('hex').slice(0, 10)}`;
+}
+
+function graphLabel(value) {
+  return String(value === undefined || value === null || value === '' ? '-' : value)
+    .replace(/\\/g, '\\\\')
+    .replace(/"/g, '\\"')
+    .replace(/\r?\n/g, ' ');
+}
+
+function generateKnowledgeArchitectureReport() {
+  try {
+    const generatedAt = new Date().toISOString();
+    const students = readStudentsIndex();
+    const projects = readProjects().map(normalizeProject);
+    const assetSummary = assetIndexSummary();
+    const assets = Array.isArray(assetSummary.assets) ? assetSummary.assets : [];
+    const studentsById = new Map(students.map((student) => [String(student.id), student]));
+    const assetsById = new Map(assets.map((asset) => [String(asset.assetId), asset]));
+    const projectAssetRefs = projects.reduce((total, project) => total + (project.assetIds || []).length, 0);
+    const stagingItems = projects.flatMap((project) => (project.stagingItems || []).map((item) => ({ project, item: normalizeProjectStagingItem(item) })));
+    const promotedStagingCount = stagingItems.filter(({ item }) => item.status === 'promoted' || item.promotedAssetId).length;
+    const aiScreenedCount = stagingItems.filter(({ item }) => item.aiAction || item.aiReason).length;
+    const publishedProjects = projects.filter((project) => project.publishedAt || project.status === 'published');
+    const archivedProjects = projects.filter((project) => project.archivedAt || project.status === 'archived');
+    const unboundProjects = projects.filter((project) => !project.studentIds.length);
+    const projectWithoutAssets = projects.filter((project) => !(project.assetIds || []).length && !(project.stagingItems || []).some((item) => item.promotedAssetId));
+    const stalePromotionProjects = projects.filter((project) => ['pending_archive', 'archived'].includes(project.status) && !project.publishedAt);
+
+    const projectRows = projects.map((project) => {
+      const studentNames = project.studentIds.map((id) => studentsById.get(String(id))?.name || id).join('、') || project.studentNames?.join('、') || '未绑定';
+      return `| ${mdCell(project.name)} | ${mdCell(project.type)} | ${mdCell(reportProjectStatusLabel(project.status))} | ${mdCell(studentNames)} | ${(project.assetIds || []).length} | ${(project.stagingItems || []).length} | ${project.promotionPath ? '是' : '否'} | ${project.publishedAt ? '是' : '否'} |`;
+    }).join('\n') || '| 暂无 | - | - | - | - | - | - | - |';
+
+    const assetRows = projects.flatMap((project) => (project.assetIds || []).map((assetId) => {
+      const asset = assetsById.get(String(assetId));
+      return `| ${mdCell(project.name)} | ${mdCell(asset?.filename || assetId)} | ${mdCell(asset?.type || '-')} | ${mdCell(asset?.ownerStudentName || '-')} | ${mdCell(asset?.path || '-')} |`;
+    })).join('\n') || '| 暂无 | - | - | - | - |';
+
+    const stagingRows = stagingItems.map(({ project, item }) => `| ${mdCell(project.name)} | ${mdCell(item.filename)} | ${mdCell(projectStagingStatusLabel(item.status))} | ${mdCell(item.aiAction)} | ${mdCell(item.governanceAction)} | ${mdCell(item.promotedAssetId)} | ${mdCell(item.sourcePath || item.path)} |`).join('\n') || '| 暂无 | - | - | - | - | - | - |';
+
+    const riskRows = [
+      ...unboundProjects.map((project) => `| 未绑定学生 | ${mdCell(project.name)} | 项目尚未绑定学生，无法发布到学生成长模型。 |`),
+      ...projectWithoutAssets.map((project) => `| 无正式资产 | ${mdCell(project.name)} | 项目没有正式资产引用，也没有已晋升暂存资料。 |`),
+      ...stalePromotionProjects.map((project) => `| 待发布贡献 | ${mdCell(project.name)} | 项目处于 ${mdCell(reportProjectStatusLabel(project.status))}，但尚未发布到成长模型。 |`),
+    ].join('\n') || '| 暂无明显风险 | - | - |';
+
+    const nodeLines = new Map();
+    const edgeLines = [];
+    const addNode = (id, label) => nodeLines.set(id, `  ${id}["${graphLabel(label)}"]`);
+    const addEdge = (from, label, to) => {
+      if (edgeLines.length < 180) edgeLines.push(`  ${from} -->|"${graphLabel(label)}"| ${to}`);
+    };
+    for (const student of students.slice(0, 80)) {
+      addNode(graphNodeId('student', student.id), `学生：${student.name}`);
+    }
+    for (const project of projects.slice(0, 80)) {
+      const projectNode = graphNodeId('project', project.id);
+      addNode(projectNode, `项目：${project.name}`);
+      for (const studentId of (project.studentIds || []).slice(0, 12)) {
+        const student = studentsById.get(String(studentId));
+        const studentNode = graphNodeId('student', studentId);
+        addNode(studentNode, `学生：${student?.name || studentId}`);
+        addEdge(studentNode, '绑定项目', projectNode);
+      }
+      for (const assetId of (project.assetIds || []).slice(0, 20)) {
+        const asset = assetsById.get(String(assetId));
+        const assetNode = graphNodeId('asset', assetId);
+        addNode(assetNode, `资产：${asset?.filename || assetId}`);
+        addEdge(projectNode, '引用资产', assetNode);
+      }
+      if (project.publishedAt || project.status === 'published') {
+        const growthNode = graphNodeId('growth', project.id);
+        addNode(growthNode, `成长沉淀：${project.name}`);
+        addEdge(projectNode, '发布贡献', growthNode);
+      }
+    }
+    const mermaid = [
+      '```mermaid',
+      'graph LR',
+      ...Array.from(nodeLines.values()),
+      ...edgeLines,
+      '```',
+    ].join('\n');
+
+    const graphReport = `# 教育管家知识关系图 v1
+
+生成时间：${generatedAt}
+
+> 本报告由 Windows 主机控制台生成，用于把学生、学习项目、文件资产、研究暂存层和知识贡献之间的关系可视化。报告只读生成，不会自动修改任何学生档案、项目或资产文件。
+
+## 总览
+
+| 指标 | 数量 |
+| --- | ---: |
+| 学生 | ${students.length} |
+| 学习项目 | ${projects.length} |
+| 文件资产 | ${assets.length} |
+| 项目资产引用 | ${projectAssetRefs} |
+| 研究暂存资料 | ${stagingItems.length} |
+| AI 初筛资料 | ${aiScreenedCount} |
+| 已晋升暂存资料 | ${promotedStagingCount} |
+| 已归档项目 | ${archivedProjects.length} |
+| 已发布项目 | ${publishedProjects.length} |
+
+## 关系图
+
+${mermaid}
+`;
+
+    const auditReport = `# 项目贡献审计索引
+
+生成时间：${generatedAt}
+
+## 项目清单
+
+| 项目 | 类型 | 状态 | 绑定学生 | 正式资产 | 暂存资料 | 贡献申请 | 已发布 |
+| --- | --- | --- | --- | ---: | ---: | --- | --- |
+${projectRows}
+
+## 项目资产引用
+
+| 项目 | 资产 | 类型 | 所属学生 | 路径 |
+| --- | --- | --- | --- | --- |
+${assetRows}
+
+## 研究暂存与晋升
+
+| 项目 | 暂存资料 | 状态 | AI建议 | 治理建议 | 晋升资产 | 来源路径 |
+| --- | --- | --- | --- | --- | --- | --- |
+${stagingRows}
+
+## 风险与待办
+
+| 类型 | 对象 | 建议 |
+| --- | --- | --- |
+${riskRows}
+
+## 审计说明
+
+- “引用资产”表示项目知识空间使用文件资产，但不代表已经进入学生主档案。
+- “发布贡献”表示项目贡献已经发布到学生综合汇总或成长模型相关索引。
+- “研究暂存”是候选资料层，未晋升前不应视为正式文件资产。
+`;
+
+    fs.mkdirSync(path.dirname(knowledgeGraphReportPath()), { recursive: true });
+    fs.writeFileSync(knowledgeGraphReportPath(), graphReport, 'utf8');
+    fs.writeFileSync(projectContributionAuditPath(), auditReport, 'utf8');
+    appendHostTimeline({
+      type: 'knowledge_graph_report_generated',
+      title: 'Knowledge graph report generated',
+      detail: `${projects.length} projects · ${assets.length} assets`,
+      count: projects.length,
+    });
+    return JSON.stringify({
+      ok: true,
+      reportPath: knowledgeGraphReportPath(),
+      auditPath: projectContributionAuditPath(),
+      content: `${graphReport}\n\n---\n\n${auditReport}`,
+      summary: {
+        students: students.length,
+        projects: projects.length,
+        assets: assets.length,
+        projectAssetRefs,
+        stagingItems: stagingItems.length,
+        aiScreenedCount,
+        promotedStagingCount,
+        publishedProjects: publishedProjects.length,
+      },
+      message: `已生成知识关系图和项目贡献审计索引：${knowledgeGraphReportPath()}`,
+    });
+  } catch (error) {
+    return JSON.stringify({ ok: false, message: `生成知识关系图失败：${error.message}` });
+  }
 }
 
 function projectStagingEvidenceItems(project) {
@@ -6397,6 +6586,7 @@ ipcMain.on('bridge:getMaterialImportRecords', (event, studentId) => { event.retu
 ipcMain.on('bridge:getAssetIndex', (event) => { event.returnValue = JSON.stringify(assetIndexSummary()); });
 ipcMain.on('bridge:rebuildAssetIndex', (event) => { licensedIpc(event, '资产索引补建', () => rebuildAssetIndex()); });
 ipcMain.on('bridge:analyzeAssetGovernance', (event) => { licensedIpc(event, '资产治理建议', () => analyzeAssetGovernance()); });
+ipcMain.on('bridge:generateKnowledgeArchitectureReport', (event) => { licensedIpc(event, '知识关系图生成', () => generateKnowledgeArchitectureReport()); });
 ipcMain.on('bridge:getProjects', (event) => { event.returnValue = getProjects(); });
 ipcMain.on('bridge:createProject', (event, optionsJson) => { licensedIpc(event, '学习项目创建', () => createProject(optionsJson)); });
 ipcMain.on('bridge:updateProjectStatus', (event, projectId, status) => { licensedIpc(event, '学习项目状态更新', () => updateProjectStatus(projectId, status)); });

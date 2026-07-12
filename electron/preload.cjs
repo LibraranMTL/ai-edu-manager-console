@@ -31,6 +31,9 @@ contextBridge.exposeInMainWorld('AndroidBridge', {
   analyzeAssetGovernance() {
     return ipcRenderer.sendSync('bridge:analyzeAssetGovernance');
   },
+  generateKnowledgeArchitectureReport() {
+    return ipcRenderer.sendSync('bridge:generateKnowledgeArchitectureReport');
+  },
   getProjects() {
     return ipcRenderer.sendSync('bridge:getProjects');
   },

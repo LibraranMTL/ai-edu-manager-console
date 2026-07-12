@@ -24,6 +24,7 @@ import {
   Plus,
   RefreshCw,
   Settings,
+  Share2,
   ShieldCheck,
   Sparkles,
   UserRound,
@@ -300,6 +301,7 @@ type AndroidBridge = {
   getAssetIndex?: () => string;
   rebuildAssetIndex?: () => string;
   analyzeAssetGovernance?: () => string;
+  generateKnowledgeArchitectureReport?: () => string;
   getProjects?: () => string;
   createProject?: (optionsJson: string) => string;
   updateProjectStatus?: (projectId: string, status: string) => string;
@@ -702,8 +704,8 @@ const storageKey = 'edu-manager-launcher.students.v2';
 const themeStorageKey = 'edu-manager-launcher.theme.v1';
 const languageStorageKey = 'edu-manager-launcher.language.v1';
 const archiveKeywordStorageKey = 'edu-manager-launcher.archive-keywords.v1';
-const currentVersionCode = 92;
-const currentVersionName = '0.7.12';
+const currentVersionCode = 93;
+const currentVersionName = '0.7.13';
 const updateManifestUrl = [
   'https://www.greatbg.com/download/edu-manager-version.json',
   'http://www.greatbg.com/download/edu-manager-version.json',
@@ -3159,6 +3161,7 @@ function App() {
   const [selectedAssetId, setSelectedAssetId] = useState('');
   const [projects, setProjects] = useState<LearningProject[]>([]);
   const [projectMessage, setProjectMessage] = useState('');
+  const [knowledgeGraphPreview, setKnowledgeGraphPreview] = useState('');
   const [selectedProjectId, setSelectedProjectId] = useState('');
   const [projectDraft, setProjectDraft] = useState({ name: '', type: '学习项目', studentIds: [] as string[] });
   const [selectedProjectAssetIds, setSelectedProjectAssetIds] = useState<string[]>([]);
@@ -5498,6 +5501,21 @@ ${conversationText || '（请先粘贴对话历史）'}`;
       }
     } catch {
       setAssetMessage('资产治理建议结果解析失败。');
+    }
+  };
+
+  const generateKnowledgeArchitectureReport = () => {
+    const raw = bridge()?.generateKnowledgeArchitectureReport?.();
+    if (!raw) {
+      setProjectMessage('当前环境不支持知识关系图生成。');
+      return;
+    }
+    try {
+      const result = JSON.parse(raw) as { ok?: boolean; content?: string; reportPath?: string; auditPath?: string; message?: string };
+      setProjectMessage(result.message || (result.ok ? '已生成知识关系图和项目贡献审计索引。' : '生成知识关系图失败。'));
+      if (result.content) setKnowledgeGraphPreview(result.content);
+    } catch {
+      setProjectMessage('知识关系图结果解析失败。');
     }
   };
 
@@ -7940,6 +7958,58 @@ ${JSON.stringify(items, null, 2)}
               <InfoPanel icon={<Archive />} title="当前项目资产" value={`${selectedProject?.assetIds?.length ?? 0} 个`} />
               <InfoPanel icon={<UserRound />} title="绑定学生" value={selectedProject?.studentNames?.join('、') || '未选择项目'} />
             </div>
+            <section className="material-source-panel">
+              <div className="mini-heading">
+                <strong>知识关系图与项目贡献审计</strong>
+                <span>生成学生、项目、资产、研究暂存和成长沉淀之间的可追溯关系报告。</span>
+              </div>
+              <div className="workflow-rail">
+                <div className="workflow-step">
+                  <span className="workflow-index">1</span>
+                  <strong>学生</strong>
+                  <em>{students.length} 个</em>
+                  <small>作为长期成长模型和主档案入口</small>
+                </div>
+                <div className="workflow-step">
+                  <span className="workflow-index">2</span>
+                  <strong>项目</strong>
+                  <em>{projects.length} 个</em>
+                  <small>作为独立知识生产空间</small>
+                </div>
+                <div className="workflow-step">
+                  <span className="workflow-index">3</span>
+                  <strong>资产</strong>
+                  <em>{assetIndex.assets.length} 个</em>
+                  <small>记录文件来源、SHA-1 和引用关系</small>
+                </div>
+                <div className="workflow-step">
+                  <span className="workflow-index">4</span>
+                  <strong>贡献</strong>
+                  <em>{projects.filter((project) => project.publishedAt || project.status === 'published').length} 个</em>
+                  <small>发布后进入学生综合汇总或成长模型</small>
+                </div>
+              </div>
+              <div className="actions">
+                <button className="primary" onClick={generateKnowledgeArchitectureReport}>
+                  <Share2 size={18} />
+                  生成知识关系图
+                </button>
+                {knowledgeGraphPreview && (
+                  <button className="secondary" onClick={() => copyText(knowledgeGraphPreview, '已复制知识关系图与项目贡献审计报告。')}>
+                    <Clipboard size={18} />
+                    复制审计报告
+                  </button>
+                )}
+              </div>
+              {knowledgeGraphPreview && (
+                <div className="markdown-reader learning-report-reader">
+                  <div className="reader-toolbar">
+                    <span>知识关系图与审计索引预览</span>
+                  </div>
+                  <MarkdownView content={knowledgeGraphPreview} />
+                </div>
+              )}
+            </section>
             <section className="material-source-panel">
               <div className="mini-heading">
                 <strong>新建学习项目</strong>

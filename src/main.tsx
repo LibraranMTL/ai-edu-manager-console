@@ -702,8 +702,8 @@ const storageKey = 'edu-manager-launcher.students.v2';
 const themeStorageKey = 'edu-manager-launcher.theme.v1';
 const languageStorageKey = 'edu-manager-launcher.language.v1';
 const archiveKeywordStorageKey = 'edu-manager-launcher.archive-keywords.v1';
-const currentVersionCode = 89;
-const currentVersionName = '0.7.9';
+const currentVersionCode = 90;
+const currentVersionName = '0.7.10';
 const updateManifestUrl = [
   'https://www.greatbg.com/download/edu-manager-version.json',
   'http://www.greatbg.com/download/edu-manager-version.json',
@@ -2024,6 +2024,30 @@ function pathsForStudent(student: Pick<Student, 'name'> & Partial<Pick<Student, 
   };
 }
 
+function logicalPathsForStudent(student: Pick<Student, 'name'>) {
+  const cleanName = sanitizeName(student.name);
+  const root = '@KB_ROOT';
+  const raw = '@RAW_DIR';
+  const summary = '@SUMMARY_DIR';
+  const reportDir = '@SUMMARY_DIR/学情报告';
+  return {
+    cleanName,
+    root,
+    raw,
+    summary,
+    reportDir,
+    profileReport: `${reportDir}/整体画像.md`,
+    changesReport: `${reportDir}/历史变化.md`,
+    dailyReport: `${reportDir}/每日行动建议.md`,
+    stageReport: `${reportDir}/阶段总结.md`,
+    agent: '@AGENT_FILE',
+    index: '@SUMMARY_DIR/index.md',
+    log: '@SUMMARY_DIR/log.md',
+    output: '@OUTPUT_DIR',
+    growth: '@GROWTH_DIR',
+  };
+}
+
 function basenameFromPath(filePath: string) {
   return String(filePath || '').split(/[\\/]/).filter(Boolean).pop() || '候选文件';
 }
@@ -2204,10 +2228,24 @@ function agentBindingModeForTool(toolId: AgentToolId): AgentBindingMode {
 
 function rawBuildAgentMd(student: StudentDraft) {
   const p = pathsForStudent(student);
+  const lp = logicalPathsForStudent(student);
   const tool = getAgentToolProfile(student.agentTool);
   return `# ${p.cleanName} 学情分析汇总 Agent Schema
 
-本文由内置模板「AGENT-教育通用.md」生成，用于让 ${tool.name} 在 \`${p.root}\` 中维护学生「${p.cleanName}」的学习知识库。目标不是一次性把原始资料聊完，而是把资料持续编译为可复用、可链接、可追溯的学情分析汇总。
+本文由内置模板「AGENT-教育通用.md」生成，用于让 ${tool.name} 在 \`${lp.root}\` 中维护学生「${p.cleanName}」的学习知识库。目标不是一次性把原始资料聊完，而是把资料持续编译为可复用、可链接、可追溯的学情分析汇总。
+
+## 0. 路径抽象与跨主机同步
+
+本 AGENT.md 是长期保存在知识库中的规则文件，默认使用逻辑路径，避免跨主机同步后写死旧电脑的绝对路径。
+
+- \`${lp.root}\`：学生知识库根目录
+- \`${lp.agent}\`：本 AGENT.md
+- \`${lp.raw}\`：学生原始资料库
+- \`${lp.summary}\`：学生学情分析汇总
+- \`${lp.output}\`：输出结果目录
+- \`${lp.growth}\`：成长模型目录
+
+当前主机的真实路径映射由 \`${lp.root}/.ai-manager/pathmap.json\` 维护。若 Agent 工具不能自动解析逻辑路径，请先读取该 pathmap，或使用控制台复制的“当前主机工作规则”。
 
 ## 1. 默认范式
 
@@ -2222,7 +2260,7 @@ function rawBuildAgentMd(student: StudentDraft) {
 执行本 AGENT.md 时，请先创建如下目录与文档：
 
 \`\`\`text
-${p.root}/
+${lp.root}/
 ├─ AGENT.md
 ├─ 输出结果/
 ├─ ${p.cleanName}原始资料库/
@@ -2243,30 +2281,30 @@ ${p.root}/
 
 初始化时请创建：
 
-- \`${p.index}\`
-- \`${p.log}\`
-- \`${p.summary}/摘要库/\`
-- \`${p.summary}/概念库/\`
-- \`${p.summary}/实体库/\`
-- \`${p.summary}/综合库/\`
-- \`${p.summary}/咨询精华库/\`
-- \`${p.reportDir}/\`
-- \`${p.profileReport}\`
-- \`${p.changesReport}\`
-- \`${p.dailyReport}\`
-- \`${p.stageReport}\`
-- \`${p.root}/输出结果/\`
+- \`${lp.index}\`
+- \`${lp.log}\`
+- \`${lp.summary}/摘要库/\`
+- \`${lp.summary}/概念库/\`
+- \`${lp.summary}/实体库/\`
+- \`${lp.summary}/综合库/\`
+- \`${lp.summary}/咨询精华库/\`
+- \`${lp.reportDir}/\`
+- \`${lp.profileReport}\`
+- \`${lp.changesReport}\`
+- \`${lp.dailyReport}\`
+- \`${lp.stageReport}\`
+- \`${lp.output}/\`
 
-\`${p.index}\` 初始化为导航页；\`${p.log}\` 初始化为 append-only 时间线。
+\`${lp.index}\` 初始化为导航页；\`${lp.log}\` 初始化为 append-only 时间线。
 
 ## 3. Session Start Protocol
 
 除非只是闲聊，开始工作前默认执行：
 
-1. 读取 \`${p.index}\`
-2. 读取 \`${p.log}\`
+1. 读取 \`${lp.index}\`
+2. 读取 \`${lp.log}\`
 3. 按任务需要读取相关页面
-4. 如果学情分析汇总不足以支撑结论，再回到 \`${p.raw}\` 搜索相关资料核对
+4. 如果学情分析汇总不足以支撑结论，再回到 \`${lp.raw}\` 搜索相关资料核对
 5. 如有新结论值得沉淀，更新相关页面、\`index.md\` 和 \`log.md\`
 
 ## 4. 目录语义
@@ -2297,7 +2335,7 @@ ${p.root}/
 
 ## 5. 消化 Protocol
 
-当 \`${p.raw}\` 有新资料或开始整理时，默认流程：
+当 \`${lp.raw}\` 有新资料或开始整理时，默认流程：
 
 1. 识别资料类型与主题
 2. 阅读图片或文档内容
@@ -2306,7 +2344,7 @@ ${p.root}/
 5. 如改变整体判断，更新 \`综合库/\`
 6. 更新 \`index.md\`
 7. 在 \`log.md\` 追加「消化」记录
-8. 更新 \`${p.root}/.edu-manager/digest-state.json\`，作为控制台和平板端同步消化结果的回执
+8. 更新 \`${lp.root}/.edu-manager/digest-state.json\`，作为控制台和平板端同步消化结果的回执
 9. 如产生对家长、学生或教师有直接价值的结论，更新 \`学情报告/\` 下的四份报告文件
 
 ### 控制台回执格式
@@ -2341,10 +2379,10 @@ ${p.root}/
 
 完成资料消化、综合分析或咨询沉淀后，如果发现对用户有直接价值的结论，请检查并更新：
 
-- \`${p.profileReport}\`
-- \`${p.changesReport}\`
-- \`${p.dailyReport}\`
-- \`${p.stageReport}\`
+- \`${lp.profileReport}\`
+- \`${lp.changesReport}\`
+- \`${lp.dailyReport}\`
+- \`${lp.stageReport}\`
 
 写作要求：
 
@@ -2367,7 +2405,7 @@ ${p.root}/
 3. 按需更新 \`实体库/\`、\`概念库/\`、\`综合库/\`
 4. 更新 \`index.md\`
 5. 在 \`log.md\` 追加「消化」记录
-6. 更新 \`${p.root}/.edu-manager/digest-state.json\`
+6. 更新 \`${lp.root}/.edu-manager/digest-state.json\`
 
 ### /咨询
 
@@ -2442,13 +2480,13 @@ ${p.root}/
 ## 13. 每日资料消化规则
 
 - ${tool.supportsScheduledTask ? `每天 ${student.digestTime} 由 ${tool.name} 定时任务唤醒本 Agent 执行 \`/消化\`。` : `当前工具 ${tool.name} 暂按手动复制指令执行 \`/消化\`，建议每天 ${student.digestTime} 由用户在控制台复制资料消化指令。`}
-- 只读取 \`${p.raw}\` 中新增或变更的资料。
+- 只读取 \`${lp.raw}\` 中新增或变更的资料。
 - 没有新资料时，在 \`log.md\` 中记录“无新增资料”，不要重复生成摘要。
 - 高影响结论必须能追溯到原始文件、图片或明确链接。
 
 ## 14. 极简执行口令
 
-先读 \`${p.index}\` 和 \`${p.log}\`，再按需读取相关页面；把新资料编译进 \`摘要库 / 实体库 / 概念库 / 综合库 / 咨询精华库\`；最后更新 \`index.md\`、\`log.md\` 和必要的 \`学情报告/\` 文件。
+先读 \`${lp.index}\` 和 \`${lp.log}\`，再按需读取相关页面；把新资料编译进 \`摘要库 / 实体库 / 概念库 / 综合库 / 咨询精华库\`；最后更新 \`index.md\`、\`log.md\` 和必要的 \`学情报告/\` 文件。
 `;
 }
 
@@ -2550,6 +2588,7 @@ function buildLearningReportTemplate(student: StudentDraft, reportId: LearningRe
 
 function templateVariables(student: StudentDraft) {
   const p = pathsForStudent(student);
+  const lp = logicalPathsForStudent(student);
   const tool = getAgentToolProfile(student.agentTool);
   return {
     studentName: p.cleanName,
@@ -2568,6 +2607,12 @@ function templateVariables(student: StudentDraft) {
     dailyReport: p.dailyReport,
     stageReport: p.stageReport,
     outputPath: p.output,
+    logicalRootPath: lp.root,
+    logicalAgentPath: lp.agent,
+    logicalRawPath: lp.raw,
+    logicalSummaryPath: lp.summary,
+    logicalOutputPath: lp.output,
+    logicalGrowthPath: lp.growth,
     digestTime: student.digestTime || '21:30',
   };
 }

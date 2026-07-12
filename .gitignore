@@ -54,3 +54,4 @@ Thumbs.db
 *.zip
 *.7z
 *.rar
+docs/delivery/*.pdf

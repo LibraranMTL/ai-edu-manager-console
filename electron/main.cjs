@@ -23,7 +23,7 @@ let hostServiceLastError = '';
 let todayUploadCount = 0;
 let uploadCountDate = new Date().toISOString().slice(0, 10);
 
-const APP_VERSION = '0.7.9';
+const APP_VERSION = '0.7.10';
 const DEFAULT_HOST_PORT = 18777;
 const AGENT_TOOL_IDS = ['qclaw', 'marvis', 'hohu', 'openclaw', 'ima.copilot', 'workbuddy', 'codex', 'claude-code', 'chatgpt', 'claude', 'doubao', 'coze', 'fastgpt'];
 const WEB_AGENT_TOOL_URLS = {
@@ -3481,20 +3481,37 @@ function snapshotCurrentFile(file, snapshotsDir) {
   return target;
 }
 
+function rulePathJoin(root, ...parts) {
+  const base = String(root || '');
+  if (base.startsWith('@')) return [base, ...parts].filter(Boolean).join('/');
+  return path.join(base, ...parts);
+}
+
+function studentLogicalRulePaths() {
+  return {
+    root: '@KB_ROOT',
+    raw: '@RAW_DIR',
+    summary: '@SUMMARY_DIR',
+    agent: '@AGENT_FILE',
+    output: '@OUTPUT_DIR',
+    growth: '@GROWTH_DIR',
+  };
+}
+
 function learningReportProtocolText(summaryPath) {
-  const reportDir = path.join(summaryPath || '', '学情报告');
-  const growthDir = path.join(summaryPath || '', '成长模型');
-  return `## 学情报告 Protocol\n\n学情报告是 Growth Layer 的成果表达层，不替代摘要库、实体库、概念库、综合库和咨询精华库。更新报告前，应优先读取成长模型、综合汇总库和已确认的项目知识贡献记录。\n\n成长模型位置：\n\n- ${path.join(growthDir, '能力画像.md')}\n- ${path.join(growthDir, '成长证据.md')}\n- ${path.join(growthDir, '项目贡献.md')}\n\n完成资料消化、综合分析或咨询沉淀后，如果发现对用户有直接价值的结论，请检查并更新：\n\n- ${path.join(reportDir, '整体画像.md')}\n- ${path.join(reportDir, '历史变化.md')}\n- ${path.join(reportDir, '每日行动建议.md')}\n- ${path.join(reportDir, '阶段总结.md')}\n\n写作要求：\n\n1. 面向家长、学生、教师可读，避免内部技术术语。\n2. 每份报告顶部保留更新时间、适用对象、状态。\n3. 结论必须对应学情分析汇总、成长模型或项目贡献中的依据来源。\n4. “每日行动建议”必须分为：给学生、给家长、给老师。\n5. 不确定判断标注“待观察”，不要写成定论。\n6. 不要删除原有报告内容；判断发生变化时，在“历史变化”或“阶段总结”中说明变化原因。\n7. 当天无新增资料时，也可以根据已有档案更新“每日行动建议”，但要注明依据。\n`;
+  const reportDir = rulePathJoin(summaryPath || '', '学情报告');
+  const growthDir = rulePathJoin(summaryPath || '', '成长模型');
+  return `## 学情报告 Protocol\n\n学情报告是 Growth Layer 的成果表达层，不替代摘要库、实体库、概念库、综合库和咨询精华库。更新报告前，应优先读取成长模型、综合汇总库和已确认的项目知识贡献记录。\n\n成长模型位置：\n\n- ${rulePathJoin(growthDir, '能力画像.md')}\n- ${rulePathJoin(growthDir, '成长证据.md')}\n- ${rulePathJoin(growthDir, '项目贡献.md')}\n\n完成资料消化、综合分析或咨询沉淀后，如果发现对用户有直接价值的结论，请检查并更新：\n\n- ${rulePathJoin(reportDir, '整体画像.md')}\n- ${rulePathJoin(reportDir, '历史变化.md')}\n- ${rulePathJoin(reportDir, '每日行动建议.md')}\n- ${rulePathJoin(reportDir, '阶段总结.md')}\n\n写作要求：\n\n1. 面向家长、学生、教师可读，避免内部技术术语。\n2. 每份报告顶部保留更新时间、适用对象、状态。\n3. 结论必须对应学情分析汇总、成长模型或项目贡献中的依据来源。\n4. “每日行动建议”必须分为：给学生、给家长、给老师。\n5. 不确定判断标注“待观察”，不要写成定论。\n6. 不要删除原有报告内容；判断发生变化时，在“历史变化”或“阶段总结”中说明变化原因。\n7. 当天无新增资料时，也可以根据已有档案更新“每日行动建议”，但要注明依据。\n`;
 }
 
 function defaultRuleFileContent(student, fileName) {
   const cleanName = sanitizeName(student.name);
   const rootPath = student.rootPath || getStudentRootDir(cleanName);
-  const summaryPath = student.summaryPath || getSummaryDir(cleanName);
   const agentPath = student.agentPath || path.join(rootPath, 'AGENT.md');
+  const logical = studentLogicalRulePaths();
   const lower = String(fileName || '').toLowerCase();
   if (lower === 'agent.md' && fs.existsSync(agentPath)) return fs.readFileSync(agentPath, 'utf8');
-  return `# ${cleanName} ${fileName}\n\n## 工作规则\n\n该 Agent 的工作协议使用：${agentPath}\n后续所有学习资料消化都围绕该学生知识库执行。\n\n${learningReportProtocolText(summaryPath)}\n## 规则说明\n\n请将本文件作为该学生智能体的规则性 Markdown 文件维护。若当前 Agent 工具支持多个规则文件，可把本文件内容同步到对应工具的规则、系统提示词或项目指令中。\n`;
+  return `# ${cleanName} ${fileName}\n\n## 工作规则\n\n该 Agent 的工作协议使用：${logical.agent}\n后续所有学习资料消化都围绕该学生知识库执行。\n\n当前主机真实路径请读取 ${logical.root}/.ai-manager/pathmap.json；跨主机同步时不要把本文件中的逻辑路径替换为某台电脑的绝对路径。\n\n${learningReportProtocolText(logical.summary)}\n## 规则说明\n\n请将本文件作为该学生智能体的规则性 Markdown 文件维护。若当前 Agent 工具支持多个规则文件，可把本文件内容同步到对应工具的规则、系统提示词或项目指令中。\n`;
 }
 
 function defaultUnifiedMemory(student) {
@@ -3504,8 +3521,8 @@ function defaultUnifiedMemory(student) {
 
 function defaultUnifiedSoul(student) {
   const cleanName = sanitizeName(student.name);
-  const agentPath = student.agentPath || path.join(student.rootPath || getStudentRootDir(cleanName), 'AGENT.md');
-  return `# ${cleanName} AI教育管家 UnifiedSoul\n\n你是「${cleanName} AI教育管家」，负责长期维护该学生学情档案，并把零散学习资料沉淀为可追溯、可复用的学情知识库。\n\n## 工作规则\n\n该 Agent 的工作协议使用：${agentPath}\n后续所有学习资料消化都围绕该学生知识库执行。\n`;
+  const logical = studentLogicalRulePaths();
+  return `# ${cleanName} AI教育管家 UnifiedSoul\n\n你是「${cleanName} AI教育管家」，负责长期维护该学生学情档案，并把零散学习资料沉淀为可追溯、可复用的学情知识库。\n\n## 工作规则\n\n该 Agent 的工作协议使用：${logical.agent}\n后续所有学习资料消化都围绕该学生知识库执行。\n\n当前主机真实路径请读取 ${logical.root}/.ai-manager/pathmap.json；如果当前 Agent 工具不能解析逻辑路径，请从控制台复制“当前主机工作规则”。\n`;
 }
 
 function writeJsonFile(file, value) {
@@ -3932,13 +3949,7 @@ function saveAgentRuleFile(studentId, fileName, content) {
 
 function ruleFileTemplateIntro(student, fileName) {
   const cleanName = sanitizeName(student.name);
-  const p = {
-    root: student.rootPath || getStudentRootDir(cleanName),
-    raw: student.rawPath || getRawDir(cleanName),
-    summary: student.summaryPath || getSummaryDir(cleanName),
-    agent: student.agentPath || path.join(student.rootPath || getStudentRootDir(cleanName), 'AGENT.md'),
-    output: student.outputPath || path.join(student.rootPath || getStudentRootDir(cleanName), '输出结果'),
-  };
+  const p = studentLogicalRulePaths();
   const lower = String(fileName || '').toLowerCase();
   if (lower === 'agents.md') {
     return `# ${cleanName} 教育管家项目说明（AGENTS.md）\n\n本目录是学生「${cleanName}」的 AI 教育管家知识库，供 Codex 或其他本地项目型 Agent 使用。\n\n## 工作规则\n\n- 该 Agent 的工作协议使用：${p.agent}\n- 后续所有学习资料消化都围绕该学生知识库执行。\n- 原始资料库是输入层：${p.raw}\n- 学情分析汇总是知识层：${p.summary}\n- 输出结果是临时交付层：${p.output}\n- 所有新增、修改和总结必须遵守 AGENT.md 中的证据追溯、索引更新和 log 记录规则。\n\n${learningReportProtocolText(p.summary)}\n`;

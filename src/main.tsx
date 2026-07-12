@@ -702,8 +702,8 @@ const storageKey = 'edu-manager-launcher.students.v2';
 const themeStorageKey = 'edu-manager-launcher.theme.v1';
 const languageStorageKey = 'edu-manager-launcher.language.v1';
 const archiveKeywordStorageKey = 'edu-manager-launcher.archive-keywords.v1';
-const currentVersionCode = 90;
-const currentVersionName = '0.7.10';
+const currentVersionCode = 91;
+const currentVersionName = '0.7.11';
 const updateManifestUrl = [
   'https://www.greatbg.com/download/edu-manager-version.json',
   'http://www.greatbg.com/download/edu-manager-version.json',
@@ -3378,6 +3378,14 @@ function App() {
     const staleReferenceCount = issueAssets.reduce((total, asset) => total + Number(asset.staleReferenceCount || 0), 0);
     return { issueCount: issueAssets.length, highRiskCount, staleReferenceCount };
   }, [assetIndex.assets]);
+  const assetWorkflowSteps = useMemo(() => {
+    const total = assetIndex.total ?? assetIndex.assets.length;
+    return [
+      { title: '登记资产', value: `${total} 个`, detail: '导入、上传、补建索引都会登记 SHA-1 与来源' },
+      { title: '识别引用', value: `${assetIndex.assets.reduce((sum, asset) => sum + Number(asset.references?.length ?? asset.referenceCount ?? 0), 0)} 条`, detail: '连接学生档案、项目知识空间和资料来源' },
+      { title: '治理候选', value: `${assetGovernanceStats.issueCount} 个`, detail: '重复、失效引用、无引用资产只提示不自动删除' },
+    ];
+  }, [assetGovernanceStats.issueCount, assetIndex.assets, assetIndex.total]);
 
   const selectedProject = projects.find((project) => project.id === selectedProjectId) ?? projects[0] ?? null;
   const selectedAsset = assetIndex.assets.find((asset) => asset.assetId === selectedAssetId) ?? filteredAssets[0] ?? null;
@@ -3423,6 +3431,17 @@ function App() {
       .map((item) => item.id);
     return { duplicateCount, actionCount: governanceCandidateIds.length, governanceCandidateIds, promotionCandidateIds };
   }, [projectStagingItems]);
+  const selectedProjectWorkflowSteps = useMemo(() => {
+    if (!selectedProject) return [];
+    const promotedCount = projectStagingItems.filter((item) => item.status === 'promoted' || item.promotedAssetId).length;
+    return [
+      { title: '研究暂存', value: `${projectStagingItems.length} 份`, detail: '先收集候选资料，不直接进入正式资产中心' },
+      { title: 'AI 初筛', value: `${projectStagingItems.filter((item) => item.aiAction || item.aiReason).length} 份`, detail: '导入 AI 建议后仍由管理员确认' },
+      { title: '资产晋升', value: `${promotedCount} 份`, detail: '晋升后复制到项目原始资料库并登记资产引用' },
+      { title: '贡献申请', value: promotionPreview || promotionPlan ? '已生成' : '待生成', detail: '生成项目知识贡献报告和归档确认清单' },
+      { title: '成长沉淀', value: selectedProject.publishedAt ? '已发布' : projectStatusLabel(selectedProject.status), detail: '发布到学生成长模型和综合汇总记录' },
+    ];
+  }, [projectStagingItems, promotionPlan, promotionPreview, selectedProject]);
 
   const projectStatusLabel = (status?: string) => {
     if (status === 'draft') return '草稿';
@@ -7763,6 +7782,16 @@ ${JSON.stringify(items, null, 2)}
               <InfoPanel icon={<ShieldCheck />} title="高风险" value={`${assetGovernanceStats.highRiskCount} 个`} />
               <InfoPanel icon={<LinkIcon />} title="失效引用" value={`${assetGovernanceStats.staleReferenceCount} 条`} />
             </div>
+            <div className="workflow-rail asset-workflow">
+              {assetWorkflowSteps.map((step, index) => (
+                <div className="workflow-step" key={step.title}>
+                  <span className="workflow-index">{index + 1}</span>
+                  <strong>{step.title}</strong>
+                  <em>{step.value}</em>
+                  <small>{step.detail}</small>
+                </div>
+              ))}
+            </div>
             <div className="actions">
               <button className="secondary" onClick={refreshAssets}>
                 <RefreshCw size={18} />
@@ -8000,6 +8029,16 @@ ${JSON.stringify(items, null, 2)}
                       <InfoPanel icon={<ListChecks />} title="项目状态" value={projectStatusLabel(selectedProject.status)} />
                       <InfoPanel icon={<Clock3 />} title="最近更新" value={selectedProject.updatedAt ? new Date(selectedProject.updatedAt).toLocaleString('zh-CN') : '暂无记录'} />
                       <InfoPanel icon={<UserRound />} title="绑定学生" value={selectedProject.studentNames?.join('、') || '未绑定'} />
+                    </div>
+                    <div className="workflow-rail project-workflow">
+                      {selectedProjectWorkflowSteps.map((step, index) => (
+                        <div className="workflow-step" key={step.title}>
+                          <span className="workflow-index">{index + 1}</span>
+                          <strong>{step.title}</strong>
+                          <em>{step.value}</em>
+                          <small>{step.detail}</small>
+                        </div>
+                      ))}
                     </div>
                     <div className="form-grid compact-grid">
                       <label>

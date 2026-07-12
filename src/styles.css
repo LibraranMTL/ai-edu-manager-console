@@ -957,6 +957,19 @@ select:focus {
   gap: 8px;
 }
 
+.inline-pre {
+  margin: 8px 0 0;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.72);
+  color: var(--text);
+  white-space: pre-wrap;
+  word-break: break-word;
+  font: inherit;
+  line-height: 1.6;
+}
+
 .form-grid.compact-grid {
   grid-template-columns: minmax(180px, 0.75fr) minmax(260px, 1.25fr);
   margin-top: 0;

@@ -23,7 +23,7 @@ let hostServiceLastError = '';
 let todayUploadCount = 0;
 let uploadCountDate = new Date().toISOString().slice(0, 10);
 
-const APP_VERSION = '0.7.0';
+const APP_VERSION = '0.7.1';
 const DEFAULT_HOST_PORT = 18777;
 const AGENT_TOOL_IDS = ['qclaw', 'marvis', 'hohu', 'openclaw', 'ima.copilot', 'workbuddy', 'codex', 'claude-code', 'chatgpt', 'claude', 'doubao', 'coze', 'fastgpt'];
 const WEB_AGENT_TOOL_URLS = {
@@ -543,6 +543,29 @@ function assetIndexSummary() {
   };
 }
 
+function collectFilesRecursive(current, files, depth) {
+  if (!current || depth < 0 || !fs.existsSync(current)) return;
+  let entries = [];
+  try {
+    entries = fs.readdirSync(current, { withFileTypes: true });
+  } catch {
+    return;
+  }
+  for (const entry of entries) {
+    const full = path.join(current, entry.name);
+    if (entry.isDirectory()) {
+      if (entry.name.startsWith('.') || entry.name === 'node_modules') continue;
+      collectFilesRecursive(full, files, depth - 1);
+    } else if (entry.isFile()) {
+      files.push(full);
+    }
+  }
+}
+
+function isAllowedMaterialFile(filePath) {
+  return isAllowedUploadFile(path.basename(filePath));
+}
+
 function rebuildAssetIndex() {
   const existing = readAssetIndex();
   const next = new Map(existing.map((asset) => [asset.assetId, asset]));
@@ -564,6 +587,40 @@ function rebuildAssetIndex() {
         });
         if (asset) next.set(asset.assetId, asset);
       }
+    }
+    const rawDir = student.rawPath || getRawDir(student.name);
+    if (rawDir && fs.existsSync(rawDir)) {
+      const rawFiles = [];
+      collectFilesRecursive(rawDir, rawFiles, 8);
+      for (const rawFile of rawFiles) {
+        if (!isAllowedMaterialFile(rawFile)) continue;
+        const asset = upsertAssetFromFile(rawFile, {
+          studentId: String(student.id || ''),
+          studentName: student.name || '',
+          sourceName: '学生原始资料库扫描',
+          role: 'student_raw_scanned',
+          referenceId: `scan-${student.id}-${crypto.createHash('sha1').update(rawFile).digest('hex').slice(0, 12)}`,
+        });
+        if (asset) next.set(asset.assetId, asset);
+      }
+    }
+  }
+  const projects = readProjects().map(normalizeProject);
+  for (const project of projects) {
+    const rawDir = project.rawPath || projectPathsFor(project.name, project.projectRootPath).rawPath;
+    if (!rawDir || !fs.existsSync(rawDir)) continue;
+    const rawFiles = [];
+    collectFilesRecursive(rawDir, rawFiles, 8);
+    for (const rawFile of rawFiles) {
+      if (!isAllowedMaterialFile(rawFile)) continue;
+      const asset = upsertAssetFromFile(rawFile, {
+        projectId: String(project.id || ''),
+        projectName: project.name || '',
+        sourceName: '项目原始资料库扫描',
+        role: 'project_raw_scanned',
+        referenceId: `scan-${project.id}-${crypto.createHash('sha1').update(rawFile).digest('hex').slice(0, 12)}`,
+      });
+      if (asset) next.set(asset.assetId, asset);
     }
   }
   readAssetIndex().forEach((asset) => next.set(asset.assetId, asset));
@@ -1596,6 +1653,8 @@ function normalizeProject(project) {
     assetIds: Array.isArray(project.assetIds) ? project.assetIds.map(String) : [],
     createdAt,
     updatedAt: project.updatedAt || createdAt,
+    archivedAt: project.archivedAt || '',
+    publishedAt: project.publishedAt || '',
   };
 }
 
@@ -1652,6 +1711,33 @@ function createProject(optionsJson) {
     return JSON.stringify({ ok: true, project, projects: readProjects().map(normalizeProject), message: `已创建项目知识空间：${project.projectRootPath}` });
   } catch (error) {
     return JSON.stringify({ ok: false, message: `创建学习项目失败：${error.message}` });
+  }
+}
+
+function updateProjectStatus(projectId, status) {
+  try {
+    const allowed = new Set(['draft', 'active', 'pending_archive', 'archived', 'published', 'sealed']);
+    const nextStatus = allowed.has(String(status || '')) ? String(status) : 'active';
+    const now = new Date().toISOString();
+    const projects = readProjects().map(normalizeProject);
+    let updated = null;
+    const nextProjects = projects.map((project) => {
+      if (String(project.id) !== String(projectId)) return project;
+      updated = {
+        ...project,
+        status: nextStatus,
+        updatedAt: now,
+        ...(nextStatus === 'archived' ? { archivedAt: project.archivedAt || now } : {}),
+        ...(nextStatus === 'published' ? { publishedAt: project.publishedAt || now } : {}),
+      };
+      return updated;
+    });
+    if (!updated) return JSON.stringify({ ok: false, message: '未找到学习项目。' });
+    writeProjects(nextProjects);
+    appendHostTimeline({ type: 'project_status_updated', title: 'Project status updated', detail: `${updated.name} -> ${nextStatus}` });
+    return JSON.stringify({ ok: true, project: updated, projects: nextProjects, message: `项目状态已更新为：${nextStatus}` });
+  } catch (error) {
+    return JSON.stringify({ ok: false, message: `更新项目状态失败：${error.message}` });
   }
 }
 
@@ -5192,6 +5278,7 @@ ipcMain.on('bridge:getAssetIndex', (event) => { event.returnValue = JSON.stringi
 ipcMain.on('bridge:rebuildAssetIndex', (event) => { licensedIpc(event, '资产索引补建', () => rebuildAssetIndex()); });
 ipcMain.on('bridge:getProjects', (event) => { event.returnValue = getProjects(); });
 ipcMain.on('bridge:createProject', (event, optionsJson) => { licensedIpc(event, '学习项目创建', () => createProject(optionsJson)); });
+ipcMain.on('bridge:updateProjectStatus', (event, projectId, status) => { licensedIpc(event, '学习项目状态更新', () => updateProjectStatus(projectId, status)); });
 ipcMain.on('bridge:importProjectAssets', (event, projectId, assetIdsJson) => { licensedIpc(event, '项目资料导入', () => importProjectAssets(projectId, assetIdsJson)); });
 ipcMain.on('bridge:generateProjectPromotion', (event, projectId) => { licensedIpc(event, '知识贡献申请', () => generateProjectPromotion(projectId)); });
 ipcMain.on('bridge:getProjectPromotionPlan', (event, projectId) => { licensedIpc(event, '归档确认清单', () => projectPromotionPlan(projectId)); });

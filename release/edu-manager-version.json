@@ -1,9 +1,9 @@
 {
   "versionCode": 61,
   "versionName": "0.5.1",
-  "windowsVersionCode": 80,
-  "windowsVersionName": "0.7.0",
-  "windowsUrl": "https://www.greatbg.com/download/AI-edu-manager-console-Windows-0.7.0.zip",
+  "windowsVersionCode": 81,
+  "windowsVersionName": "0.7.1",
+  "windowsUrl": "https://www.greatbg.com/download/AI-edu-manager-console-Windows-0.7.1.zip",
   "terminalApkUrl": "https://www.greatbg.com/download/AI-edu-manager-tablet-terminal-0.5.1.apk",
   "tabletTerminalVersionCode": 61,
   "tabletTerminalVersionName": "0.5.1",
@@ -12,5 +12,5 @@
   "managerApkVersionCode": 23,
   "managerApkVersionName": "0.2.3",
   "apkUrl": "https://www.greatbg.com/download/AI-edu-manager-tablet-terminal-0.5.1.apk",
-  "notes": "Windows 0.7.0：新增学习项目归档确认清单，可逐项选择引用、发布、吸收或跳过，并写入学生与项目追溯记录；文件资产中心新增资产引用详情和重复文件分组提示。平板终端仍为 0.5.1。"
+  "notes": "Windows 0.7.1：完善学习项目归档确认体验，增加批量动作、执行前预览、执行结果摘要和项目状态流转；文件资产中心新增来源/类型筛选，并强化旧目录资产补建扫描。平板终端仍为 0.5.1。"
 }

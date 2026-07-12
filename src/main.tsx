@@ -219,6 +219,8 @@ type LearningProject = {
   assetIds?: string[];
   createdAt?: string;
   updatedAt?: string;
+  archivedAt?: string;
+  publishedAt?: string;
 };
 
 type PromotionAction = 'reference' | 'publish' | 'absorb' | 'skip';
@@ -258,6 +260,7 @@ type AndroidBridge = {
   rebuildAssetIndex?: () => string;
   getProjects?: () => string;
   createProject?: (optionsJson: string) => string;
+  updateProjectStatus?: (projectId: string, status: string) => string;
   importProjectAssets?: (projectId: string, assetIdsJson: string) => string;
   generateProjectPromotion?: (projectId: string) => string;
   getProjectPromotionPlan?: (projectId: string) => string;
@@ -613,8 +616,8 @@ const storageKey = 'edu-manager-launcher.students.v2';
 const themeStorageKey = 'edu-manager-launcher.theme.v1';
 const languageStorageKey = 'edu-manager-launcher.language.v1';
 const archiveKeywordStorageKey = 'edu-manager-launcher.archive-keywords.v1';
-const currentVersionCode = 80;
-const currentVersionName = '0.7.0';
+const currentVersionCode = 81;
+const currentVersionName = '0.7.1';
 const updateManifestUrl = [
   'https://www.greatbg.com/download/edu-manager-version.json',
   'http://www.greatbg.com/download/edu-manager-version.json',
@@ -3016,6 +3019,8 @@ function App() {
   const [assetMessage, setAssetMessage] = useState('');
   const [assetSearch, setAssetSearch] = useState('');
   const [assetStudentFilter, setAssetStudentFilter] = useState('all');
+  const [assetSourceFilter, setAssetSourceFilter] = useState('all');
+  const [assetTypeFilter, setAssetTypeFilter] = useState('all');
   const [assetDuplicateOnly, setAssetDuplicateOnly] = useState(false);
   const [selectedAssetId, setSelectedAssetId] = useState('');
   const [projects, setProjects] = useState<LearningProject[]>([]);
@@ -3025,6 +3030,7 @@ function App() {
   const [selectedProjectAssetIds, setSelectedProjectAssetIds] = useState<string[]>([]);
   const [promotionPreview, setPromotionPreview] = useState('');
   const [promotionPlan, setPromotionPlan] = useState<PromotionPlan | null>(null);
+  const [promotionExecutionSummary, setPromotionExecutionSummary] = useState('');
   const [growthMessage, setGrowthMessage] = useState('');
   const [sharedInboxCount, setSharedInboxCount] = useState(0);
   const [compatibility, setCompatibility] = useState<Record<string, unknown> | null>(null);
@@ -3208,12 +3214,22 @@ function App() {
         const linked = asset.linkedStudents ?? [];
         if (asset.ownerStudentId !== assetStudentFilter && !linked.includes(assetStudentFilter)) return false;
       }
+      if (assetSourceFilter !== 'all' && String(asset.sourceName || '未标注来源') !== assetSourceFilter) return false;
+      if (assetTypeFilter !== 'all' && String(asset.type || 'file') !== assetTypeFilter) return false;
       if (!keyword) return true;
       return [asset.filename, asset.path, asset.ownerStudentName, asset.sourceName, asset.sha1]
         .filter(Boolean)
         .some((value) => String(value).toLowerCase().includes(keyword));
     });
-  }, [assetDuplicateOnly, assetIndex.assets, assetSearch, assetStudentFilter]);
+  }, [assetDuplicateOnly, assetIndex.assets, assetSearch, assetSourceFilter, assetStudentFilter, assetTypeFilter]);
+
+  const assetSources = useMemo(() => (
+    Array.from(new Set((assetIndex.assets ?? []).map((asset) => String(asset.sourceName || '未标注来源')).filter(Boolean))).sort()
+  ), [assetIndex.assets]);
+
+  const assetTypes = useMemo(() => (
+    Array.from(new Set((assetIndex.assets ?? []).map((asset) => String(asset.type || 'file')).filter(Boolean))).sort()
+  ), [assetIndex.assets]);
 
   const selectedProject = projects.find((project) => project.id === selectedProjectId) ?? projects[0] ?? null;
   const selectedAsset = assetIndex.assets.find((asset) => asset.assetId === selectedAssetId) ?? filteredAssets[0] ?? null;
@@ -3234,6 +3250,43 @@ function App() {
     const selectedAssetIds = new Set(selectedProject?.assetIds ?? []);
     return filteredAssets.filter((asset) => !selectedAssetIds.has(asset.assetId)).slice(0, 120);
   }, [filteredAssets, selectedProject?.assetIds]);
+
+  const projectStatusLabel = (status?: string) => {
+    if (status === 'draft') return '草稿';
+    if (status === 'active') return '进行中';
+    if (status === 'pending_archive') return '待归档';
+    if (status === 'archived') return '已归档';
+    if (status === 'published') return '已发布';
+    if (status === 'sealed') return '已封存';
+    return status || '进行中';
+  };
+
+  const promotionActionLabel = (action?: PromotionAction | string) => {
+    if (action === 'reference') return '引用';
+    if (action === 'publish') return '发布';
+    if (action === 'absorb') return '吸收';
+    if (action === 'skip') return '跳过';
+    return action || '未选择';
+  };
+
+  const promotionExecutionPreview = useMemo(() => {
+    if (!promotionPlan) return '';
+    const targets = promotionPlan.students?.map((student) => student.name).join('、') || '未绑定学生';
+    const counts = promotionPlan.items.reduce<Record<string, number>>((acc, item) => {
+      acc[item.action] = (acc[item.action] || 0) + 1;
+      return acc;
+    }, {});
+    const copyCount = promotionPlan.items.filter((item) => item.kind === 'file' && item.action === 'absorb').length;
+    const publishCount = promotionPlan.items.filter((item) => item.action === 'publish').length;
+    const referenceCount = promotionPlan.items.filter((item) => item.action === 'reference').length;
+    const skipCount = promotionPlan.items.filter((item) => item.action === 'skip').length;
+    return [
+      `目标学生：${targets}`,
+      `将发布：${publishCount} 项；引用：${referenceCount} 项；吸收复制：${copyCount} 个文件；跳过：${skipCount} 项。`,
+      '将写入：学生综合汇总目录的项目归档记录/项目贡献汇总、学生成长模型的项目贡献/成长证据，以及项目知识空间的归档执行日志。',
+      counts.absorb ? '吸收动作会复制物理文件到学生原始资料库，并登记新的资产引用。' : '',
+    ].filter(Boolean).join('\n');
+  }, [promotionPlan]);
 
   const toggleProjectAsset = (assetId: string) => {
     setSelectedProjectAssetIds((current) => (current.includes(assetId) ? current.filter((item) => item !== assetId) : [...current, assetId]));
@@ -5199,21 +5252,68 @@ ${conversationText || '（请先粘贴对话历史）'}`;
     });
   };
 
+  const setPromotionPlanBatchAction = (kind: 'all' | 'files' | 'knowledge', action: PromotionAction) => {
+    setPromotionPlan((current) => {
+      if (!current) return current;
+      return {
+        ...current,
+        items: current.items.map((item) => {
+          const included = kind === 'all'
+            || (kind === 'files' && item.kind === 'file')
+            || (kind === 'knowledge' && item.kind !== 'file');
+          if (!included || !item.allowedActions.includes(action)) return item;
+          return { ...item, action };
+        }),
+      };
+    });
+  };
+
+  const updateSelectedProjectStatus = (status: string) => {
+    if (!selectedProjectId) {
+      setProjectMessage('请先选择学习项目。');
+      return;
+    }
+    const raw = bridge()?.updateProjectStatus?.(selectedProjectId, status);
+    if (!raw) {
+      setProjectMessage('当前环境不支持更新项目状态。');
+      return;
+    }
+    try {
+      const result = JSON.parse(raw) as { ok?: boolean; project?: LearningProject; projects?: LearningProject[]; message?: string };
+      if (Array.isArray(result.projects)) setProjects(result.projects);
+      if (result.project) setSelectedProjectId(result.project.id);
+      setProjectMessage(result.message || (result.ok ? '项目状态已更新。' : '项目状态更新失败。'));
+    } catch {
+      setProjectMessage('项目状态更新结果解析失败。');
+    }
+  };
+
   const executeSelectedProjectPromotionPlan = () => {
     if (!selectedProjectId || !promotionPlan) {
       setProjectMessage('请先生成归档确认清单。');
       return;
     }
+    if (promotionExecutionPreview && !window.confirm(`确认执行归档清单吗？\n\n${promotionExecutionPreview}`)) return;
     const raw = bridge()?.executeProjectPromotionPlan?.(selectedProjectId, JSON.stringify({ items: promotionPlan.items }));
     if (!raw) {
       setProjectMessage('当前环境不支持执行归档确认清单。');
       return;
     }
     try {
-      const result = JSON.parse(raw) as { ok?: boolean; project?: LearningProject; message?: string; executionLog?: string };
+      const result = JSON.parse(raw) as { ok?: boolean; project?: LearningProject; message?: string; executionLog?: string; results?: Array<{ action?: string; ok?: boolean; target?: string }> };
       setProjectMessage(result.message || (result.ok ? '已执行归档确认清单。' : '执行归档确认清单失败。'));
       if (result.project) setProjects((current) => current.map((item) => (item.id === result.project?.id ? result.project : item)));
       if (result.ok) {
+        if (Array.isArray(result.results)) {
+          const success = result.results.filter((item) => item.ok !== false).length;
+          const failed = result.results.length - success;
+          const byAction = result.results.reduce<Record<string, number>>((acc, item) => {
+            const action = item.action || 'unknown';
+            acc[action] = (acc[action] || 0) + 1;
+            return acc;
+          }, {});
+          setPromotionExecutionSummary(`执行完成：成功 ${success} 项，失败 ${failed} 项；引用 ${byAction.reference || 0}，发布 ${byAction.publish || 0}，吸收 ${byAction.absorb || 0}，跳过 ${byAction.skip || 0}。`);
+        }
         refreshAssets();
         if (selectedStudent) refreshLearningReports(selectedStudent);
       }
@@ -7121,6 +7221,24 @@ ${conversationText || '（请先粘贴对话历史）'}`;
                   ))}
                 </select>
               </label>
+              <label>
+                来源
+                <select value={assetSourceFilter} onChange={(event) => setAssetSourceFilter(event.target.value)}>
+                  <option value="all">全部来源</option>
+                  {assetSources.map((source) => (
+                    <option value={source} key={source}>{source}</option>
+                  ))}
+                </select>
+              </label>
+              <label>
+                类型
+                <select value={assetTypeFilter} onChange={(event) => setAssetTypeFilter(event.target.value)}>
+                  <option value="all">全部类型</option>
+                  {assetTypes.map((type) => (
+                    <option value={type} key={type}>{type}</option>
+                  ))}
+                </select>
+              </label>
               <label className="checkbox-line">
                 <input type="checkbox" checked={assetDuplicateOnly} onChange={(event) => setAssetDuplicateOnly(event.target.checked)} />
                 只看重复 SHA-1 文件
@@ -7179,7 +7297,8 @@ ${conversationText || '（请先粘贴对话历史）'}`;
                       <span>
                         <strong>{group.assets.length} 份重复文件</strong>
                         <small>SHA-1：{group.sha1}</small>
-                        <small>建议保留：{group.assets[0]?.path || '待确认'}</small>
+                        <small>建议：保留引用最多或所在目录最稳定的一份，其他文件先标记为重复观察，不自动删除。</small>
+                        <small>候选保留：{group.assets[0]?.path || '待确认'}</small>
                       </span>
                     </div>
                   ))}
@@ -7254,10 +7373,11 @@ ${conversationText || '（请先粘贴对话历史）'}`;
                       setSelectedProjectAssetIds([]);
                       setPromotionPreview('');
                       setPromotionPlan(null);
+                      setPromotionExecutionSummary('');
                     }}
                   >
                     <strong>{project.name}</strong>
-                    <span>{project.type} · {project.status}</span>
+                    <span>{project.type} · {projectStatusLabel(project.status)}</span>
                     <small>{project.studentNames?.join('、') || '未绑定学生'}</small>
                     <em>{project.knowledgeRootPath}</em>
                   </button>
@@ -7288,6 +7408,30 @@ ${conversationText || '（请先粘贴对话历史）'}`;
                       <InfoPanel icon={<FolderOpen />} title="项目根目录" value={selectedProject.projectRootPath} />
                       <InfoPanel icon={<Archive />} title="项目原始资料库" value={selectedProject.rawPath} />
                       <InfoPanel icon={<FileText />} title="知识贡献目录" value={selectedProject.promotionPath || '未生成'} />
+                      <InfoPanel icon={<ListChecks />} title="项目状态" value={projectStatusLabel(selectedProject.status)} />
+                      <InfoPanel icon={<Clock3 />} title="最近更新" value={selectedProject.updatedAt ? new Date(selectedProject.updatedAt).toLocaleString('zh-CN') : '暂无记录'} />
+                      <InfoPanel icon={<UserRound />} title="绑定学生" value={selectedProject.studentNames?.join('、') || '未绑定'} />
+                    </div>
+                    <div className="form-grid compact-grid">
+                      <label>
+                        项目状态
+                        <select value={selectedProject.status || 'active'} onChange={(event) => updateSelectedProjectStatus(event.target.value)}>
+                          <option value="draft">草稿</option>
+                          <option value="active">进行中</option>
+                          <option value="pending_archive">待归档</option>
+                          <option value="archived">已归档</option>
+                          <option value="published">已发布</option>
+                          <option value="sealed">已封存</option>
+                        </select>
+                      </label>
+                      <label>
+                        归档时间
+                        <input readOnly value={selectedProject.archivedAt ? new Date(selectedProject.archivedAt).toLocaleString('zh-CN') : '尚未归档'} />
+                      </label>
+                      <label>
+                        发布时间
+                        <input readOnly value={selectedProject.publishedAt ? new Date(selectedProject.publishedAt).toLocaleString('zh-CN') : '尚未发布'} />
+                      </label>
                     </div>
                     <div className="mini-heading">
                       <strong>从资产中心加入项目</strong>
@@ -7324,6 +7468,18 @@ ${conversationText || '（请先粘贴对话历史）'}`;
                           <InfoPanel icon={<UserRound />} title="目标学生" value={promotionPlan.students?.map((student) => student.name).join('、') || '未绑定'} />
                           <InfoPanel icon={<Archive />} title="将执行" value={`${promotionPlan.items.filter((item) => item.action !== 'skip').length} 项`} />
                         </div>
+                        <div className="actions compact-actions">
+                          <button className="secondary compact" onClick={() => setPromotionPlanBatchAction('files', 'reference')}>文件全部引用</button>
+                          <button className="secondary compact" onClick={() => setPromotionPlanBatchAction('files', 'absorb')}>文件全部吸收</button>
+                          <button className="secondary compact" onClick={() => setPromotionPlanBatchAction('knowledge', 'publish')}>知识全部发布</button>
+                          <button className="secondary compact" onClick={() => setPromotionPlanBatchAction('all', 'skip')}>全部跳过</button>
+                        </div>
+                        {promotionExecutionPreview && (
+                          <div className="notice muted">
+                            <strong>执行前预览</strong>
+                            <pre className="inline-pre">{promotionExecutionPreview}</pre>
+                          </div>
+                        )}
                         <div className="download-list">
                           {promotionPlan.items.map((item) => (
                             <div className="download-item" key={item.id}>
@@ -7335,13 +7491,14 @@ ${conversationText || '（请先粘贴对话历史）'}`;
                               <select value={item.action} onChange={(event) => updatePromotionPlanItemAction(item.id, event.target.value as PromotionAction)}>
                                 {item.allowedActions.map((action) => (
                                   <option value={action} key={action}>
-                                    {action === 'reference' ? '引用' : action === 'publish' ? '发布' : action === 'absorb' ? '吸收' : '跳过'}
+                                    {promotionActionLabel(action)}
                                   </option>
                                 ))}
                               </select>
                             </div>
                           ))}
                         </div>
+                        {promotionExecutionSummary && <div className="notice">{promotionExecutionSummary}</div>}
                       </section>
                     )}
                     {promotionPreview && (

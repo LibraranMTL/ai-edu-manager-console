@@ -34,6 +34,9 @@ contextBridge.exposeInMainWorld('AndroidBridge', {
   createProject(optionsJson) {
     return ipcRenderer.sendSync('bridge:createProject', optionsJson);
   },
+  updateProjectStatus(projectId, status) {
+    return ipcRenderer.sendSync('bridge:updateProjectStatus', projectId, status);
+  },
   importProjectAssets(projectId, assetIdsJson) {
     return ipcRenderer.sendSync('bridge:importProjectAssets', projectId, assetIdsJson);
   },

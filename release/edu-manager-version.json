@@ -1,9 +1,9 @@
 {
   "versionCode": 61,
   "versionName": "0.5.1",
-  "windowsVersionCode": 87,
-  "windowsVersionName": "0.7.7",
-  "windowsUrl": "https://www.greatbg.com/download/AI-edu-manager-console-Windows-0.7.7.zip",
+  "windowsVersionCode": 88,
+  "windowsVersionName": "0.7.8",
+  "windowsUrl": "https://www.greatbg.com/download/AI-edu-manager-console-Windows-0.7.8.zip",
   "terminalApkUrl": "https://www.greatbg.com/download/AI-edu-manager-tablet-terminal-0.5.1.apk",
   "tabletTerminalVersionCode": 61,
   "tabletTerminalVersionName": "0.5.1",
@@ -12,5 +12,5 @@
   "managerApkVersionCode": 23,
   "managerApkVersionName": "0.2.3",
   "apkUrl": "https://www.greatbg.com/download/AI-edu-manager-tablet-terminal-0.5.1.apk",
-  "notes": "Windows 0.7.7：增强文件资产中心治理能力，可生成重复资产、失效路径、失效引用和空引用资产的治理建议报告；平板终端仍为 0.5.1。"
+  "notes": "Windows 0.7.8：新增学生知识库路径核对、.ai-manager 工作空间身份与 pathmap 映射，可识别跨主机同步后 AGENT.md 等规则文件中的旧绝对路径；平板终端仍为 0.5.1。"
 }

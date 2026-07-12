@@ -23,7 +23,7 @@ let hostServiceLastError = '';
 let todayUploadCount = 0;
 let uploadCountDate = new Date().toISOString().slice(0, 10);
 
-const APP_VERSION = '0.7.7';
+const APP_VERSION = '0.7.8';
 const DEFAULT_HOST_PORT = 18777;
 const AGENT_TOOL_IDS = ['qclaw', 'marvis', 'hohu', 'openclaw', 'ima.copilot', 'workbuddy', 'codex', 'claude-code', 'chatgpt', 'claude', 'doubao', 'coze', 'fastgpt'];
 const WEB_AGENT_TOOL_URLS = {
@@ -259,6 +259,282 @@ function studentDigestStatePath(student) {
   return path.join(studentManagerDir(student), 'digest-state.json');
 }
 
+function studentAiManagerDir(student) {
+  const root = student.rootPath || getStudentRootDir(student.name);
+  return path.join(root, '.ai-manager');
+}
+
+function studentWorkspaceMetadataPath(student) {
+  return path.join(studentAiManagerDir(student), 'metadata.json');
+}
+
+function studentWorkspacePathmapPath(student) {
+  return path.join(studentAiManagerDir(student), 'pathmap.json');
+}
+
+function studentWorkspaceHealthReportPath(student) {
+  return path.join(studentAiManagerDir(student), 'health-report.md');
+}
+
+function studentWorkspaceMigrationLogPath(student) {
+  return path.join(studentAiManagerDir(student), 'migration-log.md');
+}
+
+function stableWorkspaceId(student) {
+  const seed = `${student.id || ''}|${student.name || ''}|${student.rootPath || getStudentRootDir(student.name)}`;
+  return `student-kb-${sha1Text(seed).slice(0, 12)}`;
+}
+
+function studentWorkspacePathmap(student) {
+  const rootPath = student.rootPath || getStudentRootDir(student.name);
+  const rawPath = student.rawPath || getRawDir(student.name);
+  const summaryPath = student.summaryPath || getSummaryDir(student.name);
+  const agentPath = student.agentPath || path.join(rootPath, 'AGENT.md');
+  const outputPath = student.outputPath || path.join(rootPath, '输出结果');
+  return {
+    '@KB_ROOT': rootPath,
+    '@AGENT_FILE': agentPath,
+    '@RAW_DIR': rawPath,
+    '@SUMMARY_DIR': summaryPath,
+    '@OUTPUT_DIR': outputPath,
+    '@GROWTH_DIR': growthModelDirForStudent(student),
+    '@ASSET_ROOT': path.join(studentAiManagerDir(student), 'assets'),
+  };
+}
+
+function safeReadJson(filePath, fallback = {}) {
+  try {
+    return JSON.parse(fs.readFileSync(filePath, 'utf8'));
+  } catch {
+    return fallback;
+  }
+}
+
+function ensureStudentWorkspaceConfig(student) {
+  const normalized = toHostStudent(student);
+  const aiDir = studentAiManagerDir(normalized);
+  fs.mkdirSync(aiDir, { recursive: true });
+  const now = new Date().toISOString();
+  const metadataFile = studentWorkspaceMetadataPath(normalized);
+  const currentMetadata = safeReadJson(metadataFile, {});
+  const metadata = {
+    workspaceId: currentMetadata.workspaceId || normalized.workspaceId || stableWorkspaceId(normalized),
+    workspaceType: 'studentKnowledgeBase',
+    schemaVersion: '2.2',
+    appVersion: APP_VERSION,
+    studentId: normalized.id,
+    studentName: normalized.name,
+    knowledgeBaseMode: normalized.knowledgeBaseMode,
+    agentTool: normalized.agentTool,
+    createdAt: currentMetadata.createdAt || normalized.createdAt || now,
+    updatedAt: now,
+  };
+  fs.writeFileSync(metadataFile, JSON.stringify(metadata, null, 2), 'utf8');
+  const pathmap = {
+    version: 1,
+    workspaceId: metadata.workspaceId,
+    updatedAt: now,
+    paths: studentWorkspacePathmap(normalized),
+  };
+  fs.writeFileSync(studentWorkspacePathmapPath(normalized), JSON.stringify(pathmap, null, 2), 'utf8');
+  return { metadata, pathmap, metadataPath: metadataFile, pathmapPath: studentWorkspacePathmapPath(normalized) };
+}
+
+function pathExists(targetPath) {
+  try {
+    return Boolean(targetPath && fs.existsSync(targetPath));
+  } catch {
+    return false;
+  }
+}
+
+function isPathInside(parentPath, childPath) {
+  try {
+    const parent = path.resolve(parentPath);
+    const child = path.resolve(childPath);
+    const relative = path.relative(parent, child);
+    return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
+  } catch {
+    return false;
+  }
+}
+
+function cleanDetectedWindowsPath(value) {
+  return String(value || '')
+    .replace(/[，。；;,.、)）\]】}"'`]+$/g, '')
+    .trim();
+}
+
+function readSmallTextFile(filePath, maxBytes = 2 * 1024 * 1024) {
+  try {
+    const stat = fs.statSync(filePath);
+    if (!stat.isFile() || stat.size > maxBytes) return '';
+    return fs.readFileSync(filePath, 'utf8');
+  } catch {
+    return '';
+  }
+}
+
+function collectRuleFilesForPathHealth(student) {
+  const root = student.rootPath || getStudentRootDir(student.name);
+  const candidates = [
+    student.agentPath || path.join(root, 'AGENT.md'),
+    path.join(root, 'AGENTS.md'),
+    path.join(root, 'CLAUDE.md'),
+    path.join(root, 'Claude.md'),
+    path.join(root, 'IMA.md'),
+    path.join(root, 'WorkBuddy.md'),
+    path.join(root, 'Agent设定', 'UnifiedSoul.md'),
+    path.join(root, 'Agent记忆', 'UnifiedMemory.md'),
+  ];
+  const ruleDir = path.join(root, 'Agent规则');
+  try {
+    if (fs.existsSync(ruleDir)) {
+      for (const entry of fs.readdirSync(ruleDir, { withFileTypes: true })) {
+        if (entry.isFile() && entry.name.toLowerCase().endsWith('.md')) {
+          candidates.push(path.join(ruleDir, entry.name));
+        }
+      }
+    }
+  } catch {
+    // Ignore optional rule directory read errors; the health check reports core path failures separately.
+  }
+  return Array.from(new Set(candidates.map((item) => path.resolve(item)))).filter(pathExists);
+}
+
+function scanAbsolutePathsInRuleFiles(student) {
+  const files = collectRuleFilesForPathHealth(student);
+  const knownPaths = Object.values(studentWorkspacePathmap(student)).filter(Boolean);
+  const seen = new Set();
+  const findings = [];
+  const windowsPathRe = /[A-Za-z]:[\\/][^\r\n<>"|]+/g;
+  for (const filePath of files) {
+    const text = readSmallTextFile(filePath);
+    if (!text) continue;
+    const matches = text.match(windowsPathRe) || [];
+    for (const rawMatch of matches) {
+      const detectedPath = cleanDetectedWindowsPath(rawMatch);
+      if (!detectedPath) continue;
+      const key = `${filePath}|${detectedPath}`.toLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      const exists = pathExists(detectedPath);
+      const matchesCurrentPath = knownPaths.some((knownPath) => isPathInside(knownPath, detectedPath) || isPathInside(detectedPath, knownPath));
+      findings.push({
+        filePath,
+        detectedPath,
+        exists,
+        matchesCurrentPath,
+        status: exists && matchesCurrentPath ? 'ok' : 'warning',
+      });
+    }
+  }
+  return findings;
+}
+
+function markdownTableCell(value) {
+  return String(value ?? '').replace(/\r?\n/g, ' ').replace(/\|/g, '\\|');
+}
+
+function buildStudentPathHealthMarkdown(student, payload) {
+  const checkRows = payload.checks.map((check) => `| ${markdownTableCell(check.label)} | ${markdownTableCell(check.kind)} | ${check.exists ? '是' : '否'} | ${check.insideRoot ? '是' : '否'} | ${markdownTableCell(check.path)} | ${markdownTableCell(check.message)} |`).join('\n');
+  const staleRows = payload.stalePaths.length > 0
+    ? payload.stalePaths.map((item) => `| ${markdownTableCell(path.basename(item.filePath))} | ${markdownTableCell(item.detectedPath)} | ${item.exists ? '是' : '否'} | ${item.matchesCurrentPath ? '是' : '否'} | ${markdownTableCell(item.filePath)} |`).join('\n')
+    : '| 暂无 | 暂无 | - | - | - |';
+  const pathmapRows = Object.entries(payload.pathmap.paths || {}).map(([key, value]) => `| ${markdownTableCell(key)} | ${markdownTableCell(value)} |`).join('\n');
+  return `# ${student.name} 知识库路径健康报告
+
+生成时间：${new Date().toISOString()}
+
+状态：${payload.status}
+
+${payload.message}
+
+## 核心路径
+
+| 项目 | 类型 | 存在 | 位于知识库内 | 路径 | 说明 |
+| --- | --- | --- | --- | --- | --- |
+${checkRows}
+
+## 当前主机路径映射
+
+| 逻辑路径 | 当前主机路径 |
+| --- | --- |
+${pathmapRows}
+
+## 规则文件中的绝对路径
+
+| 文件 | 检测到的路径 | 路径存在 | 匹配当前知识库 | 文件位置 |
+| --- | --- | --- | --- | --- |
+${staleRows}
+
+## 建议
+
+- 若发现旧主机绝对路径，请优先更新 Agent 工具中的 Soul / 角色设定 / 长期背景。
+- 不建议自动批量替换旧规则文件；先确认旧路径是否仍有同步或备份用途。
+- 长期写入知识库的规则文件建议使用 @KB_ROOT、@RAW_DIR、@SUMMARY_DIR、@AGENT_FILE 等逻辑路径，并参考 .ai-manager/pathmap.json。
+`;
+}
+
+function checkStudentPathHealth(studentId) {
+  try {
+    const student = readStudentsIndex().find((item) => String(item.id) === String(studentId));
+    if (!student) return JSON.stringify({ ok: false, status: 'error', message: '未找到学生。' });
+    const normalized = toHostStudent(student);
+    const workspace = ensureStudentWorkspaceConfig(normalized);
+    const rootPath = normalized.rootPath || getStudentRootDir(normalized.name);
+    const checks = [
+      { label: '知识库根目录', kind: 'directory', path: rootPath, required: true },
+      { label: 'AGENT.md', kind: 'file', path: normalized.agentPath || path.join(rootPath, 'AGENT.md'), required: true },
+      { label: '原始资料库', kind: 'directory', path: normalized.rawPath || getRawDir(normalized.name), required: true },
+      { label: '学情分析汇总', kind: 'directory', path: normalized.summaryPath || getSummaryDir(normalized.name), required: true },
+      { label: '输出结果', kind: 'directory', path: normalized.outputPath || path.join(rootPath, '输出结果'), required: false },
+      { label: '成长模型', kind: 'directory', path: growthModelDirForStudent(normalized), required: false },
+      { label: '.ai-manager/metadata.json', kind: 'file', path: workspace.metadataPath, required: true },
+      { label: '.ai-manager/pathmap.json', kind: 'file', path: workspace.pathmapPath, required: true },
+    ].map((item) => {
+      const exists = pathExists(item.path);
+      const insideRoot = item.label === '知识库根目录' ? exists : isPathInside(rootPath, item.path);
+      const status = !exists && item.required ? 'error' : !insideRoot ? 'warning' : 'ok';
+      const message = !exists
+        ? (item.required ? '缺失，需要修复或重新指定。' : '可选路径尚未创建。')
+        : (!insideRoot ? '路径不在当前知识库根目录下，请确认是否为接管目录。' : '正常');
+      return { ...item, exists, insideRoot, status, message };
+    });
+    const stalePaths = scanAbsolutePathsInRuleFiles(normalized).filter((item) => item.status !== 'ok');
+    const missingCount = checks.filter((item) => item.status === 'error').length;
+    const warningCount = checks.filter((item) => item.status === 'warning').length;
+    const stalePathCount = stalePaths.length;
+    const status = missingCount > 0 ? 'error' : (warningCount > 0 || stalePathCount > 0 ? 'warning' : 'ok');
+    const message = status === 'ok'
+      ? '知识库核心路径与当前主机映射正常。'
+      : `发现 ${missingCount} 个缺失路径、${warningCount} 个路径提醒、${stalePathCount} 条疑似旧主机绝对路径。`;
+    const payload = {
+      ok: status !== 'error',
+      status,
+      message,
+      rootPath,
+      metadataPath: workspace.metadataPath,
+      pathmapPath: workspace.pathmapPath,
+      reportPath: studentWorkspaceHealthReportPath(normalized),
+      checks,
+      stalePaths,
+      pathmap: workspace.pathmap,
+      summary: {
+        totalChecks: checks.length,
+        missingCount,
+        warningCount,
+        stalePathCount,
+      },
+    };
+    fs.writeFileSync(payload.reportPath, buildStudentPathHealthMarkdown(normalized, payload), 'utf8');
+    fs.appendFileSync(studentWorkspaceMigrationLogPath(normalized), `\n- ${new Date().toISOString()} 路径健康检查：${message}\n`, 'utf8');
+    return JSON.stringify(payload);
+  } catch (error) {
+    return JSON.stringify({ ok: false, status: 'error', message: `知识库路径核对失败：${error.message}` });
+  }
+}
+
 function ensureStudentManagerFiles(student) {
   const managerDir = studentManagerDir(student);
   fs.mkdirSync(managerDir, { recursive: true });
@@ -280,6 +556,7 @@ function ensureStudentManagerFiles(student) {
     }, null, 2), 'utf8');
   }
   ensureAgentCenter(student);
+  ensureStudentWorkspaceConfig(student);
 }
 
 function readStudentMaterials(student) {
@@ -1447,10 +1724,21 @@ function migrateStudentWorkspace(studentId, newName) {
     fs.mkdirSync(newRaw, { recursive: true });
     fs.mkdirSync(newSummary, { recursive: true });
 
-    students[index] = { ...student, name: cleanName, rootPath: newRoot, rawPath: newRaw, summaryPath: newSummary };
+    const nextStudent = {
+      ...student,
+      name: cleanName,
+      rootPath: newRoot,
+      rawPath: newRaw,
+      summaryPath: newSummary,
+      agentPath: path.join(newRoot, 'AGENT.md'),
+      outputPath: path.join(newRoot, '输出结果'),
+    };
+    fs.mkdirSync(nextStudent.outputPath, { recursive: true });
+    ensureStudentWorkspaceConfig(nextStudent);
+    students[index] = nextStudent;
     writeStudentsIndex(students);
     notify('onNativeHostServiceChanged', getHostServiceStatus());
-    return JSON.stringify({ ok: true, name: cleanName, rootPathLabel: newRoot, rawPath: newRaw, summaryPath: newSummary });
+    return JSON.stringify({ ok: true, name: cleanName, rootPathLabel: newRoot, rawPath: newRaw, summaryPath: newSummary, agentPath: nextStudent.agentPath, outputPath: nextStudent.outputPath });
   } catch (error) {
     return JSON.stringify({ ok: false, message: `迁移知识库目录失败：${error.message}` });
   }
@@ -6078,6 +6366,7 @@ ipcMain.on('bridge:saveAgentConversationImport', (event, studentId, content, too
 ipcMain.on('bridge:selectAgentConversationFiles', (event, studentId, tool) => { licensedIpc(event, '对话历史导入', () => selectAgentConversationFiles(studentId, tool)); });
 ipcMain.on('bridge:saveConversationExtract', (event, studentId, extractJson, tool) => { licensedIpc(event, '对话历史提取', () => saveConversationExtract(studentId, extractJson, tool)); });
 ipcMain.on('bridge:openStudentRootDir', (event, studentId) => { licensedIpc(event, '打开学生知识库目录', () => openStudentRootDir(studentId)); });
+ipcMain.on('bridge:checkStudentPathHealth', (event, studentId) => { licensedIpc(event, '知识库路径核对', () => checkStudentPathHealth(studentId)); });
 ipcMain.on('bridge:getLicenseStatus', (event) => { event.returnValue = getLicenseStatus(); });
 ipcMain.on('bridge:activateLicense', (event, code) => { event.returnValue = activateLicense(code); });
 ipcMain.on('bridge:deactivateLicense', (event) => { event.returnValue = deactivateLicense(); });

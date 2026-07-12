@@ -341,6 +341,7 @@ type AndroidBridge = {
   selectAgentConversationFiles?: (studentId: string, tool: AgentToolId) => string;
   saveConversationExtract?: (studentId: string, extractJson: string, tool: AgentToolId) => string;
   openStudentRootDir?: (studentId: string) => string;
+  checkStudentPathHealth?: (studentId: string) => string;
   getLicenseStatus?: () => string;
   activateLicense?: (code: string) => string;
   deactivateLicense?: () => string;
@@ -439,6 +440,42 @@ type LearningReportHealth = {
   evidenceMissingCount?: number;
   warnings?: string[];
   message?: string;
+};
+
+type PathHealthCheck = {
+  label: string;
+  kind: string;
+  path: string;
+  exists: boolean;
+  insideRoot: boolean;
+  status: 'ok' | 'warning' | 'error' | string;
+  message?: string;
+};
+
+type PathHealthStalePath = {
+  filePath: string;
+  detectedPath: string;
+  exists: boolean;
+  matchesCurrentPath: boolean;
+  status: string;
+};
+
+type PathHealthReport = {
+  ok?: boolean;
+  status: 'ok' | 'warning' | 'error' | string;
+  message?: string;
+  rootPath?: string;
+  metadataPath?: string;
+  pathmapPath?: string;
+  reportPath?: string;
+  checks?: PathHealthCheck[];
+  stalePaths?: PathHealthStalePath[];
+  summary?: {
+    totalChecks?: number;
+    missingCount?: number;
+    warningCount?: number;
+    stalePathCount?: number;
+  };
 };
 
 type DownloadCandidate = {
@@ -664,8 +701,8 @@ const storageKey = 'edu-manager-launcher.students.v2';
 const themeStorageKey = 'edu-manager-launcher.theme.v1';
 const languageStorageKey = 'edu-manager-launcher.language.v1';
 const archiveKeywordStorageKey = 'edu-manager-launcher.archive-keywords.v1';
-const currentVersionCode = 87;
-const currentVersionName = '0.7.7';
+const currentVersionCode = 88;
+const currentVersionName = '0.7.8';
 const updateManifestUrl = [
   'https://www.greatbg.com/download/edu-manager-version.json',
   'http://www.greatbg.com/download/edu-manager-version.json',
@@ -3055,6 +3092,8 @@ function App() {
   const [learningReportMessage, setLearningReportMessage] = useState('');
   const [learningReportFolder, setLearningReportFolder] = useState('');
   const [learningReportHealth, setLearningReportHealth] = useState<LearningReportHealth | null>(null);
+  const [pathHealth, setPathHealth] = useState<PathHealthReport | null>(null);
+  const [pathHealthMessage, setPathHealthMessage] = useState('');
   const [inboxMessage, setInboxMessage] = useState('');
   const [downloadsMessage, setDownloadsMessage] = useState('');
   const [downloadFiles, setDownloadFiles] = useState<DownloadCandidate[]>([]);
@@ -3196,6 +3235,10 @@ function App() {
   const selectedStudentTool = selectedStudent ? getAgentToolProfile(selectedStudent.agentTool) : agentToolProfiles.qclaw;
   const selectedStudentAdapter = selectedStudent ? getAgentToolAdapter(selectedStudent.agentTool) : getAgentToolAdapter('qclaw');
   const selectedStudentPaths = selectedStudent ? pathsForStudent(selectedStudent) : pathsFor(draft.name);
+  useEffect(() => {
+    setPathHealth(null);
+    setPathHealthMessage('');
+  }, [selectedStudent?.id]);
   const activeAgentAdapter = activeSection === 'init' || activeSection === 'new' ? selectedToolAdapter : selectedStudentAdapter;
   const activeAgentTool = activeAgentAdapter.profile;
   const toolOpenState: Record<AgentToolId, boolean> = {
@@ -5007,6 +5050,26 @@ ${conversationText || '（请先粘贴对话历史）'}`;
     }
   };
 
+  const checkSelectedStudentPathHealth = () => {
+    if (!selectedStudent) return;
+    if (isWindows && !windowsLicenseActive) {
+      setPathHealthMessage('未激活状态仅支持只读浏览，激活后可执行知识库路径核对。');
+      return;
+    }
+    const raw = bridge()?.checkStudentPathHealth?.(selectedStudent.id);
+    if (!raw) {
+      setPathHealthMessage('当前环境不支持知识库路径核对。');
+      return;
+    }
+    try {
+      const result = JSON.parse(raw) as PathHealthReport;
+      setPathHealth(result);
+      setPathHealthMessage(result.message || (result.ok ? '知识库路径核对完成。' : '知识库路径核对发现问题。'));
+    } catch {
+      setPathHealthMessage('知识库路径核对结果解析失败。');
+    }
+  };
+
   const importFilesForStudent = (student: Student) => {
     setPendingImportStudentId(student.id);
     const ok = bridge()?.importFiles?.(student.id);
@@ -6186,7 +6249,7 @@ ${JSON.stringify(items, null, 2)}
       return;
     }
     try {
-      const result = JSON.parse(raw) as { ok?: boolean; message?: string; name?: string; rootPathLabel?: string };
+      const result = JSON.parse(raw) as { ok?: boolean; message?: string; name?: string; rootPathLabel?: string; rawPath?: string; summaryPath?: string; agentPath?: string; outputPath?: string };
       if (!result.ok) {
         setDigestMessage(result.message || '迁移知识库目录失败。');
         return;
@@ -6197,11 +6260,18 @@ ${JSON.stringify(items, null, 2)}
               ...student,
               ...studentEditDraft,
               name: result.name || cleanName,
+              rootPath: result.rootPathLabel || pathsFor(result.name || cleanName).root,
+              rawPath: result.rawPath || pathsFor(result.name || cleanName).raw,
+              summaryPath: result.summaryPath || pathsFor(result.name || cleanName).summary,
+              agentPath: result.agentPath || pathsFor(result.name || cleanName).agent,
+              outputPath: result.outputPath || pathsFor(result.name || cleanName).output,
               rootPathLabel: result.rootPathLabel || pathsFor(result.name || cleanName).root,
             }
           : student,
       );
       persist(next);
+      setPathHealth(null);
+      setPathHealthMessage('');
       setStudentEditDraft((current) => (current ? { ...current, name: result.name || cleanName, rootPathLabel: result.rootPathLabel || current.rootPathLabel } : current));
       setDigestMessage(`已迁移知识库目录：${result.rootPathLabel}`);
       window.setTimeout(() => setDigestMessage(''), 3600);
@@ -8233,6 +8303,72 @@ ${JSON.stringify(items, null, 2)}
                 <strong>{digestStatusText(selectedStudent)}</strong>
               </div>
             </div>
+            {isWindows && (
+              <section className="material-source-panel">
+                <div className="mini-heading">
+                  <strong>知识库路径核对</strong>
+                  <span>核对当前学生的知识库根目录、AGENT.md、原始资料库、学情汇总和规则文件中的旧主机绝对路径。</span>
+                </div>
+                <div className="actions compact-actions">
+                  <button className="secondary compact" onClick={checkSelectedStudentPathHealth} disabled={!windowsLicenseActive}>
+                    <RefreshCw size={16} />
+                    检查知识库路径
+                  </button>
+                  {pathHealth?.pathmapPath && (
+                    <button className="secondary compact" onClick={() => copyText(pathHealth.pathmapPath || '', '已复制 pathmap.json 路径。')}>
+                      <Clipboard size={16} />
+                      复制 pathmap 路径
+                    </button>
+                  )}
+                  {pathHealth?.reportPath && (
+                    <button className="secondary compact" onClick={() => copyText(pathHealth.reportPath || '', '已复制健康报告路径。')}>
+                      <Clipboard size={16} />
+                      复制报告路径
+                    </button>
+                  )}
+                </div>
+                {pathHealthMessage && (
+                  <div className={pathHealth?.status === 'error' ? 'notice warning-notice' : 'notice muted'}>
+                    {pathHealthMessage}
+                  </div>
+                )}
+                {pathHealth && (
+                  <>
+                    <div className="archive-grid">
+                      <InfoPanel icon={<ShieldCheck />} title="检查状态" value={pathHealth.status === 'ok' ? '正常' : pathHealth.status === 'warning' ? '有提醒' : '需处理'} />
+                      <InfoPanel icon={<ListChecks />} title="缺失路径" value={`${pathHealth.summary?.missingCount ?? 0} 项`} />
+                      <InfoPanel icon={<AlertTriangle />} title="旧绝对路径" value={`${pathHealth.summary?.stalePathCount ?? 0} 条`} />
+                      <InfoPanel icon={<FileText />} title="健康报告" value={pathHealth.reportPath || '未生成'} />
+                    </div>
+                    <div className="download-list">
+                      {(pathHealth.checks || []).map((check) => (
+                        <div className="download-item" key={`${check.label}-${check.path}`}>
+                          <span>
+                            <strong>{check.label}</strong>
+                            <small>{check.exists ? '已找到' : '未找到'} · {check.insideRoot ? '位于当前知识库内' : '不在当前知识库内'} · {check.message || check.status}</small>
+                            <small>{check.path}</small>
+                          </span>
+                          <em className={`staging-status-pill ${check.status}`}>{check.status}</em>
+                        </div>
+                      ))}
+                    </div>
+                    {(pathHealth.stalePaths || []).length > 0 && (
+                      <div className="notice warning-notice">
+                        <strong>检测到疑似旧主机路径</strong>
+                        <p>建议先更新 Agent 工具中的 Soul / 角色设定 / 长期背景，再决定是否手动修订规则文件。</p>
+                        <ul>
+                          {(pathHealth.stalePaths || []).slice(0, 6).map((item) => (
+                            <li key={`${item.filePath}-${item.detectedPath}`}>
+                              {item.detectedPath}（来源：{item.filePath}）
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
+                  </>
+                )}
+              </section>
+            )}
             <div className="actions">
               <button className="secondary" onClick={authorizeArchiveRoot} disabled={!windowsLicenseActive}>
                 <FolderOpen size={18} />

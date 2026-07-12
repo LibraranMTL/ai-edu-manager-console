@@ -157,6 +157,9 @@ contextBridge.exposeInMainWorld('AndroidBridge', {
   openStudentRootDir(studentId) {
     return ipcRenderer.sendSync('bridge:openStudentRootDir', studentId);
   },
+  checkStudentPathHealth(studentId) {
+    return ipcRenderer.sendSync('bridge:checkStudentPathHealth', studentId);
+  },
   getLicenseStatus() {
     return ipcRenderer.sendSync('bridge:getLicenseStatus');
   },

@@ -31,6 +31,15 @@ contextBridge.exposeInMainWorld('AndroidBridge', {
   analyzeAssetGovernance() {
     return ipcRenderer.sendSync('bridge:analyzeAssetGovernance');
   },
+  cleanupAssetReferences(assetId) {
+    return ipcRenderer.sendSync('bridge:cleanupAssetReferences', assetId);
+  },
+  createAssetVersionSnapshot(assetId) {
+    return ipcRenderer.sendSync('bridge:createAssetVersionSnapshot', assetId);
+  },
+  markAssetGovernanceDecision(assetId, decision, note) {
+    return ipcRenderer.sendSync('bridge:markAssetGovernanceDecision', assetId, decision, note);
+  },
   generateKnowledgeArchitectureReport() {
     return ipcRenderer.sendSync('bridge:generateKnowledgeArchitectureReport');
   },
@@ -70,11 +79,17 @@ contextBridge.exposeInMainWorld('AndroidBridge', {
   getProjectPromotionPlan(projectId) {
     return ipcRenderer.sendSync('bridge:getProjectPromotionPlan', projectId);
   },
+  getProjectPromotionAudit(projectId) {
+    return ipcRenderer.sendSync('bridge:getProjectPromotionAudit', projectId);
+  },
   executeProjectPromotionPlan(projectId, planJson) {
     return ipcRenderer.sendSync('bridge:executeProjectPromotionPlan', projectId, planJson);
   },
   publishProjectPromotion(projectId) {
     return ipcRenderer.sendSync('bridge:publishProjectPromotion', projectId);
+  },
+  rollbackProjectPromotionRun(projectId, runId) {
+    return ipcRenderer.sendSync('bridge:rollbackProjectPromotionRun', projectId, runId);
   },
   initStudentWorkspace(studentName, agentMd, indexMd, logMd) {
     return ipcRenderer.sendSync('bridge:initStudentWorkspace', studentName, agentMd, indexMd, logMd);
@@ -166,6 +181,12 @@ contextBridge.exposeInMainWorld('AndroidBridge', {
   repairStudentStalePaths(studentId) {
     return ipcRenderer.sendSync('bridge:repairStudentStalePaths', studentId);
   },
+  checkAllStudentsPathHealth() {
+    return ipcRenderer.sendSync('bridge:checkAllStudentsPathHealth');
+  },
+  resolveStudentPath(studentId, logicalPath) {
+    return ipcRenderer.sendSync('bridge:resolveStudentPath', studentId, logicalPath);
+  },
   getLicenseStatus() {
     return ipcRenderer.sendSync('bridge:getLicenseStatus');
   },
@@ -207,6 +228,18 @@ contextBridge.exposeInMainWorld('AndroidBridge', {
   },
   ensureGrowthModel(studentId) {
     return ipcRenderer.sendSync('bridge:ensureGrowthModel', studentId);
+  },
+  getGrowthEvidenceReview(studentId) {
+    return ipcRenderer.sendSync('bridge:getGrowthEvidenceReview', studentId);
+  },
+  updateGrowthEvidenceStatus(studentId, evidenceId, status, note) {
+    return ipcRenderer.sendSync('bridge:updateGrowthEvidenceStatus', studentId, evidenceId, status, note);
+  },
+  rebuildGrowthIndex(studentId) {
+    return ipcRenderer.sendSync('bridge:rebuildGrowthIndex', studentId);
+  },
+  getGrowthIndex(studentId) {
+    return ipcRenderer.sendSync('bridge:getGrowthIndex', studentId);
   },
   syncStudents(studentsJson) {
     return ipcRenderer.sendSync('bridge:syncStudents', studentsJson);

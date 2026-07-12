@@ -23,7 +23,7 @@ let hostServiceLastError = '';
 let todayUploadCount = 0;
 let uploadCountDate = new Date().toISOString().slice(0, 10);
 
-const APP_VERSION = '0.7.16';
+const APP_VERSION = '0.7.17';
 const DEFAULT_HOST_PORT = 18777;
 const AGENT_TOOL_IDS = ['qclaw', 'marvis', 'hohu', 'openclaw', 'ima.copilot', 'workbuddy', 'codex', 'claude-code', 'chatgpt', 'claude', 'doubao', 'coze', 'fastgpt'];
 const WEB_AGENT_TOOL_URLS = {
@@ -290,8 +290,20 @@ function studentMaintenanceReportPath(student) {
   return path.join(studentAiManagerDir(student), 'maintenance-report.md');
 }
 
+function allStudentsPathHealthReportPath() {
+  return path.join(app.getPath('userData'), 'path-health', 'all-students-health-report.md');
+}
+
 function growthEvidenceReviewPath(student) {
   return path.join(growthModelDirForStudent(student), '成长证据审核.json');
+}
+
+function growthIndexPath(student) {
+  return path.join(growthModelDirForStudent(student), 'growth-index.json');
+}
+
+function growthIndexMarkdownPath(student) {
+  return path.join(growthModelDirForStudent(student), 'growth-index.md');
 }
 
 function projectPromotionRunLogPath(project) {
@@ -1046,6 +1058,48 @@ function createAssetVersionSnapshot(assetId) {
     return JSON.stringify({ ok: true, path: file, content: report, count: group.length, message: `已生成 ${group.length} 条版本关系快照。` });
   } catch (error) {
     return JSON.stringify({ ok: false, message: `生成版本快照失败：${error.message}` });
+  }
+}
+
+function markAssetGovernanceDecision(assetId, decision, note = '') {
+  try {
+    const allowed = {
+      keep: '保留',
+      duplicate_watch: '重复观察',
+      manual_review: '人工处理',
+      archive_watch: '归档观察',
+      resolved: '已处理',
+    };
+    const nextDecision = allowed[String(decision)] ? String(decision) : 'manual_review';
+    const assets = readAssetIndex();
+    const index = assets.findIndex((asset) => String(asset.assetId) === String(assetId));
+    if (index < 0) return JSON.stringify({ ok: false, message: '未找到资产。' });
+    const now = new Date().toISOString();
+    const asset = assets[index];
+    assets[index] = {
+      ...asset,
+      governanceDecision: nextDecision,
+      governanceDecisionLabel: allowed[nextDecision],
+      governanceDecisionNote: String(note || ''),
+      governanceDecisionAt: now,
+      governanceStatus: nextDecision === 'resolved' ? 'resolved' : asset.governanceStatus || 'reviewed',
+      updatedAt: now,
+    };
+    writeAssetIndex(assets);
+    const decisionFile = path.join(app.getPath('userData'), 'asset-governance-decisions.md');
+    writeTextIfMissing(decisionFile, `# 文件资产治理人工决策记录\n\n| 时间 | 资产 | 文件 | 决策 | 备注 | 路径 |\n| --- | --- | --- | --- | --- | --- |\n`);
+    fs.appendFileSync(decisionFile, `| ${now} | ${mdCell(asset.assetId)} | ${mdCell(asset.filename)} | ${mdCell(allowed[nextDecision])} | ${mdCell(note || '-')} | ${mdCell(asset.path)} |\n`, 'utf8');
+    appendHostTimeline({ type: 'asset_governance_decision', title: 'Asset governance decision', detail: `${asset.filename} ${allowed[nextDecision]}`, count: 1 });
+    return JSON.stringify({
+      ...assetIndexSummary(),
+      ok: true,
+      decision: nextDecision,
+      decisionLabel: allowed[nextDecision],
+      decisionPath: decisionFile,
+      message: `已将「${asset.filename}」标记为：${allowed[nextDecision]}。`,
+    });
+  } catch (error) {
+    return JSON.stringify({ ok: false, message: `标记资产治理决策失败：${error.message}` });
   }
 }
 
@@ -3544,12 +3598,77 @@ function getProjectPromotionAudit(projectId) {
       }
     }
     const runLog = readProjectPromotionRunLog(ensured);
-    const report = `# ${ensured.name} 贡献冲突与回滚记录\n\n生成时间：${new Date().toISOString()}\n\n## 冲突预览\n\n| 学生 | 风险 | 目标 | 说明 |\n| --- | --- | --- | --- |\n${conflicts.map((item) => `| ${mdCell(item.studentName)} | ${mdCell(item.severity)} | ${mdCell(item.target)} | ${mdCell(item.message)} |`).join('\n') || '| 暂无 | - | - | - |'}\n\n## 执行记录\n\n| 时间 | 类型 | 状态 | 回滚提示 |\n| --- | --- | --- | --- |\n${runLog.runs.map((run) => `| ${mdCell(run.at)} | ${mdCell(run.type)} | ${mdCell(run.status)} | ${mdCell(run.rollbackHint || '-')} |`).join('\n') || '| 暂无 | - | - | - |'}\n`;
+    const rolledBackRuns = runLog.runs.filter((run) => run.status === 'rolled_back' || run.rolledBackAt);
+    const report = `# ${ensured.name} 贡献冲突与回滚记录\n\n生成时间：${new Date().toISOString()}\n\n## 冲突预览\n\n| 学生 | 风险 | 目标 | 说明 |\n| --- | --- | --- | --- |\n${conflicts.map((item) => `| ${mdCell(item.studentName)} | ${mdCell(item.severity)} | ${mdCell(item.target)} | ${mdCell(item.message)} |`).join('\n') || '| 暂无 | - | - | - |'}\n\n## 执行记录\n\n| 时间 | 类型 | 状态 | 回滚提示 |\n| --- | --- | --- | --- |\n${runLog.runs.map((run) => `| ${mdCell(run.at)} | ${mdCell(run.type)} | ${mdCell(run.status)} | ${mdCell(run.rollbackHint || '-')} |`).join('\n') || '| 暂无 | - | - | - |'}\n\n## 回滚记录\n\n| 回滚时间 | 执行记录 | 方式 | 影响 |\n| --- | --- | --- | --- |\n${rolledBackRuns.map((run) => `| ${mdCell(run.rolledBackAt || run.at)} | ${mdCell(run.id)} | ${mdCell(run.rollbackMode || 'safe_mark_only')} | ${mdCell((run.rollbackRows || []).map((row) => `${row.studentName}: ${row.revertedEvidenceCount || 0} 条证据`).join('、') || '暂无成长证据变化')} |`).join('\n') || '| 暂无 | - | - | - |'}\n`;
     fs.mkdirSync(path.dirname(projectPromotionAuditPath(ensured)), { recursive: true });
     fs.writeFileSync(projectPromotionAuditPath(ensured), report, 'utf8');
     return JSON.stringify({ ok: true, conflicts, runLog, path: projectPromotionAuditPath(ensured), content: report, message: `发现 ${conflicts.length} 条贡献冲突提醒。` });
   } catch (error) {
     return JSON.stringify({ ok: false, message: `读取贡献审计失败：${error.message}` });
+  }
+}
+
+function rollbackProjectPromotionRun(projectId, runId) {
+  try {
+    const project = readProjects().map(normalizeProject).find((item) => String(item.id) === String(projectId));
+    if (!project) return JSON.stringify({ ok: false, message: '未找到学习项目。' });
+    const ensured = ensureProjectWorkspace(project);
+    const log = readProjectPromotionRunLog(ensured);
+    const run = log.runs.find((item) => String(item.id) === String(runId));
+    if (!run) return JSON.stringify({ ok: false, message: '未找到贡献执行记录。' });
+    if (run.status === 'rolled_back') {
+      return JSON.stringify({ ...JSON.parse(getProjectPromotionAudit(projectId)), message: '该执行记录已经标记为回滚。' });
+    }
+    const now = new Date().toISOString();
+    const today = now.slice(0, 10);
+    const affectedStudentIds = mergeUnique([
+      ...(Array.isArray(run.results) ? run.results.map((item) => String(item.studentId || '')).filter(Boolean) : []),
+      ...(Array.isArray(run.published) ? run.published.map((item) => String(item.studentId || '')).filter(Boolean) : []),
+      ...(ensured.studentIds || []).map(String),
+    ]);
+    const students = readStudentsIndex().filter((student) => affectedStudentIds.includes(String(student.id)));
+    const rollbackRows = [];
+    for (const student of students) {
+      const normalized = toHostStudent(student);
+      const growth = ensureGrowthModelForStudent(normalized);
+      const review = readGrowthEvidenceReview(normalized);
+      let changed = 0;
+      for (const candidate of review.candidates) {
+        if (String(candidate.projectId || '') !== String(ensured.id)) continue;
+        if (candidate.status === 'rejected') continue;
+        candidate.previousStatusBeforeRollback = candidate.status;
+        candidate.status = 'rejected';
+        candidate.note = [candidate.note, `由知识贡献回滚自动标记：${run.id}`].filter(Boolean).join('；');
+        candidate.updatedAt = now;
+        changed += 1;
+      }
+      if (changed > 0) writeGrowthEvidenceReview(normalized, review);
+      const rollbackText = `- 回滚时间：${now}\n- 项目：${ensured.name}\n- 执行记录：${run.id}\n- 回滚方式：安全标记，不删除物理文件\n- 成长证据候选回退：${changed} 条\n- 原状态：${run.status}`;
+      appendTextSection(path.join(growth.dir, '项目贡献.md'), `${ensured.name} · 贡献回滚 · ${today}`, rollbackText);
+      const summaryPath = normalized.summaryPath || getSummaryDir(normalized.name);
+      const detailFile = path.join(summaryPath, '项目贡献明细.md');
+      writeTextIfMissing(detailFile, `# ${normalized.name} 项目贡献明细\n\n记录项目归档确认清单的逐项处理结果，便于回溯来源、目标和动作。\n\n| 日期 | 项目 | 类型 | 条目 | 动作 | 来源路径 | 目标 |\n| --- | --- | --- | --- | --- | --- | --- |\n`);
+      fs.appendFileSync(detailFile, `| ${today} | ${mdCell(ensured.name)} | rollback | ${mdCell(run.id)} | 回滚标记 | ${mdCell(projectPromotionRunLogPath(ensured))} | ${mdCell(growth.dir)} |\n`, 'utf8');
+      rollbackRows.push({ studentId: normalized.id, studentName: normalized.name, revertedEvidenceCount: changed, growthDir: growth.dir });
+    }
+    run.previousStatusBeforeRollback = run.status;
+    run.status = 'rolled_back';
+    run.rolledBackAt = now;
+    run.rollbackMode = 'safe_mark_only';
+    run.rollbackHint = '已安全标记回滚；不会自动删除已复制或已发布的物理文件。请根据贡献明细人工核对是否需要清理。';
+    run.rollbackRows = rollbackRows;
+    writeProjectPromotionRunLog(ensured, log);
+    appendTextSection(projectPromotionAuditPath(ensured), `贡献回滚 · ${today} · ${run.id}`, `- 回滚方式：安全标记，不删除物理文件\n- 影响学生：${rollbackRows.map((item) => `${item.studentName}（证据 ${item.revertedEvidenceCount} 条）`).join('、') || '暂无'}\n- 建议：如需物理撤销，请根据项目贡献明细逐项人工处理。`);
+    appendHostTimeline({ type: 'project_promotion_rolled_back', title: 'Project promotion rolled back', detail: ensured.name, count: rollbackRows.length });
+    const audit = JSON.parse(getProjectPromotionAudit(projectId));
+    return JSON.stringify({
+      ...audit,
+      ok: true,
+      rollbackRows,
+      message: `已安全标记回滚：影响 ${rollbackRows.length} 个学生，成长证据候选回退 ${rollbackRows.reduce((total, item) => total + Number(item.revertedEvidenceCount || 0), 0)} 条。`,
+    });
+  } catch (error) {
+    return JSON.stringify({ ok: false, message: `回滚知识贡献失败：${error.message}` });
   }
 }
 
@@ -3819,6 +3938,59 @@ function generateStudentMaintenanceReport(studentId) {
   }
 }
 
+function checkAllStudentsPathHealth() {
+  try {
+    const students = readStudentsIndex().map(toHostStudent);
+    const reports = [];
+    for (const student of students) {
+      try {
+        const report = JSON.parse(checkStudentPathHealth(student.id));
+        reports.push({
+          studentId: student.id,
+          studentName: student.name,
+          status: report.status || 'unknown',
+          message: report.message || '',
+          rootPath: report.rootPath || student.rootPath || getStudentRootDir(student.name),
+          reportPath: report.reportPath || '',
+          metadataPath: report.metadataPath || '',
+          pathmapPath: report.pathmapPath || '',
+          summary: report.summary || {},
+        });
+      } catch (error) {
+        reports.push({
+          studentId: student.id,
+          studentName: student.name,
+          status: 'error',
+          message: error.message,
+          rootPath: student.rootPath || getStudentRootDir(student.name),
+          reportPath: '',
+          metadataPath: '',
+          pathmapPath: '',
+          summary: {},
+        });
+      }
+    }
+    const statusRank = { error: 3, warning: 2, ok: 1 };
+    const overallStatus = reports.some((item) => item.status === 'error')
+      ? 'error'
+      : reports.some((item) => item.status === 'warning')
+        ? 'warning'
+        : 'ok';
+    const rows = reports
+      .sort((a, b) => (statusRank[b.status] || 0) - (statusRank[a.status] || 0) || a.studentName.localeCompare(b.studentName, 'zh-CN'))
+      .map((item) => `| ${mdCell(item.studentName)} | ${mdCell(item.status)} | ${Number(item.summary?.missingCount || 0)} | ${Number(item.summary?.warningCount || 0)} | ${Number(item.summary?.stalePathCount || 0)} | ${mdCell(item.message || '-')} | ${mdCell(item.rootPath)} | ${mdCell(item.reportPath || '-')} |`)
+      .join('\n') || '| 暂无学生 | - | 0 | 0 | 0 | - | - | - |';
+    const content = `# 所有学生知识库路径核对总报告\n\n生成时间：${new Date().toISOString()}\n\n## 总览\n\n| 指标 | 数量 |\n| --- | ---: |\n| 学生数 | ${reports.length} |\n| 正常 | ${reports.filter((item) => item.status === 'ok').length} |\n| 警告 | ${reports.filter((item) => item.status === 'warning').length} |\n| 错误 | ${reports.filter((item) => item.status === 'error').length} |\n\n## 明细\n\n| 学生 | 状态 | 缺失项 | 警告项 | 旧路径 | 说明 | 根目录 | 学生报告 |\n| --- | --- | ---: | ---: | ---: | --- | --- | --- |\n${rows}\n\n## 建议\n\n- 若“旧路径”大于 0，请进入对应学生执行“修复旧主机路径”。\n- 若“缺失项”大于 0，请先确认同步盘是否完成同步，再补建缺失目录或重新接管知识库。\n- 本报告只核对路径与配置，不会移动、删除、覆盖任何知识库文件。\n`;
+    const file = allStudentsPathHealthReportPath();
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, content, 'utf8');
+    appendHostTimeline({ type: 'all_students_path_health', title: 'All students path health checked', detail: overallStatus, count: reports.length });
+    return JSON.stringify({ ok: true, status: overallStatus, reports, path: file, content, message: `已完成 ${reports.length} 个学生的路径核对，总体状态：${overallStatus}。` });
+  } catch (error) {
+    return JSON.stringify({ ok: false, message: `批量核对学生路径失败：${error.message}` });
+  }
+}
+
 function readGrowthEvidenceReview(student) {
   const file = growthEvidenceReviewPath(student);
   const parsed = safeReadJson(file, {});
@@ -3878,6 +4050,119 @@ function getGrowthEvidenceReview(studentId) {
     return JSON.stringify({ ok: true, review, path: growthEvidenceReviewPath(normalized), message: `已读取 ${review.candidates.length} 条成长证据候选。` });
   } catch (error) {
     return JSON.stringify({ ok: false, message: `读取成长证据审核失败：${error.message}` });
+  }
+}
+
+function rebuildGrowthIndex(studentId) {
+  try {
+    const student = readStudentsIndex().find((item) => String(item.id) === String(studentId));
+    if (!student) return JSON.stringify({ ok: false, message: '未找到学生。' });
+    const normalized = toHostStudent(student);
+    const growth = ensureGrowthModelForStudent(normalized);
+    const review = readGrowthEvidenceReview(normalized);
+    const projects = readProjects().map(normalizeProject).filter((project) => (project.studentIds || []).map(String).includes(String(normalized.id)));
+    const abilities = new Map();
+    const projectEvidenceCount = new Map();
+    for (const candidate of review.candidates) {
+      const ability = String(candidate.ability || '待标注');
+      const item = abilities.get(ability) || {
+        name: ability,
+        total: 0,
+        pending: 0,
+        confirmed: 0,
+        watching: 0,
+        rejected: 0,
+        projectNames: new Set(),
+        evidenceIds: [],
+      };
+      item.total += 1;
+      if (candidate.status === 'confirmed') item.confirmed += 1;
+      else if (candidate.status === 'watching') item.watching += 1;
+      else if (candidate.status === 'rejected') item.rejected += 1;
+      else item.pending += 1;
+      if (candidate.projectName) item.projectNames.add(candidate.projectName);
+      item.evidenceIds.push(candidate.id);
+      abilities.set(ability, item);
+      if (candidate.projectId) projectEvidenceCount.set(String(candidate.projectId), (projectEvidenceCount.get(String(candidate.projectId)) || 0) + 1);
+    }
+    const abilityList = Array.from(abilities.values()).map((item) => ({
+      name: item.name,
+      evidenceCount: item.total,
+      pendingCount: item.pending,
+      confirmedCount: item.confirmed,
+      watchingCount: item.watching,
+      rejectedCount: item.rejected,
+      projectNames: Array.from(item.projectNames),
+      evidenceIds: item.evidenceIds,
+    })).sort((a, b) => b.evidenceCount - a.evidenceCount || a.name.localeCompare(b.name, 'zh-CN'));
+    const projectList = projects.map((project) => ({
+      projectId: project.id,
+      projectName: project.name,
+      status: project.status || 'active',
+      evidenceCount: projectEvidenceCount.get(String(project.id)) || 0,
+      knowledgeRootPath: project.knowledgeRootPath,
+      promotionPath: project.promotionPath || '',
+      publishedAt: project.publishedAt || '',
+    }));
+    const index = {
+      version: 1,
+      studentId: normalized.id,
+      studentName: normalized.name,
+      updatedAt: new Date().toISOString(),
+      growthDir: growth.dir,
+      sourceFiles: {
+        evidenceReview: growthEvidenceReviewPath(normalized),
+        evidenceMd: path.join(growth.dir, '成长证据.md'),
+        projectContributionMd: path.join(growth.dir, '项目贡献.md'),
+      },
+      summary: {
+        evidenceCount: review.candidates.length,
+        pendingCount: review.candidates.filter((item) => !['confirmed', 'watching', 'rejected'].includes(String(item.status))).length,
+        confirmedCount: review.candidates.filter((item) => item.status === 'confirmed').length,
+        watchingCount: review.candidates.filter((item) => item.status === 'watching').length,
+        rejectedCount: review.candidates.filter((item) => item.status === 'rejected').length,
+        abilityCount: abilityList.length,
+        projectCount: projectList.length,
+      },
+      abilities: abilityList,
+      projects: projectList,
+      evidence: review.candidates.map((item) => ({
+        id: item.id,
+        title: item.title,
+        status: item.status,
+        ability: item.ability || '待标注',
+        projectId: item.projectId || '',
+        projectName: item.projectName || '',
+        sourcePath: item.sourcePath || '',
+        confidence: item.confidence || '',
+        updatedAt: item.updatedAt || item.createdAt || '',
+      })),
+    };
+    fs.mkdirSync(path.dirname(growthIndexPath(normalized)), { recursive: true });
+    fs.writeFileSync(growthIndexPath(normalized), JSON.stringify(index, null, 2), 'utf8');
+    const abilityRows = abilityList.map((item) => `| ${mdCell(item.name)} | ${item.evidenceCount} | ${item.confirmedCount} | ${item.watchingCount} | ${item.pendingCount} | ${item.rejectedCount} | ${mdCell(item.projectNames.join('、') || '-')} |`).join('\n') || '| 暂无 | 0 | 0 | 0 | 0 | 0 | - |';
+    const projectRows = projectList.map((item) => `| ${mdCell(item.projectName)} | ${mdCell(item.status)} | ${item.evidenceCount} | ${mdCell(item.publishedAt || '-')} | ${mdCell(item.knowledgeRootPath || '-')} |`).join('\n') || '| 暂无 | - | 0 | - | - |';
+    const markdown = `# ${normalized.name} 成长模型结构化索引\n\n生成时间：${index.updatedAt}\n\n## 总览\n\n| 指标 | 数量 |\n| --- | ---: |\n| 成长证据候选 | ${index.summary.evidenceCount} |\n| 已确认 | ${index.summary.confirmedCount} |\n| 观察中 | ${index.summary.watchingCount} |\n| 待审核 | ${index.summary.pendingCount} |\n| 已驳回/回滚 | ${index.summary.rejectedCount} |\n| 能力维度 | ${index.summary.abilityCount} |\n| 关联项目 | ${index.summary.projectCount} |\n\n## 能力维度\n\n| 能力 | 证据 | 已确认 | 观察中 | 待审核 | 驳回/回滚 | 来源项目 |\n| --- | ---: | ---: | ---: | ---: | ---: | --- |\n${abilityRows}\n\n## 关联项目\n\n| 项目 | 状态 | 证据数 | 发布时间 | 知识空间 |\n| --- | --- | ---: | --- | --- |\n${projectRows}\n\n> 该索引由教育管家控制台生成，用于把散落在成长证据、项目贡献和知识贡献中的记录结构化。它不会覆盖原始 Markdown 内容。\n`;
+    fs.writeFileSync(growthIndexMarkdownPath(normalized), markdown, 'utf8');
+    appendHostTimeline({ type: 'growth_index_rebuilt', title: 'Growth index rebuilt', detail: normalized.name, count: review.candidates.length });
+    return JSON.stringify({ ok: true, index, path: growthIndexPath(normalized), markdownPath: growthIndexMarkdownPath(normalized), content: markdown, message: `已重建「${normalized.name}」成长模型结构化索引。` });
+  } catch (error) {
+    return JSON.stringify({ ok: false, message: `重建成长模型结构化索引失败：${error.message}` });
+  }
+}
+
+function getGrowthIndex(studentId) {
+  try {
+    const student = readStudentsIndex().find((item) => String(item.id) === String(studentId));
+    if (!student) return JSON.stringify({ ok: false, message: '未找到学生。' });
+    const normalized = toHostStudent(student);
+    const file = growthIndexPath(normalized);
+    if (!fs.existsSync(file)) return rebuildGrowthIndex(studentId);
+    const index = safeReadJson(file, {});
+    const content = fs.existsSync(growthIndexMarkdownPath(normalized)) ? readSmallTextFile(growthIndexMarkdownPath(normalized), 512 * 1024) : '';
+    return JSON.stringify({ ok: true, index, path: file, markdownPath: growthIndexMarkdownPath(normalized), content, message: '已读取成长模型结构化索引。' });
+  } catch (error) {
+    return JSON.stringify({ ok: false, message: `读取成长模型结构化索引失败：${error.message}` });
   }
 }
 
@@ -7094,6 +7379,7 @@ ipcMain.on('bridge:rebuildAssetIndex', (event) => { licensedIpc(event, '资产�
 ipcMain.on('bridge:analyzeAssetGovernance', (event) => { licensedIpc(event, '资产治理建议', () => analyzeAssetGovernance()); });
 ipcMain.on('bridge:cleanupAssetReferences', (event, assetId) => { licensedIpc(event, '资产引用清理', () => cleanupAssetReferences(assetId)); });
 ipcMain.on('bridge:createAssetVersionSnapshot', (event, assetId) => { licensedIpc(event, '资产版本快照', () => createAssetVersionSnapshot(assetId)); });
+ipcMain.on('bridge:markAssetGovernanceDecision', (event, assetId, decision, note) => { licensedIpc(event, '资产治理人工决策', () => markAssetGovernanceDecision(assetId, decision, note)); });
 ipcMain.on('bridge:generateKnowledgeArchitectureReport', (event) => { licensedIpc(event, '知识关系图生成', () => generateKnowledgeArchitectureReport()); });
 ipcMain.on('bridge:getProjects', (event) => { event.returnValue = getProjects(); });
 ipcMain.on('bridge:createProject', (event, optionsJson) => { licensedIpc(event, '学习项目创建', () => createProject(optionsJson)); });
@@ -7110,6 +7396,7 @@ ipcMain.on('bridge:getProjectPromotionPlan', (event, projectId) => { licensedIpc
 ipcMain.on('bridge:getProjectPromotionAudit', (event, projectId) => { licensedIpc(event, '知识贡献审计', () => getProjectPromotionAudit(projectId)); });
 ipcMain.on('bridge:executeProjectPromotionPlan', (event, projectId, planJson) => { licensedIpc(event, '执行归档确认清单', () => executeProjectPromotionPlan(projectId, planJson)); });
 ipcMain.on('bridge:publishProjectPromotion', (event, projectId) => { licensedIpc(event, '知识贡献发布', () => publishProjectPromotion(projectId)); });
+ipcMain.on('bridge:rollbackProjectPromotionRun', (event, projectId, runId) => { licensedIpc(event, '知识贡献回滚', () => rollbackProjectPromotionRun(projectId, runId)); });
 ipcMain.on('bridge:initStudentWorkspace', (event, studentName, agentMd, indexMd, logMd) => {
   licensedIpc(event, '初始化教育管家', () => initStudentWorkspace(studentName, agentMd, indexMd, logMd));
 });
@@ -7144,6 +7431,7 @@ ipcMain.on('bridge:saveConversationExtract', (event, studentId, extractJson, too
 ipcMain.on('bridge:openStudentRootDir', (event, studentId) => { licensedIpc(event, '打开学生知识库目录', () => openStudentRootDir(studentId)); });
 ipcMain.on('bridge:checkStudentPathHealth', (event, studentId) => { licensedIpc(event, '知识库路径核对', () => checkStudentPathHealth(studentId)); });
 ipcMain.on('bridge:repairStudentStalePaths', (event, studentId) => { licensedIpc(event, '知识库路径修复', () => repairStudentStalePaths(studentId)); });
+ipcMain.on('bridge:checkAllStudentsPathHealth', (event) => { licensedIpc(event, '批量知识库路径核对', () => checkAllStudentsPathHealth()); });
 ipcMain.on('bridge:resolveStudentPath', (event, studentId, logicalPath) => { event.returnValue = resolveStudentPathFromLogical(studentId, logicalPath); });
 ipcMain.on('bridge:getLicenseStatus', (event) => { event.returnValue = getLicenseStatus(); });
 ipcMain.on('bridge:activateLicense', (event, code) => { event.returnValue = activateLicense(code); });
@@ -7165,6 +7453,8 @@ ipcMain.on('bridge:ensureLearningReports', (event, studentId) => { licensedIpc(e
 ipcMain.on('bridge:ensureGrowthModel', (event, studentId) => { licensedIpc(event, '成长模型补建', () => ensureGrowthModel(studentId)); });
 ipcMain.on('bridge:getGrowthEvidenceReview', (event, studentId) => { event.returnValue = getGrowthEvidenceReview(studentId); });
 ipcMain.on('bridge:updateGrowthEvidenceStatus', (event, studentId, evidenceId, status, note) => { licensedIpc(event, '成长证据审核', () => updateGrowthEvidenceStatus(studentId, evidenceId, status, note)); });
+ipcMain.on('bridge:rebuildGrowthIndex', (event, studentId) => { licensedIpc(event, '成长模型结构化索引', () => rebuildGrowthIndex(studentId)); });
+ipcMain.on('bridge:getGrowthIndex', (event, studentId) => { event.returnValue = getGrowthIndex(studentId); });
 ipcMain.on('bridge:syncStudents', (event, studentsJson) => { licensedIpc(event, '学生档案同步', () => syncStudentsIndex(studentsJson)); });
 ipcMain.on('bridge:selectKnowledgeBaseRoot', (event) => { licensedIpc(event, '接管已有知识库', () => selectKnowledgeBaseRoot()); });
 ipcMain.on('bridge:scanKnowledgeBase', (event, rootPath, studentName) => { event.returnValue = scanExistingKnowledgeBase(rootPath, studentName); });

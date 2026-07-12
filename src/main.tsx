@@ -201,6 +201,10 @@ type AssetRecord = {
   governanceAction?: string;
   governanceReason?: string;
   governanceRisk?: string;
+  governanceDecision?: string;
+  governanceDecisionLabel?: string;
+  governanceDecisionNote?: string;
+  governanceDecisionAt?: string;
   staleReferenceCount?: number;
   duplicateReferenceCount?: number;
   duplicateAssetCount?: number;
@@ -318,6 +322,10 @@ type PromotionRunRecord = {
   type: string;
   status: string;
   rollbackHint?: string;
+  rolledBackAt?: string;
+  rollbackMode?: string;
+  results?: Array<{ studentId?: string; itemId?: string; action?: string; ok?: boolean; target?: string }>;
+  published?: Array<{ studentId?: string; studentName?: string; growthDir?: string }>;
 };
 
 type GrowthEvidenceCandidate = {
@@ -334,6 +342,34 @@ type GrowthEvidenceCandidate = {
 
 type GrowthEvidenceReviewState = {
   candidates: GrowthEvidenceCandidate[];
+};
+
+type GrowthIndexState = {
+  summary?: {
+    evidenceCount?: number;
+    pendingCount?: number;
+    confirmedCount?: number;
+    watchingCount?: number;
+    rejectedCount?: number;
+    abilityCount?: number;
+    projectCount?: number;
+  };
+  abilities?: Array<{
+    name: string;
+    evidenceCount: number;
+    confirmedCount: number;
+    watchingCount: number;
+    pendingCount: number;
+    rejectedCount: number;
+    projectNames?: string[];
+  }>;
+  projects?: Array<{
+    projectId: string;
+    projectName: string;
+    status: string;
+    evidenceCount: number;
+    publishedAt?: string;
+  }>;
 };
 
 type ScheduleLedgerEntry = {
@@ -372,6 +408,7 @@ type AndroidBridge = {
   analyzeAssetGovernance?: () => string;
   cleanupAssetReferences?: (assetId: string) => string;
   createAssetVersionSnapshot?: (assetId: string) => string;
+  markAssetGovernanceDecision?: (assetId: string, decision: string, note?: string) => string;
   generateKnowledgeArchitectureReport?: () => string;
   getProjects?: () => string;
   createProject?: (optionsJson: string) => string;
@@ -388,6 +425,7 @@ type AndroidBridge = {
   getProjectPromotionAudit?: (projectId: string) => string;
   executeProjectPromotionPlan?: (projectId: string, planJson: string) => string;
   publishProjectPromotion?: (projectId: string) => string;
+  rollbackProjectPromotionRun?: (projectId: string, runId: string) => string;
   importImages?: (studentName: string) => boolean;
   takePhoto?: (studentName: string) => boolean;
   initStudentWorkspace?: (studentName: string, agentMd: string, indexMd: string, logMd: string) => string;
@@ -417,6 +455,7 @@ type AndroidBridge = {
   openStudentRootDir?: (studentId: string) => string;
   checkStudentPathHealth?: (studentId: string) => string;
   repairStudentStalePaths?: (studentId: string) => string;
+  checkAllStudentsPathHealth?: () => string;
   resolveStudentPath?: (studentId: string, logicalPath: string) => string;
   getLicenseStatus?: () => string;
   activateLicense?: (code: string) => string;
@@ -436,6 +475,8 @@ type AndroidBridge = {
   ensureGrowthModel?: (studentId: string) => string;
   getGrowthEvidenceReview?: (studentId: string) => string;
   updateGrowthEvidenceStatus?: (studentId: string, evidenceId: string, status: string, note?: string) => string;
+  rebuildGrowthIndex?: (studentId: string) => string;
+  getGrowthIndex?: (studentId: string) => string;
   checkUpdate?: (manifestUrl: string, currentVersionCode: number) => boolean;
   downloadAndInstallUpdate?: (apkUrl: string) => boolean;
   scanDownloads?: () => string;
@@ -782,8 +823,8 @@ const storageKey = 'edu-manager-launcher.students.v2';
 const themeStorageKey = 'edu-manager-launcher.theme.v1';
 const languageStorageKey = 'edu-manager-launcher.language.v1';
 const archiveKeywordStorageKey = 'edu-manager-launcher.archive-keywords.v1';
-const currentVersionCode = 96;
-const currentVersionName = '0.7.16';
+const currentVersionCode = 97;
+const currentVersionName = '0.7.17';
 const updateManifestUrl = [
   'https://www.greatbg.com/download/edu-manager-version.json',
   'http://www.greatbg.com/download/edu-manager-version.json',
@@ -3241,6 +3282,8 @@ function App() {
   const [projectMessage, setProjectMessage] = useState('');
   const [knowledgeGraphPreview, setKnowledgeGraphPreview] = useState('');
   const [knowledgeGraphNodes, setKnowledgeGraphNodes] = useState<KnowledgeGraphNode[]>([]);
+  const [knowledgeGraphSearch, setKnowledgeGraphSearch] = useState('');
+  const [knowledgeGraphTypeFilter, setKnowledgeGraphTypeFilter] = useState<'all' | 'student' | 'project' | 'asset' | 'growth'>('all');
   const [projectAuditItems, setProjectAuditItems] = useState<ProjectAuditItem[]>([]);
   const [projectAuditFilter, setProjectAuditFilter] = useState<'all' | 'high' | 'medium' | 'unbound_student' | 'no_assets' | 'stale_promotion'>('all');
   const [selectedProjectId, setSelectedProjectId] = useState('');
@@ -3257,6 +3300,8 @@ function App() {
   const [promotionRuns, setPromotionRuns] = useState<PromotionRunRecord[]>([]);
   const [growthMessage, setGrowthMessage] = useState('');
   const [growthEvidenceReview, setGrowthEvidenceReview] = useState<GrowthEvidenceReviewState>({ candidates: [] });
+  const [growthIndex, setGrowthIndex] = useState<GrowthIndexState | null>(null);
+  const [growthIndexPreview, setGrowthIndexPreview] = useState('');
   const [scheduleLedger, setScheduleLedger] = useState<ScheduleLedgerState>({ entries: [] });
   const [scheduleMessage, setScheduleMessage] = useState('');
   const [maintenanceReportPreview, setMaintenanceReportPreview] = useState('');
@@ -3539,6 +3584,22 @@ function App() {
     noAssets: projectAuditItems.filter((item) => item.type === 'no_assets').length,
     stalePromotion: projectAuditItems.filter((item) => item.type === 'stale_promotion').length,
   }), [projectAuditItems]);
+
+  const knowledgeGraphStats = useMemo(() => ({
+    student: knowledgeGraphNodes.filter((node) => node.type === 'student').length,
+    project: knowledgeGraphNodes.filter((node) => node.type === 'project').length,
+    asset: knowledgeGraphNodes.filter((node) => node.type === 'asset').length,
+    growth: knowledgeGraphNodes.filter((node) => node.type === 'growth').length,
+  }), [knowledgeGraphNodes]);
+
+  const filteredKnowledgeGraphNodes = useMemo(() => {
+    const keyword = knowledgeGraphSearch.trim().toLowerCase();
+    return knowledgeGraphNodes.filter((node) => {
+      if (knowledgeGraphTypeFilter !== 'all' && node.type !== knowledgeGraphTypeFilter) return false;
+      if (!keyword) return true;
+      return [node.label, node.entityId, node.nodeId, node.type].some((value) => String(value || '').toLowerCase().includes(keyword));
+    });
+  }, [knowledgeGraphNodes, knowledgeGraphSearch, knowledgeGraphTypeFilter]);
 
   const projectStatusLabel = (status?: string) => {
     if (status === 'draft') return '草稿';
@@ -5651,6 +5712,25 @@ ${conversationText || '（请先粘贴对话历史）'}`;
     }
   };
 
+  const markSelectedAssetGovernance = (decision: 'keep' | 'duplicate_watch' | 'manual_review' | 'archive_watch' | 'resolved') => {
+    if (!selectedAsset) {
+      setAssetMessage('请先选择一个资产。');
+      return;
+    }
+    const raw = bridge()?.markAssetGovernanceDecision?.(selectedAsset.assetId, decision, '');
+    if (!raw) {
+      setAssetMessage('当前环境不支持资产治理人工决策。');
+      return;
+    }
+    try {
+      const result = JSON.parse(raw) as AssetIndexState & { decisionLabel?: string; message?: string };
+      setAssetIndex({ ...result, assets: result.assets ?? [] });
+      setAssetMessage(result.message || `已标记资产治理决策：${result.decisionLabel || decision}。`);
+    } catch {
+      setAssetMessage('资产治理人工决策结果解析失败。');
+    }
+  };
+
   const generateKnowledgeArchitectureReport = () => {
     const raw = bridge()?.generateKnowledgeArchitectureReport?.();
     if (!raw) {
@@ -6016,8 +6096,7 @@ ${JSON.stringify(items, null, 2)}
     setProjectMessage(`已定位到「${item.projectName}」。`);
   };
 
-  const handleKnowledgeGraphNodeClick = (rawNodeId: string) => {
-    const target = knowledgeGraphNodes.find((node) => rawNodeId.includes(node.nodeId));
+  const openKnowledgeGraphNode = (target: KnowledgeGraphNode) => {
     if (!target) return false;
     if (target.type === 'student') {
       setSelectedId(target.entityId);
@@ -6039,6 +6118,11 @@ ${JSON.stringify(items, null, 2)}
       return true;
     }
     return false;
+  };
+
+  const handleKnowledgeGraphNodeClick = (rawNodeId: string) => {
+    const target = knowledgeGraphNodes.find((node) => rawNodeId.includes(node.nodeId));
+    return target ? openKnowledgeGraphNode(target) : false;
   };
 
   const updatePromotionPlanItemAction = (itemId: string, action: PromotionAction) => {
@@ -6169,6 +6253,34 @@ ${JSON.stringify(items, null, 2)}
     }
   };
 
+  const rollbackPromotionRun = (run: PromotionRunRecord) => {
+    if (!selectedProjectId) {
+      setProjectMessage('请先选择学习项目。');
+      return;
+    }
+    if (run.status === 'rolled_back') {
+      setProjectMessage('这条执行记录已经标记为回滚。');
+      return;
+    }
+    const confirmed = window.confirm('确认安全回滚这条知识贡献执行记录吗？\n\n本操作只会标记回滚并回退成长证据候选状态，不会删除物理文件或覆盖 Markdown。');
+    if (!confirmed) return;
+    const raw = bridge()?.rollbackProjectPromotionRun?.(selectedProjectId, run.id);
+    if (!raw) {
+      setProjectMessage('当前环境不支持知识贡献回滚。');
+      return;
+    }
+    try {
+      const result = JSON.parse(raw) as { ok?: boolean; conflicts?: PromotionConflict[]; runLog?: { runs?: PromotionRunRecord[] }; content?: string; message?: string };
+      setProjectMessage(result.message || (result.ok ? '已安全标记回滚。' : '知识贡献回滚失败。'));
+      setPromotionConflicts(result.conflicts ?? []);
+      setPromotionRuns(result.runLog?.runs ?? []);
+      if (result.content) setPromotionAuditPreview(result.content);
+      if (selectedStudent) refreshGrowthEvidenceReview(selectedStudent);
+    } catch {
+      setProjectMessage('知识贡献回滚结果解析失败。');
+    }
+  };
+
   const refreshGrowthEvidenceReview = (student = selectedStudent) => {
     if (!student) {
       setGrowthMessage('请先选择学生。');
@@ -6226,6 +6338,40 @@ ${JSON.stringify(items, null, 2)}
     }
   };
 
+  const rebuildSelectedGrowthIndex = () => {
+    if (!selectedStudent) {
+      setGrowthMessage('请先选择学生。');
+      return;
+    }
+    const raw = bridge()?.rebuildGrowthIndex?.(selectedStudent.id);
+    if (!raw) {
+      setGrowthMessage('当前环境不支持成长模型结构化索引。');
+      return;
+    }
+    try {
+      const result = JSON.parse(raw) as { ok?: boolean; index?: GrowthIndexState; content?: string; message?: string };
+      if (result.index) setGrowthIndex(result.index);
+      if (result.content) setGrowthIndexPreview(result.content);
+      setGrowthMessage(result.message || (result.ok ? '已重建成长模型结构化索引。' : '成长模型结构化索引失败。'));
+    } catch {
+      setGrowthMessage('成长模型结构化索引结果解析失败。');
+    }
+  };
+
+  const refreshSelectedGrowthIndex = (student = selectedStudent) => {
+    if (!student) return;
+    const raw = bridge()?.getGrowthIndex?.(student.id);
+    if (!raw) return;
+    try {
+      const result = JSON.parse(raw) as { ok?: boolean; index?: GrowthIndexState; content?: string; message?: string };
+      if (result.index) setGrowthIndex(result.index);
+      if (result.content) setGrowthIndexPreview(result.content);
+      if (result.message) setGrowthMessage(result.message);
+    } catch {
+      setGrowthMessage('成长模型结构化索引读取失败。');
+    }
+  };
+
   const refreshScheduleLedgerForStudent = (student: Student) => {
     const raw = bridge()?.getStudentScheduleLedger?.(student.id);
     if (!raw) {
@@ -6253,6 +6399,21 @@ ${JSON.stringify(items, null, 2)}
       if (result.content) setMaintenanceReportPreview(result.content);
     } catch {
       setScheduleMessage('定时维护报告结果解析失败。');
+    }
+  };
+
+  const checkAllStudentsPathHealth = () => {
+    const raw = bridge()?.checkAllStudentsPathHealth?.();
+    if (!raw) {
+      setScheduleMessage('当前环境不支持批量知识库路径核对。');
+      return;
+    }
+    try {
+      const result = JSON.parse(raw) as { ok?: boolean; content?: string; message?: string; status?: string };
+      setScheduleMessage(result.message || (result.ok ? '已完成批量知识库路径核对。' : '批量路径核对失败。'));
+      if (result.content) setMaintenanceReportPreview(result.content);
+    } catch {
+      setScheduleMessage('批量知识库路径核对结果解析失败。');
     }
   };
 
@@ -7024,8 +7185,6 @@ ${JSON.stringify(items, null, 2)}
     { id: 'reports' as const, label: t('nav.reports'), icon: FileText },
     { id: 'archive' as const, label: t('nav.archive'), icon: BookOpen },
     { id: 'qa' as const, label: t('nav.qa'), icon: MessageCircle },
-    { id: 'tasks' as const, label: t('nav.tasks'), icon: Clock3 },
-    { id: 'settings' as const, label: t('nav.settings'), icon: Settings },
   ];
   const knowledgeNavItems = [
     { id: 'memory' as const, label: t('nav.memory'), icon: Clipboard },
@@ -7135,6 +7294,23 @@ ${JSON.stringify(items, null, 2)}
               {!windowsLicenseActive && <KeyRound size={15} />}
             </button>
           )}
+          <button
+            className={`${activeSection === 'tasks' ? 'nav-item active' : 'nav-item'}${isWindows && !windowsLicenseActive && restrictedSections.has('tasks') ? ' locked' : ''}`}
+            onClick={() => setActiveSection('tasks')}
+            title={isWindows && !windowsLicenseActive && restrictedSections.has('tasks') ? '该功能需要激活后使用' : t('nav.tasks')}
+          >
+            <Clock3 size={19} />
+            <span>{t('nav.tasks')}</span>
+            {isWindows && !windowsLicenseActive && restrictedSections.has('tasks') && <KeyRound size={15} />}
+          </button>
+          <button
+            className={activeSection === 'settings' ? 'nav-item active' : 'nav-item'}
+            onClick={() => setActiveSection('settings')}
+            title={t('nav.settings')}
+          >
+            <Settings size={19} />
+            <span>{t('nav.settings')}</span>
+          </button>
         </nav>
 
         <section className="student-rail">
@@ -8198,11 +8374,21 @@ ${JSON.stringify(items, null, 2)}
                   <button className="secondary compact" onClick={snapshotSelectedAssetVersions}>
                     生成版本快照
                   </button>
+                  <button className="secondary compact" onClick={() => markSelectedAssetGovernance('keep')}>
+                    标记保留
+                  </button>
+                  <button className="secondary compact" onClick={() => markSelectedAssetGovernance('duplicate_watch')}>
+                    重复观察
+                  </button>
+                  <button className="secondary compact" onClick={() => markSelectedAssetGovernance('manual_review')}>
+                    人工处理
+                  </button>
                 </div>
                 {(selectedAsset.governanceAction || selectedAsset.governanceReason) && (
                   <div className="notice muted">
                     治理建议：{selectedAsset.governanceAction || '未分析'}；{selectedAsset.governanceReason || '暂无理由'}
                     {selectedAsset.recommendedKeepAssetId ? `；建议保留资产：${selectedAsset.recommendedKeepAssetId}` : ''}
+                    {selectedAsset.governanceDecisionLabel || selectedAsset.governanceDecision ? `；人工决策：${selectedAsset.governanceDecisionLabel || selectedAsset.governanceDecision}` : ''}
                   </div>
                 )}
                 <div className="download-list">
@@ -8311,6 +8497,48 @@ ${JSON.stringify(items, null, 2)}
                   </button>
                 )}
               </div>
+              {knowledgeGraphNodes.length > 0 && (
+                <div className="material-source-panel compact-panel">
+                  <div className="mini-heading compact-heading">
+                    <strong>关系图节点定位</strong>
+                    <span>
+                      学生 {knowledgeGraphStats.student} · 项目 {knowledgeGraphStats.project} · 资产 {knowledgeGraphStats.asset} · 成长 {knowledgeGraphStats.growth}
+                    </span>
+                  </div>
+                  <div className="form-grid compact-grid">
+                    <label>
+                      搜索节点
+                      <input value={knowledgeGraphSearch} onChange={(event) => setKnowledgeGraphSearch(event.target.value)} placeholder="学生、项目、资产或节点 ID" />
+                    </label>
+                    <label>
+                      节点类型
+                      <select value={knowledgeGraphTypeFilter} onChange={(event) => setKnowledgeGraphTypeFilter(event.target.value as typeof knowledgeGraphTypeFilter)}>
+                        <option value="all">全部节点</option>
+                        <option value="student">学生</option>
+                        <option value="project">项目</option>
+                        <option value="asset">文件资产</option>
+                        <option value="growth">成长沉淀</option>
+                      </select>
+                    </label>
+                  </div>
+                  <div className="project-audit-list compact-node-list">
+                    {filteredKnowledgeGraphNodes.slice(0, 20).map((node) => (
+                      <div className={`project-audit-card ${node.type}`} key={node.nodeId}>
+                        <div>
+                          <strong>{node.label}</strong>
+                          <span>{node.type}</span>
+                          <small>{node.entityId}</small>
+                        </div>
+                        <button className="secondary compact" onClick={() => openKnowledgeGraphNode(node)}>
+                          定位
+                        </button>
+                      </div>
+                    ))}
+                    {filteredKnowledgeGraphNodes.length === 0 && <div className="empty-state compact">当前筛选下没有节点。</div>}
+                  </div>
+                  {filteredKnowledgeGraphNodes.length > 20 && <div className="notice muted">仅显示前 20 个节点，请继续搜索缩小范围。</div>}
+                </div>
+              )}
               {projectAuditItems.length > 0 && (
                 <div className="project-audit-board">
                   <div className="mini-heading compact-heading">
@@ -8473,6 +8701,29 @@ ${JSON.stringify(items, null, 2)}
                       <div className="notice muted">
                         贡献审计：冲突提醒 {promotionConflicts.length} 条，执行记录 {promotionRuns.length} 条。重复发布前建议先核对冲突目标文件。
                       </div>
+                    )}
+                    {promotionRuns.length > 0 && (
+                      <section className="material-source-panel">
+                        <div className="mini-heading compact-heading">
+                          <strong>贡献执行记录与安全回滚</strong>
+                          <span>回滚只做安全标记并回退成长证据候选，不自动删除物理文件。</span>
+                        </div>
+                        <div className="download-list">
+                          {promotionRuns.slice(0, 12).map((run) => (
+                            <div className="download-item" key={run.id}>
+                              <span>
+                                <strong>{run.type} · {run.status}</strong>
+                                <small>{run.at ? new Date(run.at).toLocaleString('zh-CN') : ''}</small>
+                                <small>{run.rollbackHint || '无回滚提示'}</small>
+                                {run.rolledBackAt && <em>已回滚：{new Date(run.rolledBackAt).toLocaleString('zh-CN')}</em>}
+                              </span>
+                              <button className="secondary compact" onClick={() => rollbackPromotionRun(run)} disabled={run.status === 'rolled_back'}>
+                                {run.status === 'rolled_back' ? '已回滚' : '安全回滚'}
+                              </button>
+                            </div>
+                          ))}
+                        </div>
+                      </section>
                     )}
                     <div className="form-grid compact-grid">
                       <label>
@@ -8753,6 +9004,10 @@ ${JSON.stringify(items, null, 2)}
                 <ListChecks size={18} />
                 刷新证据候选
               </button>
+              <button className="secondary" onClick={rebuildSelectedGrowthIndex}>
+                <Share2 size={18} />
+                重建结构化索引
+              </button>
               <button className="secondary" onClick={() => setActiveSection('reports')}>
                 <FileText size={18} />
                 查看学情报告
@@ -8765,6 +9020,32 @@ ${JSON.stringify(items, null, 2)}
             <div className="notice muted">
               成长模型 v1 会在学生知识库下创建“成长模型”目录，并维护 index、能力画像、成长证据和项目贡献四类 Markdown 索引。它不会替换现有综合汇总库，而是作为学情报告的上层来源。
             </div>
+            {growthIndex && (
+              <section className="material-source-panel">
+                <div className="mini-heading">
+                  <strong>结构化索引摘要</strong>
+                  <span>来自 growth-index.json，可供图谱、报告和后续 Agent 维护复用。</span>
+                </div>
+                <div className="archive-grid">
+                  <InfoPanel icon={<ListChecks />} title="证据总数" value={`${growthIndex.summary?.evidenceCount ?? 0} 条`} />
+                  <InfoPanel icon={<ShieldCheck />} title="已确认" value={`${growthIndex.summary?.confirmedCount ?? 0} 条`} />
+                  <InfoPanel icon={<Sparkles />} title="能力维度" value={`${growthIndex.summary?.abilityCount ?? 0} 个`} />
+                  <InfoPanel icon={<FolderOpen />} title="关联项目" value={`${growthIndex.summary?.projectCount ?? 0} 个`} />
+                </div>
+                <div className="download-list compact-list">
+                  {(growthIndex.abilities ?? []).slice(0, 8).map((ability) => (
+                    <div className="download-item" key={ability.name}>
+                      <span>
+                        <strong>{ability.name}</strong>
+                        <small>证据 {ability.evidenceCount} · 已确认 {ability.confirmedCount} · 观察 {ability.watchingCount} · 待审 {ability.pendingCount}</small>
+                        <small>{ability.projectNames?.join('、') || '暂无项目来源'}</small>
+                      </span>
+                    </div>
+                  ))}
+                  {(growthIndex.abilities ?? []).length === 0 && <div className="empty-state compact">暂无能力维度，请先发布或确认成长证据。</div>}
+                </div>
+              </section>
+            )}
             <section className="material-source-panel">
               <div className="mini-heading">
                 <strong>成长证据审核</strong>
@@ -8805,9 +9086,9 @@ ${JSON.stringify(items, null, 2)}
               </aside>
               <section className="markdown-reader">
                 <div className="reader-toolbar">
-                  <span>Growth Layer 工作方式</span>
+                  <span>{growthIndexPreview ? '结构化索引预览' : 'Growth Layer 工作方式'}</span>
                 </div>
-                <MarkdownView content={`# ${selectedStudent.name} 成长模型\n\n## 定位\n\n成长模型不是普通摘要文件夹，而是学生能力、兴趣、趋势、证据来源和项目贡献的长期索引。\n\n## 建议维护对象\n\n- 能力画像：记录学生在学科、研究、表达、协作、创造等方面的长期变化。\n- 成长证据：记录每条能力判断对应的原始资料、项目、报告或问答来源。\n- 项目贡献：记录学习项目完成后发布到学生主档案的知识贡献。\n- 学情报告：作为面向家长、学生和教师的呈现层输出。\n\n## 下一步\n\n点击“补建成长模型”后，可让 Agent 围绕成长模型目录持续维护这些索引。`} />
+                <MarkdownView content={growthIndexPreview || `# ${selectedStudent.name} 成长模型\n\n## 定位\n\n成长模型不是普通摘要文件夹，而是学生能力、兴趣、趋势、证据来源和项目贡献的长期索引。\n\n## 建议维护对象\n\n- 能力画像：记录学生在学科、研究、表达、协作、创造等方面的长期变化。\n- 成长证据：记录每条能力判断对应的原始资料、项目、报告或问答来源。\n- 项目贡献：记录学习项目完成后发布到学生主档案的知识贡献。\n- 学情报告：作为面向家长、学生和教师的呈现层输出。\n\n## 下一步\n\n点击“补建成长模型”后，可让 Agent 围绕成长模型目录持续维护这些索引。`} />
               </section>
             </div>
             {growthMessage && <div className="notice">{growthMessage}</div>}
@@ -9926,6 +10207,13 @@ ${JSON.stringify(items, null, 2)}
               <strong>定时维护 / lint</strong>
               <span>建议按周执行，用于发现跨主机旧路径、断链、重复摘要、规则文件与索引不一致等问题。</span>
             </div>
+            {isWindows && (
+              <div className="actions compact-actions">
+                <button className="secondary compact" onClick={checkAllStudentsPathHealth} disabled={!windowsLicenseActive}>
+                  批量核对所有学生路径
+                </button>
+              </div>
+            )}
             <div className="task-list">
               {students.map((student) => {
                 const paths = pathsForStudent(student);

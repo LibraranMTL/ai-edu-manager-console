@@ -1,9 +1,9 @@
 {
   "versionCode": 61,
   "versionName": "0.5.1",
-  "windowsVersionCode": 96,
-  "windowsVersionName": "0.7.16",
-  "windowsUrl": "https://www.greatbg.com/download/AI-edu-manager-console-Windows-0.7.16.zip",
+  "windowsVersionCode": 97,
+  "windowsVersionName": "0.7.17",
+  "windowsUrl": "https://www.greatbg.com/download/AI-edu-manager-console-Windows-0.7.17.zip",
   "terminalApkUrl": "https://www.greatbg.com/download/AI-edu-manager-tablet-terminal-0.5.1.apk",
   "tabletTerminalVersionCode": 61,
   "tabletTerminalVersionName": "0.5.1",
@@ -12,5 +12,5 @@
   "managerApkVersionCode": 23,
   "managerApkVersionName": "0.2.3",
   "apkUrl": "https://www.greatbg.com/download/AI-edu-manager-tablet-terminal-0.5.1.apk",
-  "notes": "Windows 0.7.16：新增定时任务去重账本与维护报告、Path Resolver 逻辑路径解析、文件资产引用清理与版本快照、项目贡献冲突/回滚审计、成长证据候选审核入口。平板终端仍为 0.5.1。"
+  "notes": "Windows 0.7.17：新增知识贡献安全回滚、成长模型结构化索引、知识关系图节点筛选、文件资产治理人工决策、所有学生路径批量核对，并调整左侧菜单顺序。平板终端仍为 0.5.1。"
 }

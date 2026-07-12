@@ -1,9 +1,9 @@
 {
   "versionCode": 61,
   "versionName": "0.5.1",
-  "windowsVersionCode": 91,
-  "windowsVersionName": "0.7.11",
-  "windowsUrl": "https://www.greatbg.com/download/AI-edu-manager-console-Windows-0.7.11.zip",
+  "windowsVersionCode": 92,
+  "windowsVersionName": "0.7.12",
+  "windowsUrl": "https://www.greatbg.com/download/AI-edu-manager-console-Windows-0.7.12.zip",
   "terminalApkUrl": "https://www.greatbg.com/download/AI-edu-manager-tablet-terminal-0.5.1.apk",
   "tabletTerminalVersionCode": 61,
   "tabletTerminalVersionName": "0.5.1",
@@ -12,5 +12,5 @@
   "managerApkVersionCode": 23,
   "managerApkVersionName": "0.2.3",
   "apkUrl": "https://www.greatbg.com/download/AI-edu-manager-tablet-terminal-0.5.1.apk",
-  "notes": "Windows 0.7.11：完成项目知识贡献可视化、研究暂存层和文件资产中心增强，新增资产治理闭环概览、项目研究暂存到成长模型的流程状态条，并保留人工确认优先的归档与晋升策略。平板终端仍为 0.5.1。"
+  "notes": "Windows 0.7.12：修复 0.7.11 在存在学习项目数据时可能首页白屏的问题；保留项目知识贡献可视化、研究暂存层和文件资产中心增强。平板终端仍为 0.5.1。"
 }

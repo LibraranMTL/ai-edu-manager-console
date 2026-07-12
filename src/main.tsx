@@ -702,8 +702,8 @@ const storageKey = 'edu-manager-launcher.students.v2';
 const themeStorageKey = 'edu-manager-launcher.theme.v1';
 const languageStorageKey = 'edu-manager-launcher.language.v1';
 const archiveKeywordStorageKey = 'edu-manager-launcher.archive-keywords.v1';
-const currentVersionCode = 91;
-const currentVersionName = '0.7.11';
+const currentVersionCode = 92;
+const currentVersionName = '0.7.12';
 const updateManifestUrl = [
   'https://www.greatbg.com/download/edu-manager-version.json',
   'http://www.greatbg.com/download/edu-manager-version.json',
@@ -3431,17 +3431,6 @@ function App() {
       .map((item) => item.id);
     return { duplicateCount, actionCount: governanceCandidateIds.length, governanceCandidateIds, promotionCandidateIds };
   }, [projectStagingItems]);
-  const selectedProjectWorkflowSteps = useMemo(() => {
-    if (!selectedProject) return [];
-    const promotedCount = projectStagingItems.filter((item) => item.status === 'promoted' || item.promotedAssetId).length;
-    return [
-      { title: '研究暂存', value: `${projectStagingItems.length} 份`, detail: '先收集候选资料，不直接进入正式资产中心' },
-      { title: 'AI 初筛', value: `${projectStagingItems.filter((item) => item.aiAction || item.aiReason).length} 份`, detail: '导入 AI 建议后仍由管理员确认' },
-      { title: '资产晋升', value: `${promotedCount} 份`, detail: '晋升后复制到项目原始资料库并登记资产引用' },
-      { title: '贡献申请', value: promotionPreview || promotionPlan ? '已生成' : '待生成', detail: '生成项目知识贡献报告和归档确认清单' },
-      { title: '成长沉淀', value: selectedProject.publishedAt ? '已发布' : projectStatusLabel(selectedProject.status), detail: '发布到学生成长模型和综合汇总记录' },
-    ];
-  }, [projectStagingItems, promotionPlan, promotionPreview, selectedProject]);
 
   const projectStatusLabel = (status?: string) => {
     if (status === 'draft') return '草稿';
@@ -3470,6 +3459,18 @@ function App() {
     if (action === 'skip') return '跳过';
     return action || '未选择';
   };
+
+  const selectedProjectWorkflowSteps = useMemo(() => {
+    if (!selectedProject) return [];
+    const promotedCount = projectStagingItems.filter((item) => item.status === 'promoted' || item.promotedAssetId).length;
+    return [
+      { title: '研究暂存', value: `${projectStagingItems.length} 份`, detail: '先收集候选资料，不直接进入正式资产中心' },
+      { title: 'AI 初筛', value: `${projectStagingItems.filter((item) => item.aiAction || item.aiReason).length} 份`, detail: '导入 AI 建议后仍由管理员确认' },
+      { title: '资产晋升', value: `${promotedCount} 份`, detail: '晋升后复制到项目原始资料库并登记资产引用' },
+      { title: '贡献申请', value: promotionPreview || promotionPlan ? '已生成' : '待生成', detail: '生成项目知识贡献报告和归档确认清单' },
+      { title: '成长沉淀', value: selectedProject.publishedAt ? '已发布' : projectStatusLabel(selectedProject.status), detail: '发布到学生成长模型和综合汇总记录' },
+    ];
+  }, [projectStagingItems, promotionPlan, promotionPreview, selectedProject]);
 
   const promotionExecutionPreview = useMemo(() => {
     if (!promotionPlan) return '';

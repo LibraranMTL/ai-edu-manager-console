@@ -2365,6 +2365,48 @@ pre {
   line-height: 1.55;
 }
 
+.markdown-content .md-mermaid {
+  width: 100%;
+  overflow: auto;
+  padding: 14px;
+  border: 1px solid #cfe2dc;
+  border-radius: 14px;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.96), rgba(244, 251, 249, 0.96));
+  box-shadow: 0 12px 28px rgba(28, 54, 48, 0.08);
+}
+
+.markdown-content .md-mermaid-canvas {
+  min-width: 560px;
+}
+
+.markdown-content .md-mermaid-canvas svg {
+  display: block;
+  width: 100%;
+  max-width: none;
+  height: auto;
+  margin: 0 auto;
+}
+
+.markdown-content .md-mermaid-status {
+  color: #46635e;
+  font-size: 14px;
+  font-weight: 800;
+}
+
+.markdown-content .md-mermaid-failed {
+  display: grid;
+  gap: 10px;
+  border-color: #f3b7cd;
+  background: #fff4f8;
+}
+
+.markdown-content .md-mermaid-failed small {
+  color: #a23b62;
+  font-size: 12px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
 .markdown-content .md-table-wrap {
   width: 100%;
   overflow-x: auto;

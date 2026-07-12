@@ -704,8 +704,8 @@ const storageKey = 'edu-manager-launcher.students.v2';
 const themeStorageKey = 'edu-manager-launcher.theme.v1';
 const languageStorageKey = 'edu-manager-launcher.language.v1';
 const archiveKeywordStorageKey = 'edu-manager-launcher.archive-keywords.v1';
-const currentVersionCode = 93;
-const currentVersionName = '0.7.13';
+const currentVersionCode = 94;
+const currentVersionName = '0.7.14';
 const updateManifestUrl = [
   'https://www.greatbg.com/download/edu-manager-version.json',
   'http://www.greatbg.com/download/edu-manager-version.json',
@@ -9903,6 +9903,7 @@ function MarkdownView({ content }: { content: string }) {
   const lines = content.split(/\r?\n/);
   const blocks: React.ReactNode[] = [];
   let codeBuffer: string[] = [];
+  let codeLanguage = '';
   let inCode = false;
   let listBuffer: Array<{ ordered: boolean; text: string }> = [];
   let tableBuffer: string[][] = [];
@@ -9995,14 +9996,22 @@ function MarkdownView({ content }: { content: string }) {
     if (line.trim().startsWith('```')) {
       flushFlow(`flow-${index}`);
       if (inCode) {
+        const codeText = codeBuffer.join('\n');
+        const language = codeLanguage.trim().toLowerCase();
         blocks.push(
-          <pre className="md-code" key={`code-${index}`}>
-            {codeBuffer.join('\n')}
-          </pre>,
+          language === 'mermaid' ? (
+            <MermaidBlock key={`mermaid-${index}`} source={codeText} />
+          ) : (
+            <pre className="md-code" key={`code-${index}`}>
+              {codeText}
+            </pre>
+          ),
         );
         codeBuffer = [];
+        codeLanguage = '';
         inCode = false;
       } else {
+        codeLanguage = line.trim().slice(3).trim().split(/\s+/)[0] || '';
         inCode = true;
       }
       index += 1;
@@ -10093,14 +10102,95 @@ function MarkdownView({ content }: { content: string }) {
 
   flushFlow('tail-flow');
   if (codeBuffer.length > 0) {
+    const codeText = codeBuffer.join('\n');
+    const language = codeLanguage.trim().toLowerCase();
     blocks.push(
-      <pre className="md-code" key="code-tail">
-        {codeBuffer.join('\n')}
-      </pre>,
+      language === 'mermaid' ? (
+        <MermaidBlock key="mermaid-tail" source={codeText} />
+      ) : (
+        <pre className="md-code" key="code-tail">
+          {codeText}
+        </pre>
+      ),
     );
   }
 
   return <article className="markdown-content">{blocks}</article>;
+}
+
+function MermaidBlock({ source }: { source: string }) {
+  const renderId = useMemo(() => `mermaid-${Math.random().toString(36).slice(2)}`, []);
+  const [result, setResult] = useState<{ loading: boolean; svg: string; error: string }>({
+    loading: true,
+    svg: '',
+    error: '',
+  });
+
+  useEffect(() => {
+    let cancelled = false;
+    const renderGraph = async () => {
+      const graph = source.trim();
+      if (!graph) {
+        setResult({ loading: false, svg: '', error: 'Mermaid 图表内容为空。' });
+        return;
+      }
+      try {
+        const { default: mermaid } = await import('mermaid');
+        mermaid.initialize({
+          startOnLoad: false,
+          securityLevel: 'strict',
+          theme: 'base',
+          themeVariables: {
+            primaryColor: '#edf8f4',
+            primaryTextColor: '#152522',
+            primaryBorderColor: '#62bdae',
+            lineColor: '#66847f',
+            secondaryColor: '#fff4fb',
+            tertiaryColor: '#f7fbff',
+            fontFamily: '"Microsoft YaHei", "PingFang SC", "Noto Sans CJK SC", sans-serif',
+          },
+        });
+        const rendered = await mermaid.render(renderId, graph);
+        if (!cancelled) setResult({ loading: false, svg: rendered.svg, error: '' });
+      } catch (error) {
+        if (!cancelled) {
+          setResult({
+            loading: false,
+            svg: '',
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+      }
+    };
+    renderGraph();
+    return () => {
+      cancelled = true;
+    };
+  }, [renderId, source]);
+
+  if (result.loading) {
+    return (
+      <div className="md-mermaid">
+        <div className="md-mermaid-status">正在渲染关系图...</div>
+      </div>
+    );
+  }
+
+  if (result.error || !result.svg) {
+    return (
+      <div className="md-mermaid md-mermaid-failed">
+        <div className="md-mermaid-status">Mermaid 图渲染失败，已回退显示源码。</div>
+        {result.error ? <small>{result.error}</small> : null}
+        <pre className="md-code">{source}</pre>
+      </div>
+    );
+  }
+
+  return (
+    <div className="md-mermaid">
+      <div className="md-mermaid-canvas" dangerouslySetInnerHTML={{ __html: result.svg }} />
+    </div>
+  );
 }
 
 createRoot(document.getElementById('root')!).render(<App />);

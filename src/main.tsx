@@ -3,6 +3,7 @@ import { createRoot } from 'react-dom/client';
 import QRCode from 'qrcode';
 import {
   Archive,
+  AlertTriangle,
   BookOpen,
   Bot,
   CheckCircle2,
@@ -15,6 +16,7 @@ import {
   Home,
   Inbox,
   KeyRound,
+  LinkIcon,
   ListChecks,
   MessageCircle,
   PanelLeftClose,
@@ -22,6 +24,7 @@ import {
   Plus,
   RefreshCw,
   Settings,
+  ShieldCheck,
   Sparkles,
   UserRound,
 } from 'lucide-react';
@@ -192,6 +195,14 @@ type AssetRecord = {
   status?: string;
   duplicateCount?: number;
   referenceCount?: number;
+  governanceAction?: string;
+  governanceReason?: string;
+  governanceRisk?: string;
+  staleReferenceCount?: number;
+  duplicateReferenceCount?: number;
+  duplicateAssetCount?: number;
+  recommendedKeepAssetId?: string;
+  governanceReviewedAt?: string;
 };
 
 type AssetIndexState = {
@@ -288,6 +299,7 @@ type AndroidBridge = {
   getMaterialImportRecords?: (studentId: string) => string;
   getAssetIndex?: () => string;
   rebuildAssetIndex?: () => string;
+  analyzeAssetGovernance?: () => string;
   getProjects?: () => string;
   createProject?: (optionsJson: string) => string;
   updateProjectStatus?: (projectId: string, status: string) => string;
@@ -652,8 +664,8 @@ const storageKey = 'edu-manager-launcher.students.v2';
 const themeStorageKey = 'edu-manager-launcher.theme.v1';
 const languageStorageKey = 'edu-manager-launcher.language.v1';
 const archiveKeywordStorageKey = 'edu-manager-launcher.archive-keywords.v1';
-const currentVersionCode = 86;
-const currentVersionName = '0.7.6';
+const currentVersionCode = 87;
+const currentVersionName = '0.7.7';
 const updateManifestUrl = [
   'https://www.greatbg.com/download/edu-manager-version.json',
   'http://www.greatbg.com/download/edu-manager-version.json',
@@ -3053,6 +3065,7 @@ function App() {
   const [materialImportRecords, setMaterialImportRecords] = useState<MaterialImportRecord[]>([]);
   const [assetIndex, setAssetIndex] = useState<AssetIndexState>({ assets: [] });
   const [assetMessage, setAssetMessage] = useState('');
+  const [assetGovernancePreview, setAssetGovernancePreview] = useState('');
   const [assetSearch, setAssetSearch] = useState('');
   const [assetStudentFilter, setAssetStudentFilter] = useState('all');
   const [assetSourceFilter, setAssetSourceFilter] = useState('all');
@@ -3256,7 +3269,7 @@ function App() {
       if (assetSourceFilter !== 'all' && String(asset.sourceName || '未标注来源') !== assetSourceFilter) return false;
       if (assetTypeFilter !== 'all' && String(asset.type || 'file') !== assetTypeFilter) return false;
       if (!keyword) return true;
-      return [asset.filename, asset.path, asset.ownerStudentName, asset.sourceName, asset.sha1]
+      return [asset.filename, asset.path, asset.ownerStudentName, asset.sourceName, asset.sha1, asset.governanceAction, asset.governanceReason]
         .filter(Boolean)
         .some((value) => String(value).toLowerCase().includes(keyword));
     });
@@ -3269,6 +3282,13 @@ function App() {
   const assetTypes = useMemo(() => (
     Array.from(new Set((assetIndex.assets ?? []).map((asset) => String(asset.type || 'file')).filter(Boolean))).sort()
   ), [assetIndex.assets]);
+
+  const assetGovernanceStats = useMemo(() => {
+    const issueAssets = (assetIndex.assets ?? []).filter((asset) => asset.governanceAction && asset.governanceAction !== '无需处理');
+    const highRiskCount = issueAssets.filter((asset) => asset.governanceRisk === 'high').length;
+    const staleReferenceCount = issueAssets.reduce((total, asset) => total + Number(asset.staleReferenceCount || 0), 0);
+    return { issueCount: issueAssets.length, highRiskCount, staleReferenceCount };
+  }, [assetIndex.assets]);
 
   const selectedProject = projects.find((project) => project.id === selectedProjectId) ?? projects[0] ?? null;
   const selectedAsset = assetIndex.assets.find((asset) => asset.assetId === selectedAssetId) ?? filteredAssets[0] ?? null;
@@ -5224,6 +5244,24 @@ ${conversationText || '（请先粘贴对话历史）'}`;
       setAssetMessage(result.message || '资产索引已补建。');
     } catch {
       setAssetMessage('补建资产索引结果解析失败。');
+    }
+  };
+
+  const analyzeAssets = () => {
+    const raw = bridge()?.analyzeAssetGovernance?.();
+    if (!raw) {
+      setAssetMessage('当前环境不支持资产治理建议。');
+      return;
+    }
+    try {
+      const result = JSON.parse(raw) as AssetIndexState & { content?: string; reportPath?: string; issueCount?: number };
+      setAssetIndex({ ...result, assets: result.assets ?? [] });
+      setAssetMessage(result.message || `已生成资产治理建议，需治理 ${result.issueCount ?? 0} 个资产。`);
+      if (result.content) {
+        setAssetGovernancePreview(result.content);
+      }
+    } catch {
+      setAssetMessage('资产治理建议结果解析失败。');
     }
   };
 
@@ -7498,6 +7536,9 @@ ${JSON.stringify(items, null, 2)}
               <InfoPanel icon={<Archive />} title="资产总数" value={`${assetIndex.total ?? assetIndex.assets.length} 个`} />
               <InfoPanel icon={<ListChecks />} title="重复文件组" value={`${assetIndex.duplicateGroups ?? 0} 组`} />
               <InfoPanel icon={<UserRound />} title="学生过滤" value={assetStudentFilter === 'all' ? '全部学生' : students.find((student) => student.id === assetStudentFilter)?.name ?? '当前筛选'} />
+              <InfoPanel icon={<AlertTriangle />} title="治理候选" value={`${assetGovernanceStats.issueCount} 个`} />
+              <InfoPanel icon={<ShieldCheck />} title="高风险" value={`${assetGovernanceStats.highRiskCount} 个`} />
+              <InfoPanel icon={<LinkIcon />} title="失效引用" value={`${assetGovernanceStats.staleReferenceCount} 条`} />
             </div>
             <div className="actions">
               <button className="secondary" onClick={refreshAssets}>
@@ -7507,6 +7548,10 @@ ${JSON.stringify(items, null, 2)}
               <button className="primary" onClick={rebuildAssets}>
                 <Archive size={18} />
                 扫描并补建资产索引
+              </button>
+              <button className="secondary" onClick={analyzeAssets}>
+                <ListChecks size={18} />
+                生成治理建议
               </button>
             </div>
             <div className="form-grid compact-grid">
@@ -7556,6 +7601,7 @@ ${JSON.stringify(items, null, 2)}
                     </small>
                     <small>{asset.path}</small>
                     {asset.sha1 && <em>SHA-1：{asset.sha1}{Number(asset.duplicateCount ?? 1) > 1 ? ` · 重复 ${asset.duplicateCount} 份` : ''}</em>}
+                    {asset.governanceAction && asset.governanceAction !== '无需处理' && <em>治理：{asset.governanceAction}</em>}
                   </span>
                 </button>
               ))}
@@ -7572,7 +7618,14 @@ ${JSON.stringify(items, null, 2)}
                   <InfoPanel icon={<FileText />} title="资产编号" value={selectedAsset.assetId} />
                   <InfoPanel icon={<Archive />} title="引用次数" value={`${selectedAsset.references?.length ?? selectedAsset.referenceCount ?? 0} 次`} />
                   <InfoPanel icon={<ListChecks />} title="重复数量" value={`${selectedAsset.duplicateCount ?? 1} 份`} />
+                  <InfoPanel icon={<ShieldCheck />} title="治理风险" value={selectedAsset.governanceRisk || '未分析'} />
                 </div>
+                {(selectedAsset.governanceAction || selectedAsset.governanceReason) && (
+                  <div className="notice muted">
+                    治理建议：{selectedAsset.governanceAction || '未分析'}；{selectedAsset.governanceReason || '暂无理由'}
+                    {selectedAsset.recommendedKeepAssetId ? `；建议保留资产：${selectedAsset.recommendedKeepAssetId}` : ''}
+                  </div>
+                )}
                 <div className="download-list">
                   {(selectedAsset.references ?? []).map((reference) => (
                     <div className="download-item" key={reference.id}>
@@ -7585,6 +7638,15 @@ ${JSON.stringify(items, null, 2)}
                   ))}
                   {(selectedAsset.references ?? []).length === 0 && <div className="empty-state">该资产暂无引用记录。</div>}
                 </div>
+              </section>
+            )}
+            {assetGovernancePreview && (
+              <section className="material-source-panel">
+                <div className="mini-heading">
+                  <strong>资产治理建议报告</strong>
+                  <button className="secondary compact" onClick={() => copyText(assetGovernancePreview, '已复制资产治理建议报告。')}>复制报告</button>
+                </div>
+                <MarkdownView content={assetGovernancePreview} />
               </section>
             )}
             {duplicateAssetGroups.length > 0 && (

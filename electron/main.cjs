@@ -23,7 +23,7 @@ let hostServiceLastError = '';
 let todayUploadCount = 0;
 let uploadCountDate = new Date().toISOString().slice(0, 10);
 
-const APP_VERSION = '0.7.6';
+const APP_VERSION = '0.7.7';
 const DEFAULT_HOST_PORT = 18777;
 const AGENT_TOOL_IDS = ['qclaw', 'marvis', 'hohu', 'openclaw', 'ima.copilot', 'workbuddy', 'codex', 'claude-code', 'chatgpt', 'claude', 'doubao', 'coze', 'fastgpt'];
 const WEB_AGENT_TOOL_URLS = {
@@ -48,6 +48,7 @@ const devicesPath = () => path.join(app.getPath('userData'), 'devices.json');
 const uploadRecordsPath = () => path.join(app.getPath('userData'), 'upload-records.json');
 const hostTimelinePath = () => path.join(app.getPath('userData'), 'host-timeline.json');
 const assetIndexPath = () => path.join(app.getPath('userData'), 'asset-index.json');
+const assetGovernanceReportPath = () => path.join(app.getPath('userData'), 'asset-governance-report.md');
 const projectsPath = () => path.join(app.getPath('userData'), 'projects.json');
 const LICENSE_SIGNING_SECRET = 'ai-edu-manager-offline-license-v1';
 let activePairSession = null;
@@ -541,6 +542,134 @@ function assetIndexSummary() {
     total: assets.length,
     duplicateGroups: Array.from(shaCounts.values()).filter((count) => count > 1).length,
   };
+}
+
+function analyzeAssetGovernance() {
+  try {
+    const assets = readAssetIndex();
+    const now = new Date().toISOString();
+    const shaGroups = new Map();
+    for (const asset of assets) {
+      if (!asset.sha1) continue;
+      const current = shaGroups.get(asset.sha1) || [];
+      current.push(asset);
+      shaGroups.set(asset.sha1, current);
+    }
+    const keepBySha = new Map();
+    for (const [sha1, group] of shaGroups.entries()) {
+      if (group.length <= 1) continue;
+      const sorted = [...group].sort((a, b) => {
+        const existsDiff = Number(fs.existsSync(b.path || '')) - Number(fs.existsSync(a.path || ''));
+        if (existsDiff) return existsDiff;
+        const refDiff = (Array.isArray(b.references) ? b.references.length : 0) - (Array.isArray(a.references) ? a.references.length : 0);
+        if (refDiff) return refDiff;
+        return String(b.updatedAt || '').localeCompare(String(a.updatedAt || ''));
+      });
+      keepBySha.set(sha1, sorted[0]?.assetId || '');
+    }
+    const nextAssets = assets.map((asset) => {
+      const references = Array.isArray(asset.references) ? asset.references : [];
+      const referenceKeys = references.map((ref) => `${ref.spaceType}|${ref.spaceId}|${ref.role}|${ref.path}`);
+      const duplicateReferenceCount = referenceKeys.length - new Set(referenceKeys).size;
+      const staleReferenceCount = references.filter((ref) => ref.path && !fs.existsSync(ref.path)).length;
+      const missingFile = Boolean(asset.path && !fs.existsSync(asset.path));
+      const duplicateAssetCount = asset.sha1 ? (shaGroups.get(asset.sha1) || []).length : 1;
+      let governanceAction = '无需处理';
+      let riskLevel = 'low';
+      const reasons = [];
+      if (missingFile && references.length === 0) {
+        governanceAction = '建议移出索引';
+        riskLevel = 'high';
+        reasons.push('资产物理文件不存在，且没有引用记录。');
+      } else if (missingFile) {
+        governanceAction = '建议修复路径或重新补建索引';
+        riskLevel = 'high';
+        reasons.push('资产主路径不存在，但仍有关联引用。');
+      }
+      if (duplicateAssetCount > 1) {
+        governanceAction = governanceAction === '无需处理' ? '建议合并重复资产记录' : `${governanceAction}；建议合并重复资产记录`;
+        riskLevel = riskLevel === 'high' ? 'high' : 'medium';
+        reasons.push(`发现 ${duplicateAssetCount} 条相同 SHA-1 的资产记录。`);
+      }
+      if (staleReferenceCount > 0) {
+        governanceAction = governanceAction === '无需处理' ? '建议清理失效引用' : `${governanceAction}；建议清理失效引用`;
+        riskLevel = riskLevel === 'high' ? 'high' : 'medium';
+        reasons.push(`${staleReferenceCount} 条引用路径不存在。`);
+      }
+      if (duplicateReferenceCount > 0) {
+        governanceAction = governanceAction === '无需处理' ? '建议去重引用' : `${governanceAction}；建议去重引用`;
+        riskLevel = riskLevel === 'high' ? 'high' : 'medium';
+        reasons.push(`${duplicateReferenceCount} 条引用疑似重复。`);
+      }
+      if (!missingFile && references.length === 0) {
+        governanceAction = governanceAction === '无需处理' ? '建议补充引用或归档观察' : governanceAction;
+        riskLevel = riskLevel === 'low' ? 'medium' : riskLevel;
+        reasons.push('资产存在但没有学生或项目引用。');
+      }
+      return {
+        ...asset,
+        governanceAction,
+        governanceReason: reasons.join(' ') || '资产路径和引用关系正常。',
+        governanceRisk: riskLevel,
+        staleReferenceCount,
+        duplicateReferenceCount,
+        duplicateAssetCount,
+        recommendedKeepAssetId: asset.sha1 ? keepBySha.get(asset.sha1) || '' : '',
+        governanceReviewedAt: now,
+      };
+    });
+    writeAssetIndex(nextAssets);
+    const issueAssets = nextAssets.filter((asset) => asset.governanceAction && asset.governanceAction !== '无需处理');
+    const duplicateGroups = Array.from(shaGroups.values()).filter((group) => group.length > 1);
+    const missingCount = nextAssets.filter((asset) => asset.path && !fs.existsSync(asset.path)).length;
+    const staleRefCount = nextAssets.reduce((total, asset) => total + Number(asset.staleReferenceCount || 0), 0);
+    const rowsFor = (list) => list.map((asset) => `| ${mdCell(asset.filename)} | ${mdCell(asset.governanceRisk)} | ${mdCell(asset.governanceAction)} | ${mdCell(asset.governanceReason)} | ${mdCell(asset.recommendedKeepAssetId || '-')} | ${mdCell(asset.path)} |`).join('\n') || '| 暂无 | - | - | - | - | - |';
+    const report = `# 文件资产中心治理建议
+
+生成时间：${new Date(now).toLocaleString('zh-CN')}
+
+## 总览
+
+| 指标 | 数量 |
+| --- | ---: |
+| 资产总数 | ${nextAssets.length} |
+| 需治理资产 | ${issueAssets.length} |
+| 重复资产组 | ${duplicateGroups.length} |
+| 主路径不存在 | ${missingCount} |
+| 失效引用 | ${staleRefCount} |
+
+## 治理清单
+
+| 文件 | 风险 | 建议 | 理由 | 建议保留资产 | 路径 |
+| --- | --- | --- | --- | --- | --- |
+${rowsFor(issueAssets)}
+
+## 全量资产检查结果
+
+| 文件 | 风险 | 建议 | 理由 | 建议保留资产 | 路径 |
+| --- | --- | --- | --- | --- | --- |
+${rowsFor(nextAssets)}
+
+## 处理原则
+
+- 本报告只提供治理建议，不会自动删除、移动、合并任何物理文件。
+- 对重复文件，优先保留路径存在、引用次数更多、更新时间更新的资产记录。
+- 对失效引用，建议先确认原文件是否迁移，再通过“扫描并补建资产索引”刷新。
+`;
+    fs.writeFileSync(assetGovernanceReportPath(), report, 'utf8');
+    appendHostTimeline({ type: 'asset_governance_analyzed', title: 'Asset governance analyzed', detail: `${issueAssets.length} issue asset(s)`, count: issueAssets.length });
+    return JSON.stringify({
+      ...assetIndexSummary(),
+      reportPath: assetGovernanceReportPath(),
+      content: report,
+      issueCount: issueAssets.length,
+      missingCount,
+      staleReferenceCount: staleRefCount,
+      message: `已生成资产治理建议：需治理 ${issueAssets.length} 个资产，重复组 ${duplicateGroups.length} 组，失效引用 ${staleRefCount} 条。`,
+    });
+  } catch (error) {
+    return JSON.stringify({ ok: false, message: `生成资产治理建议失败：${error.message}` });
+  }
 }
 
 function collectFilesRecursive(current, files, depth) {
@@ -5902,6 +6031,7 @@ ipcMain.on('bridge:importMaterialSourceFiles', (event, studentId, pathsJson) => 
 ipcMain.on('bridge:getMaterialImportRecords', (event, studentId) => { event.returnValue = getMaterialImportRecords(studentId); });
 ipcMain.on('bridge:getAssetIndex', (event) => { event.returnValue = JSON.stringify(assetIndexSummary()); });
 ipcMain.on('bridge:rebuildAssetIndex', (event) => { licensedIpc(event, '资产索引补建', () => rebuildAssetIndex()); });
+ipcMain.on('bridge:analyzeAssetGovernance', (event) => { licensedIpc(event, '资产治理建议', () => analyzeAssetGovernance()); });
 ipcMain.on('bridge:getProjects', (event) => { event.returnValue = getProjects(); });
 ipcMain.on('bridge:createProject', (event, optionsJson) => { licensedIpc(event, '学习项目创建', () => createProject(optionsJson)); });
 ipcMain.on('bridge:updateProjectStatus', (event, projectId, status) => { licensedIpc(event, '学习项目状态更新', () => updateProjectStatus(projectId, status)); });

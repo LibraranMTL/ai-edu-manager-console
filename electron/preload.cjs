@@ -28,6 +28,9 @@ contextBridge.exposeInMainWorld('AndroidBridge', {
   rebuildAssetIndex() {
     return ipcRenderer.sendSync('bridge:rebuildAssetIndex');
   },
+  analyzeAssetGovernance() {
+    return ipcRenderer.sendSync('bridge:analyzeAssetGovernance');
+  },
   getProjects() {
     return ipcRenderer.sendSync('bridge:getProjects');
   },

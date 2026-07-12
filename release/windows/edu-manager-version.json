@@ -1,9 +1,9 @@
 {
   "versionCode": 61,
   "versionName": "0.5.1",
-  "windowsVersionCode": 86,
-  "windowsVersionName": "0.7.6",
-  "windowsUrl": "https://www.greatbg.com/download/AI-edu-manager-console-Windows-0.7.6.zip",
+  "windowsVersionCode": 87,
+  "windowsVersionName": "0.7.7",
+  "windowsUrl": "https://www.greatbg.com/download/AI-edu-manager-console-Windows-0.7.7.zip",
   "terminalApkUrl": "https://www.greatbg.com/download/AI-edu-manager-tablet-terminal-0.5.1.apk",
   "tabletTerminalVersionCode": 61,
   "tabletTerminalVersionName": "0.5.1",
@@ -12,5 +12,5 @@
   "managerApkVersionCode": 23,
   "managerApkVersionName": "0.2.3",
   "apkUrl": "https://www.greatbg.com/download/AI-edu-manager-tablet-terminal-0.5.1.apk",
-  "notes": "Windows 0.7.6：增强项目知识贡献闭环，贡献申请可读取研究暂存证据、AI初筛与治理建议，并自动生成成长证据草稿和项目贡献明细；平板终端仍为 0.5.1。"
+  "notes": "Windows 0.7.7：增强文件资产中心治理能力，可生成重复资产、失效路径、失效引用和空引用资产的治理建议报告；平板终端仍为 0.5.1。"
 }

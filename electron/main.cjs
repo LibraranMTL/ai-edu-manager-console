@@ -23,7 +23,7 @@ let hostServiceLastError = '';
 let todayUploadCount = 0;
 let uploadCountDate = new Date().toISOString().slice(0, 10);
 
-const APP_VERSION = '0.7.19';
+const APP_VERSION = '0.7.20';
 const DEFAULT_HOST_PORT = 18777;
 const AGENT_TOOL_IDS = ['qclaw', 'marvis', 'hohu', 'openclaw', 'ima.copilot', 'workbuddy', 'codex', 'claude-code', 'chatgpt', 'claude', 'doubao', 'coze', 'fastgpt'];
 const WEB_AGENT_TOOL_URLS = {
@@ -2349,6 +2349,12 @@ const PROJECT_WORKSPACE_TEMPLATES = [
     name: '研究项目',
     description: '适合论文、实验、调研和文献综述。',
     folders: ['文献资料', '研究问题', '数据与实验', '分析过程', '成果论文'],
+  },
+  {
+    id: 'writing',
+    name: '写作项目',
+    description: '适合作文、论文、文书、演讲稿和长文创作。',
+    folders: ['参考资料', '选题策划', '写作大纲', '写作规则', '草稿', '修改反馈', '定稿'],
   },
   {
     id: 'application',

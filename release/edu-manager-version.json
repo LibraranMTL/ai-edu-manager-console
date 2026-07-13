@@ -1,9 +1,9 @@
 {
   "versionCode": 61,
   "versionName": "0.5.1",
-  "windowsVersionCode": 99,
-  "windowsVersionName": "0.7.19",
-  "windowsUrl": "https://www.greatbg.com/download/AI-edu-manager-console-Windows-0.7.19.zip",
+  "windowsVersionCode": 100,
+  "windowsVersionName": "0.7.20",
+  "windowsUrl": "https://www.greatbg.com/download/AI-edu-manager-console-Windows-0.7.20.zip",
   "terminalApkUrl": "https://www.greatbg.com/download/AI-edu-manager-tablet-terminal-0.5.1.apk",
   "tabletTerminalVersionCode": 61,
   "tabletTerminalVersionName": "0.5.1",
@@ -12,5 +12,5 @@
   "managerApkVersionCode": 23,
   "managerApkVersionName": "0.2.3",
   "apkUrl": "https://www.greatbg.com/download/AI-edu-manager-tablet-terminal-0.5.1.apk",
-  "notes": "Windows 0.7.19：学习项目新增项目工作空间模板，明确模板只用于项目工作空间的人类项目管理目录；项目知识空间继续固定使用 LLM Wiki schema，并支持为已有项目补建工作空间文件夹。平板终端仍为 0.5.1。"
+  "notes": "Windows 0.7.20：项目工作空间模板新增“写作项目”，包含参考资料、选题策划、写作大纲、写作规则、草稿、修改反馈、定稿等目录；模板仍只作用于项目工作空间，不改变项目知识空间的 LLM Wiki schema。平板终端仍为 0.5.1。"
 }

@@ -1,16 +1,16 @@
 {
-  "versionCode": 61,
-  "versionName": "0.5.1",
-  "windowsVersionCode": 100,
-  "windowsVersionName": "0.7.20",
-  "windowsUrl": "https://www.greatbg.com/download/AI-edu-manager-console-Windows-0.7.20.zip",
-  "terminalApkUrl": "https://www.greatbg.com/download/AI-edu-manager-tablet-terminal-0.5.1.apk",
-  "tabletTerminalVersionCode": 61,
-  "tabletTerminalVersionName": "0.5.1",
-  "tabletTerminalApkUrl": "https://www.greatbg.com/download/AI-edu-manager-tablet-terminal-0.5.1.apk",
+  "versionCode": 62,
+  "versionName": "0.5.2",
+  "windowsVersionCode": 119,
+  "windowsVersionName": "0.7.39",
+  "windowsUrl": "https://www.greatbg.com/download/AI-edu-manager-console-Windows-0.7.39.zip",
+  "terminalApkUrl": "https://www.greatbg.com/download/AI-edu-manager-tablet-terminal-0.5.2.apk",
+  "tabletTerminalVersionCode": 62,
+  "tabletTerminalVersionName": "0.5.2",
+  "tabletTerminalApkUrl": "https://www.greatbg.com/download/AI-edu-manager-tablet-terminal-0.5.2.apk",
   "managerApkUrl": "https://www.greatbg.com/download/edu-manager-android-0.2.3.apk",
   "managerApkVersionCode": 23,
   "managerApkVersionName": "0.2.3",
-  "apkUrl": "https://www.greatbg.com/download/AI-edu-manager-tablet-terminal-0.5.1.apk",
-  "notes": "Windows 0.7.20：项目工作空间模板新增“写作项目”，包含参考资料、选题策划、写作大纲、写作规则、草稿、修改反馈、定稿等目录；模板仍只作用于项目工作空间，不改变项目知识空间的 LLM Wiki schema。平板终端仍为 0.5.1。"
+  "apkUrl": "https://www.greatbg.com/download/AI-edu-manager-tablet-terminal-0.5.2.apk",
+  "notes": "Windows 0.7.39 与平板终端 0.5.2：新增跨平台连续屏幕资料采集；支持智能混合、内容变化和固定间隔策略，自动去重、重点页、暂停/继续、候选收件箱与人工晋升。Android 增加用户授权采集、前台通知控制和顶部快捷设置入口。"
 }

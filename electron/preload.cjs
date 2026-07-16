@@ -22,6 +22,33 @@ contextBridge.exposeInMainWorld('AndroidBridge', {
   getMaterialImportRecords(studentId) {
     return ipcRenderer.sendSync('bridge:getMaterialImportRecords', studentId);
   },
+  getCaptureCenterState() {
+    return ipcRenderer.sendSync('bridge:getCaptureCenterState');
+  },
+  listCaptureSources() {
+    return ipcRenderer.invoke('bridge:listCaptureSources');
+  },
+  startCaptureSession(optionsJson) {
+    return ipcRenderer.invoke('bridge:startCaptureSession', optionsJson);
+  },
+  pauseCaptureSession(sessionId) {
+    return ipcRenderer.invoke('bridge:pauseCaptureSession', sessionId);
+  },
+  resumeCaptureSession(sessionId) {
+    return ipcRenderer.invoke('bridge:resumeCaptureSession', sessionId);
+  },
+  highlightCaptureSession(sessionId) {
+    return ipcRenderer.invoke('bridge:highlightCaptureSession', sessionId);
+  },
+  stopCaptureSession(sessionId) {
+    return ipcRenderer.invoke('bridge:stopCaptureSession', sessionId);
+  },
+  promoteCaptureSession(sessionId) {
+    return ipcRenderer.invoke('bridge:promoteCaptureSession', sessionId);
+  },
+  openCaptureInbox(sessionId) {
+    return ipcRenderer.sendSync('bridge:openCaptureInbox', sessionId);
+  },
   getAssetIndex() {
     return ipcRenderer.sendSync('bridge:getAssetIndex');
   },
@@ -49,14 +76,62 @@ contextBridge.exposeInMainWorld('AndroidBridge', {
   createProject(optionsJson) {
     return ipcRenderer.sendSync('bridge:createProject', optionsJson);
   },
+  updateProjectMetadata(projectId, metadataJson) {
+    return ipcRenderer.sendSync('bridge:updateProjectMetadata', projectId, metadataJson);
+  },
+  removeProjectRecord(projectId) {
+    return ipcRenderer.sendSync('bridge:removeProjectRecord', projectId);
+  },
+  relocateProjectWorkspace(projectId) {
+    return ipcRenderer.sendSync('bridge:relocateProjectWorkspace', projectId);
+  },
+  getRemovedProjects() {
+    return ipcRenderer.sendSync('bridge:getRemovedProjects');
+  },
+  restoreRemovedProject(snapshotPath) {
+    return ipcRenderer.sendSync('bridge:restoreRemovedProject', snapshotPath);
+  },
+  exportProjectPackage(projectId) {
+    return ipcRenderer.sendSync('bridge:exportProjectPackage', projectId);
+  },
+  importProjectPackage() {
+    return ipcRenderer.sendSync('bridge:importProjectPackage');
+  },
+  duplicateProject(projectId, name) {
+    return ipcRenderer.sendSync('bridge:duplicateProject', projectId, name);
+  },
+  updateProjectStudentEvidence(projectId, studentId, evidenceJson) {
+    return ipcRenderer.sendSync('bridge:updateProjectStudentEvidence', projectId, studentId, evidenceJson);
+  },
+  buildCrossProjectKnowledgeIndex() {
+    return ipcRenderer.sendSync('bridge:buildCrossProjectKnowledgeIndex');
+  },
+  pickProjectWorkspaceDir() {
+    return ipcRenderer.sendSync('bridge:pickProjectWorkspaceDir');
+  },
   updateProjectStatus(projectId, status) {
     return ipcRenderer.sendSync('bridge:updateProjectStatus', projectId, status);
   },
   updateProjectStudents(projectId, studentIdsJson) {
     return ipcRenderer.sendSync('bridge:updateProjectStudents', projectId, studentIdsJson);
   },
-  applyProjectWorkspaceTemplate(projectId, templateId, foldersJson) {
-    return ipcRenderer.sendSync('bridge:applyProjectWorkspaceTemplate', projectId, templateId, foldersJson);
+  applyProjectWorkspaceTemplate(projectId, templateId, foldersJson, templateName, templateV2Json) {
+    return ipcRenderer.sendSync('bridge:applyProjectWorkspaceTemplate', projectId, templateId, foldersJson, templateName, templateV2Json);
+  },
+  openProjectSpace(projectId, space) {
+    return ipcRenderer.sendSync('bridge:openProjectSpace', projectId, space);
+  },
+  scanProjectWorkspace(projectId) {
+    return ipcRenderer.sendSync('bridge:scanProjectWorkspace', projectId);
+  },
+  reviewProjectStagingItems(projectId, itemIdsJson, decision, sourceStrategy, note) {
+    return ipcRenderer.sendSync('bridge:reviewProjectStagingItems', projectId, itemIdsJson, decision, sourceStrategy, note);
+  },
+  getProjectKnowledgeReview(projectId) {
+    return ipcRenderer.sendSync('bridge:getProjectKnowledgeReview', projectId);
+  },
+  updateProjectKnowledgeReview(projectId, recordIdsJson, status, note) {
+    return ipcRenderer.sendSync('bridge:updateProjectKnowledgeReview', projectId, recordIdsJson, status, note);
   },
   importProjectAssets(projectId, assetIdsJson) {
     return ipcRenderer.sendSync('bridge:importProjectAssets', projectId, assetIdsJson);
@@ -312,6 +387,48 @@ contextBridge.exposeInMainWorld('AndroidBridge', {
   },
   syncStudentDigestResult(studentId) {
     return ipcRenderer.sendSync('bridge:syncStudentDigestResult', studentId);
+  },
+  recordScheduledTaskAction(studentId, kind, commandText) {
+    return ipcRenderer.sendSync('bridge:recordScheduledTaskAction', studentId, kind, commandText);
+  },
+  getStudentScheduleLedger(studentId) {
+    return ipcRenderer.sendSync('bridge:getStudentScheduleLedger', studentId);
+  },
+  getTaskCenter() {
+    return ipcRenderer.sendSync('bridge:getTaskCenter');
+  },
+  getTaskCenterCapabilities() {
+    return ipcRenderer.sendSync('bridge:getTaskCenterCapabilities');
+  },
+  setTaskAutomationEnabled(enabled) {
+    return ipcRenderer.sendSync('bridge:setTaskAutomationEnabled', enabled);
+  },
+  executeTask(taskId, executor) {
+    return ipcRenderer.sendSync('bridge:executeTask', taskId, executor);
+  },
+  approveTask(taskId, decision, note) {
+    return ipcRenderer.sendSync('bridge:approveTask', taskId, decision, note);
+  },
+  retryTask(taskId) {
+    return ipcRenderer.sendSync('bridge:retryTask', taskId);
+  },
+  cancelTask(taskId, note) {
+    return ipcRenderer.sendSync('bridge:cancelTask', taskId, note);
+  },
+  importTaskResult(taskId) {
+    return ipcRenderer.sendSync('bridge:importTaskResult', taskId);
+  },
+  syncQClawTaskResults() {
+    return ipcRenderer.sendSync('bridge:syncQClawTaskResults');
+  },
+  submitDailyActionFeedback(taskId, status, note) {
+    return ipcRenderer.sendSync('bridge:submitDailyActionFeedback', taskId, status, note);
+  },
+  openTaskCenterPath(kind) {
+    return ipcRenderer.sendSync('bridge:openTaskCenterPath', kind);
+  },
+  generateStudentMaintenanceReport(studentId) {
+    return ipcRenderer.sendSync('bridge:generateStudentMaintenanceReport', studentId);
   },
   getHostTimeline() {
     return ipcRenderer.sendSync('bridge:getHostTimeline');

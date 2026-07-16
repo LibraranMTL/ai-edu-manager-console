@@ -6,32 +6,45 @@ import {
   AlertTriangle,
   BookOpen,
   Bot,
+  Camera,
   CheckCircle2,
+  ChevronRight,
   Clipboard,
   Clock3,
+  Copy,
   ExternalLink,
   FileDown,
   FileText,
   FolderOpen,
   Home,
   Inbox,
+  Gauge,
   KeyRound,
   LinkIcon,
   ListChecks,
   MessageCircle,
+  Monitor,
   PanelLeftClose,
   PanelLeftOpen,
+  Pause,
+  Pencil,
+  Play,
   Plus,
   RefreshCw,
   Settings,
   Share2,
   ShieldCheck,
   Sparkles,
+  Square,
+  Star,
+  Trash2,
   UserRound,
+  Zap,
 } from 'lucide-react';
 import './styles.css';
 
-type Section = 'home' | 'init' | 'new' | 'inbox' | 'assets' | 'projects' | 'growth' | 'reports' | 'archive' | 'qa' | 'memory' | 'soul' | 'rules' | 'conversation' | 'tasks' | 'settings';
+type Section = 'home' | 'init' | 'new' | 'inbox' | 'assets' | 'projects-new' | 'projects-existing' | 'growth' | 'reports' | 'archive' | 'qa' | 'memory' | 'soul' | 'rules' | 'conversation' | 'tasks' | 'settings';
+type ProjectWorkflowTarget = 'workspace' | 'assets' | 'digest' | 'knowledge' | 'promotion';
 type ThemeName = 'blue' | 'pink' | 'green' | 'purple' | 'orange';
 type LanguageCode = 'zh-CN' | 'zh-TW' | 'en' | 'fr' | 'es' | 'ja' | 'ko' | 'vi' | 'ms';
 type AgentToolId =
@@ -56,6 +69,7 @@ type InitStepId = 'folder' | 'agent' | 'execute' | 'create' | 'soul' | 'memory' 
 type ArchiveCategoryId = 'summary' | 'report' | 'qa' | 'other' | 'all';
 type LearningReportId = 'profile' | 'changes' | 'daily' | 'stage';
 type RuntimePlatform = 'android' | 'windows' | 'web' | string;
+type ProjectDashboardFocus = 'all' | 'active' | 'materials' | 'knowledge' | 'contributions' | 'risks' | 'digest';
 
 type AgentToolProfile = {
   id: AgentToolId;
@@ -227,12 +241,18 @@ type AssetIndexState = {
 type LearningProject = {
   id: string;
   name: string;
+  storageName?: string;
   type: string;
+  description?: string;
+  objective?: string;
   status: string;
   studentIds: string[];
   studentNames?: string[];
+  agentTool?: AgentToolId;
   projectRootPath: string;
   workspacePath: string;
+  workspaceMode?: 'managed' | 'linked' | string;
+  workspaceLastScannedAt?: string;
   stagingPath?: string;
   knowledgeRootPath: string;
   rawPath: string;
@@ -242,6 +262,13 @@ type LearningProject = {
   workspaceTemplateId?: string;
   workspaceTemplateName?: string;
   workspaceFolders?: string[];
+  knowledgeStrategy?: string;
+  growthStrategy?: string;
+  deliverables?: string[];
+  duplicatedFrom?: string;
+  studentEvidence?: Array<{ studentId: string; ability?: string; observation?: string; status?: string; updatedAt?: string }>;
+  automation?: { enabled?: boolean; onWorkspaceChange?: boolean; onStatusChange?: boolean; intervalMinutes?: number; nextRunAt?: string; lastRunAt?: string; lastReason?: string };
+  dashboard?: { knowledgeCount?: number; pendingKnowledgeCount?: number; pendingStagingCount?: number; acceptedStagingCount?: number; contributionReady?: boolean; contributionStatus?: string; knowledgeCoverage?: number; riskCount?: number; riskReasons?: string[] };
   promotionPath?: string;
   assetIds?: string[];
   stagingItems?: ProjectStagingItem[];
@@ -250,8 +277,20 @@ type LearningProject = {
   createdAt?: string;
   updatedAt?: string;
   archivedAt?: string;
+  sealedAt?: string;
+  sealedSnapshotPath?: string;
   publishedAt?: string;
 };
+
+type CrossProjectKnowledgeGroup = {
+  id: string;
+  kind: string;
+  canonicalName: string;
+  projects: Array<{ projectId: string; projectName: string }>;
+  records: Array<{ projectId: string; recordId?: string; studentId?: string; title?: string; status?: string }>;
+};
+
+type RemovedProjectRecord = { snapshotPath: string; removedAt?: string; project: LearningProject };
 
 type ProjectDigestState = {
   status?: 'idle' | 'pending' | 'submitted' | 'digesting' | 'completed' | 'failed' | string;
@@ -264,8 +303,11 @@ type ProjectDigestState = {
   lastDigestAt?: string;
   digestSubmittedAt?: string;
   digestBatchId?: string;
-  pendingFiles?: Array<{ filename?: string; path?: string; size?: number; sha1?: string }>;
-  digestedFiles?: string[];
+  pendingFiles?: Array<{ filename?: string; path?: string; relativePath?: string; changeType?: string; size?: number; sha1?: string }>;
+  digestedFiles?: Array<string | { relativePath?: string; path?: string; sha1?: string }>;
+  digestManifest?: Record<string, { sha1?: string; size?: number; mtimeMs?: number; digestedAt?: string; batchId?: string }>;
+  submittedFiles?: Array<{ relativePath?: string; path?: string; sha1?: string; size?: number }>;
+  digestBatches?: Array<{ id?: string; submittedAt?: string; completedAt?: string; files?: Array<{ relativePath?: string; sha1?: string }> }>;
   updatedAt?: string;
 };
 
@@ -280,6 +322,9 @@ type ProjectStagingItem = {
   sha1?: string;
   status: ProjectStagingStatus | string;
   sourceStrategy?: string;
+  reviewStatus?: string;
+  reviewNote?: string;
+  reviewedAt?: string;
   sourcePath?: string;
   addedAt?: string;
   updatedAt?: string;
@@ -294,6 +339,21 @@ type ProjectStagingItem = {
   governanceAction?: string;
   governanceReason?: string;
   governanceReviewedAt?: string;
+};
+
+type ProjectKnowledgeRecord = {
+  id: string;
+  kind: string;
+  title: string;
+  path: string;
+  sourceAssets?: string[];
+  status: string;
+  confidence?: string;
+  model?: string;
+  promptVersion?: string;
+  reviewNote?: string;
+  reviewedAt?: string;
+  generatedAt?: string;
 };
 
 type PromotionAction = 'reference' | 'publish' | 'absorb' | 'skip';
@@ -409,6 +469,65 @@ type ScheduleLedgerState = {
   entries: ScheduleLedgerEntry[];
 };
 
+type TaskCenterItem = {
+  protocolVersion?: string;
+  id: string;
+  title: string;
+  kind: string;
+  sourceType: 'student' | 'project' | 'system' | string;
+  sourceId: string;
+  sourceName: string;
+  status: 'draft' | 'pending' | 'approved' | 'queued' | 'running' | 'waiting_result' | 'reviewing' | 'succeeded' | 'failed' | 'blocked' | 'cancelled' | 'timed_out' | string;
+  statusGroup?: 'actionable' | 'running' | 'scheduled' | 'completed' | string;
+  trigger: 'schedule' | 'event' | 'manual' | string;
+  executor: string;
+  executionMode: 'direct' | 'adapter' | 'manual' | 'review' | string;
+  scheduledAt?: string;
+  updatedAt?: string;
+  count?: number;
+  detail?: string;
+  action?: string;
+  priority?: string;
+  riskLevel?: 'low' | 'medium' | 'high' | string;
+  requestedExecutor?: string;
+  timeoutSeconds?: number;
+  idempotencyKey?: string;
+  attempt?: number;
+  maxAttempts?: number;
+  startedAt?: string;
+  lastHeartbeatAt?: string;
+  completedAt?: string;
+  nextRetryAt?: string;
+  heartbeatTimeoutSeconds?: number;
+  retryBackoffSeconds?: number;
+  autoRetry?: boolean;
+  routingMode?: string;
+  routeAttempts?: string[];
+  adapterId?: string;
+  approval?: { required?: boolean; status?: string; note?: string; reviewedAt?: string; reviewedBy?: string };
+  result?: { summary?: string; message?: string; validation?: { valid?: boolean; message?: string }; packet?: { packetPath?: string; promptPath?: string }; [key: string]: unknown } | null;
+  error?: { code?: string; message?: string } | null;
+  routeDecision?: { mode?: string; selectedAdapter?: string; reason?: string; candidates?: Array<{ adapterId: string; label: string; score: number; available: boolean; mode: string; successRate?: number; costWeight?: number }> } | null;
+  permissions?: { read?: string[]; write?: string[]; operations?: string[] };
+  input?: Record<string, unknown>;
+  expectedOutput?: Record<string, unknown>;
+  executionId?: string;
+};
+
+type TaskCenterState = {
+  protocolVersion?: string;
+  generatedAt?: string;
+  automationEnabled?: boolean;
+  executionMode?: 'automatic' | 'manual' | string;
+  tasks: TaskCenterItem[];
+  history: Array<Partial<ScheduleLedgerEntry> & { id: string; taskId?: string; title?: string; at?: string; detail?: string; sourceType?: string; sourceId?: string; sourceName?: string; executor?: string; status?: string; kind?: string }>;
+  summary: { total: number; actionable: number; running: number; scheduled: number; completed: number };
+  capabilities?: Record<string, { id: string; label: string; available: boolean; authorized?: boolean; automatic: boolean; inbox: boolean; structuredResult: boolean; gateway?: boolean; gatewayHealthy?: boolean; cron?: boolean; healthMessage?: string; permissionEnforcement?: string; hidden?: boolean }>;
+  taskStorePath?: string;
+  qclawInboxPath?: string;
+  qclawResultPath?: string;
+};
+
 type KnowledgeGraphNode = {
   nodeId: string;
   type: 'student' | 'project' | 'asset' | 'growth' | string;
@@ -426,6 +545,15 @@ type AndroidBridge = {
   scanMaterialSources?: (studentId: string, sourcesJson: string) => string;
   importMaterialSourceFiles?: (studentId: string, pathsJson: string) => string;
   getMaterialImportRecords?: (studentId: string) => string;
+  getCaptureCenterState?: () => string;
+  listCaptureSources?: () => Promise<string>;
+  startCaptureSession?: (optionsJson: string) => Promise<string>;
+  pauseCaptureSession?: (sessionId: string) => Promise<string>;
+  resumeCaptureSession?: (sessionId: string) => Promise<string>;
+  highlightCaptureSession?: (sessionId: string) => Promise<string>;
+  stopCaptureSession?: (sessionId: string) => Promise<string>;
+  promoteCaptureSession?: (sessionId: string) => Promise<string>;
+  openCaptureInbox?: (sessionId?: string) => string;
   getAssetIndex?: () => string;
   rebuildAssetIndex?: () => string;
   analyzeAssetGovernance?: () => string;
@@ -435,9 +563,25 @@ type AndroidBridge = {
   generateKnowledgeArchitectureReport?: () => string;
   getProjects?: () => string;
   createProject?: (optionsJson: string) => string;
+  updateProjectMetadata?: (projectId: string, metadataJson: string) => string;
+  removeProjectRecord?: (projectId: string) => string;
+  relocateProjectWorkspace?: (projectId: string) => string;
+  getRemovedProjects?: () => string;
+  restoreRemovedProject?: (snapshotPath: string) => string;
+  exportProjectPackage?: (projectId: string) => string;
+  importProjectPackage?: () => string;
+  duplicateProject?: (projectId: string, name: string) => string;
+  updateProjectStudentEvidence?: (projectId: string, studentId: string, evidenceJson: string) => string;
+  buildCrossProjectKnowledgeIndex?: () => string;
+  pickProjectWorkspaceDir?: () => string;
   updateProjectStatus?: (projectId: string, status: string) => string;
   updateProjectStudents?: (projectId: string, studentIdsJson: string) => string;
-  applyProjectWorkspaceTemplate?: (projectId: string, templateId: string, foldersJson: string) => string;
+  applyProjectWorkspaceTemplate?: (projectId: string, templateId: string, foldersJson: string, templateName?: string, templateV2Json?: string) => string;
+  openProjectSpace?: (projectId: string, space: 'root' | 'workspace' | 'raw' | 'knowledge') => string;
+  scanProjectWorkspace?: (projectId: string) => string;
+  reviewProjectStagingItems?: (projectId: string, itemIdsJson: string, decision: string, sourceStrategy: string, note: string) => string;
+  getProjectKnowledgeReview?: (projectId: string) => string;
+  updateProjectKnowledgeReview?: (projectId: string, recordIdsJson: string, status: string, note: string) => string;
   importProjectAssets?: (projectId: string, assetIdsJson: string) => string;
   importProjectRawFiles?: (projectId: string) => string;
   getProjectDigestCommand?: (projectId: string) => string;
@@ -532,6 +676,17 @@ type AndroidBridge = {
   syncStudentDigestResult?: (studentId: string) => string;
   recordScheduledTaskAction?: (studentId: string, kind: string, commandText: string) => string;
   getStudentScheduleLedger?: (studentId: string) => string;
+  getTaskCenter?: () => string;
+  getTaskCenterCapabilities?: () => string;
+  setTaskAutomationEnabled?: (enabled: boolean) => string;
+  executeTask?: (taskId: string, executor?: string) => string;
+  approveTask?: (taskId: string, decision: 'approved' | 'rejected', note?: string) => string;
+  retryTask?: (taskId: string) => string;
+  cancelTask?: (taskId: string, note?: string) => string;
+  importTaskResult?: (taskId: string) => string;
+  syncQClawTaskResults?: () => string;
+  submitDailyActionFeedback?: (taskId: string, status: string, note?: string) => string;
+  openTaskCenterPath?: (kind: 'root' | 'qclaw-inbox' | 'qclaw-results' | 'manual-outbox' | 'events') => string;
   generateStudentMaintenanceReport?: (studentId: string) => string;
   getHostTimeline?: () => string;
   backupHostData?: () => string;
@@ -660,6 +815,70 @@ type MaterialImportRecord = {
   reason?: string;
 };
 
+type CaptureSource = {
+  id: string;
+  name: string;
+  type: 'screen' | 'window';
+  thumbnail?: string;
+};
+
+type CapturePolicy = {
+  id: 'interval' | 'change' | 'smart';
+  name: string;
+  description: string;
+  sampleIntervalMs: number;
+  minimumSaveIntervalMs: number;
+  maximumSaveIntervalMs: number;
+  visualChangeThreshold: number;
+};
+
+type CaptureItem = {
+  id: string;
+  assetId?: string;
+  filename: string;
+  path: string;
+  capturedAt: string;
+  reason?: string;
+  difference?: number;
+  isHighlighted?: boolean;
+  archiveStatus?: string;
+};
+
+type CaptureSession = {
+  id: string;
+  name: string;
+  platform: 'windows' | 'android' | string;
+  sourceId: string;
+  sourceName: string;
+  sourceType: 'screen' | 'window' | string;
+  studentId: string;
+  studentName: string;
+  projectId?: string;
+  projectName?: string;
+  status: 'capturing' | 'paused' | 'completed' | 'promoted' | 'interrupted' | string;
+  startedAt: string;
+  plannedEndAt?: string;
+  endedAt?: string;
+  screenshotCount: number;
+  candidateFrameCount: number;
+  deduplicatedCount: number;
+  highlightedCount: number;
+  inboxPath?: string;
+  archiveStatus?: string;
+  lastError?: string;
+  items?: CaptureItem[];
+  options?: { mode?: string; policyName?: string; durationMinutes?: number };
+};
+
+type CaptureCenterState = {
+  ok?: boolean;
+  protocolVersion?: number;
+  policies: CapturePolicy[];
+  activeSession: CaptureSession | null;
+  sessions: CaptureSession[];
+  inboxPath?: string;
+};
+
 type NativeImportResult = {
   ok?: boolean;
   imported?: number;
@@ -672,6 +891,7 @@ type StorageConfig = {
   usesAbsolutePaths: boolean;
   pathSeparator: string;
   hostServicePort?: number;
+  taskAutomationEnabled?: boolean;
 };
 
 type HostServiceStatus = {
@@ -851,8 +1071,12 @@ const storageKey = 'edu-manager-launcher.students.v2';
 const themeStorageKey = 'edu-manager-launcher.theme.v1';
 const languageStorageKey = 'edu-manager-launcher.language.v1';
 const archiveKeywordStorageKey = 'edu-manager-launcher.archive-keywords.v1';
-const currentVersionCode = 100;
-const currentVersionName = '0.7.20';
+const projectWorkspaceTemplateStorageKey = 'edu-manager-launcher.project-workspace-templates.v1';
+declare const __APP_VERSION__: string;
+declare const __APP_VERSION_CODE__: number;
+
+const currentVersionCode = __APP_VERSION_CODE__;
+const currentVersionName = __APP_VERSION__;
 const updateManifestUrl = [
   'https://www.greatbg.com/download/edu-manager-version.json',
   'http://www.greatbg.com/download/edu-manager-version.json',
@@ -875,36 +1099,54 @@ const projectWorkspaceTemplates = [
     name: '通用学习项目',
     description: '适合普通作业、短期专题和轻量研究。',
     folders: ['资料', '进展', '团队成员', '成果'],
+    knowledgeStrategy: '提取核心概念、关键实体、阶段摘要和可复用问答。',
+    growthStrategy: '关注主动学习、问题解决和成果表达。',
+    deliverables: ['项目总结', '最终成果'],
   },
   {
     id: 'subject',
     name: '学科专题',
     description: '适合课程学习、错题复盘和阶段总结。',
     folders: ['课程资料', '作业与反馈', '错题与问题', '阶段总结', '成果'],
+    knowledgeStrategy: '聚焦学科概念、错误模式、解题方法和反馈中的改进点。',
+    growthStrategy: '关注学科理解、迁移应用和学习策略。',
+    deliverables: ['阶段总结', '学科成果'],
   },
   {
     id: 'competition',
     name: '竞赛 / 活动',
     description: '适合比赛、活动、作品集和团队协作。',
     folders: ['赛事规则', '参考资料', '方案设计', '团队协作', '过程记录', '提交成果'],
+    knowledgeStrategy: '提取赛事要求、方案选择、技术路线、反馈和最终决策。',
+    growthStrategy: '关注创新、协作、项目推进和公开表达。',
+    deliverables: ['参赛作品', '演示材料', '项目复盘'],
   },
   {
     id: 'research',
     name: '研究项目',
     description: '适合论文、实验、调研和文献综述。',
     folders: ['文献资料', '研究问题', '数据与实验', '分析过程', '成果论文'],
+    knowledgeStrategy: '提取研究问题、文献缺口、方法、数据证据、局限与结论。',
+    growthStrategy: '关注研究设计、证据推理、数据分析和学术写作。',
+    deliverables: ['文献综述', '研究报告', '反思'],
   },
   {
     id: 'writing',
     name: '写作项目',
     description: '适合作文、论文、文书、演讲稿和长文创作。',
     folders: ['参考资料', '选题策划', '写作大纲', '写作规则', '草稿', '修改反馈', '定稿'],
+    knowledgeStrategy: '提取主题、论点、证据、结构、表达规则和修订理由。',
+    growthStrategy: '关注逻辑表达、受众意识、修订能力和写作风格。',
+    deliverables: ['定稿', '修订说明'],
   },
   {
     id: 'application',
     name: '升学申请',
     description: '适合学校申请、文书素材和申请复盘。',
     folders: ['学校与项目', '申请材料', '文书素材', '推荐与反馈', '结果与复盘'],
+    knowledgeStrategy: '提取申请要求、经历证据、个人叙事、院校匹配和反馈。',
+    growthStrategy: '关注自我认知、领导力、沟通和长期目标。',
+    deliverables: ['申请材料包', '文书', '申请复盘'],
   },
 ];
 
@@ -919,6 +1161,21 @@ const parseProjectWorkspaceFolders = (value: string) => Array.from(new Set(
     .map((item) => item.trim())
     .filter((item) => item && item !== '研究暂存'),
 )).slice(0, 24);
+
+const projectWorkspaceFolderErrors = (value: string) => {
+  const rawFolders = value.split(/\r?\n|[,，;；]/).map((item) => item.trim()).filter(Boolean);
+  const errors: string[] = [];
+  const seen = new Set<string>();
+  for (const folder of rawFolders) {
+    if (/[\\/:*?"<>|\x00-\x1F]/.test(folder)) errors.push(`“${folder}”包含非法字符`);
+    if (/^(con|prn|aux|nul|com[1-9]|lpt[1-9])(\.|$)/i.test(folder)) errors.push(`“${folder}”是 Windows 保留名`);
+    const key = folder.toLocaleLowerCase('zh-CN');
+    if (seen.has(key)) errors.push(`“${folder}”重复`);
+    seen.add(key);
+  }
+  if (rawFolders.length > 24) errors.push('最多 24 个文件夹');
+  return errors;
+};
 
 const agentToolProfiles: Record<AgentToolId, AgentToolProfile> = {
   qclaw: {
@@ -1515,6 +1772,7 @@ const languageOptions: Array<{ id: LanguageCode; label: string; nativeLabel: str
 const zhCnText = {
   'app.name': 'AI教育管家控制台',
   'app.subtitle': '半自动完成初始文档导出、Agent 工具初始化指令和 Obsidian 查看入口。',
+  'projects.subtitle': '创建各种项目制学习的资料管理空间，智能进行资料分析与 知识沉淀',
   'nav.home': '首页',
   'nav.init': '初始化教育管家',
   'nav.new': '新建教育智能体',
@@ -1525,7 +1783,7 @@ const zhCnText = {
   'nav.reports': '学情报告',
   'nav.archive': '查看教育档案',
   'nav.qa': '教育管家问答',
-  'nav.tasks': '定时任务',
+  'nav.tasks': '任务中心',
   'nav.settings': '系统设置',
   'nav.knowledge': '智能体知识管理',
   'nav.memory': 'Agent 记忆管理',
@@ -1579,6 +1837,7 @@ const uiTranslations: Record<LanguageCode, Partial<Record<TranslationKey, string
   'zh-TW': {
     'app.name': 'AI教育管家控制台',
     'app.subtitle': '半自動完成初始文件匯出、Agent 工具初始化指令和 Obsidian 查看入口。',
+    'projects.subtitle': '建立各類專案式學習的資料管理空間，智慧進行資料分析與知識沉澱',
     'nav.home': '首頁',
     'nav.init': '初始化教育管家',
     'nav.new': '新建教育智能體',
@@ -1586,7 +1845,7 @@ const uiTranslations: Record<LanguageCode, Partial<Record<TranslationKey, string
     'nav.reports': '學情報告',
     'nav.archive': '查看教育檔案',
     'nav.qa': '教育管家問答',
-    'nav.tasks': '定時任務',
+    'nav.tasks': '任務中心',
     'nav.settings': '系統設定',
     'nav.knowledge': '智能體知識管理',
     'nav.memory': 'Agent 記憶管理',
@@ -1634,6 +1893,7 @@ const uiTranslations: Record<LanguageCode, Partial<Record<TranslationKey, string
   en: {
     'app.name': 'AI Education Manager Console',
     'app.subtitle': 'Semi-automated setup for starter documents, Agent initialization prompts, and Obsidian viewing.',
+    'projects.subtitle': 'Create project-based learning spaces for intelligent material analysis and knowledge development.',
     'nav.home': 'Home',
     'nav.init': 'Initialize Manager',
     'nav.new': 'New Education Agent',
@@ -1641,7 +1901,7 @@ const uiTranslations: Record<LanguageCode, Partial<Record<TranslationKey, string
     'nav.reports': 'Learning Reports',
     'nav.archive': 'Education Archive',
     'nav.qa': 'Agent Q&A',
-    'nav.tasks': 'Scheduled Tasks',
+    'nav.tasks': 'Task Center',
     'nav.settings': 'Settings',
     'nav.knowledge': 'Agent Knowledge',
     'nav.memory': 'Agent Memory',
@@ -1696,7 +1956,7 @@ const uiTranslations: Record<LanguageCode, Partial<Record<TranslationKey, string
     'nav.reports': 'Rapports',
     'nav.archive': 'Dossiers',
     'nav.qa': 'Questions agent',
-    'nav.tasks': 'Tâches',
+    'nav.tasks': 'Centre des tâches',
     'nav.settings': 'Paramètres',
     'nav.knowledge': 'Connaissances agent',
     'nav.memory': 'Mémoire agent',
@@ -1750,7 +2010,7 @@ const uiTranslations: Record<LanguageCode, Partial<Record<TranslationKey, string
     'nav.reports': 'Informes',
     'nav.archive': 'Archivo',
     'nav.qa': 'Preguntas del agente',
-    'nav.tasks': 'Tareas',
+    'nav.tasks': 'Centro de tareas',
     'nav.settings': 'Configuración',
     'nav.knowledge': 'Conocimiento del agente',
     'nav.memory': 'Memoria del agente',
@@ -1804,7 +2064,7 @@ const uiTranslations: Record<LanguageCode, Partial<Record<TranslationKey, string
     'nav.reports': '学習レポート',
     'nav.archive': '教育アーカイブ',
     'nav.qa': 'エージェントQ&A',
-    'nav.tasks': '定期タスク',
+    'nav.tasks': 'タスクセンター',
     'nav.settings': '設定',
     'nav.knowledge': 'エージェント知識管理',
     'nav.memory': 'エージェント記憶',
@@ -1858,7 +2118,7 @@ const uiTranslations: Record<LanguageCode, Partial<Record<TranslationKey, string
     'nav.reports': '학습 보고서',
     'nav.archive': '교육 기록',
     'nav.qa': '에이전트 Q&A',
-    'nav.tasks': '예약 작업',
+    'nav.tasks': '작업 센터',
     'nav.settings': '설정',
     'nav.knowledge': '에이전트 지식 관리',
     'nav.memory': '에이전트 메모리',
@@ -1912,7 +2172,7 @@ const uiTranslations: Record<LanguageCode, Partial<Record<TranslationKey, string
     'nav.reports': 'Báo cáo học tập',
     'nav.archive': 'Hồ sơ học tập',
     'nav.qa': 'Hỏi đáp Agent',
-    'nav.tasks': 'Tác vụ định kỳ',
+    'nav.tasks': 'Trung tâm tác vụ',
     'nav.settings': 'Cài đặt',
     'nav.knowledge': 'Quản lý tri thức Agent',
     'nav.memory': 'Bộ nhớ Agent',
@@ -1966,7 +2226,7 @@ const uiTranslations: Record<LanguageCode, Partial<Record<TranslationKey, string
     'nav.reports': 'Laporan pembelajaran',
     'nav.archive': 'Arkib pendidikan',
     'nav.qa': 'Soal jawab Agent',
-    'nav.tasks': 'Tugasan berjadual',
+    'nav.tasks': 'Pusat Tugas',
     'nav.settings': 'Tetapan',
     'nav.knowledge': 'Pengurusan pengetahuan Agent',
     'nav.memory': 'Memori Agent',
@@ -3358,6 +3618,14 @@ function App() {
   const [materialSourceFiles, setMaterialSourceFiles] = useState<MaterialSourceCandidate[]>([]);
   const [selectedMaterialSourcePaths, setSelectedMaterialSourcePaths] = useState<string[]>([]);
   const [materialImportRecords, setMaterialImportRecords] = useState<MaterialImportRecord[]>([]);
+  const [captureCenter, setCaptureCenter] = useState<CaptureCenterState>({ policies: [], activeSession: null, sessions: [] });
+  const [captureSources, setCaptureSources] = useState<CaptureSource[]>([]);
+  const [captureSourceId, setCaptureSourceId] = useState('');
+  const [captureMode, setCaptureMode] = useState<'smart' | 'change' | 'interval'>('smart');
+  const [captureDuration, setCaptureDuration] = useState(30);
+  const [captureProjectId, setCaptureProjectId] = useState('');
+  const [captureMessage, setCaptureMessage] = useState('');
+  const [captureBusy, setCaptureBusy] = useState(false);
   const [assetIndex, setAssetIndex] = useState<AssetIndexState>({ assets: [] });
   const [assetMessage, setAssetMessage] = useState('');
   const [assetGovernancePreview, setAssetGovernancePreview] = useState('');
@@ -3375,13 +3643,37 @@ function App() {
   const [knowledgeGraphTypeFilter, setKnowledgeGraphTypeFilter] = useState<'all' | 'student' | 'project' | 'asset' | 'growth'>('all');
   const [projectAuditItems, setProjectAuditItems] = useState<ProjectAuditItem[]>([]);
   const [projectAuditFilter, setProjectAuditFilter] = useState<'all' | 'high' | 'medium' | 'unbound_student' | 'no_assets' | 'stale_promotion'>('all');
+  const [projectAuditLocateTarget, setProjectAuditLocateTarget] = useState<{ projectId: string; target: 'detail' | 'students' | ProjectWorkflowTarget; nonce: number } | null>(null);
   const [selectedProjectId, setSelectedProjectId] = useState('');
+  const [projectEditDraft, setProjectEditDraft] = useState({ name: '', type: '', description: '', objective: '', knowledgeStrategy: '', growthStrategy: '' });
+  const [projectEditOpen, setProjectEditOpen] = useState(false);
+  const [projectStudentEvidenceDrafts, setProjectStudentEvidenceDrafts] = useState<Record<string, { ability: string; observation: string; status: string }>>({});
+  const [crossProjectKnowledgeGroups, setCrossProjectKnowledgeGroups] = useState<CrossProjectKnowledgeGroup[]>([]);
+  const [crossProjectKnowledgeMessage, setCrossProjectKnowledgeMessage] = useState('');
+  const [removedProjects, setRemovedProjects] = useState<RemovedProjectRecord[]>([]);
+  const [projectDashboardFocus, setProjectDashboardFocus] = useState<ProjectDashboardFocus>('all');
   const [projectDraft, setProjectDraft] = useState({
     name: '',
     type: '学习项目',
+    description: '',
+    objective: '',
+    knowledgeStrategy: projectWorkspaceTemplates[0].knowledgeStrategy,
+    growthStrategy: projectWorkspaceTemplates[0].growthStrategy,
+    deliverablesText: projectWorkspaceTemplates[0].deliverables.join('\n'),
     studentIds: [] as string[],
     workspaceTemplateId: projectWorkspaceTemplates[0].id,
     workspaceFoldersText: projectWorkspaceFoldersText(projectWorkspaceTemplates[0].folders),
+    workspaceMode: 'managed' as 'managed' | 'linked',
+    workspacePath: '',
+    agentTool: 'qclaw' as AgentToolId,
+  });
+  const [customProjectWorkspaceTemplates, setCustomProjectWorkspaceTemplates] = useState<Array<{ id: string; name: string; description: string; folders: string[]; knowledgeStrategy: string; growthStrategy: string; deliverables: string[] }>>(() => {
+    try {
+      const parsed = JSON.parse(localStorage.getItem(projectWorkspaceTemplateStorageKey) || '[]');
+      return Array.isArray(parsed) ? parsed : [];
+    } catch {
+      return [];
+    }
   });
   const [projectWorkspaceTemplateEdit, setProjectWorkspaceTemplateEdit] = useState({
     templateId: projectWorkspaceTemplates[0].id,
@@ -3391,6 +3683,12 @@ function App() {
   const [selectedProjectStagingIds, setSelectedProjectStagingIds] = useState<string[]>([]);
   const [projectStagingSearch, setProjectStagingSearch] = useState('');
   const [projectStagingStatusFilter, setProjectStagingStatusFilter] = useState<'all' | ProjectStagingStatus>('all');
+  const [projectSourceStrategy, setProjectSourceStrategy] = useState<'full_copy' | 'reference_only' | 'snapshot'>('reference_only');
+  const [projectReviewNote, setProjectReviewNote] = useState('');
+  const [projectKnowledgeRecords, setProjectKnowledgeRecords] = useState<ProjectKnowledgeRecord[]>([]);
+  const [selectedProjectKnowledgeIds, setSelectedProjectKnowledgeIds] = useState<string[]>([]);
+  const [projectKnowledgeStatusFilter, setProjectKnowledgeStatusFilter] = useState('all');
+  const [projectKnowledgeReviewNote, setProjectKnowledgeReviewNote] = useState('');
   const [promotionPreview, setPromotionPreview] = useState('');
   const [promotionPlan, setPromotionPlan] = useState<PromotionPlan | null>(null);
   const [promotionExecutionSummary, setPromotionExecutionSummary] = useState('');
@@ -3404,6 +3702,13 @@ function App() {
   const [scheduleLedger, setScheduleLedger] = useState<ScheduleLedgerState>({ entries: [] });
   const [scheduleMessage, setScheduleMessage] = useState('');
   const [maintenanceReportPreview, setMaintenanceReportPreview] = useState('');
+  const [taskCenter, setTaskCenter] = useState<TaskCenterState>({ tasks: [], history: [], summary: { total: 0, actionable: 0, running: 0, scheduled: 0, completed: 0 } });
+  const [taskCenterStatusFilter, setTaskCenterStatusFilter] = useState<'all' | 'actionable' | 'running' | 'scheduled' | 'completed'>('all');
+  const [taskCenterSourceFilter, setTaskCenterSourceFilter] = useState<'all' | 'student' | 'project'>('all');
+  const [taskCenterExecutorFilter, setTaskCenterExecutorFilter] = useState('all');
+  const [selectedTaskId, setSelectedTaskId] = useState('');
+  const [taskExecutorDraft, setTaskExecutorDraft] = useState('');
+  const [taskReviewNote, setTaskReviewNote] = useState('');
   const [sharedInboxCount, setSharedInboxCount] = useState(0);
   const [compatibility, setCompatibility] = useState<Record<string, unknown> | null>(null);
   const [storageConfig, setStorageConfig] = useState<StorageConfig>(activeStorageConfig);
@@ -3444,6 +3749,7 @@ function App() {
   const [agentCenter, setAgentCenter] = useState<AgentCenterState | null>(null);
   const [agentCenterMessage, setAgentCenterMessage] = useState('');
   const [agentKnowledgeMenuOpen, setAgentKnowledgeMenuOpen] = useState(false);
+  const [projectMenuOpen, setProjectMenuOpen] = useState(true);
   const [agentScanCandidates, setAgentScanCandidates] = useState<AgentKnowledgeCandidate[]>([]);
   const [selectedCandidateKeys, setSelectedCandidateKeys] = useState<string[]>([]);
   const [aiScanTool, setAiScanTool] = useState<AgentToolId | 'all'>('all');
@@ -3478,6 +3784,20 @@ function App() {
   const t = (key: TranslationKey) => uiTranslations[language]?.[key] ?? zhCnText[key] ?? key;
 
   const selectedStudent = students.find((item) => item.id === selectedId) ?? students[0];
+  const taskCenterExecutors = useMemo(() => Array.from(new Set(taskCenter.tasks.map((task) => task.executor).filter(Boolean))), [taskCenter.tasks]);
+  const visibleTaskCenterItems = useMemo(() => taskCenter.tasks.filter((task) => {
+    const statusMatches = taskCenterStatusFilter === 'all'
+      || task.statusGroup === taskCenterStatusFilter
+      || (taskCenterStatusFilter === 'actionable' && ['draft', 'pending', 'approved', 'failed', 'blocked', 'timed_out'].includes(task.status))
+      || (taskCenterStatusFilter === 'running' && ['running', 'waiting_result', 'reviewing'].includes(task.status))
+      || (taskCenterStatusFilter === 'scheduled' && task.status === 'queued')
+      || (taskCenterStatusFilter === 'completed' && task.status === 'succeeded');
+    const sourceMatches = taskCenterSourceFilter === 'all' || task.sourceType === taskCenterSourceFilter;
+    const executorMatches = taskCenterExecutorFilter === 'all' || task.executor === taskCenterExecutorFilter;
+    return statusMatches && sourceMatches && executorMatches;
+  }), [taskCenter.tasks, taskCenterExecutorFilter, taskCenterSourceFilter, taskCenterStatusFilter]);
+  const selectedTask = taskCenter.tasks.find((task) => task.id === selectedTaskId) ?? null;
+  const selectedTaskHistory = useMemo(() => selectedTask ? taskCenter.history.filter((entry) => entry.taskId === selectedTask.id) : [], [selectedTask, taskCenter.history]);
   const systemTemplateFiles = useMemo(() => buildSystemTemplates(), []);
   const currentTemplateFiles = useMemo(() => {
     if (templateCenter?.activeTemplate === 'custom') {
@@ -3544,7 +3864,7 @@ function App() {
   const isWindows = storageConfig.platform === 'windows';
   const effectiveLicenseStatus = licenseStatus || hostServiceStatus?.license || null;
   const windowsLicenseActive = !isWindows || Boolean(effectiveLicenseStatus?.active);
-  const restrictedSections = new Set<Section>(['init', 'new', 'inbox', 'assets', 'projects', 'growth', 'qa', 'memory', 'soul', 'rules', 'conversation', 'tasks']);
+  const restrictedSections = new Set<Section>(['init', 'new', 'inbox', 'assets', 'projects-new', 'projects-existing', 'growth', 'qa', 'memory', 'soul', 'rules', 'conversation', 'tasks']);
   const isLicenseRestrictedSection = isWindows && !windowsLicenseActive && restrictedSections.has(activeSection);
   const licenseRestrictionText = effectiveLicenseStatus?.message || 'Windows 主机尚未激活。未激活状态仅支持首页、系统设置和已有档案/报告的只读浏览。';
   const shouldBlockForAgentInstall = isWindows && installStatus ? !installStatus.anyInstalled : false;
@@ -3562,7 +3882,7 @@ function App() {
     () =>
       selectedArchiveCategory === 'all'
         ? markdownFiles.filter(isVisibleArchiveFile)
-        : markdownFiles.filter((file) => isVisibleArchiveFile(file) && !isLearningReportFile(file) && classifyMarkdownFile(file, archiveKeywords) === selectedArchiveCategory),
+        : markdownFiles.filter((file) => isVisibleArchiveFile(file) && classifyMarkdownFile(file, archiveKeywords) === selectedArchiveCategory),
     [archiveKeywords, markdownFiles, selectedArchiveCategory],
   );
   const filteredHostUploadRecords = useMemo(() => {
@@ -3626,7 +3946,37 @@ function App() {
   }, [assetGovernanceStats.issueCount, assetIndex.assets, assetIndex.total]);
 
   const selectedProject = projects.find((project) => project.id === selectedProjectId) ?? projects[0] ?? null;
-  const selectedProjectWorkspaceTemplate = projectWorkspaceTemplateById(selectedProject?.workspaceTemplateId);
+  const availableProjectWorkspaceTemplates = [...projectWorkspaceTemplates, ...customProjectWorkspaceTemplates];
+  const projectWorkspaceTemplateForUi = (templateId?: string) => {
+    const template = availableProjectWorkspaceTemplates.find((item) => item.id === templateId) ?? projectWorkspaceTemplates[0];
+    return {
+      ...template,
+      knowledgeStrategy: template.knowledgeStrategy || projectWorkspaceTemplates[0].knowledgeStrategy,
+      growthStrategy: template.growthStrategy || projectWorkspaceTemplates[0].growthStrategy,
+      deliverables: Array.isArray(template.deliverables) ? template.deliverables : projectWorkspaceTemplates[0].deliverables,
+    };
+  };
+  const projectDraftFolderList = parseProjectWorkspaceFolders(projectDraft.workspaceFoldersText);
+  const projectDraftFolderErrors = projectWorkspaceFolderErrors(projectDraft.workspaceFoldersText);
+  const projectDashboardStats = useMemo(() => ({
+    total: projects.length,
+    active: projects.filter((project) => ['active', 'pending_review', 'pending_archive'].includes(project.status)).length,
+    pendingMaterials: projects.reduce((sum, project) => sum + Number(project.dashboard?.pendingStagingCount || 0), 0),
+    pendingKnowledge: projects.reduce((sum, project) => sum + Number(project.dashboard?.pendingKnowledgeCount || 0), 0),
+    readyContributions: projects.filter((project) => project.dashboard?.contributionReady && !project.publishedAt).length,
+    risks: projects.reduce((sum, project) => sum + Number(project.dashboard?.riskCount || 0), 0),
+    pendingDigest: projects.filter((project) => Number(project.digestState?.pendingCount || 0) > 0).length,
+  }), [projects]);
+  const projectDashboardRows = useMemo(() => projects.filter((project) => {
+    if (projectDashboardFocus === 'active') return ['active', 'pending_review', 'pending_archive'].includes(project.status);
+    if (projectDashboardFocus === 'materials') return Number(project.dashboard?.pendingStagingCount || 0) > 0;
+    if (projectDashboardFocus === 'knowledge') return Number(project.dashboard?.pendingKnowledgeCount || 0) > 0;
+    if (projectDashboardFocus === 'contributions') return Boolean(project.dashboard?.contributionReady && !project.publishedAt);
+    if (projectDashboardFocus === 'risks') return Number(project.dashboard?.riskCount || 0) > 0;
+    if (projectDashboardFocus === 'digest') return Number(project.digestState?.pendingCount || 0) > 0;
+    return true;
+  }), [projectDashboardFocus, projects]);
+  const selectedProjectWorkspaceTemplate = projectWorkspaceTemplateForUi(selectedProject?.workspaceTemplateId);
   const selectedProjectWorkspaceFolders = selectedProject?.workspaceFolders?.length
     ? selectedProject.workspaceFolders
     : selectedProjectWorkspaceTemplate.folders;
@@ -3649,6 +3999,9 @@ function App() {
     return filteredAssets.filter((asset) => !selectedAssetIds.has(asset.assetId)).slice(0, 120);
   }, [filteredAssets, selectedProject?.assetIds]);
   const projectStagingItems = selectedProject?.stagingItems ?? [];
+  const filteredProjectKnowledgeRecords = useMemo(() => (
+    projectKnowledgeRecords.filter((record) => projectKnowledgeStatusFilter === 'all' || record.status === projectKnowledgeStatusFilter)
+  ), [projectKnowledgeRecords, projectKnowledgeStatusFilter]);
   const filteredProjectStagingItems = useMemo(() => {
     const keyword = projectStagingSearch.trim().toLowerCase();
     return projectStagingItems.filter((item) => {
@@ -3737,8 +4090,11 @@ function App() {
   const projectStatusLabel = (status?: string) => {
     if (status === 'draft') return '草稿';
     if (status === 'active') return '进行中';
+    if (status === 'pending_review') return '待审核';
     if (status === 'pending_archive') return '待归档';
     if (status === 'archived') return '已归档';
+    if (status === 'archiving') return '归档中';
+    if (status === 'archive_failed') return '归档失败';
     if (status === 'published') return '已发布';
     if (status === 'sealed') return '已封存';
     return status || '进行中';
@@ -3746,12 +4102,68 @@ function App() {
 
   useEffect(() => {
     if (!selectedProject) return;
-    const template = projectWorkspaceTemplateById(selectedProject.workspaceTemplateId);
+    const template = projectWorkspaceTemplateForUi(selectedProject.workspaceTemplateId);
     setProjectWorkspaceTemplateEdit({
       templateId: template.id,
       foldersText: projectWorkspaceFoldersText(selectedProject.workspaceFolders?.length ? selectedProject.workspaceFolders : template.folders),
     });
-  }, [selectedProject?.id, selectedProject?.workspaceTemplateId, selectedProject?.workspaceFolders?.join('|')]);
+    setProjectEditDraft({
+      name: selectedProject.name || '',
+      type: selectedProject.type || '',
+      description: selectedProject.description || '',
+      objective: selectedProject.objective || '',
+      knowledgeStrategy: selectedProject.knowledgeStrategy || '',
+      growthStrategy: selectedProject.growthStrategy || '',
+    });
+    setProjectStudentEvidenceDrafts(Object.fromEntries((selectedProject.studentIds || []).map((studentId) => {
+      const current = selectedProject.studentEvidence?.find((item) => item.studentId === studentId);
+      return [studentId, { ability: current?.ability || '', observation: current?.observation || '', status: current?.status || 'draft' }];
+    })));
+  }, [selectedProject?.id, selectedProject?.updatedAt, selectedProject?.workspaceTemplateId, selectedProject?.workspaceFolders?.join('|')]);
+
+  useEffect(() => {
+    setSelectedProjectKnowledgeIds([]);
+    setProjectKnowledgeRecords([]);
+    if (!selectedProject?.id) return;
+    const raw = bridge()?.getProjectKnowledgeReview?.(selectedProject.id);
+    if (!raw) return;
+    try {
+      const result = JSON.parse(raw) as { ok?: boolean; records?: ProjectKnowledgeRecord[] };
+      if (result.ok) setProjectKnowledgeRecords(result.records ?? []);
+    } catch {
+      // The project page remains usable when the optional review index is unavailable.
+    }
+  }, [selectedProject?.id]);
+
+  useEffect(() => {
+    if (!projectAuditLocateTarget || selectedProject?.id !== projectAuditLocateTarget.projectId) return;
+    let attempts = 0;
+    let timer = 0;
+    const locate = () => {
+      const requestedTarget = document.querySelector<HTMLElement>(`[data-project-action-target="${projectAuditLocateTarget.target}"]`);
+      const fallbackTarget = document.querySelector<HTMLElement>('[data-project-action-target="detail"]');
+      const target = requestedTarget || (attempts >= 12 ? fallbackTarget : null);
+      if (!target && attempts < 20) {
+        attempts += 1;
+        timer = window.setTimeout(locate, 100);
+        return;
+      }
+      if (!target) {
+        setProjectMessage('已选择审计项目，但未找到对应处理区域。请展开项目详情后重试。');
+        return;
+      }
+      target.scrollIntoView({ behavior: 'smooth', block: 'start', inline: 'nearest' });
+      const detailReader = target.closest<HTMLElement>('.project-detail-reader');
+      if (detailReader && target !== detailReader) {
+        detailReader.scrollTo({ top: Math.max(0, target.offsetTop - 20), behavior: 'smooth' });
+      }
+      target.focus({ preventScroll: true });
+      setProjectMessage((current) => `${current}\n已定位并高亮处理区域。`);
+    };
+    timer = window.setTimeout(locate, 80);
+    const clearTimer = window.setTimeout(() => setProjectAuditLocateTarget((current) => current?.nonce === projectAuditLocateTarget.nonce ? null : current), 3200);
+    return () => { window.clearTimeout(timer); window.clearTimeout(clearTimer); };
+  }, [projectAuditLocateTarget, selectedProject?.id]);
 
   const projectDigestStatusLabel = (status?: string) => {
     if (status === 'idle') return '无待消化';
@@ -3784,14 +4196,16 @@ function App() {
   const selectedProjectWorkflowSteps = useMemo(() => {
     if (!selectedProject) return [];
     const promotedCount = projectStagingItems.filter((item) => item.status === 'promoted' || item.promotedAssetId).length;
+    const pendingStagingCount = projectStagingItems.filter((item) => !['promoted', 'discarded'].includes(String(item.status))).length;
+    const pendingKnowledgeCount = projectKnowledgeRecords.filter((item) => ['ai_generated', 'pending_review'].includes(String(item.status))).length;
     return [
-      { title: '研究暂存', value: `${projectStagingItems.length} 份`, detail: '先收集候选资料，不直接进入正式资产中心' },
-      { title: 'AI 初筛', value: `${projectStagingItems.filter((item) => item.aiAction || item.aiReason).length} 份`, detail: '导入 AI 建议后仍由管理员确认' },
-      { title: '资产晋升', value: `${promotedCount} 份`, detail: '晋升后复制到项目原始资料库并登记资产引用' },
-      { title: '贡献申请', value: promotionPreview || promotionPlan ? '已生成' : '待生成', detail: '生成项目知识贡献报告和归档确认清单' },
-      { title: '成长沉淀', value: selectedProject.publishedAt ? '已发布' : projectStatusLabel(selectedProject.status), detail: '发布到学生成长模型和综合汇总记录' },
+      { target: 'workspace' as ProjectWorkflowTarget, title: '资料入口', value: `${selectedProjectDigestState.rawFileCount || 0} 份正式资料`, detail: '工作空间、扫描与直接导入' },
+      { target: 'assets' as ProjectWorkflowTarget, title: '暂存治理', value: `${pendingStagingCount} 待处理 · ${promotedCount} 已晋升`, detail: '初筛、审核并应用保存策略' },
+      { target: 'digest' as ProjectWorkflowTarget, title: 'Agent 消化', value: projectDigestStatusLabel(selectedProjectDigestState.status), detail: `待消化 ${selectedProjectDigestState.pendingCount || 0} 份` },
+      { target: 'knowledge' as ProjectWorkflowTarget, title: '知识审核', value: `${pendingKnowledgeCount} 条待审核`, detail: '确认概念、实体、摘要与结论' },
+      { target: 'promotion' as ProjectWorkflowTarget, title: '贡献归档', value: selectedProject.publishedAt ? '已发布' : promotionPreview || promotionPlan ? '待执行' : '待生成', detail: '审核后进入学生档案与成长模型' },
     ];
-  }, [projectStagingItems, promotionPlan, promotionPreview, selectedProject]);
+  }, [projectKnowledgeRecords, projectStagingItems, promotionPlan, promotionPreview, selectedProject, selectedProjectDigestState]);
 
   const promotionExecutionPreview = useMemo(() => {
     if (!promotionPlan) return '';
@@ -4412,7 +4826,6 @@ ${conversationText || '（请先粘贴对话历史）'}`;
         // Keep Android/web defaults.
       }
     }
-    refreshInstallStatus();
     refreshTemplateCenter();
     syncStudentsToHost(students);
     refreshHostServiceStatus();
@@ -4420,6 +4833,12 @@ ${conversationText || '（请先粘贴对话历史）'}`;
     refreshAssets();
     refreshProjects();
   }, []);
+
+  useEffect(() => {
+    if (!['init', 'new', 'settings'].includes(activeSection) || installStatus) return undefined;
+    const timer = window.setTimeout(refreshInstallStatus, 0);
+    return () => window.clearTimeout(timer);
+  }, [activeSection, installStatus]);
 
   useEffect(() => {
     (window as unknown as { onNativeImportResult?: (payload: string | NativeImportResult) => void }).onNativeImportResult = (payload: string | NativeImportResult) => {
@@ -4561,8 +4980,14 @@ ${conversationText || '（请先粘贴对话历史）'}`;
       refreshSourceRegistry();
     }
     if (activeSection === 'conversation') refreshConversationCenter();
-    if (activeSection === 'reports' && selectedStudent) refreshLearningReports(selectedStudent);
   }, [activeSection, selectedId]);
+
+  useEffect(() => {
+    if (activeSection !== 'tasks') return undefined;
+    refreshTaskCenter();
+    const timer = window.setInterval(refreshTaskCenter, 15000);
+    return () => window.clearInterval(timer);
+  }, [activeSection, students, projects]);
 
   useEffect(() => {
     setMarkdownFiles([]);
@@ -4611,13 +5036,30 @@ ${conversationText || '（请先粘贴对话历史）'}`;
   }, [selectedId]);
 
   useEffect(() => {
+    if (!selectedStudent) return;
+    if (activeSection === 'reports') {
+      refreshLearningReports(selectedStudent);
+      return;
+    }
+    if (activeSection === 'archive') {
+      if (windowsLicenseActive) bridge()?.ensureLearningReports?.(selectedStudent.id);
+      refreshMarkdownFiles(selectedStudent);
+    }
+  }, [activeSection, selectedId]);
+
+  useEffect(() => {
     setCustomStepPrompts({});
   }, [draft, storageConfig]);
 
   useEffect(() => {
     if (isWindows && activeSection === 'inbox' && selectedStudent) {
       refreshMaterialImportRecords(selectedStudent);
+      refreshCaptureCenter();
+      void refreshCaptureSources();
+      const timer = window.setInterval(refreshCaptureCenter, 2000);
+      return () => window.clearInterval(timer);
     }
+    return undefined;
   }, [activeSection, selectedId]);
 
   const persist = (next: Student[]) => {
@@ -5724,6 +6166,103 @@ ${conversationText || '（请先粘贴对话历史）'}`;
     }
   };
 
+  const refreshCaptureCenter = () => {
+    const raw = bridge()?.getCaptureCenterState?.();
+    if (!raw) return;
+    try {
+      const result = JSON.parse(raw) as CaptureCenterState;
+      if (result.ok) setCaptureCenter(result);
+    } catch {
+      setCaptureMessage('屏幕采集状态读取失败。');
+    }
+  };
+
+  const refreshCaptureSources = async () => {
+    const action = bridge()?.listCaptureSources;
+    if (!action) return;
+    try {
+      const result = JSON.parse(await action()) as { ok?: boolean; sources?: CaptureSource[]; message?: string };
+      if (!result.ok) {
+        setCaptureMessage(result.message || '读取屏幕来源失败。');
+        return;
+      }
+      const sources = result.sources ?? [];
+      setCaptureSources(sources);
+      setCaptureSourceId((current) => (sources.some((source) => source.id === current) ? current : sources[0]?.id || ''));
+    } catch {
+      setCaptureMessage('屏幕来源结果解析失败。');
+    }
+  };
+
+  const startScreenCapture = async (student: Student) => {
+    const action = bridge()?.startCaptureSession;
+    if (!action || !captureSourceId) {
+      setCaptureMessage('请选择可用的屏幕或应用窗口。');
+      return;
+    }
+    setCaptureBusy(true);
+    try {
+      const raw = await action(JSON.stringify({
+        studentId: student.id,
+        projectId: captureProjectId,
+        sourceId: captureSourceId,
+        mode: captureMode,
+        durationMinutes: captureDuration,
+      }));
+      const result = JSON.parse(raw) as { ok?: boolean; message?: string; session?: CaptureSession };
+      setCaptureMessage(result.message || (result.ok ? '屏幕采集已开始。' : '屏幕采集启动失败。'));
+      refreshCaptureCenter();
+    } catch {
+      setCaptureMessage('屏幕采集启动失败。');
+    } finally {
+      setCaptureBusy(false);
+    }
+  };
+
+  const runCaptureControl = async (kind: 'pause' | 'resume' | 'highlight' | 'stop', sessionId: string) => {
+    const api = bridge();
+    const action = kind === 'pause'
+      ? api?.pauseCaptureSession
+      : kind === 'resume'
+        ? api?.resumeCaptureSession
+        : kind === 'highlight'
+          ? api?.highlightCaptureSession
+          : api?.stopCaptureSession;
+    if (!action) return;
+    setCaptureBusy(true);
+    try {
+      const result = JSON.parse(await action(sessionId)) as { ok?: boolean; message?: string };
+      setCaptureMessage(result.message || (result.ok ? '操作已完成。' : '操作失败。'));
+      refreshCaptureCenter();
+    } catch {
+      setCaptureMessage('屏幕采集操作失败。');
+    } finally {
+      setCaptureBusy(false);
+    }
+  };
+
+  const promoteCapture = async (session: CaptureSession) => {
+    const action = bridge()?.promoteCaptureSession;
+    if (!action) return;
+    setCaptureBusy(true);
+    try {
+      const result = JSON.parse(await action(session.id)) as { ok?: boolean; imported?: number; message?: string };
+      setCaptureMessage(result.message || (result.ok ? '采集资料已晋升。' : '采集资料晋升失败。'));
+      if (result.ok && Number(result.imported || 0) > 0) {
+        const imported = Number(result.imported || 0);
+        persist(students.map((item) => item.id === session.studentId
+          ? { ...item, pendingDigestCount: (item.pendingDigestCount ?? 0) + imported, lastImportAt: new Date().toLocaleString('zh-CN') }
+          : item));
+        refreshMaterialImportRecords(selectedStudent);
+      }
+      refreshCaptureCenter();
+    } catch {
+      setCaptureMessage('采集资料晋升结果解析失败。');
+    } finally {
+      setCaptureBusy(false);
+    }
+  };
+
   const scanMaterialSourcesForStudent = (student: Student) => {
     const sources = student.materialSources ?? [];
     const raw = bridge()?.scanMaterialSources?.(student.id, JSON.stringify(sources));
@@ -5933,10 +6472,27 @@ ${conversationText || '（请先粘贴对话历史）'}`;
     const payload = {
       name: projectDraft.name,
       type: projectDraft.type,
+      description: projectDraft.description,
+      objective: projectDraft.objective,
+      knowledgeStrategy: projectDraft.knowledgeStrategy,
+      growthStrategy: projectDraft.growthStrategy,
+      deliverables: parseProjectWorkspaceFolders(projectDraft.deliverablesText),
       studentIds: projectDraft.studentIds,
       workspaceTemplateId: projectDraft.workspaceTemplateId,
+      workspaceTemplateName: projectWorkspaceTemplateForUi(projectDraft.workspaceTemplateId).name,
       workspaceFolders: parseProjectWorkspaceFolders(projectDraft.workspaceFoldersText),
+      workspaceMode: projectDraft.workspaceMode,
+      workspacePath: projectDraft.workspacePath,
+      agentTool: projectDraft.agentTool,
     };
+    if (projectDraftFolderErrors.length) {
+      setProjectMessage(`工作空间目录需要修正：${projectDraftFolderErrors.join('；')}。`);
+      return;
+    }
+    if (projectDraft.workspaceMode === 'linked' && !projectDraft.workspacePath) {
+      setProjectMessage('请先选择已有项目文件夹。');
+      return;
+    }
     const raw = bridge()?.createProject?.(JSON.stringify(payload));
     if (!raw) {
       setProjectMessage('当前环境不支持创建学习项目。');
@@ -5952,13 +6508,225 @@ ${conversationText || '（请先粘贴对话历史）'}`;
         setProjectDraft({
           name: '',
           type: '学习项目',
+          description: '',
+          objective: '',
+          knowledgeStrategy: projectWorkspaceTemplates[0].knowledgeStrategy,
+          growthStrategy: projectWorkspaceTemplates[0].growthStrategy,
+          deliverablesText: projectWorkspaceTemplates[0].deliverables.join('\n'),
           studentIds: [],
           workspaceTemplateId: projectWorkspaceTemplates[0].id,
           workspaceFoldersText: projectWorkspaceFoldersText(projectWorkspaceTemplates[0].folders),
+          workspaceMode: 'managed',
+          workspacePath: '',
+          agentTool: 'qclaw',
         });
       }
     } catch {
       setProjectMessage('创建学习项目结果解析失败。');
+    }
+  };
+
+  const pickExistingProjectWorkspace = () => {
+    const raw = bridge()?.pickProjectWorkspaceDir?.();
+    if (!raw) {
+      setProjectMessage('当前环境不支持选择已有项目文件夹。');
+      return;
+    }
+    try {
+      const result = JSON.parse(raw) as { ok?: boolean; path?: string; alreadyBound?: boolean; message?: string };
+      if (result.ok && result.path) setProjectDraft((current) => ({ ...current, workspaceMode: 'linked', workspacePath: result.path || '' }));
+      setProjectMessage(result.message || (result.ok ? '已选择项目文件夹。' : '未选择项目文件夹。'));
+    } catch {
+      setProjectMessage('选择已有项目文件夹结果解析失败。');
+    }
+  };
+
+  const saveSelectedProjectMetadata = () => {
+    if (!selectedProjectId || !projectEditDraft.name.trim()) return setProjectMessage('请填写项目名称。');
+    const raw = bridge()?.updateProjectMetadata?.(selectedProjectId, JSON.stringify(projectEditDraft));
+    if (!raw) return setProjectMessage('当前环境不支持编辑项目。');
+    try {
+      const result = JSON.parse(raw) as { ok?: boolean; project?: LearningProject; projects?: LearningProject[]; message?: string };
+      if (Array.isArray(result.projects)) setProjects(result.projects);
+      if (result.ok) setProjectEditOpen(false);
+      setProjectMessage(result.message || (result.ok ? '项目信息已更新。' : '编辑项目失败。'));
+    } catch {
+      setProjectMessage('编辑项目结果解析失败。');
+    }
+  };
+
+  const removeSelectedProjectRecord = () => {
+    if (!selectedProject) return;
+    if (!window.confirm(`确定从教育管家中移除项目记录“${selectedProject.name}”吗？\n\n工作空间、知识空间、资产和审计文件都会保留。`)) return;
+    const raw = bridge()?.removeProjectRecord?.(selectedProject.id);
+    if (!raw) return setProjectMessage('当前环境不支持删除项目记录。');
+    try {
+      const result = JSON.parse(raw) as { ok?: boolean; projects?: LearningProject[]; message?: string };
+      if (Array.isArray(result.projects)) {
+        setProjects(result.projects);
+        setSelectedProjectId(result.projects[0]?.id || '');
+      }
+      setProjectMessage(result.message || (result.ok ? '项目记录已移除。' : '删除项目记录失败。'));
+    } catch {
+      setProjectMessage('删除项目记录结果解析失败。');
+    }
+  };
+
+  const relocateSelectedProjectWorkspace = () => {
+    if (!selectedProject) return;
+    const raw = bridge()?.relocateProjectWorkspace?.(selectedProject.id);
+    if (!raw) return setProjectMessage('当前环境不支持项目路径重新定位。');
+    try {
+      const result = JSON.parse(raw) as { ok?: boolean; projects?: LearningProject[]; message?: string };
+      if (Array.isArray(result.projects)) setProjects(result.projects);
+      setProjectMessage(result.message || (result.ok ? '项目工作空间已重新定位。' : '重新定位失败。'));
+    } catch { setProjectMessage('项目路径重新定位结果解析失败。'); }
+  };
+
+  const loadRemovedProjectRecords = () => {
+    const raw = bridge()?.getRemovedProjects?.();
+    if (!raw) return setProjectMessage('当前环境不支持项目记录恢复。');
+    try {
+      const result = JSON.parse(raw) as { removed?: RemovedProjectRecord[]; message?: string };
+      setRemovedProjects(result.removed || []);
+      setProjectMessage(result.message || '已读取可恢复项目。');
+    } catch { setProjectMessage('可恢复项目结果解析失败。'); }
+  };
+
+  const restoreProjectRecord = (snapshotPath: string) => {
+    const raw = bridge()?.restoreRemovedProject?.(snapshotPath);
+    if (!raw) return;
+    try {
+      const result = JSON.parse(raw) as { ok?: boolean; project?: LearningProject; projects?: LearningProject[]; message?: string };
+      if (Array.isArray(result.projects)) setProjects(result.projects);
+      if (result.project) setSelectedProjectId(result.project.id);
+      if (result.ok) setRemovedProjects((current) => current.filter((item) => item.snapshotPath !== snapshotPath));
+      setProjectMessage(result.message || '项目记录恢复完成。');
+    } catch { setProjectMessage('项目恢复结果解析失败。'); }
+  };
+
+  const exportSelectedProject = () => {
+    if (!selectedProject) return;
+    const raw = bridge()?.exportProjectPackage?.(selectedProject.id);
+    if (!raw) return setProjectMessage('当前环境不支持项目导出。');
+    try { const result = JSON.parse(raw) as { message?: string }; setProjectMessage(result.message || '项目导出完成。'); } catch { setProjectMessage('项目导出结果解析失败。'); }
+  };
+
+  const importLearningProject = () => {
+    const raw = bridge()?.importProjectPackage?.();
+    if (!raw) return setProjectMessage('当前环境不支持项目导入。');
+    try {
+      const result = JSON.parse(raw) as { project?: LearningProject; projects?: LearningProject[]; message?: string };
+      if (Array.isArray(result.projects)) setProjects(result.projects);
+      if (result.project) setSelectedProjectId(result.project.id);
+      setProjectMessage(result.message || '项目导入完成。');
+    } catch { setProjectMessage('项目导入结果解析失败。'); }
+  };
+
+
+  const duplicateSelectedProject = () => {
+    if (!selectedProject) return;
+    const raw = bridge()?.duplicateProject?.(selectedProject.id, `${selectedProject.name} 副本`);
+    if (!raw) return setProjectMessage('当前环境不支持复制项目。');
+    try {
+      const result = JSON.parse(raw) as { ok?: boolean; project?: LearningProject; projects?: LearningProject[]; message?: string };
+      if (Array.isArray(result.projects)) setProjects(result.projects);
+      if (result.project) setSelectedProjectId(result.project.id);
+      setProjectMessage(result.message || (result.ok ? '项目已复制。' : '复制项目失败。'));
+    } catch {
+      setProjectMessage('复制项目结果解析失败。');
+    }
+  };
+
+  const saveProjectStudentEvidence = (studentId: string) => {
+    if (!selectedProjectId) return;
+    const evidence = projectStudentEvidenceDrafts[studentId] || { ability: '', observation: '', status: 'draft' };
+    const raw = bridge()?.updateProjectStudentEvidence?.(selectedProjectId, studentId, JSON.stringify(evidence));
+    if (!raw) return setProjectMessage('当前环境不支持学生独立成长证据。');
+    try {
+      const result = JSON.parse(raw) as { ok?: boolean; projects?: LearningProject[]; message?: string };
+      if (Array.isArray(result.projects)) setProjects(result.projects);
+      setProjectMessage(result.message || (result.ok ? '学生成长证据已保存。' : '保存学生成长证据失败。'));
+    } catch {
+      setProjectMessage('学生成长证据结果解析失败。');
+    }
+  };
+
+  const generateCrossProjectKnowledgeLinks = () => {
+    const raw = bridge()?.buildCrossProjectKnowledgeIndex?.();
+    if (!raw) return setCrossProjectKnowledgeMessage('当前环境不支持跨项目知识关联。');
+    try {
+      const result = JSON.parse(raw) as { ok?: boolean; linkedGroups?: CrossProjectKnowledgeGroup[]; message?: string };
+      setCrossProjectKnowledgeGroups(result.linkedGroups ?? []);
+      setCrossProjectKnowledgeMessage(result.message || (result.ok ? '跨项目知识关联已生成。' : '生成跨项目知识关联失败。'));
+    } catch {
+      setCrossProjectKnowledgeMessage('跨项目知识关联结果解析失败。');
+    }
+  };
+
+  const saveProjectWorkspaceTemplate = () => {
+    const folders = parseProjectWorkspaceFolders(projectDraft.workspaceFoldersText);
+    if (!folders.length || projectDraftFolderErrors.length) return setProjectMessage('请先提供有效的工作空间目录。');
+    const name = `${projectDraft.name.trim() || '自定义项目'}目录方案`;
+    const template = { id: `custom-${Date.now()}`, name, description: '用户保存的项目模板 V2。', folders, knowledgeStrategy: projectDraft.knowledgeStrategy, growthStrategy: projectDraft.growthStrategy, deliverables: parseProjectWorkspaceFolders(projectDraft.deliverablesText) };
+    const next = [...customProjectWorkspaceTemplates, template].slice(-20);
+    setCustomProjectWorkspaceTemplates(next);
+    localStorage.setItem(projectWorkspaceTemplateStorageKey, JSON.stringify(next));
+    setProjectDraft((current) => ({ ...current, workspaceTemplateId: template.id }));
+    setProjectMessage(`已保存“${name}”。`);
+  };
+
+  const scanSelectedProjectWorkspace = () => {
+    if (!selectedProjectId) return setProjectMessage('请先选择学习项目。');
+    const raw = bridge()?.scanProjectWorkspace?.(selectedProjectId);
+    if (!raw) return setProjectMessage('当前环境不支持扫描项目工作空间。');
+    try {
+      const result = JSON.parse(raw) as { ok?: boolean; project?: LearningProject; projects?: LearningProject[]; message?: string };
+      if (Array.isArray(result.projects)) setProjects(result.projects);
+      setProjectMessage(result.message || (result.ok ? '工作空间扫描完成。' : '工作空间扫描失败。'));
+    } catch {
+      setProjectMessage('工作空间扫描结果解析失败。');
+    }
+  };
+
+  const reviewSelectedProjectStaging = (decision: 'accepted' | 'rejected' | 'pending') => {
+    if (!selectedProjectId || !selectedProjectStagingIds.length) return setProjectMessage('请先选择要审核的项目资料。');
+    const raw = bridge()?.reviewProjectStagingItems?.(selectedProjectId, JSON.stringify(selectedProjectStagingIds), decision, projectSourceStrategy, projectReviewNote);
+    if (!raw) return setProjectMessage('当前环境不支持项目资料审核。');
+    try {
+      const result = JSON.parse(raw) as { ok?: boolean; projects?: LearningProject[]; message?: string };
+      if (Array.isArray(result.projects)) setProjects(result.projects);
+      if (result.ok) setSelectedProjectStagingIds([]);
+      setProjectMessage(result.message || (result.ok ? '资料审核已更新。' : '资料审核失败。'));
+    } catch {
+      setProjectMessage('资料审核结果解析失败。');
+    }
+  };
+
+  const loadSelectedProjectKnowledgeReview = () => {
+    if (!selectedProjectId) return;
+    const raw = bridge()?.getProjectKnowledgeReview?.(selectedProjectId);
+    if (!raw) return;
+    try {
+      const result = JSON.parse(raw) as { ok?: boolean; records?: ProjectKnowledgeRecord[]; message?: string };
+      setProjectKnowledgeRecords(result.records ?? []);
+      if (result.message) setProjectMessage(result.message);
+    } catch {
+      setProjectMessage('知识资产审核数据解析失败。');
+    }
+  };
+
+  const updateSelectedProjectKnowledgeReview = (status: string) => {
+    if (!selectedProjectId || !selectedProjectKnowledgeIds.length) return setProjectMessage('请先选择要审核的知识资产。');
+    const raw = bridge()?.updateProjectKnowledgeReview?.(selectedProjectId, JSON.stringify(selectedProjectKnowledgeIds), status, projectKnowledgeReviewNote);
+    if (!raw) return setProjectMessage('当前环境不支持知识资产审核。');
+    try {
+      const result = JSON.parse(raw) as { ok?: boolean; records?: ProjectKnowledgeRecord[]; message?: string };
+      setProjectKnowledgeRecords(result.records ?? []);
+      if (result.ok) setSelectedProjectKnowledgeIds([]);
+      setProjectMessage(result.message || (result.ok ? '知识资产审核已更新。' : '知识资产审核失败。'));
+    } catch {
+      setProjectMessage('知识资产审核结果解析失败。');
     }
   };
 
@@ -5968,7 +6736,8 @@ ${conversationText || '（请先粘贴对话历史）'}`;
       return;
     }
     const folders = parseProjectWorkspaceFolders(projectWorkspaceTemplateEdit.foldersText);
-    const raw = bridge()?.applyProjectWorkspaceTemplate?.(selectedProjectId, projectWorkspaceTemplateEdit.templateId, JSON.stringify(folders));
+    const selectedTemplate = projectWorkspaceTemplateForUi(projectWorkspaceTemplateEdit.templateId);
+    const raw = bridge()?.applyProjectWorkspaceTemplate?.(selectedProjectId, projectWorkspaceTemplateEdit.templateId, JSON.stringify(folders), selectedTemplate.name, JSON.stringify({ knowledgeStrategy: selectedTemplate.knowledgeStrategy, growthStrategy: selectedTemplate.growthStrategy, deliverables: selectedTemplate.deliverables }));
     if (!raw) {
       setProjectMessage('当前环境不支持项目工作空间模板。');
       return;
@@ -5980,6 +6749,24 @@ ${conversationText || '（请先粘贴对话历史）'}`;
       setProjectMessage(result.message || (result.ok ? '已应用项目工作空间模板。' : '项目工作空间模板应用失败。'));
     } catch {
       setProjectMessage('项目工作空间模板结果解析失败。');
+    }
+  };
+
+  const openSelectedProjectSpace = (space: 'root' | 'workspace' | 'raw' | 'knowledge') => {
+    if (!selectedProjectId) {
+      setProjectMessage('请先选择学习项目。');
+      return;
+    }
+    const raw = bridge()?.openProjectSpace?.(selectedProjectId, space);
+    if (!raw) {
+      setProjectMessage('当前环境不支持打开项目空间。');
+      return;
+    }
+    try {
+      const result = JSON.parse(raw) as { ok?: boolean; message?: string };
+      setProjectMessage(result.message || (result.ok ? '已打开项目空间。' : '打开项目空间失败。'));
+    } catch {
+      setProjectMessage('打开项目空间结果解析失败。');
     }
   };
 
@@ -6349,8 +7136,42 @@ ${JSON.stringify(items, null, 2)}
     }
   };
 
+  const focusProjectDashboard = (focus: ProjectDashboardFocus) => {
+    setProjectDashboardFocus(focus);
+    window.setTimeout(() => {
+      const target = document.querySelector<HTMLElement>('[data-project-dashboard-results]');
+      target?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+      target?.focus({ preventScroll: true });
+    }, 0);
+  };
+
+  const focusSelectedProjectWorkflowStage = (target: ProjectWorkflowTarget) => {
+    if (!selectedProject) return;
+    setProjectAuditLocateTarget({ projectId: selectedProject.id, target, nonce: Date.now() });
+    setProjectMessage(`已定位到“${target === 'workspace' ? '资料入口' : target === 'assets' ? '暂存治理' : target === 'digest' ? 'Agent 消化' : target === 'knowledge' ? '知识审核' : '贡献归档'}”阶段。`);
+  };
+
+  const openProjectFromDashboard = (project: LearningProject) => {
+    const target = projectDashboardFocus === 'materials'
+      ? 'assets'
+      : projectDashboardFocus === 'knowledge'
+        ? 'knowledge'
+        : projectDashboardFocus === 'contributions'
+          ? 'promotion'
+          : projectDashboardFocus === 'digest'
+            ? 'digest'
+            : 'detail';
+    setSelectedProjectId(project.id);
+    setProjectAuditLocateTarget({ projectId: project.id, target, nonce: Date.now() });
+    if (target === 'promotion') loadProjectPromotionPlan(project.id);
+    setProjectMessage(`正在打开「${project.name}」的${target === 'assets' ? '资料治理' : target === 'knowledge' ? '知识审核' : target === 'promotion' ? '贡献清单' : target === 'digest' ? '人工消化' : '项目详情'}。`);
+  };
+
   const handleProjectAuditAction = (item: ProjectAuditItem) => {
+    const target = item.type === 'stale_promotion' ? 'promotion' : item.type === 'no_assets' ? 'assets' : item.type === 'unbound_student' ? 'students' : 'detail';
+    setActiveSection('projects-existing');
     setSelectedProjectId(item.projectId);
+    setProjectAuditLocateTarget({ projectId: item.projectId, target, nonce: Date.now() });
     setSelectedProjectAssetIds([]);
     setSelectedProjectStagingIds([]);
     setPromotionPreview('');
@@ -6358,15 +7179,17 @@ ${JSON.stringify(items, null, 2)}
     setPromotionExecutionSummary('');
     if (item.type === 'stale_promotion') {
       loadProjectPromotionPlan(item.projectId);
-      setProjectMessage(`已定位到「${item.projectName}」，并打开归档确认清单。`);
+      setProjectMessage(`正在定位到「${item.projectName}」的归档确认清单。`);
       return;
     }
     if (item.type === 'no_assets') {
-      setProjectMessage(`已定位到「${item.projectName}」。请从资产中心加入资料，或在研究暂存层把候选资料晋升为正式资产。`);
+      setProjectStagingStatusFilter('all');
+      setProjectStagingSearch('');
+      setProjectMessage(`正在定位到「${item.projectName}」的资料治理区域。请加入资料或晋升候选资产。`);
       return;
     }
     if (item.type === 'unbound_student') {
-      setProjectMessage(`已定位到「${item.projectName}」。请在“项目绑定学生”区域勾选至少一个学生。`);
+      setProjectMessage(`正在定位到「${item.projectName}」的学生绑定区域。`);
       return;
     }
     setProjectMessage(`已定位到「${item.projectName}」。`);
@@ -6382,7 +7205,7 @@ ${JSON.stringify(items, null, 2)}
     }
     if (target.type === 'project' || target.type === 'growth') {
       setSelectedProjectId(target.entityId);
-      setActiveSection('projects');
+      setActiveSection('projects-existing');
       setProjectMessage(`已从关系图定位到学习项目：${target.label.replace(/^项目：|^成长沉淀：/, '')}`);
       return true;
     }
@@ -6482,8 +7305,14 @@ ${JSON.stringify(items, null, 2)}
       return;
     }
     try {
-      const result = JSON.parse(raw) as { ok?: boolean; project?: LearningProject; message?: string; executionLog?: string; results?: Array<{ action?: string; ok?: boolean; target?: string }> };
+      const result = JSON.parse(raw) as { ok?: boolean; queued?: boolean; task?: TaskCenterItem; project?: LearningProject; message?: string; executionLog?: string; results?: Array<{ action?: string; ok?: boolean; target?: string }> };
       setProjectMessage(result.message || (result.ok ? '已执行归档确认清单。' : '执行归档确认清单失败。'));
+      if (result.queued && result.task) {
+        refreshTaskCenter();
+        setSelectedTaskId(result.task.id);
+        setActiveSection('tasks');
+        return;
+      }
       if (result.project) setProjects((current) => current.map((item) => (item.id === result.project?.id ? result.project : item)));
       if (result.ok) {
         if (Array.isArray(result.results)) {
@@ -6516,8 +7345,14 @@ ${JSON.stringify(items, null, 2)}
       return;
     }
     try {
-      const result = JSON.parse(raw) as { ok?: boolean; project?: LearningProject; content?: string; message?: string };
+      const result = JSON.parse(raw) as { ok?: boolean; queued?: boolean; task?: TaskCenterItem; project?: LearningProject; content?: string; message?: string };
       setProjectMessage(result.message || (result.ok ? '已发布知识贡献。' : '发布知识贡献失败。'));
+      if (result.queued && result.task) {
+        refreshTaskCenter();
+        setSelectedTaskId(result.task.id);
+        setActiveSection('tasks');
+        return;
+      }
       if (result.content) setPromotionPreview(result.content);
       if (result.project) setProjects((current) => current.map((item) => (item.id === result.project?.id ? result.project : item)));
       if (result.ok && selectedStudent) {
@@ -6546,8 +7381,14 @@ ${JSON.stringify(items, null, 2)}
       return;
     }
     try {
-      const result = JSON.parse(raw) as { ok?: boolean; conflicts?: PromotionConflict[]; runLog?: { runs?: PromotionRunRecord[] }; content?: string; message?: string };
+      const result = JSON.parse(raw) as { ok?: boolean; queued?: boolean; task?: TaskCenterItem; conflicts?: PromotionConflict[]; runLog?: { runs?: PromotionRunRecord[] }; content?: string; message?: string };
       setProjectMessage(result.message || (result.ok ? '已安全标记回滚。' : '知识贡献回滚失败。'));
+      if (result.queued && result.task) {
+        refreshTaskCenter();
+        setSelectedTaskId(result.task.id);
+        setActiveSection('tasks');
+        return;
+      }
       setPromotionConflicts(result.conflicts ?? []);
       setPromotionRuns(result.runLog?.runs ?? []);
       if (result.content) setPromotionAuditPreview(result.content);
@@ -6663,6 +7504,138 @@ ${JSON.stringify(items, null, 2)}
     }
   };
 
+  const refreshTaskCenter = () => {
+    const raw = bridge()?.getTaskCenter?.();
+    if (!raw) {
+      setScheduleMessage('当前环境不支持统一任务中心。');
+      return;
+    }
+    try {
+      const result = JSON.parse(raw) as TaskCenterState & { ok?: boolean; message?: string };
+      if (result.tasks) {
+        setTaskCenter({
+          protocolVersion: result.protocolVersion,
+          generatedAt: result.generatedAt,
+          automationEnabled: result.automationEnabled,
+          executionMode: result.executionMode,
+          tasks: result.tasks,
+          history: result.history || [],
+          summary: result.summary || { total: result.tasks.length, actionable: 0, running: 0, scheduled: 0, completed: 0 },
+          capabilities: result.capabilities,
+          taskStorePath: result.taskStorePath,
+          qclawInboxPath: result.qclawInboxPath,
+          qclawResultPath: result.qclawResultPath,
+        });
+      }
+      setScheduleMessage(result.message || (result.ok ? '任务中心已刷新。' : '任务中心读取失败。'));
+    } catch {
+      setScheduleMessage('任务中心数据解析失败。');
+    }
+  };
+
+  const updateTaskAutomationMode = (enabled: boolean) => {
+    const raw = bridge()?.setTaskAutomationEnabled?.(enabled);
+    if (!raw) {
+      setScheduleMessage('当前环境不支持切换任务执行模式。');
+      return;
+    }
+    try {
+      const result = JSON.parse(raw) as { ok?: boolean; automationEnabled?: boolean; executionMode?: string; message?: string };
+      if (result.ok) {
+        setTaskCenter((current) => ({ ...current, automationEnabled: Boolean(result.automationEnabled), executionMode: result.executionMode || (result.automationEnabled ? 'automatic' : 'manual') }));
+        setScheduleMessage(result.message || '任务执行模式已更新。');
+        window.setTimeout(refreshTaskCenter, 180);
+      } else {
+        setScheduleMessage(result.message || '任务执行模式更新失败。');
+      }
+    } catch {
+      setScheduleMessage('任务执行模式结果解析失败。');
+    }
+  };
+
+  const handleTaskCenterAction = (task: TaskCenterItem) => {
+    if (task.sourceType === 'student') {
+      const student = students.find((item) => String(item.id) === String(task.sourceId));
+      if (!student) {
+        setScheduleMessage('任务关联的学生档案已不存在。');
+        return;
+      }
+      setSelectedId(student.id);
+      if (task.action === 'student_digest') copyDigestCommand(student);
+      if (task.action === 'student_maintenance') copyLintCommand(student);
+      window.setTimeout(refreshTaskCenter, 260);
+      return;
+    }
+    if (task.sourceType === 'project') {
+      const project = projects.find((item) => String(item.id) === String(task.sourceId));
+      if (!project) {
+        setScheduleMessage('任务关联的学习项目已不存在。');
+        return;
+      }
+      const target: ProjectWorkflowTarget = task.action === 'project_knowledge'
+        ? 'knowledge'
+        : task.action === 'project_promotion'
+          ? 'promotion'
+          : 'digest';
+      setSelectedProjectId(project.id);
+      setProjectAuditLocateTarget({ projectId: project.id, target, nonce: Date.now() });
+      setActiveSection('projects-existing');
+      setProjectMessage(`已从任务中心定位到“${task.title}”。`);
+    }
+  };
+
+  const applyTaskOperationResult = (raw: string | undefined, fallback: string) => {
+    if (!raw) {
+      setScheduleMessage('当前环境不支持该任务中心操作。');
+      return false;
+    }
+    try {
+      const result = JSON.parse(raw) as { ok?: boolean; message?: string; fallback?: boolean };
+      setScheduleMessage(result.message || (result.ok ? fallback : '任务操作失败。'));
+      window.setTimeout(refreshTaskCenter, 220);
+      return Boolean(result.ok);
+    } catch {
+      setScheduleMessage('任务中心操作结果解析失败。');
+      return false;
+    }
+  };
+
+  const executeTaskFromCenter = (task: TaskCenterItem) => {
+    const executor = taskExecutorDraft || task.requestedExecutor || task.executor || '';
+    applyTaskOperationResult(bridge()?.executeTask?.(task.id, executor), '任务已提交执行。');
+  };
+
+  const approveTaskFromCenter = (task: TaskCenterItem, decision: 'approved' | 'rejected') => {
+    const actionName = task.status === 'reviewing' ? (decision === 'approved' ? '发布任务结果' : '驳回任务结果') : (decision === 'approved' ? '批准任务执行' : '拒绝任务执行');
+    if (!window.confirm(`确认${actionName}“${task.title}”吗？`)) return;
+    applyTaskOperationResult(bridge()?.approveTask?.(task.id, decision, taskReviewNote), `${actionName}完成。`);
+  };
+
+  const retryTaskFromCenter = (task: TaskCenterItem) => {
+    applyTaskOperationResult(bridge()?.retryTask?.(task.id), '任务已进入待处理队列。');
+  };
+
+  const cancelTaskFromCenter = (task: TaskCenterItem) => {
+    if (!window.confirm(`确认取消“${task.title}”吗？`)) return;
+    applyTaskOperationResult(bridge()?.cancelTask?.(task.id, taskReviewNote || '用户从任务中心取消。'), '任务已取消。');
+  };
+
+  const importTaskResultFromCenter = (task: TaskCenterItem) => {
+    applyTaskOperationResult(bridge()?.importTaskResult?.(task.id), '任务结果已导入。');
+  };
+
+  const syncQClawResultsFromCenter = () => {
+    applyTaskOperationResult(bridge()?.syncQClawTaskResults?.(), 'QClaw 结果同步完成。');
+  };
+
+  const openTaskCenterFolder = (kind: 'root' | 'qclaw-inbox' | 'qclaw-results' | 'manual-outbox' | 'events') => {
+    applyTaskOperationResult(bridge()?.openTaskCenterPath?.(kind), '任务目录已打开。');
+  };
+
+  const submitDailyFeedbackFromCenter = (task: TaskCenterItem, status: 'completed' | 'partial' | 'skipped') => {
+    applyTaskOperationResult(bridge()?.submitDailyActionFeedback?.(task.id, status, taskReviewNote), '行动反馈已保存。');
+  };
+
   const generateMaintenanceReportForStudent = (student: Student) => {
     const raw = bridge()?.generateStudentMaintenanceReport?.(student.id);
     if (!raw) {
@@ -6740,7 +7713,7 @@ ${JSON.stringify(items, null, 2)}
       return;
     }
     try {
-      const result = JSON.parse(raw) as { ok?: boolean; files?: MarkdownFile[]; message?: string };
+      const result = JSON.parse(raw) as { ok?: boolean; files?: MarkdownFile[]; folder?: string; message?: string };
       if (!result.ok) {
         setMarkdownFiles([]);
         setSelectedMarkdownId('');
@@ -6758,10 +7731,10 @@ ${JSON.stringify(items, null, 2)}
       const firstVisibleFile =
         selectedArchiveCategory === 'all'
           ? visibleFiles[0]
-          : visibleFiles.find((file) => !isLearningReportFile(file) && classifyMarkdownFile(file, archiveKeywords) === selectedArchiveCategory)
-            ?? visibleFiles.find((file) => !isLearningReportFile(file))
+          : visibleFiles.find((file) => classifyMarkdownFile(file, archiveKeywords) === selectedArchiveCategory)
             ?? visibleFiles[0];
       setMarkdownFiles(files);
+      setArchiveRootMessage(result.folder || selectedStudentPaths.summary);
       setMarkdownMessage(visibleFiles.length ? `已加载 ${visibleFiles.length} 个可浏览 Markdown 档案。` : '该学情分析汇总文件夹暂无可浏览 Markdown 文件。');
       if (firstVisibleFile) {
         openMarkdownFile(firstVisibleFile);
@@ -7455,7 +8428,6 @@ ${JSON.stringify(items, null, 2)}
     { id: 'new' as const, label: t('nav.new'), icon: Plus },
     { id: 'inbox' as const, label: t('nav.inbox'), icon: FileDown },
     ...(isWindows ? [
-      { id: 'projects' as const, label: t('nav.projects'), icon: FolderOpen },
       { id: 'growth' as const, label: t('nav.growth'), icon: Sparkles },
     ] : []),
     { id: 'reports' as const, label: t('nav.reports'), icon: FileText },
@@ -7469,13 +8441,16 @@ ${JSON.stringify(items, null, 2)}
     { id: 'conversation' as const, label: t('nav.conversation'), icon: MessageCircle },
   ];
   const sectionTitle = (section: Section) => {
+    if (section === 'projects-new') return '新建学习项目';
+    if (section === 'projects-existing') return '已有学习项目';
     const map: Record<Section, TranslationKey> = {
       home: 'nav.home',
       init: 'nav.init',
       new: 'nav.new',
       inbox: 'nav.inbox',
       assets: 'nav.assets',
-      projects: 'nav.projects',
+      'projects-new': 'nav.projects',
+      'projects-existing': 'nav.projects',
       growth: 'nav.growth',
       reports: 'nav.reports',
       archive: 'nav.archive',
@@ -7528,6 +8503,30 @@ ${JSON.stringify(items, null, 2)}
               </button>
             );
           })}
+          {isWindows && (
+            <div className="nav-group-block">
+              <button
+                className={`${activeSection === 'projects-new' || activeSection === 'projects-existing' ? 'nav-item nav-group active' : 'nav-item nav-group'}${!windowsLicenseActive ? ' locked' : ''}`}
+                onClick={() => setProjectMenuOpen((value) => !value)}
+                title={!windowsLicenseActive ? '学习项目需要激活后使用' : '学习项目'}
+              >
+                <FolderOpen size={19} />
+                <span>学习项目</span>
+                <span className="nav-chevron">{projectMenuOpen ? t('nav.collapse') : t('nav.expand')}</span>
+                {!windowsLicenseActive && <KeyRound size={15} />}
+              </button>
+              {projectMenuOpen && (
+                <div className="sub-nav-list">
+                  <button className={activeSection === 'projects-new' ? 'nav-item sub-nav-item active' : 'nav-item sub-nav-item'} onClick={() => setActiveSection('projects-new')}>
+                    <Plus size={17} /><span>新建学习项目</span>
+                  </button>
+                  <button className={activeSection === 'projects-existing' ? 'nav-item sub-nav-item active' : 'nav-item sub-nav-item'} onClick={() => setActiveSection('projects-existing')}>
+                    <FolderOpen size={17} /><span>已有学习项目</span>
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
           <div className="nav-group-block">
             <button
               className={`${activeSection === 'memory' || activeSection === 'soul' || activeSection === 'rules' || activeSection === 'conversation' ? 'nav-item nav-group active' : 'nav-item nav-group'}${isWindows && !windowsLicenseActive ? ' locked' : ''}`}
@@ -7575,7 +8574,7 @@ ${JSON.stringify(items, null, 2)}
             onClick={() => setActiveSection('tasks')}
             title={isWindows && !windowsLicenseActive && restrictedSections.has('tasks') ? '该功能需要激活后使用' : t('nav.tasks')}
           >
-            <Clock3 size={19} />
+            <ListChecks size={19} />
             <span>{t('nav.tasks')}</span>
             {isWindows && !windowsLicenseActive && restrictedSections.has('tasks') && <KeyRound size={15} />}
           </button>
@@ -7641,7 +8640,7 @@ ${JSON.stringify(items, null, 2)}
         <header className="topbar">
           <div>
             <h1>{sectionTitle(activeSection)}</h1>
-            <p>{t('app.subtitle')}</p>
+            <p>{activeSection === 'projects-new' || activeSection === 'projects-existing' ? t('projects.subtitle') : t('app.subtitle')}</p>
           </div>
           <div className="status-row">
             <label className="theme-picker">
@@ -8326,7 +9325,7 @@ ${JSON.stringify(items, null, 2)}
             <div className="panel-heading">
               <div>
                 <h2>资料收集与处理</h2>
-                <p>{isWindows ? '集中处理本机文件导入和资料消化指令，资料直接进入当前学生原始资料库。' : '集中处理拍照、图片、下载文件、Downloads 扫描、分享资料和待消化动作。'}</p>
+                <p>{isWindows ? '采集资料先进入候选收件箱，经检查后再晋升到学生原始资料库并进入消化流程。' : '集中处理拍照、图片、下载文件、Downloads 扫描、分享资料和待消化动作。'}</p>
               </div>
               <FileDown size={22} />
             </div>
@@ -8396,6 +9395,125 @@ ${JSON.stringify(items, null, 2)}
                 </button>
               )}
             </div>
+            {isWindows && (
+              <section className="screen-capture-panel">
+                <div className="screen-capture-heading">
+                  <div>
+                    <span className="section-kicker">连续采集</span>
+                    <h3>屏幕资料采集</h3>
+                    <p>在限定时间内采集屏幕或指定应用窗口，自动跳过重复画面；结束后由你确认是否晋升为正式学习资料。</p>
+                  </div>
+                  <button className="icon-button" onClick={() => { refreshCaptureCenter(); void refreshCaptureSources(); }} aria-label="刷新屏幕来源">
+                    <RefreshCw size={18} />
+                  </button>
+                </div>
+
+                {captureCenter.activeSession ? (
+                  <div className="capture-live-strip">
+                    <div className="capture-live-status">
+                      <span className={captureCenter.activeSession.status === 'paused' ? 'capture-dot paused' : 'capture-dot'} />
+                      <div>
+                        <strong>{captureCenter.activeSession.status === 'paused' ? '采集已暂停' : '正在采集'}</strong>
+                        <span>{captureCenter.activeSession.sourceName} · {captureCenter.activeSession.studentName}{captureCenter.activeSession.projectName ? ` · ${captureCenter.activeSession.projectName}` : ''}</span>
+                      </div>
+                    </div>
+                    <div className="capture-live-stats">
+                      <span>检测 {captureCenter.activeSession.candidateFrameCount}</span>
+                      <span>保留 {captureCenter.activeSession.screenshotCount}</span>
+                      <span>去重 {captureCenter.activeSession.deduplicatedCount}</span>
+                      <span>重点 {captureCenter.activeSession.highlightedCount}</span>
+                    </div>
+                    <div className="capture-controls">
+                      <button className="secondary compact" onClick={() => runCaptureControl('highlight', captureCenter.activeSession!.id)} disabled={captureBusy}>
+                        <Star size={16} />重点截取
+                      </button>
+                      {captureCenter.activeSession.status === 'paused' ? (
+                        <button className="secondary compact" onClick={() => runCaptureControl('resume', captureCenter.activeSession!.id)} disabled={captureBusy}>
+                          <Play size={16} />继续
+                        </button>
+                      ) : (
+                        <button className="secondary compact" onClick={() => runCaptureControl('pause', captureCenter.activeSession!.id)} disabled={captureBusy}>
+                          <Pause size={16} />暂停
+                        </button>
+                      )}
+                      <button className="danger compact" onClick={() => runCaptureControl('stop', captureCenter.activeSession!.id)} disabled={captureBusy}>
+                        <Square size={16} />结束并整理
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="capture-setup-grid">
+                    <label>
+                      <span>采集来源</span>
+                      <select value={captureSourceId} onChange={(event) => setCaptureSourceId(event.target.value)}>
+                        {captureSources.length === 0 && <option value="">没有可用来源</option>}
+                        {captureSources.map((source) => <option key={source.id} value={source.id}>{source.type === 'screen' ? '屏幕' : '窗口'} · {source.name}</option>)}
+                      </select>
+                    </label>
+                    <label>
+                      <span>采集策略</span>
+                      <select value={captureMode} onChange={(event) => setCaptureMode(event.target.value as 'smart' | 'change' | 'interval')}>
+                        <option value="smart">智能混合（推荐）</option>
+                        <option value="change">内容变化</option>
+                        <option value="interval">固定间隔</option>
+                      </select>
+                    </label>
+                    <label>
+                      <span>最长时间</span>
+                      <select value={captureDuration} onChange={(event) => setCaptureDuration(Number(event.target.value))}>
+                        {[15, 30, 45, 60, 90, 120].map((minutes) => <option value={minutes} key={minutes}>{minutes} 分钟</option>)}
+                      </select>
+                    </label>
+                    <label>
+                      <span>关联学习项目（可选）</span>
+                      <select value={captureProjectId} onChange={(event) => setCaptureProjectId(event.target.value)}>
+                        <option value="">不关联项目</option>
+                        {projects.filter((project) => (project.studentIds || []).includes(selectedStudent.id)).map((project) => (
+                          <option value={project.id} key={project.id}>{project.name}</option>
+                        ))}
+                      </select>
+                    </label>
+                    <button className="primary capture-start-button" onClick={() => startScreenCapture(selectedStudent)} disabled={captureBusy || !captureSourceId}>
+                      <Camera size={18} />开始连续采集
+                    </button>
+                  </div>
+                )}
+
+                <div className="capture-shortcuts">
+                  <span><kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>1</kbd> 立即截取</span>
+                  <span><kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>2</kbd> 暂停/继续</span>
+                  <span><kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>3</kbd> 标记重点</span>
+                  <button className="secondary compact" onClick={() => bridge()?.openCaptureInbox?.(captureCenter.activeSession?.id || '')}>
+                    <FolderOpen size={16} />打开采集箱
+                  </button>
+                </div>
+
+                {captureMessage && <div className="inline-notice">{captureMessage}</div>}
+
+                {captureCenter.sessions.filter((session) => session.studentId === selectedStudent.id).length > 0 && (
+                  <div className="capture-session-list">
+                    <div className="mini-heading">
+                      <strong>最近采集会话</strong>
+                      <span>完成的会话仍是候选资料，点击“晋升”后才进入学生原始资料库。</span>
+                    </div>
+                    {captureCenter.sessions.filter((session) => session.studentId === selectedStudent.id).slice(0, 5).map((session) => (
+                      <div className="capture-session-row" key={session.id}>
+                        <Monitor size={17} />
+                        <div>
+                          <strong>{session.sourceName}</strong>
+                          <span>{new Date(session.startedAt).toLocaleString('zh-CN')} · 保留 {session.screenshotCount} 张 · 去重 {session.deduplicatedCount} 张</span>
+                        </div>
+                        <span className={`status-badge ${session.status}`}>{session.status === 'promoted' ? '已晋升' : session.status === 'completed' ? '待检查' : session.status === 'interrupted' ? '已中断' : session.status}</span>
+                        <button className="icon-button" onClick={() => bridge()?.openCaptureInbox?.(session.id)} aria-label="打开该会话采集箱"><FolderOpen size={17} /></button>
+                        {session.status === 'completed' && (
+                          <button className="primary compact" onClick={() => promoteCapture(session)} disabled={captureBusy || session.screenshotCount === 0}>晋升资料</button>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </section>
+            )}
             {isWindows && (
               <section className="material-source-panel">
                 <div className="mini-heading">
@@ -8724,21 +9842,85 @@ ${JSON.stringify(items, null, 2)}
           </section>
         )}
 
-        {!shouldBlockForAgentInstall && !isLicenseRestrictedSection && isWindows && activeSection === 'projects' && (
-          <section className="panel">
+        {!shouldBlockForAgentInstall && !isLicenseRestrictedSection && isWindows && (activeSection === 'projects-new' || activeSection === 'projects-existing') && (
+          <section className={`panel projects-panel ${activeSection === 'projects-new' ? 'projects-mode-new' : 'projects-mode-existing'}`}>
+            {projectAuditLocateTarget && <div className="project-locate-toast" role="status"><CheckCircle2 size={17} />已选中 {projects.find((project) => project.id === projectAuditLocateTarget.projectId)?.name || '项目'}，正在定位处理区域…</div>}
             <div className="panel-heading">
               <div>
-                <h2>学习项目空间</h2>
-                <p>项目工作空间用于人工管理资料和进展；项目知识空间固定使用 LLM Wiki 目录消化资料，完成后通过“知识贡献申请”进入学生主档案。</p>
+                <h2>{activeSection === 'projects-new' ? '新建学习项目' : '已有学习项目'}</h2>
+                <p>{activeSection === 'projects-new' ? '创建新的项目工作空间和独立项目知识空间，也可以直接绑定本机已有项目文件夹。' : '管理项目资料、研究暂存、知识消化、审核与归档贡献。'}</p>
               </div>
               <FolderOpen size={22} />
             </div>
-            <div className="archive-grid">
+            <div className="archive-grid projects-existing-only">
               <InfoPanel icon={<FolderOpen />} title="项目数量" value={`${projects.length} 个`} />
               <InfoPanel icon={<Archive />} title="当前项目资产" value={`${selectedProject?.assetIds?.length ?? 0} 个`} />
               <InfoPanel icon={<UserRound />} title="绑定学生" value={selectedProject?.studentNames?.join('、') || '未选择项目'} />
             </div>
-            <section className="material-source-panel">
+            <section className="material-source-panel projects-existing-only staging-entry-guide">
+              <div className="mini-heading">
+                <strong>暂存资料进入项目原始资料库</strong>
+                <span>在下方“研究暂存层”导入资料，选择资料并完成“接受并应用保存策略”，再点击“晋升为正式资产”。晋升后资料会进入项目知识空间的原始资料库，并加入待消化清单。</span>
+              </div>
+              <div className="actions compact-actions">
+                <button className="primary compact" disabled={!selectedProject} onClick={() => {
+                  const target = document.querySelector('[data-project-action-target="assets"]');
+                  target?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                  (target as HTMLElement | null)?.focus({ preventScroll: true });
+                }}><Inbox size={16} />定位到研究暂存层</button>
+                <button className="secondary compact" disabled={!selectedProject} onClick={() => openSelectedProjectSpace('knowledge')}><BookOpen size={16} />打开项目知识空间</button>
+              </div>
+            </section>
+            <section className="material-source-panel project-dashboard projects-existing-only">
+              <div className="mini-heading">
+                <strong>项目仪表盘</strong>
+                <span>汇总资料治理、知识审核、人工消化、贡献进度与风险。</span>
+              </div>
+              <div className="archive-grid compact-dashboard-grid">
+                <InfoPanel icon={<Gauge />} title="进行中" value={`${projectDashboardStats.active} 个`} actionLabel="查看项目" onClick={() => focusProjectDashboard('active')} />
+                <InfoPanel icon={<Inbox />} title="待治理资料" value={`${projectDashboardStats.pendingMaterials} 份`} actionLabel="查看待治理项目" onClick={() => focusProjectDashboard('materials')} />
+                <InfoPanel icon={<ListChecks />} title="待审核知识" value={`${projectDashboardStats.pendingKnowledge} 条`} actionLabel="查看待审核项目" onClick={() => focusProjectDashboard('knowledge')} />
+                <InfoPanel icon={<Share2 />} title="待发布贡献" value={`${projectDashboardStats.readyContributions} 个`} actionLabel="查看贡献清单" onClick={() => focusProjectDashboard('contributions')} />
+                <InfoPanel icon={<AlertTriangle />} title="风险提醒" value={`${projectDashboardStats.risks} 项`} actionLabel="查看风险项目" onClick={() => focusProjectDashboard('risks')} />
+                <InfoPanel icon={<Bot />} title="人工消化" value={`${projectDashboardStats.pendingDigest} 个待处理`} actionLabel="查看待消化项目" onClick={() => focusProjectDashboard('digest')} />
+              </div>
+              <div className="actions compact-actions">
+                <button className="secondary compact" onClick={refreshProjects}><RefreshCw size={16} />刷新仪表盘</button>
+                <button className="primary compact" onClick={generateCrossProjectKnowledgeLinks}><LinkIcon size={16} />生成跨项目知识关联</button>
+              </div>
+              <div className="audit-filter-row">
+                {[
+                  ['all', `全部 ${projectDashboardStats.total}`], ['active', `进行中 ${projectDashboardStats.active}`], ['materials', `待治理资料 ${projectDashboardStats.pendingMaterials}`],
+                  ['knowledge', `待审核知识 ${projectDashboardStats.pendingKnowledge}`], ['contributions', `待发布 ${projectDashboardStats.readyContributions}`],
+                  ['risks', `风险 ${projectDashboardStats.risks}`], ['digest', `待消化 ${projectDashboardStats.pendingDigest}`],
+                ].map(([key, label]) => <button className={projectDashboardFocus === key ? 'chip-button active' : 'chip-button'} key={key} onClick={() => focusProjectDashboard(key as ProjectDashboardFocus)}>{label}</button>)}
+              </div>
+              <div className="project-dashboard-table" data-project-dashboard-results tabIndex={-1}>
+                {projectDashboardRows.slice(0, 12).map((project) => (
+                  <button className="project-dashboard-row" key={project.id} onClick={() => openProjectFromDashboard(project)}>
+                    <strong>{project.name}</strong><span>{projectStatusLabel(project.status)}</span>
+                    <span>资料 {project.dashboard?.pendingStagingCount || 0}</span><span>待审 {project.dashboard?.pendingKnowledgeCount || 0}</span>
+                    <span>覆盖 {project.dashboard?.knowledgeCoverage || 0}%</span><span title={project.dashboard?.riskReasons?.join('；') || '无风险'}>风险 {project.dashboard?.riskCount || 0}</span><em title={`复制命令后粘贴到 ${getAgentToolProfile(project.agentTool).name}`}>{getAgentToolProfile(project.agentTool).name}</em><span className="dashboard-view-label">查看 <ChevronRight size={14} /></span>
+                  </button>
+                ))}
+                {!projectDashboardRows.length && <div className="empty-state compact">当前筛选下没有项目。</div>}
+              </div>
+              {crossProjectKnowledgeMessage && <div className="notice muted">{crossProjectKnowledgeMessage}</div>}
+              {crossProjectKnowledgeGroups.length > 0 && (
+                <div className="download-list cross-project-list">
+                  {crossProjectKnowledgeGroups.slice(0, 12).map((group) => (
+                    <div className="download-item" key={group.id}>
+                      <span>
+                        <strong>{group.canonicalName}</strong>
+                        <small>{group.kind === 'concept' ? '概念' : group.kind === 'entity' ? '实体' : '能力证据'} · {group.projects.length} 个项目</small>
+                        <small>{group.projects.map((project) => project.projectName).join('、')}</small>
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </section>
+            <section className="material-source-panel projects-existing-only project-portfolio-audit">
               <div className="mini-heading">
                 <strong>知识关系图与项目贡献审计</strong>
                 <span>生成学生、项目、资产、研究暂存和成长沉淀之间的可追溯关系报告。</span>
@@ -8874,7 +10056,7 @@ ${JSON.stringify(items, null, 2)}
                 </div>
               )}
             </section>
-            <section className="material-source-panel">
+            <section className="material-source-panel projects-new-only">
               <div className="mini-heading">
                 <strong>新建学习项目</strong>
                 <span>会同时创建用户项目空间和项目知识空间；项目资料默认不污染学生主档案。</span>
@@ -8888,24 +10070,57 @@ ${JSON.stringify(items, null, 2)}
                   项目类型
                   <input value={projectDraft.type} onChange={(event) => setProjectDraft((current) => ({ ...current, type: event.target.value }))} placeholder="学习项目 / 竞赛 / 升学 / 学科专题" />
                 </label>
+                <label className="wide-field">
+                  项目说明
+                  <input value={projectDraft.description} onChange={(event) => setProjectDraft((current) => ({ ...current, description: event.target.value }))} placeholder="项目背景、参与对象或使用边界" />
+                </label>
+                <label className="wide-field">
+                  项目目标
+                  <input value={projectDraft.objective} onChange={(event) => setProjectDraft((current) => ({ ...current, objective: event.target.value }))} placeholder="项目希望完成什么" />
+                </label>
+                <label>
+                  工作空间来源
+                  <select value={projectDraft.workspaceMode} onChange={(event) => setProjectDraft((current) => ({ ...current, workspaceMode: event.target.value as 'managed' | 'linked', workspacePath: event.target.value === 'managed' ? '' : current.workspacePath }))}>
+                    <option value="managed">新建工作空间</option>
+                    <option value="linked">使用已有项目文件夹</option>
+                  </select>
+                  <small className="inline-hint">已有文件夹采用原地绑定，不移动、不删除原文件。</small>
+                </label>
+                {projectDraft.workspaceMode === 'linked' && (
+                  <div className="wide-field">
+                    <span>已有项目文件夹</span>
+                    <div className="path-picker-row">
+                      <input readOnly value={projectDraft.workspacePath} placeholder="请选择本机已有项目文件夹" />
+                      <button className="secondary compact" onClick={pickExistingProjectWorkspace} type="button">
+                        <FolderOpen size={16} />
+                        选择文件夹
+                      </button>
+                    </div>
+                  </div>
+                )}
+                {projectDraft.workspaceMode === 'managed' && (
+                  <>
                 <label>
                   项目工作空间模板
                   <select
                     value={projectDraft.workspaceTemplateId}
                     onChange={(event) => {
-                      const template = projectWorkspaceTemplateById(event.target.value);
+                      const template = projectWorkspaceTemplateForUi(event.target.value);
                       setProjectDraft((current) => ({
                         ...current,
                         workspaceTemplateId: template.id,
                         workspaceFoldersText: projectWorkspaceFoldersText(template.folders),
+                        knowledgeStrategy: template.knowledgeStrategy,
+                        growthStrategy: template.growthStrategy,
+                        deliverablesText: template.deliverables.join('\n'),
                       }));
                     }}
                   >
-                    {projectWorkspaceTemplates.map((template) => (
+                    {availableProjectWorkspaceTemplates.map((template) => (
                       <option value={template.id} key={template.id}>{template.name}</option>
                     ))}
                   </select>
-                  <small className="inline-hint">{projectWorkspaceTemplateById(projectDraft.workspaceTemplateId).description}</small>
+                  <small className="inline-hint">{projectWorkspaceTemplateForUi(projectDraft.workspaceTemplateId).description}</small>
                 </label>
                 <label className="wide-field">
                   工作空间文件夹
@@ -8916,6 +10131,40 @@ ${JSON.stringify(items, null, 2)}
                     placeholder="每行一个项目工作空间文件夹"
                   />
                   <small className="inline-hint">这里的模板只影响“项目工作空间”。“项目知识空间”仍固定使用项目原始资料库、概念库、实体库、摘要库、问答精华库、综合汇总库等 LLM Wiki schema。</small>
+                </label>
+                <label className="wide-field">
+                  知识加工策略
+                  <textarea rows={3} value={projectDraft.knowledgeStrategy} onChange={(event) => setProjectDraft((current) => ({ ...current, knowledgeStrategy: event.target.value }))} />
+                </label>
+                <label className="wide-field">
+                  成长与报告策略
+                  <textarea rows={3} value={projectDraft.growthStrategy} onChange={(event) => setProjectDraft((current) => ({ ...current, growthStrategy: event.target.value }))} />
+                </label>
+                <label className="wide-field">
+                  预期成果（每行一项）
+                  <textarea rows={3} value={projectDraft.deliverablesText} onChange={(event) => setProjectDraft((current) => ({ ...current, deliverablesText: event.target.value }))} />
+                </label>
+                <div className="wide-field workspace-folder-preview">
+                  <span>创建预览 · {projectDraftFolderList.length} 个文件夹</span>
+                  <div className="chip-row">
+                    {projectDraftFolderList.map((folder) => <em className="status-chip" key={folder}>{folder}</em>)}
+                    {projectDraftFolderList.length === 0 && <small className="inline-hint">未设置自定义文件夹。</small>}
+                  </div>
+                  {projectDraftFolderErrors.length > 0 && <small className="field-error">{projectDraftFolderErrors.join('；')}</small>}
+                  <button className="secondary compact" type="button" onClick={() => {
+                    const template = projectWorkspaceTemplateForUi(projectDraft.workspaceTemplateId);
+                    setProjectDraft((current) => ({ ...current, workspaceFoldersText: projectWorkspaceFoldersText(template.folders) }));
+                  }}>恢复模板默认目录</button>
+                  <button className="secondary compact" type="button" onClick={saveProjectWorkspaceTemplate}>保存为我的目录方案</button>
+                </div>
+                  </>
+                )}
+                <label>
+                  项目消化 Agent
+                  <select value={projectDraft.agentTool} onChange={(event) => setProjectDraft((current) => ({ ...current, agentTool: event.target.value as AgentToolId }))}>
+                    {agentToolOptions.map((tool) => <option value={tool.id} key={tool.id}>{tool.name}</option>)}
+                  </select>
+                  <small className="inline-hint">控制台只复制消化命令，不会自动启动 Agent。</small>
                 </label>
                 <div className="wide-field">
                   <span>绑定学生（可多选）</span>
@@ -8932,7 +10181,7 @@ ${JSON.stringify(items, null, 2)}
                 </div>
               </div>
               <div className="actions">
-                <button className="primary" onClick={createLearningProject}>
+                <button className="primary" onClick={createLearningProject} disabled={projectDraftFolderErrors.length > 0 || (projectDraft.workspaceMode === 'linked' && !projectDraft.workspacePath)}>
                   <Plus size={18} />
                   创建学习项目
                 </button>
@@ -8940,10 +10189,15 @@ ${JSON.stringify(items, null, 2)}
                   <RefreshCw size={18} />
                   刷新项目
                 </button>
+                <button className="secondary" onClick={importLearningProject}><FileDown size={18} />导入项目包</button>
+                <button className="secondary" onClick={loadRemovedProjectRecords}><Archive size={18} />恢复已移除项目</button>
               </div>
+              {removedProjects.length > 0 && <div className="download-list removed-project-list">
+                {removedProjects.map((item) => <div className="download-item" key={item.snapshotPath}><span><strong>{item.project.name}</strong><small>移除时间：{item.removedAt ? new Date(item.removedAt).toLocaleString('zh-CN') : '未知'}</small><small>{item.project.projectRootPath}</small></span><button className="primary compact" onClick={() => restoreProjectRecord(item.snapshotPath)}>恢复记录</button></div>)}
+              </div>}
             </section>
 
-            <div className="learning-report-layout">
+            <div className="learning-report-layout projects-existing-only project-workflow-layout">
               <aside className="learning-report-list">
                 {projects.map((project) => (
                   <button
@@ -8969,94 +10223,124 @@ ${JSON.stringify(items, null, 2)}
                 ))}
                 {projects.length === 0 && <div className="empty-state">尚未创建学习项目。</div>}
               </aside>
-              <section className="markdown-reader">
+              <section className={`markdown-reader project-detail-reader ${projectAuditLocateTarget?.target === 'detail' ? 'audit-locate-highlight' : ''}`} data-project-action-target="detail" tabIndex={-1}>
                 {selectedProject ? (
                   <>
-                    <div className="reader-toolbar">
+                    <div className="reader-toolbar project-action-toolbar project-order-header">
                       <span>{selectedProject.name}</span>
                       <div className="reader-actions">
-                        <button className="secondary compact" onClick={() => generateSelectedProjectPromotion()}>
-                          生成贡献申请
+                        <button className="secondary compact" onClick={() => setProjectEditOpen((open) => !open)}>
+                          <Pencil size={15} />
+                          编辑项目
                         </button>
-                        <button className="secondary compact" onClick={loadSelectedProjectPromotionPlan}>
-                          归档确认清单
+                        <button className="secondary compact" onClick={duplicateSelectedProject}>
+                          <Copy size={15} />
+                          复制项目
                         </button>
-                        <button className="secondary compact" onClick={loadSelectedProjectPromotionAudit}>
-                          贡献审计
-                        </button>
-                        <button className="secondary compact" onClick={importRawFilesToProject}>
-                          直接导入资料
-                        </button>
-                        <button className="secondary compact" onClick={copySelectedProjectDigestCommand}>
-                          复制消化指令
-                        </button>
-                        <button className="secondary compact" onClick={markSelectedProjectDigestSubmitted}>
-                          标记已提交
-                        </button>
-                        <button className="secondary compact" onClick={syncSelectedProjectDigestResult}>
-                          同步消化状态
-                        </button>
-                        <button className="primary compact" onClick={executeSelectedProjectPromotionPlan} disabled={!promotionPlan?.items?.length}>
-                          执行归档
-                        </button>
-                        <button className="primary compact" onClick={publishSelectedProjectPromotion}>
-                          发布到成长模型
+                        <button className="secondary compact" onClick={relocateSelectedProjectWorkspace}><FolderOpen size={15} />重新定位</button>
+                        <button className="secondary compact" onClick={exportSelectedProject}><FileDown size={15} />导出项目</button>
+                        <button className="danger-soft compact" onClick={removeSelectedProjectRecord}>
+                          <Trash2 size={15} />
+                          移除项目记录
                         </button>
                       </div>
                     </div>
-                    <div className="archive-grid">
-                      <InfoPanel icon={<FolderOpen />} title="项目根目录" value={selectedProject.projectRootPath} />
-                      <InfoPanel icon={<FolderOpen />} title="项目工作空间" value={selectedProject.workspacePath} />
-                      <InfoPanel icon={<ListChecks />} title="工作空间模板" value={`${selectedProject.workspaceTemplateName || selectedProjectWorkspaceTemplate.name} · ${selectedProjectWorkspaceFolders.length} 个文件夹`} />
-                      <InfoPanel icon={<Archive />} title="项目原始资料库" value={selectedProject.rawPath} />
-                      <InfoPanel icon={<FileText />} title="知识贡献目录" value={selectedProject.promotionPath || '未生成'} />
-                      <InfoPanel icon={<ListChecks />} title="项目状态" value={projectStatusLabel(selectedProject.status)} />
-                      <InfoPanel icon={<Clock3 />} title="最近更新" value={selectedProject.updatedAt ? new Date(selectedProject.updatedAt).toLocaleString('zh-CN') : '暂无记录'} />
-                      <InfoPanel icon={<UserRound />} title="绑定学生" value={selectedProject.studentNames?.join('、') || '未绑定'} />
-                      <InfoPanel icon={<RefreshCw />} title="消化状态" value={`${projectDigestStatusLabel(selectedProjectDigestState.status)} · 待处理 ${selectedProjectDigestState.pendingCount ?? 0} 份`} />
-                      <InfoPanel icon={<FileText />} title="原始资料数" value={`${selectedProjectDigestState.rawFileCount ?? 0} 份`} />
-                      <InfoPanel icon={<Archive />} title="状态文件" value={selectedProjectDigestState.digestFile || selectedProject.managerPath || '未生成'} />
-                    </div>
+                    <section className={`material-source-panel project-promotion-controls ${projectAuditLocateTarget?.target === 'promotion' ? 'audit-locate-highlight' : ''}`} data-project-action-target="promotion" tabIndex={-1}>
+                      <div className="mini-heading">
+                        <strong>5. 知识贡献与项目归档</strong>
+                        <span>知识审核完成后生成贡献申请，逐项确认归档动作，再发布到学生档案与成长模型。</span>
+                      </div>
+                      <div className="actions compact-actions">
+                        <button className="secondary compact" onClick={() => generateSelectedProjectPromotion()}>生成贡献申请</button>
+                        <button className="secondary compact" onClick={loadSelectedProjectPromotionPlan}>打开归档确认清单</button>
+                        <button className="secondary compact" onClick={loadSelectedProjectPromotionAudit}>查看贡献审计</button>
+                        <button className="primary compact" onClick={executeSelectedProjectPromotionPlan} disabled={!promotionPlan?.items?.length}>执行归档</button>
+                        <button className="primary compact" onClick={publishSelectedProjectPromotion}>发布到成长模型</button>
+                      </div>
+                    </section>
+                    {projectEditOpen && (
+                      <section className="material-source-panel project-edit-panel project-order-edit">
+                        <div className="mini-heading">
+                          <strong>编辑项目信息</strong>
+                          <span>只修改项目元数据；项目根目录、工作空间和知识空间的物理路径保持不变。</span>
+                        </div>
+                        <div className="form-grid compact-grid">
+                          <label>项目名称<input value={projectEditDraft.name} onChange={(event) => setProjectEditDraft((current) => ({ ...current, name: event.target.value }))} /></label>
+                          <label>项目类型<input value={projectEditDraft.type} onChange={(event) => setProjectEditDraft((current) => ({ ...current, type: event.target.value }))} /></label>
+                          <label className="wide-field">项目说明<textarea rows={2} value={projectEditDraft.description} onChange={(event) => setProjectEditDraft((current) => ({ ...current, description: event.target.value }))} /></label>
+                          <label className="wide-field">项目目标<textarea rows={2} value={projectEditDraft.objective} onChange={(event) => setProjectEditDraft((current) => ({ ...current, objective: event.target.value }))} /></label>
+                          <label className="wide-field">知识策略<textarea rows={2} value={projectEditDraft.knowledgeStrategy} onChange={(event) => setProjectEditDraft((current) => ({ ...current, knowledgeStrategy: event.target.value }))} /></label>
+                          <label className="wide-field">成长策略<textarea rows={2} value={projectEditDraft.growthStrategy} onChange={(event) => setProjectEditDraft((current) => ({ ...current, growthStrategy: event.target.value }))} /></label>
+                        </div>
+                        <div className="actions compact-actions">
+                          <button className="primary compact" onClick={saveSelectedProjectMetadata}><CheckCircle2 size={16} />保存项目信息</button>
+                          <button className="secondary compact" onClick={() => setProjectEditOpen(false)}>取消</button>
+                        </div>
+                      </section>
+                    )}
+                    <section className="project-overview-panel">
+                      <div className="mini-heading compact-heading">
+                        <strong>项目概况</strong>
+                        <span>先确认项目路径、参与学生和当前状态，再按下方流程逐步处理。</span>
+                      </div>
+                      <div className="archive-grid">
+                        <InfoPanel icon={<FolderOpen />} title="项目根目录" value={selectedProject.projectRootPath} actionLabel="打开文件夹" onClick={() => openSelectedProjectSpace('root')} />
+                        <InfoPanel icon={<FolderOpen />} title="项目工作空间" value={selectedProject.workspacePath} actionLabel="打开文件夹" onClick={() => openSelectedProjectSpace('workspace')} />
+                        <InfoPanel icon={<Archive />} title="项目原始资料库" value={selectedProject.rawPath} actionLabel="打开文件夹" onClick={() => openSelectedProjectSpace('raw')} />
+                        <InfoPanel icon={<ListChecks />} title="项目状态" value={projectStatusLabel(selectedProject.status)} />
+                        <InfoPanel icon={<UserRound />} title="绑定学生" value={selectedProject.studentNames?.join('、') || '未绑定'} />
+                        <InfoPanel icon={<Clock3 />} title="最近更新" value={selectedProject.updatedAt ? new Date(selectedProject.updatedAt).toLocaleString('zh-CN') : '暂无记录'} />
+                      </div>
+                    </section>
+                    {selectedProject.status === 'sealed' && (
+                      <div className="notice muted project-sealed-notice">项目已封存并进入只读状态。恢复为“进行中”后才能修改资料、绑定、知识和归档内容。{selectedProject.sealedSnapshotPath ? ` 快照：${selectedProject.sealedSnapshotPath}` : ''}</div>
+                    )}
                     {selectedProjectDigestState.message && (
-                      <div className="notice muted">
+                      <div className="notice muted project-digest-notice">
                         项目消化：{selectedProjectDigestState.message}
                         {selectedProjectDigestState.lastDigestAt ? ` 最近完成：${new Date(selectedProjectDigestState.lastDigestAt).toLocaleString('zh-CN')}` : ''}
                         {selectedProjectDigestState.digestSubmittedAt ? ` 提交时间：${new Date(selectedProjectDigestState.digestSubmittedAt).toLocaleString('zh-CN')}` : ''}
                       </div>
                     )}
-                    <div className="workflow-rail project-workflow">
+                    <nav className="project-flow-nav" aria-label="学习项目工作流">
                       {selectedProjectWorkflowSteps.map((step, index) => (
-                        <div className="workflow-step" key={step.title}>
+                        <button type="button" className="project-flow-step" key={step.title} onClick={() => focusSelectedProjectWorkflowStage(step.target)}>
                           <span className="workflow-index">{index + 1}</span>
-                          <strong>{step.title}</strong>
-                          <em>{step.value}</em>
-                          <small>{step.detail}</small>
-                        </div>
+                          <span><strong>{step.title}</strong><em>{step.value}</em><small>{step.detail}</small></span>
+                          <ChevronRight size={17} />
+                        </button>
                       ))}
-                    </div>
-                    <section className="material-source-panel">
+                    </nav>
+                    <section className={`material-source-panel project-workspace-panel ${projectAuditLocateTarget?.target === 'workspace' ? 'audit-locate-highlight' : ''}`} data-project-action-target="workspace" tabIndex={-1}>
                       <div className="mini-heading">
-                        <strong>项目工作空间模板</strong>
-                        <span>只补建和记录“项目工作空间”的人工目录；不会改变项目知识空间的 LLM Wiki schema。</span>
+                        <strong>1. 工作空间与资料入口</strong>
+                        <span>在工作空间开展项目，扫描候选资料；确认价值明确的核心文件也可以直接进入项目原始资料库。</span>
                       </div>
+                      <div className="actions compact-actions project-workspace-actions">
+                        <button className="secondary compact" onClick={() => openSelectedProjectSpace('workspace')}><FolderOpen size={16} />打开项目工作空间</button>
+                        <button className="secondary compact" onClick={() => openSelectedProjectSpace('knowledge')}><BookOpen size={16} />打开项目知识空间</button>
+                        <button className="primary compact" onClick={scanSelectedProjectWorkspace} disabled={selectedProject.status === 'sealed'}><RefreshCw size={16} />扫描工作空间资料</button>
+                        <button className="secondary compact" onClick={importRawFilesToProject}><FileDown size={16} />核心资料直接入库</button>
+                      </div>
+                      <div className="stage-subheading"><strong>工作空间目录模板</strong><span>模板只补建人工工作目录，不改变项目知识空间的 LLM Wiki schema。</span></div>
                       <div className="form-grid compact-grid">
                         <label>
                           模板
                           <select
                             value={projectWorkspaceTemplateEdit.templateId}
                             onChange={(event) => {
-                              const template = projectWorkspaceTemplateById(event.target.value);
+                              const template = projectWorkspaceTemplateForUi(event.target.value);
                               setProjectWorkspaceTemplateEdit({
                                 templateId: template.id,
                                 foldersText: projectWorkspaceFoldersText(template.folders),
                               });
                             }}
                           >
-                            {projectWorkspaceTemplates.map((template) => (
+                            {availableProjectWorkspaceTemplates.map((template) => (
                               <option value={template.id} key={template.id}>{template.name}</option>
                             ))}
                           </select>
-                          <small className="inline-hint">{projectWorkspaceTemplateById(projectWorkspaceTemplateEdit.templateId).description}</small>
+                          <small className="inline-hint">{projectWorkspaceTemplateForUi(projectWorkspaceTemplateEdit.templateId).description}</small>
                         </label>
                         <label className="wide-field">
                           工作空间文件夹
@@ -9072,19 +10356,25 @@ ${JSON.stringify(items, null, 2)}
                         </label>
                       </div>
                       <div className="actions compact-actions">
-                        <button className="secondary compact" onClick={applySelectedProjectWorkspaceTemplate}>
+                        <button className="secondary compact" onClick={applySelectedProjectWorkspaceTemplate} disabled={selectedProject.status === 'sealed' || selectedProject.workspaceMode === 'linked'}>
                           <FolderOpen size={16} />
                           应用到项目工作空间
                         </button>
+                        {selectedProject.workspaceMode === 'linked' && <span className="inline-hint">该项目原地绑定已有文件夹，不自动补建模板目录。</span>}
+                      </div>
+                      <div className="template-v2-summary">
+                        <div><strong>知识加工策略</strong><span>{selectedProject.knowledgeStrategy || selectedProjectWorkspaceTemplate.knowledgeStrategy}</span></div>
+                        <div><strong>成长与报告策略</strong><span>{selectedProject.growthStrategy || selectedProjectWorkspaceTemplate.growthStrategy}</span></div>
+                        <div><strong>预期成果</strong><span>{(selectedProject.deliverables?.length ? selectedProject.deliverables : selectedProjectWorkspaceTemplate.deliverables).join('、')}</span></div>
                       </div>
                     </section>
                     {(promotionConflicts.length > 0 || promotionRuns.length > 0) && (
-                      <div className="notice muted">
+                      <div className="notice muted project-promotion-notice">
                         贡献审计：冲突提醒 {promotionConflicts.length} 条，执行记录 {promotionRuns.length} 条。重复发布前建议先核对冲突目标文件。
                       </div>
                     )}
                     {promotionRuns.length > 0 && (
-                      <section className="material-source-panel">
+                      <section className="material-source-panel project-promotion-runs">
                         <div className="mini-heading compact-heading">
                           <strong>贡献执行记录与安全回滚</strong>
                           <span>回滚只做安全标记并回退成长证据候选，不自动删除物理文件。</span>
@@ -9106,12 +10396,13 @@ ${JSON.stringify(items, null, 2)}
                         </div>
                       </section>
                     )}
-                    <div className="form-grid compact-grid">
+                    <div className="form-grid compact-grid project-meta-grid">
                       <label>
                         项目状态
                         <select value={selectedProject.status || 'active'} onChange={(event) => updateSelectedProjectStatus(event.target.value)}>
                           <option value="draft">草稿</option>
                           <option value="active">进行中</option>
+                          <option value="pending_review">待审核</option>
                           <option value="pending_archive">待归档</option>
                           <option value="archived">已归档</option>
                           <option value="published">已发布</option>
@@ -9123,11 +10414,15 @@ ${JSON.stringify(items, null, 2)}
                         <input readOnly value={selectedProject.archivedAt ? new Date(selectedProject.archivedAt).toLocaleString('zh-CN') : '尚未归档'} />
                       </label>
                       <label>
+                        工作空间模式
+                        <input readOnly value={selectedProject.workspaceMode === 'linked' ? '原地绑定已有文件夹' : '教育管家新建工作空间'} />
+                      </label>
+                      <label>
                         发布时间
                         <input readOnly value={selectedProject.publishedAt ? new Date(selectedProject.publishedAt).toLocaleString('zh-CN') : '尚未发布'} />
                       </label>
                     </div>
-                    <section className="material-source-panel">
+                    <section className={`material-source-panel project-participants-panel ${projectAuditLocateTarget?.target === 'students' ? 'audit-locate-highlight' : ''}`} data-project-action-target="students" tabIndex={-1}>
                       <div className="mini-heading">
                         <strong>项目绑定学生</strong>
                         <span>学习项目支持绑定多个学生。调整后会同步项目绑定索引，不会覆盖已经手工修改过的 AGENT.md。</span>
@@ -9148,11 +10443,57 @@ ${JSON.stringify(items, null, 2)}
                       </div>
                       <small className="inline-hint">当前绑定：{selectedProject.studentNames?.join('、') || '未绑定学生'}</small>
                     </section>
-                    <section className="material-source-panel">
+                    <section className="material-source-panel project-evidence-panel">
                       <div className="mini-heading">
-                        <strong>研究暂存层</strong>
-                        <span>先收集和筛选项目研究资料；晋升后才会进入正式文件资产中心和项目原始资料库。</span>
+                        <strong>多学生项目·独立成长证据</strong>
+                        <span>项目知识空间由所有参与学生共享；能力观察按学生分别记录并进入各自 Growth Layer 待审核。</span>
                       </div>
+                      <div className="student-evidence-grid">
+                        {(selectedProject.studentIds || []).map((studentId) => {
+                          const student = students.find((item) => item.id === studentId);
+                          const draft = projectStudentEvidenceDrafts[studentId] || { ability: '', observation: '', status: 'draft' };
+                          return (
+                            <div className="student-evidence-item" key={studentId}>
+                              <strong>{student?.name || studentId}</strong>
+                              <label>能力维度<input value={draft.ability} onChange={(event) => setProjectStudentEvidenceDrafts((current) => ({ ...current, [studentId]: { ...draft, ability: event.target.value } }))} placeholder="例如：数据分析、团队协作" /></label>
+                              <label>独立观察<textarea rows={3} value={draft.observation} onChange={(event) => setProjectStudentEvidenceDrafts((current) => ({ ...current, [studentId]: { ...draft, observation: event.target.value } }))} placeholder="记录该学生在项目中的具体表现与证据" /></label>
+                              <label>证据状态<select value={draft.status} onChange={(event) => setProjectStudentEvidenceDrafts((current) => ({ ...current, [studentId]: { ...draft, status: event.target.value } }))}>
+                                <option value="draft">草稿</option>
+                                <option value="verified">已确认</option>
+                                <option value="published">已发布</option>
+                                <option value="rejected">已驳回</option>
+                              </select></label>
+                              <button className="secondary compact" onClick={() => saveProjectStudentEvidence(studentId)}><CheckCircle2 size={15} />保存该学生证据</button>
+                            </div>
+                          );
+                        })}
+                        {!(selectedProject.studentIds || []).length && <div className="empty-state compact">请先绑定项目参与学生。</div>}
+                      </div>
+                    </section>
+                    <section className={`material-source-panel project-digest-panel ${projectAuditLocateTarget?.target === 'digest' ? 'audit-locate-highlight' : ''}`} data-project-action-target="digest" tabIndex={-1}>
+                      <div className="mini-heading">
+                        <strong>3. 人工 Agent 消化</strong>
+                        <span>选择 Agent 后复制命令，粘贴到对应工具执行；控制台不绑定或自动启动 Codex CLI。</span>
+                      </div>
+                      <div className="form-grid compact-grid">
+                        <label>使用 Agent<select value={selectedProject.agentTool || 'qclaw'} onChange={(event) => {
+                          const agentTool = event.target.value as AgentToolId;
+                          setProjectEditDraft((current) => ({ ...current, agentTool } as typeof current & { agentTool: AgentToolId }));
+                          const raw = bridge()?.updateProjectMetadata?.(selectedProject.id, JSON.stringify({ ...projectEditDraft, agentTool }));
+                          if (raw) try { const result = JSON.parse(raw) as { projects?: LearningProject[]; message?: string }; if (result.projects) setProjects(result.projects); setProjectMessage(result.message || '项目 Agent 已更新。'); } catch { setProjectMessage('项目 Agent 更新结果解析失败。'); }
+                        }}>{agentToolOptions.map((tool) => <option value={tool.id} key={tool.id}>{tool.name}</option>)}</select></label>
+                        <label>当前批次<input readOnly value={selectedProjectDigestState.digestBatchId || '尚未提交'} /></label>
+                        <label>待消化资料<input readOnly value={`${selectedProjectDigestState.pendingCount || 0} 份`} /></label>
+                        <label>最近完成<input readOnly value={selectedProjectDigestState.lastDigestAt ? new Date(selectedProjectDigestState.lastDigestAt).toLocaleString('zh-CN') : '暂无'} /></label>
+                      </div>
+                      <div className="actions compact-actions"><button className="primary compact" onClick={copySelectedProjectDigestCommand}><Clipboard size={16} />复制消化命令</button><button className="secondary compact" onClick={markSelectedProjectDigestSubmitted}>标记已提交</button><button className="secondary compact" onClick={syncSelectedProjectDigestResult}>同步结果</button></div>
+                    </section>
+                    <section className={`material-source-panel project-staging-panel ${projectAuditLocateTarget?.target === 'assets' ? 'audit-locate-highlight' : ''}`} data-project-action-target="assets" tabIndex={-1}>
+                      <div className="mini-heading">
+                        <strong>2. 研究暂存、治理与资产晋升</strong>
+                        <span>收集候选资料，完成初筛、人工审核和保存策略确认；晋升后才进入正式文件资产中心和项目原始资料库。</span>
+                      </div>
+                      <div className="project-staging-scroll" tabIndex={0} aria-label="研究暂存层操作与资料列表">
                       <div className="archive-grid">
                         <InfoPanel icon={<Inbox />} title="暂存资料" value={`${projectStagingItems.length} 份`} />
                         <InfoPanel icon={<ListChecks />} title="已选" value={`${selectedProjectStagingItems.length} 份`} />
@@ -9177,6 +10518,18 @@ ${JSON.stringify(items, null, 2)}
                             <option value="promoted">已晋升</option>
                             <option value="discarded">已归档/丢弃</option>
                           </select>
+                        </label>
+                        <label>
+                          来源保存策略
+                          <select value={projectSourceStrategy} onChange={(event) => setProjectSourceStrategy(event.target.value as typeof projectSourceStrategy)}>
+                            <option value="reference_only">仅来源记录</option>
+                            <option value="snapshot">保存关键快照</option>
+                            <option value="full_copy">保存完整副本</option>
+                          </select>
+                        </label>
+                        <label>
+                          人工审核说明
+                          <input value={projectReviewNote} onChange={(event) => setProjectReviewNote(event.target.value)} placeholder="可选：采用或排除原因" />
                         </label>
                       </div>
                       <div className="actions compact-actions">
@@ -9217,7 +10570,13 @@ ${JSON.stringify(items, null, 2)}
                         <button className="secondary compact" onClick={() => updateSelectedProjectStagingStatus('analyzed')} disabled={selectedProjectStagingIds.length === 0}>
                           标记已分析
                         </button>
-                        <button className="primary compact" onClick={promoteSelectedProjectStagingItems} disabled={selectedProjectStagingIds.length === 0}>
+                        <button className="secondary compact" onClick={() => reviewSelectedProjectStaging('accepted')} disabled={selectedProjectStagingIds.length === 0}>
+                          接受并应用保存策略
+                        </button>
+                        <button className="secondary compact danger-soft" onClick={() => reviewSelectedProjectStaging('rejected')} disabled={selectedProjectStagingIds.length === 0}>
+                          人工拒绝
+                        </button>
+                        <button className="primary compact" onClick={promoteSelectedProjectStagingItems} disabled={selectedProjectStagingIds.length === 0 || selectedProjectStagingItems.some((item) => item.reviewStatus !== 'accepted')}>
                           晋升为正式资产
                         </button>
                         <button className="secondary compact danger-soft" onClick={() => updateSelectedProjectStagingStatus('discarded')} disabled={selectedProjectStagingIds.length === 0}>
@@ -9237,6 +10596,8 @@ ${JSON.stringify(items, null, 2)}
                               </small>
                               <small>{item.sourcePath || item.path}</small>
                               {item.promotedAssetId && <small>资产编号：{item.promotedAssetId}</small>}
+                              <small>人工审核：{item.reviewStatus === 'accepted' ? '已接受' : item.reviewStatus === 'rejected' ? '已拒绝' : '待确认'} · 保存策略：{item.sourceStrategy === 'full_copy' ? '完整副本' : item.sourceStrategy === 'snapshot' ? '关键快照' : '仅来源记录'}</small>
+                              {item.reviewNote && <small>审核说明：{item.reviewNote}</small>}
                               {item.aiAction && (
                                 <small className="staging-ai-note">
                                   AI建议：{item.aiAction}{item.aiScore !== undefined && item.aiScore !== '' ? ` · 评分 ${item.aiScore}` : ''}
@@ -9260,37 +10621,80 @@ ${JSON.stringify(items, null, 2)}
                           </div>
                         )}
                       </div>
+                      </div>
                     </section>
-                    <div className="mini-heading">
-                      <strong>从资产中心加入项目</strong>
-                      <span>只建立资产引用并复制到项目原始资料库，不直接合并进学生主档案。</span>
-                    </div>
-                    <div className="download-list project-asset-picker">
-                      {projectCandidateAssets.map((asset) => (
-                        <label className="download-item" key={asset.assetId}>
-                          <input type="checkbox" checked={selectedProjectAssetIds.includes(asset.assetId)} onChange={() => toggleProjectAsset(asset.assetId)} />
-                          <span>
-                            <strong>{asset.filename}</strong>
-                            <small>{asset.ownerStudentName || '未绑定学生'} · {formatFileSize(asset.size ?? 0)}</small>
-                            <small>{asset.path}</small>
-                          </span>
+                    <section className={`material-source-panel project-knowledge-panel ${projectAuditLocateTarget?.target === 'knowledge' ? 'audit-locate-highlight' : ''}`} data-project-action-target="knowledge" tabIndex={-1}>
+                      <div className="mini-heading">
+                        <strong>4. 项目知识资产审核</strong>
+                        <span>审核概念、实体、摘要、问答和综合结论；每条记录保留来源资产与生成信息。</span>
+                      </div>
+                      <div className="form-grid compact-grid staging-filter-grid">
+                        <label>
+                          状态筛选
+                          <select value={projectKnowledgeStatusFilter} onChange={(event) => setProjectKnowledgeStatusFilter(event.target.value)}>
+                            <option value="all">全部状态</option>
+                            <option value="ai_generated">AI 生成</option>
+                            <option value="pending_review">待审核</option>
+                            <option value="verified">已确认</option>
+                            <option value="published">已发布</option>
+                            <option value="rejected">已驳回</option>
+                            <option value="invalid">已失效</option>
+                          </select>
                         </label>
-                      ))}
-                      {projectCandidateAssets.length === 0 && <div className="empty-state">暂无可加入项目的资产。可先到“文件资产中心”补建索引，或导入学生资料。</div>}
-                    </div>
-                    <div className="actions">
-                      <button className="primary" onClick={importSelectedAssetsToProject} disabled={selectedProjectAssetIds.length === 0}>
-                        <FileDown size={18} />
-                        加入项目知识空间
-                      </button>
-                      <button className="secondary" onClick={importRawFilesToProject}>
-                        <FileDown size={18} />
-                        本地文件直接导入
-                      </button>
-                      <span className="inline-hint">已选 {selectedProjectAssetIds.length} 个</span>
-                    </div>
+                        <label>
+                          审核说明
+                          <input value={projectKnowledgeReviewNote} onChange={(event) => setProjectKnowledgeReviewNote(event.target.value)} placeholder="可选：确认依据、修改意见或失效原因" />
+                        </label>
+                      </div>
+                      <div className="actions compact-actions">
+                        <button className="secondary compact" onClick={loadSelectedProjectKnowledgeReview}>刷新知识资产</button>
+                        <button className="secondary compact" onClick={() => setSelectedProjectKnowledgeIds(filteredProjectKnowledgeRecords.map((record) => record.id))} disabled={!filteredProjectKnowledgeRecords.length}>选择当前筛选</button>
+                        <button className="secondary compact" onClick={() => updateSelectedProjectKnowledgeReview('pending_review')} disabled={!selectedProjectKnowledgeIds.length}>标记待审核</button>
+                        <button className="primary compact" onClick={() => updateSelectedProjectKnowledgeReview('verified')} disabled={!selectedProjectKnowledgeIds.length}>确认知识</button>
+                        <button className="secondary compact danger-soft" onClick={() => updateSelectedProjectKnowledgeReview('rejected')} disabled={!selectedProjectKnowledgeIds.length}>驳回</button>
+                        <button className="secondary compact danger-soft" onClick={() => updateSelectedProjectKnowledgeReview('invalid')} disabled={!selectedProjectKnowledgeIds.length}>标记失效</button>
+                      </div>
+                      <div className="download-list project-knowledge-review-list">
+                        {filteredProjectKnowledgeRecords.map((record) => (
+                          <label className="download-item" key={record.id}>
+                            <input type="checkbox" checked={selectedProjectKnowledgeIds.includes(record.id)} onChange={() => setSelectedProjectKnowledgeIds((current) => current.includes(record.id) ? current.filter((id) => id !== record.id) : [...current, record.id])} />
+                            <span>
+                              <strong>{record.title}</strong>
+                              <small>{record.kind} · {record.status} · 置信度 {record.confidence || 'medium'}</small>
+                              <small>{record.path}</small>
+                              <small>来源资产：{record.sourceAssets?.join('、') || '待补充'} · 模型：{record.model || '未记录'} · 提示词版本：{record.promptVersion || '未记录'}</small>
+                              {record.reviewNote && <small>审核说明：{record.reviewNote}</small>}
+                            </span>
+                          </label>
+                        ))}
+                        {filteredProjectKnowledgeRecords.length === 0 && <div className="empty-state">当前知识空间还没有可审核的概念、实体、摘要、问答或综合文件。</div>}
+                      </div>
+                    </section>
+                    <section className="material-source-panel project-asset-center-panel">
+                      <div className="mini-heading">
+                        <strong>复用已有正式资产</strong>
+                        <span>作为资料入口的补充路线：从资产中心选择已经确认的文件，复制到项目原始资料库，不进入研究暂存。</span>
+                      </div>
+                      <div className="download-list project-asset-picker">
+                        {projectCandidateAssets.map((asset) => (
+                          <label className="download-item" key={asset.assetId}>
+                            <input type="checkbox" checked={selectedProjectAssetIds.includes(asset.assetId)} onChange={() => toggleProjectAsset(asset.assetId)} />
+                            <span>
+                              <strong>{asset.filename}</strong>
+                              <small>{asset.ownerStudentName || '未绑定学生'} · {formatFileSize(asset.size ?? 0)}</small>
+                              <small>{asset.path}</small>
+                            </span>
+                          </label>
+                        ))}
+                        {projectCandidateAssets.length === 0 && <div className="empty-state">暂无可加入项目的资产。可先到“文件资产中心”补建索引，或导入学生资料。</div>}
+                      </div>
+                      <div className="actions compact-actions">
+                        <button className="primary compact" onClick={importSelectedAssetsToProject} disabled={selectedProjectAssetIds.length === 0}><FileDown size={16} />加入项目原始资料库</button>
+                        <span className="inline-hint">已选 {selectedProjectAssetIds.length} 个</span>
+                      </div>
+                    </section>
                     {promotionPlan && (
-                      <section className="material-source-panel">
+                      <section className="material-source-panel project-promotion-plan">
                         <div className="mini-heading">
                           <strong>归档确认清单</strong>
                           <span>逐项选择动作：引用只记录来源；发布写入学生汇总或成长模型；吸收会复制文件到学生原始资料库。</span>
@@ -9336,7 +10740,7 @@ ${JSON.stringify(items, null, 2)}
                       </section>
                     )}
                     {promotionPreview && (
-                      <div className="markdown-reader learning-report-reader">
+                      <div className="markdown-reader learning-report-reader project-promotion-preview">
                         <div className="reader-toolbar">
                           <span>知识贡献申请预览</span>
                           <button className="secondary compact" onClick={() => copyText(promotionPreview, '已复制项目知识贡献申请。')}>
@@ -9348,7 +10752,7 @@ ${JSON.stringify(items, null, 2)}
                       </div>
                     )}
                     {promotionAuditPreview && (
-                      <div className="markdown-reader learning-report-reader">
+                      <div className="markdown-reader learning-report-reader project-promotion-audit-preview">
                         <div className="reader-toolbar">
                           <span>贡献冲突与回滚记录</span>
                           <button className="secondary compact" onClick={() => copyText(promotionAuditPreview, '已复制贡献冲突与回滚记录。')}>
@@ -10574,14 +11978,198 @@ ${JSON.stringify(items, null, 2)}
           <section className="panel tasks-panel">
             <div className="panel-heading">
               <div>
-                <h2>定时任务</h2>
-                <p>把日常任务拆为“定时消化”和“定时维护 / lint”：前者处理新资料，后者检查路径、规则、索引和成长模型健康度。</p>
+                <h2>任务中心</h2>
+                <p>统一管理学生与学习项目的手动任务、定时任务、事件触发任务、Agent执行和人工审核。</p>
               </div>
-              <Settings size={22} />
+              <ListChecks size={22} />
             </div>
+            <div className="task-center-summary" aria-label="任务中心概览">
+              {[
+                { id: 'all' as const, label: '全部任务', value: taskCenter.summary.total, icon: <ListChecks size={18} /> },
+                { id: 'actionable' as const, label: '待处理', value: taskCenter.summary.actionable, icon: <Zap size={18} /> },
+                { id: 'running' as const, label: '执行中/等待', value: taskCenter.summary.running, icon: <RefreshCw size={18} /> },
+                { id: 'scheduled' as const, label: '已计划', value: taskCenter.summary.scheduled, icon: <Clock3 size={18} /> },
+                { id: 'completed' as const, label: '已完成', value: taskCenter.summary.completed, icon: <CheckCircle2 size={18} /> },
+              ].map((item) => (
+                <button className={taskCenterStatusFilter === item.id ? 'task-center-stat active' : 'task-center-stat'} key={item.id} onClick={() => setTaskCenterStatusFilter(item.id)}>
+                  {item.icon}
+                  <span>{item.label}</span>
+                  <strong>{item.value}</strong>
+                  <ChevronRight size={16} />
+                </button>
+              ))}
+            </div>
+            <section className="material-source-panel task-center-board">
+              <div className="mini-heading">
+                <strong>统一任务队列</strong>
+                <span>协议 {taskCenter.protocolVersion || '1.0'}；支持自动执行、QClaw 收件箱和人工任务包，所有结果统一审核。</span>
+              </div>
+              <div className="task-center-toolbar">
+                <label className={taskCenter.automationEnabled === false ? 'task-automation-toggle manual' : 'task-automation-toggle'} title="关闭后停止自动扫描、调度和后台 Agent 探测；仍可手动执行任务。">
+                  <input type="checkbox" checked={taskCenter.automationEnabled !== false} onChange={(event) => updateTaskAutomationMode(event.target.checked)} />
+                  <span>{taskCenter.automationEnabled === false ? '仅手动' : '自动运行'}</span>
+                </label>
+                <button className="secondary compact" onClick={() => openTaskCenterFolder('root')}><FolderOpen size={15} />任务仓库</button>
+                <button className="secondary compact" onClick={() => openTaskCenterFolder('qclaw-inbox')}><Inbox size={15} />QClaw 收件箱</button>
+                <button className="secondary compact" onClick={syncQClawResultsFromCenter}><RefreshCw size={15} />同步 QClaw 结果</button>
+                <button className="secondary compact" onClick={() => openTaskCenterFolder('manual-outbox')}><Clipboard size={15} />人工任务包</button>
+                <button className="secondary compact" onClick={() => openTaskCenterFolder('events')}><FileText size={15} />审计日志</button>
+              </div>
+              <div className="task-adapter-grid">
+                {Object.values(taskCenter.capabilities || {}).filter((adapter) => !adapter.hidden).map((adapter) => (
+                  <button className={adapter.available && adapter.authorized !== false ? 'task-adapter-card available' : 'task-adapter-card'} key={adapter.id} onClick={() => setTaskCenterExecutorFilter(adapter.id)}>
+                    <Bot size={17} />
+                    <span><strong>{adapter.label}</strong><small>{adapter.available && adapter.authorized !== false ? (adapter.healthMessage || (adapter.automatic ? '可自动执行' : adapter.inbox ? '收件箱/人工' : '可用')) : adapter.healthMessage || '不可用或未授权'}</small></span>
+                  </button>
+                ))}
+              </div>
+              <div className="task-center-filters">
+                <label>状态
+                  <select value={taskCenterStatusFilter} onChange={(event) => setTaskCenterStatusFilter(event.target.value as typeof taskCenterStatusFilter)}>
+                    <option value="all">全部</option>
+                    <option value="actionable">待处理/阻塞</option>
+                    <option value="running">执行中/等待结果</option>
+                    <option value="scheduled">已计划</option>
+                    <option value="completed">已完成</option>
+                  </select>
+                </label>
+                <label>来源
+                  <select value={taskCenterSourceFilter} onChange={(event) => setTaskCenterSourceFilter(event.target.value as typeof taskCenterSourceFilter)}>
+                    <option value="all">全部来源</option>
+                    <option value="student">学生档案</option>
+                    <option value="project">学习项目</option>
+                  </select>
+                </label>
+                <label>执行者
+                  <select value={taskCenterExecutorFilter} onChange={(event) => setTaskCenterExecutorFilter(event.target.value)}>
+                    <option value="all">全部执行者</option>
+                    {taskCenterExecutors.map((executor) => <option value={executor} key={executor}>{executor === 'human-review' ? '人工审核' : agentToolProfiles[executor as AgentToolId]?.name || executor}</option>)}
+                  </select>
+                </label>
+                <button className="secondary compact" onClick={refreshTaskCenter}><RefreshCw size={16} />刷新任务</button>
+              </div>
+              <div className="task-center-list">
+                {visibleTaskCenterItems.map((task) => {
+                  const statusLabel = ({ draft: '草稿', pending: '待处理', approved: '已批准', queued: '已计划', running: '执行中', waiting_result: '等待结果', reviewing: '待审核', succeeded: '已完成', failed: '失败', blocked: '阻塞', cancelled: '已取消', timed_out: '已超时' } as Record<string, string>)[task.status] || task.status;
+                  const triggerLabel = ({ schedule: '定时', event: '事件触发', manual: '手动' } as Record<string, string>)[task.trigger] || task.trigger;
+                  const modeLabel = ({ direct: '直接执行', adapter: '适配器执行', manual: '人工执行', review: '人工审核' } as Record<string, string>)[task.executionMode] || task.executionMode;
+                  const executorLabel = task.executor === 'human-review' ? '人工审核' : agentToolProfiles[task.executor as AgentToolId]?.name || task.executor;
+                  return (
+                    <article className="task-center-item" key={task.id}>
+                      <div className="task-center-item-main">
+                        <span className={`task-center-status ${task.status}`}>{statusLabel}</span>
+                        <div>
+                          <strong>{task.title}</strong>
+                          <small>{task.detail}</small>
+                        </div>
+                      </div>
+                      <div className="task-center-meta">
+                        <span>{task.sourceType === 'project' ? '学习项目' : '学生档案'} · {task.sourceName}</span>
+                        <span>{triggerLabel}{task.scheduledAt ? ` · ${task.scheduledAt}` : ''}</span>
+                        <span>{executorLabel} · {modeLabel}</span>
+                      </div>
+                      <div className="task-center-row-actions">
+                        <button className="secondary compact" onClick={() => { setSelectedTaskId(task.id); setTaskExecutorDraft('auto'); setTaskReviewNote(''); }}>
+                          查看任务<ChevronRight size={15} />
+                        </button>
+                        <button className="secondary compact" onClick={() => handleTaskCenterAction(task)}>
+                          {task.sourceType === 'project' ? '定位来源' : '打开来源'}<ExternalLink size={15} />
+                        </button>
+                      </div>
+                    </article>
+                  );
+                })}
+                {visibleTaskCenterItems.length === 0 && <div className="empty-state compact">当前筛选条件下没有任务。</div>}
+              </div>
+              {selectedTask && (
+                <section className="task-detail-panel">
+                  <div className="mini-heading">
+                    <strong>{selectedTask.title}</strong>
+                    <span>{selectedTask.id} · 协议 {selectedTask.protocolVersion || '1.0'}</span>
+                  </div>
+                  <div className="task-detail-grid">
+                    <div><small>状态</small><strong>{selectedTask.status}</strong></div>
+                    <div><small>风险</small><strong>{selectedTask.riskLevel || 'low'}</strong></div>
+                    <div><small>执行次数</small><strong>{selectedTask.attempt || 0} / {selectedTask.maxAttempts || 3}</strong></div>
+                    <div><small>幂等键</small><strong>{selectedTask.idempotencyKey || '-'}</strong></div>
+                     <div><small>适配器</small><strong>{selectedTask.adapterId || selectedTask.executor || '待路由'}</strong></div>
+                     <div><small>审批</small><strong>{selectedTask.approval?.status || 'not_required'}</strong></div>
+                     <div><small>最近心跳</small><strong>{selectedTask.lastHeartbeatAt || '尚未开始'}</strong></div>
+                     <div><small>下次重试</small><strong>{selectedTask.nextRetryAt || '未计划'}</strong></div>
+                     <div><small>路由模式</small><strong>{selectedTask.routingMode || selectedTask.routeDecision?.mode || 'smart'}</strong></div>
+                     <div><small>执行批次</small><strong>{selectedTask.executionId || '-'}</strong></div>
+                   </div>
+                  {selectedTask.routeDecision && <div className="notice muted">路由：{selectedTask.routeDecision.selectedAdapter} · {selectedTask.routeDecision.reason}</div>}
+                  {selectedTask.routeDecision?.candidates && (
+                    <div className="task-route-candidates">
+                      {selectedTask.routeDecision.candidates.map((candidate) => (
+                        <span key={candidate.adapterId}>{candidate.label} · {candidate.available ? `评分 ${candidate.score}` : '不可用'}{candidate.successRate === undefined ? '' : ` · 成功率 ${Math.round(candidate.successRate * 100)}%`}</span>
+                      ))}
+                    </div>
+                  )}
+                   {selectedTask.error?.message && <div className="notice error">{selectedTask.error.code || 'ERROR'}：{selectedTask.error.message}</div>}
+                   {selectedTask.result?.validation && <div className={selectedTask.result.validation.valid ? 'notice success' : 'notice error'}>{selectedTask.result.validation.message || '结果校验已完成。'}</div>}
+                   <details className="task-detail-data">
+                     <summary>查看任务输入、预期输出与权限</summary>
+                     <strong>输入</strong><pre>{JSON.stringify(selectedTask.input || {}, null, 2)}</pre>
+                     <strong>预期输出</strong><pre>{JSON.stringify(selectedTask.expectedOutput || {}, null, 2)}</pre>
+                     <strong>权限</strong><pre>{JSON.stringify(selectedTask.permissions || {}, null, 2)}</pre>
+                   </details>
+                   {selectedTask.result && <details className="task-detail-data"><summary>查看标准结果与文件变更</summary><pre>{JSON.stringify(selectedTask.result, null, 2)}</pre></details>}
+                   <details className="task-detail-data">
+                     <summary>查看状态流转历史（{selectedTaskHistory.length}）</summary>
+                     <div className="download-list compact-list">
+                       {selectedTaskHistory.map((entry) => <div className="download-item" key={entry.id}><span><strong>{entry.status || entry.kind || '状态更新'}</strong><small>{entry.at || '-'} · {entry.executor || selectedTask.executor || '-'}</small><small>{entry.detail || '无补充说明'}</small></span></div>)}
+                       {selectedTaskHistory.length === 0 && <div className="empty-state compact">暂无历史记录。</div>}
+                     </div>
+                   </details>
+                   <label>执行器
+                     <select value={taskExecutorDraft} onChange={(event) => setTaskExecutorDraft(event.target.value)}>
+                       <option value="auto">智能路由（自动执行）</option>
+                       <option value="rule">规则路由（按任务类型）</option>
+                       <option value="confirm">智能推荐（人工确认）</option>
+                       {Object.values(taskCenter.capabilities || {}).filter((adapter) => !adapter.hidden || selectedTask.requestedExecutor === adapter.id).map((adapter) => <option key={adapter.id} value={adapter.id}>{adapter.label}{adapter.available && adapter.authorized !== false ? '' : '（不可用或未授权，将降级）'}</option>)}
+                     </select>
+                   </label>
+                  <label>审批、驳回或反馈说明
+                    <textarea value={taskReviewNote} onChange={(event) => setTaskReviewNote(event.target.value)} placeholder="说明审批依据、失败原因或每日行动完成反馈。" />
+                  </label>
+                  <div className="task-detail-actions">
+                    {selectedTask.approval?.required && selectedTask.approval.status !== 'approved' && selectedTask.status !== 'reviewing' && <button onClick={() => approveTaskFromCenter(selectedTask, 'approved')}><ShieldCheck size={16} />批准执行</button>}
+                    {!['running', 'waiting_result', 'reviewing', 'succeeded'].includes(selectedTask.status) && (!selectedTask.approval?.required || selectedTask.approval.status === 'approved') && <button onClick={() => executeTaskFromCenter(selectedTask)}><Zap size={16} />执行任务</button>}
+                    {selectedTask.status === 'reviewing' && <button onClick={() => approveTaskFromCenter(selectedTask, 'approved')}><CheckCircle2 size={16} />{selectedTask.kind === 'daily_action' ? '审核并发布' : '审核并完成'}</button>}
+                    {selectedTask.status === 'reviewing' && <button className="danger secondary" onClick={() => approveTaskFromCenter(selectedTask, 'rejected')}><AlertTriangle size={16} />驳回结果</button>}
+                    {['waiting_result', 'running'].includes(selectedTask.status) && <button className="secondary" onClick={() => importTaskResultFromCenter(selectedTask)}><FileDown size={16} />导入结果</button>}
+                    {['failed', 'blocked', 'timed_out', 'cancelled'].includes(selectedTask.status) && <button className="secondary" onClick={() => retryTaskFromCenter(selectedTask)}><RefreshCw size={16} />重试</button>}
+                    {!['succeeded', 'cancelled'].includes(selectedTask.status) && <button className="danger secondary" onClick={() => cancelTaskFromCenter(selectedTask)}><Trash2 size={16} />取消</button>}
+                    {selectedTask.kind === 'daily_action' && selectedTask.status === 'succeeded' && <button className="secondary" onClick={() => submitDailyFeedbackFromCenter(selectedTask, 'completed')}>已完成</button>}
+                    {selectedTask.kind === 'daily_action' && selectedTask.status === 'succeeded' && <button className="secondary" onClick={() => submitDailyFeedbackFromCenter(selectedTask, 'partial')}>部分完成</button>}
+                    {selectedTask.kind === 'daily_action' && selectedTask.status === 'succeeded' && <button className="secondary" onClick={() => submitDailyFeedbackFromCenter(selectedTask, 'skipped')}>跳过</button>}
+                  </div>
+                </section>
+              )}
+            </section>
+            <section className="material-source-panel task-center-history">
+              <div className="mini-heading">
+                <strong>最近执行历史</strong>
+                <span>汇总所有学生既有的指令复制与提交账本，后续Agent适配器执行记录也将进入这里。</span>
+              </div>
+              <div className="download-list compact-list">
+                {taskCenter.history.slice(0, 12).map((entry) => (
+                  <div className="download-item" key={`${entry.sourceId || ''}-${entry.id}`}>
+                    <span>
+                      <strong>{entry.sourceName || '任务中心'} · {entry.title || entry.kind}</strong>
+                      <small>{entry.status || '-'} · {entry.executor || '人工'}{entry.copyCount ? ` · 执行/复制 ${entry.copyCount} 次` : ''}</small>
+                      <small>{entry.at || entry.lastCopiedAt || entry.copiedAt || entry.day || '-'}{entry.detail ? ` · ${entry.detail}` : ''}</small>
+                    </span>
+                  </div>
+                ))}
+                {taskCenter.history.length === 0 && <div className="empty-state compact">暂无执行记录。</div>}
+              </div>
+            </section>
             <div className="mini-heading">
-              <strong>定时消化</strong>
-              <span>复制资料消化指令后交给当前 Agent 工具执行；支持标记提交和同步主机上传记录。</span>
+              <strong>学生资料消化快捷执行</strong>
+              <span>保留现有操作入口；执行后会进入任务中心历史记录。</span>
             </div>
             <div className="task-list">
               {students.map((student) => (
@@ -10604,7 +12192,7 @@ ${JSON.stringify(items, null, 2)}
               ))}
             </div>
             <div className="mini-heading">
-              <strong>定时维护 / lint</strong>
+              <strong>知识库维护快捷执行</strong>
               <span>建议按周执行，用于发现跨主机旧路径、断链、重复摘要、规则文件与索引不一致等问题。</span>
             </div>
             {isWindows && (
@@ -10646,7 +12234,7 @@ ${JSON.stringify(items, null, 2)}
             {(scheduleLedger.entries.length > 0 || scheduleMessage) && (
               <section className="material-source-panel">
                 <div className="mini-heading">
-                  <strong>定时任务去重账本</strong>
+                  <strong>单学生任务账本详情</strong>
                   <span>同一天、同类型、同指令只保留一条记录，重复复制只增加次数。</span>
                 </div>
                 <div className="download-list">
@@ -10941,14 +12529,17 @@ ${JSON.stringify(items, null, 2)}
   );
 }
 
-function InfoPanel({ icon, title, value }: { icon: React.ReactNode; title: string; value: string }) {
-  return (
-    <article className="info-panel">
+function InfoPanel({ icon, title, value, onClick, actionLabel = '查看' }: { icon: React.ReactNode; title: string; value: string; onClick?: () => void; actionLabel?: string }) {
+  const content = (
+    <>
       <div className="info-icon">{icon}</div>
       <span>{title}</span>
       <strong>{value}</strong>
-    </article>
+      {onClick && <small className="info-panel-action-label">{actionLabel}<ChevronRight size={15} /></small>}
+    </>
   );
+  if (onClick) return <button type="button" className="info-panel info-panel-action" onClick={onClick}>{content}</button>;
+  return <article className="info-panel">{content}</article>;
 }
 
 function AgentToolCompactSelector({

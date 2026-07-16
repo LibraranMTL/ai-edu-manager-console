@@ -1,11 +1,29 @@
 ﻿const { app, BrowserWindow, clipboard, dialog, ipcMain, shell } = require('electron');
 const fs = require('fs');
+const { desktopCapturer, globalShortcut, Menu, Tray } = require('electron');
 const path = require('path');
 const os = require('os');
 const http = require('http');
 const https = require('https');
 const crypto = require('crypto');
 const { spawn, spawnSync, execFileSync } = require('child_process');
+const {
+  TASK_PROTOCOL_VERSION,
+  TASK_STATUS_TRANSITIONS,
+  cronOccurrence,
+  selectPreviousDailyFeedback,
+  selectFallbackAdapter,
+  validateDailyActionDocument,
+  validateExternalTaskResultIdentity,
+  validatePermissionDeclaration,
+  validateTaskTransition,
+} = require('./task-protocol.cjs');
+const {
+  CAPTURE_POLICIES,
+  CAPTURE_PROTOCOL_VERSION,
+  captureSaveDecision,
+  normalizeCaptureOptions,
+} = require('./capture-protocol.cjs');
 
 let mainWindow;
 let qclawOpened = false;
@@ -22,8 +40,20 @@ let hostServiceStartedAt = '';
 let hostServiceLastError = '';
 let todayUploadCount = 0;
 let uploadCountDate = new Date().toISOString().slice(0, 10);
+const taskChildProcesses = new Map();
+let taskSchedulerTimer = null;
+let taskSchedulerStartupTimer = null;
+let taskSchedulerRunning = false;
+let adapterCapabilityCache = { at: 0, value: null, refreshing: null };
+let activeCaptureRuntime = null;
+let captureTray = null;
+let captureControlWindow = null;
+let openClawCronSyncState = { at: 0, promise: null, result: null };
+let uninstallEntriesCache = { at: 0, value: [] };
+const executablePathCache = new Map();
+const agentToolInstallCache = new Map();
 
-const APP_VERSION = '0.7.20';
+const APP_VERSION = app.getVersion();
 const DEFAULT_HOST_PORT = 18777;
 const AGENT_TOOL_IDS = ['qclaw', 'marvis', 'hohu', 'openclaw', 'ima.copilot', 'workbuddy', 'codex', 'claude-code', 'chatgpt', 'claude', 'doubao', 'coze', 'fastgpt'];
 const WEB_AGENT_TOOL_URLS = {
@@ -52,6 +82,14 @@ const assetGovernanceReportPath = () => path.join(app.getPath('userData'), 'asse
 const projectsPath = () => path.join(app.getPath('userData'), 'projects.json');
 const knowledgeGraphReportPath = () => path.join(app.getPath('userData'), 'knowledge-graph-report.md');
 const projectContributionAuditPath = () => path.join(app.getPath('userData'), 'project-contribution-audit.md');
+const taskCenterDirPath = () => path.join(defaultStudentBaseDir(), '.edu-manager', 'task-center');
+const taskStorePath = () => path.join(taskCenterDirPath(), 'tasks.json');
+const taskEventLogPath = () => path.join(taskCenterDirPath(), 'events.jsonl');
+const taskExecutionDirPath = () => path.join(taskCenterDirPath(), 'executions');
+const taskManualOutboxPath = () => path.join(taskCenterDirPath(), 'manual-outbox');
+const qclawTaskInboxPath = () => path.join(taskCenterDirPath(), 'qclaw-inbox');
+const qclawTaskResultPath = () => path.join(taskCenterDirPath(), 'qclaw-results');
+const openClawCronRegistryPath = () => path.join(taskCenterDirPath(), 'openclaw-managed-cron.json');
 const LICENSE_SIGNING_SECRET = 'ai-edu-manager-offline-license-v1';
 let activePairSession = null;
 
@@ -66,6 +104,32 @@ function readSettings() {
 function writeSettings(settings) {
   fs.mkdirSync(path.dirname(settingsPath()), { recursive: true });
   fs.writeFileSync(settingsPath(), JSON.stringify(settings, null, 2), 'utf8');
+}
+
+function taskAutomationEnabled() {
+  return readSettings().taskAutomationEnabled !== false;
+}
+
+function setTaskAutomationEnabled(enabled) {
+  const nextEnabled = Boolean(enabled);
+  const settings = readSettings();
+  settings.taskAutomationEnabled = nextEnabled;
+  writeSettings(settings);
+  if (nextEnabled) {
+    refreshAdapterCapabilities(true);
+    startUnifiedTaskScheduler();
+  } else {
+    stopUnifiedTaskScheduler();
+  }
+  appendTaskEvent('', 'task_automation_mode_changed', { enabled: nextEnabled, mode: nextEnabled ? 'automatic' : 'manual' });
+  return JSON.stringify({
+    ok: true,
+    automationEnabled: nextEnabled,
+    executionMode: nextEnabled ? 'automatic' : 'manual',
+    message: nextEnabled
+      ? '自动运行已开启，统一任务中心将按计划调度任务。'
+      : '已切换为仅手动模式；现有运行任务不会中断，后续自动扫描、调度和 Agent 探测已停止。',
+  });
 }
 
 function ensureApiToken() {
@@ -307,12 +371,12 @@ function growthIndexMarkdownPath(student) {
 }
 
 function projectPromotionRunLogPath(project) {
-  const paths = projectPathsFor(project.name, project.projectRootPath);
+  const paths = projectPathsFor(project.name, project.projectRootPath, project);
   return path.join(paths.contributionPath, 'promotion-run-log.json');
 }
 
 function projectPromotionAuditPath(project) {
-  const paths = projectPathsFor(project.name, project.projectRootPath);
+  const paths = projectPathsFor(project.name, project.projectRootPath, project);
   return path.join(paths.contributionPath, '贡献冲突与回滚记录.md');
 }
 
@@ -949,9 +1013,12 @@ function upsertAssetFromFile(filePath, context = {}) {
     references: dedupedReferences,
     sourcePath: context.sourcePath || base.sourcePath || '',
     sourceName: context.sourceName || base.sourceName || context.deviceName || '主机控制台',
+    sourceType: context.sourceType || base.sourceType || 'local_file',
+    captureSessionId: context.captureSessionId || base.captureSessionId || '',
+    captureItemId: context.captureItemId || base.captureItemId || '',
     uploadedAt: base.uploadedAt || context.uploadedAt || now,
     updatedAt: now,
-    status: base.status || 'active',
+    status: context.status || base.status || 'active',
   };
   if (existingIndex >= 0) assets[existingIndex] = asset;
   else assets.unshift(asset);
@@ -978,10 +1045,14 @@ function registerAssetsFromUploadRecords(records) {
       studentName: record.studentName || '',
       sourcePath: record.sourcePath || '',
       sourceName: record.sourceName || record.deviceName || '主机控制台',
+      sourceType: record.captureSessionId ? 'windows_screenshot' : (record.sourceType || 'local_file'),
+      captureSessionId: record.captureSessionId || '',
+      captureItemId: record.captureItemId || '',
       deviceName: record.deviceName || '',
       uploadedAt: record.uploadedAt || '',
       referenceId: record.id,
       role: 'student_raw',
+      status: 'active',
     });
     if (asset) assets.push(asset);
   }
@@ -1295,7 +1366,7 @@ function rebuildAssetIndex() {
   }
   const projects = readProjects().map(normalizeProject);
   for (const project of projects) {
-    const rawDir = project.rawPath || projectPathsFor(project.name, project.projectRootPath).rawPath;
+    const rawDir = project.rawPath || projectPathsFor(project.name, project.projectRootPath, project).rawPath;
     if (!rawDir || !fs.existsSync(rawDir)) continue;
     const rawFiles = [];
     collectFilesRecursive(rawDir, rawFiles, 8);
@@ -1974,6 +2045,33 @@ function openStudentRawDir(studentId) {
   return JSON.stringify({ ok: true, path: target });
 }
 
+function openProjectSpace(projectId, space) {
+  try {
+    const project = readProjects().find((item) => String(item.id) === String(projectId));
+    if (!project) return JSON.stringify({ ok: false, message: '未找到学习项目。' });
+    const ensured = project.status === 'sealed' ? normalizeProject(project) : ensureProjectWorkspace(project);
+    const targets = {
+      root: { path: ensured.projectRootPath, label: '项目根目录' },
+      workspace: { path: ensured.workspacePath, label: '项目工作空间' },
+      raw: { path: ensured.rawPath, label: '项目原始资料库' },
+      knowledge: { path: ensured.knowledgeRootPath, label: '项目知识空间' },
+    };
+    const selected = targets[String(space || '')];
+    if (!selected?.path) return JSON.stringify({ ok: false, message: '不支持打开该项目目录。' });
+    const target = selected.path;
+    if (!fs.existsSync(target) && project.status === 'sealed') return JSON.stringify({ ok: false, message: '封存项目的目录不存在，需先恢复项目后才能补建。' });
+    fs.mkdirSync(target, { recursive: true });
+    shell.openPath(target).catch(() => {});
+    return JSON.stringify({
+      ok: true,
+      path: target,
+      message: `已打开${selected.label}。`,
+    });
+  } catch (error) {
+    return JSON.stringify({ ok: false, message: `打开项目空间失败：${error.message}` });
+  }
+}
+
 function migrateStudentWorkspace(studentId, newName) {
   try {
     const students = readStudentsIndex();
@@ -2258,6 +2356,483 @@ function defaultStudentBaseDir() {
     : path.join(app.getPath('documents') || path.join(os.homedir(), 'Documents'), '学生资料');
 }
 
+function captureCenterRootPath() {
+  return path.join(defaultStudentBaseDir(), '.edu-manager', 'capture-center');
+}
+
+function captureSessionsPath() {
+  return path.join(captureCenterRootPath(), 'capture-sessions.json');
+}
+
+function captureInboxRootPath() {
+  return path.join(captureCenterRootPath(), 'inbox');
+}
+
+function readCaptureStore() {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(captureSessionsPath(), 'utf8'));
+    return {
+      version: Number(parsed.version || CAPTURE_PROTOCOL_VERSION),
+      sessions: Array.isArray(parsed.sessions) ? parsed.sessions : [],
+    };
+  } catch {
+    return { version: CAPTURE_PROTOCOL_VERSION, sessions: [] };
+  }
+}
+
+function writeCaptureStore(store) {
+  fs.mkdirSync(captureCenterRootPath(), { recursive: true });
+  fs.writeFileSync(captureSessionsPath(), JSON.stringify({
+    version: CAPTURE_PROTOCOL_VERSION,
+    updatedAt: new Date().toISOString(),
+    sessions: (store.sessions || []).slice(0, 200),
+  }, null, 2), 'utf8');
+}
+
+function persistCaptureSession(session) {
+  const store = readCaptureStore();
+  const index = store.sessions.findIndex((item) => String(item.id) === String(session.id));
+  const clean = {
+    ...session,
+    items: (session.items || []).slice(0, 1500),
+    updatedAt: new Date().toISOString(),
+  };
+  if (index >= 0) store.sessions[index] = clean;
+  else store.sessions.unshift(clean);
+  writeCaptureStore(store);
+  return clean;
+}
+
+function captureCenterStateObject() {
+  const store = readCaptureStore();
+  const activeSession = activeCaptureRuntime?.session || null;
+  return {
+    ok: true,
+    protocolVersion: CAPTURE_PROTOCOL_VERSION,
+    policies: Object.values(CAPTURE_POLICIES),
+    activeSession,
+    sessions: store.sessions.slice(0, 30),
+    inboxPath: captureInboxRootPath(),
+  };
+}
+
+function getCaptureCenterState() {
+  return JSON.stringify(captureCenterStateObject());
+}
+
+function notifyCaptureChanged() {
+  try {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('capture:changed', JSON.stringify(captureCenterStateObject()));
+    }
+    updateCaptureTray();
+    updateCaptureControlWindow();
+  } catch {
+    // Capture remains available even if the renderer is being reloaded.
+  }
+}
+
+function captureTrayIconPath() {
+  const built = path.join(__dirname, '..', 'dist', 'brand', 'robogala.ico');
+  const source = path.join(__dirname, '..', 'public', 'brand', 'robogala.ico');
+  return fs.existsSync(built) ? built : source;
+}
+
+function showMainWindow() {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  if (mainWindow.isMinimized()) mainWindow.restore();
+  mainWindow.show();
+  mainWindow.focus();
+}
+
+function updateCaptureTray() {
+  if (!captureTray || captureTray.isDestroyed()) return;
+  const session = activeCaptureRuntime?.session;
+  const active = Boolean(session);
+  captureTray.setToolTip(active
+    ? `AI教育管家 · ${session.status === 'paused' ? '采集已暂停' : '正在采集'} · 已保留 ${session.screenshotCount} 张`
+    : 'AI教育管家 · 屏幕资料采集');
+  captureTray.setContextMenu(Menu.buildFromTemplate([
+    { label: active ? `${session.status === 'paused' ? '采集已暂停' : '正在采集'} · ${session.sourceName}` : '当前没有采集会话', enabled: false },
+    { type: 'separator' },
+    { label: '打开教育管家', click: showMainWindow },
+    { label: '打开采集箱', click: () => openCaptureInbox(session?.id || '') },
+    { type: 'separator' },
+    { label: '重点截取', enabled: active, click: () => { if (activeCaptureRuntime) void highlightCaptureSession(activeCaptureRuntime.session.id); } },
+    {
+      label: session?.status === 'paused' ? '继续采集' : '暂停采集',
+      enabled: active,
+      click: () => {
+        if (!activeCaptureRuntime) return;
+        if (activeCaptureRuntime.session.status === 'paused') resumeCaptureSession(activeCaptureRuntime.session.id);
+        else pauseCaptureSession(activeCaptureRuntime.session.id);
+      },
+    },
+    { label: '结束并整理', enabled: active, click: () => { if (activeCaptureRuntime) void stopCaptureSession(activeCaptureRuntime.session.id); } },
+  ]));
+}
+
+function createCaptureTray() {
+  if (captureTray && !captureTray.isDestroyed()) return;
+  const iconPath = captureTrayIconPath();
+  if (!fs.existsSync(iconPath)) return;
+  captureTray = new Tray(iconPath);
+  captureTray.on('click', showMainWindow);
+  updateCaptureTray();
+}
+
+function captureControlHtml(session) {
+  const paused = session.status === 'paused';
+  const sourceName = String(session.sourceName || '屏幕').replace(/[&<>"']/g, (character) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[character]));
+  return `<!doctype html><html><head><meta charset="utf-8"><style>
+    *{box-sizing:border-box}body{margin:0;font-family:"Microsoft YaHei",sans-serif;background:transparent;color:#172a27}
+    .bar{height:68px;padding:10px 12px;display:flex;align-items:center;gap:10px;background:#fbfaff;border:1px solid #d9ccff;border-left:4px solid #7c3aed;border-radius:8px;box-shadow:0 12px 30px rgba(56,35,91,.22);-webkit-app-region:drag}
+    .state{min-width:0;flex:1;display:grid;gap:2px}.state strong{font-size:13px}.state span{font-size:11px;color:#64748b;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+    .dot{width:9px;height:9px;border-radius:50%;background:${paused ? '#d97706' : '#ef4444'};box-shadow:0 0 0 4px ${paused ? 'rgba(217,119,6,.12)' : 'rgba(239,68,68,.12)'}}
+    button{width:34px;height:34px;border:1px solid #d9ccff;background:white;color:#6d28d9;border-radius:6px;font-size:15px;cursor:pointer;-webkit-app-region:no-drag}button:hover{background:#f1eaff}button.end{color:#b42318;border-color:#fecaca}
+  </style></head><body><div class="bar"><i class="dot"></i><div class="state"><strong>${paused ? '采集已暂停' : '正在采集'} · ${session.screenshotCount} 张</strong><span>${sourceName}</span></div>
+  <button title="重点截取" id="highlight">★</button><button title="${paused ? '继续采集' : '暂停采集'}" id="pause">${paused ? '▶' : 'Ⅱ'}</button><button title="打开采集箱" id="folder">▣</button><button class="end" title="结束并整理" id="stop">■</button></div>
+  <script>const id=${JSON.stringify(session.id)};document.getElementById('highlight').onclick=()=>window.AndroidBridge.highlightCaptureSession(id);document.getElementById('pause').onclick=()=>window.AndroidBridge.${paused ? 'resumeCaptureSession' : 'pauseCaptureSession'}(id);document.getElementById('folder').onclick=()=>window.AndroidBridge.openCaptureInbox(id);document.getElementById('stop').onclick=()=>window.AndroidBridge.stopCaptureSession(id);</script></body></html>`;
+}
+
+function updateCaptureControlWindow() {
+  const session = activeCaptureRuntime?.session;
+  if (!session) {
+    if (captureControlWindow && !captureControlWindow.isDestroyed()) captureControlWindow.close();
+    captureControlWindow = null;
+    return;
+  }
+  if (!captureControlWindow || captureControlWindow.isDestroyed()) {
+    captureControlWindow = new BrowserWindow({
+      width: 450,
+      height: 68,
+      frame: false,
+      transparent: true,
+      resizable: false,
+      alwaysOnTop: true,
+      skipTaskbar: true,
+      show: false,
+      webPreferences: {
+        preload: path.join(__dirname, 'preload.cjs'),
+        contextIsolation: true,
+        nodeIntegration: false,
+      },
+    });
+    captureControlWindow.setAlwaysOnTop(true, 'floating');
+    captureControlWindow.once('ready-to-show', () => captureControlWindow?.showInactive());
+    captureControlWindow.on('closed', () => { captureControlWindow = null; });
+  }
+  captureControlWindow.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(captureControlHtml(session))}`);
+}
+
+async function listCaptureSources() {
+  try {
+    const sources = await desktopCapturer.getSources({
+      types: ['screen', 'window'],
+      thumbnailSize: { width: 320, height: 180 },
+      fetchWindowIcons: true,
+    });
+    return JSON.stringify({
+      ok: true,
+      sources: sources.map((source) => ({
+        id: source.id,
+        name: source.name,
+        type: source.id.startsWith('screen:') ? 'screen' : 'window',
+        thumbnail: source.thumbnail?.isEmpty() ? '' : source.thumbnail.toDataURL(),
+      })),
+    });
+  } catch (error) {
+    return JSON.stringify({ ok: false, sources: [], message: `读取屏幕来源失败：${error.message}` });
+  }
+}
+
+function captureImageSignature(image) {
+  const sample = image.resize({ width: 16, height: 16, quality: 'good' }).toBitmap();
+  const signature = [];
+  for (let offset = 0; offset + 3 < sample.length; offset += 4) {
+    const blue = sample[offset];
+    const green = sample[offset + 1];
+    const red = sample[offset + 2];
+    signature.push(Math.round((red * 0.299) + (green * 0.587) + (blue * 0.114)));
+  }
+  return signature;
+}
+
+async function captureSourceImage(sourceId, sourceType) {
+  const sources = await desktopCapturer.getSources({
+    types: [sourceType === 'screen' ? 'screen' : 'window'],
+    thumbnailSize: { width: 1920, height: 1080 },
+    fetchWindowIcons: false,
+  });
+  const source = sources.find((item) => item.id === sourceId);
+  if (!source || source.thumbnail.isEmpty()) throw new Error('采集来源已关闭或不可用。');
+  return source.thumbnail;
+}
+
+async function captureFrame(runtime, input = {}) {
+  if (!runtime || runtime !== activeCaptureRuntime || runtime.busy || runtime.session.status !== 'capturing') return null;
+  runtime.busy = true;
+  try {
+    const image = await captureSourceImage(runtime.session.sourceId, runtime.session.sourceType);
+    const signature = captureImageSignature(image);
+    const now = Date.now();
+    const decision = captureSaveDecision(runtime, {
+      now,
+      signature,
+      force: Boolean(input.force),
+      highlight: Boolean(input.highlight),
+      options: runtime.session.options,
+    });
+    runtime.session.candidateFrameCount += 1;
+    if (!decision.save) {
+      runtime.session.deduplicatedCount += 1;
+      runtime.session.lastDecision = decision.reason;
+      if (runtime.session.candidateFrameCount % 10 === 0) persistCaptureSession(runtime.session);
+      notifyCaptureChanged();
+      return decision;
+    }
+
+    const capturedAt = new Date(now).toISOString();
+    const itemId = `capture-item-${now}-${crypto.randomBytes(3).toString('hex')}`;
+    const fileName = `capture-${capturedAt.replace(/[-:.TZ]/g, '').slice(0, 14)}-${itemId.slice(-6)}.png`;
+    fs.mkdirSync(runtime.session.inboxPath, { recursive: true });
+    const filePath = path.join(runtime.session.inboxPath, fileName);
+    fs.writeFileSync(filePath, image.toPNG());
+    const asset = upsertAssetFromFile(filePath, {
+      studentId: runtime.session.studentId,
+      studentName: runtime.session.studentName,
+      projectId: runtime.session.projectId,
+      projectName: runtime.session.projectName,
+      spaceType: 'capture_session',
+      spaceId: runtime.session.id,
+      spaceName: runtime.session.name,
+      role: 'capture_candidate',
+      sourcePath: runtime.session.sourceName,
+      sourceName: `${runtime.session.sourceName} · 屏幕采集`,
+      sourceType: 'windows_screenshot',
+      captureSessionId: runtime.session.id,
+      captureItemId: itemId,
+      status: 'candidate',
+      uploadedAt: capturedAt,
+    });
+    const item = {
+      id: itemId,
+      assetId: asset?.assetId || '',
+      filename: fileName,
+      path: filePath,
+      capturedAt,
+      reason: decision.reason,
+      difference: Number(decision.difference || 0),
+      isHighlighted: Boolean(input.highlight),
+      ocrStatus: 'pending',
+      archiveStatus: 'candidate',
+    };
+    runtime.session.items.push(item);
+    runtime.session.screenshotCount += 1;
+    if (item.isHighlighted) runtime.session.highlightedCount += 1;
+    runtime.session.lastCapturedAt = capturedAt;
+    runtime.session.lastDecision = decision.reason;
+    runtime.lastSavedAt = now;
+    runtime.lastSavedSignature = signature;
+    persistCaptureSession(runtime.session);
+    notifyCaptureChanged();
+    return { ...decision, item };
+  } catch (error) {
+    runtime.session.lastError = error.message;
+    persistCaptureSession(runtime.session);
+    notifyCaptureChanged();
+    return { save: false, reason: 'capture_error', message: error.message };
+  } finally {
+    runtime.busy = false;
+  }
+}
+
+function scheduleCaptureRuntime(runtime) {
+  if (runtime.timer) clearInterval(runtime.timer);
+  runtime.timer = setInterval(() => { void captureFrame(runtime); }, runtime.session.options.sampleIntervalMs);
+  if (runtime.stopTimer) clearTimeout(runtime.stopTimer);
+  const remaining = Math.max(1000, new Date(runtime.session.plannedEndAt).getTime() - Date.now());
+  runtime.stopTimer = setTimeout(() => { void stopCaptureSession(runtime.session.id, 'duration_complete'); }, remaining);
+}
+
+async function startCaptureSession(optionsJson) {
+  try {
+    if (activeCaptureRuntime) return JSON.stringify({ ok: false, message: '已有采集会话正在运行，请先结束当前会话。' });
+    const input = JSON.parse(optionsJson || '{}');
+    const sourceId = String(input.sourceId || '');
+    if (!sourceId) return JSON.stringify({ ok: false, message: '请选择采集屏幕或应用窗口。' });
+    const sourcesResult = JSON.parse(await listCaptureSources());
+    const source = (sourcesResult.sources || []).find((item) => item.id === sourceId);
+    if (!source) return JSON.stringify({ ok: false, message: '选中的采集来源当前不可用。' });
+    const student = readStudentsIndex().find((item) => String(item.id) === String(input.studentId || ''));
+    if (!student) return JSON.stringify({ ok: false, message: '请选择资料所属学生。' });
+    const project = readProjects().find((item) => String(item.id) === String(input.projectId || ''));
+    const now = new Date();
+    const options = normalizeCaptureOptions(input);
+    const id = `capture-${Date.now()}-${crypto.randomBytes(4).toString('hex')}`;
+    const session = {
+      id,
+      protocolVersion: CAPTURE_PROTOCOL_VERSION,
+      name: String(input.name || `${student.name}屏幕采集-${now.toLocaleString('zh-CN')}`),
+      platform: 'windows',
+      sourceId,
+      sourceName: source.name,
+      sourceType: source.type,
+      studentId: String(student.id),
+      studentName: student.name,
+      projectId: project ? String(project.id) : '',
+      projectName: project?.name || '',
+      options,
+      status: 'capturing',
+      startedAt: now.toISOString(),
+      plannedEndAt: new Date(now.getTime() + (options.durationMinutes * 60 * 1000)).toISOString(),
+      endedAt: '',
+      screenshotCount: 0,
+      candidateFrameCount: 0,
+      deduplicatedCount: 0,
+      highlightedCount: 0,
+      items: [],
+      inboxPath: path.join(captureInboxRootPath(), id),
+      ocrStatus: 'not_started',
+      archiveStatus: 'candidate',
+    };
+    fs.mkdirSync(session.inboxPath, { recursive: true });
+    persistCaptureSession(session);
+    const runtime = { session, busy: false, timer: null, stopTimer: null, lastSavedAt: 0, lastSavedSignature: null };
+    activeCaptureRuntime = runtime;
+    scheduleCaptureRuntime(runtime);
+    await captureFrame(runtime, { force: true });
+    return JSON.stringify({ ok: true, session: runtime.session, message: `已开始采集“${source.name}”。` });
+  } catch (error) {
+    activeCaptureRuntime = null;
+    return JSON.stringify({ ok: false, message: `启动屏幕采集失败：${error.message}` });
+  }
+}
+
+function pauseCaptureSession(sessionId) {
+  const runtime = activeCaptureRuntime;
+  if (!runtime || (sessionId && String(runtime.session.id) !== String(sessionId))) return JSON.stringify({ ok: false, message: '没有可暂停的采集会话。' });
+  runtime.session.status = 'paused';
+  runtime.session.pausedAt = new Date().toISOString();
+  persistCaptureSession(runtime.session);
+  notifyCaptureChanged();
+  return JSON.stringify({ ok: true, session: runtime.session, message: '采集已暂停。' });
+}
+
+function resumeCaptureSession(sessionId) {
+  const runtime = activeCaptureRuntime;
+  if (!runtime || (sessionId && String(runtime.session.id) !== String(sessionId))) return JSON.stringify({ ok: false, message: '没有可继续的采集会话。' });
+  runtime.session.status = 'capturing';
+  runtime.session.resumedAt = new Date().toISOString();
+  persistCaptureSession(runtime.session);
+  notifyCaptureChanged();
+  return JSON.stringify({ ok: true, session: runtime.session, message: '采集已继续。' });
+}
+
+async function highlightCaptureSession(sessionId) {
+  const runtime = activeCaptureRuntime;
+  if (!runtime || (sessionId && String(runtime.session.id) !== String(sessionId))) return JSON.stringify({ ok: false, message: '没有正在运行的采集会话。' });
+  const previousStatus = runtime.session.status;
+  runtime.session.status = 'capturing';
+  const result = await captureFrame(runtime, { force: true, highlight: true });
+  runtime.session.status = previousStatus;
+  persistCaptureSession(runtime.session);
+  return JSON.stringify({ ok: Boolean(result?.save), result, session: runtime.session, message: result?.save ? '已保存重点页面。' : '重点页面保存失败。' });
+}
+
+async function stopCaptureSession(sessionId, reason = 'manual') {
+  const runtime = activeCaptureRuntime;
+  if (!runtime || (sessionId && String(runtime.session.id) !== String(sessionId))) return JSON.stringify({ ok: false, message: '没有可结束的采集会话。' });
+  if (runtime.timer) clearInterval(runtime.timer);
+  if (runtime.stopTimer) clearTimeout(runtime.stopTimer);
+  runtime.session.status = 'completed';
+  runtime.session.endedAt = new Date().toISOString();
+  runtime.session.endReason = reason;
+  runtime.session.archiveStatus = 'awaiting_review';
+  persistCaptureSession(runtime.session);
+  activeCaptureRuntime = null;
+  notifyCaptureChanged();
+  return JSON.stringify({ ok: true, session: runtime.session, message: `采集已结束，共保留 ${runtime.session.screenshotCount} 张有效截图。` });
+}
+
+function openCaptureInbox(sessionId = '') {
+  const session = sessionId
+    ? readCaptureStore().sessions.find((item) => String(item.id) === String(sessionId))
+    : activeCaptureRuntime?.session;
+  const target = session?.inboxPath || captureInboxRootPath();
+  fs.mkdirSync(target, { recursive: true });
+  shell.openPath(target);
+  return JSON.stringify({ ok: true, path: target });
+}
+
+function promoteCaptureSession(sessionId) {
+  try {
+    const store = readCaptureStore();
+    const session = store.sessions.find((item) => String(item.id) === String(sessionId));
+    if (!session) return JSON.stringify({ ok: false, message: '未找到采集会话。' });
+    if (!['completed', 'promoted'].includes(session.status)) return JSON.stringify({ ok: false, message: '请先结束采集，再晋升资料。' });
+    if (session.status === 'promoted') return JSON.stringify({ ok: true, imported: session.promotedFiles?.length || 0, session, message: '该采集会话已经晋升。' });
+    const student = readStudentsIndex().find((item) => String(item.id) === String(session.studentId));
+    if (!student) return JSON.stringify({ ok: false, message: '采集会话关联的学生不存在。' });
+    const rawDir = student.rawPath || getRawDir(student.name);
+    fs.mkdirSync(rawDir, { recursive: true });
+    const records = [];
+    for (const item of session.items || []) {
+      if (!item.path || !fs.existsSync(item.path)) continue;
+      const target = uniqueTargetFile(rawDir, item.filename || path.basename(item.path));
+      fs.copyFileSync(item.path, target);
+      const stat = fs.statSync(target);
+      records.push({
+        id: `capture-upload-${Date.now()}-${crypto.randomBytes(3).toString('hex')}`,
+        studentId: String(student.id),
+        studentName: student.name,
+        filename: path.basename(target),
+        path: target,
+        sourcePath: item.path,
+        sourceName: `屏幕采集 · ${session.sourceName}`,
+        deviceName: 'Windows 屏幕采集器',
+        size: stat.size,
+        sha1: sha1File(target),
+        uploadedAt: new Date().toISOString(),
+        captureSessionId: session.id,
+        captureItemId: item.id,
+      });
+      item.archiveStatus = 'promoted';
+      item.promotedPath = target;
+    }
+    if (records.length) addUploadRecords(records);
+    session.status = 'promoted';
+    session.archiveStatus = 'student_raw';
+    session.promotedAt = new Date().toISOString();
+    session.promotedFiles = records.map((record) => record.path);
+    persistCaptureSession(session);
+    notifyCaptureChanged();
+    return JSON.stringify({ ok: true, imported: records.length, session, message: `已将 ${records.length} 张截图晋升到 ${student.name} 原始资料库，等待资料消化。` });
+  } catch (error) {
+    return JSON.stringify({ ok: false, message: `晋升采集资料失败：${error.message}` });
+  }
+}
+
+function registerCaptureShortcuts() {
+  const shortcuts = [
+    ['CommandOrControl+Shift+1', () => {
+      if (activeCaptureRuntime) void captureFrame(activeCaptureRuntime, { force: true });
+      else if (mainWindow && !mainWindow.isDestroyed()) mainWindow.show();
+    }],
+    ['CommandOrControl+Shift+2', () => {
+      if (!activeCaptureRuntime) return;
+      if (activeCaptureRuntime.session.status === 'paused') resumeCaptureSession(activeCaptureRuntime.session.id);
+      else pauseCaptureSession(activeCaptureRuntime.session.id);
+    }],
+    ['CommandOrControl+Shift+3', () => {
+      if (activeCaptureRuntime) void highlightCaptureSession(activeCaptureRuntime.session.id);
+    }],
+  ];
+  shortcuts.forEach(([accelerator, handler]) => {
+    try { globalShortcut.register(accelerator, handler); } catch { /* A conflicting shortcut should not block the app. */ }
+  });
+}
+
 function setStudentBaseDir(dir) {
   const settings = readSettings();
   settings.studentBaseDir = dir;
@@ -2278,6 +2853,7 @@ function getStorageConfig() {
     usesAbsolutePaths: true,
     pathSeparator: path.sep,
     hostServicePort: getHostServicePort(),
+    taskAutomationEnabled: taskAutomationEnabled(),
   });
 }
 
@@ -2303,16 +2879,21 @@ function projectKnowledgeRoot(projectName) {
   return path.join(projectsBaseDir(), `${sanitizeName(projectName)}项目知识库`);
 }
 
-function projectPathsFor(projectName, rootPath) {
+function projectPathsFor(projectName, rootPath, project = {}) {
   const cleanName = sanitizeName(projectName || '学习项目');
+  const storageName = sanitizeName(project.storageName || cleanName);
   const root = rootPath || projectKnowledgeRoot(cleanName);
+  const linkedWorkspace = String(project.workspaceMode || '') === 'linked' && String(project.workspacePath || '').trim()
+    ? path.resolve(String(project.workspacePath))
+    : '';
+  const workspacePath = linkedWorkspace || path.join(root, '项目工作空间');
   return {
     projectRootPath: root,
     managerPath: path.join(root, '.edu-manager'),
-    workspacePath: path.join(root, '项目工作空间'),
-    stagingPath: path.join(root, '项目工作空间', '研究暂存'),
+    workspacePath,
+    stagingPath: linkedWorkspace ? path.join(root, '研究暂存') : path.join(workspacePath, '研究暂存'),
     knowledgeRootPath: path.join(root, '项目知识空间'),
-    rawPath: path.join(root, '项目知识空间', `${cleanName}项目原始资料库`),
+    rawPath: path.join(root, '项目知识空间', `${storageName}项目原始资料库`),
     conceptPath: path.join(root, '项目知识空间', '概念库'),
     entityPath: path.join(root, '项目知识空间', '实体库'),
     summaryPath: path.join(root, '项目知识空间', '摘要库'),
@@ -2364,12 +2945,46 @@ const PROJECT_WORKSPACE_TEMPLATES = [
   },
 ];
 
+const PROJECT_TEMPLATE_V2_STRATEGIES = {
+  general: { knowledgeStrategy: '提取核心概念、关键实体、阶段摘要和可复用问答。', growthStrategy: '关注主动学习、问题解决和成果表达。', deliverables: ['项目总结', '最终成果'] },
+  subject: { knowledgeStrategy: '聚焦学科概念、错误模式、解题方法和改进点。', growthStrategy: '关注学科理解、迁移应用和学习策略。', deliverables: ['阶段总结', '学科成果'] },
+  competition: { knowledgeStrategy: '提取赛事要求、方案选择、技术路线、反馈和最终决策。', growthStrategy: '关注创新、协作、项目推进和公开表达。', deliverables: ['参赛作品', '演示材料', '项目复盘'] },
+  research: { knowledgeStrategy: '提取研究问题、文献缺口、方法、数据证据、局限与结论。', growthStrategy: '关注研究设计、证据推理、数据分析和学术写作。', deliverables: ['文献综述', '研究报告', '反思'] },
+  writing: { knowledgeStrategy: '提取主题、论点、证据、结构、表达规则和修订理由。', growthStrategy: '关注逻辑表达、受众意识、修订能力和写作风格。', deliverables: ['定稿', '修订说明'] },
+  application: { knowledgeStrategy: '提取申请要求、经历证据、个人叙事、院校匹配和反馈。', growthStrategy: '关注自我认知、领导力、沟通和长期目标。', deliverables: ['申请材料包', '文书', '申请复盘'] },
+};
+
 function sanitizeWorkspaceFolderName(value) {
   return String(value || '')
     .replace(/[\\/:*?"<>|\x00-\x1F]/g, '')
     .replace(/\s+/g, ' ')
     .trim()
     .slice(0, 60);
+}
+
+const WINDOWS_RESERVED_FOLDER = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(\.|$)/i;
+
+function validateWorkspaceFolders(folders) {
+  const source = Array.isArray(folders) ? folders : String(folders || '').split(/\r?\n|[,，;；]/);
+  const errors = [];
+  const seen = new Set();
+  const normalized = [];
+  for (const raw of source) {
+    const value = String(raw || '').trim();
+    if (!value || value === '研究暂存') continue;
+    if (/[\\/:*?"<>|\x00-\x1F]/.test(value)) errors.push(`“${value}”包含 Windows 文件夹非法字符。`);
+    if (WINDOWS_RESERVED_FOLDER.test(value)) errors.push(`“${value}”是 Windows 保留名称。`);
+    if (value.endsWith('.') || value.endsWith(' ')) errors.push(`“${value}”不能以句点或空格结尾。`);
+    const clean = sanitizeWorkspaceFolderName(value);
+    const key = clean.toLocaleLowerCase('zh-CN');
+    if (seen.has(key)) errors.push(`文件夹名称重复：“${clean}”。`);
+    if (clean && !seen.has(key)) {
+      seen.add(key);
+      normalized.push(clean);
+    }
+  }
+  if (normalized.length > 24) errors.push('工作空间文件夹最多 24 个。');
+  return { ok: errors.length === 0, folders: normalized.slice(0, 24), errors };
 }
 
 function normalizeWorkspaceFolders(folders) {
@@ -2382,7 +2997,8 @@ function normalizeWorkspaceFolders(folders) {
 }
 
 function projectWorkspaceTemplateFor(templateId) {
-  return PROJECT_WORKSPACE_TEMPLATES.find((template) => template.id === String(templateId || '')) || PROJECT_WORKSPACE_TEMPLATES[0];
+  const template = PROJECT_WORKSPACE_TEMPLATES.find((item) => item.id === String(templateId || '')) || PROJECT_WORKSPACE_TEMPLATES[0];
+  return { ...template, ...(PROJECT_TEMPLATE_V2_STRATEGIES[template.id] || PROJECT_TEMPLATE_V2_STRATEGIES.general) };
 }
 
 function projectWorkspaceFoldersFor(project) {
@@ -2392,7 +3008,7 @@ function projectWorkspaceFoldersFor(project) {
 }
 
 function projectWorkspaceIndexTemplate(project) {
-  const paths = projectPathsFor(project.name, project.projectRootPath);
+  const paths = projectPathsFor(project.name, project.projectRootPath, project);
   const template = projectWorkspaceTemplateFor(project.workspaceTemplateId);
   const folders = projectWorkspaceFoldersFor(project);
   const rows = folders.map((folder) => `| ${folder} | ${path.join(paths.workspacePath, folder)} |`).join('\n');
@@ -2401,19 +3017,20 @@ function projectWorkspaceIndexTemplate(project) {
 
 function writeProjectWorkspaceIndex(project) {
   const normalized = normalizeProject(project);
-  const paths = projectPathsFor(normalized.name, normalized.projectRootPath);
-  fs.mkdirSync(paths.workspacePath, { recursive: true });
-  fs.writeFileSync(path.join(paths.workspacePath, '工作空间结构.md'), projectWorkspaceIndexTemplate(normalized), 'utf8');
+  const paths = projectPathsFor(normalized.name, normalized.projectRootPath, normalized);
+  const targetDir = normalized.workspaceMode === 'linked' ? paths.managerPath : paths.workspacePath;
+  fs.mkdirSync(targetDir, { recursive: true });
+  fs.writeFileSync(path.join(targetDir, '工作空间结构.md'), projectWorkspaceIndexTemplate(normalized), 'utf8');
 }
 
 function projectAgentTemplate(project, students) {
-  const paths = projectPathsFor(project.name, project.projectRootPath);
+  const paths = projectPathsFor(project.name, project.projectRootPath, project);
   const studentLines = (students || []).map((student) => `- ${student.name}：${student.rootPath || getStudentRootDir(student.name)}`).join('\n') || '- 暂未绑定学生';
   return `# ${project.name} 项目教育管家 AGENT.md\n\n## 项目定位\n\n本目录是学习项目「${project.name}」的独立 LLM Wiki 知识空间，用于围绕项目资料进行消化、摘要、概念/实体抽取、问答沉淀和综合分析。\n\n## 绑定学生\n\n${studentLines}\n\n## 项目目录\n\n- 项目工作空间：${paths.workspacePath}\n- 项目原始资料库：${paths.rawPath}\n- 摘要库：${paths.summaryPath}\n- 概念库：${paths.conceptPath}\n- 实体库：${paths.entityPath}\n- 问答精华库：${paths.qaPath}\n- 综合汇总库：${paths.synthesisPath}\n- 项目报告：${paths.reportPath}\n- 知识贡献：${paths.contributionPath}\n\n## 工作规则\n\n1. 所有项目资料消化只围绕本项目知识空间执行，不要直接写入学生主档案。\n2. 只有在用户确认“知识贡献申请”后，才把项目结论发布到学生主档案或成长模型。\n3. 原始资料必须保留来源路径、资产编号或文件名，不要删除、移动用户原始文件。\n4. 每次资料消化后更新项目 index.md 和 log.md。\n5. 如果没有新增资料，请在 log.md 中记录“无新增项目资料”，不要重复生成摘要。\n\n## 可执行命令\n\n- /消化项目资料：读取「${paths.rawPath}」中的新资料，更新项目知识空间。\n- /生成知识贡献申请：基于项目知识空间生成「${path.join(paths.contributionPath, '知识贡献申请.md')}」。\n`;
 }
 
 function projectBindingIndexTemplate(project, students) {
-  const paths = projectPathsFor(project.name, project.projectRootPath);
+  const paths = projectPathsFor(project.name, project.projectRootPath, project);
   const studentLines = (students || []).map((student) => [
     `## ${student.name}`,
     '',
@@ -2427,7 +3044,7 @@ function projectBindingIndexTemplate(project, students) {
 
 function writeProjectBindingIndex(project) {
   const normalized = normalizeProject(project);
-  const paths = projectPathsFor(normalized.name, normalized.projectRootPath);
+  const paths = projectPathsFor(normalized.name, normalized.projectRootPath, normalized);
   fs.mkdirSync(paths.knowledgeRootPath, { recursive: true });
   const students = readStudentsIndex().filter((student) => normalized.studentIds.includes(String(student.id)));
   fs.writeFileSync(path.join(paths.knowledgeRootPath, '绑定学生.md'), projectBindingIndexTemplate(normalized, students), 'utf8');
@@ -2454,6 +3071,9 @@ function normalizeProjectStagingItem(item) {
     sha1: String(item?.sha1 || ''),
     status: String(item?.status || 'collected'),
     sourceStrategy: String(item?.sourceStrategy || 'full_copy'),
+    reviewStatus: String(item?.reviewStatus || 'pending'),
+    reviewNote: String(item?.reviewNote || ''),
+    reviewedAt: String(item?.reviewedAt || ''),
     sourcePath: String(item?.sourcePath || ''),
     addedAt: String(item?.addedAt || now),
     updatedAt: String(item?.updatedAt || now),
@@ -2473,7 +3093,7 @@ function normalizeProjectStagingItem(item) {
 
 function writeProjectStagingIndex(project) {
   const normalized = normalizeProject(project);
-  const paths = projectPathsFor(normalized.name, normalized.projectRootPath);
+  const paths = projectPathsFor(normalized.name, normalized.projectRootPath, normalized);
   fs.mkdirSync(paths.stagingPath, { recursive: true });
   const items = (normalized.stagingItems || []).map(normalizeProjectStagingItem);
   fs.writeFileSync(path.join(paths.stagingPath, 'staging-index.json'), JSON.stringify({
@@ -2504,6 +3124,7 @@ function collectProjectRawFiles(rawPath) {
           size: stat.size,
           mtimeMs: stat.mtimeMs,
           sha1: sha1File(fullPath),
+          relativePath: path.relative(rawPath, fullPath).replace(/\\/g, '/'),
         });
       }
     }
@@ -2513,12 +3134,12 @@ function collectProjectRawFiles(rawPath) {
 }
 
 function projectDigestStatePath(project) {
-  const paths = projectPathsFor(project.name, project.projectRootPath);
+  const paths = projectPathsFor(project.name, project.projectRootPath, project);
   return path.join(paths.managerPath, 'project-digest-state.json');
 }
 
 function readProjectDigestState(project) {
-  const paths = projectPathsFor(project.name, project.projectRootPath);
+  const paths = projectPathsFor(project.name, project.projectRootPath, project);
   let parsed = {};
   try {
     parsed = JSON.parse(fs.readFileSync(projectDigestStatePath({ ...project, ...paths }), 'utf8'));
@@ -2527,16 +3148,16 @@ function readProjectDigestState(project) {
   }
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) parsed = {};
   const rawFiles = collectProjectRawFiles(paths.rawPath);
-  const lastDigestMs = parsed.lastDigestAt ? Date.parse(parsed.lastDigestAt) : 0;
-  const digested = new Set(Array.isArray(parsed.digestedFiles) ? parsed.digestedFiles.map(String) : []);
+  const legacyDigested = new Set(Array.isArray(parsed.digestedFiles) ? parsed.digestedFiles.map(String) : []);
+  const digestManifest = parsed.digestManifest && typeof parsed.digestManifest === 'object' && !Array.isArray(parsed.digestManifest) ? parsed.digestManifest : {};
   const pendingFiles = rawFiles.filter((file) => {
-    if (!lastDigestMs && !digested.size) return true;
-    if (digested.has(file.path) || digested.has(file.sha1) || digested.has(file.filename)) return false;
-    return file.mtimeMs > lastDigestMs;
-  });
+    const previous = digestManifest[file.relativePath];
+    if (previous && String(previous.sha1 || '') === file.sha1) return false;
+    return !(legacyDigested.has(file.path) || legacyDigested.has(file.sha1));
+  }).map((file) => ({ ...file, changeType: digestManifest[file.relativePath] ? 'modified' : 'added' }));
   const status = parsed.status || (pendingFiles.length > 0 ? 'pending' : 'idle');
   return {
-    version: 1,
+    version: 2,
     projectId: String(project.id || ''),
     projectName: String(project.name || ''),
     status,
@@ -2554,20 +3175,25 @@ function readProjectDigestState(project) {
       path: file.path,
       size: file.size,
       sha1: file.sha1,
+      relativePath: file.relativePath,
+      changeType: file.changeType,
     })),
     digestedFiles: Array.isArray(parsed.digestedFiles) ? parsed.digestedFiles : [],
+    digestManifest,
+    submittedFiles: Array.isArray(parsed.submittedFiles) ? parsed.submittedFiles : [],
+    digestBatches: Array.isArray(parsed.digestBatches) ? parsed.digestBatches : [],
     updatedAt: parsed.updatedAt || '',
   };
 }
 
 function writeProjectDigestState(project, patch) {
-  const paths = projectPathsFor(project.name, project.projectRootPath);
+  const paths = projectPathsFor(project.name, project.projectRootPath, project);
   fs.mkdirSync(paths.managerPath, { recursive: true });
   const current = readProjectDigestState({ ...project, ...paths });
   const next = {
     ...current,
     ...patch,
-    version: 1,
+    version: 2,
     projectId: String(project.id || ''),
     projectName: String(project.name || ''),
     updatedAt: new Date().toISOString(),
@@ -2578,9 +3204,11 @@ function writeProjectDigestState(project, patch) {
 
 function normalizeProject(project) {
   const cleanName = sanitizeName(project.name || '学习项目');
+  const storageName = sanitizeName(project.storageName || project.name || '学习项目');
   const createdAt = project.createdAt || new Date().toISOString();
   const studentIds = Array.isArray(project.studentIds) ? project.studentIds.map(String) : [];
-  const paths = projectPathsFor(cleanName, project.projectRootPath);
+  const workspaceMode = String(project.workspaceMode || 'managed') === 'linked' ? 'linked' : 'managed';
+  const paths = projectPathsFor(cleanName, project.projectRootPath, { ...project, storageName, workspaceMode });
   const workspaceTemplate = projectWorkspaceTemplateFor(project.workspaceTemplateId);
   const workspaceFolders = projectWorkspaceFoldersFor(project);
   const fileDigestState = readProjectDigestState({ ...project, name: cleanName, projectRootPath: paths.projectRootPath });
@@ -2590,22 +3218,54 @@ function normalizeProject(project) {
   return {
     id: String(project.id || `project-${Date.now()}-${crypto.randomBytes(3).toString('hex')}`),
     name: cleanName,
+    storageName,
     type: String(project.type || '学习项目'),
+    description: String(project.description || ''),
+    objective: String(project.objective || ''),
     status: String(project.status || 'active'),
     studentIds,
     studentNames: Array.isArray(project.studentNames) ? project.studentNames.map(String) : [],
+    agentTool: String(project.agentTool || 'qclaw'),
     projectRootPath: paths.projectRootPath,
     managerPath: paths.managerPath,
     workspacePath: paths.workspacePath,
+    workspaceMode,
     stagingPath: paths.stagingPath,
     knowledgeRootPath: paths.knowledgeRootPath,
     rawPath: paths.rawPath,
+    conceptPath: paths.conceptPath,
+    entityPath: paths.entityPath,
     summaryPath: paths.summaryPath,
+    qaPath: paths.qaPath,
+    synthesisPath: paths.synthesisPath,
+    reportPath: paths.reportPath,
+    contributionPath: paths.contributionPath,
     agentPath: paths.agentPath,
     outputPath: paths.outputPath,
     workspaceTemplateId: String(project.workspaceTemplateId || workspaceTemplate.id),
     workspaceTemplateName: String(project.workspaceTemplateName || workspaceTemplate.name),
     workspaceFolders,
+    knowledgeStrategy: String(project.knowledgeStrategy || ''),
+    growthStrategy: String(project.growthStrategy || ''),
+    deliverables: Array.isArray(project.deliverables) ? project.deliverables.map(String).filter(Boolean) : [],
+    duplicatedFrom: String(project.duplicatedFrom || ''),
+    studentEvidence: Array.isArray(project.studentEvidence) ? project.studentEvidence.map((item) => ({
+      studentId: String(item?.studentId || ''),
+      ability: String(item?.ability || ''),
+      observation: String(item?.observation || ''),
+      status: String(item?.status || 'draft'),
+      updatedAt: String(item?.updatedAt || ''),
+    })).filter((item) => item.studentId) : [],
+    automation: {
+      enabled: false,
+      onWorkspaceChange: project.automation?.onWorkspaceChange !== false,
+      onStatusChange: Boolean(project.automation?.onStatusChange),
+      intervalMinutes: Math.max(15, Math.min(10080, Number(project.automation?.intervalMinutes || 1440))),
+      nextRunAt: String(project.automation?.nextRunAt || ''),
+      lastRunAt: String(project.automation?.lastRunAt || ''),
+      lastReason: String(project.automation?.lastReason || ''),
+    },
+    workspaceLastScannedAt: project.workspaceLastScannedAt || '',
     promotionPath: project.promotionPath || path.join(paths.contributionPath, '知识贡献申请.md'),
     assetIds: Array.isArray(project.assetIds) ? project.assetIds.map(String) : [],
     stagingItems: Array.isArray(project.stagingItems) ? project.stagingItems.map(normalizeProjectStagingItem) : [],
@@ -2613,14 +3273,18 @@ function normalizeProject(project) {
     createdAt,
     updatedAt: project.updatedAt || createdAt,
     archivedAt: project.archivedAt || '',
+    sealedAt: project.sealedAt || '',
+    sealedSnapshotPath: project.sealedSnapshotPath || '',
     publishedAt: project.publishedAt || '',
   };
 }
 
 function ensureProjectWorkspace(project) {
   const normalized = normalizeProject(project);
-  const paths = projectPathsFor(normalized.name, normalized.projectRootPath);
-  const workspaceFolderDirs = projectWorkspaceFoldersFor(normalized).map((folder) => path.join(paths.workspacePath, folder));
+  const paths = projectPathsFor(normalized.name, normalized.projectRootPath, normalized);
+  const workspaceFolderDirs = normalized.workspaceMode === 'linked'
+    ? []
+    : projectWorkspaceFoldersFor(normalized).map((folder) => path.join(paths.workspacePath, folder));
   [
     projectsBaseDir(),
     paths.workspacePath,
@@ -2650,7 +3314,33 @@ function ensureProjectWorkspace(project) {
 }
 
 function getProjects() {
-  const projects = readProjects().map(normalizeProject);
+  const projects = readProjects().map(normalizeProject).map((project) => {
+    const records = readProjectKnowledgeReview(project).records;
+    const knowledgeKinds = new Set(records.filter((item) => !['rejected', 'invalid'].includes(item.status)).map((item) => item.kind));
+    const knowledgeCoverage = Math.round((knowledgeKinds.size / 5) * 100);
+    const riskReasons = [
+      !project.studentIds.length ? '未绑定学生' : '',
+      !project.assetIds.length ? '无正式资产' : '',
+      project.digestState?.pendingCount ? `${project.digestState.pendingCount} 份资料待消化` : '',
+      project.digestState?.status === 'failed' ? '自动消化失败' : '',
+      !fs.existsSync(project.workspacePath) ? '工作空间路径失效' : '',
+      records.some((item) => ['ai_generated', 'pending_review'].includes(item.status) && Date.now() - Date.parse(item.generatedAt || 0) > 7 * 86400000) ? '知识待审核超过 7 天' : '',
+    ].filter(Boolean);
+    return {
+      ...project,
+      dashboard: {
+        knowledgeCount: records.length,
+        pendingKnowledgeCount: records.filter((item) => ['ai_generated', 'pending_review'].includes(item.status)).length,
+        pendingStagingCount: (project.stagingItems || []).filter((item) => !['promoted', 'discarded'].includes(item.status)).length,
+        acceptedStagingCount: (project.stagingItems || []).filter((item) => item.reviewStatus === 'accepted' && !item.promotedAssetId).length,
+        contributionReady: fs.existsSync(project.promotionPath || ''),
+        contributionStatus: project.publishedAt ? 'published' : fs.existsSync(project.promotionPath || '') ? 'ready' : 'not_generated',
+        knowledgeCoverage,
+        riskCount: riskReasons.length,
+        riskReasons,
+      },
+    };
+  });
   return JSON.stringify({ ok: true, projects });
 }
 
@@ -2661,14 +3351,34 @@ function createProject(optionsJson) {
     const students = readStudentsIndex();
     const studentIds = Array.isArray(options.studentIds) ? options.studentIds.map(String) : [];
     const selectedStudents = students.filter((student) => studentIds.includes(String(student.id)));
+    const validation = validateWorkspaceFolders(options.workspaceFolders);
+    if (!validation.ok) return JSON.stringify({ ok: false, message: validation.errors.join(' ') });
+    const workspaceMode = options.workspaceMode === 'linked' ? 'linked' : 'managed';
+    const workspacePath = workspaceMode === 'linked' ? path.resolve(String(options.workspacePath || '')) : '';
+    if (workspaceMode === 'linked' && (!workspacePath || !fs.existsSync(workspacePath) || !fs.statSync(workspacePath).isDirectory())) {
+      return JSON.stringify({ ok: false, message: '请选择一个存在的项目文件夹作为工作空间。' });
+    }
+    const existingBinding = readProjects().map(normalizeProject).find((item) => workspaceMode === 'linked'
+      && String(item.workspacePath || '').toLocaleLowerCase('zh-CN') === workspacePath.toLocaleLowerCase('zh-CN'));
+    if (existingBinding) return JSON.stringify({ ok: false, message: `该文件夹已绑定学习项目“${existingBinding.name}”。` });
     const project = ensureProjectWorkspace(normalizeProject({
       name: options.name,
+      storageName: options.name,
       type: options.type || '学习项目',
+      description: options.description || '',
+      objective: options.objective || '',
       status: options.status || 'active',
       studentIds,
       studentNames: selectedStudents.map((student) => student.name),
       workspaceTemplateId: options.workspaceTemplateId || 'general',
-      workspaceFolders: normalizeWorkspaceFolders(options.workspaceFolders),
+      workspaceTemplateName: options.workspaceTemplateName || projectWorkspaceTemplateFor(options.workspaceTemplateId).name,
+      workspaceFolders: validation.folders,
+      workspaceMode,
+      workspacePath,
+      knowledgeStrategy: options.knowledgeStrategy || '',
+      growthStrategy: options.growthStrategy || '',
+      agentTool: String(options.agentTool || 'qclaw'),
+      deliverables: Array.isArray(options.deliverables) ? options.deliverables.map(String).filter(Boolean) : [],
     }));
     const projects = readProjects().map(normalizeProject);
     writeProjects([project, ...projects.filter((item) => String(item.id) !== String(project.id))]);
@@ -2679,27 +3389,278 @@ function createProject(optionsJson) {
   }
 }
 
-function applyProjectWorkspaceTemplate(projectId, templateId, foldersJson) {
+function updateProjectMetadata(projectId, metadataJson) {
+  try {
+    const access = mutableProject(projectId, '编辑项目');
+    if (access.error) return access.error;
+    const metadata = JSON.parse(metadataJson || '{}');
+    const name = sanitizeName(metadata.name || access.project.name);
+    if (!name) return JSON.stringify({ ok: false, message: '项目名称不能为空。' });
+    const now = new Date().toISOString();
+    const projects = readProjects().map(normalizeProject);
+    let updated = null;
+    const nextProjects = projects.map((project) => {
+      if (String(project.id) !== String(projectId)) return project;
+      updated = normalizeProject({
+        ...project,
+        name,
+        type: String(metadata.type || project.type),
+        description: String(metadata.description ?? project.description ?? ''),
+        objective: String(metadata.objective ?? project.objective ?? ''),
+        knowledgeStrategy: String(metadata.knowledgeStrategy ?? project.knowledgeStrategy ?? ''),
+        growthStrategy: String(metadata.growthStrategy ?? project.growthStrategy ?? ''),
+        agentTool: String(metadata.agentTool || project.agentTool || 'qclaw'),
+        updatedAt: now,
+      });
+      return updated;
+    });
+    writeProjects(nextProjects);
+    writeProjectBindingIndex(updated);
+    appendHostTimeline({ type: 'project_metadata_updated', title: 'Project metadata updated', detail: updated.name });
+    return JSON.stringify({ ok: true, project: updated, projects: nextProjects, message: '项目信息已更新；物理目录保持不变。' });
+  } catch (error) {
+    return JSON.stringify({ ok: false, message: `编辑项目失败：${error.message}` });
+  }
+}
+
+function removeProjectRecord(projectId) {
+  try {
+    const projects = readProjects().map(normalizeProject);
+    const project = projects.find((item) => String(item.id) === String(projectId));
+    if (!project) return JSON.stringify({ ok: false, message: '未找到学习项目。' });
+    const removedAt = new Date().toISOString();
+    fs.mkdirSync(project.managerPath, { recursive: true });
+    fs.writeFileSync(path.join(project.managerPath, '项目记录已移除.json'), JSON.stringify({
+      version: 1,
+      removedAt,
+      project,
+      note: '仅从教育管家项目索引移除；工作空间、知识空间、资产与审计文件均保留。',
+    }, null, 2), 'utf8');
+    const nextProjects = projects.filter((item) => String(item.id) !== String(projectId));
+    writeProjects(nextProjects);
+    appendHostTimeline({ type: 'project_record_removed', title: 'Project record removed', detail: project.name });
+    return JSON.stringify({ ok: true, projects: nextProjects, preservedPath: project.projectRootPath, message: `已移除项目记录“${project.name}”，所有物理文件均已保留。` });
+  } catch (error) {
+    return JSON.stringify({ ok: false, message: `删除项目记录失败：${error.message}` });
+  }
+}
+
+function relocateProjectWorkspace(projectId) {
+  try {
+    const access = mutableProject(projectId, '重新定位工作空间');
+    if (access.error) return access.error;
+    const selected = dialog.showOpenDialogSync(mainWindow, { title: '重新定位项目工作空间', properties: ['openDirectory'] });
+    if (!selected?.[0]) return JSON.stringify({ ok: false, cancelled: true, message: '已取消项目路径重新定位。' });
+    const workspacePath = path.resolve(selected[0]);
+    const conflict = readProjects().map(normalizeProject).find((item) => String(item.id) !== String(projectId) && path.resolve(item.workspacePath).toLocaleLowerCase('zh-CN') === workspacePath.toLocaleLowerCase('zh-CN'));
+    if (conflict) return JSON.stringify({ ok: false, message: `该文件夹已绑定项目“${conflict.name}”。` });
+    const previousPath = access.project.workspacePath;
+    const result = updateProjectRecord(projectId, (project) => ({ ...project, workspaceMode: 'linked', workspacePath, previousWorkspacePath: previousPath, workspaceRelocatedAt: new Date().toISOString(), updatedAt: new Date().toISOString() }));
+    const ensured = ensureProjectWorkspace(result.project);
+    writeProjectBindingIndex(ensured);
+    appendHostTimeline({ type: 'project_workspace_relocated', title: 'Project workspace relocated', detail: `${ensured.name}: ${previousPath} -> ${workspacePath}` });
+    return JSON.stringify({ ok: true, project: ensured, projects: readProjects().map(normalizeProject), message: '项目工作空间已重新定位；项目知识空间和历史记录保持不变。' });
+  } catch (error) {
+    return JSON.stringify({ ok: false, message: `项目路径重新定位失败：${error.message}` });
+  }
+}
+
+function findRemovedProjectSnapshots() {
+  const snapshots = [];
+  const root = projectsBaseDir();
+  if (!fs.existsSync(root)) return snapshots;
+  for (const entry of fs.readdirSync(root, { withFileTypes: true })) {
+    if (!entry.isDirectory()) continue;
+    const snapshotPath = path.join(root, entry.name, '.edu-manager', '项目记录已移除.json');
+    if (!fs.existsSync(snapshotPath)) continue;
+    const parsed = safeReadJson(snapshotPath, null);
+    if (parsed?.project) snapshots.push({ snapshotPath, removedAt: parsed.removedAt || '', project: normalizeProject(parsed.project) });
+  }
+  return snapshots;
+}
+
+function getRemovedProjects() {
+  try {
+    const activeIds = new Set(readProjects().map((item) => String(item.id)));
+    const removed = findRemovedProjectSnapshots().filter((item) => !activeIds.has(String(item.project.id)));
+    return JSON.stringify({ ok: true, removed, message: `发现 ${removed.length} 个可恢复的项目记录。` });
+  } catch (error) {
+    return JSON.stringify({ ok: false, removed: [], message: `读取已移除项目失败：${error.message}` });
+  }
+}
+
+function restoreRemovedProject(snapshotPath) {
+  try {
+    const resolved = path.resolve(String(snapshotPath || ''));
+    const allowedRoot = path.resolve(projectsBaseDir()).toLocaleLowerCase('zh-CN');
+    if (!resolved.toLocaleLowerCase('zh-CN').startsWith(allowedRoot) || path.basename(resolved) !== '项目记录已移除.json') return JSON.stringify({ ok: false, message: '无效的项目恢复快照。' });
+    const parsed = safeReadJson(resolved, null);
+    if (!parsed?.project) return JSON.stringify({ ok: false, message: '项目恢复快照不完整。' });
+    const project = normalizeProject(parsed.project);
+    const projects = readProjects().map(normalizeProject);
+    if (projects.some((item) => String(item.id) === String(project.id))) return JSON.stringify({ ok: false, message: '该项目记录已存在。' });
+    const restored = normalizeProject({ ...project, restoredAt: new Date().toISOString(), updatedAt: new Date().toISOString() });
+    writeProjects([restored, ...projects]);
+    fs.writeFileSync(path.join(path.dirname(resolved), `项目记录恢复-${timestampForFilename()}.json`), JSON.stringify({ restoredAt: new Date().toISOString(), source: resolved, projectId: restored.id }, null, 2), 'utf8');
+    appendHostTimeline({ type: 'project_record_restored', title: 'Project record restored', detail: restored.name });
+    return JSON.stringify({ ok: true, project: restored, projects: readProjects().map(normalizeProject), message: `已恢复项目记录“${restored.name}”。` });
+  } catch (error) {
+    return JSON.stringify({ ok: false, message: `恢复项目记录失败：${error.message}` });
+  }
+}
+
+function exportProjectPackage(projectId) {
+  try {
+    const project = readProjects().map(normalizeProject).find((item) => String(item.id) === String(projectId));
+    if (!project) return JSON.stringify({ ok: false, message: '未找到学习项目。' });
+    const target = dialog.showSaveDialogSync(mainWindow, { title: '导出学习项目包', defaultPath: `${sanitizeName(project.name)}.edu-project.json`, filters: [{ name: '教育管家项目包', extensions: ['json'] }] });
+    if (!target) return JSON.stringify({ ok: false, cancelled: true, message: '已取消导出。' });
+    const payload = { format: 'edu-manager-project', version: 2, exportedAt: new Date().toISOString(), project: { name: project.name, type: project.type, description: project.description, objective: project.objective, workspaceTemplateId: project.workspaceTemplateId, workspaceTemplateName: project.workspaceTemplateName, workspaceFolders: project.workspaceFolders, knowledgeStrategy: project.knowledgeStrategy, growthStrategy: project.growthStrategy, deliverables: project.deliverables, studentIds: project.studentIds }, exclusions: ['workspace files', 'assets', 'knowledge outputs', 'student evidence', 'promotion history'] };
+    fs.writeFileSync(target, JSON.stringify(payload, null, 2), 'utf8');
+    return JSON.stringify({ ok: true, path: target, message: '项目结构与策略已导出；未包含资料、资产或历史贡献。' });
+  } catch (error) {
+    return JSON.stringify({ ok: false, message: `导出项目失败：${error.message}` });
+  }
+}
+
+function importProjectPackage() {
+  try {
+    const selected = dialog.showOpenDialogSync(mainWindow, { title: '导入学习项目包', properties: ['openFile'], filters: [{ name: '教育管家项目包', extensions: ['json'] }] });
+    if (!selected?.[0]) return JSON.stringify({ ok: false, cancelled: true, message: '已取消导入。' });
+    const payload = safeReadJson(selected[0], null);
+    if (payload?.format !== 'edu-manager-project' || !payload.project?.name) return JSON.stringify({ ok: false, message: '不是有效的教育管家项目包。' });
+    const source = payload.project;
+    const importedName = `${sanitizeName(source.name)} 导入`;
+    const validStudents = readStudentsIndex().filter((student) => (source.studentIds || []).map(String).includes(String(student.id)));
+    const project = ensureProjectWorkspace(normalizeProject({ name: importedName, storageName: importedName, type: source.type, description: source.description, objective: source.objective, status: 'draft', studentIds: validStudents.map((student) => String(student.id)), studentNames: validStudents.map((student) => student.name), workspaceTemplateId: source.workspaceTemplateId, workspaceTemplateName: source.workspaceTemplateName, workspaceFolders: source.workspaceFolders, knowledgeStrategy: source.knowledgeStrategy, growthStrategy: source.growthStrategy, deliverables: source.deliverables, importedFrom: selected[0], assetIds: [], stagingItems: [], studentEvidence: [], automation: { enabled: false } }));
+    const projects = [project, ...readProjects().map(normalizeProject)];
+    writeProjects(projects);
+    return JSON.stringify({ ok: true, project, projects, message: `已导入项目“${project.name}”；资料和历史贡献未被复制。` });
+  } catch (error) {
+    return JSON.stringify({ ok: false, message: `导入项目失败：${error.message}` });
+  }
+}
+
+function duplicateProject(projectId, name) {
+  try {
+    const source = readProjects().map(normalizeProject).find((item) => String(item.id) === String(projectId));
+    if (!source) return JSON.stringify({ ok: false, message: '未找到学习项目。' });
+    const copyName = sanitizeName(name || `${source.name} 副本`);
+    const students = readStudentsIndex().filter((student) => source.studentIds.includes(String(student.id)));
+    const project = ensureProjectWorkspace(normalizeProject({
+      name: copyName,
+      storageName: copyName,
+      type: source.type,
+      description: source.description,
+      objective: source.objective,
+      status: 'draft',
+      studentIds: source.studentIds,
+      studentNames: students.map((student) => student.name),
+      workspaceTemplateId: source.workspaceTemplateId,
+      workspaceTemplateName: source.workspaceTemplateName,
+      workspaceFolders: source.workspaceFolders,
+      workspaceMode: 'managed',
+      knowledgeStrategy: source.knowledgeStrategy,
+      growthStrategy: source.growthStrategy,
+      duplicatedFrom: source.id,
+      assetIds: [],
+      stagingItems: [],
+      studentEvidence: [],
+      automation: { ...source.automation, enabled: false, nextRunAt: '' },
+    }));
+    const projects = readProjects().map(normalizeProject);
+    const nextProjects = [project, ...projects];
+    writeProjects(nextProjects);
+    appendHostTimeline({ type: 'project_duplicated', title: 'Project duplicated', detail: `${source.name} -> ${project.name}` });
+    return JSON.stringify({ ok: true, project, projects: nextProjects, message: `已复制项目结构为“${project.name}”；未复制资料、资产、知识内容或历史贡献。` });
+  } catch (error) {
+    return JSON.stringify({ ok: false, message: `复制项目失败：${error.message}` });
+  }
+}
+
+function updateProjectStudentEvidence(projectId, studentId, evidenceJson) {
+  try {
+    const access = mutableProject(projectId, '更新学生独立成长证据');
+    if (access.error) return access.error;
+    if (!access.project.studentIds.includes(String(studentId))) return JSON.stringify({ ok: false, message: '该学生未绑定到当前项目。' });
+    const evidence = JSON.parse(evidenceJson || '{}');
+    const now = new Date().toISOString();
+    const result = updateProjectRecord(projectId, (project) => ({
+      ...project,
+      studentEvidence: [
+        ...(project.studentEvidence || []).filter((item) => String(item.studentId) !== String(studentId)),
+        { studentId: String(studentId), ability: String(evidence.ability || ''), observation: String(evidence.observation || ''), status: String(evidence.status || 'draft'), updatedAt: now },
+      ],
+      updatedAt: now,
+    }));
+    const student = readStudentsIndex().find((item) => String(item.id) === String(studentId));
+    if (student) {
+      const evidenceDir = path.join(result.project.contributionPath, '学生独立成长证据');
+      fs.mkdirSync(evidenceDir, { recursive: true });
+      fs.writeFileSync(path.join(evidenceDir, `${sanitizeName(student.name)}-${studentId}.md`), `# ${student.name} · ${result.project.name}\n\n- 能力维度：${evidence.ability || '待补充'}\n- 状态：${evidence.status || 'draft'}\n- 更新时间：${now}\n\n## 独立观察\n\n${evidence.observation || '待补充'}\n`, 'utf8');
+      appendGrowthEvidenceCandidate(student, {
+        id: `project-student-${result.project.id}-${studentId}`,
+        title: `${result.project.name}·${evidence.ability || '待标注能力'}`,
+        ability: String(evidence.ability || '待标注'),
+        content: String(evidence.observation || '待补充'),
+        projectId: result.project.id,
+        projectName: result.project.name,
+        sourcePath: evidenceDir,
+        status: evidence.status === 'verified' || evidence.status === 'published' ? 'confirmed' : evidence.status === 'rejected' ? 'rejected' : 'pending',
+        confidence: evidence.status === 'verified' || evidence.status === 'published' ? '人工确认' : '待审核',
+      });
+    }
+    return JSON.stringify({ ok: true, project: result.project, projects: result.projects, message: '学生独立成长证据已保存；项目知识仍由所有参与学生共享。' });
+  } catch (error) {
+    return JSON.stringify({ ok: false, message: `保存学生成长证据失败：${error.message}` });
+  }
+}
+
+function pickProjectWorkspaceDir() {
+  try {
+    const result = dialog.showOpenDialogSync(mainWindow, {
+      title: '选择已有项目文件夹',
+      properties: ['openDirectory', 'createDirectory'],
+    });
+    if (!result || !result[0]) return JSON.stringify({ ok: false, cancelled: true, message: '未选择项目文件夹。' });
+    const target = path.resolve(result[0]);
+    const bound = readProjects().map(normalizeProject).find((item) => String(item.workspacePath || '').toLocaleLowerCase('zh-CN') === target.toLocaleLowerCase('zh-CN'));
+    return JSON.stringify({ ok: true, path: target, alreadyBound: Boolean(bound), projectName: bound?.name || '', message: bound ? `该文件夹已绑定项目“${bound.name}”。` : '已选择已有项目文件夹。' });
+  } catch (error) {
+    return JSON.stringify({ ok: false, message: `选择项目文件夹失败：${error.message}` });
+  }
+}
+
+function applyProjectWorkspaceTemplate(projectId, templateId, foldersJson, templateName, templateV2Json) {
   try {
     const template = projectWorkspaceTemplateFor(templateId);
+    let templateV2 = {};
+    try { templateV2 = JSON.parse(templateV2Json || '{}'); } catch { templateV2 = {}; }
     let parsedFolders = [];
     try {
       parsedFolders = JSON.parse(foldersJson || '[]');
     } catch {
       parsedFolders = [];
     }
-    const workspaceFolders = normalizeWorkspaceFolders(parsedFolders);
+    const validation = validateWorkspaceFolders(parsedFolders);
+    if (!validation.ok) return JSON.stringify({ ok: false, message: validation.errors.join(' ') });
+    const workspaceFolders = validation.folders;
     const folders = workspaceFolders.length ? workspaceFolders : template.folders;
     const now = new Date().toISOString();
     const projects = readProjects().map(normalizeProject);
+    const currentProject = projects.find((project) => String(project.id) === String(projectId));
+    if (currentProject?.status === 'sealed') return JSON.stringify({ ok: false, message: '项目已封存，请先恢复为“进行中”后再修改工作空间。' });
     let updated = null;
     const nextProjects = projects.map((project) => {
       if (String(project.id) !== String(projectId)) return project;
       updated = {
         ...project,
         workspaceTemplateId: template.id,
-        workspaceTemplateName: template.name,
+        workspaceTemplateName: String(templateName || template.name),
         workspaceFolders: folders,
+        knowledgeStrategy: String(templateV2.knowledgeStrategy || template.knowledgeStrategy || project.knowledgeStrategy || ''),
+        growthStrategy: String(templateV2.growthStrategy || template.growthStrategy || project.growthStrategy || ''),
+        deliverables: Array.isArray(templateV2.deliverables) ? templateV2.deliverables.map(String).filter(Boolean) : (template.deliverables || project.deliverables),
         updatedAt: now,
       };
       return updated;
@@ -2726,11 +3687,25 @@ function applyProjectWorkspaceTemplate(projectId, templateId, foldersJson) {
 
 function updateProjectStatus(projectId, status) {
   try {
-    const allowed = new Set(['draft', 'active', 'pending_archive', 'archived', 'published', 'sealed']);
+    const allowed = new Set(['draft', 'active', 'pending_review', 'pending_archive', 'archived', 'published', 'sealed']);
     const nextStatus = allowed.has(String(status || '')) ? String(status) : 'active';
     const now = new Date().toISOString();
     const projects = readProjects().map(normalizeProject);
     let updated = null;
+    const transitions = {
+      draft: new Set(['active', 'sealed']),
+      active: new Set(['pending_review', 'pending_archive', 'sealed']),
+      pending_review: new Set(['active', 'pending_archive', 'sealed']),
+      pending_archive: new Set(['active', 'archived', 'sealed']),
+      archived: new Set(['active', 'published', 'sealed']),
+      published: new Set(['active', 'sealed']),
+      sealed: new Set(['active']),
+    };
+    const currentProject = projects.find((project) => String(project.id) === String(projectId));
+    if (!currentProject) return JSON.stringify({ ok: false, message: '未找到学习项目。' });
+    if (currentProject.status !== nextStatus && !transitions[currentProject.status]?.has(nextStatus)) {
+      return JSON.stringify({ ok: false, message: `不能从“${currentProject.status}”直接切换到“${nextStatus}”。` });
+    }
     const nextProjects = projects.map((project) => {
       if (String(project.id) !== String(projectId)) return project;
       updated = {
@@ -2739,10 +3714,34 @@ function updateProjectStatus(projectId, status) {
         updatedAt: now,
         ...(nextStatus === 'archived' ? { archivedAt: project.archivedAt || now } : {}),
         ...(nextStatus === 'published' ? { publishedAt: project.publishedAt || now } : {}),
+        ...(nextStatus === 'sealed' ? { sealedAt: now } : {}),
       };
       return updated;
     });
     if (!updated) return JSON.stringify({ ok: false, message: '未找到学习项目。' });
+    if (updated.automation?.enabled && updated.automation.onStatusChange && currentProject.status !== nextStatus && nextStatus !== 'sealed') {
+      updated.digestState = writeProjectDigestState(updated, { status: 'pending', message: `项目阶段已变更为 ${nextStatus}，等待增量消化。`, triggerReason: 'status_change' });
+      const updatedIndex = nextProjects.findIndex((item) => String(item.id) === String(projectId));
+      nextProjects[updatedIndex] = normalizeProject(updated);
+    }
+    if (nextStatus === 'sealed') {
+      const ensured = ensureProjectWorkspace(updated);
+      const snapshotDir = path.join(ensured.managerPath, '封存快照');
+      fs.mkdirSync(snapshotDir, { recursive: true });
+      const snapshotPath = path.join(snapshotDir, `snapshot-${now.replace(/[:.]/g, '-')}.json`);
+      const snapshot = {
+        version: 1,
+        sealedAt: now,
+        project: ensured,
+        workspaceFiles: collectProjectRawFiles(ensured.workspacePath).map(({ filename, path: filePath, size, sha1 }) => ({ filename, path: filePath, size, sha1 })),
+        knowledgeFiles: collectProjectRawFiles(ensured.knowledgeRootPath).map(({ filename, path: filePath, size, sha1 }) => ({ filename, path: filePath, size, sha1 })),
+        unfinished: (ensured.stagingItems || []).filter((item) => !['promoted', 'discarded'].includes(item.status)).map((item) => ({ id: item.id, filename: item.filename, status: item.status })),
+      };
+      fs.writeFileSync(snapshotPath, JSON.stringify(snapshot, null, 2), 'utf8');
+      updated.sealedSnapshotPath = snapshotPath;
+      const index = nextProjects.findIndex((item) => String(item.id) === String(projectId));
+      nextProjects[index] = { ...updated };
+    }
     writeProjects(nextProjects);
     appendHostTimeline({ type: 'project_status_updated', title: 'Project status updated', detail: `${updated.name} -> ${nextStatus}` });
     return JSON.stringify({ ok: true, project: updated, projects: nextProjects, message: `项目状态已更新为：${nextStatus}` });
@@ -2751,8 +3750,325 @@ function updateProjectStatus(projectId, status) {
   }
 }
 
+function mutableProject(projectId, action) {
+  const project = readProjects().map(normalizeProject).find((item) => String(item.id) === String(projectId));
+  if (!project) return { error: JSON.stringify({ ok: false, message: '未找到学习项目。' }) };
+  if (project.status === 'sealed') return { error: JSON.stringify({ ok: false, message: `项目已封存，不能${action}。请先恢复为“进行中”。` }) };
+  return { project };
+}
+
+function scanProjectWorkspace(projectId) {
+  try {
+    const access = mutableProject(projectId, '扫描或修改工作空间资料');
+    if (access.error) return access.error;
+    const project = ensureProjectWorkspace(access.project);
+    const excludedRoots = [project.stagingPath, project.knowledgeRootPath, project.managerPath].map((item) => path.resolve(item).toLocaleLowerCase('zh-CN'));
+    const files = collectProjectRawFiles(project.workspacePath)
+      .filter((file) => !excludedRoots.some((root) => path.resolve(file.path).toLocaleLowerCase('zh-CN').startsWith(root)))
+      .filter((file) => !['工作空间结构.md', 'desktop.ini', 'thumbs.db'].includes(file.filename.toLocaleLowerCase('zh-CN')))
+      .slice(0, 2000);
+    const existing = new Map((project.stagingItems || []).map((item) => [String(item.sourcePath || item.path).toLocaleLowerCase('zh-CN'), item]));
+    let added = 0;
+    let updatedCount = 0;
+    let missing = 0;
+    const scannedPaths = new Set();
+    const stagingItems = [...(project.stagingItems || [])];
+    for (const file of files) {
+      const key = String(file.path).toLocaleLowerCase('zh-CN');
+      scannedPaths.add(key);
+      const current = existing.get(key);
+      if (current) {
+        const index = stagingItems.findIndex((item) => item.id === current.id);
+        stagingItems[index] = normalizeProjectStagingItem({ ...current, size: file.size, sha1: file.sha1, updatedAt: new Date().toISOString() });
+        updatedCount += 1;
+      } else {
+        stagingItems.push(normalizeProjectStagingItem({
+          filename: file.filename,
+          path: file.path,
+          sourcePath: file.path,
+          size: file.size,
+          sha1: file.sha1,
+          status: 'collected',
+          sourceStrategy: 'reference_only',
+          reviewStatus: 'pending',
+        }));
+        added += 1;
+      }
+    }
+    const workspacePrefix = path.resolve(project.workspacePath).toLocaleLowerCase('zh-CN');
+    for (let index = 0; index < stagingItems.length; index += 1) {
+      const item = stagingItems[index];
+      const sourceKey = String(item.sourcePath || '').toLocaleLowerCase('zh-CN');
+      if (sourceKey.startsWith(workspacePrefix) && !scannedPaths.has(sourceKey) && !item.promotedAssetId) {
+        stagingItems[index] = normalizeProjectStagingItem({ ...item, status: 'discarded', governanceAction: '来源已移除', governanceReason: '工作空间扫描未发现原文件，请核对是否移动或删除。', governanceReviewedAt: new Date().toISOString() });
+        missing += 1;
+      }
+    }
+    const now = new Date().toISOString();
+    const nextProjects = readProjects().map(normalizeProject).map((item) => String(item.id) === String(projectId) ? { ...project, stagingItems, workspaceLastScannedAt: now, updatedAt: now } : item);
+    writeProjects(nextProjects);
+    const updatedProject = nextProjects.find((item) => String(item.id) === String(projectId));
+    if (added > 0 && updatedProject.automation?.enabled && updatedProject.automation?.onWorkspaceChange) {
+      updatedProject.digestState = writeProjectDigestState(updatedProject, { status: 'pending', message: `工作空间新增 ${added} 份资料，等待增量消化。`, triggerReason: 'workspace_change' });
+      const projectIndex = nextProjects.findIndex((item) => String(item.id) === String(projectId));
+      nextProjects[projectIndex] = normalizeProject(updatedProject);
+      writeProjects(nextProjects);
+    }
+    writeProjectStagingIndex(updatedProject);
+    return JSON.stringify({ ok: true, project: normalizeProject(updatedProject), projects: nextProjects.map(normalizeProject), scanned: files.length, added, updated: updatedCount, missing, message: `工作空间扫描完成：发现 ${files.length} 份文件，新增 ${added} 份候选资料，标记 ${missing} 份来源缺失。` });
+  } catch (error) {
+    return JSON.stringify({ ok: false, message: `扫描项目工作空间失败：${error.message}` });
+  }
+}
+
+function reviewProjectStagingItems(projectId, itemIdsJson, decision, sourceStrategy, note) {
+  try {
+    const access = mutableProject(projectId, '审核暂存资料');
+    if (access.error) return access.error;
+    const ids = new Set(JSON.parse(itemIdsJson || '[]').map(String));
+    if (!ids.size) return JSON.stringify({ ok: false, message: '请先选择要审核的资料。' });
+    const allowedDecisions = new Set(['accepted', 'rejected', 'pending']);
+    const allowedStrategies = new Set(['full_copy', 'reference_only', 'snapshot']);
+    const nextDecision = allowedDecisions.has(decision) ? decision : 'pending';
+    const nextStrategy = allowedStrategies.has(sourceStrategy) ? sourceStrategy : 'reference_only';
+    const now = new Date().toISOString();
+    const projects = readProjects().map(normalizeProject);
+    let updated = null;
+    const nextProjects = projects.map((project) => {
+      if (String(project.id) !== String(projectId)) return project;
+      updated = {
+        ...project,
+        stagingItems: (project.stagingItems || []).map((item) => ids.has(item.id) ? normalizeProjectStagingItem({
+          ...item,
+          reviewStatus: nextDecision,
+          reviewNote: String(note || ''),
+          reviewedAt: now,
+          sourceStrategy: nextStrategy,
+          status: nextDecision === 'accepted' && item.status === 'collected' ? 'selected' : nextDecision === 'rejected' ? 'discarded' : item.status,
+        }) : item),
+        updatedAt: now,
+      };
+      return updated;
+    });
+    writeProjects(nextProjects);
+    writeProjectStagingIndex(updated);
+    return JSON.stringify({ ok: true, project: normalizeProject(updated), projects: nextProjects.map(normalizeProject), message: `已审核 ${ids.size} 份资料，处理结果：${nextDecision}。` });
+  } catch (error) {
+    return JSON.stringify({ ok: false, message: `审核暂存资料失败：${error.message}` });
+  }
+}
+
+function projectKnowledgeReviewPath(project) {
+  return path.join(project.managerPath || projectPathsFor(project.name, project.projectRootPath, project).managerPath, 'knowledge-review.json');
+}
+
+function readProjectKnowledgeReview(project) {
+  let saved = { records: [] };
+  try {
+    saved = JSON.parse(fs.readFileSync(projectKnowledgeReviewPath(project), 'utf8'));
+  } catch {
+    saved = { records: [] };
+  }
+  const savedMap = new Map((Array.isArray(saved.records) ? saved.records : []).map((record) => [String(record.path).toLocaleLowerCase('zh-CN'), record]));
+  const categories = [
+    ['concept', project.conceptPath],
+    ['entity', project.entityPath],
+    ['summary', project.summaryPath],
+    ['qa', projectPathsFor(project.name, project.projectRootPath, project).qaPath],
+    ['synthesis', projectPathsFor(project.name, project.projectRootPath, project).synthesisPath],
+  ];
+  const records = [];
+  for (const [kind, dir] of categories) {
+    for (const file of collectProjectRawFiles(dir).filter((item) => /\.(md|txt|json)$/i.test(item.filename))) {
+      const current = savedMap.get(String(file.path).toLocaleLowerCase('zh-CN')) || {};
+      records.push({
+        id: String(current.id || `knowledge-${crypto.createHash('sha1').update(file.path).digest('hex').slice(0, 12)}`),
+        kind,
+        title: String(current.title || path.basename(file.filename, path.extname(file.filename))),
+        path: file.path,
+        sourceAssets: Array.isArray(current.sourceAssets) ? current.sourceAssets : project.assetIds || [],
+        status: String(current.status || 'ai_generated'),
+        confidence: String(current.confidence || 'medium'),
+        model: String(current.model || ''),
+        promptVersion: String(current.promptVersion || ''),
+        reviewNote: String(current.reviewNote || ''),
+        reviewedAt: String(current.reviewedAt || ''),
+        generatedAt: String(current.generatedAt || new Date(file.mtimeMs).toISOString()),
+        size: file.size,
+      });
+    }
+  }
+  return { version: 1, projectId: project.id, updatedAt: new Date().toISOString(), records };
+}
+
+function getProjectKnowledgeReview(projectId) {
+  try {
+    const project = readProjects().map(normalizeProject).find((item) => String(item.id) === String(projectId));
+    if (!project) return JSON.stringify({ ok: false, message: '未找到学习项目。' });
+    const review = readProjectKnowledgeReview(project);
+    if (project.status !== 'sealed') {
+      fs.mkdirSync(project.managerPath, { recursive: true });
+      fs.writeFileSync(projectKnowledgeReviewPath(project), JSON.stringify(review, null, 2), 'utf8');
+    }
+    return JSON.stringify({ ok: true, ...review, message: `已读取 ${review.records.length} 条项目知识资产。` });
+  } catch (error) {
+    return JSON.stringify({ ok: false, message: `读取知识资产审核失败：${error.message}` });
+  }
+}
+
+function updateProjectKnowledgeReview(projectId, recordIdsJson, status, note) {
+  try {
+    const access = mutableProject(projectId, '审核知识资产');
+    if (access.error) return access.error;
+    const ids = new Set(JSON.parse(recordIdsJson || '[]').map(String));
+    if (!ids.size) return JSON.stringify({ ok: false, message: '请先选择知识资产。' });
+    const allowed = new Set(['ai_generated', 'pending_review', 'verified', 'published', 'rejected', 'invalid']);
+    if (!allowed.has(String(status))) return JSON.stringify({ ok: false, message: '无效的知识审核状态。' });
+    const review = readProjectKnowledgeReview(access.project);
+    const now = new Date().toISOString();
+    review.records = review.records.map((record) => ids.has(record.id) ? { ...record, status, reviewNote: String(note || ''), reviewedAt: now } : record);
+    review.updatedAt = now;
+    fs.mkdirSync(access.project.managerPath, { recursive: true });
+    fs.writeFileSync(projectKnowledgeReviewPath(access.project), JSON.stringify(review, null, 2), 'utf8');
+    return JSON.stringify({ ok: true, ...review, message: `已更新 ${ids.size} 条知识资产的审核状态。` });
+  } catch (error) {
+    return JSON.stringify({ ok: false, message: `更新知识资产审核失败：${error.message}` });
+  }
+}
+
+const KNOWLEDGE_CANONICAL_ALIASES = new Map([
+  ['experimental design', '实验设计'], ['experiment design', '实验设计'], ['实验方法设计', '实验设计'],
+  ['data analysis', '数据分析'], ['data processing', '数据分析'], ['数据处理', '数据分析'],
+  ['critical thinking', '批判性思维'], ['research ability', '研究能力'], ['research skills', '研究能力'],
+  ['teamwork', '团队协作'], ['collaboration', '团队协作'], ['communication', '沟通表达'],
+]);
+
+function canonicalKnowledgeName(value) {
+  const cleaned = String(value || '').trim().toLocaleLowerCase('zh-CN').replace(/[\s_\-/\\]+/g, ' ').replace(/[()（）【】\[\]：:，,。.]/g, '').trim();
+  return KNOWLEDGE_CANONICAL_ALIASES.get(cleaned) || cleaned.replace(/(能力|技能|概念|方法)$/g, '').trim();
+}
+
+function knowledgeNameSimilarity(left, right) {
+  if (left === right) return 1;
+  if (!left || !right) return 0;
+  if (left.includes(right) || right.includes(left)) return Math.min(left.length, right.length) / Math.max(left.length, right.length);
+  const a = new Set(left.split(/\s+/).filter(Boolean));
+  const b = new Set(right.split(/\s+/).filter(Boolean));
+  const intersection = [...a].filter((token) => b.has(token)).length;
+  return intersection / Math.max(1, new Set([...a, ...b]).size);
+}
+
+function buildCrossProjectKnowledgeIndex() {
+  try {
+    const projects = readProjects().map(normalizeProject);
+    const groups = new Map();
+    for (const project of projects) {
+      const review = readProjectKnowledgeReview(project);
+      for (const record of review.records.filter((item) => ['concept', 'entity'].includes(item.kind) && !['rejected', 'invalid'].includes(item.status))) {
+        const canonical = canonicalKnowledgeName(record.title);
+        if (!canonical) continue;
+        const key = `${record.kind}:${canonical}`;
+        const current = groups.get(key) || { id: key, kind: record.kind, canonicalName: record.title, projects: [], records: [] };
+        if (!current.projects.some((item) => item.projectId === project.id)) current.projects.push({ projectId: project.id, projectName: project.name });
+        current.records.push({ projectId: project.id, recordId: record.id, title: record.title, path: record.path, status: record.status });
+        groups.set(key, current);
+      }
+      for (const evidence of project.studentEvidence || []) {
+        const canonical = canonicalKnowledgeName(evidence.ability);
+        if (!canonical) continue;
+        const key = `ability:${canonical}`;
+        const current = groups.get(key) || { id: key, kind: 'ability', canonicalName: evidence.ability, projects: [], records: [] };
+        if (!current.projects.some((item) => item.projectId === project.id)) current.projects.push({ projectId: project.id, projectName: project.name });
+        current.records.push({ projectId: project.id, studentId: evidence.studentId, title: evidence.ability, status: evidence.status, observation: evidence.observation });
+        groups.set(key, current);
+      }
+    }
+    const candidates = Array.from(groups.values());
+    for (let index = 0; index < candidates.length; index += 1) {
+      const target = candidates[index];
+      if (!target) continue;
+      for (let otherIndex = index + 1; otherIndex < candidates.length; otherIndex += 1) {
+        const other = candidates[otherIndex];
+        if (!other || other.kind !== target.kind) continue;
+        const similarity = knowledgeNameSimilarity(canonicalKnowledgeName(target.canonicalName), canonicalKnowledgeName(other.canonicalName));
+        if (similarity < 0.72) continue;
+        target.projects = [...new Map([...target.projects, ...other.projects].map((item) => [item.projectId, item])).values()];
+        target.records.push(...other.records.map((record) => ({ ...record, normalizationConfidence: similarity })));
+        target.aliases = Array.from(new Set([...(target.aliases || []), other.canonicalName]));
+        candidates[otherIndex] = null;
+      }
+    }
+    const linkedGroups = candidates.filter(Boolean).filter((group) => group.projects.length > 1).sort((a, b) => b.projects.length - a.projects.length || a.canonicalName.localeCompare(b.canonicalName));
+    const outputDir = path.join(projectsBaseDir(), '_跨项目知识关联');
+    fs.mkdirSync(outputDir, { recursive: true });
+    const payload = { version: 1, generatedAt: new Date().toISOString(), totalGroups: groups.size, linkedGroups };
+    fs.writeFileSync(path.join(outputDir, 'cross-project-index.json'), JSON.stringify(payload, null, 2), 'utf8');
+    const rows = linkedGroups.map((group) => `| ${group.kind} | ${String(group.canonicalName).replace(/\|/g, '/')} | ${group.projects.map((item) => item.projectName).join('、')} | ${group.records.length} |`).join('\n') || '| 暂无 | - | - | 0 |';
+    fs.writeFileSync(path.join(outputDir, '跨项目知识关联.md'), `# 跨项目知识关联\n\n> 统一识别多个学习项目中重复出现的概念、实体与能力证据。原知识文件保持不变，本索引只建立关联。\n\n| 类型 | 统一名称 | 关联项目 | 记录数 |\n| --- | --- | --- | ---: |\n${rows}\n`, 'utf8');
+    return JSON.stringify({ ok: true, ...payload, outputDir, message: `已生成跨项目知识关联：${linkedGroups.length} 个跨项目主题。` });
+  } catch (error) {
+    return JSON.stringify({ ok: false, message: `生成跨项目知识关联失败：${error.message}` });
+  }
+}
+
+function updateProjectAutomation(projectId, automationJson) {
+  try {
+    const access = mutableProject(projectId, '更新项目自动化');
+    if (access.error) return access.error;
+    const input = JSON.parse(automationJson || '{}');
+    const now = Date.now();
+    const intervalMinutes = Math.max(15, Math.min(10080, Number(input.intervalMinutes || 1440)));
+    const result = updateProjectRecord(projectId, (project) => ({
+      ...project,
+      automation: {
+        enabled: Boolean(input.enabled),
+        onWorkspaceChange: input.onWorkspaceChange !== false,
+        onStatusChange: Boolean(input.onStatusChange),
+        intervalMinutes,
+        nextRunAt: input.enabled ? new Date(now + intervalMinutes * 60000).toISOString() : '',
+        lastRunAt: project.automation?.lastRunAt || '',
+        lastReason: project.automation?.lastReason || '',
+      },
+      updatedAt: new Date().toISOString(),
+    }));
+    return JSON.stringify({ ok: true, project: result.project, projects: result.projects, message: input.enabled ? `项目自动化已启用，每 ${intervalMinutes} 分钟检查一次。` : '项目自动化已关闭。' });
+  } catch (error) {
+    return JSON.stringify({ ok: false, message: `更新项目自动化失败：${error.message}` });
+  }
+}
+
+function runProjectAutomationSweep() {
+  const now = Date.now();
+  const dueProjects = readProjects().map(normalizeProject).filter((project) => project.status !== 'sealed' && project.automation?.enabled && (!project.automation.nextRunAt || Date.parse(project.automation.nextRunAt) <= now));
+  const results = [];
+  for (const project of dueProjects) {
+    let scanResult = { ok: false, added: 0, message: '' };
+    try {
+      scanResult = JSON.parse(scanProjectWorkspace(project.id));
+    } catch {
+      scanResult = { ok: false, added: 0, message: '自动扫描结果解析失败。' };
+    }
+    let execution = { ok: false, message: '无待消化资料。' };
+    const scannedProject = readProjects().map(normalizeProject).find((item) => String(item.id) === String(project.id));
+    if (scannedProject?.digestState?.pendingCount > 0 && scannedProject.digestState.status !== 'digesting') {
+      try { execution = JSON.parse(executeProjectDigest(project.id)); } catch { execution = { ok: false, message: '自动执行结果解析失败。' }; }
+    }
+    const refreshed = readProjects().map(normalizeProject);
+    const intervalMinutes = project.automation.intervalMinutes || 1440;
+    const nextProjects = refreshed.map((item) => String(item.id) === String(project.id) ? normalizeProject({
+      ...item,
+      automation: { ...item.automation, lastRunAt: new Date().toISOString(), lastReason: 'scheduled', nextRunAt: new Date(now + intervalMinutes * 60000).toISOString() },
+    }) : item);
+    writeProjects(nextProjects);
+    results.push({ projectId: project.id, ok: Boolean(scanResult.ok), added: Number(scanResult.added || 0), executionOk: Boolean(execution.ok), message: `${scanResult.message || ''} ${execution.message || ''}`.trim() });
+  }
+  return results;
+}
+
 function updateProjectStudents(projectId, studentIdsJson) {
   try {
+    const access = mutableProject(projectId, '调整绑定学生');
+    if (access.error) return access.error;
     const parsed = JSON.parse(studentIdsJson || '[]');
     const requestedIds = Array.isArray(parsed) ? parsed.map(String) : [];
     const allStudents = readStudentsIndex();
@@ -2795,6 +4111,8 @@ function updateProjectStudents(projectId, studentIdsJson) {
 
 function importProjectAssets(projectId, assetIdsJson) {
   try {
+    const access = mutableProject(projectId, '导入项目资产');
+    if (access.error) return access.error;
     const project = readProjects().map(normalizeProject).find((item) => String(item.id) === String(projectId));
     if (!project) return JSON.stringify({ ok: false, message: '未找到学习项目。' });
     const assetIds = JSON.parse(assetIdsJson || '[]');
@@ -2842,6 +4160,8 @@ function importProjectAssets(projectId, assetIdsJson) {
 
 function importProjectRawFiles(projectId) {
   try {
+    const access = mutableProject(projectId, '导入项目原始资料');
+    if (access.error) return access.error;
     const project = readProjects().map(normalizeProject).find((item) => String(item.id) === String(projectId));
     if (!project) return JSON.stringify({ ok: false, message: '未找到学习项目。' });
     const ensured = ensureProjectWorkspace(project);
@@ -2885,7 +4205,7 @@ function importProjectRawFiles(projectId) {
       status: 'pending',
       message: `有 ${imported.length} 份新项目资料待消化。`,
     });
-    const result = updateProjectRecord(ensured.id, (item) => ({
+    let result = updateProjectRecord(ensured.id, (item) => ({
       ...item,
       assetIds: mergeUnique([...(item.assetIds || []), ...imported]),
       digestState,
@@ -2899,7 +4219,7 @@ function importProjectRawFiles(projectId) {
       project: result.project,
       projects: result.projects,
       digestState,
-      message: `已导入 ${imported.length} 份资料到项目原始资料库，并标记为待消化。`,
+      message: `已导入 ${imported.length} 份资料到项目原始资料库，并标记为待消化。请复制命令后粘贴到所选 Agent。`,
     });
   } catch (error) {
     return JSON.stringify({ ok: false, message: `导入项目原始资料失败：${error.message}` });
@@ -2912,6 +4232,8 @@ function getProjectDigestCommand(projectId) {
     if (!project) return JSON.stringify({ ok: false, message: '未找到学习项目。' });
     const ensured = ensureProjectWorkspace(project);
     const state = readProjectDigestState(ensured);
+    const agentToolNames = { qclaw: 'QClaw', marvis: 'Marvis', hohu: 'Hohu', 'ima.copilot': 'IMA Copilot', workbuddy: 'WorkBuddy', codex: 'Codex', claude: 'Claude Code', gemini: 'Gemini CLI' };
+    const agentToolName = agentToolNames[ensured.agentTool] || ensured.agentTool || '所选 Agent';
     const command = `/消化项目资料
 
 请围绕学习项目「${ensured.name}」执行项目资料消化。
@@ -2939,32 +4261,67 @@ ${state.digestFile}
 
 状态文件 JSON 格式：
 {
-  "version": 1,
+  "version": 2,
   "status": "completed",
+  "digestBatchId": "${state.digestBatchId || '请保留控制台提交批次 ID'}",
   "lastDigestAt": "当前 ISO 时间",
   "message": "项目资料已消化完成",
-  "digestedFiles": ["已处理文件的完整路径或 SHA-1"]
+  "digestedFiles": [{"relativePath":"相对项目原始资料库的路径","sha1":"对应待处理清单中的 SHA-1"}]
 }
 
 待消化资料：
-${(state.pendingFiles || []).map((file) => `- ${file.filename}：${file.path}`).join('\n') || '- 暂无待消化资料，请检查项目原始资料库。'}
+${(state.pendingFiles || []).map((file) => `- ${file.relativePath || file.filename} | ${file.changeType || 'added'} | SHA-1 ${file.sha1} | ${file.path}`).join('\n') || '- 暂无待消化资料，请检查项目原始资料库。'}
 `;
-    return JSON.stringify({ ok: true, command, digestState: state, message: '已生成项目资料消化指令。' });
+    return JSON.stringify({ ok: true, command, digestState: state, agentTool: ensured.agentTool, message: `已生成消化指令，请粘贴到 ${agentToolName}。` });
   } catch (error) {
     return JSON.stringify({ ok: false, message: `生成项目资料消化指令失败：${error.message}` });
   }
 }
 
+function executeProjectDigest(projectId) {
+  try {
+    const access = mutableProject(projectId, '执行项目资料消化');
+    if (access.error) return access.error;
+    const project = ensureProjectWorkspace(access.project);
+    const current = readProjectDigestState(project);
+    if (current.status === 'digesting') return JSON.stringify({ ok: false, message: '该项目正在执行消化，请勿重复提交。' });
+    upsertTaskCandidates(buildTaskCenterCandidates());
+    const taskId = taskStableId('project_digest', 'project', project.id);
+    const result = JSON.parse(executeTaskByAdapter(taskId, project.agentTool || ''));
+    if (!result.ok) return JSON.stringify(result);
+    const stateStatus = result.task?.status === 'running' ? 'digesting' : result.task?.status === 'waiting_result' ? 'submitted' : current.status;
+    const dispatchedDigest = readProjectDigestState(project);
+    const state = writeProjectDigestState(project, {
+      status: stateStatus,
+      digestSubmittedAt: result.task?.startedAt || taskNow(),
+      digestBatchId: dispatchedDigest.digestBatchId || current.digestBatchId || '',
+      message: result.message || '项目资料消化已交由 AgentExecutionAdapter 处理。',
+    });
+    updateProjectRecord(projectId, (item) => ({ ...item, digestState: state, updatedAt: taskNow() }));
+    appendHostTimeline({ type: 'project_digest_dispatched', title: 'Project digest dispatched', detail: `${project.name} -> ${result.task?.adapterId || 'manual'}` });
+    return JSON.stringify({ ...result, project: { ...project, digestState: state }, projects: readProjects().map(normalizeProject), digestState: state, message: `${result.message} 项目消化已解除 Codex 硬编码。` });
+  } catch (error) {
+    return JSON.stringify({ ok: false, message: `执行项目消化失败：${error.message}` });
+  }
+}
+
 function markProjectDigestSubmitted(projectId) {
   try {
+    const access = mutableProject(projectId, '提交项目资料消化');
+    if (access.error) return access.error;
     const project = readProjects().map(normalizeProject).find((item) => String(item.id) === String(projectId));
     if (!project) return JSON.stringify({ ok: false, message: '未找到学习项目。' });
     const ensured = ensureProjectWorkspace(project);
     const now = new Date().toISOString();
+    const current = readProjectDigestState(ensured);
+    if (!current.pendingCount) return JSON.stringify({ ok: false, message: '当前没有待消化资料，无需重复提交。' });
+    if (['submitted', 'digesting'].includes(current.status)) return JSON.stringify({ ok: false, message: `批次 ${current.digestBatchId || ''} 已提交，请先同步结果。` });
+    const batchId = `project-digest-${timestampForFilename()}`;
     const state = writeProjectDigestState(ensured, {
       status: 'submitted',
       digestSubmittedAt: now,
-      digestBatchId: `project-digest-${timestampForFilename()}`,
+      digestBatchId: batchId,
+      submittedFiles: (current.pendingFiles || []).map((file) => ({ relativePath: file.relativePath, path: file.path, sha1: file.sha1, size: file.size })),
       message: '项目资料消化指令已提交给 Agent，等待完成后同步。',
     });
     const result = updateProjectRecord(ensured.id, (item) => ({ ...item, digestState: state, updatedAt: now }));
@@ -2977,29 +4334,45 @@ function markProjectDigestSubmitted(projectId) {
 
 function syncProjectDigestResult(projectId) {
   try {
+    const access = mutableProject(projectId, '同步项目消化结果');
+    if (access.error) return access.error;
     const project = readProjects().map(normalizeProject).find((item) => String(item.id) === String(projectId));
     if (!project) return JSON.stringify({ ok: false, message: '未找到学习项目。' });
     const ensured = ensureProjectWorkspace(project);
-    const paths = projectPathsFor(ensured.name, ensured.projectRootPath);
+    const paths = projectPathsFor(ensured.name, ensured.projectRootPath, ensured);
     const current = readProjectDigestState(ensured);
-    const logPath = path.join(paths.knowledgeRootPath, 'log.md');
-    const indexPath = path.join(paths.knowledgeRootPath, 'index.md');
-    const logText = [logPath, indexPath].filter((file) => fs.existsSync(file)).map((file) => {
-      try {
-        return fs.readFileSync(file, 'utf8').slice(-12000);
-      } catch {
-        return '';
-      }
-    }).join('\n');
     const rawFiles = collectProjectRawFiles(paths.rawPath);
-    const hasCompletionSignal = current.status === 'completed' || /消化完成|处理完成|已完成|无新增项目资料|已更新|项目资料已消化|completed/i.test(logText);
+    const diskState = safeReadJson(projectDigestStatePath(ensured), {});
+    const hasCompletionSignal = diskState.status === 'completed'
+      && (!current.digestBatchId || !diskState.digestBatchId || diskState.digestBatchId === current.digestBatchId);
     let nextPatch = {};
     if (hasCompletionSignal) {
+      const explicit = Array.isArray(diskState.digestedFiles) ? diskState.digestedFiles : [];
+      const submitted = Array.isArray(current.submittedFiles) ? current.submittedFiles : [];
+      const confirmations = explicit.length ? explicit : submitted;
+      const confirmedKeys = new Set(confirmations.flatMap((item) => typeof item === 'string'
+        ? [item]
+        : [item.relativePath, item.path, item.sha1].filter(Boolean)).map(String));
+      const confirmed = rawFiles.filter((file) => confirmedKeys.has(file.relativePath) || confirmedKeys.has(file.path) || confirmedKeys.has(file.sha1));
+      if (!confirmed.length) return JSON.stringify({ ok: false, message: 'Agent 已写完成状态，但未提供与当前批次匹配的 digestedFiles，未更新消化清单。' });
+      const completedAt = new Date().toISOString();
+      const digestManifest = { ...(current.digestManifest || {}) };
+      for (const file of confirmed) {
+        digestManifest[file.relativePath] = { sha1: file.sha1, size: file.size, mtimeMs: file.mtimeMs, digestedAt: completedAt, batchId: current.digestBatchId || '' };
+      }
       nextPatch = {
         status: 'completed',
-        lastDigestAt: new Date().toISOString(),
-        message: '项目资料消化结果已同步为完成。',
-        digestedFiles: rawFiles.map((file) => file.path),
+        lastDigestAt: completedAt,
+        message: `已同步 ${confirmed.length} 份资料的精确消化结果。`,
+        digestedFiles: confirmed.map((file) => file.path),
+        digestManifest,
+        submittedFiles: [],
+        digestBatches: [...(current.digestBatches || []), {
+          id: current.digestBatchId || `digest-${Date.now()}`,
+          submittedAt: current.digestSubmittedAt || '',
+          completedAt,
+          files: confirmed.map((file) => ({ relativePath: file.relativePath, sha1: file.sha1 })),
+        }].slice(-50),
       };
     } else if (current.status === 'submitted' || current.status === 'digesting') {
       nextPatch = {
@@ -3042,8 +4415,9 @@ function updateProjectRecord(projectId, updater) {
 
 function importProjectStagingFiles(projectId) {
   try {
-    const project = readProjects().map(normalizeProject).find((item) => String(item.id) === String(projectId));
-    if (!project) return JSON.stringify({ ok: false, message: '未找到学习项目。' });
+    const access = mutableProject(projectId, '导入研究暂存资料');
+    if (access.error) return access.error;
+    const project = access.project;
     const ensured = ensureProjectWorkspace(project);
     const files = dialog.showOpenDialogSync(mainWindow, {
       title: '导入到项目研究暂存',
@@ -3098,6 +4472,8 @@ function importProjectStagingFiles(projectId) {
 
 function updateProjectStagingStatus(projectId, itemIdsJson, status) {
   try {
+    const access = mutableProject(projectId, '更新暂存资料状态');
+    if (access.error) return access.error;
     const allowed = new Set(['collected', 'screened', 'selected', 'analyzed', 'promoted', 'discarded']);
     const nextStatus = allowed.has(String(status || '')) ? String(status) : 'collected';
     const itemIds = JSON.parse(itemIdsJson || '[]');
@@ -3126,10 +4502,11 @@ function updateProjectStagingStatus(projectId, itemIdsJson, status) {
 
 function promoteProjectStagingItems(projectId, itemIdsJson) {
   try {
+    const access = mutableProject(projectId, '晋升暂存资料');
+    if (access.error) return access.error;
     const itemIds = JSON.parse(itemIdsJson || '[]');
     if (!Array.isArray(itemIds) || !itemIds.length) return JSON.stringify({ ok: false, message: '请先选择要晋升的暂存资料。' });
-    const project = readProjects().map(normalizeProject).find((item) => String(item.id) === String(projectId));
-    if (!project) return JSON.stringify({ ok: false, message: '未找到学习项目。' });
+    const project = access.project;
     const ensured = ensureProjectWorkspace(project);
     const now = new Date().toISOString();
     const promoted = [];
@@ -3140,17 +4517,30 @@ function promoteProjectStagingItems(projectId, itemIdsJson) {
         skipped.push(item.id);
         return item;
       }
-      const target = uniqueTargetFile(ensured.rawPath, item.filename || path.basename(item.path));
-      fs.copyFileSync(item.path, target);
-      const asset = upsertAssetFromFile(target, {
+      if (item.reviewStatus !== 'accepted') {
+        skipped.push(item.id);
+        return item;
+      }
+      const strategy = ['full_copy', 'reference_only', 'snapshot'].includes(item.sourceStrategy) ? item.sourceStrategy : 'reference_only';
+      let assetPath = item.path;
+      if (strategy !== 'reference_only') {
+        assetPath = uniqueTargetFile(ensured.rawPath, item.filename || path.basename(item.path));
+        fs.copyFileSync(item.path, assetPath);
+      }
+      const asset = upsertAssetFromFile(assetPath, {
         spaceType: 'project',
         projectId: ensured.id,
         projectName: ensured.name,
         sourcePath: item.path,
-        sourceName: '研究暂存晋升',
-        role: 'project_raw_promoted',
+        sourceName: strategy === 'reference_only' ? '项目来源引用' : strategy === 'snapshot' ? '项目关键快照' : '研究暂存晋升',
+        role: strategy === 'reference_only' ? 'project_source_reference' : strategy === 'snapshot' ? 'project_source_snapshot' : 'project_raw_promoted',
         referenceId: `${ensured.id}-${item.id}`,
       });
+      if (strategy === 'reference_only') {
+        const baseName = sanitizeName(path.basename(item.filename || item.path, path.extname(item.filename || item.path)));
+        const sourceRecordPath = path.join(ensured.rawPath, `来源记录-${baseName}-${item.id}.md`);
+        fs.writeFileSync(sourceRecordPath, `# ${item.filename || path.basename(item.path)}\n\n- 保存策略：仅来源记录\n- 来源路径：${item.sourcePath || item.path}\n- 文件资产：${asset?.assetId || '待登记'}\n- SHA-1：${item.sha1 || ''}\n- 人工审核：${item.reviewNote || '已接受'}\n- 登记时间：${now}\n`, 'utf8');
+      }
       if (asset) promoted.push(asset.assetId);
       return {
         ...item,
@@ -3160,10 +4550,18 @@ function promoteProjectStagingItems(projectId, itemIdsJson) {
         updatedAt: now,
       };
     });
-    const result = updateProjectRecord(ensured.id, (item) => ({
+    const pendingDigestState = promoted.length > 0
+      ? writeProjectDigestState(ensured, {
+        status: 'pending',
+        message: `有 ${promoted.length} 份新晋升项目资料待消化。`,
+        triggerReason: 'staging_promotion',
+      })
+      : ensured.digestState;
+    let result = updateProjectRecord(ensured.id, (item) => ({
       ...item,
       stagingItems: nextItems,
       assetIds: mergeUnique([...(item.assetIds || []), ...promoted]),
+      digestState: pendingDigestState,
       updatedAt: now,
     }));
     appendHostTimeline({ type: 'project_staging_promoted', title: 'Project staging promoted', detail: ensured.name, count: promoted.length });
@@ -3173,7 +4571,9 @@ function promoteProjectStagingItems(projectId, itemIdsJson) {
       skipped: skipped.length,
       project: result.project,
       projects: result.projects,
-      message: promoted.length ? `已晋升 ${promoted.length} 份暂存资料为正式资产，并复制到项目原始资料库。` : '没有暂存资料被晋升。',
+      message: promoted.length
+        ? `已按保存策略晋升 ${promoted.length} 份暂存资料为正式资产，并进入项目原始资料库和待消化队列。请复制命令后粘贴到所选 Agent。`
+        : '没有暂存资料被晋升；请先完成人工接受并选择保存策略。',
     });
   } catch (error) {
     return JSON.stringify({ ok: false, message: `晋升暂存资料失败：${error.message}` });
@@ -3245,6 +4645,8 @@ function screeningRecommendationsFromPayload(payload) {
 
 function importProjectStagingAiScreening(projectId) {
   try {
+    const access = mutableProject(projectId, '导入 AI 初筛结果');
+    if (access.error) return access.error;
     const project = readProjects().map(normalizeProject).find((item) => String(item.id) === String(projectId));
     if (!project) return JSON.stringify({ ok: false, message: '未找到学习项目。' });
     const ensured = ensureProjectWorkspace(project);
@@ -3326,6 +4728,8 @@ function importProjectStagingAiScreening(projectId) {
 
 function analyzeProjectStagingGovernance(projectId) {
   try {
+    const access = mutableProject(projectId, '生成暂存治理建议');
+    if (access.error) return access.error;
     const project = readProjects().map(normalizeProject).find((item) => String(item.id) === String(projectId));
     if (!project) return JSON.stringify({ ok: false, message: '未找到学习项目。' });
     const ensured = ensureProjectWorkspace(project);
@@ -3730,6 +5134,8 @@ function stagingEvidenceContent(project, item) {
 
 function generateProjectPromotion(projectId) {
   try {
+    const access = mutableProject(projectId, '生成知识贡献申请');
+    if (access.error) return access.error;
     const project = readProjects().map(normalizeProject).find((item) => String(item.id) === String(projectId));
     if (!project) return JSON.stringify({ ok: false, message: '未找到学习项目。' });
     const ensured = ensureProjectWorkspace(project);
@@ -3823,8 +5229,31 @@ function projectPromotionPlan(projectId) {
   }
 }
 
-function executeProjectPromotionPlan(projectId, planJson) {
+function createArchiveFileTransaction() {
+  const snapshots = new Map();
+  return {
+    snapshot(file) {
+      if (!file || snapshots.has(file)) return;
+      snapshots.set(file, fs.existsSync(file) ? fs.readFileSync(file) : null);
+    },
+    rollback() {
+      for (const [file, content] of [...snapshots.entries()].reverse()) {
+        if (content === null) {
+          if (fs.existsSync(file)) fs.rmSync(file, { force: true });
+        } else {
+          fs.mkdirSync(path.dirname(file), { recursive: true });
+          fs.writeFileSync(file, content);
+        }
+      }
+    },
+  };
+}
+
+function performProjectPromotionPlan(projectId, planJson, taskContext = null) {
+  let fileTransaction = null;
   try {
+    const access = mutableProject(projectId, '执行归档');
+    if (access.error) return access.error;
     const projects = readProjects().map(normalizeProject);
     const project = projects.find((item) => String(item.id) === String(projectId));
     if (!project) return JSON.stringify({ ok: false, message: '未找到学习项目。' });
@@ -3839,9 +5268,35 @@ function executeProjectPromotionPlan(projectId, planJson) {
     if (!items.length) return JSON.stringify({ ok: false, message: '归档清单为空。' });
     const students = readStudentsIndex().filter((student) => ensured.studentIds.includes(String(student.id)));
     if (!students.length) return JSON.stringify({ ok: false, message: '该学习项目尚未绑定学生，无法执行归档。' });
+    const authorization = authorizeInternalTaskOperation(taskContext, 'execute_archive_plan', [
+      projectsPath(),
+      ensured.contributionPath,
+      ...students.flatMap((student) => [toHostStudent(student).rootPath || getStudentRootDir(student.name), student.rawPath || getRawDir(student.name), student.summaryPath || getSummaryDir(student.name), growthModelDirForStudent(toHostStudent(student))]),
+    ]);
+    if (!authorization.ok) return JSON.stringify({ ok: false, blocked: true, message: authorization.message });
+    const digestState = readProjectDigestState(ensured);
+    const unresolvedStaging = (ensured.stagingItems || []).filter((item) => !['promoted', 'discarded'].includes(String(item.status)));
+    const knowledgeReview = readProjectKnowledgeReview(ensured);
+    const unresolvedKnowledge = knowledgeReview.records.filter((record) => ['ai_generated', 'pending_review'].includes(String(record.status)));
+    const gateIssues = [];
+    if (Number(digestState.pendingCount || 0) > 0 || ['submitted', 'digesting', 'failed'].includes(String(digestState.status))) gateIssues.push(`项目消化尚未收口（${digestState.pendingCount || 0} 份待处理，状态 ${digestState.status}）`);
+    if (unresolvedStaging.length) gateIssues.push(`${unresolvedStaging.length} 份暂存资料尚未晋升或排除`);
+    if (unresolvedKnowledge.length) gateIssues.push(`${unresolvedKnowledge.length} 条知识资产尚未审核`);
+    if (gateIssues.length) return JSON.stringify({ ok: false, gateIssues, message: `归档闸门未通过：${gateIssues.join('；')}。` });
+    const missingSources = items.filter((item) => String(item.action || item.defaultAction) === 'absorb' && String(item.kind) === 'file')
+      .map((item) => String(item.sourcePath || ''))
+      .filter((sourcePath) => !sourcePath || !fs.existsSync(sourcePath));
+    if (missingSources.length) return JSON.stringify({ ok: false, message: `归档预检失败：${missingSources.length} 个吸收动作的源文件不存在。`, missingSources });
     const today = new Date().toISOString().slice(0, 10);
     const now = new Date().toISOString();
-    const executionLog = path.join(ensured.contributionPath || projectPathsFor(ensured.name, ensured.projectRootPath).contributionPath, '归档执行日志.md');
+    const transactionId = `archive-${timestampForFilename()}-${crypto.randomBytes(3).toString('hex')}`;
+    const priorRuns = readProjectPromotionRunLog(ensured).runs || [];
+    const completedActionKeys = new Set(priorRuns.filter((run) => run.status === 'completed').flatMap((run) => (run.results || []).filter((result) => result.ok !== false).map((result) => result.actionKey).filter(Boolean)));
+    const knowledgeTargets = { concept: '概念库', entity: '实体库', summary: '摘要库', qa: '咨询精华库', synthesis: '综合库' };
+    writeProjects(projects.map((item) => String(item.id) === String(ensured.id) ? { ...item, status: 'archiving', archiveTransactionId: transactionId, updatedAt: now } : item));
+    const executionLog = path.join(ensured.contributionPath || projectPathsFor(ensured.name, ensured.projectRootPath, ensured).contributionPath, '归档执行日志.md');
+    fileTransaction = createArchiveFileTransaction();
+    fileTransaction.snapshot(executionLog);
     writeTextIfMissing(executionLog, `# ${ensured.name} 归档执行日志\n\n| 时间 | 学生 | 条目 | 类型 | 动作 | 来源 | 目标 |\n| --- | --- | --- | --- | --- | --- | --- |\n`);
     const results = [];
     for (const student of students) {
@@ -3852,6 +5307,7 @@ function executeProjectPromotionPlan(projectId, planJson) {
       const contributionSummaryFile = path.join(summaryPath, '项目贡献汇总.md');
       const contributionDetailFile = path.join(summaryPath, '项目贡献明细.md');
       const growthDraftFile = path.join(growth.dir, '成长证据草稿.md');
+      [archiveRecordFile, contributionSummaryFile, contributionDetailFile, growthDraftFile, path.join(growth.dir, '成长证据.md'), path.join(growth.dir, '项目贡献.md')].forEach((file) => fileTransaction.snapshot(file));
       writeTextIfMissing(archiveRecordFile, `# ${student.name} 项目归档记录\n\n| 时间 | 项目 | 条目 | 类型 | 动作 | 来源 | 目标 |\n| --- | --- | --- | --- | --- | --- | --- |\n`);
       writeTextIfMissing(contributionSummaryFile, `# ${student.name} 项目贡献汇总\n\n记录已发布到学生主档案的学习项目知识贡献。\n\n| 日期 | 项目 | 贡献内容 | 动作 | 来源路径 |\n| --- | --- | --- | --- | --- |\n`);
       writeTextIfMissing(contributionDetailFile, `# ${student.name} 项目贡献明细\n\n记录项目归档确认清单的逐项处理结果，便于回溯来源、目标和动作。\n\n| 日期 | 项目 | 类型 | 条目 | 动作 | 来源路径 | 目标 |\n| --- | --- | --- | --- | --- | --- | --- |\n`);
@@ -3866,21 +5322,28 @@ function executeProjectPromotionPlan(projectId, planJson) {
           assetId: rawItem.assetId ? String(rawItem.assetId) : '',
           content: String(rawItem.content || rawItem.title || ''),
         };
+        const sourceVersion = item.sourcePath && fs.existsSync(item.sourcePath) ? sha1File(item.sourcePath) : sha1Text(item.content);
+        const actionKey = sha1Text([ensured.id, student.id, item.id, item.action, sourceVersion].join('|'));
+        if (completedActionKeys.has(actionKey)) {
+          results.push({ studentId: student.id, itemId: item.id, action: item.action, actionKey, target: '', ok: true, idempotent: true, message: '相同来源版本已执行，跳过重复写入。' });
+          continue;
+        }
         if (item.action === 'skip') {
           const line = `| ${now} | ${ensured.name} | ${item.title} | ${item.kind} | 跳过 | ${item.sourcePath || item.assetId || '-'} | - |`;
           fs.appendFileSync(archiveRecordFile, `${line}\n`, 'utf8');
           fs.appendFileSync(contributionDetailFile, `| ${today} | ${mdCell(ensured.name)} | ${mdCell(item.kind)} | ${mdCell(item.title)} | 跳过 | ${mdCell(item.sourcePath || item.assetId || '-')} | - |\n`, 'utf8');
           fs.appendFileSync(executionLog, `| ${now} | ${student.name} | ${item.title} | ${item.kind} | 跳过 | ${item.sourcePath || item.assetId || '-'} | - |\n`, 'utf8');
-          results.push({ studentId: student.id, itemId: item.id, action: 'skip', target: '' });
+           results.push({ studentId: student.id, itemId: item.id, action: 'skip', actionKey, target: '', ok: true });
           continue;
         }
         let target = '';
         if (item.kind === 'file' && item.action === 'absorb') {
           if (!item.sourcePath || !fs.existsSync(item.sourcePath)) {
-            results.push({ studentId: student.id, itemId: item.id, action: item.action, ok: false, message: '源文件不存在' });
+            results.push({ studentId: student.id, itemId: item.id, action: item.action, actionKey, ok: false, message: '源文件不存在' });
             continue;
           }
           target = uniqueTargetFile(rawPath, path.basename(item.sourcePath));
+          fileTransaction.snapshot(target);
           fs.mkdirSync(path.dirname(target), { recursive: true });
           fs.copyFileSync(item.sourcePath, target);
           upsertAssetFromFile(target, {
@@ -3903,6 +5366,26 @@ function executeProjectPromotionPlan(projectId, planJson) {
             sourcePath: item.sourcePath || ensured.knowledgeRootPath,
             confidence: '待人工确认',
           });
+        } else if (item.action === 'publish' && knowledgeTargets[item.kind]) {
+          const verifiedRecords = knowledgeReview.records.filter((record) => record.kind === item.kind && ['verified', 'published'].includes(String(record.status)));
+          const targetDir = path.join(summaryPath, knowledgeTargets[item.kind]);
+          fs.mkdirSync(targetDir, { recursive: true });
+          const written = [];
+          for (const record of verifiedRecords) {
+            if (!record.path || !fs.existsSync(record.path)) continue;
+            const content = fs.readFileSync(record.path, 'utf8');
+            const recordHash = sha1Text(content);
+            const recordKey = sha1Text([ensured.id, student.id, record.id, recordHash].join('|'));
+            if (completedActionKeys.has(recordKey)) continue;
+            const filename = `${sanitizeName(record.title || path.parse(record.path).name)}__${ensured.storageName}.md`;
+            const recordTarget = path.join(targetDir, filename);
+            fileTransaction.snapshot(recordTarget);
+            const frontmatter = `---\nsource_project: "${ensured.name.replace(/"/g, '\\"')}"\nsource_project_id: "${ensured.id}"\nsource_record_id: "${record.id}"\nsource_path: "${String(record.path).replace(/"/g, '\\"')}"\nsource_sha1: "${recordHash}"\npublished_at: "${now}"\n---\n\n`;
+            if (!fs.existsSync(recordTarget) || sha1Text(fs.readFileSync(recordTarget, 'utf8')) !== sha1Text(frontmatter + content)) fs.writeFileSync(recordTarget, frontmatter + content, 'utf8');
+            written.push(recordTarget);
+            results.push({ studentId: student.id, itemId: record.id, action: 'publish', actionKey: recordKey, target: recordTarget, ok: true, knowledgeKind: record.kind });
+          }
+          target = written.join('；') || targetDir;
         } else if (item.action === 'publish') {
           target = contributionSummaryFile;
           fs.appendFileSync(target, `| ${today} | ${ensured.name} | ${item.title} | 发布 | ${item.sourcePath || ensured.knowledgeRootPath} |\n`, 'utf8');
@@ -3920,28 +5403,40 @@ function executeProjectPromotionPlan(projectId, planJson) {
         if (item.action === 'publish' || item.action === 'absorb') {
           appendTextSection(path.join(growth.dir, '项目贡献.md'), `${ensured.name} · ${item.title} · ${today}`, `- 动作：${actionLabel}\n- 来源：${source}\n- 目标：${target || '-'}\n- 内容：${item.content}`);
         }
-        results.push({ studentId: student.id, itemId: item.id, action: item.action, target, ok: true });
+        results.push({ studentId: student.id, itemId: item.id, action: item.action, actionKey, target, ok: true });
       }
     }
+    const failures = results.filter((result) => result.ok === false);
     const nextProjects = projects.map((item) => String(item.id) === String(ensured.id)
-      ? { ...item, status: 'archived', archivedAt: now, updatedAt: now, promotionPath: ensured.promotionPath }
+      ? { ...item, status: failures.length ? 'archive_failed' : 'archived', archivedAt: failures.length ? '' : now, archiveFailure: failures.map((failure) => failure.message).join('；'), updatedAt: now, promotionPath: ensured.promotionPath }
       : item);
     writeProjects(nextProjects);
     appendProjectPromotionRun(ensured, {
       type: 'execute_plan',
-      status: 'completed',
+      status: failures.length ? 'failed' : 'completed',
+      transactionId,
       results,
-      rollbackHint: '如需撤销，请根据归档执行日志中的目标路径人工回滚；本版本不自动删除已发布内容。',
+      rollbackHint: failures.length ? '本次归档存在失败项，项目未进入已归档状态。' : '可在贡献审计中按本次运行记录回滚。',
     });
     appendHostTimeline({ type: 'project_promotion_plan_executed', title: 'Project promotion plan executed', detail: ensured.name, count: results.length });
     return JSON.stringify({
-      ok: true,
+      ok: failures.length === 0,
       project: nextProjects.find((item) => String(item.id) === String(ensured.id)),
       results,
       executionLog,
-      message: `已执行 ${results.length} 条归档动作，并写入项目与学生追溯记录。`,
+      message: failures.length ? `归档失败：${failures.length} 项未完成，项目状态已标记为“归档失败”。` : `已幂等执行 ${results.length} 条归档动作，并将审核通过的知识逐项写入学生知识库。`,
     });
   } catch (error) {
+    try { fileTransaction?.rollback(); } catch { /* Preserve the original archive error. */ }
+    try {
+      const failedAt = new Date().toISOString();
+      const projects = readProjects().map(normalizeProject);
+      writeProjects(projects.map((item) => String(item.id) === String(projectId) ? { ...item, status: 'archive_failed', archiveFailure: error.message, updatedAt: failedAt } : item));
+      const project = projects.find((item) => String(item.id) === String(projectId));
+      if (project) appendProjectPromotionRun(project, { type: 'execute_plan', status: 'failed', error: error.message, failedAt });
+    } catch {
+      // Preserve the original archive error when recording the failure also fails.
+    }
     return JSON.stringify({ ok: false, message: `执行归档清单失败：${error.message}` });
   }
 }
@@ -4023,8 +5518,10 @@ function getProjectPromotionAudit(projectId) {
   }
 }
 
-function rollbackProjectPromotionRun(projectId, runId) {
+function performRollbackProjectPromotionRun(projectId, runId, taskContext = null) {
   try {
+    const access = mutableProject(projectId, '回滚知识贡献');
+    if (access.error) return access.error;
     const project = readProjects().map(normalizeProject).find((item) => String(item.id) === String(projectId));
     if (!project) return JSON.stringify({ ok: false, message: '未找到学习项目。' });
     const ensured = ensureProjectWorkspace(project);
@@ -4042,6 +5539,11 @@ function rollbackProjectPromotionRun(projectId, runId) {
       ...(ensured.studentIds || []).map(String),
     ]);
     const students = readStudentsIndex().filter((student) => affectedStudentIds.includes(String(student.id)));
+    const authorization = authorizeInternalTaskOperation(taskContext, 'rollback_promotion', [
+      ensured.contributionPath,
+      ...students.map((student) => toHostStudent(student).rootPath || getStudentRootDir(student.name)),
+    ]);
+    if (!authorization.ok) return JSON.stringify({ ok: false, blocked: true, message: authorization.message });
     const rollbackRows = [];
     for (const student of students) {
       const normalized = toHostStudent(student);
@@ -4087,18 +5589,26 @@ function rollbackProjectPromotionRun(projectId, runId) {
   }
 }
 
-function publishProjectPromotion(projectId) {
+function performPublishProjectPromotion(projectId, taskContext = null) {
   try {
+    const access = mutableProject(projectId, '发布知识贡献');
+    if (access.error) return access.error;
     const projects = readProjects().map(normalizeProject);
     const project = projects.find((item) => String(item.id) === String(projectId));
     if (!project) return JSON.stringify({ ok: false, message: '未找到学习项目。' });
     const ensured = ensureProjectWorkspace(project);
+    const students = readStudentsIndex().filter((student) => ensured.studentIds.includes(String(student.id)));
+    if (!students.length) return JSON.stringify({ ok: false, message: '该学习项目尚未绑定学生，无法发布到成长模型。' });
+    const authorization = authorizeInternalTaskOperation(taskContext, 'publish_growth_evidence', [
+      projectsPath(),
+      ensured.contributionPath,
+      ...students.flatMap((student) => [toHostStudent(student).rootPath || getStudentRootDir(student.name), student.summaryPath || getSummaryDir(student.name), growthModelDirForStudent(toHostStudent(student))]),
+    ]);
+    if (!authorization.ok) return JSON.stringify({ ok: false, blocked: true, message: authorization.message });
     const generated = JSON.parse(generateProjectPromotion(projectId));
     if (!generated.ok && !fs.existsSync(ensured.promotionPath)) return JSON.stringify({ ok: false, message: generated.message || '知识贡献申请不存在，无法发布。' });
     const promotionPath = generated.path || ensured.promotionPath;
     const promotionContent = fs.existsSync(promotionPath) ? fs.readFileSync(promotionPath, 'utf8') : generated.content || '';
-    const students = readStudentsIndex().filter((student) => ensured.studentIds.includes(String(student.id)));
-    if (!students.length) return JSON.stringify({ ok: false, message: '该学习项目尚未绑定学生，无法发布到成长模型。' });
     const today = new Date().toISOString().slice(0, 10);
     const published = [];
     for (const student of students) {
@@ -4148,6 +5658,97 @@ function publishProjectPromotion(projectId) {
   } catch (error) {
     return JSON.stringify({ ok: false, message: `发布知识贡献失败：${error.message}` });
   }
+}
+
+function projectPromotionPermissionScope(project) {
+  const ensured = ensureProjectWorkspace(project);
+  const students = readStudentsIndex().filter((student) => ensured.studentIds.includes(String(student.id)));
+  return {
+    read: [ensured.knowledgeRootPath, ensured.rawPath, ensured.promotionPath].filter(Boolean),
+    write: [
+      projectsPath(),
+      ensured.contributionPath,
+      ...students.flatMap((student) => [
+        toHostStudent(student).rootPath || getStudentRootDir(student.name),
+        student.rawPath || getRawDir(student.name),
+        student.summaryPath || getSummaryDir(student.name),
+        growthModelDirForStudent(toHostStudent(student)),
+      ]),
+    ].filter(Boolean),
+  };
+}
+
+function queueProjectPromotionOperation(projectId, operation, planJson = '', extraInput = {}) {
+  try {
+    const project = readProjects().map(normalizeProject).find((item) => String(item.id) === String(projectId));
+    if (!project) return JSON.stringify({ ok: false, message: '未找到学习项目。' });
+    const scope = projectPromotionPermissionScope(project);
+    let plan = null;
+    if (operation === 'execute_archive_plan') {
+      try { plan = JSON.parse(planJson || '{}'); }
+      catch { return JSON.stringify({ ok: false, message: '归档清单不是有效 JSON。' }); }
+      if (!Array.isArray(plan.items) || !plan.items.length) return JSON.stringify({ ok: false, message: '归档清单为空。' });
+    }
+    const kind = operation === 'publish_growth_evidence' ? 'growth_publish' : operation === 'rollback_promotion' ? 'promotion_rollback' : 'project_promotion';
+    const id = taskStableId(kind, 'project', project.id);
+    const store = readTaskStore();
+    const current = store.tasks.find((item) => item.id === id);
+    if (current && ['approved', 'running', 'waiting_result', 'reviewing'].includes(current.status)) {
+      return JSON.stringify({ ok: false, task: current, message: '该高风险任务已经在审批或执行流程中，请前往任务中心处理。' });
+    }
+    const task = normalizeTaskEnvelope({
+      ...(current || {}),
+      id,
+      title: operation === 'publish_growth_evidence' ? `${project.name}发布到成长模型` : operation === 'rollback_promotion' ? `${project.name}安全回滚贡献记录` : `${project.name}执行归档清单`,
+      kind,
+      sourceType: 'project',
+      sourceId: String(project.id),
+      sourceName: project.name,
+      status: 'pending',
+      trigger: 'manual',
+      priority: 'high',
+      riskLevel: 'high',
+      executor: 'internal',
+      requestedExecutor: 'internal',
+      executionMode: 'internal',
+      input: { projectId: String(project.id), operation, plan, ...extraInput, requestedAt: taskNow() },
+      expectedOutput: { type: 'internal_operation', operation },
+      permissions: { read: scope.read, write: scope.write, operations: [operation] },
+      approval: { required: true, status: 'pending' },
+      result: null,
+      error: null,
+      executionId: '',
+      adapterId: '',
+      completedAt: '',
+      detail: operation === 'publish_growth_evidence'
+        ? '发布成长证据属于高风险操作，必须在任务中心审批后执行。'
+        : operation === 'rollback_promotion'
+          ? '回滚会修改贡献和成长证据审核状态，必须在任务中心审批后执行；不会删除物理文件。'
+        : '批量归档和写入学生档案属于高风险操作，必须在任务中心审批后执行。',
+      action: operation,
+    }, current || {});
+    const index = store.tasks.findIndex((item) => item.id === id);
+    if (index >= 0) store.tasks[index] = task;
+    else store.tasks.push(task);
+    appendTaskEvent(task.id, 'high_risk_operation_requested', { operation, projectId: project.id, approvalRequired: true });
+    writeTaskStore(store);
+    notify('onNativeTaskCenterChanged', JSON.stringify({ taskId: task.id, status: task.status }));
+    return JSON.stringify({ ok: true, queued: true, task, message: '已创建高风险任务。请前往任务中心批准并执行，审批前不会写入学生档案。' });
+  } catch (error) {
+    return JSON.stringify({ ok: false, message: `创建高风险任务失败：${error.message}` });
+  }
+}
+
+function executeProjectPromotionPlan(projectId, planJson) {
+  return queueProjectPromotionOperation(projectId, 'execute_archive_plan', planJson);
+}
+
+function publishProjectPromotion(projectId) {
+  return queueProjectPromotionOperation(projectId, 'publish_growth_evidence');
+}
+
+function rollbackProjectPromotionRun(projectId, runId) {
+  return queueProjectPromotionOperation(projectId, 'rollback_promotion', '', { runId: String(runId || '') });
 }
 
 function listProjectArchiveFiles(projectId) {
@@ -4248,6 +5849,1400 @@ function ensureGrowthModelForStudent(student) {
   return { dir, created };
 }
 
+const TASK_TERMINAL_STATUSES = new Set(['succeeded', 'failed', 'blocked', 'cancelled', 'timed_out']);
+
+function taskNow() {
+  return new Date().toISOString();
+}
+
+function taskToday() {
+  const now = new Date();
+  const year = now.getFullYear();
+  const month = String(now.getMonth() + 1).padStart(2, '0');
+  const day = String(now.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
+function taskLocalDate(value) {
+  const date = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(date.getTime())) return '';
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
+function taskStableId(kind, sourceType, sourceId, suffix = '') {
+  const seed = [kind, sourceType, sourceId, suffix].filter(Boolean).join('|');
+  return `task-${kind}-${sha1Text(seed).slice(0, 12)}`;
+}
+
+function normalizeTaskStatus(status) {
+  const value = String(status || '').trim().toLowerCase();
+  const aliases = {
+    scheduled: 'queued',
+    waiting: 'waiting_result',
+    completed: 'succeeded',
+    success: 'succeeded',
+    digesting: 'running',
+    submitted: 'waiting_result',
+    idle: 'queued',
+  };
+  const normalized = aliases[value] || value;
+  return Object.prototype.hasOwnProperty.call(TASK_STATUS_TRANSITIONS, normalized) ? normalized : 'pending';
+}
+
+function taskStatusGroup(status) {
+  const normalized = normalizeTaskStatus(status);
+  if (['draft', 'pending', 'approved', 'blocked', 'failed', 'timed_out'].includes(normalized)) return 'actionable';
+  if (['running', 'waiting_result', 'reviewing'].includes(normalized)) return 'running';
+  if (normalized === 'queued') return 'scheduled';
+  if (normalized === 'succeeded') return 'completed';
+  return 'actionable';
+}
+
+function taskRiskForKind(kind) {
+  if (['project_promotion', 'growth_publish', 'promotion_rollback', 'asset_delete', 'bulk_archive'].includes(String(kind || ''))) return 'high';
+  if (['knowledge_review', 'project_digest'].includes(String(kind || ''))) return 'medium';
+  return 'low';
+}
+
+function taskRequiresApproval(task) {
+  return task?.riskLevel === 'high' || ['project_promotion', 'growth_publish'].includes(String(task?.kind || ''));
+}
+
+const TASK_OPERATION_ALLOWLIST = {
+  daily_action: new Set(['read', 'create_draft']),
+  student_digest: new Set(['read', 'write_knowledge']),
+  maintenance_lint: new Set(['read', 'create_report']),
+  project_digest: new Set(['read', 'write_project_knowledge']),
+  knowledge_review: new Set(['review_knowledge']),
+  openclaw_cron: new Set(['execute_scheduled_task']),
+  project_promotion: new Set(['execute_archive_plan', 'archive_project']),
+  growth_publish: new Set(['publish_growth_evidence']),
+  promotion_rollback: new Set(['rollback_promotion']),
+};
+
+function canonicalTaskPath(value) {
+  if (!value) return '';
+  try { return path.resolve(String(value)); }
+  catch { return '';
+  }
+}
+
+function taskPathWithin(candidate, root) {
+  const target = canonicalTaskPath(candidate);
+  const base = canonicalTaskPath(root);
+  if (!target || !base) return false;
+  const relative = path.relative(base, target);
+  return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
+}
+
+function taskPathAllowed(candidate, roots) {
+  return (roots || []).some((root) => taskPathWithin(candidate, root));
+}
+
+function validateTaskPermissionDeclaration(task) {
+  return validatePermissionDeclaration(task, TASK_OPERATION_ALLOWLIST);
+}
+
+function authorizeInternalTaskOperation(taskContext, operation, targetRoots = []) {
+  if (!taskContext?.taskId || !taskContext?.executionId) return { ok: false, message: '内部高风险操作只能由任务中心调用。' };
+  const task = readTaskStore().tasks.find((item) => item.id === String(taskContext.taskId));
+  if (!task || task.executionId !== String(taskContext.executionId)) return { ok: false, message: '任务执行上下文无效或已过期。' };
+  if (task.status !== 'running' || task.approval?.status !== 'approved') return { ok: false, message: '高风险任务尚未批准或不在执行状态。' };
+  const check = validateTaskPermissionDeclaration(task);
+  if (!check.ok) return check;
+  if (!check.permissions.operations.includes(operation)) return { ok: false, message: `任务未授权操作：${operation}` };
+  const outside = targetRoots.filter(Boolean).find((target) => !taskPathAllowed(target, check.permissions.write));
+  if (outside) return { ok: false, message: `内部操作目标超出批准的写入范围：${outside}` };
+  return { ok: true, task, permissions: check.permissions };
+}
+
+function normalizeTaskEnvelope(task, current = {}) {
+  const now = taskNow();
+  const sourceType = String(task?.sourceType || current.sourceType || 'system');
+  const sourceId = String(task?.sourceId || current.sourceId || 'system');
+  const kind = String(task?.kind || current.kind || 'generic');
+  const id = String(task?.id || current.id || taskStableId(kind, sourceType, sourceId, task?.scheduleKey || ''));
+  const riskLevel = String(task?.riskLevel || current.riskLevel || taskRiskForKind(kind));
+  const merged = {
+    protocolVersion: TASK_PROTOCOL_VERSION,
+    id,
+    title: String(task?.title || current.title || '未命名任务'),
+    kind,
+    sourceType,
+    sourceId,
+    sourceName: String(task?.sourceName || current.sourceName || ''),
+    status: normalizeTaskStatus(task?.status || current.status || 'pending'),
+    statusGroup: '',
+    trigger: String(task?.trigger || current.trigger || 'manual'),
+    priority: String(task?.priority || current.priority || 'normal'),
+    riskLevel,
+    executor: String(task?.executor || current.executor || 'manual'),
+    requestedExecutor: String(task?.requestedExecutor || current.requestedExecutor || task?.executor || 'manual'),
+    executionMode: String(task?.executionMode || current.executionMode || 'manual'),
+    scheduledAt: String(task?.scheduledAt || current.scheduledAt || ''),
+    deadlineAt: String(task?.deadlineAt || current.deadlineAt || ''),
+    timeoutSeconds: Math.max(30, Number(task?.timeoutSeconds || current.timeoutSeconds || 900)),
+    heartbeatTimeoutSeconds: Math.max(30, Number(task?.heartbeatTimeoutSeconds || current.heartbeatTimeoutSeconds || Math.min(Number(task?.timeoutSeconds || current.timeoutSeconds || 900), 180))),
+    idempotencyKey: String(task?.idempotencyKey || current.idempotencyKey || `${kind}:${sourceType}:${sourceId}:${task?.scheduleKey || 'current'}`),
+    input: task?.input && typeof task.input === 'object' ? task.input : (current.input || {}),
+    expectedOutput: task?.expectedOutput && typeof task.expectedOutput === 'object' ? task.expectedOutput : (current.expectedOutput || {}),
+    permissions: task?.permissions && typeof task.permissions === 'object' ? task.permissions : (current.permissions || { read: [], write: [], operations: [] }),
+    detail: String(task?.detail || current.detail || ''),
+    action: String(task?.action || current.action || ''),
+    count: Math.max(0, Number(task?.count ?? current.count ?? 0)),
+    approval: task?.approval && typeof task.approval === 'object' ? task.approval : (current.approval || { required: riskLevel === 'high', status: riskLevel === 'high' ? 'pending' : 'not_required' }),
+    result: task?.result && typeof task.result === 'object' ? task.result : (current.result || null),
+    attempt: Math.max(0, Number(task?.attempt ?? current.attempt ?? 0)),
+    maxAttempts: Math.max(1, Number(task?.maxAttempts || current.maxAttempts || 3)),
+    retryBackoffSeconds: Math.max(0, Number(task?.retryBackoffSeconds ?? current.retryBackoffSeconds ?? 30)),
+    autoRetry: Boolean(task?.autoRetry ?? current.autoRetry ?? true),
+    routingMode: String(task?.routingMode || current.routingMode || 'smart'),
+    routeAttempts: Array.isArray(task?.routeAttempts) ? task.routeAttempts : (Array.isArray(current.routeAttempts) ? current.routeAttempts : []),
+    createdAt: String(current.createdAt || task?.createdAt || now),
+    updatedAt: String(task?.updatedAt || now),
+    startedAt: String(task?.startedAt || current.startedAt || ''),
+    completedAt: String(task?.completedAt || current.completedAt || ''),
+    lastHeartbeatAt: String(task?.lastHeartbeatAt || current.lastHeartbeatAt || ''),
+    nextRetryAt: String(task?.nextRetryAt || current.nextRetryAt || ''),
+    executionId: String(task?.executionId || current.executionId || ''),
+    adapterId: String(task?.adapterId || current.adapterId || ''),
+    routeDecision: task?.routeDecision && typeof task.routeDecision === 'object' ? task.routeDecision : (current.routeDecision || null),
+    error: task?.error && typeof task.error === 'object' ? task.error : (current.error || null),
+  };
+  merged.statusGroup = taskStatusGroup(merged.status);
+  return merged;
+}
+
+function ensureTaskCenterWorkspace() {
+  for (const dir of [taskCenterDirPath(), taskExecutionDirPath(), taskManualOutboxPath(), qclawTaskInboxPath(), qclawTaskResultPath()]) fs.mkdirSync(dir, { recursive: true });
+  const readme = path.join(taskCenterDirPath(), 'README.md');
+  const readmeContent = `# AI 教育管家统一任务中心\n\n协议版本：${TASK_PROTOCOL_VERSION}\n\n- tasks.json：标准任务包与执行历史。\n- events.jsonl：只追加的任务事件审计日志。\n- executions：自动执行日志。\n- qclaw-inbox：QClaw 待领取任务包。\n- qclaw-results：QClaw 领取回执与结果回写目录。\n- manual-outbox：不支持自动接口时的人工任务包。\n- migration-backups：协议升级前的任务账本备份。\n\nQClaw 领取任务时，可写入 \`<taskId>.claim.json\`，必须包含 protocolVersion、taskId、executionId、agentId 和 claimedAt。完成后写入 \`<taskId>.result.json\`：\n\n\`\`\`json\n{\n  "protocolVersion": "${TASK_PROTOCOL_VERSION}",\n  "taskId": "任务 ID",\n  "executionId": "任务包中的 executionId",\n  "status": "completed",\n  "message": "执行摘要",\n  "artifacts": [{ "path": "产物路径" }],\n  "validation": { "passed": true }\n}\n\`\`\`\n\n协议版本、任务 ID、执行批次任一不匹配时，结果会进入 rejected 目录，不会改变任务状态。所有结果仍需由任务中心校验和审核，Agent 不得直接发布高风险结果。\n`;
+  if (!fs.existsSync(readme) || !fs.readFileSync(readme, 'utf8').includes(`协议版本：${TASK_PROTOCOL_VERSION}`)) fs.writeFileSync(readme, readmeContent, 'utf8');
+}
+
+function readTaskStore() {
+  ensureTaskCenterWorkspace();
+  const parsed = safeReadJson(taskStorePath(), {});
+  if (parsed.protocolVersion && parsed.protocolVersion !== TASK_PROTOCOL_VERSION && fs.existsSync(taskStorePath())) {
+    const backupDir = path.join(taskCenterDirPath(), 'migration-backups');
+    const backupPath = path.join(backupDir, `tasks-${String(parsed.protocolVersion).replace(/[^0-9A-Za-z._-]/g, '_')}-to-${TASK_PROTOCOL_VERSION}.json`);
+    if (!fs.existsSync(backupPath)) {
+      fs.mkdirSync(backupDir, { recursive: true });
+      fs.copyFileSync(taskStorePath(), backupPath);
+    }
+  }
+  return {
+    protocolVersion: TASK_PROTOCOL_VERSION,
+    updatedAt: String(parsed.updatedAt || ''),
+    tasks: Array.isArray(parsed.tasks) ? parsed.tasks.map((task) => normalizeTaskEnvelope(task, task)) : [],
+    history: Array.isArray(parsed.history) ? parsed.history : [],
+  };
+}
+
+function writeTaskStore(store) {
+  const normalized = {
+    protocolVersion: TASK_PROTOCOL_VERSION,
+    updatedAt: taskNow(),
+    tasks: (store.tasks || []).map((task) => normalizeTaskEnvelope(task, task)),
+    history: (store.history || []).slice(0, 1000),
+  };
+  writeJsonFile(taskStorePath(), normalized);
+  return normalized;
+}
+
+function appendTaskEvent(taskId, type, detail = {}, executionId = '') {
+  fs.mkdirSync(path.dirname(taskEventLogPath()), { recursive: true });
+  const event = { id: `event-${Date.now()}-${crypto.randomBytes(3).toString('hex')}`, taskId: String(taskId || ''), executionId: String(executionId || ''), type: String(type || 'updated'), at: taskNow(), detail };
+  fs.appendFileSync(taskEventLogPath(), `${JSON.stringify(event)}\n`, 'utf8');
+  return event;
+}
+
+function transitionTaskInStore(store, taskId, nextStatus, patch = {}, eventType = 'status_changed') {
+  const index = store.tasks.findIndex((task) => String(task.id) === String(taskId));
+  if (index < 0) return { ok: false, message: '未找到任务。' };
+  const current = store.tasks[index];
+  const normalizedNext = normalizeTaskStatus(nextStatus);
+  const transitionValidation = validateTaskTransition(normalizeTaskStatus(current.status), normalizedNext);
+  if (!transitionValidation.ok) return transitionValidation;
+  const now = taskNow();
+  const next = normalizeTaskEnvelope({
+    ...current,
+    ...patch,
+    status: normalizedNext,
+    updatedAt: now,
+    ...(normalizedNext === 'running' && !current.startedAt ? { startedAt: now, lastHeartbeatAt: now } : {}),
+    ...(TASK_TERMINAL_STATUSES.has(normalizedNext) ? { completedAt: now } : {}),
+  }, current);
+  store.tasks[index] = next;
+  store.history.unshift({
+    id: `history-${Date.now()}-${crypto.randomBytes(3).toString('hex')}`,
+    taskId: next.id,
+    executionId: next.executionId,
+    kind: next.kind,
+    title: next.title,
+    sourceType: next.sourceType,
+    sourceId: next.sourceId,
+    sourceName: next.sourceName,
+    executor: next.executor,
+    status: next.status,
+    at: now,
+    detail: patch.message || patch.error?.message || patch.result?.summary || '',
+    approval: patch.approval || null,
+    metrics: patch.result?.metrics || null,
+    fileChanges: patch.result?.fileChanges || [],
+    validation: patch.result?.validation || null,
+  });
+  appendTaskEvent(next.id, eventType, { from: current.status, to: next.status, ...patch }, next.executionId);
+  return { ok: true, task: next };
+}
+
+function upsertTaskCandidates(candidates) {
+  const store = readTaskStore();
+  const byId = new Map(store.tasks.map((task) => [String(task.id), task]));
+  let changed = false;
+  for (const candidate of candidates) {
+    const current = byId.get(String(candidate.id));
+    if (!current) {
+      const created = normalizeTaskEnvelope(candidate);
+      store.tasks.push(created);
+      byId.set(created.id, created);
+      changed = true;
+      appendTaskEvent(created.id, 'task_created', { kind: created.kind, sourceType: created.sourceType, sourceId: created.sourceId });
+      continue;
+    }
+    const sourceStatus = normalizeTaskStatus(candidate.status);
+    const preserveExecution = ['running', 'waiting_result', 'reviewing'].includes(current.status);
+    const preserveTerminal = TASK_TERMINAL_STATUSES.has(current.status) && Number(candidate.count || 0) === 0;
+    const nextStatus = preserveExecution || preserveTerminal ? current.status : sourceStatus;
+    const preserveRequestedOperation = taskRequiresApproval(current) && current.input?.operation && !TASK_TERMINAL_STATUSES.has(current.status);
+    const merged = normalizeTaskEnvelope({
+      ...candidate,
+      status: nextStatus,
+      input: preserveRequestedOperation ? current.input : candidate.input,
+      expectedOutput: preserveRequestedOperation ? current.expectedOutput : candidate.expectedOutput,
+      permissions: preserveRequestedOperation ? current.permissions : candidate.permissions,
+      result: current.result,
+      approval: current.approval,
+      attempt: current.attempt,
+      createdAt: current.createdAt,
+      executionId: current.executionId,
+      adapterId: current.adapterId,
+      routeDecision: current.routeDecision,
+      routeAttempts: current.routeAttempts,
+      error: current.error,
+    }, current);
+    const comparableCurrent = { ...current, updatedAt: '' };
+    const comparableMerged = { ...merged, updatedAt: '' };
+    if (JSON.stringify(comparableCurrent) === JSON.stringify(comparableMerged)) continue;
+    const index = store.tasks.findIndex((task) => task.id === current.id);
+    store.tasks[index] = merged;
+    byId.set(merged.id, merged);
+    changed = true;
+  }
+  return changed ? writeTaskStore(store) : store;
+}
+
+function dailyActionDraftPath(student, taskId) {
+  return path.join(studentAiManagerDir(student), 'task-center', 'daily-action-drafts', `${taskId}.md`);
+}
+
+function dailyActionFeedbackPath(student) {
+  return path.join(studentAiManagerDir(student), 'task-center', 'daily-action-feedback.json');
+}
+
+function readDailyActionFeedback(student) {
+  const parsed = safeReadJson(dailyActionFeedbackPath(student), {});
+  return Array.isArray(parsed.entries) ? parsed.entries : [];
+}
+
+function buildDailyActionTask(student) {
+  const normalized = toHostStudent(student);
+  const day = taskToday();
+  const report = LEARNING_REPORTS.find((item) => item.id === 'daily');
+  const officialPath = learningReportPathForStudent(normalized, report);
+  const stat = fs.existsSync(officialPath) ? fs.statSync(officialPath) : null;
+  const officialContent = stat ? readSmallTextFile(officialPath, 512 * 1024) : '';
+  const reportStatus = frontmatterValue(officialContent, 'status').toLowerCase();
+  const reportUpdated = frontmatterValue(officialContent, 'updated');
+  const updatedToday = Boolean(stat
+    && taskLocalDate(stat.mtime) === day
+    && reportUpdated === day
+    && reportStatus === 'published');
+  const id = taskStableId('daily_action', 'student', normalized.id, day);
+  const boundProjects = readProjects().map(normalizeProject)
+    .filter((project) => (project.studentIds || []).map(String).includes(String(normalized.id)))
+    .map((project) => ({ id: project.id, name: project.name, status: project.status, pendingDigest: Number(project.digestState?.pendingCount || 0), contributionStatus: project.dashboard?.contributionStatus || '' }));
+  const relatedProjectIds = new Set(boundProjects.map((project) => String(project.id)));
+  const unfinishedTasks = readTaskStore().tasks
+    .filter((task) => task.statusGroup !== 'completed'
+      && ((task.sourceType === 'student' && String(task.sourceId) === String(normalized.id))
+        || (task.sourceType === 'project' && relatedProjectIds.has(String(task.sourceId)))))
+    .map((task) => ({ id: task.id, title: task.title, status: task.status, priority: task.priority, deadlineAt: task.deadlineAt || '' }))
+    .slice(0, 20);
+  return normalizeTaskEnvelope({
+    id,
+    title: `${normalized.name}每日行动建议`,
+    kind: 'daily_action',
+    sourceType: 'student',
+    sourceId: String(normalized.id),
+    sourceName: normalized.name,
+    status: updatedToday ? 'succeeded' : 'pending',
+    trigger: 'schedule',
+    priority: 'high',
+    riskLevel: 'low',
+    executor: String(normalized.agentTool || 'qclaw'),
+    requestedExecutor: String(normalized.agentTool || 'qclaw'),
+    executionMode: 'adapter',
+    scheduledAt: String(normalized.digestTime || '21:30'),
+    scheduleKey: day,
+    idempotencyKey: `daily_action:${normalized.id}:${day}`,
+    input: {
+      date: day,
+      studentId: String(normalized.id),
+      studentName: normalized.name,
+      knowledgeRoot: normalized.rootPath || getStudentRootDir(normalized.name),
+      summaryPath: normalized.summaryPath || getSummaryDir(normalized.name),
+      growthPath: growthModelDirForStudent(normalized),
+      previousFeedback: selectPreviousDailyFeedback(readDailyActionFeedback(normalized), day, 3),
+      projects: boundProjects,
+      unfinishedTasks,
+    },
+    expectedOutput: { type: 'markdown', draftPath: dailyActionDraftPath(normalized, id), publishPath: officialPath, requiredSections: ['今日重点', '给学生', '给家长', '给老师', '今日不建议做的事', '观察点', '依据来源'] },
+    permissions: { read: [normalized.rootPath || getStudentRootDir(normalized.name)], write: [dailyActionDraftPath(normalized, id)], operations: ['read', 'create_draft'] },
+    detail: updatedToday ? '今日行动建议已发布。' : '根据最新学情、项目状态和前一日反馈生成今日建议，完成后进入人工审核。',
+    action: 'daily_action',
+    approval: { required: false, status: 'not_required' },
+  });
+}
+
+function taskCommandFor(task) {
+  if (task.kind === 'project_digest') {
+    const parsed = JSON.parse(getProjectDigestCommand(task.sourceId));
+    return parsed.ok ? parsed.command : '';
+  }
+  const student = task.sourceType === 'student' ? readStudentsIndex().find((item) => String(item.id) === String(task.sourceId)) : null;
+  if (task.kind === 'daily_action' && student) {
+    const normalized = toHostStudent(student);
+    const expectedDate = String(task.input?.date || taskToday());
+    const feedback = Array.isArray(task.input?.previousFeedback)
+      ? task.input.previousFeedback
+      : selectPreviousDailyFeedback(readDailyActionFeedback(normalized), expectedDate, 3);
+    return `请为学生「${normalized.name}」生成 ${expectedDate} 的每日行动建议。\n\n读取范围：\n- 学生知识库：${normalized.rootPath || getStudentRootDir(normalized.name)}\n- 学情分析汇总：${normalized.summaryPath || getSummaryDir(normalized.name)}\n- 成长模型：${growthModelDirForStudent(normalized)}\n\n绑定项目状态：\n${task.input?.projects?.length ? JSON.stringify(task.input.projects, null, 2) : '暂无绑定项目。'}\n\n未完成任务：\n${task.input?.unfinishedTasks?.length ? JSON.stringify(task.input.unfinishedTasks, null, 2) : '暂无未完成任务。'}\n\n前序反馈：\n${feedback.length ? JSON.stringify(feedback, null, 2) : '暂无反馈。'}\n\n必须包含：今日重点、给学生、给家长、给老师、今日不建议做的事、观察点、依据来源。每个章节必须有实质内容；建议必须具体、当天可执行，并标注依据；不确定内容标注“待观察”。\n\n只把草稿写入：${task.expectedOutput?.draftPath}\n不要直接覆盖正式报告。文件必须以如下 YAML frontmatter 开头：\n---\ndate: ${expectedDate}\ngenerated_at: 当前 ISO 时间\nstatus: pending_review\n---\n\n完成后确认文件存在。`;
+  }
+  if (task.kind === 'student_digest' && student) {
+    const normalized = toHostStudent(student);
+    return `/消化\n\n请按照 ${normalized.agentPath || path.join(normalized.rootPath || getStudentRootDir(normalized.name), 'AGENT.md')} 的规则，处理 ${normalized.rawPath || getRawDir(normalized.name)} 中尚未消化的资料，并更新摘要、概念、实体、问答、综合汇总、成长模型和学情报告。完成后更新 ${studentDigestStatePath(normalized)}。`;
+  }
+  if (task.kind === 'maintenance_lint' && student) {
+    const normalized = toHostStudent(student);
+    return `请检查学生「${normalized.name}」知识库的路径、规则文件、索引、来源引用、断链和成长模型健康度。知识库：${normalized.rootPath || getStudentRootDir(normalized.name)}。只生成检查报告，不删除或覆盖原文件。`;
+  }
+  return String(task.input?.command || task.detail || task.title || '');
+}
+
+function probeExecutable(executable, args, timeout = 2500) {
+  if (!executable) return { ok: false, output: '', error: 'executable_not_found' };
+  try {
+    const shim = resolveNodeCommandShim(executable, args);
+    const target = shim?.executable || executable;
+    const targetArgs = shim?.args || args;
+    const scripted = !shim && /\.(cmd|bat|ps1)$/i.test(executable);
+    const result = spawnSync(target, targetArgs, { windowsHide: true, shell: scripted, encoding: 'utf8', timeout });
+    return { ok: result.status === 0, output: `${result.stdout || ''}\n${result.stderr || ''}`.trim(), status: result.status, error: result.error?.message || '' };
+  } catch (error) {
+    return { ok: false, output: '', error: error.message };
+  }
+}
+
+function probeExecutableAsync(executable, args, timeout = 5000) {
+  if (!executable) return Promise.resolve({ ok: false, output: '', error: 'executable_not_found' });
+  return new Promise((resolve) => {
+    let child;
+    let stdout = '';
+    let stderr = '';
+    let settled = false;
+    const finish = (result) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(result);
+    };
+    const timer = setTimeout(() => {
+      try { child?.kill(); } catch { /* The process may already have exited. */ }
+      finish({ ok: false, output: `${stdout}\n${stderr}`.trim(), error: `timeout_after_${timeout}ms`, timedOut: true });
+    }, timeout);
+    try {
+      child = spawnAdapterProcess(executable, args, { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
+      child.stdout?.on('data', (chunk) => { stdout = `${stdout}${chunk}`.slice(-20000); });
+      child.stderr?.on('data', (chunk) => { stderr = `${stderr}${chunk}`.slice(-20000); });
+      child.on('error', (error) => finish({ ok: false, output: `${stdout}\n${stderr}`.trim(), error: error.message }));
+      child.on('exit', (status) => finish({ ok: Number(status) === 0, output: `${stdout}\n${stderr}`.trim(), status: Number(status), error: '' }));
+    } catch (error) {
+      finish({ ok: false, output: '', error: error.message });
+    }
+  });
+}
+
+function parseOpenClawModelReadiness(modelProbe) {
+  if (!modelProbe?.ok) return { ready: false, model: '', message: '未读取到默认模型配置' };
+  let configured = String(modelProbe.output || '').trim();
+  try {
+    const parsed = JSON.parse(configured);
+    configured = String(parsed.primary || parsed.model || configured);
+  } catch { /* Plain-text model identifiers are also valid. */ }
+  configured = configured.replace(/^"|"$/g, '');
+  if (!configured) return { ready: false, model: '', message: '默认模型为空' };
+  return { ready: true, model: configured, message: `模型 ${configured}` };
+}
+
+async function verifyOpenClawModel(modelProbe) {
+  const parsed = parseOpenClawModelReadiness(modelProbe);
+  if (!parsed.ready || !parsed.model.startsWith('ollama/')) return parsed;
+  const model = parsed.model.slice('ollama/'.length);
+  const ollama = findExecutableInPath(['ollama.exe', 'ollama']);
+  const list = ollama ? await probeExecutableAsync(ollama, ['list'], 5000) : { ok: false, output: '' };
+  const ready = Boolean(list.ok && list.output.split(/\r?\n/).some((line) => line.trim().startsWith(model)));
+  return { ready, model: parsed.model, message: ready ? `模型 ${parsed.model} 已就绪` : `模型 ${parsed.model} 未安装或 Ollama 不可用` };
+}
+
+function baseAdapterCapabilities(previous = {}) {
+  const codex = findAgentToolInstall('codex');
+  const openclawCli = findExecutableInPath(['openclaw.cmd', 'openclaw.exe', 'openclaw']);
+  const qclaw = findAgentToolInstall('qclaw');
+  const previousCodex = previous.codex || {};
+  const previousOpenClaw = previous.openclaw || {};
+  return {
+    internal: { id: 'internal', label: '教育管家内部执行器', available: true, authorized: true, automatic: true, cli: false, gateway: false, gatewayHealthy: true, cron: false, polling: false, inbox: false, cancel: false, structuredResult: true, permissionEnforcement: 'strict', hidden: true, exePath: '' },
+    codex: { id: 'codex', label: 'Codex', available: Boolean(codex.installed && codex.exePath), authorized: previousCodex.exePath === codex.exePath ? previousCodex.authorized !== false : Boolean(codex.installed && codex.exePath), automatic: true, cli: true, gateway: false, gatewayHealthy: false, cron: false, polling: true, inbox: false, cancel: true, structuredResult: false, permissionEnforcement: 'workspace', healthPending: true, healthMessage: previousCodex.exePath === codex.exePath && previousCodex.healthMessage ? previousCodex.healthMessage : 'CLI 已发现，后台验证配置与授权', exePath: codex.exePath || '' },
+    openclaw: { id: 'openclaw', label: 'OpenClaw', available: Boolean(openclawCli), authorized: previousOpenClaw.exePath === openclawCli ? Boolean(previousOpenClaw.authorized) : false, automatic: true, cli: Boolean(openclawCli), gateway: previousOpenClaw.exePath === openclawCli ? Boolean(previousOpenClaw.gateway) : false, gatewayHealthy: previousOpenClaw.exePath === openclawCli ? Boolean(previousOpenClaw.gatewayHealthy) : false, cron: previousOpenClaw.exePath === openclawCli ? Boolean(previousOpenClaw.cron) : false, polling: true, inbox: false, cancel: true, structuredResult: true, permissionEnforcement: 'declared_and_validated', healthPending: true, healthMessage: previousOpenClaw.exePath === openclawCli && previousOpenClaw.healthMessage ? previousOpenClaw.healthMessage : 'CLI 已发现，后台验证模型与 Gateway', model: previousOpenClaw.model || '', exePath: openclawCli || '' },
+    qclaw: { id: 'qclaw', label: 'QClaw', available: Boolean(qclaw.installed), authorized: Boolean(qclaw.installed), automatic: false, cli: false, gateway: false, gatewayHealthy: false, cron: false, polling: true, inbox: true, cancel: false, structuredResult: true, permissionEnforcement: 'task_packet', exePath: qclaw.exePath || '' },
+    manual: { id: 'manual', label: '人工执行', available: true, authorized: true, automatic: false, cli: false, gateway: false, gatewayHealthy: false, cron: false, polling: false, inbox: true, cancel: false, structuredResult: true, permissionEnforcement: 'human_review', exePath: '' },
+  };
+}
+
+function refreshAdapterCapabilities(force = false) {
+  if (!taskAutomationEnabled() && !force) return Promise.resolve(adapterCapabilityCache.value || baseAdapterCapabilities());
+  if (adapterCapabilityCache.refreshing) return adapterCapabilityCache.refreshing;
+  if (!force && adapterCapabilityCache.value && Date.now() - adapterCapabilityCache.at < 5 * 60 * 1000) return Promise.resolve(adapterCapabilityCache.value);
+  const base = baseAdapterCapabilities(adapterCapabilityCache.value || {});
+  adapterCapabilityCache.value = base;
+  const promise = (async () => {
+    const codex = base.codex;
+    const openclaw = base.openclaw;
+    const [codexAuth, openclawHelp, openclawModel, gatewayHelp, cronHelp] = await Promise.all([
+      codex.exePath ? probeExecutableAsync(codex.exePath, ['login', 'status'], 4000) : Promise.resolve({ ok: false, output: '' }),
+      openclaw.exePath ? probeExecutableAsync(openclaw.exePath, ['agent', '--help'], 5000) : Promise.resolve({ ok: false, output: '' }),
+      openclaw.exePath ? probeExecutableAsync(openclaw.exePath, ['config', 'get', 'agents.defaults.model'], 7000) : Promise.resolve({ ok: false, output: '' }),
+      openclaw.exePath ? probeExecutableAsync(openclaw.exePath, ['gateway', '--help'], 5000) : Promise.resolve({ ok: false, output: '' }),
+      openclaw.exePath ? probeExecutableAsync(openclaw.exePath, ['cron', '--help'], 5000) : Promise.resolve({ ok: false, output: '' }),
+    ]);
+    const codexAuthHealthy = Boolean(codexAuth.ok
+      && !/(error loading configuration|unknown variant|not logged in|unauthorized|authentication failed)/i.test(String(codexAuth.output || '')));
+    const [openclawModelReady, gatewayStatus] = await Promise.all([
+      verifyOpenClawModel(openclawModel),
+      gatewayHelp.ok ? probeExecutableAsync(openclaw.exePath, ['gateway', 'status'], 6000) : Promise.resolve({ ok: false, output: '' }),
+    ]);
+    const value = {
+      ...base,
+      codex: { ...codex, authorized: codexAuthHealthy, healthPending: false, healthMessage: codexAuthHealthy ? 'CLI 已授权' : `CLI 配置或授权异常${codexAuth.output || codexAuth.error ? `：${String(codexAuth.output || codexAuth.error).slice(0, 160)}` : ''}` },
+      openclaw: { ...openclaw, available: Boolean(openclaw.exePath && openclawHelp.ok), authorized: Boolean(openclaw.exePath && openclawHelp.ok && openclawModelReady.ready), cli: Boolean(openclaw.exePath && openclawHelp.ok), gateway: Boolean(gatewayHelp.ok), gatewayHealthy: Boolean(gatewayStatus.ok), cron: Boolean(cronHelp.ok), healthPending: false, healthMessage: !openclawModelReady.ready ? openclawModelReady.message : gatewayHelp.ok ? (gatewayStatus.ok ? `Gateway 正常；${openclawModelReady.message}` : `CLI 本地模式；${openclawModelReady.message}`) : `仅 CLI；${openclawModelReady.message}`, model: openclawModelReady.model },
+    };
+    adapterCapabilityCache = { at: Date.now(), value, refreshing: null };
+    return value;
+  })().catch((error) => {
+    const value = adapterCapabilityCache.value || base;
+    adapterCapabilityCache = { at: Date.now(), value, refreshing: null };
+    appendTaskEvent('', 'adapter_capability_refresh_failed', { message: error.message });
+    return value;
+  });
+  adapterCapabilityCache.refreshing = promise;
+  return promise;
+}
+
+function adapterCapabilities(force = false) {
+  if (!adapterCapabilityCache.value) adapterCapabilityCache.value = baseAdapterCapabilities();
+  if (taskAutomationEnabled() || force) void refreshAdapterCapabilities(force);
+  return adapterCapabilityCache.value;
+}
+
+function routeTask(task, requestedExecutor = '', excludedAdapters = []) {
+  const capabilities = adapterCapabilities();
+  const requestedInput = String(requestedExecutor || task.requestedExecutor || task.executor || 'manual');
+  const routingMode = ['auto', 'smart'].includes(requestedInput) ? 'smart' : requestedInput === 'rule' ? 'rule' : requestedInput === 'confirm' ? 'confirm' : 'fixed';
+  const requested = routingMode === 'fixed' ? requestedInput : '';
+  const excluded = new Set((excludedAdapters || []).map(String));
+  const history = readTaskStore().history || [];
+  const candidates = Object.values(capabilities).filter((adapter) => !adapter.hidden || requested === adapter.id).map((adapter) => {
+    let score = adapter.available && adapter.authorized && !excluded.has(adapter.id) ? 40 : -1000;
+    if (requested && adapter.id === requested) score += 50;
+    if (adapter.automatic) score += 20;
+    if (task.kind === 'daily_action' && adapter.id === 'openclaw') score += 15;
+    if (task.kind === 'project_digest' && ['openclaw', 'codex'].includes(adapter.id)) score += 10;
+    if (task.riskLevel === 'high' && adapter.id === 'manual') score += 20;
+    if (adapter.id === 'manual' && task.riskLevel !== 'high') score -= 30;
+    if (routingMode === 'rule') {
+      if (task.kind === 'daily_action' && adapter.id === 'openclaw') score += 40;
+      if (['student_digest', 'project_digest'].includes(task.kind) && adapter.id === 'codex') score += 35;
+      if (task.executionMode === 'inbox' && adapter.id === 'qclaw') score += 35;
+    }
+    const executions = history.filter((entry) => entry.executor === adapter.id && entry.taskId && ['succeeded', 'failed', 'timed_out', 'cancelled'].includes(String(entry.status)));
+    const successes = executions.filter((entry) => entry.status === 'succeeded').length;
+    const successRate = executions.length ? successes / executions.length : 0.5;
+    const qualityScore = Math.round(successRate * 20);
+    const costWeight = adapter.id === 'manual' ? 3 : adapter.id === 'qclaw' ? 6 : adapter.id === 'openclaw' ? 8 : 10;
+    const speedScore = adapter.automatic ? 20 : adapter.inbox ? 10 : 5;
+    const declaredPaths = [...(task.permissions?.read || []), ...(task.permissions?.write || [])];
+    const localOnly = declaredPaths.some((item) => /^[A-Za-z]:[\\/]/.test(String(item)));
+    const dataBoundaryScore = adapter.permissionEnforcement === 'strict' ? 20 : adapter.id === 'manual' ? 15 : localOnly && adapter.id === 'codex' ? 12 : adapter.available ? 8 : 0;
+    const deadlineMs = task.deadlineAt ? Date.parse(task.deadlineAt) - Date.now() : Number.POSITIVE_INFINITY;
+    const deadlineScore = deadlineMs < 15 * 60 * 1000 ? (adapter.automatic ? 15 : -10) : 0;
+    score += qualityScore + speedScore + dataBoundaryScore - costWeight;
+    score += deadlineScore;
+    return { adapterId: adapter.id, label: adapter.label, score, available: adapter.available && adapter.authorized && !excluded.has(adapter.id), authorized: adapter.authorized, mode: adapter.automatic ? 'automatic' : adapter.inbox ? 'inbox' : 'manual', successRate, qualityScore, speedScore, dataBoundaryScore, deadlineScore, costWeight, excluded: excluded.has(adapter.id) };
+  }).sort((a, b) => b.score - a.score);
+  const selected = candidates.find((candidate) => candidate.available) || candidates.find((candidate) => candidate.adapterId === 'manual');
+  const reason = routingMode === 'smart'
+    ? `智能路由选择 ${selected?.label || '人工执行'}：综合能力、授权、数据边界、截止时间、历史成功率和成本。`
+    : routingMode === 'rule'
+      ? `规则路由选择 ${selected?.label || '人工执行'}：按任务类型和执行模式匹配预设执行器。`
+      : routingMode === 'confirm'
+        ? `已生成执行器推荐：${selected?.label || '人工执行'}，等待人工确认后再提交。`
+    : selected?.adapterId === requested
+      ? '使用任务指定执行器。'
+      : `指定执行器不可使用，已降级为 ${selected?.label || '人工执行'}。`;
+  return { mode: routingMode, requestedExecutor: requested || requestedInput, selectedAdapter: selected?.adapterId || 'manual', reason, candidates, excludedAdapters: [...excluded], confirmationRequired: routingMode === 'confirm', decidedAt: taskNow() };
+}
+
+function writeTaskPacket(task, dir, command) {
+  fs.mkdirSync(dir, { recursive: true });
+  const packetPath = path.join(dir, `${task.id}.task.json`);
+  const promptPath = path.join(dir, `${task.id}.prompt.md`);
+  writeJsonFile(packetPath, { ...task, command, exportedAt: taskNow() });
+  fs.writeFileSync(promptPath, `# ${task.title}\n\n任务 ID：${task.id}\n协议版本：${task.protocolVersion}\n\n${command}\n\n## 结果回写\n\n请返回 TaskResult JSON，并保留 taskId、executionId、status、artifacts、validation 和 message。\n`, 'utf8');
+  return { packetPath, promptPath };
+}
+
+function validateTaskArtifacts(task, startedAt = '', resultPayload = null) {
+  const payloadPaths = Array.isArray(resultPayload?.artifacts)
+    ? resultPayload.artifacts.map((item) => typeof item === 'string' ? item : item?.path).filter(Boolean)
+    : [];
+  const paths = [...new Set([
+    task.expectedOutput?.draftPath,
+    task.expectedOutput?.publishPath,
+    task.expectedOutput?.path,
+    ...payloadPaths,
+  ].filter(Boolean))];
+  const artifacts = paths.map((file) => {
+    const exists = fs.existsSync(file);
+    const stat = exists ? fs.statSync(file) : null;
+    return { path: file, exists, size: stat?.size || 0, modifiedAt: stat?.mtime?.toISOString() || '' };
+  });
+  let valid = artifacts.some((item) => item.exists && item.size > 0 && (!startedAt || Date.parse(item.modifiedAt) >= Date.parse(startedAt) - 1000));
+  const schemaErrors = [];
+  if (task.kind === 'daily_action') {
+    const draft = artifacts.find((item) => item.path === task.expectedOutput?.draftPath);
+    valid = Boolean(draft?.exists && draft.size > 0 && (!startedAt || Date.parse(draft.modifiedAt) >= Date.parse(startedAt) - 1000));
+    if (valid) {
+      const content = fs.readFileSync(draft.path, 'utf8');
+      const schema = validateDailyActionDocument(content, {
+        expectedDate: String(task.input?.date || ''),
+        requiredSections: task.expectedOutput?.requiredSections || [],
+      });
+      schemaErrors.push(...schema.errors);
+      valid = schemaErrors.length === 0;
+    }
+  }
+  return { valid, artifacts, schemaErrors, checkedAt: taskNow(), message: valid ? '产物与输出结构校验通过。' : schemaErrors.length ? `输出结构校验失败：${schemaErrors.join('；')}。` : '未检测到符合要求的新产物。' };
+}
+
+function normalizeTaskResult(task, payload = {}, validation = null, defaults = {}) {
+  const artifacts = Array.isArray(payload.artifacts) ? payload.artifacts : (validation?.artifacts || []);
+  const startedAt = String(task.startedAt || defaults.startedAt || '');
+  const completedAt = String(payload.completedAt || defaults.completedAt || taskNow());
+  const durationMs = startedAt ? Math.max(0, Date.parse(completedAt) - Date.parse(startedAt)) : 0;
+  return {
+    protocolVersion: TASK_PROTOCOL_VERSION,
+    taskId: task.id,
+    executionId: String(payload.executionId || task.executionId || defaults.executionId || ''),
+    status: String(payload.status || defaults.status || 'reviewing'),
+    adapterId: String(payload.adapterId || task.adapterId || defaults.adapterId || task.executor || 'manual'),
+    summary: String(payload.summary || payload.message || defaults.summary || '任务已返回结果。'),
+    message: String(payload.message || defaults.message || ''),
+    output: payload.output ?? defaults.output ?? '',
+    errorOutput: payload.errorOutput ?? defaults.errorOutput ?? '',
+    structuredOutput: payload.structuredOutput ?? payload.data ?? defaults.structuredOutput ?? null,
+    artifacts,
+    fileChanges: Array.isArray(payload.fileChanges) ? payload.fileChanges : artifacts.filter((item) => item?.exists !== false && item?.path).map((item) => ({ path: item.path, operation: 'created_or_updated', modifiedAt: item.modifiedAt || '' })),
+    logReference: String(payload.logReference || payload.logPath || defaults.logReference || task.result?.logPath || ''),
+    validation: validation || payload.validation || { valid: false, message: '尚未校验。' },
+    failureReason: payload.failureReason || defaults.failureReason || null,
+    retry: { attempt: task.attempt, maxAttempts: task.maxAttempts, nextRetryAt: task.nextRetryAt || '', ...(payload.retry || {}) },
+    metrics: { durationMs, estimatedCost: Number(payload.metrics?.estimatedCost || defaults.estimatedCost || 0), qualityScore: validation?.valid ? 100 : 0, ...(payload.metrics || {}) },
+    completedAt,
+    importedFrom: payload.importedFrom || defaults.importedFrom || '',
+  };
+}
+
+function estimatedAdapterCost(adapterId, durationMs = 0) {
+  const base = { internal: 0, manual: 0, qclaw: 0.1, openclaw: 0.2, codex: 0.4 }[String(adapterId || '')] ?? 0.2;
+  return Number((base + Math.max(0, durationMs) / 3600000 * base).toFixed(4));
+}
+
+function validateTaskCompletion(task, startedAt = '', resultPayload = null) {
+  if (task.kind === 'project_digest') {
+    let domainSync;
+    try { domainSync = JSON.parse(syncProjectDigestResult(task.sourceId)); }
+    catch { domainSync = { ok: false, message: '项目消化结果同步失败。' }; }
+    const status = String(domainSync?.digestState?.status || '');
+    return { valid: Boolean(domainSync?.ok && ['completed', 'idle'].includes(status)), artifacts: [], checkedAt: taskNow(), message: domainSync?.message || '项目消化结果同步完成。', domainSync };
+  }
+  if (task.kind === 'student_digest') {
+    let domainSync;
+    try { domainSync = JSON.parse(syncStudentDigestResult(task.sourceId, { forceSubmitted: true })); }
+    catch { domainSync = { ok: false, message: '学生消化结果同步失败。' }; }
+    const status = String(domainSync?.state?.status || '');
+    return { valid: Boolean(domainSync?.ok && ['completed', 'idle'].includes(status)), artifacts: [], checkedAt: taskNow(), message: domainSync?.message || domainSync?.state?.message || '学生消化结果同步完成。', domainSync };
+  }
+  return validateTaskArtifacts(task, startedAt, resultPayload);
+}
+
+function finalizeAdapterExecution(taskId, executionId, adapterId, code, output, errorOutput = '') {
+  const store = readTaskStore();
+  const task = store.tasks.find((item) => item.id === taskId);
+  if (!task || task.executionId !== executionId || !['running', 'waiting_result'].includes(task.status)) return;
+  const validation = Number(code) === 0
+    ? validateTaskCompletion(task, task.startedAt)
+    : { valid: false, artifacts: [], checkedAt: taskNow(), message: `Agent 退出码 ${code}。` };
+  const successful = Number(code) === 0 && validation.valid;
+  const result = normalizeTaskResult(task, {
+    executionId,
+    status: successful ? 'reviewing' : 'failed',
+    adapterId,
+    summary: Number(code) === 0 ? (validation.valid ? 'Agent 执行完成，等待审核。' : validation.message) : `Agent 退出码 ${code}。`,
+    output: String(output || '').slice(-20000),
+    errorOutput: String(errorOutput || '').slice(-10000),
+    structuredOutput: validation.domainSync || null,
+    artifacts: validation.artifacts,
+    logReference: task.result?.logPath || '',
+    failureReason: successful ? null : { category: Number(code) === 0 ? 'validation' : code === -1 ? 'launch' : 'process', code: `EXIT_${code}`, detail: String(errorOutput || validation.message || '').slice(-2000) },
+  }, validation, { estimatedCost: estimatedAdapterCost(adapterId, task.startedAt ? Date.now() - Date.parse(task.startedAt) : 0) });
+  const nextStatus = result.status;
+  const retryDelayMs = Math.max(0, Number(task.retryBackoffSeconds || 0)) * 1000;
+  const nextRetryAt = !successful && task.autoRetry !== false ? new Date(Date.now() + retryDelayMs).toISOString() : '';
+  transitionTaskInStore(store, taskId, nextStatus, { result, nextRetryAt, error: nextStatus === 'failed' ? { code: `EXIT_${code}`, message: result.summary } : null, lastHeartbeatAt: taskNow() }, 'adapter_completed');
+  writeTaskStore(store);
+  notify('onNativeTaskCenterChanged', JSON.stringify({ taskId, status: nextStatus }));
+  if (!successful && task.autoRetry !== false) setTimeout(() => fallbackTaskAfterFailure(taskId, adapterId, result.summary), Math.min(retryDelayMs, 30000) + 100);
+}
+
+function fallbackTaskAfterFailure(taskId, failedAdapter, reason = '') {
+  try {
+    const store = readTaskStore();
+    const task = store.tasks.find((item) => item.id === String(taskId));
+    if (!task || !['failed', 'timed_out', 'blocked'].includes(task.status)) return { ok: false, skipped: true };
+    const attempted = [...new Set([...(task.routeAttempts || []), String(failedAdapter || '')].filter(Boolean))];
+    const decision = routeTask(task, 'auto', attempted);
+    const nextAdapter = selectFallbackAdapter(decision, attempted, task.attempt, task.maxAttempts);
+    const retryAt = taskNow();
+    const prepared = transitionTaskInStore(store, task.id, 'approved', {
+      routeDecision: { ...decision, selectedAdapter: nextAdapter, reason: `${reason || '执行失败'}；自动降级为 ${adapterCapabilities()[nextAdapter]?.label || '人工执行'}。` },
+      routeAttempts: attempted,
+      nextRetryAt: retryAt,
+      error: null,
+      completedAt: '',
+    }, 'runtime_fallback_prepared');
+    if (!prepared.ok) return prepared;
+    writeTaskStore(store);
+    appendTaskEvent(task.id, 'runtime_fallback', { failedAdapter, nextAdapter, reason, attempt: task.attempt }, task.executionId);
+    return JSON.parse(executeTaskByAdapter(task.id, nextAdapter));
+  } catch (error) {
+    appendTaskEvent(taskId, 'runtime_fallback_failed', { failedAdapter, reason, error: error.message });
+    return { ok: false, message: error.message };
+  }
+}
+
+function commandWrapperPath() {
+  return path.join(__dirname, 'invoke-agent.ps1');
+}
+
+function ensureCommandWrapper() {
+  const file = commandWrapperPath();
+  if (!fs.existsSync(file)) throw new Error(`Agent 参数桥接器不存在：${file}`);
+  return file;
+}
+
+function resolveNodeCommandShim(executable, args) {
+  if (!/\.cmd$/i.test(executable) || !fs.existsSync(executable)) return null;
+  const content = fs.readFileSync(executable, 'utf8');
+  const match = content.match(/"%dp0%\\([^"\r\n]+\.(?:mjs|cjs|js))"\s+%\*/i);
+  if (!match) return null;
+  const script = path.resolve(path.dirname(executable), match[1].replace(/\\/g, path.sep));
+  if (!fs.existsSync(script)) return null;
+  const bundledNode = path.join(path.dirname(executable), 'node.exe');
+  return { executable: fs.existsSync(bundledNode) ? bundledNode : process.execPath, args: [script, ...args] };
+}
+
+function spawnAdapterProcess(executable, args, options = {}) {
+  const nodeShim = resolveNodeCommandShim(executable, args);
+  if (nodeShim) return spawn(nodeShim.executable, nodeShim.args, { ...options, shell: false });
+  if (/\.(cmd|bat|ps1)$/i.test(executable)) {
+    const encodedArgs = Buffer.from(JSON.stringify(args), 'utf8').toString('base64');
+    return spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', ensureCommandWrapper(), '-Executable', executable, '-ArgsBase64', encodedArgs], { ...options, shell: false });
+  }
+  return spawn(executable, args, { ...options, shell: false });
+}
+
+function heartbeatTask(taskId, executionId, detail = '') {
+  const running = taskChildProcesses.get(String(taskId));
+  const now = Date.now();
+  if (running && now - Number(running.lastHeartbeatWrite || 0) < 5000) return;
+  const store = readTaskStore();
+  const task = store.tasks.find((item) => item.id === String(taskId));
+  if (!task || task.executionId !== String(executionId) || !['running', 'waiting_result'].includes(task.status)) return;
+  task.lastHeartbeatAt = taskNow();
+  task.updatedAt = task.lastHeartbeatAt;
+  writeTaskStore(store);
+  if (running) running.lastHeartbeatWrite = now;
+  appendTaskEvent(task.id, 'adapter_heartbeat', { adapterId: task.adapterId, detail: String(detail || '').slice(0, 200) }, executionId);
+}
+
+function launchCommandAdapter(task, adapterId, executable, args, cwd, stdinText = '') {
+  const store = readTaskStore();
+  const executionId = `run-${Date.now()}-${crypto.randomBytes(4).toString('hex')}`;
+  const logDir = path.join(taskExecutionDirPath(), task.id);
+  fs.mkdirSync(logDir, { recursive: true });
+  const logPath = path.join(logDir, `${executionId}.log`);
+  const transition = transitionTaskInStore(store, task.id, 'running', { executionId, adapterId, executor: adapterId, executionMode: 'automatic', attempt: task.attempt + 1, startedAt: taskNow(), lastHeartbeatAt: taskNow(), error: null, result: { logPath } }, 'adapter_started');
+  if (!transition.ok) return transition;
+  writeTaskStore(store);
+  fs.writeFileSync(logPath, `task: ${task.id}\nexecution: ${executionId}\nadapter: ${adapterId}\nstarted: ${taskNow()}\n\n`, 'utf8');
+  const child = spawnAdapterProcess(executable, args, { cwd: cwd || taskCenterDirPath(), windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
+  taskChildProcesses.set(task.id, { child, executionId, adapterId, startedAt: taskNow(), lastHeartbeatWrite: Date.now() });
+  let stdout = '';
+  let stderr = '';
+  child.stdout?.on('data', (chunk) => { stdout += chunk.toString(); fs.appendFileSync(logPath, chunk); heartbeatTask(task.id, executionId, 'stdout'); });
+  child.stderr?.on('data', (chunk) => { stderr += chunk.toString(); fs.appendFileSync(logPath, chunk); heartbeatTask(task.id, executionId, 'stderr'); });
+  if (stdinText) child.stdin?.end(stdinText, 'utf8');
+  else child.stdin?.end();
+  child.on('error', (error) => {
+    taskChildProcesses.delete(task.id);
+    finalizeAdapterExecution(task.id, executionId, adapterId, -1, stdout, `${stderr}\n${error.message}`);
+  });
+  child.on('exit', (code) => {
+    taskChildProcesses.delete(task.id);
+    finalizeAdapterExecution(task.id, executionId, adapterId, Number(code), stdout, stderr);
+  });
+  return { ok: true, task: transition.task, executionId, logPath, message: `已通过 ${adapterId} 启动任务。` };
+}
+
+function submitOpenClawTask(task, command) {
+  const capability = adapterCapabilities().openclaw;
+  if (!capability.available || !capability.exePath) return { ok: false, unavailable: true, message: 'OpenClaw CLI 不可用。' };
+  const sessionKey = `agent:main:edu-task-${task.id.replace(/[^a-zA-Z0-9_-]/g, '').slice(-40)}`;
+  const modeArgs = capability.gatewayHealthy ? [] : ['--local'];
+  return launchCommandAdapter(task, 'openclaw', capability.exePath, ['agent', ...modeArgs, '--message', command, '--json', '--timeout', String(task.timeoutSeconds), '--session-key', sessionKey], task.input?.knowledgeRoot || taskCenterDirPath());
+}
+
+function submitCodexTask(task, command) {
+  const capability = adapterCapabilities().codex;
+  if (!capability.available || !capability.exePath) return { ok: false, unavailable: true, message: 'Codex CLI 不可用。' };
+  const cwd = canonicalTaskPath(task.input?.knowledgeRoot || (task.sourceType === 'project' ? readProjects().map(normalizeProject).find((item) => String(item.id) === task.sourceId)?.knowledgeRootPath : '') || taskCenterDirPath());
+  const writableRoots = [...new Set((task.permissions?.write || []).map(canonicalTaskPath).filter(Boolean))];
+  const addDirArgs = writableRoots.filter((root) => !taskPathWithin(root, cwd)).flatMap((root) => ['--add-dir', root]);
+  const args = ['exec', '--sandbox', 'workspace-write', '--skip-git-repo-check', '--ephemeral', '-C', cwd, ...addDirArgs, '-'];
+  return launchCommandAdapter(task, 'codex', capability.exePath, args, cwd, command);
+}
+
+function submitQClawTask(task, command) {
+  const store = readTaskStore();
+  const executionId = `qclaw-${Date.now()}-${crypto.randomBytes(4).toString('hex')}`;
+  const transition = transitionTaskInStore(store, task.id, 'waiting_result', { executionId, adapterId: 'qclaw', executor: 'qclaw', executionMode: 'inbox', attempt: task.attempt + 1, startedAt: taskNow(), lastHeartbeatAt: taskNow(), result: null }, 'qclaw_inbox_prepared');
+  if (!transition.ok) return transition;
+  const packet = writeTaskPacket(transition.task, qclawTaskInboxPath(), command);
+  transition.task.result = normalizeTaskResult(transition.task, { executionId, status: 'waiting_result', artifacts: [] }, null, { summary: '任务已写入 QClaw 收件箱。' });
+  transition.task.result.packet = packet;
+  writeTaskStore(store);
+  appendTaskEvent(task.id, 'qclaw_inbox_written', { executionId, packet }, executionId);
+  return transition.ok ? { ok: true, task: transition.task, packet, message: '任务已写入 QClaw 任务收件箱，等待领取和结果回写。' } : transition;
+}
+
+function submitManualTask(task, command, reason = '') {
+  const store = readTaskStore();
+  const executionId = `manual-${Date.now()}-${crypto.randomBytes(4).toString('hex')}`;
+  const transition = transitionTaskInStore(store, task.id, 'waiting_result', {
+    executionId,
+    adapterId: 'manual',
+    executor: 'manual',
+    executionMode: 'manual',
+    attempt: task.attempt + 1,
+    startedAt: taskNow(),
+    lastHeartbeatAt: taskNow(),
+    result: null,
+  }, 'manual_execution_prepared');
+  if (transition.ok) {
+    const packet = writeTaskPacket(transition.task, taskManualOutboxPath(), command);
+    clipboard.writeText(command);
+    transition.task.result = normalizeTaskResult(transition.task, { executionId, status: 'manual_required', artifacts: [] }, null, { summary: '任务已降级为人工执行。' });
+    transition.task.result.packet = packet;
+    writeTaskStore(store);
+    appendTaskEvent(task.id, 'manual_packet_exported', { executionId, packet }, executionId);
+    return { ok: true, task: transition.task, packet, command, fallback: true, message: `${reason || '任务已转为人工执行。'}任务指令已复制，并导出人工任务包。` };
+  }
+  return transition;
+}
+
+function submitInternalTask(task) {
+  const store = readTaskStore();
+  const executionId = `internal-${Date.now()}-${crypto.randomBytes(4).toString('hex')}`;
+  const transition = transitionTaskInStore(store, task.id, 'running', { executionId, adapterId: 'internal', executor: 'internal', executionMode: 'internal', attempt: task.attempt + 1, startedAt: taskNow(), lastHeartbeatAt: taskNow(), error: null }, 'internal_operation_started');
+  if (!transition.ok) return transition;
+  writeTaskStore(store);
+  const context = { taskId: task.id, executionId };
+  let operationResult;
+  if (task.input?.operation === 'execute_archive_plan') operationResult = JSON.parse(performProjectPromotionPlan(task.sourceId, JSON.stringify(task.input?.plan || {}), context));
+  else if (task.input?.operation === 'publish_growth_evidence') operationResult = JSON.parse(performPublishProjectPromotion(task.sourceId, context));
+  else if (task.input?.operation === 'rollback_promotion') operationResult = JSON.parse(performRollbackProjectPromotionRun(task.sourceId, task.input?.runId, context));
+  else operationResult = { ok: false, message: `未知内部操作：${task.input?.operation || '-'}` };
+  const nextStore = readTaskStore();
+  const current = nextStore.tasks.find((item) => item.id === task.id);
+  const changedPaths = [...new Set([
+    ...(operationResult.results || []).map((item) => item.target),
+    ...(operationResult.published || []).flatMap((item) => [item.growthDir, item.projectSummaryFile]),
+    operationResult.executionLog,
+    operationResult.path,
+  ].filter(Boolean))];
+  const artifacts = changedPaths.map((file) => ({ path: file, exists: fs.existsSync(file), size: fs.existsSync(file) && fs.statSync(file).isFile() ? fs.statSync(file).size : 0, modifiedAt: fs.existsSync(file) ? fs.statSync(file).mtime.toISOString() : '' }));
+  const validation = { valid: Boolean(operationResult.ok), artifacts, checkedAt: taskNow(), message: operationResult.message || (operationResult.ok ? '内部操作校验通过。' : '内部操作失败。') };
+  const result = normalizeTaskResult(current || transition.task, { status: operationResult.ok ? 'reviewing' : 'failed', structuredOutput: operationResult, artifacts, fileChanges: changedPaths.map((file) => ({ path: file, operation: 'created_or_updated' })) }, validation, { adapterId: 'internal', executionId, summary: operationResult.message });
+  const nextStatus = operationResult.ok ? 'reviewing' : 'failed';
+  const completed = transitionTaskInStore(nextStore, task.id, nextStatus, { result, lastHeartbeatAt: taskNow(), error: operationResult.ok ? null : { code: 'INTERNAL_OPERATION_FAILED', message: operationResult.message || '内部操作失败。' } }, 'internal_operation_completed');
+  writeTaskStore(nextStore);
+  notify('onNativeTaskCenterChanged', JSON.stringify({ taskId: task.id, status: nextStatus }));
+  return { ...completed, message: operationResult.ok ? '内部操作已执行，等待结果审核。' : operationResult.message };
+}
+
+function getAgentExecutionAdapters() {
+  const common = { status: adapterTaskStatus, readResult: adapterTaskResult };
+  return {
+    internal: { ...common, id: 'internal', capabilities: () => adapterCapabilities().internal, submit: (task, command) => submitInternalTask(task, command), cancel: () => ({ ok: false, message: '内部同步操作不可中途取消。' }), health: () => adapterCapabilities().internal },
+    openclaw: { ...common, id: 'openclaw', capabilities: () => adapterCapabilities().openclaw, submit: (task, command) => submitOpenClawTask(task, command), cancel: (task) => cancelRunningAdapterTask(task.id), health: () => adapterCapabilities(true).openclaw },
+    codex: { ...common, id: 'codex', capabilities: () => adapterCapabilities().codex, submit: (task, command) => submitCodexTask(task, command), cancel: (task) => cancelRunningAdapterTask(task.id), health: () => adapterCapabilities(true).codex },
+    qclaw: { ...common, id: 'qclaw', capabilities: () => adapterCapabilities().qclaw, submit: (task, command) => submitQClawTask(task, command), cancel: () => ({ ok: false, message: 'QClaw 收件箱任务需要在 QClaw 侧停止。' }), health: () => adapterCapabilities(true).qclaw },
+    manual: { ...common, id: 'manual', capabilities: () => adapterCapabilities().manual, submit: (task, command, context = {}) => submitManualTask(task, command, context.reason), cancel: () => ({ ok: true }), health: () => adapterCapabilities().manual },
+  };
+}
+
+function cancelRunningAdapterTask(taskId) {
+  const running = taskChildProcesses.get(String(taskId));
+  if (!running?.child || running.child.killed) return { ok: false, message: '没有正在运行的进程。' };
+  running.child.kill();
+  taskChildProcesses.delete(String(taskId));
+  return { ok: true };
+}
+
+function adapterTaskStatus(task) {
+  const running = taskChildProcesses.get(String(task?.id || ''));
+  return { ok: true, taskId: task?.id || '', status: running?.child && !running.child.killed ? 'running' : task?.status || 'unknown', executionId: task?.executionId || '', lastHeartbeatAt: task?.lastHeartbeatAt || '' };
+}
+
+function adapterTaskResult(task) {
+  return { ok: Boolean(task?.result), taskId: task?.id || '', result: task?.result || null };
+}
+
+function executeTaskByAdapter(taskId, requestedExecutor = '') {
+  try {
+    const store = readTaskStore();
+    const task = store.tasks.find((item) => String(item.id) === String(taskId));
+    if (!task) return JSON.stringify({ ok: false, message: '未找到任务。' });
+    const permissionCheck = validateTaskPermissionDeclaration(task);
+    if (!permissionCheck.ok) return JSON.stringify({ ok: false, blocked: true, message: permissionCheck.message });
+    if (['running', 'waiting_result'].includes(task.status)) return JSON.stringify({ ok: false, message: '任务已经在执行或等待结果。' });
+    if (taskRequiresApproval(task) && task.approval?.status !== 'approved') return JSON.stringify({ ok: false, approvalRequired: true, message: '该任务属于高风险操作，必须先审批。' });
+    if (['draft', 'pending', 'failed', 'blocked', 'timed_out', 'cancelled'].includes(task.status)) {
+      const approvalStatus = taskRequiresApproval(task) ? task.approval?.status : 'not_required';
+      const transition = transitionTaskInStore(store, task.id, 'approved', { approval: { ...(task.approval || {}), required: taskRequiresApproval(task), status: approvalStatus } }, 'task_prepared');
+      if (!transition.ok) return JSON.stringify(transition);
+      writeTaskStore(store);
+    }
+    const refreshed = readTaskStore().tasks.find((item) => item.id === task.id);
+    if (refreshed.kind === 'project_digest') {
+      const project = readProjects().map(normalizeProject).find((item) => String(item.id) === refreshed.sourceId);
+      if (project) {
+        const ensured = ensureProjectWorkspace(project);
+        const currentDigest = readProjectDigestState(ensured);
+        if (currentDigest.pendingCount > 0 && !['submitted', 'digesting'].includes(currentDigest.status)) {
+          const batchId = `task-digest-${timestampForFilename()}`;
+          const digestState = writeProjectDigestState(ensured, {
+            status: 'submitted',
+            digestSubmittedAt: taskNow(),
+            digestBatchId: batchId,
+            submittedFiles: (currentDigest.pendingFiles || []).map((file) => ({ relativePath: file.relativePath, path: file.path, sha1: file.sha1, size: file.size })),
+            message: '项目资料消化已由统一任务中心提交。',
+          });
+          updateProjectRecord(project.id, (item) => ({ ...item, digestState, updatedAt: taskNow() }));
+        }
+      }
+    }
+    const routeDecision = routeTask(refreshed, requestedExecutor);
+    if (routeDecision.confirmationRequired) {
+      const confirmStore = readTaskStore();
+      const confirmTask = confirmStore.tasks.find((item) => item.id === refreshed.id);
+      Object.assign(confirmTask, { routeDecision, routingMode: 'confirm', updatedAt: taskNow() });
+      writeTaskStore(confirmStore);
+      return JSON.stringify({ ok: true, confirmationRequired: true, task: confirmTask, routeDecision, message: `${routeDecision.reason}请在执行器下拉框中确认具体执行器。` });
+    }
+    const adapterId = routeDecision.selectedAdapter;
+    const command = taskCommandFor(refreshed);
+    const nextStore = readTaskStore();
+    const taskIndex = nextStore.tasks.findIndex((item) => item.id === refreshed.id);
+    nextStore.tasks[taskIndex] = normalizeTaskEnvelope({ ...refreshed, routeDecision, routingMode: routeDecision.mode, adapterId, executor: adapterId, executionMode: adapterId === 'internal' ? 'internal' : adapterId === 'manual' ? 'manual' : adapterId === 'qclaw' ? 'inbox' : 'automatic', routeAttempts: [...new Set([...(refreshed.routeAttempts || []), adapterId])] }, refreshed);
+    writeTaskStore(nextStore);
+    const routedTask = readTaskStore().tasks.find((item) => item.id === refreshed.id);
+    const adapter = getAgentExecutionAdapters()[adapterId] || getAgentExecutionAdapters().manual;
+    const capability = adapter.capabilities();
+    const selectedAdapter = capability.available && capability.authorized ? adapter : getAgentExecutionAdapters().manual;
+    const result = selectedAdapter.submit(routedTask, command, { reason: selectedAdapter.id === adapterId ? routeDecision.reason : `${routeDecision.reason}所选适配器当前不可用，已降级。` });
+    return JSON.stringify(result);
+  } catch (error) {
+    return JSON.stringify({ ok: false, message: `执行任务失败：${error.message}` });
+  }
+}
+
+function approveTask(taskId, decision, note = '') {
+  try {
+    const store = readTaskStore();
+    const task = store.tasks.find((item) => item.id === String(taskId));
+    if (!task) return JSON.stringify({ ok: false, message: '未找到任务。' });
+    const approved = String(decision) === 'approved';
+    if (task.status === 'reviewing') {
+      if (!approved) {
+        const rejected = transitionTaskInStore(store, task.id, 'failed', { approval: { required: true, status: 'rejected', note, reviewedAt: taskNow(), reviewedBy: 'local-user' }, error: { code: 'REVIEW_REJECTED', message: note || '任务结果审核未通过。' } }, 'result_rejected');
+        writeTaskStore(store);
+        return JSON.stringify({ ...rejected, message: '任务结果已驳回，可修正后重试。' });
+      }
+      if (task.kind === 'daily_action') {
+        const approvalValidation = validateTaskCompletion(task, task.startedAt, task.result);
+        if (!approvalValidation.valid) return JSON.stringify({ ok: false, message: `草稿复核失败，不能发布：${approvalValidation.message}` });
+        const draftPath = task.expectedOutput?.draftPath;
+        const publishPath = task.expectedOutput?.publishPath;
+        if (!draftPath || !publishPath || !fs.existsSync(draftPath)) return JSON.stringify({ ok: false, message: '每日行动建议草稿不存在，不能发布。' });
+        fs.mkdirSync(path.dirname(publishPath), { recursive: true });
+        const draft = fs.readFileSync(draftPath, 'utf8');
+        const today = String(task.input?.date || taskToday());
+        let published = draft;
+        if (/^---\s*$/m.test(published)) {
+          published = /^status:\s*.*$/im.test(published)
+            ? published.replace(/^status:\s*.*$/im, 'status: published')
+            : published.replace(/^---\s*$/m, '---\nstatus: published');
+          published = /^updated:\s*.*$/im.test(published)
+            ? published.replace(/^updated:\s*.*$/im, `updated: ${today}`)
+            : published.replace(/^---\s*$/m, `---\nupdated: ${today}`);
+        } else {
+          published = `---\ntype: daily_action\ntarget: 学生 / 家长 / 教师\nupdated: ${today}\nstatus: published\n---\n\n${published}`;
+        }
+        fs.writeFileSync(publishPath, published, 'utf8');
+      }
+      const accepted = transitionTaskInStore(store, task.id, 'succeeded', { approval: { required: true, status: 'approved', note, reviewedAt: taskNow(), reviewedBy: 'local-user' }, result: { ...(task.result || {}), publishedAt: taskNow(), reviewNote: note } }, 'result_approved');
+      writeTaskStore(store);
+      return JSON.stringify({ ...accepted, message: '任务结果已审核并发布。' });
+    }
+    const nextApproval = { required: taskRequiresApproval(task), status: approved ? 'approved' : 'rejected', note: String(note || ''), reviewedAt: taskNow(), reviewedBy: 'local-user' };
+    if (!approved) {
+      const rejected = transitionTaskInStore(store, task.id, 'cancelled', { approval: nextApproval }, 'execution_rejected');
+      writeTaskStore(store);
+      return JSON.stringify({ ...rejected, message: '任务执行申请已拒绝。' });
+    }
+    const nextStatus = task.status === 'pending' ? 'approved' : task.status;
+    const accepted = transitionTaskInStore(store, task.id, nextStatus, { approval: nextApproval }, 'execution_approved');
+    writeTaskStore(store);
+    return JSON.stringify({ ...accepted, message: '任务已批准，可以执行。' });
+  } catch (error) {
+    return JSON.stringify({ ok: false, message: `审批任务失败：${error.message}` });
+  }
+}
+
+function retryTask(taskId) {
+  try {
+    const store = readTaskStore();
+    const task = store.tasks.find((item) => item.id === String(taskId));
+    if (!task) return JSON.stringify({ ok: false, message: '未找到任务。' });
+    if (!['failed', 'blocked', 'timed_out', 'cancelled'].includes(task.status)) return JSON.stringify({ ok: false, message: '只有失败、阻塞、超时或已取消任务可以重试。' });
+    if (task.attempt >= task.maxAttempts) return JSON.stringify({ ok: false, message: `已达到最大重试次数 ${task.maxAttempts}。` });
+    const transition = transitionTaskInStore(store, task.id, 'pending', { error: null, result: null, executionId: '', adapterId: '', routeAttempts: [], nextRetryAt: '', completedAt: '' }, 'task_retried');
+    writeTaskStore(store);
+    return JSON.stringify({ ...transition, message: '任务已重置为待处理。' });
+  } catch (error) {
+    return JSON.stringify({ ok: false, message: `重试任务失败：${error.message}` });
+  }
+}
+
+function cancelTask(taskId, note = '') {
+  try {
+    const store = readTaskStore();
+    const task = store.tasks.find((item) => item.id === String(taskId));
+    const adapter = task ? getAgentExecutionAdapters()[task.adapterId] : null;
+    if (adapter?.cancel) adapter.cancel(task);
+    const transition = transitionTaskInStore(store, String(taskId), 'cancelled', { error: { code: 'CANCELLED', message: String(note || '用户取消任务。') } }, 'task_cancelled');
+    if (transition.ok) writeTaskStore(store);
+    return JSON.stringify({ ...transition, message: transition.ok ? '任务已取消。' : transition.message });
+  } catch (error) {
+    return JSON.stringify({ ok: false, message: `取消任务失败：${error.message}` });
+  }
+}
+
+function importTaskResult(taskId) {
+  try {
+    const selected = dialog.showOpenDialogSync(mainWindow, { title: '导入 Agent 任务结果', properties: ['openFile'], filters: [{ name: 'TaskResult JSON', extensions: ['json'] }] });
+    if (!selected?.[0]) return JSON.stringify({ ok: false, message: '未选择结果文件。' });
+    const payload = safeReadJson(selected[0], null);
+    const store = readTaskStore();
+    const task = store.tasks.find((item) => item.id === String(taskId));
+    const identity = validateExternalTaskResultIdentity(task, payload);
+    if (!identity.ok) {
+      appendTaskEvent(taskId, 'external_result_rejected', { source: 'manual_import', file: selected[0], code: identity.code, message: identity.message }, task?.executionId || '');
+      return JSON.stringify({ ok: false, rejected: true, code: identity.code, message: identity.message });
+    }
+    const validation = validateTaskCompletion(task, task.startedAt, payload);
+    const nextStatus = payload.status === 'failed' || !validation.valid ? 'failed' : 'reviewing';
+    const result = normalizeTaskResult(task, { ...payload, importedFrom: selected[0], status: nextStatus }, validation, { importedFrom: selected[0] });
+    const transition = transitionTaskInStore(store, task.id, nextStatus, { result, error: nextStatus === 'failed' ? { code: 'RESULT_INVALID', message: payload.message || validation.message } : null }, 'task_result_imported');
+    writeTaskStore(store);
+    return JSON.stringify({ ...transition, message: nextStatus === 'reviewing' ? '结果已导入，等待审核。' : '结果已导入，但校验未通过。' });
+  } catch (error) {
+    return JSON.stringify({ ok: false, message: `导入任务结果失败：${error.message}` });
+  }
+}
+
+function quarantineQClawPayload(file, reason) {
+  const rejectedDir = path.join(qclawTaskResultPath(), 'rejected');
+  fs.mkdirSync(rejectedDir, { recursive: true });
+  const parsed = path.parse(file);
+  const nonce = crypto.randomBytes(3).toString('hex');
+  const target = path.join(rejectedDir, `${parsed.name}-${timestampForFilename()}-${nonce}${parsed.ext}`);
+  fs.renameSync(file, target);
+  writeJsonFile(`${target}.reason.json`, { rejectedAt: taskNow(), source: file, reason });
+  return target;
+}
+
+function syncQClawTaskResults() {
+  try {
+    fs.mkdirSync(qclawTaskResultPath(), { recursive: true });
+    const claimFiles = fs.readdirSync(qclawTaskResultPath()).filter((name) => name.endsWith('.claim.json'));
+    const files = fs.readdirSync(qclawTaskResultPath()).filter((name) => name.endsWith('.result.json'));
+    const store = readTaskStore();
+    let imported = 0;
+    let claimed = 0;
+    let rejected = 0;
+    for (const name of claimFiles) {
+      const file = path.join(qclawTaskResultPath(), name);
+      const payload = safeReadJson(file, null);
+      const task = store.tasks.find((item) => item.id === String(payload?.taskId || ''));
+      const identity = validateExternalTaskResultIdentity(task, payload, { allowedStatuses: ['waiting_result'] });
+      if (!identity.ok) {
+        const rejectedPath = quarantineQClawPayload(file, identity);
+        appendTaskEvent(payload?.taskId || '', 'qclaw_claim_rejected', { code: identity.code, message: identity.message, rejectedPath }, task?.executionId || '');
+        rejected += 1;
+        continue;
+      }
+      if (task.result?.claimFile === file) continue;
+      const transition = transitionTaskInStore(store, task.id, 'running', { lastHeartbeatAt: taskNow(), result: { ...(task.result || {}), claimFile: file, claimedBy: payload.agentId || 'qclaw', claimedAt: payload.claimedAt || taskNow() } }, 'qclaw_task_claimed');
+      if (transition.ok) claimed += 1;
+    }
+    for (const name of files) {
+      const file = path.join(qclawTaskResultPath(), name);
+      const payload = safeReadJson(file, null);
+      const task = store.tasks.find((item) => item.id === String(payload?.taskId || ''));
+      const identity = validateExternalTaskResultIdentity(task, payload);
+      if (!identity.ok) {
+        const rejectedPath = quarantineQClawPayload(file, identity);
+        appendTaskEvent(payload?.taskId || '', 'qclaw_result_rejected', { code: identity.code, message: identity.message, rejectedPath }, task?.executionId || '');
+        rejected += 1;
+        continue;
+      }
+      if (task.result?.resultFile === file) continue;
+      const validation = validateTaskCompletion(task, task.startedAt, payload);
+      const nextStatus = payload.status === 'failed' || !validation.valid ? 'failed' : 'reviewing';
+      const result = normalizeTaskResult(task, { ...payload, resultFile: file, status: nextStatus }, validation, { importedFrom: file });
+      result.resultFile = file;
+      const transition = transitionTaskInStore(store, task.id, nextStatus, { result, error: nextStatus === 'failed' ? { code: 'QCLAW_RESULT_INVALID', message: payload.message || validation.message } : null }, 'qclaw_result_synced');
+      if (transition.ok) imported += 1;
+    }
+    writeTaskStore(store);
+    return JSON.stringify({ ok: true, claimed, imported, rejected, inboxPath: qclawTaskInboxPath(), resultPath: qclawTaskResultPath(), message: imported || claimed || rejected ? `QClaw 同步完成：领取 ${claimed} 项，结果 ${imported} 项，拒绝过期或无效包 ${rejected} 项。` : '没有新的 QClaw 任务领取或结果。' });
+  } catch (error) {
+    return JSON.stringify({ ok: false, message: `同步 QClaw 结果失败：${error.message}` });
+  }
+}
+
+function submitDailyActionFeedback(taskId, status, note = '') {
+  try {
+    const store = readTaskStore();
+    const task = store.tasks.find((item) => item.id === String(taskId));
+    if (!task || task.kind !== 'daily_action') return JSON.stringify({ ok: false, message: '未找到每日行动建议任务。' });
+    if (task.status !== 'succeeded') return JSON.stringify({ ok: false, message: '每日行动建议尚未审核发布，不能提交完成反馈。' });
+    const normalizedStatus = String(status || 'completed');
+    if (!['completed', 'partial', 'skipped'].includes(normalizedStatus)) return JSON.stringify({ ok: false, message: '反馈状态只能是 completed、partial 或 skipped。' });
+    const student = readStudentsIndex().find((item) => String(item.id) === task.sourceId);
+    if (!student) return JSON.stringify({ ok: false, message: '未找到学生。' });
+    const normalized = toHostStudent(student);
+    const feedbackDate = String(task.input?.date || taskToday());
+    const entries = readDailyActionFeedback(normalized).filter((entry) => !(String(entry.taskId || '') === task.id && String(entry.date || '') === feedbackDate));
+    entries.unshift({ taskId: task.id, date: feedbackDate, status: normalizedStatus, note: String(note || ''), submittedAt: taskNow() });
+    writeJsonFile(dailyActionFeedbackPath(normalized), { version: 1, updatedAt: taskNow(), entries: entries.slice(0, 90) });
+    appendTaskEvent(task.id, 'daily_action_feedback', { status: normalizedStatus, note, date: feedbackDate });
+    return JSON.stringify({ ok: true, message: '完成反馈已保存，将作为下一次每日行动建议的输入。' });
+  } catch (error) {
+    return JSON.stringify({ ok: false, message: `保存行动反馈失败：${error.message}` });
+  }
+}
+
+function enforceTaskTimeouts(store) {
+  const now = Date.now();
+  let changed = false;
+  for (const task of store.tasks) {
+    if (!['running', 'waiting_result'].includes(task.status) || !task.startedAt) continue;
+    const heartbeatAt = Date.parse(task.lastHeartbeatAt || task.startedAt);
+    const executionTimeoutAt = Date.parse(task.startedAt) + Number(task.timeoutSeconds || 900) * 1000;
+    const heartbeatTimeoutAt = heartbeatAt + Number(task.heartbeatTimeoutSeconds || task.timeoutSeconds || 900) * 1000;
+    const timeoutAt = Math.min(executionTimeoutAt, heartbeatTimeoutAt);
+    if (now <= timeoutAt) continue;
+    const running = taskChildProcesses.get(task.id);
+    if (running?.child && !running.child.killed) {
+      try { running.child.kill(); } catch { /* Timeout state still applies. */ }
+      taskChildProcesses.delete(task.id);
+    }
+    const heartbeatLost = heartbeatTimeoutAt <= executionTimeoutAt;
+    const error = { code: heartbeatLost ? 'HEARTBEAT_LOST' : 'TASK_TIMEOUT', message: heartbeatLost ? `任务超过 ${task.heartbeatTimeoutSeconds} 秒没有心跳。` : `任务超过 ${task.timeoutSeconds} 秒未完成。` };
+    const nextRetryAt = task.autoRetry !== false ? new Date(now + Number(task.retryBackoffSeconds || 0) * 1000).toISOString() : '';
+    const transition = transitionTaskInStore(store, task.id, 'timed_out', { error, nextRetryAt }, heartbeatLost ? 'task_heartbeat_lost' : 'task_timed_out');
+    if (transition.ok) {
+      changed = true;
+      if (task.autoRetry !== false) setTimeout(() => fallbackTaskAfterFailure(task.id, task.adapterId, error.message), Math.min(Number(task.retryBackoffSeconds || 0) * 1000, 30000) + 100);
+    }
+  }
+  return changed;
+}
+
+function getTaskCenterCapabilities() {
+  const adapters = adapterCapabilities();
+  const automationEnabled = taskAutomationEnabled();
+  return JSON.stringify({ ok: true, protocolVersion: TASK_PROTOCOL_VERSION, adapters, automationEnabled, executionMode: automationEnabled ? 'automatic' : 'manual', qclawInboxPath: qclawTaskInboxPath(), qclawResultPath: qclawTaskResultPath(), taskStorePath: taskStorePath() });
+}
+
+function isManagedOpenClawCronJob(job) {
+  const name = String(job?.name || '');
+  const owner = String(job?.metadata?.owner || job?.payload?.metadata?.owner || '');
+  return /^\[教育管家\]/.test(name) || owner === 'edu-manager';
+}
+
+function managedOpenClawCronDefinition(job) {
+  const payload = job?.payload || {};
+  const schedule = job?.schedule || payload.schedule || {};
+  const command = String(payload.message || payload.command || job?.message || job?.command || '');
+  const permissions = payload.permissions || job?.permissions || {};
+  const expectedOutput = payload.expectedOutput || job.expectedOutput || {};
+  const declaredTimezone = String(schedule?.tz || schedule?.timezone || '');
+  const localTimezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+  const reads = Array.isArray(permissions.read) ? permissions.read.filter((item) => path.isAbsolute(String(item))) : [];
+  const writes = Array.isArray(permissions.write) ? permissions.write.filter((item) => path.isAbsolute(String(item))) : [];
+  if (!job?.id || !command || !cronOccurrence(schedule) || (declaredTimezone && declaredTimezone !== localTimezone) || (!reads.length && !writes.length) || !(expectedOutput.path || expectedOutput.draftPath)) return null;
+  return {
+    id: String(job.id),
+    name: String(job.name || job.id),
+    schedule,
+    command,
+    permissions: { read: reads, write: writes, operations: ['execute_scheduled_task'] },
+    expectedOutput,
+    adoptedAt: taskNow(),
+    source: 'openclaw_cron',
+  };
+}
+
+function readManagedOpenClawCronRegistry() {
+  const parsed = safeReadJson(openClawCronRegistryPath(), {});
+  return { version: 1, updatedAt: String(parsed.updatedAt || ''), jobs: Array.isArray(parsed.jobs) ? parsed.jobs : [] };
+}
+
+function writeManagedOpenClawCronRegistry(registry) {
+  writeJsonFile(openClawCronRegistryPath(), { version: 1, updatedAt: taskNow(), jobs: registry.jobs || [] });
+}
+
+function managedOpenClawCronCandidates(registry, now = Date.now()) {
+  return (registry.jobs || []).map((job) => {
+    const occurrence = cronOccurrence(job.schedule, now);
+    if (!occurrence) return null;
+    return normalizeTaskEnvelope({
+      id: taskStableId('openclaw_cron', 'system', job.id, occurrence.key),
+      title: `OpenClaw 定时任务：${job.name}`,
+      kind: 'openclaw_cron',
+      sourceType: 'system',
+      sourceId: job.id,
+      sourceName: 'OpenClaw Cron（任务中心托管）',
+      status: 'pending',
+      trigger: 'schedule',
+      executor: 'openclaw',
+      requestedExecutor: 'auto',
+      executionMode: 'adapter',
+      scheduledAt: occurrence.scheduledAt,
+      scheduleKey: occurrence.key,
+      idempotencyKey: `openclaw_cron:${job.id}:${occurrence.key}`,
+      input: { command: job.command, externalSchedule: job.schedule, importedFrom: 'openclaw_cron', adopted: true },
+      expectedOutput: job.expectedOutput || { type: 'external_schedule_event' },
+      permissions: job.permissions,
+      detail: 'OpenClaw 原定时任务已停用，由统一任务中心按原计划生成执行批次并统一审核。',
+      action: 'openclaw_cron',
+    });
+  }).filter(Boolean);
+}
+
+function syncOpenClawCronTasks(force = false) {
+  if (!taskAutomationEnabled()) return Promise.resolve({ ok: true, skipped: true, message: '仅手动模式未执行 OpenClaw Cron 同步。' });
+  if (openClawCronSyncState.promise) return openClawCronSyncState.promise;
+  if (!force && openClawCronSyncState.result && Date.now() - openClawCronSyncState.at < 10 * 60 * 1000) return Promise.resolve({ ...openClawCronSyncState.result, throttled: true });
+  const promise = (async () => {
+    const capability = adapterCapabilities().openclaw;
+    const registry = readManagedOpenClawCronRegistry();
+    let adopted = 0;
+    let observed = 0;
+    let probeMessage = '';
+    if (capability.healthPending) {
+      await refreshAdapterCapabilities(true);
+    }
+    if (!taskAutomationEnabled()) {
+      const result = { ok: true, skipped: true, message: '同步过程中切换为仅手动模式，未接管 OpenClaw Cron。' };
+      openClawCronSyncState = { at: Date.now(), promise: null, result };
+      return result;
+    }
+    const refreshedCapability = adapterCapabilities().openclaw;
+    if (refreshedCapability.cron && refreshedCapability.gatewayHealthy && refreshedCapability.exePath) {
+      const probe = await probeExecutableAsync(refreshedCapability.exePath, ['cron', 'list', '--all', '--json', '--timeout', '5000'], 7000);
+      if (probe.ok) {
+        try {
+          const parsed = JSON.parse(probe.output);
+          const jobs = Array.isArray(parsed) ? parsed : Array.isArray(parsed.jobs) ? parsed.jobs : [];
+          const byId = new Map(registry.jobs.map((job) => [String(job.id), job]));
+          for (const job of jobs) {
+            if (!isManagedOpenClawCronJob(job)) { observed += 1; continue; }
+            const definition = managedOpenClawCronDefinition(job);
+            if (!definition) {
+              appendTaskEvent('', 'openclaw_cron_adoption_rejected', { jobId: job.id, name: job.name, reason: '托管任务必须提供命令、受支持且与本机一致的时区、绝对读写权限和明确产物路径。' });
+              continue;
+            }
+            byId.set(definition.id, { ...(byId.get(definition.id) || {}), ...definition });
+            registry.jobs = [...byId.values()];
+            writeManagedOpenClawCronRegistry(registry);
+            if (job.enabled !== false) {
+              const disabled = await probeExecutableAsync(refreshedCapability.exePath, ['cron', 'disable', definition.id, '--timeout', '5000'], 7000);
+              if (!disabled.ok) {
+                appendTaskEvent('', 'openclaw_cron_adoption_failed', { jobId: definition.id, message: disabled.output || disabled.error || '停用外部 Cron 失败。' });
+                byId.delete(definition.id);
+                registry.jobs = [...byId.values()];
+                writeManagedOpenClawCronRegistry(registry);
+                continue;
+              }
+            }
+            adopted += 1;
+          }
+          registry.jobs = [...byId.values()];
+          writeManagedOpenClawCronRegistry(registry);
+        } catch {
+          probeMessage = 'OpenClaw Cron 返回的不是有效 JSON。';
+        }
+      } else {
+        probeMessage = probe.error || probe.output || '读取 OpenClaw Cron 失败。';
+      }
+    } else {
+      probeMessage = 'OpenClaw Gateway/Cron 当前不可用，继续使用已接管的任务中心计划。';
+    }
+    const candidates = managedOpenClawCronCandidates(registry);
+    if (candidates.length) upsertTaskCandidates(candidates);
+    const result = { ok: true, adopted, observed, count: candidates.length, registryPath: openClawCronRegistryPath(), message: `任务中心托管 ${registry.jobs.length} 个 OpenClaw Cron，生成 ${candidates.length} 个当前执行批次。${probeMessage ? ` ${probeMessage}` : ''}` };
+    openClawCronSyncState = { at: Date.now(), promise: null, result };
+    return result;
+  })().catch((error) => {
+    const result = { ok: false, message: `OpenClaw Cron 同步失败：${error.message}` };
+    openClawCronSyncState = { at: Date.now(), promise: null, result };
+    return result;
+  });
+  openClawCronSyncState.promise = promise;
+  return promise;
+}
+
+function openTaskCenterPath(kind = 'root') {
+  try {
+    const target = kind === 'qclaw-inbox' ? qclawTaskInboxPath()
+      : kind === 'qclaw-results' ? qclawTaskResultPath()
+        : kind === 'manual-outbox' ? taskManualOutboxPath()
+          : kind === 'events' ? taskEventLogPath()
+            : taskCenterDirPath();
+    const folder = path.extname(target) ? path.dirname(target) : target;
+    fs.mkdirSync(folder, { recursive: true });
+    shell.openPath(folder);
+    return JSON.stringify({ ok: true, path: folder, message: `已打开 ${folder}` });
+  } catch (error) {
+    return JSON.stringify({ ok: false, message: `打开任务目录失败：${error.message}` });
+  }
+}
+
+function scheduledTimeReached(value) {
+  const match = String(value || '').match(/^(\d{1,2}):(\d{2})$/);
+  if (!match) return true;
+  const now = new Date();
+  return now.getHours() * 60 + now.getMinutes() >= Number(match[1]) * 60 + Number(match[2]);
+}
+
+async function runUnifiedTaskScheduler() {
+  if (taskSchedulerRunning) return { ok: true, skipped: true, message: '上一轮统一任务调度仍在运行。' };
+  if (!taskAutomationEnabled()) return { ok: true, skipped: true, message: '当前为仅手动模式，未运行自动调度。' };
+  taskSchedulerRunning = true;
+  try {
+    if (!publicLicenseStatus().active) return { ok: false, skipped: true, message: '许可证未激活，自动任务未执行。' };
+    runProjectAutomationSweep();
+    syncQClawTaskResults();
+    await syncOpenClawCronTasks();
+    if (!taskAutomationEnabled()) return { ok: true, skipped: true, message: '调度过程中已切换为仅手动模式，未启动新任务。' };
+    const store = upsertTaskCandidates(buildTaskCenterCandidates());
+    if (enforceTaskTimeouts(store)) writeTaskStore(store);
+    const retryDue = readTaskStore().tasks.filter((task) => ['failed', 'timed_out', 'blocked'].includes(task.status)
+      && task.autoRetry !== false
+      && task.nextRetryAt
+      && Date.parse(task.nextRetryAt) <= Date.now());
+    for (const task of retryDue) fallbackTaskAfterFailure(task.id, task.adapterId, task.error?.message || '计划重试');
+    const due = readTaskStore().tasks.filter((task) => ['daily_action', 'openclaw_cron'].includes(task.kind)
+      && ['pending', 'approved', 'queued'].includes(task.status)
+      && Number(task.attempt || 0) === 0
+      && (task.kind === 'openclaw_cron' ? Date.parse(task.scheduledAt || '') <= Date.now() : scheduledTimeReached(task.scheduledAt)));
+    const results = due.map((task) => {
+      try { return JSON.parse(executeTaskByAdapter(task.id, 'auto')); }
+      catch (error) { return { ok: false, taskId: task.id, message: error.message }; }
+    });
+    if (results.length) appendHostTimeline({ type: 'unified_task_scheduler', title: 'Unified task scheduler', detail: `due tasks ${results.length}`, count: results.length });
+    notify('onNativeTaskCenterChanged', JSON.stringify({ scheduled: results.length, at: taskNow() }));
+    return { ok: true, results, message: results.length ? `已调度 ${results.length} 个到期任务。` : '当前没有到期的统一任务。' };
+  } catch (error) {
+    return { ok: false, message: `统一任务调度失败：${error.message}` };
+  } finally {
+    taskSchedulerRunning = false;
+  }
+}
+
+function startUnifiedTaskScheduler() {
+  stopUnifiedTaskScheduler();
+  if (process.env.EDU_DISABLE_TASK_SCHEDULER === '1' || !taskAutomationEnabled()) return;
+  taskSchedulerStartupTimer = setTimeout(() => { void runUnifiedTaskScheduler(); }, 8000);
+  taskSchedulerTimer = setInterval(() => { void runUnifiedTaskScheduler(); }, 60 * 1000);
+}
+
+function stopUnifiedTaskScheduler() {
+  if (taskSchedulerStartupTimer) clearTimeout(taskSchedulerStartupTimer);
+  if (taskSchedulerTimer) clearInterval(taskSchedulerTimer);
+  taskSchedulerStartupTimer = null;
+  taskSchedulerTimer = null;
+}
+
 function readStudentScheduleLedger(student) {
   const file = studentScheduleLedgerPath(student);
   const parsed = safeReadJson(file, {});
@@ -4324,6 +7319,107 @@ function getStudentScheduleLedger(studentId) {
     });
   } catch (error) {
     return JSON.stringify({ ok: false, message: `读取定时任务账本失败：${error.message}` });
+  }
+}
+
+function buildTaskCenterCandidates() {
+  const students = readStudentsIndex().map(toHostStudent);
+  const projects = readProjects().map(normalizeProject);
+  const tasks = [];
+  for (const student of students) {
+    const pendingCount = Math.max(0, Number(student.pendingDigestCount || 0));
+    const digestStatus = String(student.digestStatus || '').toLowerCase();
+    tasks.push(normalizeTaskEnvelope({
+      id: taskStableId('student_digest', 'student', student.id),
+      title: `${student.name}每日资料消化`, kind: 'student_digest', sourceType: 'student', sourceId: String(student.id), sourceName: student.name,
+      status: digestStatus === 'digesting' ? 'running' : digestStatus === 'submitted' ? 'waiting_result' : pendingCount > 0 ? 'pending' : 'queued',
+      trigger: 'schedule', executor: String(student.agentTool || 'qclaw'), requestedExecutor: String(student.agentTool || 'qclaw'), executionMode: 'adapter',
+      scheduledAt: String(student.digestTime || '21:30'), count: pendingCount,
+      input: { studentId: String(student.id), knowledgeRoot: student.rootPath || getStudentRootDir(student.name), rawPath: student.rawPath || getRawDir(student.name) },
+      expectedOutput: { type: 'digest_state', path: studentDigestStatePath(student) },
+      permissions: { read: [student.rootPath || getStudentRootDir(student.name)], write: [student.summaryPath || getSummaryDir(student.name), studentDigestStatePath(student)], operations: ['read', 'write_knowledge'] },
+      detail: pendingCount > 0 ? `有 ${pendingCount} 份资料等待消化。` : '当前没有新增资料，按每日计划检查。', action: 'student_digest',
+    }));
+    tasks.push(buildDailyActionTask(student));
+    tasks.push(normalizeTaskEnvelope({
+      id: taskStableId('maintenance_lint', 'student', student.id),
+      title: `${student.name}知识库维护检查`, kind: 'maintenance_lint', sourceType: 'student', sourceId: String(student.id), sourceName: student.name,
+      status: 'queued', trigger: 'schedule', executor: String(student.agentTool || 'qclaw'), requestedExecutor: String(student.agentTool || 'qclaw'), executionMode: 'adapter', scheduledAt: '每周',
+      input: { studentId: String(student.id), knowledgeRoot: student.rootPath || getStudentRootDir(student.name) },
+      expectedOutput: { type: 'markdown', path: studentMaintenanceReportPath(student) },
+      permissions: { read: [student.rootPath || getStudentRootDir(student.name)], write: [studentMaintenanceReportPath(student)], operations: ['read', 'create_report'] },
+      detail: '检查路径、规则、索引、断链和成长模型健康度。', action: 'student_maintenance',
+    }));
+  }
+  for (const project of projects) {
+    const digestState = project.digestState || {};
+    const pendingDigest = Math.max(0, Number(digestState.pendingCount || 0));
+    const digestStatus = String(digestState.status || 'idle');
+    tasks.push(normalizeTaskEnvelope({
+      id: taskStableId('project_digest', 'project', project.id),
+      title: `${project.name}项目资料消化`, kind: 'project_digest', sourceType: 'project', sourceId: String(project.id), sourceName: project.name,
+      status: digestStatus === 'digesting' ? 'running' : digestStatus === 'submitted' ? 'waiting_result' : digestStatus === 'failed' ? 'blocked' : pendingDigest > 0 ? 'pending' : 'queued',
+      trigger: project.automation?.enabled ? 'schedule' : 'manual', executor: String(project.agentTool || 'qclaw'), requestedExecutor: String(project.agentTool || 'qclaw'), executionMode: 'adapter',
+      scheduledAt: project.automation?.enabled ? String(project.automation.nextRunAt || '等待调度') : '', count: pendingDigest,
+      input: { projectId: String(project.id), knowledgeRoot: project.knowledgeRootPath, rawPath: project.rawPath },
+      expectedOutput: { type: 'project_digest_state', path: projectDigestStatePath(project) },
+      permissions: { read: [project.rawPath, project.knowledgeRootPath].filter(Boolean), write: [project.knowledgeRootPath, projectDigestStatePath(project)].filter(Boolean), operations: ['read', 'write_project_knowledge'] },
+      detail: pendingDigest > 0 ? `有 ${pendingDigest} 份正式资料等待 Agent 消化。` : '当前没有待消化的项目资料。', action: 'project_digest', riskLevel: 'medium',
+    }));
+    const pendingKnowledge = Math.max(0, Number(project.dashboard?.pendingKnowledgeCount || 0));
+    if (pendingKnowledge > 0) tasks.push(normalizeTaskEnvelope({
+      id: taskStableId('knowledge_review', 'project', project.id),
+      title: `${project.name}知识资产审核`, kind: 'knowledge_review', sourceType: 'project', sourceId: String(project.id), sourceName: project.name,
+      status: 'pending', trigger: 'event', executor: 'human-review', requestedExecutor: 'manual', executionMode: 'review', count: pendingKnowledge,
+      detail: `有 ${pendingKnowledge} 条概念、实体、摘要或结论等待审核。`, action: 'project_knowledge', riskLevel: 'medium',
+      permissions: { read: [project.knowledgeRootPath].filter(Boolean), write: [project.knowledgeRootPath].filter(Boolean), operations: ['review_knowledge'] },
+    }));
+    const contributionStatus = String(project.dashboard?.contributionStatus || '');
+    const promotionTargets = readStudentsIndex().filter((student) => (project.studentIds || []).map(String).includes(String(student.id))).map((student) => growthModelDirForStudent(toHostStudent(student)));
+    if (project.dashboard?.contributionReady || contributionStatus || project.archivedAt) tasks.push(normalizeTaskEnvelope({
+      id: taskStableId('project_promotion', 'project', project.id),
+      title: `${project.name}知识贡献与归档`, kind: 'project_promotion', sourceType: 'project', sourceId: String(project.id), sourceName: project.name,
+      status: project.publishedAt ? 'succeeded' : 'pending', trigger: 'event', executor: 'human-review', requestedExecutor: 'manual', executionMode: 'review', riskLevel: 'high',
+      detail: project.publishedAt ? '项目贡献已发布到成长模型。' : '高风险发布任务，审批后才能进入学生档案或成长模型。', action: 'project_promotion',
+      permissions: { read: [project.knowledgeRootPath].filter(Boolean), write: promotionTargets, operations: ['publish_growth_evidence', 'archive_project'] },
+      approval: { required: true, status: project.publishedAt ? 'approved' : 'pending' },
+    }));
+  }
+  return tasks;
+}
+
+function getTaskCenter() {
+  const performanceStartedAt = Date.now();
+  const performanceMarks = {};
+  try {
+    syncQClawTaskResults();
+    performanceMarks.qclawSyncMs = Date.now() - performanceStartedAt;
+    let store = upsertTaskCandidates(buildTaskCenterCandidates());
+    performanceMarks.candidateBuildMs = Date.now() - performanceStartedAt - performanceMarks.qclawSyncMs;
+    if (enforceTaskTimeouts(store)) store = writeTaskStore(store);
+    const tasks = store.tasks.slice().sort((a, b) => {
+      const groupOrder = { actionable: 0, running: 1, scheduled: 2, completed: 3 };
+      return Number(groupOrder[a.statusGroup] ?? 9) - Number(groupOrder[b.statusGroup] ?? 9) || String(b.updatedAt).localeCompare(String(a.updatedAt));
+    });
+    const legacyHistory = [];
+    for (const student of readStudentsIndex().map(toHostStudent)) {
+      const ledger = readStudentScheduleLedger(student);
+      legacyHistory.push(...ledger.entries.map((entry) => ({ ...entry, sourceType: 'student', sourceId: String(student.id), sourceName: student.name, executor: String(student.agentTool || 'qclaw'), at: entry.lastCopiedAt || entry.copiedAt || entry.day || '' })));
+    }
+    const history = [...store.history, ...legacyHistory].sort((a, b) => String(b.at || b.lastCopiedAt || b.copiedAt || b.day || '').localeCompare(String(a.at || a.lastCopiedAt || a.copiedAt || a.day || ''))).slice(0, 300);
+    const summary = {
+      total: tasks.length,
+      actionable: tasks.filter((task) => task.statusGroup === 'actionable').length,
+      running: tasks.filter((task) => task.statusGroup === 'running').length,
+      scheduled: tasks.filter((task) => task.statusGroup === 'scheduled').length,
+      completed: tasks.filter((task) => task.statusGroup === 'completed').length,
+    };
+    const automationEnabled = taskAutomationEnabled();
+    const capabilities = adapterCapabilities();
+    performanceMarks.totalMs = Date.now() - performanceStartedAt;
+    return JSON.stringify({ ok: true, protocolVersion: TASK_PROTOCOL_VERSION, generatedAt: taskNow(), tasks, history, summary, capabilities, automationEnabled, executionMode: automationEnabled ? 'automatic' : 'manual', performance: performanceMarks, taskStorePath: taskStorePath(), qclawInboxPath: qclawTaskInboxPath(), qclawResultPath: qclawTaskResultPath(), message: `任务中心已汇总 ${tasks.length} 项标准任务和 ${history.length} 条执行记录；当前为${automationEnabled ? '自动运行' : '仅手动'}模式。` });
+  } catch (error) {
+    return JSON.stringify({ ok: false, tasks: [], history: [], message: `读取任务中心失败：${error.message}` });
   }
 }
 
@@ -4432,9 +7528,23 @@ function appendGrowthEvidenceCandidate(student, candidate) {
   const review = readGrowthEvidenceReview(normalized);
   const content = String(candidate.content || candidate.title || '').trim();
   const seed = `${normalized.id}|${candidate.projectId || ''}|${candidate.title || ''}|${content}|${candidate.sourcePath || ''}`;
-  const evidenceId = `evidence-${sha1Text(seed).slice(0, 14)}`;
+  const evidenceId = String(candidate.id || `evidence-${sha1Text(seed).slice(0, 14)}`);
   const existing = review.candidates.find((item) => item.id === evidenceId);
-  if (existing) return existing;
+  if (existing) {
+    Object.assign(existing, {
+      projectId: String(candidate.projectId || existing.projectId || ''),
+      projectName: String(candidate.projectName || existing.projectName || ''),
+      title: String(candidate.title || existing.title || '未命名成长证据'),
+      content,
+      sourcePath: String(candidate.sourcePath || existing.sourcePath || ''),
+      status: String(candidate.status || existing.status || 'pending'),
+      confidence: String(candidate.confidence || existing.confidence || '待确认'),
+      ability: String(candidate.ability || existing.ability || '待标注'),
+      updatedAt: new Date().toISOString(),
+    });
+    writeGrowthEvidenceReview(normalized, review);
+    return existing;
+  }
   const item = {
     id: evidenceId,
     studentId: normalized.id,
@@ -4444,7 +7554,7 @@ function appendGrowthEvidenceCandidate(student, candidate) {
     title: String(candidate.title || '未命名成长证据'),
     content,
     sourcePath: String(candidate.sourcePath || ''),
-    status: 'pending',
+    status: String(candidate.status || 'pending'),
     confidence: String(candidate.confidence || '待确认'),
     ability: String(candidate.ability || '待标注'),
     createdAt: new Date().toISOString(),
@@ -6323,6 +9433,7 @@ function uniqueFile(dir, filename) {
 
 function queryUninstallEntries() {
   if (process.platform !== 'win32') return [];
+  if (uninstallEntriesCache.value.length && Date.now() - uninstallEntriesCache.at < 10 * 60 * 1000) return uninstallEntriesCache.value;
   const roots = [
     'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall',
     'HKLM\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall',
@@ -6352,6 +9463,7 @@ function queryUninstallEntries() {
       // Registry access can fail on restricted machines; filesystem probing is the fallback.
     }
   }
+  uninstallEntriesCache = { at: Date.now(), value: entries };
   return entries;
 }
 
@@ -6362,19 +9474,50 @@ function normalizeExePath(value) {
 }
 
 function findExecutableInPath(names) {
+  const key = names.join('|').toLowerCase();
+  const cached = executablePathCache.get(key);
+  if (cached && Date.now() - cached.at < 10 * 60 * 1000 && (!cached.value || fs.existsSync(cached.value))) return cached.value;
   for (const name of names) {
     try {
       const result = spawnSync('where.exe', [name], { encoding: 'utf8', windowsHide: true });
       const first = String(result.stdout || '').split(/\r?\n/).map((line) => line.trim()).find(Boolean);
-      if (first && fs.existsSync(first)) return first;
+      if (first && fs.existsSync(first)) {
+        executablePathCache.set(key, { at: Date.now(), value: first });
+        return first;
+      }
     } catch {
       // Ignore PATH lookup failures.
     }
   }
+  executablePathCache.set(key, { at: Date.now(), value: '' });
   return '';
 }
 
-function findAgentToolInstall(toolId) {
+function findVersionedExecutable(root, exeNames) {
+  try {
+    if (!root || !fs.existsSync(root)) return '';
+    for (const exeName of exeNames) {
+      const direct = path.join(root, exeName);
+      if (fs.existsSync(direct)) return direct;
+    }
+    const directories = fs.readdirSync(root, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => entry.name)
+      .sort((left, right) => right.localeCompare(left, undefined, { numeric: true }))
+      .slice(0, 40);
+    for (const directory of directories) {
+      for (const exeName of exeNames) {
+        const candidate = path.join(root, directory, exeName);
+        if (fs.existsSync(candidate)) return candidate;
+      }
+    }
+  } catch {
+    // Installation discovery falls back to the registry and deep search.
+  }
+  return '';
+}
+
+function findAgentToolInstallUncached(toolId) {
   const toolMeta = {
     qclaw: {
       displayNeedle: 'qclaw',
@@ -6488,6 +9631,12 @@ function findAgentToolInstall(toolId) {
       };
     }
   }
+  for (const root of Array.from(new Set(meta.roots.filter(Boolean)))) {
+    const exe = findVersionedExecutable(root, exeNames);
+    if (exe) {
+      return { installed: true, version: '', exePath: exe, installLocation: path.dirname(exe) };
+    }
+  }
   const registryEntries = queryUninstallEntries().filter(matchesRegistryEntry);
   const roots = [];
   for (const entry of registryEntries) {
@@ -6505,17 +9654,15 @@ function findAgentToolInstall(toolId) {
   }
   roots.push(...meta.roots);
   for (const root of Array.from(new Set(roots.filter(Boolean)))) {
-    for (const exeName of exeNames) {
-      const exe = findFile(root, exeName, 5);
-      if (exe) {
-        const entry = registryEntries[0] || {};
-        return {
-          installed: true,
-          version: entry.DisplayVersion || '',
-          exePath: exe,
-          installLocation: entry.InstallLocation || root,
-        };
-      }
+    const exe = findVersionedExecutable(root, exeNames);
+    if (exe) {
+      const entry = registryEntries[0] || {};
+      return {
+        installed: true,
+        version: entry.DisplayVersion || '',
+        exePath: exe,
+        installLocation: entry.InstallLocation || path.dirname(exe),
+      };
     }
   }
   return {
@@ -6524,6 +9671,14 @@ function findAgentToolInstall(toolId) {
     exePath: '',
     installLocation: registryEntries[0]?.InstallLocation || '',
   };
+}
+
+function findAgentToolInstall(toolId) {
+  const cached = agentToolInstallCache.get(toolId);
+  if (cached && Date.now() - cached.at < 10 * 60 * 1000 && (!cached.value.exePath || fs.existsSync(cached.value.exePath))) return cached.value;
+  const value = findAgentToolInstallUncached(toolId);
+  agentToolInstallCache.set(toolId, { at: Date.now(), value });
+  return value;
 }
 
 function findTailscaleInstall() {
@@ -6551,17 +9706,15 @@ function findTailscaleInstall() {
     if (entry.InstallLocation) roots.unshift(entry.InstallLocation);
   }
   for (const root of Array.from(new Set(roots.filter(Boolean)))) {
-    for (const exeName of exeNames) {
-      const exe = findFile(root, exeName, 4);
-      if (exe) {
-        const entry = registryEntries[0] || {};
-        return {
-          installed: true,
-          version: entry.DisplayVersion || '',
-          exePath: exe,
-          installLocation: entry.InstallLocation || root,
-        };
-      }
+    const exe = findVersionedExecutable(root, exeNames);
+    if (exe) {
+      const entry = registryEntries[0] || {};
+      return {
+        installed: true,
+        version: entry.DisplayVersion || '',
+        exePath: exe,
+        installLocation: entry.InstallLocation || path.dirname(exe),
+      };
     }
   }
   return {
@@ -7355,6 +10508,9 @@ async function handleMaterialUpload(request, response, studentId, url) {
       sha1: sha1File(item.path),
       deviceId: request.authContext?.deviceId || 'admin',
       deviceName: request.authContext?.deviceName || '主机控制台',
+      sourceType: url.searchParams.get('sourceType') || 'remote_upload',
+      captureSessionId: url.searchParams.get('captureSessionId') || '',
+      captureItemId: url.searchParams.get('captureItemId') || '',
       uploadedAt: new Date().toISOString(),
     })));
     const rawFileCount = countFiles(rawPath);
@@ -7800,9 +10956,25 @@ ipcMain.on('bridge:markAssetGovernanceDecision', (event, assetId, decision, note
 ipcMain.on('bridge:generateKnowledgeArchitectureReport', (event) => { licensedIpc(event, '知识关系图生成', () => generateKnowledgeArchitectureReport()); });
 ipcMain.on('bridge:getProjects', (event) => { event.returnValue = getProjects(); });
 ipcMain.on('bridge:createProject', (event, optionsJson) => { licensedIpc(event, '学习项目创建', () => createProject(optionsJson)); });
+ipcMain.on('bridge:updateProjectMetadata', (event, projectId, metadataJson) => { licensedIpc(event, '编辑学习项目', () => updateProjectMetadata(projectId, metadataJson)); });
+ipcMain.on('bridge:removeProjectRecord', (event, projectId) => { licensedIpc(event, '删除学习项目记录', () => removeProjectRecord(projectId)); });
+ipcMain.on('bridge:relocateProjectWorkspace', (event, projectId) => { licensedIpc(event, '项目路径重新定位', () => relocateProjectWorkspace(projectId)); });
+ipcMain.on('bridge:getRemovedProjects', (event) => { licensedIpc(event, '已移除项目读取', () => getRemovedProjects()); });
+ipcMain.on('bridge:restoreRemovedProject', (event, snapshotPath) => { licensedIpc(event, '项目记录恢复', () => restoreRemovedProject(snapshotPath)); });
+ipcMain.on('bridge:exportProjectPackage', (event, projectId) => { licensedIpc(event, '项目导出', () => exportProjectPackage(projectId)); });
+ipcMain.on('bridge:importProjectPackage', (event) => { licensedIpc(event, '项目导入', () => importProjectPackage()); });
+ipcMain.on('bridge:duplicateProject', (event, projectId, name) => { licensedIpc(event, '复制学习项目', () => duplicateProject(projectId, name)); });
+ipcMain.on('bridge:updateProjectStudentEvidence', (event, projectId, studentId, evidenceJson) => { licensedIpc(event, '学生独立成长证据', () => updateProjectStudentEvidence(projectId, studentId, evidenceJson)); });
+ipcMain.on('bridge:buildCrossProjectKnowledgeIndex', (event) => { licensedIpc(event, '跨项目知识关联', () => buildCrossProjectKnowledgeIndex()); });
+ipcMain.on('bridge:pickProjectWorkspaceDir', (event) => { licensedIpc(event, '选择已有项目文件夹', () => pickProjectWorkspaceDir()); });
 ipcMain.on('bridge:updateProjectStatus', (event, projectId, status) => { licensedIpc(event, '学习项目状态更新', () => updateProjectStatus(projectId, status)); });
 ipcMain.on('bridge:updateProjectStudents', (event, projectId, studentIdsJson) => { licensedIpc(event, '学习项目绑定学生', () => updateProjectStudents(projectId, studentIdsJson)); });
-ipcMain.on('bridge:applyProjectWorkspaceTemplate', (event, projectId, templateId, foldersJson) => { licensedIpc(event, '项目工作空间模板', () => applyProjectWorkspaceTemplate(projectId, templateId, foldersJson)); });
+ipcMain.on('bridge:applyProjectWorkspaceTemplate', (event, projectId, templateId, foldersJson, templateName, templateV2Json) => { licensedIpc(event, '项目模板 V2', () => applyProjectWorkspaceTemplate(projectId, templateId, foldersJson, templateName, templateV2Json)); });
+ipcMain.on('bridge:openProjectSpace', (event, projectId, space) => { licensedIpc(event, '打开学习项目空间', () => openProjectSpace(projectId, space)); });
+ipcMain.on('bridge:scanProjectWorkspace', (event, projectId) => { licensedIpc(event, '扫描项目工作空间', () => scanProjectWorkspace(projectId)); });
+ipcMain.on('bridge:reviewProjectStagingItems', (event, projectId, itemIdsJson, decision, sourceStrategy, note) => { licensedIpc(event, '项目资料人工审核', () => reviewProjectStagingItems(projectId, itemIdsJson, decision, sourceStrategy, note)); });
+ipcMain.on('bridge:getProjectKnowledgeReview', (event, projectId) => { licensedIpc(event, '读取项目知识资产审核', () => getProjectKnowledgeReview(projectId)); });
+ipcMain.on('bridge:updateProjectKnowledgeReview', (event, projectId, recordIdsJson, status, note) => { licensedIpc(event, '项目知识资产审核', () => updateProjectKnowledgeReview(projectId, recordIdsJson, status, note)); });
 ipcMain.on('bridge:importProjectAssets', (event, projectId, assetIdsJson) => { licensedIpc(event, '项目资料导入', () => importProjectAssets(projectId, assetIdsJson)); });
 ipcMain.on('bridge:importProjectRawFiles', (event, projectId) => { licensedIpc(event, '项目原始资料导入', () => importProjectRawFiles(projectId)); });
 ipcMain.on('bridge:getProjectDigestCommand', (event, projectId) => { licensedIpc(event, '项目消化指令', () => getProjectDigestCommand(projectId)); });
@@ -7898,6 +11070,17 @@ ipcMain.on('bridge:markStudentDigestSubmitted', (event, studentId) => { licensed
 ipcMain.on('bridge:syncStudentDigestResult', (event, studentId) => { licensedIpc(event, '资料消化结果同步', () => syncStudentDigestResult(studentId, { forceSubmitted: true })); });
 ipcMain.on('bridge:recordScheduledTaskAction', (event, studentId, kind, commandText) => { licensedIpc(event, '定时任务账本', () => recordScheduledTaskAction(studentId, kind, commandText)); });
 ipcMain.on('bridge:getStudentScheduleLedger', (event, studentId) => { event.returnValue = getStudentScheduleLedger(studentId); });
+ipcMain.on('bridge:getTaskCenter', (event) => { event.returnValue = getTaskCenter(); });
+ipcMain.on('bridge:getTaskCenterCapabilities', (event) => { event.returnValue = getTaskCenterCapabilities(); });
+ipcMain.on('bridge:setTaskAutomationEnabled', (event, enabled) => { licensedIpc(event, '任务自动运行模式', () => setTaskAutomationEnabled(enabled)); });
+ipcMain.on('bridge:executeTask', (event, taskId, executor) => { licensedIpc(event, '执行任务中心任务', () => executeTaskByAdapter(taskId, executor)); });
+ipcMain.on('bridge:approveTask', (event, taskId, decision, note) => { licensedIpc(event, '任务审批', () => approveTask(taskId, decision, note)); });
+ipcMain.on('bridge:retryTask', (event, taskId) => { licensedIpc(event, '任务重试', () => retryTask(taskId)); });
+ipcMain.on('bridge:cancelTask', (event, taskId, note) => { licensedIpc(event, '取消任务', () => cancelTask(taskId, note)); });
+ipcMain.on('bridge:importTaskResult', (event, taskId) => { licensedIpc(event, '导入任务结果', () => importTaskResult(taskId)); });
+ipcMain.on('bridge:syncQClawTaskResults', (event) => { licensedIpc(event, '同步 QClaw 任务结果', () => syncQClawTaskResults()); });
+ipcMain.on('bridge:submitDailyActionFeedback', (event, taskId, status, note) => { licensedIpc(event, '每日行动反馈', () => submitDailyActionFeedback(taskId, status, note)); });
+ipcMain.on('bridge:openTaskCenterPath', (event, kind) => { event.returnValue = openTaskCenterPath(kind); });
 ipcMain.on('bridge:generateStudentMaintenanceReport', (event, studentId) => { licensedIpc(event, '定时维护报告', () => generateStudentMaintenanceReport(studentId)); });
 ipcMain.on('bridge:getHostTimeline', (event) => { event.returnValue = getHostTimeline(); });
 ipcMain.on('bridge:backupHostData', (event) => { licensedIpc(event, '主机数据备份', () => backupHostData()); });
@@ -7914,10 +11097,52 @@ ipcMain.on('bridge:setHostDeviceStudentAccess', (event, deviceId, studentIdsJson
 ipcMain.on('bridge:setHostDeviceAccessMode', (event, deviceId, optionsJson) => {
   licensedIpc(event, '设备授权管理', () => setHostDeviceAccessMode(deviceId, optionsJson));
 });
+ipcMain.on('bridge:getCaptureCenterState', (event) => { event.returnValue = getCaptureCenterState(); });
+ipcMain.on('bridge:openCaptureInbox', (event, sessionId) => { event.returnValue = openCaptureInbox(sessionId); });
+ipcMain.handle('bridge:listCaptureSources', async () => listCaptureSources());
+ipcMain.handle('bridge:startCaptureSession', async (_event, optionsJson) => {
+  const locked = licenseRequiredJson('屏幕资料采集');
+  return locked || startCaptureSession(optionsJson);
+});
+ipcMain.handle('bridge:pauseCaptureSession', async (_event, sessionId) => pauseCaptureSession(sessionId));
+ipcMain.handle('bridge:resumeCaptureSession', async (_event, sessionId) => resumeCaptureSession(sessionId));
+ipcMain.handle('bridge:highlightCaptureSession', async (_event, sessionId) => highlightCaptureSession(sessionId));
+ipcMain.handle('bridge:stopCaptureSession', async (_event, sessionId) => stopCaptureSession(sessionId));
+ipcMain.handle('bridge:promoteCaptureSession', async (_event, sessionId) => {
+  const locked = licenseRequiredJson('屏幕采集资料晋升');
+  return locked || promoteCaptureSession(sessionId);
+});
 
-app.whenReady().then(createWindow);
+app.whenReady().then(() => {
+  createWindow();
+  createCaptureTray();
+  registerCaptureShortcuts();
+  if (process.env.EDU_DISABLE_TASK_SCHEDULER !== '1' && taskAutomationEnabled()) {
+    void refreshAdapterCapabilities(true);
+    startUnifiedTaskScheduler();
+  }
+});
 
 app.on('before-quit', () => {
+  globalShortcut.unregisterAll();
+  if (captureControlWindow && !captureControlWindow.isDestroyed()) captureControlWindow.destroy();
+  captureControlWindow = null;
+  if (captureTray && !captureTray.isDestroyed()) captureTray.destroy();
+  captureTray = null;
+  if (activeCaptureRuntime) {
+    if (activeCaptureRuntime.timer) clearInterval(activeCaptureRuntime.timer);
+    if (activeCaptureRuntime.stopTimer) clearTimeout(activeCaptureRuntime.stopTimer);
+    activeCaptureRuntime.session.status = 'interrupted';
+    activeCaptureRuntime.session.endedAt = new Date().toISOString();
+    activeCaptureRuntime.session.endReason = 'app_closed';
+    persistCaptureSession(activeCaptureRuntime.session);
+    activeCaptureRuntime = null;
+  }
+  stopUnifiedTaskScheduler();
+  for (const running of taskChildProcesses.values()) {
+    try { if (running?.child && !running.child.killed) running.child.kill(); } catch { /* App shutdown continues. */ }
+  }
+  taskChildProcesses.clear();
   if (hostServer) {
     hostServer.close();
     hostServer = null;

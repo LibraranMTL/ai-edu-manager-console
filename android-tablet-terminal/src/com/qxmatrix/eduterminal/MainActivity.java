@@ -1,7 +1,9 @@
 package com.qxmatrix.eduterminal;
 
+import android.Manifest;
 import android.app.Activity;
 import android.app.AlertDialog;
+import android.app.PendingIntent;
 import android.content.ContentUris;
 import android.content.ContentValues;
 import android.content.ClipData;
@@ -19,6 +21,7 @@ import android.graphics.BitmapFactory;
 import android.graphics.Color;
 import android.graphics.Matrix;
 import android.net.Uri;
+import android.media.projection.MediaProjectionManager;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Environment;
@@ -66,10 +69,12 @@ import java.net.HttpURLConnection;
 import java.net.URL;
 import java.net.URLEncoder;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.Hashtable;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 
 public class MainActivity extends Activity implements View.OnClickListener, AdapterView.OnItemSelectedListener {
     static final int REQUEST_PICK_MATERIAL = 8101;
@@ -77,8 +82,10 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
     static final int REQUEST_TAKE_PHOTO = 8103;
     static final int REQUEST_SCAN_PAIR = 8104;
     static final int REQUEST_CAPTURE_PAIR_QR = 8105;
-    static final String VERSION_NAME = "0.5.1";
-    static final int VERSION_CODE = 61;
+    static final int REQUEST_SCREEN_CAPTURE = 8106;
+    static final int REQUEST_NOTIFICATION_PERMISSION = 8107;
+    static final String VERSION_NAME = "0.5.2";
+    static final int VERSION_CODE = 62;
     static final String UPDATE_MANIFEST_URL = "https://www.greatbg.com/download/edu-manager-version.json";
     static final String TAILSCALE_APK_URL = "https://www.greatbg.com/download/tailscalev1.88.1_nbwe_7273.com.apk";
     static final String USER_AGREEMENT_URL = "https://www.greatbg.com/download/agreement.html";
@@ -152,6 +159,9 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
     Button sharedUploadButton;
     Button retryFailedUploadButton;
     Button reloadStudentsButton;
+    Button captureStartButton;
+    Button capturePauseButton;
+    Button captureUploadButton;
     Button refreshArchiveButton;
     Button copyButton;
     Button searchArchiveButton;
@@ -205,6 +215,10 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
     int layoutMode = 0;
     int skinIndex = 0;
     boolean suppressPreferenceCallbacks = false;
+    TextView captureStatusText;
+    String pendingCaptureMode = "smart";
+    int pendingCaptureDurationMinutes = 30;
+    final List<Uri> captureUploadUrisInFlight = new ArrayList<Uri>();
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -215,6 +229,7 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
         buildUi();
         loadPrefs();
         handleIncomingShare(getIntent());
+        maybeStartCaptureFromIntent(getIntent());
     }
 
     @Override
@@ -222,6 +237,7 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
         super.onNewIntent(intent);
         setIntent(intent);
         handleIncomingShare(intent);
+        maybeStartCaptureFromIntent(intent);
     }
 
     private void buildUi() {
@@ -500,6 +516,26 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
         digestStatusText.setPadding(0, dp(4), 0, 0);
         studentCard.addView(digestStatusText);
 
+        studentCard.addView(label("屏幕资料采集"));
+        studentCard.addView(label("授权后可按智能混合、内容变化或固定间隔模式连续采集；结果先保存在本机采集箱，由你确认后上传到当前学生原始资料库。"));
+        LinearLayout captureRow = row();
+        captureStartButton = button("开始屏幕采集", true);
+        capturePauseButton = button("暂停/继续", false);
+        captureUploadButton = button("上传采集资料", false);
+        captureRow.addView(captureStartButton);
+        captureRow.addView(capturePauseButton);
+        captureRow.addView(captureUploadButton);
+        studentCard.addView(captureRow);
+        captureStartButton.setOnClickListener(this);
+        capturePauseButton.setOnClickListener(this);
+        captureUploadButton.setOnClickListener(this);
+        captureStatusText = new TextView(this);
+        captureStatusText.setTextSize(12);
+        captureStatusText.setTextColor(Color.rgb(87, 107, 103));
+        captureStatusText.setPadding(0, dp(6), 0, 0);
+        studentCard.addView(captureStatusText);
+        refreshCaptureUi();
+
         contactCard = card();
         root.addView(contactCard);
         contactCard.addView(label("联系教育管家"));
@@ -708,6 +744,12 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
             retryFailedUploads();
         } else if (view == reloadStudentsButton) {
             loadStudents();
+        } else if (view == captureStartButton) {
+            handleCapturePrimary();
+        } else if (view == capturePauseButton) {
+            toggleCapturePause();
+        } else if (view == captureUploadButton) {
+            uploadCapturedScreenshots();
         } else if (view == refreshArchiveButton) {
             loadArchiveFiles();
         } else if (view == refreshReportsButton) {
@@ -806,6 +848,7 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
             selectedStudent = position >= 0 && position < students.size() ? students.get(position) : null;
             updateSharedUploadButton();
             updateDigestStatusCard();
+            refreshCaptureUi();
             updateContactCard();
             loadArchiveFiles();
         } else if (parent == archiveCategorySpinner) {
@@ -818,7 +861,10 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
 
     @Override
     public void onNothingSelected(AdapterView<?> parent) {
-        if (parent == studentSpinner) selectedStudent = null;
+        if (parent == studentSpinner) {
+            selectedStudent = null;
+            refreshCaptureUi();
+        }
     }
 
     void connectAndLoadStudents() {
@@ -1153,6 +1199,25 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
     @Override
     protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
+        if (requestCode == REQUEST_SCREEN_CAPTURE) {
+            if (resultCode == RESULT_OK && data != null) {
+                Intent serviceIntent = new Intent(this, CaptureProjectionService.class)
+                    .setAction(CaptureProjectionService.ACTION_START)
+                    .putExtra("result_code", resultCode)
+                    .putExtra("result_data", data)
+                    .putExtra("mode", pendingCaptureMode)
+                    .putExtra("duration_ms", pendingCaptureDurationMinutes * 60L * 1000L);
+                if (Build.VERSION.SDK_INT >= 26) startForegroundService(serviceIntent);
+                else startService(serviceIntent);
+                toast("屏幕资料采集已启动，通知栏可暂停、重点截取或结束。");
+                captureStatusText.postDelayed(new Runnable() {
+                    @Override public void run() { refreshCaptureUi(); }
+                }, 800L);
+            } else {
+                toast("未授权屏幕采集。");
+            }
+            return;
+        }
         if (requestCode == REQUEST_SCAN_PAIR) {
             if (resultCode == RESULT_OK && data != null) {
                 String payload = data.getStringExtra("SCAN_RESULT");
@@ -1383,6 +1448,153 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
         }
     }
 
+    @Override
+    protected void onResume() {
+        super.onResume();
+        refreshCaptureUi();
+    }
+
+    void maybeStartCaptureFromIntent(Intent intent) {
+        if (intent == null || !intent.getBooleanExtra("start_screen_capture", false)) return;
+        intent.removeExtra("start_screen_capture");
+        if (captureStatusText != null) captureStatusText.postDelayed(new Runnable() {
+            @Override public void run() { showCaptureSetupDialog(); }
+        }, 300L);
+    }
+
+    String captureStatus() {
+        return getSharedPreferences(CaptureProjectionService.PREFS, MODE_PRIVATE)
+            .getString(CaptureProjectionService.KEY_STATUS, "idle");
+    }
+
+    void refreshCaptureUi() {
+        if (captureStatusText == null) return;
+        SharedPreferences prefs = getSharedPreferences(CaptureProjectionService.PREFS, MODE_PRIVATE);
+        String state = prefs.getString(CaptureProjectionService.KEY_STATUS, "idle");
+        int saved = prefs.getInt(CaptureProjectionService.KEY_SAVED, 0);
+        int candidate = prefs.getInt(CaptureProjectionService.KEY_CANDIDATE, 0);
+        int dedup = prefs.getInt(CaptureProjectionService.KEY_DEDUP, 0);
+        int highlighted = prefs.getInt(CaptureProjectionService.KEY_HIGHLIGHTED, 0);
+        String mode = prefs.getString("mode", "smart");
+        String stateLabel = "capturing".equals(state) ? "正在采集" : "paused".equals(state) ? "已暂停" : "completed".equals(state) ? "待上传" : "尚未启动";
+        captureStatusText.setText("采集状态：" + stateLabel + " · 模式 " + captureModeLabel(mode) + " · 检测 " + candidate + " · 保留 " + saved + " · 去重 " + dedup + " · 重点 " + highlighted);
+        boolean active = "capturing".equals(state) || "paused".equals(state);
+        captureStartButton.setText(active ? "结束采集" : "开始屏幕采集");
+        capturePauseButton.setEnabled(active);
+        capturePauseButton.setText("paused".equals(state) ? "继续采集" : "暂停采集");
+        captureUploadButton.setEnabled(!active && pendingCapturedFiles().size() > 0 && selectedStudent != null);
+    }
+
+    String captureModeLabel(String mode) {
+        if ("interval".equals(mode)) return "固定间隔";
+        if ("change".equals(mode)) return "内容变化";
+        return "智能混合";
+    }
+
+    void handleCapturePrimary() {
+        String state = captureStatus();
+        if ("capturing".equals(state) || "paused".equals(state)) {
+            startService(new Intent(this, CaptureProjectionService.class).setAction(CaptureProjectionService.ACTION_STOP));
+            captureStatusText.postDelayed(new Runnable() {
+                @Override public void run() { refreshCaptureUi(); }
+            }, 600L);
+            return;
+        }
+        showCaptureSetupDialog();
+    }
+
+    void showCaptureSetupDialog() {
+        final String[] labels = new String[] { "智能混合（推荐）", "内容变化", "固定间隔" };
+        final String[] values = new String[] { "smart", "change", "interval" };
+        new AlertDialog.Builder(this)
+            .setTitle("选择屏幕采集模式")
+            .setSingleChoiceItems(labels, 0, null)
+            .setPositiveButton("下一步", new DialogInterface.OnClickListener() {
+                @Override public void onClick(DialogInterface dialog, int which) {
+                    int checked = ((AlertDialog) dialog).getListView().getCheckedItemPosition();
+                    if (checked < 0) checked = 0;
+                    pendingCaptureMode = values[checked];
+                    showCaptureDurationDialog();
+                }
+            })
+            .setNegativeButton("取消", null)
+            .show();
+    }
+
+    void showCaptureDurationDialog() {
+        final String[] labels = new String[] { "15 分钟", "30 分钟", "45 分钟", "60 分钟", "90 分钟", "120 分钟" };
+        final int[] minutes = new int[] { 15, 30, 45, 60, 90, 120 };
+        new AlertDialog.Builder(this)
+            .setTitle("设置最长采集时间")
+            .setSingleChoiceItems(labels, 1, null)
+            .setPositiveButton("授权并开始", new DialogInterface.OnClickListener() {
+                @Override public void onClick(DialogInterface dialog, int which) {
+                    int checked = ((AlertDialog) dialog).getListView().getCheckedItemPosition();
+                    if (checked < 0) checked = 1;
+                    pendingCaptureDurationMinutes = minutes[checked];
+                    requestScreenCapturePermission();
+                }
+            })
+            .setNegativeButton("取消", null)
+            .show();
+    }
+
+    void requestScreenCapturePermission() {
+        if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(new String[] { Manifest.permission.POST_NOTIFICATIONS }, REQUEST_NOTIFICATION_PERMISSION);
+        }
+        MediaProjectionManager manager = (MediaProjectionManager) getSystemService(Context.MEDIA_PROJECTION_SERVICE);
+        if (manager == null) {
+            toast("当前设备不支持屏幕采集。");
+            return;
+        }
+        startActivityForResult(manager.createScreenCaptureIntent(), REQUEST_SCREEN_CAPTURE);
+    }
+
+    void toggleCapturePause() {
+        String state = captureStatus();
+        String action = "paused".equals(state) ? CaptureProjectionService.ACTION_RESUME : CaptureProjectionService.ACTION_PAUSE;
+        startService(new Intent(this, CaptureProjectionService.class).setAction(action));
+        captureStatusText.postDelayed(new Runnable() {
+            @Override public void run() { refreshCaptureUi(); }
+        }, 400L);
+    }
+
+    List<File> pendingCapturedFiles() {
+        ArrayList<File> files = new ArrayList<File>();
+        SharedPreferences prefs = getSharedPreferences(CaptureProjectionService.PREFS, MODE_PRIVATE);
+        String dirPath = prefs.getString(CaptureProjectionService.KEY_CAPTURE_DIR, "");
+        if (dirPath.length() == 0) return files;
+        File dir = new File(dirPath);
+        File[] children = dir.listFiles();
+        Set<String> uploaded = new HashSet<String>(prefs.getStringSet("uploaded_paths", new HashSet<String>()));
+        if (children == null) return files;
+        for (File child : children) {
+            String lower = child.getName().toLowerCase(Locale.ROOT);
+            if (child.isFile() && (lower.endsWith(".jpg") || lower.endsWith(".jpeg") || lower.endsWith(".png")) && !uploaded.contains(child.getAbsolutePath())) {
+                files.add(child);
+            }
+        }
+        return files;
+    }
+
+    void uploadCapturedScreenshots() {
+        if (selectedStudent == null) {
+            toast("请先选择截图所属学生。");
+            return;
+        }
+        List<File> files = pendingCapturedFiles();
+        if (files.size() == 0) {
+            toast("当前采集会话没有待上传截图。");
+            return;
+        }
+        ArrayList<Uri> uris = new ArrayList<Uri>();
+        for (File file : files) uris.add(Uri.fromFile(file));
+        captureUploadUrisInFlight.clear();
+        captureUploadUrisInFlight.addAll(uris);
+        uploadMaterials(uris, true);
+    }
+
     void uploadPendingSharedMaterials() {
         if (pendingSharedUris.size() == 0) {
             toast("没有待上传的分享资料。");
@@ -1487,6 +1699,20 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
     void applyUploadResult(int success, int total, List<Uri> failed, List<String> failureLabels) {
         failedUploadUris.clear();
         failedUploadUris.addAll(failed);
+        if (captureUploadUrisInFlight.size() > 0) {
+            HashSet<String> failedValues = new HashSet<String>();
+            for (Uri uri : failed) failedValues.add(uri.toString());
+            SharedPreferences capturePrefs = getSharedPreferences(CaptureProjectionService.PREFS, MODE_PRIVATE);
+            HashSet<String> uploadedPaths = new HashSet<String>(capturePrefs.getStringSet("uploaded_paths", new HashSet<String>()));
+            for (Uri uri : captureUploadUrisInFlight) {
+                if (!failedValues.contains(uri.toString()) && "file".equals(uri.getScheme()) && uri.getPath() != null) {
+                    uploadedPaths.add(uri.getPath());
+                }
+            }
+            capturePrefs.edit().putStringSet("uploaded_paths", uploadedPaths).apply();
+            captureUploadUrisInFlight.clear();
+            refreshCaptureUi();
+        }
         StringBuilder text = new StringBuilder();
         String studentName = selectedStudent == null ? "当前学生" : selectedStudent.name;
         if (success == total) text.append("最近上传结果：全部成功，").append(success).append(" 个资料已进入主机。");
@@ -3193,6 +3419,11 @@ class UploadMaterialsTask implements Runnable {
                 activity.runOnUiThread(new StatusTask(activity, "正在上传 " + (i + 1) + "/" + uris.size() + "：" + fileName));
                 activity.runOnUiThread(new UploadQueueStatusTask(activity, "上传队列：" + (i + 1) + "/" + uris.size() + "，正在上传：" + fileName));
                 String url = base + "/api/students/" + activity.encode(studentId) + "/materials?filename=" + activity.encode(fileName);
+                if ("file".equals(uri.getScheme()) && uri.getPath() != null && uri.getPath().contains("screen-captures")) {
+                    String sessionId = activity.getSharedPreferences(CaptureProjectionService.PREFS, Activity.MODE_PRIVATE)
+                        .getString(CaptureProjectionService.KEY_SESSION_ID, "");
+                    url += "&sourceType=android_screenshot&captureSessionId=" + activity.encode(sessionId);
+                }
                 activity.postFile(url, token, uri);
                 success += 1;
                 uploadedUris.add(uri);

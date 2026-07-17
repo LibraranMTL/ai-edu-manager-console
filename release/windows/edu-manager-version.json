@@ -1,9 +1,9 @@
 {
   "versionCode": 63,
   "versionName": "0.5.3",
-  "windowsVersionCode": 123,
-  "windowsVersionName": "0.7.43",
-  "windowsUrl": "https://www.greatbg.com/download/AI-edu-manager-console-Windows-0.7.43.zip",
+  "windowsVersionCode": 124,
+  "windowsVersionName": "0.7.44",
+  "windowsUrl": "https://www.greatbg.com/download/AI-edu-manager-console-Windows-0.7.44.zip",
   "terminalApkUrl": "https://www.greatbg.com/download/AI-edu-manager-tablet-terminal-0.5.3.apk",
   "tabletTerminalVersionCode": 63,
   "tabletTerminalVersionName": "0.5.3",
@@ -12,5 +12,5 @@
   "managerApkVersionCode": 23,
   "managerApkVersionName": "0.2.3",
   "apkUrl": "https://www.greatbg.com/download/AI-edu-manager-tablet-terminal-0.5.3.apk",
-  "notes": "Windows 0.7.43：设备重命名改为卡片内直接编辑；已撤销设备支持恢复，也可永久删除设备记录。平板终端保持 0.5.3，并延续设备自动登记与待授权闭环。"
+  "notes": "Windows 0.7.44：增加单实例保护，学生索引以主机数据为准；主机备份保存完整学生档案，恢复后立即刷新学生、项目与资产界面。平板终端保持 0.5.3。"
 }

@@ -655,6 +655,7 @@ type AndroidBridge = {
   importDownloadFiles?: (studentName: string, pathsJson: string) => string;
   openApp?: (app: AgentToolId | 'obsidian' | 'tailscale') => boolean;
   getAppStatus?: () => string;
+  getStudents?: () => string;
   syncStudents?: (studentsJson: string) => string;
   selectKnowledgeBaseRoot?: () => string;
   scanKnowledgeBase?: (rootPath: string, studentName: string) => string;
@@ -689,7 +690,7 @@ type AndroidBridge = {
   openTaskCenterPath?: (kind: 'root' | 'qclaw-inbox' | 'qclaw-results' | 'manual-outbox' | 'events') => string;
   generateStudentMaintenanceReport?: (studentId: string) => string;
   getHostTimeline?: () => string;
-  backupHostData?: () => string;
+  backupHostData?: (studentsJson?: string) => string;
   restoreHostData?: () => string;
   resetHostApiToken?: () => string;
   exportHostLogs?: () => string;
@@ -2349,11 +2350,8 @@ function bridge() {
   return (window as unknown as { AndroidBridge?: AndroidBridge }).AndroidBridge;
 }
 
-function loadStudents() {
-  try {
-    const raw = localStorage.getItem(storageKey);
-    const parsed = raw ? (JSON.parse(raw) as Student[]) : seedStudents;
-    return parsed.map((student) => ({
+function normalizeStudents(parsed: Student[]) {
+  return parsed.map((student) => ({
       ...student,
       schemaVersion: student.schemaVersion ?? initSchemaVersion,
       agentTool: agentToolProfiles[student.agentTool] ? student.agentTool : 'qclaw',
@@ -2396,8 +2394,24 @@ function loadStudents() {
       remoteBindingStatus: student.remoteBindingStatus ?? 'unbound',
       remoteBoundAt: student.remoteBoundAt ?? '',
     }));
+}
+
+function loadStudents() {
+  try {
+    const localRaw = localStorage.getItem(storageKey);
+    const localStudents = localRaw ? (JSON.parse(localRaw) as Student[]) : seedStudents;
+    const nativeRaw = bridge()?.getStudents?.();
+    if (nativeRaw) {
+      const nativeResult = JSON.parse(nativeRaw) as { ok?: boolean; students?: Student[] };
+      if (nativeResult.ok && Array.isArray(nativeResult.students) && nativeResult.students.length > 0) {
+        const nativeStudents = normalizeStudents(nativeResult.students);
+        localStorage.setItem(storageKey, JSON.stringify(nativeStudents));
+        return nativeStudents;
+      }
+    }
+    return normalizeStudents(localStudents);
   } catch {
-    return seedStudents;
+    return normalizeStudents(seedStudents);
   }
 }
 
@@ -8092,7 +8106,7 @@ ${JSON.stringify(items, null, 2)}
   };
 
   const backupHostData = () => {
-    const raw = bridge()?.backupHostData?.();
+    const raw = bridge()?.backupHostData?.(JSON.stringify(students));
     if (!raw) {
       setHostServiceMessage('当前环境不支持备份主机数据。');
       return;
@@ -8114,11 +8128,21 @@ ${JSON.stringify(items, null, 2)}
       return;
     }
     try {
-      const result = JSON.parse(raw) as { ok?: boolean; path?: string; message?: string; status?: HostServiceStatus };
+      const result = JSON.parse(raw) as { ok?: boolean; path?: string; message?: string; status?: HostServiceStatus; studentRecords?: Student[] };
       if (result.status) setHostServiceStatus(result.status);
+      if (result.ok && Array.isArray(result.studentRecords)) {
+        const restoredStudents = normalizeStudents(result.studentRecords);
+        setStudents(restoredStudents);
+        saveStudents(restoredStudents);
+        setSelectedId((current) => restoredStudents.some((student) => student.id === current) ? current : restoredStudents[0]?.id ?? '');
+      }
       setHostServiceMessage(result.ok ? `已从备份恢复：${result.path}` : result.message || '恢复失败。');
       refreshHostUploadRecords();
       refreshHostTimeline();
+      if (result.ok) {
+        refreshAssets();
+        refreshProjects();
+      }
     } catch {
       setHostServiceMessage('恢复结果解析失败。');
     }

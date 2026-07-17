@@ -1943,14 +1943,20 @@ function timestampForFilename() {
   return new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
 }
 
-function backupHostData() {
+function backupHostData(studentsJson) {
   try {
+    let backupStudents = readStudentsIndex();
+    if (studentsJson) {
+      const parsedStudents = JSON.parse(studentsJson);
+      if (!Array.isArray(parsedStudents)) throw new Error('学生档案备份数据格式无效。');
+      backupStudents = parsedStudents;
+    }
     const payload = {
       kind: 'ai-edu-manager-host-backup',
       version: APP_VERSION,
       exportedAt: new Date().toISOString(),
       settings: readSettings(),
-      students: readStudentsIndex(),
+      students: backupStudents,
       devices: readDevices(),
       uploadRecords: readUploadRecords(),
       assets: readAssetIndex(),
@@ -1993,6 +1999,7 @@ function restoreHostData() {
       uploadRecords: Array.isArray(parsed.uploadRecords) ? parsed.uploadRecords.length : 0,
       assets: Array.isArray(parsed.assets) ? parsed.assets.length : 0,
       projects: Array.isArray(parsed.projects) ? parsed.projects.length : 0,
+      studentRecords: Array.isArray(parsed.students) ? parsed.students : [],
       status: JSON.parse(getHostServiceStatus()),
     });
   } catch (error) {
@@ -8949,6 +8956,10 @@ function readStudentsIndex() {
   }
 }
 
+function getStudentsIndex() {
+  return JSON.stringify({ ok: true, students: readStudentsIndex() });
+}
+
 function writeStudentsIndex(students) {
   fs.mkdirSync(path.dirname(studentsPath()), { recursive: true });
   fs.writeFileSync(studentsPath(), JSON.stringify(students, null, 2), 'utf8');
@@ -8982,6 +8993,7 @@ function toHostStudent(student) {
   const soulConfig = student.soulConfig && typeof student.soulConfig === 'object' ? student.soulConfig : {};
   const templateProfile = student.templateProfile && typeof student.templateProfile === 'object' ? student.templateProfile : {};
   return {
+    ...student,
     id: String(student.id || `${cleanName}-${Date.now()}`),
     name: cleanName,
     grade: String(student.grade || ''),
@@ -11151,6 +11163,7 @@ ipcMain.on('bridge:getGrowthEvidenceReview', (event, studentId) => { event.retur
 ipcMain.on('bridge:updateGrowthEvidenceStatus', (event, studentId, evidenceId, status, note) => { licensedIpc(event, '成长证据审核', () => updateGrowthEvidenceStatus(studentId, evidenceId, status, note)); });
 ipcMain.on('bridge:rebuildGrowthIndex', (event, studentId) => { licensedIpc(event, '成长模型结构化索引', () => rebuildGrowthIndex(studentId)); });
 ipcMain.on('bridge:getGrowthIndex', (event, studentId) => { event.returnValue = getGrowthIndex(studentId); });
+ipcMain.on('bridge:getStudents', (event) => { event.returnValue = getStudentsIndex(); });
 ipcMain.on('bridge:syncStudents', (event, studentsJson) => { licensedIpc(event, '学生档案同步', () => syncStudentsIndex(studentsJson)); });
 ipcMain.on('bridge:selectKnowledgeBaseRoot', (event) => { licensedIpc(event, '接管已有知识库', () => selectKnowledgeBaseRoot()); });
 ipcMain.on('bridge:scanKnowledgeBase', (event, rootPath, studentName) => { event.returnValue = scanExistingKnowledgeBase(rootPath, studentName); });
@@ -11185,7 +11198,7 @@ ipcMain.on('bridge:submitDailyActionFeedback', (event, taskId, status, note) => 
 ipcMain.on('bridge:openTaskCenterPath', (event, kind) => { event.returnValue = openTaskCenterPath(kind); });
 ipcMain.on('bridge:generateStudentMaintenanceReport', (event, studentId) => { licensedIpc(event, '定时维护报告', () => generateStudentMaintenanceReport(studentId)); });
 ipcMain.on('bridge:getHostTimeline', (event) => { event.returnValue = getHostTimeline(); });
-ipcMain.on('bridge:backupHostData', (event) => { licensedIpc(event, '主机数据备份', () => backupHostData()); });
+ipcMain.on('bridge:backupHostData', (event, studentsJson) => { licensedIpc(event, '主机数据备份', () => backupHostData(studentsJson)); });
 ipcMain.on('bridge:restoreHostData', (event) => { licensedIpc(event, '主机数据恢复', () => restoreHostData()); });
 ipcMain.on('bridge:resetHostApiToken', (event) => { licensedIpc(event, '重置 API Token', () => resetHostApiToken()); });
 ipcMain.on('bridge:exportHostLogs', (event) => { event.returnValue = exportHostLogs(); });
@@ -11217,15 +11230,31 @@ ipcMain.handle('bridge:promoteCaptureSession', async (_event, sessionId) => {
   return locked || promoteCaptureSession(sessionId);
 });
 
-app.whenReady().then(() => {
-  createWindow();
-  createCaptureTray();
-  registerCaptureShortcuts();
-  if (process.env.EDU_DISABLE_TASK_SCHEDULER !== '1' && taskAutomationEnabled()) {
-    void refreshAdapterCapabilities(true);
-    startUnifiedTaskScheduler();
-  }
-});
+const hasSingleInstanceLock = app.requestSingleInstanceLock();
+
+if (!hasSingleInstanceLock) {
+  app.quit();
+} else {
+  app.on('second-instance', () => {
+    if (!mainWindow || mainWindow.isDestroyed()) {
+      createWindow();
+      return;
+    }
+    if (mainWindow.isMinimized()) mainWindow.restore();
+    mainWindow.show();
+    mainWindow.focus();
+  });
+
+  app.whenReady().then(() => {
+    createWindow();
+    createCaptureTray();
+    registerCaptureShortcuts();
+    if (process.env.EDU_DISABLE_TASK_SCHEDULER !== '1' && taskAutomationEnabled()) {
+      void refreshAdapterCapabilities(true);
+      startUnifiedTaskScheduler();
+    }
+  });
+}
 
 app.on('before-quit', () => {
   globalShortcut.unregisterAll();

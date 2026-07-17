@@ -331,6 +331,9 @@ contextBridge.exposeInMainWorld('AndroidBridge', {
   getGrowthIndex(studentId) {
     return ipcRenderer.sendSync('bridge:getGrowthIndex', studentId);
   },
+  getStudents() {
+    return ipcRenderer.sendSync('bridge:getStudents');
+  },
   syncStudents(studentsJson) {
     return ipcRenderer.sendSync('bridge:syncStudents', studentsJson);
   },
@@ -433,8 +436,8 @@ contextBridge.exposeInMainWorld('AndroidBridge', {
   getHostTimeline() {
     return ipcRenderer.sendSync('bridge:getHostTimeline');
   },
-  backupHostData() {
-    return ipcRenderer.sendSync('bridge:backupHostData');
+  backupHostData(studentsJson) {
+    return ipcRenderer.sendSync('bridge:backupHostData', studentsJson);
   },
   restoreHostData() {
     return ipcRenderer.sendSync('bridge:restoreHostData');

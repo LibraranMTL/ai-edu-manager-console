@@ -26,3 +26,12 @@ test('duplicate filesystem setup steps are hidden from the optional Agent connec
   assert.match(source, /请不要重新创建目录、覆盖 AGENT\.md 或移动已有资料/);
   assert.match(source, /title: step\.id === 'full' \? step\.title : `\$\{index \+ 1\}/);
 });
+
+test('Agent connection step cards copy their current instructions directly', () => {
+  assert.match(source, /const copyAgentConnectionStep = async/);
+  assert.match(source, /customStepPrompts\[step\.id\] \?\? step\.prompt/);
+  assert.match(source, /onClick=\{\(\) => copyAgentConnectionStep\(step\)\}/);
+  assert.match(source, /点击复制该步骤指令/);
+  assert.match(source, /已复制，可直接粘贴/);
+  assert.doesNotMatch(source, /aria-label="复制当前步骤指令"/);
+});

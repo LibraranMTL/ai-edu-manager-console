@@ -1,9 +1,9 @@
 {
   "versionCode": 62,
   "versionName": "0.5.2",
-  "windowsVersionCode": 120,
-  "windowsVersionName": "0.7.40",
-  "windowsUrl": "https://www.greatbg.com/download/AI-edu-manager-console-Windows-0.7.40.zip",
+  "windowsVersionCode": 121,
+  "windowsVersionName": "0.7.41",
+  "windowsUrl": "https://www.greatbg.com/download/AI-edu-manager-console-Windows-0.7.41.zip",
   "terminalApkUrl": "https://www.greatbg.com/download/AI-edu-manager-tablet-terminal-0.5.2.apk",
   "tabletTerminalVersionCode": 62,
   "tabletTerminalVersionName": "0.5.2",
@@ -12,5 +12,5 @@
   "managerApkVersionCode": 23,
   "managerApkVersionName": "0.2.3",
   "apkUrl": "https://www.greatbg.com/download/AI-edu-manager-tablet-terminal-0.5.2.apk",
-  "notes": "Windows 0.7.40：学生档案保存与知识库初始化合并为一次操作；自动创建目录、AGENT.md、索引、日志与基础学情报告，移除重复初始化步骤，并将右侧调整为可选 Agent 工具连接。平板终端保持 0.5.2。"
+  "notes": "Windows 0.7.41：Agent 工具连接步骤卡片升级为直接复制入口；点击步骤即可选中并复制对应指令，支持复制高级编辑后的内容，并提供明确成功提示。平板终端保持 0.5.2。"
 }

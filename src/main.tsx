@@ -3589,6 +3589,8 @@ function App() {
   const [pendingImportStudentId, setPendingImportStudentId] = useState('');
   const [digestMessage, setDigestMessage] = useState('');
   const [studentSaveMessage, setStudentSaveMessage] = useState('');
+  const [agentConnectionMessage, setAgentConnectionMessage] = useState('');
+  const [copiedAgentConnectionStepId, setCopiedAgentConnectionStepId] = useState<InitStepId | null>(null);
   const [qclawOpened, setQclawOpened] = useState(false);
   const [marvisOpened, setMarvisOpened] = useState(false);
   const [hohuOpened, setHohuOpened] = useState(false);
@@ -5334,15 +5336,27 @@ ${conversationText || '（请先粘贴对话历史）'}`;
     window.setTimeout(() => setDigestMessage(''), 5200);
   };
 
-  const copyPrompt = async () => {
-    if (bridge()?.copyText) {
-      bridge()?.copyText?.(selectedInitPrompt);
-    } else {
-      await navigator.clipboard.writeText(selectedInitPrompt);
+  const copyAgentConnectionStep = async (step: (typeof agentConnectionSteps)[number]) => {
+    const stepPrompt = customStepPrompts[step.id] ?? step.prompt;
+    setSelectedInitStep(step.id);
+    try {
+      if (bridge()?.copyText) {
+        bridge()?.copyText?.(stepPrompt);
+      } else {
+        await navigator.clipboard.writeText(stepPrompt);
+      }
+      setCopied(true);
+      setCopiedOnce(true);
+      setCopiedAgentConnectionStepId(step.id);
+      setAgentConnectionMessage(`已复制“${step.title}”指令，可直接粘贴到 ${selectedTool.name}。`);
+      window.setTimeout(() => setCopied(false), 1800);
+      window.setTimeout(() => {
+        setCopiedAgentConnectionStepId((current) => (current === step.id ? null : current));
+        setAgentConnectionMessage('');
+      }, 6000);
+    } catch {
+      setAgentConnectionMessage('复制失败，请检查系统剪贴板权限后重试。');
     }
-    setCopied(true);
-    setCopiedOnce(true);
-    window.setTimeout(() => setCopied(false), 1800);
   };
 
   const changeTheme = (value: ThemeName) => {
@@ -9294,25 +9308,28 @@ ${JSON.stringify(items, null, 2)}
                   >
                     高级
                   </button>
-                  <button className="icon-button" onClick={copyPrompt} aria-label="复制当前步骤指令">
-                    <Clipboard size={18} />
-                  </button>
                 </div>
               </div>
               <div className="notice muted">
                 <strong>一键初始化内容</strong>
                 <p>创建知识库目录、写入 AGENT.md、补齐知识目录、索引、日志和基础学情报告，无需再次交给 Agent 执行。</p>
               </div>
+              {agentConnectionMessage && <div className="notice success">{agentConnectionMessage}</div>}
               <div className="step-command-layout">
                 <div className="step-command-list">
                   {agentConnectionSteps.map((step) => (
                     <button
                       className={step.id === activeAgentConnectionStepId ? 'step-command active' : 'step-command'}
                       key={step.id}
-                      onClick={() => setSelectedInitStep(step.id)}
+                      onClick={() => copyAgentConnectionStep(step)}
+                      title={`选择并复制“${step.title}”指令`}
                     >
-                      <strong>{step.title}</strong>
+                      <span className="step-command-heading">
+                        <strong>{step.title}</strong>
+                        <Clipboard size={16} aria-hidden="true" />
+                      </span>
                       <span>{step.description}</span>
+                      <small>{copiedAgentConnectionStepId === step.id ? '已复制，可直接粘贴' : '点击复制该步骤指令'}</small>
                     </button>
                   ))}
                 </div>

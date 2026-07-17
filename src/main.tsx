@@ -1771,7 +1771,7 @@ const languageOptions: Array<{ id: LanguageCode; label: string; nativeLabel: str
 
 const zhCnText = {
   'app.name': 'AI教育管家控制台',
-  'app.subtitle': '半自动完成初始文档导出、Agent 工具初始化指令和 Obsidian 查看入口。',
+  'app.subtitle': '填写学生信息后，一次创建知识库目录、AGENT.md 与基础档案，再按需连接 Agent 工具。',
   'projects.subtitle': '创建各种项目制学习的资料管理空间，智能进行资料分析与 知识沉淀',
   'nav.home': '首页',
   'nav.init': '初始化教育管家',
@@ -1836,7 +1836,7 @@ const uiTranslations: Record<LanguageCode, Partial<Record<TranslationKey, string
   'zh-CN': zhCnText,
   'zh-TW': {
     'app.name': 'AI教育管家控制台',
-    'app.subtitle': '半自動完成初始文件匯出、Agent 工具初始化指令和 Obsidian 查看入口。',
+    'app.subtitle': '填寫學生資訊後，一次建立知識庫目錄、AGENT.md 與基礎檔案，再按需連接 Agent 工具。',
     'projects.subtitle': '建立各類專案式學習的資料管理空間，智慧進行資料分析與知識沉澱',
     'nav.home': '首頁',
     'nav.init': '初始化教育管家',
@@ -1892,7 +1892,7 @@ const uiTranslations: Record<LanguageCode, Partial<Record<TranslationKey, string
   },
   en: {
     'app.name': 'AI Education Manager Console',
-    'app.subtitle': 'Semi-automated setup for starter documents, Agent initialization prompts, and Obsidian viewing.',
+    'app.subtitle': 'Enter student details once to create the knowledge base, AGENT.md, and starter records, then connect an Agent tool if needed.',
     'projects.subtitle': 'Create project-based learning spaces for intelligent material analysis and knowledge development.',
     'nav.home': 'Home',
     'nav.init': 'Initialize Manager',
@@ -3406,11 +3406,16 @@ function buildInitSteps(student: StudentDraft): Array<{ id: InitStepId; title: s
       : `${tool.name} 当前不假设支持本地定时任务。请在每天 ${student.digestTime} 或需要整理资料时，将以下指令复制到 ${tool.name} 对话中执行：\n\n${digestCommand}\n\n执行规则：\n- 后续所有资料消化都读取：${p.raw}\n- 所有沉淀结果写入：${p.summary}\n- 每次执行后更新：${p.index} 和 ${p.log}\n- 如果原始资料库没有新资料，请在 log.md 中记录“无新增资料”，不要重复生成摘要`,
   });
 
+  const connectionPrompt = rawSteps
+    .filter((step) => ['create', 'soul', 'memory', 'schedule'].includes(step.id))
+    .map((step) => `## ${step.title}\n\n${step.prompt}`)
+    .join('\n\n');
+
   rawSteps.push({
     id: 'full',
-    title: '完整初始化指令',
-    description: `给熟练用户或装机人员使用，目标工具：${tool.name}。`,
-    prompt: buildToolPrompt(student),
+    title: '完整 Agent 连接指令',
+    description: `一次复制 ${tool.name} 的可选连接、角色、记忆和任务配置。`,
+    prompt: `「${p.cleanName}」学生知识库已经由 AI 教育管家在本机完成初始化。请不要重新创建目录、覆盖 AGENT.md 或移动已有资料。\n\n以下操作仅用于连接和配置 ${tool.name}：\n\n${connectionPrompt}`,
   });
 
   if (activeTemplateFiles['init-step-1.md'] && rawSteps[0]) {
@@ -3575,7 +3580,7 @@ function App() {
   const [draft, setDraft] = useState<StudentDraft>(defaultDraft);
   const [selectedId, setSelectedId] = useState(students[0]?.id ?? '');
   const [activeSection, setActiveSection] = useState<Section>('init');
-  const [selectedInitStep, setSelectedInitStep] = useState<InitStepId>('folder');
+  const [selectedInitStep, setSelectedInitStep] = useState<InitStepId>('full');
   const [copied, setCopied] = useState(false);
   const [exported, setExported] = useState(false);
   const [copiedOnce, setCopiedOnce] = useState(false);
@@ -3583,6 +3588,7 @@ function App() {
   const [importMessage, setImportMessage] = useState('');
   const [pendingImportStudentId, setPendingImportStudentId] = useState('');
   const [digestMessage, setDigestMessage] = useState('');
+  const [studentSaveMessage, setStudentSaveMessage] = useState('');
   const [qclawOpened, setQclawOpened] = useState(false);
   const [marvisOpened, setMarvisOpened] = useState(false);
   const [hohuOpened, setHohuOpened] = useState(false);
@@ -3828,8 +3834,20 @@ function App() {
   }, [adoptPaths, adoptRootPath, agentBindingMode, agentNameDraft, agentNoteDraft, createMode, draft, storageConfig]);
   const prompt = useMemo(() => buildToolPrompt(effectiveDraft), [effectiveDraft, storageConfig]);
   const initSteps = useMemo(() => buildInitSteps(effectiveDraft), [effectiveDraft, storageConfig]);
-  const generatedSelectedInitPrompt = initSteps.find((step) => step.id === selectedInitStep)?.prompt ?? prompt;
-  const selectedInitPrompt = customStepPrompts[selectedInitStep] ?? generatedSelectedInitPrompt;
+  const agentConnectionSteps = useMemo(
+    () => initSteps
+      .filter((step) => !['folder', 'agent', 'execute'].includes(step.id))
+      .map((step, index) => ({
+        ...step,
+        title: step.id === 'full' ? step.title : `${index + 1}. ${step.title.replace(/^\d+\.\s*/, '')}`,
+      })),
+    [initSteps],
+  );
+  const activeAgentConnectionStep = agentConnectionSteps.find((step) => step.id === selectedInitStep)
+    ?? agentConnectionSteps[0];
+  const activeAgentConnectionStepId = activeAgentConnectionStep?.id ?? 'full';
+  const generatedSelectedInitPrompt = activeAgentConnectionStep?.prompt ?? prompt;
+  const selectedInitPrompt = customStepPrompts[activeAgentConnectionStepId] ?? generatedSelectedInitPrompt;
   const bundle = useMemo(() => buildBundle(effectiveDraft), [effectiveDraft, storageConfig]);
   const draftPaths = bundle.paths;
 
@@ -5169,6 +5187,7 @@ ${conversationText || '（请先粘贴对话历史）'}`;
   };
 
   const addStudent = () => {
+    setStudentSaveMessage('');
     if (createMode === 'adopted') {
       const cleanName = sanitizeName(draft.name);
       const result = ensureAdoptedWorkspace(false);
@@ -5272,9 +5291,17 @@ ${conversationText || '（请先粘贴对话历史）'}`;
       },
     };
     const initResult = bridge()?.initStudentWorkspace?.(p.cleanName, buildAgentMd(draft), buildIndexMd(draft), buildLogMd(draft));
+    if (isWindows && !initResult) {
+      setStudentSaveMessage('初始化未执行：当前桌面环境无法创建知识库文件，请检查应用权限后重试。');
+      return;
+    }
     if (initResult) {
       try {
-        const parsed = JSON.parse(initResult) as { rootPathLabel?: string; rootPath?: string; rawPath?: string; summaryPath?: string; agentPath?: string; outputPath?: string };
+        const parsed = JSON.parse(initResult) as { ok?: boolean; message?: string; rootPathLabel?: string; rootPath?: string; rawPath?: string; summaryPath?: string; agentPath?: string; outputPath?: string };
+        if (parsed.ok === false) {
+          setStudentSaveMessage(parsed.message || '学生知识库初始化失败，请检查目录权限后重试。');
+          return;
+        }
         if (parsed.rootPathLabel) {
           student.rootPathLabel = parsed.rootPathLabel;
           student.rootPath = parsed.rootPath || parsed.rootPathLabel;
@@ -5293,13 +5320,18 @@ ${conversationText || '（请先粘贴对话历史）'}`;
           unifiedSoulPath: joinDisplayPath(rootForAgentCenter, 'Agent设定', 'UnifiedSoul.md'),
         };
       } catch {
-        // Keep the generated display path.
+        if (isWindows) {
+          setStudentSaveMessage('初始化结果无法确认，未保存学生档案，请重试。');
+          return;
+        }
       }
     }
     const next = [student, ...students];
     persist(next);
     setSelectedId(student.id);
     setActiveSection('archive');
+    setDigestMessage(`已保存「${student.name}」学生档案，并完成目录、AGENT.md 和基础文档初始化。`);
+    window.setTimeout(() => setDigestMessage(''), 5200);
   };
 
   const copyPrompt = async () => {
@@ -5310,18 +5342,6 @@ ${conversationText || '（请先粘贴对话历史）'}`;
     }
     setCopied(true);
     setCopiedOnce(true);
-    window.setTimeout(() => setCopied(false), 1800);
-  };
-
-  const copyFullPrompt = async () => {
-    if (bridge()?.copyText) {
-      bridge()?.copyText?.(prompt);
-    } else {
-      await navigator.clipboard.writeText(prompt);
-    }
-    setCopied(true);
-    setCopiedOnce(true);
-    setSelectedInitStep('full');
     window.setTimeout(() => setCopied(false), 1800);
   };
 
@@ -7766,11 +7786,12 @@ ${JSON.stringify(items, null, 2)}
 
   const initChecklist = [
     { label: '学生信息已填写', done: Boolean(draft.name.trim() && draft.grade.trim() && draft.school.trim()) },
-    { label: `初始化包版本 v${initSchemaVersion}`, done: true },
-    { label: '初始文档已导出', done: exportedOnce },
-    { label: `${selectedTool.name} 初始化指令已复制`, done: copiedOnce },
-    { label: '学生档案已保存', done: students.some((student) => student.name === sanitizeName(draft.name)) },
-    { label: selectedTool.supportsScheduledTask ? `${selectedTool.name} 已打开` : `${selectedTool.name} 指令已生成`, done: selectedTool.supportsScheduledTask ? toolOpenState[selectedTool.id] : copiedOnce },
+    {
+      label: '保存时自动创建目录、AGENT.md 与基础文档',
+      done: students.some((student) => student.name === sanitizeName(draft.name)),
+    },
+    { label: `${selectedTool.name} 工具连接（可选）`, done: copiedOnce || toolOpenState[selectedTool.id] },
+    { label: `初始化包 v${initSchemaVersion} 已导出（可选）`, done: exportedOnce },
   ];
 
   const adoptChecklist = [
@@ -9078,7 +9099,7 @@ ${JSON.stringify(items, null, 2)}
                 onChange={(toolId) => {
                   setDraft({ ...draft, agentTool: toolId });
                   setAgentBindingMode(agentBindingModeForTool(toolId));
-                  setSelectedInitStep('folder');
+                  setSelectedInitStep('full');
                 }}
               />
 
@@ -9089,7 +9110,7 @@ ${JSON.stringify(items, null, 2)}
                     className={createMode === 'standard' ? 'tool-option active' : 'tool-option'}
                     onClick={() => {
                       setCreateMode('standard');
-                      setSelectedInitStep('folder');
+                      setSelectedInitStep('full');
                     }}
                   >
                     <strong>创建标准新知识库</strong>
@@ -9099,7 +9120,7 @@ ${JSON.stringify(items, null, 2)}
                     className={createMode === 'adopted' ? 'tool-option active' : 'tool-option'}
                     onClick={() => {
                       setCreateMode('adopted');
-                      setSelectedInitStep('folder');
+                      setSelectedInitStep('full');
                     }}
                   >
                     <strong>接管已有知识库</strong>
@@ -9242,34 +9263,27 @@ ${JSON.stringify(items, null, 2)}
               )}
 
               <div className="actions">
-                <button className="primary" onClick={copyPrompt}>
-                  <Clipboard size={18} />
-                  {copied ? '已复制指令' : '复制当前步骤指令'}
-                </button>
-                <button className="secondary" onClick={copyFullPrompt}>
-                  <Clipboard size={18} />
-                  复制完整初始化指令
+                <button className="primary" onClick={addStudent}>
+                  <CheckCircle2 size={18} />
+                  {createMode === 'adopted' ? '确认接管' : '保存学生档案并初始化'}
                 </button>
                 <button className="secondary" onClick={exportBundle}>
                   <FileDown size={18} />
-                  {exported ? '已导出初始文档' : '导出初始文档'}
-                </button>
-                <button className="secondary" onClick={addStudent}>
-                  <CheckCircle2 size={18} />
-                  {createMode === 'adopted' ? '确认接管' : '保存学生档案'}
+                  {exported ? '已导出初始化包' : '导出初始化包'}
                 </button>
                 <button className="secondary" onClick={() => selectedToolAdapter.open(openExternal)}>
                   <ExternalLink size={18} />
                   {selectedTool.openLabel}
                 </button>
               </div>
+              {studentSaveMessage && <div className="notice">{studentSaveMessage}</div>}
             </section>
 
             <section className="panel prompt-panel">
               <div className="panel-heading">
                 <div>
-                  <h2>{selectedTool.name} 分步骤初始化</h2>
-                  <p>{selectedTool.copyTargetLabel}；熟练用户可直接复制完整初始化指令。</p>
+                  <h2>{selectedTool.name} 工具连接（可选）</h2>
+                  <p>知识库本机初始化由“保存学生档案并初始化”一次完成；这里只处理外部 Agent 的连接和使用方式。</p>
                 </div>
                 <div className="heading-actions">
                   <button
@@ -9285,11 +9299,15 @@ ${JSON.stringify(items, null, 2)}
                   </button>
                 </div>
               </div>
+              <div className="notice muted">
+                <strong>一键初始化内容</strong>
+                <p>创建知识库目录、写入 AGENT.md、补齐知识目录、索引、日志和基础学情报告，无需再次交给 Agent 执行。</p>
+              </div>
               <div className="step-command-layout">
                 <div className="step-command-list">
-                  {initSteps.map((step) => (
+                  {agentConnectionSteps.map((step) => (
                     <button
-                      className={step.id === selectedInitStep ? 'step-command active' : 'step-command'}
+                      className={step.id === activeAgentConnectionStepId ? 'step-command active' : 'step-command'}
                       key={step.id}
                       onClick={() => setSelectedInitStep(step.id)}
                     >
@@ -9302,13 +9320,13 @@ ${JSON.stringify(items, null, 2)}
                   {advancedPromptOpen ? (
                     <>
                       <div className="mini-heading">
-                        <strong>{initSteps.find((step) => step.id === selectedInitStep)?.title ?? '当前步骤'}指令</strong>
+                        <strong>{activeAgentConnectionStep?.title ?? '当前步骤'}指令</strong>
                         <span>可直接编辑，复制当前步骤时会使用这里的内容。</span>
                       </div>
                       <textarea
                         className="command-textarea"
                         value={selectedInitPrompt}
-                        onChange={(event) => setCustomStepPrompts((current) => ({ ...current, [selectedInitStep]: event.target.value }))}
+                        onChange={(event) => setCustomStepPrompts((current) => ({ ...current, [activeAgentConnectionStepId]: event.target.value }))}
                       />
                     </>
                   ) : (

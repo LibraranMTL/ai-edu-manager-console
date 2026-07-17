@@ -1,9 +1,9 @@
 {
   "versionCode": 62,
   "versionName": "0.5.2",
-  "windowsVersionCode": 119,
-  "windowsVersionName": "0.7.39",
-  "windowsUrl": "https://www.greatbg.com/download/AI-edu-manager-console-Windows-0.7.39.zip",
+  "windowsVersionCode": 120,
+  "windowsVersionName": "0.7.40",
+  "windowsUrl": "https://www.greatbg.com/download/AI-edu-manager-console-Windows-0.7.40.zip",
   "terminalApkUrl": "https://www.greatbg.com/download/AI-edu-manager-tablet-terminal-0.5.2.apk",
   "tabletTerminalVersionCode": 62,
   "tabletTerminalVersionName": "0.5.2",
@@ -12,5 +12,5 @@
   "managerApkVersionCode": 23,
   "managerApkVersionName": "0.2.3",
   "apkUrl": "https://www.greatbg.com/download/AI-edu-manager-tablet-terminal-0.5.2.apk",
-  "notes": "Windows 0.7.39 与平板终端 0.5.2：新增跨平台连续屏幕资料采集；支持智能混合、内容变化和固定间隔策略，自动去重、重点页、暂停/继续、候选收件箱与人工晋升。Android 增加用户授权采集、前台通知控制和顶部快捷设置入口。"
+  "notes": "Windows 0.7.40：学生档案保存与知识库初始化合并为一次操作；自动创建目录、AGENT.md、索引、日志与基础学情报告，移除重复初始化步骤，并将右侧调整为可选 Agent 工具连接。平板终端保持 0.5.2。"
 }

@@ -4,12 +4,13 @@
 
 - 应用名称：AI教育管家平板终端
 - 包名：com.qxmatrix.eduterminal
-- 版本：0.3.14
-- APK 文件名：AI-edu-manager-tablet-terminal-0.3.14.apk
+- 版本：0.5.4
+- APK 文件名：AI-edu-manager-tablet-terminal-0.5.4.apk
 
 ## 客户版功能
 
 - 拍照识别二维码或粘贴 Windows 主机配对信息，绑定设备 token。
+- 导出当前连接备份，并在同一平板重装后导入备份直接恢复连接。
 - 读取主机端授权学生列表。
 - 上传资料到主机。
 - 浏览主机端学情 Markdown 档案。

@@ -84,8 +84,12 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
     static final int REQUEST_CAPTURE_PAIR_QR = 8105;
     static final int REQUEST_SCREEN_CAPTURE = 8106;
     static final int REQUEST_NOTIFICATION_PERMISSION = 8107;
-    static final String VERSION_NAME = "0.5.3";
-    static final int VERSION_CODE = 63;
+    static final int REQUEST_EXPORT_CONNECTION_BACKUP = 8108;
+    static final int REQUEST_IMPORT_CONNECTION_BACKUP = 8109;
+    static final String VERSION_NAME = "0.5.4";
+    static final int VERSION_CODE = 64;
+    static final String CONNECTION_BACKUP_KIND = "ai-edu-manager-tablet-connection-backup";
+    static final int CONNECTION_BACKUP_VERSION = 1;
     static final String UPDATE_MANIFEST_URL = "https://www.greatbg.com/download/edu-manager-version.json";
     static final String TAILSCALE_APK_URL = "https://www.greatbg.com/download/tailscalev1.88.1_nbwe_7273.com.apk";
     static final String USER_AGREEMENT_URL = "https://www.greatbg.com/download/agreement.html";
@@ -145,6 +149,8 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
     Button testButton;
     Button pasteButton;
     Button scanPairButton;
+    Button exportConnectionBackupButton;
+    Button importConnectionBackupButton;
     Button checkUpdateButton;
     Button copyDiagnosticsButton;
     Button downloadTailscaleButton;
@@ -386,6 +392,16 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
         pairRow.addView(scanPairButton);
         connectionConfigCard.addView(pairRow);
 
+        LinearLayout backupRow = row();
+        exportConnectionBackupButton = button("导出连接备份", false);
+        importConnectionBackupButton = button("导入并连接", false);
+        backupRow.addView(exportConnectionBackupButton);
+        backupRow.addView(importConnectionBackupButton);
+        connectionConfigCard.addView(backupRow);
+        TextView backupHint = label("连接备份包含设备授权凭据，仅用于本平板重装恢复，请妥善保管。导入成功后会自动测试连接。");
+        backupHint.setTextSize(12);
+        connectionConfigCard.addView(backupHint);
+
         statusText = new TextView(this);
         statusText.setText("尚未连接主机服务。");
         statusText.setTextColor(Color.rgb(87, 107, 103));
@@ -412,6 +428,8 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
         testButton.setOnClickListener(this);
         pasteButton.setOnClickListener(this);
         scanPairButton.setOnClickListener(this);
+        exportConnectionBackupButton.setOnClickListener(this);
+        importConnectionBackupButton.setOnClickListener(this);
 
         settingsCard = card();
         root.addView(settingsCard);
@@ -706,6 +724,10 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
             pasteConnectionInfo();
         } else if (view == scanPairButton) {
             startPairScan();
+        } else if (view == exportConnectionBackupButton) {
+            startExportConnectionBackup();
+        } else if (view == importConnectionBackupButton) {
+            startImportConnectionBackup();
         } else if (view == checkUpdateButton) {
             checkForUpdate();
         } else if (view == copyDiagnosticsButton) {
@@ -1215,6 +1237,22 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
                 }, 800L);
             } else {
                 toast("未授权屏幕采集。");
+            }
+            return;
+        }
+        if (requestCode == REQUEST_EXPORT_CONNECTION_BACKUP) {
+            if (resultCode == RESULT_OK && data != null && data.getData() != null) {
+                writeConnectionBackup(data.getData());
+            } else {
+                toast("已取消导出连接备份。");
+            }
+            return;
+        }
+        if (requestCode == REQUEST_IMPORT_CONNECTION_BACKUP) {
+            if (resultCode == RESULT_OK && data != null && data.getData() != null) {
+                importConnectionBackup(data.getData());
+            } else {
+                toast("已取消导入连接备份。");
             }
             return;
         }
@@ -1899,6 +1937,140 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
             .putString(PREF_SERVER_URL, base)
             .putString(PREF_API_TOKEN, token)
             .commit();
+    }
+
+    void startExportConnectionBackup() {
+        savePrefs();
+        if (normalizedBaseUrl().length() == 0 || apiToken().length() == 0) {
+            toast("请先保存并成功连接主机，再导出连接备份。");
+            return;
+        }
+        Intent intent = new Intent(Intent.ACTION_CREATE_DOCUMENT);
+        intent.addCategory(Intent.CATEGORY_OPENABLE);
+        intent.setType("application/json");
+        intent.putExtra(Intent.EXTRA_TITLE, "AI教育管家-平板连接备份-" + System.currentTimeMillis() + ".json");
+        try {
+            startActivityForResult(intent, REQUEST_EXPORT_CONNECTION_BACKUP);
+        } catch (Exception error) {
+            toast("无法打开备份文件保存位置：" + error.getMessage());
+        }
+    }
+
+    void writeConnectionBackup(Uri uri) {
+        OutputStream output = null;
+        try {
+            JSONObject backup = new JSONObject();
+            backup.put("kind", CONNECTION_BACKUP_KIND);
+            backup.put("protocolVersion", CONNECTION_BACKUP_VERSION);
+            backup.put("appVersion", VERSION_NAME);
+            backup.put("exportedAt", System.currentTimeMillis());
+            backup.put("deviceId", deviceId());
+            backup.put("deviceName", deviceName());
+            backup.put("serverUrl", normalizedBaseUrl());
+            backup.put("remoteUrl", normalizedRemoteUrl());
+            backup.put("connectionMode", connectionMode());
+            backup.put("apiToken", apiToken());
+            output = getContentResolver().openOutputStream(uri, "wt");
+            if (output == null) throw new Exception("无法写入所选文件");
+            output.write(backup.toString(2).getBytes("UTF-8"));
+            output.flush();
+            toast("连接备份已导出，请妥善保管。");
+            status("已导出当前连接备份。备份包含设备授权凭据，请勿转发给无关人员。");
+        } catch (Exception error) {
+            toast("导出连接备份失败：" + error.getMessage());
+        } finally {
+            if (output != null) try { output.close(); } catch (Exception ignored) {}
+        }
+    }
+
+    void startImportConnectionBackup() {
+        Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+        intent.addCategory(Intent.CATEGORY_OPENABLE);
+        intent.setType("application/json");
+        try {
+            startActivityForResult(intent, REQUEST_IMPORT_CONNECTION_BACKUP);
+        } catch (Exception error) {
+            toast("无法打开连接备份选择器：" + error.getMessage());
+        }
+    }
+
+    void importConnectionBackup(Uri uri) {
+        try {
+            String text = readConnectionBackupText(uri);
+            final JSONObject backup = new JSONObject(text);
+            if (!CONNECTION_BACKUP_KIND.equals(backup.optString("kind", ""))) {
+                throw new Exception("不是 AI 教育管家平板连接备份");
+            }
+            if (backup.optInt("protocolVersion", 0) > CONNECTION_BACKUP_VERSION) {
+                throw new Exception("备份版本过新，请先升级平板终端");
+            }
+            if (backup.optString("serverUrl", "").trim().length() == 0 || backup.optString("apiToken", "").trim().length() == 0) {
+                throw new Exception("备份缺少主机地址或授权凭据");
+            }
+            final String backupDeviceId = backup.optString("deviceId", "").trim();
+            if (backupDeviceId.length() > 0 && !backupDeviceId.equals(deviceId())) {
+                new AlertDialog.Builder(this)
+                    .setTitle("恢复原设备身份？")
+                    .setMessage("该备份来自另一安装身份。仅当这是同一台平板重装后的恢复操作时继续；继续后将使用备份中的设备授权。")
+                    .setPositiveButton("恢复并连接", new DialogInterface.OnClickListener() {
+                        @Override public void onClick(DialogInterface dialog, int which) {
+                            applyConnectionBackup(backup, true);
+                        }
+                    })
+                    .setNegativeButton("取消", null)
+                    .show();
+                return;
+            }
+            applyConnectionBackup(backup, false);
+        } catch (Exception error) {
+            toast("导入连接备份失败：" + error.getMessage());
+        }
+    }
+
+    String readConnectionBackupText(Uri uri) throws Exception {
+        InputStream input = null;
+        BufferedReader reader = null;
+        try {
+            input = openUriInput(uri);
+            if (input == null) throw new Exception("无法读取所选文件");
+            reader = new BufferedReader(new InputStreamReader(input, "UTF-8"));
+            StringBuilder builder = new StringBuilder();
+            String line;
+            while ((line = reader.readLine()) != null) {
+                builder.append(line).append('\n');
+                if (builder.length() > 512 * 1024) throw new Exception("连接备份文件过大");
+            }
+            return builder.toString();
+        } finally {
+            if (reader != null) try { reader.close(); } catch (Exception ignored) {}
+            else if (input != null) try { input.close(); } catch (Exception ignored) {}
+        }
+    }
+
+    void applyConnectionBackup(JSONObject backup, boolean restoreDeviceIdentity) {
+        try {
+            String serverUrl = backup.optString("serverUrl", "").trim();
+            String remoteUrl = backup.optString("remoteUrl", "").trim();
+            String token = backup.optString("apiToken", "").trim();
+            int mode = clamp(backup.optInt("connectionMode", 1), 0, 2);
+            String backupDeviceId = backup.optString("deviceId", "").trim();
+            serverInput.setText(serverUrl);
+            tokenInput.setText(token);
+            if (remoteInput != null) remoteInput.setText(remoteUrl);
+            if (connectionModeSpinner != null) connectionModeSpinner.setSelection(mode);
+            SharedPreferences.Editor editor = getSharedPreferences(PREFS, MODE_PRIVATE).edit()
+                .putString(PREF_SERVER_URL, serverUrl)
+                .putString(PREF_API_TOKEN, token)
+                .putString(PREF_REMOTE_URL, remoteUrl)
+                .putInt(PREF_CONNECTION_MODE, mode);
+            if (restoreDeviceIdentity && backupDeviceId.length() > 0) editor.putString(PREF_DEVICE_ID, backupDeviceId);
+            if (!editor.commit()) throw new Exception("无法保存连接配置");
+            toast("连接备份已导入，正在连接主机。");
+            status("连接备份已恢复，正在验证主机和设备授权...");
+            connectAndLoadStudents();
+        } catch (Exception error) {
+            toast("应用连接备份失败：" + error.getMessage());
+        }
     }
 
     void loadVisualPrefsOnly() {

@@ -1,16 +1,16 @@
 {
-  "versionCode": 63,
-  "versionName": "0.5.3",
+  "versionCode": 64,
+  "versionName": "0.5.4",
   "windowsVersionCode": 124,
   "windowsVersionName": "0.7.44",
   "windowsUrl": "https://www.greatbg.com/download/AI-edu-manager-console-Windows-0.7.44.zip",
-  "terminalApkUrl": "https://www.greatbg.com/download/AI-edu-manager-tablet-terminal-0.5.3.apk",
-  "tabletTerminalVersionCode": 63,
-  "tabletTerminalVersionName": "0.5.3",
-  "tabletTerminalApkUrl": "https://www.greatbg.com/download/AI-edu-manager-tablet-terminal-0.5.3.apk",
+  "terminalApkUrl": "https://www.greatbg.com/download/AI-edu-manager-tablet-terminal-0.5.4.apk",
+  "tabletTerminalVersionCode": 64,
+  "tabletTerminalVersionName": "0.5.4",
+  "tabletTerminalApkUrl": "https://www.greatbg.com/download/AI-edu-manager-tablet-terminal-0.5.4.apk",
   "managerApkUrl": "https://www.greatbg.com/download/edu-manager-android-0.2.3.apk",
   "managerApkVersionCode": 23,
   "managerApkVersionName": "0.2.3",
-  "apkUrl": "https://www.greatbg.com/download/AI-edu-manager-tablet-terminal-0.5.3.apk",
-  "notes": "Windows 0.7.44：增加单实例保护，学生索引以主机数据为准；主机备份保存完整学生档案，恢复后立即刷新学生、项目与资产界面。平板终端保持 0.5.3。"
+  "apkUrl": "https://www.greatbg.com/download/AI-edu-manager-tablet-terminal-0.5.4.apk",
+  "notes": "平板终端 0.5.4：连接设置增加连接备份导出与导入并连接；恢复不同安装身份时需要人工确认。Windows 保持 0.7.44。"
 }

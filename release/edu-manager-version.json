@@ -1,9 +1,9 @@
 {
   "versionCode": 63,
   "versionName": "0.5.3",
-  "windowsVersionCode": 122,
-  "windowsVersionName": "0.7.42",
-  "windowsUrl": "https://www.greatbg.com/download/AI-edu-manager-console-Windows-0.7.42.zip",
+  "windowsVersionCode": 123,
+  "windowsVersionName": "0.7.43",
+  "windowsUrl": "https://www.greatbg.com/download/AI-edu-manager-console-Windows-0.7.43.zip",
   "terminalApkUrl": "https://www.greatbg.com/download/AI-edu-manager-tablet-terminal-0.5.3.apk",
   "tabletTerminalVersionCode": 63,
   "tabletTerminalVersionName": "0.5.3",
@@ -12,5 +12,5 @@
   "managerApkVersionCode": 23,
   "managerApkVersionName": "0.2.3",
   "apkUrl": "https://www.greatbg.com/download/AI-edu-manager-tablet-terminal-0.5.3.apk",
-  "notes": "Windows 0.7.42 / 平板 0.5.3：修复平板未验证授权却显示已连接的问题；刷入连接信息后自动登记为 Windows 待授权设备，主机端可一键授权全部学生，平板端明确区分待授权与连接失败。"
+  "notes": "Windows 0.7.43：设备重命名改为卡片内直接编辑；已撤销设备支持恢复，也可永久删除设备记录。平板终端保持 0.5.3，并延续设备自动登记与待授权闭环。"
 }

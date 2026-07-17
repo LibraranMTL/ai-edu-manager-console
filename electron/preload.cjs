@@ -457,6 +457,12 @@ contextBridge.exposeInMainWorld('AndroidBridge', {
   revokeHostDevice(deviceId) {
     return ipcRenderer.sendSync('bridge:revokeHostDevice', deviceId);
   },
+  restoreHostDevice(deviceId) {
+    return ipcRenderer.sendSync('bridge:restoreHostDevice', deviceId);
+  },
+  deleteHostDevice(deviceId) {
+    return ipcRenderer.sendSync('bridge:deleteHostDevice', deviceId);
+  },
   setHostDeviceStudentAccess(deviceId, studentIdsJson) {
     return ipcRenderer.sendSync('bridge:setHostDeviceStudentAccess', deviceId, studentIdsJson);
   },

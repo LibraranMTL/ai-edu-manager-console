@@ -741,6 +741,18 @@ h2 {
   flex-wrap: wrap;
 }
 
+.device-rename-form {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.device-rename-form input {
+  width: min(260px, 100%);
+  min-height: 36px;
+}
+
 .device-title-line .status {
   min-height: 24px;
   padding: 0 9px;

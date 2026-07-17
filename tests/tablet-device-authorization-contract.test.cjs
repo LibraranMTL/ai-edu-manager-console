@@ -35,3 +35,14 @@ test('Windows exposes pending devices and a direct student authorization action'
   assert.match(host, /authorizationStatus:/);
   assert.match(host, /requiresApproval/);
 });
+
+test('Windows device management supports inline rename, restore and record deletion', () => {
+  assert.doesNotMatch(ui, /window\.prompt\('请输入新的设备名称'/);
+  assert.match(ui, /device-rename-form/);
+  assert.match(ui, /aria-label="设备名称"/);
+  assert.match(ui, /恢复设备/);
+  assert.match(ui, /删除记录/);
+  assert.match(host, /function restoreHostDevice/);
+  assert.match(host, /function deleteHostDevice/);
+  assert.match(host, /请先撤销设备，再删除设备记录/);
+});

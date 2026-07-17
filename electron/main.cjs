@@ -2232,7 +2232,41 @@ function revokeHostDevice(deviceId) {
   devices[index] = { ...devices[index], revoked: true, revokedAt: new Date().toISOString() };
   writeDevices(devices);
   notify('onNativeHostServiceChanged', getHostServiceStatus());
-  return JSON.stringify({ ok: true, devices: devices.map(publicDevice), status: JSON.parse(getHostServiceStatus()) });
+  return JSON.stringify({ ok: true, message: '设备已撤销。', devices: devices.map(publicDevice), status: JSON.parse(getHostServiceStatus()) });
+}
+
+function restoreHostDevice(deviceId) {
+  const devices = readDevices();
+  const index = devices.findIndex((device) => String(device.id) === String(deviceId));
+  if (index < 0) return JSON.stringify({ ok: false, message: '未找到设备。' });
+  if (!devices[index].revoked) return JSON.stringify({ ok: false, message: '设备当前未撤销。' });
+  const license = publicLicenseStatus();
+  const activeCount = devices.filter((device) => !device.revoked).length;
+  if (license.deviceLimit && activeCount >= Number(license.deviceLimit)) {
+    return JSON.stringify({ ok: false, message: `授权设备数已达上限（${license.deviceLimit} 台），请先撤销其他设备。` });
+  }
+  devices[index] = {
+    ...devices[index],
+    revoked: false,
+    revokedAt: '',
+    restoredAt: new Date().toISOString(),
+  };
+  writeDevices(devices);
+  appendHostTimeline({ type: 'device_restored', title: 'Device restored', detail: devices[index].name || devices[index].id });
+  notify('onNativeHostServiceChanged', getHostServiceStatus());
+  return JSON.stringify({ ok: true, message: '设备已恢复。', devices: devices.map(publicDevice), status: JSON.parse(getHostServiceStatus()) });
+}
+
+function deleteHostDevice(deviceId) {
+  const devices = readDevices();
+  const target = devices.find((device) => String(device.id) === String(deviceId));
+  if (!target) return JSON.stringify({ ok: false, message: '未找到设备。' });
+  if (!target.revoked) return JSON.stringify({ ok: false, message: '请先撤销设备，再删除设备记录。' });
+  const nextDevices = devices.filter((device) => String(device.id) !== String(deviceId));
+  writeDevices(nextDevices);
+  appendHostTimeline({ type: 'device_deleted', title: 'Revoked device record deleted', detail: target.name || target.id });
+  notify('onNativeHostServiceChanged', getHostServiceStatus());
+  return JSON.stringify({ ok: true, message: '已删除撤销设备记录。', devices: nextDevices.map(publicDevice), status: JSON.parse(getHostServiceStatus()) });
 }
 
 function renameHostDevice(deviceId, name) {
@@ -2244,7 +2278,7 @@ function renameHostDevice(deviceId, name) {
   devices[index] = { ...devices[index], name: cleanName };
   writeDevices(devices);
   notify('onNativeHostServiceChanged', getHostServiceStatus());
-  return JSON.stringify({ ok: true, devices: devices.map(publicDevice), status: JSON.parse(getHostServiceStatus()) });
+  return JSON.stringify({ ok: true, message: '设备已重命名。', devices: devices.map(publicDevice), status: JSON.parse(getHostServiceStatus()) });
 }
 
 function setHostDeviceStudentAccess(deviceId, studentIdsJson) {
@@ -11159,6 +11193,8 @@ ipcMain.on('bridge:openStudentRawDir', (event, studentId) => { licensedIpc(event
 ipcMain.on('bridge:migrateStudentWorkspace', (event, studentId, newName) => { licensedIpc(event, '学生知识库迁移', () => migrateStudentWorkspace(studentId, newName)); });
 ipcMain.on('bridge:renameHostDevice', (event, deviceId, name) => { licensedIpc(event, '设备管理', () => renameHostDevice(deviceId, name)); });
 ipcMain.on('bridge:revokeHostDevice', (event, deviceId) => { licensedIpc(event, '设备管理', () => revokeHostDevice(deviceId)); });
+ipcMain.on('bridge:restoreHostDevice', (event, deviceId) => { licensedIpc(event, '设备管理', () => restoreHostDevice(deviceId)); });
+ipcMain.on('bridge:deleteHostDevice', (event, deviceId) => { licensedIpc(event, '设备管理', () => deleteHostDevice(deviceId)); });
 ipcMain.on('bridge:setHostDeviceStudentAccess', (event, deviceId, studentIdsJson) => {
   licensedIpc(event, '设备授权管理', () => setHostDeviceStudentAccess(deviceId, studentIdsJson));
 });

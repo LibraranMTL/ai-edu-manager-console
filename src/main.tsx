@@ -697,6 +697,8 @@ type AndroidBridge = {
   migrateStudentWorkspace?: (studentId: string, newName: string) => string;
   renameHostDevice?: (deviceId: string, name: string) => string;
   revokeHostDevice?: (deviceId: string) => string;
+  restoreHostDevice?: (deviceId: string) => string;
+  deleteHostDevice?: (deviceId: string) => string;
   setHostDeviceStudentAccess?: (deviceId: string, studentIdsJson: string) => string;
   setHostDeviceAccessMode?: (deviceId: string, optionsJson: string) => string;
 };
@@ -3738,6 +3740,8 @@ function App() {
   const [hostServiceStatus, setHostServiceStatus] = useState<HostServiceStatus | null>(null);
   const [hostPortDraft, setHostPortDraft] = useState('18777');
   const [hostServiceMessage, setHostServiceMessage] = useState('');
+  const [editingDeviceId, setEditingDeviceId] = useState('');
+  const [deviceNameDraft, setDeviceNameDraft] = useState('');
   const [hostPairQr, setHostPairQr] = useState('');
   const [homeMode, setHomeMode] = useState<'local' | 'host'>('local');
   const [hostDiagnostics, setHostDiagnostics] = useState<HostServiceDiagnostics | null>(null);
@@ -4437,7 +4441,7 @@ function App() {
       if (parsed.ok === false && parsed.message) {
         setHostServiceMessage(parsed.message);
       } else {
-        setHostServiceMessage(status.running ? '主机服务已启动。' : '主机服务已停止。');
+        setHostServiceMessage(parsed.message || (status.running ? '主机服务已启动。' : '主机服务已停止。'));
       }
       setHostServiceStatus(status as HostServiceStatus);
       setHostPortDraft(String(status.port || 18777));
@@ -8216,17 +8220,52 @@ ${JSON.stringify(items, null, 2)}
     }
   };
 
+  const beginRenameDevice = (device: HostDevice) => {
+    setEditingDeviceId(device.id);
+    setDeviceNameDraft(device.name);
+  };
+
   const renameDevice = (device: HostDevice) => {
-    const name = window.prompt('请输入新的设备名称', device.name);
-    if (name == null) return;
+    const name = deviceNameDraft.trim();
+    if (!name) {
+      setHostServiceMessage('设备名称不能为空。');
+      return;
+    }
     const raw = bridge()?.renameHostDevice?.(device.id, name);
+    if (!raw) {
+      setHostServiceMessage('当前环境不支持设备重命名。');
+      return;
+    }
+    try {
+      if (JSON.parse(raw).ok === false) {
+        applyHostServiceResult(raw);
+        return;
+      }
+    } catch {
+      setHostServiceMessage('设备重命名结果无法解析。');
+      return;
+    }
     applyHostServiceResult(raw);
+    setEditingDeviceId('');
+    setDeviceNameDraft('');
   };
 
   const revokeDevice = (device: HostDevice) => {
     const confirmed = window.confirm(`确认撤销「${device.name}」的主机访问权限吗？`);
     if (!confirmed) return;
     const raw = bridge()?.revokeHostDevice?.(device.id);
+    applyHostServiceResult(raw);
+  };
+
+  const restoreDevice = (device: HostDevice) => {
+    const raw = bridge()?.restoreHostDevice?.(device.id);
+    applyHostServiceResult(raw);
+  };
+
+  const deleteDevice = (device: HostDevice) => {
+    const confirmed = window.confirm(`确认永久删除「${device.name}」的设备记录吗？\n\n上传历史仍会保留，但该设备如需再次使用必须重新连接。`);
+    if (!confirmed) return;
+    const raw = bridge()?.deleteHostDevice?.(device.id);
     applyHostServiceResult(raw);
   };
 
@@ -8333,13 +8372,31 @@ ${JSON.stringify(items, null, 2)}
             <article className={device.revoked ? 'device-item revoked' : 'device-item'} key={device.id}>
               <div className="device-row">
                 <div>
-                  <div className="device-title-line">
-                    <strong>{device.name}</strong>
-                    {device.authorizationStatus === 'pending' && <span className="status warn">待授权</span>}
-                    <span className={device.revoked ? 'status neutral' : device.online ? 'status ok' : 'status warn'}>
-                      {device.revoked ? '已撤销' : device.online ? '在线' : '离线'}
-                    </span>
-                  </div>
+                  {editingDeviceId === device.id ? (
+                    <div className="device-rename-form">
+                      <input
+                        autoFocus
+                        value={deviceNameDraft}
+                        maxLength={40}
+                        onChange={(event) => setDeviceNameDraft(event.target.value)}
+                        onKeyDown={(event) => {
+                          if (event.key === 'Enter') renameDevice(device);
+                          if (event.key === 'Escape') setEditingDeviceId('');
+                        }}
+                        aria-label="设备名称"
+                      />
+                      <button className="primary compact" onClick={() => renameDevice(device)}>保存</button>
+                      <button className="secondary compact" onClick={() => setEditingDeviceId('')}>取消</button>
+                    </div>
+                  ) : (
+                    <div className="device-title-line">
+                      <strong>{device.name}</strong>
+                      {device.authorizationStatus === 'pending' && <span className="status warn">待授权</span>}
+                      <span className={device.revoked ? 'status neutral' : device.online ? 'status ok' : 'status warn'}>
+                        {device.revoked ? '已撤销' : device.online ? '在线' : '离线'}
+                      </span>
+                    </div>
+                  )}
                   <small>{device.tokenPreview || device.id}</small>
                 </div>
                 <div className="device-actions">
@@ -8348,12 +8405,17 @@ ${JSON.stringify(items, null, 2)}
                       授权全部学生
                     </button>
                   )}
-                  <button className="secondary compact" disabled={device.revoked} onClick={() => renameDevice(device)}>
+                  <button className="secondary compact" disabled={device.revoked || editingDeviceId === device.id} onClick={() => beginRenameDevice(device)}>
                     重命名
                   </button>
-                  <button className="danger subtle" disabled={device.revoked} onClick={() => revokeDevice(device)}>
-                    撤销设备
-                  </button>
+                  {device.revoked ? (
+                    <>
+                      <button className="secondary compact" onClick={() => restoreDevice(device)}>恢复设备</button>
+                      <button className="danger subtle" onClick={() => deleteDevice(device)}>删除记录</button>
+                    </>
+                  ) : (
+                    <button className="danger subtle" onClick={() => revokeDevice(device)}>撤销设备</button>
+                  )}
                 </div>
               </div>
               <small>{deviceAccessSummary(device)}</small>

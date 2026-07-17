@@ -2143,6 +2143,9 @@ function publicDevice(device) {
     allowedStudentIds: Array.isArray(device.allowedStudentIds) ? device.allowedStudentIds : [],
     allowedAllStudents: Boolean(device.allowedAllStudents),
     autoAuthorizeNewStudents: Boolean(device.autoAuthorizeNewStudents),
+    authorizationStatus: device.revoked
+      ? 'revoked'
+      : (device.allowedAllStudents || (Array.isArray(device.allowedStudentIds) && device.allowedStudentIds.length > 0) ? 'approved' : 'pending'),
     revoked: Boolean(device.revoked),
     createdAt: device.createdAt || '',
     lastSeenAt,
@@ -10207,7 +10210,21 @@ function handleStudents(request, response) {
       digestMessage: state.message || '',
     };
   });
-  sendJson(response, 200, { ok: true, students });
+  const auth = request.authContext;
+  const requiresApproval = auth.type === 'device'
+    && !auth.allowedAllStudents
+    && (!Array.isArray(auth.allowedStudentIds) || auth.allowedStudentIds.length === 0);
+  sendJson(response, 200, {
+    ok: true,
+    students,
+    authorization: {
+      type: auth.type,
+      deviceId: auth.deviceId || '',
+      deviceName: auth.deviceName || '',
+      requiresApproval,
+      allowedStudentCount: auth.type === 'admin' ? readStudentsIndex().length : students.length,
+    },
+  });
 }
 
 function projectAllowed(request, project) {
@@ -10610,6 +10627,53 @@ async function handlePairConfirm(request, response) {
   }
 }
 
+async function handleDeviceEnroll(request, response) {
+  if (!requireAuth(request, response)) return;
+  if (request.authContext?.type !== 'admin') {
+    sendJson(response, 403, { ok: false, message: '只有主机连接信息可以登记新设备。' });
+    return;
+  }
+  try {
+    const body = await parseJsonBody(request);
+    const license = publicLicenseStatus();
+    const deviceId = String(body.deviceId || `device-${Date.now()}-${crypto.randomBytes(4).toString('hex')}`).slice(0, 120);
+    const devices = readDevices();
+    const activeDevices = devices.filter((item) => !item.revoked && String(item.id) !== deviceId);
+    if (license.deviceLimit && activeDevices.length >= Number(license.deviceLimit)) {
+      sendJson(response, 403, { ok: false, message: `授权设备数已达上限（${license.deviceLimit} 台）。请撤销旧设备或升级授权。` });
+      return;
+    }
+    const token = createDeviceToken();
+    const device = {
+      id: deviceId,
+      name: String(body.deviceName || body.name || '平板设备').trim().slice(0, 80) || '平板设备',
+      tokenHash: hashDeviceToken(token),
+      tokenPreview: `${token.slice(0, 7)}...${token.slice(-6)}`,
+      allowedStudentIds: [],
+      allowedAllStudents: false,
+      autoAuthorizeNewStudents: false,
+      revoked: false,
+      createdAt: devices.find((item) => String(item.id) === deviceId)?.createdAt || new Date().toISOString(),
+      enrolledAt: new Date().toISOString(),
+      lastSeenAt: new Date().toISOString(),
+      lastIp: requestClientIp(request),
+      lastUserAgent: requestUserAgent(request),
+    };
+    writeDevices([...devices.filter((item) => String(item.id) !== deviceId), device]);
+    appendHostTimeline({ type: 'device_enrolled', title: 'Tablet awaiting authorization', detail: device.name, deviceId });
+    notify('onNativeHostServiceChanged', getHostServiceStatus());
+    sendJson(response, 200, {
+      ok: true,
+      token,
+      requiresApproval: true,
+      message: '设备已登记，请在 Windows 主机端授权学生。',
+      device: publicDevice(device),
+    });
+  } catch (error) {
+    sendJson(response, 400, { ok: false, message: `设备登记失败：${error.message}` });
+  }
+}
+
 function handleDeviceHeartbeat(request, response) {
   if (!requireAuth(request, response)) return;
   const auth = request.authContext;
@@ -10644,6 +10708,10 @@ function handleHostRequest(request, response) {
   }
   if (request.method === 'POST' && pathname === '/api/pair/confirm') {
     handlePairConfirm(request, response);
+    return;
+  }
+  if (request.method === 'POST' && pathname === '/api/device/enroll') {
+    handleDeviceEnroll(request, response);
     return;
   }
   if (request.method === 'POST' && pathname === '/api/device/heartbeat') {

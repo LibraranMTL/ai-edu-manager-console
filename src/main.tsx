@@ -990,6 +990,7 @@ type HostDevice = {
   allowedStudentIds?: string[];
   allowedAllStudents?: boolean;
   autoAuthorizeNewStudents?: boolean;
+  authorizationStatus?: 'pending' | 'approved' | 'revoked';
   revoked?: boolean;
   createdAt?: string;
   lastSeenAt?: string;
@@ -8334,6 +8335,7 @@ ${JSON.stringify(items, null, 2)}
                 <div>
                   <div className="device-title-line">
                     <strong>{device.name}</strong>
+                    {device.authorizationStatus === 'pending' && <span className="status warn">待授权</span>}
                     <span className={device.revoked ? 'status neutral' : device.online ? 'status ok' : 'status warn'}>
                       {device.revoked ? '已撤销' : device.online ? '在线' : '离线'}
                     </span>
@@ -8341,6 +8343,11 @@ ${JSON.stringify(items, null, 2)}
                   <small>{device.tokenPreview || device.id}</small>
                 </div>
                 <div className="device-actions">
+                  {device.authorizationStatus === 'pending' && !device.revoked && (
+                    <button className="primary compact" onClick={() => setDeviceAccessMode(device, { allowedAllStudents: true, autoAuthorizeNewStudents: true })}>
+                      授权全部学生
+                    </button>
+                  )}
                   <button className="secondary compact" disabled={device.revoked} onClick={() => renameDevice(device)}>
                     重命名
                   </button>

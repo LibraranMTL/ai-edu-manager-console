@@ -84,8 +84,8 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
     static final int REQUEST_CAPTURE_PAIR_QR = 8105;
     static final int REQUEST_SCREEN_CAPTURE = 8106;
     static final int REQUEST_NOTIFICATION_PERMISSION = 8107;
-    static final String VERSION_NAME = "0.5.2";
-    static final int VERSION_CODE = 62;
+    static final String VERSION_NAME = "0.5.3";
+    static final int VERSION_CODE = 63;
     static final String UPDATE_MANIFEST_URL = "https://www.greatbg.com/download/edu-manager-version.json";
     static final String TAILSCALE_APK_URL = "https://www.greatbg.com/download/tailscalev1.88.1_nbwe_7273.com.apk";
     static final String USER_AGREEMENT_URL = "https://www.greatbg.com/download/agreement.html";
@@ -1894,6 +1894,13 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
             .apply();
     }
 
+    void saveDeviceCredentials(String base, String token) {
+        getSharedPreferences(PREFS, MODE_PRIVATE).edit()
+            .putString(PREF_SERVER_URL, base)
+            .putString(PREF_API_TOKEN, token)
+            .commit();
+    }
+
     void loadVisualPrefsOnly() {
         SharedPreferences prefs = getSharedPreferences(PREFS, MODE_PRIVATE);
         layoutMode = clamp(prefs.getInt(PREF_LAYOUT_MODE, 0), 0, 2);
@@ -2545,9 +2552,10 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
         return message;
     }
 
-    void applyStudents(List<Student> result, String error) {
+    void applyStudents(List<Student> result, String error, boolean requiresApproval) {
         if (error != null) {
             status("读取学生失败：" + error);
+            updateConnectionSummary("授权验证失败", students.size());
             return;
         }
         students.clear();
@@ -2562,8 +2570,10 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
         updateSharedUploadButton();
         updateDigestStatusCard();
         updateContactCard();
-        updateConnectionSummary("已连接", students.size());
-        status(students.size() > 0 ? "已读取 " + students.size() + " 个学生。" : "主机服务中还没有学生。");
+        updateConnectionSummary(requiresApproval ? "已连接，待 Windows 授权" : "已连接", students.size());
+        status(requiresApproval
+            ? "设备已登记，但尚未授权学生。请在 Windows 主机的设备列表中点击“授权全部学生”，然后刷新学生。"
+            : (students.size() > 0 ? "已读取 " + students.size() + " 个学生。" : "主机服务中还没有学生。"));
     }
 
     void applyArchiveFiles(List<ArchiveFile> result, String error) {
@@ -3095,6 +3105,25 @@ class ConnectTask implements Runnable {
     public void run() {
         try {
             JSONObject health = activity.getJson(base + "/api/health", null);
+            String token = activity.apiToken();
+            if (token.length() == 0) throw new Exception("缺少设备授权信息，请重新粘贴 Windows 连接信息或扫码绑定。");
+            JSONObject heartbeat = activity.postJson(base + "/api/device/heartbeat", new JSONObject(), token);
+            JSONObject device = heartbeat.optJSONObject("device");
+            boolean requiresApproval = false;
+            if (device == null) {
+                JSONObject enrollBody = new JSONObject();
+                enrollBody.put("deviceId", activity.deviceId());
+                enrollBody.put("deviceName", activity.deviceName());
+                JSONObject enrollment = activity.postJson(base + "/api/device/enroll", enrollBody, token);
+                String deviceToken = enrollment.optString("token", "");
+                if (deviceToken.length() == 0) throw new Exception("主机未返回独立设备授权信息。");
+                token = deviceToken;
+                requiresApproval = enrollment.optBoolean("requiresApproval", true);
+                activity.saveDeviceCredentials(base, token);
+                activity.runOnUiThread(new ConnectionCredentialsTask(activity, base, token));
+            } else {
+                requiresApproval = "pending".equals(device.optString("authorizationStatus", ""));
+            }
             activity.markConnectedNow();
             JSONObject license = health.optJSONObject("license");
             String licenseText = "主机未激活";
@@ -3106,12 +3135,14 @@ class ConnectTask implements Runnable {
                     licenseText = "主机授权已过期";
                 }
             }
-            activity.runOnUiThread(new StatusTask(activity, "主机服务已连接，版本：" + health.optString("version", "未知") + "；" + licenseText));
-            activity.runOnUiThread(new ConnectionSummaryTask(activity, "已连接", activity.students.size()));
-            activity.runOnUiThread(new StartLoadStudentsTask(activity));
+            activity.runOnUiThread(new StatusTask(activity, requiresApproval
+                ? "主机身份验证成功，设备已登记并等待 Windows 授权学生。"
+                : "主机服务已连接，版本：" + health.optString("version", "未知") + "；" + licenseText));
+            activity.runOnUiThread(new ConnectionSummaryTask(activity, requiresApproval ? "已连接，待 Windows 授权" : "已连接", activity.students.size()));
+            new LoadStudentsTask(activity, base, token).run();
         } catch (Exception error) {
             activity.runOnUiThread(new StatusTask(activity, activity.connectionErrorMessage(base, error.getMessage())));
-            activity.runOnUiThread(new ConnectionSummaryTask(activity, "连接失败", activity.students.size()));
+            activity.runOnUiThread(new ConnectionSummaryTask(activity, "授权验证失败", activity.students.size()));
         }
     }
 }
@@ -3219,6 +3250,8 @@ class LoadStudentsTask implements Runnable {
             } catch (Exception ignored) {
             }
             JSONArray array = json.optJSONArray("students");
+            JSONObject authorization = json.optJSONObject("authorization");
+            boolean requiresApproval = authorization != null && authorization.optBoolean("requiresApproval", false);
             List<Student> result = new ArrayList<Student>();
             if (array != null) {
                 for (int i = 0; i < array.length(); i++) {
@@ -3226,9 +3259,9 @@ class LoadStudentsTask implements Runnable {
                     if (item != null) result.add(new Student(item));
                 }
             }
-            activity.runOnUiThread(new StudentsResultTask(activity, result, null));
+            activity.runOnUiThread(new StudentsResultTask(activity, result, null, requiresApproval));
         } catch (Exception error) {
-            activity.runOnUiThread(new StudentsResultTask(activity, null, error.getMessage()));
+            activity.runOnUiThread(new StudentsResultTask(activity, null, error.getMessage(), false));
         }
     }
 }
@@ -3566,16 +3599,36 @@ class StudentsResultTask implements Runnable {
     private final MainActivity activity;
     private final List<Student> result;
     private final String error;
+    private final boolean requiresApproval;
 
-    StudentsResultTask(MainActivity activity, List<Student> result, String error) {
+    StudentsResultTask(MainActivity activity, List<Student> result, String error, boolean requiresApproval) {
         this.activity = activity;
         this.result = result;
         this.error = error;
+        this.requiresApproval = requiresApproval;
     }
 
     @Override
     public void run() {
-        activity.applyStudents(result, error);
+        activity.applyStudents(result, error, requiresApproval);
+    }
+}
+
+class ConnectionCredentialsTask implements Runnable {
+    private final MainActivity activity;
+    private final String base;
+    private final String token;
+
+    ConnectionCredentialsTask(MainActivity activity, String base, String token) {
+        this.activity = activity;
+        this.base = base;
+        this.token = token;
+    }
+
+    @Override
+    public void run() {
+        activity.serverInput.setText(base);
+        activity.tokenInput.setText(token);
     }
 }
 

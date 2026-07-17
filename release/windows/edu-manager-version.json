@@ -1,16 +1,16 @@
 {
-  "versionCode": 62,
-  "versionName": "0.5.2",
-  "windowsVersionCode": 121,
-  "windowsVersionName": "0.7.41",
-  "windowsUrl": "https://www.greatbg.com/download/AI-edu-manager-console-Windows-0.7.41.zip",
-  "terminalApkUrl": "https://www.greatbg.com/download/AI-edu-manager-tablet-terminal-0.5.2.apk",
-  "tabletTerminalVersionCode": 62,
-  "tabletTerminalVersionName": "0.5.2",
-  "tabletTerminalApkUrl": "https://www.greatbg.com/download/AI-edu-manager-tablet-terminal-0.5.2.apk",
+  "versionCode": 63,
+  "versionName": "0.5.3",
+  "windowsVersionCode": 122,
+  "windowsVersionName": "0.7.42",
+  "windowsUrl": "https://www.greatbg.com/download/AI-edu-manager-console-Windows-0.7.42.zip",
+  "terminalApkUrl": "https://www.greatbg.com/download/AI-edu-manager-tablet-terminal-0.5.3.apk",
+  "tabletTerminalVersionCode": 63,
+  "tabletTerminalVersionName": "0.5.3",
+  "tabletTerminalApkUrl": "https://www.greatbg.com/download/AI-edu-manager-tablet-terminal-0.5.3.apk",
   "managerApkUrl": "https://www.greatbg.com/download/edu-manager-android-0.2.3.apk",
   "managerApkVersionCode": 23,
   "managerApkVersionName": "0.2.3",
-  "apkUrl": "https://www.greatbg.com/download/AI-edu-manager-tablet-terminal-0.5.2.apk",
-  "notes": "Windows 0.7.41：Agent 工具连接步骤卡片升级为直接复制入口；点击步骤即可选中并复制对应指令，支持复制高级编辑后的内容，并提供明确成功提示。平板终端保持 0.5.2。"
+  "apkUrl": "https://www.greatbg.com/download/AI-edu-manager-tablet-terminal-0.5.3.apk",
+  "notes": "Windows 0.7.42 / 平板 0.5.3：修复平板未验证授权却显示已连接的问题；刷入连接信息后自动登记为 Windows 待授权设备，主机端可一键授权全部学生，平板端明确区分待授权与连接失败。"
 }

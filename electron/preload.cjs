@@ -391,6 +391,15 @@ contextBridge.exposeInMainWorld('AndroidBridge', {
   syncStudentDigestResult(studentId) {
     return ipcRenderer.sendSync('bridge:syncStudentDigestResult', studentId);
   },
+  getStudentDigestAudit(studentId) {
+    return ipcRenderer.sendSync('bridge:getStudentDigestAudit', studentId);
+  },
+  generateStudentDigestAudit(studentId, selectedIdsJson) {
+    return ipcRenderer.sendSync('bridge:generateStudentDigestAudit', studentId, selectedIdsJson);
+  },
+  syncStudentDigestAudit(studentId) {
+    return ipcRenderer.sendSync('bridge:syncStudentDigestAudit', studentId);
+  },
   recordScheduledTaskAction(studentId, kind, commandText) {
     return ipcRenderer.sendSync('bridge:recordScheduledTaskAction', studentId, kind, commandText);
   },

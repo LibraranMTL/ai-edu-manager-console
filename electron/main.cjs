@@ -5,7 +5,9 @@ const path = require('path');
 const os = require('os');
 const http = require('http');
 const https = require('https');
+const dgram = require('dgram');
 const crypto = require('crypto');
+const { mergeAssetReferences, recentAssetTrend } = require('./asset-statistics.cjs');
 const { spawn, spawnSync, execFileSync } = require('child_process');
 const {
   TASK_PROTOCOL_VERSION,
@@ -24,6 +26,7 @@ const {
   captureSaveDecision,
   normalizeCaptureOptions,
 } = require('./capture-protocol.cjs');
+const { parseDigestReceipt } = require('./digest-receipt.cjs');
 
 let mainWindow;
 let qclawOpened = false;
@@ -36,6 +39,7 @@ let codexOpened = false;
 let claudeCodeOpened = false;
 let obsidianOpened = false;
 let hostServer = null;
+let hostDiscoverySocket = null;
 let hostServiceStartedAt = '';
 let hostServiceLastError = '';
 let todayUploadCount = 0;
@@ -55,6 +59,8 @@ const agentToolInstallCache = new Map();
 
 const APP_VERSION = app.getVersion();
 const DEFAULT_HOST_PORT = 18777;
+const HOST_DISCOVERY_PORT = 18778;
+const HOST_DISCOVERY_REQUEST = 'AI_EDU_MANAGER_DISCOVER_V1';
 const AGENT_TOOL_IDS = ['qclaw', 'marvis', 'hohu', 'openclaw', 'ima.copilot', 'workbuddy', 'codex', 'claude-code', 'chatgpt', 'claude', 'doubao', 'coze', 'fastgpt'];
 const WEB_AGENT_TOOL_URLS = {
   'ima.copilot': 'https://ima.qq.com/',
@@ -323,6 +329,18 @@ function studentMaterialsPath(student) {
 
 function studentDigestStatePath(student) {
   return path.join(studentManagerDir(student), 'digest-state.json');
+}
+
+function studentDigestManifestPath(student) {
+  return path.join(studentManagerDir(student), 'digest-manifest.json');
+}
+
+function studentDigestReceiptPath(student) {
+  return path.join(studentManagerDir(student), 'digest-receipt.json');
+}
+
+function studentDigestAuditPath(student) {
+  return path.join(studentManagerDir(student), 'digest-audit.json');
 }
 
 function studentAiManagerDir(student) {
@@ -863,11 +881,40 @@ function upsertStudentMaterialsFromUploads(student, uploadRecords) {
   uploadRecords.forEach((record) => {
     byId.set(String(record.id), { ...byId.get(String(record.id)), ...materialRecordFromUpload(record) });
   });
-  writeStudentMaterials(student, Array.from(byId.values()).sort((a, b) => String(b.uploadedAt || '').localeCompare(String(a.uploadedAt || ''))));
-  const openCount = Array.from(byId.values()).filter((item) => isOpenDigestStatus(item.status)).length;
+  const materials = Array.from(byId.values()).sort((a, b) => String(b.uploadedAt || '').localeCompare(String(a.uploadedAt || '')));
+  writeStudentMaterials(student, materials);
+  const pendingCount = materials.filter((item) => normalizeUploadStatus(item.status) === 'pending_digest').length;
+  const submittedCount = materials.filter((item) => ['submitted', 'digesting'].includes(normalizeUploadStatus(item.status))).length;
+  const currentState = readStudentDigestState(student);
+  const currentStatus = normalizeDigestStateStatus(currentState.status);
+  const latestSubmittedMs = Math.max(0, ...materials
+    .filter((item) => ['submitted', 'digesting'].includes(normalizeUploadStatus(item.status)))
+    .map((item) => Date.parse(item.statusUpdatedAt || item.uploadedAt || '') || 0));
+  const lastDigestMs = Date.parse(currentState.lastDigestAt || '') || 0;
+  const completedCoversSubmitted = currentStatus === 'completed'
+    && lastDigestMs > 0
+    && lastDigestMs >= latestSubmittedMs;
+  const nextStatus = pendingCount > 0
+    ? 'pending'
+    : submittedCount > 0
+      ? completedCoversSubmitted ? 'completed' : currentStatus === 'failed' ? 'failed' : 'digesting'
+      : currentStatus === 'completed' ? 'completed' : currentStatus === 'failed' ? 'failed' : 'idle';
+  const nextMessage = pendingCount > 0
+    ? `有 ${pendingCount} 份资料尚未提交消化。`
+    : submittedCount > 0
+      ? completedCoversSubmitted
+        ? currentState.message || `Agent 已完成消化，等待控制台同步 ${submittedCount} 份资料。`
+        : currentStatus === 'failed'
+          ? currentState.message || 'Agent 消化失败，请检查回执后重试。'
+          : `${submittedCount} 份资料已提交，等待 Agent 完成并写回回执。`
+      : currentStatus === 'completed'
+        ? currentState.message || '最近一批资料已完成消化。'
+        : currentStatus === 'failed'
+          ? currentState.message || '最近一批资料存在识别失败项，请查看覆盖审计。'
+          : '暂无待消化资料。';
   writeStudentDigestState(student, {
-    status: openCount > 0 ? 'pending' : 'idle',
-    message: openCount > 0 ? `有 ${openCount} 份资料等待 QClaw 消化。` : '暂无待消化资料。',
+    status: nextStatus,
+    message: nextMessage,
   });
 }
 
@@ -987,10 +1034,7 @@ function upsertAssetFromFile(filePath, context = {}) {
     ...(Array.isArray(base.references) ? base.references : []),
     ...(reference ? [reference] : []),
   ];
-  const dedupedReferences = Array.from(new Map(references.map((item) => [
-    `${item.spaceType}|${item.spaceId}|${item.role}|${item.path}`,
-    item,
-  ])).values());
+  const dedupedReferences = mergeAssetReferences(references);
   const linkedStudents = mergeUnique([
     ...(Array.isArray(base.linkedStudents) ? base.linkedStudents : []),
     context.studentId || '',
@@ -1078,6 +1122,7 @@ function assetIndexSummary() {
     })),
     total: assets.length,
     duplicateGroups: Array.from(shaCounts.values()).filter((count) => count > 1).length,
+    recentTrend: recentAssetTrend(assets),
   };
 }
 
@@ -1723,11 +1768,12 @@ function setHostUploadRecordStatus(recordId, status) {
 
 function markStudentDigestSubmitted(studentId) {
   const now = new Date().toISOString();
+  const batchId = `digest-${Date.now()}-${crypto.randomBytes(3).toString('hex')}`;
   let updated = 0;
   const records = readUploadRecords().map((record) => {
-    if (String(record.studentId) !== String(studentId) || record.status === 'processed') return record;
+    if (String(record.studentId) !== String(studentId) || normalizeUploadStatus(record.status) !== 'pending_digest') return record;
     updated += 1;
-    return { ...record, status: 'submitted', statusUpdatedAt: now };
+    return { ...record, status: 'submitted', statusUpdatedAt: now, digestBatchId: batchId };
   });
   writeUploadRecords(records);
   const student = readStudentsIndex().find((item) => String(item.id) === String(studentId));
@@ -1736,6 +1782,7 @@ function markStudentDigestSubmitted(studentId) {
     writeStudentDigestState(student, {
       status: 'digesting',
       digestSubmittedAt: now,
+      digestBatchId: batchId,
       message: `已提交 QClaw 消化，等待结果同步。`,
     });
   }
@@ -1748,7 +1795,7 @@ function markStudentDigestSubmitted(studentId) {
     count: updated,
   });
   notify('onNativeHostServiceChanged', getHostServiceStatus());
-  return JSON.stringify({ ok: true, updated, status: JSON.parse(getHostServiceStatus()), records });
+  return JSON.stringify({ ok: true, updated, batchId, status: JSON.parse(getHostServiceStatus()), records });
 }
 
 function latestFileMtime(files) {
@@ -1795,9 +1842,11 @@ function inferDigestCompletedFromSummary(summaryPath, sinceMs) {
 function syncStudentDigestResult(studentId, options = {}) {
   const student = readStudentsIndex().find((item) => String(item.id) === String(studentId));
   if (!student) return JSON.stringify({ ok: false, message: 'Student not found.' });
+  // Read the Agent receipt before refreshing upload records. Material refreshes
+  // update counters and must never erase a completed receipt from the Agent.
+  const state = readStudentDigestState(student);
   syncStudentMaterialsFromUploadRecords(student);
   const now = new Date().toISOString();
-  const state = readStudentDigestState(student);
   const digestStatus = normalizeDigestStateStatus(state.status);
   const rawPath = student.rawPath || getRawDir(student.name);
   const summaryPath = student.summaryPath || getSummaryDir(student.name);
@@ -1880,6 +1929,280 @@ function syncStudentDigestResult(studentId, options = {}) {
   });
   notify('onNativeHostServiceChanged', getHostServiceStatus());
   return JSON.stringify({ ok: true, updated: changed, state: nextState, records, status: JSON.parse(getHostServiceStatus()) });
+}
+
+function readStudentDigestReceipt(student) {
+  const file = studentDigestReceiptPath(student);
+  if (!fs.existsSync(file)) return {};
+  try {
+    const source = fs.readFileSync(file, 'utf8');
+    const result = parseDigestReceipt(source);
+    if (!result.ok || !result.value || typeof result.value !== 'object') {
+      return {
+        _receiptInvalid: true,
+        _receiptError: result.repairError || result.originalError || '回执格式无效。',
+      };
+    }
+    if (!result.repaired) return result.value;
+    const backupPath = `${file}.invalid-${timestampForFilename()}.bak`;
+    fs.copyFileSync(file, backupPath);
+    fs.writeFileSync(file, JSON.stringify(result.value, null, 2), 'utf8');
+    return {
+      ...result.value,
+      _receiptNormalized: true,
+      _receiptBackupPath: backupPath,
+      _receiptOriginalError: result.originalError,
+    };
+  } catch (error) {
+    return { _receiptInvalid: true, _receiptError: error.message };
+  }
+}
+
+function readStudentDigestManifest(student) {
+  try {
+    const file = studentDigestManifestPath(student);
+    if (!fs.existsSync(file)) return {};
+    const parsed = JSON.parse(fs.readFileSync(file, 'utf8'));
+    return parsed && typeof parsed === 'object' ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function digestReceiptEntries(state, receipt) {
+  const explicit = Array.isArray(receipt.items) ? receipt.items : [];
+  const legacy = []
+    .concat(Array.isArray(state.digestedFiles) ? state.digestedFiles : [])
+    .map((item) => typeof item === 'string'
+      ? { fileName: path.basename(item), relativePath: item, status: 'covered', confidence: 1 }
+      : { ...item, fileName: item.fileName || item.filename || path.basename(item.relativePath || item.path || ''), status: item.status || 'covered' });
+  return [...explicit, ...legacy];
+}
+
+function digestReceiptMatch(record, entries) {
+  const recordName = path.basename(String(record.filename || record.path || '')).toLowerCase();
+  const recordSha1 = String(record.sha1 || '').toLowerCase();
+  return entries.find((entry) => {
+    const entryName = path.basename(String(entry.fileName || entry.filename || entry.relativePath || entry.path || '')).toLowerCase();
+    const entrySha1 = String(entry.sha1 || '').toLowerCase();
+    return (recordSha1 && entrySha1 && recordSha1 === entrySha1) || (recordName && entryName && recordName === entryName);
+  });
+}
+
+function normalizeAuditCoverageStatus(value) {
+  const status = String(value || '').toLowerCase();
+  if (['covered', 'complete', 'completed', 'processed', 'success', 'digested'].includes(status)) return 'covered';
+  if (['partial', 'low_confidence', 'uncertain'].includes(status)) return 'partial';
+  if (['failed', 'unreadable', 'error'].includes(status)) return 'failed';
+  if (['skipped', 'duplicate', 'ignored'].includes(status)) return 'skipped';
+  return '';
+}
+
+function buildStudentDigestAudit(studentId, options = {}) {
+  const student = readStudentsIndex().find((item) => String(item.id) === String(studentId));
+  if (!student) return { ok: false, message: '未找到学生档案。' };
+  syncStudentMaterialsFromUploadRecords(student);
+  const state = readStudentDigestState(student);
+  const receipt = readStudentDigestReceipt(student);
+  const entries = digestReceiptEntries(state, receipt);
+  const previousManifest = readStudentDigestManifest(student);
+  const manifestIds = new Set((Array.isArray(previousManifest.items) ? previousManifest.items : []).map((item) => String(item.id || '')).filter(Boolean));
+  const records = readUploadRecords()
+    .filter((record) => String(record.studentId) === String(studentId) && normalizeUploadStatus(record.status) !== 'ignored')
+    .filter((record) => !state.digestBatchId
+      || String(record.digestBatchId || '') === String(state.digestBatchId)
+      || isOpenDigestStatus(record.status)
+      || manifestIds.has(String(record.id))
+      || Boolean(digestReceiptMatch(record, entries)));
+  const items = records.map((record) => {
+    const matched = digestReceiptMatch(record, entries);
+    const receiptStatus = normalizeAuditCoverageStatus(matched?.status);
+    const sourceExists = Boolean(record.path && fs.existsSync(record.path));
+    const recordStatus = normalizeUploadStatus(record.status);
+    let coverageStatus = receiptStatus;
+    if (!sourceExists) coverageStatus = 'missing_source';
+    else if (!coverageStatus && recordStatus === 'processed') coverageStatus = 'unverified';
+    else if (!coverageStatus && ['submitted', 'digesting'].includes(recordStatus)) coverageStatus = 'waiting';
+    else if (!coverageStatus && recordStatus === 'failed') coverageStatus = 'failed';
+    else if (!coverageStatus) coverageStatus = 'pending';
+    const confidence = Number(matched?.confidence);
+    return {
+      id: String(record.id),
+      fileName: record.filename || path.basename(record.path || ''),
+      path: record.path || '',
+      sha1: record.sha1 || '',
+      size: Number(record.size || 0),
+      extension: path.extname(record.filename || record.path || '').toLowerCase(),
+      isImage: /\.(png|jpe?g|webp|bmp|gif|heic)$/i.test(record.filename || record.path || ''),
+      sourceExists,
+      recordStatus,
+      coverageStatus,
+      confidence: Number.isFinite(confidence) ? Math.max(0, Math.min(1, confidence)) : null,
+      topics: Array.isArray(matched?.topics) ? matched.topics : [],
+      artifacts: Array.isArray(matched?.artifacts) ? matched.artifacts : [],
+      notes: matched?.notes || matched?.message || '',
+      uploadedAt: record.uploadedAt || '',
+      statusUpdatedAt: record.statusUpdatedAt || '',
+      digestBatchId: record.digestBatchId || state.digestBatchId || '',
+    };
+  });
+  const counts = items.reduce((result, item) => {
+    result[item.coverageStatus] = (result[item.coverageStatus] || 0) + 1;
+    return result;
+  }, {});
+  const coveredCount = counts.covered || 0;
+  const reviewStatuses = new Set(['partial', 'failed', 'missing_source', 'unverified', 'waiting', 'pending']);
+  const reviewItems = items.filter((item) => reviewStatuses.has(item.coverageStatus));
+  const audit = {
+    version: 1,
+    studentId: String(student.id),
+    studentName: student.name,
+    digestBatchId: state.digestBatchId || receipt.digestBatchId || '',
+    generatedAt: new Date().toISOString(),
+    receiptPath: studentDigestReceiptPath(student),
+    manifestPath: studentDigestManifestPath(student),
+    auditPath: studentDigestAuditPath(student),
+    totalCount: items.length,
+    imageCount: items.filter((item) => item.isImage).length,
+    coveredCount,
+    reviewCount: reviewItems.length,
+    coverageRate: items.length ? Math.round((coveredCount / items.length) * 100) : 100,
+    counts,
+    items,
+    receiptNormalized: Boolean(receipt._receiptNormalized),
+    receiptInvalid: Boolean(receipt._receiptInvalid),
+    receiptMessage: receipt._receiptNormalized
+      ? `Agent 回执包含未转义文本，已自动规范化；原文件备份于 ${receipt._receiptBackupPath}。`
+      : receipt._receiptInvalid
+        ? `Agent 回执无法解析：${receipt._receiptError}`
+        : '',
+    message: receipt._receiptInvalid
+      ? `Agent 回执格式错误，暂不能同步复核数据：${receipt._receiptError}`
+      : items.length
+      ? reviewItems.length
+        ? `${receipt._receiptNormalized ? '已自动修复 Agent 回执。' : ''}覆盖率 ${Math.round((coveredCount / items.length) * 100)}%，发现 ${reviewItems.length} 份资料需要二次核对。`
+        : `本批 ${items.length} 份资料均已有逐文件覆盖回执。`
+      : '当前批次没有可审计资料。',
+  };
+  if (options.write !== false) {
+    fs.mkdirSync(studentManagerDir(student), { recursive: true });
+    fs.writeFileSync(studentDigestManifestPath(student), JSON.stringify({
+      version: 1,
+      studentId: audit.studentId,
+      studentName: audit.studentName,
+      digestBatchId: audit.digestBatchId,
+      generatedAt: audit.generatedAt,
+      items: items.map(({ id, fileName, path: filePath, sha1, size, extension, isImage, uploadedAt }) => ({ id, fileName, path: filePath, sha1, size, extension, isImage, uploadedAt })),
+    }, null, 2), 'utf8');
+    fs.writeFileSync(studentDigestAuditPath(student), JSON.stringify(audit, null, 2), 'utf8');
+  }
+  return { ok: true, audit };
+}
+
+function buildStudentDigestAuditPrompt(student, audit, selectedIds = []) {
+  const selected = new Set((Array.isArray(selectedIds) ? selectedIds : []).map(String));
+  const candidates = audit.items.filter((item) => selected.size ? selected.has(String(item.id)) : item.coverageStatus !== 'covered' && item.coverageStatus !== 'skipped');
+  const files = candidates.map((item) => `- ${item.fileName} | ${item.sha1 || '无 SHA-1'} | 当前状态 ${item.coverageStatus} | ${item.path}`).join('\n') || '- 暂无需要复核的资料';
+  return `请对「${student.name}」本批资料执行独立的消化覆盖复核。不要只复述第一次摘要，也不要删除、移动或覆盖原始资料。
+
+知识库根目录：${student.rootPath || getStudentRootDir(student.name)}
+消化清单：${audit.manifestPath}
+第一次回执：${audit.receiptPath}
+覆盖审计：${audit.auditPath}
+
+需要复核的资料：
+${files}
+
+逐份执行：
+1. 确认文件可以打开；图片必须进行视觉识别，必要时结合 OCR，不得仅凭文件名判断。
+2. 提取主要主题、题目、数学公式、表格和手写批注；如内容模糊必须标记 partial 或 failed。
+3. 核对第一次知识成果是否覆盖这些内容，并列出遗漏内容及应补充的知识文件。
+4. 将补充结果写入知识空间对应目录，并在来源中保留文件名和 SHA-1。
+5. 将逐文件回执写入 ${audit.receiptPath}，格式：
+{
+  "version": 1,
+  "digestBatchId": "${audit.digestBatchId}",
+  "completedAt": "ISO 时间",
+  "items": [
+    {
+      "fileName": "原始文件名",
+      "sha1": "清单中的 SHA-1",
+      "status": "covered | partial | failed | skipped",
+      "confidence": 0.0,
+      "topics": ["识别出的主题"],
+      "artifacts": ["新增或更新的知识文件"],
+      "notes": "遗漏、模糊、重复或补充说明"
+    }
+  ]
+}
+
+完成后明确报告：复核总数、完整覆盖数、部分识别数、失败数、补充了哪些知识内容。`;
+}
+
+function generateStudentDigestAudit(studentId, selectedIdsJson = '[]') {
+  const result = buildStudentDigestAudit(studentId, { write: true });
+  if (!result.ok) return JSON.stringify(result);
+  const student = readStudentsIndex().find((item) => String(item.id) === String(studentId));
+  let selectedIds = [];
+  try { selectedIds = JSON.parse(selectedIdsJson || '[]'); } catch { selectedIds = []; }
+  return JSON.stringify({ ...result, prompt: buildStudentDigestAuditPrompt(student, result.audit, selectedIds) });
+}
+
+function syncStudentDigestAudit(studentId) {
+  const initial = buildStudentDigestAudit(studentId, { write: true });
+  if (!initial.ok) return JSON.stringify(initial);
+  const student = readStudentsIndex().find((item) => String(item.id) === String(studentId));
+  const coverageById = new Map(initial.audit.items.map((item) => [String(item.id), item.coverageStatus]));
+  const now = new Date().toISOString();
+  let updated = 0;
+  const records = readUploadRecords().map((record) => {
+    if (String(record.studentId) !== String(studentId)) return record;
+    const coverageStatus = coverageById.get(String(record.id));
+    let status = '';
+    if (coverageStatus === 'covered') status = 'processed';
+    else if (['failed', 'partial', 'missing_source'].includes(coverageStatus)) status = 'failed';
+    else if (coverageStatus === 'skipped') status = 'ignored';
+    if (!status || normalizeUploadStatus(record.status) === status) return record;
+    updated += 1;
+    return {
+      ...record,
+      status,
+      statusUpdatedAt: now,
+      digestAuditStatus: coverageStatus,
+      ...(status === 'processed' ? { digestedAt: now } : {}),
+    };
+  });
+  writeUploadRecords(records);
+  syncStudentMaterialsFromUploadRecords(student);
+  const unresolvedCount = initial.audit.items.filter((item) => ['unverified', 'waiting', 'pending'].includes(item.coverageStatus)).length;
+  const failedCount = initial.audit.items.filter((item) => ['failed', 'partial', 'missing_source'].includes(item.coverageStatus)).length;
+  writeStudentDigestState(student, {
+    status: unresolvedCount > 0 ? 'pending' : failedCount > 0 ? 'failed' : 'completed',
+    lastDigestAt: initial.audit.coveredCount > 0 ? now : readStudentDigestState(student).lastDigestAt || '',
+    message: unresolvedCount > 0
+      ? `复核回执已同步，仍有 ${unresolvedCount} 份资料缺少可结算回执。`
+      : failedCount > 0
+        ? `复核回执已同步：${initial.audit.coveredCount} 份完整覆盖，${failedCount} 份识别失败或来源缺失。`
+        : `复核回执已同步，本批 ${initial.audit.coveredCount} 份资料均完整覆盖。`,
+  });
+  const result = buildStudentDigestAudit(studentId, { write: true });
+  if (result.ok) {
+    appendHostTimeline({
+      type: 'digest_audit_synced',
+      title: 'Digest coverage audit synced',
+      detail: result.audit.message,
+      studentId: String(studentId || ''),
+      studentName: result.audit.studentName,
+      count: result.audit.reviewCount,
+    });
+  }
+  notify('onNativeHostServiceChanged', getHostServiceStatus());
+  return JSON.stringify({
+    ...result,
+    updated,
+    records,
+    status: JSON.parse(getHostServiceStatus()),
+  });
 }
 
 function isAllowedUploadFile(filename) {
@@ -2196,6 +2519,46 @@ function getPairPayload() {
     pairCode: session.pairCode,
     expiresAt: session.expiresAt,
   };
+}
+
+function discoveryPayload() {
+  const info = getConnectionInfo();
+  return {
+    type: 'AI_EDU_MANAGER_DISCOVERY',
+    protocolVersion: 1,
+    hostName: os.hostname() || 'AI教育管家主机',
+    appVersion: APP_VERSION,
+    port: info.port,
+    serverUrl: info.serverUrl,
+    lanUrls: info.lanUrls,
+  };
+}
+
+function startHostDiscovery() {
+  if (hostDiscoverySocket) return;
+  const socket = dgram.createSocket({ type: 'udp4', reuseAddr: true });
+  hostDiscoverySocket = socket;
+  socket.on('message', (message, remote) => {
+    if (String(message || '').trim() !== HOST_DISCOVERY_REQUEST) return;
+    const payload = Buffer.from(JSON.stringify(discoveryPayload()), 'utf8');
+    socket.send(payload, remote.port, remote.address, () => {});
+  });
+  socket.on('error', (error) => {
+    hostServiceLastError = `局域网发现服务异常：${error.message}`;
+    try { socket.close(); } catch {}
+    if (hostDiscoverySocket === socket) hostDiscoverySocket = null;
+    notify('onNativeHostServiceChanged', getHostServiceStatus());
+  });
+  socket.bind(HOST_DISCOVERY_PORT, '0.0.0.0', () => {
+    try { socket.setBroadcast(true); } catch {}
+  });
+}
+
+function stopHostDiscovery() {
+  const socket = hostDiscoverySocket;
+  hostDiscoverySocket = null;
+  if (!socket) return;
+  try { socket.close(); } catch {}
 }
 
 function deviceByBearerToken(token) {
@@ -10639,18 +11002,15 @@ async function handlePairConfirm(request, response) {
       sendJson(response, 403, { ok: false, message: `当前学生数 ${existingStudents.length} 已超过授权上限（${license.studentLimit} 位）。请升级授权或减少学生后再绑定。`, license });
       return;
     }
-    const allowedStudentIds = Array.isArray(body.allowedStudentIds) && body.allowedStudentIds.length
-      ? body.allowedStudentIds.map(String).filter((id) => existingStudents.some((student) => String(student.id) === id))
-      : existingStudents.map((student) => String(student.id));
     const token = createDeviceToken();
     const device = {
       id: deviceId,
       name: String(body.deviceName || body.name || '平板设备').slice(0, 80),
       tokenHash: hashDeviceToken(token),
       tokenPreview: `${token.slice(0, 7)}...${token.slice(-6)}`,
-      allowedStudentIds,
-      allowedAllStudents: true,
-      autoAuthorizeNewStudents: true,
+      allowedStudentIds: [],
+      allowedAllStudents: false,
+      autoAuthorizeNewStudents: false,
       revoked: false,
       createdAt: new Date().toISOString(),
       lastSeenAt: new Date().toISOString(),
@@ -10665,8 +11025,10 @@ async function handlePairConfirm(request, response) {
     sendJson(response, 200, {
       ok: true,
       token,
+      requiresApproval: true,
+      message: '设备已登记，请在 Windows 主机端授权学生。',
       device: publicDevice(device),
-      students: existingStudents,
+      students: [],
     });
   } catch (error) {
     sendJson(response, 400, { ok: false, message: `Pair confirm failed: ${error.message}` });
@@ -10857,11 +11219,13 @@ function startHostService() {
     hostServer.on('error', (error) => {
       hostServiceLastError = error.message;
       hostServer = null;
+      stopHostDiscovery();
       notify('onNativeHostServiceChanged', getHostServiceStatus());
     });
     hostServer.listen(port, '0.0.0.0', () => {
       hostServiceStartedAt = new Date().toISOString();
       hostServiceLastError = '';
+      startHostDiscovery();
       notify('onNativeHostServiceChanged', getHostServiceStatus());
     });
     return getHostServiceStatus();
@@ -10873,6 +11237,7 @@ function startHostService() {
 }
 
 function stopHostService() {
+  stopHostDiscovery();
   if (!hostServer) return getHostServiceStatus();
   const server = hostServer;
   hostServer = null;
@@ -10919,6 +11284,8 @@ function getHostServiceStatus() {
   const pairPayload = getPairPayload();
   return JSON.stringify({
     running: Boolean(hostServer),
+    discoveryRunning: Boolean(hostDiscoverySocket),
+    discoveryPort: HOST_DISCOVERY_PORT,
     port: info.port,
     serverUrl: info.serverUrl,
     lanUrls: info.lanUrls,
@@ -11183,6 +11550,9 @@ ipcMain.on('bridge:clearHostUploadRecords', (event) => { licensedIpc(event, '上
 ipcMain.on('bridge:setHostUploadRecordStatus', (event, recordId, status) => { licensedIpc(event, '上传记录状态维护', () => setHostUploadRecordStatus(recordId, status)); });
 ipcMain.on('bridge:markStudentDigestSubmitted', (event, studentId) => { licensedIpc(event, '资料消化任务', () => markStudentDigestSubmitted(studentId)); });
 ipcMain.on('bridge:syncStudentDigestResult', (event, studentId) => { licensedIpc(event, '资料消化结果同步', () => syncStudentDigestResult(studentId, { forceSubmitted: true })); });
+ipcMain.on('bridge:getStudentDigestAudit', (event, studentId) => { event.returnValue = JSON.stringify(buildStudentDigestAudit(studentId, { write: false })); });
+ipcMain.on('bridge:generateStudentDigestAudit', (event, studentId, selectedIdsJson) => { licensedIpc(event, '资料消化覆盖审计', () => generateStudentDigestAudit(studentId, selectedIdsJson)); });
+ipcMain.on('bridge:syncStudentDigestAudit', (event, studentId) => { licensedIpc(event, '资料消化复核结果同步', () => syncStudentDigestAudit(studentId)); });
 ipcMain.on('bridge:recordScheduledTaskAction', (event, studentId, kind, commandText) => { licensedIpc(event, '定时任务账本', () => recordScheduledTaskAction(studentId, kind, commandText)); });
 ipcMain.on('bridge:getStudentScheduleLedger', (event, studentId) => { event.returnValue = getStudentScheduleLedger(studentId); });
 ipcMain.on('bridge:getTaskCenter', (event) => { event.returnValue = getTaskCenter(); });

@@ -235,7 +235,23 @@ type AssetIndexState = {
   assets: AssetRecord[];
   total?: number;
   duplicateGroups?: number;
+  recentTrend?: AssetRecentTrend;
   message?: string;
+};
+
+type AssetTrendDay = {
+  date: string;
+  label: string;
+  added: number;
+  references: number;
+};
+
+type AssetRecentTrend = {
+  days: AssetTrendDay[];
+  addedTotal: number;
+  referenceTotal: number;
+  undatedAssets?: number;
+  undatedReferences?: number;
 };
 
 type LearningProject = {
@@ -675,6 +691,9 @@ type AndroidBridge = {
   setHostUploadRecordStatus?: (recordId: string, status: string) => string;
   markStudentDigestSubmitted?: (studentId: string) => string;
   syncStudentDigestResult?: (studentId: string) => string;
+  getStudentDigestAudit?: (studentId: string) => string;
+  generateStudentDigestAudit?: (studentId: string, selectedIdsJson: string) => string;
+  syncStudentDigestAudit?: (studentId: string) => string;
   recordScheduledTaskAction?: (studentId: string, kind: string, commandText: string) => string;
   getStudentScheduleLedger?: (studentId: string) => string;
   getTaskCenter?: () => string;
@@ -899,6 +918,8 @@ type StorageConfig = {
 
 type HostServiceStatus = {
   running: boolean;
+  discoveryRunning?: boolean;
+  discoveryPort?: number;
   port: number;
   serverUrl?: string;
   lanUrls?: string[];
@@ -958,6 +979,52 @@ type HostUploadRecord = {
   status?: string;
   statusUpdatedAt?: string;
 };
+
+type DigestAuditItem = {
+  id: string;
+  fileName: string;
+  path?: string;
+  sha1?: string;
+  isImage?: boolean;
+  sourceExists?: boolean;
+  recordStatus?: string;
+  coverageStatus: string;
+  confidence?: number | null;
+  topics?: string[];
+  artifacts?: string[];
+  notes?: string;
+};
+
+type DigestAudit = {
+  studentId: string;
+  studentName: string;
+  digestBatchId?: string;
+  generatedAt?: string;
+  receiptPath?: string;
+  manifestPath?: string;
+  auditPath?: string;
+  totalCount: number;
+  imageCount: number;
+  coveredCount: number;
+  reviewCount: number;
+  coverageRate: number;
+  counts?: Record<string, number>;
+  items: DigestAuditItem[];
+  message?: string;
+};
+
+function digestAuditStatusLabel(status: string) {
+  return ({
+    covered: '已覆盖',
+    partial: '部分识别',
+    failed: '识别失败',
+    skipped: '已跳过',
+    missing_source: '源文件缺失',
+    unverified: '缺少逐文件回执',
+    waiting: '等待 Agent 回执',
+    pending: '待消化',
+  } as Record<string, string>)[status] || status;
+}
 
 type HostTimelineEvent = {
   id: string;
@@ -3760,6 +3827,9 @@ function App() {
   const [homeMode, setHomeMode] = useState<'local' | 'host'>('local');
   const [hostDiagnostics, setHostDiagnostics] = useState<HostServiceDiagnostics | null>(null);
   const [hostUploadRecords, setHostUploadRecords] = useState<HostUploadRecord[]>([]);
+  const [digestAudit, setDigestAudit] = useState<DigestAudit | null>(null);
+  const [selectedDigestAuditIds, setSelectedDigestAuditIds] = useState<string[]>([]);
+  const [digestAuditMessage, setDigestAuditMessage] = useState('');
   const [hostUploadSearch, setHostUploadSearch] = useState('');
   const [hostUploadStudentFilter, setHostUploadStudentFilter] = useState('all');
   const [hostUploadDeviceFilter, setHostUploadDeviceFilter] = useState('all');
@@ -3944,14 +4014,21 @@ function App() {
     });
   }, [hostServiceStatus?.recentUploads, hostUploadDateFilter, hostUploadDeviceFilter, hostUploadRecords, hostUploadSearch, hostUploadStatusFilter, hostUploadStudentFilter]);
 
+  const studentScopedAssets = useMemo(() => (
+    (assetIndex.assets ?? []).filter((asset) => {
+      if (assetStudentFilter === 'all') return true;
+      if (String(asset.ownerStudentId || '') === assetStudentFilter) return true;
+      if ((asset.linkedStudents ?? []).map(String).includes(assetStudentFilter)) return true;
+      return (asset.references ?? []).some((reference) => (
+        reference.spaceType === 'student' && String(reference.spaceId || '') === assetStudentFilter
+      ));
+    })
+  ), [assetIndex.assets, assetStudentFilter]);
+
   const filteredAssets = useMemo(() => {
     const keyword = assetSearch.trim().toLowerCase();
-    return (assetIndex.assets ?? []).filter((asset) => {
+    return studentScopedAssets.filter((asset) => {
       if (assetDuplicateOnly && Number(asset.duplicateCount ?? 1) <= 1) return false;
-      if (assetStudentFilter !== 'all') {
-        const linked = asset.linkedStudents ?? [];
-        if (asset.ownerStudentId !== assetStudentFilter && !linked.includes(assetStudentFilter)) return false;
-      }
       if (assetSourceFilter !== 'all' && String(asset.sourceName || '未标注来源') !== assetSourceFilter) return false;
       if (assetTypeFilter !== 'all' && String(asset.type || 'file') !== assetTypeFilter) return false;
       if (!keyword) return true;
@@ -3959,7 +4036,7 @@ function App() {
         .filter(Boolean)
         .some((value) => String(value).toLowerCase().includes(keyword));
     });
-  }, [assetDuplicateOnly, assetIndex.assets, assetSearch, assetSourceFilter, assetStudentFilter, assetTypeFilter]);
+  }, [assetDuplicateOnly, assetSearch, assetSourceFilter, assetTypeFilter, studentScopedAssets]);
 
   const assetSources = useMemo(() => (
     Array.from(new Set((assetIndex.assets ?? []).map((asset) => String(asset.sourceName || '未标注来源')).filter(Boolean))).sort()
@@ -3970,19 +4047,26 @@ function App() {
   ), [assetIndex.assets]);
 
   const assetGovernanceStats = useMemo(() => {
-    const issueAssets = (assetIndex.assets ?? []).filter((asset) => asset.governanceAction && asset.governanceAction !== '无需处理');
+    const issueAssets = studentScopedAssets.filter((asset) => asset.governanceAction && asset.governanceAction !== '无需处理');
     const highRiskCount = issueAssets.filter((asset) => asset.governanceRisk === 'high').length;
     const staleReferenceCount = issueAssets.reduce((total, asset) => total + Number(asset.staleReferenceCount || 0), 0);
     return { issueCount: issueAssets.length, highRiskCount, staleReferenceCount };
-  }, [assetIndex.assets]);
+  }, [studentScopedAssets]);
+  const assetScopedDuplicateGroups = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const asset of studentScopedAssets) {
+      if (asset.sha1) counts.set(asset.sha1, (counts.get(asset.sha1) ?? 0) + 1);
+    }
+    return Array.from(counts.values()).filter((count) => count > 1).length;
+  }, [studentScopedAssets]);
+  const assetScopedTrend = useMemo(() => calculateAssetRecentTrend(studentScopedAssets), [studentScopedAssets]);
   const assetWorkflowSteps = useMemo(() => {
-    const total = assetIndex.total ?? assetIndex.assets.length;
     return [
-      { title: '登记资产', value: `${total} 个`, detail: '导入、上传、补建索引都会登记 SHA-1 与来源' },
-      { title: '识别引用', value: `${assetIndex.assets.reduce((sum, asset) => sum + Number(asset.references?.length ?? asset.referenceCount ?? 0), 0)} 条`, detail: '连接学生档案、项目知识空间和资料来源' },
+      { title: '登记资产', value: `${studentScopedAssets.length} 个`, detail: '导入、上传、补建索引都会登记 SHA-1 与来源' },
+      { title: '识别引用', value: `${studentScopedAssets.reduce((sum, asset) => sum + Number(asset.references?.length ?? asset.referenceCount ?? 0), 0)} 条`, detail: '连接学生档案、项目知识空间和资料来源' },
       { title: '治理候选', value: `${assetGovernanceStats.issueCount} 个`, detail: '重复、失效引用、无引用资产只提示不自动删除' },
     ];
-  }, [assetGovernanceStats.issueCount, assetIndex.assets, assetIndex.total]);
+  }, [assetGovernanceStats.issueCount, studentScopedAssets]);
 
   const selectedProject = projects.find((project) => project.id === selectedProjectId) ?? projects[0] ?? null;
   const availableProjectWorkspaceTemplates = [...projectWorkspaceTemplates, ...customProjectWorkspaceTemplates];
@@ -4019,10 +4103,10 @@ function App() {
   const selectedProjectWorkspaceFolders = selectedProject?.workspaceFolders?.length
     ? selectedProject.workspaceFolders
     : selectedProjectWorkspaceTemplate.folders;
-  const selectedAsset = assetIndex.assets.find((asset) => asset.assetId === selectedAssetId) ?? filteredAssets[0] ?? null;
+  const selectedAsset = filteredAssets.find((asset) => asset.assetId === selectedAssetId) ?? filteredAssets[0] ?? null;
   const duplicateAssetGroups = useMemo(() => {
     const groups = new Map<string, AssetRecord[]>();
-    for (const asset of assetIndex.assets ?? []) {
+    for (const asset of filteredAssets) {
       if (!asset.sha1) continue;
       const current = groups.get(asset.sha1) ?? [];
       current.push(asset);
@@ -4032,7 +4116,7 @@ function App() {
       .map(([sha1, assets]) => ({ sha1, assets }))
       .filter((group) => group.assets.length > 1)
       .sort((a, b) => b.assets.length - a.assets.length);
-  }, [assetIndex.assets]);
+  }, [filteredAssets]);
   const projectCandidateAssets = useMemo(() => {
     const selectedAssetIds = new Set(selectedProject?.assetIds ?? []);
     return filteredAssets.filter((asset) => !selectedAssetIds.has(asset.assetId)).slice(0, 120);
@@ -4298,22 +4382,28 @@ function App() {
     hostServiceStatus?.students?.find((item) => String(item.id) === String(student.id));
 
   const hostPendingDigestTotal = (hostServiceStatus?.students ?? []).reduce(
-    (total, student) => total + (student.pendingDigestCount ?? 0) + (student.submittedDigestCount ?? 0),
+    (total, student) => total + (student.pendingDigestCount ?? 0),
     0,
   );
 
   const pendingDigestValue = (student: Student) => {
     const stat = hostStudentStat(student);
-    const hostPending = (stat?.pendingDigestCount ?? 0) + (stat?.submittedDigestCount ?? 0);
-    if (stat && typeof hostPending === 'number') return hostPending;
-    return (student.pendingDigestCount ?? 0) + (student.submittedDigestCount ?? 0);
+    if (stat) return stat.pendingDigestCount ?? 0;
+    return student.pendingDigestCount ?? 0;
+  };
+
+  const submittedDigestValue = (student: Student) => {
+    const stat = hostStudentStat(student);
+    if (stat) return stat.submittedDigestCount ?? 0;
+    return student.submittedDigestCount ?? 0;
   };
 
   const digestStatusText = (student: Student) => {
     const stat = hostStudentStat(student);
     const lastDigestAt = stat?.lastDigestAt || student.lastDigestAt || '';
     const message = stat?.digestMessage || student.digestMessage || '';
-    if (pendingDigestValue(student) > 0) return message || `有资料等待 ${getAgentToolProfile(student.agentTool).name} 消化。`;
+    if (pendingDigestValue(student) > 0) return message || `有资料尚未提交给 ${getAgentToolProfile(student.agentTool).name} 消化。`;
+    if (submittedDigestValue(student) > 0) return message || `有 ${submittedDigestValue(student)} 份资料等待 Agent 完成并写回回执。`;
     if (lastDigestAt) return `最近消化：${new Date(lastDigestAt).toLocaleString('zh-CN')}`;
     return '暂无待消化资料。';
   };
@@ -5537,10 +5627,12 @@ ${conversationText || '（请先粘贴对话历史）'}`;
   const markDigestSubmitted = (student: Student) => {
     const stamp = new Date().toLocaleString('zh-CN');
     const raw = bridge()?.markStudentDigestSubmitted?.(student.id);
+    let hostStat: HostStudentStat | undefined;
     if (raw) {
       try {
         const result = JSON.parse(raw) as { ok?: boolean; updated?: number; status?: HostServiceStatus; records?: HostUploadRecord[]; message?: string };
         if (result.status) setHostServiceStatus(result.status);
+        hostStat = result.status?.students?.find((item) => String(item.id) === String(student.id));
         if (Array.isArray(result.records)) setHostUploadRecords(result.records);
         refreshHostTimeline();
         if (!result.ok) {
@@ -5557,7 +5649,11 @@ ${conversationText || '（请先粘贴对话历史）'}`;
       item.id === student.id
         ? {
             ...item,
-            pendingDigestCount: 0,
+            pendingDigestCount: hostStat?.pendingDigestCount ?? 0,
+            submittedDigestCount: hostStat?.submittedDigestCount ?? ((item.submittedDigestCount ?? 0) + (item.pendingDigestCount ?? 0)),
+            processedDigestCount: hostStat?.processedDigestCount ?? item.processedDigestCount,
+            digestStatus: hostStat?.digestStatus ?? 'digesting',
+            digestMessage: hostStat?.digestMessage ?? item.digestMessage,
             lastDigestCommandAt: stamp,
           }
         : item,
@@ -5577,6 +5673,19 @@ ${conversationText || '（请先粘贴对话历史）'}`;
     try {
       const result = JSON.parse(raw) as { ok?: boolean; updated?: number; state?: { message?: string }; status?: HostServiceStatus; records?: HostUploadRecord[]; message?: string };
       if (result.status) setHostServiceStatus(result.status);
+      const hostStat = result.status?.students?.find((item) => String(item.id) === String(student.id));
+      if (hostStat) {
+        const next = students.map((item) => item.id === student.id ? {
+          ...item,
+          pendingDigestCount: hostStat.pendingDigestCount ?? 0,
+          submittedDigestCount: hostStat.submittedDigestCount ?? 0,
+          processedDigestCount: hostStat.processedDigestCount ?? item.processedDigestCount,
+          lastDigestAt: hostStat.lastDigestAt ?? item.lastDigestAt,
+          digestStatus: hostStat.digestStatus ?? item.digestStatus,
+          digestMessage: hostStat.digestMessage ?? item.digestMessage,
+        } : item);
+        persist(next);
+      }
       if (Array.isArray(result.records)) setHostUploadRecords(result.records);
       refreshHostTimeline();
       setDigestMessage(result.ok ? result.state?.message || `已同步消化结果，更新 ${result.updated ?? 0} 条资料状态。` : result.message || '同步消化结果失败。');
@@ -5584,6 +5693,82 @@ ${conversationText || '（请先粘贴对话历史）'}`;
       setDigestMessage('同步消化结果解析失败。');
     }
     window.setTimeout(() => setDigestMessage(''), 3600);
+  };
+
+  const applyDigestAuditResult = (raw?: string) => {
+    if (!raw) {
+      setDigestAuditMessage('当前环境不支持消化覆盖审计。');
+      return null;
+    }
+    try {
+      const result = JSON.parse(raw) as { ok?: boolean; audit?: DigestAudit; prompt?: string; message?: string };
+      if (!result.ok || !result.audit) {
+        setDigestAuditMessage(result.message || '生成消化覆盖审计失败。');
+        return null;
+      }
+      setDigestAudit(result.audit);
+      const reviewIds = result.audit.items
+        .filter((item) => !['covered', 'skipped'].includes(item.coverageStatus))
+        .map((item) => item.id);
+      setSelectedDigestAuditIds(reviewIds);
+      setDigestAuditMessage(result.audit.message || '消化覆盖审计已更新。');
+      return result;
+    } catch {
+      setDigestAuditMessage('消化覆盖审计结果解析失败。');
+      return null;
+    }
+  };
+
+  const refreshDigestAudit = (student: Student) => {
+    applyDigestAuditResult(bridge()?.getStudentDigestAudit?.(student.id));
+  };
+
+  const generateDigestAudit = (student: Student, selectedOnly = false) => {
+    const selectedIds = selectedOnly ? selectedDigestAuditIds : [];
+    return applyDigestAuditResult(bridge()?.generateStudentDigestAudit?.(student.id, JSON.stringify(selectedIds)));
+  };
+
+  const copyDigestAuditCommand = async (student: Student) => {
+    const result = generateDigestAudit(student, selectedDigestAuditIds.length > 0);
+    const prompt = result?.prompt;
+    if (!prompt) return;
+    await copyText(prompt, `已复制「${student.name}」二次核对指令，可粘贴给当前 Agent 执行。`);
+  };
+
+  const syncDigestAudit = (student: Student) => {
+    const raw = bridge()?.syncStudentDigestAudit?.(student.id);
+    const result = applyDigestAuditResult(raw);
+    if (raw) {
+      try {
+        const payload = JSON.parse(raw) as { status?: HostServiceStatus; records?: HostUploadRecord[] };
+        if (payload.status) {
+          setHostServiceStatus(payload.status);
+          const hostStat = payload.status.students?.find((item) => String(item.id) === String(student.id));
+          if (hostStat) {
+            persist(students.map((item) => item.id === student.id ? {
+              ...item,
+              pendingDigestCount: hostStat.pendingDigestCount ?? 0,
+              submittedDigestCount: hostStat.submittedDigestCount ?? 0,
+              processedDigestCount: hostStat.processedDigestCount ?? item.processedDigestCount,
+              lastDigestAt: hostStat.lastDigestAt ?? item.lastDigestAt,
+              digestStatus: hostStat.digestStatus ?? item.digestStatus,
+              digestMessage: hostStat.digestMessage ?? item.digestMessage,
+            } : item));
+          }
+        }
+        if (Array.isArray(payload.records)) setHostUploadRecords(payload.records);
+      } catch {
+        // The audit result itself already reports parse errors to the user.
+      }
+    }
+    if (result?.audit) {
+      setDigestAuditMessage(`复核结果已同步。${result.audit.message || ''}`);
+    }
+    refreshHostTimeline();
+  };
+
+  const toggleDigestAuditItem = (id: string) => {
+    setSelectedDigestAuditIds((current) => current.includes(id) ? current.filter((item) => item !== id) : [...current, id]);
   };
 
   const copyConsultCommand = async () => {
@@ -8391,7 +8576,7 @@ ${JSON.stringify(items, null, 2)}
           <span>{hostServiceStatus?.devices?.filter((device) => !device.revoked).length ?? 0} 台有效设备</span>
         </div>
         <div className="device-list">
-          {(hostServiceStatus?.devices ?? []).length === 0 && <p className="muted-text">暂无绑定设备。平板扫码并输入配对码后，会出现在这里。</p>}
+          {(hostServiceStatus?.devices ?? []).length === 0 && <p className="muted-text">暂无绑定设备。平板可选择“查找附近主机”或扫码，并输入配对码；连接后会在这里等待授权。</p>}
           {(hostServiceStatus?.devices ?? []).map((device) => (
             <article className={device.revoked ? 'device-item revoked' : 'device-item'} key={device.id}>
               <div className="device-row">
@@ -9459,7 +9644,8 @@ ${JSON.stringify(items, null, 2)}
             </div>
             <div className="archive-grid">
               <InfoPanel icon={<UserRound />} title="当前学生" value={`${selectedStudent.name} · ${selectedStudentTool.name}`} />
-              <InfoPanel icon={<Archive />} title="待消化资料" value={`${pendingDigestValue(selectedStudent)} 个`} />
+              <InfoPanel icon={<Archive />} title="待提交消化" value={`${pendingDigestValue(selectedStudent)} 个`} />
+              <InfoPanel icon={<Clock3 />} title="等待 Agent 回执" value={`${submittedDigestValue(selectedStudent)} 个`} />
               <InfoPanel icon={<FolderOpen />} title="分享收件箱" value={`${sharedInboxCount} 个待归档`} />
             </div>
             <StudentToolSelector
@@ -9523,6 +9709,70 @@ ${JSON.stringify(items, null, 2)}
                 </button>
               )}
             </div>
+            {isWindows && (
+              <section className="digest-audit-panel">
+                <div className="digest-audit-heading">
+                  <div>
+                    <span className="section-kicker">消化质量复核</span>
+                    <h3>消化覆盖审计</h3>
+                    <p>按文件核对 Agent 是否实际读取并沉淀内容，尤其检查大量图片中的漏识别、低置信度和无逐文件回执资料。</p>
+                  </div>
+                  <button className="icon-button" onClick={() => refreshDigestAudit(selectedStudent)} aria-label="刷新消化覆盖审计">
+                    <RefreshCw size={18} />
+                  </button>
+                </div>
+
+                <div className="digest-audit-summary">
+                  <div><span>本批资料</span><strong>{digestAudit?.totalCount ?? 0}</strong></div>
+                  <div><span>图片资料</span><strong>{digestAudit?.imageCount ?? 0}</strong></div>
+                  <div><span>完整覆盖</span><strong>{digestAudit?.coveredCount ?? 0}</strong></div>
+                  <div><span>需要复核</span><strong>{digestAudit?.reviewCount ?? 0}</strong></div>
+                  <div><span>覆盖率</span><strong>{digestAudit ? `${digestAudit.coverageRate}%` : '--'}</strong></div>
+                </div>
+
+                <div className="digest-audit-actions">
+                  <button className="primary" onClick={() => generateDigestAudit(selectedStudent)}>
+                    <Gauge size={18} />生成覆盖审计
+                  </button>
+                  <button
+                    className="secondary"
+                    onClick={() => setSelectedDigestAuditIds(digestAudit?.items.filter((item) => !['covered', 'skipped'].includes(item.coverageStatus)).map((item) => item.id) || [])}
+                    disabled={!digestAudit?.items.length}
+                  >
+                    <ListChecks size={18} />选择待复核
+                  </button>
+                  <button className="secondary" onClick={() => copyDigestAuditCommand(selectedStudent)} disabled={Boolean(digestAudit && selectedDigestAuditIds.length === 0 && digestAudit.reviewCount > 0)}>
+                    <Clipboard size={18} />复制二次核对指令
+                  </button>
+                  <button className="secondary" onClick={() => syncDigestAudit(selectedStudent)}>
+                    <RefreshCw size={18} />同步复核结果
+                  </button>
+                </div>
+
+                {digestAudit?.items.length ? (
+                  <div className="digest-audit-list" aria-label="逐文件消化覆盖状态">
+                    {digestAudit.items.map((item) => (
+                      <label className={`digest-audit-row status-${item.coverageStatus}`} key={item.id}>
+                        <input
+                          type="checkbox"
+                          checked={selectedDigestAuditIds.includes(item.id)}
+                          onChange={() => toggleDigestAuditItem(item.id)}
+                        />
+                        <span className="digest-audit-file">
+                          <strong>{item.fileName}</strong>
+                          <small>{item.isImage ? '图片' : '文件'}{item.notes ? ` · ${item.notes}` : ''}</small>
+                        </span>
+                        <span className="digest-audit-status">{digestAuditStatusLabel(item.coverageStatus)}</span>
+                        <span className="digest-audit-confidence">{item.confidence == null ? '--' : `${Math.round(item.confidence * 100)}%`}</span>
+                      </label>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="digest-audit-empty">点击“生成覆盖审计”，系统会建立逐文件清单，并找出需要让 Agent 二次核对的资料。</div>
+                )}
+                {digestAuditMessage && <div className="notice muted">{digestAuditMessage}</div>}
+              </section>
+            )}
             {isWindows && (
               <section className="screen-capture-panel">
                 <div className="screen-capture-heading">
@@ -9799,13 +10049,14 @@ ${JSON.stringify(items, null, 2)}
               <Archive size={22} />
             </div>
             <div className="archive-grid">
-              <InfoPanel icon={<Archive />} title="资产总数" value={`${assetIndex.total ?? assetIndex.assets.length} 个`} />
-              <InfoPanel icon={<ListChecks />} title="重复文件组" value={`${assetIndex.duplicateGroups ?? 0} 组`} />
+              <InfoPanel icon={<Archive />} title="资产总数" value={`${studentScopedAssets.length} 个`} />
+              <InfoPanel icon={<ListChecks />} title="重复文件组" value={`${assetScopedDuplicateGroups} 组`} />
               <InfoPanel icon={<UserRound />} title="学生过滤" value={assetStudentFilter === 'all' ? '全部学生' : students.find((student) => student.id === assetStudentFilter)?.name ?? '当前筛选'} />
               <InfoPanel icon={<AlertTriangle />} title="治理候选" value={`${assetGovernanceStats.issueCount} 个`} />
               <InfoPanel icon={<ShieldCheck />} title="高风险" value={`${assetGovernanceStats.highRiskCount} 个`} />
               <InfoPanel icon={<LinkIcon />} title="失效引用" value={`${assetGovernanceStats.staleReferenceCount} 条`} />
             </div>
+            <AssetTrendChart trend={assetScopedTrend} />
             <div className="workflow-rail asset-workflow">
               {assetWorkflowSteps.map((step, index) => (
                 <div className="workflow-step" key={step.title}>
@@ -11444,7 +11695,8 @@ ${JSON.stringify(items, null, 2)}
             <div className="archive-grid">
               <InfoPanel icon={<UserRound />} title="当前学生" value={`${selectedStudent.name} · ${selectedStudentTool.name}`} />
               <InfoPanel icon={<Bot />} title="Agent 工具" value={selectedStudentTool.name} />
-              <InfoPanel icon={<Archive />} title="待消化资料" value={`${pendingDigestValue(selectedStudent)} 个`} />
+              <InfoPanel icon={<Archive />} title="待提交消化" value={`${pendingDigestValue(selectedStudent)} 个`} />
+              <InfoPanel icon={<Clock3 />} title="等待 Agent 回执" value={`${submittedDigestValue(selectedStudent)} 个`} />
             </div>
             <StudentToolSelector
               value={selectedStudent.agentTool}
@@ -12304,7 +12556,7 @@ ${JSON.stringify(items, null, 2)}
                 <div className="task-row" key={student.id}>
                   <span>{student.name}</span>
                   <strong>{student.digestTime}</strong>
-                  <small>{getAgentToolProfile(student.agentTool).name} · 待消化 {pendingDigestValue(student)} 个{student.lastDigestCommandAt ? ` · 最近提交 ${student.lastDigestCommandAt}` : ''}</small>
+                  <small>{getAgentToolProfile(student.agentTool).name} · 待提交 {pendingDigestValue(student)} 个 · 等待回执 {submittedDigestValue(student)} 个{student.lastDigestCommandAt ? ` · 最近提交 ${student.lastDigestCommandAt}` : ''}</small>
                   <button className="secondary compact" onClick={() => copyDigestCommand(student)}>
                     消化资料
                   </button>
@@ -12668,6 +12920,112 @@ function InfoPanel({ icon, title, value, onClick, actionLabel = '查看' }: { ic
   );
   if (onClick) return <button type="button" className="info-panel info-panel-action" onClick={onClick}>{content}</button>;
   return <article className="info-panel">{content}</article>;
+}
+
+function calculateAssetRecentTrend(assets: AssetRecord[], now = new Date()): AssetRecentTrend {
+  const days: AssetTrendDay[] = [];
+  const buckets = new Map<string, AssetTrendDay>();
+  const dayKey = (date: Date) => (
+    `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`
+  );
+  const validDate = (value?: string) => {
+    if (!value) return null;
+    const date = new Date(value);
+    return Number.isNaN(date.getTime()) ? null : date;
+  };
+
+  for (let offset = 6; offset >= 0; offset -= 1) {
+    const date = new Date(now.getFullYear(), now.getMonth(), now.getDate() - offset);
+    const item = { date: dayKey(date), label: `${date.getMonth() + 1}/${date.getDate()}`, added: 0, references: 0 };
+    days.push(item);
+    buckets.set(item.date, item);
+  }
+
+  let undatedAssets = 0;
+  let undatedReferences = 0;
+  for (const asset of assets) {
+    const uploadedAt = validDate(asset.uploadedAt);
+    if (uploadedAt) {
+      const bucket = buckets.get(dayKey(uploadedAt));
+      if (bucket) bucket.added += 1;
+    } else {
+      undatedAssets += 1;
+    }
+    for (const reference of asset.references ?? []) {
+      const linkedAt = validDate(reference.linkedAt);
+      if (!linkedAt) {
+        undatedReferences += 1;
+        continue;
+      }
+      const bucket = buckets.get(dayKey(linkedAt));
+      if (bucket) bucket.references += 1;
+    }
+  }
+
+  return {
+    days,
+    addedTotal: days.reduce((total, day) => total + day.added, 0),
+    referenceTotal: days.reduce((total, day) => total + day.references, 0),
+    undatedAssets,
+    undatedReferences,
+  };
+}
+
+function AssetTrendChart({ trend }: { trend?: AssetRecentTrend }) {
+  const days = trend?.days?.length ? trend.days : [];
+  const width = 700;
+  const height = 210;
+  const padding = { top: 24, right: 20, bottom: 38, left: 38 };
+  const chartWidth = width - padding.left - padding.right;
+  const chartHeight = height - padding.top - padding.bottom;
+  const maxValue = Math.max(1, ...days.flatMap((day) => [day.added, day.references]));
+  const xFor = (index: number) => padding.left + (days.length <= 1 ? chartWidth / 2 : (chartWidth * index) / (days.length - 1));
+  const yFor = (value: number) => padding.top + chartHeight - (chartHeight * value) / maxValue;
+  const pointsFor = (field: 'added' | 'references') => days.map((day, index) => `${xFor(index)},${yFor(day[field])}`).join(' ');
+  const yTicks = Array.from(new Set([0, Math.ceil(maxValue / 2), maxValue])).sort((a, b) => a - b);
+
+  return (
+    <section className="asset-trend-panel" aria-labelledby="asset-trend-title">
+      <div className="asset-trend-heading">
+        <div>
+          <strong id="asset-trend-title">最近 7 天资产变化</strong>
+          <span>按文件首次登记和引用首次建立的本地日期统计</span>
+        </div>
+        <div className="asset-trend-totals" aria-label="最近七天合计">
+          <span className="asset-trend-added">新增资产 <b>{trend?.addedTotal ?? 0}</b></span>
+          <span className="asset-trend-references">新增引用 <b>{trend?.referenceTotal ?? 0}</b></span>
+        </div>
+      </div>
+      {days.length > 0 ? (
+        <div className="asset-trend-chart-wrap">
+          <svg className="asset-trend-chart" viewBox={`0 0 ${width} ${height}`} role="img" aria-label="最近7天新增资产和新增引用次数曲线图">
+            {yTicks.map((tick) => (
+              <g key={`tick-${tick}`}>
+                <line className="asset-trend-gridline" x1={padding.left} x2={width - padding.right} y1={yFor(tick)} y2={yFor(tick)} />
+                <text className="asset-trend-axis-label" x={padding.left - 9} y={yFor(tick) + 4} textAnchor="end">{tick}</text>
+              </g>
+            ))}
+            <polyline className="asset-trend-line asset-trend-line-added" points={pointsFor('added')} />
+            <polyline className="asset-trend-line asset-trend-line-references" points={pointsFor('references')} />
+            {days.map((day, index) => (
+              <g className="asset-trend-day" key={day.date} tabIndex={0} aria-label={`${day.date}，新增资产 ${day.added}，新增引用 ${day.references}`}>
+                <line className="asset-trend-hover-line" x1={xFor(index)} x2={xFor(index)} y1={padding.top} y2={padding.top + chartHeight} />
+                <circle className="asset-trend-point asset-trend-point-added" cx={xFor(index)} cy={yFor(day.added)} r="5" />
+                <circle className="asset-trend-point asset-trend-point-references" cx={xFor(index)} cy={yFor(day.references)} r="5" />
+                <text className="asset-trend-x-label" x={xFor(index)} y={height - 12} textAnchor="middle">{day.label}</text>
+                <title>{`${day.date}\n新增资产：${day.added}\n新增引用：${day.references}`}</title>
+              </g>
+            ))}
+          </svg>
+        </div>
+      ) : (
+        <div className="empty-state">刷新资产索引后显示最近 7 天统计。</div>
+      )}
+      {Boolean((trend?.undatedAssets ?? 0) + (trend?.undatedReferences ?? 0)) && (
+        <small className="asset-trend-note">历史记录中有 {trend?.undatedAssets ?? 0} 个资产、{trend?.undatedReferences ?? 0} 条引用缺少日期，未计入曲线。</small>
+      )}
+    </section>
+  );
 }
 
 function AgentToolCompactSelector({

@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>AI教育管家平板终端家长版操作手册 - 群星矩阵</title>
+  <meta name="description" content="AI教育管家平板终端家长版操作手册" />
+  <style>
+    :root { --ink:#172033; --muted:#66758a; --line:#e3eaf2; --accent:#6d28d9; --soft:#f7f5ff; }
+    * { box-sizing:border-box; }
+    html { scroll-behavior:smooth; }
+    body { margin:0; overflow-x:hidden; font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft YaHei","PingFang SC",sans-serif; color:var(--ink); background:#f7f9fc; line-height:1.8; }
+    .topbar { position:sticky; top:0; z-index:20; border-bottom:1px solid var(--line); background:rgba(255,255,255,.94); backdrop-filter:blur(14px); }
+    .topbar-inner { width:min(1180px,calc(100% - 32px)); min-height:66px; margin:auto; display:flex; align-items:center; justify-content:space-between; gap:20px; }
+    .brand { color:var(--ink); font-weight:800; text-decoration:none; white-space:nowrap; }
+    .menu { display:flex; align-items:center; gap:8px; flex-wrap:wrap; justify-content:flex-end; }
+    .menu a { padding:8px 12px; border-radius:7px; color:#4b5c70; text-decoration:none; font-size:14px; }
+    .menu a:hover,.menu a[aria-current="page"] { color:var(--accent); background:var(--soft); }
+    .layout { width:min(1180px,calc(100% - 32px)); margin:32px auto 64px; display:grid; grid-template-columns:240px minmax(0,1fr); gap:28px; align-items:start; }
+    .toc { position:sticky; top:92px; max-height:calc(100vh - 116px); overflow:auto; padding:16px; border:1px solid var(--line); border-radius:8px; background:#fff; }
+    .toc strong { display:block; margin:0 8px 10px; font-size:14px; }
+    .toc a { display:block; padding:6px 8px; border-radius:5px; color:#66758a; text-decoration:none; font-size:13px; line-height:1.45; }
+    .toc a:hover { color:var(--accent); background:var(--soft); }
+    article { min-width:0; padding:46px clamp(24px,6vw,72px); border:1px solid var(--line); border-radius:8px; background:#fff; box-shadow:0 18px 48px rgba(39,52,76,.08); }
+    h1 { margin:0 0 22px; font-size:clamp(28px,4vw,42px); line-height:1.2; letter-spacing:0; overflow-wrap:anywhere; }
+    h2 { margin:46px 0 18px; padding-top:8px; color:var(--accent); font-size:24px; line-height:1.35; letter-spacing:0; border-top:1px solid var(--line); }
+    h2:first-of-type { margin-top:28px; border-top:0; }
+    h3 { margin:28px 0 12px; font-size:18px; letter-spacing:0; }
+    p { margin:12px 0; color:#35455a; overflow-wrap:anywhere; }
+    ol,ul { margin:12px 0; padding-left:26px; }
+    li { margin:7px 0; color:#35455a; overflow-wrap:anywhere; }
+    code { padding:2px 6px; border-radius:4px; background:#f0edf9; color:#5422aa; font-family:Consolas,"Microsoft YaHei",monospace; }
+    pre { overflow:auto; padding:18px; border:1px solid #ddd4ff; border-radius:7px; background:#f7f5ff; line-height:1.55; }
+    pre code { padding:0; background:transparent; color:#273447; }
+    blockquote { margin:18px 0; padding:14px 18px; border-left:4px solid var(--accent); background:var(--soft); color:#4b3b67; }
+    footer { padding:30px 16px; text-align:center; color:#8b98a9; font-size:13px; }
+    @media(max-width:820px) { .topbar-inner { width:calc(100% - 24px); min-width:0; align-items:flex-start; flex-direction:column; padding:14px 0; } .menu { width:100%; min-width:0; display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); justify-content:stretch; } .menu a { min-width:0; padding:8px; text-align:center; overflow-wrap:anywhere; } .layout { width:calc(100% - 24px); min-width:0; grid-template-columns:minmax(0,1fr); margin-top:20px; } .toc { position:static; min-width:0; max-height:260px; } article { min-width:0; padding:30px 22px; } h1 { font-size:28px; } }
+  </style>
+</head>
+<body>
+  <header class="topbar"><div class="topbar-inner">
+    <a class="brand" href="./download.html">AI教育管家</a>
+    <nav class="menu" aria-label="网站菜单">
+      <a href="./download.html">软件下载</a>
+      <a href="./windows-manual.html">Windows 主机版手册</a>
+      <a href="./tablet-manual.html" aria-current="page">平板终端家长版手册</a>
+      <a href="./privacy.html">隐私政策</a>
+      <a href="./agreement.html">用户协议</a>
+    </nav>
+  </div></header>
+  <main class="layout">
+    <aside class="toc"><strong>本页目录</strong><a href="#section-1">1. 安装与首次连接</a><a href="#section-2">2. 选择学生</a><a href="#section-3">3. 上传学习资料</a><a href="#section-4">4. 连续屏幕资料采集</a><a href="#section-5">5. 顶部快捷设置与系统分享</a><a href="#section-6">6. 查看教育档案</a><a href="#section-7">7. 连接备份</a><a href="#section-8">8. 局域网与远程连接</a><a href="#section-9">9. 隐私与安全</a><a href="#section-10">10. 常见问题</a></aside>
+    <article><h1>AI教育管家平板终端家长版操作手册</h1><p><strong>适用版本：Android 平板终端 0.5.7</strong></p><p><strong>配套主机：Windows 0.7.50</strong></p><h2 id="section-1">1. 安装与首次连接</h2><ol><li>安装 AI教育管家平板终端 APK。</li><li>确保 Windows 主机已切换到主机-平板模式并启动主机服务。</li><li>确保平板与 Windows 电脑连接同一 Wi-Fi。</li><li>在平板“连接设置”中点击“查找附近主机”，从列表中选择当前电脑。</li><li>查看 Windows 端显示的 6 位平板配对码，将其输入平板并点击连接。</li><li>首次登记成功后，平板显示“已连接，等待 Windows 授权”。</li><li>请管理员在 Windows 设备列表中核对该平板，并授权全部或指定学生。</li><li>授权后平板每 5 秒自动检查一次，通常会在数秒内载入学生，最长自动等待约 60 秒。</li></ol><p>如果无法使用附近主机发现，仍可选择以下方式：</p><ul><li><strong>扫码绑定主机</strong>：扫描 Windows 端连接二维码；</li><li><strong>粘贴连接信息</strong>：粘贴完整连接文本后连接；</li><li><strong>导入并连接</strong>：从以前导出的连接备份恢复。</li></ul><p>“网络可达”不等于“设备已授权”。只有设备身份验证和学生授权均通过后，平板才能读取档案和上传资料。</p><h2 id="section-2">2. 选择学生</h2><p>已授权设备可以查看允许访问的学生。选择学生后，上传资料、查看档案和屏幕采集上传都会归入该学生。</p><p>如果学生列表为空：</p><ol><li>检查页面是否提示等待 Windows 授权；</li><li>请管理员检查设备授权范围；</li><li>等待自动检查，或点击刷新学生；</li><li>约 60 秒后仍为空时，检查该设备是否授权了有效学生；</li><li>仍失败时重新连接主机。</li></ol><h2 id="section-3">3. 上传学习资料</h2><p>平板支持拍照、选择图片、选择文件、扫描下载目录，以及从其他应用“分享至 AI教育管家”。</p><p>上传前确认学生；上传成功后，资料进入 Windows 主机上的学生原始资料库和待消化队列。资料的 AI 消化、覆盖审计和知识审核由 Windows 主机端完成。</p><h2 id="section-4">4. 连续屏幕资料采集</h2><p>位置：<code>资料收集与处理</code> → <code>屏幕资料采集</code>。</p><ol><li>选择当前学生和可选学习项目。</li><li>选择智能混合、内容变化或固定间隔策略。</li><li>设置采集时长。</li><li>通过 Android 系统界面授权屏幕捕获。</li><li>采集中使用前台通知或悬浮控制进行重点截取、暂停、继续和结束。</li><li>结束后检查本机采集箱并点击“上传采集资料”。</li></ol><p>Android 每次采集会话都需要用户主动授权，采集期间保持可见通知。系统不会在后台无提示地持续截屏。银行、考试和版权视频应用可能禁止截屏或返回黑屏。</p><h2 id="section-5">5. 顶部快捷设置与系统分享</h2><p>可在 Android 顶部快捷设置中添加“屏幕资料采集”磁贴，快速开始、暂停或继续采集。</p><p>浏览器、相册、PDF 阅读器或文件管理器中的资料，可使用系统“分享”功能发送到 AI教育管家。分享原始文件通常比截图保留更多标题和来源信息。</p><h2 id="section-6">6. 查看教育档案</h2><p>选择学生后打开“查看教育档案”或“学情报告”。平板从 Windows 主机读取已授权学生的 Markdown 档案，并可缓存最近文档。</p><p>若报告为空，通常表示资料尚未完成 Agent 消化、知识贡献尚未审核发布，或 Windows 主机未刷新报告索引。请在主机端检查完整工作流。</p><h2 id="section-7">7. 连接备份</h2><p>Android 0.5.7 在连接设置中提供：</p><ul><li><strong>导出连接备份</strong>：保存主机地址、远程地址、连接模式、设备身份和设备授权令牌；</li><li><strong>导入并连接</strong>：读取备份，保存配置并立即验证主机连接。</li></ul><p>若备份来自不同安装身份，系统会要求确认后才恢复原设备身份。</p><p>连接备份包含授权令牌，属于敏感文件。只应用于同一平板重装或恢复，不要转发给他人、上传公开网盘或作为普通资料分享。</p><h2 id="section-8">8. 局域网与远程连接</h2><p>在同一 Wi-Fi 下，优先点击“查找附近主机”。平板会发现 Windows 0.7.50 主机服务，用户只需选择电脑并输入一次性 6 位配对码，不需要手工输入 IP 地址。</p><p>局域网也可使用 Windows 主机显示的本地地址。远程使用需由管理员配置 Tailscale 或其他可信网络地址；附近主机发现仅用于当前局域网，不负责跨互联网搜索电脑。</p><p>连接失败时检查：</p><ol><li>主机服务是否运行；</li><li>平板与主机是否在同一网络；</li><li>主机地址和端口是否变化；</li><li>Windows 防火墙是否允许主机服务；</li><li>设备是否被撤销；</li><li>连接备份是否属于当前主机和当前设备。</li></ol><p>如果“查找附近主机”没有结果，还应检查路由器是否启用了访客网络或客户端隔离，以及 Windows 防火墙是否允许 AI教育管家访问专用网络。此时可改用扫码、粘贴连接信息或连接备份。</p><h2 id="section-9">9. 隐私与安全</h2><ul><li>仅上传用户主动选择或主动采集的资料；</li><li>连续屏幕采集始终显示系统通知；</li><li>设备只能访问 Windows 授权的学生；</li><li>设备被撤销后，原令牌不能继续访问；</li><li>不要在截图中保留密码、支付信息、私人聊天或其他学生的敏感资料；</li><li>不要公开连接二维码、配对码或连接备份。</li></ul><p>附近主机发现不会广播 API Token、设备授权令牌或 6 位配对码。6 位配对码成功使用后即失效。</p><h2 id="section-10">10. 常见问题</h2><h3>显示已连接但学生未授权</h3><p>这是正常的首次连接状态。请在 Windows 设备列表中找到该平板并授权学生。授权后 Android 0.5.7 会自动检查并载入学生；超时后可手动刷新。</p><h3>Windows 看不到新设备</h3><p>确认平板使用 0.5.7、Windows 使用 0.7.50，并重新完成“查找附近主机 → 输入 6 位配对码”；不要只检查网络健康状态。Windows 主机服务需要保持运行。</p><h3>查找不到附近主机</h3><p>确认电脑和平板处于同一 Wi-Fi，主机服务已启动，Windows 防火墙允许专用网络访问，并关闭路由器的访客网络或客户端隔离。仍找不到时使用扫码、粘贴连接信息或导入连接备份。</p><h3>已撤销设备无法连接</h3><p>管理员可在 Windows 端恢复该设备；若设备记录已删除，则平板需要重新完成连接和授权。</p><h3>重装后如何恢复</h3><p>在旧安装可用时导出连接备份。重装后选择“导入并连接”，确认设备身份恢复，再验证 Windows 授权状态。</p><h3>截图上传后没有知识内容</h3><p>平板上传只完成资料采集。管理员还需在 Windows 端执行 Agent 消化、同步回执，必要时完成覆盖审计和知识审核。</p></article>
+  </main>
+  <footer>嘉玛蓝（北京）科技有限公司版权所有</footer>
+</body>
+</html>

@@ -1,0 +1,112 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>AI教育管家｜看得见的成长</title>
+  <meta name="description" content="AI教育管家持续整理学习资料、分析学情、沉淀成长档案，让每一次学习都有迹可循。">
+  <link rel="icon" href="assets/favicon.png">
+  <link rel="stylesheet" href="site.css">
+  <style>
+    .home-hero { position: relative; min-height: min(810px, calc(100vh - 76px)); overflow: hidden; background: #eaf7f2; }
+    .home-hero .container { min-height: inherit; display: grid; grid-template-columns: .9fr 1.1fr; align-items: center; gap: 30px; }
+    .hero-copy { position: relative; z-index: 2; padding: 70px 0 96px; }
+    .hero-copy h1 { margin: 16px 0 18px; font-size: clamp(48px, 6vw, 78px); line-height: 1.05; letter-spacing: 0; }
+    .hero-copy h1 span { display: block; margin-top: 8px; color: var(--green); }
+    .hero-copy p { max-width: 610px; margin: 0; color: #587572; font-size: 20px; }
+    .hero-actions { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 32px; }
+    .hero-visual { align-self: end; }
+    .hero-visual img { width: 100%; max-height: 720px; object-fit: contain; object-position: center bottom; }
+    .hero-proof { position: absolute; left: 0; right: 0; bottom: 0; background: var(--green-dark); color: white; }
+    .proof-row { min-height: 74px; display: grid; grid-template-columns: repeat(4, 1fr); align-items: center; gap: 14px; }
+    .proof-row span { padding-left: 18px; border-left: 4px solid var(--green); font-weight: 900; }
+    .pain { background: #fff8f3; }
+    .pain-grid { margin-top: 42px; display: grid; grid-template-columns: repeat(4, 1fr); border-top: 1px solid #f3c6b4; border-bottom: 1px solid #f3c6b4; }
+    .pain-item { padding: 32px 26px; border-right: 1px solid #f3c6b4; }
+    .pain-item:last-child { border-right: 0; }
+    .pain-item b { display: block; color: var(--orange); font-size: 38px; }
+    .pain-item h3 { margin: 10px 0 6px; font-size: 22px; }
+    .pain-item p { margin: 0; color: var(--muted); }
+    .feature-flow { background: #f8fcfa; }
+    .feature-band { display: grid; grid-template-columns: 1fr 1fr; align-items: center; min-height: 560px; border-bottom: 1px solid var(--line); }
+    .feature-band:last-child { border-bottom: 0; }
+    .feature-band:nth-child(even) .feature-copy { order: 2; }
+    .feature-band:nth-child(even) .feature-media { order: 1; }
+    .feature-copy { padding: 68px; }
+    .feature-number { color: var(--green); font-weight: 900; font-size: 18px; }
+    .feature-copy h2 { margin: 8px 0 16px; font-size: clamp(34px, 4vw, 50px); line-height: 1.15; }
+    .feature-copy p { color: var(--muted); font-size: 18px; }
+    .feature-tags { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 24px; }
+    .feature-tags span { padding: 7px 11px; border-radius: 5px; background: white; border: 1px solid var(--line); font-weight: 700; }
+    .feature-media { padding: 42px; background: white; }
+    .feature-media img { width: 100%; max-height: 560px; object-fit: contain; }
+    .cta { background: var(--green-dark); color: white; }
+    .cta-inner { display: flex; align-items: center; justify-content: space-between; gap: 32px; }
+    .cta h2 { margin: 0; font-size: clamp(34px, 4vw, 52px); }
+    .cta p { color: #bcd8d2; }
+    @media (max-width: 820px) {
+      .home-hero { min-height: auto; }
+      .home-hero .container { grid-template-columns: 1fr; }
+      .hero-copy { padding: 54px 0 8px; }
+      .hero-copy h1 { font-size: 47px; }
+      .hero-visual img { max-height: 470px; }
+      .hero-proof { position: static; }
+      .proof-row { grid-template-columns: repeat(2, 1fr); padding: 16px 0; }
+      .pain-grid { grid-template-columns: 1fr 1fr; }
+      .pain-item:nth-child(2) { border-right: 0; }
+      .pain-item:nth-child(-n+2) { border-bottom: 1px solid #f3c6b4; }
+      .feature-band { grid-template-columns: 1fr; min-height: auto; }
+      .feature-band:nth-child(even) .feature-copy, .feature-band:nth-child(even) .feature-media { order: initial; }
+      .feature-copy { padding: 44px 20px 26px; }
+      .feature-media { padding: 20px; }
+      .cta-inner { align-items: flex-start; flex-direction: column; }
+    }
+  </style>
+</head>
+<body>
+  <header class="site-header">
+    <div class="header-inner">
+      <a class="brand" href="index.html" aria-label="AI教育管家首页"><img src="assets/logo.png" alt="群星矩阵 AI教育管家"></a>
+      <nav class="site-nav" aria-label="主导航">
+        <a href="#features" aria-current="page">产品特色</a><a href="download.html">下载软件</a><a href="buy.html">购买产品</a>
+        <details class="manual-menu"><summary>用户手册</summary><div class="manual-panel"><a href="windows-manual.html">Windows 主机版</a><a href="tablet-manual.html">平板终端家长版</a></div></details>
+      </nav>
+    </div>
+  </header>
+
+  <main>
+    <section class="home-hero">
+      <div class="container">
+        <div class="hero-copy">
+          <p class="section-kicker">群星矩阵 · AI教育管家</p>
+          <h1>让每一次学习，<span>都成为看得见的成长</span></h1>
+          <p>把散落的试卷、错题、笔记和学习记录，整理成持续更新的专属学情档案，让问题有诊断、行动有方向。</p>
+          <div class="hero-actions"><a class="button button-primary" href="buy.html">购买产品</a><a class="button button-outline" href="download.html">下载软件</a></div>
+        </div>
+        <div class="hero-visual"><img src="assets/product-software.png" alt="家长陪伴孩子使用AI教育管家"></div>
+      </div>
+      <div class="hero-proof"><div class="container proof-row"><span>专属档案</span><span>AI辅导</span><span>真人陪跑</span><span>长期沉淀</span></div></div>
+    </section>
+
+    <section class="section pain">
+      <div class="container"><p class="section-kicker">真实学习困境</p><h2 class="section-title">孩子学了很多，为什么进步仍不明显？</h2><p class="section-intro">问题往往不是不努力，而是学习过程没有被持续看见。</p>
+        <div class="pain-grid"><article class="pain-item"><b>01</b><h3>资料到处都是</h3><p>试卷、截图、笔记散落在不同设备。</p></article><article class="pain-item"><b>02</b><h3>错题反复出现</h3><p>知道错了，却说不清问题究竟在哪里。</p></article><article class="pain-item"><b>03</b><h3>知识越学越散</h3><p>刷题不少，学过之后仍然容易遗忘。</p></article><article class="pain-item"><b>04</b><h3>家长看不清变化</h3><p>看见分数，却看不清每天发生的成长。</p></article></div>
+      </div>
+    </section>
+
+    <section id="features" class="feature-flow">
+      <div class="container">
+        <article class="feature-band"><div class="feature-copy"><span class="feature-number">01 / 专属档案</span><h2>建立专属学情档案</h2><p>截图、照片、文档和学习记录可以便捷归集，系统持续识别、分类与整理，让每一份资料都有迹可循。</p><div class="feature-tags"><span>自动收集</span><span>智能识别</span><span>持续更新</span></div></div><div class="feature-media"><img src="assets/feature-03.png" alt="建立专属学情档案"></div></article>
+        <article class="feature-band"><div class="feature-copy"><span class="feature-number">02 / 深度分析</span><h2>从资料看见真实学情</h2><p>把试卷、错题、作业与项目资料转化为可追溯的知识与能力证据，帮助家庭看清优势、短板和变化。</p><div class="feature-tags"><span>问题诊断</span><span>成长趋势</span><span>证据追溯</span></div></div><div class="feature-media"><img src="assets/feature-04.png" alt="深入分析学情"></div></article>
+        <article class="feature-band"><div class="feature-copy"><span class="feature-number">03 / 精准辅导</span><h2>AI学伴给出下一步</h2><p>基于学生档案生成更有针对性的问答、复习重点与行动建议，把一次性回答变成持续学习支持。</p><div class="feature-tags"><span>个性化问答</span><span>行动建议</span><span>知识沉淀</span></div></div><div class="feature-media"><img src="assets/feature-05.png" alt="AI学伴精准辅导"></div></article>
+        <article class="feature-band"><div class="feature-copy"><span class="feature-number">04 / 长期陪跑</span><h2>真人管家与AI协同陪伴</h2><p>AI负责持续整理与分析，真人学习管家关注目标、反馈与执行，让家庭获得更稳定的学习支持。</p><div class="feature-tags"><span>目标跟进</span><span>阶段复盘</span><span>家校沟通</span></div></div><div class="feature-media"><img src="assets/feature-06.png" alt="真人学习管家陪跑"></div></article>
+        <article class="feature-band"><div class="feature-copy"><span class="feature-number">05 / 项目制学习</span><h2>把学习项目沉淀为长期资产</h2><p>项目工作空间服务真实学习过程，项目知识空间沉淀概念、实体、摘要与成果，连接学生的长期成长模型。</p><div class="feature-tags"><span>项目空间</span><span>知识整理</span><span>成长证据</span></div></div><div class="feature-media"><img src="assets/feature-11.png" alt="项目制学习"></div></article>
+      </div>
+    </section>
+
+    <section class="section cta"><div class="container cta-inner"><div><h2>从今天开始，建立专属学情档案</h2><p>软件、平板与学习机方案均可选择。</p></div><a class="button button-primary" href="buy.html">查看产品与购买指引</a></div></section>
+  </main>
+
+  <footer class="site-footer"><div class="container"><div class="footer-grid"><div class="footer-brand"><img src="assets/logo.png" alt="AI教育管家"><p>让学习有记录，问题有诊断，行动有方向。</p></div><div><h2 class="footer-title">产品与支持</h2><div class="footer-links"><a href="index.html#features">产品特色</a><a href="download.html">下载软件</a><a href="buy.html">购买产品</a><a href="windows-manual.html">Windows 用户手册</a><a href="tablet-manual.html">平板用户手册</a></div></div><div><h2 class="footer-title">关于我们</h2><div class="footer-links"><a href="agreement.html">用户协议</a><a href="privacy.html">隐私政策</a><a href="contact.html">联系我们</a></div></div></div><div class="footer-bottom">© 嘉玛蓝（北京）科技有限公司 版权所有</div></div></footer>
+</body>
+</html>

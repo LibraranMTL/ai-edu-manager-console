@@ -4,6 +4,7 @@ import json
 import math
 from datetime import datetime
 from pathlib import Path
+from zipfile import ZIP_DEFLATED, ZipFile
 
 from docx import Document
 from docx.enum.section import WD_SECTION
@@ -17,9 +18,9 @@ ROOT = Path(__file__).resolve().parents[1]
 OUT_DIR = ROOT / "docs" / "copyright"
 
 SOFTWARE_NAME = "AI教育管家主机控制台与平板终端系统"
-VERSION = "V0.4.5"
-WINDOWS_VERSION = "0.4.5"
-TABLET_TERMINAL_VERSION = "0.4.5"
+VERSION = "V0.7.49"
+WINDOWS_VERSION = "0.7.49"
+TABLET_TERMINAL_VERSION = "0.5.4"
 OWNER = "嘉玛蓝（北京）科技有限公司"
 COPYRIGHT_LINE = f"{OWNER}版权所有"
 PROJECT_TEAM = [
@@ -275,8 +276,8 @@ def build_manual_lines() -> list[str]:
         "6. Windows 主机控制台负责创建学生知识库、接收资料、浏览档案和管理设备。",
         "7. 平板终端负责连接主机、上传资料到主机、查看学情档案和联系教育管家。",
         "8. 系统支持局域网连接，也支持配置 Tailscale 地址作为远程连接备选。",
-        "9. 系统支持 QClaw、Hohu、Marvis、OpenClaw 等 Agent 工具的登记和引导。",
-        "10. 正式交付中建议以 QClaw 作为标准资料消化执行工具。",
+        "9. 系统通过统一任务协议支持 QClaw、OpenClaw、Codex CLI、Marvis 等 Agent 工具。",
+        "10. 无直接执行接口的 Agent 可平滑降级为复制指令、人工执行和回执同步。",
     ])
     add_section(lines, "二、运行环境", [
         "1. Windows 主机建议使用 Windows 10 或 Windows 11 系统。",
@@ -286,7 +287,7 @@ def build_manual_lines() -> list[str]:
         "5. 平板终端需要允许相机、文件访问和网络访问权限。",
         "6. 局域网模式要求 Windows 主机和平板位于同一 Wi-Fi 或同一局域网段。",
         "7. 远程模式可配置 Tailscale 地址或手动输入远程主机地址。",
-        "8. QClaw、Hohu、Marvis、OpenClaw 可按实际部署情况安装在 Windows 主机上。",
+        "8. QClaw、OpenClaw、Codex CLI、Marvis 等 Agent 工具可按实际部署情况选装。",
     ])
     add_section(lines, "三、Windows 主机控制台启动", [
         "1. 将 Windows 发布包解压到固定目录，建议目录为 D:\\AI教育管家\\主机控制台。",
@@ -297,24 +298,24 @@ def build_manual_lines() -> list[str]:
         "6. 只有选择主机-平板模式后，主机服务模块才显示。",
         "7. 主机服务默认不自动启动，避免普通用户误开端口。",
         "8. 系统设置中可查看默认根目录、版本号、更新地址和诊断信息。",
-        "9. 若界面空白，需确认使用 0.4.5 或更新版本，并重新启动应用。",
+        f"9. 若界面空白，需确认使用 Windows {WINDOWS_VERSION} 或更新版本，并重新启动应用。",
     ])
     add_section(lines, "四、创建标准新知识库", [
         "1. 进入初始化教育管家或新建教育智能体页面。",
         "2. 创建方式选择创建标准新知识库。",
         "3. 填写学生姓名、年级、学校和当前目标。",
-        "4. 选择 Agent 工具，默认建议选择 QClaw。",
+        "4. 点击保存学生档案并初始化，不需要重复执行目录创建步骤。",
         "5. 系统在 D:\\学生资料 下创建学生知识库目录。",
         "6. 示例目录为 D:\\学生资料\\张三知识库。",
         "7. 系统写入 AGENT.md 文件。",
         "8. 系统创建张三原始资料库目录。",
         "9. 系统创建张三学情分析汇总目录。",
         "10. 系统创建输出结果目录。",
-        "11. 系统不再默认落盘 Soul.md 和 Memory.md。",
-        "12. 角色设定和长期记忆作为可复制内容提供给 Agent 工具。",
-        "13. 复制的 Soul 内容包含工作规则。",
-        "14. 工作规则指明该 Agent 的工作协议使用完整 AGENT.md 路径。",
-        "15. 工作规则要求后续所有学习资料消化围绕该学生知识库执行。",
+        "11. 单次保存同时写入 AGENT.md、知识目录、索引、日志和基础学情报告。",
+        "12. 右侧 Agent 工具连接属于可选步骤，不再创建或覆盖知识库。",
+        "13. 点击每个 Agent 步骤卡片即可复制对应指令。",
+        "14. 工作规则优先使用逻辑路径和当前主机路径解析结果。",
+        "15. 初始化失败时不保留无法使用的学生记录，并显示具体原因。",
     ])
     add_section(lines, "五、接管已有知识库", [
         "1. 若用户已经通过 QClaw 或其他 Agent 工具创建过知识库，可选择接管已有知识库。",
@@ -340,19 +341,19 @@ def build_manual_lines() -> list[str]:
         "21. 接管学生后续查看档案读取已有学情分析汇总。",
         "22. 接管学生后续复制消化指令使用已有真实路径。",
     ])
-    add_section(lines, "六、Agent 工具辅助", [
-        "1. 系统以工具能力配置表生成不同 Agent 工具的操作提示。",
-        "2. QClaw 默认支持子 Agent、本地文件和定时任务。",
-        "3. Hohu 默认支持子 Agent 和本地文件。",
-        "4. OpenClaw 默认支持子 Agent、本地文件和定时任务。",
-        "5. Marvis 默认按主对话或普通对话方式使用。",
-        "6. 首页显示 QClaw、Marvis、Hohu、OpenClaw 的安装和打开状态。",
-        "7. 首页提供下载 QClaw、下载 Marvis、下载 Hohu 的入口。",
+    add_section(lines, "六、Agent 工具与统一任务中心", [
+        "1. 系统以统一任务协议生成不同 Agent 工具可接收的任务。",
+        "2. 具备接口的 Agent 可由适配器自动领取并执行任务。",
+        "3. 不具备接口的 Agent 使用复制指令、人工粘贴、结果导入方式完成任务。",
+        "4. OpenClaw 可直接执行受支持任务，QClaw 可使用任务收件箱。",
+        "5. Codex CLI、Marvis 等工具可按人工执行模式使用。",
+        "6. 所有任务统一记录状态、审批、权限、日志、超时和重试。",
+        "7. 用户可在设置中一次关闭全部自动运行，切换为手动模式。",
         "8. 初始化页面提供分步骤指令。",
-        "9. 分步骤指令默认隐藏。",
+        "9. 点击步骤卡片会同时选择并复制对应指令。",
         "10. 点击高级按钮后可以查看并编辑当前步骤指令。",
-        "11. 每个步骤的复制按钮只复制当前步骤内容。",
-        "12. 完整初始化指令仍保留给熟练装机人员使用。",
+        "11. 编辑后的内容优先复制，不再依赖右上角的小型复制按钮。",
+        "12. 每日行动建议作为统一任务中心的首个自动化闭环。",
     ])
     add_section(lines, "七、主机服务与平板绑定", [
         "1. 在首页选择主机-平板模式后，可启动主机服务。",
@@ -401,17 +402,17 @@ def build_manual_lines() -> list[str]:
         "11. Windows 端提供显示或隐藏文档列表能力。",
         "12. 回到顶部按钮位于阅读区域底部浮动显示。",
     ])
-    add_section(lines, "十、QClaw 消化任务闭环", [
+    add_section(lines, "十、Agent 资料消化与覆盖复核", [
         "1. 上传资料后，主机端记录待消化数量。",
         "2. 待消化数量按学生和上传批次统计。",
         "3. 用户可复制资料消化指令。",
-        "4. 用户将消化指令粘贴到对应学生的 QClaw Agent 中执行。",
-        "5. QClaw 按 AGENT.md 读取原始资料库。",
-        "6. QClaw 将沉淀结果写入学情分析汇总。",
-        "7. QClaw 更新 index.md 和 log.md。",
-        "8. 消化完成后用户可在主机端同步消化结果。",
-        "9. 系统根据新增 Markdown 和日志变化更新消化完成状态。",
-        "10. 若无新增资料，QClaw 应在 log.md 中记录无新增资料。",
+        "4. 用户将消化指令粘贴到所选 Agent 中执行，或由受支持适配器执行。",
+        "5. Agent 按 AGENT.md 读取原始资料库并生成概念、实体、摘要、问答和综合汇总。",
+        "6. 点击标记已提交后，资料从待提交消化转入等待 Agent 回执。",
+        "7. Agent 写回 digest-state.json 或 digest-receipt.json 逐文件回执。",
+        "8. 点击同步消化结果后，只有匹配回执的资料转为已处理。",
+        "9. 可生成覆盖审计，对图片漏识别、低置信度和无逐文件回执资料发起二次核对。",
+        "10. 同步复核结果后更新完整覆盖、失败、覆盖率及知识成果路径。",
     ])
     add_section(lines, "十一、联系教育管家", [
         "1. 平板端联系教育管家页面显示当前学生绑定方式。",
@@ -423,10 +424,10 @@ def build_manual_lines() -> list[str]:
         "7. 页面提供打开 QQ 按钮。",
         "8. 页面提供复制咨询提示按钮。",
         "9. 咨询提示内容为 /咨询，我想咨询。",
-        "10. 对话本身由外部通讯工具和 QClaw 远控流程承载。",
+        "10. 对话本身由外部通讯工具和用户选定的 Agent 工作流承载。",
     ])
     add_section(lines, "十二、备份、更新和维护", [
-        "1. 建议装机完成后备份 students.json、devices.json 和相关配置。",
+        "1. 建议装机完成后使用主机数据备份功能保存完整学生档案字段、设备授权和应用索引。",
         "2. 建议大量资料上传后备份 D:\\学生资料。",
         "3. 建议版本升级前备份主机应用数据目录。",
         "4. 更新清单文件为 edu-manager-version.json。",
@@ -434,7 +435,9 @@ def build_manual_lines() -> list[str]:
         "6. Windows 版本号不应低于已有发布版本。",
         "7. 平板终端使用独立包名，不应升级为装机控制台 APK。",
         "8. 旧 Android 控制台保留为内部测试和装机辅助。",
-        "9. 客户侧主推 AI教育管家平板终端。",
+        "9. 恢复备份后界面立即刷新学生、项目、文件资产和主机状态，无需重启。",
+        "10. 应用启用单实例保护，升级时应关闭旧版本再启动新版本。",
+        "11. 客户侧主推 AI教育管家平板终端。",
     ])
     add_section(lines, "十三、常见故障处理", [
         "1. Windows 启动空白时，先确认发布包包含 dist 目录和 index.html。",
@@ -444,8 +447,8 @@ def build_manual_lines() -> list[str]:
         "5. 扫码失败时，可使用粘贴连接信息方式绑定。",
         "6. 文件选择器不可用时，可从文件管理器分享文件到平板终端。",
         "7. 相机不可用时，确认平板有相机应用且授予相机权限。",
-        "8. 上传成功但 QClaw 未见资料时，检查 rawPath 是否与 Agent 工作规则一致。",
-        "9. 档案为空时，确认 QClaw 已完成消化并写入 summaryPath。",
+        "8. 上传成功但 Agent 未见资料时，检查 rawPath、逻辑路径映射与 Agent 工作规则。",
+        "9. 档案为空时，确认 Agent 已完成消化、写入回执并同步结果。",
         "10. 绑定 QQ 后仍显示企业微信提示时，刷新学生绑定信息。",
     ])
     add_section(lines, "十四、安全与权限说明", [
@@ -459,6 +462,28 @@ def build_manual_lines() -> list[str]:
         "8. 管理员应避免将绑定二维码长期公开展示。",
         "9. 远程连接建议配合可信网络或 Tailscale 使用。",
         "10. 系统不主动上传学生资料到第三方云端。",
+    ])
+    add_section(lines, "十五、学习项目与研究暂存层", [
+        "1. 学习项目分为面向人的项目工作空间和面向 AI 的项目知识空间。",
+        "2. 新建项目时可自定义工作空间文件夹，也可直接使用已有项目文件夹。",
+        "3. 项目模板定义工作目录、知识策略、成长策略和成果要求。",
+        "4. 工作空间中的候选资料先进入研究暂存层，不会自动污染知识空间。",
+        "5. 资料经初筛、治理和人工确认后晋升为正式资产。",
+        "6. 晋升资料以引用关系进入项目原始资料库，再由 Agent 执行知识消化。",
+        "7. 项目支持编辑记录、重新定位、复制、导入导出、移除记录和恢复。",
+        "8. 项目编辑不改动物理目录，移除记录不彻底删除项目文件。",
+        "9. 多学生项目共享项目知识，并为每位学生形成独立成长证据。",
+        "10. 项目归档前生成知识贡献申请，经审核后发布到成长模型。",
+    ])
+    add_section(lines, "十六、文件资产与屏幕资料采集", [
+        "1. 文件资产中心以资产身份、版本、来源和引用关系管理资料。",
+        "2. 学生筛选会联动资产总数、治理风险、七日曲线、列表和详情。",
+        "3. 最近七日曲线分别统计每日新增资产和新增引用次数。",
+        "4. Windows 支持全屏或指定窗口的限时连续屏幕采集。",
+        "5. 采集策略包括智能混合、内容变化和固定间隔。",
+        "6. Android 连续采集由用户授权启动并持续显示前台通知。",
+        "7. 截图先进入候选采集箱，去重后由用户决定是否晋升。",
+        "8. 候选截图不会未经审核直接写入项目知识空间。",
     ])
     return lines
 
@@ -506,7 +531,7 @@ def build_design_lines() -> list[str]:
         "4. 资料收集与处理模块负责本机导入、待消化统计和消化指令辅助。",
         "5. 查看教育档案模块负责 Markdown 分类浏览和正文阅读。",
         "6. 教育管家问答模块负责打开 Agent 工具和复制咨询、消化提示。",
-        "7. 定时任务模块负责展示与 QClaw 定时消化有关的提醒信息。",
+        "7. 统一任务中心负责管理 Agent 任务、人工任务、审批、日志、超时、重试和自动运行总开关。",
         "8. 系统设置模块负责根目录、版本、更新、皮肤和诊断。",
         "9. 主机服务模块负责启动 HTTP 服务、显示二维码和管理设备。",
         "10. 平板连接状态模块负责显示 serverUrl、token 状态和重连诊断。",
@@ -639,8 +664,8 @@ def build_design_lines() -> list[str]:
         "4. 旧 Android 控制台使用独立包名和更新通道。",
         "5. 平板终端包名为 com.qxmatrix.eduterminal。",
         "6. 旧控制台包名为 com.qxmatrix.edumanager。",
-        f"7. Windows 版本 {WINDOWS_VERSION} 包含接管已有知识库能力、Tailscale 安装检测、打开和下载入口。",
-        f"8. 平板终端版本 {TABLET_TERMINAL_VERSION} 包含手机竖屏布局切换修复、系统设置默认折叠和检查更新反馈优化。",
+        f"7. Windows 版本 {WINDOWS_VERSION} 包含项目双空间、统一任务中心、屏幕采集、消化复核和文件资产统计。",
+        f"8. 平板终端版本 {TABLET_TERMINAL_VERSION} 包含连续屏幕采集、设备授权闭环和连接备份导入恢复。",
         "9. 版本更新说明应记录新增功能、修复项和兼容性说明。",
     ])
     add_section(lines, "十四、异常处理设计", [
@@ -666,6 +691,40 @@ def build_design_lines() -> list[str]:
         "8. 上传文件只进入授权学生 rawPath。",
         "9. 档案读取只来自授权学生 summaryPath。",
         "10. 远程连接模式由用户显式配置。",
+    ])
+    add_section(lines, "十六、学习项目双空间与资产设计", [
+        "1. 学习项目由项目记录、项目工作空间和项目知识空间组成。",
+        "2. 项目工作空间面向学生和教师，目录可按模板创建、逐项自定义或绑定已有文件夹。",
+        "3. 项目知识空间面向 AI，统一使用原始资料、概念、实体、摘要、问答精华和综合汇总结构。",
+        "4. 工作空间文件不直接复制到知识空间，而是先进入研究暂存层。",
+        "5. 暂存资料经过初筛、重复识别、来源治理和人工选择后晋升为正式资产。",
+        "6. 正式资产通过引用关系进入项目原始资料库，并保留来源、版本和关联学生。",
+        "7. 项目支持编辑记录、重新定位、复制、导入导出、移除记录和恢复记录。",
+        "8. 项目编辑不修改物理目录，移除记录不删除项目文件。",
+        "9. 多学生项目共享项目知识，但按学生建立独立成长证据。",
+        "10. 项目归档通过知识贡献申请、审核、发布和审计完成。",
+    ])
+    add_section(lines, "十七、统一任务中心与 Agent 适配设计", [
+        "1. 所有自动任务和人工任务使用统一任务状态协议。",
+        "2. 任务记录输入、输出、执行 Agent、权限、审批、日志、超时、重试和审核结果。",
+        "3. Agent 执行适配器把统一任务转换为不同工具的执行方式。",
+        "4. OpenClaw 对受支持任务采用直接执行方式。",
+        "5. QClaw 采用任务收件箱方式接收任务。",
+        "6. Codex CLI、Marvis 或无接口工具采用复制指令和人工回填方式。",
+        "7. 自动运行总开关关闭后，自动触发只生成待办，不调用 Agent。",
+        "8. 新资料、项目阶段变化和定时规则可创建增量处理任务。",
+        "9. 每日行动建议使用严格结构化数据，并经审核后发布到学情报告。",
+    ])
+    add_section(lines, "十八、资料消化质量与文件资产统计设计", [
+        "1. 资料状态区分待提交消化、等待 Agent 回执、已处理、失败和需复核。",
+        "2. Agent 通过 digest-state.json 或 digest-receipt.json 写回完成证据。",
+        "3. 同步操作仅对匹配文件身份和批次的回执更新状态。",
+        "4. 覆盖审计按文件检查完整覆盖、部分识别、失败、缺少来源和缺少逐文件回执。",
+        "5. 二次核对对图片执行独立视觉识别和 OCR，并补充知识成果路径。",
+        "6. 文件资产中心按资产身份、文件指纹、版本、来源和引用关系组织数据。",
+        "7. 最近七日统计按本地自然日计算新增资产和唯一新增引用。",
+        "8. 学生筛选联动资产总数、风险、治理候选、七日趋势、列表和详情。",
+        "9. 跨项目概念、实体和能力证据通过统一身份和关系记录减少知识孤岛。",
     ])
     return lines
 
@@ -742,8 +801,8 @@ def build_application_info_lines() -> list[str]:
         "9. 发表状态：请确认填写未发表或已发表。",
         "10. 开发完成日期：请确认填写 2026年07月06日 或实际完成日期。",
         "11. 首次发表日期：如未发表则不填；如已提供下载或交付客户，应填写实际首次发表日期。",
-        "12. 软件用途：用于学生资料收集、AI 教育管家知识库管理、学情档案浏览和主机平板协同。",
-        "13. 主要功能：Windows 主机管理、Android 平板上传、Markdown 档案浏览、设备授权、Agent 工具辅助。",
+        "12. 软件用途：用于学生资料采集、项目制学习知识沉淀、成长档案管理和主机平板协同。",
+        "13. 主要功能：文件资产管理、项目双空间、LLM Wiki 知识加工、统一任务中心、消化覆盖审计、成长模型、屏幕采集和设备授权。",
         f"14. 版本构成：Windows 主机控制台 {WINDOWS_VERSION}，Android 平板终端 {TABLET_TERMINAL_VERSION}。",
     ])
     add_section(lines, "三、著作权人信息", [
@@ -764,7 +823,7 @@ def build_application_info_lines() -> list[str]:
         "4. Android 技术：Java、WebView、Intent 文件选择、相机、扫码、multipart 上传。",
         "5. 数据存储：本地 JSON 索引、Windows 本机学生知识库目录、Markdown 文档。",
         "6. 默认资料根目录：D:\\学生资料。",
-        "7. 支持工具：QClaw、Hohu、Marvis、OpenClaw 的状态检测、打开和操作指引。",
+        "7. 支持工具：通过统一任务协议和 Agent 适配器支持 QClaw、OpenClaw、Codex CLI、Marvis 等工具。",
         "8. 网络方式：局域网 HTTP 服务、bearer token 鉴权、可选 Tailscale 远程连接。",
         "9. 代码语言：TypeScript、JavaScript、Java、CSS、HTML。",
         "10. 运行环境：Windows 10/11 主机，Android 8.0 及以上平板终端。",
@@ -879,14 +938,14 @@ def build_package_checklist_lines() -> list[str]:
         "7. 如基于原有软件继续开发：原软件著作权人许可证明或相关授权文件。",
     ])
     add_section(lines, "二、当前已准备文件", [
-        "1. 01_用户操作手册_AI教育管家主机控制台与平板终端系统_V0.4.5.docx。",
-        "2. 02_软件设计说明书_AI教育管家主机控制台与平板终端系统_V0.4.5.docx。",
-        "3. 03_源程序鉴别材料_AI教育管家主机控制台与平板终端系统_V0.4.5.docx。",
-        "4. 04_项目组成员及职责说明_AI教育管家主机控制台与平板终端系统_V0.4.5.docx。",
-        "5. 05_申请表填写信息草稿_AI教育管家主机控制台与平板终端系统_V0.4.5.docx。",
-        "6. 06_公司组织开发及权属说明_AI教育管家主机控制台与平板终端系统_V0.4.5.docx。",
-        "7. 07_原创性与真实性声明_AI教育管家主机控制台与平板终端系统_V0.4.5.docx。",
-        "8. 08_申请材料目录与提交检查清单_AI教育管家主机控制台与平板终端系统_V0.4.5.docx。",
+        f"1. 01_用户操作手册_AI教育管家主机控制台与平板终端系统_{VERSION}.docx。",
+        f"2. 02_软件设计说明书_AI教育管家主机控制台与平板终端系统_{VERSION}.docx。",
+        f"3. 03_源程序鉴别材料_AI教育管家主机控制台与平板终端系统_{VERSION}.docx。",
+        f"4. 04_项目组成员及职责说明_AI教育管家主机控制台与平板终端系统_{VERSION}.docx。",
+        f"5. 05_申请表填写信息草稿_AI教育管家主机控制台与平板终端系统_{VERSION}.docx。",
+        f"6. 06_公司组织开发及权属说明_AI教育管家主机控制台与平板终端系统_{VERSION}.docx。",
+        f"7. 07_原创性与真实性声明_AI教育管家主机控制台与平板终端系统_{VERSION}.docx。",
+        f"8. 08_申请材料目录与提交检查清单_AI教育管家主机控制台与平板终端系统_{VERSION}.docx。",
     ])
     add_section(lines, "三、仍需人工补充或确认", [
         "1. 官方登记系统在线生成的计算机软件著作权登记申请表。",
@@ -930,6 +989,10 @@ def collect_source_lines() -> tuple[list[str], int, int]:
         "src/styles.css",
         "electron/main.cjs",
         "electron/preload.cjs",
+        "electron/asset-statistics.cjs",
+        "electron/digest-receipt.cjs",
+        "electron/capture-protocol.cjs",
+        "electron/task-protocol.cjs",
         "android-tablet-terminal/src/com/qxmatrix/eduterminal/MainActivity.java",
         "android-lite/src/com/qxmatrix/edumanager/MainActivity.java",
         "android-tablet-terminal/AndroidManifest.xml",
@@ -1108,6 +1171,24 @@ def main() -> None:
         encoding="utf-8",
     )
     (OUT_DIR / "生成说明.json").write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
+    package_path = OUT_DIR / f"AI教育管家软著申请材料包_{VERSION}.zip"
+    package_files = [
+        manual_path,
+        design_path,
+        source_path,
+        team_path,
+        application_info_path,
+        ownership_path,
+        originality_path,
+        checklist_path,
+        OUT_DIR / "09_待补充材料说明.md",
+        OUT_DIR / "生成说明.md",
+        OUT_DIR / "生成说明.json",
+    ]
+    with ZipFile(package_path, "w", ZIP_DEFLATED) as package:
+        for file_path in package_files:
+            if file_path.exists():
+                package.write(file_path, arcname=file_path.name)
     print(json.dumps(summary, ensure_ascii=False, indent=2))
 
 

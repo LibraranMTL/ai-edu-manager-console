@@ -28,6 +28,7 @@ import android.os.Environment;
 import android.provider.MediaStore;
 import android.provider.OpenableColumns;
 import android.provider.Settings;
+import android.text.InputType;
 import android.view.Gravity;
 import android.view.MotionEvent;
 import android.view.View;
@@ -66,6 +67,10 @@ import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.io.OutputStream;
 import java.net.HttpURLConnection;
+import java.net.DatagramPacket;
+import java.net.DatagramSocket;
+import java.net.InetAddress;
+import java.net.SocketTimeoutException;
 import java.net.URL;
 import java.net.URLEncoder;
 import java.util.ArrayList;
@@ -77,6 +82,8 @@ import java.util.Map;
 import java.util.Set;
 
 public class MainActivity extends Activity implements View.OnClickListener, AdapterView.OnItemSelectedListener {
+    static final int HOST_DISCOVERY_PORT = 18778;
+    static final String HOST_DISCOVERY_REQUEST = "AI_EDU_MANAGER_DISCOVER_V1";
     static final int REQUEST_PICK_MATERIAL = 8101;
     static final int REQUEST_PICK_IMAGE = 8102;
     static final int REQUEST_TAKE_PHOTO = 8103;
@@ -86,8 +93,8 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
     static final int REQUEST_NOTIFICATION_PERMISSION = 8107;
     static final int REQUEST_EXPORT_CONNECTION_BACKUP = 8108;
     static final int REQUEST_IMPORT_CONNECTION_BACKUP = 8109;
-    static final String VERSION_NAME = "0.5.4";
-    static final int VERSION_CODE = 64;
+    static final String VERSION_NAME = "0.5.7";
+    static final int VERSION_CODE = 67;
     static final String CONNECTION_BACKUP_KIND = "ai-edu-manager-tablet-connection-backup";
     static final int CONNECTION_BACKUP_VERSION = 1;
     static final String UPDATE_MANIFEST_URL = "https://www.greatbg.com/download/edu-manager-version.json";
@@ -149,6 +156,7 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
     Button testButton;
     Button pasteButton;
     Button scanPairButton;
+    Button nearbyHostButton;
     Button exportConnectionBackupButton;
     Button importConnectionBackupButton;
     Button checkUpdateButton;
@@ -180,6 +188,8 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
     Button reportDailyButton;
     Button reportChangesButton;
     Button reportStageButton;
+    String selectedReportId = "profile";
+    int authorizationPollsRemaining = 0;
     Button refreshReportsButton;
     Button openWeComButton;
     Button openQQButton;
@@ -388,9 +398,12 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
         connectionConfigCard.addView(connectRow);
 
         LinearLayout pairRow = row();
+        nearbyHostButton = button("查找附近主机", true);
         scanPairButton = button("扫码绑定主机", true);
+        pairRow.addView(nearbyHostButton);
         pairRow.addView(scanPairButton);
         connectionConfigCard.addView(pairRow);
+        nearbyHostButton.setOnClickListener(this);
 
         LinearLayout backupRow = row();
         exportConnectionBackupButton = button("导出连接备份", false);
@@ -612,6 +625,7 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
         reportDailyButton.setOnClickListener(this);
         reportChangesButton.setOnClickListener(this);
         reportStageButton.setOnClickListener(this);
+        updateReportButtonSelection();
 
         archiveCard = card();
         root.addView(archiveCard);
@@ -724,6 +738,8 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
             pasteConnectionInfo();
         } else if (view == scanPairButton) {
             startPairScan();
+        } else if (view == nearbyHostButton) {
+            discoverNearbyHosts();
         } else if (view == exportConnectionBackupButton) {
             startExportConnectionBackup();
         } else if (view == importConnectionBackupButton) {
@@ -910,6 +926,21 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
         new Thread(new LoadStudentsTask(this, base, token)).start();
     }
 
+    void beginAuthorizationPolling() {
+        authorizationPollsRemaining = 12;
+        loadStudents();
+    }
+
+    void scheduleAuthorizationPolling() {
+        if (authorizationPollsRemaining <= 0 || nearbyHostButton == null) return;
+        authorizationPollsRemaining -= 1;
+        nearbyHostButton.postDelayed(new Runnable() {
+            @Override public void run() {
+                if (authorizationPollsRemaining >= 0) loadStudents();
+            }
+        }, 5000);
+    }
+
     void loadArchiveFiles() {
         if (selectedStudent == null) {
             allArchiveFiles.clear();
@@ -960,8 +991,24 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
             status("请先连接主机。");
             return;
         }
+        selectedReportId = reportId;
+        updateReportButtonSelection();
         status("正在读取" + reportTitleForId(reportId) + "...");
         new Thread(new LoadLearningReportTask(this, base, token, selectedStudent.id, reportId)).start();
+    }
+
+    void updateReportButtonSelection() {
+        styleSelectableButton(reportProfileButton, "profile".equals(selectedReportId));
+        styleSelectableButton(reportDailyButton, "daily".equals(selectedReportId));
+        styleSelectableButton(reportChangesButton, "changes".equals(selectedReportId));
+        styleSelectableButton(reportStageButton, "stage".equals(selectedReportId));
+    }
+
+    void styleSelectableButton(Button target, boolean selected) {
+        if (target == null) return;
+        target.setTextColor(selected ? Color.WHITE : accentColor());
+        target.setBackgroundColor(selected ? accentColor() : accentLightColor());
+        target.setSelected(selected);
     }
 
     ArchiveFile reportArchiveFile(String reportId) {
@@ -983,8 +1030,13 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
     }
 
     void pickMaterial() {
+        if (selectedStudent == null && students.size() > 0) {
+            int position = studentSpinner == null ? 0 : Math.max(0, studentSpinner.getSelectedItemPosition());
+            selectedStudent = students.get(Math.min(position, students.size() - 1));
+        }
         if (selectedStudent == null) {
-            toast("请先选择学生。");
+            status("尚未取得已授权学生，无法确定资料归属。请先刷新学生或检查主机授权。");
+            toast("请先刷新并选择学生。");
             return;
         }
         String[] options = pendingSharedUris.size() > 0
@@ -1018,12 +1070,82 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
 
     boolean launchPicker(Intent intent, int requestCode, String title) {
         try {
-            if (intent.resolveActivity(getPackageManager()) == null) return false;
             startActivityForResult(Intent.createChooser(intent, title), requestCode);
             return true;
         } catch (Exception error) {
+            status("打开系统文件选择器失败：" + safeErrorMessage(error));
             return false;
         }
+    }
+
+    String safeErrorMessage(Exception error) {
+        if (error == null) return "未知错误";
+        String message = error.getMessage();
+        return message == null || message.trim().length() == 0
+            ? error.getClass().getSimpleName()
+            : message.trim();
+    }
+
+    void discoverNearbyHosts() {
+        status("正在查找同一局域网内的 AI 教育管家主机...");
+        nearbyHostButton.setEnabled(false);
+        new Thread(new NearbyHostDiscoveryTask(this)).start();
+    }
+
+    void showNearbyHosts(List<NearbyHost> hosts, String error) {
+        nearbyHostButton.setEnabled(true);
+        if (error != null && error.length() > 0) {
+            status("查找附近主机失败：" + error);
+            toast("未能完成附近主机搜索。");
+            return;
+        }
+        if (hosts == null || hosts.size() == 0) {
+            status("未发现附近主机。请确认 Windows 主机服务已启动，并且平板与电脑连接同一 Wi-Fi。");
+            toast("未发现附近主机。");
+            return;
+        }
+        final List<NearbyHost> found = hosts;
+        String[] labels = new String[found.size()];
+        for (int i = 0; i < found.size(); i++) {
+            NearbyHost host = found.get(i);
+            labels[i] = host.name + (host.version.length() > 0 ? " · Windows " + host.version : "") + "\n" + host.primaryUrl();
+        }
+        status("发现 " + found.size() + " 台附近主机，请选择要连接的电脑。");
+        new AlertDialog.Builder(this)
+            .setTitle("选择附近主机")
+            .setItems(labels, new DialogInterface.OnClickListener() {
+                @Override public void onClick(DialogInterface dialog, int which) {
+                    promptNearbyHostPairCode(found.get(which));
+                }
+            })
+            .setNegativeButton("取消", null)
+            .show();
+    }
+
+    void promptNearbyHostPairCode(final NearbyHost host) {
+        final EditText codeInput = new EditText(this);
+        codeInput.setHint("输入 Windows 端显示的6位配对码");
+        codeInput.setInputType(InputType.TYPE_CLASS_NUMBER);
+        codeInput.setSingleLine(true);
+        codeInput.setPadding(dp(16), dp(8), dp(16), dp(8));
+        new AlertDialog.Builder(this)
+            .setTitle("连接 " + host.name)
+            .setMessage("请在 Windows 主机的“平板配对码”区域查看6位短码。")
+            .setView(codeInput)
+            .setPositiveButton("连接", new DialogInterface.OnClickListener() {
+                @Override public void onClick(DialogInterface dialog, int which) {
+                    String code = codeInput.getText().toString().trim();
+                    if (!code.matches("\\d{6}")) {
+                        toast("请输入6位配对码。");
+                        return;
+                    }
+                    serverInput.setText(host.primaryUrl());
+                    status("正在向 " + host.name + " 确认配对...");
+                    new Thread(new PairConfirmTask(MainActivity.this, host.urls, code)).start();
+                }
+            })
+            .setNegativeButton("取消", null)
+            .show();
     }
 
     void startPairScan() {
@@ -2744,8 +2866,13 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
         updateContactCard();
         updateConnectionSummary(requiresApproval ? "已连接，待 Windows 授权" : "已连接", students.size());
         status(requiresApproval
-            ? "设备已登记，但尚未授权学生。请在 Windows 主机的设备列表中点击“授权全部学生”，然后刷新学生。"
+            ? "设备已登记，正在等待 Windows 主机授权学生；授权后会自动载入。"
             : (students.size() > 0 ? "已读取 " + students.size() + " 个学生。" : "主机服务中还没有学生。"));
+        if (requiresApproval && students.size() == 0 && authorizationPollsRemaining > 0) {
+            scheduleAuthorizationPolling();
+        } else {
+            authorizationPollsRemaining = 0;
+        }
     }
 
     void applyArchiveFiles(List<ArchiveFile> result, String error) {
@@ -3264,6 +3391,101 @@ class DownloadsUploadClickListener implements DialogInterface.OnClickListener {
     }
 }
 
+class NearbyHost {
+    final String name;
+    final String version;
+    final List<String> urls;
+
+    NearbyHost(String name, String version, List<String> urls) {
+        this.name = name == null || name.trim().length() == 0 ? "AI教育管家主机" : name.trim();
+        this.version = version == null ? "" : version.trim();
+        this.urls = urls == null ? new ArrayList<String>() : urls;
+    }
+
+    String primaryUrl() {
+        return urls.size() > 0 ? urls.get(0) : "";
+    }
+}
+
+class NearbyHostDiscoveryTask implements Runnable {
+    private final MainActivity activity;
+
+    NearbyHostDiscoveryTask(MainActivity activity) {
+        this.activity = activity;
+    }
+
+    @Override
+    public void run() {
+        DatagramSocket socket = null;
+        try {
+            socket = new DatagramSocket();
+            socket.setBroadcast(true);
+            socket.setSoTimeout(350);
+            byte[] requestBytes = MainActivity.HOST_DISCOVERY_REQUEST.getBytes("UTF-8");
+            DatagramPacket request = new DatagramPacket(
+                requestBytes,
+                requestBytes.length,
+                InetAddress.getByName("255.255.255.255"),
+                MainActivity.HOST_DISCOVERY_PORT
+            );
+            socket.send(request);
+
+            long deadline = System.currentTimeMillis() + 2600;
+            ArrayList<NearbyHost> hosts = new ArrayList<NearbyHost>();
+            HashSet<String> seen = new HashSet<String>();
+            while (System.currentTimeMillis() < deadline) {
+                try {
+                    byte[] buffer = new byte[8192];
+                    DatagramPacket response = new DatagramPacket(buffer, buffer.length);
+                    socket.receive(response);
+                    String text = new String(response.getData(), 0, response.getLength(), "UTF-8");
+                    JSONObject json = new JSONObject(text);
+                    if (!"AI_EDU_MANAGER_DISCOVERY".equals(json.optString("type", ""))) continue;
+                    int port = json.optInt("port", 18777);
+                    ArrayList<String> urls = new ArrayList<String>();
+                    urls.add("http://" + response.getAddress().getHostAddress() + ":" + port);
+                    String serverUrl = json.optString("serverUrl", "");
+                    if (serverUrl.length() > 0) urls.add(serverUrl);
+                    JSONArray lanUrls = json.optJSONArray("lanUrls");
+                    if (lanUrls != null) {
+                        for (int i = 0; i < lanUrls.length(); i++) {
+                            String url = lanUrls.optString(i, "");
+                            if (url.length() > 0) urls.add(url);
+                        }
+                    }
+                    List<String> ordered = activity.orderedServerUrls(urls);
+                    String key = ordered.size() > 0 ? ordered.get(0) : response.getAddress().getHostAddress();
+                    if (seen.add(key)) {
+                        hosts.add(new NearbyHost(json.optString("hostName", "AI教育管家主机"), json.optString("appVersion", ""), ordered));
+                    }
+                } catch (SocketTimeoutException ignored) {
+                }
+            }
+            activity.runOnUiThread(new NearbyHostsResultTask(activity, hosts, null));
+        } catch (Exception error) {
+            activity.runOnUiThread(new NearbyHostsResultTask(activity, null, error.getMessage()));
+        } finally {
+            if (socket != null) socket.close();
+        }
+    }
+}
+
+class NearbyHostsResultTask implements Runnable {
+    private final MainActivity activity;
+    private final List<NearbyHost> hosts;
+    private final String error;
+
+    NearbyHostsResultTask(MainActivity activity, List<NearbyHost> hosts, String error) {
+        this.activity = activity;
+        this.hosts = hosts;
+        this.error = error;
+    }
+
+    @Override public void run() {
+        activity.showNearbyHosts(hosts, error);
+    }
+}
+
 class ConnectTask implements Runnable {
     private final MainActivity activity;
     private final String base;
@@ -3395,10 +3617,10 @@ class PairResultTask implements Runnable {
         activity.tokenInput.setText(token);
         activity.savePrefs();
         activity.markConnectedNow();
-        activity.status("绑定主机成功，正在读取学生列表...");
-        activity.updateConnectionSummary("已绑定", activity.students.size());
-        activity.toast("绑定主机成功。");
-        activity.loadStudents();
+        activity.status("设备已连接，请在 Windows 主机端授权学生；授权后将自动载入学生。");
+        activity.updateConnectionSummary("已连接，等待 Windows 授权", activity.students.size());
+        activity.toast("已连接主机，等待授权学生。");
+        activity.beginAuthorizationPolling();
     }
 }
 

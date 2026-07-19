@@ -27,6 +27,7 @@ const {
   normalizeCaptureOptions,
 } = require('./capture-protocol.cjs');
 const { parseDigestReceipt } = require('./digest-receipt.cjs');
+const { buildGrowthIndexV2, parseLegacyGrowthEvidenceMarkdown } = require('./growth-model.cjs');
 
 let mainWindow;
 let qclawOpened = false;
@@ -6226,7 +6227,7 @@ function ensureGrowthModelForStudent(student) {
   const files = [
     {
       name: 'index.md',
-      content: `# ${student.name} 成长模型\n\n本目录记录学生能力、兴趣、趋势、证据来源和项目贡献来源。学情报告优先引用这里的稳定结论。\n\n- 能力画像：能力画像.md\n- 成长证据：成长证据.md\n- 成长证据草稿：成长证据草稿.md\n- 项目贡献：项目贡献.md\n`,
+      content: `# ${student.name} 成长模型\n\n本目录是学生长期成长数据层，集中维护能力画像、项目贡献和成长证据。学情报告只引用这里的已确认结论进行表达，不反向替代成长模型。\n\n- 能力画像：能力画像.md\n- 项目贡献：项目贡献.md\n- 成长证据：成长证据.md\n- 成长证据草稿：成长证据草稿.md\n- 结构化索引：growth-index.json\n`,
     },
     {
       name: '能力画像.md',
@@ -6641,7 +6642,7 @@ function taskCommandFor(task) {
   }
   if (task.kind === 'student_digest' && student) {
     const normalized = toHostStudent(student);
-    return `/消化\n\n请按照 ${normalized.agentPath || path.join(normalized.rootPath || getStudentRootDir(normalized.name), 'AGENT.md')} 的规则，处理 ${normalized.rawPath || getRawDir(normalized.name)} 中尚未消化的资料，并更新摘要、概念、实体、问答、综合汇总、成长模型和学情报告。完成后更新 ${studentDigestStatePath(normalized)}。`;
+    return `/消化\n\n请按照 ${normalized.agentPath || path.join(normalized.rootPath || getStudentRootDir(normalized.name), 'AGENT.md')} 的规则，处理 ${normalized.rawPath || getRawDir(normalized.name)} 中尚未消化的资料，并更新摘要、概念、实体、问答和综合汇总。新的能力判断、项目贡献与成长证据只进入成长模型待审核层，不直接覆盖学情报告；每日行动建议由统一任务中心另行审核发布。完成后更新 ${studentDigestStatePath(normalized)}。`;
   }
   if (task.kind === 'maintenance_lint' && student) {
     const normalized = toHostStudent(student);
@@ -7985,96 +7986,59 @@ function getGrowthEvidenceReview(studentId) {
   }
 }
 
+function migrateLegacyGrowthEvidence(student, review, projects) {
+  const growth = ensureGrowthModelForStudent(student);
+  const evidenceFile = path.join(growth.dir, '成长证据.md');
+  if (!fs.existsSync(evidenceFile)) return { imported: 0, source: evidenceFile };
+  const legacy = parseLegacyGrowthEvidenceMarkdown(readSmallTextFile(evidenceFile, 1024 * 1024), evidenceFile);
+  const existingKeys = new Set((review.candidates || []).map((item) => `${item.title || ''}|${item.sourcePath || ''}|${item.ability || ''}`));
+  let imported = 0;
+  for (const candidate of legacy) {
+    const key = `${candidate.title || ''}|${candidate.sourcePath || ''}|${candidate.ability || ''}`;
+    if (existingKeys.has(key)) continue;
+    const matchedProject = projects.find((project) => String(project.name || '') === String(candidate.projectName || ''));
+    review.candidates.push({
+      ...candidate,
+      studentId: student.id,
+      studentName: student.name,
+      projectId: matchedProject?.id || '',
+      projectName: matchedProject?.name || candidate.projectName || '',
+      createdAt: candidate.createdAt || fs.statSync(evidenceFile).mtime.toISOString(),
+      updatedAt: candidate.updatedAt || fs.statSync(evidenceFile).mtime.toISOString(),
+    });
+    existingKeys.add(key);
+    imported += 1;
+  }
+  if (imported) writeGrowthEvidenceReview(student, review);
+  return { imported, source: evidenceFile };
+}
+
 function rebuildGrowthIndex(studentId) {
   try {
     const student = readStudentsIndex().find((item) => String(item.id) === String(studentId));
     if (!student) return JSON.stringify({ ok: false, message: '未找到学生。' });
     const normalized = toHostStudent(student);
     const growth = ensureGrowthModelForStudent(normalized);
-    const review = readGrowthEvidenceReview(normalized);
     const projects = readProjects().map(normalizeProject).filter((project) => (project.studentIds || []).map(String).includes(String(normalized.id)));
-    const abilities = new Map();
-    const projectEvidenceCount = new Map();
-    for (const candidate of review.candidates) {
-      const ability = String(candidate.ability || '待标注');
-      const item = abilities.get(ability) || {
-        name: ability,
-        total: 0,
-        pending: 0,
-        confirmed: 0,
-        watching: 0,
-        rejected: 0,
-        projectNames: new Set(),
-        evidenceIds: [],
-      };
-      item.total += 1;
-      if (candidate.status === 'confirmed') item.confirmed += 1;
-      else if (candidate.status === 'watching') item.watching += 1;
-      else if (candidate.status === 'rejected') item.rejected += 1;
-      else item.pending += 1;
-      if (candidate.projectName) item.projectNames.add(candidate.projectName);
-      item.evidenceIds.push(candidate.id);
-      abilities.set(ability, item);
-      if (candidate.projectId) projectEvidenceCount.set(String(candidate.projectId), (projectEvidenceCount.get(String(candidate.projectId)) || 0) + 1);
-    }
-    const abilityList = Array.from(abilities.values()).map((item) => ({
-      name: item.name,
-      evidenceCount: item.total,
-      pendingCount: item.pending,
-      confirmedCount: item.confirmed,
-      watchingCount: item.watching,
-      rejectedCount: item.rejected,
-      projectNames: Array.from(item.projectNames),
-      evidenceIds: item.evidenceIds,
-    })).sort((a, b) => b.evidenceCount - a.evidenceCount || a.name.localeCompare(b.name, 'zh-CN'));
-    const projectList = projects.map((project) => ({
-      projectId: project.id,
-      projectName: project.name,
-      status: project.status || 'active',
-      evidenceCount: projectEvidenceCount.get(String(project.id)) || 0,
-      knowledgeRootPath: project.knowledgeRootPath,
-      promotionPath: project.promotionPath || '',
-      publishedAt: project.publishedAt || '',
-    }));
-    const index = {
-      version: 1,
-      studentId: normalized.id,
-      studentName: normalized.name,
-      updatedAt: new Date().toISOString(),
+    const review = readGrowthEvidenceReview(normalized);
+    const migration = migrateLegacyGrowthEvidence(normalized, review, projects);
+    const index = buildGrowthIndexV2({
+      student: normalized,
       growthDir: growth.dir,
+      review,
+      projects,
       sourceFiles: {
         evidenceReview: growthEvidenceReviewPath(normalized),
         evidenceMd: path.join(growth.dir, '成长证据.md'),
         projectContributionMd: path.join(growth.dir, '项目贡献.md'),
       },
-      summary: {
-        evidenceCount: review.candidates.length,
-        pendingCount: review.candidates.filter((item) => !['confirmed', 'watching', 'rejected'].includes(String(item.status))).length,
-        confirmedCount: review.candidates.filter((item) => item.status === 'confirmed').length,
-        watchingCount: review.candidates.filter((item) => item.status === 'watching').length,
-        rejectedCount: review.candidates.filter((item) => item.status === 'rejected').length,
-        abilityCount: abilityList.length,
-        projectCount: projectList.length,
-      },
-      abilities: abilityList,
-      projects: projectList,
-      evidence: review.candidates.map((item) => ({
-        id: item.id,
-        title: item.title,
-        status: item.status,
-        ability: item.ability || '待标注',
-        projectId: item.projectId || '',
-        projectName: item.projectName || '',
-        sourcePath: item.sourcePath || '',
-        confidence: item.confidence || '',
-        updatedAt: item.updatedAt || item.createdAt || '',
-      })),
-    };
+      migration: { legacyEvidenceImported: migration.imported, legacyEvidenceSource: migration.source },
+    });
     fs.mkdirSync(path.dirname(growthIndexPath(normalized)), { recursive: true });
     fs.writeFileSync(growthIndexPath(normalized), JSON.stringify(index, null, 2), 'utf8');
-    const abilityRows = abilityList.map((item) => `| ${mdCell(item.name)} | ${item.evidenceCount} | ${item.confirmedCount} | ${item.watchingCount} | ${item.pendingCount} | ${item.rejectedCount} | ${mdCell(item.projectNames.join('、') || '-')} |`).join('\n') || '| 暂无 | 0 | 0 | 0 | 0 | 0 | - |';
-    const projectRows = projectList.map((item) => `| ${mdCell(item.projectName)} | ${mdCell(item.status)} | ${item.evidenceCount} | ${mdCell(item.publishedAt || '-')} | ${mdCell(item.knowledgeRootPath || '-')} |`).join('\n') || '| 暂无 | - | 0 | - | - |';
-    const markdown = `# ${normalized.name} 成长模型结构化索引\n\n生成时间：${index.updatedAt}\n\n## 总览\n\n| 指标 | 数量 |\n| --- | ---: |\n| 成长证据候选 | ${index.summary.evidenceCount} |\n| 已确认 | ${index.summary.confirmedCount} |\n| 观察中 | ${index.summary.watchingCount} |\n| 待审核 | ${index.summary.pendingCount} |\n| 已驳回/回滚 | ${index.summary.rejectedCount} |\n| 能力维度 | ${index.summary.abilityCount} |\n| 关联项目 | ${index.summary.projectCount} |\n\n## 能力维度\n\n| 能力 | 证据 | 已确认 | 观察中 | 待审核 | 驳回/回滚 | 来源项目 |\n| --- | ---: | ---: | ---: | ---: | ---: | --- |\n${abilityRows}\n\n## 关联项目\n\n| 项目 | 状态 | 证据数 | 发布时间 | 知识空间 |\n| --- | --- | ---: | --- | --- |\n${projectRows}\n\n> 该索引由教育管家控制台生成，用于把散落在成长证据、项目贡献和知识贡献中的记录结构化。它不会覆盖原始 Markdown 内容。\n`;
+    const abilityRows = index.abilities.map((item) => `| ${mdCell(item.name)} | ${mdCell(item.maturity)} | ${mdCell(item.trend)} | ${item.evidenceCount} | ${item.confirmedCount} | ${mdCell(item.projectNames.join('、') || '-')} | ${mdCell(item.lastObservedAt || '-')} |`).join('\n') || '| 暂无 | - | - | 0 | 0 | - | - |';
+    const projectRows = index.projects.map((item) => `| ${mdCell(item.projectName)} | ${mdCell(item.reviewStatus)} | ${item.evidenceCount} | ${item.confirmedEvidenceCount} | ${mdCell(item.abilityNames.join('、') || '-')} | ${mdCell(item.publishedAt || '-')} |`).join('\n') || '| 暂无 | - | 0 | 0 | - | - |';
+    const markdown = `# ${normalized.name} 成长模型结构化索引\n\nSchema：edu-manager.growth-model.v2\n\n生成时间：${index.updatedAt}\n\n## 总览\n\n| 指标 | 数量 |\n| --- | ---: |\n| 成长证据 | ${index.summary.evidenceCount} |\n| 已确认 | ${index.summary.confirmedCount} |\n| 观察中 | ${index.summary.watchingCount} |\n| 待审核 | ${index.summary.pendingCount} |\n| 已驳回/回滚 | ${index.summary.rejectedCount} |\n| 能力维度 | ${index.summary.abilityCount} |\n| 关联项目 | ${index.summary.projectCount} |\n| 已发布项目贡献 | ${index.summary.publishedProjectCount} |\n\n## 能力画像\n\n| 能力 | 成熟度 | 趋势 | 证据 | 已确认 | 来源项目 | 最近观察 |\n| --- | --- | --- | ---: | ---: | --- | --- |\n${abilityRows}\n\n## 项目贡献\n\n| 项目 | 贡献状态 | 证据 | 已确认 | 能力 | 发布时间 |\n| --- | --- | ---: | ---: | --- | --- |\n${projectRows}\n\n> 该索引由教育管家控制台生成，用于统一能力画像、项目贡献和成长证据。它不会覆盖原始 Markdown；旧版成长证据会以兼容方式导入审核索引。\n`;
     fs.writeFileSync(growthIndexMarkdownPath(normalized), markdown, 'utf8');
     appendHostTimeline({ type: 'growth_index_rebuilt', title: 'Growth index rebuilt', detail: normalized.name, count: review.candidates.length });
     return JSON.stringify({ ok: true, index, path: growthIndexPath(normalized), markdownPath: growthIndexMarkdownPath(normalized), content: markdown, message: `已重建「${normalized.name}」成长模型结构化索引。` });
@@ -8091,6 +8055,7 @@ function getGrowthIndex(studentId) {
     const file = growthIndexPath(normalized);
     if (!fs.existsSync(file)) return rebuildGrowthIndex(studentId);
     const index = safeReadJson(file, {});
+    if (Number(index.version || 0) < 2) return rebuildGrowthIndex(studentId);
     const content = fs.existsSync(growthIndexMarkdownPath(normalized)) ? readSmallTextFile(growthIndexMarkdownPath(normalized), 512 * 1024) : '';
     return JSON.stringify({ ok: true, index, path: file, markdownPath: growthIndexMarkdownPath(normalized), content, message: '已读取成长模型结构化索引。' });
   } catch (error) {
@@ -8114,8 +8079,14 @@ function updateGrowthEvidenceStatus(studentId, evidenceId, status, note = '') {
     writeGrowthEvidenceReview(normalized, review);
     if (nextStatus === 'confirmed') {
       const growth = ensureGrowthModelForStudent(normalized);
-      fs.appendFileSync(path.join(growth.dir, '成长证据.md'), `| ${new Date().toISOString().slice(0, 10)} | ${mdCell(item.title)} | ${mdCell(item.sourcePath || item.projectName || '-')} | ${mdCell(item.ability || '待标注')} | ${mdCell(item.confidence || '人工确认')} |\n`, 'utf8');
+      const evidenceFile = path.join(growth.dir, '成长证据.md');
+      const marker = `<!-- evidence:${item.id} -->`;
+      const current = fs.existsSync(evidenceFile) ? readSmallTextFile(evidenceFile, 1024 * 1024) : '';
+      if (!current.includes(marker)) {
+        fs.appendFileSync(evidenceFile, `${marker}\n| ${new Date().toISOString().slice(0, 10)} | ${mdCell(item.title)} | ${mdCell(item.sourcePath || item.projectName || '-')} | ${mdCell(item.ability || '待标注')} | ${mdCell(item.confidence || '人工确认')} |\n`, 'utf8');
+      }
     }
+    rebuildGrowthIndex(studentId);
     appendHostTimeline({ type: 'growth_evidence_reviewed', title: 'Growth evidence reviewed', detail: `${normalized.name} ${nextStatus}`, count: 1 });
     return JSON.stringify({ ok: true, review, message: `已将成长证据标记为：${nextStatus}。` });
   } catch (error) {
@@ -8134,7 +8105,7 @@ function learningReportTemplate(student, report) {
     return `## ${section}\n\n- 待补充。`;
   }).join('\n\n');
   const growthDir = growthModelDirForStudent(student);
-  return `---\ntype: ${report.type}\ntarget: ${report.target}\nupdated: ${today}\nstatus: draft\ngrowth_model: ${growthDir}\n---\n\n# ${report.title}\n\n> 本报告属于 Growth Layer 的呈现输出。生成和更新时，请优先读取成长模型、综合汇总库和已确认的项目知识贡献记录。\n\n## 成长证据来源\n\n- 成长模型：${growthDir}\n- 能力画像：${path.join(growthDir, '能力画像.md')}\n- 成长证据：${path.join(growthDir, '成长证据.md')}\n- 项目贡献：${path.join(growthDir, '项目贡献.md')}\n\n## 项目贡献来源\n\n- 待补充已确认的项目知识贡献申请。\n\n${body}\n`;
+  return `---\ntype: ${report.type}\ntarget: ${report.target}\nupdated: ${today}\nstatus: draft\nsource_layer: growth_model\npresentation_only: true\ngrowth_model: ${growthDir}\n---\n\n# ${report.title}\n\n> 本报告是成长模型的呈现输出，不是能力、项目贡献或成长证据的事实来源。生成和更新时，只引用成长模型中的已确认结论。\n\n## 成长证据来源\n\n- 成长模型：${growthDir}\n- 能力画像：${path.join(growthDir, '能力画像.md')}\n- 成长证据：${path.join(growthDir, '成长证据.md')}\n- 项目贡献：${path.join(growthDir, '项目贡献.md')}\n\n## 项目贡献来源\n\n- 待补充已确认的项目知识贡献申请。\n\n${body}\n`;
 }
 
 function ensureLearningReportsForStudent(student) {
@@ -8413,7 +8384,7 @@ function studentLogicalRulePaths() {
 function learningReportProtocolText(summaryPath) {
   const reportDir = rulePathJoin(summaryPath || '', '学情报告');
   const growthDir = rulePathJoin(summaryPath || '', '成长模型');
-  return `## 学情报告 Protocol\n\n学情报告是 Growth Layer 的成果表达层，不替代摘要库、实体库、概念库、综合库和咨询精华库。更新报告前，应优先读取成长模型、综合汇总库和已确认的项目知识贡献记录。\n\n成长模型位置：\n\n- ${rulePathJoin(growthDir, '能力画像.md')}\n- ${rulePathJoin(growthDir, '成长证据.md')}\n- ${rulePathJoin(growthDir, '项目贡献.md')}\n\n完成资料消化、综合分析或咨询沉淀后，如果发现对用户有直接价值的结论，请检查并更新：\n\n- ${rulePathJoin(reportDir, '整体画像.md')}\n- ${rulePathJoin(reportDir, '历史变化.md')}\n- ${rulePathJoin(reportDir, '每日行动建议.md')}\n- ${rulePathJoin(reportDir, '阶段总结.md')}\n\n写作要求：\n\n1. 面向家长、学生、教师可读，避免内部技术术语。\n2. 每份报告顶部保留更新时间、适用对象、状态。\n3. 结论必须对应学情分析汇总、成长模型或项目贡献中的依据来源。\n4. “每日行动建议”必须分为：给学生、给家长、给老师。\n5. 不确定判断标注“待观察”，不要写成定论。\n6. 不要删除原有报告内容；判断发生变化时，在“历史变化”或“阶段总结”中说明变化原因。\n7. 当天无新增资料时，也可以根据已有档案更新“每日行动建议”，但要注明依据。\n`;
+  return `## 成长模型与学情报告 Protocol\n\n成长模型是学生长期成长的权威数据层；学情报告是面向家长、学生和教师的呈现层。学情报告不得反向充当能力、项目贡献或成长证据的事实来源。\n\n成长模型位置：\n\n- ${rulePathJoin(growthDir, '能力画像.md')}\n- ${rulePathJoin(growthDir, '项目贡献.md')}\n- ${rulePathJoin(growthDir, '成长证据.md')}\n- ${rulePathJoin(growthDir, '成长证据草稿.md')}\n\n完成资料消化、综合分析或咨询沉淀后，先把新发现写入成长证据草稿或结构化审核候选，经人工确认后再更新能力画像和项目贡献。不要在资料消化过程中直接覆盖学情报告。\n\n学情报告只根据已确认成长模型生成：\n\n- ${rulePathJoin(reportDir, '整体画像.md')}\n- ${rulePathJoin(reportDir, '历史变化.md')}\n- ${rulePathJoin(reportDir, '每日行动建议.md')}\n- ${rulePathJoin(reportDir, '阶段总结.md')}\n\n写作要求：\n\n1. 面向家长、学生、教师可读，避免内部技术术语。\n2. 每份报告顶部保留更新时间、适用对象、状态。\n3. 结论必须对应成长模型中的已确认证据和项目贡献。\n4. “每日行动建议”必须通过统一任务中心生成、审核和发布，并分为：给学生、给家长、给老师。\n5. 不确定判断标注“待观察”，不要写成定论。\n6. 不要删除原有报告内容；判断发生变化时，在“历史变化”或“阶段总结”中说明变化原因。\n7. 整体画像引用能力画像；历史变化引用能力时间线；阶段总结引用项目贡献和已确认成长证据；每日行动建议只引用当天有效的已确认依据。\n`;
 }
 
 function defaultRuleFileContent(student, fileName) {
@@ -10311,6 +10282,19 @@ function openStudentRootDir(studentId) {
   }
 }
 
+function openGrowthModelDir(studentId) {
+  try {
+    const student = findStudentByKey(studentId);
+    if (!student) return JSON.stringify({ ok: false, message: '未找到学生。' });
+    const dir = growthModelDirForStudent(student);
+    ensureGrowthModelForStudent(student);
+    shell.openPath(dir).catch(() => {});
+    return JSON.stringify({ ok: true, path: dir, message: '已打开成长模型目录。' });
+  } catch (error) {
+    return JSON.stringify({ ok: false, message: `打开成长模型目录失败：${error.message}` });
+  }
+}
+
 function pickArchiveRoot() {
   dialog.showOpenDialog(mainWindow, {
     title: '选择学生资料根目录',
@@ -10452,11 +10436,14 @@ function ensureGrowthModel(studentKey) {
     const student = findStudentByKey(studentKey);
     if (!student) return JSON.stringify({ ok: false, message: '未找到学生。' });
     const result = ensureGrowthModelForStudent(student);
+    const rebuilt = JSON.parse(rebuildGrowthIndex(student.id));
     return JSON.stringify({
       ok: true,
       folder: result.dir,
       created: result.created,
-      message: result.created.length ? `已补建成长模型文件：${result.created.join('、')}` : '成长模型文件已存在。',
+      index: rebuilt.index,
+      content: rebuilt.content,
+      message: result.created.length ? `已补建成长模型文件：${result.created.join('、')}，并升级结构化索引。` : '成长模型文件已存在，结构化索引已刷新。',
     });
   } catch (error) {
     return JSON.stringify({ ok: false, message: `补建成长模型失败：${error.message}` });
@@ -11504,6 +11491,7 @@ ipcMain.on('bridge:saveAgentConversationImport', (event, studentId, content, too
 ipcMain.on('bridge:selectAgentConversationFiles', (event, studentId, tool) => { licensedIpc(event, '对话历史导入', () => selectAgentConversationFiles(studentId, tool)); });
 ipcMain.on('bridge:saveConversationExtract', (event, studentId, extractJson, tool) => { licensedIpc(event, '对话历史提取', () => saveConversationExtract(studentId, extractJson, tool)); });
 ipcMain.on('bridge:openStudentRootDir', (event, studentId) => { licensedIpc(event, '打开学生知识库目录', () => openStudentRootDir(studentId)); });
+ipcMain.on('bridge:openGrowthModelDir', (event, studentId) => { licensedIpc(event, '打开成长模型目录', () => openGrowthModelDir(studentId)); });
 ipcMain.on('bridge:checkStudentPathHealth', (event, studentId) => { licensedIpc(event, '知识库路径核对', () => checkStudentPathHealth(studentId)); });
 ipcMain.on('bridge:repairStudentStalePaths', (event, studentId) => { licensedIpc(event, '知识库路径修复', () => repairStudentStalePaths(studentId)); });
 ipcMain.on('bridge:checkAllStudentsPathHealth', (event) => { licensedIpc(event, '批量知识库路径核对', () => checkAllStudentsPathHealth()); });

@@ -1,9 +1,9 @@
 {
   "versionCode": 67,
   "versionName": "0.5.7",
-  "windowsVersionCode": 130,
-  "windowsVersionName": "0.7.50",
-  "windowsUrl": "https://www.greatbg.com/download/AI-edu-manager-console-Windows-0.7.50.zip",
+  "windowsVersionCode": 131,
+  "windowsVersionName": "0.7.51",
+  "windowsUrl": "https://www.greatbg.com/download/AI-edu-manager-console-Windows-0.7.51.zip",
   "terminalApkUrl": "https://www.greatbg.com/download/AI-edu-manager-tablet-terminal-0.5.7.apk",
   "tabletTerminalVersionCode": 67,
   "tabletTerminalVersionName": "0.5.7",
@@ -12,5 +12,5 @@
   "managerApkVersionCode": 23,
   "managerApkVersionName": "0.2.3",
   "apkUrl": "https://www.greatbg.com/download/AI-edu-manager-tablet-terminal-0.5.7.apk",
-  "notes": "Windows 0.7.50与平板终端0.5.7：新增局域网自动发现主机、6位短码连接和Windows端学生授权确认；保留扫码、粘贴连接信息及连接备份。"
+  "notes": "Windows 0.7.51：成长模型改为能力画像、项目贡献和成长证据三视图，升级结构化索引与旧证据兼容迁移；学情报告保持独立呈现层。平板终端维持 0.5.7。"
 }

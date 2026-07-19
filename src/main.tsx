@@ -70,6 +70,7 @@ type ArchiveCategoryId = 'summary' | 'report' | 'qa' | 'other' | 'all';
 type LearningReportId = 'profile' | 'changes' | 'daily' | 'stage';
 type RuntimePlatform = 'android' | 'windows' | 'web' | string;
 type ProjectDashboardFocus = 'all' | 'active' | 'materials' | 'knowledge' | 'contributions' | 'risks' | 'digest';
+type GrowthView = 'abilities' | 'projects' | 'evidence';
 
 type AgentToolProfile = {
   id: AgentToolId;
@@ -432,11 +433,14 @@ type GrowthEvidenceCandidate = {
   title: string;
   content?: string;
   projectName?: string;
+  projectId?: string;
   sourcePath?: string;
   status: 'pending' | 'confirmed' | 'watching' | 'rejected' | string;
   ability?: string;
   confidence?: string;
   updatedAt?: string;
+  createdAt?: string;
+  migratedFrom?: string;
 };
 
 type GrowthEvidenceReviewState = {
@@ -444,6 +448,8 @@ type GrowthEvidenceReviewState = {
 };
 
 type GrowthIndexState = {
+  version?: number;
+  schema?: string;
   summary?: {
     evidenceCount?: number;
     pendingCount?: number;
@@ -452,8 +458,11 @@ type GrowthIndexState = {
     rejectedCount?: number;
     abilityCount?: number;
     projectCount?: number;
+    publishedProjectCount?: number;
+    lastEvidenceAt?: string;
   };
   abilities?: Array<{
+    abilityId?: string;
     name: string;
     evidenceCount: number;
     confirmedCount: number;
@@ -461,14 +470,31 @@ type GrowthIndexState = {
     pendingCount: number;
     rejectedCount: number;
     projectNames?: string[];
+    projectIds?: string[];
+    evidenceIds?: string[];
+    firstObservedAt?: string;
+    lastObservedAt?: string;
+    trend?: string;
+    maturity?: string;
+    confidence?: string;
   }>;
   projects?: Array<{
+    contributionId?: string;
+    contributionType?: string;
     projectId: string;
     projectName: string;
     status: string;
     evidenceCount: number;
+    confirmedEvidenceCount?: number;
+    evidenceIds?: string[];
+    abilityNames?: string[];
+    reviewStatus?: string;
+    knowledgeRootPath?: string;
+    promotionPath?: string;
     publishedAt?: string;
+    updatedAt?: string;
   }>;
+  evidence?: GrowthEvidenceCandidate[];
 };
 
 type ScheduleLedgerEntry = {
@@ -641,6 +667,7 @@ type AndroidBridge = {
   selectAgentConversationFiles?: (studentId: string, tool: AgentToolId) => string;
   saveConversationExtract?: (studentId: string, extractJson: string, tool: AgentToolId) => string;
   openStudentRootDir?: (studentId: string) => string;
+  openGrowthModelDir?: (studentId: string) => string;
   checkStudentPathHealth?: (studentId: string) => string;
   repairStudentStalePaths?: (studentId: string) => string;
   checkAllStudentsPathHealth?: () => string;
@@ -2345,11 +2372,11 @@ const uiTranslations: Record<LanguageCode, Partial<Record<TranslationKey, string
 };
 
 const themeSkinImages: Record<ThemeName, string> = {
-  blue: './skins/skin-blue.jpg',
-  pink: './skins/skin-pink.jpg',
-  green: './skins/skin-green.jpg',
-  purple: './skins/skin-purple.jpg',
-  orange: './skins/skin-orange.jpg',
+  blue: '../skins/skin-blue.jpg',
+  pink: '../skins/skin-pink.jpg',
+  green: '../skins/skin-green.jpg',
+  purple: '../skins/skin-purple.jpg',
+  orange: '../skins/skin-orange.jpg',
 };
 
 const archiveCategories: Array<{ id: ArchiveCategoryId; label: string }> = [
@@ -2528,12 +2555,14 @@ function pathsFor(studentName: string) {
   const raw = joinDisplayPath(root, `${cleanName}原始资料库`);
   const summary = joinDisplayPath(root, `${cleanName}学情分析汇总`);
   const reportDir = joinDisplayPath(summary, '学情报告');
+  const growthDir = joinDisplayPath(summary, '成长模型');
   return {
     cleanName,
     root,
     raw,
     summary,
     reportDir,
+    growthDir,
     profileReport: joinDisplayPath(reportDir, '整体画像.md'),
     changesReport: joinDisplayPath(reportDir, '历史变化.md'),
     dailyReport: joinDisplayPath(reportDir, '每日行动建议.md'),
@@ -2553,6 +2582,7 @@ function pathsForStudent(student: Pick<Student, 'name'> & Partial<Pick<Student, 
   const raw = student.rawPath || standard.raw;
   const summary = student.summaryPath || standard.summary;
   const reportDir = joinDisplayPath(summary, '学情报告');
+  const growthDir = joinDisplayPath(summary, '成长模型');
   const agent = student.agentPath || joinDisplayPath(root, 'AGENT.md');
   const output = student.outputPath || joinDisplayPath(root, '输出结果');
   return {
@@ -2561,6 +2591,7 @@ function pathsForStudent(student: Pick<Student, 'name'> & Partial<Pick<Student, 
     raw,
     summary,
     reportDir,
+    growthDir,
     profileReport: joinDisplayPath(reportDir, '整体画像.md'),
     changesReport: joinDisplayPath(reportDir, '历史变化.md'),
     dailyReport: joinDisplayPath(reportDir, '每日行动建议.md'),
@@ -3535,6 +3566,7 @@ ${projectRule}
 学生知识库：${p.root}
 原始资料库：${p.raw}
 学情分析汇总：${p.summary}
+成长模型目录：${p.growthDir}
 学情报告目录：${p.reportDir}
 控制台账本目录：${p.root}${separator}.edu-manager
 
@@ -3542,9 +3574,10 @@ ${projectRule}
 1. 只处理尚未消化的新资料，不重复生成已处理资料的摘要。
 2. 处理完成后更新 ${p.index} 和 ${p.log}。
 3. 如果没有新增资料，请在 log.md 中记录“无新增资料”。
-4. 消化完成后，请检查并更新「学情报告」目录中的四份报告：整体画像.md、历史变化.md、每日行动建议.md、阶段总结.md。
-5. 如果没有足够依据，请保留“待补充”或标注“待观察”，不要编造结论。
-6. 消化完成后，请更新 ${p.root}${separator}.edu-manager${separator}digest-state.json，格式为：
+4. 消化产生的新能力判断、项目贡献和成长证据，先写入成长模型的草稿或待审核候选；未经人工确认，不得直接写成稳定能力结论。
+5. 资料消化不直接覆盖四份学情报告。学情报告由已确认成长模型另行生成；每日行动建议通过统一任务中心审核发布。
+6. 如果没有足够依据，请保留“待补充”或标注“待观察”，不要编造结论。
+7. 消化完成后，请更新 ${p.root}${separator}.edu-manager${separator}digest-state.json，格式为：
 {
   "status": "completed",
   "lastDigestAt": "YYYY-MM-DDTHH:mm:ss+08:00",
@@ -3791,6 +3824,11 @@ function App() {
   const [growthEvidenceReview, setGrowthEvidenceReview] = useState<GrowthEvidenceReviewState>({ candidates: [] });
   const [growthIndex, setGrowthIndex] = useState<GrowthIndexState | null>(null);
   const [growthIndexPreview, setGrowthIndexPreview] = useState('');
+  const [growthView, setGrowthView] = useState<GrowthView>('abilities');
+  const [growthSearch, setGrowthSearch] = useState('');
+  const [growthEvidenceStatusFilter, setGrowthEvidenceStatusFilter] = useState('all');
+  const [growthAbilityFilter, setGrowthAbilityFilter] = useState('all');
+  const [growthProjectStatusFilter, setGrowthProjectStatusFilter] = useState('all');
   const [scheduleLedger, setScheduleLedger] = useState<ScheduleLedgerState>({ entries: [] });
   const [scheduleMessage, setScheduleMessage] = useState('');
   const [maintenanceReportPreview, setMaintenanceReportPreview] = useState('');
@@ -4069,6 +4107,25 @@ function App() {
   }, [assetGovernanceStats.issueCount, studentScopedAssets]);
 
   const selectedProject = projects.find((project) => project.id === selectedProjectId) ?? projects[0] ?? null;
+  const filteredGrowthAbilities = useMemo(() => {
+    const keyword = growthSearch.trim().toLowerCase();
+    return (growthIndex?.abilities ?? []).filter((ability) => !keyword || [ability.name, ...(ability.projectNames ?? [])].some((value) => String(value || '').toLowerCase().includes(keyword)));
+  }, [growthIndex, growthSearch]);
+  const filteredGrowthProjects = useMemo(() => {
+    const keyword = growthSearch.trim().toLowerCase();
+    return (growthIndex?.projects ?? []).filter((project) => {
+      if (growthProjectStatusFilter !== 'all' && String(project.reviewStatus || project.status) !== growthProjectStatusFilter) return false;
+      return !keyword || [project.projectName, ...(project.abilityNames ?? [])].some((value) => String(value || '').toLowerCase().includes(keyword));
+    });
+  }, [growthIndex, growthProjectStatusFilter, growthSearch]);
+  const filteredGrowthEvidence = useMemo(() => {
+    const keyword = growthSearch.trim().toLowerCase();
+    return growthEvidenceReview.candidates.filter((candidate) => {
+      if (growthEvidenceStatusFilter !== 'all' && candidate.status !== growthEvidenceStatusFilter) return false;
+      if (growthAbilityFilter !== 'all' && String(candidate.ability || '待标注') !== growthAbilityFilter) return false;
+      return !keyword || [candidate.title, candidate.content, candidate.projectName, candidate.sourcePath, candidate.ability].some((value) => String(value || '').toLowerCase().includes(keyword));
+    });
+  }, [growthAbilityFilter, growthEvidenceReview, growthEvidenceStatusFilter, growthSearch]);
   const availableProjectWorkspaceTemplates = [...projectWorkspaceTemplates, ...customProjectWorkspaceTemplates];
   const projectWorkspaceTemplateForUi = (templateId?: string) => {
     const template = availableProjectWorkspaceTemplates.find((item) => item.id === templateId) ?? projectWorkspaceTemplates[0];
@@ -4222,6 +4279,10 @@ function App() {
     if (status === 'sealed') return '已封存';
     return status || '进行中';
   };
+
+  const growthMaturityLabel = (value?: string) => value === 'established' ? '已形成' : value === 'emerging' ? '正在形成' : value === 'observing' ? '观察中' : '证据不足';
+  const growthTrendLabel = (value?: string) => value === 'improving' ? '持续增强' : value === 'stable' ? '保持稳定' : '尚不足以判断';
+  const contributionStatusLabel = (value?: string) => value === 'published' ? '已发布' : value === 'pending' ? '待审核' : '尚未形成';
 
   useEffect(() => {
     if (!selectedProject) return;
@@ -7564,7 +7625,7 @@ ${JSON.stringify(items, null, 2)}
           setPromotionExecutionSummary(`执行完成：成功 ${success} 项，失败 ${failed} 项；引用 ${byAction.reference || 0}，发布 ${byAction.publish || 0}，吸收 ${byAction.absorb || 0}，跳过 ${byAction.skip || 0}。`);
         }
         refreshAssets();
-        if (selectedStudent) refreshLearningReports(selectedStudent);
+        if (selectedStudent) refreshSelectedGrowthModel();
         loadSelectedProjectPromotionAudit();
       }
     } catch {
@@ -7593,9 +7654,7 @@ ${JSON.stringify(items, null, 2)}
       }
       if (result.content) setPromotionPreview(result.content);
       if (result.project) setProjects((current) => current.map((item) => (item.id === result.project?.id ? result.project : item)));
-      if (result.ok && selectedStudent) {
-        refreshLearningReports(selectedStudent);
-      }
+      if (result.ok && selectedStudent) refreshSelectedGrowthModel();
       if (result.ok) loadSelectedProjectPromotionAudit();
     } catch {
       setProjectMessage('发布知识贡献结果解析失败。');
@@ -7669,6 +7728,7 @@ ${JSON.stringify(items, null, 2)}
       const result = JSON.parse(raw) as { ok?: boolean; review?: GrowthEvidenceReviewState; message?: string };
       if (result.review) setGrowthEvidenceReview(result.review);
       setGrowthMessage(result.message || (result.ok ? '成长证据状态已更新。' : '成长证据状态更新失败。'));
+      if (result.ok) refreshSelectedGrowthIndex(selectedStudent);
     } catch {
       setGrowthMessage('成长证据状态更新结果解析失败。');
     }
@@ -7685,9 +7745,14 @@ ${JSON.stringify(items, null, 2)}
       return;
     }
     try {
-      const result = JSON.parse(raw) as { ok?: boolean; folder?: string; created?: string[]; message?: string };
+      const result = JSON.parse(raw) as { ok?: boolean; folder?: string; created?: string[]; index?: GrowthIndexState; content?: string; message?: string };
+      if (result.index) setGrowthIndex(result.index);
+      if (result.content) setGrowthIndexPreview(result.content);
       setGrowthMessage(result.message || (result.ok ? '成长模型已确认。' : '成长模型补建失败。'));
-      if (result.ok) refreshGrowthEvidenceReview(selectedStudent);
+      if (result.ok) {
+        refreshGrowthEvidenceReview(selectedStudent);
+        refreshSelectedGrowthIndex(selectedStudent);
+      }
     } catch {
       setGrowthMessage('成长模型补建结果解析失败。');
     }
@@ -7726,6 +7791,48 @@ ${JSON.stringify(items, null, 2)}
       setGrowthMessage('成长模型结构化索引读取失败。');
     }
   };
+
+  const refreshSelectedGrowthModel = () => {
+    if (!selectedStudent) {
+      setGrowthMessage('请先选择学生。');
+      return;
+    }
+    refreshGrowthEvidenceReview(selectedStudent);
+    refreshSelectedGrowthIndex(selectedStudent);
+  };
+
+  const openSelectedGrowthModelDir = () => {
+    if (!selectedStudent) return;
+    const raw = bridge()?.openGrowthModelDir?.(selectedStudent.id);
+    if (!raw) {
+      setGrowthMessage('当前环境不支持打开成长模型目录。');
+      return;
+    }
+    try {
+      const result = JSON.parse(raw) as { ok?: boolean; message?: string };
+      setGrowthMessage(result.message || (result.ok ? '已打开成长模型目录。' : '打开成长模型目录失败。'));
+    } catch {
+      setGrowthMessage('打开成长模型目录结果解析失败。');
+    }
+  };
+
+  const openGrowthProject = (projectId: string) => {
+    const project = projects.find((item) => item.id === projectId);
+    if (!project) {
+      setGrowthMessage('未找到对应学习项目，可能已移除或尚未同步。');
+      return;
+    }
+    setActiveSection('projects-existing');
+    openProjectFromDashboard(project);
+  };
+
+  useEffect(() => {
+    if (activeSection !== 'growth' || !selectedStudent) return;
+    setGrowthSearch('');
+    setGrowthAbilityFilter('all');
+    refreshGrowthEvidenceReview(selectedStudent);
+    refreshSelectedGrowthIndex(selectedStudent);
+  }, [activeSection, selectedStudent?.id]);
 
   const refreshScheduleLedgerForStudent = (student: Student) => {
     const raw = bridge()?.getStudentScheduleLedger?.(student.id);
@@ -11153,31 +11260,27 @@ ${JSON.stringify(items, null, 2)}
         )}
 
         {!shouldBlockForAgentInstall && !isLicenseRestrictedSection && isWindows && activeSection === 'growth' && selectedStudent && (
-          <section className="panel">
+          <section className="panel growth-model-panel">
             <div className="panel-heading">
               <div>
                 <h2>{selectedStudent.name} · 成长模型</h2>
-                <p>Growth Layer 用于沉淀能力、兴趣、趋势和项目证据；学情报告逐步从这里生成。</p>
+                <p>集中查看能力画像、项目贡献和成长证据；学情报告仅作为这些已确认数据的表达输出。</p>
               </div>
               <Sparkles size={22} />
             </div>
             <div className="archive-grid">
               <InfoPanel icon={<UserRound />} title="当前学生" value={`${selectedStudent.name} · ${selectedStudent.grade}`} />
-              <InfoPanel icon={<FolderOpen />} title="知识库目录" value={selectedStudentPaths.root} />
-              <InfoPanel icon={<FileText />} title="学情报告目录" value={selectedStudentPaths.reportDir} />
+              <InfoPanel icon={<FolderOpen />} title="知识库目录" value={selectedStudentPaths.root} actionLabel="打开目录" onClick={() => bridge()?.openStudentRootDir?.(selectedStudent.id)} />
+              <InfoPanel icon={<Gauge />} title="成长模型目录" value={selectedStudentPaths.growthDir} actionLabel="打开目录" onClick={openSelectedGrowthModelDir} />
             </div>
             <div className="actions">
               <button className="primary" onClick={ensureSelectedGrowthModel}>
                 <Sparkles size={18} />
                 补建成长模型
               </button>
-              <button className="secondary" onClick={() => refreshLearningReports(selectedStudent)}>
+              <button className="secondary" onClick={refreshSelectedGrowthModel}>
                 <RefreshCw size={18} />
-                刷新学情报告
-              </button>
-              <button className="secondary" onClick={() => refreshGrowthEvidenceReview(selectedStudent)}>
-                <ListChecks size={18} />
-                刷新证据候选
+                刷新成长模型
               </button>
               <button className="secondary" onClick={rebuildSelectedGrowthIndex}>
                 <Share2 size={18} />
@@ -11193,52 +11296,54 @@ ${JSON.stringify(items, null, 2)}
               </button>
             </div>
             <div className="notice muted">
-              成长模型 v1 会在学生知识库下创建“成长模型”目录，并维护 index、能力画像、成长证据和项目贡献四类 Markdown 索引。它不会替换现有综合汇总库，而是作为学情报告的上层来源。
+              成长模型 v2 是长期成长的权威数据层。能力判断必须能回到成长证据，项目贡献必须能回到学习项目；学情报告不会在这里重复展示。
             </div>
-            {growthIndex && (
-              <section className="material-source-panel">
-                <div className="mini-heading">
-                  <strong>结构化索引摘要</strong>
-                  <span>来自 growth-index.json，可供图谱、报告和后续 Agent 维护复用。</span>
-                </div>
-                <div className="archive-grid">
-                  <InfoPanel icon={<ListChecks />} title="证据总数" value={`${growthIndex.summary?.evidenceCount ?? 0} 条`} />
-                  <InfoPanel icon={<ShieldCheck />} title="已确认" value={`${growthIndex.summary?.confirmedCount ?? 0} 条`} />
-                  <InfoPanel icon={<Sparkles />} title="能力维度" value={`${growthIndex.summary?.abilityCount ?? 0} 个`} />
-                  <InfoPanel icon={<FolderOpen />} title="关联项目" value={`${growthIndex.summary?.projectCount ?? 0} 个`} />
-                </div>
-                <div className="download-list compact-list">
-                  {(growthIndex.abilities ?? []).slice(0, 8).map((ability) => (
-                    <div className="download-item" key={ability.name}>
-                      <span>
-                        <strong>{ability.name}</strong>
-                        <small>证据 {ability.evidenceCount} · 已确认 {ability.confirmedCount} · 观察 {ability.watchingCount} · 待审 {ability.pendingCount}</small>
-                        <small>{ability.projectNames?.join('、') || '暂无项目来源'}</small>
-                      </span>
-                    </div>
-                  ))}
-                  {(growthIndex.abilities ?? []).length === 0 && <div className="empty-state compact">暂无能力维度，请先发布或确认成长证据。</div>}
-                </div>
-              </section>
-            )}
-            <section className="material-source-panel">
-              <div className="mini-heading">
-                <strong>成长证据审核</strong>
-                <span>项目贡献发布后先进入候选证据；确认后写入“成长证据.md”。</span>
+            <div className="growth-summary-grid">
+              <InfoPanel icon={<Sparkles />} title="能力维度" value={`${growthIndex?.summary?.abilityCount ?? 0} 个`} />
+              <InfoPanel icon={<FolderOpen />} title="项目贡献" value={`${growthIndex?.summary?.projectCount ?? 0} 个`} />
+              <InfoPanel icon={<ShieldCheck />} title="已确认证据" value={`${growthIndex?.summary?.confirmedCount ?? 0} 条`} />
+              <InfoPanel icon={<Clock3 />} title="待审核" value={`${growthIndex?.summary?.pendingCount ?? 0} 条`} />
+            </div>
+            <section className="growth-workbench">
+              <div className="growth-view-tabs" role="tablist" aria-label="成长模型视图">
+                <button className={growthView === 'abilities' ? 'active' : ''} onClick={() => setGrowthView('abilities')}><Gauge size={18} />能力画像</button>
+                <button className={growthView === 'projects' ? 'active' : ''} onClick={() => setGrowthView('projects')}><FolderOpen size={18} />项目贡献</button>
+                <button className={growthView === 'evidence' ? 'active' : ''} onClick={() => setGrowthView('evidence')}><ListChecks size={18} />成长证据</button>
               </div>
-              <div className="archive-grid">
-                <InfoPanel icon={<ListChecks />} title="候选证据" value={`${growthEvidenceReview.candidates.length} 条`} />
-                <InfoPanel icon={<ShieldCheck />} title="已确认" value={`${growthEvidenceReview.candidates.filter((item) => item.status === 'confirmed').length} 条`} />
-                <InfoPanel icon={<Clock3 />} title="待审核" value={`${growthEvidenceReview.candidates.filter((item) => item.status === 'pending').length} 条`} />
+              <div className="growth-filters">
+                <input value={growthSearch} onChange={(event) => setGrowthSearch(event.target.value)} placeholder="搜索能力、项目或证据" />
+                {growthView === 'projects' && <select value={growthProjectStatusFilter} onChange={(event) => setGrowthProjectStatusFilter(event.target.value)}><option value="all">全部贡献状态</option><option value="published">已发布</option><option value="pending">待审核</option><option value="not_started">尚未形成</option></select>}
+                {growthView === 'evidence' && <select value={growthEvidenceStatusFilter} onChange={(event) => setGrowthEvidenceStatusFilter(event.target.value)}><option value="all">全部证据状态</option><option value="pending">待审核</option><option value="confirmed">已确认</option><option value="watching">观察中</option><option value="rejected">已驳回</option></select>}
+                {growthView === 'evidence' && <select value={growthAbilityFilter} onChange={(event) => setGrowthAbilityFilter(event.target.value)}><option value="all">全部能力</option>{(growthIndex?.abilities ?? []).map((ability) => <option key={ability.name} value={ability.name}>{ability.name}</option>)}</select>}
               </div>
-              <div className="download-list">
-                {growthEvidenceReview.candidates.slice(0, 80).map((candidate) => (
+
+              {growthView === 'abilities' && <div className="growth-card-grid">
+                {filteredGrowthAbilities.map((ability) => (
+                  <button className="growth-card" key={ability.abilityId || ability.name} onClick={() => { setGrowthAbilityFilter(ability.name); setGrowthView('evidence'); }}>
+                    <div className="growth-card-heading"><strong>{ability.name}</strong><span>{growthMaturityLabel(ability.maturity)}</span></div>
+                    <small>{growthTrendLabel(ability.trend)} · 已确认 {ability.confirmedCount}/{ability.evidenceCount}</small>
+                    <div className="growth-meter"><i style={{ width: `${ability.evidenceCount ? Math.round((ability.confirmedCount / ability.evidenceCount) * 100) : 0}%` }} /></div>
+                    <small>来源项目：{ability.projectNames?.join('、') || '暂无项目来源'}</small>
+                    <small>最近观察：{ability.lastObservedAt ? new Date(ability.lastObservedAt).toLocaleDateString('zh-CN') : '暂无'}</small>
+                  </button>
+                ))}
+                {filteredGrowthAbilities.length === 0 && <div className="empty-state">暂无能力画像。先确认成长证据，系统会自动汇总能力维度。</div>}
+              </div>}
+
+              {growthView === 'projects' && <div className="download-list growth-list">
+                {filteredGrowthProjects.map((project) => (
+                  <button className="download-item growth-project-row" key={project.contributionId || project.projectId} onClick={() => openGrowthProject(project.projectId)}>
+                    <span><strong>{project.projectName}</strong><small>{projectStatusLabel(project.status)} · {contributionStatusLabel(project.reviewStatus)} · 证据 {project.evidenceCount} 条</small><small>贡献能力：{project.abilityNames?.join('、') || '尚未标注'} · 已确认 {project.confirmedEvidenceCount ?? 0} 条</small></span>
+                    <ChevronRight size={18} />
+                  </button>
+                ))}
+                {filteredGrowthProjects.length === 0 && <div className="empty-state">暂无项目贡献。项目完成知识审核并发布后，会在这里形成贡献记录。</div>}
+              </div>}
+
+              {growthView === 'evidence' && <div className="download-list growth-list">
+                {filteredGrowthEvidence.map((candidate) => (
                   <div className="download-item" key={candidate.id}>
-                    <span>
-                      <strong>{candidate.title}</strong>
-                      <small>{candidate.projectName || '未关联项目'} · {candidate.status} · {candidate.confidence || '待确认'}</small>
-                      <small>{candidate.sourcePath || candidate.content || '暂无来源'}</small>
-                    </span>
+                    <span><strong>{candidate.title}</strong><small>{candidate.ability || '待标注'} · {candidate.projectName || '未关联项目'} · {candidate.status} · {candidate.confidence || '待确认'}</small><small>{candidate.sourcePath || candidate.content || '暂无来源'}</small>{candidate.migratedFrom && <small>兼容导入自：{candidate.migratedFrom}</small>}</span>
                     <div className="inline-actions">
                       <button className="secondary compact" onClick={() => updateGrowthEvidence(candidate, 'confirmed')}>确认</button>
                       <button className="secondary compact" onClick={() => updateGrowthEvidence(candidate, 'watching')}>观察</button>
@@ -11246,26 +11351,13 @@ ${JSON.stringify(items, null, 2)}
                     </div>
                   </div>
                 ))}
-                {growthEvidenceReview.candidates.length === 0 && <div className="empty-state">暂无候选成长证据。发布项目贡献或执行归档确认清单后会在这里出现。</div>}
-              </div>
+                {filteredGrowthEvidence.length === 0 && <div className="empty-state">当前筛选条件下没有成长证据。</div>}
+              </div>}
             </section>
-            <div className="learning-report-layout">
-              <aside className="learning-report-list">
-                {learningReportDefinitions.map((definition) => (
-                  <button className="learning-report-card" key={definition.id} onClick={() => openLearningReport(definition.id, selectedStudent)}>
-                    <strong>{definition.title}</strong>
-                    <span>{definition.description}</span>
-                    <small>报告中会逐步增加成长证据来源和项目贡献来源。</small>
-                  </button>
-                ))}
-              </aside>
-              <section className="markdown-reader">
-                <div className="reader-toolbar">
-                  <span>{growthIndexPreview ? '结构化索引预览' : 'Growth Layer 工作方式'}</span>
-                </div>
-                <MarkdownView content={growthIndexPreview || `# ${selectedStudent.name} 成长模型\n\n## 定位\n\n成长模型不是普通摘要文件夹，而是学生能力、兴趣、趋势、证据来源和项目贡献的长期索引。\n\n## 建议维护对象\n\n- 能力画像：记录学生在学科、研究、表达、协作、创造等方面的长期变化。\n- 成长证据：记录每条能力判断对应的原始资料、项目、报告或问答来源。\n- 项目贡献：记录学习项目完成后发布到学生主档案的知识贡献。\n- 学情报告：作为面向家长、学生和教师的呈现层输出。\n\n## 下一步\n\n点击“补建成长模型”后，可让 Agent 围绕成长模型目录持续维护这些索引。`} />
-              </section>
-            </div>
+            <details className="growth-index-details">
+              <summary>查看结构化索引说明</summary>
+              <section className="markdown-reader"><MarkdownView content={growthIndexPreview || `# ${selectedStudent.name} 成长模型\n\n成长模型由能力画像、项目贡献和成长证据构成。确认后的数据可供学情报告引用；报告内容不反向写入成长模型。`} /></section>
+            </details>
             {growthMessage && <div className="notice">{growthMessage}</div>}
           </section>
         )}

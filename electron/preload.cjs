@@ -265,6 +265,9 @@ contextBridge.exposeInMainWorld('AndroidBridge', {
   openStudentRootDir(studentId) {
     return ipcRenderer.sendSync('bridge:openStudentRootDir', studentId);
   },
+  openGrowthModelDir(studentId) {
+    return ipcRenderer.sendSync('bridge:openGrowthModelDir', studentId);
+  },
   checkStudentPathHealth(studentId) {
     return ipcRenderer.sendSync('bridge:checkStudentPathHealth', studentId);
   },

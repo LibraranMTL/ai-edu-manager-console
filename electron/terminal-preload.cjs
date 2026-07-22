@@ -1,0 +1,22 @@
+const { contextBridge, ipcRenderer } = require('electron');
+
+contextBridge.exposeInMainWorld('terminalBridge', {
+  getConfig: () => ipcRenderer.invoke('terminal:get-config'),
+  pair: (input) => ipcRenderer.invoke('terminal:pair', input),
+  disconnect: () => ipcRenderer.invoke('terminal:disconnect'),
+  loadState: () => ipcRenderer.invoke('terminal:load-state'),
+  setMode: (terminalMode) => ipcRenderer.invoke('terminal:set-mode', terminalMode),
+  loginStudent: (loginId) => ipcRenderer.invoke('terminal:login-student', loginId),
+  logoutStudent: () => ipcRenderer.invoke('terminal:logout-student'),
+  chooseAndUploadFiles: (target) => ipcRenderer.invoke('terminal:choose-files', target),
+  chooseAutoFolder: () => ipcRenderer.invoke('terminal:choose-auto-folder'),
+  configureAutoDelivery: (input) => ipcRenderer.invoke('terminal:configure-auto-delivery', input),
+  runAutoDelivery: () => ipcRenderer.invoke('terminal:run-auto-delivery'),
+  listCaptureSources: () => ipcRenderer.invoke('terminal:list-capture-sources'),
+  startCapture: (input) => ipcRenderer.invoke('terminal:start-capture', input),
+  stopCapture: () => ipcRenderer.invoke('terminal:stop-capture'),
+  uploadCapture: (input) => ipcRenderer.invoke('terminal:upload-capture', input),
+  onUploadProgress: (handler) => ipcRenderer.on('terminal:upload-progress', (_event, payload) => handler(payload)),
+  onAutoDelivery: (handler) => ipcRenderer.on('terminal:auto-delivery', (_event, payload) => handler(payload)),
+  onCaptureChanged: (handler) => ipcRenderer.on('terminal:capture-changed', (_event, payload) => handler(payload)),
+});

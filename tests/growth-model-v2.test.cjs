@@ -60,7 +60,7 @@ test('growth page owns growth data and does not render report cards', () => {
 test('digestion and report protocols enforce reviewed growth data first', () => {
   assert.match(main, /成长模型是学生长期成长的权威数据层/);
   assert.match(main, /不要在资料消化过程中直接覆盖学情报告/);
-  assert.match(main, /每日行动建议.*统一任务中心/);
+  assert.match(main, /每周行动建议.*统一任务中心/);
   assert.match(ui, /资料消化不直接覆盖四份学情报告/);
   assert.match(ui, /新能力判断、项目贡献和成长证据，先写入成长模型的草稿或待审核候选/);
 });

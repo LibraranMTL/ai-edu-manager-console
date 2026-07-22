@@ -1,17 +1,23 @@
 from __future__ import annotations
 
 import re
+import shutil
+import sys
 from html import escape as html_escape
 from pathlib import Path
 
-from reportlab.lib import colors
-from reportlab.lib.enums import TA_CENTER
-from reportlab.lib.pagesizes import A4
-from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
-from reportlab.lib.units import mm
-from reportlab.pdfbase import pdfmetrics
-from reportlab.pdfbase.ttfonts import TTFont
-from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer
+try:
+    from reportlab.lib import colors
+    from reportlab.lib.enums import TA_CENTER
+    from reportlab.lib.pagesizes import A4
+    from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
+    from reportlab.lib.units import mm
+    from reportlab.pdfbase import pdfmetrics
+    from reportlab.pdfbase.ttfonts import TTFont
+    from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer
+    REPORTLAB_AVAILABLE = True
+except ModuleNotFoundError:
+    REPORTLAB_AVAILABLE = False
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -171,8 +177,9 @@ def manual_html(markdown_text: str, current_page: str) -> str:
     close_list()
 
     toc_html = "".join(f'<a href="#{heading_id}">{html_escape(text)}</a>' for heading_id, text in toc)
-    nav_windows = ' aria-current="page"' if current_page == "windows" else ""
-    nav_tablet = ' aria-current="page"' if current_page == "tablet" else ""
+    nav_host = ' aria-current="page"' if current_page == "host" else ""
+    nav_windows_student = ' aria-current="page"' if current_page == "windows-student" else ""
+    nav_android_student = ' aria-current="page"' if current_page == "android-student" else ""
     return f'''<!doctype html>
 <html lang="zh-CN">
 <head>
@@ -199,6 +206,7 @@ def manual_html(markdown_text: str, current_page: str) -> str:
     article {{ min-width:0; padding:46px clamp(24px,6vw,72px); border:1px solid var(--line); border-radius:8px; background:#fff; box-shadow:0 18px 48px rgba(39,52,76,.08); }}
     h1 {{ margin:0 0 22px; font-size:clamp(28px,4vw,42px); line-height:1.2; letter-spacing:0; overflow-wrap:anywhere; }}
     h2 {{ margin:46px 0 18px; padding-top:8px; color:var(--accent); font-size:24px; line-height:1.35; letter-spacing:0; border-top:1px solid var(--line); }}
+    h2[id] {{ scroll-margin-top:92px; }}
     h2:first-of-type {{ margin-top:28px; border-top:0; }}
     h3 {{ margin:28px 0 12px; font-size:18px; letter-spacing:0; }}
     p {{ margin:12px 0; color:#35455a; overflow-wrap:anywhere; }}
@@ -209,7 +217,7 @@ def manual_html(markdown_text: str, current_page: str) -> str:
     pre code {{ padding:0; background:transparent; color:#273447; }}
     blockquote {{ margin:18px 0; padding:14px 18px; border-left:4px solid var(--accent); background:var(--soft); color:#4b3b67; }}
     footer {{ padding:30px 16px; text-align:center; color:#8b98a9; font-size:13px; }}
-    @media(max-width:820px) {{ .topbar-inner {{ width:calc(100% - 24px); min-width:0; align-items:flex-start; flex-direction:column; padding:14px 0; }} .menu {{ width:100%; min-width:0; display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); justify-content:stretch; }} .menu a {{ min-width:0; padding:8px; text-align:center; overflow-wrap:anywhere; }} .layout {{ width:calc(100% - 24px); min-width:0; grid-template-columns:minmax(0,1fr); margin-top:20px; }} .toc {{ position:static; min-width:0; max-height:260px; }} article {{ min-width:0; padding:30px 22px; }} h1 {{ font-size:28px; }} }}
+    @media(max-width:820px) {{ .topbar-inner {{ width:calc(100% - 24px); min-width:0; align-items:flex-start; flex-direction:column; padding:14px 0; }} .menu {{ width:100%; min-width:0; display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); justify-content:stretch; }} .menu a {{ min-width:0; padding:8px; text-align:center; overflow-wrap:anywhere; }} .layout {{ width:calc(100% - 24px); min-width:0; grid-template-columns:minmax(0,1fr); margin-top:20px; }} .toc {{ position:static; min-width:0; max-height:260px; }} article {{ min-width:0; padding:30px 22px; }} h1 {{ font-size:28px; }} h2[id] {{ scroll-margin-top:190px; }} }}
   </style>
 </head>
 <body>
@@ -217,8 +225,9 @@ def manual_html(markdown_text: str, current_page: str) -> str:
     <a class="brand" href="./download.html">AI教育管家</a>
     <nav class="menu" aria-label="网站菜单">
       <a href="./download.html">软件下载</a>
-      <a href="./windows-manual.html"{nav_windows}>Windows 主机版手册</a>
-      <a href="./tablet-manual.html"{nav_tablet}>平板终端家长版手册</a>
+      <a href="./windows-host-manual.html"{nav_host}>Windows 主机端</a>
+      <a href="./windows-student-manual.html"{nav_windows_student}>Windows 学生端</a>
+      <a href="./android-student-manual.html"{nav_android_student}>Android 学生端</a>
       <a href="./privacy.html">隐私政策</a>
       <a href="./agreement.html">用户协议</a>
     </nav>
@@ -239,11 +248,23 @@ def build_web_manual(markdown_name: str, html_name: str, current_page: str) -> N
 
 
 def main() -> None:
-    register_fonts()
-    build_manual("Windows主机版操作手册.md", "AI教育管家 Windows 主机版操作手册.pdf")
-    build_manual("平板终端家长版操作手册.md", "AI教育管家平板终端家长版操作手册.pdf")
-    build_web_manual("Windows主机版操作手册.md", "windows-manual.html", "windows")
-    build_web_manual("平板终端家长版操作手册.md", "tablet-manual.html", "tablet")
+    web_only = "--web-only" in sys.argv
+    if not web_only:
+        if not REPORTLAB_AVAILABLE:
+            raise RuntimeError("生成 PDF 需要 reportlab；仅生成网页时请使用 --web-only。")
+        register_fonts()
+        build_manual("Windows主机版操作手册.md", "AI教育管家 Windows 主机端操作手册.pdf")
+        build_manual("Windows学生终端操作手册.md", "AI教育管家 Windows 学生端操作手册.pdf")
+        build_manual("Android学生终端操作手册.md", "AI教育管家 Android 学生端操作手册.pdf")
+        # 旧文件名保留为当前正式文件的逐字节副本，避免既有交付链接失效或内容漂移。
+        shutil.copy2(DELIVERY / "AI教育管家 Windows 主机端操作手册.pdf", DELIVERY / "AI教育管家 Windows 主机版操作手册.pdf")
+        shutil.copy2(DELIVERY / "AI教育管家 Android 学生端操作手册.pdf", DELIVERY / "AI教育管家平板终端家长版操作手册.pdf")
+    build_web_manual("Windows主机版操作手册.md", "windows-host-manual.html", "host")
+    build_web_manual("Windows学生终端操作手册.md", "windows-student-manual.html", "windows-student")
+    build_web_manual("Android学生终端操作手册.md", "android-student-manual.html", "android-student")
+    # 兼容旧网址，但页面内容和导航均使用三端新结构。
+    build_web_manual("Windows主机版操作手册.md", "windows-manual.html", "host")
+    build_web_manual("Android学生终端操作手册.md", "tablet-manual.html", "android-student")
 
 
 if __name__ == "__main__":

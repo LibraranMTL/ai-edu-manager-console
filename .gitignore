@@ -31,6 +31,9 @@ logs/
 tmp/
 temp/
 .cache/
+__pycache__/
+*.py[cod]
+.gbrain-evaluation/
 tools/license-admin/license-records.json
 tools/license-admin/license-records-*.csv
 .DS_Store

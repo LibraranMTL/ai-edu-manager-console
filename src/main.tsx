@@ -40,13 +40,16 @@ import {
   Trash2,
   UserRound,
   Zap,
+  X,
 } from 'lucide-react';
 import './styles.css';
+import { DigestStatusCard, type DigestWorkflowStatus } from './DigestStatusCard';
 
 type Section = 'home' | 'init' | 'new' | 'inbox' | 'assets' | 'projects-new' | 'projects-existing' | 'growth' | 'reports' | 'archive' | 'qa' | 'memory' | 'soul' | 'rules' | 'conversation' | 'tasks' | 'settings';
-type ProjectWorkflowTarget = 'workspace' | 'assets' | 'digest' | 'knowledge' | 'promotion';
+type ProjectWorkflowTarget = 'workspace' | 'assets' | 'digest' | 'knowledge' | 'evidence' | 'promotion';
 type ThemeName = 'blue' | 'pink' | 'green' | 'purple' | 'orange';
 type LanguageCode = 'zh-CN' | 'zh-TW' | 'en' | 'fr' | 'es' | 'ja' | 'ko' | 'vi' | 'ms';
+type ClipboardNotice = { id: number; ok: boolean; title: string; detail: string; preview: string };
 type AgentToolId =
   | 'qclaw'
   | 'marvis'
@@ -71,6 +74,8 @@ type LearningReportId = 'profile' | 'changes' | 'daily' | 'stage';
 type RuntimePlatform = 'android' | 'windows' | 'web' | string;
 type ProjectDashboardFocus = 'all' | 'active' | 'materials' | 'knowledge' | 'contributions' | 'risks' | 'digest';
 type GrowthView = 'abilities' | 'projects' | 'evidence';
+type ProjectPageMode = 'list' | 'detail';
+type ProjectKnowledgeCategoryId = 'all' | 'concept' | 'entity' | 'summary' | 'qa' | 'synthesis';
 
 type AgentToolProfile = {
   id: AgentToolId;
@@ -123,6 +128,9 @@ type AgentToolAdapter = {
 
 type Student = {
   id: string;
+  loginId?: string;
+  loginIdVersion?: number;
+  loginIdIssuedAt?: string;
   name: string;
   grade: string;
   school: string;
@@ -270,8 +278,13 @@ type LearningProject = {
   workspacePath: string;
   workspaceMode?: 'managed' | 'linked' | string;
   workspaceLastScannedAt?: string;
+  workspaceScanSnapshot?: Record<string, { size?: number; mtimeMs?: number }>;
+  workspaceRebindHistory?: Array<{ id?: string; at?: string; oldPath?: string; newPath?: string; status?: string; rolledBackAt?: string }>;
   stagingPath?: string;
   knowledgeRootPath: string;
+  knowledgeMode?: 'managed' | 'adopted' | string;
+  knowledgeSpaceId?: string;
+  knowledgeAdoption?: { adoptedAt?: string; pathmapPath?: string; recordPath?: string; warnings?: string[] } | null;
   rawPath: string;
   summaryPath: string;
   agentPath: string;
@@ -283,7 +296,16 @@ type LearningProject = {
   growthStrategy?: string;
   deliverables?: string[];
   duplicatedFrom?: string;
-  studentEvidence?: Array<{ studentId: string; ability?: string; observation?: string; status?: string; updatedAt?: string }>;
+  studentEvidence?: Array<{
+    studentId: string;
+    ability?: string;
+    observation?: string;
+    status?: string;
+    confidence?: string;
+    sourcePaths?: string[];
+    generatedBy?: string;
+    updatedAt?: string;
+  }>;
   automation?: { enabled?: boolean; onWorkspaceChange?: boolean; onStatusChange?: boolean; intervalMinutes?: number; nextRunAt?: string; lastRunAt?: string; lastReason?: string };
   dashboard?: { knowledgeCount?: number; pendingKnowledgeCount?: number; pendingStagingCount?: number; acceptedStagingCount?: number; contributionReady?: boolean; contributionStatus?: string; knowledgeCoverage?: number; riskCount?: number; riskReasons?: string[] };
   promotionPath?: string;
@@ -307,7 +329,7 @@ type CrossProjectKnowledgeGroup = {
   records: Array<{ projectId: string; recordId?: string; studentId?: string; title?: string; status?: string }>;
 };
 
-type RemovedProjectRecord = { snapshotPath: string; removedAt?: string; project: LearningProject };
+type RemovedProjectRecord = { snapshotPath: string; deletedAt?: string; removedAt?: string; deletionType?: 'record_only' | string; project: LearningProject };
 
 type ProjectDigestState = {
   status?: 'idle' | 'pending' | 'submitted' | 'digesting' | 'completed' | 'failed' | string;
@@ -358,6 +380,26 @@ type ProjectStagingItem = {
   governanceReviewedAt?: string;
 };
 
+type ProjectScreeningPreview = {
+  ok?: boolean;
+  parserVersion?: string;
+  parsedCount?: number;
+  matchedCount?: number;
+  unmatchedCount?: number;
+  message?: string;
+  changes?: Array<{
+    stagingId?: string;
+    filename?: string;
+    matchBasis?: string;
+    fromStatus?: string;
+    toStatus?: string;
+    fromStrategy?: string;
+    toStrategy?: string;
+    aiReason?: string;
+  }>;
+  unmatched?: Array<{ index?: number; id?: string; filename?: string; path?: string; reason?: string }>;
+};
+
 type ProjectKnowledgeRecord = {
   id: string;
   kind: string;
@@ -373,6 +415,22 @@ type ProjectKnowledgeRecord = {
   generatedAt?: string;
 };
 
+type ProjectUnifiedReviewPackage = {
+  schema: string;
+  projectId: string;
+  generatedAt: string;
+  ready: { materialIds: string[]; knowledgeIds: string[]; count: number };
+  attention: {
+    materials: Array<{ id: string; title: string; reason: string }>;
+    knowledge: Array<{ id: string; title: string; reason: string }>;
+    evidence: Array<{ studentId: string; title: string; reason: string }>;
+    count: number;
+  };
+  pendingDigest: number;
+  primaryAction: 'approve_ready' | 'assess_materials' | 'digest' | 'review_knowledge' | 'review_evidence' | 'complete';
+  message: string;
+};
+
 type PromotionAction = 'reference' | 'publish' | 'absorb' | 'skip';
 
 type PromotionPlanItem = {
@@ -382,6 +440,7 @@ type PromotionPlanItem = {
   sourcePath?: string;
   assetId?: string;
   content?: string;
+  studentId?: string;
   action: PromotionAction;
   defaultAction?: PromotionAction;
   allowedActions: PromotionAction[];
@@ -395,6 +454,7 @@ type PromotionPlan = {
   items: PromotionPlanItem[];
   message?: string;
 };
+type ProjectCompletionBlocker = { severity: string; target: ProjectWorkflowTarget; code: string; title: string; detail: string; blocking: boolean };
 
 type ProjectAuditItem = {
   id: string;
@@ -441,10 +501,43 @@ type GrowthEvidenceCandidate = {
   updatedAt?: string;
   createdAt?: string;
   migratedFrom?: string;
+  review?: { status?: string; reviewerRole?: string; reviewerId?: string; reviewedAt?: string };
+  reviewerRole?: string;
+  reviewerId?: string;
+  reviewedAt?: string;
+  reviewHistory?: Array<{ from?: string; to?: string; note?: string; reviewerRole?: string; reviewerId?: string; reviewedAt?: string }>;
 };
 
 type GrowthEvidenceReviewState = {
   candidates: GrowthEvidenceCandidate[];
+};
+
+type LegacyGrowthReviewQueueItem = {
+  evidenceId: string;
+  legacyStatus?: string;
+  currentProtocolStatus?: string;
+  reason?: string;
+  requiredFields?: string[];
+  actions?: string[];
+};
+
+type GrowthEvidenceRiskItem = {
+  evidenceId: string;
+  level: 'low' | 'medium' | 'high' | string;
+  label: string;
+  actionable: boolean;
+  requiresIndividualReview: boolean;
+  defaultHidden: boolean;
+  suggestedAction: string;
+  reasons: Array<{ code: string; label: string }>;
+};
+
+type GrowthEvidenceRiskAssessment = {
+  assessments: GrowthEvidenceRiskItem[];
+  confirmIds: string[];
+  watchIds: string[];
+  individualIds: string[];
+  summary: { total: number; actionable: number; low: number; medium: number; high: number; batchProcessable: number; individuallyReviewed: number; alreadyProcessed: number };
 };
 
 type GrowthIndexState = {
@@ -547,7 +640,7 @@ type TaskCenterItem = {
   routeAttempts?: string[];
   adapterId?: string;
   approval?: { required?: boolean; status?: string; note?: string; reviewedAt?: string; reviewedBy?: string };
-  result?: { summary?: string; message?: string; validation?: { valid?: boolean; message?: string }; packet?: { packetPath?: string; promptPath?: string }; [key: string]: unknown } | null;
+  result?: { summary?: string; message?: string; completedAt?: string; validation?: { valid?: boolean; message?: string }; packet?: { packetPath?: string; promptPath?: string }; feedback?: { date?: string; status?: string; note?: string; submittedAt?: string }; [key: string]: unknown } | null;
   error?: { code?: string; message?: string } | null;
   routeDecision?: { mode?: string; selectedAdapter?: string; reason?: string; candidates?: Array<{ adapterId: string; label: string; score: number; available: boolean; mode: string; successRate?: number; costWeight?: number }> } | null;
   permissions?: { read?: string[]; write?: string[]; operations?: string[] };
@@ -580,13 +673,14 @@ type KnowledgeGraphNode = {
 type StudentDraft = Omit<Student, 'id' | 'createdAt' | 'status'>;
 
 type AndroidBridge = {
-  copyText?: (value: string) => void;
+  copyText?: (value: string) => Promise<string>;
   exportTextFile?: (filename: string, content: string) => string;
-  importFiles?: (studentName: string) => boolean | string;
+  importFiles?: (studentName: string, targetJson?: string) => boolean | string;
   pickMaterialSourceDir?: () => string;
   scanMaterialSources?: (studentId: string, sourcesJson: string) => string;
-  importMaterialSourceFiles?: (studentId: string, pathsJson: string) => string;
+  importMaterialSourceFiles?: (studentId: string, pathsJson: string, targetJson?: string) => string;
   getMaterialImportRecords?: (studentId: string) => string;
+  removeMaterialImportRecords?: (studentId: string, recordIdsJson: string) => string;
   getCaptureCenterState?: () => string;
   listCaptureSources?: () => Promise<string>;
   startCaptureSession?: (optionsJson: string) => Promise<string>;
@@ -594,7 +688,8 @@ type AndroidBridge = {
   resumeCaptureSession?: (sessionId: string) => Promise<string>;
   highlightCaptureSession?: (sessionId: string) => Promise<string>;
   stopCaptureSession?: (sessionId: string) => Promise<string>;
-  promoteCaptureSession?: (sessionId: string) => Promise<string>;
+  promoteCaptureSession?: (sessionId: string, targetMode?: 'project_raw' | 'student_raw') => Promise<string>;
+  deleteCaptureSession?: (sessionId: string) => Promise<string>;
   openCaptureInbox?: (sessionId?: string) => string;
   getAssetIndex?: () => string;
   rebuildAssetIndex?: () => string;
@@ -607,36 +702,52 @@ type AndroidBridge = {
   createProject?: (optionsJson: string) => string;
   updateProjectMetadata?: (projectId: string, metadataJson: string) => string;
   removeProjectRecord?: (projectId: string) => string;
+  deleteLearningProject?: (projectId: string) => string;
   relocateProjectWorkspace?: (projectId: string) => string;
+  confirmProjectWorkspaceRelocation?: (projectId: string, workspacePath: string) => string;
+  rollbackProjectWorkspaceRelocation?: (projectId: string) => string;
   getRemovedProjects?: () => string;
   restoreRemovedProject?: (snapshotPath: string) => string;
   exportProjectPackage?: (projectId: string) => string;
   importProjectPackage?: () => string;
   duplicateProject?: (projectId: string, name: string) => string;
   updateProjectStudentEvidence?: (projectId: string, studentId: string, evidenceJson: string) => string;
+  getProjectStudentEvidencePrompt?: (projectId: string) => string;
+  importProjectStudentEvidenceSuggestions?: (projectId: string, pastedText?: string) => string;
   buildCrossProjectKnowledgeIndex?: () => string;
   pickProjectWorkspaceDir?: () => string;
+  pickProjectKnowledgeBaseDir?: () => string;
+  inspectProjectKnowledgeBase?: (rootPath: string) => string;
   updateProjectStatus?: (projectId: string, status: string) => string;
   updateProjectStudents?: (projectId: string, studentIdsJson: string) => string;
   applyProjectWorkspaceTemplate?: (projectId: string, templateId: string, foldersJson: string, templateName?: string, templateV2Json?: string) => string;
   openProjectSpace?: (projectId: string, space: 'root' | 'workspace' | 'raw' | 'knowledge') => string;
-  scanProjectWorkspace?: (projectId: string) => string;
+  scanProjectWorkspace?: (projectId: string) => Promise<string>;
+  cancelProjectWorkspaceScan?: (projectId: string) => Promise<string>;
+  onProjectWorkspaceScanProgress?: (callback: (payload: { projectId: string; phase: string; visited?: number; total?: number; percent?: number; message?: string }) => void) => () => void;
   reviewProjectStagingItems?: (projectId: string, itemIdsJson: string, decision: string, sourceStrategy: string, note: string) => string;
   getProjectKnowledgeReview?: (projectId: string) => string;
   updateProjectKnowledgeReview?: (projectId: string, recordIdsJson: string, status: string, note: string) => string;
+  getProjectUnifiedReview?: (projectId: string) => string;
+  applyProjectUnifiedReview?: (projectId: string) => string;
   importProjectAssets?: (projectId: string, assetIdsJson: string) => string;
   importProjectRawFiles?: (projectId: string) => string;
   getProjectDigestCommand?: (projectId: string) => string;
   markProjectDigestSubmitted?: (projectId: string) => string;
   syncProjectDigestResult?: (projectId: string) => string;
+  applyProjectDigestReceiptText?: (projectId: string, rawText: string) => string;
   importProjectStagingFiles?: (projectId: string) => string;
   updateProjectStagingStatus?: (projectId: string, itemIdsJson: string, status: string) => string;
   promoteProjectStagingItems?: (projectId: string, itemIdsJson: string) => string;
+  approveAndPromoteProjectStagingItems?: (projectId: string, itemIdsJson: string, sourceStrategy: string, note: string) => string;
+  previewProjectStagingAiScreening?: (projectId: string, rawText: string) => string;
+  applyProjectStagingAiScreening?: (projectId: string, rawText: string) => string;
   importProjectStagingAiScreening?: (projectId: string) => string;
   analyzeProjectStagingGovernance?: (projectId: string) => string;
   generateProjectPromotion?: (projectId: string) => string;
   getProjectPromotionPlan?: (projectId: string) => string;
   getProjectPromotionAudit?: (projectId: string) => string;
+  getProjectCompletionWizard?: (projectId: string) => string;
   executeProjectPromotionPlan?: (projectId: string, planJson: string) => string;
   publishProjectPromotion?: (projectId: string) => string;
   rollbackProjectPromotionRun?: (projectId: string, runId: string) => string;
@@ -666,6 +777,10 @@ type AndroidBridge = {
   saveAgentConversationImport?: (studentId: string, content: string, tool: AgentToolId, sourcePath?: string) => string;
   selectAgentConversationFiles?: (studentId: string, tool: AgentToolId) => string;
   saveConversationExtract?: (studentId: string, extractJson: string, tool: AgentToolId) => string;
+  updateConversationKnowledgeCandidate?: (studentId: string, candidateId: string, action: string, payloadJson: string) => string;
+  promoteConversationKnowledgeCandidates?: (studentId: string, requestJson: string) => string;
+  rollbackConversationPromotion?: (studentId: string, transactionId: string) => string;
+  ingestKnowledgeCandidateEnvelope?: (studentId: string, envelopeJson: string) => string;
   openStudentRootDir?: (studentId: string) => string;
   openGrowthModelDir?: (studentId: string) => string;
   checkStudentPathHealth?: (studentId: string) => string;
@@ -684,12 +799,15 @@ type AndroidBridge = {
   getArchiveRootStatus?: () => string;
   listMarkdownFiles?: (studentName: string) => string;
   readMarkdownFile?: (documentId: string) => string;
+  listProjectKnowledgeFiles?: (projectId: string) => string;
+  readProjectKnowledgeFile?: (projectId: string, documentId: string) => string;
   listLearningReports?: (studentId: string) => string;
   readLearningReport?: (studentId: string, reportId: LearningReportId) => string;
   ensureLearningReports?: (studentId: string) => string;
   ensureGrowthModel?: (studentId: string) => string;
   getGrowthEvidenceReview?: (studentId: string) => string;
   updateGrowthEvidenceStatus?: (studentId: string, evidenceId: string, status: string, note?: string) => string;
+  batchReviewGrowthEvidence?: (studentId: string) => string;
   rebuildGrowthIndex?: (studentId: string) => string;
   getGrowthIndex?: (studentId: string) => string;
   checkUpdate?: (manifestUrl: string, currentVersionCode: number) => boolean;
@@ -704,6 +822,7 @@ type AndroidBridge = {
   scanKnowledgeBase?: (rootPath: string, studentName: string) => string;
   ensureAdoptedKnowledgeBase?: (optionsJson: string) => string;
   getHostServiceStatus?: () => string;
+  setHostUsageMode?: (mode: 'host' | 'host_terminal') => string;
   getHostServiceDiagnostics?: () => string;
   repairHostService?: () => string;
   startHostService?: () => string;
@@ -711,6 +830,11 @@ type AndroidBridge = {
   setHostServicePort?: (port: number) => string;
   getHostConnectionInfo?: () => string;
   getHostDevices?: () => string;
+  renameHostIdentity?: (displayName: string) => string;
+  findLanTablets?: () => string;
+  inviteLanTablet?: (tabletId: string) => string;
+  acceptHostPairRequest?: (requestId: string) => string;
+  rejectPairRequest?: (requestId: string) => string;
   getHostUploadRecords?: () => string;
   exportHostUploadRecords?: () => string;
   openHostUploadRecord?: (recordId: string) => string;
@@ -718,6 +842,11 @@ type AndroidBridge = {
   setHostUploadRecordStatus?: (recordId: string, status: string) => string;
   markStudentDigestSubmitted?: (studentId: string) => string;
   syncStudentDigestResult?: (studentId: string) => string;
+  startDigestWorkflow?: (scopeType: 'student' | 'project', scopeId: string, executor?: string) => string;
+  getDigestWorkflowStatus?: (scopeType: 'student' | 'project', scopeId: string) => string;
+  getDigestWorkflowCommand?: (scopeType: 'student' | 'project', scopeId: string) => string;
+  retryDigestWorkflow?: (scopeType: 'student' | 'project', scopeId: string, executor?: string) => string;
+  importDigestWorkflowResultText?: (scopeType: 'student' | 'project', scopeId: string, content: string) => string;
   getStudentDigestAudit?: (studentId: string) => string;
   generateStudentDigestAudit?: (studentId: string, selectedIdsJson: string) => string;
   syncStudentDigestAudit?: (studentId: string) => string;
@@ -731,9 +860,11 @@ type AndroidBridge = {
   retryTask?: (taskId: string) => string;
   cancelTask?: (taskId: string, note?: string) => string;
   importTaskResult?: (taskId: string) => string;
+  importTaskResultText?: (taskId: string, content: string) => string;
   syncQClawTaskResults?: () => string;
   submitDailyActionFeedback?: (taskId: string, status: string, note?: string) => string;
   openTaskCenterPath?: (kind: 'root' | 'qclaw-inbox' | 'qclaw-results' | 'manual-outbox' | 'events') => string;
+  openTaskResultPath?: (taskId: string) => string;
   generateStudentMaintenanceReport?: (studentId: string) => string;
   getHostTimeline?: () => string;
   backupHostData?: (studentsJson?: string) => string;
@@ -748,6 +879,7 @@ type AndroidBridge = {
   deleteHostDevice?: (deviceId: string) => string;
   setHostDeviceStudentAccess?: (deviceId: string, studentIdsJson: string) => string;
   setHostDeviceAccessMode?: (deviceId: string, optionsJson: string) => string;
+  setHostDeviceTerminalMode?: (deviceId: string, terminalMode: 'personal' | 'shared', boundStudentId?: string) => string;
 };
 
 type UpdateInfo = {
@@ -767,6 +899,7 @@ type MarkdownFile = {
   name: string;
   path: string;
   modified?: number;
+  category?: string;
 };
 
 type LearningReport = {
@@ -914,6 +1047,9 @@ type CaptureSession = {
   highlightedCount: number;
   inboxPath?: string;
   archiveStatus?: string;
+  promotionTarget?: 'project_raw' | 'student_raw' | string;
+  promotionTargetId?: string;
+  promotionTargetName?: string;
   lastError?: string;
   items?: CaptureItem[];
   options?: { mode?: string; policyName?: string; durationMinutes?: number };
@@ -945,8 +1081,15 @@ type StorageConfig = {
 
 type HostServiceStatus = {
   running: boolean;
+  usageMode?: 'host' | 'host_terminal';
   discoveryRunning?: boolean;
   discoveryPort?: number;
+  pairProtocolVersion?: number;
+  hostIdentity?: { hostId: string; machineCode: string; displayName: string };
+  pairRequests?: HostPairRequest[];
+  pendingPairRequestCount?: number;
+  discoveredTablets?: DiscoveredTablet[];
+  lastTabletDiscoveryAt?: string;
   port: number;
   serverUrl?: string;
   lanUrls?: string[];
@@ -983,6 +1126,8 @@ type LicenseStatus = {
 type HostStudentStat = {
   id: string;
   name: string;
+  loginId?: string;
+  loginQrPayload?: string;
   rawFileCount?: number;
   archiveFileCount?: number;
   pendingDigestCount?: number;
@@ -1083,10 +1228,16 @@ type HostServiceDiagnostics = {
 type HostDevice = {
   id: string;
   name: string;
+  machineCode?: string;
+  pairedProtocolVersion?: number;
   tokenPreview?: string;
   allowedStudentIds?: string[];
   allowedAllStudents?: boolean;
   autoAuthorizeNewStudents?: boolean;
+  terminalMode?: 'personal' | 'shared';
+  boundStudentId?: string;
+  activeStudentId?: string;
+  capabilities?: string[];
   authorizationStatus?: 'pending' | 'approved' | 'revoked';
   revoked?: boolean;
   createdAt?: string;
@@ -1097,6 +1248,29 @@ type HostDevice = {
   lastUserAgent?: string;
   uploadCount?: number;
   lastUploadAt?: string;
+};
+
+type HostPairRequest = {
+  requestId: string;
+  initiator: 'host' | 'tablet';
+  tabletId: string;
+  tabletMachineCode: string;
+  tabletName: string;
+  status: string;
+  createdAt?: string;
+  updatedAt?: string;
+  expiresAt?: string;
+  tabletAddress?: string;
+  hostAddress?: string;
+};
+
+type DiscoveredTablet = {
+  deviceId: string;
+  machineCode: string;
+  displayName: string;
+  appVersion?: string;
+  address?: string;
+  lastSeenAt?: string;
 };
 
 type AgentToolInstall = {
@@ -1759,10 +1933,47 @@ type AgentConversationState = {
   importsDir?: string;
   extractsDir?: string;
   index?: {
-    imports?: Array<{ path?: string; tool?: AgentToolId; importedAt?: string; size?: number }>;
+    imports?: Array<{ path?: string; tool?: AgentToolId; importedAt?: string; size?: number; interactionId?: string; assetId?: string; messageCount?: number }>;
     extracts?: Array<{ path?: string; tool?: AgentToolId; importedAt?: string; memoryCount?: number; soulCount?: number; qaCount?: number; todoCount?: number }>;
   };
+  latestInteraction?: {
+    id: string;
+    assetId?: string;
+    messages?: Array<{ id: string; role: string; content: string; locator?: string; occurredAt?: string }>;
+  } | null;
+  governance?: ConversationGovernanceState;
   message?: string;
+};
+type ConversationKnowledgeCandidate = {
+  id: string;
+  target: 'memory' | 'soul' | 'qa' | 'todo';
+  content: string;
+  status: 'pending' | 'rejected' | 'merged' | 'conflict' | 'expired' | 'promoted' | 'revoked';
+  tool?: AgentToolId;
+  source?: {
+    type?: string;
+    sourceUri?: string;
+    sourcePath?: string;
+    snippet?: string;
+    messageId?: string;
+    locator?: string;
+  };
+  risk?: { level?: 'low' | 'medium' | 'high'; blocked?: boolean; reasons?: Array<{ code: string; label: string; blocking?: boolean }> };
+  updatedAt?: string;
+  promotionTransactionId?: string;
+  history?: Array<{ action?: string; at?: string; note?: string }>;
+};
+type ConversationPromotionTransaction = {
+  id: string;
+  status: 'preparing' | 'committed' | 'reversed' | 'failed';
+  promotedAt?: string;
+  reversedAt?: string;
+  candidateIds?: string[];
+};
+type ConversationGovernanceState = {
+  candidates: ConversationKnowledgeCandidate[];
+  transactions: ConversationPromotionTransaction[];
+  summary: { total: number; pending: number; blocked: number; promoted: number; rejected: number };
 };
 type AgentKnowledgeCandidate = {
   path: string;
@@ -2387,11 +2598,20 @@ const archiveCategories: Array<{ id: ArchiveCategoryId; label: string }> = [
   { id: 'all', label: '全部文件' },
 ];
 
+const projectKnowledgeCategories: Array<{ id: ProjectKnowledgeCategoryId; label: string }> = [
+  { id: 'all', label: '全部知识' },
+  { id: 'concept', label: '概念' },
+  { id: 'entity', label: '实体' },
+  { id: 'summary', label: '摘要' },
+  { id: 'qa', label: '问答精华' },
+  { id: 'synthesis', label: '综合汇总' },
+];
+
 const learningReportDefinitions: Array<{ id: LearningReportId; title: string; fileName: string; description: string }> = [
-  { id: 'profile', title: '整体画像', fileName: '整体画像.md', description: '了解学生当前优势、短板、学习方式和沟通注意点。' },
-  { id: 'daily', title: '每日行动建议', fileName: '每日行动建议.md', description: '给学生、家长、老师的今日行动提醒。' },
-  { id: 'changes', title: '历史变化', fileName: '历史变化.md', description: '查看最近 7 天、30 天和阶段性的能力与习惯变化。' },
-  { id: 'stage', title: '阶段总结', fileName: '阶段总结.md', description: '本阶段进展、问题、证据和下一步建议。' },
+  { id: 'profile', title: '整体画像', fileName: '整体画像.md', description: '了解学生当前优势、短板、学习方式和沟通注意点。', cycle: '每月更新；重要证据确认后提前更新' },
+  { id: 'daily', title: '每周行动建议', fileName: '每日行动建议.md', description: '给学生、家长、老师的本周行动安排；保留原文件名兼容既有档案。', cycle: '每周更新；同一周只保留一个任务' },
+  { id: 'changes', title: '历史变化', fileName: '历史变化.md', description: '查看最近 7 天、30 天和阶段性的能力与习惯变化。', cycle: '每周更新；新证据确认后增量更新' },
+  { id: 'stage', title: '阶段总结', fileName: '阶段总结.md', description: '本阶段进展、问题、证据和下一步建议。', cycle: '每月更新；项目或课程阶段结束时提前更新' },
 ];
 
 const defaultDraft: StudentDraft = {
@@ -2968,10 +3188,10 @@ ${lp.root}/
 1. 面向家长、学生、教师可读，避免内部技术术语。
 2. 每份报告顶部保留更新时间、适用对象、状态。
 3. 结论必须对应学情分析汇总中的依据来源。
-4. “每日行动建议”必须分为：给学生、给家长、给老师。
+4. “每周行动建议”必须包含：每周重点、每日固定动作、阶段性里程碑、给学生、给家长、给老师。
 5. 不确定判断标注“待观察”，不要写成定论。
 6. 不要删除原有报告内容；判断发生变化时，在“历史变化”或“阶段总结”中说明变化原因。
-7. 当天无新增资料时，也可以根据已有档案更新“每日行动建议”，但要注明依据。
+7. 本周无新增资料时，也可以根据已有档案更新“每周行动建议”，但要注明依据。
 
 ## 8. 命令约定
 
@@ -3143,11 +3363,11 @@ function buildLearningReportTemplate(student: StudentDraft, reportId: LearningRe
       sections: ['最近 7 天变化', '最近 30 天变化', '能力变化', '习惯变化', '问题变化', '目标变化', '依据来源'],
     },
     daily: {
-      title: '每日行动建议',
-      type: 'daily_action',
+      title: '每周行动建议',
+      type: 'weekly_action',
       target: '学生 / 家长 / 教师',
-      paragraph: '今日重点',
-      sections: ['今日重点', '给学生', '给家长', '给老师', '今日不建议做的事', '观察点', '依据来源'],
+      paragraph: '每周重点',
+      sections: ['每周重点', '每日固定动作', '阶段性里程碑', '给学生', '给家长', '给老师', '本周不建议做的事', '观察点', '依据来源'],
     },
     stage: {
       title: '阶段总结',
@@ -3575,7 +3795,7 @@ ${projectRule}
 2. 处理完成后更新 ${p.index} 和 ${p.log}。
 3. 如果没有新增资料，请在 log.md 中记录“无新增资料”。
 4. 消化产生的新能力判断、项目贡献和成长证据，先写入成长模型的草稿或待审核候选；未经人工确认，不得直接写成稳定能力结论。
-5. 资料消化不直接覆盖四份学情报告。学情报告由已确认成长模型另行生成；每日行动建议通过统一任务中心审核发布。
+5. 资料消化不直接覆盖四份学情报告。学情报告由已确认成长模型另行生成；每周行动建议通过统一任务中心审核发布。
 6. 如果没有足够依据，请保留“待补充”或标注“待观察”，不要编造结论。
 7. 消化完成后，请更新 ${p.root}${separator}.edu-manager${separator}digest-state.json，格式为：
 {
@@ -3705,6 +3925,7 @@ function App() {
   const [importMessage, setImportMessage] = useState('');
   const [pendingImportStudentId, setPendingImportStudentId] = useState('');
   const [digestMessage, setDigestMessage] = useState('');
+  const [clipboardNotice, setClipboardNotice] = useState<ClipboardNotice | null>(null);
   const [studentSaveMessage, setStudentSaveMessage] = useState('');
   const [agentConnectionMessage, setAgentConnectionMessage] = useState('');
   const [copiedAgentConnectionStepId, setCopiedAgentConnectionStepId] = useState<InitStepId | null>(null);
@@ -3742,13 +3963,16 @@ function App() {
   const [materialSourceMessage, setMaterialSourceMessage] = useState('');
   const [materialSourceFiles, setMaterialSourceFiles] = useState<MaterialSourceCandidate[]>([]);
   const [selectedMaterialSourcePaths, setSelectedMaterialSourcePaths] = useState<string[]>([]);
+  const [materialImportTargetKey, setMaterialImportTargetKey] = useState('student');
   const [materialImportRecords, setMaterialImportRecords] = useState<MaterialImportRecord[]>([]);
+  const [selectedMaterialImportRecordIds, setSelectedMaterialImportRecordIds] = useState<string[]>([]);
   const [captureCenter, setCaptureCenter] = useState<CaptureCenterState>({ policies: [], activeSession: null, sessions: [] });
   const [captureSources, setCaptureSources] = useState<CaptureSource[]>([]);
   const [captureSourceId, setCaptureSourceId] = useState('');
   const [captureMode, setCaptureMode] = useState<'smart' | 'change' | 'interval'>('smart');
   const [captureDuration, setCaptureDuration] = useState(30);
   const [captureProjectId, setCaptureProjectId] = useState('');
+  const [capturePromotionTargets, setCapturePromotionTargets] = useState<Record<string, 'project_raw' | 'student_raw'>>({});
   const [captureMessage, setCaptureMessage] = useState('');
   const [captureBusy, setCaptureBusy] = useState(false);
   const [assetIndex, setAssetIndex] = useState<AssetIndexState>({ assets: [] });
@@ -3762,6 +3986,11 @@ function App() {
   const [selectedAssetId, setSelectedAssetId] = useState('');
   const [projects, setProjects] = useState<LearningProject[]>([]);
   const [projectMessage, setProjectMessage] = useState('');
+  const [projectStageFeedback, setProjectStageFeedback] = useState<Partial<Record<ProjectWorkflowTarget, string>>>({});
+  const [projectBusyAction, setProjectBusyAction] = useState('');
+  const [projectUnifiedReview, setProjectUnifiedReview] = useState<ProjectUnifiedReviewPackage | null>(null);
+  const [projectWorkspaceScanProgress, setProjectWorkspaceScanProgress] = useState<{ projectId: string; phase: string; visited?: number; total?: number; percent?: number; message?: string } | null>(null);
+  const [projectKnowledgeAdoptionPreview, setProjectKnowledgeAdoptionPreview] = useState<{ ok?: boolean; rootPath?: string; knowledgeSpaceId?: string; identitySource?: string; agentPath?: string; pathmapPath?: string; inventory?: { fileCount?: number; totalBytes?: number }; absolutePathCount?: number; errors?: string[]; warnings?: string[] } | null>(null);
   const [knowledgeGraphPreview, setKnowledgeGraphPreview] = useState('');
   const [knowledgeGraphNodes, setKnowledgeGraphNodes] = useState<KnowledgeGraphNode[]>([]);
   const [knowledgeGraphSearch, setKnowledgeGraphSearch] = useState('');
@@ -3770,9 +3999,21 @@ function App() {
   const [projectAuditFilter, setProjectAuditFilter] = useState<'all' | 'high' | 'medium' | 'unbound_student' | 'no_assets' | 'stale_promotion'>('all');
   const [projectAuditLocateTarget, setProjectAuditLocateTarget] = useState<{ projectId: string; target: 'detail' | 'students' | ProjectWorkflowTarget; nonce: number } | null>(null);
   const [selectedProjectId, setSelectedProjectId] = useState('');
+  const [projectPageMode, setProjectPageMode] = useState<ProjectPageMode>('list');
+  const [projectStudentFilterId, setProjectStudentFilterId] = useState('all');
+  const [projectKnowledgeFiles, setProjectKnowledgeFiles] = useState<MarkdownFile[]>([]);
+  const [selectedProjectKnowledgeFileId, setSelectedProjectKnowledgeFileId] = useState('');
+  const [projectKnowledgeContent, setProjectKnowledgeContent] = useState('');
+  const [projectKnowledgeCategory, setProjectKnowledgeCategory] = useState<ProjectKnowledgeCategoryId>('all');
+  const [projectKnowledgeViewMode, setProjectKnowledgeViewMode] = useState<'rendered' | 'source'>('rendered');
+  const [projectKnowledgeBrowserMessage, setProjectKnowledgeBrowserMessage] = useState('');
   const [projectEditDraft, setProjectEditDraft] = useState({ name: '', type: '', description: '', objective: '', knowledgeStrategy: '', growthStrategy: '' });
   const [projectEditOpen, setProjectEditOpen] = useState(false);
   const [projectStudentEvidenceDrafts, setProjectStudentEvidenceDrafts] = useState<Record<string, { ability: string; observation: string; status: string }>>({});
+  const [projectStudentEvidenceFeedbacks, setProjectStudentEvidenceFeedbacks] = useState<Record<string, { ok: boolean; message: string }>>({});
+  const [projectStudentEvidenceBusyId, setProjectStudentEvidenceBusyId] = useState('');
+  const [projectStudentEvidencePasteOpen, setProjectStudentEvidencePasteOpen] = useState(false);
+  const [projectStudentEvidenceRaw, setProjectStudentEvidenceRaw] = useState('');
   const [crossProjectKnowledgeGroups, setCrossProjectKnowledgeGroups] = useState<CrossProjectKnowledgeGroup[]>([]);
   const [crossProjectKnowledgeMessage, setCrossProjectKnowledgeMessage] = useState('');
   const [removedProjects, setRemovedProjects] = useState<RemovedProjectRecord[]>([]);
@@ -3790,6 +4031,9 @@ function App() {
     workspaceFoldersText: projectWorkspaceFoldersText(projectWorkspaceTemplates[0].folders),
     workspaceMode: 'managed' as 'managed' | 'linked',
     workspacePath: '',
+    scanExistingWorkspace: true,
+    knowledgeMode: 'managed' as 'managed' | 'adopted',
+    knowledgeRootPath: '',
     agentTool: 'qclaw' as AgentToolId,
   });
   const [customProjectWorkspaceTemplates, setCustomProjectWorkspaceTemplates] = useState<Array<{ id: string; name: string; description: string; folders: string[]; knowledgeStrategy: string; growthStrategy: string; deliverables: string[] }>>(() => {
@@ -3809,24 +4053,37 @@ function App() {
   const [projectStagingSearch, setProjectStagingSearch] = useState('');
   const [projectStagingStatusFilter, setProjectStagingStatusFilter] = useState<'all' | ProjectStagingStatus>('all');
   const [projectSourceStrategy, setProjectSourceStrategy] = useState<'full_copy' | 'reference_only' | 'snapshot'>('reference_only');
-  const [projectReviewNote, setProjectReviewNote] = useState('');
+  const [projectScreeningPasteOpen, setProjectScreeningPasteOpen] = useState(false);
+  const [projectScreeningRaw, setProjectScreeningRaw] = useState('');
+  const [projectScreeningPreview, setProjectScreeningPreview] = useState<ProjectScreeningPreview | null>(null);
+  const [projectDigestReceiptPasteOpen, setProjectDigestReceiptPasteOpen] = useState(false);
+  const [projectDigestReceiptRaw, setProjectDigestReceiptRaw] = useState('');
+  const [digestWorkflows, setDigestWorkflows] = useState<Record<string, DigestWorkflowStatus>>({});
+  const [digestWorkflowBusyKey, setDigestWorkflowBusyKey] = useState('');
+  const [digestWorkflowManualText, setDigestWorkflowManualText] = useState<Record<string, string>>({});
   const [projectKnowledgeRecords, setProjectKnowledgeRecords] = useState<ProjectKnowledgeRecord[]>([]);
   const [selectedProjectKnowledgeIds, setSelectedProjectKnowledgeIds] = useState<string[]>([]);
   const [projectKnowledgeStatusFilter, setProjectKnowledgeStatusFilter] = useState('all');
-  const [projectKnowledgeReviewNote, setProjectKnowledgeReviewNote] = useState('');
+  const [projectKnowledgeRiskOnly, setProjectKnowledgeRiskOnly] = useState(true);
+  const [projectMaterialEntryOpen, setProjectMaterialEntryOpen] = useState(false);
+  const [projectCompletionOpen, setProjectCompletionOpen] = useState(false);
   const [promotionPreview, setPromotionPreview] = useState('');
   const [promotionPlan, setPromotionPlan] = useState<PromotionPlan | null>(null);
   const [promotionExecutionSummary, setPromotionExecutionSummary] = useState('');
   const [promotionAuditPreview, setPromotionAuditPreview] = useState('');
   const [promotionConflicts, setPromotionConflicts] = useState<PromotionConflict[]>([]);
   const [promotionRuns, setPromotionRuns] = useState<PromotionRunRecord[]>([]);
+  const [projectCompletionBlockers, setProjectCompletionBlockers] = useState<ProjectCompletionBlocker[]>([]);
   const [growthMessage, setGrowthMessage] = useState('');
   const [growthEvidenceReview, setGrowthEvidenceReview] = useState<GrowthEvidenceReviewState>({ candidates: [] });
+  const [legacyGrowthReviewQueue, setLegacyGrowthReviewQueue] = useState<LegacyGrowthReviewQueueItem[]>([]);
+  const [growthEvidenceRiskAssessment, setGrowthEvidenceRiskAssessment] = useState<GrowthEvidenceRiskAssessment | null>(null);
   const [growthIndex, setGrowthIndex] = useState<GrowthIndexState | null>(null);
   const [growthIndexPreview, setGrowthIndexPreview] = useState('');
   const [growthView, setGrowthView] = useState<GrowthView>('abilities');
   const [growthSearch, setGrowthSearch] = useState('');
   const [growthEvidenceStatusFilter, setGrowthEvidenceStatusFilter] = useState('all');
+  const [growthEvidenceRiskFilter, setGrowthEvidenceRiskFilter] = useState<'attention' | 'all' | 'low'>('attention');
   const [growthAbilityFilter, setGrowthAbilityFilter] = useState('all');
   const [growthProjectStatusFilter, setGrowthProjectStatusFilter] = useState('all');
   const [scheduleLedger, setScheduleLedger] = useState<ScheduleLedgerState>({ entries: [] });
@@ -3837,8 +4094,9 @@ function App() {
   const [taskCenterSourceFilter, setTaskCenterSourceFilter] = useState<'all' | 'student' | 'project'>('all');
   const [taskCenterExecutorFilter, setTaskCenterExecutorFilter] = useState('all');
   const [selectedTaskId, setSelectedTaskId] = useState('');
+  const taskDetailPanelRef = React.useRef<HTMLElement | null>(null);
   const [taskExecutorDraft, setTaskExecutorDraft] = useState('');
-  const [taskReviewNote, setTaskReviewNote] = useState('');
+  const [taskResultPasteText, setTaskResultPasteText] = useState('');
   const [sharedInboxCount, setSharedInboxCount] = useState(0);
   const [compatibility, setCompatibility] = useState<Record<string, unknown> | null>(null);
   const [storageConfig, setStorageConfig] = useState<StorageConfig>(activeStorageConfig);
@@ -3861,7 +4119,9 @@ function App() {
   const [hostServiceMessage, setHostServiceMessage] = useState('');
   const [editingDeviceId, setEditingDeviceId] = useState('');
   const [deviceNameDraft, setDeviceNameDraft] = useState('');
+  const [hostNameDraft, setHostNameDraft] = useState('');
   const [hostPairQr, setHostPairQr] = useState('');
+  const [studentLoginQrs, setStudentLoginQrs] = useState<Record<string, string>>({});
   const [homeMode, setHomeMode] = useState<'local' | 'host'>('local');
   const [hostDiagnostics, setHostDiagnostics] = useState<HostServiceDiagnostics | null>(null);
   const [hostUploadRecords, setHostUploadRecords] = useState<HostUploadRecord[]>([]);
@@ -3905,6 +4165,8 @@ function App() {
   const [conversationExtractText, setConversationExtractText] = useState('');
   const [conversationExtractPreview, setConversationExtractPreview] = useState<ConversationExtractPreview | null>(null);
   const [conversationExtractTargets, setConversationExtractTargets] = useState({ memory: true, soul: true, qa: true, todos: true });
+  const [conversationCandidateFilter, setConversationCandidateFilter] = useState<'pending' | 'blocked' | 'promoted' | 'all'>('pending');
+  const [selectedConversationCandidateIds, setSelectedConversationCandidateIds] = useState<string[]>([]);
   const [conversationMessage, setConversationMessage] = useState('');
   const [memorySourceTool, setMemorySourceTool] = useState<AgentToolId>('qclaw');
   const [memorySourceText, setMemorySourceText] = useState('');
@@ -3919,6 +4181,13 @@ function App() {
   const t = (key: TranslationKey) => uiTranslations[language]?.[key] ?? zhCnText[key] ?? key;
 
   const selectedStudent = students.find((item) => item.id === selectedId) ?? students[0];
+  const visibleConversationCandidates = useMemo(() => {
+    const candidates = conversationCenter?.governance?.candidates ?? [];
+    if (conversationCandidateFilter === 'all') return candidates;
+    if (conversationCandidateFilter === 'blocked') return candidates.filter((item) => item.status === 'pending' && item.risk?.blocked);
+    return candidates.filter((item) => item.status === conversationCandidateFilter);
+  }, [conversationCandidateFilter, conversationCenter?.governance?.candidates]);
+  const selectedConversationCandidateSet = useMemo(() => new Set(selectedConversationCandidateIds), [selectedConversationCandidateIds]);
   const taskCenterExecutors = useMemo(() => Array.from(new Set(taskCenter.tasks.map((task) => task.executor).filter(Boolean))), [taskCenter.tasks]);
   const visibleTaskCenterItems = useMemo(() => taskCenter.tasks.filter((task) => {
     const statusMatches = taskCenterStatusFilter === 'all'
@@ -3987,9 +4256,20 @@ function App() {
     setPathHealth(null);
     setPathHealthMessage('');
     setGrowthEvidenceReview({ candidates: [] });
+    setLegacyGrowthReviewQueue([]);
+    setGrowthEvidenceRiskAssessment(null);
+    setConversationCenter(null);
+    setSelectedConversationCandidateIds([]);
     setScheduleLedger({ entries: [] });
     setMaintenanceReportPreview('');
   }, [selectedStudent?.id]);
+  useEffect(() => {
+    const unsubscribe = bridge()?.onProjectWorkspaceScanProgress?.((payload) => {
+      setProjectWorkspaceScanProgress(payload);
+      if (payload.message) reportProjectStage('workspace', payload.message);
+    });
+    return () => { unsubscribe?.(); };
+  }, []);
   const activeAgentAdapter = activeSection === 'init' || activeSection === 'new' ? selectedToolAdapter : selectedStudentAdapter;
   const activeAgentTool = activeAgentAdapter.profile;
   const toolOpenState: Record<AgentToolId, boolean> = {
@@ -4107,6 +4387,16 @@ function App() {
   }, [assetGovernanceStats.issueCount, studentScopedAssets]);
 
   const selectedProject = projects.find((project) => project.id === selectedProjectId) ?? projects[0] ?? null;
+  const studentFilteredProjects = useMemo(() => (
+    projectStudentFilterId === 'all'
+      ? projects
+      : projects.filter((project) => (project.studentIds || []).includes(projectStudentFilterId))
+  ), [projectStudentFilterId, projects]);
+  const filteredProjectKnowledgeFiles = useMemo(() => (
+    projectKnowledgeCategory === 'all'
+      ? projectKnowledgeFiles
+      : projectKnowledgeFiles.filter((file) => file.category === projectKnowledgeCategory)
+  ), [projectKnowledgeCategory, projectKnowledgeFiles]);
   const filteredGrowthAbilities = useMemo(() => {
     const keyword = growthSearch.trim().toLowerCase();
     return (growthIndex?.abilities ?? []).filter((ability) => !keyword || [ability.name, ...(ability.projectNames ?? [])].some((value) => String(value || '').toLowerCase().includes(keyword)));
@@ -4120,12 +4410,16 @@ function App() {
   }, [growthIndex, growthProjectStatusFilter, growthSearch]);
   const filteredGrowthEvidence = useMemo(() => {
     const keyword = growthSearch.trim().toLowerCase();
+    const riskById = new Map((growthEvidenceRiskAssessment?.assessments ?? []).map((item) => [item.evidenceId, item]));
     return growthEvidenceReview.candidates.filter((candidate) => {
+      const risk = riskById.get(candidate.id);
+      if (growthEvidenceRiskFilter === 'attention' && (!risk?.actionable || risk.level === 'low')) return false;
+      if (growthEvidenceRiskFilter === 'low' && (!risk?.actionable || risk.level !== 'low')) return false;
       if (growthEvidenceStatusFilter !== 'all' && candidate.status !== growthEvidenceStatusFilter) return false;
       if (growthAbilityFilter !== 'all' && String(candidate.ability || '待标注') !== growthAbilityFilter) return false;
       return !keyword || [candidate.title, candidate.content, candidate.projectName, candidate.sourcePath, candidate.ability].some((value) => String(value || '').toLowerCase().includes(keyword));
     });
-  }, [growthAbilityFilter, growthEvidenceReview, growthEvidenceStatusFilter, growthSearch]);
+  }, [growthAbilityFilter, growthEvidenceReview, growthEvidenceRiskAssessment, growthEvidenceRiskFilter, growthEvidenceStatusFilter, growthSearch]);
   const availableProjectWorkspaceTemplates = [...projectWorkspaceTemplates, ...customProjectWorkspaceTemplates];
   const projectWorkspaceTemplateForUi = (templateId?: string) => {
     const template = availableProjectWorkspaceTemplates.find((item) => item.id === templateId) ?? projectWorkspaceTemplates[0];
@@ -4179,9 +4473,22 @@ function App() {
     return filteredAssets.filter((asset) => !selectedAssetIds.has(asset.assetId)).slice(0, 120);
   }, [filteredAssets, selectedProject?.assetIds]);
   const projectStagingItems = selectedProject?.stagingItems ?? [];
+  const projectKnowledgeRisk = (record: ProjectKnowledgeRecord) => (
+    ['ai_generated', 'pending_review'].includes(record.status)
+    || String(record.confidence || '').toLowerCase() === 'low'
+    || !(record.sourceAssets || []).length
+  );
+  const projectKnowledgeHighConfidenceReady = projectKnowledgeRecords.filter((record) => (
+    ['ai_generated', 'pending_review'].includes(record.status)
+    && ['high', 'confirmed'].includes(String(record.confidence || '').toLowerCase())
+    && Boolean(record.sourceAssets?.length)
+  ));
   const filteredProjectKnowledgeRecords = useMemo(() => (
-    projectKnowledgeRecords.filter((record) => projectKnowledgeStatusFilter === 'all' || record.status === projectKnowledgeStatusFilter)
-  ), [projectKnowledgeRecords, projectKnowledgeStatusFilter]);
+    projectKnowledgeRecords.filter((record) => (
+      (projectKnowledgeStatusFilter === 'all' || record.status === projectKnowledgeStatusFilter)
+      && (!projectKnowledgeRiskOnly || projectKnowledgeRisk(record))
+    ))
+  ), [projectKnowledgeRecords, projectKnowledgeRiskOnly, projectKnowledgeStatusFilter]);
   const filteredProjectStagingItems = useMemo(() => {
     const keyword = projectStagingSearch.trim().toLowerCase();
     return projectStagingItems.filter((item) => {
@@ -4222,6 +4529,23 @@ function App() {
     };
   }, [projectStagingItems]);
   const selectedProjectDigestState = selectedProject?.digestState ?? {};
+  const projectStageCounts = useMemo(() => {
+    const pendingStaging = projectStagingItems.filter((item) => !['analyzed', 'promoted', 'discarded'].includes(String(item.status))).length;
+    const formalRaw = Number(selectedProjectDigestState.rawFileCount || 0);
+    const pendingDigest = Number(selectedProjectDigestState.pendingCount || 0);
+    const pendingKnowledge = projectKnowledgeRecords.filter((item) => ['ai_generated', 'pending_review'].includes(String(item.status))).length;
+    const verifiedKnowledge = projectKnowledgeRecords.filter((item) => ['verified', 'published'].includes(String(item.status))).length;
+    const promotionItems = promotionPlan?.items?.length ?? 0;
+    return {
+      workspace: projectStagingItems.length,
+      pendingStaging,
+      formalRaw,
+      pendingDigest,
+      pendingKnowledge,
+      verifiedKnowledge,
+      promotionItems,
+    };
+  }, [projectKnowledgeRecords, projectStagingItems, promotionPlan, selectedProjectDigestState.pendingCount, selectedProjectDigestState.rawFileCount]);
   const promotionPlanStats = useMemo(() => {
     const items = promotionPlan?.items ?? [];
     return items.reduce(
@@ -4308,6 +4632,7 @@ function App() {
   useEffect(() => {
     setSelectedProjectKnowledgeIds([]);
     setProjectKnowledgeRecords([]);
+    setProjectUnifiedReview(null);
     if (!selectedProject?.id) return;
     const raw = bridge()?.getProjectKnowledgeReview?.(selectedProject.id);
     if (!raw) return;
@@ -4317,7 +4642,14 @@ function App() {
     } catch {
       // The project page remains usable when the optional review index is unavailable.
     }
-  }, [selectedProject?.id]);
+    const reviewRaw = bridge()?.getProjectUnifiedReview?.(selectedProject.id);
+    if (reviewRaw) try {
+      const reviewResult = JSON.parse(reviewRaw) as { ok?: boolean; reviewPackage?: ProjectUnifiedReviewPackage };
+      if (reviewResult.ok && reviewResult.reviewPackage) setProjectUnifiedReview(reviewResult.reviewPackage);
+    } catch {
+      // Advanced controls remain available when the unified review view cannot load.
+    }
+  }, [selectedProject?.id, selectedProject?.updatedAt]);
 
   useEffect(() => {
     if (!projectAuditLocateTarget || selectedProject?.id !== projectAuditLocateTarget.projectId) return;
@@ -4379,17 +4711,30 @@ function App() {
 
   const selectedProjectWorkflowSteps = useMemo(() => {
     if (!selectedProject) return [];
-    const promotedCount = projectStagingItems.filter((item) => item.status === 'promoted' || item.promotedAssetId).length;
-    const pendingStagingCount = projectStagingItems.filter((item) => !['promoted', 'discarded'].includes(String(item.status))).length;
-    const pendingKnowledgeCount = projectKnowledgeRecords.filter((item) => ['ai_generated', 'pending_review'].includes(String(item.status))).length;
     return [
-      { target: 'workspace' as ProjectWorkflowTarget, title: '资料入口', value: `${selectedProjectDigestState.rawFileCount || 0} 份正式资料`, detail: '工作空间、扫描与直接导入' },
-      { target: 'assets' as ProjectWorkflowTarget, title: '暂存治理', value: `${pendingStagingCount} 待处理 · ${promotedCount} 已晋升`, detail: '初筛、审核并应用保存策略' },
-      { target: 'digest' as ProjectWorkflowTarget, title: 'Agent 消化', value: projectDigestStatusLabel(selectedProjectDigestState.status), detail: `待消化 ${selectedProjectDigestState.pendingCount || 0} 份` },
-      { target: 'knowledge' as ProjectWorkflowTarget, title: '知识审核', value: `${pendingKnowledgeCount} 条待审核`, detail: '确认概念、实体、摘要与结论' },
-      { target: 'promotion' as ProjectWorkflowTarget, title: '贡献归档', value: selectedProject.publishedAt ? '已发布' : promotionPreview || promotionPlan ? '待执行' : '待生成', detail: '审核后进入学生档案与成长模型' },
+      { target: 'workspace' as ProjectWorkflowTarget, title: '添加资料', value: `${projectStageCounts.workspace} 份候选 · ${projectStageCounts.formalRaw} 份正式`, detail: '扫描工作空间、导入资料或复用已有资产' },
+      { target: 'assets' as ProjectWorkflowTarget, title: 'AI 整理建议', value: `${projectStageCounts.pendingStaging} 份待整理`, detail: '去重、初筛并推荐保存策略' },
+      { target: 'digest' as ProjectWorkflowTarget, title: '确认并消化', value: `${projectStageCounts.pendingDigest} 份待消化 · ${projectStageCounts.pendingKnowledge} 条待确认`, detail: '人工确认资料后交给 Agent 消化并审核知识' },
+      { target: 'promotion' as ProjectWorkflowTarget, title: '完成项目', value: selectedProject.publishedAt ? '已发布' : `${projectStageCounts.promotionItems} 项待归档`, detail: '核对贡献清单并发布到成长模型' },
     ];
-  }, [projectKnowledgeRecords, projectStagingItems, promotionPlan, promotionPreview, selectedProject, selectedProjectDigestState]);
+  }, [projectStageCounts, selectedProject]);
+
+  const selectedProjectNextStep = useMemo(() => {
+    if (!selectedProject) return null;
+    if (!projectStageCounts.workspace && !projectStageCounts.formalRaw) {
+      return { target: 'workspace' as ProjectWorkflowTarget, title: '添加第一批项目资料', detail: '从工作空间扫描、手动导入或复用已有正式资产开始。', action: 'add' };
+    }
+    if (projectStageCounts.pendingStaging > 0) {
+      return { target: 'assets' as ProjectWorkflowTarget, title: `整理 ${projectStageCounts.pendingStaging} 份候选资料`, detail: '先生成 AI 整理建议，只人工处理冲突、重复和低置信度资料。', action: 'organize' };
+    }
+    if (projectStageCounts.pendingDigest > 0 || ['submitted', 'digesting', 'failed'].includes(String(selectedProjectDigestState.status))) {
+      return { target: 'digest' as ProjectWorkflowTarget, title: `消化 ${projectStageCounts.pendingDigest} 份正式资料`, detail: '复制本批次任务给所选 Agent，完成后检查严格回执。', action: 'digest' };
+    }
+    if (projectStageCounts.pendingKnowledge > 0) {
+      return { target: 'knowledge' as ProjectWorkflowTarget, title: `确认 ${projectStageCounts.pendingKnowledge} 条知识`, detail: '只审核低置信度、缺少来源或待确认的知识条目。', action: 'knowledge' };
+    }
+    return { target: 'promotion' as ProjectWorkflowTarget, title: selectedProject.publishedAt ? '查看项目归档结果' : '完成项目并生成归档清单', detail: '核对项目知识、每名学生的成长证据和归档目标。', action: 'complete' };
+  }, [projectStageCounts, selectedProject, selectedProjectDigestState.status]);
 
   const promotionExecutionPreview = useMemo(() => {
     if (!promotionPlan) return '';
@@ -4412,6 +4757,94 @@ function App() {
 
   const toggleProjectAsset = (assetId: string) => {
     setSelectedProjectAssetIds((current) => (current.includes(assetId) ? current.filter((item) => item !== assetId) : [...current, assetId]));
+  };
+
+  const reportProjectStage = (target: ProjectWorkflowTarget, message: string) => {
+    setProjectMessage(message);
+    setProjectStageFeedback((current) => ({ ...current, [target]: message }));
+  };
+
+  const refreshProjectUnifiedReview = (projectId = selectedProjectId) => {
+    if (!projectId) return;
+    const raw = bridge()?.getProjectUnifiedReview?.(projectId);
+    if (!raw) return;
+    try {
+      const result = JSON.parse(raw) as { ok?: boolean; reviewPackage?: ProjectUnifiedReviewPackage };
+      if (result.ok && result.reviewPackage) setProjectUnifiedReview(result.reviewPackage);
+    } catch {
+      setProjectMessage('统一审核包读取失败，高级步骤仍可继续使用。');
+    }
+  };
+
+  const applySelectedProjectUnifiedReview = () => {
+    if (!selectedProjectId || projectBusyAction) return;
+    setProjectBusyAction('unified-review');
+    const raw = bridge()?.applyProjectUnifiedReview?.(selectedProjectId);
+    if (!raw) {
+      setProjectBusyAction('');
+      setProjectMessage('当前环境不支持统一审核包。');
+      return;
+    }
+    try {
+      const result = JSON.parse(raw) as { ok?: boolean; projects?: LearningProject[]; reviewPackage?: ProjectUnifiedReviewPackage; message?: string };
+      if (Array.isArray(result.projects)) setProjects(result.projects);
+      if (result.reviewPackage) setProjectUnifiedReview(result.reviewPackage);
+      if (result.ok) {
+        refreshAssets();
+        window.setTimeout(() => {
+          loadSelectedProjectKnowledgeReview();
+          refreshProjectUnifiedReview(selectedProjectId);
+        }, 0);
+      }
+      const message = result.message || (result.ok ? '本批次已采用。' : '本批次采用失败。');
+      setProjectMessage(message);
+      showActionNotice(Boolean(result.ok), result.ok ? '批次处理成功' : '批次处理失败', message);
+    } catch {
+      setProjectMessage('统一审核包结果解析失败。');
+    } finally {
+      setProjectBusyAction('');
+    }
+  };
+
+  const applyRecommendedProjectSourceStrategy = () => {
+    const names = selectedProjectStagingItems.map((item) => item.filename.toLowerCase());
+    const hasPrimaryEvidence = names.some((name) => /(?:final|最终|原始数据|实验数据|教师反馈|官方|成绩|证书)/i.test(name));
+    const hasSnapshotMaterial = names.some((name) => /\.(?:png|jpe?g|webp|gif)$/i.test(name));
+    const nextStrategy = hasPrimaryEvidence ? 'full_copy' : hasSnapshotMaterial ? 'snapshot' : 'reference_only';
+    setProjectSourceStrategy(nextStrategy);
+    reportProjectStage('assets', `已应用建议保存策略：${nextStrategy === 'full_copy' ? '保存完整副本' : nextStrategy === 'snapshot' ? '保存关键快照' : '仅保存来源记录'}。可在高级操作中调整。`);
+  };
+
+  const runSelectedProjectNextStep = () => {
+    if (!selectedProjectNextStep) return;
+    if ((projectUnifiedReview?.ready.count || 0) > 0) {
+      applySelectedProjectUnifiedReview();
+      return;
+    }
+    if (selectedProjectNextStep.action === 'add') {
+      void scanSelectedProjectWorkspace();
+      return;
+    }
+    if (selectedProjectNextStep.action === 'organize') {
+      focusSelectedProjectWorkflowStage('assets');
+      if (!selectedProjectStagingIds.length) {
+        const recommended = projectStagingGovernanceStats.promotionCandidateIds.length
+          ? projectStagingGovernanceStats.promotionCandidateIds
+          : projectStagingItems.filter((item) => !['analyzed', 'promoted', 'discarded'].includes(String(item.status))).map((item) => item.id);
+        setSelectedProjectStagingIds(recommended);
+      }
+      return;
+    }
+    if (selectedProjectNextStep.action === 'digest') {
+      startDigestWorkflowFromPage('project', selectedProjectId);
+      return;
+    }
+    if (selectedProjectNextStep.action === 'knowledge') {
+      focusSelectedProjectWorkflowStage('knowledge');
+      return;
+    }
+    prepareProjectCompletion();
+    focusSelectedProjectWorkflowStage('promotion');
   };
 
   const toggleProjectStagingItem = (itemId: string) => {
@@ -4468,6 +4901,33 @@ function App() {
     if (lastDigestAt) return `最近消化：${new Date(lastDigestAt).toLocaleString('zh-CN')}`;
     return '暂无待消化资料。';
   };
+
+  const selectedStudentDigestWorkflow: DigestWorkflowStatus | null = selectedStudent ? (digestWorkflows[digestWorkflowKey('student', selectedStudent.id)] || {
+    scopeType: 'student',
+    scopeId: selectedStudent.id,
+    scopeName: selectedStudent.name,
+    userStatus: submittedDigestValue(selectedStudent) > 0 ? 'waiting_result' : pendingDigestValue(selectedStudent) > 0 ? 'pending' : selectedStudent.lastDigestAt ? 'completed' : 'pending',
+    pendingCount: pendingDigestValue(selectedStudent),
+    submittedCount: submittedDigestValue(selectedStudent),
+    processedCount: selectedStudent.processedDigestCount || 0,
+    lastDigestAt: selectedStudent.lastDigestAt || '',
+    message: digestStatusText(selectedStudent),
+    canStart: pendingDigestValue(selectedStudent) > 0,
+    canRetry: false,
+  }) : null;
+
+  const selectedProjectDigestWorkflow: DigestWorkflowStatus | null = selectedProject ? (digestWorkflows[digestWorkflowKey('project', selectedProject.id)] || {
+    scopeType: 'project',
+    scopeId: selectedProject.id,
+    scopeName: selectedProject.name,
+    userStatus: ['submitted', 'digesting'].includes(String(selectedProjectDigestState.status)) ? 'processing' : selectedProjectDigestState.status === 'partial' ? 'partial' : selectedProjectDigestState.status === 'failed' ? 'needs_help' : Number(selectedProjectDigestState.pendingCount || 0) > 0 ? 'pending' : selectedProjectDigestState.lastDigestAt ? 'completed' : 'pending',
+    pendingCount: Number(selectedProjectDigestState.pendingCount || 0),
+    processedCount: Number(Object.keys(selectedProjectDigestState.digestManifest || {}).length),
+    lastDigestAt: selectedProjectDigestState.lastDigestAt || '',
+    message: selectedProjectDigestState.message || '',
+    canStart: Number(selectedProjectDigestState.pendingCount || 0) > 0 && !['submitted', 'digesting'].includes(String(selectedProjectDigestState.status)),
+    canRetry: ['partial', 'failed'].includes(String(selectedProjectDigestState.status)) && Number(selectedProjectDigestState.pendingCount || 0) > 0,
+  }) : null;
 
   const connectionModeLabel = (mode?: string) => {
     if (mode === 'lan_only') return '仅局域网';
@@ -4567,6 +5027,7 @@ function App() {
     try {
       const status = JSON.parse(raw) as HostServiceStatus;
       setHostServiceStatus(status);
+      setHomeMode(status.usageMode === 'host_terminal' ? 'host' : 'local');
       if (status.license) setLicenseStatus(status.license);
       setHostPortDraft(String(status.port || 18777));
       refreshHostUploadRecords();
@@ -4822,7 +5283,11 @@ function App() {
 
   const buildConversationExtractPrompt = (student: Student) => {
     const p = pathsForStudent(student);
-    return `请从下面的对话历史中提取可沉淀到学生「${student.name}」教育管家的资产。
+    const sourceMessages = conversationCenter?.latestInteraction?.messages ?? [];
+    const sourceText = sourceMessages.length
+      ? sourceMessages.map((message) => `[${message.id}] [${message.role}] ${message.content}`).join('\n\n')
+      : '（请先点击“保存对话导入记录”，系统会生成稳定消息 ID。）';
+    return `请从下面的对话历史中提取可沉淀到学生「${student.name}」教育管家的逐条知识候选。
 
 学生信息：
 - 姓名：${student.name}
@@ -4833,16 +5298,16 @@ function App() {
 - AGENT.md：${p.agent}
 - 学情分析汇总目录：${p.summary}
 
-请只返回 JSON，不要使用 Markdown 代码块。格式：
+每条候选必须保留逐字原文 sourceQuote 和对应 messageId；不能定位原文的内容不要输出。请只返回 JSON，不要使用 Markdown 代码块。格式：
 {
-  "memoryCandidates": ["适合写入 UnifiedMemory.md 的长期事实或观察"],
-  "soulSuggestions": ["适合写入 UnifiedSoul.md 的人设、工作边界或偏好建议"],
-  "qaHighlights": ["适合写入学情分析汇总/咨询精华库的高价值问答结论"],
-  "todos": ["后续跟进事项"]
+  "memoryCandidates": [{"content":"长期事实或观察","sourceQuote":"原始消息中的逐字片段","messageId":"message-..."}],
+  "soulSuggestions": [{"content":"人设、工作边界或偏好建议","sourceQuote":"逐字原文","messageId":"message-..."}],
+  "qaHighlights": [{"content":"高价值问答结论","sourceQuote":"逐字原文","messageId":"message-..."}],
+  "todos": [{"content":"后续跟进事项","sourceQuote":"逐字原文","messageId":"message-...","expiresAt":"可选 ISO 时间"}]
 }
 
-对话历史如下：
-${conversationText || '（请先粘贴对话历史）'}`;
+已登记的不可变对话消息如下：
+${sourceText}`;
   };
 
   const saveConversationImport = () => {
@@ -4946,7 +5411,7 @@ ${conversationText || '（请先粘贴对话历史）'}`;
       return null;
     }
     const total = preview.memoryCandidates.length + preview.soulSuggestions.length + preview.qaHighlights.length + preview.todos.length;
-    setConversationMessage(total ? `已解析提取结果：共 ${total} 条候选，请确认写入范围。` : '已解析 JSON，但没有发现可写入的教育资产。');
+    setConversationMessage(total ? `已解析提取结果：共 ${total} 条候选；保存后仍需逐条治理，不会直接写入长期知识。` : '已解析 JSON，但没有发现可登记的知识候选。');
     return preview;
   };
 
@@ -4965,7 +5430,7 @@ ${conversationText || '（请先粘贴对话历史）'}`;
     };
     const selectedCount = payload.memoryCandidates.length + payload.soulSuggestions.length + payload.qaHighlights.length + payload.todos.length;
     if (!selectedCount) {
-      setConversationMessage('请至少选择一种要写入的教育资产。');
+      setConversationMessage('请至少选择一种要登记的知识候选。');
       return;
     }
     const raw = bridge()?.saveConversationExtract?.(selectedStudent.id, JSON.stringify(payload, null, 2), conversationTool);
@@ -4975,15 +5440,120 @@ ${conversationText || '（请先粘贴对话历史）'}`;
     }
     try {
       const result = JSON.parse(raw) as { ok?: boolean; message?: string };
-      setConversationMessage(result.message || (result.ok ? '已写入对话提取资产。' : '保存提取结果失败。'));
+      setConversationMessage(result.message || (result.ok ? '已保存逐条知识候选。' : '保存提取结果失败。'));
       if (result.ok) {
         setConversationExtractPreview(null);
-        refreshAgentCenter(selectedStudent.id);
         refreshConversationCenter(selectedStudent.id);
         refreshSourceRegistry(selectedStudent.id);
       }
     } catch {
       setConversationMessage('对话提取结果解析失败。');
+    }
+  };
+
+  const toggleConversationCandidate = (candidateId: string) => {
+    setSelectedConversationCandidateIds((current) => current.includes(candidateId)
+      ? current.filter((id) => id !== candidateId)
+      : [...current, candidateId]);
+  };
+
+  const updateConversationCandidate = (candidate: ConversationKnowledgeCandidate, action: string, payload: Record<string, unknown> = {}) => {
+    if (!selectedStudent) return;
+    const raw = bridge()?.updateConversationKnowledgeCandidate?.(selectedStudent.id, candidate.id, action, JSON.stringify(payload));
+    if (!raw) {
+      setConversationMessage('当前环境不支持逐条知识候选治理。');
+      return;
+    }
+    try {
+      const result = JSON.parse(raw) as { ok?: boolean; message?: string };
+      setConversationMessage(result.message || (result.ok ? '候选状态已更新。' : '候选状态更新失败。'));
+      if (result.ok) {
+        setSelectedConversationCandidateIds((current) => current.filter((id) => id !== candidate.id));
+        refreshConversationCenter(selectedStudent.id);
+      }
+    } catch {
+      setConversationMessage('候选治理结果解析失败。');
+    }
+  };
+
+  const editConversationCandidate = (candidate: ConversationKnowledgeCandidate) => {
+    const content = window.prompt('编辑候选内容：', candidate.content);
+    if (content === null) return;
+    const sourceSnippet = window.prompt('核对原始对话中的逐字片段：', candidate.source?.snippet || '');
+    if (sourceSnippet === null) return;
+    const locator = window.prompt('填写消息 ID 或定位（已有消息 ID 时可保持原值）：', candidate.source?.messageId || candidate.source?.locator || '');
+    if (locator === null) return;
+    updateConversationCandidate(candidate, 'edit', {
+      content,
+      sourceSnippet,
+      messageId: locator.startsWith('message-') ? locator : candidate.source?.messageId || '',
+      locator: locator.startsWith('message-') ? candidate.source?.locator || '' : locator,
+    });
+  };
+
+  const mergeSelectedConversationCandidates = () => {
+    const selected = (conversationCenter?.governance?.candidates ?? []).filter((item) => selectedConversationCandidateSet.has(item.id));
+    if (selected.length !== 2) {
+      setConversationMessage('合并操作需要且只能选择两条相同类型的候选。');
+      return;
+    }
+    if (selected[0].target !== selected[1].target) {
+      setConversationMessage('只有相同知识类型的候选可以合并。');
+      return;
+    }
+    const content = window.prompt('确认合并后的候选内容：', `${selected[0].content}\n${selected[1].content}`);
+    if (content === null) return;
+    updateConversationCandidate(selected[1], 'merge', { targetId: selected[0].id, content, note: '人工逐条合并' });
+  };
+
+  const promoteSelectedConversationCandidates = () => {
+    if (!selectedStudent) return;
+    const selected = (conversationCenter?.governance?.candidates ?? []).filter((item) => selectedConversationCandidateSet.has(item.id));
+    if (!selected.length) {
+      setConversationMessage('请先选择要晋升的待审核候选。');
+      return;
+    }
+    const blocked = selected.filter((item) => item.risk?.blocked);
+    if (blocked.length) {
+      setConversationMessage(`所选候选中有 ${blocked.length} 条仍被风险规则阻止，请先补充来源、处理冲突或确认敏感信息。`);
+      return;
+    }
+    if (!window.confirm(`确认通过一个可撤销事务晋升 ${selected.length} 条候选吗？未审核内容不会一并写入。`)) return;
+    const raw = bridge()?.promoteConversationKnowledgeCandidates?.(selectedStudent.id, JSON.stringify({ candidateIds: selected.map((item) => item.id) }));
+    if (!raw) {
+      setConversationMessage('当前环境不支持知识候选事务晋升。');
+      return;
+    }
+    try {
+      const result = JSON.parse(raw) as { ok?: boolean; message?: string };
+      setConversationMessage(result.message || (result.ok ? '候选已晋升。' : '候选晋升失败。'));
+      if (result.ok) {
+        setSelectedConversationCandidateIds([]);
+        refreshConversationCenter(selectedStudent.id);
+        refreshAgentCenter(selectedStudent.id);
+      }
+    } catch {
+      setConversationMessage('候选晋升结果解析失败。');
+    }
+  };
+
+  const rollbackConversationTransaction = (transaction: ConversationPromotionTransaction) => {
+    if (!selectedStudent || transaction.status !== 'committed') return;
+    if (!window.confirm(`确认撤销事务 ${transaction.id} 吗？只移除该事务写入的标记内容，原始对话不会改变。`)) return;
+    const raw = bridge()?.rollbackConversationPromotion?.(selectedStudent.id, transaction.id);
+    if (!raw) {
+      setConversationMessage('当前环境不支持撤销知识晋升。');
+      return;
+    }
+    try {
+      const result = JSON.parse(raw) as { ok?: boolean; message?: string };
+      setConversationMessage(result.message || (result.ok ? '事务已撤销。' : '事务撤销失败。'));
+      if (result.ok) {
+        refreshConversationCenter(selectedStudent.id);
+        refreshAgentCenter(selectedStudent.id);
+      }
+    } catch {
+      setConversationMessage('事务撤销结果解析失败。');
     }
   };
 
@@ -5126,8 +5696,8 @@ ${conversationText || '（请先粘贴对话历史）'}`;
           // Ignore inbox JSON parse errors.
         }
       }
-    }, 1000);
-    const hostTimer = window.setInterval(refreshHostServiceStatus, 5000);
+    }, 3000);
+    const hostTimer = window.setInterval(refreshHostServiceStatus, 10000);
     return () => {
       window.clearInterval(timer);
       window.clearInterval(hostTimer);
@@ -5137,6 +5707,31 @@ ${conversationText || '（请先粘贴对话历史）'}`;
       delete (window as unknown as { onNativeHostServiceChanged?: (payload: string) => void }).onNativeHostServiceChanged;
     };
   }, [pendingImportStudentId]);
+
+  useEffect(() => {
+    const refreshVisible = () => {
+      if (selectedId) applyDigestWorkflowPayload('student', selectedId, bridge()?.getDigestWorkflowStatus?.('student', selectedId));
+      if (selectedProjectId) applyDigestWorkflowPayload('project', selectedProjectId, bridge()?.getDigestWorkflowStatus?.('project', selectedProjectId));
+    };
+    (window as unknown as { onNativeDigestWorkflowChanged?: (payload: string) => void }).onNativeDigestWorkflowChanged = (payload: string) => {
+      try {
+        const event = JSON.parse(payload) as { scopeType?: 'student' | 'project'; scopeId?: string };
+        if (event.scopeType && event.scopeId) {
+          refreshDigestWorkflow(event.scopeType, event.scopeId);
+          return;
+        }
+      } catch {
+        // Fall through to refresh the currently visible scopes.
+      }
+      refreshVisible();
+    };
+    refreshVisible();
+    const timer = window.setInterval(refreshVisible, 15000);
+    return () => {
+      window.clearInterval(timer);
+      delete (window as unknown as { onNativeDigestWorkflowChanged?: (payload: string) => void }).onNativeDigestWorkflowChanged;
+    };
+  }, [selectedId, selectedProjectId]);
 
   useEffect(() => {
     const payload = hostServiceStatus?.pairPayloadText;
@@ -5156,6 +5751,28 @@ ${conversationText || '（请先粘贴对话历史）'}`;
       cancelled = true;
     };
   }, [hostServiceStatus?.pairPayloadText]);
+
+  useEffect(() => {
+    const loginStudents = (hostServiceStatus?.students ?? []).filter((student) => student.loginQrPayload);
+    if (loginStudents.length === 0) {
+      setStudentLoginQrs({});
+      return;
+    }
+    let cancelled = false;
+    Promise.all(loginStudents.map(async (student) => [
+      student.id,
+      await QRCode.toDataURL(student.loginQrPayload || '', { margin: 2, width: 220, errorCorrectionLevel: 'H' }),
+    ] as const))
+      .then((entries) => {
+        if (!cancelled) setStudentLoginQrs(Object.fromEntries(entries));
+      })
+      .catch(() => {
+        if (!cancelled) setStudentLoginQrs({});
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [hostServiceStatus?.students]);
 
   useEffect(() => {
     if (activeSection === 'memory' || activeSection === 'soul' || activeSection === 'qa' || activeSection === 'conversation') {
@@ -5243,6 +5860,7 @@ ${conversationText || '（请先粘贴对话历史）'}`;
 
   useEffect(() => {
     if (isWindows && activeSection === 'inbox' && selectedStudent) {
+      setSelectedMaterialImportRecordIds([]);
       refreshMaterialImportRecords(selectedStudent);
       refreshCaptureCenter();
       void refreshCaptureSources();
@@ -5509,12 +6127,8 @@ ${conversationText || '（请先粘贴对话历史）'}`;
   const copyAgentConnectionStep = async (step: (typeof agentConnectionSteps)[number]) => {
     const stepPrompt = customStepPrompts[step.id] ?? step.prompt;
     setSelectedInitStep(step.id);
-    try {
-      if (bridge()?.copyText) {
-        bridge()?.copyText?.(stepPrompt);
-      } else {
-        await navigator.clipboard.writeText(stepPrompt);
-      }
+    const success = await copyText(stepPrompt, `已复制“${step.title}”指令，可直接粘贴到 ${selectedTool.name}。`, { contentLabel: `${step.title}指令` });
+    if (success) {
       setCopied(true);
       setCopiedOnce(true);
       setCopiedAgentConnectionStepId(step.id);
@@ -5524,7 +6138,7 @@ ${conversationText || '（请先粘贴对话历史）'}`;
         setCopiedAgentConnectionStepId((current) => (current === step.id ? null : current));
         setAgentConnectionMessage('');
       }, 6000);
-    } catch {
+    } else {
       setAgentConnectionMessage('复制失败，请检查系统剪贴板权限后重试。');
     }
   };
@@ -5620,15 +6234,52 @@ ${conversationText || '（请先粘贴对话历史）'}`;
     window.setTimeout(() => setDigestMessage(''), 1800);
   };
 
-  const copyText = async (text: string, toastText?: string) => {
-    if (bridge()?.copyText) {
-      bridge()?.copyText?.(text);
-    } else {
-      await navigator.clipboard.writeText(text);
+  const showActionNotice = (ok: boolean, title: string, detail: string, preview = '', duration?: number) => {
+    const id = Date.now();
+    setClipboardNotice({ id, ok, title, detail, preview });
+    window.setTimeout(() => setClipboardNotice((current) => current?.id === id ? null : current), duration ?? (ok ? 5200 : 7600));
+  };
+
+  const copyText = async (text: string, toastText = '内容已复制。', options: { contentLabel?: string; preview?: boolean } = {}) => {
+    const value = String(text || '');
+    const contentLabel = options.contentLabel || toastText.replace(/^已复制[「“]?/, '').replace(/[」”]?[。！!]$/, '') || '复制内容';
+    const showNotice = (ok: boolean, title: string, detail: string) => {
+      const preview = ok && options.preview !== false
+        ? value.replace(/\s+/g, ' ').trim().slice(0, 140)
+        : '';
+      showActionNotice(ok, title, detail, preview);
+    };
+    if (!value) {
+      showNotice(false, '复制失败', `${contentLabel}没有可复制的内容。`);
+      return false;
     }
-    if (toastText) {
-      setDigestMessage(toastText);
-      window.setTimeout(() => setDigestMessage(''), 3000);
+    try {
+      if (bridge()?.copyText) {
+        const raw = await bridge()?.copyText?.(value);
+        const result = raw ? JSON.parse(raw) as { ok?: boolean; message?: string; length?: number } : { ok: false, message: '系统未返回剪贴板写入结果。' };
+        if (!result.ok) {
+          showNotice(false, '复制失败', result.message || `${contentLabel}未写入剪贴板。`);
+          return false;
+        }
+      } else {
+        await navigator.clipboard.writeText(value);
+        const verified = await navigator.clipboard.readText().then((copied) => copied === value).catch(() => true);
+        if (!verified) {
+          showNotice(false, '复制失败', `${contentLabel}写入后校验失败，请重试。`);
+          return false;
+        }
+      }
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1600);
+      showNotice(true, toastText, `${contentLabel} · ${value.length.toLocaleString('zh-CN')} 个字符 · 已写入系统剪贴板`);
+      if (toastText) {
+        setDigestMessage(toastText);
+        window.setTimeout(() => setDigestMessage(''), 3000);
+      }
+      return true;
+    } catch (error) {
+      showNotice(false, '复制失败', `${contentLabel}未写入剪贴板：${error instanceof Error ? error.message : '系统剪贴板不可用'}`);
+      return false;
     }
   };
 
@@ -5643,11 +6294,116 @@ ${conversationText || '（请先粘贴对话历史）'}`;
     window.setTimeout(() => setExported(false), 2200);
   };
 
+  function digestWorkflowKey(scopeType: 'student' | 'project', scopeId: string) {
+    return `${scopeType}:${scopeId}`;
+  }
+
+  const applyDigestWorkflowPayload = (scopeType: 'student' | 'project', scopeId: string, raw?: string) => {
+    if (!raw) return null;
+    try {
+      const result = JSON.parse(raw) as { ok?: boolean; message?: string; workflow?: DigestWorkflowStatus } & Partial<DigestWorkflowStatus>;
+      const workflow = result.workflow || (result.scopeType && result.scopeId ? result as DigestWorkflowStatus : null);
+      if (workflow) setDigestWorkflows((current) => ({ ...current, [digestWorkflowKey(scopeType, scopeId)]: workflow }));
+      return result;
+    } catch {
+      return null;
+    }
+  };
+
+  const refreshDigestWorkflow = (scopeType: 'student' | 'project', scopeId: string) => {
+    const result = applyDigestWorkflowPayload(scopeType, scopeId, bridge()?.getDigestWorkflowStatus?.(scopeType, scopeId));
+    if (scopeType === 'student') {
+      refreshHostServiceStatus();
+      refreshHostUploadRecords();
+    } else if (result?.ok) {
+      refreshProjects();
+    }
+    return result;
+  };
+
+  const startDigestWorkflowFromPage = (scopeType: 'student' | 'project', scopeId: string) => {
+    const key = digestWorkflowKey(scopeType, scopeId);
+    setDigestWorkflowBusyKey(key);
+    const result = applyDigestWorkflowPayload(scopeType, scopeId, bridge()?.startDigestWorkflow?.(scopeType, scopeId, 'auto'));
+    const message = result?.message || (result?.ok ? '资料已进入自动处理。' : '资料处理启动失败。');
+    if (scopeType === 'student') setDigestMessage(message);
+    else reportProjectStage('digest', message);
+    refreshDigestWorkflow(scopeType, scopeId);
+    setDigestWorkflowBusyKey('');
+  };
+
+  const retryDigestWorkflowFromPage = (scopeType: 'student' | 'project', scopeId: string) => {
+    const key = digestWorkflowKey(scopeType, scopeId);
+    setDigestWorkflowBusyKey(key);
+    const result = applyDigestWorkflowPayload(scopeType, scopeId, bridge()?.retryDigestWorkflow?.(scopeType, scopeId, 'auto'));
+    const message = result?.message || (result?.ok ? '未完成资料已重新进入处理。' : '资料重试失败。');
+    if (scopeType === 'student') setDigestMessage(message);
+    else reportProjectStage('digest', message);
+    refreshDigestWorkflow(scopeType, scopeId);
+    setDigestWorkflowBusyKey('');
+  };
+
+  const copyDigestWorkflowCommandFromPage = async (scopeType: 'student' | 'project', scopeId: string) => {
+    const raw = bridge()?.getDigestWorkflowCommand?.(scopeType, scopeId);
+    if (!raw) {
+      showActionNotice(false, '复制失败', '当前环境不支持生成资料处理指令。');
+      return;
+    }
+    try {
+      const result = JSON.parse(raw) as { ok?: boolean; command?: string; message?: string; digestBatchId?: string };
+      if (!result.ok || !result.command) {
+        showActionNotice(false, '未复制指令', result.message || '当前批次指令生成失败。');
+        return;
+      }
+      const copied = await copyText(result.command, '当前批次指令已复制。', { contentLabel: `资料处理指令${result.digestBatchId ? ` · ${result.digestBatchId}` : ''}` });
+      const message = copied ? `${result.message || '指令已复制。'}${result.digestBatchId ? ` 批次：${result.digestBatchId}` : ''}` : '指令未能写入系统剪贴板。';
+      if (scopeType === 'student') setDigestMessage(message);
+      else reportProjectStage('digest', message);
+    } catch {
+      showActionNotice(false, '复制失败', '资料处理指令响应无法解析。');
+    }
+  };
+
+  const importDigestWorkflowTextFromPage = (scopeType: 'student' | 'project', scopeId: string) => {
+    const key = digestWorkflowKey(scopeType, scopeId);
+    const content = digestWorkflowManualText[key] || '';
+    if (!content.trim()) return;
+    setDigestWorkflowBusyKey(key);
+    const result = applyDigestWorkflowPayload(scopeType, scopeId, bridge()?.importDigestWorkflowResultText?.(scopeType, scopeId, content));
+    const message = result?.message || (result?.ok ? 'Agent 结果已导入。' : 'Agent 结果未通过校验。');
+    if (result?.ok) setDigestWorkflowManualText((current) => ({ ...current, [key]: '' }));
+    if (scopeType === 'student') setDigestMessage(message);
+    else reportProjectStage('digest', message);
+    refreshDigestWorkflow(scopeType, scopeId);
+    setDigestWorkflowBusyKey('');
+  };
+
   const copyDigestCommand = async (student: Student) => {
+    let pendingCount = pendingDigestValue(student);
+    const rawRecords = bridge()?.getMaterialImportRecords?.(student.id);
+    if (rawRecords) {
+      try {
+        const result = JSON.parse(rawRecords) as { ok?: boolean; records?: MaterialImportRecord[] };
+        if (result.ok && Array.isArray(result.records)) {
+          setMaterialImportRecords(result.records);
+          pendingCount = result.records.filter((record) => record.status === 'pending_digest').length;
+        }
+      } catch {
+        // Host count remains the fallback when the record refresh cannot be parsed.
+      }
+    }
+    if (pendingCount <= 0) {
+      const message = `“${student.name}”当前没有待消化资料，未复制指令。请先导入资料或刷新资料状态。`;
+      setScheduleMessage(message);
+      setDigestMessage(message);
+      showActionNotice(false, '未复制消化指令', message);
+      return;
+    }
     const stamp = new Date().toLocaleString('zh-CN');
     const adapter = getAgentToolAdapter(student.agentTool);
     const command = adapter.buildDigestCommand(student);
-    await copyText(command, `已复制资料消化命令，${adapter.profile.digestTargetLabel}。`);
+    const success = await copyText(command, `已复制“${student.name}”资料消化指令。`, { contentLabel: `资料消化指令（交给 ${adapter.profile.name}）` });
+    if (!success) return;
     bridge()?.recordScheduledTaskAction?.(student.id, 'digest', command);
     const next = students.map((item) => (item.id === student.id ? { ...item, lastDigestCommandAt: stamp } : item));
     persist(next);
@@ -5762,7 +6518,16 @@ ${conversationText || '（请先粘贴对话历史）'}`;
       return null;
     }
     try {
-      const result = JSON.parse(raw) as { ok?: boolean; audit?: DigestAudit; prompt?: string; message?: string };
+      const result = JSON.parse(raw) as {
+        ok?: boolean;
+        audit?: DigestAudit;
+        prompt?: string;
+        message?: string;
+        synced?: boolean;
+        updated?: number;
+        status?: HostServiceStatus;
+        records?: HostUploadRecord[];
+      };
       if (!result.ok || !result.audit) {
         setDigestAuditMessage(result.message || '生成消化覆盖审计失败。');
         return null;
@@ -5799,12 +6564,10 @@ ${conversationText || '（请先粘贴对话历史）'}`;
   const syncDigestAudit = (student: Student) => {
     const raw = bridge()?.syncStudentDigestAudit?.(student.id);
     const result = applyDigestAuditResult(raw);
-    if (raw) {
-      try {
-        const payload = JSON.parse(raw) as { status?: HostServiceStatus; records?: HostUploadRecord[] };
-        if (payload.status) {
-          setHostServiceStatus(payload.status);
-          const hostStat = payload.status.students?.find((item) => String(item.id) === String(student.id));
+    if (result) {
+        if (result.status) {
+          setHostServiceStatus(result.status);
+          const hostStat = result.status.students?.find((item) => String(item.id) === String(student.id));
           if (hostStat) {
             persist(students.map((item) => item.id === student.id ? {
               ...item,
@@ -5817,13 +6580,10 @@ ${conversationText || '（请先粘贴对话历史）'}`;
             } : item));
           }
         }
-        if (Array.isArray(payload.records)) setHostUploadRecords(payload.records);
-      } catch {
-        // The audit result itself already reports parse errors to the user.
-      }
-    }
-    if (result?.audit) {
-      setDigestAuditMessage(`复核结果已同步。${result.audit.message || ''}`);
+        if (Array.isArray(result.records)) setHostUploadRecords(result.records);
+      setDigestAuditMessage(result.synced === false
+        ? result.message || '未发现可同步的新复核结果。'
+        : result.message || `复核结果已同步。${result.audit?.message || ''}`);
     }
     refreshHostTimeline();
   };
@@ -6313,9 +7073,28 @@ ${conversationText || '（请先粘贴对话历史）'}`;
     }
   };
 
+  const availableImportProjectsForStudent = (studentId: string) => projects.filter(
+    (project) => (project.studentIds || []).includes(studentId) && project.status !== 'sealed',
+  );
+
+  const normalizedMaterialImportTargetKey = (student: Student) => (
+    materialImportTargetKey === 'student'
+      || availableImportProjectsForStudent(student.id).some((project) => project.id === materialImportTargetKey)
+      ? materialImportTargetKey
+      : 'student'
+  );
+
+  const materialImportTargetForStudent = (student: Student) => {
+    const targetKey = normalizedMaterialImportTargetKey(student);
+    const boundProject = availableImportProjectsForStudent(student.id).find((project) => project.id === targetKey);
+    return boundProject
+      ? { type: 'project', id: boundProject.id, name: boundProject.name, studentId: student.id }
+      : { type: 'student', id: student.id, name: student.name, studentId: student.id };
+  };
+
   const importFilesForStudent = (student: Student) => {
     setPendingImportStudentId(student.id);
-    const ok = bridge()?.importFiles?.(student.id);
+    const ok = bridge()?.importFiles?.(student.id, JSON.stringify(materialImportTargetForStudent(student)));
     if (typeof ok === 'string') {
       try {
         const result = JSON.parse(ok) as { ok?: boolean; message?: string };
@@ -6459,9 +7238,48 @@ ${conversationText || '（请先粘贴对话历史）'}`;
     if (!raw) return;
     try {
       const result = JSON.parse(raw) as { ok?: boolean; records?: MaterialImportRecord[] };
-      if (result.ok && Array.isArray(result.records)) setMaterialImportRecords(result.records);
+      if (result.ok && Array.isArray(result.records)) {
+        setMaterialImportRecords(result.records);
+        setSelectedMaterialImportRecordIds((current) => current.filter((id) => result.records?.some((record) => record.id === id)));
+      }
     } catch {
       // 导入记录只是辅助信息，解析失败不打断主流程。
+    }
+  };
+
+  const removableMaterialImportRecord = (record: MaterialImportRecord) => ['pending_digest', 'failed', 'ignored'].includes(record.status);
+
+  const toggleMaterialImportRecord = (recordId: string) => {
+    setSelectedMaterialImportRecordIds((current) => current.includes(recordId)
+      ? current.filter((id) => id !== recordId)
+      : [...current, recordId]);
+  };
+
+  const removeSelectedMaterialImportRecords = (student: Student) => {
+    const selected = materialImportRecords.filter((record) => selectedMaterialImportRecordIds.includes(record.id));
+    if (!selected.length) {
+      setMaterialSourceMessage('请先选择要移除的资料记录。');
+      return;
+    }
+    if (!window.confirm(`从活动资料列表移除所选 ${selected.length} 条记录？\n\n物理文件和文件资产都会保留；已进入消化批次的资料不会被移除。`)) return;
+    const raw = bridge()?.removeMaterialImportRecords?.(student.id, JSON.stringify(selected.map((record) => record.id)));
+    if (!raw) {
+      setMaterialSourceMessage('当前环境不支持移除资料记录。');
+      return;
+    }
+    try {
+      const result = JSON.parse(raw) as { ok?: boolean; removed?: number; blocked?: unknown[]; message?: string };
+      const message = result.message || (result.ok ? '资料记录已移除。' : '资料记录移除失败。');
+      setMaterialSourceMessage(message);
+      showActionNotice(Boolean(result.ok), result.ok ? '资料记录已移除' : '无法移除资料记录', message);
+      if (result.ok) {
+        setSelectedMaterialImportRecordIds([]);
+        refreshMaterialImportRecords(student);
+        refreshDigestWorkflow('student', student.id);
+        refreshHostServiceStatus();
+      }
+    } catch {
+      setMaterialSourceMessage('移除资料记录结果解析失败。');
     }
   };
 
@@ -6545,18 +7363,42 @@ ${conversationText || '（请先粘贴对话历史）'}`;
     if (!action) return;
     setCaptureBusy(true);
     try {
-      const result = JSON.parse(await action(session.id)) as { ok?: boolean; imported?: number; message?: string };
+      const linkedProjectExists = Boolean(session.projectId && projects.some((project) => project.id === session.projectId));
+      const targetMode = capturePromotionTargets[session.id] || (linkedProjectExists ? 'project_raw' : 'student_raw');
+      const result = JSON.parse(await action(session.id, targetMode)) as { ok?: boolean; imported?: number; targetMode?: string; project?: LearningProject; projects?: LearningProject[]; message?: string };
       setCaptureMessage(result.message || (result.ok ? '采集资料已晋升。' : '采集资料晋升失败。'));
-      if (result.ok && Number(result.imported || 0) > 0) {
+      if (result.ok && Number(result.imported || 0) > 0 && result.targetMode === 'student_raw') {
         const imported = Number(result.imported || 0);
         persist(students.map((item) => item.id === session.studentId
           ? { ...item, pendingDigestCount: (item.pendingDigestCount ?? 0) + imported, lastImportAt: new Date().toLocaleString('zh-CN') }
           : item));
         refreshMaterialImportRecords(selectedStudent);
       }
+      if (Array.isArray(result.projects)) setProjects(result.projects);
+      else if (result.project) setProjects((current) => current.map((item) => item.id === result.project?.id ? result.project : item));
       refreshCaptureCenter();
     } catch {
       setCaptureMessage('采集资料晋升结果解析失败。');
+    } finally {
+      setCaptureBusy(false);
+    }
+  };
+
+  const deleteCapture = async (session: CaptureSession) => {
+    const action = bridge()?.deleteCaptureSession;
+    if (!action) return;
+    const promoted = session.status === 'promoted' || ['student_raw', 'project_raw'].includes(String(session.archiveStatus));
+    const confirmed = window.confirm(promoted
+      ? `删除采集会话“${session.sourceName}”？\n\n将删除本次采集记录和采集箱临时副本；已经晋升到${session.archiveStatus === 'project_raw' ? '项目' : '学生'}原始资料库的正式资产不会删除。`
+      : `删除采集会话“${session.sourceName}”及其中 ${session.screenshotCount || 0} 张候选截图？\n\n此操作无法撤销。`);
+    if (!confirmed) return;
+    setCaptureBusy(true);
+    try {
+      const result = JSON.parse(await action(session.id)) as { ok?: boolean; message?: string };
+      setCaptureMessage(result.message || (result.ok ? '采集会话已删除。' : '删除采集会话失败。'));
+      refreshCaptureCenter();
+    } catch {
+      setCaptureMessage('删除采集会话结果解析失败。');
     } finally {
       setCaptureBusy(false);
     }
@@ -6601,7 +7443,8 @@ ${conversationText || '（请先粘贴对话历史）'}`;
       setMaterialSourceMessage('请先勾选要导入的来源文件。');
       return;
     }
-    const raw = bridge()?.importMaterialSourceFiles?.(student.id, JSON.stringify(selectedMaterialSourcePaths));
+    const target = materialImportTargetForStudent(student);
+    const raw = bridge()?.importMaterialSourceFiles?.(student.id, JSON.stringify(selectedMaterialSourcePaths), JSON.stringify(target));
     if (!raw) {
       setMaterialSourceMessage('当前环境不支持导入资料来源文件。');
       return;
@@ -6763,6 +7606,71 @@ ${conversationText || '（请先粘贴对话历史）'}`;
     }
   };
 
+  const refreshProjectKnowledgeBrowser = (projectId = selectedProjectId) => {
+    if (!projectId) return;
+    const raw = bridge()?.listProjectKnowledgeFiles?.(projectId);
+    if (!raw) {
+      setProjectKnowledgeBrowserMessage('当前环境不支持项目知识空间浏览。');
+      return;
+    }
+    try {
+      const result = JSON.parse(raw) as { ok?: boolean; files?: MarkdownFile[]; message?: string };
+      const files = result.files ?? [];
+      setProjectKnowledgeFiles(files);
+      setProjectKnowledgeBrowserMessage(result.message || (result.ok ? `已读取 ${files.length} 份项目知识文档。` : '读取项目知识空间失败。'));
+      setSelectedProjectKnowledgeFileId((current) => files.some((file) => file.id === current) ? current : '');
+      if (!files.length) setProjectKnowledgeContent('');
+    } catch {
+      setProjectKnowledgeBrowserMessage('项目知识空间数据解析失败。');
+    }
+  };
+
+  const openProjectKnowledgeDocument = (file: MarkdownFile) => {
+    if (!selectedProjectId) return;
+    const raw = bridge()?.readProjectKnowledgeFile?.(selectedProjectId, file.id);
+    if (!raw) {
+      setProjectKnowledgeBrowserMessage('当前环境不支持读取项目知识文档。');
+      return;
+    }
+    try {
+      const result = JSON.parse(raw) as { ok?: boolean; content?: string; message?: string };
+      if (!result.ok) {
+        setProjectKnowledgeBrowserMessage(result.message || '读取项目知识文档失败。');
+        return;
+      }
+      setSelectedProjectKnowledgeFileId(file.id);
+      setProjectKnowledgeContent(result.content || '');
+      setProjectKnowledgeBrowserMessage(`正在查看：${file.path}`);
+    } catch {
+      setProjectKnowledgeBrowserMessage('项目知识文档解析失败。');
+    }
+  };
+
+  const openProjectDetail = (projectId: string) => {
+    setSelectedProjectId(projectId);
+    setProjectPageMode('detail');
+    setSelectedProjectAssetIds([]);
+    setSelectedProjectStagingIds([]);
+    setPromotionPreview('');
+    setPromotionPlan(null);
+    setPromotionExecutionSummary('');
+    setPromotionAuditPreview('');
+    setPromotionConflicts([]);
+    setPromotionRuns([]);
+    setProjectKnowledgeFiles([]);
+    setSelectedProjectKnowledgeFileId('');
+    setProjectKnowledgeContent('');
+    setProjectKnowledgeCategory('all');
+    refreshProjectKnowledgeBrowser(projectId);
+  };
+
+  const backToProjectList = () => {
+    setProjectPageMode('list');
+    setProjectAuditLocateTarget(null);
+    setProjectEditOpen(false);
+    setProjectMessage('已返回全部项目列表。');
+  };
+
   const createLearningProject = () => {
     if (!projectDraft.name.trim()) {
       setProjectMessage('请先填写项目名称。');
@@ -6782,6 +7690,8 @@ ${conversationText || '（请先粘贴对话历史）'}`;
       workspaceFolders: parseProjectWorkspaceFolders(projectDraft.workspaceFoldersText),
       workspaceMode: projectDraft.workspaceMode,
       workspacePath: projectDraft.workspacePath,
+      knowledgeMode: projectDraft.knowledgeMode,
+      knowledgeRootPath: projectDraft.knowledgeRootPath,
       agentTool: projectDraft.agentTool,
     };
     if (projectDraftFolderErrors.length) {
@@ -6790,6 +7700,10 @@ ${conversationText || '（请先粘贴对话历史）'}`;
     }
     if (projectDraft.workspaceMode === 'linked' && !projectDraft.workspacePath) {
       setProjectMessage('请先选择已有项目文件夹。');
+      return;
+    }
+    if (projectDraft.knowledgeMode === 'adopted' && (!projectDraft.knowledgeRootPath || !projectKnowledgeAdoptionPreview?.ok)) {
+      setProjectMessage('请先选择并通过检查的已有项目知识空间。');
       return;
     }
     const raw = bridge()?.createProject?.(JSON.stringify(payload));
@@ -6804,6 +7718,14 @@ ${conversationText || '（请先粘贴对话历史）'}`;
         const next = result.projects ?? (result.project ? [result.project, ...projects] : projects);
         setProjects(next);
         if (result.project) setSelectedProjectId(result.project.id);
+        if (result.project && projectDraft.workspaceMode === 'linked' && projectDraft.scanExistingWorkspace) {
+          setProjectBusyAction('scan-workspace');
+          void bridge()?.scanProjectWorkspace?.(result.project.id).then((scanRaw) => {
+            const scanResult = JSON.parse(scanRaw) as { ok?: boolean; projects?: LearningProject[]; message?: string };
+            if (Array.isArray(scanResult.projects)) setProjects(scanResult.projects);
+            reportProjectStage('workspace', scanResult.message || '已有工作空间首次扫描完成。');
+          }).catch(() => reportProjectStage('workspace', '已有工作空间首次扫描失败，可在项目详情中重新扫描。')).finally(() => setProjectBusyAction(''));
+        }
         setProjectDraft({
           name: '',
           type: '学习项目',
@@ -6817,8 +7739,12 @@ ${conversationText || '（请先粘贴对话历史）'}`;
           workspaceFoldersText: projectWorkspaceFoldersText(projectWorkspaceTemplates[0].folders),
           workspaceMode: 'managed',
           workspacePath: '',
+          scanExistingWorkspace: true,
+          knowledgeMode: 'managed',
+          knowledgeRootPath: '',
           agentTool: 'qclaw',
         });
+        setProjectKnowledgeAdoptionPreview(null);
       }
     } catch {
       setProjectMessage('创建学习项目结果解析失败。');
@@ -6840,13 +7766,25 @@ ${conversationText || '（请先粘贴对话历史）'}`;
     }
   };
 
+  const pickExistingProjectKnowledgeBase = () => {
+    const raw = bridge()?.pickProjectKnowledgeBaseDir?.();
+    if (!raw) return setProjectMessage('当前环境不支持选择已有项目知识空间。');
+    try {
+      const result = JSON.parse(raw) as typeof projectKnowledgeAdoptionPreview & { message?: string };
+      setProjectKnowledgeAdoptionPreview(result);
+      if (result.rootPath) setProjectDraft((current) => ({ ...current, knowledgeMode: 'adopted', knowledgeRootPath: result.rootPath || '' }));
+      setProjectMessage(result.ok ? '已有项目知识空间检查通过；确认创建前不会修改其中任何文件。' : (result.errors?.join(' ') || result.message || '知识空间检查失败。'));
+    } catch { setProjectMessage('已有项目知识空间检查结果解析失败。'); }
+  };
+
   const saveSelectedProjectMetadata = () => {
     if (!selectedProjectId || !projectEditDraft.name.trim()) return setProjectMessage('请填写项目名称。');
     const raw = bridge()?.updateProjectMetadata?.(selectedProjectId, JSON.stringify(projectEditDraft));
     if (!raw) return setProjectMessage('当前环境不支持编辑项目。');
     try {
-      const result = JSON.parse(raw) as { ok?: boolean; project?: LearningProject; projects?: LearningProject[]; message?: string };
+      const result = JSON.parse(raw) as { ok?: boolean; project?: LearningProject; projects?: LearningProject[]; growthIndex?: GrowthIndexState; message?: string };
       if (Array.isArray(result.projects)) setProjects(result.projects);
+      if (result.ok && result.growthIndex && String(selectedStudent?.id || '') === String(studentId)) setGrowthIndex(result.growthIndex);
       if (result.ok) setProjectEditOpen(false);
       setProjectMessage(result.message || (result.ok ? '项目信息已更新。' : '编辑项目失败。'));
     } catch {
@@ -6854,20 +7792,26 @@ ${conversationText || '（请先粘贴对话历史）'}`;
     }
   };
 
-  const removeSelectedProjectRecord = () => {
+  const deleteSelectedProject = () => {
     if (!selectedProject) return;
-    if (!window.confirm(`确定从教育管家中移除项目记录“${selectedProject.name}”吗？\n\n工作空间、知识空间、资产和审计文件都会保留。`)) return;
-    const raw = bridge()?.removeProjectRecord?.(selectedProject.id);
-    if (!raw) return setProjectMessage('当前环境不支持删除项目记录。');
+    if (!window.confirm(`确定删除学习项目“${selectedProject.name}”吗？\n\n这是安全删除：项目将从列表中移除，但工作空间、知识空间、资产和审计文件都会保留，并可从“已删除项目”恢复。`)) return;
+    const projectBridge = bridge();
+    const raw = projectBridge?.deleteLearningProject?.(selectedProject.id) || projectBridge?.removeProjectRecord?.(selectedProject.id);
+    if (!raw) return setProjectMessage('当前环境不支持删除项目。');
     try {
-      const result = JSON.parse(raw) as { ok?: boolean; projects?: LearningProject[]; message?: string };
+      const result = JSON.parse(raw) as { ok?: boolean; projects?: LearningProject[]; deletedProject?: RemovedProjectRecord; message?: string };
       if (Array.isArray(result.projects)) {
         setProjects(result.projects);
         setSelectedProjectId(result.projects[0]?.id || '');
       }
-      setProjectMessage(result.message || (result.ok ? '项目记录已移除。' : '删除项目记录失败。'));
+      if (result.ok && result.deletedProject) {
+        setRemovedProjects((current) => [result.deletedProject!, ...current.filter((item) => item.snapshotPath !== result.deletedProject!.snapshotPath)]);
+        setProjectPageMode('list');
+      }
+      setProjectEditOpen(false);
+      setProjectMessage(result.message || (result.ok ? '项目已安全删除，可随时恢复。' : '删除项目失败。'));
     } catch {
-      setProjectMessage('删除项目记录结果解析失败。');
+      setProjectMessage('删除项目结果解析失败。');
     }
   };
 
@@ -6876,20 +7820,38 @@ ${conversationText || '（请先粘贴对话历史）'}`;
     const raw = bridge()?.relocateProjectWorkspace?.(selectedProject.id);
     if (!raw) return setProjectMessage('当前环境不支持项目路径重新定位。');
     try {
+      const result = JSON.parse(raw) as { ok?: boolean; preview?: boolean; oldPath?: string; newPath?: string; warnings?: string[]; message?: string };
+      if (!result.ok || !result.preview || !result.newPath) return setProjectMessage(result.message || '重新定位预检失败。');
+      const warningText = result.warnings?.length ? `\n\n提醒：\n${result.warnings.join('\n')}` : '';
+      if (!window.confirm(`确认重新绑定项目工作空间？\n\n旧路径：${result.oldPath}\n新路径：${result.newPath}\n\n只更新逻辑绑定，不移动、复制或删除文件。${warningText}`)) return setProjectMessage('已取消重新绑定，项目索引未修改。');
+      const confirmedRaw = bridge()?.confirmProjectWorkspaceRelocation?.(selectedProject.id, result.newPath);
+      if (!confirmedRaw) return setProjectMessage('当前环境不支持确认路径重新绑定。');
+      const confirmed = JSON.parse(confirmedRaw) as { ok?: boolean; projects?: LearningProject[]; message?: string };
+      if (Array.isArray(confirmed.projects)) setProjects(confirmed.projects);
+      setProjectMessage(confirmed.message || (confirmed.ok ? '项目工作空间已重新绑定。' : '重新绑定失败。'));
+      if (confirmed.ok) void scanSelectedProjectWorkspace(selectedProject.id);
+    } catch { setProjectMessage('项目路径重新定位结果解析失败。'); }
+  };
+
+  const rollbackSelectedProjectWorkspace = () => {
+    if (!selectedProject) return;
+    const raw = bridge()?.rollbackProjectWorkspaceRelocation?.(selectedProject.id);
+    if (!raw) return setProjectMessage('当前环境不支持回滚工作空间绑定。');
+    try {
       const result = JSON.parse(raw) as { ok?: boolean; projects?: LearningProject[]; message?: string };
       if (Array.isArray(result.projects)) setProjects(result.projects);
-      setProjectMessage(result.message || (result.ok ? '项目工作空间已重新定位。' : '重新定位失败。'));
-    } catch { setProjectMessage('项目路径重新定位结果解析失败。'); }
+      setProjectMessage(result.message || (result.ok ? '工作空间绑定已回滚。' : '回滚失败。'));
+    } catch { setProjectMessage('工作空间回滚结果解析失败。'); }
   };
 
   const loadRemovedProjectRecords = () => {
     const raw = bridge()?.getRemovedProjects?.();
-    if (!raw) return setProjectMessage('当前环境不支持项目记录恢复。');
+    if (!raw) return setProjectMessage('当前环境不支持已删除项目恢复。');
     try {
       const result = JSON.parse(raw) as { removed?: RemovedProjectRecord[]; message?: string };
       setRemovedProjects(result.removed || []);
-      setProjectMessage(result.message || '已读取可恢复项目。');
-    } catch { setProjectMessage('可恢复项目结果解析失败。'); }
+      setProjectMessage(result.message || '已读取可恢复的已删除项目。');
+    } catch { setProjectMessage('已删除项目结果解析失败。'); }
   };
 
   const restoreProjectRecord = (snapshotPath: string) => {
@@ -6938,16 +7900,79 @@ ${conversationText || '（请先粘贴对话历史）'}`;
   };
 
   const saveProjectStudentEvidence = (studentId: string) => {
-    if (!selectedProjectId) return;
-    const evidence = projectStudentEvidenceDrafts[studentId] || { ability: '', observation: '', status: 'draft' };
+    if (!selectedProjectId || projectStudentEvidenceBusyId) return;
+    const savedEvidence = selectedProject?.studentEvidence?.find((item) => item.studentId === studentId);
+    const draft = projectStudentEvidenceDrafts[studentId] || { ability: '', observation: '', status: 'draft' };
+    // The primary action is a real one-click confirmation. Explicit rejected or
+    // published selections remain respected for recovery and compatibility.
+    const targetStatus = draft.status === 'draft' ? 'verified' : draft.status;
+    const evidence = {
+      ...savedEvidence,
+      ...draft,
+      status: targetStatus,
+      sourcePaths: savedEvidence?.sourcePaths || [],
+      confidence: savedEvidence?.confidence || '',
+      generatedBy: savedEvidence?.generatedBy || '',
+    };
+    setProjectStudentEvidenceBusyId(studentId);
+    setProjectStudentEvidenceFeedbacks((current) => ({ ...current, [studentId]: { ok: true, message: '正在提交证据状态…' } }));
     const raw = bridge()?.updateProjectStudentEvidence?.(selectedProjectId, studentId, JSON.stringify(evidence));
-    if (!raw) return setProjectMessage('当前环境不支持学生独立成长证据。');
+    if (!raw) {
+      const message = '当前环境不支持学生独立成长证据。';
+      setProjectStudentEvidenceBusyId('');
+      setProjectStudentEvidenceFeedbacks((current) => ({ ...current, [studentId]: { ok: false, message } }));
+      setProjectMessage(message);
+      showActionNotice(false, '证据操作失败', message);
+      return;
+    }
     try {
-      const result = JSON.parse(raw) as { ok?: boolean; projects?: LearningProject[]; message?: string };
+      const result = JSON.parse(raw) as { ok?: boolean; project?: LearningProject; projects?: LearningProject[]; message?: string };
       if (Array.isArray(result.projects)) setProjects(result.projects);
-      setProjectMessage(result.message || (result.ok ? '学生成长证据已保存。' : '保存学生成长证据失败。'));
+      const message = result.message || (result.ok ? '学生成长证据已确认。' : '确认学生成长证据失败。');
+      setProjectMessage(message);
+      setProjectStudentEvidenceFeedbacks((current) => ({ ...current, [studentId]: { ok: Boolean(result.ok), message } }));
+      showActionNotice(Boolean(result.ok), result.ok ? '证据操作成功' : '证据操作失败', message);
+      if (result.ok) setProjectStudentEvidenceDrafts((current) => ({ ...current, [studentId]: { ...draft, status: targetStatus } }));
+      if (result.ok && projectCompletionOpen) window.setTimeout(prepareProjectCompletion, 0);
     } catch {
-      setProjectMessage('学生成长证据结果解析失败。');
+      const message = '学生成长证据结果解析失败。';
+      setProjectMessage(message);
+      setProjectStudentEvidenceFeedbacks((current) => ({ ...current, [studentId]: { ok: false, message } }));
+      showActionNotice(false, '证据操作失败', message);
+    } finally {
+      setProjectStudentEvidenceBusyId('');
+    }
+  };
+
+  const copyProjectStudentEvidencePrompt = async () => {
+    if (!selectedProjectId) return setProjectMessage('请先选择学习项目。');
+    const raw = bridge()?.getProjectStudentEvidencePrompt?.(selectedProjectId);
+    if (!raw) return setProjectMessage('当前环境不支持个人证据建议任务。');
+    try {
+      const result = JSON.parse(raw) as { ok?: boolean; command?: string; message?: string };
+      if (!result.ok || !result.command) return setProjectMessage(result.message || '个人证据建议任务生成失败。');
+      const success = await copyText(result.command, '已复制个人成长证据建议任务。', { contentLabel: '个人成长证据建议任务' });
+      setProjectMessage(success ? '已复制个人证据建议任务。Agent完成后点击“同步AI证据草稿”。' : '个人证据建议任务复制失败，请重试。');
+    } catch {
+      setProjectMessage('个人证据建议任务解析失败。');
+    }
+  };
+
+  const importProjectStudentEvidenceSuggestions = (pastedText = '') => {
+    if (!selectedProjectId) return setProjectMessage('请先选择学习项目。');
+    const raw = bridge()?.importProjectStudentEvidenceSuggestions?.(selectedProjectId, pastedText);
+    if (!raw) return setProjectMessage('当前环境不支持同步个人证据建议。');
+    try {
+      const result = JSON.parse(raw) as { ok?: boolean; project?: LearningProject; projects?: LearningProject[]; message?: string };
+      if (Array.isArray(result.projects)) setProjects(result.projects);
+      if (result.project) setSelectedProjectId(result.project.id);
+      setProjectMessage(result.message || (result.ok ? 'AI个人证据草稿已同步。' : '同步个人证据草稿失败。'));
+      if (result.ok && pastedText) {
+        setProjectStudentEvidenceRaw('');
+        setProjectStudentEvidencePasteOpen(false);
+      }
+    } catch {
+      setProjectMessage('个人证据建议同步结果解析失败。');
     }
   };
 
@@ -6975,22 +8000,34 @@ ${conversationText || '（请先粘贴对话历史）'}`;
     setProjectMessage(`已保存“${name}”。`);
   };
 
-  const scanSelectedProjectWorkspace = () => {
-    if (!selectedProjectId) return setProjectMessage('请先选择学习项目。');
-    const raw = bridge()?.scanProjectWorkspace?.(selectedProjectId);
-    if (!raw) return setProjectMessage('当前环境不支持扫描项目工作空间。');
+  const scanSelectedProjectWorkspace = async (projectId = selectedProjectId) => {
+    if (!projectId) return reportProjectStage('workspace', '请先选择学习项目。');
+    setProjectBusyAction('scan-workspace');
+    setProjectWorkspaceScanProgress({ projectId, phase: 'starting', percent: 0, message: '正在启动工作空间扫描...' });
+    const raw = await bridge()?.scanProjectWorkspace?.(projectId);
+    if (!raw) { setProjectBusyAction(''); return reportProjectStage('workspace', '当前环境不支持扫描项目工作空间。'); }
     try {
       const result = JSON.parse(raw) as { ok?: boolean; project?: LearningProject; projects?: LearningProject[]; message?: string };
       if (Array.isArray(result.projects)) setProjects(result.projects);
-      setProjectMessage(result.message || (result.ok ? '工作空间扫描完成。' : '工作空间扫描失败。'));
+      reportProjectStage('workspace', result.message || (result.ok ? '工作空间扫描完成。新增候选已定位到研究暂存区。' : '工作空间扫描失败。'));
     } catch {
-      setProjectMessage('工作空间扫描结果解析失败。');
+      reportProjectStage('workspace', '工作空间扫描结果解析失败。');
+    } finally {
+      setProjectBusyAction('');
     }
+  };
+
+  const cancelSelectedProjectWorkspaceScan = async () => {
+    if (!selectedProjectId) return;
+    const raw = await bridge()?.cancelProjectWorkspaceScan?.(selectedProjectId);
+    if (!raw) return;
+    try { reportProjectStage('workspace', JSON.parse(raw).message || '已请求取消扫描。'); } catch { reportProjectStage('workspace', '已请求取消扫描。'); }
   };
 
   const reviewSelectedProjectStaging = (decision: 'accepted' | 'rejected' | 'pending') => {
     if (!selectedProjectId || !selectedProjectStagingIds.length) return setProjectMessage('请先选择要审核的项目资料。');
-    const raw = bridge()?.reviewProjectStagingItems?.(selectedProjectId, JSON.stringify(selectedProjectStagingIds), decision, projectSourceStrategy, projectReviewNote);
+    const note = decision === 'accepted' ? '用户一键采用。' : decision === 'rejected' ? '用户一键排除。' : '用户保留为待处理。';
+    const raw = bridge()?.reviewProjectStagingItems?.(selectedProjectId, JSON.stringify(selectedProjectStagingIds), decision, projectSourceStrategy, note);
     if (!raw) return setProjectMessage('当前环境不支持项目资料审核。');
     try {
       const result = JSON.parse(raw) as { ok?: boolean; projects?: LearningProject[]; message?: string };
@@ -7009,23 +8046,25 @@ ${conversationText || '（请先粘贴对话历史）'}`;
     try {
       const result = JSON.parse(raw) as { ok?: boolean; records?: ProjectKnowledgeRecord[]; message?: string };
       setProjectKnowledgeRecords(result.records ?? []);
-      if (result.message) setProjectMessage(result.message);
+      if (result.message) reportProjectStage('knowledge', result.message);
     } catch {
-      setProjectMessage('知识资产审核数据解析失败。');
+      reportProjectStage('knowledge', '知识资产审核数据解析失败。');
     }
   };
 
   const updateSelectedProjectKnowledgeReview = (status: string) => {
-    if (!selectedProjectId || !selectedProjectKnowledgeIds.length) return setProjectMessage('请先选择要审核的知识资产。');
-    const raw = bridge()?.updateProjectKnowledgeReview?.(selectedProjectId, JSON.stringify(selectedProjectKnowledgeIds), status, projectKnowledgeReviewNote);
-    if (!raw) return setProjectMessage('当前环境不支持知识资产审核。');
+    if (!selectedProjectId || !selectedProjectKnowledgeIds.length) return reportProjectStage('knowledge', '请先选择要审核的知识资产。');
+    const note = status === 'verified' ? '用户一键确认知识。' : status === 'rejected' ? '用户选择需要修改。' : '用户标记该知识失效。';
+    const raw = bridge()?.updateProjectKnowledgeReview?.(selectedProjectId, JSON.stringify(selectedProjectKnowledgeIds), status, note);
+    if (!raw) return reportProjectStage('knowledge', '当前环境不支持知识资产审核。');
     try {
       const result = JSON.parse(raw) as { ok?: boolean; records?: ProjectKnowledgeRecord[]; message?: string };
       setProjectKnowledgeRecords(result.records ?? []);
       if (result.ok) setSelectedProjectKnowledgeIds([]);
-      setProjectMessage(result.message || (result.ok ? '知识资产审核已更新。' : '知识资产审核失败。'));
+      reportProjectStage('knowledge', result.message || (result.ok ? '知识资产审核已更新。' : '知识资产审核失败。'));
+      if (result.ok && projectCompletionOpen) window.setTimeout(prepareProjectCompletion, 0);
     } catch {
-      setProjectMessage('知识资产审核结果解析失败。');
+      reportProjectStage('knowledge', '知识资产审核结果解析失败。');
     }
   };
 
@@ -7117,7 +8156,7 @@ ${conversationText || '（请先粘贴对话历史）'}`;
     }
   };
 
-  const copySelectedProjectDigestCommand = () => {
+  const copySelectedProjectDigestCommand = async () => {
     if (!selectedProjectId) {
       setProjectMessage('请先选择学习项目。');
       return;
@@ -7133,10 +8172,8 @@ ${conversationText || '（请先粘贴对话历史）'}`;
         setProjectMessage(result.message || '项目消化指令生成失败。');
         return;
       }
-      bridge()?.copyText?.(result.command);
-      setCopied(true);
-      window.setTimeout(() => setCopied(false), 1400);
-      setProjectMessage(result.message || '已复制项目消化指令。');
+      const success = await copyText(result.command, '已复制项目资料消化指令。', { contentLabel: '项目资料消化指令' });
+      setProjectMessage(success ? (result.message || '已复制项目消化指令。') : '项目消化指令复制失败，请重试。');
     } catch {
       setProjectMessage('项目消化指令结果解析失败。');
     }
@@ -7164,21 +8201,40 @@ ${conversationText || '（请先粘贴对话历史）'}`;
 
   const syncSelectedProjectDigestResult = () => {
     if (!selectedProjectId) {
-      setProjectMessage('请先选择学习项目。');
+      reportProjectStage('digest', '请先选择学习项目。');
       return;
     }
     const raw = bridge()?.syncProjectDigestResult?.(selectedProjectId);
     if (!raw) {
-      setProjectMessage('当前环境不支持项目消化结果同步。');
+      reportProjectStage('digest', '当前环境不支持项目消化结果同步。');
       return;
     }
     try {
       const result = JSON.parse(raw) as { ok?: boolean; project?: LearningProject; projects?: LearningProject[]; message?: string };
       if (Array.isArray(result.projects)) setProjects(result.projects);
       if (result.project) setSelectedProjectId(result.project.id);
-      setProjectMessage(result.message || (result.ok ? '已同步项目消化结果。' : '项目消化结果同步失败。'));
+      reportProjectStage('digest', result.message || (result.ok ? '已同步项目消化结果，新增知识已进入审核区。' : '项目消化结果同步失败。'));
     } catch {
-      setProjectMessage('项目消化结果同步解析失败。');
+      reportProjectStage('digest', '项目消化结果同步解析失败。');
+    }
+  };
+
+  const applyPastedProjectDigestReceipt = () => {
+    if (!selectedProjectId) return reportProjectStage('digest', '请先选择学习项目。');
+    if (!projectDigestReceiptRaw.trim()) return reportProjectStage('digest', '请先粘贴 Agent 返回的 JSON 回执。');
+    const raw = bridge()?.applyProjectDigestReceiptText?.(selectedProjectId, projectDigestReceiptRaw);
+    if (!raw) return reportProjectStage('digest', '当前环境不支持粘贴项目消化回执。');
+    try {
+      const result = JSON.parse(raw) as { ok?: boolean; project?: LearningProject; projects?: LearningProject[]; message?: string };
+      if (Array.isArray(result.projects)) setProjects(result.projects);
+      if (result.project) setSelectedProjectId(result.project.id);
+      reportProjectStage('digest', result.message || (result.ok ? '已校验并同步粘贴的 Agent 回执。' : '粘贴的 Agent 回执未通过校验。'));
+      if (result.ok) {
+        setProjectDigestReceiptRaw('');
+        setProjectDigestReceiptPasteOpen(false);
+      }
+    } catch {
+      reportProjectStage('digest', '粘贴项目消化回执结果解析失败。');
     }
   };
 
@@ -7196,7 +8252,7 @@ ${conversationText || '（请先粘贴对话历史）'}`;
       const result = JSON.parse(raw) as { ok?: boolean; imported?: number; project?: LearningProject; projects?: LearningProject[]; message?: string };
       if (Array.isArray(result.projects)) setProjects(result.projects);
       if (result.project) setSelectedProjectId(result.project.id);
-      setProjectMessage(result.message || (result.ok ? '已导入研究暂存层。' : '导入研究暂存失败。'));
+      reportProjectStage('workspace', result.message || (result.ok ? '资料已导入研究暂存层，下一步可生成 AI 整理建议。' : '导入研究暂存失败。'));
       if (result.ok) setSelectedProjectStagingIds([]);
     } catch {
       setProjectMessage('研究暂存导入结果解析失败。');
@@ -7255,7 +8311,25 @@ ${conversationText || '（请先粘贴对话历史）'}`;
     }
   };
 
-  const copyProjectStagingAiScreeningPrompt = () => {
+  const approveAndPromoteSelectedProjectStagingItems = () => {
+    if (!selectedProjectId || !selectedProjectStagingIds.length) return reportProjectStage('assets', '请先选择要加入项目知识库的资料。');
+    const raw = bridge()?.approveAndPromoteProjectStagingItems?.(selectedProjectId, JSON.stringify(selectedProjectStagingIds), projectSourceStrategy, '用户一键采用并晋升。');
+    if (!raw) return reportProjectStage('assets', '当前环境不支持审核并加入项目知识库。');
+    try {
+      const result = JSON.parse(raw) as { ok?: boolean; project?: LearningProject; projects?: LearningProject[]; message?: string };
+      if (Array.isArray(result.projects)) setProjects(result.projects);
+      if (result.project) setSelectedProjectId(result.project.id);
+      if (result.ok) {
+        setSelectedProjectStagingIds([]);
+        refreshAssets();
+      }
+      reportProjectStage('assets', result.message || (result.ok ? '资料已加入正式资产与项目原始资料库，下一步可进行知识消化。' : '资料加入项目知识库失败。'));
+    } catch {
+      reportProjectStage('assets', '资料加入项目知识库结果解析失败。');
+    }
+  };
+
+  const copyProjectStagingAiScreeningPrompt = async () => {
     if (!selectedProject) {
       setProjectMessage('请先选择学习项目。');
       return;
@@ -7307,13 +8381,53 @@ ${conversationText || '（请先粘贴对话历史）'}`;
 
 ${JSON.stringify(items, null, 2)}
 `;
-    bridge()?.copyText?.(prompt);
-    setCopied(true);
-    window.setTimeout(() => setCopied(false), 1400);
-    setProjectMessage('已复制 AI 初筛指令。请粘贴给 QClaw / OpenClaw / Hohu 等工具执行，保存返回 JSON 后再导入。');
+    const success = await copyText(prompt, '已复制项目资料 AI 初筛指令。', { contentLabel: '项目资料 AI 初筛指令' });
+    setProjectMessage(success ? '已复制 AI 初筛指令。请粘贴给所选 Agent 执行，再将返回内容直接粘贴到评估回执面板。' : 'AI 初筛指令复制失败，请重试。');
+    return success;
   };
 
-  const importProjectStagingAiScreening = () => {
+  const openProjectScreeningPaste = () => {
+    setProjectScreeningPasteOpen(true);
+    setProjectScreeningPreview(null);
+    reportProjectStage('assets', '请粘贴 Agent 返回的 JSON，或包含 JSON 代码块的 Markdown，然后先预览匹配。');
+  };
+
+  const previewPastedProjectStagingAiScreening = () => {
+    if (!selectedProjectId) return reportProjectStage('assets', '请先选择学习项目。');
+    if (!projectScreeningRaw.trim()) return reportProjectStage('assets', '请先粘贴 Agent 评估结果。');
+    const raw = bridge()?.previewProjectStagingAiScreening?.(selectedProjectId, projectScreeningRaw);
+    if (!raw) return reportProjectStage('assets', '当前环境不支持预览 Agent 评估结果。');
+    try {
+      const result = JSON.parse(raw) as ProjectScreeningPreview;
+      setProjectScreeningPreview(result);
+      reportProjectStage('assets', result.message || (result.ok ? '评估结果已预览，尚未修改项目。' : '评估结果无法应用。'));
+    } catch {
+      setProjectScreeningPreview(null);
+      reportProjectStage('assets', 'Agent 评估预览结果解析失败。');
+    }
+  };
+
+  const applyPastedProjectStagingAiScreening = () => {
+    if (!selectedProjectId || !projectScreeningPreview?.matchedCount) return reportProjectStage('assets', '请先完成有效预览。');
+    const raw = bridge()?.applyProjectStagingAiScreening?.(selectedProjectId, projectScreeningRaw);
+    if (!raw) return reportProjectStage('assets', '当前环境不支持应用 Agent 评估结果。');
+    try {
+      const result = JSON.parse(raw) as { ok?: boolean; project?: LearningProject; projects?: LearningProject[]; receiptPath?: string; message?: string };
+      if (Array.isArray(result.projects)) setProjects(result.projects);
+      if (result.project) setSelectedProjectId(result.project.id);
+      if (result.ok) {
+        setSelectedProjectStagingIds([]);
+        setProjectScreeningPasteOpen(false);
+        setProjectScreeningRaw('');
+        setProjectScreeningPreview(null);
+      }
+      reportProjectStage('assets', result.message || (result.ok ? 'Agent 评估已应用并保留审计回执。' : 'Agent 评估应用失败。'));
+    } catch {
+      reportProjectStage('assets', 'Agent 评估应用结果解析失败。');
+    }
+  };
+
+  const importProjectStagingAiScreeningFromFile = () => {
     if (!selectedProjectId) {
       setProjectMessage('请先选择学习项目。');
       return;
@@ -7328,9 +8442,9 @@ ${JSON.stringify(items, null, 2)}
       if (Array.isArray(result.projects)) setProjects(result.projects);
       if (result.project) setSelectedProjectId(result.project.id);
       if (result.ok) setSelectedProjectStagingIds([]);
-      setProjectMessage(result.message || (result.ok ? 'AI 初筛结果已导入。' : 'AI 初筛结果导入失败。'));
+      reportProjectStage('assets', result.message || (result.ok ? 'AI 整理建议已导入，请重点核对冲突、重复和低置信度资料。' : 'AI 整理建议导入失败。'));
     } catch {
-      setProjectMessage('AI 初筛结果解析失败。');
+      reportProjectStage('assets', 'AI 整理建议解析失败。');
     }
   };
 
@@ -7359,6 +8473,38 @@ ${JSON.stringify(items, null, 2)}
       setProjectMessage(result.message || (result.ok ? '已生成研究暂存治理建议。' : '生成研究暂存治理建议失败。'));
     } catch {
       setProjectMessage('研究暂存治理建议结果解析失败。');
+    }
+  };
+
+  const prepareProjectStagingEvaluation = async () => {
+    if (!selectedProjectId || !projectStagingItems.length) return reportProjectStage('assets', '请先添加研究暂存资料。');
+    const raw = bridge()?.analyzeProjectStagingGovernance?.(selectedProjectId);
+    if (raw) {
+      try {
+        const result = JSON.parse(raw) as { project?: LearningProject; projects?: LearningProject[] };
+        if (Array.isArray(result.projects)) setProjects(result.projects);
+        if (result.project) setSelectedProjectId(result.project.id);
+      } catch { /* The Agent evaluation prompt is still usable. */ }
+    }
+    const copied = await copyProjectStagingAiScreeningPrompt();
+    setProjectScreeningPasteOpen(true);
+    setProjectScreeningPreview(null);
+    reportProjectStage('assets', copied ? '已生成去重治理结果并复制 AI 整理任务。请交给所选 Agent 执行，再将返回内容粘贴到下方。' : '已生成去重治理结果，但 AI 整理任务复制失败；请点击“复制 Agent 评估指令”重试。');
+  };
+
+  const copyAndSubmitSelectedProjectDigest = async () => {
+    if (!selectedProjectId) return reportProjectStage('digest', '请先选择学习项目。');
+    const submittedRaw = bridge()?.markProjectDigestSubmitted?.(selectedProjectId);
+    if (!submittedRaw) return reportProjectStage('digest', '当前环境不支持项目消化任务。');
+    try {
+      const submitted = JSON.parse(submittedRaw) as { ok?: boolean; command?: string; project?: LearningProject; projects?: LearningProject[]; message?: string };
+      if (!submitted.ok || !submitted.command) return reportProjectStage('digest', submitted.message || '项目消化批次登记失败。');
+      const success = await copyText(submitted.command, '已复制本批次项目消化任务。', { contentLabel: '项目消化任务指令' });
+      if (Array.isArray(submitted?.projects)) setProjects(submitted.projects);
+      if (submitted?.project) setSelectedProjectId(submitted.project.id);
+      reportProjectStage('digest', success ? '消化批次已冻结，任务指令已复制并登记为等待 Agent 回执。' : '消化批次已登记，但指令复制失败；请点击复制按钮重试。');
+    } catch {
+      reportProjectStage('digest', '项目消化任务结果解析失败。');
     }
   };
 
@@ -7447,7 +8593,7 @@ ${JSON.stringify(items, null, 2)}
   const focusSelectedProjectWorkflowStage = (target: ProjectWorkflowTarget) => {
     if (!selectedProject) return;
     setProjectAuditLocateTarget({ projectId: selectedProject.id, target, nonce: Date.now() });
-    setProjectMessage(`已定位到“${target === 'workspace' ? '资料入口' : target === 'assets' ? '暂存治理' : target === 'digest' ? 'Agent 消化' : target === 'knowledge' ? '知识审核' : '贡献归档'}”阶段。`);
+    setProjectMessage(`已定位到“${target === 'workspace' ? '资料入口' : target === 'assets' ? '暂存治理' : target === 'digest' ? 'Agent 消化' : target === 'knowledge' ? '知识审核' : target === 'evidence' ? '个人成长证据' : '贡献归档'}”阶段。`);
   };
 
   const openProjectFromDashboard = (project: LearningProject) => {
@@ -7460,7 +8606,7 @@ ${JSON.stringify(items, null, 2)}
           : projectDashboardFocus === 'digest'
             ? 'digest'
             : 'detail';
-    setSelectedProjectId(project.id);
+    openProjectDetail(project.id);
     setProjectAuditLocateTarget({ projectId: project.id, target, nonce: Date.now() });
     if (target === 'promotion') loadProjectPromotionPlan(project.id);
     setProjectMessage(`正在打开「${project.name}」的${target === 'assets' ? '资料治理' : target === 'knowledge' ? '知识审核' : target === 'promotion' ? '贡献清单' : target === 'digest' ? '人工消化' : '项目详情'}。`);
@@ -7469,7 +8615,7 @@ ${JSON.stringify(items, null, 2)}
   const handleProjectAuditAction = (item: ProjectAuditItem) => {
     const target = item.type === 'stale_promotion' ? 'promotion' : item.type === 'no_assets' ? 'assets' : item.type === 'unbound_student' ? 'students' : 'detail';
     setActiveSection('projects-existing');
-    setSelectedProjectId(item.projectId);
+    openProjectDetail(item.projectId);
     setProjectAuditLocateTarget({ projectId: item.projectId, target, nonce: Date.now() });
     setSelectedProjectAssetIds([]);
     setSelectedProjectStagingIds([]);
@@ -7503,7 +8649,7 @@ ${JSON.stringify(items, null, 2)}
       return true;
     }
     if (target.type === 'project' || target.type === 'growth') {
-      setSelectedProjectId(target.entityId);
+      openProjectDetail(target.entityId);
       setActiveSection('projects-existing');
       setProjectMessage(`已从关系图定位到学习项目：${target.label.replace(/^项目：|^成长沉淀：/, '')}`);
       return true;
@@ -7589,6 +8735,30 @@ ${JSON.stringify(items, null, 2)}
       setProjectMessage(result.message || (result.ok ? '项目绑定学生已更新。' : '项目绑定学生更新失败。'));
     } catch {
       setProjectMessage('项目绑定学生更新结果解析失败。');
+    }
+  };
+
+  const prepareProjectCompletion = () => {
+    if (!selectedProjectId) return reportProjectStage('promotion', '请先选择学习项目。');
+    const raw = bridge()?.getProjectCompletionWizard?.(selectedProjectId);
+    if (!raw) return reportProjectStage('promotion', '当前环境不支持统一项目完成检查。');
+    try {
+      const result = JSON.parse(raw) as { ok?: boolean; ready?: boolean; projects?: LearningProject[]; blockers?: ProjectCompletionBlocker[]; contribution?: { content?: string }; plan?: PromotionPlan; audit?: { content?: string; conflicts?: PromotionConflict[]; runs?: PromotionRunRecord[] }; message?: string };
+      if (!result.ok) return reportProjectStage('promotion', result.message || '项目完成检查失败。');
+      if (result.projects) setProjects(result.projects);
+      const contribution = result.contribution;
+      const plan = result.plan;
+      const audit = result.audit;
+      setPromotionPreview(contribution?.content || '');
+      if (plan?.ok) setPromotionPlan({ ...plan, items: plan.items ?? [] });
+      setPromotionAuditPreview(audit?.content || '');
+      setPromotionConflicts(audit?.conflicts ?? []);
+      setPromotionRuns(audit?.runs ?? []);
+      setProjectCompletionBlockers(result.blockers ?? []);
+      setProjectCompletionOpen(true);
+      reportProjectStage('promotion', result.message || (result.ready ? '完成检查已通过。' : '完成项目前仍有未收口事项。'));
+    } catch {
+      reportProjectStage('promotion', '完成项目向导数据解析失败。');
     }
   };
 
@@ -7706,8 +8876,10 @@ ${JSON.stringify(items, null, 2)}
       return;
     }
     try {
-      const result = JSON.parse(raw) as { ok?: boolean; review?: GrowthEvidenceReviewState; message?: string };
+      const result = JSON.parse(raw) as { ok?: boolean; review?: GrowthEvidenceReviewState; protocolCompatibility?: { reviewQueue?: LegacyGrowthReviewQueueItem[] }; riskAssessment?: GrowthEvidenceRiskAssessment; message?: string };
       if (result.review) setGrowthEvidenceReview(result.review);
+      setLegacyGrowthReviewQueue(result.protocolCompatibility?.reviewQueue ?? []);
+      setGrowthEvidenceRiskAssessment(result.riskAssessment ?? null);
       setGrowthMessage(result.message || (result.ok ? '已刷新成长证据候选。' : '成长证据候选读取失败。'));
     } catch {
       setGrowthMessage('成长证据审核结果解析失败。');
@@ -7725,12 +8897,43 @@ ${JSON.stringify(items, null, 2)}
       return;
     }
     try {
-      const result = JSON.parse(raw) as { ok?: boolean; review?: GrowthEvidenceReviewState; message?: string };
+      const result = JSON.parse(raw) as { ok?: boolean; review?: GrowthEvidenceReviewState; protocolCompatibility?: { reviewQueue?: LegacyGrowthReviewQueueItem[] }; riskAssessment?: GrowthEvidenceRiskAssessment; message?: string };
       if (result.review) setGrowthEvidenceReview(result.review);
+      setLegacyGrowthReviewQueue(result.protocolCompatibility?.reviewQueue ?? []);
+      setGrowthEvidenceRiskAssessment(result.riskAssessment ?? null);
       setGrowthMessage(result.message || (result.ok ? '成长证据状态已更新。' : '成长证据状态更新失败。'));
       if (result.ok) refreshSelectedGrowthIndex(selectedStudent);
     } catch {
       setGrowthMessage('成长证据状态更新结果解析失败。');
+    }
+  };
+
+  const batchReviewGrowthEvidence = () => {
+    if (!selectedStudent) {
+      setGrowthMessage('请先选择学生。');
+      return;
+    }
+    const summary = growthEvidenceRiskAssessment?.summary;
+    if (!summary?.batchProcessable) {
+      setGrowthMessage(summary?.high ? `当前只有 ${summary.high} 条高风险记录，需要逐条确认。` : '当前没有需要批量处理的普通候选。');
+      return;
+    }
+    const confirmed = window.confirm(`确认一次处理本批成长证据吗？\n\n将采用 ${summary.low} 条来源完整的低风险证据；${summary.medium} 条信息不足的记录只转为“继续观察”；${summary.high} 条高风险记录不会改变，仍需逐条确认。`);
+    if (!confirmed) return;
+    const raw = bridge()?.batchReviewGrowthEvidence?.(selectedStudent.id);
+    if (!raw) {
+      setGrowthMessage('当前环境不支持批量审核成长证据。');
+      return;
+    }
+    try {
+      const result = JSON.parse(raw) as { ok?: boolean; review?: GrowthEvidenceReviewState; protocolCompatibility?: { reviewQueue?: LegacyGrowthReviewQueueItem[] }; riskAssessment?: GrowthEvidenceRiskAssessment; message?: string };
+      if (result.review) setGrowthEvidenceReview(result.review);
+      setLegacyGrowthReviewQueue(result.protocolCompatibility?.reviewQueue ?? []);
+      setGrowthEvidenceRiskAssessment(result.riskAssessment ?? null);
+      setGrowthMessage(result.message || (result.ok ? '本批成长证据已处理。' : '批量处理成长证据失败。'));
+      if (result.ok) refreshSelectedGrowthIndex(selectedStudent);
+    } catch {
+      setGrowthMessage('批量审核成长证据结果解析失败。');
     }
   };
 
@@ -7898,6 +9101,16 @@ ${JSON.stringify(items, null, 2)}
     }
   };
 
+  const viewTaskCenterItem = (task: TaskCenterItem) => {
+    setSelectedTaskId(task.id);
+    setTaskExecutorDraft('auto');
+    setTaskResultPasteText('');
+    window.setTimeout(() => {
+      taskDetailPanelRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      taskDetailPanelRef.current?.focus({ preventScroll: true });
+    }, 80);
+  };
+
   const handleTaskCenterAction = (task: TaskCenterItem) => {
     if (task.sourceType === 'student') {
       const student = students.find((item) => String(item.id) === String(task.sourceId));
@@ -7906,9 +9119,18 @@ ${JSON.stringify(items, null, 2)}
         return;
       }
       setSelectedId(student.id);
-      if (task.action === 'student_digest') copyDigestCommand(student);
-      if (task.action === 'student_maintenance') copyLintCommand(student);
-      window.setTimeout(refreshTaskCenter, 260);
+      if (task.kind === 'weekly_action' || task.action === 'weekly_action') {
+        setSelectedLearningReportId('daily');
+        setActiveSection('reports');
+        window.setTimeout(() => openLearningReport('daily', student), 120);
+        setScheduleMessage(`已打开“${student.name}”的每周行动建议。`);
+      } else if (task.action === 'student_digest') {
+        setActiveSection('inbox');
+        setScheduleMessage(`已打开“${student.name}”的资料收集与处理页面。`);
+      } else {
+        setActiveSection('archive');
+        setScheduleMessage(`已打开“${student.name}”的教育档案。`);
+      }
       return;
     }
     if (task.sourceType === 'project') {
@@ -7929,7 +9151,7 @@ ${JSON.stringify(items, null, 2)}
     }
   };
 
-  const applyTaskOperationResult = (raw: string | undefined, fallback: string) => {
+  const applyTaskOperationResult = (raw: string | undefined, fallback: string, sourceTask?: TaskCenterItem, returnToProject = false) => {
     if (!raw) {
       setScheduleMessage('当前环境不支持该任务中心操作。');
       return false;
@@ -7938,6 +9160,15 @@ ${JSON.stringify(items, null, 2)}
       const result = JSON.parse(raw) as { ok?: boolean; message?: string; fallback?: boolean };
       setScheduleMessage(result.message || (result.ok ? fallback : '任务操作失败。'));
       window.setTimeout(refreshTaskCenter, 220);
+      if (result.ok && returnToProject && sourceTask?.sourceType === 'project') {
+        refreshProjects();
+        setSelectedProjectId(String(sourceTask.sourceId));
+        setActiveSection('projects-existing');
+        setProjectCompletionOpen(true);
+        setProjectAuditLocateTarget({ projectId: String(sourceTask.sourceId), target: 'promotion', nonce: Date.now() });
+        setPromotionExecutionSummary(result.message || fallback);
+        setProjectMessage(`任务中心已完成“${sourceTask.title}”，项目状态已刷新。`);
+      }
       return Boolean(result.ok);
     } catch {
       setScheduleMessage('任务中心操作结果解析失败。');
@@ -7950,10 +9181,31 @@ ${JSON.stringify(items, null, 2)}
     applyTaskOperationResult(bridge()?.executeTask?.(task.id, executor), '任务已提交执行。');
   };
 
-  const approveTaskFromCenter = (task: TaskCenterItem, decision: 'approved' | 'rejected') => {
-    const actionName = task.status === 'reviewing' ? (decision === 'approved' ? '发布任务结果' : '驳回任务结果') : (decision === 'approved' ? '批准任务执行' : '拒绝任务执行');
-    if (!window.confirm(`确认${actionName}“${task.title}”吗？`)) return;
-    applyTaskOperationResult(bridge()?.approveTask?.(task.id, decision, taskReviewNote), `${actionName}完成。`);
+  const approveTaskFromCenter = (task: TaskCenterItem, decision: 'approved' | 'rejected', reason = '') => {
+    const actionName = task.status === 'reviewing' ? (decision === 'approved' ? '采用任务结果' : '退回修改') : (decision === 'approved' ? '允许执行' : '忽略任务');
+    const highRisk = task.riskLevel === 'high' && decision === 'approved' && task.status !== 'reviewing';
+    if (highRisk && !window.confirm(`“${task.title}”会修改正式档案或成长模型，确认继续吗？`)) return;
+    const defaultReason = decision === 'approved' ? '用户点击一键采用。' : '用户选择需要修改。';
+    const published = applyTaskOperationResult(bridge()?.approveTask?.(task.id, decision, reason || defaultReason), `${actionName}完成。`, task, task.status === 'reviewing' && decision === 'approved');
+    const reportIdByKind: Record<string, LearningReportId> = {
+      weekly_action: 'daily',
+      learning_profile: 'profile',
+      learning_changes: 'changes',
+      learning_stage: 'stage',
+    };
+    const reportId = reportIdByKind[task.kind];
+    if (published && reportId && task.status === 'reviewing' && decision === 'approved') {
+      const student = students.find((item) => String(item.id) === String(task.sourceId));
+      if (student) {
+        setSelectedId(student.id);
+        setSelectedLearningReportId(reportId);
+        setActiveSection('reports');
+        window.setTimeout(() => {
+          refreshLearningReports(student);
+          openLearningReport(reportId, student);
+        }, 260);
+      }
+    }
   };
 
   const retryTaskFromCenter = (task: TaskCenterItem) => {
@@ -7961,12 +9213,20 @@ ${JSON.stringify(items, null, 2)}
   };
 
   const cancelTaskFromCenter = (task: TaskCenterItem) => {
-    if (!window.confirm(`确认取消“${task.title}”吗？`)) return;
-    applyTaskOperationResult(bridge()?.cancelTask?.(task.id, taskReviewNote || '用户从任务中心取消。'), '任务已取消。');
+    applyTaskOperationResult(bridge()?.cancelTask?.(task.id, '用户点击忽略本次。'), '已忽略本次任务。');
   };
 
   const importTaskResultFromCenter = (task: TaskCenterItem) => {
     applyTaskOperationResult(bridge()?.importTaskResult?.(task.id), '任务结果已导入。');
+  };
+
+  const importTaskResultTextFromCenter = (task: TaskCenterItem) => {
+    if (!taskResultPasteText.trim()) {
+      setScheduleMessage('请先粘贴 Agent 返回的执行结果。');
+      return;
+    }
+    const imported = applyTaskOperationResult(bridge()?.importTaskResultText?.(task.id, taskResultPasteText), '粘贴结果已导入。');
+    if (imported) setTaskResultPasteText('');
   };
 
   const syncQClawResultsFromCenter = () => {
@@ -7977,8 +9237,13 @@ ${JSON.stringify(items, null, 2)}
     applyTaskOperationResult(bridge()?.openTaskCenterPath?.(kind), '任务目录已打开。');
   };
 
+  const openTaskResultFromCenter = (task: TaskCenterItem) => {
+    applyTaskOperationResult(bridge()?.openTaskResultPath?.(task.id), '任务结果已打开。');
+  };
+
   const submitDailyFeedbackFromCenter = (task: TaskCenterItem, status: 'completed' | 'partial' | 'skipped') => {
-    applyTaskOperationResult(bridge()?.submitDailyActionFeedback?.(task.id, status, taskReviewNote), '行动反馈已保存。');
+    const preset = { completed: '本周计划已完成。', partial: '本周计划部分完成。', skipped: '本周计划已跳过。' }[status];
+    applyTaskOperationResult(bridge()?.submitDailyActionFeedback?.(task.id, status, preset), '行动反馈已保存。');
   };
 
   const generateMaintenanceReportForStudent = (student: Student) => {
@@ -8272,7 +9537,7 @@ ${JSON.stringify(items, null, 2)}
     applyHostServiceResult(bridge()?.setHostServicePort?.(port));
   };
 
-  const copyHostConnectionInfo = () => {
+  const copyHostConnectionInfo = async () => {
     const raw = bridge()?.getHostConnectionInfo?.();
     if (!raw) {
       setHostServiceMessage('当前环境不支持复制主机连接信息。');
@@ -8291,22 +9556,22 @@ ${JSON.stringify(items, null, 2)}
         `tailscaleUrls=${(info.tailscaleUrls ?? []).join(',')}`,
         `pairPayload=${info.pairPayloadText ?? ''}`,
       ].join('\n');
-      copyText(text);
-      setHostServiceMessage('已复制平板连接信息。');
+      const success = await copyText(text, '已复制平板连接信息。', { contentLabel: '平板连接信息', preview: false });
+      setHostServiceMessage(success ? '已复制平板连接信息。' : '平板连接信息复制失败，请重试。');
       refreshHostServiceStatus();
     } catch {
       setHostServiceMessage('连接信息解析失败。');
     }
   };
 
-  const copyHostPairPayload = () => {
+  const copyHostPairPayload = async () => {
     const payload = hostServiceStatus?.pairPayloadText;
     if (!payload) {
       setHostServiceMessage('请先启动或刷新主机服务，生成平板配对信息。');
       return;
     }
-    copyText(payload);
-    setHostServiceMessage('已复制平板扫码配对内容。');
+    const success = await copyText(payload, '已复制平板扫码配对内容。', { contentLabel: '扫码配对内容', preview: false });
+    setHostServiceMessage(success ? '已复制平板扫码配对内容。' : '扫码配对内容复制失败，请重试。');
   };
 
   const runHostDiagnostics = () => {
@@ -8585,21 +9850,54 @@ ${JSON.stringify(items, null, 2)}
     applyHostServiceResult(raw);
   };
 
-  const setDeviceAccess = (device: HostDevice, studentId: string, checked: boolean) => {
-    const current = new Set((device.allowedStudentIds ?? []).map(String));
-    if (checked) current.add(studentId);
-    else current.delete(studentId);
-    const raw = bridge()?.setHostDeviceStudentAccess?.(device.id, JSON.stringify(Array.from(current)));
+  const changeHostUsageMode = (mode: 'host' | 'host_terminal') => {
+    const raw = bridge()?.setHostUsageMode?.(mode);
+    if (!raw) {
+      setHostServiceMessage('当前环境不支持切换使用模式。');
+      return;
+    }
+    applyHostServiceResult(raw);
+    setHomeMode(mode === 'host_terminal' ? 'host' : 'local');
+  };
+
+  const setDeviceTerminalMode = (device: HostDevice, terminalMode: 'personal' | 'shared', boundStudentId = '') => {
+    const raw = bridge()?.setHostDeviceTerminalMode?.(device.id, terminalMode, boundStudentId);
+    if (!raw) {
+      setHostServiceMessage('当前版本不支持设置终端模式。');
+      return;
+    }
     applyHostServiceResult(raw);
   };
 
-  const setDeviceAccessMode = (device: HostDevice, patch: Partial<Pick<HostDevice, 'allowedAllStudents' | 'autoAuthorizeNewStudents'>>) => {
-    const raw = bridge()?.setHostDeviceAccessMode?.(device.id, JSON.stringify({
-      allowedAllStudents: patch.allowedAllStudents ?? device.allowedAllStudents ?? false,
-      autoAuthorizeNewStudents: patch.autoAuthorizeNewStudents ?? device.autoAuthorizeNewStudents ?? false,
-    }));
-    applyHostServiceResult(raw);
+  const runPairingAction = (raw: string | undefined, fallback: string) => {
+    if (!raw) {
+      setHostServiceMessage('当前环境不支持该连接操作。');
+      return;
+    }
+    try {
+      const result = JSON.parse(raw) as { ok?: boolean; message?: string; status?: HostServiceStatus };
+      if (result.status) setHostServiceStatus(result.status);
+      setHostServiceMessage(result.message || fallback);
+      if (result.ok) window.setTimeout(refreshHostServiceStatus, 700);
+    } catch {
+      setHostServiceMessage('连接操作结果解析失败。');
+    }
   };
+
+  const saveHostIdentityName = () => {
+    const name = hostNameDraft.trim();
+    if (!name) {
+      setHostServiceMessage('主机名称不能为空。');
+      return;
+    }
+    runPairingAction(bridge()?.renameHostIdentity?.(name), '主机名称已更新。');
+    setHostNameDraft('');
+  };
+
+  const findNearbyTablets = () => runPairingAction(bridge()?.findLanTablets?.(), '正在查找局域网平板。');
+  const inviteNearbyTablet = (tabletId: string) => runPairingAction(bridge()?.inviteLanTablet?.(tabletId), '已发送连接邀请。');
+  const acceptIncomingPair = (requestId: string) => runPairingAction(bridge()?.acceptHostPairRequest?.(requestId), '已接受连接请求。');
+  const rejectIncomingPair = (requestId: string) => runPairingAction(bridge()?.rejectPairRequest?.(requestId), '已拒绝连接请求。');
 
   const copyHostDiagnostics = async () => {
     const payload = {
@@ -8619,10 +9917,12 @@ ${JSON.stringify(items, null, 2)}
 
   const deviceAccessSummary = (device: HostDevice) => {
     if (device.revoked) return '访问权限已撤销';
-    if (device.allowedAllStudents) return '可访问全部学生';
-    const count = (device.allowedStudentIds ?? []).length;
-    const auto = device.autoAuthorizeNewStudents ? '，新学生自动授权' : '';
-    return count > 0 ? `已授权 ${count} 位学生${auto}` : `未授权学生${auto}`;
+    if (device.terminalMode === 'personal') {
+      const student = students.find((item) => item.id === device.boundStudentId);
+      return student ? `个人终端 · 固定绑定 ${student.name}` : '个人终端 · 尚未绑定学生';
+    }
+    const activeStudent = students.find((item) => item.id === device.activeStudentId);
+    return activeStudent ? `共享终端 · 当前学生 ${activeStudent.name}` : '共享终端 · 等待学生扫码或输入 ID';
   };
 
   const deviceLastSeenSummary = (device: HostDevice) => {
@@ -8652,6 +9952,75 @@ ${JSON.stringify(items, null, 2)}
 
   const renderHostPairingPanel = () => (
     <div className="host-pairing-panel">
+      <section className="pair-v2-card">
+        <div className="pair-v2-heading">
+          <div>
+            <span>本机固定主机码</span>
+            <strong>{hostServiceStatus?.hostIdentity?.machineCode || '启动服务后生成'}</strong>
+            <small>{hostServiceStatus?.hostIdentity?.displayName || 'AI教育管家主机'} · 协议 V{hostServiceStatus?.pairProtocolVersion || 2}</small>
+          </div>
+          <button className="secondary compact" disabled={!hostServiceStatus?.hostIdentity?.machineCode} onClick={() => copyText(hostServiceStatus?.hostIdentity?.machineCode || '', '已复制主机机器码。', { contentLabel: '主机机器码', preview: false })}>
+            <Clipboard size={16} />复制机器码
+          </button>
+        </div>
+        <div className="inline-field">
+          <input
+            value={hostNameDraft}
+            onChange={(event) => setHostNameDraft(event.target.value)}
+            placeholder={hostServiceStatus?.hostIdentity?.displayName || '设置便于识别的主机名称'}
+            maxLength={80}
+          />
+          <button className="secondary" onClick={saveHostIdentityName}>保存主机名称</button>
+          <button className="primary" onClick={findNearbyTablets} disabled={!hostServiceStatus?.running}>
+            <RefreshCw size={18} />查找局域网平板
+          </button>
+        </div>
+        <p className="muted-text">主机码长期固定。连接请求使用后台随机令牌并由对方点击接受，无需手输一次性数字。</p>
+
+        <div className="pair-v2-columns">
+          <div>
+            <div className="device-heading"><strong>等待主机接受</strong><span>{hostServiceStatus?.pendingPairRequestCount || 0} 项</span></div>
+            {(hostServiceStatus?.pairRequests || []).filter((item) => item.status === 'pending_host_accept').map((request) => (
+              <article className="pair-request-item" key={request.requestId}>
+                <div><strong>{request.tabletName || 'Android 平板'}</strong><small>{request.tabletMachineCode}{request.tabletAddress ? ` · ${request.tabletAddress}` : ''} · {request.expiresAt ? `有效至 ${new Date(request.expiresAt).toLocaleTimeString()}` : '两分钟内有效'}</small></div>
+                <div className="actions"><button className="primary compact" onClick={() => acceptIncomingPair(request.requestId)}>接受</button><button className="danger subtle" onClick={() => rejectIncomingPair(request.requestId)}>拒绝</button></div>
+              </article>
+            ))}
+            {(hostServiceStatus?.pairRequests || []).filter((item) => item.status === 'pending_host_accept').length === 0 && <p className="muted-text">暂无平板发来的连接请求。</p>}
+          </div>
+          <div>
+            <div className="device-heading"><strong>附近平板</strong><span>{hostServiceStatus?.discoveredTablets?.length || 0} 台</span></div>
+            {(hostServiceStatus?.discoveredTablets || []).map((tablet) => (
+              <article className="pair-request-item" key={tablet.deviceId}>
+                <div><strong>{tablet.displayName}</strong><small>{tablet.machineCode} · 在线 · {tablet.address || '局域网'}{tablet.appVersion ? ` · v${tablet.appVersion}` : ''}</small></div>
+                <button className="secondary compact" onClick={() => inviteNearbyTablet(tablet.deviceId)}>邀请连接</button>
+              </article>
+            ))}
+            {(hostServiceStatus?.discoveredTablets || []).length === 0 && <p className="muted-text">让平板打开“等待主机连接”，然后点击上方查找。</p>}
+          </div>
+        </div>
+        <div className="pair-history">
+          <div className="device-heading"><strong>最近连接申请</strong><span>保留最近记录</span></div>
+          {(hostServiceStatus?.pairRequests || [])
+            .filter((item) => !['pending_host_accept', 'pending_tablet_accept'].includes(item.status))
+            .slice(0, 8)
+            .map((request) => {
+              const statusLabel: Record<string, string> = { accepted: '已接受', rejected: '已拒绝', cancelled: '已取消', expired: '已超时' };
+              return (
+                <article className="pair-request-item" key={`history-${request.requestId}`}>
+                  <div><strong>{request.tabletName || 'Android 平板'}</strong><small>{request.tabletMachineCode}{request.tabletAddress ? ` · ${request.tabletAddress}` : ''}</small></div>
+                  <span className={`status ${request.status === 'accepted' ? 'ok' : request.status === 'expired' ? 'warn' : 'neutral'}`}>
+                    {statusLabel[request.status] || request.status}
+                  </span>
+                </article>
+              );
+            })}
+          {(hostServiceStatus?.pairRequests || []).filter((item) => !['pending_host_accept', 'pending_tablet_accept'].includes(item.status)).length === 0
+            && <p className="muted-text">暂无已处理或已超时的连接申请。</p>}
+        </div>
+      </section>
+      <details className="legacy-pairing-methods">
+        <summary>其他连接方式：二维码、六位配对码、粘贴与连接备份</summary>
       <div className="pair-card">
         <div>
           <span>平板配对码</span>
@@ -8677,6 +10046,7 @@ ${JSON.stringify(items, null, 2)}
         </div>
         <textarea readOnly value={hostServiceStatus?.pairPayloadText ?? ''} rows={4} />
       </div>
+      </details>
       <div className="device-card">
         <div className="device-heading">
           <strong>已绑定设备</strong>
@@ -8713,14 +10083,9 @@ ${JSON.stringify(items, null, 2)}
                       </span>
                     </div>
                   )}
-                  <small>{device.tokenPreview || device.id}</small>
+                  <small>{device.machineCode ? `${device.machineCode} · ` : ''}{device.tokenPreview || device.id}{device.pairedProtocolVersion ? ` · 协议 V${device.pairedProtocolVersion}` : ''}</small>
                 </div>
                 <div className="device-actions">
-                  {device.authorizationStatus === 'pending' && !device.revoked && (
-                    <button className="primary compact" onClick={() => setDeviceAccessMode(device, { allowedAllStudents: true, autoAuthorizeNewStudents: true })}>
-                      授权全部学生
-                    </button>
-                  )}
                   <button className="secondary compact" disabled={device.revoked || editingDeviceId === device.id} onClick={() => beginRenameDevice(device)}>
                     重命名
                   </button>
@@ -8735,36 +10100,38 @@ ${JSON.stringify(items, null, 2)}
                 </div>
               </div>
               <small>{deviceAccessSummary(device)}</small>
-              <div className="access-list">
-                <label className="checkbox-line">
-                  <input
-                    type="checkbox"
+              <div className="terminal-mode-editor">
+                <div className="mode-grid compact-mode-grid">
+                  <button
+                    className={device.terminalMode === 'personal' ? 'mode-card active' : 'mode-card'}
                     disabled={device.revoked}
-                    checked={Boolean(device.allowedAllStudents)}
-                    onChange={(event) => setDeviceAccessMode(device, { allowedAllStudents: event.target.checked })}
-                  />
-                  <span>允许访问全部学生</span>
-                </label>
-                <label className="checkbox-line">
-                  <input
-                    type="checkbox"
+                    onClick={() => setDeviceTerminalMode(device, 'personal', device.boundStudentId || students[0]?.id || '')}
+                  >
+                    <strong>个人终端</strong>
+                    <span>固定一位学生，打开后自动进入本人资料。</span>
+                  </button>
+                  <button
+                    className={device.terminalMode !== 'personal' ? 'mode-card active' : 'mode-card'}
                     disabled={device.revoked}
-                    checked={Boolean(device.autoAuthorizeNewStudents)}
-                    onChange={(event) => setDeviceAccessMode(device, { autoAuthorizeNewStudents: event.target.checked })}
-                  />
-                  <span>默认授权新学生</span>
-                </label>
-                {students.map((student) => (
-                  <label className="checkbox-line" key={student.id}>
-                    <input
-                      type="checkbox"
-                      disabled={device.revoked || device.allowedAllStudents}
-                      checked={Boolean(device.allowedAllStudents) || (device.allowedStudentIds ?? []).includes(student.id)}
-                      onChange={(event) => setDeviceAccess(device, student.id, event.target.checked)}
-                    />
-                    <span>{student.name}</span>
+                    onClick={() => setDeviceTerminalMode(device, 'shared')}
+                  >
+                    <strong>共享终端</strong>
+                    <span>每位学生扫码或输入个人 ID 后进入本人会话。</span>
+                  </button>
+                </div>
+                {device.terminalMode === 'personal' && (
+                  <label>
+                    绑定学生
+                    <select
+                      disabled={device.revoked}
+                      value={device.boundStudentId || ''}
+                      onChange={(event) => setDeviceTerminalMode(device, 'personal', event.target.value)}
+                    >
+                      <option value="">请选择学生</option>
+                      {students.map((student) => <option key={student.id} value={student.id}>{student.name}</option>)}
+                    </select>
                   </label>
-                ))}
+                )}
               </div>
               <small>{deviceLastSeenSummary(device)}</small>
               {device.lastUserAgent && <small>客户端：{device.lastUserAgent}</small>}
@@ -8940,7 +10307,7 @@ ${JSON.stringify(items, null, 2)}
                   <button className={activeSection === 'projects-new' ? 'nav-item sub-nav-item active' : 'nav-item sub-nav-item'} onClick={() => setActiveSection('projects-new')}>
                     <Plus size={17} /><span>新建学习项目</span>
                   </button>
-                  <button className={activeSection === 'projects-existing' ? 'nav-item sub-nav-item active' : 'nav-item sub-nav-item'} onClick={() => setActiveSection('projects-existing')}>
+                  <button className={activeSection === 'projects-existing' ? 'nav-item sub-nav-item active' : 'nav-item sub-nav-item'} onClick={() => { setActiveSection('projects-existing'); setProjectPageMode('list'); setProjectAuditLocateTarget(null); }}>
                     <FolderOpen size={17} /><span>已有学习项目</span>
                   </button>
                 </div>
@@ -9161,22 +10528,12 @@ ${JSON.stringify(items, null, 2)}
               <section className="panel tool-home-panel">
                 <div className="panel-heading">
                   <div>
-                    <h2>使用模式</h2>
-                    <p>Windows 统一版同时支持本机独立使用和主机-平板协作；主机服务默认不启动。</p>
+                    <h2>当前使用模式</h2>
+                    <p>{homeMode === 'host' ? '主机-终端模式：可接收 Android/Windows 学生终端资料。' : '主机模式：仅在本机管理与处理教育资料。'}</p>
                   </div>
-                  <Bot size={22} />
-                </div>
-                <div className="mode-grid">
-                  <article className={homeMode === 'local' ? 'mode-card active' : 'mode-card'} onClick={() => setHomeMode('local')}>
-                    <strong>本机独立模式</strong>
-                    <span>默认模式。控制台、QClaw、Marvis、Hohu、OpenClaw 共用本机学生知识库目录。</span>
-                    <small>无需启动主机服务。</small>
-                  </article>
-                  <article className={homeMode === 'host' ? 'mode-card active' : 'mode-card'} onClick={() => setHomeMode('host')}>
-                    <strong>主机-平板模式</strong>
-                    <span>需要平板上传资料或浏览主机档案时，手动启动主机服务并复制连接信息。</span>
-                    <small>{hostServiceStatus?.running ? '主机服务运行中。' : '主机服务未启动。'}</small>
-                  </article>
+                  <button className="secondary compact" onClick={() => setActiveSection('settings')}>
+                    <Settings size={17} />管理使用模式
+                  </button>
                 </div>
               </section>
             )}
@@ -9197,28 +10554,28 @@ ${JSON.stringify(items, null, 2)}
                   </div>
                   <div className={hostServiceStatus?.running ? 'check-row done' : 'check-row'}>
                     <CheckCircle2 size={17} />
-                    <span>2. 需要平板协作时启动主机服务</span>
-                    <button className="secondary compact" onClick={() => setHomeMode('host')}>查看主机服务</button>
+                    <span>2. 需要学生终端协作时启动主机服务</span>
+                    <button className="secondary compact" onClick={() => setActiveSection('settings')}>打开系统设置</button>
                   </div>
                   <div className={(hostServiceStatus?.devices ?? []).some((device) => !device.revoked) ? 'check-row done' : 'check-row'}>
                     <CheckCircle2 size={17} />
-                    <span>3. 平板扫码绑定并授权学生范围</span>
+                    <span>3. 绑定学生终端并设置个人终端或共享终端</span>
                     <button className="secondary compact" onClick={copyHostConnectionInfo} disabled={!windowsLicenseActive}>复制连接信息</button>
                   </div>
                   <div className={(hostUploadRecords.length || hostServiceStatus?.recentUploads?.length || 0) > 0 ? 'check-row done' : 'check-row'}>
                     <CheckCircle2 size={17} />
-                    <span>4. 平板上传资料后，在上传记录中确认状态</span>
+                    <span>4. 学生终端上传资料后，在上传记录中确认状态</span>
                     <button className="secondary compact" onClick={refreshHostUploadRecords}>刷新记录</button>
                   </div>
                 </div>
               </section>
             )}
-            {isWindows && homeMode === 'host' && (
+            {isWindows && activeSection === 'settings' && homeMode === 'host' && (
               <section className="panel tool-home-panel">
                 <div className="panel-heading">
                   <div>
                     <h2>主机服务</h2>
-                    <p>用于平板上传学习资料，并读取学生学情分析汇总中的 Markdown 档案。</p>
+                    <p>用于 Android、Windows 学生终端上传学习资料，并读取学生学情分析汇总中的 Markdown 档案。</p>
                   </div>
                   <RefreshCw size={22} />
                 </div>
@@ -9303,7 +10660,7 @@ ${JSON.stringify(items, null, 2)}
                   <div className="mini-heading">
                     <div>
                       <strong>上传记录</strong>
-                      <span>平板上传成功后会出现在这里，便于确认资料进入了对应学生原始资料库。</span>
+                      <span>学生终端上传成功后会出现在这里，便于确认资料进入了对应学生或项目原始资料库。</span>
                     </div>
                     <div className="mini-actions">
                       <button className="secondary compact" onClick={refreshHostUploadRecords}>
@@ -9759,6 +11116,22 @@ ${JSON.stringify(items, null, 2)}
               value={selectedStudent.agentTool}
               onChange={changeSelectedStudentTool}
             />
+            {selectedStudentDigestWorkflow && <DigestStatusCard
+              status={selectedStudentDigestWorkflow}
+              busy={digestWorkflowBusyKey === digestWorkflowKey('student', selectedStudent.id)}
+              manualText={digestWorkflowManualText[digestWorkflowKey('student', selectedStudent.id)] || ''}
+              onManualTextChange={(value) => setDigestWorkflowManualText((current) => ({ ...current, [digestWorkflowKey('student', selectedStudent.id)]: value }))}
+              onStart={() => startDigestWorkflowFromPage('student', selectedStudent.id)}
+              onRetry={() => retryDigestWorkflowFromPage('student', selectedStudent.id)}
+              onCheck={() => syncDigestResult(selectedStudent)}
+              onPaste={() => importDigestWorkflowTextFromPage('student', selectedStudent.id)}
+              onOpenKnowledge={() => openStudentRoot(selectedStudent)}
+              advancedActions={<>
+                <button className="secondary compact" onClick={() => copyDigestWorkflowCommandFromPage('student', selectedStudent.id)}><Clipboard size={16} />复制当前批次指令</button>
+                <button className="secondary compact" onClick={() => markDigestSubmitted(selectedStudent)}><CheckCircle2 size={16} />仅登记批次</button>
+                {isWindows && <button className="secondary compact" onClick={() => syncDigestResult(selectedStudent)}><RefreshCw size={16} />立即检查结果</button>}
+              </>}
+            />}
             <div className="actions">
               <button className="primary" onClick={() => selectedStudentAdapter.open(openExternal)}>
                 <ExternalLink size={18} />
@@ -9779,9 +11152,20 @@ ${JSON.stringify(items, null, 2)}
                   </button>
                 </>
               )}
-              <button className="secondary" onClick={() => importFilesForStudent(selectedStudent)}>
+              {isWindows && (
+                <label className="compact-field material-import-target">
+                  <span>导入位置</span>
+                  <select value={normalizedMaterialImportTargetKey(selectedStudent)} onChange={(event) => setMaterialImportTargetKey(event.target.value)}>
+                    <option value="student">学生原始资料库 · {selectedStudent.name}</option>
+                    {availableImportProjectsForStudent(selectedStudent.id).map((project) => (
+                      <option value={project.id} key={project.id}>项目原始资料库 · {project.name}</option>
+                    ))}
+                  </select>
+                </label>
+              )}
+              <button className={pendingDigestValue(selectedStudent) === 0 && submittedDigestValue(selectedStudent) === 0 ? 'secondary workflow-action next' : 'secondary workflow-action optional'} onClick={() => importFilesForStudent(selectedStudent)}>
                 <FileDown size={18} />
-                {isWindows ? '导入本机资料' : '导入下载文件'}
+                {isWindows ? '1. 导入本机资料' : '1. 导入下载文件'}
               </button>
               {!isWindows && (
                 <>
@@ -9795,20 +11179,6 @@ ${JSON.stringify(items, null, 2)}
                   </button>
                 </>
               )}
-              <button className="secondary" onClick={() => copyDigestCommand(selectedStudent)}>
-                <Clipboard size={18} />
-                消化资料
-              </button>
-              <button className="secondary" onClick={() => markDigestSubmitted(selectedStudent)}>
-                <CheckCircle2 size={18} />
-                标记已提交消化
-              </button>
-              {isWindows && (
-                <button className="secondary" onClick={() => syncDigestResult(selectedStudent)}>
-                  <RefreshCw size={18} />
-                  同步消化结果
-                </button>
-              )}
               {isWindows && (
                 <button className="secondary" onClick={() => openStudentRawDir(selectedStudent)}>
                   <FolderOpen size={18} />
@@ -9817,7 +11187,8 @@ ${JSON.stringify(items, null, 2)}
               )}
             </div>
             {isWindows && (
-              <section className="digest-audit-panel">
+              <details className="digest-audit-panel digest-advanced-audit">
+                <summary>高级：消化质量复核与逐文件诊断</summary>
                 <div className="digest-audit-heading">
                   <div>
                     <span className="section-kicker">消化质量复核</span>
@@ -9878,7 +11249,7 @@ ${JSON.stringify(items, null, 2)}
                   <div className="digest-audit-empty">点击“生成覆盖审计”，系统会建立逐文件清单，并找出需要让 Agent 二次核对的资料。</div>
                 )}
                 {digestAuditMessage && <div className="notice muted">{digestAuditMessage}</div>}
-              </section>
+              </details>
             )}
             {isWindows && (
               <section className="screen-capture-panel">
@@ -9979,19 +11350,33 @@ ${JSON.stringify(items, null, 2)}
                   <div className="capture-session-list">
                     <div className="mini-heading">
                       <strong>最近采集会话</strong>
-                      <span>完成的会话仍是候选资料，点击“晋升”后才进入学生原始资料库。</span>
+                      <span>完成的会话仍是候选资料；关联项目时默认进入项目原始资料库，也可改存学生档案。</span>
                     </div>
                     {captureCenter.sessions.filter((session) => session.studentId === selectedStudent.id).slice(0, 5).map((session) => (
                       <div className="capture-session-row" key={session.id}>
                         <Monitor size={17} />
                         <div>
                           <strong>{session.sourceName}</strong>
-                          <span>{new Date(session.startedAt).toLocaleString('zh-CN')} · 保留 {session.screenshotCount} 张 · 去重 {session.deduplicatedCount} 张</span>
+                          <span>{new Date(session.startedAt).toLocaleString('zh-CN')} · 保留 {session.screenshotCount} 张 · 去重 {session.deduplicatedCount} 张{session.promotionTargetName ? ` · 已进入${session.archiveStatus === 'project_raw' ? '项目' : '学生'}：${session.promotionTargetName}` : ''}</span>
                         </div>
                         <span className={`status-badge ${session.status}`}>{session.status === 'promoted' ? '已晋升' : session.status === 'completed' ? '待检查' : session.status === 'interrupted' ? '已中断' : session.status}</span>
                         <button className="icon-button" onClick={() => bridge()?.openCaptureInbox?.(session.id)} aria-label="打开该会话采集箱"><FolderOpen size={17} /></button>
                         {session.status === 'completed' && (
-                          <button className="primary compact" onClick={() => promoteCapture(session)} disabled={captureBusy || session.screenshotCount === 0}>晋升资料</button>
+                          <>
+                            <select
+                              className="capture-promotion-target"
+                              value={capturePromotionTargets[session.id] || (session.projectId && projects.some((project) => project.id === session.projectId) ? 'project_raw' : 'student_raw')}
+                              onChange={(event) => setCapturePromotionTargets((current) => ({ ...current, [session.id]: event.target.value as 'project_raw' | 'student_raw' }))}
+                              aria-label={`选择采集会话 ${session.sourceName} 的晋升目标`}
+                            >
+                              {session.projectId && projects.some((project) => project.id === session.projectId) && <option value="project_raw">项目原始资料库 · {session.projectName}</option>}
+                              <option value="student_raw">学生原始资料库 · {session.studentName}</option>
+                            </select>
+                            <button className="primary compact" onClick={() => promoteCapture(session)} disabled={captureBusy || session.screenshotCount === 0}>确认晋升</button>
+                          </>
+                        )}
+                        {!['capturing', 'paused'].includes(session.status) && (
+                          <button className="icon-button danger" onClick={() => deleteCapture(session)} disabled={captureBusy} aria-label={`删除采集会话 ${session.sourceName}`} title="删除采集会话"><Trash2 size={17} /></button>
                         )}
                       </div>
                     ))}
@@ -10003,9 +11388,18 @@ ${JSON.stringify(items, null, 2)}
               <section className="material-source-panel">
                 <div className="mini-heading">
                   <strong>资料来源目录</strong>
-                  <span>来源目录只用于发现资料；导入后统一复制到当前学生原始资料库，Agent 仍只消化原始资料库。</span>
+                  <span>来源目录只用于发现资料；导入时可选择学生原始资料库或当前学生绑定且未封存的项目原始资料库。</span>
                 </div>
                 <div className="actions">
+                  <label className="compact-field material-import-target">
+                    <span>导入位置</span>
+                    <select value={normalizedMaterialImportTargetKey(selectedStudent)} onChange={(event) => setMaterialImportTargetKey(event.target.value)}>
+                      <option value="student">学生原始资料库 · {selectedStudent.name}</option>
+                      {availableImportProjectsForStudent(selectedStudent.id).map((project) => (
+                        <option value={project.id} key={project.id}>项目原始资料库 · {project.name}</option>
+                      ))}
+                    </select>
+                  </label>
                   <button className="secondary" onClick={() => addMaterialSourceDir(selectedStudent)}>
                     <Plus size={18} />
                     添加来源目录
@@ -10081,16 +11475,35 @@ ${JSON.stringify(items, null, 2)}
                 {materialImportRecords.length > 0 && (
                   <div className="material-import-records">
                     <div className="mini-heading">
-                      <strong>最近导入记录</strong>
-                      <span>记录来源目录、目标文件和导入时间，便于追踪资料来源。</span>
+                      <strong>新上传资料</strong>
+                      <span>可选择尚未进入消化批次的记录并从列表移除；物理文件和文件资产不会删除。</span>
+                    </div>
+                    <div className="actions compact-actions">
+                      <button
+                        className="secondary compact"
+                        onClick={() => setSelectedMaterialImportRecordIds(materialImportRecords.filter(removableMaterialImportRecord).map((record) => record.id))}
+                      >
+                        <ListChecks size={16} />选择可移除资料
+                      </button>
+                      <button className="danger-soft compact" onClick={() => removeSelectedMaterialImportRecords(selectedStudent)} disabled={selectedMaterialImportRecordIds.length === 0}>
+                        <Trash2 size={16} />从列表移除 ({selectedMaterialImportRecordIds.length})
+                      </button>
                     </div>
                     <div className="record-list compact-record-list">
-                      {materialImportRecords.slice(0, 8).map((record) => (
-                        <div className="record-item" key={record.id}>
-                          <strong>{record.fileName}</strong>
-                          <small>{record.sourceName || '未知来源'} → {record.targetPath || '原始资料库'}</small>
-                          <em>{record.importedAt ? new Date(record.importedAt).toLocaleString('zh-CN') : '未知时间'} · {formatFileSize(record.fileSize)}</em>
-                        </div>
+                      {materialImportRecords.slice(0, 30).map((record) => (
+                        <label className={removableMaterialImportRecord(record) ? 'record-item selectable' : 'record-item locked'} key={record.id}>
+                          <input
+                            type="checkbox"
+                            checked={selectedMaterialImportRecordIds.includes(record.id)}
+                            disabled={!removableMaterialImportRecord(record)}
+                            onChange={() => toggleMaterialImportRecord(record.id)}
+                          />
+                          <span>
+                            <strong>{record.fileName}</strong>
+                            <small>{record.sourceName || '未知来源'} → {record.targetPath || '原始资料库'}</small>
+                            <em>{record.importedAt ? new Date(record.importedAt).toLocaleString('zh-CN') : '未知时间'} · {formatFileSize(record.fileSize)} · {record.status === 'pending_digest' ? '待消化' : record.status === 'processed' ? '已完成' : record.status === 'submitted' || record.status === 'digesting' ? '已进入消化批次' : record.status}</em>
+                          </span>
+                        </label>
                       ))}
                     </div>
                   </div>
@@ -10133,8 +11546,9 @@ ${JSON.stringify(items, null, 2)}
               </section>
             )}
             <div className="notice muted">
-              {isWindows ? '本机知识库目录' : '公开资料目录'}：{selectedStudentPaths.root}；导入资料会复制到
-              {` ${selectedStudentPaths.raw}`}。{selectedStudentTool.supportsLocalFiles ? '' : `${selectedStudentTool.name} 通常不会自动读取安卓本机目录，需把资料或消化指令复制/分享给 ${selectedStudentTool.name} 后执行。`}
+              {isWindows
+                ? `本机知识库目录：${selectedStudentPaths.root}；资料将复制到上方所选的学生或项目原始资料库，并进入对应消化流程。`
+                : `公开资料目录：${selectedStudentPaths.root}；导入资料会复制到 ${selectedStudentPaths.raw}。${selectedStudentTool.supportsLocalFiles ? '' : `${selectedStudentTool.name} 通常不会自动读取安卓本机目录，需把资料或消化指令复制/分享给 ${selectedStudentTool.name} 后执行。`}`}
             </div>
             <div className="notice muted">
               消化状态：{digestStatusText(selectedStudent)}
@@ -10239,7 +11653,7 @@ ${JSON.stringify(items, null, 2)}
                   </span>
                 </button>
               ))}
-              {filteredAssets.length === 0 && <div className="empty-state">暂无资产记录。导入资料、平板上传或点击“扫描并补建资产索引”后会在这里显示。</div>}
+              {filteredAssets.length === 0 && <div className="empty-state">暂无资产记录。导入资料、学生终端上传或点击“扫描并补建资产索引”后会在这里显示。</div>}
             </div>
             {filteredAssets.length > 160 && <div className="notice muted">当前仅显示前 160 条资产，可通过搜索、学生过滤或重复文件过滤缩小范围。</div>}
             {selectedAsset && (
@@ -10329,14 +11743,16 @@ ${JSON.stringify(items, null, 2)}
         )}
 
         {!shouldBlockForAgentInstall && !isLicenseRestrictedSection && isWindows && (activeSection === 'projects-new' || activeSection === 'projects-existing') && (
-          <section className={`panel projects-panel ${activeSection === 'projects-new' ? 'projects-mode-new' : 'projects-mode-existing'}`}>
+          <section className={`panel projects-panel ${activeSection === 'projects-new' ? 'projects-mode-new' : `projects-mode-existing project-view-${projectPageMode}`}`}>
             {projectAuditLocateTarget && <div className="project-locate-toast" role="status"><CheckCircle2 size={17} />已选中 {projects.find((project) => project.id === projectAuditLocateTarget.projectId)?.name || '项目'}，正在定位处理区域…</div>}
             <div className="panel-heading">
               <div>
-                <h2>{activeSection === 'projects-new' ? '新建学习项目' : '已有学习项目'}</h2>
-                <p>{activeSection === 'projects-new' ? '创建新的项目工作空间和独立项目知识空间，也可以直接绑定本机已有项目文件夹。' : '管理项目资料、研究暂存、知识消化、审核与归档贡献。'}</p>
+                <h2>{activeSection === 'projects-new' ? '新建学习项目' : projectPageMode === 'detail' && selectedProject ? selectedProject.name : '已有学习项目'}</h2>
+                <p>{activeSection === 'projects-new' ? '创建新的项目工作空间和独立项目知识空间，也可以直接绑定本机已有项目文件夹。' : projectPageMode === 'detail' ? '独立处理当前项目的资料、知识消化、审核与归档贡献。' : '先按学生筛选并选择项目，再进入独立项目详情页。'}</p>
               </div>
-              <FolderOpen size={22} />
+              {activeSection === 'projects-existing' && projectPageMode === 'detail' ? (
+                <button className="secondary compact" onClick={backToProjectList}><ChevronRight className="project-back-icon" size={17} />返回项目列表</button>
+              ) : <FolderOpen size={22} />}
             </div>
             <div className="archive-grid projects-existing-only">
               <InfoPanel icon={<FolderOpen />} title="项目数量" value={`${projects.length} 个`} />
@@ -10582,6 +11998,37 @@ ${JSON.stringify(items, null, 2)}
                         选择文件夹
                       </button>
                     </div>
+                    <label className="checkbox-line">
+                      <input type="checkbox" checked={projectDraft.scanExistingWorkspace} onChange={(event) => setProjectDraft((current) => ({ ...current, scanExistingWorkspace: event.target.checked }))} />
+                      <span>创建后立即扫描已有资料（只登记到研究暂存，不自动晋升或消化）</span>
+                    </label>
+                  </div>
+                )}
+                <label>
+                  项目知识空间来源
+                  <select value={projectDraft.knowledgeMode} onChange={(event) => {
+                    const mode = event.target.value as 'managed' | 'adopted';
+                    setProjectDraft((current) => ({ ...current, knowledgeMode: mode, knowledgeRootPath: mode === 'managed' ? '' : current.knowledgeRootPath }));
+                    if (mode === 'managed') setProjectKnowledgeAdoptionPreview(null);
+                  }}>
+                    <option value="managed">创建新知识空间</option>
+                    <option value="adopted">接管已有项目知识库</option>
+                  </select>
+                  <small className="inline-hint">知识空间与工作空间始终分开；接管不会覆盖原 AGENT.md。</small>
+                </label>
+                {projectDraft.knowledgeMode === 'adopted' && (
+                  <div className="wide-field project-knowledge-adoption">
+                    <span>已有项目知识空间</span>
+                    <div className="path-picker-row">
+                      <input readOnly value={projectDraft.knowledgeRootPath} placeholder="请选择包含原始资料库、概念库、实体库、摘要库等目录的知识空间" />
+                      <button className="secondary compact" onClick={pickExistingProjectKnowledgeBase} type="button"><BookOpen size={16} />选择并检查</button>
+                    </div>
+                    {projectKnowledgeAdoptionPreview && <div className={`notice ${projectKnowledgeAdoptionPreview.ok ? 'muted' : 'danger'}`}>
+                      <strong>{projectKnowledgeAdoptionPreview.ok ? '只读检查通过' : '暂不能接管'}</strong>
+                      <span>知识空间 ID：{projectKnowledgeAdoptionPreview.knowledgeSpaceId || '未识别'}；文件 {projectKnowledgeAdoptionPreview.inventory?.fileCount ?? 0} 份；旧绝对路径 {projectKnowledgeAdoptionPreview.absolutePathCount ?? 0} 处。</span>
+                      {projectKnowledgeAdoptionPreview.warnings?.map((warning) => <small key={warning}>{warning}</small>)}
+                      {projectKnowledgeAdoptionPreview.errors?.map((error) => <small key={error}>{error}</small>)}
+                    </div>}
                   </div>
                 )}
                 {projectDraft.workspaceMode === 'managed' && (
@@ -10650,7 +12097,7 @@ ${JSON.stringify(items, null, 2)}
                   <select value={projectDraft.agentTool} onChange={(event) => setProjectDraft((current) => ({ ...current, agentTool: event.target.value as AgentToolId }))}>
                     {agentToolOptions.map((tool) => <option value={tool.id} key={tool.id}>{tool.name}</option>)}
                   </select>
-                  <small className="inline-hint">控制台只复制消化命令，不会自动启动 Agent。</small>
+                  <small className="inline-hint">开始处理时，控制台会优先调用当前可用通道；不可直接调用时自动提供一次复制、一次粘贴的人工方式。</small>
                 </label>
                 <div className="wide-field">
                   <span>绑定学生（可多选）</span>
@@ -10667,7 +12114,7 @@ ${JSON.stringify(items, null, 2)}
                 </div>
               </div>
               <div className="actions">
-                <button className="primary" onClick={createLearningProject} disabled={projectDraftFolderErrors.length > 0 || (projectDraft.workspaceMode === 'linked' && !projectDraft.workspacePath)}>
+                <button className="primary" onClick={createLearningProject} disabled={projectDraftFolderErrors.length > 0 || (projectDraft.workspaceMode === 'linked' && !projectDraft.workspacePath) || (projectDraft.knowledgeMode === 'adopted' && !projectKnowledgeAdoptionPreview?.ok)}>
                   <Plus size={18} />
                   创建学习项目
                 </button>
@@ -10676,39 +12123,47 @@ ${JSON.stringify(items, null, 2)}
                   刷新项目
                 </button>
                 <button className="secondary" onClick={importLearningProject}><FileDown size={18} />导入项目包</button>
-                <button className="secondary" onClick={loadRemovedProjectRecords}><Archive size={18} />恢复已移除项目</button>
+                <button className="secondary" onClick={loadRemovedProjectRecords}><Archive size={18} />已删除项目</button>
               </div>
               {removedProjects.length > 0 && <div className="download-list removed-project-list">
-                {removedProjects.map((item) => <div className="download-item" key={item.snapshotPath}><span><strong>{item.project.name}</strong><small>移除时间：{item.removedAt ? new Date(item.removedAt).toLocaleString('zh-CN') : '未知'}</small><small>{item.project.projectRootPath}</small></span><button className="primary compact" onClick={() => restoreProjectRecord(item.snapshotPath)}>恢复记录</button></div>)}
+                {removedProjects.map((item) => <div className="download-item" key={item.snapshotPath}><span><strong>{item.project.name}</strong><small>删除时间：{item.deletedAt || item.removedAt ? new Date(item.deletedAt || item.removedAt || '').toLocaleString('zh-CN') : '未知'}</small><small>文件保留位置：{item.project.projectRootPath}</small></span><button className="primary compact" onClick={() => restoreProjectRecord(item.snapshotPath)}>恢复项目</button></div>)}
               </div>}
             </section>
 
-            <div className="learning-report-layout projects-existing-only project-workflow-layout">
-              <aside className="learning-report-list">
-                {projects.map((project) => (
-                  <button
-                    className={selectedProject?.id === project.id ? 'learning-report-card active' : 'learning-report-card'}
-                    key={project.id}
-                    onClick={() => {
-                      setSelectedProjectId(project.id);
-                      setSelectedProjectAssetIds([]);
-                      setSelectedProjectStagingIds([]);
-                      setPromotionPreview('');
-                      setPromotionPlan(null);
-                      setPromotionExecutionSummary('');
-                      setPromotionAuditPreview('');
-                      setPromotionConflicts([]);
-                      setPromotionRuns([]);
-                    }}
-                  >
-                    <strong>{project.name}</strong>
-                    <span>{project.type} · {projectStatusLabel(project.status)}</span>
-                    <small>{project.studentNames?.join('、') || '未绑定学生'}</small>
-                    <em>{project.knowledgeRootPath}</em>
-                  </button>
-                ))}
-                {projects.length === 0 && <div className="empty-state">尚未创建学习项目。</div>}
-              </aside>
+            {projectPageMode === 'list' ? (
+              <section className="projects-existing-only project-index-page">
+                <div className="project-index-toolbar">
+                  <label>
+                    按学生筛选
+                    <select value={projectStudentFilterId} onChange={(event) => setProjectStudentFilterId(event.target.value)}>
+                      <option value="all">全部学生与未绑定项目</option>
+                      {students.map((student) => <option value={student.id} key={student.id}>{student.name}</option>)}
+                    </select>
+                  </label>
+                  <div className="project-index-summary">
+                    <strong>{studentFilteredProjects.length} 个项目</strong>
+                    <span>{projectStudentFilterId === 'all' ? '显示全部项目' : `仅显示 ${students.find((student) => student.id === projectStudentFilterId)?.name || '所选学生'} 参与的项目`}</span>
+                  </div>
+                  <button className="secondary compact" onClick={refreshProjects}><RefreshCw size={16} />刷新列表</button>
+                </div>
+                <div className="project-index-grid">
+                  {studentFilteredProjects.map((project) => (
+                    <button className="project-index-card" key={project.id} onClick={() => openProjectDetail(project.id)}>
+                      <span className="project-index-card-heading">
+                        <strong>{project.name}</strong>
+                        <em>{projectStatusLabel(project.status)}</em>
+                      </span>
+                      <span>{project.type}</span>
+                      <small><UserRound size={14} />{project.studentNames?.join('、') || '未绑定学生'}</small>
+                      <small><Archive size={14} />资料 {project.dashboard?.pendingStagingCount || 0} · 待消化 {project.digestState?.pendingCount || 0} · 知识 {project.dashboard?.knowledgeCount || 0}</small>
+                      <span className="project-index-enter">进入项目详情 <ChevronRight size={16} /></span>
+                    </button>
+                  ))}
+                  {studentFilteredProjects.length === 0 && <div className="empty-state project-index-empty">当前学生筛选下没有学习项目。</div>}
+                </div>
+              </section>
+            ) : (
+            <div className="projects-existing-only project-detail-page">
               <section className={`markdown-reader project-detail-reader ${projectAuditLocateTarget?.target === 'detail' ? 'audit-locate-highlight' : ''}`} data-project-action-target="detail" tabIndex={-1}>
                 {selectedProject ? (
                   <>
@@ -10725,25 +12180,12 @@ ${JSON.stringify(items, null, 2)}
                         </button>
                         <button className="secondary compact" onClick={relocateSelectedProjectWorkspace}><FolderOpen size={15} />重新定位</button>
                         <button className="secondary compact" onClick={exportSelectedProject}><FileDown size={15} />导出项目</button>
-                        <button className="danger-soft compact" onClick={removeSelectedProjectRecord}>
+                        <button className="danger-soft compact" onClick={deleteSelectedProject} title="从项目列表安全删除，物理文件保持不变并可恢复">
                           <Trash2 size={15} />
-                          移除项目记录
+                          删除项目
                         </button>
                       </div>
                     </div>
-                    <section className={`material-source-panel project-promotion-controls ${projectAuditLocateTarget?.target === 'promotion' ? 'audit-locate-highlight' : ''}`} data-project-action-target="promotion" tabIndex={-1}>
-                      <div className="mini-heading">
-                        <strong>5. 知识贡献与项目归档</strong>
-                        <span>知识审核完成后生成贡献申请，逐项确认归档动作，再发布到学生档案与成长模型。</span>
-                      </div>
-                      <div className="actions compact-actions">
-                        <button className="secondary compact" onClick={() => generateSelectedProjectPromotion()}>生成贡献申请</button>
-                        <button className="secondary compact" onClick={loadSelectedProjectPromotionPlan}>打开归档确认清单</button>
-                        <button className="secondary compact" onClick={loadSelectedProjectPromotionAudit}>查看贡献审计</button>
-                        <button className="primary compact" onClick={executeSelectedProjectPromotionPlan} disabled={!promotionPlan?.items?.length}>执行归档</button>
-                        <button className="primary compact" onClick={publishSelectedProjectPromotion}>发布到成长模型</button>
-                      </div>
-                    </section>
                     {projectEditOpen && (
                       <section className="material-source-panel project-edit-panel project-order-edit">
                         <div className="mini-heading">
@@ -10778,6 +12220,56 @@ ${JSON.stringify(items, null, 2)}
                         <InfoPanel icon={<Clock3 />} title="最近更新" value={selectedProject.updatedAt ? new Date(selectedProject.updatedAt).toLocaleString('zh-CN') : '暂无记录'} />
                       </div>
                     </section>
+                    <section className="material-source-panel project-knowledge-browser-panel">
+                      <div className="mini-heading">
+                        <strong>查看项目知识空间</strong>
+                        <span>按知识类别浏览 Agent 已沉淀的 Markdown，阅读器不会修改原文件。</span>
+                      </div>
+                      <div className="actions compact-actions">
+                        <button className="secondary compact" onClick={() => refreshProjectKnowledgeBrowser()}><RefreshCw size={16} />刷新知识</button>
+                        <button className="secondary compact" onClick={() => openSelectedProjectSpace('knowledge')}><FolderOpen size={16} />打开知识空间目录</button>
+                      </div>
+                      <div className="category-tabs project-knowledge-tabs">
+                        {projectKnowledgeCategories.map((category) => (
+                          <button
+                            className={projectKnowledgeCategory === category.id ? 'category-tab active' : 'category-tab'}
+                            key={category.id}
+                            onClick={() => {
+                              setProjectKnowledgeCategory(category.id);
+                              setSelectedProjectKnowledgeFileId('');
+                              setProjectKnowledgeContent('');
+                            }}
+                          >
+                            {category.label}
+                            <small>{category.id === 'all' ? projectKnowledgeFiles.length : projectKnowledgeFiles.filter((file) => file.category === category.id).length}</small>
+                          </button>
+                        ))}
+                      </div>
+                      <div className="project-knowledge-browser">
+                        <aside className="markdown-list project-knowledge-file-list">
+                          {filteredProjectKnowledgeFiles.map((file) => (
+                            <button className={selectedProjectKnowledgeFileId === file.id ? 'markdown-item active' : 'markdown-item'} key={file.id} onClick={() => openProjectKnowledgeDocument(file)}>
+                              <strong>{file.name}</strong>
+                              <span>{file.path}</span>
+                              {file.modified && <small>更新：{new Date(file.modified).toLocaleString('zh-CN')}</small>}
+                            </button>
+                          ))}
+                          {filteredProjectKnowledgeFiles.length === 0 && <div className="empty-state compact">该分类下暂无 Markdown 知识文档。</div>}
+                        </aside>
+                        <div className="project-knowledge-reader">
+                          <div className="reader-toolbar">
+                            <span>{filteredProjectKnowledgeFiles.find((file) => file.id === selectedProjectKnowledgeFileId)?.name || '项目知识阅读器'}</span>
+                            <button className="secondary compact" disabled={!projectKnowledgeContent} onClick={() => setProjectKnowledgeViewMode(projectKnowledgeViewMode === 'rendered' ? 'source' : 'rendered')}>
+                              {projectKnowledgeViewMode === 'rendered' ? '查看原文' : '阅读模式'}
+                            </button>
+                          </div>
+                          {projectKnowledgeContent ? (
+                            projectKnowledgeViewMode === 'rendered' ? <MarkdownView content={projectKnowledgeContent} /> : <pre className="markdown-raw">{projectKnowledgeContent}</pre>
+                          ) : <div className="empty-state">从左侧选择概念、实体、摘要、问答精华或综合汇总文档。</div>}
+                        </div>
+                      </div>
+                      {projectKnowledgeBrowserMessage && <div className="notice muted">{projectKnowledgeBrowserMessage}</div>}
+                    </section>
                     {selectedProject.status === 'sealed' && (
                       <div className="notice muted project-sealed-notice">项目已封存并进入只读状态。恢复为“进行中”后才能修改资料、绑定、知识和归档内容。{selectedProject.sealedSnapshotPath ? ` 快照：${selectedProject.sealedSnapshotPath}` : ''}</div>
                     )}
@@ -10788,9 +12280,36 @@ ${JSON.stringify(items, null, 2)}
                         {selectedProjectDigestState.digestSubmittedAt ? ` 提交时间：${new Date(selectedProjectDigestState.digestSubmittedAt).toLocaleString('zh-CN')}` : ''}
                       </div>
                     )}
+                    {selectedProjectNextStep && (
+                      <section className="project-next-step" aria-live="polite">
+                        <div>
+                          <span>系统建议下一步</span>
+                          <strong>{selectedProjectNextStep.title}</strong>
+                          <small>{selectedProjectNextStep.detail}</small>
+                        </div>
+                        <button className="primary workflow-action next" onClick={runSelectedProjectNextStep}>
+                          {selectedProjectNextStep.action === 'complete' ? <CheckCircle2 size={18} /> : <ChevronRight size={18} />}
+                          {(projectUnifiedReview?.ready.count || 0) > 0 ? `确认本批次（${projectUnifiedReview?.ready.count}）` : selectedProjectNextStep.action === 'add' ? '扫描新增资料' : selectedProjectNextStep.action === 'digest' ? '开始知识消化' : '继续处理'}
+                        </button>
+                      </section>
+                    )}
+                    {projectUnifiedReview && (
+                      <section className="project-unified-review" aria-label="项目统一审核包">
+                        <div>
+                          <strong>本批次处理包</strong>
+                          <span>{projectUnifiedReview.message}</span>
+                        </div>
+                        <div className="project-review-summary">
+                          <span>可直接采用 <b>{projectUnifiedReview.ready.count}</b></span>
+                          <span>需要关注 <b>{projectUnifiedReview.attention.count}</b></span>
+                          <span>待消化 <b>{projectUnifiedReview.pendingDigest}</b></span>
+                        </div>
+                        {projectUnifiedReview.attention.count > 0 && <small>系统只自动处理来源完整的低风险资料和知识；个人成长证据始终由人确认。</small>}
+                      </section>
+                    )}
                     <nav className="project-flow-nav" aria-label="学习项目工作流">
                       {selectedProjectWorkflowSteps.map((step, index) => (
-                        <button type="button" className="project-flow-step" key={step.title} onClick={() => focusSelectedProjectWorkflowStage(step.target)}>
+                        <button type="button" className={`project-flow-step ${(selectedProjectNextStep?.target === step.target || (selectedProjectNextStep?.target === 'knowledge' && step.target === 'digest')) ? 'recommended' : ''} ${index < Math.max(0, selectedProjectWorkflowSteps.findIndex((item) => item.target === (selectedProjectNextStep?.target === 'knowledge' ? 'digest' : selectedProjectNextStep?.target))) ? 'done' : ''}`} key={step.title} onClick={() => focusSelectedProjectWorkflowStage(step.target)} aria-current={(selectedProjectNextStep?.target === step.target || (selectedProjectNextStep?.target === 'knowledge' && step.target === 'digest')) ? 'step' : undefined}>
                           <span className="workflow-index">{index + 1}</span>
                           <span><strong>{step.title}</strong><em>{step.value}</em><small>{step.detail}</small></span>
                           <ChevronRight size={17} />
@@ -10805,9 +12324,24 @@ ${JSON.stringify(items, null, 2)}
                       <div className="actions compact-actions project-workspace-actions">
                         <button className="secondary compact" onClick={() => openSelectedProjectSpace('workspace')}><FolderOpen size={16} />打开项目工作空间</button>
                         <button className="secondary compact" onClick={() => openSelectedProjectSpace('knowledge')}><BookOpen size={16} />打开项目知识空间</button>
-                        <button className="primary compact" onClick={scanSelectedProjectWorkspace} disabled={selectedProject.status === 'sealed'}><RefreshCw size={16} />扫描工作空间资料</button>
-                        <button className="secondary compact" onClick={importRawFilesToProject}><FileDown size={16} />核心资料直接入库</button>
+                        <button className={selectedProjectNextStep?.target === 'workspace' ? 'primary compact workflow-action next' : 'primary compact workflow-action optional'} onClick={() => setProjectMaterialEntryOpen((current) => !current)}><FileDown size={16} />添加资料</button>
                       </div>
+                      {projectStageFeedback.workspace && <div className="project-stage-feedback" role="status"><span>{projectStageFeedback.workspace}</span><button className="secondary compact" onClick={() => focusSelectedProjectWorkflowStage('assets')}>查看暂存资料</button></div>}
+                      {projectMaterialEntryOpen && (
+                        <div className="project-material-entry-menu">
+                          <button className="secondary" onClick={importFilesToProjectStaging}><Inbox size={18} /><span><strong>添加到研究暂存</strong><small>论文、网页、截图、草稿等先评估再采用</small></span></button>
+                          <button className="secondary" onClick={importRawFilesToProject}><Archive size={18} /><span><strong>核心资料直接采用</strong><small>官方文件、原始数据、教师反馈和最终成果</small></span></button>
+                          <button className="secondary" onClick={() => { setProjectMaterialEntryOpen(false); document.querySelector('.project-asset-center-panel')?.scrollIntoView({ behavior: 'smooth', block: 'start' }); }}><FolderOpen size={18} /><span><strong>复用已有正式资产</strong><small>从文件资产中心加入，不重复保存</small></span></button>
+                        </div>
+                      )}
+                      <details className="project-advanced-tools">
+                        <summary>工作空间扫描与模板设置</summary>
+                        <div className="actions compact-actions">
+                          <button className="secondary compact" onClick={() => void scanSelectedProjectWorkspace()} disabled={selectedProject.status === 'sealed' || projectBusyAction === 'scan-workspace'}><RefreshCw size={16} />{projectBusyAction === 'scan-workspace' ? `正在扫描 ${projectWorkspaceScanProgress?.percent ?? 0}%` : '扫描工作空间资料'}</button>
+                          {projectBusyAction === 'scan-workspace' && <button className="danger compact" onClick={() => void cancelSelectedProjectWorkspaceScan()}>取消扫描</button>}
+                          {selectedProject.workspaceRebindHistory?.some((item: { status?: string }) => item.status === 'active') && <button className="secondary compact" onClick={rollbackSelectedProjectWorkspace}>回滚工作空间绑定</button>}
+                        </div>
+                        {projectWorkspaceScanProgress?.projectId === selectedProject.id && projectBusyAction === 'scan-workspace' && <div className="project-scan-progress"><progress max="100" value={projectWorkspaceScanProgress.percent ?? 0} /><span>{projectWorkspaceScanProgress.message || '正在扫描...'}</span></div>}
                       <div className="stage-subheading"><strong>工作空间目录模板</strong><span>模板只补建人工工作目录，不改变项目知识空间的 LLM Wiki schema。</span></div>
                       <div className="form-grid compact-grid">
                         <label>
@@ -10853,6 +12387,7 @@ ${JSON.stringify(items, null, 2)}
                         <div><strong>成长与报告策略</strong><span>{selectedProject.growthStrategy || selectedProjectWorkspaceTemplate.growthStrategy}</span></div>
                         <div><strong>预期成果</strong><span>{(selectedProject.deliverables?.length ? selectedProject.deliverables : selectedProjectWorkspaceTemplate.deliverables).join('、')}</span></div>
                       </div>
+                      </details>
                     </section>
                     {(promotionConflicts.length > 0 || promotionRuns.length > 0) && (
                       <div className="notice muted project-promotion-notice">
@@ -10904,6 +12439,10 @@ ${JSON.stringify(items, null, 2)}
                         <input readOnly value={selectedProject.workspaceMode === 'linked' ? '原地绑定已有文件夹' : '教育管家新建工作空间'} />
                       </label>
                       <label>
+                        知识空间模式
+                        <input readOnly value={selectedProject.knowledgeMode === 'adopted' ? `原地接管 · ${selectedProject.knowledgeSpaceId || '兼容身份'}` : '教育管家新建知识空间'} />
+                      </label>
+                      <label>
                         发布时间
                         <input readOnly value={selectedProject.publishedAt ? new Date(selectedProject.publishedAt).toLocaleString('zh-CN') : '尚未发布'} />
                       </label>
@@ -10929,147 +12468,103 @@ ${JSON.stringify(items, null, 2)}
                       </div>
                       <small className="inline-hint">当前绑定：{selectedProject.studentNames?.join('、') || '未绑定学生'}</small>
                     </section>
-                    <section className="material-source-panel project-evidence-panel">
-                      <div className="mini-heading">
-                        <strong>多学生项目·独立成长证据</strong>
-                        <span>项目知识空间由所有参与学生共享；能力观察按学生分别记录并进入各自 Growth Layer 待审核。</span>
-                      </div>
-                      <div className="student-evidence-grid">
-                        {(selectedProject.studentIds || []).map((studentId) => {
-                          const student = students.find((item) => item.id === studentId);
-                          const draft = projectStudentEvidenceDrafts[studentId] || { ability: '', observation: '', status: 'draft' };
-                          return (
-                            <div className="student-evidence-item" key={studentId}>
-                              <strong>{student?.name || studentId}</strong>
-                              <label>能力维度<input value={draft.ability} onChange={(event) => setProjectStudentEvidenceDrafts((current) => ({ ...current, [studentId]: { ...draft, ability: event.target.value } }))} placeholder="例如：数据分析、团队协作" /></label>
-                              <label>独立观察<textarea rows={3} value={draft.observation} onChange={(event) => setProjectStudentEvidenceDrafts((current) => ({ ...current, [studentId]: { ...draft, observation: event.target.value } }))} placeholder="记录该学生在项目中的具体表现与证据" /></label>
-                              <label>证据状态<select value={draft.status} onChange={(event) => setProjectStudentEvidenceDrafts((current) => ({ ...current, [studentId]: { ...draft, status: event.target.value } }))}>
-                                <option value="draft">草稿</option>
-                                <option value="verified">已确认</option>
-                                <option value="published">已发布</option>
-                                <option value="rejected">已驳回</option>
-                              </select></label>
-                              <button className="secondary compact" onClick={() => saveProjectStudentEvidence(studentId)}><CheckCircle2 size={15} />保存该学生证据</button>
-                            </div>
-                          );
-                        })}
-                        {!(selectedProject.studentIds || []).length && <div className="empty-state compact">请先绑定项目参与学生。</div>}
-                      </div>
-                    </section>
-                    <section className={`material-source-panel project-digest-panel ${projectAuditLocateTarget?.target === 'digest' ? 'audit-locate-highlight' : ''}`} data-project-action-target="digest" tabIndex={-1}>
-                      <div className="mini-heading">
-                        <strong>3. 人工 Agent 消化</strong>
-                        <span>选择 Agent 后复制命令，粘贴到对应工具执行；控制台不绑定或自动启动 Codex CLI。</span>
-                      </div>
-                      <div className="form-grid compact-grid">
-                        <label>使用 Agent<select value={selectedProject.agentTool || 'qclaw'} onChange={(event) => {
-                          const agentTool = event.target.value as AgentToolId;
-                          setProjectEditDraft((current) => ({ ...current, agentTool } as typeof current & { agentTool: AgentToolId }));
-                          const raw = bridge()?.updateProjectMetadata?.(selectedProject.id, JSON.stringify({ ...projectEditDraft, agentTool }));
-                          if (raw) try { const result = JSON.parse(raw) as { projects?: LearningProject[]; message?: string }; if (result.projects) setProjects(result.projects); setProjectMessage(result.message || '项目 Agent 已更新。'); } catch { setProjectMessage('项目 Agent 更新结果解析失败。'); }
-                        }}>{agentToolOptions.map((tool) => <option value={tool.id} key={tool.id}>{tool.name}</option>)}</select></label>
-                        <label>当前批次<input readOnly value={selectedProjectDigestState.digestBatchId || '尚未提交'} /></label>
-                        <label>待消化资料<input readOnly value={`${selectedProjectDigestState.pendingCount || 0} 份`} /></label>
-                        <label>最近完成<input readOnly value={selectedProjectDigestState.lastDigestAt ? new Date(selectedProjectDigestState.lastDigestAt).toLocaleString('zh-CN') : '暂无'} /></label>
-                      </div>
-                      <div className="actions compact-actions"><button className="primary compact" onClick={copySelectedProjectDigestCommand}><Clipboard size={16} />复制消化命令</button><button className="secondary compact" onClick={markSelectedProjectDigestSubmitted}>标记已提交</button><button className="secondary compact" onClick={syncSelectedProjectDigestResult}>同步结果</button></div>
-                    </section>
                     <section className={`material-source-panel project-staging-panel ${projectAuditLocateTarget?.target === 'assets' ? 'audit-locate-highlight' : ''}`} data-project-action-target="assets" tabIndex={-1}>
                       <div className="mini-heading">
-                        <strong>2. 研究暂存、治理与资产晋升</strong>
-                        <span>收集候选资料，完成初筛、人工审核和保存策略确认；晋升后才进入正式文件资产中心和项目原始资料库。</span>
+                        <strong>2. AI 整理与资料确认</strong>
+                        <span>AI先识别重复和资料价值；你只需确认需要采用、排除或保留观察的资料。</span>
                       </div>
                       <div className="project-staging-scroll" tabIndex={0} aria-label="研究暂存层操作与资料列表">
                       <div className="archive-grid">
                         <InfoPanel icon={<Inbox />} title="暂存资料" value={`${projectStagingItems.length} 份`} />
                         <InfoPanel icon={<ListChecks />} title="已选" value={`${selectedProjectStagingItems.length} 份`} />
                         <InfoPanel icon={<FolderOpen />} title="暂存目录" value={selectedProject.stagingPath || `${selectedProject.workspacePath}\\研究暂存`} />
-                        <InfoPanel icon={<Archive />} title="治理候选" value={`${projectStagingGovernanceStats.actionCount} 项`} />
+                        <InfoPanel icon={<Archive />} title="需处理" value={`${projectStagingGovernanceStats.actionCount} 项`} />
                         <InfoPanel icon={<ShieldCheck />} title="已晋升/已分析" value={`${projectStagingLifecycleStats.promoted + projectStagingLifecycleStats.analyzed} 份`} />
                         <InfoPanel icon={<Clock3 />} title="候选/初筛" value={`${projectStagingLifecycleStats.selected + projectStagingLifecycleStats.screened} 份`} />
                       </div>
-                      <div className="form-grid compact-grid staging-filter-grid">
-                        <label>
-                          搜索暂存资料
-                          <input value={projectStagingSearch} onChange={(event) => setProjectStagingSearch(event.target.value)} placeholder="文件名、路径、AI建议或理由" />
-                        </label>
-                        <label>
-                          状态筛选
-                          <select value={projectStagingStatusFilter} onChange={(event) => setProjectStagingStatusFilter(event.target.value as 'all' | ProjectStagingStatus)}>
-                            <option value="all">全部状态</option>
-                            <option value="collected">已收集</option>
-                            <option value="screened">已初筛</option>
-                            <option value="selected">选入分析</option>
-                            <option value="analyzed">已分析</option>
-                            <option value="promoted">已晋升</option>
-                            <option value="discarded">已归档/丢弃</option>
-                          </select>
-                        </label>
-                        <label>
-                          来源保存策略
-                          <select value={projectSourceStrategy} onChange={(event) => setProjectSourceStrategy(event.target.value as typeof projectSourceStrategy)}>
-                            <option value="reference_only">仅来源记录</option>
-                            <option value="snapshot">保存关键快照</option>
-                            <option value="full_copy">保存完整副本</option>
-                          </select>
-                        </label>
-                        <label>
-                          人工审核说明
-                          <input value={projectReviewNote} onChange={(event) => setProjectReviewNote(event.target.value)} placeholder="可选：采用或排除原因" />
-                        </label>
+                      <div className="project-organize-wizard">
+                        <ol>
+                          <li className={projectStagingItems.length ? 'done' : 'current'}><span>1</span><strong>收集候选</strong><small>{projectStagingItems.length} 份</small></li>
+                          <li className={projectStagingItems.some((item) => item.aiAction || item.governanceAction) ? 'done' : projectStagingItems.length ? 'current' : ''}><span>2</span><strong>AI 整理</strong><small>去重与价值判断</small></li>
+                          <li className={selectedProjectStagingIds.length ? 'current' : ''}><span>3</span><strong>人工确认</strong><small>已选 {selectedProjectStagingIds.length} 份</small></li>
+                          <li className={projectStagingLifecycleStats.promoted ? 'done' : ''}><span>4</span><strong>加入知识库</strong><small>{projectStagingLifecycleStats.promoted} 份已晋升</small></li>
+                        </ol>
+                        <div className="actions compact-actions project-wizard-actions">
+                          <button className={projectStagingItems.length > 0 && !projectStagingItems.some((item) => item.aiAction || item.governanceAction) ? 'secondary compact workflow-action next' : 'secondary compact workflow-action optional'} onClick={prepareProjectStagingEvaluation} disabled={projectStagingItems.length === 0}>复制 Agent 评估指令</button>
+                          <button className={projectScreeningPasteOpen ? 'primary compact workflow-action next' : 'primary compact workflow-action optional'} onClick={openProjectScreeningPaste} disabled={projectStagingItems.length === 0}><Clipboard size={16} />粘贴 Agent 评估结果</button>
+                          <button className="secondary compact" onClick={importProjectStagingAiScreeningFromFile} disabled={projectStagingItems.length === 0}>从文件导入</button>
+                          <button className="secondary compact" onClick={applyRecommendedProjectSourceStrategy} disabled={selectedProjectStagingIds.length === 0}>应用建议保存策略</button>
+                          <button className={selectedProjectStagingIds.length ? 'primary compact workflow-action next' : 'secondary compact workflow-action blocked'} onClick={approveAndPromoteSelectedProjectStagingItems} disabled={selectedProjectStagingIds.length === 0}>确认并加入项目知识库</button>
+                        </div>
+                        {projectScreeningPasteOpen && (
+                          <section className="project-screening-receipt-panel" aria-label="Agent 评估回执">
+                            <div className="mini-heading">
+                              <strong>Agent 评估回执</strong>
+                              <span>支持纯 JSON 或包含 JSON 代码块的 Markdown。预览不会修改项目。</span>
+                            </div>
+                            <textarea
+                              value={projectScreeningRaw}
+                              onChange={(event) => {
+                                setProjectScreeningRaw(event.target.value);
+                                setProjectScreeningPreview(null);
+                              }}
+                              rows={9}
+                              placeholder="在此粘贴 Agent 返回的评估结果"
+                            />
+                            <div className="actions compact-actions">
+                              <button className={projectScreeningRaw.trim() && !projectScreeningPreview ? 'secondary compact workflow-action next' : 'secondary compact workflow-action optional'} onClick={previewPastedProjectStagingAiScreening} disabled={!projectScreeningRaw.trim()}>预览匹配</button>
+                              <button className={projectScreeningPreview?.matchedCount ? 'primary compact workflow-action next' : 'primary compact workflow-action blocked'} onClick={applyPastedProjectStagingAiScreening} disabled={!projectScreeningPreview?.matchedCount}>确认应用</button>
+                              <button className="secondary compact" onClick={() => { setProjectScreeningPasteOpen(false); setProjectScreeningRaw(''); setProjectScreeningPreview(null); }}>取消</button>
+                            </div>
+                            {projectScreeningPreview && (
+                              <div className="project-screening-preview" role="status">
+                                <div className="project-screening-metrics">
+                                  <span>解析 <strong>{projectScreeningPreview.parsedCount ?? 0}</strong></span>
+                                  <span>匹配 <strong>{projectScreeningPreview.matchedCount ?? 0}</strong></span>
+                                  <span>未匹配 <strong>{projectScreeningPreview.unmatchedCount ?? 0}</strong></span>
+                                  <span>解析器 <strong>{projectScreeningPreview.parserVersion || '未知'}</strong></span>
+                                </div>
+                                {(projectScreeningPreview.changes ?? []).length > 0 && (
+                                  <div className="project-screening-change-list">
+                                    {(projectScreeningPreview.changes ?? []).map((change) => (
+                                      <div key={`${change.stagingId}-${change.filename}`}>
+                                        <strong>{change.filename || change.stagingId}</strong>
+                                        <small>按 {change.matchBasis || '未知依据'} 匹配 · {projectStagingStatusLabel(change.fromStatus || '')} → {projectStagingStatusLabel(change.toStatus || '')}{change.toStrategy && change.toStrategy !== change.fromStrategy ? ` · 保存策略 ${change.fromStrategy || '未设置'} → ${change.toStrategy}` : ''}</small>
+                                        {change.aiReason && <small>{change.aiReason}</small>}
+                                      </div>
+                                    ))}
+                                  </div>
+                                )}
+                                {(projectScreeningPreview.unmatched ?? []).length > 0 && (
+                                  <details>
+                                    <summary>查看未匹配项（{projectScreeningPreview.unmatched?.length}）</summary>
+                                    <div className="project-screening-unmatched-list">
+                                      {(projectScreeningPreview.unmatched ?? []).map((item) => <small key={`${item.index}-${item.id}-${item.filename}`}>{item.filename || item.id || item.path || `第 ${(item.index ?? 0) + 1} 项`}：{item.reason || '未匹配'}</small>)}
+                                    </div>
+                                  </details>
+                                )}
+                              </div>
+                            )}
+                          </section>
+                        )}
                       </div>
-                      <div className="actions compact-actions">
-                        <button className="primary compact" onClick={importFilesToProjectStaging}>
-                          <FileDown size={16} />
-                          导入到研究暂存
-                        </button>
-                        <button className="secondary compact" onClick={importRawFilesToProject}>
-                          直接导入原始资料库
-                        </button>
-                        <button className="secondary compact" onClick={copyProjectStagingAiScreeningPrompt} disabled={projectStagingItems.length === 0}>
-                          复制 AI 初筛指令
-                        </button>
-                        <button className="secondary compact" onClick={importProjectStagingAiScreening} disabled={projectStagingItems.length === 0}>
-                          导入 AI 初筛结果
-                        </button>
-                        <button className="secondary compact" onClick={analyzeProjectStagingGovernance} disabled={projectStagingItems.length === 0}>
-                          生成治理建议
-                        </button>
-                        <button className="secondary compact" onClick={selectVisibleProjectStagingItems} disabled={filteredProjectStagingItems.length === 0}>
-                          选择当前筛选
-                        </button>
-                        <button className="secondary compact" onClick={selectProjectGovernanceCandidates} disabled={projectStagingGovernanceStats.governanceCandidateIds.length === 0}>
-                          选择治理候选
-                        </button>
-                        <button className="secondary compact" onClick={selectProjectPromotionCandidates} disabled={projectStagingGovernanceStats.promotionCandidateIds.length === 0}>
-                          选择待晋升
-                        </button>
-                        <button className="secondary compact" onClick={() => setSelectedProjectStagingIds([])} disabled={selectedProjectStagingIds.length === 0}>
-                          清空选择
-                        </button>
-                        <button className="secondary compact" onClick={() => updateSelectedProjectStagingStatus('screened')} disabled={selectedProjectStagingIds.length === 0}>
-                          标记初筛
-                        </button>
-                        <button className="secondary compact" onClick={() => updateSelectedProjectStagingStatus('selected')} disabled={selectedProjectStagingIds.length === 0}>
-                          选入分析
-                        </button>
-                        <button className="secondary compact" onClick={() => updateSelectedProjectStagingStatus('analyzed')} disabled={selectedProjectStagingIds.length === 0}>
-                          标记已分析
-                        </button>
-                        <button className="secondary compact" onClick={() => reviewSelectedProjectStaging('accepted')} disabled={selectedProjectStagingIds.length === 0}>
-                          接受并应用保存策略
-                        </button>
-                        <button className="secondary compact danger-soft" onClick={() => reviewSelectedProjectStaging('rejected')} disabled={selectedProjectStagingIds.length === 0}>
-                          人工拒绝
-                        </button>
-                        <button className="primary compact" onClick={promoteSelectedProjectStagingItems} disabled={selectedProjectStagingIds.length === 0 || selectedProjectStagingItems.some((item) => item.reviewStatus !== 'accepted')}>
-                          晋升为正式资产
-                        </button>
-                        <button className="secondary compact danger-soft" onClick={() => updateSelectedProjectStagingStatus('discarded')} disabled={selectedProjectStagingIds.length === 0}>
-                          丢弃/归档
-                        </button>
-                      </div>
-                      <small className="inline-hint">当前显示 {filteredProjectStagingItems.length} / {projectStagingItems.length} 份；重复候选 {projectStagingGovernanceStats.duplicateCount} 份；AI 导入和治理建议都不会自动删除或晋升资料。</small>
+                      {projectStageFeedback.assets && <div className="project-stage-feedback" role="status"><span>{projectStageFeedback.assets}</span><button className="secondary compact" onClick={() => focusSelectedProjectWorkflowStage('digest')}>进入知识消化</button></div>}
+                      <details className="project-advanced-tools">
+                        <summary>高级筛选、保存策略与批量操作</summary>
+                        <div className="form-grid compact-grid staging-filter-grid">
+                          <label>搜索暂存资料<input value={projectStagingSearch} onChange={(event) => setProjectStagingSearch(event.target.value)} placeholder="文件名、路径、AI建议或理由" /></label>
+                          <label>状态筛选<select value={projectStagingStatusFilter} onChange={(event) => setProjectStagingStatusFilter(event.target.value as 'all' | ProjectStagingStatus)}><option value="all">全部状态</option><option value="collected">已收集</option><option value="screened">已初筛</option><option value="selected">选入分析</option><option value="analyzed">已分析</option><option value="promoted">已晋升</option><option value="discarded">已归档/丢弃</option></select></label>
+                          <label>来源保存策略<select value={projectSourceStrategy} onChange={(event) => setProjectSourceStrategy(event.target.value as typeof projectSourceStrategy)}><option value="reference_only">仅来源记录</option><option value="snapshot">保存关键快照</option><option value="full_copy">保存完整副本</option></select></label>
+                        </div>
+                        <div className="actions compact-actions">
+                          <button className="secondary compact" onClick={selectVisibleProjectStagingItems} disabled={filteredProjectStagingItems.length === 0}>选择当前筛选</button>
+                          <button className="secondary compact" onClick={selectProjectGovernanceCandidates} disabled={projectStagingGovernanceStats.governanceCandidateIds.length === 0}>选择治理候选</button>
+                          <button className="secondary compact" onClick={selectProjectPromotionCandidates} disabled={projectStagingGovernanceStats.promotionCandidateIds.length === 0}>选择待采用</button>
+                          <button className="secondary compact" onClick={() => setSelectedProjectStagingIds([])} disabled={selectedProjectStagingIds.length === 0}>清空选择</button>
+                          <button className="secondary compact danger-soft" onClick={() => updateSelectedProjectStagingStatus('discarded')} disabled={selectedProjectStagingIds.length === 0}>排除所选</button>
+                        </div>
+                      </details>
+                      <small className="inline-hint">当前显示 {filteredProjectStagingItems.length} / {projectStagingItems.length} 份；重复候选 {projectStagingGovernanceStats.duplicateCount} 份。AI只提供评估，最终采用或排除仍需人工确认。</small>
                       <div className="download-list project-staging-list">
                         {filteredProjectStagingItems.map((item) => (
                           <label className={item.status === 'discarded' ? 'download-item staging-item discarded' : 'download-item staging-item'} key={item.id}>
@@ -11109,10 +12604,48 @@ ${JSON.stringify(items, null, 2)}
                       </div>
                       </div>
                     </section>
+                    <section className={`material-source-panel project-digest-panel ${projectAuditLocateTarget?.target === 'digest' ? 'audit-locate-highlight' : ''}`} data-project-action-target="digest" tabIndex={-1}>
+                      <div className="mini-heading">
+                        <strong>3.1 Agent 知识消化</strong>
+                        <span>开始后由系统自动提交、等待和校验；普通情况下无需复制指令或检查回执。</span>
+                      </div>
+                      <div className="form-grid compact-grid">
+                        <label>使用 Agent<select value={selectedProject.agentTool || 'qclaw'} onChange={(event) => {
+                          const agentTool = event.target.value as AgentToolId;
+                          setProjectEditDraft((current) => ({ ...current, agentTool } as typeof current & { agentTool: AgentToolId }));
+                          const raw = bridge()?.updateProjectMetadata?.(selectedProject.id, JSON.stringify({ ...projectEditDraft, agentTool }));
+                          if (raw) try { const result = JSON.parse(raw) as { projects?: LearningProject[]; message?: string }; if (result.projects) setProjects(result.projects); setProjectMessage(result.message || '项目 Agent 已更新。'); } catch { setProjectMessage('项目 Agent 更新结果解析失败。'); }
+                        }}>{agentToolOptions.map((tool) => <option value={tool.id} key={tool.id}>{tool.name}</option>)}</select></label>
+                      </div>
+                      {selectedProjectDigestWorkflow && <DigestStatusCard
+                        status={selectedProjectDigestWorkflow}
+                        busy={digestWorkflowBusyKey === digestWorkflowKey('project', selectedProject.id)}
+                        manualText={digestWorkflowManualText[digestWorkflowKey('project', selectedProject.id)] || ''}
+                        onManualTextChange={(value) => setDigestWorkflowManualText((current) => ({ ...current, [digestWorkflowKey('project', selectedProject.id)]: value }))}
+                        onStart={() => startDigestWorkflowFromPage('project', selectedProject.id)}
+                        onRetry={() => retryDigestWorkflowFromPage('project', selectedProject.id)}
+                        onCheck={syncSelectedProjectDigestResult}
+                        onPaste={() => importDigestWorkflowTextFromPage('project', selectedProject.id)}
+                        onOpenKnowledge={() => openSelectedProjectSpace('knowledge')}
+                        advancedActions={<>
+                          <button className="secondary compact" onClick={() => copyDigestWorkflowCommandFromPage('project', selectedProject.id)}><Clipboard size={16} />复制当前批次指令</button>
+                          <button className="secondary compact" onClick={syncSelectedProjectDigestResult}>立即检查结果</button>
+                          <button className="secondary compact" onClick={() => setProjectDigestReceiptPasteOpen((open) => !open)}><Clipboard size={16} />粘贴严格回执</button>
+                        </>}
+                      />}
+                      {projectDigestReceiptPasteOpen && (
+                        <section className="project-screening-receipt-panel" aria-label="项目消化 Agent 回执">
+                          <div className="mini-heading"><strong>粘贴 Agent JSON 回执</strong><span>Agent 无法写入回执文件时使用。系统仍会严格校验当前项目、批次、相对路径和 SHA-1。</span></div>
+                          <textarea value={projectDigestReceiptRaw} onChange={(event) => setProjectDigestReceiptRaw(event.target.value)} rows={9} placeholder="粘贴纯 JSON，或包含 JSON 代码块的 Agent 回复。Markdown 批次报告不能替代回执。" />
+                          <div className="actions compact-actions"><button className={projectDigestReceiptRaw.trim() ? 'primary compact workflow-action next' : 'primary compact workflow-action blocked'} onClick={applyPastedProjectDigestReceipt} disabled={!projectDigestReceiptRaw.trim()}>校验并同步</button><button className="secondary compact" onClick={() => { setProjectDigestReceiptPasteOpen(false); setProjectDigestReceiptRaw(''); }}>取消</button></div>
+                        </section>
+                      )}
+                      {projectStageFeedback.digest && <div className="project-stage-feedback" role="status"><span>{projectStageFeedback.digest}</span><button className="secondary compact" onClick={() => focusSelectedProjectWorkflowStage('knowledge')}>查看知识审核</button></div>}
+                    </section>
                     <section className={`material-source-panel project-knowledge-panel ${projectAuditLocateTarget?.target === 'knowledge' ? 'audit-locate-highlight' : ''}`} data-project-action-target="knowledge" tabIndex={-1}>
                       <div className="mini-heading">
-                        <strong>4. 项目知识资产审核</strong>
-                        <span>审核概念、实体、摘要、问答和综合结论；每条记录保留来源资产与生成信息。</span>
+                        <strong>3.2 项目知识资产审核</strong>
+                        <span>默认聚焦待确认、低置信度或缺少来源的风险知识；高质量结果无需逐条重复检查。</span>
                       </div>
                       <div className="form-grid compact-grid staging-filter-grid">
                         <label>
@@ -11127,25 +12660,26 @@ ${JSON.stringify(items, null, 2)}
                             <option value="invalid">已失效</option>
                           </select>
                         </label>
-                        <label>
-                          审核说明
-                          <input value={projectKnowledgeReviewNote} onChange={(event) => setProjectKnowledgeReviewNote(event.target.value)} placeholder="可选：确认依据、修改意见或失效原因" />
+                        <label className="project-risk-toggle">
+                          审核范围
+                          <span><input type="checkbox" checked={projectKnowledgeRiskOnly} onChange={(event) => setProjectKnowledgeRiskOnly(event.target.checked)} /> 仅显示风险知识</span>
                         </label>
                       </div>
                       <div className="actions compact-actions">
                         <button className="secondary compact" onClick={loadSelectedProjectKnowledgeReview}>刷新知识资产</button>
                         <button className="secondary compact" onClick={() => setSelectedProjectKnowledgeIds(filteredProjectKnowledgeRecords.map((record) => record.id))} disabled={!filteredProjectKnowledgeRecords.length}>选择当前筛选</button>
-                        <button className="secondary compact" onClick={() => updateSelectedProjectKnowledgeReview('pending_review')} disabled={!selectedProjectKnowledgeIds.length}>标记待审核</button>
-                        <button className="primary compact" onClick={() => updateSelectedProjectKnowledgeReview('verified')} disabled={!selectedProjectKnowledgeIds.length}>确认知识</button>
+                        <button className="secondary compact" onClick={() => setSelectedProjectKnowledgeIds(projectKnowledgeHighConfidenceReady.map((record) => record.id))} disabled={!projectKnowledgeHighConfidenceReady.length}>选择高置信有来源</button>
+                        <button className={selectedProjectKnowledgeIds.length ? 'primary compact workflow-action next' : 'primary compact workflow-action blocked'} onClick={() => updateSelectedProjectKnowledgeReview('verified')} disabled={!selectedProjectKnowledgeIds.length}>确认知识</button>
                         <button className="secondary compact danger-soft" onClick={() => updateSelectedProjectKnowledgeReview('rejected')} disabled={!selectedProjectKnowledgeIds.length}>驳回</button>
                         <button className="secondary compact danger-soft" onClick={() => updateSelectedProjectKnowledgeReview('invalid')} disabled={!selectedProjectKnowledgeIds.length}>标记失效</button>
                       </div>
+                      {projectStageFeedback.knowledge && <div className="project-stage-feedback" role="status"><span>{projectStageFeedback.knowledge}</span><button className="secondary compact" onClick={prepareProjectCompletion}>准备完成项目</button></div>}
                       <div className="download-list project-knowledge-review-list">
                         {filteredProjectKnowledgeRecords.map((record) => (
                           <label className="download-item" key={record.id}>
                             <input type="checkbox" checked={selectedProjectKnowledgeIds.includes(record.id)} onChange={() => setSelectedProjectKnowledgeIds((current) => current.includes(record.id) ? current.filter((id) => id !== record.id) : [...current, record.id])} />
                             <span>
-                              <strong>{record.title}</strong>
+                              <strong>{record.title}{projectKnowledgeRisk(record) && <em className="knowledge-risk-tag">需关注</em>}</strong>
                               <small>{record.kind} · {record.status} · 置信度 {record.confidence || 'medium'}</small>
                               <small>{record.path}</small>
                               <small>来源资产：{record.sourceAssets?.join('、') || '待补充'} · 模型：{record.model || '未记录'} · 提示词版本：{record.promptVersion || '未记录'}</small>
@@ -11154,6 +12688,48 @@ ${JSON.stringify(items, null, 2)}
                           </label>
                         ))}
                         {filteredProjectKnowledgeRecords.length === 0 && <div className="empty-state">当前知识空间还没有可审核的概念、实体、摘要、问答或综合文件。</div>}
+                      </div>
+                    </section>
+                    <section className="material-source-panel project-evidence-panel" data-project-action-target="evidence" tabIndex={-1}>
+                      <div className="mini-heading">
+                        <strong>3.3 个人成长证据</strong>
+                        <span>{(selectedProject.studentIds || []).length === 1 ? '系统根据已确认知识自动生成单学生草稿；人工核对来源后确认。' : '项目知识共享，只需核对每名学生相对于共同项目的差异证据。'}</span>
+                      </div>
+                      <div className="actions compact-actions">
+                        <button className="secondary compact" onClick={copyProjectStudentEvidencePrompt} disabled={!(selectedProject.studentIds || []).length}><Clipboard size={16} />生成 AI 证据草稿</button>
+                        <button className="secondary compact" onClick={() => importProjectStudentEvidenceSuggestions()} disabled={!(selectedProject.studentIds || []).length}><RefreshCw size={16} />同步文件结果</button>
+                        <button className={projectStudentEvidencePasteOpen ? 'primary compact' : 'secondary compact'} onClick={() => setProjectStudentEvidencePasteOpen((value) => !value)} disabled={!(selectedProject.studentIds || []).length}><Clipboard size={16} />粘贴 Agent 结果</button>
+                      </div>
+                      {projectStudentEvidencePasteOpen && <div className="project-inline-paste">
+                        <textarea rows={8} value={projectStudentEvidenceRaw} onChange={(event) => setProjectStudentEvidenceRaw(event.target.value)} placeholder="粘贴 JSON、JSON 代码块或结构化 Markdown。有效学生记录会继续导入，格式不完整的项目会单独提示。" />
+                        <div className="actions compact-actions">
+                          <button className="primary compact" onClick={() => importProjectStudentEvidenceSuggestions(projectStudentEvidenceRaw)} disabled={!projectStudentEvidenceRaw.trim()}>解析并同步草稿</button>
+                          <button className="secondary compact" onClick={() => { setProjectStudentEvidencePasteOpen(false); setProjectStudentEvidenceRaw(''); }}>取消</button>
+                        </div>
+                      </div>}
+                      <div className="student-evidence-grid">
+                        {(selectedProject.studentIds || []).map((studentId) => {
+                          const student = students.find((item) => item.id === studentId);
+                          const draft = projectStudentEvidenceDrafts[studentId] || { ability: '', observation: '', status: 'draft' };
+                          const savedEvidence = selectedProject.studentEvidence?.find((item) => item.studentId === studentId);
+                          return (
+                            <div className="student-evidence-item" key={studentId}>
+                              <strong>{student?.name || studentId}</strong>
+                              <label>能力维度<input value={draft.ability} onChange={(event) => setProjectStudentEvidenceDrafts((current) => ({ ...current, [studentId]: { ...draft, ability: event.target.value } }))} placeholder="例如：数据分析、团队协作" /></label>
+                              <label>具体表现与证据<textarea rows={3} value={draft.observation} onChange={(event) => setProjectStudentEvidenceDrafts((current) => ({ ...current, [studentId]: { ...draft, observation: event.target.value } }))} placeholder="核对 AI 草稿，保留该学生的具体表现和来源" /></label>
+                              <label>证据状态<select value={draft.status} onChange={(event) => setProjectStudentEvidenceDrafts((current) => ({ ...current, [studentId]: { ...draft, status: event.target.value } }))}>
+                                <option value="draft">草稿</option>
+                                <option value="verified">已确认</option>
+                                <option value="rejected">已驳回</option>
+                                {draft.status === 'published' && <option value="published">已发布</option>}
+                              </select></label>
+                              {savedEvidence?.sourcePaths?.length ? <small className="inline-hint">来源：{savedEvidence.sourcePaths.join('、')} · 置信度 {savedEvidence.confidence || '未记录'}</small> : <small className="inline-hint">尚未记录来源，不能默认发布。</small>}
+                              <button className="primary compact" onClick={() => saveProjectStudentEvidence(studentId)} disabled={projectStudentEvidenceBusyId === studentId}><CheckCircle2 size={15} />{projectStudentEvidenceBusyId === studentId ? '正在提交…' : draft.status === 'draft' ? '确认该学生证据' : draft.status === 'rejected' ? '保存驳回状态' : '保存证据修改'}</button>
+                              {projectStudentEvidenceFeedbacks[studentId] && <div className={`project-evidence-feedback ${projectStudentEvidenceFeedbacks[studentId].ok ? 'success' : 'error'}`} role="status">{projectStudentEvidenceFeedbacks[studentId].message}</div>}
+                            </div>
+                          );
+                        })}
+                        {!(selectedProject.studentIds || []).length && <div className="empty-state compact">请先绑定项目参与学生。</div>}
                       </div>
                     </section>
                     <section className="material-source-panel project-asset-center-panel">
@@ -11179,7 +12755,37 @@ ${JSON.stringify(items, null, 2)}
                         <span className="inline-hint">已选 {selectedProjectAssetIds.length} 个</span>
                       </div>
                     </section>
-                    {promotionPlan && (
+                    <section className="material-source-panel project-completion-panel" data-project-action-target="promotion" tabIndex={-1}>
+                      <div className="mini-heading">
+                        <strong>4. 完成项目</strong>
+                        <span>一次生成知识贡献、冲突审计和智能归档建议；高风险写入仍进入任务中心等待批准。</span>
+                      </div>
+                      <div className="actions compact-actions">
+                        <button className="primary compact" onClick={prepareProjectCompletion}><Sparkles size={16} />开始完成项目</button>
+                        {projectCompletionOpen && <button className="secondary compact" onClick={() => setProjectCompletionOpen(false)}>收起完成面板</button>}
+                      </div>
+                      {projectStageFeedback.promotion && <div className="project-stage-feedback" role="status"><span>{projectStageFeedback.promotion}</span></div>}
+                      {projectCompletionOpen && (
+                        <div className="project-completion-summary">
+                          {projectCompletionBlockers.length > 0 && <div className="project-completion-blockers">
+                            {projectCompletionBlockers.map((item) => <button key={item.code} className={`completion-blocker ${item.severity}`} onClick={() => focusSelectedProjectWorkflowStage(item.target)}><strong>{item.title}</strong><span>{item.detail}</span><em>{item.blocking ? '定位处理' : '查看提醒'}</em></button>)}
+                          </div>}
+                          <div className="archive-grid">
+                            <InfoPanel icon={<ListChecks />} title="风险知识" value={`${projectKnowledgeRecords.filter(projectKnowledgeRisk).length} 条`} />
+                            <InfoPanel icon={<UserRound />} title="已确认个人证据" value={`${(selectedProject.studentEvidence || []).filter((item) => ['verified', 'published'].includes(String(item.status))).length} 条`} />
+                            <InfoPanel icon={<ShieldCheck />} title="冲突提醒" value={`${promotionConflicts.length} 条`} />
+                            <InfoPanel icon={<Archive />} title="建议执行" value={`${promotionPlan?.items.filter((item) => item.action !== 'skip').length || 0} 项`} />
+                          </div>
+                          <div className="actions compact-actions">
+                            <button className="secondary compact" onClick={prepareProjectCompletion}><RefreshCw size={16} />刷新智能建议</button>
+                            <button className="primary compact" onClick={executeSelectedProjectPromotionPlan} disabled={!promotionPlan?.items.length}>提交归档任务</button>
+                            <button className="primary compact" onClick={publishSelectedProjectPromotion} disabled={!['archived', 'published'].includes(selectedProject.status)}>发布到成长模型</button>
+                          </div>
+                          <small className="inline-hint">请先处理风险知识并确认每名学生的独立证据。归档任务审核通过后，才能发布到成长模型。</small>
+                        </div>
+                      )}
+                    </section>
+                    {projectCompletionOpen && promotionPlan && (
                       <section className="material-source-panel project-promotion-plan">
                         <div className="mini-heading">
                           <strong>归档确认清单</strong>
@@ -11225,7 +12831,7 @@ ${JSON.stringify(items, null, 2)}
                         {promotionExecutionSummary && <div className="notice">{promotionExecutionSummary}</div>}
                       </section>
                     )}
-                    {promotionPreview && (
+                    {projectCompletionOpen && promotionPreview && (
                       <div className="markdown-reader learning-report-reader project-promotion-preview">
                         <div className="reader-toolbar">
                           <span>知识贡献申请预览</span>
@@ -11237,7 +12843,7 @@ ${JSON.stringify(items, null, 2)}
                         <MarkdownView content={promotionPreview} />
                       </div>
                     )}
-                    {promotionAuditPreview && (
+                    {projectCompletionOpen && promotionAuditPreview && (
                       <div className="markdown-reader learning-report-reader project-promotion-audit-preview">
                         <div className="reader-toolbar">
                           <span>贡献冲突与回滚记录</span>
@@ -11255,6 +12861,7 @@ ${JSON.stringify(items, null, 2)}
                 )}
               </section>
             </div>
+            )}
             {projectMessage && <div className="notice">{projectMessage}</div>}
           </section>
         )}
@@ -11302,7 +12909,13 @@ ${JSON.stringify(items, null, 2)}
               <InfoPanel icon={<Sparkles />} title="能力维度" value={`${growthIndex?.summary?.abilityCount ?? 0} 个`} />
               <InfoPanel icon={<FolderOpen />} title="项目贡献" value={`${growthIndex?.summary?.projectCount ?? 0} 个`} />
               <InfoPanel icon={<ShieldCheck />} title="已确认证据" value={`${growthIndex?.summary?.confirmedCount ?? 0} 条`} />
-              <InfoPanel icon={<Clock3 />} title="待审核" value={`${growthIndex?.summary?.pendingCount ?? 0} 条`} />
+              <InfoPanel icon={<Clock3 />} title="一键可处理" value={`${growthEvidenceRiskAssessment?.summary?.batchProcessable ?? 0} 条`} />
+              <InfoPanel icon={<ShieldCheck />} title="需单独处理" value={`${growthEvidenceRiskAssessment?.summary?.high ?? 0} 条`} />
+              <InfoPanel icon={<ShieldCheck />} title="历史待补审" value={`${legacyGrowthReviewQueue.length} 条`} />
+            </div>
+            <div className="notice muted">
+              默认只显示需要关注的中高风险记录，低风险候选不会占用日常待办。一次处理会批量采用来源完整的安全证据，把信息不足的记录转为继续观察，并保留高风险记录逐条确认。
+              {(growthEvidenceRiskAssessment?.summary?.batchProcessable ?? 0) > 0 && <div className="actions"><button className="primary" onClick={batchReviewGrowthEvidence}><ShieldCheck size={18} />一键处理本批次</button></div>}
             </div>
             <section className="growth-workbench">
               <div className="growth-view-tabs" role="tablist" aria-label="成长模型视图">
@@ -11314,6 +12927,7 @@ ${JSON.stringify(items, null, 2)}
                 <input value={growthSearch} onChange={(event) => setGrowthSearch(event.target.value)} placeholder="搜索能力、项目或证据" />
                 {growthView === 'projects' && <select value={growthProjectStatusFilter} onChange={(event) => setGrowthProjectStatusFilter(event.target.value)}><option value="all">全部贡献状态</option><option value="published">已发布</option><option value="pending">待审核</option><option value="not_started">尚未形成</option></select>}
                 {growthView === 'evidence' && <select value={growthEvidenceStatusFilter} onChange={(event) => setGrowthEvidenceStatusFilter(event.target.value)}><option value="all">全部证据状态</option><option value="pending">待审核</option><option value="confirmed">已确认</option><option value="watching">观察中</option><option value="rejected">已驳回</option></select>}
+                {growthView === 'evidence' && <select value={growthEvidenceRiskFilter} onChange={(event) => setGrowthEvidenceRiskFilter(event.target.value as 'attention' | 'all' | 'low')}><option value="attention">默认：只看需关注</option><option value="low">低风险批量候选</option><option value="all">全部证据</option></select>}
                 {growthView === 'evidence' && <select value={growthAbilityFilter} onChange={(event) => setGrowthAbilityFilter(event.target.value)}><option value="all">全部能力</option>{(growthIndex?.abilities ?? []).map((ability) => <option key={ability.name} value={ability.name}>{ability.name}</option>)}</select>}
               </div>
 
@@ -11343,15 +12957,15 @@ ${JSON.stringify(items, null, 2)}
               {growthView === 'evidence' && <div className="download-list growth-list">
                 {filteredGrowthEvidence.map((candidate) => (
                   <div className="download-item" key={candidate.id}>
-                    <span><strong>{candidate.title}</strong><small>{candidate.ability || '待标注'} · {candidate.projectName || '未关联项目'} · {candidate.status} · {candidate.confidence || '待确认'}</small><small>{candidate.sourcePath || candidate.content || '暂无来源'}</small>{candidate.migratedFrom && <small>兼容导入自：{candidate.migratedFrom}</small>}</span>
+                    <span><strong>{candidate.title}</strong><small>{candidate.ability || '待标注'} · {candidate.projectName || '未关联项目'} · {candidate.status} · {candidate.confidence || '待确认'}</small>{(() => { const risk = growthEvidenceRiskAssessment?.assessments.find((item) => item.evidenceId === candidate.id); return risk ? <small>风险：{risk.label} · {risk.reasons.map((item) => item.label).join('、')}</small> : null; })()}<small>{candidate.sourcePath || candidate.content || '暂无来源'}</small>{candidate.migratedFrom && <small>兼容导入自：{candidate.migratedFrom}</small>}{legacyGrowthReviewQueue.some((item) => item.evidenceId === candidate.id) && <small>历史记录缺少审核人和时间，请重新确认、继续观察或不采用。</small>}{candidate.reviewedAt && <small>最近审核：{candidate.reviewerRole || candidate.review?.reviewerRole || '本机管理员'} · {new Date(candidate.reviewedAt).toLocaleString('zh-CN')}</small>}</span>
                     <div className="inline-actions">
-                      <button className="secondary compact" onClick={() => updateGrowthEvidence(candidate, 'confirmed')}>确认</button>
-                      <button className="secondary compact" onClick={() => updateGrowthEvidence(candidate, 'watching')}>观察</button>
-                      <button className="secondary compact" onClick={() => updateGrowthEvidence(candidate, 'rejected')}>驳回</button>
+                      <button className="secondary compact workflow-action next" onClick={() => updateGrowthEvidence(candidate, 'confirmed')}>确认采用</button>
+                      <button className="secondary compact workflow-action optional" onClick={() => updateGrowthEvidence(candidate, 'watching')}>继续观察</button>
+                      <button className="secondary compact workflow-action optional" onClick={() => updateGrowthEvidence(candidate, 'rejected')}>不采用</button>
                     </div>
                   </div>
                 ))}
-                {filteredGrowthEvidence.length === 0 && <div className="empty-state">当前筛选条件下没有成长证据。</div>}
+                {filteredGrowthEvidence.length === 0 && <div className="empty-state">当前没有需要关注的成长证据。低风险候选默认隐藏，可切换筛选查看或使用“一键处理本批次”。</div>}
               </div>}
             </section>
             <details className="growth-index-details">
@@ -11386,6 +13000,10 @@ ${JSON.stringify(items, null, 2)}
                 <FileText size={18} />
                 补建报告目录
               </button>
+              <button className="secondary workflow-action next" onClick={() => { setTaskCenterSourceFilter('student'); setSelectedTaskId(''); setActiveSection('tasks'); window.setTimeout(refreshTaskCenter, 120); }}>
+                <ListChecks size={18} />
+                查看周期更新任务
+              </button>
               <button className="secondary" onClick={() => openStudentRoot(selectedStudent)} disabled={!windowsLicenseActive}>
                 <FolderOpen size={18} />
                 打开知识库目录
@@ -11412,6 +13030,7 @@ ${JSON.stringify(items, null, 2)}
                     >
                       <strong>{definition.title}</strong>
                       <span>{definition.description}</span>
+                      <small>周期：{definition.cycle}</small>
                       <small>{report?.updatedAt ? `更新：${new Date(report.updatedAt).toLocaleString('zh-CN')}` : report?.exists === false ? '模板待创建' : '待读取'}</small>
                       <em>{report?.status || 'draft'} · {report?.summary || '待生成'}</em>
                       {report?.warnings && report.warnings.length > 0 ? (
@@ -11439,7 +13058,7 @@ ${JSON.stringify(items, null, 2)}
                 {learningReportContent ? (
                   learningReportViewMode === 'rendered' ? <MarkdownView content={learningReportContent} /> : <pre className="markdown-raw">{learningReportContent}</pre>
                 ) : (
-                  <div className="empty-state">点击左侧报告卡片，可查看整体画像、历史变化、每日行动建议和阶段总结。</div>
+                  <div className="empty-state">点击左侧报告卡片，可查看整体画像、历史变化、每周行动建议和阶段总结。</div>
                 )}
               </section>
             </div>
@@ -11799,24 +13418,10 @@ ${JSON.stringify(items, null, 2)}
                 <ExternalLink size={18} />
                 {selectedStudentTool.openLabel}
               </button>
-              <button className="secondary" onClick={() => copyDigestCommand(selectedStudent)}>
-                <Clipboard size={18} />
-                复制资料消化指令
-              </button>
               <button className="secondary" onClick={() => openStudentRoot(selectedStudent)}>
                 <FolderOpen size={18} />
                 打开学生知识库目录
               </button>
-              <button className="secondary" onClick={() => markDigestSubmitted(selectedStudent)}>
-                <CheckCircle2 size={18} />
-                标记已提交消化
-              </button>
-              {isWindows && (
-                <button className="secondary" onClick={() => syncDigestResult(selectedStudent)}>
-                  <RefreshCw size={18} />
-                  同步消化结果
-                </button>
-              )}
               <button className="secondary" onClick={copyConsultCommand}>
                 <Clipboard size={18} />
                 复制咨询提示
@@ -12318,8 +13923,8 @@ ${JSON.stringify(items, null, 2)}
           <section className="panel qa-panel">
             <div className="panel-heading">
               <div>
-                <h2>对话历史导入与提取</h2>
-                <p>把 QClaw、Marvis、Codex、Claude Code 等工具里的高价值对话提取为长期记忆、人设建议、咨询精华和后续待办。</p>
+                <h2>对话与多源知识候选</h2>
+                <p>原始对话先保存为不可变 Interaction / ConversationAsset；AI 结果只形成逐条候选，人工确认后才通过可撤销事务进入长期知识。</p>
               </div>
               <MessageCircle size={22} />
             </div>
@@ -12336,8 +13941,8 @@ ${JSON.stringify(items, null, 2)}
                 </select>
               </label>
               <label>
-                提取目标
-                <input readOnly value="UnifiedMemory / UnifiedSoul / 咨询精华库 / 输出结果待办" />
+                候选类型
+                <input readOnly value="长期记忆 / 人设建议 / 咨询精华 / 后续待办" />
               </label>
             </div>
             <label className="wide-field">
@@ -12364,14 +13969,14 @@ ${JSON.stringify(items, null, 2)}
             </label>
             <div className="actions compact-actions">
               <button className="secondary" onClick={previewConversationExtractResult}>解析预览</button>
-              <button className="primary" onClick={saveConversationExtractResult}>确认写入勾选资产</button>
+              <button className="primary" onClick={saveConversationExtractResult}>保存为逐条候选</button>
               <button className="secondary" onClick={() => setConversationExtractText('')}>清空提取结果</button>
             </div>
             {conversationExtractPreview && !conversationExtractPreview.error && (
               <div className="extract-preview">
                 <div className="mini-heading">
-                  <strong>写入前预览</strong>
-                  <span>取消勾选后，对应内容不会写入文件。</span>
+                  <strong>候选登记预览</strong>
+                  <span>这里只选择候选类型；保存不会直接修改长期知识。</span>
                 </div>
                 {[
                   ['memory', '长期记忆', conversationExtractPreview.memoryCandidates],
@@ -12391,6 +13996,76 @@ ${JSON.stringify(items, null, 2)}
                     {(items as unknown[]).slice(0, 6).map((item, index) => (
                       <small key={`${String(key)}-${index}`}>{typeof item === 'string' ? item : JSON.stringify(item)}</small>
                     ))}
+                  </div>
+                ))}
+              </div>
+            )}
+            <div className="mini-heading">
+              <strong>P2 逐条候选治理</strong>
+              <span>未审核候选不会进入正式长期知识；单次事务最多 50 条。</span>
+            </div>
+            <div className="archive-grid">
+              <InfoPanel icon={<ListChecks />} title="待审核" value={conversationCenter?.governance?.summary?.pending ?? 0} />
+              <InfoPanel icon={<ShieldCheck />} title="风险阻止" value={conversationCenter?.governance?.summary?.blocked ?? 0} />
+              <InfoPanel icon={<CheckCircle2 />} title="已晋升" value={conversationCenter?.governance?.summary?.promoted ?? 0} />
+            </div>
+            <div className="actions compact-actions">
+              <select value={conversationCandidateFilter} onChange={(event) => setConversationCandidateFilter(event.target.value as 'pending' | 'blocked' | 'promoted' | 'all')}>
+                <option value="pending">待审核候选</option>
+                <option value="blocked">风险阻止</option>
+                <option value="promoted">已晋升</option>
+                <option value="all">全部历史</option>
+              </select>
+              <button className="secondary" onClick={() => setSelectedConversationCandidateIds(visibleConversationCandidates.filter((item) => item.status === 'pending' && !item.risk?.blocked).slice(0, 50).map((item) => item.id))}>选择当前可晋升</button>
+              <button className="secondary" onClick={mergeSelectedConversationCandidates}>合并两条所选</button>
+              <button className="primary" onClick={promoteSelectedConversationCandidates}>事务晋升所选</button>
+              <button className="secondary" onClick={() => setSelectedConversationCandidateIds([])}>清除选择</button>
+            </div>
+            <div className="candidate-list">
+              {visibleConversationCandidates.map((candidate) => {
+                const riskReasons = candidate.risk?.reasons ?? [];
+                const hasSensitiveRisk = riskReasons.some((reason) => reason.code === 'sensitive_data' && reason.blocking);
+                return (
+                  <div className="candidate-row" key={candidate.id}>
+                    <label className="checkbox-line">
+                      <input
+                        type="checkbox"
+                        disabled={candidate.status !== 'pending'}
+                        checked={selectedConversationCandidateSet.has(candidate.id)}
+                        onChange={() => toggleConversationCandidate(candidate.id)}
+                      />
+                      <span>{({ memory: '长期记忆', soul: '人设建议', qa: '咨询精华', todo: '后续待办' } as Record<string, string>)[candidate.target] || candidate.target}</span>
+                    </label>
+                    <div className="candidate-main">
+                      <strong>{candidate.content}</strong>
+                      <span>{candidate.status} · 风险 {candidate.risk?.level || '待计算'} · 来源 {candidate.source?.type || 'conversation'}</span>
+                      <small>原文：{candidate.source?.snippet || '缺少原文片段'}</small>
+                      <small>定位：{candidate.source?.messageId || candidate.source?.locator || '缺少消息定位'}</small>
+                    </div>
+                    {riskReasons.length > 0 && <div className="candidate-reasons">{riskReasons.map((reason) => <span key={`${candidate.id}-${reason.code}`}>{reason.label}</span>)}</div>}
+                    <div className="actions compact-actions">
+                      {candidate.status === 'pending' && <button className="secondary compact" onClick={() => editConversationCandidate(candidate)}>编辑与补证</button>}
+                      {candidate.status === 'pending' && <button className="secondary compact" onClick={() => updateConversationCandidate(candidate, 'reject', { note: '人工逐条拒绝' })}>拒绝</button>}
+                      {candidate.status === 'pending' && <button className="secondary compact" onClick={() => updateConversationCandidate(candidate, 'conflict', { note: '人工标记冲突' })}>标记冲突</button>}
+                      {candidate.status === 'pending' && <button className="secondary compact" onClick={() => updateConversationCandidate(candidate, 'expire', { note: '人工标记过期' })}>标记过期</button>}
+                      {hasSensitiveRisk && <button className="secondary compact" onClick={() => updateConversationCandidate(candidate, 'acknowledge_sensitive', { note: '人工确认敏感信息用途' })}>确认敏感风险</button>}
+                      {candidate.status === 'conflict' && <button className="secondary compact" onClick={() => updateConversationCandidate(candidate, 'resolve', { note: '冲突已人工处理' })}>冲突已处理</button>}
+                      {['rejected', 'expired', 'revoked'].includes(candidate.status) && <button className="secondary compact" onClick={() => updateConversationCandidate(candidate, 'restore', { note: '人工恢复为候选' })}>恢复候选</button>}
+                    </div>
+                  </div>
+                );
+              })}
+              {visibleConversationCandidates.length === 0 && <div className="empty-state">当前筛选下没有知识候选。</div>}
+            </div>
+            {(conversationCenter?.governance?.transactions ?? []).length > 0 && (
+              <div className="source-list">
+                <div className="mini-heading"><strong>晋升事务与撤销</strong><span>撤销只移除对应事务标记内容。</span></div>
+                {(conversationCenter?.governance?.transactions ?? []).slice(0, 10).map((transaction) => (
+                  <div className="source-row" key={transaction.id}>
+                    <strong>{transaction.status === 'committed' ? '已提交' : transaction.status === 'reversed' ? '已撤销' : transaction.status}</strong>
+                    <span>{transaction.candidateIds?.length ?? 0} 条</span>
+                    <small>{transaction.promotedAt ? new Date(transaction.promotedAt).toLocaleString('zh-CN') : ''} · {transaction.id}</small>
+                    {transaction.status === 'committed' && <button className="secondary compact" onClick={() => rollbackConversationTransaction(transaction)}>撤销本次晋升</button>}
                   </div>
                 ))}
               </div>
@@ -12541,7 +14216,7 @@ ${JSON.stringify(items, null, 2)}
                         <span>{executorLabel} · {modeLabel}</span>
                       </div>
                       <div className="task-center-row-actions">
-                        <button className="secondary compact" onClick={() => { setSelectedTaskId(task.id); setTaskExecutorDraft('auto'); setTaskReviewNote(''); }}>
+                        <button className="secondary compact" onClick={() => viewTaskCenterItem(task)}>
                           查看任务<ChevronRight size={15} />
                         </button>
                         <button className="secondary compact" onClick={() => handleTaskCenterAction(task)}>
@@ -12554,7 +14229,7 @@ ${JSON.stringify(items, null, 2)}
                 {visibleTaskCenterItems.length === 0 && <div className="empty-state compact">当前筛选条件下没有任务。</div>}
               </div>
               {selectedTask && (
-                <section className="task-detail-panel">
+                <section className="task-detail-panel" ref={taskDetailPanelRef} tabIndex={-1}>
                   <div className="mini-heading">
                     <strong>{selectedTask.title}</strong>
                     <span>{selectedTask.id} · 协议 {selectedTask.protocolVersion || '1.0'}</span>
@@ -12581,6 +14256,21 @@ ${JSON.stringify(items, null, 2)}
                   )}
                    {selectedTask.error?.message && <div className="notice error">{selectedTask.error.code || 'ERROR'}：{selectedTask.error.message}</div>}
                    {selectedTask.result?.validation && <div className={selectedTask.result.validation.valid ? 'notice success' : 'notice error'}>{selectedTask.result.validation.message || '结果校验已完成。'}</div>}
+                   <div className={selectedTask.result ? 'task-result-summary has-result' : 'task-result-summary'}>
+                     <div>
+                       <small>Agent 反馈结果</small>
+                       <strong>{selectedTask.result?.summary || selectedTask.result?.message || '尚未收到 Agent 反馈'}</strong>
+                       {selectedTask.result?.feedback && (
+                         <span>
+                           行动反馈：{({ completed: '已完成', partial: '部分完成', skipped: '已跳过' } as Record<string, string>)[selectedTask.result.feedback.status || ''] || selectedTask.result.feedback.status || '已提交'}
+                           {selectedTask.result.feedback.date ? ` · ${selectedTask.result.feedback.date}` : ''}
+                           {selectedTask.result.feedback.note ? ` · ${selectedTask.result.feedback.note}` : ''}
+                         </span>
+                       )}
+                       {selectedTask.result?.completedAt && <span>结果时间：{String(selectedTask.result.completedAt)}</span>}
+                     </div>
+                     {selectedTask.result && <button className="secondary compact" onClick={() => openTaskResultFromCenter(selectedTask)}><ExternalLink size={15} />打开结果文件</button>}
+                   </div>
                    <details className="task-detail-data">
                      <summary>查看任务输入、预期输出与权限</summary>
                      <strong>输入</strong><pre>{JSON.stringify(selectedTask.input || {}, null, 2)}</pre>
@@ -12603,20 +14293,24 @@ ${JSON.stringify(items, null, 2)}
                        {Object.values(taskCenter.capabilities || {}).filter((adapter) => !adapter.hidden || selectedTask.requestedExecutor === adapter.id).map((adapter) => <option key={adapter.id} value={adapter.id}>{adapter.label}{adapter.available && adapter.authorized !== false ? '' : '（不可用或未授权，将降级）'}</option>)}
                      </select>
                    </label>
-                  <label>审批、驳回或反馈说明
-                    <textarea value={taskReviewNote} onChange={(event) => setTaskReviewNote(event.target.value)} placeholder="说明审批依据、失败原因或每日行动完成反馈。" />
-                  </label>
+                  {['waiting_result', 'running'].includes(selectedTask.status) && (
+                    <label>粘贴 Agent 结果
+                      <textarea value={taskResultPasteText} onChange={(event) => setTaskResultPasteText(event.target.value)} placeholder="粘贴 Agent 返回的 JSON 或文字结果。系统仍会校验当前执行批次、实际产物和输出结构。" />
+                    </label>
+                  )}
+                  <div className="notice muted task-simple-action-note">无需填写审批意见。直接选择下面的操作，系统会自动记录时间、状态和预设原因；完整状态历史仍可展开查看。</div>
                   <div className="task-detail-actions">
-                    {selectedTask.approval?.required && selectedTask.approval.status !== 'approved' && selectedTask.status !== 'reviewing' && <button onClick={() => approveTaskFromCenter(selectedTask, 'approved')}><ShieldCheck size={16} />批准执行</button>}
-                    {!['running', 'waiting_result', 'reviewing', 'succeeded'].includes(selectedTask.status) && (!selectedTask.approval?.required || selectedTask.approval.status === 'approved') && <button onClick={() => executeTaskFromCenter(selectedTask)}><Zap size={16} />执行任务</button>}
-                    {selectedTask.status === 'reviewing' && <button onClick={() => approveTaskFromCenter(selectedTask, 'approved')}><CheckCircle2 size={16} />{selectedTask.kind === 'daily_action' ? '审核并发布' : '审核并完成'}</button>}
-                    {selectedTask.status === 'reviewing' && <button className="danger secondary" onClick={() => approveTaskFromCenter(selectedTask, 'rejected')}><AlertTriangle size={16} />驳回结果</button>}
-                    {['waiting_result', 'running'].includes(selectedTask.status) && <button className="secondary" onClick={() => importTaskResultFromCenter(selectedTask)}><FileDown size={16} />导入结果</button>}
-                    {['failed', 'blocked', 'timed_out', 'cancelled'].includes(selectedTask.status) && <button className="secondary" onClick={() => retryTaskFromCenter(selectedTask)}><RefreshCw size={16} />重试</button>}
-                    {!['succeeded', 'cancelled'].includes(selectedTask.status) && <button className="danger secondary" onClick={() => cancelTaskFromCenter(selectedTask)}><Trash2 size={16} />取消</button>}
-                    {selectedTask.kind === 'daily_action' && selectedTask.status === 'succeeded' && <button className="secondary" onClick={() => submitDailyFeedbackFromCenter(selectedTask, 'completed')}>已完成</button>}
-                    {selectedTask.kind === 'daily_action' && selectedTask.status === 'succeeded' && <button className="secondary" onClick={() => submitDailyFeedbackFromCenter(selectedTask, 'partial')}>部分完成</button>}
-                    {selectedTask.kind === 'daily_action' && selectedTask.status === 'succeeded' && <button className="secondary" onClick={() => submitDailyFeedbackFromCenter(selectedTask, 'skipped')}>跳过</button>}
+                    {selectedTask.approval?.required && selectedTask.approval.status !== 'approved' && selectedTask.status !== 'reviewing' && <button className="workflow-action next" onClick={() => approveTaskFromCenter(selectedTask, 'approved')}><ShieldCheck size={16} />允许执行</button>}
+                    {!['running', 'waiting_result', 'reviewing', 'succeeded'].includes(selectedTask.status) && (!selectedTask.approval?.required || selectedTask.approval.status === 'approved') && <button className="workflow-action next" onClick={() => executeTaskFromCenter(selectedTask)}><Zap size={16} />下一步：执行任务</button>}
+                    {selectedTask.status === 'reviewing' && <button className="workflow-action next" onClick={() => approveTaskFromCenter(selectedTask, 'approved')}><CheckCircle2 size={16} />{['weekly_action', 'learning_profile', 'learning_changes', 'learning_stage'].includes(selectedTask.kind) ? '采用并发布' : '确认完成'}</button>}
+                    {selectedTask.status === 'reviewing' && <button className="workflow-action optional" onClick={() => approveTaskFromCenter(selectedTask, 'rejected', '内容需要修改。')}><RefreshCw size={16} />需要修改</button>}
+                    {['waiting_result', 'running'].includes(selectedTask.status) && <button className={taskResultPasteText.trim() ? 'workflow-action next' : 'workflow-action blocked'} onClick={() => importTaskResultTextFromCenter(selectedTask)} disabled={!taskResultPasteText.trim()}><Clipboard size={16} />下一步：导入粘贴结果</button>}
+                    {['waiting_result', 'running'].includes(selectedTask.status) && <button className="secondary" onClick={() => importTaskResultFromCenter(selectedTask)}><FileDown size={16} />从文件导入</button>}
+                    {['failed', 'blocked', 'timed_out', 'cancelled'].includes(selectedTask.status) && <button className="workflow-action next" onClick={() => retryTaskFromCenter(selectedTask)}><RefreshCw size={16} />重新执行</button>}
+                    {!['succeeded', 'cancelled'].includes(selectedTask.status) && <button className="workflow-action optional" onClick={() => cancelTaskFromCenter(selectedTask)}><X size={16} />忽略本次</button>}
+                    {selectedTask.kind === 'weekly_action' && selectedTask.status === 'succeeded' && <button className="workflow-action next" onClick={() => submitDailyFeedbackFromCenter(selectedTask, 'completed')}><CheckCircle2 size={16} />本周已完成</button>}
+                    {selectedTask.kind === 'weekly_action' && selectedTask.status === 'succeeded' && <button className="workflow-action optional" onClick={() => submitDailyFeedbackFromCenter(selectedTask, 'partial')}>部分完成</button>}
+                    {selectedTask.kind === 'weekly_action' && selectedTask.status === 'succeeded' && <button className="workflow-action optional" onClick={() => submitDailyFeedbackFromCenter(selectedTask, 'skipped')}>本周跳过</button>}
                   </div>
                 </section>
               )}
@@ -12641,7 +14335,7 @@ ${JSON.stringify(items, null, 2)}
             </section>
             <div className="mini-heading">
               <strong>学生资料消化快捷执行</strong>
-              <span>保留现有操作入口；执行后会进入任务中心历史记录。</span>
+              <span>普通情况下只需开始一次，提交、等待和结果同步由系统完成。</span>
             </div>
             <div className="task-list">
               {students.map((student) => (
@@ -12649,17 +14343,9 @@ ${JSON.stringify(items, null, 2)}
                   <span>{student.name}</span>
                   <strong>{student.digestTime}</strong>
                   <small>{getAgentToolProfile(student.agentTool).name} · 待提交 {pendingDigestValue(student)} 个 · 等待回执 {submittedDigestValue(student)} 个{student.lastDigestCommandAt ? ` · 最近提交 ${student.lastDigestCommandAt}` : ''}</small>
-                  <button className="secondary compact" onClick={() => copyDigestCommand(student)}>
-                    消化资料
+                  <button className="primary compact" onClick={() => startDigestWorkflowFromPage('student', student.id)} disabled={pendingDigestValue(student) <= 0 || submittedDigestValue(student) > 0} title={pendingDigestValue(student) <= 0 ? '当前没有待处理资料' : `处理 ${pendingDigestValue(student)} 份资料`}>
+                    {submittedDigestValue(student) > 0 ? '等待 Agent 回执' : pendingDigestValue(student) <= 0 ? '暂无待处理' : '开始处理'}
                   </button>
-                  <button className="secondary compact" onClick={() => markDigestSubmitted(student)}>
-                    标记已提交
-                  </button>
-                  {isWindows && (
-                    <button className="secondary compact" onClick={() => syncDigestResult(student)}>
-                      同步结果
-                    </button>
-                  )}
                 </div>
               ))}
             </div>
@@ -12745,6 +14431,59 @@ ${JSON.stringify(items, null, 2)}
               </div>
               <Settings size={22} />
             </div>
+            {isWindows && (
+              <div className="notice usage-mode-settings">
+                <div className="mini-heading">
+                  <strong>使用模式</strong>
+                  <span>主机版只负责管理与集中处理；学生在 Android 或 Windows 学生终端使用个人终端或共享终端。</span>
+                </div>
+                <div className="mode-grid">
+                  <button
+                    className={homeMode === 'local' ? 'mode-card active' : 'mode-card'}
+                    onClick={() => changeHostUsageMode('host')}
+                  >
+                    <strong>主机模式</strong>
+                    <span>仅在本机管理学生、导入资料、运行 Agent 和生成报告。</span>
+                    <small>学生终端服务默认不运行。</small>
+                  </button>
+                  <button
+                    className={homeMode === 'host' ? 'mode-card active' : 'mode-card'}
+                    onClick={() => changeHostUsageMode('host_terminal')}
+                  >
+                    <strong>主机-终端模式</strong>
+                    <span>集中接收 Android/Windows 学生终端上传，并按学生或绑定项目归档。</span>
+                    <small>{hostServiceStatus?.running ? '终端服务运行中。' : '选择后可在下方启动终端服务。'}</small>
+                  </button>
+                </div>
+                {hostServiceMessage && <p>{hostServiceMessage}</p>}
+              </div>
+            )}
+            {isWindows && homeMode === 'host' && (hostServiceStatus?.students ?? []).length > 0 && (
+              <details className="student-login-directory">
+                <summary>学生登录 ID 与二维码（{hostServiceStatus?.students?.length ?? 0} 位）</summary>
+                <p className="muted-text">共享终端只在当前会话中使用该身份；退出后不会保留可浏览的学生列表。可打印或由学生用另一设备扫码。</p>
+                <div className="student-login-grid">
+                  {(hostServiceStatus?.students ?? []).map((student) => (
+                    <article className="student-login-card" key={student.id}>
+                      {studentLoginQrs[student.id]
+                        ? <img src={studentLoginQrs[student.id]} alt={`${student.name} 登录二维码`} />
+                        : <div className="student-login-qr-placeholder">二维码生成中</div>}
+                      <div>
+                        <strong>{student.name}</strong>
+                        <code>{student.loginId || '待生成'}</code>
+                        <button
+                          className="secondary compact"
+                          disabled={!student.loginId}
+                          onClick={() => copyText(student.loginId || '', `已复制 ${student.name} 的登录 ID。`, { contentLabel: '学生登录 ID', preview: false })}
+                        >
+                          <Clipboard size={15} />复制 ID
+                        </button>
+                      </div>
+                    </article>
+                  ))}
+                </div>
+              </details>
+            )}
             <div className="notice settings-language-panel">
               <div>
                 <strong>{t('settings.language.title')}</strong>
@@ -12849,7 +14588,7 @@ ${JSON.stringify(items, null, 2)}
                   <div className="license-summary">
                     <span>{licenseLabel(effectiveLicenseStatus)}</span>
                     <span>学生数：{effectiveLicenseStatus?.studentLimit ?? '-'}</span>
-                    <span>平板设备：{effectiveLicenseStatus?.deviceLimit ?? '-'}</span>
+                    <span>学生终端设备：{effectiveLicenseStatus?.deviceLimit ?? '-'}</span>
                   </div>
                 </div>
                 <div className="inline-field license-field">
@@ -12997,6 +14736,17 @@ ${JSON.stringify(items, null, 2)}
           </section>
         )}
       </section>
+      {clipboardNotice && (
+        <aside className={clipboardNotice.ok ? 'clipboard-toast success' : 'clipboard-toast error'} role={clipboardNotice.ok ? 'status' : 'alert'} aria-live="polite">
+          <div className="clipboard-toast-icon">{clipboardNotice.ok ? <CheckCircle2 size={21} /> : <AlertTriangle size={21} />}</div>
+          <div className="clipboard-toast-copy">
+            <strong>{clipboardNotice.title}</strong>
+            <span>{clipboardNotice.detail}</span>
+            {clipboardNotice.preview && <small>内容预览：{clipboardNotice.preview}{clipboardNotice.preview.length >= 140 ? '…' : ''}</small>}
+          </div>
+          <button className="icon-button" onClick={() => setClipboardNotice(null)} aria-label="关闭复制提示" title="关闭"><X size={17} /></button>
+        </aside>
+      )}
     </main>
   );
 }

@@ -32,10 +32,34 @@ test('digest audit keeps a per-file manifest and a structured receipt contract',
   assert.match(mainProcess, /Boolean\(digestReceiptMatch\(record, entries\)\)/);
 });
 
+test('secondary review uses an isolated receipt with strict run and batch validation', () => {
+  assert.match(mainProcess, /digest-review-request\.json/);
+  assert.match(mainProcess, /digest-review-receipt\.json/);
+  assert.match(mainProcess, /reviewRunId/);
+  assert.match(mainProcess, /selectedItemIds/);
+  assert.match(mainProcess, /二次复核回执不属于当前复核轮次/);
+  assert.match(mainProcess, /二次复核回执与当前消化批次不一致/);
+  assert.match(mainProcess, /二次复核回执缺少 .* 个所选资料 ID/);
+  assert.match(mainProcess, /不要覆盖第一次回执/);
+  assert.match(mainProcess, /synced: false/);
+  assert.match(mainProcess, /synced: true/);
+});
+
+test('secondary review matching prioritizes immutable upload ids', () => {
+  assert.match(mainProcess, /entry\.id \|\| entry\.recordId/);
+  assert.match(mainProcess, /if \(exactId\) return exactId/);
+  assert.match(mainProcess, /"id": "消化清单中的资料 ID"/);
+});
+
 test('materials page renders audit controls and has no undefined Clock icon', () => {
   assert.match(renderer, /消化覆盖审计/);
   assert.match(renderer, /复制二次核对指令/);
   assert.match(renderer, /同步复核结果/);
   assert.match(styles, /\.digest-audit-list/);
   assert.doesNotMatch(renderer, /<Clock\s/);
+});
+
+test('materials page does not report a stale review receipt as synchronized', () => {
+  assert.match(renderer, /result\.synced === false/);
+  assert.match(renderer, /未发现可同步的新复核结果/);
 });

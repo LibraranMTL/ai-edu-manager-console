@@ -38,14 +38,17 @@ test('manual and QClaw results enforce the current execution identity', () => {
   assert.match(main, /quarantineQClawPayload/);
 });
 
-test('daily action output requires the complete reviewed schema', () => {
-  for (const section of ['今日重点', '给学生', '给家长', '给老师', '今日不建议做的事', '观察点', '依据来源']) {
+test('weekly action output keeps daily routines, weekly focus and milestones', () => {
+  for (const section of ['每周重点', '每日固定动作', '阶段性里程碑', '给学生', '给家长', '给老师', '本周不建议做的事', '观察点', '依据来源']) {
     assert.match(main, new RegExp(`'${section}'`));
   }
   assert.match(main, /输出结构校验失败/);
   assert.match(main, /validateDailyActionDocument/);
   assert.match(main, /selectPreviousDailyFeedback/);
   assert.match(main, /writeJsonFile\(dailyActionFeedbackPath\(normalized\)/);
+  assert.match(main, /taskStableId\('weekly_action'.*week\.key/);
+  assert.match(main, /reconcileWeeklyActions/);
+  assert.match(main, /旧每日任务退出当前队列/);
 });
 
 test('runtime failure has heartbeat, retry and manual fallback safeguards', () => {
@@ -53,18 +56,34 @@ test('runtime failure has heartbeat, retry and manual fallback safeguards', () =
   assert.match(main, /HEARTBEAT_LOST/);
   assert.match(main, /retryBackoffSeconds/);
   assert.match(main, /selectFallbackAdapter/);
+  assert.match(main, /task\.autoRetry === false \|\| Number\(task\.attempt \|\| 0\) >= Number\(task\.maxAttempts \|\| 1\)/);
+  assert.match(main, /task\.nextRetryAt = ''/);
+  assert.match(main, /automatic_retry_stopped/);
+  assert.match(main, /attempt: 0, autoRetry: false/);
 });
 
 test('task center renders protocol details, heartbeat, inputs, outputs and history', () => {
   for (const marker of ['最近心跳', '查看任务输入、预期输出与权限', '查看标准结果与文件变更', '查看状态流转历史']) {
     assert.match(ui, new RegExp(marker));
   }
+  assert.match(ui, /Agent 反馈结果/);
+  assert.match(ui, /scrollIntoView/);
+  assert.match(ui, /打开结果文件/);
+  assert.match(main, /function openTaskResultPath/);
+  assert.match(preload, /openTaskResultPath\(taskId\)/);
+  assert.match(main, /function importTaskResultText/);
+  assert.match(main, /task_result_text_imported/);
+  assert.match(preload, /importTaskResultText\(taskId, content\)/);
+  assert.match(ui, /粘贴 Agent 结果/);
+  assert.match(ui, /从文件导入/);
+  assert.match(ui, /refreshLearningReports\(student\)/);
+  assert.match(ui, /openLearningReport\('daily', student\)/);
 });
 
 test('managed OpenClaw cron is disabled externally and scheduled by the task center', () => {
   assert.match(main, /isManagedOpenClawCronJob/);
   assert.match(main, /\['cron', 'disable', definition\.id/);
-  assert.match(main, /\['daily_action', 'openclaw_cron'\]\.includes\(task\.kind\)/);
+  assert.match(main, /scheduledReportKinds\.has\(task\.kind\)/);
   assert.match(main, /openclaw-managed-cron\.json/);
 });
 

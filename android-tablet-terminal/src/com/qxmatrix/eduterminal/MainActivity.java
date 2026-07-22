@@ -12,6 +12,7 @@ import android.content.Context;
 import android.content.DialogInterface;
 import android.content.Intent;
 import android.content.SharedPreferences;
+import android.content.res.ColorStateList;
 import android.content.pm.ActivityInfo;
 import android.content.pm.PackageManager;
 import android.content.pm.ResolveInfo;
@@ -21,6 +22,7 @@ import android.graphics.BitmapFactory;
 import android.graphics.Color;
 import android.graphics.Matrix;
 import android.net.Uri;
+import android.net.wifi.WifiManager;
 import android.media.projection.MediaProjectionManager;
 import android.os.Build;
 import android.os.Bundle;
@@ -70,6 +72,7 @@ import java.net.HttpURLConnection;
 import java.net.DatagramPacket;
 import java.net.DatagramSocket;
 import java.net.InetAddress;
+import java.net.InetSocketAddress;
 import java.net.SocketTimeoutException;
 import java.net.URL;
 import java.net.URLEncoder;
@@ -80,10 +83,13 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.security.MessageDigest;
 
 public class MainActivity extends Activity implements View.OnClickListener, AdapterView.OnItemSelectedListener {
     static final int HOST_DISCOVERY_PORT = 18778;
-    static final String HOST_DISCOVERY_REQUEST = "AI_EDU_MANAGER_DISCOVER_V1";
+    static final String HOST_DISCOVERY_REQUEST_V1 = "AI_EDU_MANAGER_DISCOVER_V1";
+    static final String HOST_DISCOVERY_REQUEST_V2 = "AI_EDU_MANAGER_DISCOVER";
+    static final int PAIR_PROTOCOL_VERSION = 2;
     static final int REQUEST_PICK_MATERIAL = 8101;
     static final int REQUEST_PICK_IMAGE = 8102;
     static final int REQUEST_TAKE_PHOTO = 8103;
@@ -93,8 +99,9 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
     static final int REQUEST_NOTIFICATION_PERMISSION = 8107;
     static final int REQUEST_EXPORT_CONNECTION_BACKUP = 8108;
     static final int REQUEST_IMPORT_CONNECTION_BACKUP = 8109;
-    static final String VERSION_NAME = "0.5.7";
-    static final int VERSION_CODE = 67;
+    static final int REQUEST_CAPTURE_STUDENT_QR = 8110;
+    static final String VERSION_NAME = "0.6.1";
+    static final int VERSION_CODE = 71;
     static final String CONNECTION_BACKUP_KIND = "ai-edu-manager-tablet-connection-backup";
     static final int CONNECTION_BACKUP_VERSION = 1;
     static final String UPDATE_MANIFEST_URL = "https://www.greatbg.com/download/edu-manager-version.json";
@@ -118,12 +125,17 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
     private static final String PREFS = "edu_terminal_prefs";
     private static final String PREF_SERVER_URL = "server_url";
     private static final String PREF_API_TOKEN = "api_token";
+    private static final String PREF_STUDENT_SESSION_TOKEN = "student_session_token";
+    private static final String PREF_TERMINAL_MODE = "terminal_mode";
     private static final String PREF_REMOTE_URL = "remote_url";
     private static final String PREF_CONNECTION_MODE = "connection_mode";
     private static final String PREF_LAYOUT_MODE = "layout_mode";
     private static final String PREF_SKIN = "skin";
     private static final String PREF_DEVICE_ID = "device_id";
     private static final String PREF_LAST_CONNECTED_AT = "last_connected_at";
+    private static final String PREF_HOST_DEVICE_ID = "host_device_id";
+    private static final String PREF_HOST_MACHINE_CODE = "host_machine_code";
+    private static final String PREF_HOST_DISPLAY_NAME = "host_display_name";
     private static final String CACHE_ARCHIVE_FILES_PREFIX = "archive_files_";
     private static final String CACHE_MARKDOWN_PREFIX = "markdown_";
     private static final String CACHE_MARKDOWN_TITLE_PREFIX = "markdown_title_";
@@ -136,6 +148,7 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
     TextView statusText;
     TextView connectionSummaryText;
     TextView connectionHintText;
+    TextView machineCodeText;
     TextView uploadResultText;
     TextView uploadQueueText;
     TextView digestStatusText;
@@ -148,6 +161,7 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
     LinearLayout contentRoot;
     EditText archiveSearchInput;
     Spinner studentSpinner;
+    EditText studentLoginInput;
     Spinner archiveCategorySpinner;
     Spinner archiveSpinner;
     Spinner layoutModeSpinner;
@@ -157,6 +171,8 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
     Button pasteButton;
     Button scanPairButton;
     Button nearbyHostButton;
+    Button waitHostButton;
+    Button filterHostButton;
     Button exportConnectionBackupButton;
     Button importConnectionBackupButton;
     Button checkUpdateButton;
@@ -173,6 +189,11 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
     Button sharedUploadButton;
     Button retryFailedUploadButton;
     Button reloadStudentsButton;
+    Button personalTerminalButton;
+    Button sharedTerminalButton;
+    Button studentLoginButton;
+    Button studentScanButton;
+    Button studentLogoutButton;
     Button captureStartButton;
     Button capturePauseButton;
     Button captureUploadButton;
@@ -204,6 +225,8 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
     LinearLayout connectionConfigCard;
     LinearLayout settingsCard;
     LinearLayout studentCard;
+    LinearLayout studentLoginPanel;
+    TextView studentSessionText;
     LinearLayout contactCard;
     LinearLayout reportCard;
     LinearLayout archiveCard;
@@ -211,6 +234,7 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
     boolean settingsVisible = false;
 
     final List<Student> students = new ArrayList<Student>();
+    final List<LearningProject> projects = new ArrayList<LearningProject>();
     final List<ArchiveFile> allArchiveFiles = new ArrayList<ArchiveFile>();
     final List<ArchiveFile> archiveFiles = new ArrayList<ArchiveFile>();
     final List<Uri> pendingSharedUris = new ArrayList<Uri>();
@@ -224,6 +248,8 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
     ArrayAdapter<String> layoutModeAdapter;
     ArrayAdapter<String> skinAdapter;
     Student selectedStudent;
+    String terminalMode = "shared";
+    String studentSessionToken = "";
     String currentMarkdown = "";
     boolean markdownRendered = true;
     int selectedArchiveCategory = 1;
@@ -234,7 +260,16 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
     TextView captureStatusText;
     String pendingCaptureMode = "smart";
     int pendingCaptureDurationMinutes = 30;
+    String pendingCaptureProjectId = "";
+    String pendingCaptureProjectName = "";
+    boolean uploadInProgress = false;
+    String captureUploadVisualState = "idle";
+    UploadTarget lastFailedUploadTarget = null;
     final List<Uri> captureUploadUrisInFlight = new ArrayList<Uri>();
+    final List<NearbyHost> lastNearbyHosts = new ArrayList<NearbyHost>();
+    volatile boolean waitingForHostInvite = false;
+    DatagramSocket tabletDiscoverySocket = null;
+    WifiManager.MulticastLock tabletDiscoveryMulticastLock = null;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -254,6 +289,18 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
         setIntent(intent);
         handleIncomingShare(intent);
         maybeStartCaptureFromIntent(intent);
+    }
+
+    @Override
+    protected void onStop() {
+        stopWaitingForHostInvite();
+        super.onStop();
+    }
+
+    @Override
+    protected void onDestroy() {
+        stopWaitingForHostInvite();
+        super.onDestroy();
     }
 
     private void buildUi() {
@@ -398,12 +445,21 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
         connectionConfigCard.addView(connectRow);
 
         LinearLayout pairRow = row();
-        nearbyHostButton = button("查找附近主机", true);
+        nearbyHostButton = button("查找局域网主机", true);
         scanPairButton = button("扫码绑定主机", true);
+        waitHostButton = button("等待主机连接", false);
+        filterHostButton = button("按主机码筛选", false);
         pairRow.addView(nearbyHostButton);
+        pairRow.addView(waitHostButton);
+        pairRow.addView(filterHostButton);
         pairRow.addView(scanPairButton);
         connectionConfigCard.addView(pairRow);
         nearbyHostButton.setOnClickListener(this);
+        waitHostButton.setOnClickListener(this);
+        filterHostButton.setOnClickListener(this);
+        machineCodeText = label(connectedIdentityText());
+        machineCodeText.setTextSize(12);
+        connectionConfigCard.addView(machineCodeText);
 
         LinearLayout backupRow = row();
         exportConnectionBackupButton = button("导出连接备份", false);
@@ -422,7 +478,7 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
         connectionConfigCard.addView(statusText);
 
         connectionSummaryText = new TextView(this);
-        connectionSummaryText.setText("连接状态：未连接。\n建议：确认 Windows 主机已选择“主机-平板模式”并启动主机服务。");
+        connectionSummaryText.setText("连接状态：未连接。\n建议：确认 Windows 主机已选择“主机-终端模式”并启动主机服务。");
         connectionSummaryText.setTextSize(13);
         connectionSummaryText.setTextColor(Color.rgb(87, 107, 103));
         connectionSummaryText.setPadding(dp(10), dp(10), dp(10), dp(10));
@@ -430,7 +486,7 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
         connectionConfigCard.addView(connectionSummaryText);
 
         connectionHintText = new TextView(this);
-        connectionHintText.setText("连接排查：先确认 Windows 首页选择“主机-平板模式”并启动主机服务；平板与电脑连接同一 Wi-Fi；如果仍失败，请重新扫码绑定。");
+        connectionHintText.setText("连接排查：先确认 Windows 首页选择“主机-终端模式”并启动主机服务；平板与电脑连接同一 Wi-Fi；如果仍失败，请重新扫码绑定。");
         connectionHintText.setTextSize(12);
         connectionHintText.setTextColor(Color.rgb(104, 121, 117));
         connectionHintText.setPadding(dp(10), dp(8), dp(10), 0);
@@ -446,6 +502,15 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
 
         settingsCard = card();
         root.addView(settingsCard);
+        settingsCard.addView(label("\u4f7f\u7528\u6a21\u5f0f"));
+        LinearLayout terminalModeRow = row();
+        personalTerminalButton = button("\u4e2a\u4eba\u7ec8\u7aef", false);
+        sharedTerminalButton = button("\u5171\u4eab\u7ec8\u7aef", false);
+        terminalModeRow.addView(personalTerminalButton);
+        terminalModeRow.addView(sharedTerminalButton);
+        settingsCard.addView(terminalModeRow);
+        personalTerminalButton.setOnClickListener(this);
+        sharedTerminalButton.setOnClickListener(this);
         settingsCard.addView(label("系统设置"));
         settingsCard.addView(label("页面布局"));
         layoutModeSpinner = new Spinner(this);
@@ -498,6 +563,30 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
 
         studentCard = card();
         root.addView(studentCard);
+        studentCard.addView(label("\u5b66\u751f\u7a7a\u95f4"));
+        studentLoginPanel = new LinearLayout(this);
+        studentLoginPanel.setOrientation(LinearLayout.VERTICAL);
+        studentLoginPanel.setPadding(0, dp(6), 0, dp(10));
+        studentSessionText = new TextView(this);
+        studentSessionText.setText("\u5171\u4eab\u7ec8\u7aef\uff1a\u8bf7\u626b\u7801\u6216\u8f93\u5165\u4e2a\u4eba ID\u3002");
+        studentSessionText.setTextSize(14);
+        studentSessionText.setTextColor(Color.rgb(50, 76, 70));
+        studentLoginPanel.addView(studentSessionText);
+        studentLoginInput = input("\u8f93\u5165\u5b66\u751f ID\uff0c\u4f8b\u5982 S-ABCD-X");
+        studentLoginInput.setAllCaps(true);
+        studentLoginPanel.addView(studentLoginInput);
+        LinearLayout studentLoginRow = row();
+        studentLoginButton = button("\u8fdb\u5165\u6211\u7684\u8d44\u6599", true);
+        studentScanButton = button("\u626b\u7801\u8fdb\u5165", false);
+        studentLogoutButton = button("\u9000\u51fa\u5f53\u524d\u5b66\u751f", false);
+        studentLoginRow.addView(studentLoginButton);
+        studentLoginRow.addView(studentScanButton);
+        studentLoginRow.addView(studentLogoutButton);
+        studentLoginPanel.addView(studentLoginRow);
+        studentLoginButton.setOnClickListener(this);
+        studentScanButton.setOnClickListener(this);
+        studentLogoutButton.setOnClickListener(this);
+        studentCard.addView(studentLoginPanel);
         studentCard.addView(label("学生"));
         studentSpinner = new Spinner(this);
         studentAdapter = new ArrayAdapter<String>(this, android.R.layout.simple_spinner_item, new ArrayList<String>());
@@ -505,6 +594,7 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
         studentSpinner.setAdapter(studentAdapter);
         studentSpinner.setOnItemSelectedListener(this);
         studentCard.addView(studentSpinner);
+        studentSpinner.setVisibility(View.GONE);
 
         LinearLayout actionRow = row();
         uploadButton = button("上传资料到主机", true);
@@ -548,7 +638,7 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
         studentCard.addView(digestStatusText);
 
         studentCard.addView(label("屏幕资料采集"));
-        studentCard.addView(label("授权后可按智能混合、内容变化或固定间隔模式连续采集；结果先保存在本机采集箱，由你确认后上传到当前学生原始资料库。"));
+        studentCard.addView(label("授权后可按智能混合、内容变化或固定间隔模式连续采集；结果先保存在本机采集箱，确认后可上传到学生原始资料库或绑定项目原始资料库。"));
         LinearLayout captureRow = row();
         captureStartButton = button("开始屏幕采集", true);
         capturePauseButton = button("暂停/继续", false);
@@ -740,6 +830,10 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
             startPairScan();
         } else if (view == nearbyHostButton) {
             discoverNearbyHosts();
+        } else if (view == waitHostButton) {
+            toggleWaitForHostInvite();
+        } else if (view == filterHostButton) {
+            filterNearbyHostsByCode();
         } else if (view == exportConnectionBackupButton) {
             startExportConnectionBackup();
         } else if (view == importConnectionBackupButton) {
@@ -770,6 +864,16 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
             toggleConnectionSettings();
         } else if (view == settingsToggleButton) {
             toggleSettings();
+        } else if (view == personalTerminalButton) {
+            changeTerminalMode("personal");
+        } else if (view == sharedTerminalButton) {
+            changeTerminalMode("shared");
+        } else if (view == studentLoginButton) {
+            loginStudent(studentLoginInput == null ? "" : studentLoginInput.getText().toString());
+        } else if (view == studentScanButton) {
+            startStudentLoginScan();
+        } else if (view == studentLogoutButton) {
+            logoutStudent();
         } else if (view == agreementLink) {
             openUserAgreement();
         } else if (view == privacyLink) {
@@ -923,12 +1027,121 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
             return;
         }
         status("正在读取学生列表...");
-        new Thread(new LoadStudentsTask(this, base, token)).start();
+        new Thread(new BootstrapStudentSessionTask(this, base, token, studentSessionToken)).start();
     }
 
     void beginAuthorizationPolling() {
-        authorizationPollsRemaining = 12;
         loadStudents();
+    }
+
+    String dataToken() {
+        return studentSessionToken == null ? "" : studentSessionToken.trim();
+    }
+
+    void loginStudent(String loginIdOrQr) {
+        String value = loginIdOrQr == null ? "" : loginIdOrQr.trim();
+        if (value.length() == 0) {
+            toast("\u8bf7\u8f93\u5165\u5b66\u751f ID \u6216\u626b\u7801\u3002");
+            return;
+        }
+        if (normalizedBaseUrl().length() == 0 || apiToken().length() == 0) {
+            toast("\u8bf7\u5148\u8fde\u63a5 Windows \u4e3b\u673a\u3002");
+            return;
+        }
+        status("\u6b63\u5728\u8fdb\u5165\u5b66\u751f\u7a7a\u95f4...");
+        new Thread(new StudentLoginTask(this, normalizedBaseUrl(), apiToken(), value)).start();
+    }
+
+    void logoutStudent() {
+        String captureState = captureStatus();
+        if ("capturing".equals(captureState) || "paused".equals(captureState)) {
+            toast("\u8bf7\u5148\u7ed3\u675f\u5f53\u524d\u5c4f\u5e55\u91c7\u96c6\uff0c\u518d\u9000\u51fa\u5b66\u751f\u3002");
+            return;
+        }
+        if (dataToken().length() == 0) {
+            clearStudentSession("\u5df2\u7ecf\u9000\u51fa\u5b66\u751f\u7a7a\u95f4\u3002");
+            return;
+        }
+        new Thread(new StudentLogoutTask(this, normalizedBaseUrl(), dataToken())).start();
+    }
+
+    void changeTerminalMode(String mode) {
+        terminalMode = "personal".equals(mode) ? "personal" : "shared";
+        updateStudentSessionUi();
+        if (normalizedBaseUrl().length() == 0 || apiToken().length() == 0) {
+            getSharedPreferences(PREFS, MODE_PRIVATE).edit().putString(PREF_TERMINAL_MODE, terminalMode).apply();
+            return;
+        }
+        new Thread(new SetTerminalModeTask(this, normalizedBaseUrl(), apiToken(), terminalMode)).start();
+    }
+
+    void applyStudentSession(JSONObject payload, String error) {
+        if (error != null) {
+            clearStudentSession(error);
+            status(error);
+            return;
+        }
+        terminalMode = payload.optString("terminalMode", terminalMode);
+        String token = payload.optString("token", studentSessionToken);
+        if (token.length() > 0) studentSessionToken = token;
+        JSONObject studentJson = payload.optJSONObject("student");
+        List<Student> result = new ArrayList<Student>();
+        if (studentJson != null) result.add(new Student(studentJson));
+        List<LearningProject> projectResult = new ArrayList<LearningProject>();
+        JSONArray projectArray = payload.optJSONArray("projects");
+        if (projectArray != null) {
+            for (int i = 0; i < projectArray.length(); i++) {
+                JSONObject item = projectArray.optJSONObject(i);
+                if (item != null) projectResult.add(new LearningProject(item));
+            }
+        }
+        getSharedPreferences(PREFS, MODE_PRIVATE).edit()
+            .putString(PREF_TERMINAL_MODE, terminalMode)
+            .putString(PREF_STUDENT_SESSION_TOKEN, studentSessionToken)
+            .apply();
+        applyStudents(result, projectResult, null, false);
+        updateStudentSessionUi();
+        if (studentLoginInput != null) studentLoginInput.setText("");
+    }
+
+    void clearStudentSession(String message) {
+        studentSessionToken = "";
+        selectedStudent = null;
+        students.clear();
+        projects.clear();
+        allArchiveFiles.clear();
+        archiveFiles.clear();
+        pendingSharedUris.clear();
+        failedUploadUris.clear();
+        captureUploadUrisInFlight.clear();
+        if (studentAdapter != null) { studentAdapter.clear(); studentAdapter.notifyDataSetChanged(); }
+        if (archiveAdapter != null) { archiveAdapter.clear(); archiveAdapter.notifyDataSetChanged(); }
+        currentMarkdown = "";
+        updateMarkdownDisplay("\u8bf7\u5148\u626b\u7801\u6216\u8f93\u5165\u5b66\u751f ID\u3002");
+        getSharedPreferences(PREFS, MODE_PRIVATE).edit().remove(PREF_STUDENT_SESSION_TOKEN).apply();
+        updateStudentSessionUi();
+        updateSharedUploadButton();
+        refreshCaptureUi();
+        if (message != null && message.length() > 0 && studentSessionText != null) studentSessionText.setText(message);
+    }
+
+    void updateStudentSessionUi() {
+        boolean active = selectedStudent != null && dataToken().length() > 0;
+        styleSelectableButton(personalTerminalButton, "personal".equals(terminalMode));
+        styleSelectableButton(sharedTerminalButton, "shared".equals(terminalMode));
+        if (studentLoginInput != null) studentLoginInput.setVisibility(active || "personal".equals(terminalMode) ? View.GONE : View.VISIBLE);
+        if (studentLoginButton != null) studentLoginButton.setVisibility(active || "personal".equals(terminalMode) ? View.GONE : View.VISIBLE);
+        if (studentScanButton != null) studentScanButton.setVisibility(active || "personal".equals(terminalMode) ? View.GONE : View.VISIBLE);
+        if (studentLogoutButton != null) studentLogoutButton.setVisibility(active ? View.VISIBLE : View.GONE);
+        if (studentSessionText != null) {
+            if (active) studentSessionText.setText(("personal".equals(terminalMode) ? "\u4e2a\u4eba\u7ec8\u7aef" : "\u5171\u4eab\u7ec8\u7aef") + " \u00b7 \u5f53\u524d\u5b66\u751f\uff1a" + selectedStudent.name);
+            else if ("personal".equals(terminalMode)) studentSessionText.setText("\u4e2a\u4eba\u7ec8\u7aef\uff1a\u6b63\u5728\u4ece\u4e3b\u673a\u8bfb\u53d6\u7ed1\u5b9a\u5b66\u751f\u3002");
+            else studentSessionText.setText("\u5171\u4eab\u7ec8\u7aef\uff1a\u8bf7\u626b\u7801\u6216\u8f93\u5165\u4e2a\u4eba ID\u3002");
+        }
+        if (uploadButton != null) uploadButton.setEnabled(active);
+        if (quickUploadButton != null) quickUploadButton.setEnabled(active);
+        if (quickReportButton != null) quickReportButton.setEnabled(active);
+        if (quickArchiveButton != null) quickArchiveButton.setEnabled(active);
     }
 
     void scheduleAuthorizationPolling() {
@@ -952,7 +1165,7 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
             return;
         }
         String base = normalizedBaseUrl();
-        String token = apiToken();
+        String token = dataToken();
         if (base.length() == 0 || token.length() == 0) return;
         new Thread(new LoadArchiveFilesTask(this, base, token, selectedStudent.id)).start();
     }
@@ -960,7 +1173,7 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
     void loadArchiveFile(ArchiveFile file) {
         if (selectedStudent == null) return;
         String base = normalizedBaseUrl();
-        String token = apiToken();
+        String token = dataToken();
         if (base.length() == 0 || token.length() == 0) return;
         new Thread(new LoadArchiveFileTask(this, base, token, selectedStudent.id, file)).start();
     }
@@ -971,9 +1184,9 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
             return;
         }
         String base = normalizedBaseUrl();
-        String token = apiToken();
+        String token = dataToken();
         if (base.length() == 0 || token.length() == 0) {
-            status("请先连接主机。");
+            status("请先进入学生空间。");
             return;
         }
         status("正在同步学情报告...");
@@ -986,9 +1199,9 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
             return;
         }
         String base = normalizedBaseUrl();
-        String token = apiToken();
+        String token = dataToken();
         if (base.length() == 0 || token.length() == 0) {
-            status("请先连接主机。");
+            status("请先进入学生空间。");
             return;
         }
         selectedReportId = reportId;
@@ -1006,9 +1219,18 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
 
     void styleSelectableButton(Button target, boolean selected) {
         if (target == null) return;
+        int normal = selected ? accentColor() : accentLightColor();
+        int pressed = selected ? mixColor(normal, Color.BLACK, 0.14f) : mixColor(normal, accentColor(), 0.18f);
+        int disabled = Color.rgb(228, 234, 232);
+        int[][] states = new int[][] {
+            new int[] {-android.R.attr.state_enabled},
+            new int[] {android.R.attr.state_pressed},
+            new int[] {}
+        };
         target.setTextColor(selected ? Color.WHITE : accentColor());
-        target.setBackgroundColor(selected ? accentColor() : accentLightColor());
+        target.setBackgroundTintList(new ColorStateList(states, new int[] {disabled, pressed, normal}));
         target.setSelected(selected);
+        target.refreshDrawableState();
     }
 
     ArchiveFile reportArchiveFile(String reportId) {
@@ -1092,6 +1314,163 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
         new Thread(new NearbyHostDiscoveryTask(this)).start();
     }
 
+    void toggleWaitForHostInvite() {
+        if (waitingForHostInvite) {
+            stopWaitingForHostInvite();
+            status("已停止等待主机连接。");
+            return;
+        }
+        waitingForHostInvite = true;
+        acquireTabletDiscoveryMulticastLock();
+        waitHostButton.setText("停止等待主机");
+        status("正在等待 Windows 主机发现本平板。固定平板码：" + tabletMachineCode());
+        new Thread(new Runnable() {
+            @Override public void run() { runTabletDiscoveryListener(); }
+        }).start();
+    }
+
+    void stopWaitingForHostInvite() {
+        waitingForHostInvite = false;
+        DatagramSocket socket = tabletDiscoverySocket;
+        tabletDiscoverySocket = null;
+        if (socket != null) socket.close();
+        releaseTabletDiscoveryMulticastLock();
+        if (waitHostButton != null) runOnUiThread(new Runnable() {
+            @Override public void run() { waitHostButton.setText("等待主机连接"); }
+        });
+    }
+
+    void acquireTabletDiscoveryMulticastLock() {
+        if (tabletDiscoveryMulticastLock != null && tabletDiscoveryMulticastLock.isHeld()) return;
+        try {
+            WifiManager wifi = (WifiManager) getApplicationContext().getSystemService(Context.WIFI_SERVICE);
+            if (wifi == null) return;
+            tabletDiscoveryMulticastLock = wifi.createMulticastLock("ai-edu-manager-tablet-discovery");
+            tabletDiscoveryMulticastLock.setReferenceCounted(false);
+            tabletDiscoveryMulticastLock.acquire();
+        } catch (Exception error) {
+            tabletDiscoveryMulticastLock = null;
+        }
+    }
+
+    void releaseTabletDiscoveryMulticastLock() {
+        WifiManager.MulticastLock lock = tabletDiscoveryMulticastLock;
+        tabletDiscoveryMulticastLock = null;
+        if (lock == null) return;
+        try {
+            if (lock.isHeld()) lock.release();
+        } catch (Exception ignored) {
+        }
+    }
+
+    void announceTabletDiscoveryPresence(DatagramSocket socket) {
+        if (socket == null || socket.isClosed()) return;
+        try {
+            byte[] data = tabletDiscoveryPayload().toString().getBytes("UTF-8");
+            socket.send(new DatagramPacket(data, data.length, InetAddress.getByName("255.255.255.255"), HOST_DISCOVERY_PORT));
+        } catch (Exception ignored) {
+        }
+    }
+
+    void runTabletDiscoveryListener() {
+        DatagramSocket socket = null;
+        try {
+            socket = new DatagramSocket(null);
+            socket.setReuseAddress(true);
+            socket.bind(new InetSocketAddress(HOST_DISCOVERY_PORT));
+            socket.setBroadcast(true);
+            socket.setSoTimeout(700);
+            tabletDiscoverySocket = socket;
+            announceTabletDiscoveryPresence(socket);
+            long lastPresenceAt = System.currentTimeMillis();
+            while (waitingForHostInvite) {
+                try {
+                    byte[] buffer = new byte[16384];
+                    DatagramPacket packet = new DatagramPacket(buffer, buffer.length);
+                    socket.receive(packet);
+                    String text = new String(packet.getData(), 0, packet.getLength(), "UTF-8");
+                    JSONObject json = new JSONObject(text);
+                    String type = json.optString("type", "");
+                    if (HOST_DISCOVERY_REQUEST_V2.equals(type)) {
+                        String role = json.optString("searchRole", "tablet");
+                        if ("tablet".equals(role) || "all".equals(role)) {
+                            JSONObject response = tabletDiscoveryPayload();
+                            byte[] data = response.toString().getBytes("UTF-8");
+                            socket.send(new DatagramPacket(data, data.length, packet.getAddress(), packet.getPort()));
+                        }
+                    } else if ("AI_EDU_MANAGER_PAIR_INVITE".equals(type)
+                        && deviceId().equals(json.optString("targetTabletId", ""))) {
+                        final JSONObject invite = json;
+                        final String senderAddress = packet.getAddress().getHostAddress();
+                        runOnUiThread(new Runnable() {
+                            @Override public void run() { showHostPairInvite(invite, senderAddress); }
+                        });
+                    }
+                } catch (SocketTimeoutException ignored) {
+                }
+                if (System.currentTimeMillis() - lastPresenceAt >= 2000) {
+                    announceTabletDiscoveryPresence(socket);
+                    lastPresenceAt = System.currentTimeMillis();
+                }
+            }
+        } catch (final Exception error) {
+            if (waitingForHostInvite) runOnUiThread(new Runnable() {
+                @Override public void run() { status("等待主机连接失败：" + safeErrorMessage(error)); }
+            });
+        } finally {
+            if (socket != null) socket.close();
+            if (tabletDiscoverySocket == socket) {
+                tabletDiscoverySocket = null;
+                waitingForHostInvite = false;
+                releaseTabletDiscoveryMulticastLock();
+                runOnUiThread(new Runnable() {
+                    @Override public void run() { if (waitHostButton != null) waitHostButton.setText("等待主机连接"); }
+                });
+            }
+        }
+    }
+
+    JSONObject tabletDiscoveryPayload() throws Exception {
+        JSONObject json = new JSONObject();
+        json.put("type", "AI_EDU_MANAGER_DISCOVERY");
+        json.put("protocolVersion", PAIR_PROTOCOL_VERSION);
+        json.put("role", "tablet");
+        json.put("deviceId", deviceId());
+        json.put("machineCode", tabletMachineCode());
+        json.put("displayName", deviceName());
+        json.put("appVersion", VERSION_NAME);
+        json.put("discoveryPort", HOST_DISCOVERY_PORT);
+        JSONArray capabilities = new JSONArray();
+        capabilities.put("pair-request-v2");
+        capabilities.put("bidirectional-discovery-v2");
+        json.put("capabilities", capabilities);
+        return json;
+    }
+
+    void showHostPairInvite(final JSONObject invite, String senderAddress) {
+        if (!waitingForHostInvite) return;
+        final String hostName = invite.optString("hostName", "AI教育管家主机");
+        final String hostCode = invite.optString("hostMachineCode", "");
+        rememberHostIdentity(invite.optString("hostId", ""), hostCode, hostName);
+        final int port = invite.optInt("port", 18777);
+        final String base = "http://" + senderAddress + ":" + port;
+        new AlertDialog.Builder(this)
+            .setTitle("主机请求连接")
+            .setMessage(hostName + "\n固定主机码：" + hostCode + "\n地址：" + senderAddress + "\n\n确认是您正在操作的主机后再接受。")
+            .setPositiveButton("接受", new DialogInterface.OnClickListener() {
+                @Override public void onClick(DialogInterface dialog, int which) {
+                    status("正在接受 " + hostName + " 的连接邀请...");
+                    new Thread(new PairInviteDecisionTask(MainActivity.this, base, invite, true)).start();
+                }
+            })
+            .setNegativeButton("拒绝", new DialogInterface.OnClickListener() {
+                @Override public void onClick(DialogInterface dialog, int which) {
+                    new Thread(new PairInviteDecisionTask(MainActivity.this, base, invite, false)).start();
+                }
+            })
+            .show();
+    }
+
     void showNearbyHosts(List<NearbyHost> hosts, String error) {
         nearbyHostButton.setEnabled(true);
         if (error != null && error.length() > 0) {
@@ -1100,22 +1479,78 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
             return;
         }
         if (hosts == null || hosts.size() == 0) {
-            status("未发现附近主机。请确认 Windows 主机服务已启动，并且平板与电脑连接同一 Wi-Fi。");
+            lastNearbyHosts.clear();
+            status("未发现局域网主机。请确认 Windows 主机服务已启动、平板与电脑连接同一 Wi-Fi；当前网络也可能禁止局域网广播。");
             toast("未发现附近主机。");
             return;
         }
+        lastNearbyHosts.clear();
+        lastNearbyHosts.addAll(hosts);
         final List<NearbyHost> found = hosts;
         String[] labels = new String[found.size()];
         for (int i = 0; i < found.size(); i++) {
             NearbyHost host = found.get(i);
-            labels[i] = host.name + (host.version.length() > 0 ? " · Windows " + host.version : "") + "\n" + host.primaryUrl();
+            labels[i] = host.name + " · 在线" + (host.version.length() > 0 ? " · Windows " + host.version : "") + "\n" + host.primaryUrl();
+            if (host.protocolVersion >= 2 && host.machineCode.length() > 0) {
+                labels[i] = host.name + " · " + host.machineCode + " · 在线" + (host.version.length() > 0 ? " · Windows " + host.version : "") + "\n" + host.primaryUrl();
+            }
         }
         status("发现 " + found.size() + " 台附近主机，请选择要连接的电脑。");
         new AlertDialog.Builder(this)
             .setTitle("选择附近主机")
             .setItems(labels, new DialogInterface.OnClickListener() {
                 @Override public void onClick(DialogInterface dialog, int which) {
-                    promptNearbyHostPairCode(found.get(which));
+                    startNearbyHostPair(found.get(which));
+                }
+            })
+            .setNegativeButton("取消", null)
+            .show();
+    }
+
+    void startNearbyHostPair(NearbyHost host) {
+        if (host == null) return;
+        if (host.protocolVersion >= 2 && host.deviceId.length() > 0 && host.machineCode.startsWith("H-")) {
+            rememberHostIdentity(host.deviceId, host.machineCode, host.name);
+            serverInput.setText(host.primaryUrl());
+            status("已向 " + host.name + " 发送连接请求，请在 Windows 主机端点击接受。");
+            new Thread(new PairRequestV2Task(MainActivity.this, host)).start();
+        } else {
+            promptNearbyHostPairCode(host);
+        }
+    }
+
+    void filterNearbyHostsByCode() {
+        final EditText codeInput = new EditText(this);
+        codeInput.setHint("例如 H-ABCD-2345");
+        codeInput.setSingleLine(true);
+        codeInput.setPadding(dp(16), dp(8), dp(16), dp(8));
+        new AlertDialog.Builder(this)
+            .setTitle("按固定主机码筛选")
+            .setMessage(lastNearbyHosts.size() == 0
+                ? "请先点击“查找局域网主机”。如果网络禁止广播，可继续使用二维码或粘贴连接信息。"
+                : "输入主机端显示的固定主机码，从本次发现结果中筛选。")
+            .setView(codeInput)
+            .setPositiveButton("筛选", new DialogInterface.OnClickListener() {
+                @Override public void onClick(DialogInterface dialog, int which) {
+                    String query = codeInput.getText().toString().trim().toUpperCase();
+                    if (query.length() == 0) {
+                        toast("请输入固定主机码。");
+                        return;
+                    }
+                    ArrayList<NearbyHost> matches = new ArrayList<NearbyHost>();
+                    for (NearbyHost host : lastNearbyHosts) {
+                        if (host.protocolVersion >= 2
+                            && host.deviceId.length() > 0
+                            && host.machineCode.toUpperCase().contains(query)) matches.add(host);
+                    }
+                    if (matches.size() == 1) {
+                        startNearbyHostPair(matches.get(0));
+                    } else if (matches.size() > 1) {
+                        showNearbyHosts(matches, "");
+                    } else {
+                        status("本次发现结果中没有主机码 " + query + "。请重新查找或使用其他连接方式。");
+                        toast("未找到匹配主机。");
+                    }
                 }
             })
             .setNegativeButton("取消", null)
@@ -1169,6 +1604,29 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
             pendingPairQrUri = null;
             toast("无法打开相机识别二维码，请点击“粘贴连接信息”粘贴 Windows 主机二维码内容。");
             status("二维码拍照识别不可用：请在 Windows 主机端点击“复制扫码内容”，再回到平板点击“粘贴连接信息”。");
+        }
+    }
+
+    void startStudentLoginScan() {
+        try {
+            ContentValues values = new ContentValues();
+            values.put(MediaStore.Images.Media.DISPLAY_NAME, "edu-student-login-" + System.currentTimeMillis() + ".jpg");
+            values.put(MediaStore.Images.Media.MIME_TYPE, "image/jpeg");
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                values.put(MediaStore.Images.Media.RELATIVE_PATH, Environment.DIRECTORY_PICTURES + "/AI\u6559\u80b2\u7ba1\u5bb6");
+            }
+            pendingPairQrUri = getContentResolver().insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values);
+            if (pendingPairQrUri == null) {
+                toast("\u65e0\u6cd5\u521b\u5efa\u626b\u7801\u7167\u7247\uff0c\u8bf7\u76f4\u63a5\u8f93\u5165\u5b66\u751f ID\u3002");
+                return;
+            }
+            Intent intent = new Intent(MediaStore.ACTION_IMAGE_CAPTURE);
+            intent.putExtra(MediaStore.EXTRA_OUTPUT, pendingPairQrUri);
+            intent.addFlags(Intent.FLAG_GRANT_WRITE_URI_PERMISSION | Intent.FLAG_GRANT_READ_URI_PERMISSION);
+            startActivityForResult(intent, REQUEST_CAPTURE_STUDENT_QR);
+        } catch (Exception error) {
+            pendingPairQrUri = null;
+            toast("\u65e0\u6cd5\u6253\u5f00\u76f8\u673a\uff0c\u8bf7\u76f4\u63a5\u8f93\u5165\u5b66\u751f ID\u3002");
         }
     }
 
@@ -1351,6 +1809,11 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
                     .putExtra("result_data", data)
                     .putExtra("mode", pendingCaptureMode)
                     .putExtra("duration_ms", pendingCaptureDurationMinutes * 60L * 1000L);
+                getSharedPreferences(CaptureProjectionService.PREFS, MODE_PRIVATE).edit()
+                    .putString("capture_project_id", pendingCaptureProjectId)
+                    .putString("capture_project_name", pendingCaptureProjectName)
+                    .putString("capture_student_id", selectedStudent == null ? "" : selectedStudent.id)
+                    .apply();
                 if (Build.VERSION.SDK_INT >= 26) startForegroundService(serviceIntent);
                 else startService(serviceIntent);
                 toast("屏幕资料采集已启动，通知栏可暂停、重点截取或结束。");
@@ -1400,6 +1863,19 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
                 }
             } else {
                 toast("未完成扫码绑定。");
+            }
+            pendingPairQrUri = null;
+            return;
+        }
+        if (requestCode == REQUEST_CAPTURE_STUDENT_QR) {
+            if (resultCode == RESULT_OK && pendingPairQrUri != null) {
+                try {
+                    loginStudent(decodeQrFromUri(pendingPairQrUri));
+                } catch (Exception error) {
+                    toast("\u672a\u8bc6\u522b\u5230\u5b66\u751f\u767b\u5f55\u4e8c\u7ef4\u7801\uff0c\u8bf7\u91cd\u65b0\u626b\u7801\u6216\u8f93\u5165 ID\u3002");
+                }
+            } else {
+                toast("\u5df2\u53d6\u6d88\u5b66\u751f\u626b\u7801\u3002");
             }
             pendingPairQrUri = null;
             return;
@@ -1642,7 +2118,26 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
         captureStartButton.setText(active ? "结束采集" : "开始屏幕采集");
         capturePauseButton.setEnabled(active);
         capturePauseButton.setText("paused".equals(state) ? "继续采集" : "暂停采集");
-        captureUploadButton.setEnabled(!active && pendingCapturedFiles().size() > 0 && selectedStudent != null);
+        int pending = pendingCapturedFiles().size();
+        boolean canUpload = !active && pending > 0 && selectedStudent != null && !uploadInProgress;
+        captureUploadButton.setEnabled(canUpload);
+        if (uploadInProgress && captureUploadUrisInFlight.size() > 0) {
+            captureUploadButton.setText("正在上传 " + captureUploadUrisInFlight.size() + " 张…");
+            captureUploadButton.setTextColor(Color.WHITE);
+            captureUploadButton.setBackgroundTintList(ColorStateList.valueOf(Color.rgb(119, 91, 190)));
+        } else if ("succeeded".equals(captureUploadVisualState)) {
+            captureUploadButton.setText("上传完成");
+            captureUploadButton.setTextColor(Color.WHITE);
+            captureUploadButton.setBackgroundTintList(ColorStateList.valueOf(Color.rgb(36, 153, 104)));
+        } else if ("failed".equals(captureUploadVisualState)) {
+            captureUploadButton.setText("上传失败，点击重试");
+            captureUploadButton.setTextColor(Color.WHITE);
+            captureUploadButton.setBackgroundTintList(ColorStateList.valueOf(Color.rgb(210, 118, 43)));
+        } else {
+            captureUploadButton.setText(pending > 0 ? "上传采集资料(" + pending + ")" : "上传采集资料");
+            captureUploadButton.setTextColor(canUpload ? Color.WHITE : Color.rgb(122, 137, 133));
+            captureUploadButton.setBackgroundTintList(ColorStateList.valueOf(canUpload ? accentColor() : Color.rgb(224, 231, 229)));
+        }
     }
 
     String captureModeLabel(String mode) {
@@ -1674,6 +2169,51 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
                     int checked = ((AlertDialog) dialog).getListView().getCheckedItemPosition();
                     if (checked < 0) checked = 0;
                     pendingCaptureMode = values[checked];
+                    showCaptureProjectDialog();
+                }
+            })
+            .setNegativeButton("取消", null)
+            .show();
+    }
+
+    List<LearningProject> projectsForSelectedStudent() {
+        ArrayList<LearningProject> result = new ArrayList<LearningProject>();
+        if (selectedStudent == null) return result;
+        for (LearningProject project : projects) {
+            if (!"sealed".equals(project.status) && project.studentIds.contains(selectedStudent.id)) result.add(project);
+        }
+        return result;
+    }
+
+    void showCaptureProjectDialog() {
+        final List<LearningProject> bound = projectsForSelectedStudent();
+        if (bound.size() == 0) {
+            pendingCaptureProjectId = "";
+            pendingCaptureProjectName = "";
+            showCaptureDurationDialog();
+            return;
+        }
+        final String[] labels = new String[bound.size() + 1];
+        labels[0] = "不关联项目（上传到学生资料库）";
+        int checked = 0;
+        for (int i = 0; i < bound.size(); i++) {
+            labels[i + 1] = "关联项目：" + bound.get(i).name;
+            if (bound.get(i).id.equals(pendingCaptureProjectId)) checked = i + 1;
+        }
+        new AlertDialog.Builder(this)
+            .setTitle("关联学习项目（可选）")
+            .setSingleChoiceItems(labels, checked, null)
+            .setPositiveButton("下一步", new DialogInterface.OnClickListener() {
+                @Override public void onClick(DialogInterface dialog, int which) {
+                    int selected = ((AlertDialog) dialog).getListView().getCheckedItemPosition();
+                    if (selected > 0) {
+                        LearningProject project = bound.get(selected - 1);
+                        pendingCaptureProjectId = project.id;
+                        pendingCaptureProjectName = project.name;
+                    } else {
+                        pendingCaptureProjectId = "";
+                        pendingCaptureProjectName = "";
+                    }
                     showCaptureDurationDialog();
                 }
             })
@@ -1743,6 +2283,11 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
             toast("请先选择截图所属学生。");
             return;
         }
+        String captureStudentId = getSharedPreferences(CaptureProjectionService.PREFS, MODE_PRIVATE).getString("capture_student_id", "");
+        if (captureStudentId.length() > 0 && !captureStudentId.equals(selectedStudent.id)) {
+            toast("\u8fd9\u6279\u91c7\u96c6\u8d44\u6599\u5c5e\u4e8e\u4e0a\u4e00\u4f4d\u5b66\u751f\uff0c\u4e0d\u80fd\u4e0a\u4f20\u5230\u5f53\u524d\u5b66\u751f\u3002");
+            return;
+        }
         List<File> files = pendingCapturedFiles();
         if (files.size() == 0) {
             toast("当前采集会话没有待上传截图。");
@@ -1752,7 +2297,7 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
         for (File file : files) uris.add(Uri.fromFile(file));
         captureUploadUrisInFlight.clear();
         captureUploadUrisInFlight.addAll(uris);
-        uploadMaterials(uris, true);
+        chooseUploadTarget(uris, true, true);
     }
 
     void uploadPendingSharedMaterials() {
@@ -1778,6 +2323,10 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
     }
 
     void uploadMaterials(List<Uri> uris, boolean reloadAfterFinish) {
+        chooseUploadTarget(uris, reloadAfterFinish, false);
+    }
+
+    void chooseUploadTarget(final List<Uri> uris, final boolean reloadAfterFinish, boolean preferCaptureProject) {
         if (selectedStudent == null) {
             toast("请先选择学生。");
             return;
@@ -1786,15 +2335,51 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
             toast("没有可上传的资料。");
             return;
         }
+        final ArrayList<UploadTarget> targets = new ArrayList<UploadTarget>();
+        targets.add(new UploadTarget("student", selectedStudent.id, selectedStudent.name + "原始资料库", selectedStudent.id));
+        List<LearningProject> bound = projectsForSelectedStudent();
+        for (LearningProject project : bound) {
+            targets.add(new UploadTarget("project", project.id, project.name + "项目原始资料库", selectedStudent.id));
+        }
+        String captureProjectId = getSharedPreferences(CaptureProjectionService.PREFS, MODE_PRIVATE).getString("capture_project_id", "");
+        int checked = 0;
+        if (preferCaptureProject && captureProjectId.length() > 0) {
+            for (int i = 0; i < targets.size(); i++) if ("project".equals(targets.get(i).type) && captureProjectId.equals(targets.get(i).id)) checked = i;
+        }
+        final String[] labels = new String[targets.size()];
+        for (int i = 0; i < targets.size(); i++) labels[i] = targets.get(i).name;
+        final int initialChecked = checked;
+        new AlertDialog.Builder(this)
+            .setTitle("选择资料上传位置")
+            .setSingleChoiceItems(labels, initialChecked, null)
+            .setPositiveButton("确认上传", new DialogInterface.OnClickListener() {
+                @Override public void onClick(DialogInterface dialog, int which) {
+                    int position = ((AlertDialog) dialog).getListView().getCheckedItemPosition();
+                    if (position < 0 || position >= targets.size()) position = initialChecked;
+                    uploadMaterialsToTarget(new ArrayList<Uri>(uris), reloadAfterFinish, targets.get(position));
+                }
+            })
+            .setNegativeButton("取消", null)
+            .show();
+    }
+
+    void uploadMaterialsToTarget(List<Uri> uris, boolean reloadAfterFinish, UploadTarget target) {
+        if (uploadInProgress) {
+            toast("已有资料正在上传，请稍候。");
+            return;
+        }
         String base = normalizedBaseUrl();
-        String token = apiToken();
+        String token = dataToken();
         if (base.length() == 0 || token.length() == 0) {
             toast("请先连接主机服务。");
             return;
         }
+        uploadInProgress = true;
+        captureUploadVisualState = "uploading";
+        refreshCaptureUi();
         status("准备上传 " + uris.size() + " 个资料...");
         setUploadQueueText("上传队列：0/" + uris.size() + "，准备开始。");
-        new Thread(new UploadMaterialsTask(this, base, token, selectedStudent.id, new ArrayList<Uri>(uris), reloadAfterFinish)).start();
+        new Thread(new UploadMaterialsTask(this, base, token, target, new ArrayList<Uri>(uris), reloadAfterFinish)).start();
     }
 
     void setUploadQueueText(String text) {
@@ -1846,7 +2431,7 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
         } else if (lower.contains("失败") || lower.contains("error") || lower.contains("timeout") || lower.contains("refused")) {
             hint = "连接排查：请确认电脑和平板在同一网络，Windows 主机服务已启动，防火墙允许端口 18777 或当前设置端口访问。";
         } else {
-            hint = "连接排查：先确认 Windows 首页选择“主机-平板模式”并启动主机服务；平板与电脑连接同一 Wi-Fi；如果仍失败，请重新扫码绑定。";
+            hint = "连接排查：先确认 Windows 首页选择“主机-终端模式”并启动主机服务；平板与电脑连接同一 Wi-Fi；如果仍失败，请重新扫码绑定。";
         }
         connectionHintText.setText(hint);
     }
@@ -1856,7 +2441,10 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
         getSharedPreferences(PREFS, MODE_PRIVATE).edit().putString(PREF_LAST_CONNECTED_AT, time).apply();
     }
 
-    void applyUploadResult(int success, int total, List<Uri> failed, List<String> failureLabels) {
+    void applyUploadResult(int success, int total, List<Uri> failed, List<String> failureLabels, UploadTarget target) {
+        uploadInProgress = false;
+        captureUploadVisualState = failed.size() > 0 ? "failed" : "succeeded";
+        lastFailedUploadTarget = failed.size() > 0 ? target : null;
         failedUploadUris.clear();
         failedUploadUris.addAll(failed);
         if (captureUploadUrisInFlight.size() > 0) {
@@ -1874,11 +2462,11 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
             refreshCaptureUi();
         }
         StringBuilder text = new StringBuilder();
-        String studentName = selectedStudent == null ? "当前学生" : selectedStudent.name;
+        String targetName = target == null ? (selectedStudent == null ? "当前学生原始资料库" : selectedStudent.name + "原始资料库") : target.name;
         if (success == total) text.append("最近上传结果：全部成功，").append(success).append(" 个资料已进入主机。");
         else if (success == 0) text.append("最近上传结果：全部失败，共 ").append(total).append(" 个。");
         else text.append("最近上传结果：部分成功，成功 ").append(success).append(" 个，失败 ").append(total - success).append(" 个。");
-        if (success > 0) text.append("\n已上传到：").append(studentName).append(" 的主机原始资料库。");
+        if (success > 0) text.append("\n已上传到：").append(targetName).append("。");
         if (failureLabels.size() > 0) {
             text.append("\n失败资料：");
             int limit = Math.min(3, failureLabels.size());
@@ -1887,6 +2475,15 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
         }
         uploadResultText.setText(text.toString());
         updateSharedUploadButton();
+        refreshCaptureUi();
+        if (failed.size() == 0 && captureUploadButton != null) {
+            captureUploadButton.postDelayed(new Runnable() {
+                @Override public void run() {
+                    captureUploadVisualState = "idle";
+                    refreshCaptureUi();
+                }
+            }, 1800L);
+        }
     }
 
     JSONObject getJson(String urlText, String token) throws Exception {
@@ -2032,6 +2629,8 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
         SharedPreferences prefs = getSharedPreferences(PREFS, MODE_PRIVATE);
         serverInput.setText(prefs.getString(PREF_SERVER_URL, ""));
         tokenInput.setText(prefs.getString(PREF_API_TOKEN, ""));
+        terminalMode = prefs.getString(PREF_TERMINAL_MODE, "shared");
+        studentSessionToken = prefs.getString(PREF_STUDENT_SESSION_TOKEN, "");
         if (remoteInput != null) remoteInput.setText(prefs.getString(PREF_REMOTE_URL, ""));
         suppressPreferenceCallbacks = true;
         layoutMode = clamp(prefs.getInt(PREF_LAYOUT_MODE, layoutMode), 0, 2);
@@ -2040,6 +2639,7 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
         if (skinSpinner != null) skinSpinner.setSelection(skinIndex);
         if (connectionModeSpinner != null) connectionModeSpinner.setSelection(prefs.getInt(PREF_CONNECTION_MODE, 1));
         suppressPreferenceCallbacks = false;
+        updateStudentSessionUi();
         updateConnectionSummary("未连接", students.size());
     }
 
@@ -2058,7 +2658,27 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
         getSharedPreferences(PREFS, MODE_PRIVATE).edit()
             .putString(PREF_SERVER_URL, base)
             .putString(PREF_API_TOKEN, token)
+            .remove(PREF_STUDENT_SESSION_TOKEN)
             .commit();
+        studentSessionToken = "";
+    }
+
+    void rememberHostIdentity(String hostId, String machineCode, String displayName) {
+        getSharedPreferences(PREFS, MODE_PRIVATE).edit()
+            .putString(PREF_HOST_DEVICE_ID, hostId == null ? "" : hostId)
+            .putString(PREF_HOST_MACHINE_CODE, machineCode == null ? "" : machineCode)
+            .putString(PREF_HOST_DISPLAY_NAME, displayName == null ? "" : displayName)
+            .apply();
+        if (machineCodeText != null) machineCodeText.setText(connectedIdentityText());
+    }
+
+    String connectedIdentityText() {
+        SharedPreferences prefs = getSharedPreferences(PREFS, MODE_PRIVATE);
+        String hostCode = prefs.getString(PREF_HOST_MACHINE_CODE, "");
+        String hostName = prefs.getString(PREF_HOST_DISPLAY_NAME, "");
+        String own = "本平板固定机器码：" + tabletMachineCode();
+        if (hostCode == null || hostCode.length() == 0) return own + "\n当前尚未保存固定主机码。";
+        return own + "\n当前主机：" + (hostName == null || hostName.length() == 0 ? "AI教育管家主机" : hostName) + " · " + hostCode;
     }
 
     void startExportConnectionBackup() {
@@ -2088,6 +2708,11 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
             backup.put("exportedAt", System.currentTimeMillis());
             backup.put("deviceId", deviceId());
             backup.put("deviceName", deviceName());
+            SharedPreferences prefs = getSharedPreferences(PREFS, MODE_PRIVATE);
+            backup.put("tabletMachineCode", tabletMachineCode());
+            backup.put("hostId", prefs.getString(PREF_HOST_DEVICE_ID, ""));
+            backup.put("hostMachineCode", prefs.getString(PREF_HOST_MACHINE_CODE, ""));
+            backup.put("hostDisplayName", prefs.getString(PREF_HOST_DISPLAY_NAME, ""));
             backup.put("serverUrl", normalizedBaseUrl());
             backup.put("remoteUrl", normalizedRemoteUrl());
             backup.put("connectionMode", connectionMode());
@@ -2184,6 +2809,9 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
                 .putString(PREF_SERVER_URL, serverUrl)
                 .putString(PREF_API_TOKEN, token)
                 .putString(PREF_REMOTE_URL, remoteUrl)
+                .putString(PREF_HOST_DEVICE_ID, backup.optString("hostId", ""))
+                .putString(PREF_HOST_MACHINE_CODE, backup.optString("hostMachineCode", ""))
+                .putString(PREF_HOST_DISPLAY_NAME, backup.optString("hostDisplayName", ""))
                 .putInt(PREF_CONNECTION_MODE, mode);
             if (restoreDeviceIdentity && backupDeviceId.length() > 0) editor.putString(PREF_DEVICE_ID, backupDeviceId);
             if (!editor.commit()) throw new Exception("无法保存连接配置");
@@ -2226,6 +2854,22 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
             prefs.edit().putString(PREF_DEVICE_ID, id).apply();
         }
         return id;
+    }
+
+    String tabletMachineCode() {
+        final String alphabet = "23456789ABCDEFGHJKLMNPQRSTUVWXYZ";
+        try {
+            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+            byte[] bytes = digest.digest(("tablet:" + deviceId()).getBytes("UTF-8"));
+            StringBuilder body = new StringBuilder();
+            for (int i = 0; body.length() < 8; i++) {
+                int value = bytes[i % bytes.length] & 0xff;
+                body.append(alphabet.charAt(value % alphabet.length()));
+            }
+            return "T-" + body.substring(0, 4) + "-" + body.substring(4, 8);
+        } catch (Exception error) {
+            return "T-UNKNOWN";
+        }
     }
 
     String deviceName() {
@@ -2846,7 +3490,7 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
         return message;
     }
 
-    void applyStudents(List<Student> result, String error, boolean requiresApproval) {
+    void applyStudents(List<Student> result, List<LearningProject> projectResult, String error, boolean requiresApproval) {
         if (error != null) {
             status("读取学生失败：" + error);
             updateConnectionSummary("授权验证失败", students.size());
@@ -2854,6 +3498,8 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
         }
         students.clear();
         students.addAll(result);
+        projects.clear();
+        if (projectResult != null) projects.addAll(projectResult);
         studentAdapter.clear();
         for (int i = 0; i < students.size(); i++) studentAdapter.add(students.get(i).displayName());
         studentAdapter.notifyDataSetChanged();
@@ -2861,6 +3507,7 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
         if (selectedIndex < 0 || selectedIndex >= students.size()) selectedIndex = 0;
         selectedStudent = students.size() > 0 ? students.get(selectedIndex) : null;
         uploadButton.setEnabled(students.size() > 0);
+        updateStudentSessionUi();
         updateSharedUploadButton();
         updateDigestStatusCard();
         updateContactCard();
@@ -3173,7 +3820,15 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
         button.setText(text);
         button.setAllCaps(false);
         button.setTextColor(primary ? Color.WHITE : accentColor());
-        button.setBackgroundColor(primary ? accentColor() : accentLightColor());
+        int normal = primary ? accentColor() : accentLightColor();
+        int pressed = primary ? Color.rgb(15, 112, 91) : Color.rgb(201, 232, 224);
+        int disabled = Color.rgb(228, 234, 232);
+        int[][] states = new int[][] {
+            new int[] {-android.R.attr.state_enabled},
+            new int[] {android.R.attr.state_pressed},
+            new int[] {}
+        };
+        button.setBackgroundTintList(new ColorStateList(states, new int[] {disabled, pressed, normal}));
         LinearLayout.LayoutParams params = isPhoneLayout()
             ? new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(48))
             : new LinearLayout.LayoutParams(0, dp(48), 1);
@@ -3206,6 +3861,16 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
             case 4: return Color.rgb(255, 240, 224);
             default: return Color.rgb(232, 244, 255);
         }
+    }
+
+    private int mixColor(int base, int overlay, float overlayWeight) {
+        float weight = Math.max(0f, Math.min(1f, overlayWeight));
+        float baseWeight = 1f - weight;
+        return Color.rgb(
+            Math.round(Color.red(base) * baseWeight + Color.red(overlay) * weight),
+            Math.round(Color.green(base) * baseWeight + Color.green(overlay) * weight),
+            Math.round(Color.blue(base) * baseWeight + Color.blue(overlay) * weight)
+        );
     }
 
     private int pageBackgroundColor() {
@@ -3305,6 +3970,35 @@ class NestedScrollTouchGuard implements View.OnTouchListener {
     }
 }
 
+class LearningProject {
+    final String id;
+    final String name;
+    final String status;
+    final List<String> studentIds = new ArrayList<String>();
+
+    LearningProject(JSONObject json) {
+        this.id = json.optString("id", "");
+        this.name = json.optString("name", this.id);
+        this.status = json.optString("status", "active");
+        JSONArray array = json.optJSONArray("studentIds");
+        if (array != null) for (int i = 0; i < array.length(); i++) studentIds.add(array.optString(i, ""));
+    }
+}
+
+class UploadTarget {
+    final String type;
+    final String id;
+    final String name;
+    final String studentId;
+
+    UploadTarget(String type, String id, String name, String studentId) {
+        this.type = type;
+        this.id = id;
+        this.name = name;
+        this.studentId = studentId;
+    }
+}
+
 class ArchiveFile {
     final String name;
     final String path;
@@ -3395,11 +4089,19 @@ class NearbyHost {
     final String name;
     final String version;
     final List<String> urls;
+    final int protocolVersion;
+    final String deviceId;
+    final String machineCode;
+    final String discoveryEndpoint;
 
-    NearbyHost(String name, String version, List<String> urls) {
+    NearbyHost(String name, String version, List<String> urls, int protocolVersion, String deviceId, String machineCode, String discoveryEndpoint) {
         this.name = name == null || name.trim().length() == 0 ? "AI教育管家主机" : name.trim();
         this.version = version == null ? "" : version.trim();
         this.urls = urls == null ? new ArrayList<String>() : urls;
+        this.protocolVersion = protocolVersion;
+        this.deviceId = deviceId == null ? "" : deviceId.trim();
+        this.machineCode = machineCode == null ? "" : machineCode.trim();
+        this.discoveryEndpoint = discoveryEndpoint == null ? "" : discoveryEndpoint.trim();
     }
 
     String primaryUrl() {
@@ -3421,18 +4123,19 @@ class NearbyHostDiscoveryTask implements Runnable {
             socket = new DatagramSocket();
             socket.setBroadcast(true);
             socket.setSoTimeout(350);
-            byte[] requestBytes = MainActivity.HOST_DISCOVERY_REQUEST.getBytes("UTF-8");
-            DatagramPacket request = new DatagramPacket(
-                requestBytes,
-                requestBytes.length,
-                InetAddress.getByName("255.255.255.255"),
-                MainActivity.HOST_DISCOVERY_PORT
-            );
+            JSONObject requestJson = new JSONObject();
+            requestJson.put("type", MainActivity.HOST_DISCOVERY_REQUEST_V2);
+            requestJson.put("protocolVersion", MainActivity.PAIR_PROTOCOL_VERSION);
+            requestJson.put("requestId", "discover-" + java.util.UUID.randomUUID().toString());
+            requestJson.put("searchRole", "host");
+            byte[] requestBytes = requestJson.toString().getBytes("UTF-8");
+            DatagramPacket request = new DatagramPacket(requestBytes, requestBytes.length, InetAddress.getByName("255.255.255.255"), MainActivity.HOST_DISCOVERY_PORT);
             socket.send(request);
+            byte[] legacyBytes = MainActivity.HOST_DISCOVERY_REQUEST_V1.getBytes("UTF-8");
+            socket.send(new DatagramPacket(legacyBytes, legacyBytes.length, InetAddress.getByName("255.255.255.255"), MainActivity.HOST_DISCOVERY_PORT));
 
             long deadline = System.currentTimeMillis() + 2600;
             ArrayList<NearbyHost> hosts = new ArrayList<NearbyHost>();
-            HashSet<String> seen = new HashSet<String>();
             while (System.currentTimeMillis() < deadline) {
                 try {
                     byte[] buffer = new byte[8192];
@@ -3454,10 +4157,29 @@ class NearbyHostDiscoveryTask implements Runnable {
                         }
                     }
                     List<String> ordered = activity.orderedServerUrls(urls);
-                    String key = ordered.size() > 0 ? ordered.get(0) : response.getAddress().getHostAddress();
-                    if (seen.add(key)) {
-                        hosts.add(new NearbyHost(json.optString("hostName", "AI教育管家主机"), json.optString("appVersion", ""), ordered));
+                    int protocolVersion = json.optInt("protocolVersion", 1);
+                    String hostDeviceId = json.optString("deviceId", "");
+                    String hostMachineCode = json.optString("machineCode", "");
+                    String discoveryEndpoint = response.getAddress().getHostAddress() + ":" + port;
+                    NearbyHost incoming = new NearbyHost(
+                        json.optString("displayName", json.optString("hostName", "AI教育管家主机")),
+                        json.optString("appVersion", ""), ordered, protocolVersion, hostDeviceId, hostMachineCode,
+                        discoveryEndpoint
+                    );
+                    int replaceAt = -1;
+                    for (int i = hosts.size() - 1; i >= 0; i--) {
+                        NearbyHost existing = hosts.get(i);
+                        boolean sameEndpoint = discoveryEndpoint.equals(existing.discoveryEndpoint);
+                        boolean sameIdentity = hostDeviceId.length() > 0
+                            && existing.deviceId.length() > 0
+                            && hostDeviceId.equals(existing.deviceId);
+                        if (!sameEndpoint && !sameIdentity) continue;
+                        if (replaceAt < 0 || i < replaceAt) replaceAt = i;
+                        if (existing.protocolVersion > incoming.protocolVersion) incoming = existing;
+                        hosts.remove(i);
                     }
+                    if (replaceAt < 0 || replaceAt > hosts.size()) hosts.add(incoming);
+                    else hosts.add(replaceAt, incoming);
                 } catch (SocketTimeoutException ignored) {
                 }
             }
@@ -3533,10 +4255,100 @@ class ConnectTask implements Runnable {
                 ? "主机身份验证成功，设备已登记并等待 Windows 授权学生。"
                 : "主机服务已连接，版本：" + health.optString("version", "未知") + "；" + licenseText));
             activity.runOnUiThread(new ConnectionSummaryTask(activity, requiresApproval ? "已连接，待 Windows 授权" : "已连接", activity.students.size()));
-            new LoadStudentsTask(activity, base, token).run();
+            new BootstrapStudentSessionTask(activity, base, token, activity.studentSessionToken).run();
         } catch (Exception error) {
             activity.runOnUiThread(new StatusTask(activity, activity.connectionErrorMessage(base, error.getMessage())));
             activity.runOnUiThread(new ConnectionSummaryTask(activity, "授权验证失败", activity.students.size()));
+        }
+    }
+}
+
+class PairRequestV2Task implements Runnable {
+    private final MainActivity activity;
+    private final NearbyHost host;
+
+    PairRequestV2Task(MainActivity activity, NearbyHost host) {
+        this.activity = activity;
+        this.host = host;
+    }
+
+    @Override public void run() {
+        String base = host.primaryUrl();
+        try {
+            if (base.length() == 0) throw new Exception("没有可用主机地址");
+            String requestId = "pair-" + java.util.UUID.randomUUID().toString();
+            String requestToken = java.util.UUID.randomUUID().toString().replace("-", "")
+                + java.util.UUID.randomUUID().toString().replace("-", "");
+            JSONObject body = new JSONObject();
+            body.put("requestId", requestId);
+            body.put("requestToken", requestToken);
+            body.put("hostId", host.deviceId);
+            body.put("hostMachineCode", host.machineCode);
+            body.put("tabletId", activity.deviceId());
+            body.put("tabletMachineCode", activity.tabletMachineCode());
+            body.put("tabletName", activity.deviceName());
+            activity.postJson(base + "/api/pair/request", body);
+            for (int attempt = 0; attempt < 30; attempt++) {
+                Thread.sleep(4000);
+                String query = base + "/api/pair/status?requestId=" + activity.encode(requestId)
+                    + "&requestToken=" + activity.encode(requestToken);
+                JSONObject status = activity.getJson(query, null);
+                JSONObject request = status.optJSONObject("request");
+                String state = request == null ? "" : request.optString("status", "");
+                if ("accepted".equals(state)) {
+                    String token = status.optString("token", "");
+                    if (token.length() == 0) throw new Exception("主机已接受，但未返回设备授权凭据");
+                    activity.runOnUiThread(new PairResultTask(activity, base, token, null));
+                    return;
+                }
+                if ("rejected".equals(state) || "cancelled".equals(state) || "expired".equals(state)) {
+                    throw new Exception("连接请求已" + ("rejected".equals(state) ? "被主机拒绝" : "结束或过期"));
+                }
+            }
+            JSONObject cancelBody = new JSONObject();
+            cancelBody.put("requestId", requestId);
+            cancelBody.put("requestToken", requestToken);
+            try { activity.postJson(base + "/api/pair/cancel", cancelBody); } catch (Exception ignored) {}
+            throw new Exception("等待主机接受超时，请重新发起连接");
+        } catch (Exception error) {
+            activity.runOnUiThread(new PairResultTask(activity, base, "", error.getMessage()));
+        }
+    }
+}
+
+class PairInviteDecisionTask implements Runnable {
+    private final MainActivity activity;
+    private final String base;
+    private final JSONObject invite;
+    private final boolean accepted;
+
+    PairInviteDecisionTask(MainActivity activity, String base, JSONObject invite, boolean accepted) {
+        this.activity = activity;
+        this.base = base;
+        this.invite = invite;
+        this.accepted = accepted;
+    }
+
+    @Override public void run() {
+        try {
+            JSONObject body = new JSONObject();
+            body.put("requestId", invite.optString("requestId", ""));
+            body.put("requestToken", invite.optString("requestToken", ""));
+            body.put("tabletId", activity.deviceId());
+            body.put("tabletMachineCode", activity.tabletMachineCode());
+            body.put("tabletName", activity.deviceName());
+            if (!accepted) {
+                activity.postJson(base + "/api/pair/reject", body);
+                activity.runOnUiThread(new StatusTask(activity, "已拒绝主机连接邀请。"));
+                return;
+            }
+            JSONObject json = activity.postJson(base + "/api/pair/tablet-accept", body);
+            String token = json.optString("token", "");
+            if (token.length() == 0) throw new Exception("主机未返回设备授权凭据");
+            activity.stopWaitingForHostInvite();
+            activity.runOnUiThread(new PairResultTask(activity, base, token, null));
+        } catch (Exception error) {
+            activity.runOnUiThread(new PairResultTask(activity, base, "", error.getMessage()));
         }
     }
 }
@@ -3624,38 +4436,136 @@ class PairResultTask implements Runnable {
     }
 }
 
-class LoadStudentsTask implements Runnable {
+class StudentSessionApplyTask implements Runnable {
     private final MainActivity activity;
-    private final String base;
-    private final String token;
+    private final JSONObject payload;
+    private final String error;
 
-    LoadStudentsTask(MainActivity activity, String base, String token) {
+    StudentSessionApplyTask(MainActivity activity, JSONObject payload, String error) {
         this.activity = activity;
-        this.base = base;
-        this.token = token;
+        this.payload = payload;
+        this.error = error;
     }
 
-    @Override
-    public void run() {
+    @Override public void run() {
+        activity.applyStudentSession(payload == null ? new JSONObject() : payload, error);
+    }
+}
+
+class BootstrapStudentSessionTask implements Runnable {
+    private final MainActivity activity;
+    private final String base;
+    private final String deviceToken;
+    private final String existingSessionToken;
+
+    BootstrapStudentSessionTask(MainActivity activity, String base, String deviceToken, String existingSessionToken) {
+        this.activity = activity;
+        this.base = base;
+        this.deviceToken = deviceToken;
+        this.existingSessionToken = existingSessionToken == null ? "" : existingSessionToken;
+    }
+
+    @Override public void run() {
         try {
-            JSONObject json = activity.getJson(base + "/api/students", token);
-            try {
-                activity.postJson(base + "/api/device/heartbeat", new JSONObject(), token);
-            } catch (Exception ignored) {
-            }
-            JSONArray array = json.optJSONArray("students");
-            JSONObject authorization = json.optJSONObject("authorization");
-            boolean requiresApproval = authorization != null && authorization.optBoolean("requiresApproval", false);
-            List<Student> result = new ArrayList<Student>();
-            if (array != null) {
-                for (int i = 0; i < array.length(); i++) {
-                    JSONObject item = array.optJSONObject(i);
-                    if (item != null) result.add(new Student(item));
+            JSONObject modeJson = activity.getJson(base + "/api/device/mode", deviceToken);
+            JSONObject device = modeJson.optJSONObject("device");
+            final String mode = device == null ? "shared" : device.optString("terminalMode", "shared");
+            if (existingSessionToken.length() > 0) {
+                try {
+                    JSONObject session = activity.getJson(base + "/api/student-session/me", existingSessionToken);
+                    session.put("terminalMode", mode);
+                    activity.runOnUiThread(new StudentSessionApplyTask(activity, session, null));
+                    return;
+                } catch (Exception ignored) {
                 }
             }
-            activity.runOnUiThread(new StudentsResultTask(activity, result, null, requiresApproval));
+            if ("personal".equals(mode)) {
+                JSONObject session = activity.postJson(base + "/api/student-session/auto", new JSONObject(), deviceToken);
+                session.put("terminalMode", mode);
+                activity.runOnUiThread(new StudentSessionApplyTask(activity, session, null));
+                return;
+            }
+            activity.runOnUiThread(new Runnable() {
+                @Override public void run() {
+                    activity.terminalMode = mode;
+                    activity.clearStudentSession("\u8bf7\u626b\u7801\u6216\u8f93\u5165\u5b66\u751f ID \u8fdb\u5165\u672c\u4eba\u8d44\u6599\u3002");
+                    activity.updateConnectionSummary("\u5df2\u8fde\u63a5\uff0c\u7b49\u5f85\u5b66\u751f\u8fdb\u5165", 0);
+                }
+            });
         } catch (Exception error) {
-            activity.runOnUiThread(new StudentsResultTask(activity, null, error.getMessage(), false));
+            activity.runOnUiThread(new StudentSessionApplyTask(activity, null, error.getMessage()));
+        }
+    }
+}
+
+class StudentLoginTask implements Runnable {
+    private final MainActivity activity;
+    private final String base;
+    private final String deviceToken;
+    private final String loginValue;
+
+    StudentLoginTask(MainActivity activity, String base, String deviceToken, String loginValue) {
+        this.activity = activity;
+        this.base = base;
+        this.deviceToken = deviceToken;
+        this.loginValue = loginValue;
+    }
+
+    @Override public void run() {
+        try {
+            JSONObject body = new JSONObject();
+            body.put(loginValue.trim().startsWith("{") ? "qrPayload" : "loginId", loginValue);
+            JSONObject session = activity.postJson(base + "/api/student-session/login", body, deviceToken);
+            activity.runOnUiThread(new StudentSessionApplyTask(activity, session, null));
+        } catch (Exception error) {
+            activity.runOnUiThread(new StudentSessionApplyTask(activity, null, error.getMessage()));
+        }
+    }
+}
+
+class StudentLogoutTask implements Runnable {
+    private final MainActivity activity;
+    private final String base;
+    private final String sessionToken;
+
+    StudentLogoutTask(MainActivity activity, String base, String sessionToken) {
+        this.activity = activity;
+        this.base = base;
+        this.sessionToken = sessionToken;
+    }
+
+    @Override public void run() {
+        try { activity.postJson(base + "/api/student-session/logout", new JSONObject(), sessionToken); } catch (Exception ignored) {}
+        activity.runOnUiThread(new Runnable() {
+            @Override public void run() { activity.clearStudentSession("\u5df2\u9000\u51fa\u5f53\u524d\u5b66\u751f\u3002"); }
+        });
+    }
+}
+
+class SetTerminalModeTask implements Runnable {
+    private final MainActivity activity;
+    private final String base;
+    private final String deviceToken;
+    private final String mode;
+
+    SetTerminalModeTask(MainActivity activity, String base, String deviceToken, String mode) {
+        this.activity = activity;
+        this.base = base;
+        this.deviceToken = deviceToken;
+        this.mode = mode;
+    }
+
+    @Override public void run() {
+        try {
+            JSONObject body = new JSONObject();
+            body.put("terminalMode", mode);
+            activity.postJson(base + "/api/device/mode", body, deviceToken);
+            activity.runOnUiThread(new Runnable() {
+                @Override public void run() { activity.clearStudentSession("\u7ec8\u7aef\u6a21\u5f0f\u5df2\u66f4\u65b0\u3002"); }
+            });
+            new BootstrapStudentSessionTask(activity, base, deviceToken, "").run();
+        } catch (Exception error) {
+            activity.runOnUiThread(new StudentSessionApplyTask(activity, null, error.getMessage()));
         }
     }
 }
@@ -3819,15 +4729,15 @@ class UploadMaterialsTask implements Runnable {
     private final MainActivity activity;
     private final String base;
     private final String token;
-    private final String studentId;
+    private final UploadTarget target;
     private final List<Uri> uris;
     private final boolean reloadAfterFinish;
 
-    UploadMaterialsTask(MainActivity activity, String base, String token, String studentId, List<Uri> uris, boolean reloadAfterFinish) {
+    UploadMaterialsTask(MainActivity activity, String base, String token, UploadTarget target, List<Uri> uris, boolean reloadAfterFinish) {
         this.activity = activity;
         this.base = base;
         this.token = token;
-        this.studentId = studentId;
+        this.target = target;
         this.uris = uris;
         this.reloadAfterFinish = reloadAfterFinish;
     }
@@ -3845,11 +4755,18 @@ class UploadMaterialsTask implements Runnable {
             try {
                 activity.runOnUiThread(new StatusTask(activity, "正在上传 " + (i + 1) + "/" + uris.size() + "：" + fileName));
                 activity.runOnUiThread(new UploadQueueStatusTask(activity, "上传队列：" + (i + 1) + "/" + uris.size() + "，正在上传：" + fileName));
-                String url = base + "/api/students/" + activity.encode(studentId) + "/materials?filename=" + activity.encode(fileName);
-                if ("file".equals(uri.getScheme()) && uri.getPath() != null && uri.getPath().contains("screen-captures")) {
+                boolean captureFile = "file".equals(uri.getScheme()) && uri.getPath() != null && uri.getPath().contains("screen-captures");
+                String uploadId = "android-" + Integer.toHexString((uri.toString() + "|" + target.type + "|" + target.id).hashCode());
+                String url = "project".equals(target.type)
+                    ? base + "/api/projects/" + activity.encode(target.id) + "/materials?filename=" + activity.encode(fileName) + "&studentId=" + activity.encode(target.studentId)
+                    : base + "/api/students/" + activity.encode(target.id) + "/materials?filename=" + activity.encode(fileName);
+                url += "&uploadId=" + activity.encode(uploadId);
+                if (captureFile) {
                     String sessionId = activity.getSharedPreferences(CaptureProjectionService.PREFS, Activity.MODE_PRIVATE)
                         .getString(CaptureProjectionService.KEY_SESSION_ID, "");
                     url += "&sourceType=android_screenshot&captureSessionId=" + activity.encode(sessionId);
+                } else {
+                    url += "&sourceType=android_terminal_file";
                 }
                 activity.postFile(url, token, uri);
                 success += 1;
@@ -3864,14 +4781,14 @@ class UploadMaterialsTask implements Runnable {
         activity.pendingSharedUris.removeAll(uploadedUris);
         if (failures.size() == 0) {
             activity.pendingSharedUris.clear();
-            activity.runOnUiThread(new StatusTask(activity, "上传完成：" + success + " 个资料已进入 Windows 主机原始资料库。"));
+            activity.runOnUiThread(new StatusTask(activity, "上传完成：" + success + " 个资料已进入" + target.name + "。"));
             activity.runOnUiThread(new ToastTask(activity, "上传完成：" + success + " 个资料。"));
         } else {
             String firstFailure = failures.get(0);
             activity.runOnUiThread(new StatusTask(activity, "上传完成 " + success + "/" + uris.size() + " 个；失败 " + failures.size() + " 个。首个失败：" + firstFailure));
             activity.runOnUiThread(new ToastTask(activity, "部分资料上传失败，请检查主机连接后重试。"));
         }
-        activity.runOnUiThread(new UploadResultTask(activity, success, uris.size(), failedUris, failureLabels));
+        activity.runOnUiThread(new UploadResultTask(activity, success, uris.size(), failedUris, failureLabels, target));
         activity.runOnUiThread(new UploadQueueStatusTask(activity, "上传队列：完成，成功 " + success + " 个，失败 " + failures.size() + " 个。"));
         activity.runOnUiThread(new ClearSharedUploadTask(activity));
         if (reloadAfterFinish) {
@@ -3886,18 +4803,20 @@ class UploadResultTask implements Runnable {
     private final int total;
     private final List<Uri> failed;
     private final List<String> failureLabels;
+    private final UploadTarget target;
 
-    UploadResultTask(MainActivity activity, int success, int total, List<Uri> failed, List<String> failureLabels) {
+    UploadResultTask(MainActivity activity, int success, int total, List<Uri> failed, List<String> failureLabels, UploadTarget target) {
         this.activity = activity;
         this.success = success;
         this.total = total;
         this.failed = failed;
         this.failureLabels = failureLabels;
+        this.target = target;
     }
 
     @Override
     public void run() {
-        activity.applyUploadResult(success, total, failed, failureLabels);
+        activity.applyUploadResult(success, total, failed, failureLabels, target);
     }
 }
 
@@ -3992,19 +4911,21 @@ class ToastTask implements Runnable {
 class StudentsResultTask implements Runnable {
     private final MainActivity activity;
     private final List<Student> result;
+    private final List<LearningProject> projects;
     private final String error;
     private final boolean requiresApproval;
 
-    StudentsResultTask(MainActivity activity, List<Student> result, String error, boolean requiresApproval) {
+    StudentsResultTask(MainActivity activity, List<Student> result, List<LearningProject> projects, String error, boolean requiresApproval) {
         this.activity = activity;
         this.result = result;
+        this.projects = projects;
         this.error = error;
         this.requiresApproval = requiresApproval;
     }
 
     @Override
     public void run() {
-        activity.applyStudents(result, error, requiresApproval);
+        activity.applyStudents(result, projects, error, requiresApproval);
     }
 }
 

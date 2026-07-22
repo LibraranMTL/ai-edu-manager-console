@@ -22,10 +22,22 @@ test('material refresh preserves completed receipts and separates submitted work
 });
 
 test('mark submitted only moves records that are actually pending', () => {
-  const start = mainProcess.indexOf('function markStudentDigestSubmitted');
-  const end = mainProcess.indexOf('function latestFileMtime', start);
+  const start = mainProcess.indexOf('function registerStudentDigestBatch');
+  const end = mainProcess.indexOf('function markStudentDigestSubmitted', start);
   const body = mainProcess.slice(start, end);
-  assert.match(body, /normalizeUploadStatus\(record\.status\) !== 'pending_digest'/);
+  assert.match(body, /normalizeUploadStatus\(record\.status\) === 'pending_digest'/);
+  assert.match(body, /不能建立空消化批次|当前没有待处理资料/);
+  assert.match(body, /submittedIds\.has\(String\(record\.id/);
+});
+
+test('empty student digest work does not create an actionable task', () => {
+  assert.match(mainProcess, /pendingCount > 0 \|\| submittedCount > 0 \|\| \['digesting', 'submitted'\]\.includes\(digestStatus\)/);
+  assert.match(mainProcess, /options\.reconcileStudentDigests/);
+  assert.match(mainProcess, /!activeStudentDigestIds\.has\(String\(task\.id\)\)/);
+  assert.match(mainProcess, /reason: 'no_pending_materials'/);
+  assert.match(renderer, /if \(pendingCount <= 0\)/);
+  assert.match(renderer, /disabled=\{pendingDigestValue\(student\) <= 0 \|\| submittedDigestValue\(student\) > 0\}/);
+  assert.match(renderer, /暂无待处理/);
 });
 
 test('failed audit state is preserved after material counters refresh', () => {

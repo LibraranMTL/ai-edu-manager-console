@@ -1,6 +1,6 @@
 {
   "name": "edu-manager-launcher",
-  "version": "0.7.51",
+  "version": "0.9.9",
   "private": true,
   "type": "module",
   "main": "electron/main.cjs",
@@ -8,10 +8,12 @@
     "dev": "vite --host 0.0.0.0",
     "clean:dist": "node -e \"require('fs').rmSync('dist',{recursive:true,force:true})\"",
     "build": "pnpm clean:dist && vite build",
+    "build:terminal": "vite build --config vite.terminal.config.ts",
     "test": "node --test tests/*.test.cjs",
     "preview": "vite preview --host 0.0.0.0",
     "desktop": "electron .",
-    "build:win": "pnpm build && electron-builder --win portable --x64",
+    "build:win": "pnpm test && node scripts/build-windows-release.cjs",
+    "build:win-terminal": "pnpm test && node scripts/build-windows-terminal-release.cjs",
     "license-admin:desktop": "electron tools/license-admin-app",
     "build:license-admin": "electron-builder --projectDir tools/license-admin-app --win portable --x64"
   },
@@ -38,6 +40,9 @@
       "dist/**/*",
       "electron/**/*",
       "package.json"
+    ],
+    "asarUnpack": [
+      "electron/invoke-agent.ps1"
     ],
     "win": {
       "artifactName": "AI-edu-manager-console-Windows-${version}.${ext}",

@@ -1,0 +1,62 @@
+{
+  "schema": "edu-manager.knowledge-engine-evaluation.v1",
+  "datasetId": "education-synthetic-v1",
+  "synthetic": true,
+  "notice": "全部人物、资料、观察和结果均为虚构，只用于知识引擎合同评估。",
+  "subjects": [
+    { "id": "student-synthetic-a", "displayName": "虚构学生 A" },
+    { "id": "student-synthetic-b", "displayName": "虚构学生 B" }
+  ],
+  "scenarios": [
+    {
+      "id": "scenario-01-immutable-source",
+      "title": "原始资料不可变与重复导入幂等",
+      "expected": ["相同 ID 和内容重复导入不生成副本", "相同 ID 的不同内容被拒绝"]
+    },
+    {
+      "id": "scenario-02-evidence-required",
+      "title": "已确认结论必须带证据",
+      "expected": ["无 Evidence 的 confirmed Claim 被拒绝", "证据保留来源 URI 和摘录"]
+    },
+    {
+      "id": "scenario-03-candidate-hidden",
+      "title": "未确认候选默认不进入普通查询",
+      "expected": ["默认搜索只返回 confirmed", "显式授权后才可查询 candidate"]
+    },
+    {
+      "id": "scenario-04-conflicting-observations",
+      "title": "相互冲突的学习观察并存",
+      "expected": ["不静默覆盖旧观察", "冲突可通过 Claim 与关系表达"]
+    },
+    {
+      "id": "scenario-05-temporal-revision",
+      "title": "结论随时间修订并保留历史",
+      "expected": ["稳定 Claim ID 不变", "旧修订可审计", "更新时间可比较"]
+    },
+    {
+      "id": "scenario-06-entity-relationship",
+      "title": "项目、学生、证据和结论的关系检索",
+      "expected": ["关系使用稳定对象 ID", "关系导出后仍可恢复"]
+    },
+    {
+      "id": "scenario-07-student-isolation",
+      "title": "两个虚构学生的数据隔离",
+      "expected": ["按 subjectId 查询不串档", "跨学生合并需要显式授权"]
+    },
+    {
+      "id": "scenario-08-sensitive-field-policy",
+      "title": "敏感身份字段与成长证据分权",
+      "expected": ["引擎不自行决定可见性", "上层策略拒绝未授权敏感字段"]
+    },
+    {
+      "id": "scenario-09-correction-and-appeal",
+      "title": "学生纠正和监护人申诉进入事件账本",
+      "expected": ["纠正不删除历史", "申诉状态可追踪", "最终处理带责任人"]
+    },
+    {
+      "id": "scenario-10-portable-export-and-fallback",
+      "title": "开放导出、停用引擎与降级恢复",
+      "expected": ["导出包含 Markdown 和 JSON", "业务 ID 不变", "停用外部引擎后本地资料仍可读取"]
+    }
+  ]
+}

@@ -25,7 +25,7 @@ function validateTaskTransition(currentStatus, nextStatus) {
     return { ok: false, message: `不允许从 ${current} 直接流转到 ${next}。` };
   }
   if (next === 'succeeded' && current !== 'reviewing') {
-    return { ok: false, message: '任务成功前必须进入 reviewing 并完成人工审核。' };
+    return { ok: false, message: '任务成功前必须进入 reviewing 并完成结果校验或审核。' };
   }
   return { ok: true };
 }

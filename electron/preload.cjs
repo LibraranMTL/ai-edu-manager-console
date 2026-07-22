@@ -2,13 +2,13 @@ const { contextBridge, ipcRenderer } = require('electron');
 
 contextBridge.exposeInMainWorld('AndroidBridge', {
   copyText(value) {
-    ipcRenderer.send('bridge:copyText', value);
+    return ipcRenderer.invoke('bridge:copyText', value);
   },
   exportTextFile(filename, content) {
     return ipcRenderer.sendSync('bridge:exportTextFile', filename, content);
   },
-  importFiles(studentName) {
-    return ipcRenderer.sendSync('bridge:importFiles', studentName);
+  importFiles(studentName, targetJson) {
+    return ipcRenderer.sendSync('bridge:importFiles', studentName, targetJson);
   },
   pickMaterialSourceDir() {
     return ipcRenderer.sendSync('bridge:pickMaterialSourceDir');
@@ -16,11 +16,14 @@ contextBridge.exposeInMainWorld('AndroidBridge', {
   scanMaterialSources(studentId, sourcesJson) {
     return ipcRenderer.sendSync('bridge:scanMaterialSources', studentId, sourcesJson);
   },
-  importMaterialSourceFiles(studentId, pathsJson) {
-    return ipcRenderer.sendSync('bridge:importMaterialSourceFiles', studentId, pathsJson);
+  importMaterialSourceFiles(studentId, pathsJson, targetJson) {
+    return ipcRenderer.sendSync('bridge:importMaterialSourceFiles', studentId, pathsJson, targetJson);
   },
   getMaterialImportRecords(studentId) {
     return ipcRenderer.sendSync('bridge:getMaterialImportRecords', studentId);
+  },
+  removeMaterialImportRecords(studentId, recordIdsJson) {
+    return ipcRenderer.sendSync('bridge:removeMaterialImportRecords', studentId, recordIdsJson);
   },
   getCaptureCenterState() {
     return ipcRenderer.sendSync('bridge:getCaptureCenterState');
@@ -43,8 +46,11 @@ contextBridge.exposeInMainWorld('AndroidBridge', {
   stopCaptureSession(sessionId) {
     return ipcRenderer.invoke('bridge:stopCaptureSession', sessionId);
   },
-  promoteCaptureSession(sessionId) {
-    return ipcRenderer.invoke('bridge:promoteCaptureSession', sessionId);
+  promoteCaptureSession(sessionId, targetMode) {
+    return ipcRenderer.invoke('bridge:promoteCaptureSession', sessionId, targetMode);
+  },
+  deleteCaptureSession(sessionId) {
+    return ipcRenderer.invoke('bridge:deleteCaptureSession', sessionId);
   },
   openCaptureInbox(sessionId) {
     return ipcRenderer.sendSync('bridge:openCaptureInbox', sessionId);
@@ -82,8 +88,17 @@ contextBridge.exposeInMainWorld('AndroidBridge', {
   removeProjectRecord(projectId) {
     return ipcRenderer.sendSync('bridge:removeProjectRecord', projectId);
   },
+  deleteLearningProject(projectId) {
+    return ipcRenderer.sendSync('bridge:deleteLearningProject', projectId);
+  },
   relocateProjectWorkspace(projectId) {
     return ipcRenderer.sendSync('bridge:relocateProjectWorkspace', projectId);
+  },
+  confirmProjectWorkspaceRelocation(projectId, workspacePath) {
+    return ipcRenderer.sendSync('bridge:confirmProjectWorkspaceRelocation', projectId, workspacePath);
+  },
+  rollbackProjectWorkspaceRelocation(projectId) {
+    return ipcRenderer.sendSync('bridge:rollbackProjectWorkspaceRelocation', projectId);
   },
   getRemovedProjects() {
     return ipcRenderer.sendSync('bridge:getRemovedProjects');
@@ -103,11 +118,26 @@ contextBridge.exposeInMainWorld('AndroidBridge', {
   updateProjectStudentEvidence(projectId, studentId, evidenceJson) {
     return ipcRenderer.sendSync('bridge:updateProjectStudentEvidence', projectId, studentId, evidenceJson);
   },
+  getProjectStudentEvidencePrompt(projectId) {
+    return ipcRenderer.sendSync('bridge:getProjectStudentEvidencePrompt', projectId);
+  },
+  getProjectCompletionWizard(projectId) {
+    return ipcRenderer.sendSync('bridge:getProjectCompletionWizard', projectId);
+  },
+  importProjectStudentEvidenceSuggestions(projectId, pastedText = '') {
+    return ipcRenderer.sendSync('bridge:importProjectStudentEvidenceSuggestions', projectId, pastedText);
+  },
   buildCrossProjectKnowledgeIndex() {
     return ipcRenderer.sendSync('bridge:buildCrossProjectKnowledgeIndex');
   },
   pickProjectWorkspaceDir() {
     return ipcRenderer.sendSync('bridge:pickProjectWorkspaceDir');
+  },
+  pickProjectKnowledgeBaseDir() {
+    return ipcRenderer.sendSync('bridge:pickProjectKnowledgeBaseDir');
+  },
+  inspectProjectKnowledgeBase(rootPath) {
+    return ipcRenderer.sendSync('bridge:inspectProjectKnowledgeBase', rootPath);
   },
   updateProjectStatus(projectId, status) {
     return ipcRenderer.sendSync('bridge:updateProjectStatus', projectId, status);
@@ -122,7 +152,15 @@ contextBridge.exposeInMainWorld('AndroidBridge', {
     return ipcRenderer.sendSync('bridge:openProjectSpace', projectId, space);
   },
   scanProjectWorkspace(projectId) {
-    return ipcRenderer.sendSync('bridge:scanProjectWorkspace', projectId);
+    return ipcRenderer.invoke('bridge:scanProjectWorkspace', projectId);
+  },
+  cancelProjectWorkspaceScan(projectId) {
+    return ipcRenderer.invoke('bridge:cancelProjectWorkspaceScan', projectId);
+  },
+  onProjectWorkspaceScanProgress(callback) {
+    const listener = (_event, payload) => callback(payload);
+    ipcRenderer.on('bridge:projectWorkspaceScanProgress', listener);
+    return () => ipcRenderer.removeListener('bridge:projectWorkspaceScanProgress', listener);
   },
   reviewProjectStagingItems(projectId, itemIdsJson, decision, sourceStrategy, note) {
     return ipcRenderer.sendSync('bridge:reviewProjectStagingItems', projectId, itemIdsJson, decision, sourceStrategy, note);
@@ -132,6 +170,12 @@ contextBridge.exposeInMainWorld('AndroidBridge', {
   },
   updateProjectKnowledgeReview(projectId, recordIdsJson, status, note) {
     return ipcRenderer.sendSync('bridge:updateProjectKnowledgeReview', projectId, recordIdsJson, status, note);
+  },
+  getProjectUnifiedReview(projectId) {
+    return ipcRenderer.sendSync('bridge:getProjectUnifiedReview', projectId);
+  },
+  applyProjectUnifiedReview(projectId) {
+    return ipcRenderer.sendSync('bridge:applyProjectUnifiedReview', projectId);
   },
   importProjectAssets(projectId, assetIdsJson) {
     return ipcRenderer.sendSync('bridge:importProjectAssets', projectId, assetIdsJson);
@@ -148,6 +192,9 @@ contextBridge.exposeInMainWorld('AndroidBridge', {
   syncProjectDigestResult(projectId) {
     return ipcRenderer.sendSync('bridge:syncProjectDigestResult', projectId);
   },
+  applyProjectDigestReceiptText(projectId, rawText) {
+    return ipcRenderer.sendSync('bridge:applyProjectDigestReceiptText', projectId, rawText);
+  },
   importProjectStagingFiles(projectId) {
     return ipcRenderer.sendSync('bridge:importProjectStagingFiles', projectId);
   },
@@ -156,6 +203,15 @@ contextBridge.exposeInMainWorld('AndroidBridge', {
   },
   promoteProjectStagingItems(projectId, itemIdsJson) {
     return ipcRenderer.sendSync('bridge:promoteProjectStagingItems', projectId, itemIdsJson);
+  },
+  approveAndPromoteProjectStagingItems(projectId, itemIdsJson, sourceStrategy, note) {
+    return ipcRenderer.sendSync('bridge:approveAndPromoteProjectStagingItems', projectId, itemIdsJson, sourceStrategy, note);
+  },
+  previewProjectStagingAiScreening(projectId, rawText) {
+    return ipcRenderer.sendSync('bridge:previewProjectStagingAiScreening', projectId, rawText);
+  },
+  applyProjectStagingAiScreening(projectId, rawText) {
+    return ipcRenderer.sendSync('bridge:applyProjectStagingAiScreening', projectId, rawText);
   },
   importProjectStagingAiScreening(projectId) {
     return ipcRenderer.sendSync('bridge:importProjectStagingAiScreening', projectId);
@@ -262,6 +318,18 @@ contextBridge.exposeInMainWorld('AndroidBridge', {
   saveConversationExtract(studentId, extractJson, tool) {
     return ipcRenderer.sendSync('bridge:saveConversationExtract', studentId, extractJson, tool);
   },
+  updateConversationKnowledgeCandidate(studentId, candidateId, action, payloadJson) {
+    return ipcRenderer.sendSync('bridge:updateConversationKnowledgeCandidate', studentId, candidateId, action, payloadJson);
+  },
+  promoteConversationKnowledgeCandidates(studentId, requestJson) {
+    return ipcRenderer.sendSync('bridge:promoteConversationKnowledgeCandidates', studentId, requestJson);
+  },
+  rollbackConversationPromotion(studentId, transactionId) {
+    return ipcRenderer.sendSync('bridge:rollbackConversationPromotion', studentId, transactionId);
+  },
+  ingestKnowledgeCandidateEnvelope(studentId, envelopeJson) {
+    return ipcRenderer.sendSync('bridge:ingestKnowledgeCandidateEnvelope', studentId, envelopeJson);
+  },
   openStudentRootDir(studentId) {
     return ipcRenderer.sendSync('bridge:openStudentRootDir', studentId);
   },
@@ -310,6 +378,12 @@ contextBridge.exposeInMainWorld('AndroidBridge', {
   readMarkdownFile(documentId) {
     return ipcRenderer.sendSync('bridge:readMarkdownFile', documentId);
   },
+  listProjectKnowledgeFiles(projectId) {
+    return ipcRenderer.sendSync('bridge:listProjectKnowledgeFiles', projectId);
+  },
+  readProjectKnowledgeFile(projectId, documentId) {
+    return ipcRenderer.sendSync('bridge:readProjectKnowledgeFile', projectId, documentId);
+  },
   listLearningReports(studentId) {
     return ipcRenderer.sendSync('bridge:listLearningReports', studentId);
   },
@@ -327,6 +401,9 @@ contextBridge.exposeInMainWorld('AndroidBridge', {
   },
   updateGrowthEvidenceStatus(studentId, evidenceId, status, note) {
     return ipcRenderer.sendSync('bridge:updateGrowthEvidenceStatus', studentId, evidenceId, status, note);
+  },
+  batchReviewGrowthEvidence(studentId) {
+    return ipcRenderer.sendSync('bridge:batchReviewGrowthEvidence', studentId);
   },
   rebuildGrowthIndex(studentId) {
     return ipcRenderer.sendSync('bridge:rebuildGrowthIndex', studentId);
@@ -352,6 +429,9 @@ contextBridge.exposeInMainWorld('AndroidBridge', {
   getHostServiceStatus() {
     return ipcRenderer.sendSync('bridge:getHostServiceStatus');
   },
+  setHostUsageMode(mode) {
+    return ipcRenderer.sendSync('bridge:setHostUsageMode', mode);
+  },
   getHostServiceDiagnostics() {
     return ipcRenderer.sendSync('bridge:getHostServiceDiagnostics');
   },
@@ -373,6 +453,21 @@ contextBridge.exposeInMainWorld('AndroidBridge', {
   getHostDevices() {
     return ipcRenderer.sendSync('bridge:getHostDevices');
   },
+  renameHostIdentity(displayName) {
+    return ipcRenderer.sendSync('bridge:renameHostIdentity', displayName);
+  },
+  findLanTablets() {
+    return ipcRenderer.sendSync('bridge:findLanTablets');
+  },
+  inviteLanTablet(tabletId) {
+    return ipcRenderer.sendSync('bridge:inviteLanTablet', tabletId);
+  },
+  acceptHostPairRequest(requestId) {
+    return ipcRenderer.sendSync('bridge:acceptHostPairRequest', requestId);
+  },
+  rejectPairRequest(requestId) {
+    return ipcRenderer.sendSync('bridge:rejectPairRequest', requestId);
+  },
   getHostUploadRecords() {
     return ipcRenderer.sendSync('bridge:getHostUploadRecords');
   },
@@ -393,6 +488,21 @@ contextBridge.exposeInMainWorld('AndroidBridge', {
   },
   syncStudentDigestResult(studentId) {
     return ipcRenderer.sendSync('bridge:syncStudentDigestResult', studentId);
+  },
+  startDigestWorkflow(scopeType, scopeId, executor) {
+    return ipcRenderer.sendSync('bridge:startDigestWorkflow', scopeType, scopeId, executor);
+  },
+  getDigestWorkflowStatus(scopeType, scopeId) {
+    return ipcRenderer.sendSync('bridge:getDigestWorkflowStatus', scopeType, scopeId);
+  },
+  getDigestWorkflowCommand(scopeType, scopeId) {
+    return ipcRenderer.sendSync('bridge:getDigestWorkflowCommand', scopeType, scopeId);
+  },
+  retryDigestWorkflow(scopeType, scopeId, executor) {
+    return ipcRenderer.sendSync('bridge:retryDigestWorkflow', scopeType, scopeId, executor);
+  },
+  importDigestWorkflowResultText(scopeType, scopeId, content) {
+    return ipcRenderer.sendSync('bridge:importDigestWorkflowResultText', scopeType, scopeId, content);
   },
   getStudentDigestAudit(studentId) {
     return ipcRenderer.sendSync('bridge:getStudentDigestAudit', studentId);
@@ -433,6 +543,9 @@ contextBridge.exposeInMainWorld('AndroidBridge', {
   importTaskResult(taskId) {
     return ipcRenderer.sendSync('bridge:importTaskResult', taskId);
   },
+  importTaskResultText(taskId, content) {
+    return ipcRenderer.sendSync('bridge:importTaskResultText', taskId, content);
+  },
   syncQClawTaskResults() {
     return ipcRenderer.sendSync('bridge:syncQClawTaskResults');
   },
@@ -441,6 +554,9 @@ contextBridge.exposeInMainWorld('AndroidBridge', {
   },
   openTaskCenterPath(kind) {
     return ipcRenderer.sendSync('bridge:openTaskCenterPath', kind);
+  },
+  openTaskResultPath(taskId) {
+    return ipcRenderer.sendSync('bridge:openTaskResultPath', taskId);
   },
   generateStudentMaintenanceReport(studentId) {
     return ipcRenderer.sendSync('bridge:generateStudentMaintenanceReport', studentId);
@@ -483,5 +599,8 @@ contextBridge.exposeInMainWorld('AndroidBridge', {
   },
   setHostDeviceAccessMode(deviceId, optionsJson) {
     return ipcRenderer.sendSync('bridge:setHostDeviceAccessMode', deviceId, optionsJson);
+  },
+  setHostDeviceTerminalMode(deviceId, terminalMode, boundStudentId) {
+    return ipcRenderer.sendSync('bridge:setHostDeviceTerminalMode', deviceId, terminalMode, boundStudentId);
   },
 });

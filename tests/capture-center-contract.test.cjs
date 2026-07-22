@@ -12,7 +12,7 @@ const androidMain = fs.readFileSync(path.join(root, 'android-tablet-terminal', '
 const captureService = fs.readFileSync(path.join(root, 'android-tablet-terminal', 'src', 'com', 'qxmatrix', 'eduterminal', 'CaptureProjectionService.java'), 'utf8');
 
 test('Windows capture API is bridged end to end', () => {
-  for (const method of ['listCaptureSources', 'startCaptureSession', 'pauseCaptureSession', 'resumeCaptureSession', 'highlightCaptureSession', 'stopCaptureSession', 'promoteCaptureSession']) {
+  for (const method of ['listCaptureSources', 'startCaptureSession', 'pauseCaptureSession', 'resumeCaptureSession', 'highlightCaptureSession', 'stopCaptureSession', 'promoteCaptureSession', 'deleteCaptureSession']) {
     assert.match(main, new RegExp(`bridge:${method}`));
     assert.match(preload, new RegExp(`${method}\\(`));
     assert.match(ui, new RegExp(method));
@@ -21,6 +21,14 @@ test('Windows capture API is bridged end to end', () => {
   assert.match(main, /status: 'candidate'/);
   assert.match(main, /function promoteCaptureSession/);
   assert.match(main, /addUploadRecords\(records\)/);
+  assert.match(main, /targetMode === 'project_raw'/);
+  assert.match(main, /role: 'project_raw_capture'/);
+  assert.match(main, /triggerReason: 'capture_promotion'/);
+  assert.match(ui, /capture-promotion-target/);
+  assert.match(ui, /value="project_raw"/);
+  assert.match(ui, /value="student_raw"/);
+  assert.match(main, /path\.relative\(inboxRoot, inboxPath\)/);
+  assert.match(main, /fs\.rmSync\(inboxPath, \{ recursive: true, force: true \}\)/);
 });
 
 test('capture candidates do not enter student raw storage before promotion', () => {
@@ -52,6 +60,8 @@ test('capture UI follows setup, live control, review, and promotion sequence', (
   assert.ok(setup > 0);
   assert.ok(live > 0);
   assert.ok(sessions > setup);
-  assert.match(ui, /晋升资料/);
-  assert.match(ui, /打开采集箱/);
+  assert.match(ui, /confirmCapturePromotion|promoteCapture\(session\)/);
+  assert.match(ui, /openCaptureInbox/);
+  assert.match(ui, /deleteCaptureSession/);
+  assert.match(main, /retainedPromotedAssets/);
 });

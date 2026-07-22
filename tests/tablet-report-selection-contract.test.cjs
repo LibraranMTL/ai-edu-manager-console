@@ -15,5 +15,7 @@ test('tablet report buttons track and render the selected report', () => {
   assert.match(source, /styleSelectableButton\(reportChangesButton, "changes"\.equals\(selectedReportId\)\)/);
   assert.match(source, /styleSelectableButton\(reportStageButton, "stage"\.equals\(selectedReportId\)\)/);
   assert.match(source, /target\.setTextColor\(selected \? Color\.WHITE : accentColor\(\)\)/);
-  assert.match(source, /target\.setBackgroundColor\(selected \? accentColor\(\) : accentLightColor\(\)\)/);
+  assert.match(source, /int normal = selected \? accentColor\(\) : accentLightColor\(\)/);
+  assert.match(source, /target\.setBackgroundTintList\(new ColorStateList\(states, new int\[\] \{disabled, pressed, normal\}\)\)/);
+  assert.doesNotMatch(source.match(/void styleSelectableButton\([\s\S]+?\n    \}/)?.[0] || '', /setBackgroundColor/);
 });

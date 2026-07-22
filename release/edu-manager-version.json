@@ -1,12 +1,12 @@
 {
   "versionCode": 72,
   "versionName": "0.6.2",
-  "windowsVersionCode": 151,
-  "windowsVersionName": "0.9.10",
-  "windowsUrl": "https://www.greatbg.com/download/AI-edu-manager-console-Windows-0.9.10.zip",
-  "windowsTerminalVersionCode": 151,
-  "windowsTerminalVersionName": "0.9.10",
-  "windowsTerminalUrl": "https://www.greatbg.com/download/AI-edu-manager-student-terminal-Windows-0.9.10.exe",
+  "windowsVersionCode": 152,
+  "windowsVersionName": "0.10.1",
+  "windowsUrl": "https://www.greatbg.com/download/AI-edu-manager-console-Windows-0.10.1.zip",
+  "windowsTerminalVersionCode": 152,
+  "windowsTerminalVersionName": "0.10.1",
+  "windowsTerminalUrl": "https://www.greatbg.com/download/AI-edu-manager-student-terminal-Windows-0.10.1.exe",
   "terminalApkUrl": "https://www.greatbg.com/download/AI-edu-manager-tablet-terminal-0.6.2.apk",
   "tabletTerminalVersionCode": 72,
   "tabletTerminalVersionName": "0.6.2",
@@ -15,5 +15,5 @@
   "managerApkVersionCode": 23,
   "managerApkVersionName": "0.2.3",
   "apkUrl": "https://www.greatbg.com/download/AI-edu-manager-tablet-terminal-0.6.2.apk",
-  "notes": "Windows 主机端 0.9.10 / Windows 学生端 0.9.10 / Android 学生端 0.6.2：完成 P0-P2 性能与易用性优化；资料上传改为流式写入，耗时操作在后台执行，首页聚焦一次主操作，二维码功能按需加载。"
+  "notes": "Windows 主机端 0.10.1 / Windows 学生端 0.10.1 / Android 学生端 0.6.2：合并重复的学生创建入口，统一为新建学生档案；首次引导、左侧导航和新增学生按钮进入同一页面。"
 }

@@ -47,7 +47,7 @@ import { DigestStatusCard, type DigestWorkflowStatus } from './DigestStatusCard'
 const studentLoginQrDataUrlCache = new Map<string, string>();
 const loadQrCode = () => import('qrcode').then((module) => module.default);
 
-type Section = 'home' | 'init' | 'new' | 'inbox' | 'assets' | 'projects-new' | 'projects-existing' | 'growth' | 'reports' | 'archive' | 'qa' | 'memory' | 'soul' | 'rules' | 'conversation' | 'tasks' | 'settings';
+type Section = 'home' | 'init' | 'inbox' | 'assets' | 'projects-new' | 'projects-existing' | 'growth' | 'reports' | 'archive' | 'qa' | 'memory' | 'soul' | 'rules' | 'conversation' | 'tasks' | 'settings';
 type ProjectWorkflowTarget = 'workspace' | 'assets' | 'digest' | 'knowledge' | 'evidence' | 'promotion';
 type ThemeName = 'blue' | 'pink' | 'green' | 'purple' | 'orange';
 type LanguageCode = 'zh-CN' | 'zh-TW' | 'en' | 'fr' | 'es' | 'ja' | 'ko' | 'vi' | 'ms';
@@ -2085,8 +2085,7 @@ const zhCnText = {
   'app.subtitle': '填写学生信息后，一次创建知识库目录、AGENT.md 与基础档案，再按需连接 Agent 工具。',
   'projects.subtitle': '创建各种项目制学习的资料管理空间，智能进行资料分析与 知识沉淀',
   'nav.home': '首页',
-  'nav.init': '初始化教育管家',
-  'nav.new': '新建教育智能体',
+  'nav.init': '新建学生档案',
   'nav.inbox': '资料收集与处理',
   'nav.assets': '文件资产中心',
   'nav.projects': '学习项目',
@@ -2150,8 +2149,7 @@ const uiTranslations: Record<LanguageCode, Partial<Record<TranslationKey, string
     'app.subtitle': '填寫學生資訊後，一次建立知識庫目錄、AGENT.md 與基礎檔案，再按需連接 Agent 工具。',
     'projects.subtitle': '建立各類專案式學習的資料管理空間，智慧進行資料分析與知識沉澱',
     'nav.home': '首頁',
-    'nav.init': '初始化教育管家',
-    'nav.new': '新建教育智能體',
+    'nav.init': '新建學生檔案',
     'nav.inbox': '資料收集與處理',
     'nav.reports': '學情報告',
     'nav.archive': '查看教育檔案',
@@ -2206,8 +2204,7 @@ const uiTranslations: Record<LanguageCode, Partial<Record<TranslationKey, string
     'app.subtitle': 'Enter student details once to create the knowledge base, AGENT.md, and starter records, then connect an Agent tool if needed.',
     'projects.subtitle': 'Create project-based learning spaces for intelligent material analysis and knowledge development.',
     'nav.home': 'Home',
-    'nav.init': 'Initialize Manager',
-    'nav.new': 'New Education Agent',
+    'nav.init': 'New Student Record',
     'nav.inbox': 'Collect & Process',
     'nav.reports': 'Learning Reports',
     'nav.archive': 'Education Archive',
@@ -2261,8 +2258,7 @@ const uiTranslations: Record<LanguageCode, Partial<Record<TranslationKey, string
   fr: {
     'app.name': 'Console AI Education Manager',
     'nav.home': 'Accueil',
-    'nav.init': 'Initialiser',
-    'nav.new': 'Nouvel agent',
+    'nav.init': 'Nouveau dossier élève',
     'nav.inbox': 'Collecte et traitement',
     'nav.reports': 'Rapports',
     'nav.archive': 'Dossiers',
@@ -2315,8 +2311,7 @@ const uiTranslations: Record<LanguageCode, Partial<Record<TranslationKey, string
   es: {
     'app.name': 'Consola AI Education Manager',
     'nav.home': 'Inicio',
-    'nav.init': 'Inicializar',
-    'nav.new': 'Nuevo agente',
+    'nav.init': 'Nuevo expediente',
     'nav.inbox': 'Recopilar y procesar',
     'nav.reports': 'Informes',
     'nav.archive': 'Archivo',
@@ -2369,8 +2364,7 @@ const uiTranslations: Record<LanguageCode, Partial<Record<TranslationKey, string
   ja: {
     'app.name': 'AI教育マネージャーコンソール',
     'nav.home': 'ホーム',
-    'nav.init': '初期化',
-    'nav.new': '新規エージェント',
+    'nav.init': '学生記録を作成',
     'nav.inbox': '資料収集と処理',
     'nav.reports': '学習レポート',
     'nav.archive': '教育アーカイブ',
@@ -2423,8 +2417,7 @@ const uiTranslations: Record<LanguageCode, Partial<Record<TranslationKey, string
   ko: {
     'app.name': 'AI 교육 매니저 콘솔',
     'nav.home': '홈',
-    'nav.init': '초기화',
-    'nav.new': '새 교육 에이전트',
+    'nav.init': '학생 기록 만들기',
     'nav.inbox': '자료 수집 및 처리',
     'nav.reports': '학습 보고서',
     'nav.archive': '교육 기록',
@@ -2477,8 +2470,7 @@ const uiTranslations: Record<LanguageCode, Partial<Record<TranslationKey, string
   vi: {
     'app.name': 'Bảng điều khiển AI Education Manager',
     'nav.home': 'Trang chủ',
-    'nav.init': 'Khởi tạo',
-    'nav.new': 'Tạo Agent',
+    'nav.init': 'Tạo hồ sơ học sinh',
     'nav.inbox': 'Thu thập và xử lý',
     'nav.reports': 'Báo cáo học tập',
     'nav.archive': 'Hồ sơ học tập',
@@ -2531,8 +2523,7 @@ const uiTranslations: Record<LanguageCode, Partial<Record<TranslationKey, string
   ms: {
     'app.name': 'Konsol AI Education Manager',
     'nav.home': 'Laman utama',
-    'nav.init': 'Permulaan',
-    'nav.new': 'Agent baharu',
+    'nav.init': 'Cipta rekod pelajar',
     'nav.inbox': 'Kumpul & proses',
     'nav.reports': 'Laporan pembelajaran',
     'nav.archive': 'Arkib pendidikan',
@@ -4274,7 +4265,7 @@ function App() {
     });
     return () => { unsubscribe?.(); };
   }, []);
-  const activeAgentAdapter = activeSection === 'init' || activeSection === 'new' ? selectedToolAdapter : selectedStudentAdapter;
+  const activeAgentAdapter = activeSection === 'init' ? selectedToolAdapter : selectedStudentAdapter;
   const activeAgentTool = activeAgentAdapter.profile;
   const toolOpenState: Record<AgentToolId, boolean> = {
     qclaw: qclawOpened,
@@ -4295,7 +4286,7 @@ function App() {
   const isWindows = storageConfig.platform === 'windows';
   const effectiveLicenseStatus = licenseStatus || hostServiceStatus?.license || null;
   const windowsLicenseActive = !isWindows || Boolean(effectiveLicenseStatus?.active);
-  const restrictedSections = new Set<Section>(['init', 'new', 'inbox', 'assets', 'projects-new', 'projects-existing', 'growth', 'qa', 'memory', 'soul', 'rules', 'conversation', 'tasks']);
+  const restrictedSections = new Set<Section>(['init', 'inbox', 'assets', 'projects-new', 'projects-existing', 'growth', 'qa', 'memory', 'soul', 'rules', 'conversation', 'tasks']);
   const isLicenseRestrictedSection = isWindows && !windowsLicenseActive && restrictedSections.has(activeSection);
   const licenseRestrictionText = effectiveLicenseStatus?.message || 'Windows 主机尚未激活。未激活状态仅支持首页、系统设置和已有档案/报告的只读浏览。';
   const shouldBlockForAgentInstall = isWindows && installStatus ? !installStatus.anyInstalled : false;
@@ -5601,7 +5592,7 @@ ${sourceText}`;
   }, []);
 
   useEffect(() => {
-    if (!['init', 'new', 'settings'].includes(activeSection) || installStatus) return undefined;
+    if (!['init', 'settings'].includes(activeSection) || installStatus) return undefined;
     const timer = window.setTimeout(refreshInstallStatus, 0);
     return () => window.clearTimeout(timer);
   }, [activeSection, installStatus]);
@@ -10266,8 +10257,7 @@ ${JSON.stringify(items, null, 2)}
 
   const navItems = [
     { id: 'home' as const, label: t('nav.home'), icon: Home },
-    { id: 'init' as const, label: t('nav.init'), icon: Sparkles },
-    { id: 'new' as const, label: t('nav.new'), icon: Plus },
+    { id: 'init' as const, label: t('nav.init'), icon: Plus },
     { id: 'inbox' as const, label: t('nav.inbox'), icon: FileDown },
     ...(isWindows ? [
       { id: 'growth' as const, label: t('nav.growth'), icon: Sparkles },
@@ -10288,7 +10278,6 @@ ${JSON.stringify(items, null, 2)}
     const map: Record<Section, TranslationKey> = {
       home: 'nav.home',
       init: 'nav.init',
-      new: 'nav.new',
       inbox: 'nav.inbox',
       assets: 'nav.assets',
       'projects-new': 'nav.projects',
@@ -10487,7 +10476,7 @@ ${JSON.stringify(items, null, 2)}
         <section className="student-rail">
           <div className="rail-title">
             <span>{t('students.title')}</span>
-            <button aria-label={t('students.add')} onClick={() => setActiveSection('new')} title={!windowsLicenseActive ? '激活后可新增学生' : t('students.add')}>
+            <button aria-label={t('students.add')} onClick={() => setActiveSection('init')} title={!windowsLicenseActive ? '激活后可新增学生' : t('students.add')}>
               <Plus size={16} />
             </button>
           </div>
@@ -10975,7 +10964,7 @@ ${JSON.stringify(items, null, 2)}
           </>
         )}
 
-        {!shouldBlockForAgentInstall && !isLicenseRestrictedSection && (activeSection === 'init' || activeSection === 'new') && (
+        {!shouldBlockForAgentInstall && !isLicenseRestrictedSection && activeSection === 'init' && (
           <div className="setup-grid">
             <section className="panel form-panel">
               <div className="stepper">

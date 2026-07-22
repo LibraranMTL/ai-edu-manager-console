@@ -14739,7 +14739,7 @@ ipcMain.on('bridge:executeProjectPromotionPlan', (event, projectId, planJson) =>
 ipcMain.on('bridge:publishProjectPromotion', (event, projectId) => { licensedIpc(event, '知识贡献发布', () => publishProjectPromotion(projectId)); });
 ipcMain.on('bridge:rollbackProjectPromotionRun', (event, projectId, runId) => { licensedIpc(event, '知识贡献回滚', () => rollbackProjectPromotionRun(projectId, runId)); });
 ipcMain.on('bridge:initStudentWorkspace', (event, studentName, agentMd, indexMd, logMd) => {
-  licensedIpc(event, '初始化教育管家', () => initStudentWorkspace(studentName, agentMd, indexMd, logMd));
+  licensedIpc(event, '新建学生档案', () => initStudentWorkspace(studentName, agentMd, indexMd, logMd));
 });
 ipcMain.on('bridge:openApp', (event, appName) => { event.returnValue = openApp(appName); });
 ipcMain.on('bridge:openExternalUrl', (event, url) => { event.returnValue = openExternalUrl(url); });

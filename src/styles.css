@@ -5808,3 +5808,141 @@ textarea:focus {
     width: fit-content;
   }
 }
+.home-workflow-panel {
+  display: grid;
+  gap: 22px;
+  overflow: hidden;
+  background: linear-gradient(135deg, color-mix(in srgb, var(--accent) 12%, var(--panel)) 0%, var(--panel) 58%);
+}
+
+.background-work-banner {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  margin-bottom: 14px;
+  padding: 10px 14px;
+  border: 1px solid color-mix(in srgb, var(--accent) 35%, var(--border));
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--accent) 8%, var(--panel));
+  color: var(--text);
+  font-size: 13px;
+}
+
+.background-work-banner svg {
+  color: var(--accent);
+  animation: background-work-spin 1.2s linear infinite;
+}
+
+.background-work-banner span {
+  color: var(--muted);
+}
+
+@keyframes background-work-spin {
+  to { transform: rotate(360deg); }
+}
+
+.home-workflow-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+}
+
+.home-workflow-heading h2 {
+  margin: 5px 0 7px;
+}
+
+.home-workflow-heading p {
+  margin: 0;
+  color: var(--muted);
+}
+
+.home-primary-action {
+  min-width: 220px;
+  justify-content: center;
+}
+
+.home-flow-steps {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.home-flow-step {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 2px 9px;
+  align-items: center;
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--panel) 88%, transparent);
+  color: var(--text);
+  text-align: left;
+}
+
+.home-flow-step > span {
+  grid-row: span 2;
+  display: grid;
+  width: 28px;
+  height: 28px;
+  place-items: center;
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--accent) 14%, var(--panel));
+  color: var(--accent);
+  font-weight: 800;
+}
+
+.home-flow-step em {
+  color: var(--muted);
+  font-size: 12px;
+  font-style: normal;
+}
+
+.home-flow-step.attention {
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--border));
+  background: color-mix(in srgb, var(--accent) 8%, var(--panel));
+}
+
+.home-flow-step.done > span {
+  background: color-mix(in srgb, #2f9e63 16%, var(--panel));
+  color: #23784c;
+}
+
+.compact-home-grid {
+  margin-top: 0;
+}
+
+.home-advanced-tools {
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  background: color-mix(in srgb, var(--panel) 92%, transparent);
+}
+
+.home-advanced-tools > summary {
+  padding: 16px 20px;
+  cursor: pointer;
+  color: var(--muted);
+  font-weight: 700;
+}
+
+.home-advanced-tools-body {
+  display: grid;
+  gap: 18px;
+  padding: 0 16px 16px;
+}
+
+@media (max-width: 900px) {
+  .home-workflow-heading {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .home-primary-action {
+    width: 100%;
+  }
+
+  .home-flow-steps {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}

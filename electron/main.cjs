@@ -65,6 +65,8 @@ const { weekRange, monthRange, reportIsCurrent, validateSectionedDraft, publishR
 const { collectWorkspaceFiles, isPathInside: canonicalIsPathInside, sha1FileAsync, validateWorkspaceRebind } = require('./project-workspace.cjs');
 const { adoptionPathmap, scanProjectKnowledgeBase } = require('./project-knowledge-adoption.cjs');
 const { markUploadRecordsRemoved } = require('./upload-record-governance.cjs');
+const { createDirectoryCountCache } = require('./directory-count-cache.cjs');
+const { streamRequestToFile } = require('./streaming-upload.cjs');
 const {
   PAIR_PROTOCOL_VERSION,
   createPairRequest,
@@ -119,6 +121,7 @@ let uninstallEntriesCache = { at: 0, value: [] };
 let projectDigestLookupCache = { mtimeMs: -1, size: -1, projects: [] };
 const executablePathCache = new Map();
 const agentToolInstallCache = new Map();
+const hostDirectoryCountCache = createDirectoryCountCache({ ttlMs: 5 * 60 * 1000 });
 
 const APP_VERSION = app.getVersion();
 const DEFAULT_HOST_PORT = 18777;
@@ -174,8 +177,7 @@ function readSettings() {
 }
 
 function writeSettings(settings) {
-  fs.mkdirSync(path.dirname(settingsPath()), { recursive: true });
-  fs.writeFileSync(settingsPath(), JSON.stringify(settings, null, 2), 'utf8');
+  writeJsonAtomic(settingsPath(), settings);
 }
 
 function getHostUsageMode() {
@@ -193,8 +195,7 @@ function setHostUsageMode(mode) {
 }
 
 function writeHostIdentity(identity) {
-  fs.mkdirSync(path.dirname(hostIdentityPath()), { recursive: true });
-  fs.writeFileSync(hostIdentityPath(), JSON.stringify(identity, null, 2), 'utf8');
+  writeJsonAtomic(hostIdentityPath(), identity);
 }
 
 function getHostIdentity() {
@@ -231,8 +232,7 @@ function readPairRequests() {
 }
 
 function writePairRequests(requests) {
-  fs.mkdirSync(path.dirname(pairRequestsPath()), { recursive: true });
-  fs.writeFileSync(pairRequestsPath(), JSON.stringify({ requests: requests.slice(0, 100) }, null, 2), 'utf8');
+  writeJsonAtomic(pairRequestsPath(), { requests: requests.slice(0, 100) });
 }
 
 function publicPairRequest(request) {
@@ -437,8 +437,7 @@ function readDevices() {
 }
 
 function writeDevices(devices) {
-  fs.mkdirSync(path.dirname(devicesPath()), { recursive: true });
-  fs.writeFileSync(devicesPath(), JSON.stringify({ devices }, null, 2), 'utf8');
+  writeJsonAtomic(devicesPath(), { devices });
 }
 
 function readUploadRecords() {
@@ -451,8 +450,8 @@ function readUploadRecords() {
 }
 
 function writeUploadRecords(records) {
-  fs.mkdirSync(path.dirname(uploadRecordsPath()), { recursive: true });
-  fs.writeFileSync(uploadRecordsPath(), JSON.stringify({ records: records.slice(0, 200) }, null, 2), 'utf8');
+  writeJsonAtomic(uploadRecordsPath(), { records: records.slice(0, 200) });
+  hostDirectoryCountCache.clear();
 }
 
 function normalizeUploadStatus(status) {
@@ -974,14 +973,13 @@ function readStudentMaterials(student) {
 }
 
 function writeStudentMaterials(student, materials) {
-  fs.mkdirSync(studentManagerDir(student), { recursive: true });
-  fs.writeFileSync(studentMaterialsPath(student), JSON.stringify({
+  writeJsonAtomic(studentMaterialsPath(student), {
     version: 1,
     studentId: String(student.id || ''),
     studentName: student.name || '',
     updatedAt: new Date().toISOString(),
     materials: materials.slice(0, 1000),
-  }, null, 2), 'utf8');
+  });
 }
 
 function readStudentDigestState(student) {
@@ -1008,7 +1006,7 @@ function writeStudentDigestState(student, patch) {
     processedCount: materials.filter((item) => normalizeUploadStatus(item.status) === 'processed').length,
     updatedAt: new Date().toISOString(),
   };
-  fs.writeFileSync(studentDigestStatePath(student), JSON.stringify(next, null, 2), 'utf8');
+  writeJsonAtomic(studentDigestStatePath(student), next);
   return next;
 }
 
@@ -1101,12 +1099,11 @@ function readAssetIndex() {
 }
 
 function writeAssetIndex(assets) {
-  fs.mkdirSync(path.dirname(assetIndexPath()), { recursive: true });
-  fs.writeFileSync(assetIndexPath(), JSON.stringify({
+  writeJsonAtomic(assetIndexPath(), {
     version: 1,
     updatedAt: new Date().toISOString(),
     assets: assets.slice(0, 5000),
-  }, null, 2), 'utf8');
+  });
 }
 
 function readProjects() {
@@ -1134,12 +1131,11 @@ function readProjectsForDigestLookup() {
 }
 
 function writeProjects(projects) {
-  fs.mkdirSync(path.dirname(projectsPath()), { recursive: true });
-  fs.writeFileSync(projectsPath(), JSON.stringify({
+  writeJsonAtomic(projectsPath(), {
     version: 1,
     updatedAt: new Date().toISOString(),
     projects,
-  }, null, 2), 'utf8');
+  });
   projectDigestLookupCache = { mtimeMs: -1, size: -1, projects: [] };
 }
 
@@ -1979,8 +1975,7 @@ function readHostTimeline() {
 }
 
 function writeHostTimeline(events) {
-  fs.mkdirSync(path.dirname(hostTimelinePath()), { recursive: true });
-  fs.writeFileSync(hostTimelinePath(), JSON.stringify({ events: events.slice(0, 300) }, null, 2), 'utf8');
+  writeJsonAtomic(hostTimelinePath(), { events: events.slice(0, 300) });
 }
 
 function appendHostTimeline(event) {
@@ -3470,12 +3465,11 @@ function readCaptureStore() {
 }
 
 function writeCaptureStore(store) {
-  fs.mkdirSync(captureCenterRootPath(), { recursive: true });
-  fs.writeFileSync(captureSessionsPath(), JSON.stringify({
+  writeJsonAtomic(captureSessionsPath(), {
     version: CAPTURE_PROTOCOL_VERSION,
     updatedAt: new Date().toISOString(),
     sessions: (store.sessions || []).slice(0, 200),
-  }, null, 2), 'utf8');
+  });
 }
 
 function persistCaptureSession(session) {
@@ -4403,7 +4397,7 @@ function writeProjectDigestState(project, patch) {
     projectName: String(project.name || ''),
     updatedAt: new Date().toISOString(),
   };
-  fs.writeFileSync(projectDigestStatePath({ ...project, ...paths }), JSON.stringify(next, null, 2), 'utf8');
+  writeJsonAtomic(projectDigestStatePath({ ...project, ...paths }), next);
   return readProjectDigestState({ ...project, ...paths, digestState: next });
 }
 
@@ -10634,8 +10628,7 @@ function defaultUnifiedSoul(student) {
 }
 
 function writeJsonFile(file, value) {
-  fs.mkdirSync(path.dirname(file), { recursive: true });
-  fs.writeFileSync(file, JSON.stringify(value, null, 2), 'utf8');
+  writeJsonAtomic(file, value);
 }
 
 function readJsonFile(file, fallback) {
@@ -11788,8 +11781,7 @@ function getStudentsIndex() {
 }
 
 function writeStudentsIndex(students) {
-  fs.mkdirSync(path.dirname(studentsPath()), { recursive: true });
-  fs.writeFileSync(studentsPath(), JSON.stringify(students, null, 2), 'utf8');
+  writeJsonAtomic(studentsPath(), students);
 }
 
 function findStudentByKey(studentKey) {
@@ -11978,18 +11970,24 @@ function getHostConnectionMode() {
 
 function hostStudentStats() {
   const uploadRecords = readUploadRecords();
+  const recordsByStudent = new Map();
+  for (const record of uploadRecords) {
+    const studentId = String(record.studentId || '');
+    if (!recordsByStudent.has(studentId)) recordsByStudent.set(studentId, []);
+    recordsByStudent.get(studentId).push(record);
+  }
   return readStudentsIndex().map((student) => {
     const rawPath = student.rawPath || getRawDir(student.name);
     const summaryPath = student.summaryPath || getSummaryDir(student.name);
-    const records = uploadRecords.filter((record) => String(record.studentId) === String(student.id));
+    const records = recordsByStudent.get(String(student.id)) || [];
     const state = readStudentDigestState(student);
     return {
       id: String(student.id),
       name: student.name,
       loginId: student.loginId || '',
       loginQrPayload: student.loginId ? studentLoginQrPayload(student.loginId) : '',
-      rawFileCount: countFiles(rawPath),
-      archiveFileCount: countMarkdownFiles(summaryPath),
+      rawFileCount: hostDirectoryCountCache.count(rawPath, 'all'),
+      archiveFileCount: hostDirectoryCountCache.count(summaryPath, 'markdown', (name) => name.toLowerCase().endsWith('.md')),
       pendingDigestCount: records.filter((record) => normalizeUploadStatus(record.status) === 'pending_digest').length,
       submittedDigestCount: records.filter((record) => ['submitted', 'digesting'].includes(normalizeUploadStatus(record.status))).length,
       processedDigestCount: records.filter((record) => normalizeUploadStatus(record.status) === 'processed').length,
@@ -13062,7 +13060,7 @@ function sendJson(response, statusCode, body) {
   response.end(JSON.stringify(body));
 }
 
-function readRequestBuffer(request, maxBytes = 300 * 1024 * 1024) {
+function readRequestBuffer(request, maxBytes = MAX_UPLOAD_BYTES + 1024 * 1024) {
   return new Promise((resolve, reject) => {
     const chunks = [];
     let total = 0;
@@ -13464,22 +13462,24 @@ async function handleProjectMaterialUpload(request, response, projectId, url) {
   }
   try {
     const ensured = ensureProjectWorkspace(project);
-    const buffer = await readRequestBuffer(request);
     const contentType = String(request.headers['content-type'] || '');
-    const files = /multipart\/form-data/i.test(contentType)
-      ? parseMultipartFiles(buffer, contentType)
-      : [{ filename: url?.searchParams?.get('filename') || 'upload.bin', content: buffer }];
+    const multipart = /multipart\/form-data/i.test(contentType);
+    const expectedBytes = Number(request.headers['content-length'] || 0);
+    const files = multipart
+      ? parseMultipartFiles(await readRequestBuffer(request), contentType)
+      : [{ filename: url?.searchParams?.get('filename') || 'upload.bin', content: null, streamed: true }];
     if (!files.length) throw new Error('没有收到文件。');
     const saved = [];
     for (let fileIndex = 0; fileIndex < files.length; fileIndex += 1) {
       const file = files[fileIndex];
-      assertUploadFileAllowed(file.filename, file.content.length);
+      assertUploadFileAllowed(file.filename, file.content?.length || expectedBytes);
       const requestedUploadId = String(url?.searchParams?.get('uploadId') || request.headers['x-upload-id'] || '').trim().slice(0, 180);
       const uploadId = requestedUploadId && files.length === 1 ? requestedUploadId : (requestedUploadId ? `${requestedUploadId}-${fileIndex + 1}` : '');
       const existingAsset = uploadId
         ? readAssetIndex().find((asset) => (asset.references || []).some((reference) => String(reference.id) === uploadId && String(reference.spaceId) === String(ensured.id)))
         : null;
       if (existingAsset) {
+        if (file.streamed) request.resume();
         saved.push({
           filename: existingAsset.filename,
           path: existingAsset.path,
@@ -13492,8 +13492,11 @@ async function handleProjectMaterialUpload(request, response, projectId, url) {
         continue;
       }
       const target = uniqueTargetFile(ensured.rawPath, file.filename);
-      fs.writeFileSync(target, file.content);
-      const stat = fs.statSync(target);
+      const streamed = file.streamed
+        ? await streamRequestToFile(request, { targetPath: target, maxBytes: MAX_UPLOAD_BYTES, expectedBytes })
+        : null;
+      if (!streamed) fs.writeFileSync(target, file.content);
+      const stat = streamed || fs.statSync(target);
       const asset = upsertAssetFromFile(target, {
         studentId,
         studentName: student?.name || '',
@@ -13512,7 +13515,7 @@ async function handleProjectMaterialUpload(request, response, projectId, url) {
         filename: path.basename(target),
         path: target,
         size: stat.size,
-        sha1: asset?.sha1 || sha1File(target),
+        sha1: asset?.sha1 || streamed?.sha1 || sha1File(target),
         assetId: asset?.assetId || '',
         uploadId,
         duplicate: false,
@@ -13737,10 +13740,10 @@ async function handleMaterialUpload(request, response, studentId, url) {
   fs.mkdirSync(rawPath, { recursive: true });
   try {
     const contentType = String(request.headers['content-type'] || '');
-    const buffer = await readRequestBuffer(request);
     const uploadId = String(url.searchParams.get('uploadId') || request.headers['x-upload-id'] || '').trim().slice(0, 180);
     const existingUpload = uploadId ? readUploadRecords().find((record) => String(record.uploadId || '') === uploadId && String(record.studentId) === String(studentId)) : null;
     if (existingUpload) {
+      request.resume();
       sendJson(response, 200, {
         ok: true,
         duplicate: true,
@@ -13757,6 +13760,7 @@ async function handleMaterialUpload(request, response, studentId, url) {
     }
     const saved = [];
     if (/multipart\/form-data/i.test(contentType)) {
+      const buffer = await readRequestBuffer(request);
       const files = parseMultipartFiles(buffer, contentType);
       if (!files.length) throw new Error('multipart request has no file parts.');
       for (const file of files) {
@@ -13767,10 +13771,11 @@ async function handleMaterialUpload(request, response, studentId, url) {
       }
     } else {
       const filename = url.searchParams.get('filename') || 'upload.bin';
-      assertUploadFileAllowed(filename, buffer.length);
+      const expectedBytes = Number(request.headers['content-length'] || 0);
+      assertUploadFileAllowed(filename, expectedBytes);
       const target = uniqueTargetFile(rawPath, filename);
-      fs.writeFileSync(target, buffer);
-      saved.push({ filename: path.basename(target), path: target, size: buffer.length });
+      const streamed = await streamRequestToFile(request, { targetPath: target, maxBytes: MAX_UPLOAD_BYTES, expectedBytes });
+      saved.push({ filename: path.basename(target), path: target, size: streamed.size, sha1: streamed.sha1 });
     }
     resetUploadCounterIfNeeded();
     todayUploadCount += saved.length;
@@ -13782,7 +13787,7 @@ async function handleMaterialUpload(request, response, studentId, url) {
       size: item.size,
       path: item.path,
       rawPath,
-      sha1: sha1File(item.path),
+      sha1: item.sha1 || sha1File(item.path),
       deviceId: request.authContext?.deviceId || 'admin',
       deviceName: request.authContext?.deviceName || '主机控制台',
       sourceType: url.searchParams.get('sourceType') || 'remote_upload',
@@ -14636,6 +14641,20 @@ function licensedIpc(event, action, handler) {
   event.returnValue = handler();
 }
 
+function licensedInvoke(action, handler) {
+  const locked = licenseRequiredJson(action);
+  if (locked) return Promise.resolve(locked);
+  return new Promise((resolve) => {
+    setImmediate(() => {
+      try {
+        resolve(handler());
+      } catch (error) {
+        resolve(JSON.stringify({ ok: false, message: `${action}失败：${error.message}` }));
+      }
+    });
+  });
+}
+
 ipcMain.handle('bridge:copyText', (_event, value) => {
   try {
     const text = String(value || '');
@@ -14653,13 +14672,13 @@ ipcMain.handle('bridge:copyText', (_event, value) => {
 ipcMain.on('bridge:exportTextFile', (event, filename, content) => { licensedIpc(event, '导出初始化文档', () => exportTextFile(filename, content)); });
 ipcMain.on('bridge:importFiles', (event, studentName, targetJson) => { licensedIpc(event, '导入资料', () => importFiles(studentName, targetJson)); });
 ipcMain.on('bridge:pickMaterialSourceDir', (event) => { licensedIpc(event, '资料来源目录', () => pickMaterialSourceDir()); });
-ipcMain.on('bridge:scanMaterialSources', (event, studentId, sourcesJson) => { licensedIpc(event, '资料来源目录扫描', () => scanMaterialSources(studentId, sourcesJson)); });
-ipcMain.on('bridge:importMaterialSourceFiles', (event, studentId, pathsJson, targetJson) => { licensedIpc(event, '导入资料', () => importMaterialSourceFiles(studentId, pathsJson, targetJson)); });
+ipcMain.handle('bridge:scanMaterialSources', (_event, studentId, sourcesJson) => licensedInvoke('资料来源目录扫描', () => scanMaterialSources(studentId, sourcesJson)));
+ipcMain.handle('bridge:importMaterialSourceFiles', (_event, studentId, pathsJson, targetJson) => licensedInvoke('导入资料', () => importMaterialSourceFiles(studentId, pathsJson, targetJson)));
 ipcMain.on('bridge:getMaterialImportRecords', (event, studentId) => { event.returnValue = getMaterialImportRecords(studentId); });
 ipcMain.on('bridge:removeMaterialImportRecords', (event, studentId, recordIdsJson) => { licensedIpc(event, '移除资料记录', () => removeMaterialImportRecords(studentId, recordIdsJson)); });
 ipcMain.on('bridge:getAssetIndex', (event) => { event.returnValue = JSON.stringify(assetIndexSummary()); });
-ipcMain.on('bridge:rebuildAssetIndex', (event) => { licensedIpc(event, '资产索引补建', () => rebuildAssetIndex()); });
-ipcMain.on('bridge:analyzeAssetGovernance', (event) => { licensedIpc(event, '资产治理建议', () => analyzeAssetGovernance()); });
+ipcMain.handle('bridge:rebuildAssetIndex', () => licensedInvoke('资产索引补建', () => rebuildAssetIndex()));
+ipcMain.handle('bridge:analyzeAssetGovernance', () => licensedInvoke('资产治理建议', () => analyzeAssetGovernance()));
 ipcMain.on('bridge:cleanupAssetReferences', (event, assetId) => { licensedIpc(event, '资产引用清理', () => cleanupAssetReferences(assetId)); });
 ipcMain.on('bridge:createAssetVersionSnapshot', (event, assetId) => { licensedIpc(event, '资产版本快照', () => createAssetVersionSnapshot(assetId)); });
 ipcMain.on('bridge:markAssetGovernanceDecision', (event, assetId, decision, note) => { licensedIpc(event, '资产治理人工决策', () => markAssetGovernanceDecision(assetId, decision, note)); });
@@ -14680,7 +14699,7 @@ ipcMain.on('bridge:duplicateProject', (event, projectId, name) => { licensedIpc(
 ipcMain.on('bridge:updateProjectStudentEvidence', (event, projectId, studentId, evidenceJson) => { licensedIpc(event, '学生独立成长证据', () => updateProjectStudentEvidence(projectId, studentId, evidenceJson)); });
 ipcMain.on('bridge:getProjectStudentEvidencePrompt', (event, projectId) => { licensedIpc(event, '个人成长证据建议任务', () => getProjectStudentEvidencePrompt(projectId)); });
 ipcMain.on('bridge:importProjectStudentEvidenceSuggestions', (event, projectId, pastedText) => { licensedIpc(event, '同步个人成长证据建议', () => importProjectStudentEvidenceSuggestions(projectId, pastedText)); });
-ipcMain.on('bridge:buildCrossProjectKnowledgeIndex', (event) => { licensedIpc(event, '跨项目知识关联', () => buildCrossProjectKnowledgeIndex()); });
+ipcMain.handle('bridge:buildCrossProjectKnowledgeIndex', () => licensedInvoke('跨项目知识关联', () => buildCrossProjectKnowledgeIndex()));
 ipcMain.on('bridge:pickProjectWorkspaceDir', (event) => { licensedIpc(event, '选择已有项目文件夹', () => pickProjectWorkspaceDir()); });
 ipcMain.on('bridge:pickProjectKnowledgeBaseDir', (event) => { licensedIpc(event, '选择已有项目知识空间', () => pickProjectKnowledgeBaseDir()); });
 ipcMain.on('bridge:inspectProjectKnowledgeBase', (event, rootPath) => { licensedIpc(event, '检查已有项目知识空间', () => inspectProjectKnowledgeBase(rootPath)); });

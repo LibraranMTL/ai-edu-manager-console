@@ -75,10 +75,14 @@ function buildDigestBatch(options = {}) {
 
 function writeJsonAtomic(file, value) {
   fs.mkdirSync(path.dirname(file), { recursive: true });
-  const temporary = `${file}.${process.pid}.${Date.now()}.tmp`;
-  fs.writeFileSync(temporary, JSON.stringify(value, null, 2), 'utf8');
-  fs.renameSync(temporary, file);
-  return value;
+  const temporary = `${file}.${process.pid}.${Date.now()}.${crypto.randomBytes(4).toString('hex')}.tmp`;
+  try {
+    fs.writeFileSync(temporary, JSON.stringify(value, null, 2), 'utf8');
+    fs.renameSync(temporary, file);
+    return value;
+  } finally {
+    try { fs.rmSync(temporary, { force: true }); } catch {}
+  }
 }
 
 function readDigestBatch(file) {

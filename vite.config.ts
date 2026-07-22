@@ -7,6 +7,19 @@ const versionManifest = JSON.parse(readFileSync(resolve(process.cwd(), 'release/
 
 export default defineConfig({
   base: './',
+  build: {
+    rollupOptions: {
+      output: {
+        manualChunks(id) {
+          if (!id.includes('node_modules')) return undefined;
+          if (id.includes('react-dom') || id.includes('/react/')) return 'vendor-react';
+          if (id.includes('lucide-react')) return 'vendor-icons';
+          if (id.includes('/qrcode/')) return 'feature-qrcode';
+          return undefined;
+        },
+      },
+    },
+  },
   define: {
     __APP_VERSION__: JSON.stringify(packageJson.version),
     __APP_VERSION_CODE__: JSON.stringify(Number(versionManifest.windowsVersionCode || 0)),

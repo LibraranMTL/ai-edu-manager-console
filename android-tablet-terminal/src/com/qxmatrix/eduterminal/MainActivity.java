@@ -100,8 +100,8 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
     static final int REQUEST_EXPORT_CONNECTION_BACKUP = 8108;
     static final int REQUEST_IMPORT_CONNECTION_BACKUP = 8109;
     static final int REQUEST_CAPTURE_STUDENT_QR = 8110;
-    static final String VERSION_NAME = "0.6.1";
-    static final int VERSION_CODE = 71;
+    static final String VERSION_NAME = "0.6.2";
+    static final int VERSION_CODE = 72;
     static final String CONNECTION_BACKUP_KIND = "ai-edu-manager-tablet-connection-backup";
     static final int CONNECTION_BACKUP_VERSION = 1;
     static final String UPDATE_MANIFEST_URL = "https://www.greatbg.com/download/edu-manager-version.json";
@@ -2542,23 +2542,17 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
         connection.setRequestMethod("POST");
         connection.setDoOutput(true);
         connection.setRequestProperty("Authorization", "Bearer " + token);
-        String boundary = "----EduTerminal" + System.currentTimeMillis();
-        connection.setRequestProperty("Content-Type", "multipart/form-data; boundary=" + boundary);
+        connection.setRequestProperty("Content-Type", "application/octet-stream");
+        connection.setChunkedStreamingMode(16384);
 
         InputStream input = openUriInput(uri);
         OutputStream output = connection.getOutputStream();
-        String fileName = displayName(uri);
-        String head = "--" + boundary + "\r\n"
-            + "Content-Disposition: form-data; name=\"file\"; filename=\"" + fileName.replace("\"", "_") + "\"\r\n"
-            + "Content-Type: application/octet-stream\r\n\r\n";
-        output.write(head.getBytes("UTF-8"));
         byte[] buffer = new byte[16384];
         int read;
         while (input != null && (read = input.read(buffer)) != -1) {
             output.write(buffer, 0, read);
         }
         if (input != null) input.close();
-        output.write(("\r\n--" + boundary + "--\r\n").getBytes("UTF-8"));
         output.flush();
         output.close();
 

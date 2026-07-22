@@ -1,6 +1,5 @@
 ﻿import React, { useEffect, useMemo, useState } from 'react';
 import { createRoot } from 'react-dom/client';
-import QRCode from 'qrcode';
 import {
   Archive,
   AlertTriangle,
@@ -44,6 +43,9 @@ import {
 } from 'lucide-react';
 import './styles.css';
 import { DigestStatusCard, type DigestWorkflowStatus } from './DigestStatusCard';
+
+const studentLoginQrDataUrlCache = new Map<string, string>();
+const loadQrCode = () => import('qrcode').then((module) => module.default);
 
 type Section = 'home' | 'init' | 'new' | 'inbox' | 'assets' | 'projects-new' | 'projects-existing' | 'growth' | 'reports' | 'archive' | 'qa' | 'memory' | 'soul' | 'rules' | 'conversation' | 'tasks' | 'settings';
 type ProjectWorkflowTarget = 'workspace' | 'assets' | 'digest' | 'knowledge' | 'evidence' | 'promotion';
@@ -677,8 +679,8 @@ type AndroidBridge = {
   exportTextFile?: (filename: string, content: string) => string;
   importFiles?: (studentName: string, targetJson?: string) => boolean | string;
   pickMaterialSourceDir?: () => string;
-  scanMaterialSources?: (studentId: string, sourcesJson: string) => string;
-  importMaterialSourceFiles?: (studentId: string, pathsJson: string, targetJson?: string) => string;
+  scanMaterialSources?: (studentId: string, sourcesJson: string) => Promise<string>;
+  importMaterialSourceFiles?: (studentId: string, pathsJson: string, targetJson?: string) => Promise<string>;
   getMaterialImportRecords?: (studentId: string) => string;
   removeMaterialImportRecords?: (studentId: string, recordIdsJson: string) => string;
   getCaptureCenterState?: () => string;
@@ -692,8 +694,8 @@ type AndroidBridge = {
   deleteCaptureSession?: (sessionId: string) => Promise<string>;
   openCaptureInbox?: (sessionId?: string) => string;
   getAssetIndex?: () => string;
-  rebuildAssetIndex?: () => string;
-  analyzeAssetGovernance?: () => string;
+  rebuildAssetIndex?: () => Promise<string>;
+  analyzeAssetGovernance?: () => Promise<string>;
   cleanupAssetReferences?: (assetId: string) => string;
   createAssetVersionSnapshot?: (assetId: string) => string;
   markAssetGovernanceDecision?: (assetId: string, decision: string, note?: string) => string;
@@ -714,7 +716,7 @@ type AndroidBridge = {
   updateProjectStudentEvidence?: (projectId: string, studentId: string, evidenceJson: string) => string;
   getProjectStudentEvidencePrompt?: (projectId: string) => string;
   importProjectStudentEvidenceSuggestions?: (projectId: string, pastedText?: string) => string;
-  buildCrossProjectKnowledgeIndex?: () => string;
+  buildCrossProjectKnowledgeIndex?: () => Promise<string>;
   pickProjectWorkspaceDir?: () => string;
   pickProjectKnowledgeBaseDir?: () => string;
   inspectProjectKnowledgeBase?: (rootPath: string) => string;
@@ -3962,6 +3964,7 @@ function App() {
   const [selectedDownloadPaths, setSelectedDownloadPaths] = useState<string[]>([]);
   const [materialSourceMessage, setMaterialSourceMessage] = useState('');
   const [materialSourceFiles, setMaterialSourceFiles] = useState<MaterialSourceCandidate[]>([]);
+  const [materialSourceBusyAction, setMaterialSourceBusyAction] = useState('');
   const [selectedMaterialSourcePaths, setSelectedMaterialSourcePaths] = useState<string[]>([]);
   const [materialImportTargetKey, setMaterialImportTargetKey] = useState('student');
   const [materialImportRecords, setMaterialImportRecords] = useState<MaterialImportRecord[]>([]);
@@ -3977,6 +3980,7 @@ function App() {
   const [captureBusy, setCaptureBusy] = useState(false);
   const [assetIndex, setAssetIndex] = useState<AssetIndexState>({ assets: [] });
   const [assetMessage, setAssetMessage] = useState('');
+  const [assetBusyAction, setAssetBusyAction] = useState('');
   const [assetGovernancePreview, setAssetGovernancePreview] = useState('');
   const [assetSearch, setAssetSearch] = useState('');
   const [assetStudentFilter, setAssetStudentFilter] = useState('all');
@@ -5030,8 +5034,10 @@ function App() {
       setHomeMode(status.usageMode === 'host_terminal' ? 'host' : 'local');
       if (status.license) setLicenseStatus(status.license);
       setHostPortDraft(String(status.port || 18777));
-      refreshHostUploadRecords();
-      refreshHostTimeline();
+      if (activeSection === 'settings') {
+        refreshHostUploadRecords();
+        refreshHostTimeline();
+      }
     } catch {
       setHostServiceMessage('读取主机服务状态失败。');
     }
@@ -5697,7 +5703,7 @@ ${sourceText}`;
         }
       }
     }, 3000);
-    const hostTimer = window.setInterval(refreshHostServiceStatus, 10000);
+    const hostTimer = window.setInterval(refreshHostServiceStatus, 30000);
     return () => {
       window.clearInterval(timer);
       window.clearInterval(hostTimer);
@@ -5740,7 +5746,7 @@ ${sourceText}`;
       return;
     }
     let cancelled = false;
-    QRCode.toDataURL(payload, { margin: 2, width: 320, errorCorrectionLevel: 'H' })
+    loadQrCode().then((QRCode) => QRCode.toDataURL(payload, { margin: 2, width: 320, errorCorrectionLevel: 'H' }))
       .then((url) => {
         if (!cancelled) setHostPairQr(url);
       })
@@ -5752,6 +5758,15 @@ ${sourceText}`;
     };
   }, [hostServiceStatus?.pairPayloadText]);
 
+  const studentLoginQrSignature = useMemo(
+    () => (hostServiceStatus?.students ?? [])
+      .filter((student) => student.loginQrPayload)
+      .map((student) => `${student.id}:${student.loginQrPayload}`)
+      .sort()
+      .join('|'),
+    [hostServiceStatus?.students],
+  );
+
   useEffect(() => {
     const loginStudents = (hostServiceStatus?.students ?? []).filter((student) => student.loginQrPayload);
     if (loginStudents.length === 0) {
@@ -5759,10 +5774,16 @@ ${sourceText}`;
       return;
     }
     let cancelled = false;
-    Promise.all(loginStudents.map(async (student) => [
-      student.id,
-      await QRCode.toDataURL(student.loginQrPayload || '', { margin: 2, width: 220, errorCorrectionLevel: 'H' }),
-    ] as const))
+    Promise.all(loginStudents.map(async (student) => {
+      const payload = student.loginQrPayload || '';
+      let dataUrl = studentLoginQrDataUrlCache.get(payload);
+      if (!dataUrl) {
+        const QRCode = await loadQrCode();
+        dataUrl = await QRCode.toDataURL(payload, { margin: 2, width: 220, errorCorrectionLevel: 'H' });
+        studentLoginQrDataUrlCache.set(payload, dataUrl);
+      }
+      return [student.id, dataUrl] as const;
+    }))
       .then((entries) => {
         if (!cancelled) setStudentLoginQrs(Object.fromEntries(entries));
       })
@@ -5772,7 +5793,11 @@ ${sourceText}`;
     return () => {
       cancelled = true;
     };
-  }, [hostServiceStatus?.students]);
+  }, [studentLoginQrSignature]);
+
+  useEffect(() => {
+    if (isWindows && activeSection === 'settings') refreshHostServiceStatus();
+  }, [isWindows, activeSection]);
 
   useEffect(() => {
     if (activeSection === 'memory' || activeSection === 'soul' || activeSection === 'qa' || activeSection === 'conversation') {
@@ -7404,14 +7429,18 @@ ${sourceText}`;
     }
   };
 
-  const scanMaterialSourcesForStudent = (student: Student) => {
+  const scanMaterialSourcesForStudent = async (student: Student, continueAfterImport = false) => {
+    if (materialSourceBusyAction && !continueAfterImport) return;
     const sources = student.materialSources ?? [];
-    const raw = bridge()?.scanMaterialSources?.(student.id, JSON.stringify(sources));
-    if (!raw) {
+    const action = bridge()?.scanMaterialSources;
+    if (!action) {
       setMaterialSourceMessage('当前环境不支持扫描资料来源目录。');
       return;
     }
+    setMaterialSourceBusyAction('scan');
+    setMaterialSourceMessage('正在扫描资料来源目录，请稍候…');
     try {
+      const raw = await action(student.id, JSON.stringify(sources));
       const result = JSON.parse(raw) as { ok?: boolean; files?: MaterialSourceCandidate[]; scannedAt?: string; message?: string };
       if (!result.ok) {
         setMaterialSourceFiles([]);
@@ -7431,6 +7460,8 @@ ${sourceText}`;
       refreshMaterialImportRecords(student);
     } catch {
       setMaterialSourceMessage('资料来源扫描结果解析失败。');
+    } finally {
+      setMaterialSourceBusyAction('');
     }
   };
 
@@ -7438,28 +7469,34 @@ ${sourceText}`;
     setSelectedMaterialSourcePaths((current) => (current.includes(path) ? current.filter((item) => item !== path) : [...current, path]));
   };
 
-  const importSelectedMaterialSourceFiles = (student: Student) => {
+  const importSelectedMaterialSourceFiles = async (student: Student) => {
+    if (materialSourceBusyAction) return;
     if (selectedMaterialSourcePaths.length === 0) {
       setMaterialSourceMessage('请先勾选要导入的来源文件。');
       return;
     }
     const target = materialImportTargetForStudent(student);
-    const raw = bridge()?.importMaterialSourceFiles?.(student.id, JSON.stringify(selectedMaterialSourcePaths), JSON.stringify(target));
-    if (!raw) {
+    const action = bridge()?.importMaterialSourceFiles;
+    if (!action) {
       setMaterialSourceMessage('当前环境不支持导入资料来源文件。');
       return;
     }
+    setMaterialSourceBusyAction('import');
+    setMaterialSourceMessage(`正在导入 ${selectedMaterialSourcePaths.length} 个文件，请稍候…`);
     try {
+      const raw = await action(student.id, JSON.stringify(selectedMaterialSourcePaths), JSON.stringify(target));
       const result = JSON.parse(raw) as { ok?: boolean; imported?: number; skipped?: number; failed?: number; message?: string };
       setMaterialSourceMessage(result.message || (result.ok ? '已导入资料来源文件。' : '导入资料来源文件失败。'));
       if (result.ok && Number(result.imported ?? 0) > 0) {
         recordImportedFiles(student.id, Number(result.imported ?? 0));
         setSelectedMaterialSourcePaths([]);
         refreshMaterialImportRecords(student);
-        scanMaterialSourcesForStudent(student);
+        await scanMaterialSourcesForStudent(student, true);
       }
     } catch {
       setMaterialSourceMessage('资料来源导入结果解析失败。');
+    } finally {
+      setMaterialSourceBusyAction('');
     }
   };
 
@@ -7478,28 +7515,38 @@ ${sourceText}`;
     }
   };
 
-  const rebuildAssets = () => {
-    const raw = bridge()?.rebuildAssetIndex?.();
-    if (!raw) {
+  const rebuildAssets = async () => {
+    if (assetBusyAction) return;
+    const action = bridge()?.rebuildAssetIndex;
+    if (!action) {
       setAssetMessage('当前环境不支持补建资产索引。');
       return;
     }
+    setAssetBusyAction('rebuild');
+    setAssetMessage('正在扫描并补建资产索引，请稍候…');
     try {
+      const raw = await action();
       const result = JSON.parse(raw) as AssetIndexState;
       setAssetIndex({ ...result, assets: result.assets ?? [] });
       setAssetMessage(result.message || '资产索引已补建。');
     } catch {
       setAssetMessage('补建资产索引结果解析失败。');
+    } finally {
+      setAssetBusyAction('');
     }
   };
 
-  const analyzeAssets = () => {
-    const raw = bridge()?.analyzeAssetGovernance?.();
-    if (!raw) {
+  const analyzeAssets = async () => {
+    if (assetBusyAction) return;
+    const action = bridge()?.analyzeAssetGovernance;
+    if (!action) {
       setAssetMessage('当前环境不支持资产治理建议。');
       return;
     }
+    setAssetBusyAction('analyze');
+    setAssetMessage('正在分析资产治理建议，请稍候…');
     try {
+      const raw = await action();
       const result = JSON.parse(raw) as AssetIndexState & { content?: string; reportPath?: string; issueCount?: number };
       setAssetIndex({ ...result, assets: result.assets ?? [] });
       setAssetMessage(result.message || `已生成资产治理建议，需治理 ${result.issueCount ?? 0} 个资产。`);
@@ -7508,6 +7555,8 @@ ${sourceText}`;
       }
     } catch {
       setAssetMessage('资产治理建议结果解析失败。');
+    } finally {
+      setAssetBusyAction('');
     }
   };
 
@@ -7976,15 +8025,21 @@ ${sourceText}`;
     }
   };
 
-  const generateCrossProjectKnowledgeLinks = () => {
-    const raw = bridge()?.buildCrossProjectKnowledgeIndex?.();
-    if (!raw) return setCrossProjectKnowledgeMessage('当前环境不支持跨项目知识关联。');
+  const generateCrossProjectKnowledgeLinks = async () => {
+    if (projectBusyAction) return;
+    const action = bridge()?.buildCrossProjectKnowledgeIndex;
+    if (!action) return setCrossProjectKnowledgeMessage('当前环境不支持跨项目知识关联。');
+    setProjectBusyAction('cross-project-index');
+    setCrossProjectKnowledgeMessage('正在生成跨项目知识关联，请稍候…');
     try {
+      const raw = await action();
       const result = JSON.parse(raw) as { ok?: boolean; linkedGroups?: CrossProjectKnowledgeGroup[]; message?: string };
       setCrossProjectKnowledgeGroups(result.linkedGroups ?? []);
       setCrossProjectKnowledgeMessage(result.message || (result.ok ? '跨项目知识关联已生成。' : '生成跨项目知识关联失败。'));
     } catch {
       setCrossProjectKnowledgeMessage('跨项目知识关联结果解析失败。');
+    } finally {
+      setProjectBusyAction('');
     }
   };
 
@@ -10252,6 +10307,60 @@ ${JSON.stringify(items, null, 2)}
     return t(map[section]);
   };
 
+  const homePendingStudents = students.filter((student) => pendingDigestValue(student) > 0);
+  const homeWaitingStudents = students.filter((student) => submittedDigestValue(student) > 0);
+  const homePendingTotal = students.reduce((total, student) => total + pendingDigestValue(student), 0);
+  const homeWaitingTotal = students.reduce((total, student) => total + submittedDigestValue(student), 0);
+  const homeProcessedTotal = students.reduce((total, student) => total + Number(student.processedDigestCount || 0), 0);
+  const homeProjectPendingTotal = projects.reduce((total, project) => total + Number(project.digestState?.pendingCount || 0), 0);
+  const homePrimaryStudent = homePendingStudents[0] || homeWaitingStudents[0] || selectedStudent || students[0];
+  const homePrimaryAction = students.length === 0
+    ? { label: '创建第一个学生档案', detail: '建立资料库后即可开始采集与自动整理。', icon: <Plus size={18} /> }
+    : homePendingStudents.length > 0
+      ? { label: `处理 ${homePendingStudents[0].name} 的 ${pendingDigestValue(homePendingStudents[0])} 份资料`, detail: homePendingStudents.length > 1 ? `另有 ${homePendingStudents.length - 1} 位学生等待处理。` : '系统会建立本次资料批次并交给已绑定 Agent。', icon: <Zap size={18} /> }
+      : homeWaitingStudents.length > 0
+        ? { label: '查看资料处理进度', detail: `${homeWaitingTotal} 份资料正在等待 Agent 回执，不需要重复提交。`, icon: <RefreshCw size={18} /> }
+        : homeProjectPendingTotal > 0
+          ? { label: '处理项目新资料', detail: `有 ${homeProjectPendingTotal} 份项目资料等待消化。`, icon: <Bot size={18} /> }
+          : { label: '导入或接收新资料', detail: '可导入本机文件，也可由学生终端上传到学生或项目资料库。', icon: <FileDown size={18} /> };
+
+  const runHomePrimaryAction = () => {
+    if (students.length === 0) {
+      setActiveSection('init');
+      return;
+    }
+    if (homePendingStudents.length > 0) {
+      const student = homePendingStudents[0];
+      setSelectedId(student.id);
+      startDigestWorkflowFromPage('student', student.id);
+      return;
+    }
+    if (homeWaitingStudents.length > 0 && homePrimaryStudent) {
+      setSelectedId(homePrimaryStudent.id);
+      setActiveSection('inbox');
+      return;
+    }
+    if (homeProjectPendingTotal > 0) {
+      setProjectDashboardFocus('digest');
+      setProjectPageMode('list');
+      setActiveSection('projects-existing');
+      return;
+    }
+    if (homePrimaryStudent) setSelectedId(homePrimaryStudent.id);
+    setActiveSection('inbox');
+  };
+  const activeBackgroundWork = materialSourceBusyAction
+    ? (materialSourceBusyAction === 'scan' ? '正在扫描资料来源' : '正在导入资料')
+    : assetBusyAction
+      ? (assetBusyAction === 'rebuild' ? '正在补建资产索引' : '正在分析资产治理建议')
+      : projectBusyAction
+        ? (projectBusyAction === 'cross-project-index' ? '正在生成跨项目知识关联' : '正在处理学习项目')
+        : digestWorkflowBusyKey
+          ? '正在启动资料自动处理'
+          : captureBusy
+            ? '正在处理采集资料'
+            : '';
+
   return (
     <main
       className={sidebarCollapsed ? 'app-shell sidebar-collapsed' : 'app-shell'}
@@ -10427,7 +10536,7 @@ ${JSON.stringify(items, null, 2)}
         <header className="topbar">
           <div>
             <h1>{sectionTitle(activeSection)}</h1>
-            <p>{activeSection === 'projects-new' || activeSection === 'projects-existing' ? t('projects.subtitle') : t('app.subtitle')}</p>
+            <p>{activeSection === 'home' ? '查看资料进入、自动消化、成长沉淀和报告更新；通常只需处理一个下一步。' : activeSection === 'projects-new' || activeSection === 'projects-existing' ? t('projects.subtitle') : t('app.subtitle')}</p>
           </div>
           <div className="status-row">
             <label className="theme-picker">
@@ -10447,6 +10556,14 @@ ${JSON.stringify(items, null, 2)}
             </span>
           </div>
         </header>
+
+        {activeBackgroundWork && (
+          <div className="background-work-banner" role="status" aria-live="polite">
+            <RefreshCw size={16} />
+            <strong>{activeBackgroundWork}</strong>
+            <span>任务在后台继续，您可以切换到其他页面。</span>
+          </div>
+        )}
 
         {shouldBlockForAgentInstall && (
           <section className="panel install-gate">
@@ -10518,13 +10635,40 @@ ${JSON.stringify(items, null, 2)}
 
         {!shouldBlockForAgentInstall && activeSection === 'home' && (
           <>
-            <div className="home-grid">
-              <InfoPanel icon={<Bot />} title="Agent 创建" value={`${students.length} 个学生档案`} />
-              <InfoPanel icon={<Archive />} title="资料入口" value="原始资料库待同步" />
-              <InfoPanel icon={<RefreshCw />} title="当前版本" value={`v${currentVersionName}`} />
-              {isWindows && <InfoPanel icon={<KeyRound />} title="授权状态" value={licenseLabel(effectiveLicenseStatus)} />}
+            <section className="panel home-workflow-panel">
+              <div className="home-workflow-heading">
+                <div>
+                  <span className="eyebrow">今日教育资料闭环</span>
+                  <h2>{homePrimaryAction.label}</h2>
+                  <p>{homePrimaryAction.detail}</p>
+                </div>
+                <button className="primary home-primary-action" onClick={runHomePrimaryAction} disabled={!windowsLicenseActive && isWindows}>
+                  {homePrimaryAction.icon}
+                  {homePrimaryAction.label}
+                </button>
+              </div>
+              <div className="home-flow-steps" aria-label="教育资料处理进度">
+                <button className="home-flow-step" onClick={() => setActiveSection('inbox')}>
+                  <span>1</span><strong>资料进入</strong><em>{hostServiceStatus?.todayUploadCount ?? 0} 份今日上传</em>
+                </button>
+                <button className={homePendingTotal || homeWaitingTotal ? 'home-flow-step attention' : 'home-flow-step done'} onClick={() => setActiveSection('inbox')}>
+                  <span>2</span><strong>自动消化</strong><em>{homePendingTotal} 待处理 · {homeWaitingTotal} 处理中</em>
+                </button>
+                <button className="home-flow-step" onClick={() => setActiveSection(isWindows ? 'growth' : 'archive')}>
+                  <span>3</span><strong>成长沉淀</strong><em>{homeProcessedTotal} 份已完成</em>
+                </button>
+                <button className="home-flow-step" onClick={() => setActiveSection('reports')}>
+                  <span>4</span><strong>档案与报告</strong><em>按周期查看和更新</em>
+                </button>
+              </div>
+            </section>
+            <div className="home-grid compact-home-grid">
+              <InfoPanel icon={<Bot />} title="学生档案" value={`${students.length} 个`} />
+              <InfoPanel icon={<Archive />} title="待处理资料" value={`${homePendingTotal + homeProjectPendingTotal} 份`} />
+              <InfoPanel icon={<RefreshCw />} title="处理中" value={`${homeWaitingTotal} 份`} />
+              {isWindows && <InfoPanel icon={<KeyRound />} title="主机状态" value={hostServiceStatus?.running ? '终端服务运行中' : homeMode === 'host' ? '终端服务未启动' : '本机使用'} />}
             </div>
-            {isWindows && (
+            {isWindows && (students.length === 0 || (homeMode === 'host' && (!hostServiceStatus?.running || !(hostServiceStatus?.devices ?? []).some((device) => !device.revoked)))) && (
               <section className="panel tool-home-panel">
                 <div className="panel-heading">
                   <div>
@@ -10747,6 +10891,9 @@ ${JSON.stringify(items, null, 2)}
                 {hostServiceMessage && <div className="notice muted">{hostServiceMessage}</div>}
               </section>
             )}
+            <details className="home-advanced-tools">
+              <summary>高级工具与版本</summary>
+              <div className="home-advanced-tools-body">
             <section className="panel tool-home-panel">
               <div className="panel-heading">
                 <div>
@@ -10823,6 +10970,8 @@ ${JSON.stringify(items, null, 2)}
                 </div>
               )}
             </section>
+              </div>
+            </details>
           </>
         )}
 
@@ -11404,9 +11553,9 @@ ${JSON.stringify(items, null, 2)}
                     <Plus size={18} />
                     添加来源目录
                   </button>
-                  <button className="primary" onClick={() => scanMaterialSourcesForStudent(selectedStudent)} disabled={(selectedStudent.materialSources ?? []).filter((source) => source.enabled).length === 0}>
+                  <button className="primary" onClick={() => void scanMaterialSourcesForStudent(selectedStudent)} disabled={Boolean(materialSourceBusyAction) || (selectedStudent.materialSources ?? []).filter((source) => source.enabled).length === 0}>
                     <RefreshCw size={18} />
-                    扫描全部来源
+                    {materialSourceBusyAction === 'scan' ? '正在扫描…' : '扫描全部来源'}
                   </button>
                   <button className="secondary" onClick={() => refreshMaterialImportRecords(selectedStudent)}>
                     <Archive size={18} />
@@ -11458,9 +11607,9 @@ ${JSON.stringify(items, null, 2)}
                       ))}
                     </div>
                     <div className="actions">
-                      <button className="primary" onClick={() => importSelectedMaterialSourceFiles(selectedStudent)} disabled={selectedMaterialSourcePaths.length === 0}>
+                      <button className="primary" onClick={() => void importSelectedMaterialSourceFiles(selectedStudent)} disabled={Boolean(materialSourceBusyAction) || selectedMaterialSourcePaths.length === 0}>
                         <FileDown size={18} />
-                        导入选中文件
+                        {materialSourceBusyAction === 'import' ? '正在导入…' : '导入选中文件'}
                       </button>
                       <button
                         className="secondary"
@@ -11593,13 +11742,13 @@ ${JSON.stringify(items, null, 2)}
                 <RefreshCw size={18} />
                 刷新资产
               </button>
-              <button className="primary" onClick={rebuildAssets}>
+              <button className="primary" onClick={() => void rebuildAssets()} disabled={Boolean(assetBusyAction)}>
                 <Archive size={18} />
-                扫描并补建资产索引
+                {assetBusyAction === 'rebuild' ? '正在补建…' : '扫描并补建资产索引'}
               </button>
-              <button className="secondary" onClick={analyzeAssets}>
+              <button className="secondary" onClick={() => void analyzeAssets()} disabled={Boolean(assetBusyAction)}>
                 <ListChecks size={18} />
-                生成治理建议
+                {assetBusyAction === 'analyze' ? '正在分析…' : '生成治理建议'}
               </button>
             </div>
             <div className="form-grid compact-grid">
@@ -11788,7 +11937,7 @@ ${JSON.stringify(items, null, 2)}
               </div>
               <div className="actions compact-actions">
                 <button className="secondary compact" onClick={refreshProjects}><RefreshCw size={16} />刷新仪表盘</button>
-                <button className="primary compact" onClick={generateCrossProjectKnowledgeLinks}><LinkIcon size={16} />生成跨项目知识关联</button>
+                <button className="primary compact" onClick={() => void generateCrossProjectKnowledgeLinks()} disabled={Boolean(projectBusyAction)}><LinkIcon size={16} />{projectBusyAction === 'cross-project-index' ? '正在关联…' : '生成跨项目知识关联'}</button>
               </div>
               <div className="audit-filter-row">
                 {[

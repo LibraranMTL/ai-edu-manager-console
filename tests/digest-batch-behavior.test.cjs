@@ -39,3 +39,17 @@ test('digest batch atomic persistence round-trips', () => {
   assert.deepEqual(fs.readdirSync(dir), ['digest-batch.json']);
   fs.rmSync(dir, { recursive: true, force: true });
 });
+
+test('atomic persistence removes temporary files when replacement fails', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'edu-atomic-failure-'));
+  const file = path.join(dir, 'state.json');
+  const originalRename = fs.renameSync;
+  fs.renameSync = () => { throw new Error('simulated rename failure'); };
+  try {
+    assert.throws(() => writeJsonAtomic(file, { ok: true }), /simulated rename failure/);
+  } finally {
+    fs.renameSync = originalRename;
+  }
+  assert.deepEqual(fs.readdirSync(dir), []);
+  fs.rmSync(dir, { recursive: true, force: true });
+});

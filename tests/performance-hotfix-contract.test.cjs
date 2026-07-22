@@ -25,7 +25,7 @@ test('digest polling uses the mtime-aware project lookup cache', () => {
 });
 
 test('non-real-time renderer polling is throttled while capture polling stays responsive', () => {
-  assert.match(renderer, /\}, 3000\);\s*const hostTimer = window\.setInterval\(refreshHostServiceStatus, 10000\);/);
+  assert.match(renderer, /\}, 3000\);\s*const hostTimer = window\.setInterval\(refreshHostServiceStatus, 30000\);/);
   assert.match(renderer, /const timer = window\.setInterval\(refreshVisible, 15000\);/);
   assert.match(renderer, /const timer = window\.setInterval\(refreshCaptureCenter, 2000\);/);
 });
@@ -33,4 +33,11 @@ test('non-real-time renderer polling is throttled while capture polling stays re
 test('host status reads upload records once per refresh', () => {
   const functionBody = main.match(/function hostStudentStats\(\) \{([\s\S]*?)\n\}/)?.[1] || '';
   assert.equal((functionBody.match(/readUploadRecords\(\)/g) || []).length, 1);
+});
+
+test('host status uses cached directory counts and cached student QR payloads', () => {
+  assert.match(main, /hostDirectoryCountCache\.count\(rawPath, 'all'\)/);
+  assert.match(main, /hostDirectoryCountCache\.count\(summaryPath, 'markdown'/);
+  assert.match(renderer, /studentLoginQrDataUrlCache\.get\(payload\)/);
+  assert.match(renderer, /\[studentLoginQrSignature\]/);
 });

@@ -14,10 +14,10 @@ contextBridge.exposeInMainWorld('AndroidBridge', {
     return ipcRenderer.sendSync('bridge:pickMaterialSourceDir');
   },
   scanMaterialSources(studentId, sourcesJson) {
-    return ipcRenderer.sendSync('bridge:scanMaterialSources', studentId, sourcesJson);
+    return ipcRenderer.invoke('bridge:scanMaterialSources', studentId, sourcesJson);
   },
   importMaterialSourceFiles(studentId, pathsJson, targetJson) {
-    return ipcRenderer.sendSync('bridge:importMaterialSourceFiles', studentId, pathsJson, targetJson);
+    return ipcRenderer.invoke('bridge:importMaterialSourceFiles', studentId, pathsJson, targetJson);
   },
   getMaterialImportRecords(studentId) {
     return ipcRenderer.sendSync('bridge:getMaterialImportRecords', studentId);
@@ -59,10 +59,10 @@ contextBridge.exposeInMainWorld('AndroidBridge', {
     return ipcRenderer.sendSync('bridge:getAssetIndex');
   },
   rebuildAssetIndex() {
-    return ipcRenderer.sendSync('bridge:rebuildAssetIndex');
+    return ipcRenderer.invoke('bridge:rebuildAssetIndex');
   },
   analyzeAssetGovernance() {
-    return ipcRenderer.sendSync('bridge:analyzeAssetGovernance');
+    return ipcRenderer.invoke('bridge:analyzeAssetGovernance');
   },
   cleanupAssetReferences(assetId) {
     return ipcRenderer.sendSync('bridge:cleanupAssetReferences', assetId);
@@ -128,7 +128,7 @@ contextBridge.exposeInMainWorld('AndroidBridge', {
     return ipcRenderer.sendSync('bridge:importProjectStudentEvidenceSuggestions', projectId, pastedText);
   },
   buildCrossProjectKnowledgeIndex() {
-    return ipcRenderer.sendSync('bridge:buildCrossProjectKnowledgeIndex');
+    return ipcRenderer.invoke('bridge:buildCrossProjectKnowledgeIndex');
   },
   pickProjectWorkspaceDir() {
     return ipcRenderer.sendSync('bridge:pickProjectWorkspaceDir');

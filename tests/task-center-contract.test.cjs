@@ -7,6 +7,7 @@ const test = require('node:test');
 
 const root = path.resolve(__dirname, '..');
 const main = fs.readFileSync(path.join(root, 'electron', 'main.cjs'), 'utf8');
+const taskRuntime = fs.readFileSync(path.join(root, 'electron', 'task-runtime-policy.cjs'), 'utf8');
 const preload = fs.readFileSync(path.join(root, 'electron', 'preload.cjs'), 'utf8');
 const ui = fs.readFileSync(path.join(root, 'src', 'main.tsx'), 'utf8');
 
@@ -36,6 +37,9 @@ test('manual and QClaw results enforce the current execution identity', () => {
   assert.match(main, /qclaw_inbox_prepared/);
   assert.match(main, /manual_execution_prepared/);
   assert.match(main, /quarantineQClawPayload/);
+  assert.match(main, /discoverTaskPayloads/);
+  assert.match(main, /archiveQClawPayload/);
+  assert.match(main, /'processed', kind === 'claim' \? 'claims' : 'results'/);
 });
 
 test('weekly action output keeps daily routines, weekly focus and milestones', () => {
@@ -52,9 +56,10 @@ test('weekly action output keeps daily routines, weekly focus and milestones', (
 });
 
 test('runtime failure has heartbeat, retry and manual fallback safeguards', () => {
+  const runtimeSources = `${main}\n${taskRuntime}`;
   assert.match(main, /function fallbackTaskAfterFailure/);
-  assert.match(main, /HEARTBEAT_LOST/);
-  assert.match(main, /retryBackoffSeconds/);
+  assert.match(runtimeSources, /HEARTBEAT_LOST/);
+  assert.match(runtimeSources, /retryBackoffSeconds/);
   assert.match(main, /selectFallbackAdapter/);
   assert.match(main, /task\.autoRetry === false \|\| Number\(task\.attempt \|\| 0\) >= Number\(task\.maxAttempts \|\| 1\)/);
   assert.match(main, /task\.nextRetryAt = ''/);
@@ -94,7 +99,11 @@ test('agent health probes and OpenClaw cron checks never block the renderer IPC 
   assert.doesNotMatch(capabilityReader, /probeExecutable\(/);
   assert.match(main, /await probeExecutableAsync\(refreshedCapability\.exePath, \['cron', 'list'/);
   assert.match(main, /10 \* 60 \* 1000/);
-  assert.match(ui, /setInterval\(refreshTaskCenter, 15000\)/);
+  assert.match(preload, /getTaskCenterAsync\(force = false\)/);
+  assert.match(main, /ipcMain\.handle\('bridge:getTaskCenterAsync'/);
+  assert.match(ui, /await api\.getTaskCenterAsync\(force\)/);
+  assert.match(ui, /\}, 60000\)/);
+  assert.match(ui, /if \(!document\.hidden\)/);
 });
 
 test('global manual mode stops automatic scheduling while keeping the task center operable', () => {

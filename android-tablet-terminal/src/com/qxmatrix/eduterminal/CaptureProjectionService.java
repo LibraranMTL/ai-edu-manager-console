@@ -46,6 +46,9 @@ public class CaptureProjectionService extends Service {
     public static final String KEY_CANDIDATE = "candidate";
     public static final String KEY_DEDUP = "dedup";
     public static final String KEY_HIGHLIGHTED = "highlighted";
+    public static final String KEY_STUDENT_ID = "capture_student_id";
+    public static final String KEY_PROJECT_ID = "capture_project_id";
+    public static final String KEY_PROJECT_NAME = "capture_project_name";
 
     private static final String CHANNEL_ID = "screen_capture";
     private static final int NOTIFICATION_ID = 5201;
@@ -75,6 +78,12 @@ public class CaptureProjectionService extends Service {
     private int highlightedCount;
     private long startedAt;
     private long durationMs;
+    private String studentId = "";
+    private String studentName = "";
+    private String projectId = "";
+    private String projectName = "";
+    private long endedAt;
+    private String endReason = "";
 
     @Override
     public void onCreate() {
@@ -111,11 +120,15 @@ public class CaptureProjectionService extends Service {
         Intent resultData = intent.getParcelableExtra("result_data");
         mode = intent.getStringExtra("mode");
         if (mode == null) mode = "smart";
+        studentId = safeExtra(intent, "student_id");
+        studentName = safeExtra(intent, "student_name");
+        projectId = safeExtra(intent, "project_id");
+        projectName = safeExtra(intent, "project_name");
         durationMs = Math.max(60000L, intent.getLongExtra("duration_ms", 30L * 60L * 1000L));
         configurePolicy(mode);
         startedAt = System.currentTimeMillis();
         sessionId = "android-capture-" + startedAt + "-" + UUID.randomUUID().toString().substring(0, 8);
-        sessionDir = new File(getExternalFilesDir(Environment.DIRECTORY_PICTURES), "screen-captures/" + sessionId);
+        sessionDir = new File(CaptureStorage.studentDir(this, studentId), sessionId);
         if (!sessionDir.exists()) sessionDir.mkdirs();
 
         MediaProjectionManager manager = (MediaProjectionManager) getSystemService(Context.MEDIA_PROJECTION_SERVICE);
@@ -289,6 +302,10 @@ public class CaptureProjectionService extends Service {
             metadata.put("highlighted", highlighted);
             metadata.put("difference", difference);
             metadata.put("sourceType", "android_screenshot");
+            metadata.put("studentId", studentId);
+            metadata.put("studentName", studentName);
+            metadata.put("projectId", projectId);
+            metadata.put("projectName", projectName);
             FileOutputStream metadataOutput = new FileOutputStream(new File(sessionDir, name + ".json"));
             metadataOutput.write(metadata.toString(2).getBytes("UTF-8"));
             metadataOutput.close();
@@ -310,8 +327,52 @@ public class CaptureProjectionService extends Service {
         editor.putInt(KEY_HIGHLIGHTED, highlightedCount);
         editor.putLong("started_at", startedAt);
         editor.putString("mode", mode);
+        editor.putString(KEY_STUDENT_ID, studentId);
+        editor.putString(KEY_PROJECT_ID, projectId);
+        editor.putString(KEY_PROJECT_NAME, projectName);
         editor.apply();
+        writeSessionMetadata(status);
         CaptureTileService.requestRefresh(this);
+    }
+
+    private String safeExtra(Intent intent, String key) {
+        String value = intent == null ? "" : intent.getStringExtra(key);
+        return value == null ? "" : value.trim();
+    }
+
+    private void writeSessionMetadata(String status) {
+        if (sessionDir == null) return;
+        try {
+            JSONObject metadata = new JSONObject();
+            metadata.put("schema", "edu-manager.android-capture-session.v1");
+            metadata.put("sessionId", sessionId == null ? "" : sessionId);
+            metadata.put("studentId", studentId);
+            metadata.put("studentName", studentName);
+            metadata.put("projectId", projectId);
+            metadata.put("projectName", projectName);
+            metadata.put("mode", mode);
+            metadata.put("status", status);
+            metadata.put("startedAt", startedAt);
+            metadata.put("endedAt", endedAt);
+            metadata.put("endReason", endReason);
+            metadata.put("candidateCount", candidateCount);
+            metadata.put("savedCount", savedCount);
+            metadata.put("dedupCount", dedupCount);
+            metadata.put("highlightedCount", highlightedCount);
+            metadata.put("captureDir", sessionDir.getAbsolutePath());
+            File temporary = new File(sessionDir, "session.json.tmp");
+            File target = new File(sessionDir, "session.json");
+            FileOutputStream output = new FileOutputStream(temporary);
+            output.write(metadata.toString(2).getBytes("UTF-8"));
+            output.close();
+            if (target.exists()) target.delete();
+            if (!temporary.renameTo(target)) {
+                FileOutputStream fallback = new FileOutputStream(target);
+                fallback.write(metadata.toString(2).getBytes("UTF-8"));
+                fallback.close();
+                temporary.delete();
+            }
+        } catch (Exception ignored) {}
     }
 
     private Notification buildNotification(String text) {
@@ -381,8 +442,10 @@ public class CaptureProjectionService extends Service {
         captureThread = null;
         if (lastFrame != null) lastFrame.recycle();
         lastFrame = null;
+        endedAt = System.currentTimeMillis();
+        endReason = reason == null ? "" : reason;
         saveState("completed");
-        getSharedPreferences(PREFS, MODE_PRIVATE).edit().putString("end_reason", reason).apply();
+        getSharedPreferences(PREFS, MODE_PRIVATE).edit().putString("end_reason", endReason).apply();
         stopForeground(true);
         stopSelf();
     }

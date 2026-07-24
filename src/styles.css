@@ -431,6 +431,11 @@ h2 {
   background: #e9eef0;
 }
 
+.home-version-badge {
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
 .status.ok {
   color: #0b5e58;
   background: #dff2ed;
@@ -727,6 +732,10 @@ h2 {
   border: 1px solid var(--panel-border);
   border-radius: 10px;
   background: #fff;
+}
+
+.pair-request-item button {
+  white-space: nowrap;
 }
 
 .legacy-pairing-methods {

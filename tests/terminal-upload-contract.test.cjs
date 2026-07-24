@@ -15,6 +15,15 @@ test('Windows student terminal is packaged separately from the host', () => {
   assert.match(releaseScript, /student-terminal-Windows/);
   assert.match(releaseScript, /copy-minimal-runtime/);
   assert.match(releaseScript, /unexpectedly contains node_modules/);
+  for (const runtimeModule of [
+    'pairing-protocol.cjs',
+    'lan-discovery.cjs',
+    'terminal-lan-pairing.cjs',
+    'terminal-connection.cjs',
+    'windows-tailscale.cjs',
+  ]) {
+    assert.match(releaseScript, new RegExp(runtimeModule.replace('.', '\\.')));
+  }
 });
 
 test('host validates project uploads and records traceable terminal provenance', () => {

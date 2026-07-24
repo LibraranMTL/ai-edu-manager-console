@@ -30,6 +30,11 @@ const {
 const { parseDigestReceipt } = require('./digest-receipt.cjs');
 const { buildDigestBatch, digestIdempotencyKey, readDigestBatch, writeJsonAtomic } = require('./digest-batch.cjs');
 const { validateDigestResult } = require('./digest-result.cjs');
+const {
+  discoverDigestReceipts,
+  discoverSingleFileMarkdownReceipt,
+  mergeDigestReceipts,
+} = require('./digest-receipt-compat.cjs');
 const { createDigestOrchestrator, digestUserStatus, isDigestTask, shouldAutoAccept, userStatusLabel } = require('./digest-orchestrator.cjs');
 const { parseJsonText } = require('./json-file.cjs');
 const { buildGrowthIndexV2, parseLegacyGrowthEvidenceMarkdown } = require('./growth-model.cjs');
@@ -58,6 +63,12 @@ const { verifiedStudentEvidenceForPublication } = require('./project-evidence.cj
 const { normalizeProjectStudentEvidencePayload } = require('./project-student-evidence-adapter.cjs');
 const { buildProjectReviewPackage } = require('./project-flow-orchestrator.cjs');
 const { compactDigestTaskStore } = require('./task-store-compaction.cjs');
+const {
+  candidateRuntimeDecision,
+  compactTaskEvents,
+  repairTaskRuntimeStore,
+  taskTimeoutDecision,
+} = require('./task-runtime-policy.cjs');
 const { nextKnowledgeReviewState, nextStagingReviewState, projectCompletionIssues, reconcileDigestControlState, validateDigestReceipt } = require('./project-integrity.cjs');
 const { PROJECT_SCREENING_PARSER_VERSION, buildProjectScreeningPreview } = require('./project-screening.cjs');
 const { completionBlockers, singleStudentEvidenceDraft } = require('./project-completion.cjs');
@@ -67,6 +78,15 @@ const { adoptionPathmap, scanProjectKnowledgeBase } = require('./project-knowled
 const { markUploadRecordsRemoved } = require('./upload-record-governance.cjs');
 const { createDirectoryCountCache } = require('./directory-count-cache.cjs');
 const { streamRequestToFile } = require('./streaming-upload.cjs');
+const { studentTerminalProgress: buildStudentTerminalProgress } = require('./student-terminal-progress.cjs');
+const { normalizeMaterialStatus } = require('./material-status.cjs');
+const { discoverTaskPayloads } = require('./task-result-inbox.cjs');
+const {
+  buildKnowledgeGovernanceRun,
+  collectRecentKnowledgeArtifacts,
+  persistKnowledgeGovernanceRun,
+} = require('./knowledge-governance-pipeline.cjs');
+const { ARCHIVE_ACCESS_SCHEMA, createArchiveAccess, handleArchiveAccessRpc } = require('./archive-access.cjs');
 const {
   PAIR_PROTOCOL_VERSION,
   createPairRequest,
@@ -113,6 +133,8 @@ let taskSchedulerRunning = false;
 let digestWorkflowTimer = null;
 let digestWorkflowRunning = false;
 let adapterCapabilityCache = { at: 0, value: null, refreshing: null };
+let taskCenterSnapshotCache = { at: 0, value: '' };
+let taskRuntimeMigrationChecked = false;
 let activeCaptureRuntime = null;
 let captureTray = null;
 let captureControlWindow = null;
@@ -455,9 +477,7 @@ function writeUploadRecords(records) {
 }
 
 function normalizeUploadStatus(status) {
-  const value = String(status || '').trim();
-  if (['pending_digest', 'submitted', 'digesting', 'processed', 'failed', 'ignored', 'removed'].includes(value)) return value;
-  return 'pending_digest';
+  return normalizeMaterialStatus(status);
 }
 
 function isOpenDigestStatus(status) {
@@ -483,6 +503,15 @@ function studentDigestManifestPath(student) {
 
 function studentDigestReceiptPath(student) {
   return path.join(studentManagerDir(student), 'digest-receipt.json');
+}
+
+function studentDigestBatchArchiveDir(student) {
+  return path.join(studentManagerDir(student), 'digest-batches');
+}
+
+function studentDigestReceiptArchiveDir(student, batchId = '') {
+  const safeBatchId = safeFilename(String(batchId || 'unknown-batch')) || 'unknown-batch';
+  return path.join(studentManagerDir(student), 'digest-receipts', safeBatchId);
 }
 
 function studentDigestBatchPath(student) {
@@ -966,7 +995,9 @@ function readStudentMaterials(student) {
   try {
     ensureStudentManagerFiles(student);
     const parsed = JSON.parse(fs.readFileSync(studentMaterialsPath(student), 'utf8'));
-    return Array.isArray(parsed.materials) ? parsed.materials : [];
+    return Array.isArray(parsed.materials)
+      ? parsed.materials.map((item) => ({ ...item, status: normalizeUploadStatus(item.status) }))
+      : [];
   } catch {
     return [];
   }
@@ -978,7 +1009,7 @@ function writeStudentMaterials(student, materials) {
     studentId: String(student.id || ''),
     studentName: student.name || '',
     updatedAt: new Date().toISOString(),
-    materials: materials.slice(0, 1000),
+    materials: materials.slice(0, 1000).map((item) => ({ ...item, status: normalizeUploadStatus(item.status) })),
   });
 }
 
@@ -1029,6 +1060,63 @@ function materialRecordFromUpload(record) {
     digestedAt: record.digestedAt || '',
     digestBatchId: record.digestBatchId || '',
   };
+}
+
+function studentDigestSourceRecords(student, uploadRecords = readUploadRecords()) {
+  const rawRoot = student.rawPath || getRawDir(student.name);
+  const byId = new Map();
+  for (const material of readStudentMaterials(student)) {
+    const id = String(material.id || '');
+    if (!id) continue;
+    const materialPath = String(material.absolutePath || material.path || material.fileName || '');
+    const absolutePath = path.isAbsolute(materialPath) ? materialPath : path.join(rawRoot, materialPath);
+    byId.set(id, {
+      id,
+      studentId: String(student.id),
+      filename: material.fileName || path.basename(absolutePath),
+      path: absolutePath,
+      size: Number(material.size || 0),
+      sha1: String(material.sha1 || '').toLowerCase(),
+      status: normalizeUploadStatus(material.status),
+      uploadedAt: material.uploadedAt || '',
+      statusUpdatedAt: material.statusUpdatedAt || '',
+      digestBatchId: material.digestBatchId || '',
+      source: 'materials',
+    });
+  }
+  for (const record of uploadRecords.filter((item) => String(item.studentId) === String(student.id))) {
+    const id = String(record.id || '');
+    if (!id) continue;
+    const previous = byId.get(id) || {};
+    byId.set(id, {
+      ...previous,
+      ...record,
+      id,
+      filename: record.filename || previous.filename || path.basename(record.path || ''),
+      path: record.path || previous.path || '',
+      sha1: String(record.sha1 || previous.sha1 || '').toLowerCase(),
+      status: normalizeUploadStatus(record.status || previous.status),
+      source: previous.source ? 'materials+uploads' : 'uploads',
+    });
+  }
+  return Array.from(byId.values());
+}
+
+function updateStudentMaterialBatchStatuses(student, updates) {
+  if (!updates?.size) return [];
+  const now = new Date().toISOString();
+  const materials = readStudentMaterials(student).map((material) => {
+    const patch = updates.get(String(material.id || ''));
+    if (!patch) return material;
+    return {
+      ...material,
+      ...patch,
+      status: normalizeUploadStatus(patch.status || material.status),
+      statusUpdatedAt: patch.statusUpdatedAt || now,
+    };
+  });
+  writeStudentMaterials(student, materials);
+  return materials;
 }
 
 function upsertStudentMaterialsFromUploads(student, uploadRecords) {
@@ -2027,14 +2115,19 @@ function registerStudentDigestBatch(studentId, options = {}) {
   syncStudentMaterialsFromUploadRecords(normalized);
   const currentState = readStudentDigestState(normalized);
   const existingBatch = readDigestBatch(studentDigestBatchPath(normalized));
-  if (['submitted', 'digesting'].includes(normalizeDigestStateStatus(currentState.status)) && currentState.digestBatchId && existingBatch?.batchId === currentState.digestBatchId) {
+  const existingBatchStatus = String(existingBatch?.status || '').toLowerCase();
+  if (existingBatch?.batchId
+    && Array.isArray(existingBatch.files)
+    && existingBatch.files.length > 0
+    && ['submitted', 'digesting', 'partial'].includes(existingBatchStatus)) {
     return { ok: true, reused: true, student: normalized, batch: existingBatch, state: currentState, message: '当前消化批次已在处理中。' };
   }
   const allRecords = readUploadRecords();
+  const digestSources = studentDigestSourceRecords(normalized, allRecords);
   const rawRoot = normalized.rawPath || getRawDir(normalized.name);
-  const pending = allRecords.filter((record) => String(record.studentId) === String(studentId)
-    && (normalizeUploadStatus(record.status) === 'pending_digest'
-      || (options.includeSubmitted && ['submitted', 'digesting'].includes(normalizeUploadStatus(record.status)))));
+  const pending = digestSources.filter((record) =>
+    normalizeUploadStatus(record.status) === 'pending_digest'
+      || (options.includeSubmitted && ['submitted', 'digesting'].includes(normalizeUploadStatus(record.status))));
   if (!pending.length) return { ok: false, skipped: true, message: '当前没有待处理资料。' };
   const files = pending.map((record) => {
     const absolutePath = String(record.path || '');
@@ -2059,12 +2152,27 @@ function registerStudentDigestBatch(studentId, options = {}) {
     },
   });
   const receiptPath = studentDigestReceiptPath(normalized);
+  if (existingBatch?.batchId) {
+    fs.mkdirSync(studentDigestBatchArchiveDir(normalized), { recursive: true });
+    writeJsonAtomic(path.join(studentDigestBatchArchiveDir(normalized), `${safeFilename(existingBatch.batchId)}.json`), existingBatch);
+  }
   if (fs.existsSync(receiptPath)) {
-    fs.copyFileSync(receiptPath, `${receiptPath}.previous-${timestampForFilename()}.bak`);
+    const previousReceipt = readDigestReceiptFile(receiptPath);
+    const previousBatchId = String(previousReceipt.digestBatchId || previousReceipt.batchId || existingBatch?.batchId || 'unknown-batch');
+    const previousDir = studentDigestReceiptArchiveDir(normalized, previousBatchId);
+    fs.mkdirSync(previousDir, { recursive: true });
+    fs.copyFileSync(receiptPath, path.join(previousDir, `receipt-${timestampForFilename()}-${crypto.randomBytes(3).toString('hex')}.json`));
     fs.rmSync(receiptPath, { force: true });
   }
   writeJsonAtomic(studentDigestBatchPath(normalized), batch);
   const submittedIds = new Set(batch.files.map((file) => file.materialId));
+  const materialUpdates = new Map(batch.files.map((file) => [String(file.materialId), {
+    status: 'submitted',
+    digestBatchId: batch.batchId,
+    sha1: file.sha1,
+    statusUpdatedAt: now,
+  }]));
+  updateStudentMaterialBatchStatuses(normalized, materialUpdates);
   const records = allRecords.map((record) => submittedIds.has(String(record.id || ''))
     ? { ...record, sha1: batch.files.find((file) => file.materialId === String(record.id || ''))?.sha1 || record.sha1 || '', status: 'submitted', statusUpdatedAt: now, digestBatchId: batch.batchId }
     : record);
@@ -2136,12 +2244,44 @@ function inferDigestCompletedFromSummary(summaryPath, sinceMs) {
 }
 
 function syncStrictStudentDigestResult(student, state, batch, options = {}) {
-  const receipt = readStudentDigestReceipt(student);
-  if (receipt?._receiptInvalid) return { ok: false, strict: true, state, message: `Agent 回执无法解析：${receipt._receiptError}` };
+  const receiptSet = discoverDigestReceipts({
+    managerDir: studentManagerDir(student),
+    canonicalFile: studentDigestReceiptPath(student),
+    archiveRoot: path.join(studentManagerDir(student), 'digest-receipts'),
+    batchId: batch.batchId,
+  });
+  for (const candidate of [...receiptSet.candidates, ...receiptSet.stale]) {
+    const archiveDir = studentDigestReceiptArchiveDir(student, candidate.batchId);
+    fs.mkdirSync(archiveDir, { recursive: true });
+    const archivePath = path.join(archiveDir, `${candidate.fingerprint}.json`);
+    if (!fs.existsSync(archivePath)) writeJsonAtomic(archivePath, candidate.payload);
+  }
+  if (!receiptSet.candidates.length) {
+    const message = receiptSet.stale.length
+      ? `检测到 ${receiptSet.stale.length} 份旧批次结果，已安全保存；当前批次仍在等待结果。`
+      : '尚未发现当前批次的逐文件处理结果。';
+    const nextState = writeStudentDigestState(student, {
+      status: 'digesting',
+      digestBatchId: batch.batchId,
+      message,
+      strictValidation: { ok: false, code: receiptSet.stale.length ? 'stale_receipt_only' : 'receipt_missing', checkedAt: new Date().toISOString() },
+    });
+    return { ok: false, strict: true, state: nextState, records: readUploadRecords(), message };
+  }
+  const receipt = mergeDigestReceipts(receiptSet.candidates, batch);
+  const receiptFingerprints = receiptSet.candidates.map((candidate) => candidate.fingerprint).sort();
+  const previousFingerprints = (batch.receiptFingerprints || []).map(String).sort();
+  if (String(batch.status || '').toLowerCase() === 'partial'
+    && receiptFingerprints.length
+    && JSON.stringify(receiptFingerprints) === JSON.stringify(previousFingerprints)) {
+    const message = `已登记现有分批结果；仍有 ${(batch.remaining || []).length || (state.submittedFiles || []).length} 份资料等待新的回执。`;
+    return { ok: false, strict: true, unchanged: true, state, records: readUploadRecords(), message };
+  }
   const allRecords = readUploadRecords();
+  const sourceRecords = studentDigestSourceRecords(student, allRecords);
   const rawRoot = student.rawPath || getRawDir(student.name);
   const currentFiles = batch.files.map((file) => {
-    const record = allRecords.find((item) => String(item.id || '') === String(file.materialId || ''));
+    const record = sourceRecords.find((item) => String(item.id || '') === String(file.materialId || ''));
     const absolutePath = String(record?.path || file.path || path.join(rawRoot, file.relativePath));
     return { ...file, path: absolutePath, sha1: sha1File(absolutePath) };
   });
@@ -2170,19 +2310,30 @@ function syncStrictStudentDigestResult(student, state, batch, options = {}) {
       return false;
     }
   });
-  if (requiredArtifacts.length && !freshArtifacts.length) {
+  if (validation.confirmed.length > 0 && requiredArtifacts.length && !freshArtifacts.length) {
     const message = '逐文件回执已匹配，但没有检测到本批次更新的知识产物，暂不结算。';
     const nextState = writeStudentDigestState(student, { status: 'digesting', message, strictValidation: { ok: false, code: 'artifacts_not_updated', checkedAt: new Date().toISOString() } });
     return { ok: false, strict: true, validation: { ...validation, ok: false, code: 'artifacts_not_updated' }, state: nextState, records: allRecords, message };
   }
   const confirmedIds = new Set(validation.confirmed.map((file) => String(file.materialId || '')));
+  const ignoredIds = new Set((validation.ignored || []).map((file) => String(file.materialId || '')));
+  const invalidIds = new Set((validation.invalid || []).map((file) => String(file.materialId || '')));
   const remainingIds = new Set(validation.remaining.map((file) => String(file.materialId || '')));
   const completedAt = new Date().toISOString();
+  const updateForId = (id) => {
+    if (confirmedIds.has(id)) return { status: 'processed', statusUpdatedAt: completedAt, digestedAt: completedAt, digestBatchId: batch.batchId };
+    if (ignoredIds.has(id)) return { status: 'ignored', statusUpdatedAt: completedAt, digestBatchId: batch.batchId, digestDisposition: 'ignored' };
+    if (invalidIds.has(id)) return { status: 'invalid', statusUpdatedAt: completedAt, digestBatchId: batch.batchId, digestDisposition: 'invalid' };
+    if (remainingIds.has(id)) return { status: 'pending_digest', statusUpdatedAt: completedAt, digestBatchId: '' };
+    return null;
+  };
+  updateStudentMaterialBatchStatuses(student, new Map(batch.files
+    .map((file) => [String(file.materialId || ''), updateForId(String(file.materialId || ''))])
+    .filter(([, patch]) => patch)));
   const records = allRecords.map((record) => {
     if (String(record.studentId) !== String(student.id) || String(record.digestBatchId || '') !== String(batch.batchId)) return record;
-    if (confirmedIds.has(String(record.id || ''))) return { ...record, status: 'processed', statusUpdatedAt: completedAt, digestedAt: completedAt, digestBatchId: batch.batchId };
-    if (remainingIds.has(String(record.id || ''))) return { ...record, status: 'pending_digest', statusUpdatedAt: completedAt, digestBatchId: '' };
-    return record;
+    const patch = updateForId(String(record.id || ''));
+    return patch ? { ...record, ...patch } : record;
   });
   writeUploadRecords(records);
   syncStudentMaterialsFromUploadRecords(student);
@@ -2194,29 +2345,79 @@ function syncStrictStudentDigestResult(student, state, batch, options = {}) {
       at: completedAt,
       status: validation.fullyCompleted ? 'completed' : 'partial',
       confirmed: validation.confirmed.map((file) => ({ materialId: file.materialId, relativePath: file.relativePath, sha1: file.sha1 })),
+      ignored: (validation.ignored || []).map((file) => ({ materialId: file.materialId, relativePath: file.relativePath, sha1: file.sha1 })),
+      invalid: (validation.invalid || []).map((file) => ({ materialId: file.materialId, relativePath: file.relativePath, sha1: file.sha1 })),
       remaining: validation.remaining.map((file) => ({ materialId: file.materialId, relativePath: file.relativePath, sha1: file.sha1 })),
       rejected: validation.rejected || [],
     }].slice(-20),
+    receiptFingerprints: receiptSet.candidates.map((candidate) => candidate.fingerprint),
   };
   writeJsonAtomic(studentDigestBatchPath(student), nextBatch);
+  fs.mkdirSync(studentDigestBatchArchiveDir(student), { recursive: true });
+  writeJsonAtomic(path.join(studentDigestBatchArchiveDir(student), `${safeFilename(batch.batchId)}.json`), nextBatch);
   const previousBatches = Array.isArray(state.digestBatches) ? state.digestBatches : [];
+  const resolvedCount = validation.confirmed.length + (validation.ignored || []).length + (validation.invalid || []).length;
+  const governanceArtifacts = [...new Set([
+    ...freshArtifacts,
+    ...validation.confirmed.flatMap((file) => file.artifacts || []),
+  ])];
+  const governanceRun = buildKnowledgeGovernanceRun({
+    scopeType: 'student',
+    scopeId: String(student.id),
+    scopeName: student.name,
+    batchId: batch.batchId,
+    knowledgeRoot: student.rootPath || getStudentRootDir(student.name),
+    resolvedFiles: validation.confirmed,
+    artifacts: governanceArtifacts,
+    completedAt,
+  });
+  const governancePaths = persistKnowledgeGovernanceRun(studentManagerDir(student), governanceRun);
+  const resultMessage = validation.fullyCompleted
+    ? `本批资料已处理：形成知识 ${validation.confirmed.length} 份，跳过 ${(validation.ignored || []).length} 份，无效 ${(validation.invalid || []).length} 份。`
+    : `已处理 ${resolvedCount} 份，另有 ${validation.remaining.length} 份需要继续处理。`;
   const nextState = writeStudentDigestState(student, {
     status: validation.fullyCompleted ? 'completed' : 'partial',
     lastDigestAt: completedAt,
     lastDigestBatchId: batch.batchId,
-    digestBatchId: '',
-    digestSubmittedAt: '',
-    submittedFiles: [],
-    message: validation.fullyCompleted
-      ? `已自动完成 ${validation.confirmed.length} 份资料的严格消化校验。`
-      : `已完成 ${validation.confirmed.length} 份资料，另有 ${validation.remaining.length} 份可重试。`,
-    strictValidation: { ok: true, code: validation.code, confirmedCount: validation.confirmed.length, remainingCount: validation.remaining.length, rejected: validation.rejected || [], artifacts: freshArtifacts, checkedAt: completedAt },
-    digestBatches: [...previousBatches, { id: batch.batchId, submittedAt: batch.submittedAt || batch.createdAt, completedAt, status: validation.fullyCompleted ? 'completed' : 'partial', confirmedCount: validation.confirmed.length, remainingCount: validation.remaining.length }].slice(-50),
+    digestBatchId: validation.fullyCompleted ? '' : batch.batchId,
+    digestSubmittedAt: validation.fullyCompleted ? '' : (state.digestSubmittedAt || batch.submittedAt || batch.createdAt || ''),
+    submittedFiles: validation.fullyCompleted ? [] : validation.remaining,
+    message: resultMessage,
+    strictValidation: {
+      ok: true,
+      code: validation.code,
+      confirmedCount: validation.confirmed.length,
+      ignoredCount: (validation.ignored || []).length,
+      invalidCount: (validation.invalid || []).length,
+      remainingCount: validation.remaining.length,
+      rejected: validation.rejected || [],
+      artifacts: freshArtifacts,
+      receiptFingerprints: receiptSet.candidates.map((candidate) => candidate.fingerprint),
+      checkedAt: completedAt,
+    },
+    knowledgeGovernance: {
+      runId: governanceRun.runId,
+      status: governanceRun.status,
+      attentionCount: governanceRun.quality.attentionCount,
+      coverage: governanceRun.analysis.coverage,
+      reportPath: governancePaths.reportPath,
+      updatedAt: completedAt,
+    },
+    digestBatches: [...previousBatches, {
+      id: batch.batchId,
+      submittedAt: batch.submittedAt || batch.createdAt,
+      completedAt,
+      status: validation.fullyCompleted ? 'completed' : 'partial',
+      confirmedCount: validation.confirmed.length,
+      ignoredCount: (validation.ignored || []).length,
+      invalidCount: (validation.invalid || []).length,
+      remainingCount: validation.remaining.length,
+    }].slice(-50),
   });
   appendHostTimeline({ type: 'digest_auto_completed', title: 'Student digest automatically validated', detail: nextState.message, studentId: String(student.id), studentName: student.name, count: validation.confirmed.length, batchId: batch.batchId });
   notify('onNativeHostServiceChanged', getHostServiceStatus());
   notify('onNativeDigestWorkflowChanged', JSON.stringify({ scopeType: 'student', scopeId: String(student.id), status: validation.fullyCompleted ? 'completed' : 'partial', batchId: batch.batchId }));
-  return { ok: true, strict: true, updated: validation.confirmed.length, validation, state: nextState, records, status: JSON.parse(getHostServiceStatus()), message: nextState.message };
+  return { ok: true, strict: true, updated: resolvedCount, validation, governance: governanceRun, state: nextState, records, status: JSON.parse(getHostServiceStatus()), message: nextState.message };
 }
 
 function syncStudentDigestResult(studentId, options = {}) {
@@ -2226,7 +2427,7 @@ function syncStudentDigestResult(studentId, options = {}) {
   // update counters and must never erase a completed receipt from the Agent.
   const state = readStudentDigestState(student);
   const strictBatch = readDigestBatch(studentDigestBatchPath(student));
-  if (strictBatch && String(strictBatch.batchId || '') === String(state.digestBatchId || '') && ['submitted', 'digesting'].includes(normalizeDigestStateStatus(state.status))) {
+  if (strictBatch?.batchId && ['submitted', 'digesting', 'partial'].includes(String(strictBatch.status || '').toLowerCase())) {
     return JSON.stringify(syncStrictStudentDigestResult(student, state, strictBatch, options));
   }
   syncStudentMaterialsFromUploadRecords(student);
@@ -2978,8 +3179,9 @@ function publicDevice(device) {
   const lastSeenMs = lastSeenAt ? Date.now() - Date.parse(lastSeenAt) : 0;
   return {
     id: device.id,
-    name: device.name || '平板设备',
+    name: device.name || (device.platform === 'windows' ? 'Windows 学生终端' : 'Android 学生终端'),
     machineCode: device.machineCode || machineCode('tablet', device.id),
+    platform: device.platform || 'android',
     tokenPreview: device.tokenPreview || '',
     terminalMode: normalizeTerminalMode(device.terminalMode, 'shared'),
     boundStudentId: String(device.boundStudentId || ''),
@@ -3065,6 +3267,7 @@ function rememberDiscoveredTablet(payload, remote) {
     deviceId: String(payload.deviceId),
     machineCode: String(payload.machineCode || machineCode('tablet', payload.deviceId)),
     displayName: String(payload.displayName || payload.deviceName || 'Android 平板').slice(0, 80),
+    platform: String(payload.platform || 'android').toLowerCase() === 'windows' ? 'windows' : 'android',
     appVersion: String(payload.appVersion || ''),
     capabilities: Array.isArray(payload.capabilities) ? payload.capabilities : [],
     address: String(remote.address || ''),
@@ -3118,7 +3321,7 @@ function startHostDiscovery() {
 }
 
 function findLanTablets() {
-  if (!hostDiscoverySocket) return JSON.stringify({ ok: false, message: '请先启动主机服务，再查找局域网平板。' });
+  if (!hostDiscoverySocket) return JSON.stringify({ ok: false, message: '请先启动主机服务，再查找局域网学生终端。' });
   discoveredLanTablets.clear();
   lastTabletDiscoveryAt = new Date().toISOString();
   const requestId = `discover-${crypto.randomUUID()}`;
@@ -3139,9 +3342,9 @@ function findLanTablets() {
       });
     }
     appendHostTimeline({ type: 'tablet_discovery_started', title: 'Tablet discovery started', detail: `${requestId} -> ${targets.join(', ')}` });
-    return JSON.stringify({ ok: true, requestId, broadcastTargets: targets, message: `已通过 ${targets.length} 个广播地址查找局域网平板，请让平板打开“等待主机连接”页面。`, status: JSON.parse(getHostServiceStatus()) });
+    return JSON.stringify({ ok: true, requestId, broadcastTargets: targets, message: `已通过 ${targets.length} 个广播地址查找 Android/Windows 学生终端，请让终端停留在连接主机页面。`, status: JSON.parse(getHostServiceStatus()) });
   } catch (error) {
-    hostServiceLastError = `发送局域网平板发现广播失败：${error.message}`;
+    hostServiceLastError = `发送局域网学生终端发现广播失败：${error.message}`;
     return JSON.stringify({ ok: false, message: hostServiceLastError, status: JSON.parse(getHostServiceStatus()) });
   }
 }
@@ -3757,7 +3960,7 @@ async function startCaptureSession(optionsJson) {
       id,
       protocolVersion: CAPTURE_PROTOCOL_VERSION,
       name: String(input.name || `${student.name}屏幕采集-${now.toLocaleString('zh-CN')}`),
-      platform: 'windows',
+    platform: 'windows',
       sourceId,
       sourceName: source.name,
       sourceType: source.type,
@@ -4381,6 +4584,9 @@ function readProjectDigestState(project) {
     digestManifest,
     submittedFiles,
     digestBatches: Array.isArray(parsed.digestBatches) ? parsed.digestBatches : [],
+    knowledgeGovernance: parsed.knowledgeGovernance && typeof parsed.knowledgeGovernance === 'object'
+      ? parsed.knowledgeGovernance
+      : null,
     updatedAt: parsed.updatedAt || '',
   };
 }
@@ -5901,8 +6107,9 @@ ${ensured.knowledgeRootPath}
 3. 完成后更新项目 index.md 和 log.md。
 4. 只读取本批请求文件，不要修改它：
 ${projectDigestRequestPath(ensured)}
-5. 完成后将逐文件回执写入以下独立回执文件，不要覆盖控制台状态文件：
+5. 完成后必须使用文件写入工具，把完整 JSON 逐文件回执写入以下独立回执文件，不要覆盖控制台状态文件：
 ${projectDigestReceiptPath(ensured)}
+   这个 JSON 文件是教育管家确认完成的唯一标准；只新建 Markdown“消化回执”、只更新 log.md 或只在对话中回复“消化完成”都不算完成。
 6. 必须逐字复制请求文件中的 projectId 和 digestBatchId，禁止自行生成批次号。
 7. 必须使用 digestedFiles，并为本批每个实际完成的源文件填写 relativePath 与原 SHA-1；禁止改用 batchId、processedFiles 或只列出生成的摘要文件。
 8. 如果无法写入指定回执路径，请在最终回复中直接输出完整 JSON 回执；不要改写为 Markdown 报告，也不要自行保存到 ~/.qclaw。用户会把 JSON 粘贴回教育管家。
@@ -6014,13 +6221,38 @@ function syncProjectDigestResult(projectId) {
     const current = readProjectDigestState(ensured);
     const rawFiles = collectProjectRawFiles(paths.rawPath);
     const request = safeReadJson(projectDigestRequestPath(ensured), {});
-    const diskState = safeReadJson(projectDigestReceiptPath(ensured), {});
+    let diskState = safeReadJson(projectDigestReceiptPath(ensured), {});
+    let compatibilityReceipt = null;
+    if (!Object.keys(diskState).length) {
+      compatibilityReceipt = discoverSingleFileMarkdownReceipt({
+        batch: request,
+        knowledgeRoot: ensured.knowledgeRootPath,
+        rawRoot: paths.rawPath,
+        managerDir: ensured.managerPath || path.join(ensured.projectRootPath, '.edu-manager'),
+        submittedAt: current.digestSubmittedAt,
+        scanLimit: 300,
+      });
+      if (compatibilityReceipt) {
+        diskState = compatibilityReceipt.payload;
+        writeJsonAtomic(projectDigestReceiptPath(ensured), diskState);
+        appendHostTimeline({
+          type: 'project_digest_markdown_receipt_accepted',
+          title: 'Project Markdown digest receipt accepted',
+          detail: compatibilityReceipt.receiptPath,
+          count: 1,
+          projectId: String(ensured.id),
+          batchId: String(current.digestBatchId || ''),
+        });
+      }
+    }
     const receiptValidation = validateDigestReceipt({ projectId: ensured.id, current, request, receipt: diskState, rawFiles });
     if (!receiptValidation.ok && receiptValidation.code !== 'receipt_not_ready') {
       return JSON.stringify({ ok: false, digestState: current, rejectedReceipts: receiptValidation.rejected || [], message: receiptValidation.message });
     }
     const hasCompletionSignal = receiptValidation.ok;
     let nextPatch = {};
+    let governanceRun = null;
+    let governancePaths = null;
     if (hasCompletionSignal) {
       const submitted = Array.isArray(current.submittedFiles) ? current.submittedFiles : [];
       const confirmed = receiptValidation.confirmed;
@@ -6032,17 +6264,50 @@ function syncProjectDigestResult(projectId) {
       }
       const remainingSubmitted = receiptValidation.remaining;
       const fullyCompleted = receiptValidation.fullyCompleted;
+      const remainingRelativePaths = new Set(
+        remainingSubmitted.map((file) => String(file.relativePath || '')),
+      );
+      const recentArtifacts = collectRecentKnowledgeArtifacts(ensured.knowledgeRootPath, current.digestSubmittedAt || '', 300);
+      governanceRun = buildKnowledgeGovernanceRun({
+        scopeType: 'project',
+        scopeId: String(ensured.id),
+        scopeName: ensured.name,
+        batchId: current.digestBatchId,
+        knowledgeRoot: ensured.knowledgeRootPath,
+        resolvedFiles: confirmed.map((file) => ({
+          materialId: `project-${crypto.createHash('sha1').update(`${ensured.id}|${file.relativePath}`).digest('hex').slice(0, 20)}`,
+          relativePath: file.relativePath,
+          sha1: file.sha1,
+          artifacts: [],
+        })),
+        artifacts: recentArtifacts,
+        completedAt,
+      });
+      governancePaths = persistKnowledgeGovernanceRun(ensured.managerPath || path.join(ensured.projectRootPath, '.edu-manager'), governanceRun);
       nextPatch = {
         status: fullyCompleted ? 'completed' : 'partial',
         lastDigestAt: completedAt,
         message: fullyCompleted
-          ? `已同步当前批次 ${confirmed.length} 份资料的精确消化结果。`
+          ? `已同步当前批次 ${confirmed.length} 份资料的精确消化结果。${compatibilityReceipt ? ' 本次已兼容识别 Agent 生成的单文件 Markdown 回执。' : ''}`
           : `已同步 ${confirmed.length} 份资料；另有 ${remainingSubmitted.length} 份未获得有效回执，继续待处理。`,
         digestedFiles: confirmed.map((file) => file.path),
         digestManifest,
+        pendingCount: remainingSubmitted.length,
+        submittedCount: 0,
+        pendingFiles: fullyCompleted
+          ? []
+          : (current.pendingFiles || []).filter((file) => remainingRelativePaths.has(String(file.relativePath || ''))),
         submittedFiles: [],
         digestBatchId: '',
         digestSubmittedAt: '',
+        knowledgeGovernance: {
+          runId: governanceRun.runId,
+          status: governanceRun.status,
+          attentionCount: governanceRun.quality.attentionCount,
+          coverage: governanceRun.analysis.coverage,
+          reportPath: governancePaths.reportPath,
+          updatedAt: completedAt,
+        },
         digestBatches: [...(current.digestBatches || []), {
           id: current.digestBatchId,
           submittedAt: current.digestSubmittedAt || '',
@@ -6050,6 +6315,7 @@ function syncProjectDigestResult(projectId) {
           status: fullyCompleted ? 'completed' : 'partial',
           files: confirmed.map((file) => ({ relativePath: file.relativePath, sha1: file.sha1 })),
           rejectedReceipts,
+          receiptCompatibility: diskState.compatibility || null,
           remainingFiles: remainingSubmitted.map((file) => ({ relativePath: file.relativePath, sha1: file.sha1 })),
         }].slice(-50),
       };
@@ -6077,12 +6343,18 @@ function syncProjectDigestResult(projectId) {
       stagingItems: (item.stagingItems || []).map((stagingItem) => digestCompleted && stagingItem.status === 'promoted'
         ? { ...stagingItem, status: 'analyzed', analyzedAt: state.lastDigestAt || new Date().toISOString(), updatedAt: new Date().toISOString() }
         : stagingItem),
+      dashboard: governanceRun ? {
+        ...(item.dashboard || {}),
+        knowledgeGovernanceStatus: governanceRun.status,
+        knowledgeGovernanceAttentionCount: governanceRun.quality.attentionCount,
+        knowledgeTraceabilityCoverage: governanceRun.analysis.coverage,
+      } : item.dashboard,
       digestState: state,
       updatedAt: new Date().toISOString(),
     }));
     appendHostTimeline({ type: 'project_digest_synced', title: 'Project digest synced', detail: `${ensured.name} -> ${state.status}`, count: state.pendingCount || 0 });
     notify('onNativeDigestWorkflowChanged', JSON.stringify({ scopeType: 'project', scopeId: String(ensured.id), status: state.status, batchId: current.digestBatchId || '' }));
-    return JSON.stringify({ ok: true, project: result.project, projects: result.projects, digestState: state, message: state.message });
+    return JSON.stringify({ ok: true, project: result.project, projects: result.projects, digestState: state, governance: governanceRun, message: state.message });
   } catch (error) {
     return JSON.stringify({ ok: false, message: `同步项目消化结果失败：${error.message}` });
   }
@@ -7696,7 +7968,7 @@ function taskStatusGroup(status) {
 
 function taskRiskForKind(kind) {
   if (['project_promotion', 'growth_publish', 'promotion_rollback', 'asset_delete', 'bulk_archive'].includes(String(kind || ''))) return 'high';
-  if (['knowledge_review', 'project_digest'].includes(String(kind || ''))) return 'medium';
+  if (['knowledge_review', 'knowledge_quality', 'project_digest'].includes(String(kind || ''))) return 'medium';
   return 'low';
 }
 
@@ -7714,6 +7986,7 @@ const TASK_OPERATION_ALLOWLIST = {
   maintenance_lint: new Set(['read', 'create_report']),
   project_digest: new Set(['read', 'write_project_knowledge']),
   knowledge_review: new Set(['review_knowledge']),
+  knowledge_quality: new Set(['review_knowledge']),
   openclaw_cron: new Set(['execute_scheduled_task']),
   project_promotion: new Set(['execute_archive_plan', 'archive_project']),
   growth_publish: new Set(['publish_growth_evidence']),
@@ -7783,6 +8056,7 @@ function normalizeTaskEnvelope(task, current = {}) {
     deadlineAt: String(task?.deadlineAt || current.deadlineAt || ''),
     timeoutSeconds: Math.max(30, Number(task?.timeoutSeconds || current.timeoutSeconds || 900)),
     heartbeatTimeoutSeconds: Math.max(30, Number(task?.heartbeatTimeoutSeconds || current.heartbeatTimeoutSeconds || Math.min(Number(task?.timeoutSeconds || current.timeoutSeconds || 900), 180))),
+    resultTimeoutSeconds: Math.max(0, Number(task?.resultTimeoutSeconds ?? current.resultTimeoutSeconds ?? 0)),
     idempotencyKey: String(task?.idempotencyKey || current.idempotencyKey || `${kind}:${sourceType}:${sourceId}:${task?.scheduleKey || 'current'}`),
     completionPolicy: String(task?.completionPolicy || current.completionPolicy || 'manual_review'),
     input: task?.input && typeof task.input === 'object' ? task.input : (current.input || {}),
@@ -7792,7 +8066,9 @@ function normalizeTaskEnvelope(task, current = {}) {
     action: String(task?.action || current.action || ''),
     count: Math.max(0, Number(task?.count ?? current.count ?? 0)),
     approval: task?.approval && typeof task.approval === 'object' ? task.approval : (current.approval || { required: riskLevel === 'high', status: riskLevel === 'high' ? 'pending' : 'not_required' }),
-    result: task?.result && typeof task.result === 'object' ? task.result : (current.result || null),
+    result: Object.prototype.hasOwnProperty.call(task || {}, 'result')
+      ? (task?.result && typeof task.result === 'object' ? task.result : null)
+      : (current.result || null),
     attempt: Math.max(0, Number(task?.attempt ?? current.attempt ?? 0)),
     maxAttempts: Math.max(1, Number(task?.maxAttempts || current.maxAttempts || 3)),
     retryBackoffSeconds: Math.max(0, Number(task?.retryBackoffSeconds ?? current.retryBackoffSeconds ?? 30)),
@@ -7801,14 +8077,18 @@ function normalizeTaskEnvelope(task, current = {}) {
     routeAttempts: Array.isArray(task?.routeAttempts) ? task.routeAttempts : (Array.isArray(current.routeAttempts) ? current.routeAttempts : []),
     createdAt: String(current.createdAt || task?.createdAt || now),
     updatedAt: String(task?.updatedAt || now),
-    startedAt: String(task?.startedAt || current.startedAt || ''),
-    completedAt: String(task?.completedAt || current.completedAt || ''),
-    lastHeartbeatAt: String(task?.lastHeartbeatAt || current.lastHeartbeatAt || ''),
-    nextRetryAt: String(task?.nextRetryAt || current.nextRetryAt || ''),
-    executionId: String(task?.executionId || current.executionId || ''),
-    adapterId: String(task?.adapterId || current.adapterId || ''),
-    routeDecision: task?.routeDecision && typeof task.routeDecision === 'object' ? task.routeDecision : (current.routeDecision || null),
-    error: task?.error && typeof task.error === 'object' ? task.error : (current.error || null),
+    startedAt: String(task?.startedAt ?? current.startedAt ?? ''),
+    completedAt: String(task?.completedAt ?? current.completedAt ?? ''),
+    lastHeartbeatAt: String(task?.lastHeartbeatAt ?? current.lastHeartbeatAt ?? ''),
+    nextRetryAt: String(task?.nextRetryAt ?? current.nextRetryAt ?? ''),
+    executionId: String(task?.executionId ?? current.executionId ?? ''),
+    adapterId: String(task?.adapterId ?? current.adapterId ?? ''),
+    routeDecision: Object.prototype.hasOwnProperty.call(task || {}, 'routeDecision')
+      ? (task?.routeDecision && typeof task.routeDecision === 'object' ? task.routeDecision : null)
+      : (current.routeDecision || null),
+    error: Object.prototype.hasOwnProperty.call(task || {}, 'error')
+      ? (task?.error && typeof task.error === 'object' ? task.error : null)
+      : (current.error || null),
   };
   merged.statusGroup = taskStatusGroup(merged.status);
   return merged;
@@ -7846,17 +8126,97 @@ function writeTaskStore(store) {
     protocolVersion: TASK_PROTOCOL_VERSION,
     updatedAt: taskNow(),
     tasks: (store.tasks || []).map((task) => normalizeTaskEnvelope(task, task)),
-    history: (store.history || []).slice(0, 1000),
+    history: (store.history || []).slice(0, 500),
   };
   writeJsonFile(taskStorePath(), normalized);
+  taskCenterSnapshotCache = { at: 0, value: '' };
   return normalized;
 }
 
 function appendTaskEvent(taskId, type, detail = {}, executionId = '') {
-  fs.mkdirSync(path.dirname(taskEventLogPath()), { recursive: true });
+  const eventPath = taskEventLogPath();
+  fs.mkdirSync(path.dirname(eventPath), { recursive: true });
+  try {
+    const stat = fs.statSync(eventPath);
+    if (stat.size >= 5 * 1024 * 1024) {
+      const archiveDir = path.join(taskCenterDirPath(), 'event-archives');
+      fs.mkdirSync(archiveDir, { recursive: true });
+      fs.renameSync(eventPath, path.join(archiveDir, `events-${timestampForFilename()}.jsonl`));
+    }
+  } catch {
+    // The first event has no existing log to rotate.
+  }
   const event = { id: `event-${Date.now()}-${crypto.randomBytes(3).toString('hex')}`, taskId: String(taskId || ''), executionId: String(executionId || ''), type: String(type || 'updated'), at: taskNow(), detail };
-  fs.appendFileSync(taskEventLogPath(), `${JSON.stringify(event)}\n`, 'utf8');
+  fs.appendFileSync(eventPath, `${JSON.stringify(event)}\n`, 'utf8');
   return event;
+}
+
+function repairTaskCenterRuntimeState() {
+  if (taskRuntimeMigrationChecked) return { ok: true, skipped: true };
+  taskRuntimeMigrationChecked = true;
+  try {
+    ensureTaskCenterWorkspace();
+    const store = readTaskStore();
+    const repairedAt = taskNow();
+    const repair = repairTaskRuntimeStore(store, repairedAt);
+    const eventPath = taskEventLogPath();
+    const rawEvents = fs.existsSync(eventPath)
+      ? fs.readFileSync(eventPath, 'utf8').split(/\r?\n/).filter(Boolean)
+      : [];
+    const parsedEvents = rawEvents.flatMap((line) => {
+      try { return [JSON.parse(line)]; }
+      catch { return []; }
+    });
+    const compactedEvents = compactTaskEvents(parsedEvents, { maxEvents: 2000 });
+    const eventsChanged = compactedEvents.length !== parsedEvents.length || parsedEvents.length !== rawEvents.length;
+    if (!repair.changed && !eventsChanged) return { ok: true, skipped: true };
+
+    const backupDir = path.join(taskCenterDirPath(), 'migration-backups', `runtime-p0-${timestampForFilename()}`);
+    fs.mkdirSync(backupDir, { recursive: true });
+    if (fs.existsSync(taskStorePath())) fs.copyFileSync(taskStorePath(), path.join(backupDir, 'tasks.json'));
+    if (fs.existsSync(eventPath)) fs.copyFileSync(eventPath, path.join(backupDir, 'events.jsonl'));
+
+    if (repair.changed) {
+      for (const item of repair.repairs) {
+        const task = store.tasks.find((entry) => String(entry.id) === String(item.taskId));
+        store.history.unshift({
+          id: `history-${Date.now()}-${crypto.randomBytes(3).toString('hex')}`,
+          taskId: String(item.taskId || ''),
+          executionId: String(task?.executionId || ''),
+          kind: String(task?.kind || 'runtime_repair'),
+          title: String(task?.title || '任务运行时修复'),
+          sourceType: String(task?.sourceType || 'system'),
+          sourceId: String(task?.sourceId || 'task-center'),
+          sourceName: String(task?.sourceName || ''),
+          executor: String(task?.executor || 'system'),
+          status: String(task?.status || 'pending'),
+          at: repairedAt,
+          detail: `P0 运行时修复：${item.type}`,
+        });
+      }
+      writeTaskStore(store);
+    }
+
+    const summaryEvent = {
+      id: `event-${Date.now()}-${crypto.randomBytes(3).toString('hex')}`,
+      taskId: 'task-center',
+      executionId: '',
+      type: 'runtime_state_repaired',
+      at: repairedAt,
+      detail: {
+        repairs: repair.repairs,
+        originalEventCount: parsedEvents.length,
+        compactedEventCount: compactedEvents.length,
+        backupDir,
+      },
+    };
+    const finalEvents = compactTaskEvents([...compactedEvents, summaryEvent], { maxEvents: 2000 });
+    fs.writeFileSync(eventPath, `${finalEvents.map((event) => JSON.stringify(event)).join('\n')}\n`, 'utf8');
+    return { ok: true, repairs: repair.repairs, backupDir, eventCount: finalEvents.length };
+  } catch (error) {
+    taskRuntimeMigrationChecked = false;
+    return { ok: false, message: `任务运行时修复失败：${error.message}` };
+  }
 }
 
 function transitionTaskInStore(store, taskId, nextStatus, patch = {}, eventType = 'status_changed') {
@@ -7912,30 +8272,41 @@ function upsertTaskCandidates(candidates, options = {}) {
       appendTaskEvent(created.id, 'task_created', { kind: created.kind, sourceType: created.sourceType, sourceId: created.sourceId });
       continue;
     }
-    const sourceStatus = normalizeTaskStatus(candidate.status);
-    const preserveExecution = ['running', 'waiting_result', 'reviewing'].includes(current.status);
-    const preserveTerminal = TASK_TERMINAL_STATUSES.has(current.status) && Number(candidate.count || 0) === 0;
-    const newDigestCycle = ['student_digest', 'project_digest'].includes(String(candidate.kind || ''))
-      && String(candidate.idempotencyKey || '') !== String(current.idempotencyKey || '')
-      && !preserveExecution;
-    const nextStatus = preserveExecution || preserveTerminal ? current.status : sourceStatus;
+    const runtime = candidateRuntimeDecision(current, candidate);
     const preserveRequestedOperation = taskRequiresApproval(current) && current.input?.operation && !TASK_TERMINAL_STATUSES.has(current.status);
     const merged = normalizeTaskEnvelope({
       ...candidate,
-      status: nextStatus,
+      status: runtime.nextStatus,
       input: preserveRequestedOperation ? current.input : candidate.input,
       expectedOutput: preserveRequestedOperation ? current.expectedOutput : candidate.expectedOutput,
       permissions: preserveRequestedOperation ? current.permissions : candidate.permissions,
-      result: newDigestCycle ? null : current.result,
+      result: runtime.resetExecution ? null : current.result,
       approval: current.approval,
-      attempt: newDigestCycle ? 0 : current.attempt,
+      attempt: runtime.resetExecution ? 0 : current.attempt,
       createdAt: current.createdAt,
-      executionId: newDigestCycle ? '' : current.executionId,
-      adapterId: newDigestCycle ? '' : current.adapterId,
-      routeDecision: newDigestCycle ? null : current.routeDecision,
-      routeAttempts: newDigestCycle ? [] : current.routeAttempts,
-      error: newDigestCycle ? null : current.error,
+      executionId: runtime.resetExecution ? '' : current.executionId,
+      adapterId: runtime.resetExecution ? '' : current.adapterId,
+      routeDecision: runtime.resetExecution ? null : current.routeDecision,
+      routeAttempts: runtime.resetExecution ? [] : current.routeAttempts,
+      error: runtime.resetExecution ? null : current.error,
+      autoRetry: runtime.resetExecution ? candidate.autoRetry : current.autoRetry,
     }, current);
+    if (runtime.resetExecution) {
+      Object.assign(merged, {
+        result: null,
+        attempt: 0,
+        executionId: '',
+        adapterId: '',
+        routeDecision: null,
+        routeAttempts: [],
+        error: null,
+        startedAt: '',
+        completedAt: '',
+        lastHeartbeatAt: '',
+        nextRetryAt: '',
+      });
+      merged.statusGroup = taskStatusGroup(merged.status);
+    }
     const comparableCurrent = { ...current, updatedAt: '' };
     const comparableMerged = { ...merged, updatedAt: '' };
     if (JSON.stringify(comparableCurrent) === JSON.stringify(comparableMerged)) continue;
@@ -8363,9 +8734,61 @@ function writeTaskPacket(task, dir, command) {
   fs.mkdirSync(dir, { recursive: true });
   const packetPath = path.join(dir, `${task.id}.task.json`);
   const promptPath = path.join(dir, `${task.id}.prompt.md`);
-  writeJsonFile(packetPath, { ...task, command, exportedAt: taskNow() });
-  fs.writeFileSync(promptPath, `# ${task.title}\n\n任务 ID：${task.id}\n协议版本：${task.protocolVersion}\n\n${command}\n\n## 结果回写\n\n请返回 TaskResult JSON，并保留 taskId、executionId、status、artifacts、validation 和 message。\n`, 'utf8');
+  let contextBundle = null;
+  try {
+    contextBundle = currentArchiveAccess().buildContextBundle({
+      scopeType: task.sourceType,
+      scopeId: task.sourceId,
+      query: [task.title, task.detail].filter(Boolean).join(' '),
+      limit: 8,
+    });
+  } catch {
+    contextBundle = { ok: false, schema: ARCHIVE_ACCESS_SCHEMA, resources: [] };
+  }
+  writeJsonFile(packetPath, {
+    ...task,
+    command,
+    archiveAccess: {
+      schema: ARCHIVE_ACCESS_SCHEMA,
+      mode: 'embedded_read_only',
+      rpcChannel: 'bridge:archiveAccessRpc',
+      contextBundle,
+    },
+    exportedAt: taskNow(),
+  });
+  fs.writeFileSync(promptPath, `# ${task.title}\n\n任务 ID：${task.id}\n协议版本：${task.protocolVersion}\n\n${command}\n\n## 档案上下文\n\n任务包 archiveAccess.contextBundle 已附带当前范围内的最小知识上下文。引用资料时保留 edu:// URI；没有依据的内容标记为“待观察”。\n\n## 结果回写\n\n请返回 TaskResult JSON，并保留 taskId、executionId、status、artifacts、validation 和 message。\n`, 'utf8');
   return { packetPath, promptPath };
+}
+
+function currentArchiveAccess() {
+  const students = readStudentsIndex().map(toHostStudent);
+  const projects = readProjects().map(normalizeProject);
+  const descriptors = [
+    ...students.map((student) => ({
+      scopeType: 'student',
+      scopeId: String(student.id),
+      scopeName: student.name,
+      root: student.rootPath || getStudentRootDir(student.name),
+      excludedRoots: [student.rawPath || getRawDir(student.name), studentManagerDir(student)],
+    })),
+    ...projects.map((project) => ({
+      scopeType: 'project',
+      scopeId: String(project.id),
+      scopeName: project.name,
+      root: project.knowledgeRootPath,
+      excludedRoots: [project.managerPath].filter(Boolean),
+    })),
+  ];
+  return createArchiveAccess({ descriptors, maxResources: 1500 });
+}
+
+function archiveAccessRpc(requestJson) {
+  try {
+    const request = typeof requestJson === 'string' ? JSON.parse(requestJson) : requestJson;
+    return JSON.stringify(handleArchiveAccessRpc(currentArchiveAccess(), request));
+  } catch (error) {
+    return JSON.stringify({ jsonrpc: '2.0', id: null, error: { code: -32603, message: `档案读取失败：${error.message}` } });
+  }
 }
 
 function validateTaskArtifacts(task, startedAt = '', resultPayload = null) {
@@ -8495,7 +8918,24 @@ function validateTaskCompletion(task, startedAt = '', resultPayload = null) {
     try { domainSync = JSON.parse(syncStudentDigestResult(task.sourceId, { forceSubmitted: true })); }
     catch { domainSync = { ok: false, message: '学生消化结果同步失败。' }; }
     const status = String(domainSync?.state?.status || '');
-    return { valid: Boolean(domainSync?.ok && ['completed', 'partial', 'idle'].includes(status)), artifacts: [], checkedAt: taskNow(), message: domainSync?.message || domainSync?.state?.message || '学生消化结果同步完成。', domainSync };
+    const expectedBatchId = String(task.input?.digestBatchId || '');
+    const settledBatchId = String(domainSync?.validation?.result?.digestBatchId || domainSync?.state?.lastDigestBatchId || '');
+    const strictValid = Boolean(
+      domainSync?.ok
+      && domainSync?.strict
+      && domainSync?.validation?.ok
+      && ['completed', 'partial'].includes(status)
+      && (!expectedBatchId || settledBatchId === expectedBatchId)
+    );
+    return {
+      valid: strictValid,
+      artifacts: [],
+      checkedAt: taskNow(),
+      message: strictValid
+        ? domainSync?.message || domainSync?.state?.message || '学生消化结果同步完成。'
+        : domainSync?.message || domainSync?.state?.message || '当前任务尚未取得与批次匹配的逐文件结果。',
+      domainSync,
+    };
   }
   return validateTaskArtifacts(task, startedAt, resultPayload);
 }
@@ -8606,7 +9046,7 @@ function spawnAdapterProcess(executable, args, options = {}) {
   return spawn(executable, args, { ...options, shell: false });
 }
 
-function heartbeatTask(taskId, executionId, detail = '') {
+function heartbeatTask(taskId, executionId, detail = '', recordEvent = true) {
   const running = taskChildProcesses.get(String(taskId));
   const now = Date.now();
   if (running && now - Number(running.lastHeartbeatWrite || 0) < 5000) return;
@@ -8617,7 +9057,12 @@ function heartbeatTask(taskId, executionId, detail = '') {
   task.updatedAt = task.lastHeartbeatAt;
   writeTaskStore(store);
   if (running) running.lastHeartbeatWrite = now;
-  appendTaskEvent(task.id, 'adapter_heartbeat', { adapterId: task.adapterId, detail: String(detail || '').slice(0, 200) }, executionId);
+  if (recordEvent) appendTaskEvent(task.id, 'adapter_heartbeat', { adapterId: task.adapterId, detail: String(detail || '').slice(0, 200) }, executionId);
+}
+
+function clearTaskProcessHeartbeat(taskId) {
+  const running = taskChildProcesses.get(String(taskId));
+  if (running?.heartbeatTimer) clearInterval(running.heartbeatTimer);
 }
 
 function launchCommandAdapter(task, adapterId, executable, args, cwd, stdinText = '') {
@@ -8631,7 +9076,9 @@ function launchCommandAdapter(task, adapterId, executable, args, cwd, stdinText 
   writeTaskStore(store);
   fs.writeFileSync(logPath, `task: ${task.id}\nexecution: ${executionId}\nadapter: ${adapterId}\nstarted: ${taskNow()}\n\n`, 'utf8');
   const child = spawnAdapterProcess(executable, args, { cwd: cwd || taskCenterDirPath(), windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
-  taskChildProcesses.set(task.id, { child, executionId, adapterId, startedAt: taskNow(), lastHeartbeatWrite: Date.now() });
+  const heartbeatTimer = setInterval(() => heartbeatTask(task.id, executionId, 'process_alive', false), 30 * 1000);
+  heartbeatTimer.unref?.();
+  taskChildProcesses.set(task.id, { child, executionId, adapterId, startedAt: taskNow(), lastHeartbeatWrite: Date.now(), heartbeatTimer });
   let stdout = '';
   let stderr = '';
   child.stdout?.on('data', (chunk) => { stdout += chunk.toString(); fs.appendFileSync(logPath, chunk); heartbeatTask(task.id, executionId, 'stdout'); });
@@ -8639,10 +9086,12 @@ function launchCommandAdapter(task, adapterId, executable, args, cwd, stdinText 
   if (stdinText) child.stdin?.end(stdinText, 'utf8');
   else child.stdin?.end();
   child.on('error', (error) => {
+    clearTaskProcessHeartbeat(task.id);
     taskChildProcesses.delete(task.id);
     finalizeAdapterExecution(task.id, executionId, adapterId, -1, stdout, `${stderr}\n${error.message}`);
   });
   child.on('exit', (code) => {
+    clearTaskProcessHeartbeat(task.id);
     taskChildProcesses.delete(task.id);
     finalizeAdapterExecution(task.id, executionId, adapterId, Number(code), stdout, stderr);
   });
@@ -8670,7 +9119,19 @@ function submitCodexTask(task, command) {
 function submitQClawTask(task, command) {
   const store = readTaskStore();
   const executionId = `qclaw-${Date.now()}-${crypto.randomBytes(4).toString('hex')}`;
-  const transition = transitionTaskInStore(store, task.id, 'waiting_result', { executionId, adapterId: 'qclaw', executor: 'qclaw', executionMode: 'inbox', attempt: task.attempt + 1, startedAt: taskNow(), lastHeartbeatAt: taskNow(), result: null }, 'qclaw_inbox_prepared');
+  const transition = transitionTaskInStore(store, task.id, 'waiting_result', {
+    executionId,
+    adapterId: 'qclaw',
+    executor: 'qclaw',
+    executionMode: 'inbox',
+    attempt: task.attempt + 1,
+    startedAt: taskNow(),
+    lastHeartbeatAt: taskNow(),
+    resultTimeoutSeconds: 24 * 60 * 60,
+    autoRetry: false,
+    nextRetryAt: '',
+    result: null,
+  }, 'qclaw_inbox_prepared');
   if (!transition.ok) return transition;
   const packet = writeTaskPacket(transition.task, qclawTaskInboxPath(), command);
   transition.task.result = normalizeTaskResult(transition.task, { executionId, status: 'waiting_result', artifacts: [] }, null, { summary: '任务已写入 QClaw 收件箱。' });
@@ -8691,6 +9152,9 @@ function submitManualTask(task, command, reason = '') {
     attempt: task.attempt + 1,
     startedAt: taskNow(),
     lastHeartbeatAt: taskNow(),
+    resultTimeoutSeconds: 0,
+    autoRetry: false,
+    nextRetryAt: '',
     result: null,
   }, 'manual_execution_prepared');
   if (transition.ok) {
@@ -8749,6 +9213,7 @@ function getAgentExecutionAdapters() {
 function cancelRunningAdapterTask(taskId) {
   const running = taskChildProcesses.get(String(taskId));
   if (!running?.child || running.child.killed) return { ok: false, message: '没有正在运行的进程。' };
+  clearTaskProcessHeartbeat(taskId);
   running.child.kill();
   taskChildProcesses.delete(String(taskId));
   return { ok: true };
@@ -8997,18 +9462,25 @@ function quarantineQClawPayload(file, reason) {
   return target;
 }
 
+function archiveQClawPayload(file, kind) {
+  const archiveDir = path.join(qclawTaskResultPath(), 'processed', kind === 'claim' ? 'claims' : 'results');
+  fs.mkdirSync(archiveDir, { recursive: true });
+  const parsed = path.parse(file);
+  const target = path.join(archiveDir, `${parsed.name}-${timestampForFilename()}-${crypto.randomBytes(3).toString('hex')}${parsed.ext}`);
+  fs.renameSync(file, target);
+  return target;
+}
+
 function syncQClawTaskResults() {
   try {
     fs.mkdirSync(qclawTaskResultPath(), { recursive: true });
-    const claimFiles = fs.readdirSync(qclawTaskResultPath()).filter((name) => name.endsWith('.claim.json'));
-    const files = fs.readdirSync(qclawTaskResultPath()).filter((name) => name.endsWith('.result.json'));
+    const discovered = discoverTaskPayloads(qclawTaskResultPath());
     const store = readTaskStore();
     let imported = 0;
     let claimed = 0;
     let rejected = 0;
-    for (const name of claimFiles) {
-      const file = path.join(qclawTaskResultPath(), name);
-      const payload = safeReadJson(file, null);
+    for (const candidate of discovered.claims) {
+      const { file, payload } = candidate;
       const task = store.tasks.find((item) => item.id === String(payload?.taskId || ''));
       const identity = validateExternalTaskResultIdentity(task, payload, { allowedStatuses: ['waiting_result'] });
       if (!identity.ok) {
@@ -9017,13 +9489,15 @@ function syncQClawTaskResults() {
         rejected += 1;
         continue;
       }
-      if (task.result?.claimFile === file) continue;
       const transition = transitionTaskInStore(store, task.id, 'running', { lastHeartbeatAt: taskNow(), result: { ...(task.result || {}), claimFile: file, claimedBy: payload.agentId || 'qclaw', claimedAt: payload.claimedAt || taskNow() } }, 'qclaw_task_claimed');
-      if (transition.ok) claimed += 1;
+      if (transition.ok) {
+        const archivedFile = archiveQClawPayload(file, 'claim');
+        if (transition.task?.result) transition.task.result.claimFile = archivedFile;
+        claimed += 1;
+      }
     }
-    for (const name of files) {
-      const file = path.join(qclawTaskResultPath(), name);
-      const payload = safeReadJson(file, null);
+    for (const candidate of discovered.results) {
+      const { file, payload } = candidate;
       const task = store.tasks.find((item) => item.id === String(payload?.taskId || ''));
       const identity = validateExternalTaskResultIdentity(task, payload);
       if (!identity.ok) {
@@ -9032,7 +9506,6 @@ function syncQClawTaskResults() {
         rejected += 1;
         continue;
       }
-      if (task.result?.resultFile === file) continue;
       const validation = validateTaskCompletion(task, task.startedAt, payload);
       const successful = payload.status !== 'failed' && validation.valid;
       const result = normalizeTaskResult(task, { ...payload, resultFile: file, status: successful ? 'reviewing' : 'failed' }, validation, { importedFrom: file });
@@ -9043,7 +9516,14 @@ function syncQClawTaskResults() {
         event: 'qclaw_result_synced',
         autoSummary: '资料处理完成并已通过自动校验。',
       });
-      if (transition.ok) imported += 1;
+      if (transition.ok) {
+        const archivedFile = archiveQClawPayload(file, 'result');
+        if (transition.task?.result) {
+          transition.task.result.resultFile = archivedFile;
+          transition.task.result.importedFrom = archivedFile;
+        }
+        imported += 1;
+      }
       if (transition.ok && isDigestTask(task)) notify('onNativeDigestWorkflowChanged', JSON.stringify({ scopeType: task.sourceType, scopeId: task.sourceId, status: transition.task?.status || '', taskId: task.id }));
     }
     if (imported || claimed || rejected) writeTaskStore(store);
@@ -9088,24 +9568,27 @@ function enforceTaskTimeouts(store) {
   const now = Date.now();
   let changed = false;
   for (const task of store.tasks) {
-    if (!['running', 'waiting_result'].includes(task.status) || !task.startedAt) continue;
-    const heartbeatAt = Date.parse(task.lastHeartbeatAt || task.startedAt);
-    const executionTimeoutAt = Date.parse(task.startedAt) + Number(task.timeoutSeconds || 900) * 1000;
-    const heartbeatTimeoutAt = heartbeatAt + Number(task.heartbeatTimeoutSeconds || task.timeoutSeconds || 900) * 1000;
-    const timeoutAt = Math.min(executionTimeoutAt, heartbeatTimeoutAt);
-    if (now <= timeoutAt) continue;
+    const timeout = taskTimeoutDecision(task, now);
+    if (!timeout.enabled || !timeout.due) continue;
     const running = taskChildProcesses.get(task.id);
-    if (running?.child && !running.child.killed) {
-      try { running.child.kill(); } catch { /* Timeout state still applies. */ }
+    if (running) {
+      clearTaskProcessHeartbeat(task.id);
+      if (running.child && !running.child.killed) {
+        try { running.child.kill(); } catch { /* Timeout state still applies. */ }
+      }
       taskChildProcesses.delete(task.id);
     }
-    const heartbeatLost = heartbeatTimeoutAt <= executionTimeoutAt;
-    const error = { code: heartbeatLost ? 'HEARTBEAT_LOST' : 'TASK_TIMEOUT', message: heartbeatLost ? `任务超过 ${task.heartbeatTimeoutSeconds} 秒没有心跳。` : `任务超过 ${task.timeoutSeconds} 秒未完成。` };
-    const nextRetryAt = task.autoRetry !== false ? new Date(now + Number(task.retryBackoffSeconds || 0) * 1000).toISOString() : '';
-    const transition = transitionTaskInStore(store, task.id, 'timed_out', { error, nextRetryAt }, heartbeatLost ? 'task_heartbeat_lost' : 'task_timed_out');
+    const mayAutoRetry = task.autoRetry !== false && Number(task.attempt || 0) < Number(task.maxAttempts || 1);
+    const nextRetryAt = mayAutoRetry ? new Date(now + Number(task.retryBackoffSeconds || 0) * 1000).toISOString() : '';
+    const eventType = timeout.kind === 'heartbeat' ? 'task_heartbeat_lost' : timeout.kind === 'result_wait' ? 'task_result_wait_timed_out' : 'task_timed_out';
+    const transition = transitionTaskInStore(store, task.id, 'timed_out', {
+      error: timeout.error,
+      nextRetryAt,
+      autoRetry: mayAutoRetry,
+    }, eventType);
     if (transition.ok) {
       changed = true;
-      if (task.autoRetry !== false) setTimeout(() => fallbackTaskAfterFailure(task.id, task.adapterId, error.message), Math.min(Number(task.retryBackoffSeconds || 0) * 1000, 30000) + 100);
+      if (mayAutoRetry) setTimeout(() => fallbackTaskAfterFailure(task.id, task.adapterId, timeout.error.message), Math.min(Number(task.retryBackoffSeconds || 0) * 1000, 30000) + 100);
     }
   }
   return changed;
@@ -9320,6 +9803,7 @@ function scheduledTimeReached(value) {
 }
 
 async function runUnifiedTaskScheduler() {
+  repairTaskCenterRuntimeState();
   if (taskSchedulerRunning) return { ok: true, skipped: true, message: '上一轮统一任务调度仍在运行。' };
   if (!taskAutomationEnabled()) return { ok: true, skipped: true, message: '当前为仅手动模式，未运行自动调度。' };
   taskSchedulerRunning = true;
@@ -9333,6 +9817,7 @@ async function runUnifiedTaskScheduler() {
     if (enforceTaskTimeouts(store)) writeTaskStore(store);
     const retryDue = readTaskStore().tasks.filter((task) => ['failed', 'timed_out', 'blocked'].includes(task.status)
       && task.autoRetry !== false
+      && Number(task.attempt || 0) < Number(task.maxAttempts || 1)
       && task.nextRetryAt
       && Date.parse(task.nextRetryAt) <= Date.now());
     for (const task of retryDue) fallbackTaskAfterFailure(task.id, task.adapterId, task.error?.message || '计划重试');
@@ -9483,6 +9968,29 @@ function buildTaskCenterCandidates() {
         detail: pendingCount > 0 ? `有 ${pendingCount} 份资料等待消化。` : `有 ${submittedCount} 份资料等待 Agent 回执。`, action: 'student_digest',
       }));
     }
+    const governance = digestState.knowledgeGovernance || {};
+    if (Number(governance.attentionCount || 0) > 0) {
+      tasks.push(normalizeTaskEnvelope({
+        id: taskStableId('knowledge_quality', 'student', student.id),
+        title: `${student.name}知识处理需要检查`,
+        kind: 'knowledge_quality',
+        sourceType: 'student',
+        sourceId: String(student.id),
+        sourceName: student.name,
+        status: 'pending',
+        trigger: 'event',
+        executor: 'human-review',
+        requestedExecutor: 'manual',
+        executionMode: 'review',
+        count: Number(governance.attentionCount || 0),
+        idempotencyKey: String(governance.runId || `knowledge_quality:${student.id}`),
+        expectedOutput: { type: 'knowledge_governance_report', path: governance.reportPath || '' },
+        permissions: { read: [governance.reportPath].filter(Boolean), write: [], operations: ['review_knowledge'] },
+        detail: `自动治理发现 ${governance.attentionCount} 个会影响资料闭环的异常；低风险项已自动收起。`,
+        action: 'knowledge_quality',
+        riskLevel: 'medium',
+      }));
+    }
     tasks.push(buildWeeklyActionTask(student));
     tasks.push(buildPeriodicLearningReportTask(student, 'learning_profile'));
     tasks.push(buildPeriodicLearningReportTask(student, 'learning_changes'));
@@ -9527,6 +10035,29 @@ function buildTaskCenterCandidates() {
       detail: `有 ${pendingKnowledge} 条概念、实体、摘要或结论等待审核。`, action: 'project_knowledge', riskLevel: 'medium',
       permissions: { read: [project.knowledgeRootPath].filter(Boolean), write: [project.knowledgeRootPath].filter(Boolean), operations: ['review_knowledge'] },
     }));
+    const projectGovernance = digestState.knowledgeGovernance || {};
+    if (Number(projectGovernance.attentionCount || 0) > 0) {
+      tasks.push(normalizeTaskEnvelope({
+        id: taskStableId('knowledge_quality', 'project', project.id),
+        title: `${project.name}知识处理需要检查`,
+        kind: 'knowledge_quality',
+        sourceType: 'project',
+        sourceId: String(project.id),
+        sourceName: project.name,
+        status: 'pending',
+        trigger: 'event',
+        executor: 'human-review',
+        requestedExecutor: 'manual',
+        executionMode: 'review',
+        count: Number(projectGovernance.attentionCount || 0),
+        idempotencyKey: String(projectGovernance.runId || `knowledge_quality:${project.id}`),
+        expectedOutput: { type: 'knowledge_governance_report', path: projectGovernance.reportPath || '' },
+        permissions: { read: [projectGovernance.reportPath].filter(Boolean), write: [], operations: ['review_knowledge'] },
+        detail: `自动治理发现 ${projectGovernance.attentionCount} 个会影响资料闭环的异常；低风险项已自动收起。`,
+        action: 'knowledge_quality',
+        riskLevel: 'medium',
+      }));
+    }
     const contributionStatus = String(project.dashboard?.contributionStatus || '');
     const promotionTargets = readStudentsIndex().filter((student) => (project.studentIds || []).map(String).includes(String(student.id))).map((student) => growthModelDirForStudent(toHostStudent(student)));
     if (project.dashboard?.contributionReady || contributionStatus || project.archivedAt) tasks.push(normalizeTaskEnvelope({
@@ -9541,7 +10072,12 @@ function buildTaskCenterCandidates() {
   return tasks;
 }
 
-function getTaskCenter() {
+function getTaskCenter(options = {}) {
+  repairTaskCenterRuntimeState();
+  const force = Boolean(options?.force);
+  if (!force && taskCenterSnapshotCache.value && Date.now() - taskCenterSnapshotCache.at < 30_000) {
+    return taskCenterSnapshotCache.value;
+  }
   const performanceStartedAt = Date.now();
   const performanceMarks = {};
   try {
@@ -9578,7 +10114,7 @@ function getTaskCenter() {
       const ledger = readStudentScheduleLedger(student);
       legacyHistory.push(...ledger.entries.map((entry) => ({ ...entry, sourceType: 'student', sourceId: String(student.id), sourceName: student.name, executor: String(student.agentTool || 'qclaw'), at: entry.lastCopiedAt || entry.copiedAt || entry.day || '' })));
     }
-    const history = [...store.history, ...legacyHistory].sort((a, b) => String(b.at || b.lastCopiedAt || b.copiedAt || b.day || '').localeCompare(String(a.at || a.lastCopiedAt || a.copiedAt || a.day || ''))).slice(0, 300);
+    const history = [...store.history, ...legacyHistory].sort((a, b) => String(b.at || b.lastCopiedAt || b.copiedAt || b.day || '').localeCompare(String(a.at || a.lastCopiedAt || a.copiedAt || a.day || ''))).slice(0, 100);
     const summary = {
       total: tasks.length,
       actionable: tasks.filter((task) => task.statusGroup === 'actionable').length,
@@ -9589,7 +10125,9 @@ function getTaskCenter() {
     const automationEnabled = taskAutomationEnabled();
     const capabilities = adapterCapabilities();
     performanceMarks.totalMs = Date.now() - performanceStartedAt;
-    return JSON.stringify({ ok: true, protocolVersion: TASK_PROTOCOL_VERSION, generatedAt: taskNow(), tasks: renderedTasks, history, summary, capabilities, automationEnabled, executionMode: automationEnabled ? 'automatic' : 'manual', performance: performanceMarks, taskStorePath: taskStorePath(), qclawInboxPath: qclawTaskInboxPath(), qclawResultPath: qclawTaskResultPath(), message: `任务中心已汇总 ${renderedTasks.length} 项标准任务和 ${history.length} 条执行记录；当前为${automationEnabled ? '自动运行' : '仅手动'}模式。` });
+    const snapshot = JSON.stringify({ ok: true, protocolVersion: TASK_PROTOCOL_VERSION, generatedAt: taskNow(), tasks: renderedTasks, history, summary, capabilities, automationEnabled, executionMode: automationEnabled ? 'automatic' : 'manual', performance: performanceMarks, taskStorePath: taskStorePath(), qclawInboxPath: qclawTaskInboxPath(), qclawResultPath: qclawTaskResultPath(), message: `任务中心已汇总 ${renderedTasks.length} 项标准任务和 ${history.length} 条执行记录；当前为${automationEnabled ? '自动运行' : '仅手动'}模式。` });
+    taskCenterSnapshotCache = { at: Date.now(), value: snapshot };
+    return snapshot;
   } catch (error) {
     return JSON.stringify({ ok: false, tasks: [], history: [], message: `读取任务中心失败：${error.message}` });
   }
@@ -13197,11 +13735,16 @@ function handleHealth(_request, response) {
   });
 }
 
+function studentTerminalProgress(records = [], state = {}) {
+  return buildStudentTerminalProgress(records, state, { normalizeStatus: normalizeUploadStatus });
+}
+
 function terminalStudentRecord(student) {
   const rawPath = student.rawPath || getRawDir(student.name);
   const summaryPath = student.summaryPath || getSummaryDir(student.name);
   const records = readUploadRecords().filter((record) => String(record.studentId) === String(student.id));
   const state = readStudentDigestState(student);
+  const progress = studentTerminalProgress(records, state);
   return {
     ...student,
     loginQrPayload: studentLoginQrPayload(student.loginId),
@@ -13213,6 +13756,15 @@ function terminalStudentRecord(student) {
     lastDigestAt: state.lastDigestAt || '',
     digestStatus: state.status || 'idle',
     digestMessage: state.message || '',
+    progress,
+    submittedTodayCount: progress.submittedTodayCount,
+    recentUploadCount7: progress.recentUploadCount7,
+    previousUploadCount7: progress.previousUploadCount7,
+    recentUploadTrend: progress.recentTrend,
+    activeDays30: progress.activeDays30,
+    knowledgeAssetCount: progress.knowledgeAssetCount,
+    newSinceLastDigestCount: progress.newSinceLastDigestCount,
+    lastUploadAt: progress.lastUploadAt,
   };
 }
 
@@ -13844,7 +14396,7 @@ function enrollPairedTablet(input = {}, request = null) {
   const tabletId = String(input.tabletId || '').trim().slice(0, 120);
   const tabletCode = String(input.tabletMachineCode || '').trim().toUpperCase();
   if (!tabletId || tabletCode !== machineCode('tablet', tabletId)) {
-    return { ok: false, statusCode: 400, message: '平板身份或固定机器码校验失败。' };
+    return { ok: false, statusCode: 400, message: '学生终端身份或固定机器码校验失败。' };
   }
   const students = readStudentsIndex();
   if (license.studentLimit && students.length > Number(license.studentLimit)) {
@@ -13866,13 +14418,18 @@ function enrollPairedTablet(input = {}, request = null) {
   const device = {
     ...(existing || {}),
     id: tabletId,
-    name: String(input.tabletName || existing?.name || 'Android 平板').trim().slice(0, 80) || 'Android 平板',
+    name: String(input.tabletName || existing?.name || (input.tabletPlatform === 'windows' ? 'Windows 学生终端' : 'Android 平板')).trim().slice(0, 80) || '学生终端',
     machineCode: tabletCode,
+    platform: String(input.tabletPlatform || existing?.platform || 'android').toLowerCase() === 'windows' ? 'windows' : 'android',
     tokenHash: hashDeviceToken(token),
     tokenPreview: `${token.slice(0, 7)}...${token.slice(-6)}`,
     terminalMode: normalizeTerminalMode(existing?.terminalMode, 'shared'),
     boundStudentId: String(existing?.boundStudentId || ''),
-    capabilities: Array.from(new Set([...(Array.isArray(existing?.capabilities) ? existing.capabilities : []), 'student-session-v1'])),
+    capabilities: Array.from(new Set([
+      ...(Array.isArray(existing?.capabilities) ? existing.capabilities : []),
+      ...(Array.isArray(input.tabletCapabilities) ? input.tabletCapabilities.map(String) : []),
+      'student-session-v1',
+    ])),
     allowedStudentIds: normalizeTerminalMode(existing?.terminalMode, 'shared') === 'personal' && existing?.boundStudentId ? [String(existing.boundStudentId)] : [],
     allowedAllStudents: normalizeTerminalMode(existing?.terminalMode, 'shared') === 'shared',
     autoAuthorizeNewStudents: normalizeTerminalMode(existing?.terminalMode, 'shared') === 'shared',
@@ -13910,6 +14467,8 @@ function acceptHostPairRequest(requestId) {
     tabletId: current.tabletId,
     tabletMachineCode: current.tabletMachineCode,
     tabletName: current.tabletName,
+    tabletPlatform: current.tabletPlatform,
+    tabletCapabilities: current.tabletCapabilities,
     tabletAddress: current.tabletAddress,
   });
   if (!enrolled.ok) return JSON.stringify(enrolled);
@@ -13935,7 +14494,7 @@ function rejectPairRequest(requestId) {
 function inviteLanTablet(tabletId) {
   if (!hostDiscoverySocket) return JSON.stringify({ ok: false, message: '主机局域网发现服务未运行。' });
   const tablet = [...discoveredLanTablets.values()].find((item) => String(item.deviceId) === String(tabletId));
-  if (!tablet) return JSON.stringify({ ok: false, message: '未找到该平板，请重新查找。' });
+  if (!tablet) return JSON.stringify({ ok: false, message: '未找到该学生终端，请重新查找。' });
   const identity = getHostIdentity();
   const info = getConnectionInfo();
   const created = createPairRequest({
@@ -13946,6 +14505,8 @@ function inviteLanTablet(tabletId) {
     tabletMachineCode: tablet.machineCode,
     hostName: identity.displayName,
     tabletName: tablet.displayName,
+    tabletPlatform: tablet.platform,
+    tabletCapabilities: tablet.capabilities,
     hostAddress: info.serverUrl,
     tabletAddress: tablet.address,
   });
@@ -13956,6 +14517,7 @@ function inviteLanTablet(tabletId) {
     requestId: created.record.requestId,
     requestToken: created.requestToken,
     targetTabletId: tablet.deviceId,
+    targetTabletMachineCode: tablet.machineCode,
     hostId: identity.hostId,
     hostMachineCode: identity.machineCode,
     hostName: identity.displayName,
@@ -13967,11 +14529,11 @@ function inviteLanTablet(tabletId) {
   }), 'utf8');
   try {
     hostDiscoverySocket.send(payload, tablet.discoveryPort || HOST_DISCOVERY_PORT, tablet.address, (error) => {
-      if (error) hostServiceLastError = `发送平板连接邀请失败：${error.message}`;
+      if (error) hostServiceLastError = `发送学生终端连接邀请失败：${error.message}`;
     });
-    return JSON.stringify({ ok: true, message: '已发送连接邀请，请在平板端点击接受。', request: publicPairRequest(created.record), status: JSON.parse(getHostServiceStatus()) });
+    return JSON.stringify({ ok: true, message: '已发送连接邀请，请在学生终端点击接受。', request: publicPairRequest(created.record), status: JSON.parse(getHostServiceStatus()) });
   } catch (error) {
-    return JSON.stringify({ ok: false, message: `发送平板连接邀请失败：${error.message}` });
+    return JSON.stringify({ ok: false, message: `发送学生终端连接邀请失败：${error.message}` });
   }
 }
 
@@ -14019,7 +14581,9 @@ async function handlePairRequestV2(request, response) {
       hostMachineCode: identity.machineCode,
       tabletMachineCode: tabletCode,
       hostName: identity.displayName,
-      tabletName: String(body.tabletName || 'Android 平板'),
+      tabletName: String(body.tabletName || (body.platform === 'windows' ? 'Windows 学生终端' : 'Android 学生终端')),
+      tabletPlatform: String(body.platform || 'android'),
+      tabletCapabilities: Array.isArray(body.capabilities) ? body.capabilities : [],
       hostAddress: getConnectionInfo().serverUrl,
       tabletAddress: requestClientIp(request),
     });
@@ -14085,6 +14649,8 @@ async function handleTabletPairAcceptV2(request, response) {
       tabletId: current.tabletId,
       tabletMachineCode: current.tabletMachineCode,
       tabletName: body.tabletName || current.tabletName,
+      tabletPlatform: current.tabletPlatform || body.platform,
+      tabletCapabilities: current.tabletCapabilities || body.capabilities,
       tabletAddress: requestClientIp(request),
     }, request);
     if (!enrolled.ok) {
@@ -14497,6 +15063,7 @@ function getHostServiceStatus() {
     pairRequests: pairRequests.map(publicPairRequest),
     pendingPairRequestCount: pairRequests.filter((item) => item.status === 'pending_host_accept').length,
     discoveredTablets,
+    discoveredTerminals: discoveredTablets,
     lastTabletDiscoveryAt,
     port: info.port,
     serverUrl: info.serverUrl,
@@ -14530,7 +15097,7 @@ function getHostServiceDiagnostics() {
     {
       label: '主机服务',
       ok: Boolean(hostServer),
-      detail: hostServer ? `运行中，端口 ${info.port}` : '未启动。需要平板连接时，请先启动主机服务。',
+      detail: hostServer ? `运行中，端口 ${info.port}` : '未启动。需要学生终端连接时，请先启动主机服务。',
       suggestion: hostServer ? '保持控制台打开即可。' : '在系统设置的“使用模式”中选择“主机-终端模式”，点击“启动服务”。',
     },
     {
@@ -14563,13 +15130,13 @@ function getHostServiceDiagnostics() {
       label: '学生索引',
       ok: students.length > 0,
       detail: students.length > 0 ? `${students.length} 位学生可供授权。` : '还没有同步学生，请先初始化或新建学生。',
-      suggestion: students.length > 0 ? '可在设备列表中勾选每台平板可访问的学生。' : '先在 Windows 控制台初始化或新建教育管家。',
+      suggestion: students.length > 0 ? '可在设备列表中设置每台学生终端的使用模式和资料范围。' : '先在 Windows 控制台初始化或新建教育管家。',
     },
     {
       label: '学生终端设备',
       ok: activeDevices.length > 0,
       detail: activeDevices.length > 0 ? `${activeDevices.length} 台有效设备，${devices.length - activeDevices.length} 台已撤销。` : '暂无有效绑定设备。',
-      suggestion: activeDevices.length > 0 ? '如资料串学生，请检查设备的学生访问范围。' : '平板可查找主机并请求连接，或开启“等待主机连接”由 Windows 邀请。',
+      suggestion: activeDevices.length > 0 ? '如资料串学生，请检查设备的学生访问范围。' : '学生终端可查找主机并请求连接，或开启“等待主机连接”由 Windows 邀请。',
     },
     {
       label: '最近错误',
@@ -14822,6 +15389,8 @@ ipcMain.on('bridge:renameHostIdentity', (event, displayName) => { licensedIpc(ev
 ipcMain.on('bridge:findLanTablets', (event) => { licensedIpc(event, '局域网平板发现', () => findLanTablets()); });
 ipcMain.on('bridge:inviteLanTablet', (event, tabletId) => { licensedIpc(event, '邀请平板连接', () => inviteLanTablet(tabletId)); });
 ipcMain.on('bridge:acceptHostPairRequest', (event, requestId) => { licensedIpc(event, '接受平板连接', () => acceptHostPairRequest(requestId)); });
+ipcMain.on('bridge:findLanTerminals', (event) => { licensedIpc(event, '局域网学生终端发现', () => findLanTablets()); });
+ipcMain.on('bridge:inviteLanTerminal', (event, terminalId) => { licensedIpc(event, '邀请学生终端连接', () => inviteLanTablet(terminalId)); });
 ipcMain.on('bridge:rejectPairRequest', (event, requestId) => { licensedIpc(event, '拒绝设备连接', () => rejectPairRequest(requestId)); });
 ipcMain.on('bridge:getHostUploadRecords', (event) => { event.returnValue = getHostUploadRecords(); });
 ipcMain.on('bridge:exportHostUploadRecords', (event) => { event.returnValue = exportHostUploadRecords(); });
@@ -14841,6 +15410,8 @@ ipcMain.on('bridge:syncStudentDigestAudit', (event, studentId) => { licensedIpc(
 ipcMain.on('bridge:recordScheduledTaskAction', (event, studentId, kind, commandText) => { licensedIpc(event, '定时任务账本', () => recordScheduledTaskAction(studentId, kind, commandText)); });
 ipcMain.on('bridge:getStudentScheduleLedger', (event, studentId) => { event.returnValue = getStudentScheduleLedger(studentId); });
 ipcMain.on('bridge:getTaskCenter', (event) => { event.returnValue = getTaskCenter(); });
+ipcMain.handle('bridge:getTaskCenterAsync', (_event, force) => getTaskCenter({ force: Boolean(force) }));
+ipcMain.handle('bridge:archiveAccessRpc', (_event, requestJson) => archiveAccessRpc(requestJson));
 ipcMain.on('bridge:getTaskCenterCapabilities', (event) => { event.returnValue = getTaskCenterCapabilities(); });
 ipcMain.on('bridge:setTaskAutomationEnabled', (event, enabled) => { licensedIpc(event, '任务自动运行模式', () => setTaskAutomationEnabled(enabled)); });
 ipcMain.on('bridge:executeTask', (event, taskId, executor) => { licensedIpc(event, '执行任务中心任务', () => executeTaskByAdapter(taskId, executor)); });

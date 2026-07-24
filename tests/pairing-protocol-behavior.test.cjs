@@ -36,6 +36,16 @@ test('pair requests use a hidden token and expire after two minutes', () => {
   assert.equal(normalizePairRequest(created.record, now + PAIR_REQUEST_TTL_MS).status, 'expired');
 });
 
+test('pair requests retain terminal platform and capabilities for compatible enrollment', () => {
+  const created = createPairRequest({
+    initiator: 'tablet',
+    tabletPlatform: 'windows',
+    tabletCapabilities: ['student-session-v1', 'windows-terminal-v1'],
+  });
+  assert.equal(created.record.tabletPlatform, 'windows');
+  assert.deepEqual(created.record.tabletCapabilities, ['student-session-v1', 'windows-terminal-v1']);
+});
+
 test('pair request transitions reject replay after acceptance or expiry', () => {
   const now = Date.parse('2026-07-20T10:00:00.000Z');
   const { record } = createPairRequest({ initiator: 'host' }, now);

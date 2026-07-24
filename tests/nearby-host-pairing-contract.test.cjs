@@ -7,6 +7,7 @@ const root = path.resolve(__dirname, '..');
 const host = fs.readFileSync(path.join(root, 'electron', 'main.cjs'), 'utf8');
 const preload = fs.readFileSync(path.join(root, 'electron', 'preload.cjs'), 'utf8');
 const ui = fs.readFileSync(path.join(root, 'src', 'main.tsx'), 'utf8');
+const styles = fs.readFileSync(path.join(root, 'src', 'styles.css'), 'utf8');
 const tablet = fs.readFileSync(path.join(root, 'android-tablet-terminal', 'src', 'com', 'qxmatrix', 'eduterminal', 'MainActivity.java'), 'utf8');
 const tabletManifest = fs.readFileSync(path.join(root, 'android-tablet-terminal', 'AndroidManifest.xml'), 'utf8');
 
@@ -54,7 +55,8 @@ test('Windows UI and bridge expose fixed-code bilateral discovery while preservi
     assert.match(ui, new RegExp(method));
   }
   assert.match(ui, /本机固定主机码/);
-  assert.match(ui, /查找局域网平板/);
+  assert.match(ui, /查找学生终端/);
+  assert.match(ui, /固定学生终端码/);
   assert.match(ui, /最近连接申请/);
   assert.match(ui, /在线/);
   assert.match(ui, /其他连接方式：二维码、六位配对码、粘贴与连接备份/);
@@ -106,4 +108,26 @@ test('host identity and tablet identity survive supported backups', () => {
   assert.match(tablet, /backup\.put\("tabletMachineCode", tabletMachineCode\(\)\)/);
   assert.match(tablet, /backup\.put\("hostMachineCode"/);
   assert.match(tablet, /PREF_DEVICE_ID/);
+});
+
+test('Windows student terminals reuse the tablet wire role while preserving platform and capabilities', () => {
+  assert.match(host, /platform: String\(payload\.platform \|\| 'android'\)/);
+  assert.match(host, /targetTabletMachineCode: tablet\.machineCode/);
+  assert.match(host, /tabletPlatform: String\(body\.platform \|\| 'android'\)/);
+  assert.match(host, /tabletCapabilities: Array\.isArray\(body\.capabilities\)/);
+  assert.match(host, /platform: String\(input\.tabletPlatform \|\| existing\?\.platform \|\| 'android'\)/);
+  assert.match(host, /input\.tabletCapabilities/);
+});
+
+test('P3 host uses student-terminal wording and keeps legacy bridge aliases', () => {
+  assert.match(host, /discoveredTerminals: discoveredTablets/);
+  assert.match(host, /bridge:findLanTerminals/);
+  assert.match(host, /bridge:inviteLanTerminal/);
+  assert.match(preload, /findLanTerminals/);
+  assert.match(preload, /inviteLanTerminal/);
+  assert.match(ui, /附近学生终端/);
+  assert.match(ui, /Android 或 Windows 学生终端/);
+  assert.match(ui, /bridge\(\)\?\.findLanTerminals\?\.\(\) \?\? bridge\(\)\?\.findLanTablets/);
+  assert.match(ui, /bridge\(\)\?\.inviteLanTerminal\?\.\(terminalId\) \?\? bridge\(\)\?\.inviteLanTablet/);
+  assert.match(styles, /\.pair-request-item button[\s\S]*?white-space: nowrap/);
 });

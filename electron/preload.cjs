@@ -459,8 +459,14 @@ contextBridge.exposeInMainWorld('AndroidBridge', {
   findLanTablets() {
     return ipcRenderer.sendSync('bridge:findLanTablets');
   },
+  findLanTerminals() {
+    return ipcRenderer.sendSync('bridge:findLanTerminals');
+  },
   inviteLanTablet(tabletId) {
     return ipcRenderer.sendSync('bridge:inviteLanTablet', tabletId);
+  },
+  inviteLanTerminal(terminalId) {
+    return ipcRenderer.sendSync('bridge:inviteLanTerminal', terminalId);
   },
   acceptHostPairRequest(requestId) {
     return ipcRenderer.sendSync('bridge:acceptHostPairRequest', requestId);
@@ -521,6 +527,12 @@ contextBridge.exposeInMainWorld('AndroidBridge', {
   },
   getTaskCenter() {
     return ipcRenderer.sendSync('bridge:getTaskCenter');
+  },
+  getTaskCenterAsync(force = false) {
+    return ipcRenderer.invoke('bridge:getTaskCenterAsync', Boolean(force));
+  },
+  archiveAccessRpc(requestJson) {
+    return ipcRenderer.invoke('bridge:archiveAccessRpc', requestJson);
   },
   getTaskCenterCapabilities() {
     return ipcRenderer.sendSync('bridge:getTaskCenterCapabilities');

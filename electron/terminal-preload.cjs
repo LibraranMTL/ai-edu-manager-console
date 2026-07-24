@@ -2,6 +2,16 @@ const { contextBridge, ipcRenderer } = require('electron');
 
 contextBridge.exposeInMainWorld('terminalBridge', {
   getConfig: () => ipcRenderer.invoke('terminal:get-config'),
+  getTailscaleStatus: () => ipcRenderer.invoke('terminal:get-tailscale-status'),
+  openTailscale: () => ipcRenderer.invoke('terminal:open-tailscale'),
+  downloadTailscale: () => ipcRenderer.invoke('terminal:download-tailscale'),
+  getPairingState: (query = '') => ipcRenderer.invoke('terminal:get-pairing-state', query),
+  findLanHosts: (query = '') => ipcRenderer.invoke('terminal:find-lan-hosts', query),
+  requestHostPair: (hostDeviceId) => ipcRenderer.invoke('terminal:request-host-pair', hostDeviceId),
+  cancelPairRequest: () => ipcRenderer.invoke('terminal:cancel-pair-request'),
+  acceptPairInvite: () => ipcRenderer.invoke('terminal:accept-pair-invite'),
+  rejectPairInvite: () => ipcRenderer.invoke('terminal:reject-pair-invite'),
+  copyMachineCode: () => ipcRenderer.invoke('terminal:copy-machine-code'),
   pair: (input) => ipcRenderer.invoke('terminal:pair', input),
   disconnect: () => ipcRenderer.invoke('terminal:disconnect'),
   loadState: () => ipcRenderer.invoke('terminal:load-state'),
@@ -12,6 +22,10 @@ contextBridge.exposeInMainWorld('terminalBridge', {
   chooseAutoFolder: () => ipcRenderer.invoke('terminal:choose-auto-folder'),
   configureAutoDelivery: (input) => ipcRenderer.invoke('terminal:configure-auto-delivery', input),
   runAutoDelivery: () => ipcRenderer.invoke('terminal:run-auto-delivery'),
+  listLearningReports: () => ipcRenderer.invoke('terminal:list-learning-reports'),
+  readLearningReport: (reportId) => ipcRenderer.invoke('terminal:read-learning-report', reportId),
+  listArchiveFiles: () => ipcRenderer.invoke('terminal:list-archive-files'),
+  readArchiveFile: (relativePath) => ipcRenderer.invoke('terminal:read-archive-file', relativePath),
   listCaptureSources: () => ipcRenderer.invoke('terminal:list-capture-sources'),
   startCapture: (input) => ipcRenderer.invoke('terminal:start-capture', input),
   stopCapture: () => ipcRenderer.invoke('terminal:stop-capture'),
@@ -19,4 +33,9 @@ contextBridge.exposeInMainWorld('terminalBridge', {
   onUploadProgress: (handler) => ipcRenderer.on('terminal:upload-progress', (_event, payload) => handler(payload)),
   onAutoDelivery: (handler) => ipcRenderer.on('terminal:auto-delivery', (_event, payload) => handler(payload)),
   onCaptureChanged: (handler) => ipcRenderer.on('terminal:capture-changed', (_event, payload) => handler(payload)),
+  onPairingChanged: (handler) => {
+    const listener = (_event, payload) => handler(payload);
+    ipcRenderer.on('terminal:pairing-changed', listener);
+    return () => ipcRenderer.removeListener('terminal:pairing-changed', listener);
+  },
 });

@@ -1,7 +1,7 @@
 ﻿<manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="com.qxmatrix.eduterminal"
-    android:versionCode="72"
-    android:versionName="0.6.2">
+    android:versionCode="73"
+    android:versionName="0.6.3">
 
     <uses-sdk
         android:minSdkVersion="23"
@@ -116,6 +116,10 @@
             android:name=".CaptureProjectionService"
             android:exported="false"
             android:foregroundServiceType="mediaProjection" />
+        <service
+            android:name=".AutoDeliveryJobService"
+            android:exported="false"
+            android:permission="android.permission.BIND_JOB_SERVICE" />
         <service
             android:name=".CaptureTileService"
             android:exported="true"

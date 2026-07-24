@@ -4,6 +4,9 @@ node_modules/
 
 # Frontend and Electron build output
 dist/
+dist-terminal/
+output/
+.playwright-cli/
 release/**
 !release/
 !release/edu-manager-version.json

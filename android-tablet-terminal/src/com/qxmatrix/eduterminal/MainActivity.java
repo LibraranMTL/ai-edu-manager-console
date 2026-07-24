@@ -39,6 +39,7 @@ import android.widget.ArrayAdapter;
 import android.widget.Button;
 import android.widget.EditText;
 import android.widget.FrameLayout;
+import android.widget.HorizontalScrollView;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
@@ -77,6 +78,8 @@ import java.net.SocketTimeoutException;
 import java.net.URL;
 import java.net.URLEncoder;
 import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Comparator;
 import java.util.HashSet;
 import java.util.Hashtable;
 import java.util.List;
@@ -100,8 +103,9 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
     static final int REQUEST_EXPORT_CONNECTION_BACKUP = 8108;
     static final int REQUEST_IMPORT_CONNECTION_BACKUP = 8109;
     static final int REQUEST_CAPTURE_STUDENT_QR = 8110;
-    static final String VERSION_NAME = "0.6.2";
-    static final int VERSION_CODE = 72;
+    static final int REQUEST_AUTO_DELIVERY_FOLDER = 8111;
+    static final String VERSION_NAME = "0.6.3";
+    static final int VERSION_CODE = 73;
     static final String CONNECTION_BACKUP_KIND = "ai-edu-manager-tablet-connection-backup";
     static final int CONNECTION_BACKUP_VERSION = 1;
     static final String UPDATE_MANIFEST_URL = "https://www.greatbg.com/download/edu-manager-version.json";
@@ -152,6 +156,9 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
     TextView uploadResultText;
     TextView uploadQueueText;
     TextView digestStatusText;
+    TextView studentProgressText;
+    LinearLayout dailyReminderPanel;
+    TextView dailyReminderText;
     TextView archiveTitle;
     TextView markdownView;
     WebView markdownWebView;
@@ -197,6 +204,13 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
     Button captureStartButton;
     Button capturePauseButton;
     Button captureUploadButton;
+    Button captureManageButton;
+    Button autoDeliveryFolderButton;
+    Button autoDeliveryTargetButton;
+    Button autoDeliveryToggleButton;
+    Button autoDeliveryCheckButton;
+    Button dailyReminderUploadButton;
+    Button dailyReminderLaterButton;
     Button refreshArchiveButton;
     Button copyButton;
     Button searchArchiveButton;
@@ -230,6 +244,8 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
     LinearLayout contactCard;
     LinearLayout reportCard;
     LinearLayout archiveCard;
+    LinearLayout autoDeliveryPanel;
+    TextView autoDeliveryStatusText;
     boolean connectionSettingsVisible = false;
     boolean settingsVisible = false;
 
@@ -637,6 +653,59 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
         digestStatusText.setPadding(0, dp(4), 0, 0);
         studentCard.addView(digestStatusText);
 
+        studentCard.addView(label("我的资料进展"));
+        studentProgressText = new TextView(this);
+        studentProgressText.setText("进入学生空间后，将显示已提交资料、知识化处理、近期新增和提交频率。");
+        studentProgressText.setTextSize(14);
+        studentProgressText.setTextColor(Color.rgb(50, 76, 70));
+        studentProgressText.setPadding(dp(10), dp(10), dp(10), dp(10));
+        studentProgressText.setBackgroundColor(Color.rgb(238, 247, 244));
+        studentCard.addView(studentProgressText);
+
+        dailyReminderPanel = new LinearLayout(this);
+        dailyReminderPanel.setOrientation(LinearLayout.VERTICAL);
+        dailyReminderPanel.setPadding(dp(10), dp(10), dp(10), dp(8));
+        dailyReminderPanel.setBackgroundColor(Color.rgb(255, 247, 222));
+        dailyReminderText = new TextView(this);
+        dailyReminderText.setTextSize(14);
+        dailyReminderText.setTextColor(Color.rgb(105, 77, 25));
+        dailyReminderPanel.addView(dailyReminderText);
+        LinearLayout reminderRow = row();
+        dailyReminderUploadButton = button("现在上传", true);
+        dailyReminderLaterButton = button("稍后再说", false);
+        reminderRow.addView(dailyReminderUploadButton);
+        reminderRow.addView(dailyReminderLaterButton);
+        dailyReminderPanel.addView(reminderRow);
+        studentCard.addView(dailyReminderPanel);
+        dailyReminderUploadButton.setOnClickListener(this);
+        dailyReminderLaterButton.setOnClickListener(this);
+
+        autoDeliveryPanel = new LinearLayout(this);
+        autoDeliveryPanel.setOrientation(LinearLayout.VERTICAL);
+        autoDeliveryPanel.setPadding(0, dp(8), 0, dp(4));
+        autoDeliveryPanel.addView(label("自动投递文件夹（个人终端）"));
+        autoDeliveryPanel.addView(label("授权一个本地文件夹后，新文件会在联网时自动上传到当前学生或绑定项目；不会删除本地文件。系统通常约每 15 分钟检查一次。"));
+        LinearLayout autoDeliveryRow = row();
+        autoDeliveryFolderButton = button("选择文件夹", false);
+        autoDeliveryTargetButton = button("选择投递位置", false);
+        autoDeliveryToggleButton = button("启用自动投递", true);
+        autoDeliveryCheckButton = button("立即检查", false);
+        autoDeliveryRow.addView(autoDeliveryFolderButton);
+        autoDeliveryRow.addView(autoDeliveryTargetButton);
+        autoDeliveryRow.addView(autoDeliveryToggleButton);
+        autoDeliveryRow.addView(autoDeliveryCheckButton);
+        autoDeliveryPanel.addView(autoDeliveryRow);
+        autoDeliveryStatusText = new TextView(this);
+        autoDeliveryStatusText.setTextSize(12);
+        autoDeliveryStatusText.setTextColor(Color.rgb(87, 107, 103));
+        autoDeliveryStatusText.setPadding(0, dp(5), 0, dp(6));
+        autoDeliveryPanel.addView(autoDeliveryStatusText);
+        studentCard.addView(autoDeliveryPanel);
+        autoDeliveryFolderButton.setOnClickListener(this);
+        autoDeliveryTargetButton.setOnClickListener(this);
+        autoDeliveryToggleButton.setOnClickListener(this);
+        autoDeliveryCheckButton.setOnClickListener(this);
+
         studentCard.addView(label("屏幕资料采集"));
         studentCard.addView(label("授权后可按智能混合、内容变化或固定间隔模式连续采集；结果先保存在本机采集箱，确认后可上传到学生原始资料库或绑定项目原始资料库。"));
         LinearLayout captureRow = row();
@@ -647,9 +716,12 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
         captureRow.addView(capturePauseButton);
         captureRow.addView(captureUploadButton);
         studentCard.addView(captureRow);
+        captureManageButton = button("查看与清理采集资料", false);
+        studentCard.addView(captureManageButton);
         captureStartButton.setOnClickListener(this);
         capturePauseButton.setOnClickListener(this);
         captureUploadButton.setOnClickListener(this);
+        captureManageButton.setOnClickListener(this);
         captureStatusText = new TextView(this);
         captureStatusText.setTextSize(12);
         captureStatusText.setTextColor(Color.rgb(87, 107, 103));
@@ -892,6 +964,20 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
             toggleCapturePause();
         } else if (view == captureUploadButton) {
             uploadCapturedScreenshots();
+        } else if (view == captureManageButton) {
+            showCaptureManager();
+        } else if (view == autoDeliveryFolderButton) {
+            chooseAutoDeliveryFolder();
+        } else if (view == autoDeliveryTargetButton) {
+            chooseAutoDeliveryTarget();
+        } else if (view == autoDeliveryToggleButton) {
+            toggleAutoDelivery();
+        } else if (view == autoDeliveryCheckButton) {
+            runAutoDeliveryNow();
+        } else if (view == dailyReminderUploadButton) {
+            pickMaterial();
+        } else if (view == dailyReminderLaterButton) {
+            dismissDailyReminder();
         } else if (view == refreshArchiveButton) {
             loadArchiveFiles();
         } else if (view == refreshReportsButton) {
@@ -1067,6 +1153,13 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
 
     void changeTerminalMode(String mode) {
         terminalMode = "personal".equals(mode) ? "personal" : "shared";
+        if ("shared".equals(terminalMode)) {
+            getSharedPreferences(AutoDeliveryJobService.PREFS, MODE_PRIVATE).edit()
+                .putBoolean(AutoDeliveryJobService.KEY_ENABLED, false)
+                .putString(AutoDeliveryJobService.KEY_LAST_RESULT, "已切换为共享终端，自动投递已关闭。")
+                .apply();
+            AutoDeliveryJobService.schedule(this);
+        }
         updateStudentSessionUi();
         if (normalizedBaseUrl().length() == 0 || apiToken().length() == 0) {
             getSharedPreferences(PREFS, MODE_PRIVATE).edit().putString(PREF_TERMINAL_MODE, terminalMode).apply();
@@ -1122,6 +1215,7 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
         updateStudentSessionUi();
         updateSharedUploadButton();
         refreshCaptureUi();
+        updateStudentProgressCard();
         if (message != null && message.length() > 0 && studentSessionText != null) studentSessionText.setText(message);
     }
 
@@ -1142,6 +1236,130 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
         if (quickUploadButton != null) quickUploadButton.setEnabled(active);
         if (quickReportButton != null) quickReportButton.setEnabled(active);
         if (quickArchiveButton != null) quickArchiveButton.setEnabled(active);
+        updateAutoDeliveryUi();
+        updateStudentProgressCard();
+    }
+
+    void chooseAutoDeliveryFolder() {
+        if (!"personal".equals(terminalMode)) {
+            toast("共享终端不启用自动投递，请先在系统设置切换为个人终端。");
+            return;
+        }
+        Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT_TREE);
+        intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_WRITE_URI_PERMISSION | Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION | Intent.FLAG_GRANT_PREFIX_URI_PERMISSION);
+        startActivityForResult(intent, REQUEST_AUTO_DELIVERY_FOLDER);
+    }
+
+    void chooseAutoDeliveryTarget() {
+        if (!"personal".equals(terminalMode) || selectedStudent == null) {
+            toast("请先使用个人终端进入已绑定学生。");
+            return;
+        }
+        final ArrayList<UploadTarget> targets = new ArrayList<UploadTarget>();
+        targets.add(new UploadTarget("student", selectedStudent.id, selectedStudent.name + "原始资料库", selectedStudent.id));
+        for (LearningProject project : projectsForSelectedStudent()) {
+            targets.add(new UploadTarget("project", project.id, project.name + "项目原始资料库", selectedStudent.id));
+        }
+        SharedPreferences prefs = getSharedPreferences(AutoDeliveryJobService.PREFS, MODE_PRIVATE);
+        String selectedType = prefs.getString(AutoDeliveryJobService.KEY_TARGET_TYPE, "student");
+        String selectedId = prefs.getString(AutoDeliveryJobService.KEY_TARGET_ID, selectedStudent.id);
+        int checked = 0;
+        final String[] labels = new String[targets.size()];
+        for (int i = 0; i < targets.size(); i++) {
+            labels[i] = targets.get(i).name;
+            if (targets.get(i).type.equals(selectedType) && targets.get(i).id.equals(selectedId)) checked = i;
+        }
+        final int initial = checked;
+        new AlertDialog.Builder(this)
+            .setTitle("选择自动投递位置")
+            .setSingleChoiceItems(labels, initial, null)
+            .setPositiveButton("保存", new DialogInterface.OnClickListener() {
+                @Override public void onClick(DialogInterface dialog, int which) {
+                    int position = ((AlertDialog) dialog).getListView().getCheckedItemPosition();
+                    if (position < 0 || position >= targets.size()) position = initial;
+                    UploadTarget target = targets.get(position);
+                    getSharedPreferences(AutoDeliveryJobService.PREFS, MODE_PRIVATE).edit()
+                        .putString(AutoDeliveryJobService.KEY_STUDENT_ID, selectedStudent.id)
+                        .putString(AutoDeliveryJobService.KEY_STUDENT_NAME, selectedStudent.name)
+                        .putString(AutoDeliveryJobService.KEY_TARGET_TYPE, target.type)
+                        .putString(AutoDeliveryJobService.KEY_TARGET_ID, target.id)
+                        .putString(AutoDeliveryJobService.KEY_TARGET_NAME, target.name)
+                        .apply();
+                    updateAutoDeliveryUi();
+                }
+            })
+            .setNegativeButton("取消", null)
+            .show();
+    }
+
+    void toggleAutoDelivery() {
+        if (!"personal".equals(terminalMode) || selectedStudent == null || dataToken().length() == 0) {
+            toast("自动投递只适用于已连接学生的个人终端。");
+            return;
+        }
+        SharedPreferences prefs = getSharedPreferences(AutoDeliveryJobService.PREFS, MODE_PRIVATE);
+        boolean enabled = prefs.getBoolean(AutoDeliveryJobService.KEY_ENABLED, false);
+        if (!enabled && prefs.getString(AutoDeliveryJobService.KEY_TREE_URI, "").length() == 0) {
+            toast("请先选择并授权自动投递文件夹。");
+            return;
+        }
+        SharedPreferences.Editor editor = prefs.edit().putBoolean(AutoDeliveryJobService.KEY_ENABLED, !enabled);
+        if (!enabled) {
+            String configuredStudent = prefs.getString(AutoDeliveryJobService.KEY_STUDENT_ID, "");
+            if (!selectedStudent.id.equals(configuredStudent)) {
+                editor.putString(AutoDeliveryJobService.KEY_STUDENT_ID, selectedStudent.id)
+                    .putString(AutoDeliveryJobService.KEY_STUDENT_NAME, selectedStudent.name)
+                    .putString(AutoDeliveryJobService.KEY_TARGET_TYPE, "student")
+                    .putString(AutoDeliveryJobService.KEY_TARGET_ID, selectedStudent.id)
+                    .putString(AutoDeliveryJobService.KEY_TARGET_NAME, selectedStudent.name + "原始资料库");
+            }
+            editor.putString(AutoDeliveryJobService.KEY_LAST_RESULT, "自动投递已启用，正在检查文件夹。不会删除本地文件。");
+        } else {
+            editor.putString(AutoDeliveryJobService.KEY_LAST_RESULT, "自动投递已关闭。");
+        }
+        editor.apply();
+        AutoDeliveryJobService.schedule(this);
+        if (!enabled) AutoDeliveryJobService.runNow(this, true);
+        updateAutoDeliveryUi();
+    }
+
+    void runAutoDeliveryNow() {
+        SharedPreferences prefs = getSharedPreferences(AutoDeliveryJobService.PREFS, MODE_PRIVATE);
+        if (!"personal".equals(terminalMode) || !prefs.getBoolean(AutoDeliveryJobService.KEY_ENABLED, false)) {
+            toast("请先在个人终端中启用自动投递。");
+            return;
+        }
+        prefs.edit().putString(AutoDeliveryJobService.KEY_LAST_RESULT, "正在检查文件夹…").apply();
+        updateAutoDeliveryUi();
+        AutoDeliveryJobService.runNow(this, true);
+        autoDeliveryStatusText.postDelayed(new Runnable() {
+            @Override public void run() { updateAutoDeliveryUi(); }
+        }, 1800L);
+        autoDeliveryStatusText.postDelayed(new Runnable() {
+            @Override public void run() { updateAutoDeliveryUi(); }
+        }, 6000L);
+    }
+
+    void updateAutoDeliveryUi() {
+        if (autoDeliveryStatusText == null) return;
+        SharedPreferences prefs = getSharedPreferences(AutoDeliveryJobService.PREFS, MODE_PRIVATE);
+        boolean personal = "personal".equals(terminalMode);
+        boolean enabled = prefs.getBoolean(AutoDeliveryJobService.KEY_ENABLED, false);
+        String folder = prefs.getString(AutoDeliveryJobService.KEY_TREE_NAME, "尚未选择文件夹");
+        String target = prefs.getString(AutoDeliveryJobService.KEY_TARGET_NAME, selectedStudent == null ? "尚未选择投递位置" : selectedStudent.name + "原始资料库");
+        String result = prefs.getString(AutoDeliveryJobService.KEY_LAST_RESULT, "尚未执行检查。");
+        long checkedAt = prefs.getLong(AutoDeliveryJobService.KEY_LAST_CHECKED_AT, 0L);
+        String checked = checkedAt > 0L ? android.text.format.DateFormat.format("yyyy-MM-dd HH:mm", new java.util.Date(checkedAt)).toString() : "尚未检查";
+        if (!personal) {
+            autoDeliveryStatusText.setText("共享终端不启用自动投递，避免下一位学生沿用上一人的投递位置。普通文件仍可手动选择并上传。");
+        } else {
+            autoDeliveryStatusText.setText("文件夹：" + folder + "\n投递到：" + target + "\n状态：" + (enabled ? "已启用" : "已关闭") + " · 最近检查：" + checked + "\n" + result);
+        }
+        autoDeliveryFolderButton.setEnabled(personal);
+        autoDeliveryTargetButton.setEnabled(personal && selectedStudent != null);
+        autoDeliveryToggleButton.setEnabled(personal && selectedStudent != null);
+        autoDeliveryCheckButton.setEnabled(personal && enabled);
+        autoDeliveryToggleButton.setText(enabled ? "关闭自动投递" : "启用自动投递");
     }
 
     void scheduleAuthorizationPolling() {
@@ -1808,10 +2026,14 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
                     .putExtra("result_code", resultCode)
                     .putExtra("result_data", data)
                     .putExtra("mode", pendingCaptureMode)
-                    .putExtra("duration_ms", pendingCaptureDurationMinutes * 60L * 1000L);
+                    .putExtra("duration_ms", pendingCaptureDurationMinutes * 60L * 1000L)
+                    .putExtra("student_id", selectedStudent == null ? "" : selectedStudent.id)
+                    .putExtra("student_name", selectedStudent == null ? "" : selectedStudent.name)
+                    .putExtra("project_id", pendingCaptureProjectId)
+                    .putExtra("project_name", pendingCaptureProjectName);
                 getSharedPreferences(CaptureProjectionService.PREFS, MODE_PRIVATE).edit()
-                    .putString("capture_project_id", pendingCaptureProjectId)
-                    .putString("capture_project_name", pendingCaptureProjectName)
+                    .putString(CaptureProjectionService.KEY_PROJECT_ID, pendingCaptureProjectId)
+                    .putString(CaptureProjectionService.KEY_PROJECT_NAME, pendingCaptureProjectName)
                     .putString("capture_student_id", selectedStudent == null ? "" : selectedStudent.id)
                     .apply();
                 if (Build.VERSION.SDK_INT >= 26) startForegroundService(serviceIntent);
@@ -1823,6 +2045,28 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
             } else {
                 toast("未授权屏幕采集。");
             }
+            return;
+        }
+        if (requestCode == REQUEST_AUTO_DELIVERY_FOLDER) {
+            if (resultCode == RESULT_OK && data != null && data.getData() != null) {
+                Uri treeUri = data.getData();
+                int flags = data.getFlags() & (Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_WRITE_URI_PERMISSION);
+                try {
+                    getContentResolver().takePersistableUriPermission(treeUri, flags | Intent.FLAG_GRANT_READ_URI_PERMISSION);
+                    String folderName = treeUri.getLastPathSegment();
+                    if (folderName == null || folderName.length() == 0) folderName = "已授权文件夹";
+                    getSharedPreferences(AutoDeliveryJobService.PREFS, MODE_PRIVATE).edit()
+                        .putString(AutoDeliveryJobService.KEY_TREE_URI, treeUri.toString())
+                        .putString(AutoDeliveryJobService.KEY_TREE_NAME, Uri.decode(folderName))
+                        .apply();
+                    toast("自动投递文件夹已授权，请确认投递位置后启用。");
+                } catch (Exception error) {
+                    toast("无法保留文件夹授权：" + error.getMessage());
+                }
+            } else {
+                toast("已取消文件夹授权。");
+            }
+            updateAutoDeliveryUi();
             return;
         }
         if (requestCode == REQUEST_EXPORT_CONNECTION_BACKUP) {
@@ -2088,6 +2332,14 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
     protected void onResume() {
         super.onResume();
         refreshCaptureUi();
+        updateAutoDeliveryUi();
+        if ("personal".equals(terminalMode) && getSharedPreferences(AutoDeliveryJobService.PREFS, MODE_PRIVATE).getBoolean(AutoDeliveryJobService.KEY_ENABLED, false)) {
+            AutoDeliveryJobService.schedule(this);
+            AutoDeliveryJobService.runNow(this, false);
+            if (autoDeliveryStatusText != null) autoDeliveryStatusText.postDelayed(new Runnable() {
+                @Override public void run() { updateAutoDeliveryUi(); }
+            }, 1200L);
+        }
     }
 
     void maybeStartCaptureFromIntent(Intent intent) {
@@ -2159,6 +2411,10 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
     }
 
     void showCaptureSetupDialog() {
+        if (selectedStudent == null) {
+            toast("请先进入学生账号，再开始屏幕采集。");
+            return;
+        }
         final String[] labels = new String[] { "智能混合（推荐）", "内容变化", "固定间隔" };
         final String[] values = new String[] { "smart", "change", "interval" };
         new AlertDialog.Builder(this)
@@ -2266,16 +2522,283 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
         String dirPath = prefs.getString(CaptureProjectionService.KEY_CAPTURE_DIR, "");
         if (dirPath.length() == 0) return files;
         File dir = new File(dirPath);
+        if (selectedStudent == null || !CaptureStorage.isInside(dir, CaptureStorage.studentDir(this, selectedStudent.id))) return files;
         File[] children = dir.listFiles();
         Set<String> uploaded = new HashSet<String>(prefs.getStringSet("uploaded_paths", new HashSet<String>()));
         if (children == null) return files;
         for (File child : children) {
-            String lower = child.getName().toLowerCase(Locale.ROOT);
-            if (child.isFile() && (lower.endsWith(".jpg") || lower.endsWith(".jpeg") || lower.endsWith(".png")) && !uploaded.contains(child.getAbsolutePath())) {
+            if (CaptureStorage.isImage(child) && !uploaded.contains(child.getAbsolutePath())) {
                 files.add(child);
             }
         }
         return files;
+    }
+
+    void showCaptureManager() {
+        if (selectedStudent == null) {
+            toast("请先进入学生账号，再查看采集资料。");
+            return;
+        }
+        final File studentRoot = CaptureStorage.studentDir(this, selectedStudent.id);
+        if (!studentRoot.exists()) studentRoot.mkdirs();
+        File[] listed = studentRoot.listFiles();
+        final ArrayList<File> sessions = new ArrayList<File>();
+        if (listed != null) for (File file : listed) if (file.isDirectory() && CaptureStorage.isInside(file, studentRoot)) sessions.add(file);
+        File[] sorted = sessions.toArray(new File[sessions.size()]);
+        Arrays.sort(sorted, new Comparator<File>() {
+            @Override public int compare(File left, File right) {
+                return Long.compare(right.lastModified(), left.lastModified());
+            }
+        });
+
+        int imageTotal = 0;
+        for (File session : sorted) imageTotal += CaptureStorage.imageCount(session);
+        final AlertDialog[] managerDialog = new AlertDialog[1];
+        LinearLayout content = new LinearLayout(this);
+        content.setOrientation(LinearLayout.VERTICAL);
+        content.setPadding(dp(16), dp(8), dp(16), dp(12));
+        TextView summary = label(selectedStudent.name + " · " + sorted.length + " 个会话 · " + imageTotal + " 张图片 · " + formatCaptureBytes(CaptureStorage.sizeOf(studentRoot)));
+        content.addView(summary);
+        TextView scopeHint = new TextView(this);
+        scopeHint.setText("这里只显示当前学生的采集资料。清理已上传图片不会删除尚未上传的资料；删除整个会话需要再次确认。");
+        scopeHint.setTextSize(13);
+        scopeHint.setTextColor(Color.rgb(87, 107, 103));
+        scopeHint.setPadding(0, 0, 0, dp(8));
+        content.addView(scopeHint);
+
+        Button cleanupUploaded = button("清理当前学生已上传图片", false);
+        content.addView(cleanupUploaded);
+        cleanupUploaded.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View view) {
+                new AlertDialog.Builder(MainActivity.this)
+                    .setTitle("清理已上传图片")
+                    .setMessage("只删除当前学生中已经上传成功的图片及其说明文件，未上传图片会保留。")
+                    .setPositiveButton("确认清理", new DialogInterface.OnClickListener() {
+                        @Override public void onClick(DialogInterface dialog, int which) {
+                            int removed = deleteUploadedCaptureFiles(studentRoot);
+                            if (managerDialog[0] != null) managerDialog[0].dismiss();
+                            toast("已清理 " + removed + " 张已上传图片。");
+                            showCaptureManager();
+                        }
+                    })
+                    .setNegativeButton("取消", null)
+                    .show();
+            }
+        });
+
+        if (sorted.length == 0) {
+            TextView empty = new TextView(this);
+            empty.setText("当前学生还没有屏幕采集会话。");
+            empty.setTextSize(14);
+            empty.setPadding(0, dp(12), 0, dp(12));
+            content.addView(empty);
+        }
+        for (final File session : sorted) {
+            final boolean active = isActiveCaptureSession(session);
+            JSONObject metadata = readCaptureMetadata(session);
+            String project = metadata.optString("projectName", "");
+            String status = active ? "正在采集" : metadata.optString("status", "已结束");
+            LinearLayout sessionBlock = card();
+            sessionBlock.setBackgroundColor(Color.rgb(246, 250, 249));
+            TextView title = label(captureSessionTime(session) + " · " + CaptureStorage.imageCount(session) + " 张 · " + status);
+            sessionBlock.addView(title);
+            if (project.length() > 0) {
+                TextView projectText = new TextView(this);
+                projectText.setText("关联项目：" + project);
+                projectText.setTextSize(12);
+                projectText.setTextColor(Color.rgb(87, 107, 103));
+                sessionBlock.addView(projectText);
+            }
+            HorizontalScrollView strip = new HorizontalScrollView(this);
+            LinearLayout thumbnails = new LinearLayout(this);
+            thumbnails.setOrientation(LinearLayout.HORIZONTAL);
+            File[] sessionFiles = session.listFiles();
+            int shown = 0;
+            if (sessionFiles != null) {
+                Arrays.sort(sessionFiles, new Comparator<File>() {
+                    @Override public int compare(File left, File right) { return Long.compare(left.lastModified(), right.lastModified()); }
+                });
+                for (final File image : sessionFiles) {
+                    if (!CaptureStorage.isImage(image) || shown >= 16) continue;
+                    ImageView thumbnail = new ImageView(this);
+                    thumbnail.setScaleType(ImageView.ScaleType.CENTER_CROP);
+                    thumbnail.setImageBitmap(decodeCapturePreview(image, dp(112), dp(84)));
+                    LinearLayout.LayoutParams thumbParams = new LinearLayout.LayoutParams(dp(112), dp(84));
+                    thumbParams.setMargins(0, dp(8), dp(8), dp(8));
+                    thumbnail.setLayoutParams(thumbParams);
+                    thumbnail.setContentDescription("查看采集图片 " + image.getName());
+                    thumbnail.setOnClickListener(new View.OnClickListener() {
+                        @Override public void onClick(View view) { showCaptureImage(image); }
+                    });
+                    thumbnails.addView(thumbnail);
+                    shown += 1;
+                }
+            }
+            strip.addView(thumbnails);
+            sessionBlock.addView(strip);
+            Button deleteSession = button(active ? "采集中，暂不可删除" : "删除整个会话", false);
+            deleteSession.setEnabled(!active);
+            sessionBlock.addView(deleteSession);
+            deleteSession.setOnClickListener(new View.OnClickListener() {
+                @Override public void onClick(View view) {
+                    new AlertDialog.Builder(MainActivity.this)
+                        .setTitle("删除整个采集会话")
+                        .setMessage("将删除本机中的该会话及全部图片。主机端已上传的资料不受影响。")
+                        .setPositiveButton("确认删除", new DialogInterface.OnClickListener() {
+                            @Override public void onClick(DialogInterface dialog, int which) {
+                                boolean removed = deleteCaptureSession(session, studentRoot);
+                                if (managerDialog[0] != null) managerDialog[0].dismiss();
+                                toast(removed ? "采集会话已删除。" : "未能删除采集会话，请稍后重试。");
+                                showCaptureManager();
+                            }
+                        })
+                        .setNegativeButton("取消", null)
+                        .show();
+                }
+            });
+            content.addView(sessionBlock);
+        }
+
+        int legacyCount = legacyCaptureSessionCount();
+        if (legacyCount > 0) {
+            TextView legacy = new TextView(this);
+            legacy.setText("检测到 " + legacyCount + " 个升级前未标记学生的旧采集会话。为避免串档，这里不显示其中内容。");
+            legacy.setTextSize(12);
+            legacy.setTextColor(Color.rgb(126, 98, 45));
+            legacy.setPadding(0, dp(8), 0, dp(4));
+            content.addView(legacy);
+            Button cleanupLegacy = button("仅清理旧版已上传图片", false);
+            content.addView(cleanupLegacy);
+            cleanupLegacy.setOnClickListener(new View.OnClickListener() {
+                @Override public void onClick(View view) {
+                    int removed = deleteUploadedLegacyCaptureFiles();
+                    toast("已清理 " + removed + " 张旧版已上传图片，未上传内容已保留。");
+                }
+            });
+        }
+
+        ScrollView scroll = new ScrollView(this);
+        scroll.addView(content);
+        managerDialog[0] = new AlertDialog.Builder(this)
+            .setTitle("采集资料管理")
+            .setView(scroll)
+            .setPositiveButton("关闭", null)
+            .create();
+        managerDialog[0].show();
+    }
+
+    JSONObject readCaptureMetadata(File session) {
+        try {
+            File metadata = new File(session, "session.json");
+            if (!metadata.isFile()) return new JSONObject();
+            return new JSONObject(readStream(new FileInputStream(metadata)));
+        } catch (Exception ignored) {
+            return new JSONObject();
+        }
+    }
+
+    String captureSessionTime(File session) {
+        JSONObject metadata = readCaptureMetadata(session);
+        long time = metadata.optLong("startedAt", session.lastModified());
+        return android.text.format.DateFormat.format("yyyy-MM-dd HH:mm", new java.util.Date(time)).toString();
+    }
+
+    Bitmap decodeCapturePreview(File image, int width, int height) {
+        BitmapFactory.Options bounds = new BitmapFactory.Options();
+        bounds.inJustDecodeBounds = true;
+        BitmapFactory.decodeFile(image.getAbsolutePath(), bounds);
+        int sample = 1;
+        while (bounds.outWidth / sample > width * 2 || bounds.outHeight / sample > height * 2) sample *= 2;
+        BitmapFactory.Options options = new BitmapFactory.Options();
+        options.inSampleSize = Math.max(1, sample);
+        return BitmapFactory.decodeFile(image.getAbsolutePath(), options);
+    }
+
+    void showCaptureImage(File image) {
+        if (selectedStudent == null || !CaptureStorage.isInside(image, CaptureStorage.studentDir(this, selectedStudent.id))) {
+            toast("该图片不属于当前学生。");
+            return;
+        }
+        ImageView preview = new ImageView(this);
+        preview.setAdjustViewBounds(true);
+        preview.setScaleType(ImageView.ScaleType.FIT_CENTER);
+        preview.setImageBitmap(decodeCapturePreview(image, dp(900), dp(900)));
+        preview.setPadding(dp(8), dp(8), dp(8), dp(8));
+        new AlertDialog.Builder(this).setTitle(image.getName()).setView(preview).setPositiveButton("关闭", null).show();
+    }
+
+    boolean isActiveCaptureSession(File session) {
+        SharedPreferences prefs = getSharedPreferences(CaptureProjectionService.PREFS, MODE_PRIVATE);
+        String status = prefs.getString(CaptureProjectionService.KEY_STATUS, "idle");
+        String currentDir = prefs.getString(CaptureProjectionService.KEY_CAPTURE_DIR, "");
+        return ("capturing".equals(status) || "paused".equals(status)) && currentDir.length() > 0 && sameCapturePath(session, new File(currentDir));
+    }
+
+    boolean sameCapturePath(File left, File right) {
+        try { return left.getCanonicalPath().equals(right.getCanonicalPath()); }
+        catch (Exception ignored) { return false; }
+    }
+
+    int deleteUploadedCaptureFiles(File allowedRoot) {
+        SharedPreferences prefs = getSharedPreferences(CaptureProjectionService.PREFS, MODE_PRIVATE);
+        HashSet<String> uploaded = new HashSet<String>(prefs.getStringSet("uploaded_paths", new HashSet<String>()));
+        HashSet<String> retained = new HashSet<String>(uploaded);
+        int removed = 0;
+        for (String path : uploaded) {
+            File image = new File(path);
+            if (!CaptureStorage.isImage(image) || !CaptureStorage.isInside(image, allowedRoot)) continue;
+            if (!image.exists() || image.delete()) removed += image.exists() ? 0 : 1;
+            File sidecar = new File(path + ".json");
+            if (CaptureStorage.isInside(sidecar, allowedRoot)) sidecar.delete();
+            retained.remove(path);
+        }
+        prefs.edit().putStringSet("uploaded_paths", retained).apply();
+        return removed;
+    }
+
+    boolean deleteCaptureSession(File session, File studentRoot) {
+        if (isActiveCaptureSession(session) || !CaptureStorage.isInside(session, studentRoot)) return false;
+        SharedPreferences prefs = getSharedPreferences(CaptureProjectionService.PREFS, MODE_PRIVATE);
+        HashSet<String> uploaded = new HashSet<String>(prefs.getStringSet("uploaded_paths", new HashSet<String>()));
+        HashSet<String> retained = new HashSet<String>();
+        for (String path : uploaded) if (!CaptureStorage.isInside(new File(path), session)) retained.add(path);
+        boolean removed = CaptureStorage.deleteTree(session, studentRoot);
+        if (removed) prefs.edit().putStringSet("uploaded_paths", retained).apply();
+        return removed;
+    }
+
+    int legacyCaptureSessionCount() {
+        File root = CaptureStorage.root(this);
+        File[] children = root.listFiles();
+        int count = 0;
+        if (children != null) for (File child : children) if (child.isDirectory() && child.getName().startsWith("android-capture-")) count += 1;
+        return count;
+    }
+
+    int deleteUploadedLegacyCaptureFiles() {
+        File root = CaptureStorage.root(this);
+        SharedPreferences prefs = getSharedPreferences(CaptureProjectionService.PREFS, MODE_PRIVATE);
+        HashSet<String> uploaded = new HashSet<String>(prefs.getStringSet("uploaded_paths", new HashSet<String>()));
+        HashSet<String> retained = new HashSet<String>(uploaded);
+        int removed = 0;
+        for (String path : uploaded) {
+            File image = new File(path);
+            File parent = image.getParentFile();
+            boolean legacy = parent != null && parent.getName().startsWith("android-capture-") && parent.getParentFile() != null && sameCapturePath(parent.getParentFile(), root);
+            if (!legacy || !CaptureStorage.isImage(image) || !CaptureStorage.isInside(image, root)) continue;
+            if (!image.exists() || image.delete()) removed += image.exists() ? 0 : 1;
+            File sidecar = new File(path + ".json");
+            if (CaptureStorage.isInside(sidecar, root)) sidecar.delete();
+            retained.remove(path);
+        }
+        prefs.edit().putStringSet("uploaded_paths", retained).apply();
+        return removed;
+    }
+
+    String formatCaptureBytes(long bytes) {
+        if (bytes < 1024L) return bytes + " B";
+        if (bytes < 1024L * 1024L) return String.format(Locale.ROOT, "%.1f KB", bytes / 1024d);
+        return String.format(Locale.ROOT, "%.1f MB", bytes / (1024d * 1024d));
     }
 
     void uploadCapturedScreenshots() {
@@ -2390,6 +2913,7 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
         if (digestStatusText == null) return;
         if (selectedStudent == null) {
             digestStatusText.setText("资料状态：请选择学生。");
+            updateStudentProgressCard();
             return;
         }
         int waiting = selectedStudent.pendingDigestCount + selectedStudent.submittedDigestCount;
@@ -2404,6 +2928,39 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
             text.append("\n状态：").append(selectedStudent.digestStatus);
         }
         digestStatusText.setText(text.toString());
+        updateStudentProgressCard();
+    }
+
+    String localDayKey() {
+        return android.text.format.DateFormat.format("yyyy-MM-dd", new java.util.Date()).toString();
+    }
+
+    void dismissDailyReminder() {
+        if (selectedStudent == null) return;
+        getSharedPreferences(PREFS, MODE_PRIVATE).edit()
+            .putString("daily_reminder_dismissed_" + selectedStudent.id, localDayKey())
+            .apply();
+        updateStudentProgressCard();
+    }
+
+    void updateStudentProgressCard() {
+        if (studentProgressText == null || dailyReminderPanel == null) return;
+        if (selectedStudent == null) {
+            studentProgressText.setText("进入学生空间后，将显示已提交资料、知识化处理、近期新增和提交频率。");
+            dailyReminderPanel.setVisibility(View.GONE);
+            return;
+        }
+        int trend = selectedStudent.recentUploadTrend;
+        String trendText = trend > 0 ? "比前 7 天多 " + trend : trend < 0 ? "比前 7 天少 " + Math.abs(trend) : "与前 7 天持平";
+        studentProgressText.setText(
+            "已提交资料 " + selectedStudent.rawFileCount + " 份 · 已完成知识化 " + selectedStudent.knowledgeAssetCount + " 份\n"
+                + "近 7 天新增 " + selectedStudent.recentUploadCount7 + " 份（" + trendText + "） · 近 30 天活跃 " + selectedStudent.activeDays30 + " 天\n"
+                + "最近一次消化后新增或待整理 " + selectedStudent.newSinceLastDigestCount + " 份"
+        );
+        String dismissed = getSharedPreferences(PREFS, MODE_PRIVATE).getString("daily_reminder_dismissed_" + selectedStudent.id, "");
+        boolean show = selectedStudent.submittedTodayCount == 0 && !localDayKey().equals(dismissed);
+        dailyReminderPanel.setVisibility(show ? View.VISIBLE : View.GONE);
+        if (show) dailyReminderText.setText("今日学习资料提醒\n记得提交本日学习资料。可以选择今天新增的作业、笔记、截图或项目文件。");
     }
 
     void updateConnectionSummary(String state, int studentCount) {
@@ -3915,6 +4472,12 @@ class Student {
     final String lastDigestAt;
     final String digestStatus;
     final String digestMessage;
+    final int submittedTodayCount;
+    final int recentUploadCount7;
+    final int recentUploadTrend;
+    final int activeDays30;
+    final int knowledgeAssetCount;
+    final int newSinceLastDigestCount;
 
     Student(JSONObject json) {
         this.id = json.optString("id", json.optString("name", ""));
@@ -3933,6 +4496,13 @@ class Student {
         this.lastDigestAt = json.optString("lastDigestAt", "");
         this.digestStatus = json.optString("digestStatus", "idle");
         this.digestMessage = json.optString("digestMessage", "");
+        JSONObject progress = json.optJSONObject("progress");
+        this.submittedTodayCount = progress == null ? json.optInt("submittedTodayCount", 0) : progress.optInt("submittedTodayCount", json.optInt("submittedTodayCount", 0));
+        this.recentUploadCount7 = progress == null ? json.optInt("recentUploadCount7", 0) : progress.optInt("recentUploadCount7", json.optInt("recentUploadCount7", 0));
+        this.recentUploadTrend = progress == null ? json.optInt("recentUploadTrend", 0) : progress.optInt("recentTrend", json.optInt("recentUploadTrend", 0));
+        this.activeDays30 = progress == null ? json.optInt("activeDays30", 0) : progress.optInt("activeDays30", json.optInt("activeDays30", 0));
+        this.knowledgeAssetCount = progress == null ? json.optInt("knowledgeAssetCount", this.processedDigestCount) : progress.optInt("knowledgeAssetCount", this.processedDigestCount);
+        this.newSinceLastDigestCount = progress == null ? json.optInt("newSinceLastDigestCount", 0) : progress.optInt("newSinceLastDigestCount", json.optInt("newSinceLastDigestCount", 0));
     }
 
     String displayName() {

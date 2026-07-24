@@ -834,7 +834,9 @@ type AndroidBridge = {
   getHostDevices?: () => string;
   renameHostIdentity?: (displayName: string) => string;
   findLanTablets?: () => string;
+  findLanTerminals?: () => string;
   inviteLanTablet?: (tabletId: string) => string;
+  inviteLanTerminal?: (terminalId: string) => string;
   acceptHostPairRequest?: (requestId: string) => string;
   rejectPairRequest?: (requestId: string) => string;
   getHostUploadRecords?: () => string;
@@ -855,6 +857,8 @@ type AndroidBridge = {
   recordScheduledTaskAction?: (studentId: string, kind: string, commandText: string) => string;
   getStudentScheduleLedger?: (studentId: string) => string;
   getTaskCenter?: () => string;
+  getTaskCenterAsync?: (force?: boolean) => Promise<string>;
+  archiveAccessRpc?: (requestJson: string) => Promise<string>;
   getTaskCenterCapabilities?: () => string;
   setTaskAutomationEnabled?: (enabled: boolean) => string;
   executeTask?: (taskId: string, executor?: string) => string;
@@ -1091,6 +1095,7 @@ type HostServiceStatus = {
   pairRequests?: HostPairRequest[];
   pendingPairRequestCount?: number;
   discoveredTablets?: DiscoveredTablet[];
+  discoveredTerminals?: DiscoveredTablet[];
   lastTabletDiscoveryAt?: string;
   port: number;
   serverUrl?: string;
@@ -1231,6 +1236,7 @@ type HostDevice = {
   id: string;
   name: string;
   machineCode?: string;
+  platform?: 'android' | 'windows' | string;
   pairedProtocolVersion?: number;
   tokenPreview?: string;
   allowedStudentIds?: string[];
@@ -1258,6 +1264,7 @@ type HostPairRequest = {
   tabletId: string;
   tabletMachineCode: string;
   tabletName: string;
+  tabletPlatform?: 'android' | 'windows' | string;
   status: string;
   createdAt?: string;
   updatedAt?: string;
@@ -1270,6 +1277,7 @@ type DiscoveredTablet = {
   deviceId: string;
   machineCode: string;
   displayName: string;
+  platform?: 'android' | 'windows' | string;
   appVersion?: string;
   address?: string;
   lastSeenAt?: string;
@@ -4085,9 +4093,12 @@ function App() {
   const [scheduleMessage, setScheduleMessage] = useState('');
   const [maintenanceReportPreview, setMaintenanceReportPreview] = useState('');
   const [taskCenter, setTaskCenter] = useState<TaskCenterState>({ tasks: [], history: [], summary: { total: 0, actionable: 0, running: 0, scheduled: 0, completed: 0 } });
-  const [taskCenterStatusFilter, setTaskCenterStatusFilter] = useState<'all' | 'actionable' | 'running' | 'scheduled' | 'completed'>('all');
+  const [taskCenterStatusFilter, setTaskCenterStatusFilter] = useState<'all' | 'actionable' | 'running' | 'scheduled' | 'completed'>('actionable');
   const [taskCenterSourceFilter, setTaskCenterSourceFilter] = useState<'all' | 'student' | 'project'>('all');
   const [taskCenterExecutorFilter, setTaskCenterExecutorFilter] = useState('all');
+  const [taskCenterDisplayLimit, setTaskCenterDisplayLimit] = useState(30);
+  const [taskCenterRefreshing, setTaskCenterRefreshing] = useState(false);
+  const taskCenterRequestRef = React.useRef(0);
   const [selectedTaskId, setSelectedTaskId] = useState('');
   const taskDetailPanelRef = React.useRef<HTMLElement | null>(null);
   const [taskExecutorDraft, setTaskExecutorDraft] = useState('');
@@ -4115,6 +4126,7 @@ function App() {
   const [editingDeviceId, setEditingDeviceId] = useState('');
   const [deviceNameDraft, setDeviceNameDraft] = useState('');
   const [hostNameDraft, setHostNameDraft] = useState('');
+  const [terminalMachineCodeQuery, setTerminalMachineCodeQuery] = useState('');
   const [hostPairQr, setHostPairQr] = useState('');
   const [studentLoginQrs, setStudentLoginQrs] = useState<Record<string, string>>({});
   const [homeMode, setHomeMode] = useState<'local' | 'host'>('local');
@@ -4195,6 +4207,7 @@ function App() {
     const executorMatches = taskCenterExecutorFilter === 'all' || task.executor === taskCenterExecutorFilter;
     return statusMatches && sourceMatches && executorMatches;
   }), [taskCenter.tasks, taskCenterExecutorFilter, taskCenterSourceFilter, taskCenterStatusFilter]);
+  const displayedTaskCenterItems = visibleTaskCenterItems.slice(0, taskCenterDisplayLimit);
   const selectedTask = taskCenter.tasks.find((task) => task.id === selectedTaskId) ?? null;
   const selectedTaskHistory = useMemo(() => selectedTask ? taskCenter.history.filter((entry) => entry.taskId === selectedTask.id) : [], [selectedTask, taskCenter.history]);
   const systemTemplateFiles = useMemo(() => buildSystemTemplates(), []);
@@ -5807,10 +5820,12 @@ ${sourceText}`;
 
   useEffect(() => {
     if (activeSection !== 'tasks') return undefined;
-    refreshTaskCenter();
-    const timer = window.setInterval(refreshTaskCenter, 15000);
+    void refreshTaskCenter(true);
+    const timer = window.setInterval(() => {
+      if (!document.hidden) void refreshTaskCenter(false);
+    }, 60000);
     return () => window.clearInterval(timer);
-  }, [activeSection, students, projects]);
+  }, [activeSection]);
 
   useEffect(() => {
     setMarkdownFiles([]);
@@ -9098,13 +9113,20 @@ ${JSON.stringify(items, null, 2)}
     }
   };
 
-  const refreshTaskCenter = () => {
-    const raw = bridge()?.getTaskCenter?.();
-    if (!raw) {
+  const refreshTaskCenter = async (force = false) => {
+    const api = bridge();
+    if (!api?.getTaskCenterAsync && !api?.getTaskCenter) {
       setScheduleMessage('当前环境不支持统一任务中心。');
       return;
     }
+    const requestId = taskCenterRequestRef.current + 1;
+    taskCenterRequestRef.current = requestId;
+    setTaskCenterRefreshing(true);
     try {
+      const raw = api.getTaskCenterAsync
+        ? await api.getTaskCenterAsync(force)
+        : api.getTaskCenter?.();
+      if (requestId !== taskCenterRequestRef.current || !raw) return;
       const result = JSON.parse(raw) as TaskCenterState & { ok?: boolean; message?: string };
       if (result.tasks) {
         setTaskCenter({
@@ -9124,6 +9146,8 @@ ${JSON.stringify(items, null, 2)}
       setScheduleMessage(result.message || (result.ok ? '任务中心已刷新。' : '任务中心读取失败。'));
     } catch {
       setScheduleMessage('任务中心数据解析失败。');
+    } finally {
+      if (requestId === taskCenterRequestRef.current) setTaskCenterRefreshing(false);
     }
   };
 
@@ -9602,8 +9626,8 @@ ${JSON.stringify(items, null, 2)}
         `tailscaleUrls=${(info.tailscaleUrls ?? []).join(',')}`,
         `pairPayload=${info.pairPayloadText ?? ''}`,
       ].join('\n');
-      const success = await copyText(text, '已复制平板连接信息。', { contentLabel: '平板连接信息', preview: false });
-      setHostServiceMessage(success ? '已复制平板连接信息。' : '平板连接信息复制失败，请重试。');
+      const success = await copyText(text, '已复制学生终端连接信息。', { contentLabel: '学生终端连接信息', preview: false });
+      setHostServiceMessage(success ? '已复制学生终端连接信息。' : '学生终端连接信息复制失败，请重试。');
       refreshHostServiceStatus();
     } catch {
       setHostServiceMessage('连接信息解析失败。');
@@ -9940,8 +9964,8 @@ ${JSON.stringify(items, null, 2)}
     setHostNameDraft('');
   };
 
-  const findNearbyTablets = () => runPairingAction(bridge()?.findLanTablets?.(), '正在查找局域网平板。');
-  const inviteNearbyTablet = (tabletId: string) => runPairingAction(bridge()?.inviteLanTablet?.(tabletId), '已发送连接邀请。');
+  const findNearbyTerminals = () => runPairingAction(bridge()?.findLanTerminals?.() ?? bridge()?.findLanTablets?.(), '正在查找局域网学生终端。');
+  const inviteNearbyTerminal = (terminalId: string) => runPairingAction(bridge()?.inviteLanTerminal?.(terminalId) ?? bridge()?.inviteLanTablet?.(terminalId), '已发送连接邀请。');
   const acceptIncomingPair = (requestId: string) => runPairingAction(bridge()?.acceptHostPairRequest?.(requestId), '已接受连接请求。');
   const rejectIncomingPair = (requestId: string) => runPairingAction(bridge()?.rejectPairRequest?.(requestId), '已拒绝连接请求。');
 
@@ -9996,6 +10020,14 @@ ${JSON.stringify(items, null, 2)}
     }
   };
 
+  const discoveredStudentTerminals = hostServiceStatus?.discoveredTerminals ?? hostServiceStatus?.discoveredTablets ?? [];
+  const visibleStudentTerminals = discoveredStudentTerminals.filter((terminal) => {
+    const query = terminalMachineCodeQuery.trim().toUpperCase();
+    return !query || terminal.machineCode.toUpperCase().includes(query) || terminal.displayName.toUpperCase().includes(query);
+  });
+
+  const terminalPlatformLabel = (platform?: string) => platform === 'windows' ? 'Windows 学生终端' : 'Android 学生终端';
+
   const renderHostPairingPanel = () => (
     <div className="host-pairing-panel">
       <section className="pair-v2-card">
@@ -10017,8 +10049,14 @@ ${JSON.stringify(items, null, 2)}
             maxLength={80}
           />
           <button className="secondary" onClick={saveHostIdentityName}>保存主机名称</button>
-          <button className="primary" onClick={findNearbyTablets} disabled={!hostServiceStatus?.running}>
-            <RefreshCw size={18} />查找局域网平板
+          <input
+            value={terminalMachineCodeQuery}
+            onChange={(event) => setTerminalMachineCodeQuery(event.target.value.toUpperCase())}
+            placeholder="输入固定终端码，例如 T-4H8D-X2K6"
+            aria-label="固定学生终端码"
+          />
+          <button className="primary" onClick={findNearbyTerminals} disabled={!hostServiceStatus?.running}>
+            <RefreshCw size={18} />查找学生终端
           </button>
         </div>
         <p className="muted-text">主机码长期固定。连接请求使用后台随机令牌并由对方点击接受，无需手输一次性数字。</p>
@@ -10028,21 +10066,21 @@ ${JSON.stringify(items, null, 2)}
             <div className="device-heading"><strong>等待主机接受</strong><span>{hostServiceStatus?.pendingPairRequestCount || 0} 项</span></div>
             {(hostServiceStatus?.pairRequests || []).filter((item) => item.status === 'pending_host_accept').map((request) => (
               <article className="pair-request-item" key={request.requestId}>
-                <div><strong>{request.tabletName || 'Android 平板'}</strong><small>{request.tabletMachineCode}{request.tabletAddress ? ` · ${request.tabletAddress}` : ''} · {request.expiresAt ? `有效至 ${new Date(request.expiresAt).toLocaleTimeString()}` : '两分钟内有效'}</small></div>
+                <div><strong>{request.tabletName || terminalPlatformLabel(request.tabletPlatform)}</strong><small>{terminalPlatformLabel(request.tabletPlatform)} · {request.tabletMachineCode}{request.tabletAddress ? ` · ${request.tabletAddress}` : ''} · {request.expiresAt ? `有效至 ${new Date(request.expiresAt).toLocaleTimeString()}` : '两分钟内有效'}</small></div>
                 <div className="actions"><button className="primary compact" onClick={() => acceptIncomingPair(request.requestId)}>接受</button><button className="danger subtle" onClick={() => rejectIncomingPair(request.requestId)}>拒绝</button></div>
               </article>
             ))}
-            {(hostServiceStatus?.pairRequests || []).filter((item) => item.status === 'pending_host_accept').length === 0 && <p className="muted-text">暂无平板发来的连接请求。</p>}
+            {(hostServiceStatus?.pairRequests || []).filter((item) => item.status === 'pending_host_accept').length === 0 && <p className="muted-text">暂无学生终端发来的连接请求。</p>}
           </div>
           <div>
-            <div className="device-heading"><strong>附近平板</strong><span>{hostServiceStatus?.discoveredTablets?.length || 0} 台</span></div>
-            {(hostServiceStatus?.discoveredTablets || []).map((tablet) => (
-              <article className="pair-request-item" key={tablet.deviceId}>
-                <div><strong>{tablet.displayName}</strong><small>{tablet.machineCode} · 在线 · {tablet.address || '局域网'}{tablet.appVersion ? ` · v${tablet.appVersion}` : ''}</small></div>
-                <button className="secondary compact" onClick={() => inviteNearbyTablet(tablet.deviceId)}>邀请连接</button>
+            <div className="device-heading"><strong>附近学生终端</strong><span>{visibleStudentTerminals.length} 台</span></div>
+            {visibleStudentTerminals.map((terminal) => (
+              <article className="pair-request-item" key={terminal.deviceId}>
+                <div><strong>{terminal.displayName}</strong><small>{terminalPlatformLabel(terminal.platform)} · {terminal.machineCode} · 在线 · {terminal.address || '局域网'}{terminal.appVersion ? ` · v${terminal.appVersion}` : ''}</small></div>
+                <button className="secondary compact" onClick={() => inviteNearbyTerminal(terminal.deviceId)}>邀请连接</button>
               </article>
             ))}
-            {(hostServiceStatus?.discoveredTablets || []).length === 0 && <p className="muted-text">让平板打开“等待主机连接”，然后点击上方查找。</p>}
+            {visibleStudentTerminals.length === 0 && <p className="muted-text">让 Android 或 Windows 学生终端停留在连接主机页面，然后点击上方查找。输入终端码时只显示匹配设备。</p>}
           </div>
         </div>
         <div className="pair-history">
@@ -10054,7 +10092,7 @@ ${JSON.stringify(items, null, 2)}
               const statusLabel: Record<string, string> = { accepted: '已接受', rejected: '已拒绝', cancelled: '已取消', expired: '已超时' };
               return (
                 <article className="pair-request-item" key={`history-${request.requestId}`}>
-                  <div><strong>{request.tabletName || 'Android 平板'}</strong><small>{request.tabletMachineCode}{request.tabletAddress ? ` · ${request.tabletAddress}` : ''}</small></div>
+                  <div><strong>{request.tabletName || terminalPlatformLabel(request.tabletPlatform)}</strong><small>{terminalPlatformLabel(request.tabletPlatform)} · {request.tabletMachineCode}{request.tabletAddress ? ` · ${request.tabletAddress}` : ''}</small></div>
                   <span className={`status ${request.status === 'accepted' ? 'ok' : request.status === 'expired' ? 'warn' : 'neutral'}`}>
                     {statusLabel[request.status] || request.status}
                   </span>
@@ -10099,7 +10137,7 @@ ${JSON.stringify(items, null, 2)}
           <span>{hostServiceStatus?.devices?.filter((device) => !device.revoked).length ?? 0} 台有效设备</span>
         </div>
         <div className="device-list">
-          {(hostServiceStatus?.devices ?? []).length === 0 && <p className="muted-text">暂无绑定设备。平板可选择“查找附近主机”或扫码，并输入配对码；连接后会在这里等待授权。</p>}
+          {(hostServiceStatus?.devices ?? []).length === 0 && <p className="muted-text">暂无绑定设备。学生终端可选择“查找附近主机”、扫描二维码或输入连接信息；连接后会在这里等待授权。</p>}
           {(hostServiceStatus?.devices ?? []).map((device) => (
             <article className={device.revoked ? 'device-item revoked' : 'device-item'} key={device.id}>
               <div className="device-row">
@@ -10528,6 +10566,11 @@ ${JSON.stringify(items, null, 2)}
             <p>{activeSection === 'home' ? '查看资料进入、自动消化、成长沉淀和报告更新；通常只需处理一个下一步。' : activeSection === 'projects-new' || activeSection === 'projects-existing' ? t('projects.subtitle') : t('app.subtitle')}</p>
           </div>
           <div className="status-row">
+            {isWindows && activeSection === 'home' && (
+              <span className="status neutral home-version-badge" aria-label={`当前 Windows 版本 ${currentVersionName}`}>
+                Windows v{currentVersionName}
+              </span>
+            )}
             <label className="theme-picker">
               {t('settings.theme')}
               <select value={theme} onChange={(event) => changeTheme(event.target.value as ThemeName)}>
@@ -10775,7 +10818,7 @@ ${JSON.stringify(items, null, 2)}
                   </button>
                   <button className="secondary" onClick={copyHostConnectionInfo} disabled={!windowsLicenseActive}>
                     <Clipboard size={18} />
-                    复制平板连接信息
+                    复制学生终端连接信息
                   </button>
                 </div>
                 {hostDiagnostics?.checks && (
@@ -14331,10 +14374,12 @@ ${JSON.stringify(items, null, 2)}
                     {taskCenterExecutors.map((executor) => <option value={executor} key={executor}>{executor === 'human-review' ? '人工审核' : agentToolProfiles[executor as AgentToolId]?.name || executor}</option>)}
                   </select>
                 </label>
-                <button className="secondary compact" onClick={refreshTaskCenter}><RefreshCw size={16} />刷新任务</button>
+                <button className="secondary compact" disabled={taskCenterRefreshing} onClick={() => void refreshTaskCenter(true)}>
+                  <RefreshCw size={16} />{taskCenterRefreshing ? '刷新中…' : '刷新任务'}
+                </button>
               </div>
               <div className="task-center-list">
-                {visibleTaskCenterItems.map((task) => {
+                {displayedTaskCenterItems.map((task) => {
                   const statusLabel = ({ draft: '草稿', pending: '待处理', approved: '已批准', queued: '已计划', running: '执行中', waiting_result: '等待结果', reviewing: '待审核', succeeded: '已完成', failed: '失败', blocked: '阻塞', cancelled: '已取消', timed_out: '已超时' } as Record<string, string>)[task.status] || task.status;
                   const triggerLabel = ({ schedule: '定时', event: '事件触发', manual: '手动' } as Record<string, string>)[task.trigger] || task.trigger;
                   const modeLabel = ({ direct: '直接执行', adapter: '适配器执行', manual: '人工执行', review: '人工审核' } as Record<string, string>)[task.executionMode] || task.executionMode;
@@ -14365,6 +14410,11 @@ ${JSON.stringify(items, null, 2)}
                   );
                 })}
                 {visibleTaskCenterItems.length === 0 && <div className="empty-state compact">当前筛选条件下没有任务。</div>}
+                {visibleTaskCenterItems.length > displayedTaskCenterItems.length && (
+                  <button className="secondary compact" onClick={() => setTaskCenterDisplayLimit((current) => current + 30)}>
+                    再显示 30 项（尚有 {visibleTaskCenterItems.length - displayedTaskCenterItems.length} 项）
+                  </button>
+                )}
               </div>
               {selectedTask && (
                 <section className="task-detail-panel" ref={taskDetailPanelRef} tabIndex={-1}>
@@ -14805,7 +14855,7 @@ ${JSON.stringify(items, null, 2)}
                   </button>
                   <button className="secondary" onClick={copyHostConnectionInfo} disabled={!windowsLicenseActive}>
                     <Clipboard size={18} />
-                    复制平板连接信息
+                    复制学生终端连接信息
                   </button>
                   <button className="secondary" onClick={refreshHostServiceStatus}>
                     <RefreshCw size={18} />

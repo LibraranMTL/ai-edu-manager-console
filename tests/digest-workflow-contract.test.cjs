@@ -8,6 +8,7 @@ const main = fs.readFileSync(path.join(root, 'electron', 'main.cjs'), 'utf8');
 const preload = fs.readFileSync(path.join(root, 'electron', 'preload.cjs'), 'utf8');
 const renderer = fs.readFileSync(path.join(root, 'src', 'main.tsx'), 'utf8');
 const card = fs.readFileSync(path.join(root, 'src', 'DigestStatusCard.tsx'), 'utf8');
+const receiptCompat = fs.readFileSync(path.join(root, 'electron', 'digest-receipt-compat.cjs'), 'utf8');
 
 test('one-click digest workflow crosses renderer, preload and main process', () => {
   for (const method of ['startDigestWorkflow', 'getDigestWorkflowStatus', 'getDigestWorkflowCommand', 'retryDigestWorkflow', 'importDigestWorkflowResultText']) {
@@ -45,6 +46,20 @@ test('student digest freezes a strict batch and settles only exact receipt entri
   assert.match(main, /status: 'processed'/);
   assert.match(main, /status: 'pending_digest'/);
   assert.match(main, /artifacts_not_updated/);
+  assert.match(main, /discoverDigestReceipts/);
+  assert.match(main, /discoverSingleFileMarkdownReceipt/);
+  assert.match(receiptCompat, /single_file_markdown_receipt/);
+  assert.match(main, /mergeDigestReceipts/);
+  assert.match(main, /receiptFingerprints/);
+  assert.match(main, /domainSync\?\.strict/);
+  assert.match(main, /const strictValid = Boolean\([\s\S]*?\['completed', 'partial'\]\.includes\(status\)/);
+});
+
+test('project digest completion persists self-consistent pending counters', () => {
+  assert.match(main, /const remainingRelativePaths = new Set\(/);
+  assert.match(main, /pendingCount: remainingSubmitted\.length/);
+  assert.match(main, /submittedCount: 0/);
+  assert.match(main, /pendingFiles: fullyCompleted[\s\S]*?\? \[\][\s\S]*?remainingRelativePaths\.has/);
 });
 
 test('validated digest results auto-accept while other task reviews remain intact', () => {

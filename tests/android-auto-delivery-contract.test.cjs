@@ -1,0 +1,46 @@
+const test = require('node:test')
+const assert = require('node:assert/strict')
+const fs = require('node:fs')
+const path = require('node:path')
+
+const root = path.resolve(__dirname, '..')
+const read = (relative) => fs.readFileSync(path.join(root, relative), 'utf8')
+
+test('Android automatic delivery uses persisted SAF folder access with no extra runtime dependency', () => {
+  const activity = read('android-tablet-terminal/src/com/qxmatrix/eduterminal/MainActivity.java')
+  const worker = read('android-tablet-terminal/src/com/qxmatrix/eduterminal/AutoDeliveryJobService.java')
+  assert.match(activity, /Intent\.ACTION_OPEN_DOCUMENT_TREE/)
+  assert.match(activity, /takePersistableUriPermission/)
+  assert.match(worker, /DocumentsContract\.buildChildDocumentsUriUsingTree/)
+  assert.match(worker, /JobScheduler/)
+  assert.match(worker, /setPeriodic\(PERIOD_MS\)/)
+})
+
+test('Android automatic delivery is personal-terminal only and binds one student target', () => {
+  const activity = read('android-tablet-terminal/src/com/qxmatrix/eduterminal/MainActivity.java')
+  const worker = read('android-tablet-terminal/src/com/qxmatrix/eduterminal/AutoDeliveryJobService.java')
+  assert.match(activity, /自动投递文件夹（个人终端）/)
+  assert.match(activity, /共享终端不启用自动投递/)
+  assert.match(activity, /KEY_STUDENT_ID, selectedStudent\.id/)
+  assert.match(activity, /KEY_TARGET_TYPE, target\.type/)
+  assert.match(worker, /!"personal"\.equals\(terminal\.getString\("terminal_mode", "shared"\)\)/)
+})
+
+test('Android automatic delivery is idempotent, waits for stable files and never deletes local files', () => {
+  const worker = read('android-tablet-terminal/src/com/qxmatrix/eduterminal/AutoDeliveryJobService.java')
+  assert.match(worker, /KEY_PROCESSED/)
+  assert.match(worker, /KEY_PENDING/)
+  assert.match(worker, /STABLE_MS/)
+  assert.match(worker, /android-auto-/)
+  assert.match(worker, /sourceType=android_auto_delivery/)
+  assert.match(worker, /本地文件未删除/)
+  assert.doesNotMatch(worker, /\.delete\s*\(/)
+})
+
+test('Android automatic delivery service is compiled and registered', () => {
+  const build = read('android-tablet-terminal/build.ps1')
+  const manifest = read('android-tablet-terminal/AndroidManifest.xml')
+  assert.match(build, /AutoDeliveryJobService\.java/)
+  assert.match(manifest, /\.AutoDeliveryJobService/)
+  assert.match(manifest, /android\.permission\.BIND_JOB_SERVICE/)
+})

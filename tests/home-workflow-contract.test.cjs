@@ -10,6 +10,9 @@ const styles = fs.readFileSync(path.join(root, 'src', 'styles.css'), 'utf8');
 test('host home presents one primary education-material workflow', () => {
   assert.match(renderer, /今日教育资料闭环/);
   assert.match(renderer, /通常只需处理一个下一步/);
+  assert.match(renderer, /activeSection === 'home'[\s\S]*?Windows v\{currentVersionName\}/);
+  assert.match(renderer, /aria-label=\{`当前 Windows 版本 \$\{currentVersionName\}`\}/);
+  assert.match(styles, /\.home-version-badge/);
   assert.match(renderer, /const runHomePrimaryAction = \(\) =>/);
   assert.match(renderer, /1<\/span><strong>资料进入/);
   assert.match(renderer, /2<\/span><strong>自动消化/);

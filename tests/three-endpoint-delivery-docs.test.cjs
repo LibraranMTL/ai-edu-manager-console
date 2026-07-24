@@ -17,8 +17,8 @@ test('download page presents the current three-endpoint product line', () => {
     'Windows 主机端',
     'Windows 学生端',
     'Android 学生端',
-    'v0.10.1',
-    'v0.6.2',
+    'v0.10.5',
+    'v0.6.3',
     'windows-host-manual.html',
     'windows-student-manual.html',
     'android-student-manual.html',
@@ -32,9 +32,9 @@ test('download page presents the current three-endpoint product line', () => {
 test('download page links the current artifacts and canonical web manuals exist', () => {
   const download = read(path.join('release', '网站文件', 'download.html'));
   for (const artifact of [
-    'AI-edu-manager-console-Windows-0.10.1.zip',
-    'AI-edu-manager-student-terminal-Windows-0.10.1.exe',
-    'AI-edu-manager-tablet-terminal-0.6.2.apk',
+    'AI-edu-manager-console-Windows-0.10.5.zip',
+    'AI-edu-manager-student-terminal-Windows-0.10.5.exe',
+    'AI-edu-manager-tablet-terminal-0.6.3.apk',
   ]) {
     assert.match(download, new RegExp(artifact.replaceAll('.', '\\.')));
   }
@@ -89,6 +89,6 @@ test('Windows student web manual keeps its table of contents aligned with the ar
   assert.match(manual, /align-items:start/u);
   assert.match(manual, /h2\[id\] \{ scroll-margin-top:92px; \}/u);
   assert.match(manual, /@media\(max-width:820px\)/u);
-  assert.match(manual, /适用版本：Windows 学生终端 0\.10\.1/u);
+  assert.match(manual, /适用版本：Windows 学生终端 0\.10\.5/u);
   assert.doesNotMatch(manual, /118\.px|24\.px|1\.\.%|\.\.9\.6/u);
 });

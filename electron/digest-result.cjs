@@ -1,6 +1,7 @@
 const path = require('node:path');
 const { normalizeRelativePath } = require('./digest-batch.cjs');
 const { parseAgentResultInput } = require('./agent-result-envelope.cjs');
+const { classifyReceiptDisposition } = require('./material-status.cjs');
 
 const DIGEST_RESULT_SCHEMA = 'edu-manager.digest-result.v1';
 
@@ -21,7 +22,21 @@ function receiptItems(receipt) {
   if (Array.isArray(receipt?.digestedFiles)) return receipt.digestedFiles;
   if (Array.isArray(receipt?.items)) return receipt.items;
   if (Array.isArray(receipt?.processedFiles)) return receipt.processedFiles;
+  if (Array.isArray(receipt?.results)) return receipt.results;
   return [];
+}
+
+function normalizeReceiptItem(item, fallbackStatus = 'completed') {
+  const entry = typeof item === 'string' ? { relativePath: item } : (item || {});
+  return {
+    materialId: String(entry.materialId || entry.id || entry.recordId || ''),
+    relativePath: normalizeRelativePath(entry.relativePath || entry.path || entry.fileName || entry.filename),
+    sha1: String(entry.sha1 || '').toLowerCase(),
+    status: String(entry.status || fallbackStatus).toLowerCase(),
+    disposition: classifyReceiptDisposition({ ...entry, status: entry.status || fallbackStatus }),
+    artifacts: Array.isArray(entry.artifacts) ? entry.artifacts.map((artifact) => typeof artifact === 'string' ? artifact : artifact?.path).filter(Boolean) : [],
+    message: String(entry.message || entry.notes || entry.reason || ''),
+  };
 }
 
 function normalizeDigestResult(receipt, batch) {
@@ -38,17 +53,8 @@ function normalizeDigestResult(receipt, batch) {
     // Strict digest validation below remains authoritative for malformed receipts.
   }
   const scope = batch?.scope || {};
-  const processed = receiptItems(data).map((item) => {
-    const entry = typeof item === 'string' ? { relativePath: item } : (item || {});
-    return {
-      materialId: String(entry.materialId || entry.id || entry.recordId || ''),
-      relativePath: normalizeRelativePath(entry.relativePath || entry.path || entry.fileName || entry.filename),
-      sha1: String(entry.sha1 || '').toLowerCase(),
-      status: String(entry.status || 'completed').toLowerCase(),
-      artifacts: Array.isArray(entry.artifacts) ? entry.artifacts.map((artifact) => typeof artifact === 'string' ? artifact : artifact?.path).filter(Boolean) : [],
-      message: String(entry.message || entry.notes || ''),
-    };
-  });
+  const processed = receiptItems(data).map((item) => normalizeReceiptItem(item));
+  const failed = (Array.isArray(data.failed) ? data.failed : []).map((item) => normalizeReceiptItem(item, 'failed'));
   return {
     schema: String(data.schema || DIGEST_RESULT_SCHEMA),
     protocolVersion: String(data.protocolVersion || ''),
@@ -61,7 +67,7 @@ function normalizeDigestResult(receipt, batch) {
     },
     status: String(data.status || '').toLowerCase(),
     processed,
-    failed: Array.isArray(data.failed) ? data.failed : [],
+    failed,
     artifacts: Array.isArray(data.artifacts) ? data.artifacts : [],
     completedAt: String(data.completedAt || ''),
     message: String(data.message || ''),
@@ -87,16 +93,19 @@ function validateDigestResult(options = {}) {
   if (result.scope.type && result.scope.type !== String(batch.scope?.type || '')) return { ok: false, code: 'scope_type_mismatch', message: '回执资料范围类型与当前批次不一致。', result, confirmed: [], remaining: batch.files };
   if (result.scope.id && result.scope.id !== String(batch.scope?.id || '')) return { ok: false, code: 'scope_id_mismatch', message: '回执资料范围 ID 与当前批次不一致。', result, confirmed: [], remaining: batch.files };
   if (!['completed', 'partial'].includes(result.status)) return { ok: false, code: 'status_invalid', message: `回执状态必须为 completed 或 partial，实际为 ${result.status || '缺失'}。`, result, confirmed: [], remaining: batch.files };
-  if (!result.processed.length) return { ok: false, code: 'processed_empty', message: '回执没有逐文件处理结果。', result, confirmed: [], remaining: batch.files };
+  if (!result.processed.length && !result.failed.length) return { ok: false, code: 'result_items_empty', message: '回执没有逐文件处理结果。', result, confirmed: [], remaining: batch.files };
 
   const currentFiles = Array.isArray(options.currentFiles) ? options.currentFiles : batch.files;
   const batchByPath = new Map(batch.files.map((file) => [normalizeRelativePath(file.relativePath), file]));
   const currentByPath = new Map(currentFiles.map((file) => [normalizeRelativePath(file.relativePath), file]));
   const seen = new Set();
   const confirmed = [];
+  const ignored = [];
+  const invalid = [];
+  const failed = [];
   const rejected = [];
   const allowedRoots = (Array.isArray(options.allowedArtifactRoots) ? options.allowedArtifactRoots : []).filter(Boolean);
-  for (const item of result.processed) {
+  const validateItemIdentity = (item) => {
     const relativePath = normalizeRelativePath(item.relativePath);
     const expected = batchByPath.get(relativePath);
     const current = currentByPath.get(relativePath);
@@ -110,19 +119,46 @@ function validateDigestResult(options = {}) {
     else if (allowedRoots.length && item.artifacts.some((artifact) => !allowedRoots.some((root) => pathWithin(artifact, root)))) reason = '产物路径超出允许的知识目录';
     if (reason) {
       rejected.push({ ...item, reason });
-      continue;
+      return null;
     }
     seen.add(relativePath);
-    confirmed.push({ ...expected, ...current, artifacts: item.artifacts, receiptStatus: item.status });
+    return { ...expected, ...current, artifacts: item.artifacts, receiptStatus: item.status, disposition: item.disposition, message: item.message };
+  };
+  for (const item of [...result.processed, ...result.failed]) {
+    const matched = validateItemIdentity(item);
+    if (!matched) continue;
+    if (item.disposition === 'processed') confirmed.push(matched);
+    else if (item.disposition === 'ignored') ignored.push(matched);
+    else if (item.disposition === 'invalid') invalid.push(matched);
+    else failed.push(matched);
   }
-  if (!confirmed.length) return { ok: false, code: 'no_matching_files', message: '回执没有任何与当前批次严格匹配的资料。', result, confirmed, remaining: batch.files, rejected };
-  const remaining = batch.files.filter((file) => !seen.has(normalizeRelativePath(file.relativePath)));
+  const resolvedPaths = new Set([...confirmed, ...ignored, ...invalid].map((item) => normalizeRelativePath(item.relativePath)));
+  const remaining = batch.files.filter((file) => !resolvedPaths.has(normalizeRelativePath(file.relativePath)));
+  if (!confirmed.length && !ignored.length && !invalid.length) {
+    return {
+      ok: false,
+      code: failed.length ? 'all_failed' : 'no_matching_files',
+      message: failed.length ? `本次 ${failed.length} 项均未处理成功。` : '回执没有任何与当前批次严格匹配的资料。',
+      result,
+      confirmed,
+      ignored,
+      invalid,
+      failed,
+      remaining: batch.files,
+      rejected,
+    };
+  }
   return {
     ok: true,
     code: remaining.length ? 'partial' : 'completed',
-    message: remaining.length ? `已确认 ${confirmed.length} 项，另有 ${remaining.length} 项未完成。` : `当前批次 ${confirmed.length} 项资料已全部通过严格校验。`,
+    message: remaining.length
+      ? `已消化 ${confirmed.length} 项、忽略 ${ignored.length} 项、无效 ${invalid.length} 项，另有 ${remaining.length} 项未完成。`
+      : `当前批次已结算：消化 ${confirmed.length} 项、忽略 ${ignored.length} 项、无效 ${invalid.length} 项。`,
     result,
     confirmed,
+    ignored,
+    invalid,
+    failed,
     remaining,
     rejected,
     fullyCompleted: remaining.length === 0,

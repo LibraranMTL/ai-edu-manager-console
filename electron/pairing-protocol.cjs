@@ -40,6 +40,8 @@ function createPairRequest(input = {}, nowMs = Date.now()) {
       tabletMachineCode: String(input.tabletMachineCode || ''),
       hostName: String(input.hostName || '').slice(0, 80),
       tabletName: String(input.tabletName || '').slice(0, 80),
+      tabletPlatform: String(input.tabletPlatform || ''),
+      tabletCapabilities: Array.isArray(input.tabletCapabilities) ? input.tabletCapabilities.map(String).slice(0, 20) : [],
       hostAddress: String(input.hostAddress || ''),
       tabletAddress: String(input.tabletAddress || ''),
       status: initiator === 'host' ? 'pending_tablet_accept' : 'pending_host_accept',

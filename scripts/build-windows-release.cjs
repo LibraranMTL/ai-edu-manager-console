@@ -141,6 +141,29 @@ function locateAsarModule() {
   return require(path.join(pnpmRoot, packageDir, 'node_modules', '@electron', 'asar'));
 }
 
+function locateEsbuildModule() {
+  const pnpmRoot = path.join(repoRoot, 'node_modules', '.pnpm');
+  const packageDir = fs.readdirSync(pnpmRoot).find((name) => name.startsWith('esbuild@'));
+  if (!packageDir) throw new Error('Unable to locate esbuild in the pnpm store.');
+  return require(path.join(pnpmRoot, packageDir, 'node_modules', 'esbuild'));
+}
+
+function bundleCourseImportRuntime() {
+  const esbuild = locateEsbuildModule();
+  esbuild.buildSync({
+    entryPoints: [path.join(repoRoot, 'electron', 'course-custom-import.cjs')],
+    outfile: path.join(stageRoot, 'electron', 'course-custom-import.cjs'),
+    bundle: true,
+    platform: 'node',
+    format: 'cjs',
+    target: 'node20',
+    sourcemap: false,
+    minify: false,
+    external: ['electron'],
+    logLevel: 'warning',
+  });
+}
+
 function writeRuntimePackage() {
   const electronVersion = JSON.parse(fs.readFileSync(require.resolve('electron/package.json'), 'utf8')).version;
   const runtimePackage = {
@@ -245,6 +268,7 @@ function build() {
 
     recordPhase('copy-runtime-files');
     copyDirectoryFiles(path.join(repoRoot, 'electron'), path.join(stageRoot, 'electron'));
+    bundleCourseImportRuntime();
     fs.mkdirSync(path.join(stageRoot, 'public', 'brand'), { recursive: true });
     fs.copyFileSync(path.join(repoRoot, 'public', 'brand', 'robogala.ico'), path.join(stageRoot, 'public', 'brand', 'robogala.ico'));
     recordPhase('write-runtime-package');
@@ -275,10 +299,14 @@ function build() {
 
     const syntaxDir = path.join(stageRoot, 'syntax-check');
     fs.mkdirSync(syntaxDir, { recursive: true });
-    for (const relative of ['electron/main.cjs', 'electron/preload.cjs']) {
+    for (const relative of ['electron/main.cjs', 'electron/preload.cjs', 'electron/course-custom-import.cjs']) {
       const target = path.join(syntaxDir, path.basename(relative));
       fs.writeFileSync(target, asar.extractFile(appAsar, relative));
       run(process.execPath, ['--check', target]);
+    }
+    const packagedCourseImport = asar.extractFile(appAsar, 'electron/course-custom-import.cjs').toString('utf8');
+    if (/require\((['"])exceljs\1\)/.test(packagedCourseImport)) {
+      throw new Error('Packaged course import runtime still depends on an external exceljs module.');
     }
 
     const localeDir = path.join(unpackedRoot, 'locales');

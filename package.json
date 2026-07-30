@@ -1,6 +1,6 @@
 {
   "name": "edu-manager-launcher",
-  "version": "0.14.9",
+  "version": "0.15.3",
   "private": true,
   "type": "module",
   "main": "electron/main.cjs",
@@ -19,6 +19,7 @@
     "build:license-admin": "electron-builder --projectDir tools/license-admin-app --win portable --x64"
   },
   "dependencies": {
+    "exceljs": "4.4.0",
     "lucide-react": "^0.468.0",
     "mermaid": "^11.16.0",
     "qrcode": "^1.5.4",

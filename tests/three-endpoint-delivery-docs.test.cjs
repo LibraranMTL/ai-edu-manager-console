@@ -17,8 +17,8 @@ test('download page presents the current three-endpoint product line', () => {
     'Windows 主机端',
     'Windows 学生端',
     'Android 学生端',
-    'v0.14.9',
-    'v0.6.7',
+    'v0.15.3',
+    'v0.6.9',
     'windows-host-manual.html',
     'windows-student-manual.html',
     'android-student-manual.html',
@@ -32,11 +32,12 @@ test('download page presents the current three-endpoint product line', () => {
 test('download page links the current artifacts and canonical web manuals exist', () => {
   const download = read(path.join('release', '网站文件', 'download.html'));
   for (const artifact of [
-    'AI-edu-manager-console-Windows-0.14.9.zip',
-    'AI-edu-manager-student-terminal-Windows-0.14.9.exe',
-    'AI-edu-manager-tablet-terminal-0.6.7.apk',
+    ['../windows/AI-edu-manager-console-Windows-0.15.3.zip', path.join('release', 'windows', 'AI-edu-manager-console-Windows-0.15.3.zip')],
+    ['../windows-terminal/AI-edu-manager-student-terminal-Windows-0.15.3.exe', path.join('release', 'windows-terminal', 'AI-edu-manager-student-terminal-Windows-0.15.3.exe')],
+    ['../tablet-terminal/AI-edu-manager-tablet-terminal-0.6.9.apk', path.join('release', 'tablet-terminal', 'AI-edu-manager-tablet-terminal-0.6.9.apk')],
   ]) {
-    assert.match(download, new RegExp(artifact.replaceAll('.', '\\.')));
+    assert.match(download, new RegExp(artifact[0].replaceAll('.', '\\.')));
+    assert.equal(fs.existsSync(path.join(root, artifact[1])), true, `${artifact[1]} should exist`);
   }
   for (const relativePath of [
     path.join('release', '网站文件', 'windows-host-manual.html'),
@@ -69,6 +70,18 @@ test('manual sources describe target selection and terminal-specific workflows',
   assert.match(host, /绑定项目/u);
   assert.match(host, /Windows 学生端/u);
   assert.match(host, /Android 学生端/u);
+  assert.match(host, /课程学习/u);
+  assert.match(host, /课程管理/u);
+  assert.match(host, /文件大小不超过 10 MB/u);
+  assert.match(host, /一次最多导入 200 门课程/u);
+  assert.match(host, /导入平台离线目录/u);
+  assert.match(host, /允许本机团队知识查询/u);
+  assert.match(host, /允许远程协作团队知识查询/u);
+  assert.match(host, /本机没有命中时，才向已经建立有效知识协作关系/u);
+  assert.match(host, /submit_education_conversation/u);
+  assert.match(host, /不会在后台抓取 Agent 的全部历史/u);
+  assert.match(host, /学生原始资料不自动双向同步/u);
+  assert.match(host, /QClaw 远程知识路由与运行期间的教育档案自动更新仍保留复测门禁/u);
 
   assert.match(windowsStudent, /自动投递文件夹/u);
   assert.match(windowsStudent, /学生原始资料库/u);
@@ -81,6 +94,48 @@ test('manual sources describe target selection and terminal-specific workflows',
   assert.match(androidStudent, /绑定项目/u);
   assert.match(windowsStudent, /查看成长模型/u);
   assert.match(androidStudent, /查看成长模型/u);
+  assert.match(windowsStudent, /没有“课程管理”菜单/u);
+  assert.match(androidStudent, /没有“课程管理”菜单/u);
+});
+
+test('download page explains the Windows 0.15.2 course menu permission boundary', () => {
+  const html = read(path.join('release', '网站文件', 'download.html'));
+
+  assert.match(html, /Windows 0\.15\.2 课程菜单更新/u);
+  assert.match(html, /课程学习：所有版本均可打开已分配课程/u);
+  assert.match(html, /课程管理：仅已激活的专业版和机构版可用/u);
+  assert.match(html, /Excel 导入：四个字段，最多 200 门课程/u);
+});
+
+test('public site and web manual explain D-stage knowledge collaboration without overstating validation', () => {
+  const home = read(path.join('release', '网站文件', 'index.html'));
+  const download = read(path.join('release', '网站文件', 'download.html'));
+  const manual = read(path.join('release', '网站文件', 'windows-host-manual.html'));
+  const legacyManual = read(path.join('release', '网站文件', 'windows-manual.html'));
+
+  for (const expected of [
+    /跨主机知识协作/u,
+    /本地优先/u,
+    /团队范围/u,
+    /原始资料不自动双向同步/u,
+  ]) {
+    assert.match(home, expected);
+  }
+
+  assert.match(download, /知识协作与跨主机知识/u);
+  assert.match(download, /团队查询和明确对话投递已完成双机真机验证/u);
+  assert.match(download, /远程路由与自动档案更新仍在受控复测/u);
+
+  for (const expected of [
+    /教育管家问答与跨主机知识查询/u,
+    /允许本机团队知识查询/u,
+    /允许远程协作团队知识查询/u,
+    /submit_education_conversation/u,
+    /学生原始资料不自动双向同步/u,
+  ]) {
+    assert.match(manual, expected);
+    assert.match(legacyManual, expected);
+  }
 });
 
 test('Windows student web manual keeps its table of contents aligned with the article', () => {
@@ -91,6 +146,6 @@ test('Windows student web manual keeps its table of contents aligned with the ar
   assert.match(manual, /align-items:start/u);
   assert.match(manual, /h2\[id\] \{ scroll-margin-top:92px; \}/u);
   assert.match(manual, /@media\(max-width:820px\)/u);
-  assert.match(manual, /适用版本：Windows 学生终端 0\.14\.2/u);
+  assert.match(manual, /适用版本：Windows 学生终端 0\.15\.3/u);
   assert.doesNotMatch(manual, /118\.px|24\.px|1\.\.%|\.\.9\.6/u);
 });

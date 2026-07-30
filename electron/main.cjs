@@ -8,6 +8,27 @@ const https = require('https');
 const net = require('net');
 const dgram = require('dgram');
 const crypto = require('crypto');
+const { pathToFileURL } = require('url');
+const { WebContentsView, session } = require('electron');
+const { createCourseCatalogStore } = require('./course-catalog-store.cjs');
+const { safeCourseNavigation } = require('./course-catalog.cjs');
+const {
+  canImportCustomCourses,
+  importCustomCoursesFromExcel,
+  writeCustomCourseTemplate,
+} = require('./course-custom-import.cjs');
+const {
+  coursePartition,
+  installCourseGuards,
+  secureCourseWebPreferences,
+} = require('./course-browser.cjs');
+const {
+  exportBaseCandidates,
+  exportDirectoryWithFallback,
+  learningReportHtml,
+  safeExportStem,
+  writeFileWithFallback,
+} = require('./report-export.cjs');
 const {
   resolveConfiguredStoragePath,
   resolveStudentBaseDir,
@@ -261,6 +282,9 @@ const {
 } = require('./student-terminal-session.cjs');
 
 let mainWindow;
+let courseView = null;
+let activeCourse = null;
+let courseCatalogStoreInstance = null;
 const activeProjectWorkspaceScans = new Map();
 const collaborationDirectNonces = new Map();
 let qclawOpened = false;
@@ -315,6 +339,19 @@ const agentToolInstallCache = new Map();
 const hostDirectoryCountCache = createDirectoryCountCache({ ttlMs: 5 * 60 * 1000 });
 
 const APP_VERSION = app.getVersion();
+function courseCatalogStore() {
+  if (!courseCatalogStoreInstance) {
+    courseCatalogStoreInstance = createCourseCatalogStore({
+      userDataDir: app.getPath('userData'),
+      appVersion: APP_VERSION,
+      resourceRoots: [
+        path.join(__dirname, '..', 'dist'),
+        path.join(__dirname, '..', 'public'),
+      ],
+    });
+  }
+  return courseCatalogStoreInstance;
+}
 const DEFAULT_HOST_PORT = 18777;
 const HOST_DISCOVERY_PORT = 18778;
 const HOST_DISCOVERY_REQUEST_V1 = 'AI_EDU_MANAGER_DISCOVER_V1';
@@ -4464,6 +4501,11 @@ function upsertAssetFromFile(filePath, context = {}) {
     sourceType: context.sourceType || base.sourceType || 'local_file',
     captureSessionId: context.captureSessionId || base.captureSessionId || '',
     captureItemId: context.captureItemId || base.captureItemId || '',
+    courseId: context.courseId || base.courseId || '',
+    courseProvider: context.courseProvider || base.courseProvider || '',
+    courseUrl: context.courseUrl || base.courseUrl || '',
+    courseStartedAt: context.courseStartedAt || base.courseStartedAt || '',
+    courseCompletedAt: context.courseCompletedAt || base.courseCompletedAt || '',
     uploadedAt: base.uploadedAt || context.uploadedAt || now,
     updatedAt: now,
     status: context.status || base.status || 'active',
@@ -4496,6 +4538,11 @@ function registerAssetsFromUploadRecords(records) {
       sourceType: record.captureSessionId ? 'windows_screenshot' : (record.sourceType || 'local_file'),
       captureSessionId: record.captureSessionId || '',
       captureItemId: record.captureItemId || '',
+      courseId: record.courseId || '',
+      courseProvider: record.courseProvider || '',
+      courseUrl: record.courseUrl || '',
+      courseStartedAt: record.courseStartedAt || '',
+      courseCompletedAt: record.courseCompletedAt || '',
       deviceName: record.deviceName || '',
       uploadedAt: record.uploadedAt || '',
       referenceId: record.id,
@@ -6926,6 +6973,187 @@ function notify(callbackName, payload) {
   ).catch(() => {});
 }
 
+function courseViewBounds() {
+  if (!mainWindow || mainWindow.isDestroyed()) return { x: 286, y: 150, width: 900, height: 620 };
+  const [width, height] = mainWindow.getContentSize();
+  return {
+    x: Math.min(286, Math.max(0, width - 320)),
+    y: 150,
+    width: Math.max(360, width - 310),
+    height: Math.max(260, height - 174),
+  };
+}
+
+function closeCourseView(reason = 'user') {
+  if (courseView && mainWindow && !mainWindow.isDestroyed()) {
+    try { mainWindow.contentView.removeChildView(courseView); } catch {}
+    try { courseView.webContents.close(); } catch {}
+  }
+  courseView = null;
+  const closed = activeCourse;
+  activeCourse = null;
+  notify('onNativeCourseBrowserChanged', { open: false, reason, courseId: closed?.courseId || '' });
+  return JSON.stringify({ ok: true, open: false });
+}
+
+function courseAllowedByCurrentPlan(course) {
+  return course?.type !== 'tenant_custom' || canImportCustomCourses(publicLicenseStatus());
+}
+
+function openCourseView(courseId) {
+  try {
+    const course = courseCatalogStore().findCourse(courseId);
+    if (!course) return JSON.stringify({ ok: false, message: '课程不存在、未生效或已紧急下架。' });
+    if (!courseAllowedByCurrentPlan(course)) {
+      return JSON.stringify({ ok: false, message: '机构自选课程仅向已激活的专业版和机构版开放。' });
+    }
+    closeCourseView('switch');
+    const partition = coursePartition(course.courseId);
+    const courseSession = session.fromPartition(partition, { cache: true });
+    courseView = new WebContentsView({ webPreferences: secureCourseWebPreferences(partition) });
+    installCourseGuards(courseView.webContents, course, courseSession, (blocked) => {
+      notify('onNativeCourseBrowserChanged', { open: true, blocked: true, courseId: course.courseId, ...blocked });
+    });
+    mainWindow.contentView.addChildView(courseView);
+    courseView.setBounds(courseViewBounds());
+    courseView.setBackgroundColor('#ffffff');
+    activeCourse = course;
+    courseView.webContents.on('render-process-gone', () => closeCourseView('render_process_gone'));
+    void courseView.webContents.loadURL(course.url);
+    notify('onNativeCourseBrowserChanged', { open: true, courseId: course.courseId, name: course.name, url: course.url });
+    return JSON.stringify({ ok: true, open: true, course });
+  } catch (error) {
+    closeCourseView('error');
+    return JSON.stringify({ ok: false, message: `无法安全打开课程：${error.message}` });
+  }
+}
+
+function getCourseCatalogState() {
+  const state = courseCatalogStore().state();
+  const license = publicLicenseStatus();
+  const managementAllowed = canImportCustomCourses(license);
+  return JSON.stringify({
+    ...state,
+    management: {
+      allowed: managementAllowed,
+      plan: String(license.plan || ''),
+      planLabel: String(license.planLabel || ''),
+      message: managementAllowed
+        ? '当前专业版或机构版授权可以使用课程管理。'
+        : '课程管理仅向已激活的专业版和机构版开放。',
+    },
+    customImport: {
+      allowed: managementAllowed,
+      plan: String(license.plan || ''),
+      planLabel: String(license.planLabel || ''),
+      message: managementAllowed
+        ? '当前专业版或机构版授权可以导入自选课程 Excel。'
+        : '自选课程 Excel 导入仅向已激活的专业版和机构版开放。',
+    },
+    catalog: state.catalog ? {
+      ...state.catalog,
+      courses: state.catalog.courses.map((course) => {
+        const customAssetPath = course.type === 'tenant_custom' ? courseCatalogStore().assetPath(course.coverAsset) : '';
+        return {
+          ...course,
+          coverUrl: customAssetPath ? pathToFileURL(customAssetPath).toString() : course.coverAsset,
+        };
+      }),
+    } : null,
+  });
+}
+
+function courseManagementRequiredJson(code = 'COURSE_MANAGEMENT_PLAN_REQUIRED') {
+  const license = publicLicenseStatus();
+  if (canImportCustomCourses(license)) return null;
+  return JSON.stringify({
+    ok: false,
+    code,
+    license,
+    message: '课程管理仅向已激活的专业版和机构版开放。',
+  });
+}
+
+function saveCourseInstitutionPolicy(policyJson) {
+  const locked = courseManagementRequiredJson();
+  if (locked) return locked;
+  try {
+    const policy = courseCatalogStore().savePolicy(JSON.parse(policyJson || '{}'));
+    notify('onNativeCourseCatalogChanged', { action: 'policy_updated', policyVersion: policy.policyVersion });
+    return JSON.stringify({ ok: true, policy, state: JSON.parse(getCourseCatalogState()) });
+  } catch (error) {
+    return JSON.stringify({ ok: false, message: `保存课程设置失败：${error.message}` });
+  }
+}
+
+function importOfflineCourseCatalog() {
+  const locked = courseManagementRequiredJson();
+  if (locked) return locked;
+  const selected = dialog.showOpenDialogSync(mainWindow, {
+    title: '导入离线签名课程目录包',
+    properties: ['openFile'],
+    filters: [{ name: '课程目录 JSON', extensions: ['json'] }],
+  });
+  if (!selected?.[0]) return JSON.stringify({ ok: false, cancelled: true, message: '已取消导入。' });
+  const result = courseCatalogStore().importFile(selected[0]);
+  if (result.ok && activeCourse && !courseCatalogStore().findCourse(activeCourse.courseId)) closeCourseView('catalog_withdrawal');
+  notify('onNativeCourseCatalogChanged', { action: 'offline_import', ok: result.ok, catalogVersion: result.catalog?.catalogVersion || '' });
+  return JSON.stringify(result);
+}
+
+async function exportCustomCourseTemplate() {
+  const locked = courseManagementRequiredJson();
+  if (locked) return locked;
+  const target = dialog.showSaveDialogSync(mainWindow, {
+    title: '保存自选课程 Excel 模板',
+    defaultPath: 'AI教育管家-自选课程导入模板.xlsx',
+    filters: [{ name: 'Excel 工作簿', extensions: ['xlsx'] }],
+  });
+  if (!target) return JSON.stringify({ ok: false, cancelled: true, message: '已取消保存模板。' });
+  try {
+    await writeCustomCourseTemplate(target);
+    return JSON.stringify({ ok: true, path: target, message: '自选课程 Excel 模板已保存。' });
+  } catch (error) {
+    return JSON.stringify({ ok: false, message: `保存自选课程模板失败：${error.message}` });
+  }
+}
+
+async function importCustomCourseExcel() {
+  const locked = courseManagementRequiredJson('CUSTOM_COURSE_IMPORT_PLAN_REQUIRED');
+  if (locked) return locked;
+  const selected = dialog.showOpenDialogSync(mainWindow, {
+    title: '导入自选课程 Excel',
+    properties: ['openFile'],
+    filters: [{ name: 'Excel 工作簿', extensions: ['xlsx'] }],
+  });
+  if (!selected?.[0]) return JSON.stringify({ ok: false, cancelled: true, message: '已取消导入。' });
+  try {
+    const parsed = await importCustomCoursesFromExcel(selected[0], {
+      assetDir: courseCatalogStore().customAssetsDir,
+    });
+    const customCatalog = courseCatalogStore().mergeCustomCourses(parsed.courses);
+    notify('onNativeCourseCatalogChanged', {
+      action: 'tenant_custom_excel_import',
+      ok: true,
+      imported: parsed.imported,
+      total: customCatalog.courses.length,
+    });
+    return JSON.stringify({
+      ok: true,
+      imported: parsed.imported,
+      total: customCatalog.courses.length,
+      state: JSON.parse(getCourseCatalogState()),
+      message: `已导入 ${parsed.imported} 门自选课程；相同课程链接会更新，平台签名课程不受影响。`,
+    });
+  } catch (error) {
+    return JSON.stringify({
+      ok: false,
+      code: 'CUSTOM_COURSE_EXCEL_REJECTED',
+      message: `自选课程 Excel 导入失败：${error.message}`,
+    });
+  }
+}
+
 function createWindow() {
   mainWindow = new BrowserWindow({
     width: 1280,
@@ -6943,10 +7171,29 @@ function createWindow() {
   });
 
   mainWindow.loadFile(path.join(__dirname, '..', 'dist', 'index.html'));
+  mainWindow.on('resize', () => {
+    if (courseView) courseView.setBounds(courseViewBounds());
+  });
+  mainWindow.on('closed', () => {
+    if (courseView) {
+      try { courseView.webContents.close(); } catch {}
+      courseView = null;
+      activeCourse = null;
+    }
+  });
 }
 
 function downloadsDir() {
   return app.getPath('downloads') || path.join(os.homedir(), 'Downloads');
+}
+
+function educationExportBaseCandidates() {
+  return exportBaseCandidates({
+    downloads: downloadsDir(),
+    documents: app.getPath('documents'),
+    desktop: app.getPath('desktop'),
+    userData: app.getPath('userData'),
+  });
 }
 
 function defaultStudentBaseDir() {
@@ -19738,12 +19985,106 @@ function exportEducationArchive(studentKey) {
     if (!student) return JSON.stringify({ ok: false, message: '未找到学生。' });
     const version = createEducationArchiveVersion(student.id);
     if (!version.ok || !version.versionDir) return JSON.stringify(version);
-    const target = path.join(downloadsDir(), `AI-education-archive-${sanitizeName(student.name)}-${timestampForFilename()}-${Date.now()}`);
-    fs.cpSync(version.versionDir, target, { recursive: true, errorOnExist: true });
-    shell.openPath(target).catch(() => {});
-    return JSON.stringify({ ok: true, path: target, unchanged: version.unchanged, message: '完整教育档案已导出，可离线阅读 Markdown 和 JSON。' });
+    const exported = exportDirectoryWithFallback(
+      version.versionDir,
+      educationExportBaseCandidates(),
+      `AI-education-archive-${sanitizeName(student.name)}-${timestampForFilename()}`,
+    );
+    shell.openPath(exported.path).catch(() => {});
+    return JSON.stringify({
+      ok: true,
+      path: exported.path,
+      unchanged: version.unchanged,
+      message: `完整教育档案已导出：${exported.path}`,
+    });
   } catch (error) {
     return JSON.stringify({ ok: false, message: `导出教育档案失败：${error.message}` });
+  }
+}
+
+async function exportLearningReport(studentKey, reportId, format) {
+  let printWindow = null;
+  let temporaryDir = '';
+  try {
+    const student = findStudentByKey(studentKey);
+    if (!student) return JSON.stringify({ ok: false, message: '未找到学生。' });
+    const report = LEARNING_REPORTS.find((item) => item.id === String(reportId));
+    if (!report) return JSON.stringify({ ok: false, message: '未找到报告类型。' });
+    const normalizedFormat = String(format || '').toLowerCase();
+    if (!['markdown', 'pdf'].includes(normalizedFormat)) {
+      return JSON.stringify({ ok: false, message: '学情报告仅支持 Markdown 或 PDF 格式。' });
+    }
+    const file = learningReportPathForStudent(student, report);
+    if (!fs.existsSync(file) || !fs.statSync(file).isFile()) {
+      return JSON.stringify({ ok: false, message: '当前学情报告尚未生成，请先刷新报告。' });
+    }
+    const content = fs.readFileSync(file, 'utf8');
+    const stem = safeExportStem(
+      `${sanitizeName(student.name)}-${report.title}-${timestampForFilename()}`,
+      `learning-report-${timestampForFilename()}`,
+    );
+    if (normalizedFormat === 'markdown') {
+      const exported = writeFileWithFallback(
+        educationExportBaseCandidates(),
+        stem,
+        'md',
+        Buffer.from(content, 'utf8'),
+      );
+      shell.showItemInFolder(exported.path);
+      return JSON.stringify({
+        ok: true,
+        format: normalizedFormat,
+        path: exported.path,
+        message: `学情报告 Markdown 已导出：${exported.path}`,
+      });
+    }
+
+    temporaryDir = fs.mkdtempSync(path.join(app.getPath('temp'), 'edu-learning-report-'));
+    const htmlPath = path.join(temporaryDir, 'report.html');
+    fs.writeFileSync(htmlPath, learningReportHtml({
+      studentName: student.name,
+      reportTitle: report.title,
+      markdown: content,
+      generatedAt: new Date().toLocaleString('zh-CN'),
+    }), 'utf8');
+    printWindow = new BrowserWindow({
+      show: false,
+      webPreferences: {
+        contextIsolation: true,
+        nodeIntegration: false,
+        sandbox: true,
+      },
+    });
+    await printWindow.loadFile(htmlPath);
+    await printWindow.webContents.executeJavaScript('document.fonts.ready.then(() => true)');
+    const pdf = await printWindow.webContents.printToPDF({
+      pageSize: 'A4',
+      printBackground: true,
+      preferCSSPageSize: true,
+      displayHeaderFooter: true,
+      headerTemplate: '<span></span>',
+      footerTemplate: '<div style="box-sizing:border-box;width:100%;padding:0 16mm;color:#8992a3;font-family:Microsoft YaHei,sans-serif;font-size:8px;text-align:center;">AI 教育管家 · Robogala　<span class="pageNumber"></span> / <span class="totalPages"></span></div>',
+    });
+    const exported = writeFileWithFallback(
+      educationExportBaseCandidates(),
+      stem,
+      'pdf',
+      pdf,
+    );
+    shell.showItemInFolder(exported.path);
+    return JSON.stringify({
+      ok: true,
+      format: normalizedFormat,
+      path: exported.path,
+      message: `学情报告 PDF 已导出：${exported.path}`,
+    });
+  } catch (error) {
+    return JSON.stringify({ ok: false, message: `导出学情报告失败：${error.message}` });
+  } finally {
+    if (printWindow && !printWindow.isDestroyed()) printWindow.destroy();
+    if (temporaryDir && fs.existsSync(temporaryDir)) {
+      try { fs.rmSync(temporaryDir, { recursive: true, force: true }); } catch {}
+    }
   }
 }
 
@@ -20169,6 +20510,66 @@ function handleStudents(request, response) {
   });
 }
 
+function handleStudentCourses(request, response, studentId) {
+  if (!requireStudentAccess(request, response, studentId)) return;
+  const student = findStudentByKey(studentId);
+  if (!student) {
+    sendJson(response, 404, { ok: false, message: '未找到当前学生。' });
+    return;
+  }
+  const state = courseCatalogStore().state();
+  const courses = courseCatalogStore().coursesForStudent(student)
+    .filter(courseAllowedByCurrentPlan)
+    .map((course) => ({
+      ...course,
+      coverUrl: `/api/course-assets/${encodeURIComponent(path.basename(course.coverAsset))}`,
+    }));
+  sendJson(response, 200, {
+    ok: true,
+    schemaVersion: 1,
+    catalogVersion: state.catalog?.catalogVersion || '',
+    studentId: String(student.id),
+    courses,
+    disclaimer: '打开第三方课程或采集屏幕资料不代表课程完成、正确率或学情结论。',
+  });
+}
+
+function handleCourseAsset(response, assetName) {
+  const filePath = courseCatalogStore().assetPathByFilename(assetName);
+  if (!filePath) {
+    sendJson(response, 404, { ok: false, message: '课程封面不存在。' });
+    return;
+  }
+  const extension = path.extname(filePath).toLowerCase();
+  const contentType = extension === '.png' ? 'image/png' : extension === '.webp' ? 'image/webp' : 'image/jpeg';
+  response.writeHead(200, {
+    'Content-Type': contentType,
+    'Content-Length': fs.statSync(filePath).size,
+    'Cache-Control': 'public, max-age=86400, immutable',
+    'Content-Security-Policy': "default-src 'none'",
+    'X-Content-Type-Options': 'nosniff',
+  });
+  fs.createReadStream(filePath).pipe(response);
+}
+
+function courseUploadAttribution(url, student) {
+  const courseId = String(url?.searchParams?.get('courseId') || '').trim();
+  if (!courseId) return {};
+  const course = courseCatalogStore().findCourse(courseId, student);
+  if (!course) throw new Error('课程已下架、未分配给当前学生或目录版本无效。');
+  if (!courseAllowedByCurrentPlan(course)) throw new Error('当前授权不能使用机构自选课程。');
+  const requestedUrl = String(url?.searchParams?.get('courseUrl') || course.url).trim();
+  const navigation = safeCourseNavigation(requestedUrl, course.allowedHosts);
+  if (!navigation.ok) throw new Error(navigation.message);
+  return {
+    courseId: course.courseId,
+    courseProvider: course.provider,
+    courseUrl: navigation.url,
+    courseStartedAt: String(url?.searchParams?.get('courseStartedAt') || '').slice(0, 80),
+    courseCompletedAt: String(url?.searchParams?.get('courseCompletedAt') || '').slice(0, 80),
+  };
+}
+
 function projectAllowed(request, project) {
   if (!request.authContext || request.authContext.type === 'admin') return true;
   if (request.authContext.type === 'device' && request.authContext.terminalMode === 'shared') return false;
@@ -20239,6 +20640,7 @@ async function handleProjectMaterialUpload(request, response, projectId, url) {
     return;
   }
   try {
+    const courseAttribution = courseUploadAttribution(url, student);
     const ensured = ensureProjectWorkspace(project);
     const contentType = String(request.headers['content-type'] || '');
     const multipart = /multipart\/form-data/i.test(contentType);
@@ -20285,6 +20687,7 @@ async function handleProjectMaterialUpload(request, response, projectId, url) {
         sourceType: url?.searchParams?.get('sourceType') || 'remote_upload',
         captureSessionId: url?.searchParams?.get('captureSessionId') || '',
         captureItemId: url?.searchParams?.get('captureItemId') || '',
+        ...courseAttribution,
         role: 'project_raw',
         uploadedAt: new Date().toISOString(),
         referenceId: uploadId || `${ensured.id}-${Date.now()}-${crypto.randomBytes(3).toString('hex')}`,
@@ -20564,6 +20967,7 @@ async function handleMaterialUpload(request, response, studentId, url) {
   const rawPath = student.rawPath || getRawDir(student.name);
   fs.mkdirSync(rawPath, { recursive: true });
   try {
+    const courseAttribution = courseUploadAttribution(url, student);
     const contentType = String(request.headers['content-type'] || '');
     const uploadId = String(url.searchParams.get('uploadId') || request.headers['x-upload-id'] || '').trim().slice(0, 180);
     const existingUpload = uploadId ? readUploadRecords().find((record) => String(record.uploadId || '') === uploadId && String(record.studentId) === String(studentId)) : null;
@@ -20618,6 +21022,7 @@ async function handleMaterialUpload(request, response, studentId, url) {
       sourceType: url.searchParams.get('sourceType') || 'remote_upload',
       captureSessionId: url.searchParams.get('captureSessionId') || '',
       captureItemId: url.searchParams.get('captureItemId') || '',
+      ...courseAttribution,
       uploadId,
       uploadedAt: new Date().toISOString(),
     })));
@@ -21577,6 +21982,11 @@ function handleHostRequest(request, response) {
     handleHealth(request, response);
     return;
   }
+  const courseAssetMatch = pathname.match(/^\/api\/course-assets\/([^/]+)$/);
+  if (request.method === 'GET' && courseAssetMatch) {
+    handleCourseAsset(response, courseAssetMatch[1]);
+    return;
+  }
   if (request.method === 'POST' && pathname === '/api/pair/confirm') {
     handlePairConfirm(request, response);
     return;
@@ -21683,6 +22093,11 @@ function handleHostRequest(request, response) {
   const materialMatch = pathname.match(/^\/api\/students\/([^/]+)\/materials$/);
   if (request.method === 'POST' && materialMatch) {
     handleMaterialUpload(request, response, materialMatch[1], url);
+    return;
+  }
+  const studentCoursesMatch = pathname.match(/^\/api\/students\/([^/]+)\/courses$/);
+  if (request.method === 'GET' && studentCoursesMatch) {
+    handleStudentCourses(request, response, studentCoursesMatch[1]);
     return;
   }
   const reportsMatch = pathname.match(/^\/api\/students\/([^/]+)\/reports$/);
@@ -22121,6 +22536,7 @@ ipcMain.on('bridge:readLearningReport', (event, studentId, reportId) => { event.
 ipcMain.on('bridge:getLearningReportEvidence', (event, studentId, reportId) => { event.returnValue = getLearningReportEvidence(studentId, reportId); });
 ipcMain.on('bridge:openLearningReportEvidenceSource', (event, studentId, reportId, evidenceId, sourceIndex) => { event.returnValue = openLearningReportEvidenceSource(studentId, reportId, evidenceId, sourceIndex); });
 ipcMain.on('bridge:exportEducationArchive', (event, studentId) => { licensedIpc(event, '完整教育档案导出', () => exportEducationArchive(studentId)); });
+ipcMain.handle('bridge:exportLearningReport', (_event, studentId, reportId, format) => licensedInvoke('学情报告导出', () => exportLearningReport(studentId, reportId, format)));
 ipcMain.on('bridge:ensureLearningReports', (event, studentId) => { licensedIpc(event, '学情报告模板补建', () => ensureLearningReports(studentId)); });
 ipcMain.on('bridge:ensureGrowthModel', (event, studentId) => { licensedIpc(event, '成长模型补建', () => ensureGrowthModel(studentId)); });
 ipcMain.on('bridge:getGrowthEvidenceReview', (event, studentId) => { event.returnValue = getGrowthEvidenceReview(studentId); });
@@ -22252,6 +22668,17 @@ ipcMain.on('bridge:setHostDeviceAccessMode', (event, deviceId, optionsJson) => {
 ipcMain.on('bridge:setHostDeviceTerminalMode', (event, deviceId, terminalMode, boundStudentId) => {
   licensedIpc(event, '终端使用模式设置', () => setHostDeviceTerminalMode(deviceId, terminalMode, boundStudentId));
 });
+ipcMain.on('bridge:getCourseCatalogState', (event) => { event.returnValue = getCourseCatalogState(); });
+ipcMain.on('bridge:saveCourseInstitutionPolicy', (event, policyJson) => {
+  licensedIpc(event, '精选课程机构设置', () => saveCourseInstitutionPolicy(policyJson));
+});
+ipcMain.on('bridge:importOfflineCourseCatalog', (event) => {
+  licensedIpc(event, '导入离线课程目录', () => importOfflineCourseCatalog());
+});
+ipcMain.handle('bridge:exportCustomCourseTemplate', async () => exportCustomCourseTemplate());
+ipcMain.handle('bridge:importCustomCourseExcel', async () => importCustomCourseExcel());
+ipcMain.on('bridge:openCourseView', (event, courseId) => { event.returnValue = openCourseView(courseId); });
+ipcMain.on('bridge:closeCourseView', (event) => { event.returnValue = closeCourseView(); });
 ipcMain.on('bridge:getCaptureCenterState', (event) => { event.returnValue = getCaptureCenterState(); });
 ipcMain.on('bridge:openCaptureInbox', (event, sessionId) => { event.returnValue = openCaptureInbox(sessionId); });
 ipcMain.handle('bridge:listCaptureSources', async () => listCaptureSources());

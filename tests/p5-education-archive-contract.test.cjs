@@ -17,12 +17,22 @@ test('growth and formal report changes coalesce into an idempotent archive versi
 
 test('one ordinary action exports a portable Markdown and JSON archive', () => {
   assert.match(main, /function exportEducationArchive\(studentKey\)/);
-  assert.match(main, /fs\.cpSync\(version\.versionDir, target/);
+  assert.match(main, /exportDirectoryWithFallback\(/);
   assert.match(main, /bridge:exportEducationArchive/);
   assert.match(preload, /exportEducationArchive\(studentId\)/);
   assert.match(ui, /导出完整档案/);
   assert.match(ui, /exportSelectedEducationArchive/);
   assert.doesNotMatch(main, /education-archive[\s\S]{0,300}pdf/iu);
+});
+
+test('a selected learning report exports to Markdown or PDF', () => {
+  assert.match(main, /async function exportLearningReport\(studentKey, reportId, format\)/);
+  assert.match(main, /printToPDF\(/);
+  assert.match(main, /writeFileWithFallback\(/);
+  assert.match(main, /bridge:exportLearningReport/);
+  assert.match(preload, /exportLearningReport\(studentId, reportId, format\)/);
+  assert.match(ui, /导出 Markdown/);
+  assert.match(ui, /导出 PDF/);
 });
 
 test('host backup and restore carry compatible education archive snapshots', () => {

@@ -405,6 +405,9 @@ contextBridge.exposeInMainWorld('AndroidBridge', {
   exportEducationArchive(studentId) {
     return ipcRenderer.sendSync('bridge:exportEducationArchive', studentId);
   },
+  exportLearningReport(studentId, reportId, format) {
+    return ipcRenderer.invoke('bridge:exportLearningReport', studentId, reportId, format);
+  },
   ensureLearningReports(studentId) {
     return ipcRenderer.sendSync('bridge:ensureLearningReports', studentId);
   },
@@ -731,5 +734,26 @@ contextBridge.exposeInMainWorld('AndroidBridge', {
   },
   setHostDeviceTerminalMode(deviceId, terminalMode, boundStudentId) {
     return ipcRenderer.sendSync('bridge:setHostDeviceTerminalMode', deviceId, terminalMode, boundStudentId);
+  },
+  getCourseCatalogState() {
+    return ipcRenderer.sendSync('bridge:getCourseCatalogState');
+  },
+  saveCourseInstitutionPolicy(policyJson) {
+    return ipcRenderer.sendSync('bridge:saveCourseInstitutionPolicy', policyJson);
+  },
+  importOfflineCourseCatalog() {
+    return ipcRenderer.sendSync('bridge:importOfflineCourseCatalog');
+  },
+  exportCustomCourseTemplate() {
+    return ipcRenderer.invoke('bridge:exportCustomCourseTemplate');
+  },
+  importCustomCourseExcel() {
+    return ipcRenderer.invoke('bridge:importCustomCourseExcel');
+  },
+  openCourseView(courseId) {
+    return ipcRenderer.sendSync('bridge:openCourseView', courseId);
+  },
+  closeCourseView() {
+    return ipcRenderer.sendSync('bridge:closeCourseView');
   },
 });

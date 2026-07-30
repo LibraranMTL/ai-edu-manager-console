@@ -20,7 +20,9 @@ type TerminalConfig = {
   autoDelivery?: { enabled?: boolean; folder?: string; target?: UploadTarget | null };
 };
 type CaptureSource = { id: string; name: string; type: 'screen' | 'window' };
-type CaptureSession = { id: string; status: string; sourceName: string; count: number; files: string[]; target?: UploadTarget };
+type CaptureSession = { id: string; status: string; sourceName: string; count: number; files: string[]; target?: UploadTarget; courseId?: string; courseProvider?: string; courseUrl?: string; courseStartedAt?: string; courseCompletedAt?: string };
+type Course = { courseId: string; name: string; provider: string; url: string; allowedHosts: string[]; coverUrl: string; summary: string; gradeRange: string[]; languages: string[]; accountRequirement: string; legalNotice: string };
+type CourseCatalogResponse = { ok: boolean; catalogVersion?: string; studentId?: string; courses?: Course[]; disclaimer?: string };
 type Progress = { status: string; current?: number; total?: number; filename?: string; success?: number; failed?: number; pending?: number; delivered?: number };
 type LearningReport = { id: string; title: string; summary?: string; updatedAt?: string; status?: string };
 type ArchiveFile = { path: string; name?: string };
@@ -76,13 +78,17 @@ type TerminalBridge = {
   readArchiveFile: (relativePath: string) => Promise<{ path?: string; content?: string }>;
   listProjectKnowledgeFiles: (projectId: string) => Promise<{ projectId?: string; projectName?: string; files?: ArchiveFile[] }>;
   readProjectKnowledgeFile: (projectId: string, relativePath: string) => Promise<{ projectId?: string; projectName?: string; path?: string; content?: string }>;
+  listCourses: () => Promise<CourseCatalogResponse>;
+  openCourse: (courseId: string) => Promise<{ ok: boolean; open?: boolean; course?: Course; message?: string }>;
+  closeCourse: () => Promise<{ ok: boolean; open?: boolean }>;
   listCaptureSources: () => Promise<CaptureSource[]>;
   startCapture: (input: Record<string, unknown>) => Promise<CaptureSession>;
   stopCapture: () => Promise<CaptureSession | null>;
-  uploadCapture: (input: { files: string[]; target: UploadTarget; captureSessionId: string }) => Promise<{ success?: number; failed?: number; total?: number }>;
+  uploadCapture: (input: { files: string[]; target: UploadTarget; captureSessionId: string; courseId?: string; courseUrl?: string; courseStartedAt?: string; courseCompletedAt?: string }) => Promise<{ success?: number; failed?: number; total?: number }>;
   onUploadProgress: (handler: (payload: Progress) => void) => void;
   onAutoDelivery: (handler: (payload: Progress) => void) => void;
   onCaptureChanged: (handler: (payload: CaptureSession) => void) => void;
+  onCourseBrowserChanged: (handler: (payload: { open: boolean; courseId?: string; name?: string; blocked?: boolean; message?: string }) => void) => void;
   onPairingChanged: (handler: (payload: { state: PairingState; config: TerminalConfig }) => void) => () => void;
 };
 
@@ -233,6 +239,10 @@ function TerminalApp() {
   const [pairingBusy, setPairingBusy] = useState(false);
   const [tailscaleStatus, setTailscaleStatus] = useState<TailscaleStatus | null>(null);
   const [tailscaleBusy, setTailscaleBusy] = useState(false);
+  const [courses, setCourses] = useState<Course[]>([]);
+  const [courseCatalogVersion, setCourseCatalogVersion] = useState('');
+  const [courseDisclaimer, setCourseDisclaimer] = useState('');
+  const [courseBrowser, setCourseBrowser] = useState<{ open: boolean; courseId?: string; name?: string }>({ open: false });
 
   const selectedStudent = useMemo(
     () => students.find((student) => student.id === selectedStudentId) || null,
@@ -287,10 +297,28 @@ function TerminalApp() {
     setMessage(state.message || (firstStudentId ? `已进入 ${state.students[0]?.name} 的学习空间。` : '请扫码或输入个人 ID。'));
   };
 
+  const loadCourses = async () => {
+    if (!api) return;
+    try {
+      const payload = await api.listCourses();
+      setCourses(payload.courses || []);
+      setCourseCatalogVersion(payload.catalogVersion || '');
+      setCourseDisclaimer(payload.disclaimer || '');
+    } catch (error) {
+      setCourses([]);
+      setCourseDisclaimer('');
+      setMessage(`精选课程暂不可用：${(error as Error).message}`);
+    }
+  };
+
   const refresh = async () => {
     if (!api) return;
     setBusy(true);
-    try { applyRemoteState(await api.loadState()); }
+    try {
+      const state = await api.loadState();
+      applyRemoteState(state);
+      if (!state.requiresLogin && state.students?.[0]?.id) void loadCourses();
+    }
     catch (error) { setMessage(`读取主机失败：${(error as Error).message}`); }
     finally { setBusy(false); }
   };
@@ -310,6 +338,10 @@ function TerminalApp() {
     api.onUploadProgress(setUploadProgress);
     api.onAutoDelivery(setAutoProgress);
     api.onCaptureChanged(setCaptureSession);
+    api.onCourseBrowserChanged((payload) => {
+      setCourseBrowser({ open: payload.open, courseId: payload.courseId, name: payload.name });
+      if (payload.blocked) setMessage(payload.message || '已阻止课程页面跳转到非白名单域名。');
+    });
     return api.onPairingChanged((payload) => {
       setPairingState(payload.state);
       setConfig(payload.config);
@@ -319,6 +351,8 @@ function TerminalApp() {
   }, [api]);
 
   useEffect(() => {
+    setCourses([]);
+    setCourseBrowser({ open: false });
     setSelectedKnowledgeProjectId('');
     setProjectKnowledgeFiles([]);
     setDocumentTitle('');
@@ -706,6 +740,27 @@ function TerminalApp() {
     }
   };
 
+  const openCourse = async (course: Course) => {
+    if (!api) return;
+    setBusy(true);
+    try {
+      const result = await api.openCourse(course.courseId);
+      if (!result.ok) throw new Error(result.message || '课程暂不可用。');
+      setCourseBrowser({ open: true, courseId: course.courseId, name: course.name });
+      setMessage(`已在隔离浏览器中打开 ${course.name}。课程内容由 ${course.provider} 提供。`);
+    } catch (error) {
+      setMessage(`打开课程失败：${(error as Error).message}`);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const closeCourse = async () => {
+    if (!api) return;
+    await api.closeCourse();
+    setCourseBrowser({ open: false });
+  };
+
   const toggleCapture = async () => {
     if (!api || !selectedTarget) return;
     setBusy(true);
@@ -744,7 +799,15 @@ function TerminalApp() {
     if (!api || !selectedTarget || !captureSession?.files?.length) return;
     setBusy(true);
     try {
-      const result = await api.uploadCapture({ files: captureSession.files, target: selectedTarget, captureSessionId: captureSession.id });
+      const result = await api.uploadCapture({
+        files: captureSession.files,
+        target: selectedTarget,
+        captureSessionId: captureSession.id,
+        courseId: captureSession.courseId,
+        courseUrl: captureSession.courseUrl,
+        courseStartedAt: captureSession.courseStartedAt,
+        courseCompletedAt: captureSession.courseCompletedAt,
+      });
       setMessage(`采集资料上传完成：成功 ${result.success || 0} 张，失败 ${result.failed || 0} 张，已送达${selectedTarget.name}。`);
       await refresh();
     } catch (error) {
@@ -856,6 +919,40 @@ function TerminalApp() {
     );
   }
 
+  if (courseBrowser.open) {
+    const openedCourse = courses.find((course) => course.courseId === courseBrowser.courseId);
+    const captureState = captureSession?.status === 'capturing'
+      ? `采集中 · ${captureSession.count} 张`
+      : captureSession?.status === 'completed' && captureSession.courseId === openedCourse?.courseId
+        ? `已完成 · ${captureSession.count} 张待确认`
+        : '待开始 · 不会自动录屏';
+    return (
+      <main className="terminal-shell terminal-course-shell">
+        <header className="terminal-topbar">
+          <div><div className="terminal-brand">精选课程</div><h1>{openedCourse?.name || courseBrowser.name}</h1></div>
+          <div className="terminal-host-state"><span className="online-dot" />{openedCourse?.provider || '第三方提供方'}<button onClick={closeCourse}>返回课程列表</button></div>
+        </header>
+        <section className="terminal-course-toolbar" aria-label="课程浏览与主动采集控制">
+          <strong>{captureState}</strong>
+          <select value={selectedTarget ? targetKey(selectedTarget) : ''} onChange={(event) => setSelectedTargetKey(event.target.value)} disabled={captureSession?.status === 'capturing'}>
+            {targets.map((target) => <option value={targetKey(target)} key={targetKey(target)}>{target.name}</option>)}
+          </select>
+          <button className="terminal-secondary" onClick={loadCaptureSources} disabled={busy || captureSession?.status === 'capturing'}>选择采集屏幕</button>
+          <select value={captureSourceId} onChange={(event) => setCaptureSourceId(event.target.value)} disabled={captureSession?.status === 'capturing'}>
+            <option value="">选择屏幕或窗口</option>
+            {captureSources.map((source) => <option value={source.id} key={source.id}>{source.name}</option>)}
+          </select>
+          <button className={captureSession?.status === 'capturing' ? 'terminal-danger' : 'terminal-primary'} onClick={toggleCapture} disabled={busy || !selectedTarget}>
+            {captureSession?.status === 'capturing' ? '结束采集' : '开始采集'}
+          </button>
+          <button className="terminal-secondary" onClick={uploadCapture} disabled={busy || captureSession?.status !== 'completed' || captureSession.courseId !== openedCourse?.courseId || !captureSession.files?.length}>确认入库</button>
+        </section>
+        <div className="terminal-course-browser-placeholder">课程网页在隔离视图中加载。非白名单跳转、下载、弹窗和权限申请会被阻止。</div>
+        {message ? <div className="terminal-toast" role="status">{message}</div> : null}
+      </main>
+    );
+  }
+
   return (
     <main className="terminal-shell">
       <header className="terminal-topbar">
@@ -889,6 +986,24 @@ function TerminalApp() {
         <div><span>已完成知识化</span><strong>{knowledgeAssetCount}</strong><small>已消化资料数</small></div>
         <div><span>近 7 天新增</span><strong>{recentUploadCount7}</strong><small>{recentTrend > 0 ? `比前 7 天多 ${recentTrend}` : recentTrend < 0 ? `比前 7 天少 ${Math.abs(recentTrend)}` : '与前 7 天持平'}</small></div>
         <div><span>近 30 天频率</span><strong>{activeDays30} 天</strong><small>{newSinceLastDigestCount} 份等待或新增整理</small></div>
+      </section>
+
+      <section className="terminal-course-section" aria-label="当前学生精选课程">
+        <div className="card-heading">
+          <div><span className="eyebrow">当前学生有效目录</span><h2>精选课程</h2><p>{courseDisclaimer || '课程由第三方提供；教育管家负责安全访问入口与用户主动资料采集。'}</p></div>
+          <small>{courseCatalogVersion ? `目录 ${courseCatalogVersion}` : '等待主机目录'}</small>
+        </div>
+        <div className="terminal-course-grid">
+          {courses.map((course) => (
+            <article className="terminal-course-card" key={course.courseId}>
+              <img src={`${config.hostUrl}${course.coverUrl}`} alt="" />
+              <div><span>{course.provider}</span><h3>{course.name}</h3><p>{course.summary}</p><small>{course.accountRequirement}</small></div>
+              <button className="terminal-primary" onClick={() => openCourse(course)} disabled={busy}>打开课程</button>
+              <details><summary>提供方与法律声明</summary><p>{course.legalNotice}</p></details>
+            </article>
+          ))}
+          {courses.length === 0 ? <div className="terminal-empty-state">当前学生没有已分配且有效的精选课程。</div> : null}
+        </div>
       </section>
 
       <section className="terminal-card target-card">

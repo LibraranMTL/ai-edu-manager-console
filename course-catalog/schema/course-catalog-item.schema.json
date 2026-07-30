@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://robogala.cn/schemas/course-catalog-item.v1.json",
+  "title": "CourseCatalogItem",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["courseId", "type", "name", "provider", "url", "allowedHosts", "coverAsset", "summary", "subjects", "gradeRange", "languages", "accountRequirement", "effectiveAt", "expiresAt", "legalNotice", "status"],
+  "properties": {
+    "courseId": { "type": "string", "pattern": "^(platform|tenant):[a-z0-9][a-z0-9-]{2,120}$" },
+    "type": { "enum": ["platform_standard", "tenant_custom"] },
+    "name": { "type": "string", "minLength": 1, "maxLength": 120 },
+    "provider": { "type": "string", "minLength": 1, "maxLength": 120 },
+    "url": { "type": "string", "format": "uri", "pattern": "^https://" },
+    "allowedHosts": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "type": "string", "pattern": "^[a-z0-9.-]+$" } },
+    "coverAsset": { "type": "string", "minLength": 1, "maxLength": 240 },
+    "summary": { "type": "string", "minLength": 1, "maxLength": 1200 },
+    "subjects": { "type": "array", "uniqueItems": true, "items": { "type": "string", "maxLength": 80 } },
+    "gradeRange": { "type": "array", "uniqueItems": true, "items": { "type": "string", "maxLength": 40 } },
+    "languages": { "type": "array", "uniqueItems": true, "items": { "type": "string", "maxLength": 20 } },
+    "accountRequirement": { "type": "string", "maxLength": 240 },
+    "effectiveAt": { "type": "string", "format": "date-time" },
+    "expiresAt": { "type": ["string", "null"], "format": "date-time" },
+    "legalNotice": { "type": "string", "minLength": 1, "maxLength": 1600 },
+    "status": { "enum": ["active", "withdrawn"] }
+  }
+}

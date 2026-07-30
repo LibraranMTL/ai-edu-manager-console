@@ -66,6 +66,10 @@ function buildTargetUploadPath(target, filename, metadata = {}) {
   if (metadata.uploadId) params.set('uploadId', String(metadata.uploadId));
   if (metadata.captureSessionId) params.set('captureSessionId', String(metadata.captureSessionId));
   if (metadata.captureItemId) params.set('captureItemId', String(metadata.captureItemId));
+  if (metadata.courseId) params.set('courseId', String(metadata.courseId));
+  if (metadata.courseUrl) params.set('courseUrl', String(metadata.courseUrl));
+  if (metadata.courseStartedAt) params.set('courseStartedAt', String(metadata.courseStartedAt));
+  if (metadata.courseCompletedAt) params.set('courseCompletedAt', String(metadata.courseCompletedAt));
   if (normalized.type === 'project') {
     if (normalized.studentId) params.set('studentId', normalized.studentId);
     return `/api/projects/${encodeURIComponent(normalized.id)}/materials?${params.toString()}`;

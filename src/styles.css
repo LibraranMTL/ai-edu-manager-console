@@ -291,6 +291,10 @@ button:disabled {
   font-size: 14px;
 }
 
+.course-sub-nav-list .nav-item:disabled {
+  cursor: not-allowed;
+}
+
 .student-rail {
   display: flex;
   flex: 1;
@@ -902,6 +906,51 @@ h2 {
   .pair-v2-columns {
     grid-template-columns: 1fr;
   }
+}
+
+.course-catalog-page { display: grid; gap: 18px; }
+.course-catalog-hero { display: flex; align-items: flex-start; justify-content: space-between; gap: 24px; background: linear-gradient(145deg, color-mix(in srgb, var(--panel) 92%, #dff5ed), var(--panel)); }
+.course-catalog-hero h2 { margin: 6px 0 10px; }
+.course-catalog-hero p { max-width: 780px; line-height: 1.7; }
+.course-catalog-status { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; color: var(--muted); }
+.course-custom-import-panel { display: flex; align-items: center; justify-content: space-between; gap: 20px; background: color-mix(in srgb, var(--accent) 7%, var(--panel)); }
+.course-custom-import-panel h3 { margin: 5px 0 6px; }
+.course-custom-import-panel p { margin: 0; max-width: 840px; color: var(--muted); line-height: 1.65; }
+.course-learning-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 18px; }
+.course-learning-card { display: grid; grid-template-columns: 128px minmax(0, 1fr); gap: 18px; align-items: start; }
+.course-learning-card > img { width: 128px; height: 128px; object-fit: cover; border-radius: 18px; background: color-mix(in srgb, var(--accent) 8%, var(--panel)); }
+.course-learning-main { display: grid; gap: 9px; min-width: 0; }
+.course-learning-main h3, .course-learning-main p { margin: 0; }
+.course-learning-main p, .course-learning-main small { color: var(--muted); line-height: 1.6; }
+.course-learning-main .course-source-badge { width: fit-content; margin-bottom: 0; }
+.course-learning-main > button { width: fit-content; margin-top: 2px; }
+.course-learning-meta { display: flex; flex-wrap: wrap; gap: 8px; color: var(--muted); font-size: 12px; }
+.course-learning-meta span { padding: 5px 8px; border-radius: 999px; background: color-mix(in srgb, var(--accent) 7%, var(--panel)); }
+.course-admin-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(420px, 1fr)); gap: 18px; }
+.course-admin-card { display: grid; grid-template-columns: 150px minmax(0, 1fr); gap: 20px; }
+.course-admin-card > img { width: 150px; height: 150px; object-fit: cover; border-radius: 18px; background: color-mix(in srgb, var(--accent) 8%, var(--panel)); }
+.course-admin-main h3 { margin: 5px 0 8px; }
+.course-admin-main p, .course-admin-main small { color: var(--muted); line-height: 1.6; }
+.course-admin-main details { margin-top: 12px; color: var(--muted); }
+.course-admin-main code { display: block; overflow-wrap: anywhere; white-space: normal; }
+.course-source-badge { display: inline-flex; margin-bottom: 8px; padding: 4px 9px; border-radius: 999px; background: color-mix(in srgb, var(--accent) 12%, var(--panel)); color: var(--accent-dark); font-size: 12px; font-weight: 800; }
+.course-policy-controls { grid-column: 1 / -1; display: grid; gap: 12px; padding-top: 16px; border-top: 1px solid var(--line); }
+.course-policy-controls > label:not(.switch-row) { display: grid; gap: 6px; }
+.course-policy-controls fieldset { display: grid; gap: 8px; padding: 12px; border: 1px solid var(--line); border-radius: 14px; }
+.course-policy-controls legend { padding: 0 6px; color: var(--muted); font-weight: 700; }
+.course-student-check { display: flex; align-items: center; gap: 8px; }
+.course-student-check input { width: 18px; height: 18px; }
+.course-browser-guard { display: flex; align-items: center; gap: 10px; min-height: 64px; color: var(--muted); }
+
+@media (max-width: 760px) {
+  .course-catalog-hero { flex-direction: column; }
+  .course-custom-import-panel { align-items: flex-start; flex-direction: column; }
+  .course-learning-grid { grid-template-columns: 1fr; }
+  .course-learning-card { grid-template-columns: 1fr; }
+  .course-learning-card > img { width: 100%; height: 220px; }
+  .course-admin-grid { grid-template-columns: 1fr; }
+  .course-admin-card { grid-template-columns: 1fr; }
+  .course-admin-card > img { width: 100%; height: 220px; }
 }
 
 .checklist-title,

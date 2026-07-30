@@ -40,6 +40,15 @@
     .feature-tags span { padding: 7px 11px; border-radius: 5px; background: white; border: 1px solid var(--line); font-weight: 700; }
     .feature-media { padding: 42px; background: white; }
     .feature-media img { width: 100%; max-height: 560px; object-fit: contain; }
+    .collaboration { background: #eff8ff; }
+    .collaboration-head { max-width: 820px; }
+    .collaboration-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; margin-top: 38px; }
+    .collaboration-card { padding: 28px; border: 1px solid #cfe2f3; border-radius: 10px; background: rgba(255,255,255,.9); box-shadow: 0 14px 36px rgba(31,82,122,.07); }
+    .collaboration-card span { display: inline-flex; padding: 4px 9px; border-radius: 999px; color: #245d8c; background: #e1f0fb; font-size: 13px; font-weight: 900; }
+    .collaboration-card h3 { margin: 13px 0 8px; font-size: 23px; }
+    .collaboration-card p { margin: 0; color: var(--muted); }
+    .collaboration-boundary { margin: 22px 0 0; padding: 18px 20px; border-left: 5px solid var(--blue); background: white; color: #365c59; }
+    .collaboration-actions { margin-top: 24px; }
     .cta { background: var(--green-dark); color: white; }
     .cta-inner { display: flex; align-items: center; justify-content: space-between; gap: 32px; }
     .cta h2 { margin: 0; font-size: clamp(34px, 4vw, 52px); }
@@ -59,6 +68,8 @@
       .feature-band:nth-child(even) .feature-copy, .feature-band:nth-child(even) .feature-media { order: initial; }
       .feature-copy { padding: 44px 20px 26px; }
       .feature-media { padding: 20px; }
+      .collaboration-grid { grid-template-columns: 1fr; }
+      .collaboration-card { padding: 23px; }
       .cta-inner { align-items: flex-start; flex-direction: column; }
     }
   </style>
@@ -101,6 +112,24 @@
         <article class="feature-band"><div class="feature-copy"><span class="feature-number">03 / 精准辅导</span><h2>AI学伴给出下一步</h2><p>基于学生档案生成更有针对性的问答、复习重点与行动建议，把一次性回答变成持续学习支持。</p><div class="feature-tags"><span>个性化问答</span><span>行动建议</span><span>知识沉淀</span></div></div><div class="feature-media"><img src="assets/feature-05.png" alt="AI学伴精准辅导"></div></article>
         <article class="feature-band"><div class="feature-copy"><span class="feature-number">04 / 长期陪跑</span><h2>真人管家与AI协同陪伴</h2><p>AI负责持续整理与分析，真人学习管家关注目标、反馈与执行，让家庭获得更稳定的学习支持。</p><div class="feature-tags"><span>目标跟进</span><span>阶段复盘</span><span>家校沟通</span></div></div><div class="feature-media"><img src="assets/feature-06.png" alt="真人学习管家陪跑"></div></article>
         <article class="feature-band"><div class="feature-copy"><span class="feature-number">05 / 项目制学习</span><h2>把学习项目沉淀为长期资产</h2><p>项目工作空间服务真实学习过程，项目知识空间沉淀概念、实体、摘要与成果，连接学生的长期成长模型。</p><div class="feature-tags"><span>项目空间</span><span>知识整理</span><span>成长证据</span></div></div><div class="feature-media"><img src="assets/feature-11.png" alt="项目制学习"></div></article>
+      </div>
+    </section>
+
+    <section class="section collaboration" aria-labelledby="collaboration-title">
+      <div class="container">
+        <div class="collaboration-head">
+          <p class="section-kicker">完整 Windows 主机 · 知识协作</p>
+          <h2 id="collaboration-title" class="section-title">跨主机知识协作，保留清晰的学生范围与来源</h2>
+          <p class="section-intro">两台已经建立知识协作关系的 Windows 主机，可以定向发布项目、交换任务，并在授权范围内查询本机或远程知识。</p>
+        </div>
+        <div class="collaboration-grid">
+          <article class="collaboration-card"><span>01 / 知识查询</span><h3>本地优先，远程按需</h3><p>本机没有命中时才访问协作主机；局域网不可达时尝试 Tailscale，对方离线时明确显示快照时间或等待状态。</p></article>
+          <article class="collaboration-card"><span>02 / 团队范围</span><h3>长期权限开关控制范围</h3><p>本机团队和远程协作团队分别授权；学生终端始终只读取当前登录学生及其有效关联项目。</p></article>
+          <article class="collaboration-card"><span>03 / 对话沉淀</span><h3>用户明确要求后才保存</h3><p>QClaw 或 Codex 的当前或选定对话可以投递为可追溯知识候选，不会后台抓取 Agent 的全部私有历史。</p></article>
+          <article class="collaboration-card"><span>04 / 成果协同</span><h3>确认成果与原始资料分开</h3><p>已确认知识、成长模型、已发布报告和完整档案使用成果通道；原始资料通过上传、投递或项目发布交付。</p></article>
+        </div>
+        <p class="collaboration-boundary"><strong>重要边界：</strong>学生原始资料不自动双向同步。每台主机保留自己的原始资料权威目录，避免重复消化、大文件常驻传输和同名覆盖。</p>
+        <div class="collaboration-actions"><a class="button button-dark" href="windows-host-manual.html#section-15">查看知识协作操作说明</a></div>
       </div>
     </section>
 

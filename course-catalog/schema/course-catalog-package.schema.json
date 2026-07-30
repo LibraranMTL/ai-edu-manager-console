@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://robogala.cn/schemas/course-catalog-package.v1.json",
+  "title": "CourseCatalogPackage",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "catalogVersion", "issuedAt", "minHostVersion", "keyId", "checksum", "signature", "courses"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "catalogVersion": { "type": "string", "minLength": 1, "maxLength": 80 },
+    "issuedAt": { "type": "string", "format": "date-time" },
+    "minHostVersion": { "type": "string", "minLength": 1, "maxLength": 80 },
+    "keyId": { "type": "string", "minLength": 1, "maxLength": 120 },
+    "checksum": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "signature": { "type": "string", "minLength": 64 },
+    "courses": {
+      "type": "array",
+      "items": { "$ref": "course-catalog-item.schema.json" }
+    }
+  }
+}

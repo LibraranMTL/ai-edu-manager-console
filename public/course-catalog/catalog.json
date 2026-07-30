@@ -1,0 +1,84 @@
+{
+  "schemaVersion": 1,
+  "catalogVersion": "2026.07.30.1",
+  "issuedAt": "2026-07-30T00:00:00.000Z",
+  "minHostVersion": "0.14.0",
+  "keyId": "course-catalog-primary-2026",
+  "courses": [
+    {
+      "courseId": "platform:starfall-k5-math",
+      "type": "platform_standard",
+      "name": "美国英文小学数学",
+      "provider": "Starfall",
+      "url": "https://www.starfall.com/h/",
+      "allowedHosts": [
+        "www.starfall.com"
+      ],
+      "coverAsset": "catalog-assets/starfall-k5-math.png",
+      "summary": "面向幼儿园至小学阶段的英文数学与基础学习资源。课程页面和账号规则由第三方提供方维护。",
+      "subjects": [
+        "mathematics",
+        "english"
+      ],
+      "gradeRange": [
+        "K",
+        "1",
+        "2",
+        "3",
+        "4",
+        "5"
+      ],
+      "languages": [
+        "en"
+      ],
+      "accountRequirement": "部分内容可直接访问，账号、会员及收费要求以 Starfall 页面当时说明为准。",
+      "effectiveAt": "2026-07-30T00:00:00.000Z",
+      "expiresAt": null,
+      "legalNotice": "课程内容、商标、账号与服务条款由 Starfall 提供和管理。AI教育管家仅提供经筛选的访问入口、设备支持和用户主动发起的资料采集整理服务，与 Starfall 不构成隶属、代理或效果保证关系。",
+      "status": "active"
+    },
+    {
+      "courseId": "platform:codeorg-k12-computing",
+      "type": "platform_standard",
+      "name": "少儿计算机编程与人工智能英文课程",
+      "provider": "Code.org",
+      "url": "https://code.org/en-US",
+      "allowedHosts": [
+        "code.org",
+        "www.code.org"
+      ],
+      "coverAsset": "catalog-assets/codeorg-k12-computing.png",
+      "summary": "面向中小学生的英文计算机科学、编程与人工智能入门资源。具体课程结构由第三方提供方维护。",
+      "subjects": [
+        "computer-science",
+        "programming",
+        "artificial-intelligence"
+      ],
+      "gradeRange": [
+        "K",
+        "1",
+        "2",
+        "3",
+        "4",
+        "5",
+        "6",
+        "7",
+        "8",
+        "9",
+        "10",
+        "11",
+        "12"
+      ],
+      "languages": [
+        "en"
+      ],
+      "accountRequirement": "课程免费范围、登录方式、年龄要求及账号规则以 Code.org 页面当时说明为准。",
+      "effectiveAt": "2026-07-30T00:00:00.000Z",
+      "expiresAt": null,
+      "legalNotice": "课程内容、商标、账号与服务条款由 Code.org 提供和管理。AI教育管家仅提供经筛选的访问入口、设备支持和用户主动发起的资料采集整理服务，与 Code.org 不构成隶属、代理或学习效果保证关系。",
+      "status": "active"
+    }
+  ],
+  "checksum": "794f09dfc37aaafa188598af5c07ff1c8dea8465a1139616272126483088832c",
+  "signature": "PQeE9r9wL9Apald2ivZOPz9M0U3foPua7hc5VaDOrm+r2br6u4fpl9o6oI4TdAwW5waZWZdujliQC/DNPQMRtOg78KmqWVT8fH3N1Z0uksjQkW+zwIl3blKZ2lLkOQOEcf7XUgReQURkvsssBvw6J2UA1xEJemQZ02It6xATD8WCzerdXXR+o8wXc9iVq/qMgWkLfLYkPpBqnKxWSgeiLxT+5kVAXSyov1gdW5IXuLH75Mqa8fkQZJ79HVHpE76xywFeplLd8XctAI/zP1o/b6rByFdrtQZ0/W1pjoph+iRDm0YgMUIOnt0FvdnbLkp8rgXDu680bDphZI+hExCaVedRqMRJOvbXCJ8Hs5CMnswGJ7QfG4bj5cVtAxBG+qVEX+h/qZtBHDZp8MYQAu1w2T0uFbrli7R8BQJdK1toocFovOBoRi/TdtfrEqYmly2tLih1uTpWPYqokyuNVU4ecrH/RR/VOPk/cJrM6Zv6O2r11NZZrrO4ZqqCRFShujIu"
+}

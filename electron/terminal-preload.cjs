@@ -29,6 +29,9 @@ contextBridge.exposeInMainWorld('terminalBridge', {
   readArchiveFile: (relativePath) => ipcRenderer.invoke('terminal:read-archive-file', relativePath),
   listProjectKnowledgeFiles: (projectId) => ipcRenderer.invoke('terminal:list-project-knowledge-files', projectId),
   readProjectKnowledgeFile: (projectId, relativePath) => ipcRenderer.invoke('terminal:read-project-knowledge-file', projectId, relativePath),
+  listCourses: () => ipcRenderer.invoke('terminal:list-courses'),
+  openCourse: (courseId) => ipcRenderer.invoke('terminal:open-course', courseId),
+  closeCourse: () => ipcRenderer.invoke('terminal:close-course'),
   listCaptureSources: () => ipcRenderer.invoke('terminal:list-capture-sources'),
   startCapture: (input) => ipcRenderer.invoke('terminal:start-capture', input),
   stopCapture: () => ipcRenderer.invoke('terminal:stop-capture'),
@@ -36,6 +39,7 @@ contextBridge.exposeInMainWorld('terminalBridge', {
   onUploadProgress: (handler) => ipcRenderer.on('terminal:upload-progress', (_event, payload) => handler(payload)),
   onAutoDelivery: (handler) => ipcRenderer.on('terminal:auto-delivery', (_event, payload) => handler(payload)),
   onCaptureChanged: (handler) => ipcRenderer.on('terminal:capture-changed', (_event, payload) => handler(payload)),
+  onCourseBrowserChanged: (handler) => ipcRenderer.on('terminal:course-browser-changed', (_event, payload) => handler(payload)),
   onPairingChanged: (handler) => {
     const listener = (_event, payload) => handler(payload);
     ipcRenderer.on('terminal:pairing-changed', listener);

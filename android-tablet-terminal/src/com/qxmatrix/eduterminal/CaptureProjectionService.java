@@ -49,6 +49,11 @@ public class CaptureProjectionService extends Service {
     public static final String KEY_STUDENT_ID = "capture_student_id";
     public static final String KEY_PROJECT_ID = "capture_project_id";
     public static final String KEY_PROJECT_NAME = "capture_project_name";
+    public static final String KEY_COURSE_ID = "capture_course_id";
+    public static final String KEY_COURSE_PROVIDER = "capture_course_provider";
+    public static final String KEY_COURSE_URL = "capture_course_url";
+    public static final String KEY_COURSE_STARTED_AT = "capture_course_started_at";
+    public static final String KEY_COURSE_COMPLETED_AT = "capture_course_completed_at";
 
     private static final String CHANNEL_ID = "screen_capture";
     private static final int NOTIFICATION_ID = 5201;
@@ -82,6 +87,11 @@ public class CaptureProjectionService extends Service {
     private String studentName = "";
     private String projectId = "";
     private String projectName = "";
+    private String courseId = "";
+    private String courseProvider = "";
+    private String courseUrl = "";
+    private long courseStartedAt;
+    private long courseCompletedAt;
     private long endedAt;
     private String endReason = "";
 
@@ -124,6 +134,10 @@ public class CaptureProjectionService extends Service {
         studentName = safeExtra(intent, "student_name");
         projectId = safeExtra(intent, "project_id");
         projectName = safeExtra(intent, "project_name");
+        courseId = safeExtra(intent, "course_id");
+        courseProvider = safeExtra(intent, "course_provider");
+        courseUrl = safeExtra(intent, "course_url");
+        courseStartedAt = intent.getLongExtra("course_started_at", 0L);
         durationMs = Math.max(60000L, intent.getLongExtra("duration_ms", 30L * 60L * 1000L));
         configurePolicy(mode);
         startedAt = System.currentTimeMillis();
@@ -306,6 +320,11 @@ public class CaptureProjectionService extends Service {
             metadata.put("studentName", studentName);
             metadata.put("projectId", projectId);
             metadata.put("projectName", projectName);
+            metadata.put("courseId", courseId);
+            metadata.put("courseProvider", courseProvider);
+            metadata.put("courseUrl", courseUrl);
+            metadata.put("courseStartedAt", courseStartedAt);
+            metadata.put("courseCompletedAt", courseCompletedAt);
             FileOutputStream metadataOutput = new FileOutputStream(new File(sessionDir, name + ".json"));
             metadataOutput.write(metadata.toString(2).getBytes("UTF-8"));
             metadataOutput.close();
@@ -330,6 +349,11 @@ public class CaptureProjectionService extends Service {
         editor.putString(KEY_STUDENT_ID, studentId);
         editor.putString(KEY_PROJECT_ID, projectId);
         editor.putString(KEY_PROJECT_NAME, projectName);
+        editor.putString(KEY_COURSE_ID, courseId);
+        editor.putString(KEY_COURSE_PROVIDER, courseProvider);
+        editor.putString(KEY_COURSE_URL, courseUrl);
+        editor.putLong(KEY_COURSE_STARTED_AT, courseStartedAt);
+        editor.putLong(KEY_COURSE_COMPLETED_AT, courseCompletedAt);
         editor.apply();
         writeSessionMetadata(status);
         CaptureTileService.requestRefresh(this);
@@ -350,6 +374,11 @@ public class CaptureProjectionService extends Service {
             metadata.put("studentName", studentName);
             metadata.put("projectId", projectId);
             metadata.put("projectName", projectName);
+            metadata.put("courseId", courseId);
+            metadata.put("courseProvider", courseProvider);
+            metadata.put("courseUrl", courseUrl);
+            metadata.put("courseStartedAt", courseStartedAt);
+            metadata.put("courseCompletedAt", courseCompletedAt);
             metadata.put("mode", mode);
             metadata.put("status", status);
             metadata.put("startedAt", startedAt);
@@ -443,6 +472,7 @@ public class CaptureProjectionService extends Service {
         if (lastFrame != null) lastFrame.recycle();
         lastFrame = null;
         endedAt = System.currentTimeMillis();
+        courseCompletedAt = courseId.length() == 0 ? 0L : endedAt;
         endReason = reason == null ? "" : reason;
         saveState("completed");
         getSharedPreferences(PREFS, MODE_PRIVATE).edit().putString("end_reason", endReason).apply();

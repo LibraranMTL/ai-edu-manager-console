@@ -1,0 +1,23 @@
+{
+  "reviewedAt": "2026-07-30T08:00:00.000Z",
+  "releaseBlockedUntilRightsConfirmed": true,
+  "items": [
+    {
+      "courseId": "platform:starfall-k5-math",
+      "provider": "Starfall",
+      "sourceAsset": "课程/mathg1.png",
+      "releaseAsset": "public/catalog-assets/starfall-k5-math.png",
+      "rightsStatus": "pending_formal_confirmation",
+      "requiredReview": ["图片使用权", "第三方商标", "课程描述", "账号或会员要求"]
+    },
+    {
+      "courseId": "platform:codeorg-k12-computing",
+      "provider": "Code.org",
+      "sourceAsset": "课程/code.png",
+      "releaseAsset": "public/catalog-assets/codeorg-k12-computing.png",
+      "rightsStatus": "pending_formal_confirmation",
+      "requiredReview": ["图片使用权", "第三方商标", "课程描述", "免费范围与账号要求"]
+    }
+  ],
+  "prohibitedClaims": ["实时同步纠错", "直通名校或国际大赛", "保证提分", "仅凭打开页面或录屏即可判断完成率、正确率或学情"]
+}

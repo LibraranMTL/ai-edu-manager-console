@@ -29,7 +29,7 @@ test('historical reports degrade without being rewritten', () => {
   assert.match(ui, /历史报告没有证据 ID，可继续正常阅读/);
   const readOnlySection = main.slice(
     main.indexOf('function learningReportEvidence'),
-    main.indexOf('function ensureLearningReports', main.indexOf('function learningReportEvidence')),
+    main.indexOf('function educationArchiveVersionRoot', main.indexOf('function learningReportEvidence')),
   );
   assert.doesNotMatch(readOnlySection, /writeFileSync|writeJson|persist/);
 });

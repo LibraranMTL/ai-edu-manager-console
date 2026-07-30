@@ -3,6 +3,7 @@ import path from 'node:path';
 
 export default defineConfig({
   base: './',
+  publicDir: false,
   build: {
     outDir: 'dist-terminal',
     emptyOutDir: true,

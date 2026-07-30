@@ -126,6 +126,8 @@ function build() {
     'electron/terminal-lan-pairing.cjs',
     'electron/terminal-connection.cjs',
     'electron/windows-tailscale.cjs',
+    'electron/course-browser.cjs',
+    'electron/course-catalog.cjs',
     'public/brand/robogala.ico',
   ]) copyFile(relative);
   writeRuntimePackage();
@@ -150,6 +152,8 @@ function build() {
     '\\electron\\terminal-lan-pairing.cjs',
     '\\electron\\terminal-connection.cjs',
     '\\electron\\windows-tailscale.cjs',
+    '\\electron\\course-browser.cjs',
+    '\\electron\\course-catalog.cjs',
     '\\dist-terminal\\terminal.html',
   ]) {
     if (!asarFiles.includes(expected)) throw new Error(`Terminal package is missing ${expected}.`);

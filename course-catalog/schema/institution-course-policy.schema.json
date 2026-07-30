@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://robogala.cn/schemas/institution-course-policy.v1.json",
+  "title": "InstitutionCoursePolicy",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "policyVersion", "showTenantCustom", "courseRules", "updatedAt"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "policyVersion": { "type": "string", "minLength": 1, "maxLength": 80 },
+    "showTenantCustom": { "type": "boolean" },
+    "updatedAt": { "type": "string", "format": "date-time" },
+    "courseRules": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["enabled", "order", "gradeRange", "studentIds"],
+        "properties": {
+          "enabled": { "type": "boolean" },
+          "order": { "type": ["integer", "null"], "minimum": 0 },
+          "gradeRange": { "type": "array", "uniqueItems": true, "items": { "type": "string", "maxLength": 40 } },
+          "studentIds": { "type": "array", "uniqueItems": true, "items": { "type": "string", "maxLength": 160 } }
+        }
+      }
+    }
+  }
+}

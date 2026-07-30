@@ -6,6 +6,12 @@ const http = require('http');
 const https = require('https');
 const os = require('os');
 const path = require('path');
+const { WebContentsView, session } = require('electron');
+const {
+  coursePartition,
+  installCourseGuards,
+  secureCourseWebPreferences,
+} = require('./course-browser.cjs');
 const { parseGrowthIndexMarkdown } = require('./growth-markdown-summary.cjs');
 const {
   buildTargetUploadPath,
@@ -43,6 +49,9 @@ let mainWindow = null;
 let autoDeliveryTimer = null;
 let autoDeliveryBusy = false;
 let activeCapture = null;
+let courseView = null;
+let activeCourse = null;
+let effectiveCourseCache = [];
 let terminalDiscoverySocket = null;
 let terminalDiscoveryError = '';
 let lastHostDiscoveryAt = '';
@@ -532,6 +541,8 @@ async function autoLoginStudent() {
 }
 
 async function logoutStudent() {
+  closeTerminalCourse('student_logout');
+  effectiveCourseCache = [];
   const config = readConfig();
   if (config.sessionToken) {
     try { await requestJson('/api/student-session/logout', { method: 'POST', body: {}, token: config.sessionToken }); }
@@ -568,6 +579,59 @@ function currentStudentSession() {
   const studentId = String(config.currentStudent?.id || '').trim();
   if (!config.sessionToken || !studentId) throw new Error('请先扫码或输入学生 ID。');
   return { config, studentId };
+}
+
+async function loadEffectiveCourses() {
+  const { config, studentId } = currentStudentSession();
+  const payload = await requestJson(`/api/students/${encodeURIComponent(studentId)}/courses`, { token: config.sessionToken });
+  effectiveCourseCache = Array.isArray(payload.courses) ? payload.courses : [];
+  return payload;
+}
+
+function terminalCourseViewBounds() {
+  if (!mainWindow || mainWindow.isDestroyed()) return { x: 24, y: 174, width: 1000, height: 564 };
+  const [width, height] = mainWindow.getContentSize();
+  return { x: 24, y: 174, width: Math.max(360, width - 48), height: Math.max(260, height - 198) };
+}
+
+function closeTerminalCourse(reason = 'user') {
+  if (courseView && mainWindow && !mainWindow.isDestroyed()) {
+    try { mainWindow.contentView.removeChildView(courseView); } catch {}
+    try { courseView.webContents.close(); } catch {}
+  }
+  courseView = null;
+  const closed = activeCourse;
+  activeCourse = null;
+  notify('terminal:course-browser-changed', { open: false, reason, courseId: closed?.courseId || '' });
+  return { ok: true, open: false };
+}
+
+async function openTerminalCourse(courseId) {
+  const { studentId } = currentStudentSession();
+  const payload = await loadEffectiveCourses();
+  const course = (payload.courses || []).find((item) => item.courseId === String(courseId || ''));
+  if (!course || String(payload.studentId || '') !== studentId) throw new Error('该课程未分配给当前学生或已下架。');
+  closeTerminalCourse('switch');
+  const partition = coursePartition(course.courseId);
+  const courseSession = session.fromPartition(partition, { cache: true });
+  courseView = new WebContentsView({ webPreferences: secureCourseWebPreferences(partition) });
+  installCourseGuards(courseView.webContents, course, courseSession, (blocked) => {
+    notify('terminal:course-browser-changed', { open: true, blocked: true, courseId: course.courseId, ...blocked });
+  });
+  mainWindow.contentView.addChildView(courseView);
+  courseView.setBounds(terminalCourseViewBounds());
+  courseView.setBackgroundColor('#ffffff');
+  activeCourse = { ...course, startedAt: new Date().toISOString(), currentUrl: course.url };
+  courseView.webContents.on('did-navigate', (_event, url) => {
+    if (activeCourse?.courseId === course.courseId) activeCourse.currentUrl = url;
+  });
+  courseView.webContents.on('did-navigate-in-page', (_event, url) => {
+    if (activeCourse?.courseId === course.courseId) activeCourse.currentUrl = url;
+  });
+  courseView.webContents.on('render-process-gone', () => closeTerminalCourse('render_process_gone'));
+  await courseView.webContents.loadURL(course.url);
+  notify('terminal:course-browser-changed', { open: true, courseId: course.courseId, name: course.name, url: course.url });
+  return { ok: true, open: true, course };
 }
 
 async function loadLearningReports() {
@@ -777,6 +841,10 @@ async function startCapture(input = {}) {
     files: [],
     count: 0,
     startedAt: new Date().toISOString(),
+    courseId: activeCourse?.courseId || '',
+    courseProvider: activeCourse?.provider || '',
+    courseUrl: activeCourse?.currentUrl || activeCourse?.url || '',
+    courseStartedAt: activeCourse?.startedAt || '',
   };
   activeCapture = session;
   await captureFrame(session);
@@ -789,6 +857,7 @@ function stopCapture() {
   clearInterval(activeCapture.timer);
   activeCapture.status = 'completed';
   activeCapture.endedAt = new Date().toISOString();
+  activeCapture.courseCompletedAt = activeCapture.endedAt;
   const result = { ...activeCapture, timer: undefined };
   activeCapture = null;
   notify('terminal:capture-changed', result);
@@ -846,6 +915,8 @@ function registerIpc() {
   ipcMain.handle('terminal:login-student', (_event, loginId) => loginStudent(loginId));
   ipcMain.handle('terminal:logout-student', () => logoutStudent());
   ipcMain.handle('terminal:disconnect', () => {
+    closeTerminalCourse('disconnect');
+    effectiveCourseCache = [];
     writeConfig({ hostUrl: '', token: '', sessionToken: '', currentStudent: null, pendingPairRequest: null, pendingPairInvite: null });
     return { ok: true, config: publicConfig() };
   });
@@ -878,13 +949,23 @@ function registerIpc() {
   ipcMain.handle('terminal:read-archive-file', (_event, relativePath) => loadArchiveFile(relativePath));
   ipcMain.handle('terminal:list-project-knowledge-files', (_event, projectId) => loadProjectKnowledgeFiles(projectId));
   ipcMain.handle('terminal:read-project-knowledge-file', (_event, projectId, relativePath) => loadProjectKnowledgeFile(projectId, relativePath));
+  ipcMain.handle('terminal:list-courses', () => loadEffectiveCourses());
+  ipcMain.handle('terminal:open-course', (_event, courseId) => openTerminalCourse(courseId));
+  ipcMain.handle('terminal:close-course', () => closeTerminalCourse());
   ipcMain.handle('terminal:list-capture-sources', async () => {
     const sources = await desktopCapturer.getSources({ types: ['screen', 'window'], thumbnailSize: { width: 320, height: 180 } });
     return sources.map((source) => ({ id: source.id, name: source.name, type: source.id.startsWith('screen:') ? 'screen' : 'window' }));
   });
   ipcMain.handle('terminal:start-capture', (_event, input) => startCapture(input));
   ipcMain.handle('terminal:stop-capture', () => stopCapture());
-  ipcMain.handle('terminal:upload-capture', (_event, input) => uploadPaths(input?.files || [], input?.target, { sourceType: 'windows_terminal_screenshot', captureSessionId: input?.captureSessionId || '' }));
+  ipcMain.handle('terminal:upload-capture', (_event, input) => uploadPaths(input?.files || [], input?.target, {
+    sourceType: 'windows_terminal_course_capture',
+    captureSessionId: input?.captureSessionId || '',
+    courseId: input?.courseId || '',
+    courseUrl: input?.courseUrl || '',
+    courseStartedAt: input?.courseStartedAt || '',
+    courseCompletedAt: input?.courseCompletedAt || '',
+  }));
 }
 
 function createWindow() {
@@ -904,7 +985,17 @@ function createWindow() {
   const devUrl = process.env.EDU_TERMINAL_DEV_URL;
   if (devUrl) mainWindow.loadURL(devUrl);
   else mainWindow.loadFile(path.join(__dirname, '..', 'dist-terminal', 'terminal.html'));
-  mainWindow.on('closed', () => { mainWindow = null; });
+  mainWindow.on('resize', () => {
+    if (courseView) courseView.setBounds(terminalCourseViewBounds());
+  });
+  mainWindow.on('closed', () => {
+    if (courseView) {
+      try { courseView.webContents.close(); } catch {}
+      courseView = null;
+      activeCourse = null;
+    }
+    mainWindow = null;
+  });
 }
 
 app.whenReady().then(() => {

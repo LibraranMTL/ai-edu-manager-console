@@ -52,7 +52,8 @@ import { DigestStatusCard, type DigestWorkflowStatus } from './DigestStatusCard'
 const studentLoginQrDataUrlCache = new Map<string, string>();
 const loadQrCode = () => import('qrcode').then((module) => module.default);
 
-type Section = 'home' | 'init' | 'inbox' | 'assets' | 'projects-new' | 'projects-existing' | 'growth' | 'reports' | 'archive' | 'qa' | 'memory' | 'soul' | 'rules' | 'conversation' | 'tasks' | 'settings';
+type Section = 'home' | 'courses' | 'init' | 'inbox' | 'assets' | 'projects-new' | 'projects-existing' | 'growth' | 'reports' | 'archive' | 'qa' | 'memory' | 'soul' | 'rules' | 'conversation' | 'tasks' | 'settings';
+type CourseSubmenu = 'learning' | 'management';
 type SettingsSubmenu = 'basic' | 'connection' | 'collaboration';
 type ProjectWorkflowTarget = 'workspace' | 'assets' | 'digest' | 'knowledge' | 'evidence' | 'promotion';
 type ThemeName = 'blue' | 'pink' | 'green' | 'purple' | 'orange';
@@ -879,6 +880,7 @@ type AndroidBridge = {
   getLearningReportEvidence?: (studentId: string, reportId: LearningReportId) => string;
   openLearningReportEvidenceSource?: (studentId: string, reportId: LearningReportId, evidenceId: string, sourceIndex: number) => string;
   exportEducationArchive?: (studentId: string) => string;
+  exportLearningReport?: (studentId: string, reportId: LearningReportId, format: 'markdown' | 'pdf') => Promise<string>;
   ensureLearningReports?: (studentId: string) => string;
   ensureGrowthModel?: (studentId: string) => string;
   getGrowthEvidenceReview?: (studentId: string) => string;
@@ -994,6 +996,13 @@ type AndroidBridge = {
   setHostDeviceStudentAccess?: (deviceId: string, studentIdsJson: string) => string;
   setHostDeviceAccessMode?: (deviceId: string, optionsJson: string) => string;
   setHostDeviceTerminalMode?: (deviceId: string, terminalMode: 'personal' | 'shared', boundStudentId?: string) => string;
+  getCourseCatalogState?: () => string;
+  saveCourseInstitutionPolicy?: (policyJson: string) => string;
+  importOfflineCourseCatalog?: () => string;
+  exportCustomCourseTemplate?: () => Promise<string>;
+  importCustomCourseExcel?: () => Promise<string>;
+  openCourseView?: (courseId: string) => string;
+  closeCourseView?: () => string;
 };
 
 type UpdateInfo = {
@@ -1202,6 +1211,42 @@ type CaptureCenterState = {
   activeSession: CaptureSession | null;
   sessions: CaptureSession[];
   inboxPath?: string;
+};
+
+type CourseCatalogItem = {
+  courseId: string;
+  type: 'platform_standard' | 'tenant_custom';
+  name: string;
+  provider: string;
+  url: string;
+  allowedHosts: string[];
+  coverAsset: string;
+  coverUrl?: string;
+  summary: string;
+  subjects: string[];
+  gradeRange: string[];
+  languages: string[];
+  accountRequirement: string;
+  legalNotice: string;
+  status: 'active' | 'withdrawn';
+};
+
+type CourseInstitutionRule = {
+  enabled: boolean;
+  order: number | null;
+  gradeRange: string[];
+  studentIds: string[];
+};
+
+type CourseCatalogState = {
+  ok: boolean;
+  catalog?: { catalogVersion: string; issuedAt: string; minHostVersion: string; courses: CourseCatalogItem[] } | null;
+  platformCatalog?: { catalogVersion: string; courses: CourseCatalogItem[] } | null;
+  customCatalog?: { updatedAt: string; courses: CourseCatalogItem[] };
+  management?: { allowed: boolean; plan: string; planLabel: string; message: string };
+  customImport?: { allowed: boolean; plan: string; planLabel: string; message: string };
+  policy?: { schemaVersion: number; policyVersion: string; showTenantCustom: boolean; courseRules: Record<string, CourseInstitutionRule>; updatedAt: string };
+  message?: string;
 };
 
 type NativeImportResult = {
@@ -4242,6 +4287,9 @@ function App() {
   const [draft, setDraft] = useState<StudentDraft>(defaultDraft);
   const [selectedId, setSelectedId] = useState(students[0]?.id ?? '');
   const [activeSection, setActiveSection] = useState<Section>('init');
+  const [courseSubmenu, setCourseSubmenu] = useState<CourseSubmenu>(() => (
+    localStorage.getItem('edu-manager-course-submenu') === 'management' ? 'management' : 'learning'
+  ));
   const [settingsSubmenu, setSettingsSubmenu] = useState<SettingsSubmenu>(() => {
     const saved = localStorage.getItem('edu-manager-settings-submenu');
     return saved === 'connection' || saved === 'collaboration' ? saved : 'basic';
@@ -4284,6 +4332,7 @@ function App() {
   const [learningReportEvidence, setLearningReportEvidence] = useState<LearningReportEvidenceState | null>(null);
   const [learningReportViewMode, setLearningReportViewMode] = useState<'rendered' | 'source'>('rendered');
   const [learningReportMessage, setLearningReportMessage] = useState('');
+  const [learningReportExporting, setLearningReportExporting] = useState<'' | 'markdown' | 'pdf'>('');
   const [learningReportFolder, setLearningReportFolder] = useState('');
   const [learningReportHealth, setLearningReportHealth] = useState<LearningReportHealth | null>(null);
   const [pathHealth, setPathHealth] = useState<PathHealthReport | null>(null);
@@ -4308,6 +4357,9 @@ function App() {
   const [capturePromotionTargets, setCapturePromotionTargets] = useState<Record<string, 'project_raw' | 'student_raw'>>({});
   const [captureMessage, setCaptureMessage] = useState('');
   const [captureBusy, setCaptureBusy] = useState(false);
+  const [courseCatalogState, setCourseCatalogState] = useState<CourseCatalogState | null>(null);
+  const [courseCatalogMessage, setCourseCatalogMessage] = useState('');
+  const [courseBrowser, setCourseBrowser] = useState<{ open: boolean; courseId?: string; name?: string }>({ open: false });
   const [assetIndex, setAssetIndex] = useState<AssetIndexState>({ assets: [] });
   const [assetMessage, setAssetMessage] = useState('');
   const [assetBusyAction, setAssetBusyAction] = useState('');
@@ -4514,6 +4566,7 @@ function App() {
   const [agentCenter, setAgentCenter] = useState<AgentCenterState | null>(null);
   const [agentCenterMessage, setAgentCenterMessage] = useState('');
   const [agentKnowledgeMenuOpen, setAgentKnowledgeMenuOpen] = useState(false);
+  const [courseMenuOpen, setCourseMenuOpen] = useState(true);
   const [projectMenuOpen, setProjectMenuOpen] = useState(true);
   const [settingsMenuOpen, setSettingsMenuOpen] = useState(true);
   const [agentScanCandidates, setAgentScanCandidates] = useState<AgentKnowledgeCandidate[]>([]);
@@ -4780,6 +4833,10 @@ function App() {
   const isWindows = storageConfig.platform === 'windows';
   const effectiveLicenseStatus = licenseStatus || hostServiceStatus?.license || null;
   const windowsLicenseActive = !isWindows || Boolean(effectiveLicenseStatus?.active);
+  const courseManagementAllowed = !isWindows || Boolean(
+    effectiveLicenseStatus?.active
+    && ['PRO', 'ORG'].includes(String(effectiveLicenseStatus.plan || '').toUpperCase())
+  );
   const restrictedSections = new Set<Section>(['init', 'inbox', 'assets', 'projects-new', 'projects-existing', 'growth', 'qa', 'memory', 'soul', 'rules', 'conversation', 'tasks']);
   const isLicenseRestrictedSection = isWindows && !windowsLicenseActive && restrictedSections.has(activeSection);
   const licenseRestrictionText = effectiveLicenseStatus?.message || 'Windows 主机尚未激活。未激活状态仅支持首页、系统设置和已有档案/报告的只读浏览。';
@@ -5536,6 +5593,114 @@ function App() {
     } catch {
       setHostServiceMessage('读取主机服务状态失败。');
     }
+  };
+
+  const refreshCourseCatalog = () => {
+    const raw = bridge()?.getCourseCatalogState?.();
+    if (!raw) return;
+    try {
+      const state = JSON.parse(raw) as CourseCatalogState;
+      setCourseCatalogState(state);
+      setCourseCatalogMessage(state.message || '');
+    } catch {
+      setCourseCatalogMessage('读取精选课程目录失败。');
+    }
+  };
+
+  const updateCourseRule = (courseId: string, patch: Partial<CourseInstitutionRule>) => {
+    setCourseCatalogState((current) => {
+      if (!current?.policy) return current;
+      const currentRule = current.policy.courseRules[courseId] || { enabled: true, order: null, gradeRange: [], studentIds: [] };
+      return {
+        ...current,
+        policy: {
+          ...current.policy,
+          courseRules: {
+            ...current.policy.courseRules,
+            [courseId]: { ...currentRule, ...patch },
+          },
+        },
+      };
+    });
+  };
+
+  const saveCoursePolicy = () => {
+    if (!courseCatalogState?.policy) return;
+    const raw = bridge()?.saveCourseInstitutionPolicy?.(JSON.stringify(courseCatalogState.policy));
+    if (!raw) {
+      setCourseCatalogMessage('当前环境不支持课程机构设置。');
+      return;
+    }
+    try {
+      const result = JSON.parse(raw) as { ok?: boolean; message?: string; state?: CourseCatalogState };
+      if (result.state) setCourseCatalogState(result.state);
+      setCourseCatalogMessage(result.message || (result.ok ? '精选课程设置已保存并下发到学生端。' : '精选课程设置保存失败。'));
+    } catch {
+      setCourseCatalogMessage('精选课程设置结果解析失败。');
+    }
+  };
+
+  const importCourseCatalog = () => {
+    const raw = bridge()?.importOfflineCourseCatalog?.();
+    if (!raw) return;
+    try {
+      const result = JSON.parse(raw) as { ok?: boolean; cancelled?: boolean; message?: string; catalog?: { catalogVersion?: string } };
+      setCourseCatalogMessage(result.message || (result.ok ? `已导入目录 ${result.catalog?.catalogVersion || ''}` : result.cancelled ? '已取消导入。' : '离线目录校验失败，继续使用最后可用版本。'));
+      refreshCourseCatalog();
+    } catch {
+      setCourseCatalogMessage('离线目录导入结果解析失败。');
+    }
+  };
+
+  const exportCustomCourseTemplate = async () => {
+    const invoke = bridge()?.exportCustomCourseTemplate;
+    if (!invoke) {
+      setCourseCatalogMessage('当前环境不支持保存自选课程模板。');
+      return;
+    }
+    try {
+      const raw = await invoke();
+      const result = JSON.parse(raw) as { ok?: boolean; cancelled?: boolean; message?: string };
+      setCourseCatalogMessage(result.message || (result.ok ? '自选课程 Excel 模板已保存。' : result.cancelled ? '已取消保存模板。' : '模板保存失败。'));
+    } catch {
+      setCourseCatalogMessage('模板保存结果解析失败。');
+    }
+  };
+
+  const importCustomCourseExcel = async () => {
+    const invoke = bridge()?.importCustomCourseExcel;
+    if (!invoke) {
+      setCourseCatalogMessage('当前环境不支持自选课程 Excel 导入。');
+      return;
+    }
+    setCourseCatalogMessage('正在读取 Excel 并复制课程图片…');
+    try {
+      const raw = await invoke();
+      const result = JSON.parse(raw) as { ok?: boolean; cancelled?: boolean; message?: string; state?: CourseCatalogState };
+      if (result.state) setCourseCatalogState(result.state);
+      else refreshCourseCatalog();
+      setCourseCatalogMessage(result.message || (result.ok ? '自选课程已导入。' : result.cancelled ? '已取消导入。' : '自选课程导入失败。'));
+    } catch (error) {
+      setCourseCatalogMessage(`自选课程导入失败：${error instanceof Error ? error.message : String(error)}`);
+    }
+  };
+
+  const openHostCourse = (course: CourseCatalogItem) => {
+    const raw = bridge()?.openCourseView?.(course.courseId);
+    if (!raw) return;
+    try {
+      const result = JSON.parse(raw) as { ok?: boolean; message?: string };
+      if (!result.ok) throw new Error(result.message || '课程暂不可用。');
+      setCourseBrowser({ open: true, courseId: course.courseId, name: course.name });
+      setCourseCatalogMessage(`已在隔离浏览器中打开 ${course.name}。`);
+    } catch (error) {
+      setCourseCatalogMessage(`打开课程失败：${error instanceof Error ? error.message : String(error)}`);
+    }
+  };
+
+  const closeHostCourse = () => {
+    bridge()?.closeCourseView?.();
+    setCourseBrowser({ open: false });
   };
 
   const refreshHostUploadRecords = () => {
@@ -6511,6 +6676,7 @@ ${sourceText}`;
     refreshTemplateCenter();
     syncStudentsToHost(students);
     refreshHostServiceStatus();
+    refreshCourseCatalog();
     refreshLicenseStatus();
     refreshAssets();
     refreshProjects();
@@ -6521,6 +6687,22 @@ ${sourceText}`;
     const timer = window.setTimeout(refreshInstallStatus, 0);
     return () => window.clearTimeout(timer);
   }, [activeSection, installStatus]);
+
+  useEffect(() => {
+    if (activeSection !== 'courses' && courseBrowser.open) {
+      bridge()?.closeCourseView?.();
+      setCourseBrowser({ open: false });
+    }
+  }, [activeSection, courseBrowser.open]);
+
+  useEffect(() => {
+    if (!isWindows || courseManagementAllowed || courseSubmenu !== 'management') return;
+    localStorage.setItem('edu-manager-course-submenu', 'learning');
+    setCourseSubmenu('learning');
+    if (activeSection === 'courses') {
+      setCourseCatalogMessage('当前授权不能打开课程管理，已返回课程学习。');
+    }
+  }, [activeSection, courseManagementAllowed, courseSubmenu, isWindows]);
 
   useEffect(() => {
     (window as unknown as { onNativeImportResult?: (payload: string | NativeImportResult) => void }).onNativeImportResult = (payload: string | NativeImportResult) => {
@@ -6571,6 +6753,13 @@ ${sourceText}`;
       } catch {
         if (activeSectionRef.current === 'settings') refreshHostServiceStatus();
       }
+    };
+    (window as unknown as { onNativeCourseCatalogChanged?: () => void }).onNativeCourseCatalogChanged = () => {
+      refreshCourseCatalog();
+    };
+    (window as unknown as { onNativeCourseBrowserChanged?: (payload: { open?: boolean; courseId?: string; name?: string; blocked?: boolean; message?: string }) => void }).onNativeCourseBrowserChanged = (payload) => {
+      setCourseBrowser({ open: Boolean(payload?.open), courseId: payload?.courseId, name: payload?.name });
+      if (payload?.blocked) setCourseCatalogMessage(payload.message || '已阻止课程页面跳转到非白名单域名。');
     };
     (window as unknown as { onNativeCollaborationChanged?: (payload: string) => void }).onNativeCollaborationChanged = () => {
       if (activeSectionRef.current === 'settings') {
@@ -10623,6 +10812,26 @@ ${JSON.stringify(items, null, 2)}
     }
   };
 
+  const exportSelectedLearningReport = async (format: 'markdown' | 'pdf') => {
+    if (!selectedStudent || !learningReportContent || learningReportExporting) return;
+    const exportReport = bridge()?.exportLearningReport;
+    if (!exportReport) {
+      setLearningReportMessage('当前环境不支持导出学情报告。');
+      return;
+    }
+    setLearningReportExporting(format);
+    setLearningReportMessage(`正在生成${format === 'pdf' ? ' PDF' : ' Markdown'} 学情报告…`);
+    try {
+      const raw = await exportReport(selectedStudent.id, selectedLearningReportId, format);
+      const result = JSON.parse(raw) as { ok?: boolean; message?: string; path?: string };
+      setLearningReportMessage(result.message || (result.ok ? '学情报告已导出。' : '学情报告导出失败。'));
+    } catch (error) {
+      setLearningReportMessage(`学情报告导出失败：${(error as Error).message}`);
+    } finally {
+      setLearningReportExporting('');
+    }
+  };
+
   const ensureLearningReportTemplates = (student: Student | undefined = selectedStudent) => {
     if (!student) return;
     const raw = bridge()?.ensureLearningReports?.(student.id);
@@ -11380,6 +11589,7 @@ ${JSON.stringify(items, null, 2)}
 
   const navItems = [
     { id: 'home' as const, label: t('nav.home'), icon: Home },
+    { id: 'courses' as const, label: '精选课程', icon: BookOpen },
     { id: 'init' as const, label: t('nav.init'), icon: Plus },
     { id: 'inbox' as const, label: t('nav.inbox'), icon: FileDown },
     ...(isWindows ? [
@@ -11395,11 +11605,26 @@ ${JSON.stringify(items, null, 2)}
     { id: 'rules' as const, label: t('nav.rules'), icon: ListChecks },
     { id: 'conversation' as const, label: t('nav.conversation'), icon: MessageCircle },
   ];
+  const courseCatalogCourses = courseCatalogState?.catalog?.courses || [];
+  const courseLearningEntries = courseCatalogCourses
+    .map((course, index) => ({
+      course,
+      rule: courseCatalogState?.policy?.courseRules[course.courseId]
+        || { enabled: true, order: index, gradeRange: [], studentIds: [] },
+    }))
+    .filter(({ course, rule }) => (
+      rule.enabled
+      && course.status === 'active'
+      && (course.type !== 'tenant_custom' || courseManagementAllowed)
+    ))
+    .sort((left, right) => Number(left.rule.order ?? 0) - Number(right.rule.order ?? 0));
   const sectionTitle = (section: Section) => {
+    if (section === 'courses') return '精选课程';
     if (section === 'projects-new') return '新建学习项目';
     if (section === 'projects-existing') return '已有学习项目';
     const map: Record<Section, TranslationKey> = {
       home: 'nav.home',
+      courses: 'nav.archive',
       init: 'nav.init',
       inbox: 'nav.inbox',
       assets: 'nav.assets',
@@ -11424,6 +11649,18 @@ ${JSON.stringify(items, null, 2)}
     setSettingsSubmenu(submenu);
     setSettingsMenuOpen(true);
     setActiveSection('settings');
+  };
+
+  const openCourseSubmenu = (submenu: CourseSubmenu) => {
+    if (submenu === 'management' && !courseManagementAllowed) {
+      setCourseCatalogMessage('课程管理仅向已激活的专业版和机构版开放。');
+      return;
+    }
+    if (courseBrowser.open) closeHostCourse();
+    localStorage.setItem('edu-manager-course-submenu', submenu);
+    setCourseSubmenu(submenu);
+    setCourseMenuOpen(true);
+    setActiveSection('courses');
   };
 
   const homePendingStudents = students.filter((student) => pendingDigestValue(student) > 0);
@@ -11517,6 +11754,41 @@ ${JSON.stringify(items, null, 2)}
           {navItems.map((item) => {
             const Icon = item.icon;
             const locked = isWindows && !windowsLicenseActive && restrictedSections.has(item.id);
+            if (item.id === 'courses') {
+              return (
+                <div className="nav-group-block course-nav-group" key={item.id}>
+                  <button
+                    className={activeSection === 'courses' ? 'nav-item nav-group active' : 'nav-item nav-group'}
+                    onClick={() => setCourseMenuOpen((value) => !value)}
+                    title="精选课程"
+                    aria-expanded={courseMenuOpen}
+                  >
+                    <Icon size={19} />
+                    <span>{item.label}</span>
+                    <span className="nav-chevron">{courseMenuOpen ? t('nav.collapse') : t('nav.expand')}</span>
+                  </button>
+                  {courseMenuOpen && (
+                    <div className="sub-nav-list course-sub-nav-list" aria-label="精选课程子菜单">
+                      <button
+                        className={activeSection === 'courses' && courseSubmenu === 'learning' ? 'nav-item sub-nav-item active' : 'nav-item sub-nav-item'}
+                        onClick={() => openCourseSubmenu('learning')}
+                      >
+                        <Play size={17} /><span>课程学习</span>
+                      </button>
+                      <button
+                        className={`${activeSection === 'courses' && courseSubmenu === 'management' ? 'nav-item sub-nav-item active' : 'nav-item sub-nav-item'}${!courseManagementAllowed ? ' locked' : ''}`}
+                        onClick={() => openCourseSubmenu('management')}
+                        disabled={!courseManagementAllowed}
+                        title={courseManagementAllowed ? '管理课程目录、分配和导入' : '仅已激活的专业版和机构版可用'}
+                      >
+                        <Settings size={17} /><span>课程管理</span>
+                        {!courseManagementAllowed && <KeyRound size={14} />}
+                      </button>
+                    </div>
+                  )}
+                </div>
+              );
+            }
             return (
               <button
                 className={`${activeSection === item.id ? 'nav-item active' : 'nav-item'}${locked ? ' locked' : ''}`}
@@ -11687,7 +11959,17 @@ ${JSON.stringify(items, null, 2)}
         <header className="topbar">
           <div>
             <h1>{sectionTitle(activeSection)}</h1>
-            <p>{activeSection === 'home' ? '查看资料进入、自动消化、成长沉淀和报告更新；通常只需处理一个下一步。' : activeSection === 'projects-new' || activeSection === 'projects-existing' ? t('projects.subtitle') : t('app.subtitle')}</p>
+            <p>
+              {activeSection === 'home'
+                ? '查看资料进入、自动消化、成长沉淀和报告更新；通常只需处理一个下一步。'
+                : activeSection === 'projects-new' || activeSection === 'projects-existing'
+                  ? t('projects.subtitle')
+                  : activeSection === 'courses'
+                    ? courseSubmenu === 'learning'
+                      ? '查看机构已启用并分配给当前学生的课程。'
+                      : '导入、维护并向当前机构学生分发课程。'
+                    : t('app.subtitle')}
+            </p>
           </div>
           <div className="status-row">
             {isWindows && activeSection === 'home' && (
@@ -12139,6 +12421,156 @@ ${JSON.stringify(items, null, 2)}
               </div>
             </details>
           </>
+        )}
+
+        {!shouldBlockForAgentInstall && activeSection === 'courses' && (
+          <div className="course-catalog-page">
+            <section className="panel course-catalog-hero">
+              <div>
+                <span className="eyebrow">
+                  {courseSubmenu === 'learning' ? '安全打开 · 主动学习 · 受限浏览' : '平台签名目录 · 机构自选课程 · 三端一致'}
+                </span>
+                <h2>
+                  {courseBrowser.open
+                    ? `正在浏览：${courseBrowser.name || '精选课程'}`
+                    : courseSubmenu === 'learning' ? '课程学习' : '课程管理'}
+                </h2>
+                <p>
+                  {courseSubmenu === 'learning'
+                    ? '选择已启用的课程并在隔离浏览器中学习。第三方提供方负责课程内容、账号与服务条款；打开页面或采集资料不代表课程完成率、正确率或学情结论。'
+                    : '管理平台课程和机构自选课程的启用、顺序、年级与学生分配；课程管理仅向已激活的专业版和机构版开放。'}
+                </p>
+              </div>
+              <div className="actions compact-actions">
+                {courseBrowser.open ? <button className="secondary" onClick={closeHostCourse}><X size={17} />退出课程</button> : null}
+                <button className="secondary" onClick={refreshCourseCatalog}><RefreshCw size={17} />刷新目录</button>
+                {courseSubmenu === 'management' && courseManagementAllowed ? (
+                  <>
+                    <button className="secondary" onClick={exportCustomCourseTemplate}><FileDown size={17} />下载Excel模板</button>
+                    <button
+                      className="secondary"
+                      onClick={importCustomCourseExcel}
+                      disabled={!courseCatalogState?.customImport?.allowed}
+                      title={courseCatalogState?.customImport?.message}
+                    >
+                      <FileDown size={17} />导入自选课程Excel
+                    </button>
+                    <button className="secondary" onClick={importCourseCatalog}><ShieldCheck size={17} />导入平台签名目录</button>
+                    <button className="primary" onClick={saveCoursePolicy} disabled={!courseCatalogState?.policy}><ShieldCheck size={17} />保存并下发</button>
+                  </>
+                ) : null}
+              </div>
+            </section>
+
+            {!courseBrowser.open ? (
+              courseSubmenu === 'learning' ? (
+                <>
+                  <div className="course-catalog-status">
+                    <span className="status ok">可学习课程 {courseLearningEntries.length} 门</span>
+                    <span>目录版本 {courseCatalogState?.catalog?.catalogVersion || '—'}</span>
+                    <span>课程页面将在隔离浏览器中打开</span>
+                  </div>
+                  <div className="course-learning-grid">
+                    {courseLearningEntries.map(({ course, rule }) => (
+                      <article className="panel course-learning-card" key={course.courseId}>
+                        <img src={course.coverUrl || course.coverAsset} alt="" />
+                        <div className="course-learning-main">
+                          <span className="eyebrow">{course.provider}</span>
+                          <h3>{course.name}</h3>
+                          <span className="course-source-badge">{course.type === 'tenant_custom' ? '机构自选' : '平台精选'}</span>
+                          <p>{course.summary}</p>
+                          <small>{course.accountRequirement}</small>
+                          <div className="course-learning-meta">
+                            <span>{rule.gradeRange.length ? `适用年级：${rule.gradeRange.join('、')}` : '适用年级：不限'}</span>
+                            <span>{rule.studentIds.length ? `已分配 ${rule.studentIds.length} 位学生` : '学生范围：全部'}</span>
+                          </div>
+                          <button className="primary" onClick={() => openHostCourse(course)}>
+                            <ExternalLink size={17} />打开课程
+                          </button>
+                        </div>
+                      </article>
+                    ))}
+                    {!courseLearningEntries.length ? (
+                      <section className="panel empty-state">当前没有已启用且可学习的课程。专业版或机构版用户可在“课程管理”中导入、启用并分配课程。</section>
+                    ) : null}
+                  </div>
+                </>
+              ) : courseManagementAllowed ? (
+                <>
+                  <div className="course-catalog-status">
+                    <span className={courseCatalogState?.platformCatalog ? 'status ok' : 'status warn'}>{courseCatalogState?.platformCatalog ? '平台目录签名与版本校验通过' : '没有可用的平台签名目录'}</span>
+                    <span>目录版本 {courseCatalogState?.catalog?.catalogVersion || '—'}</span>
+                    <span>最低主机版本 {courseCatalogState?.catalog?.minHostVersion || '—'}</span>
+                    <span>机构自选 {courseCatalogState?.customCatalog?.courses?.length || 0} 门</span>
+                  </div>
+                  <section className="panel course-custom-import-panel">
+                    <div>
+                      <span className="eyebrow">专业版 / 机构版</span>
+                      <h3>四字段 Excel 导入</h3>
+                      <p>表格只需填写“课程名称、课程图片、课程简介、课程链接”。课程图片可填写同目录图片文件名、完整本地路径或 HTTPS 图片网址；导入后仍可统一设置启用、顺序、年级和学生。</p>
+                    </div>
+                    <span className={courseCatalogState?.customImport?.allowed ? 'status ok' : 'status warn'}>
+                      {courseCatalogState?.customImport?.allowed ? `${courseCatalogState.customImport.planLabel}可导入` : '当前授权不可导入'}
+                    </span>
+                  </section>
+                  <div className="course-admin-grid">
+                    {courseCatalogCourses.map((course, index) => {
+                      const rule = courseCatalogState?.policy?.courseRules[course.courseId] || { enabled: true, order: index, gradeRange: [], studentIds: [] };
+                      return (
+                        <article className="panel course-admin-card" key={course.courseId}>
+                          <img src={course.coverUrl || course.coverAsset} alt="" />
+                          <div className="course-admin-main">
+                            <span className="eyebrow">{course.provider}</span>
+                            <h3>{course.name}</h3>
+                            <span className="course-source-badge">{course.type === 'tenant_custom' ? '机构自选' : '平台精选'}</span>
+                            <p>{course.summary}</p>
+                            <small>{course.accountRequirement}</small>
+                            <details><summary>法律声明与允许域名</summary><p>{course.legalNotice}</p><code>{course.allowedHosts.join(' · ')}</code></details>
+                          </div>
+                          <div className="course-policy-controls">
+                            <label className="switch-row"><input type="checkbox" checked={rule.enabled} onChange={(event) => updateCourseRule(course.courseId, { enabled: event.target.checked })} /><span>向学生端启用</span></label>
+                            <label><span>显示顺序</span><input type="number" min="0" value={rule.order ?? index} onChange={(event) => updateCourseRule(course.courseId, { order: Math.max(0, Number(event.target.value) || 0) })} /></label>
+                            <label><span>适用年级（逗号分隔，留空表示不限）</span><input value={rule.gradeRange.join(', ')} onChange={(event) => updateCourseRule(course.courseId, { gradeRange: event.target.value.split(/[,，]/).map((item) => item.trim()).filter(Boolean) })} /></label>
+                            <fieldset>
+                              <legend>学生分配（留空表示所有学生）</legend>
+                              {students.map((student) => (
+                                <label className="course-student-check" key={student.id}>
+                                  <input
+                                    type="checkbox"
+                                    checked={rule.studentIds.includes(student.id)}
+                                    onChange={(event) => updateCourseRule(course.courseId, {
+                                      studentIds: event.target.checked ? [...rule.studentIds, student.id] : rule.studentIds.filter((id) => id !== student.id),
+                                    })}
+                                  />
+                                  <span>{student.name}{student.grade ? ` · ${student.grade}` : ''}</span>
+                                </label>
+                              ))}
+                            </fieldset>
+                            <button className="primary" onClick={() => openHostCourse(course)}>
+                              <ExternalLink size={17} />预览课程
+                            </button>
+                          </div>
+                        </article>
+                      );
+                    })}
+                    {!courseCatalogCourses.length ? <section className="panel empty-state">当前没有可管理的课程。平台目录校验失败时会保留最后可用版本；也可使用四字段 Excel 导入机构自选课程。</section> : null}
+                  </div>
+                </>
+              ) : (
+                <section className="panel empty-state">
+                  <KeyRound size={22} />
+                  <strong>课程管理仅向专业版和机构版开放</strong>
+                  <span>当前授权仍可使用“课程学习”；升级并激活专业版或机构版后，可导入、启用、排序和分配课程。</span>
+                </section>
+              )
+            ) : (
+              <section className="panel course-browser-guard">
+                <ShieldCheck size={20} />
+                <span>隔离 WebContentsView 已启用：无 Node、无 preload、无本地 IPC；下载、弹窗、权限申请、危险协议和非白名单跳转被阻止。</span>
+              </section>
+            )}
+            {courseCatalogMessage ? <div className="notice">{courseCatalogMessage}</div> : null}
+          </div>
         )}
 
         {!shouldBlockForAgentInstall && !isLicenseRestrictedSection && activeSection === 'init' && (
@@ -14398,6 +14830,22 @@ ${JSON.stringify(items, null, 2)}
                     <button className="secondary compact" onClick={() => copyText(learningReportContent, '已复制当前学情报告 Markdown。')} disabled={!learningReportContent}>
                       <Clipboard size={16} />
                       复制正文
+                    </button>
+                    <button
+                      className="secondary compact"
+                      onClick={() => exportSelectedLearningReport('markdown')}
+                      disabled={!learningReportContent || Boolean(learningReportExporting) || !windowsLicenseActive}
+                    >
+                      <FileDown size={16} />
+                      {learningReportExporting === 'markdown' ? '导出中…' : '导出 Markdown'}
+                    </button>
+                    <button
+                      className="secondary compact"
+                      onClick={() => exportSelectedLearningReport('pdf')}
+                      disabled={!learningReportContent || Boolean(learningReportExporting) || !windowsLicenseActive}
+                    >
+                      <FileDown size={16} />
+                      {learningReportExporting === 'pdf' ? '生成中…' : '导出 PDF'}
                     </button>
                   </div>
                 </div>

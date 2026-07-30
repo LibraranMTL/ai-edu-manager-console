@@ -48,6 +48,14 @@ import android.widget.TextView;
 import android.widget.Toast;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
+import android.webkit.WebViewClient;
+import android.webkit.WebChromeClient;
+import android.webkit.WebResourceRequest;
+import android.webkit.WebResourceError;
+import android.webkit.SslErrorHandler;
+import android.webkit.CookieManager;
+import android.webkit.PermissionRequest;
+import android.net.http.SslError;
 
 import org.json.JSONArray;
 import org.json.JSONObject;
@@ -104,8 +112,8 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
     static final int REQUEST_IMPORT_CONNECTION_BACKUP = 8109;
     static final int REQUEST_CAPTURE_STUDENT_QR = 8110;
     static final int REQUEST_AUTO_DELIVERY_FOLDER = 8111;
-    static final String VERSION_NAME = "0.6.7";
-    static final int VERSION_CODE = 77;
+    static final String VERSION_NAME = "0.6.9";
+    static final int VERSION_CODE = 79;
     static final String CONNECTION_BACKUP_KIND = "ai-edu-manager-tablet-connection-backup";
     static final int CONNECTION_BACKUP_VERSION = 1;
     static final String UPDATE_MANIFEST_URL = "https://www.greatbg.com/download/edu-manager-version.json";
@@ -244,6 +252,13 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
     LinearLayout studentCard;
     LinearLayout uploadCard;
     LinearLayout captureCard;
+    LinearLayout courseCard;
+    LinearLayout courseListContainer;
+    TextView courseStatusText;
+    FrameLayout courseOverlay;
+    WebView courseWebView;
+    Button courseBackButton;
+    Button courseCaptureButton;
     LinearLayout studentLoginPanel;
     TextView studentSessionText;
     LinearLayout contactCard;
@@ -263,6 +278,8 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
     final List<ArchiveFile> archiveFiles = new ArrayList<ArchiveFile>();
     final List<Uri> pendingSharedUris = new ArrayList<Uri>();
     final List<Uri> failedUploadUris = new ArrayList<Uri>();
+    final List<Course> courses = new ArrayList<Course>();
+    final Set<String> activeCourseAllowedHosts = new HashSet<String>();
     Uri pendingCameraUri = null;
     Uri pendingPairQrUri = null;
     ArrayAdapter<String> studentAdapter;
@@ -273,6 +290,8 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
     ArrayAdapter<String> layoutModeAdapter;
     ArrayAdapter<String> skinAdapter;
     Student selectedStudent;
+    Course activeCourse;
+    long activeCourseStartedAt = 0L;
     String terminalMode = "shared";
     String studentSessionToken = "";
     String currentMarkdown = "";
@@ -329,6 +348,12 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
     @Override
     protected void onDestroy() {
         stopWaitingForHostInvite();
+        if (courseWebView != null) {
+            courseWebView.stopLoading();
+            courseWebView.loadUrl("about:blank");
+            courseWebView.destroy();
+            courseWebView = null;
+        }
         super.onDestroy();
     }
 
@@ -715,6 +740,18 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
         captureCard.addView(captureStatusText);
         refreshCaptureUi();
 
+        courseCard = card();
+        courseCard.addView(label("精选课程"));
+        courseCard.addView(label("仅显示机构已启用并分配给当前学生的课程。课程在受限浏览器中打开；屏幕资料采集始终待开始，必须由学生确认系统授权后才会启动。"));
+        courseStatusText = new TextView(this);
+        courseStatusText.setText("进入学生空间后读取课程。");
+        courseStatusText.setTextSize(13);
+        courseStatusText.setTextColor(Color.rgb(87, 107, 103));
+        courseStatusText.setPadding(0, dp(8), 0, dp(8));
+        courseCard.addView(courseStatusText);
+        courseListContainer = stack();
+        courseCard.addView(courseListContainer);
+
         contactCard = card();
         contactCard.addView(label("联系教育管家"));
         contactText = new TextView(this);
@@ -908,6 +945,8 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
         materialContent.addView(collapsiblePanel("自动投递文件夹", "仅个人终端可持续监测；共享终端保持关闭。", autoDeliveryPanel));
         root.addView(collapsiblePanel("资料搜集上传", "本地文件、屏幕采集和自动投递统一收纳。", materialContent));
 
+        root.addView(collapsiblePanel("精选课程", "同一份签名目录按当前学生和机构策略过滤后展示。", courseCard));
+
         LinearLayout dialogueContent = stack();
         dialogueContent.addView(collapsiblePanel("QQ / 企业微信", "打开当前学生绑定的联系入口。", contactCard));
         dialogueContent.addView(collapsiblePanel("QClaw / Mavis", "打开本机已有的教育 Agent。", agentDialogCard));
@@ -942,7 +981,170 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
         topButton.setLayoutParams(topParams);
         screen.addView(topButton);
 
+        buildCourseOverlay(screen);
         setContentView(screen);
+    }
+
+    private void buildCourseOverlay(FrameLayout screen) {
+        courseOverlay = new FrameLayout(this);
+        courseOverlay.setBackgroundColor(Color.WHITE);
+        courseOverlay.setVisibility(View.GONE);
+
+        LinearLayout layout = new LinearLayout(this);
+        layout.setOrientation(LinearLayout.VERTICAL);
+        layout.setBackgroundColor(Color.WHITE);
+
+        LinearLayout toolbar = row();
+        toolbar.setPadding(dp(12), dp(10), dp(12), dp(10));
+        courseBackButton = button("返回课程目录", false);
+        courseCaptureButton = button("待开始：采集课程资料", true);
+        toolbar.addView(courseBackButton);
+        toolbar.addView(courseCaptureButton);
+        layout.addView(toolbar);
+
+        courseWebView = new WebView(this);
+        configureCourseWebView();
+        layout.addView(courseWebView, new LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT,
+            0,
+            1f
+        ));
+        courseOverlay.addView(layout, new FrameLayout.LayoutParams(
+            FrameLayout.LayoutParams.MATCH_PARENT,
+            FrameLayout.LayoutParams.MATCH_PARENT
+        ));
+        courseBackButton.setOnClickListener(this);
+        courseCaptureButton.setOnClickListener(this);
+        screen.addView(courseOverlay, new FrameLayout.LayoutParams(
+            FrameLayout.LayoutParams.MATCH_PARENT,
+            FrameLayout.LayoutParams.MATCH_PARENT
+        ));
+    }
+
+    private void configureCourseWebView() {
+        WebSettings settings = courseWebView.getSettings();
+        settings.setJavaScriptEnabled(true);
+        settings.setDomStorageEnabled(true);
+        settings.setAllowFileAccess(false);
+        settings.setAllowContentAccess(false);
+        settings.setAllowFileAccessFromFileURLs(false);
+        settings.setAllowUniversalAccessFromFileURLs(false);
+        settings.setJavaScriptCanOpenWindowsAutomatically(false);
+        settings.setSupportMultipleWindows(false);
+        settings.setGeolocationEnabled(false);
+        settings.setMediaPlaybackRequiresUserGesture(true);
+        if (Build.VERSION.SDK_INT >= 21) {
+            settings.setMixedContentMode(WebSettings.MIXED_CONTENT_NEVER_ALLOW);
+            CookieManager.getInstance().setAcceptThirdPartyCookies(courseWebView, false);
+        }
+        if (Build.VERSION.SDK_INT >= 26) {
+            settings.setSafeBrowsingEnabled(true);
+        }
+        courseWebView.setWebViewClient(new WebViewClient() {
+            @Override
+            public boolean shouldOverrideUrlLoading(WebView view, String url) {
+                return blockDisallowedCourseUrl(url);
+            }
+
+            @Override
+            public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest request) {
+                return blockDisallowedCourseUrl(request == null || request.getUrl() == null ? "" : request.getUrl().toString());
+            }
+
+            @Override
+            public void onPageStarted(WebView view, String url, Bitmap favicon) {
+                if (activeCourse != null && isAllowedCourseUrl(url)) activeCourse.currentUrl = url;
+            }
+
+            @Override
+            public void onReceivedSslError(WebView view, SslErrorHandler handler, SslError error) {
+                if (handler != null) handler.cancel();
+                toast("课程页面证书校验失败，已停止访问。");
+            }
+
+            @Override
+            public void onReceivedError(WebView view, WebResourceRequest request, WebResourceError error) {
+                if (request != null && request.isForMainFrame()) {
+                    courseStatusText.setText("课程页面加载失败，请检查网络后重试。");
+                }
+            }
+        });
+        courseWebView.setWebChromeClient(new WebChromeClient() {
+            @Override
+            public void onPermissionRequest(PermissionRequest request) {
+                if (request != null) request.deny();
+            }
+
+            @Override
+            public boolean onShowFileChooser(WebView webView, android.webkit.ValueCallback<Uri[]> callback, FileChooserParams fileChooserParams) {
+                if (callback != null) callback.onReceiveValue(null);
+                return true;
+            }
+        });
+        courseWebView.setDownloadListener(new android.webkit.DownloadListener() {
+            @Override
+            public void onDownloadStart(String url, String userAgent, String contentDisposition, String mimeType, long contentLength) {
+                toast("课程浏览器不允许直接下载文件。");
+            }
+        });
+    }
+
+    boolean blockDisallowedCourseUrl(String url) {
+        boolean blocked = !isAllowedCourseUrl(url);
+        if (blocked) toast("已阻止课程白名单之外的链接。");
+        return blocked;
+    }
+
+    boolean isAllowedCourseUrl(String url) {
+        try {
+            Uri uri = Uri.parse(url == null ? "" : url.trim());
+            String host = uri.getHost();
+            return "https".equalsIgnoreCase(uri.getScheme())
+                && host != null
+                && uri.getUserInfo() == null
+                && activeCourseAllowedHosts.contains(host.toLowerCase(Locale.US));
+        } catch (Exception ignored) {
+            return false;
+        }
+    }
+
+    void openCourseBrowser(Course course) {
+        if (course == null || !course.isSafe()) {
+            toast("课程链接或白名单无效，已停止打开。");
+            return;
+        }
+        activeCourse = course;
+        activeCourse.currentUrl = course.url;
+        activeCourseStartedAt = System.currentTimeMillis();
+        activeCourseAllowedHosts.clear();
+        activeCourseAllowedHosts.addAll(course.allowedHosts);
+        courseStatusText.setText("正在打开 " + course.name + "。资料采集尚未开始。");
+        courseOverlay.setVisibility(View.VISIBLE);
+        refreshCaptureUi();
+        courseWebView.loadUrl(course.url);
+    }
+
+    void closeCourseBrowser() {
+        if (courseWebView != null) {
+            courseWebView.stopLoading();
+            courseWebView.loadUrl("about:blank");
+            courseWebView.clearHistory();
+            courseWebView.clearFormData();
+            CookieManager.getInstance().removeSessionCookies(null);
+        }
+        if (courseOverlay != null) courseOverlay.setVisibility(View.GONE);
+        activeCourse = null;
+        activeCourseStartedAt = 0L;
+        activeCourseAllowedHosts.clear();
+    }
+
+    @Override
+    public void onBackPressed() {
+        if (courseOverlay != null && courseOverlay.getVisibility() == View.VISIBLE) {
+            closeCourseBrowser();
+            return;
+        }
+        super.onBackPressed();
     }
 
     @Override
@@ -1035,6 +1237,10 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
             uploadCapturedScreenshots();
         } else if (view == captureManageButton) {
             showCaptureManager();
+        } else if (view == courseBackButton) {
+            closeCourseBrowser();
+        } else if (view == courseCaptureButton) {
+            handleCapturePrimary();
         } else if (view == autoDeliveryFolderButton) {
             chooseAutoDeliveryFolder();
         } else if (view == autoDeliveryTargetButton) {
@@ -1150,6 +1356,7 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
             refreshCaptureUi();
             updateContactCard();
             refreshArchiveSources();
+            loadCourses();
             loadArchiveFiles();
         } else if (parent == archiveSourceSpinner && !updatingArchiveSources) {
             if (position <= 0 || position - 1 >= archiveSourceProjects.size()) {
@@ -1173,6 +1380,8 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
     public void onNothingSelected(AdapterView<?> parent) {
         if (parent == studentSpinner) {
             selectedStudent = null;
+            closeCourseBrowser();
+            loadCourses();
             refreshCaptureUi();
         }
     }
@@ -1289,6 +1498,10 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
         pendingSharedUris.clear();
         failedUploadUris.clear();
         captureUploadUrisInFlight.clear();
+        closeCourseBrowser();
+        courses.clear();
+        renderCourses();
+        if (courseStatusText != null) courseStatusText.setText("请先进入学生空间。");
         if (studentAdapter != null) { studentAdapter.clear(); studentAdapter.notifyDataSetChanged(); }
         if (archiveAdapter != null) { archiveAdapter.clear(); archiveAdapter.notifyDataSetChanged(); }
         currentMarkdown = "";
@@ -2356,10 +2569,18 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
                     .putExtra("student_id", selectedStudent == null ? "" : selectedStudent.id)
                     .putExtra("student_name", selectedStudent == null ? "" : selectedStudent.name)
                     .putExtra("project_id", pendingCaptureProjectId)
-                    .putExtra("project_name", pendingCaptureProjectName);
+                    .putExtra("project_name", pendingCaptureProjectName)
+                    .putExtra("course_id", activeCourse == null ? "" : activeCourse.id)
+                    .putExtra("course_provider", activeCourse == null ? "" : activeCourse.provider)
+                    .putExtra("course_url", activeCourse == null ? "" : activeCourse.currentUrl)
+                    .putExtra("course_started_at", activeCourse == null ? 0L : activeCourseStartedAt);
                 getSharedPreferences(CaptureProjectionService.PREFS, MODE_PRIVATE).edit()
                     .putString(CaptureProjectionService.KEY_PROJECT_ID, pendingCaptureProjectId)
                     .putString(CaptureProjectionService.KEY_PROJECT_NAME, pendingCaptureProjectName)
+                    .putString(CaptureProjectionService.KEY_COURSE_ID, activeCourse == null ? "" : activeCourse.id)
+                    .putString(CaptureProjectionService.KEY_COURSE_PROVIDER, activeCourse == null ? "" : activeCourse.provider)
+                    .putString(CaptureProjectionService.KEY_COURSE_URL, activeCourse == null ? "" : activeCourse.currentUrl)
+                    .putLong(CaptureProjectionService.KEY_COURSE_STARTED_AT, activeCourse == null ? 0L : activeCourseStartedAt)
                     .putString("capture_student_id", selectedStudent == null ? "" : selectedStudent.id)
                     .apply();
                 if (Build.VERSION.SDK_INT >= 26) startForegroundService(serviceIntent);
@@ -2716,6 +2937,12 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
             captureUploadButton.setTextColor(canUpload ? Color.WHITE : Color.rgb(122, 137, 133));
             captureUploadButton.setBackgroundTintList(ColorStateList.valueOf(canUpload ? accentColor() : Color.rgb(224, 231, 229)));
         }
+        if (courseCaptureButton != null) {
+            courseCaptureButton.setEnabled(selectedStudent != null);
+            courseCaptureButton.setText(active
+                ? "结束课程资料采集"
+                : (pending > 0 ? "待确认上传 · 再次采集" : "待开始：采集课程资料"));
+        }
     }
 
     String captureModeLabel(String mode) {
@@ -3018,6 +3245,28 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
             File metadata = new File(session, "session.json");
             if (!metadata.isFile()) return new JSONObject();
             return new JSONObject(readStream(new FileInputStream(metadata)));
+        } catch (Exception ignored) {
+            return new JSONObject();
+        }
+    }
+
+    JSONObject readCaptureItemMetadata(Uri uri) {
+        try {
+            if (uri == null || !"file".equals(uri.getScheme()) || uri.getPath() == null) return new JSONObject();
+            File metadata = new File(uri.getPath() + ".json");
+            if (!metadata.isFile()) return new JSONObject();
+            return new JSONObject(readStream(new FileInputStream(metadata)));
+        } catch (Exception ignored) {
+            return new JSONObject();
+        }
+    }
+
+    JSONObject readCaptureSessionMetadata(Uri uri) {
+        try {
+            if (uri == null || !"file".equals(uri.getScheme()) || uri.getPath() == null) return new JSONObject();
+            File image = new File(uri.getPath());
+            File parent = image.getParentFile();
+            return parent == null ? new JSONObject() : readCaptureMetadata(parent);
         } catch (Exception ignored) {
             return new JSONObject();
         }
@@ -4389,6 +4638,7 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
         updateDigestStatusCard();
         updateContactCard();
         refreshArchiveSources();
+        loadCourses();
         updateConnectionSummary(requiresApproval ? "已连接，待 Windows 授权" : "已连接", students.size());
         status(requiresApproval
             ? "设备已登记，正在等待 Windows 主机授权学生；授权后会自动载入。"
@@ -4398,6 +4648,148 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
         } else {
             authorizationPollsRemaining = 0;
         }
+    }
+
+    void loadCourses() {
+        courses.clear();
+        renderCourses();
+        if (selectedStudent == null) {
+            if (courseStatusText != null) courseStatusText.setText("请先进入学生空间。");
+            return;
+        }
+        final String base = normalizedBaseUrl();
+        final String studentId = selectedStudent.id;
+        final String token = dataToken();
+        if (base.length() == 0 || token.length() == 0) {
+            if (courseStatusText != null) courseStatusText.setText("连接并授权主机后读取课程。");
+            return;
+        }
+        if (courseStatusText != null) courseStatusText.setText("正在读取当前学生的课程目录…");
+        new Thread(new Runnable() {
+            @Override public void run() {
+                JSONObject payload = null;
+                String error = null;
+                try {
+                    payload = getJson(base + "/api/students/" + encode(studentId) + "/courses", token);
+                } catch (Exception failure) {
+                    error = failure.getMessage();
+                }
+                final JSONObject result = payload;
+                final String message = error;
+                runOnUiThread(new Runnable() {
+                    @Override public void run() {
+                        applyCourses(result, message, studentId);
+                    }
+                });
+            }
+        }).start();
+    }
+
+    void applyCourses(JSONObject payload, String error, String expectedStudentId) {
+        if (selectedStudent == null || !selectedStudent.id.equals(expectedStudentId)) return;
+        courses.clear();
+        if (error != null) {
+            courseStatusText.setText("课程目录读取失败：" + error);
+            renderCourses();
+            return;
+        }
+        if (!expectedStudentId.equals(payload == null ? "" : payload.optString("studentId", ""))) {
+            courseStatusText.setText("课程目录学生范围不匹配，已停止展示。");
+            renderCourses();
+            return;
+        }
+        JSONArray array = payload.optJSONArray("courses");
+        if (array != null) {
+            for (int i = 0; i < array.length(); i++) {
+                JSONObject item = array.optJSONObject(i);
+                if (item == null) continue;
+                Course course = new Course(item);
+                if (course.isSafe()) courses.add(course);
+            }
+        }
+        courseStatusText.setText(courses.isEmpty()
+            ? "当前学生没有已启用且已分配的课程。"
+            : "目录版本 " + payload.optString("catalogVersion", "") + " · " + courses.size() + " 门课程");
+        renderCourses();
+    }
+
+    void renderCourses() {
+        if (courseListContainer == null) return;
+        courseListContainer.removeAllViews();
+        if (courses.isEmpty()) return;
+        for (final Course course : courses) {
+            LinearLayout item = card();
+            item.setPadding(dp(12), dp(12), dp(12), dp(12));
+            boolean phoneLayout = isPhoneLayout();
+            LinearLayout body = new LinearLayout(this);
+            body.setOrientation(phoneLayout ? LinearLayout.VERTICAL : LinearLayout.HORIZONTAL);
+            body.setGravity(Gravity.TOP);
+            ImageView cover = new ImageView(this);
+            cover.setScaleType(ImageView.ScaleType.CENTER_CROP);
+            cover.setAdjustViewBounds(true);
+            cover.setBackgroundColor(Color.rgb(235, 242, 240));
+            LinearLayout.LayoutParams coverParams = phoneLayout
+                ? new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(168))
+                : new LinearLayout.LayoutParams(dp(112), dp(74));
+            coverParams.setMargins(0, 0, phoneLayout ? 0 : dp(12), phoneLayout ? dp(10) : 0);
+            body.addView(cover, coverParams);
+            LinearLayout copy = stack();
+            TextView title = label(course.name + " · " + course.provider);
+            title.setTextSize(16);
+            copy.addView(title);
+            TextView summary = label(course.summary);
+            summary.setTextSize(13);
+            copy.addView(summary);
+            LinearLayout.LayoutParams copyParams = phoneLayout
+                ? new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
+                : new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f);
+            body.addView(copy, copyParams);
+            item.addView(body);
+            TextView boundary = label(course.accountRequirement + "\n" + course.legalNotice);
+            boundary.setTextSize(12);
+            boundary.setTextColor(Color.rgb(87, 107, 103));
+            boundary.setPadding(0, dp(8), 0, dp(8));
+            item.addView(boundary);
+            Button open = button("安全打开课程", true);
+            open.setOnClickListener(new View.OnClickListener() {
+                @Override public void onClick(View view) {
+                    openCourseBrowser(course);
+                }
+            });
+            LinearLayout action = row();
+            action.addView(open);
+            item.addView(action);
+            courseListContainer.addView(item);
+            loadCourseCover(course, cover);
+        }
+    }
+
+    void loadCourseCover(final Course course, final ImageView cover) {
+        if (course.coverUrl.length() == 0) return;
+        final String url = normalizedBaseUrl() + course.coverUrl;
+        final String token = dataToken();
+        new Thread(new Runnable() {
+            @Override public void run() {
+                Bitmap bitmap = null;
+                HttpURLConnection connection = null;
+                try {
+                    connection = (HttpURLConnection) new URL(url).openConnection();
+                    connection.setConnectTimeout(5000);
+                    connection.setReadTimeout(8000);
+                    if (token.length() > 0) connection.setRequestProperty("Authorization", "Bearer " + token);
+                    bitmap = BitmapFactory.decodeStream(connection.getInputStream());
+                } catch (Exception ignored) {
+                } finally {
+                    if (connection != null) connection.disconnect();
+                }
+                final Bitmap loaded = bitmap;
+                if (loaded != null) runOnUiThread(new Runnable() {
+                    @Override public void run() {
+                        if (courses.contains(course)) cover.setImageBitmap(loaded);
+                    }
+                });
+            }
+        }).start();
     }
 
     void applyArchiveFiles(List<ArchiveFile> result, String error) {
@@ -4847,6 +5239,52 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
 
     private int dp(int value) {
         return (int) (value * getResources().getDisplayMetrics().density + 0.5f);
+    }
+}
+
+class Course {
+    final String id;
+    final String name;
+    final String provider;
+    final String url;
+    final String coverUrl;
+    final String summary;
+    final String accountRequirement;
+    final String legalNotice;
+    final Set<String> allowedHosts = new HashSet<String>();
+    String currentUrl;
+
+    Course(JSONObject json) {
+        this.id = json.optString("courseId", "");
+        this.name = json.optString("name", id);
+        this.provider = json.optString("provider", "");
+        this.url = json.optString("url", "");
+        this.currentUrl = this.url;
+        this.coverUrl = json.optString("coverUrl", "");
+        this.summary = json.optString("summary", "");
+        this.accountRequirement = json.optString("accountRequirement", "账号与收费要求以课程提供方页面为准。");
+        this.legalNotice = json.optString("legalNotice", "AI教育管家仅提供访问入口和用户主动发起的资料采集。");
+        JSONArray hosts = json.optJSONArray("allowedHosts");
+        if (hosts != null) {
+            for (int i = 0; i < hosts.length(); i++) {
+                String host = hosts.optString(i, "").trim().toLowerCase(Locale.US);
+                if (host.length() > 0) allowedHosts.add(host);
+            }
+        }
+    }
+
+    boolean isSafe() {
+        try {
+            Uri uri = Uri.parse(url);
+            String host = uri.getHost();
+            return id.length() > 0
+                && "https".equalsIgnoreCase(uri.getScheme())
+                && host != null
+                && uri.getUserInfo() == null
+                && allowedHosts.contains(host.toLowerCase(Locale.US));
+        } catch (Exception ignored) {
+            return false;
+        }
     }
 }
 
@@ -5845,9 +6283,21 @@ class UploadMaterialsTask implements Runnable {
                     : base + "/api/students/" + activity.encode(target.id) + "/materials?filename=" + activity.encode(fileName);
                 url += "&uploadId=" + activity.encode(uploadId);
                 if (captureFile) {
-                    String sessionId = activity.getSharedPreferences(CaptureProjectionService.PREFS, Activity.MODE_PRIVATE)
-                        .getString(CaptureProjectionService.KEY_SESSION_ID, "");
+                    SharedPreferences capturePrefs = activity.getSharedPreferences(CaptureProjectionService.PREFS, Activity.MODE_PRIVATE);
+                    JSONObject itemMetadata = activity.readCaptureItemMetadata(uri);
+                    JSONObject sessionMetadata = activity.readCaptureSessionMetadata(uri);
+                    String sessionId = itemMetadata.optString("sessionId", sessionMetadata.optString("sessionId", capturePrefs.getString(CaptureProjectionService.KEY_SESSION_ID, "")));
                     url += "&sourceType=android_screenshot&captureSessionId=" + activity.encode(sessionId);
+                    String courseId = itemMetadata.optString("courseId", sessionMetadata.optString("courseId", capturePrefs.getString(CaptureProjectionService.KEY_COURSE_ID, "")));
+                    String courseUrl = itemMetadata.optString("courseUrl", sessionMetadata.optString("courseUrl", capturePrefs.getString(CaptureProjectionService.KEY_COURSE_URL, "")));
+                    long courseStartedAt = itemMetadata.optLong("courseStartedAt", sessionMetadata.optLong("courseStartedAt", capturePrefs.getLong(CaptureProjectionService.KEY_COURSE_STARTED_AT, 0L)));
+                    long courseCompletedAt = sessionMetadata.optLong("courseCompletedAt", capturePrefs.getLong(CaptureProjectionService.KEY_COURSE_COMPLETED_AT, 0L));
+                    if (courseId.length() > 0) {
+                        url += "&courseId=" + activity.encode(courseId)
+                            + "&courseUrl=" + activity.encode(courseUrl)
+                            + "&courseStartedAt=" + activity.encode(String.valueOf(courseStartedAt))
+                            + "&courseCompletedAt=" + activity.encode(String.valueOf(courseCompletedAt));
+                    }
                 } else {
                     url += "&sourceType=android_terminal_file";
                 }

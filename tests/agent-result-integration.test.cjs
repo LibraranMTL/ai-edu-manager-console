@@ -19,10 +19,11 @@ test('screening parser accepts embedded JSON and structured Markdown', () => {
   assert.equal(Array.isArray(markdown.items), true);
 });
 
-test('digest compatibility parsing does not bypass batch and hash checks', () => {
+test('digest compatibility parsing trusts a unique material id despite stale receipt hash fields', () => {
   const batch = { batchId: 'b1', scope: { type: 'project', id: 'p1' }, files: [{ materialId: 'm1', relativePath: 'a.pdf', sha1: '111' }] };
   const raw = '```json\n{"status":"completed","projectId":"p1","batchId":"b1","processedFiles":[{"materialId":"m1","filename":"a.pdf","sha1":"wrong"}]}\n```';
   const result = validateDigestResult({ batch, receipt: raw, currentFiles: batch.files, requireMaterialId: true });
-  assert.equal(result.ok, false);
-  assert.equal(result.code, 'no_matching_files');
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.confirmed.map((file) => file.materialId), ['m1']);
+  assert.ok(result.compatibility.matchModes.includes('materialId'));
 });

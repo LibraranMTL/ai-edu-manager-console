@@ -18,7 +18,8 @@ test('one-click digest workflow crosses renderer, preload and main process', () 
   }
   assert.match(main, /createDigestOrchestrator/);
   assert.match(main, /startDigestWorkflowMonitor/);
-  assert.match(main, /setInterval\(\(\) => reconcileDigestWorkflows\(\), 5000\)/);
+  assert.match(main, /scheduleDigestWorkflowMonitor/);
+  assert.match(main, /digestWorkflowMonitorHasActiveWork\(\) \? 10_000 : 60_000/);
 });
 
 test('digest command copy uses the current frozen batch and reports clipboard feedback', () => {
@@ -35,23 +36,36 @@ test('digest execution respects the bound Agent and terminal failures can be ret
   assert.match(main, /requestedCandidate\?\.available \? requestedCandidate/);
   assert.match(main, /business\.pendingCount > 0 \|\| Number\(business\.submittedCount \|\| 0\) > 0/);
   assert.match(main, /app\.asar\.unpacked/);
+  assert.match(main, /discoverQClawRuntime/);
+  assert.match(main, /selectQClawAgentId/);
+  assert.match(main, /qclawRuntimeEnv/);
+  assert.match(main, /QClaw 已安装，但自动执行 Gateway 尚未连接/);
+  assert.match(main, /startDigestWorkflowWithFreshCapabilities/);
+  assert.match(main, /retryDigestWorkflowWithFreshCapabilities/);
+  assert.match(preload, /ipcRenderer\.invoke\('bridge:startDigestWorkflow'/);
+  assert.match(preload, /ipcRenderer\.invoke\('bridge:retryDigestWorkflow'/);
+  assert.match(renderer, /await bridge\(\)\?\.startDigestWorkflow/);
+  assert.match(renderer, /await bridge\(\)\?\.retryDigestWorkflow/);
 });
 
-test('student digest freezes a strict batch and settles only exact receipt entries', () => {
+test('student digest freezes a source batch but reconciles permissive Agent results automatically', () => {
   assert.match(main, /function registerStudentDigestBatch/);
   assert.match(main, /buildDigestBatch\(/);
   assert.match(main, /studentDigestBatchPath/);
   assert.match(main, /validateDigestResult\(\{/);
-  assert.match(main, /requireMaterialId: true/);
+  assert.match(main, /assumeAllOnCompletion: freshArtifacts\.length > 0/);
   assert.match(main, /status: 'processed'/);
   assert.match(main, /status: 'pending_digest'/);
   assert.match(main, /artifacts_not_updated/);
   assert.match(main, /discoverDigestReceipts/);
+  assert.match(main, /discoverKnowledgeCompletionReceipt/);
   assert.match(main, /discoverSingleFileMarkdownReceipt/);
   assert.match(receiptCompat, /single_file_markdown_receipt/);
   assert.match(main, /mergeDigestReceipts/);
   assert.match(main, /receiptFingerprints/);
   assert.match(main, /domainSync\?\.strict/);
+  assert.match(main, /extractDigestReceiptPayload/);
+  assert.match(main, /validateTaskCompletion\(task, task\.startedAt, String\(output \|\| ''\)\)/);
   assert.match(main, /const strictValid = Boolean\([\s\S]*?\['completed', 'partial'\]\.includes\(status\)/);
 });
 
@@ -80,4 +94,7 @@ test('ordinary digest UI has one main action and technical tools are folded away
   assert.match(card, /查看新增知识/);
   assert.match(card, /<details className="digest-advanced">/);
   assert.match(renderer, /digest-advanced-audit/);
+  assert.match(renderer, /已有任务等待回执/);
+  assert.match(renderer, /已打开 Agent；结果将自动同步/);
+  assert.match(renderer, /showActionNotice\(Boolean\(result\?\.ok\), title, message\)/);
 });

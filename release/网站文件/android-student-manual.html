@@ -7,8 +7,7 @@
   <meta name="description" content="AI教育管家 Android 学生端操作手册" />
   <style>
     :root { --ink:#172033; --muted:#66758a; --line:#e3eaf2; --accent:#6d28d9; --soft:#f7f5ff; }
-    * { box-sizing:border-box; }
-    html { scroll-behavior:smooth; }
+    * { box-sizing:border-box; } html { scroll-behavior:smooth; }
     body { margin:0; overflow-x:hidden; font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft YaHei","PingFang SC",sans-serif; color:var(--ink); background:#f7f9fc; line-height:1.8; }
     .topbar { position:sticky; top:0; z-index:20; border-bottom:1px solid var(--line); background:rgba(255,255,255,.94); backdrop-filter:blur(14px); }
     .topbar-inner { width:min(1180px,calc(100% - 32px)); min-height:66px; margin:auto; display:flex; align-items:center; justify-content:space-between; gap:20px; }
@@ -20,39 +19,37 @@
     .toc { position:sticky; top:92px; max-height:calc(100vh - 116px); overflow:auto; padding:16px; border:1px solid var(--line); border-radius:8px; background:#fff; }
     .toc strong { display:block; margin:0 8px 10px; font-size:14px; }
     .toc a { display:block; padding:6px 8px; border-radius:5px; color:#66758a; text-decoration:none; font-size:13px; line-height:1.45; }
-    .toc a:hover { color:var(--accent); background:var(--soft); }
     article { min-width:0; padding:46px clamp(24px,6vw,72px); border:1px solid var(--line); border-radius:8px; background:#fff; box-shadow:0 18px 48px rgba(39,52,76,.08); }
-    h1 { margin:0 0 22px; font-size:clamp(28px,4vw,42px); line-height:1.2; letter-spacing:0; overflow-wrap:anywhere; }
-    h2 { margin:46px 0 18px; padding-top:8px; color:var(--accent); font-size:24px; line-height:1.35; letter-spacing:0; border-top:1px solid var(--line); }
-    h2[id] { scroll-margin-top:92px; }
-    h2:first-of-type { margin-top:28px; border-top:0; }
-    h3 { margin:28px 0 12px; font-size:18px; letter-spacing:0; }
-    p { margin:12px 0; color:#35455a; overflow-wrap:anywhere; }
-    ol,ul { margin:12px 0; padding-left:26px; }
-    li { margin:7px 0; color:#35455a; overflow-wrap:anywhere; }
+    h1 { margin:0 0 22px; font-size:clamp(28px,4vw,42px); line-height:1.2; overflow-wrap:anywhere; }
+    h2 { margin:46px 0 18px; padding-top:8px; color:var(--accent); font-size:24px; line-height:1.35; border-top:1px solid var(--line); }
+    h2[id] { scroll-margin-top:92px; } h2:first-of-type { margin-top:28px; border-top:0; }
+    p { margin:12px 0; color:#35455a; overflow-wrap:anywhere; } ol,ul { margin:12px 0; padding-left:26px; } li { margin:7px 0; color:#35455a; }
     code { padding:2px 6px; border-radius:4px; background:#f0edf9; color:#5422aa; font-family:Consolas,"Microsoft YaHei",monospace; }
-    pre { overflow:auto; padding:18px; border:1px solid #ddd4ff; border-radius:7px; background:#f7f5ff; line-height:1.55; }
-    pre code { padding:0; background:transparent; color:#273447; }
-    blockquote { margin:18px 0; padding:14px 18px; border-left:4px solid var(--accent); background:var(--soft); color:#4b3b67; }
     footer { padding:30px 16px; text-align:center; color:#8b98a9; font-size:13px; }
-    @media(max-width:820px) { .topbar-inner { width:calc(100% - 24px); min-width:0; align-items:flex-start; flex-direction:column; padding:14px 0; } .menu { width:100%; min-width:0; display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); justify-content:stretch; } .menu a { min-width:0; padding:8px; text-align:center; overflow-wrap:anywhere; } .layout { width:calc(100% - 24px); min-width:0; grid-template-columns:minmax(0,1fr); margin-top:20px; } .toc { position:static; min-width:0; max-height:260px; } article { min-width:0; padding:30px 22px; } h1 { font-size:28px; } h2[id] { scroll-margin-top:190px; } }
+    @media(max-width:820px) { .topbar-inner { width:calc(100% - 24px); min-width:0; align-items:flex-start; flex-direction:column; padding:14px 0; } .menu { width:100%; min-width:0; display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); } .menu a { min-width:0; padding:8px; text-align:center; } .layout { width:calc(100% - 24px); min-width:0; grid-template-columns:minmax(0,1fr); margin-top:20px; } .toc { position:static; max-height:260px; } article { padding:30px 22px; } h1 { font-size:28px; } h2[id] { scroll-margin-top:190px; } }
   </style>
 </head>
 <body>
   <header class="topbar"><div class="topbar-inner">
     <a class="brand" href="./download.html">AI教育管家</a>
-    <nav class="menu" aria-label="网站菜单">
-      <a href="./download.html">软件下载</a>
-      <a href="./windows-host-manual.html">Windows 主机端</a>
-      <a href="./windows-student-manual.html">Windows 学生端</a>
-      <a href="./android-student-manual.html" aria-current="page">Android 学生端</a>
-      <a href="./privacy.html">隐私政策</a>
-      <a href="./agreement.html">用户协议</a>
-    </nav>
+    <nav class="menu" aria-label="网站菜单"><a href="./download.html">软件下载</a><a href="./windows-host-manual.html">Windows 主机端</a><a href="./windows-student-manual.html">Windows 学生端</a><a href="./android-student-manual.html" aria-current="page">Android 学生端</a><a href="./privacy.html">隐私政策</a><a href="./agreement.html">用户协议</a></nav>
   </div></header>
   <main class="layout">
-    <aside class="toc"><strong>本页目录</strong><a href="#section-1">1. 产品定位</a><a href="#section-2">2. 安装与首次连接</a><a href="#section-3">3. 个人终端与共享终端</a><a href="#section-4">4. 上传本地资料</a><a href="#section-5">5. 屏幕资料采集</a><a href="#section-6">6. 自动投递文件夹</a><a href="#section-7">7. 资料进展与每日提醒</a><a href="#section-8">8. 查看学情报告和教育档案</a><a href="#section-9">9. 连接备份</a><a href="#section-10">10. 常见问题</a></aside>
-    <article><h1>AI教育管家 Android 学生端操作手册</h1><p><strong>适用版本：Android 学生端 0.6.3</strong></p><p><strong>配套主机：Windows 主机端 0.10.5</strong></p><h2 id="section-1">1. 产品定位</h2><p>Android 学生端安装在学生使用的平板或手机上，用于进入本人学生空间、上传与采集资料、查看本人学情报告和教育档案。档案初始化、项目管理、知识治理和报告发布仍由 Windows 主机端完成。</p><h2 id="section-2">2. 安装与首次连接</h2><ol><li>安装 <code>AI-edu-manager-tablet-terminal-0.6.3.apk</code>。</li><li>主机在“系统设置 → 使用模式”中选择“主机-终端模式”，启动学生终端协作服务。</li><li>Android 与主机位于同一局域网时，可查找附近主机并核对固定主机码；也可使用扫码、粘贴连接信息或连接备份。</li><li>主机接受连接后，为该设备选择“个人终端”或“共享终端”。</li></ol><h2 id="section-3">3. 个人终端与共享终端</h2><ul><li>个人终端：主机固定绑定一名学生，连接后自动进入本人空间，适合一人长期使用的平板。</li><li>共享终端：学生在平板上输入个人 ID，或点击“扫码进入”拍摄主机生成的学生二维码；进入后只加载本人项目、报告和档案，使用结束后点击“退出当前学生”。</li></ul><p>不需要 PIN 或密码。学生 ID 由主机在创建或升级学生档案时自动生成。共享终端未进入学生空间前不会获取或显示学生名单。</p><h2 id="section-4">4. 上传本地资料</h2><p>Android 支持拍照、选择图片、选择普通文件、扫描下载目录，以及从浏览器、相册、PDF 阅读器或文件管理器分享资料。</p><ol><li>先进入学生空间。</li><li>选择文件或拍照。</li><li>选择“学生原始资料库”或当前学生绑定且未封存的“项目原始资料库”。</li><li>确认上传。终端会分块传输文件，主机端同步执行限额校验和流式落盘，大文件上传不再需要整体加载到内存。</li></ol><p>按钮会用文字和背景颜色反馈按下、上传中、成功、失败和禁用状态：开始后显示“正在上传…”，成功时显示“上传完成”，失败时显示“上传失败，点击重试”。本地源文件不会因上传而删除。</p><h2 id="section-5">5. 屏幕资料采集</h2><ol><li>进入学生空间，并可选择一个绑定学习项目。</li><li>选择智能混合、内容变化或固定间隔策略。</li><li>设置时长并通过 Android 系统授权屏幕捕获。</li><li>采集中可重点截取、暂停、继续和结束。</li><li>结束后确认上传到学生资料库或绑定项目资料库。</li></ol><p>采集开始时会记录当前学生和可选项目，并保存在该学生的独立采集目录。采集运行中不能退出学生；结束后也不能把该批截图投递给另一名学生。</p><p>点击“查看与清理采集资料”可以：</p><ul><li>只查看当前学生的采集会话和缩略图；</li><li>清理已经上传成功的图片，同时保留未上传图片；</li><li>确认后删除整个已结束会话；正在采集的会话不能删除；</li><li>检测到升级前未标记学生的旧会话时，只显示数量，不展示其中图片，避免串档。</li></ul><h2 id="section-6">6. 自动投递文件夹</h2><p>自动投递只在个人终端可用：</p><ol><li>点击“选择文件夹”，在 Android 系统文件选择器中授权一个目录。</li><li>选择投递到当前学生原始资料库或某个绑定项目原始资料库。</li><li>点击“启用自动投递”。应用打开时会检查一次，系统联网时通常约每 15 分钟检查一次，也可点击“立即检查”。</li><li>新文件稳定后才上传；同一文件版本和同一目标不会重复入库，失败文件稍后重试，本地文件不会删除。</li></ol><p>切换为共享终端时会自动关闭自动投递，避免下一位学生沿用上一位学生的文件夹和投递位置。普通文件仍可手动上传。</p><h2 id="section-7">7. 资料进展与每日提醒</h2><p>首页显示已提交资料、已完成知识化、近 7 天新增和近 30 天活跃频率。“已完成知识化”按已经消化完成的资料数统计，不等同于知识库文件数量。</p><p>当天没有新资料时显示“提交本日学习资料”提醒。点击“现在上传”进入普通文件上传；点击“稍后再说”只关闭当天提醒，不会伪造已提交状态。</p><h2 id="section-8">8. 查看学情报告和教育档案</h2><p>进入学生空间后打开“查看教育档案”或“学情报告”。终端只从主机读取当前学生会话内已经发布的 Markdown 文档，并可缓存最近查看内容。退出当前学生时，当前页面和列表会清空。</p><h2 id="section-9">9. 连接备份</h2><ul><li>导出连接备份：保存主机地址、连接模式和设备身份；</li><li>导入并连接：用于同一设备重装后的恢复。</li></ul><p>连接备份恢复的是设备连接，不会替代共享终端的学生 ID 登录。</p><h2 id="section-10">10. 常见问题</h2><h3>已连接但没有进入学生</h3><p>共享终端需要扫码或输入个人 ID；个人终端需要教师或家长在主机设备卡片中绑定学生。</p><h3>学生 ID 无效</h3><p>向教师或家长核对主机“学生登录 ID 与二维码”中的完整 ID；系统会校验 ID 格式和校验位。</p><h3>看不到绑定项目</h3><p>确认项目已经绑定当前学生且尚未封存，然后重新进入或刷新。</p><h3>上传按钮没有反应</h3><p>先确认已经进入学生空间，并观察按钮背景和文字状态；失败时检查主机服务和网络后重试。</p><h3>截图上传后没有知识内容</h3><p>学生端只负责采集和上传。知识消化、成长模型和学情报告更新由 Windows 主机端继续完成。</p></article>
+    <aside class="toc"><strong>本页目录</strong><a href="#section-1">1. 产品定位</a><a href="#section-2">2. 安装与连接</a><a href="#section-3">3. 个人与共享终端</a><a href="#section-4">4. 上传本地资料</a><a href="#section-5">5. 屏幕资料采集</a><a href="#section-6">6. 自动投递文件夹</a><a href="#section-7">7. 资料进展</a><a href="#section-8">8. 报告、档案与项目知识</a><a href="#section-9">9. 连接备份</a><a href="#section-10">10. 常见问题</a></aside>
+    <article>
+      <h1>AI教育管家 Android 学生端操作手册</h1>
+      <p><strong>适用版本：Android 学生端 0.6.7</strong></p><p><strong>配套主机：Windows 主机端 0.14.2</strong></p>
+      <h2 id="section-1">1. 产品定位</h2><p>Android 学生端用于进入本人空间、上传与采集资料，并只读查看本人成长模型、报告、教育档案和关联项目知识。管理与知识治理仍由 Windows 主机完成。</p><p>首页按“基础设置、资料搜集上传、教育管家对话、教育档案”四个默认折叠板块呈现；二级入口也默认折叠，需要时再展开。</p>
+      <h2 id="section-2">2. 安装与首次连接</h2><ol><li>安装 <code>AI-edu-manager-tablet-terminal-0.6.7.apk</code>。</li><li>主机启动学生终端服务。</li><li>通过附近主机、固定主机码、扫码、粘贴连接信息或连接备份发起连接。</li><li>主机接受后设置为个人终端或共享终端。</li></ol>
+      <h2 id="section-3">3. 个人终端与共享终端</h2><ul><li>个人终端固定绑定一名学生，并支持自动投递。</li><li>共享终端输入个人 ID 或拍摄学生二维码进入，结束后点击“退出当前学生”。</li></ul><p>不需要 PIN。共享终端未进入学生空间前不会显示学生名单。</p>
+      <h2 id="section-4">4. 上传本地资料</h2><p>支持拍照、选择图片和普通文件、扫描下载目录，以及从其他应用分享资料。可上传到学生原始资料库或当前学生绑定且未封存的项目原始资料库。按钮显示“正在上传…”“上传完成”或“上传失败，点击重试”，本地源文件不会删除。</p>
+      <h2 id="section-5">5. 屏幕资料采集</h2><p>采集开始时记录并冻结当前学生及可选项目。采集中不能退出学生，结束后也不能把该批截图投递给另一名学生。“查看与清理采集资料”只显示当前学生的会话，并可安全清理已上传图片。</p>
+      <h2 id="section-6">6. 自动投递文件夹</h2><p>个人终端可通过 Android 系统文件选择器授权一个目录，选择学生或项目资料目标后启用自动投递。文件稳定后幂等上传，失败稍后重试，且不会删除本地文件。共享终端会自动关闭此功能。</p>
+      <h2 id="section-7">7. 资料进展与每日提醒</h2><p>首页显示已提交资料、已完成知识化、近 7 天新增和近 30 天活跃频率；当天没有新资料时显示一次轻提醒。</p>
+      <h2 id="section-8">8. 成长模型、学情报告、教育档案与项目知识</h2><p>进入学生空间后，在“我的成长模型”卡片点击“查看成长模型”，可只读查看能力画像、项目贡献和近期成长证据，不会触发评估、审核或重新分析。打开“学情档案与关联项目知识”后，来源列表可在“我的学情档案”和当前学生关联项目之间切换；已封存项目仍可只读查看。主机只返回当前学生会话有权访问的内容，并再次校验学生与项目关联。退出当前学生后成长模型、项目列表、文档列表和正文都会清空。</p>
+      <h2 id="section-9">9. 连接备份</h2><p>连接备份保存主机地址、连接模式和设备身份，用于同一设备重装后恢复，不会替代共享终端的学生 ID 登录。</p>
+      <h2 id="section-10">10. 常见问题</h2><ul><li>看不到关联项目知识：确认项目已绑定当前学生，并确认主机端已有公开 Markdown 知识。</li><li>上传按钮没有反应：先确认已进入学生空间，再观察按钮背景与文字状态。</li><li>截图上传后没有知识内容：学生端只负责采集，知识消化仍由主机完成。</li></ul>
+    </article>
   </main>
   <footer>嘉玛蓝（北京）科技有限公司版权所有</footer>
 </body>

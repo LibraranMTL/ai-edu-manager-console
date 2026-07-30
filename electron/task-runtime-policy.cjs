@@ -13,6 +13,7 @@ function taskExecutionClass(task) {
   const adapterId = String(task?.adapterId || '');
   const mode = String(task?.executionMode || '');
   if (adapterId === 'manual' || mode === 'manual') return 'manual';
+  if (mode === 'automatic') return 'process';
   if (adapterId === 'qclaw' || mode === 'inbox') return 'inbox';
   if (adapterId === 'internal' || mode === 'internal') return 'internal';
   return 'process';

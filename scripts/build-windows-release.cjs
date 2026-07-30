@@ -9,6 +9,7 @@ const repoRoot = path.resolve(__dirname, '..');
 const packageJson = JSON.parse(fs.readFileSync(path.join(repoRoot, 'package.json'), 'utf8'));
 const version = String(packageJson.version);
 validateWindowsVersion(version);
+const candidateTag = String(process.env.EDU_WINDOWS_CANDIDATE_TAG || '').trim().replace(/[^a-zA-Z0-9._-]+/g, '-').replace(/^-+|-+$/g, '');
 const changelog = fs.readFileSync(path.join(repoRoot, 'CHANGELOG.md'), 'utf8');
 if (!changelog.includes(`## [${version}]`)) {
   throw new Error(`CHANGELOG.md 缺少 Windows ${version} 更新记录。`);
@@ -22,13 +23,15 @@ for (const manifestPath of [
     throw new Error(`${manifestPath} 的 Windows 版本与 package.json 不一致。`);
   }
 }
-const artifactBase = `AI-edu-manager-console-Windows-${version}`;
+const artifactBase = `AI-edu-manager-console-Windows-${version}${candidateTag && candidateTag !== version ? `-${candidateTag}` : ''}`;
 const localAppData = process.env.LOCALAPPDATA || os.tmpdir();
 const stageBase = path.resolve(localAppData, 'AI-Education-Manager', 'release-stage');
-const stageRoot = path.resolve(stageBase, version);
+const stageRoot = path.resolve(stageBase, candidateTag ? `${version}-${candidateTag}` : version);
 const stageDist = path.join(stageRoot, 'dist');
 const stageOutput = path.join(stageRoot, 'out');
-const releaseDir = path.join(repoRoot, 'release', 'windows');
+const releaseDir = candidateTag
+  ? path.join(repoRoot, 'release', 'windows', 'candidates', candidateTag)
+  : path.join(repoRoot, 'release', 'windows');
 const lockPath = path.join(stageBase, 'build.lock');
 const phaseLogPath = path.join(stageBase, 'build-phases.log');
 const electronLanguages = ['zh-CN', 'zh-TW', 'en-US', 'en-GB', 'fr', 'es', 'es-419', 'ja', 'ko', 'vi', 'ms'];
@@ -145,7 +148,7 @@ function writeRuntimePackage() {
     version,
     private: true,
     description: 'AI Education Manager Windows host console',
-    author: 'Jiamalan (Beijing) Technology Co., Ltd.',
+    author: 'Robogala',
     main: 'electron/main.cjs',
     build: {
       appId: 'com.qxmatrix.edumanager.desktop',
@@ -157,7 +160,7 @@ function writeRuntimePackage() {
       files: ['dist/**/*', 'electron/**/*', 'package.json'],
       asarUnpack: ['electron/invoke-agent.ps1'],
       win: {
-        artifactName: 'AI-edu-manager-console-Windows-${version}.${ext}',
+        artifactName: `${artifactBase}.\${ext}`,
         icon: 'public/brand/robogala.ico',
         target: ['portable'],
       },
@@ -309,6 +312,7 @@ function build() {
 
     const audit = {
       version,
+      candidateTag,
       builtAt: new Date().toISOString(),
       stagingRoot: stageRoot,
       electronLanguages,

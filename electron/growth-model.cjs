@@ -138,9 +138,14 @@ function buildGrowthIndexV2({ student, growthDir, review, projects = [], sourceF
     sourcePath: item.sourcePath || '',
     confidence: item.confidence || '',
     note: item.note || '',
+    riskLevel: item.riskLevel || '',
+    conflicts: Array.isArray(item.conflicts) ? item.conflicts : [],
     createdAt: item.createdAt || '',
     updatedAt: item.updatedAt || item.createdAt || '',
     migratedFrom: item.migratedFrom || '',
+    epistemicType: item.epistemicType || '',
+    sourceKind: item.sourceKind || '',
+    systemVerification: item.systemVerification && typeof item.systemVerification === 'object' ? item.systemVerification : null,
   })).sort((a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt)));
 
   const updatedAt = now instanceof Date ? now.toISOString() : new Date(now).toISOString();

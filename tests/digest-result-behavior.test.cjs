@@ -4,7 +4,12 @@ const test = require('node:test');
 
 const { buildDigestBatch } = require('../electron/digest-batch.cjs');
 const { validateDigestResult } = require('../electron/digest-result.cjs');
-const { digestUserStatus, shouldAutoAccept } = require('../electron/digest-orchestrator.cjs');
+const {
+  canReuseStudentDigestBatch,
+  digestUserStatus,
+  shouldAutoAccept,
+  shouldRecoverDigestExecution,
+} = require('../electron/digest-orchestrator.cjs');
 
 const HASH_A = 'a'.repeat(40);
 const HASH_B = 'b'.repeat(40);
@@ -34,16 +39,18 @@ test('strict student result confirms only matching files and keeps partial remai
   assert.deepEqual(result.remaining.map((file) => file.materialId), ['m2']);
 });
 
-test('strict result rejects stale hash, wrong batch and duplicate entries', () => {
+test('permissive result ignores batch drift but rejects changed source content and duplicate entries', () => {
   const current = batch();
-  assert.equal(validateDigestResult({ batch: current, currentFiles: current.files, requireMaterialId: true, receipt: { status: 'completed', studentId: 's1', digestBatchId: 'old', processed: [{ materialId: 'm1', relativePath: 'a.pdf', sha1: HASH_A }] } }).code, 'batch_id_mismatch');
+  const oldBatch = validateDigestResult({ batch: current, currentFiles: current.files, requireMaterialId: true, receipt: { status: 'completed', studentId: 's1', digestBatchId: 'old', processed: [{ materialId: 'm1', relativePath: 'a.pdf', sha1: HASH_A }] } });
+  assert.equal(oldBatch.ok, true);
+  assert.match(oldBatch.compatibility.warnings.join('；'), /批次号/);
   assert.equal(validateDigestResult({ batch: current, currentFiles: [{ ...current.files[0], sha1: HASH_B }, current.files[1]], requireMaterialId: true, receipt: { status: 'completed', studentId: 's1', digestBatchId: 'digest-1', processed: [{ materialId: 'm1', relativePath: 'a.pdf', sha1: HASH_A }] } }).code, 'no_matching_files');
   const duplicate = validateDigestResult({ batch: current, currentFiles: current.files, requireMaterialId: true, receipt: { status: 'completed', studentId: 's1', digestBatchId: 'digest-1', processed: [{ materialId: 'm1', relativePath: 'a.pdf', sha1: HASH_A }, { materialId: 'm1', relativePath: 'a.pdf', sha1: HASH_A }] } });
   assert.equal(duplicate.ok, true);
   assert.equal(duplicate.rejected.length, 1);
 });
 
-test('strict result completes the exact batch and rejects artifacts outside knowledge roots', () => {
+test('result completes matched files and silently excludes artifacts outside knowledge roots', () => {
   const current = batch();
   const knowledgeRoot = path.resolve('D:/knowledge/student-s1');
   const receipt = {
@@ -68,20 +75,56 @@ test('strict result completes the exact batch and rejects artifacts outside know
     allowedArtifactRoots: [knowledgeRoot],
     receipt: { ...receipt, processed: [{ ...receipt.processed[0], artifacts: [path.resolve('D:/outside/a.md')] }] },
   });
-  assert.equal(escaped.ok, false);
-  assert.equal(escaped.code, 'no_matching_files');
-  assert.match(escaped.rejected[0].reason, /超出允许/);
+  assert.equal(escaped.ok, true);
+  assert.equal(escaped.confirmed.length, 1);
+  assert.deepEqual(escaped.confirmed[0].artifacts, []);
+  assert.deepEqual(escaped.remaining.map((file) => file.materialId), ['m2']);
 });
 
 test('only validated digest tasks auto-accept and user states stay simple', () => {
   assert.equal(shouldAutoAccept({ kind: 'student_digest', completionPolicy: 'auto_after_validation' }, { valid: true }), true);
   assert.equal(shouldAutoAccept({ kind: 'growth_publish', completionPolicy: 'auto_after_validation' }, { valid: true }), false);
   assert.equal(shouldAutoAccept({ kind: 'project_digest', completionPolicy: 'manual_review' }, { valid: true }), false);
-  assert.equal(digestUserStatus('waiting_result', 'submitted', 2), 'waiting_result');
+  assert.equal(digestUserStatus('waiting_result', 'submitted', 2, 2), 'waiting_result');
+  assert.equal(digestUserStatus('waiting_result', 'pending', 2, 0), 'pending');
   assert.equal(digestUserStatus('succeeded', 'partial', 1), 'partial');
   assert.equal(digestUserStatus('failed', 'failed', 1), 'needs_help');
   assert.equal(digestUserStatus('failed', 'digesting', 0), 'needs_help');
   assert.equal(digestUserStatus('reviewing', 'completed', 0), 'completed');
   assert.equal(digestUserStatus('waiting_result', 'partial', 1), 'partial');
   assert.equal(digestUserStatus('succeeded', 'idle', 1), 'pending');
+});
+
+test('stale active tasks cannot hide new pending materials or reuse an unrelated batch', () => {
+  const batch = {
+    batchId: 'batch-old',
+    status: 'partial',
+    files: [{ materialId: 'old-1' }],
+  };
+  const state = { status: 'pending', digestBatchId: '' };
+  const materials = [{ id: 'new-1', status: 'pending_digest', digestBatchId: '' }];
+  assert.equal(canReuseStudentDigestBatch(batch, state, materials), false);
+  assert.equal(shouldRecoverDigestExecution(
+    { status: 'waiting_result', executionId: 'qclaw-old' },
+    { pendingCount: 1, submittedCount: 0, state },
+  ), true);
+});
+
+test('a live strict batch is reused only while every frozen file remains submitted in that batch', () => {
+  const batch = {
+    batchId: 'batch-live',
+    status: 'submitted',
+    files: [{ materialId: 'm1' }, { materialId: 'm2' }],
+  };
+  const state = { status: 'submitted', digestBatchId: 'batch-live' };
+  const materials = [
+    { id: 'm1', status: 'submitted', digestBatchId: 'batch-live' },
+    { id: 'm2', status: 'digesting', digestBatchId: 'batch-live' },
+  ];
+  assert.equal(canReuseStudentDigestBatch(batch, state, materials), true);
+  assert.equal(canReuseStudentDigestBatch(batch, state, materials.slice(0, 1)), false);
+  assert.equal(shouldRecoverDigestExecution(
+    { status: 'waiting_result', executionId: 'qclaw-live' },
+    { pendingCount: 1, submittedCount: 2, state },
+  ), false);
 });

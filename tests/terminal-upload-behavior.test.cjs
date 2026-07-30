@@ -1,5 +1,8 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
 const {
   buildTargetUploadPath,
   isTerminalUploadFile,
@@ -40,4 +43,39 @@ test('automatic delivery IDs are stable per file revision and target', () => {
   assert.notEqual(stableUploadId(file, target), stableUploadId({ ...file, size: 13 }, target));
   assert.equal(isTerminalUploadFile(file.path), true);
   assert.equal(isTerminalUploadFile('D:/drop/a.exe'), false);
+});
+
+test('successful automatic delivery is skipped across scans and restarts until the file revision or target changes', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'edu-auto-delivery-'));
+  const filePath = path.join(root, '作业.pdf');
+  const target = { type: 'student', id: 'student-1' };
+
+  try {
+    fs.writeFileSync(filePath, 'revision-1');
+    const firstStat = fs.statSync(filePath);
+    const firstFile = { path: filePath, size: firstStat.size, mtimeMs: firstStat.mtimeMs };
+    const firstId = stableUploadId(firstFile, target);
+    const ledger = { delivered: {} };
+
+    assert.equal(Boolean(ledger.delivered[firstId]), false, '首次扫描应进入待上传列表');
+    ledger.delivered[firstId] = { path: filePath, deliveredAt: new Date().toISOString() };
+    assert.equal(Boolean(ledger.delivered[stableUploadId(firstFile, target)]), true, '同一运行期再次扫描应跳过');
+
+    const restartedLedger = JSON.parse(JSON.stringify(ledger));
+    assert.equal(Boolean(restartedLedger.delivered[stableUploadId(firstFile, target)]), true, '重启并读取账本后仍应跳过');
+
+    fs.utimesSync(filePath, firstStat.atime, new Date(firstStat.mtimeMs + 5000));
+    const changedStat = fs.statSync(filePath);
+    const changedFile = { path: filePath, size: changedStat.size, mtimeMs: changedStat.mtimeMs };
+    const changedId = stableUploadId(changedFile, target);
+    assert.notEqual(changedId, firstId, '文件修改时间变化后应视为新版本');
+    assert.equal(Boolean(restartedLedger.delivered[changedId]), false, '新版本应重新上传一次');
+    restartedLedger.delivered[changedId] = { path: filePath, deliveredAt: new Date().toISOString() };
+    assert.equal(Boolean(restartedLedger.delivered[stableUploadId(changedFile, target)]), true, '新版本成功后也应停止重复上传');
+
+    const otherTargetId = stableUploadId(changedFile, { type: 'project', id: 'project-1' });
+    assert.equal(Boolean(restartedLedger.delivered[otherTargetId]), false, '切换投递目标后应向新目标上传一次');
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
 });

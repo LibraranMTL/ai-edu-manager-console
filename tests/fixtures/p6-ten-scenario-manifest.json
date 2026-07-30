@@ -1,0 +1,91 @@
+{
+  "schema": "edu-manager.p6-ten-scenario-gate.v1",
+  "fixture": "固定虚构教育资料，不读取真实学生目录",
+  "scenarios": [
+    {
+      "id": "P6-S01",
+      "name": "六类资料采集",
+      "files": [
+        "tests/terminal-upload-contract.test.cjs",
+        "tests/streaming-upload.test.cjs",
+        "tests/capture-protocol-behavior.test.cjs",
+        "tests/conversation-inbox.test.cjs"
+      ]
+    },
+    {
+      "id": "P6-S02",
+      "name": "重复导入幂等",
+      "files": [
+        "tests/terminal-upload-behavior.test.cjs",
+        "tests/student-raw-discovery.test.cjs"
+      ]
+    },
+    {
+      "id": "P6-S03",
+      "name": "自动消化",
+      "files": [
+        "tests/full-education-flow.test.cjs",
+        "tests/digest-workflow-contract.test.cjs",
+        "tests/digest-result-behavior.test.cjs"
+      ]
+    },
+    {
+      "id": "P6-S04",
+      "name": "Agent 不可用降级",
+      "files": [
+        "tests/task-runtime-policy.test.cjs",
+        "tests/project-digest-paste-contract.test.cjs"
+      ]
+    },
+    {
+      "id": "P6-S05",
+      "name": "档案检索",
+      "files": [
+        "tests/p4-archive-access.test.cjs",
+        "tests/agent-knowledge-query.test.cjs"
+      ]
+    },
+    {
+      "id": "P6-S06",
+      "name": "引用回溯",
+      "files": [
+        "tests/education-domain-protocol.test.cjs",
+        "tests/p5-report-evidence-contract.test.cjs",
+        "tests/report-evidence-resolver.test.cjs"
+      ]
+    },
+    {
+      "id": "P6-S07",
+      "name": "成长更新",
+      "files": [
+        "tests/growth-source-linker.test.cjs",
+        "tests/growth-refresh-queue.test.cjs",
+        "tests/growth-model-v2.test.cjs"
+      ]
+    },
+    {
+      "id": "P6-S08",
+      "name": "周期报告",
+      "files": [
+        "tests/learning-report-workflow-behavior.test.cjs",
+        "tests/report-auto-publication.test.cjs"
+      ]
+    },
+    {
+      "id": "P6-S09",
+      "name": "档案导出",
+      "files": [
+        "tests/education-archive-version.test.cjs",
+        "tests/p5-education-archive-contract.test.cjs"
+      ]
+    },
+    {
+      "id": "P6-S10",
+      "name": "备份恢复",
+      "files": [
+        "tests/backup-restore-consistency-contract.test.cjs",
+        "tests/tablet-connection-backup-contract.test.cjs"
+      ]
+    }
+  ]
+}

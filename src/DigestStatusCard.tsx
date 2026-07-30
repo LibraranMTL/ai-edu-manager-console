@@ -42,10 +42,10 @@ type Props = {
 const labels: Record<DigestUserStatus, string> = {
   pending: '待处理',
   processing: '处理中',
-  waiting_result: '等待 Agent 回执',
+  waiting_result: '处理中',
   partial: '部分完成',
   completed: '已完成',
-  needs_help: '需要帮助',
+  needs_help: '需要补充',
 };
 
 export function DigestStatusCard({ status, busy, manualText = '', onManualTextChange, onStart, onRetry, onCheck, onPaste, onOpenKnowledge, advancedActions }: Props) {
@@ -56,7 +56,7 @@ export function DigestStatusCard({ status, busy, manualText = '', onManualTextCh
       : status.userStatus === 'processing'
         ? { label: '正在处理…', action: undefined, disabled: true }
         : status.userStatus === 'waiting_result'
-          ? { label: '检查 Agent 回执', action: onCheck, disabled: !onCheck }
+          ? { label: '刷新处理结果', action: onCheck, disabled: !onCheck }
         : { label: '开始处理', action: onStart, disabled: !status.canStart };
   return (
     <section className={`digest-status-card is-${status.userStatus}`}>
@@ -71,9 +71,9 @@ export function DigestStatusCard({ status, busy, manualText = '', onManualTextCh
       </div>
       {status.manualRequired && (
         <div className="digest-manual-result">
-          <strong>Agent 已采用人工模式</strong>
-          <p>任务指令已自动复制。执行后，把 Agent 返回的 JSON 或包含 JSON 的回复粘贴到这里。</p>
-          <textarea value={manualText} onChange={(event) => onManualTextChange?.(event.target.value)} rows={7} placeholder="粘贴 Agent 返回结果" />
+          <strong>自动处理暂不可用</strong>
+          <p>处理说明已自动复制。完成外部处理后，把返回内容粘贴到这里，系统会继续完成整理。</p>
+          <textarea value={manualText} onChange={(event) => onManualTextChange?.(event.target.value)} rows={7} placeholder="粘贴处理结果" />
           <button className="primary compact" onClick={onPaste} disabled={!manualText.trim() || busy}>导入结果</button>
         </div>
       )}

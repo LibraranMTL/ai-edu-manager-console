@@ -32,5 +32,9 @@ test('project knowledge browser is categorized, rendered and connected through E
   assert.match(main, /bridge:listProjectKnowledgeFiles/);
   assert.match(main, /bridge:readProjectKnowledgeFile/);
   assert.match(main, /isPathInside\(root, target\)/);
+  const browser = main.slice(main.indexOf('function listProjectKnowledgeFiles'), main.indexOf('function readProjectKnowledgeFile'));
+  assert.match(browser, /const categoryRoots =/);
+  assert.match(browser, /collectMarkdownFiles\(categoryPath, categoryPath, files, 8\)/);
+  assert.doesNotMatch(browser, /collectMarkdownFiles\(root, root/);
   assert.match(styles, /\.project-knowledge-browser\s*\{/);
 });

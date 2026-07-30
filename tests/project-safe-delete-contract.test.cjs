@@ -29,6 +29,8 @@ test('project deletion removes only the index record and writes a recoverable sn
   const body = functionBody(main, 'deleteLearningProject', 'removeProjectRecord');
   assert.match(body, /deletionType: 'record_only'/);
   assert.match(body, /项目记录已移除\.json/);
+  assert.match(body, /dismissProjectLineage/);
+  assert.match(body, /停止自动重新接收该项目谱系/);
   assert.match(body, /preservedPaths/);
   assert.match(body, /writeProjects\(nextProjects\)/);
   assert.doesNotMatch(body, /rmSync|rmdirSync|unlinkSync/);
@@ -37,6 +39,7 @@ test('project deletion removes only the index record and writes a recoverable sn
 test('legacy remove calls remain compatible and deleted projects remain restorable', () => {
   assert.match(main, /function removeProjectRecord\(projectId\)[\s\S]*return deleteLearningProject\(projectId\)/);
   assert.match(main, /function restoreRemovedProject/);
+  assert.match(main, /restoreProjectLineage/);
   assert.match(preload, /restoreRemovedProject/);
   assert.match(ui, /restoreProjectRecord/);
 });

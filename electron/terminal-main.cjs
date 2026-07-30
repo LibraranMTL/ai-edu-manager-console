@@ -6,6 +6,7 @@ const http = require('http');
 const https = require('https');
 const os = require('os');
 const path = require('path');
+const { parseGrowthIndexMarkdown } = require('./growth-markdown-summary.cjs');
 const {
   buildTargetUploadPath,
   isTerminalUploadFile,
@@ -574,6 +575,30 @@ async function loadLearningReports() {
   return requestJson(`/api/students/${encodeURIComponent(studentId)}/reports`, { token: config.sessionToken });
 }
 
+async function loadGrowthSummary() {
+  const { config, studentId } = currentStudentSession();
+  try {
+    return await requestJson(`/api/students/${encodeURIComponent(studentId)}/growth-summary`, { token: config.sessionToken });
+  } catch (directError) {
+    try {
+      const listing = await requestJson(`/api/students/${encodeURIComponent(studentId)}/archive/files`, { token: config.sessionToken });
+      const growthFile = (Array.isArray(listing?.files) ? listing.files : []).find((item) => {
+        const relativePath = String(item?.path || '').replace(/\\/g, '/').toLowerCase();
+        return relativePath.endsWith('成长模型/growth-index.md') || relativePath.endsWith('/growth-index.md');
+      });
+      if (!growthFile?.path) throw new Error('主机尚未生成成长模型索引。');
+      const file = await requestJson(
+        `/api/students/${encodeURIComponent(studentId)}/archive/file?path=${encodeURIComponent(growthFile.path)}`,
+        { token: config.sessionToken },
+      );
+      return parseGrowthIndexMarkdown(file?.content || '');
+    } catch (fallbackError) {
+      if (/尚未生成成长模型索引/.test(String(fallbackError?.message || ''))) throw fallbackError;
+      throw directError;
+    }
+  }
+}
+
 async function loadLearningReport(reportId) {
   const { config, studentId } = currentStudentSession();
   const normalizedReportId = String(reportId || '').trim();
@@ -591,6 +616,22 @@ async function loadArchiveFile(relativePath) {
   const normalizedPath = String(relativePath || '').trim();
   if (!normalizedPath) throw new Error('请选择教育档案。');
   return requestJson(`/api/students/${encodeURIComponent(studentId)}/archive/file?path=${encodeURIComponent(normalizedPath)}`, { token: config.sessionToken });
+}
+
+async function loadProjectKnowledgeFiles(projectId) {
+  const { config } = currentStudentSession();
+  const normalizedProjectId = String(projectId || '').trim();
+  if (!normalizedProjectId) throw new Error('请选择关联项目。');
+  return requestJson(`/api/projects/${encodeURIComponent(normalizedProjectId)}/archive/files`, { token: config.sessionToken });
+}
+
+async function loadProjectKnowledgeFile(projectId, relativePath) {
+  const { config } = currentStudentSession();
+  const normalizedProjectId = String(projectId || '').trim();
+  const normalizedPath = String(relativePath || '').trim();
+  if (!normalizedProjectId) throw new Error('请选择关联项目。');
+  if (!normalizedPath) throw new Error('请选择项目知识。');
+  return requestJson(`/api/projects/${encodeURIComponent(normalizedProjectId)}/archive/file?path=${encodeURIComponent(normalizedPath)}`, { token: config.sessionToken });
 }
 
 function uploadFile(filePath, target, metadata = {}) {
@@ -831,9 +872,12 @@ function registerIpc() {
   });
   ipcMain.handle('terminal:run-auto-delivery', async () => { await runAutoDelivery(); return { ok: true }; });
   ipcMain.handle('terminal:list-learning-reports', () => loadLearningReports());
+  ipcMain.handle('terminal:get-growth-summary', () => loadGrowthSummary());
   ipcMain.handle('terminal:read-learning-report', (_event, reportId) => loadLearningReport(reportId));
   ipcMain.handle('terminal:list-archive-files', () => loadArchiveFiles());
   ipcMain.handle('terminal:read-archive-file', (_event, relativePath) => loadArchiveFile(relativePath));
+  ipcMain.handle('terminal:list-project-knowledge-files', (_event, projectId) => loadProjectKnowledgeFiles(projectId));
+  ipcMain.handle('terminal:read-project-knowledge-file', (_event, projectId, relativePath) => loadProjectKnowledgeFile(projectId, relativePath));
   ipcMain.handle('terminal:list-capture-sources', async () => {
     const sources = await desktopCapturer.getSources({ types: ['screen', 'window'], thumbnailSize: { width: 320, height: 180 } });
     return sources.map((source) => ({ id: source.id, name: source.name, type: source.id.startsWith('screen:') ? 'screen' : 'window' }));

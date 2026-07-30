@@ -7,8 +7,7 @@
   <meta name="description" content="AI教育管家 Windows 学生端操作手册" />
   <style>
     :root { --ink:#172033; --muted:#66758a; --line:#e3eaf2; --accent:#6d28d9; --soft:#f7f5ff; }
-    * { box-sizing:border-box; }
-    html { scroll-behavior:smooth; }
+    * { box-sizing:border-box; } html { scroll-behavior:smooth; }
     body { margin:0; overflow-x:hidden; font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft YaHei","PingFang SC",sans-serif; color:var(--ink); background:#f7f9fc; line-height:1.8; }
     .topbar { position:sticky; top:0; z-index:20; border-bottom:1px solid var(--line); background:rgba(255,255,255,.94); backdrop-filter:blur(14px); }
     .topbar-inner { width:min(1180px,calc(100% - 32px)); min-height:66px; margin:auto; display:flex; align-items:center; justify-content:space-between; gap:20px; }
@@ -22,18 +21,12 @@
     .toc a { display:block; padding:6px 8px; border-radius:5px; color:#66758a; text-decoration:none; font-size:13px; line-height:1.45; }
     .toc a:hover { color:var(--accent); background:var(--soft); }
     article { min-width:0; padding:46px clamp(24px,6vw,72px); border:1px solid var(--line); border-radius:8px; background:#fff; box-shadow:0 18px 48px rgba(39,52,76,.08); }
-    h1 { margin:0 0 22px; font-size:clamp(28px,4vw,42px); line-height:1.2; letter-spacing:0; overflow-wrap:anywhere; }
-    h2 { margin:46px 0 18px; padding-top:8px; color:var(--accent); font-size:24px; line-height:1.35; letter-spacing:0; border-top:1px solid var(--line); }
-    h2[id] { scroll-margin-top:92px; }
-    h2:first-of-type { margin-top:28px; border-top:0; }
-    h3 { margin:28px 0 12px; font-size:18px; letter-spacing:0; }
-    p { margin:12px 0; color:#35455a; overflow-wrap:anywhere; }
-    ol,ul { margin:12px 0; padding-left:26px; }
-    li { margin:7px 0; color:#35455a; overflow-wrap:anywhere; }
+    h1 { margin:0 0 22px; font-size:clamp(28px,4vw,42px); line-height:1.2; overflow-wrap:anywhere; }
+    h2 { margin:46px 0 18px; padding-top:8px; color:var(--accent); font-size:24px; line-height:1.35; border-top:1px solid var(--line); }
+    h2[id] { scroll-margin-top:92px; } h2:first-of-type { margin-top:28px; border-top:0; }
+    h3 { margin:28px 0 12px; font-size:18px; } p { margin:12px 0; color:#35455a; overflow-wrap:anywhere; }
+    ol,ul { margin:12px 0; padding-left:26px; } li { margin:7px 0; color:#35455a; overflow-wrap:anywhere; }
     code { padding:2px 6px; border-radius:4px; background:#f0edf9; color:#5422aa; font-family:Consolas,"Microsoft YaHei",monospace; }
-    pre { overflow:auto; padding:18px; border:1px solid #ddd4ff; border-radius:7px; background:#f7f5ff; line-height:1.55; }
-    pre code { padding:0; background:transparent; color:#273447; }
-    blockquote { margin:18px 0; padding:14px 18px; border-left:4px solid var(--accent); background:var(--soft); color:#4b3b67; }
     footer { padding:30px 16px; text-align:center; color:#8b98a9; font-size:13px; }
     @media(max-width:820px) { .topbar-inner { width:calc(100% - 24px); min-width:0; align-items:flex-start; flex-direction:column; padding:14px 0; } .menu { width:100%; min-width:0; display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); justify-content:stretch; } .menu a { min-width:0; padding:8px; text-align:center; overflow-wrap:anywhere; } .layout { width:calc(100% - 24px); min-width:0; grid-template-columns:minmax(0,1fr); margin-top:20px; } .toc { position:static; min-width:0; max-height:260px; } article { min-width:0; padding:30px 22px; } h1 { font-size:28px; } h2[id] { scroll-margin-top:190px; } }
   </style>
@@ -41,18 +34,24 @@
 <body>
   <header class="topbar"><div class="topbar-inner">
     <a class="brand" href="./download.html">AI教育管家</a>
-    <nav class="menu" aria-label="网站菜单">
-      <a href="./download.html">软件下载</a>
-      <a href="./windows-host-manual.html">Windows 主机端</a>
-      <a href="./windows-student-manual.html" aria-current="page">Windows 学生端</a>
-      <a href="./android-student-manual.html">Android 学生端</a>
-      <a href="./privacy.html">隐私政策</a>
-      <a href="./agreement.html">用户协议</a>
-    </nav>
+    <nav class="menu" aria-label="网站菜单"><a href="./download.html">软件下载</a><a href="./windows-host-manual.html">Windows 主机端</a><a href="./windows-student-manual.html" aria-current="page">Windows 学生端</a><a href="./android-student-manual.html">Android 学生端</a><a href="./privacy.html">隐私政策</a><a href="./agreement.html">用户协议</a></nav>
   </div></header>
   <main class="layout">
-    <aside class="toc"><strong>本页目录</strong><a href="#section-1">1. 产品定位</a><a href="#section-2">2. 首次连接</a><a href="#section-3">3. 个人终端与共享终端</a><a href="#section-4">4. 选择资料归属</a><a href="#section-5">5. 上传本地文件</a><a href="#section-6">6. 自动投递文件夹</a><a href="#section-7">7. 屏幕资料采集</a><a href="#section-8">8. 学情报告与教育档案</a><a href="#section-9">9. 上传反馈与退出</a><a href="#section-10">10. 常见问题</a></aside>
-    <article><h1>AI教育管家 Windows 学生端操作手册</h1><p><strong>适用版本：Windows 学生终端 0.10.5</strong></p><p><strong>配套主机：Windows 主机 0.10.5</strong></p><h2 id="section-1">1. 产品定位</h2><p>Windows 学生终端安装在学生使用的 Windows 电脑上，只承担学生进入、资料采集、资料投递和读取本人档案，不提供学生档案、项目、知识治理或报告发布管理。教师或家长继续使用独立的 Windows 主机端。</p><h2 id="section-2">2. 首次连接</h2><ol><li>下载并运行 Windows 学生端；不要把 Windows 主机端安装给学生使用。</li><li>教师或家长在主机“系统设置 → 使用模式”中选择“主机-终端模式”，启动学生终端协作服务。</li><li>在学生端选择“局域网连接”或“Tailscale 远程连接”。</li><li>选择局域网连接时，学生端会显示长期固定的终端码。点击“扫描局域网主机”，可输入固定主机码筛选，也可直接查看同一局域网中的全部主机。</li><li>选择正确的主机并点击“申请连接”，教师或家长在主机确认终端码后点击“接受”；也可以由主机搜索本终端并发出邀请，再由学生端点击“接受”或“拒绝”。</li><li>主机接受连接后，在设备卡片中选择“个人终端”或“共享终端”。</li></ol><p>固定主机码和固定终端码只用于识别设备，不是密码，不需要再输入 PIN。连接申请使用程序内部的随机令牌并在两分钟后超时。旧版主机、访客网络、客户端隔离或防火墙阻断广播时，展开“其他连接方式”，继续使用粘贴连接信息、主机地址和六位配对码。</p><h3>可选：通过 Tailscale 远程连接</h3><p>在连接页选择“Tailscale 远程连接”后，学生端会检测本机是否安装 Tailscale，并显示“已安装”或“未检测到安装”：</p><ol><li>已安装时，点击“打开 Tailscale”启动客户端并确认已经登录。</li><li>未安装时，点击“下载 Tailscale”打开 Windows 官方下载页；安装完成后返回学生终端点击“重新检测”。</li><li>让 Windows 主机和学生终端加入同一个 Tailscale 网络。</li><li>粘贴主机复制的学生终端连接信息；系统只选用其中的 Tailscale 地址。也可以手工填写主机提供的 Tailscale 地址和六位配对码。</li></ol><p>两种连接方式相互隔离：选择局域网时不会误用 Tailscale 地址，选择 Tailscale 时也不会自动回退到局域网地址。学生终端只检测本机安装状态，不读取 Tailscale 账号、密钥或网络成员信息。连接成功后仍然沿用教育管家的设备确认和学生数据隔离规则。</p><h2 id="section-3">3. 个人终端与共享终端</h2><ul><li>个人终端：在主机绑定一名学生，终端启动后自动进入该学生空间，适合一人长期使用的电脑；支持自动投递文件夹。</li><li>共享终端：每次由学生输入个人 ID，或使用扫码器扫描主机生成的学生二维码；进入后只加载本人资料，退出后交给下一位学生；不启用持续自动投递文件夹。</li></ul><p>学生 ID 在主机创建或升级学生档案时自动生成。它不是内部文件夹 ID，不会改变既有学生目录。Windows 终端可使用普通 USB 扫码器，二维码内容会像键盘输入一样进入 ID 输入框。</p><h2 id="section-4">4. 选择资料归属</h2><p>进入学生空间后，再选择以下目标之一：</p><ul><li>学生原始资料库：适合日常作业、学习记录和不属于特定项目的资料。</li><li>绑定项目原始资料库：适合项目研究、作品、过程截图和项目参考资料。</li></ul><p>终端只显示当前学生已经绑定且未封存的项目。主机依据当前学生会话再次校验学生和项目归属。</p><h2 id="section-5">5. 上传本地文件</h2><p>点击“选择并上传文件”，可一次选择多个图片、PDF、Office、文本、Markdown、CSV 或 ZIP 文件。上传期间显示当前文件和进度；成功后，主机端对应资料库进入待处理状态。</p><p>首页会显示四项简要进展：已提交资料、已完成知识化、近 7 天新增和近 30 天活跃频率。“已完成知识化”按已经消化完成的资料数统计，不等同于知识库中的文件数量。当天尚未提交资料时，首页显示“提交本日学习资料”提醒；点击“现在上传”直接进入文件选择，点击“稍后再说”只关闭当天提醒。</p><h2 id="section-6">6. 自动投递文件夹</h2><p>自动投递只在个人终端可用：</p><ol><li>选择资料目标和本地文件夹。</li><li>勾选启用并保存设置。</li><li>终端定期检查新文件，并以稳定上传编号避免重复入库；不会删除或移动本地文件。</li></ol><p>共享终端不会监测自动投递文件夹，避免下一位学生沿用上一位学生的投递目标。</p><h2 id="section-7">7. 屏幕资料采集</h2><ol><li>进入学生空间并选择屏幕或应用窗口。</li><li>选择学生原始资料库或绑定项目原始资料库后开始采集。</li><li>结束后上传采集资料。</li></ol><p>采集会话在开始时冻结当前学生和目标。共享终端必须先结束采集才能退出，不能把上一位学生的截图改投给下一位学生。</p><h2 id="section-8">8. 学情报告与教育档案</h2><ul><li>“查看学情报告”读取当前学生已经由主机发布的整体画像、行动建议、历史变化和阶段总结。</li><li>“查看教育档案”读取当前学生可访问的 Markdown 档案。</li><li>共享终端退出后会清空文档列表和正文；终端不能读取其他学生的内容。</li></ul><h2 id="section-9">9. 上传反馈与退出</h2><ul><li>上传中显示文件名、数量和进度；失败文件保留在本地，可重试。</li><li>共享终端使用结束后点击“退出当前学生”；页面会清空学生、项目、档案、报告和待传队列。</li><li>会话长时间不用会失效，需要重新输入或扫描学生 ID。</li></ul><h2 id="section-10">10. 常见问题</h2><ul><li>无法进入学生：向教师或家长核对主机“学生登录 ID 与二维码”中的 ID。</li><li>看不到项目：确认项目已绑定当前学生且未封存。</li><li>共享终端没有自动投递：这是数据隔离规则；需要自动投递时由主机改为个人终端。</li><li>上传失败是否删除本地文件：不会。</li><li>扫描不到主机：确认两台电脑位于同一局域网、主机已经进入“主机-终端模式”，并允许 Windows 防火墙专用网络的 UDP 18778。不要在同一台电脑同时运行主机版和学生端。</li><li>主机发现不到本终端：让 Windows 学生端停留在“连接主机”页面，再由主机点击“查找学生终端”；也可以直接在主机输入本机固定终端码筛选。</li><li>Tailscale 显示未安装：点击“下载 Tailscale”进入官方 Windows 下载页；完成安装后点击“重新检测”。</li><li>Tailscale 已安装但无法打开：从 Windows 开始菜单启动 Tailscale，或重新运行官方安装程序修复启动入口。</li></ul></article>
+    <aside class="toc"><strong>本页目录</strong><a href="#section-1">1. 产品定位</a><a href="#section-2">2. 首次连接</a><a href="#section-3">3. 个人与共享终端</a><a href="#section-4">4. 选择资料归属</a><a href="#section-5">5. 上传与自动投递</a><a href="#section-6">6. 屏幕资料采集</a><a href="#section-7">7. 资料进展</a><a href="#section-8">8. 成长、报告、档案与项目知识</a><a href="#section-9">9. 退出</a><a href="#section-10">10. 常见问题</a></aside>
+    <article>
+      <h1>AI教育管家 Windows 学生端操作手册</h1>
+      <p><strong>适用版本：Windows 学生终端 0.14.2</strong></p><p><strong>配套主机：Windows 主机 0.14.2</strong></p>
+      <h2 id="section-1">1. 产品定位</h2><p>Windows 学生端只承担学生进入、资料采集与投递，以及只读查看本人成长模型、报告、档案和关联项目知识。档案、项目、知识治理和发布仍由 Windows 主机端管理。</p>
+      <h2 id="section-2">2. 首次连接</h2><ol><li>运行 Windows 学生端，不要把主机版安装给学生。</li><li>主机进入“主机-终端模式”并启动服务。</li><li>学生端可选择局域网或 Tailscale，使用附近主机、固定机器码或主机提供的连接信息发起连接。</li><li>主机确认后把设备设为个人终端或共享终端。</li></ol><p>固定机器码仅用于识别设备，不需要 PIN。Tailscale 页面可检测安装状态并提供打开与下载入口。</p>
+      <h2 id="section-3">3. 个人终端与共享终端</h2><ul><li>个人终端固定绑定一名学生，适合一人长期使用，并支持自动投递文件夹。</li><li>共享终端每次输入或扫描个人 ID，退出后再交给下一位学生，不持续监听自动投递文件夹。</li></ul>
+      <h2 id="section-4">4. 选择资料归属</h2><p>普通文件和屏幕采集均可选择学生原始资料库或当前学生绑定且未封存的项目原始资料库。主机会再次校验学生与项目归属。</p>
+      <h2 id="section-5">5. 上传与自动投递</h2><p>“选择并上传文件”支持常见图片、PDF、Office、文本、Markdown、CSV 和 ZIP。个人终端还可选择自动投递文件夹，稳定文件会幂等上传，失败可重试，且不会删除本地文件。</p>
+      <h2 id="section-6">6. 屏幕资料采集</h2><p>进入学生空间后选择屏幕或窗口、资料目标并开始采集。会话开始时冻结当前学生和目标，共享终端必须结束采集后才能退出。</p>
+      <h2 id="section-7">7. 资料进展与每日提醒</h2><p>首页显示已提交资料、已完成知识化、近 7 天新增和近 30 天活跃频率；当天尚未提交时显示一次“提交本日学习资料”轻提醒。</p>
+      <h2 id="section-8">8. 成长模型、学情报告、教育档案与项目知识</h2><ul><li>“查看成长模型”读取当前学生的能力画像、项目贡献和近期成长证据；只读展示，不触发评估、审核或重新分析。</li><li>“查看学情报告”读取主机已发布的当前学生报告。</li><li>“查看教育档案”读取当前学生可访问的 Markdown 档案。</li><li>“查看关联项目知识”列出当前学生绑定项目中的公开 Markdown；已封存项目仍可只读查看。</li><li>主机按当前学生会话再次校验学生和项目范围，学生端不能读取其他学生或未关联项目，也不能修改或发布项目。</li></ul>
+      <h2 id="section-9">9. 上传反馈与退出</h2><p>上传中会显示进度，失败文件保留本地。共享终端退出后清空学生、项目、档案、报告、正文和待传队列。</p>
+      <h2 id="section-10">10. 常见问题</h2><ul><li>看不到项目：确认项目已绑定当前学生。上传目标不显示已封存项目，但只读知识列表仍可显示。</li><li>扫描不到主机：检查主机服务、同一局域网、Windows 防火墙专用网络或改用 Tailscale。</li><li>上传失败是否删除本地文件：不会。</li></ul>
+    </article>
   </main>
   <footer>嘉玛蓝（北京）科技有限公司版权所有</footer>
 </body>

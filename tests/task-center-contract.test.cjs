@@ -24,7 +24,8 @@ test('all execution paths use the adapter registry and Codex is sandboxed', () =
     assert.match(main, new RegExp(`${adapter}: \\{ \\.\\.\\.common, id: '${adapter}'`));
   }
   assert.match(main, /status: adapterTaskStatus, readResult: adapterTaskResult/);
-  assert.match(main, /'--sandbox', 'workspace-write'/);
+  assert.match(main, /const sandboxMode = task\.input\?\.remoteLocalExecution \? 'read-only' : 'workspace-write'/);
+  assert.match(main, /\['exec', '--sandbox', sandboxMode/);
   assert.doesNotMatch(main, /--full-auto/);
   assert.match(main, /codexAuthHealthy/);
   assert.match(main, /error loading configuration\|unknown variant/);
@@ -115,6 +116,12 @@ test('global manual mode stops automatic scheduling while keeping the task cente
   assert.match(preload, /setTaskAutomationEnabled\(enabled\)/);
   assert.match(ui, /task-automation-toggle/);
   assert.match(ui, /仅手动/);
+  assert.match(main, /executeTaskByAdapterWithFreshCapabilities/);
+  assert.match(main, /refreshCapabilitiesForExplicitExecution/);
+  assert.match(main, /requested !== 'qclaw'/);
+  assert.match(main, /await probeLocalPort\(base\.qclaw\.gatewayPort\)/);
+  assert.match(main, /explicit_execution_capability_refreshed/);
+  assert.match(preload, /ipcRenderer\.invoke\('bridge:executeTask'/);
 });
 
 test('npm cmd shim resolver preserves multiline Chinese arguments', { skip: process.platform !== 'win32' }, () => {

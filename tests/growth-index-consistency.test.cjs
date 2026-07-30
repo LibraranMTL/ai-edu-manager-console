@@ -2,6 +2,7 @@ const assert = require('node:assert/strict');
 const test = require('node:test');
 
 const {
+  changedGrowthProjectStudentIds,
   growthIndexNeedsRebuild,
   growthSourceFingerprint,
   legacyReportCandidate,
@@ -17,6 +18,19 @@ test('growth fingerprint changes when evidence status or project state changes',
   assert.notEqual(first, third);
   assert.equal(growthIndexNeedsRebuild({ version: 2, sourceFingerprint: first }, first), false);
   assert.equal(growthIndexNeedsRebuild({ version: 2, sourceFingerprint: first }, second), true);
+});
+
+test('project changes only mark students bound to the changed project', () => {
+  const previous = [
+    { id: 'p1', status: 'active', studentIds: ['s1'], updatedAt: 'old' },
+    { id: 'p2', status: 'active', studentIds: ['s2'], updatedAt: 'old' },
+  ];
+  const next = [
+    { id: 'p1', status: 'sealed', studentIds: ['s1'], updatedAt: 'new' },
+    { id: 'p2', status: 'active', studentIds: ['s2'], updatedAt: 'new' },
+  ];
+
+  assert.deepEqual(changedGrowthProjectStudentIds(previous, next), ['s1']);
 });
 
 test('legacy learning report becomes pending source-linked candidate only', () => {
@@ -36,4 +50,3 @@ test('legacy learning report becomes pending source-linked candidate only', () =
 test('placeholder report does not create fake growth evidence', () => {
   assert.equal(legacyReportCandidate({ studentId: 'student-1', sourcePath: 'x.md', content: '# 报告\n\n待补充。' }), null);
 });
-

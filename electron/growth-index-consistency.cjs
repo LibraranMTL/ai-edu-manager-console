@@ -19,6 +19,9 @@ function growthSourceFingerprint(review, projects = []) {
     content: String(item?.content || ''),
     sourcePath: String(item?.sourcePath || ''),
     confidence: String(item?.confidence || ''),
+    epistemicType: String(item?.epistemicType || ''),
+    systemDecision: String(item?.systemVerification?.decision || ''),
+    sourceMaterialIds: (Array.isArray(item?.systemVerification?.sourceMaterialIds) ? item.systemVerification.sourceMaterialIds : []).map(String).sort(),
     updatedAt: String(item?.updatedAt || item?.createdAt || ''),
   })).sort((a, b) => a.id.localeCompare(b.id));
   const projectState = (Array.isArray(projects) ? projects : []).map((project) => ({
@@ -26,9 +29,40 @@ function growthSourceFingerprint(review, projects = []) {
     name: String(project?.name || ''),
     status: String(project?.status || ''),
     publishedAt: String(project?.publishedAt || ''),
-    updatedAt: String(project?.updatedAt || ''),
+    studentIds: (Array.isArray(project?.studentIds) ? project.studentIds : []).map(String).sort(),
+    evidence: (Array.isArray(project?.studentEvidence) ? project.studentEvidence : []).map((item) => ({
+      id: String(item?.id || ''),
+      studentId: String(item?.studentId || ''),
+      status: String(item?.status || ''),
+      ability: String(item?.ability || ''),
+      observation: String(item?.observation || ''),
+      sourcePath: String(item?.sourcePath || ''),
+      updatedAt: String(item?.updatedAt || item?.createdAt || ''),
+    })).sort((a, b) => a.id.localeCompare(b.id)),
   })).sort((a, b) => a.id.localeCompare(b.id));
   return crypto.createHash('sha1').update(stableJson({ candidates, projects: projectState })).digest('hex');
+}
+
+function growthProjectFingerprint(projects = []) {
+  return growthSourceFingerprint({ candidates: [] }, projects);
+}
+
+function changedGrowthProjectStudentIds(previousProjects = [], nextProjects = []) {
+  const previousById = new Map((Array.isArray(previousProjects) ? previousProjects : []).map((project) => [String(project?.id || ''), project]));
+  const nextById = new Map((Array.isArray(nextProjects) ? nextProjects : []).map((project) => [String(project?.id || ''), project]));
+  const affected = new Set();
+  for (const projectId of new Set([...previousById.keys(), ...nextById.keys()])) {
+    const previous = previousById.get(projectId);
+    const next = nextById.get(projectId);
+    if (growthProjectFingerprint(previous ? [previous] : []) === growthProjectFingerprint(next ? [next] : [])) continue;
+    for (const project of [previous, next].filter(Boolean)) {
+      for (const studentId of Array.isArray(project.studentIds) ? project.studentIds : []) affected.add(String(studentId));
+      for (const evidence of Array.isArray(project.studentEvidence) ? project.studentEvidence : []) {
+        if (evidence?.studentId) affected.add(String(evidence.studentId));
+      }
+    }
+  }
+  return [...affected].filter(Boolean);
 }
 
 function growthIndexNeedsRebuild(index, fingerprint) {
@@ -68,7 +102,9 @@ function legacyReportCandidate(options = {}) {
 }
 
 module.exports = {
+  changedGrowthProjectStudentIds,
   growthIndexNeedsRebuild,
+  growthProjectFingerprint,
   growthSourceFingerprint,
   legacyReportCandidate,
   meaningfulReportText,

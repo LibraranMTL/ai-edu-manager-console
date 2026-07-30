@@ -123,6 +123,9 @@ textarea { min-height: 104px; resize: vertical; }
 .feature-card small { color: #6b827d; }
 .document-actions { display: flex; flex-wrap: wrap; gap: 10px; }
 .document-actions button { margin-top: 0; }
+.project-knowledge-selector { display: grid; grid-template-columns: auto minmax(220px, 1fr); align-items: center; gap: 12px; max-width: 720px; }
+.project-knowledge-selector span { font-weight: 700; color: #355f56; }
+.project-knowledge-selector select { width: 100%; }
 .document-browser { display: grid; grid-template-columns: minmax(220px, 32%) minmax(0, 1fr); gap: 16px; min-height: 320px; }
 .document-list { display: flex; flex-direction: column; gap: 8px; max-height: 420px; overflow: auto; }
 .document-list button { display: grid; gap: 5px; margin: 0; padding: 12px; text-align: left; border: 1px solid #d7e6e2; border-radius: 12px; color: #234c43; background: #f8fbfa; }
@@ -149,6 +152,7 @@ footer { padding: 22px 0 0; text-align: center; color: #78908a; font-size: 12px;
   .terminal-manual-pairing-form > button { width: 100%; }
   .reminder-actions { width: 100%; }
   .reminder-actions button { flex: 1; }
+  .project-knowledge-selector { grid-template-columns: 1fr; }
   .document-browser { grid-template-columns: 1fr; }
   .wide-card { grid-column: auto; }
   .terminal-card { padding: 20px; }

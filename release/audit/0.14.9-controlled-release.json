@@ -1,0 +1,64 @@
+{
+  "schema": "edu-manager.controlled-release-audit.v1",
+  "releasedAt": "2026-07-30T15:23:32+08:00",
+  "releaseStatus": "conditionally_accepted",
+  "distribution": "controlled",
+  "versions": {
+    "windowsHost": "0.14.9",
+    "windowsStudent": "0.14.9",
+    "androidStudent": "0.6.7"
+  },
+  "tests": {
+    "full": {
+      "passed": 549,
+      "failed": 0
+    },
+    "p6TenScenario": {
+      "passed": 10,
+      "failed": 0
+    },
+    "productionBuild": "passed",
+    "windowsPackageAudit": "passed",
+    "androidSignatureSchemes": [
+      "v1",
+      "v2",
+      "v3"
+    ]
+  },
+  "artifacts": [
+    {
+      "kind": "windows_host_exe",
+      "path": "release/windows/AI-edu-manager-console-Windows-0.14.9.exe",
+      "bytes": 89660978,
+      "sha256": "A20ED0869E7981CAB48079D2F9B74FFB9822BB8618D035490177810EF3952264",
+      "publisherMetadata": "Robogala",
+      "authenticode": "NotSigned"
+    },
+    {
+      "kind": "windows_host_zip",
+      "path": "release/windows/AI-edu-manager-console-Windows-0.14.9.zip",
+      "bytes": 89668905,
+      "sha256": "BD261B12265CD5423331851C7FE6D445428A26D9C5A3ADF2A074858002C6052A"
+    },
+    {
+      "kind": "windows_student_exe",
+      "path": "release/windows-terminal/AI-edu-manager-student-terminal-Windows-0.14.9.exe",
+      "bytes": 87482036,
+      "sha256": "8A53AF861A3A0C7170AB1EA0D2202990FF77FE2D8BFE8AE0DEBAD5CB6436A392",
+      "publisherMetadata": "Robogala",
+      "authenticode": "NotSigned"
+    },
+    {
+      "kind": "android_student_apk",
+      "path": "release/tablet-terminal/AI-edu-manager-tablet-terminal-0.6.7.apk",
+      "bytes": 1803240,
+      "sha256": "FC8F5D72AA9AD34793491E329ED0716612D8D689DCF5DE896D2DCEEC4935DC69",
+      "signingProfile": "project_debug_certificate"
+    }
+  ],
+  "deferredRealDeviceGates": [
+    "windows_0.9.3_in_place_upgrade",
+    "ten_minute_first_use",
+    "host_migration_restore"
+  ]
+}

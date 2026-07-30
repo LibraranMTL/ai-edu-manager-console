@@ -14,10 +14,14 @@ test('host home presents one primary education-material workflow', () => {
   assert.match(renderer, /aria-label=\{`当前 Windows 版本 \$\{currentVersionName\}`\}/);
   assert.match(styles, /\.home-version-badge/);
   assert.match(renderer, /const runHomePrimaryAction = \(\) =>/);
-  assert.match(renderer, /1<\/span><strong>资料进入/);
-  assert.match(renderer, /2<\/span><strong>自动消化/);
-  assert.match(renderer, /3<\/span><strong>成长沉淀/);
-  assert.match(renderer, /4<\/span><strong>档案与报告/);
+  assert.match(renderer, /1<\/span><strong>添加资料/);
+  assert.match(renderer, /2<\/span><strong>处理中/);
+  assert.match(renderer, /3<\/span><strong>需要补充/);
+  assert.match(renderer, /4<\/span><strong>知识更新/);
+  assert.match(renderer, /5<\/span><strong>成长变化/);
+  assert.match(renderer, /6<\/span><strong>报告与档案/);
+  assert.match(renderer, /homeNeedsSupplementTotal > 0/);
+  assert.match(renderer, /任一时刻只突出一个主操作|通常只需处理一个下一步/);
   assert.match(styles, /\.home-workflow-panel/);
 });
 

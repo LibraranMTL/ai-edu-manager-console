@@ -45,9 +45,9 @@ test('failed audit state is preserved after material counters refresh', () => {
   assert.match(mainProcess, /最近一批资料存在识别失败项/);
 });
 
-test('renderer displays pending submission and waiting receipt as separate counters', () => {
+test('renderer displays pending submission and processing as separate counters', () => {
   assert.match(renderer, /const submittedDigestValue =/);
   assert.match(renderer, /title="待提交消化"/);
-  assert.match(renderer, /title="等待 Agent 回执"/);
+  assert.match(renderer, /title="处理中"/);
   assert.doesNotMatch(renderer, /const hostPending = \(stat\?\.pendingDigestCount \?\? 0\) \+ \(stat\?\.submittedDigestCount \?\? 0\)/);
 });

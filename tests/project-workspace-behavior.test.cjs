@@ -23,6 +23,17 @@ test('workspace collection skips excluded and linked directories', async (t) => 
   assert.deepEqual(result.files.map((item) => item.relativePath), ['资料/a.txt']);
 });
 
+test('workspace collection skips generated win-unpacked trees', async (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'edu-project-generated-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  fs.mkdirSync(path.join(root, 'release', 'windows-terminal', 'win-unpacked', 'resources'), { recursive: true });
+  fs.writeFileSync(path.join(root, 'release', 'windows-terminal', 'win-unpacked', 'resources', 'app.asar'), 'volatile');
+  fs.writeFileSync(path.join(root, 'project-note.md'), 'keep');
+  const result = await collectWorkspaceFiles(root, { limit: 20 });
+  assert.deepEqual(result.files.map((item) => item.relativePath), ['project-note.md']);
+  assert.equal(result.skippedGenerated, 1);
+});
+
 test('workspace rebind rejects duplicate and knowledge-overlapping paths', (t) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'edu-project-rebind-'));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));

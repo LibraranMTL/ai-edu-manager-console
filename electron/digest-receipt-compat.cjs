@@ -4,6 +4,7 @@ const path = require('node:path');
 
 const { parseDigestReceipt } = require('./digest-receipt.cjs');
 const { normalizeDigestResult } = require('./digest-result.cjs');
+const { parseAgentResultInput } = require('./agent-result-envelope.cjs');
 
 function receiptBatchId(payload) {
   return String(payload?.digestBatchId || payload?.batchId || '').trim();
@@ -11,9 +12,12 @@ function receiptBatchId(payload) {
 
 function isDigestReceiptPayload(payload) {
   if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return false;
-  if (!receiptBatchId(payload)) return false;
-  return ['processed', 'digestedFiles', 'items', 'processedFiles', 'results', 'failed']
-    .some((key) => Array.isArray(payload[key]));
+  if (['processed', 'digestedFiles', 'digestFiles', 'items', 'processedFiles', 'completedFiles', 'successfulFiles', 'files', 'results', 'failed', 'failures', 'errors']
+    .some((key) => Array.isArray(payload[key]))) return true;
+  const status = String(payload.status || payload.digestStatus || payload.state || '');
+  const message = String(payload.message || payload.summary || payload.content || '');
+  return /completed|complete|success|succeeded|done|finished|已完成|完成|成功/i.test(status)
+    || /(消化完成|处理完成|已完成|完成消化|全部完成)/i.test(message);
 }
 
 function receiptFingerprint(payload) {
@@ -23,14 +27,24 @@ function receiptFingerprint(payload) {
 function readReceiptCandidate(file) {
   try {
     if (!fs.statSync(file).isFile()) return null;
-    const parsed = parseDigestReceipt(fs.readFileSync(file, 'utf8'));
-    if (!parsed.ok || !isDigestReceiptPayload(parsed.value)) return null;
+    const source = fs.readFileSync(file, 'utf8');
+    const parsed = parseDigestReceipt(source);
+    let payload = parsed.ok ? parsed.value : null;
+    if (!isDigestReceiptPayload(payload)) {
+      try {
+        const envelope = parseAgentResultInput(source, { kind: 'digest' });
+        payload = envelope.payload;
+      } catch {
+        payload = null;
+      }
+    }
+    if (!isDigestReceiptPayload(payload)) return null;
     return {
       file,
       mtimeMs: fs.statSync(file).mtimeMs,
-      payload: parsed.value,
-      batchId: receiptBatchId(parsed.value),
-      fingerprint: receiptFingerprint(parsed.value),
+      payload,
+      batchId: receiptBatchId(payload),
+      fingerprint: receiptFingerprint(payload),
     };
   } catch {
     return null;
@@ -42,6 +56,25 @@ function directJsonFiles(dir, limit = 200) {
     if (!fs.existsSync(dir)) return [];
     return fs.readdirSync(dir, { withFileTypes: true })
       .filter((entry) => entry.isFile() && entry.name.toLowerCase().endsWith('.json'))
+      .map((entry) => {
+        const file = path.join(dir, entry.name);
+        let mtimeMs = 0;
+        try { mtimeMs = fs.statSync(file).mtimeMs; } catch { /* ignored below */ }
+        return { file, mtimeMs };
+      })
+      .sort((a, b) => b.mtimeMs - a.mtimeMs)
+      .slice(0, Math.max(1, Math.min(500, Number(limit || 200))))
+      .map((entry) => entry.file);
+  } catch {
+    return [];
+  }
+}
+
+function directReceiptFiles(dir, limit = 200) {
+  try {
+    if (!fs.existsSync(dir)) return [];
+    return fs.readdirSync(dir, { withFileTypes: true })
+      .filter((entry) => entry.isFile() && /\.(?:json|md|txt)$/i.test(entry.name))
       .map((entry) => {
         const file = path.join(dir, entry.name);
         let mtimeMs = 0;
@@ -157,6 +190,87 @@ function discoverSingleFileMarkdownReceipt(options = {}) {
   };
 }
 
+function discoverKnowledgeCompletionReceipt(options = {}) {
+  const batch = options.batch && typeof options.batch === 'object' ? options.batch : {};
+  const files = Array.isArray(batch.files) ? batch.files : Array.isArray(batch.submittedFiles) ? batch.submittedFiles : [];
+  if (!files.length || !batch.batchId || !options.knowledgeRoot) return null;
+  const submittedAt = String(batch.submittedAt || batch.createdAt || options.submittedAt || '');
+  const submittedMs = Date.parse(submittedAt) || 0;
+  if (!submittedMs) return null;
+  const recentFiles = recentKnowledgeTextFiles(
+    options.knowledgeRoot,
+    submittedMs,
+    [options.rawRoot, options.managerDir].filter(Boolean),
+    options.scanLimit || 500,
+  );
+  if (!recentFiles.length) return null;
+  const completionFile = recentFiles.find((item) => {
+    if (!/(?:index|log|消化|digest|receipt|result)/i.test(path.basename(item.path))) return false;
+    try {
+      const content = fs.readFileSync(item.path, 'utf8').slice(0, 1024 * 1024);
+      return /(消化完成|处理完成|已完成|完成消化|全部完成|无新增资料|status\s*[:：]\s*(?:completed|done)|digest(?:ion)?\s+(?:completed|finished))/i.test(content);
+    } catch {
+      return false;
+    }
+  });
+  const artifacts = recentFiles
+    .filter((item) => item.path !== completionFile?.path)
+    .filter((item) => !isMarkdownDigestReceiptName(item.path))
+    .filter((item) => !/^绑定学生\.md$/i.test(path.basename(item.path)));
+  if (!completionFile && artifacts.length < 2) return null;
+  if (!artifacts.length) return null;
+  const completedAt = new Date(Math.max(completionFile?.mtimeMs || 0, ...artifacts.map((item) => item.mtimeMs))).toISOString();
+  const payload = {
+    version: 3,
+    status: 'completed',
+    studentId: String(batch.scope?.type === 'student' ? batch.scope.id : ''),
+    projectId: String(batch.scope?.type === 'project' ? batch.scope.id : ''),
+    digestBatchId: String(batch.batchId),
+    completedAt,
+    message: '系统根据本批次之后的知识产物和完成记录自动归并结果。',
+    processed: files.map((source) => ({
+      materialId: String(source.materialId || ''),
+      relativePath: String(source.relativePath || ''),
+      sha1: String(source.sha1 || ''),
+      status: 'completed',
+      artifacts: artifacts.map((item) => item.path),
+    })),
+    compatibility: {
+      mode: 'knowledge_update_auto_completion',
+      completionPath: completionFile?.path || '',
+      detectedAt: new Date().toISOString(),
+      artifactPaths: artifacts.map((item) => item.path),
+    },
+  };
+  return {
+    payload,
+    receiptPath: completionFile?.path || artifacts[0].path,
+    artifacts,
+    fingerprint: receiptFingerprint(payload),
+  };
+}
+
+function receiptMatchesBatch(payload, batch) {
+  if (!batch || !Array.isArray(batch.files)) return false;
+  const normalized = normalizeDigestResult(payload, batch);
+  const ids = new Set(batch.files.map((file) => String(file.materialId || '')).filter(Boolean));
+  const paths = new Set(batch.files.map((file) => String(file.relativePath || '').replace(/\\/g, '/').toLowerCase()).filter(Boolean));
+  const names = new Map();
+  const hashes = new Set(batch.files.map((file) => String(file.sha1 || '').toLowerCase()).filter(Boolean));
+  for (const file of batch.files) {
+    const name = path.basename(String(file.relativePath || '')).toLowerCase();
+    if (name) names.set(name, (names.get(name) || 0) + 1);
+  }
+  return [...(normalized.processed || []), ...(normalized.failed || [])].some((item) => {
+    const itemPath = String(item.relativePath || '').replace(/\\/g, '/').toLowerCase();
+    const basename = path.basename(itemPath).toLowerCase();
+    return (item.materialId && ids.has(String(item.materialId)))
+      || (itemPath && paths.has(itemPath))
+      || (item.sha1 && hashes.has(String(item.sha1).toLowerCase()))
+      || (basename && names.get(basename) === 1);
+  });
+}
+
 function discoverDigestReceipts(options = {}) {
   const managerDir = String(options.managerDir || '');
   const canonicalFile = String(options.canonicalFile || '');
@@ -166,8 +280,8 @@ function discoverDigestReceipts(options = {}) {
     ...(canonicalFile ? [canonicalFile] : []),
     // QClaw may choose localized or segmented filenames. Candidate detection is
     // therefore content-based; scanning is bounded to keep large inboxes fast.
-    ...directJsonFiles(managerDir, options.scanLimit),
-    ...directJsonFiles(path.join(archiveRoot, batchId), options.scanLimit),
+    ...directReceiptFiles(managerDir, options.scanLimit),
+    ...directReceiptFiles(path.join(archiveRoot, batchId), options.scanLimit),
   ]);
   const candidates = [];
   const stale = [];
@@ -177,7 +291,7 @@ function discoverDigestReceipts(options = {}) {
     const candidate = readReceiptCandidate(file);
     if (!candidate || fingerprints.has(candidate.fingerprint)) continue;
     fingerprints.add(candidate.fingerprint);
-    if (candidate.batchId === batchId) candidates.push(candidate);
+    if (!candidate.batchId || candidate.batchId === batchId || receiptMatchesBatch(candidate.payload, options.batch)) candidates.push(candidate);
     else stale.push(candidate);
   }
   candidates.sort((a, b) => a.mtimeMs - b.mtimeMs);
@@ -226,6 +340,7 @@ function mergeDigestReceipts(receipts, batch) {
 }
 
 module.exports = {
+  discoverKnowledgeCompletionReceipt,
   discoverSingleFileMarkdownReceipt,
   discoverDigestReceipts,
   isDigestReceiptPayload,

@@ -16,6 +16,15 @@ function encodedUri(scopeType, scopeId, relativePath) {
   return `edu://${encodeURIComponent(scopeType)}/${encodeURIComponent(scopeId)}/knowledge/${String(relativePath || '').split('/').map(encodeURIComponent).join('/')}`;
 }
 
+function searchTerms(query) {
+  const terms = String(query || '')
+    .toLocaleLowerCase()
+    .split(/[\s，。！？；、,:;!?()[\]{}<>《》“”"'`]+/u)
+    .map((item) => item.trim())
+    .filter((item) => item.length >= 2);
+  return Array.from(new Set(terms)).slice(0, 12);
+}
+
 function descriptorResources(descriptor, limit) {
   const root = path.resolve(String(descriptor.root || ''));
   if (!root || !fs.existsSync(root)) return [];
@@ -62,11 +71,14 @@ function createArchiveAccess(options = {}) {
   const descriptors = Array.isArray(options.descriptors) ? options.descriptors : [];
   const maxResources = Math.max(1, Math.min(5000, Number(options.maxResources || 1500)));
   let index = null;
+  const scopedIndexes = new Map();
+  const scopeKey = (scopeType, scopeId) => `${String(scopeType || '')}:${String(scopeId || '')}`;
   const ensureIndex = () => {
     if (index) return index;
     const byPath = new Map();
+    const perScopeLimit = Math.max(1, Math.ceil(maxResources / Math.max(1, descriptors.length)));
     for (const descriptor of descriptors) {
-      for (const resource of descriptorResources(descriptor, maxResources - byPath.size)) {
+      for (const resource of descriptorResources(descriptor, Math.min(perScopeLimit, maxResources - byPath.size))) {
         if (!byPath.has(resource.path.toLowerCase())) byPath.set(resource.path.toLowerCase(), resource);
       }
       if (byPath.size >= maxResources) break;
@@ -74,9 +86,43 @@ function createArchiveAccess(options = {}) {
     index = Array.from(byPath.values()).sort((a, b) => String(b.modifiedAt).localeCompare(String(a.modifiedAt)));
     return index;
   };
-  const scoped = (params = {}) => ensureIndex().filter((item) =>
-    (!params.scopeType || item.scopeType === String(params.scopeType))
-    && (!params.scopeId || item.scopeId === String(params.scopeId)));
+  const ensureScopedIndex = (scopeType, scopeId) => {
+    const normalizedType = String(scopeType || '');
+    const normalizedId = String(scopeId || '');
+    const key = scopeKey(normalizedType, normalizedId);
+    if (scopedIndexes.has(key)) return scopedIndexes.get(key);
+    const byPath = new Map();
+    for (const descriptor of descriptors) {
+      if (descriptor.scopeType !== normalizedType || String(descriptor.scopeId) !== normalizedId) continue;
+      for (const resource of descriptorResources(descriptor, maxResources - byPath.size)) {
+        if (!byPath.has(resource.path.toLowerCase())) byPath.set(resource.path.toLowerCase(), resource);
+      }
+      if (byPath.size >= maxResources) break;
+    }
+    const scopedIndex = Array.from(byPath.values())
+      .sort((a, b) => String(b.modifiedAt).localeCompare(String(a.modifiedAt)));
+    scopedIndexes.set(key, scopedIndex);
+    while (scopedIndexes.size > 16) scopedIndexes.delete(scopedIndexes.keys().next().value);
+    return scopedIndex;
+  };
+  const scoped = (params = {}) => {
+    const hasExactScope = Boolean(params.scopeType && params.scopeId);
+    const source = hasExactScope
+      ? ensureScopedIndex(params.scopeType, params.scopeId)
+      : ensureIndex();
+    return source.filter((item) =>
+      (!params.scopeType || item.scopeType === String(params.scopeType))
+      && (!params.scopeId || item.scopeId === String(params.scopeId)));
+  };
+  const scopeFromUri = (uri) => {
+    const match = String(uri || '').match(/^edu:\/\/([^/]+)\/([^/]+)\/knowledge\//);
+    if (!match) return null;
+    try {
+      return { scopeType: decodeURIComponent(match[1]), scopeId: decodeURIComponent(match[2]) };
+    } catch {
+      return null;
+    }
+  };
   const readResource = (resource, maxChars = 20_000) => {
     if (!resource || !descriptors.some((descriptor) =>
       descriptor.scopeType === resource.scopeType
@@ -95,10 +141,20 @@ function createArchiveAccess(options = {}) {
     schema: ARCHIVE_ACCESS_SCHEMA,
     refresh() {
       index = null;
+      scopedIndexes.clear();
       return { ok: true, resourceCount: ensureIndex().length };
+    },
+    primeScopes(scopes = []) {
+      const requested = Array.from(new Map((Array.isArray(scopes) ? scopes : [])
+        .filter((scope) => scope?.scopeType && scope?.scopeId)
+        .map((scope) => [`${scope.scopeType}:${scope.scopeId}`, scope])).values());
+      let resourceCount = 0;
+      for (const scope of requested) resourceCount += ensureScopedIndex(scope.scopeType, scope.scopeId).length;
+      return { ok: true, scopeCount: requested.length, resourceCount };
     },
     search(params = {}) {
       const query = String(params.query || '').trim().toLowerCase();
+      const terms = searchTerms(query);
       const limit = Math.max(1, Math.min(50, Number(params.limit || 12)));
       const hits = [];
       for (const resource of scoped(params)) {
@@ -107,19 +163,33 @@ function createArchiveAccess(options = {}) {
           try { content = fs.readFileSync(resource.path, 'utf8'); } catch { content = ''; }
         }
         const haystack = `${resource.title}\n${resource.relativePath}\n${content}`.toLowerCase();
-        if (query && !haystack.includes(query)) continue;
-        const position = query ? haystack.indexOf(query) : 0;
+        const exact = Boolean(query && haystack.includes(query));
+        const matchedTerms = exact ? terms : terms.filter((term) => haystack.includes(term));
+        const requiredMatches = terms.length <= 1 ? 1 : Math.max(1, Math.ceil(terms.length * 0.6));
+        if (query && !exact && matchedTerms.length < requiredMatches) continue;
+        const firstMatch = exact ? query : matchedTerms[0] || '';
+        const position = firstMatch ? haystack.indexOf(firstMatch) : 0;
         const excerptStart = Math.max(0, position - 120);
         hits.push({
           ...resource,
           excerpt: content ? content.slice(excerptStart, excerptStart + 500) : '',
+          relevance: exact ? 10_000 + terms.length : matchedTerms.length,
         });
-        if (hits.length >= limit) break;
       }
-      return { ok: true, schema: ARCHIVE_ACCESS_SCHEMA, query, resources: hits, count: hits.length };
+      hits.sort((a, b) => b.relevance - a.relevance || String(b.modifiedAt).localeCompare(String(a.modifiedAt)));
+      const resources = hits.slice(0, limit).map(({ relevance, ...item }) => ({
+        ...item,
+        matchScore: relevance,
+      }));
+      return { ok: true, schema: ARCHIVE_ACCESS_SCHEMA, query, resources, count: resources.length };
     },
     getResource(params = {}) {
-      const resource = ensureIndex().find((item) => item.uri === String(params.uri || ''));
+      const uri = String(params.uri || '');
+      const uriScope = scopeFromUri(uri);
+      const source = uriScope
+        ? ensureScopedIndex(uriScope.scopeType, uriScope.scopeId)
+        : ensureIndex();
+      const resource = source.find((item) => item.uri === uri);
       if (!resource) return { ok: false, code: 'resource_not_found', message: '未找到该档案资源，或资源不在授权知识范围内。' };
       return { ok: true, schema: ARCHIVE_ACCESS_SCHEMA, resource: readResource(resource, Math.max(1, Math.min(100_000, Number(params.maxChars || 20_000)))) };
     },
@@ -136,6 +206,7 @@ function createArchiveAccess(options = {}) {
         title: item.title,
         scopeType: item.scopeType,
         scopeId: item.scopeId,
+        scopeName: item.scopeName || '',
         relativePath: item.relativePath,
         modifiedAt: item.modifiedAt,
         excerpt: item.excerpt,

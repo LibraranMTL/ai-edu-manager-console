@@ -41,3 +41,44 @@ test('screening preview reports unmatched and duplicate recommendations explicit
   assert.match(preview.unmatched[0].reason, /重复匹配/);
   assert.match(preview.unmatched[1].reason, /未匹配/);
 });
+
+test('screening matches relocated workspace paths and compatible Chinese fields without trusting old ids', () => {
+  const project = {
+    id: 'project-relocated',
+    workspacePath: 'E:/同步项目',
+    stagingItems: [
+      { id: 'new-local-id', filename: '研究结论.md', path: 'E:/同步项目/资料/研究结论.md', sourcePath: 'E:/同步项目/资料/研究结论.md', sha1: 'ABC123', status: 'collected', sourceStrategy: 'reference_only' },
+    ],
+  };
+  const preview = buildProjectScreeningPreview(project, JSON.stringify({
+    recommendations: [{
+      id: 'old-sender-id',
+      relativePath: 'D:/旧主机/同步项目/资料/研究结论.md',
+      文件名: '研究结论.md',
+      结论: '已分析',
+      保存策略: '仅来源记录',
+      理由: '已经完成项目分析',
+    }],
+  }));
+  assert.equal(preview.matchedCount, 1);
+  assert.equal(preview.changes[0].matchBasis, 'path');
+  assert.equal(preview.changes[0].toStatus, 'analyzed');
+  assert.equal(preview.changes[0].aiReason, '已经完成项目分析');
+});
+
+test('screening accepts recommendation objects keyed by staging id and refuses ambiguous filenames', () => {
+  const keyed = buildProjectScreeningPreview({
+    stagingItems: [{ id: 'staging-key', filename: '唯一.pdf', path: 'D:/唯一.pdf', status: 'collected' }],
+  }, JSON.stringify({ recommendations: { 'staging-key': { status: 'selected' } } }));
+  assert.equal(keyed.matchedCount, 1);
+  assert.equal(keyed.changes[0].matchBasis, 'id');
+
+  const ambiguous = buildProjectScreeningPreview({
+    stagingItems: [
+      { id: 'one', filename: '同名.pdf', path: 'D:/一/同名.pdf', status: 'collected' },
+      { id: 'two', filename: '同名.pdf', path: 'D:/二/同名.pdf', status: 'collected' },
+    ],
+  }, JSON.stringify({ recommendations: [{ filename: '同名.pdf', status: 'selected' }] }));
+  assert.equal(ambiguous.matchedCount, 0);
+  assert.match(ambiguous.unmatched[0].reason, /歧义/);
+});

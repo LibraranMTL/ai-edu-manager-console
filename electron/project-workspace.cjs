@@ -20,6 +20,30 @@ function isPathInside(root, candidate) {
   return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
 }
 
+function inspectWorkspacePath(rootPath, resourcesPath = '') {
+  const resolved = canonicalPath(rootPath);
+  const normalized = resolved.replace(/\//g, '\\').toLocaleLowerCase('en-US');
+  const resources = resourcesPath ? canonicalPath(resourcesPath).replace(/\//g, '\\').toLocaleLowerCase('en-US') : '';
+  const runtimeArtifact = normalized.endsWith('\\app.asar')
+    || normalized.includes('\\resources\\app.asar\\')
+    || (resources && isPathInside(resources, resolved));
+  if (runtimeArtifact) {
+    return { ok: false, path: resolved, code: 'runtime_artifact', message: '工作空间被错误绑定到程序安装包内部。' };
+  }
+  if (!fs.existsSync(resolved)) {
+    return { ok: false, path: resolved, code: 'missing', message: '工作空间文件夹不存在。' };
+  }
+  try {
+    if (!fs.statSync(resolved).isDirectory()) {
+      return { ok: false, path: resolved, code: 'not_directory', message: '工作空间路径不是文件夹。' };
+    }
+    fs.accessSync(resolved, fs.constants.R_OK);
+  } catch {
+    return { ok: false, path: resolved, code: 'unreadable', message: '工作空间文件夹不可读取。' };
+  }
+  return { ok: true, path: resolved, code: 'ready', message: '工作空间可读取。' };
+}
+
 function validateWorkspaceRebind(project, targetPath, projects = []) {
   const target = canonicalPath(targetPath);
   const errors = [];
@@ -57,21 +81,44 @@ async function collectWorkspaceFiles(rootPath, options = {}) {
   const stack = [root];
   let visited = 0;
   let skippedLinks = 0;
+  let skippedUnavailable = 0;
+  let skippedGenerated = 0;
+  const excludedDirectoryNames = new Set((options.excludedDirectoryNames || [
+    '.git',
+    '.cache',
+    '.vite',
+    'node_modules',
+    'dist',
+    'build',
+    'out',
+    'win-unpacked',
+  ]).map((item) => String(item).toLocaleLowerCase('en-US')));
   while (stack.length && files.length < limit) {
-    if (options.isCancelled?.()) return { cancelled: true, files, visited, skippedLinks, limitReached: false };
+    if (options.isCancelled?.()) return { cancelled: true, files, visited, skippedLinks, skippedUnavailable, skippedGenerated, limitReached: false };
     const dir = stack.pop();
     let entries = [];
     try { entries = await fs.promises.readdir(dir, { withFileTypes: true }); } catch { continue; }
     for (const entry of entries) {
-      if (options.isCancelled?.()) return { cancelled: true, files, visited, skippedLinks, limitReached: false };
+      if (options.isCancelled?.()) return { cancelled: true, files, visited, skippedLinks, skippedUnavailable, skippedGenerated, limitReached: false };
       const fullPath = path.join(dir, entry.name);
       if (entry.isSymbolicLink()) { skippedLinks += 1; continue; }
       if (entry.isDirectory()) {
-        if (entry.name === '.edu-manager' || entry.name === 'node_modules') continue;
+        if (entry.name === '.edu-manager' || excludedDirectoryNames.has(entry.name.toLocaleLowerCase('en-US'))) {
+          skippedGenerated += 1;
+          continue;
+        }
         if (excludedRoots.some((excluded) => isPathInside(excluded, fullPath))) continue;
         stack.push(fullPath);
       } else if (entry.isFile()) {
-        const stat = await fs.promises.stat(fullPath);
+        let stat;
+        try {
+          stat = await fs.promises.stat(fullPath);
+        } catch {
+          // Build tools, cloud drives and editors can replace a file between
+          // readdir and stat. One volatile file must not abort the workspace.
+          skippedUnavailable += 1;
+          continue;
+        }
         files.push({ filename: entry.name, path: fullPath, size: stat.size, mtimeMs: stat.mtimeMs, relativePath: path.relative(root, fullPath).replace(/\\/g, '/') });
         visited += 1;
         if (visited % 25 === 0) options.onProgress?.({ phase: 'listing', visited, currentPath: fullPath, percent: 0 });
@@ -79,7 +126,15 @@ async function collectWorkspaceFiles(rootPath, options = {}) {
       }
     }
   }
-  return { cancelled: false, files, visited, skippedLinks, limitReached: files.length >= limit && stack.length > 0 };
+  return {
+    cancelled: false,
+    files,
+    visited,
+    skippedLinks,
+    skippedUnavailable,
+    skippedGenerated,
+    limitReached: files.length >= limit && stack.length > 0,
+  };
 }
 
-module.exports = { canonicalPath, samePath, isPathInside, validateWorkspaceRebind, sha1FileAsync, collectWorkspaceFiles };
+module.exports = { canonicalPath, samePath, isPathInside, inspectWorkspacePath, validateWorkspaceRebind, sha1FileAsync, collectWorkspaceFiles };

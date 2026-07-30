@@ -8,12 +8,14 @@ import {
   Camera,
   CheckCircle2,
   ChevronRight,
+  CircleAlert,
   Clipboard,
   Clock3,
   Copy,
   ExternalLink,
   FileDown,
   FileText,
+  FolderInput,
   FolderOpen,
   Home,
   Inbox,
@@ -30,6 +32,8 @@ import {
   Play,
   Plus,
   RefreshCw,
+  Search,
+  Send,
   Settings,
   Share2,
   ShieldCheck,
@@ -37,6 +41,7 @@ import {
   Square,
   Star,
   Trash2,
+  TrendingUp,
   UserRound,
   Zap,
   X,
@@ -48,6 +53,7 @@ const studentLoginQrDataUrlCache = new Map<string, string>();
 const loadQrCode = () => import('qrcode').then((module) => module.default);
 
 type Section = 'home' | 'init' | 'inbox' | 'assets' | 'projects-new' | 'projects-existing' | 'growth' | 'reports' | 'archive' | 'qa' | 'memory' | 'soul' | 'rules' | 'conversation' | 'tasks' | 'settings';
+type SettingsSubmenu = 'basic' | 'connection' | 'collaboration';
 type ProjectWorkflowTarget = 'workspace' | 'assets' | 'digest' | 'knowledge' | 'evidence' | 'promotion';
 type ThemeName = 'blue' | 'pink' | 'green' | 'purple' | 'orange';
 type LanguageCode = 'zh-CN' | 'zh-TW' | 'en' | 'fr' | 'es' | 'ja' | 'ko' | 'vi' | 'ms';
@@ -72,6 +78,7 @@ type KnowledgeBaseMode = 'standard' | 'adopted';
 type AgentBindingMode = 'subAgent' | 'mainChat';
 type InitStepId = 'folder' | 'agent' | 'execute' | 'create' | 'soul' | 'memory' | 'schedule' | 'full';
 type ArchiveCategoryId = 'summary' | 'report' | 'qa' | 'other' | 'all';
+type ArchiveDateSort = 'modified-desc' | 'modified-asc';
 type LearningReportId = 'profile' | 'changes' | 'daily' | 'stage';
 type RuntimePlatform = 'android' | 'windows' | 'web' | string;
 type ProjectDashboardFocus = 'all' | 'active' | 'materials' | 'knowledge' | 'contributions' | 'risks' | 'digest';
@@ -298,6 +305,10 @@ type LearningProject = {
   growthStrategy?: string;
   deliverables?: string[];
   duplicatedFrom?: string;
+  projectLineageId?: string;
+  collaborationPublicationVersion?: number;
+  collaborationSourceNodeId?: string;
+  collaborationSourceProjectId?: string;
   studentEvidence?: Array<{
     studentId: string;
     ability?: string;
@@ -309,7 +320,7 @@ type LearningProject = {
     updatedAt?: string;
   }>;
   automation?: { enabled?: boolean; onWorkspaceChange?: boolean; onStatusChange?: boolean; intervalMinutes?: number; nextRunAt?: string; lastRunAt?: string; lastReason?: string };
-  dashboard?: { knowledgeCount?: number; pendingKnowledgeCount?: number; pendingStagingCount?: number; acceptedStagingCount?: number; contributionReady?: boolean; contributionStatus?: string; knowledgeCoverage?: number; riskCount?: number; riskReasons?: string[] };
+  dashboard?: { rawMaterialCount?: number; knowledgeCount?: number; indexedKnowledgeCount?: number; pendingKnowledgeCount?: number; pendingStagingCount?: number; acceptedStagingCount?: number; contributionReady?: boolean; contributionStatus?: string; knowledgeCoverage?: number; riskCount?: number; riskReasons?: string[] };
   promotionPath?: string;
   assetIds?: string[];
   stagingItems?: ProjectStagingItem[];
@@ -665,6 +676,64 @@ type TaskCenterState = {
   qclawResultPath?: string;
 };
 
+type AgentKnowledgeResource = {
+  uri?: string;
+  title?: string;
+  relativePath?: string;
+  excerpt?: string;
+  modifiedAt?: string;
+  scopeType?: string;
+  scopeId?: string;
+  scopeName?: string;
+  studentId?: string;
+  studentName?: string;
+  studentIds?: string[];
+  studentNames?: string[];
+  projectId?: string;
+  projectName?: string;
+  sourceNodeId?: string;
+  freshness?: string;
+  transport?: string;
+};
+
+type AgentKnowledgeResult = {
+  ok?: boolean;
+  queryId?: string;
+  question?: string;
+  source?: 'local' | 'remote' | 'offline_snapshot' | 'waiting';
+  transport?: 'lan' | 'tailscale' | '';
+  freshness?: string;
+  sourceNodeId?: string;
+  servedAt?: string;
+  cachedAt?: string;
+  count?: number;
+  resources?: AgentKnowledgeResource[];
+  retryable?: boolean;
+  warning?: string;
+  message?: string;
+  durationMs?: number;
+  prompt?: string;
+  cachedQuery?: boolean;
+};
+
+type AgentKnowledgeDiagnostics = {
+  summary?: { total?: number; local?: number; remote?: number; snapshot?: number; waiting?: number; lan?: number; tailscale?: number };
+  entries?: Array<{
+    queryId?: string;
+    at?: string;
+    scopeType?: string;
+    scopeId?: string;
+    source?: string;
+    transport?: string;
+    freshness?: string;
+    sourceNodeId?: string;
+    resultCount?: number;
+    durationMs?: number;
+    ok?: boolean;
+    message?: string;
+  }>;
+};
+
 type KnowledgeGraphNode = {
   nodeId: string;
   type: 'student' | 'project' | 'asset' | 'growth' | string;
@@ -777,6 +846,8 @@ type AndroidBridge = {
   rollbackAgentSourceRecord?: (studentId: string, recordId: string) => string;
   getAgentConversationCenter?: (studentId: string) => string;
   saveAgentConversationImport?: (studentId: string, content: string, tool: AgentToolId, sourcePath?: string) => string;
+  deliverConversationMaterials?: (studentId: string, requestJson: string) => string;
+  importConversationShareUrl?: (studentId: string, url: string, tool: AgentToolId) => Promise<string>;
   selectAgentConversationFiles?: (studentId: string, tool: AgentToolId) => string;
   saveConversationExtract?: (studentId: string, extractJson: string, tool: AgentToolId) => string;
   updateConversationKnowledgeCandidate?: (studentId: string, candidateId: string, action: string, payloadJson: string) => string;
@@ -805,6 +876,9 @@ type AndroidBridge = {
   readProjectKnowledgeFile?: (projectId: string, documentId: string) => string;
   listLearningReports?: (studentId: string) => string;
   readLearningReport?: (studentId: string, reportId: LearningReportId) => string;
+  getLearningReportEvidence?: (studentId: string, reportId: LearningReportId) => string;
+  openLearningReportEvidenceSource?: (studentId: string, reportId: LearningReportId, evidenceId: string, sourceIndex: number) => string;
+  exportEducationArchive?: (studentId: string) => string;
   ensureLearningReports?: (studentId: string) => string;
   ensureGrowthModel?: (studentId: string) => string;
   getGrowthEvidenceReview?: (studentId: string) => string;
@@ -833,6 +907,33 @@ type AndroidBridge = {
   getHostConnectionInfo?: () => string;
   getHostDevices?: () => string;
   renameHostIdentity?: (displayName: string) => string;
+  getCollaborationState?: () => string;
+  setTeamKnowledgePolicy?: (optionsJson: string) => string;
+  getRemoteCollaborationTasks?: () => string;
+  getProjectPublicationOptions?: (projectId: string) => string;
+  publishCollaborationProject?: (optionsJson: string) => Promise<string>;
+  selectCollaborationTaskFiles?: () => string;
+  selectCollaborationResultFiles?: () => string;
+  createRemoteCollaborationTask?: (optionsJson: string) => Promise<string>;
+  updateRemoteCollaborationTask?: (taskId: string, type: string, message?: string, optionsJson?: string) => Promise<string>;
+  resolveCollaborationTaskAttachments?: (taskId: string, decision: 'stage' | 'adopt' | 'adopt_project' | 'reject', targetProjectId?: string) => string;
+  initializeCollaborationWorkspace?: () => string;
+  setCollaborationEnabled?: (enabled: boolean) => string;
+  openCollaborationPath?: (kind?: 'root' | 'nodeRoot' | 'outbox' | 'inbox' | 'receipts' | 'quarantine' | 'trash' | 'snapshots') => string;
+  scanCollaborationInbox?: () => Promise<string>;
+  rebuildCollaborationIndex?: () => string;
+  backupCollaborationState?: () => string;
+  restoreLatestCollaborationState?: () => string;
+  updateDirectDeliveryStatus?: (manifestId: string, action: 'pause' | 'resume' | 'retry' | 'cancel') => string;
+  exportCollaborationStudentStats?: (studentId: string, targetNodeId: string) => string;
+  createCollaborationBinding?: (optionsJson: string) => string;
+  createManualCollaborationInvitation?: (studentId: string, localRole: 'educator' | 'learner_authority') => string;
+  acceptManualCollaborationClipboard?: (studentId?: string) => string;
+  updateCollaborationBindingStatus?: (bindingId: string, status: 'active' | 'paused' | 'revoked') => string;
+  deleteRevokedCollaborationBindings?: (bindingId?: string) => string;
+  saveCollaborationGrant?: (optionsJson: string) => string;
+  setCollaborationStatisticsSharing?: (studentId: string, enabled: boolean) => string;
+  getCollaborationStudentMaterialStats?: (studentId: string, viewerNodeId?: string, allowedProjectIdsJson?: string) => string;
   findLanTablets?: () => string;
   findLanTerminals?: () => string;
   inviteLanTablet?: (tabletId: string) => string;
@@ -846,10 +947,10 @@ type AndroidBridge = {
   setHostUploadRecordStatus?: (recordId: string, status: string) => string;
   markStudentDigestSubmitted?: (studentId: string) => string;
   syncStudentDigestResult?: (studentId: string) => string;
-  startDigestWorkflow?: (scopeType: 'student' | 'project', scopeId: string, executor?: string) => string;
+  startDigestWorkflow?: (scopeType: 'student' | 'project', scopeId: string, executor?: string) => Promise<string>;
   getDigestWorkflowStatus?: (scopeType: 'student' | 'project', scopeId: string) => string;
   getDigestWorkflowCommand?: (scopeType: 'student' | 'project', scopeId: string) => string;
-  retryDigestWorkflow?: (scopeType: 'student' | 'project', scopeId: string, executor?: string) => string;
+  retryDigestWorkflow?: (scopeType: 'student' | 'project', scopeId: string, executor?: string) => Promise<string>;
   importDigestWorkflowResultText?: (scopeType: 'student' | 'project', scopeId: string, content: string) => string;
   getStudentDigestAudit?: (studentId: string) => string;
   generateStudentDigestAudit?: (studentId: string, selectedIdsJson: string) => string;
@@ -859,9 +960,16 @@ type AndroidBridge = {
   getTaskCenter?: () => string;
   getTaskCenterAsync?: (force?: boolean) => Promise<string>;
   archiveAccessRpc?: (requestJson: string) => Promise<string>;
+  remoteArchiveAccessRpc?: (requestJson: string) => Promise<string>;
+  queryAgentKnowledge?: (optionsJson: string) => Promise<string>;
+  getAgentKnowledgeDiagnostics?: () => string;
+  prepareAgentKnowledgeAccess?: (studentId: string) => string;
+  submitAgentConversation?: (requestJson: string) => Promise<string>;
+  getAgentConversationSubmissionState?: () => string;
+  assignAgentConversationSubmission?: (submissionId: string, scopeType: 'student' | 'project', scopeId: string) => string;
   getTaskCenterCapabilities?: () => string;
   setTaskAutomationEnabled?: (enabled: boolean) => string;
-  executeTask?: (taskId: string, executor?: string) => string;
+  executeTask?: (taskId: string, executor?: string) => Promise<string>;
   approveTask?: (taskId: string, decision: 'approved' | 'rejected', note?: string) => string;
   retryTask?: (taskId: string) => string;
   cancelTask?: (taskId: string, note?: string) => string;
@@ -933,6 +1041,32 @@ type LearningReportHealth = {
   evidenceMissingCount?: number;
   warnings?: string[];
   message?: string;
+};
+
+type LearningReportEvidenceState = {
+  ok: boolean;
+  legacy?: boolean;
+  citedCount?: number;
+  unavailableCount?: number;
+  message?: string;
+  cards: Array<{
+    evidenceId: string;
+    title: string;
+    summary?: string;
+    observedAt?: string;
+    projectName?: string;
+    ability?: string;
+    status?: string;
+    sourceAvailable?: boolean;
+    sources: Array<{
+      id: string;
+      title: string;
+      location: string;
+      uri?: string;
+      available: boolean;
+      kind: string;
+    }>;
+  }>;
 };
 
 type PathHealthCheck = {
@@ -1117,6 +1251,154 @@ type HostServiceStatus = {
   lastError?: string;
 };
 
+type CollaborationNode = {
+  nodeId: string;
+  displayName: string;
+  machineCode?: string;
+  capabilities?: string[];
+};
+
+type CollaborationPairingStage = 'idle' | 'invitation_copied' | 'acceptance_copied' | 'completed' | 'error';
+
+type CollaborationPairingFeedback = {
+  stage: CollaborationPairingStage;
+  title: string;
+  message: string;
+  nextAction?: string;
+  studentName?: string;
+  expiresAt?: string;
+  peerNodeId?: string;
+};
+
+type CollaborationState = {
+  ok?: boolean;
+  state?: {
+    enabled: boolean;
+    node: CollaborationNode;
+    bindings: Array<{
+      bindingId: string;
+      status?: 'active' | 'paused' | 'revoked' | string;
+      participantNodeIds?: string[];
+      roleAssignments?: Array<{
+        nodeId: string;
+        role: 'educator' | 'learner_authority' | string;
+        studentId?: string;
+        revokedAt?: string;
+      }>;
+      createdAt?: string;
+      lastSeenAt?: string;
+      revokedAt?: string;
+    }>;
+    grants: Array<{ grantId: string; revokedAt?: string }>;
+    statisticsSharing?: Record<string, boolean>;
+  };
+  layout?: {
+    nodeRoot?: string;
+    outbox?: string;
+    inbox?: string;
+    receipts?: string;
+    quarantine?: string;
+    trash?: string;
+    snapshots?: string;
+  } | null;
+  transport?: {
+    schema?: string;
+    id?: string;
+    label?: string;
+    kind?: string;
+    defaultTransport?: boolean;
+    externalSyncRequired?: boolean;
+    supportsOfflineQueue?: boolean;
+    supportsResume?: boolean;
+    available?: boolean;
+    message?: string;
+  };
+  teamKnowledgePolicy?: {
+    schema?: string;
+    allowLocalTeamKnowledgeQuery?: boolean;
+    allowRemoteTeamKnowledgeQuery?: boolean;
+  };
+  directDeliveries?: Array<{
+    manifestId: string;
+    targetNodeId?: string;
+    status: 'queued' | 'transferring' | 'retry_waiting' | 'paused' | 'delivered' | 'cancelled' | 'compatibility_queue' | string;
+    attempt?: number;
+    nextAttemptAt?: string;
+    updatedAt?: string;
+    deliveredAt?: string;
+    error?: string;
+    displayName?: string;
+    packageKind?: string;
+    packageCreatedAt?: string;
+    fileCount?: number;
+    totalBytes?: number;
+    lineageId?: string;
+    publicationVersion?: number;
+    supersededBy?: string;
+    channel?: 'lan' | 'tailscale' | string;
+    progress?: {
+      transferredBytes?: number;
+      totalBytes?: number;
+      fileIndex?: number;
+      fileCount?: number;
+      relativePath?: string;
+    } | null;
+  }>;
+  summary?: {
+    bindingCount?: number;
+    grantCount?: number;
+    localOnline?: boolean;
+    pendingPackageCount?: number;
+    quarantineCount?: number;
+    latestImportAt?: string;
+    directDeliverySummary?: {
+      total?: number;
+      queued?: number;
+      transferring?: number;
+      paused?: number;
+      failed?: number;
+      delivered?: number;
+      cancelled?: number;
+      invalid?: number;
+      superseded?: number;
+    };
+  };
+  message?: string;
+};
+
+type CollaborationMaterialStats = {
+  studentId: string;
+  generatedAt: string;
+  dataFreshness: 'live' | 'stale' | 'unknown' | string;
+  totalCollectedCount: number;
+  addedLast7Days: number;
+  stagingCount: number;
+  managedAssetCount: number;
+  pendingGovernanceCount: number;
+  pendingDigestCount: number;
+  digestedCount: number;
+  digestFailedCount: number;
+  projectCount: number;
+};
+
+type AgentConversationSubmissionState = {
+  ok?: boolean;
+  summary?: {
+    total?: number;
+    awaitingAttribution?: number;
+    stored?: number;
+  };
+  pending?: Array<{
+    submissionId: string;
+    title?: string;
+    sourceAgent?: string;
+    messageCount?: number;
+    receivedAt?: string;
+    receipt?: { message?: string };
+  }>;
+  message?: string;
+};
+
 type LicenseStatus = {
   status: 'inactive' | 'active' | 'expired' | string;
   active?: boolean;
@@ -1287,7 +1569,10 @@ type AgentToolInstall = {
   installed: boolean;
   version?: string;
   exePath?: string;
+  appPath?: string;
   installLocation?: string;
+  cliInstalled?: boolean;
+  desktopInstalled?: boolean;
 };
 
 type AgentToolInstallStatus = {
@@ -1367,11 +1652,13 @@ const updateManifestUrl = [
 const userAgreementUrl = 'https://www.greatbg.com/download/agreement.html';
 const privacyPolicyUrl = 'https://www.greatbg.com/download/privacy.html';
 const initSchemaVersion = 1;
+const developmentWindowsPreview = import.meta.env.DEV
+  && new URLSearchParams(window.location.search).get('platform') === 'windows';
 const defaultStorageConfig: StorageConfig = {
-  platform: 'android',
-  baseDir: 'Downloads/AI教育管家/学生资料',
-  usesAbsolutePaths: false,
-  pathSeparator: '/',
+  platform: developmentWindowsPreview ? 'windows' : 'android',
+  baseDir: developmentWindowsPreview ? 'D:\\学生资料' : 'Downloads/AI教育管家/学生资料',
+  usesAbsolutePaths: developmentWindowsPreview,
+  pathSeparator: developmentWindowsPreview ? '\\' : '/',
 };
 let activeStorageConfig = defaultStorageConfig;
 
@@ -1630,7 +1917,7 @@ const agentToolProfiles: Record<AgentToolId, AgentToolProfile> = {
   },
   codex: {
     id: 'codex',
-    name: 'Codex',
+    name: 'ChatGPT / Codex',
     category: 'local-cli',
     supportsLocalFiles: true,
     supportsAgentCreation: false,
@@ -1650,7 +1937,7 @@ const agentToolProfiles: Record<AgentToolId, AgentToolProfile> = {
     personaLocations: ['%USERPROFILE%\\.codex'],
     conversationLocations: ['%USERPROFILE%\\.codex'],
     installUrls: { windows: 'https://chatgpt.com/codex' },
-    openLabel: '打开 Codex',
+    openLabel: '打开 ChatGPT / Codex',
     copyTargetLabel: '复制到 Codex 会话或 AGENTS.md 中',
     digestTargetLabel: '可粘贴到 Codex，在学生知识库目录中执行',
     personaTargetLabel: 'Codex 项目说明 / AGENTS.md',
@@ -1826,7 +2113,10 @@ const agentToolProfiles: Record<AgentToolId, AgentToolProfile> = {
   },
 };
 
-const agentToolOptions = Object.values(agentToolProfiles);
+// ChatGPT and Codex now share the OpenAI desktop application. Keep the legacy
+// `chatgpt` profile readable for existing records, but do not show a duplicate
+// choice to new users.
+const agentToolOptions = Object.values(agentToolProfiles).filter((tool) => tool.id !== 'chatgpt');
 
 function getAgentToolProfile(value?: AgentToolId) {
   const profile = agentToolProfiles[value ?? 'qclaw'] ?? agentToolProfiles.qclaw;
@@ -1937,13 +2227,41 @@ type AgentSourceRegistryState = {
   records?: AgentSourceRecord[];
   message?: string;
 };
+type AgentConversationImport = {
+  path?: string;
+  tool?: AgentToolId;
+  importedAt?: string;
+  size?: number;
+  interactionId?: string;
+  assetId?: string;
+  messageCount?: number;
+  sourceScopeType?: 'student' | 'project';
+  sourceScopeId?: string;
+  sourceScopeName?: string;
+  sourceType?: string;
+  sourceUrl?: string;
+  analysis?: {
+    schema?: string;
+    title?: string;
+    summary?: string;
+    category?: string;
+    topics?: string[];
+    keywords?: string[];
+    decisions?: string[];
+    actionItems?: string[];
+    outcomes?: string[];
+    suggestedProjectIds?: string[];
+    suggestedTargetType?: 'student' | 'project';
+  };
+  deliveries?: Array<{ id?: string; targetType?: 'student' | 'project'; targetId?: string; targetName?: string; deliveredAt?: string }>;
+};
 type AgentConversationState = {
   ok: boolean;
   conversationDir?: string;
   importsDir?: string;
   extractsDir?: string;
   index?: {
-    imports?: Array<{ path?: string; tool?: AgentToolId; importedAt?: string; size?: number; interactionId?: string; assetId?: string; messageCount?: number }>;
+    imports?: AgentConversationImport[];
     extracts?: Array<{ path?: string; tool?: AgentToolId; importedAt?: string; memoryCount?: number; soulCount?: number; qaCount?: number; todoCount?: number }>;
   };
   latestInteraction?: {
@@ -2068,6 +2386,12 @@ function formatFileSize(size: number) {
   return `${(size / 1024 / 1024).toFixed(1)} MB`;
 }
 
+function formatDateTime(value?: string) {
+  if (!value) return '未知时间';
+  const timestamp = Date.parse(value);
+  return Number.isFinite(timestamp) ? new Date(timestamp).toLocaleString('zh-CN') : value;
+}
+
 const themeOptions: Array<{ id: ThemeName; label: string }> = [
   { id: 'blue', label: '蓝色系' },
   { id: 'pink', label: '粉色系' },
@@ -2107,7 +2431,7 @@ const zhCnText = {
   'nav.memory': 'Agent 记忆管理',
   'nav.soul': 'Agent 设定管理',
   'nav.rules': '智能体规则文件管理',
-  'nav.conversation': '对话历史导入与提取',
+  'nav.conversation': '对话资料箱',
   'nav.expand': '展开',
   'nav.collapse': '收起',
   'sidebar.hide': '隐藏左边栏',
@@ -2117,7 +2441,7 @@ const zhCnText = {
   'student.standard': '标准知识库',
   'student.adopted': '接管知识库',
   'settings.title': '系统设置',
-  'settings.description.windows': '默认根目录：D:\\学生资料；可在设置中更换资料根目录，并检测本机 Agent 工具安装状态。',
+  'settings.description.windows': '默认使用可用的学生资料目录：有 D 盘时兼容 D:\\学生资料；无 D 盘时自动使用 Windows 文档\\学生资料。也可在设置中更换目录。',
   'settings.description.android': '默认使用 App 内置资料库；Downloads 导出与 Obsidian Vault 授权作为备份和高级浏览方式。',
   'settings.language.title': '界面语言',
   'settings.language.description': '选择默认界面语言。切换后主导航、系统设置和通用操作会立即显示为所选语言。',
@@ -3918,6 +4242,10 @@ function App() {
   const [draft, setDraft] = useState<StudentDraft>(defaultDraft);
   const [selectedId, setSelectedId] = useState(students[0]?.id ?? '');
   const [activeSection, setActiveSection] = useState<Section>('init');
+  const [settingsSubmenu, setSettingsSubmenu] = useState<SettingsSubmenu>(() => {
+    const saved = localStorage.getItem('edu-manager-settings-submenu');
+    return saved === 'connection' || saved === 'collaboration' ? saved : 'basic';
+  });
   const [selectedInitStep, setSelectedInitStep] = useState<InitStepId>('full');
   const [copied, setCopied] = useState(false);
   const [exported, setExported] = useState(false);
@@ -3948,9 +4276,12 @@ function App() {
   const [markdownViewMode, setMarkdownViewMode] = useState<'rendered' | 'source'>('rendered');
   const [markdownMessage, setMarkdownMessage] = useState('');
   const [selectedArchiveCategory, setSelectedArchiveCategory] = useState<ArchiveCategoryId>('report');
+  const [archiveSearch, setArchiveSearch] = useState('');
+  const [archiveDateSort, setArchiveDateSort] = useState<ArchiveDateSort>('modified-desc');
   const [learningReports, setLearningReports] = useState<LearningReport[]>([]);
   const [selectedLearningReportId, setSelectedLearningReportId] = useState<LearningReportId>('profile');
   const [learningReportContent, setLearningReportContent] = useState('');
+  const [learningReportEvidence, setLearningReportEvidence] = useState<LearningReportEvidenceState | null>(null);
   const [learningReportViewMode, setLearningReportViewMode] = useState<'rendered' | 'source'>('rendered');
   const [learningReportMessage, setLearningReportMessage] = useState('');
   const [learningReportFolder, setLearningReportFolder] = useState('');
@@ -4099,6 +4430,7 @@ function App() {
   const [taskCenterDisplayLimit, setTaskCenterDisplayLimit] = useState(30);
   const [taskCenterRefreshing, setTaskCenterRefreshing] = useState(false);
   const taskCenterRequestRef = React.useRef(0);
+  const activeSectionRef = React.useRef<Section>(activeSection);
   const [selectedTaskId, setSelectedTaskId] = useState('');
   const taskDetailPanelRef = React.useRef<HTMLElement | null>(null);
   const [taskExecutorDraft, setTaskExecutorDraft] = useState('');
@@ -4108,6 +4440,17 @@ function App() {
   const [storageConfig, setStorageConfig] = useState<StorageConfig>(activeStorageConfig);
   const [installStatus, setInstallStatus] = useState<AgentToolInstallStatus | null>(null);
   const [installMessage, setInstallMessage] = useState('');
+  const [agentKnowledgeQuestion, setAgentKnowledgeQuestion] = useState('');
+  const [agentKnowledgeQueryScope, setAgentKnowledgeQueryScope] = useState<'current_student' | 'local_team' | 'collaboration_team' | 'all_allowed'>(() => {
+    const saved = localStorage.getItem('edu-manager-agent-knowledge-query-scope');
+    return ['current_student', 'local_team', 'collaboration_team', 'all_allowed'].includes(String(saved))
+      ? saved as 'current_student' | 'local_team' | 'collaboration_team' | 'all_allowed'
+      : 'current_student';
+  });
+  const [agentKnowledgeResult, setAgentKnowledgeResult] = useState<AgentKnowledgeResult | null>(null);
+  const [agentKnowledgeBusy, setAgentKnowledgeBusy] = useState(false);
+  const [agentKnowledgeDiagnostics, setAgentKnowledgeDiagnostics] = useState<AgentKnowledgeDiagnostics | null>(null);
+  const [agentKnowledgeDiagnosticsOpen, setAgentKnowledgeDiagnosticsOpen] = useState(false);
   const [advancedPromptOpen, setAdvancedPromptOpen] = useState(false);
   const [customStepPrompts, setCustomStepPrompts] = useState<Partial<Record<InitStepId, string>>>({});
   const [createMode, setCreateMode] = useState<KnowledgeBaseMode>('standard');
@@ -4141,6 +4484,26 @@ function App() {
   const [hostUploadDateFilter, setHostUploadDateFilter] = useState('all');
   const [hostUploadStatusFilter, setHostUploadStatusFilter] = useState('all');
   const [hostTimeline, setHostTimeline] = useState<HostTimelineEvent[]>([]);
+  const [collaborationState, setCollaborationState] = useState<CollaborationState | null>(null);
+  const [collaborationMessage, setCollaborationMessage] = useState('');
+  const [collaborationPairingFeedback, setCollaborationPairingFeedback] = useState<CollaborationPairingFeedback>({
+    stage: 'idle',
+    title: '尚未开始连接',
+    message: '在发起方完成第 1 步，另一台主机完成第 2 步，再回到发起方完成第 3 步。',
+  });
+  const [collaborationPairingBusy, setCollaborationPairingBusy] = useState(false);
+  const [collaborationStats, setCollaborationStats] = useState<CollaborationMaterialStats | null>(null);
+  const [agentConversationInbox, setAgentConversationInbox] = useState<AgentConversationSubmissionState | null>(null);
+  const [assigningAgentConversationId, setAssigningAgentConversationId] = useState('');
+  const [collaborationTaskTitle, setCollaborationTaskTitle] = useState('');
+  const [collaborationTaskInstructions, setCollaborationTaskInstructions] = useState('');
+  const [collaborationTaskSubmissionRequirements, setCollaborationTaskSubmissionRequirements] = useState('');
+  const [collaborationTaskDeadline, setCollaborationTaskDeadline] = useState('');
+  const [collaborationTaskFiles, setCollaborationTaskFiles] = useState<Array<{ path: string; name: string; size?: number }>>([]);
+  const [collaborationResultFiles, setCollaborationResultFiles] = useState<Array<{ path: string; name: string; size?: number }>>([]);
+  const [collaborationAttachmentProjectTargets, setCollaborationAttachmentProjectTargets] = useState<Record<string, string>>({});
+  const [projectPublicationBusy, setProjectPublicationBusy] = useState(false);
+  const [projectPublicationMessage, setProjectPublicationMessage] = useState('');
   const [studentEditDraft, setStudentEditDraft] = useState<StudentDraft | null>(null);
   const [archiveKeywords, setArchiveKeywords] = useState<ArchiveKeywordConfig>(loadArchiveKeywords);
   const [licenseStatus, setLicenseStatus] = useState<LicenseStatus | null>(null);
@@ -4152,6 +4515,7 @@ function App() {
   const [agentCenterMessage, setAgentCenterMessage] = useState('');
   const [agentKnowledgeMenuOpen, setAgentKnowledgeMenuOpen] = useState(false);
   const [projectMenuOpen, setProjectMenuOpen] = useState(true);
+  const [settingsMenuOpen, setSettingsMenuOpen] = useState(true);
   const [agentScanCandidates, setAgentScanCandidates] = useState<AgentKnowledgeCandidate[]>([]);
   const [selectedCandidateKeys, setSelectedCandidateKeys] = useState<string[]>([]);
   const [aiScanTool, setAiScanTool] = useState<AgentToolId | 'all'>('all');
@@ -4169,6 +4533,14 @@ function App() {
   const [conversationCenter, setConversationCenter] = useState<AgentConversationState | null>(null);
   const [conversationTool, setConversationTool] = useState<AgentToolId>('qclaw');
   const [conversationText, setConversationText] = useState('');
+  const [conversationShareUrl, setConversationShareUrl] = useState('');
+  const [conversationShareBusy, setConversationShareBusy] = useState(false);
+  const [conversationShareMessage, setConversationShareMessage] = useState('');
+  const [conversationInboxSearch, setConversationInboxSearch] = useState('');
+  const [conversationTopicFilter, setConversationTopicFilter] = useState('all');
+  const [selectedConversationAssetKeys, setSelectedConversationAssetKeys] = useState<string[]>([]);
+  const [conversationDeliveryTargetType, setConversationDeliveryTargetType] = useState<'student' | 'project'>('student');
+  const [conversationDeliveryProjectId, setConversationDeliveryProjectId] = useState('');
   const [conversationExtractText, setConversationExtractText] = useState('');
   const [conversationExtractPreview, setConversationExtractPreview] = useState<ConversationExtractPreview | null>(null);
   const [conversationExtractTargets, setConversationExtractTargets] = useState({ memory: true, soul: true, qa: true, todos: true });
@@ -4188,6 +4560,30 @@ function App() {
   const t = (key: TranslationKey) => uiTranslations[language]?.[key] ?? zhCnText[key] ?? key;
 
   const selectedStudent = students.find((item) => item.id === selectedId) ?? students[0];
+  const conversationLinkedProjects = useMemo(() => projects.filter((project) => (
+    Boolean(selectedStudent)
+    && (project.studentIds || []).map(String).includes(String(selectedStudent.id))
+    && !['sealed', 'archived'].includes(String(project.status || ''))
+  )), [projects, selectedStudent]);
+  const conversationInboxItems = useMemo(() => {
+    const keyword = conversationInboxSearch.trim().toLowerCase();
+    return (conversationCenter?.index?.imports ?? []).filter((item) => {
+      const topics = item.analysis?.topics ?? [];
+      if (conversationTopicFilter !== 'all' && !topics.includes(conversationTopicFilter)) return false;
+      if (!keyword) return true;
+      return [
+        item.analysis?.title,
+        item.analysis?.summary,
+        item.sourceScopeName,
+        item.sourceUrl,
+        ...topics,
+      ].filter(Boolean).some((value) => String(value).toLowerCase().includes(keyword));
+    });
+  }, [conversationCenter?.index?.imports, conversationInboxSearch, conversationTopicFilter]);
+  const conversationTopics = useMemo(() => Array.from(new Set(
+    (conversationCenter?.index?.imports ?? []).flatMap((item) => item.analysis?.topics ?? []),
+  )).sort(), [conversationCenter?.index?.imports]);
+  const selectedConversationAssetKeySet = useMemo(() => new Set(selectedConversationAssetKeys), [selectedConversationAssetKeys]);
   const visibleConversationCandidates = useMemo(() => {
     const candidates = conversationCenter?.governance?.candidates ?? [];
     if (conversationCandidateFilter === 'all') return candidates;
@@ -4209,6 +4605,87 @@ function App() {
   }), [taskCenter.tasks, taskCenterExecutorFilter, taskCenterSourceFilter, taskCenterStatusFilter]);
   const displayedTaskCenterItems = visibleTaskCenterItems.slice(0, taskCenterDisplayLimit);
   const selectedTask = taskCenter.tasks.find((task) => task.id === selectedTaskId) ?? null;
+  const selectedCollaborationTask = selectedTask?.kind === 'collaboration_assignment'
+    ? selectedTask.input?.collaborationTask as {
+      taskId?: string;
+      requestKind?: 'assignment' | 'help_request';
+      state?: string;
+      sourceNodeId?: string;
+      targetNodeId?: string;
+      studentId?: string;
+      projectId?: string;
+      instructions?: string;
+      submissionRequirements?: string;
+      deadlineAt?: string;
+      latestMessage?: string;
+      attachmentObjectIds?: string[];
+      executionPolicy?: {
+        mode?: 'manual' | 'remote_local';
+        requestedExecutor?: string;
+        autoStartAfterAccept?: boolean;
+      };
+      events?: Array<{
+        eventId?: string;
+        type?: string;
+        actorNodeId?: string;
+        occurredAt?: string;
+        payload?: {
+          message?: string;
+          artifactObjectIds?: string[];
+          knowledgeContribution?: {
+            contributionId?: string;
+            title?: string;
+            content?: string;
+            status?: string;
+          } | null;
+        };
+      }>;
+    } | undefined
+    : undefined;
+  const localCollaborationNodeId = collaborationState?.state?.node?.nodeId || '';
+  const isCollaborationTaskSource = Boolean(selectedCollaborationTask?.sourceNodeId && selectedCollaborationTask.sourceNodeId === localCollaborationNodeId);
+  const isCollaborationTaskTarget = Boolean(selectedCollaborationTask?.targetNodeId && selectedCollaborationTask.targetNodeId === localCollaborationNodeId);
+  const isCollaborationHelpRequest = selectedCollaborationTask?.requestKind === 'help_request';
+  const selectedCollaborationContribution = [...(selectedCollaborationTask?.events || [])]
+    .reverse()
+    .find((event) => event.payload?.knowledgeContribution)?.payload?.knowledgeContribution;
+  const selectedCollaborationResultAttachmentIds = [...(selectedCollaborationTask?.events || [])]
+    .reverse()
+    .find((event) => event.type === 'submit' && (event.payload?.artifactObjectIds?.length || 0) > 0)
+    ?.payload?.artifactObjectIds || [];
+  const selectedCollaborationMessages = (selectedCollaborationTask?.events || [])
+    .filter((event) => Boolean(event.payload?.message?.trim()))
+    .map((event) => ({
+      ...event,
+      message: event.payload?.message?.trim() || '',
+      actorLabel: event.actorNodeId === localCollaborationNodeId ? '我' : '对方',
+      actionLabel: ({
+        accept: '接受',
+        defer: '稍后处理',
+        decline: '无法处理',
+        submit: '提交结果',
+        feedback: '反馈修改',
+        close: '确认完成',
+      } as Record<string, string>)[event.type || ''] || '状态更新',
+    }));
+  const selectedCollaborationProjects = selectedCollaborationTask?.studentId
+    ? projects.filter((project) => (
+      (project.studentIds || []).map(String).includes(String(selectedCollaborationTask.studentId))
+      && !['sealed', 'archived'].includes(String(project.status || ''))
+    ))
+    : [];
+  const canCreateCollaborationTask = Boolean(selectedStudent && (collaborationState?.state?.bindings || []).some((binding) => (
+    binding.status === 'active'
+    && !binding.revokedAt
+    && (binding.roleAssignments || []).some((item) => item.nodeId === localCollaborationNodeId && item.role === 'educator' && String(item.studentId || '') === String(selectedStudent.id) && !item.revokedAt)
+    && (binding.roleAssignments || []).some((item) => item.nodeId !== localCollaborationNodeId && item.role === 'learner_authority' && Boolean(item.studentId) && !item.revokedAt)
+  )));
+  const canCreateCollaborationHelpRequest = Boolean(selectedStudent && (collaborationState?.state?.bindings || []).some((binding) => (
+    binding.status === 'active'
+    && !binding.revokedAt
+    && (binding.roleAssignments || []).some((item) => item.nodeId === localCollaborationNodeId && item.role === 'learner_authority' && String(item.studentId || '') === String(selectedStudent.id) && !item.revokedAt)
+    && (binding.roleAssignments || []).some((item) => item.nodeId !== localCollaborationNodeId && item.role === 'educator' && Boolean(item.studentId) && !item.revokedAt)
+  )));
   const selectedTaskHistory = useMemo(() => selectedTask ? taskCenter.history.filter((entry) => entry.taskId === selectedTask.id) : [], [selectedTask, taskCenter.history]);
   const systemTemplateFiles = useMemo(() => buildSystemTemplates(), []);
   const currentTemplateFiles = useMemo(() => {
@@ -4260,6 +4737,10 @@ function App() {
   const selectedStudentTool = selectedStudent ? getAgentToolProfile(selectedStudent.agentTool) : agentToolProfiles.qclaw;
   const selectedStudentAdapter = selectedStudent ? getAgentToolAdapter(selectedStudent.agentTool) : getAgentToolAdapter('qclaw');
   const selectedStudentPaths = selectedStudent ? pathsForStudent(selectedStudent) : pathsFor(draft.name);
+  useEffect(() => {
+    activeSectionRef.current = activeSection;
+  }, [activeSection]);
+
   useEffect(() => {
     setPathHealth(null);
     setPathHealthMessage('');
@@ -4313,12 +4794,22 @@ function App() {
     (sourceFilter === 'all' || record.assetType === sourceFilter)
     && (sourceToolFilter === 'all' || record.tool === sourceToolFilter)
   );
-  const filteredMarkdownFiles = useMemo(
-    () =>
-      selectedArchiveCategory === 'all'
-        ? markdownFiles.filter(isVisibleArchiveFile)
-        : markdownFiles.filter((file) => isVisibleArchiveFile(file) && classifyMarkdownFile(file, archiveKeywords) === selectedArchiveCategory),
-    [archiveKeywords, markdownFiles, selectedArchiveCategory],
+  const filteredMarkdownFiles = useMemo(() => {
+    const keyword = archiveSearch.trim().toLocaleLowerCase('zh-CN');
+    return markdownFiles
+      .filter((file) => isVisibleArchiveFile(file)
+        && (selectedArchiveCategory === 'all' || classifyMarkdownFile(file, archiveKeywords) === selectedArchiveCategory)
+        && (!keyword || `${file.name}\n${file.path}`.toLocaleLowerCase('zh-CN').includes(keyword)))
+      .sort((a, b) => {
+        const aModified = Number(a.modified || 0);
+        const bModified = Number(b.modified || 0);
+        if (aModified !== bModified) return archiveDateSort === 'modified-desc' ? bModified - aModified : aModified - bModified;
+        return a.path.localeCompare(b.path, 'zh-CN');
+      });
+  }, [archiveDateSort, archiveKeywords, archiveSearch, markdownFiles, selectedArchiveCategory]);
+  const selectedMarkdownFile = useMemo(
+    () => markdownFiles.find((file) => file.id === selectedMarkdownId),
+    [markdownFiles, selectedMarkdownId],
   );
   const filteredHostUploadRecords = useMemo(() => {
     const keyword = hostUploadSearch.trim().toLowerCase();
@@ -4736,7 +5227,7 @@ function App() {
       return { target: 'assets' as ProjectWorkflowTarget, title: `整理 ${projectStageCounts.pendingStaging} 份候选资料`, detail: '先生成 AI 整理建议，只人工处理冲突、重复和低置信度资料。', action: 'organize' };
     }
     if (projectStageCounts.pendingDigest > 0 || ['submitted', 'digesting', 'failed'].includes(String(selectedProjectDigestState.status))) {
-      return { target: 'digest' as ProjectWorkflowTarget, title: `消化 ${projectStageCounts.pendingDigest} 份正式资料`, detail: '复制本批次任务给所选 Agent，完成后检查严格回执。', action: 'digest' };
+      return { target: 'digest' as ProjectWorkflowTarget, title: `消化 ${projectStageCounts.pendingDigest} 份正式资料`, detail: '系统自动提交，并从 Agent 输出、回执文件和知识更新中自动结算。', action: 'digest' };
     }
     if (projectStageCounts.pendingKnowledge > 0) {
       return { target: 'knowledge' as ProjectWorkflowTarget, title: `确认 ${projectStageCounts.pendingKnowledge} 条知识`, detail: '只审核低置信度、缺少来源或待确认的知识条目。', action: 'knowledge' };
@@ -5069,6 +5560,344 @@ function App() {
     }
   };
 
+  const refreshCollaborationState = () => {
+    const raw = bridge()?.getCollaborationState?.();
+    if (!raw) return;
+    try {
+      const result = JSON.parse(raw) as CollaborationState;
+      setCollaborationState(result);
+      if (result.message) setCollaborationMessage(result.message);
+    } catch {
+      setCollaborationMessage('读取知识协作状态失败。');
+    }
+  };
+
+  const refreshAgentConversationInbox = () => {
+    const raw = bridge()?.getAgentConversationSubmissionState?.();
+    if (!raw) return;
+    try {
+      setAgentConversationInbox(JSON.parse(raw) as AgentConversationSubmissionState);
+    } catch {
+      setCollaborationMessage('读取 Agent 对话收件箱失败。');
+    }
+  };
+
+  const assignAgentConversationToSelectedStudent = (submissionId: string) => {
+    if (!selectedStudent) {
+      setCollaborationMessage('请先选择学生，再处理待归属对话。');
+      return;
+    }
+    setAssigningAgentConversationId(submissionId);
+    try {
+      const raw = bridge()?.assignAgentConversationSubmission?.(submissionId, 'student', selectedStudent.id);
+      if (!raw) {
+        setCollaborationMessage('当前环境不支持处理 Agent 对话收件箱。');
+        return;
+      }
+      const result = JSON.parse(raw) as { ok?: boolean; awaitingAttribution?: boolean; message?: string };
+      setCollaborationMessage(result.message || (result.ok ? `对话已归入 ${selectedStudent.name}。` : '对话归属失败。'));
+      if (result.ok && !result.awaitingAttribution) {
+        setAgentConversationInbox((current) => {
+          if (!current) return current;
+          const pending = (current.pending ?? []).filter((item) => item.submissionId !== submissionId);
+          return {
+            ...current,
+            pending,
+            summary: {
+              ...current.summary,
+              awaitingAttribution: pending.length,
+              stored: Math.max(0, Number(current.summary?.stored || 0)) + 1,
+            },
+          };
+        });
+      }
+      refreshAgentConversationInbox();
+    } catch {
+      setCollaborationMessage('Agent 对话归属结果解析失败。');
+    } finally {
+      setAssigningAgentConversationId('');
+    }
+  };
+
+  const applyCollaborationResult = (raw?: string) => {
+    if (!raw) {
+      setCollaborationMessage('当前环境不支持知识协作。');
+      return;
+    }
+    try {
+      const result = JSON.parse(raw) as CollaborationState;
+      if (result.state) setCollaborationState(result);
+      setCollaborationMessage(result.message || (result.ok ? '知识协作设置已更新。' : '知识协作设置更新失败。'));
+      if (result.ok && selectedStudent?.id) refreshCollaborationMaterialStats(selectedStudent.id);
+      if (result.ok) {
+        refreshCollaborationState();
+        refreshProjects();
+        refreshAgentConversationInbox();
+      }
+    } catch {
+      setCollaborationMessage('知识协作操作结果解析失败。');
+    }
+  };
+
+  const applyCollaborationPairingResult = (
+    raw: string | undefined,
+    fallbackStage: Exclude<CollaborationPairingStage, 'idle' | 'error'>,
+  ) => {
+    if (!raw) {
+      setCollaborationPairingFeedback({
+        stage: 'error',
+        title: '当前操作未完成',
+        message: '当前环境不支持主机协作绑定，请确认正在使用 Windows 主机版。',
+      });
+      return;
+    }
+    try {
+      const result = JSON.parse(raw) as CollaborationState & {
+        pairing?: {
+          stage?: Exclude<CollaborationPairingStage, 'idle' | 'error'>;
+          studentName?: string;
+          expiresAt?: string;
+          peerNodeId?: string;
+          nextAction?: string;
+        };
+      };
+      applyCollaborationResult(raw);
+      if (!result.ok) {
+        setCollaborationPairingFeedback({
+          stage: 'error',
+          title: '连接步骤未完成',
+          message: result.message || '请检查所选学生和剪贴板内容后重试。',
+        });
+        return;
+      }
+      const stage = result.pairing?.stage || fallbackStage;
+      const stageTitles: Record<Exclude<CollaborationPairingStage, 'idle' | 'error'>, string> = {
+        invitation_copied: '第 1 步完成：邀请代码已复制',
+        acceptance_copied: '第 2 步完成：确认回执已复制',
+        completed: '第 3 步完成：两台主机已连接',
+      };
+      setCollaborationPairingFeedback({
+        stage,
+        title: stageTitles[stage],
+        message: result.message || '本步骤已完成。',
+        nextAction: result.pairing?.nextAction,
+        studentName: result.pairing?.studentName || selectedStudent?.name,
+        expiresAt: result.pairing?.expiresAt,
+        peerNodeId: result.pairing?.peerNodeId,
+      });
+    } catch {
+      setCollaborationPairingFeedback({
+        stage: 'error',
+        title: '无法读取连接结果',
+        message: '程序没有识别本次操作结果，请刷新状态后重试。',
+      });
+    }
+  };
+
+  const createGuidedCollaborationInvitation = (localRole: 'educator' | 'learner_authority') => {
+    if (!selectedStudent) {
+      setCollaborationPairingFeedback({
+        stage: 'error',
+        title: '请先选择学生',
+        message: '主机协作必须明确对应同一名学生，不能使用未限定范围的连接。',
+      });
+      return;
+    }
+    setCollaborationPairingBusy(true);
+    try {
+      applyCollaborationPairingResult(
+        bridge()?.createManualCollaborationInvitation?.(selectedStudent.id, localRole),
+        'invitation_copied',
+      );
+    } finally {
+      setCollaborationPairingBusy(false);
+    }
+  };
+
+  const continueGuidedCollaborationPairing = (expectedStage: 'acceptance_copied' | 'completed') => {
+    if (!selectedStudent) {
+      setCollaborationPairingFeedback({
+        stage: 'error',
+        title: '请先选择本机学生',
+        message: '请选择邀请中对应的学生档案，再读取剪贴板。',
+      });
+      return;
+    }
+    setCollaborationPairingBusy(true);
+    try {
+      applyCollaborationPairingResult(
+        bridge()?.acceptManualCollaborationClipboard?.(selectedStudent.id),
+        expectedStage,
+      );
+    } finally {
+      setCollaborationPairingBusy(false);
+    }
+  };
+
+  const scanCollaborationInbox = async () => {
+    const operation = bridge()?.scanCollaborationInbox?.();
+    if (!operation) {
+      setCollaborationMessage('当前环境不支持知识协作。');
+      return;
+    }
+    setCollaborationMessage('正在增量检查新协作包，历史已完成包不会重复读取。');
+    try {
+      applyCollaborationResult(await operation);
+    } catch {
+      setCollaborationMessage('检查协作收件箱失败，请稍后重试。');
+    }
+  };
+
+  const updateDirectDeliveryFromSettings = (manifestId: string, action: 'pause' | 'resume' | 'retry' | 'cancel') => {
+    const raw = bridge()?.updateDirectDeliveryStatus?.(manifestId, action);
+    if (!raw) {
+      setCollaborationMessage('当前环境不支持发送队列管理。');
+      return;
+    }
+    try {
+      const result = JSON.parse(raw) as { ok?: boolean; message?: string };
+      setCollaborationMessage(result.message || (result.ok ? '发送队列已更新。' : '发送队列操作失败。'));
+      refreshCollaborationState();
+    } catch {
+      setCollaborationMessage('发送队列操作结果解析失败。');
+    }
+  };
+
+  const createCollaborationTask = async (requestKind: 'assignment' | 'help_request' = 'assignment') => {
+    if (!selectedStudent) {
+      setCollaborationMessage('请先选择学生。');
+      return;
+    }
+    if (!collaborationTaskTitle.trim() || !collaborationTaskInstructions.trim()) {
+      setCollaborationMessage('请填写任务名称和任务要求。');
+      return;
+    }
+    const pending = bridge()?.createRemoteCollaborationTask?.(JSON.stringify({
+      studentId: selectedStudent.id,
+      requestKind,
+      title: collaborationTaskTitle.trim(),
+      instructions: collaborationTaskInstructions.trim(),
+      submissionRequirements: collaborationTaskSubmissionRequirements.trim(),
+      deadlineAt: collaborationTaskDeadline ? new Date(collaborationTaskDeadline).toISOString() : undefined,
+      attachmentPaths: collaborationTaskFiles.map((item) => item.path),
+    }));
+    if (!pending) {
+      setCollaborationMessage('当前环境不支持跨主机协作任务。');
+      return;
+    }
+    try {
+      const raw = await pending;
+      const result = JSON.parse(raw) as { ok?: boolean; message?: string; task?: { taskId?: string } };
+      setCollaborationMessage(result.message || (result.ok ? (requestKind === 'help_request' ? '协助请求已发出。' : '协作任务已发出。') : '协作请求创建失败。'));
+      if (result.ok) {
+        setCollaborationTaskTitle('');
+        setCollaborationTaskInstructions('');
+        setCollaborationTaskSubmissionRequirements('');
+        setCollaborationTaskDeadline('');
+        setCollaborationTaskFiles([]);
+        void refreshTaskCenter(true);
+      }
+    } catch {
+      setCollaborationMessage('协作任务创建结果解析失败。');
+    }
+  };
+
+  const selectCollaborationTaskFiles = () => {
+    const raw = bridge()?.selectCollaborationTaskFiles?.();
+    if (!raw) {
+      setCollaborationMessage('当前环境不支持选择协作资料。');
+      return;
+    }
+    try {
+      const result = JSON.parse(raw) as { ok?: boolean; files?: Array<{ path: string; name: string; size?: number }>; message?: string };
+      if (result.ok) setCollaborationTaskFiles(result.files || []);
+      setCollaborationMessage(result.message || (result.ok ? '协作资料已选择。' : '选择协作资料失败。'));
+    } catch {
+      setCollaborationMessage('协作资料选择结果解析失败。');
+    }
+  };
+
+  const selectCollaborationResultFiles = () => {
+    const raw = bridge()?.selectCollaborationResultFiles?.();
+    if (!raw) {
+      setScheduleMessage('当前环境不支持选择成果文件。');
+      return;
+    }
+    try {
+      const result = JSON.parse(raw) as { ok?: boolean; files?: Array<{ path: string; name: string; size?: number }>; message?: string };
+      if (result.ok) setCollaborationResultFiles(result.files || []);
+      setScheduleMessage(result.message || (result.ok ? '成果文件已选择。' : '选择成果文件失败。'));
+    } catch {
+      setScheduleMessage('成果文件选择结果解析失败。');
+    }
+  };
+
+  const updateCollaborationTask = async (task: TaskCenterItem, type: string, message = '') => {
+    const remoteTask = task.input?.collaborationTask as { taskId?: string } | undefined;
+    if (!remoteTask?.taskId) {
+      setScheduleMessage('协作任务缺少远程任务标识，无法更新。');
+      return;
+    }
+    const pending = bridge()?.updateRemoteCollaborationTask?.(
+      remoteTask.taskId,
+      type,
+      message,
+      JSON.stringify({ attachmentPaths: type === 'submit' ? collaborationResultFiles.map((item) => item.path) : [] }),
+    );
+    if (!pending) {
+      setScheduleMessage('当前环境不支持跨主机协作任务更新。');
+      return;
+    }
+    try {
+      const raw = await pending;
+      const result = JSON.parse(raw) as { ok?: boolean; message?: string };
+      setScheduleMessage(result.message || (result.ok ? '协作任务状态已更新。' : '协作任务更新失败。'));
+      if (result.ok) {
+        setTaskResultPasteText('');
+        if (type === 'submit') setCollaborationResultFiles([]);
+        void refreshTaskCenter(true);
+        refreshCollaborationState();
+      }
+    } catch {
+      setScheduleMessage('协作任务更新结果解析失败。');
+    }
+  };
+
+  const resolveCollaborationTaskAttachments = (task: TaskCenterItem, decision: 'stage' | 'adopt' | 'adopt_project' | 'reject') => {
+    const remoteTask = task.input?.collaborationTask as { taskId?: string } | undefined;
+    if (!remoteTask?.taskId) {
+      setScheduleMessage('协作任务缺少远程任务标识，无法处理附件。');
+      return;
+    }
+    const projectId = decision === 'adopt_project' ? collaborationAttachmentProjectTargets[remoteTask.taskId] || '' : '';
+    if (decision === 'adopt_project' && !projectId) {
+      setScheduleMessage('请先选择要采用资料的学习项目。');
+      return;
+    }
+    const raw = bridge()?.resolveCollaborationTaskAttachments?.(remoteTask.taskId, decision, projectId);
+    applyTaskOperationResult(raw, '协作资料处理完成。');
+  };
+
+  const refreshCollaborationMaterialStats = (studentId = selectedStudent?.id || '') => {
+    if (!studentId) {
+      setCollaborationStats(null);
+      return;
+    }
+    const raw = bridge()?.getCollaborationStudentMaterialStats?.(studentId);
+    if (!raw) return;
+    try {
+      const result = JSON.parse(raw) as { ok?: boolean; snapshot?: CollaborationMaterialStats; message?: string };
+      if (result.ok && result.snapshot) {
+        setCollaborationStats(result.snapshot);
+      } else {
+        setCollaborationStats(null);
+        if (result.message) setCollaborationMessage(result.message);
+      }
+    } catch {
+      setCollaborationMessage('读取学生资料统计失败。');
+    }
+  };
+
   const applyHostServiceResult = (raw?: string) => {
     if (!raw) return;
     try {
@@ -5340,6 +6169,89 @@ ${sourceText}`;
       }
     } catch {
       setConversationMessage('保存对话历史结果解析失败。');
+    }
+  };
+
+  const importConversationFromShareUrl = async () => {
+    if (!selectedStudent || !conversationShareUrl.trim()) {
+      setConversationShareMessage('请先粘贴对话分享链接。');
+      return;
+    }
+    const api = bridge()?.importConversationShareUrl;
+    if (!api) {
+      setConversationShareMessage('当前环境不支持分享链接自动导入，请直接粘贴对话内容。');
+      return;
+    }
+    setConversationShareBusy(true);
+    setConversationShareMessage('正在读取分享链接并整理主题…');
+    try {
+      const result = JSON.parse(await api(selectedStudent.id, conversationShareUrl.trim(), conversationTool)) as {
+        ok?: boolean;
+        message?: string;
+        fallbackRequired?: boolean;
+      };
+      const message = result.message || (result.ok ? '分享对话已导入。' : '分享链接导入失败。');
+      setConversationShareMessage(message);
+      setConversationMessage(message);
+      if (result.ok) {
+        setConversationShareUrl('');
+        refreshConversationCenter(selectedStudent.id);
+      }
+    } catch {
+      const message = '分享链接导入结果解析失败，请直接粘贴对话内容或导入文件。';
+      setConversationShareMessage(message);
+      setConversationMessage(message);
+    } finally {
+      setConversationShareBusy(false);
+    }
+  };
+
+  const conversationAssetKey = (item: AgentConversationImport) => (
+    `${item.sourceScopeType || 'student'}:${item.sourceScopeId || selectedStudent?.id || ''}:${item.assetId || ''}`
+  );
+
+  const toggleConversationAsset = (item: AgentConversationImport) => {
+    const key = conversationAssetKey(item);
+    setSelectedConversationAssetKeys((current) => current.includes(key)
+      ? current.filter((value) => value !== key)
+      : [...current, key]);
+  };
+
+  const deliverSelectedConversationMaterials = () => {
+    if (!selectedStudent) return;
+    const selected = (conversationCenter?.index?.imports ?? []).filter((item) => selectedConversationAssetKeySet.has(conversationAssetKey(item)));
+    if (!selected.length) {
+      setConversationMessage('请先勾选要投递的对话资料。');
+      return;
+    }
+    if (conversationDeliveryTargetType === 'project' && !conversationDeliveryProjectId) {
+      setConversationMessage('请选择一个与当前学生关联的项目。');
+      return;
+    }
+    const raw = bridge()?.deliverConversationMaterials?.(selectedStudent.id, JSON.stringify({
+      sources: selected.map((item) => ({
+        sourceScopeType: item.sourceScopeType || 'student',
+        sourceScopeId: item.sourceScopeId || selectedStudent.id,
+        assetId: item.assetId,
+      })),
+      targetType: conversationDeliveryTargetType,
+      targetId: conversationDeliveryTargetType === 'project' ? conversationDeliveryProjectId : selectedStudent.id,
+    }));
+    if (!raw) {
+      setConversationMessage('当前环境不支持对话资料投递。');
+      return;
+    }
+    try {
+      const result = JSON.parse(raw) as { ok?: boolean; message?: string };
+      setConversationMessage(result.message || (result.ok ? '对话资料已投递。' : '对话资料投递失败。'));
+      if (result.ok) {
+        setSelectedConversationAssetKeys([]);
+        refreshConversationCenter(selectedStudent.id);
+        if (conversationDeliveryTargetType === 'project') refreshProjects();
+        else refreshAssets();
+      }
+    } catch {
+      setConversationMessage('对话资料投递结果解析失败。');
     }
   };
 
@@ -5655,10 +6567,19 @@ ${sourceText}`;
         const status = JSON.parse(payload) as HostServiceStatus;
         setHostServiceStatus(status);
         if (status.license) setLicenseStatus(status.license);
-        refreshHostUploadRecords();
+        if (['materials', 'settings'].includes(activeSectionRef.current)) refreshHostUploadRecords();
       } catch {
-        refreshHostServiceStatus();
+        if (activeSectionRef.current === 'settings') refreshHostServiceStatus();
       }
+    };
+    (window as unknown as { onNativeCollaborationChanged?: (payload: string) => void }).onNativeCollaborationChanged = () => {
+      if (activeSectionRef.current === 'settings') {
+        refreshCollaborationState();
+        refreshCollaborationMaterialStats();
+        refreshAgentConversationInbox();
+      }
+      if (activeSectionRef.current === 'projects') refreshProjects();
+      if (activeSectionRef.current === 'tasks') void refreshTaskCenter(false);
     };
 
     const rootStatus = bridge()?.getArchiveRootStatus?.();
@@ -5681,6 +6602,7 @@ ${sourceText}`;
     }
 
     const timer = window.setInterval(() => {
+      if (document.hidden) return;
       const raw = bridge()?.getAppStatus?.();
       if (!raw) return;
       try {
@@ -5706,8 +6628,10 @@ ${sourceText}`;
           // Ignore inbox JSON parse errors.
         }
       }
-    }, 3000);
-    const hostTimer = window.setInterval(refreshHostServiceStatus, 30000);
+    }, 10000);
+    const hostTimer = window.setInterval(() => {
+      if (!document.hidden && activeSectionRef.current === 'settings') refreshHostServiceStatus();
+    }, 60000);
     return () => {
       window.clearInterval(timer);
       window.clearInterval(hostTimer);
@@ -5715,6 +6639,7 @@ ${sourceText}`;
       delete (window as unknown as { onNativeUpdateResult?: (payload: string) => void }).onNativeUpdateResult;
       delete (window as unknown as { onNativeArchiveRootSelected?: (payload: string) => void }).onNativeArchiveRootSelected;
       delete (window as unknown as { onNativeHostServiceChanged?: (payload: string) => void }).onNativeHostServiceChanged;
+      delete (window as unknown as { onNativeCollaborationChanged?: (payload: string) => void }).onNativeCollaborationChanged;
     };
   }, [pendingImportStudentId]);
 
@@ -5736,12 +6661,19 @@ ${sourceText}`;
       refreshVisible();
     };
     refreshVisible();
-    const timer = window.setInterval(refreshVisible, 15000);
+    const timer = window.setInterval(() => {
+      if (!document.hidden) refreshVisible();
+    }, 30000);
     return () => {
       window.clearInterval(timer);
       delete (window as unknown as { onNativeDigestWorkflowChanged?: (payload: string) => void }).onNativeDigestWorkflowChanged;
     };
   }, [selectedId, selectedProjectId]);
+
+  useEffect(() => {
+    if (!isWindows || !selectedId) return;
+    bridge()?.prepareAgentKnowledgeAccess?.(selectedId);
+  }, [isWindows, selectedId]);
 
   useEffect(() => {
     const payload = hostServiceStatus?.pairPayloadText;
@@ -5800,8 +6732,13 @@ ${sourceText}`;
   }, [studentLoginQrSignature]);
 
   useEffect(() => {
-    if (isWindows && activeSection === 'settings') refreshHostServiceStatus();
-  }, [isWindows, activeSection]);
+    if (isWindows && activeSection === 'settings') {
+      refreshHostServiceStatus();
+      refreshCollaborationState();
+      refreshCollaborationMaterialStats();
+      refreshAgentConversationInbox();
+    }
+  }, [isWindows, activeSection, selectedStudent?.id]);
 
   useEffect(() => {
     if (activeSection === 'memory' || activeSection === 'soul' || activeSection === 'qa' || activeSection === 'conversation') {
@@ -6332,7 +7269,7 @@ ${sourceText}`;
   const applyDigestWorkflowPayload = (scopeType: 'student' | 'project', scopeId: string, raw?: string) => {
     if (!raw) return null;
     try {
-      const result = JSON.parse(raw) as { ok?: boolean; message?: string; workflow?: DigestWorkflowStatus } & Partial<DigestWorkflowStatus>;
+      const result = JSON.parse(raw) as { ok?: boolean; message?: string; workflow?: DigestWorkflowStatus; alreadyRunning?: boolean } & Partial<DigestWorkflowStatus>;
       const workflow = result.workflow || (result.scopeType && result.scopeId ? result as DigestWorkflowStatus : null);
       if (workflow) setDigestWorkflows((current) => ({ ...current, [digestWorkflowKey(scopeType, scopeId)]: workflow }));
       return result;
@@ -6352,25 +7289,38 @@ ${sourceText}`;
     return result;
   };
 
-  const startDigestWorkflowFromPage = (scopeType: 'student' | 'project', scopeId: string) => {
+  const startDigestWorkflowFromPage = async (scopeType: 'student' | 'project', scopeId: string) => {
     const key = digestWorkflowKey(scopeType, scopeId);
     setDigestWorkflowBusyKey(key);
-    const result = applyDigestWorkflowPayload(scopeType, scopeId, bridge()?.startDigestWorkflow?.(scopeType, scopeId, 'auto'));
+    const raw = await bridge()?.startDigestWorkflow?.(scopeType, scopeId, 'auto');
+    const result = applyDigestWorkflowPayload(scopeType, scopeId, raw);
     const message = result?.message || (result?.ok ? '资料已进入自动处理。' : '资料处理启动失败。');
     if (scopeType === 'student') setDigestMessage(message);
     else reportProjectStage('digest', message);
-    refreshDigestWorkflow(scopeType, scopeId);
+    const refreshed = refreshDigestWorkflow(scopeType, scopeId);
+    const manualRequired = Boolean(result?.workflow?.manualRequired || refreshed?.workflow?.manualRequired);
+    const title = manualRequired
+      ? '已打开 Agent；结果将自动同步'
+      : result?.alreadyRunning
+        ? '已有任务等待回执'
+        : result?.ok
+          ? '资料处理已启动'
+          : '资料处理未启动';
+    showActionNotice(Boolean(result?.ok), title, message);
     setDigestWorkflowBusyKey('');
   };
 
-  const retryDigestWorkflowFromPage = (scopeType: 'student' | 'project', scopeId: string) => {
+  const retryDigestWorkflowFromPage = async (scopeType: 'student' | 'project', scopeId: string) => {
     const key = digestWorkflowKey(scopeType, scopeId);
     setDigestWorkflowBusyKey(key);
-    const result = applyDigestWorkflowPayload(scopeType, scopeId, bridge()?.retryDigestWorkflow?.(scopeType, scopeId, 'auto'));
+    const raw = await bridge()?.retryDigestWorkflow?.(scopeType, scopeId, 'auto');
+    const result = applyDigestWorkflowPayload(scopeType, scopeId, raw);
     const message = result?.message || (result?.ok ? '未完成资料已重新进入处理。' : '资料重试失败。');
     if (scopeType === 'student') setDigestMessage(message);
     else reportProjectStage('digest', message);
-    refreshDigestWorkflow(scopeType, scopeId);
+    const refreshed = refreshDigestWorkflow(scopeType, scopeId);
+    const manualRequired = Boolean(result?.workflow?.manualRequired || refreshed?.workflow?.manualRequired);
+    showActionNotice(Boolean(result?.ok), manualRequired ? '已打开 Agent；结果将自动同步' : result?.ok ? '资料已重新处理' : '资料重试失败', message);
     setDigestWorkflowBusyKey('');
   };
 
@@ -6626,6 +7576,57 @@ ${sourceText}`;
   const copyConsultCommand = async () => {
     const value = selectedStudent ? getAgentToolAdapter(selectedStudent.agentTool).buildConsultCommand(selectedStudent) : '/咨询，我想咨询';
     await copyText(value, '已复制咨询提示。');
+  };
+
+  const refreshAgentKnowledgeDiagnostics = () => {
+    const raw = bridge()?.getAgentKnowledgeDiagnostics?.();
+    if (!raw) return;
+    try {
+      const result = JSON.parse(raw) as AgentKnowledgeDiagnostics & { ok?: boolean };
+      if (result.ok !== false) setAgentKnowledgeDiagnostics(result);
+    } catch {
+      // Diagnostics are optional and must never block ordinary questions.
+    }
+  };
+
+  const askWithEducationKnowledge = async (forceRefresh = false) => {
+    if (!selectedStudent || !agentKnowledgeQuestion.trim()) {
+      setAgentKnowledgeResult({ ok: false, source: 'waiting', message: '请输入想了解的问题。' });
+      return;
+    }
+    const api = bridge();
+    if (!api?.queryAgentKnowledge) {
+      setAgentKnowledgeResult({ ok: false, source: 'waiting', message: '当前版本不支持自动知识查询。' });
+      return;
+    }
+    setAgentKnowledgeBusy(true);
+    try {
+      api.prepareAgentKnowledgeAccess?.(selectedStudent.id);
+      const teamQueryEnabled = agentKnowledgeQueryScope !== 'current_student';
+      const raw = await api.queryAgentKnowledge(JSON.stringify({
+        scopeType: teamQueryEnabled ? 'team' : 'student',
+        scopeId: teamQueryEnabled ? 'team' : selectedStudent.id,
+        queryScope: agentKnowledgeQueryScope,
+        question: agentKnowledgeQuestion.trim(),
+        limit: 8,
+        forceRefresh,
+      }));
+      const result = JSON.parse(raw) as AgentKnowledgeResult;
+      setAgentKnowledgeResult(result);
+      refreshAgentKnowledgeDiagnostics();
+      if (result.ok && (result.resources?.length || 0) > 0 && result.prompt) {
+        await copyText(result.prompt, `已准备 ${result.resources?.length || 0} 条带来源知识，并打开 ${selectedStudentTool.name}。`);
+        selectedStudentAdapter.open(openExternal);
+      }
+    } catch (error) {
+      setAgentKnowledgeResult({
+        ok: false,
+        source: 'waiting',
+        message: error instanceof Error ? error.message : '知识查询失败。',
+      });
+    } finally {
+      setAgentKnowledgeBusy(false);
+    }
   };
 
   const saveCurrentTemplates = () => {
@@ -7658,6 +8659,33 @@ ${sourceText}`;
       setProjectMessage(result.message || `已读取 ${list.length} 个学习项目。`);
     } catch {
       setProjectMessage('学习项目数据解析失败。');
+    }
+  };
+
+  const publishSelectedProjectToPeer = async () => {
+    if (!selectedProject || projectPublicationBusy) return;
+    if (!bridge()?.publishCollaborationProject) {
+      setProjectPublicationMessage('当前版本不支持项目协作发布。');
+      return;
+    }
+    setProjectPublicationBusy(true);
+    setProjectPublicationMessage('正在整理项目增量清单并加入内置直传队列…');
+    try {
+      const raw = await bridge()!.publishCollaborationProject!(JSON.stringify({
+        projectId: selectedProject.id,
+        mode: 'snapshot',
+        scope: 'whole',
+        transferResponsibility: 'direct',
+        includeRawMaterials: true,
+        includeVerifiedKnowledge: true,
+      }));
+      const result = JSON.parse(raw) as { ok?: boolean; message?: string };
+      setProjectPublicationMessage(result.message || (result.ok ? '项目已发布。' : '项目发布失败。'));
+      if (result.ok) refreshProjects();
+    } catch (error) {
+      setProjectPublicationMessage(`项目发布失败：${error instanceof Error ? error.message : '未知错误'}`);
+    } finally {
+      setProjectPublicationBusy(false);
     }
   };
 
@@ -9175,6 +10203,7 @@ ${JSON.stringify(items, null, 2)}
     setSelectedTaskId(task.id);
     setTaskExecutorDraft('auto');
     setTaskResultPasteText('');
+    setCollaborationResultFiles([]);
     window.setTimeout(() => {
       taskDetailPanelRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
       taskDetailPanelRef.current?.focus({ preventScroll: true });
@@ -9246,9 +10275,9 @@ ${JSON.stringify(items, null, 2)}
     }
   };
 
-  const executeTaskFromCenter = (task: TaskCenterItem) => {
+  const executeTaskFromCenter = async (task: TaskCenterItem) => {
     const executor = taskExecutorDraft || task.requestedExecutor || task.executor || '';
-    applyTaskOperationResult(bridge()?.executeTask?.(task.id, executor), '任务已提交执行。');
+    applyTaskOperationResult(await bridge()?.executeTask?.(task.id, executor), '任务已提交执行。');
   };
 
   const approveTaskFromCenter = (task: TaskCenterItem, decision: 'approved' | 'rejected', reason = '') => {
@@ -9526,6 +10555,7 @@ ${JSON.stringify(items, null, 2)}
       }
       setSelectedLearningReportId(reportId);
       setLearningReportContent(result.content || '');
+      setLearningReportEvidence(null);
       setLearningReports((current) => {
         const next = current.some((item) => item.id === result.id)
           ? current.map((item) => (item.id === result.id ? { ...item, ...result } : item))
@@ -9535,6 +10565,61 @@ ${JSON.stringify(items, null, 2)}
       setLearningReportMessage('');
     } catch {
       setLearningReportMessage('学情报告正文解析失败。');
+    }
+  };
+
+  const toggleLearningReportEvidence = () => {
+    if (learningReportEvidence) {
+      setLearningReportEvidence(null);
+      return;
+    }
+    if (!selectedStudent) return;
+    const raw = bridge()?.getLearningReportEvidence?.(selectedStudent.id, selectedLearningReportId);
+    if (!raw) {
+      setLearningReportMessage('当前环境不支持查看报告依据。');
+      return;
+    }
+    try {
+      const result = JSON.parse(raw) as LearningReportEvidenceState;
+      setLearningReportEvidence(result);
+      setLearningReportMessage(result.message || '');
+    } catch {
+      setLearningReportMessage('报告依据解析失败。');
+    }
+  };
+
+  const openLearningReportEvidenceSource = (evidenceId: string, sourceIndex: number) => {
+    if (!selectedStudent) return;
+    const raw = bridge()?.openLearningReportEvidenceSource?.(
+      selectedStudent.id,
+      selectedLearningReportId,
+      evidenceId,
+      sourceIndex,
+    );
+    if (!raw) {
+      setLearningReportMessage('当前环境不支持定位依据来源。');
+      return;
+    }
+    try {
+      const result = JSON.parse(raw) as { ok?: boolean; message?: string };
+      setLearningReportMessage(result.message || (result.ok ? '已定位依据来源。' : '依据来源暂不可用。'));
+    } catch {
+      setLearningReportMessage('依据来源打开结果解析失败。');
+    }
+  };
+
+  const exportSelectedEducationArchive = () => {
+    if (!selectedStudent) return;
+    const raw = bridge()?.exportEducationArchive?.(selectedStudent.id);
+    if (!raw) {
+      setLearningReportMessage('当前环境不支持导出完整教育档案。');
+      return;
+    }
+    try {
+      const result = JSON.parse(raw) as { ok?: boolean; message?: string; path?: string };
+      setLearningReportMessage(result.message || (result.ok ? '完整教育档案已导出。' : '完整教育档案导出失败。'));
+    } catch {
+      setLearningReportMessage('教育档案导出结果解析失败。');
     }
   };
 
@@ -10334,21 +11419,34 @@ ${JSON.stringify(items, null, 2)}
     return t(map[section]);
   };
 
+  const openSettingsSubmenu = (submenu: SettingsSubmenu) => {
+    localStorage.setItem('edu-manager-settings-submenu', submenu);
+    setSettingsSubmenu(submenu);
+    setSettingsMenuOpen(true);
+    setActiveSection('settings');
+  };
+
   const homePendingStudents = students.filter((student) => pendingDigestValue(student) > 0);
   const homeWaitingStudents = students.filter((student) => submittedDigestValue(student) > 0);
   const homePendingTotal = students.reduce((total, student) => total + pendingDigestValue(student), 0);
   const homeWaitingTotal = students.reduce((total, student) => total + submittedDigestValue(student), 0);
   const homeProcessedTotal = students.reduce((total, student) => total + Number(student.processedDigestCount || 0), 0);
   const homeProjectPendingTotal = projects.reduce((total, project) => total + Number(project.digestState?.pendingCount || 0), 0);
+  const homeNeedsSupplementTotal = projectDashboardStats.risks;
+  const homeKnowledgeUpdateTotal = projects.reduce((total, project) => total + Number(project.dashboard?.knowledgeCount || 0), 0);
+  const homeGrowthChangeTotal = Number(growthIndex?.summary?.confirmedCount || 0);
+  const homeReportUpdateTotal = learningReports.filter((report) => Boolean(report.updatedAt)).length;
   const homePrimaryStudent = homePendingStudents[0] || homeWaitingStudents[0] || selectedStudent || students[0];
   const homePrimaryAction = students.length === 0
     ? { label: '创建第一个学生档案', detail: '建立资料库后即可开始采集与自动整理。', icon: <Plus size={18} /> }
     : homePendingStudents.length > 0
-      ? { label: `处理 ${homePendingStudents[0].name} 的 ${pendingDigestValue(homePendingStudents[0])} 份资料`, detail: homePendingStudents.length > 1 ? `另有 ${homePendingStudents.length - 1} 位学生等待处理。` : '系统会建立本次资料批次并交给已绑定 Agent。', icon: <Zap size={18} /> }
+      ? { label: `处理 ${homePendingStudents[0].name} 的 ${pendingDigestValue(homePendingStudents[0])} 份资料`, detail: homePendingStudents.length > 1 ? `另有 ${homePendingStudents.length - 1} 位学生等待处理。` : '系统会在后台整理资料并更新知识。', icon: <Zap size={18} /> }
       : homeWaitingStudents.length > 0
-        ? { label: '查看资料处理进度', detail: `${homeWaitingTotal} 份资料正在等待 Agent 回执，不需要重复提交。`, icon: <RefreshCw size={18} /> }
+        ? { label: '查看资料处理进度', detail: `${homeWaitingTotal} 份资料正在后台处理，不需要重复提交。`, icon: <RefreshCw size={18} /> }
         : homeProjectPendingTotal > 0
           ? { label: '处理项目新资料', detail: `有 ${homeProjectPendingTotal} 份项目资料等待消化。`, icon: <Bot size={18} /> }
+          : homeNeedsSupplementTotal > 0
+            ? { label: '查看需要补充的内容', detail: `${homeNeedsSupplementTotal} 项资料需要补充来源或解决冲突，其余任务不受影响。`, icon: <CircleAlert size={18} /> }
           : { label: '导入或接收新资料', detail: '可导入本机文件，也可由学生终端上传到学生或项目资料库。', icon: <FileDown size={18} /> };
 
   const runHomePrimaryAction = () => {
@@ -10369,6 +11467,12 @@ ${JSON.stringify(items, null, 2)}
     }
     if (homeProjectPendingTotal > 0) {
       setProjectDashboardFocus('digest');
+      setProjectPageMode('list');
+      setActiveSection('projects-existing');
+      return;
+    }
+    if (homeNeedsSupplementTotal > 0) {
+      setProjectDashboardFocus('risks');
       setProjectPageMode('list');
       setActiveSection('projects-existing');
       return;
@@ -10501,14 +11605,34 @@ ${JSON.stringify(items, null, 2)}
             <span>{t('nav.tasks')}</span>
             {isWindows && !windowsLicenseActive && restrictedSections.has('tasks') && <KeyRound size={15} />}
           </button>
-          <button
-            className={activeSection === 'settings' ? 'nav-item active' : 'nav-item'}
-            onClick={() => setActiveSection('settings')}
-            title={t('nav.settings')}
-          >
-            <Settings size={19} />
-            <span>{t('nav.settings')}</span>
-          </button>
+          <div className="nav-group-block settings-nav-group">
+            <button
+              className={activeSection === 'settings' ? 'nav-item nav-group active' : 'nav-item nav-group'}
+              onClick={() => {
+                if (activeSection !== 'settings') openSettingsSubmenu(settingsSubmenu);
+                else setSettingsMenuOpen((value) => !value);
+              }}
+              title={t('nav.settings')}
+              aria-expanded={settingsMenuOpen}
+            >
+              <Settings size={19} />
+              <span>{t('nav.settings')}</span>
+              <span className="nav-chevron">{settingsMenuOpen ? t('nav.collapse') : t('nav.expand')}</span>
+            </button>
+            {settingsMenuOpen && (
+              <div className="sub-nav-list settings-sub-nav-list" aria-label="系统设置子菜单">
+                <button className={activeSection === 'settings' && settingsSubmenu === 'basic' ? 'nav-item sub-nav-item active' : 'nav-item sub-nav-item'} onClick={() => openSettingsSubmenu('basic')}>
+                  <Gauge size={17} /><span>基础设置</span>
+                </button>
+                <button className={activeSection === 'settings' && settingsSubmenu === 'connection' ? 'nav-item sub-nav-item active' : 'nav-item sub-nav-item'} onClick={() => openSettingsSubmenu('connection')}>
+                  <LinkIcon size={17} /><span>主机连接</span>
+                </button>
+                <button className={activeSection === 'settings' && settingsSubmenu === 'collaboration' ? 'nav-item sub-nav-item active' : 'nav-item sub-nav-item'} onClick={() => openSettingsSubmenu('collaboration')}>
+                  <Share2 size={17} /><span>知识协作</span>
+                </button>
+              </div>
+            )}
+          </div>
         </nav>
 
         <section className="student-rail">
@@ -10681,16 +11805,22 @@ ${JSON.stringify(items, null, 2)}
               </div>
               <div className="home-flow-steps" aria-label="教育资料处理进度">
                 <button className="home-flow-step" onClick={() => setActiveSection('inbox')}>
-                  <span>1</span><strong>资料进入</strong><em>{hostServiceStatus?.todayUploadCount ?? 0} 份今日上传</em>
+                  <span>1</span><strong>添加资料</strong><em>{hostServiceStatus?.todayUploadCount ?? 0} 份今日上传</em>
                 </button>
                 <button className={homePendingTotal || homeWaitingTotal ? 'home-flow-step attention' : 'home-flow-step done'} onClick={() => setActiveSection('inbox')}>
-                  <span>2</span><strong>自动消化</strong><em>{homePendingTotal} 待处理 · {homeWaitingTotal} 处理中</em>
+                  <span>2</span><strong>处理中</strong><em>{homePendingTotal} 待处理 · {homeWaitingTotal} 处理中</em>
+                </button>
+                <button className={homeNeedsSupplementTotal ? 'home-flow-step attention' : 'home-flow-step done'} onClick={() => { setProjectDashboardFocus('risks'); setProjectPageMode('list'); setActiveSection('projects-existing'); }}>
+                  <span>3</span><strong>需要补充</strong><em>{homeNeedsSupplementTotal} 项</em>
+                </button>
+                <button className="home-flow-step" onClick={() => setActiveSection('assets')}>
+                  <span>4</span><strong>知识更新</strong><em>{homeKnowledgeUpdateTotal} 份项目知识</em>
                 </button>
                 <button className="home-flow-step" onClick={() => setActiveSection(isWindows ? 'growth' : 'archive')}>
-                  <span>3</span><strong>成长沉淀</strong><em>{homeProcessedTotal} 份已完成</em>
+                  <span>5</span><strong>成长变化</strong><em>{homeGrowthChangeTotal || homeProcessedTotal} 条已沉淀</em>
                 </button>
                 <button className="home-flow-step" onClick={() => setActiveSection('reports')}>
-                  <span>4</span><strong>档案与报告</strong><em>按周期查看和更新</em>
+                  <span>6</span><strong>报告与档案</strong><em>{homeReportUpdateTotal ? `${homeReportUpdateTotal} 份已更新` : '按变化和周期更新'}</em>
                 </button>
               </div>
             </section>
@@ -10698,6 +11828,10 @@ ${JSON.stringify(items, null, 2)}
               <InfoPanel icon={<Bot />} title="学生档案" value={`${students.length} 个`} />
               <InfoPanel icon={<Archive />} title="待处理资料" value={`${homePendingTotal + homeProjectPendingTotal} 份`} />
               <InfoPanel icon={<RefreshCw />} title="处理中" value={`${homeWaitingTotal} 份`} />
+              <InfoPanel icon={<CircleAlert />} title="需要补充" value={`${homeNeedsSupplementTotal} 项`} />
+              <InfoPanel icon={<Sparkles />} title="知识更新" value={`${homeKnowledgeUpdateTotal} 份`} />
+              <InfoPanel icon={<TrendingUp />} title="成长变化" value={`${homeGrowthChangeTotal || homeProcessedTotal} 条`} />
+              <InfoPanel icon={<FileText />} title="报告与档案" value={homeReportUpdateTotal ? `${homeReportUpdateTotal} 份已更新` : '按周期更新'} />
               {isWindows && <InfoPanel icon={<KeyRound />} title="主机状态" value={hostServiceStatus?.running ? '终端服务运行中' : homeMode === 'host' ? '终端服务未启动' : '本机使用'} />}
             </div>
             {isWindows && (students.length === 0 || (homeMode === 'host' && (!hostServiceStatus?.running || !(hostServiceStatus?.devices ?? []).some((device) => !device.revoked)))) && (
@@ -10952,7 +12086,7 @@ ${JSON.stringify(items, null, 2)}
                       <div className="agent-status-main">
                         <strong>{tool.name}</strong>
                         <span>{install?.installed ? `已安装${install.version ? ` ${install.version}` : ''}` : '未检测到安装'}</span>
-                        {install?.exePath && <small>{install.exePath}</small>}
+                        {(install?.appPath || install?.exePath) && <small>{install.appPath || install.exePath}</small>}
                       </div>
                       <span className={tool.openMode === 'url' ? 'status ok' : opened ? 'status ok' : 'status warn'}>
                         {tool.openMode === 'url' ? (tool.category === 'platform' ? '平台入口' : '网页入口') : opened ? '已打开' : '未打开'}
@@ -11290,7 +12424,7 @@ ${JSON.stringify(items, null, 2)}
             <div className="archive-grid">
               <InfoPanel icon={<UserRound />} title="当前学生" value={`${selectedStudent.name} · ${selectedStudentTool.name}`} />
               <InfoPanel icon={<Archive />} title="待提交消化" value={`${pendingDigestValue(selectedStudent)} 个`} />
-              <InfoPanel icon={<Clock3 />} title="等待 Agent 回执" value={`${submittedDigestValue(selectedStudent)} 个`} />
+              <InfoPanel icon={<Clock3 />} title="处理中" value={`${submittedDigestValue(selectedStudent)} 个`} />
               <InfoPanel icon={<FolderOpen />} title="分享收件箱" value={`${sharedInboxCount} 个待归档`} />
             </div>
             <StudentToolSelector
@@ -11347,6 +12481,14 @@ ${JSON.stringify(items, null, 2)}
               <button className={pendingDigestValue(selectedStudent) === 0 && submittedDigestValue(selectedStudent) === 0 ? 'secondary workflow-action next' : 'secondary workflow-action optional'} onClick={() => importFilesForStudent(selectedStudent)}>
                 <FileDown size={18} />
                 {isWindows ? '1. 导入本机资料' : '1. 导入下载文件'}
+              </button>
+              <button className="secondary" onClick={() => {
+                setConversationDeliveryTargetType('student');
+                setConversationDeliveryProjectId('');
+                setActiveSection('conversation');
+              }}>
+                <MessageCircle size={18} />
+                从对话资料箱添加
               </button>
               {!isWindows && (
                 <>
@@ -11957,14 +13099,14 @@ ${JSON.stringify(items, null, 2)}
             <section className="material-source-panel project-dashboard projects-existing-only">
               <div className="mini-heading">
                 <strong>项目仪表盘</strong>
-                <span>汇总资料治理、知识审核、人工消化、贡献进度与风险。</span>
+                <span>汇总资料整理、知识更新、处理进度、项目贡献与需要补充的内容。</span>
               </div>
               <div className="archive-grid compact-dashboard-grid">
                 <InfoPanel icon={<Gauge />} title="进行中" value={`${projectDashboardStats.active} 个`} actionLabel="查看项目" onClick={() => focusProjectDashboard('active')} />
                 <InfoPanel icon={<Inbox />} title="待治理资料" value={`${projectDashboardStats.pendingMaterials} 份`} actionLabel="查看待治理项目" onClick={() => focusProjectDashboard('materials')} />
-                <InfoPanel icon={<ListChecks />} title="待审核知识" value={`${projectDashboardStats.pendingKnowledge} 条`} actionLabel="查看待审核项目" onClick={() => focusProjectDashboard('knowledge')} />
+                <InfoPanel icon={<ListChecks />} title="待整理知识" value={`${projectDashboardStats.pendingKnowledge} 条`} actionLabel="查看待整理项目" onClick={() => focusProjectDashboard('knowledge')} />
                 <InfoPanel icon={<Share2 />} title="待发布贡献" value={`${projectDashboardStats.readyContributions} 个`} actionLabel="查看贡献清单" onClick={() => focusProjectDashboard('contributions')} />
-                <InfoPanel icon={<AlertTriangle />} title="风险提醒" value={`${projectDashboardStats.risks} 项`} actionLabel="查看风险项目" onClick={() => focusProjectDashboard('risks')} />
+                <InfoPanel icon={<AlertTriangle />} title="需要补充" value={`${projectDashboardStats.risks} 项`} actionLabel="查看需要补充的项目" onClick={() => focusProjectDashboard('risks')} />
                 <InfoPanel icon={<Bot />} title="人工消化" value={`${projectDashboardStats.pendingDigest} 个待处理`} actionLabel="查看待消化项目" onClick={() => focusProjectDashboard('digest')} />
               </div>
               <div className="actions compact-actions">
@@ -11974,16 +13116,16 @@ ${JSON.stringify(items, null, 2)}
               <div className="audit-filter-row">
                 {[
                   ['all', `全部 ${projectDashboardStats.total}`], ['active', `进行中 ${projectDashboardStats.active}`], ['materials', `待治理资料 ${projectDashboardStats.pendingMaterials}`],
-                  ['knowledge', `待审核知识 ${projectDashboardStats.pendingKnowledge}`], ['contributions', `待发布 ${projectDashboardStats.readyContributions}`],
-                  ['risks', `风险 ${projectDashboardStats.risks}`], ['digest', `待消化 ${projectDashboardStats.pendingDigest}`],
+                  ['knowledge', `待整理知识 ${projectDashboardStats.pendingKnowledge}`], ['contributions', `待发布 ${projectDashboardStats.readyContributions}`],
+                  ['risks', `需要补充 ${projectDashboardStats.risks}`], ['digest', `待处理 ${projectDashboardStats.pendingDigest}`],
                 ].map(([key, label]) => <button className={projectDashboardFocus === key ? 'chip-button active' : 'chip-button'} key={key} onClick={() => focusProjectDashboard(key as ProjectDashboardFocus)}>{label}</button>)}
               </div>
               <div className="project-dashboard-table" data-project-dashboard-results tabIndex={-1}>
                 {projectDashboardRows.slice(0, 12).map((project) => (
                   <button className="project-dashboard-row" key={project.id} onClick={() => openProjectFromDashboard(project)}>
                     <strong>{project.name}</strong><span>{projectStatusLabel(project.status)}</span>
-                    <span>资料 {project.dashboard?.pendingStagingCount || 0}</span><span>待审 {project.dashboard?.pendingKnowledgeCount || 0}</span>
-                    <span>覆盖 {project.dashboard?.knowledgeCoverage || 0}%</span><span title={project.dashboard?.riskReasons?.join('；') || '无风险'}>风险 {project.dashboard?.riskCount || 0}</span><em title={`复制命令后粘贴到 ${getAgentToolProfile(project.agentTool).name}`}>{getAgentToolProfile(project.agentTool).name}</em><span className="dashboard-view-label">查看 <ChevronRight size={14} /></span>
+                    <span>资料 {project.dashboard?.pendingStagingCount || 0}</span><span>待整理 {project.dashboard?.pendingKnowledgeCount || 0}</span>
+                    <span>覆盖 {project.dashboard?.knowledgeCoverage || 0}%</span><span title={project.dashboard?.riskReasons?.join('；') || '无需补充'}>需补充 {project.dashboard?.riskCount || 0}</span><em>自动处理</em><span className="dashboard-view-label">查看 <ChevronRight size={14} /></span>
                   </button>
                 ))}
                 {!projectDashboardRows.length && <div className="empty-state compact">当前筛选下没有项目。</div>}
@@ -12278,7 +13420,7 @@ ${JSON.stringify(items, null, 2)}
                   <select value={projectDraft.agentTool} onChange={(event) => setProjectDraft((current) => ({ ...current, agentTool: event.target.value as AgentToolId }))}>
                     {agentToolOptions.map((tool) => <option value={tool.id} key={tool.id}>{tool.name}</option>)}
                   </select>
-                  <small className="inline-hint">开始处理时，控制台会优先调用当前可用通道；不可直接调用时自动提供一次复制、一次粘贴的人工方式。</small>
+                  <small className="inline-hint">开始处理后，控制台会自动调用可用通道并持续扫描 Agent 输出、回执和知识更新；普通用户不需要复制或粘贴结果。</small>
                 </label>
                 <div className="wide-field">
                   <span>绑定学生（可多选）</span>
@@ -12336,7 +13478,7 @@ ${JSON.stringify(items, null, 2)}
                       </span>
                       <span>{project.type}</span>
                       <small><UserRound size={14} />{project.studentNames?.join('、') || '未绑定学生'}</small>
-                      <small><Archive size={14} />资料 {project.dashboard?.pendingStagingCount || 0} · 待消化 {project.digestState?.pendingCount || 0} · 知识 {project.dashboard?.knowledgeCount || 0}</small>
+                      <small><Archive size={14} />原始资料 {project.dashboard?.rawMaterialCount || 0} · 待消化 {project.digestState?.pendingCount || 0} · 知识文件 {project.dashboard?.knowledgeCount || 0}</small>
                       <span className="project-index-enter">进入项目详情 <ChevronRight size={16} /></span>
                     </button>
                   ))}
@@ -12361,12 +13503,22 @@ ${JSON.stringify(items, null, 2)}
                         </button>
                         <button className="secondary compact" onClick={relocateSelectedProjectWorkspace}><FolderOpen size={15} />重新定位</button>
                         <button className="secondary compact" onClick={exportSelectedProject}><FileDown size={15} />导出项目</button>
+                        <button
+                          className="primary compact"
+                          onClick={() => void publishSelectedProjectToPeer()}
+                          disabled={projectPublicationBusy}
+                          title="通过局域网优先、Tailscale 备用的内置直传，将原始资料和已确认知识发布给协作主机"
+                        >
+                          <Share2 size={15} />
+                          {projectPublicationBusy ? '正在发布…' : '发布项目'}
+                        </button>
                         <button className="danger-soft compact" onClick={deleteSelectedProject} title="从项目列表安全删除，物理文件保持不变并可恢复">
                           <Trash2 size={15} />
                           删除项目
                         </button>
                       </div>
                     </div>
+                    {projectPublicationMessage && <div className="notice project-publication-notice" role="status">{projectPublicationMessage}</div>}
                     {projectEditOpen && (
                       <section className="material-source-panel project-edit-panel project-order-edit">
                         <div className="mini-heading">
@@ -12506,6 +13658,11 @@ ${JSON.stringify(items, null, 2)}
                         <button className="secondary compact" onClick={() => openSelectedProjectSpace('workspace')}><FolderOpen size={16} />打开项目工作空间</button>
                         <button className="secondary compact" onClick={() => openSelectedProjectSpace('knowledge')}><BookOpen size={16} />打开项目知识空间</button>
                         <button className={selectedProjectNextStep?.target === 'workspace' ? 'primary compact workflow-action next' : 'primary compact workflow-action optional'} onClick={() => setProjectMaterialEntryOpen((current) => !current)}><FileDown size={16} />添加资料</button>
+                        <button className="secondary compact" onClick={() => {
+                          setConversationDeliveryTargetType('project');
+                          setConversationDeliveryProjectId(selectedProject.id);
+                          setActiveSection('conversation');
+                        }}><MessageCircle size={16} />从对话资料箱添加</button>
                       </div>
                       {projectStageFeedback.workspace && <div className="project-stage-feedback" role="status"><span>{projectStageFeedback.workspace}</span><button className="secondary compact" onClick={() => focusSelectedProjectWorkflowStage('assets')}>查看暂存资料</button></div>}
                       {projectMaterialEntryOpen && (
@@ -12811,13 +13968,13 @@ ${JSON.stringify(items, null, 2)}
                         advancedActions={<>
                           <button className="secondary compact" onClick={() => copyDigestWorkflowCommandFromPage('project', selectedProject.id)}><Clipboard size={16} />复制当前批次指令</button>
                           <button className="secondary compact" onClick={syncSelectedProjectDigestResult}>立即检查结果</button>
-                          <button className="secondary compact" onClick={() => setProjectDigestReceiptPasteOpen((open) => !open)}><Clipboard size={16} />粘贴严格回执</button>
+                          <button className="secondary compact" onClick={() => setProjectDigestReceiptPasteOpen((open) => !open)}><Clipboard size={16} />导入历史结果（可选）</button>
                         </>}
                       />}
                       {projectDigestReceiptPasteOpen && (
                         <section className="project-screening-receipt-panel" aria-label="项目消化 Agent 回执">
-                          <div className="mini-heading"><strong>粘贴 Agent JSON 回执</strong><span>Agent 无法写入回执文件时使用。系统仍会严格校验当前项目、批次、相对路径和 SHA-1。</span></div>
-                          <textarea value={projectDigestReceiptRaw} onChange={(event) => setProjectDigestReceiptRaw(event.target.value)} rows={9} placeholder="粘贴纯 JSON，或包含 JSON 代码块的 Agent 回复。Markdown 批次报告不能替代回执。" />
+                          <div className="mini-heading"><strong>导入旧版 Agent 结果</strong><span>仅用于迁移历史任务；当前流程会自动识别 JSON、Markdown、纯文本完成说明和知识产物更新。</span></div>
+                          <textarea value={projectDigestReceiptRaw} onChange={(event) => setProjectDigestReceiptRaw(event.target.value)} rows={9} placeholder="可粘贴旧版 JSON、Markdown 或 Agent 完成说明；批次号和缺失字段由系统自动匹配。" />
                           <div className="actions compact-actions"><button className={projectDigestReceiptRaw.trim() ? 'primary compact workflow-action next' : 'primary compact workflow-action blocked'} onClick={applyPastedProjectDigestReceipt} disabled={!projectDigestReceiptRaw.trim()}>校验并同步</button><button className="secondary compact" onClick={() => { setProjectDigestReceiptPasteOpen(false); setProjectDigestReceiptRaw(''); }}>取消</button></div>
                         </section>
                       )}
@@ -13189,6 +14346,10 @@ ${JSON.stringify(items, null, 2)}
                 <FolderOpen size={18} />
                 打开知识库目录
               </button>
+              <button className="secondary" onClick={exportSelectedEducationArchive} disabled={!windowsLicenseActive}>
+                <FileDown size={18} />
+                导出完整档案
+              </button>
               <button className="primary" onClick={() => setActiveSection('archive')}>
                 <BookOpen size={18} />
                 查看全部档案
@@ -13227,6 +14388,10 @@ ${JSON.stringify(items, null, 2)}
                 <div className="reader-toolbar">
                   <span>{learningReports.find((item) => item.id === selectedLearningReportId)?.title ?? '学情报告'}</span>
                   <div className="reader-actions">
+                    <button className="secondary compact" onClick={toggleLearningReportEvidence} disabled={!learningReportContent}>
+                      <LinkIcon size={16} />
+                      {learningReportEvidence ? '收起依据' : '查看依据'}
+                    </button>
                     <button className="secondary compact" onClick={() => setLearningReportViewMode(learningReportViewMode === 'rendered' ? 'source' : 'rendered')}>
                       {learningReportViewMode === 'rendered' ? '查看原文' : '阅读模式'}
                     </button>
@@ -13236,6 +14401,46 @@ ${JSON.stringify(items, null, 2)}
                     </button>
                   </div>
                 </div>
+                {learningReportEvidence && (
+                  <section className="report-evidence-panel" aria-label="报告依据">
+                    <div className="mini-heading">
+                      <strong>报告依据</strong>
+                      <span>{learningReportEvidence.message || '只读查看，不会修改报告或成长模型。'}</span>
+                    </div>
+                    {learningReportEvidence.cards.map((card) => (
+                      <article className="report-evidence-card" key={card.evidenceId}>
+                        <div>
+                          <strong>{card.title}</strong>
+                          <p>{card.summary || '该结论引用了一条成长证据。'}</p>
+                          <small>
+                            {[card.ability, card.projectName, card.observedAt ? new Date(card.observedAt).toLocaleString('zh-CN') : '']
+                              .filter(Boolean).join(' · ') || '成长依据'}
+                          </small>
+                        </div>
+                        <div className="report-evidence-sources">
+                          {card.sources.map((source, sourceIndex) => (
+                            <button
+                              className="secondary compact"
+                              disabled={!source.available}
+                              key={source.id}
+                              onClick={() => openLearningReportEvidenceSource(card.evidenceId, sourceIndex)}
+                              title={source.location}
+                            >
+                              <FolderOpen size={15} />
+                              {source.available ? `定位 ${source.title}` : `${source.title} 暂不可用`}
+                            </button>
+                          ))}
+                          {!card.sources.length && <small>来源尚未记录，系统将其视为需要补充。</small>}
+                        </div>
+                      </article>
+                    ))}
+                    {!learningReportEvidence.cards.length && (
+                      <div className="empty-state">
+                        {learningReportEvidence.legacy ? '历史报告没有证据 ID，可继续正常阅读。后续自动更新后将支持下钻。' : '当前报告没有可显示的依据。'}
+                      </div>
+                    )}
+                  </section>
+                )}
                 {learningReportContent ? (
                   learningReportViewMode === 'rendered' ? <MarkdownView content={learningReportContent} /> : <pre className="markdown-raw">{learningReportContent}</pre>
                 ) : (
@@ -13523,6 +14728,30 @@ ${JSON.stringify(items, null, 2)}
                 </button>
               ))}
             </div>
+            <div className="archive-browser-tools" role="search" aria-label="档案浏览选项">
+              <label className="archive-search-field">
+                <Search size={17} aria-hidden="true" />
+                <input
+                  value={archiveSearch}
+                  onChange={(event) => setArchiveSearch(event.target.value)}
+                  placeholder="搜索文件名或路径"
+                  aria-label="搜索档案"
+                />
+                {archiveSearch && (
+                  <button type="button" onClick={() => setArchiveSearch('')} aria-label="清除档案搜索">
+                    <X size={15} />
+                  </button>
+                )}
+              </label>
+              <label className="archive-sort-field">
+                <span>按日期排序</span>
+                <select value={archiveDateSort} onChange={(event) => setArchiveDateSort(event.target.value as ArchiveDateSort)} aria-label="档案日期排序">
+                  <option value="modified-desc">最新更新优先</option>
+                  <option value="modified-asc">最早更新优先</option>
+                </select>
+              </label>
+              <span className="archive-result-count">显示 {filteredMarkdownFiles.length} / {markdownFiles.filter(isVisibleArchiveFile).length} 个文档</span>
+            </div>
             <div className={archiveListVisible ? 'archive-browser' : 'archive-browser list-hidden'}>
               {archiveListVisible && (
                 <aside className="markdown-list">
@@ -13533,7 +14762,7 @@ ${JSON.stringify(items, null, 2)}
                   {markdownFiles.length === 0 ? (
                     <div className="empty-state">{isWindows ? '保存学生档案后点击“刷新档案”，这里会读取同一个本机学情分析汇总目录。' : '保存学生档案后点击“刷新档案”，这里会优先显示 App 内置学情 Markdown；Obsidian 授权是高级可选模式。'}</div>
                   ) : filteredMarkdownFiles.length === 0 ? (
-                    <div className="empty-state">该分类下暂无 Markdown 文件，可切换到“全部文件”查看真实文件树。</div>
+                    <div className="empty-state">{archiveSearch ? `没有找到包含“${archiveSearch.trim()}”的档案。` : '该分类下暂无 Markdown 文件，可切换到“全部文件”查看真实文件树。'}</div>
                   ) : (
                     filteredMarkdownFiles.map((file) => (
                       <button
@@ -13551,7 +14780,7 @@ ${JSON.stringify(items, null, 2)}
               )}
               <section className="markdown-reader">
                 <div className="reader-toolbar">
-                  <span>{selectedMarkdownId ? filteredMarkdownFiles.find((file) => file.id === selectedMarkdownId)?.name ?? 'Markdown 档案' : 'Markdown 档案'}</span>
+                  <span>{selectedMarkdownFile?.name ?? 'Markdown 档案'}</span>
                   <div className="reader-actions">
                     <button className="secondary compact" onClick={() => setMarkdownViewMode(markdownViewMode === 'rendered' ? 'source' : 'rendered')}>
                       {markdownViewMode === 'rendered' ? '查看原文' : '阅读模式'}
@@ -13580,15 +14809,126 @@ ${JSON.stringify(items, null, 2)}
             <div className="panel-heading">
               <div>
                 <h2>教育管家问答</h2>
-                <p>打开当前学生绑定的 Agent 工具，并复制问答、消化和初始化所需内容。</p>
+                <p>直接输入问题。系统先查本机知识，依据不足时自动查询已连接的协作主机，再把带来源内容交给 Agent。</p>
               </div>
               <MessageCircle size={22} />
             </div>
+            <form className="agent-knowledge-query" onSubmit={(event) => {
+              event.preventDefault();
+              void askWithEducationKnowledge(false);
+            }}>
+              <label>
+                查询范围
+                <select
+                  value={agentKnowledgeQueryScope}
+                  onChange={(event) => {
+                    const next = event.target.value as 'current_student' | 'local_team' | 'collaboration_team' | 'all_allowed';
+                    setAgentKnowledgeQueryScope(next);
+                    localStorage.setItem('edu-manager-agent-knowledge-query-scope', next);
+                  }}
+                >
+                  <option value="current_student">当前学生及关联项目</option>
+                  <option value="local_team" disabled={!collaborationState?.teamKnowledgePolicy?.allowLocalTeamKnowledgeQuery}>本机团队</option>
+                  <option value="collaboration_team" disabled={!collaborationState?.teamKnowledgePolicy?.allowRemoteTeamKnowledgeQuery}>远程协作团队</option>
+                  <option
+                    value="all_allowed"
+                    disabled={!collaborationState?.teamKnowledgePolicy?.allowLocalTeamKnowledgeQuery && !collaborationState?.teamKnowledgePolicy?.allowRemoteTeamKnowledgeQuery}
+                  >
+                    当前允许的全部范围
+                  </option>
+                </select>
+              </label>
+              <label htmlFor="agent-knowledge-question">想了解什么？</label>
+              <textarea
+                id="agent-knowledge-question"
+                value={agentKnowledgeQuestion}
+                onChange={(event) => setAgentKnowledgeQuestion(event.target.value)}
+                placeholder={`例如：${selectedStudent.name}最近在数学学习中有哪些稳定进步？`}
+                rows={3}
+                maxLength={2000}
+              />
+              <div className="actions">
+                <button className="primary" type="submit" disabled={agentKnowledgeBusy || !agentKnowledgeQuestion.trim()}>
+                  {agentKnowledgeBusy ? <RefreshCw className="spin" size={18} /> : <Search size={18} />}
+                  {agentKnowledgeBusy ? '正在查询…' : `查询并交给 ${selectedStudentTool.name}`}
+                </button>
+              </div>
+              <small className="inline-hint">无需选择网络或填写地址；当前学生范围本机有依据时不会访问远程主机，只有选择了远程团队范围并在系统设置长期允许时才进行团队远程查询。</small>
+            </form>
+            {agentKnowledgeResult && (
+              <div className={`agent-knowledge-result ${agentKnowledgeResult.ok ? 'success' : 'waiting'}`}>
+                <div className="mini-heading">
+                  <strong>
+                    {agentKnowledgeResult.source === 'local' && '已使用本机知识'}
+                    {agentKnowledgeResult.source === 'remote' && (
+                      agentKnowledgeResult.count > 0
+                        ? `已使用协作主机知识${agentKnowledgeResult.transport === 'tailscale' ? '（Tailscale）' : '（局域网）'}`
+                        : `已查询协作主机${agentKnowledgeResult.transport === 'tailscale' ? '（Tailscale）' : '（局域网）'}，但未找到依据`
+                    )}
+                    {agentKnowledgeResult.source === 'offline_snapshot' && '已使用带时间标记的离线快照'}
+                    {agentKnowledgeResult.source === 'waiting' && '暂未取得可用知识'}
+                  </strong>
+                  <span>
+                    {agentKnowledgeResult.ok
+                      ? `${agentKnowledgeResult.count || 0} 条来源 · ${agentKnowledgeResult.durationMs || 0} ms`
+                      : agentKnowledgeResult.message || '协作主机暂时不可用，可稍后重试。'}
+                  </span>
+                </div>
+                {agentKnowledgeResult.source === 'offline_snapshot' && (
+                  <div className="notice muted">快照时间：{formatDateTime(agentKnowledgeResult.cachedAt || agentKnowledgeResult.servedAt)}</div>
+                )}
+                {(agentKnowledgeResult.resources || []).length > 0 ? (
+                  <div className="agent-knowledge-sources">
+                    {(agentKnowledgeResult.resources || []).map((resource, index) => (
+                      <article key={`${resource.uri || resource.title}-${index}`}>
+                        <strong>{index + 1}. {resource.title || '知识记录'}</strong>
+                        <p>{resource.excerpt || '已找到来源记录。'}</p>
+                        <small>
+                          {[resource.studentNames?.length ? resource.studentNames.join('、') : resource.studentName, resource.projectName, resource.sourceNodeId ? `节点 ${resource.sourceNodeId.slice(-10)}` : '', resource.transport === 'tailscale' ? 'Tailscale' : resource.transport === 'lan' ? '局域网' : '', resource.freshness].filter(Boolean).join(' · ')}
+                        </small>
+                        <small>{resource.uri || resource.relativePath} · 更新 {formatDateTime(resource.modifiedAt)}</small>
+                      </article>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="notice muted">{agentKnowledgeResult.warning || agentKnowledgeResult.message || '本机和当前协作范围内没有找到直接依据。'}</div>
+                )}
+                {!agentKnowledgeResult.ok && agentKnowledgeResult.retryable && (
+                  <button className="secondary compact" type="button" onClick={() => void askWithEducationKnowledge(true)} disabled={agentKnowledgeBusy}>
+                    <RefreshCw size={16} />
+                    重新查询
+                  </button>
+                )}
+              </div>
+            )}
+            <details className="advanced-diagnostics" open={agentKnowledgeDiagnosticsOpen} onToggle={(event) => {
+              const open = event.currentTarget.open;
+              setAgentKnowledgeDiagnosticsOpen(open);
+              if (open) refreshAgentKnowledgeDiagnostics();
+            }}>
+              <summary>高级诊断</summary>
+              <p>仅用于排查连接，不影响日常问答。</p>
+              <div className="diagnostic-summary">
+                <span>本机 {agentKnowledgeDiagnostics?.summary?.local || 0}</span>
+                <span>远程 {agentKnowledgeDiagnostics?.summary?.remote || 0}</span>
+                <span>局域网 {agentKnowledgeDiagnostics?.summary?.lan || 0}</span>
+                <span>Tailscale {agentKnowledgeDiagnostics?.summary?.tailscale || 0}</span>
+                <span>离线快照 {agentKnowledgeDiagnostics?.summary?.snapshot || 0}</span>
+                <span>等待 {agentKnowledgeDiagnostics?.summary?.waiting || 0}</span>
+              </div>
+              {(agentKnowledgeDiagnostics?.entries || []).slice(0, 10).map((entry) => (
+                <div className="diagnostic-entry" key={`${entry.queryId}-${entry.at}`}>
+                  <strong>{entry.source || 'unknown'}{entry.transport ? ` · ${entry.transport}` : ''}</strong>
+                  <span>{entry.resultCount || 0} 条 · {entry.durationMs || 0} ms · {formatDateTime(entry.at)}</span>
+                  {entry.message && <small>{entry.message}</small>}
+                </div>
+              ))}
+            </details>
             <div className="archive-grid">
               <InfoPanel icon={<UserRound />} title="当前学生" value={`${selectedStudent.name} · ${selectedStudentTool.name}`} />
               <InfoPanel icon={<Bot />} title="Agent 工具" value={selectedStudentTool.name} />
               <InfoPanel icon={<Archive />} title="待提交消化" value={`${pendingDigestValue(selectedStudent)} 个`} />
-              <InfoPanel icon={<Clock3 />} title="等待 Agent 回执" value={`${submittedDigestValue(selectedStudent)} 个`} />
+              <InfoPanel icon={<Clock3 />} title="处理中" value={`${submittedDigestValue(selectedStudent)} 个`} />
             </div>
             <StudentToolSelector
               value={selectedStudent.agentTool}
@@ -14104,8 +15444,8 @@ ${JSON.stringify(items, null, 2)}
           <section className="panel qa-panel">
             <div className="panel-heading">
               <div>
-                <h2>对话与多源知识候选</h2>
-                <p>原始对话先保存为不可变 Interaction / ConversationAsset；AI 结果只形成逐条候选，人工确认后才通过可撤销事务进入长期知识。</p>
+                <h2>对话资料箱</h2>
+                <p>导入后自动整理主题；勾选资料并确认一次，即可投递到当前学生或关联项目的原始资料库。</p>
               </div>
               <MessageCircle size={22} />
             </div>
@@ -14114,6 +15454,78 @@ ${JSON.stringify(items, null, 2)}
               <InfoPanel icon={<FolderOpen />} title="导入目录" value={conversationCenter?.importsDir || '未读取'} />
               <InfoPanel icon={<Archive />} title="历史记录" value={`${conversationCenter?.index?.imports?.length ?? 0} 次导入 / ${conversationCenter?.index?.extracts?.length ?? 0} 次提取`} />
             </div>
+            <section className="material-source-panel">
+              <div className="mini-heading">
+                <strong>从分享链接导入</strong>
+                <span>支持可公开读取的对话分享页面；读取失败时可直接粘贴或导入文件，不会阻塞其他操作。</span>
+              </div>
+              <div className="actions compact-actions">
+                <input
+                  value={conversationShareUrl}
+                  onChange={(event) => setConversationShareUrl(event.target.value)}
+                  placeholder="粘贴 ChatGPT、QClaw、Codex 等对话分享链接"
+                  aria-label="对话分享链接"
+                />
+                <button className="primary" disabled={conversationShareBusy} onClick={() => void importConversationFromShareUrl()}>
+                  {conversationShareBusy ? '正在导入…' : '导入分享对话'}
+                </button>
+              </div>
+              {conversationShareMessage && <div className="notice compact">{conversationShareMessage}</div>}
+            </section>
+            <section className="material-source-panel">
+              <div className="mini-heading">
+                <strong>已导入对话资料</strong>
+                <span>系统已自动归纳主题并给出项目建议；普通使用只需勾选后确认投递。</span>
+              </div>
+              <div className="actions compact-actions">
+                <input value={conversationInboxSearch} onChange={(event) => setConversationInboxSearch(event.target.value)} placeholder="搜索标题、主题或来源" />
+                <select value={conversationTopicFilter} onChange={(event) => setConversationTopicFilter(event.target.value)}>
+                  <option value="all">全部主题</option>
+                  {conversationTopics.map((topic) => <option value={topic} key={topic}>{topic}</option>)}
+                </select>
+                <button className="secondary" onClick={() => setSelectedConversationAssetKeys(conversationInboxItems.map(conversationAssetKey))}>全选当前结果</button>
+                <button className="secondary" onClick={() => setSelectedConversationAssetKeys([])}>清除选择</button>
+              </div>
+              <div className="candidate-list">
+                {conversationInboxItems.slice(0, 100).map((item) => {
+                  const key = conversationAssetKey(item);
+                  const suggestedProject = conversationLinkedProjects.find((project) => item.analysis?.suggestedProjectIds?.includes(project.id));
+                  return (
+                    <div className="candidate-row" key={key}>
+                      <label className="checkbox-line">
+                        <input type="checkbox" checked={selectedConversationAssetKeySet.has(key)} onChange={() => toggleConversationAsset(item)} />
+                        <span>{item.analysis?.title || '未命名对话'}</span>
+                      </label>
+                      <div className="candidate-main">
+                        <strong>{item.analysis?.summary || `${item.messageCount ?? 0} 条消息`}</strong>
+                        <span>{item.sourceScopeType === 'project' ? '项目' : '学生'}来源 · {item.sourceScopeName || selectedStudent.name}</span>
+                        <small>{item.analysis?.category || '未分类'} · {(item.analysis?.topics ?? ['综合对话']).join(' · ')}{suggestedProject ? ` · 建议投递：${suggestedProject.name}` : ''}</small>
+                        {item.analysis?.keywords?.length ? <small>关键词：{item.analysis.keywords.slice(0, 8).join('、')}</small> : null}
+                        {item.analysis?.decisions?.length ? <small>结论：{item.analysis.decisions.slice(0, 2).join('；')}</small> : null}
+                        {item.analysis?.actionItems?.length ? <small>后续：{item.analysis.actionItems.slice(0, 2).join('；')}</small> : null}
+                        <small>{item.importedAt ? new Date(item.importedAt).toLocaleString('zh-CN') : ''}{item.deliveries?.length ? ` · 已投递 ${item.deliveries.length} 次` : ''}</small>
+                      </div>
+                    </div>
+                  );
+                })}
+                {conversationInboxItems.length === 0 && <div className="empty-state compact">暂无符合条件的对话资料，可从分享链接、粘贴内容或文件导入。</div>}
+              </div>
+              <div className="actions compact-actions">
+                <select value={conversationDeliveryTargetType} onChange={(event) => setConversationDeliveryTargetType(event.target.value as 'student' | 'project')}>
+                  <option value="student">投递到当前学生原始资料库</option>
+                  <option value="project">投递到关联项目原始资料库</option>
+                </select>
+                {conversationDeliveryTargetType === 'project' && (
+                  <select value={conversationDeliveryProjectId} onChange={(event) => setConversationDeliveryProjectId(event.target.value)}>
+                    <option value="">选择关联项目</option>
+                    {conversationLinkedProjects.map((project) => <option value={project.id} key={project.id}>{project.name}</option>)}
+                  </select>
+                )}
+                <button className="primary" onClick={deliverSelectedConversationMaterials}>
+                  确认投递所选（{selectedConversationAssetKeys.length}）
+                </button>
+              </div>
+            </section>
             <div className="form-grid compact-grid">
               <label>
                 来源 Agent 工具
@@ -14127,7 +15539,7 @@ ${JSON.stringify(items, null, 2)}
               </label>
             </div>
             <label className="wide-field">
-              粘贴对话历史
+              粘贴对话历史（备用入口）
               <textarea className="large-textarea" value={conversationText} onChange={(event) => setConversationText(event.target.value)} placeholder="粘贴从 Agent 工具导出的会话总结、聊天记录、问答片段或 Markdown/JSON 文本。" />
             </label>
             <div className="actions compact-actions">
@@ -14333,9 +15745,9 @@ ${JSON.stringify(items, null, 2)}
                 <span>协议 {taskCenter.protocolVersion || '1.0'}；支持自动执行、QClaw 收件箱和人工任务包，所有结果统一审核。</span>
               </div>
               <div className="task-center-toolbar">
-                <label className={taskCenter.automationEnabled === false ? 'task-automation-toggle manual' : 'task-automation-toggle'} title="关闭后停止自动扫描、调度和后台 Agent 探测；仍可手动执行任务。">
+                <label className={taskCenter.automationEnabled === false ? 'task-automation-toggle manual' : 'task-automation-toggle'} title="关闭后仅停止后台自动扫描与定时调度；主动点击处理时仍会即时检测并调用已绑定 Agent。">
                   <input type="checkbox" checked={taskCenter.automationEnabled !== false} onChange={(event) => updateTaskAutomationMode(event.target.checked)} />
-                  <span>{taskCenter.automationEnabled === false ? '仅手动' : '自动运行'}</span>
+                  <span>{taskCenter.automationEnabled === false ? '仅手动启动' : '自动运行'}</span>
                 </label>
                 <button className="secondary compact" onClick={() => openTaskCenterFolder('root')}><FolderOpen size={15} />任务仓库</button>
                 <button className="secondary compact" onClick={() => openTaskCenterFolder('qclaw-inbox')}><Inbox size={15} />QClaw 收件箱</button>
@@ -14473,33 +15885,147 @@ ${JSON.stringify(items, null, 2)}
                        {selectedTaskHistory.length === 0 && <div className="empty-state compact">暂无历史记录。</div>}
                      </div>
                    </details>
-                   <label>执行器
-                     <select value={taskExecutorDraft} onChange={(event) => setTaskExecutorDraft(event.target.value)}>
-                       <option value="auto">智能路由（自动执行）</option>
-                       <option value="rule">规则路由（按任务类型）</option>
-                       <option value="confirm">智能推荐（人工确认）</option>
-                       {Object.values(taskCenter.capabilities || {}).filter((adapter) => !adapter.hidden || selectedTask.requestedExecutor === adapter.id).map((adapter) => <option key={adapter.id} value={adapter.id}>{adapter.label}{adapter.available && adapter.authorized !== false ? '' : '（不可用或未授权，将降级）'}</option>)}
-                     </select>
-                   </label>
-                  {['waiting_result', 'running'].includes(selectedTask.status) && (
-                    <label>粘贴 Agent 结果
-                      <textarea value={taskResultPasteText} onChange={(event) => setTaskResultPasteText(event.target.value)} placeholder="粘贴 Agent 返回的 JSON 或文字结果。系统仍会校验当前执行批次、实际产物和输出结构。" />
-                    </label>
+                  {selectedCollaborationTask ? (
+                    <>
+                      <div className="notice muted task-simple-action-note">
+                        {isCollaborationHelpRequest ? '学生协助请求' : '跨主机协作任务'} · {selectedCollaborationTask.deadlineAt ? `截止 ${new Date(selectedCollaborationTask.deadlineAt).toLocaleString('zh-CN')}` : '未设置截止时间'}
+                        {selectedCollaborationTask.instructions ? ` · ${selectedCollaborationTask.instructions}` : ''}
+                      </div>
+                      {selectedCollaborationTask.submissionRequirements && (
+                        <div className="notice muted">提交要求：{selectedCollaborationTask.submissionRequirements}</div>
+                      )}
+                      {selectedCollaborationContribution && (
+                        <div className="notice muted">
+                          <strong>教师知识建议草稿：</strong>{selectedCollaborationContribution.content || selectedCollaborationContribution.title || '已返回建议'}
+                          <br />该内容尚未进入正式知识库或成长模型，需由学生主机后续确认。
+                        </div>
+                      )}
+                      {selectedCollaborationMessages.length > 0 && (
+                        <div className="task-collaboration-messages">
+                          <strong>协作沟通记录</strong>
+                          <div className="download-list compact-list">
+                            {selectedCollaborationMessages.map((event, index) => (
+                              <div className="download-item" key={event.eventId || `${event.type}-${event.occurredAt}-${index}`}>
+                                <span>
+                                  <strong>{event.actorLabel} · {event.actionLabel}</strong>
+                                  <small>{event.occurredAt ? new Date(event.occurredAt).toLocaleString('zh-CN') : '时间未记录'}</small>
+                                  <small>{event.message}</small>
+                                </span>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                      {isCollaborationTaskSource && selectedCollaborationResultAttachmentIds.length > 0 && (
+                        <div className="notice muted">
+                          已收到 {selectedCollaborationResultAttachmentIds.length} 份成果附件。附件保留在受控协作收件箱，不会自动写入教师资料库。
+                        </div>
+                      )}
+                      {(isCollaborationTaskTarget && ['accepted', 'feedback'].includes(selectedCollaborationTask.state || ''))
+                        || (isCollaborationTaskSource && selectedCollaborationTask.state === 'submitted') ? (
+                        <label>{isCollaborationTaskSource
+                          ? (isCollaborationHelpRequest ? '给教师的补充说明' : '给学生的反馈')
+                          : (isCollaborationHelpRequest ? '回复学生的处理结果' : '提交给教师的完成结果')}
+                          <textarea
+                            value={taskResultPasteText}
+                            onChange={(event) => setTaskResultPasteText(event.target.value)}
+                            placeholder={isCollaborationTaskSource
+                              ? (isCollaborationHelpRequest ? '补充问题或直接确认已经解决。' : '说明需要修改的内容；也可以直接确认完成。')
+                              : (isCollaborationHelpRequest ? '填写处理建议、结果位置或需要学生补充的内容。' : '填写完成情况、结果位置或需要教师协助的问题。')}
+                          />
+                        </label>
+                      ) : null}
+                      <div className="task-detail-actions">
+                        {isCollaborationTaskSource && selectedCollaborationResultAttachmentIds.length > 0 && (
+                          <button className="secondary" onClick={() => applyCollaborationResult(bridge()?.openCollaborationPath?.('inbox'))}><FolderOpen size={16} />打开成果附件</button>
+                        )}
+                        {isCollaborationTaskTarget && (selectedCollaborationTask.attachmentObjectIds?.length || 0) > 0 && (
+                          <button className="secondary" onClick={() => applyCollaborationResult(bridge()?.openCollaborationPath?.('inbox'))}><FolderOpen size={16} />打开附件收件箱</button>
+                        )}
+                        {isCollaborationTaskTarget && (selectedCollaborationTask.attachmentObjectIds?.length || 0) > 0 && (
+                          <button className="workflow-action optional" onClick={() => resolveCollaborationTaskAttachments(selectedTask, 'stage')}>继续暂存</button>
+                        )}
+                        {isCollaborationTaskTarget && (selectedCollaborationTask.attachmentObjectIds?.length || 0) > 0 && (
+                          <button className="workflow-action next" onClick={() => resolveCollaborationTaskAttachments(selectedTask, 'adopt')}><FileDown size={16} />采用到原始资料库</button>
+                        )}
+                        {isCollaborationTaskTarget && (selectedCollaborationTask.attachmentObjectIds?.length || 0) > 0 && selectedCollaborationProjects.length > 0 && (
+                          <select
+                            aria-label="协作资料采用项目"
+                            value={collaborationAttachmentProjectTargets[selectedCollaborationTask.taskId || ''] || ''}
+                            onChange={(event) => setCollaborationAttachmentProjectTargets((current) => ({ ...current, [selectedCollaborationTask.taskId || '']: event.target.value }))}
+                          >
+                            <option value="">选择项目</option>
+                            {selectedCollaborationProjects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}
+                          </select>
+                        )}
+                        {isCollaborationTaskTarget && (selectedCollaborationTask.attachmentObjectIds?.length || 0) > 0 && selectedCollaborationProjects.length > 0 && (
+                          <button
+                            className={collaborationAttachmentProjectTargets[selectedCollaborationTask.taskId || ''] ? 'workflow-action next' : 'workflow-action blocked'}
+                            disabled={!collaborationAttachmentProjectTargets[selectedCollaborationTask.taskId || '']}
+                            onClick={() => resolveCollaborationTaskAttachments(selectedTask, 'adopt_project')}
+                          ><FolderInput size={16} />加入所选项目</button>
+                        )}
+                        {isCollaborationTaskTarget && (selectedCollaborationTask.attachmentObjectIds?.length || 0) > 0 && (
+                          <button className="workflow-action optional" onClick={() => resolveCollaborationTaskAttachments(selectedTask, 'reject')}><X size={16} />拒绝资料</button>
+                        )}
+                        {isCollaborationTaskTarget && ['offered', 'deferred'].includes(selectedCollaborationTask.state || '') && (
+                          <button className="workflow-action next" onClick={() => updateCollaborationTask(selectedTask, 'accept')}><CheckCircle2 size={16} />{isCollaborationHelpRequest ? '接受协助请求' : selectedCollaborationTask.executionPolicy?.mode === 'remote_local' ? '接受并在本机执行' : '接受任务'}</button>
+                        )}
+                        {isCollaborationTaskTarget && selectedCollaborationTask.state === 'offered' && (
+                          <button className="workflow-action optional" onClick={() => updateCollaborationTask(selectedTask, 'defer', isCollaborationHelpRequest ? '教师选择稍后处理。' : '学生选择稍后处理。')}><Clock3 size={16} />稍后处理</button>
+                        )}
+                        {isCollaborationTaskTarget && ['offered', 'deferred'].includes(selectedCollaborationTask.state || '') && (
+                          <button className="workflow-action optional" onClick={() => updateCollaborationTask(selectedTask, 'decline', isCollaborationHelpRequest ? '教师当前无法协助。' : '学生当前无法完成。')}><X size={16} />{isCollaborationHelpRequest ? '无法协助' : '无法完成'}</button>
+                        )}
+                        {isCollaborationTaskTarget && ['accepted', 'feedback'].includes(selectedCollaborationTask.state || '') && (
+                          <button className="secondary" onClick={selectCollaborationResultFiles}><FileDown size={16} />选择成果文件{collaborationResultFiles.length ? `（${collaborationResultFiles.length}）` : ''}</button>
+                        )}
+                        {isCollaborationTaskTarget && ['accepted', 'feedback'].includes(selectedCollaborationTask.state || '') && (
+                          <button
+                            className={taskResultPasteText.trim() || collaborationResultFiles.length ? 'workflow-action next' : 'workflow-action blocked'}
+                            disabled={!taskResultPasteText.trim() && collaborationResultFiles.length === 0}
+                            onClick={() => updateCollaborationTask(selectedTask, 'submit', taskResultPasteText.trim())}
+                          ><Send size={16} />{isCollaborationHelpRequest ? '回复学生' : '提交给教师'}</button>
+                        )}
+                        {isCollaborationTaskSource && selectedCollaborationTask.state === 'submitted' && (
+                          <button className="workflow-action next" onClick={() => updateCollaborationTask(selectedTask, 'close', taskResultPasteText.trim() || (isCollaborationHelpRequest ? '学生确认问题已解决。' : '教师确认任务已完成。'))}><CheckCircle2 size={16} />{isCollaborationHelpRequest ? '确认已解决' : '确认完成'}</button>
+                        )}
+                        {isCollaborationTaskSource && selectedCollaborationTask.state === 'submitted' && (
+                          <button className={taskResultPasteText.trim() ? 'workflow-action optional' : 'workflow-action blocked'} disabled={!taskResultPasteText.trim()} onClick={() => updateCollaborationTask(selectedTask, 'feedback', taskResultPasteText.trim())}><RefreshCw size={16} />{isCollaborationHelpRequest ? '继续追问' : '反馈修改'}</button>
+                        )}
+                      </div>
+                    </>
+                  ) : (
+                    <>
+                      <label>执行器
+                        <select value={taskExecutorDraft} onChange={(event) => setTaskExecutorDraft(event.target.value)}>
+                          <option value="auto">智能路由（自动执行）</option>
+                          <option value="rule">规则路由（按任务类型）</option>
+                          <option value="confirm">智能推荐（人工确认）</option>
+                          {Object.values(taskCenter.capabilities || {}).filter((adapter) => !adapter.hidden || selectedTask.requestedExecutor === adapter.id).map((adapter) => <option key={adapter.id} value={adapter.id}>{adapter.label}{adapter.available && adapter.authorized !== false ? '' : '（不可用或未授权，将降级）'}</option>)}
+                        </select>
+                      </label>
+                      {['waiting_result', 'running'].includes(selectedTask.status) && (
+                        <label>粘贴 Agent 结果
+                          <textarea value={taskResultPasteText} onChange={(event) => setTaskResultPasteText(event.target.value)} placeholder="粘贴 Agent 返回的 JSON 或文字结果。系统仍会校验当前执行批次、实际产物和输出结构。" />
+                        </label>
+                      )}
+                      <div className="notice muted task-simple-action-note">无需填写审批意见。直接选择下面的操作，系统会自动记录时间、状态和预设原因；完整状态历史仍可展开查看。</div>
+                      <div className="task-detail-actions">
+                        {selectedTask.approval?.required && selectedTask.approval.status !== 'approved' && selectedTask.status !== 'reviewing' && <button className="workflow-action next" onClick={() => approveTaskFromCenter(selectedTask, 'approved')}><ShieldCheck size={16} />允许执行</button>}
+                        {!['running', 'waiting_result', 'reviewing', 'succeeded'].includes(selectedTask.status) && (!selectedTask.approval?.required || selectedTask.approval.status === 'approved') && <button className="workflow-action next" onClick={() => executeTaskFromCenter(selectedTask)}><Zap size={16} />下一步：执行任务</button>}
+                        {selectedTask.status === 'reviewing' && <button className="workflow-action next" onClick={() => approveTaskFromCenter(selectedTask, 'approved')}><CheckCircle2 size={16} />{['weekly_action', 'learning_profile', 'learning_changes', 'learning_stage'].includes(selectedTask.kind) ? '采用并发布' : '确认完成'}</button>}
+                        {selectedTask.status === 'reviewing' && <button className="workflow-action optional" onClick={() => approveTaskFromCenter(selectedTask, 'rejected', '内容需要修改。')}><RefreshCw size={16} />需要修改</button>}
+                        {['waiting_result', 'running'].includes(selectedTask.status) && <button className={taskResultPasteText.trim() ? 'workflow-action next' : 'workflow-action blocked'} onClick={() => importTaskResultTextFromCenter(selectedTask)} disabled={!taskResultPasteText.trim()}><Clipboard size={16} />下一步：导入粘贴结果</button>}
+                        {['waiting_result', 'running'].includes(selectedTask.status) && <button className="secondary" onClick={() => importTaskResultFromCenter(selectedTask)}><FileDown size={16} />从文件导入</button>}
+                        {['failed', 'blocked', 'timed_out', 'cancelled'].includes(selectedTask.status) && <button className="workflow-action next" onClick={() => retryTaskFromCenter(selectedTask)}><RefreshCw size={16} />重新执行</button>}
+                        {!['succeeded', 'cancelled'].includes(selectedTask.status) && <button className="workflow-action optional" onClick={() => cancelTaskFromCenter(selectedTask)}><X size={16} />忽略本次</button>}
+                        {selectedTask.kind === 'weekly_action' && selectedTask.status === 'succeeded' && <button className="workflow-action next" onClick={() => submitDailyFeedbackFromCenter(selectedTask, 'completed')}><CheckCircle2 size={16} />本周已完成</button>}
+                        {selectedTask.kind === 'weekly_action' && selectedTask.status === 'succeeded' && <button className="workflow-action optional" onClick={() => submitDailyFeedbackFromCenter(selectedTask, 'partial')}>部分完成</button>}
+                        {selectedTask.kind === 'weekly_action' && selectedTask.status === 'succeeded' && <button className="workflow-action optional" onClick={() => submitDailyFeedbackFromCenter(selectedTask, 'skipped')}>本周跳过</button>}
+                      </div>
+                    </>
                   )}
-                  <div className="notice muted task-simple-action-note">无需填写审批意见。直接选择下面的操作，系统会自动记录时间、状态和预设原因；完整状态历史仍可展开查看。</div>
-                  <div className="task-detail-actions">
-                    {selectedTask.approval?.required && selectedTask.approval.status !== 'approved' && selectedTask.status !== 'reviewing' && <button className="workflow-action next" onClick={() => approveTaskFromCenter(selectedTask, 'approved')}><ShieldCheck size={16} />允许执行</button>}
-                    {!['running', 'waiting_result', 'reviewing', 'succeeded'].includes(selectedTask.status) && (!selectedTask.approval?.required || selectedTask.approval.status === 'approved') && <button className="workflow-action next" onClick={() => executeTaskFromCenter(selectedTask)}><Zap size={16} />下一步：执行任务</button>}
-                    {selectedTask.status === 'reviewing' && <button className="workflow-action next" onClick={() => approveTaskFromCenter(selectedTask, 'approved')}><CheckCircle2 size={16} />{['weekly_action', 'learning_profile', 'learning_changes', 'learning_stage'].includes(selectedTask.kind) ? '采用并发布' : '确认完成'}</button>}
-                    {selectedTask.status === 'reviewing' && <button className="workflow-action optional" onClick={() => approveTaskFromCenter(selectedTask, 'rejected', '内容需要修改。')}><RefreshCw size={16} />需要修改</button>}
-                    {['waiting_result', 'running'].includes(selectedTask.status) && <button className={taskResultPasteText.trim() ? 'workflow-action next' : 'workflow-action blocked'} onClick={() => importTaskResultTextFromCenter(selectedTask)} disabled={!taskResultPasteText.trim()}><Clipboard size={16} />下一步：导入粘贴结果</button>}
-                    {['waiting_result', 'running'].includes(selectedTask.status) && <button className="secondary" onClick={() => importTaskResultFromCenter(selectedTask)}><FileDown size={16} />从文件导入</button>}
-                    {['failed', 'blocked', 'timed_out', 'cancelled'].includes(selectedTask.status) && <button className="workflow-action next" onClick={() => retryTaskFromCenter(selectedTask)}><RefreshCw size={16} />重新执行</button>}
-                    {!['succeeded', 'cancelled'].includes(selectedTask.status) && <button className="workflow-action optional" onClick={() => cancelTaskFromCenter(selectedTask)}><X size={16} />忽略本次</button>}
-                    {selectedTask.kind === 'weekly_action' && selectedTask.status === 'succeeded' && <button className="workflow-action next" onClick={() => submitDailyFeedbackFromCenter(selectedTask, 'completed')}><CheckCircle2 size={16} />本周已完成</button>}
-                    {selectedTask.kind === 'weekly_action' && selectedTask.status === 'succeeded' && <button className="workflow-action optional" onClick={() => submitDailyFeedbackFromCenter(selectedTask, 'partial')}>部分完成</button>}
-                    {selectedTask.kind === 'weekly_action' && selectedTask.status === 'succeeded' && <button className="workflow-action optional" onClick={() => submitDailyFeedbackFromCenter(selectedTask, 'skipped')}>本周跳过</button>}
-                  </div>
                 </section>
               )}
             </section>
@@ -14532,7 +16058,7 @@ ${JSON.stringify(items, null, 2)}
                   <strong>{student.digestTime}</strong>
                   <small>{getAgentToolProfile(student.agentTool).name} · 待提交 {pendingDigestValue(student)} 个 · 等待回执 {submittedDigestValue(student)} 个{student.lastDigestCommandAt ? ` · 最近提交 ${student.lastDigestCommandAt}` : ''}</small>
                   <button className="primary compact" onClick={() => startDigestWorkflowFromPage('student', student.id)} disabled={pendingDigestValue(student) <= 0 || submittedDigestValue(student) > 0} title={pendingDigestValue(student) <= 0 ? '当前没有待处理资料' : `处理 ${pendingDigestValue(student)} 份资料`}>
-                    {submittedDigestValue(student) > 0 ? '等待 Agent 回执' : pendingDigestValue(student) <= 0 ? '暂无待处理' : '开始处理'}
+                    {submittedDigestValue(student) > 0 ? '查看处理进度' : pendingDigestValue(student) <= 0 ? '暂无待处理' : '开始处理'}
                   </button>
                 </div>
               ))}
@@ -14619,7 +16145,9 @@ ${JSON.stringify(items, null, 2)}
               </div>
               <Settings size={22} />
             </div>
-            {isWindows && (
+            <div className="settings-page-layout single">
+            <div className="settings-page-content">
+            {isWindows && settingsSubmenu === 'basic' && (
               <div className="notice usage-mode-settings">
                 <div className="mini-heading">
                   <strong>使用模式</strong>
@@ -14646,7 +16174,483 @@ ${JSON.stringify(items, null, 2)}
                 {hostServiceMessage && <p>{hostServiceMessage}</p>}
               </div>
             )}
-            {isWindows && homeMode === 'host' && (hostServiceStatus?.students ?? []).length > 0 && (
+            {isWindows && settingsSubmenu === 'collaboration' && (
+              <div className="notice">
+                <div className="mini-heading">
+                  <strong>主机知识协作</strong>
+                  <span>同一 Windows 客户端按协作关系承担教师或学生资料权威节点角色，不需要安装不同版本。</span>
+                </div>
+                <div className="status-grid">
+                  <div className="status-card">
+                    <span>本机节点</span>
+                    <strong>{collaborationState?.state?.node?.displayName || hostServiceStatus?.hostIdentity?.displayName || '待初始化'}</strong>
+                  </div>
+                  <div className="status-card">
+                    <span>协作状态</span>
+                    <strong>{collaborationState?.state?.enabled ? '已开启' : '仅本机'}</strong>
+                  </div>
+                  <div className="status-card">
+                    <span>有效协作关系</span>
+                    <strong>{collaborationState?.summary?.bindingCount ?? 0} 个</strong>
+                  </div>
+                  <div className="status-card">
+                    <span>有效授权</span>
+                    <strong>{collaborationState?.summary?.grantCount ?? 0} 项</strong>
+                  </div>
+                  <div className="status-card">
+                    <span>等待导入</span>
+                    <strong>{collaborationState?.summary?.pendingPackageCount ?? 0} 包</strong>
+                  </div>
+                  <div className="status-card">
+                    <span>隔离异常</span>
+                    <strong>{collaborationState?.summary?.quarantineCount ?? 0} 项</strong>
+                  </div>
+                  <div className="status-card">
+                    <span>最近导入</span>
+                    <strong>{collaborationState?.summary?.latestImportAt ? new Date(collaborationState.summary.latestImportAt).toLocaleString('zh-CN') : '暂无'}</strong>
+                  </div>
+                  <div className="status-card">
+                    <span>当前传输适配器</span>
+                    <strong>{collaborationState?.transport?.label || '教育管家内置直传'}</strong>
+                  </div>
+                </div>
+                <div className="material-source-panel">
+                  <div className="mini-heading">
+                    <strong>团队知识查询范围</strong>
+                    <span>长期策略只影响完整 Windows 主机的未指定学生查询；学生终端仍只读取当前登录学生及其关联项目。</span>
+                  </div>
+                  <label className={collaborationState?.teamKnowledgePolicy?.allowLocalTeamKnowledgeQuery ? 'task-automation-toggle' : 'task-automation-toggle manual'}>
+                    <span>
+                      <strong>允许本机团队知识查询</strong>
+                      <small>未指定学生时，可查询本机多个学生及其有效关联项目；明确学生查询仍严格限定该学生。</small>
+                    </span>
+                    <input
+                      type="checkbox"
+                      checked={Boolean(collaborationState?.teamKnowledgePolicy?.allowLocalTeamKnowledgeQuery)}
+                      onChange={(event) => applyCollaborationResult(bridge()?.setTeamKnowledgePolicy?.(JSON.stringify({
+                        allowLocalTeamKnowledgeQuery: event.target.checked,
+                        allowRemoteTeamKnowledgeQuery: Boolean(collaborationState?.teamKnowledgePolicy?.allowRemoteTeamKnowledgeQuery),
+                      })))}
+                    />
+                  </label>
+                  <label className={collaborationState?.teamKnowledgePolicy?.allowRemoteTeamKnowledgeQuery ? 'task-automation-toggle' : 'task-automation-toggle manual'}>
+                    <span>
+                      <strong>允许远程协作团队知识查询</strong>
+                      <small>本机不足时按需查询有效协作主机，并允许对端在有效学生映射内查询；默认关闭。</small>
+                    </span>
+                    <input
+                      type="checkbox"
+                      disabled={!collaborationState?.state?.enabled}
+                      checked={Boolean(collaborationState?.teamKnowledgePolicy?.allowRemoteTeamKnowledgeQuery)}
+                      onChange={(event) => applyCollaborationResult(bridge()?.setTeamKnowledgePolicy?.(JSON.stringify({
+                        allowLocalTeamKnowledgeQuery: Boolean(collaborationState?.teamKnowledgePolicy?.allowLocalTeamKnowledgeQuery),
+                        allowRemoteTeamKnowledgeQuery: event.target.checked,
+                      })))}
+                    />
+                  </label>
+                </div>
+                {(agentConversationInbox?.summary?.awaitingAttribution ?? 0) > 0 && (
+                  <details className="student-login-directory" open>
+                    <summary>需要确认归属的 Agent 对话（{agentConversationInbox?.summary?.awaitingAttribution ?? 0}）</summary>
+                    <p className="muted-text">只有无法自动确定学生或项目的对话才显示在这里；正常保存不需要人工确认。</p>
+                    <div className="student-login-grid">
+                      {(agentConversationInbox?.pending ?? []).map((item) => (
+                        <article className="student-login-card" key={item.submissionId}>
+                          <div>
+                            <strong>{item.title || 'Agent 对话片段'}</strong>
+                            <small>{item.sourceAgent || 'Agent'} · {item.messageCount || 0} 条消息</small>
+                            <small>{item.receivedAt ? formatDateTime(item.receivedAt) : '时间未知'}</small>
+                          </div>
+                          <button
+                            className="primary compact"
+                            disabled={!selectedStudent || Boolean(assigningAgentConversationId)}
+                            onClick={() => assignAgentConversationToSelectedStudent(item.submissionId)}
+                          >
+                            {assigningAgentConversationId === item.submissionId
+                              ? '正在归属…'
+                              : `归入${selectedStudent?.name || '当前学生'}`}
+                          </button>
+                        </article>
+                      ))}
+                    </div>
+                  </details>
+                )}
+                {hostTimeline.some((entry) => String(entry.type || '').startsWith('agent_')) && (
+                  <details className="student-login-directory">
+                    <summary>最近 Agent 协作记录</summary>
+                    <div className="source-list">
+                      {hostTimeline
+                        .filter((entry) => String(entry.type || '').startsWith('agent_'))
+                        .slice(0, 10)
+                        .map((entry) => (
+                          <div className="source-item" key={entry.id}>
+                            <div>
+                              <strong>{({
+                                agent_knowledge_query_completed: '知识查询完成',
+                                agent_knowledge_query_waiting: '知识查询等待网络',
+                                agent_knowledge_query_failed: '知识查询失败',
+                                agent_conversation_submitted: '对话已保存到教育管家',
+                                agent_conversation_submission_failed: '对话保存失败',
+                              } as Record<string, string>)[String(entry.type || '')] || 'Agent 协作活动'}</strong>
+                              <small>{entry.at ? formatDateTime(entry.at) : '时间未知'}</small>
+                            </div>
+                            <small>{entry.detail || '已记录。'}</small>
+                          </div>
+                        ))}
+                    </div>
+                  </details>
+                )}
+                <div className="material-source-panel collaboration-delivery-queue">
+                  <div className="mini-heading">
+                    <strong>发送队列</strong>
+                    <span>联网后自动发送；局域网不可达时自动尝试 Tailscale，中断或重启后从已接收位置继续。</span>
+                  </div>
+                  <div className="status-grid">
+                    <div className="status-card">
+                      <span>等待发送</span>
+                      <strong>{collaborationState?.summary?.directDeliverySummary?.queued ?? 0} 项</strong>
+                    </div>
+                    <div className="status-card">
+                      <span>正在发送</span>
+                      <strong>{collaborationState?.summary?.directDeliverySummary?.transferring ?? 0} 项</strong>
+                    </div>
+                    <div className="status-card">
+                      <span>已暂停</span>
+                      <strong>{collaborationState?.summary?.directDeliverySummary?.paused ?? 0} 项</strong>
+                    </div>
+                    <div className="status-card">
+                      <span>已送达</span>
+                      <strong>{collaborationState?.summary?.directDeliverySummary?.delivered ?? 0} 项</strong>
+                    </div>
+                    {(collaborationState?.summary?.directDeliverySummary?.invalid ?? 0) > 0 && (
+                      <div className="status-card">
+                        <span>已自动隔离</span>
+                        <strong>{collaborationState?.summary?.directDeliverySummary?.invalid ?? 0} 项</strong>
+                      </div>
+                    )}
+                  </div>
+                  {(collaborationState?.directDeliveries?.length ?? 0) > 0 && (
+                    <details className="student-login-directory">
+                      <summary>发送记录（{collaborationState?.directDeliveries?.length ?? 0}）</summary>
+                      <div className="student-login-grid delivery-record-grid">
+                        {(collaborationState?.directDeliveries ?? []).map((delivery) => {
+                          const statusText = ({
+                            queued: '等待发送',
+                            transferring: '正在发送',
+                            retry_waiting: '等待网络恢复',
+                            paused: '已暂停',
+                            delivered: '已送达',
+                            cancelled: '已取消',
+                            compatibility_queue: '高级兼容队列',
+                            invalid: '已自动隔离',
+                            superseded: '已被新版本替代',
+                          } as Record<string, string>)[delivery.status] || delivery.status;
+                          const transferred = Number(delivery.progress?.transferredBytes || 0);
+                          const total = Number(delivery.progress?.totalBytes || 0);
+                          const progressText = total > 0 ? ` · ${Math.min(100, Math.round((transferred / total) * 100))}%` : '';
+                          const recordTime = delivery.packageCreatedAt || delivery.updatedAt || delivery.deliveredAt || '';
+                          const recordFacts = [
+                            delivery.packageKind || '协作包',
+                            recordTime ? new Date(recordTime).toLocaleString('zh-CN') : '时间未知',
+                            Number(delivery.fileCount || 0) > 0 ? `${delivery.fileCount} 个文件` : '',
+                            Number(delivery.totalBytes || 0) > 0 ? formatFileSize(Number(delivery.totalBytes)) : '',
+                            delivery.publicationVersion ? `版本 ${delivery.publicationVersion}` : '',
+                          ].filter(Boolean).join(' · ');
+                          return (
+                            <article className="student-login-card delivery-record-card" key={delivery.manifestId}>
+                              <div>
+                                <strong>{delivery.displayName || '未命名协作记录'}</strong>
+                                <small>{statusText}{progressText}</small>
+                                <small>{recordFacts}</small>
+                                <code>{delivery.manifestId}</code>
+                                <small>
+                                  {delivery.channel === 'tailscale' ? 'Tailscale' : delivery.channel === 'lan' ? '局域网' : '自动选择网络'}
+                                  {delivery.targetNodeId ? ` · 对端 ${delivery.targetNodeId.slice(-10)}` : ''}
+                                  {delivery.nextAttemptAt ? ` · 下次自动尝试 ${new Date(delivery.nextAttemptAt).toLocaleTimeString('zh-CN')}` : ''}
+                                </small>
+                                {delivery.error && <small>{delivery.error}</small>}
+                              </div>
+                              <div className="actions">
+                                {['queued', 'transferring', 'retry_waiting'].includes(delivery.status) && (
+                                  <button className="secondary compact" onClick={() => updateDirectDeliveryFromSettings(delivery.manifestId, 'pause')}>暂停</button>
+                                )}
+                                {delivery.status === 'paused' && (
+                                  <button className="secondary compact" onClick={() => updateDirectDeliveryFromSettings(delivery.manifestId, 'resume')}>继续</button>
+                                )}
+                                {['retry_waiting', 'compatibility_queue'].includes(delivery.status) && (
+                                  <button className="secondary compact" onClick={() => updateDirectDeliveryFromSettings(delivery.manifestId, 'retry')}>立即重试</button>
+                                )}
+                                {!['delivered', 'cancelled', 'invalid', 'superseded'].includes(delivery.status) && (
+                                  <button className="danger compact" onClick={() => updateDirectDeliveryFromSettings(delivery.manifestId, 'cancel')}>取消</button>
+                                )}
+                              </div>
+                            </article>
+                          );
+                        })}
+                      </div>
+                    </details>
+                  )}
+                </div>
+                {selectedStudent && collaborationStats && (
+                  <div className="status-grid">
+                    <div className="status-card"><span>{selectedStudent.name} 资料总量</span><strong>{collaborationStats.totalCollectedCount} 份</strong></div>
+                    <div className="status-card"><span>最近 7 天新增</span><strong>{collaborationStats.addedLast7Days} 份</strong></div>
+                    <div className="status-card"><span>待消化</span><strong>{collaborationStats.pendingDigestCount} 份</strong></div>
+                    <div className="status-card"><span>已消化</span><strong>{collaborationStats.digestedCount} 份</strong></div>
+                  </div>
+                )}
+                <div className="material-source-panel collaboration-task-composer">
+                  <div className="mini-heading">
+                    <strong>跨主机任务与协作请求</strong>
+                    <span>教师可布置任务，学生也可请求教师协助；双方都在统一任务中心处理，结果沿原请求回传。</span>
+                  </div>
+                  <div className="settings-grid">
+                    <label>任务名称
+                      <input value={collaborationTaskTitle} onChange={(event) => setCollaborationTaskTitle(event.target.value)} placeholder="例如：补充本周实验记录" />
+                    </label>
+                    <label>截止时间
+                      <input type="datetime-local" value={collaborationTaskDeadline} onChange={(event) => setCollaborationTaskDeadline(event.target.value)} />
+                    </label>
+                  </div>
+                  <label>任务要求
+                    <textarea value={collaborationTaskInstructions} onChange={(event) => setCollaborationTaskInstructions(event.target.value)} placeholder="写清需要完成的内容、提交形式和可用资料。" />
+                  </label>
+                  <label>提交要求（可选）
+                    <textarea value={collaborationTaskSubmissionRequirements} onChange={(event) => setCollaborationTaskSubmissionRequirements(event.target.value)} placeholder="例如：提交一份 Markdown 反思，并附上对应资料位置。" />
+                  </label>
+                  {collaborationTaskFiles.length > 0 && (
+                    <div className="notice muted">随任务发送：{collaborationTaskFiles.map((item) => item.name).join('、')}</div>
+                  )}
+                  <div className="actions">
+                    <button className="secondary" disabled={!canCreateCollaborationTask && !canCreateCollaborationHelpRequest} onClick={selectCollaborationTaskFiles}>
+                      <FileDown size={18} />选择资料{collaborationTaskFiles.length ? `（${collaborationTaskFiles.length}）` : ''}
+                    </button>
+                    {canCreateCollaborationTask && <button
+                      className="primary"
+                      disabled={!collaborationTaskTitle.trim() || !collaborationTaskInstructions.trim()}
+                      onClick={() => createCollaborationTask('assignment')}
+                    >
+                      <Send size={18} />布置给{selectedStudent?.name || '所选学生'}
+                    </button>}
+                    {canCreateCollaborationHelpRequest && <button
+                      className="primary"
+                      disabled={!collaborationTaskTitle.trim() || !collaborationTaskInstructions.trim()}
+                      onClick={() => createCollaborationTask('help_request')}
+                    >
+                      <MessageCircle size={18} />请求教师协助
+                    </button>}
+                  </div>
+                  {!canCreateCollaborationTask && !canCreateCollaborationHelpRequest && <p className="muted-text">所选学生尚无可用于任务或协助请求的有效双主机协作关系。</p>}
+                </div>
+                <p className="muted-text">
+                  高级兼容交换目录：{collaborationState?.layout?.nodeRoot || '初始化后生成'}。
+                  默认由教育管家通过局域网直传，跨网络时自动尝试 Tailscale；原交换目录仅作为 Syncthing 高级兼容方案。这里只交换清单、任务包、授权产物和回执，不同步本机索引、运行锁或 Agent 缓存。
+                </p>
+                {collaborationState?.transport?.message && <p className="muted-text">{collaborationState.transport.message}</p>}
+                {(collaborationState?.state?.bindings?.length ?? 0) > 0 && (
+                  <details className="student-login-directory" open>
+                    <summary>已绑定协作主机（{collaborationState?.state?.bindings?.length ?? 0}）</summary>
+                    {(collaborationState?.state?.bindings ?? []).some((binding) => binding.status === 'revoked' || Boolean(binding.revokedAt)) && (
+                      <div className="actions">
+                        <button
+                          className="secondary compact"
+                          onClick={() => {
+                            const revokedCount = (collaborationState?.state?.bindings ?? [])
+                              .filter((binding) => binding.status === 'revoked' || Boolean(binding.revokedAt)).length;
+                            if (window.confirm(`确定清理 ${revokedCount} 条已撤销协作记录吗？本机资料、知识和历史接收内容不会被删除。`)) {
+                              applyCollaborationResult(bridge()?.deleteRevokedCollaborationBindings?.());
+                            }
+                          }}
+                        >
+                          清理全部已撤销记录
+                        </button>
+                      </div>
+                    )}
+                    <div className="student-login-grid">
+                      {(collaborationState?.state?.bindings ?? []).map((binding) => {
+                        const localNodeId = collaborationState?.state?.node?.nodeId || '';
+                        const localAssignments = (binding.roleAssignments ?? []).filter((item) => item.nodeId === localNodeId && !item.revokedAt);
+                        const peerNodeIds = (binding.participantNodeIds ?? []).filter((nodeId) => nodeId !== localNodeId);
+                        const roleText = localAssignments.map((item) => item.role === 'educator' ? '教师协助' : '学生资料权威').join('、') || '未分配角色';
+                        const studentNames = Array.from(new Set(localAssignments.map((item) => {
+                          const student = students.find((candidate) => String(candidate.id) === String(item.studentId || ''));
+                          return student?.name || item.studentId || '';
+                        }).filter(Boolean)));
+                        const statusText = binding.status === 'active' ? '协作中' : binding.status === 'paused' ? '已暂停' : '已撤销';
+                        return (
+                          <article className="student-login-card" key={binding.bindingId}>
+                            <div>
+                              <strong>{statusText} · {roleText}</strong>
+                              <code>{peerNodeIds.length ? `对端 ${peerNodeIds.map((nodeId) => nodeId.slice(-10)).join('、')}` : binding.bindingId}</code>
+                              <small>{studentNames.length ? `学生范围：${studentNames.join('、')}` : '未绑定学生范围'}</small>
+                            </div>
+                            <div className="actions">
+                              {binding.status === 'active' && (
+                                <button className="secondary compact" onClick={() => applyCollaborationResult(bridge()?.updateCollaborationBindingStatus?.(binding.bindingId, 'paused'))}>
+                                  暂停
+                                </button>
+                              )}
+                              {binding.status === 'paused' && (
+                                <button className="secondary compact" onClick={() => applyCollaborationResult(bridge()?.updateCollaborationBindingStatus?.(binding.bindingId, 'active'))}>
+                                  恢复
+                                </button>
+                              )}
+                              {binding.status !== 'revoked' && (
+                                <button className="danger compact" onClick={() => applyCollaborationResult(bridge()?.updateCollaborationBindingStatus?.(binding.bindingId, 'revoked'))}>
+                                  撤销
+                                </button>
+                              )}
+                              {(binding.status === 'revoked' || Boolean(binding.revokedAt)) && (
+                                <button
+                                  className="danger compact"
+                                  onClick={() => {
+                                    if (window.confirm('确定删除这条已撤销协作记录吗？本机资料、知识和历史接收内容不会被删除。')) {
+                                      applyCollaborationResult(bridge()?.deleteRevokedCollaborationBindings?.(binding.bindingId));
+                                    }
+                                  }}
+                                >
+                                  删除记录
+                                </button>
+                              )}
+                            </div>
+                          </article>
+                        );
+                      })}
+                    </div>
+                    <p className="muted-text">暂停只停止新的交换；撤销不可恢复，需要重新建立协作关系。已撤销记录可从列表清理，本机资料和既有知识不会被删除。</p>
+                  </details>
+                )}
+                {selectedStudent && (
+                  <label className={collaborationState?.state?.statisticsSharing?.[selectedStudent.id] ? 'task-automation-toggle' : 'task-automation-toggle manual'}>
+                    <span>
+                      <strong>共享 {selectedStudent.name} 的资料统计</strong>
+                      <small>仅共享数量、处理状态和更新时间，不共享文件名、路径或内容。</small>
+                    </span>
+                    <input
+                      type="checkbox"
+                      disabled={!collaborationState?.state?.enabled}
+                      checked={Boolean(collaborationState?.state?.statisticsSharing?.[selectedStudent.id])}
+                      onChange={(event) => applyCollaborationResult(bridge()?.setCollaborationStatisticsSharing?.(selectedStudent.id, event.target.checked))}
+                    />
+                  </label>
+                )}
+                <section className="collaboration-pairing-wizard" aria-labelledby="collaboration-pairing-title">
+                  <div className="mini-heading">
+                    <strong id="collaboration-pairing-title">连接另一台 Windows 主机</strong>
+                    <span>不需要交换 API Token。两台主机按下面三步完成一次双向确认。</span>
+                  </div>
+                  <ol>
+                    <li className={collaborationPairingFeedback.stage === 'invitation_copied' ? 'current done' : collaborationPairingFeedback.stage === 'completed' ? 'done' : ''}>
+                      <span>1</span>
+                      <div>
+                        <strong>发起方：生成邀请</strong>
+                        <small>当前学生：{selectedStudent?.name || '请先在左侧选择学生'}</small>
+                        <p>根据本机用途选择一个按钮，邀请代码会自动复制。</p>
+                        <div className="actions compact-actions">
+                          <button
+                            className="primary compact"
+                            disabled={!selectedStudent || !collaborationState?.state?.enabled || collaborationPairingBusy}
+                            onClick={() => createGuidedCollaborationInvitation('educator')}
+                          >
+                            <Share2 size={17} />我是教师/家长，邀请学生主机
+                          </button>
+                          <button
+                            className="secondary compact"
+                            disabled={!selectedStudent || !collaborationState?.state?.enabled || collaborationPairingBusy}
+                            onClick={() => createGuidedCollaborationInvitation('learner_authority')}
+                          >
+                            <Share2 size={17} />我是学生资料主机，邀请教师
+                          </button>
+                        </div>
+                      </div>
+                    </li>
+                    <li className={collaborationPairingFeedback.stage === 'acceptance_copied' ? 'current done' : collaborationPairingFeedback.stage === 'completed' ? 'done' : ''}>
+                      <span>2</span>
+                      <div>
+                        <strong>接收方：读取邀请</strong>
+                        <small>先复制发起方发送的完整邀请代码，并选择本机对应学生。</small>
+                        <p>程序会校验邀请并自动复制确认回执。</p>
+                        <button
+                          className="secondary compact"
+                          disabled={!selectedStudent || !collaborationState?.state?.enabled || collaborationPairingBusy}
+                          onClick={() => continueGuidedCollaborationPairing('acceptance_copied')}
+                        >
+                          <Clipboard size={17} />读取邀请并生成确认回执
+                        </button>
+                      </div>
+                    </li>
+                    <li className={collaborationPairingFeedback.stage === 'completed' ? 'current done' : ''}>
+                      <span>3</span>
+                      <div>
+                        <strong>发起方：确认回执</strong>
+                        <small>复制接收方返回的完整确认回执，再回到发起方操作。</small>
+                        <p>完成后两端都会显示“协作中”，等待任务可直接重试。</p>
+                        <button
+                          className="secondary compact"
+                          disabled={!selectedStudent || !collaborationState?.state?.enabled || collaborationPairingBusy}
+                          onClick={() => continueGuidedCollaborationPairing('completed')}
+                        >
+                          <ShieldCheck size={17} />读取确认回执并完成连接
+                        </button>
+                      </div>
+                    </li>
+                  </ol>
+                  <div
+                    className={`collaboration-pairing-feedback ${collaborationPairingFeedback.stage}`}
+                    role="status"
+                    aria-live="polite"
+                  >
+                    {collaborationPairingFeedback.stage === 'error'
+                      ? <CircleAlert size={22} />
+                      : collaborationPairingFeedback.stage === 'completed'
+                        ? <CheckCircle2 size={22} />
+                        : <Clipboard size={22} />}
+                    <div>
+                      <strong>{collaborationPairingBusy ? '正在处理…' : collaborationPairingFeedback.title}</strong>
+                      <span>{collaborationPairingFeedback.message}</span>
+                      {collaborationPairingFeedback.nextAction && <small>下一步：{collaborationPairingFeedback.nextAction}</small>}
+                      {collaborationPairingFeedback.expiresAt && (
+                        <small>邀请有效至：{formatDateTime(collaborationPairingFeedback.expiresAt)}</small>
+                      )}
+                      {collaborationPairingFeedback.peerNodeId && (
+                        <small>对端节点：{collaborationPairingFeedback.peerNodeId.slice(-10)}</small>
+                      )}
+                    </div>
+                  </div>
+                </section>
+                <div className="actions">
+                  {!collaborationState?.state?.enabled ? (
+                    <button className="primary" onClick={() => applyCollaborationResult(bridge()?.initializeCollaborationWorkspace?.())}>
+                      开启知识协作
+                    </button>
+                  ) : (
+                    <button className="secondary" onClick={() => applyCollaborationResult(bridge()?.setCollaborationEnabled?.(false))}>
+                      关闭协作
+                    </button>
+                  )}
+                  <button className="secondary" disabled={!collaborationState?.layout?.nodeRoot} onClick={() => applyCollaborationResult(bridge()?.openCollaborationPath?.('nodeRoot'))}>
+                    <FolderOpen size={18} />打开兼容交换目录
+                  </button>
+                  <button className="secondary" disabled={!collaborationState?.state?.enabled} onClick={() => { void scanCollaborationInbox(); }}>
+                    <RefreshCw size={18} />检查协作收件箱
+                  </button>
+                  <button className="secondary" disabled={!collaborationState?.state?.enabled} onClick={() => applyCollaborationResult(bridge()?.rebuildCollaborationIndex?.())}>
+                    <ListChecks size={18} />重建协作索引
+                  </button>
+                  <button className="secondary" disabled={!collaborationState?.state?.enabled} onClick={() => applyCollaborationResult(bridge()?.backupCollaborationState?.())}>
+                    <Archive size={18} />备份协作状态
+                  </button>
+                  <button className="secondary" onClick={() => applyCollaborationResult(bridge()?.restoreLatestCollaborationState?.())}>
+                    <RefreshCw size={18} />恢复最近备份
+                  </button>
+                  <button className="secondary" onClick={() => { refreshCollaborationState(); refreshCollaborationMaterialStats(); refreshAgentConversationInbox(); }}>
+                    <RefreshCw size={18} />刷新状态
+                  </button>
+                </div>
+                {collaborationMessage && <p>{collaborationMessage}</p>}
+              </div>
+            )}
+            {isWindows && settingsSubmenu === 'connection' && homeMode === 'host' && (hostServiceStatus?.students ?? []).length > 0 && (
               <details className="student-login-directory">
                 <summary>学生登录 ID 与二维码（{hostServiceStatus?.students?.length ?? 0} 位）</summary>
                 <p className="muted-text">共享终端只在当前会话中使用该身份；退出后不会保留可浏览的学生列表。可打印或由学生用另一设备扫码。</p>
@@ -14672,7 +16676,18 @@ ${JSON.stringify(items, null, 2)}
                 </div>
               </details>
             )}
-            <div className="notice settings-language-panel">
+            {isWindows && settingsSubmenu === 'connection' && (
+              <div className="status-grid connection-status-grid">
+                <div className="status-card"><span>主机服务</span><strong>{hostServiceStatus?.running ? '运行中' : '未启动'}</strong></div>
+                <div className="status-card"><span>服务端口</span><strong>{hostServiceStatus?.port ?? 18777}</strong></div>
+                <div className="status-card"><span>局域网地址</span><strong>{hostServiceStatus?.serverUrl ?? `http://127.0.0.1:${hostServiceStatus?.port ?? 18777}`}</strong></div>
+                <div className="status-card"><span>Tailscale 地址</span><strong>{hostServiceStatus?.tailscaleUrl || hostServiceStatus?.tailscaleUrls?.[0] || '未检测到'}</strong></div>
+                <div className="status-card"><span>当前连接模式</span><strong>{connectionModeLabel(hostServiceStatus?.connectionMode)}</strong></div>
+                <div className="status-card"><span>Tailscale 软件</span><strong>{installStatus?.tailscale?.installed ? `已安装 ${installStatus.tailscale.version ?? ''}` : '未安装'}</strong></div>
+                <div className="status-card"><span>API Token</span><strong>{hostServiceStatus?.apiToken ? `${hostServiceStatus.apiToken.slice(0, 8)}...${hostServiceStatus.apiToken.slice(-6)}` : '未生成'}</strong></div>
+              </div>
+            )}
+            {(!isWindows || settingsSubmenu === 'basic') && <div className="notice settings-language-panel">
               <div>
                 <strong>{t('settings.language.title')}</strong>
                 <p>{t('settings.language.description')}</p>
@@ -14687,8 +16702,8 @@ ${JSON.stringify(items, null, 2)}
                   ))}
                 </select>
               </label>
-            </div>
-            <div className="status-grid">
+            </div>}
+            {(!isWindows || settingsSubmenu === 'basic') && <div className="status-grid">
               {(isWindows
                 ? [
                     [t('settings.storageMode'), 'Windows 本机目录'],
@@ -14700,7 +16715,7 @@ ${JSON.stringify(items, null, 2)}
                     ['OpenClaw', installStatus?.openclaw?.installed ? `已安装 ${installStatus.openclaw.version ?? ''}` : '未安装'],
                     ['ima.copilot', installStatus?.imaCopilot?.installed ? `已安装 ${installStatus.imaCopilot.version ?? ''}` : '未安装'],
                     ['WorkBuddy', installStatus?.workbuddy?.installed ? `已安装 ${installStatus.workbuddy.version ?? ''}` : '未安装'],
-                    ['Codex', installStatus?.codex?.installed ? `已安装 ${installStatus.codex.version ?? ''}` : '未安装'],
+                    ['ChatGPT / Codex', installStatus?.codex?.installed ? `已安装 ${installStatus.codex.version ?? ''}` : '未安装'],
                     ['Claude Code', installStatus?.claudeCode?.installed ? `已安装 ${installStatus.claudeCode.version ?? ''}` : '未安装'],
                     ['Tailscale 软件', installStatus?.tailscale?.installed ? `已安装 ${installStatus.tailscale.version ?? ''}` : '未安装'],
                     ['QClaw 路径', installStatus?.qclaw.exePath || '未检测到'],
@@ -14709,15 +16724,8 @@ ${JSON.stringify(items, null, 2)}
                     ['OpenClaw 路径', installStatus?.openclaw?.exePath || '未检测到'],
                     ['ima.copilot 路径', installStatus?.imaCopilot?.exePath || '未检测到'],
                     ['WorkBuddy 路径', installStatus?.workbuddy?.exePath || '未检测到'],
-                    ['Codex 路径', installStatus?.codex?.exePath || '未检测到'],
+                    ['ChatGPT / Codex 路径', installStatus?.codex?.appPath || installStatus?.codex?.exePath || '未检测到'],
                     ['Claude Code 路径', installStatus?.claudeCode?.exePath || '未检测到'],
-                    ['Tailscale 路径', installStatus?.tailscale?.exePath || '未检测到'],
-                    ['主机服务', hostServiceStatus?.running ? '运行中' : '未启动'],
-                    ['服务端口', hostServiceStatus?.port ?? 18777],
-                    ['局域网地址', hostServiceStatus?.serverUrl ?? `http://127.0.0.1:${hostServiceStatus?.port ?? 18777}`],
-                    ['Tailscale 地址', hostServiceStatus?.tailscaleUrl || hostServiceStatus?.tailscaleUrls?.[0] || '未检测到'],
-                    ['当前连接模式', connectionModeLabel(hostServiceStatus?.connectionMode)],
-                    ['API Token', hostServiceStatus?.apiToken ? `${hostServiceStatus.apiToken.slice(0, 8)}...${hostServiceStatus.apiToken.slice(-6)}` : '未生成'],
                   ]
                 : [
                     ['存储模式', 'App 内置资料库'],
@@ -14732,15 +16740,15 @@ ${JSON.stringify(items, null, 2)}
                 <div className="status-card" key={label}>
                   <span>{label}</span>
                   <strong>{String(value)}</strong>
-                </div>
+              </div>
               ))}
-            </div>
-            <div className="notice muted">
+            </div>}
+            {(!isWindows || settingsSubmenu === 'basic') && <div className="notice muted">
               {isWindows
-                ? 'QClaw、Marvis、Hohu、OpenClaw、Codex 和 Claude Code 将使用同一个本机学生知识库目录。默认根目录为 D:\\学生资料；更换资料根目录后，新建和导入都会写入新目录。'
+                ? 'QClaw、Marvis、Hohu、OpenClaw、ChatGPT / Codex 和 Claude Code 将使用同一个本机学生知识库目录。系统会选择可用磁盘；无 D 盘时自动使用 Windows 文档\\学生资料。'
                 : String(compatibility?.message ?? '在 Android APK 中可查看完整兼容性检测结果。')}
-            </div>
-            {isWindows && (
+            </div>}
+            {isWindows && settingsSubmenu === 'basic' && (
               <div className="source-list">
                 <div className="mini-heading">
                   <strong>{t('settings.agentAdapters')}</strong>
@@ -14755,7 +16763,7 @@ ${JSON.stringify(items, null, 2)}
                 ))}
               </div>
             )}
-            {isWindows && (
+            {isWindows && settingsSubmenu === 'connection' && (
               <div className="actions">
                 <button className="secondary compact" onClick={refreshInstallStatus}>
                   {t('settings.redetectSoftware')}
@@ -14768,7 +16776,7 @@ ${JSON.stringify(items, null, 2)}
                 </button>
               </div>
             )}
-            {isWindows && (
+            {isWindows && settingsSubmenu === 'basic' && (
               <div className="notice license-panel">
                 <div>
                   <strong>许可证授权</strong>
@@ -14801,7 +16809,7 @@ ${JSON.stringify(items, null, 2)}
                 <p className="muted-text">授权码由内部“AI教育管家授权管理工具”生成，客户版主机端只负责激活和校验。</p>
               </div>
             )}
-            <div className="notice legal-notice">
+            {(!isWindows || settingsSubmenu === 'basic') && <div className="notice legal-notice">
               <div>
                 <strong>{t('settings.legal')}</strong>
                 <p>{t('settings.legal.desc')}</p>
@@ -14816,8 +16824,8 @@ ${JSON.stringify(items, null, 2)}
                   <ExternalLink size={16} />
                 </button>
               </div>
-            </div>
-            {isWindows && (
+            </div>}
+            {isWindows && settingsSubmenu === 'connection' && (
               <div className="notice">
                 <strong>主机服务连接信息</strong>
                 <p>平板端后续可使用 serverUrl 和 API token 上传资料、读取学情分析汇总 Markdown。</p>
@@ -14865,7 +16873,7 @@ ${JSON.stringify(items, null, 2)}
                 {hostServiceMessage && <p>{hostServiceMessage}</p>}
               </div>
             )}
-            {isWindows && (
+            {isWindows && settingsSubmenu === 'basic' && (
               <div className="notice">
                 <strong>数据维护与安全</strong>
                 <p>备份会导出学生索引、设备授权、上传记录和主机事件；重置 API Token 后请重新复制连接信息。</p>
@@ -14886,7 +16894,7 @@ ${JSON.stringify(items, null, 2)}
                 </div>
               </div>
             )}
-            {isWindows && (
+            {isWindows && settingsSubmenu === 'connection' && (
               <div className="notice muted">
                 <strong>最近主机事件</strong>
                 {hostTimeline.length === 0 && <p>暂无事件。上传资料、备份恢复、重置 token 或提交消化后会记录在这里。</p>}
@@ -14897,7 +16905,7 @@ ${JSON.stringify(items, null, 2)}
                 ))}
               </div>
             )}
-            <div className="actions">
+            {(!isWindows || settingsSubmenu === 'basic') && <div className="actions">
               <button
                 className="secondary"
                 onClick={() => {
@@ -14920,6 +16928,8 @@ ${JSON.stringify(items, null, 2)}
                 <RefreshCw size={18} />
                 {t('settings.redetect')}
               </button>
+            </div>}
+            </div>
             </div>
           </section>
         )}

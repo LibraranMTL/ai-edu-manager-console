@@ -15,10 +15,20 @@ test('project evidence confirmation updates ledger and growth index as one recov
   assert.match(ui, /result\.growthIndex.*setGrowthIndex\(result\.growthIndex\)/);
 });
 
-test('growth index self-heals when source fingerprint is stale', () => {
+test('growth index self-heals on demand without startup all-student repair', () => {
   assert.match(main, /growthSourceFingerprint\(review, projects\)/);
   assert.match(main, /growthIndexNeedsRebuild\(index, fingerprint\)/);
   assert.match(main, /createGrowthRecoverySnapshot\(normalized, 'stale-index-rebuild'\)/);
-  assert.match(main, /repairStaleGrowthIndexes\(\)/);
+  assert.match(main, /function repairStaleGrowthIndexes\(studentIds = \[\]\)/);
+  assert.doesNotMatch(main, /setTimeout\(\(\) => \{\s*try \{ repairStaleGrowthIndexes/);
+  assert.match(main, /startGrowthRefreshMonitor\(\)/);
 });
 
+test('growth refresh is event-driven, bounded and has a low-frequency fallback', () => {
+  assert.match(main, /markGrowthStudentsDirty\(\[student\.id\], 'growth_evidence_changed'\)/);
+  assert.match(main, /changedGrowthProjectStudentIds\(previousProjects, projects\)/);
+  assert.match(main, /claimDueGrowthRefreshes\(readGrowthRefreshState\(\), \{ limit: 2 \}\)/);
+  assert.match(main, /growthRefreshFallbackTimer = setInterval/);
+  assert.match(main, /15 \* 60 \* 1000/);
+  assert.doesNotMatch(main, /taskSchedulerTimer = setInterval\(\(\) => \{ void runUnifiedTaskScheduler\(\); \}, 60 \* 1000\)/);
+});

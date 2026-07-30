@@ -312,6 +312,12 @@ contextBridge.exposeInMainWorld('AndroidBridge', {
   saveAgentConversationImport(studentId, content, tool, sourcePath) {
     return ipcRenderer.sendSync('bridge:saveAgentConversationImport', studentId, content, tool, sourcePath);
   },
+  deliverConversationMaterials(studentId, requestJson) {
+    return ipcRenderer.sendSync('bridge:deliverConversationMaterials', studentId, requestJson);
+  },
+  importConversationShareUrl(studentId, url, tool) {
+    return ipcRenderer.invoke('bridge:importConversationShareUrl', studentId, url, tool);
+  },
   selectAgentConversationFiles(studentId, tool) {
     return ipcRenderer.sendSync('bridge:selectAgentConversationFiles', studentId, tool);
   },
@@ -390,6 +396,15 @@ contextBridge.exposeInMainWorld('AndroidBridge', {
   readLearningReport(studentId, reportId) {
     return ipcRenderer.sendSync('bridge:readLearningReport', studentId, reportId);
   },
+  getLearningReportEvidence(studentId, reportId) {
+    return ipcRenderer.sendSync('bridge:getLearningReportEvidence', studentId, reportId);
+  },
+  openLearningReportEvidenceSource(studentId, reportId, evidenceId, sourceIndex) {
+    return ipcRenderer.sendSync('bridge:openLearningReportEvidenceSource', studentId, reportId, evidenceId, sourceIndex);
+  },
+  exportEducationArchive(studentId) {
+    return ipcRenderer.sendSync('bridge:exportEducationArchive', studentId);
+  },
   ensureLearningReports(studentId) {
     return ipcRenderer.sendSync('bridge:ensureLearningReports', studentId);
   },
@@ -456,6 +471,87 @@ contextBridge.exposeInMainWorld('AndroidBridge', {
   renameHostIdentity(displayName) {
     return ipcRenderer.sendSync('bridge:renameHostIdentity', displayName);
   },
+  getCollaborationState() {
+    return ipcRenderer.sendSync('bridge:getCollaborationState');
+  },
+  setTeamKnowledgePolicy(optionsJson) {
+    return ipcRenderer.sendSync('bridge:setTeamKnowledgePolicy', optionsJson);
+  },
+  initializeCollaborationWorkspace() {
+    return ipcRenderer.sendSync('bridge:initializeCollaborationWorkspace');
+  },
+  setCollaborationEnabled(enabled) {
+    return ipcRenderer.sendSync('bridge:setCollaborationEnabled', enabled);
+  },
+  openCollaborationPath(kind = 'nodeRoot') {
+    return ipcRenderer.sendSync('bridge:openCollaborationPath', kind);
+  },
+  scanCollaborationInbox() {
+    return ipcRenderer.invoke('bridge:scanCollaborationInbox');
+  },
+  rebuildCollaborationIndex() {
+    return ipcRenderer.sendSync('bridge:rebuildCollaborationIndex');
+  },
+  backupCollaborationState() {
+    return ipcRenderer.sendSync('bridge:backupCollaborationState');
+  },
+  restoreLatestCollaborationState() {
+    return ipcRenderer.sendSync('bridge:restoreLatestCollaborationState');
+  },
+  updateDirectDeliveryStatus(manifestId, action) {
+    return ipcRenderer.sendSync('bridge:updateDirectDeliveryStatus', manifestId, action);
+  },
+  getRemoteCollaborationTasks() {
+    return ipcRenderer.sendSync('bridge:getRemoteCollaborationTasks');
+  },
+  getProjectPublicationOptions(projectId) {
+    return ipcRenderer.sendSync('bridge:getProjectPublicationOptions', projectId);
+  },
+  publishCollaborationProject(optionsJson) {
+    return ipcRenderer.invoke('bridge:publishCollaborationProject', optionsJson);
+  },
+  selectCollaborationTaskFiles() {
+    return ipcRenderer.sendSync('bridge:selectCollaborationTaskFiles');
+  },
+  selectCollaborationResultFiles() {
+    return ipcRenderer.sendSync('bridge:selectCollaborationResultFiles');
+  },
+  createRemoteCollaborationTask(optionsJson) {
+    return ipcRenderer.invoke('bridge:createRemoteCollaborationTask', optionsJson);
+  },
+  updateRemoteCollaborationTask(taskId, type, message = '', optionsJson = '{}') {
+    return ipcRenderer.invoke('bridge:updateRemoteCollaborationTask', taskId, type, message, optionsJson);
+  },
+  resolveCollaborationTaskAttachments(taskId, decision, targetProjectId) {
+    return ipcRenderer.sendSync('bridge:resolveCollaborationTaskAttachments', taskId, decision, targetProjectId);
+  },
+  exportCollaborationStudentStats(studentId, targetNodeId) {
+    return ipcRenderer.sendSync('bridge:exportCollaborationStudentStats', studentId, targetNodeId);
+  },
+  createCollaborationBinding(optionsJson) {
+    return ipcRenderer.sendSync('bridge:createCollaborationBinding', optionsJson);
+  },
+  createManualCollaborationInvitation(studentId, localRole) {
+    return ipcRenderer.sendSync('bridge:createManualCollaborationInvitation', studentId, localRole);
+  },
+  acceptManualCollaborationClipboard(studentId) {
+    return ipcRenderer.sendSync('bridge:acceptManualCollaborationClipboard', studentId);
+  },
+  updateCollaborationBindingStatus(bindingId, status) {
+    return ipcRenderer.sendSync('bridge:updateCollaborationBindingStatus', bindingId, status);
+  },
+  deleteRevokedCollaborationBindings(bindingId) {
+    return ipcRenderer.sendSync('bridge:deleteRevokedCollaborationBindings', bindingId);
+  },
+  saveCollaborationGrant(optionsJson) {
+    return ipcRenderer.sendSync('bridge:saveCollaborationGrant', optionsJson);
+  },
+  setCollaborationStatisticsSharing(studentId, enabled) {
+    return ipcRenderer.sendSync('bridge:setCollaborationStatisticsSharing', studentId, enabled);
+  },
+  getCollaborationStudentMaterialStats(studentId, viewerNodeId = '', allowedProjectIdsJson = '[]') {
+    return ipcRenderer.sendSync('bridge:getCollaborationStudentMaterialStats', studentId, viewerNodeId, allowedProjectIdsJson);
+  },
   findLanTablets() {
     return ipcRenderer.sendSync('bridge:findLanTablets');
   },
@@ -496,7 +592,7 @@ contextBridge.exposeInMainWorld('AndroidBridge', {
     return ipcRenderer.sendSync('bridge:syncStudentDigestResult', studentId);
   },
   startDigestWorkflow(scopeType, scopeId, executor) {
-    return ipcRenderer.sendSync('bridge:startDigestWorkflow', scopeType, scopeId, executor);
+    return ipcRenderer.invoke('bridge:startDigestWorkflow', scopeType, scopeId, executor);
   },
   getDigestWorkflowStatus(scopeType, scopeId) {
     return ipcRenderer.sendSync('bridge:getDigestWorkflowStatus', scopeType, scopeId);
@@ -505,7 +601,7 @@ contextBridge.exposeInMainWorld('AndroidBridge', {
     return ipcRenderer.sendSync('bridge:getDigestWorkflowCommand', scopeType, scopeId);
   },
   retryDigestWorkflow(scopeType, scopeId, executor) {
-    return ipcRenderer.sendSync('bridge:retryDigestWorkflow', scopeType, scopeId, executor);
+    return ipcRenderer.invoke('bridge:retryDigestWorkflow', scopeType, scopeId, executor);
   },
   importDigestWorkflowResultText(scopeType, scopeId, content) {
     return ipcRenderer.sendSync('bridge:importDigestWorkflowResultText', scopeType, scopeId, content);
@@ -534,6 +630,27 @@ contextBridge.exposeInMainWorld('AndroidBridge', {
   archiveAccessRpc(requestJson) {
     return ipcRenderer.invoke('bridge:archiveAccessRpc', requestJson);
   },
+  remoteArchiveAccessRpc(requestJson) {
+    return ipcRenderer.invoke('bridge:remoteArchiveAccessRpc', requestJson);
+  },
+  queryAgentKnowledge(optionsJson) {
+    return ipcRenderer.invoke('bridge:queryAgentKnowledge', optionsJson);
+  },
+  getAgentKnowledgeDiagnostics() {
+    return ipcRenderer.sendSync('bridge:getAgentKnowledgeDiagnostics');
+  },
+  prepareAgentKnowledgeAccess(studentId) {
+    return ipcRenderer.sendSync('bridge:prepareAgentKnowledgeAccess', studentId);
+  },
+  submitAgentConversation(requestJson) {
+    return ipcRenderer.invoke('bridge:submitAgentConversation', requestJson);
+  },
+  getAgentConversationSubmissionState() {
+    return ipcRenderer.sendSync('bridge:getAgentConversationSubmissionState');
+  },
+  assignAgentConversationSubmission(submissionId, scopeType, scopeId) {
+    return ipcRenderer.sendSync('bridge:assignAgentConversationSubmission', submissionId, scopeType, scopeId);
+  },
   getTaskCenterCapabilities() {
     return ipcRenderer.sendSync('bridge:getTaskCenterCapabilities');
   },
@@ -541,7 +658,7 @@ contextBridge.exposeInMainWorld('AndroidBridge', {
     return ipcRenderer.sendSync('bridge:setTaskAutomationEnabled', enabled);
   },
   executeTask(taskId, executor) {
-    return ipcRenderer.sendSync('bridge:executeTask', taskId, executor);
+    return ipcRenderer.invoke('bridge:executeTask', taskId, executor);
   },
   approveTask(taskId, decision, note) {
     return ipcRenderer.sendSync('bridge:approveTask', taskId, decision, note);

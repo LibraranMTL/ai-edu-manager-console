@@ -24,6 +24,13 @@ type CaptureSession = { id: string; status: string; sourceName: string; count: n
 type Progress = { status: string; current?: number; total?: number; filename?: string; success?: number; failed?: number; pending?: number; delivered?: number };
 type LearningReport = { id: string; title: string; summary?: string; updatedAt?: string; status?: string };
 type ArchiveFile = { path: string; name?: string };
+type GrowthSummary = {
+  updatedAt?: string;
+  summary?: { evidenceCount?: number; confirmedCount?: number; watchingCount?: number; abilityCount?: number; projectCount?: number; publishedProjectCount?: number; lastEvidenceAt?: string };
+  abilities?: Array<{ name?: string; maturityLabel?: string; trendLabel?: string; evidenceCount?: number; confirmedCount?: number; projectNames?: string[]; lastObservedAt?: string }>;
+  projects?: Array<{ projectName?: string; reviewStatusLabel?: string; evidenceCount?: number; confirmedEvidenceCount?: number; abilityNames?: string[]; updatedAt?: string }>;
+  recentEvidence?: Array<{ title?: string; statusLabel?: string; ability?: string; projectName?: string; updatedAt?: string }>;
+};
 type DiscoveredHost = { deviceId: string; machineCode: string; displayName: string; appVersion?: string; protocolVersion: number; hostUrl: string; address?: string; lastSeenAt?: string };
 type PendingPairRequest = { requestId: string; status: string; hostId: string; hostMachineCode: string; hostName: string; hostUrl: string; createdAt?: string; expiresAt?: string };
 type TailscaleStatus = { installed: boolean; canOpen: boolean; version?: string; downloadUrl: string };
@@ -63,9 +70,12 @@ type TerminalBridge = {
   configureAutoDelivery: (input: { enabled: boolean; folder: string; target: UploadTarget }) => Promise<{ ok: boolean }>;
   runAutoDelivery: () => Promise<{ ok: boolean }>;
   listLearningReports: () => Promise<{ reports?: LearningReport[] }>;
+  getGrowthSummary: () => Promise<GrowthSummary>;
   readLearningReport: (reportId: string) => Promise<LearningReport & { content?: string }>;
   listArchiveFiles: () => Promise<{ files?: ArchiveFile[] }>;
   readArchiveFile: (relativePath: string) => Promise<{ path?: string; content?: string }>;
+  listProjectKnowledgeFiles: (projectId: string) => Promise<{ projectId?: string; projectName?: string; files?: ArchiveFile[] }>;
+  readProjectKnowledgeFile: (projectId: string, relativePath: string) => Promise<{ projectId?: string; projectName?: string; path?: string; content?: string }>;
   listCaptureSources: () => Promise<CaptureSource[]>;
   startCapture: (input: Record<string, unknown>) => Promise<CaptureSession>;
   stopCapture: () => Promise<CaptureSession | null>;
@@ -82,6 +92,29 @@ declare global {
 
 function targetKey(target?: UploadTarget | null) {
   return target?.id ? `${target.type}:${target.id}` : '';
+}
+
+function formatGrowthSummary(payload: GrowthSummary) {
+  const summary = payload.summary || {};
+  const abilities = payload.abilities || [];
+  const projects = payload.projects || [];
+  const evidence = payload.recentEvidence || [];
+  const lines = [
+    `更新时间：${payload.updatedAt ? payload.updatedAt.replace('T', ' ').slice(0, 16) : '等待主机更新'}`,
+    '',
+    `成长证据 ${summary.evidenceCount || 0} 条 · 已确认 ${summary.confirmedCount || 0} 条 · 观察中 ${summary.watchingCount || 0} 条`,
+    `能力维度 ${summary.abilityCount || 0} 个 · 关联项目 ${summary.projectCount || 0} 个`,
+    '',
+    '能力画像',
+    ...(abilities.length ? abilities.map((item) => `• ${item.name || '待标注'}：${item.maturityLabel || '证据不足'}，${item.trendLabel || '尚不足以判断'}；证据 ${item.evidenceCount || 0} 条${item.projectNames?.length ? `；项目 ${item.projectNames.join('、')}` : ''}`) : ['暂无已形成的能力画像。']),
+    '',
+    '项目贡献',
+    ...(projects.length ? projects.map((item) => `• ${item.projectName || '未命名项目'}：${item.reviewStatusLabel || '积累中'}；已确认 ${item.confirmedEvidenceCount || 0}/${item.evidenceCount || 0} 条${item.abilityNames?.length ? `；能力 ${item.abilityNames.join('、')}` : ''}`) : ['暂无项目贡献记录。']),
+    '',
+    '近期成长证据',
+    ...(evidence.length ? evidence.map((item) => `• ${item.title || '成长证据'}（${item.statusLabel || '观察中'}${item.ability ? ` · ${item.ability}` : ''}${item.projectName ? ` · ${item.projectName}` : ''}）`) : ['暂无已确认或观察中的成长证据。']),
+  ];
+  return lines.join('\n');
 }
 
 function TailscaleSupportCard({
@@ -187,9 +220,11 @@ function TerminalApp() {
   const [loginId, setLoginId] = useState('');
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [requiresLogin, setRequiresLogin] = useState(true);
-  const [documentMode, setDocumentMode] = useState<'closed' | 'reports' | 'archive'>('closed');
+  const [documentMode, setDocumentMode] = useState<'closed' | 'growth' | 'reports' | 'archive' | 'project-knowledge'>('closed');
   const [learningReports, setLearningReports] = useState<LearningReport[]>([]);
   const [archiveFiles, setArchiveFiles] = useState<ArchiveFile[]>([]);
+  const [projectKnowledgeFiles, setProjectKnowledgeFiles] = useState<ArchiveFile[]>([]);
+  const [selectedKnowledgeProjectId, setSelectedKnowledgeProjectId] = useState('');
   const [documentTitle, setDocumentTitle] = useState('');
   const [documentContent, setDocumentContent] = useState('');
   const [dismissedReminderDate, setDismissedReminderDate] = useState('');
@@ -205,6 +240,10 @@ function TerminalApp() {
   );
   const boundProjects = useMemo(
     () => projects.filter((project) => (project.studentIds || []).includes(selectedStudentId) && project.status !== 'sealed'),
+    [projects, selectedStudentId],
+  );
+  const knowledgeProjects = useMemo(
+    () => projects.filter((project) => (project.studentIds || []).includes(selectedStudentId)),
     [projects, selectedStudentId],
   );
   const targets = useMemo<UploadTarget[]>(() => {
@@ -278,6 +317,14 @@ function TerminalApp() {
       if (payload.config.connected) void refresh();
     });
   }, [api]);
+
+  useEffect(() => {
+    setSelectedKnowledgeProjectId('');
+    setProjectKnowledgeFiles([]);
+    setDocumentTitle('');
+    setDocumentContent('');
+    setDocumentMode('closed');
+  }, [selectedStudentId]);
 
   useEffect(() => {
     if (!targets.length) {
@@ -547,11 +594,30 @@ function TerminalApp() {
       const payload = await api.listLearningReports();
       setLearningReports(payload.reports || []);
       setArchiveFiles([]);
+      setProjectKnowledgeFiles([]);
       setDocumentTitle('');
       setDocumentContent('');
       setDocumentMode('reports');
     } catch (error) {
       setMessage(`读取学情报告失败：${(error as Error).message}`);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const showGrowthSummary = async () => {
+    if (!api) return;
+    setBusy(true);
+    try {
+      const payload = await api.getGrowthSummary();
+      setLearningReports([]);
+      setArchiveFiles([]);
+      setProjectKnowledgeFiles([]);
+      setDocumentTitle('我的成长模型');
+      setDocumentContent(formatGrowthSummary(payload));
+      setDocumentMode('growth');
+    } catch (error) {
+      setMessage(`读取成长模型失败：${(error as Error).message}`);
     } finally {
       setBusy(false);
     }
@@ -564,11 +630,34 @@ function TerminalApp() {
       const payload = await api.listArchiveFiles();
       setArchiveFiles(payload.files || []);
       setLearningReports([]);
+      setProjectKnowledgeFiles([]);
       setDocumentTitle('');
       setDocumentContent('');
       setDocumentMode('archive');
     } catch (error) {
       setMessage(`读取教育档案失败：${(error as Error).message}`);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const showProjectKnowledge = async (requestedProjectId = '') => {
+    if (!api) return;
+    const projectId = requestedProjectId || selectedKnowledgeProjectId || knowledgeProjects[0]?.id || '';
+    setDocumentMode('project-knowledge');
+    setLearningReports([]);
+    setArchiveFiles([]);
+    setProjectKnowledgeFiles([]);
+    setDocumentTitle('');
+    setDocumentContent('');
+    if (!projectId) return;
+    setBusy(true);
+    try {
+      const payload = await api.listProjectKnowledgeFiles(projectId);
+      setSelectedKnowledgeProjectId(projectId);
+      setProjectKnowledgeFiles(payload.files || []);
+    } catch (error) {
+      setMessage(`读取项目知识库失败：${(error as Error).message}`);
     } finally {
       setBusy(false);
     }
@@ -597,6 +686,21 @@ function TerminalApp() {
       setDocumentContent(payload.content || '当前档案暂无正文。');
     } catch (error) {
       setMessage(`读取教育档案失败：${(error as Error).message}`);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const readProjectKnowledgeFile = async (file: ArchiveFile) => {
+    if (!api || !selectedKnowledgeProjectId) return;
+    setBusy(true);
+    try {
+      const payload = await api.readProjectKnowledgeFile(selectedKnowledgeProjectId, file.path);
+      const project = knowledgeProjects.find((item) => item.id === selectedKnowledgeProjectId);
+      setDocumentTitle(`${project?.name || payload.projectName || '关联项目'} · ${file.name || file.path.split('/').pop() || '项目知识'}`);
+      setDocumentContent(payload.content || '当前项目知识暂无正文。');
+    } catch (error) {
+      setMessage(`读取项目知识失败：${(error as Error).message}`);
     } finally {
       setBusy(false);
     }
@@ -821,17 +925,29 @@ function TerminalApp() {
         </section>
 
         <section className="terminal-card feature-card wide-card student-documents-card">
-          <div className="feature-icon">▤</div><h2>学情报告与教育档案</h2><p>只读取当前学生已经在 Windows 主机形成的报告和公开档案。</p>
+          <div className="feature-icon">▤</div><h2>成长模型、学情报告、教育档案与项目知识</h2><p>只读取当前学生自己的成长信息、报告、公开档案和本人关联项目知识，不显示其他学生或未关联项目。</p>
           <div className="document-actions">
+            <button className={documentMode === 'growth' ? 'terminal-primary' : 'terminal-secondary'} onClick={showGrowthSummary} disabled={busy}>查看成长模型</button>
             <button className={documentMode === 'reports' ? 'terminal-primary' : 'terminal-secondary'} onClick={showLearningReports} disabled={busy}>查看学情报告</button>
             <button className={documentMode === 'archive' ? 'terminal-primary' : 'terminal-secondary'} onClick={showArchiveFiles} disabled={busy}>查看教育档案</button>
+            <button className={documentMode === 'project-knowledge' ? 'terminal-primary' : 'terminal-secondary'} onClick={() => showProjectKnowledge()} disabled={busy}>查看关联项目知识</button>
           </div>
+          {documentMode === 'project-knowledge' && knowledgeProjects.length > 0 ? <label className="project-knowledge-selector">
+            <span>关联项目</span>
+            <select value={selectedKnowledgeProjectId} onChange={(event) => void showProjectKnowledge(event.target.value)} disabled={busy}>
+              {knowledgeProjects.map((project) => <option value={project.id} key={project.id}>{project.name}{project.status === 'sealed' ? '（已封存）' : ''}</option>)}
+            </select>
+          </label> : null}
           {documentMode !== 'closed' ? <div className="document-browser">
             <div className="document-list">
+              {documentMode === 'growth' ? <small>成长模型由 Windows 主机整理。学生端仅只读显示，不提供审核或修改操作。</small> : null}
               {documentMode === 'reports' ? learningReports.map((report) => <button key={report.id} onClick={() => readLearningReport(report)}><strong>{report.title}</strong><span>{report.updatedAt ? `更新：${report.updatedAt.slice(0, 10)}` : '等待主机更新'}</span></button>) : null}
               {documentMode === 'archive' ? archiveFiles.map((file) => <button key={file.path} onClick={() => readArchiveFile(file)}><strong>{file.name || file.path.split('/').pop()}</strong><span>{file.path}</span></button>) : null}
+              {documentMode === 'project-knowledge' ? projectKnowledgeFiles.map((file) => <button key={file.path} onClick={() => readProjectKnowledgeFile(file)}><strong>{file.name || file.path.split('/').pop()}</strong><span>{file.path}</span></button>) : null}
               {documentMode === 'reports' && learningReports.length === 0 ? <small>当前还没有可查看的学情报告。</small> : null}
               {documentMode === 'archive' && archiveFiles.length === 0 ? <small>当前还没有可查看的教育档案。</small> : null}
+              {documentMode === 'project-knowledge' && knowledgeProjects.length === 0 ? <small>当前学生还没有关联学习项目。</small> : null}
+              {documentMode === 'project-knowledge' && knowledgeProjects.length > 0 && projectKnowledgeFiles.length === 0 ? <small>当前项目还没有可查看的知识文件。</small> : null}
             </div>
             <article className="document-reader"><h3>{documentTitle || '请选择一份内容查看'}</h3><pre>{documentContent || '正文将在这里显示。'}</pre></article>
           </div> : null}

@@ -5,6 +5,7 @@ const path = require('node:path');
 const test = require('node:test');
 
 const {
+  discoverKnowledgeCompletionReceipt,
   discoverDigestReceipts,
   discoverSingleFileMarkdownReceipt,
   mergeDigestReceipts,
@@ -47,16 +48,20 @@ test('receipt discovery uses structured content instead of one exact filename', 
       status: 'partial',
       processed: [{ materialId: 'm2', relativePath: 'b.md', sha1: 'b'.repeat(40), status: 'completed' }],
     }));
+    fs.writeFileSync(path.join(dir, '无批次号结果.json'), JSON.stringify({
+      status: 'completed',
+      processedFiles: [{ filename: 'a.jpg', status: 'done' }],
+    }));
     fs.writeFileSync(path.join(dir, 'unrelated.json'), JSON.stringify({ hello: 'world' }));
-    const found = discoverDigestReceipts({ managerDir: dir, batchId: 'batch-current' });
-    assert.equal(found.candidates.length, 2);
+    const found = discoverDigestReceipts({ managerDir: dir, batchId: 'batch-current', batch: batch() });
+    assert.equal(found.candidates.length, 3);
     assert.equal(found.stale.length, 1);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
 
-test('multiple QClaw receipt fragments merge without weakening file identity checks', () => {
+test('multiple QClaw receipt fragments merge and keep changed source files pending', () => {
   const current = batch();
   const merged = mergeDigestReceipts([
     {
@@ -82,7 +87,7 @@ test('multiple QClaw receipt fragments merge without weakening file identity che
   assert.equal(validation.remaining.length, 0);
 });
 
-test('a late old-batch receipt is never merged into the current batch', () => {
+test('an old or missing batch id is accepted when its file identity uniquely matches the current batch', () => {
   const current = batch();
   const merged = mergeDigestReceipts([{
     digestBatchId: 'batch-old',
@@ -96,8 +101,18 @@ test('a late old-batch receipt is never merged into the current batch', () => {
     currentFiles: current.files,
     requireMaterialId: true,
   });
-  assert.equal(validation.ok, false);
-  assert.equal(validation.code, 'batch_id_mismatch');
+  assert.equal(validation.ok, true);
+  assert.equal(validation.confirmed.length, 1);
+  assert.match(validation.compatibility.warnings.join('；'), /批次号/);
+
+  const withoutBatch = validateDigestResult({
+    batch: current,
+    receipt: { status: 'done', files: ['b.md'] },
+    currentFiles: current.files,
+  });
+  assert.equal(withoutBatch.ok, true);
+  assert.deepEqual(withoutBatch.confirmed.map((file) => file.materialId), ['m2']);
+  assert.ok(withoutBatch.compatibility.matchModes.includes('relativePath'));
 });
 
 test('a fresh single-file Markdown receipt plus a knowledge artifact is converted into an auditable strict receipt', () => {
@@ -151,6 +166,35 @@ test('Markdown completion inference refuses multi-file batches and receipt-only 
       batch: { ...baseBatch, files: [...baseBatch.files, { materialId: 'm2', relativePath: 'b.jpg', sha1: 'b'.repeat(40) }] },
       knowledgeRoot: root,
     }), null);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('knowledge updates after submission can close a multi-file batch without a JSON receipt', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'edu-p4-auto-complete-'));
+  try {
+    const knowledgeRoot = path.join(root, '知识空间');
+    const rawRoot = path.join(root, '原始资料库');
+    fs.mkdirSync(path.join(knowledgeRoot, '摘要库'), { recursive: true });
+    fs.mkdirSync(rawRoot, { recursive: true });
+    const submittedAt = new Date(Date.now() - 5000).toISOString();
+    fs.writeFileSync(path.join(knowledgeRoot, 'index.md'), '# 索引\n本批资料消化完成', 'utf8');
+    fs.writeFileSync(path.join(knowledgeRoot, '摘要库', '汇总.md'), '已形成新的摘要知识。', 'utf8');
+    const current = { ...batch(), submittedAt, createdAt: submittedAt };
+    const inferred = discoverKnowledgeCompletionReceipt({ batch: current, knowledgeRoot, rawRoot });
+    assert.ok(inferred);
+    assert.equal(inferred.payload.processed.length, 2);
+    const validation = validateDigestResult({
+      batch: current,
+      receipt: { status: 'completed', message: '消化完成' },
+      currentFiles: current.files,
+      assumeAllOnCompletion: true,
+      inferredArtifacts: inferred.artifacts.map((item) => item.path),
+    });
+    assert.equal(validation.ok, true);
+    assert.equal(validation.fullyCompleted, true);
+    assert.ok(validation.compatibility.matchModes.includes('completion_and_artifacts'));
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }

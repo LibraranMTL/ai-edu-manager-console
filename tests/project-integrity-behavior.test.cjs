@@ -6,6 +6,7 @@ const {
   nextStagingReviewState,
   projectCompletionIssues,
   reconcileDigestControlState,
+  normalizeProjectDigestReceipt,
   validateDigestReceipt,
 } = require('../electron/project-integrity.cjs');
 
@@ -24,7 +25,7 @@ test('digest control state repairs impossible active and completed states', () =
   assert.match(pending.message, /2 份/);
 });
 
-test('digest receipt requires exact project, batch, relative path and current sha1', () => {
+test('digest receipt accepts batch and schema drift while keeping changed source files pending', () => {
   const current = {
     status: 'submitted',
     digestBatchId: 'batch-1',
@@ -64,9 +65,9 @@ test('digest receipt requires exact project, batch, relative path and current sh
     projectId: 'p1', current, request, rawFiles,
     receipt: { status: 'completed', projectId: 'p1', digestBatchId: 'batch-old', digestedFiles: [{ relativePath: 'a.pdf', sha1: 'aaa' }] },
   });
-  assert.equal(staleBatch.ok, false);
-  assert.equal(staleBatch.code, 'receipt_not_ready');
-  assert.match(staleBatch.message, /digestBatchId 应为 batch-1/);
+  assert.equal(staleBatch.ok, true);
+  assert.deepEqual(staleBatch.confirmed.map((file) => file.relativePath), ['a.pdf']);
+  assert.equal(staleBatch.compatibility.ignoredReceiptBatch, true);
 
   const incompatibleSchema = validateDigestReceipt({
     projectId: 'p1', current, request, rawFiles,
@@ -76,11 +77,75 @@ test('digest receipt requires exact project, batch, relative path and current sh
       processedFiles: [{ path: 'a.pdf', result: 'success' }],
     },
   });
-  assert.equal(incompatibleSchema.ok, false);
-  assert.equal(incompatibleSchema.code, 'receipt_not_ready');
-  assert.match(incompatibleSchema.message, /projectId 应为 p1，实际为 缺失/);
-  assert.match(incompatibleSchema.message, /检测到不兼容字段 batchId=agent-generated-batch/);
-  assert.match(incompatibleSchema.message, /当前协议要求 digestedFiles/);
+  assert.equal(incompatibleSchema.ok, true);
+  assert.deepEqual(incompatibleSchema.confirmed.map((file) => file.relativePath), ['a.pdf']);
+});
+
+test('QClaw digestStats envelope closes from file coverage even when accounting is only advisory', () => {
+  const submittedFiles = [
+    { relativePath: 'a.pdf', sha1: 'a'.repeat(40) },
+    { relativePath: 'duplicate.pdf', sha1: 'a'.repeat(40) },
+    { relativePath: 'tool-output.json', sha1: 'b'.repeat(40) },
+  ];
+  const receipt = {
+    projectId: 'p1',
+    digestBatchId: 'batch-1',
+    digestStatus: 'partial',
+    digestFiles: submittedFiles.map((file) => ({ ...file })),
+    digestStats: { totalFiles: 3, actuallyDigested: 1, skipped: 2 },
+  };
+  const normalized = normalizeProjectDigestReceipt(receipt, submittedFiles);
+  assert.equal(normalized.receipt.status, 'partial');
+  assert.equal(normalized.receipt.digestedFiles.length, 3);
+  assert.deepEqual(normalized.compatibility, {
+    mode: 'qclaw_digest_stats_permissive',
+    sourceStatus: 'partial',
+    totalFiles: 3,
+    actuallyDigested: 1,
+    skipped: 2,
+  });
+  const validation = validateDigestReceipt({
+    projectId: 'p1',
+    current: { status: 'digesting', digestBatchId: 'batch-1', submittedFiles },
+    request: { projectId: 'p1', digestBatchId: 'batch-1' },
+    receipt,
+    rawFiles: submittedFiles.map((file) => ({ ...file, path: `raw/${file.relativePath}` })),
+  });
+  assert.equal(validation.ok, true);
+  assert.equal(validation.fullyCompleted, true);
+  assert.equal(validation.confirmed.length, 3);
+  assert.equal(validation.compatibility.skipped, 2);
+});
+
+test('QClaw digestStats count drift no longer blocks uniquely matched files', () => {
+  const submittedFiles = [
+    { relativePath: 'a.pdf', sha1: 'a'.repeat(40) },
+    { relativePath: 'b.pdf', sha1: 'b'.repeat(40) },
+  ];
+  const base = {
+    projectId: 'p1',
+    digestBatchId: 'batch-1',
+    digestStatus: 'partial',
+    digestFiles: submittedFiles.map((file) => ({ ...file })),
+    digestStats: { totalFiles: 2, actuallyDigested: 1, skipped: 1 },
+  };
+  assert.equal(normalizeProjectDigestReceipt({
+    ...base,
+    digestStats: { totalFiles: 2, actuallyDigested: 1, skipped: 0 },
+  }, submittedFiles).receipt.status, 'partial');
+  assert.equal(normalizeProjectDigestReceipt({
+    ...base,
+    digestFiles: [{ ...submittedFiles[0] }, { ...submittedFiles[1], sha1: 'c'.repeat(40) }],
+  }, submittedFiles).receipt.status, 'partial');
+  const reconciled = validateDigestReceipt({
+    projectId: 'p1',
+    current: { status: 'digesting', digestBatchId: 'batch-1', submittedFiles },
+    request: { projectId: 'p1', digestBatchId: 'batch-1' },
+    receipt: { ...base, digestStats: { totalFiles: 2, actuallyDigested: 1, skipped: 0 } },
+    rawFiles: submittedFiles,
+  });
+  assert.equal(reconciled.ok, true);
+  assert.equal(reconciled.fullyCompleted, true);
 });
 
 test('staging review restores discarded items and freezes promoted items', () => {

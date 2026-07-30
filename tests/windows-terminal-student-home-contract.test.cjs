@@ -24,6 +24,6 @@ test('Windows student terminal reads reports and archives through the scoped stu
   assert.match(main, /currentStudentSession/);
   assert.match(main, /\/api\/students\/\$\{encodeURIComponent\(studentId\)\}\/reports/);
   assert.match(main, /\/api\/students\/\$\{encodeURIComponent\(studentId\)\}\/archive\/files/);
-  assert.match(ui, /学情报告与教育档案/);
+  assert.match(ui, /学情报告、教育档案与项目知识/);
   assert.match(ui, /只读取当前学生/);
 });

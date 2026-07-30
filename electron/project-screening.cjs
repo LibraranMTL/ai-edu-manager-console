@@ -37,6 +37,11 @@ function recommendationsFromProjectScreening(payload) {
   if (!payload || typeof payload !== 'object') return [];
   for (const key of ['recommendations', 'candidates', 'items', 'results']) {
     if (Array.isArray(payload[key])) return payload[key];
+    if (payload[key] && typeof payload[key] === 'object') {
+      return Object.entries(payload[key]).map(([id, item]) => (
+        item && typeof item === 'object' ? { id, ...item } : { id, status: item }
+      ));
+    }
   }
   return [];
 }
@@ -84,19 +89,44 @@ function normalizedPath(value) {
   }
 }
 
+function portablePath(value) {
+  return String(value || '')
+    .trim()
+    .replace(/^["'`]+|["'`]+$/g, '')
+    .replace(/^file:\/+/i, '')
+    .replace(/\\/g, '/')
+    .replace(/\/+/g, '/')
+    .replace(/^\.\//, '')
+    .toLowerCase();
+}
+
+function uniqueIndexAdd(index, key, item) {
+  if (!key) return;
+  if (!index.has(key)) index.set(key, item);
+  else if (index.get(key)?.id !== item.id) index.set(key, null);
+}
+
 function buildProjectScreeningPreview(project, rawText) {
   const payload = parseProjectScreeningReceipt(rawText);
   const recommendations = recommendationsFromProjectScreening(payload);
   if (!recommendations.length) throw new Error('评估结果中没有 recommendations / candidates / items / results 数组。');
   const items = Array.isArray(project?.stagingItems) ? project.stagingItems : [];
-  const indexes = { id: new Map(), sha1: new Map(), path: new Map(), filename: new Map() };
+  const indexes = { id: new Map(), sha1: new Map(), path: new Map(), relativePath: new Map(), filename: new Map() };
   for (const item of items) {
     indexes.id.set(String(item.id || ''), item);
-    if (item.sha1) indexes.sha1.set(String(item.sha1), item);
+    if (item.collaborationSourceStagingId) indexes.id.set(String(item.collaborationSourceStagingId), item);
+    if (item.sha1) uniqueIndexAdd(indexes.sha1, String(item.sha1).toLowerCase(), item);
     for (const value of [item.path, item.sourcePath]) {
       if (value) indexes.path.set(normalizedPath(value), item);
     }
-    if (item.filename) indexes.filename.set(String(item.filename).toLowerCase(), item);
+    const itemPath = item.sourcePath || item.path;
+    if (project?.workspacePath && itemPath) {
+      const relative = path.relative(project.workspacePath, itemPath);
+      if (relative && !relative.startsWith('..') && !path.isAbsolute(relative)) {
+        uniqueIndexAdd(indexes.relativePath, portablePath(relative), item);
+      }
+    }
+    if (item.filename) uniqueIndexAdd(indexes.filename, String(item.filename).trim().toLowerCase(), item);
   }
   const matchedIds = new Set();
   const changes = [];
@@ -106,35 +136,57 @@ function buildProjectScreeningPreview(project, rawText) {
       unmatched.push({ index, reason: '评估项不是对象。' });
       return;
     }
+    const idValue = rec.id || rec.itemId || rec.stagingId || rec.subjectId || rec['暂存ID'] || rec['资料ID'];
+    const sha1Value = rec.sha1 || rec.SHA1 || rec.contentSha1 || rec.hash;
+    const pathValue = rec.path || rec.sourcePath || rec.relativePath || rec.filePath || rec['来源路径'] || rec['文件路径'];
+    const filenameValue = rec.filename || rec.fileName || rec.name || rec.title || rec['文件名'] || rec['资料'];
     const candidates = [
-      ['id', rec.id || rec.itemId || rec.stagingId],
-      ['sha1', rec.sha1],
-      ['path', rec.path || rec.sourcePath],
-      ['filename', rec.filename || rec.name],
+      ['id', idValue],
+      ['sha1', sha1Value],
+      ['path', pathValue],
+      ['filename', filenameValue],
     ];
     let item = null;
     let matchBasis = '';
     for (const [basis, value] of candidates) {
       if (!value) continue;
-      const key = basis === 'path' ? normalizedPath(value) : basis === 'filename' ? String(value).toLowerCase() : String(value);
-      item = indexes[basis].get(key) || null;
+      if (basis === 'path') {
+        item = indexes.path.get(normalizedPath(value)) || null;
+        const portable = portablePath(value);
+        if (!item) item = indexes.relativePath.get(portable) || null;
+        if (!item) {
+          const suffixMatches = [...indexes.relativePath.entries()]
+            .filter(([relative, candidate]) => candidate && (portable === relative || portable.endsWith(`/${relative}`)))
+            .map(([, candidate]) => candidate);
+          const uniqueMatches = [...new Map(suffixMatches.map((candidate) => [candidate.id, candidate])).values()];
+          if (uniqueMatches.length === 1) item = uniqueMatches[0];
+        }
+        if (!item) item = indexes.filename.get(path.posix.basename(portable)) || null;
+      } else {
+        const key = basis === 'filename'
+          ? String(value).trim().replace(/^["'`]+|["'`]+$/g, '').toLowerCase()
+          : basis === 'sha1'
+            ? String(value).trim().toLowerCase()
+            : String(value).trim();
+        item = indexes[basis].get(key) || null;
+      }
       if (item) {
         matchBasis = basis;
         break;
       }
     }
     if (!item) {
-      unmatched.push({ index, id: rec.id || rec.itemId || rec.stagingId || '', filename: rec.filename || rec.name || '', path: rec.path || rec.sourcePath || '', reason: '未匹配当前项目暂存资料。' });
+      unmatched.push({ index, id: idValue || '', filename: filenameValue || '', path: pathValue || '', reason: '未匹配当前项目暂存资料，或文件名存在歧义。' });
       return;
     }
     if (matchedIds.has(String(item.id))) {
-      unmatched.push({ index, id: rec.id || '', filename: rec.filename || rec.name || '', reason: `同一暂存资料重复匹配：${item.filename}` });
+      unmatched.push({ index, id: idValue || '', filename: filenameValue || '', reason: `同一暂存资料重复匹配：${item.filename}` });
       return;
     }
     matchedIds.add(String(item.id));
-    const toStatus = normalizeProjectScreeningStatus(rec.status || rec.action || rec.recommendation || rec.decision) || item.status;
+    const toStatus = normalizeProjectScreeningStatus(rec.status || rec.action || rec.recommendation || rec.decision || rec['结论'] || rec['状态']) || item.status;
     const reasons = Array.isArray(rec.reasons) ? rec.reasons.join('；') : '';
-    const reason = String(rec.reason || rec.aiReason || reasons || rec.preview || '').slice(0, 1000);
+    const reason = String(rec.reason || rec.aiReason || rec['理由'] || reasons || rec.preview || '').slice(0, 1000);
     const score = Number(rec.score);
     changes.push({
       recommendationIndex: index,
@@ -144,8 +196,8 @@ function buildProjectScreeningPreview(project, rawText) {
       fromStatus: item.status,
       toStatus,
       fromStrategy: item.sourceStrategy || '',
-      toStrategy: normalizeSourceStrategy(rec.sourceStrategy || rec.saveStrategy || rec.storageStrategy, item.sourceStrategy || ''),
-      aiAction: normalizeProjectScreeningAction(rec.action || rec.recommendation || rec.decision, toStatus),
+      toStrategy: normalizeSourceStrategy(rec.sourceStrategy || rec.saveStrategy || rec.storageStrategy || rec['保存策略'], item.sourceStrategy || ''),
+      aiAction: normalizeProjectScreeningAction(rec.action || rec.recommendation || rec.decision || rec['结论'], toStatus),
       aiReason: reason,
       aiScore: rec.score === undefined || rec.score === '' || !Number.isFinite(score) ? item.aiScore : score,
     });

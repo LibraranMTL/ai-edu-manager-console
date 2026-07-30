@@ -40,6 +40,41 @@ test('ArchiveAccess searches only the requested student or project knowledge sco
   }
 });
 
+test('scoped project queries are not starved when earlier student archives fill the global index budget', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'edu-archive-scope-budget-'));
+  try {
+    const studentRoot = path.join(root, 'student');
+    const projectRoot = path.join(root, 'project');
+    fs.mkdirSync(studentRoot, { recursive: true });
+    fs.mkdirSync(projectRoot, { recursive: true });
+    for (let index = 0; index < 3; index += 1) {
+      fs.writeFileSync(path.join(studentRoot, `student-${index}.md`), `student archive ${index}`, 'utf8');
+    }
+    fs.writeFileSync(path.join(projectRoot, 'remote-project-progress.md'), 'REMOTE-PROJECT-X7Q9 complete', 'utf8');
+    const access = createArchiveAccess({
+      maxResources: 3,
+      descriptors: [
+        { scopeType: 'student', scopeId: 'student-heavy', root: studentRoot },
+        { scopeType: 'project', scopeId: 'project-linked', root: projectRoot },
+      ],
+    });
+
+    const projectHits = access.search({
+      query: 'REMOTE-PROJECT-X7Q9',
+      scopeType: 'project',
+      scopeId: 'project-linked',
+    });
+    assert.equal(projectHits.count, 1);
+    assert.equal(projectHits.resources[0].scopeId, 'project-linked');
+
+    const resource = access.getResource({ uri: projectHits.resources[0].uri });
+    assert.equal(resource.ok, true);
+    assert.match(resource.resource.content, /REMOTE-PROJECT-X7Q9/);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test('ArchiveAccess resolves only indexed edu URIs and returns source-linked context bundles', () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'edu-archive-resource-'));
   try {

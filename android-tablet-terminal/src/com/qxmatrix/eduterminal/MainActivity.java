@@ -104,8 +104,8 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
     static final int REQUEST_IMPORT_CONNECTION_BACKUP = 8109;
     static final int REQUEST_CAPTURE_STUDENT_QR = 8110;
     static final int REQUEST_AUTO_DELIVERY_FOLDER = 8111;
-    static final String VERSION_NAME = "0.6.3";
-    static final int VERSION_CODE = 73;
+    static final String VERSION_NAME = "0.6.7";
+    static final int VERSION_CODE = 77;
     static final String CONNECTION_BACKUP_KIND = "ai-edu-manager-tablet-connection-backup";
     static final int CONNECTION_BACKUP_VERSION = 1;
     static final String UPDATE_MANIFEST_URL = "https://www.greatbg.com/download/edu-manager-version.json";
@@ -169,6 +169,7 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
     EditText archiveSearchInput;
     Spinner studentSpinner;
     EditText studentLoginInput;
+    Spinner archiveSourceSpinner;
     Spinner archiveCategorySpinner;
     Spinner archiveSpinner;
     Spinner layoutModeSpinner;
@@ -190,6 +191,7 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
     Button quickUploadButton;
     Button quickReportButton;
     Button quickArchiveButton;
+    Button quickProjectKnowledgeButton;
     Button quickContactButton;
     Button connectionSettingsButton;
     Button uploadButton;
@@ -226,6 +228,7 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
     String selectedReportId = "profile";
     int authorizationPollsRemaining = 0;
     Button refreshReportsButton;
+    Button refreshGrowthButton;
     Button openWeComButton;
     Button openQQButton;
     Button openQClawButton;
@@ -239,11 +242,15 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
     LinearLayout connectionConfigCard;
     LinearLayout settingsCard;
     LinearLayout studentCard;
+    LinearLayout uploadCard;
+    LinearLayout captureCard;
     LinearLayout studentLoginPanel;
     TextView studentSessionText;
     LinearLayout contactCard;
     LinearLayout reportCard;
+    LinearLayout growthCard;
     LinearLayout archiveCard;
+    TextView growthSummaryText;
     LinearLayout autoDeliveryPanel;
     TextView autoDeliveryStatusText;
     boolean connectionSettingsVisible = false;
@@ -251,6 +258,7 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
 
     final List<Student> students = new ArrayList<Student>();
     final List<LearningProject> projects = new ArrayList<LearningProject>();
+    final List<LearningProject> archiveSourceProjects = new ArrayList<LearningProject>();
     final List<ArchiveFile> allArchiveFiles = new ArrayList<ArchiveFile>();
     final List<ArchiveFile> archiveFiles = new ArrayList<ArchiveFile>();
     final List<Uri> pendingSharedUris = new ArrayList<Uri>();
@@ -259,6 +267,7 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
     Uri pendingPairQrUri = null;
     ArrayAdapter<String> studentAdapter;
     ArrayAdapter<String> connectionModeAdapter;
+    ArrayAdapter<String> archiveSourceAdapter;
     ArrayAdapter<String> archiveCategoryAdapter;
     ArrayAdapter<String> archiveAdapter;
     ArrayAdapter<String> layoutModeAdapter;
@@ -267,6 +276,10 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
     String terminalMode = "shared";
     String studentSessionToken = "";
     String currentMarkdown = "";
+    String selectedKnowledgeProjectId = "";
+    String selectedKnowledgeProjectName = "";
+    boolean showingProjectKnowledge = false;
+    boolean updatingArchiveSources = false;
     boolean markdownRendered = true;
     int selectedArchiveCategory = 1;
     int markdownFontSize = 16;
@@ -405,32 +418,7 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
         legalRow.addView(privacyLink);
         brandCopy.addView(legalRow);
 
-        LinearLayout quickCard = card();
-        root.addView(quickCard);
-        quickCard.addView(label("常用操作"));
-        LinearLayout quickRow = row();
-        quickReportButton = button("学情报告", false);
-        quickUploadButton = button("上传资料到主机", true);
-        quickArchiveButton = button("查看学情档案", false);
-        quickContactButton = button("联系教育管家", false);
-        connectionSettingsButton = button("连接设置", false);
-        settingsToggleButton = button("系统设置", false);
-        quickRow.addView(quickUploadButton);
-        quickRow.addView(quickReportButton);
-        quickRow.addView(quickArchiveButton);
-        quickRow.addView(quickContactButton);
-        quickRow.addView(connectionSettingsButton);
-        quickRow.addView(settingsToggleButton);
-        quickCard.addView(quickRow);
-        quickUploadButton.setOnClickListener(this);
-        quickReportButton.setOnClickListener(this);
-        quickArchiveButton.setOnClickListener(this);
-        quickContactButton.setOnClickListener(this);
-        connectionSettingsButton.setOnClickListener(this);
-        settingsToggleButton.setOnClickListener(this);
-
         connectionConfigCard = card();
-        root.addView(connectionConfigCard);
         connectionConfigCard.addView(label("主机服务地址"));
         serverInput = input("例如：http://192.168.1.10:18777");
         connectionConfigCard.addView(serverInput);
@@ -507,8 +495,6 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
         connectionHintText.setTextColor(Color.rgb(104, 121, 117));
         connectionHintText.setPadding(dp(10), dp(8), dp(10), 0);
         connectionConfigCard.addView(connectionHintText);
-        connectionConfigCard.setVisibility(View.GONE);
-
         saveButton.setOnClickListener(this);
         testButton.setOnClickListener(this);
         pasteButton.setOnClickListener(this);
@@ -517,7 +503,6 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
         importConnectionBackupButton.setOnClickListener(this);
 
         settingsCard = card();
-        root.addView(settingsCard);
         settingsCard.addView(label("\u4f7f\u7528\u6a21\u5f0f"));
         LinearLayout terminalModeRow = row();
         personalTerminalButton = button("\u4e2a\u4eba\u7ec8\u7aef", false);
@@ -575,10 +560,7 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
         settingsStatusText.setTextColor(Color.rgb(87, 107, 103));
         settingsStatusText.setPadding(dp(10), dp(8), dp(10), 0);
         settingsCard.addView(settingsStatusText);
-        settingsCard.setVisibility(View.GONE);
-
         studentCard = card();
-        root.addView(studentCard);
         studentCard.addView(label("\u5b66\u751f\u7a7a\u95f4"));
         studentLoginPanel = new LinearLayout(this);
         studentLoginPanel.setOrientation(LinearLayout.VERTICAL);
@@ -612,6 +594,8 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
         studentCard.addView(studentSpinner);
         studentSpinner.setVisibility(View.GONE);
 
+        uploadCard = card();
+        uploadCard.addView(label("上传资料到主机"));
         LinearLayout actionRow = row();
         uploadButton = button("上传资料到主机", true);
         sharedUploadButton = button("上传分享资料", false);
@@ -621,7 +605,7 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
         actionRow.addView(sharedUploadButton);
         actionRow.addView(retryFailedUploadButton);
         actionRow.addView(reloadStudentsButton);
-        studentCard.addView(actionRow);
+        uploadCard.addView(actionRow);
         uploadButton.setEnabled(false);
         sharedUploadButton.setEnabled(false);
         retryFailedUploadButton.setEnabled(false);
@@ -637,30 +621,30 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
         uploadResultText.setTextSize(13);
         uploadResultText.setTextColor(Color.rgb(87, 107, 103));
         uploadResultText.setPadding(0, dp(8), 0, 0);
-        studentCard.addView(uploadResultText);
+        uploadCard.addView(uploadResultText);
 
         uploadQueueText = new TextView(this);
         uploadQueueText.setText("上传队列：暂无。");
         uploadQueueText.setTextSize(12);
         uploadQueueText.setTextColor(Color.rgb(104, 121, 117));
         uploadQueueText.setPadding(0, dp(4), 0, 0);
-        studentCard.addView(uploadQueueText);
+        uploadCard.addView(uploadQueueText);
 
         digestStatusText = new TextView(this);
         digestStatusText.setText("资料状态：请选择学生。");
         digestStatusText.setTextSize(12);
         digestStatusText.setTextColor(Color.rgb(104, 121, 117));
         digestStatusText.setPadding(0, dp(4), 0, 0);
-        studentCard.addView(digestStatusText);
+        uploadCard.addView(digestStatusText);
 
-        studentCard.addView(label("我的资料进展"));
+        uploadCard.addView(label("我的资料进展"));
         studentProgressText = new TextView(this);
         studentProgressText.setText("进入学生空间后，将显示已提交资料、知识化处理、近期新增和提交频率。");
         studentProgressText.setTextSize(14);
         studentProgressText.setTextColor(Color.rgb(50, 76, 70));
         studentProgressText.setPadding(dp(10), dp(10), dp(10), dp(10));
         studentProgressText.setBackgroundColor(Color.rgb(238, 247, 244));
-        studentCard.addView(studentProgressText);
+        uploadCard.addView(studentProgressText);
 
         dailyReminderPanel = new LinearLayout(this);
         dailyReminderPanel.setOrientation(LinearLayout.VERTICAL);
@@ -676,7 +660,7 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
         reminderRow.addView(dailyReminderUploadButton);
         reminderRow.addView(dailyReminderLaterButton);
         dailyReminderPanel.addView(reminderRow);
-        studentCard.addView(dailyReminderPanel);
+        uploadCard.addView(dailyReminderPanel);
         dailyReminderUploadButton.setOnClickListener(this);
         dailyReminderLaterButton.setOnClickListener(this);
 
@@ -700,14 +684,14 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
         autoDeliveryStatusText.setTextColor(Color.rgb(87, 107, 103));
         autoDeliveryStatusText.setPadding(0, dp(5), 0, dp(6));
         autoDeliveryPanel.addView(autoDeliveryStatusText);
-        studentCard.addView(autoDeliveryPanel);
         autoDeliveryFolderButton.setOnClickListener(this);
         autoDeliveryTargetButton.setOnClickListener(this);
         autoDeliveryToggleButton.setOnClickListener(this);
         autoDeliveryCheckButton.setOnClickListener(this);
 
-        studentCard.addView(label("屏幕资料采集"));
-        studentCard.addView(label("授权后可按智能混合、内容变化或固定间隔模式连续采集；结果先保存在本机采集箱，确认后可上传到学生原始资料库或绑定项目原始资料库。"));
+        captureCard = card();
+        captureCard.addView(label("屏幕资料采集"));
+        captureCard.addView(label("授权后可按智能混合、内容变化或固定间隔模式连续采集；结果先保存在本机采集箱，确认后可上传到学生原始资料库或绑定项目原始资料库。"));
         LinearLayout captureRow = row();
         captureStartButton = button("开始屏幕采集", true);
         capturePauseButton = button("暂停/继续", false);
@@ -715,9 +699,11 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
         captureRow.addView(captureStartButton);
         captureRow.addView(capturePauseButton);
         captureRow.addView(captureUploadButton);
-        studentCard.addView(captureRow);
+        captureCard.addView(captureRow);
         captureManageButton = button("查看与清理采集资料", false);
-        studentCard.addView(captureManageButton);
+        LinearLayout captureManageRow = row();
+        captureManageRow.addView(captureManageButton);
+        captureCard.addView(captureManageRow);
         captureStartButton.setOnClickListener(this);
         capturePauseButton.setOnClickListener(this);
         captureUploadButton.setOnClickListener(this);
@@ -726,11 +712,10 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
         captureStatusText.setTextSize(12);
         captureStatusText.setTextColor(Color.rgb(87, 107, 103));
         captureStatusText.setPadding(0, dp(6), 0, 0);
-        studentCard.addView(captureStatusText);
+        captureCard.addView(captureStatusText);
         refreshCaptureUi();
 
         contactCard = card();
-        root.addView(contactCard);
         contactCard.addView(label("联系教育管家"));
         contactText = new TextView(this);
         contactText.setText("选择学生后，可查看该学生绑定的企业微信或 QQ 联系入口。");
@@ -742,17 +727,27 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
         LinearLayout contactRow = row();
         openWeComButton = button("打开企业微信", true);
         openQQButton = button("打开 QQ", true);
-        openQClawButton = button("打开 QClaw", false);
-        openMarvisButton = button("打开 Marvis", false);
-        copyConsultPromptButton = button("复制咨询提示", false);
-        copyDigestPromptButton = button("复制消化提示", false);
         contactRow.addView(openWeComButton);
         contactRow.addView(openQQButton);
-        contactRow.addView(openQClawButton);
-        contactRow.addView(openMarvisButton);
-        contactRow.addView(copyConsultPromptButton);
-        contactRow.addView(copyDigestPromptButton);
         contactCard.addView(contactRow);
+
+        LinearLayout agentDialogCard = card();
+        agentDialogCard.addView(label("本机 Agent"));
+        openQClawButton = button("打开 QClaw", false);
+        openMarvisButton = button("打开 Mavis", false);
+        LinearLayout agentDialogRow = row();
+        agentDialogRow.addView(openQClawButton);
+        agentDialogRow.addView(openMarvisButton);
+        agentDialogCard.addView(agentDialogRow);
+
+        LinearLayout promptDialogCard = card();
+        promptDialogCard.addView(label("对话提示"));
+        copyConsultPromptButton = button("复制咨询提示", false);
+        copyDigestPromptButton = button("复制消化提示", false);
+        LinearLayout promptDialogRow = row();
+        promptDialogRow.addView(copyConsultPromptButton);
+        promptDialogRow.addView(copyDigestPromptButton);
+        promptDialogCard.addView(promptDialogRow);
         openWeComButton.setOnClickListener(this);
         openQQButton.setOnClickListener(this);
         openQClawButton.setOnClickListener(this);
@@ -767,7 +762,6 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
         copyDigestPromptButton.setEnabled(false);
 
         reportCard = card();
-        root.addView(reportCard);
         reportCard.addView(label("学情报告"));
         reportCard.addView(label("四份核心报告会从 Windows 主机读取，并支持离线缓存。"));
         LinearLayout reportRow = row();
@@ -789,9 +783,29 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
         reportStageButton.setOnClickListener(this);
         updateReportButtonSelection();
 
+        growthCard = card();
+        growthCard.addView(label("我的成长模型"));
+        growthCard.addView(label("只读显示当前学生的能力画像、项目贡献和已确认或观察中的近期成长证据。"));
+        refreshGrowthButton = button("查看成长模型", false);
+        refreshGrowthButton.setOnClickListener(this);
+        growthCard.addView(refreshGrowthButton);
+        growthSummaryText = new TextView(this);
+        growthSummaryText.setText("进入学生空间后，可从 Windows 主机读取自己的成长模型。");
+        growthSummaryText.setTextSize(14);
+        growthSummaryText.setTextColor(Color.rgb(50, 76, 70));
+        growthSummaryText.setPadding(dp(10), dp(10), dp(10), dp(10));
+        growthSummaryText.setBackgroundColor(Color.rgb(238, 247, 244));
+        growthCard.addView(growthSummaryText);
+
         archiveCard = card();
-        root.addView(archiveCard);
-        archiveCard.addView(label("学情档案"));
+        archiveCard.addView(label("学情档案与关联项目知识"));
+        archiveCard.addView(label("只显示当前学生自己的档案，以及本人关联项目中的公开 Markdown 知识。"));
+        archiveCard.addView(label("查看内容"));
+        archiveSourceSpinner = new Spinner(this);
+        archiveSourceAdapter = new ArrayAdapter<String>(this, android.R.layout.simple_spinner_item, new ArrayList<String>());
+        archiveSourceAdapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
+        archiveSourceSpinner.setAdapter(archiveSourceAdapter);
+        archiveCard.addView(archiveSourceSpinner);
         archiveCard.addView(label("档案分类"));
         archiveCategorySpinner = new Spinner(this);
         archiveCategoryAdapter = new ArrayAdapter<String>(this, android.R.layout.simple_spinner_item, new ArrayList<String>());
@@ -879,6 +893,49 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
         markdownView.setVisibility(View.GONE);
         archiveCard.addView(markdownView);
         updateMarkdownDisplay("连接主机服务后，可在这里查看 Windows 主机中的 Markdown 学情档案。");
+        archiveSourceSpinner.setOnItemSelectedListener(this);
+        refreshArchiveSources();
+
+        LinearLayout basicContent = stack();
+        basicContent.addView(collapsiblePanel("连接设置", "连接局域网或 Tailscale 主机，管理配对与连接备份。", connectionConfigCard));
+        basicContent.addView(collapsiblePanel("系统设置", "设置终端模式、页面布局、皮肤、更新与诊断。", settingsCard));
+        basicContent.addView(collapsiblePanel("学生空间登录", "个人终端自动进入；共享终端输入 ID 或扫码进入本人空间。", studentCard));
+        root.addView(collapsiblePanel("基础设置", "连接、系统和学生空间入口集中在这里。", basicContent));
+
+        LinearLayout materialContent = stack();
+        materialContent.addView(collapsiblePanel("上传资料到主机", "选择学生原始资料库或本人绑定项目原始资料库。", uploadCard));
+        materialContent.addView(collapsiblePanel("屏幕资料采集", "采集、预览、清理并上传当前学生的屏幕资料。", captureCard));
+        materialContent.addView(collapsiblePanel("自动投递文件夹", "仅个人终端可持续监测；共享终端保持关闭。", autoDeliveryPanel));
+        root.addView(collapsiblePanel("资料搜集上传", "本地文件、屏幕采集和自动投递统一收纳。", materialContent));
+
+        LinearLayout dialogueContent = stack();
+        dialogueContent.addView(collapsiblePanel("QQ / 企业微信", "打开当前学生绑定的联系入口。", contactCard));
+        dialogueContent.addView(collapsiblePanel("QClaw / Mavis", "打开本机已有的教育 Agent。", agentDialogCard));
+        dialogueContent.addView(collapsiblePanel("咨询与消化提示", "按需复制咨询提示或资料消化提示。", promptDialogCard));
+        root.addView(collapsiblePanel("教育管家对话", "联系入口、Agent 和提示词集中在这里。", dialogueContent));
+
+        LinearLayout archiveEntryCard = card();
+        quickArchiveButton = button("打开学情档案", true);
+        LinearLayout archiveEntryRow = row();
+        archiveEntryRow.addView(quickArchiveButton);
+        archiveEntryCard.addView(archiveEntryRow);
+        quickArchiveButton.setOnClickListener(this);
+
+        LinearLayout projectKnowledgeEntryCard = card();
+        quickProjectKnowledgeButton = button("打开项目知识库", true);
+        LinearLayout projectKnowledgeEntryRow = row();
+        projectKnowledgeEntryRow.addView(quickProjectKnowledgeButton);
+        projectKnowledgeEntryCard.addView(projectKnowledgeEntryRow);
+        quickProjectKnowledgeButton.setOnClickListener(this);
+
+        archiveCard.setVisibility(View.GONE);
+        LinearLayout educationContent = stack();
+        educationContent.addView(collapsiblePanel("学情报告", "查看整体画像、行动建议、历史变化和阶段总结。", reportCard));
+        educationContent.addView(collapsiblePanel("成长模型", "只读查看能力画像、项目贡献和近期成长证据。", growthCard));
+        educationContent.addView(collapsiblePanel("学情档案", "打开当前学生自己的教育档案。", archiveEntryCard));
+        educationContent.addView(collapsiblePanel("项目知识库", "打开当前学生已经关联的项目知识。", projectKnowledgeEntryCard));
+        educationContent.addView(archiveCard);
+        root.addView(collapsiblePanel("教育档案", "报告、成长模型、档案和项目知识均为当前学生只读内容。", educationContent));
 
         FrameLayout.LayoutParams topParams = new FrameLayout.LayoutParams(dp(132), dp(48), Gravity.BOTTOM | Gravity.RIGHT);
         topParams.setMargins(0, 0, dp(20), dp(20));
@@ -925,9 +982,21 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
             scrollToView(reportCard);
             status("正在读取学情报告。");
         } else if (view == quickArchiveButton) {
+            selectStudentArchiveSource();
+            archiveCard.setVisibility(View.VISIBLE);
             loadArchiveFiles();
             scrollToView(archiveCard);
-            status("已刷新学情档案，可在下方选择分类和文档。");
+            status("已打开当前学生的学情档案。");
+        } else if (view == quickProjectKnowledgeButton) {
+            refreshArchiveSources();
+            if (archiveSourceProjects.isEmpty()) {
+                status("当前学生还没有关联项目知识库。");
+            } else {
+                archiveCard.setVisibility(View.VISIBLE);
+                archiveSourceSpinner.setSelection(1);
+                scrollToView(archiveCard);
+                status("已打开项目知识库，可在“查看内容”中切换本人关联项目。");
+            }
         } else if (view == quickContactButton) {
             updateContactCard();
             scrollToView(contactCard);
@@ -982,6 +1051,8 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
             loadArchiveFiles();
         } else if (view == refreshReportsButton) {
             loadLearningReports();
+        } else if (view == refreshGrowthButton) {
+            loadGrowthSummary();
         } else if (view == reportProfileButton) {
             loadLearningReport("profile");
         } else if (view == reportDailyButton) {
@@ -1078,7 +1149,18 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
             updateDigestStatusCard();
             refreshCaptureUi();
             updateContactCard();
+            refreshArchiveSources();
             loadArchiveFiles();
+        } else if (parent == archiveSourceSpinner && !updatingArchiveSources) {
+            if (position <= 0 || position - 1 >= archiveSourceProjects.size()) {
+                showingProjectKnowledge = false;
+                selectedKnowledgeProjectId = "";
+                selectedKnowledgeProjectName = "";
+                loadArchiveFiles();
+            } else {
+                LearningProject project = archiveSourceProjects.get(position - 1);
+                loadProjectKnowledgeFiles(project);
+            }
         } else if (parent == archiveCategorySpinner) {
             selectedArchiveCategory = position;
             applyArchiveCategoryFilter();
@@ -1211,6 +1293,7 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
         if (archiveAdapter != null) { archiveAdapter.clear(); archiveAdapter.notifyDataSetChanged(); }
         currentMarkdown = "";
         updateMarkdownDisplay("\u8bf7\u5148\u626b\u7801\u6216\u8f93\u5165\u5b66\u751f ID\u3002");
+        if (growthSummaryText != null) growthSummaryText.setText("进入学生空间后，可从 Windows 主机读取自己的成长模型。");
         getSharedPreferences(PREFS, MODE_PRIVATE).edit().remove(PREF_STUDENT_SESSION_TOKEN).apply();
         updateStudentSessionUi();
         updateSharedUploadButton();
@@ -1236,6 +1319,7 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
         if (quickUploadButton != null) quickUploadButton.setEnabled(active);
         if (quickReportButton != null) quickReportButton.setEnabled(active);
         if (quickArchiveButton != null) quickArchiveButton.setEnabled(active);
+        if (refreshGrowthButton != null) refreshGrowthButton.setEnabled(active);
         updateAutoDeliveryUi();
         updateStudentProgressCard();
     }
@@ -1373,6 +1457,9 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
     }
 
     void loadArchiveFiles() {
+        showingProjectKnowledge = false;
+        selectedKnowledgeProjectId = "";
+        selectedKnowledgeProjectName = "";
         if (selectedStudent == null) {
             allArchiveFiles.clear();
             archiveFiles.clear();
@@ -1388,12 +1475,65 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
         new Thread(new LoadArchiveFilesTask(this, base, token, selectedStudent.id)).start();
     }
 
+    void refreshArchiveSources() {
+        if (archiveSourceAdapter == null) return;
+        updatingArchiveSources = true;
+        archiveSourceProjects.clear();
+        archiveSourceAdapter.clear();
+        archiveSourceAdapter.add("我的学情档案");
+        if (selectedStudent != null) {
+            for (LearningProject project : projects) {
+                if (!project.studentIds.contains(selectedStudent.id)) continue;
+                archiveSourceProjects.add(project);
+                archiveSourceAdapter.add("项目知识：" + project.name + ("sealed".equals(project.status) ? "（已封存）" : ""));
+            }
+        }
+        archiveSourceAdapter.notifyDataSetChanged();
+        int selected = 0;
+        if (showingProjectKnowledge && selectedKnowledgeProjectId.length() > 0) {
+            for (int i = 0; i < archiveSourceProjects.size(); i++) {
+                if (selectedKnowledgeProjectId.equals(archiveSourceProjects.get(i).id)) selected = i + 1;
+            }
+        }
+        archiveSourceSpinner.setSelection(selected, false);
+        updatingArchiveSources = false;
+    }
+
+    void selectStudentArchiveSource() {
+        showingProjectKnowledge = false;
+        selectedKnowledgeProjectId = "";
+        selectedKnowledgeProjectName = "";
+        if (archiveSourceSpinner != null) archiveSourceSpinner.setSelection(0, false);
+    }
+
+    void loadProjectKnowledgeFiles(LearningProject project) {
+        if (selectedStudent == null || project == null || !project.studentIds.contains(selectedStudent.id)) {
+            status("当前学生没有关联该项目。");
+            return;
+        }
+        String base = normalizedBaseUrl();
+        String token = dataToken();
+        if (base.length() == 0 || token.length() == 0) {
+            status("请先进入学生空间。");
+            return;
+        }
+        showingProjectKnowledge = true;
+        selectedKnowledgeProjectId = project.id;
+        selectedKnowledgeProjectName = project.name;
+        archiveTitle.setText("正在读取“" + project.name + "”项目知识...");
+        new Thread(new LoadProjectKnowledgeFilesTask(this, base, token, selectedStudent.id, project)).start();
+    }
+
     void loadArchiveFile(ArchiveFile file) {
         if (selectedStudent == null) return;
         String base = normalizedBaseUrl();
         String token = dataToken();
         if (base.length() == 0 || token.length() == 0) return;
-        new Thread(new LoadArchiveFileTask(this, base, token, selectedStudent.id, file)).start();
+        if (showingProjectKnowledge && selectedKnowledgeProjectId.length() > 0) {
+            new Thread(new LoadProjectKnowledgeFileTask(this, base, token, selectedStudent.id, selectedKnowledgeProjectId, selectedKnowledgeProjectName, file)).start();
+        } else {
+            new Thread(new LoadArchiveFileTask(this, base, token, selectedStudent.id, file)).start();
+        }
     }
 
     void loadLearningReports() {
@@ -1409,6 +1549,192 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
         }
         status("正在同步学情报告...");
         new Thread(new LoadLearningReportsTask(this, base, token, selectedStudent.id)).start();
+    }
+
+    void loadGrowthSummary() {
+        if (selectedStudent == null) {
+            status("请先进入学生空间。");
+            return;
+        }
+        String base = normalizedBaseUrl();
+        String token = dataToken();
+        if (base.length() == 0 || token.length() == 0) {
+            status("请先进入学生空间。");
+            return;
+        }
+        status("正在读取成长模型...");
+        new Thread(new LoadGrowthSummaryTask(this, base, token, selectedStudent.id)).start();
+    }
+
+    void applyGrowthSummary(JSONObject payload, String error) {
+        if (growthSummaryText == null) return;
+        if (error != null) {
+            growthSummaryText.setText("成长模型读取失败：" + error);
+            status("成长模型读取失败：" + error);
+            return;
+        }
+        String fallbackMarkdown = payload == null ? "" : payload.optString("fallbackMarkdown", "");
+        if (fallbackMarkdown.length() > 0) {
+            growthSummaryText.setText(readableGrowthMarkdown(fallbackMarkdown));
+            status("成长模型已更新（兼容模式）。");
+            return;
+        }
+        JSONObject summary = payload == null ? null : payload.optJSONObject("summary");
+        JSONArray abilities = payload == null ? null : payload.optJSONArray("abilities");
+        JSONArray projectItems = payload == null ? null : payload.optJSONArray("projects");
+        JSONArray evidence = payload == null ? null : payload.optJSONArray("recentEvidence");
+        StringBuilder text = new StringBuilder();
+        text.append("成长证据 ").append(summary == null ? 0 : summary.optInt("evidenceCount", 0))
+            .append(" 条 · 已确认 ").append(summary == null ? 0 : summary.optInt("confirmedCount", 0))
+            .append(" 条 · 观察中 ").append(summary == null ? 0 : summary.optInt("watchingCount", 0)).append(" 条\n");
+        text.append("能力维度 ").append(summary == null ? 0 : summary.optInt("abilityCount", 0))
+            .append(" 个 · 关联项目 ").append(summary == null ? 0 : summary.optInt("projectCount", 0)).append(" 个\n\n");
+        text.append("能力画像\n");
+        if (abilities == null || abilities.length() == 0) {
+            text.append("• 暂无已形成的能力画像。\n");
+        } else {
+            for (int i = 0; i < abilities.length() && i < 8; i++) {
+                JSONObject item = abilities.optJSONObject(i);
+                if (item == null) continue;
+                text.append("• ").append(item.optString("name", "待标注"))
+                    .append("：").append(item.optString("maturityLabel", "证据不足"))
+                    .append("，").append(item.optString("trendLabel", "尚不足以判断"))
+                    .append("；证据 ").append(item.optInt("evidenceCount", 0)).append(" 条\n");
+            }
+        }
+        text.append("\n项目贡献\n");
+        if (projectItems == null || projectItems.length() == 0) {
+            text.append("• 暂无项目贡献记录。\n");
+        } else {
+            for (int i = 0; i < projectItems.length() && i < 6; i++) {
+                JSONObject item = projectItems.optJSONObject(i);
+                if (item == null) continue;
+                text.append("• ").append(item.optString("projectName", "未命名项目"))
+                    .append("：").append(item.optString("reviewStatusLabel", "积累中"))
+                    .append("；已确认 ").append(item.optInt("confirmedEvidenceCount", 0))
+                    .append("/").append(item.optInt("evidenceCount", 0)).append(" 条\n");
+            }
+        }
+        text.append("\n近期成长证据\n");
+        if (evidence == null || evidence.length() == 0) {
+            text.append("• 暂无已确认或观察中的成长证据。");
+        } else {
+            for (int i = 0; i < evidence.length() && i < 6; i++) {
+                JSONObject item = evidence.optJSONObject(i);
+                if (item == null) continue;
+                text.append("• ").append(item.optString("title", "成长证据"))
+                    .append("（").append(item.optString("statusLabel", "观察中"));
+                String ability = item.optString("ability", "");
+                if (ability.length() > 0) text.append(" · ").append(ability);
+                text.append("）");
+                if (i + 1 < evidence.length() && i < 5) text.append("\n");
+            }
+        }
+        growthSummaryText.setText(text.toString());
+        status("成长模型已更新。");
+    }
+
+    String readableGrowthMarkdown(String markdown) {
+        String updatedAt = "";
+        String evidenceCount = "0";
+        String confirmedCount = "0";
+        String watchingCount = "0";
+        String abilityCount = "0";
+        String projectCount = "0";
+        String section = "";
+        int abilityRows = 0;
+        int projectRows = 0;
+        StringBuilder abilities = new StringBuilder();
+        StringBuilder projects = new StringBuilder();
+        String[] lines = (markdown == null ? "" : markdown).replace("\r", "").split("\n");
+        for (String sourceLine : lines) {
+            String line = sourceLine == null ? "" : sourceLine.trim();
+            if (line.length() == 0) continue;
+            if (line.startsWith("生成时间：")) {
+                updatedAt = line.substring("生成时间：".length()).trim();
+                continue;
+            }
+            if (line.matches("^##\\s+总览.*")) { section = "summary"; continue; }
+            if (line.matches("^##\\s+能力画像.*")) { section = "abilities"; continue; }
+            if (line.matches("^##\\s+项目贡献.*")) { section = "projects"; continue; }
+            if (line.startsWith("## ") || line.startsWith(">")) { section = ""; continue; }
+            if (line.matches("^\\|\\s*[-:| ]+\\s*\\|$")) continue;
+            String[] cells = growthTableCells(line);
+            if (cells.length < 2) continue;
+            if ("summary".equals(section) && !"指标".equals(cells[0])) {
+                if ("成长证据".equals(cells[0])) evidenceCount = cells[1];
+                else if ("已确认".equals(cells[0])) confirmedCount = cells[1];
+                else if ("观察中".equals(cells[0])) watchingCount = cells[1];
+                else if ("能力维度".equals(cells[0])) abilityCount = cells[1];
+                else if ("关联项目".equals(cells[0])) projectCount = cells[1];
+            } else if ("abilities".equals(section) && cells.length >= 5 && !"能力".equals(cells[0]) && abilityRows < 8) {
+                if (abilities.length() > 0) abilities.append("\n");
+                abilities.append("• ").append(cells[0].length() == 0 ? "待标注" : cells[0])
+                    .append("：").append(growthMaturityLabel(cells[1]))
+                    .append("，").append(growthTrendLabel(cells[2]))
+                    .append("；证据 ").append(cells[3]).append(" 条")
+                    .append("，已确认 ").append(cells[4]).append(" 条");
+                if (cells.length > 5) {
+                    String names = safeGrowthNames(cells[5]);
+                    if (names.length() > 0) abilities.append("；项目 ").append(names);
+                }
+                abilityRows++;
+            } else if ("projects".equals(section) && cells.length >= 4 && !"项目".equals(cells[0]) && projectRows < 6) {
+                if (projects.length() > 0) projects.append("\n");
+                projects.append("• ").append(cells[0].length() == 0 ? "未命名项目" : cells[0])
+                    .append("：").append(growthProjectStatusLabel(cells[1]))
+                    .append("；已确认 ").append(cells[3]).append("/").append(cells[2]).append(" 条");
+                projectRows++;
+            }
+        }
+        StringBuilder text = new StringBuilder();
+        if (updatedAt.length() > 0) text.append("更新时间：").append(updatedAt).append("\n");
+        text.append("成长证据 ").append(evidenceCount).append(" 条 · 已确认 ").append(confirmedCount)
+            .append(" 条 · 观察中 ").append(watchingCount).append(" 条\n")
+            .append("能力维度 ").append(abilityCount).append(" 个 · 关联项目 ").append(projectCount).append(" 个\n\n")
+            .append("能力画像\n").append(abilities.length() == 0 ? "• 暂无已形成的能力画像。" : abilities.toString())
+            .append("\n\n项目贡献\n").append(projects.length() == 0 ? "• 暂无项目贡献记录。" : projects.toString());
+        return text.toString();
+    }
+
+    String[] growthTableCells(String line) {
+        String value = line == null ? "" : line.trim();
+        if (!value.startsWith("|") || !value.endsWith("|")) return new String[0];
+        String[] cells = value.substring(1, value.length() - 1).split("\\|", -1);
+        for (int i = 0; i < cells.length; i++) cells[i] = cells[i].trim();
+        return cells;
+    }
+
+    String growthMaturityLabel(String value) {
+        if ("established".equals(value)) return "已形成";
+        if ("emerging".equals(value)) return "正在形成";
+        if ("observing".equals(value)) return "观察中";
+        return "证据不足";
+    }
+
+    String growthTrendLabel(String value) {
+        if ("improving".equals(value)) return "持续增强";
+        if ("stable".equals(value)) return "保持稳定";
+        return "尚不足以判断";
+    }
+
+    String growthProjectStatusLabel(String value) {
+        if ("published".equals(value)) return "已发布";
+        if ("not_started".equals(value)) return "尚无成长证据";
+        return "积累中";
+    }
+
+    String safeGrowthNames(String value) {
+        StringBuilder safe = new StringBuilder();
+        String[] names = (value == null ? "" : value).split("[、,，]");
+        for (String source : names) {
+            String name = source == null ? "" : source.trim();
+            if (name.length() == 0 || "-".equals(name) || name.matches("^[A-Za-z]:[\\\\/].*") || name.contains(":\\")) continue;
+            if (safe.length() > 0) safe.append("、");
+            safe.append(name);
+            if (safe.length() > 80) break;
+        }
+        return safe.toString();
     }
 
     void loadLearningReport(String reportId) {
@@ -4062,6 +4388,7 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
         updateSharedUploadButton();
         updateDigestStatusCard();
         updateContactCard();
+        refreshArchiveSources();
         updateConnectionSummary(requiresApproval ? "已连接，待 Windows 授权" : "已连接", students.size());
         status(requiresApproval
             ? "设备已登记，正在等待 Windows 主机授权学生；授权后会自动载入。"
@@ -4101,6 +4428,24 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
         if (selectedStudent != null) status("档案已同步：" + archiveListCacheTimeText(selectedStudent.id));
     }
 
+    void applyProjectKnowledgeFiles(String projectId, String projectName, List<ArchiveFile> result, String error) {
+        if (!showingProjectKnowledge || !projectId.equals(selectedKnowledgeProjectId)) return;
+        if (error != null) {
+            archiveTitle.setText("项目知识读取失败");
+            currentMarkdown = "";
+            updateMarkdownDisplay("读取“" + projectName + "”项目知识失败：" + error);
+            allArchiveFiles.clear();
+            archiveFiles.clear();
+            renderArchiveFileList();
+            return;
+        }
+        allArchiveFiles.clear();
+        allArchiveFiles.addAll(result);
+        applyArchiveCategoryFilter();
+        archiveTitle.setText(result.size() > 0 ? "请选择“" + projectName + "”中的知识文件。" : "“" + projectName + "”暂无可查看的知识文件。");
+        status("已读取“" + projectName + "”项目知识：" + result.size() + " 份。");
+    }
+
     void applyArchiveCategoryFilter() {
         archiveFiles.clear();
         String keyword = archiveSearchInput == null ? "" : archiveSearchInput.getText().toString().trim().toLowerCase(Locale.ROOT);
@@ -4112,9 +4457,14 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
             }
         }
         renderArchiveFileList();
-        archiveTitle.setText(archiveFiles.size() > 0 ? "请选择档案。" : "暂无 Markdown 档案。");
+        archiveTitle.setText(archiveFiles.size() > 0
+            ? (showingProjectKnowledge ? "请选择“" + selectedKnowledgeProjectName + "”中的知识文件。" : "请选择档案。")
+            : (showingProjectKnowledge ? "当前项目暂无匹配的知识文件。" : "暂无 Markdown 档案。"));
         if (archiveFiles.size() == 0) {
-            markdownView.setText(allArchiveFiles.size() == 0 ? "Windows 主机中还没有该学生的学情分析 Markdown。" : "该分类下暂无 Markdown 档案。");
+            String emptyMessage = allArchiveFiles.size() == 0
+                ? (showingProjectKnowledge ? "当前关联项目还没有可查看的 Markdown 知识。" : "Windows 主机中还没有该学生的学情分析 Markdown。")
+                : "该分类下暂无 Markdown 文档。";
+            updateMarkdownDisplay(emptyMessage);
             currentMarkdown = "";
         }
     }
@@ -4123,7 +4473,9 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
         if (archiveAdapter == null) return;
         archiveAdapter.clear();
         if (archiveFiles.size() == 0) {
-            String emptyText = allArchiveFiles.size() == 0 ? "\u6682\u65e0 Markdown \u6863\u6848\u3002" : "\u8be5\u5206\u7c7b\u4e0b\u6682\u65e0 Markdown \u6863\u6848\u3002";
+            String emptyText = allArchiveFiles.size() == 0
+                ? (showingProjectKnowledge ? "暂无项目知识。" : "\u6682\u65e0 Markdown \u6863\u6848\u3002")
+                : "\u8be5\u5206\u7c7b\u4e0b\u6682\u65e0 Markdown \u6587\u6863\u3002";
             archiveAdapter.add(emptyText);
             archiveAdapter.notifyDataSetChanged();
             updateMarkdownDisplay(emptyText);
@@ -4338,6 +4690,49 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
         params.setMargins(0, 0, 0, dp(14));
         layout.setLayoutParams(params);
         return layout;
+    }
+
+    private LinearLayout stack() {
+        LinearLayout layout = new LinearLayout(this);
+        layout.setOrientation(LinearLayout.VERTICAL);
+        layout.setLayoutParams(new LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT,
+            LinearLayout.LayoutParams.WRAP_CONTENT
+        ));
+        return layout;
+    }
+
+    private LinearLayout collapsiblePanel(String title, String description, View content) {
+        LinearLayout shell = card();
+        LinearLayout body = stack();
+        if (description != null && description.trim().length() > 0) {
+            TextView hint = label(description);
+            hint.setTypeface(null, 0);
+            hint.setTextColor(Color.rgb(87, 107, 103));
+            body.addView(hint);
+        }
+        body.addView(content);
+        body.setVisibility(View.GONE);
+
+        Button toggle = button("▶ " + title, false);
+        LinearLayout.LayoutParams toggleParams = new LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT,
+            dp(52)
+        );
+        toggleParams.setMargins(0, 0, 0, dp(4));
+        toggle.setLayoutParams(toggleParams);
+        toggle.setGravity(Gravity.START | Gravity.CENTER_VERTICAL);
+        toggle.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View view) {
+                boolean expanding = body.getVisibility() != View.VISIBLE;
+                body.setVisibility(expanding ? View.VISIBLE : View.GONE);
+                toggle.setText((expanding ? "▼ " : "▶ ") + title);
+            }
+        });
+        shell.addView(toggle);
+        shell.addView(body);
+        return shell;
     }
 
     private LinearLayout row() {
@@ -5210,6 +5605,80 @@ class LoadArchiveFileTask implements Runnable {
     }
 }
 
+class LoadProjectKnowledgeFilesTask implements Runnable {
+    private final MainActivity activity;
+    private final String base;
+    private final String token;
+    private final String studentId;
+    private final LearningProject project;
+
+    LoadProjectKnowledgeFilesTask(MainActivity activity, String base, String token, String studentId, LearningProject project) {
+        this.activity = activity;
+        this.base = base;
+        this.token = token;
+        this.studentId = studentId;
+        this.project = project;
+    }
+
+    @Override
+    public void run() {
+        try {
+            if (!project.studentIds.contains(studentId)) throw new Exception("当前学生没有关联该项目");
+            JSONObject json = activity.getJson(base + "/api/projects/" + activity.encode(project.id) + "/archive/files", token);
+            JSONArray array = json.optJSONArray("files");
+            List<ArchiveFile> result = new ArrayList<ArchiveFile>();
+            if (array != null) {
+                for (int i = 0; i < array.length(); i++) {
+                    JSONObject item = array.optJSONObject(i);
+                    if (item == null) continue;
+                    ArchiveFile file = new ArchiveFile(item);
+                    String lower = file.path.toLowerCase(Locale.ROOT);
+                    if (lower.endsWith(".md") && !lower.endsWith("/agent.md") && !lower.endsWith("/log.md") && !lower.equals("agent.md") && !lower.equals("log.md")) {
+                        result.add(file);
+                    }
+                }
+            }
+            activity.runOnUiThread(new ProjectKnowledgeFilesResultTask(activity, project.id, project.name, result, null));
+        } catch (Exception error) {
+            activity.runOnUiThread(new ProjectKnowledgeFilesResultTask(activity, project.id, project.name, null, error.getMessage()));
+        }
+    }
+}
+
+class LoadProjectKnowledgeFileTask implements Runnable {
+    private final MainActivity activity;
+    private final String base;
+    private final String token;
+    private final String studentId;
+    private final String projectId;
+    private final String projectName;
+    private final ArchiveFile file;
+
+    LoadProjectKnowledgeFileTask(MainActivity activity, String base, String token, String studentId, String projectId, String projectName, ArchiveFile file) {
+        this.activity = activity;
+        this.base = base;
+        this.token = token;
+        this.studentId = studentId;
+        this.projectId = projectId;
+        this.projectName = projectName;
+        this.file = file;
+    }
+
+    @Override
+    public void run() {
+        String cacheScope = studentId + "-project-" + projectId;
+        try {
+            String url = base + "/api/projects/" + activity.encode(projectId) + "/archive/file?path=" + activity.encode(file.path);
+            JSONObject json = activity.getJson(url, token);
+            String content = json.optString("content", "");
+            activity.cacheMarkdown(cacheScope, file, content);
+            activity.runOnUiThread(new MarkdownResultTask(activity, cacheScope, file.path, projectName + " · " + file.name, content, null));
+        } catch (Exception error) {
+            activity.runOnUiThread(new MarkdownResultTask(activity, cacheScope, file.path, projectName + " · " + file.name, "", error.getMessage()));
+        }
+    }
+}
+
 class LoadLearningReportsTask implements Runnable {
     private final MainActivity activity;
     private final String base;
@@ -5251,6 +5720,56 @@ class LoadLearningReportsTask implements Runnable {
             activity.runOnUiThread(new StatusTask(activity, "学情报告已同步：" + count + " 份。"));
         } catch (Exception error) {
             activity.runOnUiThread(new StatusTask(activity, "学情报告同步失败：" + error.getMessage()));
+        }
+    }
+}
+
+class LoadGrowthSummaryTask implements Runnable {
+    private final MainActivity activity;
+    private final String base;
+    private final String token;
+    private final String studentId;
+
+    LoadGrowthSummaryTask(MainActivity activity, String base, String token, String studentId) {
+        this.activity = activity;
+        this.base = base;
+        this.token = token;
+        this.studentId = studentId;
+    }
+
+    @Override
+    public void run() {
+        try {
+            JSONObject json = activity.getJson(base + "/api/students/" + activity.encode(studentId) + "/growth-summary", token);
+            activity.runOnUiThread(new GrowthSummaryResultTask(activity, json, null));
+        } catch (Exception error) {
+            try {
+                JSONObject listing = activity.getJson(base + "/api/students/" + activity.encode(studentId) + "/archive/files", token);
+                JSONArray files = listing.optJSONArray("files");
+                String growthPath = "";
+                if (files != null) {
+                    for (int i = 0; i < files.length(); i++) {
+                        JSONObject item = files.optJSONObject(i);
+                        String path = item == null ? "" : item.optString("path", "");
+                        String normalized = path.replace("\\", "/").toLowerCase();
+                        if (normalized.endsWith("成长模型/growth-index.md") || normalized.endsWith("/growth-index.md")) {
+                            growthPath = path;
+                            break;
+                        }
+                    }
+                }
+                if (growthPath.length() == 0) throw new Exception("主机尚未生成成长模型索引。");
+                String url = base + "/api/students/" + activity.encode(studentId) + "/archive/file?path=" + activity.encode(growthPath);
+                JSONObject fileJson = activity.getJson(url, token);
+                JSONObject fallback = new JSONObject();
+                fallback.put("ok", true);
+                fallback.put("fallbackMarkdown", fileJson.optString("content", ""));
+                activity.runOnUiThread(new GrowthSummaryResultTask(activity, fallback, null));
+            } catch (Exception fallbackError) {
+                String message = fallbackError.getMessage();
+                if (message == null || message.length() == 0) message = error.getMessage();
+                activity.runOnUiThread(new GrowthSummaryResultTask(activity, null, message));
+            }
         }
     }
 }
@@ -5525,6 +6044,44 @@ class ArchiveFilesResultTask implements Runnable {
     @Override
     public void run() {
         activity.applyArchiveFiles(result, error);
+    }
+}
+
+class ProjectKnowledgeFilesResultTask implements Runnable {
+    private final MainActivity activity;
+    private final String projectId;
+    private final String projectName;
+    private final List<ArchiveFile> result;
+    private final String error;
+
+    ProjectKnowledgeFilesResultTask(MainActivity activity, String projectId, String projectName, List<ArchiveFile> result, String error) {
+        this.activity = activity;
+        this.projectId = projectId;
+        this.projectName = projectName;
+        this.result = result;
+        this.error = error;
+    }
+
+    @Override
+    public void run() {
+        activity.applyProjectKnowledgeFiles(projectId, projectName, result == null ? new ArrayList<ArchiveFile>() : result, error);
+    }
+}
+
+class GrowthSummaryResultTask implements Runnable {
+    private final MainActivity activity;
+    private final JSONObject payload;
+    private final String error;
+
+    GrowthSummaryResultTask(MainActivity activity, JSONObject payload, String error) {
+        this.activity = activity;
+        this.payload = payload;
+        this.error = error;
+    }
+
+    @Override
+    public void run() {
+        activity.applyGrowthSummary(payload, error);
     }
 }
 

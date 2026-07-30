@@ -23,71 +23,83 @@ function reconcileDigestControlState(parsedState, pendingCount) {
   return { status, digestBatchId, submittedFiles, message };
 }
 
-function validateDigestReceipt({ projectId, current, request, receipt, rawFiles }) {
+function normalizeProjectDigestReceipt(receipt, submittedFiles = []) {
+  const original = receipt && typeof receipt === 'object' && !Array.isArray(receipt) ? receipt : {};
+  const submitted = Array.isArray(submittedFiles) ? submittedFiles : [];
+  const normalized = normalizeDigestResult(original, {
+    batchId: String(original.digestBatchId || original.batchId || ''),
+    scope: { type: 'project', id: String(original.projectId || '') },
+    files: submitted,
+  });
+  const stats = original.digestStats && typeof original.digestStats === 'object' ? original.digestStats : {};
+  const totalFiles = Number(stats.totalFiles);
+  const actuallyDigested = Number(stats.actuallyDigested);
+  const skipped = Number(stats.skipped);
+  const hasStats = Number.isFinite(totalFiles) || Number.isFinite(actuallyDigested) || Number.isFinite(skipped);
+  const compatibility = original.compatibility || {
+    mode: hasStats ? 'qclaw_digest_stats_permissive' : 'project_receipt_permissive',
+    sourceStatus: String(original.status || original.digestStatus || original.state || ''),
+    ...(Number.isFinite(totalFiles) ? { totalFiles } : {}),
+    ...(Number.isFinite(actuallyDigested) ? { actuallyDigested } : {}),
+    ...(Number.isFinite(skipped) ? { skipped } : {}),
+  };
+  return {
+    receipt: {
+      ...original,
+      status: normalized.status || (normalized.processed.length ? 'partial' : ''),
+      projectId: String(original.projectId || normalized.scope.id || ''),
+      digestBatchId: String(original.digestBatchId || original.batchId || normalized.digestBatchId || ''),
+      digestedFiles: normalized.processed,
+      failed: normalized.failed,
+      compatibility,
+    },
+    compatibility,
+  };
+}
+
+function validateDigestReceipt({ projectId, current, request, receipt, rawFiles, assumeAllOnCompletion = false, inferredArtifacts = [] }) {
   const state = current && typeof current === 'object' ? current : {};
   const requestData = request && typeof request === 'object' ? request : {};
-  const receiptData = receipt && typeof receipt === 'object' ? receipt : {};
   const submitted = Array.isArray(state.submittedFiles) ? state.submittedFiles : [];
-  const batchId = String(state.digestBatchId || '');
-  if (!batchId || !['submitted', 'digesting'].includes(String(state.status)) || !submitted.length) {
-    return { ok: false, code: 'no_active_batch', message: '当前没有已登记且等待回执的消化批次。' };
-  }
-  if (String(requestData.projectId || '') !== String(projectId) || String(requestData.digestBatchId || '') !== batchId) {
-    return { ok: false, code: 'request_mismatch', message: '当前消化请求文件缺失或批次不一致，未同步结果。' };
-  }
+  const normalizedReceipt = normalizeProjectDigestReceipt(receipt, submitted);
+  const receiptData = normalizedReceipt.receipt;
+  const batchId = String(state.digestBatchId || requestData.digestBatchId || receiptData.digestBatchId || `project-digest-${projectId}`);
+  if (!submitted.length) return { ok: false, code: 'no_active_batch', message: '当前没有等待结算的项目资料。' };
   const receiptKeys = Object.keys(receiptData);
   if (!receiptKeys.length) {
     return { ok: false, code: 'receipt_not_ready', message: '尚未检测到当前批次的有效完成回执。' };
   }
-  const receiptProblems = [];
-  if (receiptData.status !== 'completed') {
-    receiptProblems.push(`status 应为 completed，实际为 ${String(receiptData.status || '缺失')}`);
-  }
-  if (String(receiptData.projectId || '') !== String(projectId)) {
-    receiptProblems.push(`projectId 应为 ${projectId}，实际为 ${String(receiptData.projectId || '缺失')}`);
-  }
-  if (String(receiptData.digestBatchId || '') !== batchId) {
-    const incompatibleBatch = receiptData.batchId ? `；检测到不兼容字段 batchId=${receiptData.batchId}` : '';
-    receiptProblems.push(`digestBatchId 应为 ${batchId}，实际为 ${String(receiptData.digestBatchId || '缺失')}${incompatibleBatch}`);
-  }
-  if (!Array.isArray(receiptData.digestedFiles) && Array.isArray(receiptData.processedFiles)) {
-    receiptProblems.push('使用了 processedFiles；当前协议要求 digestedFiles，并逐项提供 relativePath 与 sha1');
-  }
-  if (receiptProblems.length) {
-    return {
-      ok: false,
-      code: 'receipt_not_ready',
-      message: `已检测到回执文件，但不符合当前批次协议：${receiptProblems.join('；')}。未同步任何资料。`,
-    };
-  }
-  const explicit = Array.isArray(receiptData.digestedFiles) ? receiptData.digestedFiles : [];
-  if (!explicit.length) return { ok: false, code: 'empty_receipt', message: 'Agent 完成回执缺少 digestedFiles，未更新任何资料。' };
-  const submittedByRelativePath = new Map(submitted.map((file) => [String(file.relativePath || ''), file]));
-  const rawByRelativePath = new Map((Array.isArray(rawFiles) ? rawFiles : []).map((file) => [String(file.relativePath || ''), file]));
-  const confirmed = [];
-  const rejected = [];
-  const seen = new Set();
-  for (const item of explicit) {
-    if (!item || typeof item !== 'object') {
-      rejected.push({ receipt: item, reason: '回执条目必须同时包含 relativePath 和 sha1' });
-      continue;
-    }
-    const relativePath = String(item.relativePath || '');
-    const sha1 = String(item.sha1 || '');
-    const submittedFile = submittedByRelativePath.get(relativePath);
-    const rawFile = rawByRelativePath.get(relativePath);
-    if (!relativePath || !sha1 || !submittedFile || !rawFile || String(submittedFile.sha1 || '') !== sha1 || String(rawFile.sha1 || '') !== sha1) {
-      rejected.push({ relativePath, sha1, reason: '不属于当前批次，或文件内容已变化' });
-      continue;
-    }
-    if (!seen.has(relativePath)) {
-      confirmed.push(rawFile);
-      seen.add(relativePath);
-    }
-  }
-  if (!confirmed.length) return { ok: false, code: 'no_matching_files', rejected, message: 'Agent 已写完成状态，但未提供与当前批次匹配的 digestedFiles，未更新消化清单。' };
-  const remaining = submitted.filter((file) => !seen.has(String(file.relativePath || '')));
-  return { ok: true, confirmed, remaining, rejected, fullyCompleted: remaining.length === 0 };
+  const rawByPath = new Map((Array.isArray(rawFiles) ? rawFiles : []).map((file) => [String(file.relativePath || '').replace(/\\/g, '/').toLowerCase(), file]));
+  const batchFiles = submitted.map((file, index) => ({
+    ...file,
+    materialId: String(file.materialId || `project-${projectId}-${index}`),
+  }));
+  const currentFiles = batchFiles.map((file) => {
+    const raw = rawByPath.get(String(file.relativePath || '').replace(/\\/g, '/').toLowerCase());
+    return raw ? { ...file, ...raw, materialId: file.materialId } : file;
+  });
+  const validation = validateDigestResult({
+    batch: { batchId, scope: { type: 'project', id: String(projectId) }, files: batchFiles },
+    receipt: receiptData,
+    currentFiles,
+    assumeAllOnCompletion,
+    inferredArtifacts,
+  });
+  if (!validation.ok) return validation;
+  return {
+    ok: true,
+    confirmed: validation.confirmed,
+    remaining: validation.remaining,
+    rejected: validation.rejected,
+    fullyCompleted: validation.fullyCompleted,
+    compatibility: {
+      ...(normalizedReceipt.compatibility || {}),
+      reconciliation: validation.compatibility,
+      ignoredRequestBatch: Boolean(requestData.digestBatchId && requestData.digestBatchId !== batchId),
+      ignoredReceiptBatch: Boolean(receiptData.digestBatchId && receiptData.digestBatchId !== batchId),
+      pathMode: path.sep,
+    },
+  };
 }
 
 function nextStagingReviewState(item, decision) {
@@ -142,5 +154,9 @@ module.exports = {
   nextStagingReviewState,
   projectCompletionIssues,
   reconcileDigestControlState,
+  normalizeProjectDigestReceipt,
   validateDigestReceipt,
 };
+const path = require('node:path');
+
+const { normalizeDigestResult, validateDigestResult } = require('./digest-result.cjs');

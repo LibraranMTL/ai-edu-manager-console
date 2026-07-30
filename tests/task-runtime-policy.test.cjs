@@ -52,6 +52,18 @@ test('process tasks still enforce heartbeat and total execution timeout', () => 
   }, Date.parse('2026-07-23T00:04:01.000Z'));
   assert.equal(decision.due, true);
   assert.equal(decision.error.code, 'HEARTBEAT_LOST');
+
+  const directQClaw = taskTimeoutDecision({
+    status: 'running',
+    executionMode: 'automatic',
+    adapterId: 'qclaw',
+    startedAt: '2026-07-23T00:00:00.000Z',
+    lastHeartbeatAt: '2026-07-23T00:01:00.000Z',
+    timeoutSeconds: 900,
+    heartbeatTimeoutSeconds: 180,
+  }, Date.parse('2026-07-23T00:04:01.000Z'));
+  assert.equal(directQClaw.kind, 'heartbeat');
+  assert.equal(directQClaw.due, true);
 });
 
 test('same-cycle terminal tasks stay terminal while a new cycle resets execution state', () => {

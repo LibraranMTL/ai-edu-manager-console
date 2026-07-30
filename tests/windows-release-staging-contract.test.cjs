@@ -6,11 +6,14 @@ const test = require('node:test');
 const root = path.resolve(__dirname, '..');
 const packageJson = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
 const releaseScript = fs.readFileSync(path.join(root, 'scripts', 'build-windows-release.cjs'), 'utf8');
+const terminalReleaseScript = fs.readFileSync(path.join(root, 'scripts', 'build-windows-terminal-release.cjs'), 'utf8');
 
 test('Windows release builds through an isolated local staging directory', () => {
   assert.equal(packageJson.scripts['build:win'], 'pnpm test && node scripts/build-windows-release.cjs');
   assert.match(releaseScript, /process\.env\.LOCALAPPDATA/);
   assert.match(releaseScript, /release-stage/);
+  assert.match(releaseScript, /EDU_WINDOWS_CANDIDATE_TAG/);
+  assert.match(releaseScript, /'windows', 'candidates', candidateTag/);
   assert.match(releaseScript, /runPackageBin\('electron-builder', 'electron-builder', \['--projectDir', stageRoot/);
   assert.match(releaseScript, /resolvePackageBin/);
   assert.match(releaseScript, /processExists\(Number\(lock\?\.pid\)\)/);
@@ -34,6 +37,23 @@ test('Windows release keeps the approved multilingual locale set', () => {
     assert.match(releaseScript, new RegExp(`['"]${locale}['"]`));
   }
   assert.match(releaseScript, /Electron locale mismatch/);
+});
+
+test('Windows host and student packages use the Robogala publisher metadata', () => {
+  assert.match(releaseScript, /author: 'Robogala'/);
+  assert.match(terminalReleaseScript, /author: 'Robogala'/);
+  assert.doesNotMatch(releaseScript, /Jiamalan \(Beijing\)/);
+  assert.doesNotMatch(terminalReleaseScript, /Jiamalan \(Beijing\)/);
+});
+
+test('Windows student package audits every local module required at startup', () => {
+  assert.match(terminalReleaseScript, /'electron\/growth-markdown-summary\.cjs'/);
+  assert.match(terminalReleaseScript, /'\\\\electron\\\\growth-markdown-summary\.cjs'/);
+  const copy = terminalReleaseScript.indexOf("'electron/growth-markdown-summary.cjs'");
+  const packageElectron = terminalReleaseScript.indexOf("[windows-terminal-release] package-electron");
+  const audit = terminalReleaseScript.indexOf("'\\\\electron\\\\growth-markdown-summary.cjs'");
+  const publish = terminalReleaseScript.indexOf('publishFile(stagedArtifact, releaseArtifact)');
+  assert.ok(copy > 0 && packageElectron > copy && audit > packageElectron && publish > audit);
 });
 
 test('release artifacts are published only after package audits pass', () => {

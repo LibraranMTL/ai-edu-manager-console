@@ -1,12 +1,12 @@
 {
   "versionCode": 77,
   "versionName": "0.6.7",
-  "windowsVersionCode": 199,
-  "windowsVersionName": "0.14.9",
-  "windowsUrl": "https://www.greatbg.com/download/AI-edu-manager-console-Windows-0.14.9.zip",
-  "windowsTerminalVersionCode": 199,
-  "windowsTerminalVersionName": "0.14.9",
-  "windowsTerminalUrl": "https://www.greatbg.com/download/AI-edu-manager-student-terminal-Windows-0.14.9.exe",
+  "windowsVersionCode": 200,
+  "windowsVersionName": "0.14.10",
+  "windowsUrl": "https://www.greatbg.com/download/AI-edu-manager-console-Windows-0.14.10.zip",
+  "windowsTerminalVersionCode": 200,
+  "windowsTerminalVersionName": "0.14.10",
+  "windowsTerminalUrl": "https://www.greatbg.com/download/AI-edu-manager-student-terminal-Windows-0.14.10.exe",
   "terminalApkUrl": "https://www.greatbg.com/download/AI-edu-manager-tablet-terminal-0.6.7.apk",
   "tabletTerminalVersionCode": 77,
   "tabletTerminalVersionName": "0.6.7",
@@ -15,5 +15,5 @@
   "managerApkVersionCode": 23,
   "managerApkVersionName": "0.2.3",
   "apkUrl": "https://www.greatbg.com/download/AI-edu-manager-tablet-terminal-0.6.7.apk",
-  "notes": "Windows 主机端与学生端 0.14.9 / Android 学生端 0.6.7：P6 教育资料闭环受控正式发布版，首页以一个下一步和六个教育状态呈现；加强最低依赖、离线恢复、数据引用、幂等处理和大资料库性能门禁。延期真机门禁将在后续补充。"
+  "notes": "Windows 主机端与学生端 0.14.10 / Android 学生端 0.6.7：精选课程开发前里程碑版本。代码冻结于 P6 教育资料闭环正式基线，不包含精选课程目录、第三方课程网页、课程采集或课程授权管理功能，供以后回滚或派生其他开发线。"
 }

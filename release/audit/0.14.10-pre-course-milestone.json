@@ -1,0 +1,59 @@
+{
+  "schema": "edu-manager.release-audit.v1",
+  "releaseDate": "2026-07-30",
+  "milestone": "pre-course-catalog",
+  "baseCommit": "e231358bc05bc626cb69b87cf14b2597ccd5f71d",
+  "gitBranch": "milestone/windows-0.14.10-pre-course",
+  "gitTag": "v0.14.10",
+  "versions": {
+    "windowsHost": "0.14.10",
+    "windowsStudent": "0.14.10",
+    "androidStudent": "0.6.7"
+  },
+  "scope": {
+    "sameFunctionalCodeAs": "0.14.9",
+    "excluded": [
+      "精选课程目录",
+      "第三方课程网页",
+      "课程资料采集",
+      "课程授权管理",
+      "课程目录签名与素材"
+    ]
+  },
+  "validation": {
+    "tests": {
+      "passed": 549,
+      "total": 549
+    },
+    "p6Scenarios": {
+      "passed": 10,
+      "total": 10
+    },
+    "productionBuild": "passed",
+    "windowsPackageAudit": "passed",
+    "windowsStudentPackageAudit": "passed"
+  },
+  "artifacts": [
+    {
+      "path": "release/windows/AI-edu-manager-console-Windows-0.14.10.exe",
+      "bytes": 89662860,
+      "sha256": "C1F279497C7C4FBC5B8FF18FDF35FE2A9E92F64119DFD5CBD6E71A1DEB8594A4",
+      "productVersion": "0.14.10",
+      "companyName": "Robogala",
+      "authenticode": "NotSigned"
+    },
+    {
+      "path": "release/windows/AI-edu-manager-console-Windows-0.14.10.zip",
+      "bytes": 89670746,
+      "sha256": "9800FBDFA5CC5EFC5A93CABD25AC3C32E329C02099171E74C16CB7CEA62FC8D0"
+    },
+    {
+      "path": "release/windows-terminal/AI-edu-manager-student-terminal-Windows-0.14.10.exe",
+      "bytes": 87481850,
+      "sha256": "CC8FB86AFDB31B231901B4E6774C8C5779558006CD7BD818A78341487CF2E8D6",
+      "productVersion": "0.14.10",
+      "companyName": "Robogala",
+      "authenticode": "NotSigned"
+    }
+  ]
+}

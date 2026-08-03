@@ -5,6 +5,7 @@ const COURSE_POLICY_SCHEMA_VERSION = 1;
 const COURSE_CAPTURE_SCHEMA = 'edu-manager.course-capture.v1';
 const COURSE_ALLOWED_TYPES = new Set(['platform_standard', 'tenant_custom']);
 const COURSE_ALLOWED_STATUS = new Set(['active', 'withdrawn']);
+const HTTP_ONLY_COURSE_HOSTS = new Set(['jinbangxueba.com', 'www.jinbangxueba.com']);
 
 function text(value, max = 4000) {
   return String(value == null ? '' : value).trim().slice(0, max);
@@ -58,10 +59,11 @@ function normalizeCourseUrl(value, allowedHosts = []) {
   } catch {
     throw new Error('课程链接不是有效 URL。');
   }
-  if (parsed.protocol !== 'https:') throw new Error('课程链接必须使用 HTTPS。');
+  if (!['http:', 'https:'].includes(parsed.protocol)) throw new Error('课程链接必须使用 HTTP 或 HTTPS。');
   if (parsed.username || parsed.password) throw new Error('课程链接不能包含用户名或密码。');
   parsed.hash = '';
   parsed.hostname = parsed.hostname.toLowerCase();
+  if (HTTP_ONLY_COURSE_HOSTS.has(parsed.hostname)) parsed.protocol = 'http:';
   const normalizedHosts = allowedHosts.map(normalizeAllowedHost);
   if (!normalizedHosts.includes(parsed.hostname)) throw new Error(`课程链接域名 ${parsed.hostname} 不在允许列表。`);
   return parsed.toString();
@@ -76,12 +78,15 @@ function safeCourseNavigation(value, allowedHosts = []) {
 }
 
 function normalizeCourseItem(input = {}) {
-  const allowedHosts = [...new Set((Array.isArray(input.allowedHosts) ? input.allowedHosts : []).map(normalizeAllowedHost))];
-  if (!allowedHosts.length) throw new Error('课程必须声明至少一个允许域名。');
   const courseId = text(input.courseId, 160);
   if (!/^(platform|tenant):[a-z0-9][a-z0-9-]{2,120}$/.test(courseId)) throw new Error(`无效 courseId：${courseId || '空'}`);
   const type = text(input.type, 40);
   if (!COURSE_ALLOWED_TYPES.has(type)) throw new Error(`不支持的课程类型：${type}`);
+  const declaredHosts = [...new Set((Array.isArray(input.allowedHosts) ? input.allowedHosts : []).map(normalizeAllowedHost))];
+  const allowedHosts = type === 'tenant_custom'
+    ? [...new Set(declaredHosts.flatMap(relatedCourseHosts))]
+    : declaredHosts;
+  if (!allowedHosts.length) throw new Error('课程必须声明至少一个允许域名。');
   if (type === 'platform_standard' && !courseId.startsWith('platform:')) throw new Error('平台课程 courseId 必须以 platform: 开头。');
   if (type === 'tenant_custom' && !courseId.startsWith('tenant:')) throw new Error('机构课程 courseId 必须以 tenant: 开头。');
   const status = text(input.status || 'active', 40);
@@ -124,11 +129,13 @@ function validateCatalogPackage(input = {}, options = {}) {
     if (!/^[a-f0-9]{64}$/.test(text(input.checksum, 64)) || !crypto.timingSafeEqual(Buffer.from(expectedChecksum), Buffer.from(input.checksum))) {
       throw new Error('课程目录校验值不匹配。');
     }
-    const publicKey = text(options.publicKey || '', 20_000);
-    if (!publicKey) throw new Error('缺少课程目录签名公钥。');
-    const signature = Buffer.from(text(input.signature, 10_000), 'base64');
-    if (!signature.length || !crypto.verify('RSA-SHA256', Buffer.from(catalogSignaturePayload(input)), publicKey, signature)) {
-      throw new Error('课程目录签名验证失败。');
+    if (options.requireSignature === true) {
+      const publicKey = text(options.publicKey || '', 20_000);
+      if (!publicKey) throw new Error('缺少课程目录签名公钥。');
+      const signature = Buffer.from(text(input.signature, 10_000), 'base64');
+      if (!signature.length || !crypto.verify('RSA-SHA256', Buffer.from(catalogSignaturePayload(input)), publicKey, signature)) {
+        throw new Error('课程目录签名验证失败。');
+      }
     }
     const courses = (Array.isArray(input.courses) ? input.courses : []).map(normalizeCourseItem);
     const ids = new Set();
@@ -143,7 +150,7 @@ function validateCatalogPackage(input = {}, options = {}) {
         catalogVersion: text(input.catalogVersion, 80),
         issuedAt: new Date(input.issuedAt).toISOString(),
         minHostVersion: text(input.minHostVersion || '0.0.0', 80),
-        keyId: text(input.keyId || 'course-catalog-primary', 120),
+        keyId: text(input.keyId || '', 120),
         checksum: text(input.checksum, 64),
         signature: text(input.signature, 10_000),
         courses,
@@ -152,6 +159,14 @@ function validateCatalogPackage(input = {}, options = {}) {
   } catch (error) {
     return { ok: false, code: 'COURSE_CATALOG_REJECTED', message: error.message };
   }
+}
+
+function relatedCourseHosts(hostInput) {
+  const host = normalizeAllowedHost(hostInput);
+  const related = new Set([host]);
+  if (host.startsWith('www.')) related.add(host.slice(4));
+  else related.add(`www.${host}`);
+  return [...related];
 }
 
 function normalizeInstitutionPolicy(input = {}, catalog = { courses: [] }) {
@@ -275,6 +290,7 @@ module.exports = {
   COURSE_CAPTURE_SCHEMA,
   COURSE_CATALOG_SCHEMA_VERSION,
   COURSE_POLICY_SCHEMA_VERSION,
+  HTTP_ONLY_COURSE_HOSTS,
   applyCatalogCandidate,
   canonicalize,
   catalogChecksum,
@@ -288,6 +304,7 @@ module.exports = {
   normalizeCourseItem,
   normalizeCourseUrl,
   normalizeInstitutionPolicy,
+  relatedCourseHosts,
   safeCourseNavigation,
   unsignedCatalogPayload,
   validateCatalogPackage,

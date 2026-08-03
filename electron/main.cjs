@@ -12,9 +12,21 @@ const { pathToFileURL } = require('url');
 const { WebContentsView, session } = require('electron');
 const { createCourseCatalogStore } = require('./course-catalog-store.cjs');
 const { safeCourseNavigation } = require('./course-catalog.cjs');
+const { createPlatformCourseDraftStore } = require('./platform-course-drafts.cjs');
+const { createCoursePackage } = require('./course-package-v2.cjs');
+const { createLicenseTrustStore } = require('./license-trust-store.cjs');
+const { changeSummary } = require('./platform-publish-approval.cjs');
+const {
+  capabilitiesFor,
+  hasCapability,
+  planLabel: entitlementPlanLabel,
+  verifyLicenseTokenV2,
+} = require('./license-entitlements.cjs');
 const {
   canImportCustomCourses,
+  createCustomCourseFromForm,
   importCustomCoursesFromExcel,
+  inspectCustomCourseImage,
   writeCustomCourseTemplate,
 } = require('./course-custom-import.cjs');
 const {
@@ -30,6 +42,30 @@ const {
   writeFileWithFallback,
 } = require('./report-export.cjs');
 const {
+  PUBLICATION_SCHEMA,
+  TEMPLATES: EDUCATION_PUBLICATION_TEMPLATES,
+  buildPublicationDraft,
+  buildPublicationHtml,
+  draftMarkdown,
+  extractPublicationOutline,
+  fingerprint: publicationFingerprint,
+  publicationEligibility,
+  templateCatalog: educationPublicationTemplateCatalog,
+  validateDraftGrounding,
+} = require('./education-publishing.cjs');
+const {
+  ENHANCEMENT_PROMPT_REVISION: EDUCATION_PUBLICATION_PROMPT_REVISION,
+  ENHANCEMENT_SCHEMA: EDUCATION_PUBLICATION_ENHANCEMENT_SCHEMA,
+  buildEnhancementPrompt,
+  defaultPromptTemplate: defaultEducationPublicationPrompt,
+  promptTemplateCatalog: educationPublicationPromptCatalog,
+  validateEnhancementCandidate,
+} = require('./education-publication-enhancement.cjs');
+const {
+  adoptedStorageRootCandidates,
+  rebaseStoragePath,
+  remapStorageTree,
+  remapStorageTreeFromRoots,
   resolveConfiguredStoragePath,
   resolveStudentBaseDir,
 } = require('./storage-root.cjs');
@@ -124,7 +160,7 @@ const {
   repairTaskRuntimeStore,
   taskTimeoutDecision,
 } = require('./task-runtime-policy.cjs');
-const { nextKnowledgeReviewState, nextStagingReviewState, projectCompletionIssues, reconcileDigestControlState, validateDigestReceipt } = require('./project-integrity.cjs');
+const { nextKnowledgeReviewState, nextStagingReviewState, projectCompletionIssues, repairStagingLifecycle, reconcileDigestControlState, validateDigestReceipt } = require('./project-integrity.cjs');
 const { PROJECT_SCREENING_PARSER_VERSION, buildProjectScreeningPreview } = require('./project-screening.cjs');
 const { completionBlockers, singleStudentEvidenceDraft } = require('./project-completion.cjs');
 const { weekRange, monthRange, reportIsCurrent, validateSectionedDraft, publishReviewedReport } = require('./learning-report-workflow.cjs');
@@ -284,7 +320,13 @@ const {
 let mainWindow;
 let courseView = null;
 let activeCourse = null;
+let courseCaptureSetupVisible = false;
+let courseSidebarCollapsed = false;
+let courseFullscreen = false;
 let courseCatalogStoreInstance = null;
+let platformCourseDraftStoreInstance = null;
+let licenseTrustStoreInstance = null;
+const pendingCustomCourseImages = new Map();
 const activeProjectWorkspaceScans = new Map();
 const collaborationDirectNonces = new Map();
 let qclawOpened = false;
@@ -351,6 +393,24 @@ function courseCatalogStore() {
     });
   }
   return courseCatalogStoreInstance;
+}
+function platformCourseDraftStore() {
+  if (!platformCourseDraftStoreInstance) {
+    platformCourseDraftStoreInstance = createPlatformCourseDraftStore({ userDataDir: app.getPath('userData') });
+  }
+  return platformCourseDraftStoreInstance;
+}
+function licenseTrustStore() {
+  if (!licenseTrustStoreInstance) {
+    licenseTrustStoreInstance = createLicenseTrustStore({
+      localPath: path.join(app.getPath('userData'), 'license-trust', 'local-trusted-issuers.json'),
+      packagedPaths: [
+        path.join(__dirname, '..', 'dist', 'license', 'trusted-issuers.json'),
+        path.join(__dirname, '..', 'public', 'license', 'trusted-issuers.json'),
+      ],
+    });
+  }
+  return licenseTrustStoreInstance;
 }
 const DEFAULT_HOST_PORT = 18777;
 const HOST_DISCOVERY_PORT = 18778;
@@ -3460,21 +3520,46 @@ function normalizeLicenseCode(code) {
 }
 
 function planLabel(plan) {
-  const value = String(plan || '').toUpperCase();
-  if (value === 'FAMILY') return '家庭版';
-  if (value === 'PRO') return '专业版';
-  if (value === 'ORG') return '机构版';
-  if (value === 'TRIAL') return '试用版';
-  return value || '未知版本';
+  return entitlementPlanLabel(plan);
+}
+
+function trustedLicenseIssuers() {
+  const persisted = licenseTrustStore().state();
+  const configured = String(process.env.AI_EDU_LICENSE_TRUSTED_ISSUERS || '').trim();
+  if (configured) {
+    try {
+      const emergency = JSON.parse(configured);
+      return { issuers: [...persisted.issuers, ...(Array.isArray(emergency.issuers) ? emergency.issuers : [])] };
+    } catch {
+      return persisted;
+    }
+  }
+  return persisted;
 }
 
 function parseLicenseCode(code) {
   const normalized = normalizeLicenseCode(code);
+  if (normalized.startsWith('AIE2.')) {
+    const checked = verifyLicenseTokenV2(String(code || '').trim(), { trustedIssuers: trustedLicenseIssuers(), deviceId: getHostIdentity().hostId });
+    if (!checked.ok) return checked;
+    return {
+      ok: true,
+      license: {
+        ...checked.license,
+        status: 'active',
+        active: true,
+        licenseToken: String(code || '').trim(),
+        codeHash: checked.license.tokenHash,
+        activatedAt: new Date().toISOString(),
+      },
+    };
+  }
   const parts = normalized.split('-');
   if (parts.length !== 7 || parts[0] !== 'AIE') {
     return { ok: false, message: '激活码格式不正确。格式：AIE-套餐-到期日-学生数-设备数-随机码-签名。' };
   }
   const [, plan, expires, studentLimitRaw, deviceLimitRaw, token, signature] = parts;
+  if (!['TRIAL', 'FAMILY', 'PRO', 'ORG'].includes(plan)) return { ok: false, message: '旧版激活码不能授予平台版权限。' };
   if (!/^[A-Z0-9]{3,16}$/.test(plan)) return { ok: false, message: '激活码套餐字段不正确。' };
   if (!(expires === 'PERM' || /^\d{8}$/.test(expires))) return { ok: false, message: '激活码到期日不正确。' };
   const studentLimit = Number(studentLimitRaw);
@@ -3497,6 +3582,9 @@ function parseLicenseCode(code) {
       status: 'active',
       plan,
       planLabel: planLabel(plan),
+      edition: plan,
+      role: '',
+      capabilities: capabilitiesFor(plan),
       expiresAt,
       studentLimit,
       deviceLimit,
@@ -3508,7 +3596,7 @@ function parseLicenseCode(code) {
 }
 
 function publicLicenseStatus(rawLicense) {
-  const license = rawLicense || readSettings().license || null;
+  let license = rawLicense || readSettings().license || null;
   if (!license) {
     return {
       status: 'inactive',
@@ -3517,13 +3605,40 @@ function publicLicenseStatus(rawLicense) {
       message: 'Windows 主机尚未激活。平板终端会跟随主机授权状态。',
     };
   }
+  if (license.schema === 'edu-manager.license.v2') {
+    const checked = verifyLicenseTokenV2(license.licenseToken, { trustedIssuers: trustedLicenseIssuers(), deviceId: getHostIdentity().hostId });
+    if (!checked.ok) {
+      return {
+        status: /过期/.test(checked.message || '') ? 'expired' : 'inactive',
+        active: false,
+        planLabel: license.planLabel || '平台版',
+        message: checked.message || 'License v2 重新校验失败。',
+      };
+    }
+    license = {
+      ...license,
+      ...checked.license,
+      status: 'active',
+      active: true,
+    };
+  }
   const expiresAt = license.expiresAt || '';
   const expired = Boolean(expiresAt && Date.now() > new Date(expiresAt).getTime());
+  const capabilities = (() => {
+    try {
+      return capabilitiesFor(license.edition || license.plan, license.role || '');
+    } catch {
+      return [];
+    }
+  })();
+  const { licenseToken: _licenseToken, token: _token, ...publicLicense } = license;
   return {
-    ...license,
+    ...publicLicense,
     status: expired ? 'expired' : (license.status || 'active'),
     active: !expired && (license.status || 'active') === 'active',
     planLabel: license.planLabel || planLabel(license.plan),
+    edition: license.edition || license.plan,
+    capabilities,
     expiresAt,
     codeHash: license.codeHash ? `${license.codeHash.slice(0, 8)}...${license.codeHash.slice(-6)}` : '',
     message: expired ? '许可证已过期，请续费后重新激活。' : 'Windows 主机已激活，平板终端跟随主机授权。',
@@ -3554,15 +3669,71 @@ function activateLicense(code) {
   const parsed = parseLicenseCode(code);
   if (!parsed.ok) return JSON.stringify({ ok: false, message: parsed.message, license: publicLicenseStatus() });
   const settings = readSettings();
+  const previous = publicLicenseStatus(settings.license);
   settings.license = parsed.license;
   writeSettings(settings);
   appendHostTimeline({
     type: 'license_activated',
     title: 'License activated',
     detail: `${parsed.license.planLabel} · students ${parsed.license.studentLimit} · devices ${parsed.license.deviceLimit}`,
+    previousEdition: previous.edition || previous.plan || '',
+    nextEdition: parsed.license.edition || parsed.license.plan || '',
+    licenseId: parsed.license.licenseId || '',
+    keyId: parsed.license.keyId || '',
+    devicePolicy: parsed.license.devicePolicy || '',
+    deviceId: parsed.license.deviceId || '',
   });
   notify('onNativeHostServiceChanged', getHostServiceStatus());
   return JSON.stringify({ ok: true, message: '激活成功。平板终端将跟随 Windows 主机授权状态。', license: publicLicenseStatus(parsed.license), status: JSON.parse(getHostServiceStatus()) });
+}
+
+function importLicenseFile() {
+  const selected = dialog.showOpenDialogSync(mainWindow, { title: '导入 AI教育管家 License 文件', properties: ['openFile'], filters: [{ name: 'License 文件', extensions: ['aielicense', 'txt', 'json'] }] });
+  if (!selected?.[0]) return JSON.stringify({ ok: false, cancelled: true, message: '已取消 License 导入。' });
+  try {
+    const stat = fs.statSync(selected[0]);
+    if (!stat.isFile() || stat.size <= 0 || stat.size > 1024 * 1024) throw new Error('License 文件为空或超过 1 MB。');
+    const text = fs.readFileSync(selected[0], 'utf8').trim();
+    let code = text;
+    if (text.startsWith('{')) {
+      const parsed = JSON.parse(text);
+      code = String(parsed.license || parsed.code || parsed.token || '');
+    }
+    if (!code) throw new Error('License 文件中没有有效授权码。');
+    return activateLicense(code);
+  } catch (error) {
+    return JSON.stringify({ ok: false, message: `License 文件导入失败：${error.message}`, license: publicLicenseStatus() });
+  }
+}
+
+function importTrustedLicenseIssuerBundle() {
+  const selected = dialog.showOpenDialogSync(mainWindow, { title: '导入可信 License 签发方公钥包', properties: ['openFile'], filters: [{ name: '可信公钥包', extensions: ['json'] }] });
+  if (!selected?.[0]) return JSON.stringify({ ok: false, cancelled: true, message: '已取消可信公钥包导入。' });
+  try {
+    const issuers = licenseTrustStore().inspectBundle(selected[0]);
+    const summary = issuers.map((item) => `${item.keyId}\nSHA-256 ${item.fingerprint}`).join('\n\n');
+    const answer = dialog.showMessageBoxSync(mainWindow, {
+      type: 'warning',
+      buttons: ['取消', '已通过独立渠道核对指纹，确认导入'],
+      defaultId: 0,
+      cancelId: 0,
+      title: '确认新的 License 信任根',
+      message: '导入新公钥会允许其签发平台版 License。请先通过独立渠道核对完整指纹。',
+      detail: summary,
+      noLink: true,
+    });
+    if (answer !== 1) return JSON.stringify({ ok: false, cancelled: true, message: '未确认公钥指纹，未修改本机信任。' });
+    const state = licenseTrustStore().importBundle(selected[0], { fingerprints: issuers.map((item) => item.fingerprint) });
+    appendHostTimeline({ type: 'license_trust_bundle_imported', title: 'License trust bundle imported', detail: issuers.map((item) => item.keyId).join(', '), fingerprints: issuers.map((item) => item.fingerprint) });
+    return JSON.stringify({ ok: true, trust: { issuers: state.allIssuers }, message: `已导入 ${issuers.length} 个可信 License 公钥；现在可以验证对应 keyId 的平台 License。` });
+  } catch (error) {
+    return JSON.stringify({ ok: false, message: `可信公钥包导入失败：${error.message}` });
+  }
+}
+
+function getLicenseTrustStatus() {
+  const state = licenseTrustStore().state();
+  return JSON.stringify({ ok: true, issuers: state.allIssuers });
 }
 
 function deactivateLicense() {
@@ -6201,6 +6372,12 @@ function backupHostData(studentsJson) {
       kind: 'ai-edu-manager-host-backup',
       version: APP_VERSION,
       exportedAt: new Date().toISOString(),
+      storage: {
+        schema: 'edu-manager.host-backup-storage.v1',
+        studentBaseDir: defaultStudentBaseDir(),
+        platform: process.platform,
+        pathMode: 'managed-root-relative-remap',
+      },
       hostIdentity: getHostIdentity(),
       settings: readSettings(),
       students: backupStudents,
@@ -6230,6 +6407,25 @@ function restoreHostData() {
     if (!result || !result[0]) return JSON.stringify({ ok: false, message: 'No backup file selected.' });
     const parsed = JSON.parse(fs.readFileSync(result[0], 'utf8'));
     if (parsed.kind !== 'ai-edu-manager-host-backup') throw new Error('Unsupported backup file.');
+    const currentStudentBaseDir = defaultStudentBaseDir();
+    const backupStudentBaseDir = String(
+      parsed.storage?.studentBaseDir
+      || parsed.settings?.studentBaseDir
+      || parsed.settings?.archiveRoot
+      || (Array.isArray(parsed.students) && parsed.students[0]?.rootPath ? path.dirname(parsed.students[0].rootPath) : ''),
+    ).trim();
+    const remap = (value) => remapStorageTree(
+      value,
+      backupStudentBaseDir,
+      currentStudentBaseDir,
+      { platform: process.platform },
+    );
+    let remappedPathCount = 0;
+    const remapValue = (value) => {
+      const result = remap(value);
+      remappedPathCount += result.changed;
+      return result.value;
+    };
     if (parsed.hostIdentity && typeof parsed.hostIdentity === 'object') {
       const restoredHostId = String(parsed.hostIdentity.hostId || '').trim();
       const restoredCode = String(parsed.hostIdentity.machineCode || '').trim();
@@ -6243,12 +6439,31 @@ function restoreHostData() {
         });
       }
     }
-    if (parsed.settings && typeof parsed.settings === 'object') writeSettings(parsed.settings);
-    if (Array.isArray(parsed.students)) writeStudentsIndex(parsed.students.map(toHostStudent));
+    if (parsed.settings && typeof parsed.settings === 'object') {
+      const restoredSettings = remapValue(parsed.settings);
+      const collaborationFallback = path.join(currentStudentBaseDir, '.edu-manager', 'collaboration');
+      writeSettings({
+        ...restoredSettings,
+        studentBaseDir: currentStudentBaseDir,
+        archiveRoot: currentStudentBaseDir,
+        collaborationRootPath: resolveConfiguredStoragePath(
+          restoredSettings.collaborationRootPath,
+          collaborationFallback,
+          { platform: process.platform, existsSync: fs.existsSync },
+        ),
+      });
+    }
+    const restoredStudentRecords = Array.isArray(parsed.students)
+      ? remapValue(parsed.students).map(toHostStudent)
+      : [];
+    const restoredUploadRecords = Array.isArray(parsed.uploadRecords) ? remapValue(parsed.uploadRecords) : [];
+    const restoredAssets = Array.isArray(parsed.assets) ? remapValue(parsed.assets) : [];
+    const restoredProjects = Array.isArray(parsed.projects) ? remapValue(parsed.projects) : [];
+    if (Array.isArray(parsed.students)) writeStudentsIndex(restoredStudentRecords);
     if (Array.isArray(parsed.devices)) writeDevices(parsed.devices);
-    if (Array.isArray(parsed.uploadRecords)) writeUploadRecords(parsed.uploadRecords);
-    if (Array.isArray(parsed.assets)) writeAssetIndex(parsed.assets);
-    if (Array.isArray(parsed.projects)) writeProjects(parsed.projects);
+    if (Array.isArray(parsed.uploadRecords)) writeUploadRecords(restoredUploadRecords);
+    if (Array.isArray(parsed.assets)) writeAssetIndex(restoredAssets);
+    if (Array.isArray(parsed.projects)) writeProjects(restoredProjects);
     if (Array.isArray(parsed.timeline)) writeHostTimeline(parsed.timeline);
     let restoredEducationArchives = 0;
     if (Array.isArray(parsed.educationArchives)) {
@@ -6260,6 +6475,8 @@ function restoreHostData() {
         if (restored.ok) restoredEducationArchives += 1;
       }
     }
+    invalidateArchiveAccessCache();
+    refreshStudentArchiveSyncWatchers();
     appendHostTimeline({ type: 'backup_restored', title: 'Backup restored', detail: result[0] });
     notify('onNativeHostServiceChanged', getHostServiceStatus());
     return JSON.stringify({
@@ -6271,7 +6488,15 @@ function restoreHostData() {
       assets: Array.isArray(parsed.assets) ? parsed.assets.length : 0,
       projects: Array.isArray(parsed.projects) ? parsed.projects.length : 0,
       educationArchives: restoredEducationArchives,
-      studentRecords: Array.isArray(parsed.students) ? parsed.students : [],
+      studentRecords: restoredStudentRecords,
+      pathRemap: {
+        sourceBaseDir: backupStudentBaseDir,
+        targetBaseDir: currentStudentBaseDir,
+        changed: remappedPathCount,
+      },
+      message: remappedPathCount > 0
+        ? `备份已恢复，并将 ${remappedPathCount} 个受管路径重新映射到当前资料根目录：${currentStudentBaseDir}`
+        : `备份已恢复，当前资料根目录：${currentStudentBaseDir}`,
       status: JSON.parse(getHostServiceStatus()),
     });
   } catch (error) {
@@ -6400,6 +6625,226 @@ function migrateStudentWorkspace(studentId, newName) {
     return JSON.stringify({ ok: true, name: cleanName, rootPathLabel: newRoot, rawPath: newRaw, summaryPath: newSummary, agentPath: nextStudent.agentPath, outputPath: nextStudent.outputPath });
   } catch (error) {
     return JSON.stringify({ ok: false, message: `迁移知识库目录失败：${error.message}` });
+  }
+}
+
+function remapAdoptedStudentMetadata(student, oldRoots, newRoot) {
+  const remap = (value) => remapStorageTreeFromRoots(
+    value,
+    oldRoots,
+    newRoot,
+    { platform: process.platform },
+  );
+  const changedFiles = [];
+  const warnings = [];
+  const metadataFiles = [
+    studentMaterialsPath(student),
+    studentRawDiscoveryStatePath(student),
+    studentDigestStatePath(student),
+    studentDigestManifestPath(student),
+    studentDigestBatchPath(student),
+    studentDigestReviewReceiptPath(student),
+    studentDigestReviewRequestPath(student),
+    studentDigestAuditPath(student),
+    studentScheduleLedgerPath(student),
+    agentSourceRegistryPath(student),
+  ];
+  for (const filePath of metadataFiles) {
+    if (!fs.existsSync(filePath)) continue;
+    try {
+      const current = safeReadJson(filePath, null);
+      if (!current || typeof current !== 'object') continue;
+      const result = remap(current);
+      if (!result.changed) continue;
+      writeJsonAtomic(filePath, result.value);
+      changedFiles.push(filePath);
+    } catch (error) {
+      warnings.push(`${path.basename(filePath)}：${error.message}`);
+    }
+  }
+
+  try {
+    const records = readUploadRecords();
+    let changed = 0;
+    const next = records.map((record) => {
+      if (String(record.studentId || '') !== String(student.id || '')) return record;
+      const result = remap(record);
+      changed += result.changed;
+      return result.value;
+    });
+    if (changed) {
+      writeUploadRecords(next);
+      changedFiles.push(uploadRecordsPath());
+    }
+  } catch (error) {
+    warnings.push(`上传记录：${error.message}`);
+  }
+
+  try {
+    const assets = readAssetIndex();
+    let changed = 0;
+    const next = assets.map((asset) => {
+      const belongsToStudent = String(asset.ownerStudentId || '') === String(student.id || '')
+        || (asset.linkedStudents || []).some((id) => String(id) === String(student.id || ''))
+        || (asset.references || []).some((reference) => (
+          reference.spaceType === 'student'
+          && String(reference.spaceId || '') === String(student.id || '')
+        ));
+      if (!belongsToStudent) return asset;
+      const result = remap(asset);
+      changed += result.changed;
+      return result.value;
+    });
+    if (changed) {
+      writeAssetIndex(next);
+      changedFiles.push(assetIndexPath());
+    }
+  } catch (error) {
+    warnings.push(`资料资产索引：${error.message}`);
+  }
+  return { changedFiles, warnings };
+}
+
+function escapeRegexText(value) {
+  return String(value || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function updateAdoptedAgentDirectoryStructure(student, oldRoots) {
+  const agentPath = student.agentPath || path.join(student.rootPath || '', 'AGENT.md');
+  if (!agentPath || !fs.existsSync(agentPath)) {
+    return { updated: false, backupPath: '', warning: '新的接管目录中未找到 AGENT.md，未更新目录结构。' };
+  }
+  try {
+    const current = fs.readFileSync(agentPath, 'utf8');
+    let next = current;
+    for (const oldRoot of oldRoots || []) {
+      const source = String(oldRoot || '').trim();
+      if (!source || path.resolve(source) === path.resolve(student.rootPath || '')) continue;
+      const replacements = [
+        [source, String(student.rootPath || '')],
+        [source.replace(/\\/g, '/'), String(student.rootPath || '').replace(/\\/g, '/')],
+      ];
+      for (const [from, to] of replacements) {
+        if (!from || from === to) continue;
+        next = next.replace(new RegExp(escapeRegexText(from), process.platform === 'win32' ? 'gi' : 'g'), to);
+      }
+    }
+    const markerStart = '<!-- EDU-MANAGER-CURRENT-PATHS:START -->';
+    const markerEnd = '<!-- EDU-MANAGER-CURRENT-PATHS:END -->';
+    const paths = studentWorkspacePathmap(student);
+    const block = `${markerStart}
+## 教育管家当前目录结构
+
+本区块由教育管家在迁移或重新定位接管目录后自动维护。Agent 应优先使用以下逻辑路径；物理路径变化时不要继续使用旧盘符。
+
+- \`@KB_ROOT\`：\`${paths['@KB_ROOT']}\`
+- \`@AGENT_FILE\`：\`${paths['@AGENT_FILE']}\`
+- \`@RAW_DIR\`：\`${paths['@RAW_DIR']}\`
+- \`@SUMMARY_DIR\`：\`${paths['@SUMMARY_DIR']}\`
+- \`@OUTPUT_DIR\`：\`${paths['@OUTPUT_DIR']}\`
+- \`@GROWTH_DIR\`：\`${paths['@GROWTH_DIR']}\`
+- \`@ASSET_ROOT\`：\`${paths['@ASSET_ROOT']}\`
+${markerEnd}`;
+    const withoutManaged = next.replace(new RegExp(`${escapeRegexText(markerStart)}[\\s\\S]*?${escapeRegexText(markerEnd)}\\s*`, 'g'), '').trimEnd();
+    next = `${withoutManaged}${withoutManaged ? '\n\n' : ''}${block}\n`;
+    if (next === current) return { updated: false, backupPath: '', warning: '' };
+    const backupPath = `${agentPath}.pre-rebind-${timestampForFilename()}.bak`;
+    fs.copyFileSync(agentPath, backupPath);
+    fs.writeFileSync(agentPath, next, 'utf8');
+    return { updated: true, backupPath, warning: '' };
+  } catch (error) {
+    return { updated: false, backupPath: '', warning: `AGENT.md 目录结构更新失败：${error.message}` };
+  }
+}
+
+function rebindAdoptedStudentWorkspace(studentId) {
+  try {
+    const students = readStudentsIndex();
+    const index = students.findIndex((item) => String(item.id) === String(studentId));
+    if (index < 0) return JSON.stringify({ ok: false, message: '未找到学生。' });
+    const student = toHostStudent(students[index]);
+    if (student.knowledgeBaseMode !== 'adopted') {
+      return JSON.stringify({ ok: false, message: '当前学生不是接管已有知识库模式。' });
+    }
+    const selected = dialog.showOpenDialogSync(mainWindow, {
+      title: `重新定位「${student.name}」的已有知识库根目录`,
+      properties: ['openDirectory'],
+    });
+    if (!selected || !selected[0]) return JSON.stringify({ ok: false, cancelled: true, message: '未选择新的知识库目录。' });
+    const newRoot = path.resolve(selected[0]);
+    if (!fs.existsSync(newRoot) || !fs.statSync(newRoot).isDirectory()) {
+      return JSON.stringify({ ok: false, message: `未找到新的知识库目录：${newRoot}` });
+    }
+    const oldRoots = adoptedStorageRootCandidates(student, { platform: process.platform });
+    const scanned = JSON.parse(scanExistingKnowledgeBase(newRoot, student.name));
+    if (!scanned.ok) return JSON.stringify(scanned);
+    const existingRebasedPath = (candidate, detected, fallbackName) => {
+      for (const oldRoot of oldRoots) {
+        const rebased = rebaseStoragePath(candidate, oldRoot, newRoot, { platform: process.platform });
+        if (rebased && rebased !== candidate && fs.existsSync(rebased)) return rebased;
+      }
+      const sameName = candidate ? path.join(newRoot, path.basename(String(candidate))) : '';
+      if (sameName && fs.existsSync(sameName)) return sameName;
+      if (detected && fs.existsSync(detected)) return detected;
+      return path.join(newRoot, fallbackName);
+    };
+    const rawPath = existingRebasedPath(student.rawPath, scanned.rawPath, `${student.name}原始资料库`);
+    const summaryPath = existingRebasedPath(student.summaryPath, scanned.summaryPath, `${student.name}学情分析汇总`);
+    if (!fs.existsSync(rawPath) || !fs.statSync(rawPath).isDirectory()) {
+      return JSON.stringify({ ok: false, message: `所选目录中未找到原始资料库：${rawPath}` });
+    }
+    if (!fs.existsSync(summaryPath) || !fs.statSync(summaryPath).isDirectory()) {
+      return JSON.stringify({ ok: false, message: `所选目录中未找到学情分析汇总目录：${summaryPath}` });
+    }
+    const agentPath = existingRebasedPath(student.agentPath, scanned.agentPath, 'AGENT.md');
+    const outputPath = existingRebasedPath(student.outputPath, scanned.outputPath, '输出结果');
+    const remappedStudent = remapStorageTreeFromRoots(
+      students[index],
+      oldRoots,
+      newRoot,
+      { platform: process.platform },
+    ).value;
+    const nextStudent = {
+      ...remappedStudent,
+      rootPath: newRoot,
+      rootPathLabel: newRoot,
+      rawPath,
+      summaryPath,
+      agentPath,
+      outputPath,
+      adoptedReboundAt: new Date().toISOString(),
+      adoptedPreviousRoots: oldRoots,
+    };
+    ensureStudentWorkspaceConfig(nextStudent);
+    const agentUpdate = updateAdoptedAgentDirectoryStructure(nextStudent, oldRoots);
+    const metadataRemap = remapAdoptedStudentMetadata(nextStudent, oldRoots, newRoot);
+    if (agentUpdate.warning) metadataRemap.warnings.push(agentUpdate.warning);
+    students[index] = nextStudent;
+    writeStudentsIndex(students);
+    invalidateArchiveAccessCache();
+    refreshStudentArchiveSyncWatchers();
+    notify('onNativeHostServiceChanged', getHostServiceStatus());
+    const agentMessage = agentUpdate.updated
+      ? `；AGENT.md 中的旧路径和当前目录结构已更新，原文件已备份为 ${path.basename(agentUpdate.backupPath)}`
+      : '';
+    return JSON.stringify({
+      ok: true,
+      student: toHostStudent(nextStudent),
+      rootPathLabel: newRoot,
+      rawPath,
+      summaryPath,
+      agentPath,
+      outputPath,
+      metadataFilesUpdated: metadataRemap.changedFiles.length,
+      agentPathUpdated: agentUpdate.updated,
+      agentBackupPath: agentUpdate.backupPath,
+      warnings: metadataRemap.warnings,
+      message: metadataRemap.warnings.length
+        ? `已重新定位接管目录：${newRoot}${agentMessage}；${metadataRemap.warnings.length} 项内容未能自动更新，可稍后重试。`
+        : `已重新定位接管目录：${newRoot}${agentMessage}`,
+    });
+  } catch (error) {
+    return JSON.stringify({ ok: false, message: `重新定位接管目录失败：${error.message}` });
   }
 }
 
@@ -6976,12 +7421,60 @@ function notify(callbackName, payload) {
 function courseViewBounds() {
   if (!mainWindow || mainWindow.isDestroyed()) return { x: 286, y: 150, width: 900, height: 620 };
   const [width, height] = mainWindow.getContentSize();
+  const top = courseCaptureSetupVisible ? (courseFullscreen ? 164 : 232) : (courseFullscreen ? 88 : 150);
+  const left = courseFullscreen ? 12 : courseSidebarCollapsed ? 24 : 286;
+  const right = courseFullscreen ? 12 : 24;
   return {
-    x: Math.min(286, Math.max(0, width - 320)),
-    y: 150,
-    width: Math.max(360, width - 310),
-    height: Math.max(260, height - 174),
+    x: Math.min(left, Math.max(0, width - 360)),
+    y: top,
+    width: Math.max(360, width - left - right),
+    height: Math.max(260, height - top - (courseFullscreen ? 12 : 24)),
   };
+}
+
+function setCourseViewLayout(layoutJson) {
+  try {
+    const layout = typeof layoutJson === 'string' ? JSON.parse(layoutJson) : (layoutJson || {});
+    courseSidebarCollapsed = Boolean(layout.sidebarCollapsed);
+    courseFullscreen = Boolean(activeCourse && layout.fullscreen);
+    if (mainWindow && !mainWindow.isDestroyed() && mainWindow.isFullScreen() !== courseFullscreen) {
+      mainWindow.setFullScreen(courseFullscreen);
+    }
+    if (courseView) courseView.setBounds(courseViewBounds());
+    return JSON.stringify({ ok: true, sidebarCollapsed: courseSidebarCollapsed, fullscreen: courseFullscreen });
+  } catch (error) {
+    return JSON.stringify({ ok: false, message: `课程布局调整失败：${error.message}` });
+  }
+}
+
+function exitCourseFullscreen(reason = 'user') {
+  if (!courseFullscreen) return JSON.stringify({ ok: true, fullscreen: false });
+  courseFullscreen = false;
+  courseSidebarCollapsed = false;
+  if (mainWindow && !mainWindow.isDestroyed() && mainWindow.isFullScreen()) mainWindow.setFullScreen(false);
+  if (courseView) courseView.setBounds(courseViewBounds());
+  notify('onNativeCourseBrowserChanged', {
+    open: Boolean(activeCourse),
+    courseId: activeCourse?.courseId || '',
+    name: activeCourse?.name || '',
+    fullscreen: false,
+    sidebarCollapsed: false,
+    reason,
+  });
+  return JSON.stringify({ ok: true, fullscreen: false, sidebarCollapsed: false });
+}
+
+function handleCourseFullscreenEscape(event, input) {
+  if (courseFullscreen && input?.type === 'keyDown' && input?.key === 'Escape') {
+    event.preventDefault();
+    exitCourseFullscreen('escape');
+  }
+}
+
+function setCourseCaptureSetupVisible(visible) {
+  courseCaptureSetupVisible = Boolean(activeCourse && visible && !activeCaptureRuntime);
+  if (courseView) courseView.setBounds(courseViewBounds());
+  return JSON.stringify({ ok: true, visible: courseCaptureSetupVisible });
 }
 
 function closeCourseView(reason = 'user') {
@@ -6992,6 +7485,10 @@ function closeCourseView(reason = 'user') {
   courseView = null;
   const closed = activeCourse;
   activeCourse = null;
+  courseCaptureSetupVisible = false;
+  courseSidebarCollapsed = false;
+  if (courseFullscreen && mainWindow && !mainWindow.isDestroyed()) mainWindow.setFullScreen(false);
+  courseFullscreen = false;
   notify('onNativeCourseBrowserChanged', { open: false, reason, courseId: closed?.courseId || '' });
   return JSON.stringify({ ok: true, open: false });
 }
@@ -7015,10 +7512,12 @@ function openCourseView(courseId) {
       notify('onNativeCourseBrowserChanged', { open: true, blocked: true, courseId: course.courseId, ...blocked });
     });
     mainWindow.contentView.addChildView(courseView);
+    courseCaptureSetupVisible = !activeCaptureRuntime;
     courseView.setBounds(courseViewBounds());
     courseView.setBackgroundColor('#ffffff');
     activeCourse = course;
     courseView.webContents.on('render-process-gone', () => closeCourseView('render_process_gone'));
+    courseView.webContents.on('before-input-event', handleCourseFullscreenEscape);
     void courseView.webContents.loadURL(course.url);
     notify('onNativeCourseBrowserChanged', { open: true, courseId: course.courseId, name: course.name, url: course.url });
     return JSON.stringify({ ok: true, open: true, course });
@@ -7032,6 +7531,23 @@ function getCourseCatalogState() {
   const state = courseCatalogStore().state();
   const license = publicLicenseStatus();
   const managementAllowed = canImportCustomCourses(license);
+  const canEditPlatform = hasCapability(license, 'platform_course_edit');
+  const canPublishPlatform = hasCapability(license, 'platform_course_publish');
+  const canRollbackPlatform = hasCapability(license, 'platform_course_rollback');
+  const platformDrafts = canEditPlatform
+    ? platformCourseDraftStore().list().map((draft) => {
+      const draftAsset = platformCourseDraftStore().assetPath(draft.course?.coverAsset);
+      const publishedAsset = courseCatalogStore().assetPath(draft.course?.coverAsset);
+      return {
+        ...draft,
+        course: {
+          ...draft.course,
+          coverUrl: draftAsset || publishedAsset ? pathToFileURL(draftAsset || publishedAsset).toString() : draft.course?.coverAsset,
+        },
+      };
+    })
+    : [];
+  const platformDeletions = canEditPlatform ? platformCourseDraftStore().listDeletions() : [];
   return JSON.stringify({
     ...state,
     management: {
@@ -7039,9 +7555,18 @@ function getCourseCatalogState() {
       plan: String(license.plan || ''),
       planLabel: String(license.planLabel || ''),
       message: managementAllowed
-        ? '当前专业版或机构版授权可以使用课程管理。'
-        : '课程管理仅向已激活的专业版和机构版开放。',
+        ? '当前专业版、机构版或平台版授权可以使用课程管理。'
+        : '课程管理仅向已激活的专业版、机构版和平台版开放。',
     },
+    platformAuthoring: {
+      canEdit: canEditPlatform,
+      canPublish: canPublishPlatform,
+      canRollback: canRollbackPlatform,
+      signingConfigured: true,
+      message: canEditPlatform ? '当前平台版授权可以编辑并发布平台精选课程，无需另行配置发布凭据。' : '平台课程编辑与发布仅向有效的平台版授权开放。',
+    },
+    platformDrafts,
+    platformDeletions,
     customImport: {
       allowed: managementAllowed,
       plan: String(license.plan || ''),
@@ -7053,7 +7578,7 @@ function getCourseCatalogState() {
     catalog: state.catalog ? {
       ...state.catalog,
       courses: state.catalog.courses.map((course) => {
-        const customAssetPath = course.type === 'tenant_custom' ? courseCatalogStore().assetPath(course.coverAsset) : '';
+        const customAssetPath = courseCatalogStore().assetPath(course.coverAsset);
         return {
           ...course,
           coverUrl: customAssetPath ? pathToFileURL(customAssetPath).toString() : course.coverAsset,
@@ -7070,7 +7595,18 @@ function courseManagementRequiredJson(code = 'COURSE_MANAGEMENT_PLAN_REQUIRED') 
     ok: false,
     code,
     license,
-    message: '课程管理仅向已激活的专业版和机构版开放。',
+    message: '课程管理仅向已激活的专业版、机构版和平台版开放。',
+  });
+}
+
+function platformCourseCapabilityRequiredJson(capability, code) {
+  const license = publicLicenseStatus();
+  if (hasCapability(license, capability)) return null;
+  return JSON.stringify({
+    ok: false,
+    code,
+    license,
+    message: '当前 License 不是有效的平台版授权。',
   });
 }
 
@@ -7090,15 +7626,108 @@ function importOfflineCourseCatalog() {
   const locked = courseManagementRequiredJson();
   if (locked) return locked;
   const selected = dialog.showOpenDialogSync(mainWindow, {
-    title: '导入离线签名课程目录包',
+    title: '导入离线平台课程包',
     properties: ['openFile'],
-    filters: [{ name: '课程目录 JSON', extensions: ['json'] }],
+    filters: [
+      { name: '平台课程包', extensions: ['edu-coursepkg'] },
+      { name: '兼容课程目录 JSON', extensions: ['json'] },
+    ],
   });
   if (!selected?.[0]) return JSON.stringify({ ok: false, cancelled: true, message: '已取消导入。' });
-  const result = courseCatalogStore().importFile(selected[0]);
+  const result = selected[0].toLowerCase().endsWith('.edu-coursepkg')
+    ? courseCatalogStore().importCoursePackage(selected[0])
+    : courseCatalogStore().importFile(selected[0]);
   if (result.ok && activeCourse && !courseCatalogStore().findCourse(activeCourse.courseId)) closeCourseView('catalog_withdrawal');
   notify('onNativeCourseCatalogChanged', { action: 'offline_import', ok: result.ok, catalogVersion: result.catalog?.catalogVersion || '' });
   return JSON.stringify(result);
+}
+
+function publishPlatformCourseCatalog(releaseNotes = '') {
+  const locked = platformCourseCapabilityRequiredJson('platform_course_publish', 'PLATFORM_COURSE_PUBLISH_REQUIRED');
+  if (locked) return locked;
+  const drafts = platformCourseDraftStore().list();
+  const deletions = platformCourseDraftStore().listDeletions();
+  if (!drafts.length && !deletions.length) return JSON.stringify({ ok: false, code: 'PLATFORM_COURSE_CHANGES_EMPTY', message: '当前没有可发布的平台课程新增、修改或删除。' });
+  const invalid = drafts.filter((draft) => draft.validation?.ok !== true);
+  if (invalid.length) return JSON.stringify({ ok: false, code: 'PLATFORM_COURSE_DRAFTS_INVALID', message: `仍有 ${invalid.length} 门草稿未通过版权或字段校验，不能发布。` });
+  try {
+    const store = courseCatalogStore();
+    const preview = changeSummary(drafts, store.state().platformCatalog || { catalogVersion: '', courses: [] }, deletions.map((item) => item.courseId));
+    const issuedAt = new Date().toISOString();
+    const suggested = `AI教育管家-平台课程-${issuedAt.slice(0, 10)}.edu-coursepkg`;
+    let outputPath = dialog.showSaveDialogSync(mainWindow, {
+      title: '生成并保存平台课程包',
+      defaultPath: path.join(app.getPath('downloads') || os.tmpdir(), suggested),
+      filters: [{ name: 'AI教育管家平台课程包', extensions: ['edu-coursepkg'] }],
+    });
+    if (!outputPath) return JSON.stringify({ ok: false, cancelled: true, message: '已取消平台课程发布。' });
+    if (!outputPath.toLowerCase().endsWith('.edu-coursepkg')) outputPath += '.edu-coursepkg';
+    const built = createCoursePackage({
+      drafts,
+      deletedCourseIds: deletions.map((item) => item.courseId),
+      baseCatalog: store.state().platformCatalog || { catalogVersion: '', courses: [] },
+      issuedAt,
+      hostVersion: APP_VERSION,
+      minHostVersion: APP_VERSION,
+      outputPath,
+      releaseNotes,
+      resolveAssetPath: (assetName) => platformCourseDraftStore().assetPath(assetName) || store.assetPath(assetName),
+    });
+    const imported = store.importCoursePackage(outputPath);
+    if (!imported.ok) throw new Error(`课程包已生成但本机完整性回验安装失败：${imported.message || '未知错误'}`);
+    const license = publicLicenseStatus();
+    for (const draft of drafts) platformCourseDraftStore().remove(draft.courseId, { updatedBy: license.licenseId || '' });
+    for (const deletion of deletions) platformCourseDraftStore().cancelDeletion(deletion.courseId, { updatedBy: license.licenseId || '' });
+    if (activeCourse && !store.findCourse(activeCourse.courseId)) closeCourseView('catalog_withdrawal');
+    notify('onNativeCourseCatalogChanged', { action: 'platform_catalog_published', ok: true, catalogVersion: built.catalog.catalogVersion });
+    appendHostTimeline({ type: 'platform_course_catalog_published', title: 'Platform course catalog published', detail: built.catalog.catalogVersion, catalogVersion: built.catalog.catalogVersion, packageSha256: built.sha256, licenseId: license.licenseId || '', edition: 'PLATFORM', releaseNotes: String(releaseNotes || '').slice(0, 500), changeDigest: preview.digest });
+    return JSON.stringify({
+      ok: true,
+      outputPath,
+      catalogVersion: built.catalog.catalogVersion,
+      sha256: built.sha256,
+      bytes: built.bytes,
+      state: JSON.parse(getCourseCatalogState()),
+      message: `平台课程目录 ${built.catalog.catalogVersion} 已完成版本、文件哈希和完整性回验并应用到本机；课程包已保存。`,
+    });
+  } catch (error) {
+    return JSON.stringify({ ok: false, code: 'PLATFORM_COURSE_PUBLISH_FAILED', message: `平台课程发布失败：${error.message}` });
+  }
+}
+
+function rollbackPlatformCourseCatalog() {
+  const locked = platformCourseCapabilityRequiredJson('platform_course_rollback', 'PLATFORM_COURSE_ROLLBACK_REQUIRED');
+  if (locked) return locked;
+  const selected = dialog.showOpenDialogSync(mainWindow, {
+    title: '选择要恢复的平台课程包',
+    properties: ['openFile'],
+    filters: [{ name: 'AI教育管家平台课程包', extensions: ['edu-coursepkg'] }],
+  });
+  if (!selected?.[0]) return JSON.stringify({ ok: false, cancelled: true, message: '已取消课程目录回滚。' });
+  const answer = dialog.showMessageBoxSync(mainWindow, {
+    type: 'warning',
+    buttons: ['取消', '确认显式回滚'],
+    defaultId: 0,
+    cancelId: 0,
+    noLink: true,
+    title: '确认课程目录回滚',
+    message: '回滚会立即替换本机当前平台课程目录，并可能关闭正在打开的已撤回课程。',
+    detail: `课程包：${path.basename(selected[0])}\n机构自选课程、学生分配和历史审计不会删除。`,
+  });
+  if (answer !== 1) return JSON.stringify({ ok: false, cancelled: true, message: '未确认回滚，当前目录保持不变。' });
+  const previousVersion = courseCatalogStore().state().platformCatalog?.catalogVersion || '';
+  const result = courseCatalogStore().importCoursePackage(selected[0], { allowRollback: true });
+  if (result.ok && activeCourse && !courseCatalogStore().findCourse(activeCourse.courseId)) closeCourseView('catalog_rollback');
+  notify('onNativeCourseCatalogChanged', { action: 'platform_catalog_rollback', ok: result.ok, catalogVersion: result.catalog?.catalogVersion || '' });
+  if (result.ok) {
+    const license = publicLicenseStatus();
+    appendHostTimeline({ type: 'platform_course_catalog_rollback', title: 'Platform course catalog rollback', detail: `${previousVersion} -> ${result.catalog?.catalogVersion || ''}`, previousVersion, catalogVersion: result.catalog?.catalogVersion || '', packageSha256: crypto.createHash('sha256').update(fs.readFileSync(selected[0])).digest('hex'), licenseId: license.licenseId || '', edition: 'PLATFORM' });
+  }
+  return JSON.stringify({
+    ...result,
+    state: result.ok ? JSON.parse(getCourseCatalogState()) : undefined,
+    message: result.ok ? `已显式恢复平台课程目录 ${result.catalog?.catalogVersion || ''}。` : result.message,
+  });
 }
 
 async function exportCustomCourseTemplate() {
@@ -7143,7 +7772,7 @@ async function importCustomCourseExcel() {
       imported: parsed.imported,
       total: customCatalog.courses.length,
       state: JSON.parse(getCourseCatalogState()),
-      message: `已导入 ${parsed.imported} 门自选课程；相同课程链接会更新，平台签名课程不受影响。`,
+      message: `已导入 ${parsed.imported} 门机构精选课程；相同课程链接会更新，平台精选课程不受影响。`,
     });
   } catch (error) {
     return JSON.stringify({
@@ -7152,6 +7781,279 @@ async function importCustomCourseExcel() {
       message: `自选课程 Excel 导入失败：${error.message}`,
     });
   }
+}
+
+function prunePendingCustomCourseImages(now = Date.now()) {
+  for (const [token, entry] of pendingCustomCourseImages.entries()) {
+    if (!entry || now - Number(entry.createdAt || 0) > 30 * 60 * 1000) {
+      pendingCustomCourseImages.delete(token);
+    }
+  }
+}
+
+async function selectCustomCourseImage() {
+  const locked = courseManagementRequiredJson('CUSTOM_COURSE_DIRECT_UPLOAD_PLAN_REQUIRED');
+  if (locked) return locked;
+  const selected = dialog.showOpenDialogSync(mainWindow, {
+    title: '选择课程图片',
+    properties: ['openFile'],
+    filters: [{ name: '课程图片', extensions: ['png', 'jpg', 'jpeg', 'webp'] }],
+  });
+  if (!selected?.[0]) return JSON.stringify({ ok: false, cancelled: true, message: '已取消选择课程图片。' });
+  try {
+    const image = await inspectCustomCourseImage(selected[0]);
+    prunePendingCustomCourseImages();
+    const token = crypto.randomUUID();
+    pendingCustomCourseImages.set(token, {
+      path: selected[0],
+      createdAt: Date.now(),
+      purpose: 'tenant_custom',
+    });
+    return JSON.stringify({
+      ok: true,
+      imageToken: token,
+      filename: path.basename(selected[0]),
+      previewUrl: pathToFileURL(selected[0]).toString(),
+      bytes: image.bytes,
+      extension: image.extension,
+      message: '课程图片已选择，填写课程信息后点击保存。',
+    });
+  } catch (error) {
+    return JSON.stringify({
+      ok: false,
+      code: 'CUSTOM_COURSE_IMAGE_REJECTED',
+      message: `课程图片选择失败：${error.message}`,
+    });
+  }
+}
+
+async function saveDirectCustomCourse(inputJson) {
+  const locked = courseManagementRequiredJson('CUSTOM_COURSE_DIRECT_UPLOAD_PLAN_REQUIRED');
+  if (locked) return locked;
+  prunePendingCustomCourseImages();
+  let input;
+  try {
+    input = JSON.parse(inputJson || '{}');
+  } catch {
+    return JSON.stringify({ ok: false, code: 'CUSTOM_COURSE_FORM_INVALID', message: '单门课程表单格式无效。' });
+  }
+  const requestedCourseId = String(input.courseId || '').trim();
+  const existingCourse = requestedCourseId ? courseCatalogStore().findCourse(requestedCourseId) : null;
+  if (requestedCourseId && (!existingCourse || existingCourse.type !== 'tenant_custom')) {
+    return JSON.stringify({
+      ok: false,
+      code: 'CUSTOM_COURSE_EDIT_TARGET_INVALID',
+      message: '只能编辑仍然存在的机构精选课程；平台精选课程需使用平台版权限修改。',
+    });
+  }
+  const imageToken = String(input.imageToken || '');
+  const imageEntry = imageToken ? pendingCustomCourseImages.get(imageToken) : null;
+  if (imageEntry && imageEntry.purpose !== 'tenant_custom') {
+    return JSON.stringify({ ok: false, code: 'CUSTOM_COURSE_IMAGE_TOKEN_INVALID', message: '课程图片令牌用途不正确，请重新选择。' });
+  }
+  if (imageToken && !imageEntry) {
+    return JSON.stringify({
+      ok: false,
+      code: 'CUSTOM_COURSE_IMAGE_REQUIRED',
+      message: '请先点击“上传课程图片”重新选择图片。',
+    });
+  }
+  if (!existingCourse && !imageEntry) {
+    return JSON.stringify({
+      ok: false,
+      code: 'CUSTOM_COURSE_IMAGE_REQUIRED',
+      message: '新增课程时必须先点击“上传课程图片”选择图片。',
+    });
+  }
+  try {
+    const existingImagePath = existingCourse ? courseCatalogStore().assetPath(existingCourse.coverAsset) : '';
+    if (existingCourse && !imageEntry && !existingImagePath) {
+      throw new Error('原课程图片已不存在，请重新上传课程图片。');
+    }
+    const parsed = await createCustomCourseFromForm({
+      name: input.name,
+      summary: input.summary,
+      url: input.url,
+      imagePath: imageEntry?.path || existingImagePath,
+    }, {
+      assetDir: courseCatalogStore().customAssetsDir,
+      courseId: existingCourse?.courseId,
+    });
+    const conflictingCourse = courseCatalogStore().readCustomCatalog().courses.find((course) => (
+      course.url === parsed.course.url && course.courseId !== parsed.course.courseId
+    ));
+    if (conflictingCourse) throw new Error(`课程链接已经用于“${conflictingCourse.name}”，请直接编辑该课程。`);
+    const course = existingCourse ? {
+      ...parsed.course,
+      courseId: existingCourse.courseId,
+      provider: existingCourse.provider,
+      subjects: existingCourse.subjects,
+      gradeRange: existingCourse.gradeRange,
+      languages: existingCourse.languages,
+      accountRequirement: existingCourse.accountRequirement,
+      effectiveAt: existingCourse.effectiveAt,
+      legalNotice: existingCourse.legalNotice,
+    } : parsed.course;
+    const updating = Boolean(existingCourse || courseCatalogStore().findCourse(course.courseId));
+    const customCatalog = courseCatalogStore().mergeCustomCourses([course], {
+      action: existingCourse ? 'tenant_custom_direct_edit' : 'tenant_custom_direct_save',
+    });
+    if (imageToken) pendingCustomCourseImages.delete(imageToken);
+    notify('onNativeCourseCatalogChanged', {
+      action: existingCourse ? 'tenant_custom_direct_edit' : 'tenant_custom_direct_save',
+      ok: true,
+      courseId: course.courseId,
+      total: customCatalog.courses.length,
+    });
+    return JSON.stringify({
+      ok: true,
+      updated: updating,
+      course,
+      total: customCatalog.courses.length,
+      state: JSON.parse(getCourseCatalogState()),
+      message: existingCourse
+        ? `已保存“${course.name}”的修改；课程 ID、启用状态和学生分配保持不变。`
+        : updating
+          ? `已更新自选课程“${course.name}”；课程链接相同时保留同一课程记录。`
+          : `已保存自选课程“${course.name}”，可继续设置年级和学生分配。`,
+    });
+  } catch (error) {
+    return JSON.stringify({
+      ok: false,
+      code: 'CUSTOM_COURSE_DIRECT_SAVE_REJECTED',
+      message: `单门课程保存失败：${error.message}`,
+    });
+  }
+}
+
+function deleteCustomCourse(courseId) {
+  const locked = courseManagementRequiredJson('CUSTOM_COURSE_DELETE_PLAN_REQUIRED');
+  if (locked) return locked;
+  try {
+    const result = courseCatalogStore().removeCustomCourse(courseId);
+    if (activeCourse?.courseId === result.course.courseId) closeCourseView('course_deleted');
+    notify('onNativeCourseCatalogChanged', { action: 'tenant_custom_course_deleted', ok: true, courseId: result.course.courseId });
+    return JSON.stringify({
+      ok: true,
+      state: JSON.parse(getCourseCatalogState()),
+      message: `机构精选课程“${result.course.name}”已删除，并已清除启用、年级和学生分配设置。`,
+    });
+  } catch (error) {
+    return JSON.stringify({ ok: false, code: 'CUSTOM_COURSE_DELETE_REJECTED', message: `删除机构精选课程失败：${error.message}` });
+  }
+}
+
+async function selectPlatformCourseImage() {
+  const locked = platformCourseCapabilityRequiredJson('platform_course_edit', 'PLATFORM_COURSE_EDIT_REQUIRED');
+  if (locked) return locked;
+  const selected = dialog.showOpenDialogSync(mainWindow, {
+    title: '选择平台课程图片',
+    properties: ['openFile'],
+    filters: [{ name: '课程图片', extensions: ['png', 'jpg', 'jpeg', 'webp'] }],
+  });
+  if (!selected?.[0]) return JSON.stringify({ ok: false, cancelled: true, message: '已取消选择课程图片。' });
+  try {
+    const image = await inspectCustomCourseImage(selected[0]);
+    prunePendingCustomCourseImages();
+    const token = crypto.randomUUID();
+    pendingCustomCourseImages.set(token, { path: selected[0], createdAt: Date.now(), purpose: 'platform_course' });
+    return JSON.stringify({
+      ok: true,
+      imageToken: token,
+      filename: path.basename(selected[0]),
+      previewUrl: pathToFileURL(selected[0]).toString(),
+      bytes: image.bytes,
+      extension: image.extension,
+      message: '平台课程图片已选择，保存草稿后才会复制到受控目录。',
+    });
+  } catch (error) {
+    return JSON.stringify({ ok: false, code: 'PLATFORM_COURSE_IMAGE_REJECTED', message: `平台课程图片选择失败：${error.message}` });
+  }
+}
+
+async function savePlatformCourseDraft(inputJson) {
+  const locked = platformCourseCapabilityRequiredJson('platform_course_edit', 'PLATFORM_COURSE_EDIT_REQUIRED');
+  if (locked) return locked;
+  prunePendingCustomCourseImages();
+  let input;
+  try {
+    input = JSON.parse(inputJson || '{}');
+  } catch {
+    return JSON.stringify({ ok: false, code: 'PLATFORM_COURSE_DRAFT_INVALID', message: '平台课程草稿格式无效。' });
+  }
+  const imageToken = String(input.imageToken || '');
+  const imageEntry = imageToken ? pendingCustomCourseImages.get(imageToken) : null;
+  if (imageEntry && imageEntry.purpose !== 'platform_course') {
+    return JSON.stringify({ ok: false, code: 'PLATFORM_COURSE_IMAGE_TOKEN_INVALID', message: '平台课程图片令牌用途不正确，请重新选择。' });
+  }
+  if (imageToken && !imageEntry) {
+    return JSON.stringify({ ok: false, code: 'PLATFORM_COURSE_IMAGE_TOKEN_EXPIRED', message: '平台课程图片选择已失效，请重新选择。' });
+  }
+  try {
+    const state = courseCatalogStore().state();
+    const license = publicLicenseStatus();
+    const draft = await platformCourseDraftStore().save(input, {
+      imagePath: imageEntry?.path || '',
+      platformCourses: state.platformCatalog?.courses || [],
+      baseCatalogVersion: state.platformCatalog?.catalogVersion || '',
+      updatedBy: license.licenseId || license.codeHash || '',
+    });
+    if (imageToken) pendingCustomCourseImages.delete(imageToken);
+    notify('onNativeCourseCatalogChanged', { action: 'platform_course_draft_saved', ok: true, courseId: draft.courseId, draftRevision: draft.draftRevision });
+    return JSON.stringify({
+      ok: true,
+      draft,
+      state: JSON.parse(getCourseCatalogState()),
+      message: draft.validation?.ok
+        ? `平台课程“${draft.course.name}”草稿已保存并通过发布前校验。`
+        : `平台课程“${draft.course.name}”草稿已保存；仍有 ${draft.validation?.issues?.length || 0} 项发布前问题。`,
+    });
+  } catch (error) {
+    return JSON.stringify({ ok: false, code: 'PLATFORM_COURSE_DRAFT_SAVE_REJECTED', message: `平台课程草稿保存失败：${error.message}` });
+  }
+}
+
+function removePlatformCourseDraft(courseId) {
+  const locked = platformCourseCapabilityRequiredJson('platform_course_edit', 'PLATFORM_COURSE_EDIT_REQUIRED');
+  if (locked) return locked;
+  const license = publicLicenseStatus();
+  const removed = platformCourseDraftStore().remove(courseId, { updatedBy: license.licenseId || license.codeHash || '' });
+  if (!removed) return JSON.stringify({ ok: false, code: 'PLATFORM_COURSE_DRAFT_NOT_FOUND', message: '没有找到要删除的平台课程草稿。' });
+  notify('onNativeCourseCatalogChanged', { action: 'platform_course_draft_removed', ok: true, courseId });
+  return JSON.stringify({ ok: true, state: JSON.parse(getCourseCatalogState()), message: '平台课程草稿已删除；当前已发布课程不受影响。' });
+}
+
+function queuePlatformCourseDeletion(courseId) {
+  const locked = platformCourseCapabilityRequiredJson('platform_course_edit', 'PLATFORM_COURSE_EDIT_REQUIRED');
+  if (locked) return locked;
+  try {
+    const state = courseCatalogStore().state();
+    const course = (state.platformCatalog?.courses || []).find((item) => item.courseId === String(courseId || ''));
+    if (!course) return JSON.stringify({ ok: false, code: 'PLATFORM_COURSE_DELETE_TARGET_INVALID', message: '只能删除当前已发布的平台精选课程。' });
+    const license = publicLicenseStatus();
+    platformCourseDraftStore().markDeletion(course, {
+      baseCatalogVersion: state.platformCatalog?.catalogVersion || '',
+      updatedBy: license.licenseId || license.codeHash || '',
+    });
+    notify('onNativeCourseCatalogChanged', { action: 'platform_course_deletion_queued', ok: true, courseId: course.courseId });
+    return JSON.stringify({
+      ok: true,
+      state: JSON.parse(getCourseCatalogState()),
+      message: `平台课程“${course.name}”已加入待删除；点击“发布平台精选课程”后，本机和新版课程包才会正式删除该课程。`,
+    });
+  } catch (error) {
+    return JSON.stringify({ ok: false, code: 'PLATFORM_COURSE_DELETE_REJECTED', message: `删除平台课程失败：${error.message}` });
+  }
+}
+
+function cancelPlatformCourseDeletion(courseId) {
+  const locked = platformCourseCapabilityRequiredJson('platform_course_edit', 'PLATFORM_COURSE_EDIT_REQUIRED');
+  if (locked) return locked;
+  const license = publicLicenseStatus();
+  const removed = platformCourseDraftStore().cancelDeletion(courseId, { updatedBy: license.licenseId || license.codeHash || '' });
+  if (!removed) return JSON.stringify({ ok: false, code: 'PLATFORM_COURSE_DELETE_NOT_FOUND', message: '没有找到该课程的待删除记录。' });
+  notify('onNativeCourseCatalogChanged', { action: 'platform_course_deletion_cancelled', ok: true, courseId });
+  return JSON.stringify({ ok: true, state: JSON.parse(getCourseCatalogState()), message: '已取消删除，该平台课程保持不变。' });
 }
 
 function createWindow() {
@@ -7171,8 +8073,12 @@ function createWindow() {
   });
 
   mainWindow.loadFile(path.join(__dirname, '..', 'dist', 'index.html'));
+  mainWindow.webContents.on('before-input-event', handleCourseFullscreenEscape);
   mainWindow.on('resize', () => {
     if (courseView) courseView.setBounds(courseViewBounds());
+  });
+  mainWindow.on('leave-full-screen', () => {
+    if (courseFullscreen) exitCourseFullscreen('system');
   });
   mainWindow.on('closed', () => {
     if (courseView) {
@@ -7198,13 +8104,22 @@ function educationExportBaseCandidates() {
 
 function defaultStudentBaseDir() {
   const settings = readSettings();
-  return resolveStudentBaseDir({
+  const configured = String(settings.studentBaseDir || '').trim();
+  const resolved = resolveStudentBaseDir({
     configured: settings.studentBaseDir,
     platform: process.platform,
     documentsDir: app.getPath('documents'),
     homeDir: os.homedir(),
     existsSync: fs.existsSync,
   });
+  if (configured && path.resolve(configured) !== path.resolve(resolved)) {
+    writeSettings({
+      ...settings,
+      studentBaseDir: resolved,
+      archiveRoot: resolved,
+    });
+  }
+  return resolved;
 }
 
 function captureCenterRootPath() {
@@ -7462,6 +8377,10 @@ async function captureFrame(runtime, input = {}) {
       sourceType: 'windows_screenshot',
       captureSessionId: runtime.session.id,
       captureItemId: itemId,
+      courseId: runtime.session.courseId || '',
+      courseProvider: runtime.session.courseProvider || '',
+      courseUrl: runtime.session.courseUrl || '',
+      courseStartedAt: runtime.session.courseStartedAt || '',
       status: 'candidate',
       uploadedAt: capturedAt,
     });
@@ -7516,14 +8435,26 @@ async function startCaptureSession(optionsJson) {
     if (!source) return JSON.stringify({ ok: false, message: '选中的采集来源当前不可用。' });
     const student = readStudentsIndex().find((item) => String(item.id) === String(input.studentId || ''));
     if (!student) return JSON.stringify({ ok: false, message: '请选择资料所属学生。' });
-    const project = readProjects().find((item) => String(item.id) === String(input.projectId || ''));
+    const requestedProjectId = String(input.projectId || '');
+    const project = readProjects().find((item) => String(item.id) === requestedProjectId);
+    if (requestedProjectId && (!project || !(project.studentIds || []).map(String).includes(String(student.id)) || ['sealed', 'archived'].includes(String(project.status || '')))) {
+      return JSON.stringify({ ok: false, message: '所选学习项目未绑定该学生或已封存，请重新选择。' });
+    }
+    const requestedCourseId = String(input.courseId || '').trim();
+    let course = null;
+    if (requestedCourseId) {
+      course = courseCatalogStore().findCourse(requestedCourseId, student);
+      if (!activeCourse || String(activeCourse.courseId) !== requestedCourseId || !course || !courseAllowedByCurrentPlan(course)) {
+        return JSON.stringify({ ok: false, message: '课程采集上下文已变化，请重新打开课程后再开始。' });
+      }
+    }
     const now = new Date();
     const options = normalizeCaptureOptions(input);
     const id = `capture-${Date.now()}-${crypto.randomBytes(4).toString('hex')}`;
     const session = {
       id,
       protocolVersion: CAPTURE_PROTOCOL_VERSION,
-      name: String(input.name || `${student.name}屏幕采集-${now.toLocaleString('zh-CN')}`),
+      name: String(input.name || (course ? `${student.name} · ${course.name}课程采集` : `${student.name}屏幕采集-${now.toLocaleString('zh-CN')}`)),
     platform: 'windows',
       sourceId,
       sourceName: source.name,
@@ -7532,6 +8463,11 @@ async function startCaptureSession(optionsJson) {
       studentName: student.name,
       projectId: project ? String(project.id) : '',
       projectName: project?.name || '',
+      courseId: course?.courseId || '',
+      courseName: course?.name || '',
+      courseProvider: course?.provider || '',
+      courseUrl: course?.url || '',
+      courseStartedAt: course ? now.toISOString() : '',
       options,
       status: 'capturing',
       startedAt: now.toISOString(),
@@ -7550,6 +8486,8 @@ async function startCaptureSession(optionsJson) {
     persistCaptureSession(session);
     const runtime = { session, busy: false, timer: null, stopTimer: null, lastSavedAt: 0, lastSavedSignature: null };
     activeCaptureRuntime = runtime;
+    courseCaptureSetupVisible = false;
+    if (courseView) courseView.setBounds(courseViewBounds());
     scheduleCaptureRuntime(runtime);
     await captureFrame(runtime, { force: true });
     return JSON.stringify({ ok: true, session: runtime.session, message: `已开始采集“${source.name}”。` });
@@ -7597,10 +8535,13 @@ async function stopCaptureSession(sessionId, reason = 'manual') {
   if (runtime.stopTimer) clearTimeout(runtime.stopTimer);
   runtime.session.status = 'completed';
   runtime.session.endedAt = new Date().toISOString();
+  if (runtime.session.courseId) runtime.session.courseCompletedAt = runtime.session.endedAt;
   runtime.session.endReason = reason;
   runtime.session.archiveStatus = 'awaiting_review';
   persistCaptureSession(runtime.session);
   activeCaptureRuntime = null;
+  courseCaptureSetupVisible = Boolean(activeCourse);
+  if (courseView) courseView.setBounds(courseViewBounds());
   notifyCaptureChanged();
   return JSON.stringify({ ok: true, session: runtime.session, message: `采集已结束，共保留 ${runtime.session.screenshotCount} 张有效截图。` });
 }
@@ -7659,6 +8600,11 @@ function promoteCaptureSession(sessionId, requestedTarget = '') {
         uploadedAt: new Date().toISOString(),
         captureSessionId: session.id,
         captureItemId: item.id,
+        courseId: session.courseId || '',
+        courseProvider: session.courseProvider || '',
+        courseUrl: session.courseUrl || '',
+        courseStartedAt: session.courseStartedAt || '',
+        courseCompletedAt: session.courseCompletedAt || '',
       };
       records.push(record);
       if (targetMode === 'project_raw') {
@@ -7673,6 +8619,11 @@ function promoteCaptureSession(sessionId, requestedTarget = '') {
           sourceType: 'windows_screenshot',
           captureSessionId: session.id,
           captureItemId: item.id,
+          courseId: session.courseId || '',
+          courseProvider: session.courseProvider || '',
+          courseUrl: session.courseUrl || '',
+          courseStartedAt: session.courseStartedAt || '',
+          courseCompletedAt: session.courseCompletedAt || '',
           referenceId: `${ensuredProject.id}-${session.id}-${item.id}`,
           role: 'project_raw_capture',
           status: 'active',
@@ -7710,7 +8661,7 @@ function promoteCaptureSession(sessionId, requestedTarget = '') {
     session.promotedAt = new Date().toISOString();
     session.promotedFiles = records.map((record) => record.path);
     persistCaptureSession(session);
-    appendHostTimeline({ type: 'capture_session_promoted', title: 'Capture session promoted', detail: `${session.sourceName} -> ${session.promotionTargetName}`, studentId: String(student.id), studentName: student.name, count: records.length });
+    appendHostTimeline({ type: 'capture_session_promoted', title: 'Capture session promoted', detail: `${session.sourceName} -> ${session.promotionTargetName}`, studentId: String(student.id), studentName: student.name, courseId: session.courseId || '', courseName: session.courseName || '', count: records.length });
     notifyCaptureChanged();
     return JSON.stringify({
       ok: true,
@@ -8016,34 +8967,37 @@ function projectStagingStatusLabel(status) {
 
 function normalizeProjectStagingItem(item) {
   const now = new Date().toISOString();
+  const repaired = repairStagingLifecycle(item);
   return {
-    id: String(item?.id || `staging-${Date.now()}-${crypto.randomBytes(3).toString('hex')}`),
-    filename: String(item?.filename || path.basename(String(item?.path || '暂存资料'))),
-    path: String(item?.path || ''),
-    size: Number(item?.size || 0),
-    mtimeMs: Number(item?.mtimeMs || 0),
-    type: String(item?.type || materialTypeForFile(item?.filename || item?.path || '')),
-    sha1: String(item?.sha1 || ''),
-    status: String(item?.status || 'collected'),
-    sourceStrategy: String(item?.sourceStrategy || 'full_copy'),
-    reviewStatus: String(item?.reviewStatus || 'pending'),
-    reviewNote: String(item?.reviewNote || ''),
-    reviewedAt: String(item?.reviewedAt || ''),
-    sourcePath: String(item?.sourcePath || ''),
-    addedAt: String(item?.addedAt || now),
-    updatedAt: String(item?.updatedAt || now),
-    promotedAt: String(item?.promotedAt || ''),
-    promotedAssetId: String(item?.promotedAssetId || ''),
-    aiAction: String(item?.aiAction || ''),
-    aiReason: String(item?.aiReason || ''),
-    aiScore: item?.aiScore === undefined || item?.aiScore === '' ? '' : Number(item.aiScore),
-    aiReviewedAt: String(item?.aiReviewedAt || ''),
-    duplicateCount: Number(item?.duplicateCount || 1),
-    stagingAgeDays: item?.stagingAgeDays === undefined || item?.stagingAgeDays === '' ? '' : Number(item.stagingAgeDays),
-    governanceAction: String(item?.governanceAction || ''),
-    governanceReason: String(item?.governanceReason || ''),
-    governanceReviewedAt: String(item?.governanceReviewedAt || ''),
-    collaborationSourceStagingId: String(item?.collaborationSourceStagingId || ''),
+    id: String(repaired.id || `staging-${Date.now()}-${crypto.randomBytes(3).toString('hex')}`),
+    filename: String(repaired.filename || path.basename(String(repaired.path || '暂存资料'))),
+    path: String(repaired.path || ''),
+    size: Number(repaired.size || 0),
+    mtimeMs: Number(repaired.mtimeMs || 0),
+    type: String(repaired.type || materialTypeForFile(repaired.filename || repaired.path || '')),
+    sha1: String(repaired.sha1 || ''),
+    status: String(repaired.status || 'collected'),
+    sourceStrategy: String(repaired.sourceStrategy || 'full_copy'),
+    reviewStatus: String(repaired.reviewStatus || 'pending'),
+    reviewNote: String(repaired.reviewNote || ''),
+    reviewedAt: String(repaired.reviewedAt || ''),
+    sourcePath: String(repaired.sourcePath || ''),
+    addedAt: String(repaired.addedAt || now),
+    updatedAt: String(repaired.updatedAt || now),
+    promotedAt: String(repaired.promotedAt || ''),
+    promotedAssetId: String(repaired.promotedAssetId || ''),
+    analyzedAt: String(repaired.analyzedAt || ''),
+    lifecycleRepairReason: String(repaired.lifecycleRepairReason || ''),
+    aiAction: String(repaired.aiAction || ''),
+    aiReason: String(repaired.aiReason || ''),
+    aiScore: repaired.aiScore === undefined || repaired.aiScore === '' ? '' : Number(repaired.aiScore),
+    aiReviewedAt: String(repaired.aiReviewedAt || ''),
+    duplicateCount: Number(repaired.duplicateCount || 1),
+    stagingAgeDays: repaired.stagingAgeDays === undefined || repaired.stagingAgeDays === '' ? '' : Number(repaired.stagingAgeDays),
+    governanceAction: String(repaired.governanceAction || ''),
+    governanceReason: String(repaired.governanceReason || ''),
+    governanceReviewedAt: String(repaired.governanceReviewedAt || ''),
+    collaborationSourceStagingId: String(repaired.collaborationSourceStagingId || ''),
   };
 }
 
@@ -8581,8 +9535,8 @@ function relocateProjectWorkspace(projectId) {
   try {
     const access = mutableProject(projectId, '重新定位工作空间');
     if (access.error) return access.error;
-    const selected = dialog.showOpenDialogSync(mainWindow, { title: '重新定位项目工作空间', properties: ['openDirectory'] });
-    if (!selected?.[0]) return JSON.stringify({ ok: false, cancelled: true, message: '已取消项目路径重新定位。' });
+    const selected = dialog.showOpenDialogSync(mainWindow, { title: '重新定位项目工作空间（选择新的来源目录）', properties: ['openDirectory'] });
+    if (!selected?.[0]) return JSON.stringify({ ok: false, cancelled: true, message: '已取消项目工作空间重新定位。' });
     const validation = validateWorkspaceRebind(access.project, selected[0], readProjects().map(normalizeProject));
     if (!validation.ok) return JSON.stringify({ ok: false, message: validation.errors.join(' ') });
     const openTasks = readTaskStore().tasks.filter((task) => String(task.projectId || task.sourceId || '') === String(projectId) && !['completed', 'failed', 'cancelled'].includes(String(task.status)));
@@ -8593,10 +9547,10 @@ function relocateProjectWorkspace(projectId) {
       newPath: validation.targetPath,
       warnings: [...validation.warnings, ...(openTasks.length ? [`存在 ${openTasks.length} 个未完成项目任务，重新绑定前应先处理或确认暂停。`] : [])],
       openTaskCount: openTasks.length,
-      message: '已完成路径预检。确认后只更新逻辑绑定，不移动、复制或删除任何文件。',
+      message: '已完成路径预检。重新定位就是修改工作空间来源目录；确认后只更新逻辑绑定，不移动、复制或删除任何文件，项目知识空间保持不变。',
     });
   } catch (error) {
-    return JSON.stringify({ ok: false, message: `项目路径重新定位失败：${error.message}` });
+    return JSON.stringify({ ok: false, message: `项目工作空间重新定位失败：${error.message}` });
   }
 }
 
@@ -8622,7 +9576,7 @@ function confirmProjectWorkspaceRelocation(projectId, workspacePath) {
     const ensured = ensureProjectWorkspace(result.project);
     writeProjectBindingIndex(ensured);
     appendHostTimeline({ type: 'project_workspace_relocated', title: 'Project workspace relocated', detail: `${ensured.name}: ${previousPath} -> ${validation.targetPath}` });
-    return JSON.stringify({ ok: true, project: ensured, projects: readProjects().map(normalizeProject), rebindId: historyEntry.id, message: '工作空间逻辑绑定已更新；原目录与知识空间均未修改。正在等待对新目录执行首次扫描。' });
+    return JSON.stringify({ ok: true, project: ensured, projects: readProjects().map(normalizeProject), rebindId: historyEntry.id, message: '项目工作空间已重新定位；来源目录绑定已更新，原目录与知识空间均未改动，系统将重新扫描新目录。' });
   } catch (error) {
     return JSON.stringify({ ok: false, message: `确认项目路径重新定位失败：${error.message}` });
   }
@@ -9341,7 +10295,11 @@ function reviewProjectStagingItems(projectId, itemIdsJson, decision, sourceStrat
     });
     const changed = matched - blocked.length;
     if (!matched) return JSON.stringify({ ok: false, message: '所选暂存资料已不存在，未更新任何记录。' });
-    if (!changed) return JSON.stringify({ ok: false, blocked, message: '所选资料均不允许执行当前审核操作。' });
+    if (!changed) return JSON.stringify({
+      ok: false,
+      blocked,
+      message: `所选 ${blocked.length} 份资料均已晋升或完成分析，不能重复审核；请只选择尚未完成处理的资料。`,
+    });
     writeProjects(nextProjects);
     writeProjectStagingIndex(updated);
     return JSON.stringify({ ok: true, updated: changed, blocked, project: normalizeProject(updated), projects: nextProjects.map(normalizeProject), message: `已审核 ${changed} 份资料；${blocked.length} 份因状态约束未修改。处理结果：${nextDecision}。` });
@@ -10200,21 +11158,31 @@ function updateProjectStagingStatus(projectId, itemIdsJson, status) {
     const itemIds = JSON.parse(itemIdsJson || '[]');
     if (!Array.isArray(itemIds) || !itemIds.length) return JSON.stringify({ ok: false, message: '请先选择暂存资料。' });
     const now = new Date().toISOString();
+    let updatedCount = 0;
+    let blockedCount = 0;
     const result = updateProjectRecord(projectId, (project) => ({
       ...project,
-      stagingItems: (project.stagingItems || []).map((item) => itemIds.includes(item.id)
-        ? { ...item, status: nextStatus, updatedAt: now }
-        : item),
+      stagingItems: (project.stagingItems || []).map((item) => {
+        if (!itemIds.includes(item.id)) return item;
+        if (['promoted', 'analyzed'].includes(String(item.status))) {
+          blockedCount += 1;
+          return item;
+        }
+        updatedCount += 1;
+        return { ...item, status: nextStatus, updatedAt: now };
+      }),
       updatedAt: now,
     }));
     if (!result.project) return JSON.stringify({ ok: false, message: '未找到学习项目。' });
-    appendHostTimeline({ type: 'project_staging_status_updated', title: 'Project staging status updated', detail: `${result.project.name} -> ${nextStatus}`, count: itemIds.length });
+    if (!updatedCount) return JSON.stringify({ ok: false, blocked: blockedCount, message: '所选资料均已晋升或完成分析，不能修改暂存状态。' });
+    appendHostTimeline({ type: 'project_staging_status_updated', title: 'Project staging status updated', detail: `${result.project.name} -> ${nextStatus}`, count: updatedCount });
     return JSON.stringify({
       ok: true,
-      updated: itemIds.length,
+      updated: updatedCount,
+      blocked: blockedCount,
       project: result.project,
       projects: result.projects,
-      message: `已将 ${itemIds.length} 份暂存资料标记为：${projectStagingStatusLabel(nextStatus)}。`,
+      message: `已将 ${updatedCount} 份暂存资料标记为：${projectStagingStatusLabel(nextStatus)}。${blockedCount ? ` ${blockedCount} 份已完成资料保持不变。` : ''}`,
     });
   } catch (error) {
     return JSON.stringify({ ok: false, message: `更新暂存资料状态失败：${error.message}` });
@@ -11761,6 +12729,7 @@ const TASK_OPERATION_ALLOWLIST = {
   growth_publish: new Set(['publish_growth_evidence']),
   promotion_rollback: new Set(['rollback_promotion']),
   collaboration_assignment: new Set(['read']),
+  publication_enhancement: new Set(['read', 'create_draft']),
 };
 
 function canonicalTaskPath(value) {
@@ -13956,7 +14925,7 @@ function normalizeTaskResult(task, payload = {}, validation = null, defaults = {
     message: String(payload.message || defaults.message || ''),
     output: payload.output ?? defaults.output ?? '',
     errorOutput: payload.errorOutput ?? defaults.errorOutput ?? '',
-    structuredOutput: payload.structuredOutput ?? payload.data ?? defaults.structuredOutput ?? null,
+    structuredOutput: payload.structuredOutput ?? payload.data ?? validation?.structuredOutput ?? defaults.structuredOutput ?? null,
     artifacts,
     fileChanges: Array.isArray(payload.fileChanges) ? payload.fileChanges : artifacts.filter((item) => item?.exists !== false && item?.path).map((item) => ({ path: item.path, operation: 'created_or_updated', modifiedAt: item.modifiedAt || '' })),
     logReference: String(payload.logReference || payload.logPath || defaults.logReference || task.result?.logPath || ''),
@@ -13999,6 +14968,14 @@ function commitValidatedTaskResult(store, task, result, validation, options = {}
       approval: { ...(task.approval || {}), required: false, status: 'not_required', reviewedAt: acceptedAt, reviewedBy: 'system_validation' },
       completedAt: acceptedAt,
     }, publication.unchanged ? 'report_unchanged_auto_accepted' : 'report_auto_published');
+  }
+  if (task.kind === 'publication_enhancement') {
+    const acceptedAt = taskNow();
+    return transitionTaskInStore(store, task.id, 'succeeded', {
+      result: { ...reviewingResult, status: 'succeeded', autoAcceptedAt: acceptedAt, summary: 'Agent 草稿已通过原文依据校验。' },
+      approval: { ...(task.approval || {}), required: false, status: 'not_required', reviewedAt: acceptedAt, reviewedBy: 'system_grounding_validation' },
+      completedAt: acceptedAt,
+    }, 'publication_enhancement_auto_accepted');
   }
   if (!shouldAutoAccept(task, validation)) return reviewing;
   const acceptedAt = taskNow();
@@ -14093,6 +15070,40 @@ function materializeDigestReceiptFromTaskPayload(task, payload) {
 
 function validateTaskCompletion(task, startedAt = '', resultPayload = null) {
   materializeDigestReceiptFromTaskPayload(task, resultPayload);
+  if (task.kind === 'publication_enhancement') {
+    const student = findStudentByKey(task.sourceId);
+    const source = student ? educationPublicationSource(student, task.input?.sourceType, task.input?.publicationSourceId) : { ok: false };
+    const resultPath = String(task.expectedOutput?.path || '');
+    let candidate = resultPayload;
+    if (resultPath && fs.existsSync(resultPath)) {
+      try { candidate = fs.readFileSync(resultPath, 'utf8'); } catch {}
+    }
+    const validation = source.ok
+      ? validateEnhancementCandidate(candidate, source.content, {
+        templateId: task.input?.templateId,
+        fallbackTitle: source.title,
+        fallbackSubtitle: task.input?.sourceType === 'learning_report' ? '学情报告要点' : '教育档案要点',
+      })
+      : { valid: false, errors: ['出版来源已不存在。'], draft: null, coverage: 0, grounded: 0, total: 0 };
+    const droppedSummary = validation.dropped
+      ? `已自动剔除 ${validation.dropped} 条无法逐字溯源的内容，保留 ${validation.grounded} 条安全摘录。`
+      : '全部条目均已逐字匹配原文。';
+    return {
+      valid: validation.valid,
+      artifacts: resultPath && fs.existsSync(resultPath) ? [{ path: resultPath, exists: true }] : [],
+      checkedAt: taskNow(),
+      message: validation.valid ? `Agent 草稿已通过证据优先校验。${droppedSummary}` : `Agent 草稿未通过依据校验：${validation.errors.join('；')}`,
+      structuredOutput: validation.valid ? {
+        schema: EDUCATION_PUBLICATION_ENHANCEMENT_SCHEMA,
+        draft: validation.draft,
+        coverage: validation.coverage,
+        grounded: validation.grounded,
+        total: validation.total,
+        dropped: validation.dropped,
+        warnings: validation.warnings,
+      } : null,
+    };
+  }
   if (task.kind === 'collaboration_assignment' && task.input?.remoteLocalExecution) {
     const output = typeof resultPayload === 'string'
       ? resultPayload
@@ -14157,7 +15168,7 @@ function finalizeAdapterExecution(taskId, executionId, adapterId, code, output, 
     summary: Number(code) === 0 ? (validation.valid ? ((shouldAutoAccept(task, validation) || isAutoPublishReportTask(task)) ? '任务完成并已通过自动校验。' : 'Agent 执行完成，等待审核。') : validation.message) : `Agent 退出码 ${code}。`,
     output: String(output || '').slice(-20000),
     errorOutput: String(errorOutput || '').slice(-10000),
-    structuredOutput: validation.domainSync || null,
+    structuredOutput: validation.structuredOutput || validation.domainSync || null,
     artifacts: validation.artifacts,
     logReference: task.result?.logPath || '',
     failureReason: successful ? null : { category: Number(code) === 0 ? 'validation' : code === -1 ? 'launch' : 'process', code: `EXIT_${code}`, detail: String(errorOutput || validation.message || '').slice(-2000) },
@@ -20088,6 +21099,366 @@ async function exportLearningReport(studentKey, reportId, format) {
   }
 }
 
+function educationPublicationIndexPath() {
+  return path.join(app.getPath('userData'), 'education-publications.json');
+}
+
+function readEducationPublicationIndex() {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(educationPublicationIndexPath(), 'utf8'));
+    return Array.isArray(parsed?.records) ? parsed.records : [];
+  } catch {
+    return [];
+  }
+}
+
+function writeEducationPublicationIndex(records) {
+  writeJsonAtomic(educationPublicationIndexPath(), {
+    schema: PUBLICATION_SCHEMA,
+    updatedAt: new Date().toISOString(),
+    records: records.slice(0, 200),
+  });
+}
+
+function educationPublicationSource(student, sourceType, sourceId) {
+  if (sourceType === 'learning_report') {
+    const report = LEARNING_REPORTS.find((item) => item.id === String(sourceId));
+    if (!report) return { ok: false, message: '未找到学情报告类型。' };
+    const filePath = learningReportPathForStudent(student, report);
+    if (!fs.existsSync(filePath) || !fs.statSync(filePath).isFile()) return { ok: false, message: '学情报告尚未生成。' };
+    const content = fs.readFileSync(filePath, 'utf8');
+    return { ok: true, title: report.title, path: filePath, content, eligibility: { eligible: true, reason: '' } };
+  }
+  if (sourceType === 'archive_file') {
+    const filePath = path.resolve(String(sourceId || ''));
+    const summaryRoot = path.resolve(student.summaryPath || getSummaryDir(student.name));
+    if (!isPathInside(summaryRoot, filePath)) return { ok: false, message: '所选文件不属于当前学生的教育档案。' };
+    const eligibility = publicationEligibility(filePath);
+    if (!eligibility.eligible) return { ok: false, message: eligibility.reason, eligibility };
+    if (!fs.existsSync(filePath) || !fs.statSync(filePath).isFile()) return { ok: false, message: '未找到所选档案文件。' };
+    const content = fs.readFileSync(filePath, 'utf8');
+    return { ok: true, title: path.basename(filePath, path.extname(filePath)), path: filePath, content, eligibility };
+  }
+  return { ok: false, message: '不支持的教育内容来源。' };
+}
+
+function sanitizeEducationPublicationDraft(candidate, automaticDraft, sourceContent) {
+  if (!candidate || typeof candidate !== 'object') return automaticDraft;
+  if (String(candidate.templateId || '') !== String(automaticDraft.templateId || '')) return automaticDraft;
+  if (String(candidate.sourceHash || '') !== String(automaticDraft.sourceHash || '')) return automaticDraft;
+  const title = String(candidate.title || automaticDraft.title || '').trim().slice(0, 160) || automaticDraft.title;
+  const subtitle = String(candidate.subtitle || '').trim().slice(0, 240);
+  if (automaticDraft.mode === 'document') {
+    const markdown = String(candidate.markdown || '').trim();
+    if (!markdown || Buffer.byteLength(markdown, 'utf8') > 512 * 1024) return automaticDraft;
+    return {
+      ...automaticDraft,
+      title,
+      subtitle,
+      markdown,
+      edited: markdown !== automaticDraft.markdown || title !== automaticDraft.title || subtitle !== automaticDraft.subtitle,
+    };
+  }
+  const sections = Array.isArray(candidate.sections) ? candidate.sections.slice(0, 10).map((section, sectionIndex) => ({
+    id: String(section?.id || `section-${sectionIndex + 1}`).slice(0, 80),
+    label: String(section?.label || '内容要点').trim().slice(0, 80) || '内容要点',
+    kind: String(section?.kind || '').slice(0, 32),
+    items: (Array.isArray(section?.items) ? section.items : []).slice(0, 12).map((item, itemIndex) => ({
+      id: String(item?.id || `item-${sectionIndex + 1}-${itemIndex + 1}`).slice(0, 120),
+      text: String(item?.text || '').trim().slice(0, 1000),
+      sourceHeading: String(item?.sourceHeading || '').slice(0, 160),
+      sourceHash: String(item?.sourceHash || '').slice(0, 128),
+      grounded: Boolean(item?.grounded),
+      sourceQuote: String(item?.sourceQuote || '').trim().slice(0, 2000),
+      sourceRefs: (Array.isArray(item?.sourceRefs) ? item.sourceRefs : []).slice(0, 8).map((value) => String(value).slice(0, 160)),
+      emphasis: item?.emphasis === 'highlight' ? 'highlight' : 'normal',
+    })).filter((item) => item.text),
+  })).filter((section) => section.items.length) : [];
+  if (!sections.length) return automaticDraft;
+  if (candidate.generationMethod === 'agent') {
+    const checked = validateEnhancementCandidate({
+      schema: EDUCATION_PUBLICATION_ENHANCEMENT_SCHEMA,
+      title, subtitle,
+      layout: candidate.mode || automaticDraft.mode,
+      sections,
+    }, sourceContent, {
+      templateId: automaticDraft.templateId,
+      fallbackTitle: automaticDraft.title,
+      fallbackSubtitle: automaticDraft.subtitle,
+    });
+    if (!checked.valid) return automaticDraft;
+    return {
+      ...automaticDraft,
+      ...checked.draft,
+      templateId: automaticDraft.templateId,
+      sourceHash: automaticDraft.sourceHash,
+      generationMethod: 'agent',
+      promptTemplateId: String(candidate.promptTemplateId || ''),
+      edited: Boolean(candidate.edited),
+      validation: { total: checked.total, grounded: checked.grounded, coverage: checked.coverage, valid: checked.valid },
+    };
+  }
+  const draft = {
+    ...automaticDraft,
+    title,
+    subtitle,
+    sections,
+    edited: JSON.stringify(sections) !== JSON.stringify(automaticDraft.sections) || title !== automaticDraft.title || subtitle !== automaticDraft.subtitle,
+  };
+  return { ...draft, validation: validateDraftGrounding(draft, sourceContent) };
+}
+
+function getEducationPublishingState(studentKey, sourceType, sourceId) {
+  try {
+    const student = findStudentByKey(studentKey);
+    if (!student) return JSON.stringify({ ok: false, message: '未找到学生。' });
+    const source = educationPublicationSource(student, sourceType, sourceId);
+    if (!source.ok) return JSON.stringify(source);
+    const sourceHash = publicationFingerprint(source.content);
+    const records = readEducationPublicationIndex()
+      .filter((item) => String(item.studentId) === String(student.id))
+      .map((item) => ({ ...item, sourceChanged: item.sourceId === String(sourceId) && item.sourceHash !== sourceHash }))
+      .slice(0, 20);
+    const templates = educationPublicationTemplateCatalog(publicLicenseStatus().plan || 'basic');
+    const drafts = Object.fromEntries(templates.map((template) => [template.id, buildPublicationDraft(source.content, {
+      templateId: template.id,
+      title: source.title,
+      sourceType,
+      subtitle: sourceType === 'learning_report' ? (template.id === 'formal' || template.id === 'monochrome' ? '学情报告' : '学情报告要点') : (template.id === 'formal' || template.id === 'monochrome' ? '教育档案报告' : '教育档案要点'),
+    })]));
+    return JSON.stringify({
+      ok: true,
+      source: { type: sourceType, id: String(sourceId), title: source.title, path: source.path, hash: sourceHash },
+      outline: extractPublicationOutline(source.content, { title: source.title, templateId: 'concise', sourceType }),
+      drafts,
+      templates,
+      enhancementTemplates: Object.fromEntries(templates.map((template) => [template.id, educationPublicationPromptCatalog(template.id)])),
+      records,
+    });
+  } catch (error) {
+    return JSON.stringify({ ok: false, message: `读取教育内容出版状态失败：${error.message}` });
+  }
+}
+
+function educationPublicationEnhancementTaskId(studentId, sourceHash, templateId, promptTemplateId) {
+  return taskStableId('publication_enhancement', 'student', studentId, `${String(sourceHash).slice(0, 16)}:${templateId}:${promptTemplateId}:${EDUCATION_PUBLICATION_PROMPT_REVISION}`);
+}
+
+function educationPublicationEnhancementState(studentKey, optionsJson) {
+  try {
+    const student = findStudentByKey(studentKey);
+    if (!student) return JSON.stringify({ ok: false, message: '未找到学生。' });
+    const options = typeof optionsJson === 'string' ? JSON.parse(optionsJson || '{}') : (optionsJson || {});
+    const source = educationPublicationSource(student, options.sourceType, options.sourceId);
+    if (!source.ok) return JSON.stringify(source);
+    const sourceHash = publicationFingerprint(source.content);
+    const templateId = String(options.templateId || 'concise');
+    const promptTemplateId = String(options.promptTemplateId || defaultEducationPublicationPrompt(templateId));
+    const taskId = educationPublicationEnhancementTaskId(student.id, sourceHash, templateId, promptTemplateId);
+    const task = readTaskStore().tasks.find((item) => item.id === taskId);
+    const enhanced = task?.result?.structuredOutput?.draft || null;
+    const fallbackDraft = buildPublicationDraft(source.content, {
+      templateId,
+      title: source.title,
+      sourceType: options.sourceType,
+      subtitle: options.sourceType === 'learning_report' ? '学情报告要点' : '教育档案要点',
+    });
+    return JSON.stringify({
+      ok: true,
+      taskId,
+      status: task?.status || 'idle',
+      message: enhanced ? (task?.result?.summary || 'Agent 草稿已通过证据优先校验。') : task?.result?.summary || task?.error?.message || '尚未生成 Agent 草稿。',
+      draft: enhanced ? { ...fallbackDraft, ...enhanced, templateId, sourceHash, generationMethod: 'agent', promptTemplateId, edited: false } : fallbackDraft,
+      fallback: !enhanced,
+    });
+  } catch (error) {
+    return JSON.stringify({ ok: false, message: `读取 Agent 出版草稿失败：${error.message}` });
+  }
+}
+
+async function startEducationPublicationEnhancement(studentKey, optionsJson) {
+  try {
+    const student = findStudentByKey(studentKey);
+    if (!student) return JSON.stringify({ ok: false, message: '未找到学生。' });
+    const options = typeof optionsJson === 'string' ? JSON.parse(optionsJson || '{}') : (optionsJson || {});
+    const source = educationPublicationSource(student, options.sourceType, options.sourceId);
+    if (!source.ok) return JSON.stringify(source);
+    const sourceHash = publicationFingerprint(source.content);
+    const templateId = String(options.templateId || 'concise');
+    const promptTemplateId = String(options.promptTemplateId || defaultEducationPublicationPrompt(templateId));
+    const taskId = educationPublicationEnhancementTaskId(student.id, sourceHash, templateId, promptTemplateId);
+    const outputDir = path.join(taskCenterDirPath(), 'publication-enhancements', String(student.id));
+    fs.mkdirSync(outputDir, { recursive: true });
+    const resultPath = path.join(outputDir, `${taskId}.json`);
+    const command = buildEnhancementPrompt({
+      templateId, promptTemplateId, sourcePath: source.path, resultPath,
+      studentId: student.id, studentName: student.name,
+    });
+    const store = readTaskStore();
+    const existingIndex = store.tasks.findIndex((item) => item.id === taskId);
+    const existing = existingIndex >= 0 ? store.tasks[existingIndex] : null;
+    if (existing?.status === 'succeeded' && existing.result?.structuredOutput?.draft && options.force !== true) {
+      return JSON.stringify({ ok: true, taskId, status: 'succeeded', message: '已使用通过校验的 Agent 草稿。' });
+    }
+    const task = normalizeTaskEnvelope({
+      ...(existing || {}), id: taskId, title: `智能提炼：${source.title}`,
+      kind: 'publication_enhancement', sourceType: 'student', sourceId: String(student.id), sourceName: student.name,
+      status: 'pending', trigger: 'education_publishing', priority: 'normal', riskLevel: 'low',
+      requestedExecutor: String(options.executor || 'auto'), executor: String(options.executor || 'auto'),
+      completionPolicy: 'auto_after_validation', maxAttempts: 2, attempt: 0, autoRetry: true,
+      input: { command, sourceType: options.sourceType, publicationSourceId: String(options.sourceId), sourceHash, templateId, promptTemplateId, promptRevision: EDUCATION_PUBLICATION_PROMPT_REVISION },
+      expectedOutput: { type: EDUCATION_PUBLICATION_ENHANCEMENT_SCHEMA, path: resultPath },
+      permissions: { read: [source.path], write: [outputDir], operations: ['read', 'create_draft'] },
+      approval: { required: false, status: 'not_required' },
+      detail: '根据原文生成结构化草稿；逐条依据校验失败时保留忠实原文草稿。',
+      result: null, error: null, completedAt: '',
+    }, existing || {});
+    if (existingIndex >= 0) store.tasks[existingIndex] = task; else store.tasks.unshift(task);
+    writeTaskStore(store);
+    appendTaskEvent(taskId, 'publication_enhancement_created', { templateId, promptTemplateId, promptRevision: EDUCATION_PUBLICATION_PROMPT_REVISION, sourceHash });
+    const execution = JSON.parse(await executeTaskByAdapterWithFreshCapabilities(taskId, String(options.executor || 'auto')));
+    return JSON.stringify({ ...execution, taskId, status: execution.task?.status || 'running', fallbackDraftRetained: true });
+  } catch (error) {
+    return JSON.stringify({ ok: false, message: `启动 Agent 智能提炼失败：${error.message}`, fallbackDraftRetained: true });
+  }
+}
+
+async function exportEducationPublication(studentKey, optionsJson) {
+  let renderWindow = null;
+  let temporaryDir = '';
+  try {
+    const student = findStudentByKey(studentKey);
+    if (!student) return JSON.stringify({ ok: false, message: '未找到学生。' });
+    const options = typeof optionsJson === 'string' ? JSON.parse(optionsJson || '{}') : (optionsJson || {});
+    const sourceType = String(options.sourceType || '');
+    const sourceId = String(options.sourceId || '');
+    const template = EDUCATION_PUBLICATION_TEMPLATES.find((item) => item.id === String(options.templateId || 'formal'));
+    const outputFormat = String(options.format || '').toLowerCase();
+    const colorMode = options.colorMode === 'monochrome' ? 'monochrome' : 'color';
+    if (!template || !template.formats.includes(outputFormat)) return JSON.stringify({ ok: false, message: '当前模板不支持所选输出格式。' });
+    const source = educationPublicationSource(student, sourceType, sourceId);
+    if (!source.ok) return JSON.stringify(source);
+    const sourceHash = publicationFingerprint(source.content);
+    const automaticDraft = buildPublicationDraft(source.content, {
+      templateId: template.id,
+      title: source.title,
+      sourceType,
+      subtitle: sourceType === 'learning_report' ? (template.id === 'formal' || template.id === 'monochrome' ? '学情报告' : '学情报告要点') : (template.id === 'formal' || template.id === 'monochrome' ? '教育档案报告' : '教育档案要点'),
+    });
+    const draft = sanitizeEducationPublicationDraft(options.draft, automaticDraft, source.content);
+    const generatedAt = new Date();
+    const stem = safeExportStem(`${sanitizeName(student.name)}-${source.title}-${template.name}-${timestampForFilename()}`, `education-publication-${timestampForFilename()}`);
+    let exported;
+    if (outputFormat === 'markdown') {
+      exported = writeFileWithFallback(educationExportBaseCandidates(), stem, 'md', Buffer.from(draftMarkdown(draft), 'utf8'));
+    } else {
+      temporaryDir = fs.mkdtempSync(path.join(app.getPath('temp'), 'edu-publication-'));
+      const htmlPath = path.join(temporaryDir, 'publication.html');
+      fs.writeFileSync(htmlPath, buildPublicationHtml({
+        templateId: template.id,
+        outputFormat,
+        colorMode,
+        studentName: student.name,
+        title: source.title,
+        subtitle: sourceType === 'learning_report' ? '学情报告要点' : '教育档案要点',
+        markdown: source.content,
+        draft,
+        generatedAt: generatedAt.toLocaleString('zh-CN'),
+      }), 'utf8');
+      renderWindow = new BrowserWindow({
+        show: false,
+        width: outputFormat === 'png' ? 1080 : 900,
+        height: outputFormat === 'png' ? 1920 : 1100,
+        webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true },
+      });
+      await renderWindow.loadFile(htmlPath);
+      await renderWindow.webContents.executeJavaScript('document.fonts.ready.then(() => true)');
+      if (outputFormat === 'pdf') {
+        const pdf = await renderWindow.webContents.printToPDF({ pageSize: template.id === 'growth-card' ? { width: 285750, height: 508000 } : 'A4', printBackground: true, preferCSSPageSize: true });
+        exported = writeFileWithFallback(educationExportBaseCandidates(), stem, 'pdf', pdf);
+      } else {
+        const contentHeight = await renderWindow.webContents.executeJavaScript(`(() => {
+          const page = document.querySelector('.page');
+          return Math.max(1440, Math.ceil(page?.scrollHeight || document.documentElement.scrollHeight || 1440));
+        })()`);
+        const captureHeight = Math.min(12000, Number(contentHeight) || 1440);
+        if (Number(contentHeight) > 12000) throw new Error('卡片内容过长，请精简后重试，或改用 PDF 输出完整内容。');
+        renderWindow.setContentSize(1080, captureHeight);
+        await renderWindow.webContents.executeJavaScript('new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)))');
+        const image = await renderWindow.webContents.capturePage({ x: 0, y: 0, width: 1080, height: captureHeight });
+        exported = writeFileWithFallback(educationExportBaseCandidates(), stem, 'png', image.toPNG());
+      }
+    }
+    const record = {
+      id: `publication-${crypto.randomUUID()}`,
+      studentId: String(student.id),
+      studentName: student.name,
+      sourceType,
+      sourceId,
+      sourcePath: source.path,
+      sourceHash,
+      sourceTitle: source.title,
+      templateId: template.id,
+      templateName: template.name,
+      format: outputFormat,
+      colorMode,
+      outputPath: exported.path,
+      generatedAt: generatedAt.toISOString(),
+      edited: Boolean(draft.edited),
+      generationMethod: draft.generationMethod || 'source',
+      promptTemplateId: draft.promptTemplateId || '',
+      validation: draft.validation,
+      draft,
+    };
+    writeEducationPublicationIndex([record, ...readEducationPublicationIndex().filter((item) => item.id !== record.id)]);
+    shell.showItemInFolder(exported.path);
+    return JSON.stringify({ ok: true, record, message: `${template.name}已生成：${exported.path}` });
+  } catch (error) {
+    return JSON.stringify({ ok: false, message: `生成教育内容失败：${error.message}` });
+  } finally {
+    if (renderWindow && !renderWindow.isDestroyed()) renderWindow.destroy();
+    if (temporaryDir && fs.existsSync(temporaryDir)) {
+      try { fs.rmSync(temporaryDir, { recursive: true, force: true }); } catch {}
+    }
+  }
+}
+
+function openEducationPublication(studentKey, publicationId) {
+  const student = findStudentByKey(studentKey);
+  const record = readEducationPublicationIndex().find((item) => item.id === String(publicationId) && String(item.studentId) === String(student?.id || ''));
+  if (!record || !record.outputPath || !fs.existsSync(record.outputPath)) return JSON.stringify({ ok: false, message: '未找到生成文件。' });
+  shell.showItemInFolder(record.outputPath);
+  return JSON.stringify({ ok: true, message: '已定位生成文件。' });
+}
+
+function deleteEducationPublication(studentKey, publicationId) {
+  try {
+    const student = findStudentByKey(studentKey);
+    const records = readEducationPublicationIndex();
+    const record = records.find((item) => item.id === String(publicationId) && String(item.studentId) === String(student?.id || ''));
+    if (!record) return JSON.stringify({ ok: false, message: '未找到生成记录。' });
+    if (record.outputPath && fs.existsSync(record.outputPath)) fs.unlinkSync(record.outputPath);
+    writeEducationPublicationIndex(records.filter((item) => item.id !== record.id));
+    return JSON.stringify({ ok: true, message: '已删除生成文件和记录，原始档案未改动。' });
+  } catch (error) {
+    return JSON.stringify({ ok: false, message: `删除生成文件失败：${error.message}` });
+  }
+}
+
+async function regenerateEducationPublication(studentKey, publicationId) {
+  const student = findStudentByKey(studentKey);
+  const record = readEducationPublicationIndex().find((item) => item.id === String(publicationId) && String(item.studentId) === String(student?.id || ''));
+  if (!record) return JSON.stringify({ ok: false, message: '未找到可重新生成的记录。' });
+  return exportEducationPublication(studentKey, JSON.stringify({
+    sourceType: record.sourceType,
+    sourceId: record.sourceId,
+    templateId: record.templateId,
+    format: record.format,
+    colorMode: record.colorMode,
+    draft: record.draft,
+  }));
+}
+
 function restoreEducationArchiveSnapshot(student, snapshot) {
   if (!snapshot || String(snapshot.student?.id || '') !== String(student.id)) return { ok: false, message: '教育档案备份与学生不匹配。' };
   const version = writeArchiveVersion({
@@ -22389,6 +23760,18 @@ function licensedInvoke(action, handler) {
   });
 }
 
+function deferredInvoke(handler) {
+  return new Promise((resolve) => {
+    setImmediate(() => {
+      try {
+        resolve(handler());
+      } catch (error) {
+        resolve(JSON.stringify({ ok: false, message: `读取数据失败：${error.message}` }));
+      }
+    });
+  });
+}
+
 ipcMain.handle('bridge:copyText', (_event, value) => {
   try {
     const text = String(value || '');
@@ -22410,14 +23793,14 @@ ipcMain.handle('bridge:scanMaterialSources', (_event, studentId, sourcesJson) =>
 ipcMain.handle('bridge:importMaterialSourceFiles', (_event, studentId, pathsJson, targetJson) => licensedInvoke('导入资料', () => importMaterialSourceFiles(studentId, pathsJson, targetJson)));
 ipcMain.on('bridge:getMaterialImportRecords', (event, studentId) => { event.returnValue = getMaterialImportRecords(studentId); });
 ipcMain.on('bridge:removeMaterialImportRecords', (event, studentId, recordIdsJson) => { licensedIpc(event, '移除资料记录', () => removeMaterialImportRecords(studentId, recordIdsJson)); });
-ipcMain.on('bridge:getAssetIndex', (event) => { event.returnValue = JSON.stringify(assetIndexSummary()); });
+ipcMain.handle('bridge:getAssetIndex', () => deferredInvoke(() => JSON.stringify(assetIndexSummary())));
 ipcMain.handle('bridge:rebuildAssetIndex', () => licensedInvoke('资产索引补建', () => rebuildAssetIndex()));
 ipcMain.handle('bridge:analyzeAssetGovernance', () => licensedInvoke('资产治理建议', () => analyzeAssetGovernance()));
 ipcMain.on('bridge:cleanupAssetReferences', (event, assetId) => { licensedIpc(event, '资产引用清理', () => cleanupAssetReferences(assetId)); });
 ipcMain.on('bridge:createAssetVersionSnapshot', (event, assetId) => { licensedIpc(event, '资产版本快照', () => createAssetVersionSnapshot(assetId)); });
 ipcMain.on('bridge:markAssetGovernanceDecision', (event, assetId, decision, note) => { licensedIpc(event, '资产治理人工决策', () => markAssetGovernanceDecision(assetId, decision, note)); });
 ipcMain.on('bridge:generateKnowledgeArchitectureReport', (event) => { licensedIpc(event, '知识关系图生成', () => generateKnowledgeArchitectureReport()); });
-ipcMain.on('bridge:getProjects', (event) => { event.returnValue = getProjects(); });
+ipcMain.handle('bridge:getProjects', () => deferredInvoke(() => getProjects()));
 ipcMain.on('bridge:createProject', (event, optionsJson) => { licensedIpc(event, '学习项目创建', () => createProject(optionsJson)); });
 ipcMain.on('bridge:updateProjectMetadata', (event, projectId, metadataJson) => { licensedIpc(event, '编辑学习项目', () => updateProjectMetadata(projectId, metadataJson)); });
 ipcMain.on('bridge:removeProjectRecord', (event, projectId) => { licensedIpc(event, '删除学习项目记录', () => removeProjectRecord(projectId)); });
@@ -22517,6 +23900,9 @@ ipcMain.on('bridge:checkAllStudentsPathHealth', (event) => { licensedIpc(event, 
 ipcMain.on('bridge:resolveStudentPath', (event, studentId, logicalPath) => { event.returnValue = resolveStudentPathFromLogical(studentId, logicalPath); });
 ipcMain.on('bridge:getLicenseStatus', (event) => { event.returnValue = getLicenseStatus(); });
 ipcMain.on('bridge:activateLicense', (event, code) => { event.returnValue = activateLicense(code); });
+ipcMain.on('bridge:importLicenseFile', (event) => { event.returnValue = importLicenseFile(); });
+ipcMain.on('bridge:getLicenseTrustStatus', (event) => { event.returnValue = getLicenseTrustStatus(); });
+ipcMain.on('bridge:importTrustedLicenseIssuerBundle', (event) => { event.returnValue = importTrustedLicenseIssuerBundle(); });
 ipcMain.on('bridge:deactivateLicense', (event) => { event.returnValue = deactivateLicense(); });
 ipcMain.on('bridge:getAgentToolInstallStatus', (event) => { event.returnValue = getAgentToolInstallStatus(); });
 ipcMain.on('bridge:checkUpdate', (event, manifestUrl, currentVersionCode) => {
@@ -22537,6 +23923,13 @@ ipcMain.on('bridge:getLearningReportEvidence', (event, studentId, reportId) => {
 ipcMain.on('bridge:openLearningReportEvidenceSource', (event, studentId, reportId, evidenceId, sourceIndex) => { event.returnValue = openLearningReportEvidenceSource(studentId, reportId, evidenceId, sourceIndex); });
 ipcMain.on('bridge:exportEducationArchive', (event, studentId) => { licensedIpc(event, '完整教育档案导出', () => exportEducationArchive(studentId)); });
 ipcMain.handle('bridge:exportLearningReport', (_event, studentId, reportId, format) => licensedInvoke('学情报告导出', () => exportLearningReport(studentId, reportId, format)));
+ipcMain.on('bridge:getEducationPublishingState', (event, studentId, sourceType, sourceId) => { event.returnValue = getEducationPublishingState(studentId, sourceType, sourceId); });
+ipcMain.on('bridge:getEducationPublicationEnhancementState', (event, studentId, optionsJson) => { event.returnValue = educationPublicationEnhancementState(studentId, optionsJson); });
+ipcMain.handle('bridge:startEducationPublicationEnhancement', (_event, studentId, optionsJson) => licensedInvoke('Agent 智能提炼', () => startEducationPublicationEnhancement(studentId, optionsJson)));
+ipcMain.handle('bridge:exportEducationPublication', (_event, studentId, optionsJson) => licensedInvoke('教育内容智能出版', () => exportEducationPublication(studentId, optionsJson)));
+ipcMain.on('bridge:openEducationPublication', (event, studentId, publicationId) => { event.returnValue = openEducationPublication(studentId, publicationId); });
+ipcMain.on('bridge:deleteEducationPublication', (event, studentId, publicationId) => { licensedIpc(event, '删除教育内容生成文件', () => deleteEducationPublication(studentId, publicationId)); });
+ipcMain.handle('bridge:regenerateEducationPublication', (_event, studentId, publicationId) => licensedInvoke('重新生成教育内容', () => regenerateEducationPublication(studentId, publicationId)));
 ipcMain.on('bridge:ensureLearningReports', (event, studentId) => { licensedIpc(event, '学情报告模板补建', () => ensureLearningReports(studentId)); });
 ipcMain.on('bridge:ensureGrowthModel', (event, studentId) => { licensedIpc(event, '成长模型补建', () => ensureGrowthModel(studentId)); });
 ipcMain.on('bridge:getGrowthEvidenceReview', (event, studentId) => { event.returnValue = getGrowthEvidenceReview(studentId); });
@@ -22655,6 +24048,7 @@ ipcMain.on('bridge:resetHostApiToken', (event) => { licensedIpc(event, '重置 A
 ipcMain.on('bridge:exportHostLogs', (event) => { event.returnValue = exportHostLogs(); });
 ipcMain.on('bridge:openStudentRawDir', (event, studentId) => { licensedIpc(event, '打开原始资料库', () => openStudentRawDir(studentId)); });
 ipcMain.on('bridge:migrateStudentWorkspace', (event, studentId, newName) => { licensedIpc(event, '学生知识库迁移', () => migrateStudentWorkspace(studentId, newName)); });
+ipcMain.on('bridge:rebindAdoptedStudentWorkspace', (event, studentId) => { licensedIpc(event, '重新定位接管目录', () => rebindAdoptedStudentWorkspace(studentId)); });
 ipcMain.on('bridge:renameHostDevice', (event, deviceId, name) => { licensedIpc(event, '设备管理', () => renameHostDevice(deviceId, name)); });
 ipcMain.on('bridge:revokeHostDevice', (event, deviceId) => { licensedIpc(event, '设备管理', () => revokeHostDevice(deviceId)); });
 ipcMain.on('bridge:restoreHostDevice', (event, deviceId) => { licensedIpc(event, '设备管理', () => restoreHostDevice(deviceId)); });
@@ -22677,8 +24071,20 @@ ipcMain.on('bridge:importOfflineCourseCatalog', (event) => {
 });
 ipcMain.handle('bridge:exportCustomCourseTemplate', async () => exportCustomCourseTemplate());
 ipcMain.handle('bridge:importCustomCourseExcel', async () => importCustomCourseExcel());
+ipcMain.handle('bridge:selectCustomCourseImage', async () => selectCustomCourseImage());
+ipcMain.handle('bridge:saveDirectCustomCourse', async (_event, inputJson) => saveDirectCustomCourse(inputJson));
+ipcMain.on('bridge:deleteCustomCourse', (event, courseId) => { event.returnValue = deleteCustomCourse(courseId); });
+ipcMain.handle('bridge:selectPlatformCourseImage', async () => selectPlatformCourseImage());
+ipcMain.handle('bridge:savePlatformCourseDraft', async (_event, inputJson) => savePlatformCourseDraft(inputJson));
+ipcMain.on('bridge:removePlatformCourseDraft', (event, courseId) => { event.returnValue = removePlatformCourseDraft(courseId); });
+ipcMain.on('bridge:queuePlatformCourseDeletion', (event, courseId) => { event.returnValue = queuePlatformCourseDeletion(courseId); });
+ipcMain.on('bridge:cancelPlatformCourseDeletion', (event, courseId) => { event.returnValue = cancelPlatformCourseDeletion(courseId); });
+ipcMain.on('bridge:publishPlatformCourseCatalog', (event, releaseNotes) => { event.returnValue = publishPlatformCourseCatalog(releaseNotes); });
+ipcMain.on('bridge:rollbackPlatformCourseCatalog', (event) => { event.returnValue = rollbackPlatformCourseCatalog(); });
 ipcMain.on('bridge:openCourseView', (event, courseId) => { event.returnValue = openCourseView(courseId); });
 ipcMain.on('bridge:closeCourseView', (event) => { event.returnValue = closeCourseView(); });
+ipcMain.on('bridge:setCourseCaptureSetupVisible', (event, visible) => { event.returnValue = setCourseCaptureSetupVisible(visible); });
+ipcMain.on('bridge:setCourseViewLayout', (event, layoutJson) => { event.returnValue = setCourseViewLayout(layoutJson); });
 ipcMain.on('bridge:getCaptureCenterState', (event) => { event.returnValue = getCaptureCenterState(); });
 ipcMain.on('bridge:openCaptureInbox', (event, sessionId) => { event.returnValue = openCaptureInbox(sessionId); });
 ipcMain.handle('bridge:listCaptureSources', async () => listCaptureSources());

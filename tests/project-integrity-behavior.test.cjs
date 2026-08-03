@@ -5,6 +5,7 @@ const {
   nextKnowledgeReviewState,
   nextStagingReviewState,
   projectCompletionIssues,
+  repairStagingLifecycle,
   reconcileDigestControlState,
   normalizeProjectDigestReceipt,
   validateDigestReceipt,
@@ -154,6 +155,27 @@ test('staging review restores discarded items and freezes promoted items', () =>
   const blocked = nextStagingReviewState({ status: 'promoted' }, 'rejected');
   assert.equal(blocked.ok, false);
   assert.equal(blocked.status, 'promoted');
+});
+
+test('legacy AI-analyzed staging items are repaired only when no promotion evidence exists', () => {
+  assert.deepEqual(repairStagingLifecycle({
+    id: 'legacy-ai-only',
+    status: 'analyzed',
+    reviewStatus: 'pending',
+    promotedAssetId: '',
+    promotedAt: '',
+  }), {
+    id: 'legacy-ai-only',
+    status: 'screened',
+    reviewStatus: 'pending',
+    promotedAssetId: '',
+    promotedAt: '',
+    lifecycleRepairReason: 'AI初筛不能直接进入已分析终态，已恢复为待人工确认。',
+  });
+  assert.equal(repairStagingLifecycle({ status: 'analyzed', reviewStatus: 'accepted' }).status, 'analyzed');
+  assert.equal(repairStagingLifecycle({ status: 'analyzed', reviewStatus: 'pending', promotedAssetId: 'asset-1' }).status, 'analyzed');
+  assert.equal(repairStagingLifecycle({ status: 'analyzed', reviewStatus: 'pending', promotedAt: '2026-08-01T00:00:00.000Z' }).status, 'analyzed');
+  assert.equal(repairStagingLifecycle({ status: 'analyzed', reviewStatus: 'pending', analyzedAt: '2026-08-01T00:10:00.000Z' }).status, 'analyzed');
 });
 
 test('knowledge review cannot silently overwrite a published record', () => {

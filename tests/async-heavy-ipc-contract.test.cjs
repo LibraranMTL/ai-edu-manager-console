@@ -14,6 +14,8 @@ const routes = [
   'rebuildAssetIndex',
   'analyzeAssetGovernance',
   'buildCrossProjectKnowledgeIndex',
+  'getAssetIndex',
+  'getProjects',
 ];
 
 test('heavy bridge operations use invoke/handle instead of synchronous IPC', () => {
@@ -32,6 +34,10 @@ test('renderer awaits heavy work and exposes non-blocking busy feedback', () => 
   assert.match(renderer, /const importSelectedMaterialSourceFiles = async/);
   assert.match(renderer, /const rebuildAssets = async/);
   assert.match(renderer, /const analyzeAssets = async/);
+  assert.match(renderer, /const refreshAssets = async/);
+  assert.match(renderer, /const refreshProjects = async/);
+  assert.match(renderer, /activeSection === 'assets'\) void refreshAssets\(\)/);
+  assert.doesNotMatch(renderer, /refreshLicenseStatus\(\);\s*refreshAssets\(\)/);
   assert.match(renderer, /const generateCrossProjectKnowledgeLinks = async/);
   assert.match(renderer, /materialSourceBusyAction === 'scan' \? '正在扫描…'/);
   assert.match(renderer, /materialSourceBusyAction === 'import' \? '正在导入…'/);

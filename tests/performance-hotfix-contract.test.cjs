@@ -24,13 +24,13 @@ test('digest polling uses the mtime-aware project lookup cache', () => {
   assert.match(main, /projectDigestLookupCache = \{ mtimeMs: -1, size: -1, projects: \[\] \};/);
 });
 
-test('non-real-time renderer polling is throttled while capture polling stays responsive', () => {
+test('non-real-time renderer polling is throttled while capture polling remains bounded', () => {
   assert.match(renderer, /if \(document\.hidden\) return;/);
   assert.match(renderer, /\}, 10000\);\s*const hostTimer = window\.setInterval/);
   assert.match(renderer, /activeSectionRef\.current === 'settings'/);
   assert.match(renderer, /\}, 60000\);/);
   assert.match(renderer, /const timer = window\.setInterval\(\(\) => \{\s*if \(!document\.hidden\) refreshVisible\(\);\s*\}, 30000\);/);
-  assert.match(renderer, /const timer = window\.setInterval\(refreshCaptureCenter, 2000\);/);
+  assert.match(renderer, /const timer = window\.setInterval\(refreshCaptureCenter, 5000\);/);
 });
 
 test('host status reads upload records once per refresh', () => {

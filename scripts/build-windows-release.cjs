@@ -112,6 +112,24 @@ function sha256(file) {
   return hash.digest('hex').toUpperCase();
 }
 
+const privateKeyHeaderPattern = new RegExp(`-{5}BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-{5}`);
+const secretPatterns = [
+  { name: 'private_pem', pattern: privateKeyHeaderPattern },
+  { name: 'license_v2_token', pattern: /AIE2\.[A-Za-z0-9_-]{40,}\.[A-Za-z0-9_-]{40,}/ },
+];
+
+function scanSecretSignatures(files, label) {
+  const findings = [];
+  for (const file of files) {
+    const stat = fs.statSync(file);
+    if (!stat.isFile() || stat.size > 400 * 1024 * 1024) continue;
+    const content = fs.readFileSync(file).toString('latin1');
+    for (const rule of secretPatterns) if (rule.pattern.test(content)) findings.push({ file, rule: rule.name });
+  }
+  if (findings.length) throw new Error(`${label} secret scan failed: ${findings.map((item) => `${item.rule}:${item.file}`).join(', ')}`);
+  return { label, files: files.length, findings: 0 };
+}
+
 function reachableDistAssets(distRoot) {
   const assetsRoot = path.join(distRoot, 'assets');
   const names = fs.existsSync(assetsRoot)
@@ -248,6 +266,14 @@ function build() {
   const lockHandle = acquireBuildLock();
   try {
     fs.writeFileSync(phaseLogPath, '', 'utf8');
+    recordPhase('secret-scan-source');
+    const sourceSecretAudit = scanSecretSignatures([
+      ...walkFiles(path.join(repoRoot, 'electron')),
+      ...walkFiles(path.join(repoRoot, 'src')),
+      ...walkFiles(path.join(repoRoot, 'public')),
+      ...walkFiles(path.join(repoRoot, 'tools', 'license-admin-app')),
+      ...walkFiles(path.join(repoRoot, 'scripts')),
+    ], 'source');
     recordPhase('clear-stage');
     fs.rmSync(stageRoot, { recursive: true, force: true });
     fs.mkdirSync(stageRoot, { recursive: true });
@@ -273,6 +299,8 @@ function build() {
     fs.copyFileSync(path.join(repoRoot, 'public', 'brand', 'robogala.ico'), path.join(stageRoot, 'public', 'brand', 'robogala.ico'));
     recordPhase('write-runtime-package');
     writeRuntimePackage();
+    recordPhase('secret-scan-stage');
+    const stageSecretAudit = scanSecretSignatures(walkFiles(stageRoot), 'staged runtime');
 
     recordPhase('package-electron');
     runPackageBin('electron-builder', 'electron-builder', ['--projectDir', stageRoot, '--win', 'portable', '--x64']);
@@ -290,12 +318,26 @@ function build() {
     if (!asarFiles.includes('\\electron\\main.cjs') || !asarFiles.includes('\\dist\\index.html')) {
       throw new Error('Packaged app is missing its main process or renderer entry.');
     }
+    for (const required of [
+      '\\electron\\course-package-v2.cjs',
+      '\\electron\\platform-course-drafts.cjs',
+      '\\electron\\license-entitlements.cjs',
+      '\\electron\\license-trust-store.cjs',
+      '\\electron\\platform-key-manager.cjs',
+      '\\electron\\platform-publish-approval.cjs',
+      '\\dist\\license\\trusted-issuers.json',
+      '\\dist\\course-catalog\\public-key.pem',
+    ]) {
+      if (!asarFiles.includes(required)) throw new Error(`Packaged app is missing platform course security runtime: ${required}`);
+    }
     const unpackedAgentBridge = path.join(unpackedRoot, 'resources', 'app.asar.unpacked', 'electron', 'invoke-agent.ps1');
     if (!fs.existsSync(unpackedAgentBridge)) {
       throw new Error(`Packaged Agent parameter bridge is missing: ${unpackedAgentBridge}`);
     }
     const asarBytes = fs.statSync(appAsar).size;
     if (asarBytes > 20 * 1024 * 1024) throw new Error(`app.asar exceeds 20 MiB: ${(asarBytes / 1024 / 1024).toFixed(2)} MiB`);
+    recordPhase('secret-scan-package');
+    const packageSecretAudit = scanSecretSignatures([appAsar, stagedExe], 'packaged artifacts');
 
     const syntaxDir = path.join(stageRoot, 'syntax-check');
     fs.mkdirSync(syntaxDir, { recursive: true });
@@ -357,6 +399,11 @@ function build() {
         nodeModuleFiles: packagedNodeModules.length,
         agentBridge: unpackedAgentBridge,
         unpackedBytes: directorySize(unpackedRoot),
+      },
+      secretScan: {
+        source: sourceSecretAudit,
+        stage: stageSecretAudit,
+        package: packageSecretAudit,
       },
       artifacts: {
         exe: { path: releaseExe, bytes: fs.statSync(releaseExe).size, sha256: sha256(releaseExe) },

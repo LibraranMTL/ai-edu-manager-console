@@ -28,7 +28,7 @@ test('packaged course catalog has a valid checksum, signature and host version',
   ]);
 });
 
-test('tampered, under-version and unsigned packages cannot replace last good catalog', () => {
+test('tampered and under-version packages cannot replace last good catalog while signatures are optional', () => {
   const lastGood = validateCatalogPackage(signedCatalog, { hostVersion: '0.14.9', publicKey }).catalog;
   const tampered = structuredClone(signedCatalog);
   tampered.courses[0].url = 'https://attacker.invalid/';
@@ -43,7 +43,8 @@ test('tampered, under-version and unsigned packages cannot replace last good cat
 
   const unsigned = structuredClone(signedCatalog);
   unsigned.signature = '';
-  assert.equal(validateCatalogPackage(unsigned, { hostVersion: '0.14.9', publicKey }).ok, false);
+  assert.equal(validateCatalogPackage(unsigned, { hostVersion: '0.14.9', publicKey }).ok, true);
+  assert.equal(validateCatalogPackage(unsigned, { hostVersion: '0.14.9', publicKey, requireSignature: true }).ok, false);
 });
 
 test('URL normalization blocks unknown hosts, credentials and dangerous protocols', () => {

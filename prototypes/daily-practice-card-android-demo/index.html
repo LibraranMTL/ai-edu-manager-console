@@ -1,0 +1,246 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" content="#f4f3ed" />
+  <title>今日提分卡 · Android 竖屏 Demo</title>
+  <link rel="stylesheet" href="./styles.css" />
+</head>
+<body>
+  <main class="phone" aria-label="AI教育管家 Android 学生端原型">
+    <div class="status-bar" aria-hidden="true">
+      <span>08:30</span>
+      <div><i></i><i></i><b>86</b></div>
+    </div>
+
+    <section class="screen active" id="homeScreen" data-screen="home">
+      <header class="app-header">
+        <div>
+          <small>AI教育管家</small>
+          <h1>今日提分卡</h1>
+        </div>
+        <button class="student-button" type="button" aria-label="当前学生林小满">
+          <span>林</span>
+          <i></i>
+        </button>
+      </header>
+
+      <div class="student-scope" role="status">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3 4.5 6.4v5.1c0 4.6 3.1 8.4 7.5 9.5 4.4-1.1 7.5-4.9 7.5-9.5V6.4L12 3Z"/><path d="m9 12 2 2 4-4"/></svg>
+        <p><strong>林小满的专属练习</strong><span>只显示你的卡片与学习记录</span></p>
+      </div>
+
+      <section class="greeting">
+        <p>7月31日 · 星期五</p>
+        <h2>今天只练一个点，<br />10分钟就够了。</h2>
+      </section>
+
+      <article class="today-card">
+        <div class="card-topline">
+          <span>数学 · 分数应用</span>
+          <b><i></i> 已准备好</b>
+        </div>
+        <div class="card-art" aria-label="单位量关系示意">
+          <div class="orbit"></div>
+          <div class="planet"><strong>48</strong><small>故事书</small></div>
+          <div class="moon"><strong>¾</strong><small>科技书</small></div>
+          <div class="mini-rocket" aria-hidden="true"></div>
+        </div>
+        <div class="card-copy">
+          <small>今日挑战</small>
+          <h3>谁是“1”？</h3>
+          <p>先找到单位量，应用题就解开一半了。</p>
+        </div>
+        <div class="card-meta">
+          <span><strong>10</strong> 分钟</span>
+          <span><strong>3</strong> 小题</span>
+          <span>难度：正合适</span>
+        </div>
+        <div class="card-actions">
+          <button class="primary-action" id="startPractice" type="button">
+            开始今天的练习
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 5 7 7-7 7"/></svg>
+          </button>
+          <button class="download-action" id="openDownload" type="button" aria-label="下载今日卡片">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v12m-5-5 5 5 5-5M5 19h14"/></svg>
+            <span>下载</span>
+          </button>
+        </div>
+      </article>
+
+      <button class="reason-row" id="openEvidence" type="button">
+        <span class="reason-icon">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 4h14v16H5z"/><path d="M8 8h8M8 12h8M8 16h5"/></svg>
+        </span>
+        <span><small>为什么练这个</small><strong>本周要点复习 · 单位“1”判断</strong></span>
+        <svg class="chevron" viewBox="0 0 24 24" aria-hidden="true"><path d="m9 5 7 7-7 7"/></svg>
+      </button>
+
+      <section class="plan-status">
+        <div class="section-heading">
+          <div><small>今日安排</small><h3>一张卡，一个任务</h3></div>
+          <span>自动</span>
+        </div>
+        <ol>
+          <li class="done"><i></i><div><strong>学情有新进展</strong><small>已根据最新资料更新练习</small></div><time>08:18</time></li>
+          <li class="current"><i></i><div><strong>完成今日卡片</strong><small>等待你开始 · 约10分钟</small></div><time>现在</time></li>
+          <li><i></i><div><strong>记录练习反馈</strong><small>完成后自动回到教育档案</small></div><time>待完成</time></li>
+        </ol>
+        <p class="dedupe-note">若今天没有新的学情更新，系统会在 18:30 兜底生成；同一天不会重复推送。</p>
+      </section>
+
+      <section class="week-summary">
+        <div class="section-heading"><div><small>本周节奏</small><h3>已经坚持 4 天</h3></div><strong>32 分钟</strong></div>
+        <div class="days" aria-label="本周练习记录">
+          <span class="complete"><b>一</b><i></i></span>
+          <span class="complete"><b>二</b><i></i></span>
+          <span class="complete"><b>三</b><i></i></span>
+          <span class="today"><b>四</b><i></i></span>
+          <span><b>五</b><i></i></span>
+          <span><b>六</b><i></i></span>
+          <span><b>日</b><i></i></span>
+        </div>
+      </section>
+    </section>
+
+    <section class="screen practice-screen" id="practiceScreen" data-screen="practice">
+      <header class="compact-header">
+        <button class="back-button" id="backHome" type="button" aria-label="返回今日卡片">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m15 5-7 7 7 7"/></svg>
+        </button>
+        <div><small>数学 · 分数应用</small><strong>第 1 题，共 3 题</strong></div>
+        <button class="more-button" type="button" aria-label="更多">•••</button>
+      </header>
+
+      <div class="progress-track"><i></i></div>
+
+      <article class="question-card">
+        <div class="question-number">01</div>
+        <p>图书角有 <strong>48</strong> 本故事书，科技书的数量是故事书的 <strong>3/4</strong>。</p>
+        <h2>这句话里，谁是单位“1”？</h2>
+        <div class="relationship-figure" aria-label="分数关系示意图">
+          <div><strong>48</strong><small>故事书</small></div>
+          <span>的</span>
+          <div class="fraction"><strong>¾</strong><small>科技书</small></div>
+        </div>
+        <div class="answers" role="group" aria-label="请选择答案">
+          <button type="button" data-answer="wrong"><b>A</b><span>科技书</span><i></i></button>
+          <button type="button" data-answer="correct"><b>B</b><span>故事书</span><i></i></button>
+          <button type="button" data-answer="wrong"><b>C</b><span>全部图书</span><i></i></button>
+        </div>
+        <div class="answer-message" id="answerMessage" aria-live="polite">
+          <strong>选出你的答案</strong><span>想一想：“谁是谁的几分之几？”</span>
+        </div>
+      </article>
+
+      <button class="source-link" id="openEvidenceFromQuestion" type="button">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 4h14v16H5z"/><path d="M8 8h8M8 12h8M8 16h5"/></svg>
+        查看这道题的学情依据
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 5 7 7-7 7"/></svg>
+      </button>
+
+      <div class="practice-actions">
+        <button class="primary-action" id="submitAnswer" type="button" disabled>确认答案</button>
+      </div>
+    </section>
+
+    <section class="screen success-screen" id="successScreen" data-screen="success">
+      <div class="success-mark" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="m6 12 4 4 8-9"/></svg></div>
+      <small>今日练习已完成</small>
+      <h2>你找到了单位“1”</h2>
+      <p>本次用时 8 分 24 秒，结果已经自动记录到你的教育档案。</p>
+      <div class="result-card">
+        <div><span>正确率</span><strong>3 / 3</strong></div>
+        <div><span>掌握变化</span><strong>观察中 → 提升</strong></div>
+        <div><span>下次建议</span><strong>周末再巩固一次</strong></div>
+      </div>
+      <div class="feeling-block">
+        <strong>今天的难度怎么样？</strong>
+        <div><button type="button">轻松</button><button class="active" type="button">正合适</button><button type="button">有点难</button></div>
+      </div>
+      <button class="primary-action" id="finishPractice" type="button">返回今日卡片</button>
+    </section>
+
+    <section class="screen placeholder-screen" id="archiveScreen" data-screen="archive">
+      <header class="app-header"><div><small>教育档案</small><h1>我的学习记录</h1></div></header>
+      <div class="placeholder-illustration"><span>4</span><small>天连续练习</small></div>
+      <h2>这里会汇总你的练习结果</h2>
+      <p>正式版本只展示当前登录学生自己的报告、成长模型和练习记录。</p>
+    </section>
+
+    <section class="screen placeholder-screen" id="projectsScreen" data-screen="projects">
+      <header class="app-header"><div><small>我的项目</small><h1>关联项目知识</h1></div></header>
+      <div class="project-row"><span>无人机单人侦测装置</span><b>31 份知识</b></div>
+      <div class="project-row"><span>AI时代的办公空间设计</span><b>37 份知识</b></div>
+      <p>只显示与你有效关联的项目，其他学生和未关联项目不会出现。</p>
+    </section>
+
+    <nav class="bottom-nav" id="bottomNav" aria-label="底部导航">
+      <button class="active" type="button" data-nav="home">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m4 10 8-7 8 7v10h-6v-6h-4v6H4z"/></svg><span>首页</span>
+      </button>
+      <button type="button" data-nav="practice">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="3" width="14" height="18" rx="2"/><path d="M9 8h6M9 12h6M9 16h4"/></svg><span>今日卡</span>
+      </button>
+      <button type="button" data-nav="archive">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5.5A2.5 2.5 0 0 1 6.5 3H11v17H6.5A2.5 2.5 0 0 0 4 22zM20 5.5A2.5 2.5 0 0 0 17.5 3H13v17h4.5A2.5 2.5 0 0 1 20 22z"/></svg><span>教育档案</span>
+      </button>
+      <button type="button" data-nav="projects">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7h7l2 2h9v10H3z"/><path d="M3 7V5h7l2 2"/></svg><span>我的项目</span>
+      </button>
+    </nav>
+
+    <div class="sheet-backdrop" id="sheetBackdrop" hidden></div>
+    <aside class="bottom-sheet" id="evidenceSheet" aria-hidden="true" aria-labelledby="evidenceTitle">
+      <div class="sheet-handle" aria-hidden="true"></div>
+      <div class="sheet-heading">
+        <div><small>生成依据</small><h2 id="evidenceTitle">为什么今天练这个</h2></div>
+        <button id="closeEvidence" type="button" aria-label="关闭">×</button>
+      </div>
+      <blockquote>最近两次分数应用题中，你能正确计算分数乘法，但容易把比较量当作单位“1”。</blockquote>
+      <div class="evidence-item"><span>01</span><div><strong>本周要点复习</strong><small>覆盖近 7 天确认的重点与薄弱点</small></div><b>本次采用</b></div>
+      <div class="evidence-item"><span>02</span><div><strong>7月综合学情报告</strong><small>2026/07/29 更新 · 证据 M-FRAC-02</small></div></div>
+      <div class="evidence-item"><span>03</span><div><strong>教育档案 v12</strong><small>2026/07/30 更新 · 已确认</small></div></div>
+      <div class="privacy-note"><i></i><p><strong>只使用林小满的学习依据</strong><span>不会读取或展示其他学生的数据。</span></p></div>
+    </aside>
+
+    <aside class="bottom-sheet download-sheet" id="downloadSheet" aria-hidden="true" aria-labelledby="downloadTitle">
+      <div class="sheet-handle" aria-hidden="true"></div>
+      <div class="sheet-heading">
+        <div><small>保存与分享</small><h2 id="downloadTitle">下载今日卡片</h2></div>
+        <button id="closeDownload" type="button" aria-label="关闭下载选项">×</button>
+      </div>
+      <p class="download-intro">选择一种格式。只导出练习卡片，不包含学生姓名、档案目录或其他个人资料。</p>
+      <label class="print-style-toggle" for="monochromePrint">
+        <span class="print-style-icon">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 8V3h10v5M7 18H5a2 2 0 0 1-2-2v-5a3 3 0 0 1 3-3h12a3 3 0 0 1 3 3v5a2 2 0 0 1-2 2h-2"/><path d="M7 14h10v7H7zM17 11h.01"/></svg>
+        </span>
+        <span><strong>黑白打印</strong><small>去除大面积底色与装饰，保留清晰边框和文字</small></span>
+        <input id="monochromePrint" type="checkbox" />
+        <span class="switch-track" aria-hidden="true"><i></i></span>
+      </label>
+      <div class="current-output-style"><span>当前输出</span><strong id="downloadStyleLabel">彩色版式</strong></div>
+      <div class="download-options">
+        <button type="button" data-download-format="image">
+          <span class="format-icon image-format"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="9" cy="9" r="2"/><path d="m5 17 4-4 3 3 2-2 5 3"/></svg></span>
+          <span><strong>高清图片</strong><small id="imageFormatHint">彩色 PNG · 适合保存到相册或发送给老师</small></span>
+          <svg class="chevron" viewBox="0 0 24 24" aria-hidden="true"><path d="m9 5 7 7-7 7"/></svg>
+        </button>
+        <button type="button" data-download-format="pdf">
+          <span class="format-icon pdf-format"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3h8l4 4v14H6z"/><path d="M14 3v5h5M9 13h6M9 17h4"/></svg></span>
+          <span><strong>PDF 文件</strong><small id="pdfFormatHint">彩色 A4 · 适合打印或长期保存</small></span>
+          <svg class="chevron" viewBox="0 0 24 24" aria-hidden="true"><path d="m9 5 7 7-7 7"/></svg>
+        </button>
+      </div>
+      <div class="download-location">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h6l2 2h8v10H4z"/></svg>
+        <p><strong>保存位置</strong><span>Android 下载目录 / AI教育管家</span></p>
+      </div>
+    </aside>
+
+    <div class="toast" id="toast" role="status" aria-live="polite"></div>
+  </main>
+  <script src="./app.js"></script>
+</body>
+</html>

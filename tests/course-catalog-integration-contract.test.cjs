@@ -9,6 +9,7 @@ const read = (...parts) => fs.readFileSync(path.join(root, ...parts), 'utf8');
 test('Windows host and student terminal expose scoped course catalog contracts', () => {
   const host = read('electron', 'main.cjs');
   const hostUi = read('src', 'main.tsx');
+  const preload = read('electron', 'preload.cjs');
   const terminal = read('electron', 'terminal-main.cjs');
   const browser = read('electron', 'course-browser.cjs');
 
@@ -18,11 +19,43 @@ test('Windows host and student terminal expose scoped course catalog contracts',
   assert.match(host, /canImportCustomCourses\(license\)/);
   assert.match(host, /importCustomCoursesFromExcel/);
   assert.match(host, /CUSTOM_COURSE_IMPORT_PLAN_REQUIRED/);
+  assert.match(host, /CUSTOM_COURSE_DIRECT_UPLOAD_PLAN_REQUIRED/);
   assert.match(host, /COURSE_MANAGEMENT_PLAN_REQUIRED/);
   assert.match(host, /function courseManagementRequiredJson/);
   assert.match(host, /function saveCourseInstitutionPolicy\(policyJson\) \{\s*const locked = courseManagementRequiredJson\(\)/);
   assert.match(host, /function importOfflineCourseCatalog\(\) \{\s*const locked = courseManagementRequiredJson\(\)/);
   assert.match(host, /async function exportCustomCourseTemplate\(\) \{\s*const locked = courseManagementRequiredJson\(\)/);
+  assert.match(host, /async function selectCustomCourseImage\(\) \{\s*const locked = courseManagementRequiredJson\('CUSTOM_COURSE_DIRECT_UPLOAD_PLAN_REQUIRED'\)/);
+  assert.match(host, /async function saveDirectCustomCourse\(inputJson\) \{\s*const locked = courseManagementRequiredJson\('CUSTOM_COURSE_DIRECT_UPLOAD_PLAN_REQUIRED'\)/);
+  assert.match(host, /pendingCustomCourseImages\.get\(imageToken\)/);
+  assert.match(host, /imageEntry\?\.path \|\| existingImagePath/);
+  assert.doesNotMatch(host, /imagePath:\s*input\.imagePath/);
+  assert.match(host, /tenant_custom_direct_save/);
+  assert.match(host, /tenant_custom_direct_edit/);
+  assert.match(host, /tenant_custom_course_deleted/);
+  assert.match(host, /function deleteCustomCourse/);
+  assert.match(host, /function queuePlatformCourseDeletion/);
+  assert.match(host, /deletedCourseIds/);
+  assert.match(host, /CUSTOM_COURSE_EDIT_TARGET_INVALID/);
+  assert.match(host, /课程 ID、启用状态和学生分配保持不变/);
+  assert.match(host, /ipcMain\.handle\('bridge:selectCustomCourseImage'/);
+  assert.match(host, /ipcMain\.handle\('bridge:saveDirectCustomCourse'/);
+  assert.match(host, /platformCourseCapabilityRequiredJson\('platform_course_edit'/);
+  assert.match(host, /platformCourseCapabilityRequiredJson\('platform_course_publish'/);
+  assert.match(host, /platformCourseCapabilityRequiredJson\('platform_course_rollback'/);
+  assert.match(host, /createCoursePackage/);
+  assert.match(host, /importCoursePackage/);
+  assert.doesNotMatch(host, /COURSE_CATALOG_PRIVATE_KEY/);
+  assert.match(host, /ipcMain\.on\('bridge:publishPlatformCourseCatalog'/);
+  assert.match(host, /ipcMain\.on\('bridge:rollbackPlatformCourseCatalog'/);
+  assert.match(preload, /selectCustomCourseImage\(\)/);
+  assert.match(preload, /saveDirectCustomCourse\(inputJson\)/);
+  assert.match(preload, /deleteCustomCourse\(courseId\)/);
+  assert.match(preload, /queuePlatformCourseDeletion\(courseId\)/);
+  assert.match(preload, /cancelPlatformCourseDeletion\(courseId\)/);
+  assert.doesNotMatch(preload, /getPlatformPublishPreview\(\)/);
+  assert.match(preload, /publishPlatformCourseCatalog\(releaseNotes\)/);
+  assert.match(preload, /rollbackPlatformCourseCatalog\(\)/);
   assert.match(host, /\.filter\(courseAllowedByCurrentPlan\)/);
   assert.match(host, /当前授权不能使用机构自选课程/);
   assert.match(hostUi, /type CourseSubmenu = 'learning' \| 'management'/);
@@ -31,9 +64,29 @@ test('Windows host and student terminal expose scoped course catalog contracts',
   assert.match(hostUi, />课程管理<\/span>/);
   assert.match(hostUi, /courseSubmenu === 'learning'/);
   assert.match(hostUi, /courseSubmenu === 'management'/);
-  assert.match(hostUi, /courseManagementAllowed = !isWindows \|\| Boolean\([\s\S]*\['PRO', 'ORG'\]\.includes/);
+  assert.match(hostUi, /courseManagementAllowed = !isWindows \|\| Boolean\([\s\S]*licenseCapability\('tenant_course_manage'\)/);
+  assert.match(hostUi, /platformCourseEditAllowed = !isWindows \|\| licenseCapability\('platform_course_edit'\)/);
+  assert.match(hostUi, /platformCoursePublishAllowed = !isWindows \|\| licenseCapability\('platform_course_publish'\)/);
+  assert.match(hostUi, /publishPlatformCourseCatalog/);
   assert.match(hostUi, /disabled=\{!courseManagementAllowed\}/);
-  assert.match(hostUi, /课程管理仅向已激活的专业版和机构版开放/);
+  assert.match(hostUi, /专业版、机构版和平台版/);
+  assert.match(hostUi, /新增一门机构精选课程/);
+  assert.match(hostUi, />课程名称</);
+  assert.match(hostUi, />课程简介</);
+  assert.match(hostUi, />课程链接</);
+  assert.match(hostUi, /上传课程图片/);
+  assert.match(hostUi, /保存课程/);
+  assert.match(hostUi, /function directCourseUrlIssue/);
+  assert.match(hostUi, /course-direct-feedback/);
+  assert.match(hostUi, /aria-live="polite"/);
+  assert.match(hostUi, /课程链接不能包含空格/);
+  assert.match(hostUi, /编辑机构精选课程/);
+  assert.match(hostUi, />\s*<Pencil size=\{17\} \/>编辑课程\s*</);
+  assert.match(hostUi, /保存修改/);
+  assert.match(hostUi, /删除课程/);
+  assert.match(hostUi, /删除平台课程/);
+  assert.match(hostUi, /待发布删除/);
+  assert.match(hostUi, /平台精选课程由平台版维护/);
   assert.match(terminal, /\/api\/students\/\$\{encodeURIComponent\(studentId\)\}\/courses/);
   assert.match(terminal, /String\(payload\.studentId \|\| ''\) !== studentId/);
   assert.match(browser, /nodeIntegration: false/);
@@ -53,7 +106,7 @@ test('Android course WebView denies native capabilities and keeps capture user i
   assert.match(activity, /setMixedContentMode\(WebSettings\.MIXED_CONTENT_NEVER_ALLOW\)/);
   assert.match(activity, /request\.deny\(\)/);
   assert.doesNotMatch(activity, /addJavascriptInterface/);
-  assert.match(activity, /"https"\.equalsIgnoreCase\(uri\.getScheme\(\)\)/);
+  assert.match(activity, /"https"\.equalsIgnoreCase\(uri\.getScheme\(\)\)[\s\S]*"http"\.equalsIgnoreCase\(uri\.getScheme\(\)\)/);
   assert.match(activity, /courseCaptureButton\.setText\(active/);
   assert.match(activity, /handleCapturePrimary\(\)/);
   assert.match(activity, /REQUEST_SCREEN_CAPTURE/);
@@ -63,7 +116,7 @@ test('Android course WebView denies native capabilities and keeps capture user i
   assert.match(capture, /courseCompletedAt = courseId\.length\(\) == 0 \? 0L : endedAt/);
 });
 
-test('first-party release payload includes both covers and the signed catalog', () => {
+test('first-party release payload includes both covers and the integrity catalog', () => {
   for (const relativePath of [
     ['public', 'course-catalog', 'catalog.json'],
     ['public', 'course-catalog', 'public-key.pem'],

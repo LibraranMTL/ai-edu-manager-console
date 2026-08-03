@@ -31,8 +31,9 @@ test('a selected learning report exports to Markdown or PDF', () => {
   assert.match(main, /writeFileWithFallback\(/);
   assert.match(main, /bridge:exportLearningReport/);
   assert.match(preload, /exportLearningReport\(studentId, reportId, format\)/);
-  assert.match(ui, /导出 Markdown/);
-  assert.match(ui, /导出 PDF/);
+  assert.match(ui, /导出与分享/);
+  assert.match(ui, /PDF 报告/);
+  assert.match(ui, /Markdown 原稿/);
 });
 
 test('host backup and restore carry compatible education archive snapshots', () => {

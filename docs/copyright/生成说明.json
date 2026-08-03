@@ -1,49 +1,49 @@
 {
   "softwareName": "AI教育管家主机控制台与平板终端系统",
-  "version": "V0.4.5",
-  "windowsVersion": "0.4.5",
-  "tabletTerminalVersion": "0.4.5",
+  "version": "V0.7.49",
+  "windowsVersion": "0.7.49",
+  "tabletTerminalVersion": "0.5.4",
   "owner": "嘉玛蓝（北京）科技有限公司",
-  "generatedAt": "2026-07-07T07:03:05",
+  "generatedAt": "2026-07-19T10:53:24",
   "manual": {
-    "path": "D:\\群星矩阵文件\\智能体开发项目\\AI教育管家\\平板部署\\edu-launcher-app\\docs\\copyright\\01_用户操作手册_AI教育管家主机控制台与平板终端系统_V0.4.5.docx",
+    "path": "D:\\群星矩阵文件\\智能体开发项目\\AI教育管家\\平板部署\\edu-launcher-app\\docs\\copyright\\01_用户操作手册_AI教育管家主机控制台与平板终端系统_V0.7.49.docx",
     "pages": 7,
     "linesPerPage": 30
   },
   "design": {
-    "path": "D:\\群星矩阵文件\\智能体开发项目\\AI教育管家\\平板部署\\edu-launcher-app\\docs\\copyright\\02_软件设计说明书_AI教育管家主机控制台与平板终端系统_V0.4.5.docx",
-    "pages": 7,
+    "path": "D:\\群星矩阵文件\\智能体开发项目\\AI教育管家\\平板部署\\edu-launcher-app\\docs\\copyright\\02_软件设计说明书_AI教育管家主机控制台与平板终端系统_V0.7.49.docx",
+    "pages": 8,
     "linesPerPage": 30
   },
   "source": {
-    "path": "D:\\群星矩阵文件\\智能体开发项目\\AI教育管家\\平板部署\\edu-launcher-app\\docs\\copyright\\03_源程序鉴别材料_AI教育管家主机控制台与平板终端系统_V0.4.5.docx",
-    "originalEstimatedPagesAt50Lines": 281,
+    "path": "D:\\群星矩阵文件\\智能体开发项目\\AI教育管家\\平板部署\\edu-launcher-app\\docs\\copyright\\03_源程序鉴别材料_AI教育管家主机控制台与平板终端系统_V0.7.49.docx",
+    "originalEstimatedPagesAt50Lines": 731,
     "submittedPages": 60,
     "linesPerPage": 50,
     "selection": "原始源程序超过60页，已按前30页和后30页生成连续鉴别材料。"
   },
   "team": {
-    "path": "D:\\群星矩阵文件\\智能体开发项目\\AI教育管家\\平板部署\\edu-launcher-app\\docs\\copyright\\04_项目组成员及职责说明_AI教育管家主机控制台与平板终端系统_V0.4.5.docx",
+    "path": "D:\\群星矩阵文件\\智能体开发项目\\AI教育管家\\平板部署\\edu-launcher-app\\docs\\copyright\\04_项目组成员及职责说明_AI教育管家主机控制台与平板终端系统_V0.7.49.docx",
     "pages": 2,
     "linesPerPage": 30
   },
   "applicationInfo": {
-    "path": "D:\\群星矩阵文件\\智能体开发项目\\AI教育管家\\平板部署\\edu-launcher-app\\docs\\copyright\\05_申请表填写信息草稿_AI教育管家主机控制台与平板终端系统_V0.4.5.docx",
+    "path": "D:\\群星矩阵文件\\智能体开发项目\\AI教育管家\\平板部署\\edu-launcher-app\\docs\\copyright\\05_申请表填写信息草稿_AI教育管家主机控制台与平板终端系统_V0.7.49.docx",
     "pages": 2,
     "linesPerPage": 30
   },
   "ownership": {
-    "path": "D:\\群星矩阵文件\\智能体开发项目\\AI教育管家\\平板部署\\edu-launcher-app\\docs\\copyright\\06_公司组织开发及权属说明_AI教育管家主机控制台与平板终端系统_V0.4.5.docx",
+    "path": "D:\\群星矩阵文件\\智能体开发项目\\AI教育管家\\平板部署\\edu-launcher-app\\docs\\copyright\\06_公司组织开发及权属说明_AI教育管家主机控制台与平板终端系统_V0.7.49.docx",
     "pages": 2,
     "linesPerPage": 30
   },
   "originality": {
-    "path": "D:\\群星矩阵文件\\智能体开发项目\\AI教育管家\\平板部署\\edu-launcher-app\\docs\\copyright\\07_原创性与真实性声明_AI教育管家主机控制台与平板终端系统_V0.4.5.docx",
+    "path": "D:\\群星矩阵文件\\智能体开发项目\\AI教育管家\\平板部署\\edu-launcher-app\\docs\\copyright\\07_原创性与真实性声明_AI教育管家主机控制台与平板终端系统_V0.7.49.docx",
     "pages": 2,
     "linesPerPage": 30
   },
   "checklist": {
-    "path": "D:\\群星矩阵文件\\智能体开发项目\\AI教育管家\\平板部署\\edu-launcher-app\\docs\\copyright\\08_申请材料目录与提交检查清单_AI教育管家主机控制台与平板终端系统_V0.4.5.docx",
+    "path": "D:\\群星矩阵文件\\智能体开发项目\\AI教育管家\\平板部署\\edu-launcher-app\\docs\\copyright\\08_申请材料目录与提交检查清单_AI教育管家主机控制台与平板终端系统_V0.7.49.docx",
     "pages": 2,
     "linesPerPage": 30
   }

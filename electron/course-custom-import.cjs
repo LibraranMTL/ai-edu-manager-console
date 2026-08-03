@@ -4,9 +4,9 @@ const https = require('https');
 const path = require('path');
 const { fileURLToPath } = require('url');
 const ExcelJS = require('exceljs');
-const { normalizeCourseItem } = require('./course-catalog.cjs');
+const { HTTP_ONLY_COURSE_HOSTS, normalizeCourseItem, relatedCourseHosts } = require('./course-catalog.cjs');
 
-const CUSTOM_COURSE_IMPORT_PLANS = new Set(['PRO', 'ORG']);
+const CUSTOM_COURSE_IMPORT_PLANS = new Set(['PRO', 'ORG', 'PLATFORM']);
 const MAX_CUSTOM_COURSES = 200;
 const MAX_WORKBOOK_BYTES = 10 * 1024 * 1024;
 const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
@@ -19,7 +19,10 @@ const HEADER_ALIASES = {
 };
 
 function canImportCustomCourses(license = {}) {
-  return license.active === true && CUSTOM_COURSE_IMPORT_PLANS.has(String(license.plan || '').toUpperCase());
+  return license.active === true && (
+    (Array.isArray(license.capabilities) && license.capabilities.includes('tenant_course_manage'))
+    || CUSTOM_COURSE_IMPORT_PLANS.has(String(license.edition || license.plan || '').toUpperCase())
+  );
 }
 
 function cellText(cell, preferHyperlink = false) {
@@ -52,16 +55,18 @@ function findHeader(worksheet) {
 }
 
 function parseCourseUrl(value, rowNumber) {
+  const prefix = Number.isInteger(rowNumber) ? `第 ${rowNumber} 行` : '';
   let parsed;
   try {
     parsed = new URL(String(value || '').trim());
   } catch {
-    throw new Error(`第 ${rowNumber} 行课程链接不是有效网址。`);
+    throw new Error(`${prefix}课程链接不是有效网址。`);
   }
-  if (parsed.protocol !== 'https:') throw new Error(`第 ${rowNumber} 行课程链接必须使用 HTTPS。`);
-  if (parsed.username || parsed.password) throw new Error(`第 ${rowNumber} 行课程链接不能包含用户名或密码。`);
+  if (!['http:', 'https:'].includes(parsed.protocol)) throw new Error(`${prefix}课程链接必须使用 HTTP 或 HTTPS。`);
+  if (parsed.username || parsed.password) throw new Error(`${prefix}课程链接不能包含用户名或密码。`);
   parsed.hash = '';
   parsed.hostname = parsed.hostname.toLowerCase();
+  if (HTTP_ONLY_COURSE_HOSTS.has(parsed.hostname)) parsed.protocol = 'http:';
   return parsed;
 }
 
@@ -186,6 +191,64 @@ function writeImageAsset(assetDir, buffer) {
   return `custom-assets/${filename}`;
 }
 
+async function inspectCustomCourseImage(imagePath) {
+  const buffer = await readImageReference(imagePath, '');
+  return {
+    bytes: buffer.length,
+    extension: imageExtension(buffer),
+  };
+}
+
+async function createCustomCourseFromForm(input = {}, options = {}) {
+  const name = String(input.name || '').trim();
+  const summary = String(input.summary || '').trim();
+  const url = String(input.url || '').trim();
+  const imagePath = String(input.imagePath || '').trim();
+  const missing = [
+    !name ? '课程名称' : '',
+    !summary ? '课程简介' : '',
+    !url ? '课程链接' : '',
+    !imagePath ? '课程图片' : '',
+  ].filter(Boolean);
+  if (missing.length) throw new Error(`请填写或选择：${missing.join('、')}。`);
+  if (name.length > 120) throw new Error('课程名称不能超过 120 个字符。');
+  if (summary.length > 1200) throw new Error('课程简介不能超过 1200 个字符。');
+
+  const parsed = parseCourseUrl(url);
+  const normalizedUrl = parsed.toString();
+  let imageBuffer;
+  try {
+    imageBuffer = await readImageReference(imagePath, '');
+  } catch (error) {
+    throw new Error(`课程图片读取失败：${error.message}`);
+  }
+  const requestedCourseId = String(options.courseId || '').trim();
+  if (requestedCourseId && !requestedCourseId.startsWith('tenant:')) {
+    throw new Error('只能编辑机构自选课程。');
+  }
+  const courseId = requestedCourseId || `tenant:custom-${crypto.createHash('sha256').update(normalizedUrl).digest('hex').slice(0, 20)}`;
+  const coverAsset = writeImageAsset(options.assetDir, imageBuffer);
+  const course = normalizeCourseItem({
+    courseId,
+    type: 'tenant_custom',
+    name,
+    provider: '机构自选课程',
+    url: normalizedUrl,
+    allowedHosts: relatedCourseHosts(parsed.hostname),
+    coverAsset,
+    summary,
+    subjects: [],
+    gradeRange: [],
+    languages: [],
+    accountRequirement: '账号、会员、收费和年龄要求以课程网站当时说明为准。',
+    effectiveAt: options.now || new Date().toISOString(),
+    expiresAt: null,
+    legalNotice: '本课程由当前专业版或机构版用户自行选择并上传。课程内容、图片、链接、商标、账号及服务条款由上传方和课程提供方负责；AI教育管家仅提供受限访问入口与用户主动资料采集能力，不构成隶属、代理或学习效果保证。',
+    status: 'active',
+  });
+  return { course };
+}
+
 async function importCustomCoursesFromExcel(workbookPath, options = {}) {
   const rows = await readCustomCourseWorkbook(workbookPath);
   const workbookDir = path.dirname(workbookPath);
@@ -210,7 +273,7 @@ async function importCustomCoursesFromExcel(workbookPath, options = {}) {
       name: row.name,
       provider: '机构自选课程',
       url: normalizedUrl,
-      allowedHosts: [parsed.hostname],
+      allowedHosts: relatedCourseHosts(parsed.hostname),
       coverAsset,
       summary: row.summary,
       subjects: [],
@@ -298,7 +361,9 @@ module.exports = {
   canImportCustomCourses,
   cellText,
   findHeader,
+  createCustomCourseFromForm,
   importCustomCoursesFromExcel,
+  inspectCustomCourseImage,
   readCustomCourseWorkbook,
   writeCustomCourseTemplate,
 };

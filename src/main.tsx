@@ -20,6 +20,7 @@ import {
   Home,
   Inbox,
   Gauge,
+  ImageUp,
   KeyRound,
   LinkIcon,
   ListChecks,
@@ -27,12 +28,15 @@ import {
   Monitor,
   PanelLeftClose,
   PanelLeftOpen,
+  Maximize2,
+  Minimize2,
   Pause,
   Pencil,
   Play,
   Plus,
   RefreshCw,
   Search,
+  Save,
   Send,
   Settings,
   Share2,
@@ -81,6 +85,8 @@ type InitStepId = 'folder' | 'agent' | 'execute' | 'create' | 'soul' | 'memory' 
 type ArchiveCategoryId = 'summary' | 'report' | 'qa' | 'other' | 'all';
 type ArchiveDateSort = 'modified-desc' | 'modified-asc';
 type LearningReportId = 'profile' | 'changes' | 'daily' | 'stage';
+type PublishingSourceType = 'learning_report' | 'archive_file';
+type PublishingFormat = 'pdf' | 'png' | 'markdown';
 type RuntimePlatform = 'android' | 'windows' | 'web' | string;
 type ProjectDashboardFocus = 'all' | 'active' | 'materials' | 'knowledge' | 'contributions' | 'risks' | 'digest';
 type GrowthView = 'abilities' | 'projects' | 'evidence';
@@ -383,6 +389,8 @@ type ProjectStagingItem = {
   updatedAt?: string;
   promotedAt?: string;
   promotedAssetId?: string;
+  analyzedAt?: string;
+  lifecycleRepairReason?: string;
   aiAction?: string;
   aiReason?: string;
   aiScore?: number | string;
@@ -393,6 +401,8 @@ type ProjectStagingItem = {
   governanceReason?: string;
   governanceReviewedAt?: string;
 };
+
+const projectStagingItemReviewable = (item: ProjectStagingItem) => !['promoted', 'analyzed'].includes(String(item.status));
 
 type ProjectScreeningPreview = {
   ok?: boolean;
@@ -754,6 +764,7 @@ type AndroidBridge = {
   getMaterialImportRecords?: (studentId: string) => string;
   removeMaterialImportRecords?: (studentId: string, recordIdsJson: string) => string;
   getCaptureCenterState?: () => string;
+  onCaptureChanged?: (callback: (payload: string) => void) => () => void;
   listCaptureSources?: () => Promise<string>;
   startCaptureSession?: (optionsJson: string) => Promise<string>;
   pauseCaptureSession?: (sessionId: string) => Promise<string>;
@@ -763,14 +774,14 @@ type AndroidBridge = {
   promoteCaptureSession?: (sessionId: string, targetMode?: 'project_raw' | 'student_raw') => Promise<string>;
   deleteCaptureSession?: (sessionId: string) => Promise<string>;
   openCaptureInbox?: (sessionId?: string) => string;
-  getAssetIndex?: () => string;
+  getAssetIndex?: () => Promise<string>;
   rebuildAssetIndex?: () => Promise<string>;
   analyzeAssetGovernance?: () => Promise<string>;
   cleanupAssetReferences?: (assetId: string) => string;
   createAssetVersionSnapshot?: (assetId: string) => string;
   markAssetGovernanceDecision?: (assetId: string, decision: string, note?: string) => string;
   generateKnowledgeArchitectureReport?: () => string;
-  getProjects?: () => string;
+  getProjects?: () => Promise<string>;
   createProject?: (optionsJson: string) => string;
   updateProjectMetadata?: (projectId: string, metadataJson: string) => string;
   removeProjectRecord?: (projectId: string) => string;
@@ -863,6 +874,9 @@ type AndroidBridge = {
   resolveStudentPath?: (studentId: string, logicalPath: string) => string;
   getLicenseStatus?: () => string;
   activateLicense?: (code: string) => string;
+  importLicenseFile?: () => string;
+  getLicenseTrustStatus?: () => string;
+  importTrustedLicenseIssuerBundle?: () => string;
   deactivateLicense?: () => string;
   getAgentToolInstallStatus?: () => string;
   openExternalUrl?: (url: string) => boolean;
@@ -881,6 +895,13 @@ type AndroidBridge = {
   openLearningReportEvidenceSource?: (studentId: string, reportId: LearningReportId, evidenceId: string, sourceIndex: number) => string;
   exportEducationArchive?: (studentId: string) => string;
   exportLearningReport?: (studentId: string, reportId: LearningReportId, format: 'markdown' | 'pdf') => Promise<string>;
+  getEducationPublishingState?: (studentId: string, sourceType: PublishingSourceType, sourceId: string) => string;
+  getEducationPublicationEnhancementState?: (studentId: string, optionsJson: string) => string;
+  startEducationPublicationEnhancement?: (studentId: string, optionsJson: string) => Promise<string>;
+  exportEducationPublication?: (studentId: string, optionsJson: string) => Promise<string>;
+  openEducationPublication?: (studentId: string, publicationId: string) => string;
+  deleteEducationPublication?: (studentId: string, publicationId: string) => string;
+  regenerateEducationPublication?: (studentId: string, publicationId: string) => Promise<string>;
   ensureLearningReports?: (studentId: string) => string;
   ensureGrowthModel?: (studentId: string) => string;
   getGrowthEvidenceReview?: (studentId: string) => string;
@@ -989,6 +1010,7 @@ type AndroidBridge = {
   exportHostLogs?: () => string;
   openStudentRawDir?: (studentId: string) => string;
   migrateStudentWorkspace?: (studentId: string, newName: string) => string;
+  rebindAdoptedStudentWorkspace?: (studentId: string) => string;
   renameHostDevice?: (deviceId: string, name: string) => string;
   revokeHostDevice?: (deviceId: string) => string;
   restoreHostDevice?: (deviceId: string) => string;
@@ -1001,8 +1023,20 @@ type AndroidBridge = {
   importOfflineCourseCatalog?: () => string;
   exportCustomCourseTemplate?: () => Promise<string>;
   importCustomCourseExcel?: () => Promise<string>;
+  selectCustomCourseImage?: () => Promise<string>;
+  saveDirectCustomCourse?: (inputJson: string) => Promise<string>;
+  deleteCustomCourse?: (courseId: string) => string;
+  selectPlatformCourseImage?: () => Promise<string>;
+  savePlatformCourseDraft?: (inputJson: string) => Promise<string>;
+  removePlatformCourseDraft?: (courseId: string) => string;
+  queuePlatformCourseDeletion?: (courseId: string) => string;
+  cancelPlatformCourseDeletion?: (courseId: string) => string;
+  publishPlatformCourseCatalog?: (releaseNotes: string) => string;
+  rollbackPlatformCourseCatalog?: () => string;
   openCourseView?: (courseId: string) => string;
   closeCourseView?: () => string;
+  setCourseCaptureSetupVisible?: (visible: boolean) => string;
+  setCourseViewLayout?: (layoutJson: string) => string;
 };
 
 type UpdateInfo = {
@@ -1076,6 +1110,69 @@ type LearningReportEvidenceState = {
       kind: string;
     }>;
   }>;
+};
+
+type EducationPublicationTemplate = {
+  id: string;
+  name: string;
+  description: string;
+  formats: PublishingFormat[];
+  locked?: boolean;
+};
+
+type EducationPublicationRecord = {
+  id: string;
+  sourceTitle: string;
+  templateName: string;
+  format: PublishingFormat;
+  colorMode: 'color' | 'monochrome';
+  outputPath: string;
+  generatedAt: string;
+  sourceChanged?: boolean;
+};
+
+type EducationPublicationDraftItem = {
+  id: string;
+  text: string;
+  sourceHeading?: string;
+  sourceHash?: string;
+  grounded?: boolean;
+  sourceQuote?: string;
+  sourceRefs?: string[];
+  emphasis?: 'normal' | 'highlight';
+};
+
+type EducationPublicationDraftSection = {
+  id: string;
+  label: string;
+  kind?: 'narrative' | 'metrics' | 'timeline' | 'strength' | 'attention' | 'action';
+  items: EducationPublicationDraftItem[];
+};
+
+type EducationPublicationDraft = {
+  schema: string;
+  templateId: string;
+  mode: 'document' | 'summary' | 'card';
+  title: string;
+  subtitle: string;
+  sourceHash: string;
+  markdown: string;
+  sections: EducationPublicationDraftSection[];
+  edited?: boolean;
+  validation?: { total: number; grounded: number; coverage: number; valid: boolean };
+  generationMethod?: 'source' | 'agent';
+  promptTemplateId?: string;
+};
+
+type EducationPublishingState = {
+  ok: boolean;
+  message?: string;
+  source?: { type: PublishingSourceType; id: string; title: string; path: string; hash: string };
+  outline?: { title: string; subtitle: string; points: string[] };
+  drafts?: Record<string, EducationPublicationDraft>;
+  templates?: EducationPublicationTemplate[];
+  enhancementTemplates?: Record<string, Array<{ id: string; name: string; description: string; targetTemplates: string[] }>>;
+  records?: EducationPublicationRecord[];
 };
 
 type PathHealthCheck = {
@@ -1186,6 +1283,12 @@ type CaptureSession = {
   studentName: string;
   projectId?: string;
   projectName?: string;
+  courseId?: string;
+  courseName?: string;
+  courseProvider?: string;
+  courseUrl?: string;
+  courseStartedAt?: string;
+  courseCompletedAt?: string;
   status: 'capturing' | 'paused' | 'completed' | 'promoted' | 'interrupted' | string;
   startedAt: string;
   plannedEndAt?: string;
@@ -1228,6 +1331,8 @@ type CourseCatalogItem = {
   languages: string[];
   accountRequirement: string;
   legalNotice: string;
+  effectiveAt: string;
+  expiresAt: string | null;
   status: 'active' | 'withdrawn';
 };
 
@@ -1244,9 +1349,47 @@ type CourseCatalogState = {
   platformCatalog?: { catalogVersion: string; courses: CourseCatalogItem[] } | null;
   customCatalog?: { updatedAt: string; courses: CourseCatalogItem[] };
   management?: { allowed: boolean; plan: string; planLabel: string; message: string };
+  platformAuthoring?: {
+    canEdit: boolean; canPublish: boolean; canRollback: boolean; signingConfigured?: boolean; message: string;
+    signingStatus?: { configured: boolean; source?: string; activeKey?: { keyId: string; fingerprint: string } | null; trustedKeys?: Array<{ keyId: string; fingerprint: string; status: string }>; managedKeys?: Array<{ keyId: string; fingerprint: string; status: string }> };
+  };
+  platformDrafts?: PlatformCourseDraft[];
+  platformDeletions?: PlatformCourseDeletion[];
   customImport?: { allowed: boolean; plan: string; planLabel: string; message: string };
   policy?: { schemaVersion: number; policyVersion: string; showTenantCustom: boolean; courseRules: Record<string, CourseInstitutionRule>; updatedAt: string };
   message?: string;
+};
+
+type PlatformCourseDraft = {
+  courseId: string;
+  baseCatalogVersion: string;
+  draftRevision: number;
+  course: CourseCatalogItem;
+  rights: { status: 'pending' | 'confirmed' | 'expired'; evidenceRef: string; note?: string; reviewedBy?: string; reviewedAt?: string };
+  createdAt: string;
+  updatedAt: string;
+  updatedBy?: string;
+  validation?: { ok: boolean; issues: string[] };
+};
+
+type PlatformCourseDeletion = {
+  courseId: string;
+  name: string;
+  baseCatalogVersion: string;
+  requestedAt: string;
+  requestedBy?: string;
+};
+
+type DirectCourseImage = {
+  imageToken: string;
+  filename: string;
+  previewUrl: string;
+  bytes?: number;
+};
+
+type DirectCourseFeedback = {
+  message: string;
+  tone: 'info' | 'success' | 'danger';
 };
 
 type NativeImportResult = {
@@ -1448,7 +1591,11 @@ type LicenseStatus = {
   status: 'inactive' | 'active' | 'expired' | string;
   active?: boolean;
   plan?: string;
+  edition?: string;
   planLabel?: string;
+  role?: string;
+  roleLabel?: string;
+  capabilities?: string[];
   expiresAt?: string;
   studentLimit?: number;
   deviceLimit?: number;
@@ -3034,6 +3181,20 @@ function bridge() {
   return (window as unknown as { AndroidBridge?: AndroidBridge }).AndroidBridge;
 }
 
+function directCourseUrlIssue(value: string) {
+  const trimmed = String(value || '').trim();
+  if (!trimmed) return '';
+  if (/\s/.test(trimmed)) return '课程链接不能包含空格；请改为完整格式，例如 https://www.example.com。';
+  try {
+    const parsed = new URL(trimmed);
+    if (!['https:', 'http:'].includes(parsed.protocol)) return '课程链接必须以 https:// 或 http:// 开头。';
+    if (parsed.username || parsed.password) return '课程链接不能包含网址用户名或密码。';
+    return '';
+  } catch {
+    return '课程链接不是有效网址；请检查协议和域名是否完整。';
+  }
+}
+
 function normalizeStudents(parsed: Student[]) {
   return parsed.map((student) => ({
       ...student,
@@ -4280,6 +4441,27 @@ function fallbackDownload(filename: string, content: string) {
   URL.revokeObjectURL(link.href);
 }
 
+function publicationDraftMarkdown(draft?: EducationPublicationDraft | null) {
+  if (!draft) return '';
+  if (draft.mode === 'document') return draft.markdown || '';
+  return (draft.sections || []).flatMap((section) => [
+    `## ${section.label}`,
+    ...(section.items || []).map((item) => `- ${item.text}`),
+    '',
+  ]).join('\n').trim();
+}
+
+function publicationSectionKindLabel(kind?: EducationPublicationDraftSection['kind']) {
+  return ({
+    metrics: '关键指标',
+    timeline: '阶段进展',
+    strength: '当前优势',
+    attention: '需要关注',
+    action: '下一步行动',
+    narrative: '事实摘录',
+  } as Record<string, string>)[kind || 'narrative'] || '事实摘录';
+}
+
 function App() {
   const [students, setStudents] = useState<Student[]>(loadStudents);
   const [theme, setTheme] = useState<ThemeName>(loadTheme);
@@ -4335,6 +4517,17 @@ function App() {
   const [learningReportExporting, setLearningReportExporting] = useState<'' | 'markdown' | 'pdf'>('');
   const [learningReportFolder, setLearningReportFolder] = useState('');
   const [learningReportHealth, setLearningReportHealth] = useState<LearningReportHealth | null>(null);
+  const [publishingState, setPublishingState] = useState<EducationPublishingState | null>(null);
+  const [publishingDrafts, setPublishingDrafts] = useState<Record<string, EducationPublicationDraft>>({});
+  const [publishingEditing, setPublishingEditing] = useState(false);
+  const [publishingTemplateId, setPublishingTemplateId] = useState('formal');
+  const [publishingFormat, setPublishingFormat] = useState<PublishingFormat>('pdf');
+  const [publishingColorMode, setPublishingColorMode] = useState<'color' | 'monochrome'>('color');
+  const [publishingBusy, setPublishingBusy] = useState(false);
+  const [publishingMessage, setPublishingMessage] = useState('');
+  const [publishingContentMode, setPublishingContentMode] = useState<'source' | 'agent'>('source');
+  const [publishingPromptTemplateId, setPublishingPromptTemplateId] = useState('formal-faithful');
+  const [publishingEnhancing, setPublishingEnhancing] = useState(false);
   const [pathHealth, setPathHealth] = useState<PathHealthReport | null>(null);
   const [pathHealthMessage, setPathHealthMessage] = useState('');
   const [inboxMessage, setInboxMessage] = useState('');
@@ -4354,11 +4547,30 @@ function App() {
   const [captureMode, setCaptureMode] = useState<'smart' | 'change' | 'interval'>('smart');
   const [captureDuration, setCaptureDuration] = useState(30);
   const [captureProjectId, setCaptureProjectId] = useState('');
+  const [courseCaptureStudentId, setCourseCaptureStudentId] = useState('');
+  const [courseCaptureProjectId, setCourseCaptureProjectId] = useState('');
+  const [courseCaptureSourceId, setCourseCaptureSourceId] = useState('');
+  const [courseCaptureBusy, setCourseCaptureBusy] = useState(false);
+  const [courseCaptureMessage, setCourseCaptureMessage] = useState('');
   const [capturePromotionTargets, setCapturePromotionTargets] = useState<Record<string, 'project_raw' | 'student_raw'>>({});
   const [captureMessage, setCaptureMessage] = useState('');
   const [captureBusy, setCaptureBusy] = useState(false);
   const [courseCatalogState, setCourseCatalogState] = useState<CourseCatalogState | null>(null);
   const [courseCatalogMessage, setCourseCatalogMessage] = useState('');
+  const [directCourseDraft, setDirectCourseDraft] = useState({ name: '', summary: '', url: '' });
+  const [directCourseImage, setDirectCourseImage] = useState<DirectCourseImage | null>(null);
+  const [directCourseSaving, setDirectCourseSaving] = useState(false);
+  const [directCourseFeedback, setDirectCourseFeedback] = useState<DirectCourseFeedback>({ message: '', tone: 'info' });
+  const [editingDirectCourseId, setEditingDirectCourseId] = useState('');
+  const [platformCourseDraft, setPlatformCourseDraft] = useState({
+    courseId: '', name: '', provider: '', summary: '', url: '', allowedHosts: '', subjects: '', gradeRange: '', languages: '',
+    accountRequirement: '', legalNotice: '', effectiveAt: '', expiresAt: '', status: 'active' as 'active' | 'withdrawn',
+    rightsStatus: 'pending' as 'pending' | 'confirmed' | 'expired', rightsEvidenceRef: '', rightsNote: '', rightsReviewedBy: '',
+  });
+  const [platformCourseImage, setPlatformCourseImage] = useState<DirectCourseImage | null>(null);
+  const [platformCourseSaving, setPlatformCourseSaving] = useState(false);
+  const [platformReleaseNotes, setPlatformReleaseNotes] = useState('');
+  const [platformPublishing, setPlatformPublishing] = useState(false);
   const [courseBrowser, setCourseBrowser] = useState<{ open: boolean; courseId?: string; name?: string }>({ open: false });
   const [assetIndex, setAssetIndex] = useState<AssetIndexState>({ assets: [] });
   const [assetMessage, setAssetMessage] = useState('');
@@ -4514,6 +4726,7 @@ function App() {
   const [agentNameDraft, setAgentNameDraft] = useState('');
   const [agentNoteDraft, setAgentNoteDraft] = useState('');
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [courseFullscreen, setCourseFullscreen] = useState(false);
   const [archiveListVisible, setArchiveListVisible] = useState(true);
   const [hostServiceStatus, setHostServiceStatus] = useState<HostServiceStatus | null>(null);
   const [hostPortDraft, setHostPortDraft] = useState('18777');
@@ -4561,6 +4774,7 @@ function App() {
   const [licenseStatus, setLicenseStatus] = useState<LicenseStatus | null>(null);
   const [licenseCodeDraft, setLicenseCodeDraft] = useState('');
   const [licenseMessage, setLicenseMessage] = useState('');
+  const [licenseTrustIssuers, setLicenseTrustIssuers] = useState<Array<{ keyId: string; fingerprint: string; status: string }>>([]);
   const [templateCenter, setTemplateCenter] = useState<TemplateCenterState | null>(null);
   const [templateMessage, setTemplateMessage] = useState('');
   const [agentCenter, setAgentCenter] = useState<AgentCenterState | null>(null);
@@ -4613,6 +4827,13 @@ function App() {
   const t = (key: TranslationKey) => uiTranslations[language]?.[key] ?? zhCnText[key] ?? key;
 
   const selectedStudent = students.find((item) => item.id === selectedId) ?? students[0];
+  const isWindows = storageConfig.platform === 'windows';
+  const courseCaptureStudent = students.find((item) => item.id === courseCaptureStudentId) ?? selectedStudent;
+  const courseCaptureProjects = useMemo(() => projects.filter((project) => (
+    Boolean(courseCaptureStudent)
+    && (project.studentIds || []).map(String).includes(String(courseCaptureStudent.id))
+    && !['sealed', 'archived'].includes(String(project.status || ''))
+  )), [projects, courseCaptureStudent]);
   const conversationLinkedProjects = useMemo(() => projects.filter((project) => (
     Boolean(selectedStudent)
     && (project.studentIds || []).map(String).includes(String(selectedStudent.id))
@@ -4812,6 +5033,30 @@ function App() {
     });
     return () => { unsubscribe?.(); };
   }, []);
+  useEffect(() => {
+    const unsubscribe = bridge()?.onCaptureChanged?.((payload) => {
+      try {
+        const result = JSON.parse(payload) as CaptureCenterState;
+        if (result.ok) setCaptureCenter(result);
+      } catch {
+        // The next explicit refresh will recover a malformed auxiliary event.
+      }
+    });
+    return () => { unsubscribe?.(); };
+  }, []);
+  useEffect(() => {
+    if (courseCaptureProjectId && !courseCaptureProjects.some((project) => project.id === courseCaptureProjectId)) {
+      setCourseCaptureProjectId('');
+    }
+  }, [courseCaptureProjectId, courseCaptureProjects]);
+  useEffect(() => {
+    const waiting = Boolean(isWindows && courseBrowser.open && !captureCenter.activeSession);
+    bridge()?.setCourseCaptureSetupVisible?.(waiting);
+  }, [captureCenter.activeSession, courseBrowser.open, isWindows]);
+  useEffect(() => {
+    if (!isWindows || !courseBrowser.open) return;
+    bridge()?.setCourseViewLayout?.(JSON.stringify({ sidebarCollapsed, fullscreen: courseFullscreen }));
+  }, [courseBrowser.open, courseFullscreen, isWindows, sidebarCollapsed]);
   const activeAgentAdapter = activeSection === 'init' ? selectedToolAdapter : selectedStudentAdapter;
   const activeAgentTool = activeAgentAdapter.profile;
   const toolOpenState: Record<AgentToolId, boolean> = {
@@ -4830,13 +5075,23 @@ function App() {
     fastgpt: false,
   };
   const activeAgentOpened = activeAgentAdapter.isOpened(toolOpenState);
-  const isWindows = storageConfig.platform === 'windows';
   const effectiveLicenseStatus = licenseStatus || hostServiceStatus?.license || null;
   const windowsLicenseActive = !isWindows || Boolean(effectiveLicenseStatus?.active);
-  const courseManagementAllowed = !isWindows || Boolean(
+  const licenseCapability = (capability: string) => Boolean(
     effectiveLicenseStatus?.active
-    && ['PRO', 'ORG'].includes(String(effectiveLicenseStatus.plan || '').toUpperCase())
+    && (
+      effectiveLicenseStatus.capabilities?.includes(capability)
+      || (capability === 'tenant_course_manage'
+        && ['PRO', 'ORG', 'PLATFORM'].includes(String(effectiveLicenseStatus.edition || effectiveLicenseStatus.plan || '').toUpperCase()))
+      || (['platform_course_edit', 'platform_course_publish', 'platform_course_rollback'].includes(capability)
+        && String(effectiveLicenseStatus.edition || effectiveLicenseStatus.plan || '').toUpperCase() === 'PLATFORM')
+    )
   );
+  const courseManagementAllowed = !isWindows || Boolean(
+    licenseCapability('tenant_course_manage')
+  );
+  const platformCourseEditAllowed = !isWindows || licenseCapability('platform_course_edit');
+  const platformCoursePublishAllowed = !isWindows || licenseCapability('platform_course_publish');
   const restrictedSections = new Set<Section>(['init', 'inbox', 'assets', 'projects-new', 'projects-existing', 'growth', 'qa', 'memory', 'soul', 'rules', 'conversation', 'tasks']);
   const isLicenseRestrictedSection = isWindows && !windowsLicenseActive && restrictedSections.has(activeSection);
   const licenseRestrictionText = effectiveLicenseStatus?.message || 'Windows 主机尚未激活。未激活状态仅支持首页、系统设置和已有档案/报告的只读浏览。';
@@ -5055,16 +5310,20 @@ function App() {
         .some((value) => String(value).toLowerCase().includes(keyword));
     });
   }, [projectStagingItems, projectStagingSearch, projectStagingStatusFilter]);
-  const selectedProjectStagingItems = projectStagingItems.filter((item) => selectedProjectStagingIds.includes(item.id));
+  const selectedProjectStagingItems = projectStagingItems.filter((item) => selectedProjectStagingIds.includes(item.id) && projectStagingItemReviewable(item));
+  const selectedProjectReviewableStagingIds = selectedProjectStagingItems.map((item) => item.id);
   const projectStagingGovernanceStats = useMemo(() => {
     const duplicateCount = projectStagingItems.filter((item) => Number(item.duplicateCount ?? 1) > 1).length;
     const governanceCandidateIds = projectStagingItems
-      .filter((item) => item.governanceAction && !String(item.governanceAction).includes('无需处理'))
+      .filter((item) => projectStagingItemReviewable(item) && item.governanceAction && !String(item.governanceAction).includes('无需处理'))
       .map((item) => item.id);
     const promotionCandidateIds = projectStagingItems
       .filter((item) => (
-        ['selected', 'analyzed', 'promoted'].includes(String(item.status))
-        || /选入|晋升|分析|采用/.test(`${item.aiAction || ''}${item.governanceAction || ''}`)
+        projectStagingItemReviewable(item)
+        && (
+          String(item.status) === 'selected'
+          || /选入|晋升|采用/.test(`${item.aiAction || ''}${item.governanceAction || ''}`)
+        )
       ))
       .map((item) => item.id);
     return { duplicateCount, actionCount: governanceCandidateIds.length, governanceCandidateIds, promotionCandidateIds };
@@ -5383,7 +5642,7 @@ function App() {
     }
     if (selectedProjectNextStep.action === 'organize') {
       focusSelectedProjectWorkflowStage('assets');
-      if (!selectedProjectStagingIds.length) {
+      if (!selectedProjectReviewableStagingIds.length) {
         const recommended = projectStagingGovernanceStats.promotionCandidateIds.length
           ? projectStagingGovernanceStats.promotionCandidateIds
           : projectStagingItems.filter((item) => !['analyzed', 'promoted', 'discarded'].includes(String(item.status))).map((item) => item.id);
@@ -5404,11 +5663,16 @@ function App() {
   };
 
   const toggleProjectStagingItem = (itemId: string) => {
+    const item = projectStagingItems.find((candidate) => candidate.id === itemId);
+    if (item && !projectStagingItemReviewable(item)) {
+      reportProjectStage('assets', '该资料已经晋升或完成分析，无需重复审核。');
+      return;
+    }
     setSelectedProjectStagingIds((current) => (current.includes(itemId) ? current.filter((item) => item !== itemId) : [...current, itemId]));
   };
 
   const selectVisibleProjectStagingItems = () => {
-    setSelectedProjectStagingIds(filteredProjectStagingItems.map((item) => item.id));
+    setSelectedProjectStagingIds(filteredProjectStagingItems.filter(projectStagingItemReviewable).map((item) => item.id));
   };
 
   const selectProjectGovernanceCandidates = () => {
@@ -5565,6 +5829,36 @@ function App() {
     }
   };
 
+  const importLicenseFile = () => {
+    const raw = bridge()?.importLicenseFile?.();
+    if (!raw) return setLicenseMessage('当前环境不支持 License 文件导入。');
+    try {
+      const result = JSON.parse(raw) as { ok?: boolean; message?: string; license?: LicenseStatus; status?: HostServiceStatus };
+      if (result.license) setLicenseStatus(result.license);
+      if (result.status) setHostServiceStatus(result.status);
+      setLicenseMessage(result.message || (result.ok ? 'License 文件导入成功。' : 'License 文件导入失败。'));
+    } catch { setLicenseMessage('License 文件导入失败。'); }
+  };
+
+  const refreshLicenseTrustStatus = () => {
+    const raw = bridge()?.getLicenseTrustStatus?.();
+    if (!raw) return;
+    try {
+      const result = JSON.parse(raw) as { ok?: boolean; issuers?: Array<{ keyId: string; fingerprint: string; status: string }> };
+      setLicenseTrustIssuers(result.issuers || []);
+    } catch { setLicenseMessage('读取可信签发方失败。'); }
+  };
+
+  const importLicenseTrustBundle = () => {
+    const raw = bridge()?.importTrustedLicenseIssuerBundle?.();
+    if (!raw) return setLicenseMessage('当前环境不支持可信公钥包导入。');
+    try {
+      const result = JSON.parse(raw) as { ok?: boolean; message?: string; trust?: { issuers?: Array<{ keyId: string; fingerprint: string; status: string }> } };
+      if (result.trust?.issuers) setLicenseTrustIssuers(result.trust.issuers);
+      setLicenseMessage(result.message || (result.ok ? '可信公钥包导入成功。' : '可信公钥包导入失败。'));
+    } catch { setLicenseMessage('可信公钥包导入失败。'); }
+  };
+
   const syncStudentsToHost = (next: Student[]) => {
     if (!bridge()?.syncStudents) return;
     try {
@@ -5685,6 +5979,316 @@ function App() {
     }
   };
 
+  const selectDirectCourseImage = async () => {
+    const invoke = bridge()?.selectCustomCourseImage;
+    if (!invoke) {
+      const message = '当前环境不支持上传课程图片。';
+      setDirectCourseFeedback({ message, tone: 'danger' });
+      setCourseCatalogMessage(message);
+      return;
+    }
+    try {
+      const raw = await invoke();
+      const result = JSON.parse(raw) as {
+        ok?: boolean;
+        cancelled?: boolean;
+        message?: string;
+        imageToken?: string;
+        filename?: string;
+        previewUrl?: string;
+        bytes?: number;
+      };
+      if (result.ok && result.imageToken && result.filename && result.previewUrl) {
+        setDirectCourseImage({
+          imageToken: result.imageToken,
+          filename: result.filename,
+          previewUrl: result.previewUrl,
+          bytes: result.bytes,
+        });
+      }
+      const message = result.message || (result.cancelled ? '已取消选择课程图片。' : result.ok ? '课程图片已选择。' : '课程图片选择失败。');
+      setDirectCourseFeedback({ message, tone: result.ok ? 'success' : result.cancelled ? 'info' : 'danger' });
+      setCourseCatalogMessage(message);
+    } catch (error) {
+      const message = `课程图片选择失败：${error instanceof Error ? error.message : String(error)}`;
+      setDirectCourseFeedback({ message, tone: 'danger' });
+      setCourseCatalogMessage(message);
+    }
+  };
+
+  const resetDirectCourseForm = () => {
+    setDirectCourseDraft({ name: '', summary: '', url: '' });
+    setDirectCourseImage(null);
+    setDirectCourseFeedback({ message: '', tone: 'info' });
+    setEditingDirectCourseId('');
+  };
+
+  const editCustomCourse = (course: CourseCatalogItem) => {
+    if (course.type !== 'tenant_custom') {
+      setCourseCatalogMessage('平台精选课程需使用平台版权限编辑。');
+      return;
+    }
+    setEditingDirectCourseId(course.courseId);
+    setDirectCourseDraft({ name: course.name, summary: course.summary, url: course.url });
+    setDirectCourseImage({
+      imageToken: '',
+      filename: `当前课程图片 · ${course.coverAsset.split('/').pop() || '已保存图片'}`,
+      previewUrl: course.coverUrl || course.coverAsset,
+    });
+    const message = `正在编辑“${course.name}”；未重新上传图片时将保留当前课程图片。`;
+    setDirectCourseFeedback({ message, tone: 'info' });
+    setCourseCatalogMessage(message);
+    window.setTimeout(() => document.querySelector('.course-direct-upload-panel')?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 0);
+  };
+
+  const saveDirectCourse = async () => {
+    const name = directCourseDraft.name.trim();
+    const summary = directCourseDraft.summary.trim();
+    const url = directCourseDraft.url.trim();
+    if (!name || !summary || !url || !directCourseImage) {
+      const message = '请填写课程名称、课程简介、课程链接，并上传课程图片。';
+      setDirectCourseFeedback({ message, tone: 'danger' });
+      setCourseCatalogMessage(message);
+      return;
+    }
+    const urlIssue = directCourseUrlIssue(url);
+    if (urlIssue) {
+      setDirectCourseFeedback({ message: urlIssue, tone: 'danger' });
+      setCourseCatalogMessage(urlIssue);
+      return;
+    }
+    const invoke = bridge()?.saveDirectCustomCourse;
+    if (!invoke) {
+      const message = '当前环境不支持保存单门课程。';
+      setDirectCourseFeedback({ message, tone: 'danger' });
+      setCourseCatalogMessage(message);
+      return;
+    }
+    setDirectCourseSaving(true);
+    setDirectCourseFeedback({ message: '正在校验课程链接并保存课程图片…', tone: 'info' });
+    setCourseCatalogMessage('正在校验课程链接并保存课程图片…');
+    try {
+      const courseId = editingDirectCourseId;
+      const raw = await invoke(JSON.stringify({
+        courseId,
+        name,
+        summary,
+        url,
+        imageToken: directCourseImage.imageToken,
+      }));
+      const result = JSON.parse(raw) as { ok?: boolean; message?: string; state?: CourseCatalogState };
+      if (result.state) {
+        setCourseCatalogState((current) => courseId && current?.policy
+          ? { ...result.state!, policy: current.policy }
+          : result.state!);
+      }
+      else if (result.ok) refreshCourseCatalog();
+      if (result.ok) resetDirectCourseForm();
+      const message = result.message || (result.ok ? courseId ? '课程修改已保存。' : '单门课程已保存。' : '单门课程保存失败。');
+      setDirectCourseFeedback({ message, tone: result.ok ? 'success' : 'danger' });
+      setCourseCatalogMessage(message);
+    } catch (error) {
+      const message = `单门课程保存失败：${error instanceof Error ? error.message : String(error)}`;
+      setDirectCourseFeedback({ message, tone: 'danger' });
+      setCourseCatalogMessage(message);
+    } finally {
+      setDirectCourseSaving(false);
+    }
+  };
+
+  const deleteCustomCourse = (course: CourseCatalogItem) => {
+    if (course.type !== 'tenant_custom') return;
+    if (!window.confirm(`确认永久删除机构精选课程“${course.name}”？\n\n删除后将同时清除该课程的启用、年级和学生分配设置；学生端不再显示。`)) return;
+    const raw = bridge()?.deleteCustomCourse?.(course.courseId);
+    if (!raw) {
+      setCourseCatalogMessage('当前环境不支持删除机构精选课程。');
+      return;
+    }
+    try {
+      const result = JSON.parse(raw) as { ok?: boolean; message?: string; state?: CourseCatalogState };
+      if (result.state) setCourseCatalogState(result.state);
+      if (result.ok && editingDirectCourseId === course.courseId) resetDirectCourseForm();
+      setCourseCatalogMessage(result.message || (result.ok ? '机构精选课程已删除。' : '删除机构精选课程失败。'));
+    } catch {
+      setCourseCatalogMessage('删除机构精选课程结果解析失败。');
+    }
+  };
+
+  const resetPlatformCourseForm = () => {
+    setPlatformCourseDraft({
+      courseId: '', name: '', provider: '', summary: '', url: '', allowedHosts: '', subjects: '', gradeRange: '', languages: '',
+      accountRequirement: '', legalNotice: '', effectiveAt: '', expiresAt: '', status: 'active',
+      rightsStatus: 'pending', rightsEvidenceRef: '', rightsNote: '', rightsReviewedBy: '',
+    });
+    setPlatformCourseImage(null);
+  };
+
+  const selectPlatformCourseImage = async () => {
+    const invoke = bridge()?.selectPlatformCourseImage;
+    if (!invoke) {
+      setCourseCatalogMessage('当前环境不支持选择平台课程图片。');
+      return;
+    }
+    try {
+      const result = JSON.parse(await invoke()) as {
+        ok?: boolean; cancelled?: boolean; message?: string; imageToken?: string; filename?: string; previewUrl?: string; bytes?: number;
+      };
+      if (result.ok && result.imageToken && result.filename && result.previewUrl) {
+        setPlatformCourseImage({ imageToken: result.imageToken, filename: result.filename, previewUrl: result.previewUrl, bytes: result.bytes });
+      }
+      setCourseCatalogMessage(result.message || (result.cancelled ? '已取消选择平台课程图片。' : result.ok ? '平台课程图片已选择。' : '平台课程图片选择失败。'));
+    } catch (error) {
+      setCourseCatalogMessage(`平台课程图片选择失败：${error instanceof Error ? error.message : String(error)}`);
+    }
+  };
+
+  const editPlatformCourse = (course: CourseCatalogItem) => {
+    if (!platformCourseEditAllowed || course.type !== 'platform_standard') {
+      setCourseCatalogMessage('当前 License 不是有效的平台版授权。');
+      return;
+    }
+    const savedDraft = courseCatalogState?.platformDrafts?.find((item) => item.courseId === course.courseId);
+    const source = savedDraft?.course || course;
+    setPlatformCourseDraft({
+      courseId: source.courseId,
+      name: source.name,
+      provider: source.provider,
+      summary: source.summary,
+      url: source.url,
+      allowedHosts: source.allowedHosts.join(', '),
+      subjects: source.subjects.join(', '),
+      gradeRange: source.gradeRange.join(', '),
+      languages: source.languages.join(', '),
+      accountRequirement: source.accountRequirement,
+      legalNotice: source.legalNotice,
+      effectiveAt: source.effectiveAt ? source.effectiveAt.slice(0, 16) : '',
+      expiresAt: source.expiresAt ? source.expiresAt.slice(0, 16) : '',
+      status: source.status,
+      rightsStatus: savedDraft?.rights?.status || 'pending',
+      rightsEvidenceRef: savedDraft?.rights?.evidenceRef || '',
+      rightsNote: savedDraft?.rights?.note || '',
+      rightsReviewedBy: savedDraft?.rights?.reviewedBy || '',
+    });
+    setPlatformCourseImage({ imageToken: '', filename: `当前课程图片 · ${source.coverAsset.split('/').pop() || '已保存图片'}`, previewUrl: source.coverUrl || source.coverAsset });
+    setCourseCatalogMessage(savedDraft ? `正在继续编辑“${source.name}”草稿。` : `已从已发布课程“${source.name}”创建编辑表单；保存后只形成草稿。`);
+    window.setTimeout(() => document.querySelector('.platform-course-authoring-panel')?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 0);
+  };
+
+  const editSavedPlatformDraft = (draft: PlatformCourseDraft) => editPlatformCourse({ ...draft.course, coverUrl: draft.course.coverUrl });
+
+  const savePlatformCourseDraft = async () => {
+    const invoke = bridge()?.savePlatformCourseDraft;
+    if (!invoke) {
+      setCourseCatalogMessage('当前环境不支持保存平台课程草稿。');
+      return;
+    }
+    const required = [platformCourseDraft.name, platformCourseDraft.summary, platformCourseDraft.url];
+    if (required.some((value) => !value.trim()) || (!platformCourseDraft.courseId && !platformCourseImage?.imageToken)) {
+      setCourseCatalogMessage('请填写课程名称、课程简介和课程链接；新增课程还必须上传课程图片。');
+      return;
+    }
+    setPlatformCourseSaving(true);
+    setCourseCatalogMessage('正在校验平台课程并保存草稿…');
+    try {
+      const split = (value: string) => value.split(/[,，\n]/).map((item) => item.trim()).filter(Boolean);
+      const result = JSON.parse(await invoke(JSON.stringify({
+        ...platformCourseDraft,
+        allowedHosts: split(platformCourseDraft.allowedHosts),
+        subjects: split(platformCourseDraft.subjects),
+        gradeRange: split(platformCourseDraft.gradeRange),
+        languages: split(platformCourseDraft.languages),
+        effectiveAt: platformCourseDraft.effectiveAt ? new Date(platformCourseDraft.effectiveAt).toISOString() : '',
+        expiresAt: platformCourseDraft.expiresAt ? new Date(platformCourseDraft.expiresAt).toISOString() : '',
+        imageToken: platformCourseImage?.imageToken || '',
+      }))) as { ok?: boolean; message?: string; state?: CourseCatalogState };
+      if (result.state) setCourseCatalogState(result.state);
+      if (result.ok) resetPlatformCourseForm();
+      setCourseCatalogMessage(result.message || (result.ok ? '平台课程草稿已保存。' : '平台课程草稿保存失败。'));
+    } catch (error) {
+      setCourseCatalogMessage(`平台课程草稿保存失败：${error instanceof Error ? error.message : String(error)}`);
+    } finally {
+      setPlatformCourseSaving(false);
+    }
+  };
+
+  const removePlatformCourseDraft = (courseId: string) => {
+    if (!window.confirm('删除该平台课程草稿？当前已发布课程不会被删除或修改。')) return;
+    const raw = bridge()?.removePlatformCourseDraft?.(courseId);
+    if (!raw) return;
+    try {
+      const result = JSON.parse(raw) as { ok?: boolean; message?: string; state?: CourseCatalogState };
+      if (result.state) setCourseCatalogState(result.state);
+      if (result.ok && platformCourseDraft.courseId === courseId) resetPlatformCourseForm();
+      setCourseCatalogMessage(result.message || (result.ok ? '平台课程草稿已删除。' : '删除平台课程草稿失败。'));
+    } catch {
+      setCourseCatalogMessage('删除平台课程草稿结果解析失败。');
+    }
+  };
+
+  const queuePlatformCourseDeletion = (course: CourseCatalogItem) => {
+    if (!window.confirm(`确认删除平台精选课程“${course.name}”？\n\n该课程会先进入“待删除”，必须点击“发布平台精选课程”生成新版课程包后，删除才会正式生效。`)) return;
+    const raw = bridge()?.queuePlatformCourseDeletion?.(course.courseId);
+    if (!raw) {
+      setCourseCatalogMessage('当前环境不支持删除平台精选课程。');
+      return;
+    }
+    try {
+      const result = JSON.parse(raw) as { ok?: boolean; message?: string; state?: CourseCatalogState };
+      if (result.state) setCourseCatalogState(result.state);
+      if (result.ok && platformCourseDraft.courseId === course.courseId) resetPlatformCourseForm();
+      setCourseCatalogMessage(result.message || (result.ok ? '平台课程已加入待删除。' : '删除平台课程失败。'));
+    } catch {
+      setCourseCatalogMessage('删除平台课程结果解析失败。');
+    }
+  };
+
+  const cancelPlatformCourseDeletion = (courseId: string) => {
+    const raw = bridge()?.cancelPlatformCourseDeletion?.(courseId);
+    if (!raw) return;
+    try {
+      const result = JSON.parse(raw) as { ok?: boolean; message?: string; state?: CourseCatalogState };
+      if (result.state) setCourseCatalogState(result.state);
+      setCourseCatalogMessage(result.message || (result.ok ? '已取消删除平台课程。' : '取消删除失败。'));
+    } catch {
+      setCourseCatalogMessage('取消删除平台课程结果解析失败。');
+    }
+  };
+
+  const publishPlatformCourseCatalog = () => {
+    const invoke = bridge()?.publishPlatformCourseCatalog;
+    if (!invoke) {
+      setCourseCatalogMessage('当前环境不支持平台课程发布。');
+      return;
+    }
+    setPlatformPublishing(true);
+    setCourseCatalogMessage('正在生成平台课程包并执行文件哈希与完整性回验…');
+    try {
+      const result = JSON.parse(invoke(platformReleaseNotes)) as { ok?: boolean; cancelled?: boolean; message?: string; outputPath?: string; state?: CourseCatalogState };
+      if (result.state) setCourseCatalogState(result.state);
+      if (result.ok) setPlatformReleaseNotes('');
+      setCourseCatalogMessage(result.message || (result.cancelled ? '已取消平台课程发布。' : result.ok ? `平台课程包已保存到 ${result.outputPath || '所选位置'}。` : '平台课程发布失败。'));
+    } catch (error) {
+      setCourseCatalogMessage(`平台课程发布失败：${error instanceof Error ? error.message : String(error)}`);
+    } finally {
+      setPlatformPublishing(false);
+    }
+  };
+
+  const rollbackPlatformCourseCatalog = () => {
+    const invoke = bridge()?.rollbackPlatformCourseCatalog;
+    if (!invoke || !window.confirm('确认从旧的平台课程包恢复课程目录？该操作会立即影响本机课程目录。')) return;
+    setPlatformPublishing(true);
+    try {
+      const result = JSON.parse(invoke()) as { ok?: boolean; cancelled?: boolean; message?: string; state?: CourseCatalogState };
+      if (result.state) setCourseCatalogState(result.state);
+      setCourseCatalogMessage(result.message || (result.cancelled ? '已取消课程目录恢复。' : result.ok ? '课程目录已恢复。' : '课程目录恢复失败。'));
+    } catch (error) {
+      setCourseCatalogMessage(`课程目录恢复失败：${error instanceof Error ? error.message : String(error)}`);
+    } finally {
+      setPlatformPublishing(false);
+    }
+  };
+
   const openHostCourse = (course: CourseCatalogItem) => {
     const raw = bridge()?.openCourseView?.(course.courseId);
     if (!raw) return;
@@ -5692,6 +6296,12 @@ function App() {
       const result = JSON.parse(raw) as { ok?: boolean; message?: string };
       if (!result.ok) throw new Error(result.message || '课程暂不可用。');
       setCourseBrowser({ open: true, courseId: course.courseId, name: course.name });
+      setCourseFullscreen(false);
+      setCourseCaptureStudentId(selectedStudent?.id || '');
+      setCourseCaptureProjectId('');
+      setCourseCaptureMessage('');
+      refreshCaptureCenter();
+      void refreshCaptureSources();
       setCourseCatalogMessage(`已在隔离浏览器中打开 ${course.name}。`);
     } catch (error) {
       setCourseCatalogMessage(`打开课程失败：${error instanceof Error ? error.message : String(error)}`);
@@ -5700,7 +6310,10 @@ function App() {
 
   const closeHostCourse = () => {
     bridge()?.closeCourseView?.();
+    bridge()?.setCourseCaptureSetupVisible?.(false);
     setCourseBrowser({ open: false });
+    setCourseFullscreen(false);
+    setCourseCaptureMessage('');
   };
 
   const refreshHostUploadRecords = () => {
@@ -6678,9 +7291,12 @@ ${sourceText}`;
     refreshHostServiceStatus();
     refreshCourseCatalog();
     refreshLicenseStatus();
-    refreshAssets();
-    refreshProjects();
+    void refreshProjects();
   }, []);
+
+  useEffect(() => {
+    if (activeSection === 'assets') void refreshAssets();
+  }, [activeSection]);
 
   useEffect(() => {
     if (!['init', 'settings'].includes(activeSection) || installStatus) return undefined;
@@ -6757,8 +7373,10 @@ ${sourceText}`;
     (window as unknown as { onNativeCourseCatalogChanged?: () => void }).onNativeCourseCatalogChanged = () => {
       refreshCourseCatalog();
     };
-    (window as unknown as { onNativeCourseBrowserChanged?: (payload: { open?: boolean; courseId?: string; name?: string; blocked?: boolean; message?: string }) => void }).onNativeCourseBrowserChanged = (payload) => {
+    (window as unknown as { onNativeCourseBrowserChanged?: (payload: { open?: boolean; courseId?: string; name?: string; blocked?: boolean; message?: string; fullscreen?: boolean; sidebarCollapsed?: boolean }) => void }).onNativeCourseBrowserChanged = (payload) => {
       setCourseBrowser({ open: Boolean(payload?.open), courseId: payload?.courseId, name: payload?.name });
+      if (payload?.fullscreen === false) setCourseFullscreen(false);
+      if (payload?.sidebarCollapsed === false) setSidebarCollapsed(false);
       if (payload?.blocked) setCourseCatalogMessage(payload.message || '已阻止课程页面跳转到非白名单域名。');
     };
     (window as unknown as { onNativeCollaborationChanged?: (payload: string) => void }).onNativeCollaborationChanged = () => {
@@ -7021,7 +7639,7 @@ ${sourceText}`;
       refreshMaterialImportRecords(selectedStudent);
       refreshCaptureCenter();
       void refreshCaptureSources();
-      const timer = window.setInterval(refreshCaptureCenter, 2000);
+      const timer = window.setInterval(refreshCaptureCenter, 5000);
       return () => window.clearInterval(timer);
     }
     return undefined;
@@ -8527,6 +9145,7 @@ ${sourceText}`;
       const sources = result.sources ?? [];
       setCaptureSources(sources);
       setCaptureSourceId((current) => (sources.some((source) => source.id === current) ? current : sources[0]?.id || ''));
+      setCourseCaptureSourceId((current) => (sources.some((source) => source.id === current) ? current : sources[0]?.id || ''));
     } catch {
       setCaptureMessage('屏幕来源结果解析失败。');
     }
@@ -8554,6 +9173,32 @@ ${sourceText}`;
       setCaptureMessage('屏幕采集启动失败。');
     } finally {
       setCaptureBusy(false);
+    }
+  };
+
+  const startCourseCapture = async () => {
+    const action = bridge()?.startCaptureSession;
+    if (!action || !courseBrowser.courseId || !courseCaptureStudent || !courseCaptureSourceId) {
+      setCourseCaptureMessage('请先选择学生和采集屏幕。');
+      return;
+    }
+    setCourseCaptureBusy(true);
+    try {
+      const raw = await action(JSON.stringify({
+        studentId: courseCaptureStudent.id,
+        projectId: courseCaptureProjectId,
+        sourceId: courseCaptureSourceId,
+        courseId: courseBrowser.courseId,
+        mode: 'smart',
+        durationMinutes: 30,
+      }));
+      const result = JSON.parse(raw) as { ok?: boolean; message?: string; session?: CaptureSession };
+      setCourseCaptureMessage(result.message || (result.ok ? '课程采集已开始。' : '课程采集启动失败。'));
+      refreshCaptureCenter();
+    } catch {
+      setCourseCaptureMessage('课程采集启动失败。');
+    } finally {
+      setCourseCaptureBusy(false);
     }
   };
 
@@ -8696,8 +9341,8 @@ ${sourceText}`;
     }
   };
 
-  const refreshAssets = () => {
-    const raw = bridge()?.getAssetIndex?.();
+  const refreshAssets = async () => {
+    const raw = await bridge()?.getAssetIndex?.();
     if (!raw) {
       setAssetMessage('当前环境不支持文件资产中心。');
       return;
@@ -8830,8 +9475,8 @@ ${sourceText}`;
     }
   };
 
-  const refreshProjects = () => {
-    const raw = bridge()?.getProjects?.();
+  const refreshProjects = async () => {
+    const raw = await bridge()?.getProjects?.();
     if (!raw) {
       setProjectMessage('当前环境不支持学习项目管理。');
       return;
@@ -9090,19 +9735,19 @@ ${sourceText}`;
   const relocateSelectedProjectWorkspace = () => {
     if (!selectedProject) return;
     const raw = bridge()?.relocateProjectWorkspace?.(selectedProject.id);
-    if (!raw) return setProjectMessage('当前环境不支持项目路径重新定位。');
+    if (!raw) return setProjectMessage('当前环境不支持项目工作空间重新定位。');
     try {
       const result = JSON.parse(raw) as { ok?: boolean; preview?: boolean; oldPath?: string; newPath?: string; warnings?: string[]; message?: string };
-      if (!result.ok || !result.preview || !result.newPath) return setProjectMessage(result.message || '重新定位预检失败。');
+      if (!result.ok || !result.preview || !result.newPath) return setProjectMessage(result.message || '项目工作空间重新定位预检失败。');
       const warningText = result.warnings?.length ? `\n\n提醒：\n${result.warnings.join('\n')}` : '';
-      if (!window.confirm(`确认重新绑定项目工作空间？\n\n旧路径：${result.oldPath}\n新路径：${result.newPath}\n\n只更新逻辑绑定，不移动、复制或删除文件。${warningText}`)) return setProjectMessage('已取消重新绑定，项目索引未修改。');
+      if (!window.confirm(`确认重新定位项目工作空间？\n\n旧路径：${result.oldPath}\n新路径：${result.newPath}\n\n重新定位就是修改工作空间来源目录；只更新逻辑绑定，不移动、复制或删除任何文件，项目知识空间保持不变。${warningText}`)) return setProjectMessage('已取消重新定位，项目索引未变化。');
       const confirmedRaw = bridge()?.confirmProjectWorkspaceRelocation?.(selectedProject.id, result.newPath);
-      if (!confirmedRaw) return setProjectMessage('当前环境不支持确认路径重新绑定。');
+      if (!confirmedRaw) return setProjectMessage('当前环境不支持确认项目工作空间重新定位。');
       const confirmed = JSON.parse(confirmedRaw) as { ok?: boolean; projects?: LearningProject[]; message?: string };
       if (Array.isArray(confirmed.projects)) setProjects(confirmed.projects);
-      setProjectMessage(confirmed.message || (confirmed.ok ? '项目工作空间已重新绑定。' : '重新绑定失败。'));
+      setProjectMessage(confirmed.message || (confirmed.ok ? '项目工作空间已重新定位。' : '项目工作空间重新定位失败。'));
       if (confirmed.ok) void scanSelectedProjectWorkspace(selectedProject.id);
-    } catch { setProjectMessage('项目路径重新定位结果解析失败。'); }
+    } catch { setProjectMessage('项目工作空间重新定位结果解析失败。'); }
   };
 
   const rollbackSelectedProjectWorkspace = () => {
@@ -9303,9 +9948,9 @@ ${sourceText}`;
   };
 
   const reviewSelectedProjectStaging = (decision: 'accepted' | 'rejected' | 'pending') => {
-    if (!selectedProjectId || !selectedProjectStagingIds.length) return setProjectMessage('请先选择要审核的项目资料。');
+    if (!selectedProjectId || !selectedProjectReviewableStagingIds.length) return setProjectMessage('请先选择尚未完成处理的项目资料。');
     const note = decision === 'accepted' ? '用户一键采用。' : decision === 'rejected' ? '用户一键排除。' : '用户保留为待处理。';
-    const raw = bridge()?.reviewProjectStagingItems?.(selectedProjectId, JSON.stringify(selectedProjectStagingIds), decision, projectSourceStrategy, note);
+    const raw = bridge()?.reviewProjectStagingItems?.(selectedProjectId, JSON.stringify(selectedProjectReviewableStagingIds), decision, projectSourceStrategy, note);
     if (!raw) return setProjectMessage('当前环境不支持项目资料审核。');
     try {
       const result = JSON.parse(raw) as { ok?: boolean; projects?: LearningProject[]; message?: string };
@@ -9542,11 +10187,11 @@ ${sourceText}`;
       setProjectMessage('请先选择学习项目。');
       return;
     }
-    if (!selectedProjectStagingIds.length) {
-      setProjectMessage('请先选择暂存资料。');
+    if (!selectedProjectReviewableStagingIds.length) {
+      setProjectMessage('请先选择尚未完成处理的暂存资料。');
       return;
     }
-    const raw = bridge()?.updateProjectStagingStatus?.(selectedProjectId, JSON.stringify(selectedProjectStagingIds), status);
+    const raw = bridge()?.updateProjectStagingStatus?.(selectedProjectId, JSON.stringify(selectedProjectReviewableStagingIds), status);
     if (!raw) {
       setProjectMessage('当前环境不支持研究暂存状态更新。');
       return;
@@ -9566,11 +10211,11 @@ ${sourceText}`;
       setProjectMessage('请先选择学习项目。');
       return;
     }
-    if (!selectedProjectStagingIds.length) {
-      setProjectMessage('请先选择要晋升的暂存资料。');
+    if (!selectedProjectReviewableStagingIds.length) {
+      setProjectMessage('请先选择尚未完成处理、可以晋升的暂存资料。');
       return;
     }
-    const raw = bridge()?.promoteProjectStagingItems?.(selectedProjectId, JSON.stringify(selectedProjectStagingIds));
+    const raw = bridge()?.promoteProjectStagingItems?.(selectedProjectId, JSON.stringify(selectedProjectReviewableStagingIds));
     if (!raw) {
       setProjectMessage('当前环境不支持研究暂存晋升。');
       return;
@@ -9590,8 +10235,8 @@ ${sourceText}`;
   };
 
   const approveAndPromoteSelectedProjectStagingItems = () => {
-    if (!selectedProjectId || !selectedProjectStagingIds.length) return reportProjectStage('assets', '请先选择要加入项目知识库的资料。');
-    const raw = bridge()?.approveAndPromoteProjectStagingItems?.(selectedProjectId, JSON.stringify(selectedProjectStagingIds), projectSourceStrategy, '用户一键采用并晋升。');
+    if (!selectedProjectId || !selectedProjectReviewableStagingIds.length) return reportProjectStage('assets', '请先选择尚未完成处理、需要加入项目知识库的资料。');
+    const raw = bridge()?.approveAndPromoteProjectStagingItems?.(selectedProjectId, JSON.stringify(selectedProjectReviewableStagingIds), projectSourceStrategy, '用户一键采用并晋升。');
     if (!raw) return reportProjectStage('assets', '当前环境不支持审核并加入项目知识库。');
     try {
       const result = JSON.parse(raw) as { ok?: boolean; project?: LearningProject; projects?: LearningProject[]; message?: string };
@@ -10832,6 +11477,182 @@ ${JSON.stringify(items, null, 2)}
     }
   };
 
+  const openEducationPublishing = (sourceType: PublishingSourceType, sourceId: string) => {
+    if (!selectedStudent) return;
+    const raw = bridge()?.getEducationPublishingState?.(selectedStudent.id, sourceType, sourceId);
+    if (!raw) {
+      const message = '当前环境不支持教育内容智能出版。';
+      sourceType === 'learning_report' ? setLearningReportMessage(message) : setMarkdownMessage(message);
+      return;
+    }
+    try {
+      const result = JSON.parse(raw) as EducationPublishingState;
+      if (!result.ok) {
+        const message = result.message || '所选内容暂时不能生成报告或卡片。';
+        sourceType === 'learning_report' ? setLearningReportMessage(message) : setMarkdownMessage(message);
+        return;
+      }
+      const firstTemplate = result.templates?.find((item) => !item.locked) || result.templates?.[0];
+      setPublishingTemplateId(firstTemplate?.id || 'formal');
+      setPublishingContentMode('source');
+      setPublishingPromptTemplateId(result.enhancementTemplates?.[firstTemplate?.id || 'formal']?.[0]?.id || 'formal-faithful');
+      setPublishingFormat(firstTemplate?.formats?.[0] || 'pdf');
+      setPublishingColorMode(firstTemplate?.id === 'monochrome' ? 'monochrome' : 'color');
+      setPublishingDrafts(result.drafts || {});
+      setPublishingEditing(false);
+      setPublishingMessage('');
+      setPublishingState(result);
+    } catch {
+      setLearningReportMessage('教育内容出版状态解析失败。');
+    }
+  };
+
+  const refreshEducationPublishing = () => {
+    if (!selectedStudent || !publishingState?.source) return;
+    const raw = bridge()?.getEducationPublishingState?.(selectedStudent.id, publishingState.source.type, publishingState.source.id);
+    if (!raw) return;
+    try { setPublishingState(JSON.parse(raw) as EducationPublishingState); } catch { setPublishingMessage('生成记录刷新失败。'); }
+  };
+
+  const updatePublishingDraft = (updater: (draft: EducationPublicationDraft) => EducationPublicationDraft) => {
+    setPublishingDrafts((current) => {
+      const draft = current[publishingTemplateId];
+      if (!draft) return current;
+      return { ...current, [publishingTemplateId]: { ...updater(draft), edited: true } };
+    });
+  };
+
+  const resetPublishingDraft = () => {
+    const automatic = publishingState?.drafts?.[publishingTemplateId];
+    if (!automatic) return;
+    setPublishingDrafts((current) => ({ ...current, [publishingTemplateId]: automatic }));
+    setPublishingMessage('已恢复为根据当前原文自动生成的草稿。');
+  };
+
+  const updatePublishingDraftItem = (sectionId: string, itemId: string, text: string) => {
+    updatePublishingDraft((draft) => ({
+      ...draft,
+      sections: draft.sections.map((section) => section.id !== sectionId ? section : {
+        ...section,
+        items: section.items.map((item) => item.id === itemId ? { ...item, text, grounded: false } : item),
+      }),
+    }));
+  };
+
+  const addPublishingDraftItem = (sectionId: string) => {
+    updatePublishingDraft((draft) => ({
+      ...draft,
+      sections: draft.sections.map((section) => section.id !== sectionId ? section : {
+        ...section,
+        items: [...section.items, { id: `manual-${Date.now()}`, text: '请输入新的内容要点', grounded: false }],
+      }),
+    }));
+  };
+
+  const deletePublishingDraftItem = (sectionId: string, itemId: string) => {
+    updatePublishingDraft((draft) => ({
+      ...draft,
+      sections: draft.sections.map((section) => section.id !== sectionId ? section : {
+        ...section,
+        items: section.items.filter((item) => item.id !== itemId),
+      }).filter((section) => section.items.length),
+    }));
+  };
+
+  const generateAgentPublishingDraft = async () => {
+    if (!selectedStudent || !publishingState?.source || publishingEnhancing) return;
+    const starter = bridge()?.startEducationPublicationEnhancement;
+    const reader = bridge()?.getEducationPublicationEnhancementState;
+    if (!starter || !reader) return setPublishingMessage('当前版本未提供 Agent 智能提炼。');
+    const options = {
+      sourceType: publishingState.source.type,
+      sourceId: publishingState.source.id,
+      templateId: publishingTemplateId,
+      promptTemplateId: publishingPromptTemplateId,
+    };
+    setPublishingEnhancing(true);
+    setPublishingMessage('Agent 正在根据原文生成草稿；未通过依据校验时会自动保留忠实原文。');
+    try {
+      const started = JSON.parse(await starter(selectedStudent.id, JSON.stringify(options))) as { ok?: boolean; message?: string; status?: string };
+      if (!started.ok) throw new Error(started.message || 'Agent 任务未能启动。');
+      for (let attempt = 0; attempt < 120; attempt += 1) {
+        const state = JSON.parse(reader(selectedStudent.id, JSON.stringify(options))) as { ok?: boolean; status?: string; message?: string; draft?: EducationPublicationDraft; fallback?: boolean };
+        if (state.status === 'succeeded' && state.draft && !state.fallback) {
+          setPublishingDrafts((current) => ({ ...current, [publishingTemplateId]: state.draft! }));
+          setPublishingMessage(state.message || 'Agent 草稿已通过证据优先校验，可继续编辑或直接生成。');
+          return;
+        }
+        if (['failed', 'timed_out', 'blocked', 'cancelled'].includes(String(state.status || ''))) {
+          throw new Error(state.message || 'Agent 草稿未通过校验。');
+        }
+        await new Promise((resolve) => window.setTimeout(resolve, 1500));
+      }
+      throw new Error('Agent 处理仍在继续，请稍后再次生成；当前忠实原文草稿已保留。');
+    } catch (error) {
+      setPublishingContentMode('source');
+      setPublishingMessage(`${(error as Error).message} 已自动保留忠实原文草稿。`);
+    } finally {
+      setPublishingEnhancing(false);
+    }
+  };
+
+  const generateEducationPublication = async () => {
+    if (!selectedStudent || !publishingState?.source || publishingBusy) return;
+    const exporter = bridge()?.exportEducationPublication;
+    if (!exporter) return setPublishingMessage('当前环境不支持生成文件。');
+    setPublishingBusy(true);
+    setPublishingMessage('正在本机生成，不会修改原始档案…');
+    try {
+      const raw = await exporter(selectedStudent.id, JSON.stringify({
+        sourceType: publishingState.source.type,
+        sourceId: publishingState.source.id,
+        templateId: publishingTemplateId,
+        format: publishingFormat,
+        colorMode: publishingColorMode,
+        draft: publishingDrafts[publishingTemplateId],
+      }));
+      const result = JSON.parse(raw) as { ok?: boolean; message?: string };
+      setPublishingMessage(result.message || (result.ok ? '生成完成。' : '生成失败。'));
+      if (result.ok) refreshEducationPublishing();
+    } catch (error) {
+      setPublishingMessage(`生成失败：${(error as Error).message}`);
+    } finally {
+      setPublishingBusy(false);
+    }
+  };
+
+  const openPublicationRecord = (recordId: string) => {
+    if (!selectedStudent) return;
+    const raw = bridge()?.openEducationPublication?.(selectedStudent.id, recordId);
+    if (!raw) return;
+    try { setPublishingMessage((JSON.parse(raw) as { message?: string }).message || ''); } catch { setPublishingMessage('无法定位生成文件。'); }
+  };
+
+  const deletePublicationRecord = (recordId: string) => {
+    if (!selectedStudent || !window.confirm('删除这份生成文件和记录？原始档案不会被修改。')) return;
+    const raw = bridge()?.deleteEducationPublication?.(selectedStudent.id, recordId);
+    if (!raw) return;
+    try {
+      const result = JSON.parse(raw) as { ok?: boolean; message?: string };
+      setPublishingMessage(result.message || '');
+      if (result.ok) refreshEducationPublishing();
+    } catch { setPublishingMessage('删除结果解析失败。'); }
+  };
+
+  const regeneratePublicationRecord = async (recordId: string) => {
+    if (!selectedStudent || publishingBusy) return;
+    const regenerate = bridge()?.regenerateEducationPublication;
+    if (!regenerate) return;
+    setPublishingBusy(true);
+    setPublishingMessage('正在按原模板重新生成…');
+    try {
+      const result = JSON.parse(await regenerate(selectedStudent.id, recordId)) as { ok?: boolean; message?: string };
+      setPublishingMessage(result.message || '');
+      if (result.ok) refreshEducationPublishing();
+    } catch (error) { setPublishingMessage(`重新生成失败：${(error as Error).message}`); }
+    finally { setPublishingBusy(false); }
+  };
+
   const ensureLearningReportTemplates = (student: Student | undefined = selectedStudent) => {
     if (!student) return;
     const raw = bridge()?.ensureLearningReports?.(student.id);
@@ -11057,7 +11878,7 @@ ${JSON.stringify(items, null, 2)}
         saveStudents(restoredStudents);
         setSelectedId((current) => restoredStudents.some((student) => student.id === current) ? current : restoredStudents[0]?.id ?? '');
       }
-      setHostServiceMessage(result.ok ? `已从备份恢复：${result.path}` : result.message || '恢复失败。');
+      setHostServiceMessage(result.ok ? result.message || `已从备份恢复：${result.path}` : result.message || '恢复失败。');
       refreshHostUploadRecords();
       refreshHostTimeline();
       if (result.ok) {
@@ -11162,6 +11983,41 @@ ${JSON.stringify(items, null, 2)}
       window.setTimeout(() => setDigestMessage(''), 3600);
     } catch {
       setDigestMessage('迁移知识库目录结果解析失败。');
+    }
+  };
+
+  const rebindSelectedAdoptedWorkspace = () => {
+    if (!selectedStudent || selectedStudent.knowledgeBaseMode !== 'adopted') return;
+    if (isWindows && !windowsLicenseActive) {
+      setDigestMessage('未激活状态仅支持只读浏览，激活后可重新定位接管目录。');
+      return;
+    }
+    const confirmed = window.confirm(`请选择「${selectedStudent.name}」在当前主机上的已有知识库根目录。\n\n本操作只更新教育管家中的路径，不移动、复制或删除任何资料。`);
+    if (!confirmed) return;
+    const raw = bridge()?.rebindAdoptedStudentWorkspace?.(selectedStudent.id);
+    if (!raw) {
+      setDigestMessage('当前环境不支持重新定位接管目录。');
+      return;
+    }
+    try {
+      const result = JSON.parse(raw) as { ok?: boolean; cancelled?: boolean; message?: string; student?: Student };
+      if (!result.ok) {
+        if (!result.cancelled) setDigestMessage(result.message || '重新定位接管目录失败。');
+        return;
+      }
+      if (result.student) {
+        const next = students.map((student) => student.id === selectedStudent.id ? { ...student, ...result.student } : student);
+        // The main process has already committed the authoritative rebinding.
+        // Keep the renderer mirror in sync without writing stale pre-rebind fields back over it.
+        setStudents(next);
+        saveStudents(next);
+        setStudentEditDraft((current) => current && result.student ? { ...current, ...result.student } : current);
+      }
+      setPathHealth(null);
+      setPathHealthMessage('');
+      setDigestMessage(result.message || '已重新定位接管目录。');
+    } catch {
+      setDigestMessage('重新定位接管目录结果解析失败。');
     }
   };
 
@@ -11653,7 +12509,7 @@ ${JSON.stringify(items, null, 2)}
 
   const openCourseSubmenu = (submenu: CourseSubmenu) => {
     if (submenu === 'management' && !courseManagementAllowed) {
-      setCourseCatalogMessage('课程管理仅向已激活的专业版和机构版开放。');
+      setCourseCatalogMessage('课程管理仅向已激活的专业版、机构版和平台版开放。');
       return;
     }
     if (courseBrowser.open) closeHostCourse();
@@ -11726,12 +12582,13 @@ ${JSON.stringify(items, null, 2)}
         : digestWorkflowBusyKey
           ? '正在启动资料自动处理'
           : captureBusy
-            ? '正在处理采集资料'
-            : '';
+             ? '正在处理采集资料'
+             : '';
+  const activePublishingDraft = publishingDrafts[publishingTemplateId];
 
   return (
     <main
-      className={sidebarCollapsed ? 'app-shell sidebar-collapsed' : 'app-shell'}
+      className={`app-shell${sidebarCollapsed ? ' sidebar-collapsed' : ''}${courseFullscreen ? ' course-fullscreen' : ''}`}
       data-theme={theme}
       data-language={language}
       style={{ '--skin-image': `url(${themeSkinImages[theme]})` } as React.CSSProperties}
@@ -12428,7 +13285,7 @@ ${JSON.stringify(items, null, 2)}
             <section className="panel course-catalog-hero">
               <div>
                 <span className="eyebrow">
-                  {courseSubmenu === 'learning' ? '安全打开 · 主动学习 · 受限浏览' : '平台签名目录 · 机构自选课程 · 三端一致'}
+                  {courseSubmenu === 'learning' ? '安全打开 · 主动学习 · 受限浏览' : '平台课程包 · 机构精选课程 · 三端一致'}
                 </span>
                 <h2>
                   {courseBrowser.open
@@ -12438,10 +13295,11 @@ ${JSON.stringify(items, null, 2)}
                 <p>
                   {courseSubmenu === 'learning'
                     ? '选择已启用的课程并在隔离浏览器中学习。第三方提供方负责课程内容、账号与服务条款；打开页面或采集资料不代表课程完成率、正确率或学情结论。'
-                    : '管理平台课程和机构自选课程的启用、顺序、年级与学生分配；课程管理仅向已激活的专业版和机构版开放。'}
+                    : '机构精选课程用于本机构学生；平台精选课程由平台版制作课程包供其他主机导入。两类课程均可设置启用、顺序、年级与学生分配。'}
                 </p>
               </div>
               <div className="actions compact-actions">
+                {courseBrowser.open ? <button className="secondary course-fullscreen-toggle" onClick={() => { const next = !courseFullscreen; setCourseFullscreen(next); setSidebarCollapsed(next); }}>{courseFullscreen ? <Minimize2 size={17} /> : <Maximize2 size={17} />}{courseFullscreen ? '退出全屏（Esc）' : '全屏学习'}</button> : null}
                 {courseBrowser.open ? <button className="secondary" onClick={closeHostCourse}><X size={17} />退出课程</button> : null}
                 <button className="secondary" onClick={refreshCourseCatalog}><RefreshCw size={17} />刷新目录</button>
                 {courseSubmenu === 'management' && courseManagementAllowed ? (
@@ -12455,12 +13313,51 @@ ${JSON.stringify(items, null, 2)}
                     >
                       <FileDown size={17} />导入自选课程Excel
                     </button>
-                    <button className="secondary" onClick={importCourseCatalog}><ShieldCheck size={17} />导入平台签名目录</button>
+                    <button className="secondary" onClick={importCourseCatalog}><ShieldCheck size={17} />导入平台课程包</button>
                     <button className="primary" onClick={saveCoursePolicy} disabled={!courseCatalogState?.policy}><ShieldCheck size={17} />保存并下发</button>
                   </>
                 ) : null}
               </div>
             </section>
+
+            {isWindows && courseBrowser.open && !captureCenter.activeSession ? (
+              <section className="course-capture-start-strip" aria-label="课程屏幕资料采集">
+                <div className="course-capture-state">
+                  <span className="status warn">待开始</span>
+                  <div>
+                    <strong>课程资料采集</strong>
+                    <small>主动选择归属和屏幕后开始；打开课程不会自动采集。</small>
+                  </div>
+                </div>
+                <label>
+                  <span>学生</span>
+                  <select value={courseCaptureStudent?.id || ''} onChange={(event) => setCourseCaptureStudentId(event.target.value)}>
+                    {students.map((student) => <option key={student.id} value={student.id}>{student.name}</option>)}
+                  </select>
+                </label>
+                <label>
+                  <span>项目（可选）</span>
+                  <select value={courseCaptureProjectId} onChange={(event) => setCourseCaptureProjectId(event.target.value)}>
+                    <option value="">学生原始资料</option>
+                    {courseCaptureProjects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}
+                  </select>
+                </label>
+                <label className="course-capture-source">
+                  <span>屏幕或窗口</span>
+                  <select value={courseCaptureSourceId} onChange={(event) => setCourseCaptureSourceId(event.target.value)}>
+                    {!captureSources.length ? <option value="">没有可用来源</option> : null}
+                    {captureSources.map((source) => <option key={source.id} value={source.id}>{source.type === 'screen' ? '屏幕' : '窗口'} · {source.name}</option>)}
+                  </select>
+                </label>
+                <button className="ghost compact course-capture-refresh" type="button" onClick={() => void refreshCaptureSources()} aria-label="刷新屏幕来源">
+                  <RefreshCw size={16} />
+                </button>
+                <button className="primary compact" type="button" onClick={() => void startCourseCapture()} disabled={courseCaptureBusy || !courseCaptureStudent || !courseCaptureSourceId}>
+                  <Camera size={17} />{courseCaptureBusy ? '正在开始…' : '开始采集'}
+                </button>
+                {courseCaptureMessage ? <span className="course-capture-message">{courseCaptureMessage}</span> : null}
+              </section>
+            ) : null}
 
             {!courseBrowser.open ? (
               courseSubmenu === 'learning' ? (
@@ -12498,24 +13395,197 @@ ${JSON.stringify(items, null, 2)}
               ) : courseManagementAllowed ? (
                 <>
                   <div className="course-catalog-status">
-                    <span className={courseCatalogState?.platformCatalog ? 'status ok' : 'status warn'}>{courseCatalogState?.platformCatalog ? '平台目录签名与版本校验通过' : '没有可用的平台签名目录'}</span>
+                    <span className={courseCatalogState?.platformCatalog ? 'status ok' : 'status warn'}>{courseCatalogState?.platformCatalog ? '平台课程包版本与完整性校验通过' : '没有可用的平台课程包'}</span>
                     <span>目录版本 {courseCatalogState?.catalog?.catalogVersion || '—'}</span>
                     <span>最低主机版本 {courseCatalogState?.catalog?.minHostVersion || '—'}</span>
                     <span>机构自选 {courseCatalogState?.customCatalog?.courses?.length || 0} 门</span>
                   </div>
                   <section className="panel course-custom-import-panel">
                     <div>
-                      <span className="eyebrow">专业版 / 机构版</span>
+                      <span className="eyebrow">机构精选课程 · 专业版 / 机构版 / 平台版</span>
                       <h3>四字段 Excel 导入</h3>
-                      <p>表格只需填写“课程名称、课程图片、课程简介、课程链接”。课程图片可填写同目录图片文件名、完整本地路径或 HTTPS 图片网址；导入后仍可统一设置启用、顺序、年级和学生。</p>
+                      <p>表格只需填写“课程名称、课程图片、课程简介、课程链接”。这些课程保存在本机并只下发给本机构学生，不会进入平台课程包。图片网址和课程链接优先使用 HTTPS；确实不支持 HTTPS 时可使用 HTTP。</p>
                     </div>
                     <span className={courseCatalogState?.customImport?.allowed ? 'status ok' : 'status warn'}>
                       {courseCatalogState?.customImport?.allowed ? `${courseCatalogState.customImport.planLabel}可导入` : '当前授权不可导入'}
                     </span>
                   </section>
+                  <section className="panel course-direct-upload-panel" aria-labelledby="direct-course-title">
+                    <div className="course-direct-upload-heading">
+                      <div>
+                        <span className="eyebrow">{editingDirectCourseId ? '已有课程 · 编辑' : '单门课程 · 直接上传'}</span>
+                        <h3 id="direct-course-title">{editingDirectCourseId ? '编辑机构精选课程' : '新增一门机构精选课程'}</h3>
+                        <p>{editingDirectCourseId
+                          ? '可修改课程名称、课程简介、课程图片和课程链接；不重新上传图片时保留当前图片，课程 ID 和原有分配关系保持不变。'
+                          : '填写三项课程信息，选择一张课程图片后保存。课程链接相同时会更新原课程，不会重复创建。'}</p>
+                      </div>
+                      <span className="status ok">{courseCatalogState?.customImport?.planLabel || '专业版 / 机构版'}可用</span>
+                    </div>
+                    <div className="course-direct-upload-body">
+                      <div className="course-direct-image-column">
+                        <div className={`course-direct-image-preview${directCourseImage ? ' selected' : ''}`}>
+                          {directCourseImage ? (
+                            <img src={directCourseImage.previewUrl} alt="已选择的课程图片预览" />
+                          ) : (
+                            <div><ImageUp size={32} /><span>PNG、JPG/JPEG 或 WebP</span><small>单张不超过 5 MB</small></div>
+                          )}
+                        </div>
+                        <button className="secondary" onClick={selectDirectCourseImage} disabled={directCourseSaving}>
+                          <ImageUp size={17} />{directCourseImage ? '重新选择课程图片' : '上传课程图片'}
+                        </button>
+                        {directCourseImage ? (
+                          <small className="course-direct-image-name">
+                            {directCourseImage.filename}
+                            {directCourseImage.bytes ? ` · ${(directCourseImage.bytes / 1024 / 1024).toFixed(2)} MB` : ''}
+                          </small>
+                        ) : null}
+                      </div>
+                      <div className="course-direct-fields">
+                        <label>
+                          <span>课程名称</span>
+                          <input
+                            value={directCourseDraft.name}
+                            maxLength={120}
+                            placeholder="例如：小学英语自然拼读"
+                            onChange={(event) => setDirectCourseDraft((current) => ({ ...current, name: event.target.value }))}
+                          />
+                          <small>{directCourseDraft.name.length}/120</small>
+                        </label>
+                        <label>
+                          <span>课程简介</span>
+                          <textarea
+                            value={directCourseDraft.summary}
+                            maxLength={1200}
+                            placeholder="简要介绍课程内容、适用对象和学习方向"
+                            onChange={(event) => setDirectCourseDraft((current) => ({ ...current, summary: event.target.value }))}
+                          />
+                          <small>{directCourseDraft.summary.length}/1200</small>
+                        </label>
+                        <label>
+                          <span>课程链接</span>
+                          <input
+                            type="url"
+                            value={directCourseDraft.url}
+                            placeholder="https://example.com/course 或 http://example.com/course"
+                            onChange={(event) => setDirectCourseDraft((current) => ({ ...current, url: event.target.value }))}
+                            aria-invalid={Boolean(directCourseUrlIssue(directCourseDraft.url))}
+                          />
+                          <small className={directCourseUrlIssue(directCourseDraft.url) ? 'field-error' : ''}>
+                            {directCourseUrlIssue(directCourseDraft.url) || '优先使用 HTTPS；无 HTTPS 的课程可使用 HTTP。系统只允许访问登记域名，且网址不得包含用户名或密码。'}
+                          </small>
+                        </label>
+                        {directCourseFeedback.message ? (
+                          <div
+                            className={`notice course-direct-feedback${directCourseFeedback.tone === 'danger' ? ' danger' : directCourseFeedback.tone === 'success' ? ' success' : ''}`}
+                            role="status"
+                            aria-live="polite"
+                          >
+                            {directCourseFeedback.message}
+                          </div>
+                        ) : null}
+                        <div className="course-direct-save-row">
+                          <span>{editingDirectCourseId ? '保存修改不会改变课程 ID、启用状态、顺序、年级或学生分配。' : '保存后可在下方继续设置启用、顺序、年级和学生分配。'}</span>
+                          <div className="course-direct-save-actions">
+                            {editingDirectCourseId ? (
+                              <button className="secondary" type="button" onClick={resetDirectCourseForm} disabled={directCourseSaving}>取消编辑</button>
+                            ) : null}
+                            <button
+                              className="primary"
+                              onClick={saveDirectCourse}
+                              disabled={directCourseSaving || !directCourseDraft.name.trim() || !directCourseDraft.summary.trim() || !directCourseDraft.url.trim() || Boolean(directCourseUrlIssue(directCourseDraft.url)) || !directCourseImage}
+                            >
+                              <Save size={17} />{directCourseSaving ? '正在保存…' : editingDirectCourseId ? '保存修改' : '保存课程'}
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  </section>
+                  {platformCourseEditAllowed ? (
+                    <section className="panel course-direct-upload-panel platform-course-authoring-panel" aria-labelledby="platform-course-authoring-title">
+                      <div className="course-direct-upload-heading">
+                        <div>
+                          <span className="eyebrow">平台精选课程 · 仅平台版</span>
+                          <h3 id="platform-course-authoring-title">平台精选课程发布</h3>
+                          <p>与机构精选课程使用相同的四字段录入；保存后形成平台草稿，点击发布即可生成可供其他主机导入的平台课程包。</p>
+                        </div>
+                        <span className={platformCoursePublishAllowed ? 'status ok' : 'status warn'}>{platformCoursePublishAllowed ? '可编辑并发布' : '需要平台版授权'}</span>
+                      </div>
+                      {courseCatalogState?.platformDrafts?.length ? (
+                        <div className="course-catalog-status">
+                          {courseCatalogState.platformDrafts.map((draft) => (
+                            <span className={draft.validation?.ok ? 'status ok' : 'status warn'} key={draft.courseId}>
+                              {draft.course.name} · 草稿 r{draft.draftRevision} · {draft.validation?.ok ? '校验通过' : `${draft.validation?.issues?.length || 0} 项待处理`}
+                              <button className="ghost compact" type="button" onClick={() => editSavedPlatformDraft(draft)}>编辑</button>
+                              <button className="ghost compact" type="button" onClick={() => removePlatformCourseDraft(draft.courseId)}>删除草稿</button>
+                            </span>
+                          ))}
+                        </div>
+                      ) : <div className="notice muted">当前没有平台课程草稿。可点击下方平台课程卡片的“编辑平台课程”，或直接新增课程。</div>}
+                      {courseCatalogState?.platformDeletions?.length ? (
+                        <div className="course-catalog-status" aria-label="待删除平台课程">
+                          {courseCatalogState.platformDeletions.map((deletion) => (
+                            <span className="status warn" key={deletion.courseId}>
+                              {deletion.name} · 待删除
+                              <button className="ghost compact" type="button" onClick={() => cancelPlatformCourseDeletion(deletion.courseId)}>取消删除</button>
+                            </span>
+                          ))}
+                        </div>
+                      ) : null}
+                      {platformCoursePublishAllowed ? (
+                        <div className="platform-course-release-box">
+                          <div className="notice muted">平台版 License 是唯一发布条件；课程包保留版本、文件哈希和完整性校验，不再配置发布凭据。</div>
+                          <label>
+                            <span>发布说明</span>
+                            <textarea maxLength={2000} value={platformReleaseNotes} onChange={(event) => setPlatformReleaseNotes(event.target.value)} placeholder="说明本次新增、调整或撤回的课程（可选）" />
+                          </label>
+                          <div className="course-direct-save-row">
+                            <span className="status ok">平台版可直接发布</span>
+                            <div className="course-direct-save-actions">
+                              {courseCatalogState?.platformAuthoring?.canRollback ? <button className="secondary" type="button" onClick={rollbackPlatformCourseCatalog} disabled={platformPublishing}><Archive size={17} />从课程包恢复</button> : null}
+                              <button
+                                className="primary"
+                                type="button"
+                                onClick={publishPlatformCourseCatalog}
+                                disabled={platformPublishing || (!(courseCatalogState?.platformDrafts?.length) && !(courseCatalogState?.platformDeletions?.length)) || Boolean(courseCatalogState?.platformDrafts?.some((draft) => !draft.validation?.ok))}
+                              >
+                                <ShieldCheck size={17} />{platformPublishing ? '正在校验并发布…' : '发布平台精选课程'}
+                              </button>
+                            </div>
+                          </div>
+                        </div>
+                      ) : null}
+                      <div className="course-direct-upload-body">
+                        <div className="course-direct-image-column">
+                          <div className={`course-direct-image-preview${platformCourseImage ? ' selected' : ''}`}>
+                            {platformCourseImage ? <img src={platformCourseImage.previewUrl} alt="平台课程图片预览" /> : <div><ImageUp size={32} /><span>平台课程封面</span><small>PNG、JPG/JPEG 或 WebP，最大 5 MB</small></div>}
+                          </div>
+                          <button className="secondary" type="button" onClick={selectPlatformCourseImage} disabled={platformCourseSaving}>
+                            <ImageUp size={17} />{platformCourseImage ? '重新选择平台课程图片' : '上传平台课程图片'}
+                          </button>
+                          {platformCourseImage ? <small className="course-direct-image-name">{platformCourseImage.filename}</small> : null}
+                        </div>
+                        <div className="course-direct-fields">
+                          <label><span>课程名称</span><input maxLength={120} value={platformCourseDraft.name} onChange={(event) => setPlatformCourseDraft((current) => ({ ...current, name: event.target.value }))} placeholder="例如：平台精选数学课程" /><small>{platformCourseDraft.name.length}/120</small></label>
+                          <label><span>课程简介</span><textarea maxLength={1200} value={platformCourseDraft.summary} onChange={(event) => setPlatformCourseDraft((current) => ({ ...current, summary: event.target.value }))} placeholder="简要介绍课程内容、适用对象和学习方向" /><small>{platformCourseDraft.summary.length}/1200</small></label>
+                          <label><span>课程链接</span><input type="url" value={platformCourseDraft.url} onChange={(event) => setPlatformCourseDraft((current) => ({ ...current, url: event.target.value }))} placeholder="https://example.com/course 或 http://example.com/course" /><small>优先使用 HTTPS；确实没有 HTTPS 的课程可填写 HTTP，系统仍限制在登记域名内访问。</small></label>
+                          <div className="course-direct-save-row">
+                            <span>{platformCourseDraft.courseId ? `编辑 ${platformCourseDraft.courseId}；保存只更新草稿。` : '新增课程将在首次保存时生成稳定 platform: ID。'}</span>
+                            <div className="course-direct-save-actions">
+                              {platformCourseDraft.courseId || platformCourseDraft.name ? <button className="secondary" type="button" onClick={resetPlatformCourseForm} disabled={platformCourseSaving}>清空表单</button> : null}
+                              <button className="primary" type="button" onClick={savePlatformCourseDraft} disabled={platformCourseSaving || !platformCourseDraft.name.trim() || !platformCourseDraft.summary.trim() || !platformCourseDraft.url.trim() || (!platformCourseDraft.courseId && !platformCourseImage)}>
+                                <Save size={17} />{platformCourseSaving ? '正在保存…' : '保存平台草稿'}
+                              </button>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    </section>
+                  ) : null}
                   <div className="course-admin-grid">
                     {courseCatalogCourses.map((course, index) => {
                       const rule = courseCatalogState?.policy?.courseRules[course.courseId] || { enabled: true, order: index, gradeRange: [], studentIds: [] };
+                      const pendingPlatformDeletion = Boolean(courseCatalogState?.platformDeletions?.some((item) => item.courseId === course.courseId));
                       return (
                         <article className="panel course-admin-card" key={course.courseId}>
                           <img src={course.coverUrl || course.coverAsset} alt="" />
@@ -12523,6 +13593,7 @@ ${JSON.stringify(items, null, 2)}
                             <span className="eyebrow">{course.provider}</span>
                             <h3>{course.name}</h3>
                             <span className="course-source-badge">{course.type === 'tenant_custom' ? '机构自选' : '平台精选'}</span>
+                            {pendingPlatformDeletion ? <span className="status warn">待发布删除</span> : null}
                             <p>{course.summary}</p>
                             <small>{course.accountRequirement}</small>
                             <details><summary>法律声明与允许域名</summary><p>{course.legalNotice}</p><code>{course.allowedHosts.join(' · ')}</code></details>
@@ -12546,9 +13617,34 @@ ${JSON.stringify(items, null, 2)}
                                 </label>
                               ))}
                             </fieldset>
-                            <button className="primary" onClick={() => openHostCourse(course)}>
-                              <ExternalLink size={17} />预览课程
-                            </button>
+                            <div className="course-policy-action-row">
+                              {course.type === 'tenant_custom' ? (
+                                <>
+                                  <button className="secondary" type="button" onClick={() => editCustomCourse(course)}>
+                                    <Pencil size={17} />编辑课程
+                                  </button>
+                                  <button className="danger-soft" type="button" onClick={() => deleteCustomCourse(course)}>
+                                    <Trash2 size={17} />删除课程
+                                  </button>
+                                </>
+                              ) : platformCourseEditAllowed ? (
+                                pendingPlatformDeletion ? (
+                                  <button className="secondary" type="button" onClick={() => cancelPlatformCourseDeletion(course.courseId)}>取消待删除</button>
+                                ) : (
+                                  <>
+                                    <button className="secondary" type="button" onClick={() => editPlatformCourse(course)}>
+                                      <Pencil size={17} />编辑平台课程
+                                    </button>
+                                    <button className="danger-soft" type="button" onClick={() => queuePlatformCourseDeletion(course)}>
+                                      <Trash2 size={17} />删除平台课程
+                                    </button>
+                                  </>
+                                )
+                              ) : <span className="inline-hint">平台精选课程由平台版维护；当前 License 只能设置启用和分配。</span>}
+                              <button className="primary" onClick={() => openHostCourse(course)}>
+                                <ExternalLink size={17} />预览课程
+                              </button>
+                            </div>
                           </div>
                         </article>
                       );
@@ -12559,16 +13655,11 @@ ${JSON.stringify(items, null, 2)}
               ) : (
                 <section className="panel empty-state">
                   <KeyRound size={22} />
-                  <strong>课程管理仅向专业版和机构版开放</strong>
-                  <span>当前授权仍可使用“课程学习”；升级并激活专业版或机构版后，可导入、启用、排序和分配课程。</span>
+                  <strong>课程管理仅向专业版、机构版和平台版开放</strong>
+                  <span>当前授权仍可使用“课程学习”；升级并激活专业版、机构版或平台版后，可导入、启用、排序和分配课程。</span>
                 </section>
               )
-            ) : (
-              <section className="panel course-browser-guard">
-                <ShieldCheck size={20} />
-                <span>隔离 WebContentsView 已启用：无 Node、无 preload、无本地 IPC；下载、弹窗、权限申请、危险协议和非白名单跳转被阻止。</span>
-              </section>
-            )}
+            ) : null}
             {courseCatalogMessage ? <div className="notice">{courseCatalogMessage}</div> : null}
           </div>
         )}
@@ -13933,13 +15024,13 @@ ${JSON.stringify(items, null, 2)}
                           <Copy size={15} />
                           复制项目
                         </button>
-                        <button className="secondary compact" onClick={relocateSelectedProjectWorkspace}><FolderOpen size={15} />重新定位</button>
+                        <button className="secondary compact" onClick={relocateSelectedProjectWorkspace} title="修改该项目绑定的工作空间来源目录；不移动原文件或项目知识空间"><FolderOpen size={15} />重新定位</button>
                         <button className="secondary compact" onClick={exportSelectedProject}><FileDown size={15} />导出项目</button>
                         <button
                           className="primary compact"
                           onClick={() => void publishSelectedProjectToPeer()}
                           disabled={projectPublicationBusy}
-                          title="通过局域网优先、Tailscale 备用的内置直传，将原始资料和已确认知识发布给协作主机"
+                          title="通过局域网优先、Tailscale 备用的内置直传，将项目原始资料和已确认知识发布给协作主机；不发送工作空间目录本身"
                         >
                           <Share2 size={15} />
                           {projectPublicationBusy ? '正在发布…' : '发布项目'}
@@ -14256,15 +15347,15 @@ ${JSON.stringify(items, null, 2)}
                         <ol>
                           <li className={projectStagingItems.length ? 'done' : 'current'}><span>1</span><strong>收集候选</strong><small>{projectStagingItems.length} 份</small></li>
                           <li className={projectStagingItems.some((item) => item.aiAction || item.governanceAction) ? 'done' : projectStagingItems.length ? 'current' : ''}><span>2</span><strong>AI 整理</strong><small>去重与价值判断</small></li>
-                          <li className={selectedProjectStagingIds.length ? 'current' : ''}><span>3</span><strong>人工确认</strong><small>已选 {selectedProjectStagingIds.length} 份</small></li>
-                          <li className={projectStagingLifecycleStats.promoted ? 'done' : ''}><span>4</span><strong>加入知识库</strong><small>{projectStagingLifecycleStats.promoted} 份已晋升</small></li>
+                          <li className={selectedProjectReviewableStagingIds.length ? 'current' : ''}><span>3</span><strong>人工确认</strong><small>已选 {selectedProjectReviewableStagingIds.length} 份</small></li>
+                          <li className={projectStagingLifecycleStats.promoted + projectStagingLifecycleStats.analyzed ? 'done' : ''}><span>4</span><strong>加入知识库</strong><small>{projectStagingLifecycleStats.promoted + projectStagingLifecycleStats.analyzed} 份已加入/处理</small></li>
                         </ol>
                         <div className="actions compact-actions project-wizard-actions">
                           <button className={projectStagingItems.length > 0 && !projectStagingItems.some((item) => item.aiAction || item.governanceAction) ? 'secondary compact workflow-action next' : 'secondary compact workflow-action optional'} onClick={prepareProjectStagingEvaluation} disabled={projectStagingItems.length === 0}>复制 Agent 评估指令</button>
                           <button className={projectScreeningPasteOpen ? 'primary compact workflow-action next' : 'primary compact workflow-action optional'} onClick={openProjectScreeningPaste} disabled={projectStagingItems.length === 0}><Clipboard size={16} />粘贴 Agent 评估结果</button>
                           <button className="secondary compact" onClick={importProjectStagingAiScreeningFromFile} disabled={projectStagingItems.length === 0}>从文件导入</button>
-                          <button className="secondary compact" onClick={applyRecommendedProjectSourceStrategy} disabled={selectedProjectStagingIds.length === 0}>应用建议保存策略</button>
-                          <button className={selectedProjectStagingIds.length ? 'primary compact workflow-action next' : 'secondary compact workflow-action blocked'} onClick={approveAndPromoteSelectedProjectStagingItems} disabled={selectedProjectStagingIds.length === 0}>确认并加入项目知识库</button>
+                          <button className="secondary compact" onClick={applyRecommendedProjectSourceStrategy} disabled={selectedProjectReviewableStagingIds.length === 0}>应用建议保存策略</button>
+                          <button className={selectedProjectReviewableStagingIds.length ? 'primary compact workflow-action next' : 'secondary compact workflow-action blocked'} onClick={approveAndPromoteSelectedProjectStagingItems} disabled={selectedProjectReviewableStagingIds.length === 0}>确认并加入项目知识库</button>
                         </div>
                         {projectScreeningPasteOpen && (
                           <section className="project-screening-receipt-panel" aria-label="Agent 评估回执">
@@ -14331,14 +15422,14 @@ ${JSON.stringify(items, null, 2)}
                           <button className="secondary compact" onClick={selectProjectGovernanceCandidates} disabled={projectStagingGovernanceStats.governanceCandidateIds.length === 0}>选择治理候选</button>
                           <button className="secondary compact" onClick={selectProjectPromotionCandidates} disabled={projectStagingGovernanceStats.promotionCandidateIds.length === 0}>选择待采用</button>
                           <button className="secondary compact" onClick={() => setSelectedProjectStagingIds([])} disabled={selectedProjectStagingIds.length === 0}>清空选择</button>
-                          <button className="secondary compact danger-soft" onClick={() => updateSelectedProjectStagingStatus('discarded')} disabled={selectedProjectStagingIds.length === 0}>排除所选</button>
+                          <button className="secondary compact danger-soft" onClick={() => updateSelectedProjectStagingStatus('discarded')} disabled={selectedProjectReviewableStagingIds.length === 0}>排除所选</button>
                         </div>
                       </details>
                       <small className="inline-hint">当前显示 {filteredProjectStagingItems.length} / {projectStagingItems.length} 份；重复候选 {projectStagingGovernanceStats.duplicateCount} 份。AI只提供评估，最终采用或排除仍需人工确认。</small>
                       <div className="download-list project-staging-list">
                         {filteredProjectStagingItems.map((item) => (
                           <label className={item.status === 'discarded' ? 'download-item staging-item discarded' : 'download-item staging-item'} key={item.id}>
-                            <input type="checkbox" checked={selectedProjectStagingIds.includes(item.id)} onChange={() => toggleProjectStagingItem(item.id)} />
+                            <input type="checkbox" checked={selectedProjectReviewableStagingIds.includes(item.id)} onChange={() => toggleProjectStagingItem(item.id)} disabled={!projectStagingItemReviewable(item)} />
                             <span>
                               <strong>{item.filename}</strong>
                               <small>
@@ -14347,6 +15438,8 @@ ${JSON.stringify(items, null, 2)}
                               </small>
                               <small>{item.sourcePath || item.path}</small>
                               {item.promotedAssetId && <small>资产编号：{item.promotedAssetId}</small>}
+                              {!projectStagingItemReviewable(item) && <small>该资料已加入知识库或完成分析，无需重复审核。</small>}
+                              {item.lifecycleRepairReason && <small>状态修复：{item.lifecycleRepairReason}</small>}
                               <small>人工审核：{item.reviewStatus === 'accepted' ? '已接受' : item.reviewStatus === 'rejected' ? '已拒绝' : '待确认'} · 保存策略：{item.sourceStrategy === 'full_copy' ? '完整副本' : item.sourceStrategy === 'snapshot' ? '关键快照' : '仅来源记录'}</small>
                               {item.reviewNote && <small>审核说明：{item.reviewNote}</small>}
                               {item.aiAction && (
@@ -14832,20 +15925,12 @@ ${JSON.stringify(items, null, 2)}
                       复制正文
                     </button>
                     <button
-                      className="secondary compact"
-                      onClick={() => exportSelectedLearningReport('markdown')}
+                      className="primary compact"
+                      onClick={() => openEducationPublishing('learning_report', selectedLearningReportId)}
                       disabled={!learningReportContent || Boolean(learningReportExporting) || !windowsLicenseActive}
                     >
-                      <FileDown size={16} />
-                      {learningReportExporting === 'markdown' ? '导出中…' : '导出 Markdown'}
-                    </button>
-                    <button
-                      className="secondary compact"
-                      onClick={() => exportSelectedLearningReport('pdf')}
-                      disabled={!learningReportContent || Boolean(learningReportExporting) || !windowsLicenseActive}
-                    >
-                      <FileDown size={16} />
-                      {learningReportExporting === 'pdf' ? '生成中…' : '导出 PDF'}
+                      <Share2 size={16} />
+                      导出与分享
                     </button>
                   </div>
                 </div>
@@ -15132,10 +16217,16 @@ ${JSON.stringify(items, null, 2)}
                     </>
                   )}
                   {isWindows && selectedStudent.knowledgeBaseMode === 'adopted' && (
-                    <button className="secondary" onClick={() => openStudentRawDir(selectedStudent)} disabled={!windowsLicenseActive}>
-                      <FolderOpen size={18} />
-                      打开学生原始资料库
-                    </button>
+                    <>
+                      <button className="secondary" onClick={rebindSelectedAdoptedWorkspace} disabled={!windowsLicenseActive}>
+                        <FolderOpen size={18} />
+                        重新定位接管目录
+                      </button>
+                      <button className="secondary" onClick={() => openStudentRawDir(selectedStudent)} disabled={!windowsLicenseActive}>
+                        <FolderOpen size={18} />
+                        打开学生原始资料库
+                      </button>
+                    </>
                   )}
                 </div>
               </section>
@@ -15230,6 +16321,14 @@ ${JSON.stringify(items, null, 2)}
                 <div className="reader-toolbar">
                   <span>{selectedMarkdownFile?.name ?? 'Markdown 档案'}</span>
                   <div className="reader-actions">
+                    <button
+                      className="primary compact"
+                      onClick={() => selectedMarkdownId && openEducationPublishing('archive_file', selectedMarkdownId)}
+                      disabled={!markdownContent || !selectedMarkdownId || !windowsLicenseActive}
+                    >
+                      <Sparkles size={16} />
+                      生成报告或卡片
+                    </button>
                     <button className="secondary compact" onClick={() => setMarkdownViewMode(markdownViewMode === 'rendered' ? 'source' : 'rendered')}>
                       {markdownViewMode === 'rendered' ? '查看原文' : '阅读模式'}
                     </button>
@@ -17252,7 +18351,15 @@ ${JSON.stringify(items, null, 2)}
                   <button className="secondary compact" onClick={deactivateLicense}>
                     移除本机许可证
                   </button>
+                  <button className="secondary compact" onClick={importLicenseFile}>导入 License 文件</button>
+                  <button className="secondary compact" onClick={importLicenseTrustBundle}>导入可信签发方公钥包</button>
+                  <button className="ghost compact" onClick={refreshLicenseTrustStatus}>查看可信签发方</button>
                 </div>
+                {licenseTrustIssuers.length ? (
+                  <div className="license-trust-list">
+                    {licenseTrustIssuers.map((issuer) => <code key={issuer.keyId}>{issuer.keyId} · SHA-256 {issuer.fingerprint} · {issuer.status === 'revoked' ? '已撤销' : '可信'}</code>)}
+                  </div>
+                ) : null}
                 {licenseMessage && <p>{licenseMessage}</p>}
                 <p className="muted-text">授权码由内部“AI教育管家授权管理工具”生成，客户版主机端只负责激活和校验。</p>
               </div>
@@ -17382,6 +18489,152 @@ ${JSON.stringify(items, null, 2)}
           </section>
         )}
       </section>
+      {publishingState?.ok && publishingState.source && (
+        <div className="publishing-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setPublishingState(null); }}>
+          <section className="publishing-dialog" role="dialog" aria-modal="true" aria-labelledby="publishing-title">
+            <header>
+              <div>
+                <span className="publishing-eyebrow">教育内容智能出版</span>
+                <h2 id="publishing-title">{publishingState.source.title}</h2>
+                <p>来源已锁定到当前学生和文件哈希；生成文件不会修改原始档案。</p>
+              </div>
+              <button className="icon-button" onClick={() => setPublishingState(null)} aria-label="关闭"><X size={20} /></button>
+            </header>
+            <div className="publishing-layout">
+              <div className="publishing-controls">
+                <div className="mini-heading"><strong>1. 选择模板</strong><span>普通用户只需选择一次并确认生成。</span></div>
+                <div className="publishing-template-grid">
+                  {(publishingState.templates || []).map((template) => (
+                    <button
+                      type="button"
+                      className={publishingTemplateId === template.id ? 'publishing-template active' : 'publishing-template'}
+                      disabled={template.locked}
+                      key={template.id}
+                      onClick={() => {
+                         setPublishingTemplateId(template.id);
+                         setPublishingFormat(template.formats[0] || 'pdf');
+                         setPublishingColorMode(template.id === 'monochrome' ? 'monochrome' : 'color');
+                         setPublishingContentMode('source');
+                         setPublishingPromptTemplateId(publishingState.enhancementTemplates?.[template.id]?.[0]?.id || 'concise-brief');
+                         setPublishingEditing(false);
+                      }}
+                    >
+                      <strong>{template.name}</strong><span>{template.description}</span>{template.locked && <small>当前版本未开放</small>}
+                    </button>
+                  ))}
+                </div>
+                <div className="publishing-enhancement-panel">
+                  <div className="mini-heading"><strong>2. 内容生成方式</strong><span>默认忠实原文；只有需要重新提炼时才调用 Agent。</span></div>
+                  <div className="publishing-options">
+                    <label>生成方式
+                      <select value={publishingContentMode} onChange={(event) => setPublishingContentMode(event.target.value as 'source' | 'agent')}>
+                        <option value="source">忠实原文（推荐）</option>
+                        <option value="agent">Agent 智能提炼</option>
+                      </select>
+                    </label>
+                    {publishingContentMode === 'agent' && <label>提炼模板
+                      <select value={publishingPromptTemplateId} onChange={(event) => setPublishingPromptTemplateId(event.target.value)}>
+                        {(publishingState.enhancementTemplates?.[publishingTemplateId] || []).map((template) => <option key={template.id} value={template.id}>{template.name}</option>)}
+                      </select>
+                    </label>}
+                  </div>
+                  {publishingContentMode === 'agent' && <button type="button" className="secondary" onClick={generateAgentPublishingDraft} disabled={publishingEnhancing}>
+                    <Sparkles size={17} />{publishingEnhancing ? '正在智能提炼…' : '生成 Agent 草稿'}
+                  </button>}
+                  <small>Agent 采用证据优先摘编：展示文字和依据都必须逐字命中原文；不合格条目会先被剔除，安全内容不足时才整体回退。</small>
+                  {publishingContentMode === 'agent' && <div className="publishing-visual-legend" aria-label="智能提炼视觉语义">
+                    {(['metrics', 'timeline', 'strength', 'attention', 'action'] as const).map((kind) => <span data-kind={kind} key={kind}>{publicationSectionKindLabel(kind)}</span>)}
+                  </div>}
+                </div>
+                <div className="publishing-options">
+                  <label>输出格式
+                    <select value={publishingFormat} onChange={(event) => setPublishingFormat(event.target.value as PublishingFormat)}>
+                      {(publishingState.templates?.find((item) => item.id === publishingTemplateId)?.formats || ['pdf']).map((format) => (
+                        <option key={format} value={format}>{format === 'pdf' ? 'PDF 报告' : format === 'png' ? 'PNG 图片' : 'Markdown 原稿'}</option>
+                      ))}
+                    </select>
+                  </label>
+                  <label>输出色彩
+                    <select value={publishingColorMode} onChange={(event) => setPublishingColorMode(event.target.value as 'color' | 'monochrome')}>
+                      <option value="color">彩色</option><option value="monochrome">黑白打印</option>
+                    </select>
+                  </label>
+                </div>
+                <button className="primary publishing-generate" onClick={generateEducationPublication} disabled={publishingBusy || !activePublishingDraft}>
+                  <Sparkles size={18} />{publishingBusy ? '正在生成…' : '生成并打开位置'}
+                </button>
+                {publishingMessage && <div className="notice muted">{publishingMessage}</div>}
+              </div>
+              <aside className={publishingColorMode === 'monochrome' ? 'publishing-preview monochrome' : 'publishing-preview'}>
+                <div className="publishing-preview-toolbar">
+                  <span>{publishingEditing ? '编辑出版草稿' : '输出内容预览'}</span>
+                  <div className="publishing-preview-tabs">
+                    <button type="button" className={!publishingEditing ? 'active' : ''} onClick={() => setPublishingEditing(false)}>预览</button>
+                    <button type="button" className={publishingEditing ? 'active' : ''} onClick={() => setPublishingEditing(true)}>编辑</button>
+                  </div>
+                </div>
+                {!activePublishingDraft && <div className="empty-state">正在准备出版草稿…</div>}
+                {activePublishingDraft && publishingEditing && (
+                  <div className="publishing-editor">
+                    <label>标题<input value={activePublishingDraft.title} onChange={(event) => updatePublishingDraft((draft) => ({ ...draft, title: event.target.value }))} /></label>
+                    <label>副标题<input value={activePublishingDraft.subtitle} onChange={(event) => updatePublishingDraft((draft) => ({ ...draft, subtitle: event.target.value }))} /></label>
+                    {activePublishingDraft.mode === 'document' ? (
+                      <label>报告正文<textarea className="publishing-document-editor" value={activePublishingDraft.markdown} onChange={(event) => updatePublishingDraft((draft) => ({ ...draft, markdown: event.target.value }))} /></label>
+                    ) : (
+                      <div className="publishing-section-editors">
+                        {activePublishingDraft.sections.map((section) => (
+                          <section key={section.id}>
+                            <input className="publishing-section-label" value={section.label} aria-label="分区标题" onChange={(event) => updatePublishingDraft((draft) => ({ ...draft, sections: draft.sections.map((item) => item.id === section.id ? { ...item, label: event.target.value } : item) }))} />
+                            {section.items.map((item) => (
+                              <div className="publishing-item-editor" key={item.id}>
+                                <textarea value={item.text} aria-label={`${section.label}内容`} onChange={(event) => updatePublishingDraftItem(section.id, item.id, event.target.value)} />
+                                <button type="button" className="icon-button" onClick={() => deletePublishingDraftItem(section.id, item.id)} aria-label="删除这条内容"><Trash2 size={16} /></button>
+                              </div>
+                            ))}
+                            <button type="button" className="secondary compact" onClick={() => addPublishingDraftItem(section.id)}>添加一条</button>
+                          </section>
+                        ))}
+                      </div>
+                    )}
+                    <div className="publishing-editor-actions"><button type="button" className="secondary" onClick={resetPublishingDraft}><RefreshCw size={16} />恢复自动草稿</button><small>修改只作用于本次输出，不会改动原始报告。</small></div>
+                  </div>
+                )}
+                {activePublishingDraft && !publishingEditing && (
+                  <div className="publishing-draft-preview">
+                    <h3>{activePublishingDraft.title}</h3>
+                    <p>{activePublishingDraft.subtitle}</p>
+                    {activePublishingDraft.mode === 'document' ? (
+                      <div className="publishing-markdown-preview"><MarkdownView content={publicationDraftMarkdown(activePublishingDraft)} /></div>
+                    ) : (
+                      <div className="publishing-structured-preview">
+                        {activePublishingDraft.sections.map((section) => (
+                          <article data-kind={section.kind || 'narrative'} key={section.id}>
+                            <header><span>{publicationSectionKindLabel(section.kind)}</span><h4>{section.label}</h4></header>
+                            <ul>{section.items.map((item) => <li className={item.emphasis === 'highlight' ? 'highlight' : ''} key={item.id}>{item.text}</li>)}</ul>
+                          </article>
+                        ))}
+                      </div>
+                    )}
+                    {activePublishingDraft.mode !== 'document' && <small className={activePublishingDraft.validation?.valid ? 'publishing-grounding ok' : 'publishing-grounding'}>自动要点来源匹配：{activePublishingDraft.validation?.grounded || 0}/{activePublishingDraft.validation?.total || 0}{activePublishingDraft.edited ? ' · 已含人工编辑' : ''}</small>}
+                  </div>
+                )}
+              </aside>
+            </div>
+            <details className="publishing-records">
+              <summary>最近生成记录（{publishingState.records?.length || 0}）</summary>
+              <div className="publishing-record-list">
+                {(publishingState.records || []).map((record) => (
+                  <article key={record.id}>
+                    <div><strong>{record.sourceTitle} · {record.templateName}</strong><small>{record.format.toUpperCase()} · {new Date(record.generatedAt).toLocaleString('zh-CN')}</small>{record.sourceChanged && <em>来源已更新，建议重新生成</em>}</div>
+                    <div className="actions"><button className="secondary compact" onClick={() => openPublicationRecord(record.id)}>打开</button><button className="secondary compact" onClick={() => regeneratePublicationRecord(record.id)}>重新生成</button><button className="danger compact" onClick={() => deletePublicationRecord(record.id)}>删除</button></div>
+                  </article>
+                ))}
+                {!publishingState.records?.length && <div className="empty-state">暂无生成记录。</div>}
+              </div>
+            </details>
+          </section>
+        </div>
+      )}
       {clipboardNotice && (
         <aside className={clipboardNotice.ok ? 'clipboard-toast success' : 'clipboard-toast error'} role={clipboardNotice.ok ? 'status' : 'alert'} aria-live="polite">
           <div className="clipboard-toast-icon">{clipboardNotice.ok ? <CheckCircle2 size={21} /> : <AlertTriangle size={21} />}</div>

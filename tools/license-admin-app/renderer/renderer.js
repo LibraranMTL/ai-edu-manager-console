@@ -4,6 +4,7 @@ const state = {
   records: [],
   query: '',
   latestCode: '',
+  keyStore: { active: {}, keys: [] },
 };
 
 function parseResult(raw) {
@@ -12,6 +13,48 @@ function parseResult(raw) {
   } catch {
     return { ok: false, message: raw || '结果解析失败。' };
   }
+}
+
+function showKeyMessage(text, danger = false) {
+  const el = $('keyMessage');
+  el.hidden = !text;
+  el.textContent = text || '';
+  el.style.color = danger ? '#9f1239' : '#0f5132';
+  el.style.background = danger ? '#fff1f2' : '#ecfdf5';
+}
+
+function renderKeyStore() {
+  const activeId = state.keyStore?.active?.license_signing || '';
+  const keys = (state.keyStore?.keys || []).filter((item) => item.purpose === 'license_signing');
+  const badge = $('keyStatusBadge');
+  badge.textContent = activeId ? `已配置 · ${activeId}` : '尚未初始化';
+  badge.classList.toggle('ready', Boolean(activeId));
+  $('keyList').innerHTML = keys.length ? keys.map((item) => `
+    <article class="key-item">
+      <div><strong>${escapeHtml(item.keyId)}</strong><div class="muted">${escapeHtml(item.status === 'revoked' ? '已撤销' : item.keyId === activeId ? '当前签发密钥' : '可用历史密钥')}</div></div>
+      <code>SHA-256 ${escapeHtml(item.fingerprint)}</code>
+      <div class="row-actions">
+        ${item.status !== 'revoked' && item.keyId !== activeId ? `<button class="secondary" data-key-action="select" data-key-id="${escapeHtml(item.keyId)}">设为当前</button>` : ''}
+        ${item.status !== 'revoked' ? `<button class="danger" data-key-action="revoke" data-key-id="${escapeHtml(item.keyId)}">泄露/撤销</button>` : ''}
+      </div>
+    </article>
+  `).join('') : '<span class="muted">尚未创建平台 License 密钥。普通版本仍可使用旧授权流程，但平台版不能签发。</span>';
+}
+
+async function refreshKeyStatus(message = '') {
+  const result = parseResult(await bridge.keyStatus());
+  if (!result.ok) return showKeyMessage(result.message || '读取密钥状态失败。', true);
+  state.keyStore = result.keyStore || { active: {}, keys: [] };
+  renderKeyStore();
+  if (message) showKeyMessage(message);
+}
+
+async function runKeyAction(action, ...args) {
+  const result = parseResult(await action(...args));
+  if (!result.ok) return showKeyMessage(result.message || '密钥操作失败。', true);
+  if (result.keyStore) state.keyStore = result.keyStore;
+  renderKeyStore();
+  showKeyMessage(result.message || '密钥操作完成。');
 }
 
 function $(id) {
@@ -118,6 +161,8 @@ function formInput() {
     studentLimit: $('studentLimit').value,
     deviceLimit: $('deviceLimit').value,
     expiresAt: permanent ? 'PERM' : $('expiresAt').value,
+    devicePolicy: $('devicePolicy').value,
+    deviceId: $('deviceId').value,
     note: $('note').value,
   };
 }
@@ -127,6 +172,10 @@ function issueLicense(event) {
   const input = formInput();
   if (!input.customerName.trim()) {
     showMessage('请填写客户名称。', true);
+    return;
+  }
+  if (input.devicePolicy === 'required_binding' && !input.deviceId.trim()) {
+    showMessage('必须绑定当前主机时，请填写目标稳定主机 ID。', true);
     return;
   }
   const result = parseResult(bridge.issue(input));
@@ -203,6 +252,26 @@ function init() {
     $('expiresAt').disabled = event.target.checked;
   });
   $('expiresAt').disabled = $('permanent').checked;
+  $('createPlatformKeyBtn').addEventListener('click', () => runKeyAction(bridge.createPlatformKey, $('newKeyId').value));
+  $('importPlatformKeyBtn').addEventListener('click', () => runKeyAction(bridge.importPlatformKey, $('newKeyId').value));
+  $('exportTrustBundleBtn').addEventListener('click', async () => {
+    const result = parseResult(await bridge.exportTrustBundle());
+    showKeyMessage(result.ok ? result.message : result.message || '导出可信公钥包失败。', !result.ok);
+  });
+  const backupPassword = () => $('keyBackupPassword').value;
+  $('createKeyBackupBtn').addEventListener('click', () => runKeyAction(bridge.createKeyBackup, backupPassword()));
+  $('restoreKeyBackupBtn').addEventListener('click', () => runKeyAction(bridge.restoreKeyBackup, backupPassword(), false));
+  $('testKeyBackupBtn').addEventListener('click', () => runKeyAction(bridge.restoreKeyBackup, backupPassword(), true));
+  $('keyList').addEventListener('click', async (event) => {
+    const target = event.target.closest('button');
+    if (!target) return;
+    const keyId = target.dataset.keyId || '';
+    if (target.dataset.keyAction === 'select') await runKeyAction(bridge.selectPlatformKey, keyId);
+    if (target.dataset.keyAction === 'revoke') {
+      const reason = window.prompt('请输入撤销或疑似泄露原因。撤销后该密钥不能再签发新 License。');
+      if (reason) await runKeyAction(bridge.revokePlatformKey, keyId, reason);
+    }
+  });
 
   $('recordsBody').addEventListener('click', (event) => {
     const target = event.target.closest('button');
@@ -218,6 +287,7 @@ function init() {
   });
 
   refreshRecords();
+  refreshKeyStatus();
 }
 
 init();

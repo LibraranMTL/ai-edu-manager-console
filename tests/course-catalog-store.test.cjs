@@ -27,7 +27,7 @@ test('invalid offline import preserves the last-good catalog', () => {
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'course-catalog-rollback-'));
   const store = createCourseCatalogStore({ userDataDir: temp, appVersion: '0.14.9', resourceRoots: [path.join(root, 'public')] });
   const lastVersion = store.state().catalog.catalogVersion;
-  const invalid = { ...store.state().catalog, signature: 'invalid' };
+  const invalid = { ...store.state().catalog, checksum: '0'.repeat(64) };
   const result = store.importPackage(invalid);
   assert.equal(result.ok, false);
   assert.equal(result.rolledBack, true);
@@ -65,6 +65,13 @@ test('tenant custom courses merge beside the signed catalog and use scoped local
   assert.match(state.catalog.catalogVersion, /\+custom\./);
   assert.equal(store.assetPathByFilename(filename), path.join(store.customAssetsDir, filename));
   assert.equal(store.coursesForStudent({ id: 'student-a', grade: '3' }).some((item) => item.courseId === 'tenant:custom-example-course'), true);
+  store.savePolicy({ courseRules: { 'tenant:custom-example-course': { enabled: true, order: 3, studentIds: ['student-a'], gradeRange: ['3'] } } });
+  const removed = store.removeCustomCourse('tenant:custom-example-course');
+  assert.equal(removed.course.courseId, 'tenant:custom-example-course');
+  assert.equal(store.state().customCatalog.courses.length, 0);
+  assert.equal(store.state().catalog.courses.length, 2);
+  assert.equal(store.state().policy.courseRules['tenant:custom-example-course'], undefined);
+  assert.equal(fs.existsSync(path.join(store.customAssetsDir, filename)), true, 'deletion keeps the cover asset available for audit and recovery');
 });
 
 test('course browser preferences enforce renderer isolation without preload or Node', () => {

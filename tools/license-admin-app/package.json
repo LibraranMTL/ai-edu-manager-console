@@ -1,6 +1,6 @@
 {
   "name": "ai-edu-license-admin",
-  "version": "0.1.0",
+  "version": "0.3.1",
   "private": true,
   "main": "main.cjs",
   "description": "AI教育管家内部授权码管理工具",
@@ -18,6 +18,12 @@
       "license-core.cjs",
       "renderer/**/*",
       "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "../../electron/platform-key-manager.cjs",
+        "to": "platform-key-manager.cjs"
+      }
     ],
     "win": {
       "artifactName": "AI-edu-license-admin-Windows-${version}.${ext}",

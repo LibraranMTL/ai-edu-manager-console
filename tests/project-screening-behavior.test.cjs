@@ -42,7 +42,7 @@ test('screening preview reports unmatched and duplicate recommendations explicit
   assert.match(preview.unmatched[1].reason, /未匹配/);
 });
 
-test('screening matches relocated workspace paths and compatible Chinese fields without trusting old ids', () => {
+test('screening matches relocated workspace paths and keeps AI evaluation out of the analyzed terminal state', () => {
   const project = {
     id: 'project-relocated',
     workspacePath: 'E:/同步项目',
@@ -62,8 +62,24 @@ test('screening matches relocated workspace paths and compatible Chinese fields 
   }));
   assert.equal(preview.matchedCount, 1);
   assert.equal(preview.changes[0].matchBasis, 'path');
-  assert.equal(preview.changes[0].toStatus, 'analyzed');
+  assert.equal(preview.changes[0].toStatus, 'screened');
   assert.equal(preview.changes[0].aiReason, '已经完成项目分析');
+});
+
+test('screening cannot overwrite promoted or analyzed terminal items', () => {
+  const preview = buildProjectScreeningPreview({
+    id: 'project-terminal',
+    stagingItems: [
+      { id: 'promoted', filename: '已晋升.pdf', path: 'D:/已晋升.pdf', status: 'promoted' },
+      { id: 'analyzed', filename: '已分析.pdf', path: 'D:/已分析.pdf', status: 'analyzed' },
+    ],
+  }, JSON.stringify({ recommendations: [
+    { id: 'promoted', status: 'discarded' },
+    { id: 'analyzed', status: 'selected' },
+  ] }));
+  assert.equal(preview.matchedCount, 0);
+  assert.equal(preview.unmatchedCount, 2);
+  assert.ok(preview.unmatched.every((item) => /不能覆盖其终态/.test(item.reason)));
 });
 
 test('screening accepts recommendation objects keyed by staging id and refuses ambiguous filenames', () => {

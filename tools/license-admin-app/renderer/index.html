@@ -20,6 +20,38 @@
         </div>
       </section>
 
+      <section class="panel key-panel" aria-labelledby="keyPanelTitle">
+        <div class="panel-title">
+          <div>
+            <p class="eyebrow">Platform trust</p>
+            <h2 id="keyPanelTitle">平台 License 密钥管理</h2>
+          </div>
+          <span id="keyStatusBadge" class="status-badge">未检查</span>
+        </div>
+        <p class="muted">私钥只由主进程保存在本机受控目录中，界面仅显示 keyId 和 SHA-256 公钥指纹。平台版发码必须先初始化密钥。</p>
+        <div class="key-grid">
+          <label>新密钥 keyId<input id="newKeyId" value="license-platform-2026-01" autocomplete="off" /></label>
+          <div class="key-actions">
+            <button id="createPlatformKeyBtn" class="primary">创建 RSA 3072 密钥对</button>
+            <button id="importPlatformKeyBtn" class="secondary">使用已有私钥</button>
+            <button id="exportTrustBundleBtn" class="secondary">导出可信公钥包</button>
+          </div>
+        </div>
+        <div id="keyList" class="key-list"><span class="muted">正在读取密钥状态…</span></div>
+        <details>
+          <summary>加密备份、恢复演练和泄露处置</summary>
+          <div class="backup-grid">
+            <label>备份恢复密码<input id="keyBackupPassword" type="password" autocomplete="new-password" placeholder="至少 12 个字符；不得与 U 盘一起保存" /></label>
+            <div class="key-actions">
+              <button id="createKeyBackupBtn" class="secondary">创建加密备份</button>
+              <button id="restoreKeyBackupBtn" class="secondary">恢复密钥</button>
+              <button id="testKeyBackupBtn" class="ghost">执行恢复演练</button>
+            </div>
+          </div>
+        </details>
+        <div id="keyMessage" class="message" role="status" aria-live="polite" hidden></div>
+      </section>
+
       <section class="layout">
         <form id="issueForm" class="panel">
           <div class="panel-title">
@@ -52,6 +84,7 @@
                 <option value="FAMILY">家庭版</option>
                 <option value="PRO">专业版</option>
                 <option value="ORG">机构版</option>
+                <option value="PLATFORM">平台版（内部授权）</option>
                 <option value="TRIAL">试用版</option>
               </select>
             </label>
@@ -75,6 +108,20 @@
             <label class="check-row">
               <input id="permanent" type="checkbox" checked />
               永久授权
+            </label>
+          </div>
+
+          <div class="grid-2 device-binding-grid">
+            <label>
+              设备绑定策略
+              <select id="devicePolicy">
+                <option value="optional_binding">可选绑定</option>
+                <option value="required_binding">必须绑定当前主机</option>
+              </select>
+            </label>
+            <label>
+              目标稳定主机 ID
+              <input id="deviceId" autocomplete="off" placeholder="required_binding 时必须填写 host-..." />
             </label>
           </div>
 

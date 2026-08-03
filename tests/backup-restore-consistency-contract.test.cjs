@@ -18,7 +18,7 @@ test('Windows student index is restored into the current renderer immediately', 
   assert.match(mainProcess, /function getStudentsIndex\(\)/);
   assert.match(preload, /getStudents\(\)/);
   assert.match(renderer, /bridge\(\)\?\.getStudents\?\.\(\)/);
-  assert.match(mainProcess, /studentRecords: Array\.isArray\(parsed\.students\)/);
+  assert.match(mainProcess, /studentRecords: restoredStudentRecords/);
   assert.match(renderer, /normalizeStudents\(result\.studentRecords\)/);
   assert.match(renderer, /refreshAssets\(\)/);
   assert.match(renderer, /refreshProjects\(\)/);
@@ -29,4 +29,14 @@ test('host backups receive complete renderer student records', () => {
   assert.match(mainProcess, /function backupHostData\(studentsJson\)/);
   assert.match(mainProcess, /backupStudents = parsedStudents/);
   assert.match(mainProcess, /return \{\s*\.\.\.student,/);
+});
+
+test('host restore rebases managed paths onto the current machine storage root', () => {
+  assert.match(mainProcess, /parsed\.storage\?\.studentBaseDir/);
+  assert.match(mainProcess, /remapStorageTree\(/);
+  assert.match(mainProcess, /const restoredSettings = remapValue\(parsed\.settings\)/);
+  assert.match(mainProcess, /studentBaseDir: currentStudentBaseDir/);
+  assert.match(mainProcess, /studentRecords: restoredStudentRecords/);
+  assert.match(mainProcess, /pathRemap:/);
+  assert.match(renderer, /result\.message \|\| `已从备份恢复：\$\{result\.path\}`/);
 });

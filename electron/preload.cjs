@@ -28,6 +28,11 @@ contextBridge.exposeInMainWorld('AndroidBridge', {
   getCaptureCenterState() {
     return ipcRenderer.sendSync('bridge:getCaptureCenterState');
   },
+  onCaptureChanged(callback) {
+    const listener = (_event, payload) => callback(payload);
+    ipcRenderer.on('capture:changed', listener);
+    return () => ipcRenderer.removeListener('capture:changed', listener);
+  },
   listCaptureSources() {
     return ipcRenderer.invoke('bridge:listCaptureSources');
   },
@@ -56,7 +61,7 @@ contextBridge.exposeInMainWorld('AndroidBridge', {
     return ipcRenderer.sendSync('bridge:openCaptureInbox', sessionId);
   },
   getAssetIndex() {
-    return ipcRenderer.sendSync('bridge:getAssetIndex');
+    return ipcRenderer.invoke('bridge:getAssetIndex');
   },
   rebuildAssetIndex() {
     return ipcRenderer.invoke('bridge:rebuildAssetIndex');
@@ -77,7 +82,7 @@ contextBridge.exposeInMainWorld('AndroidBridge', {
     return ipcRenderer.sendSync('bridge:generateKnowledgeArchitectureReport');
   },
   getProjects() {
-    return ipcRenderer.sendSync('bridge:getProjects');
+    return ipcRenderer.invoke('bridge:getProjects');
   },
   createProject(optionsJson) {
     return ipcRenderer.sendSync('bridge:createProject', optionsJson);
@@ -360,6 +365,15 @@ contextBridge.exposeInMainWorld('AndroidBridge', {
   activateLicense(code) {
     return ipcRenderer.sendSync('bridge:activateLicense', code);
   },
+  importLicenseFile() {
+    return ipcRenderer.sendSync('bridge:importLicenseFile');
+  },
+  getLicenseTrustStatus() {
+    return ipcRenderer.sendSync('bridge:getLicenseTrustStatus');
+  },
+  importTrustedLicenseIssuerBundle() {
+    return ipcRenderer.sendSync('bridge:importTrustedLicenseIssuerBundle');
+  },
   deactivateLicense() {
     return ipcRenderer.sendSync('bridge:deactivateLicense');
   },
@@ -407,6 +421,27 @@ contextBridge.exposeInMainWorld('AndroidBridge', {
   },
   exportLearningReport(studentId, reportId, format) {
     return ipcRenderer.invoke('bridge:exportLearningReport', studentId, reportId, format);
+  },
+  getEducationPublishingState(studentId, sourceType, sourceId) {
+    return ipcRenderer.sendSync('bridge:getEducationPublishingState', studentId, sourceType, sourceId);
+  },
+  getEducationPublicationEnhancementState(studentId, optionsJson) {
+    return ipcRenderer.sendSync('bridge:getEducationPublicationEnhancementState', studentId, optionsJson);
+  },
+  startEducationPublicationEnhancement(studentId, optionsJson) {
+    return ipcRenderer.invoke('bridge:startEducationPublicationEnhancement', studentId, optionsJson);
+  },
+  exportEducationPublication(studentId, optionsJson) {
+    return ipcRenderer.invoke('bridge:exportEducationPublication', studentId, optionsJson);
+  },
+  openEducationPublication(studentId, publicationId) {
+    return ipcRenderer.sendSync('bridge:openEducationPublication', studentId, publicationId);
+  },
+  deleteEducationPublication(studentId, publicationId) {
+    return ipcRenderer.sendSync('bridge:deleteEducationPublication', studentId, publicationId);
+  },
+  regenerateEducationPublication(studentId, publicationId) {
+    return ipcRenderer.invoke('bridge:regenerateEducationPublication', studentId, publicationId);
   },
   ensureLearningReports(studentId) {
     return ipcRenderer.sendSync('bridge:ensureLearningReports', studentId);
@@ -714,6 +749,9 @@ contextBridge.exposeInMainWorld('AndroidBridge', {
   migrateStudentWorkspace(studentId, newName) {
     return ipcRenderer.sendSync('bridge:migrateStudentWorkspace', studentId, newName);
   },
+  rebindAdoptedStudentWorkspace(studentId) {
+    return ipcRenderer.sendSync('bridge:rebindAdoptedStudentWorkspace', studentId);
+  },
   renameHostDevice(deviceId, name) {
     return ipcRenderer.sendSync('bridge:renameHostDevice', deviceId, name);
   },
@@ -750,10 +788,46 @@ contextBridge.exposeInMainWorld('AndroidBridge', {
   importCustomCourseExcel() {
     return ipcRenderer.invoke('bridge:importCustomCourseExcel');
   },
+  selectCustomCourseImage() {
+    return ipcRenderer.invoke('bridge:selectCustomCourseImage');
+  },
+  saveDirectCustomCourse(inputJson) {
+    return ipcRenderer.invoke('bridge:saveDirectCustomCourse', inputJson);
+  },
+  deleteCustomCourse(courseId) {
+    return ipcRenderer.sendSync('bridge:deleteCustomCourse', courseId);
+  },
+  selectPlatformCourseImage() {
+    return ipcRenderer.invoke('bridge:selectPlatformCourseImage');
+  },
+  savePlatformCourseDraft(inputJson) {
+    return ipcRenderer.invoke('bridge:savePlatformCourseDraft', inputJson);
+  },
+  removePlatformCourseDraft(courseId) {
+    return ipcRenderer.sendSync('bridge:removePlatformCourseDraft', courseId);
+  },
+  queuePlatformCourseDeletion(courseId) {
+    return ipcRenderer.sendSync('bridge:queuePlatformCourseDeletion', courseId);
+  },
+  cancelPlatformCourseDeletion(courseId) {
+    return ipcRenderer.sendSync('bridge:cancelPlatformCourseDeletion', courseId);
+  },
+  publishPlatformCourseCatalog(releaseNotes) {
+    return ipcRenderer.sendSync('bridge:publishPlatformCourseCatalog', releaseNotes);
+  },
+  rollbackPlatformCourseCatalog() {
+    return ipcRenderer.sendSync('bridge:rollbackPlatformCourseCatalog');
+  },
   openCourseView(courseId) {
     return ipcRenderer.sendSync('bridge:openCourseView', courseId);
   },
   closeCourseView() {
     return ipcRenderer.sendSync('bridge:closeCourseView');
+  },
+  setCourseCaptureSetupVisible(visible) {
+    return ipcRenderer.sendSync('bridge:setCourseCaptureSetupVisible', visible);
+  },
+  setCourseViewLayout(layoutJson) {
+    return ipcRenderer.sendSync('bridge:setCourseViewLayout', layoutJson);
   },
 });

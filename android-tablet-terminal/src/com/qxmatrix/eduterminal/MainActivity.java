@@ -112,8 +112,8 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
     static final int REQUEST_IMPORT_CONNECTION_BACKUP = 8109;
     static final int REQUEST_CAPTURE_STUDENT_QR = 8110;
     static final int REQUEST_AUTO_DELIVERY_FOLDER = 8111;
-    static final String VERSION_NAME = "0.6.9";
-    static final int VERSION_CODE = 79;
+    static final String VERSION_NAME = "0.6.10";
+    static final int VERSION_CODE = 80;
     static final String CONNECTION_BACKUP_KIND = "ai-edu-manager-tablet-connection-backup";
     static final int CONNECTION_BACKUP_VERSION = 1;
     static final String UPDATE_MANIFEST_URL = "https://www.greatbg.com/download/edu-manager-version.json";
@@ -1099,7 +1099,7 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
         try {
             Uri uri = Uri.parse(url == null ? "" : url.trim());
             String host = uri.getHost();
-            return "https".equalsIgnoreCase(uri.getScheme())
+            return ("https".equalsIgnoreCase(uri.getScheme()) || "http".equalsIgnoreCase(uri.getScheme()))
                 && host != null
                 && uri.getUserInfo() == null
                 && activeCourseAllowedHosts.contains(host.toLowerCase(Locale.US));
@@ -5278,7 +5278,7 @@ class Course {
             Uri uri = Uri.parse(url);
             String host = uri.getHost();
             return id.length() > 0
-                && "https".equalsIgnoreCase(uri.getScheme())
+                && ("https".equalsIgnoreCase(uri.getScheme()) || "http".equalsIgnoreCase(uri.getScheme()))
                 && host != null
                 && uri.getUserInfo() == null
                 && allowedHosts.contains(host.toLowerCase(Locale.US));

@@ -51,7 +51,7 @@ function normalizeProjectScreeningStatus(value) {
   if (['promote', 'promotion', 'promoted', '晋升', '建议晋升', '正式资产'].includes(text)) return 'selected';
   if (['select', 'selected', 'analysis', 'analyze', '分析', '选入分析', '采用'].includes(text)) return 'selected';
   if (['screen', 'screened', '初筛', '已初筛', '候选'].includes(text)) return 'screened';
-  if (['analyzed', '分析完成', '已分析'].includes(text)) return 'analyzed';
+  if (['analyzed', '分析完成', '已分析'].includes(text)) return 'screened';
   if (['discard', 'discarded', 'skip', 'ignore', '丢弃', '跳过', '忽略', '低价值'].includes(text)) return 'discarded';
   if (['collect', 'collected', '收集', '已收集'].includes(text)) return 'collected';
   return '';
@@ -177,6 +177,10 @@ function buildProjectScreeningPreview(project, rawText) {
     }
     if (!item) {
       unmatched.push({ index, id: idValue || '', filename: filenameValue || '', path: pathValue || '', reason: '未匹配当前项目暂存资料，或文件名存在歧义。' });
+      return;
+    }
+    if (['promoted', 'analyzed'].includes(String(item.status))) {
+      unmatched.push({ index, id: idValue || '', filename: filenameValue || item.filename || '', reason: '资料已经晋升或完成分析，AI初筛不能覆盖其终态。' });
       return;
     }
     if (matchedIds.has(String(item.id))) {

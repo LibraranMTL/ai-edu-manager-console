@@ -102,6 +102,19 @@ button {
   align-items: start;
 }
 
+.key-panel { gap: 14px; }
+.key-grid, .backup-grid { display: grid; grid-template-columns: minmax(260px, 0.7fr) minmax(0, 1.3fr); gap: 16px; align-items: end; }
+.key-actions { display: flex; flex-wrap: wrap; gap: 10px; }
+.key-list { display: grid; gap: 10px; }
+.key-item { display: grid; grid-template-columns: minmax(180px, 0.8fr) minmax(260px, 1.6fr) auto; gap: 12px; align-items: center; padding: 12px 14px; border: 1px solid #d8e5e2; border-radius: 14px; background: #fbfffe; }
+.key-item code { overflow-wrap: anywhere; color: #0f766e; }
+.status-badge { padding: 7px 11px; color: #9f1239; border-radius: 999px; background: #fff1f2; font-size: 12px; font-weight: 900; }
+.status-badge.ready { color: #0f5132; background: #ecfdf5; }
+details { border: 1px dashed #c9dad6; border-radius: 14px; padding: 12px 14px; }
+summary { cursor: pointer; color: #314340; font-weight: 900; }
+details[open] summary { margin-bottom: 14px; }
+.device-binding-grid { grid-template-columns: 1fr 1.4fr; }
+
 .panel {
   display: grid;
   gap: 16px;

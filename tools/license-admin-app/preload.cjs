@@ -32,4 +32,12 @@ contextBridge.exposeInMainWorld('licenseAdmin', {
   openRecordsFolder() {
     return send('license:openRecordsFolder');
   },
+  keyStatus() { return ipcRenderer.invoke('license:keyStatus'); },
+  createPlatformKey(keyId) { return ipcRenderer.invoke('license:createPlatformKey', keyId); },
+  importPlatformKey(keyId) { return ipcRenderer.invoke('license:importPlatformKey', keyId); },
+  selectPlatformKey(keyId) { return ipcRenderer.invoke('license:selectPlatformKey', keyId); },
+  exportTrustBundle() { return ipcRenderer.invoke('license:exportTrustBundle'); },
+  createKeyBackup(password) { return ipcRenderer.invoke('license:createKeyBackup', password); },
+  restoreKeyBackup(password, drill) { return ipcRenderer.invoke('license:restoreKeyBackup', password, drill); },
+  revokePlatformKey(keyId, reason) { return ipcRenderer.invoke('license:revokePlatformKey', keyId, reason); },
 });

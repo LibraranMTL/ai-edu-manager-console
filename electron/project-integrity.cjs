@@ -112,6 +112,22 @@ function nextStagingReviewState(item, decision) {
   return { ok: true, status: current.status === 'discarded' ? 'collected' : String(current.status || 'collected') };
 }
 
+function repairStagingLifecycle(item) {
+  const current = item && typeof item === 'object' ? item : {};
+  const status = String(current.status || 'collected');
+  const analyzedWithoutPromotion = status === 'analyzed'
+    && String(current.reviewStatus || 'pending') !== 'accepted'
+    && !String(current.promotedAssetId || '')
+    && !String(current.promotedAt || '')
+    && !String(current.analyzedAt || '');
+  if (!analyzedWithoutPromotion) return { ...current };
+  return {
+    ...current,
+    status: 'screened',
+    lifecycleRepairReason: String(current.lifecycleRepairReason || 'AI初筛不能直接进入已分析终态，已恢复为待人工确认。'),
+  };
+}
+
 function nextKnowledgeReviewState(currentStatus, nextStatus) {
   const transitions = {
     ai_generated: new Set(['pending_review', 'verified', 'rejected', 'invalid']),
@@ -153,6 +169,7 @@ module.exports = {
   nextKnowledgeReviewState,
   nextStagingReviewState,
   projectCompletionIssues,
+  repairStagingLifecycle,
   reconcileDigestControlState,
   normalizeProjectDigestReceipt,
   validateDigestReceipt,

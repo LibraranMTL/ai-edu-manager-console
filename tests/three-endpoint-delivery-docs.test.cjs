@@ -29,6 +29,17 @@ test('download page presents the current three-endpoint product line', () => {
   assert.doesNotMatch(html, /iOS|即将开放/u);
 });
 
+test('download page publishes the Windows 0.15.9 formal acceptance checksums', () => {
+  const html = read(path.join('release', '网站文件', 'download.html'));
+
+  assert.match(html, /Windows 0\.15\.9 教育内容智能出版正式发布/u);
+  assert.match(html, /全量自动测试 640\/640/u);
+  assert.match(html, /B6ECD8F58B7296832F564F456893C362C8C4E13425645DE2E00293B48F65682B/u);
+  assert.match(html, /D157816B2C22B6E9C4BCE7230EF7E340C26BAC48228ACAC8A93A5BD2D2DEA28C/u);
+  assert.match(html, /发行者元数据为 Robogala/u);
+  assert.match(html, /尚未配置 Authenticode 公开代码签名/u);
+});
+
 test('download page links the current artifacts and canonical web manuals exist', () => {
   const download = read(path.join('release', '网站文件', 'download.html'));
   for (const artifact of [

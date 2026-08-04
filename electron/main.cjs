@@ -6856,6 +6856,13 @@ function createDeviceToken() {
   return `edt_${crypto.randomBytes(24).toString('hex')}`;
 }
 
+function normalizeTerminalDeviceRole(value, capabilities = []) {
+  const requested = String(value || '').trim().toLowerCase();
+  if (requested === 'teacher' || requested === 'teacher_terminal') return 'teacher';
+  if ((Array.isArray(capabilities) ? capabilities : []).map(String).includes('teacher-terminal-v1')) return 'teacher';
+  return 'student';
+}
+
 function publicDevice(device) {
   const records = readUploadRecords().filter((record) => String(record.deviceId || '') === String(device.id || ''));
   const lastSeenAt = device.lastSeenAt || '';
@@ -6865,6 +6872,7 @@ function publicDevice(device) {
     name: device.name || (device.platform === 'windows' ? 'Windows 学生终端' : 'Android 学生终端'),
     machineCode: device.machineCode || machineCode('tablet', device.id),
     platform: device.platform || 'android',
+    deviceRole: normalizeTerminalDeviceRole(device.deviceRole, device.capabilities),
     tokenPreview: device.tokenPreview || '',
     terminalMode: normalizeTerminalMode(device.terminalMode, 'shared'),
     boundStudentId: String(device.boundStudentId || ''),
@@ -21613,14 +21621,19 @@ function authContext(request) {
   const device = deviceByBearerToken(token);
   if (!device) return null;
   touchDevice(device.id, request);
+  const deviceRole = normalizeTerminalDeviceRole(device.deviceRole, device.capabilities);
+  const teacherStudentIds = deviceRole === 'teacher' ? readStudentsIndex().map((student) => String(student.id)) : [];
   return {
     type: 'device',
     deviceId: device.id,
-    deviceName: device.name || '学生终端',
+    deviceName: device.name || (deviceRole === 'teacher' ? '教师终端' : '学生终端'),
+    deviceRole,
     terminalMode: normalizeTerminalMode(device.terminalMode, 'shared'),
     boundStudentId: String(device.boundStudentId || ''),
-    allowedStudentIds: normalizeTerminalMode(device.terminalMode, 'shared') === 'personal' && device.boundStudentId ? [String(device.boundStudentId)] : [],
-    allowedAllStudents: false,
+    allowedStudentIds: deviceRole === 'teacher'
+      ? teacherStudentIds
+      : (normalizeTerminalMode(device.terminalMode, 'shared') === 'personal' && device.boundStudentId ? [String(device.boundStudentId)] : []),
+    allowedAllStudents: deviceRole === 'teacher',
   };
 }
 
@@ -21642,6 +21655,7 @@ function requireAuth(request, response) {
 function isStudentAllowed(request, studentId) {
   const auth = request.authContext;
   if (!auth || auth.type === 'admin') return true;
+  if (auth.type === 'device' && auth.deviceRole === 'teacher') return true;
   if (auth.type === 'student_session') return String(auth.studentId) === String(studentId);
   if (auth.type === 'device' && auth.terminalMode === 'shared') return false;
   return auth.allowedStudentIds.includes(String(studentId));
@@ -21703,6 +21717,31 @@ function terminalStudentRecord(student) {
     knowledgeAssetCount: progress.knowledgeAssetCount,
     newSinceLastDigestCount: progress.newSinceLastDigestCount,
     lastUploadAt: progress.lastUploadAt,
+  };
+}
+
+function teacherTerminalStudentRecord(student) {
+  const record = terminalStudentRecord(student);
+  return {
+    id: String(record.id || ''),
+    name: String(record.name || ''),
+    grade: String(record.grade || ''),
+    rawFileCount: Number(record.rawFileCount || 0),
+    archiveFileCount: Number(record.archiveFileCount || 0),
+    pendingDigestCount: Number(record.pendingDigestCount || 0),
+    submittedDigestCount: Number(record.submittedDigestCount || 0),
+    processedDigestCount: Number(record.processedDigestCount || 0),
+    lastDigestAt: String(record.lastDigestAt || ''),
+    digestStatus: String(record.digestStatus || 'idle'),
+    digestMessage: String(record.digestMessage || ''),
+    progress: record.progress || {},
+    submittedTodayCount: Number(record.submittedTodayCount || 0),
+    recentUploadCount7: Number(record.recentUploadCount7 || 0),
+    recentUploadTrend: Number(record.recentUploadTrend || 0),
+    activeDays30: Number(record.activeDays30 || 0),
+    knowledgeAssetCount: Number(record.knowledgeAssetCount || 0),
+    newSinceLastDigestCount: Number(record.newSinceLastDigestCount || 0),
+    lastUploadAt: String(record.lastUploadAt || ''),
   };
 }
 
@@ -21861,9 +21900,12 @@ async function handleDeviceMode(request, response) {
 
 function handleStudents(request, response) {
   if (!requireAuth(request, response)) return;
-  const students = readStudentsIndex().filter((student) => isStudentAllowed(request, student.id)).map(terminalStudentRecord);
   const auth = request.authContext;
-  const requiresStudentLogin = auth.type === 'device' && auth.terminalMode === 'shared';
+  const isTeacherTerminal = auth.type === 'device' && auth.deviceRole === 'teacher';
+  const students = readStudentsIndex()
+    .filter((student) => isStudentAllowed(request, student.id))
+    .map(isTeacherTerminal ? teacherTerminalStudentRecord : terminalStudentRecord);
+  const requiresStudentLogin = auth.type === 'device' && auth.terminalMode === 'shared' && !isTeacherTerminal;
   const requiresBinding = auth.type === 'device' && auth.terminalMode === 'personal' && !auth.boundStudentId;
   sendJson(response, 200, {
     ok: true,
@@ -21872,6 +21914,7 @@ function handleStudents(request, response) {
       type: auth.type,
       deviceId: auth.deviceId || '',
       deviceName: auth.deviceName || '',
+      deviceRole: auth.deviceRole || (auth.type === 'admin' ? 'admin' : 'student'),
       terminalMode: auth.terminalMode || '',
       requiresApproval: false,
       requiresStudentLogin,
@@ -21943,6 +21986,7 @@ function courseUploadAttribution(url, student) {
 
 function projectAllowed(request, project) {
   if (!request.authContext || request.authContext.type === 'admin') return true;
+  if (request.authContext.type === 'device' && request.authContext.deviceRole === 'teacher') return true;
   if (request.authContext.type === 'device' && request.authContext.terminalMode === 'shared') return false;
   const allowed = new Set(request.authContext.allowedStudentIds || []);
   return (project.studentIds || []).some((id) => allowed.has(String(id)));
@@ -22464,24 +22508,27 @@ function enrollPairedTablet(input = {}, request = null) {
   }
   const token = createDeviceToken();
   const now = new Date().toISOString();
+  const requestedCapabilities = Array.isArray(input.tabletCapabilities) ? input.tabletCapabilities.map(String) : [];
+  const deviceRole = normalizeTerminalDeviceRole(input.deviceRole, requestedCapabilities);
   const device = {
     ...(existing || {}),
     id: tabletId,
-    name: String(input.tabletName || existing?.name || (input.tabletPlatform === 'windows' ? 'Windows 学生终端' : 'Android 平板')).trim().slice(0, 80) || '学生终端',
+    name: String(input.tabletName || existing?.name || (deviceRole === 'teacher' ? 'Android 教师终端' : (input.tabletPlatform === 'windows' ? 'Windows 学生终端' : 'Android 平板'))).trim().slice(0, 80) || (deviceRole === 'teacher' ? '教师终端' : '学生终端'),
     machineCode: tabletCode,
     platform: String(input.tabletPlatform || existing?.platform || 'android').toLowerCase() === 'windows' ? 'windows' : 'android',
+    deviceRole,
     tokenHash: hashDeviceToken(token),
     tokenPreview: `${token.slice(0, 7)}...${token.slice(-6)}`,
     terminalMode: normalizeTerminalMode(existing?.terminalMode, 'shared'),
     boundStudentId: String(existing?.boundStudentId || ''),
     capabilities: Array.from(new Set([
       ...(Array.isArray(existing?.capabilities) ? existing.capabilities : []),
-      ...(Array.isArray(input.tabletCapabilities) ? input.tabletCapabilities.map(String) : []),
-      'student-session-v1',
+      ...requestedCapabilities,
+      ...(deviceRole === 'teacher' ? ['teacher-terminal-v1'] : ['student-session-v1']),
     ])),
     allowedStudentIds: normalizeTerminalMode(existing?.terminalMode, 'shared') === 'personal' && existing?.boundStudentId ? [String(existing.boundStudentId)] : [],
-    allowedAllStudents: normalizeTerminalMode(existing?.terminalMode, 'shared') === 'shared',
-    autoAuthorizeNewStudents: normalizeTerminalMode(existing?.terminalMode, 'shared') === 'shared',
+    allowedAllStudents: deviceRole === 'teacher' || normalizeTerminalMode(existing?.terminalMode, 'shared') === 'shared',
+    autoAuthorizeNewStudents: deviceRole === 'teacher' || normalizeTerminalMode(existing?.terminalMode, 'shared') === 'shared',
     revoked: false,
     createdAt: existing?.createdAt || now,
     enrolledAt: now,
@@ -22492,7 +22539,7 @@ function enrollPairedTablet(input = {}, request = null) {
   };
   writeDevices([...devices.filter((item) => String(item.id) !== tabletId), device]);
   appendHostTimeline({ type: 'device_pair_v2_accepted', title: 'Device connection accepted', detail: device.name, deviceId: tabletId });
-  return { ok: true, statusCode: 200, token, device, requiresApproval: false, message: '设备已连接。请选择个人终端或共享终端使用方式。' };
+  return { ok: true, statusCode: 200, token, device, requiresApproval: false, message: deviceRole === 'teacher' ? '教师终端已连接，可查看本主机学生并上传资料。' : '设备已连接。请选择个人终端或共享终端使用方式。' };
 }
 
 function savePairRequest(record) {
@@ -22770,14 +22817,17 @@ async function handlePairConfirm(request, response) {
       return;
     }
     const token = createDeviceToken();
+    const requestedCapabilities = Array.isArray(body.capabilities) ? body.capabilities.map(String) : [];
+    const deviceRole = normalizeTerminalDeviceRole(body.deviceRole, requestedCapabilities);
     const device = {
       id: deviceId,
-      name: String(body.deviceName || body.name || '平板设备').slice(0, 80),
+      name: String(body.deviceName || body.name || (deviceRole === 'teacher' ? 'Android 教师终端' : '平板设备')).slice(0, 80),
       tokenHash: hashDeviceToken(token),
       tokenPreview: `${token.slice(0, 7)}...${token.slice(-6)}`,
+      deviceRole,
       terminalMode: 'shared',
       boundStudentId: '',
-      capabilities: ['student-session-v1'],
+      capabilities: Array.from(new Set([...requestedCapabilities, ...(deviceRole === 'teacher' ? ['teacher-terminal-v1'] : ['student-session-v1'])])),
       allowedStudentIds: [],
       allowedAllStudents: true,
       autoAuthorizeNewStudents: true,
@@ -22796,7 +22846,7 @@ async function handlePairConfirm(request, response) {
       ok: true,
       token,
       requiresApproval: false,
-      message: '设备已登记，默认为共享终端；学生可扫码或输入个人 ID。',
+      message: deviceRole === 'teacher' ? '教师终端已登记，可直接读取本主机学生。' : '设备已登记，默认为共享终端；学生可扫码或输入个人 ID。',
       device: publicDevice(device),
       students: [],
     });
@@ -22822,14 +22872,17 @@ async function handleDeviceEnroll(request, response) {
       return;
     }
     const token = createDeviceToken();
+    const requestedCapabilities = Array.isArray(body.capabilities) ? body.capabilities.map(String) : [];
+    const deviceRole = normalizeTerminalDeviceRole(body.deviceRole, requestedCapabilities);
     const device = {
       id: deviceId,
-      name: String(body.deviceName || body.name || '平板设备').trim().slice(0, 80) || '平板设备',
+      name: String(body.deviceName || body.name || (deviceRole === 'teacher' ? 'Android 教师终端' : '平板设备')).trim().slice(0, 80) || (deviceRole === 'teacher' ? '教师终端' : '平板设备'),
       tokenHash: hashDeviceToken(token),
       tokenPreview: `${token.slice(0, 7)}...${token.slice(-6)}`,
+      deviceRole,
       terminalMode: 'shared',
       boundStudentId: '',
-      capabilities: ['student-session-v1'],
+      capabilities: Array.from(new Set([...requestedCapabilities, ...(deviceRole === 'teacher' ? ['teacher-terminal-v1'] : ['student-session-v1'])])),
       allowedStudentIds: [],
       allowedAllStudents: true,
       autoAuthorizeNewStudents: true,
@@ -22847,7 +22900,7 @@ async function handleDeviceEnroll(request, response) {
       ok: true,
       token,
       requiresApproval: false,
-      message: '设备已登记，默认为共享终端；学生可扫码或输入个人 ID。',
+      message: deviceRole === 'teacher' ? '教师终端已登记，可直接读取本主机学生。' : '设备已登记，默认为共享终端；学生可扫码或输入个人 ID。',
       device: publicDevice(device),
     });
   } catch (error) {

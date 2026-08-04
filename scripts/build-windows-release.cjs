@@ -350,6 +350,12 @@ function build() {
     if (/require\((['"])exceljs\1\)/.test(packagedCourseImport)) {
       throw new Error('Packaged course import runtime still depends on an external exceljs module.');
     }
+    const packagedMain = asar.extractFile(appAsar, 'electron/main.cjs').toString('utf8');
+    for (const marker of ['teacher-terminal-v1', 'teacherTerminalStudentRecord', "deviceRole === 'teacher'"]) {
+      if (!packagedMain.includes(marker)) {
+        throw new Error(`Packaged Windows host is missing teacher-terminal support: ${marker}`);
+      }
+    }
 
     const localeDir = path.join(unpackedRoot, 'locales');
     const locales = fs.readdirSync(localeDir).filter((name) => name.endsWith('.pak')).map((name) => name.replace(/\.pak$/, '')).sort();
@@ -398,6 +404,7 @@ function build() {
         asarFiles: asarFiles.length,
         nodeModuleFiles: packagedNodeModules.length,
         agentBridge: unpackedAgentBridge,
+        teacherTerminalSupport: true,
         unpackedBytes: directorySize(unpackedRoot),
       },
       secretScan: {

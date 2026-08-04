@@ -19,6 +19,7 @@ release/**
 .android-tools/
 android-lite/build/
 android-tablet-terminal/build/
+android-teacher-terminal/build/
 android-lite/assets/www/
 
 # Signing keys and generated keystores

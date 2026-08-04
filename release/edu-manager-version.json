@@ -1,9 +1,9 @@
 {
   "versionCode": 80,
   "versionName": "0.6.10",
-  "windowsVersionCode": 208,
-  "windowsVersionName": "0.15.9",
-  "windowsUrl": "https://www.greatbg.com/download/AI-edu-manager-console-Windows-0.15.9.zip",
+  "windowsVersionCode": 209,
+  "windowsVersionName": "0.15.10",
+  "windowsUrl": "https://www.greatbg.com/download/AI-edu-manager-console-Windows-0.15.10.zip",
   "windowsTerminalVersionCode": 208,
   "windowsTerminalVersionName": "0.15.9",
   "windowsTerminalUrl": "https://www.greatbg.com/download/AI-edu-manager-student-terminal-Windows-0.15.9.exe",
@@ -11,9 +11,13 @@
   "tabletTerminalVersionCode": 80,
   "tabletTerminalVersionName": "0.6.10",
   "tabletTerminalApkUrl": "https://www.greatbg.com/download/AI-edu-manager-tablet-terminal-0.6.10.apk",
+  "teacherTerminalVersionCode": 1,
+  "teacherTerminalVersionName": "0.1.0",
+  "teacherTerminalUrl": "https://www.greatbg.com/download/AI-edu-manager-teacher-terminal-0.1.0.apk",
+  "teacherTerminalNotes": "教师端首版：查看全部学生及关联项目，上传资料到学生或项目原始资料库，并查看报告、成长模型、教育档案和项目知识。",
   "managerApkUrl": "https://www.greatbg.com/download/edu-manager-android-0.2.3.apk",
   "managerApkVersionCode": 23,
   "managerApkVersionName": "0.2.3",
   "apkUrl": "https://www.greatbg.com/download/AI-edu-manager-tablet-terminal-0.6.10.apk",
-  "notes": "Windows 主机端 0.15.9 已完成真机验收并正式发布：新增教育内容智能出版，可将学情报告和教育档案生成 PDF、PNG 或 Markdown；支持输出前编辑、彩色/黑白模板、Agent 严格依据提炼、表格兼容和 9:16 手机卡片。Windows 学生端 0.15.9 与 Android 学生端 0.6.10 保持不变。Windows 安装包发行者元数据为 Robogala，尚未配置 Authenticode 正式签名。"
+  "notes": "Windows 主机端 0.15.10 新增 Android 教师终端支持：教师设备配对后可读取全部学生及关联项目，并把资料上传到指定学生或项目原始资料库；报告、成长模型、教育档案和项目知识接口保持可用。Windows 学生端 0.15.9、Android 学生端 0.6.10 保持不变，Android 教师端版本为 0.1.0。Windows 安装包发行者元数据为 Robogala，尚未配置 Authenticode 正式签名。"
 }

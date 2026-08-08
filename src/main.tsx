@@ -296,6 +296,7 @@ type LearningProject = {
   workspaceLastScannedAt?: string;
   workspaceScanSnapshot?: Record<string, { size?: number; mtimeMs?: number }>;
   workspaceRebindHistory?: Array<{ id?: string; at?: string; oldPath?: string; newPath?: string; status?: string; rolledBackAt?: string }>;
+  knowledgeRebindHistory?: Array<{ id?: string; at?: string; oldPath?: string; newPath?: string; status?: string; rolledBackAt?: string }>;
   stagingPath?: string;
   knowledgeRootPath: string;
   knowledgeMode?: 'managed' | 'adopted' | string;
@@ -754,6 +755,49 @@ type KnowledgeGraphNode = {
 
 type StudentDraft = Omit<Student, 'id' | 'createdAt' | 'status'>;
 
+type HostMigrationExternalSource = {
+  id: string;
+  label: string;
+  rootPath: string;
+  fileCount: number;
+  totalBytes: number;
+  required?: boolean;
+  references?: Array<{ label?: string; ownerType?: string; ownerId?: string; required?: boolean }>;
+};
+
+type HostMigrationPlan = {
+  ok?: boolean;
+  message?: string;
+  managedRoot?: string;
+  managed?: { fileCount?: number; totalBytes?: number };
+  externalSources?: HostMigrationExternalSource[];
+  security?: { passwordRequired?: boolean; excluded?: string[]; targetAction?: string };
+};
+
+type HostMigrationInspection = {
+  ok?: boolean;
+  message?: string;
+  packagePath?: string;
+  migrationId?: string;
+  appVersion?: string;
+  createdAt?: string;
+  encrypted?: boolean;
+  requiresPassword?: boolean;
+  fileCount?: number;
+  totalBytes?: number;
+  externalSources?: HostMigrationExternalSource[];
+};
+
+type HostMigrationProgress = {
+  phase?: 'exporting' | 'restoring' | 'completed' | 'failed';
+  totalFiles?: number;
+  completedFiles?: number;
+  completedBytes?: number;
+  current?: string;
+  message?: string;
+  recoveryPath?: string;
+};
+
 type AndroidBridge = {
   copyText?: (value: string) => Promise<string>;
   exportTextFile?: (filename: string, content: string) => string;
@@ -789,6 +833,7 @@ type AndroidBridge = {
   relocateProjectWorkspace?: (projectId: string) => string;
   confirmProjectWorkspaceRelocation?: (projectId: string, workspacePath: string) => string;
   rollbackProjectWorkspaceRelocation?: (projectId: string) => string;
+  rebindProjectKnowledgeSpace?: (projectId: string) => string;
   getRemovedProjects?: () => string;
   restoreRemovedProject?: (snapshotPath: string) => string;
   exportProjectPackage?: (projectId: string) => string;
@@ -859,6 +904,7 @@ type AndroidBridge = {
   getAgentConversationCenter?: (studentId: string) => string;
   saveAgentConversationImport?: (studentId: string, content: string, tool: AgentToolId, sourcePath?: string) => string;
   deliverConversationMaterials?: (studentId: string, requestJson: string) => string;
+  manageConversationImports?: (studentId: string, requestJson: string) => string;
   importConversationShareUrl?: (studentId: string, url: string, tool: AgentToolId) => Promise<string>;
   selectAgentConversationFiles?: (studentId: string, tool: AgentToolId) => string;
   saveConversationExtract?: (studentId: string, extractJson: string, tool: AgentToolId) => string;
@@ -876,7 +922,6 @@ type AndroidBridge = {
   activateLicense?: (code: string) => string;
   importLicenseFile?: () => string;
   getLicenseTrustStatus?: () => string;
-  importTrustedLicenseIssuerBundle?: () => string;
   deactivateLicense?: () => string;
   getAgentToolInstallStatus?: () => string;
   openExternalUrl?: (url: string) => boolean;
@@ -886,7 +931,7 @@ type AndroidBridge = {
   pickArchiveRoot?: () => boolean;
   getArchiveRootStatus?: () => string;
   listMarkdownFiles?: (studentName: string) => string;
-  readMarkdownFile?: (documentId: string) => string;
+  readMarkdownFile?: (studentId: string, documentId: string) => string;
   listProjectKnowledgeFiles?: (projectId: string) => string;
   readProjectKnowledgeFile?: (projectId: string, documentId: string) => string;
   listLearningReports?: (studentId: string) => string;
@@ -931,6 +976,8 @@ type AndroidBridge = {
   getHostDevices?: () => string;
   renameHostIdentity?: (displayName: string) => string;
   getCollaborationState?: () => string;
+  setStudentArchiveSyncEnabled?: (studentId: string, enabled: boolean) => string;
+  syncStudentArchiveNow?: (studentId: string) => string;
   setTeamKnowledgePolicy?: (optionsJson: string) => string;
   getRemoteCollaborationTasks?: () => string;
   getProjectPublicationOptions?: (projectId: string) => string;
@@ -1006,11 +1053,17 @@ type AndroidBridge = {
   getHostTimeline?: () => string;
   backupHostData?: (studentsJson?: string) => string;
   restoreHostData?: () => string;
+  getHostMigrationPlan?: () => Promise<string>;
+  createHostMigrationPackage?: (optionsJson: string) => Promise<string>;
+  inspectHostMigrationPackage?: () => Promise<string>;
+  restoreHostMigrationPackage?: (optionsJson: string) => Promise<string>;
+  onHostMigrationProgress?: (callback: (payload: string) => void) => () => void;
+  openHostMigrationRecord?: () => string;
   resetHostApiToken?: () => string;
   exportHostLogs?: () => string;
   openStudentRawDir?: (studentId: string) => string;
   migrateStudentWorkspace?: (studentId: string, newName: string) => string;
-  rebindAdoptedStudentWorkspace?: (studentId: string) => string;
+  rebindAdoptedStudentWorkspace?: (studentId: string, selectionMode?: 'knowledge' | 'raw') => Promise<string>;
   renameHostDevice?: (deviceId: string, name: string) => string;
   revokeHostDevice?: (deviceId: string) => string;
   restoreHostDevice?: (deviceId: string) => string;
@@ -1032,6 +1085,7 @@ type AndroidBridge = {
   queuePlatformCourseDeletion?: (courseId: string) => string;
   cancelPlatformCourseDeletion?: (courseId: string) => string;
   publishPlatformCourseCatalog?: (releaseNotes: string) => string;
+  reExportPlatformCourseCatalog?: () => string;
   rollbackPlatformCourseCatalog?: () => string;
   openCourseView?: (courseId: string) => string;
   closeCourseView?: () => string;
@@ -1057,6 +1111,9 @@ type MarkdownFile = {
   path: string;
   modified?: number;
   category?: string;
+  bytes?: number;
+  contentState?: 'substantive' | 'partial' | 'template' | 'empty';
+  contentMessage?: string;
 };
 
 type LearningReport = {
@@ -1071,6 +1128,7 @@ type LearningReport = {
   stale?: boolean;
   staleDays?: number | null;
   evidenceOk?: boolean;
+  substantive?: boolean;
   health?: 'ok' | 'warning' | string;
   warnings?: string[];
   summary?: string;
@@ -1347,6 +1405,7 @@ type CourseCatalogState = {
   ok: boolean;
   catalog?: { catalogVersion: string; issuedAt: string; minHostVersion: string; courses: CourseCatalogItem[] } | null;
   platformCatalog?: { catalogVersion: string; courses: CourseCatalogItem[] } | null;
+  currentPlatformPackage?: { catalogVersion: string; sha256: string; bytes: number; archivedAt: string; filename: string; canReExport: boolean } | null;
   customCatalog?: { updatedAt: string; courses: CourseCatalogItem[] };
   management?: { allowed: boolean; plan: string; planLabel: string; message: string };
   platformAuthoring?: {
@@ -1506,6 +1565,15 @@ type CollaborationState = {
     allowLocalTeamKnowledgeQuery?: boolean;
     allowRemoteTeamKnowledgeQuery?: boolean;
   };
+  studentArchiveSync?: Array<{
+    studentId: string;
+    studentName: string;
+    enabled: boolean;
+    mappingStatus: 'exact' | 'unavailable';
+    peers: Array<{ peerNodeId: string; targetStudentId: string }>;
+    lastPublishedAt?: string;
+    lastImportedAt?: string;
+  }>;
   directDeliveries?: Array<{
     manifestId: string;
     targetNodeId?: string;
@@ -2446,6 +2514,15 @@ type AgentConversationImport = {
     suggestedTargetType?: 'student' | 'project';
   };
   deliveries?: Array<{ id?: string; targetType?: 'student' | 'project'; targetId?: string; targetName?: string; deliveredAt?: string }>;
+  lifecycleStatus?: 'active' | 'trashed';
+  trashedAt?: string;
+  restoredAt?: string;
+  dependencies?: {
+    deliveryCount: number;
+    candidateCount: number;
+    promotedCount: number;
+    canPermanentlyDelete: boolean;
+  };
 };
 type AgentConversationState = {
   ok: boolean;
@@ -2647,7 +2724,7 @@ const zhCnText = {
   'settings.redetect': '重新检测',
   'settings.redetectSoftware': '重新检测软件',
   'settings.legal': '法律与服务条款',
-  'settings.legal.desc': '继续使用本软件前，请阅读并理解用户协议与隐私政策。商业部署时建议同步配置正式售后、隐私与订阅说明。',
+  'settings.legal.desc': '继续使用本软件前，请阅读并理解用户协议与隐私政策。',
   'legal.agreement': '用户协议',
   'legal.privacy': '隐私政策',
   'license.activateFirst': '请先激活许可证',
@@ -4530,6 +4607,8 @@ function App() {
   const [publishingEnhancing, setPublishingEnhancing] = useState(false);
   const [pathHealth, setPathHealth] = useState<PathHealthReport | null>(null);
   const [pathHealthMessage, setPathHealthMessage] = useState('');
+  const [pathBindingBusy, setPathBindingBusy] = useState(false);
+  const [pathBindingMessage, setPathBindingMessage] = useState('');
   const [inboxMessage, setInboxMessage] = useState('');
   const [downloadsMessage, setDownloadsMessage] = useState('');
   const [downloadFiles, setDownloadFiles] = useState<DownloadCandidate[]>([]);
@@ -4731,6 +4810,13 @@ function App() {
   const [hostServiceStatus, setHostServiceStatus] = useState<HostServiceStatus | null>(null);
   const [hostPortDraft, setHostPortDraft] = useState('18777');
   const [hostServiceMessage, setHostServiceMessage] = useState('');
+  const [hostMigrationPlan, setHostMigrationPlan] = useState<HostMigrationPlan | null>(null);
+  const [hostMigrationInspection, setHostMigrationInspection] = useState<HostMigrationInspection | null>(null);
+  const [hostMigrationExternalIds, setHostMigrationExternalIds] = useState<string[]>([]);
+  const [hostMigrationPassword, setHostMigrationPassword] = useState('');
+  const [hostMigrationProgress, setHostMigrationProgress] = useState<HostMigrationProgress | null>(null);
+  const [hostMigrationBusy, setHostMigrationBusy] = useState(false);
+  const [hostMigrationMessage, setHostMigrationMessage] = useState('');
   const [editingDeviceId, setEditingDeviceId] = useState('');
   const [deviceNameDraft, setDeviceNameDraft] = useState('');
   const [hostNameDraft, setHostNameDraft] = useState('');
@@ -4805,6 +4891,8 @@ function App() {
   const [conversationShareMessage, setConversationShareMessage] = useState('');
   const [conversationInboxSearch, setConversationInboxSearch] = useState('');
   const [conversationTopicFilter, setConversationTopicFilter] = useState('all');
+  const [conversationWorkspaceTab, setConversationWorkspaceTab] = useState<'awaiting' | 'inbox' | 'candidates' | 'delivered' | 'trash'>('inbox');
+  const [conversationAttributionTargets, setConversationAttributionTargets] = useState<Record<string, string>>({});
   const [selectedConversationAssetKeys, setSelectedConversationAssetKeys] = useState<string[]>([]);
   const [conversationDeliveryTargetType, setConversationDeliveryTargetType] = useState<'student' | 'project'>('student');
   const [conversationDeliveryProjectId, setConversationDeliveryProjectId] = useState('');
@@ -4842,6 +4930,14 @@ function App() {
   const conversationInboxItems = useMemo(() => {
     const keyword = conversationInboxSearch.trim().toLowerCase();
     return (conversationCenter?.index?.imports ?? []).filter((item) => {
+      const trashed = item.lifecycleStatus === 'trashed';
+      if (conversationWorkspaceTab === 'trash' && !trashed) return false;
+      if (conversationWorkspaceTab !== 'trash' && trashed) return false;
+      if (
+        conversationWorkspaceTab === 'delivered'
+        && !(item.deliveries?.length)
+        && !Number(item.dependencies?.promotedCount || 0)
+      ) return false;
       const topics = item.analysis?.topics ?? [];
       if (conversationTopicFilter !== 'all' && !topics.includes(conversationTopicFilter)) return false;
       if (!keyword) return true;
@@ -4853,7 +4949,20 @@ function App() {
         ...topics,
       ].filter(Boolean).some((value) => String(value).toLowerCase().includes(keyword));
     });
-  }, [conversationCenter?.index?.imports, conversationInboxSearch, conversationTopicFilter]);
+  }, [conversationCenter?.index?.imports, conversationInboxSearch, conversationTopicFilter, conversationWorkspaceTab]);
+  const conversationWorkspaceCounts = useMemo(() => {
+    const imports = conversationCenter?.index?.imports ?? [];
+    return {
+      awaiting: agentConversationInbox?.summary?.awaitingAttribution ?? 0,
+      inbox: imports.filter((item) => item.lifecycleStatus !== 'trashed').length,
+      candidates: conversationCenter?.governance?.summary?.total ?? 0,
+      delivered: imports.filter((item) => (
+        item.lifecycleStatus !== 'trashed'
+        && (Boolean(item.deliveries?.length) || Number(item.dependencies?.promotedCount || 0) > 0)
+      )).length,
+      trash: imports.filter((item) => item.lifecycleStatus === 'trashed').length,
+    };
+  }, [agentConversationInbox?.summary?.awaitingAttribution, conversationCenter?.governance?.summary?.total, conversationCenter?.index?.imports]);
   const conversationTopics = useMemo(() => Array.from(new Set(
     (conversationCenter?.index?.imports ?? []).flatMap((item) => item.analysis?.topics ?? []),
   )).sort(), [conversationCenter?.index?.imports]);
@@ -5019,6 +5128,8 @@ function App() {
     setPathHealth(null);
     setPathHealthMessage('');
     setGrowthEvidenceReview({ candidates: [] });
+    setGrowthIndex(null);
+    setGrowthIndexPreview('');
     setLegacyGrowthReviewQueue([]);
     setGrowthEvidenceRiskAssessment(null);
     setConversationCenter(null);
@@ -5040,6 +5151,16 @@ function App() {
         if (result.ok) setCaptureCenter(result);
       } catch {
         // The next explicit refresh will recover a malformed auxiliary event.
+      }
+    });
+    return () => { unsubscribe?.(); };
+  }, []);
+  useEffect(() => {
+    const unsubscribe = bridge()?.onHostMigrationProgress?.((payload) => {
+      try {
+        setHostMigrationProgress(JSON.parse(payload) as HostMigrationProgress);
+      } catch {
+        setHostMigrationMessage('迁移进度事件格式无效；当前操作仍会继续执行。');
       }
     });
     return () => { unsubscribe?.(); };
@@ -5777,7 +5898,9 @@ function App() {
 
   const licenseLabel = (license?: LicenseStatus | null) => {
     if (!license || license.status === 'inactive') return '未激活';
+    if (license.status === 'migration_required') return '需要换发 License v3';
     if (license.status === 'expired') return '已过期';
+    if (!license.active) return '授权无效';
     return `${license.planLabel || license.plan || '已激活'}${license.expiresAt ? ` · 到期 ${new Date(license.expiresAt).toLocaleDateString('zh-CN')}` : ' · 永久'}`;
   };
 
@@ -5847,16 +5970,6 @@ function App() {
       const result = JSON.parse(raw) as { ok?: boolean; issuers?: Array<{ keyId: string; fingerprint: string; status: string }> };
       setLicenseTrustIssuers(result.issuers || []);
     } catch { setLicenseMessage('读取可信签发方失败。'); }
-  };
-
-  const importLicenseTrustBundle = () => {
-    const raw = bridge()?.importTrustedLicenseIssuerBundle?.();
-    if (!raw) return setLicenseMessage('当前环境不支持可信公钥包导入。');
-    try {
-      const result = JSON.parse(raw) as { ok?: boolean; message?: string; trust?: { issuers?: Array<{ keyId: string; fingerprint: string; status: string }> } };
-      if (result.trust?.issuers) setLicenseTrustIssuers(result.trust.issuers);
-      setLicenseMessage(result.message || (result.ok ? '可信公钥包导入成功。' : '可信公钥包导入失败。'));
-    } catch { setLicenseMessage('可信公钥包导入失败。'); }
   };
 
   const syncStudentsToHost = (next: Student[]) => {
@@ -6226,7 +6339,7 @@ function App() {
   };
 
   const queuePlatformCourseDeletion = (course: CourseCatalogItem) => {
-    if (!window.confirm(`确认删除平台精选课程“${course.name}”？\n\n该课程会先进入“待删除”，必须点击“发布平台精选课程”生成新版课程包后，删除才会正式生效。`)) return;
+    if (!window.confirm(`确认删除平台精选课程“${course.name}”？\n\n该课程会先进入“待删除”，必须点击“发布并导出平台课程包”生成新版课程包后，删除才会正式生效。`)) return;
     const raw = bridge()?.queuePlatformCourseDeletion?.(course.courseId);
     if (!raw) {
       setCourseCatalogMessage('当前环境不支持删除平台精选课程。');
@@ -6272,6 +6385,38 @@ function App() {
     } finally {
       setPlatformPublishing(false);
     }
+  };
+
+  const reExportPlatformCourseCatalog = () => {
+    const invoke = bridge()?.reExportPlatformCourseCatalog;
+    if (!invoke) {
+      setCourseCatalogMessage('当前环境不支持重新导出平台课程包。');
+      return;
+    }
+    setPlatformPublishing(true);
+    setCourseCatalogMessage('正在校验并重新导出当前已发布课程包…');
+    try {
+      const result = JSON.parse(invoke()) as { ok?: boolean; cancelled?: boolean; message?: string; outputPath?: string; state?: CourseCatalogState };
+      if (result.state) setCourseCatalogState(result.state);
+      setCourseCatalogMessage(result.message || (result.cancelled ? '已取消重新导出。' : result.ok ? `课程包已重新导出到 ${result.outputPath || '所选位置'}。` : '重新导出失败。'));
+    } catch (error) {
+      setCourseCatalogMessage(`重新导出失败：${error instanceof Error ? error.message : String(error)}`);
+    } finally {
+      setPlatformPublishing(false);
+    }
+  };
+
+  const generateOrExportPlatformCoursePackage = () => {
+    const hasChanges = Boolean(courseCatalogState?.platformDrafts?.length || courseCatalogState?.platformDeletions?.length);
+    if (hasChanges) {
+      publishPlatformCourseCatalog();
+      return;
+    }
+    if (courseCatalogState?.currentPlatformPackage?.canReExport) {
+      reExportPlatformCourseCatalog();
+      return;
+    }
+    setCourseCatalogMessage('当前没有待发布修改，也没有已归档的原始平台课程包。请先新增或编辑平台课程并发布。');
   };
 
   const rollbackPlatformCourseCatalog = () => {
@@ -6360,20 +6505,29 @@ function App() {
     }
   };
 
-  const assignAgentConversationToSelectedStudent = (submissionId: string) => {
+  const assignAgentConversationToSelectedStudent = (submissionId: string, forcedTargetValue = '') => {
     if (!selectedStudent) {
       setCollaborationMessage('请先选择学生，再处理待归属对话。');
       return;
     }
+    const targetValue = forcedTargetValue || conversationAttributionTargets[submissionId] || `student:${selectedStudent.id}`;
+    const [scopeType, scopeId] = targetValue.split(':', 2) as ['student' | 'project', string];
+    if (scopeType === 'project' && !conversationLinkedProjects.some((project) => String(project.id) === String(scopeId))) {
+      setCollaborationMessage('请选择当前学生关联且可写的项目。');
+      return;
+    }
     setAssigningAgentConversationId(submissionId);
     try {
-      const raw = bridge()?.assignAgentConversationSubmission?.(submissionId, 'student', selectedStudent.id);
+      const raw = bridge()?.assignAgentConversationSubmission?.(submissionId, scopeType, scopeId);
       if (!raw) {
         setCollaborationMessage('当前环境不支持处理 Agent 对话收件箱。');
         return;
       }
       const result = JSON.parse(raw) as { ok?: boolean; awaitingAttribution?: boolean; message?: string };
-      setCollaborationMessage(result.message || (result.ok ? `对话已归入 ${selectedStudent.name}。` : '对话归属失败。'));
+      const targetName = scopeType === 'project'
+        ? conversationLinkedProjects.find((project) => String(project.id) === String(scopeId))?.name || '所选项目'
+        : selectedStudent.name;
+      setCollaborationMessage(result.message || (result.ok ? `对话已归入 ${targetName}。` : '对话归属失败。'));
       if (result.ok && !result.awaitingAttribution) {
         setAgentConversationInbox((current) => {
           if (!current) return current;
@@ -6390,6 +6544,7 @@ function App() {
         });
       }
       refreshAgentConversationInbox();
+      if (result.ok) refreshConversationCenter(selectedStudent.id);
     } catch {
       setCollaborationMessage('Agent 对话归属结果解析失败。');
     } finally {
@@ -7033,6 +7188,51 @@ ${sourceText}`;
     }
   };
 
+  const manageConversationMaterials = (action: 'trash' | 'restore' | 'delete', explicitItems?: AgentConversationImport[]) => {
+    if (!selectedStudent) return;
+    const selected = explicitItems ?? (conversationCenter?.index?.imports ?? []).filter((item) => (
+      selectedConversationAssetKeySet.has(conversationAssetKey(item))
+    ));
+    if (!selected.length) {
+      setConversationMessage('请先勾选要处理的对话资料。');
+      return;
+    }
+    if (action === 'trash' && !window.confirm(`将 ${selected.length} 份对话移入回收站？已投递资料和已晋升知识不会被删除。`)) return;
+    if (action === 'delete') {
+      const blocked = selected.filter((item) => !item.dependencies?.canPermanentlyDelete);
+      if (blocked.length) {
+        const deliveryCount = blocked.reduce((sum, item) => sum + Number(item.dependencies?.deliveryCount || 0), 0);
+        const candidateCount = blocked.reduce((sum, item) => sum + Number(item.dependencies?.candidateCount || 0), 0);
+        setConversationMessage(`所选对话中有 ${blocked.length} 份仍关联 ${deliveryCount} 条资料投递和 ${candidateCount} 条知识候选，不能彻底删除；可继续保留在回收站。`);
+        return;
+      }
+      if (!window.confirm(`彻底删除 ${selected.length} 份对话原文和治理记录？此操作不可撤销。`)) return;
+    }
+    const raw = bridge()?.manageConversationImports?.(selectedStudent.id, JSON.stringify({
+      action,
+      confirmPermanentDelete: action === 'delete',
+      sources: selected.map((item) => ({
+        sourceScopeType: item.sourceScopeType || 'student',
+        sourceScopeId: item.sourceScopeId || selectedStudent.id,
+        assetId: item.assetId,
+      })),
+    }));
+    if (!raw) {
+      setConversationMessage('当前环境不支持对话回收站管理。');
+      return;
+    }
+    try {
+      const result = JSON.parse(raw) as { ok?: boolean; partial?: boolean; message?: string };
+      setConversationMessage(result.message || (result.ok ? '对话资料已处理。' : '对话资料处理失败。'));
+      if (result.ok || result.partial) {
+        setSelectedConversationAssetKeys([]);
+        refreshConversationCenter(selectedStudent.id);
+      }
+    } catch {
+      setConversationMessage('对话资料治理结果解析失败。');
+    }
+  };
+
   const importConversationFiles = () => {
     if (!selectedStudent) return;
     const raw = bridge()?.selectAgentConversationFiles?.(selectedStudent.id, conversationTool);
@@ -7559,7 +7759,10 @@ ${sourceText}`;
       refreshAgentRules();
       refreshSourceRegistry();
     }
-    if (activeSection === 'conversation') refreshConversationCenter();
+    if (activeSection === 'conversation') {
+      refreshConversationCenter();
+      refreshAgentConversationInbox();
+    }
   }, [activeSection, selectedId]);
 
   useEffect(() => {
@@ -8898,6 +9101,16 @@ ${sourceText}`;
       setPathHealthMessage('未激活状态仅支持只读浏览，激活后可修复知识库旧路径。');
       return;
     }
+    const staleCount = pathHealth?.stalePaths?.length ?? 0;
+    if (!staleCount) {
+      setPathHealthMessage('请先执行“核对知识库路径”；当前没有待确认的旧路径。');
+      return;
+    }
+    const affectedFiles = new Set((pathHealth?.stalePaths || []).map((item) => item.filePath)).size;
+    if (!window.confirm(`确认修复检测到的旧主机路径？\n\n共 ${staleCount} 条疑似旧路径，涉及 ${affectedFiles} 个文件。系统会先备份原文件；index.md、log.md 和普通知识正文只报告、不做全文替换。`)) {
+      setPathHealthMessage('已取消路径修复，文件未修改。');
+      return;
+    }
     const raw = bridge()?.repairStudentStalePaths?.(selectedStudent.id);
     if (!raw) {
       setPathHealthMessage('当前环境不支持知识库路径修复。');
@@ -9748,6 +9961,17 @@ ${sourceText}`;
       setProjectMessage(confirmed.message || (confirmed.ok ? '项目工作空间已重新定位。' : '项目工作空间重新定位失败。'));
       if (confirmed.ok) void scanSelectedProjectWorkspace(selectedProject.id);
     } catch { setProjectMessage('项目工作空间重新定位结果解析失败。'); }
+  };
+
+  const rebindSelectedProjectKnowledge = () => {
+    if (!selectedProject) return;
+    const raw = bridge()?.rebindProjectKnowledgeSpace?.(selectedProject.id);
+    if (!raw) return setProjectMessage('当前环境不支持重新绑定项目知识空间。');
+    try {
+      const result = JSON.parse(raw) as { ok?: boolean; cancelled?: boolean; projects?: LearningProject[]; message?: string };
+      if (Array.isArray(result.projects)) setProjects(result.projects);
+      if (!result.cancelled) setProjectMessage(result.message || (result.ok ? '项目知识空间已重新绑定。' : '项目知识空间绑定失败。'));
+    } catch { setProjectMessage('项目知识空间绑定结果解析失败。'); }
   };
 
   const rollbackSelectedProjectWorkspace = () => {
@@ -10918,14 +11142,19 @@ ${JSON.stringify(items, null, 2)}
     }
   };
 
-  const refreshSelectedGrowthModel = () => {
-    if (!selectedStudent) {
+  const refreshSelectedGrowthModel = (student = selectedStudent) => {
+    if (!student) {
       setGrowthMessage('请先选择学生。');
       return;
     }
-    refreshGrowthEvidenceReview(selectedStudent);
-    refreshSelectedGrowthIndex(selectedStudent);
+    refreshGrowthEvidenceReview(student);
+    refreshSelectedGrowthIndex(student);
   };
+
+  useEffect(() => {
+    if (activeSection !== 'growth' || !selectedStudent) return;
+    refreshSelectedGrowthModel(selectedStudent);
+  }, [activeSection, selectedStudent?.id]);
 
   const openSelectedGrowthModelDir = () => {
     if (!selectedStudent) return;
@@ -11288,7 +11517,7 @@ ${JSON.stringify(items, null, 2)}
   };
 
   const openMarkdownFile = (file: MarkdownFile) => {
-    const raw = bridge()?.readMarkdownFile?.(file.id);
+    const raw = bridge()?.readMarkdownFile?.(selectedStudent.id, file.id);
     if (!raw) {
       setMarkdownMessage('当前环境不支持读取 Markdown 文件。');
       return;
@@ -11890,6 +12119,141 @@ ${JSON.stringify(items, null, 2)}
     }
   };
 
+  const analyzeHostMigration = async () => {
+    const api = bridge()?.getHostMigrationPlan;
+    if (!api) {
+      if (developmentWindowsPreview) {
+        const preview: HostMigrationPlan = {
+          ok: true,
+          managedRoot: 'D:\\学生资料',
+          managed: { fileCount: 1268, totalBytes: 3_486_146_560 },
+          externalSources: [{ id: 'preview-external-project', label: '项目工作空间：示例研究项目', rootPath: 'E:\\学习项目\\示例研究项目', fileCount: 84, totalBytes: 536_870_912 }],
+          security: { passwordRequired: false, excluded: ['License', 'API Token', '固定主机身份', '终端授权令牌', '协作直传密钥', '平台私钥'], targetAction: '新电脑重新激活并重新连接终端' },
+        };
+        setHostMigrationPlan(preview);
+        setHostMigrationExternalIds((preview.externalSources || []).map((source) => source.id));
+        setHostMigrationMessage('开发预览：已展示换机迁移盘点和外部目录选择界面。安装包中会读取本机真实资料。');
+        return;
+      }
+      setHostMigrationMessage('当前环境不支持换机迁移分析。');
+      return;
+    }
+    setHostMigrationBusy(true);
+    setHostMigrationMessage('正在盘点受管资料、应用状态和外部目录…');
+    try {
+      const result = JSON.parse(await api()) as HostMigrationPlan;
+      if (!result.ok) {
+        setHostMigrationMessage(result.message || '迁移内容分析失败。');
+        return;
+      }
+      setHostMigrationPlan(result);
+      setHostMigrationExternalIds((result.externalSources || []).map((source) => source.id));
+      setHostMigrationMessage(`已完成盘点：${result.managed?.fileCount || 0} 个受管及必需学生文件，另有 ${result.externalSources?.length || 0} 个外部目录；完整迁移已默认全部包含。`);
+    } catch {
+      setHostMigrationMessage('迁移内容分析结果解析失败。');
+    } finally {
+      setHostMigrationBusy(false);
+    }
+  };
+
+  const toggleHostMigrationExternal = (sourceId: string) => {
+    setHostMigrationExternalIds((current) => current.includes(sourceId) ? current.filter((id) => id !== sourceId) : [...current, sourceId]);
+  };
+
+  const createHostMigrationPackage = async () => {
+    const api = bridge()?.createHostMigrationPackage;
+    if (!api) {
+      setHostMigrationMessage('当前环境不支持创建换机迁移包。');
+      return;
+    }
+    if (!hostMigrationPlan?.ok) {
+      setHostMigrationMessage('请先分析迁移内容。');
+      return;
+    }
+    setHostMigrationBusy(true);
+    setHostMigrationProgress({ phase: 'exporting', completedFiles: 0, totalFiles: hostMigrationPlan.managed?.fileCount || 0 });
+    setHostMigrationMessage('正在创建迁移包；请保持外接存储连接。');
+    try {
+      const result = JSON.parse(await api(JSON.stringify({ externalSourceIds: hostMigrationExternalIds }))) as { ok?: boolean; cancelled?: boolean; message?: string; packagePath?: string; recoveryPath?: string };
+      setHostMigrationMessage(result.message || (result.ok ? `迁移包已创建：${result.packagePath}` : '创建迁移包失败。'));
+    } catch {
+      setHostMigrationMessage('创建迁移包结果解析失败。');
+    } finally {
+      setHostMigrationBusy(false);
+    }
+  };
+
+  const inspectHostMigrationPackage = async () => {
+    const api = bridge()?.inspectHostMigrationPackage;
+    if (!api) {
+      setHostMigrationMessage('当前环境不支持迁移包预检。');
+      return;
+    }
+    setHostMigrationBusy(true);
+    setHostMigrationMessage('正在校验迁移包清单和全部载荷哈希…');
+    try {
+      const result = JSON.parse(await api()) as HostMigrationInspection & { cancelled?: boolean };
+      if (result.ok) setHostMigrationInspection(result);
+      setHostMigrationMessage(result.message || (result.ok ? '迁移包校验通过。' : '迁移包预检失败。'));
+    } catch {
+      setHostMigrationMessage('迁移包预检结果解析失败。');
+    } finally {
+      setHostMigrationBusy(false);
+    }
+  };
+
+  const restoreHostMigrationPackage = async () => {
+    const api = bridge()?.restoreHostMigrationPackage;
+    if (!api || !hostMigrationInspection?.packagePath) {
+      setHostMigrationMessage('请先选择并校验迁移包。');
+      return;
+    }
+    if (hostMigrationInspection.requiresPassword && !hostMigrationPassword) {
+      setHostMigrationMessage('请输入迁移包密码。');
+      return;
+    }
+    if (!window.confirm('确认从迁移包恢复到新电脑吗？\n\n请选择空白资料目录。系统会先暂存并校验全部文件，不会覆盖非空目录；License、主机身份、终端授权和协作密钥不会从旧电脑复制。')) return;
+    setHostMigrationBusy(true);
+    setHostMigrationProgress({ phase: 'restoring', completedFiles: 0, totalFiles: hostMigrationInspection.fileCount || 0 });
+    setHostMigrationMessage('正在暂存并校验迁移资料…');
+    try {
+      const result = JSON.parse(await api(JSON.stringify({ packagePath: hostMigrationInspection.packagePath, password: hostMigrationPassword }))) as {
+        ok?: boolean; cancelled?: boolean; message?: string; studentRecords?: Student[]; projectRecords?: LearningProject[]; recoveryPath?: string;
+      };
+      if (result.ok && Array.isArray(result.studentRecords)) {
+        const restoredStudents = normalizeStudents(result.studentRecords);
+        setStudents(restoredStudents);
+        saveStudents(restoredStudents);
+        setSelectedId(restoredStudents[0]?.id || '');
+        refreshAssets();
+        if (Array.isArray(result.projectRecords)) setProjects(result.projectRecords);
+        refreshProjects();
+        if (restoredStudents[0]) refreshSelectedGrowthModel(restoredStudents[0]);
+        refreshHostServiceStatus();
+        setHostMigrationPassword('');
+      }
+      setHostMigrationMessage(result.message || (result.ok ? '迁移恢复完成。' : '迁移恢复失败。'));
+    } catch {
+      setHostMigrationMessage('迁移恢复结果解析失败。');
+    } finally {
+      setHostMigrationBusy(false);
+    }
+  };
+
+  const openHostMigrationRecord = () => {
+    const raw = bridge()?.openHostMigrationRecord?.();
+    if (!raw) {
+      setHostMigrationMessage('当前环境不支持查看迁移记录。');
+      return;
+    }
+    try {
+      const result = JSON.parse(raw) as { ok?: boolean; message?: string };
+      setHostMigrationMessage(result.message || (result.ok ? '已打开迁移记录。' : '没有可查看的迁移记录。'));
+    } catch {
+      setHostMigrationMessage('迁移记录结果解析失败。');
+    }
+  };
+
   const resetHostApiToken = () => {
     if (!window.confirm('确认重置主机 API Token 吗？\n\n旧的手工连接信息会失效，已扫码绑定的设备 token 不会被删除。')) return;
     const raw = bridge()?.resetHostApiToken?.();
@@ -11986,38 +12350,49 @@ ${JSON.stringify(items, null, 2)}
     }
   };
 
-  const rebindSelectedAdoptedWorkspace = () => {
-    if (!selectedStudent || selectedStudent.knowledgeBaseMode !== 'adopted') return;
+  const rebindSelectedAdoptedWorkspace = async (selectionMode: 'knowledge' | 'raw') => {
+    if (!selectedStudent) return;
     if (isWindows && !windowsLicenseActive) {
-      setDigestMessage('未激活状态仅支持只读浏览，激活后可重新定位接管目录。');
+      setPathBindingMessage('未激活状态仅支持只读浏览，激活后可重新绑定学生知识库。');
       return;
     }
-    const confirmed = window.confirm(`请选择「${selectedStudent.name}」在当前主机上的已有知识库根目录。\n\n本操作只更新教育管家中的路径，不移动、复制或删除任何资料。`);
-    if (!confirmed) return;
-    const raw = bridge()?.rebindAdoptedStudentWorkspace?.(selectedStudent.id);
-    if (!raw) {
-      setDigestMessage('当前环境不支持重新定位接管目录。');
+    const api = bridge()?.rebindAdoptedStudentWorkspace;
+    if (!api) {
+      setPathBindingMessage('当前环境不支持目录绑定与路径修复。');
       return;
     }
+    setPathBindingBusy(true);
+    setPathBindingMessage(selectionMode === 'raw'
+      ? `正在为“${selectedStudent.name}”手工选择原始资料库…`
+      : `正在为“${selectedStudent.name}”手工选择学生知识库…`);
     try {
+      const raw = await api(selectedStudent.id, selectionMode);
       const result = JSON.parse(raw) as { ok?: boolean; cancelled?: boolean; message?: string; student?: Student };
       if (!result.ok) {
-        if (!result.cancelled) setDigestMessage(result.message || '重新定位接管目录失败。');
+        setPathBindingMessage(result.message || (result.cancelled ? '已取消目录绑定，未修改任何配置。' : '目录绑定与路径修复失败。'));
         return;
       }
-      if (result.student) {
-        const next = students.map((student) => student.id === selectedStudent.id ? { ...student, ...result.student } : student);
-        // The main process has already committed the authoritative rebinding.
-        // Keep the renderer mirror in sync without writing stale pre-rebind fields back over it.
-        setStudents(next);
-        saveStudents(next);
-        setStudentEditDraft((current) => current && result.student ? { ...current, ...result.student } : current);
+      const refreshedRaw = bridge()?.getStudents?.();
+      const refreshedResult = refreshedRaw ? JSON.parse(refreshedRaw) as { ok?: boolean; students?: Student[] } : null;
+      const authoritativeStudents = refreshedResult?.ok && Array.isArray(refreshedResult.students)
+        ? normalizeStudents(refreshedResult.students)
+        : result.student
+          ? students.map((student) => student.id === selectedStudent.id ? { ...student, ...result.student } : student)
+          : students;
+      setStudents(authoritativeStudents);
+      saveStudents(authoritativeStudents);
+      const reboundStudent = authoritativeStudents.find((student) => student.id === selectedStudent.id);
+      if (reboundStudent) {
+        setStudentEditDraft((current) => current ? { ...current, ...reboundStudent } : current);
       }
       setPathHealth(null);
       setPathHealthMessage('');
-      setDigestMessage(result.message || '已重新定位接管目录。');
-    } catch {
-      setDigestMessage('重新定位接管目录结果解析失败。');
+      setPathBindingMessage(`${result.message || '已重新绑定学生知识库并更新本机路径映射。'} 当前根目录：${reboundStudent?.rootPath || result.student?.rootPath || '已更新'}`);
+    } catch (error) {
+      const detail = error instanceof Error && error.message ? `（${error.message}）` : '';
+      setPathBindingMessage(`目录绑定与路径修复调用失败${detail}，未修改现有配置。请重试或导出主机日志。`);
+    } finally {
+      setPathBindingBusy(false);
     }
   };
 
@@ -13297,6 +13672,9 @@ ${JSON.stringify(items, null, 2)}
                     ? '选择已启用的课程并在隔离浏览器中学习。第三方提供方负责课程内容、账号与服务条款；打开页面或采集资料不代表课程完成率、正确率或学情结论。'
                     : '机构精选课程用于本机构学生；平台精选课程由平台版制作课程包供其他主机导入。两类课程均可设置启用、顺序、年级与学生分配。'}
                 </p>
+                {courseSubmenu === 'management' && courseManagementAllowed && !platformCoursePublishAllowed ? (
+                  <small className="course-package-permission-note">当前{courseCatalogState?.management?.planLabel || '版本'}可以导入平台课程包；只有平台版可以生成或导出平台课程包。</small>
+                ) : null}
               </div>
               <div className="actions compact-actions">
                 {courseBrowser.open ? <button className="secondary course-fullscreen-toggle" onClick={() => { const next = !courseFullscreen; setCourseFullscreen(next); setSidebarCollapsed(next); }}>{courseFullscreen ? <Minimize2 size={17} /> : <Maximize2 size={17} />}{courseFullscreen ? '退出全屏（Esc）' : '全屏学习'}</button> : null}
@@ -13314,6 +13692,11 @@ ${JSON.stringify(items, null, 2)}
                       <FileDown size={17} />导入自选课程Excel
                     </button>
                     <button className="secondary" onClick={importCourseCatalog}><ShieldCheck size={17} />导入平台课程包</button>
+                    {platformCoursePublishAllowed ? (
+                      <button className="secondary" onClick={generateOrExportPlatformCoursePackage} disabled={platformPublishing} title="有待发布修改时生成新版；没有修改时重新导出当前已发布版本">
+                        <FileDown size={17} />生成/导出平台课程包
+                      </button>
+                    ) : null}
                     <button className="primary" onClick={saveCoursePolicy} disabled={!courseCatalogState?.policy}><ShieldCheck size={17} />保存并下发</button>
                   </>
                 ) : null}
@@ -13534,7 +13917,7 @@ ${JSON.stringify(items, null, 2)}
                       ) : null}
                       {platformCoursePublishAllowed ? (
                         <div className="platform-course-release-box">
-                          <div className="notice muted">平台版 License 是唯一发布条件；课程包保留版本、文件哈希和完整性校验，不再配置发布凭据。</div>
+                          <div className="notice muted">平台版 License 是唯一发布条件；“发布并导出”会生成新版课程包、保存到指定位置并同步应用到本机。课程包保留版本、文件哈希和完整性校验，不再配置发布凭据。</div>
                           <label>
                             <span>发布说明</span>
                             <textarea maxLength={2000} value={platformReleaseNotes} onChange={(event) => setPlatformReleaseNotes(event.target.value)} placeholder="说明本次新增、调整或撤回的课程（可选）" />
@@ -13543,13 +13926,14 @@ ${JSON.stringify(items, null, 2)}
                             <span className="status ok">平台版可直接发布</span>
                             <div className="course-direct-save-actions">
                               {courseCatalogState?.platformAuthoring?.canRollback ? <button className="secondary" type="button" onClick={rollbackPlatformCourseCatalog} disabled={platformPublishing}><Archive size={17} />从课程包恢复</button> : null}
+                              {courseCatalogState?.currentPlatformPackage?.canReExport ? <button className="secondary" type="button" onClick={reExportPlatformCourseCatalog} disabled={platformPublishing}><FileDown size={17} />重新导出当前版本</button> : null}
                               <button
                                 className="primary"
                                 type="button"
                                 onClick={publishPlatformCourseCatalog}
                                 disabled={platformPublishing || (!(courseCatalogState?.platformDrafts?.length) && !(courseCatalogState?.platformDeletions?.length)) || Boolean(courseCatalogState?.platformDrafts?.some((draft) => !draft.validation?.ok))}
                               >
-                                <ShieldCheck size={17} />{platformPublishing ? '正在校验并发布…' : '发布平台精选课程'}
+                                <ShieldCheck size={17} />{platformPublishing ? '正在校验并发布…' : '发布并导出平台课程包'}
                               </button>
                             </div>
                           </div>
@@ -15024,7 +15408,8 @@ ${JSON.stringify(items, null, 2)}
                           <Copy size={15} />
                           复制项目
                         </button>
-                        <button className="secondary compact" onClick={relocateSelectedProjectWorkspace} title="修改该项目绑定的工作空间来源目录；不移动原文件或项目知识空间"><FolderOpen size={15} />重新定位</button>
+                        <button className="secondary compact" onClick={relocateSelectedProjectWorkspace} title="修改该项目绑定的工作空间来源目录；不移动原文件或项目知识空间"><FolderOpen size={15} />更换工作空间</button>
+                        <button className="secondary compact" onClick={rebindSelectedProjectKnowledge} title="绑定本机已有项目知识空间；不移动工作空间或知识文件"><BookOpen size={15} />绑定知识空间</button>
                         <button className="secondary compact" onClick={exportSelectedProject}><FileDown size={15} />导出项目</button>
                         <button
                           className="primary compact"
@@ -15934,6 +16319,12 @@ ${JSON.stringify(items, null, 2)}
                     </button>
                   </div>
                 </div>
+                {learningReports.find((item) => item.id === selectedLearningReportId)?.substantive === false && (
+                  <div className="notice warning-notice">
+                    <strong>当前文件是占位模板，不是正式学情报告</strong>
+                    <p>迁移资料中没有可直接显示的报告正文。请先确认成长模型与项目资料，再到“周期更新任务”生成正式报告；系统不会把占位内容当作已有结论。</p>
+                  </div>
+                )}
                 {learningReportEvidence && (
                   <section className="report-evidence-panel" aria-label="报告依据">
                     <div className="mini-heading">
@@ -16140,10 +16531,10 @@ ${JSON.stringify(items, null, 2)}
               </section>
             )}
             <div className="actions">
-              <button className="secondary" onClick={authorizeArchiveRoot} disabled={!windowsLicenseActive}>
+              {!isWindows && <button className="secondary" onClick={authorizeArchiveRoot}>
                 <FolderOpen size={18} />
-                {isWindows ? '更换资料根目录' : '授权 Obsidian Vault'}
-              </button>
+                授权 Obsidian Vault
+              </button>}
               <button className="secondary" onClick={() => refreshMarkdownFiles(selectedStudent)}>
                 <RefreshCw size={18} />
                 刷新档案
@@ -16200,35 +16591,24 @@ ${JSON.stringify(items, null, 2)}
                   <button className="primary" onClick={saveSelectedStudentProfile} disabled={!windowsLicenseActive}>
                     保存学生资料
                   </button>
-                  {isWindows && selectedStudent.knowledgeBaseMode !== 'adopted' && (
+                  {isWindows && (
                     <>
-                      <button className="secondary" onClick={migrateSelectedStudentWorkspace} disabled={!windowsLicenseActive}>
+                      <button type="button" className="secondary" onClick={() => void rebindSelectedAdoptedWorkspace('raw')} disabled={!windowsLicenseActive || pathBindingBusy}>
                         <FolderOpen size={18} />
-                        迁移/重命名知识库目录
+                        手工选择原始资料库
                       </button>
-                      <button className="secondary" onClick={() => openStudentRawDir(selectedStudent)} disabled={!windowsLicenseActive}>
+                      <button type="button" className="secondary" onClick={() => void rebindSelectedAdoptedWorkspace('knowledge')} disabled={!windowsLicenseActive || pathBindingBusy}>
                         <FolderOpen size={18} />
-                        打开原始资料库
-                      </button>
-                      <button className="secondary" onClick={() => copyStudentProfileUpdatePrompt(selectedStudent)}>
-                        <Clipboard size={18} />
-                        复制资料变更提示
-                      </button>
-                    </>
-                  )}
-                  {isWindows && selectedStudent.knowledgeBaseMode === 'adopted' && (
-                    <>
-                      <button className="secondary" onClick={rebindSelectedAdoptedWorkspace} disabled={!windowsLicenseActive}>
-                        <FolderOpen size={18} />
-                        重新定位接管目录
-                      </button>
-                      <button className="secondary" onClick={() => openStudentRawDir(selectedStudent)} disabled={!windowsLicenseActive}>
-                        <FolderOpen size={18} />
-                        打开学生原始资料库
+                        手工选择学生知识库
                       </button>
                     </>
                   )}
                 </div>
+                {pathBindingMessage && (
+                  <div className="notice muted" role="status" aria-live="polite">
+                    {pathBindingMessage}
+                  </div>
+                )}
               </section>
             )}
             {isWindows && (
@@ -16311,6 +16691,7 @@ ${JSON.stringify(items, null, 2)}
                       >
                         <strong>{file.name}</strong>
                         <span>{file.path}</span>
+                        {file.contentState && <small className={file.contentState === 'substantive' ? 'success-text' : 'warning-text'}>{file.contentMessage || file.contentState}</small>}
                         {file.modified && <small>更新：{new Date(file.modified).toLocaleString()}</small>}
                       </button>
                     ))
@@ -16340,6 +16721,12 @@ ${JSON.stringify(items, null, 2)}
                     )}
                   </div>
                 </div>
+                {selectedMarkdownFile?.contentState && selectedMarkdownFile.contentState !== 'substantive' && (
+                  <div className="notice warning-notice">
+                    <strong>{selectedMarkdownFile.contentState === 'empty' ? '当前档案没有正文' : selectedMarkdownFile.contentState === 'template' ? '当前档案是占位模板' : '当前档案仍有待补充内容'}</strong>
+                    <p>迁移会保留原文件内容，不会根据文件名自动编造档案。请先核对原电脑是否已有正式正文；学情报告可从历史教育档案快照恢复，其他知识文档需从原目录、同步版本或资料消化结果中恢复。</p>
+                  </div>
+                )}
                 {markdownContent ? (
                   markdownViewMode === 'rendered' ? <MarkdownView content={markdownContent} /> : <pre className="markdown-raw">{markdownContent}</pre>
                 ) : (
@@ -16996,12 +17383,59 @@ ${JSON.stringify(items, null, 2)}
               </div>
               <MessageCircle size={22} />
             </div>
+            <div className="task-center-summary" aria-label="对话资料箱分类">
+              {([
+                ['awaiting', '待确认归属', conversationWorkspaceCounts.awaiting],
+                ['inbox', '已导入对话', conversationWorkspaceCounts.inbox],
+                ['candidates', '知识候选', conversationWorkspaceCounts.candidates],
+                ['delivered', '已投递/晋升', conversationWorkspaceCounts.delivered],
+                ['trash', '回收站', conversationWorkspaceCounts.trash],
+              ] as const).map(([id, label, count]) => (
+                <button className={conversationWorkspaceTab === id ? 'task-center-stat active' : 'task-center-stat'} key={id} onClick={() => {
+                  setConversationWorkspaceTab(id);
+                  setSelectedConversationAssetKeys([]);
+                }}>
+                  <MessageCircle size={17} />
+                  <span>{label}</span>
+                  <strong>{count}</strong>
+                </button>
+              ))}
+            </div>
             <div className="archive-grid">
               <InfoPanel icon={<UserRound />} title="当前学生" value={selectedStudent.name} />
               <InfoPanel icon={<FolderOpen />} title="导入目录" value={conversationCenter?.importsDir || '未读取'} />
               <InfoPanel icon={<Archive />} title="历史记录" value={`${conversationCenter?.index?.imports?.length ?? 0} 次导入 / ${conversationCenter?.index?.extracts?.length ?? 0} 次提取`} />
             </div>
-            <section className="material-source-panel">
+            {conversationWorkspaceTab === 'awaiting' && (
+              <section className="material-source-panel">
+                <div className="mini-heading">
+                  <strong>需要确认归属的 Agent 对话</strong>
+                  <span>只显示无法自动确定学生或项目的对话；可归入当前学生或其关联项目。</span>
+                </div>
+                <div className="candidate-list">
+                  {(agentConversationInbox?.pending ?? []).map((item) => (
+                    <div className="candidate-row" key={item.submissionId}>
+                      <div className="candidate-main">
+                        <strong>{item.title || 'Agent 对话片段'}</strong>
+                        <span>{item.sourceAgent || 'Agent'} · {item.messageCount || 0} 条消息</span>
+                        <small>{item.receivedAt ? formatDateTime(item.receivedAt) : '时间未知'}</small>
+                      </div>
+                      <div className="actions compact-actions">
+                        <select value={conversationAttributionTargets[item.submissionId] || `student:${selectedStudent.id}`} onChange={(event) => setConversationAttributionTargets((current) => ({ ...current, [item.submissionId]: event.target.value }))}>
+                          <option value={`student:${selectedStudent.id}`}>归入当前学生对话资料箱</option>
+                          {conversationLinkedProjects.map((project) => <option value={`project:${project.id}`} key={project.id}>归入项目：{project.name}</option>)}
+                        </select>
+                        <button className="primary compact" disabled={Boolean(assigningAgentConversationId)} onClick={() => assignAgentConversationToSelectedStudent(item.submissionId)}>
+                          {assigningAgentConversationId === item.submissionId ? '正在归属…' : '确认归属'}
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                  {(agentConversationInbox?.pending ?? []).length === 0 && <div className="empty-state compact">当前没有待确认归属的 Agent 对话。</div>}
+                </div>
+              </section>
+            )}
+            {conversationWorkspaceTab === 'inbox' && <section className="material-source-panel">
               <div className="mini-heading">
                 <strong>从分享链接导入</strong>
                 <span>支持可公开读取的对话分享页面；读取失败时可直接粘贴或导入文件，不会阻塞其他操作。</span>
@@ -17018,8 +17452,8 @@ ${JSON.stringify(items, null, 2)}
                 </button>
               </div>
               {conversationShareMessage && <div className="notice compact">{conversationShareMessage}</div>}
-            </section>
-            <section className="material-source-panel">
+            </section>}
+            {(['inbox', 'delivered', 'trash'] as const).includes(conversationWorkspaceTab as 'inbox' | 'delivered' | 'trash') && <section className="material-source-panel">
               <div className="mini-heading">
                 <strong>已导入对话资料</strong>
                 <span>系统已自动归纳主题并给出项目建议；普通使用只需勾选后确认投递。</span>
@@ -17051,13 +17485,23 @@ ${JSON.stringify(items, null, 2)}
                         {item.analysis?.decisions?.length ? <small>结论：{item.analysis.decisions.slice(0, 2).join('；')}</small> : null}
                         {item.analysis?.actionItems?.length ? <small>后续：{item.analysis.actionItems.slice(0, 2).join('；')}</small> : null}
                         <small>{item.importedAt ? new Date(item.importedAt).toLocaleString('zh-CN') : ''}{item.deliveries?.length ? ` · 已投递 ${item.deliveries.length} 次` : ''}</small>
+                        {item.lifecycleStatus === 'trashed' && <small>已移入回收站：{item.trashedAt ? new Date(item.trashedAt).toLocaleString('zh-CN') : ''}</small>}
+                        <small>依赖：资料投递 {item.dependencies?.deliveryCount ?? 0} · 知识候选 {item.dependencies?.candidateCount ?? 0} · 已晋升 {item.dependencies?.promotedCount ?? 0}</small>
+                      </div>
+                      <div className="actions compact-actions">
+                        {item.lifecycleStatus === 'trashed'
+                          ? <>
+                              <button className="secondary compact" onClick={() => manageConversationMaterials('restore', [item])}>恢复</button>
+                              <button className="danger compact" disabled={!item.dependencies?.canPermanentlyDelete} title={item.dependencies?.canPermanentlyDelete ? '彻底删除不可恢复' : '仍有关联资料或知识候选，只能保留在回收站'} onClick={() => manageConversationMaterials('delete', [item])}>彻底删除</button>
+                            </>
+                          : <button className="secondary compact" onClick={() => manageConversationMaterials('trash', [item])}>移入回收站</button>}
                       </div>
                     </div>
                   );
                 })}
                 {conversationInboxItems.length === 0 && <div className="empty-state compact">暂无符合条件的对话资料，可从分享链接、粘贴内容或文件导入。</div>}
               </div>
-              <div className="actions compact-actions">
+              {conversationWorkspaceTab !== 'trash' ? <div className="actions compact-actions">
                 <select value={conversationDeliveryTargetType} onChange={(event) => setConversationDeliveryTargetType(event.target.value as 'student' | 'project')}>
                   <option value="student">投递到当前学生原始资料库</option>
                   <option value="project">投递到关联项目原始资料库</option>
@@ -17071,8 +17515,13 @@ ${JSON.stringify(items, null, 2)}
                 <button className="primary" onClick={deliverSelectedConversationMaterials}>
                   确认投递所选（{selectedConversationAssetKeys.length}）
                 </button>
-              </div>
-            </section>
+                <button className="secondary" onClick={() => manageConversationMaterials('trash')}>移入回收站</button>
+              </div> : <div className="actions compact-actions">
+                <button className="secondary" onClick={() => manageConversationMaterials('restore')}>恢复所选</button>
+                <button className="danger" onClick={() => manageConversationMaterials('delete')}>彻底删除无依赖项</button>
+              </div>}
+            </section>}
+            {conversationWorkspaceTab === 'inbox' && <>
             <div className="form-grid compact-grid">
               <label>
                 来源 Agent 工具
@@ -17096,6 +17545,8 @@ ${JSON.stringify(items, null, 2)}
               <button className="secondary" onClick={() => copyAiAgentScanPrompt('conversation')}>复制对话文件扫描指令</button>
               <button className="secondary" onClick={() => refreshConversationCenter()}>刷新对话中心</button>
             </div>
+            </>}
+            {conversationWorkspaceTab === 'candidates' && <>
             <label className="wide-field">
               粘贴 AI 提取结果 JSON
               <textarea
@@ -17210,6 +17661,7 @@ ${JSON.stringify(items, null, 2)}
                 ))}
               </div>
             )}
+            </>}
             {conversationScanCandidates.length > 0 && (
               <div className="candidate-list">
                 <div className="mini-heading">
@@ -17695,6 +18147,7 @@ ${JSON.stringify(items, null, 2)}
             <div className="settings-page-layout single">
             <div className="settings-page-content">
             {isWindows && settingsSubmenu === 'basic' && (
+              <>
               <div className="notice usage-mode-settings">
                 <div className="mini-heading">
                   <strong>使用模式</strong>
@@ -17720,6 +18173,20 @@ ${JSON.stringify(items, null, 2)}
                 </div>
                 {hostServiceMessage && <p>{hostServiceMessage}</p>}
               </div>
+              <div className="notice">
+                <div className="mini-heading">
+                  <strong>本机默认学生资料根目录</strong>
+                  <span>只决定以后新建的受管档案默认保存位置，不移动或重新绑定已有学生档案。</span>
+                </div>
+                <p className="path-display">{activeStorageConfig.baseDir}</p>
+                <div className="actions">
+                  <button className="secondary" onClick={authorizeArchiveRoot} disabled={!windowsLicenseActive}>
+                    <FolderOpen size={18} />更换本机默认资料根目录（不移动已有档案）
+                  </button>
+                </div>
+                {archiveRootMessage && <p>{archiveRootMessage}</p>}
+              </div>
+              </>
             )}
             {isWindows && settingsSubmenu === 'collaboration' && (
               <div className="notice">
@@ -17811,7 +18278,7 @@ ${JSON.stringify(items, null, 2)}
                           <button
                             className="primary compact"
                             disabled={!selectedStudent || Boolean(assigningAgentConversationId)}
-                            onClick={() => assignAgentConversationToSelectedStudent(item.submissionId)}
+                            onClick={() => assignAgentConversationToSelectedStudent(item.submissionId, `student:${selectedStudent.id}`)}
                           >
                             {assigningAgentConversationId === item.submissionId
                               ? '正在归属…'
@@ -18081,6 +18548,42 @@ ${JSON.stringify(items, null, 2)}
                     />
                   </label>
                 )}
+                {selectedStudent && (() => {
+                  const archiveSync = collaborationState?.studentArchiveSync?.find((item) => item.studentId === selectedStudent.id);
+                  return (
+                    <section className="settings-notice-card">
+                      <div>
+                        <strong>{selectedStudent.name} 的跨主机档案同步</strong>
+                        <p>
+                          {archiveSync?.mappingStatus === 'exact'
+                            ? `已建立精确学生 ID 映射；仅同步已确认知识、已确认成长模型、已发布学情报告和教育档案版本。原始资料与草稿不会同步。`
+                            : '当前协作关系没有唯一的一对一学生 ID 映射，系统已阻止档案同步，避免写入其他学生。'}
+                        </p>
+                        {archiveSync?.peers?.length ? (
+                          <small>目标：{archiveSync.peers.map((peer) => `${peer.peerNodeId} / ${peer.targetStudentId}`).join('；')}</small>
+                        ) : null}
+                      </div>
+                      <div className="actions compact-actions">
+                        <label className={archiveSync?.enabled ? 'task-automation-toggle' : 'task-automation-toggle manual'}>
+                          <span><strong>{archiveSync?.enabled ? '同步已开启' : '同步已暂停'}</strong></span>
+                          <input
+                            type="checkbox"
+                            disabled={!collaborationState?.state?.enabled || archiveSync?.mappingStatus !== 'exact'}
+                            checked={archiveSync?.enabled !== false}
+                            onChange={(event) => applyCollaborationResult(bridge()?.setStudentArchiveSyncEnabled?.(selectedStudent.id, event.target.checked))}
+                          />
+                        </label>
+                        <button
+                          className="secondary compact"
+                          disabled={!archiveSync?.enabled || archiveSync?.mappingStatus !== 'exact'}
+                          onClick={() => applyCollaborationResult(bridge()?.syncStudentArchiveNow?.(selectedStudent.id))}
+                        >
+                          <RefreshCw size={15} />立即同步
+                        </button>
+                      </div>
+                    </section>
+                  );
+                })()}
                 <section className="collaboration-pairing-wizard" aria-labelledby="collaboration-pairing-title">
                   <div className="mini-heading">
                     <strong id="collaboration-pairing-title">连接另一台 Windows 主机</strong>
@@ -18334,11 +18837,25 @@ ${JSON.stringify(items, null, 2)}
                     <span>学生终端设备：{effectiveLicenseStatus?.deviceLimit ?? '-'}</span>
                   </div>
                 </div>
+                <div className="license-device-id">
+                  <div>
+                    <strong>License v3 设备码</strong>
+                    <code>{hostServiceStatus?.hostIdentity?.hostId || '正在读取设备码…'}</code>
+                    <small>签发 Windows 主机端 License v3 时填写此设备码；它不同于终端连接使用的 HOST-… 主机机器码。</small>
+                  </div>
+                  <button
+                    className="secondary compact"
+                    disabled={!hostServiceStatus?.hostIdentity?.hostId}
+                    onClick={() => copyText(hostServiceStatus?.hostIdentity?.hostId || '', '已复制 License v3 设备码。', { contentLabel: 'License v3 设备码', preview: false })}
+                  >
+                    <Clipboard size={16} />复制设备码
+                  </button>
+                </div>
                 <div className="inline-field license-field">
                   <input
                     value={licenseCodeDraft}
                     onChange={(event) => setLicenseCodeDraft(event.target.value)}
-                    placeholder="输入激活码：AIE-FAMILY-20270706-3-6-随机码-签名"
+                    placeholder="输入由授权管理工具签发的 AIE3 激活码"
                   />
                   <button className="primary" onClick={activateLicense}>
                     激活
@@ -18352,7 +18869,6 @@ ${JSON.stringify(items, null, 2)}
                     移除本机许可证
                   </button>
                   <button className="secondary compact" onClick={importLicenseFile}>导入 License 文件</button>
-                  <button className="secondary compact" onClick={importLicenseTrustBundle}>导入可信签发方公钥包</button>
                   <button className="ghost compact" onClick={refreshLicenseTrustStatus}>查看可信签发方</button>
                 </div>
                 {licenseTrustIssuers.length ? (
@@ -18361,7 +18877,7 @@ ${JSON.stringify(items, null, 2)}
                   </div>
                 ) : null}
                 {licenseMessage && <p>{licenseMessage}</p>}
-                <p className="muted-text">授权码由内部“AI教育管家授权管理工具”生成，客户版主机端只负责激活和校验。</p>
+                <p className="muted-text">授权码由内部“AI教育管家授权管理工具”生成；Windows 0.16.5 起只接受绑定本机设备码的 License v3，旧版激活码需换发。</p>
               </div>
             )}
             {(!isWindows || settingsSubmenu === 'basic') && <div className="notice legal-notice">
@@ -18430,15 +18946,19 @@ ${JSON.stringify(items, null, 2)}
             )}
             {isWindows && settingsSubmenu === 'basic' && (
               <div className="notice">
-                <strong>数据维护与安全</strong>
-                <p>备份会导出学生索引、设备授权、上传记录和主机事件；重置 API Token 后请重新复制连接信息。</p>
+                <strong>备份与迁移</strong>
+                <p>日常备份用于快速恢复索引和主机状态；“迁移到新电脑”会携带受管学生资料、项目、知识文档、课程和必要应用状态。</p>
                 <div className="actions">
                   <button className="secondary" onClick={backupHostData}>
                     <FileDown size={18} />
-                    备份主机数据
+                    创建日常备份
                   </button>
                   <button className="secondary" onClick={restoreHostData}>
-                    恢复备份
+                    恢复日常备份
+                  </button>
+                  <button className="secondary" onClick={openHostMigrationRecord}>
+                    <FileText size={18} />
+                    查看迁移记录
                   </button>
                   <button className="secondary" onClick={resetHostApiToken}>
                     重置 API Token
@@ -18447,6 +18967,104 @@ ${JSON.stringify(items, null, 2)}
                     导出诊断日志
                   </button>
                 </div>
+                <details className="advanced-panel">
+                  <summary>迁移到新电脑 / 从迁移包恢复</summary>
+                  <div className="notice muted">
+                    <strong>完整换机迁移</strong>
+                    <p>迁移采用“复制 → 哈希校验 → 暂存恢复 → 切换”流程，不删除旧电脑资料，也不会覆盖新电脑的非空目录。</p>
+                    <div className="actions">
+                      <button className="secondary" type="button" onClick={analyzeHostMigration} disabled={hostMigrationBusy}>
+                        <Search size={18} />分析迁移内容
+                      </button>
+                    </div>
+                    {hostMigrationPlan?.ok && (
+                      <div className="stack-list">
+                        <div className="download-item">
+                          <span>
+                            <strong>受管资料与应用状态</strong>
+                            <small>{hostMigrationPlan.managed?.fileCount || 0} 个文件 · {formatFileSize(hostMigrationPlan.managed?.totalBytes || 0)}</small>
+                            <small>来源：{hostMigrationPlan.managedRoot}</small>
+                          </span>
+                          <em>必选</em>
+                        </div>
+                        {(hostMigrationPlan.externalSources || []).map((source) => (
+                          <label className="download-item" key={source.id}>
+                            <span>
+                              <strong>{source.label}</strong>
+                              <small>{source.fileCount || 0} 个文件 · {formatFileSize(source.totalBytes || 0)}</small>
+                              <small>{source.rootPath}</small>
+                              {source.references && source.references.length > 1 && <small>覆盖：{source.references.map((item) => item.label).join('、')}</small>}
+                            </span>
+                            {source.required && <em>学生资料必选</em>}
+                            <input
+                              type="checkbox"
+                              checked={Boolean(source.required) || hostMigrationExternalIds.includes(source.id)}
+                              onChange={() => toggleHostMigrationExternal(source.id)}
+                              disabled={Boolean(source.required)}
+                              aria-label={`把${source.label}复制进迁移包`}
+                            />
+                          </label>
+                        ))}
+                        {(hostMigrationPlan.externalSources || []).length === 0 && <p className="muted-text">没有发现位于受管资料根目录之外的接管知识库或项目工作空间。</p>}
+                        <p className="muted-text">学生知识库、原始资料、学情分析汇总、成长模型、输出结果和教育档案历史版本为必选；项目目录默认全部包含。迁移包无需设置密码，并保留逐文件 SHA-256 完整性校验。</p>
+                        <p className="muted-text">不会迁移：{hostMigrationPlan.security?.excluded?.join('、')}。新电脑需要重新激活并重新连接终端。</p>
+                        <div className="actions">
+                          <button className="primary" type="button" onClick={createHostMigrationPackage} disabled={hostMigrationBusy}>
+                            <FileDown size={18} />创建迁移包
+                          </button>
+                        </div>
+                      </div>
+                    )}
+                    <hr />
+                    <strong>在新电脑恢复</strong>
+                    <p>先选择迁移包并校验全部文件，再选择一个空白目录作为新的学生资料根目录。</p>
+                    <div className="actions">
+                      <button className="secondary" type="button" onClick={inspectHostMigrationPackage} disabled={hostMigrationBusy}>
+                        <ShieldCheck size={18} />选择并校验迁移包
+                      </button>
+                      {hostMigrationInspection?.ok && (
+                        <button className="primary" type="button" onClick={restoreHostMigrationPackage} disabled={hostMigrationBusy || Boolean(hostMigrationInspection.requiresPassword && !hostMigrationPassword)}>
+                          <RefreshCw size={18} />恢复到空白目录
+                        </button>
+                      )}
+                    </div>
+                    {hostMigrationInspection?.ok && (
+                      <>
+                        <div className="download-item">
+                          <span>
+                            <strong>迁移包校验通过</strong>
+                            <small>{hostMigrationInspection.fileCount || 0} 个文件 · {formatFileSize(hostMigrationInspection.totalBytes || 0)} · 来源版本 {hostMigrationInspection.appVersion || '未知'}</small>
+                            <small>{hostMigrationInspection.packagePath}</small>
+                          </span>
+                          <em>{hostMigrationInspection.encrypted ? '旧版加密包' : '标准迁移包'}</em>
+                        </div>
+                        {hostMigrationInspection.requiresPassword && (
+                          <label className="field full-width">
+                            <span>旧版加密迁移包密码</span>
+                            <input
+                              type="password"
+                              value={hostMigrationPassword}
+                              onChange={(event) => setHostMigrationPassword(event.target.value)}
+                              autoComplete="current-password"
+                              placeholder="仅恢复旧版加密迁移包时需要"
+                            />
+                          </label>
+                        )}
+                      </>
+                    )}
+                    {hostMigrationProgress && hostMigrationProgress.phase !== 'completed' && (
+                      <div className="progress-block" aria-live="polite">
+                        <progress value={hostMigrationProgress.completedFiles || 0} max={Math.max(1, hostMigrationProgress.totalFiles || 1)} />
+                        <small>
+                          {hostMigrationProgress.phase === 'restoring' ? '正在恢复' : hostMigrationProgress.phase === 'failed' ? '迁移失败' : '正在导出'}：
+                          {hostMigrationProgress.completedFiles || 0}/{hostMigrationProgress.totalFiles || 0} 个文件
+                          {hostMigrationProgress.current ? ` · ${hostMigrationProgress.current}` : ''}
+                        </small>
+                      </div>
+                    )}
+                    {hostMigrationMessage && <p>{hostMigrationMessage}</p>}
+                  </div>
+                </details>
               </div>
             )}
             {isWindows && settingsSubmenu === 'connection' && (

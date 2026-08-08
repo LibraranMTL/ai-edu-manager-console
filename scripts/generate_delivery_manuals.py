@@ -105,7 +105,7 @@ def markdown_story(text: str, styles):
 def build_manual(markdown_name: str, pdf_name: str) -> None:
     text = (DELIVERY / markdown_name).read_text(encoding="utf-8")
     output = DELIVERY / pdf_name
-    doc = SimpleDocTemplate(str(output), pagesize=A4, rightMargin=18 * mm, leftMargin=18 * mm, topMargin=17 * mm, bottomMargin=18 * mm, title=text.splitlines()[0].lstrip("# "), author="嘉玛蓝（北京）科技有限公司")
+    doc = SimpleDocTemplate(str(output), pagesize=A4, rightMargin=18 * mm, leftMargin=18 * mm, topMargin=17 * mm, bottomMargin=23 * mm, title=text.splitlines()[0].lstrip("# "), author="嘉玛蓝（北京）科技有限公司")
     doc.build(markdown_story(text, make_styles()), onFirstPage=footer, onLaterPages=footer)
 
 
@@ -180,6 +180,8 @@ def manual_html(markdown_text: str, current_page: str) -> str:
     nav_host = ' aria-current="page"' if current_page == "host" else ""
     nav_windows_student = ' aria-current="page"' if current_page == "windows-student" else ""
     nav_android_student = ' aria-current="page"' if current_page == "android-student" else ""
+    nav_android_teacher = ' aria-current="page"' if current_page == "android-teacher" else ""
+    nav_android_standalone = ' aria-current="page"' if current_page == "android-standalone" else ""
     return f'''<!doctype html>
 <html lang="zh-CN">
 <head>
@@ -228,6 +230,8 @@ def manual_html(markdown_text: str, current_page: str) -> str:
       <a href="./windows-host-manual.html"{nav_host}>Windows 主机端</a>
       <a href="./windows-student-manual.html"{nav_windows_student}>Windows 学生端</a>
       <a href="./android-student-manual.html"{nav_android_student}>Android 学生端</a>
+      <a href="./android-teacher-manual.html"{nav_android_teacher}>Android 教师端</a>
+      <a href="./android-standalone-manual.html"{nav_android_standalone}>Android 单机版</a>
       <a href="./privacy.html">隐私政策</a>
       <a href="./agreement.html">用户协议</a>
     </nav>
@@ -256,13 +260,17 @@ def main() -> None:
         build_manual("Windows主机版操作手册.md", "AI教育管家 Windows 主机端操作手册.pdf")
         build_manual("Windows学生终端操作手册.md", "AI教育管家 Windows 学生端操作手册.pdf")
         build_manual("Android学生终端操作手册.md", "AI教育管家 Android 学生端操作手册.pdf")
+        build_manual("Android教师终端操作手册.md", "AI教育管家 Android 教师端操作手册.pdf")
+        build_manual("Android单机版操作手册.md", "AI教育管家 Android 单机版操作手册.pdf")
         # 旧文件名保留为当前正式文件的逐字节副本，避免既有交付链接失效或内容漂移。
         shutil.copy2(DELIVERY / "AI教育管家 Windows 主机端操作手册.pdf", DELIVERY / "AI教育管家 Windows 主机版操作手册.pdf")
         shutil.copy2(DELIVERY / "AI教育管家 Android 学生端操作手册.pdf", DELIVERY / "AI教育管家平板终端家长版操作手册.pdf")
     build_web_manual("Windows主机版操作手册.md", "windows-host-manual.html", "host")
     build_web_manual("Windows学生终端操作手册.md", "windows-student-manual.html", "windows-student")
     build_web_manual("Android学生终端操作手册.md", "android-student-manual.html", "android-student")
-    # 兼容旧网址，但页面内容和导航均使用三端新结构。
+    build_web_manual("Android教师终端操作手册.md", "android-teacher-manual.html", "android-teacher")
+    build_web_manual("Android单机版操作手册.md", "android-standalone-manual.html", "android-standalone")
+    # 兼容旧网址，但页面内容和导航均使用当前产品结构。
     build_web_manual("Windows主机版操作手册.md", "windows-manual.html", "host")
     build_web_manual("Android学生终端操作手册.md", "tablet-manual.html", "android-student")
 

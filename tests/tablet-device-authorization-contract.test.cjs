@@ -30,6 +30,43 @@ test('Android verifies the device then opens only a student session', () => {
   assert.doesNotMatch(tablet, /base \+ "\/api\/students"/);
 });
 
+test('connection settings keep multiple endpoints and automatically fall back without changing authorization', () => {
+  const connectTask = tablet.slice(tablet.indexOf('class ConnectTask'), tablet.indexOf('class ConnectionEndpointTask'));
+  const candidates = tablet.slice(tablet.indexOf('List<String> connectionCandidates()'), tablet.indexOf('void rememberSuccessfulEndpoint'));
+  assert.match(tablet, /PREF_ENDPOINT_CANDIDATES/);
+  assert.match(tablet, /List<String> connectionCandidates\(\)/);
+  assert.match(tablet, /rememberSuccessfulEndpoint\(String base\)/);
+  assert.match(candidates, /connectionMode\(\) == 1 && manual\.length\(\) > 0 && isTailscaleServerUrl\(manual\)/);
+  assert.match(candidates, /candidates\.add\(manual\)/);
+  assert.match(connectTask, /for \(int i = 0; i < bases\.size\(\); i\+\+\)/);
+  assert.match(connectTask, /连接失败，正在自动尝试/);
+  assert.match(connectTask, /new ConnectionEndpointTask\(activity, base\)/);
+  assert.match(tablet, /主机地址已刷新，无需重新授权/);
+  assert.match(tablet, /&& !refreshAddressOnly\) tokenInput\.setText\(value\)/);
+});
+
+test('connection failures distinguish endpoint reachability from real authorization rejection', () => {
+  assert.match(tablet, /String connectionFailureState\(String detail\)/);
+  assert.match(tablet, /return "连接超时"/);
+  assert.match(tablet, /return "主机地址不可达"/);
+  assert.match(tablet, /return "端口连接被拒绝"/);
+  assert.match(tablet, /return "授权失效"/);
+  assert.doesNotMatch(connectTaskSource(), /ConnectionSummaryTask\(activity, "授权验证失败"/);
+});
+
+function connectTaskSource() {
+  return tablet.slice(tablet.indexOf('class ConnectTask'), tablet.indexOf('class ConnectionEndpointTask'));
+}
+
+test('Windows pairing advertises a cached MagicDNS fallback without exposing another user setting', () => {
+  assert.match(host, /function getTailscaleDnsUrls\(port\)/);
+  assert.match(host, /Self\?\.DNSName/);
+  assert.match(host, /tailscaleDnsUrlCache/);
+  assert.match(host, /hostId: identity\.hostId/);
+  assert.match(host, /tailscaleUrls: info\.tailscaleUrls/);
+  assert.doesNotMatch(ui, /MagicDNS 设置/);
+});
+
 test('Windows uses personal/shared terminal configuration and student login QR codes', () => {
   assert.match(preload, /setHostDeviceTerminalMode/);
   assert.match(ui, /setDeviceTerminalMode/);

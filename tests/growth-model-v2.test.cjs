@@ -57,6 +57,13 @@ test('growth page owns growth data and does not render report cards', () => {
   assert.match(main, /bridge:openGrowthModelDir/);
 });
 
+test('growth data reloads after migration, section entry and student changes', () => {
+  assert.match(ui, /if \(restoredStudents\[0\]\) refreshSelectedGrowthModel\(restoredStudents\[0\]\)/);
+  assert.match(ui, /if \(activeSection !== 'growth' \|\| !selectedStudent\) return;\s+refreshSelectedGrowthModel\(selectedStudent\)/);
+  assert.match(ui, /setGrowthIndex\(null\)/);
+  assert.match(ui, /setGrowthIndexPreview\(''\)/);
+});
+
 test('digestion and report protocols enforce reviewed growth data first', () => {
   assert.match(main, /成长模型是学生长期成长的权威数据层/);
   assert.match(main, /不要在资料消化过程中直接覆盖学情报告/);

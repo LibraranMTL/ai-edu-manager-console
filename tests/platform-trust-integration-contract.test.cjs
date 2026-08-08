@@ -10,9 +10,12 @@ test('platform license is the only platform publishing credential and receivers 
   const main = read('electron', 'main.cjs');
   const preload = read('electron', 'preload.cjs');
   const ui = read('src', 'main.tsx');
-  assert.match(main, /verifyLicenseTokenV2[\s\S]*deviceId: getHostIdentity\(\)\.hostId/);
+  assert.match(main, /activateWindowsLicenseV3[\s\S]*deviceId: getHostIdentity\(\)\.hostId/);
+  assert.doesNotMatch(main, /verifyLicenseTokenV2|AI_EDU_LICENSE_TRUSTED_ISSUERS|LICENSE_SIGNING_SECRET/);
   assert.match(main, /bridge:importLicenseFile/);
-  assert.match(main, /bridge:importTrustedLicenseIssuerBundle/);
+  assert.doesNotMatch(main, /bridge:importTrustedLicenseIssuerBundle/);
+  assert.doesNotMatch(preload, /importTrustedLicenseIssuerBundle/);
+  assert.doesNotMatch(ui, /导入可信签发方公钥包|importLicenseTrustBundle/);
   assert.doesNotMatch(main, /bridge:importCourseSigningKey/);
   assert.doesNotMatch(main, /bridge:importCourseTrustBundle/);
   assert.doesNotMatch(main, /bridge:createCourseSigningKey/);
@@ -33,7 +36,7 @@ test('license admin packages the canonical key manager and uses its package vers
   const preload = read('tools', 'license-admin-app', 'preload.cjs');
   const html = read('tools', 'license-admin-app', 'renderer', 'index.html');
   const renderer = read('tools', 'license-admin-app', 'renderer', 'renderer.js');
-  assert.equal(packageJson.version, '0.3.1');
+  assert.equal(packageJson.version, '0.4.1');
   assert.match(JSON.stringify(packageJson.build.extraResources), /platform-key-manager\.cjs/);
   assert.match(main, /package\.json/);
   assert.match(main, /process\.resourcesPath[\s\S]*platform-key-manager\.cjs/);
@@ -53,4 +56,6 @@ test('Windows release script scans sources, staged runtime and packaged artifact
   assert.match(build, /license_v2_token/);
   assert.match(build, /private_pem/);
   assert.match(build, /platform-key-manager\.cjs/);
+  assert.match(build, /assertWindowsLicenseClosure/);
+  assert.match(build, /windows-license-policy\.cjs/);
 });

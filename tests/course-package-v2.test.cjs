@@ -77,6 +77,18 @@ test('platform publisher creates and verifies an installable integrity course pa
   assert.equal(imported.ok, true, imported.message);
   assert.equal(store.state().platformCatalog.catalogVersion, '2026.08.01.1');
   assert.equal(fs.existsSync(store.assetPath(imported.catalog.courses[0].coverAsset)), true);
+  assert.equal(store.state().currentPlatformPackage.canReExport, true);
+  const reExportedPath = path.join(temp, 're-exported-current.edu-coursepkg');
+  const reExported = store.exportCurrentCoursePackage(reExportedPath);
+  assert.equal(reExported.catalogVersion, '2026.08.01.1');
+  assert.equal(fs.existsSync(reExportedPath), true);
+  assert.equal(fs.readFileSync(reExportedPath).equals(fs.readFileSync(outputPath)), true);
+  assert.equal(reExported.sha256, crypto.createHash('sha256').update(fs.readFileSync(outputPath)).digest('hex'));
+  const archivedPath = path.join(userDataDir, 'course-catalog', 'platform-packages', store.state().currentPlatformPackage.filename);
+  const tampered = fs.readFileSync(archivedPath);
+  tampered[Math.floor(tampered.length / 2)] ^= 0xff;
+  fs.writeFileSync(archivedPath, tampered);
+  assert.throws(() => store.exportCurrentCoursePackage(path.join(temp, 'tampered-export.edu-coursepkg')), /完整性校验失败/);
 });
 
 test('course package rejects drafts that did not pass rights validation', () => {

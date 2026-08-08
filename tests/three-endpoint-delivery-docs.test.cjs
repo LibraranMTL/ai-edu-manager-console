@@ -10,7 +10,7 @@ function read(relativePath) {
   return fs.readFileSync(path.join(root, relativePath), 'utf8');
 }
 
-test('download page presents the current four-endpoint product line', () => {
+test('download page presents four product families and five client builds', () => {
   const html = read(path.join('release', '网站文件', 'download.html'));
 
   for (const expected of [
@@ -18,54 +18,79 @@ test('download page presents the current four-endpoint product line', () => {
     'Windows 学生端',
     'Android 学生端',
     'Android 教师端',
-    'v0.15.10',
-    'v0.15.9',
-    'v0.6.10',
+    'Android 单机版',
+    'v0.16.7',
+    'v0.6.12',
     'v0.1.0',
+    'v1.1.1',
     'windows-host-manual.html',
     'windows-student-manual.html',
     'android-student-manual.html',
     'android-teacher-manual.html',
+    'android-standalone-manual.html',
+    '完整功能，支持主机—多终端部署',
+    '资料采集与上传、精选课程学习、学情报告查看',
+    '完整功能 · 家庭平板单机',
   ]) {
     assert.match(html, new RegExp(expected.replaceAll('.', '\\.'), 'u'));
   }
 
   assert.doesNotMatch(html, /iOS|即将开放/u);
+  assert.match(html, /正式签名版/u);
+  assert.match(html, /下载正式 APK/u);
+  assert.doesNotMatch(html, /正式包待签名/u);
+  assert.doesNotMatch(html, /app-debug\.apk|device-test-candidate\.apk/u);
 });
 
-test('download page publishes the Windows 0.15.9 formal acceptance checksums', () => {
+test('download page omits historical release notes and acceptance details', () => {
   const html = read(path.join('release', '网站文件', 'download.html'));
 
-  assert.match(html, /Windows 0\.15\.9 教育内容智能出版正式发布/u);
-  assert.match(html, /全量自动测试 640\/640/u);
-  assert.match(html, /B6ECD8F58B7296832F564F456893C362C8C4E13425645DE2E00293B48F65682B/u);
-  assert.match(html, /D157816B2C22B6E9C4BCE7230EF7E340C26BAC48228ACAC8A93A5BD2D2DEA28C/u);
-  assert.match(html, /发行者元数据为 Robogala/u);
-  assert.match(html, /尚未配置 Authenticode 公开代码签名/u);
+  for (const removed of [
+    'Windows 0.15.10 课程包导出正式版',
+    'Windows 0.15.10 备份迁移候选',
+    'Windows 0.15.10 Android 教师端支持升级',
+    'Windows 0.15.9 教育内容智能出版正式发布',
+    'Windows 0.15.6 平台课程权限与签名发布',
+    'Windows 0.15.5 课程编辑与资料确认修复',
+    'Windows 0.15.4 课程上传与换机恢复',
+    'Windows 0.15.3 档案与报告导出更新',
+    'Windows 0.15.2 课程菜单更新',
+    '知识协作与跨主机知识',
+    '全量自动测试',
+    'SHA-256',
+    'Authenticode',
+  ]) {
+    assert.doesNotMatch(html, new RegExp(removed.replaceAll('.', '\\.'), 'u'));
+  }
+  assert.doesNotMatch(html, /class=["']release-note/u);
 });
 
 test('download page links the current artifacts and canonical web manuals exist', () => {
   const download = read(path.join('release', '网站文件', 'download.html'));
   for (const artifact of [
-    ['../download/AI-edu-manager-console-Windows-0.15.10.zip', path.join('release', 'windows', 'AI-edu-manager-console-Windows-0.15.10.zip')],
-    ['../download/AI-edu-manager-student-terminal-Windows-0.15.9.exe', path.join('release', 'windows-terminal', 'AI-edu-manager-student-terminal-Windows-0.15.9.exe')],
-    ['../download/AI-edu-manager-tablet-terminal-0.6.10.apk', path.join('release', 'tablet-terminal', 'AI-edu-manager-tablet-terminal-0.6.10.apk')],
+    ['../windows/candidates/path-rebind-existing-dirs-v3/AI-edu-manager-console-Windows-0.16.7-path-rebind-existing-dirs-v3.zip', null],
+    ['../download/AI-edu-manager-student-terminal-Windows-0.16.1.exe', path.join('release', 'windows-terminal', 'AI-edu-manager-student-terminal-Windows-0.16.1.exe')],
+    ['../download/AI-edu-manager-tablet-terminal-0.6.12.apk', path.join('release', 'tablet-terminal', 'AI-edu-manager-tablet-terminal-0.6.12.apk')],
     ['../download/AI-edu-manager-teacher-terminal-0.1.0.apk', path.join('release', 'teacher-terminal', 'AI-edu-manager-teacher-terminal-0.1.0.apk')],
+    ['../download/AI-Education-Manager-Android-Standalone-1.1.1-release.apk', path.join('android-standalone-manager', 'delivery', 'AI-Education-Manager-Android-Standalone-1.1.1-release.apk')],
   ]) {
     assert.match(download, new RegExp(artifact[0].replaceAll('.', '\\.')));
-    assert.equal(fs.existsSync(path.join(root, artifact[1])), true, `${artifact[1]} should exist`);
+    if (artifact[1]) {
+      assert.equal(fs.existsSync(path.join(root, artifact[1])), true, `${artifact[1]} should exist`);
+    }
   }
   for (const relativePath of [
     path.join('release', '网站文件', 'windows-host-manual.html'),
     path.join('release', '网站文件', 'windows-student-manual.html'),
     path.join('release', '网站文件', 'android-student-manual.html'),
     path.join('release', '网站文件', 'android-teacher-manual.html'),
+    path.join('release', '网站文件', 'android-standalone-manual.html'),
   ]) {
     assert.equal(fs.existsSync(path.join(root, relativePath)), true, `${relativePath} should exist`);
   }
 });
 
-test('all primary site pages link to the four canonical manuals', () => {
+test('all primary site pages link to the five canonical manuals', () => {
   for (const filename of ['index.html', 'download.html', 'buy.html', 'contact.html']) {
     const html = fs.readFileSync(path.join(website, filename), 'utf8');
     for (const manual of [
@@ -73,6 +98,7 @@ test('all primary site pages link to the four canonical manuals', () => {
       'windows-student-manual.html',
       'android-student-manual.html',
       'android-teacher-manual.html',
+      'android-standalone-manual.html',
     ]) {
       assert.match(html, new RegExp(`href=["']${manual.replace('.', '\\.')}["']`, 'u'), `${filename} should link ${manual}`);
     }
@@ -84,6 +110,7 @@ test('manual sources describe target selection and terminal-specific workflows',
   const windowsStudent = read(path.join('docs', 'delivery', 'Windows学生终端操作手册.md'));
   const androidStudent = read(path.join('docs', 'delivery', 'Android学生终端操作手册.md'));
   const androidTeacher = read(path.join('docs', 'delivery', 'Android教师终端操作手册.md'));
+  const androidStandalone = read(path.join('docs', 'delivery', 'Android单机版操作手册.md'));
 
   assert.match(host, /学生原始资料库/u);
   assert.match(host, /绑定项目/u);
@@ -124,44 +151,35 @@ test('manual sources describe target selection and terminal-specific workflows',
   assert.match(androidTeacher, /自动投递文件夹/u);
   assert.match(androidTeacher, /档案缓存/u);
   assert.match(androidTeacher, /不包含精选课程、学生空间登录或教育管家对话模块/u);
+  assert.match(androidStandalone, /不依赖 Windows 主机的完整教育管家/u);
+  assert.match(androidStandalone, /新建或接管学生学情档案/u);
+  assert.match(androidStandalone, /智能混合（推荐）/u);
+  assert.match(androidStandalone, /PalmClaw、豆包、MobileClaw 或 ChatGPT\/Codex/u);
+  assert.match(androidStandalone, /加密备份与恢复/u);
+  assert.match(androidStandalone, /不会自动读取其他应用的私有聊天数据库/u);
 });
 
-test('four web manuals are synchronized to the current host and teacher workflow', () => {
+test('five web manuals are synchronized to the current product workflows', () => {
   const windowsStudent = read(path.join('release', '网站文件', 'windows-student-manual.html'));
   const androidStudent = read(path.join('release', '网站文件', 'android-student-manual.html'));
   const androidTeacher = read(path.join('release', '网站文件', 'android-teacher-manual.html'));
+  const androidStandalone = read(path.join('release', '网站文件', 'android-standalone-manual.html'));
 
-  assert.match(windowsStudent, /配套主机：Windows 主机 0\.15\.10/u);
-  assert.match(androidStudent, /配套主机：Windows 主机端 0\.15\.10/u);
+  assert.match(windowsStudent, /配套主机：Windows 主机 0\.16\.1/u);
+  assert.match(androidStudent, /配套主机：Windows 主机端 0\.16\.1/u);
   assert.match(androidTeacher, /适用版本：Android 教师端 0\.1\.0/u);
   assert.match(androidTeacher, /不是把文件发送到学生设备/u);
   assert.match(androidTeacher, /在主机暂时不可连接时仍可从缓存查看/u);
-  for (const manual of [windowsStudent, androidStudent, androidTeacher]) {
+  assert.match(androidStandalone, /适用版本：Android 单机版 1\.1\.1/u);
+  assert.match(androidStandalone, /Android 单机版是一套不依赖 Windows 主机的完整教育管家/u);
+  for (const manual of [windowsStudent, androidStudent, androidTeacher, androidStandalone]) {
     assert.match(manual, /android-teacher-manual\.html/u);
+    assert.match(manual, /android-standalone-manual\.html/u);
   }
 });
 
-test('download page explains the Windows 0.15.2 course menu permission boundary', () => {
-  const html = read(path.join('release', '网站文件', 'download.html'));
-
-  assert.match(html, /Windows 0\.15\.2 课程菜单更新/u);
-  assert.match(html, /课程学习：所有版本均可打开已分配课程/u);
-  assert.match(html, /课程管理：仅已激活的专业版和机构版可用/u);
-  assert.match(html, /Excel 导入：四个字段，最多 200 门课程/u);
-});
-
-test('download page explains the Windows 0.15.4 direct course upload and host migration workflow', () => {
-  const html = read(path.join('release', '网站文件', 'download.html'));
-
-  assert.match(html, /Windows 0\.15\.4 课程上传与换机恢复/u);
-  assert.match(html, /名称、简介、HTTPS 链接和最大 5 MB 图片/u);
-  assert.match(html, /相同课程链接更新原课程/u);
-  assert.match(html, /受管路径转到当前资料根目录，外部知识库不误改/u);
-});
-
-test('public site and web manual explain D-stage knowledge collaboration without overstating validation', () => {
+test('public home and web manual retain D-stage knowledge collaboration guidance', () => {
   const home = read(path.join('release', '网站文件', 'index.html'));
-  const download = read(path.join('release', '网站文件', 'download.html'));
   const manual = read(path.join('release', '网站文件', 'windows-host-manual.html'));
   const legacyManual = read(path.join('release', '网站文件', 'windows-manual.html'));
 
@@ -173,10 +191,6 @@ test('public site and web manual explain D-stage knowledge collaboration without
   ]) {
     assert.match(home, expected);
   }
-
-  assert.match(download, /知识协作与跨主机知识/u);
-  assert.match(download, /团队查询和明确对话投递已完成双机真机验证/u);
-  assert.match(download, /远程路由与自动档案更新仍在受控复测/u);
 
   for (const expected of [
     /教育管家问答与跨主机知识查询/u,
@@ -198,6 +212,6 @@ test('Windows student web manual keeps its table of contents aligned with the ar
   assert.match(manual, /align-items:start/u);
   assert.match(manual, /h2\[id\] \{ scroll-margin-top:92px; \}/u);
   assert.match(manual, /@media\(max-width:820px\)/u);
-  assert.match(manual, /适用版本：Windows 学生终端 0\.15\.9/u);
+  assert.match(manual, /适用版本：Windows 学生终端 0\.16\.1/u);
   assert.doesNotMatch(manual, /118\.px|24\.px|1\.\.%|\.\.9\.6/u);
 });

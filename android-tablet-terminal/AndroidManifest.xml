@@ -1,7 +1,7 @@
 ﻿<manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="com.qxmatrix.eduterminal"
-    android:versionCode="80"
-    android:versionName="0.6.10">
+    android:versionCode="82"
+    android:versionName="0.6.12">
 
     <uses-sdk
         android:minSdkVersion="23"
@@ -58,6 +58,7 @@
         <package android:name="com.tencent.ai.marvis" />
         <package android:name="com.tencent.aigc.marvis" />
         <package android:name="md.obsidian" />
+        <package android:name="com.qxmatrix.edumanager.standalone" />
         <intent>
             <action android:name="android.intent.action.VIEW" />
             <data android:scheme="wxwork" />

@@ -1,0 +1,30 @@
+package com.qxmatrix.edumanager.standalone
+
+import android.content.Context
+import org.json.JSONArray
+import org.json.JSONObject
+
+class ProjectRepository(context: Context) {
+    private val state = PrivateStateStore(context)
+    fun list(): List<ProjectRecord> = try {
+        JSONObject(state.readBytes(PATH).toString(Charsets.UTF_8)).optJSONArray("projects").toObjects().map(ProjectRecord::fromJson)
+    } catch (_: Exception) { emptyList() }
+
+    fun validateAdd(project: ProjectRecord) {
+        val current = list()
+        require(current.none { it.name == project.name }) { "同名学习项目已存在" }
+        require(project.knowledgeMode != "adopted" || current.none { it.knowledgeMode == "adopted" && it.knowledgeRootUri == project.knowledgeRootUri }) { "该项目知识库已被其他项目接管" }
+    }
+
+    fun add(project: ProjectRecord) {
+        validateAdd(project)
+        val root = JSONObject().put("version", 1).put("updatedAt", Timestamp.now())
+            .put("projects", JSONArray().also { array -> (listOf(project) + list()).forEach { array.put(it.toJson()) } })
+        state.writeBytes(PATH, (root.toString(2) + "\n").toByteArray())
+    }
+
+    fun requireExact(projectId: String): ProjectRecord = list().singleOrNull { it.id == projectId }
+        ?: throw NoSuchElementException("未找到指定项目 ID：$projectId")
+
+    companion object { private const val PATH = "projects.json" }
+}

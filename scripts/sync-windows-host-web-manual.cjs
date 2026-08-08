@@ -145,6 +145,7 @@ function manualMenu(currentHref) {
       <a href="./windows-student-manual.html"${currentHref === './windows-student-manual.html' ? ' aria-current="page"' : ''}>Windows 学生端</a>
       <a href="./android-student-manual.html"${currentHref === './android-student-manual.html' ? ' aria-current="page"' : ''}>Android 学生端</a>
       <a href="./android-teacher-manual.html"${currentHref === './android-teacher-manual.html' ? ' aria-current="page"' : ''}>Android 教师端</a>
+      <a href="./android-standalone-manual.html">Android 单机版</a>
       <a href="./privacy.html">隐私政策</a>
       <a href="./agreement.html">用户协议</a>
     </nav>`;

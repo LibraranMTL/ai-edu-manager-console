@@ -1,0 +1,74 @@
+{
+  "student": {
+    "id": "student-w0-001",
+    "name": "测试学生",
+    "grade": "7",
+    "rootPath": "D:\\Education\\测试学生知识库",
+    "rawPath": "D:\\Education\\测试学生知识库\\测试学生原始资料库",
+    "summaryPath": "D:\\Education\\测试学生知识库\\测试学生学情分析汇总",
+    "agentPath": "D:\\Education\\测试学生知识库\\AGENT.md",
+    "outputPath": "D:\\Education\\测试学生知识库\\输出结果",
+    "knowledgeBaseMode": "adopted",
+    "futureCompatibleField": "must-be-preserved"
+  },
+  "assetIndex": {
+    "version": 1,
+    "assets": [
+      {
+        "assetId": "asset-0123456789abcdef",
+        "filename": "课程截图.png",
+        "sha1": "0123456789abcdef0123456789abcdef01234567",
+        "size": 2048,
+        "type": "image",
+        "path": "D:\\Education\\测试学生知识库\\测试学生原始资料库\\课程截图.png",
+        "ownerStudentId": "student-w0-001",
+        "linkedStudents": ["student-w0-001"],
+        "linkedProjects": ["project-w0-001"],
+        "references": [
+          {
+            "spaceType": "student",
+            "spaceId": "student-w0-001",
+            "workspaceId": "student-w0-001",
+            "logicalPath": "@RAW_DIR/课程截图.png",
+            "role": "student_raw",
+            "path": "D:\\Education\\测试学生知识库\\测试学生原始资料库\\课程截图.png",
+            "source": "课程屏幕采集"
+          }
+        ],
+        "courseId": "platform:test-course",
+        "status": "active"
+      }
+    ]
+  },
+  "projectIndex": {
+    "version": 1,
+    "projects": [
+      {
+        "id": "project-w0-001",
+        "name": "测试项目",
+        "studentIds": ["student-w0-001"],
+        "workspaceMode": "managed",
+        "knowledgeMode": "adopted",
+        "knowledgeSpaceId": "project-kb-w0-001",
+        "status": "active"
+      }
+    ]
+  },
+  "taskResult": {
+    "protocolVersion": "1.2",
+    "taskId": "task-w0-001",
+    "executionId": "execution-w0-001",
+    "status": "completed",
+    "message": "消化完成",
+    "artifacts": [{"path": "测试学生学情分析汇总/index.md"}],
+    "validation": {"passed": true}
+  },
+  "courseCapture": {
+    "schema": "edu-manager.course-capture.v1",
+    "studentId": "student-w0-001",
+    "courseId": "platform:test-course",
+    "provider": "Test Provider",
+    "url": "https://example.test/course",
+    "captureSessionId": "capture-w0-001"
+  }
+}

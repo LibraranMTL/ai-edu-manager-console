@@ -71,7 +71,14 @@ function collectFiles(root, options = {}) {
 function latestArchiveVersionDir(archiveRoot) {
   const latest = readJson(path.join(String(archiveRoot || ''), 'latest.json'), {});
   const candidate = path.resolve(String(latest.versionDir || ''));
-  return candidate && fs.existsSync(candidate) && pathInside(candidate, archiveRoot) ? candidate : '';
+  if (candidate && fs.existsSync(candidate) && pathInside(candidate, archiveRoot)) return candidate;
+  const root = path.resolve(String(archiveRoot || ''));
+  if (!root || !fs.existsSync(root)) return '';
+  return fs.readdirSync(root, { withFileTypes: true })
+    .filter((entry) => entry.isDirectory() && !entry.name.startsWith('.'))
+    .map((entry) => path.join(root, entry.name))
+    .filter((dir) => fs.existsSync(path.join(dir, 'education-archive.json')) && fs.existsSync(path.join(dir, 'manifest.json')))
+    .sort((left, right) => fs.statSync(right).mtimeMs - fs.statSync(left).mtimeMs)[0] || '';
 }
 
 function collectStudentArchiveFiles(options = {}) {
@@ -90,6 +97,37 @@ function collectStudentArchiveFiles(options = {}) {
       const status = /^status:\s*([^\r\n]+)$/im.exec(header)?.[1]?.trim().toLowerCase() || '';
       return !status || status === 'published';
     })
+    .map((item) => ({ ...item, kind: 'learning_report' }));
+  const archiveVersionDir = latestArchiveVersionDir(options.archiveRoot);
+  const archive = collectFiles(archiveVersionDir, { limit: 50 })
+    .map((item) => ({ ...item, kind: 'education_archive' }));
+  const rawPrefix = rawRoot ? `${rawRoot.toLowerCase()}${path.sep}` : '';
+  return [...knowledge, ...growth, ...reports, ...archive].filter((item) => {
+    const source = path.resolve(item.sourcePath).toLowerCase();
+    return !rawRoot || (source !== rawRoot.toLowerCase() && !source.startsWith(rawPrefix));
+  });
+}
+
+function governedStatus(filePath) {
+  const header = fs.readFileSync(filePath, 'utf8').slice(0, 8192);
+  return /^status:\s*([^\r\n]+)$/im.exec(header)?.[1]?.trim().toLowerCase() || '';
+}
+
+function collectGovernedStudentArchiveFiles(options = {}) {
+  const rawRoot = path.resolve(String(options.rawRoot || ''));
+  const reportRoot = path.resolve(String(options.reportRoot || ''));
+  const excludedKnowledgeStatuses = new Set(['draft', 'pending', 'pending_review', 'rejected', 'template']);
+  const knowledge = collectFiles(options.knowledgeRoot, {
+    excludedRoots: [rawRoot, reportRoot].filter(Boolean),
+    limit: options.limit,
+  })
+    .filter((item) => !excludedKnowledgeStatuses.has(governedStatus(item.sourcePath)))
+    .map((item) => ({ ...item, kind: 'confirmed_knowledge' }));
+  const growth = collectFiles(options.growthRoot, { limit: options.limit })
+    .filter((item) => !/(^|\/)(?:成长证据草稿|.*(?:draft|草稿).*)\.(?:md|json|txt|csv)$/iu.test(item.relativePath))
+    .map((item) => ({ ...item, kind: 'growth_model' }));
+  const reports = collectFiles(reportRoot, { limit: 100 })
+    .filter((item) => governedStatus(item.sourcePath) === 'published')
     .map((item) => ({ ...item, kind: 'learning_report' }));
   const archiveVersionDir = latestArchiveVersionDir(options.archiveRoot);
   const archive = collectFiles(archiveVersionDir, { limit: 50 })
@@ -375,7 +413,7 @@ function recordPublishedStudentArchive(stateInput, publication) {
 module.exports = {
   STUDENT_ARCHIVE_SYNC_SCHEMA,
   STUDENT_ARCHIVE_SYNC_STATE_SCHEMA,
-  collectStudentArchiveFiles,
+  collectStudentArchiveFiles: collectGovernedStudentArchiveFiles,
   createStudentArchivePublication,
   materializeStudentArchivePublication,
   normalizeState,

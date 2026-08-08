@@ -130,6 +130,23 @@ function scanSecretSignatures(files, label) {
   return { label, files: files.length, findings: 0 };
 }
 
+function assertWindowsLicenseClosure(runtimeRoot, label) {
+  const mainPath = path.join(runtimeRoot, 'electron', 'main.cjs');
+  const trustPath = path.join(runtimeRoot, 'electron', 'license-trust-store.cjs');
+  const policyPath = path.join(runtimeRoot, 'electron', 'windows-license-policy.cjs');
+  for (const required of [mainPath, trustPath, policyPath]) {
+    if (!fs.existsSync(required)) throw new Error(`${label} is missing Windows License closure runtime: ${required}`);
+  }
+  const main = fs.readFileSync(mainPath, 'utf8');
+  for (const forbidden of ['LICENSE_SIGNING_SECRET', 'AI_EDU_LICENSE_TRUSTED_ISSUERS', 'verifyLicenseTokenV2']) {
+    if (main.includes(forbidden)) throw new Error(`${label} still contains forbidden Windows License compatibility path: ${forbidden}`);
+  }
+  const trust = fs.readFileSync(trustPath, 'utf8');
+  if (!trust.includes("policy: 'packaged_only'") || trust.includes('function importBundle')) {
+    throw new Error(`${label} does not enforce packaged-only License trust.`);
+  }
+}
+
 function reachableDistAssets(distRoot) {
   const assetsRoot = path.join(distRoot, 'assets');
   const names = fs.existsSync(assetsRoot)
@@ -267,6 +284,7 @@ function build() {
   try {
     fs.writeFileSync(phaseLogPath, '', 'utf8');
     recordPhase('secret-scan-source');
+    assertWindowsLicenseClosure(repoRoot, 'source');
     const sourceSecretAudit = scanSecretSignatures([
       ...walkFiles(path.join(repoRoot, 'electron')),
       ...walkFiles(path.join(repoRoot, 'src')),
@@ -300,10 +318,24 @@ function build() {
     recordPhase('write-runtime-package');
     writeRuntimePackage();
     recordPhase('secret-scan-stage');
+    assertWindowsLicenseClosure(stageRoot, 'staged runtime');
     const stageSecretAudit = scanSecretSignatures(walkFiles(stageRoot), 'staged runtime');
 
     recordPhase('package-electron');
-    runPackageBin('electron-builder', 'electron-builder', ['--projectDir', stageRoot, '--win', 'portable', '--x64']);
+    const electronBuilderArgs = ['--projectDir', stageRoot, '--win', 'portable', '--x64'];
+    const configuredElectronDist = String(process.env.EDU_ELECTRON_DIST || '').trim();
+    if (configuredElectronDist) {
+      const electronDist = path.resolve(configuredElectronDist);
+      if (!fs.existsSync(electronDist) || !fs.statSync(electronDist).isFile()) {
+        throw new Error(`EDU_ELECTRON_DIST does not point to a local Electron zip: ${electronDist}`);
+      }
+      const expectedElectronZip = `electron-v${JSON.parse(fs.readFileSync(require.resolve('electron/package.json'), 'utf8')).version}-win32-x64.zip`;
+      if (path.basename(electronDist) !== expectedElectronZip) {
+        throw new Error(`EDU_ELECTRON_DIST must reference ${expectedElectronZip}.`);
+      }
+      electronBuilderArgs.push(`--config.electronDist=${electronDist}`);
+    }
+    runPackageBin('electron-builder', 'electron-builder', electronBuilderArgs);
 
     const unpackedRoot = path.join(stageOutput, 'win-unpacked');
     const appAsar = path.join(unpackedRoot, 'resources', 'app.asar');
@@ -323,6 +355,7 @@ function build() {
       '\\electron\\platform-course-drafts.cjs',
       '\\electron\\license-entitlements.cjs',
       '\\electron\\license-trust-store.cjs',
+      '\\electron\\windows-license-policy.cjs',
       '\\electron\\platform-key-manager.cjs',
       '\\electron\\platform-publish-approval.cjs',
       '\\dist\\license\\trusted-issuers.json',

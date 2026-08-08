@@ -1,6 +1,8 @@
 const crypto = require('crypto');
 
 const LICENSE_V2_SCHEMA = 'edu-manager.license.v2';
+const LICENSE_V3_SCHEMA = 'edu-manager.license.v3';
+const LICENSE_PRODUCTS = new Set(['WINDOWS_HOST', 'ANDROID_STANDALONE']);
 const LICENSE_EDITIONS = new Set(['TRIAL', 'FAMILY', 'PRO', 'ORG', 'PLATFORM']);
 const PLATFORM_ROLES = new Set(['PLATFORM_EDITOR', 'PLATFORM_PUBLISHER', 'PLATFORM_ADMIN']);
 const EDITION_RANK = { TRIAL: 0, FAMILY: 1, PRO: 2, ORG: 3, PLATFORM: 4 };
@@ -168,18 +170,90 @@ function verifyLicenseTokenV2(token, options = {}) {
   }
 }
 
+function normalizeProductId(value) {
+  const productId = String(value || '').trim().toUpperCase();
+  if (!LICENSE_PRODUCTS.has(productId)) throw new Error(`不支持的授权产品：${productId || '空'}`);
+  return productId;
+}
+
+function verifyLicenseTokenV3(token, options = {}) {
+  try {
+    const compact = String(token || '').trim();
+    const parts = compact.split('.');
+    if (parts.length !== 3 || parts[0] !== 'AIE3') throw new Error('License v3 格式不正确。');
+    const payload = JSON.parse(base64UrlDecode(parts[1]).toString('utf8'));
+    if (payload.schema !== LICENSE_V3_SCHEMA) throw new Error('License v3 Schema 不受支持。');
+    const productId = normalizeProductId(payload.productId);
+    const expectedProductId = String(options.productId || '').trim().toUpperCase();
+    if (expectedProductId && productId !== expectedProductId) throw new Error('License 产品与当前应用不匹配。');
+    const entitlement = entitlementFor(payload);
+    const trusted = normalizeTrustedIssuers(options.trustedIssuers);
+    const issuer = trusted.get(String(payload.keyId || ''));
+    if (!issuer) throw new Error('License 签发密钥不受信任。');
+    if (EDITION_RANK[entitlement.edition] > EDITION_RANK[issuer.maxEdition]) throw new Error('当前签发密钥无权授予该版本。');
+    if (!crypto.verify('RSA-SHA256', Buffer.from(`AIE3.${parts[1]}`), issuer.publicKey, base64UrlDecode(parts[2]))) {
+      throw new Error('License v3 签名验证失败。');
+    }
+    const issuedAt = String(payload.issuedAt || '');
+    const expiresAt = String(payload.expiresAt || '');
+    if (!issuedAt || Number.isNaN(Date.parse(issuedAt))) throw new Error('License 签发时间无效。');
+    if (expiresAt && Number.isNaN(Date.parse(expiresAt))) throw new Error('License 到期时间无效。');
+    const now = options.now instanceof Date ? options.now : new Date(options.now || Date.now());
+    if (expiresAt && now.getTime() > Date.parse(expiresAt)) throw new Error('License 已过期。');
+    const devicePolicy = String(payload.devicePolicy || 'required_binding');
+    const boundDeviceId = String(payload.deviceId || '').trim();
+    const deviceId = String(options.deviceId || '').trim();
+    if (!['optional_binding', 'required_binding'].includes(devicePolicy)) throw new Error('License 设备绑定策略不受支持。');
+    if (devicePolicy === 'required_binding' && !boundDeviceId) throw new Error('License 缺少目标设备码。');
+    if (boundDeviceId && boundDeviceId.toLowerCase() !== deviceId.toLowerCase()) throw new Error('License 与当前设备不匹配。');
+    const declared = [...new Set((payload.capabilities || []).map(String))].sort();
+    const expected = [...entitlement.capabilities].sort();
+    if (JSON.stringify(declared) !== JSON.stringify(expected)) throw new Error('License 能力声明与授权版本不一致。');
+    const maxActiveStudents = Math.max(1, Math.min(999999, Number.parseInt(payload.maxActiveStudents ?? payload.studentLimit, 10) || 1));
+    const maxDevices = Math.max(1, Math.min(999999, Number.parseInt(payload.maxDevices ?? payload.deviceLimit, 10) || 1));
+    return {
+      ok: true,
+      license: {
+        schema: LICENSE_V3_SCHEMA,
+        licenseId: String(payload.licenseId || ''),
+        productId,
+        customerId: String(payload.customerId || ''),
+        tenantId: String(payload.tenantId || ''),
+        ...entitlement,
+        maxActiveStudents,
+        studentLimit: maxActiveStudents,
+        maxDevices,
+        deviceLimit: maxDevices,
+        devicePolicy,
+        deviceId: boundDeviceId,
+        issuedAt,
+        expiresAt,
+        issuer: String(payload.issuer || ''),
+        keyId: issuer.keyId,
+        tokenHash: crypto.createHash('sha256').update(compact).digest('hex'),
+      },
+    };
+  } catch (error) {
+    return { ok: false, code: 'LICENSE_V3_REJECTED', message: error.message };
+  }
+}
+
 module.exports = {
   EDITION_CAPABILITIES,
   EDITION_RANK,
   LICENSE_EDITIONS,
   LICENSE_V2_SCHEMA,
+  LICENSE_V3_SCHEMA,
+  LICENSE_PRODUCTS,
   PLATFORM_ROLES,
   ROLE_CAPABILITIES: {},
   capabilitiesFor,
   entitlementFor,
   hasCapability,
   normalizeTrustedIssuers,
+  normalizeProductId,
   planLabel,
   roleLabel,
   verifyLicenseTokenV2,
+  verifyLicenseTokenV3,
 };

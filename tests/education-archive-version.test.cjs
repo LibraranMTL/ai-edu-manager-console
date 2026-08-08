@@ -4,10 +4,17 @@ const os = require('node:os');
 const path = require('node:path');
 const test = require('node:test');
 const {
+  recoverPlaceholderReportsFromArchive,
+  reportHasSubstantiveContent,
   restoreArchiveVersion,
   validateArchiveVersion,
   writeArchiveVersion,
 } = require('../electron/education-archive-version.cjs');
+
+test('placeholder reports are distinguished from substantive reports', () => {
+  assert.equal(reportHasSubstantiveContent('---\nstatus: draft\n---\n# 阶段总结\n\n## 本阶段核心进展\n\n待生成。\n\n## 主要问题\n\n- 待补充。'), false);
+  assert.equal(reportHasSubstantiveContent('# 阶段总结\n\n## 本阶段核心进展\n\n学生已完成两轮资料整理并形成项目提纲。'), true);
+});
 
 function fixture(root, suffix = '') {
   return {
@@ -80,4 +87,27 @@ test('validated archive restores growth and reports while a damaged export is is
     growthIndexPath: growthPath,
     reportPaths: { profile: reportPath },
   }).ok, false);
+});
+
+test('migration recovery only replaces placeholder reports and repairs the portable latest pointer', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'edu-archive-migration-recovery-'));
+  const version = writeArchiveVersion(fixture(root));
+  const current = path.join(root, 'current');
+  const placeholder = path.join(current, '整体画像.md');
+  const existing = path.join(current, '阶段总结.md');
+  fs.mkdirSync(current, { recursive: true });
+  fs.writeFileSync(placeholder, '---\nstatus: draft\n---\n# 整体画像\n\n## 一句话画像\n\n待生成。', 'utf8');
+  fs.writeFileSync(existing, '# 阶段总结\n\n保留当前电脑已有的正式内容。', 'utf8');
+  fs.writeFileSync(path.join(root, 'versions', 'latest.json'), JSON.stringify({ versionDir: 'C:\\old-host\\missing' }), 'utf8');
+
+  const result = recoverPlaceholderReportsFromArchive({
+    rootDir: path.join(root, 'versions'),
+    studentId: 'student-1',
+    reportPaths: { profile: placeholder, stage: existing },
+  });
+
+  assert.equal(result.recovered.length, 1);
+  assert.match(fs.readFileSync(placeholder, 'utf8'), /稳定阅读/);
+  assert.match(fs.readFileSync(existing, 'utf8'), /保留当前电脑/);
+  assert.equal(JSON.parse(fs.readFileSync(path.join(root, 'versions', 'latest.json'), 'utf8')).versionDir, version.versionDir);
 });

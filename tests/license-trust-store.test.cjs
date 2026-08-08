@@ -14,36 +14,36 @@ function pair() {
   });
 }
 
-test('license trust import requires exact administrator-confirmed fingerprints and preserves multiple key ids', () => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'license-trust-'));
+test('Windows runtime trusts packaged official issuers and quarantines legacy local trust', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'license-trust-packaged-only-'));
   const packagedPath = path.join(root, 'packaged.json');
-  const localPath = path.join(root, 'local.json');
-  const bundlePath = path.join(root, 'bundle.json');
-  const oldKey = pair();
-  const newKey = pair();
-  fs.writeFileSync(packagedPath, JSON.stringify({ issuers: [{ keyId: 'license-platform-old', publicKey: oldKey.publicKey, maxEdition: 'PLATFORM' }] }));
-  fs.writeFileSync(bundlePath, JSON.stringify({ schema: 'edu-manager.trust-bundle.v1', keys: [{ keyId: 'license-platform-new', purpose: 'license_signing', publicKey: newKey.publicKey, fingerprint: publicKeyFingerprint(newKey.publicKey), maxEdition: 'PLATFORM' }] }));
-  const store = createLicenseTrustStore({ localPath, packagedPaths: [packagedPath] });
+  const localPath = path.join(root, 'local-trusted-issuers.json');
+  const official = pair();
+  const attacker = pair();
+  fs.writeFileSync(packagedPath, JSON.stringify({ issuers: [{ keyId: 'license-official', publicKey: official.publicKey, fingerprint: publicKeyFingerprint(official.publicKey), maxEdition: 'PLATFORM' }] }));
+  fs.writeFileSync(localPath, JSON.stringify({ issuers: [{ keyId: 'license-attacker', publicKey: attacker.publicKey, maxEdition: 'PLATFORM' }] }));
 
-  assert.throws(() => store.importBundle(bundlePath, { fingerprints: [] }), /逐一确认/);
-  const state = store.importBundle(bundlePath, { fingerprints: [publicKeyFingerprint(newKey.publicKey)] });
-  assert.deepEqual(state.issuers.map((item) => item.keyId).sort(), ['license-platform-new', 'license-platform-old']);
+  const store = createLicenseTrustStore({ localPath, packagedPaths: [packagedPath] });
+  const state = store.state();
+
+  assert.equal(state.policy, 'packaged_only');
+  assert.deepEqual(state.issuers.map((item) => item.keyId), ['license-official']);
   assert.equal(state.allIssuers.some((item) => Object.hasOwn(item, 'publicKey')), false);
+  assert.equal(fs.existsSync(localPath), false);
+  const quarantine = path.join(root, 'quarantine');
+  assert.equal(fs.readdirSync(quarantine).some((name) => name.startsWith('local-trusted-issuers.ignored-')), true);
+  assert.equal(Object.hasOwn(store, 'importBundle'), false);
+  assert.equal(Object.hasOwn(store, 'revoke'), false);
 });
 
-test('license trust store refuses a keyId collision and can revoke only locally imported trust', () => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'license-trust-revoke-'));
-  const localPath = path.join(root, 'local.json');
-  const bundlePath = path.join(root, 'bundle.json');
+test('conflicting packaged keys with the same keyId fail closed', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'license-trust-conflict-'));
+  const firstPath = path.join(root, 'first.json');
+  const secondPath = path.join(root, 'second.json');
   const first = pair();
   const second = pair();
-  const writeBundle = (publicKey) => fs.writeFileSync(bundlePath, JSON.stringify({ schema: 'edu-manager.trust-bundle.v1', keys: [{ keyId: 'license-platform-one', purpose: 'license_signing', publicKey, fingerprint: publicKeyFingerprint(publicKey), maxEdition: 'PLATFORM' }] }));
-  const store = createLicenseTrustStore({ localPath, packagedPaths: [] });
-  writeBundle(first.publicKey);
-  store.importBundle(bundlePath, { fingerprints: [publicKeyFingerprint(first.publicKey)] });
-  writeBundle(second.publicKey);
-  assert.throws(() => store.importBundle(bundlePath, { fingerprints: [publicKeyFingerprint(second.publicKey)] }), /不能覆盖/);
-  const revoked = store.revoke('license-platform-one', 'suspected leak');
-  assert.equal(revoked.issuers.length, 0);
-  assert.equal(revoked.allIssuers[0].status, 'revoked');
+  fs.writeFileSync(firstPath, JSON.stringify({ issuers: [{ keyId: 'license-official', publicKey: first.publicKey, maxEdition: 'PLATFORM' }] }));
+  fs.writeFileSync(secondPath, JSON.stringify({ issuers: [{ keyId: 'license-official', publicKey: second.publicKey, maxEdition: 'PLATFORM' }] }));
+  const store = createLicenseTrustStore({ packagedPaths: [firstPath, secondPath] });
+  assert.deepEqual(store.state().issuers, []);
 });

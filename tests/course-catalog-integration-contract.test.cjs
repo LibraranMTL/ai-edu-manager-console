@@ -47,6 +47,7 @@ test('Windows host and student terminal expose scoped course catalog contracts',
   assert.match(host, /importCoursePackage/);
   assert.doesNotMatch(host, /COURSE_CATALOG_PRIVATE_KEY/);
   assert.match(host, /ipcMain\.on\('bridge:publishPlatformCourseCatalog'/);
+  assert.match(host, /ipcMain\.on\('bridge:reExportPlatformCourseCatalog'/);
   assert.match(host, /ipcMain\.on\('bridge:rollbackPlatformCourseCatalog'/);
   assert.match(preload, /selectCustomCourseImage\(\)/);
   assert.match(preload, /saveDirectCustomCourse\(inputJson\)/);
@@ -55,6 +56,7 @@ test('Windows host and student terminal expose scoped course catalog contracts',
   assert.match(preload, /cancelPlatformCourseDeletion\(courseId\)/);
   assert.doesNotMatch(preload, /getPlatformPublishPreview\(\)/);
   assert.match(preload, /publishPlatformCourseCatalog\(releaseNotes\)/);
+  assert.match(preload, /reExportPlatformCourseCatalog\(\)/);
   assert.match(preload, /rollbackPlatformCourseCatalog\(\)/);
   assert.match(host, /\.filter\(courseAllowedByCurrentPlan\)/);
   assert.match(host, /当前授权不能使用机构自选课程/);
@@ -68,6 +70,9 @@ test('Windows host and student terminal expose scoped course catalog contracts',
   assert.match(hostUi, /platformCourseEditAllowed = !isWindows \|\| licenseCapability\('platform_course_edit'\)/);
   assert.match(hostUi, /platformCoursePublishAllowed = !isWindows \|\| licenseCapability\('platform_course_publish'\)/);
   assert.match(hostUi, /publishPlatformCourseCatalog/);
+  assert.match(hostUi, /生成\/导出平台课程包/);
+  assert.match(hostUi, /重新导出当前版本/);
+  assert.match(hostUi, /只有平台版可以生成或导出平台课程包/);
   assert.match(hostUi, /disabled=\{!courseManagementAllowed\}/);
   assert.match(hostUi, /专业版、机构版和平台版/);
   assert.match(hostUi, /新增一门机构精选课程/);

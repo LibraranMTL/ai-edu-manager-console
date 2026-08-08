@@ -50,4 +50,8 @@ test('education archive browser supports search and modified-date sorting', () =
   assert.match(ui, /archiveSearch\.trim\(\)\.toLocaleLowerCase/);
   assert.match(ui, /archiveDateSort === 'modified-desc'/);
   assert.match(ui, /显示 \{filteredMarkdownFiles\.length\}/);
+  assert.match(main, /summarizeArchiveContentHealth\(inspectedFiles\)/);
+  assert.match(ui, /当前档案是占位模板/);
+  assert.match(preload, /readMarkdownFile\(studentId, documentId\)/);
+  assert.match(main, /该文件不在当前学生教育档案范围内/);
 });

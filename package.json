@@ -1,6 +1,6 @@
 {
   "name": "edu-manager-launcher",
-  "version": "0.15.10",
+  "version": "0.16.7",
   "private": true,
   "type": "module",
   "main": "electron/main.cjs",
@@ -16,7 +16,7 @@
     "build:win": "pnpm test && node scripts/build-windows-release.cjs",
     "build:win-terminal": "pnpm test && node scripts/build-windows-terminal-release.cjs",
     "license-admin:desktop": "electron tools/license-admin-app",
-    "build:license-admin": "electron-builder --projectDir tools/license-admin-app --win portable --x64"
+    "build:license-admin": "node scripts/build-license-admin-qr-vendor.cjs && electron-builder --projectDir tools/license-admin-app --win portable --x64"
   },
   "dependencies": {
     "exceljs": "4.4.0",

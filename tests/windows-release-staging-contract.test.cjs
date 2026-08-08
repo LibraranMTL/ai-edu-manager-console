@@ -14,7 +14,10 @@ test('Windows release builds through an isolated local staging directory', () =>
   assert.match(releaseScript, /release-stage/);
   assert.match(releaseScript, /EDU_WINDOWS_CANDIDATE_TAG/);
   assert.match(releaseScript, /'windows', 'candidates', candidateTag/);
-  assert.match(releaseScript, /runPackageBin\('electron-builder', 'electron-builder', \['--projectDir', stageRoot/);
+  assert.match(releaseScript, /const electronBuilderArgs = \['--projectDir', stageRoot/);
+  assert.match(releaseScript, /runPackageBin\('electron-builder', 'electron-builder', electronBuilderArgs\)/);
+  assert.match(releaseScript, /process\.env\.EDU_ELECTRON_DIST/);
+  assert.match(releaseScript, /EDU_ELECTRON_DIST must reference/);
   assert.match(releaseScript, /resolvePackageBin/);
   assert.match(releaseScript, /processExists\(Number\(lock\?\.pid\)\)/);
   assert.match(releaseScript, /Another Windows release build is active/);

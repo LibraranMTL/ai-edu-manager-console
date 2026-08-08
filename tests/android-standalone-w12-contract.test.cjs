@@ -1,0 +1,60 @@
+const test = require('node:test');
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
+
+const sourceRoot = path.join(__dirname, '..', 'android-standalone-manager', 'app', 'src', 'main');
+const javaRoot = path.join(sourceRoot, 'java', 'com', 'qxmatrix', 'edumanager', 'standalone');
+const read = (name) => fs.readFileSync(path.join(javaRoot, name), 'utf8');
+
+test('W12 student archives, projects and reports open the bounded Markdown browser', () => {
+  const main = read('MainActivity.kt');
+  const browser = read('MarkdownBrowserActivity.kt');
+  const store = read('SafWorkspaceStore.kt');
+  for (const mode of ['MODE_ARCHIVE', 'MODE_PROJECT', 'MODE_REPORT']) assert.match(main, new RegExp(mode));
+  assert.match(browser, /settings\.javaScriptEnabled = false/);
+  assert.match(browser, /settings\.allowFileAccess = false/);
+  assert.match(browser, /settings\.allowContentAccess = false/);
+  assert.match(browser, /StudentIndexRepository\(this\)\.requireExact/);
+  assert.match(browser, /ProjectRepository\(this\)\.requireExact/);
+  assert.match(store, /fun listMarkdownFiles/);
+});
+
+test('W12 completed OCR results can be selected and rendered', () => {
+  const main = read('MainActivity.kt');
+  const browser = read('MarkdownBrowserActivity.kt');
+  assert.match(main, /查看 OCR 识别结果/);
+  assert.match(main, /ocrStatus.*completed/);
+  assert.match(main, /openOcrResult/);
+  assert.match(browser, /MODE_OCR/);
+  assert.match(browser, /ocrMarkdownPath/);
+  assert.match(browser, /OCR 结果路径超出当前学生范围/);
+});
+
+test('W12 course cards retain imported cover bytes and display summaries', () => {
+  const main = read('MainActivity.kt');
+  const catalog = read('CourseCatalogService.kt');
+  assert.match(main, /ImageView/);
+  assert.match(main, /course\.summary/);
+  assert.match(main, /courseCatalogService\.coverBytes/);
+  assert.match(catalog, /coverPayloads/);
+  assert.match(catalog, /state\.writeBytes\("\$COVER_ROOT\/\$cover"/);
+});
+
+test('W12 launches the real PalmClaw package before offering its official release page', () => {
+  const main = read('MainActivity.kt');
+  const manifest = fs.readFileSync(path.join(sourceRoot, 'AndroidManifest.xml'), 'utf8');
+  assert.match(main, /"com\.palmclaw"/);
+  assert.match(manifest, /<package android:name="com\.palmclaw"/);
+  assert.match(main, /if \(installedAgentPackage\(tool\) != null\).*launchAgentTool\(tool\)/s);
+  assert.match(main, /https:\/\/github\.com\/ModalityDance\/PalmClaw\/releases\/latest/);
+});
+
+test('W12 accepts either an Agent base URL or a complete chat completions URL', () => {
+  const agent = read('AgentAdapter.kt');
+  assert.match(agent, /resolveChatCompletionsUrl/);
+  assert.match(agent, /endsWith\("\/chat\/completions"/);
+  assert.match(agent, /safeErrorDetail/);
+  assert.match(agent, /x-request-id/);
+  assert.doesNotMatch(agent, /URL\("\$\{configuration\.endpoint\}\/chat\/completions"\)/);
+});

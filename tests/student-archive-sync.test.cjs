@@ -39,7 +39,7 @@ test('student archive collection includes governed outputs and excludes original
   write(path.join(raw, '课堂照片.jpg'), 'raw');
   write(path.join(growth, 'growth-index.json'), '{"confirmed":1}');
   write(path.join(growth, '成长证据草稿.md'), '候选内容');
-  write(path.join(reports, '整体画像.md'), '报告');
+  write(path.join(reports, '整体画像.md'), '---\nstatus: published\n---\n报告');
   write(path.join(reports, '待审核.md'), '---\nstatus: pending_review\n---\n候选报告');
   write(path.join(version, '教育档案.md'), '完整档案');
   write(path.join(archive, 'latest.json'), JSON.stringify({ versionDir: version }));
@@ -231,7 +231,8 @@ test('main process wires archive sync into the durable direct channel without ra
   assert.match(source, /function refreshStudentArchiveSyncWatchers\(\)/);
   assert.match(source, /fs\.watch\(target\.root,[\s\S]*?scheduleStudentArchiveSync\(target\.studentId,\s*6_000\)/);
   assert.match(source, /const roots = studentArchiveRoots\(normalized\);[\s\S]*?\[roots\.knowledgeRoot,\s*roots\.growthRoot,\s*roots\.reportRoot,\s*roots\.archiveRoot\]/);
-  assert.doesNotMatch(source, /\[roots\.knowledgeRoot,\s*roots\.rawRoot/);
+  const watcher = source.slice(source.indexOf('function refreshStudentArchiveSyncWatchers()'), source.indexOf('function startStudentArchiveSyncWatchers()'));
+  assert.doesNotMatch(watcher, /\[roots\.knowledgeRoot,\s*roots\.rawRoot/);
   assert.match(source, /suppressStudentArchiveSync\(student\.id\)[\s\S]*?materializeStudentArchivePublication/);
   assert.match(source, /startStudentArchiveSyncWatchers\(\)/);
   assert.match(source, /stopStudentArchiveSyncWatchers\(\)/);

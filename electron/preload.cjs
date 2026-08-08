@@ -105,6 +105,9 @@ contextBridge.exposeInMainWorld('AndroidBridge', {
   rollbackProjectWorkspaceRelocation(projectId) {
     return ipcRenderer.sendSync('bridge:rollbackProjectWorkspaceRelocation', projectId);
   },
+  rebindProjectKnowledgeSpace(projectId) {
+    return ipcRenderer.sendSync('bridge:rebindProjectKnowledgeSpace', projectId);
+  },
   getRemovedProjects() {
     return ipcRenderer.sendSync('bridge:getRemovedProjects');
   },
@@ -320,6 +323,9 @@ contextBridge.exposeInMainWorld('AndroidBridge', {
   deliverConversationMaterials(studentId, requestJson) {
     return ipcRenderer.sendSync('bridge:deliverConversationMaterials', studentId, requestJson);
   },
+  manageConversationImports(studentId, requestJson) {
+    return ipcRenderer.sendSync('bridge:manageConversationImports', studentId, requestJson);
+  },
   importConversationShareUrl(studentId, url, tool) {
     return ipcRenderer.invoke('bridge:importConversationShareUrl', studentId, url, tool);
   },
@@ -371,9 +377,6 @@ contextBridge.exposeInMainWorld('AndroidBridge', {
   getLicenseTrustStatus() {
     return ipcRenderer.sendSync('bridge:getLicenseTrustStatus');
   },
-  importTrustedLicenseIssuerBundle() {
-    return ipcRenderer.sendSync('bridge:importTrustedLicenseIssuerBundle');
-  },
   deactivateLicense() {
     return ipcRenderer.sendSync('bridge:deactivateLicense');
   },
@@ -395,8 +398,8 @@ contextBridge.exposeInMainWorld('AndroidBridge', {
   listMarkdownFiles(studentName) {
     return ipcRenderer.sendSync('bridge:listMarkdownFiles', studentName);
   },
-  readMarkdownFile(documentId) {
-    return ipcRenderer.sendSync('bridge:readMarkdownFile', documentId);
+  readMarkdownFile(studentId, documentId) {
+    return ipcRenderer.sendSync('bridge:readMarkdownFile', studentId, documentId);
   },
   listProjectKnowledgeFiles(projectId) {
     return ipcRenderer.sendSync('bridge:listProjectKnowledgeFiles', projectId);
@@ -511,6 +514,12 @@ contextBridge.exposeInMainWorld('AndroidBridge', {
   },
   getCollaborationState() {
     return ipcRenderer.sendSync('bridge:getCollaborationState');
+  },
+  setStudentArchiveSyncEnabled(studentId, enabled) {
+    return ipcRenderer.sendSync('bridge:setStudentArchiveSyncEnabled', studentId, enabled);
+  },
+  syncStudentArchiveNow(studentId) {
+    return ipcRenderer.sendSync('bridge:syncStudentArchiveNow', studentId);
   },
   setTeamKnowledgePolicy(optionsJson) {
     return ipcRenderer.sendSync('bridge:setTeamKnowledgePolicy', optionsJson);
@@ -737,6 +746,26 @@ contextBridge.exposeInMainWorld('AndroidBridge', {
   restoreHostData() {
     return ipcRenderer.sendSync('bridge:restoreHostData');
   },
+  getHostMigrationPlan() {
+    return ipcRenderer.invoke('bridge:getHostMigrationPlan');
+  },
+  createHostMigrationPackage(optionsJson) {
+    return ipcRenderer.invoke('bridge:createHostMigrationPackage', optionsJson);
+  },
+  inspectHostMigrationPackage() {
+    return ipcRenderer.invoke('bridge:inspectHostMigrationPackage');
+  },
+  restoreHostMigrationPackage(optionsJson) {
+    return ipcRenderer.invoke('bridge:restoreHostMigrationPackage', optionsJson);
+  },
+  onHostMigrationProgress(callback) {
+    const listener = (_event, payload) => callback(payload);
+    ipcRenderer.on('host-migration:progress', listener);
+    return () => ipcRenderer.removeListener('host-migration:progress', listener);
+  },
+  openHostMigrationRecord() {
+    return ipcRenderer.sendSync('bridge:openHostMigrationRecord');
+  },
   resetHostApiToken() {
     return ipcRenderer.sendSync('bridge:resetHostApiToken');
   },
@@ -749,8 +778,8 @@ contextBridge.exposeInMainWorld('AndroidBridge', {
   migrateStudentWorkspace(studentId, newName) {
     return ipcRenderer.sendSync('bridge:migrateStudentWorkspace', studentId, newName);
   },
-  rebindAdoptedStudentWorkspace(studentId) {
-    return ipcRenderer.sendSync('bridge:rebindAdoptedStudentWorkspace', studentId);
+  rebindAdoptedStudentWorkspace(studentId, selectionMode) {
+    return ipcRenderer.invoke('bridge:rebindAdoptedStudentWorkspace', studentId, selectionMode);
   },
   renameHostDevice(deviceId, name) {
     return ipcRenderer.sendSync('bridge:renameHostDevice', deviceId, name);
@@ -814,6 +843,9 @@ contextBridge.exposeInMainWorld('AndroidBridge', {
   },
   publishPlatformCourseCatalog(releaseNotes) {
     return ipcRenderer.sendSync('bridge:publishPlatformCourseCatalog', releaseNotes);
+  },
+  reExportPlatformCourseCatalog() {
+    return ipcRenderer.sendSync('bridge:reExportPlatformCourseCatalog');
   },
   rollbackPlatformCourseCatalog() {
     return ipcRenderer.sendSync('bridge:rollbackPlatformCourseCatalog');

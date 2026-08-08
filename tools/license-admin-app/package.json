@@ -1,6 +1,6 @@
 {
   "name": "ai-edu-license-admin",
-  "version": "0.3.1",
+  "version": "0.4.1",
   "private": true,
   "main": "main.cjs",
   "description": "AI教育管家内部授权码管理工具",

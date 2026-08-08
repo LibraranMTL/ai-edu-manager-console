@@ -1,0 +1,12 @@
+.gradle/
+.gradle-dist/
+build/
+app/build/
+local.properties
+delivery/*.xml
+delivery/*.zip
+delivery/*.edu-coursepkg
+delivery/restore-pull/
+delivery/verify-*.apk
+delivery/*.new
+delivery/physical-acceptance-*/

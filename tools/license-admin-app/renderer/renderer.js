@@ -4,6 +4,9 @@ const state = {
   records: [],
   query: '',
   latestCode: '',
+  qrCode: '',
+  qrDataUrl: '',
+  qrSuggestedName: '',
   keyStore: { active: {}, keys: [] },
 };
 
@@ -111,7 +114,7 @@ function renderRecords() {
       </td>
       <td>
         <strong>${escapeHtml(record.planLabel || record.plan || '')}</strong>
-        <div class="muted">${escapeHtml(record.plan || '')}</div>
+        <div class="muted">${escapeHtml(record.productId || '历史 Windows 授权')} · ${escapeHtml(record.plan || '')}</div>
       </td>
       <td>
         学生 ${escapeHtml(record.studentLimit || '')}<br />
@@ -133,6 +136,7 @@ function renderRecords() {
       <td>
         <div class="row-actions">
           <button class="secondary" data-action="copy" data-code="${escapeHtml(record.code || '')}">复制</button>
+          <button class="secondary" data-action="qr" data-code="${escapeHtml(record.code || '')}" data-label="${escapeHtml(record.customerName || record.productId || 'License-v3')}">二维码</button>
           <button class="ghost" data-action="validate" data-code="${escapeHtml(record.code || '')}">校验</button>
         </div>
       </td>
@@ -154,6 +158,7 @@ function refreshRecords(message = '') {
 function formInput() {
   const permanent = $('permanent').checked;
   return {
+    productId: $('productId').value,
     customerName: $('customerName').value,
     contact: $('contact').value,
     orderNo: $('orderNo').value,
@@ -167,7 +172,7 @@ function formInput() {
   };
 }
 
-function issueLicense(event) {
+async function issueLicense(event) {
   event.preventDefault();
   const input = formInput();
   if (!input.customerName.trim()) {
@@ -188,6 +193,44 @@ function issueLicense(event) {
   state.records = result.records || [];
   renderRecords();
   showMessage(result.message || '已生成授权码。');
+  await showLicenseQr(state.latestCode, result.record.customerName || result.record.productId || 'License-v3');
+}
+
+function normalizedV3Code(code) {
+  const value = String(code || '').trim();
+  if (!value.startsWith('AIE3.') || value.length > 16384) return '';
+  return value;
+}
+
+async function showLicenseQr(code, label = 'License-v3') {
+  const token = normalizedV3Code(code);
+  if (!token) {
+    showMessage('只有有效的 License v3 激活码才能生成二维码。', true);
+    return;
+  }
+  try {
+    const dataUrl = await QRCode.toDataURL(token, {
+      errorCorrectionLevel: 'M',
+      margin: 4,
+      width: 720,
+      color: { dark: '#10201fff', light: '#ffffffff' },
+    });
+    state.qrCode = token;
+    state.qrDataUrl = dataUrl;
+    state.qrSuggestedName = `AI教育管家-${String(label || 'License-v3').trim()}-License-v3-二维码`;
+    $('licenseQrTitle').textContent = `${label || 'License v3'} · 激活二维码`;
+    $('licenseQrImage').src = dataUrl;
+    $('licenseQrPreview').textContent = `${token.slice(0, 28)}…${token.slice(-18)}`;
+    $('licenseQrDialog').showModal();
+  } catch (error) {
+    showMessage(`生成二维码失败：${error?.message || error}`, true);
+  }
+}
+
+function saveCurrentQr() {
+  if (!state.qrDataUrl) return showMessage('请先生成二维码。', true);
+  const result = parseResult(bridge.saveQr(state.qrDataUrl, state.qrSuggestedName));
+  showMessage(result.message || (result.ok ? '二维码已保存。' : '二维码保存失败。'), !result.ok);
 }
 
 function updateStatus(id, status) {
@@ -230,6 +273,15 @@ function init() {
   if (info.ok) $('versionText').textContent = `v${info.version}`;
 
   $('issueForm').addEventListener('submit', issueLicense);
+  $('productId').addEventListener('change', () => {
+    const android = $('productId').value === 'ANDROID_STANDALONE';
+    $('devicePolicy').value = 'required_binding';
+    if (android) {
+      $('studentLimit').value = '1';
+      $('deviceLimit').value = '1';
+    }
+    $('deviceId').placeholder = android ? 'ANDROID-XXXX-XXXX-XXXX' : 'HOST-XXXX-XXXX-XXXX';
+  });
   $('searchInput').addEventListener('input', (event) => {
     state.query = event.target.value;
     refreshRecords();
@@ -244,6 +296,10 @@ function init() {
     }
     copyText(state.latestCode, '已复制最近生成的授权码。');
   });
+  $('showLatestQrBtn').addEventListener('click', () => showLicenseQr(state.latestCode, $('customerName').value || 'License-v3'));
+  $('closeQrBtn').addEventListener('click', () => $('licenseQrDialog').close());
+  $('saveQrBtn').addEventListener('click', saveCurrentQr);
+  $('copyQrCodeBtn').addEventListener('click', () => copyText(state.qrCode, '已复制二维码中的激活码。'));
   $('openRecordsFolderBtn').addEventListener('click', () => {
     const result = parseResult(bridge.openRecordsFolder());
     showMessage(result.ok ? '已打开记录目录。' : result.message || '打开记录目录失败。', !result.ok);
@@ -278,6 +334,7 @@ function init() {
     if (!target) return;
     const action = target.dataset.action;
     if (action === 'copy') copyText(target.dataset.code || '', '已复制授权码。');
+    if (action === 'qr') showLicenseQr(target.dataset.code || '', target.dataset.label || 'License-v3');
     if (action === 'validate') validateCode(target.dataset.code || '');
   });
 

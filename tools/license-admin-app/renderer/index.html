@@ -23,12 +23,12 @@
       <section class="panel key-panel" aria-labelledby="keyPanelTitle">
         <div class="panel-title">
           <div>
-            <p class="eyebrow">Platform trust</p>
-            <h2 id="keyPanelTitle">平台 License 密钥管理</h2>
+            <p class="eyebrow">Offline license trust</p>
+            <h2 id="keyPanelTitle">离线 License 签发密钥管理</h2>
           </div>
           <span id="keyStatusBadge" class="status-badge">未检查</span>
         </div>
-        <p class="muted">私钥只由主进程保存在本机受控目录中，界面仅显示 keyId 和 SHA-256 公钥指纹。平台版发码必须先初始化密钥。</p>
+        <p class="muted">私钥只由主进程保存在本机受控目录中，界面仅显示 keyId 和 SHA-256 公钥指纹。Windows 主机端、Android 单机版和平台版统一使用该密钥签发产品隔离、设备绑定的 License v3。</p>
         <div class="key-grid">
           <label>新密钥 keyId<input id="newKeyId" value="license-platform-2026-01" autocomplete="off" /></label>
           <div class="key-actions">
@@ -79,6 +79,13 @@
 
           <div class="grid-3">
             <label>
+              授权产品
+              <select id="productId">
+                <option value="WINDOWS_HOST">Windows 主机端</option>
+                <option value="ANDROID_STANDALONE">Android 单机版</option>
+              </select>
+            </label>
+            <label>
               套餐
               <select id="plan">
                 <option value="FAMILY">家庭版</option>
@@ -115,13 +122,13 @@
             <label>
               设备绑定策略
               <select id="devicePolicy">
-                <option value="optional_binding">可选绑定</option>
-                <option value="required_binding">必须绑定当前主机</option>
+                <option value="required_binding">必须绑定目标设备</option>
+                <option value="optional_binding">可选绑定（仅限兼容）</option>
               </select>
             </label>
             <label>
-              目标稳定主机 ID
-              <input id="deviceId" autocomplete="off" placeholder="required_binding 时必须填写 host-..." />
+              目标设备码
+              <input id="deviceId" autocomplete="off" placeholder="HOST-XXXX-XXXX-XXXX" />
             </label>
           </div>
 
@@ -133,7 +140,10 @@
           <div class="result-box">
             <span>最近生成授权码</span>
             <code id="latestCode">尚未生成</code>
-            <button id="copyLatestBtn" type="button" class="secondary">复制授权码</button>
+            <div class="result-actions">
+              <button id="copyLatestBtn" type="button" class="secondary">复制授权码</button>
+              <button id="showLatestQrBtn" type="button" class="secondary">显示二维码</button>
+            </div>
           </div>
         </form>
 
@@ -175,6 +185,25 @@
         </section>
       </section>
     </main>
+    <dialog id="licenseQrDialog" class="qr-dialog">
+      <div class="qr-dialog-content">
+        <div class="panel-title">
+          <div>
+            <p class="eyebrow">Offline activation</p>
+            <h2 id="licenseQrTitle">License v3 二维码</h2>
+          </div>
+          <button id="closeQrBtn" type="button" class="ghost">关闭</button>
+        </div>
+        <p class="muted">二维码只包含完整 AIE3 激活码。Android 单机版可使用“扫码激活”或“从相册识别二维码”，识别后仍会校验产品、设备码、签名和有效期。</p>
+        <div class="qr-image-shell"><img id="licenseQrImage" alt="License v3 激活二维码" /></div>
+        <code id="licenseQrPreview" class="qr-code-preview"></code>
+        <div class="result-actions">
+          <button id="saveQrBtn" type="button" class="primary">保存二维码图片</button>
+          <button id="copyQrCodeBtn" type="button" class="secondary">复制激活码</button>
+        </div>
+      </div>
+    </dialog>
+    <script src="./qrcode.bundle.js"></script>
     <script src="./renderer.js"></script>
   </body>
 </html>

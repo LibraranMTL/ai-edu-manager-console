@@ -20,6 +20,9 @@ contextBridge.exposeInMainWorld('licenseAdmin', {
   copyText(text) {
     return send('license:copyText', text);
   },
+  saveQr(dataUrl, suggestedName) {
+    return send('license:saveQr', dataUrl, suggestedName);
+  },
   validateCode(code) {
     return send('license:validateCode', code);
   },

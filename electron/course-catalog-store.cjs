@@ -40,6 +40,8 @@ function createCourseCatalogStore(options = {}) {
   const customCatalogPath = path.join(root, 'tenant-custom-courses.json');
   const customAssetsDir = path.join(root, 'custom-assets');
   const platformAssetsDir = path.join(root, 'platform-assets');
+  const platformPackagesDir = path.join(root, 'platform-packages');
+  const platformPackageIndexPath = path.join(platformPackagesDir, 'index.json');
   const publicKeyPath = existingPath(resourceRoots.map((item) => path.join(item, 'course-catalog', 'public-key.pem')));
   const packagedCatalogPath = existingPath(resourceRoots.map((item) => path.join(item, 'course-catalog', 'catalog.json')));
   const publicKey = publicKeyPath ? fs.readFileSync(publicKeyPath, 'utf8') : '';
@@ -159,10 +161,12 @@ function createCourseCatalogStore(options = {}) {
     const customCatalog = readCustomCatalog();
     const catalog = combinedCatalog();
     const policy = readPolicy(catalog || { courses: [] });
+    const currentPlatformPackage = archivedPackageForVersion(platformCatalog?.catalogVersion);
     return {
       ok: Boolean(catalog),
       catalog,
       platformCatalog,
+      currentPlatformPackage,
       customCatalog,
       policy,
       paths: {
@@ -232,6 +236,74 @@ function createCourseCatalogStore(options = {}) {
     }
   }
 
+  function readPlatformPackageIndex() {
+    const input = readJson(platformPackageIndexPath, {});
+    return {
+      schema: 'edu-manager.platform-course-package-index.v1',
+      packages: Array.isArray(input?.packages) ? input.packages.filter((item) => item && typeof item === 'object') : [],
+    };
+  }
+
+  function archivedPackageForVersion(catalogVersion) {
+    const version = String(catalogVersion || '').trim();
+    if (!version) return null;
+    const record = readPlatformPackageIndex().packages.find((item) => item.catalogVersion === version);
+    if (!record || !/^[a-z0-9._-]+\.edu-coursepkg$/i.test(String(record.filename || ''))) return null;
+    const packagePath = path.resolve(platformPackagesDir, record.filename);
+    if (!packagePath.startsWith(`${path.resolve(platformPackagesDir)}${path.sep}`) || !fs.existsSync(packagePath)) return null;
+    return {
+      catalogVersion: version,
+      sha256: String(record.sha256 || ''),
+      bytes: Number(record.bytes || 0),
+      archivedAt: String(record.archivedAt || ''),
+      filename: String(record.filename || ''),
+      canReExport: true,
+    };
+  }
+
+  function archiveCoursePackage(filePath, verified) {
+    const catalogVersion = String(verified?.catalog?.catalogVersion || verified?.manifest?.catalogVersion || '').trim();
+    if (!catalogVersion) throw new Error('课程包缺少可归档的目录版本。');
+    const bytes = fs.readFileSync(filePath);
+    const sha256 = crypto.createHash('sha256').update(bytes).digest('hex');
+    const safeVersion = catalogVersion.replace(/[^a-z0-9._-]+/gi, '-').replace(/^-+|-+$/g, '') || 'catalog';
+    const filename = `${safeVersion}-${sha256.slice(0, 12)}.edu-coursepkg`;
+    fs.mkdirSync(platformPackagesDir, { recursive: true });
+    const target = path.join(platformPackagesDir, filename);
+    if (!fs.existsSync(target)) {
+      const temporary = `${target}.${process.pid}.tmp`;
+      fs.writeFileSync(temporary, bytes);
+      fs.renameSync(temporary, target);
+    }
+    const index = readPlatformPackageIndex();
+    const record = { catalogVersion, sha256, bytes: bytes.length, filename, archivedAt: new Date().toISOString() };
+    index.packages = [record, ...index.packages.filter((item) => item.catalogVersion !== catalogVersion || item.sha256 !== sha256)].slice(0, 100);
+    writeJsonAtomic(platformPackageIndexPath, index);
+    return { ...record, canReExport: true };
+  }
+
+  function exportCurrentCoursePackage(outputPath) {
+    const platformCatalog = ensureCatalog();
+    const archived = archivedPackageForVersion(platformCatalog?.catalogVersion);
+    if (!platformCatalog || !archived) throw new Error('当前已发布版本没有可重新导出的原始课程包；请先发布或导入一次平台课程包。');
+    const source = path.join(platformPackagesDir, archived.filename);
+    const verified = verifyCoursePackage(source, { hostVersion: appVersion, tempRoot: path.join(root, 'package-temp') });
+    if (!verified.ok || verified.catalog?.catalogVersion !== platformCatalog.catalogVersion) throw new Error(`归档课程包完整性校验失败：${verified.message || '目录版本不一致'}`);
+    const target = path.resolve(outputPath);
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    const temporary = `${target}.${process.pid}.tmp`;
+    fs.copyFileSync(source, temporary);
+    const copiedSha256 = crypto.createHash('sha256').update(fs.readFileSync(temporary)).digest('hex');
+    if (copiedSha256 !== archived.sha256) {
+      fs.rmSync(temporary, { force: true });
+      throw new Error('重新导出的课程包哈希校验失败。');
+    }
+    fs.rmSync(target, { force: true });
+    fs.renameSync(temporary, target);
+    audit({ action: 'platform_course_package_reexported', ok: true, catalogVersion: archived.catalogVersion, packageSha256: archived.sha256 });
+    return { ...archived, outputPath: target };
+  }
+
   function importCoursePackage(filePath, importOptions = {}) {
     const verified = verifyCoursePackage(filePath, {
       hostVersion: appVersion,
@@ -242,6 +314,7 @@ function createCourseCatalogStore(options = {}) {
       return { ...verified, catalog: loadLastGood() };
     }
     try {
+      const archivedPackage = archiveCoursePackage(filePath, verified);
       installPlatformAssets(verified.assets);
       const result = importPackage(verified.catalog, importOptions);
       audit({
@@ -252,7 +325,7 @@ function createCourseCatalogStore(options = {}) {
         releaseIntent: verified.manifest.releaseIntent,
         message: result.message || '',
       });
-      return { ...result, manifest: verified.manifest };
+      return { ...result, manifest: verified.manifest, archivedPackage: result.ok ? archivedPackage : null };
     } catch (error) {
       audit({ action: 'signed_course_package_rejected', ok: false, message: error.message });
       return { ok: false, code: 'COURSE_PACKAGE_INSTALL_FAILED', message: error.message, catalog: loadLastGood() };
@@ -360,6 +433,7 @@ function createCourseCatalogStore(options = {}) {
     importCoursePackage,
     importPackage,
     importSignedCoursePackage,
+    exportCurrentCoursePackage,
     installPlatformAssets,
     mergeCustomCourses,
     removeCustomCourse,

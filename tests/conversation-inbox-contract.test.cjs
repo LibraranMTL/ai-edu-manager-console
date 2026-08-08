@@ -34,3 +34,31 @@ test('conversation inbox exposes automatic topics, filters, and contextual entri
   assert.match(ui, /从对话资料箱添加/);
   assert.match(ui, /conversationInboxSearch/);
 });
+
+test('conversation workspace unifies attribution, imports, candidates, deliveries, and trash', () => {
+  assert.match(ui, /conversationWorkspaceTab/);
+  assert.match(ui, /conversationWorkspaceCounts/);
+  assert.match(ui, /\['awaiting', '待确认归属'/);
+  assert.match(ui, /\['inbox', '已导入对话'/);
+  assert.match(ui, /\['candidates', '知识候选'/);
+  assert.match(ui, /\['delivered', '已投递\/晋升'/);
+  assert.match(ui, /\['trash', '回收站'/);
+  assert.match(ui, /assignAgentConversationToSelectedStudent/);
+});
+
+test('conversation imports support dependency-aware trash, restore, and permanent delete', () => {
+  assert.match(main, /function conversationImportDependencySummary/);
+  assert.match(main, /canPermanentlyDelete:\s*matchingDeliveries\.length === 0 && candidates\.length === 0/);
+  assert.match(main, /function manageConversationImports/);
+  assert.match(main, /confirmPermanentDelete/);
+  assert.match(main, /markAgentConversationSubmissionDeleted/);
+  assert.match(main, /!\['awaiting_attribution', 'deleted'\]\.includes\(existing\.status\)/);
+  assert.match(main, /bridge:manageConversationImports/);
+  assert.match(preload, /manageConversationImports/);
+  assert.match(ui, /manageConversationMaterials/);
+});
+
+test('delivered workspace also includes promoted conversations without material delivery', () => {
+  assert.match(ui, /conversationWorkspaceTab === 'delivered'[\s\S]*dependencies\?\.promotedCount/);
+  assert.match(ui, /Boolean\(item\.deliveries\?\.length\) \|\| Number\(item\.dependencies\?\.promotedCount \|\| 0\) > 0/);
+});

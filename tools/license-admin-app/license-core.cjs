@@ -5,6 +5,8 @@ const crypto = require('crypto');
 const DEFAULT_SECRET = 'ai-edu-manager-offline-license-v1';
 const LICENSE_SIGNING_SECRET = process.env.AI_EDU_LICENSE_SECRET || DEFAULT_SECRET;
 const LICENSE_V2_SCHEMA = 'edu-manager.license.v2';
+const LICENSE_V3_SCHEMA = 'edu-manager.license.v3';
+const LICENSE_PRODUCTS = new Set(['WINDOWS_HOST', 'ANDROID_STANDALONE']);
 const PLATFORM_ROLES = new Set(['PLATFORM_EDITOR', 'PLATFORM_PUBLISHER', 'PLATFORM_ADMIN']);
 
 function nowIso() {
@@ -165,8 +167,80 @@ function createLicenseV2Record(input = {}, options = {}) {
   };
 }
 
+function normalizeProductId(value) {
+  const productId = String(value || 'WINDOWS_HOST').trim().toUpperCase();
+  if (!LICENSE_PRODUCTS.has(productId)) throw new Error(`不支持的授权产品：${productId || '空'}`);
+  return productId;
+}
+
+function createLicenseV3Record(input = {}, options = {}) {
+  const productId = normalizeProductId(input.productId);
+  const plan = normalizePlan(input.plan);
+  const role = normalizeRole(input.role, plan);
+  const issuedAt = nowIso();
+  const expiresCode = licenseExpiryToCode(input.expiresAt || input.expires || '');
+  const expiresAt = expiryCodeToDate(expiresCode);
+  const maxActiveStudents = clampLimit(input.maxActiveStudents ?? input.studentLimit, productId === 'ANDROID_STANDALONE' ? 1 : 3);
+  const maxDevices = clampLimit(input.maxDevices ?? input.deviceLimit, 1);
+  const devicePolicy = String(input.devicePolicy || 'required_binding');
+  const deviceId = String(input.deviceId || '').trim();
+  if (!['optional_binding', 'required_binding'].includes(devicePolicy)) throw new Error('设备绑定策略不受支持。');
+  if (devicePolicy === 'required_binding' && !deviceId) throw new Error('单机授权必须填写目标设备码。');
+  const keyId = String(options.keyId || process.env.AI_EDU_LICENSE_STANDARD_KEY_ID || 'license-standard-2026').trim();
+  const payload = {
+    schema: LICENSE_V3_SCHEMA,
+    licenseId: `lic-${Date.now()}-${crypto.randomBytes(5).toString('hex')}`,
+    productId,
+    customerId: String(input.customerId || '').trim(),
+    tenantId: String(input.tenantId || '').trim(),
+    edition: plan,
+    capabilities: capabilitiesFor(plan, role),
+    maxActiveStudents,
+    maxDevices,
+    devicePolicy,
+    deviceId,
+    issuedAt,
+    expiresAt,
+    issuer: 'license-admin',
+    keyId,
+  };
+  const encoded = Buffer.from(JSON.stringify(payload), 'utf8').toString('base64url');
+  const privateKey = resolveV2PrivateKey(plan, options);
+  const signature = crypto.sign('RSA-SHA256', Buffer.from(`AIE3.${encoded}`), privateKey).toString('base64url');
+  const code = `AIE3.${encoded}.${signature}`;
+  return {
+    id: payload.licenseId,
+    schema: LICENSE_V3_SCHEMA,
+    productId,
+    code,
+    codeHash: shortHash(code),
+    plan,
+    planLabel: planLabel(plan),
+    capabilities: payload.capabilities,
+    expiresAt,
+    maxActiveStudents,
+    studentLimit: maxActiveStudents,
+    maxDevices,
+    deviceLimit: maxDevices,
+    customerName: String(input.customerName || '').trim(),
+    contact: String(input.contact || '').trim(),
+    orderNo: String(input.orderNo || '').trim(),
+    note: String(input.note || '').trim(),
+    status: 'issued',
+    issuedAt,
+    updatedAt: issuedAt,
+    keyId,
+    publicKeyFingerprint: String(options.publicKeyFingerprint || ''),
+    devicePolicy,
+    deviceId,
+  };
+}
+
 function createLicenseRecord(input = {}, options = {}) {
   const plan = normalizePlan(input.plan);
+  if (input.schema === LICENSE_V3_SCHEMA || input.productId || options.forceV3 === true) {
+    return createLicenseV3Record(input, options);
+  }
   if (plan === 'PLATFORM' || input.schema === LICENSE_V2_SCHEMA || options.forceV2 === true) {
     return createLicenseV2Record(input, options);
   }
@@ -238,6 +312,24 @@ function parseLicenseV2(code, options = {}) {
 }
 
 function parseLicenseCode(code, options = {}) {
+  if (String(code || '').trim().startsWith('AIE3.')) {
+    try {
+      const compact = String(code || '').trim();
+      const parts = compact.split('.');
+      if (parts.length !== 3) throw new Error('License v3 格式不正确。');
+      const payload = JSON.parse(Buffer.from(parts[1], 'base64url').toString('utf8'));
+      if (payload.schema !== LICENSE_V3_SCHEMA) throw new Error('License v3 Schema 不受支持。');
+      const privateKey = resolveV2PrivateKey(normalizePlan(payload.edition), options);
+      const publicKey = crypto.createPublicKey(privateKey);
+      if (!crypto.verify('RSA-SHA256', Buffer.from(`AIE3.${parts[1]}`), publicKey, Buffer.from(parts[2], 'base64url'))) throw new Error('License v3 签名校验失败。');
+      const productId = normalizeProductId(payload.productId);
+      const maxActiveStudents = clampLimit(payload.maxActiveStudents, 1);
+      const maxDevices = clampLimit(payload.maxDevices, 1);
+      return { ok: true, license: { ...payload, productId, plan: normalizePlan(payload.edition), planLabel: planLabel(payload.edition), studentLimit: maxActiveStudents, deviceLimit: maxDevices, codeHash: shortHash(compact) } };
+    } catch (error) {
+      return { ok: false, message: error.message };
+    }
+  }
   if (String(code || '').trim().startsWith('AIE2.')) return parseLicenseV2(code, options);
   const normalized = normalizeLicenseCode(code);
   const parts = normalized.split('-');
@@ -327,12 +419,13 @@ function escapeCsvCell(value) {
 }
 
 function recordsToCsv(records) {
-  const header = ['生成时间', '客户', '联系方式', '订单号', '套餐', '到期时间', '学生数', '设备数', '状态', '授权码', '备注'];
+  const header = ['生成时间', '客户', '联系方式', '订单号', '授权产品', '套餐', '到期时间', '学生数', '设备数', '状态', '授权码', '备注'];
   const rows = records.map((record) => [
     record.issuedAt || '',
     record.customerName || '',
     record.contact || '',
     record.orderNo || '',
+    record.productId || 'LEGACY_WINDOWS',
     record.planLabel || record.plan || '',
     record.expiresAt || '永久',
     record.studentLimit || '',
@@ -356,6 +449,7 @@ module.exports = {
   DEFAULT_SECRET,
   createLicenseRecord,
   createLicenseV2Record,
+  createLicenseV3Record,
   capabilitiesFor,
   issueLicense,
   listRecords,

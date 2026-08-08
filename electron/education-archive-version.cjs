@@ -163,6 +163,83 @@ function validateArchiveVersion(versionDir) {
   return { ok: true, manifest };
 }
 
+function reportHasSubstantiveContent(content) {
+  const lines = String(content || '')
+    .replace(/^---[\s\S]*?---\s*/u, '')
+    .split(/\r?\n/u)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .filter((line) => !line.startsWith('#'))
+    .filter((line) => !line.startsWith('> 本报告是成长模型的呈现输出'))
+    .filter((line) => !/^- (?:成长模型|能力画像|成长证据|项目贡献)：/u.test(line))
+    .filter((line) => !/^[-*]?\s*待(?:生成|补充)[。.]?$/u.test(line))
+    .filter((line) => !/^- 待补充已确认的项目知识贡献申请[。.]?$/u.test(line));
+  return lines.some((line) => line.replace(/^[-*]\s*/u, '').length >= 4);
+}
+
+function discoverArchiveVersions(rootDir, studentId) {
+  const root = path.resolve(String(rootDir || ''));
+  if (!root || !fs.existsSync(root) || !fs.statSync(root).isDirectory()) return [];
+  const versions = [];
+  for (const name of fs.readdirSync(root)) {
+    if (name === 'latest.json' || name.startsWith('.')) continue;
+    const versionDir = path.join(root, name);
+    if (!fs.statSync(versionDir).isDirectory()) continue;
+    const validation = validateArchiveVersion(versionDir);
+    if (!validation.ok) continue;
+    try {
+      const snapshot = JSON.parse(fs.readFileSync(path.join(versionDir, 'education-archive.json'), 'utf8'));
+      if (String(snapshot.student?.id || '') !== String(studentId || '')) continue;
+      versions.push({ versionDir, snapshot });
+    } catch {}
+  }
+  return versions.sort((a, b) => String(b.snapshot.createdAt || '').localeCompare(String(a.snapshot.createdAt || '')));
+}
+
+function recoverPlaceholderReportsFromArchive(options = {}) {
+  const reportPaths = options.reportPaths && typeof options.reportPaths === 'object' ? options.reportPaths : {};
+  const versions = discoverArchiveVersions(options.rootDir, options.studentId);
+  const recovered = [];
+  const unresolved = [];
+  for (const [reportId, reportPath] of Object.entries(reportPaths)) {
+    if (!reportPath) continue;
+    const current = fs.existsSync(reportPath) && fs.statSync(reportPath).isFile()
+      ? fs.readFileSync(reportPath, 'utf8')
+      : '';
+    if (reportHasSubstantiveContent(current)) continue;
+    const source = versions
+      .map((version) => ({
+        version,
+        report: (version.snapshot.reports || []).find((item) => String(item.id || '') === String(reportId)),
+      }))
+      .find((item) => item.report && reportHasSubstantiveContent(item.report.content));
+    if (!source) {
+      unresolved.push(String(reportId));
+      continue;
+    }
+    replaceFileAtomic(reportPath, String(source.report.content || ''));
+    recovered.push({
+      reportId: String(reportId),
+      reportPath,
+      versionDir: source.version.versionDir,
+      createdAt: String(source.version.snapshot.createdAt || ''),
+    });
+  }
+  if (versions.length) {
+    const latestPath = path.join(path.resolve(options.rootDir), 'latest.json');
+    const latestContent = JSON.stringify({
+      schema: ARCHIVE_SCHEMA,
+      versionId: path.basename(versions[0].versionDir),
+      versionDir: versions[0].versionDir,
+      sourceFingerprint: String(versions[0].snapshot.sourceFingerprint || ''),
+      createdAt: String(versions[0].snapshot.createdAt || ''),
+    }, null, 2);
+    const currentLatest = fs.existsSync(latestPath) ? fs.readFileSync(latestPath, 'utf8') : '';
+    if (currentLatest !== latestContent) replaceFileAtomic(latestPath, latestContent);
+  }
+  return { recovered, unresolved, archiveVersionCount: versions.length };
+}
+
 function restoreArchiveVersion(options = {}) {
   const validation = validateArchiveVersion(options.versionDir);
   if (!validation.ok) return validation;
@@ -186,6 +263,9 @@ module.exports = {
   archiveFingerprint,
   archiveSnapshot,
   changeSummary,
+  discoverArchiveVersions,
+  recoverPlaceholderReportsFromArchive,
+  reportHasSubstantiveContent,
   restoreArchiveVersion,
   validateArchiveVersion,
   writeArchiveVersion,

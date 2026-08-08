@@ -112,14 +112,17 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
     static final int REQUEST_IMPORT_CONNECTION_BACKUP = 8109;
     static final int REQUEST_CAPTURE_STUDENT_QR = 8110;
     static final int REQUEST_AUTO_DELIVERY_FOLDER = 8111;
-    static final String VERSION_NAME = "0.6.10";
-    static final int VERSION_CODE = 80;
+    static final String VERSION_NAME = "0.6.12";
+    static final int VERSION_CODE = 82;
     static final String CONNECTION_BACKUP_KIND = "ai-edu-manager-tablet-connection-backup";
     static final int CONNECTION_BACKUP_VERSION = 1;
     static final String UPDATE_MANIFEST_URL = "https://www.greatbg.com/download/edu-manager-version.json";
     static final String TAILSCALE_APK_URL = "https://www.greatbg.com/download/tailscalev1.88.1_nbwe_7273.com.apk";
     static final String USER_AGREEMENT_URL = "https://www.greatbg.com/download/agreement.html";
     static final String PRIVACY_POLICY_URL = "https://www.greatbg.com/download/privacy.html";
+    static final String STANDALONE_DOWNLOAD_URL = "https://www.greatbg.com/download.html";
+    static final String STANDALONE_PACKAGE = "com.qxmatrix.edumanager.standalone";
+    static final String STANDALONE_MIGRATION_ACTION = "com.qxmatrix.edumanager.standalone.IMPORT_STUDENT_MIGRATION";
     static final String APK_PROVIDER_AUTHORITY = "com.qxmatrix.eduterminal.apkprovider";
     private static final String[] MATERIAL_MIME_TYPES = new String[] {
         "image/*",
@@ -140,6 +143,8 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
     private static final String PREF_STUDENT_SESSION_TOKEN = "student_session_token";
     private static final String PREF_TERMINAL_MODE = "terminal_mode";
     private static final String PREF_REMOTE_URL = "remote_url";
+    private static final String PREF_ENDPOINT_CANDIDATES = "endpoint_candidates";
+    private static final String PREF_LAST_SUCCESSFUL_URL = "last_successful_url";
     private static final String PREF_CONNECTION_MODE = "connection_mode";
     private static final String PREF_LAYOUT_MODE = "layout_mode";
     private static final String PREF_SKIN = "skin";
@@ -185,6 +190,7 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
     Button saveButton;
     Button testButton;
     Button pasteButton;
+    Button refreshHostAddressButton;
     Button scanPairButton;
     Button nearbyHostButton;
     Button waitHostButton;
@@ -195,6 +201,7 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
     Button copyDiagnosticsButton;
     Button downloadTailscaleButton;
     Button tailscaleButton;
+    Button upgradeStandaloneButton;
     Button settingsToggleButton;
     Button quickUploadButton;
     Button quickReportButton;
@@ -468,9 +475,11 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
         saveButton = button("保存连接", false);
         testButton = button("连接主机", true);
         pasteButton = button("粘贴连接信息", false);
+        refreshHostAddressButton = button("刷新主机地址", false);
         connectRow.addView(saveButton);
         connectRow.addView(testButton);
         connectRow.addView(pasteButton);
+        connectRow.addView(refreshHostAddressButton);
         connectionConfigCard.addView(connectRow);
 
         LinearLayout pairRow = row();
@@ -523,6 +532,7 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
         saveButton.setOnClickListener(this);
         testButton.setOnClickListener(this);
         pasteButton.setOnClickListener(this);
+        refreshHostAddressButton.setOnClickListener(this);
         scanPairButton.setOnClickListener(this);
         exportConnectionBackupButton.setOnClickListener(this);
         importConnectionBackupButton.setOnClickListener(this);
@@ -569,15 +579,18 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
         copyDiagnosticsButton = button("复制诊断信息", false);
         downloadTailscaleButton = button("下载 Tailscale", false);
         tailscaleButton = button("打开 Tailscale", false);
+        upgradeStandaloneButton = button("一键升级为 Android 单机版", true);
         maintenanceRow.addView(checkUpdateButton);
         maintenanceRow.addView(copyDiagnosticsButton);
         maintenanceRow.addView(downloadTailscaleButton);
         maintenanceRow.addView(tailscaleButton);
         settingsCard.addView(maintenanceRow);
+        settingsCard.addView(upgradeStandaloneButton);
         checkUpdateButton.setOnClickListener(this);
         copyDiagnosticsButton.setOnClickListener(this);
         downloadTailscaleButton.setOnClickListener(this);
         tailscaleButton.setOnClickListener(this);
+        upgradeStandaloneButton.setOnClickListener(this);
 
         settingsStatusText = new TextView(this);
         settingsStatusText.setText("系统设置已收起。需要更改布局、皮肤或检查更新时点击上方“系统设置”。");
@@ -1157,6 +1170,8 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
             connectAndLoadStudents();
         } else if (view == pasteButton) {
             pasteConnectionInfo();
+        } else if (view == refreshHostAddressButton) {
+            refreshHostAddress();
         } else if (view == scanPairButton) {
             startPairScan();
         } else if (view == nearbyHostButton) {
@@ -1177,6 +1192,8 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
             openTailscaleDownload();
         } else if (view == tailscaleButton) {
             openTailscaleApp();
+        } else if (view == upgradeStandaloneButton) {
+            startStandaloneUpgrade();
         } else if (view == quickUploadButton) {
             pickMaterial();
         } else if (view == quickReportButton) {
@@ -1304,6 +1321,55 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
         }
     }
 
+    void startStandaloneUpgrade() {
+        final String migrationToken = "personal".equals(terminalMode) ? apiToken() : dataToken();
+        if (selectedStudent == null || migrationToken.length() == 0 || normalizedBaseUrl().length() == 0) {
+            new AlertDialog.Builder(this)
+                .setTitle("请先进入学生空间")
+                .setMessage("一键升级只迁移当前学生。请先连接 Windows 主机，并进入要升级的学生空间。")
+                .setPositiveButton("知道了", null).show();
+            return;
+        }
+        final Student student = selectedStudent;
+        new AlertDialog.Builder(this)
+            .setTitle("升级为 Android 单机版")
+            .setMessage("将从 Windows 主机固定快照并迁移：\n\n" + student.name + "\n学生 ID：" + student.id + "\n教育档案、资料、学情报告、成长记录和关联学习项目。\n\n这是一次性迁移，不建立后续同步。")
+            .setNegativeButton("取消", null)
+            .setPositiveButton("开始升级", new DialogInterface.OnClickListener() {
+                @Override public void onClick(DialogInterface dialog, int which) {
+                    status("正在请求 Windows 主机固定迁移快照…");
+                    new Thread(new StandaloneUpgradeTask(MainActivity.this, normalizedBaseUrl(), migrationToken, student.id)).start();
+                }
+            }).show();
+    }
+
+    void openStandaloneMigration(JSONObject session) {
+        Intent launch = new Intent(STANDALONE_MIGRATION_ACTION);
+        launch.setPackage(STANDALONE_PACKAGE);
+        launch.putExtra("baseUrl", normalizedBaseUrl());
+        launch.putExtra("bearerToken", session.optString("bearerToken", dataToken()));
+        launch.putExtra("studentId", session.optString("studentId"));
+        launch.putExtra("sessionId", session.optString("sessionId"));
+        launch.putExtra("downloadUrl", session.optString("downloadUrl"));
+        launch.putExtra("sha256", session.optString("sha256"));
+        launch.putExtra("bytes", session.optLong("bytes", 0L));
+        if (launch.resolveActivity(getPackageManager()) != null) {
+            startActivity(launch);
+            status("迁移快照已就绪，已打开 Android 单机版。");
+            return;
+        }
+        new AlertDialog.Builder(this)
+            .setTitle("请先安装 Android 单机版")
+            .setMessage("本平板未检测到最新 Android 单机版。安装后返回学生端，再点一次“一键升级”。")
+            .setNegativeButton("取消", null)
+            .setPositiveButton("打开下载页", new DialogInterface.OnClickListener() {
+                @Override public void onClick(DialogInterface dialog, int which) {
+                    try { startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(STANDALONE_DOWNLOAD_URL))); }
+                    catch (Exception error) { copyPlainText("android-standalone-download", STANDALONE_DOWNLOAD_URL); toast("已复制 Android 单机版下载页地址。"); }
+                }
+            }).show();
+    }
+
     void toggleConnectionSettings() {
         connectionSettingsVisible = !connectionSettingsVisible;
         if (connectionConfigCard != null) {
@@ -1387,13 +1453,13 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
     }
 
     void connectAndLoadStudents() {
-        String base = normalizedBaseUrl();
-        if (base.length() == 0) {
+        List<String> candidates = connectionCandidates();
+        if (candidates.size() == 0) {
             status("请先填写主机服务地址。");
             return;
         }
-        status("正在连接主机服务...");
-        new Thread(new ConnectTask(this, base)).start();
+        status(candidates.size() > 1 ? "正在自动尝试局域网和 Tailscale 主机地址..." : "正在连接主机服务...");
+        new Thread(new ConnectTask(this, candidates)).start();
     }
 
     void loadStudents() {
@@ -3545,6 +3611,10 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
         text.append("主机地址：").append(normalizedBaseUrl().length() > 0 ? normalizedBaseUrl() : "未填写").append("\n");
         text.append("本机设备：").append(deviceName()).append("\n");
         text.append("授权学生：").append(studentCount).append(" 位");
+        String lastSuccessfulUrl = getSharedPreferences(PREFS, MODE_PRIVATE).getString(PREF_LAST_SUCCESSFUL_URL, "");
+        if (lastSuccessfulUrl != null && lastSuccessfulUrl.length() > 0) {
+            text.append("\n最近通道：").append(connectionChannelLabel(lastSuccessfulUrl)).append(" · ").append(lastSuccessfulUrl);
+        }
         if (last != null && last.length() > 0) text.append("\n最近连接成功：").append(last);
         connectionSummaryText.setText(text.toString());
         updateConnectionHint(state, studentCount);
@@ -3558,10 +3628,10 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
             hint = studentCount <= 0
                 ? "连接排查：主机已连通，但当前设备没有可访问学生。请在 Windows 主机服务的设备列表中勾选学生访问范围。"
                 : "连接正常：可以上传资料到主机，也可以刷新查看学情档案。";
-        } else if (lower.contains("token") || lower.contains("授权") || lower.contains("401") || lower.contains("403")) {
+        } else if (lower.contains("超时") || lower.contains("不可达") || lower.contains("拒绝") || lower.contains("timeout") || lower.contains("refused")) {
+            hint = "连接排查：主机地址或端口当前不可达。请确认 Windows 主机服务已启动；若 Tailscale 地址已变化，请复制最新连接信息并点击“刷新主机地址”。";
+        } else if (lower.contains("token") || lower.contains("授权失效") || lower.contains("401") || lower.contains("403")) {
             hint = "连接排查：授权可能已失效。请在 Windows 主机端撤销旧设备后，重新扫码绑定。";
-        } else if (lower.contains("失败") || lower.contains("error") || lower.contains("timeout") || lower.contains("refused")) {
-            hint = "连接排查：请确认电脑和平板在同一网络，Windows 主机服务已启动，防火墙允许端口 18777 或当前设置端口访问。";
         } else {
             hint = "连接排查：先确认 Windows 首页选择“主机-终端模式”并启动主机服务；平板与电脑连接同一 Wi-Fi；如果仍失败，请重新扫码绑定。";
         }
@@ -3631,7 +3701,7 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
         String body = readStream(stream);
         JSONObject json = body.length() > 0 ? new JSONObject(body) : new JSONObject();
         if (code < 200 || code >= 300 || !json.optBoolean("ok", true)) {
-            throw new Exception(json.optString("message", "HTTP " + code));
+            throw new Exception("HTTP " + code + ": " + json.optString("message", "请求失败"));
         }
         return json;
     }
@@ -3662,7 +3732,7 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
         String responseBody = readStream(stream);
         JSONObject json = responseBody.length() > 0 ? new JSONObject(responseBody) : new JSONObject();
         if (code < 200 || code >= 300 || !json.optBoolean("ok", true)) {
-            throw new Exception(json.optString("message", "HTTP " + code));
+            throw new Exception("HTTP " + code + ": " + json.optString("message", "请求失败"));
         }
         return json;
     }
@@ -3719,6 +3789,11 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
         String value = connectionMode() == 2 && remoteInput != null && remoteInput.getText().toString().trim().length() > 0
             ? remoteInput.getText().toString().trim()
             : serverInput.getText().toString().trim();
+        return normalizeServerUrlValue(value);
+    }
+
+    String normalizeServerUrlValue(String rawValue) {
+        String value = rawValue == null ? "" : rawValue.trim();
         if (value.length() == 0) return "";
         if (!value.startsWith("http://") && !value.startsWith("https://")) value = "http://" + value;
         while (value.endsWith("/")) value = value.substring(0, value.length() - 1);
@@ -3727,11 +3802,107 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
 
     String normalizedRemoteUrl() {
         if (remoteInput == null) return "";
-        String value = remoteInput.getText().toString().trim();
-        if (value.length() == 0) return "";
-        if (!value.startsWith("http://") && !value.startsWith("https://")) value = "http://" + value;
-        while (value.endsWith("/")) value = value.substring(0, value.length() - 1);
-        return value;
+        return normalizeServerUrlValue(remoteInput.getText().toString());
+    }
+
+    boolean isTailscaleServerUrl(String url) {
+        String host = serverHost(url);
+        if (host.endsWith(".ts.net")) return true;
+        String[] parts = host.split("\\.");
+        if (parts.length != 4) return false;
+        try {
+            int first = Integer.parseInt(parts[0]);
+            int second = Integer.parseInt(parts[1]);
+            return first == 100 && second >= 64 && second <= 127;
+        } catch (Exception ignored) {
+            return false;
+        }
+    }
+
+    boolean isLanServerUrl(String url) {
+        String host = serverHost(url);
+        if ("127.0.0.1".equals(host) || "localhost".equals(host)) return true;
+        String[] parts = host.split("\\.");
+        if (parts.length != 4) return false;
+        try {
+            int first = Integer.parseInt(parts[0]);
+            int second = Integer.parseInt(parts[1]);
+            return first == 10 || (first == 192 && second == 168) || (first == 172 && second >= 16 && second <= 31);
+        } catch (Exception ignored) {
+            return false;
+        }
+    }
+
+    String serverHost(String url) {
+        String host = normalizeServerUrlValue(url).replace("http://", "").replace("https://", "");
+        int slash = host.indexOf('/');
+        if (slash >= 0) host = host.substring(0, slash);
+        int colon = host.indexOf(':');
+        if (colon >= 0) host = host.substring(0, colon);
+        return host.toLowerCase(Locale.ROOT);
+    }
+
+    List<String> storedConnectionCandidates() {
+        ArrayList<String> values = new ArrayList<String>();
+        String raw = getSharedPreferences(PREFS, MODE_PRIVATE).getString(PREF_ENDPOINT_CANDIDATES, "");
+        if (raw == null || raw.trim().length() == 0) return values;
+        try {
+            JSONArray array = new JSONArray(raw);
+            for (int i = 0; i < array.length(); i++) {
+                String value = normalizeServerUrlValue(array.optString(i, ""));
+                if (value.length() > 0 && !values.contains(value)) values.add(value);
+            }
+        } catch (Exception ignored) {
+        }
+        return values;
+    }
+
+    void rememberConnectionCandidates(List<String> candidates) {
+        List<String> ordered = orderedServerUrls(candidates);
+        JSONArray array = new JSONArray();
+        for (int i = 0; i < ordered.size(); i++) array.put(ordered.get(i));
+        getSharedPreferences(PREFS, MODE_PRIVATE).edit().putString(PREF_ENDPOINT_CANDIDATES, array.toString()).apply();
+    }
+
+    List<String> connectionCandidates() {
+        ArrayList<String> candidates = new ArrayList<String>();
+        String manual = normalizedRemoteUrl();
+        String current = normalizeServerUrlValue(serverInput == null ? "" : serverInput.getText().toString());
+        if (connectionMode() == 2) {
+            if (manual.length() > 0) candidates.add(manual);
+            else if (current.length() > 0) candidates.add(current);
+            return orderedServerUrls(candidates);
+        }
+        if (current.length() > 0) candidates.add(current);
+        // Older installations keep the valid Tailscale endpoint in the remote field.
+        // The automatic mode must include it as a fallback instead of reserving it for
+        // manual mode only.
+        if (connectionMode() == 1 && manual.length() > 0 && isTailscaleServerUrl(manual)) {
+            candidates.add(manual);
+        }
+        candidates.addAll(storedConnectionCandidates());
+        ArrayList<String> filtered = new ArrayList<String>();
+        for (int i = 0; i < candidates.size(); i++) {
+            String candidate = normalizeServerUrlValue(candidates.get(i));
+            if (candidate.length() == 0) continue;
+            if (connectionMode() == 0 && !isLanServerUrl(candidate)) continue;
+            if (!filtered.contains(candidate)) filtered.add(candidate);
+        }
+        return orderedServerUrls(filtered);
+    }
+
+    void rememberSuccessfulEndpoint(String base) {
+        final String normalized = normalizeServerUrlValue(base);
+        if (normalized.length() == 0) return;
+        serverInput.setText(normalized);
+        ArrayList<String> candidates = new ArrayList<String>();
+        candidates.add(normalized);
+        candidates.addAll(storedConnectionCandidates());
+        rememberConnectionCandidates(candidates);
+        getSharedPreferences(PREFS, MODE_PRIVATE).edit()
+            .putString(PREF_SERVER_URL, normalized)
+            .putString(PREF_LAST_SUCCESSFUL_URL, normalized)
+            .apply();
     }
 
     int connectionMode() {
@@ -3841,6 +4012,7 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
             backup.put("hostDisplayName", prefs.getString(PREF_HOST_DISPLAY_NAME, ""));
             backup.put("serverUrl", normalizedBaseUrl());
             backup.put("remoteUrl", normalizedRemoteUrl());
+            backup.put("endpointCandidates", new JSONArray(storedConnectionCandidates()));
             backup.put("connectionMode", connectionMode());
             backup.put("apiToken", apiToken());
             output = getContentResolver().openOutputStream(uri, "wt");
@@ -3930,6 +4102,17 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
             serverInput.setText(serverUrl);
             tokenInput.setText(token);
             if (remoteInput != null) remoteInput.setText(remoteUrl);
+            JSONArray endpointCandidates = backup.optJSONArray("endpointCandidates");
+            ArrayList<String> restoredCandidates = new ArrayList<String>();
+            if (endpointCandidates != null) {
+                for (int i = 0; i < endpointCandidates.length(); i++) {
+                    String candidate = normalizeServerUrlValue(endpointCandidates.optString(i, ""));
+                    if (candidate.length() > 0) restoredCandidates.add(candidate);
+                }
+            }
+            if (serverUrl.length() > 0) restoredCandidates.add(serverUrl);
+            if (remoteUrl.length() > 0) restoredCandidates.add(remoteUrl);
+            rememberConnectionCandidates(restoredCandidates);
             if (connectionModeSpinner != null) connectionModeSpinner.setSelection(mode);
             SharedPreferences.Editor editor = getSharedPreferences(PREFS, MODE_PRIVATE).edit()
                 .putString(PREF_SERVER_URL, serverUrl)
@@ -4068,6 +4251,10 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
     }
 
     boolean handlePairPayload(String text) {
+        return handlePairPayload(text, false);
+    }
+
+    boolean handlePairPayload(String text, boolean refreshAddressOnly) {
         if (text == null) return false;
         String payload = extractPairPayload(text.trim());
         if (payload.length() == 0) return false;
@@ -4099,11 +4286,29 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
             List<String> orderedUrls = orderedServerUrls(urls);
             String base = orderedUrls.size() > 0 ? orderedUrls.get(0) : "";
             String pairCode = json.optString("pairCode", "");
-            if (base.length() == 0 || pairCode.length() == 0) {
+            if (base.length() == 0 || (!refreshAddressOnly && pairCode.length() == 0)) {
                 toast("配对内容缺少主机地址或配对码。");
                 return true;
             }
+            String incomingHostId = json.optString("hostId", "").trim();
+            String savedHostId = getSharedPreferences(PREFS, MODE_PRIVATE).getString(PREF_HOST_DEVICE_ID, "").trim();
+            if (refreshAddressOnly && incomingHostId.length() > 0 && savedHostId.length() > 0 && !incomingHostId.equals(savedHostId)) {
+                status("刷新主机地址已停止：剪贴板信息属于另一台 Windows 主机。");
+                toast("主机身份不一致，未修改当前连接。");
+                return true;
+            }
+            rememberConnectionCandidates(orderedUrls);
+            if (incomingHostId.length() > 0) {
+                rememberHostIdentity(incomingHostId, json.optString("hostMachineCode", ""), json.optString("hostDisplayName", ""));
+            }
             serverInput.setText(base);
+            if (refreshAddressOnly) {
+                savePrefs();
+                status("已刷新主机候选地址，正在保留原授权重新连接...");
+                toast("主机地址已刷新，无需重新授权。");
+                connectAndLoadStudents();
+                return true;
+            }
             status("正在向主机确认配对...");
             new Thread(new PairConfirmTask(this, orderedUrls, pairCode)).start();
             return true;
@@ -4129,7 +4334,24 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
         return "";
     }
 
+    void refreshHostAddress() {
+        new AlertDialog.Builder(this)
+            .setTitle("刷新主机地址")
+            .setMessage("请先在 Windows 主机的“主机连接”中复制最新学生终端连接信息。本操作只更新局域网、MagicDNS 和 Tailscale 地址，保留当前设备授权。")
+            .setPositiveButton("从剪贴板刷新", new DialogInterface.OnClickListener() {
+                @Override public void onClick(DialogInterface dialog, int which) {
+                    pasteConnectionInfo(true);
+                }
+            })
+            .setNegativeButton("取消", null)
+            .show();
+    }
+
     void pasteConnectionInfo() {
+        pasteConnectionInfo(false);
+    }
+
+    void pasteConnectionInfo(boolean refreshAddressOnly) {
         ClipboardManager manager = (ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
         if (manager == null || !manager.hasPrimaryClip()) {
             toast("剪贴板里没有连接信息。");
@@ -4146,11 +4368,17 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
             return;
         }
         String pasted = text.toString().trim();
-        if (handlePairPayload(pasted)) return;
+        if (handlePairPayload(pasted, refreshAddressOnly)) return;
         if (pasted.startsWith("http://") || pasted.startsWith("https://")) {
-            serverInput.setText(pickPreferredServerUrl(pasted));
+            String refreshed = pickPreferredServerUrl(pasted);
+            serverInput.setText(refreshed);
+            ArrayList<String> directCandidates = new ArrayList<String>();
+            directCandidates.add(refreshed);
+            directCandidates.addAll(storedConnectionCandidates());
+            rememberConnectionCandidates(directCandidates);
             savePrefs();
-            toast("已粘贴连接地址。");
+            toast(refreshAddressOnly ? "主机地址已刷新，无需重新授权。" : "已粘贴连接地址。");
+            if (refreshAddressOnly) connectAndLoadStudents();
             return;
         }
         String serverUrl = "";
@@ -4185,15 +4413,20 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
                 else if ("manual".equalsIgnoreCase(value) && connectionModeSpinner != null) connectionModeSpinner.setSelection(2);
                 else if (connectionModeSpinner != null) connectionModeSpinner.setSelection(1);
             }
-            if ("apiToken".equalsIgnoreCase(key)) tokenInput.setText(value);
+            if ("apiToken".equalsIgnoreCase(key) && !refreshAddressOnly) tokenInput.setText(value);
         }
         if (candidateUrls.size() > 0) {
             serverInput.setText(pickPreferredServerUrl(candidateUrls));
+            rememberConnectionCandidates(candidateUrls);
         } else if (serverUrl.length() > 0) {
             serverInput.setText(serverUrl);
         }
         savePrefs();
-        toast("已粘贴连接信息。");
+        toast(refreshAddressOnly ? "主机地址已刷新，无需重新授权。" : "已粘贴连接信息。");
+        if (refreshAddressOnly) {
+            status("已刷新主机候选地址，正在保留原授权重新连接...");
+            connectAndLoadStudents();
+        }
     }
 
     String pickPreferredServerUrl(String urlsText) {
@@ -4240,6 +4473,7 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
         int colon = host.indexOf(':');
         if (colon >= 0) host = host.substring(0, colon);
         String[] parts = host.split("\\.");
+        if (host.endsWith(".ts.net")) return 90;
         if (parts.length < 2) return 200;
         try {
             int a = Integer.parseInt(parts[0]);
@@ -4609,17 +4843,36 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
     }
 
     String connectionErrorMessage(String url, String detail) {
-        String message = "连接失败：" + detail;
-        if (url.indexOf("://100.") >= 0 || detail.toLowerCase().indexOf("failed to connect") >= 0 || detail.toLowerCase().indexOf("timed out") >= 0) {
-            message += "\n请确认 Windows 主机服务已启动，并优先使用同一 Wi-Fi 网段地址，例如 http://192.168.x.x:18777。不要优先使用 100.x.x.x 这类虚拟网卡地址，除非平板也已接入同一虚拟网络。";
+        String safeDetail = detail == null ? "未知错误" : detail;
+        String state = connectionFailureState(safeDetail);
+        String message = state + "：" + safeDetail;
+        if ("授权失效".equals(state)) {
+            message += "\n主机已经连通，但设备凭据被拒绝。请在 Windows 主机端重新绑定当前设备。";
+        } else if ("连接超时".equals(state) || "主机地址不可达".equals(state) || "端口连接被拒绝".equals(state)) {
+            message += "\n请确认 Windows 主机服务正在运行，并检查当前主机地址。若 Tailscale 地址已经变化，可复制 Windows 最新连接信息后点击“刷新主机地址”，原有授权会保留。";
         }
         return message;
+    }
+
+    String connectionFailureState(String detail) {
+        String lower = detail == null ? "" : detail.toLowerCase(Locale.ROOT);
+        if (lower.contains("http 401") || lower.contains("http 403") || lower.contains("unauthorized") || lower.contains("forbidden") || lower.contains("token")) return "授权失效";
+        if (lower.contains("timed out") || lower.contains("timeout") || lower.contains("after 8000ms")) return "连接超时";
+        if (lower.contains("refused") || lower.contains("econnrefused")) return "端口连接被拒绝";
+        if (lower.contains("failed to connect") || lower.contains("unreachable") || lower.contains("unknown host") || lower.contains("unable to resolve")) return "主机地址不可达";
+        return "连接失败";
+    }
+
+    String connectionChannelLabel(String url) {
+        if (isTailscaleServerUrl(url)) return serverHost(url).endsWith(".ts.net") ? "Tailscale 智能地址" : "Tailscale";
+        if (isLanServerUrl(url)) return "局域网";
+        return "远程网络";
     }
 
     void applyStudents(List<Student> result, List<LearningProject> projectResult, String error, boolean requiresApproval) {
         if (error != null) {
             status("读取学生失败：" + error);
-            updateConnectionSummary("授权验证失败", students.size());
+            updateConnectionSummary(connectionFailureState(error), students.size());
             return;
         }
         students.clear();
@@ -5607,56 +5860,105 @@ class NearbyHostsResultTask implements Runnable {
 
 class ConnectTask implements Runnable {
     private final MainActivity activity;
-    private final String base;
+    private final List<String> bases;
 
-    ConnectTask(MainActivity activity, String base) {
+    ConnectTask(MainActivity activity, List<String> bases) {
         this.activity = activity;
-        this.base = base;
+        this.bases = bases == null ? new ArrayList<String>() : bases;
     }
 
     @Override
     public void run() {
-        try {
-            JSONObject health = activity.getJson(base + "/api/health", null);
-            String token = activity.apiToken();
-            if (token.length() == 0) throw new Exception("缺少设备授权信息，请重新粘贴 Windows 连接信息或扫码绑定。");
-            JSONObject heartbeat = activity.postJson(base + "/api/device/heartbeat", new JSONObject(), token);
-            JSONObject device = heartbeat.optJSONObject("device");
-            boolean requiresApproval = false;
-            if (device == null) {
-                JSONObject enrollBody = new JSONObject();
-                enrollBody.put("deviceId", activity.deviceId());
-                enrollBody.put("deviceName", activity.deviceName());
-                JSONObject enrollment = activity.postJson(base + "/api/device/enroll", enrollBody, token);
-                String deviceToken = enrollment.optString("token", "");
-                if (deviceToken.length() == 0) throw new Exception("主机未返回独立设备授权信息。");
-                token = deviceToken;
-                requiresApproval = enrollment.optBoolean("requiresApproval", true);
-                activity.saveDeviceCredentials(base, token);
-                activity.runOnUiThread(new ConnectionCredentialsTask(activity, base, token));
-            } else {
-                requiresApproval = "pending".equals(device.optString("authorizationStatus", ""));
-            }
-            activity.markConnectedNow();
-            JSONObject license = health.optJSONObject("license");
-            String licenseText = "主机未激活";
-            if (license != null) {
-                String status = license.optString("status", "inactive");
-                if ("active".equals(status)) {
-                    licenseText = "主机已激活：" + license.optString("planLabel", "已授权");
-                } else if ("expired".equals(status)) {
-                    licenseText = "主机授权已过期";
+        String lastBase = bases.size() > 0 ? bases.get(0) : "";
+        String lastError = "没有可用主机地址";
+        for (int i = 0; i < bases.size(); i++) {
+            String base = bases.get(i);
+            lastBase = base;
+            final String attemptBase = base;
+            final int attemptIndex = i;
+            activity.runOnUiThread(new StatusTask(activity,
+                "正在尝试" + activity.connectionChannelLabel(attemptBase) + "主机地址（" + (attemptIndex + 1) + "/" + bases.size() + "）..."));
+            try {
+                JSONObject health = activity.getJson(base + "/api/health", null);
+                String token = activity.apiToken();
+                if (token.length() == 0) throw new Exception("缺少设备授权信息，请重新粘贴 Windows 连接信息或扫码绑定。");
+                JSONObject heartbeat = activity.postJson(base + "/api/device/heartbeat", new JSONObject(), token);
+                JSONObject device = heartbeat.optJSONObject("device");
+                boolean requiresApproval = false;
+                if (device == null) {
+                    JSONObject enrollBody = new JSONObject();
+                    enrollBody.put("deviceId", activity.deviceId());
+                    enrollBody.put("deviceName", activity.deviceName());
+                    JSONObject enrollment = activity.postJson(base + "/api/device/enroll", enrollBody, token);
+                    String deviceToken = enrollment.optString("token", "");
+                    if (deviceToken.length() == 0) throw new Exception("主机未返回独立设备授权信息。");
+                    token = deviceToken;
+                    requiresApproval = enrollment.optBoolean("requiresApproval", true);
+                    activity.saveDeviceCredentials(base, token);
+                    activity.runOnUiThread(new ConnectionCredentialsTask(activity, base, token));
+                } else {
+                    requiresApproval = "pending".equals(device.optString("authorizationStatus", ""));
+                }
+                activity.markConnectedNow();
+                activity.runOnUiThread(new ConnectionEndpointTask(activity, base));
+                JSONObject license = health.optJSONObject("license");
+                String licenseText = "主机未激活";
+                if (license != null) {
+                    String status = license.optString("status", "inactive");
+                    if ("active".equals(status)) {
+                        licenseText = "主机已激活：" + license.optString("planLabel", "已授权");
+                    } else if ("expired".equals(status)) {
+                        licenseText = "主机授权已过期";
+                    }
+                }
+                String channel = activity.connectionChannelLabel(base);
+                activity.runOnUiThread(new StatusTask(activity, requiresApproval
+                    ? "已通过 " + channel + " 连接主机，设备已登记并等待 Windows 授权学生。"
+                    : "已通过 " + channel + " 连接主机，版本：" + health.optString("version", "未知") + "；" + licenseText));
+                activity.runOnUiThread(new ConnectionSummaryTask(activity, requiresApproval ? "已连接，待 Windows 授权" : "已连接", activity.students.size()));
+                new BootstrapStudentSessionTask(activity, base, token, activity.studentSessionToken).run();
+                return;
+            } catch (Exception error) {
+                lastError = error.getMessage() == null ? error.getClass().getSimpleName() : error.getMessage();
+                if (i + 1 < bases.size()) {
+                    final String nextBase = bases.get(i + 1);
+                    activity.runOnUiThread(new StatusTask(activity,
+                        activity.connectionChannelLabel(attemptBase) + "连接失败，正在自动尝试"
+                            + activity.connectionChannelLabel(nextBase) + "..."));
                 }
             }
-            activity.runOnUiThread(new StatusTask(activity, requiresApproval
-                ? "主机身份验证成功，设备已登记并等待 Windows 授权学生。"
-                : "主机服务已连接，版本：" + health.optString("version", "未知") + "；" + licenseText));
-            activity.runOnUiThread(new ConnectionSummaryTask(activity, requiresApproval ? "已连接，待 Windows 授权" : "已连接", activity.students.size()));
-            new BootstrapStudentSessionTask(activity, base, token, activity.studentSessionToken).run();
-        } catch (Exception error) {
-            activity.runOnUiThread(new StatusTask(activity, activity.connectionErrorMessage(base, error.getMessage())));
-            activity.runOnUiThread(new ConnectionSummaryTask(activity, "授权验证失败", activity.students.size()));
         }
+        activity.runOnUiThread(new StatusTask(activity, activity.connectionErrorMessage(lastBase, lastError)
+            + (bases.size() > 1 ? "\n已自动尝试 " + bases.size() + " 个候选地址。" : "")));
+        activity.runOnUiThread(new ConnectionSummaryTask(activity, activity.connectionFailureState(lastError), activity.students.size()));
+    }
+}
+
+class ConnectionEndpointTask implements Runnable {
+    private final MainActivity activity;
+    private final String base;
+
+    ConnectionEndpointTask(MainActivity activity, String base) {
+        this.activity = activity;
+        this.base = base;
+    }
+
+    @Override public void run() {
+        activity.rememberSuccessfulEndpoint(base);
+    }
+}
+
+class ConnectionCandidatesTask implements Runnable {
+    private final MainActivity activity;
+    private final List<String> candidates;
+
+    ConnectionCandidatesTask(MainActivity activity, List<String> candidates) {
+        this.activity = activity;
+        this.candidates = candidates == null ? new ArrayList<String>() : candidates;
+    }
+
+    @Override public void run() {
+        activity.rememberConnectionCandidates(candidates);
     }
 }
 
@@ -5765,6 +6067,7 @@ class PairConfirmTask implements Runnable {
     public void run() {
         try {
             if (bases.size() == 0) throw new Exception("没有可用主机地址");
+            activity.runOnUiThread(new ConnectionCandidatesTask(activity, bases));
             if (bases.size() > 1) {
                 String lastError = "";
                 for (int i = 0; i < bases.size(); i++) {
@@ -5824,6 +6127,7 @@ class PairResultTask implements Runnable {
         }
         activity.serverInput.setText(base);
         activity.tokenInput.setText(token);
+        activity.rememberSuccessfulEndpoint(base);
         activity.savePrefs();
         activity.markConnectedNow();
         activity.status("设备已连接，请在 Windows 主机端授权学生；授权后将自动载入学生。");
@@ -6438,6 +6742,43 @@ class ToastTask implements Runnable {
     @Override
     public void run() {
         activity.toast(message);
+    }
+}
+
+class StandaloneUpgradeTask implements Runnable {
+    private final MainActivity activity;
+    private final String base;
+    private final String token;
+    private final String studentId;
+
+    StandaloneUpgradeTask(MainActivity activity, String base, String token, String studentId) {
+        this.activity = activity; this.base = base; this.token = token; this.studentId = studentId;
+    }
+
+    @Override public void run() {
+        try {
+            String encoded = URLEncoder.encode(studentId, "UTF-8").replace("+", "%20");
+            JSONObject created = activity.postJson(base + "/api/students/" + encoded + "/portable-migrations", new JSONObject(), token);
+            String sessionId = created.getString("sessionId");
+            String statusUrl = base + "/api/students/" + encoded + "/portable-migrations/" + URLEncoder.encode(sessionId, "UTF-8");
+            for (int poll = 0; poll < 120; poll++) {
+                final JSONObject state = activity.getJson(statusUrl, token);
+                String status = state.optString("status");
+                if ("ready".equals(status)) {
+                    state.put("downloadUrl", "/api/students/" + encoded + "/portable-migrations/" + sessionId + "/download");
+                    state.put("bearerToken", token);
+                    activity.runOnUiThread(new Runnable() { @Override public void run() { activity.openStandaloneMigration(state); } });
+                    return;
+                }
+                if ("failed".equals(status)) throw new Exception(state.optString("message", "生成迁移包失败"));
+                final String message = state.optString("message", "正在生成迁移快照…");
+                activity.runOnUiThread(new Runnable() { @Override public void run() { activity.status(message); } });
+                Thread.sleep(1000L);
+            }
+            throw new Exception("迁移包生成超时，请重试。");
+        } catch (final Exception error) {
+            activity.runOnUiThread(new Runnable() { @Override public void run() { activity.status("一键升级失败：" + error.getMessage()); } });
+        }
     }
 }
 

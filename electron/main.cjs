@@ -8,6 +8,7 @@ const https = require('https');
 const net = require('net');
 const dgram = require('dgram');
 const crypto = require('crypto');
+const { Worker } = require('worker_threads');
 const { pathToFileURL } = require('url');
 const { WebContentsView, session } = require('electron');
 const { createCourseCatalogStore } = require('./course-catalog-store.cjs');
@@ -15,12 +16,12 @@ const { safeCourseNavigation } = require('./course-catalog.cjs');
 const { createPlatformCourseDraftStore } = require('./platform-course-drafts.cjs');
 const { createCoursePackage } = require('./course-package-v2.cjs');
 const { createLicenseTrustStore } = require('./license-trust-store.cjs');
+const { activeStudentCount, studentSeatDecision } = require('./license-seat-policy.cjs');
+const { activateWindowsLicenseV3, evaluateStoredWindowsLicense } = require('./windows-license-policy.cjs');
 const { changeSummary } = require('./platform-publish-approval.cjs');
 const {
   capabilitiesFor,
   hasCapability,
-  planLabel: entitlementPlanLabel,
-  verifyLicenseTokenV2,
 } = require('./license-entitlements.cjs');
 const {
   canImportCustomCourses,
@@ -72,6 +73,7 @@ const {
 const { mergeOpenAiToolInstall } = require('./openai-tool-install.cjs');
 const { mergeAssetReferences, recentAssetTrend } = require('./asset-statistics.cjs');
 const { lanDiscoveryBroadcastTargets } = require('./lan-discovery.cjs');
+const { createStudentPortableMigrationManager } = require('./student-portable-migration.cjs');
 const { spawn, spawnSync, execFileSync } = require('child_process');
 const {
   TASK_PROTOCOL_VERSION,
@@ -166,9 +168,12 @@ const { completionBlockers, singleStudentEvidenceDraft } = require('./project-co
 const { weekRange, monthRange, reportIsCurrent, validateSectionedDraft, publishReviewedReport } = require('./learning-report-workflow.cjs');
 const { reportContentFingerprint, validateReportDraftForAutoPublish } = require('./report-auto-publication.cjs');
 const { resolveReportEvidence } = require('./report-evidence-resolver.cjs');
-const { restoreArchiveVersion, writeArchiveVersion } = require('./education-archive-version.cjs');
+const { discoverArchiveVersions, recoverPlaceholderReportsFromArchive, reportHasSubstantiveContent, restoreArchiveVersion, writeArchiveVersion } = require('./education-archive-version.cjs');
+const { analyzeArchiveMarkdownContent, summarizeArchiveContentHealth } = require('./archive-content-health.cjs');
+const { mergeExternalMigrationCandidates } = require('./migration-source-plan.cjs');
 const { canonicalPath, collectWorkspaceFiles, isPathInside: canonicalIsPathInside, inspectWorkspacePath, sha1FileAsync, validateWorkspaceRebind } = require('./project-workspace.cjs');
 const { adoptionPathmap, scanProjectKnowledgeBase } = require('./project-knowledge-adoption.cjs');
+const { appendPathChangeLog, classifyStudentBindingSelection, replaceManagedBlock, validateExistingBinding } = require('./path-binding.cjs');
 const { markUploadRecordsRemoved } = require('./upload-record-governance.cjs');
 const { createDirectoryCountCache } = require('./directory-count-cache.cjs');
 const { streamRequestToFile } = require('./streaming-upload.cjs');
@@ -462,7 +467,6 @@ const taskManualOutboxPath = () => path.join(taskCenterDirPath(), 'manual-outbox
 const qclawTaskInboxPath = () => path.join(taskCenterDirPath(), 'qclaw-inbox');
 const qclawTaskResultPath = () => path.join(taskCenterDirPath(), 'qclaw-results');
 const openClawCronRegistryPath = () => path.join(taskCenterDirPath(), 'openclaw-managed-cron.json');
-const LICENSE_SIGNING_SECRET = 'ai-edu-manager-offline-license-v1';
 let activePairSession = null;
 
 function readSettings() {
@@ -2566,11 +2570,17 @@ function studentArchiveSyncPeers(studentId, state = readCollaborationState()) {
       && !item.revokedAt
       && String(item.studentId || '') === localStudentId
     ));
-    if (!localAssignments.length) return [];
+    const allLocalStudentAssignments = (binding.roleAssignments || []).filter((item) => (
+      item.nodeId === state.node.nodeId && !item.revokedAt && item.studentId
+    ));
+    // Archive synchronization is allowed only for an unambiguous one-to-one
+    // student mapping inside a binding. Never form a cross-product by name.
+    if (localAssignments.length !== 1 || allLocalStudentAssignments.length !== 1) return [];
     return (binding.participantNodeIds || []).filter((nodeId) => nodeId !== state.node.nodeId).flatMap((peerNodeId) => {
-      const peerStudentIds = (binding.roleAssignments || []).filter((item) => (
+      const peerStudentIds = [...new Set((binding.roleAssignments || []).filter((item) => (
         item.nodeId === peerNodeId && !item.revokedAt && item.studentId
-      )).map((item) => String(item.studentId));
+      )).map((item) => String(item.studentId)))];
+      if (peerStudentIds.length !== 1) return [];
       return peerStudentIds.map((targetStudentId) => {
         const endpoints = [
           `${state.node.nodeId}:${localStudentId}`,
@@ -2584,6 +2594,57 @@ function studentArchiveSyncPeers(studentId, state = readCollaborationState()) {
         };
       });
     });
+  });
+}
+
+function studentArchiveSyncPolicy() {
+  const value = readSettings().studentArchiveSyncPolicy;
+  return value && typeof value === 'object' ? value : {};
+}
+
+function studentArchiveSyncEnabled(studentId) {
+  return studentArchiveSyncPolicy()[String(studentId || '')] !== false;
+}
+
+function setStudentArchiveSyncEnabled(studentId, enabled) {
+  try {
+    const student = findStudentByKey(studentId);
+    if (!student) return JSON.stringify({ ok: false, message: '未找到学生档案。' });
+    const settings = readSettings();
+    const policy = settings.studentArchiveSyncPolicy && typeof settings.studentArchiveSyncPolicy === 'object'
+      ? { ...settings.studentArchiveSyncPolicy }
+      : {};
+    policy[String(student.id)] = Boolean(enabled);
+    writeSettings({ ...settings, studentArchiveSyncPolicy: policy });
+    refreshStudentArchiveSyncWatchers();
+    if (enabled) scheduleStudentArchiveSync(student.id, 1_000);
+    appendHostTimeline({
+      type: 'student_archive_sync_policy_changed',
+      title: enabled ? 'Student archive synchronization resumed' : 'Student archive synchronization paused',
+      detail: `${student.name}: ${enabled ? 'enabled' : 'paused'}`,
+      studentId: String(student.id),
+      studentName: student.name,
+    });
+    return JSON.stringify({ ok: true, message: enabled ? '已开启该学生的档案同步。' : '已暂停该学生的档案同步。' });
+  } catch (error) {
+    return JSON.stringify({ ok: false, message: `更新学生档案同步策略失败：${error.message}` });
+  }
+}
+
+function studentArchiveSyncStatus(state = readCollaborationState()) {
+  const syncState = readStudentArchiveSyncState();
+  return readStudentsIndex().map(toHostStudent).map((student) => {
+    const peers = studentArchiveSyncPeers(student.id, state);
+    const lineages = peers.map((peer) => syncState.lineages?.[peer.lineageId]).filter(Boolean);
+    return {
+      studentId: String(student.id),
+      studentName: student.name,
+      enabled: studentArchiveSyncEnabled(student.id),
+      mappingStatus: peers.length ? 'exact' : 'unavailable',
+      peers: peers.map((peer) => ({ peerNodeId: peer.peerNodeId, targetStudentId: peer.targetStudentId })),
+      lastPublishedAt: lineages.map((item) => String(item.lastPublishedAt || '')).sort().at(-1) || '',
+      lastImportedAt: lineages.map((item) => String(item.lastImportedAt || '')).sort().at(-1) || '',
+    };
   });
 }
 
@@ -2604,6 +2665,7 @@ function publishStudentArchiveSync(studentKey) {
   const student = findStudentByKey(studentKey);
   if (!student) return { ok: false, message: '未找到学生。', queued: 0 };
   const normalized = toHostStudent(student);
+  if (!studentArchiveSyncEnabled(normalized.id)) return { ok: true, skipped: true, reason: 'student_sync_paused', queued: 0 };
   const peers = studentArchiveSyncPeers(normalized.id, state);
   if (!peers.length) return { ok: true, skipped: true, reason: 'no_active_peer', queued: 0 };
   const roots = studentArchiveRoots(normalized);
@@ -2719,6 +2781,7 @@ function refreshStudentArchiveSyncWatchers() {
     if (state.enabled) {
       for (const student of readStudentsIndex()) {
         const normalized = toHostStudent(student);
+        if (!studentArchiveSyncEnabled(normalized.id)) continue;
         if (!studentArchiveSyncPeers(normalized.id, state).length) continue;
         const roots = studentArchiveRoots(normalized);
         for (const root of [roots.knowledgeRoot, roots.growthRoot, roots.reportRoot, roots.archiveRoot]) {
@@ -2803,11 +2866,7 @@ function ingestImportedStudentArchives() {
     ) continue;
     const publication = safeReadJson(object.importedPath, null);
     if (!publication?.publicationId || importedIds.has(publication.publicationId)) continue;
-    let student = findStudentByKey(publication.targetStudentId);
-    if (!student && publication.sourceStudentName) {
-      const matches = readStudentsIndex().filter((item) => String(item.name || '').trim() === String(publication.sourceStudentName).trim());
-      if (matches.length === 1) student = matches[0];
-    }
+    const student = findStudentByKey(publication.targetStudentId);
     if (!student) {
       conflicts += 1;
       continue;
@@ -2815,12 +2874,30 @@ function ingestImportedStudentArchives() {
     suppressStudentArchiveSync(student.id);
     const contentRoot = path.dirname(path.dirname(path.dirname(object.importedPath)));
     const normalized = toHostStudent(student);
+    const roots = studentArchiveRoots(normalized);
+    const binding = validateExistingBinding({
+      rootPath: normalized.rootPath,
+      rejectEmpty: true,
+      requiredPaths: [roots.knowledgeRoot, roots.rawRoot],
+      limit: 5000,
+    });
+    if (!binding.ok) {
+      conflicts += 1;
+      appendHostTimeline({
+        type: 'student_archive_sync_target_invalid',
+        title: 'Student archive synchronization target needs attention',
+        detail: `${normalized.name}: ${binding.errors.join(' ')}`,
+        studentId: String(normalized.id),
+        studentName: normalized.name,
+      });
+      continue;
+    }
     const result = materializeStudentArchivePublication({
       publication,
       targetNodeId: collaboration.node.nodeId,
       packageContentRoot: contentRoot,
       packageRelativePath: (entry) => `student-archives/${publication.publicationId}/${entry.kind}/${entry.relativePath}`,
-      roots: studentArchiveRoots(normalized),
+      roots,
       conflictRoot: path.join(studentManagerDir(normalized), 'student-archive-sync', 'conflicts'),
       state: syncState,
     });
@@ -3118,6 +3195,7 @@ function getCollaborationState() {
       transport: collaborationDirectDescriptor(),
       transports: [collaborationDirectDescriptor(), transport.describe({ nodeId: state.node.nodeId })],
       teamKnowledgePolicy: teamKnowledgePolicy(),
+      studentArchiveSync: studentArchiveSyncStatus(state),
       directDeliveries,
       discoveredDirectPeers: [...discoveredCollaborationHosts.values()],
       summary: {
@@ -3502,147 +3580,22 @@ function ensureApiToken() {
   return settings.apiToken;
 }
 
-function licenseSignature(payload) {
-  return crypto
-    .createHash('sha256')
-    .update(`${LICENSE_SIGNING_SECRET}|${payload}`)
-    .digest('hex')
-    .slice(0, 12)
-    .toUpperCase();
-}
-
-function normalizeLicenseCode(code) {
-  return String(code || '')
-    .trim()
-    .toUpperCase()
-    .replace(/[—–]/g, '-')
-    .replace(/\s+/g, '');
-}
-
-function planLabel(plan) {
-  return entitlementPlanLabel(plan);
-}
-
 function trustedLicenseIssuers() {
-  const persisted = licenseTrustStore().state();
-  const configured = String(process.env.AI_EDU_LICENSE_TRUSTED_ISSUERS || '').trim();
-  if (configured) {
-    try {
-      const emergency = JSON.parse(configured);
-      return { issuers: [...persisted.issuers, ...(Array.isArray(emergency.issuers) ? emergency.issuers : [])] };
-    } catch {
-      return persisted;
-    }
-  }
-  return persisted;
+  return licenseTrustStore().state();
 }
 
 function parseLicenseCode(code) {
-  const normalized = normalizeLicenseCode(code);
-  if (normalized.startsWith('AIE2.')) {
-    const checked = verifyLicenseTokenV2(String(code || '').trim(), { trustedIssuers: trustedLicenseIssuers(), deviceId: getHostIdentity().hostId });
-    if (!checked.ok) return checked;
-    return {
-      ok: true,
-      license: {
-        ...checked.license,
-        status: 'active',
-        active: true,
-        licenseToken: String(code || '').trim(),
-        codeHash: checked.license.tokenHash,
-        activatedAt: new Date().toISOString(),
-      },
-    };
-  }
-  const parts = normalized.split('-');
-  if (parts.length !== 7 || parts[0] !== 'AIE') {
-    return { ok: false, message: '激活码格式不正确。格式：AIE-套餐-到期日-学生数-设备数-随机码-签名。' };
-  }
-  const [, plan, expires, studentLimitRaw, deviceLimitRaw, token, signature] = parts;
-  if (!['TRIAL', 'FAMILY', 'PRO', 'ORG'].includes(plan)) return { ok: false, message: '旧版激活码不能授予平台版权限。' };
-  if (!/^[A-Z0-9]{3,16}$/.test(plan)) return { ok: false, message: '激活码套餐字段不正确。' };
-  if (!(expires === 'PERM' || /^\d{8}$/.test(expires))) return { ok: false, message: '激活码到期日不正确。' };
-  const studentLimit = Number(studentLimitRaw);
-  const deviceLimit = Number(deviceLimitRaw);
-  if (!Number.isInteger(studentLimit) || studentLimit < 1 || studentLimit > 9999) return { ok: false, message: '激活码学生数不正确。' };
-  if (!Number.isInteger(deviceLimit) || deviceLimit < 1 || deviceLimit > 9999) return { ok: false, message: '激活码设备数不正确。' };
-  if (!/^[A-Z0-9]{6,24}$/.test(token)) return { ok: false, message: '激活码随机码不正确。' };
-  const payload = ['AIE', plan, expires, studentLimitRaw, deviceLimitRaw, token].join('|');
-  const expected = licenseSignature(payload);
-  if (signature !== expected) return { ok: false, message: '激活码校验失败，请确认是否复制完整。' };
-  const expiresAt = expires === 'PERM'
-    ? ''
-    : `${expires.slice(0, 4)}-${expires.slice(4, 6)}-${expires.slice(6, 8)}T23:59:59.999+08:00`;
-  if (expiresAt && Date.now() > new Date(expiresAt).getTime()) {
-    return { ok: false, message: '激活码已过期。', expired: true };
-  }
-  return {
-    ok: true,
-    license: {
-      status: 'active',
-      plan,
-      planLabel: planLabel(plan),
-      edition: plan,
-      role: '',
-      capabilities: capabilitiesFor(plan),
-      expiresAt,
-      studentLimit,
-      deviceLimit,
-      token,
-      codeHash: crypto.createHash('sha256').update(normalized).digest('hex'),
-      activatedAt: new Date().toISOString(),
-    },
-  };
+  return activateWindowsLicenseV3(code, {
+    trustedIssuers: trustedLicenseIssuers(),
+    deviceId: getHostIdentity().hostId,
+  });
 }
 
 function publicLicenseStatus(rawLicense) {
-  let license = rawLicense || readSettings().license || null;
-  if (!license) {
-    return {
-      status: 'inactive',
-      active: false,
-      planLabel: '未激活',
-      message: 'Windows 主机尚未激活。平板终端会跟随主机授权状态。',
-    };
-  }
-  if (license.schema === 'edu-manager.license.v2') {
-    const checked = verifyLicenseTokenV2(license.licenseToken, { trustedIssuers: trustedLicenseIssuers(), deviceId: getHostIdentity().hostId });
-    if (!checked.ok) {
-      return {
-        status: /过期/.test(checked.message || '') ? 'expired' : 'inactive',
-        active: false,
-        planLabel: license.planLabel || '平台版',
-        message: checked.message || 'License v2 重新校验失败。',
-      };
-    }
-    license = {
-      ...license,
-      ...checked.license,
-      status: 'active',
-      active: true,
-    };
-  }
-  const expiresAt = license.expiresAt || '';
-  const expired = Boolean(expiresAt && Date.now() > new Date(expiresAt).getTime());
-  const capabilities = (() => {
-    try {
-      return capabilitiesFor(license.edition || license.plan, license.role || '');
-    } catch {
-      return [];
-    }
-  })();
-  const { licenseToken: _licenseToken, token: _token, ...publicLicense } = license;
-  return {
-    ...publicLicense,
-    status: expired ? 'expired' : (license.status || 'active'),
-    active: !expired && (license.status || 'active') === 'active',
-    planLabel: license.planLabel || planLabel(license.plan),
-    edition: license.edition || license.plan,
-    capabilities,
-    expiresAt,
-    codeHash: license.codeHash ? `${license.codeHash.slice(0, 8)}...${license.codeHash.slice(-6)}` : '',
-    message: expired ? '许可证已过期，请续费后重新激活。' : 'Windows 主机已激活，平板终端跟随主机授权。',
-  };
+  return evaluateStoredWindowsLicense(rawLicense || readSettings().license || null, {
+    trustedIssuers: trustedLicenseIssuers(),
+    deviceId: getHostIdentity().hostId,
+  });
 }
 
 function licenseRequiredPayload(action = '正式功能') {
@@ -3659,6 +3612,22 @@ function licenseRequiredPayload(action = '正式功能') {
 function licenseRequiredJson(action) {
   const payload = licenseRequiredPayload(action);
   return payload ? JSON.stringify(payload) : null;
+}
+
+function assertStudentCapacity(nextStudents, currentStudents = readStudentsIndex(), action = '新增学生') {
+  const license = publicLicenseStatus();
+  if (!license.active) throw new Error(license.message || 'Windows 主机尚未激活。');
+  const limit = Number(license.maxActiveStudents || license.studentLimit || 0);
+  if (!limit) return;
+  const decision = studentSeatDecision({ maxActiveStudents: limit, currentStudents, nextStudents });
+  if (!decision.allowed) {
+    throw new Error(`${action}失败：当前授权最多管理 ${limit} 名活跃学生，现有 ${decision.currentCount} 名，本次操作将增加到 ${decision.nextCount} 名。请归档暂不使用的学生或升级授权。`);
+  }
+}
+
+function assertCanAddStudent(action = '新增学生') {
+  const current = readStudentsIndex();
+  assertStudentCapacity([...current, { id: `capacity-check-${Date.now()}`, status: 'ready' }], current, action);
 }
 
 function getLicenseStatus() {
@@ -3703,31 +3672,6 @@ function importLicenseFile() {
     return activateLicense(code);
   } catch (error) {
     return JSON.stringify({ ok: false, message: `License 文件导入失败：${error.message}`, license: publicLicenseStatus() });
-  }
-}
-
-function importTrustedLicenseIssuerBundle() {
-  const selected = dialog.showOpenDialogSync(mainWindow, { title: '导入可信 License 签发方公钥包', properties: ['openFile'], filters: [{ name: '可信公钥包', extensions: ['json'] }] });
-  if (!selected?.[0]) return JSON.stringify({ ok: false, cancelled: true, message: '已取消可信公钥包导入。' });
-  try {
-    const issuers = licenseTrustStore().inspectBundle(selected[0]);
-    const summary = issuers.map((item) => `${item.keyId}\nSHA-256 ${item.fingerprint}`).join('\n\n');
-    const answer = dialog.showMessageBoxSync(mainWindow, {
-      type: 'warning',
-      buttons: ['取消', '已通过独立渠道核对指纹，确认导入'],
-      defaultId: 0,
-      cancelId: 0,
-      title: '确认新的 License 信任根',
-      message: '导入新公钥会允许其签发平台版 License。请先通过独立渠道核对完整指纹。',
-      detail: summary,
-      noLink: true,
-    });
-    if (answer !== 1) return JSON.stringify({ ok: false, cancelled: true, message: '未确认公钥指纹，未修改本机信任。' });
-    const state = licenseTrustStore().importBundle(selected[0], { fingerprints: issuers.map((item) => item.fingerprint) });
-    appendHostTimeline({ type: 'license_trust_bundle_imported', title: 'License trust bundle imported', detail: issuers.map((item) => item.keyId).join(', '), fingerprints: issuers.map((item) => item.fingerprint) });
-    return JSON.stringify({ ok: true, trust: { issuers: state.allIssuers }, message: `已导入 ${issuers.length} 个可信 License 公钥；现在可以验证对应 keyId 的平台 License。` });
-  } catch (error) {
-    return JSON.stringify({ ok: false, message: `可信公钥包导入失败：${error.message}` });
   }
 }
 
@@ -4047,6 +3991,7 @@ function readSmallTextFile(filePath, maxBytes = 2 * 1024 * 1024) {
 
 function collectRuleFilesForPathHealth(student) {
   const root = student.rootPath || getStudentRootDir(student.name);
+  const summaryRoot = student.summaryPath || getSummaryDir(student.name);
   const candidates = [
     student.agentPath || path.join(root, 'AGENT.md'),
     path.join(root, 'AGENTS.md'),
@@ -4056,6 +4001,8 @@ function collectRuleFilesForPathHealth(student) {
     path.join(root, 'WorkBuddy.md'),
     path.join(root, 'Agent设定', 'UnifiedSoul.md'),
     path.join(root, 'Agent记忆', 'UnifiedMemory.md'),
+    path.join(summaryRoot, 'index.md'),
+    path.join(summaryRoot, 'log.md'),
   ];
   const ruleDir = path.join(root, 'Agent规则');
   try {
@@ -4127,6 +4074,10 @@ function repairStudentStalePaths(studentId) {
     const byFile = new Map();
     const skipped = [];
     for (const item of stalePaths) {
+      if (['index.md', 'log.md'].includes(path.basename(item.filePath).toLowerCase())) {
+        skipped.push({ ...item, reason: '索引和历史日志只报告旧路径，不执行全文替换' });
+        continue;
+      }
       const replacement = replacementForDetectedPath(normalized, item.detectedPath);
       if (!replacement) {
         skipped.push({ ...item, reason: '无法确定逻辑路径替换目标' });
@@ -4547,6 +4498,7 @@ function writeAssetIndex(assets) {
 function readProjects() {
   try {
     const parsed = JSON.parse(fs.readFileSync(projectsPath(), 'utf8'));
+    if (Array.isArray(parsed)) return parsed;
     return Array.isArray(parsed.projects) ? parsed.projects : [];
   } catch {
     return [];
@@ -6350,10 +6302,7 @@ function timestampForFilename() {
 function collectEducationArchiveBackups(students) {
   const backups = [];
   for (const student of (Array.isArray(students) ? students : []).map(toHostStudent)) {
-    const latest = safeReadJson(path.join(educationArchiveVersionRoot(student), 'latest.json'), {});
-    const snapshotPath = latest.versionDir ? path.join(latest.versionDir, 'education-archive.json') : '';
-    if (!snapshotPath || !canonicalIsPathInside(educationArchiveVersionRoot(student), snapshotPath) || !fs.existsSync(snapshotPath)) continue;
-    const snapshot = safeReadJson(snapshotPath, null);
+    const snapshot = discoverArchiveVersions(educationArchiveVersionRoot(student), student.id)[0]?.snapshot || null;
     if (snapshot?.student?.id === student.id) backups.push(snapshot);
   }
   return backups;
@@ -6368,6 +6317,11 @@ function backupHostData(studentsJson) {
       backupStudents = parsedStudents;
     }
     for (const student of backupStudents) createEducationArchiveVersion(student.id);
+    const backupSettings = { ...readSettings() };
+    delete backupSettings.license;
+    delete backupSettings.apiToken;
+    delete backupSettings.platformPrivateKey;
+    delete backupSettings.courseCatalogPrivateKey;
     const payload = {
       kind: 'ai-edu-manager-host-backup',
       version: APP_VERSION,
@@ -6378,8 +6332,7 @@ function backupHostData(studentsJson) {
         platform: process.platform,
         pathMode: 'managed-root-relative-remap',
       },
-      hostIdentity: getHostIdentity(),
-      settings: readSettings(),
+      settings: backupSettings,
       students: backupStudents,
       devices: readDevices(),
       uploadRecords: readUploadRecords(),
@@ -6407,6 +6360,8 @@ function restoreHostData() {
     if (!result || !result[0]) return JSON.stringify({ ok: false, message: 'No backup file selected.' });
     const parsed = JSON.parse(fs.readFileSync(result[0], 'utf8'));
     if (parsed.kind !== 'ai-edu-manager-host-backup') throw new Error('Unsupported backup file.');
+    const currentStudentsBeforeRestore = readStudentsIndex();
+    if (Array.isArray(parsed.students)) assertStudentCapacity(parsed.students.map(toHostStudent), currentStudentsBeforeRestore, '恢复备份');
     const currentStudentBaseDir = defaultStudentBaseDir();
     const backupStudentBaseDir = String(
       parsed.storage?.studentBaseDir
@@ -6426,24 +6381,20 @@ function restoreHostData() {
       remappedPathCount += result.changed;
       return result.value;
     };
-    if (parsed.hostIdentity && typeof parsed.hostIdentity === 'object') {
-      const restoredHostId = String(parsed.hostIdentity.hostId || '').trim();
-      const restoredCode = String(parsed.hostIdentity.machineCode || '').trim();
-      if (restoredHostId && restoredCode === machineCode('host', restoredHostId)) {
-        writeHostIdentity({
-          hostId: restoredHostId,
-          machineCode: restoredCode,
-          displayName: String(parsed.hostIdentity.displayName || os.hostname() || 'AI教育管家主机').trim().slice(0, 80),
-          createdAt: parsed.hostIdentity.createdAt || new Date().toISOString(),
-          updatedAt: new Date().toISOString(),
-        });
-      }
-    }
     if (parsed.settings && typeof parsed.settings === 'object') {
       const restoredSettings = remapValue(parsed.settings);
+      const currentSettings = readSettings();
+      delete restoredSettings.license;
+      delete restoredSettings.apiToken;
+      delete restoredSettings.platformPrivateKey;
+      delete restoredSettings.courseCatalogPrivateKey;
       const collaborationFallback = path.join(currentStudentBaseDir, '.edu-manager', 'collaboration');
       writeSettings({
         ...restoredSettings,
+        ...(currentSettings.license ? { license: currentSettings.license } : {}),
+        ...(currentSettings.apiToken ? { apiToken: currentSettings.apiToken } : {}),
+        ...(currentSettings.platformPrivateKey ? { platformPrivateKey: currentSettings.platformPrivateKey } : {}),
+        ...(currentSettings.courseCatalogPrivateKey ? { courseCatalogPrivateKey: currentSettings.courseCatalogPrivateKey } : {}),
         studentBaseDir: currentStudentBaseDir,
         archiveRoot: currentStudentBaseDir,
         collaborationRootPath: resolveConfiguredStoragePath(
@@ -6502,6 +6453,294 @@ function restoreHostData() {
   } catch (error) {
     return JSON.stringify({ ok: false, message: error.message });
   }
+}
+
+function isSameOrInsidePath(rootPath, candidatePath) {
+  if (!rootPath || !candidatePath) return false;
+  const root = path.resolve(rootPath);
+  const candidate = path.resolve(candidatePath);
+  if (root.toLocaleLowerCase('zh-CN') === candidate.toLocaleLowerCase('zh-CN')) return true;
+  return canonicalIsPathInside(root, candidate);
+}
+
+function migrationExternalSources() {
+  const managedRoot = defaultStudentBaseDir();
+  const candidates = [];
+  const add = (rootPath, label, ownerType, ownerId, required = false) => {
+    const resolved = String(rootPath || '').trim();
+    if (!resolved || !path.isAbsolute(resolved) || isSameOrInsidePath(managedRoot, resolved)) return;
+    if (!fs.existsSync(resolved) || !fs.statSync(resolved).isDirectory()) return;
+    candidates.push({ rootPath: path.resolve(resolved), label, ownerType, ownerId, required: Boolean(required) });
+  };
+  for (const student of readStudentsIndex().map(toHostStudent)) {
+    const rootPath = student.rootPath || getStudentRootDir(student.name);
+    const rawPath = student.rawPath || getRawDir(student.name);
+    const summaryPath = student.summaryPath || getSummaryDir(student.name);
+    const outputPath = student.outputPath || path.join(rootPath, '输出结果');
+    add(rootPath, `学生知识库：${student.name}`, 'student_knowledge', student.id, true);
+    add(rawPath, `学生原始资料：${student.name}`, 'student_raw', student.id, true);
+    add(summaryPath, `学生学情分析汇总：${student.name}`, 'student_summary', student.id, true);
+    add(outputPath, `学生输出结果：${student.name}`, 'student_output', student.id, true);
+    add(growthModelDirForStudent(student), `学生成长模型：${student.name}`, 'student_growth', student.id, true);
+    add(educationArchiveVersionRoot(student), `学生教育档案历史版本：${student.name}`, 'student_archive_versions', student.id, true);
+  }
+  for (const project of readProjects().map(normalizeProject)) {
+    add(project.projectRootPath, `项目根目录：${project.name}`, 'project_root', project.id);
+    add(project.workspacePath, `项目工作空间：${project.name}`, 'project_workspace', project.id);
+    add(project.rawPath, `项目原始资料：${project.name}`, 'project_raw', project.id);
+    add(project.knowledgeRootPath, `项目知识空间：${project.name}`, 'project_knowledge', project.id);
+    add(project.managerPath, `项目管理记录：${project.name}`, 'project_manager', project.id);
+  }
+  return mergeExternalMigrationCandidates(candidates);
+}
+
+function sanitizeMigrationSettings(input) {
+  const blockedExact = new Set(['license', 'apiToken', 'hostIdentity', 'platformPrivateKey', 'courseCatalogPrivateKey']);
+  const visit = (value) => {
+    if (Array.isArray(value)) return value.map(visit);
+    if (!value || typeof value !== 'object') return value;
+    const next = {};
+    for (const [key, child] of Object.entries(value)) {
+      if (blockedExact.has(key) || /(?:secret|password|privatekey|accesstoken|refreshtoken)/i.test(key)) continue;
+      next[key] = visit(child);
+    }
+    return next;
+  };
+  const sanitized = visit(input || {});
+  delete sanitized.license;
+  delete sanitized.apiToken;
+  return sanitized;
+}
+
+function migrationStateVirtualFiles() {
+  const stateFiles = [
+    ['settings.json', sanitizeMigrationSettings(readSettings())],
+    ['students.json', readStudentsIndex()],
+    ['upload-records.json', readUploadRecords()],
+    ['asset-index.json', readAssetIndex()],
+    ['projects.json', { version: 1, updatedAt: new Date().toISOString(), projects: readProjects() }],
+    ['host-timeline.json', readHostTimeline()],
+    ['collaboration-state.json', safeReadJson(collaborationStatePath(), {})],
+    ['collaboration-import-ledger.json', safeReadJson(collaborationImportLedgerPath(), {})],
+    ['collaboration-tasks.json', safeReadJson(collaborationTaskStorePath(), {})],
+    ['collaboration-material-decisions.json', safeReadJson(collaborationMaterialDecisionPath(), {})],
+    ['collaboration-direct-deliveries.json', safeReadJson(collaborationDirectDeliveryPath(), {})],
+    ['collaboration-project-publications.json', safeReadJson(collaborationProjectPublicationPath(), {})],
+    ['student-archive-sync-state.json', safeReadJson(studentArchiveSyncStatePath(), {})],
+    ['education-publications.json', safeReadJson(educationPublicationIndexPath(), {})],
+  ];
+  return stateFiles.map(([relativePath, value]) => ({
+    kind: 'state',
+    id: 'host-state',
+    relativePath,
+    content: `${JSON.stringify(value, null, 2)}\n`,
+  }));
+}
+
+function migrationStateDirectorySources() {
+  const roots = [
+    ['course-catalog', '课程目录与机构课程'],
+    ['platform-course-authoring', '平台课程草稿'],
+    ['license-trust', 'License 可信发行方公钥'],
+    ['asset-version-snapshots', '资产版本快照'],
+    ['path-health', '路径健康报告'],
+    ['growth-recovery', '成长索引恢复点'],
+  ];
+  return roots
+    .map(([name, label]) => ({ kind: 'state', id: name, destinationPrefix: name, label, rootPath: path.join(app.getPath('userData'), name) }))
+    .filter((item) => fs.existsSync(item.rootPath) && fs.statSync(item.rootPath).isDirectory());
+}
+
+function hostMigrationSources(selectedExternalIds = []) {
+  const selected = new Set((Array.isArray(selectedExternalIds) ? selectedExternalIds : []).map(String));
+  const external = migrationExternalSources();
+  return {
+    managedRoot: defaultStudentBaseDir(),
+    external,
+    sources: [
+      { kind: 'managed', id: 'managed-root', label: '受管学生资料根目录', rootPath: defaultStudentBaseDir(), excludeNames: ['migration-rollbacks'] },
+      ...external.filter((item) => item.required || selected.has(item.id)),
+      ...migrationStateDirectorySources(),
+    ],
+  };
+}
+
+function runHostMigrationWorker(action, options = {}, onProgress) {
+  return new Promise((resolve, reject) => {
+    const requestId = crypto.randomUUID();
+    const worker = new Worker(path.join(__dirname, 'host-migration-worker.cjs'));
+    let settled = false;
+    const finish = (handler, value) => {
+      if (settled) return;
+      settled = true;
+      worker.terminate().catch(() => {});
+      handler(value);
+    };
+    worker.on('message', (message) => {
+      if (message?.requestId !== requestId) return;
+      if (message.type === 'progress') {
+        if (typeof onProgress === 'function') onProgress(message.progress);
+        return;
+      }
+      if (message.type === 'result') finish(resolve, message.result);
+      else if (message.type === 'error') finish(reject, Object.assign(new Error(message.error?.message || '迁移工作进程失败。'), { recoveryPath: message.error?.recoveryPath || '' }));
+    });
+    worker.on('error', (error) => finish(reject, error));
+    worker.on('exit', (code) => {
+      if (!settled && code !== 0) finish(reject, new Error(`迁移工作进程异常退出（${code}）。`));
+    });
+    worker.postMessage({ requestId, action, options });
+  });
+}
+
+async function getHostMigrationPlan() {
+  try {
+    const sourceState = hostMigrationSources([]);
+    const managedInspection = await runHostMigrationWorker('inspect-sources', { sources: sourceState.sources });
+    const externalInspection = await runHostMigrationWorker('inspect-sources', { sources: sourceState.external });
+    const externalById = new Map(externalInspection.sources.map((item) => [item.id, item]));
+    return JSON.stringify({
+      ok: true,
+      schema: 'edu-manager.migration-plan.v1',
+      managedRoot: sourceState.managedRoot,
+      managed: {
+        fileCount: managedInspection.fileCount,
+        totalBytes: managedInspection.totalBytes,
+      },
+      externalSources: sourceState.external.map((item) => ({ ...item, ...(externalById.get(item.id) || {}) })),
+      security: {
+        passwordRequired: false,
+        excluded: ['License', 'API Token', '固定主机身份', '终端授权令牌', '协作直传密钥', '平台私钥'],
+        targetAction: '新电脑重新激活并重新连接终端',
+      },
+    });
+  } catch (error) {
+    return JSON.stringify({ ok: false, message: `迁移内容分析失败：${error.message}` });
+  }
+}
+
+function emitHostMigrationProgress(event, payload) {
+  if (!event?.sender || event.sender.isDestroyed()) return;
+  event.sender.send('host-migration:progress', JSON.stringify(payload));
+}
+
+async function quiesceHostForMigration() {
+  if (activeCaptureRuntime) throw new Error('存在正在进行的屏幕采集，请先停止采集再迁移。');
+  const wasRunning = Boolean(hostServer);
+  stopHostDiscovery();
+  stopStudentArchiveSyncWatchers();
+  if (hostServer) {
+    const server = hostServer;
+    hostServer = null;
+    await new Promise((resolve) => server.close(resolve));
+  }
+  return { wasRunning };
+}
+
+function resumeHostAfterMigration(state) {
+  refreshStudentArchiveSyncWatchers();
+  if (state?.wasRunning) startHostService({ preserveUsageMode: true });
+  notify('onNativeHostServiceChanged', getHostServiceStatus());
+}
+
+async function createHostMigrationPackage(event, optionsJson) {
+  try {
+    const options = optionsJson ? JSON.parse(optionsJson) : {};
+    const selected = await dialog.showOpenDialog(mainWindow, { title: '选择迁移包保存位置（U 盘、移动硬盘或其他目录）', properties: ['openDirectory', 'createDirectory'] });
+    if (selected.canceled || !selected.filePaths[0]) return JSON.stringify({ ok: false, cancelled: true, message: '已取消创建迁移包。' });
+    const sourceState = hostMigrationSources(options.externalSourceIds || []);
+    const selectedIds = new Set((options.externalSourceIds || []).map(String));
+    const runtimeState = await quiesceHostForMigration();
+    let result;
+    try {
+      result = await runHostMigrationWorker('create', {
+        destinationParent: selected.filePaths[0],
+        managedRoot: sourceState.managedRoot,
+        userDataRoot: app.getPath('userData'),
+        appVersion: APP_VERSION,
+        hostDisplayName: getHostIdentity().displayName,
+        sources: sourceState.sources,
+        virtualFiles: migrationStateVirtualFiles(),
+        unresolvedExternalSources: sourceState.external.filter((item) => !item.required && !selectedIds.has(item.id)),
+      }, (payload) => emitHostMigrationProgress(event, payload));
+    } finally {
+      resumeHostAfterMigration(runtimeState);
+    }
+    appendHostTimeline({ type: 'migration_package_created', title: 'Migration package created', detail: result.packagePath, migrationId: result.migrationId, fileCount: result.fileCount, totalBytes: result.totalBytes });
+    const changeWarningCount = Array.isArray(result.sourceChangeWarnings) ? result.sourceChangeWarnings.length : 0;
+    return JSON.stringify({
+      ...result,
+      message: changeWarningCount
+        ? `迁移包已创建：${result.packagePath}。请将整个目录直接复制到 U 盘，不要改动其中的文件。导出期间有 ${changeWarningCount} 个目录发生后台变化；包内文件均通过逐文件 SHA-256 校验，稍后新增或更新的内容可能未包含，请查看迁移报告。`
+        : `迁移包已创建：${result.packagePath}。请将整个目录直接复制到 U 盘，不要改动其中的文件。`,
+    });
+  } catch (error) {
+    return JSON.stringify({ ok: false, message: `创建迁移包失败：${error.message}`, recoveryPath: error.recoveryPath || '' });
+  }
+}
+
+async function selectAndInspectHostMigrationPackage() {
+  try {
+    const selected = await dialog.showOpenDialog(mainWindow, { title: '选择 AI教育管家迁移包目录', properties: ['openDirectory'] });
+    if (selected.canceled || !selected.filePaths[0]) return JSON.stringify({ ok: false, cancelled: true, message: '未选择迁移包。' });
+    const result = await runHostMigrationWorker('inspect-package', { packageRoot: selected.filePaths[0] });
+    return JSON.stringify({ ...result, message: `迁移包校验通过：${result.fileCount} 个文件。` });
+  } catch (error) {
+    return JSON.stringify({ ok: false, message: `迁移包预检失败：${error.message}` });
+  }
+}
+
+async function restoreHostMigrationPackage(event, optionsJson) {
+  try {
+    const options = optionsJson ? JSON.parse(optionsJson) : {};
+    const packagePath = String(options.packagePath || '').trim();
+    if (!packagePath) return JSON.stringify({ ok: false, message: '请先选择并校验迁移包。' });
+    const inspected = await runHostMigrationWorker('inspect-package', { packageRoot: packagePath });
+    const password = String(options.password || '');
+    if (inspected.requiresPassword && !password) return JSON.stringify({ ok: false, message: '请输入迁移包密码。' });
+    const selected = await dialog.showOpenDialog(mainWindow, { title: '选择新电脑的空白学生资料根目录', properties: ['openDirectory', 'createDirectory'] });
+    if (selected.canceled || !selected.filePaths[0]) return JSON.stringify({ ok: false, cancelled: true, message: '已取消恢复迁移包。' });
+    const targetRoot = selected.filePaths[0];
+    const runtimeState = await quiesceHostForMigration();
+    let result;
+    try {
+      const activeLicense = publicLicenseStatus();
+      result = await runHostMigrationWorker('restore', {
+        packageRoot: packagePath,
+        targetRoot,
+        userDataDir: app.getPath('userData'),
+        password,
+        currentAppVersion: APP_VERSION,
+        maxActiveStudents: Number(activeLicense.maxActiveStudents || activeLicense.studentLimit || 0),
+      }, (payload) => emitHostMigrationProgress(event, payload));
+    } finally {
+      resumeHostAfterMigration(runtimeState);
+    }
+    courseCatalogStoreInstance = null;
+    platformCourseDraftStoreInstance = null;
+    licenseTrustStoreInstance = null;
+    invalidateArchiveAccessCache();
+    const reportRecovery = readStudentsIndex().map(toHostStudent).map((student) => recoverLearningReportsForStudent(student));
+    const recoveredReportCount = reportRecovery.reduce((sum, item) => sum + item.recovered.length, 0);
+    const unresolvedReportCount = reportRecovery.reduce((sum, item) => sum + item.unresolved.length, 0);
+    appendHostTimeline({ type: 'migration_package_restored', title: 'Migration package restored', detail: targetRoot, migrationId: result.migrationId, fileCount: result.fileCount, totalBytes: result.totalBytes });
+    return JSON.stringify({
+      ...result,
+      studentRecords: readStudentsIndex().map(toHostStudent),
+      projectRecords: readProjects().map(normalizeProject),
+      reportRecovery,
+      message: `迁移恢复完成：${targetRoot}。${recoveredReportCount ? `已从历史教育档案恢复 ${recoveredReportCount} 份学情报告。` : ''}${unresolvedReportCount ? `另有 ${unresolvedReportCount} 份报告在迁移资料中只有占位模板，需通过周期更新任务生成正式正文。` : ''}License、终端和跨主机协作凭据需要在本机重新授权。`,
+    });
+  } catch (error) {
+    return JSON.stringify({ ok: false, message: `迁移恢复失败：${error.message}`, recoveryPath: error.recoveryPath || '' });
+  }
+}
+
+function openHostMigrationRecord() {
+  const reportPath = path.join(defaultStudentBaseDir(), '.edu-manager', 'migration-report.json');
+  if (!fs.existsSync(reportPath)) return JSON.stringify({ ok: false, message: '当前资料根目录尚没有成功恢复的迁移报告。导出记录可在主机事件时间线中查看。' });
+  shell.showItemInFolder(reportPath);
+  return JSON.stringify({ ok: true, path: reportPath, message: `已定位迁移报告：${reportPath}` });
 }
 
 function resetHostApiToken() {
@@ -6590,11 +6829,17 @@ function migrateStudentWorkspace(studentId, newName) {
     const newRaw = getRawDir(cleanName);
     const newSummary = getSummaryDir(cleanName);
 
+    if (!fs.existsSync(oldRoot) || !fs.statSync(oldRoot).isDirectory()) {
+      return JSON.stringify({ ok: false, message: `原知识库目录不存在，已停止迁移且未创建空目录：${oldRoot}。请使用“目录绑定与路径修复”重新选择真实知识库。` });
+    }
+    if (!fs.existsSync(oldRaw) || !fs.existsSync(oldSummary)) {
+      return JSON.stringify({ ok: false, message: '原知识库缺少原始资料库或学情分析汇总，已停止迁移。请先核对并重新绑定真实目录。' });
+    }
+
     if (path.resolve(oldRoot) !== path.resolve(newRoot)) {
       if (fs.existsSync(newRoot)) return JSON.stringify({ ok: false, message: `目标知识库目录已存在：${newRoot}` });
       fs.mkdirSync(path.dirname(newRoot), { recursive: true });
-      if (fs.existsSync(oldRoot)) fs.renameSync(oldRoot, newRoot);
-      else fs.mkdirSync(newRoot, { recursive: true });
+      fs.renameSync(oldRoot, newRoot);
     }
 
     const movedOldRaw = path.join(newRoot, path.basename(oldRaw));
@@ -6716,24 +6961,8 @@ function updateAdoptedAgentDirectoryStructure(student, oldRoots) {
   }
   try {
     const current = fs.readFileSync(agentPath, 'utf8');
-    let next = current;
-    for (const oldRoot of oldRoots || []) {
-      const source = String(oldRoot || '').trim();
-      if (!source || path.resolve(source) === path.resolve(student.rootPath || '')) continue;
-      const replacements = [
-        [source, String(student.rootPath || '')],
-        [source.replace(/\\/g, '/'), String(student.rootPath || '').replace(/\\/g, '/')],
-      ];
-      for (const [from, to] of replacements) {
-        if (!from || from === to) continue;
-        next = next.replace(new RegExp(escapeRegexText(from), process.platform === 'win32' ? 'gi' : 'g'), to);
-      }
-    }
-    const markerStart = '<!-- EDU-MANAGER-CURRENT-PATHS:START -->';
-    const markerEnd = '<!-- EDU-MANAGER-CURRENT-PATHS:END -->';
     const paths = studentWorkspacePathmap(student);
-    const block = `${markerStart}
-## 教育管家当前目录结构
+    const block = `## 教育管家当前目录结构
 
 本区块由教育管家在迁移或重新定位接管目录后自动维护。Agent 应优先使用以下逻辑路径；物理路径变化时不要继续使用旧盘符。
 
@@ -6743,10 +6972,8 @@ function updateAdoptedAgentDirectoryStructure(student, oldRoots) {
 - \`@SUMMARY_DIR\`：\`${paths['@SUMMARY_DIR']}\`
 - \`@OUTPUT_DIR\`：\`${paths['@OUTPUT_DIR']}\`
 - \`@GROWTH_DIR\`：\`${paths['@GROWTH_DIR']}\`
-- \`@ASSET_ROOT\`：\`${paths['@ASSET_ROOT']}\`
-${markerEnd}`;
-    const withoutManaged = next.replace(new RegExp(`${escapeRegexText(markerStart)}[\\s\\S]*?${escapeRegexText(markerEnd)}\\s*`, 'g'), '').trimEnd();
-    next = `${withoutManaged}${withoutManaged ? '\n\n' : ''}${block}\n`;
+- \`@ASSET_ROOT\`：\`${paths['@ASSET_ROOT']}\``;
+    const next = replaceManagedBlock(current, 'CURRENT-PATHS', block);
     if (next === current) return { updated: false, backupPath: '', warning: '' };
     const backupPath = `${agentPath}.pre-rebind-${timestampForFilename()}.bak`;
     fs.copyFileSync(agentPath, backupPath);
@@ -6757,28 +6984,54 @@ ${markerEnd}`;
   }
 }
 
-function rebindAdoptedStudentWorkspace(studentId) {
+async function rebindAdoptedStudentWorkspace(studentId, selectionMode = 'knowledge') {
   try {
     const students = readStudentsIndex();
     const index = students.findIndex((item) => String(item.id) === String(studentId));
     if (index < 0) return JSON.stringify({ ok: false, message: '未找到学生。' });
     const student = toHostStudent(students[index]);
-    if (student.knowledgeBaseMode !== 'adopted') {
-      return JSON.stringify({ ok: false, message: '当前学生不是接管已有知识库模式。' });
+    let selectedBinding;
+    if (selectionMode === 'raw') {
+      const rawResult = await dialog.showOpenDialog(mainWindow, {
+        title: `为「${student.name}」选择现有原始资料库`,
+        defaultPath: fs.existsSync(student.rawPath || '') ? student.rawPath : student.rootPath,
+        properties: ['openDirectory'],
+      });
+      const rawPath = rawResult?.filePaths?.[0] || '';
+      if (rawResult?.canceled || !rawPath) return JSON.stringify({ ok: false, cancelled: true, message: '已取消选择原始资料库，未修改任何配置。' });
+      const rawValidation = validateExistingBinding({ rootPath: rawPath, rejectEmpty: true });
+      if (!rawValidation.ok) return JSON.stringify({ ok: false, message: `原始资料库校验失败：${rawValidation.errors.join(' ')}`, inventory: rawValidation });
+      selectedBinding = {
+        selectedPath: path.resolve(rawPath),
+        rootPath: student.rootPath,
+        rawPath: path.resolve(rawPath),
+        summaryPath: student.summaryPath,
+        selectedRole: 'raw',
+        inventory: rawValidation,
+      };
+    } else {
+      const selectedResult = await dialog.showOpenDialog(mainWindow, {
+        title: `为「${student.name}」选择现有学生知识库或 wiki/汇总目录`,
+        defaultPath: fs.existsSync(student.summaryPath || '') ? student.summaryPath : student.rootPath,
+        properties: ['openDirectory'],
+      });
+      const selected = selectedResult?.filePaths || [];
+      if (selectedResult?.canceled || !selected[0]) return JSON.stringify({ ok: false, cancelled: true, message: '已取消选择知识库，未修改任何配置。' });
+      selectedBinding = classifyStudentBindingSelection(selected[0], student);
+      if (selectedBinding.selectedRole === 'raw') {
+        return JSON.stringify({ ok: false, message: '当前操作用于选择学生知识库，所选目录看起来是原始资料库。请使用“手工选择原始资料库”。' });
+      }
+      selectedBinding.rawPath = student.rawPath;
+      selectedBinding.selectedRole = selectedBinding.selectedRole === 'summary' ? 'summary' : 'knowledge';
     }
-    const selected = dialog.showOpenDialogSync(mainWindow, {
-      title: `重新定位「${student.name}」的已有知识库根目录`,
-      properties: ['openDirectory'],
-    });
-    if (!selected || !selected[0]) return JSON.stringify({ ok: false, cancelled: true, message: '未选择新的知识库目录。' });
-    const newRoot = path.resolve(selected[0]);
+    const newRoot = selectedBinding.rootPath;
     if (!fs.existsSync(newRoot) || !fs.statSync(newRoot).isDirectory()) {
       return JSON.stringify({ ok: false, message: `未找到新的知识库目录：${newRoot}` });
     }
     const oldRoots = adoptedStorageRootCandidates(student, { platform: process.platform });
     const scanned = JSON.parse(scanExistingKnowledgeBase(newRoot, student.name));
     if (!scanned.ok) return JSON.stringify(scanned);
-    const existingRebasedPath = (candidate, detected, fallbackName) => {
+    const existingRebasedPath = (candidate, detected, fallbackName, allowMissing = true) => {
       for (const oldRoot of oldRoots) {
         const rebased = rebaseStoragePath(candidate, oldRoot, newRoot, { platform: process.platform });
         if (rebased && rebased !== candidate && fs.existsSync(rebased)) return rebased;
@@ -6786,26 +7039,46 @@ function rebindAdoptedStudentWorkspace(studentId) {
       const sameName = candidate ? path.join(newRoot, path.basename(String(candidate))) : '';
       if (sameName && fs.existsSync(sameName)) return sameName;
       if (detected && fs.existsSync(detected)) return detected;
-      return path.join(newRoot, fallbackName);
+      return allowMissing ? path.join(newRoot, fallbackName) : '';
     };
-    const rawPath = existingRebasedPath(student.rawPath, scanned.rawPath, `${student.name}原始资料库`);
-    const summaryPath = existingRebasedPath(student.summaryPath, scanned.summaryPath, `${student.name}学情分析汇总`);
+    const rawPath = selectedBinding.rawPath || existingRebasedPath(student.rawPath, scanned.rawPath, `${student.name}原始资料库`, false);
+    const summaryPath = selectedBinding.summaryPath || existingRebasedPath(student.summaryPath, scanned.summaryPath, `${student.name}学情分析汇总`, false);
     if (!fs.existsSync(rawPath) || !fs.statSync(rawPath).isDirectory()) {
-      return JSON.stringify({ ok: false, message: `所选目录中未找到原始资料库：${rawPath}` });
+      return JSON.stringify({ ok: false, message: '所选目录及其同级目录中未找到现有原始资料库。绑定操作不会自动新建目录；请选择学生知识库上级目录，或先确认原始资料库实际位置。' });
     }
     if (!fs.existsSync(summaryPath) || !fs.statSync(summaryPath).isDirectory()) {
-      return JSON.stringify({ ok: false, message: `所选目录中未找到学情分析汇总目录：${summaryPath}` });
+      return JSON.stringify({ ok: false, message: '所选目录中未找到现有学情汇总知识库。绑定操作不会自动新建目录；可直接选择现有 wiki/汇总目录，或选择同时包含原始资料库和汇总目录的上级目录。' });
     }
+    const bindingValidation = selectedBinding.inventory || validateExistingBinding({
+      rootPath: newRoot,
+      requiredPaths: [summaryPath],
+      rejectEmpty: true,
+    });
+    if (!bindingValidation.ok) return JSON.stringify({ ok: false, message: bindingValidation.errors.join(' '), inventory: bindingValidation });
+    const confirmation = await dialog.showMessageBox(mainWindow, {
+      type: 'warning',
+      buttons: ['取消', '确认绑定并修复路径'],
+      defaultId: 0,
+      cancelId: 0,
+      noLink: true,
+      title: selectedBinding.selectedRole === 'raw' ? '确认原始资料库绑定' : '确认学生知识库绑定',
+      message: `确认修改“${student.name}”的${selectedBinding.selectedRole === 'raw' ? '原始资料库' : '学生知识库'}路径？`,
+      detail: `本次选择：${selectedBinding.selectedPath}\n修改项目：${selectedBinding.selectedRole === 'raw' ? '原始资料库' : '学生知识库'}\n知识库根目录：${newRoot}\n原始资料库：${rawPath}\n学生知识库（学情汇总/wiki）：${summaryPath}\n文件：${bindingValidation.fileCount} 个\n容量：${bindingValidation.totalBytes} 字节\n关键文件：${bindingValidation.keyFiles.slice(0, 8).join('、') || '未识别'}\n\n本操作只更新所选路径和受控路径区块，不新建、移动、复制或删除资料目录。`,
+    });
+    if (confirmation.response !== 1) return JSON.stringify({ ok: false, cancelled: true, message: '已取消目录绑定，未修改任何配置。' });
     const agentPath = existingRebasedPath(student.agentPath, scanned.agentPath, 'AGENT.md');
     const outputPath = existingRebasedPath(student.outputPath, scanned.outputPath, '输出结果');
+    const remapRoots = selectedBinding.selectedRole === 'raw' ? [student.rawPath].filter(Boolean) : oldRoots;
+    const remapTarget = selectedBinding.selectedRole === 'raw' ? rawPath : newRoot;
     const remappedStudent = remapStorageTreeFromRoots(
       students[index],
-      oldRoots,
-      newRoot,
+      remapRoots,
+      remapTarget,
       { platform: process.platform },
     ).value;
     const nextStudent = {
       ...remappedStudent,
+      knowledgeBaseMode: 'adopted',
       rootPath: newRoot,
       rootPathLabel: newRoot,
       rawPath,
@@ -6814,18 +7087,62 @@ function rebindAdoptedStudentWorkspace(studentId) {
       outputPath,
       adoptedReboundAt: new Date().toISOString(),
       adoptedPreviousRoots: oldRoots,
+      pathBindingHistory: [...(Array.isArray(student.pathBindingHistory) ? student.pathBindingHistory : []), {
+        id: `student-rebind-${Date.now()}`,
+        at: new Date().toISOString(),
+        oldBinding: {
+          knowledgeBaseMode: student.knowledgeBaseMode,
+          rootPath: student.rootPath,
+          rootPathLabel: student.rootPathLabel,
+          rawPath: student.rawPath,
+          summaryPath: student.summaryPath,
+          agentPath: student.agentPath,
+          outputPath: student.outputPath,
+        },
+        oldPath: selectedBinding.selectedRole === 'raw' ? (student.rawPath || '') : (student.rootPath || ''),
+        newPath: selectedBinding.selectedRole === 'raw' ? rawPath : newRoot,
+        status: 'active',
+        inventory: {
+          fileCount: bindingValidation.fileCount,
+          totalBytes: bindingValidation.totalBytes,
+          fingerprint: bindingValidation.fingerprint,
+        },
+      }].slice(-20),
     };
     ensureStudentWorkspaceConfig(nextStudent);
     const agentUpdate = updateAdoptedAgentDirectoryStructure(nextStudent, oldRoots);
-    const metadataRemap = remapAdoptedStudentMetadata(nextStudent, oldRoots, newRoot);
+    const metadataRemap = remapAdoptedStudentMetadata(nextStudent, remapRoots, remapTarget);
     if (agentUpdate.warning) metadataRemap.warnings.push(agentUpdate.warning);
     students[index] = nextStudent;
     writeStudentsIndex(students);
+    const indexPath = path.join(summaryPath, 'index.md');
+    if (fs.existsSync(indexPath) && fs.statSync(indexPath).isFile()) {
+      const currentIndex = fs.readFileSync(indexPath, 'utf8');
+      const indexBlock = `## 当前主机逻辑目录\n\n- 学生知识库：\`@KB_ROOT\`\n- 原始资料库：\`@RAW_DIR\`\n- 学情分析汇总：\`@SUMMARY_DIR\`\n- 成长模型：\`@GROWTH_DIR\`\n- 输出结果：\`@OUTPUT_DIR\`\n\n真实路径由 \`@KB_ROOT/.ai-manager/pathmap.json\` 维护。`;
+      const nextIndex = replaceManagedBlock(currentIndex, 'INDEX-PATHS', indexBlock);
+      if (nextIndex !== currentIndex) {
+        fs.copyFileSync(indexPath, `${indexPath}.pre-path-repair-${timestampForFilename()}.bak`);
+        fs.writeFileSync(indexPath, nextIndex, 'utf8');
+      }
+    }
+    const logPath = path.join(summaryPath, 'log.md');
+    if (fs.existsSync(logPath) && fs.statSync(logPath).isFile()) {
+      const currentLog = fs.readFileSync(logPath, 'utf8');
+      const nextLog = appendPathChangeLog(currentLog, {
+        scope: selectedBinding.selectedRole === 'raw' ? '学生原始资料库' : '学生知识库',
+        oldPath: selectedBinding.selectedRole === 'raw' ? (student.rawPath || '') : (student.rootPath || ''),
+        newPath: selectedBinding.selectedRole === 'raw' ? rawPath : newRoot,
+      });
+      if (nextLog !== currentLog) {
+        fs.copyFileSync(logPath, `${logPath}.pre-path-repair-${timestampForFilename()}.bak`);
+        fs.writeFileSync(logPath, nextLog, 'utf8');
+      }
+    }
     invalidateArchiveAccessCache();
     refreshStudentArchiveSyncWatchers();
     notify('onNativeHostServiceChanged', getHostServiceStatus());
     const agentMessage = agentUpdate.updated
-      ? `；AGENT.md 中的旧路径和当前目录结构已更新，原文件已备份为 ${path.basename(agentUpdate.backupPath)}`
+      ? `；AGENT.md 的教育管家受控路径区块已更新，原文件已备份为 ${path.basename(agentUpdate.backupPath)}`
       : '';
     return JSON.stringify({
       ok: true,
@@ -6836,15 +7153,16 @@ function rebindAdoptedStudentWorkspace(studentId) {
       agentPath,
       outputPath,
       metadataFilesUpdated: metadataRemap.changedFiles.length,
+      inventory: bindingValidation,
       agentPathUpdated: agentUpdate.updated,
       agentBackupPath: agentUpdate.backupPath,
       warnings: metadataRemap.warnings,
       message: metadataRemap.warnings.length
-        ? `已重新定位接管目录：${newRoot}${agentMessage}；${metadataRemap.warnings.length} 项内容未能自动更新，可稍后重试。`
-        : `已重新定位接管目录：${newRoot}${agentMessage}`,
+        ? `已完成${selectedBinding.selectedRole === 'raw' ? '原始资料库' : '知识库'}路径绑定：${selectedBinding.selectedRole === 'raw' ? rawPath : newRoot}${agentMessage}；${metadataRemap.warnings.length} 项结构化索引未能自动更新，可稍后重试。`
+        : `已完成${selectedBinding.selectedRole === 'raw' ? '原始资料库' : '知识库'}路径绑定：${selectedBinding.selectedRole === 'raw' ? rawPath : newRoot}${agentMessage}`,
     });
   } catch (error) {
-    return JSON.stringify({ ok: false, message: `重新定位接管目录失败：${error.message}` });
+    return JSON.stringify({ ok: false, message: `目录绑定与路径修复失败：${error.message}` });
   }
 }
 
@@ -6916,9 +7234,13 @@ function getPairSession(forceNew = false) {
 function getPairPayload() {
   const info = getConnectionInfo();
   const session = getPairSession();
+  const identity = getHostIdentity();
   return {
     type: 'AI_EDU_MANAGER_PAIR',
     version: APP_VERSION,
+    hostId: identity.hostId,
+    hostMachineCode: identity.machineCode,
+    hostDisplayName: identity.displayName,
     serverUrl: info.serverUrl,
     lanUrls: info.lanUrls,
     tailscaleUrl: info.tailscaleUrl,
@@ -7700,6 +8022,37 @@ function publishPlatformCourseCatalog(releaseNotes = '') {
     });
   } catch (error) {
     return JSON.stringify({ ok: false, code: 'PLATFORM_COURSE_PUBLISH_FAILED', message: `平台课程发布失败：${error.message}` });
+  }
+}
+
+function reExportPlatformCourseCatalog() {
+  const locked = platformCourseCapabilityRequiredJson('platform_course_publish', 'PLATFORM_COURSE_PUBLISH_REQUIRED');
+  if (locked) return locked;
+  try {
+    const store = courseCatalogStore();
+    const currentPackage = store.state().currentPlatformPackage;
+    if (!currentPackage?.canReExport) {
+      return JSON.stringify({ ok: false, code: 'PLATFORM_COURSE_PACKAGE_NOT_ARCHIVED', message: '当前已发布版本没有可重新导出的原始课程包；请先发布或导入一次平台课程包。' });
+    }
+    const suggested = `AI教育管家-平台课程-${currentPackage.catalogVersion}.edu-coursepkg`;
+    let outputPath = dialog.showSaveDialogSync(mainWindow, {
+      title: '重新导出当前平台课程包',
+      defaultPath: path.join(app.getPath('downloads') || os.tmpdir(), suggested),
+      filters: [{ name: 'AI教育管家平台课程包', extensions: ['edu-coursepkg'] }],
+    });
+    if (!outputPath) return JSON.stringify({ ok: false, cancelled: true, message: '已取消重新导出。' });
+    if (!outputPath.toLowerCase().endsWith('.edu-coursepkg')) outputPath += '.edu-coursepkg';
+    const exported = store.exportCurrentCoursePackage(outputPath);
+    const license = publicLicenseStatus();
+    appendHostTimeline({ type: 'platform_course_package_reexported', title: 'Platform course package re-exported', detail: exported.catalogVersion, catalogVersion: exported.catalogVersion, packageSha256: exported.sha256, licenseId: license.licenseId || '', edition: 'PLATFORM' });
+    return JSON.stringify({
+      ok: true,
+      ...exported,
+      state: JSON.parse(getCourseCatalogState()),
+      message: `平台课程包 ${exported.catalogVersion} 已按原版本和原 SHA-256 重新导出到 ${exported.outputPath}。`,
+    });
+  } catch (error) {
+    return JSON.stringify({ ok: false, code: 'PLATFORM_COURSE_PACKAGE_REEXPORT_FAILED', message: `重新导出平台课程包失败：${error.message}` });
   }
 }
 
@@ -8920,11 +9273,10 @@ function projectWorkspaceFoldersFor(project) {
 }
 
 function projectWorkspaceIndexTemplate(project) {
-  const paths = projectPathsFor(project.name, project.projectRootPath, project);
   const template = projectWorkspaceTemplateFor(project.workspaceTemplateId);
   const folders = projectWorkspaceFoldersFor(project);
-  const rows = folders.map((folder) => `| ${folder} | ${path.join(paths.workspacePath, folder)} |`).join('\n');
-  return `# ${project.name} 项目工作空间结构\n\n> 本文件描述的是“项目工作空间”的人工项目管理目录结构，不是“项目知识空间”的 LLM Wiki schema。\n\n- 工作空间模板：${project.workspaceTemplateName || template.name}\n- 项目工作空间：${paths.workspacePath}\n- 研究暂存层：${paths.stagingPath}\n- 项目知识空间：${paths.knowledgeRootPath}\n\n## 工作空间文件夹\n\n| 文件夹 | 路径 |\n| --- | --- |\n${rows || '| 暂无 | - |'}\n\n## 边界说明\n\n- 项目工作空间：用于按项目管理习惯收集资料、进展、团队协作、成果等内容。\n- 研究暂存层：用于候选资料收集、AI 初筛、治理和资产晋升。\n- 项目知识空间：固定使用 LLM Wiki 结构，包括项目原始资料库、概念库、实体库、摘要库、问答精华库、综合汇总库、项目报告和知识贡献。\n- 修改本模板只会影响项目工作空间下的文件夹，不会改变项目知识空间目录结构。\n`;
+  const rows = folders.map((folder) => `| ${folder} | @PROJECT_WORKSPACE/${folder.replace(/\\/g, '/')} |`).join('\n');
+  return `# ${project.name} 项目工作空间结构\n\n> 本文件描述的是“项目工作空间”的人工项目管理目录结构，不是“项目知识空间”的 LLM Wiki schema。\n\n- 工作空间模板：${project.workspaceTemplateName || template.name}\n- 项目工作空间：@PROJECT_WORKSPACE\n- 研究暂存层：@PROJECT_ROOT/研究暂存\n- 项目知识空间：@PROJECT_KNOWLEDGE\n\n## 工作空间文件夹\n\n| 文件夹 | 逻辑路径 |\n| --- | --- |\n${rows || '| 暂无 | - |'}\n\n## 边界说明\n\n- 项目工作空间：用于按项目管理习惯收集资料、进展、团队协作、成果等内容。\n- 研究暂存层：用于候选资料收集、AI 初筛、治理和资产晋升。\n- 项目知识空间：固定使用 LLM Wiki 结构，包括项目原始资料库、概念库、实体库、摘要库、问答精华库、综合汇总库、项目报告和知识贡献。\n- 当前主机真实路径由项目管理目录中的 pathmap 维护；跨主机发布不得继承源主机盘符。\n`;
 }
 
 function writeProjectWorkspaceIndex(project) {
@@ -8936,9 +9288,8 @@ function writeProjectWorkspaceIndex(project) {
 }
 
 function projectAgentTemplate(project, students) {
-  const paths = projectPathsFor(project.name, project.projectRootPath, project);
-  const studentLines = (students || []).map((student) => `- ${student.name}：${student.rootPath || getStudentRootDir(student.name)}`).join('\n') || '- 暂未绑定学生';
-  return `# ${project.name} 项目教育管家 AGENT.md\n\n## 项目定位\n\n本目录是学习项目「${project.name}」的独立 LLM Wiki 知识空间，用于围绕项目资料进行消化、摘要、概念/实体抽取、问答沉淀和综合分析。\n\n## 绑定学生\n\n${studentLines}\n\n## 项目目录\n\n- 项目工作空间：${paths.workspacePath}\n- 项目原始资料库：${paths.rawPath}\n- 摘要库：${paths.summaryPath}\n- 概念库：${paths.conceptPath}\n- 实体库：${paths.entityPath}\n- 问答精华库：${paths.qaPath}\n- 综合汇总库：${paths.synthesisPath}\n- 项目报告：${paths.reportPath}\n- 知识贡献：${paths.contributionPath}\n\n## 工作规则\n\n1. 所有项目资料消化只围绕本项目知识空间执行，不要直接写入学生主档案。\n2. 只有在用户确认“知识贡献申请”后，才把项目结论发布到学生主档案或成长模型。\n3. 原始资料必须保留来源路径、资产编号或文件名，不要删除、移动用户原始文件。\n4. 每次资料消化后更新项目 index.md 和 log.md。\n5. 如果没有新增资料，请在 log.md 中记录“无新增项目资料”，不要重复生成摘要。\n\n## 可执行命令\n\n- /消化项目资料：读取「${paths.rawPath}」中的新资料，更新项目知识空间。\n- /生成知识贡献申请：基于项目知识空间生成「${path.join(paths.contributionPath, '知识贡献申请.md')}」。\n`;
+  const studentLines = (students || []).map((student) => `- ${student.name}（学生ID：${student.id}，档案：edu://student/${student.id}）`).join('\n') || '- 暂未绑定学生';
+  return `# ${project.name} 项目教育管家 AGENT.md\n\n## 项目定位\n\n本目录是学习项目「${project.name}」的独立 LLM Wiki 知识空间，用于围绕项目资料进行消化、摘要、概念/实体抽取、问答沉淀和综合分析。\n\n## 绑定学生\n\n${studentLines}\n\n## 项目目录\n\n- 项目工作空间：@PROJECT_WORKSPACE\n- 项目知识空间：@PROJECT_KNOWLEDGE\n- 项目原始资料库：@PROJECT_RAW\n- 项目报告：@PROJECT_REPORT\n- 知识贡献：@PROJECT_CONTRIBUTION\n\n真实路径由当前主机项目 pathmap 维护，禁止把某台主机的 C:\\、D:\\ 等绝对路径作为跨主机合同。\n\n## 工作规则\n\n1. 所有项目资料消化只围绕本项目知识空间执行，不要直接写入学生主档案。\n2. 只有在用户确认“知识贡献申请”后，才把项目结论发布到学生主档案或成长模型。\n3. 原始资料必须保留相对路径、资产编号或文件名，不要删除、移动用户原始文件。\n4. 每次资料消化后更新项目 index.md 和 log.md。\n5. 如果没有新增资料，请在 log.md 中记录“无新增项目资料”，不要重复生成摘要。\n\n## 可执行命令\n\n- /消化项目资料：读取 @PROJECT_RAW 中的新资料，更新 @PROJECT_KNOWLEDGE。\n- /生成知识贡献申请：基于 @PROJECT_KNOWLEDGE 生成 @PROJECT_CONTRIBUTION/知识贡献申请.md。\n`;
 }
 
 function projectBindingIndexTemplate(project, students) {
@@ -8947,11 +9298,9 @@ function projectBindingIndexTemplate(project, students) {
     `## ${student.name}`,
     '',
     `- 学生ID：${student.id}`,
-    `- 学生知识库：${student.rootPath || getStudentRootDir(student.name)}`,
-    `- 原始资料库：${student.rawPath || getRawDir(student.name)}`,
-    `- 学情分析汇总：${student.summaryPath || getSummaryDir(student.name)}`,
+    `- 学生档案：edu://student/${student.id}`,
   ].join('\n')).join('\n\n') || '暂无绑定学生。';
-  return `# ${project.name} 项目绑定学生\n\n更新时间：${new Date().toLocaleString('zh-CN')}\n\n本文件由控制台生成，用于记录学习项目当前绑定的学生。修改项目绑定学生时会更新本文件；不会自动覆盖 AGENT.md。\n\n## 项目路径\n\n- 项目知识空间：${paths.knowledgeRootPath}\n- 项目原始资料库：${paths.rawPath}\n- 知识贡献目录：${paths.contributionPath}\n\n## 绑定学生\n\n${studentLines}\n`;
+  return `# ${project.name} 项目绑定学生\n\n更新时间：${new Date().toLocaleString('zh-CN')}\n\n本文件由控制台生成，用于记录学习项目当前绑定的学生。修改项目绑定学生时会更新本文件；不会自动覆盖 AGENT.md。\n\n## 项目路径\n\n- 项目知识空间：@PROJECT_KNOWLEDGE\n- 项目原始资料库：@PROJECT_RAW\n- 知识贡献目录：@PROJECT_CONTRIBUTION\n\n## 绑定学生\n\n${studentLines}\n`;
 }
 
 function writeProjectBindingIndex(project) {
@@ -9296,6 +9645,7 @@ function normalizeProject(project) {
     workspaceLastScannedAt: project.workspaceLastScannedAt || '',
     workspaceScanSnapshot: project.workspaceScanSnapshot && typeof project.workspaceScanSnapshot === 'object' ? project.workspaceScanSnapshot : {},
     workspaceRebindHistory: Array.isArray(project.workspaceRebindHistory) ? project.workspaceRebindHistory : [],
+    knowledgeRebindHistory: Array.isArray(project.knowledgeRebindHistory) ? project.knowledgeRebindHistory : [],
     promotionPath: project.promotionPath || path.join(paths.contributionPath, '知识贡献申请.md'),
     assetIds: Array.isArray(project.assetIds) ? project.assetIds.map(String) : [],
     stagingItems: Array.isArray(project.stagingItems) ? project.stagingItems.map(normalizeProjectStagingItem) : [],
@@ -9587,6 +9937,118 @@ function confirmProjectWorkspaceRelocation(projectId, workspacePath) {
     return JSON.stringify({ ok: true, project: ensured, projects: readProjects().map(normalizeProject), rebindId: historyEntry.id, message: '项目工作空间已重新定位；来源目录绑定已更新，原目录与知识空间均未改动，系统将重新扫描新目录。' });
   } catch (error) {
     return JSON.stringify({ ok: false, message: `确认项目路径重新定位失败：${error.message}` });
+  }
+}
+
+function rebindProjectKnowledgeSpace(projectId) {
+  try {
+    const access = mutableProject(projectId, '重新绑定项目知识空间');
+    if (access.error) return access.error;
+    const selected = dialog.showOpenDialogSync(mainWindow, {
+      title: `为“${access.project.name}”选择已有项目知识空间`,
+      properties: ['openDirectory'],
+    });
+    if (!selected?.[0]) return JSON.stringify({ ok: false, cancelled: true, message: '已取消项目知识空间绑定。' });
+    const projects = readProjects().map(normalizeProject).filter((item) => String(item.id) !== String(projectId));
+    const scan = scanProjectKnowledgeBase(selected[0], projects);
+    if (!scan.ok) return JSON.stringify({ ok: false, message: scan.errors.join(' '), scan });
+    const validation = validateExistingBinding({
+      rootPath: scan.rootPath,
+      requiredPaths: Object.values(scan.paths || {}).filter(Boolean),
+      rejectEmpty: true,
+    });
+    if (!validation.ok) return JSON.stringify({ ok: false, message: validation.errors.join(' '), scan, inventory: validation });
+    const confirmation = dialog.showMessageBoxSync(mainWindow, {
+      type: 'warning',
+      buttons: ['取消', '确认绑定并修复路径'],
+      defaultId: 0,
+      cancelId: 0,
+      noLink: true,
+      title: '确认项目知识空间绑定',
+      message: `确认把“${access.project.name}”绑定到所选项目知识空间？`,
+      detail: `原路径：${access.project.knowledgeRootPath || ''}\n新路径：${scan.rootPath}\n文件：${validation.fileCount} 个\n容量：${validation.totalBytes} 字节\n知识空间ID：${scan.knowledgeSpaceId}\n\n本操作不会移动、复制或删除工作空间及知识文件。`,
+    });
+    if (confirmation !== 1) return JSON.stringify({ ok: false, cancelled: true, message: '已取消项目知识空间绑定，未修改任何配置。' });
+    const oldPath = access.project.knowledgeRootPath || '';
+    const now = new Date().toISOString();
+    const result = updateProjectRecord(projectId, (project) => ({
+      ...project,
+      knowledgeMode: 'adopted',
+      knowledgeRootPath: scan.rootPath,
+      knowledgeSpaceId: scan.knowledgeSpaceId,
+      rawPath: scan.paths.rawPath,
+      conceptPath: scan.paths.conceptPath,
+      entityPath: scan.paths.entityPath,
+      summaryPath: scan.paths.summaryPath,
+      qaPath: scan.paths.qaPath,
+      synthesisPath: scan.paths.synthesisPath,
+      reportPath: path.join(scan.rootPath, '项目报告'),
+      contributionPath: path.join(scan.rootPath, '知识贡献'),
+      agentPath: scan.agentPath || project.agentPath,
+      knowledgeAdoption: {
+        ...(project.knowledgeAdoption || {}),
+        adoptedAt: now,
+        originalAgentPath: scan.agentPath,
+        originalPathmapPath: scan.pathmapPath,
+        metadataPath: scan.metadataPath,
+        identitySource: scan.identitySource,
+        inventory: scan.inventory,
+        warnings: scan.warnings,
+      },
+      knowledgeRebindHistory: [...(Array.isArray(project.knowledgeRebindHistory) ? project.knowledgeRebindHistory : []), {
+        id: `knowledge-rebind-${Date.now()}`,
+        at: now,
+        oldPath,
+        newPath: scan.rootPath,
+        oldBinding: {
+          knowledgeMode: project.knowledgeMode,
+          knowledgeRootPath: project.knowledgeRootPath,
+          knowledgeSpaceId: project.knowledgeSpaceId,
+          rawPath: project.rawPath,
+          conceptPath: project.conceptPath,
+          entityPath: project.entityPath,
+          summaryPath: project.summaryPath,
+          qaPath: project.qaPath,
+          synthesisPath: project.synthesisPath,
+          reportPath: project.reportPath,
+          contributionPath: project.contributionPath,
+          agentPath: project.agentPath,
+          knowledgeAdoption: project.knowledgeAdoption,
+        },
+        status: 'active',
+        inventory: { fileCount: validation.fileCount, totalBytes: validation.totalBytes, fingerprint: validation.fingerprint },
+      }].slice(-20),
+      updatedAt: now,
+    }));
+    const ensured = ensureProjectWorkspace(result.project);
+    const pathmap = adoptionPathmap(ensured, scan);
+    const pathmapPath = path.join(ensured.managerPath, 'adopted-knowledge-pathmap.json');
+    fs.mkdirSync(path.dirname(pathmapPath), { recursive: true });
+    writeJsonAtomic(pathmapPath, pathmap);
+    const agentPath = scan.agentPath || ensured.agentPath;
+    if (agentPath && fs.existsSync(agentPath) && fs.statSync(agentPath).isFile()) {
+      const current = fs.readFileSync(agentPath, 'utf8');
+      const block = `## 教育管家当前项目目录\n\n- \`@PROJECT_ROOT\`：\`${ensured.projectRootPath}\`\n- \`@PROJECT_WORKSPACE\`：\`${ensured.workspacePath}\`\n- \`@PROJECT_KNOWLEDGE\`：\`${ensured.knowledgeRootPath}\`\n- \`@PROJECT_RAW\`：\`${ensured.rawPath}\`\n- \`@PROJECT_REPORT\`：\`${ensured.reportPath}\`\n- \`@PROJECT_CONTRIBUTION\`：\`${ensured.contributionPath}\``;
+      const next = replaceManagedBlock(current, 'PROJECT-PATHS', block);
+      if (next !== current) {
+        fs.copyFileSync(agentPath, `${agentPath}.pre-path-repair-${timestampForFilename()}.bak`);
+        fs.writeFileSync(agentPath, next, 'utf8');
+      }
+    }
+    const logPath = path.join(ensured.knowledgeRootPath, 'log.md');
+    if (fs.existsSync(logPath) && fs.statSync(logPath).isFile()) {
+      const current = fs.readFileSync(logPath, 'utf8');
+      const next = appendPathChangeLog(current, { at: now, scope: '项目知识空间', oldPath, newPath: ensured.knowledgeRootPath });
+      if (next !== current) {
+        fs.copyFileSync(logPath, `${logPath}.pre-path-repair-${timestampForFilename()}.bak`);
+        fs.writeFileSync(logPath, next, 'utf8');
+      }
+    }
+    writeProjectBindingIndex(ensured);
+    appendHostTimeline({ type: 'project_knowledge_rebound', title: 'Project knowledge space rebound', detail: `${ensured.name}: ${oldPath} -> ${ensured.knowledgeRootPath}` });
+    return JSON.stringify({ ok: true, project: ensured, projects: readProjects().map(normalizeProject), pathmapPath, inventory: validation, message: '项目知识空间已重新绑定；工作空间与原知识文件均未移动或删除。' });
+  } catch (error) {
+    return JSON.stringify({ ok: false, message: `重新绑定项目知识空间失败：${error.message}` });
   }
 }
 
@@ -17182,6 +17644,7 @@ function getGrowthIndex(studentId) {
     const student = readStudentsIndex().find((item) => String(item.id) === String(studentId));
     if (!student) return JSON.stringify({ ok: false, message: '未找到学生。' });
     const normalized = toHostStudent(student);
+    repairMigratedStudentMetadata(normalized);
     const file = growthIndexPath(normalized);
     if (!fs.existsSync(file)) {
       createGrowthRecoverySnapshot(normalized, 'missing-index-rebuild');
@@ -17363,6 +17826,68 @@ function ensureLearningReportsForStudent(student) {
   return { reportDir, created };
 }
 
+function recoverLearningReportsForStudent(student) {
+  const normalized = toHostStudent(student);
+  const metadataRepair = repairMigratedStudentMetadata(normalized);
+  const recovered = recoverPlaceholderReportsFromArchive({
+    rootDir: educationArchiveVersionRoot(normalized),
+    studentId: normalized.id,
+    reportPaths: Object.fromEntries(LEARNING_REPORTS.map((report) => [report.id, learningReportPathForStudent(normalized, report)])),
+  });
+  return { studentId: normalized.id, studentName: normalized.name, metadataRepair, ...recovered };
+}
+
+function remapAllAbsolutePathStrings(value, mappings) {
+  if (typeof value === 'string') {
+    return mappings.reduce((current, mapping) => rebaseStoragePath(current, mapping.sourceRoot, mapping.targetRoot, { platform: process.platform }), value);
+  }
+  if (Array.isArray(value)) return value.map((item) => remapAllAbsolutePathStrings(item, mappings));
+  if (!value || typeof value !== 'object') return value;
+  return Object.fromEntries(Object.entries(value).map(([key, child]) => [key, remapAllAbsolutePathStrings(child, mappings)]));
+}
+
+function collectMigratedStudentMetadataJson(student) {
+  const roots = [studentAiManagerDir(student), studentManagerDir(student), growthModelDirForStudent(student)];
+  const files = [];
+  const visit = (current, depth = 0) => {
+    if (depth > 8 || !fs.existsSync(current)) return;
+    for (const entry of fs.readdirSync(current, { withFileTypes: true })) {
+      if (entry.isDirectory() && entry.name === 'education-archive-versions') continue;
+      const target = path.join(current, entry.name);
+      if (entry.isDirectory()) visit(target, depth + 1);
+      else if (entry.isFile() && entry.name.toLowerCase().endsWith('.json')) files.push(target);
+    }
+  };
+  for (const root of roots) visit(root);
+  return [...new Set(files)];
+}
+
+function repairMigratedStudentMetadata(student) {
+  try {
+    const report = safeReadJson(path.join(defaultStudentBaseDir(), '.edu-manager', 'migration-report.json'), {});
+    const mappings = [
+      ...(report.sourceManagedRoot && report.targetRoot ? [{ sourceRoot: report.sourceManagedRoot, targetRoot: report.targetRoot }] : []),
+      ...(Array.isArray(report.externalMappings) ? report.externalMappings : []),
+    ]
+      .filter((item) => item?.sourceRoot && item?.targetRoot);
+    if (!mappings.length) return { changedFiles: 0, scannedFiles: 0 };
+    let changedFiles = 0;
+    const files = collectMigratedStudentMetadataJson(student);
+    for (const file of files) {
+      const current = safeReadJson(file, null);
+      if (!current) continue;
+      const next = remapAllAbsolutePathStrings(current, mappings);
+      if (JSON.stringify(next) === JSON.stringify(current)) continue;
+      writeJsonAtomic(file, next);
+      changedFiles += 1;
+    }
+    if (changedFiles) appendHostTimeline({ type: 'migration_metadata_paths_repaired', title: 'Migration metadata paths repaired', detail: `${student.name}: ${changedFiles}`, studentId: String(student.id), count: changedFiles });
+    return { changedFiles, scannedFiles: files.length };
+  } catch (error) {
+    return { changedFiles: 0, scannedFiles: 0, message: error.message };
+  }
+}
+
 function frontmatterValue(content, key) {
   const match = new RegExp(`^${key}:\\s*(.+)$`, 'im').exec(String(content || ''));
   return match ? match[1].trim() : '';
@@ -17394,12 +17919,14 @@ function learningReportRecord(student, report) {
   const updatedMs = stat ? stat.mtimeMs : 0;
   const staleDays = updatedMs ? Math.floor((Date.now() - updatedMs) / (24 * 60 * 60 * 1000)) : null;
   const evidenceOk = reportHasEvidence(content);
+  const substantive = reportHasSubstantiveContent(content);
   const stale = Boolean(staleDays !== null && staleDays >= 14);
   const warnings = [];
   if (!exists) warnings.push('报告文件缺失');
   if (status === 'draft') warnings.push('仍是草稿状态');
   if (stale) warnings.push(`已 ${staleDays} 天未更新`);
   if (!evidenceOk) warnings.push('缺少有效依据来源');
+  if (!substantive) warnings.push('当前为占位模板，尚未生成正式正文');
   return {
     id: report.id,
     title: report.title,
@@ -17412,6 +17939,7 @@ function learningReportRecord(student, report) {
     stale,
     staleDays,
     evidenceOk,
+    substantive,
     health: warnings.length ? 'warning' : 'ok',
     warnings,
     summary: extractSectionSummary(content, report.summaryHeading),
@@ -18357,6 +18885,60 @@ function conversationDeliveriesPath(student) {
   return path.join(conversationGovernanceDir(student), 'material-deliveries.json');
 }
 
+function conversationImportLocation(student, sourceScopeType, sourceScopeId) {
+  if (sourceScopeType !== 'project') {
+    if (String(sourceScopeId || student.id) !== String(student.id)) return null;
+    return {
+      scopeType: 'student',
+      scopeId: String(student.id),
+      scopeName: student.name,
+      indexPath: conversationIndexPath(student),
+      indexFallback: { version: 2, imports: [], extracts: [] },
+      assetsDir: conversationAssetsDir(student),
+      interactionsDir: conversationInteractionsDir(student),
+      candidatesPath: conversationCandidatesPath(student),
+      allowedContentRoot: agentConversationImportsDir(student),
+    };
+  }
+  const project = readProjects().map(normalizeProject).find((item) => (
+    String(item.id) === String(sourceScopeId || '')
+    && (item.studentIds || []).map(String).includes(String(student.id))
+  ));
+  if (!project) return null;
+  const governanceDir = projectConversationGovernanceDir(project);
+  return {
+    scopeType: 'project',
+    scopeId: String(project.id),
+    scopeName: project.name,
+    project,
+    indexPath: projectConversationIndexPath(project),
+    indexFallback: { schema: 'edu-manager.project-conversation-index.v1', version: 1, projectId: String(project.id), imports: [] },
+    assetsDir: path.join(governanceDir, 'assets'),
+    interactionsDir: path.join(governanceDir, 'interactions'),
+    candidatesPath: projectConversationCandidatesPath(project),
+    allowedContentRoot: path.join(project.rawPath, 'Agent对话资料'),
+  };
+}
+
+function conversationImportDependencySummary(student, location, item, deliveries = []) {
+  const matchingDeliveries = deliveries.filter((delivery) => (
+    String(delivery.assetId) === String(item.assetId)
+    && String(delivery.sourceScopeType || 'student') === location.scopeType
+    && String(delivery.sourceScopeId || student.id) === location.scopeId
+  ));
+  const candidateRegistry = readJsonFile(location.candidatesPath, { candidates: [] });
+  const candidates = (candidateRegistry.candidates || []).filter((candidate) => (
+    String(candidate?.source?.assetId || '') === String(item.assetId)
+  ));
+  const promoted = candidates.filter((candidate) => candidate.status === 'promoted' || candidate.promotionTransactionId).length;
+  return {
+    deliveryCount: matchingDeliveries.length,
+    candidateCount: candidates.length,
+    promotedCount: promoted,
+    canPermanentlyDelete: matchingDeliveries.length === 0 && candidates.length === 0,
+  };
+}
+
 function conversationAnalysisFor(student, content) {
   const projects = readProjects().map(normalizeProject).filter((project) => (
     (project.studentIds || []).map(String).includes(String(student.id))
@@ -18451,8 +19033,126 @@ function conversationInboxImports(student) {
         && delivery.sourceScopeType === item.sourceScopeType
         && delivery.sourceScopeId === item.sourceScopeId
       )),
+      dependencies: conversationImportDependencySummary(
+        student,
+        conversationImportLocation(student, item.sourceScopeType, item.sourceScopeId),
+        item,
+        deliveries,
+      ),
     }))
     .sort((left, right) => String(right.importedAt || '').localeCompare(String(left.importedAt || '')));
+}
+
+function markAgentConversationSubmissionDeleted(assetId, deletedAt) {
+  const store = readAgentConversationSubmissionStore();
+  let changed = false;
+  for (const record of Object.values(store.submissions || {})) {
+    if (String(record?.receipt?.assetId || '') !== String(assetId || '')) continue;
+    record.status = 'deleted';
+    record.deletedAt = deletedAt;
+    record.receipt = {
+      ...(record.receipt || {}),
+      status: 'deleted',
+      message: '原始对话已按用户确认彻底删除；再次提交相同内容时允许重新导入。',
+    };
+    changed = true;
+  }
+  if (changed) writeAgentConversationSubmissionStore(store);
+}
+
+function manageConversationImports(studentId, requestJson) {
+  try {
+    const student = findStudentByKey(studentId);
+    if (!student) return JSON.stringify({ ok: false, message: '未找到学生。' });
+    const request = parseJsonObject(requestJson);
+    const action = ['trash', 'restore', 'delete'].includes(request.action) ? request.action : '';
+    const sources = Array.isArray(request.sources) ? request.sources.slice(0, 100) : [];
+    if (!action || !sources.length) return JSON.stringify({ ok: false, message: '请选择对话并指定有效操作。' });
+    const deliveries = readConversationDeliveries(student).deliveries || [];
+    const now = new Date().toISOString();
+    const results = [];
+    for (const source of sources) {
+      const location = conversationImportLocation(student, source.sourceScopeType, source.sourceScopeId);
+      if (!location) {
+        results.push({ assetId: String(source.assetId || ''), ok: false, message: '对话来源不属于当前学生。' });
+        continue;
+      }
+      const index = readJsonFile(location.indexPath, location.indexFallback);
+      const imports = Array.isArray(index.imports) ? index.imports : [];
+      const itemIndex = imports.findIndex((item) => String(item.assetId || '') === String(source.assetId || ''));
+      if (itemIndex < 0) {
+        results.push({ assetId: String(source.assetId || ''), ok: false, message: '未找到对话导入记录。' });
+        continue;
+      }
+      const item = imports[itemIndex];
+      const dependencies = conversationImportDependencySummary(student, location, item, deliveries);
+      if (action === 'trash') {
+        if (item.lifecycleStatus === 'trashed') {
+          results.push({ assetId: item.assetId, ok: true, deduplicated: true, action, dependencies });
+          continue;
+        }
+        imports[itemIndex] = { ...item, lifecycleStatus: 'trashed', trashedAt: now };
+      } else if (action === 'restore') {
+        if (item.lifecycleStatus !== 'trashed') {
+          results.push({ assetId: item.assetId, ok: true, deduplicated: true, action, dependencies });
+          continue;
+        }
+        const restored = { ...item, lifecycleStatus: 'active', restoredAt: now };
+        delete restored.trashedAt;
+        imports[itemIndex] = restored;
+      } else {
+        if (item.lifecycleStatus !== 'trashed') {
+          results.push({ assetId: item.assetId, ok: false, action, dependencies, message: '请先将对话移入回收站，再执行彻底删除。' });
+          continue;
+        }
+        if (!request.confirmPermanentDelete) {
+          results.push({ assetId: item.assetId, ok: false, action, dependencies, message: '彻底删除需要二次确认。' });
+          continue;
+        }
+        if (!dependencies.canPermanentlyDelete) {
+          results.push({ assetId: item.assetId, ok: false, action, dependencies, message: `存在 ${dependencies.deliveryCount} 条资料投递和 ${dependencies.candidateCount} 条知识候选，不能彻底删除原始证据。` });
+          continue;
+        }
+        const asset = readJsonFile(path.join(location.assetsDir, `${item.assetId}.json`), null);
+        const contentPath = path.resolve(asset?.storedPath || item.path || '');
+        if (contentPath && fs.existsSync(contentPath) && canonicalIsPathInside(location.allowedContentRoot, contentPath)) fs.unlinkSync(contentPath);
+        const assetPath = path.join(location.assetsDir, `${item.assetId}.json`);
+        const interactionPath = path.join(location.interactionsDir, `${item.interactionId}.json`);
+        if (fs.existsSync(assetPath)) fs.unlinkSync(assetPath);
+        if (fs.existsSync(interactionPath)) fs.unlinkSync(interactionPath);
+        imports.splice(itemIndex, 1);
+        markAgentConversationSubmissionDeleted(item.assetId, now);
+      }
+      writeJsonFile(location.indexPath, { ...index, imports, updatedAt: now });
+      results.push({ assetId: item.assetId, ok: true, action, dependencies });
+    }
+    const succeeded = results.filter((item) => item.ok).length;
+    const failed = results.length - succeeded;
+    if (succeeded) {
+      appendHostTimeline({
+        type: `conversation_import_${action}`,
+        title: action === 'trash' ? 'Conversation moved to trash' : action === 'restore' ? 'Conversation restored' : 'Conversation permanently deleted',
+        detail: `${student.name}: ${succeeded} succeeded, ${failed} failed`,
+        studentId: String(student.id),
+        studentName: student.name,
+        count: succeeded,
+      });
+    }
+    return JSON.stringify({
+      ok: succeeded > 0 && failed === 0,
+      partial: succeeded > 0 && failed > 0,
+      succeeded,
+      failed,
+      results,
+      message: action === 'trash'
+        ? `已将 ${succeeded} 份对话移入回收站${failed ? `，${failed} 份未处理` : ''}。已投递资料和已晋升知识不受影响。`
+        : action === 'restore'
+          ? `已恢复 ${succeeded} 份对话${failed ? `，${failed} 份未处理` : ''}。`
+          : `已彻底删除 ${succeeded} 份无依赖对话${failed ? `，${failed} 份因依赖或校验未删除` : ''}。`,
+    });
+  } catch (error) {
+    return JSON.stringify({ ok: false, message: `管理对话资料失败：${error.message}` });
+  }
 }
 
 function resolveConversationInboxAsset(student, request) {
@@ -19172,7 +19872,7 @@ function persistAgentConversationSubmission(input, options = {}) {
   );
   if (
     existing
-    && existing.status !== 'awaiting_attribution'
+    && !['awaiting_attribution', 'deleted'].includes(existing.status)
     && (!submission.targetProject || existingProjectMaterialized)
   ) {
     return { ok: true, deduplicated: true, submission, receipt: existing.receipt, message: '相同对话片段已经保存，本次未生成重复记录。' };
@@ -19674,7 +20374,8 @@ function syncStudentsIndex(studentsJson) {
   try {
     const parsed = JSON.parse(studentsJson || '[]');
     if (!Array.isArray(parsed)) throw new Error('学生数据格式不是数组');
-    const existingById = new Map(readStudentsIndex().map((student) => [String(student.id), student]));
+    const currentStudents = readStudentsIndex();
+    const existingById = new Map(currentStudents.map((student) => [String(student.id), student]));
     const merged = parsed.map((student) => {
       const existing = existingById.get(String(student.id));
       return toHostStudent({
@@ -19686,6 +20387,7 @@ function syncStudentsIndex(studentsJson) {
     });
     const ensured = ensureStudentLoginIds(merged);
     const students = ensured.students;
+    assertStudentCapacity(students, currentStudents, '同步学生档案');
     writeStudentsIndex(students);
     const validIds = new Set(students.map((student) => String(student.id)));
     const migrated = migrateTerminalDevices(readDevices(), Array.from(validIds));
@@ -19770,7 +20472,36 @@ function getLanUrls(port) {
 }
 
 function getTailscaleUrls(port) {
-  return getNetworkUrls(port, 'tailscale');
+  return [...getTailscaleDnsUrls(port), ...getNetworkUrls(port, 'tailscale')]
+    .filter((url, index, list) => list.indexOf(url) === index);
+}
+
+let tailscaleDnsUrlCache = { port: 0, expiresAt: 0, urls: [] };
+
+function getTailscaleDnsUrls(port) {
+  if (tailscaleDnsUrlCache.port === port && tailscaleDnsUrlCache.expiresAt > Date.now()) {
+    return [...tailscaleDnsUrlCache.urls];
+  }
+  try {
+    const result = spawnSync('tailscale.exe', ['status', '--json'], {
+      encoding: 'utf8',
+      windowsHide: true,
+      timeout: 5_000,
+      maxBuffer: 2 * 1024 * 1024,
+    });
+    if (result.status !== 0 || !String(result.stdout || '').trim()) {
+      tailscaleDnsUrlCache = { port, expiresAt: Date.now() + 60_000, urls: [] };
+      return [];
+    }
+    const status = JSON.parse(result.stdout);
+    const dnsName = String(status?.Self?.DNSName || '').trim().replace(/\.$/, '').toLowerCase();
+    const urls = dnsName && /^[a-z0-9.-]+\.ts\.net$/.test(dnsName) ? [`http://${dnsName}:${port}`] : [];
+    tailscaleDnsUrlCache = { port, expiresAt: Date.now() + 5 * 60_000, urls };
+    return [...urls];
+  } catch {
+    tailscaleDnsUrlCache = { port, expiresAt: Date.now() + 60_000, urls: [] };
+    return [];
+  }
 }
 
 function getHostConnectionMode() {
@@ -19838,6 +20569,7 @@ function getHostConnectionInfo() {
 
 function initStudentWorkspace(studentName, agentMd, indexMd, logMd) {
   try {
+    assertCanAddStudent('新建学生档案');
     const cleanName = sanitizeName(studentName);
     const root = getStudentRootDir(cleanName);
     const raw = getRawDir(cleanName);
@@ -19923,7 +20655,7 @@ function scanExistingKnowledgeBase(rootPath, studentName) {
     }
     const agentPath = path.join(root, 'AGENT.md');
     const rawPath = findKnowledgeDir(root, `${cleanName}原始资料库`, ['原始资料库', '原始资料', 'raw', 'materials', '资料库']);
-    const summaryPath = findKnowledgeDir(root, `${cleanName}学情分析汇总`, ['学情分析汇总', '汇总', 'summary', 'report', '分析', '综合']);
+    const summaryPath = findKnowledgeDir(root, `${cleanName}学情分析汇总`, ['学情分析汇总', '汇总', 'summary', 'report', 'wiki', '分析', '综合']);
     const outputPath = findKnowledgeDir(root, '输出结果', ['输出结果', '输出', 'result']);
     const indexPath = summaryPath ? path.join(summaryPath, 'index.md') : '';
     const logPath = summaryPath ? path.join(summaryPath, 'log.md') : '';
@@ -19971,6 +20703,7 @@ function resolveAdoptedPath(root, candidate, fallbackName) {
 
 function ensureAdoptedKnowledgeBase(optionsJson) {
   try {
+    assertCanAddStudent('接管学生档案');
     const options = JSON.parse(optionsJson || '{}');
     const cleanName = sanitizeName(options.studentName || '学生');
     if (!String(options.rootPath || '').trim()) return JSON.stringify({ ok: false, message: '请先填写已有知识库根目录。' });
@@ -20708,11 +21441,18 @@ function getArchiveRootStatus() {
 function listMarkdownFiles(studentKey) {
   try {
     const student = findStudentByKey(studentKey);
+    if (!student) return JSON.stringify({ ok: false, message: '未找到学生。' });
+    const recovery = recoverLearningReportsForStudent(student);
     const target = student?.summaryPath || getSummaryDir(student?.name || studentKey);
     if (!fs.existsSync(target)) return JSON.stringify({ ok: false, message: `未找到 ${target}` });
     const files = [];
     collectMarkdownFiles(target, target, files, 8);
-    return JSON.stringify({ ok: true, folder: target, storageMode: 'windows_documents', files });
+    const inspectedFiles = files.map((file) => {
+      const content = readSmallTextFile(file.id, 2 * 1024 * 1024);
+      const health = analyzeArchiveMarkdownContent(content);
+      return { ...file, bytes: fs.statSync(file.id).size, contentState: health.state, contentMessage: health.message };
+    });
+    return JSON.stringify({ ok: true, folder: target, storageMode: 'windows_documents', files: inspectedFiles, health: summarizeArchiveContentHealth(inspectedFiles), recovery });
   } catch (error) {
     return JSON.stringify({ ok: false, message: `读取档案失败：${error.message}` });
   }
@@ -20795,10 +21535,16 @@ function collectMarkdownFiles(root, current, files, depth) {
   }
 }
 
-function readMarkdownFile(documentId) {
+function readMarkdownFile(studentKey, documentId) {
   try {
-    if (!documentId || !fs.existsSync(documentId)) return JSON.stringify({ ok: false, message: '未找到文件' });
-    return JSON.stringify({ ok: true, content: fs.readFileSync(documentId, 'utf8') });
+    const student = findStudentByKey(studentKey);
+    if (!student) return JSON.stringify({ ok: false, message: '未找到学生。' });
+    const summaryRoot = path.resolve(student.summaryPath || getSummaryDir(student.name));
+    const target = path.resolve(String(documentId || ''));
+    if (!target.toLowerCase().endsWith('.md') || !isPathInside(summaryRoot, target)) return JSON.stringify({ ok: false, message: '该文件不在当前学生教育档案范围内。' });
+    if (!fs.existsSync(target) || !fs.statSync(target).isFile()) return JSON.stringify({ ok: false, message: '未找到文件' });
+    const content = fs.readFileSync(target, 'utf8');
+    return JSON.stringify({ ok: true, content, ...analyzeArchiveMarkdownContent(content) });
   } catch (error) {
     return JSON.stringify({ ok: false, message: `读取 Markdown 失败：${error.message}` });
   }
@@ -20808,6 +21554,7 @@ function listLearningReports(studentKey) {
   try {
     const student = findStudentByKey(studentKey);
     if (!student) return JSON.stringify({ ok: false, message: '未找到学生。' });
+    const recovery = recoverLearningReportsForStudent(student);
     const license = publicLicenseStatus();
     const ensured = license.active
       ? ensureLearningReportsForStudent(student)
@@ -20820,8 +21567,11 @@ function listLearningReports(studentKey) {
       folder: ensured.reportDir,
       reports,
       health,
+      recovery,
       created: ensured.created,
-      message: ensured.created.length ? `已补建 ${ensured.created.length} 个报告模板。${health.message}` : health.message,
+      message: recovery.recovered.length
+        ? `已从迁移的历史教育档案恢复 ${recovery.recovered.length} 份学情报告。${health.message}`
+        : ensured.created.length ? `已补建 ${ensured.created.length} 个报告模板。${health.message}` : health.message,
     });
   } catch (error) {
     return JSON.stringify({ ok: false, message: `读取学情报告失败：${error.message}` });
@@ -20832,6 +21582,7 @@ function readLearningReport(studentKey, reportId) {
   try {
     const student = findStudentByKey(studentKey);
     if (!student) return JSON.stringify({ ok: false, message: '未找到学生。' });
+    recoverLearningReportsForStudent(student);
     const license = publicLicenseStatus();
     if (license.active) ensureLearningReportsForStudent(student);
     const report = LEARNING_REPORTS.find((item) => item.id === String(reportId));
@@ -20954,6 +21705,7 @@ function createEducationArchiveVersion(studentKey) {
   const student = findStudentByKey(studentKey);
   if (!student) return { ok: false, message: '未找到学生。' };
   const normalized = toHostStudent(student);
+  recoverLearningReportsForStudent(normalized);
   const indexFile = growthIndexPath(normalized);
   const growthIndex = safeReadJson(indexFile, {});
   if (!growthIndex.sourceFingerprint) return { ok: false, message: '成长模型尚未形成，暂不创建教育档案版本。' };
@@ -21674,6 +22426,65 @@ function findStudent(studentId) {
   return readStudentsIndex().find((student) => String(student.id) === String(studentId));
 }
 
+let studentPortableMigrationManager;
+
+function portableMigrationManager() {
+  if (!studentPortableMigrationManager) {
+    studentPortableMigrationManager = createStudentPortableMigrationManager({
+      rootDir: path.join(app.getPath('userData'), 'student-portable-migrations'),
+      resolveStudentRoot: (student) => student.rootPath || getStudentRootDir(student.name),
+      resolveProjectRoot: (project) => project.projectRootPath || project.rootPath || '',
+    });
+  }
+  return studentPortableMigrationManager;
+}
+
+function handlePortableMigrationCreate(request, response, studentId) {
+  if (!requireStudentAccess(request, response, studentId)) return;
+  const student = findStudent(studentId);
+  if (!student) {
+    sendJson(response, 404, { ok: false, message: '未找到指定学生档案。' });
+    return;
+  }
+  const session = portableMigrationManager().create(student, readProjects().map(normalizeProject));
+  sendJson(response, 202, {
+    ...session,
+    statusUrl: `/api/students/${encodeURIComponent(studentId)}/portable-migrations/${session.sessionId}`,
+    downloadUrl: `/api/students/${encodeURIComponent(studentId)}/portable-migrations/${session.sessionId}/download`,
+  });
+}
+
+function handlePortableMigrationStatus(request, response, studentId, sessionId) {
+  if (!requireStudentAccess(request, response, studentId)) return;
+  const session = portableMigrationManager().requireSession(sessionId, studentId);
+  if (!session) {
+    sendJson(response, 404, { ok: false, message: '迁移会话不存在或已经过期。' });
+    return;
+  }
+  sendJson(response, 200, portableMigrationManager().publicSession(session));
+}
+
+function handlePortableMigrationDownload(request, response, studentId, sessionId) {
+  if (!requireStudentAccess(request, response, studentId)) return;
+  const session = portableMigrationManager().requireSession(sessionId, studentId);
+  if (!session) {
+    sendJson(response, 404, { ok: false, message: '迁移会话不存在或已经过期。' });
+    return;
+  }
+  if (session.status !== 'ready' || !fs.existsSync(session.filePath)) {
+    sendJson(response, 409, { ok: false, status: session.status, message: session.message });
+    return;
+  }
+  response.writeHead(200, {
+    'Content-Type': 'application/zip',
+    'Content-Length': session.bytes,
+    'Content-Disposition': `attachment; filename="student-${encodeURIComponent(studentId)}.edu-migration.zip"`,
+    'X-Edu-Content-Sha256': session.sha256,
+    'Access-Control-Allow-Origin': '*',
+  });
+  fs.createReadStream(session.filePath).pipe(response);
+}
+
 function handleHealth(_request, response) {
   const collaborationState = readCollaborationState();
   sendJson(response, 200, {
@@ -22257,13 +23068,19 @@ function handleArchiveFiles(request, response, studentId) {
     return;
   }
   const summaryPath = student.summaryPath || getSummaryDir(student.name);
+  const recovery = recoverLearningReportsForStudent(student);
   if (!fs.existsSync(summaryPath)) {
     sendJson(response, 200, { ok: true, folder: summaryPath, files: [] });
     return;
   }
   const files = [];
   collectMarkdownFiles(summaryPath, summaryPath, files, 8);
-  sendJson(response, 200, { ok: true, folder: summaryPath, files: files.filter((file) => isPublicArchiveFile(file.path)) });
+  const visible = files.filter((file) => isPublicArchiveFile(file.path)).map((file) => {
+    const content = readSmallTextFile(file.id, 2 * 1024 * 1024);
+    const health = analyzeArchiveMarkdownContent(content);
+    return { ...file, contentState: health.state, contentMessage: health.message };
+  });
+  sendJson(response, 200, { ok: true, folder: summaryPath, files: visible, health: summarizeArchiveContentHealth(visible), recovery });
 }
 
 function handleArchiveFile(request, response, studentId, url) {
@@ -22298,6 +23115,7 @@ function handleLearningReports(request, response, studentId) {
     return;
   }
   try {
+    const recovery = recoverLearningReportsForStudent(student);
     const ensured = ensureLearningReportsForStudent(student);
     const reports = LEARNING_REPORTS.map((report) => learningReportRecord(student, report));
     sendJson(response, 200, {
@@ -22306,6 +23124,7 @@ function handleLearningReports(request, response, studentId) {
       folder: ensured.reportDir,
       reports,
       health: learningReportHealthSummary(reports),
+      recovery,
     });
   } catch (error) {
     sendJson(response, 400, { ok: false, message: error.message });
@@ -23529,6 +24348,21 @@ function handleHostRequest(request, response) {
     handleLearningReports(request, response, reportsMatch[1]);
     return;
   }
+  const portableMigrationCreateMatch = pathname.match(/^\/api\/students\/([^/]+)\/portable-migrations$/);
+  if (request.method === 'POST' && portableMigrationCreateMatch) {
+    handlePortableMigrationCreate(request, response, portableMigrationCreateMatch[1]);
+    return;
+  }
+  const portableMigrationDownloadMatch = pathname.match(/^\/api\/students\/([^/]+)\/portable-migrations\/([^/]+)\/download$/);
+  if (request.method === 'GET' && portableMigrationDownloadMatch) {
+    handlePortableMigrationDownload(request, response, portableMigrationDownloadMatch[1], portableMigrationDownloadMatch[2]);
+    return;
+  }
+  const portableMigrationStatusMatch = pathname.match(/^\/api\/students\/([^/]+)\/portable-migrations\/([^/]+)$/);
+  if (request.method === 'GET' && portableMigrationStatusMatch) {
+    handlePortableMigrationStatus(request, response, portableMigrationStatusMatch[1], portableMigrationStatusMatch[2]);
+    return;
+  }
   const reportFileMatch = pathname.match(/^\/api\/students\/([^/]+)\/reports\/([^/]+)$/);
   if (request.method === 'GET' && reportFileMatch) {
     handleLearningReportFile(request, response, reportFileMatch[1], reportFileMatch[2]);
@@ -23860,6 +24694,7 @@ ipcMain.on('bridge:removeProjectRecord', (event, projectId) => { licensedIpc(eve
 ipcMain.on('bridge:deleteLearningProject', (event, projectId) => { licensedIpc(event, '安全删除学习项目', () => deleteLearningProject(projectId)); });
 ipcMain.on('bridge:relocateProjectWorkspace', (event, projectId) => { licensedIpc(event, '项目路径重新定位', () => relocateProjectWorkspace(projectId)); });
 ipcMain.on('bridge:confirmProjectWorkspaceRelocation', (event, projectId, workspacePath) => { licensedIpc(event, '确认项目路径重新定位', () => confirmProjectWorkspaceRelocation(projectId, workspacePath)); });
+ipcMain.on('bridge:rebindProjectKnowledgeSpace', (event, projectId) => { licensedIpc(event, '重新绑定项目知识空间', () => rebindProjectKnowledgeSpace(projectId)); });
 ipcMain.on('bridge:rollbackProjectWorkspaceRelocation', (event, projectId) => { licensedIpc(event, '回滚项目路径重新定位', () => rollbackProjectWorkspaceRelocation(projectId)); });
 ipcMain.on('bridge:getRemovedProjects', (event) => { licensedIpc(event, '已移除项目读取', () => getRemovedProjects()); });
 ipcMain.on('bridge:restoreRemovedProject', (event, snapshotPath) => { licensedIpc(event, '项目记录恢复', () => restoreRemovedProject(snapshotPath)); });
@@ -23938,6 +24773,7 @@ ipcMain.on('bridge:rollbackAgentSourceRecord', (event, studentId, recordId) => {
 ipcMain.on('bridge:getAgentConversationCenter', (event, studentId) => { event.returnValue = getAgentConversationCenter(studentId); });
 ipcMain.on('bridge:saveAgentConversationImport', (event, studentId, content, tool, sourcePath) => { licensedIpc(event, '对话历史导入', () => saveAgentConversationImport(studentId, content, tool, sourcePath)); });
 ipcMain.on('bridge:deliverConversationMaterials', (event, studentId, requestJson) => { licensedIpc(event, '对话资料投递', () => deliverConversationMaterials(studentId, requestJson)); });
+ipcMain.on('bridge:manageConversationImports', (event, studentId, requestJson) => { licensedIpc(event, '对话资料治理', () => manageConversationImports(studentId, requestJson)); });
 ipcMain.handle('bridge:importConversationShareUrl', (_event, studentId, url, tool) => licensedInvoke('对话分享链接导入', () => importConversationShareUrl(studentId, url, tool)));
 ipcMain.on('bridge:selectAgentConversationFiles', (event, studentId, tool) => { licensedIpc(event, '对话历史导入', () => selectAgentConversationFiles(studentId, tool)); });
 ipcMain.on('bridge:saveConversationExtract', (event, studentId, extractJson, tool) => { licensedIpc(event, '对话历史提取', () => saveConversationExtract(studentId, extractJson, tool)); });
@@ -23955,7 +24791,6 @@ ipcMain.on('bridge:getLicenseStatus', (event) => { event.returnValue = getLicens
 ipcMain.on('bridge:activateLicense', (event, code) => { event.returnValue = activateLicense(code); });
 ipcMain.on('bridge:importLicenseFile', (event) => { event.returnValue = importLicenseFile(); });
 ipcMain.on('bridge:getLicenseTrustStatus', (event) => { event.returnValue = getLicenseTrustStatus(); });
-ipcMain.on('bridge:importTrustedLicenseIssuerBundle', (event) => { event.returnValue = importTrustedLicenseIssuerBundle(); });
 ipcMain.on('bridge:deactivateLicense', (event) => { event.returnValue = deactivateLicense(); });
 ipcMain.on('bridge:getAgentToolInstallStatus', (event) => { event.returnValue = getAgentToolInstallStatus(); });
 ipcMain.on('bridge:checkUpdate', (event, manifestUrl, currentVersionCode) => {
@@ -23967,7 +24802,7 @@ ipcMain.on('bridge:downloadAndInstallUpdate', (event, downloadUrl) => {
 ipcMain.on('bridge:pickArchiveRoot', (event) => { licensedIpc(event, '更换资料根目录', () => pickArchiveRoot()); });
 ipcMain.on('bridge:getArchiveRootStatus', (event) => { event.returnValue = getArchiveRootStatus(); });
 ipcMain.on('bridge:listMarkdownFiles', (event, studentName) => { event.returnValue = listMarkdownFiles(studentName); });
-ipcMain.on('bridge:readMarkdownFile', (event, documentId) => { event.returnValue = readMarkdownFile(documentId); });
+ipcMain.on('bridge:readMarkdownFile', (event, studentId, documentId) => { event.returnValue = readMarkdownFile(studentId, documentId); });
 ipcMain.on('bridge:listProjectKnowledgeFiles', (event, projectId) => { event.returnValue = listProjectKnowledgeFiles(projectId); });
 ipcMain.on('bridge:readProjectKnowledgeFile', (event, projectId, documentId) => { event.returnValue = readProjectKnowledgeFile(projectId, documentId); });
 ipcMain.on('bridge:listLearningReports', (event, studentId) => { event.returnValue = listLearningReports(studentId); });
@@ -24006,6 +24841,12 @@ ipcMain.on('bridge:getHostConnectionInfo', (event) => { event.returnValue = getH
 ipcMain.on('bridge:getHostDevices', (event) => { event.returnValue = getHostDevices(); });
 ipcMain.on('bridge:renameHostIdentity', (event, displayName) => { licensedIpc(event, '主机身份设置', () => renameHostIdentity(displayName)); });
 ipcMain.on('bridge:getCollaborationState', (event) => { event.returnValue = getCollaborationState(); });
+ipcMain.on('bridge:setStudentArchiveSyncEnabled', (event, studentId, enabled) => {
+  event.returnValue = licensedSync('更新学生档案同步策略', () => setStudentArchiveSyncEnabled(studentId, enabled));
+});
+ipcMain.on('bridge:syncStudentArchiveNow', (event, studentId) => {
+  event.returnValue = licensedSync('同步学生档案', () => JSON.stringify(publishStudentArchiveSync(studentId)));
+});
 ipcMain.on('bridge:initializeCollaborationWorkspace', (event) => { licensedIpc(event, '知识协作空间初始化', () => initializeCollaborationWorkspace()); });
 ipcMain.on('bridge:setTeamKnowledgePolicy', (event, optionsJson) => { licensedIpc(event, '团队知识查询策略', () => setTeamKnowledgePolicy(optionsJson)); });
 ipcMain.on('bridge:setCollaborationEnabled', (event, enabled) => { licensedIpc(event, '知识协作模式设置', () => setCollaborationEnabled(enabled)); });
@@ -24097,11 +24938,16 @@ ipcMain.on('bridge:generateStudentMaintenanceReport', (event, studentId) => { li
 ipcMain.on('bridge:getHostTimeline', (event) => { event.returnValue = getHostTimeline(); });
 ipcMain.on('bridge:backupHostData', (event, studentsJson) => { licensedIpc(event, '主机数据备份', () => backupHostData(studentsJson)); });
 ipcMain.on('bridge:restoreHostData', (event) => { licensedIpc(event, '主机数据恢复', () => restoreHostData()); });
+ipcMain.handle('bridge:getHostMigrationPlan', () => licensedInvoke('换机迁移分析', () => getHostMigrationPlan()));
+ipcMain.handle('bridge:createHostMigrationPackage', (event, optionsJson) => licensedInvoke('创建换机迁移包', () => createHostMigrationPackage(event, optionsJson)));
+ipcMain.handle('bridge:inspectHostMigrationPackage', () => licensedInvoke('迁移包预检', () => selectAndInspectHostMigrationPackage()));
+ipcMain.handle('bridge:restoreHostMigrationPackage', (event, optionsJson) => licensedInvoke('从迁移包恢复', () => restoreHostMigrationPackage(event, optionsJson)));
+ipcMain.on('bridge:openHostMigrationRecord', (event) => { licensedIpc(event, '查看迁移记录', () => openHostMigrationRecord()); });
 ipcMain.on('bridge:resetHostApiToken', (event) => { licensedIpc(event, '重置 API Token', () => resetHostApiToken()); });
 ipcMain.on('bridge:exportHostLogs', (event) => { event.returnValue = exportHostLogs(); });
 ipcMain.on('bridge:openStudentRawDir', (event, studentId) => { licensedIpc(event, '打开原始资料库', () => openStudentRawDir(studentId)); });
 ipcMain.on('bridge:migrateStudentWorkspace', (event, studentId, newName) => { licensedIpc(event, '学生知识库迁移', () => migrateStudentWorkspace(studentId, newName)); });
-ipcMain.on('bridge:rebindAdoptedStudentWorkspace', (event, studentId) => { licensedIpc(event, '重新定位接管目录', () => rebindAdoptedStudentWorkspace(studentId)); });
+ipcMain.handle('bridge:rebindAdoptedStudentWorkspace', (_event, studentId, selectionMode) => licensedInvoke('重新定位接管目录', () => rebindAdoptedStudentWorkspace(studentId, selectionMode)));
 ipcMain.on('bridge:renameHostDevice', (event, deviceId, name) => { licensedIpc(event, '设备管理', () => renameHostDevice(deviceId, name)); });
 ipcMain.on('bridge:revokeHostDevice', (event, deviceId) => { licensedIpc(event, '设备管理', () => revokeHostDevice(deviceId)); });
 ipcMain.on('bridge:restoreHostDevice', (event, deviceId) => { licensedIpc(event, '设备管理', () => restoreHostDevice(deviceId)); });
@@ -24133,6 +24979,7 @@ ipcMain.on('bridge:removePlatformCourseDraft', (event, courseId) => { event.retu
 ipcMain.on('bridge:queuePlatformCourseDeletion', (event, courseId) => { event.returnValue = queuePlatformCourseDeletion(courseId); });
 ipcMain.on('bridge:cancelPlatformCourseDeletion', (event, courseId) => { event.returnValue = cancelPlatformCourseDeletion(courseId); });
 ipcMain.on('bridge:publishPlatformCourseCatalog', (event, releaseNotes) => { event.returnValue = publishPlatformCourseCatalog(releaseNotes); });
+ipcMain.on('bridge:reExportPlatformCourseCatalog', (event) => { event.returnValue = reExportPlatformCourseCatalog(); });
 ipcMain.on('bridge:rollbackPlatformCourseCatalog', (event) => { event.returnValue = rollbackPlatformCourseCatalog(); });
 ipcMain.on('bridge:openCourseView', (event, courseId) => { event.returnValue = openCourseView(courseId); });
 ipcMain.on('bridge:closeCourseView', (event) => { event.returnValue = closeCourseView(); });

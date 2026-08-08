@@ -85,13 +85,9 @@ ipcMain.on('license:listRecords', (event, query) => {
 
 ipcMain.on('license:issue', (event, input) => {
   try {
-    const normalized = input || {};
-    const options = String(normalized.plan || '').toUpperCase() === 'PLATFORM'
-      ? (() => {
-        const active = keyManager().readPrivateKey('license_signing');
-        return { privateKey: active.privateKey, keyId: active.record.keyId, publicKeyFingerprint: active.record.fingerprint };
-      })()
-      : {};
+    const normalized = { ...(input || {}), schema: 'edu-manager.license.v3' };
+    const active = keyManager().readPrivateKey('license_signing');
+    const options = { forceV3: true, privateKey: active.privateKey, keyId: active.record.keyId, publicKeyFingerprint: active.record.fingerprint };
     const record = issueLicense(recordsPath(), normalized, options);
     clipboard.writeText(record.code);
     event.returnValue = ok({ record, records: filteredRecords(''), message: '已生成授权码，并复制到剪贴板。' });
@@ -179,9 +175,38 @@ ipcMain.on('license:copyText', (event, text) => {
   event.returnValue = ok({ message: '已复制。' });
 });
 
+ipcMain.on('license:saveQr', (event, dataUrl, suggestedName) => {
+  try {
+    const match = /^data:image\/png;base64,([A-Za-z0-9+/=]+)$/.exec(String(dataUrl || ''));
+    if (!match) throw new Error('二维码图片格式无效。');
+    const bytes = Buffer.from(match[1], 'base64');
+    if (bytes.length < 8 || bytes.length > 5 * 1024 * 1024) throw new Error('二维码图片为空或超过 5 MB。');
+    const pngSignature = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+    if (!bytes.subarray(0, 8).equals(pngSignature)) throw new Error('二维码图片不是有效 PNG。');
+    const safeName = String(suggestedName || 'AI教育管家-License-v3-二维码')
+      .replace(/[<>:"/\\|?*\x00-\x1f]+/g, '-')
+      .replace(/[. ]+$/g, '')
+      .slice(0, 100) || 'AI教育管家-License-v3-二维码';
+    const target = dialog.showSaveDialogSync(mainWindow, {
+      title: '保存 License v3 二维码',
+      defaultPath: path.join(app.getPath('downloads'), `${safeName}.png`),
+      filters: [{ name: 'PNG 图片', extensions: ['png'] }],
+    });
+    if (!target) {
+      event.returnValue = ok({ cancelled: true, message: '已取消保存二维码。' });
+      return;
+    }
+    fs.writeFileSync(target, bytes);
+    event.returnValue = ok({ path: target, message: 'License v3 二维码已保存。' });
+  } catch (error) {
+    event.returnValue = fail(error);
+  }
+});
+
 ipcMain.on('license:validateCode', (event, code) => {
   try {
-    event.returnValue = JSON.stringify(parseLicenseCode(code));
+    const active = keyManager().readPrivateKey('license_signing');
+    event.returnValue = JSON.stringify(parseLicenseCode(code, { privateKey: active.privateKey, keyId: active.record.keyId }));
   } catch (error) {
     event.returnValue = fail(error);
   }

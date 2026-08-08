@@ -102,8 +102,10 @@ test('host-to-tablet discovery survives common Wi-Fi broadcast filtering', () =>
   assert.match(tablet, /announceTabletDiscoveryPresence\(socket\)/);
 });
 
-test('host identity and tablet identity survive supported backups', () => {
-  assert.match(host, /hostIdentity: getHostIdentity\(\)/);
+test('device-bound host identity is excluded from portable backups', () => {
+  assert.doesNotMatch(host, /hostIdentity: getHostIdentity\(\)/);
+  assert.match(host, /delete backupSettings\.license/);
+  assert.match(host, /currentSettings\.license/);
   assert.match(host, /writeHostIdentity/);
   assert.match(tablet, /backup\.put\("tabletMachineCode", tabletMachineCode\(\)\)/);
   assert.match(tablet, /backup\.put\("hostMachineCode"/);

@@ -24,5 +24,5 @@
   "managerApkVersionCode": 23,
   "managerApkVersionName": "0.2.3",
   "apkUrl": "https://www.greatbg.com/download/AI-edu-manager-tablet-terminal-0.6.12.apk",
-  "notes": "Android 单机版 1.1.1 已完成二维码激活真机验收并使用正式产品证书签名；Windows 主机端保持 0.16.7，其他客户端版本保持不变。"
+  "notes": "Windows 主机端 0.16.7 已完成目录重绑定与换机迁移真机验收并正式发布；Android 单机版 1.1.1 保持正式产品证书签名，其他客户端版本保持不变。"
 }

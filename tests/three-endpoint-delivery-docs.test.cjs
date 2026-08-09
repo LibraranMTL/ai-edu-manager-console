@@ -68,7 +68,7 @@ test('download page omits historical release notes and acceptance details', () =
 test('download page links the current artifacts and canonical web manuals exist', () => {
   const download = read(path.join('release', '网站文件', 'download.html'));
   for (const artifact of [
-    ['../windows/candidates/path-rebind-existing-dirs-v3/AI-edu-manager-console-Windows-0.16.7-path-rebind-existing-dirs-v3.zip', null],
+    ['../windows/AI-edu-manager-console-Windows-0.16.7.zip', path.join('release', 'windows', 'AI-edu-manager-console-Windows-0.16.7.zip')],
     ['../download/AI-edu-manager-student-terminal-Windows-0.16.1.exe', path.join('release', 'windows-terminal', 'AI-edu-manager-student-terminal-Windows-0.16.1.exe')],
     ['../download/AI-edu-manager-tablet-terminal-0.6.12.apk', path.join('release', 'tablet-terminal', 'AI-edu-manager-tablet-terminal-0.6.12.apk')],
     ['../download/AI-edu-manager-teacher-terminal-0.1.0.apk', path.join('release', 'teacher-terminal', 'AI-edu-manager-teacher-terminal-0.1.0.apk')],

@@ -24,12 +24,15 @@ import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
 import androidx.core.content.FileProvider
+import androidx.core.content.ContextCompat
+import androidx.documentfile.provider.DocumentFile
 import com.google.mlkit.vision.barcode.BarcodeScannerOptions
 import com.google.mlkit.vision.barcode.BarcodeScanning
 import com.google.mlkit.vision.barcode.common.Barcode
 import com.google.mlkit.vision.common.InputImage
 import java.io.File
 import java.net.URI
+import org.json.JSONObject
 
 class MainActivity : Activity() {
     private lateinit var rootGrant: SafRootGrant
@@ -64,6 +67,7 @@ class MainActivity : Activity() {
     private var pendingConversationProjectId: String? = null
     private var pendingConversationAgent: String = "其他Agent"
     private var pendingStudentMigration: PendingStudentMigration? = null
+    private var pendingOfflineMigrationSource: Uri? = null
     private var pendingUpdateApk: File? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -282,6 +286,14 @@ class MainActivity : Activity() {
     private fun renderArchives() {
         sectionNote("新建或接管学生学情档案；每名学生继续使用独立的 Windows/LLM Wiki 目录与精确 ID。")
         rootStatus = statusCard(); sectionContent.addView(rootStatus, matchWrap()); updateRootStatus()
+        val offlineMigration = StudentOfflineMigrationJournal(this).latest()
+        if (offlineMigration != null) sectionContent.addView(statusCard().apply {
+            text = "U盘迁移：${offlineMigration.phase} · ${offlineMigration.completedFiles}/${offlineMigration.totalFiles} 个文件\n${offlineMigration.message}${if (offlineMigration.current.isBlank()) "" else "\n当前：${offlineMigration.current}"}"
+        }, matchWrap())
+        addAction("从 U 盘迁移并接管") { startTreePicker(REQUEST_OFFLINE_MIGRATION_SOURCE) }
+        if (offlineMigration != null && offlineMigration.phase in setOf("copying", "failed")) addAction("继续上次 U 盘迁移") {
+            startOfflineMigration(Uri.parse(offlineMigration.sourceUri), Uri.parse(offlineMigration.targetUri))
+        }
         addAction("设置新建档案保存位置") { startTreePicker(REQUEST_WORKSPACE_ROOT) }
         addAction("新建学情档案") { showStudentInputDialog("新建学生档案库") { input -> createStudent(input) } }
         addAction("接管已有学情档案") { showStudentInputDialog("接管已有学生档案库") { input -> pendingAdoption = input; startTreePicker(REQUEST_ADOPTED_ROOT) } }
@@ -301,8 +313,9 @@ class MainActivity : Activity() {
 
     private fun renderCourses() {
         val catalog = runCatching { courseCatalogService.lastGoodCatalog() }.getOrNull()
-        sectionNote(if (catalog == null) "尚未导入平台课程目录。可在系统设置的高级功能中导入 Windows 主机导出的课程包。" else "平台课程目录 ${catalog.optString("catalogVersion")} · ${catalog.optJSONArray("courses")?.length() ?: 0} 门课程")
-        addAction("查看和学习平台课程") { chooseStudentForCourses() }
+        val assigned = workspaceService.listStudents().count { courseCatalogService.offlineSnapshot(it.id) != null }
+        sectionNote(if (catalog == null && assigned == 0) "尚未导入课程。可导入 Windows 平台课程包，或从 Windows 主机通过 U 盘迁入该学生的有效平台/机构课程。" else "全局平台目录 ${catalog?.optString("catalogVersion").orEmpty().ifBlank { "未导入" }} · 已有 $assigned 名学生获得离线课程快照")
+        addAction("查看和学习课程") { chooseStudentForCourses() }
     }
 
     private fun renderAssistant() {
@@ -430,7 +443,53 @@ class MainActivity : Activity() {
                 onSuccess = { importPendingStudentMigration(it) },
                 onFailure = { pendingStudentMigration = null; showMessage("目录授权失败", it.message ?: "未知错误") },
             )
+            REQUEST_OFFLINE_MIGRATION_SOURCE -> rootGrant.acceptAdditionalTreeResult(data ?: return).fold(
+                onSuccess = { inspectOfflineMigrationSource(it) },
+                onFailure = { showMessage("迁移目录授权失败", it.message ?: "未知错误") },
+            )
+            REQUEST_OFFLINE_MIGRATION_TARGET -> rootGrant.acceptAdditionalTreeResult(data ?: return).fold(
+                onSuccess = { target -> pendingOfflineMigrationSource?.let { source -> pendingOfflineMigrationSource = null; startOfflineMigration(source, target) } },
+                onFailure = { pendingOfflineMigrationSource = null; showMessage("目标目录授权失败", it.message ?: "未知错误") },
+            )
         }
+    }
+
+    private fun inspectOfflineMigrationSource(source: Uri) {
+        val result = runCatching {
+            val root = requireNotNull(DocumentFile.fromTreeUri(this, source))
+            val descriptorFile = requireNotNull(root.findFile("migration.json")) { "所选目录不是 Android 学生迁移目录" }
+            val descriptor = contentResolver.openInputStream(descriptorFile.uri)?.use { JSONObject(it.readBytes().toString(Charsets.UTF_8)) }
+                ?: error("无法读取迁移说明")
+            require(descriptor.getString("schema") == StudentOfflineMigrationService.PACKAGE_SCHEMA) { "迁移目录版本不受支持" }
+            descriptor
+        }
+        result.onFailure { showMessage("迁移目录预检失败", it.message ?: "未知错误") }.onSuccess { descriptor ->
+            pendingOfflineMigrationSource = source
+            val student = descriptor.optJSONObject("student")
+            val courses = descriptor.optJSONObject("courses")
+            AlertDialog.Builder(this).setTitle("迁移并接管 ${student?.optString("name").orEmpty()}")
+                .setMessage("学生 ID：${student?.optString("id").orEmpty()}\n文件：${descriptor.optInt("fileCount")} 个\n容量：${formatBytes(descriptor.optLong("totalBytes"))}\n学习项目：${descriptor.optJSONArray("projects")?.length() ?: 0} 个\n课程：${courses?.optInt("courseCount") ?: 0} 门（平台 ${courses?.optInt("platformCount") ?: 0}、机构 ${courses?.optInt("tenantCount") ?: 0}）\n\n请选择一个空目录作为该学生的单机档案目录。迁移会在前台通知中显示进度，中断后可继续。")
+                .setNegativeButton("取消") { _, _ -> pendingOfflineMigrationSource = null }
+                .setPositiveButton("选择空目标目录") { _, _ -> startTreePicker(REQUEST_OFFLINE_MIGRATION_TARGET) }
+                .show()
+        }
+    }
+
+    private fun startOfflineMigration(source: Uri, target: Uri) {
+        val intent = Intent(this, StudentOfflineMigrationService::class.java).apply {
+            action = StudentOfflineMigrationService.ACTION_START
+            putExtra(StudentOfflineMigrationService.EXTRA_SOURCE_URI, source.toString())
+            putExtra(StudentOfflineMigrationService.EXTRA_TARGET_URI, target.toString())
+        }
+        ContextCompat.startForegroundService(this, intent)
+        showMessage("迁移已开始", "可以继续使用其他页面。请保持 U 盘连接，并通过持续通知查看进度；若中断，可在教育档案中点击“继续上次 U 盘迁移”。")
+    }
+
+    private fun formatBytes(bytes: Long): String = when {
+        bytes >= 1024L * 1024 * 1024 -> "%.2f GB".format(bytes / (1024.0 * 1024 * 1024))
+        bytes >= 1024L * 1024 -> "%.1f MB".format(bytes / (1024.0 * 1024))
+        bytes >= 1024L -> "%.1f KB".format(bytes / 1024.0)
+        else -> "$bytes B"
     }
 
     private fun recognizeLicenseQrImage(uri: Uri) {
@@ -1454,9 +1513,12 @@ class MainActivity : Activity() {
     private fun chooseStudentForCourses() {
         val students = workspaceService.listStudents()
         if (students.isEmpty()) { showMessage("没有学生档案", "请先建立学生档案。课程学习与采集必须绑定一个明确学生。") ; return }
-        val courses = runCatching { courseCatalogService.effectiveCourses() }.getOrElse { showMessage("课程目录不可用", it.message ?: "未知错误"); return }
-        if (courses.isEmpty()) { showMessage("没有可学习课程", "请先导入平台发放的 .edu-coursepkg；家庭版不提供课程编辑或机构课程管理。") ; return }
-        AlertDialog.Builder(this).setTitle("选择课程学习学生").setItems(students.map { it.name }.toTypedArray()) { _, index -> showPlatformCourses(students[index], courses) }.show()
+        AlertDialog.Builder(this).setTitle("选择课程学习学生").setItems(students.map { it.name }.toTypedArray()) { _, index ->
+            val student = students[index]
+            val courses = runCatching { courseCatalogService.effectiveCourses(student.id) }.getOrElse { showMessage("课程目录不可用", it.message ?: "未知错误"); return@setItems }
+            if (courses.isEmpty()) showMessage("没有可学习课程", "请导入平台发放的 .edu-coursepkg，或从 Windows 主机为该学生导入 U 盘迁移目录。")
+            else showPlatformCourses(student, courses)
+        }.show()
     }
 
     private fun showPlatformCourses(student: StudentRecord, courses: List<PlatformCourse>) {
@@ -1476,12 +1538,12 @@ class MainActivity : Activity() {
             val details = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(16), 0, 0, 0) }
             details.addView(TextView(this).apply { text = course.name; textSize = 19f; setTextColor(palette.accentDark) }, matchWrap())
             details.addView(TextView(this).apply { text = course.summary; textSize = 14f; setTextColor(palette.text); maxLines = 4; setPadding(0, dp(5), 0, dp(5)) }, matchWrap())
-            details.addView(TextView(this).apply { text = "${course.provider} · 点击查看学习选项"; textSize = 13f; setTextColor(palette.muted) }, matchWrap())
+            details.addView(TextView(this).apply { text = "${if (course.type == "tenant_custom") "机构课程" else "平台课程"} · ${course.provider} · 点击查看学习选项"; textSize = 13f; setTextColor(palette.muted) }, matchWrap())
             card.addView(details, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
             list.addView(card, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { setMargins(0, 0, 0, dp(12)) })
         }
         val scroll = ScrollView(this).apply { addView(list) }
-        AlertDialog.Builder(this).setTitle("${student.name} · 平台课程（${courses.size}）").setView(scroll).setPositiveButton("关闭", null).show()
+        AlertDialog.Builder(this).setTitle("${student.name} · 课程（${courses.size}）").setView(scroll).setPositiveButton("关闭", null).show()
     }
 
     private fun showCourseActions(student: StudentRecord, course: PlatformCourse) {
@@ -1596,6 +1658,8 @@ class MainActivity : Activity() {
         const val REQUEST_INSTALL_UPDATE_PERMISSION = 2112
         const val REQUEST_LICENSE_QR_SCAN = 2113
         const val REQUEST_LICENSE_QR_IMAGE = 2114
+        const val REQUEST_OFFLINE_MIGRATION_SOURCE = 2115
+        const val REQUEST_OFFLINE_MIGRATION_TARGET = 2116
     }
 
     private enum class AppSection(val label: String) {

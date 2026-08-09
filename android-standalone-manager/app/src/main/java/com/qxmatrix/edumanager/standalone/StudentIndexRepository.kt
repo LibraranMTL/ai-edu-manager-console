@@ -25,6 +25,16 @@ class StudentIndexRepository(context: Context) {
         return next
     }
 
+    fun addImportedIdempotent(record: StudentRecord): List<StudentRecord> {
+        val current = list()
+        val existing = current.singleOrNull { it.id == record.id }
+        if (existing != null) {
+            require(existing.name == record.name && existing.storageRootUri == record.storageRootUri) { "相同学生 ID 已被其他档案使用" }
+            return current
+        }
+        return add(record)
+    }
+
     fun validateAdd(record: StudentRecord) {
         validateAdd(record, list())
     }

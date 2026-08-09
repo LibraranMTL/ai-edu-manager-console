@@ -5,6 +5,10 @@ const {
   inspectMigrationSources,
   restoreMigrationPackage,
 } = require('./host-migration.cjs');
+const {
+  createStudentOfflineMigrationPackage,
+  inspectStudentOfflineMigration,
+} = require('./student-offline-migration.cjs');
 
 parentPort.on('message', async (message) => {
   const requestId = String(message?.requestId || '');
@@ -14,6 +18,13 @@ parentPort.on('message', async (message) => {
       result = inspectMigrationSources(message.options?.sources || []);
     } else if (message.action === 'create') {
       result = await createMigrationPackage({
+        ...(message.options || {}),
+        onProgress: (progress) => parentPort.postMessage({ requestId, type: 'progress', progress }),
+      });
+    } else if (message.action === 'inspect-student-offline') {
+      result = inspectStudentOfflineMigration(message.options || {});
+    } else if (message.action === 'create-student-offline') {
+      result = await createStudentOfflineMigrationPackage({
         ...(message.options || {}),
         onProgress: (progress) => parentPort.postMessage({ requestId, type: 'progress', progress }),
       });

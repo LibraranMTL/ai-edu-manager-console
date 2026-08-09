@@ -63,6 +63,12 @@ test('three current candidate clients expose the one-click upgrade contract', ()
   assert.match(host, /auth\.allowedStudentIds\.includes\(String\(studentId\)\)/);
   assert.match(host, /portable-migrations/);
   assert.match(student, /一键升级为 Android 单机版/);
+  assert.match(student, /VERSION_NAME = "0\.6\.13"/);
+  assert.match(student, /VERSION_CODE = 83/);
+  assert.match(student, /!student\.fileStatsReady/);
+  assert.match(student, /student\.rawFileCount >= 1000/);
+  assert.match(student, /student\.rawTotalBytes >= 3L \* 1024L \* 1024L \* 1024L/);
+  assert.match(student, /导出到 Android 单机版（U盘）/);
   assert.match(student, /"personal"\.equals\(terminalMode\) \? apiToken\(\) : dataToken\(\)/);
   assert.match(student, /session\.optString\("bearerToken", dataToken\(\)\)/);
   assert.match(student, /state\.put\("bearerToken", token\)/);

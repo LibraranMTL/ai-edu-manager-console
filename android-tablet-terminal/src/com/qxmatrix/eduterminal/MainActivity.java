@@ -112,8 +112,8 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
     static final int REQUEST_IMPORT_CONNECTION_BACKUP = 8109;
     static final int REQUEST_CAPTURE_STUDENT_QR = 8110;
     static final int REQUEST_AUTO_DELIVERY_FOLDER = 8111;
-    static final String VERSION_NAME = "0.6.12";
-    static final int VERSION_CODE = 82;
+    static final String VERSION_NAME = "0.6.13";
+    static final int VERSION_CODE = 83;
     static final String CONNECTION_BACKUP_KIND = "ai-edu-manager-tablet-connection-backup";
     static final int CONNECTION_BACKUP_VERSION = 1;
     static final String UPDATE_MANIFEST_URL = "https://www.greatbg.com/download/edu-manager-version.json";
@@ -1331,6 +1331,24 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
             return;
         }
         final Student student = selectedStudent;
+        if (!student.fileStatsReady) {
+            new AlertDialog.Builder(this)
+                .setTitle("正在统计学生资料")
+                .setMessage("Windows 主机正在后台统计该学生的文件数量和容量。请保持连接，稍后刷新学生空间再试；统计完成前不会启动可能长时间卡住的网络迁移。")
+                .setPositiveButton("知道了", null)
+                .show();
+            return;
+        }
+        final boolean largeMigration = student.rawFileCount >= 1000 || student.rawTotalBytes >= 3L * 1024L * 1024L * 1024L;
+        if (largeMigration) {
+            new AlertDialog.Builder(this)
+                .setTitle("资料较多，建议使用 U 盘迁移")
+                .setMessage("当前学生约有 " + student.rawFileCount + " 份资料（" + formatCaptureBytes(student.rawTotalBytes) + "）。为避免网络快照长时间等待或大型 ZIP 失败，请在 Windows 主机端打开该学生的“教育档案”，点击“导出到 Android 单机版（U盘）”；然后在单机版选择“从 U 盘迁移并接管”。\n\n该方式会逐文件校验、支持中断后继续，并同时带入关联学习项目及有效的平台/机构课程。")
+                .setNegativeButton("取消", null)
+                .setPositiveButton("知道了", null)
+                .show();
+            return;
+        }
         new AlertDialog.Builder(this)
             .setTitle("升级为 Android 单机版")
             .setMessage("将从 Windows 主机固定快照并迁移：\n\n" + student.name + "\n学生 ID：" + student.id + "\n教育档案、资料、学情报告、成长记录和关联学习项目。\n\n这是一次性迁移，不建立后续同步。")
@@ -3439,6 +3457,7 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
     String formatCaptureBytes(long bytes) {
         if (bytes < 1024L) return bytes + " B";
         if (bytes < 1024L * 1024L) return String.format(Locale.ROOT, "%.1f KB", bytes / 1024d);
+        if (bytes >= 1024L * 1024L * 1024L) return String.format(Locale.ROOT, "%.2f GB", bytes / (1024d * 1024d * 1024d));
         return String.format(Locale.ROOT, "%.1f MB", bytes / (1024d * 1024d));
     }
 
@@ -5551,6 +5570,8 @@ class Student {
     final String remoteBindingStatus;
     final String remoteBoundAt;
     final int rawFileCount;
+    final long rawTotalBytes;
+    final boolean fileStatsReady;
     final int archiveFileCount;
     final int pendingDigestCount;
     final int submittedDigestCount;
@@ -5575,6 +5596,8 @@ class Student {
         this.remoteBindingStatus = json.optString("remoteBindingStatus", "unbound");
         this.remoteBoundAt = json.optString("remoteBoundAt", "");
         this.rawFileCount = json.optInt("rawFileCount", 0);
+        this.rawTotalBytes = json.optLong("rawTotalBytes", 0L);
+        this.fileStatsReady = json.optBoolean("fileStatsReady", false);
         this.archiveFileCount = json.optInt("archiveFileCount", 0);
         this.pendingDigestCount = json.optInt("pendingDigestCount", 0);
         this.submittedDigestCount = json.optInt("submittedDigestCount", 0);
@@ -6761,7 +6784,7 @@ class StandaloneUpgradeTask implements Runnable {
             JSONObject created = activity.postJson(base + "/api/students/" + encoded + "/portable-migrations", new JSONObject(), token);
             String sessionId = created.getString("sessionId");
             String statusUrl = base + "/api/students/" + encoded + "/portable-migrations/" + URLEncoder.encode(sessionId, "UTF-8");
-            for (int poll = 0; poll < 120; poll++) {
+            for (int poll = 0; poll < 1800; poll++) {
                 final JSONObject state = activity.getJson(statusUrl, token);
                 String status = state.optString("status");
                 if ("ready".equals(status)) {

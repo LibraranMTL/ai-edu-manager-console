@@ -446,6 +446,7 @@ function createCourseCatalogStore(options = {}) {
     savePolicy,
     state,
     coursesForStudent,
+    assetPath,
   };
 }
 

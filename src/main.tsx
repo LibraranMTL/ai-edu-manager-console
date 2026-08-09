@@ -798,6 +798,18 @@ type HostMigrationProgress = {
   recoveryPath?: string;
 };
 
+type StudentOfflineMigrationPlan = {
+  ok?: boolean;
+  message?: string;
+  fileCount?: number;
+  totalBytes?: number;
+  largestFileBytes?: number;
+  projectCount?: number;
+  courseCount?: number;
+  platformCourseCount?: number;
+  tenantCourseCount?: number;
+};
+
 type AndroidBridge = {
   copyText?: (value: string) => Promise<string>;
   exportTextFile?: (filename: string, content: string) => string;
@@ -1055,9 +1067,12 @@ type AndroidBridge = {
   restoreHostData?: () => string;
   getHostMigrationPlan?: () => Promise<string>;
   createHostMigrationPackage?: (optionsJson: string) => Promise<string>;
+  getStudentOfflineMigrationPlan?: (studentId: string) => Promise<string>;
+  createStudentOfflineMigration?: (studentId: string) => Promise<string>;
   inspectHostMigrationPackage?: () => Promise<string>;
   restoreHostMigrationPackage?: (optionsJson: string) => Promise<string>;
   onHostMigrationProgress?: (callback: (payload: string) => void) => () => void;
+  onStudentOfflineMigrationProgress?: (callback: (payload: string) => void) => () => void;
   openHostMigrationRecord?: () => string;
   resetHostApiToken?: () => string;
   exportHostLogs?: () => string;
@@ -4817,6 +4832,10 @@ function App() {
   const [hostMigrationProgress, setHostMigrationProgress] = useState<HostMigrationProgress | null>(null);
   const [hostMigrationBusy, setHostMigrationBusy] = useState(false);
   const [hostMigrationMessage, setHostMigrationMessage] = useState('');
+  const [studentOfflineMigrationPlan, setStudentOfflineMigrationPlan] = useState<StudentOfflineMigrationPlan | null>(null);
+  const [studentOfflineMigrationProgress, setStudentOfflineMigrationProgress] = useState<HostMigrationProgress | null>(null);
+  const [studentOfflineMigrationBusy, setStudentOfflineMigrationBusy] = useState(false);
+  const [studentOfflineMigrationMessage, setStudentOfflineMigrationMessage] = useState('');
   const [editingDeviceId, setEditingDeviceId] = useState('');
   const [deviceNameDraft, setDeviceNameDraft] = useState('');
   const [hostNameDraft, setHostNameDraft] = useState('');
@@ -5161,6 +5180,16 @@ function App() {
         setHostMigrationProgress(JSON.parse(payload) as HostMigrationProgress);
       } catch {
         setHostMigrationMessage('迁移进度事件格式无效；当前操作仍会继续执行。');
+      }
+    });
+    return () => { unsubscribe?.(); };
+  }, []);
+  useEffect(() => {
+    const unsubscribe = bridge()?.onStudentOfflineMigrationProgress?.((payload) => {
+      try {
+        setStudentOfflineMigrationProgress(JSON.parse(payload) as HostMigrationProgress);
+      } catch {
+        setStudentOfflineMigrationMessage('Android 迁移导出进度格式无效；导出仍会继续。');
       }
     });
     return () => { unsubscribe?.(); };
@@ -12156,6 +12185,45 @@ ${JSON.stringify(items, null, 2)}
     }
   };
 
+  const exportSelectedStudentForAndroid = async () => {
+    if (!selectedStudent) return;
+    const inspectApi = bridge()?.getStudentOfflineMigrationPlan;
+    const exportApi = bridge()?.createStudentOfflineMigration;
+    if (!inspectApi || !exportApi) {
+      setStudentOfflineMigrationMessage('当前版本不支持导出 Android 单机版迁移目录。');
+      return;
+    }
+    setStudentOfflineMigrationBusy(true);
+    setStudentOfflineMigrationMessage('正在精确盘点该学生的档案、关联学习项目和有效课程…');
+    try {
+      const plan = JSON.parse(await inspectApi(selectedStudent.id)) as StudentOfflineMigrationPlan;
+      setStudentOfflineMigrationPlan(plan);
+      if (!plan.ok) {
+        setStudentOfflineMigrationMessage(plan.message || '迁移内容盘点失败。');
+        return;
+      }
+      const confirmed = window.confirm(
+        `将为“${selectedStudent.name}”导出 Android 单机版 U 盘迁移目录。\n\n` +
+        `${plan.fileCount || 0} 个文件，共 ${formatFileSize(plan.totalBytes || 0)}\n` +
+        `${plan.projectCount || 0} 个关联学习项目\n` +
+        `${plan.courseCount || 0} 门有效课程（平台 ${plan.platformCourseCount || 0}、机构 ${plan.tenantCourseCount || 0}）\n\n` +
+        '迁移目录不打包为大型 ZIP，可在平板中断后继续。是否选择 U 盘或移动硬盘开始导出？',
+      );
+      if (!confirmed) {
+        setStudentOfflineMigrationMessage('已取消导出；未写入任何文件。');
+        return;
+      }
+      setStudentOfflineMigrationProgress({ phase: 'exporting', completedFiles: 0, totalFiles: plan.fileCount || 0 });
+      setStudentOfflineMigrationMessage('正在写入迁移目录；请不要拔出外接存储。');
+      const result = JSON.parse(await exportApi(selectedStudent.id)) as { ok?: boolean; cancelled?: boolean; message?: string; packagePath?: string };
+      setStudentOfflineMigrationMessage(result.message || (result.ok ? `迁移目录已创建：${result.packagePath}` : '迁移目录创建失败。'));
+    } catch {
+      setStudentOfflineMigrationMessage('Android 单机版迁移导出结果无法解析。');
+    } finally {
+      setStudentOfflineMigrationBusy(false);
+    }
+  };
+
   const toggleHostMigrationExternal = (sourceId: string) => {
     setHostMigrationExternalIds((current) => current.includes(sourceId) ? current.filter((id) => id !== sourceId) : [...current, sourceId]);
   };
@@ -16550,7 +16618,27 @@ ${JSON.stringify(items, null, 2)}
               <button className="secondary danger" onClick={() => deleteStudent(selectedStudent)} disabled={!windowsLicenseActive}>
                 删除学生记录
               </button>
+              {isWindows && (
+                <button className="secondary" onClick={() => void exportSelectedStudentForAndroid()} disabled={!windowsLicenseActive || studentOfflineMigrationBusy}>
+                  <FileDown size={18} />
+                  {studentOfflineMigrationBusy ? '正在导出…' : '导出到 Android 单机版（U盘）'}
+                </button>
+              )}
             </div>
+            {isWindows && studentOfflineMigrationPlan?.ok && (
+              <div className="notice muted">
+                已盘点 {studentOfflineMigrationPlan.fileCount || 0} 个文件（{formatFileSize(studentOfflineMigrationPlan.totalBytes || 0)}）、
+                {studentOfflineMigrationPlan.projectCount || 0} 个关联项目和 {studentOfflineMigrationPlan.courseCount || 0} 门有效课程。
+                大量照片会以目录方式逐文件迁移，不生成容易卡住的大型 ZIP。
+              </div>
+            )}
+            {isWindows && studentOfflineMigrationProgress && studentOfflineMigrationProgress.phase !== 'completed' && (
+              <div className="migration-progress" role="status" aria-live="polite">
+                <progress value={studentOfflineMigrationProgress.completedFiles || 0} max={Math.max(1, studentOfflineMigrationProgress.totalFiles || 1)} />
+                <span>{studentOfflineMigrationProgress.completedFiles || 0}/{studentOfflineMigrationProgress.totalFiles || 0} 个文件{studentOfflineMigrationProgress.current ? ` · ${studentOfflineMigrationProgress.current}` : ''}</span>
+              </div>
+            )}
+            {isWindows && studentOfflineMigrationMessage && <div className="notice muted">{studentOfflineMigrationMessage}</div>}
             {studentEditDraft && (
               <section className="student-profile-editor">
                 <div className="mini-heading">

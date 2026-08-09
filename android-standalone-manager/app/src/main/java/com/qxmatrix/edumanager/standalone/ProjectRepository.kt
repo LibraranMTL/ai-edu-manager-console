@@ -23,6 +23,16 @@ class ProjectRepository(context: Context) {
         state.writeBytes(PATH, (root.toString(2) + "\n").toByteArray())
     }
 
+    fun addImportedIdempotent(project: ProjectRecord) {
+        val current = list()
+        val existing = current.singleOrNull { it.id == project.id }
+        if (existing != null) {
+            require(existing.name == project.name && existing.projectRootUri == project.projectRootUri) { "相同项目 ID 已被其他项目使用" }
+            return
+        }
+        add(project)
+    }
+
     fun requireExact(projectId: String): ProjectRecord = list().singleOrNull { it.id == projectId }
         ?: throw NoSuchElementException("未找到指定项目 ID：$projectId")
 

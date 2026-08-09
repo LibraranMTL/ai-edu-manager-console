@@ -62,6 +62,9 @@ function walkFiles(rootPath, options = {}) {
   const root = path.resolve(rootPath);
   if (!fs.existsSync(root) || !fs.statSync(root).isDirectory()) return [];
   const excludes = new Set([...DEFAULT_EXCLUDES, ...(options.excludeNames || [])]);
+  const included = Array.isArray(options.includeRelativePaths) && options.includeRelativePaths.length
+    ? new Set(options.includeRelativePaths.map((item) => portableRelative(item).toLocaleLowerCase('en-US')))
+    : null;
   const files = [];
   const queue = [''];
   while (queue.length) {
@@ -75,7 +78,10 @@ function walkFiles(rootPath, options = {}) {
       const stat = fs.lstatSync(absolutePath);
       if (stat.isSymbolicLink()) continue;
       if (stat.isDirectory()) queue.push(relativePath);
-      else if (stat.isFile()) files.push({ absolutePath, relativePath: relativePath.replace(/\\/g, '/'), size: stat.size, mtimeMs: stat.mtimeMs });
+      else if (stat.isFile()) {
+        const portable = relativePath.replace(/\\/g, '/');
+        if (!included || included.has(portable.toLocaleLowerCase('en-US'))) files.push({ absolutePath, relativePath: portable, size: stat.size, mtimeMs: stat.mtimeMs });
+      }
     }
   }
   return files;
@@ -85,11 +91,14 @@ function inspectMigrationSources(sources = []) {
   const inspected = [];
   let fileCount = 0;
   let totalBytes = 0;
+  let largestFileBytes = 0;
   for (const source of sources) {
     const files = walkFiles(source.rootPath, source);
     const bytes = files.reduce((sum, item) => sum + item.size, 0);
     fileCount += files.length;
     totalBytes += bytes;
+    const sourceLargest = files.reduce((largest, item) => Math.max(largest, item.size), 0);
+    largestFileBytes = Math.max(largestFileBytes, sourceLargest);
     inspected.push({
       id: safeId(source.id),
       kind: source.kind,
@@ -97,10 +106,11 @@ function inspectMigrationSources(sources = []) {
       rootPath: path.resolve(source.rootPath),
       fileCount: files.length,
       totalBytes: bytes,
+      largestFileBytes: sourceLargest,
       exists: fs.existsSync(source.rootPath),
     });
   }
-  return { fileCount, totalBytes, sources: inspected };
+  return { fileCount, totalBytes, largestFileBytes, sources: inspected };
 }
 
 async function compareSourceSnapshot(source, expectedFiles = [], expectedHashes = new Map()) {
@@ -170,9 +180,10 @@ async function writeVirtual(content, targetPath, key) {
   return { size: buffer.length, sha256: sha256Buffer(buffer), iv: iv.toString('base64'), authTag: cipher.getAuthTag().toString('base64') };
 }
 
-function packageStem(date = new Date()) {
+function packageStem(date = new Date(), prefix = 'AI-Edu-Migrate') {
   const compactTimestamp = date.toISOString().slice(0, 19).replace(/[-:T]/g, '');
-  return `AI-Edu-Migrate-${compactTimestamp}`;
+  const safePrefix = String(prefix || 'AI-Edu-Migrate').trim().replace(/[^a-z0-9_-]+/gi, '-').replace(/^-+|-+$/g, '') || 'AI-Edu-Migrate';
+  return `${safePrefix}-${compactTimestamp}`;
 }
 
 function payloadObjectRelativePath(category, scopeId, relativePath, encrypted = false) {
@@ -190,7 +201,7 @@ async function createMigrationPackage(options = {}) {
   const password = String(options.password || '');
   if (password && password.length < 8) throw new Error('迁移包密码至少需要 8 个字符。');
   const migrationId = `migration-${Date.now()}-${crypto.randomBytes(4).toString('hex')}`;
-  const finalRoot = path.join(destinationParent, `${packageStem()}-${migrationId.slice(-8)}`);
+  const finalRoot = path.join(destinationParent, `${packageStem(new Date(), options.packagePrefix)}-${migrationId.slice(-8)}`);
   const writingRoot = `${finalRoot}.writing`;
   const destinationReal = fs.realpathSync.native(destinationParent);
   for (const source of Array.isArray(options.sources) ? options.sources : []) {
@@ -220,9 +231,11 @@ async function createMigrationPackage(options = {}) {
       const scopeId = safeId(item.source.id);
       const category = String(item.source.kind || 'managed');
       const relativePath = portableRelative(item.file.relativePath);
-      const destinationRelativePath = category === 'state'
-        ? portableRelative(`${item.source.destinationPrefix || scopeId}/${relativePath}`)
-        : relativePath;
+      const destinationRelativePath = item.source.destinationPrefix
+        ? portableRelative(`${item.source.destinationPrefix}/${relativePath}`)
+        : category === 'state'
+          ? portableRelative(`${scopeId}/${relativePath}`)
+          : relativePath;
       const payloadRelativePath = payloadObjectRelativePath(category, scopeId, relativePath, Boolean(key));
       const payloadPath = targetInside(path.join(writingRoot, 'payload'), payloadRelativePath);
       const plainSha256 = await sha256File(item.file.absolutePath);
@@ -252,7 +265,7 @@ async function createMigrationPackage(options = {}) {
       if (comparison.added.length || comparison.removed.length || comparison.modified.length) sourceChangeWarnings.push(snapshotChangeWarning(source, comparison));
     }
     const manifest = {
-      schema: MANIFEST_SCHEMA,
+      schema: String(options.manifestSchema || MANIFEST_SCHEMA),
       migrationId,
       appVersion: String(options.appVersion || ''),
       createdAt: new Date().toISOString(),
@@ -263,21 +276,34 @@ async function createMigrationPackage(options = {}) {
       },
       encrypted: Boolean(key),
       encryption: key ? { algorithm: 'aes-256-gcm', kdf: 'scrypt', salt: salt.toString('base64') } : null,
-      identityPolicy: 'new-host-identity-and-license-reactivation',
+      identityPolicy: String(options.identityPolicy || 'new-host-identity-and-license-reactivation'),
       payloadLayout: 'flat-sha256-v2',
       files: manifestFiles,
       externalSources: sources.filter((item) => item.kind === 'external').map((item) => ({ id: safeId(item.id), label: String(item.label || ''), sourceRoot: path.resolve(item.rootPath) })),
       unresolvedExternalSources: (options.unresolvedExternalSources || []).map((item) => ({ id: safeId(item.id), label: String(item.label || ''), sourceRoot: path.resolve(item.rootPath || '') })),
       sourceChangesDuringExport: sourceChangeWarnings,
-      excludedSensitiveData: ['host-identity', 'license', 'api-token', 'collaboration-direct-secrets', 'platform-private-keys'],
+      excludedSensitiveData: Array.isArray(options.excludedSensitiveData)
+        ? options.excludedSensitiveData.map(String)
+        : ['host-identity', 'license', 'api-token', 'collaboration-direct-secrets', 'platform-private-keys'],
+      ...(options.manifestExtensions && typeof options.manifestExtensions === 'object' ? options.manifestExtensions : {}),
     };
     const manifestText = `${JSON.stringify(manifest, null, 2)}\n`;
     fs.writeFileSync(path.join(writingRoot, 'manifest.json'), manifestText, 'utf8');
     fs.writeFileSync(path.join(writingRoot, 'manifest.sha256'), `${sha256Buffer(Buffer.from(manifestText, 'utf8'))}  manifest.json\n`, 'utf8');
-    const descriptor = { schema: PACKAGE_SCHEMA, migrationId, appVersion: manifest.appVersion, createdAt: manifest.createdAt, encrypted: Boolean(key), payloadLayout: manifest.payloadLayout, fileCount: manifestFiles.length, totalBytes: manifestFiles.reduce((sum, item) => sum + item.size, 0) };
+    const descriptor = {
+      schema: String(options.packageSchema || PACKAGE_SCHEMA),
+      migrationId,
+      appVersion: manifest.appVersion,
+      createdAt: manifest.createdAt,
+      encrypted: Boolean(key),
+      payloadLayout: manifest.payloadLayout,
+      fileCount: manifestFiles.length,
+      totalBytes: manifestFiles.reduce((sum, item) => sum + item.size, 0),
+      ...(options.descriptorExtensions && typeof options.descriptorExtensions === 'object' ? options.descriptorExtensions : {}),
+    };
     atomicJson(path.join(writingRoot, 'migration.json'), descriptor);
     const report = [
-      '# AI教育管家迁移包导出报告', '',
+      String(options.reportTitle || '# AI教育管家迁移包导出报告'), '',
       `- 迁移 ID：${migrationId}`,
       `- 创建时间：${manifest.createdAt}`,
       `- 文件数量：${descriptor.fileCount}`,
@@ -289,7 +315,8 @@ async function createMigrationPackage(options = {}) {
         ...sourceChangeWarnings.map((item) => `  - ${item.label || item.scopeId}：新增 ${item.added}、删除 ${item.removed}、修改 ${item.modified}${item.examples.length ? `；示例：${item.examples.join('、')}` : ''}`),
         '- 说明：迁移包保留每个文件复制时通过前后 SHA-256 校验的稳定版本；导出开始后新增或再次更新的内容可能不在本包内。', '',
       ] : []),
-      'License、API Token、主机身份、协作直传密钥和平台私钥未进入迁移包；新电脑需要重新激活和连接。',
+      ...(Array.isArray(options.reportLines) ? options.reportLines.map(String) : []),
+      String(options.reportFooter || 'License、API Token、主机身份、协作直传密钥和平台私钥未进入迁移包；新电脑需要重新激活和连接。'),
     ].join('\n');
     fs.writeFileSync(path.join(writingRoot, 'migration-report.md'), `${report}\n`, 'utf8');
     fs.renameSync(writingRoot, finalRoot);

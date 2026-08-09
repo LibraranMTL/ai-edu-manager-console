@@ -752,6 +752,12 @@ contextBridge.exposeInMainWorld('AndroidBridge', {
   createHostMigrationPackage(optionsJson) {
     return ipcRenderer.invoke('bridge:createHostMigrationPackage', optionsJson);
   },
+  getStudentOfflineMigrationPlan(studentId) {
+    return ipcRenderer.invoke('bridge:getStudentOfflineMigrationPlan', studentId);
+  },
+  createStudentOfflineMigration(studentId) {
+    return ipcRenderer.invoke('bridge:createStudentOfflineMigration', studentId);
+  },
   inspectHostMigrationPackage() {
     return ipcRenderer.invoke('bridge:inspectHostMigrationPackage');
   },
@@ -762,6 +768,11 @@ contextBridge.exposeInMainWorld('AndroidBridge', {
     const listener = (_event, payload) => callback(payload);
     ipcRenderer.on('host-migration:progress', listener);
     return () => ipcRenderer.removeListener('host-migration:progress', listener);
+  },
+  onStudentOfflineMigrationProgress(callback) {
+    const listener = (_event, payload) => callback(payload);
+    ipcRenderer.on('student-offline-migration:progress', listener);
+    return () => ipcRenderer.removeListener('student-offline-migration:progress', listener);
   },
   openHostMigrationRecord() {
     return ipcRenderer.sendSync('bridge:openHostMigrationRecord');

@@ -6679,6 +6679,109 @@ async function createHostMigrationPackage(event, optionsJson) {
   }
 }
 
+function studentOfflineMigrationInput(studentId) {
+  const source = readStudentsIndex().find((item) => String(item.id) === String(studentId));
+  if (!source) throw new Error('未找到指定学生档案。');
+  const student = toHostStudent(source);
+  const projects = readProjects().map(normalizeProject).filter((project) => (project.studentIds || []).map(String).includes(String(student.id)))
+    .map((project) => ({
+      ...project,
+      resolvedRootPath: project.projectRootPath || project.rootPath || '',
+    }));
+  const store = courseCatalogStore();
+  const courseState = store.state();
+  const courses = store.coursesForStudent(student);
+  const courseAssets = {};
+  for (const course of courses) {
+    const asset = store.assetPath(course.coverAsset);
+    if (!asset) throw new Error(`课程“${course.name}”的封面不存在，请先修复课程目录。`);
+    courseAssets[course.coverAsset] = asset;
+  }
+  return {
+    appVersion: APP_VERSION,
+    hostDisplayName: getHostIdentity().displayName,
+    student: { ...student, resolvedRootPath: student.rootPath || getStudentRootDir(student.name) },
+    projects,
+    courses,
+    courseAssets,
+    catalogVersion: String(courseState?.catalog?.catalogVersion || courseState?.platformCatalog?.catalogVersion || 'student-effective-snapshot'),
+  };
+}
+
+async function getStudentOfflineMigrationPlan(studentId) {
+  try {
+    const result = await runHostMigrationWorker('inspect-student-offline', studentOfflineMigrationInput(studentId));
+    return JSON.stringify({
+      ...result,
+      projectCount: Array.isArray(result.projects) ? result.projects.length : 0,
+      courseCount: Number(result.courses?.courseCount || 0),
+      platformCourseCount: Number(result.courses?.platformCount || 0),
+      tenantCourseCount: Number(result.courses?.tenantCount || 0),
+    });
+  } catch (error) {
+    return JSON.stringify({ ok: false, message: `分析 Android 单机版迁移内容失败：${error.message}` });
+  }
+}
+
+function emitStudentOfflineMigrationProgress(event, payload) {
+  if (!event?.sender || event.sender.isDestroyed()) return;
+  event.sender.send('student-offline-migration:progress', JSON.stringify(payload));
+}
+
+function formatMigrationBytes(value) {
+  const bytes = Math.max(0, Number(value || 0));
+  if (bytes < 1024) return `${bytes} B`;
+  const units = ['KB', 'MB', 'GB', 'TB'];
+  let amount = bytes;
+  let unit = -1;
+  do {
+    amount /= 1024;
+    unit += 1;
+  } while (amount >= 1024 && unit < units.length - 1);
+  return `${amount.toFixed(amount >= 10 ? 1 : 2)} ${units[unit]}`;
+}
+
+async function createStudentOfflineMigration(event, studentId) {
+  try {
+    const input = studentOfflineMigrationInput(studentId);
+    const selected = await dialog.showOpenDialog(mainWindow, {
+      title: `选择“${input.student.name}”Android 单机版迁移目录保存位置（U 盘或移动硬盘）`,
+      properties: ['openDirectory', 'createDirectory'],
+    });
+    if (selected.canceled || !selected.filePaths[0]) return JSON.stringify({ ok: false, cancelled: true, message: '已取消导出。' });
+    const destinationParent = selected.filePaths[0];
+    const plan = await runHostMigrationWorker('inspect-student-offline', input);
+    if (typeof fs.statfsSync === 'function') {
+      const capacity = fs.statfsSync(destinationParent);
+      const availableBytes = Number(capacity.bavail) * Number(capacity.bsize);
+      const requiredBytes = Math.ceil(Number(plan.totalBytes || 0) * 1.08) + 32 * 1024 * 1024;
+      if (Number.isFinite(availableBytes) && availableBytes < requiredBytes) {
+        throw new Error(`目标存储空间不足；至少需要 ${formatMigrationBytes(requiredBytes)}，当前约 ${formatMigrationBytes(availableBytes)}。`);
+      }
+    }
+    const result = await runHostMigrationWorker('create-student-offline', {
+      ...input,
+      destinationParent,
+    }, (payload) => emitStudentOfflineMigrationProgress(event, payload));
+    appendHostTimeline({
+      type: 'student_android_offline_migration_created',
+      title: 'Android student migration created',
+      detail: result.packagePath,
+      studentId: String(input.student.id),
+      studentName: input.student.name,
+      migrationId: result.migrationId,
+      fileCount: result.fileCount,
+      totalBytes: result.totalBytes,
+    });
+    return JSON.stringify({
+      ...result,
+      message: `已为“${input.student.name}”创建 Android 单机版迁移目录：${result.packagePath}。请保持整个目录结构不变，并在平板单机版“教育档案 → 从 U 盘迁移并接管”中选择该目录。`,
+    });
+  } catch (error) {
+    return JSON.stringify({ ok: false, message: `导出 Android 单机版迁移目录失败：${error.message}`, recoveryPath: error.recoveryPath || '' });
+  }
+}
+
 async function selectAndInspectHostMigrationPackage() {
   try {
     const selected = await dialog.showOpenDialog(mainWindow, { title: '选择 AI教育管家迁移包目录', properties: ['openDirectory'] });
@@ -22502,17 +22605,84 @@ function studentTerminalProgress(records = [], state = {}) {
   return buildStudentTerminalProgress(records, state, { normalizeStatus: normalizeUploadStatus });
 }
 
-function terminalStudentRecord(student) {
+const terminalFileStatsCache = new Map();
+const TERMINAL_FILE_STATS_TTL_MS = 30_000;
+
+function immediateTick() {
+  return new Promise((resolve) => setImmediate(resolve));
+}
+
+async function collectTerminalDirectoryStats(rootPath, markdownOnly = false) {
+  const result = { fileCount: 0, totalBytes: 0 };
+  if (!rootPath || !fs.existsSync(rootPath)) return result;
+  const pending = [rootPath];
+  let visited = 0;
+  while (pending.length) {
+    const current = pending.pop();
+    let entries = [];
+    try { entries = fs.readdirSync(current, { withFileTypes: true }); } catch { continue; }
+    for (const entry of entries) {
+      const full = path.join(current, entry.name);
+      if (entry.isDirectory()) {
+        pending.push(full);
+      } else if (!markdownOnly || entry.name.toLowerCase().endsWith('.md')) {
+        result.fileCount += 1;
+        try { result.totalBytes += fs.statSync(full).size; } catch {}
+      }
+      visited += 1;
+      if (visited % 100 === 0) await immediateTick();
+    }
+  }
+  return result;
+}
+
+function terminalFileStats(student, records, progress) {
   const rawPath = student.rawPath || getRawDir(student.name);
   const summaryPath = student.summaryPath || getSummaryDir(student.name);
+  const key = `${student.id}|${rawPath}|${summaryPath}`;
+  const current = terminalFileStatsCache.get(key);
+  const now = Date.now();
+  if (!current || (!current.scanning && now - current.updatedAt > TERMINAL_FILE_STATS_TTL_MS)) {
+    const next = current || { rawFileCount: 0, rawTotalBytes: 0, archiveFileCount: 0, archiveTotalBytes: 0, updatedAt: 0 };
+    next.scanning = true;
+    terminalFileStatsCache.set(key, next);
+    Promise.all([
+      collectTerminalDirectoryStats(rawPath, false),
+      collectTerminalDirectoryStats(summaryPath, true),
+    ]).then(([raw, archive]) => {
+      terminalFileStatsCache.set(key, {
+        rawFileCount: raw.fileCount,
+        rawTotalBytes: raw.totalBytes,
+        archiveFileCount: archive.fileCount,
+        archiveTotalBytes: archive.totalBytes,
+        updatedAt: Date.now(),
+        scanning: false,
+      });
+    }).catch(() => {
+      next.updatedAt = Date.now();
+      next.scanning = false;
+    });
+  }
+  const fallbackRawCount = new Set(records.map((record) => String(record.targetPath || record.sourcePath || record.id || '')).filter(Boolean)).size;
+  const value = terminalFileStatsCache.get(key) || {};
+  return {
+    rawFileCount: Number(value.updatedAt ? value.rawFileCount : fallbackRawCount),
+    rawTotalBytes: Number(value.updatedAt ? value.rawTotalBytes : 0),
+    archiveFileCount: Number(value.updatedAt ? value.archiveFileCount : progress.knowledgeAssetCount || 0),
+    archiveTotalBytes: Number(value.updatedAt ? value.archiveTotalBytes : 0),
+    fileStatsReady: Boolean(value.updatedAt && !value.scanning),
+  };
+}
+
+function terminalStudentRecord(student) {
   const records = readUploadRecords().filter((record) => String(record.studentId) === String(student.id));
   const state = readStudentDigestState(student);
   const progress = studentTerminalProgress(records, state);
+  const fileStats = terminalFileStats(student, records, progress);
   return {
     ...student,
     loginQrPayload: studentLoginQrPayload(student.loginId),
-    rawFileCount: countFiles(rawPath),
-    archiveFileCount: countMarkdownFiles(summaryPath),
+    ...fileStats,
     pendingDigestCount: records.filter((record) => normalizeUploadStatus(record.status) === 'pending_digest').length,
     submittedDigestCount: records.filter((record) => ['submitted', 'digesting'].includes(normalizeUploadStatus(record.status))).length,
     processedDigestCount: records.filter((record) => normalizeUploadStatus(record.status) === 'processed').length,
@@ -22538,7 +22708,10 @@ function teacherTerminalStudentRecord(student) {
     name: String(record.name || ''),
     grade: String(record.grade || ''),
     rawFileCount: Number(record.rawFileCount || 0),
+    rawTotalBytes: Number(record.rawTotalBytes || 0),
     archiveFileCount: Number(record.archiveFileCount || 0),
+    archiveTotalBytes: Number(record.archiveTotalBytes || 0),
+    fileStatsReady: Boolean(record.fileStatsReady),
     pendingDigestCount: Number(record.pendingDigestCount || 0),
     submittedDigestCount: Number(record.submittedDigestCount || 0),
     processedDigestCount: Number(record.processedDigestCount || 0),
@@ -22559,10 +22732,11 @@ function teacherTerminalStudentRecord(student) {
 function studentSessionStatePayload(session, student) {
   const requestLike = { authContext: { type: 'student_session', studentId: String(student.id), allowedStudentIds: [String(student.id)] } };
   const projects = readProjects().map(normalizeProject).filter((project) => projectAllowed(requestLike, project));
+  const record = terminalStudentRecord(student);
   return {
     session: publicStudentSession(session),
-    student: terminalStudentRecord(student),
-    students: [terminalStudentRecord(student)],
+    student: record,
+    students: [record],
     projects,
   };
 }
@@ -24940,6 +25114,8 @@ ipcMain.on('bridge:backupHostData', (event, studentsJson) => { licensedIpc(event
 ipcMain.on('bridge:restoreHostData', (event) => { licensedIpc(event, '主机数据恢复', () => restoreHostData()); });
 ipcMain.handle('bridge:getHostMigrationPlan', () => licensedInvoke('换机迁移分析', () => getHostMigrationPlan()));
 ipcMain.handle('bridge:createHostMigrationPackage', (event, optionsJson) => licensedInvoke('创建换机迁移包', () => createHostMigrationPackage(event, optionsJson)));
+ipcMain.handle('bridge:getStudentOfflineMigrationPlan', (_event, studentId) => licensedInvoke('分析 Android 学生迁移', () => getStudentOfflineMigrationPlan(studentId)));
+ipcMain.handle('bridge:createStudentOfflineMigration', (event, studentId) => licensedInvoke('导出 Android 学生迁移', () => createStudentOfflineMigration(event, studentId)));
 ipcMain.handle('bridge:inspectHostMigrationPackage', () => licensedInvoke('迁移包预检', () => selectAndInspectHostMigrationPackage()));
 ipcMain.handle('bridge:restoreHostMigrationPackage', (event, optionsJson) => licensedInvoke('从迁移包恢复', () => restoreHostMigrationPackage(event, optionsJson)));
 ipcMain.on('bridge:openHostMigrationRecord', (event) => { licensedIpc(event, '查看迁移记录', () => openHostMigrationRecord()); });

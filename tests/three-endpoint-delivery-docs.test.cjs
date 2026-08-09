@@ -19,10 +19,10 @@ test('download page presents four product families and five client builds', () =
     'Android 学生端',
     'Android 教师端',
     'Android 单机版',
-    'v0.16.7',
-    'v0.6.12',
+    'v0.16.8',
+    'v0.6.13',
     'v0.1.0',
-    'v1.1.1',
+    'v1.1.2',
     'windows-host-manual.html',
     'windows-student-manual.html',
     'android-student-manual.html',
@@ -68,11 +68,11 @@ test('download page omits historical release notes and acceptance details', () =
 test('download page links the current artifacts and canonical web manuals exist', () => {
   const download = read(path.join('release', '网站文件', 'download.html'));
   for (const artifact of [
-    ['../windows/AI-edu-manager-console-Windows-0.16.7.zip', path.join('release', 'windows', 'AI-edu-manager-console-Windows-0.16.7.zip')],
+    ['../windows/AI-edu-manager-console-Windows-0.16.8.zip', path.join('release', 'windows', 'AI-edu-manager-console-Windows-0.16.8.zip')],
     ['../download/AI-edu-manager-student-terminal-Windows-0.16.1.exe', path.join('release', 'windows-terminal', 'AI-edu-manager-student-terminal-Windows-0.16.1.exe')],
-    ['../download/AI-edu-manager-tablet-terminal-0.6.12.apk', path.join('release', 'tablet-terminal', 'AI-edu-manager-tablet-terminal-0.6.12.apk')],
+    ['../download/AI-edu-manager-tablet-terminal-0.6.13.apk', path.join('release', 'tablet-terminal', 'AI-edu-manager-tablet-terminal-0.6.13.apk')],
     ['../download/AI-edu-manager-teacher-terminal-0.1.0.apk', path.join('release', 'teacher-terminal', 'AI-edu-manager-teacher-terminal-0.1.0.apk')],
-    ['../download/AI-Education-Manager-Android-Standalone-1.1.1-release.apk', path.join('android-standalone-manager', 'delivery', 'AI-Education-Manager-Android-Standalone-1.1.1-release.apk')],
+    ['../download/AI-Education-Manager-Android-Standalone-1.1.2-release.apk', path.join('android-standalone-manager', 'delivery', 'AI-Education-Manager-Android-Standalone-1.1.2-release.apk')],
   ]) {
     assert.match(download, new RegExp(artifact[0].replaceAll('.', '\\.')));
     if (artifact[1]) {
@@ -170,7 +170,7 @@ test('five web manuals are synchronized to the current product workflows', () =>
   assert.match(androidTeacher, /适用版本：Android 教师端 0\.1\.0/u);
   assert.match(androidTeacher, /不是把文件发送到学生设备/u);
   assert.match(androidTeacher, /在主机暂时不可连接时仍可从缓存查看/u);
-  assert.match(androidStandalone, /适用版本：Android 单机版 1\.1\.1/u);
+  assert.match(androidStandalone, /适用版本：Android 单机版 1\.1\.2/u);
   assert.match(androidStandalone, /Android 单机版是一套不依赖 Windows 主机的完整教育管家/u);
   for (const manual of [windowsStudent, androidStudent, androidTeacher, androidStandalone]) {
     assert.match(manual, /android-teacher-manual\.html/u);

@@ -19,6 +19,7 @@ class SafWorkspaceStore(
     private val root = requireNotNull(DocumentFile.fromTreeUri(context, rootUri)) {
         "The authorized workspace root is unavailable"
     }
+    private val directoryCache = linkedMapOf("" to root)
 
     fun ensureDirectory(relativePath: String): DocumentFile =
         resolveDirectory(WorkspacePath.segments(relativePath), create = true)
@@ -131,8 +132,17 @@ class SafWorkspaceStore(
     }
 
     private fun resolveDirectory(parts: List<String>, create: Boolean): DocumentFile {
+        val fullKey = parts.joinToString("/")
+        directoryCache[fullKey]?.takeIf { it.exists() && it.isDirectory }?.let { return it }
         var current = root
+        var key = ""
         for (part in parts) {
+            key = if (key.isBlank()) part else "$key/$part"
+            val cached = directoryCache[key]?.takeIf { it.exists() && it.isDirectory }
+            if (cached != null) {
+                current = cached
+                continue
+            }
             val child = current.findFile(part)
             current = when {
                 child?.isDirectory == true -> child
@@ -142,6 +152,7 @@ class SafWorkspaceStore(
                 }
                 else -> throw FileNotFoundException(parts.joinToString("/"))
             }
+            directoryCache[key] = current
         }
         return current
     }

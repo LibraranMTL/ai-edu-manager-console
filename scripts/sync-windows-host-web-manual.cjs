@@ -32,6 +32,13 @@ const manualSpecs = [
     description: 'AI教育管家 Android 教师端操作手册',
     currentHref: './android-teacher-manual.html',
   },
+  {
+    sourcePath: path.join(root, 'docs', 'delivery', 'Android单机版操作手册.md'),
+    targetPaths: [path.join(websiteRoot, 'android-standalone-manual.html')],
+    title: 'AI教育管家 Android 单机版操作手册 - 群星矩阵',
+    description: 'AI教育管家 Android 单机版操作手册',
+    currentHref: './android-standalone-manual.html',
+  },
 ];
 
 function escapeHtml(value) {

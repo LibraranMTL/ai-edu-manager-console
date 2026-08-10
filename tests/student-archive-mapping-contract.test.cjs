@@ -9,6 +9,7 @@ const preload = fs.readFileSync(path.join(root, 'electron', 'preload.cjs'), 'utf
 const ui = fs.readFileSync(path.join(root, 'src', 'main.tsx'), 'utf8');
 
 test('student archive collaboration requires one-to-one id mapping and never falls back by name', () => {
+  assert.match(main, /peersForStudentMappings\(state, state\.node\.nodeId, localStudentId\)/);
   assert.match(main, /localAssignments\.length !== 1 \|\| allLocalStudentAssignments\.length !== 1/);
   assert.match(main, /peerStudentIds\.length !== 1/);
   const ingestStart = main.indexOf('function ingestImportedStudentArchives()');
@@ -16,7 +17,27 @@ test('student archive collaboration requires one-to-one id mapping and never fal
   const ingest = main.slice(ingestStart, ingestEnd);
   assert.match(ingest, /findStudentByKey\(publication\.targetStudentId\)/);
   assert.doesNotMatch(ingest, /sourceStudentName[\s\S]*?matches/);
-  assert.match(ingest, /validateExistingBinding\(\{[\s\S]*?rootPath: normalized\.rootPath/);
+  assert.match(ingest, /validateStudentArchiveTargetRoots\(roots\)/);
+  assert.doesNotMatch(ingest, /requiredPaths:\s*\[roots\.knowledgeRoot,\s*roots\.rawRoot\]/);
+});
+
+test('collaboration state derives device trust and student maps without dropping legacy bindings', () => {
+  assert.match(main, /deriveCollaborationRelationships\(\{/);
+  assert.match(main, /deviceBindings: relationships\.deviceBindings/);
+  assert.match(main, /studentMaps: relationships\.studentMaps/);
+  assert.match(main, /bindings,/);
+  assert.match(ui, /协作设备/);
+  assert.match(ui, /共享学生/);
+  assert.doesNotMatch(ui.slice(ui.indexOf('<summary>协作设备'), ui.indexOf('跨主机档案同步')), /学生资料权威/);
+  assert.match(main, /function createCollaborationDeviceInvitation\(\)/);
+  assert.match(main, /function createCollaborationStudentMappingOffer\(deviceBindingId, studentId\)/);
+  assert.match(main, /function acceptCollaborationStudentMappingClipboard\(studentId\)/);
+  assert.match(main, /function collaborationStudentByExactId\(studentId\)/);
+  const nativeMappingStart = main.indexOf('function createCollaborationStudentMappingOffer(deviceBindingId, studentId)');
+  const legacyInvitationStart = main.indexOf('function createManualCollaborationInvitation(studentId, localRole)', nativeMappingStart);
+  assert.doesNotMatch(main.slice(nativeMappingStart, legacyInvitationStart), /findStudentByKey\(/);
+  assert.match(main, /deviceBindings: current\.deviceBindings\.filter\(\(item\) => !removedDeviceIds\.has\(item\.deviceBindingId\)\)/);
+  assert.match(main, /studentMaps: current\.studentMaps\.filter\(\(item\) => !removedDeviceIds\.has\(item\.deviceBindingId\)\)/);
 });
 
 test('student archive collaboration can be paused and manually synchronized per student', () => {

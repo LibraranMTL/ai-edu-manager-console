@@ -578,6 +578,18 @@ contextBridge.exposeInMainWorld('AndroidBridge', {
   createCollaborationBinding(optionsJson) {
     return ipcRenderer.sendSync('bridge:createCollaborationBinding', optionsJson);
   },
+  createCollaborationDeviceInvitation() {
+    return ipcRenderer.sendSync('bridge:createCollaborationDeviceInvitation');
+  },
+  joinCollaborationDevice(value) {
+    return ipcRenderer.invoke('bridge:joinCollaborationDevice', value);
+  },
+  createCollaborationStudentMappingOffer(deviceBindingId, studentId) {
+    return ipcRenderer.sendSync('bridge:createCollaborationStudentMappingOffer', deviceBindingId, studentId);
+  },
+  acceptCollaborationStudentMappingClipboard(studentId) {
+    return ipcRenderer.sendSync('bridge:acceptCollaborationStudentMappingClipboard', studentId);
+  },
   createManualCollaborationInvitation(studentId, localRole) {
     return ipcRenderer.sendSync('bridge:createManualCollaborationInvitation', studentId, localRole);
   },

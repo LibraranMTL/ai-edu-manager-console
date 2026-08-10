@@ -6,6 +6,7 @@ import android.app.PendingIntent
 import android.app.Service
 import android.content.Intent
 import android.net.Uri
+import android.os.Build
 import android.os.IBinder
 import android.os.PowerManager
 import androidx.core.app.NotificationCompat
@@ -26,7 +27,9 @@ class StudentOfflineMigrationService : Service() {
 
     override fun onCreate() {
         super.onCreate()
-        notificationManager.createNotificationChannel(NotificationChannel(CHANNEL, "学生资料迁移", NotificationManager.IMPORTANCE_LOW))
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            notificationManager.createNotificationChannel(NotificationChannel(CHANNEL, "学生资料迁移", NotificationManager.IMPORTANCE_LOW))
+        }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {

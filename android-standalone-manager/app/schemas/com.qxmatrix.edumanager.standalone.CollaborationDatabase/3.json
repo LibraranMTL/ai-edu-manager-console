@@ -1,0 +1,628 @@
+{
+  "formatVersion": 1,
+  "database": {
+    "version": 3,
+    "identityHash": "b51a53912e4e11ab471f8f6a590a5b87",
+    "entities": [
+      {
+        "tableName": "collaboration_devices",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`deviceBindingId` TEXT NOT NULL, `transportBindingId` TEXT NOT NULL, `localNodeId` TEXT NOT NULL, `peerNodeId` TEXT NOT NULL, `peerDisplayName` TEXT NOT NULL, `endpointsJson` TEXT NOT NULL, `capabilitiesJson` TEXT NOT NULL, `encryptedSecret` TEXT NOT NULL, `status` TEXT NOT NULL, `createdAt` TEXT NOT NULL, `updatedAt` TEXT NOT NULL, `lastSeenAt` TEXT NOT NULL, PRIMARY KEY(`deviceBindingId`))",
+        "fields": [
+          {
+            "fieldPath": "deviceBindingId",
+            "columnName": "deviceBindingId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "transportBindingId",
+            "columnName": "transportBindingId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "localNodeId",
+            "columnName": "localNodeId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "peerNodeId",
+            "columnName": "peerNodeId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "peerDisplayName",
+            "columnName": "peerDisplayName",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "endpointsJson",
+            "columnName": "endpointsJson",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "capabilitiesJson",
+            "columnName": "capabilitiesJson",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "encryptedSecret",
+            "columnName": "encryptedSecret",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "status",
+            "columnName": "status",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "createdAt",
+            "columnName": "createdAt",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "updatedAt",
+            "columnName": "updatedAt",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "lastSeenAt",
+            "columnName": "lastSeenAt",
+            "affinity": "TEXT",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "deviceBindingId"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_collaboration_devices_peerNodeId",
+            "unique": true,
+            "columnNames": [
+              "peerNodeId"
+            ],
+            "orders": [],
+            "createSql": "CREATE UNIQUE INDEX IF NOT EXISTS `index_collaboration_devices_peerNodeId` ON `${TABLE_NAME}` (`peerNodeId`)"
+          }
+        ],
+        "foreignKeys": []
+      },
+      {
+        "tableName": "collaboration_student_maps",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`studentMapId` TEXT NOT NULL, `deviceBindingId` TEXT NOT NULL, `transportBindingId` TEXT NOT NULL, `localStudentId` TEXT NOT NULL, `peerStudentId` TEXT NOT NULL, `peerStudentName` TEXT NOT NULL, `syncKindsJson` TEXT NOT NULL, `status` TEXT NOT NULL, `createdAt` TEXT NOT NULL, `updatedAt` TEXT NOT NULL, PRIMARY KEY(`studentMapId`))",
+        "fields": [
+          {
+            "fieldPath": "studentMapId",
+            "columnName": "studentMapId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "deviceBindingId",
+            "columnName": "deviceBindingId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "transportBindingId",
+            "columnName": "transportBindingId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "localStudentId",
+            "columnName": "localStudentId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "peerStudentId",
+            "columnName": "peerStudentId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "peerStudentName",
+            "columnName": "peerStudentName",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "syncKindsJson",
+            "columnName": "syncKindsJson",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "status",
+            "columnName": "status",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "createdAt",
+            "columnName": "createdAt",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "updatedAt",
+            "columnName": "updatedAt",
+            "affinity": "TEXT",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "studentMapId"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_collaboration_student_maps_deviceBindingId",
+            "unique": false,
+            "columnNames": [
+              "deviceBindingId"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_collaboration_student_maps_deviceBindingId` ON `${TABLE_NAME}` (`deviceBindingId`)"
+          },
+          {
+            "name": "index_collaboration_student_maps_localStudentId",
+            "unique": false,
+            "columnNames": [
+              "localStudentId"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_collaboration_student_maps_localStudentId` ON `${TABLE_NAME}` (`localStudentId`)"
+          },
+          {
+            "name": "index_collaboration_student_maps_deviceBindingId_localStudentId_peerStudentId",
+            "unique": true,
+            "columnNames": [
+              "deviceBindingId",
+              "localStudentId",
+              "peerStudentId"
+            ],
+            "orders": [],
+            "createSql": "CREATE UNIQUE INDEX IF NOT EXISTS `index_collaboration_student_maps_deviceBindingId_localStudentId_peerStudentId` ON `${TABLE_NAME}` (`deviceBindingId`, `localStudentId`, `peerStudentId`)"
+          }
+        ],
+        "foreignKeys": []
+      },
+      {
+        "tableName": "collaboration_saf_mappings",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`localStudentId` TEXT NOT NULL, `treeUri` TEXT NOT NULL, `rootPath` TEXT NOT NULL, `rawPath` TEXT NOT NULL, `summaryPath` TEXT NOT NULL, `outputPath` TEXT NOT NULL, `hasReadWriteGrant` INTEGER NOT NULL, `updatedAt` TEXT NOT NULL, PRIMARY KEY(`localStudentId`))",
+        "fields": [
+          {
+            "fieldPath": "localStudentId",
+            "columnName": "localStudentId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "treeUri",
+            "columnName": "treeUri",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "rootPath",
+            "columnName": "rootPath",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "rawPath",
+            "columnName": "rawPath",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "summaryPath",
+            "columnName": "summaryPath",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "outputPath",
+            "columnName": "outputPath",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "hasReadWriteGrant",
+            "columnName": "hasReadWriteGrant",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "updatedAt",
+            "columnName": "updatedAt",
+            "affinity": "TEXT",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "localStudentId"
+          ]
+        },
+        "indices": [],
+        "foreignKeys": []
+      },
+      {
+        "tableName": "collaboration_revisions",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`studentMapId` TEXT NOT NULL, `objectId` TEXT NOT NULL, `localStudentId` TEXT NOT NULL, `relativePath` TEXT NOT NULL, `contentSha256` TEXT NOT NULL, `revision` INTEGER NOT NULL, `parentRevision` INTEGER NOT NULL, `sizeBytes` INTEGER NOT NULL, `originNodeId` TEXT NOT NULL, `locallyModified` INTEGER NOT NULL, `updatedAt` TEXT NOT NULL, PRIMARY KEY(`studentMapId`, `objectId`))",
+        "fields": [
+          {
+            "fieldPath": "studentMapId",
+            "columnName": "studentMapId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "objectId",
+            "columnName": "objectId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "localStudentId",
+            "columnName": "localStudentId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "relativePath",
+            "columnName": "relativePath",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "contentSha256",
+            "columnName": "contentSha256",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "revision",
+            "columnName": "revision",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "parentRevision",
+            "columnName": "parentRevision",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "sizeBytes",
+            "columnName": "sizeBytes",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "originNodeId",
+            "columnName": "originNodeId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "locallyModified",
+            "columnName": "locallyModified",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "updatedAt",
+            "columnName": "updatedAt",
+            "affinity": "TEXT",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "studentMapId",
+            "objectId"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_collaboration_revisions_localStudentId",
+            "unique": false,
+            "columnNames": [
+              "localStudentId"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_collaboration_revisions_localStudentId` ON `${TABLE_NAME}` (`localStudentId`)"
+          },
+          {
+            "name": "index_collaboration_revisions_contentSha256",
+            "unique": false,
+            "columnNames": [
+              "contentSha256"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_collaboration_revisions_contentSha256` ON `${TABLE_NAME}` (`contentSha256`)"
+          }
+        ],
+        "foreignKeys": []
+      },
+      {
+        "tableName": "collaboration_queue",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`jobId` TEXT NOT NULL, `operation` TEXT NOT NULL, `deviceBindingId` TEXT NOT NULL, `studentMapId` TEXT NOT NULL, `localStudentId` TEXT NOT NULL, `payloadJson` TEXT NOT NULL, `status` TEXT NOT NULL, `attemptCount` INTEGER NOT NULL, `nextAttemptAt` INTEGER NOT NULL, `createdAt` TEXT NOT NULL, `updatedAt` TEXT NOT NULL, `lastError` TEXT NOT NULL, PRIMARY KEY(`jobId`))",
+        "fields": [
+          {
+            "fieldPath": "jobId",
+            "columnName": "jobId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "operation",
+            "columnName": "operation",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "deviceBindingId",
+            "columnName": "deviceBindingId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "studentMapId",
+            "columnName": "studentMapId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "localStudentId",
+            "columnName": "localStudentId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "payloadJson",
+            "columnName": "payloadJson",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "status",
+            "columnName": "status",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "attemptCount",
+            "columnName": "attemptCount",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "nextAttemptAt",
+            "columnName": "nextAttemptAt",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "createdAt",
+            "columnName": "createdAt",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "updatedAt",
+            "columnName": "updatedAt",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "lastError",
+            "columnName": "lastError",
+            "affinity": "TEXT",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "jobId"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_collaboration_queue_status_nextAttemptAt",
+            "unique": false,
+            "columnNames": [
+              "status",
+              "nextAttemptAt"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_collaboration_queue_status_nextAttemptAt` ON `${TABLE_NAME}` (`status`, `nextAttemptAt`)"
+          },
+          {
+            "name": "index_collaboration_queue_localStudentId",
+            "unique": false,
+            "columnNames": [
+              "localStudentId"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_collaboration_queue_localStudentId` ON `${TABLE_NAME}` (`localStudentId`)"
+          }
+        ],
+        "foreignKeys": []
+      },
+      {
+        "tableName": "collaboration_conflicts",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`conflictId` TEXT NOT NULL, `studentMapId` TEXT NOT NULL, `localStudentId` TEXT NOT NULL, `objectId` TEXT NOT NULL, `relativePath` TEXT NOT NULL, `conflictCopyPath` TEXT NOT NULL, `localSha256` TEXT NOT NULL, `remoteSha256` TEXT NOT NULL, `conflictType` TEXT NOT NULL, `createdAt` TEXT NOT NULL, `resolvedAt` TEXT NOT NULL, PRIMARY KEY(`conflictId`))",
+        "fields": [
+          {
+            "fieldPath": "conflictId",
+            "columnName": "conflictId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "studentMapId",
+            "columnName": "studentMapId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "localStudentId",
+            "columnName": "localStudentId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "objectId",
+            "columnName": "objectId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "relativePath",
+            "columnName": "relativePath",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "conflictCopyPath",
+            "columnName": "conflictCopyPath",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "localSha256",
+            "columnName": "localSha256",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "remoteSha256",
+            "columnName": "remoteSha256",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "conflictType",
+            "columnName": "conflictType",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "createdAt",
+            "columnName": "createdAt",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "resolvedAt",
+            "columnName": "resolvedAt",
+            "affinity": "TEXT",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "conflictId"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_collaboration_conflicts_localStudentId_resolvedAt",
+            "unique": false,
+            "columnNames": [
+              "localStudentId",
+              "resolvedAt"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_collaboration_conflicts_localStudentId_resolvedAt` ON `${TABLE_NAME}` (`localStudentId`, `resolvedAt`)"
+          }
+        ],
+        "foreignKeys": []
+      },
+      {
+        "tableName": "collaboration_package_checkpoints",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`manifestId` TEXT NOT NULL, `studentMapId` TEXT NOT NULL, `status` TEXT NOT NULL, `materializedAt` TEXT NOT NULL, `acknowledgedAt` TEXT NOT NULL, PRIMARY KEY(`manifestId`))",
+        "fields": [
+          {
+            "fieldPath": "manifestId",
+            "columnName": "manifestId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "studentMapId",
+            "columnName": "studentMapId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "status",
+            "columnName": "status",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "materializedAt",
+            "columnName": "materializedAt",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "acknowledgedAt",
+            "columnName": "acknowledgedAt",
+            "affinity": "TEXT",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "manifestId"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_collaboration_package_checkpoints_studentMapId_status",
+            "unique": false,
+            "columnNames": [
+              "studentMapId",
+              "status"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_collaboration_package_checkpoints_studentMapId_status` ON `${TABLE_NAME}` (`studentMapId`, `status`)"
+          }
+        ],
+        "foreignKeys": []
+      }
+    ],
+    "views": [],
+    "setupQueries": [
+      "CREATE TABLE IF NOT EXISTS room_master_table (id INTEGER PRIMARY KEY,identity_hash TEXT)",
+      "INSERT OR REPLACE INTO room_master_table (id,identity_hash) VALUES(42, 'b51a53912e4e11ab471f8f6a590a5b87')"
+    ]
+  }
+}

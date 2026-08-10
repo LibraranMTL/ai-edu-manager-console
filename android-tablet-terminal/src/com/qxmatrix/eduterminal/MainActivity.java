@@ -112,8 +112,8 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
     static final int REQUEST_IMPORT_CONNECTION_BACKUP = 8109;
     static final int REQUEST_CAPTURE_STUDENT_QR = 8110;
     static final int REQUEST_AUTO_DELIVERY_FOLDER = 8111;
-    static final String VERSION_NAME = "0.6.13";
-    static final int VERSION_CODE = 83;
+    static final String VERSION_NAME = "0.6.14";
+    static final int VERSION_CODE = 84;
     static final String CONNECTION_BACKUP_KIND = "ai-edu-manager-tablet-connection-backup";
     static final int CONNECTION_BACKUP_VERSION = 1;
     static final String UPDATE_MANIFEST_URL = "https://www.greatbg.com/download/edu-manager-version.json";
@@ -579,7 +579,7 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
         copyDiagnosticsButton = button("复制诊断信息", false);
         downloadTailscaleButton = button("下载 Tailscale", false);
         tailscaleButton = button("打开 Tailscale", false);
-        upgradeStandaloneButton = button("一键升级为 Android 单机版", true);
+        upgradeStandaloneButton = button("从 Windows 主机升级到单机版（少量资料）", true);
         maintenanceRow.addView(checkUpdateButton);
         maintenanceRow.addView(copyDiagnosticsButton);
         maintenanceRow.addView(downloadTailscaleButton);
@@ -1326,7 +1326,7 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
         if (selectedStudent == null || migrationToken.length() == 0 || normalizedBaseUrl().length() == 0) {
             new AlertDialog.Builder(this)
                 .setTitle("请先进入学生空间")
-                .setMessage("一键升级只迁移当前学生。请先连接 Windows 主机，并进入要升级的学生空间。")
+                .setMessage("学生端升级入口只迁移当前学生，适合少量资料。请先连接 Windows 主机，并进入要升级的学生空间。")
                 .setPositiveButton("知道了", null).show();
             return;
         }
@@ -1378,7 +1378,7 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
         }
         new AlertDialog.Builder(this)
             .setTitle("请先安装 Android 单机版")
-            .setMessage("本平板未检测到最新 Android 单机版。安装后返回学生端，再点一次“一键升级”。")
+            .setMessage("本平板未检测到最新 Android 单机版。安装后返回学生端，再点一次“从 Windows 主机升级到单机版（少量资料）”。")
             .setNegativeButton("取消", null)
             .setPositiveButton("打开下载页", new DialogInterface.OnClickListener() {
                 @Override public void onClick(DialogInterface dialog, int which) {

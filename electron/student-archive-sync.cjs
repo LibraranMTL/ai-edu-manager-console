@@ -31,9 +31,59 @@ function normalizeState(input = {}) {
   return {
     schema: STUDENT_ARCHIVE_SYNC_STATE_SCHEMA,
     lineages: input.lineages && typeof input.lineages === 'object' ? input.lineages : {},
+    pathProvenance: input.pathProvenance && typeof input.pathProvenance === 'object' ? input.pathProvenance : {},
+    operationSequence: Math.max(0, Number(input.operationSequence || 0)),
     importedPublicationIds: Array.isArray(input.importedPublicationIds) ? input.importedPublicationIds.map(String).slice(-2000) : [],
     updatedAt: String(input.updatedAt || new Date().toISOString()),
   };
+}
+
+function archivePathKey(kind, relativePath) {
+  return `${String(kind || '')}\u001f${safeRelativePath(relativePath).toLowerCase()}`;
+}
+
+function recordPathProvenance(state, entry, sourceNodeId, localNodeId, tombstone) {
+  state.operationSequence = Math.max(0, Number(state.operationSequence || 0)) + 1;
+  state.pathProvenance[archivePathKey(entry.kind, entry.relativePath)] = {
+    sourceNodeId: String(sourceNodeId || ''),
+    origin: String(sourceNodeId || '') === String(localNodeId || '') ? 'local' : 'remote',
+    tombstone: Boolean(tombstone),
+    revisionId: String(entry.revisionId || ''),
+    sequence: state.operationSequence,
+  };
+  const provenanceEntries = Object.entries(state.pathProvenance);
+  if (provenanceEntries.length > 20_000) {
+    for (const [key] of provenanceEntries.sort((left, right) => Number(left[1]?.sequence || 0) - Number(right[1]?.sequence || 0)).slice(0, 1_000)) {
+      delete state.pathProvenance[key];
+    }
+  }
+}
+
+function revisionContentKey(kind, relativePath, sha256) {
+  return `${String(kind || '')}\u001f${safeRelativePath(relativePath).toLowerCase()}\u001f${String(sha256 || '').toLowerCase()}`;
+}
+
+function filterLocallyAuthoredStudentArchiveFiles(options = {}) {
+  const localNodeId = String(options.localNodeId || '').trim();
+  const state = normalizeState(options.state);
+  const remotelySourced = new Set();
+  for (const lineage of Object.values(state.lineages || {})) {
+    for (const object of Object.values(lineage?.objects || {})) {
+      if (
+        !object?.tombstone
+        && object?.sourceNodeId
+        && String(object.sourceNodeId) !== localNodeId
+        && object?.sha256
+      ) {
+        remotelySourced.add(revisionContentKey(object.kind, object.relativePath, object.sha256));
+      }
+    }
+  }
+  return (Array.isArray(options.files) ? options.files : []).flatMap((file) => {
+    const sha256 = String(file?.sha256 || sha256File(file.sourcePath)).toLowerCase();
+    const key = revisionContentKey(file?.kind, file?.relativePath, sha256);
+    return remotelySourced.has(key) ? [] : [{ ...file, sha256 }];
+  });
 }
 
 function collectFiles(root, options = {}) {
@@ -166,6 +216,11 @@ function createStudentArchivePublication(options = {}) {
   if (!lineageId) throw new Error('学生档案同步缺少 lineageId。');
   const state = normalizeState(options.state);
   const lineage = state.lineages[lineageId] || { objects: {} };
+  const presentObjectIds = new Set((options.presentFiles || options.files || []).map((file) => {
+    const kind = String(file.kind || '');
+    const relativePath = safeRelativePath(file.relativePath);
+    return `student-archive:${stableId(lineageId, kind, relativePath.toLowerCase()).slice(0, 40)}`;
+  }));
   const entries = (options.files || []).map((file) => {
     const sha256 = file.sha256 || sha256File(file.sourcePath);
     const kind = String(file.kind || '');
@@ -201,6 +256,11 @@ function createStudentArchivePublication(options = {}) {
   const currentObjectIds = new Set(entries.map((entry) => entry.objectId));
   for (const [objectId, previous] of Object.entries(lineage.objects || {})) {
     if (currentObjectIds.has(objectId)) continue;
+    // A governed file can still exist locally but be intentionally suppressed
+    // because it is an unchanged remote revision. That is not a deletion.
+    if (presentObjectIds.has(objectId)) continue;
+    const provenance = state.pathProvenance[archivePathKey(previous.kind, previous.relativePath)];
+    if (provenance?.origin === 'remote' && provenance.tombstone) continue;
     if (previous.tombstone) {
       entries.push(normalizeEntry({
         objectId,
@@ -215,7 +275,7 @@ function createStudentArchivePublication(options = {}) {
       }, lineageId));
       continue;
     }
-    if (!previous.localManaged) continue;
+    if (!previous.localManaged || (previous.sourceNodeId && String(previous.sourceNodeId) !== String(options.sourceNodeId || ''))) continue;
     entries.push(normalizeEntry({
       objectId,
       kind: previous.kind,
@@ -243,6 +303,29 @@ function createStudentArchivePublication(options = {}) {
     entries,
     fingerprint: stableId(lineageId, entries.map((entry) => `${entry.objectId}:${entry.revisionId}`).sort().join('|')),
   };
+}
+
+function splitStudentArchivePublication(publication, maximumEntries = 999) {
+  const limit = Math.max(1, Math.min(999, Number(maximumEntries || 999)));
+  const entries = Array.isArray(publication?.entries) ? publication.entries : [];
+  if (entries.length <= limit) return [publication];
+  const chunks = [];
+  for (let offset = 0; offset < entries.length; offset += limit) chunks.push(entries.slice(offset, offset + limit));
+  return chunks.map((batchEntries, index) => {
+    const fingerprint = stableId(
+      publication.lineageId,
+      batchEntries.map((entry) => `${entry.objectId}:${entry.revisionId}`).sort().join('|'),
+    );
+    return {
+      ...publication,
+      publicationId: `student-archive-${stableId(publication.lineageId, publication.sourceNodeId, fingerprint).slice(0, 32)}`,
+      entries: batchEntries,
+      fingerprint,
+      collectionFingerprint: publication.fingerprint,
+      batchIndex: index + 1,
+      batchCount: chunks.length,
+    };
+  });
 }
 
 function validateStudentArchivePublication(publication, options = {}) {
@@ -278,8 +361,66 @@ function targetForEntry(entry, roots = {}, publication = {}) {
 }
 
 function conflictPath(conflictRoot, publication, entry) {
-  const suffix = `${publication.sourceNodeId}-${entry.revisionId.replace(/[^a-zA-Z0-9]+/g, '-').slice(-24)}`;
-  return path.join(conflictRoot, entry.kind, `${entry.relativePath}.${suffix}`);
+  const parsed = path.posix.parse(entry.relativePath);
+  const timestamp = String(publication.createdAt || new Date().toISOString()).replace(/[^0-9]/g, '').slice(0, 14);
+  const source = String(publication.sourceNodeId || 'remote').replace(/[^a-zA-Z0-9_-]+/g, '-').slice(-20);
+  const filename = `${parsed.name} (conflict-${source}-${timestamp || Date.now()})${parsed.ext}`;
+  return path.join(conflictRoot, entry.kind, ...parsed.dir.split('/').filter(Boolean), filename);
+}
+
+function trashPath(trashRoot, publication, entry) {
+  const parsed = path.posix.parse(entry.relativePath);
+  const timestamp = String(publication.createdAt || new Date().toISOString()).replace(/[^0-9]/g, '').slice(0, 14);
+  const filename = `${parsed.name} (deleted-${timestamp || Date.now()})${parsed.ext}`;
+  return path.join(trashRoot, entry.kind, ...parsed.dir.split('/').filter(Boolean), filename);
+}
+
+function availableFilePath(candidatePath) {
+  if (!fs.existsSync(candidatePath)) return candidatePath;
+  const parsed = path.parse(candidatePath);
+  for (let index = 2; index <= 999; index += 1) {
+    const candidate = path.join(parsed.dir, `${parsed.name}-${index}${parsed.ext}`);
+    if (!fs.existsSync(candidate)) return candidate;
+  }
+  return path.join(parsed.dir, `${parsed.name}-${crypto.randomUUID()}${parsed.ext}`);
+}
+
+function copyThenRemove(sourcePath, destinationPath) {
+  const availableDestination = availableFilePath(destinationPath);
+  fs.mkdirSync(path.dirname(availableDestination), { recursive: true });
+  const temporary = `${availableDestination}.${process.pid}.${Date.now()}.tmp`;
+  fs.copyFileSync(sourcePath, temporary);
+  fs.renameSync(temporary, availableDestination);
+  fs.unlinkSync(sourcePath);
+  return availableDestination;
+}
+
+function validateStudentArchiveTargetRoots(options = {}) {
+  const errors = [];
+  const roots = [
+    { name: 'knowledgeRoot', value: options.knowledgeRoot, create: false },
+    { name: 'growthRoot', value: options.growthRoot, create: true },
+    { name: 'reportRoot', value: options.reportRoot, create: true },
+    { name: 'archiveRoot', value: options.archiveRoot, create: true },
+  ];
+  for (const root of roots) {
+    const resolved = path.resolve(String(root.value || ''));
+    if (!String(root.value || '').trim() || resolved === path.parse(resolved).root) {
+      errors.push(`${root.name} 不是安全的目录路径。`);
+      continue;
+    }
+    try {
+      if (!fs.existsSync(resolved) && root.create) fs.mkdirSync(resolved, { recursive: true });
+      if (!fs.existsSync(resolved) || !fs.statSync(resolved).isDirectory()) {
+        errors.push(`${root.name} 不存在或不是文件夹。`);
+        continue;
+      }
+      fs.accessSync(resolved, fs.constants.R_OK | fs.constants.W_OK);
+    } catch (error) {
+      errors.push(`${root.name} 无法读写：${error.message}`);
+    }
+  }
+  return { ok: errors.length === 0, errors };
 }
 
 function materializeStudentArchivePublication(options = {}) {
@@ -301,6 +442,36 @@ function materializeStudentArchivePublication(options = {}) {
       continue;
     }
     if (entry.tombstone) {
+      const { root, target } = targetForEntry(entry, options.roots, publication);
+      const localHash = root && target && fs.existsSync(target) && fs.statSync(target).isFile() ? sha256File(target) : '';
+      const baseRevisionKnown = Boolean(
+        current.currentRevisionId
+        && current.sha256
+        && current.sha256 === localHash
+        && entry.parentRevisionIds.includes(String(current.currentRevisionId)),
+      );
+      if (localHash && !baseRevisionKnown) {
+        lineage.conflicts.push({
+          objectId: entry.objectId,
+          localRevisionId: current.currentRevisionId || `revision:${localHash}`,
+          remoteRevisionId: entry.revisionId,
+          reason: 'delete_conflict',
+          publicationId: publication.publicationId,
+          createdAt: new Date().toISOString(),
+        });
+        lineage.objects[entry.objectId] = {
+          ...current,
+          seenRevisionIds: [...new Set([...(current.seenRevisionIds || []), entry.revisionId])].slice(-50),
+          pendingDeletion: true,
+          tombstone: false,
+        };
+        conflicts += 1;
+        continue;
+      }
+      let trashedPath = '';
+      if (localHash && options.trashRoot) {
+        trashedPath = copyThenRemove(target, trashPath(path.resolve(String(options.trashRoot)), publication, entry));
+      }
       lineage.objects[entry.objectId] = {
         ...current,
         objectId: entry.objectId,
@@ -309,13 +480,16 @@ function materializeStudentArchivePublication(options = {}) {
         sha256: entry.sha256,
         version: entry.version,
         tombstone: true,
-        pendingDeletion: true,
+        pendingDeletion: false,
+        trashedPath,
         currentRevisionId: entry.revisionId,
         parentRevisionIds: entry.parentRevisionIds,
         seenRevisionIds: [...new Set([...(current.seenRevisionIds || []), entry.revisionId])],
+        sourceNodeId: publication.sourceNodeId,
         localManaged: false,
         updatedAt: publication.createdAt,
       };
+      recordPathProvenance(state, entry, publication.sourceNodeId, options.targetNodeId, true);
       tombstones += 1;
       continue;
     }
@@ -340,7 +514,7 @@ function materializeStudentArchivePublication(options = {}) {
         && entry.parentRevisionIds.includes(String(current.currentRevisionId))
       );
       if (!fastForward) {
-        const branch = conflictPath(conflictRoot, publication, entry);
+        const branch = availableFilePath(conflictPath(conflictRoot, publication, entry));
         fs.mkdirSync(path.dirname(branch), { recursive: true });
         fs.copyFileSync(sourcePath, branch);
         lineage.conflicts.push({
@@ -370,10 +544,11 @@ function materializeStudentArchivePublication(options = {}) {
       parentRevisionIds: entry.parentRevisionIds,
       seenRevisionIds: [...new Set([...(current.seenRevisionIds || []), entry.revisionId])].slice(-50),
       sourceNodeId: publication.sourceNodeId,
-      localManaged: true,
+      localManaged: false,
       tombstone: false,
       updatedAt: publication.createdAt,
     };
+    recordPathProvenance(state, entry, publication.sourceNodeId, options.targetNodeId, false);
   }
   lineage.updatedAt = new Date().toISOString();
   lineage.lastSyncedFingerprint = publication.fingerprint;
@@ -396,10 +571,12 @@ function recordPublishedStudentArchive(stateInput, publication) {
       currentRevisionId: entry.revisionId,
       version: entry.version,
       seenRevisionIds: [...new Set([...(current.seenRevisionIds || []), entry.revisionId])].slice(-50),
+      sourceNodeId: publication.sourceNodeId,
       localManaged: !entry.tombstone,
       tombstone: entry.tombstone,
       updatedAt: publication.createdAt,
     };
+    recordPathProvenance(state, entry, publication.sourceNodeId, publication.sourceNodeId, entry.tombstone);
   }
   lineage.lastPublishedAt = publication.createdAt;
   lineage.lastPublicationId = publication.publicationId;
@@ -415,9 +592,12 @@ module.exports = {
   STUDENT_ARCHIVE_SYNC_STATE_SCHEMA,
   collectStudentArchiveFiles: collectGovernedStudentArchiveFiles,
   createStudentArchivePublication,
+  filterLocallyAuthoredStudentArchiveFiles,
   materializeStudentArchivePublication,
   normalizeState,
   recordPublishedStudentArchive,
+  splitStudentArchivePublication,
   validateStudentArchivePublication,
+  validateStudentArchiveTargetRoots,
   writeJsonAtomic,
 };

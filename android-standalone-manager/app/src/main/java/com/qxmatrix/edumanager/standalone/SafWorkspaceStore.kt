@@ -43,6 +43,58 @@ class SafWorkspaceStore(
             ?: throw FileNotFoundException(relativePath)
     }
 
+    fun openInputStream(relativePath: String): InputStream {
+        val document = find(WorkspacePath.segments(relativePath))
+            ?: throw FileNotFoundException(relativePath)
+        require(document.isFile) { "Workspace path is not a file: $relativePath" }
+        return resolver.openInputStream(document.uri) ?: throw FileNotFoundException(relativePath)
+    }
+
+    data class WorkspaceFile(
+        val name: String,
+        val relativePath: String,
+        val size: Long,
+        val lastModified: Long,
+        val mimeType: String,
+    )
+
+    /** Lists bounded collaboration-safe text assets without exposing absolute provider paths. */
+    fun listTextFiles(
+        relativeRoot: String,
+        excludedPrefixes: List<String> = emptyList(),
+        maximum: Int = 2_000,
+        maximumDepth: Int = 24,
+    ): List<WorkspaceFile> {
+        require(maximum in 1..50_001 && maximumDepth in 1..32)
+        val normalizedRoot = WorkspacePath.segments(relativeRoot).joinToString("/")
+        val excluded = excludedPrefixes.map { WorkspacePath.segments(it).joinToString("/").trimEnd('/') }.filter(String::isNotBlank)
+        val rootDocument = find(WorkspacePath.segments(normalizedRoot)) ?: return emptyList()
+        val output = mutableListOf<WorkspaceFile>()
+        fun walk(document: DocumentFile, prefix: String, depth: Int) {
+            if (depth > maximumDepth || output.size >= maximum) return
+            document.listFiles().sortedBy { it.name.orEmpty().lowercase() }.forEach { child ->
+                if (output.size >= maximum) return
+                val name = child.name.orEmpty()
+                if (name.isBlank() || name.startsWith(".")) return@forEach
+                val logical = if (prefix.isBlank()) name else "$prefix/$name"
+                if (excluded.any { logical == it || logical.startsWith("$it/") }) return@forEach
+                if (child.isDirectory) walk(child, logical, depth + 1)
+                else if (child.isFile && name.substringAfterLast('.', "").lowercase() in COLLABORATION_TEXT_EXTENSIONS) {
+                    output += WorkspaceFile(name, logical, child.length(), child.lastModified(), child.type.orEmpty())
+                }
+            }
+        }
+        if (rootDocument.isFile) {
+            val name = rootDocument.name.orEmpty()
+            if (name.substringAfterLast('.', "").lowercase() in COLLABORATION_TEXT_EXTENSIONS) {
+                output += WorkspaceFile(name, normalizedRoot, rootDocument.length(), rootDocument.lastModified(), rootDocument.type.orEmpty())
+            }
+        } else if (rootDocument.isDirectory) {
+            walk(rootDocument, normalizedRoot, 0)
+        }
+        return output
+    }
+
     /** Deletes one already-authorized logical file. Missing files make retries idempotent. */
     fun deleteFileIfExists(relativePath: String): Boolean {
         val document = find(WorkspacePath.segments(relativePath)) ?: return true
@@ -155,5 +207,9 @@ class SafWorkspaceStore(
             directoryCache[key] = current
         }
         return current
+    }
+
+    companion object {
+        private val COLLABORATION_TEXT_EXTENSIONS = setOf("md", "markdown", "json", "txt", "csv")
     }
 }

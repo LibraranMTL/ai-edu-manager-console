@@ -211,6 +211,24 @@ const {
   verifyCollaborationAcceptance,
 } = require('./collaboration-protocol.cjs');
 const {
+  deriveCollaborationRelationships,
+  peersForStudentMappings,
+  selectStudentArchiveAuthorizationBinding,
+} = require('./collaboration-device-binding.cjs');
+const {
+  DEVICE_CONNECTION_SCHEMA,
+  STUDENT_MAPPING_ACCEPTANCE_SCHEMA,
+  STUDENT_MAPPING_OFFER_SCHEMA,
+  acceptStudentMappingOffer,
+  completeDevicePairing,
+  createDevicePairingInvitation,
+  createStudentMappingOffer,
+  publicDeviceConnectionInfo,
+  verifyDevicePairingConfirmation,
+  verifyPairingCode,
+  verifyStudentMappingAcceptance,
+} = require('./collaboration-device-pairing.cjs');
+const {
   createCollaborationStateSnapshot,
   importCollaborationPackage,
   restoreCollaborationStateSnapshot,
@@ -281,9 +299,12 @@ const {
 const {
   collectStudentArchiveFiles,
   createStudentArchivePublication,
+  filterLocallyAuthoredStudentArchiveFiles,
   materializeStudentArchivePublication,
   normalizeState: normalizeStudentArchiveSyncState,
   recordPublishedStudentArchive,
+  splitStudentArchivePublication,
+  validateStudentArchiveTargetRoots,
   writeJsonAtomic: writeStudentArchiveSyncStateAtomic,
 } = require('./student-archive-sync.cjs');
 const {
@@ -347,6 +368,7 @@ let hostServer = null;
 let hostDiscoverySocket = null;
 const discoveredLanTablets = new Map();
 const discoveredCollaborationHosts = new Map();
+const collaborationDevicePairAttempts = new Map();
 let lastCollaborationDiscoveryAt = 0;
 const studentSessions = new Map();
 let lastTabletDiscoveryAt = '';
@@ -454,6 +476,7 @@ const collaborationTaskStorePath = () => path.join(app.getPath('userData'), 'col
 const collaborationMaterialDecisionPath = () => path.join(app.getPath('userData'), 'collaboration-material-decisions.json');
 const collaborationDirectSecretsPath = () => path.join(app.getPath('userData'), 'collaboration-direct-secrets.json');
 const collaborationDirectDeliveryPath = () => path.join(app.getPath('userData'), 'collaboration-direct-deliveries.json');
+const collaborationDevicePairingPath = () => path.join(app.getPath('userData'), 'collaboration-device-pairing.json');
 const collaborationProjectPublicationPath = () => path.join(app.getPath('userData'), 'collaboration-project-publications.json');
 const studentArchiveSyncStatePath = () => path.join(app.getPath('userData'), 'student-archive-sync-state.json');
 const knowledgeGraphReportPath = () => path.join(app.getPath('userData'), 'knowledge-graph-report.md');
@@ -615,6 +638,55 @@ function saveCollaborationDirectSecret(bindingId, secret) {
     ...readCollaborationDirectSecrets(),
     [cleanBindingId]: cleanSecret,
   });
+}
+
+function readCollaborationDevicePairingSessions() {
+  const value = safeReadJson(collaborationDevicePairingPath(), {});
+  const now = Date.now();
+  return {
+    schema: 'edu-manager.collaboration-device-pairing-state.v1',
+    invitations: (Array.isArray(value.invitations) ? value.invitations : [])
+      .filter((item) => Date.parse(String(item?.expiresAt || '')) > now)
+      .slice(-20),
+    mappingOffers: (Array.isArray(value.mappingOffers) ? value.mappingOffers : [])
+      .filter((item) => Date.parse(String(item?.expiresAt || '')) > now)
+      .slice(-100),
+    completedMappingAcceptances: (Array.isArray(value.completedMappingAcceptances) ? value.completedMappingAcceptances : [])
+      .filter((item) => Date.parse(String(item?.completedAt || '')) > now - 24 * 60 * 60 * 1000)
+      .slice(-100),
+    updatedAt: String(value.updatedAt || new Date().toISOString()),
+  };
+}
+
+function writeCollaborationDevicePairingSessions(value = {}) {
+  const normalized = {
+    schema: 'edu-manager.collaboration-device-pairing-state.v1',
+    invitations: (Array.isArray(value.invitations) ? value.invitations : []).slice(-20),
+    mappingOffers: (Array.isArray(value.mappingOffers) ? value.mappingOffers : []).slice(-100),
+    completedMappingAcceptances: (Array.isArray(value.completedMappingAcceptances) ? value.completedMappingAcceptances : []).slice(-100),
+    updatedAt: new Date().toISOString(),
+  };
+  writeJsonAtomic(collaborationDevicePairingPath(), normalized);
+  return normalized;
+}
+
+function collaborationDeviceCredential(deviceBindingId, state = readCollaborationState()) {
+  const requestedId = String(deviceBindingId || '');
+  const device = state.deviceBindings.find((item) => (
+    item.deviceBindingId === requestedId
+    && item.status === 'active'
+    && !item.revokedAt
+    && item.participantNodeIds?.includes(state.node.nodeId)
+  ));
+  if (!device) return null;
+  const candidates = (device.transportBindingIds || [])
+    .map((bindingId) => state.bindings.find((item) => item.bindingId === bindingId && item.status === 'active' && !item.revokedAt))
+    .filter(Boolean);
+  const binding = candidates.find((item) => collaborationDirectSecret(item) && item.transportOffers?.length)
+    || candidates.find((item) => collaborationDirectSecret(item));
+  const secret = binding ? collaborationDirectSecret(binding) : '';
+  const peerNodeId = device.participantNodeIds.find((nodeId) => nodeId !== state.node.nodeId) || '';
+  return binding && secret && peerNodeId ? { device, binding, secret, peerNodeId } : null;
 }
 
 function collaborationBindingForPeer(peerNodeId) {
@@ -817,17 +889,37 @@ function updateDirectDelivery(manifestId, patch = {}) {
   return current.deliveries[manifestId];
 }
 
+function collaborationAuthBindingForPackage(manifest, packageRoot) {
+  const state = readCollaborationState();
+  const publicationDescriptor = (manifest?.files || []).find((file) => file.objectType === 'student_archive_publication');
+  if (publicationDescriptor && packageRoot) {
+    const contentRoot = path.resolve(packageRoot, 'content');
+    const relativePath = safeRelativePath(publicationDescriptor.relativePath);
+    const publicationPath = path.resolve(contentRoot, relativePath);
+    const publication = relativePath && pathInside(publicationPath, contentRoot) ? safeReadJson(publicationPath, null) : null;
+    const mappingBinding = selectStudentArchiveAuthorizationBinding(state.bindings, {
+      lineageId: publication?.lineageId,
+      localNodeId: state.node.nodeId,
+      targetNodeId: manifest.targetNodeId,
+      isUsable: (binding) => Boolean(collaborationDirectSecret(binding)),
+    });
+    if (mappingBinding) return mappingBinding;
+  }
+  return collaborationBindingForPeer(manifest?.targetNodeId);
+}
+
 function queueDirectCollaborationDelivery(published) {
   const manifest = published?.manifest;
   if (!manifest?.manifestId) return { queued: false, reason: 'manifest_missing' };
-  const binding = collaborationBindingForPeer(manifest.targetNodeId);
-  const secret = binding ? collaborationDirectSecret(binding) : '';
-  const baseUrls = collaborationDirectTargets(binding, manifest.targetNodeId);
-  if (!binding || !secret || !baseUrls.length) {
+  const authBinding = collaborationAuthBindingForPackage(manifest, published.packageRoot);
+  const routeBinding = collaborationBindingForPeer(manifest.targetNodeId);
+  const secret = authBinding ? collaborationDirectSecret(authBinding) : '';
+  const baseUrls = collaborationDirectTargets(routeBinding, manifest.targetNodeId);
+  if (!authBinding || !secret || !baseUrls.length) {
     updateDirectDelivery(manifest.manifestId, {
       status: 'compatibility_queue',
       targetNodeId: manifest.targetNodeId,
-      bindingId: binding?.bindingId || '',
+      bindingId: authBinding?.bindingId || '',
       packageRoot: published.packageRoot,
       queuedAt: new Date().toISOString(),
       error: '现有协作关系尚未包含内置直传信息；协作包已保留在兼容交换队列。',
@@ -844,7 +936,7 @@ function queueDirectCollaborationDelivery(published) {
   updateDirectDelivery(manifest.manifestId, {
     status: 'queued',
     targetNodeId: manifest.targetNodeId,
-    bindingId: binding.bindingId,
+    bindingId: authBinding.bindingId,
     packageRoot: published.packageRoot,
     baseUrls,
     attempt: 0,
@@ -871,15 +963,20 @@ function directDeliveryControl(manifestId) {
 async function deliverDirectQueueRecord(record) {
   const manifest = safeReadJson(path.join(record.packageRoot, 'manifest.json'), null);
   if (!manifest?.manifestId || manifest.manifestId !== record.manifestId) throw new Error('待发送协作包已经不存在或清单不匹配。');
-  const binding = collaborationBindingForPeer(record.targetNodeId);
-  const secret = binding ? collaborationDirectSecret(binding) : '';
-  const baseUrls = collaborationDirectTargets(binding, record.targetNodeId);
-  if (!binding || !secret || !baseUrls.length) throw new Error('对端直传地址暂不可用。');
+  const state = readCollaborationState();
+  const authBinding = collaborationAuthBindingForPackage(manifest, record.packageRoot)
+    || state.bindings.find((binding) => (
+      binding.bindingId === record.bindingId && binding.status === 'active' && !binding.revokedAt
+    ));
+  const routeBinding = collaborationBindingForPeer(record.targetNodeId);
+  const secret = authBinding ? collaborationDirectSecret(authBinding) : '';
+  const baseUrls = collaborationDirectTargets(routeBinding, record.targetNodeId);
+  if (!authBinding || !secret || !baseUrls.length) throw new Error('对端直传地址暂不可用。');
   const control = directDeliveryControl(record.manifestId);
   control.stopped = false;
   updateDirectDelivery(record.manifestId, {
     status: 'transferring',
-    bindingId: binding.bindingId,
+    bindingId: authBinding.bindingId,
     baseUrls,
     attempt: Number(record.attempt || 0) + 1,
     startedAt: new Date().toISOString(),
@@ -895,7 +992,7 @@ async function deliverDirectQueueRecord(record) {
         chunkBytes: DEFAULT_CHUNK_BYTES,
         timeoutMs: 30_000,
         isCancelled: () => control.stopped,
-        auth: { bindingId: binding.bindingId, nodeId: manifest.sourceNodeId, secret },
+        auth: { bindingId: authBinding.bindingId, nodeId: manifest.sourceNodeId, secret },
         onProgress: (progress) => {
           if (control.stopped) return;
           updateDirectDelivery(record.manifestId, {
@@ -1074,19 +1171,30 @@ function normalizeCollaborationState(input = {}) {
     ...hostIdentity,
     ...(input.node || {}),
     nodeId: input.node?.nodeId || hostIdentity.hostId,
-    capabilities: input.node?.capabilities || [
+    capabilities: [...new Set([
+      ...(Array.isArray(input.node?.capabilities) ? input.node.capabilities : []),
       'controlled_sync',
       'material_statistics',
       'task_exchange',
       'knowledge_exchange',
-    ],
+      'device_pairing',
+      'student_mapping',
+    ])],
+  });
+  const bindings = Array.isArray(input.bindings) ? input.bindings : [];
+  const relationships = deriveCollaborationRelationships({
+    bindings,
+    deviceBindings: input.deviceBindings,
+    studentMaps: input.studentMaps,
   });
   return {
     schema: 'edu-manager.collaboration-state.v1',
     protocolVersion: COLLABORATION_PROTOCOL_VERSION,
     enabled: Boolean(input.enabled),
     node,
-    bindings: Array.isArray(input.bindings) ? input.bindings : [],
+    bindings,
+    deviceBindings: relationships.deviceBindings,
+    studentMaps: relationships.studentMaps,
     grants: Array.isArray(input.grants) ? input.grants : [],
     pendingInvitations: Array.isArray(input.pendingInvitations) ? input.pendingInvitations : [],
     statisticsSharing: input.statisticsSharing && typeof input.statisticsSharing === 'object'
@@ -1132,10 +1240,15 @@ function readCollaborationState() {
   const current = safeReadJson(collaborationStatePath(), {});
   const normalized = normalizeCollaborationState(current);
   const repaired = repairCollaborationLocalStudentMappings(normalized);
-  if (!current.node?.nodeId || current.protocolVersion !== COLLABORATION_PROTOCOL_VERSION || repaired.changed) {
-    writeJsonAtomic(collaborationStatePath(), repaired.state);
+  const reconciled = repaired.changed ? normalizeCollaborationState(repaired.state) : repaired.state;
+  const relationshipsChanged = (
+    JSON.stringify(current.deviceBindings || []) !== JSON.stringify(reconciled.deviceBindings || [])
+    || JSON.stringify(current.studentMaps || []) !== JSON.stringify(reconciled.studentMaps || [])
+  );
+  if (!current.node?.nodeId || current.protocolVersion !== COLLABORATION_PROTOCOL_VERSION || repaired.changed || relationshipsChanged) {
+    writeJsonAtomic(collaborationStatePath(), reconciled);
   }
-  return repaired.state;
+  return reconciled;
 }
 
 function writeCollaborationState(state) {
@@ -2560,6 +2673,15 @@ function writeStudentArchiveSyncState(state) {
 
 function studentArchiveSyncPeers(studentId, state = readCollaborationState()) {
   const localStudentId = String(studentId || '');
+  const mappedPeers = peersForStudentMappings(state, state.node.nodeId, localStudentId);
+  if (mappedPeers.length) {
+    return mappedPeers.map((peer) => ({
+      ...peer,
+      bindingId: peer.transportBindingId || peer.deviceBindingId,
+    }));
+  }
+  // Compatibility fallback for historical or partially repaired state. New
+  // writes derive exact student maps and therefore do not normally use it.
   return (state.bindings || []).filter((binding) => (
     binding.status === 'active'
     && !binding.revokedAt
@@ -2669,8 +2791,13 @@ function publishStudentArchiveSync(studentKey) {
   const peers = studentArchiveSyncPeers(normalized.id, state);
   if (!peers.length) return { ok: true, skipped: true, reason: 'no_active_peer', queued: 0 };
   const roots = studentArchiveRoots(normalized);
-  const files = collectStudentArchiveFiles(roots);
   let syncState = readStudentArchiveSyncState();
+  const collectedFiles = collectStudentArchiveFiles(roots);
+  const files = filterLocallyAuthoredStudentArchiveFiles({
+    files: collectedFiles,
+    state: syncState,
+    localNodeId: state.node.nodeId,
+  });
   let queued = 0;
   let unchanged = 0;
   let assets = 0;
@@ -2683,45 +2810,52 @@ function publishStudentArchiveSync(studentKey) {
       targetStudentId: peer.targetStudentId,
       state: syncState,
       files,
+      presentFiles: collectedFiles,
     });
     publication = { ...publication, sourceStudentName: normalized.name };
     if (syncState.lineages[peer.lineageId]?.lastSyncedFingerprint === publication.fingerprint) {
       unchanged += 1;
       continue;
     }
-    const exportRoot = path.join(app.getPath('userData'), 'collaboration-exports', 'student-archives', publication.publicationId);
-    fs.mkdirSync(exportRoot, { recursive: true });
-    const envelopePath = path.join(exportRoot, 'publication.json');
-    writeJsonAtomic(envelopePath, publication);
     const sourceByKey = new Map(files.map((item) => [`${item.kind}|${item.relativePath}`, item.sourcePath]));
-    const packageFiles = [{
-      sourcePath: envelopePath,
-      relativePath: `student-archives/${publication.publicationId}/publication.json`,
-      objectId: `student-archive-publication:${publication.publicationId}`,
-      objectType: 'student_archive_publication',
-      version: 1,
-      studentId: peer.targetStudentId,
-    }];
-    for (const entry of publication.entries.filter((item) => !item.tombstone)) {
-      const sourcePath = sourceByKey.get(`${entry.kind}|${entry.relativePath}`);
-      if (!sourcePath || !fs.existsSync(sourcePath)) continue;
-      packageFiles.push({
-        sourcePath,
-        relativePath: `student-archives/${publication.publicationId}/${entry.kind}/${entry.relativePath}`,
-        objectId: `${entry.objectId}@${entry.revisionId}`,
-        objectType: 'student_archive_asset_revision',
-        version: entry.version,
+    for (const batch of splitStudentArchivePublication(publication, 999)) {
+      const exportRoot = path.join(app.getPath('userData'), 'collaboration-exports', 'student-archives', batch.publicationId);
+      fs.mkdirSync(exportRoot, { recursive: true });
+      const envelopePath = path.join(exportRoot, 'publication.json');
+      writeJsonAtomic(envelopePath, batch);
+      const packageFiles = [{
+        sourcePath: envelopePath,
+        relativePath: `student-archives/${batch.publicationId}/publication.json`,
+        objectId: `student-archive-publication:${batch.publicationId}`,
+        objectType: 'student_archive_publication',
+        version: 1,
         studentId: peer.targetStudentId,
+      }];
+      for (const entry of batch.entries.filter((item) => !item.tombstone)) {
+        const sourcePath = sourceByKey.get(`${entry.kind}|${entry.relativePath}`);
+        if (!sourcePath || !fs.existsSync(sourcePath)) continue;
+        packageFiles.push({
+          sourcePath,
+          relativePath: `student-archives/${batch.publicationId}/${entry.kind}/${entry.relativePath}`,
+          objectId: `${entry.objectId}@${entry.revisionId}`,
+          objectType: 'student_archive_asset_revision',
+          version: entry.version,
+          studentId: peer.targetStudentId,
+        });
+      }
+      const published = collaborationTransport().sendPackage({
+        sourceNodeId: state.node.nodeId,
+        targetNodeId: peer.peerNodeId,
+        files: packageFiles,
       });
+      queueDirectCollaborationDelivery(published);
+      syncState = recordPublishedStudentArchive(syncState, batch);
+      queued += 1;
     }
-    const published = collaborationTransport().sendPackage({
-      sourceNodeId: state.node.nodeId,
-      targetNodeId: peer.peerNodeId,
-      files: packageFiles,
-    });
-    queueDirectCollaborationDelivery(published);
-    syncState = recordPublishedStudentArchive(syncState, publication);
-    queued += 1;
+    if (syncState.lineages[peer.lineageId]) {
+      syncState.lineages[peer.lineageId].lastSyncedFingerprint = publication.fingerprint;
+      syncState.lineages[peer.lineageId].collectionFingerprint = publication.fingerprint;
+    }
     assets += publication.entries.length;
   }
   writeStudentArchiveSyncState(syncState);
@@ -2875,12 +3009,7 @@ function ingestImportedStudentArchives() {
     const contentRoot = path.dirname(path.dirname(path.dirname(object.importedPath)));
     const normalized = toHostStudent(student);
     const roots = studentArchiveRoots(normalized);
-    const binding = validateExistingBinding({
-      rootPath: normalized.rootPath,
-      rejectEmpty: true,
-      requiredPaths: [roots.knowledgeRoot, roots.rawRoot],
-      limit: 5000,
-    });
+    const binding = validateStudentArchiveTargetRoots(roots);
     if (!binding.ok) {
       conflicts += 1;
       appendHostTimeline({
@@ -2899,6 +3028,7 @@ function ingestImportedStudentArchives() {
       packageRelativePath: (entry) => `student-archives/${publication.publicationId}/${entry.kind}/${entry.relativePath}`,
       roots,
       conflictRoot: path.join(studentManagerDir(normalized), 'student-archive-sync', 'conflicts'),
+      trashRoot: path.join(studentManagerDir(normalized), 'student-archive-sync', 'trash'),
       state: syncState,
     });
     if (!result.ok) {
@@ -3200,6 +3330,8 @@ function getCollaborationState() {
       discoveredDirectPeers: [...discoveredCollaborationHosts.values()],
       summary: {
         bindingCount: state.bindings.filter((item) => item?.status === 'active' && !item?.revokedAt).length,
+        deviceBindingCount: state.deviceBindings.filter((item) => item?.status === 'active' && !item?.revokedAt).length,
+        studentMapCount: state.studentMaps.filter((item) => item?.status === 'active' && !item?.revokedAt).length,
         grantCount: state.grants.filter((item) => !item?.revokedAt).length,
         localOnline: true,
         pendingPackageCount,
@@ -3220,9 +3352,407 @@ function createCollaborationBinding(optionsJson) {
     const binding = createPeerBinding(options);
     const existing = current.bindings.filter((item) => item.bindingId !== binding.bindingId);
     const state = writeCollaborationState({ ...current, bindings: [...existing, binding] });
-    return JSON.stringify({ ok: true, binding, state, message: '协作关系已建立。角色只作用于该协作关系，不会改变软件版本或本机类型。' });
+    return JSON.stringify({ ok: true, binding, state, message: '协作关系已建立。可在同一设备关系下继续增加其他学生映射。' });
   } catch (error) {
     return JSON.stringify({ ok: false, message: `建立协作关系失败：${error.message}` });
+  }
+}
+
+function activeCollaborationDeviceForPeer(state, peerNodeId) {
+  return state.deviceBindings.find((item) => (
+    item.status !== 'revoked'
+    && !item.revokedAt
+    && item.participantNodeIds?.includes(state.node.nodeId)
+    && item.participantNodeIds?.includes(String(peerNodeId || ''))
+  ));
+}
+
+function upsertNativeCollaborationDevice(state, binding, deviceBinding) {
+  return writeCollaborationState({
+    ...state,
+    enabled: true,
+    bindings: [...state.bindings.filter((item) => item.bindingId !== binding.bindingId), binding],
+    deviceBindings: [
+      ...state.deviceBindings.filter((item) => item.deviceBindingId !== deviceBinding.deviceBindingId),
+      deviceBinding,
+    ],
+  });
+}
+
+function createCollaborationDeviceInvitation() {
+  try {
+    if (!hostServer) startHostService({ preserveUsageMode: true });
+    if (!hostServer) throw new Error(hostServiceLastError || '主机协作服务未能启动。');
+    const current = readCollaborationState();
+    const invitation = createDevicePairingInvitation({
+      inviterNode: current.node,
+      transportOffers: [collaborationDirectOffer()],
+    });
+    const sessions = readCollaborationDevicePairingSessions();
+    writeCollaborationDevicePairingSessions({
+      ...sessions,
+      invitations: [...sessions.invitations.filter((item) => item.invitationId !== invitation.invitationId), invitation],
+    });
+    const connectionInfo = publicDeviceConnectionInfo(invitation);
+    clipboard.writeText(JSON.stringify(connectionInfo, null, 2));
+    requestCollaborationPeerDiscovery(true);
+    return JSON.stringify({
+      ok: true,
+      state: writeCollaborationState({ ...current, enabled: true }),
+      pairing: {
+        stage: 'device_invitation_ready',
+        pairingCode: invitation.pairingCode,
+        expiresAt: invitation.expiresAt,
+        connectionInfoText: JSON.stringify(connectionInfo),
+        nextAction: '另一台 Windows 主机可输入六位码；Android 单机版可扫描二维码。若自动发现不到，也可粘贴已复制的完整连接信息。',
+      },
+      message: '六位临时码和二维码连接信息已生成，完整连接信息也已复制。设备配对完成后不必为每个学生重复连接。',
+    });
+  } catch (error) {
+    return JSON.stringify({ ok: false, message: `生成设备配对码失败：${error.message}` });
+  }
+}
+
+function devicePairingEndpointCandidates(connectionInfo) {
+  if (connectionInfo?.endpoints?.length) return routeDirectEndpoints(connectionInfo.endpoints).slice(0, 8);
+  return routeDirectEndpoints([...discoveredCollaborationHosts.values()].flatMap((item) => item.endpoints || [])).slice(0, 8);
+}
+
+async function joinCollaborationDevice(value) {
+  try {
+    const raw = String(value || '').trim();
+    if (!raw) throw new Error('请输入六位临时码，或粘贴另一台主机复制的连接信息。');
+    let connectionInfo = null;
+    let pairingCode = raw.replace(/\D/g, '');
+    if (raw.startsWith('{')) {
+      connectionInfo = parseJsonObject(raw);
+      if (connectionInfo.schema !== DEVICE_CONNECTION_SCHEMA) throw new Error('粘贴内容不是设备连接信息。');
+      pairingCode = String(connectionInfo.pairingCode || '').replace(/\D/g, '');
+      if (Date.parse(String(connectionInfo.expiresAt || '')) <= Date.now()) throw new Error('设备连接信息已过期，请让对方重新生成。');
+    }
+    if (!/^\d{6}$/.test(pairingCode)) throw new Error('设备配对码必须是六位数字。');
+    if (!hostServer) startHostService({ preserveUsageMode: true });
+    requestCollaborationPeerDiscovery(true);
+    let endpoints = devicePairingEndpointCandidates(connectionInfo);
+    if (!endpoints.length && !connectionInfo) {
+      await new Promise((resolve) => setTimeout(resolve, 800));
+      endpoints = devicePairingEndpointCandidates(null);
+    }
+    if (!endpoints.length) {
+      throw new Error('尚未发现另一台主机。请确认两台电脑在同一局域网，或粘贴对方复制的完整连接信息。');
+    }
+    const current = readCollaborationState();
+    const expectedNodeId = String(connectionInfo?.nodeId || '');
+    let lastError = '';
+    const joinDeadline = Date.now() + 15_000;
+    for (const endpoint of endpoints) {
+      if (Date.now() >= joinDeadline) break;
+      if (expectedNodeId && !(await probeCollaborationEndpoint(endpoint, expectedNodeId))) continue;
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), Math.max(500, Math.min(4_000, joinDeadline - Date.now())));
+      try {
+        const response = await fetch(`${endpoint}/api/collaboration/device-pair/join`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            invitationId: String(connectionInfo?.invitationId || ''),
+            pairingCode,
+            acceptingNode: current.node,
+            transportOffers: [collaborationDirectOffer()],
+          }),
+          signal: controller.signal,
+        });
+        const payload = await response.json().catch(() => ({}));
+        if (!response.ok || !payload?.confirmation) {
+          lastError = String(payload?.message || `连接 ${endpoint} 失败。`);
+          continue;
+        }
+        const verified = verifyDevicePairingConfirmation(payload.confirmation, { localNodeId: current.node.nodeId });
+        const peerNodeId = String(payload.confirmation.inviterNode?.nodeId || '');
+        if (!peerNodeId || (expectedNodeId && peerNodeId !== expectedNodeId)) throw new Error('返回的主机身份与连接信息不一致。');
+        const state = upsertNativeCollaborationDevice(current, verified.binding, verified.deviceBinding);
+        saveCollaborationDirectSecret(verified.binding.bindingId, verified.secret);
+        discoveredCollaborationHosts.set(peerNodeId, {
+          nodeId: peerNodeId,
+          machineCode: String(payload.confirmation.inviterNode?.machineCode || ''),
+          displayName: String(payload.confirmation.inviterNode?.displayName || '协作主机'),
+          endpoints: routeDirectEndpoints(payload.confirmation.binding?.transportOffers
+            ?.filter((item) => item.nodeId === peerNodeId)
+            .flatMap((item) => item.endpoints || []) || [endpoint]),
+          lastSeenAt: new Date().toISOString(),
+        });
+        collaborationTransport().ensureNode(state.node.nodeId);
+        appendHostTimeline({ type: 'collaboration_device_paired', title: 'Collaboration device paired', detail: peerNodeId });
+        notify('onNativeCollaborationChanged', JSON.stringify({ peerNodeId, status: 'device_paired' }));
+        return JSON.stringify({
+          ok: true,
+          state,
+          pairing: {
+            stage: 'device_connected',
+            peerNodeId,
+            nextAction: '设备信任已建立。选择学生后，可在下方为这台设备添加对应学生。',
+          },
+          message: `已与“${payload.confirmation.inviterNode?.displayName || peerNodeId}”建立可信设备连接。`,
+        });
+      } catch (error) {
+        lastError = error.name === 'AbortError' ? `连接 ${endpoint} 超时。` : error.message;
+      } finally {
+        clearTimeout(timeout);
+      }
+    }
+    throw new Error(lastError || '没有主机接受该临时码，请确认临时码未过期并重试。');
+  } catch (error) {
+    return JSON.stringify({ ok: false, message: `连接协作设备失败：${error.message}` });
+  }
+}
+
+function recordCollaborationDevicePairAttempt(request) {
+  const now = Date.now();
+  const key = requestClientIp(request) || 'unknown';
+  for (const [ip, item] of collaborationDevicePairAttempts.entries()) {
+    if (now - item.windowStartedAt > 10 * 60 * 1000) collaborationDevicePairAttempts.delete(ip);
+  }
+  const current = collaborationDevicePairAttempts.get(key);
+  if (current && current.count >= 8 && now - current.windowStartedAt <= 10 * 60 * 1000) return false;
+  collaborationDevicePairAttempts.set(key, current && now - current.windowStartedAt <= 10 * 60 * 1000
+    ? { ...current, count: current.count + 1 }
+    : { windowStartedAt: now, count: 1 });
+  return true;
+}
+
+async function handleCollaborationDevicePairJoin(request, response) {
+  const locked = licenseRequiredPayload('知识协作设备配对');
+  if (locked) {
+    sendJson(response, 402, locked);
+    return;
+  }
+  if (!recordCollaborationDevicePairAttempt(request)) {
+    sendJson(response, 429, { ok: false, message: '临时码尝试次数过多，请十分钟后重试。' });
+    return;
+  }
+  try {
+    const body = await parseJsonBody(request);
+    const sessions = readCollaborationDevicePairingSessions();
+    let invitation = null;
+    for (const candidate of sessions.invitations) {
+      if (body.invitationId && candidate.invitationId !== String(body.invitationId)) continue;
+      try {
+        verifyPairingCode(candidate, body.pairingCode);
+        invitation = candidate;
+        break;
+      } catch {
+        // Try the next active invitation without revealing which part was incorrect.
+      }
+    }
+    if (!invitation) {
+      sendJson(response, 401, { ok: false, message: '六位临时码不正确或已经过期。' });
+      return;
+    }
+    const current = readCollaborationState();
+    const acceptingNode = normalizeNodeIdentity(body.acceptingNode || {});
+    if (activeCollaborationDeviceForPeer(current, acceptingNode.nodeId)) {
+      sendJson(response, 409, { ok: false, message: '两台主机已经建立设备信任，无需重复配对。' });
+      return;
+    }
+    const completed = completeDevicePairing(invitation, acceptingNode, {
+      pairingCode: body.pairingCode,
+      transportOffers: body.transportOffers,
+    });
+    const state = upsertNativeCollaborationDevice(current, completed.binding, completed.deviceBinding);
+    saveCollaborationDirectSecret(completed.binding.bindingId, completed.secret);
+    writeCollaborationDevicePairingSessions({
+      ...sessions,
+      invitations: sessions.invitations.filter((item) => item.invitationId !== invitation.invitationId),
+    });
+    collaborationDevicePairAttempts.delete(requestClientIp(request) || 'unknown');
+    collaborationTransport().ensureNode(state.node.nodeId);
+    appendHostTimeline({ type: 'collaboration_device_paired', title: 'Collaboration device paired', detail: acceptingNode.nodeId });
+    notify('onNativeCollaborationChanged', JSON.stringify({ peerNodeId: acceptingNode.nodeId, status: 'device_paired' }));
+    sendJson(response, 200, { ok: true, confirmation: completed.confirmation });
+  } catch (error) {
+    sendJson(response, 400, { ok: false, message: `设备配对失败：${error.message}` });
+  }
+}
+
+function applyCollaborationStudentMapping(state, studentMap, mappingBinding, secret) {
+  const next = writeCollaborationState({
+    ...state,
+    enabled: true,
+    bindings: [...state.bindings.filter((item) => item.bindingId !== mappingBinding.bindingId), mappingBinding],
+    studentMaps: [...state.studentMaps.filter((item) => item.studentMapId !== studentMap.studentMapId), studentMap],
+  });
+  saveCollaborationDirectSecret(mappingBinding.bindingId, secret);
+  collaborationTransport().ensureNode(next.node.nodeId);
+  refreshStudentArchiveSyncWatchers();
+  return next;
+}
+
+function completeCollaborationStudentMappingAcceptance(payload) {
+  const current = readCollaborationState();
+  const sessions = readCollaborationDevicePairingSessions();
+  const acceptanceHash = crypto.createHash('sha256').update(JSON.stringify(payload || {})).digest('hex');
+  const completed = sessions.completedMappingAcceptances.find((item) => item.offerId === payload.offerId);
+  if (completed) {
+    if (completed.acceptanceHash !== acceptanceHash) throw new Error('该学生映射邀请已经由另一份确认回执完成。');
+    const existing = current.studentMaps.find((item) => item.studentMapId === completed.studentMapId && item.status === 'active' && !item.revokedAt);
+    if (!existing) throw new Error('已完成的学生映射状态不完整，请撤销设备信任后重新配对。');
+    return {
+      ok: true,
+      state: current,
+      pairing: {
+        stage: 'student_mapping_completed',
+        peerNodeId: completed.peerNodeId,
+        nextAction: '学生共享已建立，无需重复确认。',
+      },
+      message: '学生精确映射此前已完成。',
+      idempotent: true,
+    };
+  }
+  const offer = sessions.mappingOffers.find((item) => item.offerId === payload.offerId);
+  if (!offer) throw new Error('本机没有找到对应的待确认学生映射，可能已过期或已完成。');
+  const credential = collaborationDeviceCredential(offer.deviceBindingId, current);
+  if (!credential || credential.peerNodeId === current.node.nodeId) throw new Error('学生映射对应的设备信任已失效。');
+  const verified = verifyStudentMappingAcceptance(payload, { offer, secret: credential.secret });
+  const local = verified.studentMap.participantStudents.find((item) => item.nodeId === current.node.nodeId);
+  if (!local || local.studentId !== String(offer.inviterStudentId)) throw new Error('确认回执中的本机学生与原邀请不一致。');
+  const state = applyCollaborationStudentMapping(current, verified.studentMap, verified.mappingBinding, credential.secret);
+  writeCollaborationDevicePairingSessions({
+    ...sessions,
+    mappingOffers: sessions.mappingOffers.filter((item) => item.offerId !== offer.offerId),
+    completedMappingAcceptances: [
+      ...sessions.completedMappingAcceptances.filter((item) => item.offerId !== offer.offerId),
+      {
+        offerId: offer.offerId,
+        acceptanceHash,
+        studentMapId: verified.studentMap.studentMapId,
+        peerNodeId: credential.peerNodeId,
+        completedAt: new Date().toISOString(),
+      },
+    ],
+  });
+  appendHostTimeline({ type: 'collaboration_student_mapped', title: 'Collaboration student mapped', detail: verified.studentMap.studentMapId });
+  notify('onNativeCollaborationChanged', JSON.stringify({ peerNodeId: credential.peerNodeId, status: 'student_mapped' }));
+  return {
+    ok: true,
+    state,
+    pairing: {
+      stage: 'student_mapping_completed',
+      studentName: collaborationStudentByExactId(offer.inviterStudentId)?.name || offer.inviterStudentName,
+      peerNodeId: credential.peerNodeId,
+      nextAction: '学生共享已建立。双方可在该学生的跨主机档案同步区域查看状态并立即同步。',
+    },
+    message: '学生精确映射已在两台设备完成。',
+  };
+}
+
+async function handleCollaborationStudentMappingAcceptance(request, response) {
+  const locked = licenseRequiredPayload('知识协作学生映射');
+  if (locked) {
+    sendJson(response, 402, locked);
+    return;
+  }
+  try {
+    const result = completeCollaborationStudentMappingAcceptance(await parseJsonBody(request));
+    sendJson(response, 200, {
+      ok: true,
+      pairing: result.pairing,
+      message: result.message,
+      idempotent: Boolean(result.idempotent),
+    });
+  } catch (error) {
+    sendJson(response, 400, { ok: false, message: `确认学生映射失败：${error.message}` });
+  }
+}
+
+function collaborationStudentByExactId(studentId) {
+  const requestedId = String(studentId || '');
+  return readStudentsIndex().find((student) => String(student.id) === requestedId) || null;
+}
+
+function createCollaborationStudentMappingOffer(deviceBindingId, studentId) {
+  try {
+    const student = collaborationStudentByExactId(studentId);
+    if (!student) throw new Error('请先选择本机要共享的学生档案。');
+    const current = readCollaborationState();
+    const credential = collaborationDeviceCredential(deviceBindingId, current);
+    if (!credential) throw new Error('所选协作设备尚未建立有效信任，或本机缺少连接凭据。');
+    const duplicate = current.studentMaps.find((item) => (
+      item.deviceBindingId === credential.device.deviceBindingId
+      && item.status === 'active'
+      && !item.revokedAt
+      && item.participantStudents?.some((part) => part.nodeId === current.node.nodeId && part.studentId === String(student.id))
+    ));
+    if (duplicate) throw new Error('这个学生已经映射到所选协作设备，无需重复添加。');
+    const offer = createStudentMappingOffer({
+      deviceBindingId: credential.device.deviceBindingId,
+      transportBindingId: credential.binding.bindingId,
+      inviterNodeId: current.node.nodeId,
+      inviterStudentId: student.id,
+      inviterStudentName: student.name,
+      secret: credential.secret,
+    });
+    const sessions = readCollaborationDevicePairingSessions();
+    writeCollaborationDevicePairingSessions({
+      ...sessions,
+      mappingOffers: [...sessions.mappingOffers.filter((item) => item.offerId !== offer.offerId), offer],
+    });
+    clipboard.writeText(JSON.stringify(offer, null, 2));
+    return JSON.stringify({
+      ok: true,
+      state: current,
+      pairing: {
+        stage: 'student_mapping_offered',
+        studentName: student.name,
+        expiresAt: offer.expiresAt,
+        peerNodeId: credential.peerNodeId,
+        nextAction: '把已复制的学生映射邀请发给另一台可信主机；对方选择对应学生后读取邀请。',
+      },
+      message: `已复制“${student.name}”的学生映射邀请。`,
+    });
+  } catch (error) {
+    return JSON.stringify({ ok: false, message: `生成学生映射邀请失败：${error.message}` });
+  }
+}
+
+function acceptCollaborationStudentMappingClipboard(studentId) {
+  try {
+    const payload = parseJsonObject(clipboard.readText() || '{}');
+    const current = readCollaborationState();
+    if (payload.schema === STUDENT_MAPPING_OFFER_SCHEMA) {
+      const student = collaborationStudentByExactId(studentId);
+      if (!student) throw new Error('请先选择本机与邀请对应的学生档案。');
+      const credential = collaborationDeviceCredential(payload.deviceBindingId, current);
+      if (!credential || credential.peerNodeId !== String(payload.inviterNodeId || '')) {
+        throw new Error('这份学生映射邀请不属于本机已信任的协作设备。');
+      }
+      const accepted = acceptStudentMappingOffer(payload, {
+        acceptingNodeId: current.node.nodeId,
+        acceptingStudentId: student.id,
+        secret: credential.secret,
+        transportOffers: credential.binding.transportOffers,
+      });
+      const state = applyCollaborationStudentMapping(current, accepted.studentMap, accepted.mappingBinding, credential.secret);
+      clipboard.writeText(JSON.stringify(accepted.acceptance, null, 2));
+      appendHostTimeline({ type: 'collaboration_student_mapped', title: 'Collaboration student mapped', detail: `${student.id} <-> ${payload.inviterStudentId}` });
+      notify('onNativeCollaborationChanged', JSON.stringify({ peerNodeId: credential.peerNodeId, status: 'student_mapped' }));
+      return JSON.stringify({
+        ok: true,
+        state,
+        pairing: {
+          stage: 'student_mapping_accepted',
+          studentName: student.name,
+          peerNodeId: credential.peerNodeId,
+          nextAction: '确认回执已复制。把回执发回邀请方，邀请方再次点击“读取学生映射邀请或确认回执”。',
+        },
+        message: `已将本机“${student.name}”与对端学生精确对应，并复制确认回执。`,
+      });
+    }
+    if (payload.schema === STUDENT_MAPPING_ACCEPTANCE_SCHEMA) {
+      return JSON.stringify(completeCollaborationStudentMappingAcceptance(payload));
+    }
+    throw new Error('剪贴板中不是学生映射邀请或确认回执。');
+  } catch (error) {
+    return JSON.stringify({ ok: false, message: `处理学生映射失败：${error.message}` });
   }
 }
 
@@ -3351,16 +3881,38 @@ function acceptManualCollaborationClipboard(studentId = '') {
 function updateCollaborationBindingStatus(bindingId, status) {
   try {
     const current = readCollaborationState();
-    const index = current.bindings.findIndex((item) => item.bindingId === String(bindingId || ''));
-    if (index < 0) return JSON.stringify({ ok: false, message: '未找到协作关系。' });
+    const requestedId = String(bindingId || '');
+    const deviceBinding = current.deviceBindings.find((item) => item.deviceBindingId === requestedId);
+    const targetIds = new Set(deviceBinding?.transportBindingIds || [requestedId]);
+    const matchingIndexes = current.bindings
+      .map((item, index) => targetIds.has(item.bindingId) ? index : -1)
+      .filter((index) => index >= 0);
+    if (!matchingIndexes.length) return JSON.stringify({ ok: false, message: '未找到协作设备或兼容协作记录。' });
     const bindings = [...current.bindings];
-    bindings[index] = transitionPeerBinding(bindings[index], status);
-    const state = writeCollaborationState({ ...current, bindings });
+    for (const index of matchingIndexes) bindings[index] = transitionPeerBinding(bindings[index], status);
+    const now = new Date().toISOString();
+    const deviceBindings = current.deviceBindings.map((item) => item.deviceBindingId === deviceBinding?.deviceBindingId
+      ? {
+          ...item,
+          status,
+          updatedAt: now,
+          revokedAt: status === 'revoked' ? now : '',
+        }
+      : item);
+    const studentMaps = current.studentMaps.map((item) => item.deviceBindingId === deviceBinding?.deviceBindingId
+      ? {
+          ...item,
+          status,
+          updatedAt: now,
+          revokedAt: status === 'revoked' ? now : '',
+        }
+      : item);
+    const state = writeCollaborationState({ ...current, bindings, deviceBindings, studentMaps });
     return JSON.stringify({
       ok: true,
       state,
-      binding: bindings[index],
-      message: status === 'active' ? '协作关系已恢复。' : status === 'paused' ? '协作关系已暂停。' : '协作关系已撤销。',
+      bindings: matchingIndexes.map((index) => bindings[index]),
+      message: status === 'active' ? '协作设备已恢复。' : status === 'paused' ? '协作设备已暂停。' : '协作设备已撤销。',
     });
   } catch (error) {
     return JSON.stringify({ ok: false, message: `更新协作关系失败：${error.message}` });
@@ -3371,13 +3923,18 @@ function deleteRevokedCollaborationBindings(bindingId = '') {
   try {
     const requestedBindingId = String(bindingId || '').trim();
     const current = readCollaborationState();
+    const requestedDevice = current.deviceBindings.find((item) => item.deviceBindingId === requestedBindingId);
+    if (requestedDevice && requestedDevice.status !== 'revoked' && !requestedDevice.revokedAt) {
+      return JSON.stringify({ ok: false, message: '只有已撤销的协作设备可以删除，请先撤销该设备。' });
+    }
+    const requestedIds = new Set(requestedDevice?.transportBindingIds || (requestedBindingId ? [requestedBindingId] : []));
     const candidates = current.bindings.filter((binding) => (
-      (!requestedBindingId || binding.bindingId === requestedBindingId)
+      (!requestedBindingId || requestedIds.has(binding.bindingId))
       && (binding.status === 'revoked' || Boolean(binding.revokedAt))
     ));
     if (!candidates.length) {
       const requested = requestedBindingId
-        ? current.bindings.find((binding) => binding.bindingId === requestedBindingId)
+        ? requestedDevice || current.bindings.find((binding) => binding.bindingId === requestedBindingId)
         : null;
       return JSON.stringify({
         ok: false,
@@ -3387,15 +3944,31 @@ function deleteRevokedCollaborationBindings(bindingId = '') {
       });
     }
     const removedIds = new Set(candidates.map((binding) => String(binding.bindingId)));
+    const removedDeviceIds = new Set(current.deviceBindings
+      .filter((item) => (
+        (item.status === 'revoked' || Boolean(item.revokedAt))
+        && (!requestedBindingId || item.deviceBindingId === requestedBindingId)
+        && (item.transportBindingIds || []).every((id) => removedIds.has(String(id)))
+      ))
+      .map((item) => item.deviceBindingId));
     const state = writeCollaborationState({
       ...current,
       bindings: current.bindings.filter((binding) => !removedIds.has(String(binding.bindingId))),
+      deviceBindings: current.deviceBindings.filter((item) => !removedDeviceIds.has(item.deviceBindingId)),
+      studentMaps: current.studentMaps.filter((item) => !removedDeviceIds.has(item.deviceBindingId)),
       grants: current.grants.filter((grant) => !removedIds.has(String(grant.bindingId || ''))),
       pendingInvitations: current.pendingInvitations.filter((invitation) => !removedIds.has(String(invitation.bindingId || ''))),
     });
     const secrets = readCollaborationDirectSecrets();
     for (const removedId of removedIds) delete secrets[removedId];
     writeJsonAtomic(collaborationDirectSecretsPath(), secrets);
+    if (removedDeviceIds.size) {
+      const sessions = readCollaborationDevicePairingSessions();
+      writeCollaborationDevicePairingSessions({
+        ...sessions,
+        mappingOffers: sessions.mappingOffers.filter((item) => !removedDeviceIds.has(item.deviceBindingId)),
+      });
+    }
     agentKnowledgeQueryCache.clear();
     invalidateArchiveAccessCache();
     return JSON.stringify({
@@ -7371,7 +7944,7 @@ function discoveryPayload(protocolVersion = PAIR_PROTOCOL_VERSION) {
     serverUrl: info.serverUrl,
     lanUrls: info.lanUrls,
     tailscaleUrls: info.tailscaleUrls,
-    capabilities: protocolVersion >= 2 ? ['pair-request-v2', 'bidirectional-discovery-v2'] : [],
+    capabilities: protocolVersion >= 2 ? ['pair-request-v2', 'bidirectional-discovery-v2', 'device-pairing-v1'] : [],
   };
 }
 
@@ -23986,6 +24559,56 @@ function authenticateDirectRequest(request, pathname, actualContentSha256 = '') 
   return { state, binding, sourceNodeId, verified };
 }
 
+function directAuthorizedStudentIds(binding, nodeId) {
+  return new Set((binding?.roleAssignments || [])
+    .filter((assignment) => assignment.nodeId === nodeId && assignment.studentId && !assignment.revokedAt)
+    .map((assignment) => String(assignment.studentId)));
+}
+
+function assertDirectStudentArchiveManifestScope(auth, files = []) {
+  const archiveFiles = files.filter((file) => ['student_archive_publication', 'student_archive_asset_revision'].includes(file.objectType));
+  if (!archiveFiles.length) return;
+  const localStudentIds = directAuthorizedStudentIds(auth.binding, auth.state.node.nodeId);
+  const declaredStudentIds = new Set(archiveFiles.map((file) => String(file.studentId || '')));
+  if (localStudentIds.size < 1 || declaredStudentIds.size !== 1 || [...declaredStudentIds].some((studentId) => !studentId || !localStudentIds.has(studentId))) {
+    throw new Error('学生档案包超出当前精确学生映射范围。');
+  }
+  if (!archiveFiles.some((file) => file.objectType === 'student_archive_publication')) {
+    throw new Error('学生档案包缺少发布清单。');
+  }
+}
+
+function assertDirectStudentArchiveContentScope(auth, manifest, packageRoot) {
+  const files = Array.isArray(manifest?.files) ? manifest.files : [];
+  assertDirectStudentArchiveManifestScope(auth, files);
+  const publications = files.filter((file) => file.objectType === 'student_archive_publication');
+  if (!publications.length) return;
+  const remoteStudentIds = directAuthorizedStudentIds(auth.binding, auth.sourceNodeId);
+  for (const descriptor of publications) {
+    const relativePath = safeRelativePath(descriptor.relativePath);
+    const publicationPath = path.resolve(packageRoot, 'content', relativePath);
+    if (!relativePath || !pathInside(publicationPath, path.resolve(packageRoot, 'content')) || !fs.existsSync(publicationPath)) {
+      throw new Error('学生档案发布清单路径无效。');
+    }
+    const publication = safeReadJson(publicationPath, null);
+    const participants = [
+      `${auth.state.node.nodeId}:${publication?.targetStudentId || ''}`,
+      `${auth.sourceNodeId}:${publication?.sourceStudentId || ''}`,
+    ].sort();
+    const expectedLineage = `${auth.binding.bindingId}:student-archive:${participants.join('|')}`;
+    if (
+      publication?.schema !== 'edu-manager.student-archive-sync.v1'
+      || publication.targetNodeId !== auth.state.node.nodeId
+      || publication.sourceNodeId !== auth.sourceNodeId
+      || String(publication.targetStudentId || '') !== String(descriptor.studentId || '')
+      || !remoteStudentIds.has(String(publication.sourceStudentId || ''))
+      || publication.lineageId !== expectedLineage
+    ) {
+      throw new Error('学生档案发布清单未通过精确学生与版本谱系校验。');
+    }
+  }
+}
+
 async function handleCollaborationDirectInit(request, response, pathname) {
   try {
     const bodyBuffer = await readRequestBuffer(request, 2 * 1024 * 1024);
@@ -24007,6 +24630,7 @@ async function handleCollaborationDirectInit(request, response, pathname) {
     if (files.reduce((sum, item) => sum + Number(item.size || 0), 0) > 2 * 1024 * 1024 * 1024) {
       throw new Error('协作包总大小超出限制。');
     }
+    assertDirectStudentArchiveManifestScope(auth, files);
     const locations = directPackagePaths(manifest.manifestId);
     if (fs.existsSync(locations.completed)) {
       sendJson(response, 200, { ok: true, duplicate: true, manifestId: manifest.manifestId });
@@ -24177,6 +24801,7 @@ async function handleCollaborationDirectCommit(request, response, pathname, mani
       packageRoot = locations.completed;
     }
     const manifest = safeReadJson(path.join(packageRoot, 'manifest.json'), null);
+    assertDirectStudentArchiveContentScope(auth, manifest, packageRoot);
     const receipt = importCollaborationPackage(collaborationRootPath(), { packageRoot, manifest }, {
       targetNodeId: auth.state.node.nodeId,
       ledgerPath: collaborationImportLedgerPath(),
@@ -24194,6 +24819,143 @@ async function handleCollaborationDirectCommit(request, response, pathname, mani
     sendJson(response, 200, { ok: true, receipt, taskImport, projectImport, studentArchiveImport });
   } catch (error) {
     sendJson(response, 400, { ok: false, message: `提交协作直传失败：${error.message}` });
+  }
+}
+
+function androidPullStudentMapping(auth, studentMapId) {
+  const mapping = (auth.state.studentMaps || []).find((item) => (
+    item.studentMapId === String(studentMapId || '')
+    && item.status === 'active'
+    && !item.revokedAt
+    && item.participantStudents?.some((part) => part.nodeId === auth.sourceNodeId)
+    && item.participantStudents?.some((part) => part.nodeId === auth.state.node.nodeId)
+    && item.transportBindingIds?.includes(auth.binding.bindingId)
+  ));
+  if (!mapping) throw new Error('没有找到当前协作设备可用的精确学生映射。');
+  const device = (auth.state.deviceBindings || []).find((item) => (
+    item.deviceBindingId === mapping.deviceBindingId
+    && item.status === 'active'
+    && !item.revokedAt
+    && item.participantNodeIds?.includes(auth.sourceNodeId)
+    && item.participantNodeIds?.includes(auth.state.node.nodeId)
+  ));
+  if (!device) throw new Error('学生映射对应的设备信任已暂停或失效。');
+  const local = mapping.participantStudents.find((item) => item.nodeId === auth.state.node.nodeId);
+  const peer = mapping.participantStudents.find((item) => item.nodeId === auth.sourceNodeId);
+  if (!local?.studentId || !peer?.studentId) throw new Error('学生映射缺少双方精确学生 ID。');
+  return { mapping, localStudentId: local.studentId, peerStudentId: peer.studentId };
+}
+
+function androidPullPackage(auth, studentMapId, manifestId = '') {
+  const scope = androidPullStudentMapping(auth, studentMapId);
+  const candidates = Object.values(readDirectDeliveryStore().deliveries || {})
+    .filter((record) => (
+      ['compatibility_queue', 'queued', 'retry_waiting'].includes(record.status)
+      && record.targetNodeId === auth.sourceNodeId
+      && record.packageRoot
+      && (!manifestId || record.manifestId === manifestId)
+    ))
+    .map((record) => ({ record, manifest: safeReadJson(path.join(record.packageRoot, 'manifest.json'), null) }))
+    .filter(({ manifest }) => (
+      manifest?.manifestId
+      && manifest.sourceNodeId === auth.state.node.nodeId
+      && manifest.targetNodeId === auth.sourceNodeId
+      && (manifest.files || []).some((file) => file.objectType === 'student_archive_publication')
+      && (manifest.files || []).every((file) => !file.studentId || String(file.studentId) === String(scope.peerStudentId))
+    ))
+    .sort((left, right) => String(left.manifest.createdAt || '').localeCompare(String(right.manifest.createdAt || '')));
+  const selected = candidates[0];
+  if (!selected) return { ...scope, record: null, manifest: null };
+  return { ...scope, ...selected };
+}
+
+async function handleCollaborationAndroidPullNext(request, response, pathname, studentMapId) {
+  try {
+    const auth = authenticateDirectRequest(request, pathname, sha256DirectContent(Buffer.alloc(0)));
+    const selected = androidPullPackage(auth, studentMapId);
+    if (!selected.manifest) {
+      sendJson(response, 200, { ok: true, available: false });
+      return;
+    }
+    const manifestJson = fs.readFileSync(path.join(selected.record.packageRoot, 'manifest.json'), 'utf8');
+    const manifestSha256 = sha256DirectContent(Buffer.from(manifestJson, 'utf8'));
+    const proof = crypto.createHmac('sha256', collaborationDirectSecret(auth.binding))
+      .update([selected.manifest.manifestId, manifestSha256].join('\u001f'))
+      .digest('hex');
+    sendJson(response, 200, {
+      ok: true,
+      available: true,
+      manifestJson,
+      manifestSha256,
+      proof,
+      protocolVersion: DIRECT_PROTOCOL_VERSION,
+      maxChunkBytes: 4 * 1024 * 1024,
+    });
+  } catch (error) {
+    sendJson(response, 400, { ok: false, message: `读取 Android 协作清单失败：${error.message}` });
+  }
+}
+
+async function handleCollaborationAndroidPullChunk(request, response, pathname, studentMapId, manifestId, fileIndex, url) {
+  try {
+    const auth = authenticateDirectRequest(request, pathname, sha256DirectContent(Buffer.alloc(0)));
+    const selected = androidPullPackage(auth, studentMapId, manifestId);
+    if (!selected.manifest) throw new Error('待拉取的协作包不存在或已完成。');
+    const file = selected.manifest.files?.[Number(fileIndex)];
+    if (!file) throw new Error('协作文件序号无效。');
+    const contentRoot = path.resolve(selected.record.packageRoot, 'content');
+    const relativePath = safeRelativePath(file.relativePath);
+    const sourcePath = path.resolve(contentRoot, relativePath);
+    if (!relativePath || !pathInside(sourcePath, contentRoot) || !fs.existsSync(sourcePath)) throw new Error('协作文件不存在或路径无效。');
+    const size = fs.statSync(sourcePath).size;
+    if (size !== Number(file.size)) throw new Error('协作文件大小与清单不一致。');
+    const offset = Math.max(0, Number(url.searchParams.get('offset') || 0));
+    const requested = Math.max(1, Math.min(4 * 1024 * 1024, Number(url.searchParams.get('length') || 1024 * 1024)));
+    if (!Number.isSafeInteger(offset) || offset >= size) throw new Error('协作文件分块位置无效。');
+    const length = Math.min(requested, size - offset);
+    const handle = fs.openSync(sourcePath, 'r');
+    let body;
+    try {
+      body = Buffer.allocUnsafe(length);
+      if (fs.readSync(handle, body, 0, length, offset) !== length) throw new Error('读取协作文件分块不完整。');
+    } finally {
+      fs.closeSync(handle);
+    }
+    response.writeHead(200, {
+      'Content-Type': 'application/octet-stream',
+      'Content-Length': body.length,
+      'X-Edu-Chunk-Sha256': sha256DirectContent(body),
+      'X-Edu-File-Sha256': String(file.sha256 || ''),
+      'X-Edu-Received-Offset': String(offset + body.length),
+      'Access-Control-Allow-Origin': '*',
+    });
+    response.end(body);
+  } catch (error) {
+    sendJson(response, 400, { ok: false, message: `下载 Android 协作分块失败：${error.message}` });
+  }
+}
+
+async function handleCollaborationAndroidPullAck(request, response, pathname, studentMapId, manifestId) {
+  try {
+    const bodyBuffer = await readRequestBuffer(request, 1024 * 1024);
+    const auth = authenticateDirectRequest(request, pathname, sha256DirectContent(bodyBuffer));
+    const selected = androidPullPackage(auth, studentMapId, manifestId);
+    const body = bodyBuffer.length ? JSON.parse(bodyBuffer.toString('utf8')) : {};
+    if (!selected.manifest || body.manifestId !== manifestId || body.status !== 'materialized') throw new Error('协作包确认信息无效。');
+    updateDirectDelivery(manifestId, {
+      status: 'delivered',
+      channel: 'android_pull',
+      deliveredAt: new Date().toISOString(),
+      nextAttemptAt: '',
+      progress: null,
+      error: '',
+      receipt: { status: 'materialized', studentMapId, receivedBy: auth.sourceNodeId },
+    });
+    appendHostTimeline({ type: 'collaboration_android_pull_delivered', title: 'Android pulled collaboration package', detail: manifestId });
+    notify('onNativeCollaborationChanged', JSON.stringify({ manifestId, status: 'delivered', channel: 'android_pull' }));
+    sendJson(response, 200, { ok: true, manifestId });
+  } catch (error) {
+    sendJson(response, 400, { ok: false, message: `确认 Android 协作包失败：${error.message}` });
   }
 }
 
@@ -24362,6 +25124,29 @@ function handleHostRequest(request, response) {
   }
   if (request.method === 'POST' && pathname === REMOTE_ARCHIVE_PATH) {
     handleRemoteArchiveQuery(request, response, pathname);
+    return;
+  }
+  if (request.method === 'POST' && pathname === '/api/collaboration/device-pair/join') {
+    handleCollaborationDevicePairJoin(request, response);
+    return;
+  }
+  if (request.method === 'POST' && pathname === '/api/collaboration/student-map/accept') {
+    handleCollaborationStudentMappingAcceptance(request, response);
+    return;
+  }
+  const androidPullNextMatch = pathname.match(/^\/api\/collaboration\/android\/pull\/([^/]+)$/);
+  if (request.method === 'GET' && androidPullNextMatch) {
+    handleCollaborationAndroidPullNext(request, response, pathname, androidPullNextMatch[1]);
+    return;
+  }
+  const androidPullFileMatch = pathname.match(/^\/api\/collaboration\/android\/pull\/([^/]+)\/packages\/([^/]+)\/files\/(\d+)$/);
+  if (request.method === 'GET' && androidPullFileMatch) {
+    handleCollaborationAndroidPullChunk(request, response, pathname, androidPullFileMatch[1], androidPullFileMatch[2], androidPullFileMatch[3], url);
+    return;
+  }
+  const androidPullAckMatch = pathname.match(/^\/api\/collaboration\/android\/pull\/([^/]+)\/packages\/([^/]+)\/ack$/);
+  if (request.method === 'POST' && androidPullAckMatch) {
+    handleCollaborationAndroidPullAck(request, response, pathname, androidPullAckMatch[1], androidPullAckMatch[2]);
     return;
   }
   if (request.method === 'GET' && pathname === '/api/collaboration/direct/capabilities') {
@@ -25042,6 +25827,18 @@ ipcMain.on('bridge:exportCollaborationStudentStats', (event, studentId, targetNo
   licensedIpc(event, '发送学生资料统计', () => exportCollaborationStudentStats(studentId, targetNodeId));
 });
 ipcMain.on('bridge:createCollaborationBinding', (event, optionsJson) => { licensedIpc(event, '主机协作关系管理', () => createCollaborationBinding(optionsJson)); });
+ipcMain.on('bridge:createCollaborationDeviceInvitation', (event) => {
+  licensedIpc(event, '生成协作设备临时码', () => createCollaborationDeviceInvitation());
+});
+ipcMain.handle('bridge:joinCollaborationDevice', (_event, value) => (
+  licensedInvoke('连接协作设备', () => joinCollaborationDevice(value))
+));
+ipcMain.on('bridge:createCollaborationStudentMappingOffer', (event, deviceBindingId, studentId) => {
+  licensedIpc(event, '生成学生共享邀请', () => createCollaborationStudentMappingOffer(deviceBindingId, studentId));
+});
+ipcMain.on('bridge:acceptCollaborationStudentMappingClipboard', (event, studentId) => {
+  licensedIpc(event, '处理学生共享邀请', () => acceptCollaborationStudentMappingClipboard(studentId));
+});
 ipcMain.on('bridge:createManualCollaborationInvitation', (event, studentId, localRole) => {
   licensedIpc(event, '生成主机协作邀请', () => createManualCollaborationInvitation(studentId, localRole));
 });

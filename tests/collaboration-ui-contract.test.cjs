@@ -9,37 +9,42 @@ function read(relativePath) {
   return fs.readFileSync(path.join(root, relativePath), 'utf8');
 }
 
-test('collaboration UI exposes setup, bilateral pairing, inbox and recovery controls', () => {
+test('collaboration UI exposes role-neutral device trust, exact student mapping, inbox and recovery controls', () => {
   const ui = read('src/main.tsx');
   const preload = read('electron/preload.cjs');
   const main = read('electron/main.cjs');
 
   for (const label of [
     '开启知识协作',
-    '连接另一台 Windows 主机',
-    '我是教师/家长，邀请学生主机',
-    '我是学生资料主机，邀请教师',
-    '读取邀请并生成确认回执',
-    '读取确认回执并完成连接',
-    '不需要交换 API Token',
+    '连接协作设备并添加共享学生',
+    '生成临时码、二维码并复制连接信息',
+    '连接并双向确认',
+    '复制当前学生的映射邀请',
+    '读取学生映射邀请或确认回执',
+    '不交换 API Token',
     '检查协作收件箱',
     '重建协作索引',
     '备份协作状态',
     '恢复最近备份',
-    '已绑定协作主机',
+    '协作设备',
+    '共享学生',
     '暂停',
     '恢复',
     '撤销',
-    '删除记录',
-    '清理全部已撤销记录',
+    '删除',
+    '清理全部已撤销设备',
   ]) {
     assert.match(ui, new RegExp(label));
   }
+  assert.doesNotMatch(ui, /我是教师\/家长，邀请学生主机/);
+  assert.doesNotMatch(ui, /我是学生资料主机，邀请教师/);
 
   for (const bridgeMethod of [
     'initializeCollaborationWorkspace',
-    'createManualCollaborationInvitation',
-    'acceptManualCollaborationClipboard',
+    'createCollaborationDeviceInvitation',
+    'joinCollaborationDevice',
+    'createCollaborationStudentMappingOffer',
+    'acceptCollaborationStudentMappingClipboard',
     'scanCollaborationInbox',
     'rebuildCollaborationIndex',
     'backupCollaborationState',
@@ -50,20 +55,35 @@ test('collaboration UI exposes setup, bilateral pairing, inbox and recovery cont
     assert.match(preload, new RegExp(bridgeMethod));
   }
 
-  assert.match(main, /edu-manager\.collaboration-invitation\.v1/);
+  assert.match(main, /\/api\/collaboration\/device-pair\/join/);
+  assert.match(main, /\/api\/collaboration\/student-map\/accept/);
+  assert.match(main, /androidPullNextMatch/);
+  assert.match(main, /function handleCollaborationAndroidPullNext/);
+  assert.match(main, /function handleCollaborationAndroidPullChunk/);
+  assert.match(main, /function handleCollaborationAndroidPullAck/);
+  assert.match(main, /function completeCollaborationStudentMappingAcceptance\(payload\)/);
+  assert.match(main, /completedMappingAcceptances/);
+  assert.match(main, /recordCollaborationDevicePairAttempt/);
+  assert.match(main, /bridge:createCollaborationDeviceInvitation/);
+  assert.match(main, /bridge:joinCollaborationDevice/);
+  assert.match(main, /bridge:createCollaborationStudentMappingOffer/);
+  assert.match(main, /bridge:acceptCollaborationStudentMappingClipboard/);
   assert.match(main, /bridge:updateCollaborationBindingStatus/);
   assert.match(main, /bridge:deleteRevokedCollaborationBindings/);
-  assert.match(main, /只有已撤销的协作关系可以删除/);
+  assert.match(main, /只有已撤销的协作设备可以删除/);
   assert.match(main, /delete secrets\[removedId\]/);
-  assert.match(main, /协作关系已暂停/);
-  assert.match(main, /协作关系已恢复/);
-  assert.match(main, /协作关系已撤销/);
-  assert.match(main, /stage: 'invitation_copied'/);
-  assert.match(main, /stage: 'acceptance_copied'/);
-  assert.match(main, /stage: 'completed'/);
+  assert.match(main, /协作设备已暂停/);
+  assert.match(main, /协作设备已恢复/);
+  assert.match(main, /协作设备已撤销/);
+  assert.match(main, /stage: 'device_invitation_ready'/);
+  assert.match(main, /connectionInfoText: JSON\.stringify\(connectionInfo\)/);
+  assert.match(main, /stage: 'device_connected'/);
+  assert.match(main, /stage: 'student_mapping_offered'/);
+  assert.match(main, /stage: 'student_mapping_accepted'/);
+  assert.match(main, /stage: 'student_mapping_completed'/);
 });
 
-test('collaboration pairing renders a three-step guide and actionable result feedback', () => {
+test('collaboration pairing renders device-first guidance and actionable result feedback', () => {
   const ui = read('src/main.tsx');
   const styles = read('src/styles.css');
 
@@ -71,10 +91,15 @@ test('collaboration pairing renders a three-step guide and actionable result fee
   assert.match(ui, /collaboration-pairing-feedback/);
   assert.match(ui, /aria-live="polite"/);
   assert.match(ui, /下一步：/);
+  assert.match(ui, /六位临时码：/);
   assert.match(ui, /邀请有效至：/);
   assert.match(ui, /对端节点：/);
+  assert.match(ui, /Android 单机版知识协作连接二维码/);
+  assert.match(ui, /QRCode\.toDataURL\(connectionInfoText/);
   assert.match(styles, /\.collaboration-pairing-wizard ol/);
-  assert.match(styles, /\.collaboration-pairing-feedback\.completed/);
+  assert.match(styles, /\.collaboration-pairing-feedback\.device_connected/);
+  assert.match(styles, /\.collaboration-pairing-code/);
+  assert.match(styles, /\.collaboration-device-qr img/);
   assert.match(styles, /\.collaboration-pairing-feedback\.error/);
 });
 

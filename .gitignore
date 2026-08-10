@@ -14,6 +14,9 @@ release/**
 !release/privacy.html
 !release/windows/
 !release/windows/edu-manager-version.json
+!release/网站文件/
+release/网站文件/**
+!release/网站文件/android-standalone-manual.html
 
 # Android build output and local toolchains
 .android-tools/

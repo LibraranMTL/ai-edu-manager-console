@@ -55,14 +55,14 @@ class BackupRestoreService(private val context: Context) {
                             .put("storedSha256", encrypted.storedSha256).put("iv", encrypted.iv).put("authTag", encrypted.authTag))
                         totalBytes += encrypted.plainBytes; encrypted.file.delete()
                     }
-                    val manifest = JSONObject().put("schema", MANIFEST_SCHEMA).put("migrationId", migrationId).put("appVersion", APP_VERSION)
+                    val manifest = JSONObject().put("schema", MANIFEST_SCHEMA).put("migrationId", migrationId).put("appVersion", appVersion())
                         .put("createdAt", Timestamp.now()).put("encrypted", true)
                         .put("encryption", JSONObject().put("algorithm", "aes-256-gcm").put("kdf", "scrypt").put("salt", android.util.Base64.encodeToString(salt, android.util.Base64.NO_WRAP)).put("N", 16384).put("r", 8).put("p", 1))
                         .put("identityPolicy", "new-device-uri-and-agent-reauthorization").put("roots", JSONArray().also { array -> roots.forEach { array.put(it.toJson()) } })
                         .put("files", manifestFiles).put("excludedSensitiveData", JSONArray(listOf("agent-api-token", "android-keystore-key", "media-projection-grant", "old-saf-grants")))
                     val manifestBytes = (manifest.toString(2) + "\n").toByteArray()
-                    putBytes(zip, "manifest.json", manifestBytes); putBytes(zip, "manifest.sha256", (sha256(manifestBytes) + "  manifest.json\n").toByteArray())
-                    val descriptor = JSONObject().put("schema", PACKAGE_SCHEMA).put("migrationId", migrationId).put("appVersion", APP_VERSION)
+                    putBytes(zip, "manifest.json", manifestBytes); putBytes(zip, "manifest.sha256", (sha256(bytes = manifestBytes) + "  manifest.json\n").toByteArray())
+                    val descriptor = JSONObject().put("schema", PACKAGE_SCHEMA).put("migrationId", migrationId).put("appVersion", appVersion())
                         .put("createdAt", manifest.getString("createdAt")).put("encrypted", true).put("fileCount", manifestFiles.length()).put("totalBytes", totalBytes)
                     putBytes(zip, "migration.json", (descriptor.toString(2) + "\n").toByteArray())
                 }
@@ -88,7 +88,7 @@ class BackupRestoreService(private val context: Context) {
                 val names = zip.entries().asSequence().map { safePackagePath(it.name) }.toList()
                 require(names.size == names.toSet().size) { "备份包包含重复文件" }
                 val descriptor = JSONObject(readSmall(zip, "migration.json")); require(descriptor.getString("schema") == PACKAGE_SCHEMA) { "不支持的迁移包" }
-                require(compareVersions(APP_VERSION, descriptor.getString("appVersion")) >= 0) { "备份来自更高版本，请先升级 APK" }
+                require(compareVersions(appVersion(), descriptor.getString("appVersion")) >= 0) { "备份来自更高版本，请先升级 APK" }
                 val manifestBytes = readSmallBytes(zip, "manifest.json"); val checksum = readSmall(zip, "manifest.sha256").trim().substringBefore(' ')
                 require(sha256(manifestBytes) == checksum) { "迁移包清单校验失败" }
                 val manifest = JSONObject(manifestBytes.toString(Charsets.UTF_8)); require(manifest.getString("schema") == MANIFEST_SCHEMA && manifest.getString("migrationId") == descriptor.getString("migrationId")) { "迁移包清单结构无效" }
@@ -272,10 +272,12 @@ class BackupRestoreService(private val context: Context) {
     private fun sha256(input: InputStream): String { val digest = MessageDigest.getInstance("SHA-256"); val buffer = ByteArray(64 * 1024); while (true) { val read = input.read(buffer); if (read < 0) break; digest.update(buffer, 0, read) }; return digest.digest().hex() }
     private fun ByteArray.hex() = joinToString("") { "%02x".format(it) }
     private fun compareVersions(left: String, right: String): Int { val a = left.split(Regex("[.+-]")).map { it.toIntOrNull() ?: 0 }; val b = right.split(Regex("[.+-]")).map { it.toIntOrNull() ?: 0 }; for (index in 0 until maxOf(a.size, b.size)) { val value = (a.getOrNull(index) ?: 0).compareTo(b.getOrNull(index) ?: 0); if (value != 0) return value }; return 0 }
+    @Suppress("DEPRECATION")
+    private fun appVersion(): String = context.packageManager.getPackageInfo(context.packageName, 0).versionName.orEmpty()
 
     private data class RootSpec(val id: String, val originalUri: String, val destinationPrefix: String) { fun toJson() = JSONObject().put("id", id).put("originalUri", originalUri).put("destinationPrefix", destinationPrefix) }
     private data class Source(val category: String, val scopeId: String, val relativePath: String, val destinationRelativePath: String, val expectedBytes: Long, val open: () -> InputStream)
     private data class Encrypted(val file: File, val plainBytes: Long, val plainSha256: String, val storedSha256: String, val iv: String, val authTag: String)
 
-    companion object { const val PACKAGE_SCHEMA = "edu-manager.migration-package.v1"; const val MANIFEST_SCHEMA = "edu-manager.migration-manifest.v1"; const val APP_VERSION = "1.0.0" }
+    companion object { const val PACKAGE_SCHEMA = "edu-manager.migration-package.v1"; const val MANIFEST_SCHEMA = "edu-manager.migration-manifest.v1" }
 }

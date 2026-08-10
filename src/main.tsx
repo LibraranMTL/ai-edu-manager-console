@@ -1009,6 +1009,10 @@ type AndroidBridge = {
   updateDirectDeliveryStatus?: (manifestId: string, action: 'pause' | 'resume' | 'retry' | 'cancel') => string;
   exportCollaborationStudentStats?: (studentId: string, targetNodeId: string) => string;
   createCollaborationBinding?: (optionsJson: string) => string;
+  createCollaborationDeviceInvitation?: () => string;
+  joinCollaborationDevice?: (value: string) => Promise<string>;
+  createCollaborationStudentMappingOffer?: (deviceBindingId: string, studentId: string) => string;
+  acceptCollaborationStudentMappingClipboard?: (studentId?: string) => string;
   createManualCollaborationInvitation?: (studentId: string, localRole: 'educator' | 'learner_authority') => string;
   acceptManualCollaborationClipboard?: (studentId?: string) => string;
   updateCollaborationBindingStatus?: (bindingId: string, status: 'active' | 'paused' | 'revoked') => string;
@@ -1520,7 +1524,17 @@ type CollaborationNode = {
   capabilities?: string[];
 };
 
-type CollaborationPairingStage = 'idle' | 'invitation_copied' | 'acceptance_copied' | 'completed' | 'error';
+type CollaborationPairingStage =
+  | 'idle'
+  | 'invitation_copied'
+  | 'acceptance_copied'
+  | 'completed'
+  | 'device_invitation_ready'
+  | 'device_connected'
+  | 'student_mapping_offered'
+  | 'student_mapping_accepted'
+  | 'student_mapping_completed'
+  | 'error';
 
 type CollaborationPairingFeedback = {
   stage: CollaborationPairingStage;
@@ -1530,6 +1544,7 @@ type CollaborationPairingFeedback = {
   studentName?: string;
   expiresAt?: string;
   peerNodeId?: string;
+  pairingCode?: string;
 };
 
 type CollaborationState = {
@@ -1549,6 +1564,23 @@ type CollaborationState = {
       }>;
       createdAt?: string;
       lastSeenAt?: string;
+      revokedAt?: string;
+    }>;
+    deviceBindings: Array<{
+      deviceBindingId: string;
+      status?: 'active' | 'paused' | 'revoked' | string;
+      participantNodeIds?: string[];
+      transportBindingIds?: string[];
+      createdAt?: string;
+      updatedAt?: string;
+      revokedAt?: string;
+    }>;
+    studentMaps: Array<{
+      studentMapId: string;
+      deviceBindingId: string;
+      status?: 'active' | 'paused' | 'revoked' | string;
+      participantStudents?: Array<{ nodeId: string; studentId: string }>;
+      syncKinds?: string[];
       revokedAt?: string;
     }>;
     grants: Array<{ grantId: string; revokedAt?: string }>;
@@ -1615,8 +1647,17 @@ type CollaborationState = {
       relativePath?: string;
     } | null;
   }>;
+  discoveredDirectPeers?: Array<{
+    nodeId: string;
+    displayName?: string;
+    machineCode?: string;
+    endpoints?: string[];
+    lastSeenAt?: string;
+  }>;
   summary?: {
     bindingCount?: number;
+    deviceBindingCount?: number;
+    studentMapCount?: number;
     grantCount?: number;
     localOnline?: boolean;
     pendingPackageCount?: number;
@@ -4858,10 +4899,13 @@ function App() {
   const [collaborationMessage, setCollaborationMessage] = useState('');
   const [collaborationPairingFeedback, setCollaborationPairingFeedback] = useState<CollaborationPairingFeedback>({
     stage: 'idle',
-    title: '尚未开始连接',
-    message: '在发起方完成第 1 步，另一台主机完成第 2 步，再回到发起方完成第 3 步。',
+    title: '尚未建立设备连接',
+    message: '先用六位临时码让两台 Windows 主机建立一次信任，再按学生添加共享关系。',
   });
   const [collaborationPairingBusy, setCollaborationPairingBusy] = useState(false);
+  const [collaborationDeviceQr, setCollaborationDeviceQr] = useState('');
+  const [collaborationDeviceJoinValue, setCollaborationDeviceJoinValue] = useState('');
+  const [selectedCollaborationDeviceId, setSelectedCollaborationDeviceId] = useState('');
   const [collaborationStats, setCollaborationStats] = useState<CollaborationMaterialStats | null>(null);
   const [agentConversationInbox, setAgentConversationInbox] = useState<AgentConversationSubmissionState | null>(null);
   const [assigningAgentConversationId, setAssigningAgentConversationId] = useState('');
@@ -6620,6 +6664,8 @@ function App() {
           studentName?: string;
           expiresAt?: string;
           peerNodeId?: string;
+          pairingCode?: string;
+          connectionInfoText?: string;
           nextAction?: string;
         };
       };
@@ -6637,6 +6683,11 @@ function App() {
         invitation_copied: '第 1 步完成：邀请代码已复制',
         acceptance_copied: '第 2 步完成：确认回执已复制',
         completed: '第 3 步完成：两台主机已连接',
+        device_invitation_ready: '设备临时码已生成',
+        device_connected: '可信设备连接已建立',
+        student_mapping_offered: '学生映射邀请已复制',
+        student_mapping_accepted: '本机学生已确认',
+        student_mapping_completed: '学生共享已在两端完成',
       };
       setCollaborationPairingFeedback({
         stage,
@@ -6646,6 +6697,7 @@ function App() {
         studentName: result.pairing?.studentName || selectedStudent?.name,
         expiresAt: result.pairing?.expiresAt,
         peerNodeId: result.pairing?.peerNodeId,
+        pairingCode: result.pairing?.pairingCode,
       });
     } catch {
       setCollaborationPairingFeedback({
@@ -6654,6 +6706,87 @@ function App() {
         message: '程序没有识别本次操作结果，请刷新状态后重试。',
       });
     }
+  };
+
+  const createCollaborationDevicePairCode = async () => {
+    setCollaborationPairingBusy(true);
+    try {
+      const raw = bridge()?.createCollaborationDeviceInvitation?.();
+      applyCollaborationPairingResult(raw, 'device_invitation_ready');
+      const connectionInfoText = raw
+        ? (JSON.parse(raw) as { pairing?: { connectionInfoText?: string } }).pairing?.connectionInfoText
+        : '';
+      if (!connectionInfoText) {
+        setCollaborationDeviceQr('');
+        return;
+      }
+      const QRCode = await loadQrCode();
+      setCollaborationDeviceQr(await QRCode.toDataURL(connectionInfoText, { margin: 2, width: 240, errorCorrectionLevel: 'H' }));
+    } catch {
+      setCollaborationDeviceQr('');
+      setCollaborationPairingFeedback({
+        stage: 'error',
+        title: '二维码生成失败',
+        message: '六位临时码或复制的完整连接信息仍可使用，请重新生成后再试。',
+      });
+    } finally {
+      setCollaborationPairingBusy(false);
+    }
+  };
+
+  const joinTrustedCollaborationDevice = async () => {
+    const value = collaborationDeviceJoinValue.trim();
+    if (!value) {
+      setCollaborationPairingFeedback({
+        stage: 'error',
+        title: '请输入连接信息',
+        message: '输入另一台主机显示的六位临时码，或粘贴对方复制的完整连接信息。',
+      });
+      return;
+    }
+    const operation = bridge()?.joinCollaborationDevice?.(value);
+    if (!operation) {
+      applyCollaborationPairingResult(undefined, 'device_connected');
+      return;
+    }
+    setCollaborationPairingBusy(true);
+    try {
+      applyCollaborationPairingResult(await operation, 'device_connected');
+    } catch (error) {
+      setCollaborationPairingFeedback({
+        stage: 'error',
+        title: '设备连接未完成',
+        message: error instanceof Error ? error.message : '连接另一台主机失败。',
+      });
+    } finally {
+      setCollaborationPairingBusy(false);
+    }
+  };
+
+  const createSelectedStudentMapping = () => {
+    const activeDeviceBindings = collaborationState?.state?.deviceBindings?.filter((item) => item.status === 'active' && !item.revokedAt) ?? [];
+    const deviceBindingId = activeDeviceBindings.find((item) => item.deviceBindingId === selectedCollaborationDeviceId)?.deviceBindingId
+      || activeDeviceBindings[0]?.deviceBindingId
+      || '';
+    if (!selectedStudent || !deviceBindingId) {
+      setCollaborationPairingFeedback({
+        stage: 'error',
+        title: '请选择学生和协作设备',
+        message: '设备信任建立后，请选择本机学生和要共享到的协作设备。',
+      });
+      return;
+    }
+    applyCollaborationPairingResult(
+      bridge()?.createCollaborationStudentMappingOffer?.(deviceBindingId, selectedStudent.id),
+      'student_mapping_offered',
+    );
+  };
+
+  const processSelectedStudentMappingClipboard = () => {
+    applyCollaborationPairingResult(
+      bridge()?.acceptCollaborationStudentMappingClipboard?.(selectedStudent?.id),
+      'student_mapping_accepted',
+    );
   };
 
   const createGuidedCollaborationInvitation = (localRole: 'educator' | 'learner_authority') => {
@@ -18279,8 +18412,8 @@ ${JSON.stringify(items, null, 2)}
             {isWindows && settingsSubmenu === 'collaboration' && (
               <div className="notice">
                 <div className="mini-heading">
-                  <strong>主机知识协作</strong>
-                  <span>同一 Windows 客户端按协作关系承担教师或学生资料权威节点角色，不需要安装不同版本。</span>
+                  <strong>多端知识协作</strong>
+                  <span>先建立设备信任，再按学生精确选择共享范围；不设置学生档案权威端，冲突内容保留副本。</span>
                 </div>
                 <div className="status-grid">
                   <div className="status-card">
@@ -18292,12 +18425,12 @@ ${JSON.stringify(items, null, 2)}
                     <strong>{collaborationState?.state?.enabled ? '已开启' : '仅本机'}</strong>
                   </div>
                   <div className="status-card">
-                    <span>有效协作关系</span>
-                    <strong>{collaborationState?.summary?.bindingCount ?? 0} 个</strong>
+                    <span>协作设备</span>
+                    <strong>{collaborationState?.summary?.deviceBindingCount ?? collaborationState?.summary?.bindingCount ?? 0} 台</strong>
                   </div>
                   <div className="status-card">
-                    <span>有效授权</span>
-                    <strong>{collaborationState?.summary?.grantCount ?? 0} 项</strong>
+                    <span>共享学生</span>
+                    <strong>{collaborationState?.summary?.studentMapCount ?? 0} 人</strong>
                   </div>
                   <div className="status-card">
                     <span>等待导入</span>
@@ -18549,56 +18682,59 @@ ${JSON.stringify(items, null, 2)}
                   默认由教育管家通过局域网直传，跨网络时自动尝试 Tailscale；原交换目录仅作为 Syncthing 高级兼容方案。这里只交换清单、任务包、授权产物和回执，不同步本机索引、运行锁或 Agent 缓存。
                 </p>
                 {collaborationState?.transport?.message && <p className="muted-text">{collaborationState.transport.message}</p>}
-                {(collaborationState?.state?.bindings?.length ?? 0) > 0 && (
+                {(collaborationState?.state?.deviceBindings?.length ?? 0) > 0 && (
                   <details className="student-login-directory" open>
-                    <summary>已绑定协作主机（{collaborationState?.state?.bindings?.length ?? 0}）</summary>
-                    {(collaborationState?.state?.bindings ?? []).some((binding) => binding.status === 'revoked' || Boolean(binding.revokedAt)) && (
+                    <summary>协作设备（{collaborationState?.state?.deviceBindings?.length ?? 0}）</summary>
+                    {(collaborationState?.state?.deviceBindings ?? []).some((binding) => binding.status === 'revoked' || Boolean(binding.revokedAt)) && (
                       <div className="actions">
                         <button
                           className="secondary compact"
                           onClick={() => {
-                            const revokedCount = (collaborationState?.state?.bindings ?? [])
+                            const revokedCount = (collaborationState?.state?.deviceBindings ?? [])
                               .filter((binding) => binding.status === 'revoked' || Boolean(binding.revokedAt)).length;
-                            if (window.confirm(`确定清理 ${revokedCount} 条已撤销协作记录吗？本机资料、知识和历史接收内容不会被删除。`)) {
+                            if (window.confirm(`确定清理 ${revokedCount} 台已撤销协作设备吗？本机资料、知识和历史接收内容不会被删除。`)) {
                               applyCollaborationResult(bridge()?.deleteRevokedCollaborationBindings?.());
                             }
                           }}
                         >
-                          清理全部已撤销记录
+                          清理全部已撤销设备
                         </button>
                       </div>
                     )}
                     <div className="student-login-grid">
-                      {(collaborationState?.state?.bindings ?? []).map((binding) => {
+                      {(collaborationState?.state?.deviceBindings ?? []).map((binding) => {
                         const localNodeId = collaborationState?.state?.node?.nodeId || '';
-                        const localAssignments = (binding.roleAssignments ?? []).filter((item) => item.nodeId === localNodeId && !item.revokedAt);
                         const peerNodeIds = (binding.participantNodeIds ?? []).filter((nodeId) => nodeId !== localNodeId);
-                        const roleText = localAssignments.map((item) => item.role === 'educator' ? '教师协助' : '学生资料权威').join('、') || '未分配角色';
-                        const studentNames = Array.from(new Set(localAssignments.map((item) => {
-                          const student = students.find((candidate) => String(candidate.id) === String(item.studentId || ''));
-                          return student?.name || item.studentId || '';
+                        const localStudentIds = (collaborationState?.state?.studentMaps ?? [])
+                          .filter((mapping) => mapping.deviceBindingId === binding.deviceBindingId && mapping.status !== 'revoked' && !mapping.revokedAt)
+                          .flatMap((mapping) => (mapping.participantStudents ?? [])
+                            .filter((item) => item.nodeId === localNodeId)
+                            .map((item) => item.studentId));
+                        const studentNames = Array.from(new Set(localStudentIds.map((studentId) => {
+                          const student = students.find((candidate) => String(candidate.id) === String(studentId));
+                          return student?.name || studentId;
                         }).filter(Boolean)));
                         const statusText = binding.status === 'active' ? '协作中' : binding.status === 'paused' ? '已暂停' : '已撤销';
                         return (
-                          <article className="student-login-card" key={binding.bindingId}>
+                          <article className="student-login-card" key={binding.deviceBindingId}>
                             <div>
-                              <strong>{statusText} · {roleText}</strong>
-                              <code>{peerNodeIds.length ? `对端 ${peerNodeIds.map((nodeId) => nodeId.slice(-10)).join('、')}` : binding.bindingId}</code>
-                              <small>{studentNames.length ? `学生范围：${studentNames.join('、')}` : '未绑定学生范围'}</small>
+                              <strong>{statusText}</strong>
+                              <code>{peerNodeIds.length ? `设备 ${peerNodeIds.map((nodeId) => nodeId.slice(-10)).join('、')}` : binding.deviceBindingId}</code>
+                              <small>{studentNames.length ? `共享学生：${studentNames.join('、')}` : '尚未选择共享学生'}</small>
                             </div>
                             <div className="actions">
                               {binding.status === 'active' && (
-                                <button className="secondary compact" onClick={() => applyCollaborationResult(bridge()?.updateCollaborationBindingStatus?.(binding.bindingId, 'paused'))}>
+                                <button className="secondary compact" onClick={() => applyCollaborationResult(bridge()?.updateCollaborationBindingStatus?.(binding.deviceBindingId, 'paused'))}>
                                   暂停
                                 </button>
                               )}
                               {binding.status === 'paused' && (
-                                <button className="secondary compact" onClick={() => applyCollaborationResult(bridge()?.updateCollaborationBindingStatus?.(binding.bindingId, 'active'))}>
+                                <button className="secondary compact" onClick={() => applyCollaborationResult(bridge()?.updateCollaborationBindingStatus?.(binding.deviceBindingId, 'active'))}>
                                   恢复
                                 </button>
                               )}
                               {binding.status !== 'revoked' && (
-                                <button className="danger compact" onClick={() => applyCollaborationResult(bridge()?.updateCollaborationBindingStatus?.(binding.bindingId, 'revoked'))}>
+                                <button className="danger compact" onClick={() => applyCollaborationResult(bridge()?.updateCollaborationBindingStatus?.(binding.deviceBindingId, 'revoked'))}>
                                   撤销
                                 </button>
                               )}
@@ -18606,8 +18742,8 @@ ${JSON.stringify(items, null, 2)}
                                 <button
                                   className="danger compact"
                                   onClick={() => {
-                                    if (window.confirm('确定删除这条已撤销协作记录吗？本机资料、知识和历史接收内容不会被删除。')) {
-                                      applyCollaborationResult(bridge()?.deleteRevokedCollaborationBindings?.(binding.bindingId));
+                                    if (window.confirm('确定删除这台已撤销协作设备吗？本机资料、知识和历史接收内容不会被删除。')) {
+                                      applyCollaborationResult(bridge()?.deleteRevokedCollaborationBindings?.(binding.deviceBindingId));
                                     }
                                   }}
                                 >
@@ -18619,7 +18755,7 @@ ${JSON.stringify(items, null, 2)}
                         );
                       })}
                     </div>
-                    <p className="muted-text">暂停只停止新的交换；撤销不可恢复，需要重新建立协作关系。已撤销记录可从列表清理，本机资料和既有知识不会被删除。</p>
+                    <p className="muted-text">设备只需建立一次信任，可继续增加多个共享学生。暂停只停止新的交换；撤销后需要重新建立信任。本机资料和既有知识不会被删除。</p>
                   </details>
                 )}
                 {selectedStudent && (
@@ -18674,62 +18810,90 @@ ${JSON.stringify(items, null, 2)}
                 })()}
                 <section className="collaboration-pairing-wizard" aria-labelledby="collaboration-pairing-title">
                   <div className="mini-heading">
-                    <strong id="collaboration-pairing-title">连接另一台 Windows 主机</strong>
-                    <span>不需要交换 API Token。两台主机按下面三步完成一次双向确认。</span>
+                    <strong id="collaboration-pairing-title">连接协作设备并添加共享学生</strong>
+                    <span>不交换 API Token，也不区分教师端或学生资料端。设备只配对一次，之后可继续添加多个学生。</span>
                   </div>
                   <ol>
-                    <li className={collaborationPairingFeedback.stage === 'invitation_copied' ? 'current done' : collaborationPairingFeedback.stage === 'completed' ? 'done' : ''}>
+                    <li className={['device_invitation_ready', 'device_connected', 'student_mapping_offered', 'student_mapping_accepted', 'student_mapping_completed'].includes(collaborationPairingFeedback.stage) ? 'current done' : ''}>
                       <span>1</span>
                       <div>
-                        <strong>发起方：生成邀请</strong>
-                        <small>当前学生：{selectedStudent?.name || '请先在左侧选择学生'}</small>
-                        <p>根据本机用途选择一个按钮，邀请代码会自动复制。</p>
+                        <strong>建立设备信任</strong>
+                        <small>Windows 主机可输入六位临时码；Android 单机版可扫描二维码。发现失败时两端都可粘贴完整连接信息。</small>
                         <div className="actions compact-actions">
                           <button
                             className="primary compact"
-                            disabled={!selectedStudent || !collaborationState?.state?.enabled || collaborationPairingBusy}
-                            onClick={() => createGuidedCollaborationInvitation('educator')}
+                            disabled={!collaborationState?.state?.enabled || collaborationPairingBusy}
+                            onClick={() => { void createCollaborationDevicePairCode(); }}
                           >
-                            <Share2 size={17} />我是教师/家长，邀请学生主机
+                            <Share2 size={17} />生成临时码、二维码并复制连接信息
+                          </button>
+                        </div>
+                        {collaborationDeviceQr ? (
+                          <div className="collaboration-device-qr">
+                            <img src={collaborationDeviceQr} alt="Android 单机版知识协作连接二维码" />
+                            <small>在 Android 单机版“系统设置 → 知识协作”中选择“扫描 Windows 主机连接二维码”。</small>
+                          </div>
+                        ) : null}
+                        <label>
+                          输入六位临时码或粘贴连接信息
+                          <textarea
+                            rows={3}
+                            value={collaborationDeviceJoinValue}
+                            onChange={(event) => setCollaborationDeviceJoinValue(event.target.value)}
+                            placeholder="例如：123456；若自动发现不到，可粘贴对方复制的完整 JSON 连接信息"
+                          />
+                        </label>
+                        <button
+                          className="secondary compact"
+                          disabled={!collaborationState?.state?.enabled || collaborationPairingBusy || !collaborationDeviceJoinValue.trim()}
+                          onClick={() => { void joinTrustedCollaborationDevice(); }}
+                        >
+                          <ShieldCheck size={17} />连接并双向确认
+                        </button>
+                      </div>
+                    </li>
+                    <li className={['student_mapping_offered', 'student_mapping_accepted', 'student_mapping_completed'].includes(collaborationPairingFeedback.stage) ? 'current done' : ''}>
+                      <span>2</span>
+                      <div>
+                        <strong>为可信设备添加共享学生</strong>
+                        <small>当前学生：{selectedStudent?.name || '请先在左侧选择学生'}。双方都明确选择本机对应学生，系统不会按姓名自动匹配。</small>
+                        <label>
+                          目标协作设备
+                          <select
+                            value={collaborationState?.state?.deviceBindings
+                              ?.find((item) => item.deviceBindingId === selectedCollaborationDeviceId && item.status === 'active' && !item.revokedAt)
+                              ?.deviceBindingId
+                              || collaborationState?.state?.deviceBindings?.find((item) => item.status === 'active' && !item.revokedAt)?.deviceBindingId
+                              || ''}
+                            onChange={(event) => setSelectedCollaborationDeviceId(event.target.value)}
+                          >
+                            <option value="">请选择已信任设备</option>
+                            {(collaborationState?.state?.deviceBindings ?? [])
+                              .filter((item) => item.status === 'active' && !item.revokedAt)
+                              .map((item) => {
+                                const localNodeId = collaborationState?.state?.node?.nodeId || '';
+                                const peerNodeId = (item.participantNodeIds ?? []).find((nodeId) => nodeId !== localNodeId) || '';
+                                const peer = collaborationState?.discoveredDirectPeers?.find((candidate) => candidate.nodeId === peerNodeId);
+                                return <option key={item.deviceBindingId} value={item.deviceBindingId}>{peer?.displayName || `协作设备 ${peerNodeId.slice(-10)}`}</option>;
+                              })}
+                          </select>
+                        </label>
+                        <div className="actions compact-actions">
+                          <button
+                            className="primary compact"
+                            disabled={!selectedStudent || !(collaborationState?.state?.deviceBindings ?? []).some((item) => item.status === 'active' && !item.revokedAt) || collaborationPairingBusy}
+                            onClick={createSelectedStudentMapping}
+                          >
+                            <Clipboard size={17} />复制当前学生的映射邀请
                           </button>
                           <button
                             className="secondary compact"
-                            disabled={!selectedStudent || !collaborationState?.state?.enabled || collaborationPairingBusy}
-                            onClick={() => createGuidedCollaborationInvitation('learner_authority')}
+                            disabled={!selectedStudent || collaborationPairingBusy}
+                            onClick={processSelectedStudentMappingClipboard}
                           >
-                            <Share2 size={17} />我是学生资料主机，邀请教师
+                            <ShieldCheck size={17} />读取学生映射邀请或确认回执
                           </button>
                         </div>
-                      </div>
-                    </li>
-                    <li className={collaborationPairingFeedback.stage === 'acceptance_copied' ? 'current done' : collaborationPairingFeedback.stage === 'completed' ? 'done' : ''}>
-                      <span>2</span>
-                      <div>
-                        <strong>接收方：读取邀请</strong>
-                        <small>先复制发起方发送的完整邀请代码，并选择本机对应学生。</small>
-                        <p>程序会校验邀请并自动复制确认回执。</p>
-                        <button
-                          className="secondary compact"
-                          disabled={!selectedStudent || !collaborationState?.state?.enabled || collaborationPairingBusy}
-                          onClick={() => continueGuidedCollaborationPairing('acceptance_copied')}
-                        >
-                          <Clipboard size={17} />读取邀请并生成确认回执
-                        </button>
-                      </div>
-                    </li>
-                    <li className={collaborationPairingFeedback.stage === 'completed' ? 'current done' : ''}>
-                      <span>3</span>
-                      <div>
-                        <strong>发起方：确认回执</strong>
-                        <small>复制接收方返回的完整确认回执，再回到发起方操作。</small>
-                        <p>完成后两端都会显示“协作中”，等待任务可直接重试。</p>
-                        <button
-                          className="secondary compact"
-                          disabled={!selectedStudent || !collaborationState?.state?.enabled || collaborationPairingBusy}
-                          onClick={() => continueGuidedCollaborationPairing('completed')}
-                        >
-                          <ShieldCheck size={17} />读取确认回执并完成连接
-                        </button>
                       </div>
                     </li>
                   </ol>
@@ -18740,12 +18904,15 @@ ${JSON.stringify(items, null, 2)}
                   >
                     {collaborationPairingFeedback.stage === 'error'
                       ? <CircleAlert size={22} />
-                      : collaborationPairingFeedback.stage === 'completed'
+                      : ['device_connected', 'student_mapping_completed', 'completed'].includes(collaborationPairingFeedback.stage)
                         ? <CheckCircle2 size={22} />
                         : <Clipboard size={22} />}
                     <div>
                       <strong>{collaborationPairingBusy ? '正在处理…' : collaborationPairingFeedback.title}</strong>
                       <span>{collaborationPairingFeedback.message}</span>
+                      {collaborationPairingFeedback.pairingCode && (
+                        <strong className="collaboration-pairing-code">六位临时码：{collaborationPairingFeedback.pairingCode}</strong>
+                      )}
                       {collaborationPairingFeedback.nextAction && <small>下一步：{collaborationPairingFeedback.nextAction}</small>}
                       {collaborationPairingFeedback.expiresAt && (
                         <small>邀请有效至：{formatDateTime(collaborationPairingFeedback.expiresAt)}</small>

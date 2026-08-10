@@ -20,9 +20,9 @@ test('download page presents four product families and five client builds', () =
     'Android 教师端',
     'Android 单机版',
     'v0.16.8',
-    'v0.6.13',
+    'v0.6.14',
     'v0.1.0',
-    'v1.1.2',
+    'v1.1.3',
     'windows-host-manual.html',
     'windows-student-manual.html',
     'android-student-manual.html',
@@ -70,9 +70,9 @@ test('download page links the current artifacts and canonical web manuals exist'
   for (const artifact of [
     ['../windows/AI-edu-manager-console-Windows-0.16.8.zip', path.join('release', 'windows', 'AI-edu-manager-console-Windows-0.16.8.zip')],
     ['../download/AI-edu-manager-student-terminal-Windows-0.16.1.exe', path.join('release', 'windows-terminal', 'AI-edu-manager-student-terminal-Windows-0.16.1.exe')],
-    ['../download/AI-edu-manager-tablet-terminal-0.6.13.apk', path.join('release', 'tablet-terminal', 'AI-edu-manager-tablet-terminal-0.6.13.apk')],
+    ['../download/AI-edu-manager-tablet-terminal-0.6.14.apk', path.join('release', 'tablet-terminal', 'AI-edu-manager-tablet-terminal-0.6.14.apk')],
     ['../download/AI-edu-manager-teacher-terminal-0.1.0.apk', path.join('release', 'teacher-terminal', 'AI-edu-manager-teacher-terminal-0.1.0.apk')],
-    ['../download/AI-Education-Manager-Android-Standalone-1.1.2-release.apk', path.join('android-standalone-manager', 'delivery', 'AI-Education-Manager-Android-Standalone-1.1.2-release.apk')],
+    ['../download/AI-Education-Manager-Android-Standalone-1.1.3-release.apk', path.join('android-standalone-manager', 'delivery', 'AI-Education-Manager-Android-Standalone-1.1.3-release.apk')],
   ]) {
     assert.match(download, new RegExp(artifact[0].replaceAll('.', '\\.')));
     if (artifact[1]) {
@@ -159,18 +159,18 @@ test('manual sources describe target selection and terminal-specific workflows',
   assert.match(androidStandalone, /不会自动读取其他应用的私有聊天数据库/u);
 });
 
-test('five web manuals are synchronized to the current product workflows', () => {
+test('web manuals are synchronized to the current product workflows', () => {
   const windowsStudent = read(path.join('release', '网站文件', 'windows-student-manual.html'));
   const androidStudent = read(path.join('release', '网站文件', 'android-student-manual.html'));
   const androidTeacher = read(path.join('release', '网站文件', 'android-teacher-manual.html'));
   const androidStandalone = read(path.join('release', '网站文件', 'android-standalone-manual.html'));
 
   assert.match(windowsStudent, /配套主机：Windows 主机 0\.16\.1/u);
-  assert.match(androidStudent, /配套主机：Windows 主机端 0\.16\.1/u);
+  assert.match(androidStudent, /配套主机：Windows 主机端 0\.16\.8/u);
   assert.match(androidTeacher, /适用版本：Android 教师端 0\.1\.0/u);
   assert.match(androidTeacher, /不是把文件发送到学生设备/u);
   assert.match(androidTeacher, /在主机暂时不可连接时仍可从缓存查看/u);
-  assert.match(androidStandalone, /适用版本：Android 单机版 1\.1\.2/u);
+  assert.match(androidStandalone, /适用版本：Android 单机版 1\.1\.3/u);
   assert.match(androidStandalone, /Android 单机版是一套不依赖 Windows 主机的完整教育管家/u);
   for (const manual of [windowsStudent, androidStudent, androidTeacher, androidStandalone]) {
     assert.match(manual, /android-teacher-manual\.html/u);

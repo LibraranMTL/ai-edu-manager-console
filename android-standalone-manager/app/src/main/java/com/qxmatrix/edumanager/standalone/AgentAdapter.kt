@@ -22,6 +22,27 @@ data class AgentConfiguration(
     val visionModel: String = "",
 )
 
+data class AgentPublicConfiguration(
+    val endpoint: String,
+    val model: String,
+    val visionModel: String = "",
+) {
+    fun toJson(): JSONObject = JSONObject().put("endpoint", endpoint).put("model", model).put("visionModel", visionModel)
+
+    companion object {
+        fun fromJson(value: JSONObject) = AgentPublicConfiguration(
+            value.optString("endpoint"), value.optString("model"), value.optString("visionModel"),
+        )
+    }
+}
+
+data class AgentConfigurationSnapshot(
+    val endpoint: String,
+    val model: String,
+    val visionModel: String,
+    val encryptedCredential: String,
+)
+
 class AgentConfigurationStore(context: Context) {
     private val preferences = context.applicationContext.getSharedPreferences("local_agent", Context.MODE_PRIVATE)
 
@@ -47,8 +68,45 @@ class AgentConfigurationStore(context: Context) {
         return AgentConfiguration(endpoint, model, decrypt(encrypted), preferences.getString("vision_model", "").orEmpty())
     }
 
+    fun publicProfile(): AgentPublicConfiguration? {
+        val endpoint = preferences.getString("endpoint", "").orEmpty()
+        val model = preferences.getString("model", "").orEmpty()
+        if (endpoint.isBlank() || model.isBlank()) return null
+        return AgentPublicConfiguration(endpoint, model, preferences.getString("vision_model", "").orEmpty())
+    }
+
+    /** Migrates only non-secret routing metadata. A new device must enter its own API key. */
+    fun restorePublicProfile(profile: AgentPublicConfiguration?) {
+        if (profile == null) return
+        val normalized = profile.endpoint.trim().trimEnd('/')
+        val uri = URI(normalized)
+        require(uri.scheme == "https" || (uri.scheme == "http" && uri.host in setOf("127.0.0.1", "localhost"))) { "Agent 接口必须使用 HTTPS（本机回环地址除外）" }
+        require(uri.rawQuery == null && uri.rawFragment == null) { "Agent 接口不能包含查询参数或片段" }
+        require(profile.model.isNotBlank()) { "模型名称不能为空" }
+        check(preferences.edit().putString("endpoint", normalized).putString("model", profile.model.trim())
+            .putString("vision_model", profile.visionModel.trim()).remove("credential").commit())
+    }
+
+    fun snapshotForRollback() = AgentConfigurationSnapshot(
+        preferences.getString("endpoint", "").orEmpty(),
+        preferences.getString("model", "").orEmpty(),
+        preferences.getString("vision_model", "").orEmpty(),
+        preferences.getString("credential", "").orEmpty(),
+    )
+
+    fun restoreSnapshot(snapshot: AgentConfigurationSnapshot) {
+        val editor = preferences.edit().clear()
+        if (snapshot.endpoint.isNotBlank()) editor.putString("endpoint", snapshot.endpoint)
+        if (snapshot.model.isNotBlank()) editor.putString("model", snapshot.model)
+        if (snapshot.visionModel.isNotBlank()) editor.putString("vision_model", snapshot.visionModel)
+        if (snapshot.encryptedCredential.isNotBlank()) editor.putString("credential", snapshot.encryptedCredential)
+        check(editor.commit())
+    }
+
     fun summary(): String = load()?.let {
         "已配置 ${URI(it.endpoint).host} · 文本 ${it.model}" + if (it.visionModel.isBlank()) " · 视觉未单独配置" else " · 视觉 ${it.visionModel}"
+    } ?: publicProfile()?.let {
+        "已迁移 ${URI(it.endpoint).host} · 文本 ${it.model} · 需要重新填写 API Key"
     } ?: "尚未配置 Agent 模型"
 
     fun clear() {

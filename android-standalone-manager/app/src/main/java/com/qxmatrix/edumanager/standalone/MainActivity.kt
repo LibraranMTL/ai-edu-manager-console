@@ -1,5 +1,6 @@
 package com.qxmatrix.edumanager.standalone
 
+import android.Manifest
 import android.app.Activity
 import android.app.AlertDialog
 import android.content.Intent
@@ -68,6 +69,7 @@ class MainActivity : Activity() {
     private var pendingConversationAgent: String = "其他Agent"
     private var pendingStudentMigration: PendingStudentMigration? = null
     private var pendingOfflineMigrationSource: Uri? = null
+    private var pendingDeviceMigrationSource: Uri? = null
     private var pendingUpdateApk: File? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -86,6 +88,7 @@ class MainActivity : Activity() {
         projectService = ProjectWorkspaceService(this)
         courseCatalogService = CourseCatalogService(this)
         conversationImportService = ConversationImportService(this)
+        Thread { runCatching { CollaborationRepository(this).initialize() } }.start()
 
         activeSection = savedInstanceState?.getString(STATE_SECTION)?.let { runCatching { AppSection.valueOf(it) }.getOrNull() } ?: AppSection.HOME
         setContentView(buildAppShell())
@@ -348,7 +351,7 @@ class MainActivity : Activity() {
     }
 
     private fun renderSettings() {
-        sectionNote("界面、任务 Agent、目录授权和本机备份设置。密钥继续使用 Android Keystore 加密。")
+        sectionNote("界面、任务 Agent、目录授权、换机迁移和本机备份设置。密钥继续使用 Android Keystore 加密。")
         val license = licenseManager.status()
         sectionContent.addView(statusCard().apply {
             text = "产品授权：${if (license.active) "已激活" else "未激活"}\n设备码：${licenseManager.deviceId()}\n学生席位：${license.maxActiveStudents}\n到期：${license.expiresAt.ifBlank { "永久" }}"
@@ -375,6 +378,19 @@ class MainActivity : Activity() {
         addAction("页面布局：${uiPreferences.layoutMode().label}") { showLayoutDialog() }
         addAction("检查版本更新") { checkForAppUpdate() }
         addAction("存储与目录授权") { startTreePicker(REQUEST_WORKSPACE_ROOT) }
+        addAction("知识协作") { startActivity(Intent(this, CollaborationActivity::class.java)) }
+        sectionHeading("设备迁移与备份")
+        val deviceMigration = StandaloneDeviceMigrationJournal(this).latest()
+        if (deviceMigration != null) sectionContent.addView(statusCard().apply {
+            text = "最近整机迁移：${if (deviceMigration.operation == StandaloneDeviceMigrationService.OPERATION_EXPORT) "导出" else "接管"} · ${deviceMigration.phase}\n" +
+                "${deviceMigration.completedFiles}/${deviceMigration.totalFiles} 个文件 · ${formatBytes(deviceMigration.completedBytes)}/${formatBytes(deviceMigration.totalBytes)}\n${deviceMigration.message}"
+        }, matchWrap())
+        addAction("换新平板：导出整机迁移目录") { confirmDeviceMigrationExport() }
+        addAction("在新平板恢复并接管") { startTreePicker(REQUEST_DEVICE_MIGRATION_SOURCE) }
+        if (deviceMigration != null && deviceMigration.phase in setOf("copying", "failed")) addAction("继续上次整机迁移") { resumeDeviceMigration(deviceMigration) }
+        if (deviceMigration != null) addAction("查看最近迁移报告") {
+            showMessage("最近整机迁移", "迁移 ID：${deviceMigration.migrationId}\n操作：${deviceMigration.operation}\n状态：${deviceMigration.phase}\n文件：${deviceMigration.completedFiles}/${deviceMigration.totalFiles}\n容量：${formatBytes(deviceMigration.completedBytes)}/${formatBytes(deviceMigration.totalBytes)}\n${deviceMigration.message}")
+        }
         addAction("加密备份") { promptBackupPassword() }
         addAction("备份恢复") { startRestorePackagePicker() }
         sectionHeading("高级设置")
@@ -451,6 +467,75 @@ class MainActivity : Activity() {
                 onSuccess = { target -> pendingOfflineMigrationSource?.let { source -> pendingOfflineMigrationSource = null; startOfflineMigration(source, target) } },
                 onFailure = { pendingOfflineMigrationSource = null; showMessage("目标目录授权失败", it.message ?: "未知错误") },
             )
+            REQUEST_DEVICE_MIGRATION_EXPORT_TARGET -> rootGrant.acceptAdditionalTreeResult(data ?: return).fold(
+                onSuccess = { startDeviceMigrationExport(it) },
+                onFailure = { showMessage("迁移目录授权失败", it.message ?: "未知错误") },
+            )
+            REQUEST_DEVICE_MIGRATION_SOURCE -> rootGrant.acceptAdditionalTreeResult(data ?: return).fold(
+                onSuccess = { inspectDeviceMigrationSource(it) },
+                onFailure = { showMessage("迁移目录授权失败", it.message ?: "未知错误") },
+            )
+            REQUEST_DEVICE_MIGRATION_TARGET -> rootGrant.acceptAdditionalTreeResult(data ?: return).fold(
+                onSuccess = { target -> pendingDeviceMigrationSource?.let { source -> pendingDeviceMigrationSource = null; startDeviceMigrationImport(source, target) } },
+                onFailure = { pendingDeviceMigrationSource = null; showMessage("新资料目录授权失败", it.message ?: "未知错误") },
+            )
+        }
+    }
+
+    private fun confirmDeviceMigrationExport() {
+        AlertDialog.Builder(this).setTitle("导出整机迁移目录")
+            .setMessage("适用于更换平板或复制完整单机资料。请选择 U 盘上的空目录；系统会导出全部学生档案、学习项目、课程状态和本机业务索引，并支持中断后继续。\n\n不会导出激活码、设备码、Agent API Key、Android Keystore、目录授权和录屏授权。新平板必须先单独激活。")
+            .setNegativeButton("取消", null)
+            .setPositiveButton("选择 U 盘空目录") { _, _ -> startTreePicker(REQUEST_DEVICE_MIGRATION_EXPORT_TARGET) }
+            .show()
+    }
+
+    private fun startDeviceMigrationExport(target: Uri) {
+        requestMigrationNotificationPermission()
+        ContextCompat.startForegroundService(this, Intent(this, StandaloneDeviceMigrationService::class.java).apply {
+            action = StandaloneDeviceMigrationService.ACTION_EXPORT
+            putExtra(StandaloneDeviceMigrationService.EXTRA_TARGET_URI, target.toString())
+        })
+        showMessage("整机导出已开始", "请保持 U 盘连接。迁移在前台服务中运行，可通过持续通知查看进度；中断后可在系统设置中继续。")
+    }
+
+    private fun inspectDeviceMigrationSource(source: Uri) {
+        val result = runCatching {
+            require(workspaceService.listStudents().isEmpty() && projectService.listProjects().isEmpty()) { "本机已经有学生档案或学习项目，不能合并整机资料。请在新安装且业务资料为空的单机版中接管。" }
+            val store = SafWorkspaceStore(this, source)
+            val descriptor = JSONObject(store.readBytes(StandaloneDeviceMigrationContract.DESCRIPTOR_PATH).toString(Charsets.UTF_8))
+            require(descriptor.getString("schema") == StandaloneDeviceMigrationContract.PACKAGE_SCHEMA && descriptor.getString("profile") == StandaloneDeviceMigrationContract.PROFILE) { "所选目录不是 Android 单机版整机迁移目录" }
+            require(!descriptor.optBoolean("encrypted", true)) { "该目录不是可续传整机迁移格式" }
+            descriptor
+        }
+        result.onFailure { showMessage("整机迁移预检失败", it.message ?: "未知错误") }.onSuccess { descriptor ->
+            pendingDeviceMigrationSource = source
+            AlertDialog.Builder(this).setTitle("确认接管整机资料")
+                .setMessage("学生：${descriptor.optInt("studentCount")} 名\n学习项目：${descriptor.optInt("projectCount")} 个\n文件：${descriptor.optInt("fileCount")} 个\n容量：${formatBytes(descriptor.optLong("totalBytes"))}\n来源版本：${descriptor.optString("appVersion")}\n\n下一步请选择本平板上的空目录。所有业务 ID 将保留，旧设备 URI 会重映射；Agent API Key 需要重新填写。")
+                .setNegativeButton("取消") { _, _ -> pendingDeviceMigrationSource = null }
+                .setPositiveButton("选择本机空目录") { _, _ -> startTreePicker(REQUEST_DEVICE_MIGRATION_TARGET) }
+                .show()
+        }
+    }
+
+    private fun startDeviceMigrationImport(source: Uri, target: Uri) {
+        requestMigrationNotificationPermission()
+        ContextCompat.startForegroundService(this, Intent(this, StandaloneDeviceMigrationService::class.java).apply {
+            action = StandaloneDeviceMigrationService.ACTION_IMPORT
+            putExtra(StandaloneDeviceMigrationService.EXTRA_SOURCE_URI, source.toString())
+            putExtra(StandaloneDeviceMigrationService.EXTRA_TARGET_URI, target.toString())
+        })
+        showMessage("新平板接管已开始", "请保持 U 盘连接。完成前不要在本机新建学生或项目；可通过持续通知查看进度，中断后可继续。")
+    }
+
+    private fun resumeDeviceMigration(state: StandaloneDeviceMigrationState) {
+        if (state.operation == StandaloneDeviceMigrationService.OPERATION_EXPORT) startDeviceMigrationExport(Uri.parse(state.targetUri))
+        else startDeviceMigrationImport(Uri.parse(state.sourceUri), Uri.parse(state.targetUri))
+    }
+
+    private fun requestMigrationNotificationPermission() {
+        if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), REQUEST_DEVICE_MIGRATION_NOTIFICATION)
         }
     }
 
@@ -939,12 +1024,13 @@ class MainActivity : Activity() {
 
     private fun showAgentConfigurationDialog() {
         val existing = runCatching { AgentConfigurationStore(this).load() }.getOrNull()
+        val publicProfile = AgentConfigurationStore(this).publicProfile()
         val fields = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(40, 12, 40, 0) }
         fun field(hintText: String) = EditText(this).apply { hint = hintText; fields.addView(this, matchWrap()) }
-        val endpoint = field("接口基地址或完整 chat/completions 地址").apply { setText(existing?.endpoint.orEmpty()) }
-        val model = field("文本模型名称").apply { setText(existing?.model.orEmpty()) }
-        val visionModel = field("视觉模型名称（可选；必须支持图片输入）").apply { setText(existing?.visionModel.orEmpty()) }
-        val key = field(if (existing == null) "API Key" else "新 API Key（留空保持原密钥）").apply { inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD }
+        val endpoint = field("接口基地址或完整 chat/completions 地址").apply { setText(existing?.endpoint ?: publicProfile?.endpoint.orEmpty()) }
+        val model = field("文本模型名称").apply { setText(existing?.model ?: publicProfile?.model.orEmpty()) }
+        val visionModel = field("视觉模型名称（可选；必须支持图片输入）").apply { setText(existing?.visionModel ?: publicProfile?.visionModel.orEmpty()) }
+        val key = field(if (existing == null) "API Key（换机后必须重新填写）" else "新 API Key（留空保持原密钥）").apply { inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD }
         AlertDialog.Builder(this).setTitle("配置教育管家 Agent").setView(fields).setNegativeButton("取消", null)
             .setPositiveButton("安全保存") { _, _ ->
                 runCatching { AgentConfigurationStore(this).saveOrUpdate(endpoint.text.toString(), model.text.toString(), key.text.toString(), visionModel.text.toString()) }
@@ -1660,6 +1746,10 @@ class MainActivity : Activity() {
         const val REQUEST_LICENSE_QR_IMAGE = 2114
         const val REQUEST_OFFLINE_MIGRATION_SOURCE = 2115
         const val REQUEST_OFFLINE_MIGRATION_TARGET = 2116
+        const val REQUEST_DEVICE_MIGRATION_EXPORT_TARGET = 2117
+        const val REQUEST_DEVICE_MIGRATION_SOURCE = 2118
+        const val REQUEST_DEVICE_MIGRATION_TARGET = 2119
+        const val REQUEST_DEVICE_MIGRATION_NOTIFICATION = 2120
     }
 
     private enum class AppSection(val label: String) {

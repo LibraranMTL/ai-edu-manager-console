@@ -16,13 +16,13 @@ const releaseManifest = fs.readFileSync(path.join(root, 'release', 'edu-manager-
 
 test('teacher terminal is an independently installable purple-red Android app', () => {
   assert.match(manifest, /package="com\.qxmatrix\.eduteacher"/);
-  assert.match(manifest, /android:versionCode="1"/);
-  assert.match(manifest, /android:versionName="0\.1\.0"/);
+  assert.match(manifest, /android:versionCode="2"/);
+  assert.match(manifest, /android:versionName="0\.1\.1"/);
   assert.match(manifest, /android:icon="@drawable\/brand_logo_teacher"/);
   assert.match(strings, /AI教育管家教师端/);
   assert.match(icon, /#9D174D/);
   assert.match(build, /release\\teacher-terminal/);
-  assert.match(build, /AI-edu-manager-teacher-terminal-0\.1\.0\.apk/);
+  assert.match(build, /AI-edu-manager-teacher-terminal-0\.1\.1\.apk/);
   assert.doesNotMatch(build, /src\\com\\qxmatrix\\eduterminal/);
 });
 
@@ -103,6 +103,6 @@ test('Windows host release packages and advertises teacher-terminal support', ()
   assert.match(windowsBuild, /teacherTerminalStudentRecord/);
   assert.match(windowsBuild, /teacherTerminalSupport: true/);
   assert.match(releaseManifest, /"windowsVersionName": "0\.16\.8"/);
-  assert.match(releaseManifest, /"teacherTerminalVersionName": "0\.1\.0"/);
-  assert.match(releaseManifest, /AI-edu-manager-teacher-terminal-0\.1\.0\.apk/);
+  assert.match(releaseManifest, /"teacherTerminalVersionName": "0\.1\.1"/);
+  assert.match(releaseManifest, /AI-edu-manager-teacher-terminal-0\.1\.1\.apk/);
 });

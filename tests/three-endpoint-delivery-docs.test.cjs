@@ -20,8 +20,8 @@ test('download page presents four product families and five client builds', () =
     'Android 教师端',
     'Android 单机版',
     'v0.16.8',
-    'v0.6.14',
-    'v0.1.0',
+    'v0.6.15',
+    'v0.1.1',
     'v1.2.0',
     'windows-host-manual.html',
     'windows-student-manual.html',
@@ -70,8 +70,8 @@ test('download page links the current artifacts and canonical web manuals exist'
   for (const artifact of [
     ['../windows/AI-edu-manager-console-Windows-0.16.8.zip', path.join('release', 'windows', 'AI-edu-manager-console-Windows-0.16.8.zip')],
     ['../download/AI-edu-manager-student-terminal-Windows-0.16.1.exe', path.join('release', 'windows-terminal', 'AI-edu-manager-student-terminal-Windows-0.16.1.exe')],
-    ['../download/AI-edu-manager-tablet-terminal-0.6.14.apk', path.join('release', 'tablet-terminal', 'AI-edu-manager-tablet-terminal-0.6.14.apk')],
-    ['../download/AI-edu-manager-teacher-terminal-0.1.0.apk', path.join('release', 'teacher-terminal', 'AI-edu-manager-teacher-terminal-0.1.0.apk')],
+    ['../download/AI-edu-manager-tablet-terminal-0.6.15.apk', path.join('release', 'tablet-terminal', 'AI-edu-manager-tablet-terminal-0.6.15.apk')],
+    ['../download/AI-edu-manager-teacher-terminal-0.1.1.apk', path.join('release', 'teacher-terminal', 'AI-edu-manager-teacher-terminal-0.1.1.apk')],
     ['../download/AI-Education-Manager-Android-Standalone-1.2.0-release.apk', path.join('android-standalone-manager', 'delivery', 'AI-Education-Manager-Android-Standalone-1.2.0-release.apk')],
   ]) {
     assert.match(download, new RegExp(artifact[0].replaceAll('.', '\\.')));
@@ -150,6 +150,7 @@ test('manual sources describe target selection and terminal-specific workflows',
   assert.match(androidTeacher, /不是把文件发送到学生设备/u);
   assert.match(androidTeacher, /自动投递文件夹/u);
   assert.match(androidTeacher, /档案缓存/u);
+  assert.match(androidTeacher, /导入智能体对话/u);
   assert.match(androidTeacher, /不包含精选课程、学生空间登录或教育管家对话模块/u);
   assert.match(androidStandalone, /不依赖 Windows 主机的完整教育管家/u);
   assert.match(androidStandalone, /新建或接管学生学情档案/u);
@@ -167,7 +168,9 @@ test('web manuals are synchronized to the current product workflows', () => {
 
   assert.match(windowsStudent, /配套主机：Windows 主机 0\.16\.1/u);
   assert.match(androidStudent, /配套主机：Windows 主机端 0\.16\.8/u);
-  assert.match(androidTeacher, /适用版本：Android 教师端 0\.1\.0/u);
+  assert.match(androidTeacher, /适用版本：Android 教师端 0\.1\.1/u);
+  assert.match(androidStudent, /导入智能体对话/u);
+  assert.match(androidTeacher, /导入智能体对话/u);
   assert.match(androidTeacher, /不是把文件发送到学生设备/u);
   assert.match(androidTeacher, /在主机暂时不可连接时仍可从缓存查看/u);
   assert.match(androidStandalone, /适用版本：Android 单机版 1\.2\.0/u);

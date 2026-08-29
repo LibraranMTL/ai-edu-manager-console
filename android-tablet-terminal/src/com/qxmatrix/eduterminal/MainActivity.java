@@ -112,8 +112,8 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
     static final int REQUEST_IMPORT_CONNECTION_BACKUP = 8109;
     static final int REQUEST_CAPTURE_STUDENT_QR = 8110;
     static final int REQUEST_AUTO_DELIVERY_FOLDER = 8111;
-    static final String VERSION_NAME = "0.6.14";
-    static final int VERSION_CODE = 84;
+    static final String VERSION_NAME = "0.6.15";
+    static final int VERSION_CODE = 85;
     static final String CONNECTION_BACKUP_KIND = "ai-edu-manager-tablet-connection-backup";
     static final int CONNECTION_BACKUP_VERSION = 1;
     static final String UPDATE_MANIFEST_URL = "https://www.greatbg.com/download/edu-manager-version.json";
@@ -153,6 +153,8 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
     private static final String PREF_HOST_DEVICE_ID = "host_device_id";
     private static final String PREF_HOST_MACHINE_CODE = "host_machine_code";
     private static final String PREF_HOST_DISPLAY_NAME = "host_display_name";
+    private static final String PREF_PENDING_CONVERSATION_TEXT = "pending_conversation_text";
+    private static final int MAX_CONVERSATION_CHARS = 60000;
     private static final String CACHE_ARCHIVE_FILES_PREFIX = "archive_files_";
     private static final String CACHE_MARKDOWN_PREFIX = "markdown_";
     private static final String CACHE_MARKDOWN_TITLE_PREFIX = "markdown_title_";
@@ -213,6 +215,7 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
     Button sharedUploadButton;
     Button retryFailedUploadButton;
     Button reloadStudentsButton;
+    Button conversationImportButton;
     Button personalTerminalButton;
     Button sharedTerminalButton;
     Button studentLoginButton;
@@ -258,6 +261,7 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
     LinearLayout settingsCard;
     LinearLayout studentCard;
     LinearLayout uploadCard;
+    LinearLayout conversationImportCard;
     LinearLayout captureCard;
     LinearLayout courseCard;
     LinearLayout courseListContainer;
@@ -318,6 +322,10 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
     String pendingCaptureProjectId = "";
     String pendingCaptureProjectName = "";
     boolean uploadInProgress = false;
+    boolean conversationSubmitInProgress = false;
+    String pendingConversationText = "";
+    String conversationLastResult = "";
+    TextView conversationImportStatusText;
     String captureUploadVisualState = "idle";
     UploadTarget lastFailedUploadTarget = null;
     final List<Uri> captureUploadUrisInFlight = new ArrayList<Uri>();
@@ -675,6 +683,19 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
         digestStatusText.setPadding(0, dp(4), 0, 0);
         uploadCard.addView(digestStatusText);
 
+        conversationImportCard = card();
+        conversationImportCard.addView(label("导入智能体对话"));
+        conversationImportCard.addView(label("从智能体应用分享当前对话，或复制后在这里粘贴。默认存入当前学生教育档案，也可选择本人关联项目。"));
+        conversationImportButton = button("粘贴智能体对话", true);
+        conversationImportButton.setOnClickListener(this);
+        conversationImportCard.addView(conversationImportButton);
+        conversationImportStatusText = new TextView(this);
+        conversationImportStatusText.setTextSize(13);
+        conversationImportStatusText.setTextColor(Color.rgb(87, 107, 103));
+        conversationImportStatusText.setPadding(0, dp(8), 0, 0);
+        conversationImportCard.addView(conversationImportStatusText);
+        updateConversationImportUi();
+
         uploadCard.addView(label("我的资料进展"));
         studentProgressText = new TextView(this);
         studentProgressText.setText("进入学生空间后，将显示已提交资料、知识化处理、近期新增和提交频率。");
@@ -954,6 +975,7 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
 
         LinearLayout materialContent = stack();
         materialContent.addView(collapsiblePanel("上传资料到主机", "选择学生原始资料库或本人绑定项目原始资料库。", uploadCard));
+        materialContent.addView(collapsiblePanel("导入智能体对话", "分享或粘贴当前对话，一次确认后发送到主机。", conversationImportCard));
         materialContent.addView(collapsiblePanel("屏幕资料采集", "采集、预览、清理并上传当前学生的屏幕资料。", captureCard));
         materialContent.addView(collapsiblePanel("自动投递文件夹", "仅个人终端可持续监测；共享终端保持关闭。", autoDeliveryPanel));
         root.addView(collapsiblePanel("资料搜集上传", "本地文件、屏幕采集和自动投递统一收纳。", materialContent));
@@ -1244,6 +1266,8 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
             uploadPendingSharedMaterials();
         } else if (view == retryFailedUploadButton) {
             retryFailedUploads();
+        } else if (view == conversationImportButton) {
+            openConversationImport();
         } else if (view == reloadStudentsButton) {
             loadStudents();
         } else if (view == captureStartButton) {
@@ -1436,6 +1460,7 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
         } else if (parent == studentSpinner) {
             selectedStudent = position >= 0 && position < students.size() ? students.get(position) : null;
             updateSharedUploadButton();
+            updateConversationImportUi();
             updateDigestStatusCard();
             refreshCaptureUi();
             updateContactCard();
@@ -1464,6 +1489,7 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
     public void onNothingSelected(AdapterView<?> parent) {
         if (parent == studentSpinner) {
             selectedStudent = null;
+            updateConversationImportUi();
             closeCourseBrowser();
             loadCourses();
             refreshCaptureUi();
@@ -2931,8 +2957,13 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
         String action = intent.getAction();
         if (!Intent.ACTION_SEND.equals(action) && !Intent.ACTION_SEND_MULTIPLE.equals(action)) return;
         List<Uri> uris = extractUris(intent);
+        CharSequence sharedText = intent.getCharSequenceExtra(Intent.EXTRA_TEXT);
+        if (uris.size() == 0 && sharedText != null && sharedText.toString().trim().length() > 0) {
+            acceptConversationDraft(sharedText.toString());
+            return;
+        }
         if (uris.size() == 0) {
-            toast("未发现可接收的分享文件。");
+            toast("未发现可接收的分享文件或对话正文。");
             return;
         }
         pendingSharedUris.clear();
@@ -2957,6 +2988,251 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
             retryFailedUploadButton.setVisibility(failedUploadUris.size() > 0 ? View.VISIBLE : View.GONE);
             retryFailedUploadButton.setEnabled(selectedStudent != null && failedUploadUris.size() > 0);
         }
+    }
+
+    void openConversationImport() {
+        if (pendingConversationText.length() > 0) {
+            showConversationConfirmDialog();
+            return;
+        }
+        ClipboardManager clipboard = (ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
+        ClipData clip = clipboard == null ? null : clipboard.getPrimaryClip();
+        CharSequence value = clip == null || clip.getItemCount() == 0 ? null : clip.getItemAt(0).coerceToText(this);
+        if (value == null || value.toString().trim().length() == 0) {
+            toast("剪贴板中没有可导入的对话正文。");
+            return;
+        }
+        acceptConversationDraft(value.toString());
+    }
+
+    void acceptConversationDraft(String rawText) {
+        String text = rawText == null ? "" : rawText.trim();
+        if (text.length() == 0) {
+            toast("对话正文不能为空。");
+            return;
+        }
+        if (text.matches("(?i)^https?://\\S+$")) {
+            toast("当前分享只有链接，请复制对话正文后再粘贴。");
+            status("智能体应用只分享了链接；为避免抓取其他应用数据，请复制对话正文后粘贴。 ");
+            return;
+        }
+        if (text.length() > MAX_CONVERSATION_CHARS) {
+            toast("对话超过 60000 字，请只发送当前对话或选定片段。");
+            return;
+        }
+        pendingConversationText = text;
+        conversationLastResult = "";
+        getSharedPreferences(PREFS, MODE_PRIVATE).edit()
+            .putString(PREF_PENDING_CONVERSATION_TEXT, pendingConversationText)
+            .apply();
+        updateConversationImportUi();
+        if (selectedStudent == null) {
+            status("已收到智能体对话，请先进入当前学生空间。 ");
+            return;
+        }
+        showConversationConfirmDialog();
+    }
+
+    void updateConversationImportUi() {
+        if (conversationImportButton == null || conversationImportStatusText == null) return;
+        if (conversationSubmitInProgress) {
+            conversationImportButton.setText("正在发送到主机...");
+            conversationImportButton.setEnabled(false);
+            conversationImportStatusText.setText("正在等待主机保存回执，请稍候。 ");
+            return;
+        }
+        if (pendingConversationText.length() > 0) {
+            conversationImportButton.setText("继续发送对话");
+            conversationImportButton.setEnabled(selectedStudent != null);
+            conversationImportStatusText.setText(selectedStudent == null
+                ? "已保留对话草稿；进入学生空间后即可发送。"
+                : "已准备好对话；默认存入“" + selectedStudent.name + "”的教育档案。 ");
+            return;
+        }
+        conversationImportButton.setText("粘贴智能体对话");
+        conversationImportButton.setEnabled(true);
+        conversationImportStatusText.setText(conversationLastResult.length() > 0
+            ? conversationLastResult
+            : "也可以在其他智能体应用中点击“分享”，直接选择本应用。 ");
+    }
+
+    void showConversationConfirmDialog() {
+        if (pendingConversationText.length() == 0) {
+            updateConversationImportUi();
+            return;
+        }
+        if (selectedStudent == null) {
+            toast("请先进入当前学生空间。 ");
+            return;
+        }
+        final String expectedStudentId = selectedStudent.id;
+        final ArrayList<UploadTarget> targets = new ArrayList<UploadTarget>();
+        targets.add(new UploadTarget("student", selectedStudent.id, selectedStudent.name + "的教育档案", selectedStudent.id));
+        for (LearningProject project : projectsForSelectedStudent()) {
+            targets.add(new UploadTarget("project", project.id, "关联项目：" + project.name, selectedStudent.id));
+        }
+        ArrayList<String> labels = new ArrayList<String>();
+        for (UploadTarget target : targets) labels.add(target.name);
+        LinearLayout panel = new LinearLayout(this);
+        panel.setOrientation(LinearLayout.VERTICAL);
+        panel.setPadding(dp(20), dp(8), dp(20), 0);
+        TextView preview = new TextView(this);
+        String body = pendingConversationText.length() > 800 ? pendingConversationText.substring(0, 800) + "…" : pendingConversationText;
+        preview.setText("对话预览\n" + body);
+        preview.setTextSize(13);
+        preview.setTextColor(Color.rgb(50, 76, 70));
+        preview.setMaxLines(8);
+        panel.addView(preview);
+        TextView targetLabel = label("存入位置");
+        targetLabel.setPadding(0, dp(12), 0, dp(4));
+        panel.addView(targetLabel);
+        final Spinner targetSpinner = new Spinner(this);
+        ArrayAdapter<String> targetAdapter = new ArrayAdapter<String>(this, android.R.layout.simple_spinner_item, labels);
+        targetAdapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
+        targetSpinner.setAdapter(targetAdapter);
+        panel.addView(targetSpinner);
+        new AlertDialog.Builder(this)
+            .setTitle("发送智能体对话")
+            .setView(panel)
+            .setPositiveButton("发送到主机", new DialogInterface.OnClickListener() {
+                @Override public void onClick(DialogInterface dialog, int which) {
+                    int position = targetSpinner.getSelectedItemPosition();
+                    if (position < 0 || position >= targets.size()) position = 0;
+                    if (selectedStudent == null || !expectedStudentId.equals(selectedStudent.id)) {
+                        toast("学生已切换，请重新确认。 ");
+                        return;
+                    }
+                    submitConversation(targets.get(position));
+                }
+            })
+            .setNegativeButton("取消", null)
+            .show();
+    }
+
+    void submitConversation(final UploadTarget target) {
+        if (conversationSubmitInProgress || pendingConversationText.length() == 0) return;
+        if (selectedStudent == null || !selectedStudent.id.equals(target.studentId)) {
+            toast("对话目标学生已变化，请重新确认。 ");
+            return;
+        }
+        if ("project".equals(target.type)) {
+            boolean linked = false;
+            for (LearningProject project : projectsForSelectedStudent()) if (project.id.equals(target.id)) linked = true;
+            if (!linked) {
+                toast("该项目已不再关联当前学生，请重新选择。 ");
+                return;
+            }
+        }
+        final String base = normalizedBaseUrl();
+        final String token = dataToken();
+        if (base.length() == 0 || token.length() == 0) {
+            toast("请先连接 Windows 主机。 ");
+            return;
+        }
+        final String text = pendingConversationText;
+        final String digest = sha256Text(text);
+        try {
+            JSONObject payload = new JSONObject();
+            payload.put("schema", "edu-manager.agent-conversation-submission.v1");
+            payload.put("sourceAgent", "android-student-import");
+            payload.put("sourceNodeId", deviceId());
+            payload.put("sessionId", "android-conversation-" + digest.substring(0, 24));
+            payload.put("title", conversationTitle(text));
+            payload.put("scopeType", target.type);
+            payload.put("scopeId", target.id);
+            payload.put("studentHint", target.studentId);
+            if ("project".equals(target.type)) payload.put("targetProject", target.id);
+            JSONArray messages = new JSONArray();
+            JSONObject message = new JSONObject();
+            message.put("messageId", "android-message-" + digest.substring(0, 24));
+            message.put("role", "unknown");
+            message.put("content", text);
+            messages.put(message);
+            payload.put("messages", messages);
+            payload.put("submittedAt", isoNow());
+            payload.put("idempotencyKey", "android-conversation-" + sha256Text(deviceId() + "|" + digest + "|" + target.type + "|" + target.id).substring(0, 32));
+            conversationSubmitInProgress = true;
+            updateConversationImportUi();
+            status("正在将智能体对话发送到主机...");
+            final JSONObject requestBody = payload;
+            new Thread(new Runnable() {
+                @Override public void run() {
+                    JSONObject result = null;
+                    String error = null;
+                    try {
+                        result = postJson(base + "/api/agent/conversation/submit", requestBody, token);
+                    } catch (Exception failure) {
+                        error = failure.getMessage();
+                    }
+                    final JSONObject response = result;
+                    final String failureMessage = error;
+                    runOnUiThread(new Runnable() {
+                        @Override public void run() {
+                            applyConversationSubmissionResult(response, failureMessage, target, digest);
+                        }
+                    });
+                }
+            }).start();
+        } catch (Exception error) {
+            conversationSubmitInProgress = false;
+            updateConversationImportUi();
+            toast("无法准备对话：" + error.getMessage());
+        }
+    }
+
+    void applyConversationSubmissionResult(JSONObject result, String error, UploadTarget target, String submittedDigest) {
+        conversationSubmitInProgress = false;
+        if (error != null) {
+            conversationImportStatusText.setText("发送失败：" + error + "\n对话草稿已保留，可点击重试。 ");
+            conversationImportButton.setText("重试发送对话");
+            conversationImportButton.setEnabled(selectedStudent != null);
+            status("智能体对话发送失败，草稿已保留。 ");
+            return;
+        }
+        JSONObject receipt = result == null ? null : result.optJSONObject("receipt");
+        String receiptStatus = receipt == null ? "" : receipt.optString("status", "");
+        String friendly;
+        if ((result != null && result.optBoolean("deduplicated", false)) || "deduplicated".equals(receiptStatus)) {
+            friendly = "该对话已经存入“" + target.name + "”，无需重复上传。 ";
+        } else if ((result != null && result.optBoolean("awaitingAttribution", false)) || "awaiting_attribution".equals(receiptStatus)) {
+            friendly = "对话已发送，正在等待主机确认归属。 ";
+        } else {
+            friendly = "已存入“" + target.name + "”。 ";
+        }
+        if (sha256Text(pendingConversationText).equals(submittedDigest)) {
+            pendingConversationText = "";
+            getSharedPreferences(PREFS, MODE_PRIVATE).edit()
+                .remove(PREF_PENDING_CONVERSATION_TEXT)
+                .apply();
+        }
+        conversationLastResult = friendly;
+        updateConversationImportUi();
+        status(friendly);
+        toast(friendly);
+    }
+
+    String sha256Text(String value) {
+        try {
+            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+            byte[] bytes = digest.digest(String.valueOf(value == null ? "" : value).getBytes("UTF-8"));
+            StringBuilder hex = new StringBuilder();
+            for (byte item : bytes) hex.append(String.format(Locale.ROOT, "%02x", item & 0xff));
+            return hex.toString();
+        } catch (Exception error) {
+            return Integer.toHexString(String.valueOf(value).hashCode()) + "00000000000000000000000000000000";
+        }
+    }
+
+    String conversationTitle(String text) {
+        String first = String.valueOf(text == null ? "" : text).split("\\r?\\n", 2)[0].trim();
+        if (first.length() > 48) first = first.substring(0, 48) + "…";
+        return first.length() == 0 ? "智能体对话" : "智能体对话 · " + first;
+    }
+
+    String isoNow() {
+        java.text.SimpleDateFormat format = new java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", Locale.US);
+        format.setTimeZone(java.util.TimeZone.getTimeZone("UTC"));
+        return format.format(new java.util.Date());
     }
 
     @Override
@@ -3947,6 +4223,7 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
         tokenInput.setText(prefs.getString(PREF_API_TOKEN, ""));
         terminalMode = prefs.getString(PREF_TERMINAL_MODE, "shared");
         studentSessionToken = prefs.getString(PREF_STUDENT_SESSION_TOKEN, "");
+        pendingConversationText = prefs.getString(PREF_PENDING_CONVERSATION_TEXT, "");
         if (remoteInput != null) remoteInput.setText(prefs.getString(PREF_REMOTE_URL, ""));
         suppressPreferenceCallbacks = true;
         layoutMode = clamp(prefs.getInt(PREF_LAYOUT_MODE, layoutMode), 0, 2);
@@ -3956,6 +4233,7 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
         if (connectionModeSpinner != null) connectionModeSpinner.setSelection(prefs.getInt(PREF_CONNECTION_MODE, 1));
         suppressPreferenceCallbacks = false;
         updateStudentSessionUi();
+        updateConversationImportUi();
         updateConnectionSummary("未连接", students.size());
     }
 

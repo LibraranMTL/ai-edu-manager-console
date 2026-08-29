@@ -13,6 +13,7 @@ const service = android('java', 'com', 'qxmatrix', 'edumanager', 'standalone', '
 const journal = android('java', 'com', 'qxmatrix', 'edumanager', 'standalone', 'StudentOfflineMigrationJournal.kt');
 const catalog = android('java', 'com', 'qxmatrix', 'edumanager', 'standalone', 'CourseCatalogService.kt');
 const activity = android('java', 'com', 'qxmatrix', 'edumanager', 'standalone', 'MainActivity.kt');
+const safWorkspace = android('java', 'com', 'qxmatrix', 'edumanager', 'standalone', 'SafWorkspaceStore.kt');
 const manifest = android('AndroidManifest.xml');
 
 test('Windows exposes exact-student Android directory export through async IPC', () => {
@@ -47,6 +48,13 @@ test('Android large migration is foreground, resumable, hash verified and licens
   assert.match(journal, /Atomic|PrivateStateStore/);
   assert.match(activity, /从 U 盘迁移并接管/);
   assert.match(activity, /继续上次 U 盘迁移/);
+});
+
+test('Android SAF safe writes use short helper names for long source filenames', () => {
+  assert.match(safWorkspace, /val temporaryName = "edu-write-\$token"/);
+  assert.match(safWorkspace, /val backupName = "edu-backup-\$token"/);
+  assert.doesNotMatch(safWorkspace, /\.\$fileName\.write-/);
+  assert.match(safWorkspace, /目标目录无法创建迁移临时文件：\$relativePath/);
 });
 
 test('offline course snapshot retains platform and tenant courses for one exact student', () => {

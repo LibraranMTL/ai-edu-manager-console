@@ -42,12 +42,15 @@ class StudentMaterialRepository(context: Context, private val student: StudentRe
         else JSONObject().put("version", 1).put("studentId", student.id).put("materials", JSONArray())
 
     private fun write(items: List<JSONObject>) {
+        require(items.size <= MAX_MATERIAL_RECORDS) { "单个学生资料记录超过 $MAX_MATERIAL_RECORDS 份，请先归档后继续导入" }
         val root = JSONObject().put("version", 1).put("studentId", student.id).put("studentName", student.name)
-            .put("updatedAt", Timestamp.now()).put("materials", JSONArray().also { array -> items.take(1000).forEach(array::put) })
+            .put("updatedAt", Timestamp.now()).put("materials", JSONArray().also { array -> items.forEach(array::put) })
         store.writeBytesSafely(filePath, (root.toString(2) + "\n").toByteArray(), "application/json")
     }
 
     private fun child(root: String, path: String) = if (root.isBlank()) path else "$root/$path"
+
+    companion object { private const val MAX_MATERIAL_RECORDS = 20_000 }
 }
 
 class AssetIndexRepository(context: Context) {
@@ -62,8 +65,9 @@ class AssetIndexRepository(context: Context) {
         val index = assets.indexOfFirst { it.optString("sha1") == candidate.getString("sha1") }
         val merged = if (index < 0) candidate else merge(assets[index], candidate)
         if (index < 0) assets.add(0, merged) else assets[index] = merged
+        require(assets.size <= MAX_ASSET_RECORDS) { "文件资产索引超过 $MAX_ASSET_RECORDS 项，请先归档后继续导入" }
         val root = JSONObject().put("version", 1).put("updatedAt", Timestamp.now())
-            .put("assets", JSONArray().also { array -> assets.take(5000).forEach(array::put) })
+            .put("assets", JSONArray().also { array -> assets.forEach(array::put) })
         state.writeBytes(PATH, (root.toString(2) + "\n").toByteArray())
         return merged
     }
@@ -89,7 +93,10 @@ class AssetIndexRepository(context: Context) {
         }.forEach(output::put)
     }
 
-    companion object { private const val PATH = "asset-index.json" }
+    companion object {
+        private const val PATH = "asset-index.json"
+        private const val MAX_ASSET_RECORDS = 50_000
+    }
 }
 
 internal fun JSONArray?.toObjects(): List<JSONObject> = if (this == null) emptyList() else buildList {

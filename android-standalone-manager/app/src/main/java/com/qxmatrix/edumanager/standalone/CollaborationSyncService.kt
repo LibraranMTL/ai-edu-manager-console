@@ -104,14 +104,14 @@ private data class OutboundPayload(
     val workspacePath: String = "",
 )
 
-private data class DownloadedCollaborationPackage(
+internal data class DownloadedCollaborationPackage(
     val endpoint: String,
     val manifest: JSONObject,
     val root: File,
     val files: Map<String, File>,
 )
 
-private data class PullMaterialization(val available: Boolean, val imported: Int = 0, val conflicts: Int = 0, val tombstones: Int = 0)
+internal data class PullMaterialization(val available: Boolean, val imported: Int = 0, val conflicts: Int = 0, val tombstones: Int = 0)
 
 class CollaborationSyncService(private val context: Context) {
     private val appContext = context.applicationContext
@@ -130,11 +130,16 @@ class CollaborationSyncService(private val context: Context) {
         val student = students.requireExact(map.localStudentId)
         requireStudentScope(student)
         val secret = cipher.decrypt(device.encryptedSecret, device.deviceBindingId)
-        val endpoints = JSONArray(device.endpointsJson).collaborationStrings()
-        require(endpoints.isNotEmpty()) { "协作设备没有可用的 Windows 地址" }
+        val discovered = runCatching { CollaborationLanDiscovery.discover().firstOrNull { it.nodeId == device.peerNodeId } }.getOrNull()
+        val endpoints = (discovered?.endpoints.orEmpty() + JSONArray(device.endpointsJson).collaborationStrings()).distinct().take(8)
+        require(endpoints.isNotEmpty()) { "协作设备没有可用的连接地址" }
+        if (discovered != null) runBlocking {
+            val now = utcNow()
+            dao.updateDeviceEndpoints(device.deviceBindingId, JSONArray(endpoints).toString(), now, now)
+        }
         val store = SafWorkspaceStore(appContext, Uri.parse(student.storageRootUri))
 
-        var lastError = "Windows 协作主机当前不可达"
+        var lastError = "协作设备当前不可达"
         for (endpoint in endpoints.mapNotNull(CollaborationPairingProtocol::normalizeEndpoint).distinct().take(8)) {
             try {
                 var pulledFiles = 0
@@ -158,6 +163,36 @@ class CollaborationSyncService(private val context: Context) {
         error(lastError)
     }
 
+    fun materializeIncomingPackage(
+        deviceBindingId: String,
+        studentMapId: String,
+        manifest: JSONObject,
+        packageRoot: File,
+    ): CollaborationSyncSummary {
+        val map = runBlocking { dao.studentMap(studentMapId) } ?: error("没有找到学生协作映射")
+        require(map.status == "active" && map.deviceBindingId == deviceBindingId) { "协作包超出当前学生映射范围" }
+        val device = runBlocking { dao.device(deviceBindingId) } ?: error("学生映射缺少协作设备")
+        require(device.status == "active") { "协作设备当前未启用" }
+        val student = students.requireExact(map.localStudentId)
+        requireStudentScope(student)
+        require(manifest.optString("targetNodeId") == node.nodeId && manifest.optString("sourceNodeId") == device.peerNodeId) {
+            "协作包发送方或目标设备不匹配"
+        }
+        val files = manifest.optJSONArray("files").collaborationObjects().associate { descriptor ->
+            val relativePath = safeRelativePath(descriptor.optString("relativePath"))
+            relativePath to File(packageRoot, "content/$relativePath").also { candidate ->
+                require(candidate.canonicalPath.startsWith(File(packageRoot, "content").canonicalPath + File.separator)) { "协作包文件路径越界" }
+            }
+        }
+        val downloaded = DownloadedCollaborationPackage("nearby", manifest, packageRoot, files)
+        val result = materializeDownloadedPackage(downloaded, device, map, student, SafWorkspaceStore(appContext, Uri.parse(student.storageRootUri)))
+        val checkpoint = runBlocking { dao.packageCheckpoint(manifest.getString("manifestId")) }
+        if (checkpoint != null) runBlocking {
+            dao.upsertPackageCheckpoint(checkpoint.copy(status = "acknowledged", acknowledgedAt = utcNow()))
+        }
+        return CollaborationSyncSummary(result.imported, 0, result.conflicts, result.tombstones)
+    }
+
     private fun requireStudentScope(student: StudentRecord) {
         val mapping = runBlocking { dao.safMapping(student.id) } ?: error("学生知识库尚未建立 SAF 映射")
         require(mapping.localStudentId == student.id && mapping.treeUri == student.storageRootUri) { "学生知识库目录映射与当前档案不一致" }
@@ -176,11 +211,29 @@ class CollaborationSyncService(private val context: Context) {
         secret: String,
     ): PullMaterialization {
         val downloaded = client.pullNext(endpoint, device, map, node.nodeId, secret) ?: return PullMaterialization(false)
+        val result = materializeDownloadedPackage(downloaded, device, map, student, store)
+        val manifestId = downloaded.manifest.getString("manifestId")
+        client.ackPull(endpoint, device, map, node.nodeId, secret, manifestId)
+        val checkpoint = runBlocking { dao.packageCheckpoint(manifestId) }
+        if (checkpoint != null) runBlocking {
+            dao.upsertPackageCheckpoint(checkpoint.copy(status = "acknowledged", acknowledgedAt = utcNow()))
+        }
+        downloaded.root.deleteRecursively()
+        return result
+    }
+
+    private fun materializeDownloadedPackage(
+        downloaded: DownloadedCollaborationPackage,
+        device: CollaborationDeviceEntity,
+        map: CollaborationStudentMapEntity,
+        student: StudentRecord,
+        store: SafWorkspaceStore,
+    ): PullMaterialization {
         val publicationDescriptor = downloaded.manifest.getJSONArray("files").collaborationObjects()
             .singleOrNull { it.optString("objectType") == "student_archive_publication" }
-            ?: error("Windows 协作包缺少学生档案清单")
+            ?: error("协作包缺少学生档案清单")
         val publicationFile = downloaded.files[publicationDescriptor.getString("relativePath")]
-            ?: error("Windows 协作包缺少学生档案清单文件")
+            ?: error("协作包缺少学生档案清单文件")
         val publication = JSONObject(publicationFile.readText(Charsets.UTF_8))
         require(publication.optString("schema") == "edu-manager.student-archive-sync.v1") { "学生档案清单版本不兼容" }
         require(publication.optString("targetNodeId") == node.nodeId && publication.optString("targetStudentId") == student.id) { "学生档案清单目标与本机学生不一致" }
@@ -190,9 +243,6 @@ class CollaborationSyncService(private val context: Context) {
         val manifestId = downloaded.manifest.getString("manifestId")
         val checkpoint = runBlocking { dao.packageCheckpoint(manifestId) }
         if (checkpoint?.status in setOf("materialized", "acknowledged")) {
-            client.ackPull(endpoint, device, map, node.nodeId, secret, manifestId)
-            runBlocking { dao.upsertPackageCheckpoint(checkpoint!!.copy(status = "acknowledged", acknowledgedAt = utcNow())) }
-            downloaded.root.deleteRecursively()
             return PullMaterialization(true)
         }
 
@@ -256,19 +306,6 @@ class CollaborationSyncService(private val context: Context) {
                 ),
             )
         }
-        client.ackPull(endpoint, device, map, node.nodeId, secret, manifestId)
-        runBlocking {
-            dao.upsertPackageCheckpoint(
-                CollaborationPackageCheckpointEntity(
-                    manifestId = manifestId,
-                    studentMapId = map.studentMapId,
-                    status = "acknowledged",
-                    materializedAt = materializedAt,
-                    acknowledgedAt = utcNow(),
-                ),
-            )
-        }
-        downloaded.root.deleteRecursively()
         return PullMaterialization(true, imported, conflicts, tombstones)
     }
 

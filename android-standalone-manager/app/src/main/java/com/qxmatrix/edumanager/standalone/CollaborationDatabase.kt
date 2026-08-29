@@ -185,11 +185,20 @@ interface CollaborationDao {
     @Query("UPDATE collaboration_devices SET status = :status, encryptedSecret = :encryptedSecret, updatedAt = :updatedAt WHERE deviceBindingId = :deviceBindingId")
     suspend fun updateDeviceStatus(deviceBindingId: String, status: String, encryptedSecret: String, updatedAt: String): Int
 
+    @Query("UPDATE collaboration_devices SET endpointsJson = :endpointsJson, updatedAt = :updatedAt, lastSeenAt = :lastSeenAt WHERE deviceBindingId = :deviceBindingId AND status = 'active'")
+    suspend fun updateDeviceEndpoints(deviceBindingId: String, endpointsJson: String, updatedAt: String, lastSeenAt: String): Int
+
     @Query("UPDATE collaboration_student_maps SET status = :status, updatedAt = :updatedAt WHERE deviceBindingId = :deviceBindingId AND status != 'revoked'")
     suspend fun updateStudentMapsForDevice(deviceBindingId: String, status: String, updatedAt: String): Int
 
+    @Query("UPDATE collaboration_student_maps SET status = :status, updatedAt = :updatedAt WHERE studentMapId = :studentMapId")
+    suspend fun updateStudentMapStatus(studentMapId: String, status: String, updatedAt: String): Int
+
     @Query("UPDATE collaboration_queue SET status = 'cancelled', updatedAt = :updatedAt, lastError = '协作设备已撤销' WHERE deviceBindingId = :deviceBindingId AND status IN ('queued', 'retry', 'running')")
     suspend fun cancelQueueForDevice(deviceBindingId: String, updatedAt: String): Int
+
+    @Query("UPDATE collaboration_queue SET status = 'cancelled', updatedAt = :updatedAt, lastError = '学生共享已暂停或解除' WHERE studentMapId = :studentMapId AND status IN ('queued', 'retry', 'running')")
+    suspend fun cancelQueueForStudentMap(studentMapId: String, updatedAt: String): Int
 
     @Query("SELECT * FROM collaboration_student_maps ORDER BY updatedAt DESC")
     suspend fun studentMaps(): List<CollaborationStudentMapEntity>
@@ -197,7 +206,10 @@ interface CollaborationDao {
     @Query("SELECT * FROM collaboration_student_maps WHERE studentMapId = :studentMapId LIMIT 1")
     suspend fun studentMap(studentMapId: String): CollaborationStudentMapEntity?
 
-    @Query("SELECT * FROM collaboration_student_maps WHERE status = 'active' ORDER BY updatedAt DESC")
+    @Query("SELECT * FROM collaboration_student_maps WHERE transportBindingId = :transportBindingId AND status = 'active' LIMIT 1")
+    suspend fun activeStudentMapForTransport(transportBindingId: String): CollaborationStudentMapEntity?
+
+    @Query("SELECT collaboration_student_maps.* FROM collaboration_student_maps INNER JOIN collaboration_devices ON collaboration_devices.deviceBindingId = collaboration_student_maps.deviceBindingId WHERE collaboration_student_maps.status = 'active' AND collaboration_devices.status = 'active' ORDER BY collaboration_student_maps.updatedAt DESC")
     suspend fun activeStudentMaps(): List<CollaborationStudentMapEntity>
 
     @Query("SELECT * FROM collaboration_saf_mappings WHERE localStudentId = :studentId LIMIT 1")

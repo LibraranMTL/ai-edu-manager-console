@@ -3,7 +3,10 @@ package com.qxmatrix.edumanager.standalone
 import android.Manifest
 import android.app.Activity
 import android.app.AlertDialog
+import android.content.BroadcastReceiver
+import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.content.res.ColorStateList
 import android.content.res.Configuration
 import android.graphics.BitmapFactory
@@ -13,6 +16,8 @@ import android.provider.MediaStore
 import android.provider.Settings
 import android.net.Uri
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.text.InputType
 import android.view.Gravity
 import android.view.View
@@ -22,6 +27,7 @@ import android.widget.EditText
 import android.widget.FrameLayout
 import android.widget.ImageView
 import android.widget.LinearLayout
+import android.widget.ProgressBar
 import android.widget.ScrollView
 import android.widget.TextView
 import androidx.core.content.FileProvider
@@ -52,6 +58,8 @@ class MainActivity : Activity() {
     private lateinit var portraitSectionButton: Button
     private val navigationButtons = linkedMapOf<AppSection, Button>()
     private var activeSection = AppSection.HOME
+    private var activeMaterialQueueFilter = MaterialQueueFilter.ALL
+    private val legacyCourseReconciliationAttempted = mutableSetOf<String>()
     private lateinit var rootStatus: TextView
     private lateinit var studentList: LinearLayout
     private lateinit var projectList: LinearLayout
@@ -71,6 +79,31 @@ class MainActivity : Activity() {
     private var pendingOfflineMigrationSource: Uri? = null
     private var pendingDeviceMigrationSource: Uri? = null
     private var pendingUpdateApk: File? = null
+    private var offlineMigrationLiveState: StudentOfflineMigrationState? = null
+    private var offlineMigrationCard: LinearLayout? = null
+    private var offlineMigrationTitle: TextView? = null
+    private var offlineMigrationDetails: TextView? = null
+    private var offlineMigrationCurrent: TextView? = null
+    private var offlineMigrationProgress: ProgressBar? = null
+    private var offlineMigrationContinueButton: Button? = null
+    private var offlineMigrationStartButton: Button? = null
+    private var offlineMigrationReceiverRegistered = false
+    private var offlineMigrationCompletedRefreshId: String? = null
+    private val offlineMigrationHandler = Handler(Looper.getMainLooper())
+    private val offlineMigrationPoll = object : Runnable {
+        override fun run() {
+            if (offlineMigrationReceiverRegistered) {
+                StudentOfflineMigrationJournal(this@MainActivity).latestProgress()?.let(::applyOfflineMigrationState)
+                offlineMigrationHandler.postDelayed(this, OFFLINE_MIGRATION_POLL_MS)
+            }
+        }
+    }
+    private val offlineMigrationReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            val raw = intent?.getStringExtra(StudentOfflineMigrationService.EXTRA_STATE).orEmpty()
+            runCatching { StudentOfflineMigrationState.fromJson(JSONObject(raw)) }.getOrNull()?.let(::applyOfflineMigrationState)
+        }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -98,6 +131,26 @@ class MainActivity : Activity() {
 
     override fun onNewIntent(intent: Intent?) {
         super.onNewIntent(intent); if (intent != null) { setIntent(intent); handleIncomingIntent(intent) }
+    }
+
+    override fun onStart() {
+        super.onStart()
+        if (!licenseManager.status().active || !::sectionContent.isInitialized || offlineMigrationReceiverRegistered) return
+        ContextCompat.registerReceiver(
+            this, offlineMigrationReceiver, IntentFilter(StudentOfflineMigrationService.ACTION_PROGRESS), ContextCompat.RECEIVER_NOT_EXPORTED,
+        )
+        offlineMigrationReceiverRegistered = true
+        offlineMigrationHandler.removeCallbacks(offlineMigrationPoll)
+        offlineMigrationHandler.post(offlineMigrationPoll)
+    }
+
+    override fun onStop() {
+        offlineMigrationHandler.removeCallbacks(offlineMigrationPoll)
+        if (offlineMigrationReceiverRegistered) {
+            unregisterReceiver(offlineMigrationReceiver)
+            offlineMigrationReceiverRegistered = false
+        }
+        super.onStop()
     }
 
     override fun onSaveInstanceState(outState: Bundle) {
@@ -234,8 +287,9 @@ class MainActivity : Activity() {
         AlertDialog.Builder(this).setTitle("功能目录").setItems(AppSection.entries.map { it.label }.toTypedArray()) { _, index -> renderSection(AppSection.entries[index]) }.show()
     }
 
-    private fun renderSection(section: AppSection) {
-        activeSection = section; sectionTitle.text = section.label; sectionContent.removeAllViews()
+    private fun renderSection(section: AppSection, materialFilter: MaterialQueueFilter? = null) {
+        if (section == AppSection.MATERIALS) activeMaterialQueueFilter = materialFilter ?: MaterialQueueFilter.ALL
+        activeSection = section; sectionTitle.text = section.label; sectionContent.removeAllViews(); clearOfflineMigrationViews()
         if (::portraitSectionButton.isInitialized) portraitSectionButton.text = section.label
         navigationButtons.forEach { (item, button) ->
             button.backgroundTintList = ColorStateList.valueOf(if (item == section) palette.accent else palette.card)
@@ -256,20 +310,26 @@ class MainActivity : Activity() {
 
     private fun renderHome() {
         val students = workspaceService.listStudents()
-        val materials = students.flatMap { runCatching { fileAssetService.materials(it.id) }.getOrDefault(emptyList()) }
-        val pending = materials.count { it.optString("status") == MaterialStatus.PENDING_DIGEST.wireValue }
-        val needsHelp = materials.count { it.optString("ocrStatus") == "failed" || it.optString("visionStatus") == "unavailable" }
-        val completedOcr = materials.count { it.optString("ocrStatus") == "completed" }
+        val queue = materialQueueItems(students)
+        val pending = queue.count(::materialPending)
+        val processing = queue.count(::materialProcessing)
+        val needsHelp = queue.count(::materialNeedsHelp)
+        val completedOcr = queue.count { it.material.optString("ocrStatus") == "completed" }
         val projects = projectService.listProjects().size
         sectionNote("从收集资料到形成档案，按当前状态进入下一步；所有内容仍写入对应学生或学习项目的独立目录。")
         sectionContent.addView(TextView(this).apply {
-            text = "学生档案 ${students.size} · 学习项目 $projects · 待处理 $pending · 已完成 OCR $completedOcr"
+            text = "学生档案 ${students.size} · 学习项目 $projects · 待处理 $pending · 正在处理 $processing · 需补充 $needsHelp · 已完成 OCR $completedOcr"
             textSize = 16f; setTextColor(palette.text); setPadding(dp(16), dp(14), dp(16), dp(14)); setBackgroundColor(withAlpha(palette.card, 238))
         }, matchWrap())
         sectionHeading("现在可以做什么")
         addHomeGuide("添加资料", "导入文件、拍照或连续采集屏幕") { renderSection(AppSection.MATERIALS) }
-        addHomeGuide("处理中", if (pending > 0) "$pending 份资料等待 OCR、消化或整理" else "当前没有待消化资料") { renderSection(AppSection.MATERIALS) }
-        addHomeGuide("需要补充", if (needsHelp > 0) "$needsHelp 份资料需要检查视觉模型或重新处理" else "当前没有标记为需要补充的资料") { renderSection(AppSection.MATERIALS) }
+        val actionable = queue.count(::materialActionRequired)
+        addHomeGuide("处理中", if (actionable > 0) "$actionable 份资料正在处理或等待下一步，点击直接查看" else "当前没有待处理资料") {
+            renderSection(AppSection.MATERIALS, MaterialQueueFilter.ACTION_REQUIRED)
+        }
+        addHomeGuide("需要补充", if (needsHelp > 0) "$needsHelp 份资料失败或需要补充视觉处理，点击直接重试" else "当前没有标记为需要补充的资料") {
+            renderSection(AppSection.MATERIALS, MaterialQueueFilter.NEEDS_HELP)
+        }
         addHomeGuide("知识更新", "查看教育档案和学习项目中的最新沉淀") { renderSection(AppSection.ARCHIVES) }
         addHomeGuide("成长变化", "查看有来源、可审核的成长证据") { renderSection(AppSection.GROWTH) }
         addHomeGuide("报告与档案", "浏览 Markdown 学情报告与教育档案") {
@@ -289,13 +349,14 @@ class MainActivity : Activity() {
     private fun renderArchives() {
         sectionNote("新建或接管学生学情档案；每名学生继续使用独立的 Windows/LLM Wiki 目录与精确 ID。")
         rootStatus = statusCard(); sectionContent.addView(rootStatus, matchWrap()); updateRootStatus()
-        val offlineMigration = StudentOfflineMigrationJournal(this).latest()
-        if (offlineMigration != null) sectionContent.addView(statusCard().apply {
-            text = "U盘迁移：${offlineMigration.phase} · ${offlineMigration.completedFiles}/${offlineMigration.totalFiles} 个文件\n${offlineMigration.message}${if (offlineMigration.current.isBlank()) "" else "\n当前：${offlineMigration.current}"}"
-        }, matchWrap())
-        addAction("从 U 盘迁移并接管") { startTreePicker(REQUEST_OFFLINE_MIGRATION_SOURCE) }
-        if (offlineMigration != null && offlineMigration.phase in setOf("copying", "failed")) addAction("继续上次 U 盘迁移") {
-            startOfflineMigration(Uri.parse(offlineMigration.sourceUri), Uri.parse(offlineMigration.targetUri))
+        val offlineMigration = offlineMigrationLiveState ?: StudentOfflineMigrationJournal(this).latestProgress()
+        offlineMigrationLiveState = offlineMigration
+        offlineMigration?.let(::addOfflineMigrationCard)
+        offlineMigrationStartButton = themedButton(if (StudentOfflineMigrationService.isRunning()) "U盘迁移正在运行" else "从 U 盘迁移并接管") {
+            startTreePicker(REQUEST_OFFLINE_MIGRATION_SOURCE)
+        }.also { button ->
+            button.isEnabled = !StudentOfflineMigrationService.isRunning()
+            sectionContent.addView(button, matchWrap())
         }
         addAction("设置新建档案保存位置") { startTreePicker(REQUEST_WORKSPACE_ROOT) }
         addAction("新建学情档案") { showStudentInputDialog("新建学生档案库") { input -> createStudent(input) } }
@@ -304,14 +365,216 @@ class MainActivity : Activity() {
         studentList = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }; sectionContent.addView(studentList, matchWrap()); refreshStudents()
     }
 
+    private fun addOfflineMigrationCard(state: StudentOfflineMigrationState) {
+        val card = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(16), dp(14), dp(16), dp(14))
+            setBackgroundColor(palette.card)
+        }
+        offlineMigrationTitle = TextView(this).apply { textSize = 17f; setTextColor(palette.accentDark) }
+        offlineMigrationProgress = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply { max = 1000 }
+        offlineMigrationDetails = TextView(this).apply { textSize = 14f; setTextColor(palette.text); setPadding(0, dp(8), 0, 0) }
+        offlineMigrationCurrent = TextView(this).apply { textSize = 13f; setTextColor(palette.muted); setPadding(0, dp(5), 0, 0) }
+        offlineMigrationContinueButton = themedButton("继续上次 U 盘迁移") {
+            offlineMigrationLiveState?.let { startOfflineMigration(Uri.parse(it.sourceUri), Uri.parse(it.targetUri)) }
+        }
+        card.addView(offlineMigrationTitle, matchWrap())
+        card.addView(offlineMigrationProgress, matchWrap().apply { topMargin = dp(10) })
+        card.addView(offlineMigrationDetails, matchWrap())
+        card.addView(offlineMigrationCurrent, matchWrap())
+        card.addView(offlineMigrationContinueButton, matchWrap())
+        offlineMigrationCard = card
+        sectionContent.addView(card, matchWrap().apply { bottomMargin = dp(10) })
+        updateOfflineMigrationCard(state)
+    }
+
+    private fun applyOfflineMigrationState(state: StudentOfflineMigrationState) {
+        offlineMigrationLiveState = state
+        if (activeSection != AppSection.ARCHIVES || !::sectionContent.isInitialized) return
+        if (offlineMigrationCard == null) {
+            renderSection(AppSection.ARCHIVES)
+            return
+        }
+        updateOfflineMigrationCard(state)
+    }
+
+    private fun updateOfflineMigrationCard(state: StudentOfflineMigrationState) {
+        val liveBytes = (state.completedBytes + state.currentFileBytes).coerceAtMost(state.totalBytes)
+        val progress = when {
+            state.totalBytes > 0L -> ((liveBytes * 1000L) / state.totalBytes).toInt()
+            state.totalFiles > 0 -> ((state.completedFiles.toLong() * 1000L) / state.totalFiles).toInt()
+            else -> 0
+        }
+        val percent = progress / 10.0
+        offlineMigrationTitle?.text = "U盘迁移 · ${offlineMigrationPhaseLabel(state.phase)}"
+        offlineMigrationProgress?.isIndeterminate = state.totalFiles <= 0 && state.totalBytes <= 0L && state.phase !in setOf("completed", "failed")
+        offlineMigrationProgress?.progress = progress
+        val elapsed = if (state.startedAtEpochMs > 0L) formatElapsed(System.currentTimeMillis() - state.startedAtEpochMs) else "—"
+        offlineMigrationDetails?.text = if (state.totalFiles > 0) {
+            "${state.message}\n文件 ${state.completedFiles}/${state.totalFiles} · 容量 ${formatBytes(liveBytes)}/${formatBytes(state.totalBytes)} · ${"%.1f".format(percent)}% · 已用 $elapsed"
+        } else "${state.message}\n正在建立迁移任务 · 已用 $elapsed"
+        offlineMigrationCurrent?.text = when {
+            state.current.isBlank() -> if (state.phase in setOf("completed", "failed")) "" else "请保持 U 盘连接，迁移可在后台继续运行。"
+            state.currentFileTotalBytes > 0L -> "当前：${state.current}\n当前文件 ${formatBytes(state.currentFileBytes)}/${formatBytes(state.currentFileTotalBytes)}"
+            else -> "当前：${state.current}"
+        }
+        val active = state.phase !in setOf("completed", "failed")
+        val canResume = state.phase == "failed" || (active && !StudentOfflineMigrationService.isRunning())
+        offlineMigrationContinueButton?.visibility = if (canResume) View.VISIBLE else View.GONE
+        offlineMigrationStartButton?.apply {
+            isEnabled = !StudentOfflineMigrationService.isRunning()
+            text = if (StudentOfflineMigrationService.isRunning()) "U盘迁移正在运行" else "从 U 盘迁移并接管"
+        }
+        if (state.phase == "completed" && offlineMigrationCompletedRefreshId != state.migrationId) {
+            offlineMigrationCompletedRefreshId = state.migrationId
+            if (::studentList.isInitialized && studentList.parent != null) refreshStudents()
+        }
+    }
+
+    private fun clearOfflineMigrationViews() {
+        offlineMigrationCard = null; offlineMigrationTitle = null; offlineMigrationDetails = null
+        offlineMigrationCurrent = null; offlineMigrationProgress = null; offlineMigrationContinueButton = null; offlineMigrationStartButton = null
+    }
+
+    private fun offlineMigrationPhaseLabel(phase: String): String = when (phase) {
+        "preparing" -> "正在准备"
+        "checking-license" -> "检查授权"
+        "verifying" -> "检查迁移包"
+        "copying" -> "复制并校验资料"
+        "importing-student" -> "接管学生档案"
+        "importing-projects" -> "接管学习项目"
+        "importing-courses" -> "导入课程"
+        "completing" -> "完成接管"
+        "completed" -> "迁移完成"
+        "failed" -> "迁移失败"
+        else -> phase.ifBlank { "未知状态" }
+    }
+
+    private fun formatElapsed(milliseconds: Long): String {
+        val seconds = milliseconds.coerceAtLeast(0L) / 1000L
+        val hours = seconds / 3600L; val minutes = (seconds % 3600L) / 60L; val remainingSeconds = seconds % 60L
+        return if (hours > 0L) "%d:%02d:%02d".format(hours, minutes, remainingSeconds) else "%02d:%02d".format(minutes, remainingSeconds)
+    }
+
     private fun renderMaterials() {
         sectionNote("本机导入、连续屏幕采集、OCR/视觉解析与资料消化统一进入文件资产中心。")
         addAction("文件资产中心") { chooseStudentForAssets() }
+        addAction("浏览原始资料库") { chooseStudentForRawBrowser() }
         addAction("本机导入") { chooseImportStudent() }
         addAction("连续屏幕采集") { startGeneralScreenCapture() }
-        addAction("OCR / 视觉解析资料") { chooseMaterialForOcr() }
+        addAction("OCR / 视觉解析资料（可多选）") { chooseMaterialsForOcr() }
         addAction("查看 OCR 识别结果") { chooseOcrResult() }
-        addAction("消化资料") { chooseStudentForDigest() }
+        addAction("消化资料（可多选）") { chooseMaterialsForDigest() }
+        renderMaterialQueue()
+        reconcileLegacyCourseCapturesIfNeeded()
+    }
+
+    private fun reconcileLegacyCourseCapturesIfNeeded() {
+        val preferences = getSharedPreferences("material_workflow_repairs", MODE_PRIVATE)
+        val students = workspaceService.listStudents().filter { student ->
+            student.id !in legacyCourseReconciliationAttempted && !preferences.getBoolean("course-captures-v1:${student.id}", false)
+        }
+        if (students.isEmpty()) return
+        legacyCourseReconciliationAttempted += students.map { it.id }
+        Thread {
+            var registered = 0
+            val failures = mutableListOf<String>()
+            students.forEach { student ->
+                runCatching { fileAssetService.reconcileLegacyCourseCaptures(student.id) }
+                    .onSuccess { result ->
+                        registered += result.optInt("registered")
+                        if (result.optInt("failed") == 0) preferences.edit().putBoolean("course-captures-v1:${student.id}", true).apply()
+                        else failures += "${student.name}：${result.optInt("failed")} 份登记失败"
+                    }
+                    .onFailure { failures += "${student.name}：${it.message ?: "检查失败"}" }
+            }
+            runOnUiThread {
+                if (registered > 0 && activeSection == AppSection.MATERIALS) renderSection(AppSection.MATERIALS, activeMaterialQueueFilter)
+                if (registered > 0 || failures.isNotEmpty()) showMessage(
+                    "历史课程资料检查完成",
+                    "已将 $registered 份旧版课程截图补充登记到原始资料队列。${if (failures.isEmpty()) "" else "\n${failures.joinToString("\n")}"}",
+                )
+            }
+        }.start()
+    }
+
+    private fun materialQueueItems(students: List<StudentRecord> = workspaceService.listStudents()): List<MaterialQueueItem> =
+        students.flatMap { student ->
+            runCatching { fileAssetService.materials(student.id) }.getOrDefault(emptyList())
+                .filter { MaterialStatus.normalize(it.optString("status")) != MaterialStatus.REMOVED }
+                .map { MaterialQueueItem(student, it) }
+        }.sortedByDescending { it.material.optString("uploadedAt") }
+
+    private fun materialPending(item: MaterialQueueItem): Boolean =
+        MaterialStatus.normalize(item.material.optString("status")) == MaterialStatus.PENDING_DIGEST
+
+    private fun materialProcessing(item: MaterialQueueItem): Boolean {
+        val status = MaterialStatus.normalize(item.material.optString("status"))
+        return status in setOf(MaterialStatus.SUBMITTED, MaterialStatus.DIGESTING) ||
+            item.material.optString("ocrStatus") == "running" || item.material.optString("visionStatus") == "running"
+    }
+
+    private fun materialNeedsHelp(item: MaterialQueueItem): Boolean =
+        MaterialStatus.normalize(item.material.optString("status")) == MaterialStatus.FAILED ||
+            item.material.optString("ocrStatus") == "failed" ||
+            item.material.optString("visionStatus") in setOf("failed", "unavailable")
+
+    private fun materialActionRequired(item: MaterialQueueItem): Boolean =
+        materialPending(item) || materialProcessing(item) || materialNeedsHelp(item)
+
+    private fun filteredMaterialQueue(): List<MaterialQueueItem> {
+        val items = materialQueueItems()
+        return when (activeMaterialQueueFilter) {
+            MaterialQueueFilter.ALL -> items
+            MaterialQueueFilter.ACTION_REQUIRED -> items.filter(::materialActionRequired)
+            MaterialQueueFilter.NEEDS_HELP -> items.filter(::materialNeedsHelp)
+        }
+    }
+
+    private fun materialWorkflowLabel(item: MaterialQueueItem): String {
+        val material = item.material
+        val status = MaterialStatus.normalize(material.optString("status"))
+        val workflow = when {
+            materialNeedsHelp(item) -> "需要补充/重试"
+            materialProcessing(item) -> "正在处理"
+            status == MaterialStatus.PENDING_DIGEST && material.optString("ocrStatus") == "completed" -> "等待消化"
+            status == MaterialStatus.PENDING_DIGEST -> "等待 OCR/解析"
+            status == MaterialStatus.PROCESSED -> "已消化"
+            else -> status.wireValue
+        }
+        return "$workflow · ${material.optString("fileName")}"
+    }
+
+    private fun renderMaterialQueue() {
+        val items = filteredMaterialQueue()
+        sectionHeading("资料队列 · ${activeMaterialQueueFilter.label}（${items.size}）")
+        if (activeMaterialQueueFilter != MaterialQueueFilter.ALL) {
+            addAction("查看全部资料") { renderSection(AppSection.MATERIALS, MaterialQueueFilter.ALL) }
+        }
+        if (items.isEmpty()) {
+            sectionContent.addView(statusCard().apply { text = "当前筛选条件下没有资料。" }, matchWrap())
+            return
+        }
+        addAction("批量处理当前列表（${items.size}）") { showBatchMaterialPicker(items) }
+        val groups = items.groupBy { item ->
+            val session = item.material.optString("captureSessionId").ifBlank { item.material.optString("id") }
+            "${item.student.id}::$session"
+        }.values.toList()
+        groups.take(MAX_VISIBLE_MATERIAL_GROUPS).forEach { group ->
+            val first = group.first()
+            val course = first.material.optString("courseId")
+            val source = if (course.isNotBlank()) "课程采集 · ${first.material.optString("courseProvider").ifBlank { course }}" else first.material.optString("sourceName").ifBlank { "本机资料" }
+            val help = group.count(::materialNeedsHelp)
+            val active = group.count(::materialProcessing)
+            val pending = group.count(::materialPending)
+            addHomeGuide(
+                "${first.student.name} · $source · ${group.size} 份",
+                "待处理 $pending · 处理中 $active · 需补充 $help\n${group.take(3).joinToString("\n") { materialWorkflowLabel(it) }}${if (group.size > 3) "\n……" else ""}",
+            ) { showMaterialActions(group) }
+        }
+        if (groups.size > MAX_VISIBLE_MATERIAL_GROUPS) {
+            sectionContent.addView(statusCard().apply { text = "列表较多，当前显示前 $MAX_VISIBLE_MATERIAL_GROUPS 组；批量处理仍包含全部 ${items.size} 份资料。" }, matchWrap())
+        }
     }
 
     private fun renderCourses() {
@@ -329,6 +592,7 @@ class MainActivity : Activity() {
         addAction("打开 ChatGPT / Codex") { openChatGpt() }
         addAction("导入智能体对话历史") { showConversationImportMenu() }
         addAction("管理已保存对话历史") { showSavedConversations() }
+        addAction("智能体对话知识管理") { openConversationKnowledge() }
     }
 
     private fun renderGrowth() {
@@ -372,7 +636,7 @@ class MainActivity : Activity() {
         sectionHeading("任务 Agent 服务")
         agentStatus = statusCard(); sectionContent.addView(agentStatus, matchWrap()); updateAgentStatus()
         addAction("配置或修改本地任务 Agent") { showAgentConfigurationDialog() }
-        addAction("测试 Agent 连接") { testAgentConfiguration() }
+        addAction("测试文本 / 视觉 Agent") { testAgentConfiguration() }
         addAction("停用本地任务 Agent") { confirmClearAgentConfiguration() }
         addAction("界面皮肤：${uiPreferences.skin().label}") { showSkinDialog() }
         addAction("页面布局：${uiPreferences.layoutMode().label}") { showLayoutDialog() }
@@ -561,13 +825,21 @@ class MainActivity : Activity() {
     }
 
     private fun startOfflineMigration(source: Uri, target: Uri) {
+        requestMigrationNotificationPermission()
+        val startedAt = System.currentTimeMillis()
+        offlineMigrationLiveState = StudentOfflineMigrationState(
+            migrationId = "pending-$startedAt", sourceUri = source.toString(), targetUri = target.toString(), phase = "preparing",
+            totalFiles = 0, completedFiles = 0, totalBytes = 0L, completedBytes = 0L, current = "",
+            message = "正在启动迁移服务", completedKeys = emptySet(), updatedAt = Timestamp.now(), startedAtEpochMs = startedAt,
+        )
+        if (activeSection == AppSection.ARCHIVES) renderSection(AppSection.ARCHIVES)
         val intent = Intent(this, StudentOfflineMigrationService::class.java).apply {
             action = StudentOfflineMigrationService.ACTION_START
             putExtra(StudentOfflineMigrationService.EXTRA_SOURCE_URI, source.toString())
             putExtra(StudentOfflineMigrationService.EXTRA_TARGET_URI, target.toString())
         }
         ContextCompat.startForegroundService(this, intent)
-        showMessage("迁移已开始", "可以继续使用其他页面。请保持 U 盘连接，并通过持续通知查看进度；若中断，可在教育档案中点击“继续上次 U 盘迁移”。")
+        showMessage("迁移已开始", "教育档案页面已经显示实时进度。可以继续使用其他页面；请保持 U 盘连接。通知权限被拒绝时，应用内进度仍会继续显示。")
     }
 
     private fun formatBytes(bytes: Long): String = when {
@@ -667,6 +939,12 @@ class MainActivity : Activity() {
     }
 
     private fun handleIncomingIntent(incoming: Intent) {
+        if (incoming.getBooleanExtra(EXTRA_OPEN_CONVERSATION_IMPORT, false)) {
+            incoming.removeExtra(EXTRA_OPEN_CONVERSATION_IMPORT)
+            renderSection(AppSection.ASSISTANT)
+            showConversationImportMenu()
+            return
+        }
         if (incoming.action == StudentPortableMigrationService.ACTION) {
             val pending = PendingStudentMigration(
                 baseUrl = incoming.getStringExtra("baseUrl").orEmpty(),
@@ -904,6 +1182,16 @@ class MainActivity : Activity() {
         AlertDialog.Builder(this).setTitle("查看文件资产").setItems(students.map { it.name }.toTypedArray()) { _, index -> showStudentAssets(students[index]) }.show()
     }
 
+    private fun chooseStudentForRawBrowser() {
+        val students = workspaceService.listStudents()
+        if (students.isEmpty()) { showMessage("没有学生档案", "请先新建或接管学生档案库。"); return }
+        AlertDialog.Builder(this).setTitle("浏览哪个学生的原始资料库")
+            .setItems(students.map { it.name }.toTypedArray()) { _, index ->
+                startActivity(Intent(this, RawMaterialBrowserActivity::class.java)
+                    .putExtra(RawMaterialBrowserActivity.EXTRA_STUDENT_ID, students[index].id))
+            }.show()
+    }
+
     private fun showStudentAssets(student: StudentRecord) {
         val materials = fileAssetService.materials(student.id).filter { it.optString("status") != "removed" }
         val indexed = fileAssetService.assets(student.id)
@@ -919,6 +1207,9 @@ class MainActivity : Activity() {
                 .setNegativeButton("关闭", null)
             if (item.optString("ocrStatus") == "completed" && item.optString("ocrMarkdownPath").isNotBlank()) {
                 builder.setPositiveButton("查看 OCR 结果") { _, _ -> openOcrResult(student.id, item.optString("id")) }
+            }
+            if (MaterialStatus.normalize(item.optString("status")) == MaterialStatus.FAILED || item.optString("ocrStatus") == "failed" || item.optString("visionStatus") in setOf("failed", "unavailable")) {
+                builder.setNeutralButton("重新加入待处理") { _, _ -> retryFailedMaterials(listOf(MaterialQueueItem(student, item))) }
             }
             builder.show()
         }.setPositiveButton("完成", null).show()
@@ -1046,10 +1337,22 @@ class MainActivity : Activity() {
     private fun testAgentConfiguration() {
         val config = runCatching { AgentConfigurationStore(this).load() }.getOrNull()
         if (config == null) { showMessage("尚未配置", "请先配置本地任务 Agent。") ; return }
-        val progress = showProgress("正在测试 Agent", "只发送最小连接测试，不读取或上传学生资料。")
+        val progress = showProgress("正在测试 Agent", "先测试文本模型，再用应用生成的 1×1 测试图片检查视觉模型；不会读取或上传学生资料。")
         Thread {
-            val result = runCatching { OpenAiCompatibleAgentAdapter(config).testConnection() }
-            runOnUiThread { progress.dismiss(); result.onSuccess { showMessage("连接测试通过", "服务 ${URI(config.endpoint).host} · ${config.model} 已返回响应。") }.onFailure { showMessage("连接测试失败", it.message ?: "未知错误") } }
+            val adapter = OpenAiCompatibleAgentAdapter(config)
+            val textResult = runCatching { adapter.testConnection() }
+            val visionResult = if (config.visionModel.isBlank()) null else runCatching { adapter.testVisionConnection() }
+            runOnUiThread {
+                progress.dismiss()
+                val textLine = if (textResult.isSuccess) "文本模型 ${config.model}：通过" else "文本模型 ${config.model}：失败\n${textResult.exceptionOrNull()?.message ?: "未知错误"}"
+                val visionLine = when {
+                    config.visionModel.isBlank() -> "视觉模型：未配置"
+                    visionResult?.isSuccess == true -> "视觉模型 ${config.visionModel}：通过"
+                    else -> "视觉模型 ${config.visionModel}：失败\n${visionResult?.exceptionOrNull()?.message ?: "未知错误"}"
+                }
+                val allPassed = textResult.isSuccess && (visionResult == null || visionResult.isSuccess)
+                showMessage(if (allPassed) "Agent 测试完成" else "Agent 测试发现问题", "服务 ${URI(config.endpoint).host}\n\n$textLine\n\n$visionLine")
+            }
         }.start()
     }
 
@@ -1207,11 +1510,43 @@ class MainActivity : Activity() {
     }
 
     private fun showConversationImportMenu() {
-        AlertDialog.Builder(this).setTitle("导入智能体对话历史")
-            .setMessage("只保存你主动粘贴、选择或从 Agent 分享的当前对话；不会读取 PalmClaw、豆包的私有聊天数据库。")
-            .setItems(arrayOf("粘贴对话文字", "导入 .md / .txt / .json 文件")) { _, which ->
-                chooseConversationSourceAgent { agent -> if (which == 0) showConversationPaste(agent) else chooseConversationFileTarget(agent) }
-            }.setNegativeButton("取消", null).show()
+        showConversationActionPanel(
+            "导入智能体对话历史",
+            "只保存你主动粘贴、选择、分享或输入公开 HTTPS 链接的当前对话；不会读取 PalmClaw、豆包的私有聊天数据库。",
+            listOf("粘贴对话文字", "导入 .md / .txt / .json 文件", "导入公开 HTTPS 对话链接"),
+        ) { which ->
+            when (which) {
+                0 -> chooseConversationSourceAgent(::showConversationPaste)
+                1 -> chooseConversationSourceAgent(::chooseConversationFileTarget)
+                2 -> chooseConversationSourceAgent(::showConversationPublicLink)
+            }
+        }
+    }
+
+    private fun showConversationPublicLink(sourceAgent: String) {
+        val input = EditText(this).apply { hint = "https://公开分享链接"; setSingleLine(true); inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_URI }
+        val dialog = AlertDialog.Builder(this).setTitle("导入公开对话链接").setMessage("仅支持公开 HTTPS 页面或文本链接，最多读取 5 MB；不会登录账号或绕过访问权限。")
+            .setView(input).setNegativeButton("取消", null).setPositiveButton("读取并预览", null).create()
+        dialog.setOnShowListener {
+            dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+                val url = input.text.toString().trim()
+                if (url.isBlank()) { input.error = "请输入 HTTPS 链接"; return@setOnClickListener }
+                dialog.dismiss(); importConversationPublicLink(sourceAgent, url)
+            }
+        }
+        dialog.show()
+    }
+
+    private fun importConversationPublicLink(sourceAgent: String, url: String) {
+        val progress = showProgress("正在读取公开对话", "只读取你明确输入的公开 HTTPS 链接。")
+        Thread {
+            val result = runCatching { ConversationPublicLinkService.fetch(url) }
+            runOnUiThread {
+                progress.dismiss()
+                result.onSuccess { content -> chooseConversationTarget(sourceAgent, content, url) }
+                    .onFailure { showMessage("链接导入失败", it.message ?: "无法读取公开对话链接") }
+            }
+        }.start()
     }
 
     private fun chooseConversationSourceAgent(onSelected: (String) -> Unit) {
@@ -1253,7 +1588,11 @@ class MainActivity : Activity() {
         val progress = showProgress("正在保存对话", "正在生成不可变原文、内容哈希和归属记录。")
         Thread {
             val result = runCatching { conversationImportService.save(studentId, projectId, sourceAgent, content, sourcePath) }
-            runOnUiThread { progress.dismiss(); result.onSuccess { showMessage("对话历史已保存", it.optString("message")) }.onFailure { showMessage("保存失败", it.message ?: "未知错误") } }
+            runOnUiThread {
+                progress.dismiss()
+                result.onSuccess { saved -> showConversationSavedActions(saved, "对话历史已保存") }
+                    .onFailure { showMessage("保存失败", it.message ?: "未知错误") }
+            }
         }.start()
     }
 
@@ -1286,7 +1625,11 @@ class MainActivity : Activity() {
                 } ?: error("无法读取所选文件")
                 conversationImportService.save(studentId, projectId, agent, bytes.toString(Charsets.UTF_8), uri.toString())
             }
-            runOnUiThread { progress.dismiss(); result.onSuccess { showMessage("对话文件已导入", it.optString("message")) }.onFailure { showMessage("导入失败", it.message ?: "未知错误") } }
+            runOnUiThread {
+                progress.dismiss()
+                result.onSuccess { saved -> showConversationSavedActions(saved, "对话文件已导入") }
+                    .onFailure { showMessage("导入失败", it.message ?: "未知错误") }
+            }
         }.start()
     }
 
@@ -1315,7 +1658,15 @@ class MainActivity : Activity() {
         if (students.isEmpty()) { showMessage("没有学生档案", "当前没有可查看的学生范围。"); return }
         AlertDialog.Builder(this).setTitle("管理学生对话历史").setItems(students.map { it.name }.toTypedArray()) { _, which ->
             val student = students[which]; val records = conversationImportService.list(student.id)
-            if (records.isEmpty()) { showMessage("没有对话历史", "${student.name} 当前没有主动保存的 Agent 对话。"); return@setItems }
+            if (records.isEmpty()) {
+                AlertDialog.Builder(this).setTitle("没有对话历史")
+                    .setMessage("${student.name} 当前没有主动保存的 Agent 对话。你可以立即粘贴文字、导入文件，或从 PalmClaw / 豆包使用 Android“分享”发送到教育管家。")
+                    .setPositiveButton("立即导入") { _, _ -> showConversationImportMenu() }
+                    .setNeutralButton("选择其他学生") { _, _ -> showSavedConversations() }
+                    .setNegativeButton("关闭", null)
+                    .show()
+                return@setItems
+            }
             AlertDialog.Builder(this).setTitle("${student.name} · 已保存对话（${records.size}）")
                 .setItems(records.map { "${it.optString("sourceAgent")} · ${conversationDigestStatusLabel(it.optString("digestStatus"))}\n${it.optString("projectName").ifBlank { "${student.name} · 学生档案" }} · ${it.optInt("messageCount")} 条消息" }.toTypedArray()) { _, index ->
                     showConversationActions(student, records[index])
@@ -1332,14 +1683,14 @@ class MainActivity : Activity() {
             "failed" -> "重新进入消化流程"
             else -> "进入消化流程"
         }
-        actions += if (status in setOf("running", "completed")) "删除说明" else "删除对话"
+        actions += if (status in setOf("running", "completed")) "删除说明" else "移入回收站"
         val scopeName = item.optString("projectName").ifBlank { "${student.name} · 学生档案" }
         val details = buildString {
             append("来源：${item.optString("sourceAgent")}\n归属：$scopeName\n状态：${conversationDigestStatusLabel(status)}\n")
             append("导入：${item.optString("importedAt")}\n消息定位：${item.optInt("messageCount")} 条\nSHA-256：${item.optString("contentHash")}")
             if (status == "failed" && item.optString("digestError").isNotBlank()) append("\n失败原因：${item.optString("digestError")}")
         }
-        AlertDialog.Builder(this).setTitle("对话历史").setMessage(details).setItems(actions.toTypedArray()) { _, which ->
+        showConversationActionPanel("对话历史", details, actions) { which ->
             when (which) {
                 0 -> openConversationDocument(item.getString("recordId"), digest = false)
                 1 -> when (status) {
@@ -1352,7 +1703,54 @@ class MainActivity : Activity() {
                     showMessage("不能直接删除", message)
                 } else confirmConversationDelete(item)
             }
-        }.setNegativeButton("关闭", null).show()
+        }
+    }
+
+    private fun showConversationSavedActions(saved: JSONObject, title: String) {
+        val record = saved.optJSONObject("record")
+        val recordId = record?.optString("recordId").orEmpty()
+        if (recordId.isBlank()) {
+            showMessage(title, saved.optString("message"))
+            return
+        }
+        showConversationActionPanel(
+            title,
+            saved.optString("message"),
+            listOf("浏览已保存原文", "进入消化流程", "打开对话知识管理"),
+        ) { which ->
+            when (which) {
+                0 -> openConversationDocument(recordId, digest = false)
+                1 -> confirmConversationDigest(conversationImportService.requireExact(recordId))
+                2 -> openConversationKnowledge(record?.optString("studentId").orEmpty(), recordId)
+            }
+        }
+    }
+
+    private fun showConversationActionPanel(title: String, details: String, actions: List<String>, onSelected: (Int) -> Unit) {
+        val body = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(20), dp(8), dp(20), dp(8))
+        }
+        body.addView(TextView(this).apply {
+            text = details
+            textSize = 14f
+            setTextColor(palette.text)
+            setPadding(0, 0, 0, dp(8))
+        }, matchWrap())
+        val dialog = AlertDialog.Builder(this).setTitle(title).setView(body).setNegativeButton("关闭", null).create()
+        actions.forEachIndexed { index, label ->
+            body.addView(themedButton(label) {
+                dialog.dismiss()
+                onSelected(index)
+            }, matchWrap())
+        }
+        dialog.show()
+    }
+
+    private fun openConversationKnowledge(studentId: String = "", recordId: String = "") {
+        startActivity(Intent(this, ConversationKnowledgeActivity::class.java)
+            .putExtra(ConversationKnowledgeActivity.EXTRA_STUDENT_ID, studentId)
+            .putExtra(ConversationKnowledgeActivity.EXTRA_RECORD_ID, recordId))
     }
 
     private fun conversationDigestStatusLabel(status: String): String = when (status) {
@@ -1396,47 +1794,141 @@ class MainActivity : Activity() {
     }
 
     private fun confirmConversationDelete(item: org.json.JSONObject) {
-        AlertDialog.Builder(this).setTitle("删除对话")
-            .setMessage("将永久删除对话原文和元数据，无法恢复；系统只保留不含原文的 SHA-256 删除审计。是否继续？")
+        AlertDialog.Builder(this).setTitle("移入回收站")
+            .setMessage("对话原文不会立即删除，可在“智能体对话知识管理—回收站”恢复。是否继续？")
             .setNegativeButton("取消", null)
-            .setPositiveButton("永久删除") { _, _ ->
-                runCatching { conversationImportService.delete(item.getString("recordId")) }
-                    .onSuccess { showMessage("已删除对话", "原文和元数据已删除，仅保留不含原文的哈希审计记录。") }
-                    .onFailure { showMessage("删除失败", it.message ?: "未知错误") }
+            .setPositiveButton("移入回收站") { _, _ ->
+                runCatching { conversationImportService.trash(item.getString("recordId")) }
+                    .onSuccess { showMessage("已移入回收站", "可在智能体对话知识管理中恢复；永久删除前会再次检查证据依赖。") }
+                    .onFailure { showMessage("移动失败", it.message ?: "未知错误") }
             }.show()
     }
 
-    private fun chooseStudentForDigest() {
-        val students = workspaceService.listStudents()
-        if (students.isEmpty()) { showMessage("没有学生档案", "请先建立学生档案。"); return }
-        AlertDialog.Builder(this).setTitle("选择要消化资料的学生").setItems(students.map { it.name }.toTypedArray()) { _, index ->
-            val student = students[index]
-            val progress = showProgress("任务正在进行", "正在为 ${student.name} 消化待处理的文本资料；完成后会自动校验任务结果。")
-            Thread {
-                val result = runCatching { StudentDigestOrchestrator(this).digestPending(student.id) }
-                runOnUiThread {
-                    progress.dismiss()
-                    result.onSuccess { refreshStudents(); showMessage("资料消化完成", "已处理 ${it.optInt("processed")} 份资料，知识声明保持候选状态。") }
-                        .onFailure { refreshStudents(); showMessage("资料消化失败", it.message ?: "未知错误") }
+    private fun chooseMaterialsForDigest() {
+        val items = materialQueueItems().filter(::materialPending)
+        if (items.isEmpty()) { showMessage("没有待消化资料", "当前没有可选择的待处理资料。"); return }
+        showBatchMaterialPicker(items, MaterialBatchAction.DIGEST)
+    }
+
+    private fun chooseMaterialsForOcr() {
+        val items = materialQueueItems().filter(::supportsOcr)
+        if (items.isEmpty()) { showMessage("没有可解析资料", "请先导入图片或 PDF。"); return }
+        showBatchMaterialPicker(items)
+    }
+
+    private fun showBatchMaterialPicker(items: List<MaterialQueueItem>, preset: MaterialBatchAction? = null) {
+        val selectable = items.take(MAX_BATCH_SELECTION)
+        val checked = BooleanArray(selectable.size) { true }
+        val labels = selectable.map { "${it.student.name} · ${materialWorkflowLabel(it)}" }.toTypedArray()
+        val title = if (items.size > selectable.size) "选择资料（本批最多 $MAX_BATCH_SELECTION 份）" else "选择资料（可多选）"
+        val dialog = AlertDialog.Builder(this).setTitle(title)
+            .setMultiChoiceItems(labels, checked) { _, which, value -> checked[which] = value }
+            .setNegativeButton("取消", null)
+            .setNeutralButton("全不选") { _, _ -> }
+            .setPositiveButton("下一步", null)
+            .create()
+        dialog.setOnShowListener {
+            dialog.getButton(AlertDialog.BUTTON_NEUTRAL).setOnClickListener {
+                checked.indices.forEach { index -> checked[index] = false; dialog.listView.setItemChecked(index, false) }
+            }
+            dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+                val selected = selectable.indices.filter { checked[it] }.map { selectable[it] }
+                if (selected.isEmpty()) { showMessage("尚未选择资料", "请至少选择一份资料。"); return@setOnClickListener }
+                dialog.dismiss()
+                if (preset == null) showMaterialActions(selected) else runMaterialBatch(selected, preset)
+            }
+        }
+        dialog.show()
+    }
+
+    private fun showMaterialActions(items: List<MaterialQueueItem>) {
+        val actions = listOf(
+            MaterialBatchAction.LOCAL_OCR,
+            MaterialBatchAction.OCR_AND_VISION,
+            MaterialBatchAction.DIGEST,
+            MaterialBatchAction.RETRY,
+        )
+        AlertDialog.Builder(this).setTitle("处理已选 ${items.size} 份资料")
+            .setItems(actions.map { it.label }.toTypedArray()) { _, which -> runMaterialBatch(items, actions[which]) }
+            .setNegativeButton("取消", null).show()
+    }
+
+    private fun runMaterialBatch(items: List<MaterialQueueItem>, action: MaterialBatchAction) {
+        when (action) {
+            MaterialBatchAction.LOCAL_OCR -> runBatchOcr(items, false)
+            MaterialBatchAction.OCR_AND_VISION -> runBatchOcr(items, true)
+            MaterialBatchAction.DIGEST -> runBatchDigest(items)
+            MaterialBatchAction.RETRY -> retryFailedMaterials(items)
+        }
+    }
+
+    private fun supportsOcr(item: MaterialQueueItem): Boolean =
+        item.material.optString("fileName").substringAfterLast('.', "").lowercase() in OCR_EXTENSIONS
+
+    private fun runBatchOcr(items: List<MaterialQueueItem>, includeVision: Boolean) {
+        val eligible = items.filter(::supportsOcr)
+        if (eligible.isEmpty()) { showMessage("没有可解析资料", "所选资料中没有图片或 PDF。"); return }
+        val progress = showProgress(if (includeVision) "批量 OCR + 视觉理解" else "批量本地 OCR", "正在准备 ${eligible.size} 份资料……")
+        Thread {
+            var completed = 0
+            val failures = mutableListOf<String>()
+            eligible.forEachIndexed { index, item ->
+                runOnUiThread { progress.setMessage("${index + 1}/${eligible.size} · ${item.student.name} · ${item.material.optString("fileName")}") }
+                runCatching { OcrVisionService(this).extract(item.student.id, item.material.getString("id"), includeVision) }
+                    .onSuccess { completed += 1 }
+                    .onFailure { failures += "${item.material.optString("fileName")}：${it.message ?: "解析失败"}" }
+            }
+            runOnUiThread {
+                progress.dismiss(); refreshStudents()
+                if (activeSection == AppSection.MATERIALS) renderSection(AppSection.MATERIALS, activeMaterialQueueFilter)
+                showMessage("批量解析完成", "成功 $completed 份，失败 ${failures.size} 份。${if (failures.isEmpty()) "" else "\n\n${failures.take(5).joinToString("\n")}"}")
+            }
+        }.start()
+    }
+
+    private fun runBatchDigest(items: List<MaterialQueueItem>) {
+        val eligible = items.filter {
+            materialPending(it) && (it.material.optString("fileName").substringAfterLast('.', "").lowercase() in DIGEST_TEXT_EXTENSIONS || it.material.optString("ocrStatus") == "completed")
+        }
+        if (eligible.isEmpty()) { showMessage("没有可消化资料", "请先对图片或 PDF 完成本地 OCR；文本、Markdown、CSV 和 JSON 可直接消化。"); return }
+        val groups = eligible.groupBy { it.student.id }
+        val progress = showProgress("批量消化资料", "正在准备 ${eligible.size} 份资料……")
+        Thread {
+            var completed = 0
+            val failures = mutableListOf<String>()
+            groups.values.forEachIndexed { index, group ->
+                val student = group.first().student
+                runOnUiThread { progress.setMessage("${index + 1}/${groups.size} · ${student.name} · ${group.size} 份资料") }
+                runCatching { StudentDigestOrchestrator(this).digestSelected(student.id, group.map { it.material.getString("id") }.toSet()) }
+                    .onSuccess { completed += it.optInt("processed") }
+                    .onFailure { failures += "${student.name}：${it.message ?: "消化失败"}" }
+            }
+            runOnUiThread {
+                progress.dismiss(); refreshStudents()
+                if (activeSection == AppSection.MATERIALS) renderSection(AppSection.MATERIALS, activeMaterialQueueFilter)
+                showMessage("批量消化完成", "已处理 $completed 份，失败 ${failures.size} 组；知识声明仍保持候选状态。${if (failures.isEmpty()) "" else "\n\n${failures.take(5).joinToString("\n")}"}")
+            }
+        }.start()
+    }
+
+    private fun retryFailedMaterials(items: List<MaterialQueueItem>) {
+        var reset = 0
+        val failures = mutableListOf<String>()
+        items.forEach { item ->
+            runCatching {
+                val material = item.material
+                if (MaterialStatus.normalize(material.optString("status")) == MaterialStatus.FAILED) {
+                    fileAssetService.transitionMaterial(item.student.id, material.getString("id"), MaterialStatus.PENDING_DIGEST)
                 }
-            }.start()
-        }.show()
-    }
-
-    private fun chooseMaterialForOcr() {
-        val students = workspaceService.listStudents()
-        if (students.isEmpty()) { showMessage("没有学生档案", "请先建立学生档案。"); return }
-        AlertDialog.Builder(this).setTitle("选择资料所属学生").setItems(students.map { it.name }.toTypedArray()) { _, studentIndex ->
-            val student = students[studentIndex]
-            val materials = fileAssetService.materials(student.id).filter { it.optString("status") != "removed" }
-            if (materials.isEmpty()) { showMessage("没有可解析资料", "请先导入图片或 PDF。"); return@setItems }
-            AlertDialog.Builder(this).setTitle("选择要解析的资料").setItems(materials.map { it.optString("fileName") }.toTypedArray()) { _, materialIndex ->
-                val material = materials[materialIndex]
-                AlertDialog.Builder(this).setTitle("解析方式").setMessage("OCR 在设备本地运行；视觉理解会把压缩后的预览页发送给已配置的视觉模型。")
-                    .setNegativeButton("仅本地 OCR") { _, _ -> runOcr(student, material, false) }
-                    .setPositiveButton("OCR + 视觉理解") { _, _ -> runOcr(student, material, true) }.show()
-            }.show()
-        }.show()
+                val patch = JSONObject()
+                if (material.optString("ocrStatus") == "failed") patch.put("ocrStatus", "pending").put("ocrError", "")
+                if (material.optString("visionStatus") in setOf("failed", "unavailable")) patch.put("visionStatus", "pending").put("visionError", "")
+                if (patch.length() > 0) fileAssetService.patchMaterial(item.student.id, material.getString("id"), patch)
+                reset += 1
+            }.onFailure { failures += "${item.material.optString("fileName")}：${it.message ?: "重试准备失败"}" }
+        }
+        if (activeSection == AppSection.MATERIALS) renderSection(AppSection.MATERIALS, activeMaterialQueueFilter)
+        showMessage("已重新加入处理队列", "已重置 $reset 份，失败 ${failures.size} 份。现在可再次执行 OCR、视觉理解或资料消化。${if (failures.isEmpty()) "" else "\n\n${failures.take(5).joinToString("\n")}"}")
     }
 
     private fun runOcr(student: StudentRecord, material: org.json.JSONObject, includeVision: Boolean) {
@@ -1491,11 +1983,12 @@ class MainActivity : Activity() {
     }
 
     private fun showGrowthActions(student: StudentRecord) {
-        val actions = arrayOf("查看成长模型摘要", "添加成长证据候选", "审核成长证据", "重建成长模型索引")
+        val pendingCount = runCatching { GrowthModelService(this).candidates(student.id).count { it.optString("status") in setOf("pending", "watching") } }.getOrDefault(0)
+        val actions = arrayOf("查看成长模型摘要", "审核待确认成长证据（$pendingCount）", "高级：手工添加成长证据", "重建成长模型索引")
         AlertDialog.Builder(this).setTitle("${student.name} · 成长模型").setItems(actions) { _, which -> when (which) {
             0 -> showGrowthSummary(student)
-            1 -> showGrowthCandidateDialog(student)
-            2 -> reviewGrowthCandidate(student)
+            1 -> reviewGrowthCandidate(student)
+            2 -> showGrowthCandidateDialog(student)
             3 -> runCatching { GrowthModelService(this).rebuildIndex(student.id) }.onSuccess { showMessage("索引已重建", "成长模型结构化索引已更新。") }.onFailure { showMessage("重建失败", it.message ?: "未知错误") }
         } }.show()
     }
@@ -1548,11 +2041,30 @@ class MainActivity : Activity() {
         if (candidates.isEmpty()) { showMessage("没有待审核候选", "当前没有 pending 或 watching 成长证据。"); return }
         AlertDialog.Builder(this).setTitle("选择成长证据").setItems(candidates.map { "${it.optString("title")} · ${it.optString("status")}" }.toTypedArray()) { _, index ->
             val item = candidates[index]
-            AlertDialog.Builder(this).setTitle(item.optString("title")).setMessage("来源：${item.optString("sourceUri")}\n能力：${item.optString("ability")}\n\n${item.optString("content")}")
+            val needsSource = GrowthEvidencePolicy.requiresPrimarySource(item)
+            val sourceLabel = if (needsSource) "缺少可核验的原始资料（历史报告不能作为自身证据）" else item.optString("sourceUri")
+            val builder = AlertDialog.Builder(this).setTitle(item.optString("title")).setMessage("来源：$sourceLabel\n能力：${item.optString("ability")}\n\n${item.optString("content")}")
                 .setNegativeButton("驳回") { _, _ -> reviewGrowth(student, item, "rejected") }
                 .setNeutralButton("继续观察") { _, _ -> reviewGrowth(student, item, "watching") }
-                .setPositiveButton("确认采用") { _, _ -> reviewGrowth(student, item, "confirmed") }.show()
+            if (needsSource) builder.setPositiveButton("补充来源") { _, _ -> chooseGrowthCandidateSource(student, item) }
+            else builder.setPositiveButton("确认采用") { _, _ -> reviewGrowth(student, item, "confirmed") }
+            builder.show()
         }.show()
+    }
+
+    private fun chooseGrowthCandidateSource(student: StudentRecord, item: org.json.JSONObject) {
+        val materials = FileAssetService(this).materials(student.id)
+        if (materials.isEmpty()) { showMessage("没有可选原始资料", "请先在“资料收集与处理”导入、拍照或采集原始资料，再返回补充来源。"); return }
+        val labels = materials.map { material ->
+            val source = material.optString("sourceName").ifBlank { material.optString("sourceType") }
+            "${material.optString("fileName")} · ${source.ifBlank { "原始资料" }}"
+        }.toTypedArray()
+        AlertDialog.Builder(this).setTitle("选择支撑这条证据的原始资料").setItems(labels) { _, index ->
+            val material = materials[index]
+            runCatching { GrowthModelService(this).attachCandidateSource(student.id, item.getString("id"), material.getString("id"), material.optString("fileName")) }
+                .onSuccess { showMessage("来源已补充", "该候选现在可以再次打开并确认采用；历史报告路径仍保留用于审计。") }
+                .onFailure { showMessage("补充来源失败", it.message ?: "未知错误") }
+        }.setNegativeButton("取消", null).show()
     }
 
     private fun reviewGrowth(student: StudentRecord, item: org.json.JSONObject, status: String) {
@@ -1566,9 +2078,20 @@ class MainActivity : Activity() {
             val result = runCatching { GrowthModelService(this).generateReportDrafts(student.id) }
             runOnUiThread {
                 progress.dismiss()
-                result.onSuccess {
-                    AlertDialog.Builder(this).setTitle("四份报告草稿已生成").setMessage("请确认是否将草稿发布为正式的整体画像、历史变化、每周行动建议（文件名保持每日行动建议.md）和阶段总结。")
-                        .setNegativeButton("暂不发布", null).setPositiveButton("确认发布") { _, _ ->
+                result.onSuccess { generated ->
+                    val warnings = generated.optJSONArray("warnings")
+                    val detail = buildString {
+                        append(generated.optString("message", "四份报告草稿已生成。"))
+                        append("\n\n请先预览，再决定是否发布为正式报告。正式报告不会在生成阶段自动覆盖。")
+                        if (warnings != null && warnings.length() > 0) append("\n\n自动保守处理 ${warnings.length()} 项模型漏项或无依据内容。")
+                    }
+                    AlertDialog.Builder(this).setTitle("四份报告草稿已生成").setMessage(detail)
+                        .setNegativeButton("暂不发布", null)
+                        .setNeutralButton("预览草稿") { _, _ -> startActivity(Intent(this, MarkdownBrowserActivity::class.java)
+                            .putExtra(MarkdownBrowserActivity.EXTRA_MODE, MarkdownBrowserActivity.MODE_REPORT_DRAFT)
+                            .putExtra(MarkdownBrowserActivity.EXTRA_STUDENT_ID, student.id)
+                            .putExtra(MarkdownBrowserActivity.EXTRA_TITLE, "${student.name} · 待审核报告草稿")) }
+                        .setPositiveButton("确认发布") { _, _ ->
                             runCatching { GrowthModelService(this).publishReportDrafts(student.id) }.onSuccess { published -> showMessage("报告已发布", published.getString("message")) }
                                 .onFailure { error -> showMessage("发布失败", error.message ?: "未知错误") }
                         }.show()
@@ -1719,6 +2242,7 @@ class MainActivity : Activity() {
 
     private data class StudentInput(val name: String, val grade: String, val school: String, val goal: String)
     private data class ProjectInput(val name: String, val type: String, val description: String, val objective: String, val studentIds: List<String>)
+    private data class MaterialQueueItem(val student: StudentRecord, val material: JSONObject)
     private data class AgentToolDefinition(
         val id: String,
         val displayName: String,
@@ -1728,8 +2252,9 @@ class MainActivity : Activity() {
         val allowedDownloadHost: String,
     )
 
-    private companion object {
+    companion object {
         const val STATE_SECTION = "active_section"
+        const val EXTRA_OPEN_CONVERSATION_IMPORT = "open_conversation_import"
         const val REQUEST_WORKSPACE_ROOT = 2101
         const val REQUEST_ADOPTED_ROOT = 2102
         const val REQUEST_IMPORT_FILES = 2103
@@ -1750,6 +2275,22 @@ class MainActivity : Activity() {
         const val REQUEST_DEVICE_MIGRATION_SOURCE = 2118
         const val REQUEST_DEVICE_MIGRATION_TARGET = 2119
         const val REQUEST_DEVICE_MIGRATION_NOTIFICATION = 2120
+        const val OFFLINE_MIGRATION_POLL_MS = 1_000L
+        const val MAX_VISIBLE_MATERIAL_GROUPS = 100
+        const val MAX_BATCH_SELECTION = 200
+        val OCR_EXTENSIONS = setOf("jpg", "jpeg", "png", "webp", "bmp", "pdf")
+        val DIGEST_TEXT_EXTENSIONS = setOf("txt", "md", "csv", "json")
+    }
+
+    private enum class MaterialQueueFilter(val label: String) {
+        ALL("全部"), ACTION_REQUIRED("处理中"), NEEDS_HELP("需要补充")
+    }
+
+    private enum class MaterialBatchAction(val label: String) {
+        LOCAL_OCR("批量本地 OCR"),
+        OCR_AND_VISION("批量 OCR + 视觉理解"),
+        DIGEST("批量消化"),
+        RETRY("将失败项重新加入待处理"),
     }
 
     private enum class AppSection(val label: String) {

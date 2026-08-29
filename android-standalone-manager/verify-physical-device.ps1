@@ -2,7 +2,8 @@ param(
   [Parameter(Mandatory = $true)]
   [string]$ApkPath,
   [string]$DeviceSerial = '',
-  [string]$EvidenceDirectory = ''
+  [string]$EvidenceDirectory = '',
+  [switch]$KnowledgeCollaboration
 )
 
 $ErrorActionPreference = 'Stop'
@@ -12,12 +13,15 @@ $adb = Join-Path $repositoryRoot '.android-tools\sdk\platform-tools\adb.exe'
 $buildTools = Join-Path $repositoryRoot '.android-tools\sdk\build-tools\34.0.0'
 $apksigner = Join-Path $buildTools 'apksigner.bat'
 $aapt = Join-Path $buildTools 'aapt.exe'
+$apkanalyzer = Join-Path $repositoryRoot '.android-tools\sdk\cmdline-tools\latest\bin\apkanalyzer.bat'
 $jdkHome = Join-Path $repositoryRoot '.android-tools\jdk\jdk-21.0.11+10'
 $java = Join-Path $jdkHome 'bin\java.exe'
 $packageName = 'com.qxmatrix.edumanager.standalone'
 $launcherActivity = "$packageName/.MainActivity"
 
-foreach ($tool in @($adb, $apksigner, $aapt, $java)) {
+$requiredTools = @($adb, $apksigner, $aapt, $java)
+if ($KnowledgeCollaboration) { $requiredTools += $apkanalyzer }
+foreach ($tool in $requiredTools) {
   if (-not (Test-Path -LiteralPath $tool -PathType Leaf)) {
     throw "Required Android tool does not exist: $tool"
   }
@@ -71,6 +75,42 @@ try {
   }
   $expectedVersionCode = $packageMatch.Groups[2].Value
   $expectedVersionName = $packageMatch.Groups[3].Value
+
+  $collaborationPackageStructure = 'not-requested'
+  if ($KnowledgeCollaboration) {
+    try {
+      if ([version]$expectedVersionName -lt [version]'1.1.3') {
+        throw "Knowledge collaboration acceptance requires Android standalone 1.1.3 or newer; APK is $expectedVersionName."
+      }
+    } catch {
+      throw "Unable to validate the knowledge collaboration APK version: $($_.Exception.Message)"
+    }
+    $manifestOutput = (& $apkanalyzer manifest print $verificationApk 2>&1 | Out-String)
+    if ($LASTEXITCODE -ne 0) { throw 'Unable to inspect the APK manifest for knowledge collaboration.' }
+    foreach ($marker in @(
+      'com.qxmatrix.edumanager.standalone.CollaborationActivity',
+      'com.qxmatrix.edumanager.standalone.CollaborationQrScannerActivity',
+      'com.qxmatrix.edumanager.standalone.CollaborationNearbyService',
+      'androidx.work.impl.foreground.SystemForegroundService'
+    )) {
+      if ($manifestOutput -notmatch [regex]::Escape($marker)) {
+        throw "The APK is missing the knowledge collaboration manifest component: $marker"
+      }
+    }
+    $dexPackages = (& $apkanalyzer dex packages --defined-only $verificationApk 2>&1 | Out-String)
+    if ($LASTEXITCODE -ne 0) { throw 'Unable to inspect APK classes for knowledge collaboration.' }
+    foreach ($marker in @(
+      'com.qxmatrix.edumanager.standalone.CollaborationActivity',
+      'com.qxmatrix.edumanager.standalone.CollaborationDatabase',
+      'com.qxmatrix.edumanager.standalone.CollaborationRecoveryWorker',
+      'com.qxmatrix.edumanager.standalone.CollaborationNearbyService'
+    )) {
+      if ($dexPackages -notmatch [regex]::Escape($marker)) {
+        throw "The APK is missing the knowledge collaboration runtime component: $marker"
+      }
+    }
+    $collaborationPackageStructure = 'passed'
+  }
 
   $devicesOutput = Invoke-AdbText -CommandArgs @('devices', '-l')
   $readyLines = @($devicesOutput -split "`r?`n" | Where-Object { $_ -match '^\S+\s+device(?:\s|$)' })
@@ -155,8 +195,27 @@ try {
     [ordered]@{ id = 'backup-restore'; status = 'pending'; evidence = ''; requirement = 'Export an encrypted backup and restore it into an empty selected directory.' },
     [ordered]@{ id = 'reboot-persistence'; status = 'pending'; evidence = ''; requirement = 'Reboot the tablet and verify SAF access, indexes, students, projects, and courses remain usable.' }
   )
+  if ($KnowledgeCollaboration) {
+    $manualAcceptance += @(
+      [ordered]@{ id = 'collaboration-pairing-three-paths'; status = 'pending'; evidence = ''; requirement = 'Pair with Windows by QR code, six-digit temporary code, and pasted connection information; verify the same trusted device is not duplicated.' },
+      [ordered]@{ id = 'collaboration-exact-student-map'; status = 'pending'; evidence = ''; requirement = 'Map at least two students by exact local and peer IDs; verify names are never used as fallback and each student remains isolated.' },
+      [ordered]@{ id = 'collaboration-scope-isolation'; status = 'pending'; evidence = ''; requirement = 'Synchronize confirmed knowledge, growth model, published reports, and education archive; verify raw materials, drafts, secrets, SAF URIs, and absolute paths are absent.' },
+      [ordered]@{ id = 'collaboration-large-inventory'; status = 'pending'; evidence = ''; requirement = 'Verify 5005 files form resumable packages, test near the 20000-file boundary, and confirm over-limit scans fail explicitly without silent omission.' },
+      [ordered]@{ id = 'collaboration-large-file-resume'; status = 'pending'; evidence = ''; requirement = 'Transfer a file near the 64 MB limit, interrupt the network during upload, and verify resume continues from the acknowledged offset.' },
+      [ordered]@{ id = 'collaboration-foreground-recovery'; status = 'pending'; evidence = ''; requirement = 'Start manual sync, verify the data-sync foreground notification, kill the app or reboot, and verify persistent queue recovery without duplicate materialization.' },
+      [ordered]@{ id = 'collaboration-conflict-delete'; status = 'pending'; evidence = ''; requirement = 'Modify the same file on both nodes and verify a conflict copy; delete a remote file and verify recoverable recycle behavior without silent local deletion.' },
+      [ordered]@{ id = 'collaboration-lan-tailscale'; status = 'pending'; evidence = ''; requirement = 'Verify LAN is preferred and an interrupted or unavailable LAN path falls back to the saved Tailscale endpoint.' },
+      [ordered]@{ id = 'collaboration-student-terminal-regression'; status = 'pending'; evidence = ''; requirement = 'Verify Android student terminal 0.6.14 keeps the existing host connection workflow and is not registered as a knowledge collaboration node.' },
+      [ordered]@{ id = 'collaboration-android-nearby-receiver'; status = 'pending'; evidence = ''; requirement = 'On Android 13 or newer, grant notification permission, start nearby receiving, verify the persistent notification and real running status, then stop it from both the app and notification.' },
+      [ordered]@{ id = 'collaboration-android-wifi-hotspot'; status = 'pending'; evidence = ''; requirement = 'Pair two Android standalone devices over the same Wi-Fi and over a hotspot using QR and six-digit code, then verify exact-device identity and no duplicate trust record.' },
+      [ordered]@{ id = 'collaboration-android-pairing-guard'; status = 'pending'; evidence = ''; requirement = 'Enter incorrect pairing information five times from one peer, verify increasing cooldown and invitation invalidation, then generate a new invitation and pair successfully.' },
+      [ordered]@{ id = 'collaboration-android-reverse-sync'; status = 'pending'; evidence = ''; requirement = 'Synchronize one exact student in each direction and verify the receiver reports reverse_queued only when the reverse job is actually persisted.' },
+      [ordered]@{ id = 'collaboration-android-staging-guard'; status = 'pending'; evidence = ''; requirement = 'Interrupt package transfer, verify resume, seven-day stale cleanup policy, 4 GB aggregate reservation limit, 512 MB free-space reserve, and cleanup after device revocation without deleting governed archives.' }
+    )
+  }
   $result = [ordered]@{
     schema = 'edu-manager.android-physical-acceptance.v1'
+    profile = if ($KnowledgeCollaboration) { 'knowledge-collaboration-p5' } else { 'standalone-general' }
     overall = 'automated-ready-manual-pending'
     createdAt = [DateTime]::UtcNow.ToString('yyyy-MM-ddTHH:mm:ss.fffZ')
     apk = [ordered]@{
@@ -187,6 +246,7 @@ try {
       installedVersion = 'passed'
       screenshotCaptured = 'passed'
       uiHierarchyCaptured = 'passed'
+      knowledgeCollaborationPackageStructure = $collaborationPackageStructure
     }
     manualAcceptance = $manualAcceptance
   }

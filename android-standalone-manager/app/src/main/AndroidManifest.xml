@@ -32,6 +32,14 @@
             android:exported="false"
             android:resizeableActivity="true" />
         <activity
+            android:name=".ConversationKnowledgeActivity"
+            android:exported="false"
+            android:resizeableActivity="true" />
+        <activity
+            android:name=".RawMaterialBrowserActivity"
+            android:exported="false"
+            android:resizeableActivity="true" />
+        <activity
             android:name=".ScreenCaptureActivity"
             android:exported="false"
             android:resizeableActivity="true" />
@@ -85,6 +93,11 @@
             android:name=".StandaloneDeviceMigrationService"
             android:exported="false"
             android:foregroundServiceType="dataSync" />
+        <service
+            android:name=".CollaborationNearbyService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync"
+            android:stopWithTask="false" />
         <service
             android:name="androidx.work.impl.foreground.SystemForegroundService"
             android:foregroundServiceType="dataSync"

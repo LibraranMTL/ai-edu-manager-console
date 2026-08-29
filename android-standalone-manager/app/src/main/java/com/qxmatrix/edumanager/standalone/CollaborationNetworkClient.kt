@@ -25,7 +25,7 @@ internal object CollaborationLanDiscovery {
             put("type", "AI_EDU_MANAGER_DISCOVER")
             put("protocolVersion", 2)
             put("requestId", "android-collaboration-discover-${UUID.randomUUID()}")
-            put("searchRole", "host")
+            put("searchRole", "all")
         }.toString().toByteArray(Charsets.UTF_8)
         val results = linkedMapOf<String, DiscoveredCollaborationHost>()
         DatagramSocket().use { socket ->
@@ -44,7 +44,7 @@ internal object CollaborationLanDiscovery {
                     continue
                 }
                 val payload = runCatching { JSONObject(String(packet.data, packet.offset, packet.length, Charsets.UTF_8)) }.getOrNull() ?: continue
-                if (payload.optString("type") != "AI_EDU_MANAGER_DISCOVERY" || payload.optString("role") != "host") continue
+                if (payload.optString("type") != "AI_EDU_MANAGER_DISCOVERY" || payload.optString("role") !in setOf("host", "standalone")) continue
                 val nodeId = payload.optString("deviceId").trim()
                 if (nodeId.isBlank()) continue
                 val port = payload.optInt("port", 18777).coerceIn(1, 65535)
@@ -56,7 +56,7 @@ internal object CollaborationLanDiscovery {
                 if (endpoints.isEmpty()) continue
                 results[nodeId] = DiscoveredCollaborationHost(
                     nodeId = nodeId,
-                    displayName = payload.optString("displayName").ifBlank { payload.optString("hostName") }.ifBlank { "Windows 协作主机" },
+                    displayName = payload.optString("displayName").ifBlank { payload.optString("hostName") }.ifBlank { "附近协作设备" },
                     endpoints = endpoints,
                 )
             }
@@ -74,16 +74,20 @@ internal object CollaborationLanDiscovery {
 }
 
 internal class CollaborationNetworkClient {
-    fun join(connection: CollaborationConnectionInfo, localNode: CollaborationNodeIdentity): VerifiedDevicePairing {
+    fun join(
+        connection: CollaborationConnectionInfo,
+        localNode: CollaborationNodeIdentity,
+        localEndpoints: List<String> = emptyList(),
+    ): VerifiedDevicePairing {
         val discovered = if (connection.endpoints.isEmpty()) CollaborationLanDiscovery.discover() else emptyList()
         val candidates = if (connection.endpoints.isNotEmpty()) connection.endpoints else discovered.flatMap { it.endpoints }
-        require(candidates.isNotEmpty()) { "尚未发现 Windows 协作主机；请确认两台设备在同一局域网，或粘贴完整连接信息" }
-        var lastError = "没有主机接受该临时码"
+        require(candidates.isNotEmpty()) { "尚未发现协作设备；请确认两台设备在同一局域网或热点，或粘贴完整连接信息" }
+        var lastError = "没有协作设备接受该临时码"
         for (endpoint in candidates.distinct().take(8)) {
             try {
-                val payload = postJoin(endpoint, connection, localNode)
+                val payload = postJoin(endpoint, connection, localNode, localEndpoints)
                 val confirmation = requireNotNull(payload.optJSONObject("confirmation")) {
-                    payload.optString("message").ifBlank { "主机没有返回设备配对确认" }
+                    payload.optString("message").ifBlank { "对方没有返回设备配对确认" }
                 }
                 val verified = CollaborationPairingProtocol.verifyDeviceConfirmation(confirmation, localNode.nodeId)
                 if (connection.expectedNodeId.isNotBlank()) require(verified.peerNodeId == connection.expectedNodeId) { "返回的主机身份与连接信息不一致" }
@@ -97,7 +101,7 @@ internal class CollaborationNetworkClient {
 
     fun confirmStudentMapping(endpoints: List<String>, acceptanceJson: String) {
         require(endpoints.isNotEmpty()) { "协作设备没有可用的确认地址" }
-        var lastError = "无法把学生映射确认发回 Windows 主机"
+        var lastError = "无法把学生映射确认发回协作设备"
         for (endpoint in endpoints.mapNotNull(CollaborationPairingProtocol::normalizeEndpoint).distinct().take(8)) {
             val http = try {
                 (URL("$endpoint/api/collaboration/student-map/accept").openConnection() as HttpURLConnection).apply {
@@ -117,9 +121,9 @@ internal class CollaborationNetworkClient {
                 val response = (if (status in 200..299) http.inputStream else http.errorStream)
                     ?.bufferedReader()?.use { it.readText() }.orEmpty()
                 val parsed = runCatching { JSONObject(response) }
-                    .getOrElse { JSONObject().put("message", "主机返回了无法识别的响应（HTTP $status）") }
+                    .getOrElse { JSONObject().put("message", "协作设备返回了无法识别的响应（HTTP $status）") }
                 require(status in 200..299 && parsed.optBoolean("ok")) {
-                    parsed.optString("message").ifBlank { "主机没有确认学生映射（HTTP $status）" }
+                    parsed.optString("message").ifBlank { "协作设备没有确认学生映射（HTTP $status）" }
                 }
                 return
             } catch (error: Exception) {
@@ -131,7 +135,12 @@ internal class CollaborationNetworkClient {
         error(lastError)
     }
 
-    private fun postJoin(endpoint: String, connection: CollaborationConnectionInfo, localNode: CollaborationNodeIdentity): JSONObject {
+    private fun postJoin(
+        endpoint: String,
+        connection: CollaborationConnectionInfo,
+        localNode: CollaborationNodeIdentity,
+        localEndpoints: List<String>,
+    ): JSONObject {
         val http = URL("$endpoint/api/collaboration/device-pair/join").openConnection() as HttpURLConnection
         http.requestMethod = "POST"
         http.connectTimeout = 4_000
@@ -142,13 +151,22 @@ internal class CollaborationNetworkClient {
             put("invitationId", connection.invitationId)
             put("pairingCode", connection.pairingCode)
             put("acceptingNode", localNode.toJson())
-            put("transportOffers", org.json.JSONArray())
+            put("transportOffers", org.json.JSONArray().apply {
+                val endpoints = localEndpoints.mapNotNull(CollaborationPairingProtocol::normalizeEndpoint).distinct().take(8)
+                if (endpoints.isNotEmpty()) put(JSONObject().apply {
+                    put("transportId", "lan_direct")
+                    put("protocolVersion", "1.1")
+                    put("endpoints", org.json.JSONArray(endpoints))
+                    put("preferred", true)
+                    put("nodeId", localNode.nodeId)
+                })
+            })
         }.toString().toByteArray(Charsets.UTF_8)
         http.outputStream.use { it.write(body) }
         val status = http.responseCode
         val response = (if (status in 200..299) http.inputStream else http.errorStream)?.bufferedReader()?.use { it.readText() }.orEmpty()
-        val parsed = runCatching { JSONObject(response) }.getOrElse { JSONObject().put("message", "主机返回了无法识别的响应（HTTP $status）") }
-        require(status in 200..299) { parsed.optString("message").ifBlank { "连接主机失败（HTTP $status）" } }
+        val parsed = runCatching { JSONObject(response) }.getOrElse { JSONObject().put("message", "协作设备返回了无法识别的响应（HTTP $status）") }
+        require(status in 200..299) { parsed.optString("message").ifBlank { "连接协作设备失败（HTTP $status）" } }
         http.disconnect()
         return parsed
     }

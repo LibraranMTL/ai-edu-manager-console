@@ -11,9 +11,19 @@ class StudentDigestOrchestrator(private val context: Context) {
     private val files = FileAssetService(context)
     private val tasks = TaskRepository(context)
 
-    fun digestPending(studentId: String): JSONObject {
+    fun digestPending(studentId: String): JSONObject = digest(studentId, null)
+
+    fun digestSelected(studentId: String, materialIds: Set<String>): JSONObject {
+        require(materialIds.isNotEmpty()) { "没有选择要消化的资料" }
+        return digest(studentId, materialIds)
+    }
+
+    private fun digest(studentId: String, selectedMaterialIds: Set<String>?): JSONObject {
         val student = students.requireExact(studentId)
-        val materials = files.materials(studentId).filter { MaterialStatus.normalize(it.optString("status")) == MaterialStatus.PENDING_DIGEST }
+        val materials = files.materials(studentId).filter {
+            MaterialStatus.normalize(it.optString("status")) == MaterialStatus.PENDING_DIGEST &&
+                (selectedMaterialIds == null || it.optString("id") in selectedMaterialIds)
+        }
         require(materials.isNotEmpty()) { "当前没有待消化资料" }
         val eligible = materials.filter { it.optString("fileName").substringAfterLast('.', "").lowercase() in setOf("txt", "md", "csv", "json") || it.optString("ocrStatus") == "completed" }
         require(eligible.isNotEmpty()) { "当前待消化资料需要先经过 W7 OCR/文档解析" }
@@ -48,6 +58,7 @@ class StudentDigestOrchestrator(private val context: Context) {
             store.writeBytesSafely(artifactPath, digestMarkdown(student, parsed, sourceContents).toByteArray(), "text/markdown")
             updateWikiIndexes(store, student, artifactPath)
             registerKnowledge(student, sourceContents, parsed)
+            registerGrowthEvidence(student, sourceContents, parsed)
             eligible.forEach { files.transitionMaterial(studentId, it.getString("id"), MaterialStatus.PROCESSED) }
             val result = resultPayload(task.getString("id"), executionId, true, "已消化 ${eligible.size} 份资料", artifactPath)
             tasks.acceptResult(task.getString("id"), result)
@@ -67,9 +78,32 @@ class StudentDigestOrchestrator(private val context: Context) {
         appendLine("""
 
             返回格式：
-            {"summary":"批次摘要","concepts":["概念"],"entities":["实体"],"qa":[{"question":"问题","answer":"答案"}],"claims":[{"predicate":"声明类型","value":"候选判断","confidence":"low|medium|high","sourceMaterialId":"资料ID","excerpt":"证据摘录"}]}
+            {"summary":"批次摘要","concepts":["概念"],"entities":["实体"],"qa":[{"question":"问题","answer":"答案"}],"claims":[{"predicate":"声明类型","value":"候选判断","confidence":"low|medium|high","sourceMaterialId":"资料ID","excerpt":"证据摘录"}],"growthEvidence":[{"title":"可审核的观察标题","ability":"支撑的能力维度或待标注","observation":"只描述资料中可直接观察到的学习行为或成果","confidence":"low|medium","sourceMaterialId":"资料ID","excerpt":"原文摘录"}]}
             claims 只能是 candidate；没有来源证据就不要生成。不得输出学生人格、能力或诊断性标签。
+            growthEvidence 只登记原始资料直接支持的学习行为、作品成果、订正或执行事实；不能从分数、报告或单次表现推断人格和稳定能力。没有这类事实时返回空数组。
         """.trimIndent())
+    }
+
+    private fun registerGrowthEvidence(student: StudentRecord, sources: List<Pair<JSONObject, String>>, parsed: JSONObject) {
+        val sourceByMaterial = sources.associate { (material, _) -> material.optString("id") to material }
+        val candidates = parsed.optJSONArray("growthEvidence") ?: JSONArray(); val growth = GrowthModelService(context)
+        for (index in 0 until candidates.length()) {
+            val candidate = candidates.optJSONObject(index) ?: continue
+            val material = sourceByMaterial[candidate.optString("sourceMaterialId")] ?: continue
+            val title = candidate.optString("title").trim(); val observation = candidate.optString("observation").trim()
+            if (title.isBlank() || observation.isBlank()) continue
+            val excerpt = candidate.optString("excerpt").trim()
+            val content = if (excerpt.isBlank() || observation.contains(excerpt)) observation else "$observation\n\n原文摘录：$excerpt"
+            growth.addAutomaticCandidate(
+                studentId = student.id,
+                title = title,
+                ability = candidate.optString("ability", "待标注"),
+                sourceUri = "edu://student/${student.id}/raw/${material.getString("id")}",
+                content = content,
+                confidence = candidate.optString("confidence", "unknown"),
+                generatedBy = "local-agent-student-digest",
+            )
+        }
     }
 
     private fun registerKnowledge(student: StudentRecord, sources: List<Pair<JSONObject, String>>, parsed: JSONObject) {
@@ -84,7 +118,7 @@ class StudentDigestOrchestrator(private val context: Context) {
             val candidate = claims.optJSONObject(index) ?: continue; val materialId = candidate.optString("sourceMaterialId"); val sourceUri = uriByMaterial[materialId] ?: continue
             val predicate = candidate.optString("predicate").trim(); if (predicate.isBlank() || candidate.optString("value").isBlank()) continue
             val evidence = JSONArray().put(JSONObject().put("id", "evidence-${UUID.randomUUID()}").put("sourceUri", sourceUri).put("excerpt", candidate.optString("excerpt")).put("observedAt", Timestamp.now()))
-            engine.upsertClaim(JSONObject().put("id", "claim-${UUID.randomUUID()}").put("subjectId", student.id).put("predicate", predicate).put("value", candidate.optString("value"))
+            engine.upsertClaim(JSONObject().put("id", "claim-${UUID.randomUUID()}").put("subjectId", engine.subjectId).put("predicate", predicate).put("value", candidate.optString("value"))
                 .put("status", "candidate").put("confidence", candidate.optString("confidence", "unknown")).put("evidence", evidence).put("generatedBy", "local-agent"))
         }
     }

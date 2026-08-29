@@ -149,6 +149,17 @@ class OpenAiCompatibleAgentAdapter(private val configuration: AgentConfiguration
 
     fun testConnection(): String = execute("你是连接测试工具。只回复 OK。", "连接测试")
 
+    fun testVisionConnection(): String {
+        require(configuration.visionModel.isNotBlank()) { "尚未配置视觉模型" }
+        val image = Base64.decode(TEST_IMAGE_BASE64, Base64.DEFAULT)
+        return executeVision(
+            "你是视觉模型连接测试工具。不要推断任何个人信息。",
+            "这是一张应用生成的测试图片。只回复 VISION_OK。",
+            image,
+            "image/png",
+        )
+    }
+
     fun executeVision(systemPrompt: String, prompt: String, imageBytes: ByteArray, mimeType: String): String {
         val dataUrl = "data:$mimeType;base64,${Base64.encodeToString(imageBytes, Base64.NO_WRAP)}"
         val userContent = JSONArray().put(JSONObject().put("type", "text").put("text", prompt))
@@ -184,6 +195,9 @@ class OpenAiCompatibleAgentAdapter(private val configuration: AgentConfiguration
     }
 
     companion object {
+        // 1x1 opaque PNG generated for connectivity checks; it contains no user data.
+        private const val TEST_IMAGE_BASE64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
+
         fun resolveChatCompletionsUrl(endpoint: String): String {
             val normalized = endpoint.trim().trimEnd('/')
             return if (normalized.endsWith("/chat/completions", ignoreCase = true)) normalized else "$normalized/chat/completions"

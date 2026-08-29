@@ -75,6 +75,10 @@ class MarkdownBrowserActivity : Activity() {
             val definition = GrowthModelService.REPORTS.singleOrNull { it.id == reportId } ?: error("未知学情报告")
             listOf(Document(definition.title, definition.fileName, "", GrowthModelService(this).readPublishedReport(studentId, reportId)))
         }
+        MODE_REPORT_DRAFT -> {
+            val studentId = requireNotNull(intent.getStringExtra(EXTRA_STUDENT_ID)); val service = GrowthModelService(this)
+            GrowthModelService.REPORTS.map { definition -> Document("${definition.title} · 待审核草稿", definition.fileName, "", service.readReportDraft(studentId, definition.id)) }
+        }
         MODE_OCR -> {
             val studentId = requireNotNull(intent.getStringExtra(EXTRA_STUDENT_ID)); val materialId = requireNotNull(intent.getStringExtra(EXTRA_MATERIAL_ID))
             val student = StudentIndexRepository(this).requireExact(studentId)
@@ -146,7 +150,7 @@ class MarkdownBrowserActivity : Activity() {
 
     companion object {
         const val EXTRA_MODE = "mode"; const val EXTRA_TITLE = "title"; const val EXTRA_STUDENT_ID = "student_id"; const val EXTRA_PROJECT_ID = "project_id"; const val EXTRA_REPORT_ID = "report_id"; const val EXTRA_MATERIAL_ID = "material_id"; const val EXTRA_CONVERSATION_ID = "conversation_id"
-        const val MODE_ARCHIVE = "archive"; const val MODE_PROJECT = "project"; const val MODE_REPORT = "report"; const val MODE_OCR = "ocr"; const val MODE_CONVERSATION = "conversation"; const val MODE_CONVERSATION_DIGEST = "conversation_digest"
+        const val MODE_ARCHIVE = "archive"; const val MODE_PROJECT = "project"; const val MODE_REPORT = "report"; const val MODE_REPORT_DRAFT = "report_draft"; const val MODE_OCR = "ocr"; const val MODE_CONVERSATION = "conversation"; const val MODE_CONVERSATION_DIGEST = "conversation_digest"
         private const val MAX_MARKDOWN_BYTES = 2 * 1024 * 1024
         private const val MAX_CONVERSATION_BYTES = 5 * 1024 * 1024
     }

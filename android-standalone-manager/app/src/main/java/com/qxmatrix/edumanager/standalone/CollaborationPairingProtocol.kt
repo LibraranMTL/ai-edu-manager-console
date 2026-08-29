@@ -4,6 +4,8 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.net.InetAddress
 import java.net.URI
+import java.security.SecureRandom
+import java.util.UUID
 
 data class CollaborationConnectionInfo(
     val invitationId: String,
@@ -39,6 +41,34 @@ data class AcceptedStudentMapping(
     val acceptanceJson: String,
 )
 
+data class CollaborationDeviceInvitation(
+    val invitationId: String,
+    val transportBindingId: String,
+    val inviterNode: CollaborationNodeIdentity,
+    val endpoints: List<String>,
+    val pairingCode: String,
+    val pairingCodeHash: String,
+    val requestToken: String,
+    val createdAt: String,
+    val expiresAt: String,
+) {
+    fun publicConnectionJson(): String = JSONObject().apply {
+        put("schema", CollaborationPairingProtocol.DEVICE_CONNECTION_SCHEMA)
+        put("protocolVersion", CollaborationPairingProtocol.PROTOCOL_VERSION)
+        put("invitationId", invitationId)
+        put("nodeId", inviterNode.nodeId)
+        put("displayName", inviterNode.displayName)
+        put("endpoints", JSONArray(endpoints))
+        put("pairingCode", pairingCode)
+        put("expiresAt", expiresAt)
+    }.toString()
+}
+
+data class IncomingDevicePairing(
+    val inviterPairing: VerifiedDevicePairing,
+    val confirmationJson: String,
+)
+
 internal object CollaborationPairingProtocol {
     const val PROTOCOL_VERSION = "1.0"
     const val NODE_SCHEMA = "edu-manager.collaboration-node.v1"
@@ -52,12 +82,203 @@ internal object CollaborationPairingProtocol {
 
     private val defaultSyncKinds = listOf("confirmed_knowledge", "growth_model", "learning_report", "education_archive")
 
+    fun createDeviceInvitation(
+        inviterNode: CollaborationNodeIdentity,
+        endpoints: List<String>,
+        nowMillis: Long = System.currentTimeMillis(),
+        pairingCode: String = SecureRandom().nextInt(1_000_000).toString().padStart(6, '0'),
+        requestToken: String = randomSecret(),
+    ): CollaborationDeviceInvitation {
+        val normalizedEndpoints = endpoints.mapNotNull(::normalizeEndpoint).distinct().take(8)
+        require(normalizedEndpoints.isNotEmpty()) { "本机没有可用于附近协作的局域网或 Tailscale 地址" }
+        require(pairingCode.matches(Regex("^\\d{6}$"))) { "设备配对码必须是六位数字" }
+        require(requestToken.length >= 32) { "设备配对临时凭据长度不足" }
+        val invitationId = "device-invitation-${UUID.randomUUID()}"
+        val createdAt = utcAt(nowMillis)
+        return CollaborationDeviceInvitation(
+            invitationId = invitationId,
+            transportBindingId = "binding-${UUID.randomUUID()}",
+            inviterNode = inviterNode,
+            endpoints = normalizedEndpoints,
+            pairingCode = pairingCode,
+            pairingCodeHash = CollaborationCrypto.sha256("$invitationId\u001f$pairingCode\u001f$requestToken"),
+            requestToken = requestToken,
+            createdAt = createdAt,
+            expiresAt = utcAt(nowMillis + 15 * 60 * 1000L),
+        )
+    }
+
+    fun completeDevicePairing(
+        invitation: CollaborationDeviceInvitation,
+        acceptingNode: JSONObject,
+        pairingCode: String,
+        acceptingEndpoints: List<String>,
+        nowMillis: Long = System.currentTimeMillis(),
+    ): IncomingDevicePairing {
+        require(parseUtcMillis(invitation.expiresAt) > nowMillis) { "设备连接信息已过期，请重新生成" }
+        val code = pairingCode.replace(Regex("\\D"), "")
+        require(code.matches(Regex("^\\d{6}$"))) { "设备配对码必须是六位数字" }
+        val expectedCodeHash = CollaborationCrypto.sha256("${invitation.invitationId}\u001f$code\u001f${invitation.requestToken}")
+        require(CollaborationCrypto.constantTimeEquals(invitation.pairingCodeHash, expectedCodeHash)) { "设备配对码不正确或已经失效" }
+        require(acceptingNode.optString("schema") == NODE_SCHEMA && acceptingNode.optString("protocolVersion") == PROTOCOL_VERSION) {
+            "接收设备身份格式无效"
+        }
+        val peerNodeId = acceptingNode.optString("nodeId").trim()
+        require(peerNodeId.isNotBlank() && peerNodeId != invitation.inviterNode.nodeId) { "不能将本机与自身建立知识协作" }
+        val peerDisplayName = acceptingNode.optString("displayName").trim().ifBlank { "Android 单机版" }.take(80)
+        val peerEndpoints = acceptingEndpoints.mapNotNull(::normalizeEndpoint).distinct().take(8)
+        require(peerEndpoints.isNotEmpty()) { "接收设备没有提供可用的附近协作地址" }
+        val participants = listOf(invitation.inviterNode.nodeId, peerNodeId).sorted()
+        val transportOffers = JSONArray().apply {
+            put(transportOffer(invitation.inviterNode.nodeId, invitation.endpoints))
+            put(transportOffer(peerNodeId, peerEndpoints))
+        }
+        val binding = JSONObject().apply {
+            put("schema", PEER_BINDING_SCHEMA); put("protocolVersion", PROTOCOL_VERSION); put("bindingId", invitation.transportBindingId)
+            put("participantNodeIds", JSONArray(participants)); put("roleAssignments", JSONArray())
+            put("sharedSecretRef", CollaborationCrypto.sha256(invitation.requestToken)); put("status", "active")
+            put("capabilities", JSONArray(listOf("lan-direct-v1", "android-nearby-v1"))); put("transportOffers", transportOffers)
+            put("createdAt", invitation.createdAt); put("lastSeenAt", ""); put("revokedAt", "")
+        }
+        val deviceBindingId = stableId("device-binding", participants)
+        val deviceBinding = JSONObject().apply {
+            put("schema", DEVICE_BINDING_SCHEMA); put("deviceBindingId", deviceBindingId)
+            put("participantNodeIds", JSONArray(participants)); put("status", "active")
+            put("capabilities", JSONArray(listOf("device-trust-v1", "student-mapping-v1", "android-nearby-v1")))
+            put("transportOffers", transportOffers); put("transportBindingIds", JSONArray(listOf(invitation.transportBindingId)))
+            put("origin", "native"); put("createdAt", invitation.createdAt); put("updatedAt", invitation.createdAt); put("revokedAt", "")
+        }
+        val confirmedAt = utcAt(nowMillis)
+        val confirmation = JSONObject().apply {
+            put("schema", DEVICE_CONFIRMATION_SCHEMA); put("protocolVersion", PROTOCOL_VERSION)
+            put("confirmationId", "device-confirmation-${UUID.randomUUID()}"); put("invitationId", invitation.invitationId)
+            put("transportBindingId", invitation.transportBindingId); put("inviterNode", invitation.inviterNode.toJson())
+            put("acceptingNode", acceptingNode); put("binding", binding); put("deviceBinding", deviceBinding)
+            put("sharedSecret", invitation.requestToken); put("confirmedAt", confirmedAt)
+        }
+        confirmation.put("proof", CollaborationCrypto.hmac(invitation.requestToken, listOf(
+            invitation.invitationId,
+            invitation.transportBindingId,
+            invitation.inviterNode.nodeId,
+            peerNodeId,
+            confirmedAt,
+            CollaborationCrypto.sha256(stringifyPeerBinding(binding)),
+            CollaborationCrypto.sha256(stringifyDeviceBinding(deviceBinding)),
+        )))
+        return IncomingDevicePairing(
+            inviterPairing = VerifiedDevicePairing(
+                deviceBindingId = deviceBindingId,
+                transportBindingId = invitation.transportBindingId,
+                localNodeId = invitation.inviterNode.nodeId,
+                peerNodeId = peerNodeId,
+                peerDisplayName = peerDisplayName,
+                endpoints = peerEndpoints,
+                capabilities = deviceBinding.optJSONArray("capabilities").collaborationStrings(),
+                sharedSecret = invitation.requestToken,
+                createdAt = invitation.createdAt,
+                confirmedAt = confirmedAt,
+            ),
+            confirmationJson = confirmation.toString(),
+        )
+    }
+
+    fun createStudentMappingOffer(
+        device: CollaborationDeviceEntity,
+        localNodeId: String,
+        localStudentId: String,
+        localStudentName: String,
+        secret: String,
+        nowMillis: Long = System.currentTimeMillis(),
+    ): String {
+        require(device.status == "active" && device.localNodeId == localNodeId && localStudentId.isNotBlank()) { "学生共享邀请范围无效" }
+        require(secret.isNotBlank()) { "协作设备缺少本机信任凭据" }
+        val createdAt = utcAt(nowMillis)
+        val offer = JSONObject().apply {
+            put("schema", STUDENT_MAPPING_OFFER_SCHEMA); put("protocolVersion", PROTOCOL_VERSION)
+            put("offerId", "student-map-offer-${UUID.randomUUID()}"); put("deviceBindingId", device.deviceBindingId)
+            put("transportBindingId", device.transportBindingId); put("mappingBindingId", "binding-${UUID.randomUUID()}")
+            put("inviterNodeId", localNodeId); put("inviterStudentId", localStudentId)
+            put("inviterStudentName", localStudentName.trim().take(120)); put("createdAt", createdAt)
+            put("expiresAt", utcAt(nowMillis + 30 * 60 * 1000L))
+        }
+        offer.put("proof", CollaborationCrypto.hmac(secret, listOf(
+            offer.getString("offerId"), device.deviceBindingId, device.transportBindingId,
+            offer.getString("mappingBindingId"), localNodeId, localStudentId, offer.getString("expiresAt"),
+        )))
+        return offer.toString()
+    }
+
+    fun verifyStudentMappingAcceptance(
+        raw: String,
+        offerRaw: String,
+        localNodeId: String,
+        localStudentId: String,
+        peerStudentName: String,
+        secret: String,
+    ): AcceptedStudentMapping {
+        val acceptance = JSONObject(raw.trim())
+        val offer = JSONObject(offerRaw.trim())
+        require(acceptance.optString("schema") == STUDENT_MAPPING_ACCEPTANCE_SCHEMA && acceptance.optString("protocolVersion") == PROTOCOL_VERSION) {
+            "学生映射确认格式无效"
+        }
+        require(offer.optString("schema") == STUDENT_MAPPING_OFFER_SCHEMA && acceptance.optString("offerId") == offer.optString("offerId")) {
+            "学生映射确认与本机邀请不匹配"
+        }
+        require(acceptance.optString("deviceBindingId") == offer.optString("deviceBindingId")) { "学生映射确认的设备范围不匹配" }
+        val studentMap = requireNotNull(acceptance.optJSONObject("studentMap")) { "学生映射确认缺少学生关系" }
+        val mappingBinding = requireNotNull(acceptance.optJSONObject("mappingBinding")) { "学生映射确认缺少传输关系" }
+        val expectedProof = CollaborationCrypto.hmac(secret, listOf(
+            offer.optString("offerId"), studentMap.optString("studentMapId"), mappingBinding.optString("bindingId"),
+            CollaborationCrypto.sha256(stringifyStudentMap(studentMap)), CollaborationCrypto.sha256(stringifyPeerBinding(mappingBinding)),
+        ))
+        require(CollaborationCrypto.constantTimeEquals(acceptance.optString("proof"), expectedProof)) { "学生映射确认未通过设备信任校验" }
+        require(studentMap.optString("schema") == STUDENT_MAP_SCHEMA && studentMap.optString("deviceBindingId") == offer.optString("deviceBindingId")) {
+            "学生映射确认中的学生关系无效"
+        }
+        require(mappingBinding.optString("schema") == PEER_BINDING_SCHEMA && mappingBinding.optString("bindingId") == offer.optString("mappingBindingId")) {
+            "学生映射确认中的传输关系无效"
+        }
+        require(mappingBinding.optString("sharedSecretRef") == CollaborationCrypto.sha256(secret) && mappingBinding.optString("status") == "active") {
+            "学生映射确认中的设备信任无效"
+        }
+        val participants = studentMap.optJSONArray("participantStudents").collaborationObjects()
+        require(participants.size == 2 && participants.map { it.optString("nodeId") }.distinct().size == 2) { "学生映射必须精确包含两台设备" }
+        val local = participants.singleOrNull { it.optString("nodeId") == localNodeId }
+        require(local?.optString("studentId") == localStudentId && localStudentId == offer.optString("inviterStudentId")) { "学生映射确认改变了本机学生范围" }
+        val peer = participants.singleOrNull { it.optString("nodeId") != localNodeId }
+        require(!peer?.optString("studentId").isNullOrBlank()) { "学生映射确认缺少对方精确学生 ID" }
+        val nodeParticipants = mappingBinding.optJSONArray("participantNodeIds").collaborationStrings().sorted()
+        require(nodeParticipants == participants.map { it.optString("nodeId") }.sorted()) { "学生映射与传输参与设备不一致" }
+        val syncKinds = studentMap.optJSONArray("syncKinds").collaborationStrings()
+        require(syncKinds.toSet() == defaultSyncKinds.toSet()) { "学生映射同步范围被扩大或缺失" }
+        return AcceptedStudentMapping(
+            studentMapId = studentMap.optString("studentMapId"),
+            deviceBindingId = offer.optString("deviceBindingId"),
+            transportBindingId = mappingBinding.optString("bindingId"),
+            localStudentId = localStudentId,
+            peerStudentId = peer!!.optString("studentId"),
+            peerStudentName = peerStudentName,
+            syncKinds = syncKinds,
+            createdAt = studentMap.optString("createdAt").ifBlank { offer.optString("createdAt") },
+            acceptanceJson = acceptance.toString(),
+        ).also {
+            require(it.studentMapId.isNotBlank() && it.transportBindingId.isNotBlank()) { "学生映射确认缺少关系编号" }
+        }
+    }
+
     fun normalizeQrPayload(raw: String?): String? = runCatching {
         val value = raw.orEmpty().trim()
         if (value.matches(Regex("^\\d{6}$"))) return@runCatching value
         val parsed = JSONObject(value)
-        require(parsed.optString("schema") == DEVICE_CONNECTION_SCHEMA)
-        parseConnectionInput(value)
+        when (parsed.optString("schema")) {
+            DEVICE_CONNECTION_SCHEMA -> parseConnectionInput(value)
+            STUDENT_MAPPING_OFFER_SCHEMA -> {
+                require(parsed.optString("protocolVersion") == PROTOCOL_VERSION)
+                require(parseUtcMillis(parsed.optString("expiresAt")) > System.currentTimeMillis())
+                require(parsed.optString("offerId").isNotBlank() && parsed.optString("deviceBindingId").isNotBlank())
+            }
+            else -> error("不是可识别的知识协作二维码")
+        }
         value
     }.getOrNull()
 
@@ -226,6 +447,16 @@ internal object CollaborationPairingProtocol {
     private fun roleAssignment(nodeId: String, studentId: String, role: String, createdAt: String) = JSONObject().apply {
         put("nodeId", nodeId); put("actorId", ""); put("role", role); put("studentId", studentId)
         put("scope", JSONArray()); put("createdAt", createdAt); put("revokedAt", "")
+    }
+
+    private fun transportOffer(nodeId: String, endpoints: List<String>) = JSONObject().apply {
+        put("transportId", "lan_direct"); put("protocolVersion", "1.1")
+        put("endpoints", JSONArray(endpoints)); put("preferred", true); put("nodeId", nodeId)
+    }
+
+    private fun randomSecret(): String {
+        val bytes = ByteArray(32).also(SecureRandom()::nextBytes)
+        return bytes.joinToString("") { "%02x".format(it) }
     }
 
     private fun stableId(prefix: String, values: List<String>): String = "$prefix-${CollaborationCrypto.sha256(values.filter { it.isNotBlank() }.distinct().sorted().joinToString("\u001f")).take(32)}"

@@ -46,7 +46,7 @@ test('W11 offers course learning with explicit system-authorized capture startup
 test('W11 Agent configuration can be edited, tested, disabled and can launch capability apps', () => {
   const main = read('MainActivity.kt');
   const agent = read('AgentAdapter.kt');
-  for (const value of ['配置或修改本地任务 Agent', '测试 Agent 连接', '停用本地任务 Agent', '打开 PalmClaw', '打开 MobileClaw']) {
+  for (const value of ['配置或修改本地任务 Agent', '测试文本 / 视觉 Agent', '停用本地任务 Agent', '打开 PalmClaw', '打开 MobileClaw']) {
     assert.match(main, new RegExp(value));
   }
   assert.match(agent, /fun saveOrUpdate/);

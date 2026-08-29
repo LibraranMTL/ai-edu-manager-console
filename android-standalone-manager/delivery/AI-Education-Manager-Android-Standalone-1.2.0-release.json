@@ -1,0 +1,18 @@
+{
+  "schema": "edu-manager.android-release.v1",
+  "packageName": "com.qxmatrix.edumanager.standalone",
+  "versionName": "1.2.0",
+  "versionCode": 24,
+  "fileName": "AI-Education-Manager-Android-Standalone-1.2.0-release.apk",
+  "bytes": 68592185,
+  "sha256": "0CD50763359E1059DA5B73F4627818D1C1C91B2EA74C984E0A8107F0331126BC",
+  "certificateDn": "CN=AI教育管家, OU=AI教育产品, O=嘉玛蓝（北京）科技有限公司, L=北京, S=北京, C=CN",
+  "certificateSha256": "647087C196380BED06FF285A95B29617DC5A31C4977A0C04DDBA895ADC67164F",
+  "signatureSchemes": [
+    "v1",
+    "v2"
+  ],
+  "releaseStatus": "release",
+  "candidateTag": "",
+  "builtAt": "2026-08-29T07:13:33.260Z"
+}

@@ -156,7 +156,18 @@ class CourseCaptureService : Service() {
             .put("projectId", projectId).put("projectName", projectName).put("captureMode", captureMode)
             .put("path", relative).put("sha256", sha256(bytes)).put("bytes", bytes.size)
         SafWorkspaceStore(this, Uri.parse(rootUri)).writeBytesSafely("$relative.json", item.toString(2).toByteArray(), "application/json")
-        if (captureKind == "material") FileAssetService(this).registerCapturedFile(studentId, relative, bytes, sessionId, itemId, projectId, projectName)
+        FileAssetService(this).registerCapturedFile(
+            studentId = studentId,
+            logicalPath = relative,
+            bytes = bytes,
+            captureSessionId = sessionId,
+            captureItemId = itemId,
+            projectId = projectId,
+            projectName = projectName,
+            courseId = courseId,
+            courseProvider = courseProvider,
+            courseUrl = courseUrl,
+        )
         capturedFiles.put(item); saved += 1; updateState(if (paused) "paused" else "capturing"); updateNotification("正在采集学习资料 · 已保留 $saved 张")
     }
 

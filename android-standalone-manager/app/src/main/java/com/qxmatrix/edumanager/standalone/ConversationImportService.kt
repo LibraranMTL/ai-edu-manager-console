@@ -48,6 +48,8 @@ class ConversationImportService(private val context: Context) {
             .put("contentHash", hash).put("size", bytes.size).put("messageCount", messageCount)
             .put("contentPath", contentPath).put("metadataPath", metadataPath).put("importedAt", importedAt).put("candidateOnly", true)
             .put("digestStatus", "pending").put("digestedAt", "").put("digestArtifactPath", "").put("digestError", "")
+            .put("analysis", ConversationAnalysisPolicy.analyze(normalized)).put("analyzedAt", importedAt)
+            .put("lifecycleStatus", "active").put("trashedAt", "").put("restoredAt", "")
             .put("explicitUserSave", true)
         val store = SafWorkspaceStore(context, Uri.parse(rootUri))
         store.writeBytesSafely(contentPath, bytes, "text/markdown")
@@ -59,9 +61,17 @@ class ConversationImportService(private val context: Context) {
             .put("message", "对话已保存到教育管家，共记录 $messageCount 条消息定位；知识内容保持候选状态。")
     }
 
-    fun list(studentId: String? = null): List<JSONObject> = readIndex().optJSONArray("imports").toObjects().map(::normalizeRecord)
-        .filter { studentId.isNullOrBlank() || it.optString("studentId") == studentId }
+    fun list(studentId: String? = null, includeTrashed: Boolean = false): List<JSONObject> = readIndex().optJSONArray("imports").toObjects().map(::normalizeRecord)
+        .filter { (studentId.isNullOrBlank() || it.optString("studentId") == studentId) && (includeTrashed || it.optString("lifecycleStatus") != "trashed") }
         .sortedByDescending { it.optString("importedAt") }
+
+    fun trashed(studentId: String? = null): List<JSONObject> = list(studentId, includeTrashed = true)
+        .filter { it.optString("lifecycleStatus") == "trashed" }
+
+    fun analyze(recordId: String): JSONObject {
+        val analysis = ConversationAnalysisPolicy.analyze(readContent(recordId))
+        return updateRecord(recordId) { it.put("analysis", analysis).put("analyzedAt", Timestamp.now()) }
+    }
 
     fun requireExact(recordId: String): JSONObject = readIndex().optJSONArray("imports").toObjects()
         .singleOrNull { normalizeRecord(it).optString("recordId") == recordId }
@@ -100,8 +110,19 @@ class ConversationImportService(private val context: Context) {
         return next
     }
 
+    fun trash(recordId: String): JSONObject {
+        val current = requireExact(recordId)
+        require(current.optString("digestStatus") != "running") { "对话正在消化，不能移入回收站" }
+        return updateRecord(recordId) { it.put("lifecycleStatus", "trashed").put("trashedAt", Timestamp.now()) }
+    }
+
+    fun restore(recordId: String): JSONObject = updateRecord(recordId) {
+        it.put("lifecycleStatus", "active").put("restoredAt", Timestamp.now()).put("trashedAt", "")
+    }
+
     fun delete(recordId: String): JSONObject {
         val record = requireExact(recordId)
+        require(record.optString("lifecycleStatus") == "trashed") { "请先将对话移入回收站，再执行永久删除" }
         require(record.optString("digestStatus") != "running") { "对话正在消化，不能删除" }
         require(record.optString("digestStatus") != "completed") { "已消化对话必须保留原文作为候选知识证据；请保留该记录" }
         val access = access(record); validateConversationPaths(record, access)
@@ -124,9 +145,10 @@ class ConversationImportService(private val context: Context) {
         JSONObject(privateState.readBytes(INDEX_PATH).toString(Charsets.UTF_8)).also {
             if (!it.has("imports")) it.put("imports", JSONArray())
             if (!it.has("deletions")) it.put("deletions", JSONArray())
+            it.put("schema", "edu-manager.android-conversation-index.v2")
         }
     } catch (_: Exception) {
-        JSONObject().put("schema", "edu-manager.android-conversation-index.v1").put("imports", JSONArray()).put("deletions", JSONArray()).put("updatedAt", "")
+        JSONObject().put("schema", "edu-manager.android-conversation-index.v2").put("imports", JSONArray()).put("deletions", JSONArray()).put("updatedAt", "")
     }
 
     private fun writeIndex(index: JSONObject) = privateState.writeBytes(INDEX_PATH, (index.toString(2) + "\n").toByteArray())
@@ -138,6 +160,22 @@ class ConversationImportService(private val context: Context) {
         if (!has("digestedAt")) put("digestedAt", "")
         if (!has("digestArtifactPath")) put("digestArtifactPath", "")
         if (!has("digestError")) put("digestError", "")
+        if (!has("analysis")) put("analysis", JSONObject())
+        if (!has("analyzedAt")) put("analyzedAt", "")
+        if (!has("lifecycleStatus")) put("lifecycleStatus", "active")
+        if (!has("trashedAt")) put("trashedAt", "")
+        if (!has("restoredAt")) put("restoredAt", "")
+    }
+
+    private fun updateRecord(recordId: String, transform: (JSONObject) -> JSONObject): JSONObject {
+        val index = readIndex(); val records = index.getJSONArray("imports").toObjects().toMutableList()
+        val position = records.indexOfFirst { normalizeRecord(it).optString("recordId") == recordId }
+        require(position >= 0) { "未找到指定对话记录" }
+        val next = transform(normalizeRecord(records[position]))
+        records[position] = next
+        index.put("imports", JSONArray(records)).put("updatedAt", Timestamp.now())
+        writeIndex(index)
+        return next
     }
 
     private fun recordId(hash: String, scopeType: String, scopeId: String): String =

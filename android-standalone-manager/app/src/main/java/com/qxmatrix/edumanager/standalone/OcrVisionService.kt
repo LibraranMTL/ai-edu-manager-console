@@ -34,6 +34,11 @@ class OcrVisionService(private val context: Context) {
                 .put("operations", JSONArray(listOf("read_file", "write_ocr_result") + if (includeVision) listOf("vision_analyze") else emptyList<String>()))))
         val running = tasks.start(task.getString("id")); val executionId = running.getString("executionId")
         return try {
+            files.patchMaterial(student.id, materialId, JSONObject()
+                .put("ocrStatus", "running")
+                .put("ocrError", "")
+                .put("visionStatus", if (includeVision) "running" else material.optString("visionStatus", "not_requested"))
+                .put("visionError", ""))
             val bytes = tools.readStudentFile(task.getString("id"), executionId, student.id, sourcePath)
             val extension = material.getString("fileName").substringAfterLast('.', "").lowercase()
             val extracted = when (extension) {

@@ -70,6 +70,86 @@ class CollaborationPairingProtocolTest {
         assertTrue(error?.message?.contains("信任校验") == true)
     }
 
+    @Test fun androidInvitationCompletesMutualDeviceTrustWithNearbyEndpoints() {
+        val inviter = CollaborationNodeIdentity("node-android-a", "Android A", "ANDROID-A", "2026-08-10T00:00:00.000Z")
+        val invitation = CollaborationPairingProtocol.createDeviceInvitation(
+            inviterNode = inviter,
+            endpoints = listOf("http://192.168.43.1:18779"),
+            nowMillis = 1_786_320_000_000L,
+            pairingCode = "246810",
+            requestToken = "a".repeat(64),
+        )
+        val accepting = CollaborationNodeIdentity("node-android-b", "Android B", "ANDROID-B", "2026-08-10T00:01:00.000Z")
+        val completed = CollaborationPairingProtocol.completeDevicePairing(
+            invitation = invitation,
+            acceptingNode = accepting.toJson(),
+            pairingCode = "246 810",
+            acceptingEndpoints = listOf("http://192.168.43.2:18779"),
+            nowMillis = 1_786_320_120_000L,
+        )
+        assertEquals("node-android-b", completed.inviterPairing.peerNodeId)
+        assertEquals(listOf("http://192.168.43.2:18779"), completed.inviterPairing.endpoints)
+        val acceptingView = CollaborationPairingProtocol.verifyDeviceConfirmation(JSONObject(completed.confirmationJson), "node-android-b")
+        assertEquals("node-android-a", acceptingView.peerNodeId)
+        assertEquals(listOf("http://192.168.43.1:18779"), acceptingView.endpoints)
+        assertEquals(completed.inviterPairing.deviceBindingId, acceptingView.deviceBindingId)
+    }
+
+    @Test fun androidInvitationRejectsWrongOrExpiredCode() {
+        val invitation = CollaborationPairingProtocol.createDeviceInvitation(
+            CollaborationNodeIdentity("node-a", "A", "A", "2026-08-10T00:00:00.000Z"),
+            listOf("http://192.168.1.2:18779"),
+            1_786_320_000_000L,
+            "123456",
+            "b".repeat(64),
+        )
+        val peer = CollaborationNodeIdentity("node-b", "B", "B", "2026-08-10T00:00:01.000Z").toJson()
+        val wrong = runCatching {
+            CollaborationPairingProtocol.completeDevicePairing(invitation, peer, "654321", listOf("http://192.168.1.3:18779"), 1_786_320_100_000L)
+        }.exceptionOrNull()
+        assertTrue(wrong?.message?.contains("不正确") == true)
+        val expired = runCatching {
+            CollaborationPairingProtocol.completeDevicePairing(invitation, peer, "123456", listOf("http://192.168.1.3:18779"), 1_786_321_000_001L)
+        }.exceptionOrNull()
+        assertTrue(expired?.message?.contains("已过期") == true)
+    }
+
+    @Test fun androidPeersCreateAcceptAndVerifyAnExactStudentMapping() {
+        val secret = "nearby-secret-" + "c".repeat(48)
+        val device = CollaborationDeviceEntity(
+            deviceBindingId = "device-binding-nearby",
+            transportBindingId = "binding-nearby-device",
+            localNodeId = "node-android-a",
+            peerNodeId = "node-android-b",
+            peerDisplayName = "Android B",
+            endpointsJson = "[]",
+            capabilitiesJson = "[]",
+            encryptedSecret = "fixture",
+            status = "active",
+            createdAt = "2026-08-10T00:00:00.000Z",
+            updatedAt = "2026-08-10T00:00:00.000Z",
+            lastSeenAt = "",
+        )
+        val offer = CollaborationPairingProtocol.createStudentMappingOffer(
+            device, "node-android-a", "student-a-exact", "学生 A", secret, 1_786_320_000_000L,
+        )
+        val acceptedByB = CollaborationPairingProtocol.acceptStudentMappingOffer(
+            offer, "node-android-b", "student-b-exact", secret, 1_786_320_100_000L,
+        )
+        val verifiedByA = CollaborationPairingProtocol.verifyStudentMappingAcceptance(
+            raw = acceptedByB.acceptanceJson,
+            offerRaw = offer,
+            localNodeId = "node-android-a",
+            localStudentId = "student-a-exact",
+            peerStudentName = "学生 B",
+            secret = secret,
+        )
+        assertEquals("student-a-exact", verifiedByA.localStudentId)
+        assertEquals("student-b-exact", verifiedByA.peerStudentId)
+        assertEquals(acceptedByB.studentMapId, verifiedByA.studentMapId)
+        assertEquals(acceptedByB.transportBindingId, verifiedByA.transportBindingId)
+    }
+
     private fun studentOffer(): JSONObject {
         val offer = JSONObject()
             .put("schema", CollaborationPairingProtocol.STUDENT_MAPPING_OFFER_SCHEMA)

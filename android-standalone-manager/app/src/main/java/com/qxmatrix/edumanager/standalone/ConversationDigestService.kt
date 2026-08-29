@@ -49,6 +49,8 @@ class ConversationDigestService(private val context: Context) {
             val parsed = parseJsonResponse(response)
             val artifactPath = if (project == null) digestStudent(record, student, parsed, content, executionId)
                 else digestProject(record, project, parsed, executionId)
+            registerGrowthEvidence(record, student, project, parsed)
+            ConversationCandidateRepository(context).registerFromDigest(record, parsed)
             conversations.markDigestState(recordId, "completed", artifactPath)
             val result = resultPayload(task.getString("id"), executionId, true, "对话消化完成", artifactPath)
             tasks.acceptResult(task.getString("id"), result)
@@ -77,7 +79,7 @@ class ConversationDigestService(private val context: Context) {
             if (predicate.isBlank() || value.isBlank()) continue
             val evidence = JSONArray().put(JSONObject().put("id", "evidence-${UUID.randomUUID()}")
                 .put("sourceUri", sourceUri).put("excerpt", candidate.optString("excerpt")).put("observedAt", Timestamp.now()))
-            engine.upsertClaim(JSONObject().put("id", "claim-${UUID.randomUUID()}").put("subjectId", student.id)
+            engine.upsertClaim(JSONObject().put("id", "claim-${UUID.randomUUID()}").put("subjectId", engine.subjectId)
                 .put("predicate", predicate).put("value", value).put("status", "candidate")
                 .put("confidence", candidate.optString("confidence", "unknown")).put("evidence", evidence).put("generatedBy", "local-agent-conversation-digest"))
         }
@@ -127,9 +129,32 @@ class ConversationDigestService(private val context: Context) {
         $content
 
         返回格式：
-        {"summary":"摘要","concepts":["概念"],"entities":["实体"],"qa":[{"question":"问题","answer":"答案"}],"claims":[{"predicate":"声明类型","value":"候选判断","confidence":"low|medium|high","excerpt":"原文证据"}]}
+        {"summary":"摘要","concepts":["概念"],"entities":["实体"],"qa":[{"question":"问题","answer":"答案"}],"actionItems":["明确的学习行动或待办"],"claims":[{"predicate":"声明类型","value":"候选判断","confidence":"low|medium|high","excerpt":"原文证据"}],"growthEvidence":[{"title":"可审核的观察标题","ability":"支撑的能力维度或待标注","observation":"对话原文直接支持的学习行为、成果或计划执行事实","confidence":"low|medium","excerpt":"原文摘录"}]}
         claims 只能是 candidate；没有原文证据就不要生成。不得输出人格、能力或诊断性标签。项目对话不得直接写入学生主档案。
+        growthEvidence 没有直接原文支撑时返回空数组；它只进入待审核成长证据，不会自动确认为正式成长事实。
     """.trimIndent()
+
+    private fun registerGrowthEvidence(record: JSONObject, student: StudentRecord, project: ProjectRecord?, parsed: JSONObject) {
+        val candidates = parsed.optJSONArray("growthEvidence") ?: JSONArray(); val growth = GrowthModelService(context)
+        val sourceUri = "edu://student/${student.id}/conversation/${record.getString("recordId")}"
+        for (index in 0 until candidates.length()) {
+            val candidate = candidates.optJSONObject(index) ?: continue
+            val title = candidate.optString("title").trim(); val observation = candidate.optString("observation").trim()
+            if (title.isBlank() || observation.isBlank()) continue
+            val excerpt = candidate.optString("excerpt").trim()
+            val content = if (excerpt.isBlank() || observation.contains(excerpt)) observation else "$observation\n\n原文摘录：$excerpt"
+            growth.addAutomaticCandidate(
+                studentId = student.id,
+                title = title,
+                ability = candidate.optString("ability", "待标注"),
+                sourceUri = sourceUri,
+                content = content,
+                confidence = candidate.optString("confidence", "unknown"),
+                projectId = project?.id.orEmpty(),
+                generatedBy = "local-agent-conversation-digest",
+            )
+        }
+    }
 
     private fun digestMarkdown(record: JSONObject, parsed: JSONObject) = """
         # ${record.optString("sourceAgent")} 对话消化结果

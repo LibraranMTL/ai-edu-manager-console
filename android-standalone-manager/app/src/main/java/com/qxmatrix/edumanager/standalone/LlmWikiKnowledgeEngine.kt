@@ -11,7 +11,7 @@ import java.util.TimeZone
 class KnowledgeEngineException(val code: String, message: String) : IllegalArgumentException(message)
 
 class LlmWikiKnowledgeEngine(
-    private val subjectId: String,
+    val subjectId: String,
     private val documents: KnowledgeDocumentStore,
 ) {
     val contractVersion = ProtocolBaseline.KNOWLEDGE_ENGINE_CONTRACT_VERSION

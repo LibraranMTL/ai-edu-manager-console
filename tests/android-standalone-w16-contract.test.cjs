@@ -10,7 +10,7 @@ const read = (name) => fs.readFileSync(path.join(java, name), 'utf8');
 test('W16 conversation history exposes browse, digest result and controlled deletion actions', () => {
   const main = read('MainActivity.kt');
   const browser = read('MarkdownBrowserActivity.kt');
-  for (const label of ['管理已保存对话历史', '浏览对话原文', '进入消化流程', '查看消化结果', '删除对话']) {
+  for (const label of ['管理已保存对话历史', '浏览对话原文', '进入消化流程', '查看消化结果', '移入回收站']) {
     assert.match(main, new RegExp(label));
   }
   assert.match(browser, /MODE_CONVERSATION/);
@@ -45,9 +45,9 @@ test('W16 digest follows student and project AGENT rules without cross-scope pub
   assert.match(digest, /project\.paths\.qaPath/);
 });
 
-test('current candidate advances Android standalone to 1.1.3 code 19', () => {
+test('post-1.1.6 source candidate advances Android standalone to 1.2.0 code 24', () => {
   const build = fs.readFileSync(path.join(__dirname, '..', 'android-standalone-manager', 'app', 'build.gradle.kts'), 'utf8');
-  assert.match(build, /versionCode = 19/);
-  assert.match(build, /versionName = "1\.1\.3"/);
+  assert.match(build, /versionCode = 24/);
+  assert.match(build, /versionName = "1\.2\.0"/);
   assert.match(build, /isMinifyEnabled = true/);
 });

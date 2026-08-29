@@ -6,6 +6,7 @@ const path = require('node:path');
 const root = path.join(__dirname, '..', 'android-standalone-manager');
 const launcher = fs.readFileSync(path.join(root, 'publish-release.ps1'), 'utf8');
 const chineseLauncher = fs.readFileSync(path.join(root, '发布正式版.ps1'), 'utf8');
+const signer = fs.readFileSync(path.join(root, 'sign-release.ps1'), 'utf8');
 
 test('one-click Android publisher persists only non-secret signing location', () => {
   assert.match(launcher, /android-signing-location\.json/);
@@ -24,6 +25,7 @@ test('one-click Android publisher securely prompts and scopes all four variables
   }
   assert.match(launcher, /finally\s*\{[\s\S]*previousEnvironment/);
   assert.match(launcher, /& \$releaseScript @releaseArguments/);
+  assert.match(launcher, /releaseArguments\.CandidateTag = \$CandidateTag/);
 });
 
 test('one-click Android publisher reuses complete process signing configuration without prompting', () => {
@@ -38,4 +40,10 @@ test('one-click Android publisher reuses complete process signing configuration 
 test('Chinese one-click entry delegates to the audited publisher', () => {
   assert.match(chineseLauncher, /publish-release\.ps1/);
   assert.match(chineseLauncher, /@args/);
+});
+
+test('formal signer rejects certificates that differ from the previous Android standalone release', () => {
+  assert.match(signer, /AI-Education-Manager-Android-Standalone-\*-release\.json/);
+  assert.match(signer, /trustedCertificateSha256 -ne \$certificateSha256/);
+  assert.match(signer, /would conflict with installed copies/);
 });

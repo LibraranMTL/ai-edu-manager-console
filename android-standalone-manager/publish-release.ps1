@@ -3,6 +3,7 @@ param(
   [string]$KeyAlias = '',
   [string]$DeviceSerial = '',
   [string]$OutputDirectory = '',
+  [string]$CandidateTag = '',
   [switch]$ResetSigningLocation
 )
 
@@ -105,6 +106,7 @@ try {
   $releaseArguments = @{}
   if (-not [string]::IsNullOrWhiteSpace($DeviceSerial)) { $releaseArguments.DeviceSerial = $DeviceSerial }
   if (-not [string]::IsNullOrWhiteSpace($OutputDirectory)) { $releaseArguments.OutputDirectory = $OutputDirectory }
+  if (-not [string]::IsNullOrWhiteSpace($CandidateTag)) { $releaseArguments.CandidateTag = $CandidateTag }
   & $releaseScript @releaseArguments
   if ($LASTEXITCODE -ne 0) { throw "Android release signing failed with exit code $LASTEXITCODE" }
 } finally {

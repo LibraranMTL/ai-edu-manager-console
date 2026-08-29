@@ -2,6 +2,7 @@ package com.qxmatrix.edumanager.standalone
 
 import android.content.Context
 import android.net.Uri
+import org.json.JSONObject
 
 data class StudentWorkspaceScan(
     val paths: StudentWorkspacePaths,
@@ -68,7 +69,19 @@ class StudentWorkspaceService(private val context: Context) {
     fun knowledgeEngine(studentId: String): LlmWikiKnowledgeEngine {
         val student = students.requireExact(studentId)
         val safStore = SafWorkspaceStore(context, Uri.parse(student.storageRootUri))
-        return LlmWikiKnowledgeEngine(student.id, SafKnowledgeDocumentStore(safStore, student.paths.rootPath))
+        val documents = SafKnowledgeDocumentStore(safStore, student.paths.rootPath)
+        val mapping = KnowledgeSubjectIdentity.mapping(student.id)
+        val mappingPath = ".edu-manager/knowledge-engine-v1/subject-map.json"
+        if (documents.exists(mappingPath)) {
+            val stored = JSONObject(documents.readText(mappingPath))
+            require(stored.optString("businessStudentId") == student.id.trim() &&
+                stored.optString("knowledgeSubjectId") == mapping.getString("knowledgeSubjectId")) {
+                "学生知识主体映射与当前档案不一致"
+            }
+        } else {
+            documents.writeTextSafely(mappingPath, mapping.toString(2) + "\n")
+        }
+        return LlmWikiKnowledgeEngine(mapping.getString("knowledgeSubjectId"), documents)
     }
 
     private fun initializeWorkspace(store: SafWorkspaceStore, student: StudentRecord) {

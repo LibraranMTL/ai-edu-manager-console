@@ -84,8 +84,11 @@ test('W10 formal release pipeline rejects debug or repository-owned keys and ver
   assert.match(releaseScript, /aapt dump badging \$verificationApk/);
   assert.match(releaseScript, /APK Signature Scheme v2\\\): true/);
   assert.match(releaseScript, /com\.qxmatrix\.edumanager\.standalone/);
-  assert.match(releaseScript, /Move-Item -LiteralPath \$stagedPath -Destination \$finalPath/);
+  assert.match(releaseScript, /\[System\.IO\.File\]::Move\(\$stagedPath, \$finalPath\)/);
+  assert.match(releaseScript, /正式发布目标已存在，请先提升版本号/);
   assert.match(releaseScript, /\[string\]\$OutputDirectory/);
+  assert.match(releaseScript, /\[string\]\$CandidateTag/);
+  assert.match(releaseScript, /releaseStatus = if/);
   assert.match(releaseScript, /edu-manager\.android-release\.v1/);
   assert.match(releaseScript, /Get-FileHash -LiteralPath \$finalPath -Algorithm SHA256/);
   assert.match(releaseScript, /verify-physical-device\.ps1/);
@@ -108,4 +111,32 @@ test('W10 final acceptance requires a product-signed APK and a physical tablet',
     assert.match(physicalVerificationScript, new RegExp(gate));
   }
   assert.doesNotMatch(physicalVerificationScript, /overall\s*=\s*'passed'/);
+});
+
+test('P4 physical acceptance has an explicit knowledge collaboration profile', () => {
+  assert.match(physicalVerificationScript, /\[switch\]\$KnowledgeCollaboration/);
+  assert.match(physicalVerificationScript, /Knowledge collaboration acceptance requires Android standalone 1\.1\.3 or newer/);
+  assert.match(physicalVerificationScript, /CollaborationActivity/);
+  assert.match(physicalVerificationScript, /CollaborationNearbyService/);
+  assert.match(physicalVerificationScript, /CollaborationDatabase/);
+  assert.match(physicalVerificationScript, /CollaborationRecoveryWorker/);
+  assert.match(physicalVerificationScript, /knowledge-collaboration-p5/);
+  for (const gate of [
+    'collaboration-pairing-three-paths',
+    'collaboration-exact-student-map',
+    'collaboration-scope-isolation',
+    'collaboration-large-inventory',
+    'collaboration-large-file-resume',
+    'collaboration-foreground-recovery',
+    'collaboration-conflict-delete',
+    'collaboration-lan-tailscale',
+    'collaboration-student-terminal-regression',
+    'collaboration-android-nearby-receiver',
+    'collaboration-android-wifi-hotspot',
+    'collaboration-android-pairing-guard',
+    'collaboration-android-reverse-sync',
+    'collaboration-android-staging-guard',
+  ]) {
+    assert.match(physicalVerificationScript, new RegExp(gate));
+  }
 });

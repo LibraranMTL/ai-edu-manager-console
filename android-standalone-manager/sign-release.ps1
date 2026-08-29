@@ -1,6 +1,7 @@
 param(
   [string]$DeviceSerial = '',
-  [string]$OutputDirectory = ''
+  [string]$OutputDirectory = '',
+  [string]$CandidateTag = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -10,6 +11,10 @@ $deliveryRoot = if ([string]::IsNullOrWhiteSpace($OutputDirectory)) {
   Join-Path $projectRoot 'delivery'
 } else {
   [IO.Path]::GetFullPath($OutputDirectory)
+}
+$candidateTagValue = $CandidateTag.Trim()
+if (-not [string]::IsNullOrWhiteSpace($candidateTagValue) -and $candidateTagValue -notmatch '^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$') {
+  throw 'CandidateTag must use 1-80 letters, digits, dots, underscores or hyphens.'
 }
 $jdkHome = Join-Path $repositoryRoot '.android-tools\jdk\jdk-21.0.11+10'
 $buildTools = Join-Path $repositoryRoot '.android-tools\sdk\build-tools\34.0.0'
@@ -87,6 +92,19 @@ try {
     throw 'Unable to read the release certificate identity or SHA-256 fingerprint.'
   }
 
+  $previousReleaseMetadata = Get-ChildItem -LiteralPath $deliveryRoot -File -Filter 'AI-Education-Manager-Android-Standalone-*-release.json' -ErrorAction SilentlyContinue |
+    Sort-Object LastWriteTime -Descending
+  foreach ($previousMetadataFile in $previousReleaseMetadata) {
+    $previousMetadata = Get-Content -LiteralPath $previousMetadataFile.FullName -Raw -Encoding UTF8 | ConvertFrom-Json
+    if ([string]$previousMetadata.packageName -eq 'com.qxmatrix.edumanager.standalone' -and -not [string]::IsNullOrWhiteSpace([string]$previousMetadata.certificateSha256)) {
+      $trustedCertificateSha256 = ([string]$previousMetadata.certificateSha256).ToUpperInvariant()
+      if ($trustedCertificateSha256 -ne $certificateSha256) {
+        throw "Release certificate does not match the previous formal Android standalone release ($($previousMetadataFile.Name)). Refusing an APK that would conflict with installed copies."
+      }
+      break
+    }
+  }
+
   $badging = (& $aapt dump badging $verificationApk 2>&1 | Out-String)
   if ($LASTEXITCODE -ne 0) { throw 'Unable to read Release APK package metadata.' }
   $packageMatch = [regex]::Match($badging, "package: name='([^']+)' versionCode='([^']+)' versionName='([^']+)'")
@@ -99,7 +117,8 @@ try {
   }
 
   New-Item -ItemType Directory -Force -Path $deliveryRoot | Out-Null
-  $finalName = "AI-Education-Manager-Android-Standalone-$versionName-release.apk"
+  $artifactLabel = if ([string]::IsNullOrWhiteSpace($candidateTagValue)) { 'release' } else { $candidateTagValue }
+  $finalName = "AI-Education-Manager-Android-Standalone-$versionName-$artifactLabel.apk"
   $finalPath = Join-Path $deliveryRoot $finalName
   $stagedPath = Join-Path $deliveryRoot "$finalName.new"
   Copy-Item -LiteralPath $verificationApk -Destination $stagedPath -Force
@@ -107,7 +126,10 @@ try {
   if ((Get-FileHash -LiteralPath $stagedPath -Algorithm SHA256).Hash -ne $verifiedSha256) {
     throw 'The staged delivery APK does not match the verified APK.'
   }
-  Move-Item -LiteralPath $stagedPath -Destination $finalPath -Force
+  if (Test-Path -LiteralPath $finalPath) {
+    throw "正式发布目标已存在，请先提升版本号，避免覆盖既有正式安装包：$finalPath"
+  }
+  [System.IO.File]::Move($stagedPath, $finalPath)
 
   $artifact = Get-Item -LiteralPath $finalPath
   $artifactSha256 = (Get-FileHash -LiteralPath $finalPath -Algorithm SHA256).Hash
@@ -122,9 +144,11 @@ try {
     certificateDn = $certificateDn
     certificateSha256 = $certificateSha256
     signatureSchemes = @('v1', 'v2')
+    releaseStatus = if ([string]::IsNullOrWhiteSpace($candidateTagValue)) { 'release' } else { 'candidate' }
+    candidateTag = $candidateTagValue
     builtAt = [DateTime]::UtcNow.ToString('yyyy-MM-ddTHH:mm:ss.fffZ')
   }
-  $metadataPath = Join-Path $deliveryRoot "AI-Education-Manager-Android-Standalone-$versionName-release.json"
+  $metadataPath = Join-Path $deliveryRoot "AI-Education-Manager-Android-Standalone-$versionName-$artifactLabel.json"
   [IO.File]::WriteAllText($metadataPath, (($metadata | ConvertTo-Json -Depth 4) + "`n"), [Text.UTF8Encoding]::new($false))
 
   $deviceVerification = $null

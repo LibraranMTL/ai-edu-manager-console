@@ -146,11 +146,14 @@ class SafWorkspaceStore(
         val parts = WorkspacePath.segments(relativePath)
         val fileName = parts.last()
         val parent = resolveDirectory(parts.dropLast(1), create = true)
-        val token = UUID.randomUUID().toString()
-        val temporaryName = ".$fileName.write-$token"
-        val backupName = ".$fileName.backup-$token"
+        // Keep provider-facing helper names short and independent of the original name.
+        // Some SAF providers enforce a byte-length limit on display names; appending a
+        // UUID to a long Chinese/photo filename can make createFile() return null.
+        val token = UUID.randomUUID().toString().replace("-", "").take(12)
+        val temporaryName = "edu-write-$token"
+        val backupName = "edu-backup-$token"
         val temporary = requireNotNull(parent.createFile(mimeType, temporaryName)) {
-            "The document provider could not create a temporary file"
+            "目标目录无法创建迁移临时文件：$relativePath。请确认目标目录仍有可用空间和写入权限"
         }
 
         try {

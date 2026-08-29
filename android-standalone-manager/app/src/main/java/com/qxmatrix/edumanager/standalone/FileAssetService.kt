@@ -67,6 +67,49 @@ class FileAssetService(private val context: Context) {
         return assets.forStudent(studentId)
     }
 
+    /** Registers course screenshots created by older builds without moving or rewriting originals. */
+    fun reconcileLegacyCourseCaptures(studentId: String): JSONObject {
+        val student = students.requireExact(studentId)
+        val store = SafWorkspaceStore(context, Uri.parse(student.storageRootUri))
+        val ledgerPath = "${student.paths.rawPath}/.edu-manager/course-captures.json"
+        if (!store.exists(ledgerPath)) return JSONObject().put("registered", 0).put("failed", 0)
+        val sessions = JSONArray(store.readBytes(ledgerPath).toString(Charsets.UTF_8))
+        val existingIds = materials(student.id).map { it.optString("id") }.toMutableSet()
+        var registered = 0
+        val failures = JSONArray()
+        for (sessionIndex in 0 until sessions.length()) {
+            val session = sessions.optJSONObject(sessionIndex) ?: continue
+            val captured = session.optJSONArray("capturedFiles") ?: continue
+            for (fileIndex in 0 until captured.length()) {
+                val item = captured.optJSONObject(fileIndex) ?: continue
+                val captureItemId = item.optString("captureItemId")
+                val materialId = "material-$captureItemId"
+                if (captureItemId.isBlank() || materialId in existingIds) continue
+                val logicalPath = item.optString("path")
+                if (!logicalPath.startsWith("${student.paths.rawPath.trimEnd('/')}/")) {
+                    failures.put(JSONObject().put("path", logicalPath).put("error", "路径超出学生原始资料库")); continue
+                }
+                runCatching {
+                    val bytes = store.readBytes(logicalPath)
+                    registerCapturedFile(
+                        studentId = student.id,
+                        logicalPath = logicalPath,
+                        bytes = bytes,
+                        captureSessionId = session.optString("captureSessionId"),
+                        captureItemId = captureItemId,
+                        projectId = item.optString("projectId"),
+                        projectName = item.optString("projectName"),
+                        courseId = item.optString("courseId").ifBlank { session.optString("courseId") },
+                        courseProvider = item.optString("courseProvider").ifBlank { session.optString("provider") },
+                        courseUrl = item.optString("courseUrl").ifBlank { session.optString("url") },
+                    )
+                    existingIds += materialId; registered += 1
+                }.onFailure { failures.put(JSONObject().put("path", logicalPath).put("error", it.message ?: "登记失败")) }
+            }
+        }
+        return JSONObject().put("registered", registered).put("failed", failures.length()).put("failures", failures)
+    }
+
     fun registerCapturedFile(
         studentId: String,
         logicalPath: String,
@@ -75,6 +118,9 @@ class FileAssetService(private val context: Context) {
         captureItemId: String,
         projectId: String = "",
         projectName: String = "",
+        courseId: String = "",
+        courseProvider: String = "",
+        courseUrl: String = "",
     ): JSONObject {
         val student = students.requireExact(studentId)
         require(logicalPath.startsWith("${student.paths.rawPath.trimEnd('/')}/")) { "采集文件必须位于当前学生原始资料库" }
@@ -82,26 +128,29 @@ class FileAssetService(private val context: Context) {
         val filename = logicalPath.substringAfterLast('/')
         val relativePath = logicalPath.removePrefix(student.paths.rawPath).trimStart('/')
         val sha1 = digest("SHA-1", bytes); val now = Timestamp.now(); val materialId = "material-$captureItemId"
+        val courseCapture = courseId.isNotBlank()
+        val sourceName = if (courseCapture) "Android 课程连续屏幕采集" else "Android 连续屏幕采集"
         val material = JSONObject()
             .put("id", materialId).put("studentId", student.id).put("studentName", student.name)
             .put("fileName", filename).put("path", relativePath).put("absolutePath", logicalPath)
             .put("size", bytes.size).put("sha1", sha1).put("uploadedAt", now)
             .put("sourceDevice", "Android 平板").put("sourceDeviceId", "android-local")
-            .put("sourcePath", logicalPath).put("sourceName", "Android 连续屏幕采集")
+            .put("sourcePath", logicalPath).put("sourceName", sourceName)
             .put("status", MaterialStatus.PENDING_DIGEST.wireValue).put("statusUpdatedAt", now)
             .put("digestedAt", "").put("digestBatchId", "").put("captureSessionId", captureSessionId)
             .put("captureItemId", captureItemId).put("projectId", projectId).put("projectName", projectName)
+            .put("courseId", courseId).put("courseProvider", courseProvider).put("courseUrl", courseUrl)
         StudentMaterialRepository(context, student).upsert(material)
         val reference = JSONObject().put("id", materialId).put("spaceType", "student").put("spaceId", student.id)
             .put("spaceName", student.name).put("workspaceId", student.id).put("logicalPath", "@RAW_DIR/$relativePath")
-            .put("role", "student_raw").put("path", logicalPath).put("source", "Android 连续屏幕采集").put("linkedAt", now)
+            .put("role", "student_raw").put("path", logicalPath).put("source", sourceName).put("linkedAt", now)
         val asset = JSONObject().put("assetId", "asset-${sha1.take(16)}").put("filename", filename).put("sha1", sha1)
             .put("size", bytes.size).put("type", "image").put("path", logicalPath)
             .put("ownerStudentId", student.id).put("ownerStudentName", student.name)
             .put("linkedStudents", JSONArray().put(student.id)).put("linkedProjects", JSONArray().also { if (projectId.isNotBlank()) it.put(projectId) })
-            .put("references", JSONArray().put(reference)).put("sourcePath", logicalPath).put("sourceName", "Android 连续屏幕采集")
-            .put("sourceType", "android_screenshot").put("captureSessionId", captureSessionId).put("captureItemId", captureItemId)
-            .put("courseId", "").put("courseProvider", "").put("courseUrl", "").put("courseStartedAt", "").put("courseCompletedAt", "")
+            .put("references", JSONArray().put(reference)).put("sourcePath", logicalPath).put("sourceName", sourceName)
+            .put("sourceType", if (courseCapture) "course_screen_capture" else "android_screenshot").put("captureSessionId", captureSessionId).put("captureItemId", captureItemId)
+            .put("courseId", courseId).put("courseProvider", courseProvider).put("courseUrl", courseUrl).put("courseStartedAt", "").put("courseCompletedAt", "")
             .put("uploadedAt", now).put("updatedAt", now).put("status", "active")
         return JSONObject().put("ok", true).put("material", material).put("asset", assets.upsertBySha1(asset))
     }

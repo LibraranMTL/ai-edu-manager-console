@@ -31,7 +31,14 @@ data class CollaborationNodeIdentity(
         put("machineCode", machineCode)
         put("ownerIdentityId", "")
         put("publicKey", "")
-        put("capabilities", JSONArray(listOf("device-trust-v1", "student-mapping-v1", "revision-manifest-v1", "persistent-queue-v1")))
+        put("capabilities", JSONArray(listOf(
+            "device-trust-v1",
+            "student-mapping-v1",
+            "revision-manifest-v1",
+            "persistent-queue-v1",
+            "android-nearby-v1",
+            "lan-direct-v1",
+        )))
         put("transportOffers", JSONArray())
         put("createdAt", createdAt)
         put("revokedAt", "")

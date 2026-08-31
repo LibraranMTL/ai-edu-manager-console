@@ -37,8 +37,8 @@ test('Android standalone update uses scoped FileProvider installation permission
 });
 
 test('public update manifest publishes the current standalone release channel', () => {
-  assert.equal(publicManifest.standaloneVersionCode, 24);
-  assert.equal(publicManifest.standaloneVersionName, '1.2.0');
-  assert.equal(publicManifest.standaloneApkUrl, 'https://www.greatbg.com/download/AI-Education-Manager-Android-Standalone-1.2.0-release.apk');
-  assert.equal(publicManifest.standaloneSha256, '0CD50763359E1059DA5B73F4627818D1C1C91B2EA74C984E0A8107F0331126BC');
+  assert.equal(publicManifest.standaloneVersionCode, 25);
+  assert.equal(publicManifest.standaloneVersionName, '1.2.1');
+  assert.equal(publicManifest.standaloneApkUrl, 'https://www.greatbg.com/download/AI-Education-Manager-Android-Standalone-1.2.1-release.apk');
+  assert.equal(publicManifest.standaloneSha256, 'E55918AC1F28EEEE68CF9AC8A4264D1F01A030F300AAE09BD250618D735BF03D');
 });

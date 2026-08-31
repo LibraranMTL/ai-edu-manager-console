@@ -63,7 +63,11 @@ class CourseCaptureService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
-            ACTION_START -> { captureKind = intent.getStringExtra("capture_kind")?.takeIf { it in setOf("course", "material") } ?: "course"; startForegroundCompat(notification("正在准备屏幕采集")); startProjection(intent) }
+            ACTION_START -> {
+                captureKind = intent.getStringExtra("capture_kind")?.takeIf { it in setOf("course", "material") } ?: "course"
+                startForegroundCompat(notification("正在准备屏幕采集"))
+                runCatching { startProjection(intent) }.onFailure { stopCapture("start_failed", it.message ?: "屏幕采集启动失败") }
+            }
             ACTION_PAUSE -> { paused = true; updateNotification("屏幕采集已暂停") }
             ACTION_RESUME -> { paused = false; updateNotification("正在采集学习资料") }
             ACTION_STOP -> stopCapture("manual")
@@ -122,7 +126,9 @@ class CourseCaptureService : Service() {
             if (shouldSave) {
                 saveBitmap(bitmap, now, difference); lastSignature = signature; lastSavedAt = now
             }
-        } catch (_: Exception) { updateState("error") }
+        } catch (error: Exception) {
+            main.post { stopCapture("write_failed", error.message ?: "截图写入失败") }
+        }
         finally { image?.close(); bitmap?.recycle() }
     }
 
@@ -171,7 +177,7 @@ class CourseCaptureService : Service() {
         capturedFiles.put(item); saved += 1; updateState(if (paused) "paused" else "capturing"); updateNotification("正在采集学习资料 · 已保留 $saved 张")
     }
 
-    @Synchronized private fun stopCapture(reason: String) {
+    @Synchronized private fun stopCapture(reason: String, detail: String = "") {
         if (stopping) return; stopping = true; main.removeCallbacksAndMessages(null)
         reader?.setOnImageAvailableListener(null, null); display?.release(); display = null; reader?.close(); reader = null
         val current = projection; projection = null; current?.stop(); worker?.quitSafely(); worker = null
@@ -186,12 +192,22 @@ class CourseCaptureService : Service() {
             val folder = if (captureKind == "course") "课程采集" else "屏幕采集"
             SafWorkspaceStore(this, Uri.parse(rootUri)).writeBytesSafely("$rawPath/$folder/$sessionId/session.json", session.toString(2).toByteArray(), "application/json")
         }
-        updateState("completed"); stopForeground(true); stopSelf()
+        val failed = reason in setOf("permission_missing", "projection_unavailable", "permission_denied", "start_failed", "write_failed")
+        updateState(if (failed) "error" else "completed", if (failed) reason else "", detail)
+        stopForeground(true); stopSelf()
     }
 
     private fun requiredExtra(intent: Intent, key: String): String = requireNotNull(intent.getStringExtra(key)?.trim()).also { require(it.isNotBlank()) { "缺少 $key" } }
     private fun sha256(bytes: ByteArray): String = MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) }
-    private fun updateState(status: String) { getSharedPreferences(PREFS, MODE_PRIVATE).edit().putString(KEY_STATUS, status).putString(KEY_SESSION_ID, if (::sessionId.isInitialized) sessionId else "").putString(KEY_STUDENT_ID, if (::studentId.isInitialized) studentId else "").putString(KEY_CAPTURE_KIND, captureKind).putInt(KEY_SAVED, saved).apply() }
+    private fun updateState(status: String, errorCode: String = "", errorDetail: String = "") {
+        val editor = getSharedPreferences(PREFS, MODE_PRIVATE).edit().putString(KEY_STATUS, status)
+            .putString(KEY_SESSION_ID, if (::sessionId.isInitialized) sessionId else "")
+            .putString(KEY_STUDENT_ID, if (::studentId.isInitialized) studentId else "")
+            .putString(KEY_CAPTURE_KIND, captureKind).putInt(KEY_SAVED, saved).putLong(KEY_UPDATED_AT, System.currentTimeMillis())
+        if (errorCode.isNotBlank()) editor.putString(KEY_ERROR_CODE, errorCode).putString(KEY_ERROR_DETAIL, errorDetail.take(600)).putLong(KEY_ERROR_AT, System.currentTimeMillis())
+        else if (status == "capturing") editor.remove(KEY_ERROR_CODE).remove(KEY_ERROR_DETAIL).remove(KEY_ERROR_AT)
+        editor.apply()
+    }
 
     private fun notification(text: String): Notification {
         val open = PendingIntent.getActivity(this, 0, Intent(this, MainActivity::class.java), PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
@@ -218,6 +234,7 @@ class CourseCaptureService : Service() {
         const val ACTION_RESUME = "com.qxmatrix.edumanager.standalone.coursecapture.RESUME"
         const val ACTION_STOP = "com.qxmatrix.edumanager.standalone.coursecapture.STOP"
         const val PREFS = "course_capture_state"; const val KEY_STATUS = "status"; const val KEY_SESSION_ID = "session_id"; const val KEY_STUDENT_ID = "student_id"; const val KEY_CAPTURE_KIND = "capture_kind"; const val KEY_SAVED = "saved"
+        const val KEY_ERROR_CODE = "error_code"; const val KEY_ERROR_DETAIL = "error_detail"; const val KEY_ERROR_AT = "error_at"; const val KEY_UPDATED_AT = "updated_at"
         private const val CHANNEL_ID = "course_screen_capture"; private const val NOTIFICATION_ID = 5301
         private const val SAMPLE_INTERVAL_MS = 2_000L; private const val MIN_SAVE_INTERVAL_MS = 5_000L; private const val FIXED_INTERVAL_MS = 30_000L; private const val MAX_SAVE_INTERVAL_MS = 90_000L
         private const val MAX_DURATION_MS = 30L * 60 * 1000; private const val EXACT_DUPLICATE = .003; private const val CHANGE_THRESHOLD = .12

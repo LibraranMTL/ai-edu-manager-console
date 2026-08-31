@@ -59,12 +59,23 @@ class StudentDigestOrchestrator(private val context: Context) {
             updateWikiIndexes(store, student, artifactPath)
             registerKnowledge(student, sourceContents, parsed)
             registerGrowthEvidence(student, sourceContents, parsed)
-            eligible.forEach { files.transitionMaterial(studentId, it.getString("id"), MaterialStatus.PROCESSED) }
+            eligible.forEach {
+                files.patchMaterial(studentId, it.getString("id"), JSONObject()
+                    .put("digestedAt", Timestamp.now()).put("digestBatchId", executionId)
+                    .put("digestArtifactPath", artifactPath).put("digestResult", parsed.optString("summary"))
+                    .put("digestAttemptedAt", Timestamp.now()).put("digestError", ""))
+                files.transitionMaterial(studentId, it.getString("id"), MaterialStatus.PROCESSED)
+            }
             val result = resultPayload(task.getString("id"), executionId, true, "已消化 ${eligible.size} 份资料", artifactPath)
             tasks.acceptResult(task.getString("id"), result)
             JSONObject().put("ok", true).put("task", tasks.requireExact(task.getString("id"))).put("artifactPath", artifactPath).put("processed", eligible.size)
         } catch (error: Throwable) {
-            eligible.forEach { material -> runCatching { files.transitionMaterial(studentId, material.getString("id"), MaterialStatus.FAILED) } }
+            eligible.forEach { material -> runCatching {
+                files.patchMaterial(studentId, material.getString("id"), JSONObject()
+                    .put("digestAttemptedAt", Timestamp.now()).put("digestBatchId", executionId)
+                    .put("digestError", (error.message ?: "资料消化失败").take(600)))
+                files.transitionMaterial(studentId, material.getString("id"), MaterialStatus.FAILED)
+            } }
             val result = resultPayload(task.getString("id"), executionId, false, error.message ?: "资料消化失败", "")
             runCatching { tasks.acceptResult(task.getString("id"), result) }
             throw error

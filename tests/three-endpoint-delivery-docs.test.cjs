@@ -22,7 +22,7 @@ test('download page presents four product families and five client builds', () =
     'v0.16.8',
     'v0.6.15',
     'v0.1.1',
-    'v1.2.0',
+    'v1.2.1',
     'windows-host-manual.html',
     'windows-student-manual.html',
     'android-student-manual.html',
@@ -72,7 +72,7 @@ test('download page links the current artifacts and canonical web manuals exist'
     ['../download/AI-edu-manager-student-terminal-Windows-0.16.1.exe', path.join('release', 'windows-terminal', 'AI-edu-manager-student-terminal-Windows-0.16.1.exe')],
     ['../download/AI-edu-manager-tablet-terminal-0.6.15.apk', path.join('release', 'tablet-terminal', 'AI-edu-manager-tablet-terminal-0.6.15.apk')],
     ['../download/AI-edu-manager-teacher-terminal-0.1.1.apk', path.join('release', 'teacher-terminal', 'AI-edu-manager-teacher-terminal-0.1.1.apk')],
-    ['../download/AI-Education-Manager-Android-Standalone-1.2.0-release.apk', path.join('android-standalone-manager', 'delivery', 'AI-Education-Manager-Android-Standalone-1.2.0-release.apk')],
+    ['../download/AI-Education-Manager-Android-Standalone-1.2.1-release.apk', path.join('android-standalone-manager', 'delivery', 'AI-Education-Manager-Android-Standalone-1.2.1-release.apk')],
   ]) {
     assert.match(download, new RegExp(artifact[0].replaceAll('.', '\\.')));
     if (artifact[1]) {
@@ -173,7 +173,7 @@ test('web manuals are synchronized to the current product workflows', () => {
   assert.match(androidTeacher, /导入智能体对话/u);
   assert.match(androidTeacher, /不是把文件发送到学生设备/u);
   assert.match(androidTeacher, /在主机暂时不可连接时仍可从缓存查看/u);
-  assert.match(androidStandalone, /适用版本：Android 单机版 1\.2\.0/u);
+  assert.match(androidStandalone, /适用版本：Android 单机版 1\.2\.1/u);
   assert.match(androidStandalone, /Android 单机版是一套不依赖 Windows 主机的完整教育管家/u);
   for (const manual of [windowsStudent, androidStudent, androidTeacher, androidStandalone]) {
     assert.match(manual, /android-teacher-manual\.html/u);

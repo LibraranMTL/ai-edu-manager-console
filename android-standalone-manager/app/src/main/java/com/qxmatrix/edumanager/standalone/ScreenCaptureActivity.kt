@@ -82,10 +82,24 @@ class ScreenCaptureActivity : Activity() {
 
     private fun state() = getSharedPreferences(CourseCaptureService.PREFS, MODE_PRIVATE).getString(CourseCaptureService.KEY_STATUS, "idle").orEmpty()
     private fun refreshState() {
-        val prefs = getSharedPreferences(CourseCaptureService.PREFS, MODE_PRIVATE); val active = state() in setOf("capturing", "paused")
+        val prefs = getSharedPreferences(CourseCaptureService.PREFS, MODE_PRIVATE); val currentState = state(); val active = currentState in setOf("capturing", "paused")
         val kind = prefs.getString(CourseCaptureService.KEY_CAPTURE_KIND, "").orEmpty(); val saved = prefs.getInt(CourseCaptureService.KEY_SAVED, 0)
         val activeStudentId = prefs.getString(CourseCaptureService.KEY_STUDENT_ID, "").orEmpty(); val belongsHere = activeStudentId.isBlank() || activeStudentId == student.id
-        status.text = if (active && !belongsHere) "另一学生的屏幕采集正在运行。请从持续通知结束后再为 ${student.name} 采集。" else if (active) "正在${if (kind == "course") "采集课程" else "采集学习资料"} · 已保存 $saved 张\n学生：${student.name}${if (projectName.isBlank()) "" else " · 项目：$projectName"}" else "学生：${student.name}${if (projectName.isBlank()) "" else " · 项目：$projectName"}\n采集结果将进入原始资料库和文件资产中心。"
+        val errorCode = prefs.getString(CourseCaptureService.KEY_ERROR_CODE, "").orEmpty()
+        val errorDetail = prefs.getString(CourseCaptureService.KEY_ERROR_DETAIL, "").orEmpty()
+        val errorMessage = when (errorCode) {
+            "permission_missing", "permission_denied" -> "系统未授予屏幕录制权限，请重新开始并在系统窗口中允许。"
+            "projection_unavailable" -> "当前系统不支持屏幕投射服务，请重启平板后重试。"
+            "write_failed" -> "截图无法写入学生资料目录，请在系统设置检查目录授权、剩余空间和 U 盘连接。"
+            "start_failed" -> "屏幕采集启动失败，请检查通知权限、目录授权后重试。"
+            else -> errorDetail.ifBlank { "屏幕采集未能运行。" }
+        }
+        status.text = when {
+            active && !belongsHere -> "另一学生的屏幕采集正在运行。请从持续通知结束后再为 ${student.name} 采集。"
+            active -> "正在${if (kind == "course") "采集课程" else "采集学习资料"} · 已保存 $saved 张\n学生：${student.name}${if (projectName.isBlank()) "" else " · 项目：$projectName"}\n持续通知已启用，可从通知暂停或结束。"
+            currentState == "error" && belongsHere -> "采集失败：$errorMessage${if (errorDetail.isBlank() || errorDetail == errorMessage) "" else "\n详情：$errorDetail"}"
+            else -> "学生：${student.name}${if (projectName.isBlank()) "" else " · 项目：$projectName"}\n采集结果将进入原始资料库和文件资产中心。"
+        }
         primary.text = if (active && belongsHere) "结束当前采集（已保存 $saved 张）" else if (active) "当前有其他采集任务" else "选择模式并开始"
     }
 

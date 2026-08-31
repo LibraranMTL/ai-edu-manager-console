@@ -103,6 +103,30 @@ class SafWorkspaceStore(
         return true
     }
 
+    data class TreeStats(val files: Int, val directories: Int, val bytes: Long)
+
+    fun treeStats(relativePath: String, maximumEntries: Int = 100_000): TreeStats {
+        require(relativePath.isNotBlank()) { "不能统计授权根目录本身" }
+        val document = find(WorkspacePath.segments(relativePath)) ?: return TreeStats(0, 0, 0)
+        var files = 0; var directories = 0; var bytes = 0L; var visited = 0
+        fun walk(item: DocumentFile) {
+            check(++visited <= maximumEntries) { "目录项目过多，已停止统计" }
+            if (item.isDirectory) { directories += 1; item.listFiles().forEach(::walk) }
+            else if (item.isFile) { files += 1; bytes += item.length().coerceAtLeast(0L) }
+        }
+        walk(document)
+        return TreeStats(files, directories, bytes)
+    }
+
+    fun deleteDirectoryTree(relativePath: String): Boolean {
+        require(relativePath.isNotBlank()) { "不能删除授权根目录本身" }
+        val document = find(WorkspacePath.segments(relativePath)) ?: return true
+        require(document.isDirectory) { "目标不是学生资料目录" }
+        check(document.delete()) { "文档提供程序未能删除学生资料目录" }
+        directoryCache.keys.filter { it == relativePath || it.startsWith("${relativePath.trimEnd('/')}/") }.forEach(directoryCache::remove)
+        return true
+    }
+
     data class MarkdownFile(val name: String, val relativePath: String)
 
     /** Lists bounded Markdown documents below already-authorized logical roots. */
@@ -128,6 +152,7 @@ class SafWorkspaceStore(
         directory.listFiles().sortedBy { it.name.orEmpty().lowercase() }.forEach { child ->
             if (output.size >= maximum) return
             val name = child.name.orEmpty(); if (name.isBlank()) return@forEach
+            if (name.startsWith(".")) return@forEach
             val relative = if (prefix.isBlank()) name else "$prefix/$name"
             if (child.isDirectory) walkMarkdown(child, relative, depth + 1, maximumDepth, maximum, output)
             else if (child.isFile && (name.endsWith(".md", true) || name.endsWith(".markdown", true))) output[relative] = MarkdownFile(name, relative)

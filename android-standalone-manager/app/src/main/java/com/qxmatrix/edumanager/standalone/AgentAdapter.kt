@@ -1,6 +1,8 @@
 package com.qxmatrix.edumanager.standalone
 
 import android.content.Context
+import android.graphics.Bitmap
+import android.graphics.Color
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
 import android.util.Base64
@@ -9,6 +11,7 @@ import org.json.JSONObject
 import java.net.HttpURLConnection
 import java.net.URI
 import java.net.URL
+import java.io.ByteArrayOutputStream
 import java.security.KeyStore
 import javax.crypto.Cipher
 import javax.crypto.KeyGenerator
@@ -151,7 +154,7 @@ class OpenAiCompatibleAgentAdapter(private val configuration: AgentConfiguration
 
     fun testVisionConnection(): String {
         require(configuration.visionModel.isNotBlank()) { "尚未配置视觉模型" }
-        val image = Base64.decode(TEST_IMAGE_BASE64, Base64.DEFAULT)
+        val image = generatedTestImage()
         return executeVision(
             "你是视觉模型连接测试工具。不要推断任何个人信息。",
             "这是一张应用生成的测试图片。只回复 VISION_OK。",
@@ -195,8 +198,15 @@ class OpenAiCompatibleAgentAdapter(private val configuration: AgentConfiguration
     }
 
     companion object {
-        // 1x1 opaque PNG generated for connectivity checks; it contains no user data.
-        private const val TEST_IMAGE_BASE64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
+        /** 128x128 application-generated PNG; large enough for common vision-model limits and contains no user data. */
+        private fun generatedTestImage(): ByteArray {
+            val bitmap = Bitmap.createBitmap(128, 128, Bitmap.Config.ARGB_8888)
+            bitmap.eraseColor(Color.rgb(36, 150, 150))
+            val output = ByteArrayOutputStream()
+            bitmap.compress(Bitmap.CompressFormat.PNG, 100, output)
+            bitmap.recycle()
+            return output.toByteArray()
+        }
 
         fun resolveChatCompletionsUrl(endpoint: String): String {
             val normalized = endpoint.trim().trimEnd('/')

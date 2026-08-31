@@ -45,9 +45,9 @@ test('W16 digest follows student and project AGENT rules without cross-scope pub
   assert.match(digest, /project\.paths\.qaPath/);
 });
 
-test('post-1.1.6 source candidate advances Android standalone to 1.2.0 code 24', () => {
+test('formal source advances Android standalone to 1.2.1 code 25', () => {
   const build = fs.readFileSync(path.join(__dirname, '..', 'android-standalone-manager', 'app', 'build.gradle.kts'), 'utf8');
-  assert.match(build, /versionCode = 24/);
-  assert.match(build, /versionName = "1\.2\.0"/);
+  assert.match(build, /versionCode = 25/);
+  assert.match(build, /versionName = "1\.2\.1"/);
   assert.match(build, /isMinifyEnabled = true/);
 });

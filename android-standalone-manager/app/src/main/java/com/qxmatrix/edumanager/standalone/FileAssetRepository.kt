@@ -9,7 +9,15 @@ class StudentMaterialRepository(context: Context, private val student: StudentRe
     private val store = SafWorkspaceStore(context, Uri.parse(student.storageRootUri))
     private val filePath = child(student.paths.rootPath, ".edu-manager/materials.json")
 
-    fun list(): List<JSONObject> = readRoot().optJSONArray("materials").toObjects()
+    fun list(): List<JSONObject> = readRoot().optJSONArray("materials").toObjects().map { source ->
+        val item = JSONObject(source.toString())
+        val alreadyDigested = item.optString("digestedAt").isNotBlank() ||
+            item.optString("digestArtifactPath").isNotBlank() || item.optString("digestBatchId").isNotBlank()
+        if (alreadyDigested && MaterialStatus.normalize(item.optString("status")) == MaterialStatus.PENDING_DIGEST) {
+            item.put("status", MaterialStatus.PROCESSED.wireValue)
+        }
+        item
+    }
 
     fun upsert(material: JSONObject): List<JSONObject> {
         require(material.getString("studentId") == student.id) { "资料不能写入其他学生档案" }

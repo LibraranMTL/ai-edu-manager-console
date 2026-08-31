@@ -33,8 +33,29 @@ class ProjectRepository(context: Context) {
         add(project)
     }
 
+    fun detachStudent(studentId: String) {
+        val current = list()
+        val next = current.map { project ->
+            if (studentId !in project.studentIds) project else project.copy(
+                studentIds = project.studentIds.filterNot { it == studentId },
+                studentNames = project.studentIds.filterNot { it == studentId }.mapNotNull { id ->
+                    StudentIndexRepository(context = appContext).list().singleOrNull { it.id == id }?.name
+                },
+            )
+        }
+        writeAll(next)
+    }
+
     fun requireExact(projectId: String): ProjectRecord = list().singleOrNull { it.id == projectId }
         ?: throw NoSuchElementException("未找到指定项目 ID：$projectId")
+
+    private val appContext: Context = context.applicationContext
+
+    private fun writeAll(projects: List<ProjectRecord>) {
+        val root = JSONObject().put("version", 1).put("updatedAt", Timestamp.now())
+            .put("projects", JSONArray().also { array -> projects.forEach { array.put(it.toJson()) } })
+        state.writeBytes(PATH, (root.toString(2) + "\n").toByteArray())
+    }
 
     companion object { private const val PATH = "projects.json" }
 }

@@ -23,6 +23,7 @@ import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
 import android.widget.Button
+import android.widget.CheckBox
 import android.widget.EditText
 import android.widget.FrameLayout
 import android.widget.ImageView
@@ -69,6 +70,7 @@ class MainActivity : Activity() {
     private var pendingCameraUri: Uri? = null
     private var pendingCameraFile: File? = null
     private var pendingProjectAdoption: ProjectInput? = null
+    private var pendingProjectRootMode: Boolean? = null
     private var pendingBackupPassword: CharArray? = null
     private var pendingRestorePassword: CharArray? = null
     private var pendingRestorePackage: Uri? = null
@@ -465,6 +467,8 @@ class MainActivity : Activity() {
         addAction("OCR / 视觉解析资料（可多选）") { chooseMaterialsForOcr() }
         addAction("查看 OCR 识别结果") { chooseOcrResult() }
         addAction("消化资料（可多选）") { chooseMaterialsForDigest() }
+        addAction("查看资料消化记录") { chooseDigestHistoryStudent() }
+        addAction("导入智能体对话历史") { showConversationImportMenu() }
         renderMaterialQueue()
         reconcileLegacyCourseCapturesIfNeeded()
     }
@@ -610,6 +614,7 @@ class MainActivity : Activity() {
         sectionNote("新建或接管学习项目；项目知识空间继续使用固定 LLM Wiki Schema。")
         addAction("新建学习项目") { showProjectInputDialog(adoptKnowledge = false) }
         addAction("接管已有项目知识库") { showProjectInputDialog(adoptKnowledge = true) }
+        addAction("设置或更换单机资料根目录") { startTreePicker(REQUEST_WORKSPACE_ROOT) }
         sectionHeading("已有学习项目")
         projectList = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }; sectionContent.addView(projectList, matchWrap()); refreshProjects()
     }
@@ -638,6 +643,7 @@ class MainActivity : Activity() {
         addAction("配置或修改本地任务 Agent") { showAgentConfigurationDialog() }
         addAction("测试文本 / 视觉 Agent") { testAgentConfiguration() }
         addAction("停用本地任务 Agent") { confirmClearAgentConfiguration() }
+        addAction("自动消化资料：${if (AutoDigestSettingsStore(this).load().enabled) "已开启" else "已关闭"}") { showAutoDigestSettings() }
         addAction("界面皮肤：${uiPreferences.skin().label}") { showSkinDialog() }
         addAction("页面布局：${uiPreferences.layoutMode().label}") { showLayoutDialog() }
         addAction("检查版本更新") { checkForAppUpdate() }
@@ -685,13 +691,18 @@ class MainActivity : Activity() {
             if (resultCode == RESULT_OK) data?.data?.let(::recognizeLicenseQrImage)
             return
         }
-        if (resultCode != RESULT_OK) return
+        if (resultCode != RESULT_OK) {
+            if (requestCode == REQUEST_WORKSPACE_ROOT) pendingProjectRootMode = null
+            return
+        }
         when (requestCode) {
             REQUEST_WORKSPACE_ROOT -> {
                 val result = rootGrant.acceptPickerResult(data ?: return)
                 if (::rootStatus.isInitialized) rootStatus.text = result.fold(
-                    onSuccess = { "新建档案根目录已授权：$it" }, onFailure = { "目录授权失败：${it.message ?: "未知错误"}" },
+                    onSuccess = { "单机资料根目录已授权：$it" }, onFailure = { "目录授权失败：${it.message ?: "未知错误"}" },
                 )
+                result.onSuccess { pendingProjectRootMode?.let { mode -> pendingProjectRootMode = null; showProjectInputDialog(mode) } }
+                    .onFailure { pendingProjectRootMode = null }
             }
             REQUEST_ADOPTED_ROOT -> {
                 val input = pendingAdoption ?: return
@@ -1075,7 +1086,7 @@ class MainActivity : Activity() {
             val materials = runCatching { fileAssetService.materials(student.id) }.getOrDefault(emptyList())
             val assetCount = runCatching { fileAssetService.assets(student.id).size }.getOrDefault(0)
             studentList.addView(TextView(this).apply {
-                text = "${student.name} · ${if (student.knowledgeBaseMode == "adopted") "接管目录" else "本机新建"}\n${student.grade.ifBlank { "未填写年级" }}\n资料 ${materials.size} · 文件资产 $assetCount · 待消化 ${materials.count { it.optString("status") == "pending_digest" }}\nKnowledgeEngine：${if (engineState?.optBoolean("ok") == true) "正常" else "待检查"} · 来源 ${counts?.optInt("sources") ?: 0} · 声明 ${counts?.optInt("claims") ?: 0}\nID: ${student.id}"
+                text = "${student.name} · ${if (student.knowledgeBaseMode == "adopted") "接管目录" else "本机新建"}\n${student.grade.ifBlank { "未填写年级" }}\n资料 ${materials.size} · 文件资产 $assetCount · 待消化 ${materials.count { MaterialStatus.normalize(it.optString("status")) == MaterialStatus.PENDING_DIGEST }}\nKnowledgeEngine：${if (engineState?.optBoolean("ok") == true) "正常" else "待检查"} · 来源 ${counts?.optInt("sources") ?: 0} · 声明 ${counts?.optInt("claims") ?: 0}\n点击浏览 · 长按管理\nID: ${student.id}"
                 textSize = 15f
                 setTextColor(palette.text)
                 setPadding(24, 20, 24, 20)
@@ -1083,20 +1094,77 @@ class MainActivity : Activity() {
                 isClickable = true
                 isFocusable = true
                 setOnClickListener { openStudentArchive(student) }
+                setOnLongClickListener { showStudentManagement(student); true }
+                contentDescription = "${student.name}，点击浏览档案，长按管理或删除"
             }, matchWrap())
         }
     }
 
+    private fun showStudentManagement(student: StudentRecord) {
+        val actions = mutableListOf("浏览教育档案", "从本机列表移除")
+        if (student.knowledgeBaseMode == "standard" && student.paths.rootPath.isNotBlank()) actions += "永久删除本机资料"
+        AlertDialog.Builder(this).setTitle("${student.name} · 档案管理").setItems(actions.toTypedArray()) { _, which ->
+            when (actions[which]) {
+                "浏览教育档案" -> openStudentArchive(student)
+                "从本机列表移除" -> confirmRemoveStudent(student, deleteFiles = false)
+                else -> confirmRemoveStudent(student, deleteFiles = true)
+            }
+        }.setNegativeButton("取消", null).show()
+    }
+
+    private fun confirmRemoveStudent(student: StudentRecord, deleteFiles: Boolean) {
+        val activeTask = TaskRepository(this).list().any {
+            it.optString("sourceId") == student.id && it.optString("status") in setOf("queued", "approved", "running", "reviewing")
+        }
+        val capturePrefs = getSharedPreferences(CourseCaptureService.PREFS, MODE_PRIVATE)
+        val activeCapture = capturePrefs.getString(CourseCaptureService.KEY_STUDENT_ID, "").orEmpty() == student.id &&
+            capturePrefs.getString(CourseCaptureService.KEY_STATUS, "idle").orEmpty() in setOf("capturing", "paused")
+        if (activeTask || activeCapture || StudentOfflineMigrationService.isRunning()) {
+            showMessage("当前不能移除", "该学生仍有资料处理、屏幕采集或迁移任务。请先结束任务再操作。")
+            return
+        }
+        val stats = if (deleteFiles) runCatching { SafWorkspaceStore(this, Uri.parse(student.storageRootUri)).treeStats(student.paths.rootPath) }.getOrNull() else null
+        val message = if (deleteFiles) "将永久删除 ${student.name} 的本机资料目录：${stats?.files ?: "未知"} 个文件、${stats?.directories ?: "未知"} 个目录。此操作不可恢复。" else "只从本机学生列表移除并解除学习项目关联，不删除原始目录和文件；以后仍可重新接管。"
+        AlertDialog.Builder(this).setTitle(if (deleteFiles) "永久删除学生资料？" else "移除学生档案？").setMessage(message)
+            .setNegativeButton("取消", null).setPositiveButton(if (deleteFiles) "继续确认" else "确认移除") { _, _ ->
+                if (deleteFiles) AlertDialog.Builder(this).setTitle("再次确认永久删除")
+                    .setMessage("确认永久删除 ${student.name} 的本机资料？")
+                    .setNegativeButton("取消", null).setPositiveButton("永久删除") { _, _ -> removeStudent(student, true) }.show()
+                else removeStudent(student, false)
+            }.show()
+    }
+
+    private fun removeStudent(student: StudentRecord, deleteFiles: Boolean) {
+        runCatching {
+            ProjectRepository(this).detachStudent(student.id)
+            StudentIndexRepository(this).remove(student.id)
+            if (deleteFiles) SafWorkspaceStore(this, Uri.parse(student.storageRootUri)).deleteDirectoryTree(student.paths.rootPath)
+        }.onSuccess {
+            refreshStudents()
+            showMessage(if (deleteFiles) "学生资料已永久删除" else "学生档案已移除", if (deleteFiles) "${student.name} 的本机资料目录和登记已删除。" else "原目录未删除，可通过“接管已有学情档案”重新接管。")
+        }.onFailure { showMessage("操作失败", it.message ?: "未知错误") }
+    }
+
     private fun openStudentArchive(student: StudentRecord) {
-        startActivity(Intent(this, MarkdownBrowserActivity::class.java)
-            .putExtra(MarkdownBrowserActivity.EXTRA_MODE, MarkdownBrowserActivity.MODE_ARCHIVE)
-            .putExtra(MarkdownBrowserActivity.EXTRA_STUDENT_ID, student.id)
-            .putExtra(MarkdownBrowserActivity.EXTRA_TITLE, "${student.name} · 教育档案"))
+        val categories = arrayOf("资料摘要", "综合汇总", "问答精华", "概念库", "实体库", "成长模型", "学情报告", "原始资料", "全部文件")
+        AlertDialog.Builder(this).setTitle("${student.name} · 教育档案").setItems(categories) { _, which ->
+            if (categories[which] in setOf("原始资料", "全部文件")) {
+                val allFiles = categories[which] == "全部文件"
+                startActivity(Intent(this, RawMaterialBrowserActivity::class.java)
+                    .putExtra(RawMaterialBrowserActivity.EXTRA_STUDENT_ID, student.id)
+                    .putExtra(RawMaterialBrowserActivity.EXTRA_START_PATH, if (allFiles) student.paths.rootPath else student.paths.rawPath)
+                    .putExtra(RawMaterialBrowserActivity.EXTRA_TITLE, "${student.name} · ${categories[which]}"))
+            } else startActivity(Intent(this, MarkdownBrowserActivity::class.java)
+                .putExtra(MarkdownBrowserActivity.EXTRA_MODE, MarkdownBrowserActivity.MODE_ARCHIVE)
+                .putExtra(MarkdownBrowserActivity.EXTRA_ARCHIVE_CATEGORY, categories[which])
+                .putExtra(MarkdownBrowserActivity.EXTRA_STUDENT_ID, student.id)
+                .putExtra(MarkdownBrowserActivity.EXTRA_TITLE, "${student.name} · ${categories[which]}"))
+        }.setNegativeButton("取消", null).show()
     }
 
     private fun updateRootStatus() {
-        if (::rootStatus.isInitialized) rootStatus.text = rootGrant.currentRootUri()?.let { "新建档案根目录已授权：$it" }
-            ?: "尚未选择新建档案的资料根目录。应用只访问你明确授权的目录。"
+        if (::rootStatus.isInitialized) rootStatus.text = rootGrant.currentRootUri()?.let { "单机资料根目录已授权：$it" }
+            ?: "尚未选择单机资料根目录。应用只访问你明确授权的目录。"
     }
 
     private fun startTreePicker(requestCode: Int) {
@@ -1235,7 +1303,11 @@ class MainActivity : Activity() {
     private fun showProjectInputDialog(adoptKnowledge: Boolean) {
         val root = rootGrant.currentRootUri()
         if (root == null) {
-            showMessage("尚未选择根目录", "请先选择新建档案的资料根目录；学习项目控制目录也会建立在该授权根目录内。")
+            AlertDialog.Builder(this).setTitle("尚未选择单机资料根目录")
+                .setMessage("学习项目控制目录需要建立在你明确授权的单机资料根目录内。")
+                .setNegativeButton("取消", null).setPositiveButton("立即选择根目录") { _, _ ->
+                    pendingProjectRootMode = adoptKnowledge; startTreePicker(REQUEST_WORKSPACE_ROOT)
+                }.show()
             return
         }
         val fields = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(40, 12, 40, 0) }
@@ -1337,7 +1409,7 @@ class MainActivity : Activity() {
     private fun testAgentConfiguration() {
         val config = runCatching { AgentConfigurationStore(this).load() }.getOrNull()
         if (config == null) { showMessage("尚未配置", "请先配置本地任务 Agent。") ; return }
-        val progress = showProgress("正在测试 Agent", "先测试文本模型，再用应用生成的 1×1 测试图片检查视觉模型；不会读取或上传学生资料。")
+        val progress = showProgress("正在测试 Agent", "先测试文本模型，再用应用生成的 128×128 测试图片检查视觉模型；不会读取或上传学生资料。")
         Thread {
             val adapter = OpenAiCompatibleAgentAdapter(config)
             val textResult = runCatching { adapter.testConnection() }
@@ -1363,6 +1435,31 @@ class MainActivity : Activity() {
                 runCatching { AgentConfigurationStore(this).clear() }.onSuccess { updateAgentStatus(); showMessage("已停用", "Agent 配置和本机加密密钥已删除。") }
                     .onFailure { showMessage("停用失败", it.message ?: "未知错误") }
             }.show()
+    }
+
+    private fun showAutoDigestSettings() {
+        val store = AutoDigestSettingsStore(this); val current = store.load()
+        val fields = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(24), dp(8), dp(24), 0) }
+        val enabled = CheckBox(this).apply { text = "开启每日自动消化"; isChecked = current.enabled; fields.addView(this, matchWrap()) }
+        val time = EditText(this).apply { hint = "执行时间（HH:mm）"; setText("%02d:%02d".format(current.hour, current.minute)); fields.addView(this, matchWrap()) }
+        val wifi = CheckBox(this).apply { text = "仅在 Wi-Fi 下运行"; isChecked = current.wifiOnly; fields.addView(this, matchWrap()) }
+        val charging = CheckBox(this).apply { text = "仅在充电时运行"; isChecked = current.chargingOnly; fields.addView(this, matchWrap()) }
+        val maximum = EditText(this).apply { hint = "每名学生单次最多处理份数"; inputType = InputType.TYPE_CLASS_NUMBER; setText(current.maximumPerStudent.toString()); fields.addView(this, matchWrap()) }
+        fields.addView(TextView(this).apply { text = "只处理已准备好的待消化资料；图片/PDF 必须先完成 OCR。失败资料保留在待处理队列，不会静默删除。\n\n${store.summary()}"; setTextColor(palette.muted); setPadding(0, dp(8), 0, 0) }, matchWrap())
+        val dialog = AlertDialog.Builder(this).setTitle("自动消化资料").setView(fields).setNegativeButton("取消", null).setPositiveButton("保存", null).create()
+        dialog.setOnShowListener {
+            dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+                val parts = time.text.toString().trim().split(':')
+                val hour = parts.getOrNull(0)?.toIntOrNull(); val minute = parts.getOrNull(1)?.toIntOrNull()
+                val count = maximum.text.toString().toIntOrNull()
+                if (hour !in 0..23 || minute !in 0..59) { time.error = "请输入 00:00 到 23:59"; return@setOnClickListener }
+                if (count !in 1..100) { maximum.error = "请输入 1 到 100"; return@setOnClickListener }
+                store.save(AutoDigestSettings(enabled.isChecked, requireNotNull(hour), requireNotNull(minute), wifi.isChecked, charging.isChecked, requireNotNull(count)))
+                dialog.dismiss(); showMessage("自动消化设置已保存", store.summary())
+                if (activeSection == AppSection.SETTINGS) renderSection(AppSection.SETTINGS)
+            }
+        }
+        dialog.show()
     }
 
     private fun showSkinDialog() {
@@ -1805,9 +1902,42 @@ class MainActivity : Activity() {
     }
 
     private fun chooseMaterialsForDigest() {
-        val items = materialQueueItems().filter(::materialPending)
-        if (items.isEmpty()) { showMessage("没有待消化资料", "当前没有可选择的待处理资料。"); return }
+        val items = materialQueueItems().filter { materialPending(it) && digestEligible(it) }
+        if (items.isEmpty()) { showMessage("没有可消化资料", "当前没有已准备好的待消化资料；图片或 PDF 需要先完成 OCR。"); return }
         showBatchMaterialPicker(items, MaterialBatchAction.DIGEST)
+    }
+
+    private fun digestEligible(item: MaterialQueueItem): Boolean =
+        item.material.optString("fileName").substringAfterLast('.', "").lowercase() in DIGEST_TEXT_EXTENSIONS ||
+            item.material.optString("ocrStatus") == "completed"
+
+    private fun chooseDigestHistoryStudent() {
+        val students = workspaceService.listStudents()
+        if (students.isEmpty()) { showMessage("没有学生档案", "请先新建或接管学生档案。"); return }
+        AlertDialog.Builder(this).setTitle("查看哪名学生的消化记录")
+            .setItems(students.map { it.name }.toTypedArray()) { _, which -> showDigestHistory(students[which]) }.show()
+    }
+
+    private fun showDigestHistory(student: StudentRecord) {
+        val records = fileAssetService.materials(student.id)
+            .filter { MaterialStatus.normalize(it.optString("status")) == MaterialStatus.PROCESSED || it.optString("digestedAt").isNotBlank() || it.optString("digestAttemptedAt").isNotBlank() }
+            .sortedByDescending { it.optString("digestedAt").ifBlank { it.optString("digestAttemptedAt").ifBlank { it.optString("statusUpdatedAt") } } }
+        if (records.isEmpty()) { showMessage("暂无消化记录", "${student.name} 还没有已完成的资料消化记录。"); return }
+        val labels = records.map {
+            val failed = it.optString("digestError").isNotBlank()
+            val result = if (failed) "失败：${it.optString("digestError")}" else it.optString("digestResult").ifBlank { "已写入知识候选" }
+            "${it.optString("fileName")}\n${it.optString("digestedAt").ifBlank { it.optString("digestAttemptedAt").ifBlank { it.optString("statusUpdatedAt") } }} · ${result.take(120)}"
+        }.toTypedArray()
+        AlertDialog.Builder(this).setTitle("${student.name} · 资料消化记录（${records.size}）")
+            .setItems(labels) { _, which ->
+                val record = records[which]; val path = record.optString("digestArtifactPath")
+                if (path.isBlank()) showMessage("历史记录", "资料：${record.optString("fileName")}\n时间：${record.optString("digestedAt").ifBlank { record.optString("digestAttemptedAt") }}\n批次：${record.optString("digestBatchId")}\n结果：${record.optString("digestError").ifBlank { record.optString("digestResult").ifBlank { "已完成；旧记录未保存独立产物路径" } }}")
+                else startActivity(Intent(this, MarkdownBrowserActivity::class.java)
+                    .putExtra(MarkdownBrowserActivity.EXTRA_MODE, MarkdownBrowserActivity.MODE_MATERIAL_DIGEST)
+                    .putExtra(MarkdownBrowserActivity.EXTRA_STUDENT_ID, student.id)
+                    .putExtra(MarkdownBrowserActivity.EXTRA_MATERIAL_ID, record.getString("id"))
+                    .putExtra(MarkdownBrowserActivity.EXTRA_TITLE, "${record.optString("fileName")} · 消化结果"))
+            }.setNegativeButton("关闭", null).show()
     }
 
     private fun chooseMaterialsForOcr() {

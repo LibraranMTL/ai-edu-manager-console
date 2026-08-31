@@ -60,7 +60,18 @@ class MarkdownBrowserActivity : Activity() {
         MODE_ARCHIVE -> {
             val student = StudentIndexRepository(this).requireExact(requireNotNull(intent.getStringExtra(EXTRA_STUDENT_ID)))
             val store = SafWorkspaceStore(this, Uri.parse(student.storageRootUri))
-            store.listMarkdownFiles(listOf(student.paths.summaryPath)).map { Document(it.name, it.relativePath, student.storageRootUri) }
+            val category = intent.getStringExtra(EXTRA_ARCHIVE_CATEGORY).orEmpty()
+            val roots = when (category) {
+                "资料摘要" -> listOf("${student.paths.summaryPath}/摘要库")
+                "综合汇总" -> listOf("${student.paths.summaryPath}/综合汇总库")
+                "问答精华" -> listOf("${student.paths.summaryPath}/问答精华库", "${student.paths.summaryPath}/问答库")
+                "概念库" -> listOf("${student.paths.summaryPath}/概念库")
+                "实体库" -> listOf("${student.paths.summaryPath}/实体库")
+                "成长模型" -> listOf("${student.paths.summaryPath}/成长模型")
+                "学情报告" -> listOf("${student.paths.summaryPath}/学情报告")
+                else -> listOf(student.paths.summaryPath)
+            }
+            store.listMarkdownFiles(roots).map { Document(it.name, it.relativePath, student.storageRootUri) }
         }
         MODE_PROJECT -> {
             val project = ProjectRepository(this).requireExact(requireNotNull(intent.getStringExtra(EXTRA_PROJECT_ID)))
@@ -87,6 +98,14 @@ class MarkdownBrowserActivity : Activity() {
             val allowedRoot = if (student.paths.rootPath.isBlank()) ".edu-manager/ocr" else "${student.paths.rootPath}/.edu-manager/ocr"
             require(path.startsWith("${allowedRoot.trimEnd('/')}/")) { "OCR 结果路径超出当前学生范围" }
             listOf(Document("${material.optString("fileName")} · OCR 结果", path, student.storageRootUri))
+        }
+        MODE_MATERIAL_DIGEST -> {
+            val studentId = requireNotNull(intent.getStringExtra(EXTRA_STUDENT_ID)); val materialId = requireNotNull(intent.getStringExtra(EXTRA_MATERIAL_ID))
+            val student = StudentIndexRepository(this).requireExact(studentId)
+            val material = FileAssetService(this).materials(studentId).singleOrNull { it.optString("id") == materialId } ?: error("未找到指定资料")
+            val path = material.optString("digestArtifactPath"); require(path.isNotBlank()) { "该记录没有可查看的消化产物" }
+            require(path == student.paths.summaryPath || path.startsWith("${student.paths.summaryPath.trimEnd('/')}/")) { "消化产物路径超出当前学生范围" }
+            listOf(Document("${material.optString("fileName")} · 消化结果", path, student.storageRootUri))
         }
         MODE_CONVERSATION -> {
             val recordId = requireNotNull(intent.getStringExtra(EXTRA_CONVERSATION_ID))
@@ -149,8 +168,8 @@ class MarkdownBrowserActivity : Activity() {
     override fun onDestroy() { if (::webView.isInitialized) { webView.stopLoading(); webView.loadUrl("about:blank"); webView.destroy() }; super.onDestroy() }
 
     companion object {
-        const val EXTRA_MODE = "mode"; const val EXTRA_TITLE = "title"; const val EXTRA_STUDENT_ID = "student_id"; const val EXTRA_PROJECT_ID = "project_id"; const val EXTRA_REPORT_ID = "report_id"; const val EXTRA_MATERIAL_ID = "material_id"; const val EXTRA_CONVERSATION_ID = "conversation_id"
-        const val MODE_ARCHIVE = "archive"; const val MODE_PROJECT = "project"; const val MODE_REPORT = "report"; const val MODE_REPORT_DRAFT = "report_draft"; const val MODE_OCR = "ocr"; const val MODE_CONVERSATION = "conversation"; const val MODE_CONVERSATION_DIGEST = "conversation_digest"
+        const val EXTRA_MODE = "mode"; const val EXTRA_TITLE = "title"; const val EXTRA_STUDENT_ID = "student_id"; const val EXTRA_PROJECT_ID = "project_id"; const val EXTRA_REPORT_ID = "report_id"; const val EXTRA_MATERIAL_ID = "material_id"; const val EXTRA_CONVERSATION_ID = "conversation_id"; const val EXTRA_ARCHIVE_CATEGORY = "archive_category"
+        const val MODE_ARCHIVE = "archive"; const val MODE_PROJECT = "project"; const val MODE_REPORT = "report"; const val MODE_REPORT_DRAFT = "report_draft"; const val MODE_OCR = "ocr"; const val MODE_MATERIAL_DIGEST = "material_digest"; const val MODE_CONVERSATION = "conversation"; const val MODE_CONVERSATION_DIGEST = "conversation_digest"
         private const val MAX_MARKDOWN_BYTES = 2 * 1024 * 1024
         private const val MAX_CONVERSATION_BYTES = 5 * 1024 * 1024
     }

@@ -71,6 +71,7 @@ test('Agent diagnostics independently exercise text and multimodal models withou
   assert.match(activity, /testVisionConnection\(\)/)
   assert.match(activity, /文本模型/)
   assert.match(activity, /视觉模型/)
-  assert.match(adapter, /1x1 opaque PNG generated for connectivity checks/)
+  assert.match(adapter, /128x128 application-generated PNG/)
+  assert.match(adapter, /Bitmap\.createBitmap\(128, 128/)
   assert.match(adapter, /executeVision/)
 })

@@ -126,8 +126,8 @@ test('P5-R candidate preserves the optimized unencrypted directory migration bas
   assert.match(migration, /!descriptor\.optBoolean\("encrypted", true\)/);
   assert.match(migration, /MANIFEST_HASH_PATH/);
   assert.match(migration, /completedKeys/);
-  assert.match(build, /versionName = "1\.2\.0"/);
-  assert.match(build, /versionCode = 24/);
+  assert.match(build, /versionName = "1\.2\.1"/);
+  assert.match(build, /versionCode = 25/);
 });
 
 test('P5 keeps original materials and secrets outside the collaboration payload', () => {

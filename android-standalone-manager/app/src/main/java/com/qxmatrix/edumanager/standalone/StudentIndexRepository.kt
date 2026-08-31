@@ -51,6 +51,14 @@ class StudentIndexRepository(context: Context) {
     fun requireExact(studentId: String): StudentRecord = list().singleOrNull { it.id == studentId }
         ?: throw NoSuchElementException("未找到指定学生 ID：$studentId")
 
+    fun remove(studentId: String): StudentRecord {
+        val current = list()
+        val target = current.singleOrNull { it.id == studentId }
+            ?: throw NoSuchElementException("未找到指定学生 ID：$studentId")
+        write(current.filterNot { it.id == studentId })
+        return target
+    }
+
     private fun write(students: List<StudentRecord>) {
         val array = JSONArray()
         students.forEach { array.put(it.toJson()) }

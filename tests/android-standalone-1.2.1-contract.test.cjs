@@ -10,7 +10,7 @@ test('1.2.1 exposes archive categories and explicit student removal', () => {
   const activity = read('MainActivity.kt');
   const index = read('StudentIndexRepository.kt');
   const store = read('SafWorkspaceStore.kt');
-  assert.match(activity, /setOnLongClickListener \{ showStudentManagement\(student\)/);
+  assert.match(activity, /themedButton\("更多管理"[\s\S]*showStudentManagement\(student\)/);
   assert.match(activity, /"资料摘要", "综合汇总", "问答精华"/);
   assert.match(activity, /"原始资料", "全部文件"/);
   assert.match(activity, /removeStudent\(student, true\)/);
@@ -43,7 +43,7 @@ test('1.2.1 schedules constrained daily automatic digestion', () => {
 
 test('1.2.1 reuses governed conversation import from material collection', () => {
   const activity = read('MainActivity.kt');
-  const matches = activity.match(/addAction\("导入智能体对话历史"\) \{ showConversationImportMenu\(\) \}/g) || [];
+  const matches = activity.match(/YouthAction\([^\n]*showConversationImportMenu\(\)/g) || [];
   assert.ok(matches.length >= 2, 'conversation import should be reachable from both assistant and material collection');
 });
 

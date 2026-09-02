@@ -26,6 +26,7 @@ import android.widget.Button
 import android.widget.CheckBox
 import android.widget.EditText
 import android.widget.FrameLayout
+import android.widget.GridLayout
 import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ProgressBar
@@ -56,14 +57,18 @@ class MainActivity : Activity() {
     private lateinit var palette: UiPalette
     private lateinit var sectionContent: LinearLayout
     private lateinit var sectionTitle: TextView
+    private lateinit var sectionSubtitle: TextView
+    private lateinit var headerStatusRow: LinearLayout
+    private lateinit var currentStudentButton: Button
     private lateinit var portraitSectionButton: Button
     private val navigationButtons = linkedMapOf<AppSection, Button>()
     private var activeSection = AppSection.HOME
     private var activeMaterialQueueFilter = MaterialQueueFilter.ALL
     private val legacyCourseReconciliationAttempted = mutableSetOf<String>()
     private lateinit var rootStatus: TextView
-    private lateinit var studentList: LinearLayout
-    private lateinit var projectList: LinearLayout
+    private lateinit var studentList: GridLayout
+    private lateinit var projectList: GridLayout
+    private var wideLayout = false
     private lateinit var agentStatus: TextView
     private var pendingAdoption: StudentInput? = null
     private var pendingImportStudentId: String? = null
@@ -169,7 +174,7 @@ class MainActivity : Activity() {
             inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE
             setTextColor(palette.text)
             setHintTextColor(palette.muted)
-            setBackgroundColor(Color.WHITE)
+            setBackgroundColor(palette.card)
             setPadding(dp(14), dp(12), dp(14), dp(12))
         }
         val statusText = TextView(this).apply {
@@ -194,7 +199,7 @@ class MainActivity : Activity() {
                 text = "Android 单机版产品激活"
                 textSize = 28f
                 gravity = Gravity.CENTER
-                setTextColor(palette.accentDark)
+                setTextColor(palette.heading)
             }, matchWrap())
             addView(TextView(this@MainActivity).apply {
                 text = "本机设备码\n$deviceCode"
@@ -225,7 +230,7 @@ class MainActivity : Activity() {
                     addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
                 }, REQUEST_LICENSE_QR_IMAGE)
             }, matchWrap())
-            addView(themedButton("激活并进入教育管家") {
+            addView(themedButton("激活并进入教育管家", YouthButtonRole.PRIMARY) {
                 runCatching { licenseManager.activate(input.text.toString()) }
                     .onSuccess { recreate() }
                     .onFailure { statusText.text = it.message ?: "激活失败。" }
@@ -244,43 +249,89 @@ class MainActivity : Activity() {
     }
 
     private fun buildAppShell(): FrameLayout {
-        val wide = resources.configuration.orientation == Configuration.ORIENTATION_LANDSCAPE && resources.configuration.smallestScreenWidthDp >= 600
-        val frame = FrameLayout(this)
+        wideLayout = resources.configuration.orientation == Configuration.ORIENTATION_LANDSCAPE && resources.configuration.smallestScreenWidthDp >= 600
+        val frame = FrameLayout(this).apply { setBackgroundColor(palette.page) }
         frame.addView(ImageView(this).apply {
-            setImageResource(uiPreferences.skin().backgroundResource()); scaleType = ImageView.ScaleType.CENTER_CROP; alpha = 0.22f
+            setImageResource(uiPreferences.skin().backgroundResource()); scaleType = ImageView.ScaleType.CENTER_CROP; alpha = 0.12f
             contentDescription = "${uiPreferences.skin().label}界面背景"
         }, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
-        val root = LinearLayout(this).apply { orientation = if (wide) LinearLayout.HORIZONTAL else LinearLayout.VERTICAL; setBackgroundColor(Color.TRANSPARENT) }
-        if (wide) {
-            root.addView(buildNavigation(), LinearLayout.LayoutParams(dp(238), ViewGroup.LayoutParams.MATCH_PARENT))
+        val root = LinearLayout(this).apply { orientation = if (wideLayout) LinearLayout.HORIZONTAL else LinearLayout.VERTICAL; setBackgroundColor(Color.TRANSPARENT) }
+        currentStudentButton = themedButton("当前学生", YouthButtonRole.COMPACT) { showCurrentStudentPicker() }
+        if (wideLayout) {
+            root.addView(buildNavigation(), LinearLayout.LayoutParams(dp(navigationWidthDp()), ViewGroup.LayoutParams.MATCH_PARENT))
         } else {
             val top = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL; setPadding(dp(12), dp(8), dp(12), dp(8)); setBackgroundColor(withAlpha(palette.accentSoft, 244)) }
-            portraitSectionButton = themedButton(activeSection.label) { showSectionPicker() }
+            portraitSectionButton = themedButton(activeSection.displayLabel, YouthButtonRole.COMPACT) { showSectionPicker() }
             top.addView(portraitSectionButton, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
-            top.addView(ImageView(this).apply { setImageResource(R.drawable.robogala_logo); scaleType = ImageView.ScaleType.CENTER_INSIDE; contentDescription = "群星矩阵" }, LinearLayout.LayoutParams(dp(145), dp(58)))
+            top.addView(ImageView(this).apply {
+                setImageResource(R.drawable.robogala_logo)
+                imageTintList = ColorStateList.valueOf(Color.WHITE)
+                scaleType = ImageView.ScaleType.CENTER_INSIDE
+                contentDescription = "群星矩阵"
+            }, LinearLayout.LayoutParams(dp(145), dp(58)))
             root.addView(top, matchWrap())
         }
-        val page = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(22), dp(22), dp(22), dp(32)); setBackgroundColor(withAlpha(palette.page, 232)) }
-        sectionTitle = TextView(this).apply { textSize = 26f; setTextColor(palette.accentDark); setPadding(0, 0, 0, dp(12)) }
+        val page = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            val horizontal = if (wideLayout) 18 else 14
+            setPadding(dp(horizontal), dp(16), dp(horizontal), dp(28))
+            setBackgroundColor(withAlpha(palette.page, 236))
+        }
+        sectionTitle = TextView(this).apply {
+            textSize = 28f
+            setTextColor(palette.heading)
+            typeface = android.graphics.Typeface.create("sans-serif", android.graphics.Typeface.BOLD)
+        }
+        sectionSubtitle = TextView(this).apply {
+            textSize = 14f
+            setTextColor(palette.muted)
+            setPadding(0, dp(4), 0, 0)
+        }
+        val headerCopy = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            addView(sectionTitle, matchWrap())
+            addView(sectionSubtitle, matchWrap())
+        }
+        headerStatusRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.END or Gravity.CENTER_VERTICAL
+        }
+        val headerTools = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.END
+            if (!wideLayout) addView(currentStudentButton, matchWrap())
+            addView(headerStatusRow, matchWrap().apply { if (!wideLayout) topMargin = dp(8) })
+        }
+        val pageHeader = LinearLayout(this).apply {
+            orientation = if (wideLayout) LinearLayout.HORIZONTAL else LinearLayout.VERTICAL
+            gravity = Gravity.CENTER_VERTICAL
+            addView(headerCopy, if (wideLayout) LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f) else matchWrap())
+            addView(headerTools, if (wideLayout) LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { marginStart = dp(16) } else matchWrap().apply { topMargin = dp(8) })
+        }
         sectionContent = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        page.addView(sectionTitle, matchWrap()); page.addView(sectionContent, matchWrap())
+        page.addView(pageHeader, matchWrap().apply { bottomMargin = dp(12) }); page.addView(sectionContent, matchWrap())
         val scroll = ScrollView(this).apply { addView(page) }
-        root.addView(scroll, if (wide) LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f) else LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
+        root.addView(scroll, if (wideLayout) LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f) else LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
         frame.addView(root, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
         return frame
     }
 
     private fun buildNavigation(): LinearLayout = LinearLayout(this).apply {
         orientation = LinearLayout.VERTICAL; setPadding(dp(14), dp(16), dp(14), dp(18)); setBackgroundColor(withAlpha(palette.accentSoft, 244))
-        addView(ImageView(this@MainActivity).apply { setImageResource(R.drawable.robogala_logo); scaleType = ImageView.ScaleType.CENTER_INSIDE; contentDescription = "群星矩阵" }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(88)))
-        addView(TextView(this@MainActivity).apply { text = "AI教育管家"; textSize = 20f; gravity = Gravity.CENTER; setTextColor(palette.accentDark); setPadding(dp(8), 0, dp(8), dp(10)) }, matchWrap())
+        addView(ImageView(this@MainActivity).apply {
+            setImageResource(R.drawable.robogala_logo)
+            imageTintList = ColorStateList.valueOf(Color.WHITE)
+            scaleType = ImageView.ScaleType.CENTER_INSIDE
+            contentDescription = "群星矩阵"
+        }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(88)))
+        addView(currentStudentButton, matchWrap().apply { bottomMargin = dp(10) })
         val menu = LinearLayout(this@MainActivity).apply { orientation = LinearLayout.VERTICAL }
         AppSection.entries.filterNot { it == AppSection.SETTINGS }.forEach { section ->
-            val button = themedButton(section.label) { renderSection(section) }
+            val button = themedButton(section.displayLabel, YouthButtonRole.NAVIGATION) { renderSection(section) }
             navigationButtons[section] = button; menu.addView(button, matchWrap())
         }
         addView(ScrollView(this@MainActivity).apply { isFillViewport = true; addView(menu) }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
-        val settings = themedButton(AppSection.SETTINGS.label) { renderSection(AppSection.SETTINGS) }
+        val settings = themedButton(AppSection.SETTINGS.displayLabel, YouthButtonRole.NAVIGATION) { renderSection(AppSection.SETTINGS) }
         navigationButtons[AppSection.SETTINGS] = settings
         addView(settings, matchWrap())
     }
@@ -289,13 +340,78 @@ class MainActivity : Activity() {
         AlertDialog.Builder(this).setTitle("功能目录").setItems(AppSection.entries.map { it.label }.toTypedArray()) { _, index -> renderSection(AppSection.entries[index]) }.show()
     }
 
+    private fun navigationWidthDp(): Int = when {
+        resources.configuration.screenWidthDp >= 1280 -> 220
+        resources.configuration.screenWidthDp >= 960 -> 200
+        else -> 184
+    }
+
+    private fun actionGridColumns(preferred: Int = 3): Int {
+        if (!wideLayout) return 1
+        val available = resources.configuration.screenWidthDp - navigationWidthDp() - 36
+        return when {
+            preferred >= 3 && available >= 900 -> 3
+            available >= 620 -> 2
+            else -> 1
+        }
+    }
+
+    private fun selectedStudent(): StudentRecord? {
+        val students = workspaceService.listStudents()
+        if (students.isEmpty()) return null
+        val preferences = getSharedPreferences(UI_CONTEXT_PREFS, MODE_PRIVATE)
+        val selectedId = preferences.getString(KEY_CURRENT_STUDENT_ID, "").orEmpty()
+        return students.firstOrNull { it.id == selectedId } ?: students.first().also {
+            preferences.edit().putString(KEY_CURRENT_STUDENT_ID, it.id).apply()
+        }
+    }
+
+    private fun updateCurrentStudentButton() {
+        if (!::currentStudentButton.isInitialized) return
+        val student = selectedStudent()
+        currentStudentButton.text = if (student == null) "🚀  先建立学生档案" else "🚀  ${student.name}的学习舱\n单机本地 · 已激活"
+        currentStudentButton.contentDescription = if (student == null) "建立学生档案" else "当前学生是${student.name}，点击切换"
+    }
+
+    private fun rememberCurrentStudent(student: StudentRecord) {
+        getSharedPreferences(UI_CONTEXT_PREFS, MODE_PRIVATE).edit().putString(KEY_CURRENT_STUDENT_ID, student.id).apply()
+        updateCurrentStudentButton()
+    }
+
+    private fun showCurrentStudentPicker() {
+        val students = workspaceService.listStudents()
+        if (students.isEmpty()) {
+            AlertDialog.Builder(this).setTitle("还没有学生档案")
+                .setMessage("先建立或接管一份学生档案，之后导入、课程、成长模型和报告都会自动使用当前学生。")
+                .setNegativeButton("稍后", null)
+                .setPositiveButton("去建立档案") { _, _ -> renderSection(AppSection.ARCHIVES) }
+                .show()
+            return
+        }
+        val selected = selectedStudent()
+        AlertDialog.Builder(this).setTitle("切换当前学生")
+            .setSingleChoiceItems(students.map { "${it.name} · ${it.grade.ifBlank { "未填写年级" }}" }.toTypedArray(), students.indexOfFirst { it.id == selected?.id }) { dialog, which ->
+                rememberCurrentStudent(students[which])
+                dialog.dismiss()
+                renderSection(activeSection)
+            }
+            .setNegativeButton("取消", null)
+            .show()
+    }
+
+    private fun withCurrentStudent(emptyMessage: String = "请先建立或接管学生档案。", action: (StudentRecord) -> Unit) {
+        val student = selectedStudent()
+        if (student == null) showMessage("没有学生档案", emptyMessage) else action(student)
+    }
+
     private fun renderSection(section: AppSection, materialFilter: MaterialQueueFilter? = null) {
         if (section == AppSection.MATERIALS) activeMaterialQueueFilter = materialFilter ?: MaterialQueueFilter.ALL
         activeSection = section; sectionTitle.text = section.label; sectionContent.removeAllViews(); clearOfflineMigrationViews()
-        if (::portraitSectionButton.isInitialized) portraitSectionButton.text = section.label
+        configureSectionHeader(defaultSectionSubtitle(section))
+        if (::portraitSectionButton.isInitialized) portraitSectionButton.text = section.displayLabel
+        updateCurrentStudentButton()
         navigationButtons.forEach { (item, button) ->
-            button.backgroundTintList = ColorStateList.valueOf(if (item == section) palette.accent else palette.card)
-            button.setTextColor(if (item == section) Color.WHITE else palette.text)
+            YouthUi.applyButton(button, palette, if (item == section) YouthButtonRole.NAVIGATION_ACTIVE else YouthButtonRole.NAVIGATION)
         }
         when (section) {
             AppSection.HOME -> renderHome()
@@ -310,42 +426,56 @@ class MainActivity : Activity() {
         }
     }
 
+    private fun defaultSectionSubtitle(section: AppSection): String = when (section) {
+        AppSection.HOME -> "查看今天的资料进度和推荐操作"
+        AppSection.ARCHIVES -> "管理当前学生的独立教育档案"
+        AppSection.MATERIALS -> "选择一个方块，开始今天的资料整理"
+        AppSection.COURSES -> "查看当前学生可以学习的课程"
+        AppSection.ASSISTANT -> "打开学习助手并管理已保存对话"
+        AppSection.GROWTH -> "查看有来源、可审核的成长证据"
+        AppSection.REPORTS -> "阅读画像、变化与行动建议"
+        AppSection.PROJECTS -> "管理当前学生参与的学习项目"
+        AppSection.SETTINGS -> "调整界面、Agent、存储与设备设置"
+    }
+
+    private fun configureSectionHeader(subtitle: String, badges: List<String> = emptyList()) {
+        sectionSubtitle.text = subtitle
+        headerStatusRow.removeAllViews()
+        badges.filter { it.isNotBlank() }.forEach { value ->
+            headerStatusRow.addView(TextView(this).apply {
+                text = value
+                textSize = 13f
+                setTextColor(palette.text)
+                setPadding(dp(12), dp(7), dp(12), dp(7))
+                YouthUi.applyBadge(this, palette, false)
+            }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { marginStart = dp(8) })
+        }
+    }
+
     private fun renderHome() {
         val students = workspaceService.listStudents()
-        val queue = materialQueueItems(students)
+        val current = selectedStudent()
+        val queue = if (current == null) emptyList() else materialQueueItems(listOf(current))
         val pending = queue.count(::materialPending)
         val processing = queue.count(::materialProcessing)
         val needsHelp = queue.count(::materialNeedsHelp)
         val completedOcr = queue.count { it.material.optString("ocrStatus") == "completed" }
         val projects = projectService.listProjects().size
-        sectionNote("从收集资料到形成档案，按当前状态进入下一步；所有内容仍写入对应学生或学习项目的独立目录。")
+        sectionNote("从收集资料到形成档案，按卡片提示完成下一步；资料始终写入当前学生或明确选择的学习项目。")
         sectionContent.addView(TextView(this).apply {
-            text = "学生档案 ${students.size} · 学习项目 $projects · 待处理 $pending · 正在处理 $processing · 需补充 $needsHelp · 已完成 OCR $completedOcr"
-            textSize = 16f; setTextColor(palette.text); setPadding(dp(16), dp(14), dp(16), dp(14)); setBackgroundColor(withAlpha(palette.card, 238))
+            text = if (current == null) "还没有学生档案，请先建立或接管档案。" else "${current.name} · ${current.grade.ifBlank { "未填写年级" }}　资料 ${queue.size} · 待处理 $pending · 正在处理 $processing · 需补充 $needsHelp · 已完成识别 $completedOcr\n本机共有 ${students.size} 份学生档案 · $projects 个学习项目"
+            textSize = 16f; setTextColor(palette.text); setPadding(dp(18), dp(16), dp(18), dp(16)); YouthUi.applyStatusCard(this, palette)
         }, matchWrap())
         sectionHeading("现在可以做什么")
-        addHomeGuide("添加资料", "导入文件、拍照或连续采集屏幕") { renderSection(AppSection.MATERIALS) }
         val actionable = queue.count(::materialActionRequired)
-        addHomeGuide("处理中", if (actionable > 0) "$actionable 份资料正在处理或等待下一步，点击直接查看" else "当前没有待处理资料") {
-            renderSection(AppSection.MATERIALS, MaterialQueueFilter.ACTION_REQUIRED)
-        }
-        addHomeGuide("需要补充", if (needsHelp > 0) "$needsHelp 份资料失败或需要补充视觉处理，点击直接重试" else "当前没有标记为需要补充的资料") {
-            renderSection(AppSection.MATERIALS, MaterialQueueFilter.NEEDS_HELP)
-        }
-        addHomeGuide("知识更新", "查看教育档案和学习项目中的最新沉淀") { renderSection(AppSection.ARCHIVES) }
-        addHomeGuide("成长变化", "查看有来源、可审核的成长证据") { renderSection(AppSection.GROWTH) }
-        addHomeGuide("报告与档案", "浏览 Markdown 学情报告与教育档案") {
-            AlertDialog.Builder(this).setTitle("报告与档案").setItems(arrayOf("教育档案", "学情报告")) { _, which -> renderSection(if (which == 0) AppSection.ARCHIVES else AppSection.REPORTS) }.show()
-        }
-    }
-
-    private fun addHomeGuide(title: String, detail: String, action: () -> Unit) {
-        val card = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL; setPadding(dp(14), dp(10), dp(14), dp(10)); setBackgroundColor(withAlpha(palette.card, 242)); isClickable = true; isFocusable = true; setOnClickListener { action() }
-        }
-        card.addView(TextView(this).apply { text = title; textSize = 18f; setTextColor(palette.accentDark) }, matchWrap())
-        card.addView(TextView(this).apply { text = detail; textSize = 14f; setTextColor(palette.muted) }, matchWrap())
-        sectionContent.addView(card, matchWrap().apply { setMargins(0, 0, 0, dp(9)) })
+        addActionGrid(listOf(
+            YouthAction("＋", "添加资料", "导入文件、拍照或连续采集屏幕", if (queue.isEmpty()) "从这里开始" else "继续添加") { renderSection(AppSection.MATERIALS) },
+            YouthAction("▶", "处理中", if (actionable > 0) "查看正在处理或等待下一步的资料" else "当前没有待处理资料", if (actionable > 0) "$actionable 份" else "已清空") { renderSection(AppSection.MATERIALS, MaterialQueueFilter.ACTION_REQUIRED) },
+            YouthAction("!", "需要补充", if (needsHelp > 0) "打开失败项并直接重试" else "当前没有需要补充的资料", if (needsHelp > 0) "$needsHelp 份" else "状态正常") { renderSection(AppSection.MATERIALS, MaterialQueueFilter.NEEDS_HELP) },
+            YouthAction("▣", "知识更新", "查看教育档案和学习项目中的最新沉淀") { renderSection(AppSection.ARCHIVES) },
+            YouthAction("↗", "成长变化", "查看有来源、可以审核的成长证据") { renderSection(AppSection.GROWTH) },
+            YouthAction("☰", "报告与档案", "浏览学情报告、资料摘要与综合汇总") { renderSection(AppSection.REPORTS) },
+        ))
     }
 
     private fun renderArchives() {
@@ -354,17 +484,20 @@ class MainActivity : Activity() {
         val offlineMigration = offlineMigrationLiveState ?: StudentOfflineMigrationJournal(this).latestProgress()
         offlineMigrationLiveState = offlineMigration
         offlineMigration?.let(::addOfflineMigrationCard)
-        offlineMigrationStartButton = themedButton(if (StudentOfflineMigrationService.isRunning()) "U盘迁移正在运行" else "从 U 盘迁移并接管") {
+        offlineMigrationStartButton = themedButton(if (StudentOfflineMigrationService.isRunning()) "U盘迁移正在运行" else "从 U 盘迁移并接管", YouthButtonRole.PRIMARY) {
             startTreePicker(REQUEST_OFFLINE_MIGRATION_SOURCE)
         }.also { button ->
             button.isEnabled = !StudentOfflineMigrationService.isRunning()
             sectionContent.addView(button, matchWrap())
         }
-        addAction("设置新建档案保存位置") { startTreePicker(REQUEST_WORKSPACE_ROOT) }
-        addAction("新建学情档案") { showStudentInputDialog("新建学生档案库") { input -> createStudent(input) } }
-        addAction("接管已有学情档案") { showStudentInputDialog("接管已有学生档案库") { input -> pendingAdoption = input; startTreePicker(REQUEST_ADOPTED_ROOT) } }
+        addActionGrid(listOf(
+            YouthAction("⌂", "设置资料位置", "选择新建档案和学习项目的本机根目录") { startTreePicker(REQUEST_WORKSPACE_ROOT) },
+            YouthAction("＋", "新建学生档案", "为一名学生建立独立的学习资料与知识空间") { showStudentInputDialog("新建学生档案库") { input -> createStudent(input) } },
+            YouthAction("⇢", "接管已有档案", "连接已有 Windows/LLM Wiki 学情档案") { showStudentInputDialog("接管已有学生档案库") { input -> pendingAdoption = input; startTreePicker(REQUEST_ADOPTED_ROOT) } },
+        ))
         sectionHeading("已有学情档案")
-        studentList = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }; sectionContent.addView(studentList, matchWrap()); refreshStudents()
+        studentList = GridLayout(this).apply { columnCount = actionGridColumns(3); alignmentMode = GridLayout.ALIGN_BOUNDS }
+        sectionContent.addView(studentList, matchWrap().apply { setMargins(dp(-6), 0, dp(-6), 0) }); refreshStudents()
     }
 
     private fun addOfflineMigrationCard(state: StudentOfflineMigrationState) {
@@ -373,7 +506,7 @@ class MainActivity : Activity() {
             setPadding(dp(16), dp(14), dp(16), dp(14))
             setBackgroundColor(palette.card)
         }
-        offlineMigrationTitle = TextView(this).apply { textSize = 17f; setTextColor(palette.accentDark) }
+        offlineMigrationTitle = TextView(this).apply { textSize = 17f; setTextColor(palette.heading) }
         offlineMigrationProgress = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply { max = 1000 }
         offlineMigrationDetails = TextView(this).apply { textSize = 14f; setTextColor(palette.text); setPadding(0, dp(8), 0, 0) }
         offlineMigrationCurrent = TextView(this).apply { textSize = 13f; setTextColor(palette.muted); setPadding(0, dp(5), 0, 0) }
@@ -459,16 +592,24 @@ class MainActivity : Activity() {
     }
 
     private fun renderMaterials() {
-        sectionNote("本机导入、连续屏幕采集、OCR/视觉解析与资料消化统一进入文件资产中心。")
-        addAction("文件资产中心") { chooseStudentForAssets() }
-        addAction("浏览原始资料库") { chooseStudentForRawBrowser() }
-        addAction("本机导入") { chooseImportStudent() }
-        addAction("连续屏幕采集") { startGeneralScreenCapture() }
-        addAction("OCR / 视觉解析资料（可多选）") { chooseMaterialsForOcr() }
-        addAction("查看 OCR 识别结果") { chooseOcrResult() }
-        addAction("消化资料（可多选）") { chooseMaterialsForDigest() }
-        addAction("查看资料消化记录") { chooseDigestHistoryStudent() }
-        addAction("导入智能体对话历史") { showConversationImportMenu() }
+        val queue = selectedStudent()?.let { materialQueueItems(listOf(it)) }.orEmpty()
+        val needsHelp = queue.count(::materialNeedsHelp)
+        val pending = queue.count(::materialPending)
+        configureSectionHeader("选择一个方块，开始今天的资料整理", listOf("$pending 待处理", "$needsHelp 需补充"))
+        addActionGrid(listOf(
+            YouthAction("📁", "文件资产中心", "浏览全部原始资料和处理状态", "${queue.size} 份", tone = 0) { chooseStudentForAssets() },
+            YouthAction("↑", "本机导入", "从平板、U盘选择学习资料", tone = 1) { chooseFileImport() },
+            YouthAction("📷", "拍照采集", "拍摄作业、试卷和课堂笔记", tone = 2) { choosePhotoImport() },
+            YouthAction("▣", "连续屏幕采集", "智能混合、画面变化或固定间隔", tone = 3) { startGeneralScreenCapture() },
+            YouthAction("◎", "OCR / 视觉解析", "识别文字、图表和页面重点", if (needsHelp > 0) "$needsHelp 份需补充" else "可多选", tone = 4) { chooseMaterialsForOcr() },
+            YouthAction("✦", "消化资料", "整理摘要并写入学生知识库", if (pending > 0) "$pending 份待处理" else "暂无待处理", tone = 5) { chooseMaterialsForDigest() },
+            YouthAction("💬", "导入智能体对话", "保存 PalmClaw、豆包等对话历史", tone = 1) { showConversationImportMenu() },
+            YouthAction("✓", "查看消化记录", "查看处理时间、资料和结果，可追溯每一步", tone = 0, spanColumns = 2) { chooseDigestHistoryStudent() },
+        ))
+        addActionGrid(listOf(
+            YouthAction("⌂", "浏览原始资料", "按目录查看照片、文档和课程截图") { chooseStudentForRawBrowser() },
+            YouthAction("▤", "查看识别结果", "浏览已经完成的 OCR 与视觉解析") { chooseOcrResult() },
+        ), preferredColumns = 2, colorful = false)
         renderMaterialQueue()
         reconcileLegacyCourseCapturesIfNeeded()
     }
@@ -527,7 +668,7 @@ class MainActivity : Activity() {
         materialPending(item) || materialProcessing(item) || materialNeedsHelp(item)
 
     private fun filteredMaterialQueue(): List<MaterialQueueItem> {
-        val items = materialQueueItems()
+        val items = selectedStudent()?.let { materialQueueItems(listOf(it)) }.orEmpty()
         return when (activeMaterialQueueFilter) {
             MaterialQueueFilter.ALL -> items
             MaterialQueueFilter.ACTION_REQUIRED -> items.filter(::materialActionRequired)
@@ -564,18 +705,21 @@ class MainActivity : Activity() {
             val session = item.material.optString("captureSessionId").ifBlank { item.material.optString("id") }
             "${item.student.id}::$session"
         }.values.toList()
-        groups.take(MAX_VISIBLE_MATERIAL_GROUPS).forEach { group ->
+        val cards = groups.take(MAX_VISIBLE_MATERIAL_GROUPS).map { group ->
             val first = group.first()
             val course = first.material.optString("courseId")
             val source = if (course.isNotBlank()) "课程采集 · ${first.material.optString("courseProvider").ifBlank { course }}" else first.material.optString("sourceName").ifBlank { "本机资料" }
             val help = group.count(::materialNeedsHelp)
             val active = group.count(::materialProcessing)
             val pending = group.count(::materialPending)
-            addHomeGuide(
+            YouthAction(
+                if (help > 0) "!" else if (active > 0) "▶" else "▤",
                 "${first.student.name} · $source · ${group.size} 份",
                 "待处理 $pending · 处理中 $active · 需补充 $help\n${group.take(3).joinToString("\n") { materialWorkflowLabel(it) }}${if (group.size > 3) "\n……" else ""}",
+                when { help > 0 -> "$help 份需处理"; active > 0 -> "$active 份处理中"; else -> "查看资料" },
             ) { showMaterialActions(group) }
         }
+        addActionGrid(cards, preferredColumns = 2, colorful = false)
         if (groups.size > MAX_VISIBLE_MATERIAL_GROUPS) {
             sectionContent.addView(statusCard().apply { text = "列表较多，当前显示前 $MAX_VISIBLE_MATERIAL_GROUPS 组；批量处理仍包含全部 ${items.size} 份资料。" }, matchWrap())
         }
@@ -585,38 +729,55 @@ class MainActivity : Activity() {
         val catalog = runCatching { courseCatalogService.lastGoodCatalog() }.getOrNull()
         val assigned = workspaceService.listStudents().count { courseCatalogService.offlineSnapshot(it.id) != null }
         sectionNote(if (catalog == null && assigned == 0) "尚未导入课程。可导入 Windows 平台课程包，或从 Windows 主机通过 U 盘迁入该学生的有效平台/机构课程。" else "全局平台目录 ${catalog?.optString("catalogVersion").orEmpty().ifBlank { "未导入" }} · 已有 $assigned 名学生获得离线课程快照")
-        addAction("查看和学习课程") { chooseStudentForCourses() }
+        addActionGrid(listOf(
+            YouthAction("▶", "查看和学习课程", "显示课程封面和介绍；学习时可同时启动屏幕采集", "当前学生") { chooseStudentForCourses() },
+            YouthAction("↓", "导入离线课程包", "导入 Windows 平台发布的课程包") { startPlatformCourseImport() },
+        ))
     }
 
     private fun renderAssistant() {
         sectionNote("教育管家仍负责学生身份、档案和写回；本机助手只作为问答或受控任务能力入口。")
-        addAction("打开 PalmClaw") { openPalmClaw() }
-        addAction("打开豆包") { openDoubao() }
-        addAction("打开 MobileClaw") { openMobileClaw() }
-        addAction("打开 ChatGPT / Codex") { openChatGpt() }
-        addAction("导入智能体对话历史") { showConversationImportMenu() }
-        addAction("管理已保存对话历史") { showSavedConversations() }
-        addAction("智能体对话知识管理") { openConversationKnowledge() }
+        addActionGrid(listOf(
+            YouthAction("P", "打开 PalmClaw", "进入本机已安装的 PalmClaw") { openPalmClaw() },
+            YouthAction("豆", "打开豆包", "进入豆包进行问答和学习") { openDoubao() },
+            YouthAction("M", "打开 MobileClaw", "进入本机 MobileClaw") { openMobileClaw() },
+            YouthAction("AI", "ChatGPT / Codex", "进入已安装应用或官方下载页") { openChatGpt() },
+            YouthAction("↓", "保存 AI 对话", "粘贴、导入或接收分享的对话历史") { showConversationImportMenu() },
+            YouthAction("☵", "管理对话历史", "查看、整理或移入回收站") { showSavedConversations() },
+            YouthAction("✦", "对话知识管理", "将保存的对话转为可审核知识") { openConversationKnowledge() },
+        ))
     }
 
     private fun renderGrowth() {
         sectionNote("成长模型只沉淀有来源、可审核的成长证据，不由学情报告反向覆盖。")
-        addAction("查看和维护成长模型") { chooseGrowthStudent() }
+        val student = selectedStudent()
+        val pendingCount = student?.let { runCatching { GrowthModelService(this).candidates(it.id).count { item -> item.optString("status") in setOf("pending", "watching") } }.getOrDefault(0) } ?: 0
+        addActionGrid(listOf(
+            YouthAction("↗", "查看成长摘要", "查看能力维度、已确认和待审核证据") { chooseGrowthStudent() },
+            YouthAction("✓", "审核成长证据", "确认、继续观察或补充原始资料", if (pendingCount > 0) "$pendingCount 条待审核" else "暂无待审核") { withCurrentStudent { reviewGrowthCandidate(it) } },
+            YouthAction("＋", "高级：补充证据", "仅在自动生成证据不足时手工添加") { withCurrentStudent { showGrowthCandidateDialog(it) } },
+        ))
     }
 
     private fun renderReports() {
         sectionNote("整体画像、历史变化、每周行动建议和阶段总结继续以成长模型的已确认证据为依据。")
-        addAction("查看学情报告") { chooseReportStudent() }
-        addAction("生成并审核报告草稿") { chooseStudentForReportDrafts() }
+        addActionGrid(listOf(
+            YouthAction("☰", "查看学情报告", "浏览整体画像、历史变化、行动建议和阶段总结") { chooseReportStudent() },
+            YouthAction("✦", "生成报告草稿", "先预览和审核，确认后再发布", "需要确认") { chooseStudentForReportDrafts() },
+            YouthAction("▣", "查看完整教育档案", "查看资料摘要、综合汇总、问答精华和全部文件") { withCurrentStudent { openStudentArchive(it) } },
+        ))
     }
 
     private fun renderProjects() {
         sectionNote("新建或接管学习项目；项目知识空间继续使用固定 LLM Wiki Schema。")
-        addAction("新建学习项目") { showProjectInputDialog(adoptKnowledge = false) }
-        addAction("接管已有项目知识库") { showProjectInputDialog(adoptKnowledge = true) }
-        addAction("设置或更换单机资料根目录") { startTreePicker(REQUEST_WORKSPACE_ROOT) }
+        addActionGrid(listOf(
+            YouthAction("＋", "新建学习项目", "建立项目资料、研究暂存层和知识空间") { showProjectInputDialog(adoptKnowledge = false) },
+            YouthAction("⇢", "接管已有项目", "连接已有的 LLM Wiki 项目知识库") { showProjectInputDialog(adoptKnowledge = true) },
+            YouthAction("⌂", "设置资料根目录", "选择学习项目控制目录的保存位置") { startTreePicker(REQUEST_WORKSPACE_ROOT) },
+        ))
         sectionHeading("已有学习项目")
-        projectList = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }; sectionContent.addView(projectList, matchWrap()); refreshProjects()
+        projectList = GridLayout(this).apply { columnCount = actionGridColumns(3); alignmentMode = GridLayout.ALIGN_BOUNDS }
+        sectionContent.addView(projectList, matchWrap().apply { setMargins(dp(-6), 0, dp(-6), 0) }); refreshProjects()
     }
 
     private fun renderSettings() {
@@ -625,53 +786,145 @@ class MainActivity : Activity() {
         sectionContent.addView(statusCard().apply {
             text = "产品授权：${if (license.active) "已激活" else "未激活"}\n设备码：${licenseManager.deviceId()}\n学生席位：${license.maxActiveStudents}\n到期：${license.expiresAt.ifBlank { "永久" }}"
         }, matchWrap())
-        addAction("更换激活码") {
+        addActionGrid(listOf(YouthAction("◆", "更换激活码", "已有资料不会删除；更换后重新验证产品授权") {
             AlertDialog.Builder(this).setTitle("更换激活码")
                 .setMessage("清除当前激活码后将返回产品激活页。已有资料不会删除。确认继续吗？")
                 .setNegativeButton("取消", null)
                 .setPositiveButton("继续") { _, _ -> licenseManager.clear(); recreate() }
                 .show()
-        }
+        }), preferredColumns = 2, colorful = false)
         val toolStates = agentToolDefinitions().map { it to installedAgentPackage(it) }
         sectionContent.addView(statusCard().apply {
             text = "Agent 工具：已安装 ${toolStates.count { it.second != null }} / ${toolStates.size}\n" +
                 toolStates.joinToString(" · ") { (tool, packageName) -> "${tool.displayName}${if (packageName == null) "未安装" else "已安装"}" }
         }, matchWrap())
-        addAction("Agent 工具适配") { showAgentToolAdapter() }
+        addActionGrid(listOf(YouthAction("AI", "Agent 工具适配", "检查 PalmClaw、豆包等工具并提供官方入口", "${toolStates.count { it.second != null }}/${toolStates.size} 已安装") { showAgentToolAdapter() }), preferredColumns = 2, colorful = false)
         sectionHeading("任务 Agent 服务")
         agentStatus = statusCard(); sectionContent.addView(agentStatus, matchWrap()); updateAgentStatus()
-        addAction("配置或修改本地任务 Agent") { showAgentConfigurationDialog() }
-        addAction("测试文本 / 视觉 Agent") { testAgentConfiguration() }
-        addAction("停用本地任务 Agent") { confirmClearAgentConfiguration() }
-        addAction("自动消化资料：${if (AutoDigestSettingsStore(this).load().enabled) "已开启" else "已关闭"}") { showAutoDigestSettings() }
-        addAction("界面皮肤：${uiPreferences.skin().label}") { showSkinDialog() }
-        addAction("页面布局：${uiPreferences.layoutMode().label}") { showLayoutDialog() }
-        addAction("检查版本更新") { checkForAppUpdate() }
-        addAction("存储与目录授权") { startTreePicker(REQUEST_WORKSPACE_ROOT) }
-        addAction("知识协作") { startActivity(Intent(this, CollaborationActivity::class.java)) }
+        addActionGrid(listOf(
+            YouthAction("⚙", "配置任务 Agent", "填写或修改文本与视觉模型服务") { showAgentConfigurationDialog() },
+            YouthAction("✓", "测试 Agent", "分别测试文本和视觉模型是否可用") { testAgentConfiguration() },
+            YouthAction("■", "停用任务 Agent", "停止使用已保存的任务 Agent 配置") { confirmClearAgentConfiguration() },
+            YouthAction("◷", "自动整理资料", "当前：${if (AutoDigestSettingsStore(this).load().enabled) "已开启" else "已关闭"}") { showAutoDigestSettings() },
+        ), preferredColumns = 2, colorful = false)
+        sectionHeading("界面与本机")
+        addActionGrid(listOf(
+            YouthAction("◉", "界面皮肤", "当前：${uiPreferences.skin().label}") { showSkinDialog() },
+            YouthAction("▭", "页面布局", "当前：${uiPreferences.layoutMode().label}") { showLayoutDialog() },
+            YouthAction("↻", "检查版本更新", "检查并下载可覆盖安装的新版本") { checkForAppUpdate() },
+            YouthAction("⌂", "存储与目录授权", "设置学生档案和学习项目根目录") { startTreePicker(REQUEST_WORKSPACE_ROOT) },
+            YouthAction("⇄", "知识协作", "进入本机知识协作与设备绑定") { startActivity(Intent(this, CollaborationActivity::class.java)) },
+        ), preferredColumns = 2, colorful = false)
         sectionHeading("设备迁移与备份")
         val deviceMigration = StandaloneDeviceMigrationJournal(this).latest()
         if (deviceMigration != null) sectionContent.addView(statusCard().apply {
             text = "最近整机迁移：${if (deviceMigration.operation == StandaloneDeviceMigrationService.OPERATION_EXPORT) "导出" else "接管"} · ${deviceMigration.phase}\n" +
                 "${deviceMigration.completedFiles}/${deviceMigration.totalFiles} 个文件 · ${formatBytes(deviceMigration.completedBytes)}/${formatBytes(deviceMigration.totalBytes)}\n${deviceMigration.message}"
         }, matchWrap())
-        addAction("换新平板：导出整机迁移目录") { confirmDeviceMigrationExport() }
-        addAction("在新平板恢复并接管") { startTreePicker(REQUEST_DEVICE_MIGRATION_SOURCE) }
-        if (deviceMigration != null && deviceMigration.phase in setOf("copying", "failed")) addAction("继续上次整机迁移") { resumeDeviceMigration(deviceMigration) }
-        if (deviceMigration != null) addAction("查看最近迁移报告") {
+        val migrationActions = mutableListOf(
+            YouthAction("↑", "导出整机资料", "换新平板时导出完整迁移目录") { confirmDeviceMigrationExport() },
+            YouthAction("↓", "在新平板接管", "从迁移目录恢复档案、项目和课程") { startTreePicker(REQUEST_DEVICE_MIGRATION_SOURCE) },
+            YouthAction("▣", "加密备份", "生成可用于本机恢复的备份包") { promptBackupPassword() },
+            YouthAction("↻", "备份恢复", "选择备份包恢复资料") { startRestorePackagePicker() },
+        )
+        if (deviceMigration != null && deviceMigration.phase in setOf("copying", "failed")) migrationActions += YouthAction("▶", "继续上次迁移", "从上次中断位置继续") { resumeDeviceMigration(deviceMigration) }
+        if (deviceMigration != null) migrationActions += YouthAction("☰", "查看迁移报告", "查看文件数、容量、状态和失败原因") {
             showMessage("最近整机迁移", "迁移 ID：${deviceMigration.migrationId}\n操作：${deviceMigration.operation}\n状态：${deviceMigration.phase}\n文件：${deviceMigration.completedFiles}/${deviceMigration.totalFiles}\n容量：${formatBytes(deviceMigration.completedBytes)}/${formatBytes(deviceMigration.totalBytes)}\n${deviceMigration.message}")
         }
-        addAction("加密备份") { promptBackupPassword() }
-        addAction("备份恢复") { startRestorePackagePicker() }
+        addActionGrid(migrationActions, preferredColumns = 2, colorful = false)
         sectionHeading("高级设置")
-        addAction("导入离线平台课程包") { startPlatformCourseImport() }
+        addActionGrid(listOf(YouthAction("↓", "导入离线课程包", "导入 Windows 平台发布的课程文件") { startPlatformCourseImport() }), preferredColumns = 2, colorful = false)
     }
 
-    private fun sectionNote(value: String) { sectionContent.addView(TextView(this).apply { text = value; textSize = 15f; setTextColor(palette.muted); setPadding(0, 0, 0, dp(12)) }, matchWrap()) }
-    private fun sectionHeading(value: String) { sectionContent.addView(TextView(this).apply { text = value; textSize = 20f; setTextColor(palette.accentDark); setPadding(0, dp(18), 0, dp(8)) }, matchWrap()) }
-    private fun statusCard() = TextView(this).apply { textSize = 14f; setTextColor(palette.text); setPadding(dp(16), dp(14), dp(16), dp(14)); setBackgroundColor(palette.card) }
-    private fun addAction(label: String, action: () -> Unit) { sectionContent.addView(themedButton(label, action), matchWrap()) }
-    private fun themedButton(label: String, action: () -> Unit) = Button(this).apply { text = label; isAllCaps = false; textSize = 15f; backgroundTintList = ColorStateList.valueOf(palette.card); setTextColor(palette.text); setOnClickListener { action() } }
+    private fun sectionNote(value: String) { sectionContent.addView(TextView(this).apply { text = value; textSize = 15f; setTextColor(palette.muted); setPadding(dp(4), dp(10), dp(4), dp(14)) }, matchWrap()) }
+    private fun sectionHeading(value: String) { sectionContent.addView(TextView(this).apply { text = value; textSize = 20f; setTextColor(palette.heading); typeface = android.graphics.Typeface.create("sans-serif-medium", android.graphics.Typeface.NORMAL); setPadding(dp(4), dp(22), dp(4), dp(8)) }, matchWrap()) }
+    private fun statusCard() = TextView(this).apply { textSize = 14f; setTextColor(palette.text); setPadding(dp(18), dp(16), dp(18), dp(16)); YouthUi.applyStatusCard(this, palette) }
+    private fun addActionGrid(actions: List<YouthAction>, preferredColumns: Int = 3, colorful: Boolean = true): GridLayout {
+        val columns = actionGridColumns(preferredColumns)
+        val grid = GridLayout(this).apply {
+            columnCount = columns
+            alignmentMode = GridLayout.ALIGN_BOUNDS
+            useDefaultMargins = false
+        }
+        actions.forEachIndexed { index, action ->
+            val highContrast = colorful
+            val card = FrameLayout(this).apply {
+                isClickable = true
+                isFocusable = true
+                clipChildren = false
+                contentDescription = buildString {
+                    append(action.title)
+                    if (action.detail.isNotBlank()) append("，${action.detail}")
+                    if (action.badge.isNotBlank()) append("，${action.badge}")
+                }
+                setOnClickListener { action.action() }
+                if (colorful) YouthUi.applyLearningCard(this, if (action.tone >= 0) action.tone else index) else YouthUi.applySurface(this, palette, 24)
+            }
+            if (colorful) card.addView(View(this).apply {
+                importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
+                YouthUi.applyDecorativeOrb(this)
+            }, FrameLayout.LayoutParams(dp(88), dp(88), Gravity.END or Gravity.BOTTOM).apply {
+                rightMargin = dp(-18)
+                bottomMargin = dp(-28)
+            })
+            val body = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                gravity = Gravity.CENTER_VERTICAL
+                setPadding(dp(18), dp(15), dp(18), dp(15))
+            }
+            val top = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
+            top.addView(TextView(this).apply {
+                text = action.icon
+                textSize = 24f
+                setTextColor(if (highContrast) Color.WHITE else palette.heading)
+                gravity = Gravity.CENTER
+                YouthUi.applyIconTile(this, palette, highContrast)
+            }, LinearLayout.LayoutParams(dp(52), dp(52)))
+            top.addView(View(this), LinearLayout.LayoutParams(0, 1, 1f))
+            if (action.badge.isNotBlank()) top.addView(TextView(this).apply {
+                text = action.badge
+                textSize = 12f
+                setTextColor(if (highContrast) Color.WHITE else palette.heading)
+                setPadding(dp(10), dp(5), dp(10), dp(5))
+                YouthUi.applyBadge(this, palette, highContrast)
+            })
+            body.addView(top, matchWrap())
+            body.addView(TextView(this).apply {
+                text = action.title
+                textSize = 19f
+                typeface = android.graphics.Typeface.create("sans-serif-medium", android.graphics.Typeface.NORMAL)
+                setTextColor(if (highContrast) Color.WHITE else palette.text)
+                setPadding(0, dp(8), 0, 0)
+                maxLines = 2
+            }, matchWrap())
+            body.addView(TextView(this).apply {
+                text = action.detail
+                textSize = 14f
+                setTextColor(if (highContrast) withAlpha(Color.WHITE, 224) else palette.muted)
+                setPadding(0, dp(4), 0, 0)
+                maxLines = 3
+            }, matchWrap())
+            card.addView(body, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+            val span = if (columns >= 3) action.spanColumns.coerceIn(1, columns) else 1
+            grid.addView(card, GridLayout.LayoutParams().apply {
+                width = 0
+                height = dp(if (wideLayout) 154 else 118)
+                columnSpec = GridLayout.spec(GridLayout.UNDEFINED, span, span.toFloat())
+                setMargins(dp(6), dp(6), dp(6), dp(6))
+            })
+        }
+        sectionContent.addView(grid, matchWrap().apply { setMargins(dp(-6), 0, dp(-6), dp(4)) })
+        return grid
+    }
+
+    private fun addAction(label: String, action: () -> Unit) {
+        sectionContent.addView(themedButton(label, YouthButtonRole.SECONDARY, action), matchWrap())
+    }
+    private fun themedButton(label: String, role: YouthButtonRole = YouthButtonRole.SECONDARY, action: () -> Unit) = Button(this).apply {
+        text = label
+        YouthUi.applyButton(this, palette, role)
+        setOnClickListener { action() }
+    }
     private fun dp(value: Int) = (value * resources.displayMetrics.density).toInt()
     private fun withAlpha(color: Int, alpha: Int) = Color.argb(alpha, Color.red(color), Color.green(color), Color.blue(color))
 
@@ -989,7 +1242,7 @@ class MainActivity : Activity() {
         Thread {
             runCatching { StudentPortableMigrationService(this).import(pending, targetRoot) }
                 .onSuccess { result -> runOnUiThread {
-                    progress.dismiss(); renderSection(AppSection.ARCHIVES)
+                    progress.dismiss(); rememberCurrentStudent(result.student); renderSection(AppSection.ARCHIVES)
                     showMessage("升级完成", "已接管 ${result.student.name}（ID：${result.student.id}）。\n迁移文件 ${result.files} 个，关联学习项目 ${result.projects} 个。")
                 } }
                 .onFailure { error -> runOnUiThread { progress.dismiss(); showMessage("升级失败", error.message ?: "未知错误") } }
@@ -1005,6 +1258,7 @@ class MainActivity : Activity() {
         runCatching {
             workspaceService.createStandard(input.name, input.grade, input.school, input.goal, rootUri)
         }.onSuccess {
+            rememberCurrentStudent(it)
             refreshStudents()
             showMessage("新建完成", "已为 ${it.name} 建立学生知识库、原始资料库和学情分析汇总。")
         }.onFailure { showMessage("新建失败", it.message ?: "未知错误") }
@@ -1035,6 +1289,7 @@ class MainActivity : Activity() {
         runCatching {
             workspaceService.adoptExisting(input.name, input.grade, input.school, input.goal, rootUri)
         }.onSuccess { (student, _) ->
+            rememberCurrentStudent(student)
             refreshStudents()
             showMessage("接管完成", "已有目录已绑定到学生 ${student.name}；原有文件未被覆盖。")
         }.onFailure { showMessage("接管失败", it.message ?: "未知错误") }
@@ -1077,27 +1332,45 @@ class MainActivity : Activity() {
         studentList.removeAllViews()
         val students = workspaceService.listStudents()
         if (students.isEmpty()) {
-            studentList.addView(TextView(this).apply { text = "尚未建立学生档案。" }, matchWrap())
+            studentList.addView(statusCard().apply { text = "尚未建立学生档案。点击上方“新建学生档案”或“接管已有档案”开始。" }, GridLayout.LayoutParams().apply {
+                width = 0; columnSpec = GridLayout.spec(0, studentList.columnCount, 1f); setMargins(dp(6), dp(6), dp(6), dp(6))
+            })
+            updateCurrentStudentButton()
             return
         }
+        val selectedId = selectedStudent()?.id
         students.forEach { student ->
             val engineState = runCatching { workspaceService.knowledgeEngine(student.id).health() }.getOrNull()
             val counts = engineState?.optJSONObject("counts")
             val materials = runCatching { fileAssetService.materials(student.id) }.getOrDefault(emptyList())
             val assetCount = runCatching { fileAssetService.assets(student.id).size }.getOrDefault(0)
-            studentList.addView(TextView(this).apply {
-                text = "${student.name} · ${if (student.knowledgeBaseMode == "adopted") "接管目录" else "本机新建"}\n${student.grade.ifBlank { "未填写年级" }}\n资料 ${materials.size} · 文件资产 $assetCount · 待消化 ${materials.count { MaterialStatus.normalize(it.optString("status")) == MaterialStatus.PENDING_DIGEST }}\nKnowledgeEngine：${if (engineState?.optBoolean("ok") == true) "正常" else "待检查"} · 来源 ${counts?.optInt("sources") ?: 0} · 声明 ${counts?.optInt("claims") ?: 0}\n点击浏览 · 长按管理\nID: ${student.id}"
-                textSize = 15f
-                setTextColor(palette.text)
-                setPadding(24, 20, 24, 20)
-                setBackgroundColor(palette.card)
+            val card = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                setPadding(dp(18), dp(16), dp(18), dp(14))
                 isClickable = true
                 isFocusable = true
                 setOnClickListener { openStudentArchive(student) }
-                setOnLongClickListener { showStudentManagement(student); true }
-                contentDescription = "${student.name}，点击浏览档案，长按管理或删除"
+                contentDescription = "${student.name}，点击打开教育档案"
+                YouthUi.applySurface(this, palette, 24)
+            }
+            card.addView(TextView(this).apply {
+                text = "${if (student.id == selectedId) "● " else ""}${student.name} · ${student.grade.ifBlank { "未填写年级" }}"
+                textSize = 19f; setTextColor(palette.heading)
+                typeface = android.graphics.Typeface.create("sans-serif-medium", android.graphics.Typeface.NORMAL)
             }, matchWrap())
+            card.addView(TextView(this).apply {
+                text = "${if (student.knowledgeBaseMode == "adopted") "已接管原有档案" else "本机建立档案"}\n学习资料 ${materials.size} · 已归档 $assetCount · 待整理 ${materials.count { MaterialStatus.normalize(it.optString("status")) == MaterialStatus.PENDING_DIGEST }}\n知识状态：${if (engineState?.optBoolean("ok") == true) "正常" else "需要检查"} · 来源 ${counts?.optInt("sources") ?: 0}"
+                textSize = 14f; setTextColor(palette.muted); setPadding(0, dp(7), 0, dp(10))
+            }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
+            val actions = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
+            actions.addView(themedButton("打开档案", YouthButtonRole.COMPACT) { openStudentArchive(student) }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+            actions.addView(themedButton("更多管理", YouthButtonRole.COMPACT) { showStudentManagement(student) }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply { marginStart = dp(6) })
+            card.addView(actions, matchWrap())
+            studentList.addView(card, GridLayout.LayoutParams().apply {
+                width = 0; height = dp(if (wideLayout) 228 else 210); columnSpec = GridLayout.spec(GridLayout.UNDEFINED, 1f); setMargins(dp(6), dp(6), dp(6), dp(6))
+            })
         }
+        updateCurrentStudentButton()
     }
 
     private fun showStudentManagement(student: StudentRecord) {
@@ -1173,29 +1446,41 @@ class MainActivity : Activity() {
     }
 
     private fun chooseImportStudent() {
-        val students = workspaceService.listStudents()
-        if (students.isEmpty()) {
-            showMessage("没有学生档案", "请先新建或接管学生档案库。")
-            return
+        withCurrentStudent("请先新建或接管学生档案库。") { student ->
+            pendingImportStudentId = student.id
+            showLocalImportSource()
         }
-        AlertDialog.Builder(this).setTitle("资料归属学生")
-            .setItems(students.map { it.name }.toTypedArray()) { _, index ->
-                pendingImportStudentId = students[index].id
-                showLocalImportSource()
-            }.show()
+    }
+
+    private fun chooseFileImport() {
+        withCurrentStudent("请先新建或接管学生档案库。") { student ->
+            pendingImportStudentId = student.id
+            startLocalFileImport()
+        }
+    }
+
+    private fun choosePhotoImport() {
+        withCurrentStudent("请先新建或接管学生档案库。") { student ->
+            pendingImportStudentId = student.id
+            startCameraImport()
+        }
+    }
+
+    private fun startLocalFileImport() {
+        val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+            addCategory(Intent.CATEGORY_OPENABLE)
+            type = "*/*"
+            putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true)
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }
+        @Suppress("DEPRECATION")
+        startActivityForResult(intent, REQUEST_IMPORT_FILES)
     }
 
     private fun showLocalImportSource() {
         AlertDialog.Builder(this).setTitle("本机导入方式")
             .setItems(arrayOf("选择本机文件", "拍照导入")) { _, which ->
-                if (which == 0) {
-                    val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
-                        addCategory(Intent.CATEGORY_OPENABLE); type = "*/*"; putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true)
-                        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                    }
-                    @Suppress("DEPRECATION")
-                    startActivityForResult(intent, REQUEST_IMPORT_FILES)
-                } else startCameraImport()
+                if (which == 0) startLocalFileImport() else startCameraImport()
             }.setNegativeButton("取消") { _, _ -> pendingImportStudentId = null }.show()
     }
 
@@ -1245,19 +1530,14 @@ class MainActivity : Activity() {
     }
 
     private fun chooseStudentForAssets() {
-        val students = workspaceService.listStudents()
-        if (students.isEmpty()) { showMessage("没有学生档案", "请先新建或接管学生档案库。") ; return }
-        AlertDialog.Builder(this).setTitle("查看文件资产").setItems(students.map { it.name }.toTypedArray()) { _, index -> showStudentAssets(students[index]) }.show()
+        withCurrentStudent("请先新建或接管学生档案库。") { showStudentAssets(it) }
     }
 
     private fun chooseStudentForRawBrowser() {
-        val students = workspaceService.listStudents()
-        if (students.isEmpty()) { showMessage("没有学生档案", "请先新建或接管学生档案库。"); return }
-        AlertDialog.Builder(this).setTitle("浏览哪个学生的原始资料库")
-            .setItems(students.map { it.name }.toTypedArray()) { _, index ->
-                startActivity(Intent(this, RawMaterialBrowserActivity::class.java)
-                    .putExtra(RawMaterialBrowserActivity.EXTRA_STUDENT_ID, students[index].id))
-            }.show()
+        withCurrentStudent("请先新建或接管学生档案库。") { student ->
+            startActivity(Intent(this, RawMaterialBrowserActivity::class.java)
+                .putExtra(RawMaterialBrowserActivity.EXTRA_STUDENT_ID, student.id))
+        }
     }
 
     private fun showStudentAssets(student: StudentRecord) {
@@ -1284,10 +1564,7 @@ class MainActivity : Activity() {
     }
 
     private fun startGeneralScreenCapture() {
-        val students = workspaceService.listStudents()
-        if (students.isEmpty()) { showMessage("没有学生档案", "连续屏幕采集必须绑定一个明确学生。") ; return }
-        AlertDialog.Builder(this).setTitle("屏幕资料归属学生").setItems(students.map { it.name }.toTypedArray()) { _, studentIndex ->
-            val student = students[studentIndex]
+        withCurrentStudent("连续屏幕采集必须绑定一个明确学生。") { student ->
             val projects = projectService.listProjects().filter { student.id in it.studentIds }
             val choices = listOf("不关联学习项目") + projects.map { it.name }
             AlertDialog.Builder(this).setTitle("关联学习项目（可选）").setItems(choices.toTypedArray()) { _, projectIndex ->
@@ -1297,7 +1574,7 @@ class MainActivity : Activity() {
                     .putExtra(ScreenCaptureActivity.EXTRA_PROJECT_ID, project?.id.orEmpty())
                     .putExtra(ScreenCaptureActivity.EXTRA_PROJECT_NAME, project?.name.orEmpty()))
             }.show()
-        }.show()
+        }
     }
 
     private fun showProjectInputDialog(adoptKnowledge: Boolean) {
@@ -1368,13 +1645,28 @@ class MainActivity : Activity() {
         if (!::projectList.isInitialized) return
         projectList.removeAllViews()
         val projects = projectService.listProjects()
-        if (projects.isEmpty()) { projectList.addView(TextView(this).apply { text = "尚未建立学习项目。" }, matchWrap()); return }
+        if (projects.isEmpty()) {
+            projectList.addView(statusCard().apply { text = "尚未建立学习项目。点击上方“新建学习项目”开始。" }, GridLayout.LayoutParams().apply {
+                width = 0; columnSpec = GridLayout.spec(0, projectList.columnCount, 1f); setMargins(dp(6), dp(6), dp(6), dp(6))
+            })
+            return
+        }
         projects.forEach { project ->
-            projectList.addView(TextView(this).apply {
-                text = "${project.name} · ${if (project.knowledgeMode == "adopted") "接管知识库" else "本机知识库"}\n参与学生：${project.studentNames.joinToString().ifBlank { "未绑定" }}\n工作空间：${project.workspaceMode} · 状态：${project.status}\nID: ${project.id}"
-                textSize = 15f; setTextColor(palette.text); setPadding(24, 20, 24, 20); setBackgroundColor(palette.card)
-                isClickable = true; isFocusable = true; setOnClickListener { openProjectKnowledge(project) }
+            val card = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL; setPadding(dp(18), dp(16), dp(18), dp(16)); isClickable = true; isFocusable = true
+                setOnClickListener { openProjectKnowledge(project) }; contentDescription = "${project.name}，点击打开项目知识库"; YouthUi.applySurface(this, palette, 24)
+            }
+            card.addView(TextView(this).apply {
+                text = project.name; textSize = 19f; setTextColor(palette.heading); typeface = android.graphics.Typeface.create("sans-serif-medium", android.graphics.Typeface.NORMAL)
             }, matchWrap())
+            card.addView(TextView(this).apply {
+                text = "${if (project.knowledgeMode == "adopted") "已接管原有知识库" else "本机项目知识库"}\n参与学生：${project.studentNames.joinToString().ifBlank { "暂未绑定" }}\n状态：${project.status}"
+                textSize = 14f; setTextColor(palette.muted); setPadding(0, dp(7), 0, dp(10))
+            }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
+            card.addView(themedButton("打开项目知识库", YouthButtonRole.COMPACT) { openProjectKnowledge(project) }, matchWrap())
+            projectList.addView(card, GridLayout.LayoutParams().apply {
+                width = 0; height = dp(if (wideLayout) 214 else 190); columnSpec = GridLayout.spec(GridLayout.UNDEFINED, 1f); setMargins(dp(6), dp(6), dp(6), dp(6))
+            })
         }
     }
 
@@ -1545,12 +1837,12 @@ class MainActivity : Activity() {
             card.addView(TextView(this).apply {
                 text = tool.displayName
                 textSize = 18f
-                setTextColor(palette.accentDark)
+                setTextColor(palette.heading)
             }, matchWrap())
             card.addView(TextView(this).apply {
                 text = if (installedPackage == null) "未安装" else "已安装 · $installedPackage"
                 textSize = 14f
-                setTextColor(if (installedPackage == null) Color.rgb(178, 78, 50) else Color.rgb(30, 126, 72))
+                setTextColor(if (installedPackage == null) Color.rgb(253, 186, 116) else Color.rgb(110, 231, 183))
                 setPadding(0, dp(3), 0, dp(3))
             }, matchWrap())
             card.addView(TextView(this).apply {
@@ -1751,24 +2043,22 @@ class MainActivity : Activity() {
     }
 
     private fun showSavedConversations() {
-        val students = workspaceService.listStudents()
-        if (students.isEmpty()) { showMessage("没有学生档案", "当前没有可查看的学生范围。"); return }
-        AlertDialog.Builder(this).setTitle("管理学生对话历史").setItems(students.map { it.name }.toTypedArray()) { _, which ->
-            val student = students[which]; val records = conversationImportService.list(student.id)
+        withCurrentStudent("当前没有可查看的学生范围。") { student ->
+            val records = conversationImportService.list(student.id)
             if (records.isEmpty()) {
                 AlertDialog.Builder(this).setTitle("没有对话历史")
                     .setMessage("${student.name} 当前没有主动保存的 Agent 对话。你可以立即粘贴文字、导入文件，或从 PalmClaw / 豆包使用 Android“分享”发送到教育管家。")
                     .setPositiveButton("立即导入") { _, _ -> showConversationImportMenu() }
-                    .setNeutralButton("选择其他学生") { _, _ -> showSavedConversations() }
+                    .setNeutralButton("切换当前学生") { _, _ -> showCurrentStudentPicker() }
                     .setNegativeButton("关闭", null)
                     .show()
-                return@setItems
+                return@withCurrentStudent
             }
             AlertDialog.Builder(this).setTitle("${student.name} · 已保存对话（${records.size}）")
                 .setItems(records.map { "${it.optString("sourceAgent")} · ${conversationDigestStatusLabel(it.optString("digestStatus"))}\n${it.optString("projectName").ifBlank { "${student.name} · 学生档案" }} · ${it.optInt("messageCount")} 条消息" }.toTypedArray()) { _, index ->
                     showConversationActions(student, records[index])
                 }.show()
-        }.show()
+        }
     }
 
     private fun showConversationActions(student: StudentRecord, item: org.json.JSONObject) {
@@ -1902,7 +2192,7 @@ class MainActivity : Activity() {
     }
 
     private fun chooseMaterialsForDigest() {
-        val items = materialQueueItems().filter { materialPending(it) && digestEligible(it) }
+        val items = selectedStudent()?.let { materialQueueItems(listOf(it)) }.orEmpty().filter { materialPending(it) && digestEligible(it) }
         if (items.isEmpty()) { showMessage("没有可消化资料", "当前没有已准备好的待消化资料；图片或 PDF 需要先完成 OCR。"); return }
         showBatchMaterialPicker(items, MaterialBatchAction.DIGEST)
     }
@@ -1912,10 +2202,7 @@ class MainActivity : Activity() {
             item.material.optString("ocrStatus") == "completed"
 
     private fun chooseDigestHistoryStudent() {
-        val students = workspaceService.listStudents()
-        if (students.isEmpty()) { showMessage("没有学生档案", "请先新建或接管学生档案。"); return }
-        AlertDialog.Builder(this).setTitle("查看哪名学生的消化记录")
-            .setItems(students.map { it.name }.toTypedArray()) { _, which -> showDigestHistory(students[which]) }.show()
+        withCurrentStudent { showDigestHistory(it) }
     }
 
     private fun showDigestHistory(student: StudentRecord) {
@@ -1941,7 +2228,7 @@ class MainActivity : Activity() {
     }
 
     private fun chooseMaterialsForOcr() {
-        val items = materialQueueItems().filter(::supportsOcr)
+        val items = selectedStudent()?.let { materialQueueItems(listOf(it)) }.orEmpty().filter(::supportsOcr)
         if (items.isEmpty()) { showMessage("没有可解析资料", "请先导入图片或 PDF。"); return }
         showBatchMaterialPicker(items)
     }
@@ -2086,16 +2373,13 @@ class MainActivity : Activity() {
     }
 
     private fun chooseOcrResult() {
-        val students = workspaceService.listStudents()
-        if (students.isEmpty()) { showMessage("没有学生档案", "请先建立学生档案。"); return }
-        AlertDialog.Builder(this).setTitle("选择学生").setItems(students.map { it.name }.toTypedArray()) { _, index ->
-            val student = students[index]
+        withCurrentStudent { student ->
             val results = fileAssetService.materials(student.id).filter { it.optString("ocrStatus") == "completed" && it.optString("ocrMarkdownPath").isNotBlank() }
-            if (results.isEmpty()) { showMessage("没有 OCR 结果", "${student.name} 当前没有已完成的本地 OCR 结果。"); return@setItems }
+            if (results.isEmpty()) { showMessage("没有识别结果", "${student.name} 当前没有已经完成的图片文字识别结果。"); return@withCurrentStudent }
             AlertDialog.Builder(this).setTitle("${student.name} · OCR 结果").setItems(results.map { it.optString("fileName") }.toTypedArray()) { _, which ->
                 openOcrResult(student.id, results[which].optString("id"))
             }.show()
-        }.show()
+        }
     }
 
     private fun openOcrResult(studentId: String, materialId: String) {
@@ -2107,9 +2391,7 @@ class MainActivity : Activity() {
     }
 
     private fun chooseGrowthStudent() {
-        val students = workspaceService.listStudents()
-        if (students.isEmpty()) { showMessage("没有学生档案", "请先建立学生档案。"); return }
-        AlertDialog.Builder(this).setTitle("选择学生").setItems(students.map { it.name }.toTypedArray()) { _, index -> showGrowthActions(students[index]) }.show()
+        withCurrentStudent { showGrowthActions(it) }
     }
 
     private fun showGrowthActions(student: StudentRecord) {
@@ -2130,9 +2412,7 @@ class MainActivity : Activity() {
     }
 
     private fun chooseReportStudent() {
-        val students = workspaceService.listStudents()
-        if (students.isEmpty()) { showMessage("没有学生档案", "请先建立学生档案。") ; return }
-        AlertDialog.Builder(this).setTitle("选择学情报告学生").setItems(students.map { it.name }.toTypedArray()) { _, index -> showReports(students[index]) }.show()
+        withCurrentStudent { showReports(it) }
     }
 
     private fun showReports(student: StudentRecord) {
@@ -2151,9 +2431,7 @@ class MainActivity : Activity() {
     }
 
     private fun chooseStudentForReportDrafts() {
-        val students = workspaceService.listStudents()
-        if (students.isEmpty()) { showMessage("没有学生档案", "请先建立学生档案。") ; return }
-        AlertDialog.Builder(this).setTitle("选择生成报告的学生").setItems(students.map { it.name }.toTypedArray()) { _, index -> generateReportDrafts(students[index]) }.show()
+        withCurrentStudent { generateReportDrafts(it) }
     }
 
     private fun showGrowthCandidateDialog(student: StudentRecord) {
@@ -2250,14 +2528,11 @@ class MainActivity : Activity() {
     }
 
     private fun chooseStudentForCourses() {
-        val students = workspaceService.listStudents()
-        if (students.isEmpty()) { showMessage("没有学生档案", "请先建立学生档案。课程学习与采集必须绑定一个明确学生。") ; return }
-        AlertDialog.Builder(this).setTitle("选择课程学习学生").setItems(students.map { it.name }.toTypedArray()) { _, index ->
-            val student = students[index]
-            val courses = runCatching { courseCatalogService.effectiveCourses(student.id) }.getOrElse { showMessage("课程目录不可用", it.message ?: "未知错误"); return@setItems }
+        withCurrentStudent("请先建立学生档案。课程学习与采集必须绑定一个明确学生。") { student ->
+            val courses = runCatching { courseCatalogService.effectiveCourses(student.id) }.getOrElse { showMessage("课程目录不可用", it.message ?: "未知错误"); return@withCurrentStudent }
             if (courses.isEmpty()) showMessage("没有可学习课程", "请导入平台发放的 .edu-coursepkg，或从 Windows 主机为该学生导入 U 盘迁移目录。")
             else showPlatformCourses(student, courses)
-        }.show()
+        }
     }
 
     private fun showPlatformCourses(student: StudentRecord, courses: List<PlatformCourse>) {
@@ -2275,7 +2550,7 @@ class MainActivity : Activity() {
             if (bitmap == null) coverBox.addView(TextView(this).apply { text = "封面未载入\n请重新导入课程包"; gravity = Gravity.CENTER; setTextColor(palette.muted); textSize = 13f }, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
             card.addView(coverBox, LinearLayout.LayoutParams(dp(180), dp(112)))
             val details = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(16), 0, 0, 0) }
-            details.addView(TextView(this).apply { text = course.name; textSize = 19f; setTextColor(palette.accentDark) }, matchWrap())
+            details.addView(TextView(this).apply { text = course.name; textSize = 19f; setTextColor(palette.heading) }, matchWrap())
             details.addView(TextView(this).apply { text = course.summary; textSize = 14f; setTextColor(palette.text); maxLines = 4; setPadding(0, dp(5), 0, dp(5)) }, matchWrap())
             details.addView(TextView(this).apply { text = "${if (course.type == "tenant_custom") "机构课程" else "平台课程"} · ${course.provider} · 点击查看学习选项"; textSize = 13f; setTextColor(palette.muted) }, matchWrap())
             card.addView(details, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
@@ -2373,6 +2648,15 @@ class MainActivity : Activity() {
     private data class StudentInput(val name: String, val grade: String, val school: String, val goal: String)
     private data class ProjectInput(val name: String, val type: String, val description: String, val objective: String, val studentIds: List<String>)
     private data class MaterialQueueItem(val student: StudentRecord, val material: JSONObject)
+    private data class YouthAction(
+        val icon: String,
+        val title: String,
+        val detail: String,
+        val badge: String = "",
+        val tone: Int = -1,
+        val spanColumns: Int = 1,
+        val action: () -> Unit,
+    )
     private data class AgentToolDefinition(
         val id: String,
         val displayName: String,
@@ -2406,6 +2690,8 @@ class MainActivity : Activity() {
         const val REQUEST_DEVICE_MIGRATION_TARGET = 2119
         const val REQUEST_DEVICE_MIGRATION_NOTIFICATION = 2120
         const val OFFLINE_MIGRATION_POLL_MS = 1_000L
+        const val UI_CONTEXT_PREFS = "standalone_ui_context"
+        const val KEY_CURRENT_STUDENT_ID = "current_student_id"
         const val MAX_VISIBLE_MATERIAL_GROUPS = 100
         const val MAX_BATCH_SELECTION = 200
         val OCR_EXTENSIONS = setOf("jpg", "jpeg", "png", "webp", "bmp", "pdf")
@@ -2423,9 +2709,11 @@ class MainActivity : Activity() {
         RETRY("将失败项重新加入待处理"),
     }
 
-    private enum class AppSection(val label: String) {
-        HOME("首页"),
-        ARCHIVES("教育档案"), MATERIALS("资料收集与处理"), COURSES("课程中心"), ASSISTANT("AI助手问答"),
-        GROWTH("成长模型"), REPORTS("学情报告"), PROJECTS("学习项目"), SETTINGS("系统设置")
+    private enum class AppSection(val label: String, val icon: String) {
+        HOME("首页", "⌂"),
+        ARCHIVES("教育档案", "▣"), MATERIALS("资料收集与处理", "＋"), COURSES("课程中心", "▶"), ASSISTANT("AI助手问答", "✦"),
+        GROWTH("成长模型", "↗"), REPORTS("学情报告", "☰"), PROJECTS("学习项目", "◆"), SETTINGS("系统设置", "⚙");
+
+        val displayLabel: String get() = "$icon  $label"
     }
 }

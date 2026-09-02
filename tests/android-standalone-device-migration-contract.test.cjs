@@ -54,7 +54,7 @@ test('device credentials and volatile grants are excluded but public Agent routi
 
 test('settings exposes device migration without removing encrypted archival backup', () => {
   const main = read('MainActivity.kt');
-  for (const label of ['换新平板：导出整机迁移目录', '在新平板恢复并接管', '继续上次整机迁移', '查看最近迁移报告', '加密备份', '备份恢复']) {
+  for (const label of ['导出整机资料', '在新平板接管', '继续上次迁移', '查看迁移报告', '加密备份', '备份恢复']) {
     assert.match(main, new RegExp(label));
   }
 });

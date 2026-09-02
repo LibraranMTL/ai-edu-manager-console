@@ -12,7 +12,7 @@ const paths = fs.readFileSync(path.join(root, 'res', 'xml', 'file_paths.xml'), '
 const publicManifest = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'release', 'edu-manager-version.json'), 'utf8'));
 
 test('Android standalone settings exposes its own version update action', () => {
-  assert.match(main, /addAction\("检查版本更新"\)/);
+  assert.match(main, /YouthAction\([^\n]*"检查版本更新"[\s\S]*checkForAppUpdate\(\)/);
   assert.match(main, /packageManager\.getPackageInfo\(packageName, 0\)/);
   assert.match(update, /standaloneVersionCode/);
   assert.match(update, /standaloneVersionName/);
@@ -37,8 +37,8 @@ test('Android standalone update uses scoped FileProvider installation permission
 });
 
 test('public update manifest publishes the current standalone release channel', () => {
-  assert.equal(publicManifest.standaloneVersionCode, 25);
-  assert.equal(publicManifest.standaloneVersionName, '1.2.1');
-  assert.equal(publicManifest.standaloneApkUrl, 'https://www.greatbg.com/download/AI-Education-Manager-Android-Standalone-1.2.1-release.apk');
-  assert.equal(publicManifest.standaloneSha256, 'E55918AC1F28EEEE68CF9AC8A4264D1F01A030F300AAE09BD250618D735BF03D');
+  assert.equal(publicManifest.standaloneVersionCode, 26);
+  assert.equal(publicManifest.standaloneVersionName, '1.2.2');
+  assert.equal(publicManifest.standaloneApkUrl, 'https://www.greatbg.com/download/AI-Education-Manager-Android-Standalone-1.2.2-release.apk');
+  assert.equal(publicManifest.standaloneSha256, 'A430636A6A1395507EE711D1A0FA99902F1BD174B49BA0945F053C9231DFC8DB');
 });

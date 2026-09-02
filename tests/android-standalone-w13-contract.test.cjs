@@ -57,7 +57,7 @@ test('W13 sidebar scrolls intermediate sections and pins system settings at the 
   const main = read('MainActivity.kt');
   assert.match(main, /filterNot \{ it == AppSection\.SETTINGS \}/);
   assert.match(main, /ScrollView\(this@MainActivity\).*LinearLayout\.LayoutParams\(ViewGroup\.LayoutParams\.MATCH_PARENT, 0, 1f\)/s);
-  assert.match(main, /val settings = themedButton\(AppSection\.SETTINGS\.label\)/);
+  assert.match(main, /val settings = themedButton\(AppSection\.SETTINGS\.displayLabel, YouthButtonRole\.NAVIGATION\)/);
 });
 
 test('W13 Agent conversations are explicit, immutable, deduplicated and shareable', () => {

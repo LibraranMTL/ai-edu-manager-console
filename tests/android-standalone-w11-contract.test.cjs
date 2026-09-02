@@ -46,7 +46,7 @@ test('W11 offers course learning with explicit system-authorized capture startup
 test('W11 Agent configuration can be edited, tested, disabled and can launch capability apps', () => {
   const main = read('MainActivity.kt');
   const agent = read('AgentAdapter.kt');
-  for (const value of ['配置或修改本地任务 Agent', '测试文本 / 视觉 Agent', '停用本地任务 Agent', '打开 PalmClaw', '打开 MobileClaw']) {
+  for (const value of ['配置任务 Agent', '测试 Agent', '停用任务 Agent', '打开 PalmClaw', '打开 MobileClaw']) {
     assert.match(main, new RegExp(value));
   }
   assert.match(agent, /fun saveOrUpdate/);
@@ -66,6 +66,6 @@ test('W11 exposes five skins and landscape, portrait and adaptive layouts', () =
 test('W11 retains Windows course-package import as an advanced offline compatibility path', () => {
   const source = read('MainActivity.kt');
   assert.match(source, /高级设置/);
-  assert.match(source, /导入离线平台课程包/);
+  assert.match(source, /导入离线课程包/);
   assert.match(source, /startPlatformCourseImport/);
 });

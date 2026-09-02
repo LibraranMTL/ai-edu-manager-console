@@ -33,14 +33,14 @@ class MarkdownBrowserActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         val ui = UiPreferences(this); ui.applyOrientation(this); val palette = ui.palette()
-        window.statusBarColor = palette.accentDark; window.navigationBarColor = palette.page
+        window.statusBarColor = palette.page; window.navigationBarColor = palette.page
         val root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(18, 18, 18, 18); setBackgroundColor(palette.page) }
         val toolbar = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        toolbar.addView(Button(this).apply { text = "返回"; isAllCaps = false; setOnClickListener { finish() } }, weighted())
-        pickerButton = Button(this).apply { text = "选择文档"; isAllCaps = false; isEnabled = false; setOnClickListener { showPicker() } }; toolbar.addView(pickerButton, weighted())
-        modeButton = Button(this).apply { text = "查看原文"; isAllCaps = false; isEnabled = false; setOnClickListener { rendered = !rendered; updateDisplay() } }; toolbar.addView(modeButton, weighted())
+        toolbar.addView(Button(this).apply { text = "返回"; YouthUi.applyButton(this, palette, YouthButtonRole.COMPACT); setOnClickListener { finish() } }, weighted())
+        pickerButton = Button(this).apply { text = "选择文档"; YouthUi.applyButton(this, palette, YouthButtonRole.COMPACT); isEnabled = false; setOnClickListener { showPicker() } }; toolbar.addView(pickerButton, weighted())
+        modeButton = Button(this).apply { text = "查看原文"; YouthUi.applyButton(this, palette, YouthButtonRole.COMPACT); isEnabled = false; setOnClickListener { rendered = !rendered; updateDisplay() } }; toolbar.addView(modeButton, weighted())
         root.addView(toolbar, matchWrap())
-        titleView = TextView(this).apply { text = intent.getStringExtra(EXTRA_TITLE).orEmpty().ifBlank { "Markdown 阅读器" }; textSize = 24f; setTextColor(palette.accentDark); setPadding(4, 14, 4, 4) }; root.addView(titleView, matchWrap())
+        titleView = TextView(this).apply { text = intent.getStringExtra(EXTRA_TITLE).orEmpty().ifBlank { "Markdown 阅读器" }; textSize = 24f; setTextColor(palette.heading); setPadding(4, 14, 4, 4) }; root.addView(titleView, matchWrap())
         statusView = TextView(this).apply { text = "正在读取文档…"; textSize = 14f; setTextColor(palette.muted); setPadding(4, 4, 4, 10) }; root.addView(statusView, matchWrap())
         val content = FrameLayout(this)
         webView = WebView(this).apply {
@@ -50,7 +50,7 @@ class MarkdownBrowserActivity : Activity() {
                 @Deprecated("API 23 compatibility") override fun shouldOverrideUrlLoading(view: WebView?, url: String?): Boolean = openExternal(url?.let(Uri::parse))
             }
         }
-        rawView = TextView(this).apply { setTextColor(palette.text); textSize = 16f; setPadding(18, 18, 18, 40); setBackgroundColor(Color.WHITE); visibility = View.GONE; setTextIsSelectable(true) }
+        rawView = TextView(this).apply { setTextColor(Color.rgb(31, 41, 55)); textSize = 16f; setPadding(18, 18, 18, 40); setBackgroundColor(Color.WHITE); visibility = View.GONE; setTextIsSelectable(true) }
         content.addView(webView, frameMatch()); content.addView(rawView, frameMatch()); root.addView(content, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
         setContentView(root)
         Thread { val result = runCatching { loadDocuments() }; runOnUiThread { result.onSuccess(::applyDocuments).onFailure { showFailure(it.message ?: "读取失败") } } }.start()

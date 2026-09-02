@@ -48,7 +48,7 @@ class ConversationKnowledgeActivity : Activity() {
         val page = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL; setPadding(dp(18), dp(16), dp(18), dp(20)); setBackgroundColor(palette.page)
         }
-        page.addView(TextView(this).apply { text = "智能体对话知识管理"; textSize = 25f; setTextColor(palette.accentDark) }, matchWrap())
+        page.addView(TextView(this).apply { text = "智能体对话知识管理"; textSize = 25f; setTextColor(palette.heading) }, matchWrap())
         page.addView(TextView(this).apply {
             text = "只管理用户主动粘贴、选择或分享的对话。原文保持不可变，提取结果先进入候选，审核后才写入知识库。"
             textSize = 14f; setTextColor(palette.muted); setPadding(0, dp(4), 0, dp(8))
@@ -213,11 +213,18 @@ class ConversationKnowledgeActivity : Activity() {
     }
 
     private fun card(value: String) = LinearLayout(this).apply {
-        orientation = LinearLayout.VERTICAL; setPadding(dp(14), dp(12), dp(14), dp(12)); setBackgroundColor(palette.card)
+        orientation = LinearLayout.VERTICAL; setPadding(dp(16), dp(14), dp(16), dp(14)); YouthUi.applySurface(this, palette)
         addView(TextView(this@ConversationKnowledgeActivity).apply { text = value; textSize = 14f; setTextColor(palette.text); setPadding(0, 0, 0, dp(6)) }, matchWrap())
     }
     private fun button(label: String, action: () -> Unit) = Button(this).apply {
-        text = label; isAllCaps = false; backgroundTintList = ColorStateList.valueOf(palette.accentSoft); setTextColor(palette.text); setOnClickListener { action() }
+        text = label
+        val role = when {
+            label in setOf("永久删除", "移入回收站", "驳回") -> YouthButtonRole.DANGER
+            label in setOf("导入新的对话", "确认采用当前待审核（最多 50 条）") -> YouthButtonRole.PRIMARY
+            else -> YouthButtonRole.SECONDARY
+        }
+        YouthUi.applyButton(this, palette, role)
+        setOnClickListener { action() }
     }
     private fun showError(message: String) = AlertDialog.Builder(this).setTitle("操作失败").setMessage(message).setPositiveButton("知道了", null).show()
     private fun recordSearchText(value: JSONObject) = listOf(value.optString("sourceAgent"), value.optString("studentName"), value.optString("projectName"), value.optJSONObject("analysis")?.toString().orEmpty()).joinToString(" ")

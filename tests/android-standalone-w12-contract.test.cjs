@@ -23,7 +23,7 @@ test('W12 student archives, projects and reports open the bounded Markdown brows
 test('W12 completed OCR results can be selected and rendered', () => {
   const main = read('MainActivity.kt');
   const browser = read('MarkdownBrowserActivity.kt');
-  assert.match(main, /查看 OCR 识别结果/);
+  assert.match(main, /查看识别结果/);
   assert.match(main, /ocrStatus.*completed/);
   assert.match(main, /openOcrResult/);
   assert.match(browser, /MODE_OCR/);

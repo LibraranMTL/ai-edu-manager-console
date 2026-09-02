@@ -45,14 +45,14 @@ class CourseLearningActivity : Activity() {
         val ui = UiPreferences(this)
         ui.applyOrientation(this)
         val palette = ui.palette()
-        window.statusBarColor = palette.accentDark
+        window.statusBarColor = palette.page
         window.navigationBarColor = palette.page
         student = StudentIndexRepository(this).requireExact(requireNotNull(intent.getStringExtra(EXTRA_STUDENT_ID)))
         course = PlatformCourse.fromJson(org.json.JSONObject(requireNotNull(intent.getStringExtra(EXTRA_COURSE_JSON))))
-        val layout = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setBackgroundColor(palette.page); setPadding(18, 18, 18, 18) }
+        val layout = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setBackgroundColor(palette.page); setPadding(dp(14), dp(12), dp(14), dp(12)) }
         val toolbar = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        toolbar.addView(Button(this).apply { text = "返回课程中心"; setOnClickListener { finish() } }, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
-        captureButton = Button(this).apply { text = "开始采集课程资料"; setOnClickListener { handleCapturePrimary() } }
+        toolbar.addView(Button(this).apply { text = "返回课程中心"; YouthUi.applyButton(this, palette, YouthButtonRole.COMPACT); setOnClickListener { finish() } }, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+        captureButton = Button(this).apply { text = "开始采集课程资料"; YouthUi.applyButton(this, palette, YouthButtonRole.PRIMARY); setOnClickListener { handleCapturePrimary() } }
         toolbar.addView(captureButton, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)); layout.addView(toolbar)
         status = TextView(this).apply { text = "${course.name} · ${course.provider}\n采集仅在你点击并通过 Android 系统授权后开始。"; setTextColor(palette.text); setPadding(8, 12, 8, 12) }
         layout.addView(status)
@@ -162,6 +162,7 @@ class CourseLearningActivity : Activity() {
 
     override fun onResume() { super.onResume(); if (::captureButton.isInitialized) refreshCaptureState() }
     override fun onDestroy() { refreshHandler.removeCallbacks(refreshCapture); if (::webView.isInitialized) { webView.stopLoading(); webView.loadUrl("about:blank"); webView.clearHistory(); webView.destroy() }; super.onDestroy() }
+    private fun dp(value: Int) = (value * resources.displayMetrics.density).toInt()
 
     companion object {
         const val EXTRA_STUDENT_ID = "student_id"; const val EXTRA_COURSE_JSON = "course_json"; const val EXTRA_AUTO_START_CAPTURE = "auto_start_capture"

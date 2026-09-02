@@ -53,7 +53,11 @@ class CollaborationQrScannerActivity : ComponentActivity() {
             addView(LinearLayout(this@CollaborationQrScannerActivity).apply {
                 orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER_HORIZONTAL; setPadding(dp(18), dp(24), dp(18), dp(24))
                 addView(statusText, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
-                addView(Button(this@CollaborationQrScannerActivity).apply { text = "取消"; isAllCaps = false; setOnClickListener { finish() } })
+                addView(Button(this@CollaborationQrScannerActivity).apply {
+                    text = "取消"
+                    YouthUi.applyButton(this, UiPreferences(this@CollaborationQrScannerActivity).palette(), YouthButtonRole.PRIMARY)
+                    setOnClickListener { finish() }
+                })
             }, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM))
         }
     }

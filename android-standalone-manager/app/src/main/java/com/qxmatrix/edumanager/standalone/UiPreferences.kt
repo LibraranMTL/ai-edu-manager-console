@@ -43,7 +43,8 @@ data class UiPalette(
     val text: Int,
     val muted: Int,
     val border: Int,
-    val card: Int = Color.WHITE,
+    val card: Int,
+    val heading: Int,
 )
 
 class UiPreferences(context: Context) {
@@ -63,11 +64,11 @@ class UiPreferences(context: Context) {
     }
 
     fun palette(): UiPalette = when (skin()) {
-        UiSkin.PURPLE -> UiPalette(Color.rgb(139, 92, 246), Color.rgb(109, 40, 217), Color.rgb(240, 233, 255), Color.rgb(251, 249, 255), Color.rgb(49, 39, 70), Color.rgb(101, 84, 126), Color.rgb(212, 194, 255))
-        UiSkin.PINK -> UiPalette(Color.rgb(236, 72, 153), Color.rgb(190, 24, 93), Color.rgb(253, 231, 242), Color.rgb(255, 248, 251), Color.rgb(76, 35, 55), Color.rgb(130, 76, 102), Color.rgb(249, 184, 213))
-        UiSkin.GREEN -> UiPalette(Color.rgb(38, 166, 106), Color.rgb(8, 114, 69), Color.rgb(232, 248, 239), Color.rgb(247, 252, 249), Color.rgb(38, 57, 54), Color.rgb(87, 107, 103), Color.rgb(185, 232, 207))
-        UiSkin.BLUE -> UiPalette(Color.rgb(55, 118, 232), Color.rgb(29, 78, 216), Color.rgb(231, 240, 255), Color.rgb(247, 250, 255), Color.rgb(35, 49, 76), Color.rgb(82, 101, 137), Color.rgb(185, 207, 248))
-        UiSkin.ORANGE -> UiPalette(Color.rgb(249, 115, 22), Color.rgb(194, 65, 12), Color.rgb(255, 240, 223), Color.rgb(255, 250, 244), Color.rgb(75, 49, 31), Color.rgb(130, 91, 62), Color.rgb(254, 208, 164))
+        UiSkin.PURPLE -> UiPalette(Color.rgb(139, 92, 246), Color.rgb(109, 40, 217), Color.rgb(31, 29, 58), Color.rgb(10, 17, 36), Color.rgb(248, 250, 252), Color.rgb(183, 195, 216), Color.rgb(64, 61, 103), Color.rgb(22, 29, 54), Color.rgb(196, 181, 253))
+        UiSkin.PINK -> UiPalette(Color.rgb(236, 72, 153), Color.rgb(190, 24, 93), Color.rgb(48, 25, 48), Color.rgb(22, 14, 31), Color.rgb(255, 248, 252), Color.rgb(216, 188, 207), Color.rgb(91, 47, 76), Color.rgb(39, 22, 43), Color.rgb(249, 168, 212))
+        UiSkin.GREEN -> UiPalette(Color.rgb(38, 166, 106), Color.rgb(8, 114, 69), Color.rgb(15, 44, 42), Color.rgb(7, 25, 29), Color.rgb(246, 252, 250), Color.rgb(175, 205, 198), Color.rgb(42, 83, 76), Color.rgb(15, 41, 42), Color.rgb(110, 231, 183))
+        UiSkin.BLUE -> UiPalette(Color.rgb(55, 118, 232), Color.rgb(29, 78, 216), Color.rgb(17, 39, 69), Color.rgb(6, 20, 43), Color.rgb(248, 250, 255), Color.rgb(176, 197, 224), Color.rgb(42, 76, 115), Color.rgb(15, 35, 64), Color.rgb(147, 197, 253))
+        UiSkin.ORANGE -> UiPalette(Color.rgb(249, 115, 22), Color.rgb(194, 65, 12), Color.rgb(48, 31, 23), Color.rgb(27, 17, 12), Color.rgb(255, 250, 246), Color.rgb(221, 195, 177), Color.rgb(104, 66, 48), Color.rgb(45, 28, 20), Color.rgb(253, 186, 116))
     }
 
     companion object {

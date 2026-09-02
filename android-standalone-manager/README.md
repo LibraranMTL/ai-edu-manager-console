@@ -34,9 +34,9 @@ P5 源码增加 Android 单机版—Android 单机版近距离协作：一台设
 
 P5-R 已加入五次失败配对限制与递增冷却、持久防重放、七天过期暂存清理、4 GB 暂存上限、512 MB 剩余空间保留，并在撤销设备时清理其未完成暂存。服务启动和反向同步使用实际结果更新状态，不再在尚未监听或尚未入队时预设成功。
 
-Android 单机版当前正式发布基线为 `1.2.1 / code 25`。本版增加教育档案知识库分类浏览和学生档案删除；学习项目可直接选择或补选资料根目录；资料消化只列出待处理资料，并增加每日自动消化和消化记录；资料收集增加智能体对话导入，同时改进连续屏幕采集故障提示和视觉 Agent 测试样本。正式 APK 使用与既有产品正式版相同的长期证书，包名、递增版本号、v1/v2 签名、证书指纹和 SHA-256 已验证；本轮真机覆盖安装仍需单独确认。P5 的 Android 单机版—Android 单机版附近协作仍需两台不同真机完成 Wi-Fi、热点、断点恢复、冲突和重启验收，不因 1.2.1 正式发布而自动视为稳定能力。普通 Android 学生端 0.6.15 继续使用原有主机连接，不具备知识节点接收服务。
+Android 单机版当前正式发布基线为 `1.2.2 / code 26`。本版采用面向中小学生的方案 A 界面：横屏使用紧凑左侧导航和自适应方块操作卡片，竖屏与小屏自动降列；五套皮肤统一改为高对比深色背景，并保留各自强调色；增加当前学生快捷切换，资料、档案、报告、项目等操作默认使用准确学生范围。正式 APK 使用与既有产品正式版相同的长期证书，包名、递增版本号、v1/v2 签名、证书指纹和 SHA-256 已验证；本轮真机覆盖安装及新界面可用性仍需单独确认。P5 的 Android 单机版—Android 单机版附近协作仍需两台不同真机完成 Wi-Fi、热点、断点恢复、冲突和重启验收，不因 1.2.2 正式发布而自动视为稳定能力。普通 Android 学生端 0.6.15 继续使用原有主机连接，不具备知识节点接收服务。
 
-正式发布记录与人工验收范围见 `docs/delivery/Android单机版-资料消化与档案管理-1.2.1发布记录.md`。
+正式发布记录与人工验收范围见 `docs/delivery/Android单机版-青少年深色界面-1.2.2发布记录.md`。
 
 ## 构建
 
@@ -58,7 +58,7 @@ powershell -ExecutionPolicy Bypass -File android-standalone-manager\build.ps1 -T
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File android-standalone-manager\verify-physical-device.ps1 `
-  -ApkPath android-standalone-manager\delivery\AI-Education-Manager-Android-Standalone-1.2.1-release.apk `
+  -ApkPath android-standalone-manager\delivery\AI-Education-Manager-Android-Standalone-1.2.2-release.apk `
   -DeviceSerial <实体平板序列号>
 ```
 
@@ -66,7 +66,7 @@ powershell -ExecutionPolicy Bypass -File android-standalone-manager\verify-physi
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File android-standalone-manager\verify-physical-device.ps1 `
-  -ApkPath android-standalone-manager\delivery\AI-Education-Manager-Android-Standalone-1.2.1-release.apk `
+  -ApkPath android-standalone-manager\delivery\AI-Education-Manager-Android-Standalone-1.2.2-release.apk `
   -DeviceSerial <实体平板序列号> `
   -KnowledgeCollaboration
 ```

@@ -28,11 +28,11 @@ class ScreenCaptureActivity : Activity() {
         projectId = intent.getStringExtra(EXTRA_PROJECT_ID).orEmpty(); projectName = intent.getStringExtra(EXTRA_PROJECT_NAME).orEmpty()
         if (projectId.isNotBlank()) require(ProjectRepository(this).requireExact(projectId).studentIds.contains(student.id)) { "关联项目未绑定当前学生" }
         val palette = UiPreferences(this).palette()
-        val layout = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(28, 28, 28, 28); setBackgroundColor(palette.page) }
-        layout.addView(TextView(this).apply { text = "连续屏幕采集"; textSize = 26f; setTextColor(palette.accentDark) }, matchWrap())
-        status = TextView(this).apply { textSize = 15f; setTextColor(palette.text); setPadding(0, 18, 0, 18) }; layout.addView(status, matchWrap())
-        primary = Button(this).apply { text = "选择模式并开始"; isAllCaps = false; setOnClickListener { handlePrimary() } }; layout.addView(primary, matchWrap())
-        layout.addView(Button(this).apply { text = "返回资料中心"; isAllCaps = false; setOnClickListener { finish() } }, matchWrap())
+        val layout = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(22), dp(22), dp(22), dp(28)); setBackgroundColor(palette.page) }
+        layout.addView(TextView(this).apply { text = "连续屏幕采集"; textSize = 26f; setTextColor(palette.heading) }, matchWrap())
+        status = TextView(this).apply { textSize = 15f; setTextColor(palette.text); setPadding(dp(16), dp(15), dp(16), dp(15)); YouthUi.applyStatusCard(this, palette) }; layout.addView(status, matchWrap())
+        primary = Button(this).apply { text = "选择模式并开始"; YouthUi.applyButton(this, palette, YouthButtonRole.PRIMARY); setOnClickListener { handlePrimary() } }; layout.addView(primary, matchWrap())
+        layout.addView(Button(this).apply { text = "返回资料中心"; YouthUi.applyButton(this, palette, YouthButtonRole.SECONDARY); setOnClickListener { finish() } }, matchWrap())
         setContentView(layout); refreshState()
     }
 
@@ -105,6 +105,7 @@ class ScreenCaptureActivity : Activity() {
 
     override fun onResume() { super.onResume(); if (::status.isInitialized) refreshState() }
     private fun matchWrap() = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+    private fun dp(value: Int) = (value * resources.displayMetrics.density).toInt()
 
     companion object {
         const val EXTRA_STUDENT_ID = "student_id"; const val EXTRA_PROJECT_ID = "project_id"; const val EXTRA_PROJECT_NAME = "project_name"

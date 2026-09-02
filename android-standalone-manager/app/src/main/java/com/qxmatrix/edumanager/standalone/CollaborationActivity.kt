@@ -30,6 +30,7 @@ class CollaborationActivity : Activity() {
     private lateinit var summaryText: TextView
     private lateinit var nearbyStatusText: TextView
     private lateinit var nearbyToggleButton: Button
+    private lateinit var palette: UiPalette
     private var busyDialog: AlertDialog? = null
     private var nearbyRunning = false
     private var createInvitationAfterNotification = false
@@ -38,19 +39,20 @@ class CollaborationActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         if (!LicenseManager(this).status().active) { finish(); return }
+        val ui = UiPreferences(this); ui.applyOrientation(this); palette = ui.palette()
         repository = CollaborationRepository(this)
         setContentView(buildPage())
         loadSnapshot()
     }
 
     private fun buildPage(): ScrollView = ScrollView(this).apply {
-        setBackgroundColor(0xFFF4F8F7.toInt())
+        setBackgroundColor(palette.page)
         addView(LinearLayout(this@CollaborationActivity).apply {
             orientation = LinearLayout.VERTICAL; setPadding(dp(22), dp(20), dp(22), dp(36))
-            addView(TextView(this@CollaborationActivity).apply { text = "知识协作"; textSize = 28f; setTextColor(0xFF173B37.toInt()) }, matchWrap())
+            addView(TextView(this@CollaborationActivity).apply { text = "知识协作"; textSize = 28f; setTextColor(palette.heading) }, matchWrap())
             addView(TextView(this@CollaborationActivity).apply {
                 text = "先建立设备信任，再按学生精确共享。支持 Windows 主机和附近 Android 单机版；不会同步原始资料、License、API Token、SAF 地址或本机密钥。"
-                textSize = 15f; setTextColor(0xFF526B68.toInt()); setPadding(0, dp(6), 0, dp(12))
+                textSize = 15f; setTextColor(palette.muted); setPadding(0, dp(6), 0, dp(12))
             }, matchWrap())
             summaryText = statusText("正在读取本机协作状态…"); addView(summaryText, matchWrap())
 
@@ -63,7 +65,7 @@ class CollaborationActivity : Activity() {
             addView(sectionTitle("共享学生"), matchWrap())
             addView(TextView(this@CollaborationActivity).apply {
                 text = "由任一可信设备创建学生共享邀请，另一端人工选择对应学生；不会按姓名自动匹配。"
-                textSize = 14f; setTextColor(0xFF526B68.toInt())
+                textSize = 14f; setTextColor(palette.muted)
             }, matchWrap())
             addView(actionButton("创建学生共享邀请") { chooseDeviceAndStudentForOffer() }, matchWrap())
             addView(actionButton("粘贴并接受学生共享邀请") { chooseStudentForClipboardOffer() }, matchWrap())
@@ -286,7 +288,7 @@ class CollaborationActivity : Activity() {
                 val peerType = if (device.capabilitiesJson.contains("android-nearby-v1")) "Android 单机版" else "Windows 主机"
                 val sharedCount = snapshot.studentMaps.count { it.deviceBindingId == device.deviceBindingId && it.status != "revoked" }
                 text = "${device.peerDisplayName}\n$peerType · ${statusLabel(device.status)} · 共享学生 $sharedCount 个\n最近连接 ${device.lastSeenAt.ifBlank { "尚无" }}"
-                textSize = 15f; setTextColor(0xFF173B37.toInt())
+                textSize = 15f; setTextColor(palette.text)
             }, matchWrap())
             val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
             if (device.status != "revoked") row.addView(actionButton(if (device.status == "active") "本机暂停" else "恢复") {
@@ -398,7 +400,7 @@ class CollaborationActivity : Activity() {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(20), dp(8), dp(20), 0)
             addView(TextView(this@CollaborationActivity).apply {
-                text = message; textSize = 15f; setTextColor(0xFF2B4C48.toInt())
+                text = message; textSize = 15f; setTextColor(palette.text)
             }, matchWrap())
             addView(ImageView(this@CollaborationActivity).apply {
                 setImageBitmap(CollaborationQrRenderer.render(payload, dp(340)))
@@ -415,11 +417,15 @@ class CollaborationActivity : Activity() {
             }.show()
     }
 
-    private fun sectionTitle(value: String) = TextView(this).apply { text = value; textSize = 21f; setTextColor(0xFF173B37.toInt()); setPadding(0, dp(22), 0, dp(8)) }
-    private fun statusText(value: String) = TextView(this).apply { text = value; textSize = 14f; setTextColor(0xFF2B4C48.toInt()); setBackgroundColor(Color.WHITE); setPadding(dp(14), dp(12), dp(14), dp(12)) }
-    private fun emptyText(value: String) = TextView(this).apply { text = value; textSize = 14f; setTextColor(0xFF6B7F7C.toInt()); setPadding(dp(8), dp(10), dp(8), dp(10)) }
-    private fun card() = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setBackgroundColor(Color.WHITE); setPadding(dp(14), dp(12), dp(14), dp(12)) }
-    private fun actionButton(value: String, action: () -> Unit) = Button(this).apply { text = value; isAllCaps = false; setOnClickListener { action() } }
+    private fun sectionTitle(value: String) = TextView(this).apply { text = value; textSize = 21f; setTextColor(palette.heading); setPadding(0, dp(22), 0, dp(8)) }
+    private fun statusText(value: String) = TextView(this).apply { text = value; textSize = 14f; setTextColor(palette.text); setPadding(dp(16), dp(14), dp(16), dp(14)); YouthUi.applyStatusCard(this, palette) }
+    private fun emptyText(value: String) = TextView(this).apply { text = value; textSize = 14f; setTextColor(palette.muted); setPadding(dp(8), dp(10), dp(8), dp(10)) }
+    private fun card() = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(16), dp(14), dp(16), dp(14)); YouthUi.applySurface(this, palette) }
+    private fun actionButton(value: String, action: () -> Unit) = Button(this).apply {
+        text = value
+        YouthUi.applyButton(this, palette, if (value in setOf("撤销", "解除")) YouthButtonRole.DANGER else YouthButtonRole.SECONDARY)
+        setOnClickListener { action() }
+    }
     private fun statusLabel(value: String) = when (value) { "active" -> "已启用"; "paused" -> "已暂停"; "revoked" -> "已撤销"; else -> value }
     private fun showBusy(message: String) { hideBusy(); busyDialog = AlertDialog.Builder(this).setTitle("知识协作").setMessage(message).setCancelable(false).show() }
     private fun hideBusy() { busyDialog?.dismiss(); busyDialog = null }

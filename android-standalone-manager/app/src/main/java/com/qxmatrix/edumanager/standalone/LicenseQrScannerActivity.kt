@@ -57,7 +57,7 @@ class LicenseQrScannerActivity : ComponentActivity() {
         }
         val close = Button(this).apply {
             text = "取消"
-            isAllCaps = false
+            YouthUi.applyButton(this, UiPreferences(this@LicenseQrScannerActivity).palette(), YouthButtonRole.PRIMARY)
             setOnClickListener { finish() }
         }
         return FrameLayout(this).apply {

@@ -63,8 +63,8 @@ test('three current candidate clients expose the one-click upgrade contract', ()
   assert.match(host, /auth\.allowedStudentIds\.includes\(String\(studentId\)\)/);
   assert.match(host, /portable-migrations/);
   assert.match(student, /从 Windows 主机升级到单机版（少量资料）/);
-  assert.match(student, /VERSION_NAME = "0\.6\.15"/);
-  assert.match(student, /VERSION_CODE = 85/);
+  assert.match(student, /VERSION_NAME = "0\.6\.16"/);
+  assert.match(student, /VERSION_CODE = 86/);
   assert.match(student, /!student\.fileStatsReady/);
   assert.match(student, /student\.rawFileCount >= 1000/);
   assert.match(student, /student\.rawTotalBytes >= 3L \* 1024L \* 1024L \* 1024L/);

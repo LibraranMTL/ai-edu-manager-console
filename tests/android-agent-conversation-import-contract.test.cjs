@@ -74,9 +74,9 @@ test('a failed request keeps one restart-safe draft and a successful receipt cle
 });
 
 test('release versions advance only the two Android terminals', () => {
-  assert.match(student, /VERSION_NAME = "0\.6\.15"/u);
-  assert.match(student, /VERSION_CODE = 85/u);
-  assert.match(studentManifest, /android:versionName="0\.6\.15"/u);
+  assert.match(student, /VERSION_NAME = "0\.6\.16"/u);
+  assert.match(student, /VERSION_CODE = 86/u);
+  assert.match(studentManifest, /android:versionName="0\.6\.16"/u);
   assert.match(teacher, /VERSION_NAME = "0\.1\.1"/u);
   assert.match(teacher, /VERSION_CODE = 2/u);
   assert.match(teacherManifest, /android:versionName="0\.1\.1"/u);

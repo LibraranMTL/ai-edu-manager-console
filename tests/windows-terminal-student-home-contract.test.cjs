@@ -10,10 +10,14 @@ const preload = read('electron', 'terminal-preload.cjs');
 const main = read('electron', 'terminal-main.cjs');
 
 test('manual upload remains available in personal and shared student terminal modes', () => {
-  const grid = ui.slice(ui.indexOf('<div className="terminal-feature-grid">'), ui.indexOf('<section className="terminal-card feature-card wide-card">'));
-  assert.match(grid, /<h2>上传本地资料<\/h2>/);
-  assert.doesNotMatch(grid, /terminalMode === 'personal'[\s\S]*<h2>上传本地资料<\/h2>/);
-  assert.match(grid, /config\.terminalMode === 'personal'[\s\S]*<h2>自动投递文件夹<\/h2>[\s\S]*共享终端不会持续监测文件夹/);
+  const gridStart = ui.indexOf('<section className="student-action-grid"');
+  const grid = ui.slice(gridStart, ui.indexOf('</section>', gridStart));
+  const uploadIndex = grid.indexOf('title="上传学习资料"');
+  const modeSpecificIndex = grid.indexOf("config.terminalMode === 'personal'");
+  assert.ok(uploadIndex > 0, 'manual upload tile should stay in the shared action grid');
+  assert.ok(modeSpecificIndex > uploadIndex, 'manual upload must not be conditional on personal-terminal mode');
+  assert.match(grid, /title="自动投递"/);
+  assert.match(ui, /共享终端不会持续监测文件夹/);
 });
 
 test('Windows student terminal reads reports and archives through the scoped student session', () => {

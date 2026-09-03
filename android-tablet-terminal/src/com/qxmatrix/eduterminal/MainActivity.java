@@ -13,6 +13,7 @@ import android.content.DialogInterface;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.content.res.ColorStateList;
+import android.content.res.Configuration;
 import android.content.pm.ActivityInfo;
 import android.content.pm.PackageManager;
 import android.content.pm.ResolveInfo;
@@ -21,6 +22,8 @@ import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
 import android.graphics.Color;
 import android.graphics.Matrix;
+import android.graphics.drawable.GradientDrawable;
+import android.graphics.drawable.StateListDrawable;
 import android.net.Uri;
 import android.net.wifi.WifiManager;
 import android.media.projection.MediaProjectionManager;
@@ -31,6 +34,7 @@ import android.provider.MediaStore;
 import android.provider.OpenableColumns;
 import android.provider.Settings;
 import android.text.InputType;
+import android.text.TextUtils;
 import android.view.Gravity;
 import android.view.MotionEvent;
 import android.view.View;
@@ -39,6 +43,7 @@ import android.widget.ArrayAdapter;
 import android.widget.Button;
 import android.widget.EditText;
 import android.widget.FrameLayout;
+import android.widget.GridLayout;
 import android.widget.HorizontalScrollView;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
@@ -112,8 +117,8 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
     static final int REQUEST_IMPORT_CONNECTION_BACKUP = 8109;
     static final int REQUEST_CAPTURE_STUDENT_QR = 8110;
     static final int REQUEST_AUTO_DELIVERY_FOLDER = 8111;
-    static final String VERSION_NAME = "0.6.15";
-    static final int VERSION_CODE = 85;
+    static final String VERSION_NAME = "0.6.16";
+    static final int VERSION_CODE = 86;
     static final String CONNECTION_BACKUP_KIND = "ai-edu-manager-tablet-connection-backup";
     static final int CONNECTION_BACKUP_VERSION = 1;
     static final String UPDATE_MANIFEST_URL = "https://www.greatbg.com/download/edu-manager-version.json";
@@ -181,6 +186,10 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
     FrameLayout screenRoot;
     ImageView skinBackground;
     LinearLayout contentRoot;
+    TextView navigationStudentText;
+    final Map<String, LinearLayout> panelBodies = new Hashtable<String, LinearLayout>();
+    final Map<String, Button> panelToggles = new Hashtable<String, Button>();
+    final Map<String, View> panelShells = new Hashtable<String, View>();
     EditText archiveSearchInput;
     Spinner studentSpinner;
     EditText studentLoginInput;
@@ -355,6 +364,30 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
     }
 
     @Override
+    public void onConfigurationChanged(Configuration newConfig) {
+        super.onConfigurationChanged(newConfig);
+        loadVisualPrefsOnly();
+        disposeUiWebViews();
+        buildUi();
+        loadPrefs();
+    }
+
+    private void disposeUiWebViews() {
+        if (courseWebView != null) {
+            courseWebView.stopLoading();
+            courseWebView.loadUrl("about:blank");
+            courseWebView.destroy();
+            courseWebView = null;
+        }
+        if (markdownWebView != null) {
+            markdownWebView.stopLoading();
+            markdownWebView.loadUrl("about:blank");
+            markdownWebView.destroy();
+            markdownWebView = null;
+        }
+    }
+
+    @Override
     protected void onStop() {
         stopWaitingForHostInvite();
         super.onStop();
@@ -363,29 +396,35 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
     @Override
     protected void onDestroy() {
         stopWaitingForHostInvite();
-        if (courseWebView != null) {
-            courseWebView.stopLoading();
-            courseWebView.loadUrl("about:blank");
-            courseWebView.destroy();
-            courseWebView = null;
-        }
+        disposeUiWebViews();
         super.onDestroy();
     }
 
     private void buildUi() {
+        panelBodies.clear();
+        panelToggles.clear();
+        panelShells.clear();
         FrameLayout screen = new FrameLayout(this);
         screenRoot = screen;
         screen.setBackgroundColor(pageBackgroundColor());
 
         skinBackground = new ImageView(this);
         skinBackground.setScaleType(ImageView.ScaleType.CENTER_CROP);
-        skinBackground.setAlpha(isPhoneLayout() ? 0.10f : 0.13f);
+        skinBackground.setAlpha(isPhoneLayout() ? 0.18f : 0.22f);
         skinBackground.setImageResource(skinBackgroundResource());
         screen.addView(skinBackground, new FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT));
 
         View veil = new View(this);
-        veil.setBackgroundColor(Color.argb(isPhoneLayout() ? 228 : 218, 248, 252, 251));
+        veil.setBackgroundColor(Color.argb(isPhoneLayout() ? 210 : 198, 248, 252, 251));
         screen.addView(veil, new FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT));
+
+        LinearLayout appShell = new LinearLayout(this);
+        appShell.setOrientation(LinearLayout.HORIZONTAL);
+        screen.addView(appShell, new FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT));
+
+        if (isWideLandscape()) {
+            appShell.addView(buildNavigationRail(), new LinearLayout.LayoutParams(dp(224), LinearLayout.LayoutParams.MATCH_PARENT));
+        }
 
         ScrollView scroll = new ScrollView(this);
         rootScroll = scroll;
@@ -396,12 +435,20 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
         root.setPadding(sidePadding, dp(16), sidePadding, dp(22));
         root.setBackgroundColor(Color.TRANSPARENT);
         scroll.addView(root);
-        screen.addView(scroll, new FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT));
+        appShell.addView(scroll, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 1f));
 
         LinearLayout brandRow = new LinearLayout(this);
         brandRow.setOrientation(LinearLayout.HORIZONTAL);
         brandRow.setGravity(Gravity.CENTER_VERTICAL);
-        brandRow.setPadding(0, 0, 0, dp(8));
+        brandRow.setPadding(dp(16), dp(14), dp(16), dp(12));
+        brandRow.setBackground(heroBackground());
+        brandRow.setElevation(dp(3));
+        LinearLayout.LayoutParams brandParams = new LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT,
+            LinearLayout.LayoutParams.WRAP_CONTENT
+        );
+        brandParams.setMargins(0, 0, 0, dp(14));
+        brandRow.setLayoutParams(brandParams);
         root.addView(brandRow);
 
         ImageView brandLogo = new ImageView(this);
@@ -416,16 +463,16 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
         brandRow.addView(brandCopy, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1));
 
         TextView title = new TextView(this);
-        title.setText("AI教育管家平板终端");
-        title.setTextSize(28);
+        title.setText("AI教育管家");
+        title.setTextSize(isPhoneLayout() ? 25 : 30);
         title.setTextColor(Color.rgb(15, 32, 31));
         title.setGravity(Gravity.START);
         title.setTypeface(null, 1);
         brandCopy.addView(title);
 
         TextView subtitle = new TextView(this);
-        subtitle.setText("连接 Windows 统一版主机服务，用于上传学习资料和查看学情档案。版本 v" + VERSION_NAME);
-        subtitle.setTextSize(14);
+        subtitle.setText("我的学习空间 · 资料、课程和成长记录都在这里  v" + VERSION_NAME);
+        subtitle.setTextSize(isPhoneLayout() ? 13 : 15);
         subtitle.setTextColor(Color.rgb(87, 107, 103));
         subtitle.setPadding(0, dp(4), 0, dp(2));
         brandCopy.addView(subtitle);
@@ -457,6 +504,8 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
         privacyLink.setOnClickListener(this);
         legalRow.addView(privacyLink);
         brandCopy.addView(legalRow);
+
+        root.addView(buildStudentDashboard());
 
         connectionConfigCard = card();
         connectionConfigCard.addView(label("主机服务地址"));
@@ -1014,7 +1063,13 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
         FrameLayout.LayoutParams topParams = new FrameLayout.LayoutParams(dp(132), dp(48), Gravity.BOTTOM | Gravity.RIGHT);
         topParams.setMargins(0, 0, dp(20), dp(20));
         topButton.setLayoutParams(topParams);
+        topButton.setVisibility(View.GONE);
         screen.addView(topButton);
+        scroll.setOnScrollChangeListener(new View.OnScrollChangeListener() {
+            @Override public void onScrollChange(View view, int scrollX, int scrollY, int oldScrollX, int oldScrollY) {
+                if (topButton != null) topButton.setVisibility(scrollY > dp(420) ? View.VISIBLE : View.GONE);
+            }
+        });
 
         buildCourseOverlay(screen);
         setContentView(screen);
@@ -1219,6 +1274,7 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
         } else if (view == quickUploadButton) {
             pickMaterial();
         } else if (view == quickReportButton) {
+            openPanelPath("教育档案", "学情报告");
             loadLearningReport("profile");
             scrollToView(reportCard);
             status("正在读取学情报告。");
@@ -1239,6 +1295,7 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
                 status("已打开项目知识库，可在“查看内容”中切换本人关联项目。");
             }
         } else if (view == quickContactButton) {
+            openPanelPath("教育管家对话", "QQ / 企业微信");
             updateContactCard();
             scrollToView(contactCard);
             status("请在“联系教育管家”区域打开企业微信或 QQ，并复制咨询提示。");
@@ -1440,7 +1497,14 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
 
     void scrollToView(final View target) {
         if (rootScroll == null || target == null) return;
-        rootScroll.smoothScrollTo(0, Math.max(0, target.getTop() - dp(10)));
+        rootScroll.post(new Runnable() {
+            @Override public void run() {
+                android.graphics.Rect bounds = new android.graphics.Rect();
+                target.getDrawingRect(bounds);
+                rootScroll.offsetDescendantRectToMyCoords(target, bounds);
+                rootScroll.smoothScrollTo(0, Math.max(0, bounds.top - dp(10)));
+            }
+        });
     }
 
     @Override
@@ -1637,6 +1701,11 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
             if (active) studentSessionText.setText(("personal".equals(terminalMode) ? "\u4e2a\u4eba\u7ec8\u7aef" : "\u5171\u4eab\u7ec8\u7aef") + " \u00b7 \u5f53\u524d\u5b66\u751f\uff1a" + selectedStudent.name);
             else if ("personal".equals(terminalMode)) studentSessionText.setText("\u4e2a\u4eba\u7ec8\u7aef\uff1a\u6b63\u5728\u4ece\u4e3b\u673a\u8bfb\u53d6\u7ed1\u5b9a\u5b66\u751f\u3002");
             else studentSessionText.setText("\u5171\u4eab\u7ec8\u7aef\uff1a\u8bf7\u626b\u7801\u6216\u8f93\u5165\u4e2a\u4eba ID\u3002");
+        }
+        if (navigationStudentText != null) {
+            navigationStudentText.setText(active
+                ? "当前学生\n" + selectedStudent.name
+                : ("personal".equals(terminalMode) ? "正在读取绑定学生…" : "尚未进入学生空间"));
         }
         if (uploadButton != null) uploadButton.setEnabled(active);
         if (quickUploadButton != null) quickUploadButton.setEnabled(active);
@@ -5620,11 +5689,218 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
         Toast.makeText(this, message, Toast.LENGTH_SHORT).show();
     }
 
+    private LinearLayout buildNavigationRail() {
+        LinearLayout rail = new LinearLayout(this);
+        rail.setOrientation(LinearLayout.VERTICAL);
+        rail.setPadding(dp(16), dp(22), dp(16), dp(18));
+        GradientDrawable background = new GradientDrawable(
+            GradientDrawable.Orientation.TOP_BOTTOM,
+            new int[] {Color.rgb(8, 31, 66), Color.rgb(10, 48, 83)}
+        );
+        rail.setBackground(background);
+
+        TextView brand = new TextView(this);
+        brand.setText("AI 教育管家");
+        brand.setTextColor(Color.WHITE);
+        brand.setTextSize(22);
+        brand.setTypeface(null, 1);
+        brand.setPadding(dp(8), dp(4), dp(8), dp(4));
+        rail.addView(brand);
+
+        TextView edition = new TextView(this);
+        edition.setText("安卓学生端  v" + VERSION_NAME);
+        edition.setTextColor(Color.rgb(172, 206, 232));
+        edition.setTextSize(12);
+        edition.setPadding(dp(8), 0, dp(8), dp(18));
+        rail.addView(edition);
+
+        navigationStudentText = new TextView(this);
+        navigationStudentText.setText("尚未进入学生空间");
+        navigationStudentText.setTextColor(Color.WHITE);
+        navigationStudentText.setTextSize(13);
+        navigationStudentText.setMaxLines(2);
+        navigationStudentText.setEllipsize(TextUtils.TruncateAt.END);
+        navigationStudentText.setPadding(dp(12), dp(11), dp(12), dp(11));
+        navigationStudentText.setBackground(roundedSolid(Color.rgb(25, 67, 108), dp(15), Color.rgb(57, 111, 157)));
+        LinearLayout.LayoutParams studentParams = new LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT,
+            LinearLayout.LayoutParams.WRAP_CONTENT
+        );
+        studentParams.setMargins(0, 0, 0, dp(18));
+        rail.addView(navigationStudentText, studentParams);
+
+        rail.addView(navigationButton("⌂  首页", new View.OnClickListener() {
+            @Override public void onClick(View view) { if (rootScroll != null) rootScroll.smoothScrollTo(0, 0); }
+        }));
+        rail.addView(navigationButton("▶  精选课程", new View.OnClickListener() {
+            @Override public void onClick(View view) { openPanelPath("精选课程"); }
+        }));
+        rail.addView(navigationButton("＋  资料收集", new View.OnClickListener() {
+            @Override public void onClick(View view) { openPanelPath("资料搜集上传"); }
+        }));
+        rail.addView(navigationButton("✦  AI 学习助手", new View.OnClickListener() {
+            @Override public void onClick(View view) { openPanelPath("教育管家对话"); }
+        }));
+        rail.addView(navigationButton("▤  教育档案", new View.OnClickListener() {
+            @Override public void onClick(View view) { openPanelPath("教育档案"); }
+        }));
+
+        View spacer = new View(this);
+        rail.addView(spacer, new LinearLayout.LayoutParams(1, 0, 1f));
+        rail.addView(navigationButton("⚙  系统设置", new View.OnClickListener() {
+            @Override public void onClick(View view) { openPanelPath("基础设置", "系统设置"); }
+        }));
+        return rail;
+    }
+
+    private Button navigationButton(String text, View.OnClickListener listener) {
+        Button button = new Button(this);
+        button.setText(text);
+        button.setAllCaps(false);
+        button.setTextColor(Color.WHITE);
+        button.setTextSize(15);
+        button.setTypeface(null, 1);
+        button.setGravity(Gravity.START | Gravity.CENTER_VERTICAL);
+        button.setPadding(dp(14), 0, dp(10), 0);
+        button.setMinHeight(0);
+        button.setMinimumHeight(0);
+        button.setBackgroundTintList(null);
+        StateListDrawable states = new StateListDrawable();
+        states.addState(new int[] {android.R.attr.state_pressed}, roundedSolid(Color.rgb(51, 105, 185), dp(14), Color.TRANSPARENT));
+        states.addState(new int[] {android.R.attr.state_focused}, roundedSolid(Color.rgb(43, 94, 171), dp(14), Color.WHITE));
+        states.addState(new int[] {}, roundedSolid(Color.TRANSPARENT, dp(14), Color.TRANSPARENT));
+        button.setBackground(states);
+        button.setOnClickListener(listener);
+        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(52));
+        params.setMargins(0, 0, 0, dp(5));
+        button.setLayoutParams(params);
+        return button;
+    }
+
+    private LinearLayout buildStudentDashboard() {
+        LinearLayout section = new LinearLayout(this);
+        section.setOrientation(LinearLayout.VERTICAL);
+        section.setPadding(0, 0, 0, dp(6));
+
+        TextView eyebrow = new TextView(this);
+        eyebrow.setText("今天从这里开始");
+        eyebrow.setTextColor(accentColor());
+        eyebrow.setTextSize(13);
+        eyebrow.setTypeface(null, 1);
+        section.addView(eyebrow);
+
+        TextView heading = new TextView(this);
+        heading.setText("我的学习空间");
+        heading.setTextColor(Color.rgb(15, 32, 47));
+        heading.setTextSize(isPhoneLayout() ? 24 : 28);
+        heading.setTypeface(null, 1);
+        heading.setPadding(0, dp(3), 0, dp(12));
+        section.addView(heading);
+
+        final GridLayout grid = new GridLayout(this);
+        final int columns = actionGridColumns();
+        grid.setColumnCount(columns);
+        grid.setAlignmentMode(GridLayout.ALIGN_BOUNDS);
+        grid.setUseDefaultMargins(false);
+
+        addDashboardAction(grid, 0, columns, "▶", "精选课程", "继续今天的课程", Color.rgb(40, 101, 235), new View.OnClickListener() {
+            @Override public void onClick(View view) { openPanelPath("精选课程"); }
+        });
+        quickUploadButton = addDashboardAction(grid, 1, columns, "＋", "上传学习资料", "把作业和笔记交给教育管家", Color.rgb(7, 154, 181), this);
+        addDashboardAction(grid, 2, columns, "▣", "屏幕资料采集", "截取当前学习内容并上传", Color.rgb(241, 112, 43), new View.OnClickListener() {
+            @Override public void onClick(View view) { openPanelPath("资料搜集上传", "屏幕资料采集"); }
+        });
+        quickContactButton = addDashboardAction(grid, 3, columns, "✦", "AI 学习助手", "联系老师或打开教育 Agent", Color.rgb(132, 82, 222), this);
+        quickReportButton = addDashboardAction(grid, 4, columns, "✓", "学情报告", "查看我的学习画像与建议", Color.rgb(19, 164, 101), this);
+        addDashboardAction(grid, 5, columns, "▤", "学情档案", "回顾历史变化和阶段记录", Color.rgb(220, 67, 139), new View.OnClickListener() {
+            @Override public void onClick(View view) {
+                openPanelPath("教育档案", "学情档案");
+                if (quickArchiveButton != null) quickArchiveButton.performClick();
+            }
+        });
+        addDashboardAction(grid, 6, columns, "↗", "成长模型", "看看能力进步和成长证据", Color.rgb(38, 137, 204), new View.OnClickListener() {
+            @Override public void onClick(View view) { openPanelPath("教育档案", "成长模型"); }
+        });
+        addDashboardAction(grid, 7, columns, "◇", "项目知识库", "打开我已关联的项目知识", Color.rgb(237, 143, 34), new View.OnClickListener() {
+            @Override public void onClick(View view) {
+                openPanelPath("教育档案", "项目知识库");
+                if (quickProjectKnowledgeButton != null) quickProjectKnowledgeButton.performClick();
+            }
+        });
+        section.addView(grid, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT));
+        return section;
+    }
+
+    private Button addDashboardAction(GridLayout grid, int index, int columns, String icon, String title, String description, int color, View.OnClickListener listener) {
+        Button button = new Button(this);
+        button.setText(icon + "   " + title + "\n" + description);
+        button.setAllCaps(false);
+        button.setTextColor(Color.WHITE);
+        button.setTextSize(isPhoneLayout() ? 15 : 16);
+        button.setTypeface(null, 1);
+        button.setGravity(Gravity.START | Gravity.CENTER_VERTICAL);
+        button.setPadding(dp(18), dp(12), dp(16), dp(12));
+        button.setMaxLines(3);
+        button.setLineSpacing(dp(3), 1.05f);
+        button.setContentDescription(title + "。" + description);
+        button.setBackgroundTintList(null);
+        button.setBackground(dashboardButtonBackground(color));
+        button.setElevation(dp(4));
+        button.setOnClickListener(listener);
+
+        GridLayout.LayoutParams params = new GridLayout.LayoutParams(
+            GridLayout.spec(index / columns),
+            GridLayout.spec(index % columns, 1, 1f)
+        );
+        params.width = 0;
+        params.height = dp(isPhoneLayout() ? 112 : 132);
+        params.setMargins(dp(5), dp(5), dp(5), dp(5));
+        grid.addView(button, params);
+        return button;
+    }
+
+    private StateListDrawable dashboardButtonBackground(int color) {
+        StateListDrawable states = new StateListDrawable();
+        states.addState(new int[] {-android.R.attr.state_enabled}, roundedSolid(Color.rgb(178, 187, 194), dp(22), Color.TRANSPARENT));
+        states.addState(new int[] {android.R.attr.state_pressed}, roundedGradient(mixColor(color, Color.BLACK, 0.10f), mixColor(color, Color.BLACK, 0.25f), Color.TRANSPARENT, false));
+        states.addState(new int[] {android.R.attr.state_focused}, roundedSolid(mixColor(color, Color.WHITE, 0.05f), dp(22), Color.WHITE));
+        states.addState(new int[] {}, roundedGradient(mixColor(color, Color.WHITE, 0.08f), mixColor(color, Color.BLACK, 0.08f), Color.TRANSPARENT, false));
+        return states;
+    }
+
+    private GradientDrawable roundedSolid(int color, int radius, int stroke) {
+        GradientDrawable drawable = new GradientDrawable();
+        drawable.setColor(color);
+        drawable.setCornerRadius(radius);
+        if (Color.alpha(stroke) > 0) drawable.setStroke(dp(1), stroke);
+        return drawable;
+    }
+
+    private void openPanelPath(String... titles) {
+        View target = null;
+        for (String title : titles) {
+            LinearLayout body = panelBodies.get(title);
+            Button toggle = panelToggles.get(title);
+            if (body == null || toggle == null) continue;
+            body.setVisibility(View.VISIBLE);
+            toggle.setText(panelButtonText(true, title, panelDescription(toggle)));
+            target = panelShells.get(title);
+        }
+        if (target != null) scrollToView(target);
+    }
+
+    private String panelDescription(Button toggle) {
+        Object tag = toggle == null ? null : toggle.getTag();
+        return tag == null ? "" : String.valueOf(tag);
+    }
+
     private LinearLayout card() {
         LinearLayout layout = new LinearLayout(this);
         layout.setOrientation(LinearLayout.VERTICAL);
-        layout.setPadding(dp(14), dp(12), dp(14), dp(12));
-        layout.setBackgroundColor(Color.argb(238, 255, 255, 255));
+        layout.setPadding(dp(14), dp(14), dp(14), dp(14));
+        layout.setBackground(cardBackground());
+        layout.setElevation(dp(2));
+        layout.setClipToOutline(true);
         LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(
             LinearLayout.LayoutParams.MATCH_PARENT,
             LinearLayout.LayoutParams.WRAP_CONTENT
@@ -5656,24 +5932,35 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
         body.addView(content);
         body.setVisibility(View.GONE);
 
-        Button toggle = button("▶ " + title, false);
+        Button toggle = button(title, true);
+        toggle.setText(panelButtonText(false, title, description));
+        toggle.setTextSize(isPhoneLayout() ? 15 : 16);
+        toggle.setMaxLines(2);
+        toggle.setEllipsize(TextUtils.TruncateAt.END);
+        toggle.setLineSpacing(0, 1.08f);
         LinearLayout.LayoutParams toggleParams = new LinearLayout.LayoutParams(
             LinearLayout.LayoutParams.MATCH_PARENT,
-            dp(52)
+            dp(isPhoneLayout() ? 78 : 74)
         );
-        toggleParams.setMargins(0, 0, 0, dp(4));
+        toggleParams.setMargins(0, 0, 0, dp(6));
         toggle.setLayoutParams(toggleParams);
         toggle.setGravity(Gravity.START | Gravity.CENTER_VERTICAL);
+        toggle.setPadding(dp(18), dp(8), dp(18), dp(8));
+        toggle.setContentDescription(title + "。" + description);
+        toggle.setTag(description == null ? "" : description);
         toggle.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View view) {
                 boolean expanding = body.getVisibility() != View.VISIBLE;
                 body.setVisibility(expanding ? View.VISIBLE : View.GONE);
-                toggle.setText((expanding ? "▼ " : "▶ ") + title);
+                toggle.setText(panelButtonText(expanding, title, description));
             }
         });
         shell.addView(toggle);
         shell.addView(body);
+        panelBodies.put(title, body);
+        panelToggles.put(title, toggle);
+        panelShells.put(title, shell);
         return shell;
     }
 
@@ -5707,28 +5994,145 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
         Button button = new Button(this);
         button.setText(text);
         button.setAllCaps(false);
-        button.setTextColor(primary ? Color.WHITE : accentColor());
-        int normal = primary ? accentColor() : accentLightColor();
-        int pressed = primary ? Color.rgb(15, 112, 91) : Color.rgb(201, 232, 224);
-        int disabled = Color.rgb(228, 234, 232);
-        int[][] states = new int[][] {
-            new int[] {-android.R.attr.state_enabled},
-            new int[] {android.R.attr.state_pressed},
-            new int[] {}
-        };
-        button.setBackgroundTintList(new ColorStateList(states, new int[] {disabled, pressed, normal}));
+        button.setTextColor(buttonTextColors(primary));
+        button.setTextSize(primary ? 15 : 14);
+        button.setTypeface(null, primary ? 1 : 0);
+        button.setGravity(Gravity.CENTER);
+        button.setPadding(dp(14), 0, dp(14), 0);
+        button.setMinWidth(0);
+        button.setMinimumWidth(0);
+        button.setMinHeight(0);
+        button.setMinimumHeight(0);
+        button.setBackgroundTintList(null);
+        button.setBackground(buttonBackground(text, primary));
+        button.setElevation(dp(primary ? 3 : 1));
         LinearLayout.LayoutParams params = isPhoneLayout()
-            ? new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(48))
-            : new LinearLayout.LayoutParams(0, dp(48), 1);
+            ? new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(52))
+            : new LinearLayout.LayoutParams(0, dp(54), 1);
         params.setMargins(0, 0, isPhoneLayout() ? 0 : dp(8), isPhoneLayout() ? dp(8) : 0);
         button.setLayoutParams(params);
         return button;
     }
 
+    private String panelButtonText(boolean expanded, String title, String description) {
+        String state = expanded ? "⌃" : "›";
+        String detail = description == null ? "" : description.trim();
+        return featureIcon(title) + "  " + title + "  " + state + (detail.length() == 0 ? "" : "\n    " + detail);
+    }
+
+    private String featureIcon(String title) {
+        String value = title == null ? "" : title;
+        if (value.contains("课程")) return "▶";
+        if (value.contains("资料") || value.contains("上传") || value.contains("采集")) return "＋";
+        if (value.contains("对话") || value.contains("咨询") || value.contains("Agent")) return "✦";
+        if (value.contains("档案") || value.contains("报告") || value.contains("成长") || value.contains("知识")) return "▤";
+        if (value.contains("连接") || value.contains("设置") || value.contains("登录") || value.contains("基础")) return "⚙";
+        return "◆";
+    }
+
+    private StateListDrawable buttonBackground(String text, boolean primary) {
+        int base = featureColor(text);
+        StateListDrawable states = new StateListDrawable();
+        states.addState(
+            new int[] {-android.R.attr.state_enabled},
+            roundedGradient(Color.rgb(232, 236, 238), Color.rgb(218, 224, 227), Color.rgb(207, 214, 217), false)
+        );
+        states.addState(
+            new int[] {android.R.attr.state_pressed},
+            primary
+                ? roundedGradient(mixColor(base, Color.BLACK, 0.16f), mixColor(base, Color.BLACK, 0.28f), Color.TRANSPARENT, false)
+                : roundedGradient(mixColor(base, Color.WHITE, 0.76f), mixColor(base, Color.WHITE, 0.66f), mixColor(base, Color.BLACK, 0.04f), true)
+        );
+        states.addState(
+            new int[] {android.R.attr.state_focused},
+            primary
+                ? roundedGradient(mixColor(base, Color.WHITE, 0.08f), mixColor(base, Color.BLACK, 0.10f), Color.WHITE, true)
+                : roundedGradient(Color.WHITE, mixColor(base, Color.WHITE, 0.84f), base, true)
+        );
+        states.addState(
+            new int[] {},
+            primary
+                ? roundedGradient(mixColor(base, Color.WHITE, 0.12f), mixColor(base, Color.BLACK, 0.08f), Color.TRANSPARENT, false)
+                : roundedGradient(Color.WHITE, mixColor(base, Color.WHITE, 0.88f), mixColor(base, Color.WHITE, 0.24f), true)
+        );
+        return states;
+    }
+
+    private ColorStateList buttonTextColors(boolean primary) {
+        int normal = primary ? Color.WHITE : accentColor();
+        return new ColorStateList(
+            new int[][] {
+                new int[] {-android.R.attr.state_enabled},
+                new int[] {android.R.attr.state_pressed},
+                new int[] {}
+            },
+            new int[] {Color.rgb(105, 116, 120), normal, normal}
+        );
+    }
+
+    private GradientDrawable roundedGradient(int start, int end, int stroke, boolean showStroke) {
+        GradientDrawable drawable = new GradientDrawable(GradientDrawable.Orientation.TL_BR, new int[] {start, end});
+        drawable.setCornerRadius(dp(18));
+        if (showStroke) drawable.setStroke(dp(1), stroke);
+        return drawable;
+    }
+
+    private GradientDrawable cardBackground() {
+        GradientDrawable drawable = new GradientDrawable(
+            GradientDrawable.Orientation.TL_BR,
+            new int[] {Color.argb(250, 255, 255, 255), Color.argb(242, 248, 252, 255)}
+        );
+        drawable.setCornerRadius(dp(22));
+        drawable.setStroke(dp(1), Color.argb(54, Color.red(accentColor()), Color.green(accentColor()), Color.blue(accentColor())));
+        return drawable;
+    }
+
+    private GradientDrawable heroBackground() {
+        int base = accentColor();
+        GradientDrawable drawable = new GradientDrawable(
+            GradientDrawable.Orientation.LEFT_RIGHT,
+            new int[] {mixColor(base, Color.WHITE, 0.82f), Color.argb(246, 255, 255, 255)}
+        );
+        drawable.setCornerRadius(dp(24));
+        drawable.setStroke(dp(1), mixColor(base, Color.WHITE, 0.52f));
+        return drawable;
+    }
+
+    private int featureColor(String text) {
+        String value = text == null ? "" : text;
+        if (value.contains("课程") || value.contains("学习")) return Color.rgb(39, 174, 108);
+        if (value.contains("资料") || value.contains("上传") || value.contains("采集") || value.contains("文件")) return Color.rgb(18, 151, 196);
+        if (value.contains("报告") || value.contains("成长") || value.contains("档案") || value.contains("知识")) return Color.rgb(126, 87, 194);
+        if (value.contains("对话") || value.contains("咨询") || value.contains("Agent") || value.contains("QClaw") || value.contains("Mavis")) return Color.rgb(233, 116, 47);
+        if (value.contains("连接") || value.contains("扫码") || value.contains("主机") || value.contains("设置")) return Color.rgb(37, 104, 194);
+        return accentColor();
+    }
+
     private boolean isPhoneLayout() {
         if (layoutMode == 1) return false;
         if (layoutMode == 2) return true;
-        return getResources().getDisplayMetrics().widthPixels < dp(720);
+        return screenWidthDp() < 720;
+    }
+
+    private boolean isWideLandscape() {
+        if (layoutMode == 2) return false;
+        Configuration configuration = getResources().getConfiguration();
+        boolean landscape = configuration.orientation == Configuration.ORIENTATION_LANDSCAPE;
+        if (layoutMode == 1) landscape = true;
+        return landscape && screenWidthDp() >= 840;
+    }
+
+    private int actionGridColumns() {
+        int availableWidth = screenWidthDp() - (isWideLandscape() ? 224 : 0) - (isPhoneLayout() ? 24 : 36);
+        if (availableWidth >= 900) return 3;
+        if (availableWidth >= 600) return 2;
+        return 1;
+    }
+
+    private int screenWidthDp() {
+        Configuration configuration = getResources().getConfiguration();
+        if (configuration.screenWidthDp > 0) return configuration.screenWidthDp;
+        return Math.round(getResources().getDisplayMetrics().widthPixels / getResources().getDisplayMetrics().density);
     }
 
     private int accentColor() {

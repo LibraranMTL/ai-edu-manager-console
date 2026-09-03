@@ -1,5 +1,25 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
+import {
+  Archive,
+  ArrowRight,
+  BookOpen,
+  FileText,
+  FolderSync,
+  LibraryBig,
+  LogOut,
+  MonitorUp,
+  RefreshCw,
+  Settings,
+  Target,
+  TrendingUp,
+  Upload,
+  UserRound,
+  Wifi,
+  X,
+  type LucideIcon,
+} from 'lucide-react';
+import { renderTerminalMarkdown } from './terminal-markdown.js';
 import './terminal-styles.css';
 
 type StudentProgress = { submittedTodayCount?: number; recentUploadCount7?: number; previousUploadCount7?: number; recentTrend?: number; activeDays30?: number; knowledgeAssetCount?: number; newSinceLastDigestCount?: number; lastUploadAt?: string };
@@ -37,6 +57,7 @@ type DiscoveredHost = { deviceId: string; machineCode: string; displayName: stri
 type PendingPairRequest = { requestId: string; status: string; hostId: string; hostMachineCode: string; hostName: string; hostUrl: string; createdAt?: string; expiresAt?: string };
 type TailscaleStatus = { installed: boolean; canOpen: boolean; version?: string; downloadUrl: string };
 type ConnectionMethod = 'lan' | 'tailscale';
+type StudentWorkspace = 'courses' | 'auto-delivery' | 'capture' | 'documents' | null;
 type PairingState = {
   discoveryRunning: boolean;
   discoveryPort: number;
@@ -121,6 +142,46 @@ function formatGrowthSummary(payload: GrowthSummary) {
     ...(evidence.length ? evidence.map((item) => `• ${item.title || '成长证据'}（${item.statusLabel || '观察中'}${item.ability ? ` · ${item.ability}` : ''}${item.projectName ? ` · ${item.projectName}` : ''}）`) : ['暂无已确认或观察中的成长证据。']),
   ];
   return lines.join('\n');
+}
+
+function StudentActionTile({
+  icon: Icon,
+  title,
+  description,
+  meta,
+  tone,
+  active = false,
+  disabled = false,
+  onClick,
+}: {
+  icon: LucideIcon;
+  title: string;
+  description: string;
+  meta?: string;
+  tone: string;
+  active?: boolean;
+  disabled?: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      className={`student-action-tile ${tone}${active ? ' active' : ''}`}
+      type="button"
+      onClick={onClick}
+      disabled={disabled}
+      aria-pressed={active}
+    >
+      <span className="student-action-icon" aria-hidden="true"><Icon size={29} strokeWidth={2} /></span>
+      {meta ? <span className="student-action-meta">{meta}</span> : null}
+      <span className="student-action-copy"><strong>{title}</strong><small>{description}</small></span>
+      <span className="student-action-arrow" aria-hidden="true"><ArrowRight size={17} /></span>
+    </button>
+  );
+}
+
+function MarkdownDocument({ content }: { content: string }) {
+  const html = useMemo(() => renderTerminalMarkdown(content), [content]);
+  return <div className="terminal-markdown" dangerouslySetInnerHTML={{ __html: html }} />;
 }
 
 function TailscaleSupportCard({
@@ -243,6 +304,8 @@ function TerminalApp() {
   const [courseCatalogVersion, setCourseCatalogVersion] = useState('');
   const [courseDisclaimer, setCourseDisclaimer] = useState('');
   const [courseBrowser, setCourseBrowser] = useState<{ open: boolean; courseId?: string; name?: string }>({ open: false });
+  const [activeWorkspace, setActiveWorkspace] = useState<StudentWorkspace>(null);
+  const workspaceRef = useRef<HTMLElement | null>(null);
 
   const selectedStudent = useMemo(
     () => students.find((student) => student.id === selectedStudentId) || null,
@@ -353,6 +416,7 @@ function TerminalApp() {
   useEffect(() => {
     setCourses([]);
     setCourseBrowser({ open: false });
+    setActiveWorkspace(null);
     setSelectedKnowledgeProjectId('');
     setProjectKnowledgeFiles([]);
     setDocumentTitle('');
@@ -817,6 +881,21 @@ function TerminalApp() {
     }
   };
 
+  const revealWorkspace = (workspace: Exclude<StudentWorkspace, null>) => {
+    setActiveWorkspace(workspace);
+    window.requestAnimationFrame(() => {
+      workspaceRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    });
+  };
+
+  const openDocumentWorkspace = (mode: Exclude<typeof documentMode, 'closed'>) => {
+    revealWorkspace('documents');
+    if (mode === 'growth') void showGrowthSummary();
+    if (mode === 'reports') void showLearningReports();
+    if (mode === 'archive') void showArchiveFiles();
+    if (mode === 'project-knowledge') void showProjectKnowledge();
+  };
+
   if (!config?.connected) {
     return (
       <main className="terminal-shell connection-shell">
@@ -954,14 +1033,23 @@ function TerminalApp() {
   }
 
   return (
-    <main className="terminal-shell">
-      <header className="terminal-topbar">
-        <div><div className="terminal-brand">AI教育管家</div><h1>Windows 学生终端</h1></div>
-        <div className="terminal-host-state"><span className="online-dot" />已连接 {config.hostUrl}<button onClick={refresh} disabled={busy}>刷新</button><button onClick={() => setSettingsOpen((value) => !value)}>系统设置</button><button onClick={leaveStudent} disabled={busy || captureSession?.status === 'capturing'}>退出当前学生</button></div>
+    <main className="terminal-shell terminal-home-shell">
+      <header className="terminal-topbar student-home-topbar">
+        <div className="student-brand-lockup">
+          <span className="student-brand-mark" aria-hidden="true">AI</span>
+          <span><strong>AI教育管家</strong><small>Windows 学生端</small></span>
+        </div>
+        <div className="student-home-controls">
+          <div className="student-identity-chip"><span aria-hidden="true"><UserRound size={19} /></span><small>正在学习</small><strong>{selectedStudent.name}</strong></div>
+          <div className="student-host-chip" title={config.hostUrl}><Wifi size={16} /><span>家庭主机 · 已连接</span></div>
+          <button className="student-topbar-button" onClick={refresh} disabled={busy} aria-label="刷新学生端数据"><RefreshCw size={17} />刷新</button>
+          <button className="student-topbar-button" onClick={() => setSettingsOpen((value) => !value)} aria-expanded={settingsOpen}><Settings size={17} />设置</button>
+          <button className="student-topbar-button quiet" onClick={leaveStudent} disabled={busy || captureSession?.status === 'capturing'}><LogOut size={17} />退出</button>
+        </div>
       </header>
 
       {settingsOpen ? (
-        <section className="terminal-card target-card">
+        <section className="terminal-card target-card student-settings-panel">
           <div className="card-heading"><div><h2>使用模式</h2><p>模式切换后会结束当前学生会话。</p></div></div>
           <div className="mode-grid">
             <button className={config.terminalMode === 'personal' ? 'mode-card active' : 'mode-card'} onClick={() => changeMode('personal')} disabled={busy}><strong>个人终端</strong><span>固定绑定当前学生，可使用自动投递。</span></button>
@@ -971,63 +1059,71 @@ function TerminalApp() {
         </section>
       ) : null}
 
-      <section className="terminal-hero">
-        <div><span className="eyebrow">当前学生：{selectedStudent.name}</span><h2>把学习资料送到正确的位置</h2><p>学生归属已由当前会话固定，只需选择本人资料库或绑定项目。</p></div>
-        <div className="hero-status"><strong>{selectedStudent?.name || '等待主机确认'}</strong><span>{boundProjects.length} 个绑定项目</span></div>
-      </section>
-
-      {reminderVisible ? <section className="terminal-reminder" role="status">
-        <div><span>今日学习资料提醒</span><strong>记得提交本日学习资料</strong><p>选择今天新增的作业、笔记、截图或项目文件即可，系统会自动进入后续整理流程。</p></div>
-        <div className="reminder-actions"><button className="terminal-primary" onClick={uploadFiles} disabled={busy || !selectedTarget}>现在上传</button><button className="terminal-secondary" onClick={dismissReminderToday}>稍后再说</button></div>
-      </section> : null}
-
-      <section className="student-progress-grid" aria-label="学习资料进展">
-        <div><span>已提交资料</span><strong>{selectedStudent.rawFileCount || 0}</strong><small>主机原始资料库</small></div>
-        <div><span>已完成知识化</span><strong>{knowledgeAssetCount}</strong><small>已消化资料数</small></div>
-        <div><span>近 7 天新增</span><strong>{recentUploadCount7}</strong><small>{recentTrend > 0 ? `比前 7 天多 ${recentTrend}` : recentTrend < 0 ? `比前 7 天少 ${Math.abs(recentTrend)}` : '与前 7 天持平'}</small></div>
-        <div><span>近 30 天频率</span><strong>{activeDays30} 天</strong><small>{newSinceLastDigestCount} 份等待或新增整理</small></div>
-      </section>
-
-      <section className="terminal-course-section" aria-label="当前学生精选课程">
-        <div className="card-heading">
-          <div><span className="eyebrow">当前学生有效目录</span><h2>精选课程</h2><p>{courseDisclaimer || '课程由第三方提供；教育管家负责安全访问入口与用户主动资料采集。'}</p></div>
-          <small>{courseCatalogVersion ? `目录 ${courseCatalogVersion}` : '等待主机目录'}</small>
+      <section className="student-home-dashboard" aria-labelledby="student-home-title">
+        <div className="student-dashboard-heading">
+          <div><span className="student-dashboard-eyebrow">{selectedStudent.grade ? `${selectedStudent.grade} · ` : ''}我的学习工作台</span><h1 id="student-home-title">今天想先做什么？</h1><p>选择一个方块开始，资料只会进入当前学生本人或已关联项目。</p></div>
+          <label className="student-target-picker">
+            <span className="student-target-icon" aria-hidden="true"><Target size={20} /></span>
+            <span className="student-target-copy"><small>当前资料目标</small><select value={selectedTarget ? targetKey(selectedTarget) : ''} onChange={(event) => setSelectedTargetKey(event.target.value)} aria-label="当前资料目标">{targets.map((target) => <option value={targetKey(target)} key={targetKey(target)}>{target.name}</option>)}</select></span>
+          </label>
         </div>
-        <div className="terminal-course-grid">
-          {courses.map((course) => (
-            <article className="terminal-course-card" key={course.courseId}>
-              <img src={`${config.hostUrl}${course.coverUrl}`} alt="" />
-              <div><span>{course.provider}</span><h3>{course.name}</h3><p>{course.summary}</p><small>{course.accountRequirement}</small></div>
-              <button className="terminal-primary" onClick={() => openCourse(course)} disabled={busy}>打开课程</button>
-              <details><summary>提供方与法律声明</summary><p>{course.legalNotice}</p></details>
-            </article>
-          ))}
-          {courses.length === 0 ? <div className="terminal-empty-state">当前学生没有已分配且有效的精选课程。</div> : null}
-        </div>
-      </section>
 
-      <section className="terminal-card target-card">
-        <div className="card-heading"><div><h2>1. 选择资料目标</h2><p>当前学生固定为 {selectedStudent.name}；项目资料用于项目知识加工，其他资料进入个人原始资料库。</p></div></div>
-        <label><span>资料目标</span><select value={selectedTarget ? targetKey(selectedTarget) : ''} onChange={(event) => setSelectedTargetKey(event.target.value)}>{targets.map((target) => <option value={targetKey(target)} key={targetKey(target)}>{target.name}</option>)}</select></label>
-      </section>
+        {reminderVisible ? <section className="student-reminder-strip" role="status">
+          <div><strong>记得提交本日学习资料</strong><span>作业、笔记、试卷或截图都可以。</span></div>
+          <button className="terminal-primary" onClick={uploadFiles} disabled={busy || !selectedTarget}>现在上传</button>
+          <button className="student-reminder-dismiss" onClick={dismissReminderToday}>稍后再说</button>
+        </section> : null}
 
-      <div className="terminal-feature-grid">
-        <section className="terminal-card feature-card">
-          <div className="feature-icon">↑</div><h2>上传本地资料</h2><p>支持图片、PDF、Office、文本、Markdown、CSV 和 ZIP，可一次选择多个文件。</p>
-          <button className="terminal-primary" onClick={uploadFiles} disabled={busy || !selectedTarget}>{uploadProgress?.status === 'uploading' ? `正在上传 ${uploadProgress.current}/${uploadProgress.total}` : '选择并上传文件'}</button>
-          {uploadProgress?.filename ? <small>当前：{uploadProgress.filename}</small> : null}
+        <section className="student-progress-strip" aria-label="学习资料进展">
+          <div><span>全部资料</span><strong>{selectedStudent.rawFileCount || 0}</strong></div>
+          <div><span>已完成知识化</span><strong>{knowledgeAssetCount}</strong><small>已消化资料数</small></div>
+          <div><span>近 7 天</span><strong>{recentUploadCount7}</strong><small>{recentTrend === 0 ? '趋势平稳' : recentTrend > 0 ? `增加 ${recentTrend}` : `减少 ${Math.abs(recentTrend)}`}</small></div>
+          <div><span>近 30 天学习</span><strong>{activeDays30} 天</strong><small>{newSinceLastDigestCount} 份待整理</small></div>
         </section>
 
-        {config.terminalMode === 'personal' ? <section className="terminal-card feature-card">
-          <div className="feature-icon">↻</div><h2>自动投递文件夹</h2><p>监测指定文件夹，新文件联网后自动送到当前资料目标；不会删除本地文件。</p>
-          <div className="folder-row"><input readOnly value={autoFolder} placeholder="尚未选择文件夹" /><button onClick={chooseAutoFolder}>选择</button></div>
-          <label className="switch-row"><input type="checkbox" checked={autoEnabled} onChange={(event) => setAutoEnabled(event.target.checked)} /><span>启用自动投递到 {selectedTarget?.name || '所选目标'}</span></label>
-          <button className="terminal-secondary" onClick={saveAutoDelivery} disabled={busy || !selectedTarget || !autoFolder}>保存自动投递设置</button>
-          {autoProgress ? <small>{autoProgress.status === 'uploading' ? `正在投递 ${autoProgress.pending || 0} 个文件` : autoProgress.failed ? `${autoProgress.failed} 个文件待重试` : '自动投递已检查'}</small> : null}
-        </section> : <section className="terminal-card feature-card"><div className="feature-icon">↻</div><h2>自动投递文件夹</h2><p>共享终端不会持续监测文件夹，避免下一名学生接手后沿用上一人的投递目标。</p><small>普通文件仍可使用左侧“上传本地资料”。个人终端可在系统设置中启用自动投递。</small></section>}
+        <section className="student-action-grid" aria-label="学生端常用功能">
+          <StudentActionTile icon={Upload} title="上传学习资料" description="作业、试卷、笔记或项目文件" meta={uploadProgress?.status === 'uploading' ? `上传中 ${uploadProgress.current || 0}/${uploadProgress.total || 0}` : `今日已提交 ${submittedToday} 份`} tone="tone-upload" disabled={busy || !selectedTarget} onClick={uploadFiles} />
+          <StudentActionTile icon={BookOpen} title="我的课程" description="继续已分配的精选课程" meta={`${courses.length} 门可用课程`} tone="tone-course" active={activeWorkspace === 'courses'} onClick={() => revealWorkspace('courses')} />
+          <StudentActionTile icon={MonitorUp} title="屏幕资料采集" description="截取学习屏幕或应用窗口" meta={captureSession?.status === 'capturing' ? `采集中 · ${captureSession.count} 张` : captureSession?.status === 'completed' ? `${captureSession.count} 张待上传` : '需要时主动开启'} tone="tone-capture" active={activeWorkspace === 'capture'} onClick={() => revealWorkspace('capture')} />
+          <StudentActionTile icon={FolderSync} title="自动投递" description={config.terminalMode === 'personal' ? '监测指定文件夹中的新资料' : '共享终端不持续监测文件夹'} meta={config.terminalMode === 'personal' ? (autoEnabled ? '已开启' : '未开启') : '个人终端可用'} tone="tone-auto" active={activeWorkspace === 'auto-delivery'} onClick={() => revealWorkspace('auto-delivery')} />
+          <StudentActionTile icon={TrendingUp} title="成长模型" description="查看能力与项目成长证据" meta="只读查看" tone="tone-growth" active={activeWorkspace === 'documents' && documentMode === 'growth'} disabled={busy} onClick={() => openDocumentWorkspace('growth')} />
+          <StudentActionTile icon={FileText} title="学情报告" description="查看掌握情况和学习建议" meta="只读查看" tone="tone-report" active={activeWorkspace === 'documents' && documentMode === 'reports'} disabled={busy} onClick={() => openDocumentWorkspace('reports')} />
+          <StudentActionTile icon={Archive} title="教育档案" description="查找本人已公开的档案内容" meta={`${selectedStudent.archiveFileCount || 0} 份档案`} tone="tone-archive" active={activeWorkspace === 'documents' && documentMode === 'archive'} disabled={busy} onClick={() => openDocumentWorkspace('archive')} />
+          <StudentActionTile icon={LibraryBig} title="项目知识" description="阅读本人关联项目的知识资料" meta={`${knowledgeProjects.length} 个关联项目`} tone="tone-knowledge" active={activeWorkspace === 'documents' && documentMode === 'project-knowledge'} disabled={busy} onClick={() => openDocumentWorkspace('project-knowledge')} />
+        </section>
+      </section>
 
-        <section className="terminal-card feature-card wide-card">
-          <div className="feature-icon">▣</div><h2>屏幕资料采集</h2><p>连续截取学习屏幕或应用窗口。结束后仍可重新选择学生资料库或绑定项目资料库。</p>
+      {activeWorkspace ? <section className="student-workspace-panel" ref={workspaceRef} aria-label="当前功能工作区">
+        <header className="student-workspace-heading">
+          <div><span>当前功能</span><h2>{activeWorkspace === 'courses' ? '我的课程' : activeWorkspace === 'auto-delivery' ? '自动投递' : activeWorkspace === 'capture' ? '屏幕资料采集' : '成长与档案'}</h2></div>
+          <button className="student-workspace-close" type="button" onClick={() => setActiveWorkspace(null)} aria-label="关闭当前功能工作区"><X size={20} /></button>
+        </header>
+
+        {activeWorkspace === 'courses' ? <>
+          <p className="student-workspace-description">{courseDisclaimer || '课程由第三方提供；教育管家负责安全访问入口与用户主动资料采集。'} {courseCatalogVersion ? `当前目录：${courseCatalogVersion}` : ''}</p>
+          <div className="terminal-course-grid student-course-grid">
+            {courses.map((course) => (
+              <article className="terminal-course-card" key={course.courseId}>
+                <img src={`${config.hostUrl}${course.coverUrl}`} alt="" />
+                <div><span>{course.provider}</span><h3>{course.name}</h3><p>{course.summary}</p><small>{course.accountRequirement}</small></div>
+                <button className="terminal-primary" onClick={() => openCourse(course)} disabled={busy}>打开课程</button>
+                <details><summary>提供方与法律声明</summary><p>{course.legalNotice}</p></details>
+              </article>
+            ))}
+            {courses.length === 0 ? <div className="terminal-empty-state">当前学生没有已分配且有效的精选课程。</div> : null}
+          </div>
+        </> : null}
+
+        {activeWorkspace === 'auto-delivery' ? (config.terminalMode === 'personal' ? <div className="student-tool-form">
+          <p>监测指定文件夹，新文件联网后自动送到当前资料目标；不会删除本地文件。</p>
+          <div className="folder-row"><input readOnly value={autoFolder} placeholder="尚未选择文件夹" /><button onClick={chooseAutoFolder}>选择文件夹</button></div>
+          <label className="switch-row"><input type="checkbox" checked={autoEnabled} onChange={(event) => setAutoEnabled(event.target.checked)} /><span>启用自动投递到 {selectedTarget?.name || '所选目标'}</span></label>
+          <button className="terminal-primary" onClick={saveAutoDelivery} disabled={busy || !selectedTarget || !autoFolder}>保存自动投递设置</button>
+          {autoProgress ? <small>{autoProgress.status === 'uploading' ? `正在投递 ${autoProgress.pending || 0} 个文件` : autoProgress.failed ? `${autoProgress.failed} 个文件待重试` : '自动投递已检查'}</small> : null}
+        </div> : <div className="terminal-empty-state">共享终端不会持续监测文件夹，避免下一名学生接手后沿用上一人的投递目标。普通文件仍可使用“上传学习资料”。</div>) : null}
+
+        {activeWorkspace === 'capture' ? <div className="student-tool-form">
+          <p>主动选择学习屏幕或应用窗口。结束采集后，再确认上传到当前学生本人或已关联项目。</p>
           <div className="capture-row">
             <button className="terminal-secondary" onClick={loadCaptureSources} disabled={busy || captureSession?.status === 'capturing'}>刷新屏幕列表</button>
             <select value={captureSourceId} onFocus={() => { if (!captureSources.length) void loadCaptureSources(); }} onChange={(event) => setCaptureSourceId(event.target.value)} disabled={captureSession?.status === 'capturing'}>
@@ -1037,14 +1133,14 @@ function TerminalApp() {
             <button className={captureSession?.status === 'capturing' ? 'terminal-danger' : 'terminal-primary'} onClick={toggleCapture} disabled={busy || !selectedTarget}>{captureSession?.status === 'capturing' ? `结束采集（${captureSession.count}）` : '开始屏幕采集'}</button>
             <button className="terminal-secondary" onClick={uploadCapture} disabled={busy || captureSession?.status !== 'completed' || !captureSession.files?.length}>上传采集资料</button>
           </div>
-        </section>
+        </div> : null}
 
-        <section className="terminal-card feature-card wide-card student-documents-card">
-          <div className="feature-icon">▤</div><h2>成长模型、学情报告、教育档案与项目知识</h2><p>只读取当前学生自己的成长信息、报告、公开档案和本人关联项目知识，不显示其他学生或未关联项目。</p>
+        {activeWorkspace === 'documents' ? <div className="student-documents-workspace">
+          <p className="student-workspace-description">成长模型、学情报告、教育档案与项目知识只读取当前学生自己的内容，不显示其他学生或未关联项目。</p>
           <div className="document-actions">
             <button className={documentMode === 'growth' ? 'terminal-primary' : 'terminal-secondary'} onClick={showGrowthSummary} disabled={busy}>查看成长模型</button>
-            <button className={documentMode === 'reports' ? 'terminal-primary' : 'terminal-secondary'} onClick={showLearningReports} disabled={busy}>查看学情报告</button>
-            <button className={documentMode === 'archive' ? 'terminal-primary' : 'terminal-secondary'} onClick={showArchiveFiles} disabled={busy}>查看教育档案</button>
+            <button className={documentMode === 'reports' ? 'terminal-primary' : 'terminal-secondary'} onClick={showLearningReports} disabled={busy}>学情报告</button>
+            <button className={documentMode === 'archive' ? 'terminal-primary' : 'terminal-secondary'} onClick={showArchiveFiles} disabled={busy}>教育档案</button>
             <button className={documentMode === 'project-knowledge' ? 'terminal-primary' : 'terminal-secondary'} onClick={() => showProjectKnowledge()} disabled={busy}>查看关联项目知识</button>
           </div>
           {documentMode === 'project-knowledge' && knowledgeProjects.length > 0 ? <label className="project-knowledge-selector">
@@ -1064,13 +1160,13 @@ function TerminalApp() {
               {documentMode === 'project-knowledge' && knowledgeProjects.length === 0 ? <small>当前学生还没有关联学习项目。</small> : null}
               {documentMode === 'project-knowledge' && knowledgeProjects.length > 0 && projectKnowledgeFiles.length === 0 ? <small>当前项目还没有可查看的知识文件。</small> : null}
             </div>
-            <article className="document-reader"><h3>{documentTitle || '请选择一份内容查看'}</h3><pre>{documentContent || '正文将在这里显示。'}</pre></article>
+            <article className="document-reader"><h3>{documentTitle || '请选择一份内容查看'}</h3><MarkdownDocument content={documentContent || '正文将在这里显示。'} /></article>
           </div> : null}
-        </section>
-      </div>
+        </div> : null}
+      </section> : null}
 
-      {message ? <div className="terminal-toast" role="status">{message}</div> : null}
-      <footer>学生终端 v{config.version} · 资料由 Windows 主机集中处理</footer>
+      {message ? <div className="terminal-toast student-home-toast" role="status">{message}</div> : null}
+      <footer className="student-home-footer">学生终端 v{config.version} · 资料由 Windows 主机集中处理</footer>
     </main>
   );
 }

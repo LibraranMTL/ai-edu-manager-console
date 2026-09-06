@@ -1,5 +1,6 @@
 ﻿import React, { useEffect, useMemo, useState } from 'react';
 import { createRoot } from 'react-dom/client';
+import { useDeferredValue } from 'react';
 import {
   Archive,
   AlertTriangle,
@@ -72,6 +73,7 @@ type AgentToolId =
   | 'workbuddy'
   | 'codex'
   | 'claude-code'
+  | 'hermes'
   | 'chatgpt'
   | 'claude'
   | 'doubao'
@@ -130,7 +132,7 @@ type AgentToolAdapter = {
   id: AgentToolId;
   profile: AgentToolProfile;
   statusKey: keyof AgentToolInstallStatus | 'claudeCode';
-  openedKey?: 'qclawOpened' | 'marvisOpened' | 'hohuOpened' | 'openclawOpened' | 'imaCopilotOpened' | 'workbuddyOpened' | 'codexOpened' | 'claudeCodeOpened';
+  openedKey?: 'qclawOpened' | 'marvisOpened' | 'hohuOpened' | 'openclawOpened' | 'imaCopilotOpened' | 'workbuddyOpened' | 'codexOpened' | 'claudeCodeOpened' | 'hermesOpened';
   canOpenLocally: boolean;
   getInstall: (status: AgentToolInstallStatus | null) => AgentToolInstall | undefined;
   isOpened: (openState: Partial<Record<AgentToolId, boolean>>) => boolean;
@@ -155,6 +157,7 @@ type Student = {
   goal: string;
   digestTime: string;
   agentTool: AgentToolId;
+  agentToolLegacy?: boolean;
   storageMode: StorageMode;
   knowledgeBaseMode?: KnowledgeBaseMode;
   rootPath?: string;
@@ -340,6 +343,18 @@ type LearningProject = {
   sealedAt?: string;
   sealedSnapshotPath?: string;
   publishedAt?: string;
+};
+
+type ProjectPublicationPeer = {
+  bindingId: string;
+  peerNodeId: string;
+  directReady?: boolean;
+  targetStudentIds?: string[];
+  studentMappings?: Array<{
+    localStudentId: string;
+    localStudentName?: string;
+    targetStudentId: string;
+  }>;
 };
 
 type CrossProjectKnowledgeGroup = {
@@ -947,6 +962,7 @@ type AndroidBridge = {
   listProjectKnowledgeFiles?: (projectId: string) => string;
   readProjectKnowledgeFile?: (projectId: string, documentId: string) => string;
   listLearningReports?: (studentId: string) => string;
+  updateLearningReports?: (studentId: string) => Promise<string>;
   readLearningReport?: (studentId: string, reportId: LearningReportId) => string;
   getLearningReportEvidence?: (studentId: string, reportId: LearningReportId) => string;
   openLearningReportEvidenceSource?: (studentId: string, reportId: LearningReportId, evidenceId: string, sourceIndex: number) => string;
@@ -1032,6 +1048,9 @@ type AndroidBridge = {
   clearHostUploadRecords?: () => string;
   setHostUploadRecordStatus?: (recordId: string, status: string) => string;
   markStudentDigestSubmitted?: (studentId: string) => string;
+  getStudentMaterialPathIssues?: (studentId: string) => string;
+  retryStudentMaterialPathRecovery?: (studentId: string) => string;
+  selectStudentMaterialPath?: (studentId: string, materialId: string) => string;
   syncStudentDigestResult?: (studentId: string) => string;
   startDigestWorkflow?: (scopeType: 'student' | 'project', scopeId: string, executor?: string) => Promise<string>;
   getDigestWorkflowStatus?: (scopeType: 'student' | 'project', scopeId: string) => string;
@@ -1050,6 +1069,8 @@ type AndroidBridge = {
   queryAgentKnowledge?: (optionsJson: string) => Promise<string>;
   getAgentKnowledgeDiagnostics?: () => string;
   prepareAgentKnowledgeAccess?: (studentId: string) => string;
+  getAgentMemoryState?: (studentId: string) => string;
+  setAgentMemoryAutomation?: (studentId: string, enabled: boolean) => string;
   submitAgentConversation?: (requestJson: string) => Promise<string>;
   getAgentConversationSubmissionState?: () => string;
   assignAgentConversationSubmission?: (submissionId: string, scopeType: 'student' | 'project', scopeId: string) => string;
@@ -1883,6 +1904,8 @@ type DiscoveredTablet = {
 
 type AgentToolInstall = {
   installed: boolean;
+  available?: boolean;
+  openable?: boolean;
   version?: string;
   exePath?: string;
   appPath?: string;
@@ -1900,11 +1923,10 @@ type AgentToolInstallStatus = {
   workbuddy?: AgentToolInstall;
   codex?: AgentToolInstall;
   claudeCode?: AgentToolInstall;
+  hermes?: AgentToolInstall;
   chatgpt?: AgentToolInstall;
   claude?: AgentToolInstall;
   doubao?: AgentToolInstall;
-  coze?: AgentToolInstall;
-  fastgpt?: AgentToolInstall;
   tailscale?: AgentToolInstall;
   anyInstalled: boolean;
   recommendedTool: AgentToolId;
@@ -2211,7 +2233,7 @@ const agentToolProfiles: Record<AgentToolId, AgentToolProfile> = {
     supportsAgentCreation: false,
     supportsPersonaSetting: true,
     supportsMemorySetting: true,
-    supportsScheduledTask: false,
+    supportsScheduledTask: true,
     supportsSubAgent: false,
     supportsProjectRules: true,
     supportsMemoryFile: true,
@@ -2286,6 +2308,34 @@ const agentToolProfiles: Record<AgentToolId, AgentToolProfile> = {
     digestTargetLabel: '可粘贴到 Claude Code，在学生知识库目录中执行',
     personaTargetLabel: 'Claude Code 项目规则 / CLAUDE.md',
     memoryTargetLabel: 'Claude Code 会话总结',
+  },
+  hermes: {
+    id: 'hermes',
+    name: 'Hermes',
+    category: 'local-cli',
+    supportsLocalFiles: true,
+    supportsAgentCreation: true,
+    supportsPersonaSetting: true,
+    supportsMemorySetting: true,
+    supportsScheduledTask: false,
+    supportsSubAgent: true,
+    supportsProjectRules: true,
+    supportsMemoryFile: true,
+    supportsPersonaFile: true,
+    supportsConversationExport: true,
+    supportsMemoryPaste: true,
+    supportsSoulPaste: true,
+    openMode: 'cli',
+    ruleFiles: ['AGENTS.md', 'AGENT.md'],
+    memoryLocations: ['%USERPROFILE%\\.hermes', '%LOCALAPPDATA%\\hermes'],
+    personaLocations: ['%USERPROFILE%\\.hermes', '%LOCALAPPDATA%\\hermes'],
+    conversationLocations: ['%USERPROFILE%\\.hermes'],
+    installUrls: { windows: 'https://hermes-agent.nousresearch.com/' },
+    openLabel: '打开 Hermes 工作目录',
+    copyTargetLabel: '复制到 Hermes 会话或项目规则中',
+    digestTargetLabel: '可粘贴到 Hermes，在学生知识库目录中执行',
+    personaTargetLabel: 'Hermes Agent 角色 / 项目规则',
+    memoryTargetLabel: 'Hermes Agent 长期记忆',
   },
   chatgpt: {
     id: 'chatgpt',
@@ -2429,10 +2479,10 @@ const agentToolProfiles: Record<AgentToolId, AgentToolProfile> = {
   },
 };
 
-// ChatGPT and Codex now share the OpenAI desktop application. Keep the legacy
-// `chatgpt` profile readable for existing records, but do not show a duplicate
-// choice to new users.
-const agentToolOptions = Object.values(agentToolProfiles).filter((tool) => tool.id !== 'chatgpt');
+// Keep old identifiers readable so historical students and source records are
+// never rewritten. New configurations only show actively supported adapters.
+const legacyAgentToolIds = new Set<AgentToolId>(['chatgpt', 'coze', 'fastgpt']);
+const agentToolOptions = Object.values(agentToolProfiles).filter((tool) => !legacyAgentToolIds.has(tool.id));
 
 function getAgentToolProfile(value?: AgentToolId) {
   const profile = agentToolProfiles[value ?? 'qclaw'] ?? agentToolProfiles.qclaw;
@@ -2454,6 +2504,7 @@ function installStatusKeyForTool(toolId: AgentToolId): keyof AgentToolInstallSta
 function openedKeyForTool(toolId: AgentToolId): AgentToolAdapter['openedKey'] {
   if (toolId === 'ima.copilot') return 'imaCopilotOpened';
   if (toolId === 'claude-code') return 'claudeCodeOpened';
+  if (toolId === 'hermes') return 'hermesOpened';
   if (['qclaw', 'marvis', 'hohu', 'openclaw', 'workbuddy', 'codex'].includes(toolId)) return `${toolId}Opened` as AgentToolAdapter['openedKey'];
   return undefined;
 }
@@ -2523,6 +2574,76 @@ type AgentCenterState = {
   unifiedSoul?: string;
   memoryIndex?: { sources?: Array<{ tool: AgentToolId; currentPath: string; lastSyncedAt?: string; hash?: string; exists?: boolean }> };
   soulIndex?: { sources?: Array<{ tool: AgentToolId; currentPath: string; lastSyncedAt?: string; lastCheckedAt?: string; hash?: string; exists?: boolean }> };
+  message?: string;
+};
+type AgentMemorySessionState = {
+  ok: boolean;
+  schema?: string;
+  studentId?: string;
+  settings?: {
+    automationEnabled: boolean;
+    allowedAgents: string[];
+    retentionDays: number;
+    updatedAt?: string;
+  };
+  sessions?: Array<{
+    sessionId: string;
+    agentId: string;
+    origin?: 'authorized_agent' | string;
+    title?: string;
+    projectId?: string;
+    status: 'active' | 'completed' | 'failed' | 'cancelled';
+    startedAt?: string;
+    updatedAt?: string;
+    messages?: Array<{
+      eventId: string;
+      role: 'user' | 'assistant' | 'tool' | 'unknown';
+      content: string;
+      occurredAt?: string;
+    }>;
+    capturedChars?: number;
+    conversationReceipt?: {
+      status?: string;
+      studentId?: string;
+      projectId?: string;
+      interactionId?: string;
+      message?: string;
+    } | null;
+    summary?: {
+      objective?: string;
+      completed?: string[];
+      decisions?: string[];
+      openLoops?: string[];
+      risks?: string[];
+      nextSteps?: string[];
+    };
+    handoff?: {
+      handoffId: string;
+      targetAgent: string;
+      status: 'pending' | 'accepted' | 'cancelled' | 'expired';
+      expiresAt?: string;
+    } | null;
+  }>;
+  registration?: {
+    codexRegistered?: boolean;
+    qclawRegistered?: boolean;
+    qclawNativeRegistered?: boolean;
+    qclawLifecycleRegistered?: boolean;
+    workbuddyRegistered?: boolean;
+    workbuddyLifecycleRegistered?: boolean;
+    openclawRegistered?: boolean;
+    openclawLifecycleRegistered?: boolean;
+    codexLifecycleRegistered?: boolean;
+    claudeCodeLifecycleRegistered?: boolean;
+    hermesLifecycleRegistered?: boolean;
+  };
+  lifecycleHealth?: Partial<Record<AgentToolId, {
+    configured: boolean;
+    eventReceived: boolean;
+    active: boolean;
+    lastEventAt?: string;
+  }>>;
+  summary?: { total: number; active: number; pendingHandoffs: number };
   message?: string;
 };
 type AgentSourceRecord = {
@@ -3603,7 +3724,7 @@ function buildAiAgentScanPrompt(student: Student, targetKind: AgentKnowledgeKind
   ]
 }
 
-tool 只能使用：qclaw、marvis、hohu、openclaw、ima.copilot、workbuddy、codex、claude-code、chatgpt、claude、doubao、coze、fastgpt。
+tool 只能使用：qclaw、marvis、hohu、openclaw、ima.copilot、workbuddy、codex、claude-code、hermes、claude、doubao。
 kind 只能使用：memory、soul、rule、conversation。`;
 }
 
@@ -4629,6 +4750,7 @@ function App() {
   const [workbuddyOpened, setWorkbuddyOpened] = useState(false);
   const [codexOpened, setCodexOpened] = useState(false);
   const [claudeCodeOpened, setClaudeCodeOpened] = useState(false);
+  const [hermesOpened, setHermesOpened] = useState(false);
   const [obsidianOpened, setObsidianOpened] = useState(false);
   const [checkingUpdate, setCheckingUpdate] = useState(false);
   const [updateInfo, setUpdateInfo] = useState<UpdateInfo | null>(null);
@@ -4648,6 +4770,7 @@ function App() {
   const [learningReportViewMode, setLearningReportViewMode] = useState<'rendered' | 'source'>('rendered');
   const [learningReportMessage, setLearningReportMessage] = useState('');
   const [learningReportExporting, setLearningReportExporting] = useState<'' | 'markdown' | 'pdf'>('');
+  const [learningReportUpdating, setLearningReportUpdating] = useState(false);
   const [learningReportFolder, setLearningReportFolder] = useState('');
   const [learningReportHealth, setLearningReportHealth] = useState<LearningReportHealth | null>(null);
   const [publishingState, setPublishingState] = useState<EducationPublishingState | null>(null);
@@ -4782,6 +4905,7 @@ function App() {
     foldersText: projectWorkspaceFoldersText(projectWorkspaceTemplates[0].folders),
   });
   const [selectedProjectAssetIds, setSelectedProjectAssetIds] = useState<string[]>([]);
+  const [projectAssetSearch, setProjectAssetSearch] = useState('');
   const [selectedProjectStagingIds, setSelectedProjectStagingIds] = useState<string[]>([]);
   const [projectStagingSearch, setProjectStagingSearch] = useState('');
   const [projectStagingStatusFilter, setProjectStagingStatusFilter] = useState<'all' | ProjectStagingStatus>('all');
@@ -4918,6 +5042,9 @@ function App() {
   const [collaborationAttachmentProjectTargets, setCollaborationAttachmentProjectTargets] = useState<Record<string, string>>({});
   const [projectPublicationBusy, setProjectPublicationBusy] = useState(false);
   const [projectPublicationMessage, setProjectPublicationMessage] = useState('');
+  const [projectPublicationPeers, setProjectPublicationPeers] = useState<ProjectPublicationPeer[]>([]);
+  const [selectedProjectPublicationTargets, setSelectedProjectPublicationTargets] = useState<string[]>([]);
+  const [projectPublicationChooserOpen, setProjectPublicationChooserOpen] = useState(false);
   const [studentEditDraft, setStudentEditDraft] = useState<StudentDraft | null>(null);
   const [archiveKeywords, setArchiveKeywords] = useState<ArchiveKeywordConfig>(loadArchiveKeywords);
   const [licenseStatus, setLicenseStatus] = useState<LicenseStatus | null>(null);
@@ -4928,6 +5055,7 @@ function App() {
   const [templateMessage, setTemplateMessage] = useState('');
   const [agentCenter, setAgentCenter] = useState<AgentCenterState | null>(null);
   const [agentCenterMessage, setAgentCenterMessage] = useState('');
+  const [agentMemoryState, setAgentMemoryState] = useState<AgentMemorySessionState | null>(null);
   const [agentKnowledgeMenuOpen, setAgentKnowledgeMenuOpen] = useState(false);
   const [courseMenuOpen, setCourseMenuOpen] = useState(true);
   const [projectMenuOpen, setProjectMenuOpen] = useState(true);
@@ -5262,6 +5390,7 @@ function App() {
     workbuddy: workbuddyOpened,
     codex: codexOpened,
     'claude-code': claudeCodeOpened,
+    hermes: hermesOpened,
     chatgpt: false,
     claude: false,
     doubao: false,
@@ -5289,7 +5418,9 @@ function App() {
   const restrictedSections = new Set<Section>(['init', 'inbox', 'assets', 'projects-new', 'projects-existing', 'growth', 'qa', 'memory', 'soul', 'rules', 'conversation', 'tasks']);
   const isLicenseRestrictedSection = isWindows && !windowsLicenseActive && restrictedSections.has(activeSection);
   const licenseRestrictionText = effectiveLicenseStatus?.message || 'Windows 主机尚未激活。未激活状态仅支持首页、系统设置和已有档案/报告的只读浏览。';
-  const shouldBlockForAgentInstall = isWindows && installStatus ? !installStatus.anyInstalled : false;
+  // The knowledge manager remains usable without a local Agent. Web tools and
+  // later installation are valid paths, so installation is guidance, not a gate.
+  const shouldBlockForAgentInstall = false;
   const memoryScanCandidates = agentScanCandidates.filter((candidate) => candidate.kind === 'memory');
   const soulScanCandidates = agentScanCandidates.filter((candidate) => candidate.kind === 'soul');
   const ruleScanCandidates = agentScanCandidates.filter((candidate) => candidate.kind === 'rule');
@@ -5473,10 +5604,18 @@ function App() {
       .filter((group) => group.assets.length > 1)
       .sort((a, b) => b.assets.length - a.assets.length);
   }, [filteredAssets]);
-  const projectCandidateAssets = useMemo(() => {
+  const deferredProjectAssetSearch = useDeferredValue(projectAssetSearch.trim().toLocaleLowerCase('zh-CN'));
+  const projectCandidateAssetMatches = useMemo(() => {
     const selectedAssetIds = new Set(selectedProject?.assetIds ?? []);
-    return filteredAssets.filter((asset) => !selectedAssetIds.has(asset.assetId)).slice(0, 120);
-  }, [filteredAssets, selectedProject?.assetIds]);
+    return (assetIndex.assets ?? []).filter((asset) => {
+      if (selectedAssetIds.has(asset.assetId) || String(asset.status || 'active') !== 'active') return false;
+      if (!deferredProjectAssetSearch) return true;
+      return [asset.filename, asset.ownerStudentName, asset.sourceName, asset.type, asset.sha1, asset.path]
+        .filter(Boolean)
+        .some((value) => String(value).toLocaleLowerCase('zh-CN').includes(deferredProjectAssetSearch));
+    });
+  }, [assetIndex.assets, deferredProjectAssetSearch, selectedProject?.assetIds]);
+  const projectCandidateAssets = projectCandidateAssetMatches.slice(0, 120);
   const projectStagingItems = selectedProject?.stagingItems ?? [];
   const projectKnowledgeRisk = (record: ProjectKnowledgeRecord) => (
     ['ai_generated', 'pending_review'].includes(record.status)
@@ -5957,6 +6096,7 @@ function App() {
     if (toolId === 'ima.copilot') return installStatus?.imaCopilot;
     if (toolId === 'workbuddy') return installStatus?.workbuddy;
     if (toolId === 'claude-code') return installStatus?.claudeCode;
+    if (toolId === 'hermes') return installStatus?.hermes;
     return installStatus?.[toolId as 'qclaw' | 'marvis' | 'hohu' | 'openclaw' | 'codex'];
   };
 
@@ -7056,19 +7196,16 @@ function App() {
       const status = JSON.parse(raw) as AgentToolInstallStatus;
       setInstallStatus(status);
       if (!status.anyInstalled) {
-        setInstallMessage('未检测到 QClaw、OpenClaw、WorkBuddy、Hohu、ima.copilot、Marvis、Codex 或 Claude Code，请先下载安装其中一个工具。');
-        return;
+        setInstallMessage('尚未检测到本机 Agent；仍可先使用教育管家和网页 Agent，安装后系统会自动接入。');
+      } else {
+        setInstallMessage('');
       }
-      setInstallMessage('');
       setDraft((current) => {
-        if (status.qclaw.installed && current.agentTool !== 'qclaw') return { ...current, agentTool: 'qclaw' };
-        if (!status.qclaw.installed && status.openclaw?.installed && current.agentTool !== 'openclaw') return { ...current, agentTool: 'openclaw' };
-        if (!status.qclaw.installed && !status.openclaw?.installed && status.workbuddy?.installed && current.agentTool !== 'workbuddy') return { ...current, agentTool: 'workbuddy' };
-        if (!status.qclaw.installed && !status.openclaw?.installed && !status.workbuddy?.installed && status.hohu.installed && current.agentTool !== 'hohu') return { ...current, agentTool: 'hohu' };
-        if (!status.qclaw.installed && !status.openclaw?.installed && !status.workbuddy?.installed && !status.hohu.installed && status.imaCopilot?.installed && current.agentTool !== 'ima.copilot') return { ...current, agentTool: 'ima.copilot' };
-        if (!status.qclaw.installed && !status.openclaw?.installed && !status.workbuddy?.installed && !status.hohu.installed && !status.imaCopilot?.installed && status.marvis.installed && current.agentTool !== 'marvis') return { ...current, agentTool: 'marvis' };
-        if (!status.qclaw.installed && !status.openclaw?.installed && !status.workbuddy?.installed && !status.hohu.installed && !status.imaCopilot?.installed && !status.marvis.installed && status.codex?.installed && current.agentTool !== 'codex') return { ...current, agentTool: 'codex' };
-        if (!status.qclaw.installed && !status.openclaw?.installed && !status.workbuddy?.installed && !status.hohu.installed && !status.imaCopilot?.installed && !status.marvis.installed && !status.codex?.installed && status.claudeCode?.installed && current.agentTool !== 'claude-code') return { ...current, agentTool: 'claude-code' };
+        const currentInstall = getAgentToolAdapter(current.agentTool).getInstall(status);
+        if (getAgentToolProfile(current.agentTool).openMode === 'url' || currentInstall?.installed) return current;
+        if (status.anyInstalled && !legacyAgentToolIds.has(status.recommendedTool) && status.recommendedTool !== current.agentTool) {
+          return { ...current, agentTool: status.recommendedTool };
+        }
         return current;
       });
     } catch {
@@ -7103,6 +7240,35 @@ function App() {
       }
     } catch {
       setAgentCenterMessage('Agent 中枢读取结果解析失败。');
+    }
+  };
+
+  const refreshAgentMemoryState = (studentId = selectedStudent?.id) => {
+    if (!studentId) return;
+    const raw = bridge()?.getAgentMemoryState?.(studentId);
+    if (!raw) return;
+    try {
+      const result = JSON.parse(raw) as AgentMemorySessionState;
+      setAgentMemoryState(result);
+      if (!result.ok) setAgentCenterMessage(result.message || '读取自动会话记忆失败。');
+    } catch {
+      setAgentCenterMessage('自动会话记忆读取结果解析失败。');
+    }
+  };
+
+  const updateAgentMemoryAutomation = (enabled: boolean) => {
+    if (!selectedStudent) return;
+    const raw = bridge()?.setAgentMemoryAutomation?.(selectedStudent.id, enabled);
+    if (!raw) {
+      setAgentCenterMessage('当前环境不支持自动会话记忆。');
+      return;
+    }
+    try {
+      const result = JSON.parse(raw) as { ok?: boolean; message?: string };
+      setAgentCenterMessage(result.message || (result.ok ? '自动会话记忆设置已更新。' : '更新自动会话记忆失败。'));
+      refreshAgentMemoryState(selectedStudent.id);
+    } catch {
+      setAgentCenterMessage('自动会话记忆设置结果解析失败。');
     }
   };
 
@@ -7775,7 +7941,7 @@ ${sourceText}`;
       const raw = bridge()?.getAppStatus?.();
       if (!raw) return;
       try {
-        const status = JSON.parse(raw) as { qclawOpened?: boolean; marvisOpened?: boolean; hohuOpened?: boolean; openclawOpened?: boolean; imaCopilotOpened?: boolean; workbuddyOpened?: boolean; codexOpened?: boolean; claudeCodeOpened?: boolean; obsidianOpened?: boolean };
+        const status = JSON.parse(raw) as { qclawOpened?: boolean; marvisOpened?: boolean; hohuOpened?: boolean; openclawOpened?: boolean; imaCopilotOpened?: boolean; workbuddyOpened?: boolean; codexOpened?: boolean; claudeCodeOpened?: boolean; hermesOpened?: boolean; obsidianOpened?: boolean };
         setQclawOpened(Boolean(status.qclawOpened));
         setMarvisOpened(Boolean(status.marvisOpened));
         setHohuOpened(Boolean(status.hohuOpened));
@@ -7784,6 +7950,7 @@ ${sourceText}`;
         setWorkbuddyOpened(Boolean(status.workbuddyOpened));
         setCodexOpened(Boolean(status.codexOpened));
         setClaudeCodeOpened(Boolean(status.claudeCodeOpened));
+        setHermesOpened(Boolean(status.hermesOpened));
         setObsidianOpened(Boolean(status.obsidianOpened));
       } catch {
         // Ignore bridge JSON parse errors.
@@ -7913,6 +8080,7 @@ ${sourceText}`;
     if (activeSection === 'memory' || activeSection === 'soul' || activeSection === 'qa' || activeSection === 'conversation') {
       refreshAgentCenter();
       refreshSourceRegistry();
+      if (activeSection === 'memory') refreshAgentMemoryState();
     }
   }, [activeSection, selectedId]);
 
@@ -8493,6 +8661,44 @@ ${sourceText}`;
     const refreshed = refreshDigestWorkflow(scopeType, scopeId);
     const manualRequired = Boolean(result?.workflow?.manualRequired || refreshed?.workflow?.manualRequired);
     showActionNotice(Boolean(result?.ok), manualRequired ? '已打开 Agent；结果将自动同步' : result?.ok ? '资料已重新处理' : '资料重试失败', message);
+    setDigestWorkflowBusyKey('');
+  };
+
+  const retryStudentMaterialPathRecoveryFromPage = (student: Student) => {
+    const key = digestWorkflowKey('student', student.id);
+    setDigestWorkflowBusyKey(key);
+    const raw = bridge()?.retryStudentMaterialPathRecovery?.(student.id);
+    let ok = false;
+    let message = '资料路径检查未完成。';
+    try {
+      const result = raw ? JSON.parse(raw) as { ok?: boolean; message?: string } : null;
+      ok = Boolean(result?.ok);
+      message = result?.message || message;
+    } catch {
+      message = '资料路径检查结果无法解析。';
+    }
+    refreshDigestWorkflow('student', student.id);
+    showActionNotice(ok, ok ? '资料路径检查完成' : '资料路径检查失败', message);
+    setDigestWorkflowBusyKey('');
+  };
+
+  const selectStudentMaterialPathFromPage = (student: Student, materialId: string) => {
+    const key = digestWorkflowKey('student', student.id);
+    setDigestWorkflowBusyKey(key);
+    const raw = bridge()?.selectStudentMaterialPath?.(student.id, materialId);
+    let ok = false;
+    let cancelled = false;
+    let message = '手工选择资料未完成。';
+    try {
+      const result = raw ? JSON.parse(raw) as { ok?: boolean; cancelled?: boolean; message?: string } : null;
+      ok = Boolean(result?.ok);
+      cancelled = Boolean(result?.cancelled);
+      message = result?.message || message;
+    } catch {
+      message = '手工选择资料结果无法解析。';
+    }
+    refreshDigestWorkflow('student', student.id);
+    if (!cancelled) showActionNotice(ok, ok ? '资料路径已安全绑定' : '资料路径未修改', message);
     setDigestWorkflowBusyKey('');
   };
 
@@ -9137,6 +9343,7 @@ ${sourceText}`;
     if (app === 'workbuddy') setWorkbuddyOpened((value) => value || Boolean(ok));
     if (app === 'codex') setCodexOpened((value) => value || Boolean(ok));
     if (app === 'claude-code') setClaudeCodeOpened((value) => value || Boolean(ok));
+    if (app === 'hermes') setHermesOpened((value) => value || Boolean(ok));
     if (app === 'obsidian') setObsidianOpened((value) => value || Boolean(ok));
     const urls: Record<AgentToolId | 'obsidian' | 'tailscale', string> = {
       qclaw: 'qclaw://',
@@ -9147,6 +9354,7 @@ ${sourceText}`;
       workbuddy: 'https://www.workbuddy.ai/',
       codex: 'https://chatgpt.com/codex',
       'claude-code': 'https://www.anthropic.com/claude-code',
+      hermes: 'https://hermes-agent.nousresearch.com/',
       chatgpt: 'https://chatgpt.com/',
       claude: 'https://claude.ai/',
       doubao: 'https://www.doubao.com/',
@@ -9871,30 +10079,67 @@ ${sourceText}`;
     }
   };
 
-  const publishSelectedProjectToPeer = async () => {
-    if (!selectedProject || projectPublicationBusy) return;
-    if (!bridge()?.publishCollaborationProject) {
-      setProjectPublicationMessage('当前版本不支持项目协作发布。');
+  const publishProjectToTargets = async (targetNodeIds: string[]) => {
+    if (!selectedProject || projectPublicationBusy || !bridge()?.publishCollaborationProject) return;
+    const targets = [...new Set(targetNodeIds.map(String).filter(Boolean))];
+    if (!targets.length) {
+      setProjectPublicationMessage('请至少选择一个接收节点。');
       return;
     }
     setProjectPublicationBusy(true);
-    setProjectPublicationMessage('正在整理项目增量清单并加入内置直传队列…');
+    setProjectPublicationMessage(`正在为 ${targets.length} 个接收节点分别生成定向发布包…`);
+    const results: Array<{ targetNodeId: string; ok: boolean; message: string }> = [];
     try {
-      const raw = await bridge()!.publishCollaborationProject!(JSON.stringify({
-        projectId: selectedProject.id,
-        mode: 'snapshot',
-        scope: 'whole',
-        transferResponsibility: 'direct',
-        includeRawMaterials: true,
-        includeVerifiedKnowledge: true,
-      }));
-      const result = JSON.parse(raw) as { ok?: boolean; message?: string };
-      setProjectPublicationMessage(result.message || (result.ok ? '项目已发布。' : '项目发布失败。'));
-      if (result.ok) refreshProjects();
+      for (const targetNodeId of targets) {
+        const raw = await bridge()!.publishCollaborationProject!(JSON.stringify({
+          projectId: selectedProject.id,
+          targetNodeId,
+          mode: 'snapshot',
+          scope: 'whole',
+          transferResponsibility: 'direct',
+          includeRawMaterials: true,
+          includeVerifiedKnowledge: true,
+        }));
+        const result = JSON.parse(raw) as { ok?: boolean; message?: string };
+        results.push({ targetNodeId, ok: Boolean(result.ok), message: result.message || '' });
+      }
+      const succeeded = results.filter((item) => item.ok);
+      const failed = results.filter((item) => !item.ok);
+      setProjectPublicationMessage(failed.length
+        ? `定向发布完成：成功 ${succeeded.length} 个，失败 ${failed.length} 个。${failed.map((item) => `${item.targetNodeId.slice(0, 12)}：${item.message || '发布失败'}`).join('；')}`
+        : `已分别向 ${succeeded.length} 个明确接收节点发布项目。`);
+      if (succeeded.length) void refreshProjects();
     } catch (error) {
       setProjectPublicationMessage(`项目发布失败：${error instanceof Error ? error.message : '未知错误'}`);
     } finally {
       setProjectPublicationBusy(false);
+    }
+  };
+
+  const publishSelectedProjectToPeer = async () => {
+    if (!selectedProject || projectPublicationBusy) return;
+    const api = bridge();
+    if (!api?.getProjectPublicationOptions || !api.publishCollaborationProject) {
+      setProjectPublicationMessage('当前版本不支持项目协作发布。');
+      return;
+    }
+    try {
+      const result = JSON.parse(api.getProjectPublicationOptions(selectedProject.id)) as { ok?: boolean; peers?: ProjectPublicationPeer[]; message?: string };
+      const peers = result.peers || [];
+      if (!result.ok || !peers.length) {
+        setProjectPublicationMessage(result.message || '没有与项目学生明确映射的接收节点。');
+        return;
+      }
+      if (peers.length === 1) {
+        await publishProjectToTargets([peers[0].peerNodeId]);
+        return;
+      }
+      setProjectPublicationPeers(peers);
+      setSelectedProjectPublicationTargets([]);
+      setProjectPublicationChooserOpen(true);
+      setProjectPublicationMessage(`找到 ${peers.length} 个明确映射节点，请勾选接收方。`);
+    } catch (error) {
+      setProjectPublicationMessage(`读取项目接收方失败：${error instanceof Error ? error.message : '未知错误'}`);
     }
   };
 
@@ -11765,6 +12010,27 @@ ${JSON.stringify(items, null, 2)}
     }
   };
 
+  const updateCurrentLearningReports = async (student: Student | undefined = selectedStudent) => {
+    if (!student || learningReportUpdating) return;
+    const update = bridge()?.updateLearningReports;
+    if (!update) {
+      setLearningReportMessage('当前环境不支持主动更新学情报告。');
+      return;
+    }
+    setLearningReportUpdating(true);
+    setLearningReportMessage('正在校验已有草稿并启动本周期缺失的报告任务…');
+    try {
+      const result = JSON.parse(await update(student.id)) as { ok?: boolean; message?: string };
+      refreshLearningReports(student);
+      await refreshTaskCenter(true);
+      setLearningReportMessage(result.message || (result.ok ? '学情报告更新已提交。' : '学情报告更新失败。'));
+    } catch (error) {
+      setLearningReportMessage(`学情报告更新失败：${(error as Error).message}`);
+    } finally {
+      setLearningReportUpdating(false);
+    }
+  };
+
   const openLearningReport = (reportId: LearningReportId, student: Student | undefined = selectedStudent) => {
     if (!student) return;
     const raw = bridge()?.readLearningReport?.(student.id, reportId);
@@ -12075,6 +12341,7 @@ ${JSON.stringify(items, null, 2)}
       workbuddy: 'https://www.workbuddy.ai/',
       codex: 'https://chatgpt.com/codex',
       'claude-code': 'https://www.anthropic.com/claude-code',
+      hermes: 'https://hermes-agent.nousresearch.com/',
       chatgpt: 'https://chatgpt.com/',
       claude: 'https://claude.ai/',
       doubao: 'https://www.doubao.com/',
@@ -14549,6 +14816,8 @@ ${JSON.stringify(items, null, 2)}
               onCheck={() => syncDigestResult(selectedStudent)}
               onPaste={() => importDigestWorkflowTextFromPage('student', selectedStudent.id)}
               onOpenKnowledge={() => openStudentRoot(selectedStudent)}
+              onRetryPathCheck={() => retryStudentMaterialPathRecoveryFromPage(selectedStudent)}
+              onSelectMaterialPath={(materialId) => selectStudentMaterialPathFromPage(selectedStudent, materialId)}
               advancedActions={<>
                 <button className="secondary compact" onClick={() => copyDigestWorkflowCommandFromPage('student', selectedStudent.id)}><Clipboard size={16} />复制当前批次指令</button>
                 <button className="secondary compact" onClick={() => markDigestSubmitted(selectedStudent)}><CheckCircle2 size={16} />仅登记批次</button>
@@ -16184,7 +16453,14 @@ ${JSON.stringify(items, null, 2)}
                     <section className="material-source-panel project-asset-center-panel">
                       <div className="mini-heading">
                         <strong>复用已有正式资产</strong>
-                        <span>作为资料入口的补充路线：从资产中心选择已经确认的文件，复制到项目原始资料库，不进入研究暂存。</span>
+                        <span>从文件资产中心建立项目引用和来源记录，不复制原始文件，也不进入研究暂存。</span>
+                      </div>
+                      <div className="form-grid compact-grid project-asset-search">
+                        <label>
+                          搜索正式资产
+                          <input value={projectAssetSearch} onChange={(event) => setProjectAssetSearch(event.target.value)} placeholder="文件名、学生、来源、类型或 SHA-1" />
+                        </label>
+                        <div className="inline-hint">匹配 {projectCandidateAssetMatches.length} 个 · 已选 {selectedProjectAssetIds.length} 个</div>
                       </div>
                       <div className="download-list project-asset-picker">
                         {projectCandidateAssets.map((asset) => (
@@ -16197,10 +16473,11 @@ ${JSON.stringify(items, null, 2)}
                             </span>
                           </label>
                         ))}
-                        {projectCandidateAssets.length === 0 && <div className="empty-state">暂无可加入项目的资产。可先到“文件资产中心”补建索引，或导入学生资料。</div>}
+                        {projectCandidateAssets.length === 0 && <div className="empty-state">当前搜索没有可复用资产。可调整关键词，或先到“文件资产中心”补建索引。</div>}
                       </div>
+                      {projectCandidateAssetMatches.length > projectCandidateAssets.length && <div className="notice muted">匹配较多，当前显示前 {projectCandidateAssets.length} 个；可继续输入关键词缩小范围。</div>}
                       <div className="actions compact-actions">
-                        <button className="primary compact" onClick={importSelectedAssetsToProject} disabled={selectedProjectAssetIds.length === 0}><FileDown size={16} />加入项目原始资料库</button>
+                        <button className="primary compact" onClick={importSelectedAssetsToProject} disabled={selectedProjectAssetIds.length === 0}><LinkIcon size={16} />引用所选资产</button>
                         <span className="inline-hint">已选 {selectedProjectAssetIds.length} 个</span>
                       </div>
                     </section>
@@ -16441,15 +16718,19 @@ ${JSON.stringify(items, null, 2)}
               <InfoPanel icon={<ListChecks />} title="报告提醒" value={learningReportHealth?.message || '刷新后显示报告健康度'} />
             </div>
             <div className="actions">
-              <button className="secondary" onClick={() => refreshLearningReports(selectedStudent)}>
+              <button className="primary" onClick={() => updateCurrentLearningReports(selectedStudent)} disabled={!windowsLicenseActive || learningReportUpdating}>
+                <RefreshCw size={18} className={learningReportUpdating ? 'spin' : ''} />
+                {learningReportUpdating ? '正在更新…' : '更新学情报告'}
+              </button>
+              <button className="secondary" onClick={() => refreshLearningReports(selectedStudent)} disabled={learningReportUpdating}>
                 <RefreshCw size={18} />
-                刷新报告
+                重新读取
               </button>
               <button className="secondary" onClick={() => ensureLearningReportTemplates(selectedStudent)} disabled={!windowsLicenseActive}>
                 <FileText size={18} />
                 补建报告目录
               </button>
-              <button className="secondary workflow-action next" onClick={() => { setTaskCenterSourceFilter('student'); setSelectedTaskId(''); setActiveSection('tasks'); window.setTimeout(refreshTaskCenter, 120); }}>
+              <button className="secondary" onClick={() => { setTaskCenterSourceFilter('student'); setSelectedTaskId(''); setActiveSection('tasks'); window.setTimeout(refreshTaskCenter, 120); }}>
                 <ListChecks size={18} />
                 查看周期更新任务
               </button>
@@ -16461,7 +16742,7 @@ ${JSON.stringify(items, null, 2)}
                 <FileDown size={18} />
                 导出完整档案
               </button>
-              <button className="primary" onClick={() => setActiveSection('archive')}>
+              <button className="secondary" onClick={() => setActiveSection('archive')}>
                 <BookOpen size={18} />
                 查看全部档案
               </button>
@@ -17242,6 +17523,74 @@ ${JSON.stringify(items, null, 2)}
               <InfoPanel icon={<FolderOpen />} title="统一记忆文件" value={agentCenter?.unifiedMemoryPath || selectedStudent.memoryConfig?.unifiedMemoryPath || '未生成'} />
               <InfoPanel icon={<Archive />} title="来源数量" value={`${agentCenter?.memoryIndex?.sources?.filter((item) => item.exists).length ?? 0} 个`} />
             </div>
+            <section className="material-source-panel">
+              <div className="mini-heading">
+                <strong>自动会话记忆</strong>
+                <span>一次授权后，系统会自动探测并接入 Codex、QClaw、WorkBuddy、OpenClaw、Claude Code 和 Hermes，只采集授权后的新会话。不会读取启用前历史、系统提示、密钥、其他聊天或教育管家任务执行上下文。</span>
+              </div>
+              <div className="actions compact-actions">
+                <label className={agentMemoryState?.settings?.automationEnabled ? 'task-automation-toggle' : 'task-automation-toggle manual'}>
+                  <input
+                    type="checkbox"
+                    checked={agentMemoryState?.settings?.automationEnabled === true}
+                    onChange={(event) => updateAgentMemoryAutomation(event.target.checked)}
+                  />
+                  <span>{agentMemoryState?.settings?.automationEnabled ? '已授权采集' : '尚未授权'}</span>
+                </label>
+                <button className="secondary compact" onClick={() => refreshAgentMemoryState()}>刷新会话</button>
+                <span className="muted">最近 {agentMemoryState?.summary?.total ?? 0} 个授权会话 · {agentMemoryState?.summary?.active ?? 0} 个采集中</span>
+              </div>
+              <div className="agent-capture-status" aria-label="Agent 会话采集接入状态">
+                {([
+                  ['codex', 'Codex', agentMemoryState?.registration?.codexLifecycleRegistered],
+                  ['qclaw', 'QClaw', agentMemoryState?.registration?.qclawLifecycleRegistered],
+                  ['workbuddy', 'WorkBuddy', agentMemoryState?.registration?.workbuddyLifecycleRegistered],
+                  ['openclaw', 'OpenClaw', agentMemoryState?.registration?.openclawLifecycleRegistered],
+                  ['claude-code', 'Claude Code', agentMemoryState?.registration?.claudeCodeLifecycleRegistered],
+                  ['hermes', 'Hermes', agentMemoryState?.registration?.hermesLifecycleRegistered],
+                ] as Array<[AgentToolId, string, boolean | undefined]>).map(([agentId, name, registered]) => {
+                  const health = agentMemoryState?.lifecycleHealth?.[agentId];
+                  const received = health?.eventReceived === true;
+                  const configured = health?.configured ?? registered;
+                  const stateLabel = health?.active ? '自动采集中' : configured ? '已接入' : '需要处理';
+                  return (
+                    <span
+                      className={received ? 'ready' : ''}
+                      key={name}
+                      title={health?.lastEventAt ? `最近事件：${formatDateTime(health.lastEventAt)}` : configured ? '已完成生命周期接入，等待新会话事件' : '未检测到安装或自动接入未完成'}
+                    >
+                      {name} · {stateLabel}
+                    </span>
+                  );
+                })}
+              </div>
+              <div className="candidate-list">
+                {(agentMemoryState?.sessions ?? []).slice(0, 8).map((session) => (
+                  <div className="candidate-row" key={session.sessionId}>
+                    <div className="candidate-main">
+                      <strong>{session.title || session.summary?.objective || '授权 Agent 会话'}</strong>
+                      <span>{agentToolProfiles[session.agentId as AgentToolId]?.name || session.agentId} · {session.status === 'active' ? '采集中' : session.conversationReceipt ? '已归档' : session.status === 'completed' ? '已结束' : session.status === 'failed' ? '采集失败' : '已取消'}</span>
+                      <small>{session.updatedAt ? formatDateTime(session.updatedAt) : '时间未知'}{session.projectId ? ` · 项目 ${session.projectId}` : ''}</small>
+                      <small>{session.messages?.length ?? 0} 条授权消息{session.conversationReceipt?.message ? ` · ${session.conversationReceipt.message}` : ''}</small>
+                      {(session.messages?.length ?? 0) > 0 && (
+                        <details className="agent-memory-conversation">
+                          <summary>查看采集的对话内容</summary>
+                          <div className="agent-memory-messages">
+                            {(session.messages ?? []).map((message) => (
+                              <article className={`agent-memory-message ${message.role}`} key={message.eventId}>
+                                <b>{message.role === 'user' ? '用户' : message.role === 'assistant' ? 'Agent' : message.role}</b>
+                                <p>{message.content}</p>
+                              </article>
+                            ))}
+                          </div>
+                        </details>
+                      )}
+                    </div>
+                  </div>
+                ))}
+                {(agentMemoryState?.sessions ?? []).length === 0 && <div className="empty-state compact">尚无已授权 Agent 会话。开启后请在 Codex、QClaw、WorkBuddy 或 OpenClaw 中开始新会话；旧历史不会被扫描。</div>}
+              </div>
+            </section>
             <div className="form-grid compact-grid">
               <label>
                 来源 Agent 工具
@@ -17962,7 +18311,7 @@ ${JSON.stringify(items, null, 2)}
             <section className="material-source-panel task-center-board">
               <div className="mini-heading">
                 <strong>统一任务队列</strong>
-                <span>协议 {taskCenter.protocolVersion || '1.0'}；支持自动执行、QClaw 收件箱和人工任务包，所有结果统一审核。</span>
+                <span>协议 {taskCenter.protocolVersion || '1.0'}；支持 WorkBuddy、Codex、OpenClaw 自动执行，兼容 QClaw 收件箱和人工任务包，所有结果统一校验。</span>
               </div>
               <div className="task-center-toolbar">
                 <label className={taskCenter.automationEnabled === false ? 'task-automation-toggle manual' : 'task-automation-toggle'} title="关闭后仅停止后台自动扫描与定时调度；主动点击处理时仍会即时检测并调用已绑定 Agent。">
@@ -19362,6 +19711,56 @@ ${JSON.stringify(items, null, 2)}
           </section>
         )}
       </section>
+      {projectPublicationChooserOpen && (
+        <div className="publishing-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget && !projectPublicationBusy) setProjectPublicationChooserOpen(false); }}>
+          <section className="publishing-dialog project-publication-dialog" role="dialog" aria-modal="true" aria-labelledby="project-publication-title">
+            <header>
+              <div>
+                <span className="publishing-eyebrow">项目定向发布</span>
+                <h2 id="project-publication-title">选择接收节点</h2>
+                <p>这里只列出与当前项目学生已建立明确映射的协作节点；每个接收方会生成独立发布包。</p>
+              </div>
+              <button className="icon-button" disabled={projectPublicationBusy} onClick={() => setProjectPublicationChooserOpen(false)} aria-label="关闭"><X size={20} /></button>
+            </header>
+            <div className="project-publication-peer-list">
+              {projectPublicationPeers.map((peer) => {
+                const checked = selectedProjectPublicationTargets.includes(peer.peerNodeId);
+                const localStudents = [...new Set((peer.studentMappings || []).map((mapping) => mapping.localStudentName || mapping.localStudentId).filter(Boolean))];
+                return (
+                  <label className="download-item" key={peer.peerNodeId}>
+                    <input
+                      type="checkbox"
+                      checked={checked}
+                      disabled={projectPublicationBusy}
+                      onChange={() => setSelectedProjectPublicationTargets((current) => checked
+                        ? current.filter((nodeId) => nodeId !== peer.peerNodeId)
+                        : [...current, peer.peerNodeId])}
+                    />
+                    <span>
+                      <strong>协作节点 {peer.peerNodeId.slice(0, 16)}</strong>
+                      <small>项目学生：{localStudents.join('、') || '已映射学生'} · 对端学生 {peer.targetStudentIds?.length || 0} 名</small>
+                      <small>{peer.directReady ? '内置直传已就绪' : '将进入兼容传输队列'}</small>
+                    </span>
+                  </label>
+                );
+              })}
+            </div>
+            <div className="actions compact-actions">
+              <button className="secondary" disabled={projectPublicationBusy} onClick={() => setProjectPublicationChooserOpen(false)}>取消</button>
+              <button
+                className="primary"
+                disabled={projectPublicationBusy || selectedProjectPublicationTargets.length === 0}
+                onClick={async () => {
+                  await publishProjectToTargets(selectedProjectPublicationTargets);
+                  setProjectPublicationChooserOpen(false);
+                }}
+              >
+                <Share2 size={17} />{projectPublicationBusy ? '正在分别发布…' : `发布给已选 ${selectedProjectPublicationTargets.length} 个节点`}
+              </button>
+            </div>
+          </section>
+        </div>
+      )}
       {publishingState?.ok && publishingState.source && (
         <div className="publishing-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setPublishingState(null); }}>
           <section className="publishing-dialog" role="dialog" aria-modal="true" aria-labelledby="publishing-title">
@@ -19654,11 +20053,13 @@ function AgentToolCompactSelector({
   disabled?: boolean;
 }) {
   const tool = getAgentToolProfile(value);
+  const legacy = legacyAgentToolIds.has(value);
   return (
     <div className="agent-tool-compact">
       <label>
         <span>{label}</span>
         <select value={value} onChange={(event) => onChange(event.target.value as AgentToolId)} disabled={disabled}>
+          {legacy && <option value={value}>{tool.name}（旧配置，已停止适配）</option>}
           {agentToolOptions.map((item) => (
             <option value={item.id} key={item.id}>{item.name}</option>
           ))}
@@ -19671,6 +20072,7 @@ function AgentToolCompactSelector({
         <span>{tool.supportsProjectRules ? `规则：${tool.ruleFiles[0]}` : '无项目规则'}</span>
         <span>{tool.supportsScheduledTask ? '支持定时' : '手动执行'}</span>
       </div>
+      {legacy && <small className="muted">原工具已停止适配，旧记录仍可查看；请重新选择受支持的 Agent。</small>}
     </div>
   );
 }

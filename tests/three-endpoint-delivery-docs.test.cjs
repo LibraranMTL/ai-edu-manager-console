@@ -19,7 +19,7 @@ test('download page presents four product families and five client builds', () =
     'Android 学生端',
     'Android 教师端',
     'Android 单机版',
-    'v0.16.8',
+    'v0.16.9',
     'v0.6.16',
     'v0.1.1',
     'v1.2.2',
@@ -68,7 +68,7 @@ test('download page omits historical release notes and acceptance details', () =
 test('download page links the current artifacts and canonical web manuals exist', () => {
   const download = read(path.join('release', '网站文件', 'download.html'));
   for (const artifact of [
-    ['../windows/AI-edu-manager-console-Windows-0.16.8.zip', path.join('release', 'windows', 'AI-edu-manager-console-Windows-0.16.8.zip')],
+    ['../download/AI-edu-manager-console-Windows-0.16.9.zip', path.join('release', 'windows', 'AI-edu-manager-console-Windows-0.16.9.zip')],
     ['../download/AI-edu-manager-student-terminal-Windows-0.16.8.exe', path.join('release', 'windows-terminal', 'AI-edu-manager-student-terminal-Windows-0.16.8.exe')],
     ['../download/AI-edu-manager-tablet-terminal-0.6.16.apk', path.join('release', 'tablet-terminal', 'AI-edu-manager-tablet-terminal-0.6.16.apk')],
     ['../download/AI-edu-manager-teacher-terminal-0.1.1.apk', path.join('release', 'teacher-terminal', 'AI-edu-manager-teacher-terminal-0.1.1.apk')],
@@ -128,7 +128,7 @@ test('manual sources describe target selection and terminal-specific workflows',
   assert.match(host, /允许远程协作团队知识查询/u);
   assert.match(host, /本机没有命中时，才向已经建立有效知识协作关系/u);
   assert.match(host, /submit_education_conversation/u);
-  assert.match(host, /不会在后台抓取 Agent 的全部历史/u);
+  assert.match(host, /不读取授权前历史、其他会话、系统提示、工具密钥、缓存或教育管家任务中心上下文/u);
   assert.match(host, /学生原始资料不自动双向同步/u);
   assert.match(host, /QClaw 远程知识路由与运行期间的教育档案自动更新仍保留复测门禁/u);
 
@@ -166,8 +166,8 @@ test('web manuals are synchronized to the current product workflows', () => {
   const androidTeacher = read(path.join('release', '网站文件', 'android-teacher-manual.html'));
   const androidStandalone = read(path.join('release', '网站文件', 'android-standalone-manual.html'));
 
-  assert.match(windowsStudent, /配套主机：Windows 主机 0\.16\.8/u);
-  assert.match(androidStudent, /配套主机：Windows 主机端 0\.16\.8/u);
+  assert.match(windowsStudent, /配套主机：Windows 主机 0\.16\.9/u);
+  assert.match(androidStudent, /配套主机：Windows 主机端 0\.16\.9/u);
   assert.match(androidTeacher, /适用版本：Android 教师端 0\.1\.1/u);
   assert.match(androidStudent, /导入智能体对话/u);
   assert.match(androidTeacher, /导入智能体对话/u);

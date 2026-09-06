@@ -200,6 +200,31 @@ function peersForStudentMappings(state = {}, localNodeId, localStudentId) {
   });
 }
 
+function projectPeersForStudentMappings(state = {}, localNodeId, projectStudentIds = []) {
+  const localStudentIds = strings(projectStudentIds, 100);
+  const byPeer = new Map();
+  for (const localStudentId of localStudentIds) {
+    for (const mapping of peersForStudentMappings(state, localNodeId, localStudentId)) {
+      const current = byPeer.get(mapping.peerNodeId) || {
+        peerNodeId: mapping.peerNodeId,
+        targetStudentIds: [],
+        transportBindingIds: [],
+        studentMappings: [],
+      };
+      current.targetStudentIds = strings([...current.targetStudentIds, mapping.targetStudentId], 100);
+      current.transportBindingIds = strings([...current.transportBindingIds, mapping.transportBindingId], 100);
+      current.studentMappings.push({
+        localStudentId,
+        targetStudentId: mapping.targetStudentId,
+        studentMapId: mapping.studentMapId,
+        deviceBindingId: mapping.deviceBindingId,
+      });
+      byPeer.set(mapping.peerNodeId, current);
+    }
+  }
+  return [...byPeer.values()].sort((left, right) => left.peerNodeId.localeCompare(right.peerNodeId));
+}
+
 function selectStudentArchiveAuthorizationBinding(bindings = [], options = {}) {
   const lineageId = String(options.lineageId || '').trim();
   const localNodeId = String(options.localNodeId || '').trim();
@@ -224,5 +249,6 @@ module.exports = {
   normalizeDeviceBinding,
   normalizeStudentMap,
   peersForStudentMappings,
+  projectPeersForStudentMappings,
   selectStudentArchiveAuthorizationBinding,
 };

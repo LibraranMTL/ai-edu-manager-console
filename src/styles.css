@@ -1438,6 +1438,70 @@ select:focus {
   white-space: nowrap;
 }
 
+.agent-capture-status {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.agent-capture-status span {
+  padding: 5px 9px;
+  border: 1px solid var(--panel-border);
+  border-radius: 999px;
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.agent-capture-status span.ready {
+  border-color: rgba(31, 143, 95, 0.28);
+  background: rgba(31, 143, 95, 0.1);
+  color: #187149;
+}
+
+.agent-memory-conversation {
+  margin-top: 6px;
+  border-top: 1px solid var(--panel-border);
+  padding-top: 8px;
+}
+
+.agent-memory-conversation summary {
+  cursor: pointer;
+  color: var(--accent-strong);
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.agent-memory-messages {
+  display: grid;
+  gap: 8px;
+  max-height: 360px;
+  margin-top: 9px;
+  overflow: auto;
+}
+
+.agent-memory-message {
+  padding: 9px 10px;
+  border-radius: 11px;
+  background: rgba(255, 255, 255, 0.72);
+}
+
+.agent-memory-message.assistant {
+  background: var(--accent-soft);
+}
+
+.agent-memory-message b {
+  color: var(--text-main);
+  font-size: 12px;
+}
+
+.agent-memory-message p {
+  margin: 4px 0 0;
+  color: var(--text-main);
+  line-height: 1.55;
+  white-space: pre-wrap;
+}
+
 .candidate-reasons {
   display: flex;
   flex-wrap: wrap;
@@ -6440,6 +6504,35 @@ textarea:focus {
   margin-bottom: 8px;
 }
 
+.digest-material-preflight {
+  display: grid;
+  gap: 8px;
+  margin-top: 14px;
+  padding: 14px;
+  border: 1px solid rgba(185, 123, 45, 0.24);
+  border-radius: 12px;
+  background: rgba(255, 250, 238, 0.72);
+}
+
+.digest-material-preflight p {
+  margin: 0;
+  color: var(--muted-text, #62736c);
+}
+
+.digest-material-issue {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.72);
+}
+
+.digest-material-preflight > button {
+  justify-self: start;
+}
+
 .digest-advanced,
 .digest-advanced-audit {
   margin-top: 12px;
@@ -6635,6 +6728,11 @@ textarea:focus {
 
 .publishing-dialog h2 { margin: 6px 0; }
 .publishing-dialog header p { margin: 0; color: var(--muted); }
+.project-publication-dialog { width: min(680px, 94vw); }
+.project-publication-peer-list { display: grid; gap: 10px; max-height: 52vh; margin-bottom: 20px; overflow: auto; }
+.project-publication-peer-list .download-item { grid-template-columns: auto minmax(0, 1fr); cursor: pointer; }
+.project-asset-search { align-items: end; }
+.project-asset-search .inline-hint { padding: 0 0 12px; }
 .publishing-eyebrow { color: var(--primary); font-size: 0.82rem; font-weight: 800; letter-spacing: 0.12em; }
 .publishing-layout { display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(300px, 0.75fr); gap: 24px; }
 .publishing-controls { min-width: 0; }

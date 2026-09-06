@@ -1,9 +1,9 @@
 {
   "versionCode": 86,
   "versionName": "0.6.16",
-  "windowsVersionCode": 217,
-  "windowsVersionName": "0.16.8",
-  "windowsUrl": "https://www.greatbg.com/download/AI-edu-manager-console-Windows-0.16.8.zip",
+  "windowsVersionCode": 218,
+  "windowsVersionName": "0.16.9",
+  "windowsUrl": "https://www.greatbg.com/download/AI-edu-manager-console-Windows-0.16.9.zip",
   "windowsTerminalVersionCode": 217,
   "windowsTerminalVersionName": "0.16.8",
   "windowsTerminalUrl": "https://www.greatbg.com/download/AI-edu-manager-student-terminal-Windows-0.16.8.exe",
@@ -24,5 +24,5 @@
   "managerApkVersionCode": 23,
   "managerApkVersionName": "0.2.3",
   "apkUrl": "https://www.greatbg.com/download/AI-edu-manager-tablet-terminal-0.6.16.apk",
-  "notes": "Windows 学生端 0.16.8 与 Android 学生端 0.6.16 采用适合中小学生的自适应学习工作台，优化方块按钮、横竖屏布局与 Markdown 学情档案渲染；Android 教师端 0.1.1、Android 单机版 1.2.2 保持兼容。"
+  "notes": "Windows 主机端 0.16.9 新增 Codex、QClaw、WorkBuddy、OpenClaw、Claude Code、Hermes 当前授权新会话的生命周期自动采集，并保留学生范围隔离、离线队列和手动粘贴备用入口；Windows 学生端 0.16.8、Android 学生端 0.6.16、Android 教师端 0.1.1、Android 单机版 1.2.2 保持兼容。"
 }

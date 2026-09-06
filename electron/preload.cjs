@@ -410,6 +410,9 @@ contextBridge.exposeInMainWorld('AndroidBridge', {
   listLearningReports(studentId) {
     return ipcRenderer.sendSync('bridge:listLearningReports', studentId);
   },
+  updateLearningReports(studentId) {
+    return ipcRenderer.invoke('bridge:updateLearningReports', studentId);
+  },
   readLearningReport(studentId, reportId) {
     return ipcRenderer.sendSync('bridge:readLearningReport', studentId, reportId);
   },
@@ -647,6 +650,15 @@ contextBridge.exposeInMainWorld('AndroidBridge', {
   markStudentDigestSubmitted(studentId) {
     return ipcRenderer.sendSync('bridge:markStudentDigestSubmitted', studentId);
   },
+  getStudentMaterialPathIssues(studentId) {
+    return ipcRenderer.sendSync('bridge:getStudentMaterialPathIssues', studentId);
+  },
+  retryStudentMaterialPathRecovery(studentId) {
+    return ipcRenderer.sendSync('bridge:retryStudentMaterialPathRecovery', studentId);
+  },
+  selectStudentMaterialPath(studentId, materialId) {
+    return ipcRenderer.sendSync('bridge:selectStudentMaterialPath', studentId, materialId);
+  },
   syncStudentDigestResult(studentId) {
     return ipcRenderer.sendSync('bridge:syncStudentDigestResult', studentId);
   },
@@ -700,6 +712,12 @@ contextBridge.exposeInMainWorld('AndroidBridge', {
   },
   prepareAgentKnowledgeAccess(studentId) {
     return ipcRenderer.sendSync('bridge:prepareAgentKnowledgeAccess', studentId);
+  },
+  getAgentMemoryState(studentId) {
+    return ipcRenderer.sendSync('bridge:getAgentMemoryState', studentId);
+  },
+  setAgentMemoryAutomation(studentId, enabled) {
+    return ipcRenderer.sendSync('bridge:setAgentMemoryAutomation', studentId, Boolean(enabled));
   },
   submitAgentConversation(requestJson) {
     return ipcRenderer.invoke('bridge:submitAgentConversation', requestJson);

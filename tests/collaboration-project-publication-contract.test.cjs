@@ -95,12 +95,37 @@ test('D3 keeps Syncthing compatibility out of the default project publishing pat
   assert.match(ui, /局域网优先、Tailscale 备用的内置直传/);
 });
 
-test('D3 prefers a direct-ready binding and treats a legacy exchange package as queued instead of unreachable', () => {
-  assert.match(main, /candidate\.directReady && !current\.directReady/);
+test('D3 prefers a direct-ready transport for an exact mapped peer and treats a legacy exchange package as queued instead of unreachable', () => {
+  assert.match(main, /projectPeersForStudentMappings\(collaboration, localNodeId, project\.studentIds \|\| \[\]\)/);
+  assert.match(main, /Number\(Boolean\(collaborationDirectSecret\(right\)\)/);
   assert.match(main, /fallbackQueued: Boolean\(published\.packageRoot\)/);
   assert.match(main, /已进入兼容交换队列/);
   assert.match(main, /无需重复发布/);
   assert.doesNotMatch(main, /项目发布包已生成，但对端当前不可达/);
+});
+
+test('S2-S4 only offers exact student-mapped recipients and requires an explicit target', () => {
+  assert.match(main, /code: 'project_has_no_students'/);
+  assert.match(main, /code: peers\.length \? 'ready' : 'student_mapping_required'/);
+  assert.match(main, /const requestedTargetNodeId = String\(options\.targetNodeId \|\| ''\)\.trim\(\)/);
+  assert.match(main, /const peer = peers\.find\(\(item\) => item\.peerNodeId === requestedTargetNodeId\)/);
+  assert.doesNotMatch(main, /peers\.find\(\(item\) => item\.related\)\s*\|\|\s*peers\[0\]/);
+  assert.match(ui, /if \(peers\.length === 1\)/);
+  assert.match(ui, /setProjectPublicationChooserOpen\(true\)/);
+  assert.match(ui, /for \(const targetNodeId of targets\)/);
+  assert.match(ui, /targetNodeId,/);
+  assert.match(ui, /每个接收方会生成独立发布包/);
+});
+
+test('S1 searches the full loaded asset index before applying the display cap', () => {
+  const searchStart = ui.indexOf('const projectCandidateAssetMatches = useMemo');
+  const capStart = ui.indexOf('const projectCandidateAssets = projectCandidateAssetMatches.slice(0, 120)');
+  assert.ok(searchStart >= 0);
+  assert.ok(capStart > searchStart);
+  assert.match(ui.slice(searchStart, capStart), /assetIndex\.assets/);
+  assert.match(ui, /placeholder="文件名、学生、来源、类型或 SHA-1"/);
+  assert.match(ui, /不复制原始文件/);
+  assert.match(ui, /引用所选资产/);
 });
 
 test('D3 upgrades legacy bindings and promotes only the latest project package to native direct delivery', () => {

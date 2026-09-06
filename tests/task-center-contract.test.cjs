@@ -20,7 +20,7 @@ test('high-risk project operations are queued before internal execution', () => 
 });
 
 test('all execution paths use the adapter registry and Codex is sandboxed', () => {
-  for (const adapter of ['internal', 'openclaw', 'codex', 'qclaw', 'manual']) {
+  for (const adapter of ['internal', 'openclaw', 'codex', 'workbuddy', 'qclaw', 'manual']) {
     assert.match(main, new RegExp(`${adapter}: \\{ \\.\\.\\.common, id: '${adapter}'`));
   }
   assert.match(main, /status: adapterTaskStatus, readResult: adapterTaskResult/);
@@ -28,6 +28,8 @@ test('all execution paths use the adapter registry and Codex is sandboxed', () =
   assert.match(main, /\['exec', '--sandbox', sandboxMode/);
   assert.doesNotMatch(main, /--full-auto/);
   assert.match(main, /codexAuthHealthy/);
+  assert.match(main, /function submitWorkBuddyTask/);
+  assert.match(main, /buildWorkBuddyInvocation/);
   assert.match(main, /error loading configuration\|unknown variant/);
   assert.match(main, /function probeExecutable[\s\S]*resolveNodeCommandShim\(executable, args\)/);
 });

@@ -101,10 +101,37 @@ function parseFrontmatter(content) {
   return { exists: true, values, body: text.slice(match[0].length) };
 }
 
+function normalizeMarkdownHeading(value) {
+  let normalized = String(value || '')
+    .replace(/\s+#+\s*$/u, '')
+    .trim();
+  const numberedPrefix = /^(?:(?:第\s*)?[一二三四五六七八九十百零〇\d]+(?:章|节)?\s*[、.．:：)）\]】]\s*|[（(][一二三四五六七八九十百零〇\d]+[）)]\s*)/u;
+  while (numberedPrefix.test(normalized)) normalized = normalized.replace(numberedPrefix, '').trim();
+  return normalized.replace(/\s+/gu, ' ');
+}
+
 function markdownSectionBody(content, heading) {
-  const escaped = String(heading).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  const match = String(content || '').match(new RegExp(`^#{1,6}\\s*${escaped}\\s*$\\r?\\n([\\s\\S]*?)(?=^#{1,6}\\s|$)`, 'm'));
-  return match ? match[1].trim() : '';
+  const lines = String(content || '').split(/\r?\n/);
+  const target = normalizeMarkdownHeading(heading);
+  let sectionStart = -1;
+  let sectionLevel = 0;
+  for (let index = 0; index < lines.length; index += 1) {
+    const match = /^(#{1,6})\s+(.+?)\s*$/u.exec(lines[index]);
+    if (!match || normalizeMarkdownHeading(match[2]) !== target) continue;
+    sectionStart = index + 1;
+    sectionLevel = match[1].length;
+    break;
+  }
+  if (sectionStart < 0) return '';
+  let sectionEnd = lines.length;
+  for (let index = sectionStart; index < lines.length; index += 1) {
+    const match = /^(#{1,6})\s+(.+?)\s*$/u.exec(lines[index]);
+    if (match && match[1].length <= sectionLevel) {
+      sectionEnd = index;
+      break;
+    }
+  }
+  return lines.slice(sectionStart, sectionEnd).join('\n').trim();
 }
 
 function validateDailyActionDocument(content, options = {}) {
@@ -167,6 +194,8 @@ module.exports = {
   TASK_PROTOCOL_VERSION,
   TASK_STATUS_TRANSITIONS,
   cronOccurrence,
+  markdownSectionBody,
+  normalizeMarkdownHeading,
   selectPreviousDailyFeedback,
   selectFallbackAdapter,
   validateDailyActionDocument,

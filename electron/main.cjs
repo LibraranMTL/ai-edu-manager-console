@@ -117,6 +117,27 @@ const {
   selectQClawAgentId,
   upsertQClawNativeMcpServer,
 } = require('./qclaw-runtime.cjs');
+const { buildWorkBuddyInvocation, discoverWorkBuddyRuntime } = require('./workbuddy-runtime.cjs');
+const {
+  issueAgentAccessGrant,
+  normalizeAgentAccessGrantStore,
+  resolveAgentAccessGrant,
+} = require('./agent-access-grant.cjs');
+const {
+  createAgentMemoryStore,
+} = require('./agent-memory-v1.cjs');
+const {
+  lifecycleCaptureAllowed,
+  normalizeLifecycleEnvelope,
+} = require('./agent-lifecycle-capture.cjs');
+const {
+  ACTIVE_AGENT_TOOL_IDS,
+  AUTO_CAPTURE_AGENT_IDS,
+  KNOWN_AGENT_SOURCE_IDS,
+  isActiveAgentTool,
+  isKnownAgentSource,
+  lifecycleAdapter,
+} = require('./agent-adapter-registry.cjs');
 const { parseJsonText } = require('./json-file.cjs');
 const { buildGrowthIndexV2, parseLegacyGrowthEvidenceMarkdown } = require('./growth-model.cjs');
 const { changedGrowthProjectStudentIds, growthIndexNeedsRebuild, growthSourceFingerprint, legacyReportCandidate } = require('./growth-index-consistency.cjs');
@@ -181,6 +202,12 @@ const { studentTerminalProgress: buildStudentTerminalProgress } = require('./stu
 const { buildStudentGrowthSummary } = require('./student-growth-summary.cjs');
 const { normalizeMaterialStatus } = require('./material-status.cjs');
 const { discoverStudentRawMaterials } = require('./student-raw-discovery.cjs');
+const {
+  inventoryRawFiles,
+  isPathInside: isStudentMaterialPathInside,
+  resolveStudentMaterialPaths,
+  selectDigestBatchFiles,
+} = require('./material-path-recovery.cjs');
 const { duplicateKnowledgeRawFiles } = require('./project-publication-reconciliation.cjs');
 const { discoverTaskPayloads } = require('./task-result-inbox.cjs');
 const {
@@ -213,6 +240,7 @@ const {
 const {
   deriveCollaborationRelationships,
   peersForStudentMappings,
+  projectPeersForStudentMappings,
   selectStudentArchiveAuthorizationBinding,
 } = require('./collaboration-device-binding.cjs');
 const {
@@ -363,6 +391,7 @@ let imaCopilotOpened = false;
 let workbuddyOpened = false;
 let codexOpened = false;
 let claudeCodeOpened = false;
+let hermesOpened = false;
 let obsidianOpened = false;
 let hostServer = null;
 let hostDiscoverySocket = null;
@@ -382,6 +411,7 @@ let taskSchedulerStartupTimer = null;
 let taskSchedulerRunning = false;
 let digestWorkflowTimer = null;
 let digestWorkflowRunning = false;
+const studentDigestContinuationTimers = new Map();
 let collaborationDirectDeliveryTimer = null;
 let collaborationDirectDeliveryRunning = false;
 const collaborationDirectDeliveryControls = new Map();
@@ -443,15 +473,13 @@ const DEFAULT_HOST_PORT = 18777;
 const HOST_DISCOVERY_PORT = 18778;
 const HOST_DISCOVERY_REQUEST_V1 = 'AI_EDU_MANAGER_DISCOVER_V1';
 const HOST_DISCOVERY_REQUEST_V2 = 'AI_EDU_MANAGER_DISCOVER';
-const AGENT_TOOL_IDS = ['qclaw', 'marvis', 'hohu', 'openclaw', 'ima.copilot', 'workbuddy', 'codex', 'claude-code', 'chatgpt', 'claude', 'doubao', 'coze', 'fastgpt'];
+const AGENT_TOOL_IDS = ACTIVE_AGENT_TOOL_IDS;
 const WEB_AGENT_TOOL_URLS = {
   'ima.copilot': 'https://ima.qq.com/',
   workbuddy: 'https://www.workbuddy.ai/',
   chatgpt: 'https://chatgpt.com/',
   claude: 'https://claude.ai/',
   doubao: 'https://www.doubao.com/',
-  coze: 'https://www.coze.cn/',
-  fastgpt: 'https://fastgpt.in/',
 };
 const MAX_UPLOAD_BYTES = 100 * 1024 * 1024;
 const ALLOWED_UPLOAD_EXTENSIONS = new Set([
@@ -491,7 +519,6 @@ const qclawTaskInboxPath = () => path.join(taskCenterDirPath(), 'qclaw-inbox');
 const qclawTaskResultPath = () => path.join(taskCenterDirPath(), 'qclaw-results');
 const openClawCronRegistryPath = () => path.join(taskCenterDirPath(), 'openclaw-managed-cron.json');
 let activePairSession = null;
-
 function readSettings() {
   try {
     return JSON.parse(fs.readFileSync(settingsPath(), 'utf8'));
@@ -1549,42 +1576,39 @@ function submitAgentConversation(requestJson) {
 }
 
 function projectPublicationPeerOptions(project, collaboration = readCollaborationState()) {
-  const localStudentIds = new Set((project.studentIds || []).map(String));
-  const candidates = (collaboration.bindings || []).filter((binding) => (
-    binding.status === 'active'
-    && !binding.revokedAt
-    && binding.participantNodeIds?.includes(collaboration.node.nodeId)
-  )).flatMap((binding) => {
-    const peerNodeIds = (binding.participantNodeIds || []).filter((nodeId) => nodeId !== collaboration.node.nodeId);
-    return peerNodeIds.map((peerNodeId) => {
-      const localAssignments = (binding.roleAssignments || []).filter((item) => item.nodeId === collaboration.node.nodeId && !item.revokedAt);
-      const peerAssignments = (binding.roleAssignments || []).filter((item) => item.nodeId === peerNodeId && !item.revokedAt);
-      const related = !localStudentIds.size || localAssignments.some((item) => !item.studentId || localStudentIds.has(String(item.studentId)));
-      return {
-        bindingId: binding.bindingId,
-        peerNodeId,
-        related,
-        directReady: Boolean(collaborationDirectSecret(binding)) && collaborationDirectTargets(binding, peerNodeId).length > 0,
-        bindingUpdatedAt: String(binding.lastSeenAt || binding.createdAt || ''),
-        targetStudentIds: [...new Set(peerAssignments.map((item) => String(item.studentId || '')).filter(Boolean))],
-      };
-    });
-  });
-  const bestByPeer = new Map();
-  for (const candidate of candidates) {
-    const current = bestByPeer.get(candidate.peerNodeId);
-    if (
-      !current
-      || (candidate.directReady && !current.directReady)
-      || (candidate.directReady === current.directReady && candidate.bindingUpdatedAt > current.bindingUpdatedAt)
-    ) {
-      bestByPeer.set(candidate.peerNodeId, candidate);
-    }
-  }
-  return [...bestByPeer.values()].sort((left, right) => (
+  const localNodeId = String(collaboration.node?.nodeId || '');
+  const studentsById = new Map(readStudentsIndex().map((student) => [String(student.id), student]));
+  const exactPeers = projectPeersForStudentMappings(collaboration, localNodeId, project.studentIds || []);
+  return exactPeers.flatMap((mappedPeer) => {
+    const transportIds = new Set(mappedPeer.transportBindingIds || []);
+    const bindings = (collaboration.bindings || []).filter((binding) => (
+      binding.status === 'active'
+      && !binding.revokedAt
+      && binding.participantNodeIds?.includes(localNodeId)
+      && binding.participantNodeIds?.includes(mappedPeer.peerNodeId)
+    )).sort((left, right) => (
+      Number(transportIds.has(String(right.bindingId || ''))) - Number(transportIds.has(String(left.bindingId || '')))
+      || Number(Boolean(collaborationDirectSecret(right)) && collaborationDirectTargets(right, mappedPeer.peerNodeId).length > 0)
+        - Number(Boolean(collaborationDirectSecret(left)) && collaborationDirectTargets(left, mappedPeer.peerNodeId).length > 0)
+      || String(right.lastSeenAt || right.createdAt || '').localeCompare(String(left.lastSeenAt || left.createdAt || ''))
+    ));
+    const binding = bindings[0];
+    if (!binding) return [];
+    return [{
+      bindingId: binding.bindingId,
+      peerNodeId: mappedPeer.peerNodeId,
+      directReady: Boolean(collaborationDirectSecret(binding)) && collaborationDirectTargets(binding, mappedPeer.peerNodeId).length > 0,
+      bindingUpdatedAt: String(binding.lastSeenAt || binding.createdAt || ''),
+      targetStudentIds: mappedPeer.targetStudentIds,
+      studentMappings: mappedPeer.studentMappings.map((mapping) => ({
+        ...mapping,
+        localStudentName: studentsById.get(String(mapping.localStudentId))?.name || '',
+      })),
+    }];
+  }).sort((left, right) => (
     Number(right.directReady) - Number(left.directReady)
-    || Number(right.related) - Number(left.related)
     || right.bindingUpdatedAt.localeCompare(left.bindingUpdatedAt)
+    || left.peerNodeId.localeCompare(right.peerNodeId)
   ));
 }
 
@@ -1666,14 +1690,20 @@ function getProjectPublicationOptions(projectId) {
     const project = readProjects().map(normalizeProject).find((item) => String(item.id) === String(projectId));
     if (!project) return JSON.stringify({ ok: false, peers: [], message: '未找到学习项目。' });
     const state = readCollaborationState();
+    const projectStudentIds = [...new Set((project.studentIds || []).map(String).filter(Boolean))];
+    if (!projectStudentIds.length) {
+      return JSON.stringify({ ok: false, code: 'project_has_no_students', peers: [], message: '该项目尚未关联学生。请先编辑项目并选择学生，再发布项目。' });
+    }
+    if (!state.enabled) return JSON.stringify({ ok: false, code: 'collaboration_disabled', peers: [], message: '请先开启知识协作。' });
     const peers = projectPublicationPeerOptions(project, state);
     return JSON.stringify({
-      ok: true,
+      ok: peers.length > 0,
+      code: peers.length ? 'ready' : 'student_mapping_required',
       enabled: state.enabled,
       localNodeId: state.node.nodeId,
       lineageId: project.projectLineageId || stableProjectLineageId(state.node.nodeId, project.id),
       peers,
-      message: peers.length ? `可发布到 ${peers.length} 个协作节点。` : '当前没有可用的双主机协作关系。',
+      message: peers.length ? `找到 ${peers.length} 个与项目学生明确映射的协作节点。` : '项目学生尚未映射到任何协作节点。请先在“知识协作”中建立对应学生映射。',
     });
   } catch (error) {
     return JSON.stringify({ ok: false, peers: [], message: `读取项目发布目标失败：${error.message}` });
@@ -1690,10 +1720,10 @@ function publishCollaborationProject(optionsJson) {
     if (index < 0) return JSON.stringify({ ok: false, message: '未找到要发布的学习项目。' });
     const project = ensureProjectWorkspace(projects[index]);
     const peers = projectPublicationPeerOptions(project, state);
-    const peer = peers.find((item) => item.peerNodeId === String(options.targetNodeId || ''))
-      || peers.find((item) => item.related)
-      || peers[0];
-    if (!peer) return JSON.stringify({ ok: false, message: '当前没有可用于项目发布的双主机协作关系。' });
+    const requestedTargetNodeId = String(options.targetNodeId || '').trim();
+    if (!requestedTargetNodeId) return JSON.stringify({ ok: false, message: '请选择一个与项目学生明确映射的接收节点。' });
+    const peer = peers.find((item) => item.peerNodeId === requestedTargetNodeId);
+    if (!peer) return JSON.stringify({ ok: false, message: '所选接收节点与当前项目学生没有有效映射，请刷新映射后重试。' });
     const profile = {
       mode: ['snapshot', 'follow', 'contribution'].includes(options.mode) ? options.mode : 'snapshot',
       scope: options.scope === 'selected' ? 'selected' : 'whole',
@@ -4289,7 +4319,10 @@ function readUploadRecords() {
 }
 
 function writeUploadRecords(records) {
-  writeJsonAtomic(uploadRecordsPath(), { records: records.slice(0, 200) });
+  // Upload records are an audit source, not the authoritative material-path
+  // registry. Do not drop older active rows: doing so made the UI show 200
+  // while a student's materials file still contained hundreds of items.
+  writeJsonAtomic(uploadRecordsPath(), { records: Array.isArray(records) ? records : [] });
   hostDirectoryCountCache.clear();
 }
 
@@ -4312,6 +4345,18 @@ function studentMaterialsPath(student) {
 
 function studentRawDiscoveryStatePath(student) {
   return path.join(studentManagerDir(student), 'raw-discovery-state.json');
+}
+
+function studentMaterialPathIssuesPath(student) {
+  return path.join(studentManagerDir(student), 'material-path-issues.json');
+}
+
+function studentMaterialPathRepairHistoryPath(student) {
+  return path.join(studentManagerDir(student), 'material-path-repair-history.json');
+}
+
+function studentMaterialPathRepairBackupDir(student) {
+  return path.join(studentManagerDir(student), 'material-path-repair-backups');
 }
 
 function studentDigestStatePath(student) {
@@ -4837,7 +4882,9 @@ function writeStudentMaterials(student, materials) {
     studentId: String(student.id || ''),
     studentName: student.name || '',
     updatedAt: new Date().toISOString(),
-    materials: materials.slice(0, 1000).map((item) => ({ ...item, status: normalizeUploadStatus(item.status) })),
+    // Preserve the full active/history ledger. Digest batching is bounded
+    // separately, so persistence must never silently discard item 1001+.
+    materials: (Array.isArray(materials) ? materials : []).map((item) => ({ ...item, status: normalizeUploadStatus(item.status) })),
   });
 }
 
@@ -4962,13 +5009,14 @@ function studentDigestSourceRecords(student, uploadRecords = readUploadRecords()
     if (!id) continue;
     const previous = byId.get(id) || {};
     byId.set(id, {
-      ...previous,
       ...record,
+      ...previous,
       id,
-      filename: record.filename || previous.filename || path.basename(record.path || ''),
-      path: record.path || previous.path || '',
-      sha1: String(record.sha1 || previous.sha1 || '').toLowerCase(),
-      status: normalizeUploadStatus(record.status || previous.status),
+      filename: previous.filename || record.filename || path.basename(previous.path || record.path || ''),
+      path: previous.path || record.path || '',
+      size: Number(previous.size || record.size || 0),
+      sha1: String(previous.sha1 || record.sha1 || '').toLowerCase(),
+      status: normalizeUploadStatus(previous.status || record.status),
       source: previous.source ? 'materials+uploads' : 'uploads',
     });
   }
@@ -4997,7 +5045,21 @@ function upsertStudentMaterialsFromUploads(student, uploadRecords) {
   const existing = readStudentMaterials(student);
   const byId = new Map(existing.map((item) => [String(item.id), item]));
   uploadRecords.forEach((record) => {
-    byId.set(String(record.id), { ...byId.get(String(record.id)), ...materialRecordFromUpload(record) });
+    const id = String(record.id);
+    const previous = byId.get(id);
+    const incoming = materialRecordFromUpload(record);
+    byId.set(id, previous
+      ? {
+          ...incoming,
+          ...previous,
+          // materials.json is authoritative for the current physical path;
+          // the upload record remains an audit source for workflow status.
+          status: normalizeUploadStatus(record.status || previous.status),
+          statusUpdatedAt: record.statusUpdatedAt || previous.statusUpdatedAt || incoming.statusUpdatedAt,
+          digestedAt: record.digestedAt || previous.digestedAt || '',
+          digestBatchId: record.digestBatchId || previous.digestBatchId || '',
+        }
+      : incoming);
   });
   const materials = Array.from(byId.values()).sort((a, b) => String(b.uploadedAt || '').localeCompare(String(a.uploadedAt || '')));
   writeStudentMaterials(student, materials);
@@ -5996,6 +6058,267 @@ function setHostUploadRecordStatus(recordId, status) {
   return JSON.stringify({ ok: true, record: records[index], status: JSON.parse(getHostServiceStatus()) });
 }
 
+function materialPathIssueLabel(code) {
+  return ({
+    ambiguous: '找到多个相同文件，需要手工选择',
+    batch_size_exceeded: '单个文件超过批次大小上限，请拆分或压缩后重新导入',
+    candidate_limit_exceeded: '同尺寸候选过多，无法安全自动定位，请手工选择',
+    changed_during_validation: '文件校验期间仍在变化',
+    hash_mismatch: '文件内容与原记录不一致',
+    missing: '当前原始资料库中未找到文件',
+    missing_hash: '缺少可验证的文件指纹',
+    not_regular_file: '目标不是可读取的普通文件',
+    outside_root: '目标不在当前学生原始资料库内',
+    size_mismatch: '文件大小与原记录不一致',
+    unstable: '文件刚写入，等待稳定后重试',
+    unreadable: '文件无法读取',
+  })[String(code || '')] || '资料路径需要人工确认';
+}
+
+function backupStudentMaterialPathRegistry(student, repairedAt) {
+  const backupDir = studentMaterialPathRepairBackupDir(student);
+  fs.mkdirSync(backupDir, { recursive: true });
+  const stamp = timestampForFilename(new Date(repairedAt));
+  const materialsFile = studentMaterialsPath(student);
+  if (fs.existsSync(materialsFile)) fs.copyFileSync(materialsFile, path.join(backupDir, `materials-${stamp}.json`));
+  const uploadsFile = uploadRecordsPath();
+  if (fs.existsSync(uploadsFile)) fs.copyFileSync(uploadsFile, path.join(backupDir, `upload-records-${stamp}.json`));
+}
+
+function applyStudentMaterialPathRepairs(student, repairedItems = []) {
+  if (!Array.isArray(repairedItems) || !repairedItems.length) return { repairedCount: 0, repairedIds: [] };
+  const repairedAt = new Date().toISOString();
+  const byId = new Map(repairedItems.map((item) => [String(item.materialId || ''), item]));
+  backupStudentMaterialPathRegistry(student, repairedAt);
+  const materials = readStudentMaterials(student).map((material) => {
+    const repair = byId.get(String(material.id || ''));
+    if (!repair) return material;
+    return {
+      ...material,
+      ...repair.material,
+      id: String(material.id || repair.materialId || ''),
+      path: repair.relativePath,
+      absolutePath: repair.absolutePath,
+      sha1: repair.sha1,
+      size: repair.size,
+      pathRepair: {
+        repairedAt,
+        method: repair.method || 'verified_hash',
+        previousPath: repair.previousPath || '',
+        currentPath: repair.absolutePath,
+        rawRoot: student.rawPath || getRawDir(student.name),
+      },
+    };
+  });
+  writeStudentMaterials(student, materials);
+  const rawRoot = student.rawPath || getRawDir(student.name);
+  const records = readUploadRecords().map((record) => {
+    if (String(record.studentId || '') !== String(student.id || '')) return record;
+    const repair = byId.get(String(record.id || ''));
+    if (!repair) return record;
+    return {
+      ...record,
+      path: repair.absolutePath,
+      rawPath: rawRoot,
+      filename: repair.material?.fileName || record.filename || path.basename(repair.absolutePath),
+      size: repair.size,
+      sha1: repair.sha1,
+      pathRepair: {
+        repairedAt,
+        method: repair.method || 'verified_hash',
+        previousPath: repair.previousPath || record.path || '',
+        currentPath: repair.absolutePath,
+        rawRoot,
+      },
+    };
+  });
+  writeUploadRecords(records);
+  const history = safeReadJson(studentMaterialPathRepairHistoryPath(student), { version: 1, entries: [] });
+  writeJsonAtomic(studentMaterialPathRepairHistoryPath(student), {
+    version: 1,
+    studentId: String(student.id || ''),
+    entries: [
+      ...repairedItems.map((item) => ({
+        repairedAt,
+        materialId: String(item.materialId || ''),
+        method: item.method || 'verified_hash',
+        previousPath: item.previousPath || '',
+        currentPath: item.absolutePath,
+        relativePath: item.relativePath,
+        sha1: item.sha1,
+      })),
+      ...(Array.isArray(history?.entries) ? history.entries : []),
+    ].slice(0, 5_000),
+  });
+  return { repairedCount: repairedItems.length, repairedIds: Array.from(byId.keys()), repairedAt };
+}
+
+function preflightStudentDigestMaterials(student, options = {}) {
+  const rawRoot = path.resolve(String(student.rawPath || getRawDir(student.name) || ''));
+  const allRecords = readUploadRecords();
+  const digestSources = studentDigestSourceRecords(student, allRecords);
+  const pending = digestSources.filter((record) => (
+    normalizeUploadStatus(record.status) === 'pending_digest'
+      || (options.includeSubmitted && ['submitted', 'digesting'].includes(normalizeUploadStatus(record.status)))
+  ));
+  const inventory = inventoryRawFiles(rawRoot);
+  const maxFiles = Number(options.maxFiles || 100);
+  const maxBytes = Number(options.maxBytes || 512 * 1024 * 1024);
+  const discoveryState = readStudentRawDiscoveryState(student);
+  const resolution = { resolved: [], repaired: [], blocked: [], inventoryCount: inventory.length };
+  let inspectedCount = 0;
+  let selected = selectDigestBatchFiles([], { maxFiles, maxBytes });
+  // Hash at most the amount needed to form the current bounded batch. The
+  // inventory scan is metadata-only; later records remain pending and are
+  // validated when their batch becomes current, avoiding a long UI stall for
+  // directories containing hundreds or thousands of images.
+  const validationWindow = Math.max(25, Math.min(100, maxFiles));
+  while (inspectedCount < pending.length && selected.selected.length < maxFiles) {
+    const window = pending.slice(inspectedCount, inspectedCount + validationWindow).map((record) => ({
+      ...record,
+      fileName: record.fileName || record.filename || path.basename(String(record.path || '')),
+      absolutePath: record.path || record.absolutePath || '',
+    }));
+    const current = resolveStudentMaterialPaths({
+      rawRoot,
+      materials: window,
+      inventory,
+      discoveryState,
+      nowMs: Date.now(),
+      settleMs: Number(options.settleMs ?? 3_000),
+    });
+    resolution.resolved.push(...current.resolved);
+    resolution.repaired.push(...current.repaired);
+    resolution.blocked.push(...current.blocked);
+    inspectedCount += window.length;
+    selected = selectDigestBatchFiles(resolution.resolved, { maxFiles, maxBytes });
+  }
+  const uninspectedCount = Math.max(0, pending.length - inspectedCount);
+  const applied = applyStudentMaterialPathRepairs(student, resolution.repaired);
+  const checkedAt = new Date().toISOString();
+  const issues = [
+    ...resolution.blocked,
+    ...selected.oversized.map((item) => ({
+      materialId: item.materialId,
+      fileName: item.material?.fileName || path.basename(item.absolutePath || ''),
+      code: 'batch_size_exceeded',
+      retryable: false,
+      recordedPath: item.absolutePath || '',
+      expectedSha1: item.sha1 || '',
+    })),
+  ].map((issue) => ({
+    ...issue,
+    label: materialPathIssueLabel(issue.code),
+    candidates: (issue.candidates || []).filter((candidate) => isStudentMaterialPathInside(rawRoot, candidate)),
+  }));
+  const report = {
+    version: 1,
+    studentId: String(student.id || ''),
+    studentName: student.name || '',
+    rawRoot,
+    issuePath: studentMaterialPathIssuesPath(student),
+    checkedAt,
+    totalCount: pending.length,
+    inventoryCount: resolution.inventoryCount,
+    inspectedCount,
+    readyCount: Math.max(0, resolution.resolved.length - selected.oversized.length),
+    selectedCount: selected.selected.length,
+    selectedBytes: selected.selectedBytes,
+    repairedCount: applied.repairedCount,
+    blockedCount: issues.length,
+    retryableCount: issues.filter((issue) => issue.retryable).length,
+    deferredCount: selected.deferred.length + uninspectedCount,
+    issues,
+  };
+  writeJsonAtomic(studentMaterialPathIssuesPath(student), report);
+  return { ...report, selected: selected.selected, deferred: selected.deferred, repaired: resolution.repaired };
+}
+
+function materialPreflightState(report) {
+  if (!report) return null;
+  return {
+    checkedAt: report.checkedAt || '',
+    totalCount: Number(report.totalCount || 0),
+    readyCount: Number(report.readyCount || 0),
+    selectedCount: Number(report.selectedCount || 0),
+    repairedCount: Number(report.repairedCount || 0),
+    blockedCount: Number(report.blockedCount || 0),
+    retryableCount: Number(report.retryableCount || 0),
+    deferredCount: Number(report.deferredCount || 0),
+    issuePath: report.issuePath || '',
+    issues: (report.issues || []).slice(0, 50),
+  };
+}
+
+function getStudentMaterialPathIssues(studentId) {
+  const student = readStudentsIndex().find((item) => String(item.id) === String(studentId));
+  if (!student) return JSON.stringify({ ok: false, message: '未找到学生档案。' });
+  const normalized = toHostStudent(student);
+  const report = safeReadJson(studentMaterialPathIssuesPath(normalized), null);
+  return JSON.stringify({ ok: true, report, issuePath: studentMaterialPathIssuesPath(normalized) });
+}
+
+function retryStudentMaterialPathRecovery(studentId) {
+  try {
+    const student = readStudentsIndex().find((item) => String(item.id) === String(studentId));
+    if (!student) return JSON.stringify({ ok: false, message: '未找到学生档案。' });
+    const normalized = toHostStudent(student);
+    syncStudentMaterialsFromUploadRecords(normalized, { force: true });
+    const report = preflightStudentDigestMaterials(normalized);
+    writeStudentDigestState(normalized, {
+      materialPreflight: materialPreflightState(report),
+      message: report.blockedCount
+        ? `路径检查完成：可处理 ${report.readyCount} 份，已修复 ${report.repairedCount} 份，仍需确认 ${report.blockedCount} 份。`
+        : `路径检查完成：${report.readyCount} 份资料均可读取，已自动修复 ${report.repairedCount} 份。`,
+    });
+    return JSON.stringify({ ok: true, report: materialPreflightState(report), message: readStudentDigestState(normalized).message });
+  } catch (error) {
+    return JSON.stringify({ ok: false, message: `资料路径检查失败：${error.message}` });
+  }
+}
+
+function selectStudentMaterialPath(studentId, materialId) {
+  try {
+    const student = readStudentsIndex().find((item) => String(item.id) === String(studentId));
+    if (!student) return JSON.stringify({ ok: false, message: '未找到学生档案。' });
+    const normalized = toHostStudent(student);
+    const rawRoot = path.resolve(String(normalized.rawPath || getRawDir(normalized.name) || ''));
+    const material = readStudentMaterials(normalized).find((item) => String(item.id || '') === String(materialId));
+    if (!material) return JSON.stringify({ ok: false, message: '未找到对应资料记录。' });
+    const selected = dialog.showOpenDialogSync(mainWindow, {
+      title: `为“${material.fileName || '待处理资料'}”选择当前文件`,
+      defaultPath: fs.existsSync(rawRoot) ? rawRoot : undefined,
+      properties: ['openFile'],
+    });
+    if (!selected?.[0]) return JSON.stringify({ ok: false, cancelled: true, message: '已取消选择，未修改任何记录。' });
+    const selectedPath = fs.realpathSync(selected[0]);
+    if (!isStudentMaterialPathInside(rawRoot, selectedPath)) {
+      return JSON.stringify({ ok: false, message: '所选文件不在当前学生原始资料库内。请先把文件放入该学生原始资料库，再重新选择。' });
+    }
+    const resolution = resolveStudentMaterialPaths({
+      rawRoot,
+      materials: [{ ...material, absolutePath: selectedPath, path: selectedPath }],
+      inventory: inventoryRawFiles(rawRoot),
+      discoveryState: readStudentRawDiscoveryState(normalized),
+      nowMs: Date.now(),
+      settleMs: 0,
+    });
+    const resolved = resolution.resolved.find((item) => String(item.materialId) === String(materialId));
+    if (!resolved || path.resolve(resolved.absolutePath) !== path.resolve(selectedPath)) {
+      const issue = resolution.blocked[0];
+      return JSON.stringify({ ok: false, message: issue?.code === 'hash_mismatch'
+        ? '所选文件内容与原资料指纹不一致，未修改路径。'
+        : `所选文件未通过校验：${materialPathIssueLabel(issue?.code)}` });
+    }
+    const applied = applyStudentMaterialPathRepairs(normalized, [{ ...resolved, repaired: true, method: 'manual_verified_selection', previousPath: material.absolutePath || material.path || '' }]);
+    const report = preflightStudentDigestMaterials(normalized);
+    writeStudentDigestState(normalized, { materialPreflight: materialPreflightState(report), message: `已安全绑定 1 份资料；当前可处理 ${report.readyCount} 份，仍需确认 ${report.blockedCount} 份。` });
+    return JSON.stringify({ ok: true, repairedCount: applied.repairedCount, report: materialPreflightState(report), message: readStudentDigestState(normalized).message });
+  } catch (error) {
+    return JSON.stringify({ ok: false, message: `手工选择资料失败：${error.message}` });
+  }
+}
+
 function registerStudentDigestBatch(studentId, options = {}) {
   const student = readStudentsIndex().find((item) => String(item.id) === String(studentId));
   if (!student) return { ok: false, message: '未找到学生档案。' };
@@ -6007,21 +6330,29 @@ function registerStudentDigestBatch(studentId, options = {}) {
   if (canReuseStudentDigestBatch(existingBatch, currentState, currentMaterials)) {
     return { ok: true, reused: true, student: normalized, batch: existingBatch, state: currentState, message: '当前消化批次已在处理中。' };
   }
+  const preflight = preflightStudentDigestMaterials(normalized, options);
+  if (!preflight.totalCount) return { ok: false, skipped: true, message: '当前没有待处理资料。', preflight: materialPreflightState(preflight) };
+  const files = preflight.selected.map((item) => ({
+    materialId: String(item.materialId || ''),
+    relativePath: item.relativePath,
+    path: item.absolutePath,
+    sha1: String(item.sha1 || '').toLowerCase(),
+    size: Number(item.size || 0),
+  }));
+  if (!files.length) {
+    const retryableOnly = preflight.blockedCount > 0 && preflight.blockedCount === preflight.retryableCount;
+    const message = retryableOnly
+      ? `资料仍在写入或校验中，尚未建立批次；系统已隔离 ${preflight.blockedCount} 份并保留待处理状态，请稍后重试。`
+      : `当前没有可安全读取的资料，尚未建立批次；${preflight.blockedCount} 份需要手工确认路径。`;
+    const state = writeStudentDigestState(normalized, {
+      status: retryableOnly ? 'pending' : 'failed',
+      materialPreflight: materialPreflightState(preflight),
+      message,
+    });
+    if (retryableOnly) scheduleStudentDigestContinuation(normalized.id);
+    return { ok: false, needsPathRepair: true, retryable: retryableOnly, preflight: materialPreflightState(preflight), state, message };
+  }
   const allRecords = readUploadRecords();
-  const digestSources = studentDigestSourceRecords(normalized, allRecords);
-  const rawRoot = normalized.rawPath || getRawDir(normalized.name);
-  const pending = digestSources.filter((record) =>
-    normalizeUploadStatus(record.status) === 'pending_digest'
-      || (options.includeSubmitted && ['submitted', 'digesting'].includes(normalizeUploadStatus(record.status))));
-  if (!pending.length) return { ok: false, skipped: true, message: '当前没有待处理资料。' };
-  const files = pending.map((record) => {
-    const absolutePath = String(record.path || '');
-    const relativePath = absolutePath && rawRoot ? path.relative(rawRoot, absolutePath).replace(/\\/g, '/') : String(record.filename || '');
-    const sha1 = String(record.sha1 || sha1File(absolutePath)).toLowerCase();
-    return { materialId: String(record.id || ''), relativePath, path: absolutePath, sha1, size: Number(record.size || 0) };
-  });
-  const unreadable = files.find((file) => !file.path || !fs.existsSync(file.path) || !file.sha1);
-  if (unreadable) return { ok: false, message: `资料无法读取，未建立批次：${unreadable.relativePath || unreadable.materialId}` };
   const now = new Date().toISOString();
   const batch = buildDigestBatch({
     scope: { type: 'student', id: String(normalized.id), name: normalized.name },
@@ -6059,6 +6390,8 @@ function registerStudentDigestBatch(studentId, options = {}) {
   }]));
   updateStudentMaterialBatchStatuses(normalized, materialUpdates);
   const records = allRecords.map((record) => submittedIds.has(String(record.id || ''))
+      && (normalizeUploadStatus(record.status) === 'pending_digest'
+        || (options.includeSubmitted && ['submitted', 'digesting'].includes(normalizeUploadStatus(record.status))))
     ? { ...record, sha1: batch.files.find((file) => file.materialId === String(record.id || ''))?.sha1 || record.sha1 || '', status: 'submitted', statusUpdatedAt: now, digestBatchId: batch.batchId }
     : record);
   writeUploadRecords(records);
@@ -6070,13 +6403,14 @@ function registerStudentDigestBatch(studentId, options = {}) {
     digestBatchPath: studentDigestBatchPath(normalized),
     receiptPath,
     submittedFiles: batch.files,
+    materialPreflight: materialPreflightState(preflight),
     completionPolicy: 'auto_after_validation',
-    message: `${batch.files.length} 份资料已进入自动处理。`,
+    message: `${batch.files.length} 份资料已进入自动处理${preflight.repairedCount ? `，已自动修复 ${preflight.repairedCount} 份路径` : ''}${preflight.deferredCount ? `；另有 ${preflight.deferredCount} 份留待下一批` : ''}${preflight.blockedCount ? `；${preflight.blockedCount} 份需稍后重试或手工确认` : ''}。`,
   });
   appendHostTimeline({ type: 'digest_submitted', title: 'Student digest submitted', detail: `${batch.files.length} file(s) frozen in strict batch`, studentId: String(studentId), studentName: normalized.name, count: batch.files.length, batchId: batch.batchId });
   notify('onNativeHostServiceChanged', getHostServiceStatus());
   notify('onNativeDigestWorkflowChanged', JSON.stringify({ scopeType: 'student', scopeId: String(studentId), status: 'processing', batchId: batch.batchId }));
-  return { ok: true, updated: batch.files.length, batchId: batch.batchId, batch, state, student: normalized, records, status: JSON.parse(getHostServiceStatus()), message: state.message };
+  return { ok: true, updated: batch.files.length, batchId: batch.batchId, batch, preflight: materialPreflightState(preflight), state, student: normalized, records, status: JSON.parse(getHostServiceStatus()), message: state.message };
 }
 
 function markStudentDigestSubmitted(studentId) {
@@ -6245,6 +6579,9 @@ function syncStrictStudentDigestResult(student, state, batch, options = {}) {
   });
   writeUploadRecords(records);
   syncStudentMaterialsFromUploadRecords(student);
+  const remainingPendingCount = readStudentMaterials(student)
+    .filter((material) => normalizeUploadStatus(material.status) === 'pending_digest').length;
+  const hasMorePending = remainingPendingCount > 0;
   const nextBatch = {
     ...batch,
     status: validation.fullyCompleted ? 'completed' : 'partial',
@@ -6282,10 +6619,10 @@ function syncStrictStudentDigestResult(student, state, batch, options = {}) {
   const governancePaths = persistKnowledgeGovernanceRun(studentManagerDir(student), governanceRun);
   const growthLink = linkGovernedStudentKnowledgeToGrowth(student, governanceRun);
   const resultMessage = validation.fullyCompleted
-    ? `本批资料已处理：形成知识 ${validation.confirmed.length} 份，跳过 ${(validation.ignored || []).length} 份，无效 ${(validation.invalid || []).length} 份。`
+    ? `本批资料已处理：形成知识 ${validation.confirmed.length} 份，跳过 ${(validation.ignored || []).length} 份，无效 ${(validation.invalid || []).length} 份。${hasMorePending ? `另有 ${remainingPendingCount} 份保留在后续批次。` : ''}`
     : `已处理 ${resolvedCount} 份，另有 ${validation.remaining.length} 份需要继续处理。`;
   const nextState = writeStudentDigestState(student, {
-    status: validation.fullyCompleted ? 'completed' : 'partial',
+    status: validation.fullyCompleted && !hasMorePending ? 'completed' : 'partial',
     lastDigestAt: completedAt,
     lastDigestBatchId: batch.batchId,
     digestBatchId: validation.fullyCompleted ? '' : batch.batchId,
@@ -6325,7 +6662,8 @@ function syncStrictStudentDigestResult(student, state, batch, options = {}) {
   });
   appendHostTimeline({ type: 'digest_auto_completed', title: 'Student digest automatically validated', detail: nextState.message, studentId: String(student.id), studentName: student.name, count: validation.confirmed.length, batchId: batch.batchId });
   notify('onNativeHostServiceChanged', getHostServiceStatus());
-  notify('onNativeDigestWorkflowChanged', JSON.stringify({ scopeType: 'student', scopeId: String(student.id), status: validation.fullyCompleted ? 'completed' : 'partial', batchId: batch.batchId }));
+  notify('onNativeDigestWorkflowChanged', JSON.stringify({ scopeType: 'student', scopeId: String(student.id), status: validation.fullyCompleted && !hasMorePending ? 'completed' : 'partial', batchId: batch.batchId }));
+  if (validation.fullyCompleted && hasMorePending) scheduleStudentDigestContinuation(student.id);
   return { ok: true, strict: true, updated: resolvedCount, validation, governance: governanceRun, growthLink, state: nextState, records, status: JSON.parse(getHostServiceStatus()), message: nextState.message };
 }
 
@@ -11549,7 +11887,13 @@ function updateProjectKnowledgeReview(projectId, recordIdsJson, status, note) {
     review.updatedAt = now;
     fs.mkdirSync(access.project.managerPath, { recursive: true });
     fs.writeFileSync(projectKnowledgeReviewPath(access.project), JSON.stringify(review, null, 2), 'utf8');
-    return JSON.stringify({ ok: true, ...review, updated, blocked, message: `已更新 ${updated} 条知识资产；${blocked.length} 条因状态约束未修改。` });
+    return JSON.stringify({
+      ok: true,
+      ...review,
+      updated,
+      blocked,
+      message: `已更新 ${updated} 条知识资产；${blocked.length} 条因状态约束未修改。`,
+    });
   } catch (error) {
     return JSON.stringify({ ok: false, message: `更新知识资产审核失败：${error.message}` });
   }
@@ -14410,6 +14754,113 @@ function buildWeeklyActionTask(student) {
   });
 }
 
+function currentLearningReportTaskCandidates(student) {
+  return [
+    buildWeeklyActionTask(student),
+    buildPeriodicLearningReportTask(student, 'learning_profile'),
+    buildPeriodicLearningReportTask(student, 'learning_changes'),
+    buildPeriodicLearningReportTask(student, 'learning_stage'),
+  ];
+}
+
+function prepareCurrentLearningReportTasks(student) {
+  const candidates = currentLearningReportTaskCandidates(student);
+  let store = upsertTaskCandidates(candidates);
+  let changed = false;
+  for (const candidate of candidates) {
+    const current = store.tasks.find((task) => String(task.id) === String(candidate.id));
+    if (!current || candidate.status === 'succeeded' || current.status !== 'succeeded') continue;
+    const reset = transitionTaskInStore(store, current.id, 'pending', {
+      result: null,
+      error: null,
+      executionId: '',
+      adapterId: '',
+      routeDecision: null,
+      routeAttempts: [],
+      attempt: 0,
+      startedAt: '',
+      completedAt: '',
+      lastHeartbeatAt: '',
+      message: '当前正式报告已过期或来源发生变化，重新进入本周期更新队列。',
+    }, 'learning_report_cycle_reopened');
+    if (reset.ok) changed = true;
+  }
+  if (changed) store = writeTaskStore(store);
+  return { candidates, store };
+}
+
+function recoverValidatedLearningReportDrafts(student) {
+  const prepared = prepareCurrentLearningReportTasks(student);
+  const store = prepared.store;
+  const recovered = [];
+  const rejected = [];
+  let mutated = false;
+  for (const candidate of prepared.candidates) {
+    let task = store.tasks.find((item) => String(item.id) === String(candidate.id));
+    if (!task || !isAutoPublishReportTask(task) || task.status === 'succeeded') continue;
+    if (taskChildProcesses.has(String(task.id))) continue;
+    const draftPath = String(task.expectedOutput?.draftPath || '');
+    if (!draftPath || !fs.existsSync(draftPath)) continue;
+    const validation = validateTaskCompletion(task, '', null);
+    if (!validation.valid) {
+      rejected.push({ taskId: task.id, title: task.title, message: validation.message });
+      continue;
+    }
+    const recoveryExecutionId = String(task.executionId || `recovery-${Date.now()}-${crypto.randomBytes(3).toString('hex')}`);
+    if (task.status === 'draft') {
+      const pending = transitionTaskInStore(store, task.id, 'pending', {}, 'learning_report_draft_recovery_prepared');
+      if (!pending.ok) continue;
+      task = pending.task;
+      mutated = true;
+    }
+    if (task.status === 'cancelled') {
+      const pending = transitionTaskInStore(store, task.id, 'pending', {}, 'learning_report_draft_recovery_prepared');
+      if (!pending.ok) continue;
+      task = pending.task;
+      mutated = true;
+    }
+    if (['pending', 'failed', 'blocked', 'timed_out'].includes(task.status)) {
+      const approved = transitionTaskInStore(store, task.id, 'approved', {
+        approval: { ...(task.approval || {}), required: false, status: 'not_required' },
+      }, 'learning_report_draft_recovery_prepared');
+      if (!approved.ok) continue;
+      task = approved.task;
+      mutated = true;
+    }
+    if (['approved', 'queued'].includes(task.status)) {
+      const running = transitionTaskInStore(store, task.id, 'running', {
+        executionId: recoveryExecutionId,
+        adapterId: task.adapterId || task.executor || 'artifact-recovery',
+        startedAt: task.startedAt || taskNow(),
+        lastHeartbeatAt: taskNow(),
+      }, 'learning_report_draft_recovery_started');
+      if (!running.ok) continue;
+      task = running.task;
+      mutated = true;
+    }
+    if (!['running', 'waiting_result', 'reviewing'].includes(task.status)) continue;
+    const result = normalizeTaskResult(task, {
+      executionId: recoveryExecutionId,
+      status: 'reviewing',
+      adapterId: task.adapterId || task.executor || 'artifact-recovery',
+      summary: '检测到已完成的报告草稿，现有校验通过后自动恢复。',
+      artifacts: validation.artifacts,
+    }, validation, { importedFrom: draftPath });
+    const committed = commitValidatedTaskResult(store, task, result, validation, {
+      successful: true,
+      event: 'learning_report_draft_recovered',
+      autoSummary: '报告草稿已恢复并通过自动校验。',
+    });
+    if (committed.ok) mutated = true;
+    if (committed.ok) recovered.push({ taskId: task.id, title: task.title, path: task.expectedOutput?.publishPath || '' });
+  }
+  if (mutated) writeTaskStore(store);
+  if (recovered.length) {
+    notify('onNativeTaskCenterChanged', JSON.stringify({ studentId: String(student.id), recovered: recovered.length, status: 'succeeded' }));
+  }
+  return { recovered, rejected, taskIds: prepared.candidates.map((task) => task.id) };
+}
+
 function taskCommandFor(task) {
   if (task.kind === 'project_digest') {
     const parsed = JSON.parse(getProjectDigestCommand(task.sourceId));
@@ -14424,13 +14875,13 @@ function taskCommandFor(task) {
     const feedback = Array.isArray(task.input?.previousFeedback)
       ? task.input.previousFeedback
       : selectPreviousDailyFeedback(readDailyActionFeedback(normalized), expectedDate, 3);
-    return `请为学生「${normalized.name}」生成 ${weekStart} 至 ${weekEnd} 的每周行动建议。\n\n读取范围：\n- 学生知识库：${normalized.rootPath || getStudentRootDir(normalized.name)}\n- 学情分析汇总：${normalized.summaryPath || getSummaryDir(normalized.name)}\n- 成长模型：${growthModelDirForStudent(normalized)}\n\n绑定项目状态：\n${task.input?.projects?.length ? JSON.stringify(task.input.projects, null, 2) : '暂无绑定项目。'}\n\n未完成任务：\n${task.input?.unfinishedTasks?.length ? JSON.stringify(task.input.unfinishedTasks, null, 2) : '暂无未完成任务。'}\n\n上周及更早反馈：\n${feedback.length ? JSON.stringify(feedback, null, 2) : '暂无反馈。'}\n\n必须包含：每周重点、每日固定动作、阶段性里程碑、给学生、给家长、给老师、本周不建议做的事、观察点、依据来源。每日固定动作应按可重复执行的最小动作编写；阶段性里程碑应给出本周检查节点和完成标准。每项正式判断使用“[依据:证据ID]”；watching 证据只能使用“待观察/继续观察”等措辞。无充分依据时写“本周期无实质变化”或“资料不足”，不得虚构。\n\n只把草稿写入：${task.expectedOutput?.draftPath}\n不要直接覆盖正式报告。文件必须以如下 YAML frontmatter 开头：\n---\ndate: ${expectedDate}\nweek_start: ${weekStart}\nweek_end: ${weekEnd}\nstudent_id: ${normalized.id}\ngrowth_fingerprint: ${task.input?.growthFingerprint || ''}\ngenerated_at: 当前 ISO 时间\nstatus: pending_review\n---\n\n完成后确认文件存在。`;
+    return `请为学生「${normalized.name}」生成 ${weekStart} 至 ${weekEnd} 的每周行动建议。\n\n读取范围：\n- 学生知识库：${normalized.rootPath || getStudentRootDir(normalized.name)}\n- 学情分析汇总：${normalized.summaryPath || getSummaryDir(normalized.name)}\n- 成长模型：${growthModelDirForStudent(normalized)}\n\n绑定项目状态：\n${task.input?.projects?.length ? JSON.stringify(task.input.projects, null, 2) : '暂无绑定项目。'}\n\n未完成任务：\n${task.input?.unfinishedTasks?.length ? JSON.stringify(task.input.unfinishedTasks, null, 2) : '暂无未完成任务。'}\n\n上周及更早反馈：\n${feedback.length ? JSON.stringify(feedback, null, 2) : '暂无反馈。'}\n\n必须包含：每周重点、每日固定动作、阶段性里程碑、给学生、给家长、给老师、本周不建议做的事、观察点、依据来源。所有二级章节标题必须原样使用上述名称，不要增加“一、”“1.”“（一）”等编号。每日固定动作应按可重复执行的最小动作编写；阶段性里程碑应给出本周检查节点和完成标准。每项正式判断使用“[依据:证据ID]”；watching 证据只能使用“待观察/继续观察”等措辞。无充分依据时写“本周期无实质变化”或“资料不足”，不得虚构。\n\n只把草稿写入：${task.expectedOutput?.draftPath}\n不要直接覆盖正式报告。文件必须以如下 YAML frontmatter 开头：\n---\ndate: ${expectedDate}\nweek_start: ${weekStart}\nweek_end: ${weekEnd}\nstudent_id: ${normalized.id}\ngrowth_fingerprint: ${task.input?.growthFingerprint || ''}\ngenerated_at: 当前 ISO 时间\nstatus: pending_review\n---\n\n完成后确认文件存在。`;
   }
   if (PERIODIC_REPORT_TASKS[task.kind] && student) {
     const normalized = toHostStudent(student);
     const definition = PERIODIC_REPORT_TASKS[task.kind];
     const report = LEARNING_REPORTS.find((item) => item.id === definition.reportId);
-    return `请为学生「${normalized.name}」生成“${definition.label}”报告草稿。\n\n读取范围：\n- 学生知识库：${normalized.rootPath || getStudentRootDir(normalized.name)}\n- 成长模型：${growthModelDirForStudent(normalized)}\n- 已确认能力画像、成长证据和项目贡献\n\n报告周期：${task.input?.periodStart || '-'} 至 ${task.input?.periodEnd || '-'}\n要求：\n1. 只引用当前成长模型，不把学情报告反向作为事实来源。\n2. 必须包含以下章节：${(report?.sections || []).join('、')}。\n3. 每项正式判断使用“[依据:证据ID]”；watching 证据只能使用“待观察/继续观察”等措辞。\n4. 没有实质变化时明确写“本周期无实质变化”，资料不足时写“资料不足”，不要虚构更新。\n5. 只写草稿：${task.expectedOutput?.draftPath}\n6. 不要直接覆盖正式报告：${task.expectedOutput?.publishPath}\n\n文件顶部使用 YAML frontmatter，至少包含：\nstudent_id: ${normalized.id}\ngrowth_fingerprint: ${task.input?.growthFingerprint || ''}\nupdated: ${taskToday()}\nstatus: pending_review`;
+    return `请为学生「${normalized.name}」生成“${definition.label}”报告草稿。\n\n读取范围：\n- 学生知识库：${normalized.rootPath || getStudentRootDir(normalized.name)}\n- 成长模型：${growthModelDirForStudent(normalized)}\n- 已确认能力画像、成长证据和项目贡献\n\n报告周期：${task.input?.periodStart || '-'} 至 ${task.input?.periodEnd || '-'}\n要求：\n1. 只引用当前成长模型，不把学情报告反向作为事实来源。\n2. 必须包含以下章节：${(report?.sections || []).join('、')}。所有二级章节标题必须原样使用，不要增加“一、”“1.”“（一）”等编号。\n3. 每项正式判断使用“[依据:证据ID]”；watching 证据只能使用“待观察/继续观察”等措辞。\n4. 没有实质变化时明确写“本周期无实质变化”，资料不足时写“资料不足”，不要虚构更新。\n5. 只写草稿：${task.expectedOutput?.draftPath}\n6. 不要直接覆盖正式报告：${task.expectedOutput?.publishPath}\n\n文件顶部使用 YAML frontmatter，至少包含：\nstudent_id: ${normalized.id}\ngrowth_fingerprint: ${task.input?.growthFingerprint || ''}\nupdated: ${taskToday()}\nstatus: pending_review`;
   }
   if (task.kind === 'student_digest' && student) {
     const normalized = toHostStudent(student);
@@ -14534,12 +14985,38 @@ function baseAdapterCapabilities(previous = {}) {
   const openclawCli = findExecutableInPath(['openclaw.cmd', 'openclaw.exe', 'openclaw']);
   const qclaw = findAgentToolInstall('qclaw');
   const qclawRuntime = discoverQClawRuntime(qclaw.exePath || '');
+  const workbuddy = findAgentToolInstall('workbuddy');
+  const workbuddyRuntime = discoverWorkBuddyRuntime(workbuddy.exePath || '', { findExecutable: findExecutableInPath, hostNodePath: process.execPath });
   const previousCodex = previous.codex || {};
   const previousOpenClaw = previous.openclaw || {};
   const previousQClaw = previous.qclaw || {};
   return {
     internal: { id: 'internal', label: '教育管家内部执行器', available: true, authorized: true, automatic: true, cli: false, gateway: false, gatewayHealthy: true, cron: false, polling: false, inbox: false, cancel: false, structuredResult: true, permissionEnforcement: 'strict', hidden: true, exePath: '' },
     codex: { id: 'codex', label: 'Codex', available: Boolean(codex.installed && codex.exePath), authorized: previousCodex.exePath === codex.exePath ? previousCodex.authorized !== false : Boolean(codex.installed && codex.exePath), automatic: true, cli: true, gateway: false, gatewayHealthy: false, cron: false, polling: true, inbox: false, cancel: true, structuredResult: false, permissionEnforcement: 'workspace', healthPending: true, healthMessage: previousCodex.exePath === codex.exePath && previousCodex.healthMessage ? previousCodex.healthMessage : 'CLI 已发现，后台验证配置与授权', exePath: codex.exePath || '' },
+    workbuddy: {
+      id: 'workbuddy',
+      label: 'WorkBuddy',
+      installed: Boolean(workbuddy.installed),
+      available: Boolean(workbuddyRuntime.available),
+      authorized: Boolean(workbuddyRuntime.available),
+      automatic: true,
+      cli: Boolean(workbuddyRuntime.available),
+      gateway: false,
+      gatewayHealthy: false,
+      cron: false,
+      polling: true,
+      inbox: false,
+      cancel: true,
+      structuredResult: true,
+      permissionEnforcement: 'declared_and_validated',
+      healthPending: false,
+      healthMessage: workbuddyRuntime.available ? '已连接本机 WorkBuddy CLI' : workbuddy.installed ? '已安装 WorkBuddy，但未找到可执行 CLI' : '未安装 WorkBuddy',
+      exePath: workbuddy.exePath || '',
+      cliPath: workbuddyRuntime.cliPath || '',
+      nodePath: workbuddyRuntime.nodePath || '',
+      runtimeMode: workbuddyRuntime.mode || '',
+      useElectronNode: Boolean(workbuddyRuntime.useElectronNode),
+    },
     openclaw: { id: 'openclaw', label: 'OpenClaw', available: Boolean(openclawCli), authorized: previousOpenClaw.exePath === openclawCli ? Boolean(previousOpenClaw.authorized) : false, automatic: true, cli: Boolean(openclawCli), gateway: previousOpenClaw.exePath === openclawCli ? Boolean(previousOpenClaw.gateway) : false, gatewayHealthy: previousOpenClaw.exePath === openclawCli ? Boolean(previousOpenClaw.gatewayHealthy) : false, cron: previousOpenClaw.exePath === openclawCli ? Boolean(previousOpenClaw.cron) : false, polling: true, inbox: false, cancel: true, structuredResult: true, permissionEnforcement: 'declared_and_validated', healthPending: true, healthMessage: previousOpenClaw.exePath === openclawCli && previousOpenClaw.healthMessage ? previousOpenClaw.healthMessage : 'CLI 已发现，后台验证模型与 Gateway', model: previousOpenClaw.model || '', exePath: openclawCli || '' },
     qclaw: {
       id: 'qclaw',
@@ -14655,7 +15132,7 @@ function routeTask(task, requestedExecutor = '', excludedAdapters = []) {
   const requested = routingMode === 'fixed' ? requestedInput : '';
   const excluded = new Set((excludedAdapters || []).map(String));
   const history = readTaskStore().history || [];
-  const candidates = Object.values(capabilities).filter((adapter) => !adapter.hidden || requested === adapter.id).map((adapter) => {
+  const candidates = Object.values(capabilities).filter((adapter) => !adapter.hidden || requested === adapter.id || (task.executionMode === 'internal' && adapter.id === 'internal')).map((adapter) => {
     let score = adapter.available && adapter.authorized && !excluded.has(adapter.id) ? 40 : -1000;
     if (requested && adapter.id === requested) score += 50;
     if (adapter.automatic) score += 20;
@@ -14672,7 +15149,7 @@ function routeTask(task, requestedExecutor = '', excludedAdapters = []) {
     const successes = executions.filter((entry) => entry.status === 'succeeded').length;
     const successRate = executions.length ? successes / executions.length : 0.5;
     const qualityScore = Math.round(successRate * 20);
-    const costWeight = adapter.id === 'manual' ? 3 : adapter.id === 'qclaw' ? 6 : adapter.id === 'openclaw' ? 8 : 10;
+    const costWeight = adapter.id === 'manual' ? 3 : adapter.id === 'qclaw' ? 6 : ['openclaw', 'workbuddy'].includes(adapter.id) ? 8 : 10;
     const speedScore = adapter.automatic ? 20 : adapter.inbox ? 10 : 5;
     const declaredPaths = [...(task.permissions?.read || []), ...(task.permissions?.write || [])];
     const localOnly = declaredPaths.some((item) => /^[A-Za-z]:[\\/]/.test(String(item)));
@@ -15509,7 +15986,43 @@ function agentKnowledgeAccessDir(student) {
 }
 
 function agentKnowledgeTokenPath(student) {
+  const suffix = crypto.createHash('sha256').update(String(student.id || student.name || 'student')).digest('hex').slice(0, 32);
+  return path.join(app.getPath('userData'), 'agent-access-tokens', `${suffix}.token`);
+}
+
+function legacyAgentKnowledgeTokenPath(student) {
   return path.join(agentKnowledgeAccessDir(student), 'agent-knowledge-token.txt');
+}
+
+function agentAccessGrantStorePath() {
+  return path.join(app.getPath('userData'), 'agent-access-grants.json');
+}
+
+function readAgentAccessGrantStore() {
+  return normalizeAgentAccessGrantStore(safeReadJson(agentAccessGrantStorePath(), {}));
+}
+
+function writeAgentAccessGrantStore(store) {
+  writeJsonAtomic(agentAccessGrantStorePath(), normalizeAgentAccessGrantStore(store));
+}
+
+function ensureStudentAgentAccessToken(student, allowedProjectIds = []) {
+  const tokenPath = agentKnowledgeTokenPath(student);
+  let existingToken = '';
+  try { existingToken = fs.existsSync(tokenPath) ? fs.readFileSync(tokenPath, 'utf8').trim() : ''; } catch { existingToken = ''; }
+  const issued = issueAgentAccessGrant(readAgentAccessGrantStore(), {
+    studentId: String(student.id),
+    allowedProjectIds,
+    existingToken,
+  });
+  writeAgentAccessGrantStore(issued.store);
+  fs.mkdirSync(path.dirname(tokenPath), { recursive: true });
+  fs.writeFileSync(tokenPath, issued.token, { encoding: 'utf8', mode: 0o600 });
+  const legacyTokenPath = legacyAgentKnowledgeTokenPath(student);
+  if (legacyTokenPath !== tokenPath && fs.existsSync(legacyTokenPath)) {
+    try { fs.unlinkSync(legacyTokenPath); } catch { /* Keep the new private token active even if legacy cleanup is unavailable. */ }
+  }
+  return { tokenPath, grant: issued.grant, rotated: !issued.reused };
 }
 
 function agentKnowledgeDescriptorPath(student) {
@@ -15530,6 +16043,298 @@ function activeAgentKnowledgeDescriptorPath() {
 
 function activeAgentKnowledgeMcpBridgePath() {
   return path.join(activeAgentKnowledgeAccessDir(), 'agent-knowledge-mcp.ps1');
+}
+
+function activeAgentLifecycleHookPath() {
+  return path.join(activeAgentKnowledgeAccessDir(), 'agent-lifecycle-hook.ps1');
+}
+
+function agentLifecycleQueueDir() {
+  return path.join(activeAgentKnowledgeAccessDir(), 'lifecycle-queue');
+}
+
+function quoteHookCommandArgument(value) {
+  return `"${String(value || '').replace(/"/g, '\\"')}"`;
+}
+
+function managedLifecycleHookCommand(sourceAgent, descriptorPath = activeAgentKnowledgeDescriptorPath()) {
+  return [
+    'powershell.exe',
+    '-NoProfile',
+    '-NonInteractive',
+    '-ExecutionPolicy Bypass',
+    '-File',
+    quoteHookCommandArgument(activeAgentLifecycleHookPath()),
+    '-Descriptor',
+    quoteHookCommandArgument(descriptorPath),
+    '-SourceAgent',
+    sourceAgent,
+    '-ManagedMarker',
+    'EDU-MANAGER-LIFECYCLE',
+  ].join(' ');
+}
+
+function upsertLifecycleCommandHooks(configPath, sourceAgent) {
+  let config = {};
+  if (fs.existsSync(configPath)) {
+    config = parseJsoncObject(fs.readFileSync(configPath, 'utf8'));
+    if (!config || typeof config !== 'object' || Array.isArray(config)) throw new Error('Hook 配置不是有效对象。');
+  }
+  config.hooks = config.hooks && typeof config.hooks === 'object' && !Array.isArray(config.hooks) ? config.hooks : {};
+  const command = managedLifecycleHookCommand(sourceAgent);
+  const eventNames = lifecycleAdapter(sourceAgent)?.hookEvents
+    || ['SessionStart', 'UserPromptSubmit', 'Stop', 'SessionEnd'];
+  for (const eventName of eventNames) {
+    const groups = Array.isArray(config.hooks[eventName]) ? config.hooks[eventName] : [];
+    const cleaned = groups.map((group) => ({
+      ...group,
+      hooks: (Array.isArray(group?.hooks) ? group.hooks : []).filter((hook) => !String(hook?.command || '').includes('EDU-MANAGER-LIFECYCLE')),
+    })).filter((group) => group.hooks.length);
+    const handler = { type: 'command', command, timeout: 3 };
+    if (['codex', 'claude-code'].includes(sourceAgent) && !['SessionEnd', 'Interrupt'].includes(eventName)) handler.async = true;
+    config.hooks[eventName] = [...cleaned, { hooks: [handler] }];
+  }
+  writeJsonAtomic(configPath, config);
+  const verified = safeReadJson(configPath, {});
+  return ['SessionStart', 'UserPromptSubmit', 'Stop', 'SessionEnd'].every((eventName) => (
+    (verified?.hooks?.[eventName] || []).some((group) => (
+      (group?.hooks || []).some((hook) => String(hook?.command || '').includes('EDU-MANAGER-LIFECYCLE'))
+    ))
+  ));
+}
+
+function setLifecycleCommandHooksEnabled(configPath, enabled) {
+  if (enabled || !fs.existsSync(configPath)) return;
+  const config = parseJsoncObject(fs.readFileSync(configPath, 'utf8'));
+  if (!config?.hooks || typeof config.hooks !== 'object') return;
+  for (const eventName of Object.keys(config.hooks)) {
+    if (!Array.isArray(config.hooks[eventName])) continue;
+    config.hooks[eventName] = config.hooks[eventName].map((group) => ({
+      ...group,
+      hooks: (Array.isArray(group?.hooks) ? group.hooks : []).filter((hook) => !String(hook?.command || '').includes('EDU-MANAGER-LIFECYCLE')),
+    })).filter((group) => group.hooks.length);
+    if (!config.hooks[eventName].length) delete config.hooks[eventName];
+  }
+  writeJsonAtomic(configPath, config);
+}
+
+function openClawLifecyclePluginSource(sourceAgent) {
+  return `import fs from "node:fs";
+import path from "node:path";
+import crypto from "node:crypto";
+
+const descriptorPath = ${JSON.stringify(activeAgentKnowledgeDescriptorPath())};
+const sourceAgent = ${JSON.stringify(sourceAgent)};
+
+function enqueue(hookEventName, event, context) {
+  try {
+    const descriptor = JSON.parse(fs.readFileSync(descriptorPath, "utf8"));
+    const capture = descriptor.lifecycleCapture || {};
+    if (capture.enabled !== true || !Array.isArray(capture.allowedAgents) || !capture.allowedAgents.includes(sourceAgent)) return;
+    const queueDir = String(capture.queueDir || "");
+    if (!queueDir) return;
+    fs.mkdirSync(queueDir, { recursive: true });
+    const capturedAt = new Date().toISOString();
+    const envelope = {
+      schema: "edu-manager.agent-lifecycle-event.v1",
+      sourceAgent,
+      scopeId: String(descriptor.defaults?.scopeId || ""),
+      grantId: String(descriptor.authentication?.grantId || ""),
+      capturedAt,
+      payload: { hook_event_name: hookEventName, event, context },
+    };
+    const stamp = capturedAt.replace(/\\D/g, "");
+    const target = path.join(queueDir, stamp + "-" + crypto.randomUUID() + ".json");
+    const temp = target + ".tmp";
+    fs.writeFileSync(temp, JSON.stringify(envelope), "utf8");
+    fs.renameSync(temp, target);
+  } catch { /* Conversation flow must not be affected by capture. */ }
+}
+
+export default {
+  id: "edu-manager-lifecycle",
+  name: "Education Manager Lifecycle Capture",
+  register(api) {
+    for (const hookName of ["session_start", "message_received", "message_sent", "session_end"]) {
+      api.on(hookName, async (event, context) => enqueue(hookName, event, context), { timeoutMs: 1000 });
+    }
+  },
+};
+`;
+}
+
+function installOpenClawLifecyclePlugin(configPath, sourceAgent) {
+  const stateDir = path.dirname(configPath);
+  const pluginDir = path.join(stateDir, 'plugins', 'edu-manager-lifecycle');
+  fs.mkdirSync(pluginDir, { recursive: true });
+  fs.writeFileSync(path.join(pluginDir, 'index.ts'), openClawLifecyclePluginSource(sourceAgent), 'utf8');
+  writeJsonAtomic(path.join(pluginDir, 'openclaw.plugin.json'), {
+    id: 'edu-manager-lifecycle',
+    name: 'Education Manager Lifecycle Capture',
+    version: '1.0.0',
+    description: 'Captures only newly emitted, student-authorized conversation lifecycle events.',
+    main: 'index.ts',
+    configSchema: { type: 'object', additionalProperties: false, properties: {} },
+  });
+  let config = fs.existsSync(configPath) ? parseJsoncObject(fs.readFileSync(configPath, 'utf8')) : {};
+  config.plugins = config.plugins && typeof config.plugins === 'object' && !Array.isArray(config.plugins) ? config.plugins : {};
+  config.plugins.load = config.plugins.load && typeof config.plugins.load === 'object' && !Array.isArray(config.plugins.load) ? config.plugins.load : {};
+  config.plugins.load.paths = mergeUnique([...(Array.isArray(config.plugins.load.paths) ? config.plugins.load.paths : []), pluginDir]);
+  config.plugins.entries = config.plugins.entries && typeof config.plugins.entries === 'object' && !Array.isArray(config.plugins.entries) ? config.plugins.entries : {};
+  config.plugins.entries['edu-manager-lifecycle'] = {
+    ...(config.plugins.entries['edu-manager-lifecycle'] || {}),
+    enabled: true,
+  };
+  if (Array.isArray(config.plugins.allow)) config.plugins.allow = mergeUnique([...config.plugins.allow, 'edu-manager-lifecycle']);
+  writeJsonAtomic(configPath, config);
+  const verified = safeReadJson(configPath, {});
+  return Boolean(
+    verified?.plugins?.entries?.['edu-manager-lifecycle']?.enabled
+    && (verified?.plugins?.load?.paths || []).includes(pluginDir),
+  );
+}
+
+function setOpenClawLifecyclePluginEnabled(configPath, enabled) {
+  if (!fs.existsSync(configPath)) return;
+  const config = parseJsoncObject(fs.readFileSync(configPath, 'utf8'));
+  if (!config?.plugins?.entries?.['edu-manager-lifecycle']) return;
+  config.plugins.entries['edu-manager-lifecycle'].enabled = Boolean(enabled);
+  writeJsonAtomic(configPath, config);
+}
+
+function hermesHomeDir() {
+  const candidates = [
+    process.env.HERMES_HOME,
+    path.join(os.homedir(), '.hermes'),
+    process.env.LOCALAPPDATA ? path.join(process.env.LOCALAPPDATA, 'hermes') : '',
+    path.join(os.homedir(), 'AppData', 'Local', 'hermes'),
+  ].filter(Boolean);
+  const configured = candidates.find((candidate) => fs.existsSync(path.join(candidate, 'config.yaml')));
+  return configured || candidates.find((candidate) => fs.existsSync(candidate)) || candidates[0];
+}
+
+function hermesLifecyclePluginDir() {
+  return path.join(hermesHomeDir(), 'plugins', 'edu-manager-lifecycle');
+}
+
+function hermesLifecyclePluginSource() {
+  return `"""Education Manager lifecycle capture for authorized, newly emitted Hermes turns."""
+import json
+import uuid
+from datetime import datetime, timezone
+from pathlib import Path
+
+DESCRIPTOR_PATH = Path(${JSON.stringify(activeAgentKnowledgeDescriptorPath())})
+SOURCE_AGENT = "hermes"
+
+
+def _enqueue(hook_event_name, **kwargs):
+    try:
+        if not DESCRIPTOR_PATH.exists():
+            return None
+        descriptor = json.loads(DESCRIPTOR_PATH.read_text(encoding="utf-8-sig"))
+        capture = descriptor.get("lifecycleCapture") or {}
+        if capture.get("enabled") is not True or SOURCE_AGENT not in (capture.get("allowedAgents") or []):
+            return None
+        session_id = str(kwargs.get("session_id") or "").strip()
+        queue_dir = Path(str(capture.get("queueDir") or ""))
+        if not session_id or not str(queue_dir):
+            return None
+        payload = {
+            "hook_event_name": hook_event_name,
+            "session_id": session_id,
+            "model": str(kwargs.get("model") or "")[:240],
+            "platform": str(kwargs.get("platform") or "")[:120],
+        }
+        if hook_event_name == "pre_llm_call":
+            payload["user_message"] = str(kwargs.get("user_message") or "")[:20000]
+            payload["is_first_turn"] = bool(kwargs.get("is_first_turn"))
+        elif hook_event_name == "post_llm_call":
+            payload["assistant_response"] = str(kwargs.get("assistant_response") or "")[:20000]
+        elif hook_event_name == "on_session_finalize":
+            payload["completed"] = True
+        captured_at = datetime.now(timezone.utc).isoformat()
+        envelope = {
+            "schema": "edu-manager.agent-lifecycle-event.v1",
+            "sourceAgent": SOURCE_AGENT,
+            "scopeId": str((descriptor.get("defaults") or {}).get("scopeId") or ""),
+            "grantId": str((descriptor.get("authentication") or {}).get("grantId") or ""),
+            "capturedAt": captured_at,
+            "payload": payload,
+        }
+        queue_dir.mkdir(parents=True, exist_ok=True)
+        target = queue_dir / (datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S%f") + "-" + uuid.uuid4().hex + ".json")
+        temporary = Path(str(target) + ".tmp")
+        temporary.write_text(json.dumps(envelope, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
+        temporary.replace(target)
+    except Exception:
+        return None
+    return None
+
+
+def _on_session_start(session_id=None, model=None, platform=None, **kwargs):
+    return _enqueue("on_session_start", session_id=session_id, model=model, platform=platform, **kwargs)
+
+
+def _pre_llm_call(session_id=None, user_message=None, conversation_history=None, is_first_turn=False, model=None, platform=None, **kwargs):
+    return _enqueue("pre_llm_call", session_id=session_id, user_message=user_message, is_first_turn=is_first_turn, model=model, platform=platform, **kwargs)
+
+
+def _post_llm_call(session_id=None, user_message=None, assistant_response=None, conversation_history=None, is_first_turn=False, model=None, platform=None, **kwargs):
+    return _enqueue("post_llm_call", session_id=session_id, assistant_response=assistant_response, model=model, platform=platform, **kwargs)
+
+
+def _on_session_finalize(session_id=None, platform=None, **kwargs):
+    return _enqueue("on_session_finalize", session_id=session_id, platform=platform, **kwargs)
+
+
+def register(ctx):
+    ctx.register_hook("on_session_start", _on_session_start)
+    ctx.register_hook("pre_llm_call", _pre_llm_call)
+    ctx.register_hook("post_llm_call", _post_llm_call)
+    ctx.register_hook("on_session_finalize", _on_session_finalize)
+`;
+}
+
+function runHermesPluginCommand(action) {
+  const executable = findAgentToolInstall('hermes').exePath;
+  if (!executable || !fs.existsSync(executable)) return { ok: false, message: '未找到 Hermes CLI。' };
+  const result = spawnSync(executable, ['plugins', action, 'edu-manager-lifecycle'], {
+    encoding: 'utf8',
+    timeout: 15_000,
+    windowsHide: true,
+    shell: process.platform === 'win32' && /\.(cmd|bat)$/i.test(executable),
+  });
+  return {
+    ok: result.status === 0,
+    message: String(result.stderr || result.stdout || '').trim().slice(0, 1000),
+  };
+}
+
+function installHermesLifecyclePlugin() {
+  if (!findAgentToolInstall('hermes').installed) return false;
+  const pluginDir = hermesLifecyclePluginDir();
+  fs.mkdirSync(pluginDir, { recursive: true });
+  fs.writeFileSync(path.join(pluginDir, 'plugin.yaml'), [
+    'name: edu-manager-lifecycle',
+    'version: 1.0.0',
+    'description: Captures only newly emitted student-authorized conversation turns.',
+    'provides_hooks:',
+    '  - on_session_start',
+    '  - pre_llm_call',
+    '  - post_llm_call',
+    '  - on_session_finalize',
+    '',
+  ].join('\n'), 'utf8');
+  fs.writeFileSync(path.join(pluginDir, '__init__.py'), hermesLifecyclePluginSource(), 'utf8');
+  const enabled = runHermesPluginCommand('enable');
+  if (!enabled.ok) throw new Error(enabled.message || 'Hermes 插件启用失败。');
+  return fs.existsSync(path.join(pluginDir, 'plugin.yaml')) && fs.existsSync(path.join(pluginDir, '__init__.py'));
+}
+
+function setHermesLifecyclePluginEnabled(enabled) {
+  if (!fs.existsSync(hermesLifecyclePluginDir())) return;
+  runHermesPluginCommand(enabled ? 'enable' : 'disable');
 }
 
 function replaceManagedTextBlock(filePath, markerStart, markerEnd, block, initialHeading = '') {
@@ -15620,6 +16425,31 @@ function upsertMcporterServer(configPath, serverName, server, options = {}) {
   return Boolean(verified?.mcpServers?.[serverName]);
 }
 
+function upsertOpenClawMcpServer(configPath, serverName, server, options = {}) {
+  let config = {};
+  if (fs.existsSync(configPath)) {
+    config = parseJsoncObject(fs.readFileSync(configPath, 'utf8'));
+    if (!config || typeof config !== 'object' || Array.isArray(config)) throw new Error('OpenClaw 配置不是有效对象。');
+  }
+  config.mcp = config.mcp && typeof config.mcp === 'object' && !Array.isArray(config.mcp) ? config.mcp : {};
+  config.mcp.servers = config.mcp.servers && typeof config.mcp.servers === 'object' && !Array.isArray(config.mcp.servers)
+    ? config.mcp.servers
+    : {};
+  if (options.replaceEducationManagerServers) {
+    for (const key of Object.keys(config.mcp.servers)) {
+      if (key === 'edu-manager-knowledge' || key.startsWith('edu-manager-knowledge-')) delete config.mcp.servers[key];
+    }
+  }
+  config.mcp.servers[serverName] = {
+    command: server.command,
+    args: server.args,
+    enabled: true,
+  };
+  writeJsonAtomic(configPath, config);
+  const verified = safeReadJson(configPath, {});
+  return Boolean(verified?.mcp?.servers?.[serverName]);
+}
+
 function installCodexMcpServer(configPath, serverName, command, args, options = {}) {
   if (serverName === 'edu-manager-knowledge' && fs.existsSync(configPath)) {
     const current = fs.readFileSync(configPath, 'utf8');
@@ -15656,6 +16486,8 @@ function agentKnowledgeWorkspaceRule(student) {
 
 回答“${student.name}”的学生档案、学情、成长或关联学习项目问题时，调用教育管家 MCP 工具 \`query_education_knowledge\`。可以直接传入用户的完整自然语言问题；工具会先查询本机学生档案及其关联项目知识，依据不足时自动使用局域网或 Tailscale 查询当前协作范围。QClaw 0.2.34 及以上会从自身 MCP 注册表直接加载该工具，不要只检查 mcporter 的默认服务器。回答必须保留返回的 \`edu://\` 来源；没有依据时明确说明，不要编造。
 
+当用户在教育管家开启“自动会话记忆”后，教育管家会通过 Agent 生命周期 Hook 自动采集当前新会话；不需要也不要由模型主动调用会话采集工具。不得读取启用前历史、其他会话、系统提示、缓存、工具密钥或未获授权内容；不要把教育管家任务中心的任务执行上下文当作会话采集来源。
+
 仅当用户明确要求“保存当前对话”“发送到教育管家”或同等意思时，调用 \`submit_education_conversation\`。只提交当前对话或用户明确选择的消息和附件，不读取或发送其他会话、私有历史、缓存、系统提示或密钥。用户明确指定学习项目时，必须把项目名称传入 \`targetProject\`；如果工具报告项目未唯一匹配，不得退回学生档案。
 <!-- EDU-MANAGER-KNOWLEDGE-TOOL:END -->`;
 }
@@ -15667,6 +16499,7 @@ function installAgentKnowledgeMcpRegistrations(student, options = {}) {
   const bridgePath = agentKnowledgeMcpBridgePath(student);
   const activeDescriptorPath = activeAgentKnowledgeDescriptorPath();
   const activeBridgePath = activeAgentKnowledgeMcpBridgePath();
+  const activeLifecycleHookPath = activeAgentLifecycleHookPath();
   fs.writeFileSync(
     bridgePath,
     fs.readFileSync(path.join(__dirname, 'agent-knowledge-mcp.ps1'), 'utf8'),
@@ -15678,21 +16511,29 @@ function installAgentKnowledgeMcpRegistrations(student, options = {}) {
     fs.readFileSync(path.join(__dirname, 'agent-knowledge-mcp.ps1'), 'utf8'),
     'utf8',
   );
+  fs.writeFileSync(
+    activeLifecycleHookPath,
+    fs.readFileSync(path.join(__dirname, 'agent-lifecycle-hook.ps1'), 'utf8'),
+    'utf8',
+  );
 
   const command = 'powershell.exe';
   const args = ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', bridgePath, '-Descriptor', descriptorPath];
   const activeArgs = ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', activeBridgePath, '-Descriptor', activeDescriptorPath];
+  const toolNames = ['query_education_knowledge', 'submit_education_conversation', 'get_recent_education_context', 'start_education_session', 'record_authorized_education_turn', 'finalize_education_session', 'accept_education_handoff', 'cancel_education_handoff'];
   const projectServer = {
-    description: `${student.name}的教育管家只读知识查询与选定对话主动保存`,
+    description: `${student.name}的教育管家知识查询与当前授权 Agent 会话采集`,
+    type: 'stdio',
     command,
     args,
-    allowedTools: ['query_education_knowledge', 'submit_education_conversation'],
+    allowedTools: toolNames,
   };
   const activeServer = {
-    description: '教育管家当前学生或用户明确指定学生的只读知识查询与选定对话主动保存',
+    description: '教育管家当前学生的知识查询与当前授权 Agent 会话采集',
+    type: 'stdio',
     command,
     args: activeArgs,
-    allowedTools: ['query_education_knowledge', 'submit_education_conversation'],
+    allowedTools: toolNames,
   };
   const qclawConfigPaths = new Set([path.join(root, 'config', 'mcporter.json')]);
   const qclawRuntime = discoverQClawRuntime(findAgentToolInstall('qclaw').exePath || '');
@@ -15706,6 +16547,7 @@ function installAgentKnowledgeMcpRegistrations(student, options = {}) {
   const qclawConfigPath = path.join(root, 'config', 'mcporter.json');
   let qclawRegistered = false;
   let qclawNativeRegistered = false;
+  let qclawLifecycleRegistered = false;
   let qclawWarning = '';
   try {
     for (const configPath of qclawConfigPaths) {
@@ -15727,6 +16569,7 @@ function installAgentKnowledgeMcpRegistrations(student, options = {}) {
         activeServer,
         { replaceEducationManagerServers: true },
       );
+      qclawLifecycleRegistered = installOpenClawLifecyclePlugin(qclawRuntime.configPath, 'qclaw');
     }
   } catch (error) {
     qclawWarning = `QClaw 已有无法安全合并的 MCP 配置：${error.message}`;
@@ -15749,6 +16592,70 @@ function installAgentKnowledgeMcpRegistrations(student, options = {}) {
       { replaceEducationManagerServers: true },
     )
     : false;
+  const codexHooksPath = path.join(os.homedir(), '.codex', 'hooks.json');
+  const codexLifecycleRegistered = activateGlobal
+    ? upsertLifecycleCommandHooks(codexHooksPath, 'codex')
+    : false;
+  const claudeCodeHooksPath = path.join(os.homedir(), '.claude', 'settings.json');
+  let claudeCodeLifecycleRegistered = false;
+  let claudeCodeWarning = '';
+  if (activateGlobal && findAgentToolInstall('claude-code').installed) {
+    try {
+      claudeCodeLifecycleRegistered = upsertLifecycleCommandHooks(claudeCodeHooksPath, 'claude-code');
+    } catch (error) {
+      claudeCodeWarning = `Claude Code 已有无法安全合并的 Hook 配置：${error.message}`;
+    }
+  }
+
+  const workbuddyConfigPath = path.join(os.homedir(), '.workbuddy', '.mcp.json');
+  const codebuddyConfigPath = path.join(os.homedir(), '.codebuddy', '.mcp.json');
+  const openclawConfigPath = path.join(os.homedir(), '.openclaw', 'openclaw.json');
+  let workbuddyRegistered = false;
+  let workbuddyLifecycleRegistered = false;
+  let workbuddyWarning = '';
+  let openclawRegistered = false;
+  let openclawLifecycleRegistered = false;
+  let openclawWarning = '';
+  let hermesLifecycleRegistered = false;
+  let hermesWarning = '';
+  if (activateGlobal) {
+    try {
+      workbuddyRegistered = upsertMcporterServer(
+        workbuddyConfigPath,
+        agentKnowledgeServerName(student, true),
+        activeServer,
+        { replaceEducationManagerServers: true },
+      );
+      workbuddyRegistered = upsertMcporterServer(
+        codebuddyConfigPath,
+        agentKnowledgeServerName(student, true),
+        activeServer,
+        { replaceEducationManagerServers: true },
+      ) || workbuddyRegistered;
+      workbuddyLifecycleRegistered = upsertLifecycleCommandHooks(path.join(os.homedir(), '.workbuddy', 'settings.json'), 'workbuddy');
+      workbuddyLifecycleRegistered = upsertLifecycleCommandHooks(path.join(os.homedir(), '.codebuddy', 'settings.json'), 'workbuddy') || workbuddyLifecycleRegistered;
+    } catch (error) {
+      workbuddyWarning = `WorkBuddy 已有无法安全合并的 MCP 配置：${error.message}`;
+    }
+    try {
+      openclawRegistered = upsertOpenClawMcpServer(
+        openclawConfigPath,
+        agentKnowledgeServerName(student, true),
+        activeServer,
+        { replaceEducationManagerServers: true },
+      );
+      openclawLifecycleRegistered = installOpenClawLifecyclePlugin(openclawConfigPath, 'openclaw');
+    } catch (error) {
+      openclawWarning = `OpenClaw 已有无法安全合并的 MCP 配置：${error.message}`;
+    }
+    if (findAgentToolInstall('hermes').installed) {
+      try {
+        hermesLifecycleRegistered = installHermesLifecyclePlugin();
+      } catch (error) {
+        hermesWarning = `Hermes 生命周期插件暂未接通：${error.message}`;
+      }
+    }
+  }
 
   const agentsPath = path.join(root, 'AGENTS.md');
   const agentsBlock = agentKnowledgeWorkspaceRule(student);
@@ -15772,6 +16679,7 @@ function installAgentKnowledgeMcpRegistrations(student, options = {}) {
   return {
     bridgePath,
     activeBridgePath,
+    activeLifecycleHookPath,
     activeDescriptorPath,
     qclawConfigPath,
     qclawConfigPaths: [...qclawConfigPaths],
@@ -15780,13 +16688,31 @@ function installAgentKnowledgeMcpRegistrations(student, options = {}) {
     qclawWorkspace: qclawAgent?.workspace || '',
     qclawRegistered,
     qclawNativeRegistered,
+    qclawLifecycleRegistered,
     qclawWarning,
     codexConfigPath,
     codexGlobalConfigPath,
     codexRegistered: Boolean(codexProjectRegistered && (!activateGlobal || codexGlobalRegistered)),
+    codexHooksPath,
+    codexLifecycleRegistered,
+    claudeCodeHooksPath,
+    claudeCodeLifecycleRegistered,
+    claudeCodeWarning,
     codexRulePath: agentsPath,
+    workbuddyConfigPath,
+    codebuddyConfigPath,
+    workbuddyRegistered,
+    workbuddyLifecycleRegistered,
+    workbuddyWarning,
+    openclawConfigPath,
+    openclawRegistered,
+    openclawLifecycleRegistered,
+    openclawWarning,
+    hermesLifecycleRegistered,
+    hermesPluginDir: hermesLifecyclePluginDir(),
+    hermesWarning,
     toolName: 'query_education_knowledge',
-    toolNames: ['query_education_knowledge', 'submit_education_conversation'],
+    toolNames,
   };
 }
 
@@ -15802,6 +16728,8 @@ function installManagedAgentKnowledgeRule(student) {
 
 回答学生档案或学习项目问题时，优先调用 MCP 工具 \`query_education_knowledge\`，可以直接传入用户的完整自然语言问题。工具注册信息由教育管家自动维护，也可从 \`${descriptor}\` 查看当前只读能力；服务会自动选择本机、局域网或 Tailscale，并返回带 \`edu://\` 引用和更新时间的最小知识片段。不要遍历远程文件系统，不要把离线快照表述为实时信息。
 
+用户在教育管家开启“自动会话记忆”后，教育管家通过 Agent 生命周期 Hook 自动采集当前新会话；不需要也不要由模型主动调用会话采集工具。不得读取启用前历史、其他会话、系统提示、缓存、工具密钥或教育管家任务中心的任务执行上下文。
+
 仅当用户明确要求保存或发送当前对话时，调用 \`submit_education_conversation\`。只提交当前对话或用户明确选择的消息和附件，不读取其他会话、私有历史、缓存、系统提示或密钥。用户指定项目时必须通过 \`targetProject\` 传入准确项目名称；未唯一匹配时不得退回学生档案。
 ${markerEnd}`;
   return replaceManagedTextBlock(agentPath, markerStart, markerEnd, block);
@@ -15813,22 +16741,44 @@ function prepareAgentKnowledgeAccess(studentId, options = {}) {
     if (!student) return JSON.stringify({ ok: false, message: '未找到学生。' });
     const directory = agentKnowledgeAccessDir(student);
     fs.mkdirSync(directory, { recursive: true });
-    const tokenPath = agentKnowledgeTokenPath(student);
-    fs.writeFileSync(tokenPath, ensureApiToken(), { encoding: 'utf8', mode: 0o600 });
-    const registration = installAgentKnowledgeMcpRegistrations(student, options);
     const linkedProjects = readProjects().map(normalizeProject)
       .filter((project) => (project.studentIds || []).map(String).includes(String(student.id)))
       .map((project) => ({ id: String(project.id), name: String(project.name || project.id) }));
+    const access = ensureStudentAgentAccessToken(student, linkedProjects.map((project) => project.id));
+    const tokenPath = access.tokenPath;
+    const registration = installAgentKnowledgeMcpRegistrations(student, options);
+    const automationEnabled = options.captureEnabled === undefined
+      ? agentMemoryStore().getSettings(String(student.id)).automationEnabled
+      : Boolean(options.captureEnabled);
     const descriptor = {
       schema: AGENT_KNOWLEDGE_QUERY_SCHEMA,
       mode: 'local_first_then_remote_on_demand',
       teamQueryPolicy: teamKnowledgePolicy(),
       endpoint: `http://127.0.0.1:${getHostServicePort()}/api/agent/knowledge/query`,
       conversationEndpoint: `http://127.0.0.1:${getHostServicePort()}/api/agent/conversation/submit`,
+      memoryEndpoints: {
+        start: `http://127.0.0.1:${getHostServicePort()}/api/agent/memory/session/start`,
+        append: `http://127.0.0.1:${getHostServicePort()}/api/agent/memory/session/append`,
+        observe: `http://127.0.0.1:${getHostServicePort()}/api/agent/memory/session/observe`,
+        finalize: `http://127.0.0.1:${getHostServicePort()}/api/agent/memory/session/finalize`,
+        recent: `http://127.0.0.1:${getHostServicePort()}/api/agent/memory/recent`,
+        acceptHandoff: `http://127.0.0.1:${getHostServicePort()}/api/agent/memory/handoff/accept`,
+        cancelHandoff: `http://127.0.0.1:${getHostServicePort()}/api/agent/memory/handoff/cancel`,
+      },
       method: 'POST',
       authentication: {
         type: 'bearer_token_file',
         tokenFile: tokenPath,
+        grantType: 'student_scoped',
+        grantId: access.grant.grantId,
+      },
+      lifecycleCapture: {
+        schema: 'edu-manager.agent-lifecycle-capture.v1',
+        enabled: automationEnabled,
+        mode: 'event_queue',
+        queueDir: agentLifecycleQueueDir(),
+        allowedAgents: AUTO_CAPTURE_AGENT_IDS,
+        excludes: ['historical_sessions', 'system_prompts', 'tool_secrets', 'task_center_context'],
       },
       defaults: {
         scopeType: 'student',
@@ -15838,7 +16788,7 @@ function prepareAgentKnowledgeAccess(studentId, options = {}) {
         projects: linkedProjects,
       },
       ordinaryUserConfigurationRequired: false,
-      capabilities: ['search', 'context_bundle', 'citations', 'offline_snapshot', 'submit_selected_conversation'],
+      capabilities: ['search', 'context_bundle', 'citations', 'offline_snapshot', 'submit_selected_conversation', 'authorized_conversation_capture', 'incremental_turn_capture', 'full_conversation_archive', 'recent_context', 'session_summary', 'handoff'],
       nativeTool: {
         name: registration.toolName,
         names: registration.toolNames,
@@ -15847,7 +16797,19 @@ function prepareAgentKnowledgeAccess(studentId, options = {}) {
         qclawNativeRegistered: registration.qclawNativeRegistered,
         qclawConfig: registration.qclawConfigPath,
         codexConfig: registration.codexConfigPath,
+        codexRegistered: registration.codexRegistered,
+        codexLifecycleRegistered: registration.codexLifecycleRegistered,
+        claudeCodeLifecycleRegistered: registration.claudeCodeLifecycleRegistered,
+        workbuddyConfig: registration.workbuddyConfigPath,
+        workbuddyRegistered: registration.workbuddyRegistered,
+        workbuddyLifecycleRegistered: registration.workbuddyLifecycleRegistered,
+        openclawConfig: registration.openclawConfigPath,
+        openclawRegistered: registration.openclawRegistered,
+        openclawLifecycleRegistered: registration.openclawLifecycleRegistered,
+        qclawLifecycleRegistered: registration.qclawLifecycleRegistered,
+        hermesLifecycleRegistered: registration.hermesLifecycleRegistered,
         bridge: registration.bridgePath,
+        lifecycleHook: registration.activeLifecycleHookPath,
       },
       updatedAt: new Date().toISOString(),
     };
@@ -15857,7 +16819,7 @@ function prepareAgentKnowledgeAccess(studentId, options = {}) {
         ...descriptor,
         defaults: {
           ...descriptor.defaults,
-          scopePolicy: 'active_student_or_explicit',
+          scopePolicy: 'fixed_student',
         },
       });
     }
@@ -15867,9 +16829,7 @@ function prepareAgentKnowledgeAccess(studentId, options = {}) {
       descriptorPath: agentKnowledgeDescriptorPath(student),
       rulePath,
       registration,
-      message: registration.qclawRegistered
-        ? '已为 QClaw 和 Codex 准备原生知识工具，无需手工配置端口或协议。'
-        : `Codex 原生知识工具已准备；${registration.qclawWarning}`,
+      message: `已为 Codex、QClaw、WorkBuddy、OpenClaw、Claude Code、Hermes 准备生命周期自动采集。${[registration.qclawWarning, registration.workbuddyWarning, registration.openclawWarning, registration.claudeCodeWarning, registration.hermesWarning].filter(Boolean).join('；')}`,
     });
   } catch (error) {
     return JSON.stringify({ ok: false, message: `准备 Agent 知识调用失败：${error.message}` });
@@ -15909,6 +16869,460 @@ function refreshAgentKnowledgeAccessForStudents(studentIds) {
     }
   }
   return refreshed;
+}
+
+let agentMemoryStoreInstance = null;
+let agentLifecycleDrainTimer = null;
+let agentLifecycleInstallMonitorTimer = null;
+let agentLifecycleInstallFingerprint = '';
+let lastAgentLifecycleStaleSweepAt = 0;
+
+function agentMemoryStore() {
+  if (!agentMemoryStoreInstance) {
+    agentMemoryStoreInstance = createAgentMemoryStore({
+      rootDir: path.join(app.getPath('userData'), 'agent-memory-v1'),
+    });
+  }
+  return agentMemoryStoreInstance;
+}
+
+function finalizeStoredLifecycleSession(student, session, options = {}) {
+  const store = agentMemoryStore();
+  if (!session || session.finalizedAt || !Array.isArray(session.messages) || !session.messages.length) return false;
+  const finalizationKey = String(options.finalizationKey || `lifecycle-stale:${session.sessionId}`);
+  const archived = persistAgentConversationSubmission({
+    sourceAgent: session.agentId,
+    sourceNodeId: session.sourceNodeId,
+    sessionId: session.sessionId,
+    title: session.title || `${session.agentId} 授权会话`,
+    scopeType: 'student',
+    scopeId: String(student.id),
+    studentHint: String(student.id),
+    messages: session.messages.map((message) => ({
+      messageId: message.eventId,
+      role: message.role,
+      content: message.content,
+      occurredAt: message.occurredAt,
+    })),
+    submittedAt: String(options.occurredAt || new Date().toISOString()),
+  });
+  store.finalizeSession({
+    studentId: String(student.id),
+    projectId: '',
+    sessionId: session.sessionId,
+    status: options.status || 'completed',
+    idempotencyKey: finalizationKey,
+  });
+  store.attachConversationReceipt({ studentId: String(student.id), projectId: '', sessionId: session.sessionId, receipt: archived.receipt });
+  return true;
+}
+
+function processAgentLifecycleEnvelope(rawEnvelope) {
+  const event = normalizeLifecycleEnvelope(rawEnvelope);
+  if (!event) return { ok: true, ignored: true };
+  const student = findStudentByKey(event.scopeId);
+  if (!student) return { ok: false, discard: true, message: 'Lifecycle student scope no longer exists.' };
+  const descriptor = safeReadJson(agentKnowledgeDescriptorPath(student), {});
+  if (
+    String(descriptor?.defaults?.scopeId || '') !== String(student.id)
+    || String(descriptor?.authentication?.grantId || '') !== event.grantId
+  ) return { ok: false, discard: true, message: 'Lifecycle authorization no longer matches.' };
+  const store = agentMemoryStore();
+  const settings = store.getSettings(String(student.id));
+  if (!settings.automationEnabled || !lifecycleCaptureAllowed(descriptor, event.sourceAgent)) {
+    return { ok: false, deferred: true, message: 'Lifecycle capture is disabled.' };
+  }
+  const scope = { studentId: String(student.id), projectId: '' };
+  if (event.action === 'start') {
+    store.startSession({
+      ...scope,
+      sessionId: event.sessionId,
+      idempotencyKey: `lifecycle:${event.sourceAgent}:${event.nativeSessionId}`,
+      agentId: event.sourceAgent,
+      origin: 'authorized_agent',
+      sourceNodeId: event.grantId,
+      title: event.title,
+    });
+    return { ok: true, action: 'start' };
+  }
+  if (event.action === 'append') {
+    let session = store.readSession(scope.studentId, event.sessionId);
+    if (!session) {
+      session = store.startSession({
+        ...scope,
+        sessionId: event.sessionId,
+        idempotencyKey: `lifecycle:${event.sourceAgent}:${event.nativeSessionId}`,
+        agentId: event.sourceAgent,
+        origin: 'authorized_agent',
+        sourceNodeId: event.grantId,
+        title: event.title,
+      }).session;
+    }
+    if (session.finalizedAt) return { ok: true, ignored: true, action: 'append_after_finalize' };
+    store.appendMessages({
+      ...scope,
+      sessionId: event.sessionId,
+      messages: [{ ...event.message, eventId: event.eventId }],
+    });
+    return { ok: true, action: 'append' };
+  }
+  if (event.action === 'finalize') {
+    const session = store.readSession(scope.studentId, event.sessionId);
+    if (!session || !Array.isArray(session.messages) || !session.messages.length) return { ok: true, ignored: true, action: 'empty_finalize' };
+    if (session.finalizedAt && session.finalizationKey === event.finalizationKey) return { ok: true, ignored: true, action: 'duplicate_finalize' };
+    if (session.finalizedAt) return { ok: true, ignored: true, action: 'already_finalized' };
+    finalizeStoredLifecycleSession(student, session, {
+      status: event.status,
+      finalizationKey: event.finalizationKey,
+      occurredAt: event.occurredAt,
+    });
+    return { ok: true, action: 'finalize' };
+  }
+  return { ok: true, ignored: true };
+}
+
+function drainAgentLifecycleQueue(limit = 200) {
+  const directory = agentLifecycleQueueDir();
+  if (!fs.existsSync(directory)) return { processed: 0, deferred: 0, discarded: 0 };
+  const files = fs.readdirSync(directory, { withFileTypes: true })
+    .filter((entry) => entry.isFile() && entry.name.endsWith('.json'))
+    .map((entry) => entry.name)
+    .sort()
+    .slice(0, Math.max(1, Math.min(1000, Number(limit || 200))));
+  const result = { processed: 0, deferred: 0, discarded: 0 };
+  for (const name of files) {
+    const filePath = path.join(directory, name);
+    try {
+      const envelope = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+      const outcome = processAgentLifecycleEnvelope(envelope);
+      if (outcome.deferred) {
+        result.deferred += 1;
+        continue;
+      }
+      fs.unlinkSync(filePath);
+      if (outcome.discard) result.discarded += 1;
+      else result.processed += 1;
+    } catch {
+      // A partial write or temporarily unavailable archive is retried later.
+    }
+  }
+  finalizeStaleLifecycleSessions();
+  return result;
+}
+
+function finalizeStaleLifecycleSessions(options = {}) {
+  const now = Number(options.now || Date.now());
+  if (!options.force && now - lastAgentLifecycleStaleSweepAt < 60_000) return 0;
+  lastAgentLifecycleStaleSweepAt = now;
+  const staleBefore = now - Math.max(5 * 60_000, Number(options.staleAfterMs || 30 * 60_000));
+  let finalized = 0;
+  const store = agentMemoryStore();
+  for (const student of readStudentsIndex().map(toHostStudent)) {
+    const sessions = store.listSessions({ studentId: String(student.id), limit: 100 });
+    for (const session of sessions) {
+      if (
+        session.status !== 'active'
+        || session.origin !== 'authorized_agent'
+        || !String(session.idempotencyKey || '').startsWith('lifecycle:')
+        || Date.parse(session.updatedAt || session.startedAt || '') > staleBefore
+      ) continue;
+      try {
+        if (Array.isArray(session.messages) && session.messages.length) {
+          if (finalizeStoredLifecycleSession(student, session, {
+            status: 'failed',
+            finalizationKey: `lifecycle-stale:${session.sessionId}`,
+            occurredAt: new Date(now).toISOString(),
+          })) finalized += 1;
+        } else {
+          store.finalizeSession({
+            studentId: String(student.id),
+            projectId: '',
+            sessionId: session.sessionId,
+            status: 'cancelled',
+            idempotencyKey: `lifecycle-stale-empty:${session.sessionId}`,
+          });
+          finalized += 1;
+        }
+      } catch {
+        // Keep the active session for the next sweep if archival is unavailable.
+      }
+    }
+  }
+  return finalized;
+}
+
+function startAgentLifecycleDrainMonitor() {
+  if (agentLifecycleDrainTimer) return;
+  fs.mkdirSync(agentLifecycleQueueDir(), { recursive: true });
+  drainAgentLifecycleQueue();
+  agentLifecycleDrainTimer = setInterval(() => drainAgentLifecycleQueue(), 2_000);
+  agentLifecycleDrainTimer.unref?.();
+}
+
+function stopAgentLifecycleDrainMonitor() {
+  if (agentLifecycleDrainTimer) clearInterval(agentLifecycleDrainTimer);
+  agentLifecycleDrainTimer = null;
+}
+
+function currentLifecycleInstallFingerprint(options = {}) {
+  if (options.force === true) {
+    for (const agentId of AUTO_CAPTURE_AGENT_IDS) agentToolInstallCache.delete(agentId);
+  }
+  return AUTO_CAPTURE_AGENT_IDS.map((agentId) => {
+    const install = findAgentToolInstall(agentId);
+    return `${agentId}:${install.installed ? '1' : '0'}:${install.exePath || ''}`;
+  }).join('|');
+}
+
+function reconcileAuthorizedLifecycleAdapters(options = {}) {
+  try {
+    const fingerprint = currentLifecycleInstallFingerprint(options);
+    if (!options.force && fingerprint === agentLifecycleInstallFingerprint) return false;
+    agentLifecycleInstallFingerprint = fingerprint;
+    const descriptor = safeReadJson(activeAgentKnowledgeDescriptorPath(), {});
+    if (descriptor?.lifecycleCapture?.enabled !== true) return false;
+    const studentId = String(descriptor?.defaults?.scopeId || '');
+    if (!studentId || !findStudentByKey(studentId)) return false;
+    const prepared = parseJsonObject(prepareAgentKnowledgeAccess(studentId, { activateGlobal: true, captureEnabled: true }));
+    if (!prepared.ok) return false;
+    notify('onNativeAgentMemoryChanged', JSON.stringify({ studentId, reason: 'adapter_reconciled' }));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function startAgentLifecycleInstallMonitor() {
+  if (agentLifecycleInstallMonitorTimer) return;
+  reconcileAuthorizedLifecycleAdapters({ force: true });
+  agentLifecycleInstallMonitorTimer = setInterval(() => reconcileAuthorizedLifecycleAdapters({ force: true }), 2 * 60 * 1000);
+  agentLifecycleInstallMonitorTimer.unref?.();
+}
+
+function stopAgentLifecycleInstallMonitor() {
+  if (agentLifecycleInstallMonitorTimer) clearInterval(agentLifecycleInstallMonitorTimer);
+  agentLifecycleInstallMonitorTimer = null;
+}
+
+function agentMemoryState(studentId) {
+  try {
+    const student = findStudentByKey(studentId);
+    if (!student) return JSON.stringify({ ok: false, message: '未找到学生。' });
+    const store = agentMemoryStore();
+    drainAgentLifecycleQueue();
+    const authorizedSessions = store.listSessions({ studentId: String(student.id), limit: 100 })
+      .filter((item) => item.origin === 'authorized_agent');
+    const sessions = authorizedSessions.slice(0, 30);
+    const descriptor = safeReadJson(agentKnowledgeDescriptorPath(student), {});
+    const registration = descriptor.nativeTool || {};
+    const lifecycleConfigured = {
+      codex: registration.codexLifecycleRegistered,
+      qclaw: registration.qclawLifecycleRegistered,
+      workbuddy: registration.workbuddyLifecycleRegistered,
+      openclaw: registration.openclawLifecycleRegistered,
+      'claude-code': registration.claudeCodeLifecycleRegistered,
+      hermes: registration.hermesLifecycleRegistered,
+    };
+    const lifecycleHealth = Object.fromEntries(Object.entries(lifecycleConfigured).map(([agentId, configured]) => {
+      const latestSession = authorizedSessions.find((item) => (
+        item.agentId === agentId && String(item.idempotencyKey || '').startsWith(`lifecycle:${agentId}:`)
+      ));
+      return [agentId, {
+        configured: Boolean(configured),
+        eventReceived: Boolean(latestSession),
+        active: latestSession?.status === 'active',
+        lastEventAt: latestSession?.updatedAt || '',
+      }];
+    }));
+    return JSON.stringify({
+      ok: true,
+      schema: 'edu-manager.agent-memory.v1',
+      studentId: String(student.id),
+      settings: store.getSettings(String(student.id)),
+      sessions,
+      registration,
+      lifecycleHealth,
+      summary: {
+        total: sessions.length,
+        active: sessions.filter((item) => item.status === 'active').length,
+        pendingHandoffs: sessions.filter((item) => item.handoff?.status === 'pending').length,
+      },
+      message: '已读取智能体会话记忆。',
+    });
+  } catch (error) {
+    return JSON.stringify({ ok: false, message: `读取智能体会话记忆失败：${error.message}` });
+  }
+}
+
+function setLifecycleDescriptorEnabled(student, enabled) {
+  for (const descriptorPath of [agentKnowledgeDescriptorPath(student), activeAgentKnowledgeDescriptorPath()]) {
+    const descriptor = safeReadJson(descriptorPath, null);
+    if (!descriptor || String(descriptor?.defaults?.scopeId || '') !== String(student.id)) continue;
+    writeJsonAtomic(descriptorPath, {
+      ...descriptor,
+      lifecycleCapture: {
+        ...(descriptor.lifecycleCapture || {}),
+        enabled: Boolean(enabled),
+        updatedAt: new Date().toISOString(),
+      },
+      updatedAt: new Date().toISOString(),
+    });
+  }
+}
+
+function disableAgentLifecycleRegistrations() {
+  setLifecycleCommandHooksEnabled(path.join(os.homedir(), '.codex', 'hooks.json'), false);
+  setLifecycleCommandHooksEnabled(path.join(os.homedir(), '.workbuddy', 'settings.json'), false);
+  setLifecycleCommandHooksEnabled(path.join(os.homedir(), '.codebuddy', 'settings.json'), false);
+  setLifecycleCommandHooksEnabled(path.join(os.homedir(), '.claude', 'settings.json'), false);
+  setOpenClawLifecyclePluginEnabled(path.join(os.homedir(), '.openclaw', 'openclaw.json'), false);
+  setOpenClawLifecyclePluginEnabled(path.join(os.homedir(), '.qclaw', 'openclaw.json'), false);
+  setHermesLifecyclePluginEnabled(false);
+}
+
+function setAgentMemoryAutomation(studentId, enabled) {
+  try {
+    const student = findStudentByKey(studentId);
+    if (!student) return JSON.stringify({ ok: false, message: '未找到学生。' });
+    const settings = agentMemoryStore().updateSettings(String(student.id), {
+      automationEnabled: Boolean(enabled),
+      allowedAgents: AUTO_CAPTURE_AGENT_IDS,
+    });
+    let prepared;
+    if (settings.automationEnabled) {
+      prepared = parseJsonObject(prepareAgentKnowledgeAccess(String(student.id), { activateGlobal: true, captureEnabled: true }));
+    } else {
+      setLifecycleDescriptorEnabled(student, false);
+      disableAgentLifecycleRegistrations();
+      prepared = { ok: true, registration: safeReadJson(agentKnowledgeDescriptorPath(student), {}).nativeTool || {} };
+    }
+    if (!prepared.ok) throw new Error(prepared.message || '无法完成 Agent 会话采集注册。');
+    if (settings.automationEnabled) drainAgentLifecycleQueue();
+    appendHostTimeline({
+      type: 'agent_memory_automation_changed',
+      title: 'Agent memory automation changed',
+      detail: `${student.id}: ${settings.automationEnabled ? 'enabled' : 'disabled'}`,
+      studentId: String(student.id),
+    });
+    return JSON.stringify({
+      ok: true,
+      settings,
+      registration: prepared.registration || {},
+      message: settings.automationEnabled
+        ? '已启用受支持 Agent 的生命周期自动采集；无需 Agent 主动调用，且不会扫描启用前历史。'
+        : '已关闭受支持 Agent 的生命周期采集 Hook；已有记录不会删除。',
+    });
+  } catch (error) {
+    return JSON.stringify({ ok: false, message: `更新自动会话记忆失败：${error.message}` });
+  }
+}
+
+function agentMemoryRequestScope(request, incoming = {}, capability = '') {
+  const studentId = String(incoming.studentId || incoming.scopeId || '');
+  if (!studentId || !isStudentAllowed(request, studentId)) throw new Error('当前调用方没有访问该学生会话记忆的权限。');
+  if (capability && request.authContext?.type === 'agent_grant' && !(request.authContext.capabilities || []).includes(capability)) {
+    throw new Error('当前 Agent 授权不包含所需的会话记忆能力。');
+  }
+  const projectId = String(incoming.projectId || '');
+  if (projectId) {
+    const project = readProjects().map(normalizeProject).find((item) => String(item.id) === projectId);
+    if (!project || !(project.studentIds || []).map(String).includes(studentId) || !projectAllowed(request, project)) {
+      throw new Error('当前调用方没有访问该学生项目会话记忆的权限。');
+    }
+  }
+  return { studentId, projectId };
+}
+
+async function handleAgentMemoryRequest(request, response, action) {
+  try {
+    if (!requireAuth(request, response)) return;
+    const body = JSON.parse((await readRequestBuffer(request, 512 * 1024)).toString('utf8') || '{}');
+    const capability = action === 'recent' ? 'memory:read' : action.includes('handoff') ? 'handoff:manage' : 'memory:write';
+    let scope = agentMemoryRequestScope(request, body, capability);
+    const store = agentMemoryStore();
+    if (['append', 'finalize'].includes(action)) {
+      const existingSession = store.readSession(scope.studentId, body.sessionId);
+      if (existingSession?.projectId && scope.projectId && existingSession.projectId !== scope.projectId) {
+        throw new Error('授权 Agent 会话项目范围不匹配。');
+      }
+      if (existingSession?.projectId && !scope.projectId) {
+        scope = agentMemoryRequestScope(request, { studentId: scope.studentId, projectId: existingSession.projectId }, capability);
+      }
+    }
+    const agentId = String(body.sourceAgent || body.agentId || '').trim().toLowerCase();
+    const captureAction = ['start', 'append', 'finalize'].includes(action);
+    if (captureAction) {
+      const settings = store.getSettings(scope.studentId);
+      if (!settings.automationEnabled) throw new Error('当前学生尚未开启授权 Agent 自动会话采集。');
+      if (!AUTO_CAPTURE_AGENT_IDS.includes(agentId) || !settings.allowedAgents.includes(agentId)) {
+        throw new Error('当前 Agent 不在授权会话采集范围内。');
+      }
+      if (request.authContext?.type === 'agent_grant' && !(request.authContext.capabilities || []).includes('conversation:submit')) {
+        throw new Error('当前 Agent 授权不包含对话投递能力。');
+      }
+    }
+    let result;
+    if (action === 'start') result = store.startSession({
+      ...body,
+      ...scope,
+      agentId,
+      origin: 'authorized_agent',
+      sourceNodeId: String(body.sourceNodeId || request.authContext?.grantId || 'agent-mcp'),
+    });
+    else if (action === 'append') {
+      const session = store.readSession(scope.studentId, body.sessionId);
+      if (!session || session.agentId !== agentId || session.origin !== 'authorized_agent') throw new Error('授权 Agent 会话身份不匹配。');
+      result = store.appendMessages({ ...body, ...scope, agentId });
+    }
+    else if (action === 'observe') result = store.appendObservation({ ...body, ...scope });
+    else if (action === 'finalize') {
+      let session = store.readSession(scope.studentId, body.sessionId);
+      if (!session || session.agentId !== agentId || session.origin !== 'authorized_agent') throw new Error('授权 Agent 会话身份不匹配。');
+      const finalizationKey = String(body.idempotencyKey || `authorized-agent-finalize:${session.sessionId}`);
+      if (session.finalizedAt && session.finalizationKey === finalizationKey) {
+        result = { session, reused: true, receipt: session.conversationReceipt };
+      } else {
+        if (Array.isArray(body.messages) && body.messages.length) {
+          store.appendMessages({ ...body, ...scope, agentId });
+          session = store.readSession(scope.studentId, body.sessionId);
+        }
+        if (!Array.isArray(session.messages) || !session.messages.length) throw new Error('当前授权会话没有可归档的用户或助手消息。');
+        const archived = persistAgentConversationSubmission({
+          sourceAgent: agentId,
+          sourceNodeId: session.sourceNodeId || request.authContext?.grantId || 'agent-mcp',
+          sessionId: session.sessionId,
+          title: body.title || session.title || `${agentId} 授权会话`,
+          scopeType: scope.projectId ? 'project' : 'student',
+          scopeId: scope.projectId || scope.studentId,
+          studentHint: scope.studentId,
+          targetProject: scope.projectId,
+          messages: session.messages.map((message) => ({
+            messageId: message.eventId,
+            role: message.role,
+            content: message.content,
+            occurredAt: message.occurredAt,
+          })),
+          contentSummary: body.contentSummary || body.summary?.objective || session.summary?.objective,
+          submittedAt: body.submittedAt || new Date().toISOString(),
+        });
+        const finalized = store.finalizeSession({ ...body, ...scope, agentId, idempotencyKey: finalizationKey });
+        store.attachConversationReceipt({ ...scope, sessionId: session.sessionId, receipt: archived.receipt });
+        result = {
+          ...finalized,
+          session: store.readSession(scope.studentId, session.sessionId),
+          receipt: archived.receipt,
+          archived: true,
+        };
+      }
+    }
+    else if (action === 'recent') result = store.recentContext({ ...body, ...scope });
+    else if (action === 'handoff-accept') result = store.acceptHandoff({ ...body, ...scope });
+    else if (action === 'handoff-cancel') result = store.cancelHandoff({ ...body, ...scope });
+    else throw new Error('不支持的会话记忆操作。');
+    sendJson(response, 200, { ok: true, result });
+  } catch (error) {
+    sendJson(response, /没有访问|授权|范围|身份不匹配/.test(error.message) ? 403 : 400, { ok: false, message: error.message });
+  }
 }
 
 function isAutoPublishReportTask(task) {
@@ -16133,7 +17547,7 @@ function commitValidatedTaskResult(store, task, result, validation, options = {}
 }
 
 function estimatedAdapterCost(adapterId, durationMs = 0) {
-  const base = { internal: 0, manual: 0, qclaw: 0.1, openclaw: 0.2, codex: 0.4 }[String(adapterId || '')] ?? 0.2;
+  const base = { internal: 0, manual: 0, qclaw: 0.1, workbuddy: 0.2, openclaw: 0.2, codex: 0.4 }[String(adapterId || '')] ?? 0.2;
   return Number((base + Math.max(0, durationMs) / 3600000 * base).toFixed(4));
 }
 
@@ -16482,6 +17896,41 @@ function submitCodexTask(task, command) {
   return launchCommandAdapter(task, 'codex', capability.exePath, args, cwd, command);
 }
 
+function submitWorkBuddyTask(task, command) {
+  const capability = adapterCapabilities().workbuddy;
+  const runtime = discoverWorkBuddyRuntime(capability?.exePath || findAgentToolInstall('workbuddy').exePath || '', {
+    findExecutable: findExecutableInPath,
+    hostNodePath: process.execPath,
+  });
+  if (!runtime.available) return { ok: false, unavailable: true, message: 'WorkBuddy CLI 不可用。' };
+  const cwd = canonicalTaskPath(task.input?.knowledgeRoot || taskCenterDirPath());
+  const expectedFiles = new Set([
+    task.expectedOutput?.draftPath,
+    task.expectedOutput?.publishPath,
+    task.expectedOutput?.path,
+  ].map(canonicalTaskPath).filter(Boolean));
+  const taskDirectory = (value) => {
+    const target = canonicalTaskPath(value);
+    if (!target) return '';
+    try { if (fs.existsSync(target) && fs.statSync(target).isFile()) return path.dirname(target); } catch { /* Treat unresolved targets as declared paths. */ }
+    return expectedFiles.has(target) || path.extname(target) ? path.dirname(target) : target;
+  };
+  const additionalRoots = [...new Set([
+    ...(task.permissions?.read || []),
+    ...(task.permissions?.write || []),
+  ].map(taskDirectory).filter(Boolean).filter((root) => !taskPathWithin(root, cwd)))];
+  const invocation = buildWorkBuddyInvocation(runtime, {
+    cwd,
+    additionalRoots,
+    command,
+    maxTurns: Math.ceil(Number(task.timeoutSeconds || 900) / 60),
+    baseEnv: process.env,
+  });
+  if (!invocation) return { ok: false, unavailable: true, message: 'WorkBuddy 执行参数初始化失败。' };
+  const launched = launchCommandAdapter(task, 'workbuddy', invocation.executable, invocation.args, invocation.cwd, invocation.stdinText, { env: invocation.env });
+  return launched.ok ? { ...launched, message: '已交给 WorkBuddy 自动执行；完成后由教育管家校验并登记产物。' } : launched;
+}
+
 function submitQClawInboxTask(task, command) {
   const store = readTaskStore();
   const executionId = `qclaw-${Date.now()}-${crypto.randomBytes(4).toString('hex')}`;
@@ -16614,6 +18063,7 @@ function getAgentExecutionAdapters() {
     internal: { ...common, id: 'internal', capabilities: () => adapterCapabilities().internal, submit: (task, command) => submitInternalTask(task, command), cancel: () => ({ ok: false, message: '内部同步操作不可中途取消。' }), health: () => adapterCapabilities().internal },
     openclaw: { ...common, id: 'openclaw', capabilities: () => adapterCapabilities().openclaw, submit: (task, command) => submitOpenClawTask(task, command), cancel: (task) => cancelRunningAdapterTask(task.id), health: () => adapterCapabilities(true).openclaw },
     codex: { ...common, id: 'codex', capabilities: () => adapterCapabilities().codex, submit: (task, command) => submitCodexTask(task, command), cancel: (task) => cancelRunningAdapterTask(task.id), health: () => adapterCapabilities(true).codex },
+    workbuddy: { ...common, id: 'workbuddy', capabilities: () => adapterCapabilities().workbuddy, submit: (task, command) => submitWorkBuddyTask(task, command), cancel: (task) => cancelRunningAdapterTask(task.id), health: () => adapterCapabilities(true).workbuddy },
     qclaw: { ...common, id: 'qclaw', capabilities: () => adapterCapabilities().qclaw, submit: (task, command) => submitQClawTask(task, command), cancel: () => ({ ok: false, message: 'QClaw 收件箱任务需要在 QClaw 侧停止。' }), health: () => adapterCapabilities(true).qclaw },
     manual: { ...common, id: 'manual', capabilities: () => adapterCapabilities().manual, submit: (task, command, context = {}) => submitManualTask(task, command, context.reason), cancel: () => ({ ok: true }), health: () => adapterCapabilities().manual },
   };
@@ -16795,7 +18245,9 @@ function cancelTask(taskId, note = '') {
     const adapter = task ? getAgentExecutionAdapters()[task.adapterId] : null;
     if (adapter?.cancel) adapter.cancel(task);
     const transition = transitionTaskInStore(store, String(taskId), 'cancelled', { error: { code: 'CANCELLED', message: String(note || '用户取消任务。') } }, 'task_cancelled');
-    if (transition.ok) writeTaskStore(store);
+    if (transition.ok) {
+      writeTaskStore(store);
+    }
     return JSON.stringify({ ...transition, message: transition.ok ? '任务已取消。' : transition.message });
   } catch (error) {
     return JSON.stringify({ ok: false, message: `取消任务失败：${error.message}` });
@@ -17830,6 +19282,31 @@ function startDigestWorkflow(scopeType, scopeId, requestedExecutor = 'auto') {
   catch (error) { return JSON.stringify({ ok: false, message: `开始资料处理失败：${error.message}` }); }
 }
 
+function scheduleStudentDigestContinuation(studentId) {
+  const key = String(studentId || '');
+  if (!key || studentDigestContinuationTimers.has(key)) return;
+  const timer = setTimeout(async () => {
+    studentDigestContinuationTimers.delete(key);
+    try {
+      const business = digestBusinessSnapshot('student', key);
+      if (!business.ok || Number(business.pendingCount || 0) <= 0 || Number(business.submittedCount || 0) > 0) return;
+      const executor = configuredDigestExecutor('student', key, 'auto');
+      // A manual adapter still needs a user to copy/run the new frozen batch;
+      // automatic adapters may safely continue with the next bounded batch.
+      if (!executor || executor === 'manual') return;
+      const task = readTaskStore().tasks.find((item) => String(item.id) === digestTaskId('student', key));
+      if (task && !['succeeded', 'failed', 'cancelled', 'timed_out', 'pending', 'queued', 'approved'].includes(String(task.status || ''))) {
+        scheduleStudentDigestContinuation(key);
+        return;
+      }
+      await startDigestWorkflowWithFreshCapabilities('student', key, executor);
+    } catch {
+      // Pending materials remain visible and can be retried from the UI.
+    }
+  }, 5_000);
+  studentDigestContinuationTimers.set(key, timer);
+}
+
 async function startDigestWorkflowWithFreshCapabilities(scopeType, scopeId, requestedExecutor = 'auto') {
   const executor = configuredDigestExecutor(scopeType, scopeId, requestedExecutor);
   await refreshCapabilitiesForExplicitExecution(executor);
@@ -18813,7 +20290,7 @@ function agentSoulUnifiedPath(student) {
 }
 
 function agentSourceDir(baseDir, tool) {
-  return path.join(baseDir, 'sources', AGENT_TOOL_IDS.includes(tool) ? tool : 'qclaw');
+  return path.join(baseDir, 'sources', isKnownAgentSource(tool) ? tool : 'qclaw');
 }
 
 function sha1Text(value) {
@@ -18912,7 +20389,7 @@ function appendAgentSourceRecord(student, record) {
       id: record.id || `${Date.now()}-${Math.random().toString(16).slice(2)}`,
       studentId: String(student.id || ''),
       assetType: record.assetType || 'memory',
-      tool: AGENT_TOOL_IDS.includes(record.tool) ? record.tool : 'qclaw',
+      tool: isKnownAgentSource(record.tool) ? record.tool : 'qclaw',
       sourceType: record.sourceType || 'manualPaste',
       sourcePath: record.sourcePath || '',
       targetPath: record.targetPath || '',
@@ -18994,7 +20471,7 @@ function ensureAgentCenter(student) {
 }
 
 function importExistingAgentFile(student, filename, baseDir, currentName) {
-  const tool = AGENT_TOOL_IDS.includes(student.agentTool) ? student.agentTool : 'qclaw';
+  const tool = isKnownAgentSource(student.agentTool) ? student.agentTool : 'qclaw';
   const source = path.join(student.rootPath || getStudentRootDir(student.name), filename);
   const target = path.join(agentSourceDir(baseDir, tool), currentName);
   if (fs.existsSync(source) && !fs.existsSync(target)) {
@@ -19003,7 +20480,7 @@ function importExistingAgentFile(student, filename, baseDir, currentName) {
 }
 
 function listSourceEntries(baseDir, currentName, mode) {
-  return AGENT_TOOL_IDS.map((tool) => {
+  return KNOWN_AGENT_SOURCE_IDS.map((tool) => {
     const currentPath = path.join(agentSourceDir(baseDir, tool), currentName);
     const content = fs.existsSync(currentPath) ? fs.readFileSync(currentPath, 'utf8') : '';
     return {
@@ -19086,7 +20563,7 @@ function saveAgentMemorySource(studentId, tool, content, mode) {
     const student = findStudentByKey(studentId);
     if (!student) return JSON.stringify({ ok: false, message: '未找到学生。' });
     ensureAgentCenter(student);
-    const safeTool = AGENT_TOOL_IDS.includes(tool) ? tool : 'qclaw';
+    const safeTool = isKnownAgentSource(tool) ? tool : 'qclaw';
     const dir = agentSourceDir(agentMemoryDir(student), safeTool);
     const file = path.join(dir, 'current.Memory.md');
     const snapshot = snapshotCurrentFile(file, path.join(dir, 'snapshots'));
@@ -19113,7 +20590,7 @@ function mergeAgentMemory(studentId) {
     if (!student) return JSON.stringify({ ok: false, message: '未找到学生。' });
     ensureAgentCenter(student);
     const chunks = [];
-    for (const tool of AGENT_TOOL_IDS) {
+    for (const tool of KNOWN_AGENT_SOURCE_IDS) {
       const file = path.join(agentSourceDir(agentMemoryDir(student), tool), 'current.Memory.md');
       if (fs.existsSync(file)) chunks.push({ tool, content: fs.readFileSync(file, 'utf8') });
     }
@@ -19144,7 +20621,7 @@ function saveAgentSoulSource(studentId, tool, content) {
     const student = findStudentByKey(studentId);
     if (!student) return JSON.stringify({ ok: false, message: '未找到学生。' });
     ensureAgentCenter(student);
-    const safeTool = AGENT_TOOL_IDS.includes(tool) ? tool : 'qclaw';
+    const safeTool = isKnownAgentSource(tool) ? tool : 'qclaw';
     const dir = agentSourceDir(agentSoulDir(student), safeTool);
     const file = path.join(dir, 'current.Soul.md');
     const snapshot = snapshotCurrentFile(file, path.join(dir, 'snapshots'));
@@ -19183,7 +20660,7 @@ function compareAgentSoulSource(studentId, tool) {
     const student = findStudentByKey(studentId);
     if (!student) return JSON.stringify({ ok: false, message: '未找到学生。' });
     ensureAgentCenter(student);
-    const safeTool = AGENT_TOOL_IDS.includes(tool) ? tool : 'qclaw';
+    const safeTool = isKnownAgentSource(tool) ? tool : 'qclaw';
     const sourceFile = path.join(agentSourceDir(agentSoulDir(student), safeTool), 'current.Soul.md');
     const unified = fs.existsSync(agentSoulUnifiedPath(student)) ? fs.readFileSync(agentSoulUnifiedPath(student), 'utf8') : '';
     const source = fs.existsSync(sourceFile) ? fs.readFileSync(sourceFile, 'utf8') : '';
@@ -19307,7 +20784,7 @@ function ruleFileTemplateIntro(student, fileName) {
     return `# ${cleanName} 教育管家 ima.copilot 规则\n\n本文件用于 ima.copilot 围绕该学生知识库进行搜、读、写和资料消化协作。\n\n## 工作规则\n\n该 Agent 的工作协议使用：${p.agent}\n后续所有学习资料消化都围绕该学生知识库执行。\n\n请优先读取 AGENT.md，再处理原始资料库与学情分析汇总。不要移动、删除用户原始资料。\n\n${learningReportProtocolText(p.summary)}\n`;
   }
   if (lower === 'workbuddy.md') {
-    return `# ${cleanName} 教育管家 WorkBuddy 规则\n\n本文件用于 WorkBuddy 在该学生知识库目录中执行资料整理、报告生成和后续跟进。\n\n## 工作规则\n\n该 Agent 的工作协议使用：${p.agent}\n后续所有学习资料消化都围绕该学生知识库执行。\n\n请优先读取 AGENT.md，再处理原始资料库与学情分析汇总。不要移动、删除用户原始资料。\n\n${learningReportProtocolText(p.summary)}\n`;
+    return `# ${cleanName} 教育管家 WorkBuddy 规则\n\n本文件用于 WorkBuddy 在该学生知识库目录中执行资料整理、报告生成和后续跟进。\n\n## 工作规则\n\n该 Agent 的工作协议使用：${p.agent}\n后续所有学习资料消化都围绕该学生知识库执行。\n\n请优先读取 AGENT.md，再处理原始资料库与学情分析汇总。不要移动、删除用户原始资料。教育管家任务中心只负责本任务执行，不会把任务上下文写入自动会话记忆；只有用户已授权的外部 Agent 当前聊天才由生命周期 Hook 自动采集，不需要 Agent 主动调用。\n\n${learningReportProtocolText(p.summary)}\n`;
   }
   return defaultRuleFileContent(student, fileName);
 }
@@ -19402,6 +20879,7 @@ function inferAgentToolFromPath(filePath) {
   if (lower.includes('claude-code') || lower.includes('.claude')) return 'claude-code';
   if (lower.includes('ima.copilot') || lower.includes('\\ima\\') || lower.includes('/ima/') || lower.includes('.ima')) return 'ima.copilot';
   if (lower.includes('workbuddy') || lower.includes('work-buddy')) return 'workbuddy';
+  if (lower.includes('hermes')) return 'hermes';
   if (lower.includes('chatgpt') || lower.includes('openai')) return 'chatgpt';
   if (lower.includes('doubao') || lower.includes('豆包')) return 'doubao';
   if (lower.includes('fastgpt')) return 'fastgpt';
@@ -19417,7 +20895,7 @@ function inferAgentToolFromPath(filePath) {
 
 function inferAgentKnowledgeKind(fileName) {
   const lower = String(fileName || '').toLowerCase();
-  if (/^(agents|agent|claude|claud|qclaw|openclaw|marvis|hohu|ima|ima\.copilot|workbuddy|rules?)\.(md|txt)$/i.test(lower)) return 'rule';
+  if (/^(agents|agent|claude|claud|qclaw|openclaw|marvis|hohu|ima|ima\.copilot|workbuddy|hermes|rules?)\.(md|txt)$/i.test(lower)) return 'rule';
   if (/(conversation|chat|history|transcript|对话|聊天|会话)/i.test(lower)) return 'conversation';
   if (/^(memory|long[-_ ]?term[-_ ]?memory|memories)\.(md|txt|json)$/.test(lower) || lower.includes('memory')) return 'memory';
   if (/^(soul|persona|role|system|prompt|profile)\.(md|txt|json)$/.test(lower) || /(soul|persona|role|system|人设|角色)/i.test(lower)) return 'soul';
@@ -19454,7 +20932,7 @@ function scoreAgentKnowledgeCandidate(student, filePath, fileName, kind, content
   if (student.agentPath && text.includes(student.agentPath)) add(35, '内容包含 AGENT.md 完整路径');
   if (lowerText.includes('agent.md')) add(22, '内容提到 AGENT.md');
   if (/原始资料库|学情分析汇总|学习资料消化|知识库/.test(text)) add(20, '内容包含教育管家知识库关键词');
-  if (AGENT_TOOL_IDS.some((tool) => lowerPath.includes(tool))) add(14, '路径命中 Agent 工具目录');
+  if (KNOWN_AGENT_SOURCE_IDS.some((tool) => lowerPath.includes(tool))) add(14, '路径命中 Agent 工具目录');
   if ((kind === 'memory' && lowerName === 'memory.md') || (kind === 'soul' && lowerName === 'soul.md') || (kind === 'rule' && /^(agent|agents|claude)\.md$/.test(lowerName))) add(12, '文件名为标准名称');
   if (lowerPath.includes(String(student.name || '').toLowerCase())) add(10, '路径包含学生姓名');
   return { score, reasons };
@@ -19534,7 +21012,7 @@ function importAgentKnowledgeFile(studentId, filePath, tool, kind) {
   try {
     const student = findStudentByKey(studentId);
     if (!student) return JSON.stringify({ ok: false, message: '未找到学生。' });
-    const safeTool = AGENT_TOOL_IDS.includes(tool) ? tool : inferAgentToolFromPath(filePath);
+    const safeTool = isKnownAgentSource(tool) ? tool : inferAgentToolFromPath(filePath);
     const safeKind = ['soul', 'rule', 'conversation'].includes(kind) ? kind : 'memory';
     if (!filePath || !fs.existsSync(filePath) || !fs.statSync(filePath).isFile()) {
       return JSON.stringify({ ok: false, message: '候选文件不存在或不可读取。' });
@@ -20098,7 +21576,7 @@ function saveAgentConversationImport(studentId, content, tool = 'qclaw', sourceP
   try {
     const student = findStudentByKey(studentId);
     if (!student) return JSON.stringify({ ok: false, message: '未找到学生。' });
-    const safeTool = AGENT_TOOL_IDS.includes(tool) ? tool : 'qclaw';
+    const safeTool = isKnownAgentSource(tool) ? tool : 'qclaw';
     if (!String(content || '').trim()) return JSON.stringify({ ok: false, message: '对话历史不能为空。' });
     fs.mkdirSync(agentConversationImportsDir(student), { recursive: true });
     fs.mkdirSync(conversationInteractionsDir(student), { recursive: true });
@@ -20244,7 +21722,7 @@ function projectConversationCandidatesPath(project) {
 function saveAgentProjectConversationImport(student, project, content, tool = 'qclaw', sourcePath = '') {
   try {
     const ensuredProject = ensureProjectWorkspace(project);
-    const safeTool = AGENT_TOOL_IDS.includes(tool) ? tool : 'qclaw';
+    const safeTool = isKnownAgentSource(tool) ? tool : 'qclaw';
     if (!String(content || '').trim()) return { ok: false, message: '对话历史不能为空。' };
     const governanceDir = projectConversationGovernanceDir(ensuredProject);
     const interactionsDir = path.join(governanceDir, 'interactions');
@@ -20578,13 +22056,13 @@ function persistAgentConversationSubmission(input, options = {}) {
       target.student,
       target.project,
       conversationSubmissionContent(submission),
-      AGENT_TOOL_IDS.includes(submission.sourceAgent) ? submission.sourceAgent : 'qclaw',
+      isKnownAgentSource(submission.sourceAgent) ? submission.sourceAgent : 'qclaw',
       options.sourcePath || '',
     )
     : parseJsonObject(saveAgentConversationImport(
       target.student.id,
       conversationSubmissionContent(submission),
-      AGENT_TOOL_IDS.includes(submission.sourceAgent) ? submission.sourceAgent : 'qclaw',
+      isKnownAgentSource(submission.sourceAgent) ? submission.sourceAgent : 'qclaw',
       options.sourcePath || '',
     ));
   if (!imported.ok) throw new Error(imported.message || '保存不可变对话资产失败。');
@@ -20674,7 +22152,7 @@ function selectAgentConversationFiles(studentId, tool = 'qclaw') {
   try {
     const student = findStudentByKey(studentId);
     if (!student) return JSON.stringify({ ok: false, message: '未找到学生。' });
-    const safeTool = AGENT_TOOL_IDS.includes(tool) ? tool : 'qclaw';
+    const safeTool = isKnownAgentSource(tool) ? tool : 'qclaw';
     const result = dialog.showOpenDialogSync(mainWindow, {
       title: '选择对话历史文件',
       properties: ['openFile', 'multiSelections'],
@@ -20730,7 +22208,7 @@ function saveConversationExtract(studentId, extractJson, tool = 'qclaw') {
   try {
     const student = findStudentByKey(studentId);
     if (!student) return JSON.stringify({ ok: false, message: '未找到学生。' });
-    const safeTool = AGENT_TOOL_IDS.includes(tool) ? tool : 'qclaw';
+    const safeTool = isKnownAgentSource(tool) ? tool : 'qclaw';
     let parsed = {};
     try {
       parsed = JSON.parse(extractJsonLikeText(extractJson || '{}'));
@@ -20985,7 +22463,7 @@ function toHostStudent(student) {
   const bindingStatus = String(student.remoteBindingStatus || 'unbound').toLowerCase();
   const remoteBindingStatus = ['unbound', 'pending', 'bound'].includes(bindingStatus) ? bindingStatus : 'unbound';
   const tool = String(student.agentTool || 'qclaw').toLowerCase();
-  const agentTool = AGENT_TOOL_IDS.includes(tool) ? tool : 'qclaw';
+  const agentTool = isKnownAgentSource(tool) ? tool : 'qclaw';
   const mode = String(student.knowledgeBaseMode || 'standard').toLowerCase() === 'adopted' ? 'adopted' : 'standard';
   const rootPath = student.rootPath || getStudentRootDir(cleanName);
   const rawPath = student.rawPath || getRawDir(cleanName);
@@ -21012,6 +22490,7 @@ function toHostStudent(student) {
     goal: String(student.goal || ''),
     digestTime: String(student.digestTime || '21:30'),
     agentTool,
+    agentToolLegacy: !isActiveAgentTool(agentTool),
     agentBindingMode: ['subAgent', 'mainChat'].includes(bindingMode) ? bindingMode : 'subAgent',
     agentName: String(student.agentName || ''),
     agentNote: String(student.agentNote || ''),
@@ -21198,6 +22677,8 @@ function hostStudentStats() {
     const rawPath = student.rawPath || getRawDir(student.name);
     const summaryPath = student.summaryPath || getSummaryDir(student.name);
     const records = recordsByStudent.get(String(student.id)) || [];
+    const materials = readStudentMaterials(student);
+    const digestLedger = materials.length ? materials : records;
     const state = readStudentDigestState(student);
     return {
       id: String(student.id),
@@ -21206,9 +22687,9 @@ function hostStudentStats() {
       loginQrPayload: student.loginId ? studentLoginQrPayload(student.loginId) : '',
       rawFileCount: hostDirectoryCountCache.count(rawPath, 'all'),
       archiveFileCount: hostDirectoryCountCache.count(summaryPath, 'markdown', (name) => name.toLowerCase().endsWith('.md')),
-      pendingDigestCount: records.filter((record) => normalizeUploadStatus(record.status) === 'pending_digest').length,
-      submittedDigestCount: records.filter((record) => ['submitted', 'digesting'].includes(normalizeUploadStatus(record.status))).length,
-      processedDigestCount: records.filter((record) => normalizeUploadStatus(record.status) === 'processed').length,
+      pendingDigestCount: digestLedger.filter((record) => normalizeUploadStatus(record.status) === 'pending_digest').length,
+      submittedDigestCount: digestLedger.filter((record) => ['submitted', 'digesting'].includes(normalizeUploadStatus(record.status))).length,
+      processedDigestCount: digestLedger.filter((record) => normalizeUploadStatus(record.status) === 'processed').length,
       lastDigestAt: state.lastDigestAt || '',
       digestStatus: state.status || 'idle',
       digestMessage: state.message || '',
@@ -21786,6 +23267,16 @@ function findAgentToolInstallUncached(toolId) {
         path.join(os.homedir(), '.claude'),
       ],
     },
+    hermes: {
+      displayNeedle: 'hermes',
+      exeNames: ['hermes.cmd', 'hermes.exe', 'hermes'],
+      roots: [
+        process.env.LOCALAPPDATA ? path.join(process.env.LOCALAPPDATA, 'hermes') : '',
+        path.join(os.homedir(), 'AppData', 'Local', 'hermes'),
+        path.join(os.homedir(), 'AppData', 'Roaming', 'npm'),
+        path.join(os.homedir(), '.hermes'),
+      ],
+    },
   };
   const meta = toolMeta[toolId] || toolMeta.qclaw;
   const displayNeedle = meta.displayNeedle;
@@ -21797,7 +23288,7 @@ function findAgentToolInstallUncached(toolId) {
     }
     return haystack.includes(displayNeedle);
   };
-  if (toolId === 'codex' || toolId === 'claude-code') {
+  if (['codex', 'claude-code', 'hermes'].includes(toolId)) {
     const pathExe = findExecutableInPath(exeNames);
     if (pathExe) {
       return {
@@ -21911,8 +23402,11 @@ function getAgentToolInstallStatus() {
   const workbuddy = findAgentToolInstall('workbuddy');
   const codex = findAgentToolInstall('codex');
   const claudeCode = findAgentToolInstall('claude-code');
-  const webTool = (url, label = '网页入口') => ({ installed: true, version: label, exePath: url, installLocation: url });
+  const hermes = findAgentToolInstall('hermes');
+  const webTool = (url, label = '网页入口') => ({ installed: false, available: true, openable: true, version: label, exePath: url, installLocation: url });
   const tailscale = findTailscaleInstall();
+  const localTools = { qclaw, openclaw, workbuddy, hermes, hohu, 'ima.copilot': imaCopilot, marvis, codex, 'claude-code': claudeCode };
+  const recommendedTool = Object.entries(localTools).find(([, tool]) => tool.installed)?.[0] || 'qclaw';
   return JSON.stringify({
     qclaw,
     marvis,
@@ -21922,14 +23416,13 @@ function getAgentToolInstallStatus() {
     workbuddy,
     codex,
     claudeCode,
+    hermes,
     chatgpt: codex,
     claude: webTool(WEB_AGENT_TOOL_URLS.claude),
     doubao: webTool(WEB_AGENT_TOOL_URLS.doubao),
-    coze: webTool(WEB_AGENT_TOOL_URLS.coze, '平台入口'),
-    fastgpt: webTool(WEB_AGENT_TOOL_URLS.fastgpt, '平台入口'),
     tailscale,
-    anyInstalled: true,
-    recommendedTool: qclaw.installed ? 'qclaw' : (openclaw.installed ? 'openclaw' : (workbuddy.installed ? 'workbuddy' : (hohu.installed ? 'hohu' : (imaCopilot.installed ? 'ima.copilot' : (marvis.installed ? 'marvis' : (codex.installed ? 'codex' : (claudeCode.installed ? 'claude-code' : 'qclaw'))))))),
+    anyInstalled: Object.values(localTools).some((item) => item.installed),
+    recommendedTool,
   });
 }
 
@@ -22040,6 +23533,16 @@ function openApp(appName) {
       shell.openPath(defaultStudentBaseDir()).catch(() => {});
     } else {
       shell.openExternal('https://www.anthropic.com/claude-code').catch(() => {});
+    }
+    return true;
+  }
+  if (appName === 'hermes') {
+    hermesOpened = true;
+    const exe = findAgentToolInstall('hermes').exePath;
+    if (exe && fs.existsSync(exe)) {
+      shell.openPath(defaultStudentBaseDir()).catch(() => {});
+    } else {
+      shell.openExternal('https://hermes-agent.nousresearch.com/').catch(() => {});
     }
     return true;
   }
@@ -22235,6 +23738,9 @@ function listLearningReports(studentKey) {
     const ensured = license.active
       ? ensureLearningReportsForStudent(student)
       : { reportDir: learningReportDirForStudent(student), created: [] };
+    const draftRecovery = license.active
+      ? recoverValidatedLearningReportDrafts(student)
+      : { recovered: [], rejected: [], taskIds: [] };
     const reports = LEARNING_REPORTS.map((report) => learningReportRecord(student, report));
     const health = learningReportHealthSummary(reports);
     return JSON.stringify({
@@ -22244,13 +23750,67 @@ function listLearningReports(studentKey) {
       reports,
       health,
       recovery,
+      draftRecovery,
       created: ensured.created,
-      message: recovery.recovered.length
+      message: draftRecovery.recovered.length
+        ? `已恢复并发布 ${draftRecovery.recovered.length} 份通过校验的报告草稿。${health.message}`
+        : recovery.recovered.length
         ? `已从迁移的历史教育档案恢复 ${recovery.recovered.length} 份学情报告。${health.message}`
         : ensured.created.length ? `已补建 ${ensured.created.length} 个报告模板。${health.message}` : health.message,
     });
   } catch (error) {
     return JSON.stringify({ ok: false, message: `读取学情报告失败：${error.message}` });
+  }
+}
+
+async function updateLearningReports(studentKey) {
+  try {
+    const license = publicLicenseStatus();
+    if (!license.active) return JSON.stringify({ ok: false, message: '未激活状态仅支持浏览已有学情报告。' });
+    const student = findStudentByKey(studentKey);
+    if (!student) return JSON.stringify({ ok: false, message: '未找到学生。' });
+    ensureLearningReportsForStudent(student);
+    const draftRecovery = recoverValidatedLearningReportDrafts(student);
+    const prepared = prepareCurrentLearningReportTasks(student);
+    await refreshAdapterCapabilities(true);
+    const capabilities = adapterCapabilities();
+    const started = [];
+    const skipped = [];
+    for (const taskId of prepared.candidates.map((task) => task.id)) {
+      const task = readTaskStore().tasks.find((item) => String(item.id) === String(taskId));
+      if (!task || ['succeeded', 'running', 'waiting_result', 'reviewing'].includes(task.status)) continue;
+      if (!String(task.input?.growthFingerprint || '')) {
+        skipped.push({ taskId, title: task.title, message: '成长模型尚无可验证指纹。' });
+        continue;
+      }
+      const preferred = String(task.requestedExecutor || task.executor || '');
+      const preferredCapability = capabilities[preferred];
+      const executor = preferredCapability?.available && preferredCapability?.authorized !== false ? preferred : 'auto';
+      const route = routeTask(task, executor);
+      if (route.selectedAdapter === 'manual') {
+        skipped.push({ taskId, title: task.title, message: '当前没有可自动执行的 Agent，请到任务中心选择执行器。' });
+        continue;
+      }
+      let execution;
+      try { execution = JSON.parse(executeTaskByAdapter(task.id, executor)); }
+      catch { execution = { ok: false, message: '任务启动结果无法解析。' }; }
+      if (execution.ok) started.push({ taskId, title: task.title, adapterId: execution.task?.adapterId || route.selectedAdapter });
+      else skipped.push({ taskId, title: task.title, message: execution.message || '任务未能启动。' });
+    }
+    const reports = LEARNING_REPORTS.map((report) => learningReportRecord(student, report));
+    const health = learningReportHealthSummary(reports);
+    const recoveredCount = draftRecovery.recovered.length;
+    const startedCount = started.length;
+    const skippedCount = skipped.length;
+    const message = [
+      recoveredCount ? `已恢复并发布 ${recoveredCount} 份有效草稿` : '',
+      startedCount ? `已启动 ${startedCount} 项当前周期更新` : '',
+      skippedCount ? `${skippedCount} 项暂未启动，可在任务中心查看原因` : '',
+      !recoveredCount && !startedCount && !skippedCount ? '当前四份学情报告均已是最新版本。' : '',
+    ].filter(Boolean).join('；');
+    return JSON.stringify({ ok: true, studentId: String(student.id), recovered: draftRecovery.recovered, started, skipped, reports, health, message });
+  } catch (error) {
+    return JSON.stringify({ ok: false, message: `更新学情报告失败：${error.message}` });
   }
 }
 
@@ -23028,6 +24588,8 @@ function authContext(request) {
   const match = /^Bearer\s+(.+)$/i.exec(header);
   const token = match ? match[1].trim() : '';
   if (!token) return null;
+  const agentGrant = resolveAgentAccessGrant(readAgentAccessGrantStore(), token);
+  if (agentGrant) return agentGrant;
   if (token === ensureApiToken()) {
     return { type: 'admin', allowedStudentIds: null };
   }
@@ -23249,6 +24811,8 @@ function terminalFileStats(student, records, progress) {
 
 function terminalStudentRecord(student) {
   const records = readUploadRecords().filter((record) => String(record.studentId) === String(student.id));
+  const materials = readStudentMaterials(student);
+  const digestLedger = materials.length ? materials : records;
   const state = readStudentDigestState(student);
   const progress = studentTerminalProgress(records, state);
   const fileStats = terminalFileStats(student, records, progress);
@@ -23256,9 +24820,9 @@ function terminalStudentRecord(student) {
     ...student,
     loginQrPayload: studentLoginQrPayload(student.loginId),
     ...fileStats,
-    pendingDigestCount: records.filter((record) => normalizeUploadStatus(record.status) === 'pending_digest').length,
-    submittedDigestCount: records.filter((record) => ['submitted', 'digesting'].includes(normalizeUploadStatus(record.status))).length,
-    processedDigestCount: records.filter((record) => normalizeUploadStatus(record.status) === 'processed').length,
+    pendingDigestCount: digestLedger.filter((record) => normalizeUploadStatus(record.status) === 'pending_digest').length,
+    submittedDigestCount: digestLedger.filter((record) => ['submitted', 'digesting'].includes(normalizeUploadStatus(record.status))).length,
+    processedDigestCount: digestLedger.filter((record) => normalizeUploadStatus(record.status) === 'processed').length,
     lastDigestAt: state.lastDigestAt || '',
     digestStatus: state.status || 'idle',
     digestMessage: state.message || '',
@@ -23546,6 +25110,9 @@ function projectAllowed(request, project) {
   if (!request.authContext || request.authContext.type === 'admin') return true;
   if (request.authContext.type === 'device' && request.authContext.deviceRole === 'teacher') return true;
   if (request.authContext.type === 'device' && request.authContext.terminalMode === 'shared') return false;
+  if (request.authContext.type === 'agent_grant') {
+    return (request.authContext.allowedProjectIds || []).includes(String(project.id));
+  }
   const allowed = new Set(request.authContext.allowedStudentIds || []);
   return (project.studentIds || []).some((id) => allowed.has(String(id)));
 }
@@ -25040,6 +26607,10 @@ function resolveIncomingAgentKnowledgeScope(incoming = {}) {
 async function handleAgentKnowledgeQuery(request, response) {
   try {
     if (!requireAuth(request, response)) return;
+    if (request.authContext?.type === 'agent_grant' && !(request.authContext.capabilities || []).includes('knowledge:query')) {
+      sendJson(response, 403, { ok: false, message: '当前 Agent 授权不包含知识查询能力。' });
+      return;
+    }
     const bodyBuffer = await readRequestBuffer(request, 512 * 1024);
     const incoming = bodyBuffer.length ? JSON.parse(bodyBuffer.toString('utf8')) : {};
     const scopedIncoming = resolveIncomingAgentKnowledgeScope(incoming);
@@ -25054,8 +26625,7 @@ async function handleAgentKnowledgeQuery(request, response) {
     }
     if (query.scopeType === 'project' && request.authContext?.type !== 'admin') {
       const project = readProjects().map(normalizeProject).find((item) => String(item.id) === String(query.scopeId));
-      const studentIds = (project?.studentIds || []).map(String);
-      if (!project || !studentIds.some((studentId) => isStudentAllowed(request, studentId))) {
+      if (!project || !projectAllowed(request, project)) {
         sendJson(response, 403, { ok: false, message: '当前调用方没有访问该项目知识的权限。' });
         return;
       }
@@ -25070,6 +26640,10 @@ async function handleAgentKnowledgeQuery(request, response) {
 async function handleAgentConversationSubmission(request, response) {
   try {
     if (!requireAuth(request, response)) return;
+    if (request.authContext?.type === 'agent_grant' && !(request.authContext.capabilities || []).includes('conversation:submit')) {
+      sendJson(response, 403, { ok: false, message: '当前 Agent 授权不包含对话投递能力。' });
+      return;
+    }
     const bodyBuffer = await readRequestBuffer(request, 5 * 1024 * 1024);
     const incoming = bodyBuffer.length ? JSON.parse(bodyBuffer.toString('utf8')) : {};
     const submission = normalizeAgentConversationSubmission(incoming);
@@ -25120,6 +26694,19 @@ function handleHostRequest(request, response) {
   }
   if (request.method === 'POST' && pathname === '/api/agent/conversation/submit') {
     handleAgentConversationSubmission(request, response);
+    return;
+  }
+  const agentMemoryRoutes = {
+    '/api/agent/memory/session/start': 'start',
+    '/api/agent/memory/session/append': 'append',
+    '/api/agent/memory/session/observe': 'observe',
+    '/api/agent/memory/session/finalize': 'finalize',
+    '/api/agent/memory/recent': 'recent',
+    '/api/agent/memory/handoff/accept': 'handoff-accept',
+    '/api/agent/memory/handoff/cancel': 'handoff-cancel',
+  };
+  if (request.method === 'POST' && agentMemoryRoutes[pathname]) {
+    handleAgentMemoryRequest(request, response, agentMemoryRoutes[pathname]);
     return;
   }
   if (request.method === 'POST' && pathname === REMOTE_ARCHIVE_PATH) {
@@ -25708,7 +27295,7 @@ ipcMain.on('bridge:initStudentWorkspace', (event, studentName, agentMd, indexMd,
 ipcMain.on('bridge:openApp', (event, appName) => { event.returnValue = openApp(appName); });
 ipcMain.on('bridge:openExternalUrl', (event, url) => { event.returnValue = openExternalUrl(url); });
 ipcMain.on('bridge:getAppStatus', (event) => {
-  event.returnValue = JSON.stringify({ qclawOpened, marvisOpened, hohuOpened, openclawOpened, imaCopilotOpened, workbuddyOpened, codexOpened, claudeCodeOpened, obsidianOpened });
+  event.returnValue = JSON.stringify({ qclawOpened, marvisOpened, hohuOpened, openclawOpened, imaCopilotOpened, workbuddyOpened, codexOpened, claudeCodeOpened, hermesOpened, obsidianOpened });
 });
 ipcMain.on('bridge:getStorageConfig', (event) => { event.returnValue = getStorageConfig(); });
 ipcMain.on('bridge:getTemplateCenter', (event, systemTemplatesJson) => { event.returnValue = getTemplateCenter(systemTemplatesJson); });
@@ -25765,6 +27352,7 @@ ipcMain.on('bridge:readMarkdownFile', (event, studentId, documentId) => { event.
 ipcMain.on('bridge:listProjectKnowledgeFiles', (event, projectId) => { event.returnValue = listProjectKnowledgeFiles(projectId); });
 ipcMain.on('bridge:readProjectKnowledgeFile', (event, projectId, documentId) => { event.returnValue = readProjectKnowledgeFile(projectId, documentId); });
 ipcMain.on('bridge:listLearningReports', (event, studentId) => { event.returnValue = listLearningReports(studentId); });
+ipcMain.handle('bridge:updateLearningReports', (_event, studentId) => licensedInvoke('更新学情报告', () => updateLearningReports(studentId)));
 ipcMain.on('bridge:readLearningReport', (event, studentId, reportId) => { event.returnValue = readLearningReport(studentId, reportId); });
 ipcMain.on('bridge:getLearningReportEvidence', (event, studentId, reportId) => { event.returnValue = getLearningReportEvidence(studentId, reportId); });
 ipcMain.on('bridge:openLearningReportEvidenceSource', (event, studentId, reportId, evidenceId, sourceIndex) => { event.returnValue = openLearningReportEvidenceSource(studentId, reportId, evidenceId, sourceIndex); });
@@ -25870,6 +27458,9 @@ ipcMain.on('bridge:openHostUploadRecord', (event, recordId) => { event.returnVal
 ipcMain.on('bridge:clearHostUploadRecords', (event) => { licensedIpc(event, '上传记录维护', () => clearHostUploadRecords()); });
 ipcMain.on('bridge:setHostUploadRecordStatus', (event, recordId, status) => { licensedIpc(event, '上传记录状态维护', () => setHostUploadRecordStatus(recordId, status)); });
 ipcMain.on('bridge:markStudentDigestSubmitted', (event, studentId) => { licensedIpc(event, '资料消化任务', () => markStudentDigestSubmitted(studentId)); });
+ipcMain.on('bridge:getStudentMaterialPathIssues', (event, studentId) => { event.returnValue = getStudentMaterialPathIssues(studentId); });
+ipcMain.on('bridge:retryStudentMaterialPathRecovery', (event, studentId) => { licensedIpc(event, '资料路径检查与修复', () => retryStudentMaterialPathRecovery(studentId)); });
+ipcMain.on('bridge:selectStudentMaterialPath', (event, studentId, materialId) => { licensedIpc(event, '手工选择资料路径', () => selectStudentMaterialPath(studentId, materialId)); });
 ipcMain.on('bridge:syncStudentDigestResult', (event, studentId) => { licensedIpc(event, '资料消化结果同步', () => syncStudentDigestResult(studentId, { forceSubmitted: true })); });
 ipcMain.handle('bridge:startDigestWorkflow', (_event, scopeType, scopeId, executor) => licensedInvoke('开始资料自动处理', () => startDigestWorkflowWithFreshCapabilities(scopeType, scopeId, executor)));
 ipcMain.on('bridge:getDigestWorkflowStatus', (event, scopeType, scopeId) => { event.returnValue = getDigestWorkflowStatus(scopeType, scopeId); });
@@ -25893,6 +27484,8 @@ ipcMain.on('bridge:assignAgentConversationSubmission', (event, submissionId, sco
 });
 ipcMain.on('bridge:getAgentKnowledgeDiagnostics', (event) => { event.returnValue = getAgentKnowledgeDiagnostics(); });
 ipcMain.on('bridge:prepareAgentKnowledgeAccess', (event, studentId) => { licensedIpc(event, 'Agent 知识调用', () => prepareAgentKnowledgeAccess(studentId)); });
+ipcMain.on('bridge:getAgentMemoryState', (event, studentId) => { event.returnValue = agentMemoryState(studentId); });
+ipcMain.on('bridge:setAgentMemoryAutomation', (event, studentId, enabled) => { licensedIpc(event, 'Agent 自动会话记忆', () => setAgentMemoryAutomation(studentId, enabled)); });
 ipcMain.on('bridge:getTaskCenterCapabilities', (event) => { event.returnValue = getTaskCenterCapabilities(); });
 ipcMain.on('bridge:setTaskAutomationEnabled', (event, enabled) => { licensedIpc(event, '任务自动运行模式', () => setTaskAutomationEnabled(enabled)); });
 ipcMain.handle('bridge:executeTask', (_event, taskId, executor) => licensedInvoke('执行任务中心任务', () => executeTaskByAdapterWithFreshCapabilities(taskId, executor)));
@@ -26001,6 +27594,8 @@ if (!hasSingleInstanceLock) {
     startDigestWorkflowMonitor();
     startGrowthRefreshMonitor();
     startDirectDeliveryMonitor();
+    startAgentLifecycleDrainMonitor();
+    startAgentLifecycleInstallMonitor();
     const collaboration = readCollaborationState();
     if (collaboration.enabled && collaboration.bindings.some((item) => item.status === 'active' && !item.revokedAt)) {
       startHostService({ preserveUsageMode: true });
@@ -26037,6 +27632,8 @@ app.on('before-quit', () => {
   stopUnifiedTaskScheduler();
   stopDigestWorkflowMonitor();
   stopDirectDeliveryMonitor();
+  stopAgentLifecycleDrainMonitor();
+  stopAgentLifecycleInstallMonitor();
   for (const running of taskChildProcesses.values()) {
     try { if (running?.child && !running.child.killed) running.child.kill(); } catch { /* App shutdown continues. */ }
   }

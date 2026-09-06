@@ -5,6 +5,7 @@ const {
   STUDENT_MAP_SCHEMA,
   deriveCollaborationRelationships,
   peersForStudentMappings,
+  projectPeersForStudentMappings,
   selectStudentArchiveAuthorizationBinding,
 } = require('../electron/collaboration-device-binding.cjs');
 
@@ -46,6 +47,26 @@ test('student mapping resolves exact peer ids without using names or cross produ
   assert.equal(peers[0].targetStudentId, 'student-b-1');
   assert.match(peers[0].lineageId, /^legacy-1:student-archive:/);
   assert.equal(peersForStudentMappings(relationships, 'node-a', 'unknown-student').length, 0);
+});
+
+test('project recipients aggregate only active exact student mappings', () => {
+  const relationships = deriveCollaborationRelationships({
+    bindings: [
+      legacyBinding('legacy-1', 'student-a-1', 'student-b-1'),
+      legacyBinding('legacy-2', 'student-a-2', 'student-b-2'),
+      legacyBinding('legacy-unrelated', 'student-a-3', 'student-b-3'),
+      legacyBinding('legacy-revoked', 'student-a-4', 'student-b-4', 'revoked'),
+    ],
+  });
+  const peers = projectPeersForStudentMappings(relationships, 'node-a', ['student-a-1', 'student-a-2', 'missing']);
+  assert.equal(peers.length, 1);
+  assert.equal(peers[0].peerNodeId, 'node-b');
+  assert.deepEqual(peers[0].targetStudentIds.sort(), ['student-b-1', 'student-b-2']);
+  assert.deepEqual(peers[0].transportBindingIds.sort(), ['legacy-1', 'legacy-2']);
+  assert.equal(peers[0].studentMappings.length, 2);
+  assert.equal(projectPeersForStudentMappings(relationships, 'node-a', ['student-a-3']).length, 1);
+  assert.equal(projectPeersForStudentMappings(relationships, 'node-a', ['student-a-4']).length, 0);
+  assert.equal(projectPeersForStudentMappings(relationships, 'node-a', []).length, 0);
 });
 
 test('removing every legacy source removes its derived device and student records', () => {

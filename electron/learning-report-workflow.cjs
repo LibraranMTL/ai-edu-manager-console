@@ -1,5 +1,6 @@
 const fs = require('fs');
 const path = require('path');
+const { markdownSectionBody } = require('./task-protocol.cjs');
 
 function localDate(value = new Date()) {
   const date = value instanceof Date ? value : new Date(value);
@@ -56,8 +57,7 @@ function validateSectionedDraft(content, requiredSections = []) {
   const text = String(content || '');
   const errors = [];
   for (const section of requiredSections) {
-    const escaped = String(section).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    if (!new RegExp(`^##\\s+${escaped}\\s*$`, 'm').test(text)) errors.push(`缺少章节“${section}”`);
+    if (!markdownSectionBody(text, section)) errors.push(`章节“${section}”缺失或为空`);
   }
   if (!/^status:\s*pending_review\s*$/im.test(text)) errors.push('状态必须为 pending_review');
   if (!/^updated:\s*\d{4}-\d{2}-\d{2}\s*$/im.test(text)) errors.push('缺少有效 updated 日期');

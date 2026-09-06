@@ -35,6 +35,16 @@ test('new report drafts are validated and automatically published without routin
   assert.doesNotMatch(ui, /人工审核说明/);
 });
 
+test('report page recovers valid drafts and exposes one explicit update action', () => {
+  assert.match(main, /function recoverValidatedLearningReportDrafts/);
+  assert.match(main, /learning_report_draft_recovered/);
+  assert.match(main, /async function updateLearningReports/);
+  assert.match(main, /bridge:updateLearningReports/);
+  assert.match(ui, /updateCurrentLearningReports/);
+  assert.match(ui, /更新学情报告/);
+  assert.match(ui, /重新读取/);
+});
+
 test('digest and task flows expose theme-aware next action guidance', () => {
   assert.match(ui, /未复制消化指令/);
   assert.match(ui, /getMaterialImportRecords/);

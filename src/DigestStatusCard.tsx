@@ -24,6 +24,19 @@ export type DigestWorkflowStatus = {
   canRetry?: boolean;
   canPaste?: boolean;
   knowledgePath?: string;
+  state?: {
+    materialPreflight?: {
+      checkedAt?: string;
+      totalCount?: number;
+      readyCount?: number;
+      selectedCount?: number;
+      repairedCount?: number;
+      blockedCount?: number;
+      retryableCount?: number;
+      deferredCount?: number;
+      issues?: Array<{ materialId?: string; fileName?: string; code?: string; label?: string; retryable?: boolean }>;
+    };
+  };
 };
 
 type Props = {
@@ -36,6 +49,8 @@ type Props = {
   onCheck?: () => void;
   onPaste?: () => void;
   onOpenKnowledge?: () => void;
+  onRetryPathCheck?: () => void;
+  onSelectMaterialPath?: (materialId: string) => void;
   advancedActions?: ReactNode;
 };
 
@@ -48,7 +63,7 @@ const labels: Record<DigestUserStatus, string> = {
   needs_help: '需要补充',
 };
 
-export function DigestStatusCard({ status, busy, manualText = '', onManualTextChange, onStart, onRetry, onCheck, onPaste, onOpenKnowledge, advancedActions }: Props) {
+export function DigestStatusCard({ status, busy, manualText = '', onManualTextChange, onStart, onRetry, onCheck, onPaste, onOpenKnowledge, onRetryPathCheck, onSelectMaterialPath, advancedActions }: Props) {
   const primary = status.userStatus === 'partial' || status.userStatus === 'needs_help'
     ? { label: '重试未完成项', action: onRetry, disabled: !status.canRetry }
     : status.userStatus === 'completed'
@@ -58,6 +73,7 @@ export function DigestStatusCard({ status, busy, manualText = '', onManualTextCh
         : status.userStatus === 'waiting_result'
           ? { label: '刷新处理结果', action: onCheck, disabled: !onCheck }
         : { label: '开始处理', action: onStart, disabled: !status.canStart };
+  const preflight = status.state?.materialPreflight;
   return (
     <section className={`digest-status-card is-${status.userStatus}`}>
       <div className="digest-status-main">
@@ -69,6 +85,25 @@ export function DigestStatusCard({ status, busy, manualText = '', onManualTextCh
         </div>
         <button className="primary compact" onClick={primary.action} disabled={busy || primary.disabled}>{busy ? '正在准备…' : primary.label}</button>
       </div>
+      {preflight && (Number(preflight.repairedCount || 0) > 0 || Number(preflight.blockedCount || 0) > 0 || Number(preflight.deferredCount || 0) > 0) && (
+        <div className="digest-material-preflight">
+          <strong>资料路径预检</strong>
+          <p>
+            共 {preflight.totalCount || 0} 份 · 本批 {preflight.selectedCount || 0} 份 · 自动修复 {preflight.repairedCount || 0} 份
+            {Number(preflight.deferredCount || 0) > 0 ? ` · 后续批次 ${preflight.deferredCount} 份` : ''}
+            {Number(preflight.blockedCount || 0) > 0 ? ` · 待确认 ${preflight.blockedCount} 份` : ''}
+          </p>
+          {(preflight.issues || []).slice(0, 12).map((issue) => (
+            <div className="digest-material-issue" key={`${issue.materialId || issue.fileName}-${issue.code}`}>
+              <span>{issue.fileName || issue.materialId || '未命名资料'}：{issue.label || '路径需要确认'}</span>
+              {issue.materialId && !issue.retryable && onSelectMaterialPath && (
+                <button className="secondary compact" onClick={() => onSelectMaterialPath(issue.materialId || '')}>手工选择文件</button>
+              )}
+            </div>
+          ))}
+          {onRetryPathCheck && <button className="secondary compact" onClick={onRetryPathCheck} disabled={busy}>重新检查并自动修复</button>}
+        </div>
+      )}
       {status.manualRequired && (
         <div className="digest-manual-result">
           <strong>自动处理暂不可用</strong>

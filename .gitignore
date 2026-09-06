@@ -30,6 +30,7 @@ android-lite/assets/www/
 *.jks
 *.p12
 *.pem
+!public/course-catalog/public-key.pem
 *.key
 
 # Local app data, caches, logs

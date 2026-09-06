@@ -5,6 +5,8 @@ const test = require('node:test');
 const {
   TASK_PROTOCOL_VERSION,
   cronOccurrence,
+  markdownSectionBody,
+  normalizeMarkdownHeading,
   selectFallbackAdapter,
   selectPreviousDailyFeedback,
   validateDailyActionDocument,
@@ -48,6 +50,15 @@ test('daily action schema requires strict frontmatter and non-empty sections', (
   assert.equal(validateDailyActionDocument(dailyDocument().replace('date: 2026-07-16\n', ''), { expectedDate: '2026-07-16', requiredSections }).valid, false);
   assert.equal(validateDailyActionDocument(dailyDocument().replace('generated_at: 2026-07-16T08:00:00+08:00\n', ''), { expectedDate: '2026-07-16', requiredSections }).valid, false);
   assert.equal(validateDailyActionDocument(dailyDocument().replace('## 观察点\n观察点的具体内容。', '## 观察点\n'), { expectedDate: '2026-07-16', requiredSections }).valid, false);
+});
+
+test('markdown sections accept common numbered headings without weakening body checks', () => {
+  const content = `# 报告\n\n## 一、本阶段核心进展\n\n### 证据\n\n已完成实验。\n\n## 2. 主要问题\n\n仍需补充样本。\n\n## （三）关键证据\n\n- 记录 A\n`;
+  assert.equal(normalizeMarkdownHeading('（一） 本阶段核心进展'), '本阶段核心进展');
+  assert.match(markdownSectionBody(content, '本阶段核心进展'), /已完成实验/);
+  assert.match(markdownSectionBody(content, '主要问题'), /仍需补充样本/);
+  assert.match(markdownSectionBody(content, '关键证据'), /记录 A/);
+  assert.equal(markdownSectionBody('## 一、空章节\n\n## 二、下一节\n内容', '空章节'), '');
 });
 
 test('second-day context reads the first-day feedback without reading same-day feedback', () => {

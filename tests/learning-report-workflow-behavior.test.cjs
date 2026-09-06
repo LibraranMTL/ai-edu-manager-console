@@ -70,3 +70,10 @@ test('all four report drafts validate and publish without altering the draft', (
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
+
+test('numbered report headings validate when every required section has content', () => {
+  const sections = ['本阶段核心进展', '主要问题', '关键证据'];
+  const content = `---\nupdated: 2026-08-31\nstatus: pending_review\n---\n\n## 一、本阶段核心进展\n\n进展正文。\n\n## 2. 主要问题\n\n问题正文。\n\n## （三）关键证据\n\n证据正文。\n`;
+  assert.deepEqual(validateSectionedDraft(content, sections), { valid: true, errors: [] });
+  assert.match(validateSectionedDraft(content.replace('证据正文。', ''), sections).errors.join('；'), /关键证据/);
+});

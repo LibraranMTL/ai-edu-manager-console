@@ -178,19 +178,23 @@ test('QClaw and Codex receive workspace and user-discoverable MCP registrations 
   assert.match(main, /os\.homedir\(\), '\.mcporter', 'mcporter\.json'/);
   assert.match(main, /upsertQClawNativeMcpServer/);
   assert.match(main, /activeAgentKnowledgeDescriptorPath/);
-  assert.match(main, /scopePolicy: 'active_student_or_explicit'/);
+  assert.match(main, /scopePolicy: 'fixed_student'/);
+  assert.match(main, /ensureStudentAgentAccessToken/);
+  assert.match(main, /resolveAgentAccessGrant/);
   assert.match(main, /resolveAgentKnowledgeStudentScope\(incoming, readStudentsIndex\(\)\.map\(toHostStudent\)\)/);
   assert.match(main, /qclawNativeRegistered/);
   assert.match(main, /\.codex', 'config\.toml'/);
   assert.match(main, /codexGlobalConfigPath/);
   assert.match(main, /qclawAgent\?\.workspace/);
   assert.match(main, /\[mcp_servers\.\$\{serverName\}\]/);
-  assert.match(main, /allowedTools: \['query_education_knowledge', 'submit_education_conversation'\]/);
+  assert.match(main, /const toolNames = \['query_education_knowledge', 'submit_education_conversation', 'get_recent_education_context'/);
+  assert.match(main, /allowedTools: toolNames/);
   assert.match(main, /AGENTS\.md/);
   assert.match(bridge, /query_education_knowledge/);
   assert.match(bridge, /student = \@\{/);
   assert.match(bridge, /never substitute the active student/);
   assert.match(bridge, /submit_education_conversation/);
+  assert.match(bridge, /get_recent_education_context/);
   assert.match(bridge, /authentication\.tokenFile/);
   assert.match(bridge, /-TimeoutSec 75/);
   assert.doesNotMatch(main, /mcp_servers[\s\S]{0,600}Bearer [A-Za-z0-9]/);
@@ -204,7 +208,16 @@ test('native MCP bridge exposes the education knowledge tool over stdio', () => 
       scopeType: 'student',
       scopeId: 'student-1',
       scopeName: '测试学生',
+      scopePolicy: 'fixed_student',
       projects: [{ id: 'project-1', name: '无人机项目' }],
+    },
+    memoryEndpoints: {
+      start: 'http://127.0.0.1/start',
+      observe: 'http://127.0.0.1/observe',
+      finalize: 'http://127.0.0.1/finalize',
+      recent: 'http://127.0.0.1/recent',
+      acceptHandoff: 'http://127.0.0.1/accept',
+      cancelHandoff: 'http://127.0.0.1/cancel',
     },
   }), 'utf8');
   const input = [
@@ -231,6 +244,14 @@ test('native MCP bridge exposes the education knowledge tool over stdio', () => 
     assert.equal(messages[1].result.tools[1].name, 'submit_education_conversation');
     assert.match(messages[1].result.tools[1].description, /无人机项目/);
     assert.equal(messages[1].result.tools[1].inputSchema.properties.targetProject.type, 'string');
+    assert.deepEqual(messages[1].result.tools.slice(2).map((tool) => tool.name), [
+      'get_recent_education_context',
+      'start_education_session',
+      'record_authorized_education_turn',
+      'finalize_education_session',
+      'accept_education_handoff',
+      'cancel_education_handoff',
+    ]);
   } finally {
     fs.rmSync(descriptor, { force: true });
   }

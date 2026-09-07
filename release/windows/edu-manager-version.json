@@ -1,12 +1,12 @@
 {
   "versionCode": 86,
   "versionName": "0.6.16",
-  "windowsVersionCode": 218,
-  "windowsVersionName": "0.16.9",
-  "windowsUrl": "https://www.greatbg.com/download/AI-edu-manager-console-Windows-0.16.9.zip",
-  "windowsTerminalVersionCode": 217,
-  "windowsTerminalVersionName": "0.16.8",
-  "windowsTerminalUrl": "https://www.greatbg.com/download/AI-edu-manager-student-terminal-Windows-0.16.8.exe",
+  "windowsVersionCode": 219,
+  "windowsVersionName": "0.16.10",
+  "windowsUrl": "https://www.greatbg.com/download/AI-edu-manager-console-Windows-0.16.10.zip",
+  "windowsTerminalVersionCode": 219,
+  "windowsTerminalVersionName": "0.16.10",
+  "windowsTerminalUrl": "https://www.greatbg.com/download/AI-edu-manager-student-terminal-Windows-0.16.10.exe",
   "terminalApkUrl": "https://www.greatbg.com/download/AI-edu-manager-tablet-terminal-0.6.16.apk",
   "tabletTerminalVersionCode": 86,
   "tabletTerminalVersionName": "0.6.16",
@@ -24,5 +24,5 @@
   "managerApkVersionCode": 23,
   "managerApkVersionName": "0.2.3",
   "apkUrl": "https://www.greatbg.com/download/AI-edu-manager-tablet-terminal-0.6.16.apk",
-  "notes": "Windows 主机端 0.16.9 新增 Codex、QClaw、WorkBuddy、OpenClaw、Claude Code、Hermes 当前授权新会话的生命周期自动采集，并保留学生范围隔离、离线队列和手动粘贴备用入口；Windows 学生端 0.16.8、Android 学生端 0.6.16、Android 教师端 0.1.1、Android 单机版 1.2.2 保持兼容。"
+  "notes": "Windows 主机端与学生端 0.16.10 成对修复个人终端自动会话采集：主机提供学生范围授权接口，学生端在授权前显示本机 Agent 探测结果，并在主机版本不兼容时给出明确升级提示；Android 学生端 0.6.16、Android 教师端 0.1.1、Android 单机版 1.2.2 保持兼容。"
 }

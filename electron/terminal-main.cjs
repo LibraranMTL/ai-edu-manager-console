@@ -37,6 +37,14 @@ const {
   TAILSCALE_WINDOWS_DOWNLOAD_URL,
   findWindowsTailscaleInstall,
 } = require('./windows-tailscale.cjs');
+const {
+  detectLifecycleAgents,
+  drainTerminalLifecycleQueue,
+  reconcileTerminalLifecycle,
+  setTerminalLifecycleDescriptorEnabled,
+  terminalLifecyclePaths,
+} = require('./student-agent-lifecycle.cjs');
+const { AUTO_CAPTURE_AGENT_IDS } = require('./agent-adapter-registry.cjs');
 
 app.setName('AI Education Student Terminal');
 
@@ -57,6 +65,9 @@ let terminalDiscoveryError = '';
 let lastHostDiscoveryAt = '';
 let pairStatusTimer = null;
 let pairStatusBusy = false;
+let agentCaptureDrainTimer = null;
+let agentCaptureInstallTimer = null;
+let agentCaptureBusy = false;
 const discoveredLanHosts = new Map();
 
 function readJson(filePath, fallback) {
@@ -90,6 +101,7 @@ function readConfig() {
     deviceId: '',
     deviceName: `${os.hostname()} · Windows 学生终端`,
     autoDelivery: { enabled: false, folder: '', target: null },
+    agentCapture: { enabled: false, registrations: {}, warnings: [], pending: 0 },
     ...readJson(configPath(), {}),
   };
 }
@@ -190,8 +202,231 @@ async function requestJson(route, options = {}) {
   let payload = {};
   try { payload = text ? JSON.parse(text) : {}; }
   catch { payload = { ok: false, message: text || `HTTP ${response.status}` }; }
-  if (!response.ok || payload.ok === false) throw new Error(payload.message || `HTTP ${response.status}`);
+  if (!response.ok || payload.ok === false) {
+    const error = new Error(payload.message || `HTTP ${response.status}`);
+    error.status = response.status;
+    throw error;
+  }
   return payload;
+}
+
+function publicAgentCaptureState(config = readConfig()) {
+  const capture = config.agentCapture || {};
+  const registrations = capture.registrations && typeof capture.registrations === 'object' ? capture.registrations : {};
+  return {
+    enabled: Boolean(capture.enabled),
+    active: Boolean(
+      capture.enabled
+      && config.terminalMode === 'personal'
+      && config.sessionToken
+      && config.currentStudent?.id
+    ),
+    registrations,
+    warnings: Array.isArray(capture.warnings) ? capture.warnings : [],
+    installedCount: Object.values(registrations).filter((item) => item?.installed).length,
+    connectedCount: Object.values(registrations).filter((item) => item?.connected).length,
+    pending: Math.max(0, Number(capture.pending || 0)),
+    lastSyncAt: String(capture.lastSyncAt || ''),
+    message: String(capture.message || ''),
+  };
+}
+
+function notifyAgentCaptureChanged(config = readConfig()) {
+  notify('terminal:agent-capture-changed', publicAgentCaptureState(config));
+}
+
+function updateLocalAgentCapture(patch = {}) {
+  const config = readConfig();
+  const next = writeConfig({
+    agentCapture: {
+      ...(config.agentCapture || {}),
+      ...patch,
+      updatedAt: new Date().toISOString(),
+    },
+  });
+  notifyAgentCaptureChanged(next);
+  return next;
+}
+
+function detectedAgentCaptureRegistrations(existing = {}, preserveConnections = false) {
+  const detected = detectLifecycleAgents();
+  return Object.fromEntries(AUTO_CAPTURE_AGENT_IDS.map((agentId) => {
+    const installed = Boolean(detected[agentId]?.installed);
+    const previous = existing[agentId] || {};
+    return [agentId, {
+      installed,
+      connected: Boolean(preserveConnections && installed && previous.connected),
+      ...(previous.warning ? { warning: String(previous.warning) } : {}),
+    }];
+  }));
+}
+
+function refreshLocalAgentCaptureInventory(config = readConfig()) {
+  const registrations = detectedAgentCaptureRegistrations(config.agentCapture?.registrations, false);
+  if (JSON.stringify(registrations) === JSON.stringify(config.agentCapture?.registrations || {})) return config;
+  return updateLocalAgentCapture({ registrations });
+}
+
+function reconcilePersonalAgentCapture(config = readConfig()) {
+  if (
+    config.terminalMode !== 'personal'
+    || !config.sessionToken
+    || !config.currentStudent?.id
+    || !config.agentCapture?.enabled
+  ) {
+    setTerminalLifecycleDescriptorEnabled(terminalUserData(), false);
+    return { enabled: false, registrations: config.agentCapture?.registrations || {}, warnings: [] };
+  }
+  const result = reconcileTerminalLifecycle({
+    userDataDir: terminalUserData(),
+    hookSourcePath: path.join(__dirname, 'agent-lifecycle-hook.ps1'),
+    studentId: String(config.currentStudent.id),
+    deviceId: deviceId(),
+    enabled: true,
+    detectedAgents: detectLifecycleAgents(),
+  });
+  updateLocalAgentCapture({
+    registrations: result.registrations,
+    warnings: result.warnings,
+    message: result.warnings.length
+      ? `部分 Agent 暂未接入：${result.warnings.join('；')}`
+      : '此个人终端已接入受支持 Agent 的新会话生命周期。',
+  });
+  return result;
+}
+
+async function authorizePersonalAgentCapture(enabled) {
+  const { config, studentId } = currentStudentSession();
+  if (config.terminalMode !== 'personal') throw new Error('只有个人终端可以启用自动会话采集。');
+  if (!enabled) {
+    reconcileTerminalLifecycle({
+      userDataDir: terminalUserData(),
+      hookSourcePath: path.join(__dirname, 'agent-lifecycle-hook.ps1'),
+      studentId,
+      deviceId: deviceId(),
+      enabled: false,
+      detectedAgents: detectLifecycleAgents(),
+    });
+    updateLocalAgentCapture({
+      enabled: false,
+      registrations: detectedAgentCaptureRegistrations({}, false),
+      warnings: [],
+      pending: 0,
+      message: '此个人终端已停止采集；已有归档不会删除。',
+    });
+    const remote = await requestJson('/api/student-session/agent-memory/capture', {
+      method: 'POST',
+      token: config.sessionToken,
+      body: { enabled: false },
+    });
+    return { ...publicAgentCaptureState(), message: remote.message || publicAgentCaptureState().message };
+  }
+  let remote;
+  try {
+    remote = await requestJson('/api/student-session/agent-memory/capture', {
+      method: 'POST',
+      token: config.sessionToken,
+      body: { enabled: true },
+    });
+  } catch (error) {
+    const status = Number(error.status || 0);
+    const detail = status === 404
+      ? '当前 Windows 主机版本不支持个人终端自动会话采集，请将主机升级到 0.16.10 或更高版本。'
+      : `未能从主机取得采集授权：${error.message}`;
+    updateLocalAgentCapture({
+      enabled: false,
+      registrations: detectedAgentCaptureRegistrations({}, false),
+      warnings: [detail],
+      message: detail,
+    });
+    const failure = new Error(detail);
+    failure.status = status;
+    throw failure;
+  }
+  const next = updateLocalAgentCapture({ enabled: true, message: remote.message || '已授权此个人终端采集新会话。' });
+  reconcilePersonalAgentCapture(next);
+  await runAgentCaptureDrain();
+  return { ...publicAgentCaptureState(), message: remote.message || publicAgentCaptureState().message };
+}
+
+async function refreshPersonalAgentCapture() {
+  const config = readConfig();
+  if (
+    config.terminalMode !== 'personal'
+    || !config.sessionToken
+    || !config.currentStudent?.id
+    || !config.agentCapture?.enabled
+  ) {
+    setTerminalLifecycleDescriptorEnabled(terminalUserData(), false);
+    return publicAgentCaptureState(config.terminalMode === 'personal'
+      ? refreshLocalAgentCaptureInventory(config)
+      : config);
+  }
+  try {
+    let remote = await requestJson('/api/student-session/agent-memory/capture', { token: config.sessionToken });
+    if (!remote.capture?.enabled) {
+      remote = await requestJson('/api/student-session/agent-memory/capture', {
+        method: 'POST',
+        token: config.sessionToken,
+        body: { enabled: true },
+      });
+    }
+    reconcilePersonalAgentCapture(readConfig());
+    await runAgentCaptureDrain();
+    return publicAgentCaptureState();
+  } catch (error) {
+    const status = Number(error.status || 0);
+    if (status === 404) {
+      const detail = '当前 Windows 主机版本不支持个人终端自动会话采集，请将主机升级到 0.16.10 或更高版本。';
+      setTerminalLifecycleDescriptorEnabled(terminalUserData(), false);
+      updateLocalAgentCapture({
+        enabled: false,
+        registrations: detectedAgentCaptureRegistrations({}, false),
+        warnings: [detail],
+        message: detail,
+      });
+    } else if ([401, 403].includes(status)) {
+      setTerminalLifecycleDescriptorEnabled(terminalUserData(), false);
+      updateLocalAgentCapture({ enabled: false, warnings: [String(error.message || error)], message: `主机已拒绝或撤销自动会话采集授权：${error.message}` });
+    } else {
+      updateLocalAgentCapture({ warnings: [String(error.message || error)], message: `主机暂不可达，新会话继续保留在本机队列：${error.message}` });
+    }
+    return publicAgentCaptureState();
+  }
+}
+
+async function runAgentCaptureDrain() {
+  if (agentCaptureBusy) return publicAgentCaptureState();
+  const config = readConfig();
+  if (
+    config.terminalMode !== 'personal'
+    || !config.sessionToken
+    || !config.currentStudent?.id
+    || !config.agentCapture?.enabled
+  ) return publicAgentCaptureState(config);
+  agentCaptureBusy = true;
+  try {
+    const result = await drainTerminalLifecycleQueue({
+      queueDir: terminalLifecyclePaths(terminalUserData()).queueDir,
+      studentId: String(config.currentStudent.id),
+      deviceId: deviceId(),
+      postEnvelope: (envelope) => requestJson('/api/student-session/agent-memory/events', {
+        method: 'POST',
+        token: config.sessionToken,
+        body: envelope,
+      }),
+    });
+    const next = updateLocalAgentCapture({
+      pending: result.pending,
+      lastSyncAt: result.processed ? new Date().toISOString() : String(config.agentCapture?.lastSyncAt || ''),
+      message: result.deferred
+        ? '主机暂不可达，已授权的新会话事件保留在本机等待补交。'
+        : (result.processed ? `已向主机补交 ${result.processed} 条会话事件。` : String(config.agentCapture?.message || '自动会话采集运行中。')),
+    });
+    return publicAgentCaptureState(next);
+  } finally {
+    agentCaptureBusy = false;
+  }
 }
 
 function terminalDiscoveryPayload(protocolVersion = 2) {
@@ -206,7 +441,7 @@ function terminalDiscoveryPayload(protocolVersion = 2) {
     displayName: identity.displayName,
     appVersion: TERMINAL_VERSION,
     discoveryPort: HOST_DISCOVERY_PORT,
-    capabilities: protocolVersion >= 2 ? ['pair-request-v2', 'bidirectional-discovery-v2', 'student-session-v1'] : [],
+    capabilities: protocolVersion >= 2 ? ['pair-request-v2', 'bidirectional-discovery-v2', 'student-session-v1', 'agent-lifecycle-capture-v1'] : [],
   };
 }
 
@@ -358,7 +593,7 @@ async function requestHostPair(hostDeviceId) {
       tabletName: identity.displayName,
       platform: 'windows',
       role: 'terminal',
-      capabilities: ['student-session-v1', 'windows-terminal-v1'],
+      capabilities: ['student-session-v1', 'windows-terminal-v1', 'agent-lifecycle-capture-v1'],
     },
   });
   writeConfig({
@@ -452,7 +687,7 @@ async function acceptPendingPairInvite() {
       tabletName: identity.displayName,
       platform: 'windows',
       role: 'terminal',
-      capabilities: ['student-session-v1', 'windows-terminal-v1'],
+      capabilities: ['student-session-v1', 'windows-terminal-v1', 'agent-lifecycle-capture-v1'],
     },
   });
   writeConfig({
@@ -503,7 +738,7 @@ async function pairWithHost(input = {}) {
       deviceName: String(input.deviceName || config.deviceName || `${os.hostname()} · Windows 学生终端`).slice(0, 80),
       platform: 'windows',
       role: 'terminal',
-      capabilities: ['student-session-v1'],
+      capabilities: ['student-session-v1', 'windows-terminal-v1', 'agent-lifecycle-capture-v1'],
     },
   });
   writeConfig({
@@ -511,6 +746,7 @@ async function pairWithHost(input = {}) {
     token: payload.token,
     sessionToken: '',
     currentStudent: null,
+    agentCapture: { enabled: false, registrations: {}, warnings: [], pending: 0 },
     pendingPairRequest: null,
     pendingPairInvite: null,
     terminalMode: payload.device?.terminalMode || 'shared',
@@ -524,19 +760,45 @@ async function setTerminalMode(terminalMode) {
   const payload = await requestJson('/api/device/mode', { method: 'POST', body: { terminalMode: requested }, deviceToken: true });
   const config = readConfig();
   const autoDelivery = requested === 'shared' ? { ...(config.autoDelivery || {}), enabled: false } : config.autoDelivery;
-  writeConfig({ terminalMode: requested, sessionToken: '', currentStudent: null, autoDelivery });
+  if (requested === 'shared' && config.currentStudent?.id) {
+    try {
+      reconcileTerminalLifecycle({
+        userDataDir: terminalUserData(),
+        hookSourcePath: path.join(__dirname, 'agent-lifecycle-hook.ps1'),
+        studentId: String(config.currentStudent.id),
+        deviceId: deviceId(),
+        enabled: false,
+        detectedAgents: detectLifecycleAgents(),
+      });
+    } catch {
+      setTerminalLifecycleDescriptorEnabled(terminalUserData(), false);
+    }
+  } else if (requested === 'shared') {
+    setTerminalLifecycleDescriptorEnabled(terminalUserData(), false);
+  }
+  writeConfig({
+    terminalMode: requested,
+    sessionToken: '',
+    currentStudent: null,
+    autoDelivery,
+    agentCapture: requested === 'shared'
+      ? { enabled: false, registrations: {}, warnings: [], pending: 0, message: '共享终端不启用自动会话采集。' }
+      : config.agentCapture,
+  });
   return { ...payload, config: publicConfig() };
 }
 
 async function loginStudent(loginId) {
   const payload = await requestJson('/api/student-session/login', { method: 'POST', body: { loginId }, deviceToken: true });
-  writeConfig({ sessionToken: payload.token, currentStudent: payload.student || null, terminalMode: payload.terminalMode || readConfig().terminalMode });
+  const next = writeConfig({ sessionToken: payload.token, currentStudent: payload.student || null, terminalMode: payload.terminalMode || readConfig().terminalMode });
+  if (next.terminalMode === 'personal' && next.agentCapture?.enabled) void refreshPersonalAgentCapture();
   return { ...payload, config: publicConfig() };
 }
 
 async function autoLoginStudent() {
   const payload = await requestJson('/api/student-session/auto', { method: 'POST', body: {}, deviceToken: true });
-  writeConfig({ sessionToken: payload.token, currentStudent: payload.student || null, terminalMode: 'personal' });
+  const next = writeConfig({ sessionToken: payload.token, currentStudent: payload.student || null, terminalMode: 'personal' });
+  if (next.agentCapture?.enabled) void refreshPersonalAgentCapture();
   return { ...payload, config: publicConfig() };
 }
 
@@ -548,6 +810,7 @@ async function logoutStudent() {
     try { await requestJson('/api/student-session/logout', { method: 'POST', body: {}, token: config.sessionToken }); }
     catch {}
   }
+  setTerminalLifecycleDescriptorEnabled(terminalUserData(), false);
   writeConfig({ sessionToken: '', currentStudent: null });
   return { ok: true, config: publicConfig() };
 }
@@ -566,7 +829,10 @@ async function loadRemoteState() {
   }
   try {
     const payload = await requestJson('/api/student-session/me', { token: config.sessionToken });
-    if (payload.student) writeConfig({ currentStudent: payload.student });
+    if (payload.student) {
+      const next = writeConfig({ currentStudent: payload.student });
+      if (next.terminalMode === 'personal' && next.agentCapture?.enabled) void refreshPersonalAgentCapture();
+    }
     return { ...payload, students: payload.students || (payload.student ? [payload.student] : []), projects: payload.projects || [], device: modePayload.device || null, config: publicConfig() };
   } catch (error) {
     writeConfig({ sessionToken: '', currentStudent: null });
@@ -914,10 +1180,34 @@ function registerIpc() {
   ipcMain.handle('terminal:set-mode', (_event, terminalMode) => setTerminalMode(terminalMode));
   ipcMain.handle('terminal:login-student', (_event, loginId) => loginStudent(loginId));
   ipcMain.handle('terminal:logout-student', () => logoutStudent());
+  ipcMain.handle('terminal:get-agent-capture', () => refreshPersonalAgentCapture());
+  ipcMain.handle('terminal:set-agent-capture', (_event, enabled) => authorizePersonalAgentCapture(Boolean(enabled)));
+  ipcMain.handle('terminal:run-agent-capture', () => runAgentCaptureDrain());
   ipcMain.handle('terminal:disconnect', () => {
     closeTerminalCourse('disconnect');
     effectiveCourseCache = [];
-    writeConfig({ hostUrl: '', token: '', sessionToken: '', currentStudent: null, pendingPairRequest: null, pendingPairInvite: null });
+    const config = readConfig();
+    if (config.currentStudent?.id) {
+      try {
+        reconcileTerminalLifecycle({
+          userDataDir: terminalUserData(),
+          hookSourcePath: path.join(__dirname, 'agent-lifecycle-hook.ps1'),
+          studentId: String(config.currentStudent.id),
+          deviceId: deviceId(),
+          enabled: false,
+          detectedAgents: detectLifecycleAgents(),
+        });
+      } catch {
+        setTerminalLifecycleDescriptorEnabled(terminalUserData(), false);
+      }
+    } else {
+      setTerminalLifecycleDescriptorEnabled(terminalUserData(), false);
+    }
+    writeConfig({
+      hostUrl: '', token: '', sessionToken: '', currentStudent: null,
+      pendingPairRequest: null, pendingPairInvite: null,
+      agentCapture: { enabled: false, registrations: {}, warnings: [], pending: 0, message: '已断开主机，自动会话采集已停止。' },
+    });
     return { ok: true, config: publicConfig() };
   });
   ipcMain.handle('terminal:choose-files', async (_event, target) => {
@@ -1004,13 +1294,18 @@ app.whenReady().then(() => {
   createWindow();
   autoDeliveryTimer = setInterval(() => { void runAutoDelivery(); }, 15000);
   pairStatusTimer = setInterval(() => { void pollPendingPairRequest(); }, 2000);
+  agentCaptureDrainTimer = setInterval(() => { void runAgentCaptureDrain(); }, 2000);
+  agentCaptureInstallTimer = setInterval(() => { void refreshPersonalAgentCapture(); }, 120000);
   void runAutoDelivery();
   void pollPendingPairRequest();
+  void refreshPersonalAgentCapture();
 });
 
 app.on('before-quit', () => {
   if (autoDeliveryTimer) clearInterval(autoDeliveryTimer);
   if (pairStatusTimer) clearInterval(pairStatusTimer);
+  if (agentCaptureDrainTimer) clearInterval(agentCaptureDrainTimer);
+  if (agentCaptureInstallTimer) clearInterval(agentCaptureInstallTimer);
   if (activeCapture?.timer) clearInterval(activeCapture.timer);
   stopTerminalDiscovery();
 });

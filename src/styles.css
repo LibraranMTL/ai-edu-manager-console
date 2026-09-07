@@ -1459,6 +1459,34 @@ select:focus {
   color: #187149;
 }
 
+.agent-capture-status span.capturing {
+  border-color: rgba(20, 122, 72, 0.45);
+  background: rgba(20, 122, 72, 0.16);
+  color: #0f633d;
+}
+
+.agent-capture-status span.waiting {
+  border-color: rgba(185, 117, 20, 0.32);
+  background: rgba(245, 158, 11, 0.1);
+  color: #9a5d0a;
+}
+
+.capture-target-badge {
+  padding: 6px 10px;
+  border-radius: 999px;
+  background: rgba(31, 143, 95, 0.1);
+  color: #187149;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.capture-target-notice {
+  margin: 10px 0;
+  border-color: rgba(245, 158, 11, 0.28);
+  background: rgba(245, 158, 11, 0.08);
+  color: #875207;
+}
+
 .agent-memory-conversation {
   margin-top: 6px;
   border-top: 1px solid var(--panel-border);

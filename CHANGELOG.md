@@ -10,6 +10,21 @@
 - 每次迭代均新增一条日志；未实际发布的编号明确标记为“跳过”，不补写虚假功能。
 - Android 版本独立递增，除非发布内容明确说明，不随 Windows 同步升级。
 
+## [0.16.10] - 2026-09-07
+
+### Windows 个人终端自动会话采集兼容修复
+
+- Windows 主机端与 Windows 学生端改为成对发布 0.16.10，确保学生端调用的个人终端采集授权、状态读取和生命周期事件提交接口均由当前主机正式包提供。
+- 学生端在未授权时也会探测 Codex、QClaw、WorkBuddy、OpenClaw、Claude Code 与 Hermes，不再把“尚未授权”误显示为 `0/0 个 Agent 已接入`。
+- 点击“授权采集”遇到旧主机返回 404 时，采集保持关闭，不安装生命周期 Hook，并在卡片内明确提示“请将主机升级到 0.16.10 或更高版本”。
+- 学生范围、个人终端绑定、只采集授权后新会话、离线队列以及不读取系统提示、密钥和任务中心上下文的边界保持不变。
+
+### 发布验证
+
+- 全量 Node 测试 927 项：926 通过、1 项按环境条件跳过、0 失败；主机端与学生端生产构建通过，包内确认同时存在采集授权接口、事件提交接口、本机 Agent 探测和旧主机升级提示；包书源学生范围的 QClaw 真实界面采集验收通过。
+- Windows 主机端 EXE SHA-256 为 `C2A4F9A6F120E4E28E00215B1157A54F8C8B07E94F5EC0A74A697B76CEDC65B1`，ZIP SHA-256 为 `5236427A2FC6C309B8FB9C0B897D1DD769F3163A9CFDD5FCCED4E0706342DC3F`；Windows 学生端 EXE SHA-256 为 `796933FECFA8A4B707EB69FFC847952213AE087BEFD48EAA711AE323B8C52DDA`。
+- 两个 EXE 的文件版本与产品版本均为 0.16.10，Authenticode 均为 `NotSigned`。本地正式包已完成包书源学生范围的 QClaw 真实界面验收；其余五种 Agent 的逐一真实会话验收仍不在本次确认范围内。
+
 ## [0.16.9] - 2026-09-06
 
 ### 智能体授权会话自动采集
@@ -25,6 +40,7 @@
 - Windows 真机中完成教育管家进程、学生范围授权、生命周期 Hook、离线队列、`user + assistant` 增量消息、会话完成和不可变对话回执闭环；真实 Hermes 插件已安装启用，真实 WorkBuddy 会话已采集双向消息。
 - 全量 Node 自动测试 `916` 项：`915` 通过、`1` 项按环境条件跳过、`0` 失败；生产前端和 Windows 正式包构建通过，源码、暂存运行时、打包产物三层秘密扫描均为零命中。
 - Windows 正式 EXE SHA-256 为 `25BDA3AA73C8A9CBF611F71B161C5014C5D6789F30041F51BDAB957520663D84`，ZIP SHA-256 为 `7BF2F5FF7036920DD4A15F553F7A0939C759588CA7FD7C446CED4EB0911D346F`，ZIP 内 EXE 与独立 EXE 一致；完整审计见同目录 `AI-edu-manager-console-Windows-0.16.9-build-audit.json`。Authenticode 仍为 `NotSigned`，继续按已知来源受控分发，不代表已经取得公开代码签名。
+- Windows 学生端 0.16.9 正式 EXE 已生成，SHA-256 为 `03606DFFCBD755B44CC0EEC3DCE284E30A216E542DD8DB2567AE8E866D6CCEC6`；ASAR 为 403,339 字节、21 个文件、0 个 `node_modules` 文件，审计见 `release/windows-terminal/AI-edu-manager-student-terminal-Windows-0.16.9-build-audit.json`。Authenticode 状态为 `NotSigned`；个人终端自动会话采集仍需独立双机和真实 Agent 验收后再公开上线。
 
 ## [Android 单机版 1.2.2] - 2026-09-02
 

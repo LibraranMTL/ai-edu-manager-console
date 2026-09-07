@@ -3,6 +3,7 @@ import { createRoot } from 'react-dom/client';
 import {
   Archive,
   ArrowRight,
+  Bot,
   BookOpen,
   FileText,
   FolderSync,
@@ -38,6 +39,7 @@ type TerminalConfig = {
   studentSessionActive?: boolean;
   currentStudent?: Student | null;
   autoDelivery?: { enabled?: boolean; folder?: string; target?: UploadTarget | null };
+  agentCapture?: Partial<AgentCaptureState>;
 };
 type CaptureSource = { id: string; name: string; type: 'screen' | 'window' };
 type CaptureSession = { id: string; status: string; sourceName: string; count: number; files: string[]; target?: UploadTarget; courseId?: string; courseProvider?: string; courseUrl?: string; courseStartedAt?: string; courseCompletedAt?: string };
@@ -58,6 +60,18 @@ type PendingPairRequest = { requestId: string; status: string; hostId: string; h
 type TailscaleStatus = { installed: boolean; canOpen: boolean; version?: string; downloadUrl: string };
 type ConnectionMethod = 'lan' | 'tailscale';
 type StudentWorkspace = 'courses' | 'auto-delivery' | 'capture' | 'documents' | null;
+type AgentCaptureRegistration = { installed?: boolean; connected?: boolean; warning?: string };
+type AgentCaptureState = {
+  enabled: boolean;
+  active: boolean;
+  registrations: Record<string, AgentCaptureRegistration>;
+  warnings: string[];
+  installedCount: number;
+  connectedCount: number;
+  pending: number;
+  lastSyncAt?: string;
+  message?: string;
+};
 type PairingState = {
   discoveryRunning: boolean;
   discoveryPort: number;
@@ -88,6 +102,9 @@ type TerminalBridge = {
   setMode: (terminalMode: 'personal' | 'shared') => Promise<{ message?: string; config: TerminalConfig }>;
   loginStudent: (loginId: string) => Promise<{ message?: string; student?: Student; students?: Student[]; projects?: Project[]; config: TerminalConfig }>;
   logoutStudent: () => Promise<{ config: TerminalConfig }>;
+  getAgentCapture: () => Promise<AgentCaptureState>;
+  setAgentCapture: (enabled: boolean) => Promise<AgentCaptureState>;
+  runAgentCapture: () => Promise<AgentCaptureState>;
   chooseAndUploadFiles: (target: UploadTarget) => Promise<{ cancelled?: boolean; success?: number; failed?: number; total?: number }>;
   chooseAutoFolder: () => Promise<{ ok: boolean; folder: string }>;
   configureAutoDelivery: (input: { enabled: boolean; folder: string; target: UploadTarget }) => Promise<{ ok: boolean }>;
@@ -110,6 +127,7 @@ type TerminalBridge = {
   onAutoDelivery: (handler: (payload: Progress) => void) => void;
   onCaptureChanged: (handler: (payload: CaptureSession) => void) => void;
   onCourseBrowserChanged: (handler: (payload: { open: boolean; courseId?: string; name?: string; blocked?: boolean; message?: string }) => void) => void;
+  onAgentCaptureChanged: (handler: (payload: AgentCaptureState) => void) => () => void;
   onPairingChanged: (handler: (payload: { state: PairingState; config: TerminalConfig }) => void) => () => void;
 };
 
@@ -305,6 +323,8 @@ function TerminalApp() {
   const [courseDisclaimer, setCourseDisclaimer] = useState('');
   const [courseBrowser, setCourseBrowser] = useState<{ open: boolean; courseId?: string; name?: string }>({ open: false });
   const [activeWorkspace, setActiveWorkspace] = useState<StudentWorkspace>(null);
+  const [agentCapture, setAgentCapture] = useState<AgentCaptureState>({ enabled: false, active: false, registrations: {}, warnings: [], installedCount: 0, connectedCount: 0, pending: 0 });
+  const [agentCaptureBusy, setAgentCaptureBusy] = useState(false);
   const workspaceRef = useRef<HTMLElement | null>(null);
 
   const selectedStudent = useMemo(
@@ -398,6 +418,7 @@ function TerminalApp() {
     });
     void api.getPairingState().then(setPairingState);
     void api.getTailscaleStatus().then(setTailscaleStatus).catch(() => {});
+    void api.getAgentCapture().then(setAgentCapture).catch(() => {});
     api.onUploadProgress(setUploadProgress);
     api.onAutoDelivery(setAutoProgress);
     api.onCaptureChanged(setCaptureSession);
@@ -405,12 +426,17 @@ function TerminalApp() {
       setCourseBrowser({ open: payload.open, courseId: payload.courseId, name: payload.name });
       if (payload.blocked) setMessage(payload.message || '已阻止课程页面跳转到非白名单域名。');
     });
-    return api.onPairingChanged((payload) => {
+    const removeAgentCaptureListener = api.onAgentCaptureChanged(setAgentCapture);
+    const removePairingListener = api.onPairingChanged((payload) => {
       setPairingState(payload.state);
       setConfig(payload.config);
       if (payload.state.lastResult?.message) setMessage(payload.state.lastResult.message);
       if (payload.config.connected) void refresh();
     });
+    return () => {
+      removeAgentCaptureListener();
+      removePairingListener();
+    };
   }, [api]);
 
   useEffect(() => {
@@ -640,6 +666,20 @@ function TerminalApp() {
       setMessage(config?.terminalMode === 'personal' ? '已退出当前页面，个人终端刷新后会重新进入绑定学生。' : '已退出当前学生，请下一位学生扫码或输入 ID。');
     } finally {
       setBusy(false);
+    }
+  };
+
+  const toggleAgentCapture = async () => {
+    if (!api || config?.terminalMode !== 'personal') return;
+    setAgentCaptureBusy(true);
+    try {
+      const result = await api.setAgentCapture(!agentCapture.enabled);
+      setAgentCapture(result);
+      setMessage(result.message || (result.enabled ? '自动会话记忆已授权。' : '自动会话记忆已暂停。'));
+    } catch (error) {
+      setMessage(`自动会话记忆设置失败：${(error as Error).message}`);
+    } finally {
+      setAgentCaptureBusy(false);
     }
   };
 
@@ -1055,6 +1095,26 @@ function TerminalApp() {
             <button className={config.terminalMode === 'personal' ? 'mode-card active' : 'mode-card'} onClick={() => changeMode('personal')} disabled={busy}><strong>个人终端</strong><span>固定绑定当前学生，可使用自动投递。</span></button>
             <button className={config.terminalMode === 'shared' ? 'mode-card active' : 'mode-card'} onClick={() => changeMode('shared')} disabled={busy}><strong>共享终端</strong><span>退出后由下一位学生输入个人 ID。</span></button>
           </div>
+          <section className={`student-agent-capture-card${agentCapture.enabled ? ' enabled' : ''}`} aria-labelledby="agent-capture-title">
+            <span className="student-agent-capture-icon" aria-hidden="true"><Bot size={24} /></span>
+            <div>
+              <h3 id="agent-capture-title">自动会话记忆</h3>
+              <p>{config.terminalMode === 'personal'
+                ? '一次授权后，自动采集本机受支持 Agent 的新会话，并只归档到当前绑定学生。不会读取授权前历史、系统提示、密钥或任务中心上下文。'
+                : '共享终端不支持自动会话采集，避免不同学生之间混入会话。'}</p>
+              <small>{config.terminalMode === 'personal'
+                ? (agentCapture.enabled
+                    ? `${agentCapture.connectedCount}/${agentCapture.installedCount} 个已安装 Agent 已接入${agentCapture.pending ? ` · ${agentCapture.pending} 条待补交` : ''}`
+                    : (agentCapture.installedCount
+                        ? `已检测到 ${agentCapture.installedCount} 个受支持 Agent · 授权后接入`
+                        : '暂未检测到已安装的受支持 Agent'))
+                : '请切换到个人终端并完成固定绑定后使用。'}</small>
+              {agentCapture.warnings.length ? <small className="student-agent-capture-warning">{agentCapture.warnings[0]}</small> : null}
+            </div>
+            <button className={agentCapture.enabled ? 'terminal-danger' : 'terminal-primary'} type="button" onClick={toggleAgentCapture} disabled={busy || agentCaptureBusy || config.terminalMode !== 'personal'}>
+              {agentCaptureBusy ? '正在设置…' : agentCapture.enabled ? '停止采集' : '授权采集'}
+            </button>
+          </section>
           <TailscaleSupportCard status={tailscaleStatus} busy={tailscaleBusy} onRefresh={refreshTailscaleStatus} onOpen={openTailscale} onDownload={downloadTailscale} />
         </section>
       ) : null}

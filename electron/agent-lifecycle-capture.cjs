@@ -37,13 +37,26 @@ function nativeSessionId(payload = {}) {
     payload.session_id
       || payload.sessionId
       || payload.sessionKey
-      || payload.event?.sessionId
-      || payload.event?.sessionKey
-      || payload.context?.sessionId
       || payload.context?.sessionKey
+      || payload.context?.sessionId
       || payload.context?.conversationId
+      || payload.event?.sessionKey
+      || payload.event?.sessionId
       || payload.event?.conversationId,
     500,
+  );
+}
+
+function assistantOutputText(payload = {}) {
+  const assistantTexts = Array.isArray(payload.event?.assistantTexts)
+    ? payload.event.assistantTexts.map((item) => text(item)).filter(Boolean)
+    : [];
+  return text(
+    payload.last_assistant_message
+      || payload.assistant_response
+      || payload.content
+      || payload.event?.content
+      || assistantTexts.join('\n\n'),
   );
 }
 
@@ -67,11 +80,11 @@ function normalizeLifecycleEnvelope(value = {}) {
     action = 'append';
     role = 'user';
     content = text(payload.prompt || payload.user_message || payload.content || payload.event?.content);
-  } else if (['stop', 'message_sent', 'post_llm_call'].includes(name)) {
+  } else if (['stop', 'message_sent', 'post_llm_call', 'llm_output'].includes(name)) {
     if (name === 'message_sent' && payload.event?.success === false) return null;
     action = 'append';
     role = 'assistant';
-    content = text(payload.last_assistant_message || payload.assistant_response || payload.content || payload.event?.content);
+    content = assistantOutputText(payload);
   } else if (['sessionend', 'session_end', 'on_session_end', 'on_session_finalize'].includes(name)) action = 'finalize';
   else if (['interrupt', 'stopfailure'].includes(name)) {
     action = 'finalize';

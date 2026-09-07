@@ -719,6 +719,9 @@ contextBridge.exposeInMainWorld('AndroidBridge', {
   setAgentMemoryAutomation(studentId, enabled) {
     return ipcRenderer.sendSync('bridge:setAgentMemoryAutomation', studentId, Boolean(enabled));
   },
+  activateAgentMemoryCapture(studentId) {
+    return ipcRenderer.sendSync('bridge:activateAgentMemoryCapture', studentId);
+  },
   submitAgentConversation(requestJson) {
     return ipcRenderer.invoke('bridge:submitAgentConversation', requestJson);
   },

@@ -131,6 +131,11 @@ const {
   normalizeLifecycleEnvelope,
 } = require('./agent-lifecycle-capture.cjs');
 const {
+  activeCaptureTarget,
+  captureSwitchDecision,
+  studentCaptureStatus,
+} = require('./agent-capture-coordinator.cjs');
+const {
   ACTIVE_AGENT_TOOL_IDS,
   AUTO_CAPTURE_AGENT_IDS,
   KNOWN_AGENT_SOURCE_IDS,
@@ -8208,6 +8213,9 @@ function publicDevice(device) {
     tokenPreview: device.tokenPreview || '',
     terminalMode: normalizeTerminalMode(device.terminalMode, 'shared'),
     boundStudentId: String(device.boundStudentId || ''),
+    agentCaptureEnabled: Boolean(device.agentCaptureEnabled),
+    agentCaptureStudentId: String(device.agentCaptureStudentId || ''),
+    agentCaptureAuthorizedAt: String(device.agentCaptureAuthorizedAt || ''),
     activeStudentId: activeStudentIdForDevice(device.id),
     capabilities: Array.isArray(device.capabilities) ? device.capabilities : [],
     allowedStudentIds: Array.isArray(device.allowedStudentIds) ? device.allowedStudentIds : [],
@@ -16155,7 +16163,10 @@ export default {
   id: "edu-manager-lifecycle",
   name: "Education Manager Lifecycle Capture",
   register(api) {
-    for (const hookName of ["session_start", "message_received", "message_sent", "session_end"]) {
+    const hookNames = sourceAgent === "qclaw"
+      ? ["session_start", "message_received", "llm_output", "session_end"]
+      : ["session_start", "message_received", "message_sent", "session_end"];
+    for (const hookName of hookNames) {
       api.on(hookName, async (event, context) => enqueue(hookName, event, context), { timeoutMs: 1000 });
     }
   },
@@ -16184,12 +16195,17 @@ function installOpenClawLifecyclePlugin(configPath, sourceAgent) {
   config.plugins.entries['edu-manager-lifecycle'] = {
     ...(config.plugins.entries['edu-manager-lifecycle'] || {}),
     enabled: true,
+    hooks: {
+      ...(config.plugins.entries['edu-manager-lifecycle']?.hooks || {}),
+      allowConversationAccess: true,
+    },
   };
   if (Array.isArray(config.plugins.allow)) config.plugins.allow = mergeUnique([...config.plugins.allow, 'edu-manager-lifecycle']);
   writeJsonAtomic(configPath, config);
   const verified = safeReadJson(configPath, {});
   return Boolean(
     verified?.plugins?.entries?.['edu-manager-lifecycle']?.enabled
+    && verified?.plugins?.entries?.['edu-manager-lifecycle']?.hooks?.allowConversationAccess === true
     && (verified?.plugins?.load?.paths || []).includes(pluginDir),
   );
 }
@@ -16876,6 +16892,7 @@ let agentLifecycleDrainTimer = null;
 let agentLifecycleInstallMonitorTimer = null;
 let agentLifecycleInstallFingerprint = '';
 let lastAgentLifecycleStaleSweepAt = 0;
+let agentCaptureSwitchInProgress = false;
 
 function agentMemoryStore() {
   if (!agentMemoryStoreInstance) {
@@ -16932,6 +16949,11 @@ function processAgentLifecycleEnvelope(rawEnvelope) {
   if (!settings.automationEnabled || !lifecycleCaptureAllowed(descriptor, event.sourceAgent)) {
     return { ok: false, deferred: true, message: 'Lifecycle capture is disabled.' };
   }
+  return applyNormalizedLifecycleEvent(student, event, event.grantId);
+}
+
+function applyNormalizedLifecycleEvent(student, event, sourceNodeId) {
+  const store = agentMemoryStore();
   const scope = { studentId: String(student.id), projectId: '' };
   if (event.action === 'start') {
     store.startSession({
@@ -16940,7 +16962,7 @@ function processAgentLifecycleEnvelope(rawEnvelope) {
       idempotencyKey: `lifecycle:${event.sourceAgent}:${event.nativeSessionId}`,
       agentId: event.sourceAgent,
       origin: 'authorized_agent',
-      sourceNodeId: event.grantId,
+      sourceNodeId,
       title: event.title,
     });
     return { ok: true, action: 'start' };
@@ -16954,7 +16976,7 @@ function processAgentLifecycleEnvelope(rawEnvelope) {
         idempotencyKey: `lifecycle:${event.sourceAgent}:${event.nativeSessionId}`,
         agentId: event.sourceAgent,
         origin: 'authorized_agent',
-        sourceNodeId: event.grantId,
+        sourceNodeId,
         title: event.title,
       }).session;
     }
@@ -16979,6 +17001,42 @@ function processAgentLifecycleEnvelope(rawEnvelope) {
     return { ok: true, action: 'finalize' };
   }
   return { ok: true, ignored: true };
+}
+
+function studentTerminalCaptureDevice(request) {
+  const auth = request.authContext;
+  if (auth?.type !== 'student_session' || auth.terminalMode !== 'personal') {
+    throw new Error('只有已登录的个人 Windows 学生终端可以使用自动会话采集。');
+  }
+  const device = readDevices().find((item) => String(item.id) === String(auth.deviceId));
+  if (
+    !device
+    || String(device.platform || '').toLowerCase() !== 'windows'
+    || normalizeTerminalDeviceRole(device.deviceRole, device.capabilities) !== 'student'
+    || normalizeTerminalMode(device.terminalMode, 'shared') !== 'personal'
+    || String(device.boundStudentId || '') !== String(auth.studentId)
+  ) throw new Error('个人终端设备与当前学生绑定不一致。');
+  return device;
+}
+
+function processStudentTerminalLifecycleEnvelope(request, rawEnvelope) {
+  const device = studentTerminalCaptureDevice(request);
+  if (!device.agentCaptureEnabled || String(device.agentCaptureStudentId || '') !== String(request.authContext.studentId)) {
+    throw new Error('当前个人终端尚未授权自动会话采集。');
+  }
+  if (
+    String(rawEnvelope?.scopeId || '') !== String(request.authContext.studentId)
+    || String(rawEnvelope?.grantId || '') !== `terminal-device:${device.id}`
+  ) throw new Error('学生终端生命周期事件范围不匹配。');
+  const event = normalizeLifecycleEnvelope(rawEnvelope);
+  if (!event) return { ok: true, ignored: true };
+  const student = findStudentByKey(request.authContext.studentId);
+  if (!student) throw new Error('当前学生已经不存在。');
+  const settings = agentMemoryStore().getSettings(String(student.id));
+  if (!settings.automationEnabled || !settings.allowedAgents.includes(event.sourceAgent)) {
+    throw new Error('当前学生尚未开启授权 Agent 自动会话采集。');
+  }
+  return applyNormalizedLifecycleEvent(student, event, `student-terminal:${device.id}`);
 }
 
 function drainAgentLifecycleQueue(limit = 200) {
@@ -17110,6 +17168,8 @@ function agentMemoryState(studentId) {
     if (!student) return JSON.stringify({ ok: false, message: '未找到学生。' });
     const store = agentMemoryStore();
     drainAgentLifecycleQueue();
+    const activeDescriptor = safeReadJson(activeAgentKnowledgeDescriptorPath(), {});
+    const captureTarget = studentCaptureStatus(activeDescriptor, student.id);
     const authorizedSessions = store.listSessions({ studentId: String(student.id), limit: 100 })
       .filter((item) => item.origin === 'authorized_agent');
     const sessions = authorizedSessions.slice(0, 30);
@@ -17139,6 +17199,7 @@ function agentMemoryState(studentId) {
       schema: 'edu-manager.agent-memory.v1',
       studentId: String(student.id),
       settings: store.getSettings(String(student.id)),
+      captureTarget,
       sessions,
       registration,
       lifecycleHealth,
@@ -17180,20 +17241,133 @@ function disableAgentLifecycleRegistrations() {
   setHermesLifecyclePluginEnabled(false);
 }
 
+function activeLifecycleSessionsForStudent(studentId) {
+  return agentMemoryStore().listSessions({ studentId: String(studentId), limit: 100 })
+    .filter((session) => (
+      session.status === 'active'
+      && session.origin === 'authorized_agent'
+      && String(session.idempotencyKey || '').startsWith('lifecycle:')
+    ));
+}
+
+function finalizeActiveLifecycleSessionsForStudent(student, reason = 'disabled') {
+  let finalized = 0;
+  const store = agentMemoryStore();
+  for (const session of activeLifecycleSessionsForStudent(student.id)) {
+    const finalizationKey = `lifecycle-${reason}:${session.sessionId}`;
+    if (Array.isArray(session.messages) && session.messages.length) {
+      if (finalizeStoredLifecycleSession(student, session, {
+        status: 'cancelled',
+        finalizationKey,
+      })) finalized += 1;
+    } else {
+      store.finalizeSession({
+        studentId: String(student.id),
+        projectId: '',
+        sessionId: session.sessionId,
+        status: 'cancelled',
+        idempotencyKey: `${finalizationKey}:empty`,
+      });
+      finalized += 1;
+    }
+  }
+  return finalized;
+}
+
+function activateAgentMemoryCapture(studentId) {
+  if (agentCaptureSwitchInProgress) {
+    return JSON.stringify({ ok: false, code: 'SWITCH_IN_PROGRESS', message: '正在切换采集对象，请稍后重试。' });
+  }
+  agentCaptureSwitchInProgress = true;
+  const previousDescriptorExists = fs.existsSync(activeAgentKnowledgeDescriptorPath());
+  const previousDescriptor = safeReadJson(activeAgentKnowledgeDescriptorPath(), null);
+  try {
+    const student = findStudentByKey(studentId);
+    if (!student) return JSON.stringify({ ok: false, code: 'STUDENT_NOT_FOUND', message: '未找到学生。' });
+    const settings = agentMemoryStore().getSettings(String(student.id));
+    if (!settings.automationEnabled) {
+      return JSON.stringify({ ok: false, code: 'NOT_AUTHORIZED', message: `请先授权采集「${student.name}」的新会话。` });
+    }
+    drainAgentLifecycleQueue();
+    const currentTarget = activeCaptureTarget(previousDescriptor || {});
+    const currentStudent = currentTarget.studentId ? findStudentByKey(currentTarget.studentId) : null;
+    const decision = captureSwitchDecision({
+      currentTarget,
+      targetStudentId: String(student.id),
+      activeSessions: currentStudent ? activeLifecycleSessionsForStudent(currentStudent.id) : [],
+    });
+    if (!decision.allowed) {
+      const names = decision.blockingSessions
+        .map((session) => lifecycleAdapter(session.agentId)?.name || session.agentId)
+        .filter(Boolean);
+      return JSON.stringify({
+        ok: false,
+        code: decision.code,
+        blockingSessionCount: decision.blockingSessions.length,
+        message: `当前采集对象「${currentTarget.studentName || currentStudent?.name || currentTarget.studentId}」仍有 ${decision.blockingSessions.length} 个 Agent 会话进行中${names.length ? `（${mergeUnique(names).join('、')}）` : ''}。请先结束这些会话，再切换到「${student.name}」。`,
+      });
+    }
+    const prepared = parseJsonObject(prepareAgentKnowledgeAccess(String(student.id), {
+      activateGlobal: true,
+      captureEnabled: true,
+    }));
+    if (!prepared.ok) throw new Error(prepared.message || '无法完成 Agent 会话采集注册。');
+    const reason = decision.code === 'ALREADY_ACTIVE' ? 'capture_target_refreshed' : 'capture_target_changed';
+    appendHostTimeline({
+      type: 'agent_memory_capture_target_changed',
+      title: 'Agent memory capture target changed',
+      detail: `${currentTarget.studentId || 'none'} -> ${student.id}`,
+      studentId: String(student.id),
+    });
+    if (currentTarget.studentId && currentTarget.studentId !== String(student.id)) {
+      notify('onNativeAgentMemoryChanged', JSON.stringify({ studentId: currentTarget.studentId, reason }));
+    }
+    notify('onNativeAgentMemoryChanged', JSON.stringify({ studentId: String(student.id), reason }));
+    return JSON.stringify({
+      ok: true,
+      code: decision.code,
+      captureTarget: studentCaptureStatus(safeReadJson(activeAgentKnowledgeDescriptorPath(), {}), student.id),
+      registration: prepared.registration || {},
+      message: decision.code === 'ALREADY_ACTIVE'
+        ? `「${student.name}」已经是当前采集对象，接入状态已刷新。`
+        : `已将本机 Agent 新会话采集对象切换为「${student.name}」。`,
+    });
+  } catch (error) {
+    if (previousDescriptor) {
+      try { writeJsonAtomic(activeAgentKnowledgeDescriptorPath(), previousDescriptor); } catch { /* Preserve the original failure. */ }
+    } else if (!previousDescriptorExists) {
+      try { fs.unlinkSync(activeAgentKnowledgeDescriptorPath()); } catch { /* The failed switch may not have written a descriptor. */ }
+    }
+    return JSON.stringify({ ok: false, code: 'SWITCH_FAILED', message: `切换自动会话采集对象失败：${error.message}` });
+  } finally {
+    agentCaptureSwitchInProgress = false;
+  }
+}
+
 function setAgentMemoryAutomation(studentId, enabled) {
   try {
     const student = findStudentByKey(studentId);
     if (!student) return JSON.stringify({ ok: false, message: '未找到学生。' });
+    const activeDescriptor = safeReadJson(activeAgentKnowledgeDescriptorPath(), {});
+    const currentTarget = activeCaptureTarget(activeDescriptor);
+    if (!enabled && currentTarget.studentId === String(student.id)) {
+      drainAgentLifecycleQueue();
+      finalizeActiveLifecycleSessionsForStudent(student, 'authorization-disabled');
+    }
     const settings = agentMemoryStore().updateSettings(String(student.id), {
       automationEnabled: Boolean(enabled),
       allowedAgents: AUTO_CAPTURE_AGENT_IDS,
     });
     let prepared;
     if (settings.automationEnabled) {
-      prepared = parseJsonObject(prepareAgentKnowledgeAccess(String(student.id), { activateGlobal: true, captureEnabled: true }));
+      const shouldActivate = !currentTarget.enabled || currentTarget.studentId === String(student.id);
+      prepared = parseJsonObject(prepareAgentKnowledgeAccess(String(student.id), {
+        activateGlobal: shouldActivate,
+        captureEnabled: true,
+      }));
     } else {
       setLifecycleDescriptorEnabled(student, false);
-      disableAgentLifecycleRegistrations();
+      if (currentTarget.studentId === String(student.id)) disableAgentLifecycleRegistrations();
       prepared = { ok: true, registration: safeReadJson(agentKnowledgeDescriptorPath(student), {}).nativeTool || {} };
     }
     if (!prepared.ok) throw new Error(prepared.message || '无法完成 Agent 会话采集注册。');
@@ -17209,8 +17383,12 @@ function setAgentMemoryAutomation(studentId, enabled) {
       settings,
       registration: prepared.registration || {},
       message: settings.automationEnabled
-        ? '已启用受支持 Agent 的生命周期自动采集；无需 Agent 主动调用，且不会扫描启用前历史。'
-        : '已关闭受支持 Agent 的生命周期采集 Hook；已有记录不会删除。',
+        ? (!currentTarget.enabled || currentTarget.studentId === String(student.id)
+          ? `已授权并将「${student.name}」设为当前采集对象；不会扫描启用前历史。`
+          : `已授权采集「${student.name}」的新会话；本机当前采集对象仍为「${currentTarget.studentName || currentTarget.studentId}」，可在本页明确切换。`)
+        : (currentTarget.studentId === String(student.id)
+          ? '已关闭当前学生的生命周期采集 Hook；进行中的采集记录已安全结束，已有归档不会删除。'
+          : `已撤销「${student.name}」的采集授权；当前采集对象未受影响。`),
     });
   } catch (error) {
     return JSON.stringify({ ok: false, message: `更新自动会话记忆失败：${error.message}` });
@@ -17259,6 +17437,12 @@ async function handleAgentMemoryRequest(request, response, action) {
       }
       if (request.authContext?.type === 'agent_grant' && !(request.authContext.capabilities || []).includes('conversation:submit')) {
         throw new Error('当前 Agent 授权不包含对话投递能力。');
+      }
+      if (request.authContext?.type === 'student_session') {
+        const captureDevice = studentTerminalCaptureDevice(request);
+        if (!captureDevice.agentCaptureEnabled || String(captureDevice.agentCaptureStudentId || '') !== scope.studentId) {
+          throw new Error('当前个人终端尚未授权自动会话采集。');
+        }
       }
     }
     let result;
@@ -24983,6 +25167,84 @@ function handleStudentSessionLogout(request, response) {
   sendJson(response, 200, { ok: true, message: '已退出当前学生。' });
 }
 
+function studentTerminalAgentCapturePayload(device, studentId) {
+  const settings = agentMemoryStore().getSettings(String(studentId));
+  return {
+    schema: 'edu-manager.student-terminal-agent-capture.v1',
+    supported: true,
+    personalModeRequired: true,
+    enabled: Boolean(
+      device?.agentCaptureEnabled
+      && String(device?.agentCaptureStudentId || '') === String(studentId)
+      && normalizeTerminalMode(device?.terminalMode, 'shared') === 'personal'
+    ),
+    studentId: String(studentId),
+    deviceId: String(device?.id || ''),
+    allowedAgents: [...AUTO_CAPTURE_AGENT_IDS],
+    authorizedAt: String(device?.agentCaptureAuthorizedAt || ''),
+    excludes: ['historical_sessions', 'system_prompts', 'tool_secrets', 'task_center_context'],
+    hostArchiveEnabled: Boolean(settings.automationEnabled),
+  };
+}
+
+async function handleStudentTerminalAgentCaptureAuthorization(request, response) {
+  if (!requireAuth(request, response)) return;
+  try {
+    const device = studentTerminalCaptureDevice(request);
+    if (request.method === 'GET') {
+      sendJson(response, 200, { ok: true, capture: studentTerminalAgentCapturePayload(device, request.authContext.studentId) });
+      return;
+    }
+    const body = await parseJsonBody(request);
+    const enabled = Boolean(body.enabled);
+    const devices = readDevices();
+    const index = devices.findIndex((item) => String(item.id) === String(device.id));
+    if (index < 0) throw new Error('没有找到当前个人终端设备。');
+    devices[index] = {
+      ...devices[index],
+      capabilities: Array.from(new Set([...(Array.isArray(devices[index].capabilities) ? devices[index].capabilities : []), 'agent-lifecycle-capture-v1'])),
+      agentCaptureEnabled: enabled,
+      agentCaptureStudentId: enabled ? String(request.authContext.studentId) : '',
+      agentCaptureAuthorizedAt: enabled ? new Date().toISOString() : String(devices[index].agentCaptureAuthorizedAt || ''),
+      agentCaptureDisabledAt: enabled ? '' : new Date().toISOString(),
+    };
+    writeDevices(devices);
+    if (enabled) {
+      agentMemoryStore().updateSettings(String(request.authContext.studentId), {
+        automationEnabled: true,
+        allowedAgents: AUTO_CAPTURE_AGENT_IDS,
+      });
+    }
+    appendHostTimeline({
+      type: 'student_terminal_agent_capture_changed',
+      title: 'Student terminal Agent capture changed',
+      detail: `${devices[index].id}: ${enabled ? 'enabled' : 'disabled'}`,
+      deviceId: devices[index].id,
+      studentId: String(request.authContext.studentId),
+    });
+    sendJson(response, 200, {
+      ok: true,
+      capture: studentTerminalAgentCapturePayload(devices[index], request.authContext.studentId),
+      message: enabled
+        ? '已授权此个人 Windows 学生终端自动采集受支持 Agent 的新会话。'
+        : '已停止此个人 Windows 学生终端的自动会话采集；已有归档不会删除。',
+    });
+  } catch (error) {
+    sendJson(response, /个人|绑定|授权|范围/.test(error.message) ? 403 : 400, { ok: false, message: error.message });
+  }
+}
+
+async function handleStudentTerminalLifecycleEvent(request, response) {
+  if (!requireAuth(request, response)) return;
+  try {
+    const body = JSON.parse((await readRequestBuffer(request, 256 * 1024)).toString('utf8') || '{}');
+    const result = processStudentTerminalLifecycleEnvelope(request, body);
+    sendJson(response, 200, { ok: true, result });
+  } catch (error) {
+    sendJson(response, /个人|绑定|授权|范围|学生/.test(error.message) ? 403 : 400, { ok: false, message: error.message });
+  }
+}
+
 async function handleDeviceMode(request, response) {
   if (!requireAuth(request, response)) return;
   if (request.authContext?.type !== 'device') {
@@ -25009,6 +25271,9 @@ async function handleDeviceMode(request, response) {
       allowedStudentIds: terminalMode === 'personal' && devices[index].boundStudentId ? [String(devices[index].boundStudentId)] : [],
       allowedAllStudents: terminalMode === 'shared',
       autoAuthorizeNewStudents: terminalMode === 'shared',
+      agentCaptureEnabled: terminalMode === 'personal' ? Boolean(devices[index].agentCaptureEnabled) : false,
+      agentCaptureStudentId: terminalMode === 'personal' ? String(devices[index].agentCaptureStudentId || '') : '',
+      agentCaptureDisabledAt: terminalMode === 'personal' ? String(devices[index].agentCaptureDisabledAt || '') : new Date().toISOString(),
       modeUpdatedAt: new Date().toISOString(),
     };
     clearStudentSessionsForDevice(devices[index].id);
@@ -26828,6 +27093,14 @@ function handleHostRequest(request, response) {
     handleStudentSessionLogout(request, response);
     return;
   }
+  if (['GET', 'POST'].includes(request.method) && pathname === '/api/student-session/agent-memory/capture') {
+    handleStudentTerminalAgentCaptureAuthorization(request, response);
+    return;
+  }
+  if (request.method === 'POST' && pathname === '/api/student-session/agent-memory/events') {
+    handleStudentTerminalLifecycleEvent(request, response);
+    return;
+  }
   if (request.method === 'GET' && pathname === '/api/students') {
     handleStudents(request, response);
     return;
@@ -27483,9 +27756,10 @@ ipcMain.on('bridge:assignAgentConversationSubmission', (event, submissionId, sco
   licensedIpc(event, 'Agent 对话待归属处理', () => assignAgentConversationSubmission(submissionId, scopeType, scopeId));
 });
 ipcMain.on('bridge:getAgentKnowledgeDiagnostics', (event) => { event.returnValue = getAgentKnowledgeDiagnostics(); });
-ipcMain.on('bridge:prepareAgentKnowledgeAccess', (event, studentId) => { licensedIpc(event, 'Agent 知识调用', () => prepareAgentKnowledgeAccess(studentId)); });
+ipcMain.on('bridge:prepareAgentKnowledgeAccess', (event, studentId) => { licensedIpc(event, 'Agent 知识调用', () => prepareAgentKnowledgeAccess(studentId, { activateGlobal: false })); });
 ipcMain.on('bridge:getAgentMemoryState', (event, studentId) => { event.returnValue = agentMemoryState(studentId); });
 ipcMain.on('bridge:setAgentMemoryAutomation', (event, studentId, enabled) => { licensedIpc(event, 'Agent 自动会话记忆', () => setAgentMemoryAutomation(studentId, enabled)); });
+ipcMain.on('bridge:activateAgentMemoryCapture', (event, studentId) => { licensedIpc(event, '切换 Agent 自动会话采集对象', () => activateAgentMemoryCapture(studentId)); });
 ipcMain.on('bridge:getTaskCenterCapabilities', (event) => { event.returnValue = getTaskCenterCapabilities(); });
 ipcMain.on('bridge:setTaskAutomationEnabled', (event, enabled) => { licensedIpc(event, '任务自动运行模式', () => setTaskAutomationEnabled(enabled)); });
 ipcMain.handle('bridge:executeTask', (_event, taskId, executor) => licensedInvoke('执行任务中心任务', () => executeTaskByAdapterWithFreshCapabilities(taskId, executor)));

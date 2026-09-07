@@ -119,6 +119,9 @@ function build() {
   for (const relative of [
     'electron/terminal-main.cjs',
     'electron/terminal-preload.cjs',
+    'electron/student-agent-lifecycle.cjs',
+    'electron/agent-adapter-registry.cjs',
+    'electron/agent-lifecycle-hook.ps1',
     'electron/terminal-upload.cjs',
     'electron/growth-markdown-summary.cjs',
     'electron/pairing-protocol.cjs',
@@ -133,7 +136,20 @@ function build() {
   writeRuntimePackage();
 
   process.stdout.write('[windows-terminal-release] package-electron\n');
-  runPackageBin('electron-builder', 'electron-builder', ['--projectDir', stageRoot, '--win', 'portable', '--x64']);
+  const electronBuilderArgs = ['--projectDir', stageRoot, '--win', 'portable', '--x64'];
+  const configuredElectronDist = String(process.env.EDU_ELECTRON_DIST || '').trim();
+  if (configuredElectronDist) {
+    const electronDist = path.resolve(configuredElectronDist);
+    if (!fs.existsSync(electronDist) || !fs.statSync(electronDist).isFile()) {
+      throw new Error(`EDU_ELECTRON_DIST does not point to a local Electron zip: ${electronDist}`);
+    }
+    const expectedElectronZip = `electron-v${JSON.parse(fs.readFileSync(require.resolve('electron/package.json'), 'utf8')).version}-win32-x64.zip`;
+    if (path.basename(electronDist) !== expectedElectronZip) {
+      throw new Error(`EDU_ELECTRON_DIST must reference ${expectedElectronZip}.`);
+    }
+    electronBuilderArgs.push(`--config.electronDist=${electronDist}`);
+  }
+  runPackageBin('electron-builder', 'electron-builder', electronBuilderArgs);
 
   const stagedArtifact = path.join(stageOutput, artifactName);
   const asarPath = path.join(stageOutput, 'win-unpacked', 'resources', 'app.asar');
@@ -145,6 +161,9 @@ function build() {
   for (const expected of [
     '\\electron\\terminal-main.cjs',
     '\\electron\\terminal-preload.cjs',
+    '\\electron\\student-agent-lifecycle.cjs',
+    '\\electron\\agent-adapter-registry.cjs',
+    '\\electron\\agent-lifecycle-hook.ps1',
     '\\electron\\terminal-upload.cjs',
     '\\electron\\growth-markdown-summary.cjs',
     '\\electron\\pairing-protocol.cjs',

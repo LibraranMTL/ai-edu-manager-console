@@ -201,6 +201,13 @@ button:focus-visible { outline: 4px solid rgba(23, 111, 206, .24); outline-offse
 .student-topbar-button.quiet { color: #697b77; background: transparent; }
 .student-topbar-button.quiet:hover:not(:disabled) { background: #f0f4f3; }
 .student-settings-panel { margin-bottom: 10px; }
+.student-agent-capture-card { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 14px; margin-top: 14px; padding: 16px 18px; border: 1px solid #cdded9; border-radius: 16px; background: #f8fbfa; }
+.student-agent-capture-card.enabled { border-color: #74baa9; background: #eef9f5; }
+.student-agent-capture-icon { display: grid; place-items: center; width: 44px; height: 44px; border-radius: 14px; color: #176b5d; background: #dff2ec; }
+.student-agent-capture-card h3 { margin: 0 0 5px; color: #234c43; }
+.student-agent-capture-card p { margin: 0; color: #607a74; line-height: 1.5; }
+.student-agent-capture-card small { display: block; margin-top: 7px; color: #3f6e64; }
+.student-agent-capture-card .student-agent-capture-warning { color: #a35e18; }
 
 .student-home-dashboard { padding: 16px 18px 18px; border: 1px solid #dce8e5; border-radius: 24px; background: rgba(255,255,255,.96); box-shadow: 0 14px 38px rgba(26, 67, 58, .08); }
 .student-dashboard-heading { min-height: 67px; display: flex; align-items: center; justify-content: space-between; gap: 24px; margin-bottom: 10px; }
@@ -285,7 +292,7 @@ button:focus-visible { outline: 4px solid rgba(23, 111, 206, .24); outline-offse
   .terminal-host-state { flex-wrap: wrap; }
   .terminal-hero { padding: 26px; }
   .hero-status { min-width: 0; }
-  .terminal-form-grid, .terminal-feature-grid, .mode-grid, .student-progress-grid, .connection-method-grid { grid-template-columns: 1fr; }
+  .terminal-form-grid, .terminal-feature-grid, .mode-grid, .student-progress-grid, .connection-method-grid, .student-agent-capture-card { grid-template-columns: 1fr; }
   .terminal-manual-pairing-form > button { width: 100%; }
   .reminder-actions { width: 100%; }
   .reminder-actions button { flex: 1; }

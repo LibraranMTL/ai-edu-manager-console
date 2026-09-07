@@ -40,6 +40,7 @@ test('P1 authorized Agent conversations are captured and archived without task-c
 test('P1 UI and native MCP expose one-time authorization, full messages and six Agent registrations', () => {
   assert.match(preload, /getAgentMemoryState\(studentId\)/);
   assert.match(preload, /setAgentMemoryAutomation\(studentId, enabled\)/);
+  assert.match(preload, /activateAgentMemoryCapture\(studentId\)/);
   assert.match(ui, /自动会话记忆/);
   assert.match(ui, /Codex、QClaw、WorkBuddy、OpenClaw、Claude Code 和 Hermes/);
   assert.match(ui, /查看采集的对话内容/);
@@ -59,6 +60,18 @@ test('P1 UI and native MCP expose one-time authorization, full messages and six 
   assert.doesNotMatch(bridge, /Task-center sessions are recorded automatically/);
 });
 
+test('multi-student capture separates authorization from the one active machine target', () => {
+  assert.match(main, /prepareAgentKnowledgeAccess\(studentId, \{ activateGlobal: false \}\)/);
+  assert.match(main, /function activateAgentMemoryCapture\(studentId\)/);
+  assert.match(main, /captureSwitchDecision\(\{/);
+  assert.match(main, /currentTarget\.studentId === String\(student\.id\)\) disableAgentLifecycleRegistrations\(\)/);
+  assert.match(main, /finalizeActiveLifecycleSessionsForStudent\(student, 'authorization-disabled'\)/);
+  assert.match(main, /notify\('onNativeAgentMemoryChanged'/);
+  assert.match(ui, /当前采集对象/);
+  assert.match(ui, /等待切换/);
+  assert.match(ui, /切换到\{selectedStudent\.name\}/);
+});
+
 test('P1 automatic capture uses lifecycle hooks and never asks the Agent model to submit turns', () => {
   assert.match(main, /upsertLifecycleCommandHooks\(codexHooksPath, 'codex'\)/);
   assert.match(main, /upsertLifecycleCommandHooks\(path\.join\(os\.homedir\(\), '\.workbuddy', 'settings\.json'\), 'workbuddy'\)/);
@@ -71,7 +84,10 @@ test('P1 automatic capture uses lifecycle hooks and never asks the Agent model t
   assert.match(main, /finalizeStaleLifecycleSessions/);
   assert.match(main, /30 \* 60_000/);
   assert.match(main, /lifecycle-stale-empty:/);
+  assert.match(main, /sourceAgent === "qclaw"/);
+  assert.match(main, /\["session_start", "message_received", "llm_output", "session_end"\]/);
   assert.match(main, /\["session_start", "message_received", "message_sent", "session_end"\]/);
+  assert.match(main, /allowConversationAccess: true/);
   assert.match(main, /drainAgentLifecycleQueue/);
   assert.match(lifecycleHook, /\[Console\]::In\.ReadToEnd\(\)/);
   assert.match(lifecycleHook, /lifecycleCapture\.enabled/);

@@ -1071,6 +1071,7 @@ type AndroidBridge = {
   prepareAgentKnowledgeAccess?: (studentId: string) => string;
   getAgentMemoryState?: (studentId: string) => string;
   setAgentMemoryAutomation?: (studentId: string, enabled: boolean) => string;
+  activateAgentMemoryCapture?: (studentId: string) => string;
   submitAgentConversation?: (requestJson: string) => Promise<string>;
   getAgentConversationSubmissionState?: () => string;
   assignAgentConversationSubmission?: (submissionId: string, scopeType: 'student' | 'project', scopeId: string) => string;
@@ -2585,6 +2586,13 @@ type AgentMemorySessionState = {
     allowedAgents: string[];
     retentionDays: number;
     updatedAt?: string;
+  };
+  captureTarget?: {
+    enabled: boolean;
+    studentId: string;
+    studentName: string;
+    grantId: string;
+    isCurrentStudent: boolean;
   };
   sessions?: Array<{
     sessionId: string;
@@ -7269,6 +7277,22 @@ function App() {
       refreshAgentMemoryState(selectedStudent.id);
     } catch {
       setAgentCenterMessage('自动会话记忆设置结果解析失败。');
+    }
+  };
+
+  const activateSelectedAgentMemoryCapture = () => {
+    if (!selectedStudent) return;
+    const raw = bridge()?.activateAgentMemoryCapture?.(selectedStudent.id);
+    if (!raw) {
+      setAgentCenterMessage('当前环境不支持切换自动会话采集对象。');
+      return;
+    }
+    try {
+      const result = JSON.parse(raw) as { ok?: boolean; message?: string };
+      setAgentCenterMessage(result.message || (result.ok ? '自动会话采集对象已切换。' : '切换自动会话采集对象失败。'));
+      refreshAgentMemoryState(selectedStudent.id);
+    } catch {
+      setAgentCenterMessage('切换自动会话采集对象结果解析失败。');
     }
   };
 
@@ -17520,6 +17544,7 @@ ${JSON.stringify(items, null, 2)}
             </div>
             <div className="archive-grid">
               <InfoPanel icon={<UserRound />} title="当前学生" value={selectedStudent.name} />
+              <InfoPanel icon={<Bot />} title="当前采集对象" value={agentMemoryState?.captureTarget?.enabled ? (agentMemoryState.captureTarget.studentName || agentMemoryState.captureTarget.studentId) : '尚未设置'} />
               <InfoPanel icon={<FolderOpen />} title="统一记忆文件" value={agentCenter?.unifiedMemoryPath || selectedStudent.memoryConfig?.unifiedMemoryPath || '未生成'} />
               <InfoPanel icon={<Archive />} title="来源数量" value={`${agentCenter?.memoryIndex?.sources?.filter((item) => item.exists).length ?? 0} 个`} />
             </div>
@@ -17537,9 +17562,18 @@ ${JSON.stringify(items, null, 2)}
                   />
                   <span>{agentMemoryState?.settings?.automationEnabled ? '已授权采集' : '尚未授权'}</span>
                 </label>
+                {agentMemoryState?.settings?.automationEnabled && !agentMemoryState?.captureTarget?.isCurrentStudent && (
+                  <button className="primary compact" onClick={activateSelectedAgentMemoryCapture}>切换到{selectedStudent.name}</button>
+                )}
+                {agentMemoryState?.captureTarget?.isCurrentStudent && <span className="capture-target-badge">当前采集对象</span>}
                 <button className="secondary compact" onClick={() => refreshAgentMemoryState()}>刷新会话</button>
                 <span className="muted">最近 {agentMemoryState?.summary?.total ?? 0} 个授权会话 · {agentMemoryState?.summary?.active ?? 0} 个采集中</span>
               </div>
+              {agentMemoryState?.settings?.automationEnabled && !agentMemoryState?.captureTarget?.isCurrentStudent && (
+                <div className="notice capture-target-notice">
+                  {selectedStudent.name}已授权，但本机当前采集对象为“{agentMemoryState?.captureTarget?.enabled ? (agentMemoryState.captureTarget.studentName || agentMemoryState.captureTarget.studentId) : '未设置'}”。切换前请先结束当前 Agent 会话，避免同一会话跨学生分段归档。
+                </div>
+              )}
               <div className="agent-capture-status" aria-label="Agent 会话采集接入状态">
                 {([
                   ['codex', 'Codex', agentMemoryState?.registration?.codexLifecycleRegistered],
@@ -17552,12 +17586,35 @@ ${JSON.stringify(items, null, 2)}
                   const health = agentMemoryState?.lifecycleHealth?.[agentId];
                   const received = health?.eventReceived === true;
                   const configured = health?.configured ?? registered;
-                  const stateLabel = health?.active ? '自动采集中' : configured ? '已接入' : '需要处理';
+                  const isCaptureTarget = agentMemoryState?.captureTarget?.isCurrentStudent === true;
+                  const authorized = agentMemoryState?.settings?.automationEnabled === true;
+                  const stateLabel = !authorized
+                    ? '尚未授权'
+                    : !isCaptureTarget
+                      ? '等待切换'
+                      : health?.active
+                        ? '自动采集中'
+                        : received
+                          ? '已接入'
+                          : configured
+                            ? '已配置，等待新会话'
+                            : '需要处理';
+                  const statusClassName = health?.active && isCaptureTarget
+                    ? 'capturing'
+                    : received && isCaptureTarget
+                      ? 'ready'
+                      : authorized && !isCaptureTarget
+                        ? 'waiting'
+                        : '';
                   return (
                     <span
-                      className={received ? 'ready' : ''}
+                      className={statusClassName}
                       key={name}
-                      title={health?.lastEventAt ? `最近事件：${formatDateTime(health.lastEventAt)}` : configured ? '已完成生命周期接入，等待新会话事件' : '未检测到安装或自动接入未完成'}
+                      title={!isCaptureTarget && authorized
+                        ? `已授权，但当前采集对象为${agentMemoryState?.captureTarget?.studentName || agentMemoryState?.captureTarget?.studentId || '未设置'}`
+                        : health?.lastEventAt
+                          ? `最近事件：${formatDateTime(health.lastEventAt)}`
+                          : configured ? '已完成生命周期接入，等待新会话事件' : '未检测到安装或自动接入未完成'}
                     >
                       {name} · {stateLabel}
                     </span>

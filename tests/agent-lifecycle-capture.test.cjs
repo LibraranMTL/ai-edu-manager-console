@@ -62,6 +62,40 @@ test('OpenClaw and QClaw typed hooks use only emitted event content and session 
   assert.equal(ended.action, 'finalize');
 });
 
+test('current QClaw llm_output captures only the emitted assistant text for the same session', () => {
+  const received = normalizeLifecycleEnvelope({
+    sourceAgent: 'qclaw',
+    scopeId: 'student-2',
+    grantId: 'grant-2',
+    payload: {
+      hook_event_name: 'message_received',
+      event: { content: '自动会话采集验收测试', messageId: 'message-1' },
+      context: { sessionKey: 'agent:baoshuyuan:session-1' },
+    },
+  });
+  const output = normalizeLifecycleEnvelope({
+    sourceAgent: 'qclaw',
+    scopeId: 'student-2',
+    grantId: 'grant-2',
+    capturedAt: '2026-09-07T07:46:01.000Z',
+    payload: {
+      hook_event_name: 'llm_output',
+      event: {
+        runId: 'run-1',
+        sessionId: '7cba7054-c6b4-4ac4-8ad4-69fe42e6aed1',
+        assistantTexts: ['测试通过'],
+        lastAssistant: { role: 'assistant', content: '不读取这个扩展对象' },
+      },
+      context: { sessionKey: 'agent:baoshuyuan:session-1' },
+    },
+  });
+  assert.equal(output.action, 'append');
+  assert.equal(output.message.role, 'assistant');
+  assert.equal(output.message.content, '测试通过');
+  assert.equal(output.nativeSessionId, 'agent:baoshuyuan:session-1');
+  assert.equal(output.sessionId, received.sessionId);
+});
+
 test('Claude Code and Hermes lifecycle events use the same normalized queue protocol', () => {
   const claudeFailure = normalizeLifecycleEnvelope({
     sourceAgent: 'claude-code',

@@ -18,7 +18,8 @@ test('all four report tasks use growth fingerprinted automatic validation', () =
 test('validated reports publish without a human review transition', () => {
   assert.match(main, /function autoPublishValidatedReport\(task, validation\)/);
   assert.match(main, /const publication = autoPublishValidatedReport\(task, validation\)/);
-  assert.match(main, /reviewedBy: 'system_validation'/);
+  assert.match(main, /validatedAt: acceptedAt/);
+  assert.match(main, /reviewedAt: '', reviewedBy: ''/);
   assert.match(main, /'report_auto_published'/);
 });
 
@@ -26,4 +27,15 @@ test('invalid reports retain the previous publication and write one issue record
   assert.match(main, /function persistReportIssue\(task, validation\)/);
   assert.match(main, /报告暂未更新，上一版仍可使用；需要补充依据。/);
   assert.match(main, /REPORT_AUTO_PUBLICATION_FAILED/);
+});
+
+test('report generation receives only governed and accessible evidence ids', () => {
+  assert.match(main, /function reportEligibleEvidence\(student\)/);
+  assert.match(main, /eligibleEvidenceIds: eligibleEvidence\.ids/);
+  assert.match(main, /eligibleEvidence: eligibleEvidence\.items/);
+  assert.match(main, /evidence\?\.migratedFrom/);
+  assert.match(main, /project\.promotionPath/);
+  assert.match(main, /可引用证据白名单/);
+  assert.match(main, /只允许引用白名单中的证据 ID/);
+  assert.match(main, /eligibleIds\.has\(String\(item\.id \|\| ''\)\)/);
 });

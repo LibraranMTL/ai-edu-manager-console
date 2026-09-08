@@ -70,7 +70,7 @@ const {
   resolveConfiguredStoragePath,
   resolveStudentBaseDir,
 } = require('./storage-root.cjs');
-const { mergeOpenAiToolInstall } = require('./openai-tool-install.cjs');
+const { mergeOpenAiToolInstall, selectNewestCodexCliCandidate } = require('./openai-tool-install.cjs');
 const { mergeAssetReferences, recentAssetTrend } = require('./asset-statistics.cjs');
 const { lanDiscoveryBroadcastTargets } = require('./lan-discovery.cjs');
 const { createStudentPortableMigrationManager } = require('./student-portable-migration.cjs');
@@ -191,7 +191,7 @@ const {
 const { nextKnowledgeReviewState, nextStagingReviewState, projectCompletionIssues, repairStagingLifecycle, reconcileDigestControlState, validateDigestReceipt } = require('./project-integrity.cjs');
 const { PROJECT_SCREENING_PARSER_VERSION, buildProjectScreeningPreview } = require('./project-screening.cjs');
 const { completionBlockers, singleStudentEvidenceDraft } = require('./project-completion.cjs');
-const { weekRange, monthRange, reportIsCurrent, validateSectionedDraft, publishReviewedReport } = require('./learning-report-workflow.cjs');
+const { weekRange, monthRange, reportIsCurrent, validateSectionedReport, publishValidatedReport } = require('./learning-report-workflow.cjs');
 const { reportContentFingerprint, validateReportDraftForAutoPublish } = require('./report-auto-publication.cjs');
 const { resolveReportEvidence } = require('./report-evidence-resolver.cjs');
 const { discoverArchiveVersions, recoverPlaceholderReportsFromArchive, reportHasSubstantiveContent, restoreArchiveVersion, writeArchiveVersion } = require('./education-archive-version.cjs');
@@ -11907,32 +11907,39 @@ function updateProjectKnowledgeReview(projectId, recordIdsJson, status, note) {
   }
 }
 
+function projectUnifiedReviewSnapshot(projectId) {
+  const project = readProjects().map(normalizeProject).find((item) => String(item.id) === String(projectId));
+  if (!project) return { ok: false, message: '未找到学习项目。' };
+  const knowledgeReview = readProjectKnowledgeReview(project);
+  const reviewPackage = buildProjectReviewPackage(project, knowledgeReview.records);
+  return { ok: true, project, reviewPackage, message: reviewPackage.message };
+}
+
 function getProjectUnifiedReview(projectId) {
   try {
-    const project = readProjects().map(normalizeProject).find((item) => String(item.id) === String(projectId));
-    if (!project) return JSON.stringify({ ok: false, message: '未找到学习项目。' });
-    const knowledgeReview = readProjectKnowledgeReview(project);
-    const reviewPackage = buildProjectReviewPackage(project, knowledgeReview.records);
-    return JSON.stringify({ ok: true, project, reviewPackage, message: reviewPackage.message });
+    const snapshot = projectUnifiedReviewSnapshot(projectId);
+    if (!snapshot.ok || !snapshot.reviewPackage?.ready?.count) return JSON.stringify(snapshot);
+    return applyProjectUnifiedReview(projectId, { automatic: true, snapshot });
   } catch (error) {
     return JSON.stringify({ ok: false, message: `生成统一审核包失败：${error.message}` });
   }
 }
 
-function applyProjectUnifiedReview(projectId) {
+function applyProjectUnifiedReview(projectId, options = {}) {
   try {
-    const initial = JSON.parse(getProjectUnifiedReview(projectId));
+    const automatic = Boolean(options.automatic);
+    const initial = options.snapshot || projectUnifiedReviewSnapshot(projectId);
     if (!initial.ok) return JSON.stringify(initial);
     const applied = { materials: 0, knowledge: 0 };
     const messages = [];
     if (initial.reviewPackage.ready.materialIds.length) {
-      const result = JSON.parse(approveAndPromoteProjectStagingItems(projectId, JSON.stringify(initial.reviewPackage.ready.materialIds), 'reference_only', '统一审核包一键采用。'));
+      const result = JSON.parse(approveAndPromoteProjectStagingItems(projectId, JSON.stringify(initial.reviewPackage.ready.materialIds), 'reference_only', automatic ? '系统自动采用：来源完整且无冲突。' : '统一审核包一键采用。'));
       if (!result.ok) return JSON.stringify({ ...result, reviewPackage: initial.reviewPackage });
       applied.materials = Number(result.promoted || initial.reviewPackage.ready.materialIds.length);
       messages.push(result.message);
     }
     if (initial.reviewPackage.ready.knowledgeIds.length) {
-      const result = JSON.parse(updateProjectKnowledgeReview(projectId, JSON.stringify(initial.reviewPackage.ready.knowledgeIds), 'verified', '统一审核包确认：高置信且来源完整。'));
+      const result = JSON.parse(updateProjectKnowledgeReview(projectId, JSON.stringify(initial.reviewPackage.ready.knowledgeIds), 'verified', automatic ? '系统自动确认：高置信、来源完整且项目归属明确。' : '统一审核包确认：高置信且来源完整。'));
       if (!result.ok) return JSON.stringify({ ...result, reviewPackage: initial.reviewPackage, applied });
       applied.knowledge = Number(result.updated || initial.reviewPackage.ready.knowledgeIds.length);
       messages.push(result.message);
@@ -11940,8 +11947,8 @@ function applyProjectUnifiedReview(projectId) {
     const refreshedProject = readProjects().map(normalizeProject).find((item) => String(item.id) === String(projectId));
     const refreshedKnowledge = readProjectKnowledgeReview(refreshedProject).records;
     const reviewPackage = buildProjectReviewPackage(refreshedProject, refreshedKnowledge);
-    appendHostTimeline({ type: 'project_unified_review_applied', title: 'Project unified review applied', detail: `${refreshedProject.name}: materials ${applied.materials}, knowledge ${applied.knowledge}`, count: applied.materials + applied.knowledge });
-    return JSON.stringify({ ok: true, applied, project: refreshedProject, projects: readProjects().map(normalizeProject), reviewPackage, message: `本批次已采用 ${applied.materials} 份资料、确认 ${applied.knowledge} 条低风险知识。成长证据仍等待人工确认。${messages.length ? ` ${messages.join(' ')}` : ''}` });
+    appendHostTimeline({ type: automatic ? 'project_low_risk_auto_applied' : 'project_unified_review_applied', title: automatic ? 'Project low-risk items automatically applied' : 'Project unified review applied', detail: `${refreshedProject.name}: materials ${applied.materials}, knowledge ${applied.knowledge}`, count: applied.materials + applied.knowledge });
+    return JSON.stringify({ ok: true, automatic, applied, project: refreshedProject, projects: readProjects().map(normalizeProject), reviewPackage, message: `${automatic ? '系统已自动' : '本批次已'}采用 ${applied.materials} 份低风险资料、确认 ${applied.knowledge} 条低风险知识。高风险或归属不明确的成长证据仍需人工确认。${messages.length ? ` ${messages.join(' ')}` : ''}` });
   } catch (error) {
     return JSON.stringify({ ok: false, message: `应用统一审核包失败：${error.message}` });
   }
@@ -12553,7 +12560,7 @@ function syncProjectDigestResult(projectId) {
     }
     const state = writeProjectDigestState(ensured, nextPatch);
     const digestCompleted = state.status === 'completed';
-    const result = updateProjectRecord(ensured.id, (item) => ({
+    let result = updateProjectRecord(ensured.id, (item) => ({
       ...item,
       status: digestCompleted && item.status === 'active' ? 'pending_review' : item.status,
       stagingItems: (item.stagingItems || []).map((stagingItem) => digestCompleted && stagingItem.status === 'promoted'
@@ -12568,9 +12575,27 @@ function syncProjectDigestResult(projectId) {
       digestState: state,
       updatedAt: new Date().toISOString(),
     }));
+    let automaticReview = null;
+    if (hasCompletionSignal) {
+      try {
+        automaticReview = JSON.parse(getProjectUnifiedReview(ensured.id));
+        if (automaticReview.ok && Number(automaticReview.reviewPackage?.attention?.count || 0) === 0) {
+          result = updateProjectRecord(ensured.id, (item) => ({
+            ...item,
+            status: item.status === 'pending_review' ? 'active' : item.status,
+            updatedAt: new Date().toISOString(),
+          }));
+        }
+      } catch (error) {
+        automaticReview = { ok: false, message: `低风险资料自动处理失败：${error.message}` };
+      }
+    }
     appendHostTimeline({ type: 'project_digest_synced', title: 'Project digest synced', detail: `${ensured.name} -> ${state.status}`, count: state.pendingCount || 0 });
     notify('onNativeDigestWorkflowChanged', JSON.stringify({ scopeType: 'project', scopeId: String(ensured.id), status: state.status, batchId: current.digestBatchId || '' }));
-    return JSON.stringify({ ok: true, project: result.project, projects: result.projects, digestState: state, governance: governanceRun, message: state.message });
+    const automaticMessage = automaticReview?.automatic && Number(automaticReview.applied?.materials || 0) + Number(automaticReview.applied?.knowledge || 0) > 0
+      ? ` ${automaticReview.message}`
+      : automaticReview?.ok === false ? ` ${automaticReview.message}` : '';
+    return JSON.stringify({ ok: true, project: result.project, projects: result.projects, digestState: state, governance: governanceRun, automaticReview, message: `${state.message}${automaticMessage}` });
   } catch (error) {
     return JSON.stringify({ ok: false, message: `同步项目消化结果失败：${error.message}` });
   }
@@ -14594,7 +14619,7 @@ function upsertTaskCandidates(candidates, options = {}) {
 }
 
 function dailyActionDraftPath(student, taskId) {
-  return path.join(studentAiManagerDir(student), 'task-center', 'daily-action-drafts', `${taskId}.md`);
+  return path.join(studentAiManagerDir(student), 'task-center', 'report-staging', `${taskId}.md`);
 }
 
 const PERIODIC_REPORT_TASKS = {
@@ -14604,7 +14629,7 @@ const PERIODIC_REPORT_TASKS = {
 };
 
 function learningReportDraftPath(student, taskId) {
-  return path.join(studentAiManagerDir(student), 'task-center', 'learning-report-drafts', `${taskId}.md`);
+  return path.join(studentAiManagerDir(student), 'task-center', 'report-staging', `${taskId}.md`);
 }
 
 function latestGrowthModelMtime(student) {
@@ -14616,7 +14641,7 @@ function latestGrowthModelMtime(student) {
     .reduce((latest, file) => Math.max(latest, fs.statSync(file).mtimeMs), 0);
 }
 
-function buildPeriodicLearningReportTask(student, kind) {
+function buildPeriodicLearningReportTask(student, kind, sharedEvidence = null) {
   const normalized = toHostStudent(student);
   const definition = PERIODIC_REPORT_TASKS[kind];
   const report = LEARNING_REPORTS.find((item) => item.id === definition.reportId);
@@ -14626,15 +14651,17 @@ function buildPeriodicLearningReportTask(student, kind) {
   const officialContent = officialStat ? readSmallTextFile(officialPath, 512 * 1024) : '';
   const reportStatus = frontmatterValue(officialContent, 'status').toLowerCase();
   const reportUpdated = frontmatterValue(officialContent, 'updated') || (officialStat ? taskLocalDate(officialStat.mtime) : '');
-  const sourceChanged = latestGrowthModelMtime(normalized) > Number(officialStat?.mtimeMs || 0);
+  const sourceMtimeMs = latestGrowthModelMtime(normalized);
+  const sourceChanged = sourceMtimeMs > Number(officialStat?.mtimeMs || 0);
   const growthFingerprint = String(safeReadJson(growthIndexPath(normalized), {}).sourceFingerprint || '');
+  const eligibleEvidence = sharedEvidence || reportEligibleEvidence(normalized);
   const current = reportIsCurrent({
     exists: Boolean(officialStat),
     status: reportStatus,
     updated: reportUpdated,
     period,
     reportMtimeMs: Number(officialStat?.mtimeMs || 0),
-    sourceMtimeMs: latestGrowthModelMtime(normalized),
+    sourceMtimeMs,
   });
   const id = taskStableId(kind, 'student', normalized.id, period.key);
   return normalizeTaskEnvelope({
@@ -14664,6 +14691,9 @@ function buildPeriodicLearningReportTask(student, kind) {
       knowledgeRoot: normalized.rootPath || getStudentRootDir(normalized.name),
       growthPath: growthModelDirForStudent(normalized),
       growthFingerprint,
+      eligibleEvidenceIds: eligibleEvidence.ids,
+      eligibleEvidence: eligibleEvidence.items,
+      blockedEvidenceCount: eligibleEvidence.blockedCount,
       reportPath: officialPath,
     },
     expectedOutput: {
@@ -14680,8 +14710,9 @@ function buildPeriodicLearningReportTask(student, kind) {
     detail: current ? `本周期${definition.label}已发布。` : growthFingerprint ? `${definition.reason}校验通过后自动更新正式学情报告。` : '成长模型更新后将自动生成报告。',
     action: 'learning_report',
     approval: { required: false, status: 'not_required' },
-    autoRetry: false,
-    maxAttempts: 1,
+    autoRetry: true,
+    maxAttempts: 3,
+    retryBackoffSeconds: 10,
   });
 }
 
@@ -14694,7 +14725,7 @@ function readDailyActionFeedback(student) {
   return Array.isArray(parsed.entries) ? parsed.entries : [];
 }
 
-function buildWeeklyActionTask(student) {
+function buildWeeklyActionTask(student, sharedEvidence = null) {
   const normalized = toHostStudent(student);
   const week = taskWeekRange();
   const report = LEARNING_REPORTS.find((item) => item.id === 'daily');
@@ -14704,12 +14735,14 @@ function buildWeeklyActionTask(student) {
   const reportStatus = frontmatterValue(officialContent, 'status').toLowerCase();
   const reportUpdated = frontmatterValue(officialContent, 'updated');
   const reportUpdatedDate = reportUpdated || (stat ? taskLocalDate(stat.mtime) : '');
+  const reportPublished = new Set(['published', 'current', 'updated', 'active']).has(reportStatus);
   const updatedThisWeek = Boolean(stat
     && reportUpdatedDate >= week.start
     && reportUpdatedDate <= week.end
-    && reportStatus === 'published');
+    && reportPublished);
   const id = taskStableId('weekly_action', 'student', normalized.id, week.key);
   const growthFingerprint = String(safeReadJson(growthIndexPath(normalized), {}).sourceFingerprint || '');
+  const eligibleEvidence = sharedEvidence || reportEligibleEvidence(normalized);
   const boundProjects = readProjects().map(normalizeProject)
     .filter((project) => (project.studentIds || []).map(String).includes(String(normalized.id)))
     .map((project) => ({ id: project.id, name: project.name, status: project.status, pendingDigest: Number(project.digestState?.pendingCount || 0), contributionStatus: project.dashboard?.contributionStatus || '' }));
@@ -14738,8 +14771,9 @@ function buildWeeklyActionTask(student) {
     scheduleKey: week.key,
     idempotencyKey: `weekly_action:${normalized.id}:${week.key}:${growthFingerprint || 'growth-pending'}`,
     completionPolicy: 'auto_after_validation',
-    autoRetry: false,
-    maxAttempts: 1,
+    autoRetry: true,
+    maxAttempts: 3,
+    retryBackoffSeconds: 10,
     input: {
       date: week.start,
       weekStart: week.start,
@@ -14750,6 +14784,9 @@ function buildWeeklyActionTask(student) {
       summaryPath: normalized.summaryPath || getSummaryDir(normalized.name),
       growthPath: growthModelDirForStudent(normalized),
       growthFingerprint,
+      eligibleEvidenceIds: eligibleEvidence.ids,
+      eligibleEvidence: eligibleEvidence.items,
+      blockedEvidenceCount: eligibleEvidence.blockedCount,
       previousFeedback: selectPreviousDailyFeedback(readDailyActionFeedback(normalized), week.start, 3),
       projects: boundProjects,
       unfinishedTasks,
@@ -14763,11 +14800,12 @@ function buildWeeklyActionTask(student) {
 }
 
 function currentLearningReportTaskCandidates(student) {
+  const eligibleEvidence = reportEligibleEvidence(toHostStudent(student));
   return [
-    buildWeeklyActionTask(student),
-    buildPeriodicLearningReportTask(student, 'learning_profile'),
-    buildPeriodicLearningReportTask(student, 'learning_changes'),
-    buildPeriodicLearningReportTask(student, 'learning_stage'),
+    buildWeeklyActionTask(student, eligibleEvidence),
+    buildPeriodicLearningReportTask(student, 'learning_profile', eligibleEvidence),
+    buildPeriodicLearningReportTask(student, 'learning_changes', eligibleEvidence),
+    buildPeriodicLearningReportTask(student, 'learning_stage', eligibleEvidence),
   ];
 }
 
@@ -14851,13 +14889,13 @@ function recoverValidatedLearningReportDrafts(student) {
       executionId: recoveryExecutionId,
       status: 'reviewing',
       adapterId: task.adapterId || task.executor || 'artifact-recovery',
-      summary: '检测到已完成的报告草稿，现有校验通过后自动恢复。',
+      summary: '检测到已完成的报告生成结果，校验通过后自动恢复。',
       artifacts: validation.artifacts,
     }, validation, { importedFrom: draftPath });
     const committed = commitValidatedTaskResult(store, task, result, validation, {
       successful: true,
       event: 'learning_report_draft_recovered',
-      autoSummary: '报告草稿已恢复并通过自动校验。',
+      autoSummary: '报告生成结果已恢复并通过自动校验。',
     });
     if (committed.ok) mutated = true;
     if (committed.ok) recovered.push({ taskId: task.id, title: task.title, path: task.expectedOutput?.publishPath || '' });
@@ -14883,13 +14921,15 @@ function taskCommandFor(task) {
     const feedback = Array.isArray(task.input?.previousFeedback)
       ? task.input.previousFeedback
       : selectPreviousDailyFeedback(readDailyActionFeedback(normalized), expectedDate, 3);
-    return `请为学生「${normalized.name}」生成 ${weekStart} 至 ${weekEnd} 的每周行动建议。\n\n读取范围：\n- 学生知识库：${normalized.rootPath || getStudentRootDir(normalized.name)}\n- 学情分析汇总：${normalized.summaryPath || getSummaryDir(normalized.name)}\n- 成长模型：${growthModelDirForStudent(normalized)}\n\n绑定项目状态：\n${task.input?.projects?.length ? JSON.stringify(task.input.projects, null, 2) : '暂无绑定项目。'}\n\n未完成任务：\n${task.input?.unfinishedTasks?.length ? JSON.stringify(task.input.unfinishedTasks, null, 2) : '暂无未完成任务。'}\n\n上周及更早反馈：\n${feedback.length ? JSON.stringify(feedback, null, 2) : '暂无反馈。'}\n\n必须包含：每周重点、每日固定动作、阶段性里程碑、给学生、给家长、给老师、本周不建议做的事、观察点、依据来源。所有二级章节标题必须原样使用上述名称，不要增加“一、”“1.”“（一）”等编号。每日固定动作应按可重复执行的最小动作编写；阶段性里程碑应给出本周检查节点和完成标准。每项正式判断使用“[依据:证据ID]”；watching 证据只能使用“待观察/继续观察”等措辞。无充分依据时写“本周期无实质变化”或“资料不足”，不得虚构。\n\n只把草稿写入：${task.expectedOutput?.draftPath}\n不要直接覆盖正式报告。文件必须以如下 YAML frontmatter 开头：\n---\ndate: ${expectedDate}\nweek_start: ${weekStart}\nweek_end: ${weekEnd}\nstudent_id: ${normalized.id}\ngrowth_fingerprint: ${task.input?.growthFingerprint || ''}\ngenerated_at: 当前 ISO 时间\nstatus: pending_review\n---\n\n完成后确认文件存在。`;
+    const eligibleEvidence = Array.isArray(task.input?.eligibleEvidence) ? task.input.eligibleEvidence : [];
+    return `请为学生「${normalized.name}」生成 ${weekStart} 至 ${weekEnd} 的每周行动建议。\n\n读取范围：\n- 学生知识库：${normalized.rootPath || getStudentRootDir(normalized.name)}\n- 学情分析汇总：${normalized.summaryPath || getSummaryDir(normalized.name)}\n- 成长模型：${growthModelDirForStudent(normalized)}\n\n可引用证据白名单：\n${eligibleEvidence.length ? JSON.stringify(eligibleEvidence, null, 2) : '当前没有可引用证据。'}\n只允许引用白名单中的证据 ID；没有可用证据时必须写“本周期无实质变化”或“资料不足”，并且不要写任何 [依据:...] 标记。\n\n绑定项目状态：\n${task.input?.projects?.length ? JSON.stringify(task.input.projects, null, 2) : '暂无绑定项目。'}\n\n未完成任务：\n${task.input?.unfinishedTasks?.length ? JSON.stringify(task.input.unfinishedTasks, null, 2) : '暂无未完成任务。'}\n\n上周及更早反馈：\n${feedback.length ? JSON.stringify(feedback, null, 2) : '暂无反馈。'}\n\n必须包含：每周重点、每日固定动作、阶段性里程碑、给学生、给家长、给老师、本周不建议做的事、观察点、依据来源。所有二级章节标题必须原样使用上述名称，不要增加“一、”“1.”“（一）”等编号。每日固定动作应按可重复执行的最小动作编写；阶段性里程碑应给出本周检查节点和完成标准。每项正式判断使用“[依据:证据ID]”；watching 证据只能使用“待观察/继续观察”等措辞。无充分依据时写“本周期无实质变化”或“资料不足”，不得虚构。\n\n只把草稿写入：${task.expectedOutput?.draftPath}\n不要直接覆盖正式报告。文件必须以如下 YAML frontmatter 开头：\n---\ndate: ${expectedDate}\nweek_start: ${weekStart}\nweek_end: ${weekEnd}\nstudent_id: ${normalized.id}\ngrowth_fingerprint: ${task.input?.growthFingerprint || ''}\ngenerated_at: 当前 ISO 时间\nstatus: pending_review\n---\n\n完成后确认文件存在。`;
   }
   if (PERIODIC_REPORT_TASKS[task.kind] && student) {
     const normalized = toHostStudent(student);
     const definition = PERIODIC_REPORT_TASKS[task.kind];
     const report = LEARNING_REPORTS.find((item) => item.id === definition.reportId);
-    return `请为学生「${normalized.name}」生成“${definition.label}”报告草稿。\n\n读取范围：\n- 学生知识库：${normalized.rootPath || getStudentRootDir(normalized.name)}\n- 成长模型：${growthModelDirForStudent(normalized)}\n- 已确认能力画像、成长证据和项目贡献\n\n报告周期：${task.input?.periodStart || '-'} 至 ${task.input?.periodEnd || '-'}\n要求：\n1. 只引用当前成长模型，不把学情报告反向作为事实来源。\n2. 必须包含以下章节：${(report?.sections || []).join('、')}。所有二级章节标题必须原样使用，不要增加“一、”“1.”“（一）”等编号。\n3. 每项正式判断使用“[依据:证据ID]”；watching 证据只能使用“待观察/继续观察”等措辞。\n4. 没有实质变化时明确写“本周期无实质变化”，资料不足时写“资料不足”，不要虚构更新。\n5. 只写草稿：${task.expectedOutput?.draftPath}\n6. 不要直接覆盖正式报告：${task.expectedOutput?.publishPath}\n\n文件顶部使用 YAML frontmatter，至少包含：\nstudent_id: ${normalized.id}\ngrowth_fingerprint: ${task.input?.growthFingerprint || ''}\nupdated: ${taskToday()}\nstatus: pending_review`;
+    const eligibleEvidence = Array.isArray(task.input?.eligibleEvidence) ? task.input.eligibleEvidence : [];
+    return `请为学生「${normalized.name}」生成“${definition.label}”报告草稿。\n\n读取范围：\n- 学生知识库：${normalized.rootPath || getStudentRootDir(normalized.name)}\n- 成长模型：${growthModelDirForStudent(normalized)}\n- 已确认能力画像、成长证据和项目贡献\n\n可引用证据白名单：\n${eligibleEvidence.length ? JSON.stringify(eligibleEvidence, null, 2) : '当前没有可引用证据。'}\n只允许引用白名单中的证据 ID；没有可用证据时必须写“本周期无实质变化”或“资料不足”，并且不要写任何 [依据:...] 标记。\n\n报告周期：${task.input?.periodStart || '-'} 至 ${task.input?.periodEnd || '-'}\n要求：\n1. 只引用当前成长模型，不把学情报告反向作为事实来源。\n2. 必须包含以下章节：${(report?.sections || []).join('、')}。所有二级章节标题必须原样使用，不要增加“一、”“1.”“（一）”等编号。\n3. 每项正式判断使用“[依据:证据ID]”；watching 证据只能使用“待观察/继续观察”等措辞。\n4. 没有实质变化时明确写“本周期无实质变化”，资料不足时写“资料不足”，不要虚构更新。\n5. 只写草稿：${task.expectedOutput?.draftPath}\n6. 不要直接覆盖正式报告：${task.expectedOutput?.publishPath}\n\n文件顶部使用 YAML frontmatter，至少包含：\nstudent_id: ${normalized.id}\ngrowth_fingerprint: ${task.input?.growthFingerprint || ''}\nupdated: ${taskToday()}\nstatus: pending_review`;
   }
   if (task.kind === 'student_digest' && student) {
     const normalized = toHostStudent(student);
@@ -14902,6 +14942,16 @@ function taskCommandFor(task) {
     return `请检查学生「${normalized.name}」知识库的路径、规则文件、索引、来源引用、断链和成长模型健康度。知识库：${normalized.rootPath || getStudentRootDir(normalized.name)}。只生成检查报告，不删除或覆盖原文件。`;
   }
   return String(task.input?.command || task.detail || task.title || '');
+}
+
+function directReportExecutionCommand(task, command) {
+  if (!isAutoPublishReportTask(task)) return command;
+  return String(command || '')
+    .replaceAll('报告草稿', '学情报告')
+    .replaceAll('只把草稿写入', '先把生成结果写入系统校验区')
+    .replaceAll('只写草稿', '先写入系统校验区')
+    .replaceAll('不要直接覆盖正式报告', '校验通过后由系统自动原子发布正式报告')
+    .replaceAll('status: pending_review', 'status: generated');
 }
 
 function probeExecutable(executable, args, timeout = 2500) {
@@ -14989,7 +15039,7 @@ function probeLocalPort(port, timeout = 1200) {
 }
 
 function baseAdapterCapabilities(previous = {}) {
-  const codex = mergeOpenAiToolInstall(findAgentToolInstall('codex'), findOpenAiDesktopInstall());
+  const codex = mergeOpenAiToolInstall(findPreferredCodexCliInstall(), findOpenAiDesktopInstall());
   const openclawCli = findExecutableInPath(['openclaw.cmd', 'openclaw.exe', 'openclaw']);
   const qclaw = findAgentToolInstall('qclaw');
   const qclawRuntime = discoverQClawRuntime(qclaw.exePath || '');
@@ -15058,7 +15108,15 @@ function refreshAdapterCapabilities(force = false) {
   const base = baseAdapterCapabilities(adapterCapabilityCache.value || {});
   adapterCapabilityCache.value = base;
   const promise = (async () => {
-    const codex = base.codex;
+    const preferredCodexInstall = await refreshPreferredCodexCliInstall();
+    const mergedCodexInstall = mergeOpenAiToolInstall(preferredCodexInstall, findOpenAiDesktopInstall());
+    const codex = {
+      ...base.codex,
+      available: Boolean(mergedCodexInstall.installed && mergedCodexInstall.exePath),
+      cli: Boolean(mergedCodexInstall.exePath),
+      exePath: mergedCodexInstall.exePath || '',
+      version: preferredCodexInstall.version || mergedCodexInstall.version || '',
+    };
     const openclaw = base.openclaw;
     const qclaw = base.qclaw;
     const [codexAuth, openclawHelp, openclawModel, gatewayHelp, cronHelp, qclawGatewayHealthy] = await Promise.all([
@@ -17516,26 +17574,64 @@ function isAutoPublishReportTask(task) {
   );
 }
 
+function reportProjectsForStudent(student) {
+  return readProjects().map(normalizeProject)
+    .filter((project) => (project.studentIds || []).map(String).includes(String(student.id)));
+}
+
+function reportEvidenceSourceValues(student, projects, evidence) {
+  const values = [];
+  const append = (value) => {
+    if (Array.isArray(value)) value.forEach(append);
+    else String(value || '').split(/[；;]/u).map((item) => item.trim()).filter(Boolean).forEach((item) => values.push(item));
+  };
+  append(evidence?.sourceUri);
+  append(evidence?.sourcePath);
+  append(evidence?.sourcePaths);
+  append(evidence?.systemVerification?.sourcePaths);
+  append(evidence?.migratedFrom);
+  const project = projects.find((item) => (
+    (evidence?.projectId && String(item.id) === String(evidence.projectId))
+    || (evidence?.projectName && String(item.name) === String(evidence.projectName))
+  ));
+  if (project) append(project.promotionPath);
+  return [...new Set(values)];
+}
+
+function reportEligibleEvidence(student) {
+  const projects = reportProjectsForStudent(student);
+  const growthIndex = safeReadJson(growthIndexPath(student), {});
+  const allEvidence = Array.isArray(growthIndex.evidence) ? growthIndex.evidence : [];
+  const evidence = allEvidence.filter((item) => {
+    const status = String(item?.status || '');
+    const hasConflict = String(item?.riskLevel || '') === 'high'
+      || Boolean(item?.risk?.blocked)
+      || (Array.isArray(item?.conflicts) && item.conflicts.length > 0);
+    return ['confirmed', 'watching'].includes(status)
+      && !hasConflict
+      && reportEvidenceSourceValues(student, projects, item)
+        .some((source) => reportEvidenceSourceResolver(student, projects, source).available);
+  });
+  return {
+    ids: evidence.map((item) => String(item.id || '')).filter(Boolean),
+    items: evidence.map((item) => ({
+      id: String(item.id || ''),
+      status: String(item.status || ''),
+      title: String(item.title || ''),
+      ability: String(item.ability || ''),
+      projectName: String(item.projectName || ''),
+      observation: String(item.observation || item.content || '').slice(0, 1200),
+    })),
+    blockedCount: Math.max(0, allEvidence.length - evidence.length),
+  };
+}
+
 function reportEvidenceSourceAccessible(task, evidence) {
   const student = readStudentsIndex().map(toHostStudent).find((item) => String(item.id) === String(task.sourceId));
   if (!student) return false;
-  const projects = readProjects().map(normalizeProject)
-    .filter((project) => (project.studentIds || []).map(String).includes(String(student.id)));
-  const allowedRoots = [
-    student.rootPath || getStudentRootDir(student.name),
-    ...projects.flatMap((project) => [project.knowledgeRootPath, project.projectRootPath, project.contributionPath].filter(Boolean)),
-  ].map(canonicalTaskPath).filter(Boolean);
-  const sources = String(evidence?.sourcePath || '')
-    .split(/[；;]/u)
-    .map((item) => item.trim())
-    .filter(Boolean);
-  if (!sources.length) return false;
-  const access = currentArchiveAccess();
-  return sources.some((source) => {
-    if (source.startsWith('edu://')) return Boolean(access.getResource({ uri: source, maxChars: 1 }).ok);
-    const target = canonicalTaskPath(source);
-    return Boolean(target && fs.existsSync(target) && allowedRoots.some((root) => canonicalIsPathInside(root, target)));
-  });
+  const projects = reportProjectsForStudent(student);
+  return reportEvidenceSourceValues(student, projects, evidence)
+    .some((source) => reportEvidenceSourceResolver(student, projects, source).available);
 }
 
 function validateReportAutoPublication(task, content) {
@@ -17553,11 +17649,15 @@ function validateReportAutoPublication(task, content) {
     };
   }
   const growthIndex = safeReadJson(growthIndexPath(student), {});
+  const eligibleIds = Array.isArray(task.input?.eligibleEvidenceIds) ? new Set(task.input.eligibleEvidenceIds.map(String)) : null;
+  const validationGrowthIndex = eligibleIds
+    ? { ...growthIndex, evidence: (Array.isArray(growthIndex.evidence) ? growthIndex.evidence : []).filter((item) => eligibleIds.has(String(item.id || ''))) }
+    : growthIndex;
   return validateReportDraftForAutoPublish({
     content,
     studentId: String(task.sourceId || ''),
     expectedFingerprint: String(task.input?.growthFingerprint || ''),
-    growthIndex,
+    growthIndex: validationGrowthIndex,
     sourceAccessible: (evidence) => reportEvidenceSourceAccessible(task, evidence),
   });
 }
@@ -17591,7 +17691,7 @@ function autoPublishValidatedReport(task, validation) {
   if (!isAutoPublishReportTask(task) || !validation?.valid) return { ok: false, message: '报告尚未通过自动发布校验。' };
   const draftPath = task.expectedOutput?.draftPath;
   const publishPath = task.expectedOutput?.publishPath;
-  if (!draftPath || !publishPath || !fs.existsSync(draftPath)) return { ok: false, message: '报告草稿不存在。' };
+  if (!draftPath || !publishPath || !fs.existsSync(draftPath)) return { ok: false, message: '报告生成结果不存在。' };
   const draftContent = fs.readFileSync(draftPath, 'utf8');
   const publishedContent = fs.existsSync(publishPath) ? fs.readFileSync(publishPath, 'utf8') : '';
   const periodStart = String(task.input?.periodStart || task.input?.weekStart || task.input?.date || '');
@@ -17601,14 +17701,18 @@ function autoPublishValidatedReport(task, validation) {
     && publishedUpdated >= periodStart
     && reportContentFingerprint(publishedContent) === reportContentFingerprint(draftContent)
   );
-  if (unchangedInCurrentPeriod) return { ok: true, unchanged: true, path: publishPath, message: '报告内容无实质变化，保留当前版本。' };
-  const published = publishReviewedReport({
-    draftPath,
+  if (unchangedInCurrentPeriod) {
+    try { fs.unlinkSync(draftPath); } catch { /* A stale staging file is safe to clean on the next run. */ }
+    return { ok: true, unchanged: true, path: publishPath, message: '报告内容无实质变化，保留当前版本。' };
+  }
+  const published = publishValidatedReport({
+    stagingPath: draftPath,
     publishPath,
     updated: taskToday(),
     type: task.kind,
   });
   if (!published.ok) return published;
+  try { fs.unlinkSync(draftPath); } catch { /* Publication is already durable; cleanup is best effort. */ }
   return { ...published, unchanged: false, message: '报告已通过自动校验并发布。' };
 }
 
@@ -17642,7 +17746,7 @@ function validateTaskArtifacts(task, startedAt = '', resultPayload = null) {
         });
         schemaErrors.push(...schema.errors);
       } else {
-        schemaErrors.push(...validateSectionedDraft(content, task.expectedOutput?.requiredSections || []).errors);
+        schemaErrors.push(...validateSectionedReport(content, task.expectedOutput?.requiredSections || []).errors);
       }
       if (!schemaErrors.length && isAutoPublishReportTask(task)) {
         reportValidation = validateReportAutoPublication(task, content);
@@ -17708,8 +17812,8 @@ function commitValidatedTaskResult(store, task, result, validation, options = {}
     if (!publication.unchanged) scheduleEducationArchiveVersion(task.sourceId);
     const acceptedAt = taskNow();
     return transitionTaskInStore(store, task.id, 'succeeded', {
-      result: { ...reviewingResult, status: 'succeeded', autoAcceptedAt: acceptedAt, publishedAt: publication.unchanged ? '' : acceptedAt, publication, summary: publication.message },
-      approval: { ...(task.approval || {}), required: false, status: 'not_required', reviewedAt: acceptedAt, reviewedBy: 'system_validation' },
+      result: { ...reviewingResult, status: 'succeeded', validatedAt: acceptedAt, publishedAt: publication.unchanged ? '' : acceptedAt, publication, summary: publication.message },
+      approval: { ...(task.approval || {}), required: false, status: 'not_required', reviewedAt: '', reviewedBy: '' },
       completedAt: acceptedAt,
     }, publication.unchanged ? 'report_unchanged_auto_accepted' : 'report_auto_published');
   }
@@ -17897,32 +18001,44 @@ function validateTaskCompletion(task, startedAt = '', resultPayload = null) {
   return validateTaskArtifacts(task, startedAt, resultPayload);
 }
 
+function adapterRuntimeFailureMessage(adapterId, output, errorOutput = '') {
+  const combined = `${String(output || '')}\n${String(errorOutput || '')}`;
+  if (String(adapterId) === 'codex' && /requires a newer version of Codex/i.test(combined)) {
+    return '当前 Codex CLI 版本过旧，不能运行已配置模型。请升级 Codex 后重试。';
+  }
+  if (/unsupported model|model .* (?:is not supported|not found)|invalid_request_error/i.test(combined)) {
+    return '当前 Agent 无法使用已配置模型，请检查模型配置或升级 Agent 后重试。';
+  }
+  return '';
+}
+
 function finalizeAdapterExecution(taskId, executionId, adapterId, code, output, errorOutput = '') {
   const store = readTaskStore();
   const task = store.tasks.find((item) => item.id === taskId);
   if (!task || task.executionId !== executionId || !['running', 'waiting_result'].includes(task.status)) return;
-  const validation = Number(code) === 0
+  const runtimeFailure = adapterRuntimeFailureMessage(adapterId, output, errorOutput);
+  const validation = Number(code) === 0 && !runtimeFailure
     ? validateTaskCompletion(task, task.startedAt, String(output || ''))
-    : { valid: false, artifacts: [], checkedAt: taskNow(), message: `Agent 退出码 ${code}。` };
-  const successful = Number(code) === 0 && validation.valid;
+    : { valid: false, artifacts: [], checkedAt: taskNow(), message: runtimeFailure || `Agent 退出码 ${code}。` };
+  const successful = Number(code) === 0 && !runtimeFailure && validation.valid;
   const result = normalizeTaskResult(task, {
     executionId,
     status: successful ? 'reviewing' : 'failed',
     adapterId,
-    summary: Number(code) === 0 ? (validation.valid ? ((shouldAutoAccept(task, validation) || isAutoPublishReportTask(task)) ? '任务完成并已通过自动校验。' : 'Agent 执行完成，等待审核。') : validation.message) : `Agent 退出码 ${code}。`,
+    summary: runtimeFailure || (Number(code) === 0 ? (validation.valid ? ((shouldAutoAccept(task, validation) || isAutoPublishReportTask(task)) ? '任务完成并已通过自动校验。' : 'Agent 执行完成，等待审核。') : validation.message) : `Agent 退出码 ${code}。`),
     output: String(output || '').slice(-20000),
     errorOutput: String(errorOutput || '').slice(-10000),
     structuredOutput: validation.structuredOutput || validation.domainSync || null,
     artifacts: validation.artifacts,
     logReference: task.result?.logPath || '',
-    failureReason: successful ? null : { category: Number(code) === 0 ? 'validation' : code === -1 ? 'launch' : 'process', code: `EXIT_${code}`, detail: String(errorOutput || validation.message || '').slice(-2000) },
+    failureReason: successful ? null : { category: runtimeFailure ? 'compatibility' : Number(code) === 0 ? 'validation' : code === -1 ? 'launch' : 'process', code: runtimeFailure ? 'AGENT_RUNTIME_INCOMPATIBLE' : `EXIT_${code}`, detail: String(runtimeFailure || errorOutput || validation.message || '').slice(-2000) },
   }, validation, { estimatedCost: estimatedAdapterCost(adapterId, task.startedAt ? Date.now() - Date.parse(task.startedAt) : 0) });
   const retryDelayMs = Math.max(0, Number(task.retryBackoffSeconds || 0)) * 1000;
   const mayAutoRetry = !successful && task.autoRetry !== false && Number(task.attempt || 0) < Number(task.maxAttempts || 1);
   const nextRetryAt = mayAutoRetry ? new Date(Date.now() + retryDelayMs).toISOString() : '';
   const committed = commitValidatedTaskResult(store, task, result, validation, {
     successful,
-    error: successful ? null : { code: `EXIT_${code}`, message: result.summary },
+    error: successful ? null : { code: runtimeFailure ? 'AGENT_RUNTIME_INCOMPATIBLE' : `EXIT_${code}`, message: result.summary },
     event: 'adapter_completed',
     autoSummary: isAutoPublishReportTask(task) ? '报告已通过自动校验。' : '资料处理完成并已通过自动校验。',
   });
@@ -18340,7 +18456,7 @@ function executeTaskByAdapter(taskId, requestedExecutor = '') {
       return JSON.stringify({ ok: true, confirmationRequired: true, task: confirmTask, routeDecision, message: `${routeDecision.reason}请在执行器下拉框中确认具体执行器。` });
     }
     const adapterId = routeDecision.selectedAdapter;
-    const command = taskCommandFor(refreshed);
+    const command = directReportExecutionCommand(refreshed, taskCommandFor(refreshed));
     const nextStore = readTaskStore();
     const taskIndex = nextStore.tasks.findIndex((item) => item.id === refreshed.id);
     nextStore.tasks[taskIndex] = normalizeTaskEnvelope({ ...refreshed, routeDecision, routingMode: routeDecision.mode, adapterId, executor: adapterId, executionMode: adapterId === 'internal' ? 'internal' : adapterId === 'manual' ? 'manual' : adapterId === 'qclaw' ? 'inbox' : 'automatic', routeAttempts: [...new Set([...(refreshed.routeAttempts || []), adapterId])] }, refreshed);
@@ -18386,7 +18502,7 @@ function approveTask(taskId, decision, note = '') {
         const publishPath = task.expectedOutput?.publishPath;
         if (!draftPath || !publishPath || !fs.existsSync(draftPath)) return JSON.stringify({ ok: false, message: '报告草稿不存在，不能采用。' });
         const today = String(task.input?.date || taskToday());
-        const publishResult = publishReviewedReport({ draftPath, publishPath, updated: today, type: task.kind });
+        const publishResult = publishValidatedReport({ stagingPath: draftPath, publishPath, updated: today, type: task.kind });
         if (!publishResult.ok) return JSON.stringify(publishResult);
       }
       const accepted = transitionTaskInStore(store, task.id, 'succeeded', { approval: { required: true, status: 'approved', note, reviewedAt: taskNow(), reviewedBy: 'local-user' }, result: { ...(task.result || {}), publishedAt: taskNow(), reviewNote: note } }, 'result_approved');
@@ -19049,10 +19165,7 @@ function buildTaskCenterCandidates() {
         riskLevel: 'medium',
       }));
     }
-    tasks.push(buildWeeklyActionTask(student));
-    tasks.push(buildPeriodicLearningReportTask(student, 'learning_profile'));
-    tasks.push(buildPeriodicLearningReportTask(student, 'learning_changes'));
-    tasks.push(buildPeriodicLearningReportTask(student, 'learning_stage'));
+    tasks.push(...currentLearningReportTaskCandidates(student));
     tasks.push(normalizeTaskEnvelope({
       id: taskStableId('maintenance_lint', 'student', student.id),
       title: `${student.name}知识库维护检查`, kind: 'maintenance_lint', sourceType: 'student', sourceId: String(student.id), sourceName: student.name,
@@ -19188,6 +19301,30 @@ function getTaskCenter(options = {}) {
     return snapshot;
   } catch (error) {
     return JSON.stringify({ ok: false, tasks: [], history: [], message: `读取任务中心失败：${error.message}` });
+  }
+}
+
+function getTaskStatuses(taskIds = []) {
+  try {
+    const ids = new Set((Array.isArray(taskIds) ? taskIds : []).map(String).filter(Boolean).slice(0, 32));
+    if (!ids.size) return JSON.stringify({ ok: true, tasks: [], generatedAt: taskNow() });
+    syncQClawTaskResults();
+    const store = readTaskStore();
+    if (enforceTaskTimeouts(store)) writeTaskStore(store);
+    const tasks = store.tasks
+      .filter((task) => ids.has(String(task.id)))
+      .map((task) => ({
+        id: task.id,
+        status: task.status,
+        updatedAt: task.updatedAt,
+        completedAt: task.completedAt,
+        error: task.error || null,
+        result: task.result ? { summary: task.result.summary || '', message: task.result.message || '' } : null,
+        detail: task.detail || '',
+      }));
+    return JSON.stringify({ ok: true, tasks, generatedAt: taskNow() });
+  } catch (error) {
+    return JSON.stringify({ ok: false, tasks: [], message: `读取任务状态失败：${error.message}` });
   }
 }
 
@@ -19354,7 +19491,7 @@ function getDigestWorkflowCommand(scopeType, scopeId) {
       }
       task = attachDigestBatchToTask(task.id, request, projectDigestRequestPath(ensured), projectDigestReceiptPath(ensured)) || task;
     }
-    const command = taskCommandFor(task);
+    const command = directReportExecutionCommand(task, taskCommandFor(task));
     if (!command || /批次无效/.test(command)) return JSON.stringify({ ok: false, message: command || '当前批次指令生成失败。' });
     return JSON.stringify({ ok: true, command, taskId: task.id, digestBatchId: task.input?.digestBatchId || '', executor: task.requestedExecutor || task.executor || '', message: '已生成当前冻结批次的完整 Agent 指令。' });
   } catch (error) {
@@ -19853,16 +19990,63 @@ function appendGrowthEvidenceCandidate(student, candidate) {
   return item;
 }
 
+function applyAutomaticGrowthEvidencePlan(student, review) {
+  const normalized = toHostStudent(student);
+  let metadataChanged = 0;
+  for (const item of review.candidates) {
+    if (!['pending', 'confirmed'].includes(String(item.status || 'pending'))) continue;
+    const sourceUnavailable = Boolean(String(item.sourceUri || item.sourcePath || '').trim())
+      && !reportEvidenceSourceAccessible({ sourceId: normalized.id }, item);
+    const nextReason = sourceUnavailable ? 'source_unavailable' : '';
+    if (String(item.automationAttentionReason || '') !== nextReason) {
+      item.automationAttentionReason = nextReason;
+      item.updatedAt = new Date().toISOString();
+      metadataChanged += 1;
+    }
+  }
+  const compatibility = mapGrowthEvidenceReviewToEducationClaims({ student: normalized, review, sourcePath: growthEvidenceReviewPath(normalized) });
+  const plan = buildGrowthEvidenceBatchPlan(review.candidates, { legacyReviewIds: compatibility.reviewQueue.map((item) => item.evidenceId) });
+  if (!plan.summary.batchProcessable) return { changed: 0, metadataChanged, confirmed: 0, watching: 0, plan, batchId: '' };
+  const processedAt = new Date().toISOString();
+  const batchId = `growth-auto-${processedAt.replace(/[-:.TZ]/g, '').slice(0, 14)}-${crypto.randomBytes(3).toString('hex')}`;
+  const confirmIds = new Set(plan.confirmIds);
+  const watchIds = new Set(plan.watchIds);
+  const reviewer = { reviewerRole: 'administrator', reviewerId: 'system-risk-policy', automated: true };
+  let confirmed = 0;
+  let watching = 0;
+  for (const item of review.candidates) {
+    if (confirmIds.has(String(item.id))) {
+      applyGrowthEvidenceReviewDecision(item, 'confirmed', '系统自动确认：来源完整、项目归属明确且未发现高风险因素。', processedAt, batchId, reviewer);
+      appendConfirmedGrowthEvidence(normalized, item);
+      confirmed += 1;
+    } else if (watchIds.has(String(item.id))) {
+      applyGrowthEvidenceReviewDecision(item, 'watching', '系统自动分流：信息不完整或可信度待观察，未发布为正式结论。', processedAt, batchId, reviewer);
+      watching += 1;
+    }
+  }
+  return { changed: confirmed + watching, metadataChanged, confirmed, watching, plan, batchId };
+}
+
 function getGrowthEvidenceReview(studentId) {
   try {
     const student = readStudentsIndex().find((item) => String(item.id) === String(studentId));
     if (!student) return JSON.stringify({ ok: false, message: '未找到学生。' });
     const normalized = toHostStudent(student);
     ensureGrowthModelForStudent(normalized);
-    const review = readGrowthEvidenceReview(normalized);
+    let review = readGrowthEvidenceReview(normalized);
+    const automatic = applyAutomaticGrowthEvidencePlan(normalized, review);
+    if (automatic.changed || automatic.metadataChanged) {
+      writeGrowthEvidenceReview(normalized, review, { markDirty: false });
+      rebuildGrowthIndex(studentId, { skipAutomaticEvidence: true });
+      review = readGrowthEvidenceReview(normalized);
+    }
+    if (automatic.changed) {
+      appendHostTimeline({ type: 'growth_evidence_auto_processed', title: 'Growth evidence automatically processed', detail: `${normalized.name} confirmed ${automatic.confirmed}, watching ${automatic.watching}`, count: automatic.changed });
+    }
     const protocolCompatibility = mapGrowthEvidenceReviewToEducationClaims({ student: normalized, review, sourcePath: growthEvidenceReviewPath(normalized) });
     const riskAssessment = buildGrowthEvidenceBatchPlan(review.candidates, { legacyReviewIds: protocolCompatibility.reviewQueue.map((item) => item.evidenceId) });
-    return JSON.stringify({ ok: true, review, protocolCompatibility, riskAssessment, path: growthEvidenceReviewPath(normalized), message: `已读取 ${review.candidates.length} 条成长证据；默认仅显示 ${riskAssessment.summary.medium + riskAssessment.summary.high} 条需要关注的记录。` });
+    const automaticMessage = automatic.changed ? `系统已自动确认 ${automatic.confirmed} 条低风险证据，并将 ${automatic.watching} 条转为继续观察；` : '';
+    return JSON.stringify({ ok: true, automatic, review, protocolCompatibility, riskAssessment, path: growthEvidenceReviewPath(normalized), message: `${automaticMessage}当前仅有 ${riskAssessment.summary.high} 条高风险记录需要逐条确认。` });
   } catch (error) {
     return JSON.stringify({ ok: false, message: `读取成长证据审核失败：${error.message}` });
   }
@@ -19937,6 +20121,10 @@ function rebuildGrowthIndex(studentId, options = {}) {
     }
     const migration = migrateLegacyGrowthEvidence(normalized, review, projects);
     const reportMigration = migrateLegacyLearningReports(normalized, review);
+    const automatic = options.skipAutomaticEvidence
+      ? { changed: 0, metadataChanged: 0, confirmed: 0, watching: 0, batchId: '' }
+      : applyAutomaticGrowthEvidencePlan(normalized, review);
+    if (automatic.changed || automatic.metadataChanged) writeGrowthEvidenceReview(normalized, review, { markDirty: false });
     const index = buildGrowthIndexV2({
       student: normalized,
       growthDir: growth.dir,
@@ -19970,7 +20158,7 @@ function rebuildGrowthIndex(studentId, options = {}) {
         }, { ok: true, fingerprint: index.sourceFingerprint }));
       }
     }
-    return JSON.stringify({ ok: true, index, protocolCompatibility, path: growthIndexPath(normalized), markdownPath: growthIndexMarkdownPath(normalized), content: markdown, message: `已重建「${normalized.name}」成长模型结构化索引。` });
+    return JSON.stringify({ ok: true, index, protocolCompatibility, automatic, path: growthIndexPath(normalized), markdownPath: growthIndexMarkdownPath(normalized), content: markdown, message: `已重建「${normalized.name}」成长模型结构化索引。${automatic.changed ? ` 系统自动处理 ${automatic.changed} 条普通候选。` : ''}` });
   } catch (error) {
     return JSON.stringify({ ok: false, message: `重建成长模型结构化索引失败：${error.message}` });
   }
@@ -20029,17 +20217,21 @@ function repairStaleGrowthIndexes(studentIds = []) {
   return { repaired, failed };
 }
 
-function applyGrowthEvidenceReviewDecision(item, nextStatus, note, reviewedAt, batchId = '') {
+function applyGrowthEvidenceReviewDecision(item, nextStatus, note, reviewedAt, batchId = '', reviewer = {}) {
   const previousStatus = String(item.status || 'pending');
   const reviewDecision = nextStatus === 'confirmed' ? 'approved' : nextStatus === 'rejected' ? 'rejected' : 'pending';
+  const reviewerRole = String(reviewer.reviewerRole || 'administrator');
+  const reviewerId = String(reviewer.reviewerId || 'local-user');
+  const automated = Boolean(reviewer.automated);
   item.status = nextStatus;
   item.note = String(note || item.note || '');
   item.updatedAt = reviewedAt;
   item.review = {
     status: reviewDecision,
-    reviewerRole: 'administrator',
-    reviewerId: 'local-user',
+    reviewerRole,
+    reviewerId,
     reviewedAt,
+    automated,
     ...(batchId ? { batchId } : {}),
   };
   item.reviewerRole = item.review.reviewerRole;
@@ -20054,6 +20246,7 @@ function applyGrowthEvidenceReviewDecision(item, nextStatus, note, reviewedAt, b
       reviewerRole: item.review.reviewerRole,
       reviewerId: item.review.reviewerId,
       reviewedAt,
+      automated,
       ...(batchId ? { batchId } : {}),
     },
   ];
@@ -20102,35 +20295,24 @@ function batchReviewGrowthEvidence(studentId) {
     const normalized = toHostStudent(student);
     ensureGrowthModelForStudent(normalized);
     const review = readGrowthEvidenceReview(normalized);
-    const compatibilityBefore = mapGrowthEvidenceReviewToEducationClaims({ student: normalized, review, sourcePath: growthEvidenceReviewPath(normalized) });
-    const plan = buildGrowthEvidenceBatchPlan(review.candidates, { legacyReviewIds: compatibilityBefore.reviewQueue.map((item) => item.evidenceId) });
-    if (!plan.summary.batchProcessable) {
-      return JSON.stringify({ ok: true, changed: 0, review, protocolCompatibility: compatibilityBefore, riskAssessment: plan, message: plan.summary.high ? `当前只有 ${plan.summary.high} 条高风险记录，需要逐条确认。` : '当前没有需要批量处理的普通候选。' });
-    }
-    const reviewedAt = new Date().toISOString();
-    const batchId = `growth-review-${reviewedAt.replace(/[-:.TZ]/g, '').slice(0, 14)}-${crypto.randomBytes(3).toString('hex')}`;
-    const confirmIds = new Set(plan.confirmIds);
-    const watchIds = new Set(plan.watchIds);
-    let confirmed = 0;
-    let watching = 0;
-    for (const item of review.candidates) {
-      if (confirmIds.has(String(item.id))) {
-        applyGrowthEvidenceReviewDecision(item, 'confirmed', '批量确认：来源完整、已关联项目且未发现高风险因素。', reviewedAt, batchId);
-        appendConfirmedGrowthEvidence(normalized, item);
-        confirmed += 1;
-      } else if (watchIds.has(String(item.id))) {
-        applyGrowthEvidenceReviewDecision(item, 'watching', '批量分流：信息不完整或可信度待观察，未发布为正式结论。', reviewedAt, batchId);
-        watching += 1;
+    const automatic = applyAutomaticGrowthEvidencePlan(normalized, review);
+    const { changed, metadataChanged, confirmed, watching, batchId } = automatic;
+    if (!changed) {
+      if (metadataChanged) {
+        writeGrowthEvidenceReview(normalized, review);
+        rebuildGrowthIndex(studentId, { skipAutomaticEvidence: true });
       }
+      const compatibilityBefore = mapGrowthEvidenceReviewToEducationClaims({ student: normalized, review, sourcePath: growthEvidenceReviewPath(normalized) });
+      return JSON.stringify({ ok: true, automatic: true, changed: 0, review, protocolCompatibility: compatibilityBefore, riskAssessment: automatic.plan, message: automatic.plan.summary.high ? `当前只有 ${automatic.plan.summary.high} 条高风险记录需要逐条确认。` : '当前没有需要系统处理的普通候选。' });
     }
     writeGrowthEvidenceReview(normalized, review);
     rebuildGrowthIndex(studentId);
     const protocolCompatibility = mapGrowthEvidenceReviewToEducationClaims({ student: normalized, review, sourcePath: growthEvidenceReviewPath(normalized) });
     const riskAssessment = buildGrowthEvidenceBatchPlan(review.candidates, { legacyReviewIds: protocolCompatibility.reviewQueue.map((item) => item.evidenceId) });
-    appendHostTimeline({ type: 'growth_evidence_batch_reviewed', title: 'Growth evidence batch reviewed', detail: `${normalized.name} confirmed ${confirmed}, watching ${watching}`, count: confirmed + watching });
-    return JSON.stringify({ ok: true, changed: confirmed + watching, confirmed, watching, batchId, review, protocolCompatibility, riskAssessment, message: `一次处理完成：采用 ${confirmed} 条低风险证据，${watching} 条转为继续观察；${riskAssessment.summary.high} 条高风险记录保留逐条确认。` });
+    appendHostTimeline({ type: 'growth_evidence_auto_processed', title: 'Growth evidence automatically processed', detail: `${normalized.name} confirmed ${confirmed}, watching ${watching}`, count: changed });
+    return JSON.stringify({ ok: true, automatic: true, changed, confirmed, watching, batchId, review, protocolCompatibility, riskAssessment, message: `系统自动处理完成：确认 ${confirmed} 条低风险证据，${watching} 条转为继续观察；${riskAssessment.summary.high} 条高风险记录保留逐条确认。` });
   } catch (error) {
-    return JSON.stringify({ ok: false, message: `批量审核成长证据失败：${error.message}` });
+    return JSON.stringify({ ok: false, message: `自动处理成长证据失败：${error.message}` });
   }
 }
 
@@ -23335,6 +23517,31 @@ function findExecutableInPath(names) {
   return '';
 }
 
+function findExecutablesInPath(names) {
+  const found = [];
+  const directories = String(process.env.PATH || process.env.Path || '')
+    .split(path.delimiter)
+    .map((entry) => entry.trim().replace(/^"|"$/g, ''))
+    .filter(Boolean);
+  const extensions = process.platform === 'win32'
+    ? String(process.env.PATHEXT || '.EXE;.CMD;.BAT;.COM').split(';').map((entry) => entry.toLowerCase()).filter(Boolean)
+    : [''];
+  for (const directory of directories) {
+    for (const name of names) {
+      const suffixes = path.extname(name) ? [''] : extensions;
+      for (const suffix of suffixes) {
+        const candidate = path.join(directory, `${name}${suffix}`);
+        try {
+          if (fs.existsSync(candidate) && fs.statSync(candidate).isFile()) found.push(candidate);
+        } catch {
+          // PATH entries may disappear while software is being updated.
+        }
+      }
+    }
+  }
+  return [...new Set(found.map((candidate) => canonicalTaskPath(candidate)).filter(Boolean))];
+}
+
 function findVersionedExecutable(root, exeNames) {
   try {
     if (!root || !fs.existsSync(root)) return '';
@@ -23533,6 +23740,53 @@ function findAgentToolInstall(toolId) {
   return value;
 }
 
+function codexCliCandidatePaths() {
+  const candidates = findExecutablesInPath(['codex.exe', 'codex.cmd', 'codex']);
+  const codexBinRoot = process.env.LOCALAPPDATA ? path.join(process.env.LOCALAPPDATA, 'OpenAI', 'Codex', 'bin') : '';
+  if (codexBinRoot && fs.existsSync(codexBinRoot)) {
+    const direct = path.join(codexBinRoot, 'codex.exe');
+    if (fs.existsSync(direct)) candidates.push(direct);
+    try {
+      for (const entry of fs.readdirSync(codexBinRoot, { withFileTypes: true })) {
+        if (!entry.isDirectory()) continue;
+        const versioned = path.join(codexBinRoot, entry.name, 'codex.exe');
+        if (fs.existsSync(versioned)) candidates.push(versioned);
+      }
+    } catch {
+      // A concurrent Codex Desktop update may temporarily replace this directory.
+    }
+  }
+  return [...new Set(candidates.map((candidate) => canonicalTaskPath(candidate)).filter(Boolean))];
+}
+
+function findPreferredCodexCliInstall() {
+  const cacheKey = 'codex-preferred-cli';
+  const cached = agentToolInstallCache.get(cacheKey);
+  if (cached && Date.now() - cached.at < 10 * 60 * 1000 && (!cached.value.exePath || fs.existsSync(cached.value.exePath))) return cached.value;
+  const fallback = findAgentToolInstall('codex');
+  return fallback;
+}
+
+async function refreshPreferredCodexCliInstall() {
+  const cacheKey = 'codex-preferred-cli';
+  const cached = agentToolInstallCache.get(cacheKey);
+  if (cached && Date.now() - cached.at < 10 * 60 * 1000 && (!cached.value.exePath || fs.existsSync(cached.value.exePath))) return cached.value;
+  const fallback = findAgentToolInstall('codex');
+  const candidates = codexCliCandidatePaths();
+  if (fallback.exePath) candidates.push(fallback.exePath);
+  const probed = await Promise.all([...new Set(candidates.map((candidate) => canonicalTaskPath(candidate)).filter(Boolean))]
+    .map(async (candidate) => {
+      const versionProbe = await probeExecutableAsync(candidate, ['--version'], 3500);
+      return { path: candidate, version: String(versionProbe.output || '').trim() };
+    }));
+  const selected = selectNewestCodexCliCandidate(probed);
+  const value = selected
+    ? { installed: true, version: selected.version, exePath: selected.path, installLocation: path.dirname(selected.path) }
+    : fallback;
+  agentToolInstallCache.set(cacheKey, { at: Date.now(), value });
+  return value;
+}
+
 function findTailscaleInstall() {
   const registryEntries = queryUninstallEntries().filter((entry) => {
     const haystack = `${entry.DisplayName || ''} ${entry.InstallLocation || ''} ${entry.DisplayIcon || ''}`.toLowerCase();
@@ -23584,7 +23838,7 @@ function getAgentToolInstallStatus() {
   const openclaw = findAgentToolInstall('openclaw');
   const imaCopilot = findAgentToolInstall('ima.copilot');
   const workbuddy = findAgentToolInstall('workbuddy');
-  const codex = findAgentToolInstall('codex');
+  const codex = mergeOpenAiToolInstall(findPreferredCodexCliInstall(), findOpenAiDesktopInstall());
   const claudeCode = findAgentToolInstall('claude-code');
   const hermes = findAgentToolInstall('hermes');
   const webTool = (url, label = '网页入口') => ({ installed: false, available: true, openable: true, version: label, exePath: url, installLocation: url });
@@ -23700,7 +23954,7 @@ function openApp(appName) {
   }
   if (appName === 'codex' || appName === 'chatgpt') {
     codexOpened = true;
-    const tool = mergeOpenAiToolInstall(findAgentToolInstall('codex'), findOpenAiDesktopInstall());
+    const tool = mergeOpenAiToolInstall(findPreferredCodexCliInstall(), findOpenAiDesktopInstall());
     if (tool.appPath && fs.existsSync(tool.appPath)) {
       spawn(tool.appPath, [], { detached: true, stdio: 'ignore' }).unref();
     } else if (tool.exePath && fs.existsSync(tool.exePath)) {
@@ -23937,7 +24191,7 @@ function listLearningReports(studentKey) {
       draftRecovery,
       created: ensured.created,
       message: draftRecovery.recovered.length
-        ? `已恢复并发布 ${draftRecovery.recovered.length} 份通过校验的报告草稿。${health.message}`
+        ? `已恢复并发布 ${draftRecovery.recovered.length} 份通过校验的报告生成结果。${health.message}`
         : recovery.recovered.length
         ? `已从迁移的历史教育档案恢复 ${recovery.recovered.length} 份学情报告。${health.message}`
         : ensured.created.length ? `已补建 ${ensured.created.length} 个报告模板。${health.message}` : health.message,
@@ -23987,7 +24241,7 @@ async function updateLearningReports(studentKey) {
     const startedCount = started.length;
     const skippedCount = skipped.length;
     const message = [
-      recoveredCount ? `已恢复并发布 ${recoveredCount} 份有效草稿` : '',
+      recoveredCount ? `已恢复并发布 ${recoveredCount} 份有效生成结果` : '',
       startedCount ? `已启动 ${startedCount} 项当前周期更新` : '',
       skippedCount ? `${skippedCount} 项暂未启动，可在任务中心查看原因` : '',
       !recoveredCount && !startedCount && !skippedCount ? '当前四份学情报告均已是最新版本。' : '',
@@ -24069,9 +24323,14 @@ function learningReportEvidence(studentKey, reportId) {
     if (!fs.existsSync(file)) return { ok: false, message: '报告尚未生成。', cards: [] };
     const projects = readProjects().map(normalizeProject)
       .filter((project) => (project.studentIds || []).map(String).includes(String(student.id)));
+    const growthIndex = safeReadJson(growthIndexPath(student), {});
+    const evidenceWithFallbackSources = (Array.isArray(growthIndex.evidence) ? growthIndex.evidence : []).map((evidence) => ({
+      ...evidence,
+      sourcePath: reportEvidenceSourceValues(student, projects, evidence).join('；'),
+    }));
     const result = resolveReportEvidence({
       content: fs.readFileSync(file, 'utf8'),
-      growthIndex: safeReadJson(growthIndexPath(student), {}),
+      growthIndex: { ...growthIndex, evidence: evidenceWithFallbackSources },
       resolveSource: (source) => reportEvidenceSourceResolver(student, projects, source),
     });
     return { ...result, studentId: String(student.id), reportId: report.id };
@@ -27449,7 +27708,11 @@ function licensedIpc(event, action, handler) {
     event.returnValue = locked;
     return;
   }
-  event.returnValue = handler();
+  try {
+    event.returnValue = handler();
+  } catch (error) {
+    event.returnValue = JSON.stringify({ ok: false, message: `${action}失败：${error.message}` });
+  }
 }
 
 function licensedInvoke(action, handler) {
@@ -27662,10 +27925,10 @@ ipcMain.on('bridge:getHostDevices', (event) => { event.returnValue = getHostDevi
 ipcMain.on('bridge:renameHostIdentity', (event, displayName) => { licensedIpc(event, '主机身份设置', () => renameHostIdentity(displayName)); });
 ipcMain.on('bridge:getCollaborationState', (event) => { event.returnValue = getCollaborationState(); });
 ipcMain.on('bridge:setStudentArchiveSyncEnabled', (event, studentId, enabled) => {
-  event.returnValue = licensedSync('更新学生档案同步策略', () => setStudentArchiveSyncEnabled(studentId, enabled));
+  licensedIpc(event, '更新学生档案同步策略', () => setStudentArchiveSyncEnabled(studentId, enabled));
 });
 ipcMain.on('bridge:syncStudentArchiveNow', (event, studentId) => {
-  event.returnValue = licensedSync('同步学生档案', () => JSON.stringify(publishStudentArchiveSync(studentId)));
+  licensedIpc(event, '同步学生档案', () => JSON.stringify(publishStudentArchiveSync(studentId)));
 });
 ipcMain.on('bridge:initializeCollaborationWorkspace', (event) => { licensedIpc(event, '知识协作空间初始化', () => initializeCollaborationWorkspace()); });
 ipcMain.on('bridge:setTeamKnowledgePolicy', (event, optionsJson) => { licensedIpc(event, '团队知识查询策略', () => setTeamKnowledgePolicy(optionsJson)); });
@@ -27747,6 +28010,7 @@ ipcMain.on('bridge:recordScheduledTaskAction', (event, studentId, kind, commandT
 ipcMain.on('bridge:getStudentScheduleLedger', (event, studentId) => { event.returnValue = getStudentScheduleLedger(studentId); });
 ipcMain.on('bridge:getTaskCenter', (event) => { event.returnValue = getTaskCenter(); });
 ipcMain.handle('bridge:getTaskCenterAsync', (_event, force) => getTaskCenter({ force: Boolean(force) }));
+ipcMain.handle('bridge:getTaskStatusesAsync', (_event, taskIds) => getTaskStatuses(taskIds));
 ipcMain.handle('bridge:archiveAccessRpc', (_event, requestJson) => archiveAccessRpc(requestJson));
 ipcMain.handle('bridge:remoteArchiveAccessRpc', (_event, requestJson) => remoteArchiveAccessRpc(requestJson));
 ipcMain.handle('bridge:queryAgentKnowledge', (_event, optionsJson) => queryAgentKnowledge(optionsJson));

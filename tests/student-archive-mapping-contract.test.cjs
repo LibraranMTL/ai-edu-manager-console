@@ -43,8 +43,9 @@ test('collaboration state derives device trust and student maps without dropping
 test('student archive collaboration can be paused and manually synchronized per student', () => {
   assert.match(main, /function setStudentArchiveSyncEnabled\(studentId, enabled\)/);
   assert.match(main, /function studentArchiveSyncStatus\(state = readCollaborationState\(\)\)/);
-  assert.match(main, /bridge:setStudentArchiveSyncEnabled/);
-  assert.match(main, /bridge:syncStudentArchiveNow/);
+  assert.match(main, /bridge:setStudentArchiveSyncEnabled'[\s\S]*?licensedIpc\(event, '更新学生档案同步策略'/);
+  assert.match(main, /bridge:syncStudentArchiveNow'[\s\S]*?licensedIpc\(event, '同步学生档案'/);
+  assert.doesNotMatch(main, /licensedSync\s*\(/);
   assert.match(preload, /setStudentArchiveSyncEnabled\(studentId, enabled\)/);
   assert.match(preload, /syncStudentArchiveNow\(studentId\)/);
   assert.match(ui, /跨主机档案同步/);

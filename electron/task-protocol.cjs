@@ -146,7 +146,7 @@ function validateDailyActionDocument(content, options = {}) {
   const generatedAt = String(parsed.values.generated_at || '');
   if (!generatedAt || Number.isNaN(Date.parse(generatedAt))) errors.push('缺少有效的 generated_at ISO 时间');
   const status = String(parsed.values.status || '').toLowerCase();
-  if (!['待审核', 'pending_review', 'draft'].includes(status)) errors.push('status 必须为 pending_review、draft 或待审核');
+  if (!['generated', '待审核', 'pending_review', 'draft'].includes(status)) errors.push('status 必须为 generated');
   for (const section of requiredSections) {
     const body = markdownSectionBody(parsed.body, section);
     if (!body) errors.push(`章节“${section}”缺失或为空`);

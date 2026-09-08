@@ -11,26 +11,29 @@ const css = fs.readFileSync(path.join(root, 'src', 'styles.css'), 'utf8');
 
 test('all four learning reports have idempotent weekly or monthly tasks', () => {
   for (const kind of ['learning_profile', 'learning_changes', 'learning_stage']) {
-    assert.match(main, new RegExp(`buildPeriodicLearningReportTask\\(student, '${kind}'\\)`));
+    assert.match(main, new RegExp(`buildPeriodicLearningReportTask\\(student, '${kind}', eligibleEvidence\\)`));
     assert.match(main, new RegExp(`${kind}: new Set\\(\\['read', 'create_draft'\\]\\)`));
   }
   assert.match(main, /function taskMonthRange/);
   assert.match(main, /idempotencyKey: `\$\{kind\}:\$\{normalized\.id\}:\$\{period\.key\}:\$\{growthFingerprint \|\| 'growth-pending'\}`/);
   assert.match(main, /periodicKinds\.has\(task\.kind\)/);
   assert.match(main, /scheduledReportKinds\.has\(task\.kind\)/);
+  assert.match(main, /new Set\(\['published', 'current', 'updated', 'active'\]\)\.has\(reportStatus\)/);
 });
 
 test('new report drafts are validated and automatically published without routine review', () => {
   assert.match(main, /task\.kind === 'weekly_action' \|\| PERIODIC_REPORT_TASKS\[task\.kind\]/);
-  assert.match(main, /validateSectionedDraft/);
+  assert.match(main, /validateSectionedReport/);
   assert.match(main, /validateReportAutoPublication/);
   assert.match(main, /completionPolicy: 'auto_after_validation'/);
   assert.match(main, /report_auto_published/);
-  assert.match(workflow, /status:\\s\*pending_review/);
+  assert.match(workflow, /generated\|pending_review/);
+  assert.match(workflow, /publishValidatedReport/);
+  assert.match(main, /directReportExecutionCommand/);
+  assert.match(main, /status: generated/);
   assert.match(main, /报告已通过自动校验并发布/);
-  // Legacy pending drafts remain manually recoverable, but new scheduled tasks do not require this step.
-  assert.match(ui, /采用并发布/);
-  assert.match(ui, /需要修改/);
+  assert.match(ui, /系统正在校验并自动发布，无需人工操作/);
+  assert.doesNotMatch(ui, /采用并发布/);
   assert.doesNotMatch(ui, /审批、驳回或反馈说明/);
   assert.doesNotMatch(ui, /人工审核说明/);
 });
@@ -43,6 +46,10 @@ test('report page recovers valid drafts and exposes one explicit update action',
   assert.match(ui, /updateCurrentLearningReports/);
   assert.match(ui, /更新学情报告/);
   assert.match(ui, /重新读取/);
+  assert.match(ui, /learningReportTaskIds/);
+  assert.match(ui, /getTaskStatusesAsync\(learningReportTaskIds\)/);
+  assert.match(ui, /完成后将自动刷新/);
+  assert.match(ui, /上一版报告保持不变/);
 });
 
 test('digest and task flows expose theme-aware next action guidance', () => {

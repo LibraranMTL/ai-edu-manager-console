@@ -698,6 +698,9 @@ contextBridge.exposeInMainWorld('AndroidBridge', {
   getTaskCenterAsync(force = false) {
     return ipcRenderer.invoke('bridge:getTaskCenterAsync', Boolean(force));
   },
+  getTaskStatusesAsync(taskIds = []) {
+    return ipcRenderer.invoke('bridge:getTaskStatusesAsync', taskIds);
+  },
   archiveAccessRpc(requestJson) {
     return ipcRenderer.invoke('bridge:archiveAccessRpc', requestJson);
   },

@@ -69,5 +69,7 @@ test('digestion and report protocols enforce reviewed growth data first', () => 
   assert.match(main, /不要在资料消化过程中直接覆盖学情报告/);
   assert.match(main, /每周行动建议.*统一任务中心/);
   assert.match(ui, /资料消化不直接覆盖四份学情报告/);
-  assert.match(ui, /新能力判断、项目贡献和成长证据，先写入成长模型的草稿或待审核候选/);
+  assert.match(ui, /只有来源完整、无冲突的低风险知识可由系统自动采用/);
+  assert.match(ui, /高风险或归属不明确的内容仍需确认/);
+  assert.match(ui, /系统校验通过后自动发布/);
 });

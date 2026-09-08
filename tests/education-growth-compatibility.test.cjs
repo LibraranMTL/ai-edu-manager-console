@@ -135,9 +135,10 @@ test('Electron read responses expose compatibility views without replacing legac
   const main = fs.readFileSync(path.join(__dirname, '..', 'electron', 'main.cjs'), 'utf8');
   assert.match(main, /mapGrowthEvidenceReviewToEducationClaims\(\{ student: normalized, review, sourcePath: growthEvidenceReviewPath\(normalized\) \}\)/);
   assert.match(main, /mapGrowthIndexV2ToDomainSnapshot\(\{ student: normalized, index, sourcePath:/);
-  assert.match(main, /\{ ok: true, review, protocolCompatibility, riskAssessment, path:/);
+  assert.match(main, /\{ ok: true, automatic, review, protocolCompatibility, riskAssessment, path:/);
   assert.match(main, /\{ ok: true, index, protocolCompatibility, path:/);
   assert.match(main, /item\.reviewerRole = item\.review\.reviewerRole/);
   assert.match(main, /item\.reviewHistory = \[/);
+  assert.match(main, /reviewerId: 'system-risk-policy'/);
   assert.match(main, /并记录本机人工审核/);
 });

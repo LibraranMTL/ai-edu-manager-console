@@ -9,7 +9,9 @@ const {
   monthRange,
   reportIsCurrent,
   validateSectionedDraft,
+  validateSectionedReport,
   publishReviewedReport,
+  publishValidatedReport,
 } = require('../electron/learning-report-workflow.cjs');
 const { validateDailyActionDocument } = require('../electron/task-protocol.cjs');
 
@@ -38,6 +40,9 @@ test('a published report becomes pending after its period or source changes', ()
   assert.equal(reportIsCurrent({ exists: true, status: 'published', updated: '2026-07-19', period, reportMtimeMs: 200, sourceMtimeMs: 100 }), false);
   assert.equal(reportIsCurrent({ exists: true, status: 'published', updated: '2026-07-21', period, reportMtimeMs: 200, sourceMtimeMs: 201 }), false);
   assert.equal(reportIsCurrent({ exists: true, status: 'pending_review', updated: '2026-07-21', period, reportMtimeMs: 200, sourceMtimeMs: 100 }), false);
+  for (const legacyStatus of ['current', 'updated', 'active']) {
+    assert.equal(reportIsCurrent({ exists: true, status: legacyStatus, updated: '2026-07-21', period, reportMtimeMs: 200, sourceMtimeMs: 100 }), true);
+  }
 });
 
 test('all four report drafts validate and publish without altering the draft', () => {
@@ -66,6 +71,29 @@ test('all four report drafts validate and publish without altering the draft', (
     fs.writeFileSync(weeklyDraft, weekly, 'utf8');
     assert.equal(publishReviewedReport({ draftPath: weeklyDraft, publishPath: weeklyPublished, updated: date, type: 'weekly_action' }).ok, true);
     assert.match(fs.readFileSync(weeklyPublished, 'utf8'), /^status: published$/m);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('generated reports publish directly and replace the previous version atomically', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'edu-direct-report-'));
+  const sections = reports[0].sections;
+  const body = sections.map((section) => `## ${section}\n\n${section}的新内容。`).join('\n\n');
+  const generated = `---\nupdated: 2026-09-08\nstatus: generated\n---\n\n${body}\n`;
+  const stagingPath = path.join(root, 'report-staging', 'profile.md');
+  const publishPath = path.join(root, 'published', 'profile.md');
+  try {
+    fs.mkdirSync(path.dirname(stagingPath), { recursive: true });
+    fs.mkdirSync(path.dirname(publishPath), { recursive: true });
+    fs.writeFileSync(stagingPath, generated, 'utf8');
+    fs.writeFileSync(publishPath, '旧版本', 'utf8');
+    assert.deepEqual(validateSectionedReport(generated, sections), { valid: true, errors: [] });
+    const result = publishValidatedReport({ stagingPath, publishPath, updated: '2026-09-08', type: 'learning_profile' });
+    assert.equal(result.ok, true);
+    assert.match(fs.readFileSync(publishPath, 'utf8'), /^status: published$/m);
+    assert.match(fs.readFileSync(publishPath, 'utf8'), /一句话画像的新内容/);
+    assert.equal(fs.readdirSync(path.dirname(publishPath)).some((name) => name.includes('.publishing-')), false);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }

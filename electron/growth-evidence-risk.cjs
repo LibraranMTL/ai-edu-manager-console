@@ -28,6 +28,10 @@ function classifyGrowthEvidenceRisk(item = {}, options = {}) {
     level = 'high';
     reasons.push({ code: 'missing_source', label: '缺少可追溯来源' });
   }
+  if (String(item.automationAttentionReason || '') === 'source_unavailable') {
+    level = 'high';
+    reasons.push({ code: 'source_unavailable', label: '来源文件不存在或不在授权范围' });
+  }
   if (SENSITIVE_PATTERN.test(combined)) {
     level = 'high';
     reasons.push({ code: 'sensitive_content', label: '可能包含敏感信息' });

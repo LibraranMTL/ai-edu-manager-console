@@ -667,6 +667,7 @@ type TaskCenterItem = {
   requestedExecutor?: string;
   timeoutSeconds?: number;
   idempotencyKey?: string;
+  completionPolicy?: string;
   attempt?: number;
   maxAttempts?: number;
   startedAt?: string;
@@ -1064,6 +1065,7 @@ type AndroidBridge = {
   getStudentScheduleLedger?: (studentId: string) => string;
   getTaskCenter?: () => string;
   getTaskCenterAsync?: (force?: boolean) => Promise<string>;
+  getTaskStatusesAsync?: (taskIds: string[]) => Promise<string>;
   archiveAccessRpc?: (requestJson: string) => Promise<string>;
   remoteArchiveAccessRpc?: (requestJson: string) => Promise<string>;
   queryAgentKnowledge?: (optionsJson: string) => Promise<string>;
@@ -4587,8 +4589,8 @@ ${projectRule}
 1. 只处理尚未消化的新资料，不重复生成已处理资料的摘要。
 2. 处理完成后更新 ${p.index} 和 ${p.log}。
 3. 如果没有新增资料，请在 log.md 中记录“无新增资料”。
-4. 消化产生的新能力判断、项目贡献和成长证据，先写入成长模型的草稿或待审核候选；未经人工确认，不得直接写成稳定能力结论。
-5. 资料消化不直接覆盖四份学情报告。学情报告由已确认成长模型另行生成；每周行动建议通过统一任务中心审核发布。
+4. 消化产生的新能力判断、项目贡献和成长证据，先写入成长模型候选；只有来源完整、无冲突的低风险知识可由系统自动采用，高风险或归属不明确的内容仍需确认。
+5. 资料消化不直接覆盖四份学情报告。学情报告由已确认成长模型另行生成，并在系统校验通过后自动发布。
 6. 如果没有足够依据，请保留“待补充”或标注“待观察”，不要编造结论。
 7. 消化完成后，请更新 ${p.root}${separator}.edu-manager${separator}digest-state.json，格式为：
 {
@@ -4779,6 +4781,7 @@ function App() {
   const [learningReportMessage, setLearningReportMessage] = useState('');
   const [learningReportExporting, setLearningReportExporting] = useState<'' | 'markdown' | 'pdf'>('');
   const [learningReportUpdating, setLearningReportUpdating] = useState(false);
+  const [learningReportTaskIds, setLearningReportTaskIds] = useState<string[]>([]);
   const [learningReportFolder, setLearningReportFolder] = useState('');
   const [learningReportHealth, setLearningReportHealth] = useState<LearningReportHealth | null>(null);
   const [publishingState, setPublishingState] = useState<EducationPublishingState | null>(null);
@@ -5187,6 +5190,7 @@ function App() {
   }), [taskCenter.tasks, taskCenterExecutorFilter, taskCenterSourceFilter, taskCenterStatusFilter]);
   const displayedTaskCenterItems = visibleTaskCenterItems.slice(0, taskCenterDisplayLimit);
   const selectedTask = taskCenter.tasks.find((task) => task.id === selectedTaskId) ?? null;
+  const selectedTaskAutoValidated = selectedTask?.completionPolicy === 'auto_after_validation';
   const selectedCollaborationTask = selectedTask?.kind === 'collaboration_assignment'
     ? selectedTask.input?.collaborationTask as {
       taskId?: string;
@@ -5335,6 +5339,8 @@ function App() {
     setSelectedConversationCandidateIds([]);
     setScheduleLedger({ entries: [] });
     setMaintenanceReportPreview('');
+    setLearningReportTaskIds([]);
+    setLearningReportUpdating(false);
   }, [selectedStudent?.id]);
   useEffect(() => {
     const unsubscribe = bridge()?.onProjectWorkspaceScanProgress?.((payload) => {
@@ -5870,7 +5876,7 @@ function App() {
     return [
       { target: 'workspace' as ProjectWorkflowTarget, title: '添加资料', value: `${projectStageCounts.workspace} 份候选 · ${projectStageCounts.formalRaw} 份正式`, detail: '扫描工作空间、导入资料或复用已有资产' },
       { target: 'assets' as ProjectWorkflowTarget, title: 'AI 整理建议', value: `${projectStageCounts.pendingStaging} 份待整理`, detail: '去重、初筛并推荐保存策略' },
-      { target: 'digest' as ProjectWorkflowTarget, title: '确认并消化', value: `${projectStageCounts.pendingDigest} 份待消化 · ${projectStageCounts.pendingKnowledge} 条待确认`, detail: '人工确认资料后交给 Agent 消化并审核知识' },
+      { target: 'digest' as ProjectWorkflowTarget, title: '自动消化与整理', value: `${projectStageCounts.pendingDigest} 份待消化 · ${projectStageCounts.pendingKnowledge} 条需关注`, detail: '系统自动消化资料、采用低风险内容，只提示异常项' },
       { target: 'promotion' as ProjectWorkflowTarget, title: '完成项目', value: selectedProject.publishedAt ? '已发布' : `${projectStageCounts.promotionItems} 项待归档`, detail: '核对贡献清单并发布到成长模型' },
     ];
   }, [projectStageCounts, selectedProject]);
@@ -5887,7 +5893,7 @@ function App() {
       return { target: 'digest' as ProjectWorkflowTarget, title: `消化 ${projectStageCounts.pendingDigest} 份正式资料`, detail: '系统自动提交，并从 Agent 输出、回执文件和知识更新中自动结算。', action: 'digest' };
     }
     if (projectStageCounts.pendingKnowledge > 0) {
-      return { target: 'knowledge' as ProjectWorkflowTarget, title: `确认 ${projectStageCounts.pendingKnowledge} 条知识`, detail: '只审核低置信度、缺少来源或待确认的知识条目。', action: 'knowledge' };
+      return { target: 'knowledge' as ProjectWorkflowTarget, title: `处理 ${projectStageCounts.pendingKnowledge} 条异常知识`, detail: '低风险知识已经自动确认，这里只显示低置信度、缺少来源或冲突项。', action: 'knowledge' };
     }
     return { target: 'promotion' as ProjectWorkflowTarget, title: selectedProject.publishedAt ? '查看项目归档结果' : '完成项目并生成归档清单', detail: '核对项目知识、每名学生的成长证据和归档目标。', action: 'complete' };
   }, [projectStageCounts, selectedProject, selectedProjectDigestState.status]);
@@ -5925,40 +5931,12 @@ function App() {
     const raw = bridge()?.getProjectUnifiedReview?.(projectId);
     if (!raw) return;
     try {
-      const result = JSON.parse(raw) as { ok?: boolean; reviewPackage?: ProjectUnifiedReviewPackage };
+      const result = JSON.parse(raw) as { ok?: boolean; automatic?: boolean; projects?: LearningProject[]; reviewPackage?: ProjectUnifiedReviewPackage; message?: string };
+      if (Array.isArray(result.projects)) setProjects(result.projects);
       if (result.ok && result.reviewPackage) setProjectUnifiedReview(result.reviewPackage);
+      if (result.automatic && result.message) setProjectMessage(result.message);
     } catch {
       setProjectMessage('统一审核包读取失败，高级步骤仍可继续使用。');
-    }
-  };
-
-  const applySelectedProjectUnifiedReview = () => {
-    if (!selectedProjectId || projectBusyAction) return;
-    setProjectBusyAction('unified-review');
-    const raw = bridge()?.applyProjectUnifiedReview?.(selectedProjectId);
-    if (!raw) {
-      setProjectBusyAction('');
-      setProjectMessage('当前环境不支持统一审核包。');
-      return;
-    }
-    try {
-      const result = JSON.parse(raw) as { ok?: boolean; projects?: LearningProject[]; reviewPackage?: ProjectUnifiedReviewPackage; message?: string };
-      if (Array.isArray(result.projects)) setProjects(result.projects);
-      if (result.reviewPackage) setProjectUnifiedReview(result.reviewPackage);
-      if (result.ok) {
-        refreshAssets();
-        window.setTimeout(() => {
-          loadSelectedProjectKnowledgeReview();
-          refreshProjectUnifiedReview(selectedProjectId);
-        }, 0);
-      }
-      const message = result.message || (result.ok ? '本批次已采用。' : '本批次采用失败。');
-      setProjectMessage(message);
-      showActionNotice(Boolean(result.ok), result.ok ? '批次处理成功' : '批次处理失败', message);
-    } catch {
-      setProjectMessage('统一审核包结果解析失败。');
-    } finally {
-      setProjectBusyAction('');
     }
   };
 
@@ -5973,10 +5951,6 @@ function App() {
 
   const runSelectedProjectNextStep = () => {
     if (!selectedProjectNextStep) return;
-    if ((projectUnifiedReview?.ready.count || 0) > 0) {
-      applySelectedProjectUnifiedReview();
-      return;
-    }
     if (selectedProjectNextStep.action === 'add') {
       void scanSelectedProjectWorkspace();
       return;
@@ -11486,35 +11460,6 @@ ${JSON.stringify(items, null, 2)}
     }
   };
 
-  const batchReviewGrowthEvidence = () => {
-    if (!selectedStudent) {
-      setGrowthMessage('请先选择学生。');
-      return;
-    }
-    const summary = growthEvidenceRiskAssessment?.summary;
-    if (!summary?.batchProcessable) {
-      setGrowthMessage(summary?.high ? `当前只有 ${summary.high} 条高风险记录，需要逐条确认。` : '当前没有需要批量处理的普通候选。');
-      return;
-    }
-    const confirmed = window.confirm(`确认一次处理本批成长证据吗？\n\n将采用 ${summary.low} 条来源完整的低风险证据；${summary.medium} 条信息不足的记录只转为“继续观察”；${summary.high} 条高风险记录不会改变，仍需逐条确认。`);
-    if (!confirmed) return;
-    const raw = bridge()?.batchReviewGrowthEvidence?.(selectedStudent.id);
-    if (!raw) {
-      setGrowthMessage('当前环境不支持批量审核成长证据。');
-      return;
-    }
-    try {
-      const result = JSON.parse(raw) as { ok?: boolean; review?: GrowthEvidenceReviewState; protocolCompatibility?: { reviewQueue?: LegacyGrowthReviewQueueItem[] }; riskAssessment?: GrowthEvidenceRiskAssessment; message?: string };
-      if (result.review) setGrowthEvidenceReview(result.review);
-      setLegacyGrowthReviewQueue(result.protocolCompatibility?.reviewQueue ?? []);
-      setGrowthEvidenceRiskAssessment(result.riskAssessment ?? null);
-      setGrowthMessage(result.message || (result.ok ? '本批成长证据已处理。' : '批量处理成长证据失败。'));
-      if (result.ok) refreshSelectedGrowthIndex(selectedStudent);
-    } catch {
-      setGrowthMessage('批量审核成长证据结果解析失败。');
-    }
-  };
-
   const ensureSelectedGrowthModel = () => {
     if (!selectedStudent) {
       setGrowthMessage('请先选择学生。');
@@ -12042,18 +11987,75 @@ ${JSON.stringify(items, null, 2)}
       return;
     }
     setLearningReportUpdating(true);
-    setLearningReportMessage('正在校验已有草稿并启动本周期缺失的报告任务…');
+    setLearningReportMessage('正在校验已有生成结果并启动本周期缺失的报告任务…');
+    let trackingStarted = false;
     try {
-      const result = JSON.parse(await update(student.id)) as { ok?: boolean; message?: string };
+      const result = JSON.parse(await update(student.id)) as {
+        ok?: boolean;
+        message?: string;
+        started?: Array<{ taskId: string; title?: string; adapterId?: string }>;
+        skipped?: Array<{ taskId: string; title?: string; message?: string }>;
+      };
       refreshLearningReports(student);
       await refreshTaskCenter(true);
-      setLearningReportMessage(result.message || (result.ok ? '学情报告更新已提交。' : '学情报告更新失败。'));
+      const taskIds = (result.started || []).map((item) => String(item.taskId || '')).filter(Boolean);
+      if (result.ok && taskIds.length) {
+        trackingStarted = true;
+        setLearningReportTaskIds(taskIds);
+        setLearningReportMessage(`${result.message || `已启动 ${taskIds.length} 项更新`}；正在等待 Agent 完成并自动刷新报告。`);
+      } else {
+        setLearningReportTaskIds([]);
+        const skippedReason = result.skipped?.map((item) => item.message).filter(Boolean)[0];
+        setLearningReportMessage(result.message || skippedReason || (result.ok ? '当前学情报告无需更新。' : '学情报告更新失败。'));
+      }
     } catch (error) {
+      setLearningReportTaskIds([]);
       setLearningReportMessage(`学情报告更新失败：${(error as Error).message}`);
     } finally {
-      setLearningReportUpdating(false);
+      if (!trackingStarted) setLearningReportUpdating(false);
     }
   };
+
+  useEffect(() => {
+    if (!learningReportTaskIds.length || !selectedStudent) return undefined;
+    let cancelled = false;
+    const terminalStatuses = new Set(['succeeded', 'failed', 'blocked', 'cancelled', 'timed_out']);
+    const poll = async () => {
+      const api = bridge();
+      if (!api?.getTaskStatusesAsync) return;
+      try {
+        const raw = await api.getTaskStatusesAsync(learningReportTaskIds);
+        if (cancelled || !raw) return;
+        const result = JSON.parse(raw) as TaskCenterState & { ok?: boolean };
+        const tracked = (result.tasks || []).filter((task) => learningReportTaskIds.includes(String(task.id)));
+        if (tracked.length !== learningReportTaskIds.length) return;
+        const completed = tracked.filter((task) => terminalStatuses.has(String(task.status)));
+        if (completed.length < tracked.length) {
+          setLearningReportMessage(`学情报告更新执行中：${completed.length}/${tracked.length} 项已完成，完成后将自动刷新。`);
+          return;
+        }
+        const succeeded = tracked.filter((task) => task.status === 'succeeded');
+        const failed = tracked.filter((task) => task.status !== 'succeeded');
+        refreshLearningReports(selectedStudent);
+        await refreshTaskCenter(true);
+        if (cancelled) return;
+        setLearningReportTaskIds([]);
+        setLearningReportUpdating(false);
+        const failureReason = failed.map((task) => task.error?.message || task.result?.summary || task.detail).filter(Boolean)[0];
+        setLearningReportMessage(failed.length
+          ? `更新完成：${succeeded.length} 项已发布，${failed.length} 项未更新${failureReason ? `；原因：${failureReason}` : '，请在任务中心查看原因'}。上一版报告保持不变。`
+          : `更新完成：${succeeded.length} 项报告已发布并自动刷新。`);
+      } catch (error) {
+        if (!cancelled) setLearningReportMessage(`正在等待报告任务完成；状态读取暂时失败：${(error as Error).message}`);
+      }
+    };
+    void poll();
+    const timer = window.setInterval(() => { void poll(); }, 3000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [learningReportTaskIds.join('|'), selectedStudent?.id]);
 
   const openLearningReport = (reportId: LearningReportId, student: Student | undefined = selectedStudent) => {
     if (!student) return;
@@ -16024,22 +16026,22 @@ ${JSON.stringify(items, null, 2)}
                         </div>
                         <button className="primary workflow-action next" onClick={runSelectedProjectNextStep}>
                           {selectedProjectNextStep.action === 'complete' ? <CheckCircle2 size={18} /> : <ChevronRight size={18} />}
-                          {(projectUnifiedReview?.ready.count || 0) > 0 ? `确认本批次（${projectUnifiedReview?.ready.count}）` : selectedProjectNextStep.action === 'add' ? '扫描新增资料' : selectedProjectNextStep.action === 'digest' ? '开始知识消化' : '继续处理'}
+                          {selectedProjectNextStep.action === 'add' ? '扫描新增资料' : selectedProjectNextStep.action === 'digest' ? '开始知识消化' : '继续处理'}
                         </button>
                       </section>
                     )}
                     {projectUnifiedReview && (
                       <section className="project-unified-review" aria-label="项目统一审核包">
                         <div>
-                          <strong>本批次处理包</strong>
+                          <strong>自动处理与异常清单</strong>
                           <span>{projectUnifiedReview.message}</span>
                         </div>
                         <div className="project-review-summary">
-                          <span>可直接采用 <b>{projectUnifiedReview.ready.count}</b></span>
+                          <span>待系统自动处理 <b>{projectUnifiedReview.ready.count}</b></span>
                           <span>需要关注 <b>{projectUnifiedReview.attention.count}</b></span>
                           <span>待消化 <b>{projectUnifiedReview.pendingDigest}</b></span>
                         </div>
-                        {projectUnifiedReview.attention.count > 0 && <small>系统只自动处理来源完整的低风险资料和知识；个人成长证据始终由人确认。</small>}
+                        <small>{projectUnifiedReview.attention.count > 0 ? '低风险资料和知识已自动处理；这里只保留冲突、来源缺失、低置信度或个人归属不明确的项目。' : '本批低风险资料和知识已全部自动处理，无需人工确认。'}</small>
                       </section>
                     )}
                     <nav className="project-flow-nav" aria-label="学习项目工作流">
@@ -16659,13 +16661,12 @@ ${JSON.stringify(items, null, 2)}
               <InfoPanel icon={<Sparkles />} title="能力维度" value={`${growthIndex?.summary?.abilityCount ?? 0} 个`} />
               <InfoPanel icon={<FolderOpen />} title="项目贡献" value={`${growthIndex?.summary?.projectCount ?? 0} 个`} />
               <InfoPanel icon={<ShieldCheck />} title="已确认证据" value={`${growthIndex?.summary?.confirmedCount ?? 0} 条`} />
-              <InfoPanel icon={<Clock3 />} title="一键可处理" value={`${growthEvidenceRiskAssessment?.summary?.batchProcessable ?? 0} 条`} />
+              <InfoPanel icon={<Clock3 />} title="系统自动处理" value={`${growthEvidenceRiskAssessment?.summary?.batchProcessable ?? 0} 条`} />
               <InfoPanel icon={<ShieldCheck />} title="需单独处理" value={`${growthEvidenceRiskAssessment?.summary?.high ?? 0} 条`} />
               <InfoPanel icon={<ShieldCheck />} title="历史待补审" value={`${legacyGrowthReviewQueue.length} 条`} />
             </div>
             <div className="notice muted">
-              默认只显示需要关注的中高风险记录，低风险候选不会占用日常待办。一次处理会批量采用来源完整的安全证据，把信息不足的记录转为继续观察，并保留高风险记录逐条确认。
-              {(growthEvidenceRiskAssessment?.summary?.batchProcessable ?? 0) > 0 && <div className="actions"><button className="primary" onClick={batchReviewGrowthEvidence}><ShieldCheck size={18} />一键处理本批次</button></div>}
+              系统会自动确认来源完整且归属明确的低风险证据，并把信息不足的普通记录转为继续观察。这里只保留高风险、冲突、敏感或来源不明的记录供逐条确认。
             </div>
             <section className="growth-workbench">
               <div className="growth-view-tabs" role="tablist" aria-label="成长模型视图">
@@ -18418,7 +18419,9 @@ ${JSON.stringify(items, null, 2)}
               </div>
               <div className="task-center-list">
                 {displayedTaskCenterItems.map((task) => {
-                  const statusLabel = ({ draft: '草稿', pending: '待处理', approved: '已批准', queued: '已计划', running: '执行中', waiting_result: '等待结果', reviewing: '待审核', succeeded: '已完成', failed: '失败', blocked: '阻塞', cancelled: '已取消', timed_out: '已超时' } as Record<string, string>)[task.status] || task.status;
+                  const statusLabel = task.status === 'reviewing' && task.completionPolicy === 'auto_after_validation'
+                    ? '自动校验中'
+                    : ({ draft: '草稿', pending: '待处理', approved: '已批准', queued: '已计划', running: '执行中', waiting_result: '等待结果', reviewing: '待审核', succeeded: '已完成', failed: '失败', blocked: '阻塞', cancelled: '已取消', timed_out: '已超时' } as Record<string, string>)[task.status] || task.status;
                   const triggerLabel = ({ schedule: '定时', event: '事件触发', manual: '手动' } as Record<string, string>)[task.trigger] || task.trigger;
                   const modeLabel = ({ direct: '直接执行', adapter: '适配器执行', manual: '人工执行', review: '人工审核' } as Record<string, string>)[task.executionMode] || task.executionMode;
                   const executorLabel = task.executor === 'human-review' ? '人工审核' : agentToolProfiles[task.executor as AgentToolId]?.name || task.executor;
@@ -18466,7 +18469,7 @@ ${JSON.stringify(items, null, 2)}
                     <div><small>执行次数</small><strong>{selectedTask.attempt || 0} / {selectedTask.maxAttempts || 3}</strong></div>
                     <div><small>幂等键</small><strong>{selectedTask.idempotencyKey || '-'}</strong></div>
                      <div><small>适配器</small><strong>{selectedTask.adapterId || selectedTask.executor || '待路由'}</strong></div>
-                     <div><small>审批</small><strong>{selectedTask.approval?.status || 'not_required'}</strong></div>
+                     <div><small>人工审核</small><strong>{selectedTask.approval?.required ? (selectedTask.approval?.status || '待处理') : '无需'}</strong></div>
                      <div><small>最近心跳</small><strong>{selectedTask.lastHeartbeatAt || '尚未开始'}</strong></div>
                      <div><small>下次重试</small><strong>{selectedTask.nextRetryAt || '未计划'}</strong></div>
                      <div><small>路由模式</small><strong>{selectedTask.routingMode || selectedTask.routeDecision?.mode || 'smart'}</strong></div>
@@ -18640,8 +18643,9 @@ ${JSON.stringify(items, null, 2)}
                       <div className="task-detail-actions">
                         {selectedTask.approval?.required && selectedTask.approval.status !== 'approved' && selectedTask.status !== 'reviewing' && <button className="workflow-action next" onClick={() => approveTaskFromCenter(selectedTask, 'approved')}><ShieldCheck size={16} />允许执行</button>}
                         {!['running', 'waiting_result', 'reviewing', 'succeeded'].includes(selectedTask.status) && (!selectedTask.approval?.required || selectedTask.approval.status === 'approved') && <button className="workflow-action next" onClick={() => executeTaskFromCenter(selectedTask)}><Zap size={16} />下一步：执行任务</button>}
-                        {selectedTask.status === 'reviewing' && <button className="workflow-action next" onClick={() => approveTaskFromCenter(selectedTask, 'approved')}><CheckCircle2 size={16} />{['weekly_action', 'learning_profile', 'learning_changes', 'learning_stage'].includes(selectedTask.kind) ? '采用并发布' : '确认完成'}</button>}
-                        {selectedTask.status === 'reviewing' && <button className="workflow-action optional" onClick={() => approveTaskFromCenter(selectedTask, 'rejected', '内容需要修改。')}><RefreshCw size={16} />需要修改</button>}
+                        {selectedTask.status === 'reviewing' && selectedTaskAutoValidated && <span className="notice muted">系统正在校验并自动发布，无需人工操作。</span>}
+                        {selectedTask.status === 'reviewing' && !selectedTaskAutoValidated && <button className="workflow-action next" onClick={() => approveTaskFromCenter(selectedTask, 'approved')}><CheckCircle2 size={16} />确认完成</button>}
+                        {selectedTask.status === 'reviewing' && !selectedTaskAutoValidated && <button className="workflow-action optional" onClick={() => approveTaskFromCenter(selectedTask, 'rejected', '内容需要修改。')}><RefreshCw size={16} />需要修改</button>}
                         {['waiting_result', 'running'].includes(selectedTask.status) && <button className={taskResultPasteText.trim() ? 'workflow-action next' : 'workflow-action blocked'} onClick={() => importTaskResultTextFromCenter(selectedTask)} disabled={!taskResultPasteText.trim()}><Clipboard size={16} />下一步：导入粘贴结果</button>}
                         {['waiting_result', 'running'].includes(selectedTask.status) && <button className="secondary" onClick={() => importTaskResultFromCenter(selectedTask)}><FileDown size={16} />从文件导入</button>}
                         {['failed', 'blocked', 'timed_out', 'cancelled'].includes(selectedTask.status) && <button className="workflow-action next" onClick={() => retryTaskFromCenter(selectedTask)}><RefreshCw size={16} />重新执行</button>}

@@ -12,7 +12,7 @@ const screening = fs.readFileSync(path.join(root, 'electron', 'project-screening
 test('project page exposes one four-step primary workflow', () => {
   const add = ui.indexOf("title: '添加资料'");
   const organize = ui.indexOf("title: 'AI 整理建议'");
-  const digest = ui.indexOf("title: '确认并消化'");
+  const digest = ui.indexOf("title: '自动消化与整理'");
   const complete = ui.indexOf("title: '完成项目'");
   assert.ok(add > 0);
   assert.ok(add < organize && organize < digest && digest < complete);

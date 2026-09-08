@@ -1,6 +1,39 @@
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
 const test = require('node:test');
-const { mergeOpenAiToolInstall } = require('../electron/openai-tool-install.cjs');
+const {
+  mergeOpenAiToolInstall,
+  parseCodexCliVersion,
+  selectNewestCodexCliCandidate,
+} = require('../electron/openai-tool-install.cjs');
+
+test('Codex CLI versions are parsed and the newest installed runtime wins', () => {
+  assert.deepEqual(parseCodexCliVersion('codex-cli 0.153.4'), {
+    raw: '0.153.4', major: 0, minor: 153, patch: 4, prerelease: '',
+  });
+  const selected = selectNewestCodexCliCandidate([
+    { path: 'C:\\old\\codex.cmd', version: '0.130.0-alpha.5' },
+    { path: 'C:\\new\\codex.exe', version: '0.153.4' },
+  ]);
+  assert.equal(selected.path, 'C:\\new\\codex.exe');
+});
+
+test('host discovery probes all Codex candidates asynchronously instead of blocking Electron startup', () => {
+  const main = fs.readFileSync(path.join(__dirname, '..', 'electron', 'main.cjs'), 'utf8');
+  assert.match(main, /function findPreferredCodexCliInstall/);
+  assert.match(main, /async function refreshPreferredCodexCliInstall/);
+  assert.match(main, /OpenAI', 'Codex', 'bin/);
+  assert.match(main, /await Promise\.all/);
+  assert.match(main, /probeExecutableAsync\(candidate, \['--version'\], 3500\)/);
+  assert.match(main, /selectNewestCodexCliCandidate\(probed\)/);
+  const pathLookup = main.slice(main.indexOf('function findExecutablesInPath'), main.indexOf('function findVersionedExecutable'));
+  assert.doesNotMatch(pathLookup, /spawnSync/);
+  const fastLookup = main.slice(main.indexOf('function findPreferredCodexCliInstall'), main.indexOf('async function refreshPreferredCodexCliInstall'));
+  assert.doesNotMatch(fastLookup, /probeExecutable\(/);
+  assert.match(main, /requires a newer version of Codex/);
+  assert.match(main, /AGENT_RUNTIME_INCOMPATIBLE/);
+});
 
 test('new ChatGPT desktop app satisfies merged ChatGPT and Codex installation detection', () => {
   const result = mergeOpenAiToolInstall(

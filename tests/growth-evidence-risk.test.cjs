@@ -24,6 +24,13 @@ test('traceable project evidence is low risk and hidden from the default attenti
   assert.equal(result.suggestedAction, 'confirm');
 });
 
+test('an unavailable source is escalated instead of being automatically confirmed', () => {
+  const result = classifyGrowthEvidenceRisk(candidate({ automationAttentionReason: 'source_unavailable' }));
+  assert.equal(result.level, 'high');
+  assert.equal(result.requiresIndividualReview, true);
+  assert.ok(result.reasons.some((reason) => reason.code === 'source_unavailable'));
+});
+
 test('missing source, sensitive content, conflicts, agent inference and legacy audit gaps require individual review', () => {
   const cases = [
     candidate({ id: 'e-missing', sourcePath: '' }),

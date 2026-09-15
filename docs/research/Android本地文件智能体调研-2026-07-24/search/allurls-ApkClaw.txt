@@ -1,0 +1,37 @@
+===== Round 2 =====
+Section: ApkClaw native Android agent runtime, file tool boundary, permissions, and security
+Keywords:
+- ApkClaw GitHub
+- ApkClaw agent loop
+- ApkClaw ToolRegistry
+- ApkClaw SendFileTool
+- ApkClaw MANAGE_EXTERNAL_STORAGE
+- ApkClaw accessibility service
+- ApkClaw LangChain4j
+- ApkClaw LAN config server
+- ApkClaw MMKV API key
+- ApkClaw Apache 2.0
+
+1. Summary: ApkClaw 官方仓库提供 Android 原生 agent loop、LangChain4j 模型桥接、ToolRegistry、无障碍执行层、消息通道、构建要求和 Apache 2.0 许可证，是判断其是否需要 Termux、是否由 APK 自主执行任务的第一手来源。
+Source: platform: GitHub; title: apkclaw-team/ApkClaw; date: accessed 2026-07-24; URL: https://github.com/apkclaw-team/ApkClaw
+
+2. Summary: 官方 0.0.2 发布页证明公开仓库确实提供过 APK release，可用于区分“只有源码概念”与“存在可安装构建”。发布页不能替代真机验收，本次仅记录版本、发布时间和资产存在性。
+Source: platform: GitHub Releases; title: ApkClaw v0.0.2; date: 2026-03-27; URL: https://github.com/apkclaw-team/ApkClaw/releases/tag/v0.0.2
+
+3. Summary: 官方 Manifest 是权限边界的一手证据，显示应用申请所有文件访问、无障碍关联服务、悬浮窗、忽略电池优化、查询全部应用、安装应用、精确闹钟和开机自启等能力，适合评估学生设备的权限与上架风险。
+Source: platform: GitHub Raw; title: AndroidManifest.xml; date: accessed 2026-07-24; URL: https://raw.githubusercontent.com/apkclaw-team/ApkClaw/main/app/src/main/AndroidManifest.xml
+
+4. Summary: ToolRegistry 源码列出实际注册工具。其能力集中在屏幕、手势、输入、App、剪贴板和 send_file，没有目录列举、文件读取、搜索、写入、移动或删除，证明 ApkClaw 的核心定位是 GUI 自动化而不是本地文件工作区。
+Source: platform: GitHub Raw; title: ToolRegistry.kt; date: accessed 2026-07-24; URL: https://raw.githubusercontent.com/apkclaw-team/ApkClaw/main/app/src/main/java/com/apk/claw/android/tool/ToolRegistry.kt
+
+5. Summary: SendFileTool 是公开版本唯一明确文件工具，接收绝对路径、检查 MANAGE_EXTERNAL_STORAGE 后把文件发送到消息通道。它没有 SAF 目录树或路径沙箱，说明直接用于学生本地资料会产生过大的读取和外发范围。
+Source: platform: GitHub Raw; title: SendFileTool.java; date: accessed 2026-07-24; URL: https://raw.githubusercontent.com/apkclaw-team/ApkClaw/main/app/src/main/java/com/apk/claw/android/tool/impl/SendFileTool.java
+
+6. Summary: DefaultAgentService 展示模型 tool call 到 ToolRegistry 的直接执行流程。源码存在安全 system prompt，但没有发现独立的运行时 approval gate；提示词约束不能替代针对写入、发送和破坏性操作的强制代码审批。
+Source: platform: GitHub Raw; title: DefaultAgentService.kt; date: accessed 2026-07-24; URL: https://raw.githubusercontent.com/apkclaw-team/ApkClaw/main/app/src/main/java/com/apk/claw/android/agent/DefaultAgentService.kt
+
+7. Summary: ConfigServer 源码显示可选局域网 HTTP 配置面及 debug 工具路由。GET 接口读取完整 LLM key 与通道 secret，公开 serve 路由未见鉴权；结合明文网络配置，这一实现不应直接进入含学生身份和资料的产品。
+Source: platform: GitHub Raw; title: ConfigServer.kt; date: accessed 2026-07-24; URL: https://raw.githubusercontent.com/apkclaw-team/ApkClaw/main/app/src/main/java/com/apk/claw/android/server/ConfigServer.kt
+
+8. Summary: ApkClaw 隐私政策说明账户、任务日志、截图、LLM 指令、无障碍树和第三方模型的数据处理方式，并明确产品不面向 16 岁以下儿童。该政策进一步说明学生教育场景不能直接采用其现有商业服务边界。
+Source: platform: ApkClaw; title: Privacy Policy; date: 2026-03-19; URL: https://apkclaw.ai/privacy-policy.html

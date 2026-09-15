@@ -4,16 +4,21 @@ const os = require('node:os');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 const { validateWindowsVersion } = require('./version-policy.cjs');
+const { compileLifecycleHook } = require('./compile-lifecycle-hook.cjs');
 
 const repoRoot = path.resolve(__dirname, '..');
 const sourcePackage = JSON.parse(fs.readFileSync(path.join(repoRoot, 'package.json'), 'utf8'));
 const version = String(sourcePackage.version);
 validateWindowsVersion(version);
-const artifactName = `AI-edu-manager-student-terminal-Windows-${version}.exe`;
+const candidateTag = String(process.env.EDU_WINDOWS_CANDIDATE_TAG || '').trim().replace(/[^a-zA-Z0-9._-]+/g, '-').replace(/^-+|-+$/g, '');
+const artifactBase = `AI-edu-manager-student-terminal-Windows-${version}${candidateTag && candidateTag !== version ? `-${candidateTag}` : ''}`;
+const artifactName = `${artifactBase}.exe`;
 const stageBase = path.resolve(process.env.LOCALAPPDATA || os.tmpdir(), 'AI-Education-Manager', 'terminal-release-stage');
-const stageRoot = path.resolve(stageBase, version);
+const stageRoot = path.resolve(stageBase, candidateTag ? `${version}-${candidateTag}` : version);
 const stageOutput = path.join(stageRoot, 'out');
-const releaseDir = path.join(repoRoot, 'release', 'windows-terminal');
+const releaseDir = candidateTag
+  ? path.join(repoRoot, 'release', 'windows-terminal', 'candidates', candidateTag)
+  : path.join(repoRoot, 'release', 'windows-terminal');
 const electronLanguages = ['zh-CN', 'en-US'];
 
 function assertInside(target, parent) {
@@ -97,7 +102,7 @@ function writeRuntimePackage() {
       directories: { output: 'out' },
       files: ['dist-terminal/**/*', 'electron/**/*', 'package.json'],
       win: {
-        artifactName: 'AI-edu-manager-student-terminal-Windows-${version}.${ext}',
+        artifactName: `${artifactBase}.\${ext}`,
         icon: 'public/brand/robogala.ico',
         target: ['portable'],
       },
@@ -122,6 +127,7 @@ function build() {
     'electron/student-agent-lifecycle.cjs',
     'electron/agent-adapter-registry.cjs',
     'electron/agent-lifecycle-hook.ps1',
+    'electron/agent-lifecycle-hook.cs',
     'electron/terminal-upload.cjs',
     'electron/growth-markdown-summary.cjs',
     'electron/pairing-protocol.cjs',
@@ -133,6 +139,7 @@ function build() {
     'electron/course-catalog.cjs',
     'public/brand/robogala.ico',
   ]) copyFile(relative);
+  compileLifecycleHook(path.join(stageRoot, 'electron', 'agent-lifecycle-hook.cs'), path.join(stageRoot, 'electron', 'agent-lifecycle-hook.exe'));
   writeRuntimePackage();
 
   process.stdout.write('[windows-terminal-release] package-electron\n');
@@ -164,6 +171,7 @@ function build() {
     '\\electron\\student-agent-lifecycle.cjs',
     '\\electron\\agent-adapter-registry.cjs',
     '\\electron\\agent-lifecycle-hook.ps1',
+    '\\electron\\agent-lifecycle-hook.exe',
     '\\electron\\terminal-upload.cjs',
     '\\electron\\growth-markdown-summary.cjs',
     '\\electron\\pairing-protocol.cjs',
@@ -184,6 +192,7 @@ function build() {
   publishFile(stagedArtifact, releaseArtifact);
   const audit = {
     version,
+    candidateTag,
     builtAt: new Date().toISOString(),
     stagingRoot: stageRoot,
     electronLanguages,

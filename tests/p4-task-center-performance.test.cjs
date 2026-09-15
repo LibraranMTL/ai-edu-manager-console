@@ -13,7 +13,7 @@ test('task center refresh is asynchronous, cached and does not block the rendere
   assert.match(main, /ipcMain\.handle\('bridge:getTaskCenterAsync'/);
   assert.match(main, /taskCenterSnapshotCache/);
   assert.match(main, /Date\.now\(\) - taskCenterSnapshotCache\.at < 30_000/);
-  assert.match(renderer, /const refreshTaskCenter = async \(force = false\)/);
+  assert.match(renderer, /const refreshTaskCenter = async \(force = false, quick = false\)/);
   assert.match(renderer, /taskCenterRequestRef/);
 });
 

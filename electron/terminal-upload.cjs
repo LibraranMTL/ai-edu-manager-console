@@ -66,6 +66,9 @@ function buildTargetUploadPath(target, filename, metadata = {}) {
   if (metadata.uploadId) params.set('uploadId', String(metadata.uploadId));
   if (metadata.captureSessionId) params.set('captureSessionId', String(metadata.captureSessionId));
   if (metadata.captureItemId) params.set('captureItemId', String(metadata.captureItemId));
+  if (metadata.capturedAt) params.set('capturedAt', String(metadata.capturedAt));
+  if (metadata.captureSequence) params.set('captureSequence', String(metadata.captureSequence));
+  if (metadata.captureHighlighted) params.set('captureHighlighted', '1');
   if (metadata.courseId) params.set('courseId', String(metadata.courseId));
   if (metadata.courseUrl) params.set('courseUrl', String(metadata.courseUrl));
   if (metadata.courseStartedAt) params.set('courseStartedAt', String(metadata.courseStartedAt));

@@ -1,11 +1,13 @@
 {
   "versionCode": 86,
   "versionName": "0.6.16",
-  "windowsVersionCode": 220,
-  "windowsVersionName": "0.17.1",
-  "windowsUrl": "https://www.greatbg.com/download/AI-edu-manager-console-Windows-0.17.1.zip",
-  "windowsTerminalVersionCode": 219,
-  "windowsTerminalVersionName": "0.16.10",
+  "windowsVersionCode": 228,
+  "windowsVersionName": "0.17.9",
+  "windowsReleaseStatus": "stable",
+  "windowsUrl": "https://www.greatbg.com/download/AI-edu-manager-console-Windows-0.17.9.zip",
+  "windowsTerminalVersionCode": 227,
+  "windowsTerminalVersionName": "0.17.8",
+  "windowsTerminalReleaseStatus": "candidate",
   "windowsTerminalUrl": "https://www.greatbg.com/download/AI-edu-manager-student-terminal-Windows-0.16.10.exe",
   "terminalApkUrl": "https://www.greatbg.com/download/AI-edu-manager-tablet-terminal-0.6.16.apk",
   "tabletTerminalVersionCode": 86,
@@ -24,5 +26,5 @@
   "managerApkVersionCode": 23,
   "managerApkVersionName": "0.2.3",
   "apkUrl": "https://www.greatbg.com/download/AI-edu-manager-tablet-terminal-0.6.16.apk",
-  "notes": "Windows 主机端 0.17.1 优化运行性能和学情报告更新，报告通过结构与证据校验后直接发布；项目低风险资料和知识、普通成长证据由系统自动处理，仅将来源失效、冲突、敏感或归属不明项交给用户。Windows 学生端 0.16.10 及现有 Android 终端保持兼容。"
+  "notes": "Windows 主机端 0.17.9 正式发布：Agent 会话自动采集支持一次 Hook 信任后自动复用，已打开会话从授权后的下一轮开始采集且不回扫历史；同时优化学习时间线、界面导航和项目绑定学生性能。Windows 学生端仍为 0.17.8 候选版，官网学生端正式下载保持 0.16.10。"
 }

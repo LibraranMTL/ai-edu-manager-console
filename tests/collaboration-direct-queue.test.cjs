@@ -5,6 +5,7 @@ const test = require('node:test');
 const {
   deliveryBackoffMs,
   dueDeliveries,
+  latestDeliveryForLineages,
   normalizeDeliveryStore,
   reconcileDeliveries,
   recoverInterruptedDeliveries,
@@ -58,6 +59,20 @@ test('reliable queue only schedules due non-paused deliveries and summarizes sta
     invalid: 0,
     superseded: 0,
   });
+});
+
+test('student archive status selects the newest package for the exact lineage', () => {
+  const latest = latestDeliveryForLineages({
+    deliveries: {
+      old: { manifestId: 'old', lineageId: 'student-a', packageKind: '学生知识档案同步', packageCreatedAt: '2026-09-08T01:00:00.000Z', status: 'delivered' },
+      current: { manifestId: 'current', lineageId: 'student-a', packageKind: '学生知识档案同步', packageCreatedAt: '2026-09-09T01:00:00.000Z', status: 'retry_waiting', attempt: 3 },
+      project: { manifestId: 'project', lineageId: 'student-a', packageKind: '项目发布', packageCreatedAt: '2026-09-10T01:00:00.000Z', status: 'queued' },
+      other: { manifestId: 'other', lineageId: 'student-b', packageKind: '学生知识档案同步', packageCreatedAt: '2026-09-11T01:00:00.000Z', status: 'queued' },
+    },
+  }, ['student-a'], { packageKind: '学生知识档案同步' });
+  assert.equal(latest.manifestId, 'current');
+  assert.equal(latest.status, 'retry_waiting');
+  assert.equal(latest.attempt, 3);
 });
 
 test('invalid packages are isolated and older project publications are superseded automatically', () => {

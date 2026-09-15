@@ -48,7 +48,10 @@ test('conversation workspace unifies attribution, imports, candidates, deliverie
 
 test('conversation imports support dependency-aware trash, restore, and permanent delete', () => {
   assert.match(main, /function conversationImportDependencySummary/);
-  assert.match(main, /canPermanentlyDelete:\s*matchingDeliveries\.length === 0 && candidates\.length === 0/);
+  assert.match(main, /canPermanentlyDelete:\s*matchingDeliveries\.length === 0 && promoted === 0/);
+  assert.match(main, /retainedCandidates/);
+  assert.match(main, /updateArchivedAssetLifecycle/);
+  assert.match(main, /function purgeQueuedAgentLifecycleSession/);
   assert.match(main, /function manageConversationImports/);
   assert.match(main, /confirmPermanentDelete/);
   assert.match(main, /markAgentConversationSubmissionDeleted/);
@@ -56,6 +59,15 @@ test('conversation imports support dependency-aware trash, restore, and permanen
   assert.match(main, /bridge:manageConversationImports/);
   assert.match(preload, /manageConversationImports/);
   assert.match(ui, /manageConversationMaterials/);
+});
+
+test('authorized lifecycle conversations expose direct delivery and trash controls', () => {
+  assert.match(main, /lifecycleCapture: true/);
+  assert.match(main, /sourceType: options\.lifecycleCapture === true \? 'authorized_lifecycle'/);
+  assert.match(ui, /deliverCapturedConversation/);
+  assert.match(ui, /manageCapturedConversation/);
+  assert.match(ui, /管理全部对话资料/);
+  assert.match(ui, /会话结束后可投递或移除/);
 });
 
 test('delivered workspace also includes promoted conversations without material delivery', () => {

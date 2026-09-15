@@ -1,0 +1,14 @@
+第一节：原生 Android 智能体运行时、本地文件工具与远程大模型
+关键词：Android 原生智能体、端侧 agent loop、本地文件工具、远程模型 API、Kotlin 工具调用、OpenClaw Android 替代、PalmClaw、X-OmniClaw、CellClaw、不依赖 Termux
+
+第二节：Android 有界文件访问、用户授权与应用商店政策
+关键词：Storage Access Framework、目录树授权、持久化 URI、DocumentsContract、ContentResolver、文件沙箱、所有文件访问、Google Play 政策、Android 11 限制、最小权限
+
+第三节：Android 智能体后台可靠性与产品安全
+关键词：WorkManager、前台服务限制、进程终止恢复、幂等文件操作、审计回执、数据最小化、Android Keystore、远程模型隐私、任务确认、学生数据保护
+
+第四节：ApkClaw 原生运行时、文件工具边界、权限和安全性
+关键词：ApkClaw 源码、agent loop、ToolRegistry、SendFileTool、所有文件访问、无障碍服务、LangChain4j、局域网配置服务、MMKV API Key、Apache 2.0
+
+第五节：MobileClaw 同名项目、Android 本地运行时、文件边界与审批
+关键词：aohp-os MobileClaw、ChenKuanSun mobileClaw、Android 原生 agent runtime、Python ADB 手机执行器、FileSystemTool、Downloads scoped storage、Storage Access Framework、NeedsConfirmation、Android Keystore、BYPASS_ALL、MIT

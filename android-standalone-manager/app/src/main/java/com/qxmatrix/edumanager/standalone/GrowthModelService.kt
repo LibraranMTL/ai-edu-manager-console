@@ -9,13 +9,26 @@ import java.util.UUID
 
 data class LearningReportDefinition(val id: String, val title: String, val fileName: String, val type: String, val target: String, val summaryHeading: String, val sections: List<String>)
 
+private data class GeneratedReportSections(
+    val definition: LearningReportDefinition,
+    val sections: JSONObject,
+)
+
+private data class GeneratedReportSet(
+    val evidence: List<JSONObject>,
+    val reports: List<GeneratedReportSections>,
+    val modelReportCount: Int,
+    val fallbackSectionCount: Int,
+    val warnings: List<String>,
+)
+
 class GrowthModelService(private val context: Context) {
     private val students = StudentIndexRepository(context)
     private val projects = ProjectRepository(context)
 
     fun ensure(studentId: String): JSONObject {
         val student = students.requireExact(studentId); val store = store(student); val growth = growthRoot(student); val report = reportRoot(student)
-        store.ensureDirectory(growth); store.ensureDirectory(report); store.ensureDirectory(draftRoot(student))
+        store.ensureDirectory(growth); store.ensureDirectory(report)
         val files = mapOf(
             "$growth/index.md" to "# ${student.name} 成长模型\n\n本目录是学生长期成长数据层。学情报告只引用这里的已确认结论，不反向替代成长模型。\n\n- 能力画像：能力画像.md\n- 项目贡献：项目贡献.md\n- 成长证据：成长证据.md\n- 成长证据草稿：成长证据草稿.md\n- 结构化索引：growth-index.json\n",
             "$growth/能力画像.md" to "# ${student.name} 能力画像\n\n## 学术能力\n\n- 待补充。\n\n## 通用能力\n\n- 待补充。\n\n## 兴趣方向\n\n- 待补充。\n\n## 可信度说明\n\n- 每条判断应标注证据来源、项目来源和更新时间。\n",
@@ -30,12 +43,12 @@ class GrowthModelService(private val context: Context) {
     }
 
     fun addCandidate(studentId: String, title: String, ability: String, sourceUri: String, content: String, confidence: String = "unknown", projectId: String = ""): JSONObject {
-        val student = students.requireExact(studentId); require(title.isNotBlank()) { "成长证据标题不能为空" }; require(sourceUri.isNotBlank()) { "成长证据必须提供来源 URI" }
+        val student = students.requireExact(studentId); require(title.isNotBlank()) { "成长证据标题不能为空" }; require(content.isNotBlank()) { "成长证据观察内容不能为空" }; require(sourceUri.isNotBlank()) { "成长证据必须关联原始资料" }
         if (projectId.isNotBlank()) require(projects.requireExact(projectId).studentIds.contains(studentId)) { "项目未绑定当前学生" }
         ensure(studentId); val review = readReview(student); val now = Timestamp.now()
         val candidate = JSONObject().put("schema", "edu-manager.growth-evidence.v1").put("protocolVersion", ProtocolBaseline.EDUCATION_DOMAIN_PROTOCOL_VERSION)
             .put("id", "growth-evidence-${UUID.randomUUID()}").put("studentId", student.id).put("studentName", student.name)
-            .put("title", title.trim()).put("content", content.trim()).put("status", "pending").put("ability", ability.trim().ifBlank { "待标注" })
+            .put("title", inlineText(title)).put("content", content.trim()).put("status", "pending").put("ability", inlineText(ability).ifBlank { "待标注" })
             .put("sourceUri", sourceUri.trim()).put("sourcePath", sourceUri.trim()).put("originalSourcePath", sourceUri.trim())
             .put("projectId", projectId).put("projectName", if (projectId.isBlank()) "" else projects.requireExact(projectId).name)
             .put("confidence", confidence).put("createdAt", now).put("updatedAt", now).put("review", JSONObject().put("status", "pending"))
@@ -127,60 +140,59 @@ class GrowthModelService(private val context: Context) {
         return index
     }
 
-    fun generateReportDrafts(studentId: String): JSONObject {
-        val student = students.requireExact(studentId); val index = rebuildIndex(studentId); val confirmed = index.getJSONArray("evidence").toObjects().filter { it.optString("status") == "confirmed" }
-        val generated = JSONObject(); val warnings = JSONArray(); var modelReports = 0; var fallbackSections = 0
+    fun generateAndPublishReports(studentId: String): JSONObject {
+        val student = students.requireExact(studentId)
+        val result = generateReportSet(student)
+        require(result.evidence.isNotEmpty()) { "当前没有已确认的成长证据。请先消化资料并在成长模型中确认至少一条证据，再生成正式学情报告。" }
+        val published = JSONArray()
+        result.reports.forEach { report ->
+            val target = "${reportRoot(student)}/${report.definition.fileName}"
+            val content = reportPublished(student, report.definition, report.sections, result.evidence)
+            store(student).writeBytesSafely(target, content.toByteArray(), "text/markdown")
+            published.put(target)
+        }
+        val message = if (result.warnings.isEmpty()) {
+            "四份正式学情报告已生成并发布，可直接查看、导出或打印。"
+        } else {
+            "四份正式学情报告已生成并发布；${result.warnings.size} 项模型漏项或无依据内容已自动使用保守表述。"
+        }
+        return JSONObject().put("ok", true).put("published", published).put("modelUsed", result.modelReportCount > 0)
+            .put("modelReportCount", result.modelReportCount).put("fallbackSectionCount", result.fallbackSectionCount)
+            .put("warnings", JSONArray(result.warnings)).put("message", message)
+    }
+
+    private fun generateReportSet(student: StudentRecord): GeneratedReportSet {
+        val index = rebuildIndex(student.id)
+        val confirmed = index.getJSONArray("evidence").toObjects().filter { it.optString("status") == "confirmed" }
+        val warnings = mutableListOf<String>()
+        var modelReports = 0
+        var fallbackSections = 0
         val adapter = AgentConfigurationStore(context).load()?.let(::OpenAiCompatibleAgentAdapter)
         val evidencePayload = JSONArray(confirmed.take(100).map { evidence -> JSONObject()
             .put("id", evidence.optString("id")).put("title", evidence.optString("title"))
             .put("ability", evidence.optString("ability")).put("content", evidence.optString("content").take(1200))
             .put("sourceUri", evidence.optString("sourceUri")) })
-        REPORTS.forEach { definition ->
+        val reports = REPORTS.map { definition ->
             val modelSections = if (adapter == null || confirmed.isEmpty()) null else runCatching {
                 val response = adapter.execute(
-                    "你是教育管家的学情报告草稿工具。成长模型是唯一事实层；只引用给定的已确认证据，不添加诊断、人格标签或新事实。只输出 JSON。",
+                    "你是教育管家的学情报告生成工具。成长模型是唯一事实层；只引用给定的已确认证据，不添加诊断、人格标签或新事实。只输出 JSON。",
                     "学生：${student.name}\n报告：${definition.title}\n章节：${definition.sections.joinToString("、")}\n已确认证据：$evidencePayload\n返回 {\"sections\":{\"章节标题\":\"Markdown 正文\"}}。必须使用原章节名；每项事实判断标注 [依据:证据ID]；没有依据写“资料不足”，没有变化写“本周期无实质变化”。",
                 )
                 ReportDraftPolicy.extractModelSections(response, definition.id)
-            }.onFailure { warnings.put("${definition.title} Agent 生成失败，已使用保守模板：${it.message ?: "未知错误"}") }.getOrNull()
+            }.onFailure { warnings += "${definition.title} Agent 生成失败，已使用保守模板：${it.message ?: "未知错误"}" }.getOrNull()
             val completed = ReportDraftPolicy.complete(definition.sections, modelSections, confirmed)
             if (completed.adoptedModelSections > 0) modelReports += 1
             fallbackSections += completed.fallbackSections
-            completed.warnings.forEach { warnings.put("${definition.title}：$it") }
-            val path = "${draftRoot(student)}/${definition.id}.md"
-            store(student).writeBytesSafely(path, reportDraft(student, definition, completed.sections, confirmed).toByteArray(), "text/markdown")
-            generated.put(definition.id, path)
+            completed.warnings.forEach { warnings += "${definition.title}：$it" }
+            GeneratedReportSections(definition, completed.sections)
         }
-        val message = when {
-            confirmed.isEmpty() -> "没有已确认证据，四份报告已生成“资料不足”草稿。"
-            warnings.length() == 0 -> "四份报告草稿已生成，等待本机用户发布确认。"
-            else -> "四份草稿均已生成；模型漏项或异常章节已自动替换为“资料不足”，请预览后再发布。"
-        }
-        return JSONObject().put("ok", true).put("drafts", generated).put("modelUsed", modelReports > 0)
-            .put("modelReportCount", modelReports).put("fallbackSectionCount", fallbackSections).put("warnings", warnings).put("message", message)
-    }
-
-    fun publishReportDrafts(studentId: String): JSONObject {
-        val student = students.requireExact(studentId); val store = store(student); val published = JSONArray()
-        REPORTS.forEach { definition ->
-            val draft = "${draftRoot(student)}/${definition.id}.md"; require(store.exists(draft)) { "缺少 ${definition.title} 草稿" }
-            val content = store.readBytes(draft).toString(Charsets.UTF_8).replace("status: pending_review", "status: active\nreviewer_role: administrator\nreviewer_id: local-user\nreviewed_at: ${Timestamp.now()}")
-            val target = "${reportRoot(student)}/${definition.fileName}"; store.writeBytesSafely(target, content.toByteArray(), "text/markdown"); published.put(target)
-        }
-        return JSONObject().put("ok", true).put("published", published).put("message", "四份正式学情报告已由本机用户确认发布。")
+        return GeneratedReportSet(confirmed, reports, modelReports, fallbackSections, warnings)
     }
 
     fun readPublishedReport(studentId: String, reportId: String): String {
         val student = students.requireExact(studentId); ensure(studentId)
         val definition = REPORTS.singleOrNull { it.id == reportId } ?: error("未知学情报告")
         return store(student).readBytes("${reportRoot(student)}/${definition.fileName}").toString(Charsets.UTF_8)
-    }
-
-    fun readReportDraft(studentId: String, reportId: String): String {
-        val student = students.requireExact(studentId); ensure(studentId)
-        val definition = REPORTS.singleOrNull { it.id == reportId } ?: error("未知学情报告")
-        val path = "${draftRoot(student)}/${definition.id}.md"; require(store(student).exists(path)) { "尚未生成 ${definition.title} 草稿" }
-        return store(student).readBytes(path).toString(Charsets.UTF_8)
     }
 
     private fun readReview(student: StudentRecord): JSONObject {
@@ -191,17 +203,23 @@ class GrowthModelService(private val context: Context) {
     }
     private fun writeReview(student: StudentRecord, review: JSONObject) = writeJson(store(student), "${growthRoot(student)}/成长证据审核.json", review.put("version", 1).put("updatedAt", Timestamp.now()))
     private fun appendDraftCandidate(student: StudentRecord, item: JSONObject) { val s = store(student); val p = "${growthRoot(student)}/成长证据草稿.md"; s.writeBytesSafely(p, (s.readBytes(p).toString(Charsets.UTF_8).trimEnd() + "\n\n- [${item.getString("id")}] ${item.getString("title")}（${item.getString("sourceUri")}）\n").toByteArray(), "text/markdown") }
-    private fun appendConfirmedEvidence(student: StudentRecord, item: JSONObject) { val sourceUri = item.optString("sourceUri").trim(); require(sourceUri.isNotBlank()) { "成长证据缺少来源，不能写入正式成长模型" }; val s = store(student); val p = "${growthRoot(student)}/成长证据.md"; val marker = "<!-- evidence:${item.getString("id")} -->"; val old = s.readBytes(p).toString(Charsets.UTF_8); if (!old.contains(marker)) s.writeBytesSafely(p, (old.trimEnd() + "\n$marker\n| ${Timestamp.now().take(10)} | ${item.getString("title")} | $sourceUri | ${item.optString("ability", "待标注")} | ${item.optString("confidence", "人工确认")} |\n").toByteArray(), "text/markdown") }
+    private fun appendConfirmedEvidence(student: StudentRecord, item: JSONObject) { val sourceUri = item.optString("sourceUri").trim(); require(sourceUri.isNotBlank()) { "成长证据缺少来源，不能写入正式成长模型" }; val s = store(student); val p = "${growthRoot(student)}/成长证据.md"; val marker = "<!-- evidence:${item.getString("id")} -->"; val old = s.readBytes(p).toString(Charsets.UTF_8); if (!old.contains(marker)) s.writeBytesSafely(p, (old.trimEnd() + "\n$marker\n| ${Timestamp.now().take(10)} | ${markdownCell(item.getString("title"))} | ${markdownCell(sourceUri)} | ${markdownCell(item.optString("ability", "待标注"))} | ${markdownCell(item.optString("confidence", "人工确认"))} |\n").toByteArray(), "text/markdown") }
     private fun reportTemplate(student: StudentRecord, d: LearningReportDefinition) = reportHeader(student, d, "draft") + d.sections.joinToString("\n\n") { "## $it\n\n${if (it == d.summaryHeading) "待生成。" else "- 待补充。"}" } + "\n"
-    private fun reportDraft(student: StudentRecord, d: LearningReportDefinition, sections: JSONObject, evidence: List<JSONObject>) = reportHeader(student, d, "pending_review", evidence.map { it.getString("id") }) + d.sections.joinToString("\n\n") { "## $it\n\n${sections.getString(it)}" } + "\n"
-    private fun reportHeader(student: StudentRecord, d: LearningReportDefinition, status: String, ids: List<String> = emptyList()) = "---\ntype: ${d.type}\ntarget: ${d.target}\nstudent_id: ${student.id}\nupdated: ${Timestamp.now().take(10)}\nstatus: $status\nsource_layer: growth_model\npresentation_only: true\nsource_claim_ids: ${ids.joinToString(",")}\n---\n\n# ${d.title}\n\n> 本报告是成长模型的呈现输出，不是成长证据的事实来源。\n\n"
+    private fun reportPublished(student: StudentRecord, d: LearningReportDefinition, sections: JSONObject, evidence: List<JSONObject>): String {
+        val now = Timestamp.now()
+        val metadata = "publication_mode: direct\npublisher_role: administrator\npublisher_id: local-user\npublished_at: $now\n"
+        return reportHeader(student, d, "active", evidence.map { it.getString("id") }, metadata) +
+            d.sections.joinToString("\n\n") { "## $it\n\n${sections.getString(it)}" } + "\n"
+    }
+    private fun reportHeader(student: StudentRecord, d: LearningReportDefinition, status: String, ids: List<String> = emptyList(), extraMetadata: String = "") = "---\ntype: ${d.type}\ntarget: ${d.target}\nstudent_id: ${student.id}\nupdated: ${Timestamp.now().take(10)}\nstatus: $status\nsource_layer: growth_model\npresentation_only: true\nsource_claim_ids: ${ids.joinToString(",")}\n$extraMetadata---\n\n# ${d.title}\n\n> 本报告是成长模型的呈现输出，不是成长证据的事实来源。\n\n"
     private fun growthIndexMarkdown(student: StudentRecord, index: JSONObject) = "# ${student.name} 成长模型结构化索引\n\nSchema：edu-manager.growth-model.v2\n\n生成时间：${index.getString("updatedAt")}\n\n- 成长证据：${index.getJSONObject("summary").getInt("evidenceCount")}\n- 已确认：${index.getJSONObject("summary").getInt("confirmedCount")}\n- 待审核：${index.getJSONObject("summary").getInt("pendingCount")}\n"
     private fun writeJson(store: SafWorkspaceStore, path: String, value: JSONObject) = store.writeBytesSafely(path, (value.toString(2) + "\n").toByteArray(), "application/json")
     private fun writeIfMissing(store: SafWorkspaceStore, path: String, content: String) { if (!store.exists(path)) store.writeBytesSafely(path, content.toByteArray(), if (path.endsWith(".json")) "application/json" else "text/markdown") }
     private fun store(student: StudentRecord) = SafWorkspaceStore(context, Uri.parse(student.storageRootUri))
-    private fun growthRoot(s: StudentRecord) = "${s.paths.summaryPath}/成长模型"; private fun reportRoot(s: StudentRecord) = "${s.paths.summaryPath}/学情报告"; private fun draftRoot(s: StudentRecord) = child(s.paths.rootPath, ".edu-manager/report-drafts")
-    private fun child(root: String, path: String) = if (root.isBlank()) path else "$root/$path"
+    private fun growthRoot(s: StudentRecord) = "${s.paths.summaryPath}/成长模型"; private fun reportRoot(s: StudentRecord) = "${s.paths.summaryPath}/学情报告"
     private fun stableId(prefix: String, value: String) = "$prefix-${MessageDigest.getInstance("SHA-1").digest(value.toByteArray()).joinToString("") { "%02x".format(it) }.take(14)}"
+    private fun inlineText(value: String) = value.trim().replace(Regex("\\s+"), " ")
+    private fun markdownCell(value: String) = inlineText(value).replace("|", "｜")
 
     companion object {
         val EVIDENCE_STATUSES = setOf("pending", "confirmed", "watching", "rejected")

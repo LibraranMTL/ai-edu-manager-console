@@ -1,0 +1,8 @@
+https://github.com/apkclaw-team/ApkClaw
+https://github.com/apkclaw-team/ApkClaw/releases/tag/v0.0.2
+https://raw.githubusercontent.com/apkclaw-team/ApkClaw/main/app/src/main/AndroidManifest.xml
+https://raw.githubusercontent.com/apkclaw-team/ApkClaw/main/app/src/main/java/com/apk/claw/android/tool/ToolRegistry.kt
+https://raw.githubusercontent.com/apkclaw-team/ApkClaw/main/app/src/main/java/com/apk/claw/android/tool/impl/SendFileTool.java
+https://raw.githubusercontent.com/apkclaw-team/ApkClaw/main/app/src/main/java/com/apk/claw/android/agent/DefaultAgentService.kt
+https://raw.githubusercontent.com/apkclaw-team/ApkClaw/main/app/src/main/java/com/apk/claw/android/server/ConfigServer.kt
+https://apkclaw.ai/privacy-policy.html

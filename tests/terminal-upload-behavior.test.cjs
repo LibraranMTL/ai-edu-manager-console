@@ -28,12 +28,14 @@ test('terminal target path carries student, project and provenance metadata', ()
   const result = buildTargetUploadPath(
     { type: 'project', id: 'project 1', studentId: 'student 1' },
     '课堂 笔记.pdf',
-    { uploadId: 'u-1', sourceType: 'windows_terminal_auto_folder', captureSessionId: 'c-1' },
+    { uploadId: 'u-1', sourceType: 'windows_terminal_auto_folder', captureSessionId: 'c-1', captureItemId: 'i-1', capturedAt: '2026-09-10T04:00:00.000Z' },
   );
   assert.match(result, /^\/api\/projects\/project%201\/materials\?/);
   assert.match(result, /studentId=student\+1/);
   assert.match(result, /uploadId=u-1/);
   assert.match(result, /captureSessionId=c-1/);
+  assert.match(result, /captureItemId=i-1/);
+  assert.match(result, /capturedAt=2026-09-10T04%3A00%3A00.000Z/);
 });
 
 test('automatic delivery IDs are stable per file revision and target', () => {

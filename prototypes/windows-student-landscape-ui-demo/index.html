@@ -1,0 +1,111 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Windows 学生端横屏布局 Demo</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <svg class="symbol-library" aria-hidden="true">
+      <symbol id="i-upload" viewBox="0 0 24 24"><path d="M12 16V4m0 0L7.5 8.5M12 4l4.5 4.5M5 14v4.5A1.5 1.5 0 0 0 6.5 20h11a1.5 1.5 0 0 0 1.5-1.5V14"/></symbol>
+      <symbol id="i-course" viewBox="0 0 24 24"><path d="M4 5.5A2.5 2.5 0 0 1 6.5 3H20v16H6.5A2.5 2.5 0 0 0 4 21.5v-16Zm0 0V19m5-11h7m-7 4h7"/></symbol>
+      <symbol id="i-camera" viewBox="0 0 24 24"><path d="M4 7.5h3l1.5-2h7l1.5 2h3v11H4v-11Z"/><circle cx="12" cy="13" r="3.5"/></symbol>
+      <symbol id="i-chat" viewBox="0 0 24 24"><path d="M5 5h14v11H9l-4 3V5Z"/><path d="M8.5 9h7m-7 3h5"/></symbol>
+      <symbol id="i-growth" viewBox="0 0 24 24"><path d="M5 19V10m7 9V5m7 14v-7M3 19h18"/></symbol>
+      <symbol id="i-report" viewBox="0 0 24 24"><path d="M6 3h9l3 3v15H6V3Z"/><path d="M15 3v4h4M9 11h6m-6 4h6"/></symbol>
+      <symbol id="i-archive" viewBox="0 0 24 24"><path d="M4 7h16v13H4V7Zm-1-4h18v4H3V3Z"/><path d="M9 11h6"/></symbol>
+      <symbol id="i-knowledge" viewBox="0 0 24 24"><path d="M4 5.5A2.5 2.5 0 0 1 6.5 3H11v16H6.5A2.5 2.5 0 0 0 4 21.5v-16ZM20 5.5A2.5 2.5 0 0 0 17.5 3H13v16h4.5a2.5 2.5 0 0 1 2.5 2.5v-16Z"/></symbol>
+      <symbol id="i-target" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="3"/><path d="M18 6l3-3m0 0v4m0-4h-4"/></symbol>
+      <symbol id="i-settings" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19 12a7 7 0 0 0-.1-1.2l2-1.5-2-3.4-2.4 1a8 8 0 0 0-2-1.2L14.2 3h-4l-.3 2.7a8 8 0 0 0-2 1.2l-2.4-1-2 3.4 2 1.5a7 7 0 0 0 0 2.4l-2 1.5 2 3.4 2.4-1a8 8 0 0 0 2 1.2l.3 2.7h4l.3-2.7a8 8 0 0 0 2-1.2l2.4 1 2-3.4-2-1.5A7 7 0 0 0 19 12Z"/></symbol>
+      <symbol id="i-arrow" viewBox="0 0 24 24"><path d="M5 12h14m-5-5 5 5-5 5"/></symbol>
+      <symbol id="i-check" viewBox="0 0 24 24"><path d="m5 12 4 4L19 6"/></symbol>
+    </svg>
+
+    <main class="app-shell">
+      <header class="topbar">
+        <div class="brand-mark" aria-hidden="true">AI</div>
+        <div class="brand-copy">
+          <strong>AI教育管家</strong>
+          <span>Windows 学生端</span>
+        </div>
+        <div class="student-chip">
+          <span class="avatar" aria-hidden="true">星</span>
+          <span><small>正在学习</small><strong>小星同学</strong></span>
+        </div>
+        <div class="host-chip"><span class="status-dot"></span>家庭主机 · 已连接</div>
+        <button class="icon-button" type="button" aria-label="打开设置" data-action="打开设置">
+          <svg><use href="#i-settings" /></svg>
+        </button>
+      </header>
+
+      <nav class="variant-switcher" aria-label="选择横屏布局方案">
+        <span class="switcher-title">横屏布局方案</span>
+        <button class="variant-tab is-active" type="button" data-variant="balanced" aria-pressed="true"><b>A</b> 全功能宫格</button>
+        <button class="variant-tab" type="button" data-variant="focus" aria-pressed="false"><b>B</b> 主任务工作台 <em>推荐</em></button>
+        <button class="variant-tab" type="button" data-variant="path" aria-pressed="false"><b>C</b> 学习路径分区</button>
+        <span class="demo-badge">演示数据</span>
+      </nav>
+
+      <section class="workspace" aria-live="polite">
+        <div class="workspace-heading">
+          <div>
+            <p class="eyebrow" id="variant-kicker">方案 A · 探索型</p>
+            <h1 id="variant-title">今天想先做什么？</h1>
+          </div>
+          <div class="target-panel">
+            <span class="target-icon"><svg><use href="#i-target" /></svg></span>
+            <span><small>当前资料目标</small><strong>小星同学原始资料库</strong></span>
+            <button type="button" class="text-button" data-action="切换资料目标">切换</button>
+          </div>
+        </div>
+
+        <section class="demo-view is-active" data-view="balanced" aria-label="A 方案：全功能宫格">
+          <div class="tile-grid balanced-grid">
+            <button class="task-tile tone-teal" type="button" data-action="上传学习资料"><span class="tile-icon"><svg><use href="#i-upload" /></svg></span><span class="tile-copy"><strong>上传学习资料</strong><small>把作业、试卷或笔记交给管家</small></span><span class="tile-arrow"><svg><use href="#i-arrow" /></svg></span></button>
+            <button class="task-tile tone-blue" type="button" data-action="进入我的课程"><span class="tile-icon"><svg><use href="#i-course" /></svg></span><span class="tile-copy"><strong>我的课程</strong><small>继续最近学习的课程</small></span><span class="tile-arrow"><svg><use href="#i-arrow" /></svg></span></button>
+            <button class="task-tile tone-orange" type="button" data-action="开始截屏提问"><span class="tile-icon"><svg><use href="#i-camera" /></svg></span><span class="tile-copy"><strong>截屏提问</strong><small>圈出看不懂的题目</small></span><span class="tile-arrow"><svg><use href="#i-arrow" /></svg></span></button>
+            <button class="task-tile tone-violet" type="button" data-action="打开智能对话"><span class="tile-icon"><svg><use href="#i-chat" /></svg></span><span class="tile-copy"><strong>智能对话</strong><small>向学习助手提一个问题</small></span><span class="tile-arrow"><svg><use href="#i-arrow" /></svg></span></button>
+            <button class="task-tile tone-green" type="button" data-action="查看成长记录"><span class="tile-icon"><svg><use href="#i-growth" /></svg></span><span class="tile-copy"><strong>成长记录</strong><small>查看本周学习进步</small></span><span class="tile-arrow"><svg><use href="#i-arrow" /></svg></span></button>
+            <button class="task-tile tone-yellow" type="button" data-action="查看学习报告"><span class="tile-icon"><svg><use href="#i-report" /></svg></span><span class="tile-copy"><strong>学习报告</strong><small>看看掌握情况和建议</small></span><span class="tile-arrow"><svg><use href="#i-arrow" /></svg></span></button>
+            <button class="task-tile tone-slate" type="button" data-action="打开资料档案"><span class="tile-icon"><svg><use href="#i-archive" /></svg></span><span class="tile-copy"><strong>我的资料</strong><small>查找已经上传的内容</small></span><span class="tile-arrow"><svg><use href="#i-arrow" /></svg></span></button>
+            <button class="task-tile tone-rose" type="button" data-action="打开项目知识"><span class="tile-icon"><svg><use href="#i-knowledge" /></svg></span><span class="tile-copy"><strong>项目知识</strong><small>阅读老师分享的资料</small></span><span class="tile-arrow"><svg><use href="#i-arrow" /></svg></span></button>
+          </div>
+        </section>
+
+        <section class="demo-view" data-view="focus" aria-label="B 方案：主任务工作台" hidden>
+          <div class="tile-grid focus-grid">
+            <button class="task-tile primary-tile tone-teal" type="button" data-action="上传学习资料">
+              <span class="primary-label">今天的第一步</span><span class="tile-icon"><svg><use href="#i-upload" /></svg></span>
+              <span class="tile-copy"><strong>上传学习资料</strong><small>作业、试卷、错题或课堂笔记都可以</small></span>
+              <span class="primary-cta">选择文件 <svg><use href="#i-arrow" /></svg></span>
+            </button>
+            <button class="task-tile compact-tile tone-blue" type="button" data-action="进入我的课程"><span class="tile-icon"><svg><use href="#i-course" /></svg></span><span class="tile-copy"><strong>我的课程</strong><small>继续学习</small></span></button>
+            <button class="task-tile compact-tile tone-orange" type="button" data-action="开始截屏提问"><span class="tile-icon"><svg><use href="#i-camera" /></svg></span><span class="tile-copy"><strong>截屏提问</strong><small>遇到难题就问</small></span></button>
+            <button class="task-tile compact-tile tone-violet" type="button" data-action="打开智能对话"><span class="tile-icon"><svg><use href="#i-chat" /></svg></span><span class="tile-copy"><strong>智能对话</strong><small>和助手聊一聊</small></span></button>
+            <button class="task-tile compact-tile tone-green" type="button" data-action="查看成长记录"><span class="tile-icon"><svg><use href="#i-growth" /></svg></span><span class="tile-copy"><strong>成长记录</strong><small>看看本周进步</small></span></button>
+          </div>
+        </section>
+
+        <section class="demo-view" data-view="path" aria-label="C 方案：学习路径分区" hidden>
+          <div class="path-grid">
+            <button class="path-tile tone-teal" type="button" data-action="收集学习资料"><span class="step-number">01</span><span class="tile-icon"><svg><use href="#i-upload" /></svg></span><span class="tile-copy"><strong>收集资料</strong><small>上传作业、试卷和笔记</small></span><span class="path-action">开始上传 <svg><use href="#i-arrow" /></svg></span></button>
+            <button class="path-tile tone-blue" type="button" data-action="开始今天的学习"><span class="step-number">02</span><span class="tile-icon"><svg><use href="#i-course" /></svg></span><span class="tile-copy"><strong>开始学习</strong><small>从最近课程继续</small></span><span class="path-action">继续课程 <svg><use href="#i-arrow" /></svg></span></button>
+            <button class="path-tile tone-green" type="button" data-action="查看成长总结"><span class="step-number">03</span><span class="tile-icon"><svg><use href="#i-growth" /></svg></span><span class="tile-copy"><strong>查看成长</strong><small>复盘进度与薄弱点</small></span><span class="path-action">查看记录 <svg><use href="#i-arrow" /></svg></span></button>
+            <button class="quick-tile tone-orange" type="button" data-action="开始截屏提问"><span class="tile-icon"><svg><use href="#i-camera" /></svg></span><span><strong>截屏提问</strong><small>快速工具</small></span></button>
+            <button class="quick-tile tone-violet" type="button" data-action="打开智能对话"><span class="tile-icon"><svg><use href="#i-chat" /></svg></span><span><strong>智能对话</strong><small>快速工具</small></span></button>
+            <button class="quick-tile tone-slate" type="button" data-action="打开我的资料"><span class="tile-icon"><svg><use href="#i-archive" /></svg></span><span><strong>我的资料</strong><small>快速工具</small></span></button>
+          </div>
+        </section>
+      </section>
+
+      <footer class="comparison-note">
+        <span class="note-icon"><svg><use href="#i-check" /></svg></span>
+        <p id="variant-note"><strong>适合：</strong>低龄学生首次使用，所有功能都能在一屏内看见。<span><strong>取舍：</strong>入口最多，主任务突出程度一般。</span></p>
+      </footer>
+    </main>
+
+    <div class="action-toast" role="status" aria-live="polite"><svg><use href="#i-check" /></svg><span>这是布局演示，未执行真实操作</span></div>
+    <script src="./app.js"></script>
+  </body>
+</html>

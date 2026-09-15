@@ -4,6 +4,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 const { validateWindowsVersion } = require('./version-policy.cjs');
+const { compileLifecycleHook } = require('./compile-lifecycle-hook.cjs');
 
 const repoRoot = path.resolve(__dirname, '..');
 const packageJson = JSON.parse(fs.readFileSync(path.join(repoRoot, 'package.json'), 'utf8'));
@@ -242,7 +243,7 @@ function writeRuntimePackage() {
       electronLanguages,
       directories: { output: 'out' },
       files: ['dist/**/*', 'electron/**/*', 'package.json'],
-      asarUnpack: ['electron/invoke-agent.ps1'],
+      asarUnpack: ['electron/invoke-agent.ps1', 'electron/capture-timeline-ocr.ps1'],
       win: {
         artifactName: `${artifactBase}.\${ext}`,
         icon: 'public/brand/robogala.ico',
@@ -339,6 +340,7 @@ function build() {
 
     recordPhase('copy-runtime-files');
     copyDirectoryFiles(path.join(repoRoot, 'electron'), path.join(stageRoot, 'electron'));
+    compileLifecycleHook(path.join(stageRoot, 'electron', 'agent-lifecycle-hook.cs'), path.join(stageRoot, 'electron', 'agent-lifecycle-hook.exe'));
     bundleCourseImportRuntime();
     fs.mkdirSync(path.join(stageRoot, 'public', 'brand'), { recursive: true });
     fs.copyFileSync(path.join(repoRoot, 'public', 'brand', 'robogala.ico'), path.join(stageRoot, 'public', 'brand', 'robogala.ico'));
@@ -378,6 +380,7 @@ function build() {
       throw new Error('Packaged app is missing its main process or renderer entry.');
     }
     for (const required of [
+      '\\electron\\agent-lifecycle-hook.exe',
       '\\electron\\course-package-v2.cjs',
       '\\electron\\platform-course-drafts.cjs',
       '\\electron\\license-entitlements.cjs',
@@ -393,6 +396,10 @@ function build() {
     const unpackedAgentBridge = path.join(unpackedRoot, 'resources', 'app.asar.unpacked', 'electron', 'invoke-agent.ps1');
     if (!fs.existsSync(unpackedAgentBridge)) {
       throw new Error(`Packaged Agent parameter bridge is missing: ${unpackedAgentBridge}`);
+    }
+    const unpackedTimelineOcr = path.join(unpackedRoot, 'resources', 'app.asar.unpacked', 'electron', 'capture-timeline-ocr.ps1');
+    if (!fs.existsSync(unpackedTimelineOcr)) {
+      throw new Error(`Packaged timeline OCR bridge is missing: ${unpackedTimelineOcr}`);
     }
     const asarBytes = fs.statSync(appAsar).size;
     if (asarBytes > 20 * 1024 * 1024) throw new Error(`app.asar exceeds 20 MiB: ${(asarBytes / 1024 / 1024).toFixed(2)} MiB`);

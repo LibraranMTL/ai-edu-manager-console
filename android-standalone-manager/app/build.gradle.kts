@@ -24,8 +24,8 @@ android {
         applicationId = "com.qxmatrix.edumanager.standalone"
         minSdk = 23
         targetSdk = 34
-        versionCode = 26
-        versionName = "1.2.2"
+        versionCode = 29
+        versionName = "1.2.5"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }

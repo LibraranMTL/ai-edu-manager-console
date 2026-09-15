@@ -1,0 +1,46 @@
+===== Round 2 =====
+Section: MobileClaw disambiguation, Android-native runtime, file boundary, and approvals
+Keywords:
+- aohp-os MobileClaw
+- ChenKuanSun mobileClaw
+- Android native agent runtime
+- Python ADB phone executor
+- FileSystemTool
+- Android scoped storage
+- Storage Access Framework
+- NeedsConfirmation
+- Android Keystore
+- BYPASS_ALL
+
+1. Summary: aohp-os/MobileClaw official repository documents a PC-hosted Python agent, two remote models, Android accessibility client, and ADB port forwarding. This is primary evidence that its APK is an execution bridge rather than the local agent runtime.
+Source: platform: GitHub; title: aohp-os/MobileClaw; date: accessed 2026-07-24; URL: https://github.com/aohp-os/MobileClaw
+
+2. Summary: The aohp-os APK release page confirms a v0.3.5 binary asset exists, but the repository does not publish the Android project source. An APK asset alone does not prove local agent execution or auditable file boundaries.
+Source: platform: GitHub Releases; title: MobileClaw App v0.3.5; date: 2026-04-02; URL: https://github.com/aohp-os/MobileClaw/releases/tag/apk-v0.3.5
+
+3. Summary: The fixed README revision contains the PC setup, Python entry point, ADB forwarding, and two-model requirements used to classify the deployment architecture without relying on mutable main-branch prose.
+Source: platform: GitHub Raw; title: aohp-os MobileClaw README at 1c553fdd; date: 2026-07-07; URL: https://raw.githubusercontent.com/aohp-os/MobileClaw/1c553fdd606474e7275f9b730f196f6020214c60/README.md
+
+4. Summary: ChenKuanSun/mobileClaw is a Kotlin and Jetpack Compose Android application with agent runtime, cloud providers, tools, and optional on-device inference packaged in the app. Its LICENSE file is MIT despite one inconsistent Apache 2.0 sentence in the README comparison table.
+Source: platform: GitHub; title: ChenKuanSun/mobileClaw; date: accessed 2026-07-24; URL: https://github.com/ChenKuanSun/mobileClaw
+
+5. Summary: The v1.2.12 release page records the APK asset, feature flags, provider failover, auto-skill changes, and the upstream claim that 247 unit tests passed. This research did not independently reproduce that test count.
+Source: platform: GitHub Releases; title: MobileClaw v1.2.12; date: 2026-05-09; URL: https://github.com/ChenKuanSun/mobileClaw/releases/tag/v1.2.12
+
+6. Summary: FileSystemTool at the audited commit implements list, read, write, delete, and info for app directories and public Downloads. It reveals a 10KB read cap, confirmation on write/delete, direct File-based Downloads access, and a string-prefix canonical path check.
+Source: platform: GitHub; title: FileSystemTool.kt at 83c66b04; date: accessed 2026-07-24; URL: https://github.com/ChenKuanSun/mobileClaw/blob/83c66b046fde0a0ffd3ead1514e82c8e8afd41cf/app/src/main/java/ai/affiora/mobileclaw/tools/FileSystemTool.kt
+
+7. Summary: AgentRuntime at the audited commit strips model-supplied __confirmed, emits a confirmation event, waits for user approval, then injects the confirmation flag internally before re-running the tool.
+Source: platform: GitHub; title: AgentRuntime.kt at 83c66b04; date: accessed 2026-07-24; URL: https://github.com/ChenKuanSun/mobileClaw/blob/83c66b046fde0a0ffd3ead1514e82c8e8afd41cf/app/src/main/java/ai/affiora/mobileclaw/agent/AgentRuntime.kt
+
+8. Summary: PermissionManager defines DEFAULT, ALLOWLIST, and BYPASS_ALL modes. BYPASS_ALL auto-approves every confirmation-capable tool and should not be present in a student deployment.
+Source: platform: GitHub; title: PermissionManager.kt at 83c66b04; date: accessed 2026-07-24; URL: https://github.com/ChenKuanSun/mobileClaw/blob/83c66b046fde0a0ffd3ead1514e82c8e8afd41cf/app/src/main/java/ai/affiora/mobileclaw/agent/PermissionManager.kt
+
+9. Summary: UserPreferences stores provider tokens with EncryptedSharedPreferences using an Android Keystore-backed AES-256-GCM master key. It is a useful credential-storage reference for a native Android agent.
+Source: platform: GitHub; title: UserPreferences.kt at 83c66b04; date: accessed 2026-07-24; URL: https://github.com/ChenKuanSun/mobileClaw/blob/83c66b046fde0a0ffd3ead1514e82c8e8afd41cf/app/src/main/java/ai/affiora/mobileclaw/data/prefs/UserPreferences.kt
+
+10. Summary: The audited manifest does not request MANAGE_EXTERNAL_STORAGE, but declares SMS, call log, contacts, calendar, phone, camera, microphone, exact alarm, notification listener, accessibility, and boot capabilities. This permission footprint is too broad for a minimal student file agent.
+Source: platform: GitHub; title: AndroidManifest.xml at 83c66b04; date: accessed 2026-07-24; URL: https://github.com/ChenKuanSun/mobileClaw/blob/83c66b046fde0a0ffd3ead1514e82c8e8afd41cf/app/src/main/AndroidManifest.xml
+
+11. Summary: The actual MIT license text is the authoritative source for code reuse analysis and resolves the README comparison-table inconsistency.
+Source: platform: GitHub; title: ChenKuanSun/mobileClaw LICENSE; date: accessed 2026-07-24; URL: https://github.com/ChenKuanSun/mobileClaw/blob/83c66b046fde0a0ffd3ead1514e82c8e8afd41cf/LICENSE

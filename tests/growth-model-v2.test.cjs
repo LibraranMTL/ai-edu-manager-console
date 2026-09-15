@@ -45,8 +45,9 @@ test('growth index v2 separates abilities, contributions and evidence', () => {
 });
 
 test('growth page owns growth data and does not render report cards', () => {
-  const growthStart = ui.indexOf("activeSection === 'growth'");
-  const reportsStart = ui.indexOf("activeSection === 'reports'", growthStart);
+  const growthStart = ui.indexOf("isWindows && activeSection === 'growth' && selectedStudent");
+  const reportsStart = ui.indexOf("activeSection === 'reports' && selectedStudent", growthStart);
+  assert.ok(growthStart >= 0 && reportsStart > growthStart, 'growth and report pages should remain distinct');
   const growthPage = ui.slice(growthStart, reportsStart);
   assert.match(growthPage, /title="成长模型目录"/);
   assert.match(growthPage, />能力画像</);
@@ -59,7 +60,7 @@ test('growth page owns growth data and does not render report cards', () => {
 
 test('growth data reloads after migration, section entry and student changes', () => {
   assert.match(ui, /if \(restoredStudents\[0\]\) refreshSelectedGrowthModel\(restoredStudents\[0\]\)/);
-  assert.match(ui, /if \(activeSection !== 'growth' \|\| !selectedStudent\) return;\s+refreshSelectedGrowthModel\(selectedStudent\)/);
+  assert.match(ui, /if \(activeSection !== 'growth' \|\| !selectedStudent\) return;\s+setGrowthSearch\(''\);\s+setGrowthAbilityFilter\('all'\);\s+void refreshSelectedGrowthModel\(selectedStudent\)/);
   assert.match(ui, /setGrowthIndex\(null\)/);
   assert.match(ui, /setGrowthIndexPreview\(''\)/);
 });

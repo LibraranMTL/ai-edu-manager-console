@@ -763,7 +763,8 @@ class MainActivity : Activity() {
         sectionNote("整体画像、历史变化、每周行动建议和阶段总结继续以成长模型的已确认证据为依据。")
         addActionGrid(listOf(
             YouthAction("☰", "查看学情报告", "浏览整体画像、历史变化、行动建议和阶段总结") { chooseReportStudent() },
-            YouthAction("✦", "生成报告草稿", "先预览和审核，确认后再发布", "需要确认") { chooseStudentForReportDrafts() },
+            YouthAction("✦", "生成并发布报告", "依据已确认成长证据，一键生成四份正式报告", "一键完成") { chooseStudentForReportPublication() },
+            YouthAction("⇩", "导出、分享与打印", "输出正式报告、简明报告或成长卡片") { withCurrentStudent { chooseReportForPublication(it) } },
             YouthAction("▣", "查看完整教育档案", "查看资料摘要、综合汇总、问答精华和全部文件") { withCurrentStudent { openStudentArchive(it) } },
         ))
     }
@@ -2396,7 +2397,7 @@ class MainActivity : Activity() {
 
     private fun showGrowthActions(student: StudentRecord) {
         val pendingCount = runCatching { GrowthModelService(this).candidates(student.id).count { it.optString("status") in setOf("pending", "watching") } }.getOrDefault(0)
-        val actions = arrayOf("查看成长模型摘要", "审核待确认成长证据（$pendingCount）", "高级：手工添加成长证据", "重建成长模型索引")
+        val actions = arrayOf("查看成长模型摘要", "审核待确认成长证据（$pendingCount）", "高级：手工添加成长证据", "高级：修复成长模型索引")
         AlertDialog.Builder(this).setTitle("${student.name} · 成长模型").setItems(actions) { _, which -> when (which) {
             0 -> showGrowthSummary(student)
             1 -> reviewGrowthCandidate(student)
@@ -2416,94 +2417,212 @@ class MainActivity : Activity() {
     }
 
     private fun showReports(student: StudentRecord) {
-        val definitions = GrowthModelService.REPORTS
-        AlertDialog.Builder(this).setTitle("${student.name} · 学情报告").setItems(definitions.map { it.title }.toTypedArray()) { _, index ->
-            val definition = definitions[index]
-            runCatching { GrowthModelService(this).readPublishedReport(student.id, definition.id) }
-                .onSuccess {
-                    startActivity(Intent(this, MarkdownBrowserActivity::class.java)
-                        .putExtra(MarkdownBrowserActivity.EXTRA_MODE, MarkdownBrowserActivity.MODE_REPORT)
-                        .putExtra(MarkdownBrowserActivity.EXTRA_STUDENT_ID, student.id)
-                        .putExtra(MarkdownBrowserActivity.EXTRA_REPORT_ID, definition.id)
-                        .putExtra(MarkdownBrowserActivity.EXTRA_TITLE, definition.title))
-                }.onFailure { showMessage("报告读取失败", it.message ?: "未知错误") }
-        }.show()
+        val service = GrowthModelService(this)
+        val reports = GrowthModelService.REPORTS.mapNotNull { definition ->
+            runCatching { service.readPublishedReport(student.id, definition.id) }.getOrNull()
+                ?.takeIf(EducationPublicationPolicy::hasMeaningfulBody)?.let { definition to it }
+        }
+        if (reports.isEmpty()) {
+            AlertDialog.Builder(this).setTitle("暂无学情报告")
+                .setMessage("当前只有空白模板。确认成长证据后，可以直接生成并发布四份正式报告。")
+                .setNegativeButton("取消", null)
+                .setPositiveButton("生成并发布") { _, _ -> generateAndPublishReports(student) }
+                .show()
+            return
+        }
+        val labels = reports.map { (definition, source) ->
+            val formal = runCatching { EducationPublicationPolicy.validatePublishedReport(student.id, definition.title, source) }.isSuccess
+            "${definition.title} · ${if (formal) "正式报告" else "已有内容，仅供查看"}"
+        }.toTypedArray()
+        AlertDialog.Builder(this).setTitle("${student.name} · 选择报告（${reports.size} 份）").setItems(labels) { _, index ->
+            val definition = reports[index].first
+            startActivity(Intent(this, MarkdownBrowserActivity::class.java)
+                .putExtra(MarkdownBrowserActivity.EXTRA_MODE, MarkdownBrowserActivity.MODE_REPORT)
+                .putExtra(MarkdownBrowserActivity.EXTRA_STUDENT_ID, student.id)
+                .putExtra(MarkdownBrowserActivity.EXTRA_REPORT_ID, definition.id)
+                .putExtra(MarkdownBrowserActivity.EXTRA_TITLE, definition.title))
+        }.setNegativeButton("取消", null).show()
     }
 
-    private fun chooseStudentForReportDrafts() {
-        withCurrentStudent { generateReportDrafts(it) }
+    private fun chooseStudentForReportPublication() {
+        withCurrentStudent { student -> confirmReportGeneration(student) }
+    }
+
+    private fun chooseReportForPublication(student: StudentRecord) {
+        val service = GrowthModelService(this)
+        val reports = GrowthModelService.REPORTS.map { definition ->
+            definition to runCatching { service.readPublishedReport(student.id, definition.id) }
+        }
+        val definitions = reports.filter { (definition, source) ->
+            source.mapCatching { EducationPublicationPolicy.validatePublishedReport(student.id, definition.title, it) }.isSuccess
+        }.map { it.first }
+        if (definitions.isEmpty()) {
+            val existing = reports.filter { (_, source) -> source.getOrNull()?.let(EducationPublicationPolicy::hasMeaningfulBody) == true }
+            if (existing.isNotEmpty()) {
+                AlertDialog.Builder(this).setTitle("找到已有报告，未自动覆盖")
+                    .setMessage("已找到 ${existing.size} 份包含正文的学情报告，但其发布状态或学生归属未通过输出校验。为保护原报告，本入口不会重新生成或覆盖。请先查看已有报告，确认状态后再处理。")
+                    .setNegativeButton("关闭", null)
+                    .setPositiveButton("查看已有报告") { _, _ -> showReports(student) }
+                    .show()
+                return
+            }
+            AlertDialog.Builder(this).setTitle("暂无可输出的正式报告")
+                .setMessage("当前学生还没有包含有效内容的正式报告。可以现在依据已确认的成长证据，一键生成并发布四份报告。")
+                .setNegativeButton("取消", null)
+                .setPositiveButton("生成并发布") { _, _ -> generateAndPublishReports(student, openPublicationAfter = true) }
+                .show()
+            return
+        }
+        // AlertDialog's message and item list share the same content panel on some Android builds.
+        // Keeping the count in the title ensures the selectable report rows are actually rendered.
+        AlertDialog.Builder(this).setTitle("${student.name} · 选择报告（${definitions.size} 份）")
+            .setItems(definitions.map { it.title }.toTypedArray()) { _, index ->
+                val definition = definitions[index]
+                val result = runCatching {
+                    val source = GrowthModelService(this).readPublishedReport(student.id, definition.id)
+                    EducationPublicationPolicy.validatePublishedReport(student.id, definition.title, source)
+                }
+                result.onSuccess {
+                    startActivity(Intent(this, EducationPublicationActivity::class.java)
+                        .putExtra(EducationPublicationActivity.EXTRA_STUDENT_ID, student.id)
+                        .putExtra(EducationPublicationActivity.EXTRA_REPORT_ID, definition.id))
+                }.onFailure { showMessage("该报告暂不能输出", it.message ?: "报告尚未正式发布") }
+            }.setNegativeButton("取消", null).show()
+    }
+
+    private fun confirmReportGeneration(student: StudentRecord) {
+        val service = GrowthModelService(this)
+        val existing = GrowthModelService.REPORTS.count { definition ->
+            runCatching { service.readPublishedReport(student.id, definition.id) }
+                .getOrNull()?.let(EducationPublicationPolicy::hasMeaningfulBody) == true
+        }
+        if (existing == 0) {
+            generateAndPublishReports(student)
+            return
+        }
+        AlertDialog.Builder(this).setTitle("更新已有学情报告？")
+            .setMessage("当前学生已有 $existing 份包含正文的报告。继续会依据最新的已确认成长证据更新四份正式报告；只有在你明确确认后才会写入。")
+            .setNegativeButton("取消", null)
+            .setPositiveButton("确认更新并发布") { _, _ -> generateAndPublishReports(student) }
+            .show()
     }
 
     private fun showGrowthCandidateDialog(student: StudentRecord) {
         val fields = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(40, 12, 40, 0) }
         fun field(hintText: String) = EditText(this).apply { hint = hintText; fields.addView(this, matchWrap()) }
-        val title = field("证据标题（必填）"); val ability = field("支撑能力"); val source = field("来源 URI/文件标识（必填）"); val content = field("观察内容")
-        AlertDialog.Builder(this).setTitle("添加成长证据候选").setView(fields).setNegativeButton("取消", null).setPositiveButton("保存为待审核") { _, _ ->
-            runCatching { GrowthModelService(this).addCandidate(student.id, title.text.toString(), ability.text.toString(), source.text.toString(), content.text.toString()) }
-                .onSuccess { showMessage("候选已保存", "该证据仍为 pending，不会直接进入正式画像或报告。") }.onFailure { showMessage("保存失败", it.message ?: "未知错误") }
-        }.show()
+        val title = field("证据标题（必填）"); val ability = field("支撑能力（选填）"); val content = field("观察内容")
+        val dialog = AlertDialog.Builder(this).setTitle("添加成长证据候选")
+            .setMessage("填写后从已导入的原始资料中选择依据，不需要填写 URI 或文件标识。")
+            .setView(fields).setNegativeButton("取消", null).setPositiveButton("下一步：选择资料", null).create()
+        dialog.setOnShowListener {
+            dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+                when {
+                    title.text.isBlank() -> { title.error = "请填写证据标题"; title.requestFocus() }
+                    content.text.isBlank() -> { content.error = "请填写观察内容"; content.requestFocus() }
+                    FileAssetService(this).materials(student.id).isEmpty() ->
+                        showMessage("还没有原始资料", "请先在“资料收集与处理”导入文件或拍照，再回来添加成长证据。")
+                    else -> {
+                        val titleValue = title.text.toString(); val abilityValue = ability.text.toString(); val contentValue = content.text.toString()
+                        dialog.dismiss()
+                        chooseSourceForNewGrowthCandidate(student, titleValue, abilityValue, contentValue)
+                    }
+                }
+            }
+        }
+        dialog.show()
     }
 
     private fun reviewGrowthCandidate(student: StudentRecord) {
         val service = GrowthModelService(this); val candidates = service.candidates(student.id).filter { it.optString("status") in setOf("pending", "watching") }
-        if (candidates.isEmpty()) { showMessage("没有待审核候选", "当前没有 pending 或 watching 成长证据。"); return }
-        AlertDialog.Builder(this).setTitle("选择成长证据").setItems(candidates.map { "${it.optString("title")} · ${it.optString("status")}" }.toTypedArray()) { _, index ->
+        if (candidates.isEmpty()) { showMessage("没有待审核候选", "当前没有待审核或继续观察的成长证据。"); return }
+        AlertDialog.Builder(this).setTitle("选择成长证据").setItems(candidates.map { "${it.optString("title")} · ${growthStatusLabel(it.optString("status"))}" }.toTypedArray()) { _, index ->
             val item = candidates[index]
             val needsSource = GrowthEvidencePolicy.requiresPrimarySource(item)
-            val sourceLabel = if (needsSource) "缺少可核验的原始资料（历史报告不能作为自身证据）" else item.optString("sourceUri")
+            val sourceLabel = if (needsSource) "缺少可核验的原始资料（历史报告不能作为自身证据）"
+                else item.optString("sourceName").ifBlank { "已关联原始资料" }
             val builder = AlertDialog.Builder(this).setTitle(item.optString("title")).setMessage("来源：$sourceLabel\n能力：${item.optString("ability")}\n\n${item.optString("content")}")
                 .setNegativeButton("驳回") { _, _ -> reviewGrowth(student, item, "rejected") }
                 .setNeutralButton("继续观察") { _, _ -> reviewGrowth(student, item, "watching") }
-            if (needsSource) builder.setPositiveButton("补充来源") { _, _ -> chooseGrowthCandidateSource(student, item) }
+            if (needsSource) builder.setPositiveButton("选择资料并确认") { _, _ -> chooseGrowthCandidateSource(student, item, confirmAfterSelection = true) }
             else builder.setPositiveButton("确认采用") { _, _ -> reviewGrowth(student, item, "confirmed") }
             builder.show()
         }.show()
     }
 
-    private fun chooseGrowthCandidateSource(student: StudentRecord, item: org.json.JSONObject) {
+    private fun chooseSourceForNewGrowthCandidate(student: StudentRecord, title: String, ability: String, content: String) {
+        if (title.isBlank()) { showMessage("请填写证据标题", "用一句普通的话说明这条成长证据，例如“能够独立完成实验记录”。"); return }
+        if (content.isBlank()) { showMessage("请填写观察内容", "说明你从资料中看到了什么；没有观察内容的候选不会保存。"); return }
+        val materials = FileAssetService(this).materials(student.id)
+        if (materials.isEmpty()) { showMessage("还没有原始资料", "请先在“资料收集与处理”导入文件或拍照，再回来添加成长证据。"); return }
+        val labels = materials.map(::growthSourceLabel).toTypedArray()
+        AlertDialog.Builder(this).setTitle("选择这条证据依据的资料").setItems(labels) { _, index ->
+            val material = materials[index]
+            runCatching {
+                val sourceUri = "edu://student/${student.id}/raw/${material.getString("id")}"
+                val candidate = GrowthModelService(this).addCandidate(student.id, title, ability, sourceUri, content)
+                GrowthModelService(this).attachCandidateSource(student.id, candidate.getString("id"), material.getString("id"), material.optString("fileName"))
+            }.onSuccess { showMessage("候选已保存", "资料已自动关联；这条证据仍需在审核列表中确认后才会进入成长模型。") }
+                .onFailure { showMessage("保存失败", it.message ?: "未知错误") }
+        }.setNegativeButton("取消", null).show()
+    }
+
+    private fun chooseGrowthCandidateSource(student: StudentRecord, item: org.json.JSONObject, confirmAfterSelection: Boolean = false) {
         val materials = FileAssetService(this).materials(student.id)
         if (materials.isEmpty()) { showMessage("没有可选原始资料", "请先在“资料收集与处理”导入、拍照或采集原始资料，再返回补充来源。"); return }
-        val labels = materials.map { material ->
-            val source = material.optString("sourceName").ifBlank { material.optString("sourceType") }
-            "${material.optString("fileName")} · ${source.ifBlank { "原始资料" }}"
-        }.toTypedArray()
+        val labels = materials.map(::growthSourceLabel).toTypedArray()
         AlertDialog.Builder(this).setTitle("选择支撑这条证据的原始资料").setItems(labels) { _, index ->
             val material = materials[index]
-            runCatching { GrowthModelService(this).attachCandidateSource(student.id, item.getString("id"), material.getString("id"), material.optString("fileName")) }
-                .onSuccess { showMessage("来源已补充", "该候选现在可以再次打开并确认采用；历史报告路径仍保留用于审计。") }
+            runCatching {
+                val service = GrowthModelService(this)
+                service.attachCandidateSource(student.id, item.getString("id"), material.getString("id"), material.optString("fileName"))
+                if (confirmAfterSelection) service.reviewCandidate(student.id, item.getString("id"), "confirmed", "本机用户选择原始资料后确认采用")
+            }.onSuccess {
+                if (confirmAfterSelection) showMessage("已确认采用", "原始资料已自动关联，证据已进入成长模型。")
+                else showMessage("来源已补充", "原始资料已自动关联，该候选现在可以确认采用。")
+            }
                 .onFailure { showMessage("补充来源失败", it.message ?: "未知错误") }
         }.setNegativeButton("取消", null).show()
     }
 
-    private fun reviewGrowth(student: StudentRecord, item: org.json.JSONObject, status: String) {
-        runCatching { GrowthModelService(this).reviewCandidate(student.id, item.getString("id"), status, "本机用户逐条审核") }
-            .onSuccess { showMessage("审核已记录", "证据状态已更新为 $status，并保留 reviewerRole/reviewerId 审计字段。") }.onFailure { showMessage("审核失败", it.message ?: "未知错误") }
+    private fun growthSourceLabel(material: org.json.JSONObject): String {
+        val source = material.optString("sourceName").ifBlank { material.optString("sourceType") }
+        return "${material.optString("fileName")} · ${source.ifBlank { "原始资料" }}"
     }
 
-    private fun generateReportDrafts(student: StudentRecord) {
-        val progress = showProgress("正在生成草稿", "正式报告不会被自动覆盖；草稿完成后会再次请求发布确认。")
+    private fun reviewGrowth(student: StudentRecord, item: org.json.JSONObject, status: String) {
+        runCatching { GrowthModelService(this).reviewCandidate(student.id, item.getString("id"), status, "本机用户逐条审核") }
+            .onSuccess {
+                val title = when (status) { "confirmed" -> "已确认采用"; "watching" -> "已设为继续观察"; "rejected" -> "已驳回"; else -> "审核已记录" }
+                val detail = when (status) { "confirmed" -> "这条证据已进入成长模型。"; "watching" -> "这条证据会保留在待审核列表，方便以后补充资料。"; "rejected" -> "这条证据不会进入成长模型。"; else -> "证据状态已更新。" }
+                showMessage(title, detail)
+            }.onFailure { showMessage("审核失败", it.message ?: "未知错误") }
+    }
+
+    private fun growthStatusLabel(status: String) = when (status) {
+        "confirmed" -> "已确认"
+        "watching" -> "继续观察"
+        "rejected" -> "已驳回"
+        else -> "待审核"
+    }
+
+    private fun generateAndPublishReports(student: StudentRecord, openPublicationAfter: Boolean = false) {
+        val progress = showProgress("正在生成并发布报告", "正在读取已确认成长证据；Agent 异常时会自动使用保守内容。")
         Thread {
-            val result = runCatching { GrowthModelService(this).generateReportDrafts(student.id) }
+            val result = runCatching { GrowthModelService(this).generateAndPublishReports(student.id) }
             runOnUiThread {
                 progress.dismiss()
                 result.onSuccess { generated ->
                     val warnings = generated.optJSONArray("warnings")
                     val detail = buildString {
-                        append(generated.optString("message", "四份报告草稿已生成。"))
-                        append("\n\n请先预览，再决定是否发布为正式报告。正式报告不会在生成阶段自动覆盖。")
+                        append(generated.optString("message", "四份正式报告已生成并发布。"))
                         if (warnings != null && warnings.length() > 0) append("\n\n自动保守处理 ${warnings.length()} 项模型漏项或无依据内容。")
                     }
-                    AlertDialog.Builder(this).setTitle("四份报告草稿已生成").setMessage(detail)
-                        .setNegativeButton("暂不发布", null)
-                        .setNeutralButton("预览草稿") { _, _ -> startActivity(Intent(this, MarkdownBrowserActivity::class.java)
-                            .putExtra(MarkdownBrowserActivity.EXTRA_MODE, MarkdownBrowserActivity.MODE_REPORT_DRAFT)
-                            .putExtra(MarkdownBrowserActivity.EXTRA_STUDENT_ID, student.id)
-                            .putExtra(MarkdownBrowserActivity.EXTRA_TITLE, "${student.name} · 待审核报告草稿")) }
-                        .setPositiveButton("确认发布") { _, _ ->
-                            runCatching { GrowthModelService(this).publishReportDrafts(student.id) }.onSuccess { published -> showMessage("报告已发布", published.getString("message")) }
-                                .onFailure { error -> showMessage("发布失败", error.message ?: "未知错误") }
-                        }.show()
-                }.onFailure { showMessage("草稿生成失败", it.message ?: "未知错误") }
+                    AlertDialog.Builder(this).setTitle("报告已生成并发布").setMessage(detail)
+                        .setNegativeButton("完成", null)
+                        .setNeutralButton("查看报告") { _, _ -> showReports(student) }
+                        .setPositiveButton(if (openPublicationAfter) "继续导出打印" else "导出打印") { _, _ -> chooseReportForPublication(student) }
+                        .show()
+                }.onFailure { showMessage("报告生成失败", it.message ?: "未知错误") }
             }
         }.start()
     }

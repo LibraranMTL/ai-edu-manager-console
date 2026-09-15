@@ -1,0 +1,14 @@
+Section 1: Native Android agent runtimes with local file tools and remote LLM providers
+Keywords: native Android AI agent, on-device agent loop, Android local file tools, remote LLM API Android agent, Kotlin tool calling, Android autonomous agent, OpenClaw Android alternative, PalmClaw, X-OmniClaw, CellClaw
+
+Section 2: Android bounded file access, user authorization, and storage policy
+Keywords: Android Storage Access Framework, ACTION_OPEN_DOCUMENT_TREE, persistable URI permission, scoped storage, DocumentsContract, ContentResolver, Android file sandbox, MANAGE_EXTERNAL_STORAGE policy, Google Play all files access, Android document tree restrictions
+
+Section 3: Reliable background work and product safety for Android agents
+Keywords: Android WorkManager persistent work, foreground service restrictions, Android 12 background service, Android 14 while-in-use permissions, agent task recovery, Android process death, idempotent file operations, Android audit log, remote model data minimization, Android Keystore API keys
+
+Section 4: ApkClaw native Android agent runtime, file tool boundary, permissions, and security
+Keywords: ApkClaw GitHub, ApkClaw agent loop, ApkClaw ToolRegistry, ApkClaw SendFileTool, ApkClaw MANAGE_EXTERNAL_STORAGE, ApkClaw accessibility service, ApkClaw LangChain4j, ApkClaw LAN config server, ApkClaw MMKV API key, ApkClaw Apache 2.0
+
+Section 5: Disambiguating MobileClaw projects, native Android runtime, file boundary, and approvals
+Keywords: aohp-os MobileClaw, ChenKuanSun mobileClaw, native Android agent runtime, Python ADB phone executor, FileSystemTool, Android Downloads scoped storage, Storage Access Framework, NeedsConfirmation, Android Keystore, BYPASS_ALL, MIT

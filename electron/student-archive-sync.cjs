@@ -163,6 +163,12 @@ function governedStatus(filePath) {
   return /^status:\s*([^\r\n]+)$/im.exec(header)?.[1]?.trim().toLowerCase() || '';
 }
 
+const PUBLISHABLE_LEARNING_REPORT_STATUSES = new Set(['published', 'current', 'updated', 'active']);
+
+function isPublishableLearningReportStatus(status) {
+  return PUBLISHABLE_LEARNING_REPORT_STATUSES.has(String(status || '').trim().toLowerCase());
+}
+
 function collectGovernedStudentArchiveFiles(options = {}) {
   const rawRoot = path.resolve(String(options.rawRoot || ''));
   const reportRoot = path.resolve(String(options.reportRoot || ''));
@@ -177,7 +183,7 @@ function collectGovernedStudentArchiveFiles(options = {}) {
     .filter((item) => !/(^|\/)(?:成长证据草稿|.*(?:draft|草稿).*)\.(?:md|json|txt|csv)$/iu.test(item.relativePath))
     .map((item) => ({ ...item, kind: 'growth_model' }));
   const reports = collectFiles(reportRoot, { limit: 100 })
-    .filter((item) => governedStatus(item.sourcePath) === 'published')
+    .filter((item) => isPublishableLearningReportStatus(governedStatus(item.sourcePath)))
     .map((item) => ({ ...item, kind: 'learning_report' }));
   const archiveVersionDir = latestArchiveVersionDir(options.archiveRoot);
   const archive = collectFiles(archiveVersionDir, { limit: 50 })
@@ -593,6 +599,7 @@ module.exports = {
   collectStudentArchiveFiles: collectGovernedStudentArchiveFiles,
   createStudentArchivePublication,
   filterLocallyAuthoredStudentArchiveFiles,
+  isPublishableLearningReportStatus,
   materializeStudentArchivePublication,
   normalizeState,
   recordPublishedStudentArchive,

@@ -94,6 +94,20 @@ function summarizeDeliveries(store) {
   };
 }
 
+function latestDeliveryForLineages(store, lineageIds = [], options = {}) {
+  const allowedLineages = new Set((lineageIds || []).map(String).filter(Boolean));
+  const packageKind = String(options.packageKind || '');
+  if (!allowedLineages.size) return null;
+  return Object.values(normalizeDeliveryStore(store).deliveries)
+    .filter((record) => allowedLineages.has(record.lineageId))
+    .filter((record) => !packageKind || record.packageKind === packageKind)
+    .sort((left, right) => {
+      const rightAt = Date.parse(right.packageCreatedAt || right.queuedAt || right.updatedAt || right.deliveredAt || '') || 0;
+      const leftAt = Date.parse(left.packageCreatedAt || left.queuedAt || left.updatedAt || left.deliveredAt || '') || 0;
+      return rightAt - leftAt;
+    })[0] || null;
+}
+
 function reconcileDeliveries(input = {}, options = {}) {
   const inspectPackage = typeof options.inspectPackage === 'function'
     ? options.inspectPackage
@@ -166,6 +180,7 @@ module.exports = {
   TERMINAL_DELIVERY_STATUSES,
   deliveryBackoffMs,
   dueDeliveries,
+  latestDeliveryForLineages,
   normalizeDelivery,
   normalizeDeliveryStore,
   reconcileDeliveries,

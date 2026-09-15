@@ -31,6 +31,8 @@ test('new report drafts are validated and automatically published without routin
   assert.match(workflow, /publishValidatedReport/);
   assert.match(main, /directReportExecutionCommand/);
   assert.match(main, /status: generated/);
+  assert.match(main, /本次执行必须实际写入或更新系统校验区文件/);
+  assert.match(main, /行动建议、观察点和依据来源可以引用 watching 证据/);
   assert.match(main, /报告已通过自动校验并发布/);
   assert.match(ui, /系统正在校验并自动发布，无需人工操作/);
   assert.doesNotMatch(ui, /采用并发布/);
@@ -50,6 +52,17 @@ test('report page recovers valid drafts and exposes one explicit update action',
   assert.match(ui, /getTaskStatusesAsync\(learningReportTaskIds\)/);
   assert.match(ui, /完成后将自动刷新/);
   assert.match(ui, /上一版报告保持不变/);
+});
+
+test('knowledge synchronization recovers validated reports before collecting governed files', () => {
+  const syncFunction = main.slice(
+    main.indexOf('function publishStudentArchiveSync'),
+    main.indexOf('function scheduleStudentArchiveSync'),
+  );
+  assert.ok(syncFunction.indexOf('recoverValidatedLearningReportDrafts') < syncFunction.indexOf('pendingStudentArchiveReports'));
+  assert.ok(syncFunction.indexOf('recoverValidatedLearningReportDrafts') < syncFunction.indexOf('collectStudentArchiveFiles'));
+  assert.match(syncFunction, /recoveredReports: draftRecovery\.recovered/);
+  assert.match(main, /isPublishableLearningReportStatus\(publishedStatus\)/);
 });
 
 test('digest and task flows expose theme-aware next action guidance', () => {

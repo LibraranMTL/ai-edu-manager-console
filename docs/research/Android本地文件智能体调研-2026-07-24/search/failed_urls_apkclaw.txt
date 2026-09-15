@@ -1,0 +1,3 @@
+https://raw.githubusercontent.com/apkclaw-team/ApkClaw/main/app/src/main/AndroidManifest.xml	body too short: 0 chars
+https://raw.githubusercontent.com/apkclaw-team/ApkClaw/main/app/src/main/java/com/apk/claw/android/tool/impl/SendFileTool.java	HTTPSConnectionPool(host='raw.githubusercontent.com', port=443): Max retries exceeded with url: /apkclaw-team/ApkClaw/main/app/src/main/java/com/apk/claw/android/tool/impl/SendFileTool.java (Caused by ProxyError('Unable to connect to proxy', RemoteDisconnected('Remote end closed connection without response')))
+https://raw.githubusercontent.com/apkclaw-team/ApkClaw/main/app/src/main/java/com/apk/claw/android/server/ConfigServer.kt	bad page pattern detected

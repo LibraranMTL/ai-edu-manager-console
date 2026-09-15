@@ -4,6 +4,7 @@ const fs = require('fs');
 const {
   issueLicense,
   listRecords,
+  filterRecords,
   updateRecord,
   recordsToCsv,
   parseLicenseCode,
@@ -53,19 +54,7 @@ function fail(error) {
 }
 
 function filteredRecords(query = '') {
-  const keyword = String(query || '').trim().toLowerCase();
-  const records = listRecords(recordsPath());
-  if (!keyword) return records;
-  return records.filter((record) => [
-    record.customerName,
-    record.contact,
-    record.orderNo,
-    record.plan,
-    record.planLabel,
-    record.status,
-    record.code,
-    record.note,
-  ].some((value) => String(value || '').toLowerCase().includes(keyword)));
+  return filterRecords(listRecords(recordsPath()), query);
 }
 
 ipcMain.on('license:getAppInfo', (event) => {

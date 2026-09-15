@@ -1,0 +1,150 @@
+{
+  "researchDate": "2026-07-24",
+  "scope": {
+    "androidNativeAgentRuntime": true,
+    "localFileTools": true,
+    "remoteLlmAllowed": true,
+    "localInferenceRequired": false,
+    "termuxAllowed": false,
+    "remoteGatewayOnlyClientExcluded": true
+  },
+  "candidateSourceAudit": {
+    "PalmClaw": {
+      "repository": "https://github.com/ModalityDance/PalmClaw",
+      "commit": "29a8724ac87ef5c07fd35ce7b2a3e70f7917a5f3",
+      "verified": [
+        "Android native agent loop",
+        "remote model providers",
+        "local file tools",
+        "workspace path resolver",
+        "destructive action confirmations",
+        "MANAGE_EXTERNAL_STORAGE declaration",
+        "AGPLv3 and commercial dual licensing"
+      ]
+    },
+    "X-OmniClaw": {
+      "repository": "https://github.com/OPPO-Mente-Lab/X-OmniClaw",
+      "commit": "8614c935d4aecb864f60d6c1de2ea9b2688f6ad0",
+      "verified": [
+        "Android native agent loop",
+        "remote model providers",
+        "read write edit file tools",
+        "MANAGE_EXTERNAL_STORAGE declaration",
+        "broad device permission requirements",
+        "Apache-2.0 license"
+      ]
+    },
+    "ApkClaw": {
+      "repository": "https://github.com/apkclaw-team/ApkClaw",
+      "commit": "1b8d40fad417618f63f62af73fdfe688796dabad",
+      "publicVersion": "0.0.2",
+      "license": "Apache-2.0",
+      "verified": [
+        "Android native agent loop",
+        "remote OpenAI-compatible and Anthropic-compatible model providers",
+        "LangChain4j tool bridge",
+        "accessibility-based cross-app automation",
+        "no list read write search move or delete file tools in ToolRegistry",
+        "send_file accepts an absolute path",
+        "MANAGE_EXTERNAL_STORAGE declaration",
+        "tool calls execute directly without a separate runtime approval gate",
+        "default MMKV storage without visible crypt key",
+        "LAN configuration GET routes return full LLM and channel secrets",
+        "cleartext network traffic permitted",
+        "only template unit and instrumentation tests in the public tree"
+      ],
+      "adoptionStatus": "cross-app automation reference only; excluded as local-file-agent base"
+    },
+    "MobileClaw-ChenKuanSun": {
+      "repository": "https://github.com/ChenKuanSun/mobileClaw",
+      "commit": "83c66b046fde0a0ffd3ead1514e82c8e8afd41cf",
+      "publicVersion": "1.2.12",
+      "license": "MIT",
+      "verified": [
+        "Kotlin and Jetpack Compose Android-native agent runtime",
+        "cloud model providers with optional LiteRT-LM local inference",
+        "list read write delete and info file actions",
+        "10KB file read limit",
+        "write and delete confirmation results",
+        "model-supplied __confirmed parameter stripped by AgentRuntime",
+        "EncryptedSharedPreferences backed by Android Keystore",
+        "no MANAGE_EXTERNAL_STORAGE declaration",
+        "no SAF document-tree implementation",
+        "public Downloads accessed through legacy File API",
+        "canonical path boundary implemented with unsafe string prefix matching",
+        "BYPASS_ALL permission mode",
+        "broad phone automation and personal-data permissions",
+        "25 Kotlin test files but no direct FileSystemTool test"
+      ],
+      "localTestAttempt": {
+        "command": "gradlew.bat testDebugUnitTest --no-daemon --console=plain",
+        "result": "not started because Java and JAVA_HOME were unavailable",
+        "upstreamClaimReproduced": false
+      },
+      "adoptionStatus": "best MIT native runtime reference; file and permission layers must be replaced"
+    },
+    "MobileClaw-aohp-os": {
+      "repository": "https://github.com/aohp-os/MobileClaw",
+      "commit": "1c553fdd606474e7275f9b730f196f6020214c60",
+      "publicVersion": "apk-v0.3.5",
+      "license": "MIT",
+      "verified": [
+        "Python agent installed and run on a computer",
+        "Android APK used as accessibility and WebSocket execution client",
+        "ADB port forwarding required by official developer setup",
+        "two remote models required",
+        "file memory and skill operations target the computer root_dir",
+        "Android push_file and pull_file methods are unimplemented",
+        "Android project source not published in repository",
+        "official warning not to use a main device"
+      ],
+      "adoptionStatus": "excluded because the agent runtime is external to Android"
+    },
+    "CellClaw": {
+      "website": "https://cellclaw.com/",
+      "repositoryLinkedByWebsite": "https://github.com/jordanthejet/cellclaw",
+      "repositoryStatus": "404 repository not found",
+      "adoptionStatus": "unverified and excluded from P0"
+    }
+  },
+  "existingProductAudit": {
+    "packageVersion": "0.10.7",
+    "verified": [
+      "ACTION_OPEN_DOCUMENT_TREE",
+      "takePersistableUriPermission",
+      "ContentResolver and DocumentsContract file enumeration",
+      "background delivery job",
+      "stable-file wait",
+      "processed file signature",
+      "failure retry"
+    ]
+  },
+  "literatureArchive": {
+    "cleanedUrlCount": 20,
+    "archivedMarkdownCount": 19,
+    "rawNoteCount": 5,
+    "failedDownloadCount": 1,
+    "failedDownload": "https://developer.android.com/privacy-and-security/keystore",
+    "failureReason": "bad page pattern detected; claim retained only at design recommendation level",
+    "apkClawSupplement": {
+      "cleanedUrlCount": 8,
+      "archivedMarkdownCount": 5,
+      "failedDownloadCount": 3,
+      "failedSourcesWereAuditedThroughGitHubContentsApi": true
+    },
+    "mobileClawSupplement": {
+      "cleanedUrlCount": 11,
+      "archivedMarkdownCount": 9,
+      "failedDownloadCount": 2,
+      "failedSourcesWereAuditedFromFixedCommitShallowClones": true,
+      "fixedCommitCloneCount": 2
+    }
+  },
+  "artifactStatus": {
+    "reportCreated": true,
+    "productCodeChanged": false,
+    "apkBuilt": false,
+    "apkInstalledOnDevice": false,
+    "realStudentDataUsed": false
+  }
+}

@@ -53,9 +53,12 @@ const terminalUserData = () => app.getPath('userData');
 const configPath = () => path.join(terminalUserData(), 'terminal-config.json');
 const deliveryPath = () => path.join(terminalUserData(), 'delivery-ledger.json');
 const captureRoot = () => path.join(terminalUserData(), 'screen-captures');
+const captureDeliveryQueuePath = () => path.join(terminalUserData(), 'capture-delivery-queue.json');
 let mainWindow = null;
 let autoDeliveryTimer = null;
 let autoDeliveryBusy = false;
+let captureDeliveryTimer = null;
+let captureDeliveryBusy = false;
 let activeCapture = null;
 let courseView = null;
 let activeCourse = null;
@@ -69,6 +72,19 @@ let agentCaptureDrainTimer = null;
 let agentCaptureInstallTimer = null;
 let agentCaptureBusy = false;
 const discoveredLanHosts = new Map();
+const CAPTURE_DELIVERY_RETRY_DELAYS = [60_000, 5 * 60_000, 15 * 60_000, 30 * 60_000];
+const SENSITIVE_CAPTURE_SOURCE_PATTERN = /password|credential|secret|token|authenticator|1password|bitwarden|keepass|微信|wechat|qq|钉钉|dingtalk|飞书|lark|telegram|whatsapp|mail|邮箱|邮件/i;
+
+function isSensitiveCaptureSourceName(value = '') {
+  return SENSITIVE_CAPTURE_SOURCE_PATTERN.test(String(value || ''));
+}
+
+function deidentifyCaptureSourceName(value = '', sourceType = 'screen') {
+  if (sourceType === 'screen') return '已授权屏幕';
+  const compact = String(value || '').replace(/[\r\n\t]+/g, ' ').trim();
+  const application = compact.split(/\s[-—|]\s/).at(-1)?.trim();
+  return application && application.length <= 48 ? application : '已授权应用窗口';
+}
 
 function readJson(filePath, fallback) {
   try { return JSON.parse(fs.readFileSync(filePath, 'utf8')); }
@@ -273,6 +289,8 @@ function reconcilePersonalAgentCapture(config = readConfig()) {
     || !config.sessionToken
     || !config.currentStudent?.id
     || !config.agentCapture?.enabled
+    || !config.agentCapture?.captureEpoch
+    || !config.agentCapture?.authorizedAt
   ) {
     setTerminalLifecycleDescriptorEnabled(terminalUserData(), false);
     return { enabled: false, registrations: config.agentCapture?.registrations || {}, warnings: [] };
@@ -283,6 +301,8 @@ function reconcilePersonalAgentCapture(config = readConfig()) {
     studentId: String(config.currentStudent.id),
     deviceId: deviceId(),
     enabled: true,
+    captureEpoch: config.agentCapture.captureEpoch,
+    authorizedAt: config.agentCapture.authorizedAt,
     detectedAgents: detectLifecycleAgents(),
   });
   updateLocalAgentCapture({
@@ -290,7 +310,7 @@ function reconcilePersonalAgentCapture(config = readConfig()) {
     warnings: result.warnings,
     message: result.warnings.length
       ? `部分 Agent 暂未接入：${result.warnings.join('；')}`
-      : '此个人终端已接入受支持 Agent 的新会话生命周期。',
+      : '此个人终端已接入受支持 Agent；已有会话从授权后的下一条提问开始采集。',
   });
   return result;
 }
@@ -305,10 +325,14 @@ async function authorizePersonalAgentCapture(enabled) {
       studentId,
       deviceId: deviceId(),
       enabled: false,
+      captureEpoch: '',
+      authorizedAt: '',
       detectedAgents: detectLifecycleAgents(),
     });
     updateLocalAgentCapture({
       enabled: false,
+      captureEpoch: '',
+      authorizedAt: '',
       registrations: detectedAgentCaptureRegistrations({}, false),
       warnings: [],
       pending: 0,
@@ -343,7 +367,17 @@ async function authorizePersonalAgentCapture(enabled) {
     failure.status = status;
     throw failure;
   }
-  const next = updateLocalAgentCapture({ enabled: true, message: remote.message || '已授权此个人终端采集新会话。' });
+  if (!remote.capture?.captureEpoch || !remote.capture?.authorizedAt) {
+    setTerminalLifecycleDescriptorEnabled(terminalUserData(), false);
+    updateLocalAgentCapture({ enabled: false, captureEpoch: '', authorizedAt: '' });
+    throw new Error('当前 Windows 主机尚不支持旧会话授权后续采集，请升级主机后重试。');
+  }
+  const next = updateLocalAgentCapture({
+    enabled: true,
+    captureEpoch: remote.capture.captureEpoch,
+    authorizedAt: remote.capture.authorizedAt,
+    message: remote.message || '已授权此个人终端采集后续轮次。',
+  });
   reconcilePersonalAgentCapture(next);
   await runAgentCaptureDrain();
   return { ...publicAgentCaptureState(), message: remote.message || publicAgentCaptureState().message };
@@ -363,14 +397,21 @@ async function refreshPersonalAgentCapture() {
       : config);
   }
   try {
-    let remote = await requestJson('/api/student-session/agent-memory/capture', { token: config.sessionToken });
+    const remote = await requestJson('/api/student-session/agent-memory/capture', { token: config.sessionToken });
     if (!remote.capture?.enabled) {
-      remote = await requestJson('/api/student-session/agent-memory/capture', {
-        method: 'POST',
-        token: config.sessionToken,
-        body: { enabled: true },
-      });
+      setTerminalLifecycleDescriptorEnabled(terminalUserData(), false);
+      updateLocalAgentCapture({ enabled: false, captureEpoch: '', authorizedAt: '', message: '主机已停止此个人终端的自动会话采集，请重新授权后再使用。' });
+      return publicAgentCaptureState();
     }
+    if (!remote.capture?.captureEpoch || !remote.capture?.authorizedAt) {
+      setTerminalLifecycleDescriptorEnabled(terminalUserData(), false);
+      updateLocalAgentCapture({ enabled: false, captureEpoch: '', authorizedAt: '', message: '当前 Windows 主机尚不支持旧会话授权后续采集，请升级主机后重新授权。' });
+      return publicAgentCaptureState();
+    }
+    if (
+      String(config.agentCapture?.captureEpoch || '') !== String(remote.capture.captureEpoch)
+      || String(config.agentCapture?.authorizedAt || '') !== String(remote.capture.authorizedAt)
+    ) updateLocalAgentCapture({ captureEpoch: remote.capture.captureEpoch, authorizedAt: remote.capture.authorizedAt });
     reconcilePersonalAgentCapture(readConfig());
     await runAgentCaptureDrain();
     return publicAgentCaptureState();
@@ -389,7 +430,7 @@ async function refreshPersonalAgentCapture() {
       setTerminalLifecycleDescriptorEnabled(terminalUserData(), false);
       updateLocalAgentCapture({ enabled: false, warnings: [String(error.message || error)], message: `主机已拒绝或撤销自动会话采集授权：${error.message}` });
     } else {
-      updateLocalAgentCapture({ warnings: [String(error.message || error)], message: `主机暂不可达，新会话继续保留在本机队列：${error.message}` });
+      updateLocalAgentCapture({ warnings: [String(error.message || error)], message: `主机暂不可达，已授权的后续会话事件保留在本机队列：${error.message}` });
     }
     return publicAgentCaptureState();
   }
@@ -403,6 +444,7 @@ async function runAgentCaptureDrain() {
     || !config.sessionToken
     || !config.currentStudent?.id
     || !config.agentCapture?.enabled
+    || !config.agentCapture?.captureEpoch
   ) return publicAgentCaptureState(config);
   agentCaptureBusy = true;
   try {
@@ -410,6 +452,7 @@ async function runAgentCaptureDrain() {
       queueDir: terminalLifecyclePaths(terminalUserData()).queueDir,
       studentId: String(config.currentStudent.id),
       deviceId: deviceId(),
+      captureEpoch: String(config.agentCapture.captureEpoch || ''),
       postEnvelope: (envelope) => requestJson('/api/student-session/agent-memory/events', {
         method: 'POST',
         token: config.sessionToken,
@@ -420,7 +463,7 @@ async function runAgentCaptureDrain() {
       pending: result.pending,
       lastSyncAt: result.processed ? new Date().toISOString() : String(config.agentCapture?.lastSyncAt || ''),
       message: result.deferred
-        ? '主机暂不可达，已授权的新会话事件保留在本机等待补交。'
+        ? '主机暂不可达，已授权的后续会话事件保留在本机等待补交。'
         : (result.processed ? `已向主机补交 ${result.processed} 条会话事件。` : String(config.agentCapture?.message || '自动会话采集运行中。')),
     });
     return publicAgentCaptureState(next);
@@ -1012,17 +1055,184 @@ async function uploadPaths(paths, target, metadata = {}) {
   const results = [];
   for (let index = 0; index < files.length; index += 1) {
     const filePath = files[index];
+    const captureItem = Array.isArray(metadata.captureItems)
+      ? metadata.captureItems.find((item) => path.resolve(String(item.path || '')) === path.resolve(filePath))
+      : null;
     notify('terminal:upload-progress', { status: 'uploading', current: index + 1, total: files.length, filename: path.basename(filePath) });
     try {
-      results.push({ ok: true, filePath, result: await uploadFile(filePath, normalizedTarget, { ...metadata, captureItemId: metadata.captureSessionId ? `${metadata.captureSessionId}-${index + 1}` : metadata.captureItemId }) });
+      results.push({
+        ok: true,
+        filePath,
+        result: await uploadFile(filePath, normalizedTarget, {
+          ...metadata,
+          captureItems: undefined,
+          captureItemId: captureItem?.id || (metadata.captureSessionId ? `${metadata.captureSessionId}-${index + 1}` : metadata.captureItemId),
+          capturedAt: captureItem?.capturedAt || metadata.capturedAt || '',
+          captureSequence: captureItem?.sequence || index + 1,
+          captureHighlighted: Boolean(captureItem?.highlighted),
+        }),
+      });
     } catch (error) {
       results.push({ ok: false, filePath, message: error.message });
     }
   }
   const success = results.filter((item) => item.ok).length;
-  const summary = { ok: success === results.length, success, failed: results.length - success, total: results.length, results };
+  let completion = null;
+  if (success === results.length && metadata.captureSessionId) {
+    try {
+      completion = await notifyCaptureSessionComplete(normalizedTarget, metadata);
+    } catch (error) {
+      completion = { ok: false, message: error.message };
+    }
+  }
+  const summary = {
+    ok: success === results.length && (!metadata.captureSessionId || completion?.ok),
+    success,
+    failed: results.length - success,
+    total: results.length,
+    results,
+    completion,
+  };
   notify('terminal:upload-progress', { status: summary.ok ? 'succeeded' : 'failed', ...summary });
   return summary;
+}
+
+function postHostJson(route, payload) {
+  return new Promise((resolve, reject) => {
+    const config = readConfig();
+    const hostUrl = normalizeHostUrl(config.hostUrl);
+    if (!hostUrl || !config.sessionToken || !config.currentStudent?.id) {
+      reject(new Error('学生会话尚未连接主机。'));
+      return;
+    }
+    const url = new URL(`${hostUrl}${route}`);
+    const content = Buffer.from(JSON.stringify(payload || {}), 'utf8');
+    const client = url.protocol === 'https:' ? https : http;
+    const request = client.request(url, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${config.sessionToken}`,
+        'Content-Type': 'application/json; charset=utf-8',
+        'Content-Length': content.length,
+        'User-Agent': `AI-Education-Windows-Terminal/${TERMINAL_VERSION}`,
+      },
+    }, (response) => {
+      const chunks = [];
+      response.on('data', (chunk) => chunks.push(chunk));
+      response.on('end', () => {
+        const raw = Buffer.concat(chunks).toString('utf8');
+        let result = {};
+        try { result = raw ? JSON.parse(raw) : {}; }
+        catch { result = { ok: false, message: raw || `HTTP ${response.statusCode}` }; }
+        if ((response.statusCode || 500) >= 400 || result.ok === false) reject(new Error(result.message || `HTTP ${response.statusCode}`));
+        else resolve(result);
+      });
+    });
+    request.setTimeout(30_000, () => request.destroy(new Error('通知主机会话完成超时。')));
+    request.on('error', reject);
+    request.end(content);
+  });
+}
+
+function notifyCaptureSessionComplete(target, metadata = {}) {
+  const config = readConfig();
+  const studentId = String(config.currentStudent?.id || target.studentId || (target.type === 'student' ? target.id : ''));
+  if (!studentId || !metadata.captureSessionId) return Promise.reject(new Error('采集会话缺少明确学生归属。'));
+  return postHostJson(`/api/students/${encodeURIComponent(studentId)}/capture-sessions/${encodeURIComponent(metadata.captureSessionId)}/complete`, {
+    projectId: target.type === 'project' ? String(target.id || '') : '',
+    expectedItemCount: Number(metadata.expectedItemCount || metadata.captureItems?.length || 0),
+    startedAt: String(metadata.startedAt || metadata.courseStartedAt || ''),
+    endedAt: String(metadata.endedAt || metadata.courseCompletedAt || ''),
+    sourceType: String(metadata.sourceType || 'windows_terminal_course_capture'),
+    sourceName: deidentifyCaptureSourceName(metadata.sourceName || '', metadata.captureSourceType || 'screen'),
+    courseId: String(metadata.courseId || ''),
+    courseUrl: String(metadata.courseUrl || ''),
+    courseStartedAt: String(metadata.courseStartedAt || ''),
+    courseCompletedAt: String(metadata.courseCompletedAt || ''),
+  });
+}
+
+function readCaptureDeliveryQueue() {
+  const value = readJson(captureDeliveryQueuePath(), { version: 1, items: [] });
+  return { version: 1, items: Array.isArray(value.items) ? value.items : [] };
+}
+
+function writeCaptureDeliveryQueue(queue) {
+  writeJson(captureDeliveryQueuePath(), { version: 1, updatedAt: new Date().toISOString(), items: queue.items || [] });
+}
+
+function queueCaptureDelivery(session, options = {}) {
+  if (!session?.id || !session?.target || !Array.isArray(session.files) || !session.files.length) return null;
+  const queue = readCaptureDeliveryQueue();
+  const id = String(session.id);
+  const item = {
+    id,
+    target: normalizeUploadTarget(session.target),
+    files: session.files.map(String),
+    captureItems: (session.items || []).map((entry) => ({
+      id: String(entry.id || ''),
+      path: String(entry.path || ''),
+      capturedAt: String(entry.capturedAt || ''),
+      sequence: Number(entry.sequence || 0),
+      highlighted: Boolean(entry.highlighted),
+    })),
+    sourceType: 'windows_terminal_course_capture',
+    sourceName: deidentifyCaptureSourceName(session.sourceName, session.sourceType),
+    captureSourceType: String(session.sourceType || 'screen'),
+    captureSessionId: id,
+    expectedItemCount: session.items?.length || session.files.length,
+    startedAt: String(session.startedAt || ''),
+    endedAt: String(session.endedAt || ''),
+    courseId: String(session.courseId || ''),
+    courseUrl: String(session.courseUrl || ''),
+    courseStartedAt: String(session.courseStartedAt || ''),
+    courseCompletedAt: String(session.courseCompletedAt || ''),
+    attempt: Math.max(0, Number(options.attempt || 0)),
+    nextRetryAt: String(options.nextRetryAt || new Date().toISOString()),
+    lastError: '',
+  };
+  const index = queue.items.findIndex((entry) => String(entry.id) === id);
+  if (index >= 0) queue.items[index] = { ...queue.items[index], ...item, attempt: options.resetAttempt ? 0 : Number(queue.items[index].attempt || 0) };
+  else queue.items.push(item);
+  writeCaptureDeliveryQueue(queue);
+  return item;
+}
+
+async function runCaptureDeliveryQueue() {
+  if (captureDeliveryBusy) return { ok: true, skipped: true };
+  const config = readConfig();
+  if (!config.hostUrl || !config.sessionToken || !config.currentStudent?.id) return { ok: true, skipped: true };
+  const queue = readCaptureDeliveryQueue();
+  const now = Date.now();
+  const item = queue.items
+    .filter((entry) => (Date.parse(entry.nextRetryAt || '') || 0) <= now)
+    .sort((left, right) => (Date.parse(left.nextRetryAt || '') || 0) - (Date.parse(right.nextRetryAt || '') || 0))[0];
+  if (!item) return { ok: true, skipped: true };
+  captureDeliveryBusy = true;
+  try {
+    const result = await uploadPaths(item.files, item.target, item);
+    const latest = readCaptureDeliveryQueue();
+    const index = latest.items.findIndex((entry) => String(entry.id) === String(item.id));
+    if (result.ok) {
+      if (index >= 0) latest.items.splice(index, 1);
+      writeCaptureDeliveryQueue(latest);
+      notify('terminal:capture-changed', { id: item.id, status: 'delivered', delivery: result });
+      return result;
+    }
+    const attempt = Number(item.attempt || 0) + 1;
+    const delay = CAPTURE_DELIVERY_RETRY_DELAYS[Math.min(attempt - 1, CAPTURE_DELIVERY_RETRY_DELAYS.length - 1)];
+    if (index >= 0) latest.items[index] = {
+      ...latest.items[index],
+      attempt,
+      nextRetryAt: new Date(Date.now() + delay).toISOString(),
+      lastError: String(result.completion?.message || result.results?.find((entry) => !entry.ok)?.message || '送达未完成'),
+    };
+    writeCaptureDeliveryQueue(latest);
+    notify('terminal:capture-changed', { id: item.id, status: 'delivery_retry_scheduled', nextRetryAt: latest.items[index]?.nextRetryAt, message: '采集资料将在后台自动重试，无需人工恢复。' });
+    return result;
+  } finally {
+    captureDeliveryBusy = false;
+  }
 }
 
 function listFolderFiles(root, limit = 1000) {
@@ -1076,10 +1286,17 @@ async function captureFrame(session) {
   const sources = await desktopCapturer.getSources({ types: [session.sourceType], thumbnailSize: { width: 1600, height: 900 } });
   const source = sources.find((item) => item.id === session.sourceId);
   if (!source || source.thumbnail.isEmpty()) return false;
-  const filename = `capture-${Date.now()}.jpg`;
+  const capturedAt = new Date().toISOString();
+  const content = source.thumbnail.toJPEG(84);
+  const contentHash = crypto.createHash('sha1').update(content).digest('hex');
+  if (session.lastContentHash === contentHash) return false;
+  const itemId = `${session.id}-${session.items.length + 1}`;
+  const filename = `capture-${capturedAt.replace(/\D/g, '').slice(0, 14)}-${session.items.length + 1}.jpg`;
   const target = path.join(session.folder, filename);
-  fs.writeFileSync(target, source.thumbnail.toJPEG(84));
+  fs.writeFileSync(target, content);
   session.files.push(target);
+  session.items.push({ id: itemId, path: target, filename, capturedAt, sequence: session.items.length + 1, hashAlgorithm: 'sha1', contentHash });
+  session.lastContentHash = contentHash;
   session.count = session.files.length;
   session.updatedAt = new Date().toISOString();
   notify('terminal:capture-changed', { ...session, timer: undefined });
@@ -1091,6 +1308,10 @@ async function startCapture(input = {}) {
   const sourceId = String(input.sourceId || '');
   const sourceType = input.sourceType === 'window' ? 'window' : 'screen';
   if (!sourceId) throw new Error('请选择需要采集的屏幕或窗口。');
+  const availableSources = await desktopCapturer.getSources({ types: ['screen', 'window'], thumbnailSize: { width: 1, height: 1 } });
+  const selectedSource = availableSources.find((source) => source.id === sourceId);
+  if (!selectedSource) throw new Error('所选采集来源已不可用，请重新选择。');
+  if (sourceType === 'window' && isSensitiveCaptureSourceName(selectedSource.name)) throw new Error('该窗口可能包含密码、凭据或私人通信，已自动排除。');
   const id = `windows-terminal-capture-${Date.now()}-${crypto.randomBytes(3).toString('hex')}`;
   const folder = path.join(captureRoot(), id);
   fs.mkdirSync(folder, { recursive: true });
@@ -1099,12 +1320,13 @@ async function startCapture(input = {}) {
     status: 'capturing',
     sourceId,
     sourceType,
-    sourceName: String(input.sourceName || '屏幕'),
+    sourceName: deidentifyCaptureSourceName(selectedSource.name || input.sourceName, sourceType),
     studentId: String(input.studentId || ''),
     projectId: String(input.projectId || ''),
     target: normalizeUploadTarget(input.target),
     folder,
     files: [],
+    items: [],
     count: 0,
     startedAt: new Date().toISOString(),
     courseId: activeCourse?.courseId || '',
@@ -1126,8 +1348,10 @@ function stopCapture() {
   activeCapture.courseCompletedAt = activeCapture.endedAt;
   const result = { ...activeCapture, timer: undefined };
   activeCapture = null;
-  notify('terminal:capture-changed', result);
-  return result;
+  const queued = queueCaptureDelivery(result, { resetAttempt: true });
+  notify('terminal:capture-changed', { ...result, deliveryStatus: queued ? 'queued' : 'empty' });
+  if (queued) void runCaptureDeliveryQueue();
+  return { ...result, deliveryStatus: queued ? 'queued' : 'empty' };
 }
 
 function publicTailscaleStatus(status = findWindowsTailscaleInstall()) {
@@ -1244,17 +1468,34 @@ function registerIpc() {
   ipcMain.handle('terminal:close-course', () => closeTerminalCourse());
   ipcMain.handle('terminal:list-capture-sources', async () => {
     const sources = await desktopCapturer.getSources({ types: ['screen', 'window'], thumbnailSize: { width: 320, height: 180 } });
-    return sources.map((source) => ({ id: source.id, name: source.name, type: source.id.startsWith('screen:') ? 'screen' : 'window' }));
+    return sources.map((source) => {
+      const type = source.id.startsWith('screen:') ? 'screen' : 'window';
+      const blocked = type === 'window' && isSensitiveCaptureSourceName(source.name);
+      return {
+        id: source.id,
+        name: blocked ? '敏感窗口（已自动排除）' : deidentifyCaptureSourceName(source.name, type),
+        type,
+        available: !blocked,
+        blocked,
+        blockReason: blocked ? '该窗口可能包含密码、凭据或私人通信，已自动排除。' : '',
+      };
+    });
   });
   ipcMain.handle('terminal:start-capture', (_event, input) => startCapture(input));
   ipcMain.handle('terminal:stop-capture', () => stopCapture());
   ipcMain.handle('terminal:upload-capture', (_event, input) => uploadPaths(input?.files || [], input?.target, {
     sourceType: 'windows_terminal_course_capture',
     captureSessionId: input?.captureSessionId || '',
+    captureItems: Array.isArray(input?.captureItems) ? input.captureItems : [],
     courseId: input?.courseId || '',
     courseUrl: input?.courseUrl || '',
     courseStartedAt: input?.courseStartedAt || '',
     courseCompletedAt: input?.courseCompletedAt || '',
+    expectedItemCount: Array.isArray(input?.captureItems) ? input.captureItems.length : 0,
+    startedAt: input?.startedAt || input?.courseStartedAt || '',
+    endedAt: input?.endedAt || input?.courseCompletedAt || '',
+    sourceName: input?.sourceName || '',
+    captureSourceType: input?.sourceType || 'screen',
   }));
 }
 
@@ -1293,16 +1534,19 @@ app.whenReady().then(() => {
   startTerminalDiscovery();
   createWindow();
   autoDeliveryTimer = setInterval(() => { void runAutoDelivery(); }, 15000);
+  captureDeliveryTimer = setInterval(() => { void runCaptureDeliveryQueue(); }, 15000);
   pairStatusTimer = setInterval(() => { void pollPendingPairRequest(); }, 2000);
   agentCaptureDrainTimer = setInterval(() => { void runAgentCaptureDrain(); }, 2000);
   agentCaptureInstallTimer = setInterval(() => { void refreshPersonalAgentCapture(); }, 120000);
   void runAutoDelivery();
+  void runCaptureDeliveryQueue();
   void pollPendingPairRequest();
   void refreshPersonalAgentCapture();
 });
 
 app.on('before-quit', () => {
   if (autoDeliveryTimer) clearInterval(autoDeliveryTimer);
+  if (captureDeliveryTimer) clearInterval(captureDeliveryTimer);
   if (pairStatusTimer) clearInterval(pairStatusTimer);
   if (agentCaptureDrainTimer) clearInterval(agentCaptureDrainTimer);
   if (agentCaptureInstallTimer) clearInterval(agentCaptureInstallTimer);

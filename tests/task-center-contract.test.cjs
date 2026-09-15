@@ -102,9 +102,9 @@ test('agent health probes and OpenClaw cron checks never block the renderer IPC 
   assert.doesNotMatch(capabilityReader, /probeExecutable\(/);
   assert.match(main, /await probeExecutableAsync\(refreshedCapability\.exePath, \['cron', 'list'/);
   assert.match(main, /10 \* 60 \* 1000/);
-  assert.match(preload, /getTaskCenterAsync\(force = false\)/);
+  assert.match(preload, /getTaskCenterAsync\(force = false, quick = false\)/);
   assert.match(main, /ipcMain\.handle\('bridge:getTaskCenterAsync'/);
-  assert.match(ui, /await api\.getTaskCenterAsync\(force\)/);
+  assert.match(ui, /await api\.getTaskCenterAsync\(force, quick\)/);
   assert.match(ui, /\}, 60000\)/);
   assert.match(ui, /if \(!document\.hidden\)/);
 });

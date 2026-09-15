@@ -6,9 +6,12 @@ const { spawnSync } = require('node:child_process');
 const test = require('node:test');
 
 const {
+  captureEpochMatches,
+  codexTurnAllowed,
   lifecycleCaptureAllowed,
   normalizeLifecycleEnvelope,
 } = require('../electron/agent-lifecycle-capture.cjs');
+const { compileLifecycleHook } = require('../scripts/compile-lifecycle-hook.cjs');
 
 test('Codex and WorkBuddy lifecycle events become deterministic user and assistant messages', () => {
   const user = normalizeLifecycleEnvelope({
@@ -126,6 +129,45 @@ test('unsupported, protected and disabled lifecycle inputs are ignored', () => {
   assert.equal(lifecycleCaptureAllowed({ lifecycleCapture: { enabled: false, allowedAgents: ['codex'] } }, 'codex'), false);
 });
 
+test('an existing Codex session starts a new authorization segment at the next user turn', () => {
+  const base = {
+    sourceAgent: 'codex',
+    scopeId: 'student-1',
+    grantId: 'grant-1',
+    captureEpoch: 'epoch-2',
+  };
+  const priorStop = normalizeLifecycleEnvelope({
+    ...base,
+    capturedAt: '2026-09-12T10:00:01.000Z',
+    payload: { hook_event_name: 'Stop', session_id: 'already-open', turn_id: 'before-consent', last_assistant_message: 'Old answer' },
+  });
+  assert.equal(codexTurnAllowed(priorStop, null), false);
+  const user = normalizeLifecycleEnvelope({
+    ...base,
+    capturedAt: '2026-09-12T10:00:02.000Z',
+    payload: { hook_event_name: 'UserPromptSubmit', session_id: 'already-open', turn_id: 'after-consent', prompt: 'New question' },
+  });
+  assert.equal(codexTurnAllowed(user, null), true);
+  const assistant = normalizeLifecycleEnvelope({
+    ...base,
+    capturedAt: '2026-09-12T10:00:03.000Z',
+    payload: { hook_event_name: 'Stop', session_id: 'already-open', turn_id: 'after-consent', last_assistant_message: 'New answer' },
+  });
+  assert.equal(codexTurnAllowed(assistant, { messages: [user.message] }), true);
+  assert.equal(codexTurnAllowed(priorStop, { messages: [user.message] }), false);
+  const laterEpoch = normalizeLifecycleEnvelope({
+    ...base,
+    captureEpoch: 'epoch-3',
+    capturedAt: '2026-09-12T10:00:04.000Z',
+    payload: { hook_event_name: 'UserPromptSubmit', session_id: 'already-open', turn_id: 'after-consent', prompt: 'New question' },
+  });
+  assert.notEqual(user.sessionId, laterEpoch.sessionId);
+  assert.notEqual(user.turnMarker, laterEpoch.turnMarker);
+  assert.equal(captureEpochMatches({ captureEpoch: 'epoch-2', capturedAt: '2026-09-12T10:00:02.000Z' }, { enabled: true, captureEpoch: 'epoch-2', authorizedAt: '2026-09-12T10:00:00.000Z' }), true);
+  assert.equal(captureEpochMatches({ captureEpoch: 'epoch-1', capturedAt: '2026-09-12T10:00:02.000Z' }, { enabled: true, captureEpoch: 'epoch-2', authorizedAt: '2026-09-12T10:00:00.000Z' }), false);
+  assert.equal(captureEpochMatches({ captureEpoch: 'epoch-2', capturedAt: '2026-09-12T10:00:02.000Z' }, { enabled: false, captureEpoch: 'epoch-2', authorizedAt: '2026-09-12T10:00:00.000Z' }), false);
+});
+
 test('Windows WorkBuddy lifecycle hook accepts the managed marker and queues an authorized event', { skip: process.platform !== 'win32' }, () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'edu-lifecycle-hook-'));
   try {
@@ -134,7 +176,7 @@ test('Windows WorkBuddy lifecycle hook accepts the managed marker and queues an 
     fs.writeFileSync(descriptorPath, JSON.stringify({
       authentication: { grantId: 'grant-test' },
       defaults: { scopeId: 'student-test' },
-      lifecycleCapture: { enabled: true, allowedAgents: ['workbuddy'], queueDir },
+      lifecycleCapture: { enabled: true, captureEpoch: 'epoch-test', allowedAgents: ['workbuddy'], queueDir },
     }), 'utf8');
     const prompt = '自动会话采集验收测试 🧪';
     const result = spawnSync('powershell.exe', [
@@ -154,6 +196,7 @@ test('Windows WorkBuddy lifecycle hook accepts the managed marker and queues an 
     const envelope = JSON.parse(fs.readFileSync(path.join(queueDir, queued[0]), 'utf8'));
     assert.equal(envelope.scopeId, 'student-test');
     assert.equal(envelope.grantId, 'grant-test');
+    assert.equal(envelope.captureEpoch, 'epoch-test');
     assert.equal(envelope.sourceAgent, 'workbuddy');
     assert.equal(envelope.payload.prompt, prompt);
   } finally {
@@ -164,4 +207,42 @@ test('Windows WorkBuddy lifecycle hook accepts the managed marker and queues an 
 test('Windows lifecycle hook accepts Claude Code and Hermes adapter ids', () => {
   const source = fs.readFileSync(path.join(__dirname, '..', 'electron', 'agent-lifecycle-hook.ps1'), 'utf8');
   assert.match(source, /ValidateSet\('codex', 'qclaw', 'workbuddy', 'openclaw', 'claude-code', 'hermes'\)/);
+});
+
+test('native Codex lifecycle hook queues only authorized new events and returns valid Stop JSON', { skip: process.platform !== 'win32' }, () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'edu-native-lifecycle-hook-'));
+  try {
+    const executable = compileLifecycleHook(
+      path.join(__dirname, '..', 'electron', 'agent-lifecycle-hook.cs'),
+      path.join(tempRoot, 'agent-lifecycle-hook.exe'),
+    );
+    const queueDir = path.join(tempRoot, 'queue');
+    const descriptorPath = path.join(tempRoot, 'descriptor.json');
+    const descriptor = {
+      authentication: { grantId: 'grant-test' },
+      defaults: { scopeId: 'student-test' },
+      lifecycleCapture: { enabled: true, captureEpoch: 'epoch-test', allowedAgents: ['codex'], queueDir },
+    };
+    fs.writeFileSync(descriptorPath, JSON.stringify(descriptor), 'utf8');
+    const invoke = (event) => spawnSync(executable, [
+      '-Descriptor', descriptorPath, '-SourceAgent', 'codex', '-ManagedMarker', 'EDU-MANAGER-LIFECYCLE',
+    ], { input: JSON.stringify(event), encoding: 'utf8', windowsHide: true });
+    const prompt = invoke({ hook_event_name: 'UserPromptSubmit', session_id: 'old-session', turn_id: 'new-turn', prompt: '授权后的问题 🧪' });
+    assert.equal(prompt.status, 0);
+    assert.deepEqual(JSON.parse(prompt.stdout), {});
+    const stop = invoke({ hook_event_name: 'Stop', session_id: 'old-session', turn_id: 'new-turn', last_assistant_message: '授权后的回答。' });
+    assert.equal(stop.status, 0);
+    assert.deepEqual(JSON.parse(stop.stdout), {});
+    const queued = fs.readdirSync(queueDir).filter((name) => name.endsWith('.json'));
+    assert.equal(queued.length, 2);
+    const envelopes = queued.map((name) => JSON.parse(fs.readFileSync(path.join(queueDir, name), 'utf8')));
+    assert.equal(envelopes.every((item) => item.captureEpoch === 'epoch-test' && item.scopeId === 'student-test'), true);
+    assert.equal(envelopes.some((item) => item.payload.prompt === '授权后的问题 🧪'), true);
+    descriptor.lifecycleCapture.enabled = false;
+    fs.writeFileSync(descriptorPath, JSON.stringify(descriptor), 'utf8');
+    assert.deepEqual(JSON.parse(invoke({ hook_event_name: 'Stop', session_id: 'old-session', last_assistant_message: '不应采集' }).stdout), {});
+    assert.equal(fs.readdirSync(queueDir).filter((name) => name.endsWith('.json')).length, 2);
+  } finally {
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
 });

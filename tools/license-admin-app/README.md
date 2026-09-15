@@ -9,6 +9,8 @@
 - 复制授权码
 - 显示并保存 License v3 二维码，可供 Android 单机版扫码或从相册识别
 - 搜索客户、联系方式、订单号、授权码和备注
+- 在发码记录中显示并复制目标设备码，可按目标设备码反查授权码
+- 发码记录默认折叠完整授权码，点击后展开查看，避免长码占用表格空间
 - 修改记录状态：有效、已作废、已过期、已换码
 - 导出 CSV
 - 导出 JSON
@@ -43,7 +45,7 @@ pnpm build:license-admin
 输出位置：
 
 ```text
-release\license-admin\AI-edu-license-admin-Windows-0.4.1.exe
+release\license-admin\AI-edu-license-admin-Windows-0.4.3.exe
 ```
 
 ## 记录文件

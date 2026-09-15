@@ -62,8 +62,10 @@ test('Windows host and student terminal expose scoped course catalog contracts',
   assert.match(host, /当前授权不能使用机构自选课程/);
   assert.match(hostUi, /type CourseSubmenu = 'learning' \| 'management'/);
   assert.match(hostUi, /edu-manager-course-submenu/);
-  assert.match(hostUi, />课程学习<\/span>/);
-  assert.match(hostUi, />课程管理<\/span>/);
+  assert.match(hostUi, /'nav\.courses\.learning': '课程学习'/);
+  assert.match(hostUi, /'nav\.courses\.management': '课程管理'/);
+  assert.match(hostUi, />\{t\('nav\.courses\.learning'\)\}<\/span>/);
+  assert.match(hostUi, />\{t\('nav\.courses\.management'\)\}<\/span>/);
   assert.match(hostUi, /courseSubmenu === 'learning'/);
   assert.match(hostUi, /courseSubmenu === 'management'/);
   assert.match(hostUi, /courseManagementAllowed = !isWindows \|\| Boolean\([\s\S]*licenseCapability\('tenant_course_manage'\)/);

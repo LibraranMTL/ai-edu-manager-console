@@ -391,6 +391,25 @@ function listRecords(recordsPath) {
   return readStore(recordsPath).records.map(normalizeRecord);
 }
 
+function filterRecords(records, query = '') {
+  const keyword = String(query || '').trim().toLowerCase();
+  const normalizedRecords = (Array.isArray(records) ? records : []).map(normalizeRecord);
+  if (!keyword) return normalizedRecords;
+  return normalizedRecords.filter((record) => [
+    record.customerName,
+    record.contact,
+    record.orderNo,
+    record.productId,
+    record.deviceId,
+    record.plan,
+    record.planLabel,
+    record.status,
+    record.code,
+    record.codeHash,
+    record.note,
+  ].some((value) => String(value || '').toLowerCase().includes(keyword)));
+}
+
 function issueLicense(recordsPath, input = {}, options = {}) {
   const record = createLicenseRecord(input, options);
   writeStore(recordsPath, [record, ...listRecords(recordsPath)].slice(0, 10000));
@@ -419,13 +438,14 @@ function escapeCsvCell(value) {
 }
 
 function recordsToCsv(records) {
-  const header = ['生成时间', '客户', '联系方式', '订单号', '授权产品', '套餐', '到期时间', '学生数', '设备数', '状态', '授权码', '备注'];
+  const header = ['生成时间', '客户', '联系方式', '订单号', '授权产品', '目标设备码', '套餐', '到期时间', '学生数', '设备数', '状态', '授权码', '备注'];
   const rows = records.map((record) => [
     record.issuedAt || '',
     record.customerName || '',
     record.contact || '',
     record.orderNo || '',
     record.productId || 'LEGACY_WINDOWS',
+    record.deviceId || '',
     record.planLabel || record.plan || '',
     record.expiresAt || '永久',
     record.studentLimit || '',
@@ -453,6 +473,7 @@ module.exports = {
   capabilitiesFor,
   issueLicense,
   listRecords,
+  filterRecords,
   updateRecord,
   recordsToCsv,
   parseLicenseCode,

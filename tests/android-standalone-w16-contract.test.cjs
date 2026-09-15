@@ -45,9 +45,15 @@ test('W16 digest follows student and project AGENT rules without cross-scope pub
   assert.match(digest, /project\.paths\.qaPath/);
 });
 
-test('formal source advances Android standalone to 1.2.2 code 26', () => {
+test('formal Android source matches its release record and preserves the W16 baseline', () => {
   const build = fs.readFileSync(path.join(__dirname, '..', 'android-standalone-manager', 'app', 'build.gradle.kts'), 'utf8');
-  assert.match(build, /versionCode = 26/);
-  assert.match(build, /versionName = "1\.2\.2"/);
+  const versionName = build.match(/versionName = "(\d+\.\d+\.\d+)"/)?.[1];
+  const versionCode = Number(build.match(/versionCode = (\d+)/)?.[1]);
+  assert.ok(versionName, 'Android standalone versionName must be semantic');
+  assert.ok(versionCode >= 26, 'W16 must not regress below code 26');
+  const releaseRecord = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'android-standalone-manager', 'delivery', `AI-Education-Manager-Android-Standalone-${versionName}-release.json`), 'utf8'));
+  assert.equal(releaseRecord.versionName, versionName);
+  assert.equal(releaseRecord.versionCode, versionCode);
+  assert.equal(releaseRecord.releaseStatus, 'release');
   assert.match(build, /isMinifyEnabled = true/);
 });

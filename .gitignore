@@ -17,6 +17,7 @@ release/**
 !release/网站文件/
 release/网站文件/**
 !release/网站文件/android-standalone-manual.html
+!release/网站文件/edu-manager-version.json
 
 # Android build output and local toolchains
 .android-tools/

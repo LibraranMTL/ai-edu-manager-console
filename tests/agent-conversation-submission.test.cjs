@@ -162,7 +162,11 @@ test('D4-C project targeting never falls back to another student or the student 
   assert.match(main, /projects: linkedProjects/);
   assert.match(main, /resolveLinkedConversationProject/);
   assert.match(main, /target\.message \|\| '暂时无法唯一确定学生或项目/);
-  assert.match(main, /refreshAgentKnowledgeAccessForStudents\(mergeUnique\(\[\.\.\.previousStudentIds, \.\.\.studentIds\]\)\)/);
+  assert.match(main, /const affectedStudentIds = mergeUnique\(\[\.\.\.previousStudentIds, \.\.\.studentIds\]\)/);
+  assert.match(
+    main,
+    /setImmediate\(\(\) => \{[\s\S]{0,240}refreshAgentKnowledgeAccessForStudents\(affectedStudentIds\)/,
+  );
   assert.match(main, /activeAgentKnowledgeDescriptorPath\(\)/);
   assert.match(main, /if \(submission\.studentHint\) return \{ status: 'awaiting_attribution', project \}/);
   assert.match(main, /replaceEducationManagerServers: true/);

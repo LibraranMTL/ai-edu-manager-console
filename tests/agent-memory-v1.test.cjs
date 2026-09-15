@@ -6,6 +6,35 @@ const test = require('node:test');
 
 const { createAgentMemoryStore, MAX_CAPTURE_CHARS, MAX_CAPTURE_MESSAGES } = require('../electron/agent-memory-v1.cjs');
 
+test('Empty authorized sessions can be removed without touching active, populated, or other-student sessions', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'edu-agent-memory-empty-'));
+  try {
+    const store = createAgentMemoryStore({ rootDir: root });
+    const empty = store.startSession({ studentId: 'a', sessionId: 'empty-1', agentId: 'qclaw', origin: 'authorized_agent' }).session;
+    store.finalizeSession({ studentId: 'a', sessionId: empty.sessionId, status: 'cancelled' });
+    store.startSession({ studentId: 'a', sessionId: 'active', agentId: 'qclaw', origin: 'authorized_agent' });
+    const kept = store.startSession({ studentId: 'a', sessionId: 'populated', agentId: 'codex', origin: 'authorized_agent' }).session;
+    store.appendMessages({ studentId: 'a', sessionId: kept.sessionId, messages: [{ role: 'user', content: 'private', eventId: '1' }] });
+    store.finalizeSession({ studentId: 'a', sessionId: kept.sessionId });
+    const receipt = store.startSession({ studentId: 'a', sessionId: 'receipt', agentId: 'qclaw', origin: 'authorized_agent' }).session;
+    store.finalizeSession({ studentId: 'a', sessionId: receipt.sessionId });
+    store.attachConversationReceipt({ studentId: 'a', sessionId: receipt.sessionId, receipt: { status: 'stored', interactionId: 'receipt-only' } });
+    const other = store.startSession({ studentId: 'b', sessionId: 'other', agentId: 'qclaw', origin: 'authorized_agent' }).session;
+    store.finalizeSession({ studentId: 'b', sessionId: other.sessionId });
+    assert.deepEqual(store.deleteEmptySessions({ studentId: 'a', sessionId: 'populated' }), { deleted: 0, remaining: 0 });
+    assert.equal(store.deleteEmptySessions({ studentId: 'a' }).deleted, 1);
+    assert.equal(store.readSession('a', 'empty-1').status, 'deleted');
+    assert.equal(store.readSession('a', 'active').status, 'active');
+    assert.equal(store.readSession('a', 'populated').messages.length, 1);
+    assert.equal(store.readSession('a', 'receipt').conversationReceipt.interactionId, 'receipt-only');
+    assert.equal(store.readSession('b', 'other').status, 'completed');
+    assert.equal(store.startSession({ studentId: 'a', sessionId: 'empty-1', agentId: 'qclaw' }).session.status, 'deleted');
+    assert.throws(() => store.appendMessages({ studentId: 'a', sessionId: 'empty-1', messages: [{ role: 'user', content: 'late' }] }), /Only active sessions/);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test('Agent memory keeps sessions isolated by student and project', () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'edu-agent-memory-'));
   try {
@@ -55,8 +84,8 @@ test('Authorized conversation turns are stored incrementally and deduplicated by
       studentId: 'a',
       sessionId: session.sessionId,
       messages: [
-        { eventId: 'turn-1-user', role: 'user', content: '为什么勾股定理成立？' },
-        { eventId: 'turn-1-assistant', role: 'assistant', content: '可以用面积法证明。' },
+        { eventId: 'turn-1-user', role: 'user', content: '为什么勾股定理成立？', turnMarker: 'authorized-turn' },
+        { eventId: 'turn-1-assistant', role: 'assistant', content: '可以用面积法证明。', turnMarker: 'authorized-turn' },
         { eventId: 'protected', role: 'system', content: 'secret prompt' },
       ],
     };
@@ -66,6 +95,7 @@ test('Authorized conversation turns are stored incrementally and deduplicated by
     assert.equal(first.skippedProtected, 1);
     assert.equal(second.accepted, 0);
     assert.equal(second.session.messages.length, 2);
+    assert.equal(store.readSession('a', session.sessionId).messages[0].turnMarker, 'authorized-turn');
     assert.doesNotMatch(JSON.stringify(second.session), /secret prompt/);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
@@ -112,6 +142,35 @@ test('Expired handoffs are never injected into recent Agent context', () => {
     const context = store.recentContext({ studentId: 'a', agentId: 'codex' });
     assert.equal(context.sessions[0].handoff, null);
     assert.equal(store.readSession('a', session.sessionId).handoff.status, 'expired');
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('Archived conversation trash and permanent deletion also remove Agent memory context', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'edu-agent-memory-'));
+  try {
+    const store = createAgentMemoryStore({ rootDir: root });
+    const session = store.startSession({ studentId: 'student-a', sessionId: 'native-1', agentId: 'codex', origin: 'authorized_agent', title: 'Private title' }).session;
+    store.appendMessages({ studentId: 'student-a', sessionId: session.sessionId, messages: [{ role: 'user', content: 'Private conversation', eventId: 'message-1' }] });
+    store.finalizeSession({ studentId: 'student-a', sessionId: session.sessionId, summary: { objective: 'Private objective', openLoops: ['Private next step'] } });
+    store.attachConversationReceipt({ studentId: 'student-a', sessionId: session.sessionId, receipt: { status: 'stored', assetId: 'asset-1' } });
+    assert.equal(store.recentContext({ studentId: 'student-a', agentId: 'qclaw' }).sessions.length, 1);
+    const trashed = store.updateArchivedAssetLifecycle({ studentId: 'student-a', assetId: 'asset-1', action: 'trash' });
+    assert.equal(trashed.matched, 1);
+    assert.deepEqual(trashed.sessionIds, [session.sessionId]);
+    assert.equal(store.recentContext({ studentId: 'student-a', agentId: 'qclaw' }).sessions.length, 0);
+    assert.equal(store.updateArchivedAssetLifecycle({ studentId: 'student-a', assetId: 'asset-1', action: 'restore' }).changed, 1);
+    assert.equal(store.recentContext({ studentId: 'student-a', agentId: 'qclaw' }).sessions.length, 1);
+    assert.equal(store.updateArchivedAssetLifecycle({ studentId: 'student-b', assetId: 'asset-1', action: 'delete' }).matched, 0);
+    store.updateArchivedAssetLifecycle({ studentId: 'student-a', assetId: 'asset-1', action: 'delete' });
+    const tombstone = store.readSession('student-a', session.sessionId);
+    assert.equal(tombstone.status, 'deleted');
+    assert.equal(store.listSessions({ studentId: 'student-a' }).length, 0);
+    assert.equal(store.recentContext({ studentId: 'student-a', agentId: 'qclaw' }).sessions.length, 0);
+    assert.doesNotMatch(JSON.stringify(tombstone), /Private/);
+    assert.equal(store.startSession({ studentId: 'student-a', sessionId: session.sessionId, agentId: 'codex' }).session.status, 'deleted');
+    assert.throws(() => store.appendMessages({ studentId: 'student-a', sessionId: session.sessionId, messages: [{ role: 'user', content: 'resurrect' }] }), /Only active sessions/);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }

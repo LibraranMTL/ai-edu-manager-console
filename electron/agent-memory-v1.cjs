@@ -71,6 +71,7 @@ function normalizeMessage(value = {}, now = new Date().toISOString()) {
     role,
     content,
     occurredAt,
+    ...(value.turnMarker ? { turnMarker: bounded(value.turnMarker, 64) } : {}),
   };
 }
 
@@ -78,6 +79,8 @@ function normalizeSettings(value = {}) {
   return {
     automationEnabled: value.automationEnabled === true,
     allowedAgents: stringList(value.allowedAgents, 30, 120),
+    captureEpoch: bounded(value.captureEpoch, 120),
+    captureAuthorizedAt: bounded(value.captureAuthorizedAt, 80),
     retentionDays: Math.max(1, Math.min(180, Number(value.retentionDays || 30))),
     updatedAt: bounded(value.updatedAt, 80),
   };
@@ -119,6 +122,7 @@ function createAgentMemoryStore(options = {}) {
       .filter((entry) => entry.isFile() && entry.name.endsWith('.json'))
       .map((entry) => readJson(path.join(directory, entry.name), null))
       .filter((session) => session?.schema === AGENT_MEMORY_SCHEMA && session.studentId === studentId)
+      .filter((session) => input.includeDeleted === true || session.status !== 'deleted')
       .map((session) => {
         if (session.handoff?.status === 'pending' && Date.parse(session.handoff.expiresAt || '') <= nowMs) {
           session.handoff.status = 'expired';
@@ -258,11 +262,104 @@ function createAgentMemoryStore(options = {}) {
 
   function attachConversationReceipt(input = {}) {
     const session = requireSession(input);
+    if (session.status === 'deleted') throw new Error('Deleted Agent memory sessions cannot be restored by a receipt.');
     session.conversationReceipt = input.receipt && typeof input.receipt === 'object'
       ? JSON.parse(JSON.stringify(input.receipt))
       : null;
     session.updatedAt = clock();
     return { session: saveSession(session) };
+  }
+
+  function updateArchivedAssetLifecycle(input = {}) {
+    const studentId = bounded(input.studentId);
+    const assetId = bounded(input.assetId, 240);
+    const action = bounded(input.action, 20);
+    if (!studentId || !assetId || !['trash', 'restore', 'delete'].includes(action)) {
+      throw new Error('A student, archived asset, and valid lifecycle action are required.');
+    }
+    const directory = path.join(studentDir(studentId), 'sessions');
+    if (!fs.existsSync(directory)) return { matched: 0, changed: 0, sessionIds: [] };
+    let matched = 0;
+    let changed = 0;
+    const sessionIds = [];
+    for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+      if (!entry.isFile() || !entry.name.endsWith('.json')) continue;
+      const session = readJson(path.join(directory, entry.name), null);
+      if (session?.studentId !== studentId || String(session?.conversationReceipt?.assetId || '') !== assetId) continue;
+      matched += 1;
+      sessionIds.push(session.sessionId);
+      if (session.status === 'deleted') {
+        if (action !== 'delete') throw new Error('A permanently deleted Agent conversation cannot be restored.');
+        continue;
+      }
+      if (!session.finalizedAt) throw new Error('An active Agent conversation cannot be managed as an archived asset.');
+      const now = clock();
+      if (action === 'delete') {
+        // Keep only an identity tombstone so a late lifecycle event cannot recreate the erased conversation.
+        saveSession({
+          schema: AGENT_MEMORY_SCHEMA,
+          sessionId: session.sessionId,
+          idempotencyKey: session.idempotencyKey,
+          studentId,
+          projectId: session.projectId || '',
+          agentId: session.agentId,
+          origin: session.origin,
+          status: 'deleted',
+          materialLifecycleStatus: 'deleted',
+          finalizedAt: session.finalizedAt,
+          finalizationKey: session.finalizationKey,
+          deletedAt: now,
+          updatedAt: now,
+          conversationReceipt: { assetId, status: 'deleted' },
+        });
+      } else {
+        session.materialLifecycleStatus = action === 'trash' ? 'trashed' : 'active';
+        session.updatedAt = now;
+        if (action === 'trash' && session.handoff?.status === 'pending') {
+          session.handoff.status = 'cancelled';
+          session.handoff.updatedAt = now;
+        }
+        saveSession(session);
+      }
+      changed += 1;
+    }
+    return { matched, changed, sessionIds };
+  }
+
+  function deleteEmptySessions(input = {}) {
+    const studentId = bounded(input.studentId);
+    const requestedId = bounded(input.sessionId, 240);
+    const directory = path.join(studentDir(studentId), 'sessions');
+    if (!fs.existsSync(directory)) return { deleted: 0, remaining: 0 };
+    let deleted = 0;
+    let remaining = 0;
+    const limit = requestedId ? 1 : 200;
+    for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+      if (!entry.isFile() || !entry.name.endsWith('.json')) continue;
+      const session = readJson(path.join(directory, entry.name), null);
+      if (session?.schema !== AGENT_MEMORY_SCHEMA || session.studentId !== studentId
+        || session.origin !== 'authorized_agent' || session.status === 'active' || session.status === 'deleted'
+        || session.conversationReceipt || (session.messages || []).length || (session.observations || []).length
+        || (requestedId && session.sessionId !== requestedId)) continue;
+      if (deleted >= limit) { remaining += 1; continue; }
+      const now = clock();
+      saveSession({
+        schema: AGENT_MEMORY_SCHEMA,
+        studentId,
+        sessionId: session.sessionId,
+        idempotencyKey: session.idempotencyKey,
+        projectId: session.projectId || '',
+        agentId: session.agentId,
+        origin: session.origin,
+        status: 'deleted',
+        finalizedAt: session.finalizedAt || now,
+        finalizationKey: session.finalizationKey || '',
+        updatedAt: now,
+        deletedAt: now,
+      });
+      deleted += 1;
+    }
+    return { deleted, remaining };
   }
 
   function finalizeSession(input = {}) {
@@ -301,6 +398,8 @@ function createAgentMemoryStore(options = {}) {
     const agentId = bounded(input.agentId, 120);
     const relevant = sessions.filter((session) => (
       session.status !== 'cancelled'
+      && session.materialLifecycleStatus !== 'trashed'
+      && session.status !== 'deleted'
       && (!session.handoff || session.handoff.status !== 'pending' || ['any-agent', agentId].includes(session.handoff.targetAgent))
     ));
     return {
@@ -348,12 +447,14 @@ function createAgentMemoryStore(options = {}) {
     appendObservation,
     attachConversationReceipt,
     cancelHandoff: (input) => updateHandoff(input, 'cancel'),
+    deleteEmptySessions,
     finalizeSession,
     getSettings,
     listSessions,
     recentContext,
     readSession,
     startSession,
+    updateArchivedAssetLifecycle,
     updateSettings,
   };
 }

@@ -28,6 +28,9 @@ contextBridge.exposeInMainWorld('AndroidBridge', {
   getCaptureCenterState() {
     return ipcRenderer.sendSync('bridge:getCaptureCenterState');
   },
+  setCaptureVisionConsent(inputJson) {
+    return ipcRenderer.sendSync('bridge:setCaptureVisionConsent', inputJson);
+  },
   onCaptureChanged(callback) {
     const listener = (_event, payload) => callback(payload);
     ipcRenderer.on('capture:changed', listener);
@@ -35,6 +38,39 @@ contextBridge.exposeInMainWorld('AndroidBridge', {
   },
   listCaptureSources() {
     return ipcRenderer.invoke('bridge:listCaptureSources');
+  },
+  getCaptureSessionSummaries(inputJson) {
+    return ipcRenderer.invoke('bridge:getCaptureSessionSummaries', inputJson);
+  },
+  getCaptureTimelineDates(inputJson) {
+    return ipcRenderer.invoke('bridge:getCaptureTimelineDates', inputJson);
+  },
+  getCaptureTimeline(inputJson) {
+    return ipcRenderer.invoke('bridge:getCaptureTimeline', inputJson);
+  },
+  getCaptureTimelineSegments(inputJson) {
+    return ipcRenderer.invoke('bridge:getCaptureTimelineSegments', inputJson);
+  },
+  getCaptureTimelineProcessingState(inputJson) {
+    return ipcRenderer.invoke('bridge:getCaptureTimelineProcessingState', inputJson);
+  },
+  retryCaptureTimelineProcessing(inputJson) {
+    return ipcRenderer.invoke('bridge:retryCaptureTimelineProcessing', inputJson);
+  },
+  reportCaptureTimelinePerformance(inputJson) {
+    return ipcRenderer.invoke('bridge:reportCaptureTimelinePerformance', inputJson);
+  },
+  getCaptureTimelineKnowledgeLinks(inputJson) {
+    return ipcRenderer.invoke('bridge:getCaptureTimelineKnowledgeLinks', inputJson);
+  },
+  getCaptureThumbnail(inputJson) {
+    return ipcRenderer.invoke('bridge:getCaptureThumbnail', inputJson);
+  },
+  openCaptureOriginal(inputJson) {
+    return ipcRenderer.invoke('bridge:openCaptureOriginal', inputJson);
+  },
+  rebuildCaptureTimeline(inputJson) {
+    return ipcRenderer.invoke('bridge:rebuildCaptureTimeline', inputJson);
   },
   startCaptureSession(optionsJson) {
     return ipcRenderer.invoke('bridge:startCaptureSession', optionsJson);
@@ -151,7 +187,7 @@ contextBridge.exposeInMainWorld('AndroidBridge', {
     return ipcRenderer.sendSync('bridge:updateProjectStatus', projectId, status);
   },
   updateProjectStudents(projectId, studentIdsJson) {
-    return ipcRenderer.sendSync('bridge:updateProjectStudents', projectId, studentIdsJson);
+    return ipcRenderer.invoke('bridge:updateProjectStudents', projectId, studentIdsJson);
   },
   applyProjectWorkspaceTemplate(projectId, templateId, foldersJson, templateName, templateV2Json) {
     return ipcRenderer.sendSync('bridge:applyProjectWorkspaceTemplate', projectId, templateId, foldersJson, templateName, templateV2Json);
@@ -458,6 +494,12 @@ contextBridge.exposeInMainWorld('AndroidBridge', {
   getGrowthEvidenceReview(studentId) {
     return ipcRenderer.sendSync('bridge:getGrowthEvidenceReview', studentId);
   },
+  getGrowthEvidenceReviewAsync(studentId) {
+    return ipcRenderer.invoke('bridge:getGrowthEvidenceReviewAsync', studentId);
+  },
+  getGrowthModelSnapshot(studentId) {
+    return ipcRenderer.invoke('bridge:getGrowthModelSnapshot', studentId);
+  },
   updateGrowthEvidenceStatus(studentId, evidenceId, status, note) {
     return ipcRenderer.sendSync('bridge:updateGrowthEvidenceStatus', studentId, evidenceId, status, note);
   },
@@ -469,6 +511,9 @@ contextBridge.exposeInMainWorld('AndroidBridge', {
   },
   getGrowthIndex(studentId) {
     return ipcRenderer.sendSync('bridge:getGrowthIndex', studentId);
+  },
+  getGrowthIndexAsync(studentId) {
+    return ipcRenderer.invoke('bridge:getGrowthIndexAsync', studentId);
   },
   getStudents() {
     return ipcRenderer.sendSync('bridge:getStudents');
@@ -695,8 +740,8 @@ contextBridge.exposeInMainWorld('AndroidBridge', {
   getTaskCenter() {
     return ipcRenderer.sendSync('bridge:getTaskCenter');
   },
-  getTaskCenterAsync(force = false) {
-    return ipcRenderer.invoke('bridge:getTaskCenterAsync', Boolean(force));
+  getTaskCenterAsync(force = false, quick = false) {
+    return ipcRenderer.invoke('bridge:getTaskCenterAsync', Boolean(force), Boolean(quick));
   },
   getTaskStatusesAsync(taskIds = []) {
     return ipcRenderer.invoke('bridge:getTaskStatusesAsync', taskIds);
@@ -719,11 +764,17 @@ contextBridge.exposeInMainWorld('AndroidBridge', {
   getAgentMemoryState(studentId) {
     return ipcRenderer.sendSync('bridge:getAgentMemoryState', studentId);
   },
+  deleteEmptyAgentMemorySessions(studentId, sessionId = '') {
+    return ipcRenderer.sendSync('bridge:deleteEmptyAgentMemorySessions', studentId, sessionId);
+  },
   setAgentMemoryAutomation(studentId, enabled) {
     return ipcRenderer.sendSync('bridge:setAgentMemoryAutomation', studentId, Boolean(enabled));
   },
   activateAgentMemoryCapture(studentId) {
     return ipcRenderer.sendSync('bridge:activateAgentMemoryCapture', studentId);
+  },
+  openCodexHookReview() {
+    return ipcRenderer.sendSync('bridge:openCodexHookReview');
   },
   submitAgentConversation(requestJson) {
     return ipcRenderer.invoke('bridge:submitAgentConversation', requestJson);

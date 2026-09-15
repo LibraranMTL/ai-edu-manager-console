@@ -1,10 +1,23 @@
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
 const test = require('node:test');
 
 const {
+  frontmatterValueFromFile,
   reportContentFingerprint,
   validateReportDraftForAutoPublish,
 } = require('../electron/report-auto-publication.cjs');
+
+test('file frontmatter reader reads the header of reports larger than its prefix limit', (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'report-frontmatter-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const file = path.join(root, '每周行动建议.md');
+  fs.writeFileSync(file, `---\nstatus: published\nupdated: 2026-09-09\n---\n\n${'行动建议。'.repeat(2400)}`, 'utf8');
+  assert.ok(fs.statSync(file).size > 8192);
+  assert.equal(frontmatterValueFromFile(file, 'status', 8192), 'published');
+});
 
 const growthIndex = {
   sourceFingerprint: 'growth-fp-1',
@@ -50,6 +63,64 @@ test('watching evidence must remain explicit observation language', () => {
     sourceAccessible: () => true,
   });
   assert.equal(valid.valid, true);
+});
+
+test('watching evidence accepts equivalent cautious wording in conclusion sections', () => {
+  for (const wording of ['待确认', '待核验', '不能据此形成正式结论']) {
+    const result = validateReportDraftForAutoPublish({
+      content: draft(`## 关键证据\n\n实验设计能力${wording}。[依据:watching-1]`),
+      studentId: 'student-a',
+      expectedFingerprint: 'growth-fp-1',
+      growthIndex,
+      sourceAccessible: () => true,
+    });
+    assert.equal(result.valid, true, wording);
+  }
+});
+
+test('watching evidence can support actions and source ledgers without becoming a formal conclusion', () => {
+  const result = validateReportDraftForAutoPublish({
+    content: draft([
+      '## 下一阶段目标',
+      '',
+      '补充三次实验记录并复核设计步骤。[依据:watching-1]',
+      '',
+      '## 建议行动',
+      '',
+      '安排每周一次的实验复盘。[依据:watching-1]',
+      '',
+      '## 依据来源',
+      '',
+      '| 证据 ID | 状态 |',
+      '| --- | --- |',
+      '| watching-1 [依据:watching-1] | watching |',
+    ].join('\n')),
+    studentId: 'student-a',
+    expectedFingerprint: 'growth-fp-1',
+    growthIndex,
+    sourceAccessible: () => true,
+  });
+  assert.equal(result.valid, true);
+});
+
+test('watching evidence remains blocked when an action section ends and a claim section begins', () => {
+  const result = validateReportDraftForAutoPublish({
+    content: draft([
+      '## 建议行动',
+      '',
+      '安排更多训练。[依据:watching-1]',
+      '',
+      '## 主要问题',
+      '',
+      '已经形成严重拖延习惯。[依据:watching-1]',
+    ].join('\n')),
+    studentId: 'student-a',
+    expectedFingerprint: 'growth-fp-1',
+    growthIndex,
+    sourceAccessible: () => true,
+  });
+  assert.equal(result.valid, false);
+  assert.match(result.errors.join('；'), /观察项不能写成正式定论/);
 });
 
 test('scope, stale fingerprint, missing source and rejected evidence block publication', () => {

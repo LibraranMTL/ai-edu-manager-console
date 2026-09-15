@@ -101,21 +101,53 @@ function normalizeLifecycleEnvelope(value = {}) {
       || payload.context?.runId,
     300,
   );
+  const captureEpoch = text(value.captureEpoch, 120);
+  const turnMarker = sourceAgent === 'codex' && nativeEventId
+    ? stableHash(`${nativeId}\n${captureEpoch}\n${nativeEventId}`, 48)
+    : '';
   return {
     schema: LIFECYCLE_CAPTURE_SCHEMA,
     sourceAgent,
     scopeId: text(value.scopeId, 240),
     grantId: text(value.grantId, 240),
+    captureEpoch,
     nativeSessionId: nativeId,
-    sessionId,
+    sessionId: captureEpoch ? `lifecycle-${sourceAgent}-${stableHash(`${nativeId}\n${captureEpoch}`)}` : sessionId,
     action,
     status,
     title: `${sourceAgent} 授权会话`,
     occurredAt,
-    eventId: `lifecycle-event-${stableHash(`${sourceAgent}\n${nativeId}\n${name}\n${nativeEventId}\n${role}\n${content}\n${occurredAt}`, 48)}`,
-    message: action === 'append' ? { role, content, occurredAt } : null,
-    finalizationKey: `lifecycle-finalize:${sourceAgent}:${stableHash(nativeId, 48)}`,
+    eventId: `lifecycle-event-${stableHash(
+      sourceAgent === 'codex' && nativeEventId
+        ? `${sourceAgent}\n${nativeId}\n${captureEpoch}\n${name}\n${nativeEventId}\n${role}`
+        : `${sourceAgent}\n${nativeId}\n${captureEpoch}\n${name}\n${nativeEventId}\n${role}\n${content}\n${occurredAt}`,
+      48,
+    )}`,
+    turnMarker,
+    message: action === 'append' ? { role, content, occurredAt, ...(turnMarker ? { turnMarker } : {}) } : null,
+    finalizationKey: `lifecycle-finalize:${sourceAgent}:${stableHash(captureEpoch ? `${nativeId}\n${captureEpoch}` : nativeId, 48)}`,
   };
+}
+
+function codexTurnAllowed(event, session) {
+  if (event.sourceAgent !== 'codex' || event.action !== 'append') return true;
+  if (!event.turnMarker) return false;
+  if (event.message?.role === 'user') return true;
+  return Boolean(session?.messages?.some((message) => (
+    message.role === 'user' && message.turnMarker === event.turnMarker
+  )));
+}
+
+function captureEpochMatches(value, capture = {}) {
+  // The epoch is issued only after consent and changes on reauthorization.
+  // Do not compare host and personal-terminal clocks: offline relays may skew.
+  return Boolean(
+    capture.enabled === true
+    && capture.captureEpoch
+    && String(value?.captureEpoch || '') === String(capture.captureEpoch)
+    && Number.isFinite(Date.parse(String(capture.authorizedAt || '')))
+    && Number.isFinite(Date.parse(String(value?.capturedAt || '')))
+  );
 }
 
 function lifecycleCaptureAllowed(descriptor = {}, sourceAgent = '') {
@@ -127,6 +159,8 @@ function lifecycleCaptureAllowed(descriptor = {}, sourceAgent = '') {
 module.exports = {
   LIFECYCLE_CAPTURE_SCHEMA,
   SUPPORTED_AGENTS,
+  captureEpochMatches,
+  codexTurnAllowed,
   lifecycleCaptureAllowed,
   normalizeLifecycleEnvelope,
   stableHash,

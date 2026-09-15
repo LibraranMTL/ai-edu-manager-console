@@ -126,8 +126,12 @@ test('P5-R candidate preserves the optimized unencrypted directory migration bas
   assert.match(migration, /!descriptor\.optBoolean\("encrypted", true\)/);
   assert.match(migration, /MANIFEST_HASH_PATH/);
   assert.match(migration, /completedKeys/);
-  assert.match(build, /versionName = "1\.2\.2"/);
-  assert.match(build, /versionCode = 26/);
+  const versionName = build.match(/versionName = "(\d+)\.(\d+)\.(\d+)"/);
+  const versionCode = Number(build.match(/versionCode = (\d+)/)?.[1]);
+  assert.ok(versionName, 'Android standalone versionName must be semantic');
+  assert.ok(versionCode >= 26, 'P5-R migration must not regress below code 26');
+  const versionParts = versionName.slice(1).map(Number);
+  assert.ok(versionParts[0] > 1 || (versionParts[0] === 1 && (versionParts[1] > 2 || (versionParts[1] === 2 && versionParts[2] >= 2))), 'P5-R migration must not regress below 1.2.2');
 });
 
 test('P5 keeps original materials and secrets outside the collaboration payload', () => {

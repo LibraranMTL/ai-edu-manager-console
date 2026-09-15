@@ -97,10 +97,17 @@ function escapeHtml(value) {
     .replace(/'/g, '&#039;');
 }
 
+function compactLicenseCode(value) {
+  const code = String(value || '').trim();
+  if (!code) return '无授权码';
+  if (code.length <= 42) return code;
+  return `${code.slice(0, 20)}…${code.slice(-14)}`;
+}
+
 function renderRecords() {
   const body = $('recordsBody');
   if (!state.records.length) {
-    body.innerHTML = '<tr><td colspan="7" class="muted">暂无授权记录。</td></tr>';
+    body.innerHTML = '<tr><td colspan="8" class="muted">暂无授权记录。</td></tr>';
     return;
   }
   body.innerHTML = state.records.map((record) => `
@@ -115,6 +122,11 @@ function renderRecords() {
       <td>
         <strong>${escapeHtml(record.planLabel || record.plan || '')}</strong>
         <div class="muted">${escapeHtml(record.productId || '历史 Windows 授权')} · ${escapeHtml(record.plan || '')}</div>
+      </td>
+      <td class="device-cell">
+        ${record.deviceId
+          ? `<code>${escapeHtml(record.deviceId)}</code><button class="ghost compact-copy" data-action="copy-device" data-device-id="${escapeHtml(record.deviceId)}">复制设备码</button>`
+          : '<span class="muted">未记录（历史授权）</span>'}
       </td>
       <td>
         学生 ${escapeHtml(record.studentLimit || '')}<br />
@@ -132,7 +144,12 @@ function renderRecords() {
           <option value="replaced" ${record.status === 'replaced' ? 'selected' : ''}>已换码</option>
         </select>
       </td>
-      <td class="code-cell">${escapeHtml(record.code || '')}</td>
+      <td class="code-cell">
+        <details class="license-code-details">
+          <summary title="点击展开完整授权码"><code>${escapeHtml(compactLicenseCode(record.code))}</code><span>展开完整授权码</span></summary>
+          <code class="full-license-code">${escapeHtml(record.code || '')}</code>
+        </details>
+      </td>
       <td>
         <div class="row-actions">
           <button class="secondary" data-action="copy" data-code="${escapeHtml(record.code || '')}">复制</button>
@@ -280,7 +297,7 @@ function init() {
       $('studentLimit').value = '1';
       $('deviceLimit').value = '1';
     }
-    $('deviceId').placeholder = android ? 'ANDROID-XXXX-XXXX-XXXX' : 'HOST-XXXX-XXXX-XXXX';
+    $('deviceId').placeholder = android ? 'ANDROID-XXXX-XXXX-XXXX' : 'host-xxxxxxxxxxxxxxxx';
   });
   $('searchInput').addEventListener('input', (event) => {
     state.query = event.target.value;
@@ -334,6 +351,7 @@ function init() {
     if (!target) return;
     const action = target.dataset.action;
     if (action === 'copy') copyText(target.dataset.code || '', '已复制授权码。');
+    if (action === 'copy-device') copyText(target.dataset.deviceId || '', '已复制目标设备码。');
     if (action === 'qr') showLicenseQr(target.dataset.code || '', target.dataset.label || 'License-v3');
     if (action === 'validate') validateCode(target.dataset.code || '');
   });

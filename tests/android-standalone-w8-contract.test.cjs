@@ -7,6 +7,7 @@ const root = path.join(repo, 'android-standalone-manager', 'app', 'src', 'main',
 const source = fs.readFileSync(path.join(root, 'GrowthModelService.kt'), 'utf8');
 const activity = fs.readFileSync(path.join(root, 'MainActivity.kt'), 'utf8');
 const evidencePolicy = fs.readFileSync(path.join(root, 'GrowthEvidencePolicy.kt'), 'utf8');
+const publicationPolicy = fs.readFileSync(path.join(root, 'EducationPublicationPolicy.kt'), 'utf8');
 const reportPolicy = fs.readFileSync(path.join(root, 'ReportDraftPolicy.kt'), 'utf8');
 const studentDigest = fs.readFileSync(path.join(root, 'StudentDigestOrchestrator.kt'), 'utf8');
 const conversationDigest = fs.readFileSync(path.join(root, 'ConversationDigestService.kt'), 'utf8');
@@ -33,10 +34,32 @@ test('W8 retains all four reports and the weekly-title versus legacy-filename co
   assert.match(source, /presentation_only: true/); assert.match(source, /source_layer: growth_model/);
 });
 
-test('W8 separates evidence review, report drafting and explicit publication', () => {
-  assert.match(source, /fun generateReportDrafts/); assert.match(source, /status: pending_review/); assert.match(source, /fun publishReportDrafts/);
-  assert.match(activity, /正式报告不会被自动覆盖/); assert.match(activity, /暂不发布/); assert.match(activity, /确认发布/);
-  assert.match(source, /只引用给定的已确认证据/); assert.match(source, /没有已确认证据/);
+test('W8 directly publishes evidence-bound reports and protects existing report content', () => {
+  assert.match(source, /fun generateAndPublishReports/); assert.match(source, /reportHeader\(student, d, "active"/);
+  assert.match(activity, /找到已有报告，未自动覆盖/); assert.match(activity, /确认更新并发布/);
+  assert.match(source, /只引用给定的已确认证据/); assert.match(source, /当前没有已确认的成长证据/);
+  for (const status of ['published', 'current', 'updated', 'active']) assert.match(publicationPolicy, new RegExp(`"${status}"`));
+});
+
+test('W8 report output chooser renders selectable rows without a competing message panel', () => {
+  const chooser = activity.slice(activity.indexOf('private fun chooseReportForPublication'), activity.indexOf('private fun confirmReportGeneration'));
+  assert.match(chooser, /选择报告（\$\{definitions\.size\} 份）/);
+  assert.match(chooser, /setItems\(definitions\.map \{ it\.title \}/);
+  assert.doesNotMatch(chooser, /已找到 \$\{definitions\.size\} 份可输出报告/);
+});
+
+test('W8 growth and report surfaces keep user-facing states readable and print after page readiness', () => {
+  assert.match(activity, /growthStatusLabel/);
+  assert.match(activity, /已关联原始资料/);
+  assert.match(activity, /暂无学情报告/);
+  assert.doesNotMatch(activity, /证据状态已更新为 \$status/);
+  const publication = fs.readFileSync(path.join(root, 'EducationPublicationActivity.kt'), 'utf8');
+  assert.match(publication, /prepareWebViewForOutput\([^)]*\) \{/);
+  assert.match(publication, /record\.sourceTitle/);
+  assert.match(publication, /prepareWebViewForOutput\("pdf"\)/);
+  const printFlow = publication.slice(publication.indexOf('private fun printDocument'), publication.indexOf('private fun chooseSaveDestination'));
+  assert.doesNotMatch(printFlow, /format = "pdf"/);
+  assert.doesNotMatch(publication, /postDelayed\(\{[\s\S]*printManager\.print/);
 });
 
 test('W8 repairs legacy source fields without confirming a historical report as primary evidence', () => {
@@ -46,6 +69,8 @@ test('W8 repairs legacy source fields without confirming a historical report as 
   assert.match(source, /attachCandidateSource/);
   assert.match(activity, /历史报告不能作为自身证据/);
   assert.match(activity, /选择支撑这条证据的原始资料/);
+  assert.match(activity, /选择资料并确认/);
+  assert.doesNotMatch(activity, /来源 URI\/文件标识（必填）/);
 });
 
 test('W8 automatically registers deduplicated digest evidence as pending review', () => {
@@ -60,11 +85,11 @@ test('W8 automatically registers deduplicated digest evidence as pending review'
   assert.match(activity, /高级：手工添加成长证据/);
 });
 
-test('W8 report drafting uses conservative complete-section fallbacks and draft preview', () => {
+test('W8 direct report publication uses conservative complete-section fallbacks', () => {
   assert.match(reportPolicy, /complete\(/);
   assert.match(reportPolicy, /资料不足/);
   assert.match(reportPolicy, /未确认依据/);
   assert.doesNotMatch(source, /草稿缺少章节/);
   assert.match(source, /fallbackSectionCount/);
-  assert.match(activity, /预览草稿/);
+  assert.match(activity, /生成并发布报告/);
 });

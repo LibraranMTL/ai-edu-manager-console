@@ -9,6 +9,7 @@ const {
   collectStudentArchiveFiles,
   createStudentArchivePublication,
   filterLocallyAuthoredStudentArchiveFiles,
+  isPublishableLearningReportStatus,
   materializeStudentArchivePublication,
   recordPublishedStudentArchive,
   splitStudentArchivePublication,
@@ -68,6 +69,9 @@ test('student archive collection includes governed outputs and excludes original
   write(path.join(growth, 'growth-index.json'), '{"confirmed":1}');
   write(path.join(growth, '成长证据草稿.md'), '候选内容');
   write(path.join(reports, '整体画像.md'), '---\nstatus: published\n---\n报告');
+  write(path.join(reports, '历史变化.md'), '---\nstatus: current\n---\n旧版正式报告');
+  write(path.join(reports, '每周行动建议.md'), '---\nstatus: active\n---\n兼容正式报告');
+  write(path.join(reports, '阶段总结.md'), '---\nstatus: generated\n---\n尚未校验的生成结果');
   write(path.join(reports, '待审核.md'), '---\nstatus: pending_review\n---\n候选报告');
   write(path.join(version, '教育档案.md'), '完整档案');
   write(path.join(archive, 'latest.json'), JSON.stringify({ versionDir: version }));
@@ -88,7 +92,17 @@ test('student archive collection includes governed outputs and excludes original
   ]));
   assert.equal(files.some((item) => item.sourcePath.startsWith(raw)), false);
   assert.equal(files.filter((item) => item.relativePath === '整体画像.md').length, 1);
-  assert.equal(files.some((item) => /草稿|待审核/u.test(item.relativePath)), false);
+  assert.equal(files.filter((item) => item.kind === 'learning_report').length, 3);
+  assert.equal(files.some((item) => /阶段总结|草稿|待审核/u.test(item.relativePath)), false);
+});
+
+test('student archive report status policy accepts formal legacy states but rejects generated drafts', () => {
+  for (const status of ['published', 'current', 'updated', 'active']) {
+    assert.equal(isPublishableLearningReportStatus(status), true, `${status} should be publishable`);
+  }
+  for (const status of ['', 'generated', 'draft', 'pending_review', 'rejected']) {
+    assert.equal(isPublishableLearningReportStatus(status), false, `${status || '(missing)'} should stay local`);
+  }
 });
 
 test('student archive publication uses stable objects, immutable revisions and parent links', () => {

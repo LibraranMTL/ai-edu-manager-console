@@ -41,6 +41,7 @@ test('collaboration state derives device trust and student maps without dropping
 });
 
 test('student archive collaboration can be paused and manually synchronized per student', () => {
+  assert.match(main, /pathInside,[\s\S]*?require\('\.\/collaboration-sync\.cjs'\)/);
   assert.match(main, /function setStudentArchiveSyncEnabled\(studentId, enabled\)/);
   assert.match(main, /function studentArchiveSyncStatus\(state = readCollaborationState\(\)\)/);
   assert.match(main, /bridge:setStudentArchiveSyncEnabled'[\s\S]*?licensedIpc\(event, '更新学生档案同步策略'/);
@@ -50,4 +51,28 @@ test('student archive collaboration can be paused and manually synchronized per 
   assert.match(preload, /syncStudentArchiveNow\(studentId\)/);
   assert.match(ui, /跨主机档案同步/);
   assert.match(ui, /原始资料与草稿不会同步/);
+});
+
+test('manual archive sync explains when an unvalidated report is intentionally excluded', () => {
+  assert.match(main, /function pendingStudentArchiveReports\(student\)/);
+  assert.match(main, /frontmatterValueFromFile\(file, 'status', 8192\)/);
+  assert.doesNotMatch(main, /frontmatterValue\(readSmallTextFile\(file, 8192\), 'status'\)/);
+  assert.match(main, /isPublishableLearningReportStatus\(status\)/);
+  assert.match(main, /尚未通过自动校验发布，未纳入知识同步；其余学生知识档案无实质变化/);
+});
+
+test('student archive sync reports delivery state even when content is unchanged', () => {
+  assert.match(main, /function studentArchiveLatestDelivery\(peers, store = readDirectDeliveryStore\(\)\)/);
+  assert.match(main, /latestDeliveryForLineages/);
+  assert.match(main, /学生知识档案无实质变化/);
+  assert.match(main, /最新同步包尚未送达/);
+  assert.match(main, /正在等待网络恢复并自动重试/);
+  assert.match(main, /latestDelivery,/);
+  assert.match(ui, /最新同步状态：/);
+  assert.match(ui, /archiveSync\.latestDelivery\.statusLabel/);
+  assert.match(ui, /下次自动重试/);
+  assert.match(ui, /pendingCollaborationDeliveryManifestRef/);
+  assert.match(ui, /event\.manifestId === pendingCollaborationDeliveryManifestRef\.current/);
+  assert.match(ui, /学生知识档案同步包已送达；主机与目标设备状态已一致/);
+  assert.match(ui, /全部协作设备发送队列/);
 });

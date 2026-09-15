@@ -22,6 +22,19 @@ test('project page exposes one four-step primary workflow', () => {
   assert.doesNotMatch(ui, /title: '暂存治理'/);
 });
 
+test('project student selection stays local until one asynchronous save', () => {
+  assert.match(ui, /const ProjectStudentBindingEditor = memo/);
+  assert.match(ui, /setDraftStudentIds/);
+  assert.match(ui, /保存绑定（\$\{draftStudentIds\.length\}）/);
+  assert.match(ui, /await update\(selectedProjectId, JSON\.stringify\(studentIds\)\)/);
+  assert.match(preload, /updateProjectStudents\(projectId, studentIdsJson\)[\s\S]{0,120}ipcRenderer\.invoke\('bridge:updateProjectStudents'/);
+  assert.match(main, /ipcMain\.handle\('bridge:updateProjectStudents'/);
+  assert.doesNotMatch(preload, /sendSync\('bridge:updateProjectStudents'/);
+  const bindingUpdate = main.slice(main.indexOf('function updateProjectStudents'), main.indexOf('function importProjectAssets'));
+  assert.match(bindingUpdate, /setImmediate\(\(\) => \{[\s\S]*refreshAgentKnowledgeAccessForStudents/);
+  assert.match(bindingUpdate, /projects: nextProjects\.map\(normalizeProject\)/);
+});
+
 test('resolved analyzed staging items are not counted as pending work', () => {
   assert.match(ui, /!\['analyzed', 'promoted', 'discarded'\]\.includes\(String\(item\.status\)\)/);
 });

@@ -15,8 +15,21 @@
 - W8：成长模型 v2、证据审核和四类学情报告。
 - W9：Windows 课程包 v3、受限 WebView 和用户主动屏幕采集。
 - W10：逐文件加密备份、空目录恢复、URI 重映射和发布构建。
+- W11：学情报告正式输出、成长卡片、分享、打印与来源追踪。
 
 累计契约测试、Android `check`、Lint、Android 14 平板模拟器端到端验收结果见 `delivery/W0-W10-验收报告.md`。
+
+## 学情报告导出、卡片与打印
+
+“学情报告 → 导出、分享与打印”只处理当前精确学生已经审核发布的正式报告；`pending_review`、空白报告、占位稿以及明确属于其他学生的内容都会被拒绝。迁移来的旧报告若未写 `student_id`，仍以当前学生的 SAF 档案目录作唯一归属边界。
+
+普通用户无需配置 Agent：可直接选择正式报告、简明报告或成长要点卡，使用彩色/黑白模式预览，并输出 Markdown、A4 PDF 或 9:16 PNG/PDF 卡片。生成文件可保存到本机/U 盘、通过 Android 分享、交给系统打印服务打印或另存 PDF。最近输出记录包含学生、报告、来源 SHA-256、模板、格式、颜色、生成时间和输出 URI；原报告更新后会提示“原报告已变化”，删除输出不会删除正式报告。
+
+“高级：Agent 精选”是可选能力，只允许从正式报告逐字选择原文句子；超时、服务错误、格式错误或出现改写内容时，应用会保留本地自动草稿，普通导出不受影响。编辑操作只修改本次输出副本，不会回写成长模型或正式学情报告。
+
+从 `1.2.4 / code 28` 起，学情报告业务流程取消“生成草稿 → 预览 → 再确认发布”环节，改为“生成并发布报告”。应用只读取当前准确学生的已确认成长证据，生成后直接写入四份 `active` 正式报告；没有任何已确认证据时拒绝发布空报告。Agent 失败、漏项或引用无效证据时自动使用保守表述。导出与打印入口只列出通过正式状态、学生归属和有效正文校验的报告；列表为空时可直接发起一次生成并发布。
+
+从 `1.2.5 / code 29` 起，任务 Agent 未配置、超时或返回异常时，报告生成会直接采用已确认成长证据原文及证据编号，不会把有证据的报告全部回退为“资料不足”。报告选择、打印和最近输出均显示具体报告名称；成长证据来源由用户从已导入资料中选择，不要求填写 URI 或文件标识。
 
 ## 多端知识协作 P2–P5
 
@@ -34,9 +47,9 @@ P5 源码增加 Android 单机版—Android 单机版近距离协作：一台设
 
 P5-R 已加入五次失败配对限制与递增冷却、持久防重放、七天过期暂存清理、4 GB 暂存上限、512 MB 剩余空间保留，并在撤销设备时清理其未完成暂存。服务启动和反向同步使用实际结果更新状态，不再在尚未监听或尚未入队时预设成功。
 
-Android 单机版当前正式发布基线为 `1.2.2 / code 26`。本版采用面向中小学生的方案 A 界面：横屏使用紧凑左侧导航和自适应方块操作卡片，竖屏与小屏自动降列；五套皮肤统一改为高对比深色背景，并保留各自强调色；增加当前学生快捷切换，资料、档案、报告、项目等操作默认使用准确学生范围。正式 APK 使用与既有产品正式版相同的长期证书，包名、递增版本号、v1/v2 签名、证书指纹和 SHA-256 已验证；本轮真机覆盖安装及新界面可用性仍需单独确认。P5 的 Android 单机版—Android 单机版附近协作仍需两台不同真机完成 Wi-Fi、热点、断点恢复、冲突和重启验收，不因 1.2.2 正式发布而自动视为稳定能力。普通 Android 学生端 0.6.15 继续使用原有主机连接，不具备知识节点接收服务。
+Android 单机版当前正式发布基线为 `1.2.5 / code 29`。本版在 1.2.4 直接生成并发布学情报告的基础上，修复成长证据审核、报告选择、证据回退、打印准备和输出记录易用性问题。横屏使用紧凑左侧导航和自适应方块操作卡片，竖屏与小屏自动降列；五套皮肤统一使用高对比深色背景，并保留各自强调色；资料、档案、报告、项目等操作默认使用准确学生范围。正式 APK 必须使用与既有产品正式版相同的长期证书，并验证包名、递增版本号、v1/v2 签名、证书指纹和 SHA-256；本轮真机覆盖安装、系统打印服务及不同平板分享目标仍需单独确认。P5 的 Android 单机版—Android 单机版附近协作仍需两台不同真机完成 Wi-Fi、热点、断点恢复、冲突和重启验收，不因 1.2.5 正式发布而自动视为稳定能力。普通 Android 学生端 0.6.15 继续使用原有主机连接，不具备知识节点接收服务。
 
-正式发布记录与人工验收范围见 `docs/delivery/Android单机版-青少年深色界面-1.2.2发布记录.md`。
+1.2.2 青少年深色界面发布记录见 `docs/delivery/Android单机版-青少年深色界面-1.2.2发布记录.md`；1.2.3 学情报告输出能力及人工验收范围见 `docs/delivery/Android单机版-学情报告导出打印-1.2.3发布记录.md`。
 
 ## 构建
 
@@ -58,7 +71,7 @@ powershell -ExecutionPolicy Bypass -File android-standalone-manager\build.ps1 -T
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File android-standalone-manager\verify-physical-device.ps1 `
-  -ApkPath android-standalone-manager\delivery\AI-Education-Manager-Android-Standalone-1.2.2-release.apk `
+  -ApkPath android-standalone-manager\delivery\AI-Education-Manager-Android-Standalone-1.2.3-release.apk `
   -DeviceSerial <实体平板序列号>
 ```
 
@@ -66,7 +79,7 @@ powershell -ExecutionPolicy Bypass -File android-standalone-manager\verify-physi
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File android-standalone-manager\verify-physical-device.ps1 `
-  -ApkPath android-standalone-manager\delivery\AI-Education-Manager-Android-Standalone-1.2.2-release.apk `
+  -ApkPath android-standalone-manager\delivery\AI-Education-Manager-Android-Standalone-1.2.3-release.apk `
   -DeviceSerial <实体平板序列号> `
   -KnowledgeCollaboration
 ```

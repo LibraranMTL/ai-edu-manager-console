@@ -10,6 +10,7 @@ try {
   if (-not (Test-Path -LiteralPath $Descriptor)) { exit 0 }
   $descriptorValue = Get-Content -LiteralPath $Descriptor -Raw -Encoding UTF8 | ConvertFrom-Json
   if ($descriptorValue.lifecycleCapture.enabled -ne $true) { exit 0 }
+  if ([string]::IsNullOrWhiteSpace([string]$descriptorValue.lifecycleCapture.captureEpoch)) { exit 0 }
   if (@($descriptorValue.lifecycleCapture.allowedAgents) -notcontains $SourceAgent) { exit 0 }
 
   [Console]::InputEncoding = [System.Text.UTF8Encoding]::new($false)
@@ -26,6 +27,7 @@ try {
     sourceAgent = $SourceAgent
     scopeId = [string]$descriptorValue.defaults.scopeId
     grantId = [string]$descriptorValue.authentication.grantId
+    captureEpoch = [string]$descriptorValue.lifecycleCapture.captureEpoch
     capturedAt = $capturedAt
     payload = $payload
   }
@@ -37,6 +39,9 @@ try {
   [System.IO.File]::Move($temp, $target)
 } catch {
   # Lifecycle collection must never block or alter the Agent conversation.
+} finally {
+  # Codex Stop requires JSON stdout, including when a path with spaces uses this fallback.
+  if ($SourceAgent -eq 'codex') { [Console]::Out.WriteLine('{}') }
 }
 
 exit 0

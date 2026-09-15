@@ -1,4 +1,5 @@
 const fs = require('fs');
+const crypto = require('crypto');
 const os = require('os');
 const path = require('path');
 const { spawnSync } = require('child_process');
@@ -12,6 +13,7 @@ const MANAGED_MARKER = 'EDU-MANAGER-LIFECYCLE';
 const PLUGIN_ID = 'edu-manager-lifecycle';
 const TERMINAL_DESCRIPTOR_SCHEMA = 'edu-manager.student-terminal-lifecycle-capture.v1';
 const TERMINAL_GRANT_PREFIX = 'terminal-device:';
+const NATIVE_HOOK_IDENTITY_VERSION = 'edu-manager-native-lifecycle-hook-v1';
 
 function readJson(filePath, fallback = {}) {
   try { return JSON.parse(fs.readFileSync(filePath, 'utf8')); }
@@ -96,10 +98,11 @@ function setTerminalLifecycleDescriptorEnabled(userDataDir, enabled) {
   return true;
 }
 
-function buildTerminalLifecycleDescriptor({ studentId, deviceId, queueDir, enabled }) {
+function buildTerminalLifecycleDescriptor({ studentId, deviceId, queueDir, enabled, captureEpoch = '', authorizedAt = '' }) {
   const scopeId = String(studentId || '').trim();
   const safeDeviceId = String(deviceId || '').trim();
   if (!scopeId || !safeDeviceId) throw new Error('个人终端自动会话采集缺少学生或设备身份。');
+  if (enabled && (!captureEpoch || !authorizedAt)) throw new Error('个人终端缺少本次采集授权标识。');
   return {
     schema: TERMINAL_DESCRIPTOR_SCHEMA,
     authentication: {
@@ -109,6 +112,8 @@ function buildTerminalLifecycleDescriptor({ studentId, deviceId, queueDir, enabl
     lifecycleCapture: {
       schema: 'edu-manager.agent-lifecycle-capture.v1',
       enabled: Boolean(enabled),
+      captureEpoch: enabled ? String(captureEpoch) : '',
+      authorizedAt: enabled ? String(authorizedAt) : '',
       mode: 'event_queue',
       queueDir: path.resolve(queueDir),
       allowedAgents: [...AUTO_CAPTURE_AGENT_IDS],
@@ -129,7 +134,23 @@ function quoteHookCommandArgument(value) {
   return `"${String(value || '').replace(/"/g, '\\"')}"`;
 }
 
-function managedLifecycleHookCommand(sourceAgent, hookPath, descriptorPath) {
+function lifecycleHookIdentity(hookSourcePath, nativeHookPath) {
+  const nativeSourcePath = String(hookSourcePath || '').replace(/\.ps1$/i, '.cs');
+  const identityPath = fs.existsSync(nativeSourcePath) ? nativeSourcePath : nativeHookPath;
+  return crypto.createHash('sha256')
+    .update(`${NATIVE_HOOK_IDENTITY_VERSION}\0`)
+    .update(fs.readFileSync(identityPath))
+    .digest('hex')
+    .slice(0, 16);
+}
+
+function managedLifecycleHookCommand(sourceAgent, hookPath, descriptorPath, nativeHookPath) {
+  if (sourceAgent === 'codex' && !/[\s&|<>^()%!"]/u.test(nativeHookPath)) return [
+    nativeHookPath,
+    '-Descriptor', quoteHookCommandArgument(descriptorPath),
+    '-SourceAgent', sourceAgent,
+    '-ManagedMarker', MANAGED_MARKER,
+  ].join(' ');
   return [
     'powershell.exe',
     '-NoProfile',
@@ -146,14 +167,14 @@ function managedLifecycleHookCommand(sourceAgent, hookPath, descriptorPath) {
   ].join(' ');
 }
 
-function upsertLifecycleCommandHooks(configPath, sourceAgent, hookPath, descriptorPath) {
+function upsertLifecycleCommandHooks(configPath, sourceAgent, hookPath, descriptorPath, nativeHookPath) {
   let config = {};
   if (fs.existsSync(configPath)) {
     config = parseJsoncObject(fs.readFileSync(configPath, 'utf8'));
     if (!config || typeof config !== 'object' || Array.isArray(config)) throw new Error('Hook 配置不是有效对象。');
   }
   config.hooks = config.hooks && typeof config.hooks === 'object' && !Array.isArray(config.hooks) ? config.hooks : {};
-  const command = managedLifecycleHookCommand(sourceAgent, hookPath, descriptorPath);
+  const command = managedLifecycleHookCommand(sourceAgent, hookPath, descriptorPath, nativeHookPath);
   const eventNames = lifecycleAdapter(sourceAgent)?.hookEvents || ['SessionStart', 'UserPromptSubmit', 'Stop', 'SessionEnd'];
   for (const eventName of eventNames) {
     const groups = Array.isArray(config.hooks[eventName]) ? config.hooks[eventName] : [];
@@ -162,7 +183,7 @@ function upsertLifecycleCommandHooks(configPath, sourceAgent, hookPath, descript
       hooks: (Array.isArray(group?.hooks) ? group.hooks : []).filter((hook) => !String(hook?.command || '').includes(MANAGED_MARKER)),
     })).filter((group) => group.hooks.length);
     const handler = { type: 'command', command, timeout: 3 };
-    if (['codex', 'claude-code'].includes(sourceAgent) && !['SessionEnd', 'Interrupt'].includes(eventName)) handler.async = true;
+    if (sourceAgent === 'claude-code' && !['SessionEnd', 'Interrupt'].includes(eventName)) handler.async = true;
     config.hooks[eventName] = [...cleaned, { hooks: [handler] }];
   }
   writeJsonAtomic(configPath, config);
@@ -204,7 +225,7 @@ function enqueue(hookEventName, event, context) {
   try {
     const descriptor = JSON.parse(fs.readFileSync(descriptorPath, "utf8"));
     const capture = descriptor.lifecycleCapture || {};
-    if (capture.enabled !== true || !Array.isArray(capture.allowedAgents) || !capture.allowedAgents.includes(sourceAgent)) return;
+    if (capture.enabled !== true || !capture.captureEpoch || !Array.isArray(capture.allowedAgents) || !capture.allowedAgents.includes(sourceAgent)) return;
     const queueDir = String(capture.queueDir || "");
     if (!queueDir) return;
     fs.mkdirSync(queueDir, { recursive: true });
@@ -214,6 +235,7 @@ function enqueue(hookEventName, event, context) {
       sourceAgent,
       scopeId: String(descriptor.defaults?.scopeId || ""),
       grantId: String(descriptor.authentication?.grantId || ""),
+      captureEpoch: String(capture.captureEpoch),
       capturedAt,
       payload: { hook_event_name: hookEventName, event, context },
     };
@@ -422,7 +444,10 @@ function lifecycleConfigPaths(homeDir) {
 function disableTerminalLifecycleRegistrations(options = {}) {
   const homeDir = options.homeDir || os.homedir();
   const configs = lifecycleConfigPaths(homeDir);
-  for (const configPath of [...configs.codex, ...configs.workbuddy, ...configs['claude-code']]) disableLifecycleCommandHooks(configPath);
+  // A dormant, previously trusted Codex hook allows an existing Codex session
+  // to resume at its next authorized user turn. The disabled descriptor exits
+  // before reading hook input, so no conversation text enters our queue.
+  for (const configPath of [...configs.workbuddy, ...configs['claude-code']]) disableLifecycleCommandHooks(configPath);
   for (const configPath of [...configs.qclaw, ...configs.openclaw]) setOpenClawLifecyclePluginEnabled(configPath, false);
   const detected = options.detectedAgents || detectLifecycleAgents(options);
   if (detected.hermes?.exePath) runHermesPluginCommand(detected.hermes.exePath, 'disable');
@@ -434,11 +459,17 @@ function reconcileTerminalLifecycle(options = {}) {
   const paths = terminalLifecyclePaths(userDataDir);
   fs.mkdirSync(paths.queueDir, { recursive: true });
   fs.copyFileSync(options.hookSourcePath, paths.hookPath);
+  const nativeSource = options.hookSourcePath.replace(/\.ps1$/i, '.exe');
+  const nativeDigest = lifecycleHookIdentity(options.hookSourcePath, nativeSource);
+  paths.nativeHookPath = path.join(paths.root, `agent-lifecycle-hook-${nativeDigest}.exe`);
+  if (!fs.existsSync(paths.nativeHookPath)) fs.copyFileSync(nativeSource, paths.nativeHookPath);
   const descriptor = buildTerminalLifecycleDescriptor({
     studentId: options.studentId,
     deviceId: options.deviceId,
     queueDir: paths.queueDir,
     enabled: options.enabled,
+    captureEpoch: options.captureEpoch,
+    authorizedAt: options.authorizedAt,
   });
   writeJsonAtomic(paths.descriptorPath, descriptor);
   if (!options.enabled) {
@@ -458,7 +489,7 @@ function reconcileTerminalLifecycle(options = {}) {
         const targets = configs[agentId].filter((configPath) => agentId !== 'workbuddy' || fs.existsSync(path.dirname(configPath)));
         const effectiveTargets = targets.length ? targets : [configs[agentId][0]];
         const connectedTargets = effectiveTargets.map((configPath) => (
-          upsertLifecycleCommandHooks(configPath, agentId, paths.hookPath, paths.descriptorPath)
+          upsertLifecycleCommandHooks(configPath, agentId, paths.hookPath, paths.descriptorPath, paths.nativeHookPath)
         ));
         registrations[agentId].connected = connectedTargets.some(Boolean);
       } else if (agentId === 'qclaw' || agentId === 'openclaw') {
@@ -479,6 +510,7 @@ async function drainTerminalLifecycleQueue(options = {}) {
   if (!fs.existsSync(queueDir)) return { processed: 0, discarded: 0, deferred: 0, pending: 0 };
   const expectedScopeId = String(options.studentId || '').trim();
   const expectedGrantId = terminalGrantId(options.deviceId);
+  const expectedCaptureEpoch = String(options.captureEpoch || '');
   const files = fs.readdirSync(queueDir, { withFileTypes: true })
     .filter((entry) => entry.isFile() && entry.name.endsWith('.json'))
     .map((entry) => entry.name)
@@ -499,6 +531,8 @@ async function drainTerminalLifecycleQueue(options = {}) {
       envelope?.schema !== 'edu-manager.agent-lifecycle-event.v1'
       || String(envelope.scopeId || '') !== expectedScopeId
       || String(envelope.grantId || '') !== expectedGrantId
+      || !expectedCaptureEpoch
+      || String(envelope.captureEpoch || '') !== expectedCaptureEpoch
       || !AUTO_CAPTURE_AGENT_IDS.includes(String(envelope.sourceAgent || '').toLowerCase())
     ) {
       try { fs.unlinkSync(filePath); } catch {}
@@ -531,6 +565,7 @@ module.exports = {
   disableTerminalLifecycleRegistrations,
   drainTerminalLifecycleQueue,
   installOpenClawLifecyclePlugin,
+  lifecycleHookIdentity,
   lifecycleConfigPaths,
   managedLifecycleHookCommand,
   parseJsoncObject,

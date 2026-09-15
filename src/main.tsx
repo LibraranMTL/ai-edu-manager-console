@@ -1,6 +1,8 @@
 ﻿import React, { useEffect, useMemo, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { useDeferredValue } from 'react';
+import { useTransition } from 'react';
+import { memo, useCallback, useRef } from 'react';
 import {
   Archive,
   AlertTriangle,
@@ -57,9 +59,9 @@ import { DigestStatusCard, type DigestWorkflowStatus } from './DigestStatusCard'
 const studentLoginQrDataUrlCache = new Map<string, string>();
 const loadQrCode = () => import('qrcode').then((module) => module.default);
 
-type Section = 'home' | 'courses' | 'init' | 'inbox' | 'assets' | 'projects-new' | 'projects-existing' | 'growth' | 'reports' | 'archive' | 'qa' | 'memory' | 'soul' | 'rules' | 'conversation' | 'tasks' | 'settings';
+type Section = 'home' | 'courses' | 'init' | 'inbox' | 'assets' | 'projects-new' | 'projects-existing' | 'growth' | 'reports' | 'archive' | 'qa' | 'memory' | 'capture' | 'soul' | 'rules' | 'conversation' | 'tasks' | 'settings';
 type CourseSubmenu = 'learning' | 'management';
-type SettingsSubmenu = 'basic' | 'connection' | 'collaboration';
+type SettingsSubmenu = 'basic' | 'connection' | 'collaboration' | 'agent-qa';
 type ProjectWorkflowTarget = 'workspace' | 'assets' | 'digest' | 'knowledge' | 'evidence' | 'promotion';
 type ThemeName = 'blue' | 'pink' | 'green' | 'purple' | 'orange';
 type LanguageCode = 'zh-CN' | 'zh-TW' | 'en' | 'fr' | 'es' | 'ja' | 'ko' | 'vi' | 'ms';
@@ -344,6 +346,65 @@ type LearningProject = {
   sealedSnapshotPath?: string;
   publishedAt?: string;
 };
+
+type ProjectStudentBindingEditorProps = {
+  students: Student[];
+  savedStudentIds: string[];
+  savedStudentNames: string[];
+  busy: boolean;
+  highlighted: boolean;
+  onSave: (studentIds: string[]) => Promise<void>;
+};
+
+const ProjectStudentBindingEditor = memo(function ProjectStudentBindingEditor({
+  students,
+  savedStudentIds,
+  savedStudentNames,
+  busy,
+  highlighted,
+  onSave,
+}: ProjectStudentBindingEditorProps) {
+  const savedKey = savedStudentIds.join('|');
+  const [draftStudentIds, setDraftStudentIds] = useState<string[]>(() => savedStudentIds.map(String));
+  useEffect(() => {
+    setDraftStudentIds(savedStudentIds.map(String));
+  }, [savedKey]);
+  const selectionChanged = useMemo(() => {
+    const saved = new Set(savedStudentIds.map(String));
+    const draft = new Set(draftStudentIds.map(String));
+    return saved.size !== draft.size || [...saved].some((studentId) => !draft.has(studentId));
+  }, [draftStudentIds, savedKey]);
+  const toggleStudent = (studentId: string) => {
+    setDraftStudentIds((current) => current.includes(studentId)
+      ? current.filter((id) => id !== studentId)
+      : [...current, studentId]);
+  };
+  const draftNames = draftStudentIds.map((id) => students.find((student) => student.id === id)?.name || id);
+  return (
+    <section className={`material-source-panel project-participants-panel ${highlighted ? 'audit-locate-highlight' : ''}`} data-project-action-target="students" tabIndex={-1}>
+      <div className="mini-heading">
+        <strong>项目绑定学生</strong>
+        <span>学习项目支持绑定多个学生。可连续选择，点击一次保存后同步绑定索引；不会覆盖已经手工修改过的 AGENT.md。</span>
+      </div>
+      <div className="student-checkbox-list">
+        {students.map((student) => (
+          <label className="student-checkbox" key={student.id}>
+            <input type="checkbox" checked={draftStudentIds.includes(student.id)} disabled={busy} onChange={() => toggleStudent(student.id)} />
+            <span>{student.name}</span>
+          </label>
+        ))}
+        {students.length === 0 && <div className="empty-state compact">暂无学生可绑定。</div>}
+      </div>
+      <div className="actions compact-actions project-student-save-actions">
+        <button className="primary compact" disabled={!selectionChanged || busy} onClick={() => void onSave(draftStudentIds)}>
+          <CheckCircle2 size={16} />{busy ? '正在保存…' : `保存绑定（${draftStudentIds.length}）`}
+        </button>
+        <button className="secondary compact" disabled={!selectionChanged || busy} onClick={() => setDraftStudentIds(savedStudentIds.map(String))}>撤销选择</button>
+        <small className="inline-hint">{selectionChanged ? `待保存：${draftNames.join('、') || '不绑定学生'}` : `当前绑定：${savedStudentNames.join('、') || '未绑定学生'}`}</small>
+      </div>
+    </section>
+  );
+});
 
 type ProjectPublicationPeer = {
   bindingId: string;
@@ -836,8 +897,20 @@ type AndroidBridge = {
   getMaterialImportRecords?: (studentId: string) => string;
   removeMaterialImportRecords?: (studentId: string, recordIdsJson: string) => string;
   getCaptureCenterState?: () => string;
+  setCaptureVisionConsent?: (inputJson: string) => string;
   onCaptureChanged?: (callback: (payload: string) => void) => () => void;
   listCaptureSources?: () => Promise<string>;
+  getCaptureSessionSummaries?: (inputJson: string) => Promise<string>;
+  getCaptureTimelineDates?: (inputJson: string) => Promise<string>;
+  getCaptureTimeline?: (inputJson: string) => Promise<string>;
+  getCaptureTimelineSegments?: (inputJson: string) => Promise<string>;
+  getCaptureTimelineProcessingState?: (inputJson: string) => Promise<string>;
+  retryCaptureTimelineProcessing?: (inputJson: string) => Promise<string>;
+  reportCaptureTimelinePerformance?: (inputJson: string) => Promise<string>;
+  getCaptureTimelineKnowledgeLinks?: (inputJson: string) => Promise<string>;
+  getCaptureThumbnail?: (inputJson: string) => Promise<string>;
+  openCaptureOriginal?: (inputJson: string) => Promise<string>;
+  rebuildCaptureTimeline?: (inputJson: string) => Promise<string>;
   startCaptureSession?: (optionsJson: string) => Promise<string>;
   pauseCaptureSession?: (sessionId: string) => Promise<string>;
   resumeCaptureSession?: (sessionId: string) => Promise<string>;
@@ -875,7 +948,7 @@ type AndroidBridge = {
   pickProjectKnowledgeBaseDir?: () => string;
   inspectProjectKnowledgeBase?: (rootPath: string) => string;
   updateProjectStatus?: (projectId: string, status: string) => string;
-  updateProjectStudents?: (projectId: string, studentIdsJson: string) => string;
+  updateProjectStudents?: (projectId: string, studentIdsJson: string) => Promise<string>;
   applyProjectWorkspaceTemplate?: (projectId: string, templateId: string, foldersJson: string, templateName?: string, templateV2Json?: string) => string;
   openProjectSpace?: (projectId: string, space: 'root' | 'workspace' | 'raw' | 'knowledge') => string;
   scanProjectWorkspace?: (projectId: string) => Promise<string>;
@@ -979,10 +1052,13 @@ type AndroidBridge = {
   ensureLearningReports?: (studentId: string) => string;
   ensureGrowthModel?: (studentId: string) => string;
   getGrowthEvidenceReview?: (studentId: string) => string;
+  getGrowthEvidenceReviewAsync?: (studentId: string) => Promise<string>;
+  getGrowthModelSnapshot?: (studentId: string) => Promise<string>;
   updateGrowthEvidenceStatus?: (studentId: string, evidenceId: string, status: string, note?: string) => string;
   batchReviewGrowthEvidence?: (studentId: string) => string;
   rebuildGrowthIndex?: (studentId: string) => string;
   getGrowthIndex?: (studentId: string) => string;
+  getGrowthIndexAsync?: (studentId: string) => Promise<string>;
   checkUpdate?: (manifestUrl: string, currentVersionCode: number) => boolean;
   downloadAndInstallUpdate?: (apkUrl: string) => boolean;
   scanDownloads?: () => string;
@@ -1064,7 +1140,7 @@ type AndroidBridge = {
   recordScheduledTaskAction?: (studentId: string, kind: string, commandText: string) => string;
   getStudentScheduleLedger?: (studentId: string) => string;
   getTaskCenter?: () => string;
-  getTaskCenterAsync?: (force?: boolean) => Promise<string>;
+  getTaskCenterAsync?: (force?: boolean, quick?: boolean) => Promise<string>;
   getTaskStatusesAsync?: (taskIds: string[]) => Promise<string>;
   archiveAccessRpc?: (requestJson: string) => Promise<string>;
   remoteArchiveAccessRpc?: (requestJson: string) => Promise<string>;
@@ -1072,8 +1148,10 @@ type AndroidBridge = {
   getAgentKnowledgeDiagnostics?: () => string;
   prepareAgentKnowledgeAccess?: (studentId: string) => string;
   getAgentMemoryState?: (studentId: string) => string;
+  deleteEmptyAgentMemorySessions?: (studentId: string, sessionId?: string) => string;
   setAgentMemoryAutomation?: (studentId: string, enabled: boolean) => string;
   activateAgentMemoryCapture?: (studentId: string) => string;
+  openCodexHookReview?: () => string;
   submitAgentConversation?: (requestJson: string) => Promise<string>;
   getAgentConversationSubmissionState?: () => string;
   assignAgentConversationSubmission?: (submissionId: string, scopeType: 'student' | 'project', scopeId: string) => string;
@@ -1209,6 +1287,7 @@ type LearningReportEvidenceState = {
       uri?: string;
       available: boolean;
       kind: string;
+      timelineRefs?: Array<{ date: string; segmentId: string; sessionId: string; relation?: string }>;
     }>;
   }>;
 };
@@ -1349,6 +1428,8 @@ type CaptureSource = {
   name: string;
   type: 'screen' | 'window';
   thumbnail?: string;
+  blocked?: boolean;
+  blockReason?: string;
 };
 
 type CapturePolicy = {
@@ -1403,6 +1484,14 @@ type CaptureSession = {
   promotionTarget?: 'project_raw' | 'student_raw' | string;
   promotionTargetId?: string;
   promotionTargetName?: string;
+  semanticStatus?: string;
+  activitySegmentCount?: number;
+  keyFrameCount?: number;
+  recognizedKeyFrameCount?: number;
+  timelineMemorySummary?: string;
+  visionStatus?: string;
+  visionObservationCount?: number;
+  visionFailedBatchCount?: number;
   lastError?: string;
   items?: CaptureItem[];
   options?: { mode?: string; policyName?: string; durationMinutes?: number };
@@ -1412,9 +1501,137 @@ type CaptureCenterState = {
   ok?: boolean;
   protocolVersion?: number;
   policies: CapturePolicy[];
+  visionConsent?: { enabled: boolean; provider: string; processingLocation: string; authorizedAt: string; epoch: string };
   activeSession: CaptureSession | null;
   sessions: CaptureSession[];
   inboxPath?: string;
+};
+
+type CaptureTimelineDate = {
+  date: string;
+  eventCount: number;
+  highlightedCount?: number;
+  firstOccurredAt?: string;
+  lastOccurredAt?: string;
+  sessionIds?: string[];
+};
+
+type CaptureTimelineEvent = {
+  id: string;
+  eventType: 'capture' | string;
+  occurredAt: string;
+  date: string;
+  studentId: string;
+  sessionId: string;
+  platform?: string;
+  sourceName?: string;
+  projectName?: string;
+  courseName?: string;
+  reason?: string;
+  difference?: number;
+  highlighted?: boolean;
+  archiveStatus?: string;
+  filename?: string;
+  thumbnailAvailable?: boolean;
+};
+
+type CaptureTimelinePage = {
+  ok?: boolean;
+  studentId?: string;
+  date?: string;
+  total?: number;
+  events?: CaptureTimelineEvent[];
+  nextCursor?: string;
+  message?: string;
+};
+
+type CaptureTimelineProcessingJob = {
+  state?: string;
+  unitCounts?: { total?: number; completed?: number; retryScheduled?: number; degraded?: number; blocked?: number };
+  requiresUserAction?: boolean;
+  blockingReason?: string;
+  nextRetryAt?: string;
+};
+
+type CaptureTimelineSegment = {
+  segmentId: string;
+  studentId: string;
+  sessionId: string;
+  date: string;
+  startedAt: string;
+  endedAt: string;
+  category?: string;
+  topic?: string;
+  candidateSummary?: string;
+  visualSummary?: string;
+  formalSummary?: string;
+  confidence?: number;
+  recognitionStatus?: string;
+  archiveStatus?: string;
+  digestStatus?: string;
+  digestBatchId?: string;
+  knowledgeState?: string;
+  knowledgeConcepts?: string[];
+  knowledgeStateChange?: string | { previous?: string; current?: string; summary?: string } | null;
+  guidanceResponses?: Array<{ text?: string; applicableFrom?: string; applicableTo?: string; evidenceRefs?: Array<{ sourceType: string; sourceId: string }>; generatedBy?: string }>;
+  guidanceState?: string;
+  linkErrors?: string[];
+  keyEvents?: CaptureTimelineEvent[];
+  processing?: CaptureTimelineProcessingJob | null;
+  observationStatus?: string;
+  visualReadStatus?: string;
+  observation?: {
+    observedAction?: string;
+    attempts?: string[];
+    obstacle?: string;
+    difficultyOrChange?: string;
+    observedOutcome?: string;
+    reason?: string | null;
+    evidenceRefs?: Array<{ sourceType: string; sourceId: string }>;
+  };
+};
+
+type CaptureLearningReport = {
+  timelineReport?: {
+    observedCount?: number;
+    unknownCount?: number;
+    topics?: string[];
+    attempts?: Array<{ segmentId: string; projectId?: string; text: string }>;
+    obstacles?: Array<{ segmentId: string; projectId?: string; text: string }>;
+    changes?: Array<{ segmentId: string; projectId?: string; text: string }>;
+    outcomes?: Array<{ segmentId: string; projectId?: string; text: string }>;
+    guidance?: Array<{ segmentId: string; projectId?: string; text: string; evidenceRefs?: Array<{ sourceType: string; sourceId: string }> }>;
+    segmentRefs?: Array<{ date: string; segmentId: string }>;
+  };
+  behaviorReport?: {
+    screenshotCount?: number;
+    representativeCount?: number;
+    activitySegmentCounts?: Record<string, number>;
+    hours?: Array<{ hour: number; screenshotCount: number; segmentCount?: number; activitySegmentCounts?: Record<string, number> }>;
+    days?: Array<{ date: string; screenshotCount: number }>;
+    durationMinutes?: null;
+  };
+};
+
+type CaptureTimelineMemory = {
+  candidateSummary?: string;
+  segmentCount?: number;
+  status?: string;
+  topics?: string[];
+  formalKnowledgeCount?: number;
+  guidanceResponseCount?: number;
+};
+
+type CaptureTimelineSemanticPage = {
+  ok?: boolean;
+  studentId?: string;
+  date?: string;
+  total?: number;
+  segments?: CaptureTimelineSegment[];
+  memory?: CaptureTimelineMemory | null;
+  reports?: { day?: CaptureLearningReport | null; week?: CaptureLearningReport | null; session?: CaptureLearningReport | null } | null;
+  nextCursor?: string;
+  message?: string;
 };
 
 type CourseCatalogItem = {
@@ -1644,6 +1861,21 @@ type CollaborationState = {
     peers: Array<{ peerNodeId: string; targetStudentId: string }>;
     lastPublishedAt?: string;
     lastImportedAt?: string;
+    latestDelivery?: {
+      manifestId: string;
+      targetNodeId?: string;
+      status: string;
+      statusLabel: string;
+      attempt?: number;
+      packageCreatedAt?: string;
+      updatedAt?: string;
+      deliveredAt?: string;
+      nextAttemptAt?: string;
+      error?: string;
+      fileCount?: number;
+      totalBytes?: number;
+      channel?: string;
+    } | null;
   }>;
   directDeliveries?: Array<{
     manifestId: string;
@@ -2612,8 +2844,17 @@ type AgentMemorySessionState = {
       occurredAt?: string;
     }>;
     capturedChars?: number;
+    materialLifecycleStatus?: 'active' | 'trashed';
+    materialAvailable?: boolean;
+    materialDependencies?: {
+      deliveryCount: number;
+      candidateCount: number;
+      promotedCount: number;
+      canPermanentlyDelete: boolean;
+    };
     conversationReceipt?: {
       status?: string;
+      assetId?: string;
       studentId?: string;
       projectId?: string;
       interactionId?: string;
@@ -2653,7 +2894,21 @@ type AgentMemorySessionState = {
     active: boolean;
     lastEventAt?: string;
   }>>;
-  summary?: { total: number; active: number; pendingHandoffs: number };
+  codexHookOnboarding?: {
+    status: 'not_configured' | 'needs_confirmation' | 'waiting_for_event' | 'verified';
+    configured: boolean;
+    verified: boolean;
+    requiresConfirmation: boolean;
+    reviewCommand: '/hooks';
+    canOpenReview: boolean;
+    hookIdentity?: string;
+    hookPath?: string;
+    configuredAt?: string;
+    reviewOpenedAt?: string;
+    verifiedAt?: string;
+    lastVerifiedEventAt?: string;
+  };
+  summary?: { total: number; active: number; empty?: number; pendingHandoffs: number };
   message?: string;
 };
 type AgentSourceRecord = {
@@ -2876,18 +3131,30 @@ const zhCnText = {
   'nav.init': '新建学生档案',
   'nav.inbox': '资料收集与处理',
   'nav.assets': '文件资产中心',
-  'nav.projects': '学习项目',
+  'nav.education': '教育档案',
+  'nav.projects': '项目知识管理',
+  'nav.projects.new': '新建项目',
+  'nav.projects.existing': '已有项目',
   'nav.growth': '成长模型',
   'nav.reports': '学情报告',
-  'nav.archive': '查看教育档案',
-  'nav.qa': '教育管家问答',
+  'nav.archive': '学情资料',
+  'nav.qa': '知识查询',
+  'nav.qa.settings': 'Agent问答设置',
+  'nav.collaboration': '知识协作',
+  'nav.collaboration.settings': '协作设置',
+  'nav.courses': '精选课程',
+  'nav.courses.learning': '课程学习',
+  'nav.courses.management': '课程管理',
   'nav.tasks': '任务中心',
   'nav.settings': '系统设置',
   'nav.knowledge': '智能体知识管理',
-  'nav.memory': 'Agent 记忆管理',
-  'nav.soul': 'Agent 设定管理',
-  'nav.rules': '智能体规则文件管理',
+  'nav.memory': 'Agent记忆管理',
+  'nav.capture': 'Agent会话自动采集',
+  'nav.soul': 'Agent人设管理',
+  'nav.rules': 'Agent规则管理',
   'nav.conversation': '对话资料箱',
+  'nav.settings.basic': '基础设置',
+  'nav.settings.connection': '主机连接',
   'nav.expand': '展开',
   'nav.collapse': '收起',
   'sidebar.hide': '隐藏左边栏',
@@ -2939,16 +3206,31 @@ const uiTranslations: Record<LanguageCode, Partial<Record<TranslationKey, string
     'nav.home': '首頁',
     'nav.init': '新建學生檔案',
     'nav.inbox': '資料收集與處理',
+    'nav.assets': '檔案資產中心',
+    'nav.education': '教育檔案',
+    'nav.projects': '專案知識管理',
+    'nav.projects.new': '新建專案',
+    'nav.projects.existing': '現有專案',
+    'nav.growth': '成長模型',
     'nav.reports': '學情報告',
-    'nav.archive': '查看教育檔案',
-    'nav.qa': '教育管家問答',
+    'nav.archive': '學情資料',
+    'nav.qa': '知識查詢',
+    'nav.qa.settings': 'Agent問答設定',
+    'nav.collaboration': '知識協作',
+    'nav.collaboration.settings': '協作設定',
+    'nav.courses': '精選課程',
+    'nav.courses.learning': '課程學習',
+    'nav.courses.management': '課程管理',
     'nav.tasks': '任務中心',
     'nav.settings': '系統設定',
     'nav.knowledge': '智能體知識管理',
     'nav.memory': 'Agent 記憶管理',
-    'nav.soul': 'Agent 設定管理',
-    'nav.rules': '智能體規則文件管理',
-    'nav.conversation': '對話歷史匯入與提取',
+    'nav.capture': 'Agent會話自動擷取',
+    'nav.soul': 'Agent人設管理',
+    'nav.rules': 'Agent規則管理',
+    'nav.conversation': '對話資料箱',
+    'nav.settings.basic': '基礎設定',
+    'nav.settings.connection': '主機連線',
     'nav.expand': '展開',
     'nav.collapse': '收起',
     'sidebar.hide': '隱藏左邊欄',
@@ -2994,16 +3276,31 @@ const uiTranslations: Record<LanguageCode, Partial<Record<TranslationKey, string
     'nav.home': 'Home',
     'nav.init': 'New Student Record',
     'nav.inbox': 'Collect & Process',
+    'nav.assets': 'File Asset Center',
+    'nav.education': 'Education Records',
+    'nav.projects': 'Project Knowledge',
+    'nav.projects.new': 'New Project',
+    'nav.projects.existing': 'Existing Projects',
+    'nav.growth': 'Growth Model',
     'nav.reports': 'Learning Reports',
-    'nav.archive': 'Education Archive',
-    'nav.qa': 'Agent Q&A',
+    'nav.archive': 'Learning Records',
+    'nav.qa': 'Knowledge Search',
+    'nav.qa.settings': 'Agent Q&A Settings',
+    'nav.collaboration': 'Knowledge Collaboration',
+    'nav.collaboration.settings': 'Collaboration Settings',
+    'nav.courses': 'Featured Courses',
+    'nav.courses.learning': 'Course Learning',
+    'nav.courses.management': 'Course Management',
     'nav.tasks': 'Task Center',
     'nav.settings': 'Settings',
     'nav.knowledge': 'Agent Knowledge',
-    'nav.memory': 'Agent Memory',
-    'nav.soul': 'Agent Persona',
-    'nav.rules': 'Agent Rule Files',
-    'nav.conversation': 'Conversation Import',
+    'nav.memory': 'Agent Memory Management',
+    'nav.capture': 'Agent Conversation Capture',
+    'nav.soul': 'Agent Persona Management',
+    'nav.rules': 'Agent Rule Management',
+    'nav.conversation': 'Conversation Inbox',
+    'nav.settings.basic': 'Basic Settings',
+    'nav.settings.connection': 'Host Connection',
     'nav.expand': 'Expand',
     'nav.collapse': 'Collapse',
     'sidebar.hide': 'Hide sidebar',
@@ -3048,16 +3345,31 @@ const uiTranslations: Record<LanguageCode, Partial<Record<TranslationKey, string
     'nav.home': 'Accueil',
     'nav.init': 'Nouveau dossier élève',
     'nav.inbox': 'Collecte et traitement',
+    'nav.assets': 'Centre des fichiers',
+    'nav.education': 'Dossiers éducatifs',
+    'nav.projects': 'Connaissances projet',
+    'nav.projects.new': 'Nouveau projet',
+    'nav.projects.existing': 'Projets existants',
+    'nav.growth': 'Modèle de progression',
     'nav.reports': 'Rapports',
-    'nav.archive': 'Dossiers',
-    'nav.qa': 'Questions agent',
+    'nav.archive': 'Données scolaires',
+    'nav.qa': 'Recherche de connaissances',
+    'nav.qa.settings': 'Paramètres Q&R Agent',
+    'nav.collaboration': 'Collaboration des connaissances',
+    'nav.collaboration.settings': 'Paramètres de collaboration',
+    'nav.courses': 'Cours sélectionnés',
+    'nav.courses.learning': 'Suivre un cours',
+    'nav.courses.management': 'Gestion des cours',
     'nav.tasks': 'Centre des tâches',
     'nav.settings': 'Paramètres',
     'nav.knowledge': 'Connaissances agent',
-    'nav.memory': 'Mémoire agent',
-    'nav.soul': 'Profil agent',
-    'nav.rules': 'Fichiers de règles',
-    'nav.conversation': 'Import de conversations',
+    'nav.memory': 'Gestion de la mémoire Agent',
+    'nav.capture': 'Capture auto des conversations Agent',
+    'nav.soul': 'Gestion du profil Agent',
+    'nav.rules': 'Gestion des règles Agent',
+    'nav.conversation': 'Boîte de conversations',
+    'nav.settings.basic': 'Paramètres de base',
+    'nav.settings.connection': 'Connexion hôte',
     'nav.expand': 'Développer',
     'nav.collapse': 'Réduire',
     'sidebar.hide': 'Masquer la barre',
@@ -3101,16 +3413,31 @@ const uiTranslations: Record<LanguageCode, Partial<Record<TranslationKey, string
     'nav.home': 'Inicio',
     'nav.init': 'Nuevo expediente',
     'nav.inbox': 'Recopilar y procesar',
+    'nav.assets': 'Centro de archivos',
+    'nav.education': 'Expedientes educativos',
+    'nav.projects': 'Conocimiento de proyectos',
+    'nav.projects.new': 'Nuevo proyecto',
+    'nav.projects.existing': 'Proyectos existentes',
+    'nav.growth': 'Modelo de desarrollo',
     'nav.reports': 'Informes',
-    'nav.archive': 'Archivo',
-    'nav.qa': 'Preguntas del agente',
+    'nav.archive': 'Datos académicos',
+    'nav.qa': 'Búsqueda de conocimiento',
+    'nav.qa.settings': 'Ajustes de preguntas Agent',
+    'nav.collaboration': 'Colaboración de conocimiento',
+    'nav.collaboration.settings': 'Ajustes de colaboración',
+    'nav.courses': 'Cursos destacados',
+    'nav.courses.learning': 'Aprender en cursos',
+    'nav.courses.management': 'Gestión de cursos',
     'nav.tasks': 'Centro de tareas',
     'nav.settings': 'Configuración',
     'nav.knowledge': 'Conocimiento del agente',
-    'nav.memory': 'Memoria del agente',
-    'nav.soul': 'Perfil del agente',
-    'nav.rules': 'Archivos de reglas',
-    'nav.conversation': 'Importar conversaciones',
+    'nav.memory': 'Gestión de memoria Agent',
+    'nav.capture': 'Captura automática de conversaciones Agent',
+    'nav.soul': 'Gestión de perfil Agent',
+    'nav.rules': 'Gestión de reglas Agent',
+    'nav.conversation': 'Bandeja de conversaciones',
+    'nav.settings.basic': 'Ajustes básicos',
+    'nav.settings.connection': 'Conexión del host',
     'nav.expand': 'Expandir',
     'nav.collapse': 'Contraer',
     'sidebar.hide': 'Ocultar barra',
@@ -3154,16 +3481,31 @@ const uiTranslations: Record<LanguageCode, Partial<Record<TranslationKey, string
     'nav.home': 'ホーム',
     'nav.init': '学生記録を作成',
     'nav.inbox': '資料収集と処理',
+    'nav.assets': 'ファイル資産センター',
+    'nav.education': '教育記録',
+    'nav.projects': 'プロジェクト知識管理',
+    'nav.projects.new': '新規プロジェクト',
+    'nav.projects.existing': '既存プロジェクト',
+    'nav.growth': '成長モデル',
     'nav.reports': '学習レポート',
-    'nav.archive': '教育アーカイブ',
-    'nav.qa': 'エージェントQ&A',
+    'nav.archive': '学習資料',
+    'nav.qa': '知識検索',
+    'nav.qa.settings': 'Agent問答設定',
+    'nav.collaboration': '知識コラボレーション',
+    'nav.collaboration.settings': 'コラボレーション設定',
+    'nav.courses': 'おすすめコース',
+    'nav.courses.learning': 'コース学習',
+    'nav.courses.management': 'コース管理',
     'nav.tasks': 'タスクセンター',
     'nav.settings': '設定',
     'nav.knowledge': 'エージェント知識管理',
-    'nav.memory': 'エージェント記憶',
-    'nav.soul': 'エージェント設定',
-    'nav.rules': 'ルールファイル',
-    'nav.conversation': '会話履歴インポート',
+    'nav.memory': 'Agent記憶管理',
+    'nav.capture': 'Agent会話の自動収集',
+    'nav.soul': 'Agentペルソナ管理',
+    'nav.rules': 'Agentルール管理',
+    'nav.conversation': '会話資料ボックス',
+    'nav.settings.basic': '基本設定',
+    'nav.settings.connection': 'ホスト接続',
     'nav.expand': '展開',
     'nav.collapse': '折りたたむ',
     'sidebar.hide': 'サイドバーを隠す',
@@ -3207,16 +3549,31 @@ const uiTranslations: Record<LanguageCode, Partial<Record<TranslationKey, string
     'nav.home': '홈',
     'nav.init': '학생 기록 만들기',
     'nav.inbox': '자료 수집 및 처리',
+    'nav.assets': '파일 자산 센터',
+    'nav.education': '교육 기록',
+    'nav.projects': '프로젝트 지식 관리',
+    'nav.projects.new': '새 프로젝트',
+    'nav.projects.existing': '기존 프로젝트',
+    'nav.growth': '성장 모델',
     'nav.reports': '학습 보고서',
-    'nav.archive': '교육 기록',
-    'nav.qa': '에이전트 Q&A',
+    'nav.archive': '학습 자료',
+    'nav.qa': '지식 검색',
+    'nav.qa.settings': 'Agent Q&A 설정',
+    'nav.collaboration': '지식 협업',
+    'nav.collaboration.settings': '협업 설정',
+    'nav.courses': '추천 강좌',
+    'nav.courses.learning': '강좌 학습',
+    'nav.courses.management': '강좌 관리',
     'nav.tasks': '작업 센터',
     'nav.settings': '설정',
     'nav.knowledge': '에이전트 지식 관리',
-    'nav.memory': '에이전트 메모리',
-    'nav.soul': '에이전트 설정',
-    'nav.rules': '규칙 파일',
-    'nav.conversation': '대화 가져오기',
+    'nav.memory': 'Agent 메모리 관리',
+    'nav.capture': 'Agent 대화 자동 수집',
+    'nav.soul': 'Agent 페르소나 관리',
+    'nav.rules': 'Agent 규칙 관리',
+    'nav.conversation': '대화 자료함',
+    'nav.settings.basic': '기본 설정',
+    'nav.settings.connection': '호스트 연결',
     'nav.expand': '펼치기',
     'nav.collapse': '접기',
     'sidebar.hide': '사이드바 숨기기',
@@ -3260,16 +3617,31 @@ const uiTranslations: Record<LanguageCode, Partial<Record<TranslationKey, string
     'nav.home': 'Trang chủ',
     'nav.init': 'Tạo hồ sơ học sinh',
     'nav.inbox': 'Thu thập và xử lý',
+    'nav.assets': 'Trung tâm tệp',
+    'nav.education': 'Hồ sơ giáo dục',
+    'nav.projects': 'Quản lý tri thức dự án',
+    'nav.projects.new': 'Dự án mới',
+    'nav.projects.existing': 'Dự án hiện có',
+    'nav.growth': 'Mô hình phát triển',
     'nav.reports': 'Báo cáo học tập',
-    'nav.archive': 'Hồ sơ học tập',
-    'nav.qa': 'Hỏi đáp Agent',
+    'nav.archive': 'Tài liệu học tập',
+    'nav.qa': 'Tra cứu tri thức',
+    'nav.qa.settings': 'Cài đặt hỏi đáp Agent',
+    'nav.collaboration': 'Cộng tác tri thức',
+    'nav.collaboration.settings': 'Cài đặt cộng tác',
+    'nav.courses': 'Khóa học nổi bật',
+    'nav.courses.learning': 'Học theo khóa',
+    'nav.courses.management': 'Quản lý khóa học',
     'nav.tasks': 'Trung tâm tác vụ',
     'nav.settings': 'Cài đặt',
     'nav.knowledge': 'Quản lý tri thức Agent',
-    'nav.memory': 'Bộ nhớ Agent',
-    'nav.soul': 'Thiết lập Agent',
-    'nav.rules': 'Tệp quy tắc',
-    'nav.conversation': 'Nhập hội thoại',
+    'nav.memory': 'Quản lý bộ nhớ Agent',
+    'nav.capture': 'Tự động thu thập hội thoại Agent',
+    'nav.soul': 'Quản lý hồ sơ Agent',
+    'nav.rules': 'Quản lý quy tắc Agent',
+    'nav.conversation': 'Hộp tư liệu hội thoại',
+    'nav.settings.basic': 'Cài đặt cơ bản',
+    'nav.settings.connection': 'Kết nối máy chủ',
     'nav.expand': 'Mở rộng',
     'nav.collapse': 'Thu gọn',
     'sidebar.hide': 'Ẩn thanh bên',
@@ -3313,16 +3685,31 @@ const uiTranslations: Record<LanguageCode, Partial<Record<TranslationKey, string
     'nav.home': 'Laman utama',
     'nav.init': 'Cipta rekod pelajar',
     'nav.inbox': 'Kumpul & proses',
+    'nav.assets': 'Pusat aset fail',
+    'nav.education': 'Rekod pendidikan',
+    'nav.projects': 'Pengurusan ilmu projek',
+    'nav.projects.new': 'Projek baharu',
+    'nav.projects.existing': 'Projek sedia ada',
+    'nav.growth': 'Model perkembangan',
     'nav.reports': 'Laporan pembelajaran',
-    'nav.archive': 'Arkib pendidikan',
-    'nav.qa': 'Soal jawab Agent',
+    'nav.archive': 'Bahan pembelajaran',
+    'nav.qa': 'Carian pengetahuan',
+    'nav.qa.settings': 'Tetapan soal jawab Agent',
+    'nav.collaboration': 'Kerjasama pengetahuan',
+    'nav.collaboration.settings': 'Tetapan kerjasama',
+    'nav.courses': 'Kursus pilihan',
+    'nav.courses.learning': 'Pembelajaran kursus',
+    'nav.courses.management': 'Pengurusan kursus',
     'nav.tasks': 'Pusat Tugas',
     'nav.settings': 'Tetapan',
     'nav.knowledge': 'Pengurusan pengetahuan Agent',
-    'nav.memory': 'Memori Agent',
-    'nav.soul': 'Tetapan Agent',
-    'nav.rules': 'Fail peraturan',
-    'nav.conversation': 'Import perbualan',
+    'nav.memory': 'Pengurusan memori Agent',
+    'nav.capture': 'Tangkap perbualan Agent automatik',
+    'nav.soul': 'Pengurusan persona Agent',
+    'nav.rules': 'Pengurusan peraturan Agent',
+    'nav.conversation': 'Peti bahan perbualan',
+    'nav.settings.basic': 'Tetapan asas',
+    'nav.settings.connection': 'Sambungan hos',
     'nav.expand': 'Kembangkan',
     'nav.collapse': 'Tutup',
     'sidebar.hide': 'Sembunyikan bar sisi',
@@ -3444,6 +3831,184 @@ const seedStudents: Student[] = [
 function bridge() {
   return (window as unknown as { AndroidBridge?: AndroidBridge }).AndroidBridge;
 }
+
+function captureReasonLabel(reason = '') {
+  if (reason === 'manual') return '会话开始';
+  if (reason === 'highlight') return '重点截取';
+  if (reason === 'visual_change') return '画面变化';
+  if (reason === 'maximum_interval') return '最长间隔';
+  if (reason === 'student_terminal_interval') return '学生端定时采集';
+  if (reason === 'initial') return '会话开始';
+  return '定时采集';
+}
+
+function captureArchiveLabel(status = '') {
+  if (status === 'project_raw') return '已进入项目资料库';
+  if (status === 'student_raw' || status === 'promoted') return '已进入学生资料库';
+  if (status === 'organizing') return '自动整理中';
+  return '候选资料';
+}
+
+const CaptureTimelineThumbnail = memo(function CaptureTimelineThumbnail({ event }: { event: CaptureTimelineEvent }) {
+  const [dataUrl, setDataUrl] = useState('');
+  const [shouldLoad, setShouldLoad] = useState(false);
+  const rootRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    const element = rootRef.current;
+    if (!element || typeof IntersectionObserver === 'undefined') {
+      setShouldLoad(true);
+      return undefined;
+    }
+    const observer = new IntersectionObserver((entries) => {
+      if (entries.some((entry) => entry.isIntersecting)) {
+        setShouldLoad(true);
+        observer.disconnect();
+      }
+    }, { rootMargin: '320px 0px' });
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, [event.id]);
+  useEffect(() => {
+    let cancelled = false;
+    if (!shouldLoad || !event.thumbnailAvailable) {
+      setDataUrl('');
+      return () => { cancelled = true; };
+    }
+    const action = bridge()?.getCaptureThumbnail;
+    if (!action) return () => { cancelled = true; };
+    void action(JSON.stringify({ studentId: event.studentId, date: event.date, eventId: event.id })).then((raw) => {
+      if (cancelled) return;
+      try {
+        const result = JSON.parse(raw) as { ok?: boolean; dataUrl?: string };
+        if (result.ok && result.dataUrl) setDataUrl(result.dataUrl);
+      } catch {
+        setDataUrl('');
+      }
+    }).catch(() => { if (!cancelled) setDataUrl(''); });
+    return () => { cancelled = true; };
+  }, [event.id, event.studentId, event.date, event.thumbnailAvailable, shouldLoad]);
+  return (
+    <div className="capture-timeline-thumbnail" ref={rootRef}>
+      {dataUrl
+        ? <img src={dataUrl} alt={`${new Date(event.occurredAt).toLocaleTimeString('zh-CN')} 采集画面`} loading="lazy" />
+        : <div className="placeholder"><Camera size={22} /><span>{event.thumbnailAvailable ? '进入可视区域后加载' : '缩略图处理中'}</span></div>}
+    </div>
+  );
+});
+
+const CaptureTimelineCard = memo(function CaptureTimelineCard({ event, onOpen }: { event: CaptureTimelineEvent; onOpen: (event: CaptureTimelineEvent) => void }) {
+  return (
+    <article className="capture-timeline-card">
+      <time>{new Date(event.occurredAt).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}</time>
+      <CaptureTimelineThumbnail event={event} />
+      <div className="capture-timeline-detail">
+        <div>
+          <strong>{event.highlighted ? '重点画面' : captureReasonLabel(event.reason)}</strong>
+          <span className={`status-badge ${event.archiveStatus || 'candidate'}`}>{captureArchiveLabel(event.archiveStatus)}</span>
+        </div>
+        <p>{event.sourceName || '屏幕采集'}{event.projectName ? ` · ${event.projectName}` : ''}{event.courseName ? ` · ${event.courseName}` : ''}</p>
+        <small>{event.filename || event.id}{typeof event.difference === 'number' ? ` · 画面变化 ${Math.round(event.difference * 100)}%` : ''}</small>
+        <button className="secondary compact" onClick={() => onOpen(event)}><ExternalLink size={15} />打开原图</button>
+      </div>
+    </article>
+  );
+});
+
+function captureTimelineCategoryLabel(category = '') {
+  return ({ coding: '编程与调试', practice: '练习与订正', writing: '写作与产出', agent_assisted: '智能体辅助学习', reading: '阅读与学习' } as Record<string, string>)[category] || '学习活动';
+}
+
+function captureTimelineRecognitionLabel(status = '') {
+  if (status === 'pending_digest') return '采集事实，待消化';
+  if (status === 'completed') return '已识别';
+  if (status === 'partial_completed') return '部分完成，后台恢复中';
+  if (status === 'degraded') return '候选记录，后台恢复中';
+  return '正在整理';
+}
+
+function captureTimelineKnowledgeLabel(segment: CaptureTimelineSegment) {
+  if (segment.knowledgeState === 'formal_knowledge_linked') return '已形成正式知识';
+  if (segment.knowledgeState === 'digested_no_linked_asset') return '已消化，暂无可回链知识';
+  if (segment.digestStatus === 'link_isolated') return '部分回链已隔离，其他活动不受影响';
+  if (segment.archiveStatus === 'project_raw' || segment.archiveStatus === 'student_raw') return '已进入资料库，等待消化';
+  return '候选观察';
+}
+
+const CaptureTimelineSegmentCard = memo(function CaptureTimelineSegmentCard({ segment, onOpen }: { segment: CaptureTimelineSegment; onOpen: (event: CaptureTimelineEvent) => void }) {
+  const [expanded, setExpanded] = useState(false);
+  const evidence = expanded ? (segment.keyEvents || []).slice(0, 6) : [];
+  const summary = segment.observationStatus === 'accepted'
+    ? (segment.observation?.observedAction || segment.formalSummary || '该段已形成可追溯观察。')
+    : segment.recognitionStatus === 'pending_digest'
+      ? '已采集屏幕事实，正在等待正式消化；尚无可确认的学习活动结论。'
+      : (segment.formalSummary || segment.candidateSummary || '系统正在后台整理本活动段。');
+  return (
+    <article className="capture-timeline-segment-card">
+      <div className="capture-timeline-segment-time">
+        <time>{new Date(segment.startedAt).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}</time>
+        <span>—</span>
+        <time>{new Date(segment.endedAt).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}</time>
+      </div>
+      <div className="capture-timeline-segment-body">
+        <div className="capture-timeline-segment-heading">
+          <strong>{segment.topic || captureTimelineCategoryLabel(segment.category)}</strong>
+          <span className={`status-badge ${segment.archiveStatus || 'candidate'}`}>{captureArchiveLabel(segment.archiveStatus)}</span>
+        </div>
+        <div className="capture-timeline-segment-meta">
+          <span>{captureTimelineCategoryLabel(segment.category)}</span>
+          <span>{captureTimelineRecognitionLabel(segment.recognitionStatus)}</span>
+          <span>{captureTimelineKnowledgeLabel(segment)}</span>
+          <span>{segment.keyEvents?.length || 0} 个关键证据</span>
+        </div>
+        <p>{summary}</p>
+        {segment.observationStatus === 'accepted' ? (
+          <div className="capture-timeline-formal-result">
+            {(segment.observation?.attempts || []).length > 0 && <span>尝试：{segment.observation!.attempts!.join('；')}</span>}
+            {segment.observation?.obstacle && <span>障碍：{segment.observation.obstacle}</span>}
+            {segment.observation?.difficultyOrChange && <span>变化：{segment.observation.difficultyOrChange}</span>}
+            {segment.observation?.observedOutcome && <span>产出：{segment.observation.observedOutcome}</span>}
+            {segment.observation?.reason && <span>明确原因：{segment.observation.reason}</span>}
+          </div>
+        ) : null}
+        {segment.observationStatus === 'candidate_unverified' && <small>活动观察尚未取得可信的图片读取或其他来源证明，暂不作为正式时间线结论。</small>}
+        {segment.observationStatus !== 'accepted' && segment.recognitionStatus !== 'pending_digest' && Number(segment.confidence || 0) < 0.6 ? <small>低置信度：当前仅作为候选观察，系统会在后台自动继续识别。</small> : null}
+        {segment.observationStatus === 'accepted' && segment.visualSummary ? <small>视觉补充：{segment.visualSummary}</small> : null}
+        {(segment.knowledgeConcepts || []).length ? <small>关联知识：{segment.knowledgeConcepts!.join('、')}</small> : null}
+        {segment.knowledgeState === 'candidate_observation' && <small>候选观察：正式知识状态和指导响应将在资料自动消化并校验后补充。</small>}
+        {segment.knowledgeStateChange && (
+          <div className="capture-timeline-formal-result">
+            <strong>知识状态</strong>
+            <span>{typeof segment.knowledgeStateChange === 'string'
+              ? segment.knowledgeStateChange
+              : segment.knowledgeStateChange.summary || [segment.knowledgeStateChange.previous, segment.knowledgeStateChange.current].filter(Boolean).join(' → ')}</span>
+          </div>
+        )}
+        {(segment.guidanceResponses || []).length > 0 && (
+          <div className="capture-timeline-formal-result">
+            <strong>指导响应</strong>
+            {(segment.guidanceResponses || []).map((guidance, index) => <span key={`${segment.segmentId}-guidance-${index}`}>{guidance.text}{guidance.evidenceRefs?.length ? `（依据本段 ${guidance.evidenceRefs.length} 项证据）` : ''}</span>)}
+          </div>
+        )}
+        <button className="secondary compact" onClick={() => setExpanded((current) => !current)}>
+          {expanded ? '收起证据' : '查看证据'}
+        </button>
+        {expanded && (
+          <div className="capture-timeline-segment-evidence">
+            {evidence.length ? evidence.map((event) => (
+              <div className="capture-timeline-evidence-item" key={event.id}>
+                <CaptureTimelineThumbnail event={event} />
+                <div>
+                  <time>{new Date(event.occurredAt).toLocaleTimeString('zh-CN')}</time>
+                  <button className="secondary compact" onClick={() => onOpen(event)}><ExternalLink size={14} />打开原图</button>
+                </div>
+              </div>
+            )) : <div className="capture-timeline-empty">关键证据暂不可用；活动摘要和其他活动段不受影响。</div>}
+          </div>
+        )}
+      </div>
+    </article>
+  );
+});
 
 function directCourseUrlIssue(value: string) {
   const trimmed = String(value || '').trim();
@@ -4738,7 +5303,7 @@ function App() {
   ));
   const [settingsSubmenu, setSettingsSubmenu] = useState<SettingsSubmenu>(() => {
     const saved = localStorage.getItem('edu-manager-settings-submenu');
-    return saved === 'connection' || saved === 'collaboration' ? saved : 'basic';
+    return saved === 'connection' || saved === 'collaboration' || saved === 'agent-qa' ? saved : 'basic';
   });
   const [selectedInitStep, setSelectedInitStep] = useState<InitStepId>('full');
   const [copied, setCopied] = useState(false);
@@ -4821,9 +5386,28 @@ function App() {
   const [courseCaptureSourceId, setCourseCaptureSourceId] = useState('');
   const [courseCaptureBusy, setCourseCaptureBusy] = useState(false);
   const [courseCaptureMessage, setCourseCaptureMessage] = useState('');
-  const [capturePromotionTargets, setCapturePromotionTargets] = useState<Record<string, 'project_raw' | 'student_raw'>>({});
   const [captureMessage, setCaptureMessage] = useState('');
   const [captureBusy, setCaptureBusy] = useState(false);
+  const [captureView, setCaptureView] = useState<'sessions' | 'timeline'>('sessions');
+  const [captureTimelineDates, setCaptureTimelineDates] = useState<CaptureTimelineDate[]>([]);
+  const [captureTimelineDate, setCaptureTimelineDate] = useState('');
+  const [captureTimelineEvents, setCaptureTimelineEvents] = useState<CaptureTimelineEvent[]>([]);
+  const [captureTimelineSegments, setCaptureTimelineSegments] = useState<CaptureTimelineSegment[]>([]);
+  const [captureTimelineMemory, setCaptureTimelineMemory] = useState<CaptureTimelineMemory | null>(null);
+  const [captureTimelineReports, setCaptureTimelineReports] = useState<CaptureTimelineSemanticPage['reports']>(null);
+  const [captureTimelineMode, setCaptureTimelineMode] = useState<'semantic' | 'facts'>('semantic');
+  const [captureTimelineCursor, setCaptureTimelineCursor] = useState('');
+  const [captureTimelineTotal, setCaptureTimelineTotal] = useState(0);
+  const [captureTimelineReason, setCaptureTimelineReason] = useState('');
+  const [captureTimelineCategory, setCaptureTimelineCategory] = useState('');
+  const [captureTimelineKnowledgeState, setCaptureTimelineKnowledgeState] = useState('');
+  const [captureTimelineQuery, setCaptureTimelineQuery] = useState('');
+  const deferredCaptureTimelineQuery = useDeferredValue(captureTimelineQuery);
+  const [captureTimelineArchiveStatus, setCaptureTimelineArchiveStatus] = useState('');
+  const [captureTimelineSessionId, setCaptureTimelineSessionId] = useState('');
+  const [captureTimelineSegmentId, setCaptureTimelineSegmentId] = useState('');
+  const [captureTimelineLoading, setCaptureTimelineLoading] = useState(false);
+  const [, startCaptureTimelineTransition] = useTransition();
   const [courseCatalogState, setCourseCatalogState] = useState<CourseCatalogState | null>(null);
   const [courseCatalogMessage, setCourseCatalogMessage] = useState('');
   const [directCourseDraft, setDirectCourseDraft] = useState({ name: '', summary: '', url: '' });
@@ -4876,6 +5460,7 @@ function App() {
   const [projectKnowledgeBrowserMessage, setProjectKnowledgeBrowserMessage] = useState('');
   const [projectEditDraft, setProjectEditDraft] = useState({ name: '', type: '', description: '', objective: '', knowledgeStrategy: '', growthStrategy: '' });
   const [projectEditOpen, setProjectEditOpen] = useState(false);
+  const [projectStudentSaveBusy, setProjectStudentSaveBusy] = useState(false);
   const [projectStudentEvidenceDrafts, setProjectStudentEvidenceDrafts] = useState<Record<string, { ability: string; observation: string; status: string }>>({});
   const [projectStudentEvidenceFeedbacks, setProjectStudentEvidenceFeedbacks] = useState<Record<string, { ok: boolean; message: string }>>({});
   const [projectStudentEvidenceBusyId, setProjectStudentEvidenceBusyId] = useState('');
@@ -4948,6 +5533,9 @@ function App() {
   const [growthEvidenceRiskAssessment, setGrowthEvidenceRiskAssessment] = useState<GrowthEvidenceRiskAssessment | null>(null);
   const [growthIndex, setGrowthIndex] = useState<GrowthIndexState | null>(null);
   const [growthIndexPreview, setGrowthIndexPreview] = useState('');
+  const [growthLoading, setGrowthLoading] = useState(false);
+  const growthLoadSerial = useRef(0);
+  const growthLoadedStudentId = useRef('');
   const [growthView, setGrowthView] = useState<GrowthView>('abilities');
   const [growthSearch, setGrowthSearch] = useState('');
   const [growthEvidenceStatusFilter, setGrowthEvidenceStatusFilter] = useState('all');
@@ -4965,6 +5553,7 @@ function App() {
   const [taskCenterRefreshing, setTaskCenterRefreshing] = useState(false);
   const taskCenterRequestRef = React.useRef(0);
   const activeSectionRef = React.useRef<Section>(activeSection);
+  const selectedStudentIdRef = React.useRef('');
   const [selectedTaskId, setSelectedTaskId] = useState('');
   const taskDetailPanelRef = React.useRef<HTMLElement | null>(null);
   const [taskExecutorDraft, setTaskExecutorDraft] = useState('');
@@ -5032,6 +5621,7 @@ function App() {
   const [hostTimeline, setHostTimeline] = useState<HostTimelineEvent[]>([]);
   const [collaborationState, setCollaborationState] = useState<CollaborationState | null>(null);
   const [collaborationMessage, setCollaborationMessage] = useState('');
+  const pendingCollaborationDeliveryManifestRef = React.useRef('');
   const [collaborationPairingFeedback, setCollaborationPairingFeedback] = useState<CollaborationPairingFeedback>({
     stage: 'idle',
     title: '尚未建立设备连接',
@@ -5068,9 +5658,11 @@ function App() {
   const [agentCenterMessage, setAgentCenterMessage] = useState('');
   const [agentMemoryState, setAgentMemoryState] = useState<AgentMemorySessionState | null>(null);
   const [agentKnowledgeMenuOpen, setAgentKnowledgeMenuOpen] = useState(false);
-  const [courseMenuOpen, setCourseMenuOpen] = useState(true);
-  const [projectMenuOpen, setProjectMenuOpen] = useState(true);
-  const [settingsMenuOpen, setSettingsMenuOpen] = useState(true);
+  const [educationArchiveMenuOpen, setEducationArchiveMenuOpen] = useState(false);
+  const [collaborationMenuOpen, setCollaborationMenuOpen] = useState(false);
+  const [courseMenuOpen, setCourseMenuOpen] = useState(false);
+  const [projectMenuOpen, setProjectMenuOpen] = useState(false);
+  const [settingsMenuOpen, setSettingsMenuOpen] = useState(false);
   const [agentScanCandidates, setAgentScanCandidates] = useState<AgentKnowledgeCandidate[]>([]);
   const [selectedCandidateKeys, setSelectedCandidateKeys] = useState<string[]>([]);
   const [aiScanTool, setAiScanTool] = useState<AgentToolId | 'all'>('all');
@@ -5098,6 +5690,7 @@ function App() {
   const [selectedConversationAssetKeys, setSelectedConversationAssetKeys] = useState<string[]>([]);
   const [conversationDeliveryTargetType, setConversationDeliveryTargetType] = useState<'student' | 'project'>('student');
   const [conversationDeliveryProjectId, setConversationDeliveryProjectId] = useState('');
+  const [agentSessionTargetSelections, setAgentSessionTargetSelections] = useState<Record<string, string>>({});
   const [conversationExtractText, setConversationExtractText] = useState('');
   const [conversationExtractPreview, setConversationExtractPreview] = useState<ConversationExtractPreview | null>(null);
   const [conversationExtractTargets, setConversationExtractTargets] = useState({ memory: true, soul: true, qa: true, todos: true });
@@ -5117,6 +5710,7 @@ function App() {
   const t = (key: TranslationKey) => uiTranslations[language]?.[key] ?? zhCnText[key] ?? key;
 
   const selectedStudent = students.find((item) => item.id === selectedId) ?? students[0];
+  const codexHookOnboarding = agentMemoryState?.codexHookOnboarding;
   const isWindows = storageConfig.platform === 'windows';
   const courseCaptureStudent = students.find((item) => item.id === courseCaptureStudentId) ?? selectedStudent;
   const courseCaptureProjects = useMemo(() => projects.filter((project) => (
@@ -5147,6 +5741,8 @@ function App() {
         item.analysis?.title,
         item.analysis?.summary,
         item.sourceScopeName,
+        item.tool,
+        item.sourceType === 'authorized_lifecycle' ? '自动采集' : item.sourceType,
         item.sourceUrl,
         ...topics,
       ].filter(Boolean).some((value) => String(value).toLowerCase().includes(keyword));
@@ -5328,6 +5924,10 @@ function App() {
   }, [activeSection]);
 
   useEffect(() => {
+    selectedStudentIdRef.current = selectedStudent?.id || '';
+  }, [selectedStudent?.id]);
+
+  useEffect(() => {
     setPathHealth(null);
     setPathHealthMessage('');
     setGrowthEvidenceReview({ candidates: [] });
@@ -5341,6 +5941,19 @@ function App() {
     setMaintenanceReportPreview('');
     setLearningReportTaskIds([]);
     setLearningReportUpdating(false);
+    setCaptureTimelineDates([]);
+    setCaptureTimelineDate('');
+    setCaptureTimelineEvents([]);
+    setCaptureTimelineSegments([]);
+    setCaptureTimelineMemory(null);
+    setCaptureTimelineMode('semantic');
+    setCaptureTimelineCursor('');
+    setCaptureTimelineTotal(0);
+    setCaptureTimelineSessionId('');
+    setCaptureTimelineSegmentId('');
+    setCaptureTimelineCategory('');
+    setCaptureTimelineKnowledgeState('');
+    setCaptureTimelineQuery('');
   }, [selectedStudent?.id]);
   useEffect(() => {
     const unsubscribe = bridge()?.onProjectWorkspaceScanProgress?.((payload) => {
@@ -5352,8 +5965,18 @@ function App() {
   useEffect(() => {
     const unsubscribe = bridge()?.onCaptureChanged?.((payload) => {
       try {
-        const result = JSON.parse(payload) as CaptureCenterState;
-        if (result.ok) setCaptureCenter(result);
+        const result = JSON.parse(payload) as CaptureCenterState & { kind?: string; session?: CaptureSession | null };
+        if (result.ok && result.kind === 'capture_delta') {
+          setCaptureCenter((current) => {
+            const changed = result.session;
+            const sessions = changed
+              ? [changed, ...current.sessions.filter((session) => session.id !== changed.id)].slice(0, 30)
+              : current.sessions;
+            return { ...current, activeSession: result.activeSession ?? null, sessions };
+          });
+        } else if (result.ok) {
+          setCaptureCenter(result);
+        }
       } catch {
         // The next explicit refresh will recover a malformed auxiliary event.
       }
@@ -5429,8 +6052,8 @@ function App() {
   );
   const platformCourseEditAllowed = !isWindows || licenseCapability('platform_course_edit');
   const platformCoursePublishAllowed = !isWindows || licenseCapability('platform_course_publish');
-  const restrictedSections = new Set<Section>(['init', 'inbox', 'assets', 'projects-new', 'projects-existing', 'growth', 'qa', 'memory', 'soul', 'rules', 'conversation', 'tasks']);
-  const isLicenseRestrictedSection = isWindows && !windowsLicenseActive && restrictedSections.has(activeSection);
+  const restrictedSections = new Set<Section>(['init', 'inbox', 'assets', 'projects-new', 'projects-existing', 'growth', 'qa', 'memory', 'capture', 'soul', 'rules', 'conversation', 'tasks']);
+  const isLicenseRestrictedSection = isWindows && !windowsLicenseActive && (restrictedSections.has(activeSection) || (activeSection === 'settings' && settingsSubmenu === 'agent-qa'));
   const licenseRestrictionText = effectiveLicenseStatus?.message || 'Windows 主机尚未激活。未激活状态仅支持首页、系统设置和已有档案/报告的只读浏览。';
   // The knowledge manager remains usable without a local Agent. Web tools and
   // later installation are valid paths, so installation is guidance, not a gate.
@@ -6753,8 +7376,15 @@ function App() {
       return;
     }
     try {
-      const result = JSON.parse(raw) as CollaborationState;
+      const result = JSON.parse(raw) as CollaborationState & {
+        latestDelivery?: { manifestId?: string; status?: string } | null;
+      };
       if (result.state) setCollaborationState(result);
+      if (result.latestDelivery?.manifestId) {
+        pendingCollaborationDeliveryManifestRef.current = ['delivered', 'cancelled', 'invalid', 'superseded'].includes(String(result.latestDelivery.status || ''))
+          ? ''
+          : result.latestDelivery.manifestId;
+      }
       setCollaborationMessage(result.message || (result.ok ? '知识协作设置已更新。' : '知识协作设置更新失败。'));
       if (result.ok && selectedStudent?.id) refreshCollaborationMaterialStats(selectedStudent.id);
       if (result.ok) {
@@ -6764,6 +7394,22 @@ function App() {
       }
     } catch {
       setCollaborationMessage('知识协作操作结果解析失败。');
+    }
+  };
+
+  const applyCollaborationDeliveryEvent = (payload: string) => {
+    try {
+      const event = JSON.parse(payload || '{}') as { manifestId?: string; status?: string };
+      if (
+        event.status === 'delivered'
+        && event.manifestId
+        && event.manifestId === pendingCollaborationDeliveryManifestRef.current
+      ) {
+        pendingCollaborationDeliveryManifestRef.current = '';
+        setCollaborationMessage('学生知识档案同步包已送达；主机与目标设备状态已一致。');
+      }
+    } catch {
+      // State refresh remains authoritative even if an older event has no JSON payload.
     }
   };
 
@@ -7238,6 +7884,83 @@ function App() {
     }
   };
 
+  const clearEmptyAgentSessions = (sessionId = '') => {
+    if (!selectedStudent) return;
+    const prompt = sessionId ? '清理这条无授权消息的已结束会话？' : '批量清理无授权消息的已结束会话？有内容及采集中的会话不会删除。';
+    if (!window.confirm(prompt)) return;
+    const raw = bridge()?.deleteEmptyAgentMemorySessions?.(selectedStudent.id, sessionId);
+    if (!raw) { setAgentCenterMessage('当前环境不支持清理空会话。'); return; }
+    try {
+      const result = JSON.parse(raw) as { ok?: boolean; message?: string };
+      setAgentCenterMessage(result.message || (result.ok ? '空会话已清理。' : '清理失败。'));
+      if (result.ok) refreshAgentMemoryState(selectedStudent.id);
+    } catch {
+      setAgentCenterMessage('清理空会话结果解析失败。');
+    }
+  };
+
+  const deliverCapturedConversation = (session: NonNullable<AgentMemorySessionState['sessions']>[number]) => {
+    if (!selectedStudent || !session.conversationReceipt?.assetId || !session.materialAvailable) return;
+    const selection = agentSessionTargetSelections[session.sessionId] || 'student';
+    const projectId = selection.startsWith('project:') ? selection.slice('project:'.length) : '';
+    if (projectId && !conversationLinkedProjects.some((project) => project.id === projectId)) {
+      setAgentCenterMessage('所选项目已不再与当前学生关联，未投递会话。');
+      return;
+    }
+    const raw = bridge()?.deliverConversationMaterials?.(selectedStudent.id, JSON.stringify({
+      sources: [{ sourceScopeType: 'student', sourceScopeId: selectedStudent.id, assetId: session.conversationReceipt.assetId }],
+      targetType: projectId ? 'project' : 'student',
+      targetId: projectId || selectedStudent.id,
+    }));
+    if (!raw) {
+      setAgentCenterMessage('当前环境不支持自动会话资料投递。');
+      return;
+    }
+    try {
+      const result = JSON.parse(raw) as { ok?: boolean; message?: string };
+      setAgentCenterMessage(result.message || (result.ok ? '会话已投递到原始资料库。' : '会话投递失败。'));
+      if (result.ok) {
+        refreshAgentMemoryState(selectedStudent.id);
+        refreshConversationCenter(selectedStudent.id);
+        if (projectId) refreshProjects();
+        else refreshAssets();
+      }
+    } catch {
+      setAgentCenterMessage('自动会话投递结果解析失败。');
+    }
+  };
+
+  const manageCapturedConversation = (session: NonNullable<AgentMemorySessionState['sessions']>[number], action: 'trash' | 'restore' | 'delete') => {
+    if (!selectedStudent || !session.conversationReceipt?.assetId || !session.materialAvailable) return;
+    if (action === 'trash' && !window.confirm(`将自动采集会话“${session.title || session.sessionId}”移入回收站？已投递资料和已晋升知识不会被删除。`)) return;
+    if (action === 'delete') {
+      if (!session.materialDependencies?.canPermanentlyDelete) {
+        setAgentCenterMessage('该会话仍关联资料投递或已晋升知识，不能彻底删除；请先处理下游依赖。');
+        return;
+      }
+      if (!window.confirm(`彻底删除自动采集会话“${session.title || session.sessionId}”的原文、本地会话记忆及未晋升知识候选？此操作不可撤销。`)) return;
+    }
+    const raw = bridge()?.manageConversationImports?.(selectedStudent.id, JSON.stringify({
+      action,
+      confirmPermanentDelete: action === 'delete',
+      sources: [{ sourceScopeType: 'student', sourceScopeId: selectedStudent.id, assetId: session.conversationReceipt.assetId }],
+    }));
+    if (!raw) {
+      setAgentCenterMessage('当前环境不支持自动会话删除管理。');
+      return;
+    }
+    try {
+      const result = JSON.parse(raw) as { ok?: boolean; message?: string };
+      setAgentCenterMessage(result.message || (result.ok ? '会话已处理。' : '会话处理失败。'));
+      if (result.ok) {
+        refreshAgentMemoryState(selectedStudent.id);
+        refreshConversationCenter(selectedStudent.id);
+      }
+    } catch {
+      setAgentCenterMessage('自动会话管理结果解析失败。');
+    }
+  };
+
   const updateAgentMemoryAutomation = (enabled: boolean) => {
     if (!selectedStudent) return;
     const raw = bridge()?.setAgentMemoryAutomation?.(selectedStudent.id, enabled);
@@ -7267,6 +7990,25 @@ function App() {
       refreshAgentMemoryState(selectedStudent.id);
     } catch {
       setAgentCenterMessage('切换自动会话采集对象结果解析失败。');
+    }
+  };
+
+  const openCodexHookReview = () => {
+    const raw = bridge()?.openCodexHookReview?.();
+    if (!raw) {
+      setAgentCenterMessage('当前环境无法打开 Codex CLI，请手动打开后输入 /hooks。');
+      return;
+    }
+    try {
+      const result = JSON.parse(raw) as { ok?: boolean; message?: string; onboarding?: AgentMemorySessionState['codexHookOnboarding'] };
+      setAgentCenterMessage(result.message || (result.ok ? 'Codex Hook 审查已打开。' : '无法打开 Codex Hook 审查。'));
+      if (result.ok && result.onboarding) {
+        setAgentMemoryState((current) => current ? { ...current, codexHookOnboarding: result.onboarding } : current);
+      } else if (selectedStudent) {
+        refreshAgentMemoryState(selectedStudent.id);
+      }
+    } catch {
+      setAgentCenterMessage('Codex Hook 审查结果解析失败。');
     }
   };
 
@@ -7528,11 +8270,11 @@ ${sourceText}`;
       const blocked = selected.filter((item) => !item.dependencies?.canPermanentlyDelete);
       if (blocked.length) {
         const deliveryCount = blocked.reduce((sum, item) => sum + Number(item.dependencies?.deliveryCount || 0), 0);
-        const candidateCount = blocked.reduce((sum, item) => sum + Number(item.dependencies?.candidateCount || 0), 0);
-        setConversationMessage(`所选对话中有 ${blocked.length} 份仍关联 ${deliveryCount} 条资料投递和 ${candidateCount} 条知识候选，不能彻底删除；可继续保留在回收站。`);
+        const promotedCount = blocked.reduce((sum, item) => sum + Number(item.dependencies?.promotedCount || 0), 0);
+        setConversationMessage(`所选对话中有 ${blocked.length} 份仍关联 ${deliveryCount} 条资料投递和 ${promotedCount} 条已晋升知识，不能彻底删除；可继续保留在回收站。`);
         return;
       }
-      if (!window.confirm(`彻底删除 ${selected.length} 份对话原文和治理记录？此操作不可撤销。`)) return;
+      if (!window.confirm(`彻底删除 ${selected.length} 份对话原文、本地会话记忆及未晋升知识候选？此操作不可撤销。`)) return;
     }
     const raw = bridge()?.manageConversationImports?.(selectedStudent.id, JSON.stringify({
       action,
@@ -7905,7 +8647,8 @@ ${sourceText}`;
       if (payload?.sidebarCollapsed === false) setSidebarCollapsed(false);
       if (payload?.blocked) setCourseCatalogMessage(payload.message || '已阻止课程页面跳转到非白名单域名。');
     };
-    (window as unknown as { onNativeCollaborationChanged?: (payload: string) => void }).onNativeCollaborationChanged = () => {
+    (window as unknown as { onNativeCollaborationChanged?: (payload: string) => void }).onNativeCollaborationChanged = (payload: string) => {
+      applyCollaborationDeliveryEvent(payload);
       if (activeSectionRef.current === 'settings') {
         refreshCollaborationState();
         refreshCollaborationMaterialStats();
@@ -7913,6 +8656,18 @@ ${sourceText}`;
       }
       if (activeSectionRef.current === 'projects') refreshProjects();
       if (activeSectionRef.current === 'tasks') void refreshTaskCenter(false);
+    };
+    (window as unknown as { onNativeAgentMemoryChanged?: (payload: string) => void }).onNativeAgentMemoryChanged = (payload: string) => {
+      try {
+        const event = JSON.parse(payload) as { studentId?: string; reason?: string };
+        if (String(event.studentId || '') !== selectedStudentIdRef.current) return;
+        refreshAgentMemoryState(String(event.studentId));
+        if (event.reason === 'codex_hook_verified') {
+          setAgentCenterMessage('Codex Hook 已完成一次确认验证，后续会话将由 AI教育管家自动采集。');
+        }
+      } catch {
+        if (selectedStudentIdRef.current) refreshAgentMemoryState(selectedStudentIdRef.current);
+      }
     };
 
     const rootStatus = bridge()?.getArchiveRootStatus?.();
@@ -7974,6 +8729,7 @@ ${sourceText}`;
       delete (window as unknown as { onNativeArchiveRootSelected?: (payload: string) => void }).onNativeArchiveRootSelected;
       delete (window as unknown as { onNativeHostServiceChanged?: (payload: string) => void }).onNativeHostServiceChanged;
       delete (window as unknown as { onNativeCollaborationChanged?: (payload: string) => void }).onNativeCollaborationChanged;
+      delete (window as unknown as { onNativeAgentMemoryChanged?: (payload: string) => void }).onNativeAgentMemoryChanged;
     };
   }, [pendingImportStudentId]);
 
@@ -8075,10 +8831,10 @@ ${sourceText}`;
   }, [isWindows, activeSection, selectedStudent?.id]);
 
   useEffect(() => {
-    if (activeSection === 'memory' || activeSection === 'soul' || activeSection === 'qa' || activeSection === 'conversation') {
+    if (activeSection === 'memory' || activeSection === 'capture' || activeSection === 'soul' || activeSection === 'qa' || activeSection === 'conversation') {
       refreshAgentCenter();
       refreshSourceRegistry();
-      if (activeSection === 'memory') refreshAgentMemoryState();
+      if (activeSection === 'memory' || activeSection === 'capture') refreshAgentMemoryState();
     }
   }, [activeSection, selectedId]);
 
@@ -8095,7 +8851,7 @@ ${sourceText}`;
 
   useEffect(() => {
     if (activeSection !== 'tasks') return undefined;
-    void refreshTaskCenter(true);
+    void refreshTaskCenter(false, true);
     const timer = window.setInterval(() => {
       if (!document.hidden) void refreshTaskCenter(false);
     }, 60000);
@@ -8170,11 +8926,30 @@ ${sourceText}`;
       refreshMaterialImportRecords(selectedStudent);
       refreshCaptureCenter();
       void refreshCaptureSources();
-      const timer = window.setInterval(refreshCaptureCenter, 5000);
-      return () => window.clearInterval(timer);
     }
     return undefined;
   }, [activeSection, selectedId]);
+
+  useEffect(() => {
+    if (isWindows && activeSection === 'inbox' && captureView === 'timeline' && selectedStudent) {
+      void refreshCaptureTimelineDates(selectedStudent);
+    }
+  }, [activeSection, selectedId, captureView]);
+
+  useEffect(() => {
+    if (isWindows && activeSection === 'inbox' && captureView === 'timeline' && selectedStudent && captureTimelineDate) {
+      void loadCaptureTimeline(selectedStudent, captureTimelineDate);
+    }
+  }, [activeSection, selectedId, captureView, captureTimelineDate, captureTimelineReason, captureTimelineArchiveStatus, captureTimelineSessionId, captureTimelineSegmentId, captureTimelineCategory, captureTimelineKnowledgeState, deferredCaptureTimelineQuery]);
+
+  useEffect(() => {
+    if (!(isWindows && activeSection === 'inbox' && captureView === 'timeline' && selectedStudent && captureTimelineDate)) return undefined;
+    const timer = window.setInterval(() => {
+      if (document.hidden) return;
+      if (!captureTimelineLoading) void loadCaptureTimeline(selectedStudent, captureTimelineDate);
+    }, 15_000);
+    return () => window.clearInterval(timer);
+  }, [activeSection, selectedId, captureView, captureTimelineDate, captureTimelineMode, captureTimelineLoading]);
 
   const persist = (next: Student[]) => {
     setStudents(next);
@@ -9714,6 +10489,97 @@ ${sourceText}`;
     }
   };
 
+  const refreshCaptureTimelineDates = async (student: Student, rebuild = false) => {
+    const action = rebuild ? bridge()?.rebuildCaptureTimeline : bridge()?.getCaptureTimelineDates;
+    if (!action) return;
+    setCaptureTimelineLoading(true);
+    try {
+      const raw = await action(JSON.stringify({ studentId: student.id }));
+      const result = JSON.parse(raw) as { ok?: boolean; dates?: CaptureTimelineDate[]; message?: string };
+      if (!result.ok) {
+        setCaptureMessage(result.message || '学习时间线日期读取失败。');
+        return;
+      }
+      const dates = result.dates || [];
+      setCaptureTimelineDates(dates);
+      setCaptureTimelineDate((current) => (dates.some((item) => item.date === current) ? current : dates[0]?.date || ''));
+      if (rebuild && result.message) setCaptureMessage(result.message);
+    } catch (error) {
+      setCaptureMessage(`学习时间线读取失败：${(error as Error).message}`);
+    } finally {
+      setCaptureTimelineLoading(false);
+    }
+  };
+
+  const loadCaptureTimeline = async (student: Student, date: string, append = false) => {
+    const semanticAction = bridge()?.getCaptureTimelineSegments;
+    const factualAction = bridge()?.getCaptureTimeline;
+    if ((!semanticAction && !factualAction) || !date) return;
+    const performanceStartedAt = performance.now();
+    setCaptureTimelineLoading(true);
+    try {
+      const cursor = append ? captureTimelineCursor : '';
+      if (semanticAction) {
+        const semantic = JSON.parse(await semanticAction(JSON.stringify({
+          studentId: student.id,
+          date,
+          cursor,
+          limit: 30,
+          category: captureTimelineCategory,
+          knowledgeState: captureTimelineKnowledgeState,
+          query: deferredCaptureTimelineQuery,
+          archiveStatus: captureTimelineArchiveStatus,
+          sessionId: captureTimelineSessionId,
+          segmentId: captureTimelineSegmentId,
+        }))) as CaptureTimelineSemanticPage;
+        if (semantic.ok && (Number(semantic.total || 0) > 0 || semantic.memory)) {
+          startCaptureTimelineTransition(() => {
+            setCaptureTimelineMode('semantic');
+            setCaptureTimelineSegments((current) => append ? [...current, ...(semantic.segments || [])] : (semantic.segments || []));
+            setCaptureTimelineEvents([]);
+            setCaptureTimelineMemory(semantic.memory || null);
+            if (!append) setCaptureTimelineReports(semantic.reports || null);
+            setCaptureTimelineCursor(semantic.nextCursor || '');
+            setCaptureTimelineTotal(Number(semantic.total || 0));
+          });
+          return;
+        }
+      }
+      if (!factualAction) return;
+      const raw = await factualAction(JSON.stringify({ studentId: student.id, date, cursor, limit: 30, reason: captureTimelineReason, archiveStatus: captureTimelineArchiveStatus, sessionId: captureTimelineSessionId }));
+      const result = JSON.parse(raw) as CaptureTimelinePage;
+      if (!result.ok) {
+        setCaptureMessage(result.message || '学习时间线读取失败。');
+        return;
+      }
+      startCaptureTimelineTransition(() => {
+        setCaptureTimelineMode('facts');
+        setCaptureTimelineEvents((current) => append ? [...current, ...(result.events || [])] : (result.events || []));
+        setCaptureTimelineSegments([]);
+        setCaptureTimelineMemory(null);
+        if (!append) setCaptureTimelineReports(null);
+        setCaptureTimelineCursor(result.nextCursor || '');
+        setCaptureTimelineTotal(Number(result.total || 0));
+      });
+    } catch (error) {
+      setCaptureMessage(`学习时间线加载失败：${(error as Error).message}`);
+    } finally {
+      void bridge()?.reportCaptureTimelinePerformance?.(JSON.stringify({ rendererLatencyMs: performance.now() - performanceStartedAt }));
+      setCaptureTimelineLoading(false);
+    }
+  };
+
+  const openCaptureTimelineOriginal = useCallback(async (event: CaptureTimelineEvent) => {
+    const action = bridge()?.openCaptureOriginal;
+    if (!action) return;
+    try {
+      const result = JSON.parse(await action(JSON.stringify({ studentId: event.studentId, date: event.date, eventId: event.id }))) as { ok?: boolean; message?: string };
+      if (!result.ok) setCaptureMessage(result.message || '无法打开原始截图。');
+    } catch (error) {
+      setCaptureMessage(`无法打开原始截图：${(error as Error).message}`);
+    }
+  }, []);
+
   const refreshCaptureSources = async () => {
     const action = bridge()?.listCaptureSources;
     if (!action) return;
@@ -9724,9 +10590,10 @@ ${sourceText}`;
         return;
       }
       const sources = result.sources ?? [];
+      const availableSources = sources.filter((source) => !source.blocked);
       setCaptureSources(sources);
-      setCaptureSourceId((current) => (sources.some((source) => source.id === current) ? current : sources[0]?.id || ''));
-      setCourseCaptureSourceId((current) => (sources.some((source) => source.id === current) ? current : sources[0]?.id || ''));
+      setCaptureSourceId((current) => (availableSources.some((source) => source.id === current) ? current : availableSources[0]?.id || ''));
+      setCourseCaptureSourceId((current) => (availableSources.some((source) => source.id === current) ? current : availableSources[0]?.id || ''));
     } catch {
       setCaptureMessage('屏幕来源结果解析失败。');
     }
@@ -9800,32 +10667,6 @@ ${sourceText}`;
       refreshCaptureCenter();
     } catch {
       setCaptureMessage('屏幕采集操作失败。');
-    } finally {
-      setCaptureBusy(false);
-    }
-  };
-
-  const promoteCapture = async (session: CaptureSession) => {
-    const action = bridge()?.promoteCaptureSession;
-    if (!action) return;
-    setCaptureBusy(true);
-    try {
-      const linkedProjectExists = Boolean(session.projectId && projects.some((project) => project.id === session.projectId));
-      const targetMode = capturePromotionTargets[session.id] || (linkedProjectExists ? 'project_raw' : 'student_raw');
-      const result = JSON.parse(await action(session.id, targetMode)) as { ok?: boolean; imported?: number; targetMode?: string; project?: LearningProject; projects?: LearningProject[]; message?: string };
-      setCaptureMessage(result.message || (result.ok ? '采集资料已晋升。' : '采集资料晋升失败。'));
-      if (result.ok && Number(result.imported || 0) > 0 && result.targetMode === 'student_raw') {
-        const imported = Number(result.imported || 0);
-        persist(students.map((item) => item.id === session.studentId
-          ? { ...item, pendingDigestCount: (item.pendingDigestCount ?? 0) + imported, lastImportAt: new Date().toLocaleString('zh-CN') }
-          : item));
-        refreshMaterialImportRecords(selectedStudent);
-      }
-      if (Array.isArray(result.projects)) setProjects(result.projects);
-      else if (result.project) setProjects((current) => current.map((item) => item.id === result.project?.id ? result.project : item));
-      refreshCaptureCenter();
-    } catch {
-      setCaptureMessage('采集资料晋升结果解析失败。');
     } finally {
       setCaptureBusy(false);
     }
@@ -11267,17 +12108,21 @@ ${JSON.stringify(items, null, 2)}
     }
   };
 
-  const updateSelectedProjectStudents = (studentIds: string[]) => {
+  const updateSelectedProjectStudents = async (studentIds: string[]) => {
     if (!selectedProjectId) {
       setProjectMessage('请先选择学习项目。');
       return;
     }
-    const raw = bridge()?.updateProjectStudents?.(selectedProjectId, JSON.stringify(studentIds));
-    if (!raw) {
+    const update = bridge()?.updateProjectStudents;
+    if (!update) {
       setProjectMessage('当前环境不支持更新项目绑定学生。');
       return;
     }
+    if (projectStudentSaveBusy) return;
+    setProjectStudentSaveBusy(true);
+    setProjectMessage('正在保存项目绑定；Agent 接入配置将在后台自动刷新。');
     try {
+      const raw = await update(selectedProjectId, JSON.stringify(studentIds));
       const result = JSON.parse(raw) as { ok?: boolean; project?: LearningProject; projects?: LearningProject[]; message?: string };
       if (Array.isArray(result.projects)) setProjects(result.projects);
       if (result.project) setSelectedProjectId(result.project.id);
@@ -11287,6 +12132,8 @@ ${JSON.stringify(items, null, 2)}
       setProjectMessage(result.message || (result.ok ? '项目绑定学生已更新。' : '项目绑定学生更新失败。'));
     } catch {
       setProjectMessage('项目绑定学生更新结果解析失败。');
+    } finally {
+      setProjectStudentSaveBusy(false);
     }
   };
 
@@ -11518,18 +12365,70 @@ ${JSON.stringify(items, null, 2)}
     }
   };
 
-  const refreshSelectedGrowthModel = (student = selectedStudent) => {
+  const refreshSelectedGrowthModel = async (student = selectedStudent, full = false) => {
     if (!student) {
       setGrowthMessage('请先选择学生。');
       return;
     }
-    refreshGrowthEvidenceReview(student);
-    refreshSelectedGrowthIndex(student);
+    const requestId = ++growthLoadSerial.current;
+    const api = bridge();
+    if (growthLoadedStudentId.current !== student.id) {
+      growthLoadedStudentId.current = student.id;
+      setGrowthIndex(null);
+      setGrowthIndexPreview('');
+      setGrowthEvidenceReview({ candidates: [] });
+      setLegacyGrowthReviewQueue([]);
+      setGrowthEvidenceRiskAssessment(null);
+    }
+    setGrowthLoading(true);
+    try {
+      if (!full && api?.getGrowthModelSnapshot) {
+        const raw = await api.getGrowthModelSnapshot(student.id);
+        if (requestId !== growthLoadSerial.current) return;
+        const snapshot = JSON.parse(raw) as { ok?: boolean; review?: GrowthEvidenceReviewState; index?: GrowthIndexState; content?: string; message?: string };
+        if (snapshot.review) setGrowthEvidenceReview(snapshot.review);
+        if (snapshot.index) setGrowthIndex(snapshot.index);
+        if (snapshot.content) setGrowthIndexPreview(snapshot.content);
+        setGrowthMessage(snapshot.message || '正在后台读取成长模型，页面可继续操作。');
+        return;
+      }
+      const reviewRaw = api?.getGrowthEvidenceReviewAsync
+        ? await api.getGrowthEvidenceReviewAsync(student.id)
+        : api?.getGrowthEvidenceReview?.(student.id);
+      if (requestId !== growthLoadSerial.current) return;
+      if (reviewRaw) {
+        const result = JSON.parse(reviewRaw) as { ok?: boolean; review?: GrowthEvidenceReviewState; protocolCompatibility?: { reviewQueue?: LegacyGrowthReviewQueueItem[] }; riskAssessment?: GrowthEvidenceRiskAssessment; message?: string };
+        if (result.review) setGrowthEvidenceReview(result.review);
+        setLegacyGrowthReviewQueue(result.protocolCompatibility?.reviewQueue ?? []);
+        setGrowthEvidenceRiskAssessment(result.riskAssessment ?? null);
+        setGrowthMessage(result.message || (result.ok ? '已刷新成长证据候选。' : '成长证据候选读取失败。'));
+      } else {
+        setGrowthMessage('当前环境不支持成长证据审核。');
+      }
+      // Evidence auto-processing may rebuild the index, so read the index only after it completes.
+      const indexRaw = api?.getGrowthIndexAsync
+        ? await api.getGrowthIndexAsync(student.id)
+        : api?.getGrowthIndex?.(student.id);
+      if (requestId !== growthLoadSerial.current) return;
+      if (indexRaw) {
+        const result = JSON.parse(indexRaw) as { ok?: boolean; index?: GrowthIndexState; content?: string; message?: string };
+        if (result.index) setGrowthIndex(result.index);
+        if (result.content) setGrowthIndexPreview(result.content);
+        if (!result.ok && result.message) setGrowthMessage(result.message);
+      }
+    } catch {
+      if (requestId === growthLoadSerial.current) setGrowthMessage('成长模型读取失败，请稍后重试。');
+    } finally {
+      if (requestId === growthLoadSerial.current) setGrowthLoading(false);
+    }
   };
 
   useEffect(() => {
     if (activeSection !== 'growth' || !selectedStudent) return;
-    refreshSelectedGrowthModel(selectedStudent);
+    setGrowthSearch('');
+    setGrowthAbilityFilter('all');
+    void refreshSelectedGrowthModel(selectedStudent);
+    return () => { growthLoadSerial.current += 1; };
   }, [activeSection, selectedStudent?.id]);
 
   const openSelectedGrowthModelDir = () => {
@@ -11557,14 +12456,6 @@ ${JSON.stringify(items, null, 2)}
     openProjectFromDashboard(project);
   };
 
-  useEffect(() => {
-    if (activeSection !== 'growth' || !selectedStudent) return;
-    setGrowthSearch('');
-    setGrowthAbilityFilter('all');
-    refreshGrowthEvidenceReview(selectedStudent);
-    refreshSelectedGrowthIndex(selectedStudent);
-  }, [activeSection, selectedStudent?.id]);
-
   const refreshScheduleLedgerForStudent = (student: Student) => {
     const raw = bridge()?.getStudentScheduleLedger?.(student.id);
     if (!raw) {
@@ -11580,7 +12471,7 @@ ${JSON.stringify(items, null, 2)}
     }
   };
 
-  const refreshTaskCenter = async (force = false) => {
+  const refreshTaskCenter = async (force = false, quick = false) => {
     const api = bridge();
     if (!api?.getTaskCenterAsync && !api?.getTaskCenter) {
       setScheduleMessage('当前环境不支持统一任务中心。');
@@ -11591,7 +12482,7 @@ ${JSON.stringify(items, null, 2)}
     setTaskCenterRefreshing(true);
     try {
       const raw = api.getTaskCenterAsync
-        ? await api.getTaskCenterAsync(force)
+        ? await api.getTaskCenterAsync(force, quick)
         : api.getTaskCenter?.();
       if (requestId !== taskCenterRequestRef.current || !raw) return;
       const result = JSON.parse(raw) as TaskCenterState & { ok?: boolean; message?: string };
@@ -12122,6 +13013,33 @@ ${JSON.stringify(items, null, 2)}
       setLearningReportMessage(result.message || (result.ok ? '已定位依据来源。' : '依据来源暂不可用。'));
     } catch {
       setLearningReportMessage('依据来源打开结果解析失败。');
+    }
+  };
+
+  const openLearningReportTimeline = (reference: { date: string; segmentId?: string; sessionId: string }) => {
+    setCaptureTimelineDate(reference.date);
+    setCaptureTimelineSessionId(reference.sessionId);
+    setCaptureTimelineSegmentId(reference.segmentId || '');
+    setCaptureTimelineCategory('');
+    setCaptureTimelineKnowledgeState('formal_knowledge_linked');
+    setCaptureTimelineQuery('');
+    setCaptureView('timeline');
+    setActiveSection('inbox');
+  };
+
+  const openKnowledgeTimeline = async (targetPath: string) => {
+    if (!selectedStudent || !targetPath || !bridge()?.getCaptureTimelineKnowledgeLinks) return;
+    try {
+      const raw = await bridge()!.getCaptureTimelineKnowledgeLinks!(JSON.stringify({ studentId: selectedStudent.id, targetPath }));
+      const result = JSON.parse(raw) as { ok?: boolean; links?: Array<{ date: string; segmentId: string; sessionId: string }>; message?: string };
+      const reference = result.links?.[0];
+      if (!result.ok || !reference) {
+        setCaptureMessage(result.message || '该知识当前没有可定位的学习时间线来源。');
+        return;
+      }
+      openLearningReportTimeline(reference);
+    } catch (error) {
+      setCaptureMessage(`读取知识时间线来源失败：${(error as Error).message}`);
     }
   };
 
@@ -13314,20 +14232,19 @@ ${JSON.stringify(items, null, 2)}
 
   const navItems = [
     { id: 'home' as const, label: t('nav.home'), icon: Home },
-    { id: 'courses' as const, label: '精选课程', icon: BookOpen },
-    { id: 'init' as const, label: t('nav.init'), icon: Plus },
     { id: 'inbox' as const, label: t('nav.inbox'), icon: FileDown },
-    ...(isWindows ? [
-      { id: 'growth' as const, label: t('nav.growth'), icon: Sparkles },
+    ...(!isWindows ? [
+      { id: 'init' as const, label: t('nav.init'), icon: Plus },
+      { id: 'reports' as const, label: t('nav.reports'), icon: FileText },
+      { id: 'archive' as const, label: t('nav.archive'), icon: BookOpen },
+      { id: 'qa' as const, label: t('nav.qa'), icon: MessageCircle },
     ] : []),
-    { id: 'reports' as const, label: t('nav.reports'), icon: FileText },
-    { id: 'archive' as const, label: t('nav.archive'), icon: BookOpen },
-    { id: 'qa' as const, label: t('nav.qa'), icon: MessageCircle },
   ];
   const knowledgeNavItems = [
     { id: 'memory' as const, label: t('nav.memory'), icon: Clipboard },
     { id: 'soul' as const, label: t('nav.soul'), icon: Bot },
     { id: 'rules' as const, label: t('nav.rules'), icon: ListChecks },
+    ...(isWindows ? [{ id: 'capture' as const, label: t('nav.capture'), icon: MessageCircle }] : []),
     { id: 'conversation' as const, label: t('nav.conversation'), icon: MessageCircle },
   ];
   const courseCatalogCourses = courseCatalogState?.catalog?.courses || [];
@@ -13344,9 +14261,12 @@ ${JSON.stringify(items, null, 2)}
     ))
     .sort((left, right) => Number(left.rule.order ?? 0) - Number(right.rule.order ?? 0));
   const sectionTitle = (section: Section) => {
-    if (section === 'courses') return '精选课程';
-    if (section === 'projects-new') return '新建学习项目';
-    if (section === 'projects-existing') return '已有学习项目';
+    if (section === 'courses') return t('nav.courses');
+    if (section === 'projects-new') return t('nav.projects.new');
+    if (section === 'projects-existing') return t('nav.projects.existing');
+    if (section === 'capture') return t('nav.capture');
+    if (section === 'settings' && settingsSubmenu === 'collaboration') return t('nav.collaboration.settings');
+    if (section === 'settings' && settingsSubmenu === 'agent-qa') return t('nav.qa.settings');
     const map: Record<Section, TranslationKey> = {
       home: 'nav.home',
       courses: 'nav.archive',
@@ -13360,6 +14280,7 @@ ${JSON.stringify(items, null, 2)}
       archive: 'nav.archive',
       qa: 'nav.qa',
       memory: 'nav.memory',
+      capture: 'nav.memory',
       soul: 'nav.soul',
       rules: 'nav.rules',
       conversation: 'nav.conversation',
@@ -13367,6 +14288,20 @@ ${JSON.stringify(items, null, 2)}
       settings: 'nav.settings',
     };
     return t(map[section]);
+  };
+  const sectionDescription = () => {
+    if (activeSection === 'home') return '查看资料进入、自动消化、成长沉淀和报告更新；通常只需处理一个下一步。';
+    if (activeSection === 'projects-new' || activeSection === 'projects-existing') return t('projects.subtitle');
+    if (activeSection === 'courses') return courseSubmenu === 'learning' ? '查看机构已启用并分配给当前学生的课程。' : '导入、维护并向当前机构学生分发课程。';
+    if (activeSection === 'growth') return '查看当前学生的能力画像、项目贡献和成长证据。';
+    if (activeSection === 'archive') return '浏览当前学生的档案资料；路径与 Agent 工具信息已收纳至高级选项。';
+    if (activeSection === 'reports') return '查看和管理基于已确认成长数据生成的学情报告。';
+    if (activeSection === 'qa') return '按授权范围检索本机与协作知识，并保留来源依据。';
+    if (activeSection === 'capture') return '授权后自动采集 Agent 对话的新轮次，不回扫授权前历史。';
+    if (activeSection === 'settings' && settingsSubmenu === 'collaboration') return '管理设备信任、共享范围与多端协作。';
+    if (activeSection === 'settings' && settingsSubmenu === 'agent-qa') return '配置当前学生的 Agent 问答与远程咨询。';
+    if (activeSection === 'settings') return t(isWindows ? 'settings.description.windows' : 'settings.description.android');
+    return t('app.subtitle');
   };
 
   const openSettingsSubmenu = (submenu: SettingsSubmenu) => {
@@ -13476,45 +14411,10 @@ ${JSON.stringify(items, null, 2)}
           </button>
         </div>
 
-        <nav className="nav-list">
+        <nav className="nav-list" aria-label="主菜单">
           {navItems.map((item) => {
             const Icon = item.icon;
             const locked = isWindows && !windowsLicenseActive && restrictedSections.has(item.id);
-            if (item.id === 'courses') {
-              return (
-                <div className="nav-group-block course-nav-group" key={item.id}>
-                  <button
-                    className={activeSection === 'courses' ? 'nav-item nav-group active' : 'nav-item nav-group'}
-                    onClick={() => setCourseMenuOpen((value) => !value)}
-                    title="精选课程"
-                    aria-expanded={courseMenuOpen}
-                  >
-                    <Icon size={19} />
-                    <span>{item.label}</span>
-                    <span className="nav-chevron">{courseMenuOpen ? t('nav.collapse') : t('nav.expand')}</span>
-                  </button>
-                  {courseMenuOpen && (
-                    <div className="sub-nav-list course-sub-nav-list" aria-label="精选课程子菜单">
-                      <button
-                        className={activeSection === 'courses' && courseSubmenu === 'learning' ? 'nav-item sub-nav-item active' : 'nav-item sub-nav-item'}
-                        onClick={() => openCourseSubmenu('learning')}
-                      >
-                        <Play size={17} /><span>课程学习</span>
-                      </button>
-                      <button
-                        className={`${activeSection === 'courses' && courseSubmenu === 'management' ? 'nav-item sub-nav-item active' : 'nav-item sub-nav-item'}${!courseManagementAllowed ? ' locked' : ''}`}
-                        onClick={() => openCourseSubmenu('management')}
-                        disabled={!courseManagementAllowed}
-                        title={courseManagementAllowed ? '管理课程目录、分配和导入' : '仅已激活的专业版和机构版可用'}
-                      >
-                        <Settings size={17} /><span>课程管理</span>
-                        {!courseManagementAllowed && <KeyRound size={14} />}
-                      </button>
-                    </div>
-                  )}
-                </div>
-              );
-            }
             return (
               <button
                 className={`${activeSection === item.id ? 'nav-item active' : 'nav-item'}${locked ? ' locked' : ''}`}
@@ -13530,23 +14430,40 @@ ${JSON.stringify(items, null, 2)}
           })}
           {isWindows && (
             <div className="nav-group-block">
+              <button className={`${['init', 'growth', 'reports', 'archive'].includes(activeSection) ? 'nav-item nav-group active' : 'nav-item nav-group'}${!windowsLicenseActive ? ' locked' : ''}`} onClick={() => { setEducationArchiveMenuOpen((value) => !value); setProjectMenuOpen(false); setAgentKnowledgeMenuOpen(false); setCollaborationMenuOpen(false); setCourseMenuOpen(false); setSettingsMenuOpen(false); }} aria-expanded={educationArchiveMenuOpen} title={t('nav.education')}>
+                <BookOpen size={19} /><span>{t('nav.education')}</span><span className="nav-chevron">{educationArchiveMenuOpen ? t('nav.collapse') : t('nav.expand')}</span>
+                {!windowsLicenseActive && <KeyRound size={15} />}
+              </button>
+              {educationArchiveMenuOpen && <div className="sub-nav-list" aria-label={t('nav.education')}>
+                {([
+                  { id: 'init' as const, label: t('nav.init'), icon: Plus },
+                  { id: 'growth' as const, label: t('nav.growth'), icon: Sparkles },
+                  { id: 'reports' as const, label: t('nav.reports'), icon: FileText },
+                  { id: 'archive' as const, label: t('nav.archive'), icon: BookOpen },
+                ]).map((item) => { const Icon = item.icon; return <button key={item.id} className={activeSection === item.id ? 'nav-item sub-nav-item active' : 'nav-item sub-nav-item'} onClick={() => setActiveSection(item.id)}><Icon size={17} /><span>{item.label}</span></button>; })}
+              </div>}
+            </div>
+          )}
+          {isWindows && (
+            <div className="nav-group-block">
               <button
                 className={`${activeSection === 'projects-new' || activeSection === 'projects-existing' ? 'nav-item nav-group active' : 'nav-item nav-group'}${!windowsLicenseActive ? ' locked' : ''}`}
-                onClick={() => setProjectMenuOpen((value) => !value)}
-                title={!windowsLicenseActive ? '学习项目需要激活后使用' : '学习项目'}
+                onClick={() => { setProjectMenuOpen((value) => !value); setEducationArchiveMenuOpen(false); setAgentKnowledgeMenuOpen(false); setCollaborationMenuOpen(false); setCourseMenuOpen(false); setSettingsMenuOpen(false); }}
+                title={!windowsLicenseActive ? `${t('nav.projects')}需要激活后使用` : t('nav.projects')}
+                aria-expanded={projectMenuOpen}
               >
                 <FolderOpen size={19} />
-                <span>学习项目</span>
+                <span>{t('nav.projects')}</span>
                 <span className="nav-chevron">{projectMenuOpen ? t('nav.collapse') : t('nav.expand')}</span>
                 {!windowsLicenseActive && <KeyRound size={15} />}
               </button>
               {projectMenuOpen && (
                 <div className="sub-nav-list">
                   <button className={activeSection === 'projects-new' ? 'nav-item sub-nav-item active' : 'nav-item sub-nav-item'} onClick={() => setActiveSection('projects-new')}>
-                    <Plus size={17} /><span>新建学习项目</span>
+                    <Plus size={17} /><span>{t('nav.projects.new')}</span>
                   </button>
                   <button className={activeSection === 'projects-existing' ? 'nav-item sub-nav-item active' : 'nav-item sub-nav-item'} onClick={() => { setActiveSection('projects-existing'); setProjectPageMode('list'); setProjectAuditLocateTarget(null); }}>
-                    <FolderOpen size={17} /><span>已有学习项目</span>
+                    <FolderOpen size={17} /><span>{t('nav.projects.existing')}</span>
                   </button>
                 </div>
               )}
@@ -13554,9 +14471,10 @@ ${JSON.stringify(items, null, 2)}
           )}
           <div className="nav-group-block">
             <button
-              className={`${activeSection === 'memory' || activeSection === 'soul' || activeSection === 'rules' || activeSection === 'conversation' ? 'nav-item nav-group active' : 'nav-item nav-group'}${isWindows && !windowsLicenseActive ? ' locked' : ''}`}
-              onClick={() => setAgentKnowledgeMenuOpen((value) => !value)}
+              className={`${activeSection === 'memory' || activeSection === 'capture' || activeSection === 'soul' || activeSection === 'rules' || activeSection === 'conversation' ? 'nav-item nav-group active' : 'nav-item nav-group'}${isWindows && !windowsLicenseActive ? ' locked' : ''}`}
+              onClick={() => { setAgentKnowledgeMenuOpen((value) => !value); setEducationArchiveMenuOpen(false); setProjectMenuOpen(false); setCollaborationMenuOpen(false); setCourseMenuOpen(false); setSettingsMenuOpen(false); }}
               title={isWindows && !windowsLicenseActive ? '智能体知识管理需要激活后使用' : t('nav.knowledge')}
+              aria-expanded={agentKnowledgeMenuOpen}
             >
               <Bot size={19} />
               <span>{t('nav.knowledge')}</span>
@@ -13583,6 +14501,15 @@ ${JSON.stringify(items, null, 2)}
               </div>
             )}
           </div>
+          {isWindows && <div className="nav-group-block">
+            <button className={activeSection === 'qa' || (activeSection === 'settings' && settingsSubmenu === 'collaboration') ? 'nav-item nav-group active' : 'nav-item nav-group'} onClick={() => { setCollaborationMenuOpen((value) => !value); setEducationArchiveMenuOpen(false); setProjectMenuOpen(false); setAgentKnowledgeMenuOpen(false); setCourseMenuOpen(false); setSettingsMenuOpen(false); }} aria-expanded={collaborationMenuOpen} title={t('nav.collaboration')}>
+              <Share2 size={19} /><span>{t('nav.collaboration')}</span><span className="nav-chevron">{collaborationMenuOpen ? t('nav.collapse') : t('nav.expand')}</span>
+            </button>
+            {collaborationMenuOpen && <div className="sub-nav-list" aria-label={t('nav.collaboration')}>
+              <button className={`${activeSection === 'qa' ? 'nav-item sub-nav-item active' : 'nav-item sub-nav-item'}${!windowsLicenseActive ? ' locked' : ''}`} onClick={() => setActiveSection('qa')} title={!windowsLicenseActive ? `${t('nav.qa')}需要激活后使用` : t('nav.qa')}><Search size={17} /><span>{t('nav.qa')}</span>{!windowsLicenseActive && <KeyRound size={14} />}</button>
+              <button className={activeSection === 'settings' && settingsSubmenu === 'collaboration' ? 'nav-item sub-nav-item active' : 'nav-item sub-nav-item'} onClick={() => openSettingsSubmenu('collaboration')}><Settings size={17} /><span>{t('nav.collaboration.settings')}</span></button>
+            </div>}
+          </div>}
           {isWindows && (
             <button
               className={`${activeSection === 'assets' ? 'nav-item active' : 'nav-item'}${!windowsLicenseActive ? ' locked' : ''}`}
@@ -13603,12 +14530,21 @@ ${JSON.stringify(items, null, 2)}
             <span>{t('nav.tasks')}</span>
             {isWindows && !windowsLicenseActive && restrictedSections.has('tasks') && <KeyRound size={15} />}
           </button>
+          <div className="nav-group-block course-nav-group">
+            <button className={activeSection === 'courses' ? 'nav-item nav-group active' : 'nav-item nav-group'} onClick={() => { setCourseMenuOpen((value) => !value); setEducationArchiveMenuOpen(false); setProjectMenuOpen(false); setAgentKnowledgeMenuOpen(false); setCollaborationMenuOpen(false); setSettingsMenuOpen(false); }} title={t('nav.courses')} aria-expanded={courseMenuOpen}>
+              <BookOpen size={19} /><span>{t('nav.courses')}</span><span className="nav-chevron">{courseMenuOpen ? t('nav.collapse') : t('nav.expand')}</span>
+            </button>
+            {courseMenuOpen && <div className="sub-nav-list course-sub-nav-list" aria-label={t('nav.courses')}>
+              <button className={activeSection === 'courses' && courseSubmenu === 'learning' ? 'nav-item sub-nav-item active' : 'nav-item sub-nav-item'} onClick={() => openCourseSubmenu('learning')}><Play size={17} /><span>{t('nav.courses.learning')}</span></button>
+              <button className={`${activeSection === 'courses' && courseSubmenu === 'management' ? 'nav-item sub-nav-item active' : 'nav-item sub-nav-item'}${!courseManagementAllowed ? ' locked' : ''}`} onClick={() => openCourseSubmenu('management')} disabled={!courseManagementAllowed} title={courseManagementAllowed ? '管理课程目录、分配和导入' : '仅已激活的专业版和机构版可用'}><Settings size={17} /><span>{t('nav.courses.management')}</span>{!courseManagementAllowed && <KeyRound size={14} />}</button>
+            </div>}
+          </div>
           <div className="nav-group-block settings-nav-group">
             <button
-              className={activeSection === 'settings' ? 'nav-item nav-group active' : 'nav-item nav-group'}
+              className={activeSection === 'settings' && settingsSubmenu !== 'collaboration' ? 'nav-item nav-group active' : 'nav-item nav-group'}
               onClick={() => {
-                if (activeSection !== 'settings') openSettingsSubmenu(settingsSubmenu);
-                else setSettingsMenuOpen((value) => !value);
+                if (activeSection !== 'settings' || settingsSubmenu === 'collaboration') openSettingsSubmenu('basic');
+                else { setSettingsMenuOpen((value) => !value); setEducationArchiveMenuOpen(false); setProjectMenuOpen(false); setAgentKnowledgeMenuOpen(false); setCollaborationMenuOpen(false); setCourseMenuOpen(false); }
               }}
               title={t('nav.settings')}
               aria-expanded={settingsMenuOpen}
@@ -13620,13 +14556,13 @@ ${JSON.stringify(items, null, 2)}
             {settingsMenuOpen && (
               <div className="sub-nav-list settings-sub-nav-list" aria-label="系统设置子菜单">
                 <button className={activeSection === 'settings' && settingsSubmenu === 'basic' ? 'nav-item sub-nav-item active' : 'nav-item sub-nav-item'} onClick={() => openSettingsSubmenu('basic')}>
-                  <Gauge size={17} /><span>基础设置</span>
+                  <Gauge size={17} /><span>{t('nav.settings.basic')}</span>
                 </button>
                 <button className={activeSection === 'settings' && settingsSubmenu === 'connection' ? 'nav-item sub-nav-item active' : 'nav-item sub-nav-item'} onClick={() => openSettingsSubmenu('connection')}>
-                  <LinkIcon size={17} /><span>主机连接</span>
+                  <LinkIcon size={17} /><span>{t('nav.settings.connection')}</span>
                 </button>
-                <button className={activeSection === 'settings' && settingsSubmenu === 'collaboration' ? 'nav-item sub-nav-item active' : 'nav-item sub-nav-item'} onClick={() => openSettingsSubmenu('collaboration')}>
-                  <Share2 size={17} /><span>知识协作</span>
+                <button className={activeSection === 'settings' && settingsSubmenu === 'agent-qa' ? 'nav-item sub-nav-item active' : 'nav-item sub-nav-item'} onClick={() => openSettingsSubmenu('agent-qa')}>
+                  <MessageCircle size={17} /><span>{t('nav.qa.settings')}</span>
                 </button>
               </div>
             )}
@@ -13640,7 +14576,7 @@ ${JSON.stringify(items, null, 2)}
               <Plus size={16} />
             </button>
           </div>
-          <div className="student-list">
+          <div className="student-list" aria-label={t('students.title')}>
             {students.map((student) => (
               <button
                 key={student.id}
@@ -13685,17 +14621,7 @@ ${JSON.stringify(items, null, 2)}
         <header className="topbar">
           <div>
             <h1>{sectionTitle(activeSection)}</h1>
-            <p>
-              {activeSection === 'home'
-                ? '查看资料进入、自动消化、成长沉淀和报告更新；通常只需处理一个下一步。'
-                : activeSection === 'projects-new' || activeSection === 'projects-existing'
-                  ? t('projects.subtitle')
-                  : activeSection === 'courses'
-                    ? courseSubmenu === 'learning'
-                      ? '查看机构已启用并分配给当前学生的课程。'
-                      : '导入、维护并向当前机构学生分发课程。'
-                    : t('app.subtitle')}
-            </p>
+            <p>{sectionDescription()}</p>
           </div>
           <div className="status-row">
             {isWindows && activeSection === 'home' && (
@@ -14223,7 +15149,7 @@ ${JSON.stringify(items, null, 2)}
                   <span>屏幕或窗口</span>
                   <select value={courseCaptureSourceId} onChange={(event) => setCourseCaptureSourceId(event.target.value)}>
                     {!captureSources.length ? <option value="">没有可用来源</option> : null}
-                    {captureSources.map((source) => <option key={source.id} value={source.id}>{source.type === 'screen' ? '屏幕' : '窗口'} · {source.name}</option>)}
+                    {captureSources.map((source) => <option key={source.id} value={source.id} disabled={source.blocked}>{source.type === 'screen' ? '屏幕' : '窗口'} · {source.name}{source.blocked ? '（已保护）' : ''}</option>)}
                   </select>
                 </label>
                 <button className="ghost compact course-capture-refresh" type="button" onClick={() => void refreshCaptureSources()} aria-label="刷新屏幕来源">
@@ -14983,12 +15909,23 @@ ${JSON.stringify(items, null, 2)}
                   <div>
                     <span className="section-kicker">连续采集</span>
                     <h3>屏幕资料采集</h3>
-                    <p>在限定时间内采集屏幕或指定应用窗口，自动跳过重复画面；结束后由你确认是否晋升为正式学习资料。</p>
+                    <p>在限定时间内采集屏幕或指定应用窗口，自动跳过重复画面；结束后自动晋升资料包，完成消化后展示时间线与行为统计。无需逐张检查或确认晋升。</p>
                   </div>
                   <button className="icon-button" onClick={() => { refreshCaptureCenter(); void refreshCaptureSources(); }} aria-label="刷新屏幕来源">
                     <RefreshCw size={18} />
                   </button>
                 </div>
+
+                <label className="capture-vision-consent">
+                  <input type="checkbox" checked={captureCenter.visionConsent?.enabled === true} onChange={(event) => {
+                    try {
+                      const result = JSON.parse(bridge()?.setCaptureVisionConsent?.(JSON.stringify({ enabled: event.target.checked, provider: 'codex' })) || '{}');
+                      if (!result.ok) setCaptureMessage(result.message || '截图视觉授权更新失败。');
+                      else { setCaptureMessage(result.message || '截图视觉授权已更新。'); refreshCaptureCenter(); }
+                    } catch { setCaptureMessage('截图视觉授权更新失败。'); }
+                  }} />
+                  <span><strong>授权 Codex 视觉服务识别学习截图</strong><small>仅处理今后已授权采集的代表图；图片会提交给 Codex 云端服务，具体处理地域取决于账号配置。可随时关闭，关闭后停止新提交。</small></span>
+                </label>
 
                 {captureCenter.activeSession ? (
                   <div className="capture-live-strip">
@@ -15029,7 +15966,7 @@ ${JSON.stringify(items, null, 2)}
                       <span>采集来源</span>
                       <select value={captureSourceId} onChange={(event) => setCaptureSourceId(event.target.value)}>
                         {captureSources.length === 0 && <option value="">没有可用来源</option>}
-                        {captureSources.map((source) => <option key={source.id} value={source.id}>{source.type === 'screen' ? '屏幕' : '窗口'} · {source.name}</option>)}
+                        {captureSources.map((source) => <option key={source.id} value={source.id} disabled={source.blocked}>{source.type === 'screen' ? '屏幕' : '窗口'} · {source.name}{source.blocked ? '（已保护）' : ''}</option>)}
                       </select>
                     </label>
                     <label>
@@ -15070,13 +16007,22 @@ ${JSON.stringify(items, null, 2)}
                   </button>
                 </div>
 
+                <div className="capture-view-tabs" role="tablist" aria-label="屏幕采集视图">
+                  <button className={captureView === 'sessions' ? 'active' : ''} onClick={() => setCaptureView('sessions')} role="tab" aria-selected={captureView === 'sessions'}>
+                    采集会话
+                  </button>
+                  <button className={captureView === 'timeline' ? 'active' : ''} onClick={() => setCaptureView('timeline')} role="tab" aria-selected={captureView === 'timeline'}>
+                    学习时间线
+                  </button>
+                </div>
+
                 {captureMessage && <div className="inline-notice">{captureMessage}</div>}
 
-                {captureCenter.sessions.filter((session) => session.studentId === selectedStudent.id).length > 0 && (
+                {captureView === 'sessions' && captureCenter.sessions.filter((session) => session.studentId === selectedStudent.id).length > 0 && (
                   <div className="capture-session-list">
                     <div className="mini-heading">
                       <strong>最近采集会话</strong>
-                      <span>完成的会话仍是候选资料；关联项目时默认进入项目原始资料库，也可改存学生档案。</span>
+                      <span>采集结束后自动生成资料包并排队消化；有可信证据的活动观察会进入学习报告。</span>
                     </div>
                     {captureCenter.sessions.filter((session) => session.studentId === selectedStudent.id).slice(0, 5).map((session) => (
                       <div className="capture-session-row" key={session.id}>
@@ -15084,28 +16030,152 @@ ${JSON.stringify(items, null, 2)}
                         <div>
                           <strong>{session.sourceName}</strong>
                           <span>{new Date(session.startedAt).toLocaleString('zh-CN')} · 保留 {session.screenshotCount} 张 · 去重 {session.deduplicatedCount} 张{session.promotionTargetName ? ` · 已进入${session.archiveStatus === 'project_raw' ? '项目' : '学生'}：${session.promotionTargetName}` : ''}</span>
+                          {session.visionStatus && <span>视觉整理：{session.visionStatus === 'running' ? '后台处理中' : session.visionStatus === 'completed' ? (session.visionObservationCount ? `已完成 · ${session.visionObservationCount} 段观察` : '已处理，暂无可靠观察') : session.visionStatus === 'degraded' ? `部分降级 · ${session.visionObservationCount || 0} 段观察` : session.visionStatus === 'retry_scheduled' ? '等待自动重试' : session.visionStatus === 'waiting_idle' ? '等待设备空闲' : '等待采集结束'}{session.visionFailedBatchCount ? ` · ${session.visionFailedBatchCount} 批证据不足` : ''}</span>}
                         </div>
-                        <span className={`status-badge ${session.status}`}>{session.status === 'promoted' ? '已晋升' : session.status === 'completed' ? '待检查' : session.status === 'interrupted' ? '已中断' : session.status}</span>
+                        <span className={`status-badge ${session.status}`}>{session.status === 'promoted' ? `已整理${session.activitySegmentCount ? ` · ${session.activitySegmentCount} 段` : ''}` : session.status === 'completed' ? '后台自动整理中' : session.status === 'interrupted' ? '已中断' : session.status}</span>
                         <button className="icon-button" onClick={() => bridge()?.openCaptureInbox?.(session.id)} aria-label="打开该会话采集箱"><FolderOpen size={17} /></button>
-                        {session.status === 'completed' && (
-                          <>
-                            <select
-                              className="capture-promotion-target"
-                              value={capturePromotionTargets[session.id] || (session.projectId && projects.some((project) => project.id === session.projectId) ? 'project_raw' : 'student_raw')}
-                              onChange={(event) => setCapturePromotionTargets((current) => ({ ...current, [session.id]: event.target.value as 'project_raw' | 'student_raw' }))}
-                              aria-label={`选择采集会话 ${session.sourceName} 的晋升目标`}
-                            >
-                              {session.projectId && projects.some((project) => project.id === session.projectId) && <option value="project_raw">项目原始资料库 · {session.projectName}</option>}
-                              <option value="student_raw">学生原始资料库 · {session.studentName}</option>
-                            </select>
-                            <button className="primary compact" onClick={() => promoteCapture(session)} disabled={captureBusy || session.screenshotCount === 0}>确认晋升</button>
-                          </>
-                        )}
+                        {session.status === 'completed' && <small>系统将在空闲时自动处理；失败会自动恢复，不需要人工重试。</small>}
                         {!['capturing', 'paused'].includes(session.status) && (
                           <button className="icon-button danger" onClick={() => deleteCapture(session)} disabled={captureBusy} aria-label={`删除采集会话 ${session.sourceName}`} title="删除采集会话"><Trash2 size={17} /></button>
                         )}
                       </div>
                     ))}
+                  </div>
+                )}
+                {captureView === 'timeline' && (
+                  <div className="capture-timeline-panel">
+                    <div className="capture-timeline-toolbar">
+                      <label>
+                        <span>日期</span>
+                        <select value={captureTimelineDate} onChange={(event) => { setCaptureTimelineDate(event.target.value); setCaptureTimelineSessionId(''); setCaptureTimelineSegmentId(''); }}>
+                          {captureTimelineDates.length === 0 && <option value="">暂无采集日期</option>}
+                          {captureTimelineDates.map((item) => <option value={item.date} key={item.date}>{item.date} · {item.eventCount} 张</option>)}
+                        </select>
+                      </label>
+                      <label>
+                        <span>采集会话</span>
+                        <select value={captureTimelineSessionId} onChange={(event) => { setCaptureTimelineSessionId(event.target.value); setCaptureTimelineSegmentId(''); }}>
+                          <option value="">全部会话</option>
+                          {(captureTimelineDates.find((item) => item.date === captureTimelineDate)?.sessionIds || []).map((sessionId) => {
+                            const session = captureCenter.sessions.find((item) => item.id === sessionId);
+                            return <option value={sessionId} key={sessionId}>{session?.sourceName || sessionId}</option>;
+                          })}
+                        </select>
+                      </label>
+                      <label>
+                        <span>学习活动</span>
+                        <select value={captureTimelineCategory} onChange={(event) => setCaptureTimelineCategory(event.target.value)}>
+                          <option value="">全部活动</option>
+                          <option value="reading">阅读与学习</option>
+                          <option value="practice">练习与订正</option>
+                          <option value="coding">编程与调试</option>
+                          <option value="writing">写作与产出</option>
+                          <option value="agent_assisted">智能体辅助学习</option>
+                        </select>
+                      </label>
+                      <label className="capture-timeline-search">
+                        <span>搜索记忆</span>
+                        <input value={captureTimelineQuery} onChange={(event) => setCaptureTimelineQuery(event.target.value)} placeholder="主题、OCR文字或知识概念" />
+                      </label>
+                      <label>
+                        <span>归档状态</span>
+                        <select value={captureTimelineArchiveStatus} onChange={(event) => setCaptureTimelineArchiveStatus(event.target.value)}>
+                          <option value="">全部状态</option>
+                          <option value="candidate">候选资料</option>
+                          <option value="project_raw">项目资料库</option>
+                          <option value="student_raw">学生资料库</option>
+                        </select>
+                      </label>
+                      <label>
+                        <span>知识状态</span>
+                        <select value={captureTimelineKnowledgeState} onChange={(event) => setCaptureTimelineKnowledgeState(event.target.value)}>
+                          <option value="">全部状态</option>
+                          <option value="formal_knowledge_linked">已形成正式知识</option>
+                          <option value="candidate_observation">候选观察</option>
+                        </select>
+                      </label>
+                      <button className="secondary compact" onClick={() => void refreshCaptureTimelineDates(selectedStudent, true)} disabled={captureTimelineLoading}>
+                        <RefreshCw size={16} />补齐旧记录
+                      </button>
+                    </div>
+                    <div className="capture-timeline-summary">
+                      <strong>{captureTimelineDate || '未选择日期'}</strong>
+                      {captureTimelineMode === 'semantic' ? (
+                        <>
+                          <span>{captureTimelineMemory?.candidateSummary || `已显示 ${captureTimelineSegments.length} / ${captureTimelineTotal} 个学习活动段。`}</span>
+                          {(captureTimelineMemory?.topics || []).length > 0 && <small>主题：{captureTimelineMemory?.topics?.join('、')}</small>}
+                          {(Number(captureTimelineMemory?.formalKnowledgeCount || 0) > 0 || Number(captureTimelineMemory?.guidanceResponseCount || 0) > 0) && (
+                            <small>正式知识 {captureTimelineMemory?.formalKnowledgeCount || 0} 段 · 指导响应 {captureTimelineMemory?.guidanceResponseCount || 0} 条</small>
+                          )}
+                        </>
+                      ) : <span>AI 正在后台识别和归纳，暂显示 {captureTimelineEvents.length} / {captureTimelineTotal} 个事实证据；完成后会自动切换为活动段。</span>}
+                    </div>
+                    {captureTimelineReports?.day && (
+                      <div className="capture-learning-reports">
+                        <section className="capture-learning-report">
+                          <strong>当日学习时间线报告</strong>
+                          <p>已核验观察 {captureTimelineReports.day.timelineReport?.observedCount || 0} 段；未知或待补齐 {captureTimelineReports.day.timelineReport?.unknownCount || 0} 段。</p>
+                          {(captureTimelineReports.day.timelineReport?.topics || []).length > 0 && <p>主题：{captureTimelineReports.day.timelineReport!.topics!.join('、')}</p>}
+                          {(['attempts', 'obstacles', 'changes', 'outcomes'] as const).map((kind) => {
+                            const label = { attempts: '尝试', obstacles: '障碍', changes: '变化', outcomes: '产出' }[kind];
+                            return (captureTimelineReports.day?.timelineReport?.[kind] || []).slice(0, 6).map((item, index) => (
+                              <button className="capture-learning-report-link" key={`${kind}-${item.segmentId}-${index}`} onClick={() => setCaptureTimelineSegmentId(item.segmentId)}>{item.projectId ? `项目 ${item.projectId} · ` : ''}{label}：{item.text} · 查看证据</button>
+                            ));
+                          })}
+                          {(captureTimelineReports.day.timelineReport?.guidance || []).slice(0, 4).map((item, index) => (
+                            <button className="capture-learning-report-link" key={`guidance-${item.segmentId}-${index}`} onClick={() => setCaptureTimelineSegmentId(item.segmentId)}>下一步：{item.text} · 查看依据</button>
+                          ))}
+                        </section>
+                        <section className="capture-learning-report">
+                          <strong>按时间统计的学习行为报告</strong>
+                          <p>采集截图 {captureTimelineReports.day.behaviorReport?.screenshotCount || 0} 张，代表证据 {captureTimelineReports.day.behaviorReport?.representativeCount || 0} 张。</p>
+                          <p>活动分类：{Object.entries(captureTimelineReports.day.behaviorReport?.activitySegmentCounts || {}).map(([category, count]) => `${captureTimelineCategoryLabel(category)} ${count} 段`).join(' · ') || '尚无可分类活动段'}</p>
+                          <p>{(captureTimelineReports.day.behaviorReport?.hours || []).map((item) => `${String(item.hour).padStart(2, '0')}时 ${item.segmentCount || 0} 段活动 / ${item.screenshotCount} 张证据`).join(' · ') || '暂无可统计的采集时段'}</p>
+                          <small>仅统计可观察证据，不等于有效学习或专注时长。</small>
+                        </section>
+                        {captureTimelineSessionId && captureTimelineReports.session && (
+                          <section className="capture-learning-report">
+                            <strong>所选会话回顾</strong>
+                            <p>已核验观察 {captureTimelineReports.session.timelineReport?.observedCount || 0} 段；未知 {captureTimelineReports.session.timelineReport?.unknownCount || 0} 段。</p>
+                            {(captureTimelineReports.session.timelineReport?.topics || []).length > 0 && <p>主题：{captureTimelineReports.session.timelineReport!.topics!.join('、')}</p>}
+                            {(captureTimelineReports.session.timelineReport?.outcomes || []).slice(0, 4).map((item, index) => (
+                              <button className="capture-learning-report-link" key={`${item.segmentId}-${index}`} onClick={() => setCaptureTimelineSegmentId(item.segmentId)}>产出：{item.text} · 查看证据</button>
+                            ))}
+                          </section>
+                        )}
+                        {captureTimelineReports.week && (
+                          <section className="capture-learning-report capture-learning-report-week">
+                            <strong>本周变化概览</strong>
+                            <p>已核验观察 {captureTimelineReports.week.timelineReport?.observedCount || 0} 段；未知 {captureTimelineReports.week.timelineReport?.unknownCount || 0} 段；截图 {captureTimelineReports.week.behaviorReport?.screenshotCount || 0} 张。</p>
+                            <p>{(captureTimelineReports.week.behaviorReport?.days || []).map((item) => `${item.date.slice(5)} ${item.screenshotCount} 张`).join(' · ')}</p>
+                            {(captureTimelineReports.week.timelineReport?.changes || []).slice(0, 4).map((item, index) => {
+                              const ref = captureTimelineReports.week?.timelineReport?.segmentRefs?.find((entry) => entry.segmentId === item.segmentId);
+                              return <button className="capture-learning-report-link" key={`${item.segmentId}-${index}`} onClick={() => { if (ref?.date) setCaptureTimelineDate(ref.date); setCaptureTimelineSegmentId(item.segmentId); }}>{item.projectId ? `项目 ${item.projectId} · ` : ''}变化：{item.text} · 查看活动段</button>;
+                            })}
+                          </section>
+                        )}
+                      </div>
+                    )}
+                    {captureTimelineSegments.length > 0 ? (
+                      <div className="capture-timeline-segment-list">
+                        {captureTimelineSegments.map((segment) => (
+                          <CaptureTimelineSegmentCard segment={segment} onOpen={openCaptureTimelineOriginal} key={segment.segmentId} />
+                        ))}
+                      </div>
+                    ) : captureTimelineEvents.length > 0 ? (
+                      <div className="capture-timeline-list">
+                        {captureTimelineEvents.map((event) => (
+                          <CaptureTimelineCard event={event} onOpen={openCaptureTimelineOriginal} key={event.id} />
+                        ))}
+                      </div>
+                    ) : (
+                      <div className="capture-timeline-empty">{captureTimelineLoading ? '正在读取学习记忆…' : '当前日期和筛选条件下暂无学习活动。'}</div>
+                    )}
+                    {captureTimelineCursor && (
+                      <button className="secondary capture-timeline-more" onClick={() => void loadCaptureTimeline(selectedStudent, captureTimelineDate, true)} disabled={captureTimelineLoading}>
+                        {captureTimelineLoading ? '正在加载…' : '加载更多'}
+                      </button>
+                    )}
                   </div>
                 )}
               </section>
@@ -15473,7 +16543,7 @@ ${JSON.stringify(items, null, 2)}
             {projectAuditLocateTarget && <div className="project-locate-toast" role="status"><CheckCircle2 size={17} />已选中 {projects.find((project) => project.id === projectAuditLocateTarget.projectId)?.name || '项目'}，正在定位处理区域…</div>}
             <div className="panel-heading">
               <div>
-                <h2>{activeSection === 'projects-new' ? '新建学习项目' : projectPageMode === 'detail' && selectedProject ? selectedProject.name : '已有学习项目'}</h2>
+                <h2>{activeSection === 'projects-new' ? t('nav.projects.new') : projectPageMode === 'detail' && selectedProject ? selectedProject.name : t('nav.projects.existing')}</h2>
                 <p>{activeSection === 'projects-new' ? '创建新的项目工作空间和独立项目知识空间，也可以直接绑定本机已有项目文件夹。' : projectPageMode === 'detail' ? '独立处理当前项目的资料、知识消化、审核与归档贡献。' : '先按学生筛选并选择项目，再进入独立项目详情页。'}</p>
               </div>
               {activeSection === 'projects-existing' && projectPageMode === 'detail' ? (
@@ -15686,7 +16756,7 @@ ${JSON.stringify(items, null, 2)}
             </section>
             <section className="material-source-panel projects-new-only">
               <div className="mini-heading">
-                <strong>新建学习项目</strong>
+                <strong>新建项目</strong>
                 <span>会同时创建用户项目空间和项目知识空间；项目资料默认不污染学生主档案。</span>
               </div>
               <div className="form-grid compact-grid">
@@ -15996,6 +17066,9 @@ ${JSON.stringify(items, null, 2)}
                         <div className="project-knowledge-reader">
                           <div className="reader-toolbar">
                             <span>{filteredProjectKnowledgeFiles.find((file) => file.id === selectedProjectKnowledgeFileId)?.name || '项目知识阅读器'}</span>
+                            <button className="secondary compact" disabled={!selectedProjectKnowledgeFileId || !selectedStudent} onClick={() => void openKnowledgeTimeline(selectedProjectKnowledgeFileId)}>
+                              <Clock3 size={15} />学习时间线来源
+                            </button>
                             <button className="secondary compact" disabled={!projectKnowledgeContent} onClick={() => setProjectKnowledgeViewMode(projectKnowledgeViewMode === 'rendered' ? 'source' : 'rendered')}>
                               {projectKnowledgeViewMode === 'rendered' ? '查看原文' : '阅读模式'}
                             </button>
@@ -16189,27 +17262,15 @@ ${JSON.stringify(items, null, 2)}
                         <input readOnly value={selectedProject.publishedAt ? new Date(selectedProject.publishedAt).toLocaleString('zh-CN') : '尚未发布'} />
                       </label>
                     </div>
-                    <section className={`material-source-panel project-participants-panel ${projectAuditLocateTarget?.target === 'students' ? 'audit-locate-highlight' : ''}`} data-project-action-target="students" tabIndex={-1}>
-                      <div className="mini-heading">
-                        <strong>项目绑定学生</strong>
-                        <span>学习项目支持绑定多个学生。调整后会同步项目绑定索引，不会覆盖已经手工修改过的 AGENT.md。</span>
-                      </div>
-                      <div className="student-checkbox-list">
-                        {students.map((student) => {
-                          const nextIds = selectedProject.studentIds?.includes(student.id)
-                            ? selectedProject.studentIds.filter((id) => id !== student.id)
-                            : [...(selectedProject.studentIds ?? []), student.id];
-                          return (
-                            <label className="student-checkbox" key={student.id}>
-                              <input type="checkbox" checked={selectedProject.studentIds?.includes(student.id) ?? false} onChange={() => updateSelectedProjectStudents(nextIds)} />
-                              <span>{student.name}</span>
-                            </label>
-                          );
-                        })}
-                        {students.length === 0 && <div className="empty-state compact">暂无学生可绑定。</div>}
-                      </div>
-                      <small className="inline-hint">当前绑定：{selectedProject.studentNames?.join('、') || '未绑定学生'}</small>
-                    </section>
+                    <ProjectStudentBindingEditor
+                      key={selectedProject.id}
+                      students={students}
+                      savedStudentIds={selectedProject.studentIds || []}
+                      savedStudentNames={selectedProject.studentNames || []}
+                      busy={projectStudentSaveBusy}
+                      highlighted={projectAuditLocateTarget?.target === 'students'}
+                      onSave={updateSelectedProjectStudents}
+                    />
                     <section className={`material-source-panel project-staging-panel ${projectAuditLocateTarget?.target === 'assets' ? 'audit-locate-highlight' : ''}`} data-project-action-target="assets" tabIndex={-1}>
                       <div className="mini-heading">
                         <strong>2. AI 整理与资料确认</strong>
@@ -16627,6 +17688,12 @@ ${JSON.stringify(items, null, 2)}
               </div>
               <Sparkles size={22} />
             </div>
+            {growthLoading && <div className="notice muted" role="status">正在后台读取成长模型，页面可继续操作…</div>}
+            <div className="actions growth-primary-action">
+              <button className="secondary" onClick={() => { void refreshSelectedGrowthModel(selectedStudent, true); }} disabled={growthLoading}><RefreshCw size={18} />刷新成长模型</button>
+            </div>
+            <details className="advanced-options growth-advanced-options">
+              <summary>高级选项</summary>
             <div className="archive-grid">
               <InfoPanel icon={<UserRound />} title="当前学生" value={`${selectedStudent.name} · ${selectedStudent.grade}`} />
               <InfoPanel icon={<FolderOpen />} title="知识库目录" value={selectedStudentPaths.root} actionLabel="打开目录" onClick={() => bridge()?.openStudentRootDir?.(selectedStudent.id)} />
@@ -16636,10 +17703,6 @@ ${JSON.stringify(items, null, 2)}
               <button className="primary" onClick={ensureSelectedGrowthModel}>
                 <Sparkles size={18} />
                 补建成长模型
-              </button>
-              <button className="secondary" onClick={refreshSelectedGrowthModel}>
-                <RefreshCw size={18} />
-                刷新成长模型
               </button>
               <button className="secondary" onClick={rebuildSelectedGrowthIndex}>
                 <Share2 size={18} />
@@ -16651,7 +17714,7 @@ ${JSON.stringify(items, null, 2)}
               </button>
               <button className="secondary" onClick={() => setActiveSection('archive')}>
                 <BookOpen size={18} />
-                查看教育档案
+                查看学情资料
               </button>
             </div>
             <div className="notice muted">
@@ -16668,6 +17731,7 @@ ${JSON.stringify(items, null, 2)}
             <div className="notice muted">
               系统会自动确认来源完整且归属明确的低风险证据，并把信息不足的普通记录转为继续观察。这里只保留高风险、冲突、敏感或来源不明的记录供逐条确认。
             </div>
+            </details>
             <section className="growth-workbench">
               <div className="growth-view-tabs" role="tablist" aria-label="成长模型视图">
                 <button className={growthView === 'abilities' ? 'active' : ''} onClick={() => setGrowthView('abilities')}><Gauge size={18} />能力画像</button>
@@ -16710,6 +17774,7 @@ ${JSON.stringify(items, null, 2)}
                   <div className="download-item" key={candidate.id}>
                     <span><strong>{candidate.title}</strong><small>{candidate.ability || '待标注'} · {candidate.projectName || '未关联项目'} · {candidate.status} · {candidate.confidence || '待确认'}</small>{(() => { const risk = growthEvidenceRiskAssessment?.assessments.find((item) => item.evidenceId === candidate.id); return risk ? <small>风险：{risk.label} · {risk.reasons.map((item) => item.label).join('、')}</small> : null; })()}<small>{candidate.sourcePath || candidate.content || '暂无来源'}</small>{candidate.migratedFrom && <small>兼容导入自：{candidate.migratedFrom}</small>}{legacyGrowthReviewQueue.some((item) => item.evidenceId === candidate.id) && <small>历史记录缺少审核人和时间，请重新确认、继续观察或不采用。</small>}{candidate.reviewedAt && <small>最近审核：{candidate.reviewerRole || candidate.review?.reviewerRole || '本机管理员'} · {new Date(candidate.reviewedAt).toLocaleString('zh-CN')}</small>}</span>
                     <div className="inline-actions">
+                      {candidate.sourcePath ? <button className="secondary compact" onClick={() => void openKnowledgeTimeline(candidate.sourcePath)}><Clock3 size={15} />时间线来源</button> : null}
                       <button className="secondary compact workflow-action next" onClick={() => updateGrowthEvidence(candidate, 'confirmed')}>确认采用</button>
                       <button className="secondary compact workflow-action optional" onClick={() => updateGrowthEvidence(candidate, 'watching')}>继续观察</button>
                       <button className="secondary compact workflow-action optional" onClick={() => updateGrowthEvidence(candidate, 'rejected')}>不采用</button>
@@ -16732,7 +17797,7 @@ ${JSON.stringify(items, null, 2)}
             <div className="panel-heading">
               <div>
                 <h2>{selectedStudent.name} · 学情报告</h2>
-                <p>给家长、学生和教师看的表达层报告；原始证据和完整文件树仍在“查看教育档案”。</p>
+                <p>给家长、学生和教师看的表达层报告；原始证据和完整文件树仍在“学情资料”。</p>
               </div>
               <FileText size={22} />
             </div>
@@ -16850,16 +17915,22 @@ ${JSON.stringify(items, null, 2)}
                         </div>
                         <div className="report-evidence-sources">
                           {card.sources.map((source, sourceIndex) => (
-                            <button
-                              className="secondary compact"
-                              disabled={!source.available}
-                              key={source.id}
-                              onClick={() => openLearningReportEvidenceSource(card.evidenceId, sourceIndex)}
-                              title={source.location}
-                            >
-                              <FolderOpen size={15} />
-                              {source.available ? `定位 ${source.title}` : `${source.title} 暂不可用`}
-                            </button>
+                            <React.Fragment key={source.id}>
+                              <button
+                                className="secondary compact"
+                                disabled={!source.available}
+                                onClick={() => openLearningReportEvidenceSource(card.evidenceId, sourceIndex)}
+                                title={source.location}
+                              >
+                                <FolderOpen size={15} />
+                                {source.available ? `定位 ${source.title}` : `${source.title} 暂不可用`}
+                              </button>
+                              {source.timelineRefs?.[0] && (
+                                <button className="secondary compact" onClick={() => openLearningReportTimeline(source.timelineRefs![0])}>
+                                  <Clock3 size={15} />查看学习时间线
+                                </button>
+                              )}
+                            </React.Fragment>
                           ))}
                           {!card.sources.length && <small>来源尚未记录，系统将其视为需要补充。</small>}
                         </div>
@@ -16913,16 +17984,18 @@ ${JSON.stringify(items, null, 2)}
               />
               <InfoPanel icon={<BookOpen />} title="内置档案" value={selectedStudentPaths.summary} />
             </div>
-            <StudentToolSelector
-              value={selectedStudent.agentTool}
-              onChange={changeSelectedStudentTool}
-              disabled={!windowsLicenseActive}
-            />
             {!windowsLicenseActive && (
               <div className="notice warning-notice">
                 当前为未激活只读浏览模式。可查看已有档案，但不能更换资料根目录、删除学生、编辑学生资料或迁移知识库。
               </div>
             )}
+            <details className="advanced-options archive-advanced-options" open={!isWindows}>
+              <summary>高级选项</summary>
+            <StudentToolSelector
+              value={selectedStudent.agentTool}
+              onChange={changeSelectedStudentTool}
+              disabled={!windowsLicenseActive}
+            />
             <div className="status-grid">
               <div className="status-card">
                 <span>初始化包版本</span>
@@ -17037,6 +18110,7 @@ ${JSON.stringify(items, null, 2)}
                 )}
               </section>
             )}
+            </details>
             <div className="actions">
               {!isWindows && <button className="secondary" onClick={authorizeArchiveRoot}>
                 <FolderOpen size={18} />
@@ -17265,15 +18339,16 @@ ${JSON.stringify(items, null, 2)}
           </section>
         )}
 
-        {!shouldBlockForAgentInstall && !isLicenseRestrictedSection && activeSection === 'qa' && selectedStudent && (
+        {!shouldBlockForAgentInstall && !isLicenseRestrictedSection && (activeSection === 'qa' || (activeSection === 'settings' && settingsSubmenu === 'agent-qa')) && selectedStudent && (
           <section className="panel qa-panel">
             <div className="panel-heading">
               <div>
-                <h2>教育管家问答</h2>
-                <p>直接输入问题。系统先查本机知识，依据不足时自动查询已连接的协作主机，再把带来源内容交给 Agent。</p>
+                <h2>{!isWindows ? '教育管家问答' : activeSection === 'qa' ? t('nav.qa') : t('nav.qa.settings')}</h2>
+                <p>{activeSection === 'qa' ? '输入问题，按授权范围查询本机与协作知识，并把带来源的内容交给 Agent。' : '设置当前学生的 Agent 问答与远程咨询；高级诊断仅供排查。'}</p>
               </div>
               <MessageCircle size={22} />
             </div>
+            {activeSection === 'qa' && <>
             <form className="agent-knowledge-query" onSubmit={(event) => {
               event.preventDefault();
               void askWithEducationKnowledge(false);
@@ -17314,7 +18389,7 @@ ${JSON.stringify(items, null, 2)}
                   {agentKnowledgeBusy ? '正在查询…' : `查询并交给 ${selectedStudentTool.name}`}
                 </button>
               </div>
-              <small className="inline-hint">无需选择网络或填写地址；当前学生范围本机有依据时不会访问远程主机，只有选择了远程团队范围并在系统设置长期允许时才进行团队远程查询。</small>
+              <small className="inline-hint">无需选择网络或填写地址；当前学生范围本机有依据时不会访问远程主机，只有选择了远程团队范围并在协作设置中长期允许时才进行团队远程查询。</small>
             </form>
             {agentKnowledgeResult && (
               <div className={`agent-knowledge-result ${agentKnowledgeResult.ok ? 'success' : 'waiting'}`}>
@@ -17362,6 +18437,8 @@ ${JSON.stringify(items, null, 2)}
                 )}
               </div>
             )}
+            </>}
+            {((activeSection === 'settings' && settingsSubmenu === 'agent-qa') || (!isWindows && activeSection === 'qa')) && <>
             <details className="advanced-diagnostics" open={agentKnowledgeDiagnosticsOpen} onToggle={(event) => {
               const open = event.currentTarget.open;
               setAgentKnowledgeDiagnosticsOpen(open);
@@ -17531,28 +18608,32 @@ ${JSON.stringify(items, null, 2)}
                 : `${selectedStudentTool.name} 暂按手动复制资料消化指令执行，后续可由控制台做提醒。`}
             </div>
             {digestMessage && <div className="notice">{digestMessage}</div>}
+            </>}
           </section>
         )}
 
-        {!shouldBlockForAgentInstall && !isLicenseRestrictedSection && activeSection === 'memory' && selectedStudent && (
+        {!shouldBlockForAgentInstall && !isLicenseRestrictedSection && (activeSection === 'memory' || activeSection === 'capture') && selectedStudent && (
           <section className="panel qa-panel">
             <div className="panel-heading">
               <div>
-                <h2>Agent 记忆管理</h2>
-                <p>备份不同 Agent 工具里的 Memory，并合并为当前学生的 UnifiedMemory.md。</p>
+                <h2>{activeSection === 'capture' ? t('nav.capture') : t('nav.memory')}</h2>
+                <p>{activeSection === 'capture' ? '一次授权后自动采集当前学生的 Agent 对话；只记录授权后的新轮次。' : '备份不同 Agent 工具里的 Memory，并合并为当前学生的 UnifiedMemory.md。'}</p>
               </div>
               <Clipboard size={22} />
             </div>
+            {activeSection === 'memory' && <>
             <div className="archive-grid">
               <InfoPanel icon={<UserRound />} title="当前学生" value={selectedStudent.name} />
               <InfoPanel icon={<Bot />} title="当前采集对象" value={agentMemoryState?.captureTarget?.enabled ? (agentMemoryState.captureTarget.studentName || agentMemoryState.captureTarget.studentId) : '尚未设置'} />
               <InfoPanel icon={<FolderOpen />} title="统一记忆文件" value={agentCenter?.unifiedMemoryPath || selectedStudent.memoryConfig?.unifiedMemoryPath || '未生成'} />
               <InfoPanel icon={<Archive />} title="来源数量" value={`${agentCenter?.memoryIndex?.sources?.filter((item) => item.exists).length ?? 0} 个`} />
             </div>
+            </>}
+            {(activeSection === 'capture' || (!isWindows && activeSection === 'memory')) &&
             <section className="material-source-panel">
               <div className="mini-heading">
                 <strong>自动会话记忆</strong>
-                <span>一次授权后，系统会自动探测并接入 Codex、QClaw、WorkBuddy、OpenClaw、Claude Code 和 Hermes，只采集授权后的新会话。不会读取启用前历史、系统提示、密钥、其他聊天或教育管家任务执行上下文。</span>
+                <span>一次授权后，系统会自动探测并接入 Codex、QClaw、WorkBuddy、OpenClaw、Claude Code 和 Hermes。新会话可采集；已打开的 Codex、QClaw 会话在接入生效时，从授权后的后续轮次开始采集。不会扫描授权前历史、系统提示、密钥、其他聊天或教育管家任务执行上下文。</span>
               </div>
               <div className="actions compact-actions">
                 <label className={agentMemoryState?.settings?.automationEnabled ? 'task-automation-toggle' : 'task-automation-toggle manual'}>
@@ -17568,12 +18649,45 @@ ${JSON.stringify(items, null, 2)}
                 )}
                 {agentMemoryState?.captureTarget?.isCurrentStudent && <span className="capture-target-badge">当前采集对象</span>}
                 <button className="secondary compact" onClick={() => refreshAgentMemoryState()}>刷新会话</button>
+                <button className="secondary compact" onClick={() => setActiveSection('conversation')}>管理全部对话资料</button>
                 <span className="muted">最近 {agentMemoryState?.summary?.total ?? 0} 个授权会话 · {agentMemoryState?.summary?.active ?? 0} 个采集中</span>
+                {(agentMemoryState?.summary?.empty ?? 0) > 0 && <button className="secondary compact" onClick={() => clearEmptyAgentSessions()}>清理空会话（{agentMemoryState?.summary?.empty}）</button>}
               </div>
               {agentMemoryState?.settings?.automationEnabled && !agentMemoryState?.captureTarget?.isCurrentStudent && (
                 <div className="notice capture-target-notice">
                   {selectedStudent.name}已授权，但本机当前采集对象为“{agentMemoryState?.captureTarget?.enabled ? (agentMemoryState.captureTarget.studentName || agentMemoryState.captureTarget.studentId) : '未设置'}”。切换前请先结束当前 Agent 会话，避免同一会话跨学生分段归档。
                 </div>
+              )}
+              {agentMemoryState?.settings?.automationEnabled
+                && agentMemoryState?.captureTarget?.isCurrentStudent
+                && codexHookOnboarding?.configured && (
+                <section className={`codex-hook-onboarding ${codexHookOnboarding.status}`} aria-label="Codex Hook 一次确认">
+                  <div className="codex-hook-onboarding-head">
+                    <div>
+                      <strong>{codexHookOnboarding.verified ? 'Codex Hook 已完成一次确认' : 'Codex Hook 仅需确认一次'}</strong>
+                      <p>
+                        {codexHookOnboarding.verified
+                          ? '后续启动、授权切换和会话采集均由 AI教育管家自动维护；仅当 Hook 定义真正更新时才会再次提示。'
+                          : codexHookOnboarding.status === 'waiting_for_event'
+                            ? 'Codex CLI 已打开且 /hooks 已复制。完成信任后发送一条消息，AI教育管家会用首个真实事件自动验证。'
+                            : 'AI教育管家已安装稳定 Hook。打开 Codex CLI 后粘贴 /hooks，只需审查并信任 EDU-MANAGER-LIFECYCLE 一次。'}
+                      </p>
+                    </div>
+                    {!codexHookOnboarding.verified && (
+                      <button className="secondary compact" disabled={!codexHookOnboarding.canOpenReview} onClick={openCodexHookReview}>
+                        {codexHookOnboarding.status === 'waiting_for_event' ? '重新打开审查' : '打开 Codex，一次确认'}
+                      </button>
+                    )}
+                  </div>
+                  <ol className="codex-hook-steps">
+                    <li className="done">Hook 已安装</li>
+                    <li className={codexHookOnboarding.reviewOpenedAt || codexHookOnboarding.verified ? 'done' : 'current'}>Codex 一次确认</li>
+                    <li className={codexHookOnboarding.verified ? 'done' : 'current'}>{codexHookOnboarding.verified ? '真实事件已验证' : '等待首个真实事件'}</li>
+                  </ol>
+                  {!codexHookOnboarding.canOpenReview && !codexHookOnboarding.verified && (
+                    <small>未找到 Codex CLI。请先修复 Codex CLI，或手动打开后输入 <code>/hooks</code>。</small>
+                  )}
+                </section>
               )}
               <div className="agent-capture-status" aria-label="Agent 会话采集接入状态">
                 {([
@@ -17589,22 +18703,25 @@ ${JSON.stringify(items, null, 2)}
                   const configured = health?.configured ?? registered;
                   const isCaptureTarget = agentMemoryState?.captureTarget?.isCurrentStudent === true;
                   const authorized = agentMemoryState?.settings?.automationEnabled === true;
+                  const codexVerified = agentId !== 'codex' || codexHookOnboarding?.verified === true;
                   const stateLabel = !authorized
                     ? '尚未授权'
                     : !isCaptureTarget
                       ? '等待切换'
+                      : !codexVerified
+                        ? codexHookOnboarding?.status === 'waiting_for_event' ? '等待确认验证' : '需一次确认'
                       : health?.active
                         ? '自动采集中'
                         : received
                           ? '已接入'
                           : configured
-                            ? '已配置，等待新会话'
+                            ? agentId === 'codex' ? '已验证，等待后续轮次' : '已配置，等待后续轮次'
                             : '需要处理';
-                  const statusClassName = health?.active && isCaptureTarget
+                  const statusClassName = health?.active && isCaptureTarget && codexVerified
                     ? 'capturing'
-                    : received && isCaptureTarget
+                    : (received || (agentId === 'codex' && codexVerified)) && isCaptureTarget
                       ? 'ready'
-                      : authorized && !isCaptureTarget
+                      : authorized && (!isCaptureTarget || (agentId === 'codex' && !codexVerified))
                         ? 'waiting'
                         : '';
                   return (
@@ -17615,7 +18732,7 @@ ${JSON.stringify(items, null, 2)}
                         ? `已授权，但当前采集对象为${agentMemoryState?.captureTarget?.studentName || agentMemoryState?.captureTarget?.studentId || '未设置'}`
                         : health?.lastEventAt
                           ? `最近事件：${formatDateTime(health.lastEventAt)}`
-                          : configured ? '已完成生命周期接入，等待新会话事件' : '未检测到安装或自动接入未完成'}
+                          : configured ? agentId === 'codex' ? codexVerified ? '当前 Hook 身份已经过真实事件验证' : '已写入稳定 Codex Hook；需完成一次 /hooks 审查' : '已完成生命周期接入，等待授权后的会话事件' : '未检测到安装或自动接入未完成'}
                     >
                       {name} · {stateLabel}
                     </span>
@@ -17627,9 +18744,10 @@ ${JSON.stringify(items, null, 2)}
                   <div className="candidate-row" key={session.sessionId}>
                     <div className="candidate-main">
                       <strong>{session.title || session.summary?.objective || '授权 Agent 会话'}</strong>
-                      <span>{agentToolProfiles[session.agentId as AgentToolId]?.name || session.agentId} · {session.status === 'active' ? '采集中' : session.conversationReceipt ? '已归档' : session.status === 'completed' ? '已结束' : session.status === 'failed' ? '采集失败' : '已取消'}</span>
+                      <span>{agentToolProfiles[session.agentId as AgentToolId]?.name || session.agentId} · {session.materialLifecycleStatus === 'trashed' ? '回收站' : session.status === 'active' ? '采集中' : session.conversationReceipt ? '已保存到对话资料箱' : session.status === 'completed' ? '已结束' : session.status === 'failed' ? '采集失败' : '已取消'}</span>
                       <small>{session.updatedAt ? formatDateTime(session.updatedAt) : '时间未知'}{session.projectId ? ` · 项目 ${session.projectId}` : ''}</small>
                       <small>{session.messages?.length ?? 0} 条授权消息{session.conversationReceipt?.message ? ` · ${session.conversationReceipt.message}` : ''}</small>
+                      {session.conversationReceipt?.assetId && <small>资料投递 {session.materialDependencies?.deliveryCount ?? 0} 次 · 知识候选 {session.materialDependencies?.candidateCount ?? 0} 条</small>}
                       {(session.messages?.length ?? 0) > 0 && (
                         <details className="agent-memory-conversation">
                           <summary>查看采集的对话内容</summary>
@@ -17644,11 +18762,33 @@ ${JSON.stringify(items, null, 2)}
                         </details>
                       )}
                     </div>
+                    <div className="actions compact-actions agent-memory-actions">
+                      {session.status === 'active'
+                        ? <span className="muted">会话结束后可投递或移除</span>
+                        : !session.materialAvailable && (session.messages?.length ?? 0) === 0 && !session.conversationReceipt
+                          ? <button className="danger compact" onClick={() => clearEmptyAgentSessions(session.sessionId)}>删除空会话</button>
+                        : !session.materialAvailable
+                          ? <span className="muted">尚无可管理的对话资料；可稍后刷新</span>
+                          : session.materialLifecycleStatus === 'trashed'
+                            ? <>
+                                <button className="secondary compact" onClick={() => manageCapturedConversation(session, 'restore')}>恢复</button>
+                                <button className="danger compact" disabled={!session.materialDependencies?.canPermanentlyDelete} title={session.materialDependencies?.canPermanentlyDelete ? '删除对话原文、本地会话记忆及未晋升候选' : '仍关联资料投递或已晋升知识，不能彻底删除'} onClick={() => manageCapturedConversation(session, 'delete')}>彻底删除</button>
+                              </>
+                            : <>
+                                <select aria-label={`${session.title || '授权会话'}投递目标`} value={agentSessionTargetSelections[session.sessionId] || 'student'} onChange={(event) => setAgentSessionTargetSelections((current) => ({ ...current, [session.sessionId]: event.target.value }))}>
+                                  <option value="student">学生原始资料库</option>
+                                  {conversationLinkedProjects.map((project) => <option value={`project:${project.id}`} key={project.id}>项目：{project.name}</option>)}
+                                </select>
+                                <button className="primary compact" onClick={() => deliverCapturedConversation(session)}>投递到原始资料库</button>
+                                <button className="secondary compact" onClick={() => manageCapturedConversation(session, 'trash')}>移入回收站</button>
+                              </>}
+                    </div>
                   </div>
                 ))}
-                {(agentMemoryState?.sessions ?? []).length === 0 && <div className="empty-state compact">尚无已授权 Agent 会话。开启后请在 Codex、QClaw、WorkBuddy 或 OpenClaw 中开始新会话；旧历史不会被扫描。</div>}
+                {(agentMemoryState?.sessions ?? []).length === 0 && <div className="empty-state compact">尚无已授权 Agent 会话。开启后可开始新会话；已打开的 Codex 或 QClaw 会话若接入已生效，可继续提问并从该轮开始采集。授权前历史不会被扫描。</div>}
               </div>
-            </section>
+            </section>}
+            {activeSection === 'memory' && <>
             <div className="form-grid compact-grid">
               <label>
                 来源 Agent 工具
@@ -17735,6 +18875,17 @@ ${JSON.stringify(items, null, 2)}
             {sourceRegistryPanel}
             {agentScanMessage && activeSection === 'memory' && <div className="notice muted">{agentScanMessage}</div>}
             {agentCenterMessage && <div className="notice">{agentCenterMessage}</div>}
+            </>}
+            {activeSection === 'capture' && agentCenterMessage && <div className="notice">{agentCenterMessage}</div>}
+          </section>
+        )}
+
+        {!shouldBlockForAgentInstall && !isLicenseRestrictedSection && (activeSection === 'memory' || activeSection === 'capture') && !selectedStudent && (
+          <section className="panel qa-panel">
+            <div className="empty-state">
+              请先新建或选择学生档案，再使用{activeSection === 'capture' ? t('nav.capture') : t('nav.memory')}。
+              <div className="actions"><button className="secondary" onClick={() => setActiveSection('init')}>{t('nav.init')}</button></div>
+            </div>
           </section>
         )}
 
@@ -17742,7 +18893,7 @@ ${JSON.stringify(items, null, 2)}
           <section className="panel qa-panel">
             <div className="panel-heading">
               <div>
-                <h2>Agent 设定管理</h2>
+                <h2>{t('nav.soul')}</h2>
                 <p>维护统一 Soul，备份不同工具的人设版本，并对比差异后手动调整。</p>
               </div>
               <Bot size={22} />
@@ -17858,7 +19009,7 @@ ${JSON.stringify(items, null, 2)}
           <section className="panel qa-panel">
             <div className="panel-heading">
               <div>
-                <h2>智能体规则文件管理</h2>
+                <h2>{t('nav.rules')}</h2>
                 <p>管理当前学生知识库根目录下的 AGENT.md、AGENTS.md、CLAUDE.md、IMA.md、WorkBuddy.md 等规则性 Markdown 文件。</p>
               </div>
               <ListChecks size={22} />
@@ -18107,7 +19258,7 @@ ${JSON.stringify(items, null, 2)}
                       </label>
                       <div className="candidate-main">
                         <strong>{item.analysis?.summary || `${item.messageCount ?? 0} 条消息`}</strong>
-                        <span>{item.sourceScopeType === 'project' ? '项目' : '学生'}来源 · {item.sourceScopeName || selectedStudent.name}</span>
+                        <span>{item.sourceType === 'authorized_lifecycle' ? '自动采集' : item.sourceScopeType === 'project' ? '项目来源' : '学生来源'} · {agentToolProfiles[item.tool as AgentToolId]?.name || item.tool || 'Agent'} · {item.sourceScopeName || selectedStudent.name}</span>
                         <small>{item.analysis?.category || '未分类'} · {(item.analysis?.topics ?? ['综合对话']).join(' · ')}{suggestedProject ? ` · 建议投递：${suggestedProject.name}` : ''}</small>
                         {item.analysis?.keywords?.length ? <small>关键词：{item.analysis.keywords.slice(0, 8).join('、')}</small> : null}
                         {item.analysis?.decisions?.length ? <small>结论：{item.analysis.decisions.slice(0, 2).join('；')}</small> : null}
@@ -18120,7 +19271,7 @@ ${JSON.stringify(items, null, 2)}
                         {item.lifecycleStatus === 'trashed'
                           ? <>
                               <button className="secondary compact" onClick={() => manageConversationMaterials('restore', [item])}>恢复</button>
-                              <button className="danger compact" disabled={!item.dependencies?.canPermanentlyDelete} title={item.dependencies?.canPermanentlyDelete ? '彻底删除不可恢复' : '仍有关联资料或知识候选，只能保留在回收站'} onClick={() => manageConversationMaterials('delete', [item])}>彻底删除</button>
+                              <button className="danger compact" disabled={!item.dependencies?.canPermanentlyDelete} title={item.dependencies?.canPermanentlyDelete ? '同时删除未晋升知识候选，不可恢复' : '仍有关联资料投递或已晋升知识，只能保留在回收站'} onClick={() => manageConversationMaterials('delete', [item])}>彻底删除</button>
                             </>
                           : <button className="secondary compact" onClick={() => manageConversationMaterials('trash', [item])}>移入回收站</button>}
                       </div>
@@ -18146,7 +19297,7 @@ ${JSON.stringify(items, null, 2)}
                 <button className="secondary" onClick={() => manageConversationMaterials('trash')}>移入回收站</button>
               </div> : <div className="actions compact-actions">
                 <button className="secondary" onClick={() => manageConversationMaterials('restore')}>恢复所选</button>
-                <button className="danger" onClick={() => manageConversationMaterials('delete')}>彻底删除无依赖项</button>
+                <button className="danger" onClick={() => manageConversationMaterials('delete')}>彻底删除无下游依赖项</button>
               </div>}
             </section>}
             {conversationWorkspaceTab === 'inbox' && <>
@@ -18335,9 +19486,9 @@ ${JSON.stringify(items, null, 2)}
           </section>
         )}
 
-        {!shouldBlockForAgentInstall && !isLicenseRestrictedSection && activeSection === 'qa' && !selectedStudent && (
+        {!shouldBlockForAgentInstall && !isLicenseRestrictedSection && (activeSection === 'qa' || (activeSection === 'settings' && settingsSubmenu === 'agent-qa')) && !selectedStudent && (
           <section className="panel qa-panel">
-            <div className="empty-state">请先初始化或新建教育管家，再进入问答模块。</div>
+            <div className="empty-state">请先新建或选择学生档案，再使用{activeSection === 'qa' ? '知识查询' : 'Agent问答设置'}。</div>
           </section>
         )}
 
@@ -18727,7 +19878,7 @@ ${JSON.stringify(items, null, 2)}
                       </button>
                     )}
                     <button className="secondary compact" onClick={() => { setSelectedId(student.id); setActiveSection('archive'); }}>
-                      查看教育档案
+                      查看学情资料
                     </button>
                   </div>
                 );
@@ -18766,12 +19917,12 @@ ${JSON.stringify(items, null, 2)}
           </section>
         )}
 
-        {!shouldBlockForAgentInstall && activeSection === 'settings' && (
+        {!shouldBlockForAgentInstall && activeSection === 'settings' && settingsSubmenu !== 'agent-qa' && (
           <section className="panel tasks-panel">
             <div className="panel-heading">
               <div>
-                <h2>{t('settings.title')}</h2>
-                <p>{isWindows ? t('settings.description.windows') : t('settings.description.android')}</p>
+                <h2>{settingsSubmenu === 'collaboration' ? t('nav.collaboration.settings') : t('settings.title')}</h2>
+                <p>{settingsSubmenu === 'collaboration' ? '管理多端协作、设备信任与共享范围。' : isWindows ? t('settings.description.windows') : t('settings.description.android')}</p>
               </div>
               <Settings size={22} />
             </div>
@@ -18947,8 +20098,8 @@ ${JSON.stringify(items, null, 2)}
                 )}
                 <div className="material-source-panel collaboration-delivery-queue">
                   <div className="mini-heading">
-                    <strong>发送队列</strong>
-                    <span>联网后自动发送；局域网不可达时自动尝试 Tailscale，中断或重启后从已接收位置继续。</span>
+                    <strong>全部协作设备发送队列</strong>
+                    <span>这里包含其他学生和项目的发送任务；联网后自动发送，局域网不可达时自动尝试 Tailscale，中断或重启后从已接收位置继续。</span>
                   </div>
                   <div className="status-grid">
                     <div className="status-card">
@@ -19196,6 +20347,18 @@ ${JSON.stringify(items, null, 2)}
                         {archiveSync?.peers?.length ? (
                           <small>目标：{archiveSync.peers.map((peer) => `${peer.peerNodeId} / ${peer.targetStudentId}`).join('；')}</small>
                         ) : null}
+                        {archiveSync?.latestDelivery ? (
+                          <p className="muted-text">
+                            <strong>最新同步状态：{archiveSync.latestDelivery.statusLabel}</strong>
+                            {archiveSync.latestDelivery.fileCount ? ` · ${archiveSync.latestDelivery.fileCount} 个文件` : ''}
+                            {archiveSync.latestDelivery.attempt ? ` · 已尝试 ${archiveSync.latestDelivery.attempt} 次` : ''}
+                            {archiveSync.latestDelivery.deliveredAt ? ` · 送达 ${new Date(archiveSync.latestDelivery.deliveredAt).toLocaleString('zh-CN')}` : ''}
+                            {archiveSync.latestDelivery.nextAttemptAt ? ` · 下次自动重试 ${new Date(archiveSync.latestDelivery.nextAttemptAt).toLocaleString('zh-CN')}` : ''}
+                            {archiveSync.latestDelivery.error ? ` · ${archiveSync.latestDelivery.error}` : ''}
+                          </p>
+                        ) : (
+                          <small>最新同步状态：尚无同步包记录</small>
+                        )}
                       </div>
                       <div className="actions compact-actions">
                         <label className={archiveSync?.enabled ? 'task-automation-toggle' : 'task-automation-toggle manual'}>

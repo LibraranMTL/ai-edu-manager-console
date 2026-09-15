@@ -1,0 +1,18 @@
+{
+  "schema": "edu-manager.android-source-candidate.v1",
+  "applicationId": "com.qxmatrix.edumanager.standalone",
+  "versionName": "1.2.0",
+  "versionCode": 24,
+  "buildType": "debug",
+  "releaseStatus": "source-candidate-physical-device-pending",
+  "fileName": "AI-Education-Manager-Android-Standalone-1.2.0-conversation-knowledge-debug.apk",
+  "bytes": 75147002,
+  "sha256": "D7C1680DB6C8DA4AB1892EA501C6ECAFBA368BF1A444863603D87033AD145BF8",
+  "verification": {
+    "androidCheck": "passed",
+    "conversationContractTests": "passed",
+    "productCertificateSigned": false,
+    "physicalTabletAccepted": false
+  },
+  "notes": "仅供对话导入与知识管理真机候选验收；Debug 证书不能覆盖已安装的正式版，也不能进入公开下载通道。"
+}

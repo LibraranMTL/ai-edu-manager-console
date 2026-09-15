@@ -24,13 +24,20 @@ test('digest polling uses the mtime-aware project lookup cache', () => {
   assert.match(main, /projectDigestLookupCache = \{ mtimeMs: -1, size: -1, projects: \[\] \};/);
 });
 
-test('non-real-time renderer polling is throttled while capture polling remains bounded', () => {
+test('non-real-time renderer polling is throttled and capture updates are event driven', () => {
   assert.match(renderer, /if \(document\.hidden\) return;/);
   assert.match(renderer, /\}, 10000\);\s*const hostTimer = window\.setInterval/);
   assert.match(renderer, /activeSectionRef\.current === 'settings'/);
   assert.match(renderer, /\}, 60000\);/);
   assert.match(renderer, /const timer = window\.setInterval\(\(\) => \{\s*if \(!document\.hidden\) refreshVisible\(\);\s*\}, 30000\);/);
-  assert.match(renderer, /const timer = window\.setInterval\(refreshCaptureCenter, 5000\);/);
+  assert.doesNotMatch(renderer, /setInterval\(refreshCaptureCenter/);
+  assert.match(main, /kind: 'capture_delta'/);
+  assert.match(main, /sessions: \(store\.sessions \|\| \[\]\).*\.map\(captureSessionSummary\)/s);
+  assert.match(main, /appendCaptureSessionItem\(session\.id, appendedItem\)/);
+  assert.match(renderer, /memo\(function CaptureTimelineCard/);
+  assert.match(renderer, /new IntersectionObserver/);
+  assert.match(renderer, /rootMargin: '320px 0px'/);
+  assert.match(renderer, /startCaptureTimelineTransition/);
 });
 
 test('host status reads upload records once per refresh', () => {

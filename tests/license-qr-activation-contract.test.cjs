@@ -8,14 +8,14 @@ const androidMain = path.join(root, 'android-standalone-manager', 'app', 'src', 
 const androidJava = path.join(androidMain, 'java', 'com', 'qxmatrix', 'edumanager', 'standalone');
 const read = (file) => fs.readFileSync(file, 'utf8');
 
-test('License Admin 0.4.1 renders and saves offline License v3 QR images', () => {
+test('License Admin 0.4.3 renders and saves offline License v3 QR images', () => {
   const packageJson = JSON.parse(read(path.join(root, 'tools', 'license-admin-app', 'package.json')));
   const html = read(path.join(root, 'tools', 'license-admin-app', 'renderer', 'index.html'));
   const renderer = read(path.join(root, 'tools', 'license-admin-app', 'renderer', 'renderer.js'));
   const preload = read(path.join(root, 'tools', 'license-admin-app', 'preload.cjs'));
   const main = read(path.join(root, 'tools', 'license-admin-app', 'main.cjs'));
   const bundle = path.join(root, 'tools', 'license-admin-app', 'renderer', 'qrcode.bundle.js');
-  assert.equal(packageJson.version, '0.4.1');
+  assert.equal(packageJson.version, '0.4.3');
   assert.match(html, /qrcode\.bundle\.js/);
   assert.match(html, /显示二维码/);
   assert.match(html, /保存二维码图片/);

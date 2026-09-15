@@ -1,6 +1,6 @@
 {
   "name": "edu-manager-launcher",
-  "version": "0.17.1",
+  "version": "0.17.9",
   "private": true,
   "type": "module",
   "main": "electron/main.cjs",
@@ -11,6 +11,8 @@
     "build:terminal": "vite build --config vite.terminal.config.ts",
     "test": "node --test tests/*.test.cjs",
     "test:p6": "node scripts/run-p6-ten-scenario.cjs",
+    "benchmark:capture-p0": "node --expose-gc scripts/benchmark-capture-timeline.cjs",
+    "benchmark:capture-p1": "node scripts/benchmark-capture-timeline-p1.cjs",
     "preview": "vite preview --host 0.0.0.0",
     "desktop": "electron .",
     "build:win": "pnpm test && node scripts/build-windows-release.cjs",
@@ -44,7 +46,8 @@
       "package.json"
     ],
     "asarUnpack": [
-      "electron/invoke-agent.ps1"
+      "electron/invoke-agent.ps1",
+      "electron/capture-timeline-ocr.ps1"
     ],
     "win": {
       "artifactName": "AI-edu-manager-console-Windows-${version}.${ext}",

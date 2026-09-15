@@ -32,6 +32,10 @@
             android:exported="false"
             android:resizeableActivity="true" />
         <activity
+            android:name=".EducationPublicationActivity"
+            android:exported="false"
+            android:resizeableActivity="true" />
+        <activity
             android:name=".ConversationKnowledgeActivity"
             android:exported="false"
             android:resizeableActivity="true" />

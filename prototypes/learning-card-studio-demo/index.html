@@ -1,0 +1,278 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>AI教育管家 ·学习卡片工作室 Demo</title>
+  <link rel="stylesheet" href="./styles.css" />
+</head>
+<body>
+  <div class="demo-ribbon">
+    <span>示意 Demo · 全部学生与学情数据均为虚构</span>
+    <span>不连接真实账号，不上传任何资料</span>
+  </div>
+
+  <div class="app-shell">
+    <aside class="sidebar">
+      <div class="brand">
+        <div class="brand-mark" aria-hidden="true"><i></i><b></b></div>
+        <div><strong>AI教育管家</strong><small>Learning Studio</small></div>
+      </div>
+
+      <nav aria-label="主要导航">
+        <button class="nav-item active" data-page="studio" type="button"><span>01</span><b>学习卡片</b></button>
+        <button class="nav-item" data-page="resources" type="button"><span>02</span><b>资源中心</b><em>12</em></button>
+        <button class="nav-item" data-page="history" type="button"><span>03</span><b>使用记录</b></button>
+      </nav>
+
+      <div class="core-links">
+        <p>教育管家</p>
+        <button type="button">学生档案</button>
+        <button type="button">学情报告</button>
+        <button type="button">任务中心</button>
+      </div>
+
+      <div class="sidebar-foot">
+        <div class="local-status"><i></i><span><b>本地数据空间</b><small>学生资料未离开本机</small></span></div>
+        <div class="account"><span>LC</span><div><b>Learning Coach</b><small>School workspace</small></div><button type="button">⌄</button></div>
+      </div>
+    </aside>
+
+    <main>
+      <header class="topbar">
+        <div class="crumb"><span>学生成长</span><i>/</i><b id="crumbTitle">学习卡片</b></div>
+        <div class="top-actions">
+          <button class="student-switch" type="button" id="studentSwitch">
+            <span>MC</span><span><small>当前学生</small><b>Maya Chen · Year 7</b></span><i>⌄</i>
+          </button>
+          <button class="quiet-button" id="openEvidenceTop" type="button">查看学情依据</button>
+          <button class="primary-button" id="generateTop" type="button"><i>✦</i> 生成今日卡片</button>
+        </div>
+      </header>
+
+      <section class="page active" data-page-panel="studio">
+        <div class="page-heading">
+          <div>
+            <p class="eyebrow">TODAY · 09 SEP 2026</p>
+            <h1>一张真正适合 Maya 的卡片</h1>
+            <p>系统从已确认的学情证据中选择一个重点，自动匹配内容、难度与版式。</p>
+          </div>
+          <div class="value-note"><span>预计节省</span><strong>18 min</strong><small>相对手工整理</small></div>
+        </div>
+
+        <div class="evidence-rail">
+          <div><span class="verified-dot">✓</span><p><b>3 条已确认学情证据</b><small>最后更新：今天 16:42</small></p></div>
+          <i></i>
+          <div><span class="rail-index">01</span><p><b>唯一练习重点</b><small>过去进行时的场景表达</small></p></div>
+          <i></i>
+          <div><span class="rail-index">10</span><p><b>约 10 分钟完成</b><small>4 题 + 1 个表达任务</small></p></div>
+          <button id="openEvidenceRail" type="button">为什么是这个？ →</button>
+        </div>
+
+        <div class="studio-layout">
+          <section class="canvas-area">
+            <div class="canvas-toolbar">
+              <div class="view-tabs" role="tablist">
+                <button class="active" data-mode="preview" type="button">预览</button>
+                <button data-mode="edit" type="button">轻量编辑</button>
+              </div>
+              <div class="device-tabs">
+                <button class="active" data-device="a4" type="button">A4</button>
+                <button data-device="mobile" type="button">学生端</button>
+                <button data-device="mono" type="button">黑白打印</button>
+              </div>
+              <span class="saved-state"><i></i> 已保存</span>
+            </div>
+
+            <div class="canvas-stage" id="canvasStage" data-device="a4">
+              <article class="learning-sheet theme-forest" id="learningSheet">
+                <div class="sheet-orbit orbit-one"></div>
+                <div class="sheet-orbit orbit-two"></div>
+                <header class="sheet-header">
+                  <div class="sheet-brand"><span>AI</span><div><b>MAYA'S ENGLISH LAB</b><small>PERSONALISED PRACTICE · DAY 08</small></div></div>
+                  <div class="sheet-meta"><span>YEAR 7</span><b>10 MIN</b></div>
+                </header>
+
+                <section class="sheet-hero">
+                  <div>
+                    <p>TODAY'S MISSION</p>
+                    <h2 data-editable>Set the scene</h2>
+                    <span data-editable>Use the past continuous to show what was happening.</span>
+                  </div>
+                  <div class="scene-illustration" aria-label="原创抽象山林插画">
+                    <span class="sun"></span><i class="mountain mountain-a"></i><i class="mountain mountain-b"></i><b class="tree tree-a"></b><b class="tree tree-b"></b><em class="path"></em>
+                  </div>
+                </section>
+
+                <section class="sheet-grid">
+                  <div class="lesson-block rule-block">
+                    <span class="block-number">01</span>
+                    <p class="block-kicker">THE PATTERN</p>
+                    <h3 data-editable>was / were + verb-ing</h3>
+                    <p data-editable>Use it for an action that was in progress at a time in the past.</p>
+                    <div class="timeline"><i></i><span>6 pm</span><b>was reading</b><em>now</em></div>
+                  </div>
+                  <div class="lesson-block example-block">
+                    <span class="block-number">02</span>
+                    <p class="block-kicker">MAKE IT PERSONAL</p>
+                    <blockquote data-editable>At 6 pm yesterday, I was reading while my brother was cooking.</blockquote>
+                    <small>昨天六点，我在看书，同时我弟弟在做饭。</small>
+                  </div>
+                </section>
+
+                <section class="practice-block" id="practiceBlock">
+                  <div class="practice-title"><span class="block-number">03</span><div><p class="block-kicker">YOUR TURN</p><h3>Choose the sentence that sets the scene.</h3></div></div>
+                  <div class="answers">
+                    <button type="button" data-answer="wrong"><span>A</span> I finished my homework at six.</button>
+                    <button type="button" data-answer="correct"><span>B</span> I was doing my homework at six.</button>
+                    <button type="button" data-answer="wrong"><span>C</span> I will do my homework at six.</button>
+                  </div>
+                  <p class="answer-hint" id="answerHint">Pick one answer to check your thinking.</p>
+                </section>
+
+                <section class="write-block" id="writeBlock">
+                  <div><span class="block-number">04</span><p><b>WRITE ONE TRUE SENTENCE</b><small>What were you doing at 8 pm yesterday?</small></p></div>
+                  <i></i><i></i>
+                </section>
+
+                <footer class="sheet-footer"><span>Based on verified learning evidence · ENG-GR-042</span><b>Made for Maya · 09.09.2026</b></footer>
+              </article>
+            </div>
+          </section>
+
+          <aside class="inspector">
+            <div class="inspector-section">
+              <div class="section-title"><span>学习重点</span><button id="openEvidenceSide" type="button">查看证据</button></div>
+              <h3>过去进行时的场景表达</h3>
+              <p>最近两次写作中能正确使用过去时，但描述背景动作时容易漏用 <b>was / were</b>。</p>
+              <div class="source-tags"><span>教师已确认</span><span>近期薄弱点</span></div>
+            </div>
+
+            <div class="inspector-section">
+              <div class="section-title"><span>卡片风格</span><small>系统已推荐</small></div>
+              <div class="theme-list">
+                <button class="theme-option active" data-theme="forest" type="button"><i class="forest-swatch"></i><span><b>森林手账</b><small>温和、图文均衡</small></span><em>✓</em></button>
+                <button class="theme-option" data-theme="academic" type="button"><i class="academic-swatch"></i><span><b>清晰学术</b><small>低干扰、重点明确</small></span><em>✓</em></button>
+                <button class="theme-option" data-theme="mono" type="button"><i class="mono-swatch"></i><span><b>黑白练习</b><small>节省墨水、方便书写</small></span><em>✓</em></button>
+              </div>
+            </div>
+
+            <div class="inspector-section compact-section">
+              <div class="section-title"><span>内容区块</span><small>约 10 分钟</small></div>
+              <label class="toggle-row"><span><b>选择题</b><small>3 个选项</small></span><input type="checkbox" data-toggle-target="practiceBlock" checked><i></i></label>
+              <label class="toggle-row"><span><b>空白表达区</b><small>适合手写与打印</small></span><input type="checkbox" data-toggle-target="writeBlock" checked><i></i></label>
+            </div>
+
+            <div class="output-actions">
+              <button class="secondary-button" id="printCard" type="button">打印 / 下载</button>
+              <button class="primary-button wide" id="sendCard" type="button">发送到 Maya 学生端</button>
+              <small>仅发送此卡片，不发送原始学情资料</small>
+            </div>
+          </aside>
+        </div>
+      </section>
+
+      <section class="page" data-page-panel="resources">
+        <div class="resource-heading">
+          <div><p class="eyebrow">CURATED RESOURCES</p><h1>教学资源中心</h1><p>选择经过审核的模板和活动包，无需安装插件。</p></div>
+          <div class="resource-search"><span>⌕</span><input id="resourceSearch" type="search" placeholder="搜索学科、年龄或风格" /></div>
+        </div>
+
+        <div class="category-row">
+          <button class="active" data-filter="all" type="button">全部</button>
+          <button data-filter="language" type="button">语言学习</button>
+          <button data-filter="stem" type="button">数学与科学</button>
+          <button data-filter="print" type="button">黑白打印</button>
+          <button data-filter="school" type="button">学校品牌</button>
+        </div>
+
+        <div class="resource-feature">
+          <div class="feature-copy"><span>本周精选 · 官方模板</span><h2>把一个薄弱点，变成一场小小探索</h2><p>森林手账包含语言、科学与阅读三种活动版式，自动适配 A4 和学生端。</p><button class="primary-button add-resource" data-name="森林手账" type="button">已添加 · 当前使用</button></div>
+          <div class="feature-art" aria-label="原创森林手账模板预览"><div class="mini-sheet"><span>FIELD NOTES</span><h3>Explore<br>one idea.</h3><i></i><i></i><b></b></div><div class="mini-leaf leaf-a"></div><div class="mini-leaf leaf-b"></div></div>
+        </div>
+
+        <div class="resource-grid" id="resourceGrid">
+          <article class="resource-item" data-category="language" data-search="英语 词汇 语言 vocabulary">
+            <div class="resource-preview preview-words"><span>WORD LAB</span><b>context</b><i>meaning · example · your turn</i></div>
+            <div class="resource-info"><p><span>语言学习</span><small>官方</small></p><h3>Vocabulary Lab</h3><p>用语境、搭配和个人表达掌握词汇。</p><button class="add-resource" data-name="Vocabulary Lab" type="button">添加到模板</button></div>
+          </article>
+          <article class="resource-item" data-category="stem" data-search="数学 科学 图解 stem">
+            <div class="resource-preview preview-logic"><span>THINK IN STEPS</span><div><i>1</i><b>→</b><i>2</i><b>→</b><i>3</i></div><em>show your thinking</em></div>
+            <div class="resource-info"><p><span>数学与科学</span><small>教师创作</small></p><h3>清晰推理</h3><p>把计算过程拆成可以检查的步骤。</p><button class="add-resource" data-name="清晰推理" type="button">添加到模板</button></div>
+          </article>
+          <article class="resource-item" data-category="print" data-search="黑白 打印 单词 卡片 print">
+            <div class="resource-preview preview-mono"><span>01</span><h4>decorate</h4><p>/ˈdekəreɪt/</p><i></i><i></i></div>
+            <div class="resource-info"><p><span>黑白打印</span><small>学校精选</small></p><h3>Ink Saver</h3><p>高对比线稿设计，适合家庭打印。</p><button class="add-resource" data-name="Ink Saver" type="button">添加到模板</button></div>
+          </article>
+          <article class="resource-item" data-category="school" data-search="学校 品牌 校本 school">
+            <div class="resource-preview preview-school"><span>NORTHSTAR</span><i></i><b>WEEKLY<br>REVIEW</b><em>school edition</em></div>
+            <div class="resource-info"><p><span>学校品牌</span><small>机构模板</small></p><h3>Northstar School Kit</h3><p>校徽、课程色与教师反馈统一呈现。</p><button class="add-resource" data-name="Northstar School Kit" type="button">添加到模板</button></div>
+          </article>
+        </div>
+
+        <div class="creator-strip"><div><span>TEACHER CREATOR</span><h2>把你的教学方法，做成可复用资源</h2><p>首阶段仅支持模板与内容包；平台负责版本、安全和版权审核。</p></div><button class="quiet-button" id="creatorInfo" type="button">了解创作者计划</button></div>
+      </section>
+
+      <section class="page" data-page-panel="history">
+        <div class="page-heading history-heading"><div><p class="eyebrow">LEARNING LOOP</p><h1>使用记录</h1><p>只记录必要的练习结果，用来改善下一张卡片。</p></div><div class="history-total"><span>本周已完成</span><strong>4 / 5</strong><small>共 42 分钟</small></div></div>
+
+        <div class="loop-summary">
+          <div><span>发现</span><b>3</b><small>已确认薄弱点</small></div><i>→</i><div><span>生成</span><b>5</b><small>针对性卡片</small></div><i>→</i><div><span>完成</span><b>4</b><small>学生明确提交</small></div><i>→</i><div class="accent"><span>调整</span><b>2</b><small>进入下一轮计划</small></div>
+        </div>
+
+        <div class="history-list">
+          <div class="history-row header"><span>日期与学科</span><span>练习重点</span><span>用时</span><span>学生反馈</span><span>结果</span></div>
+          <div class="history-row"><span><b>09 Sep</b><small>English</small></span><span><b>Past continuous</b><small>ENG-GR-042</small></span><span>进行中</span><span>—</span><span><em class="status current">今日</em></span></div>
+          <div class="history-row"><span><b>08 Sep</b><small>Mathematics</small></span><span><b>Fraction as operator</b><small>M-FRAC-018</small></span><span>9 min</span><span>正合适</span><span><em class="status done">已完成</em></span></div>
+          <div class="history-row"><span><b>07 Sep</b><small>English</small></span><span><b>Evidence in paragraphs</b><small>ENG-WR-031</small></span><span>12 min</span><span>有点难</span><span><em class="status adjusted">已调低难度</em></span></div>
+          <div class="history-row"><span><b>05 Sep</b><small>Science</small></span><span><b>Particle model</b><small>SCI-CH-014</small></span><span>11 min</span><span>正合适</span><span><em class="status done">已完成</em></span></div>
+        </div>
+
+        <div class="next-adjustment"><span>下一张卡片将如何变化</span><h2>保留真实表达任务，减少语法提示。</h2><p>依据 Maya 最近两次“正合适”反馈和一次独立完成记录。教师可以随时覆盖此建议。</p><button class="quiet-button" type="button" id="viewRule">查看调整依据</button></div>
+      </section>
+    </main>
+  </div>
+
+  <div class="modal-backdrop" id="evidenceModal" aria-hidden="true">
+    <section class="modal evidence-modal" role="dialog" aria-modal="true" aria-labelledby="evidenceTitle">
+      <button class="modal-close" data-close type="button" aria-label="关闭">×</button>
+      <p class="eyebrow">TRACEABLE EVIDENCE</p><h2 id="evidenceTitle">为什么练这个？</h2>
+      <p class="modal-intro">卡片只使用已经发布或由教师确认的学情证据。原始资料不会随卡片发送。</p>
+      <div class="evidence-list">
+        <div><span>01</span><p><b>英语写作反馈 · 04 Sep</b><small>“背景描述中漏用 was/were，共 3 处。”</small></p><em>教师已确认</em></div>
+        <div><span>02</span><p><b>课堂练习 · Unit 2</b><small>过去进行时结构题正确率 62%，低于近期平均。</small></p><em>已采用</em></div>
+        <div><span>03</span><p><b>学习偏好档案</b><small>Maya 对图文结合、短任务的完成度更高。</small></p><em>已采用</em></div>
+      </div>
+      <div class="evidence-policy"><b>系统规则</b><span>证据不足时不推断薄弱点，也不会自动生成卡片。</span></div>
+    </section>
+  </div>
+
+  <div class="modal-backdrop" id="generateModal" aria-hidden="true">
+    <section class="modal generate-modal" role="dialog" aria-modal="true" aria-labelledby="generateTitle">
+      <button class="modal-close" data-close type="button" aria-label="关闭">×</button>
+      <div class="generate-symbol"><span>✦</span><i></i></div>
+      <p class="eyebrow">ONE TASK · ONE RESULT</p><h2 id="generateTitle">正在生成 Maya 的今日卡片</h2>
+      <p class="modal-intro">系统自动完成依据筛选、内容生成、模板匹配和输出检查。</p>
+      <div class="generate-steps">
+        <div class="active"><i></i><span><b>读取已确认证据</b><small>3 条可用证据</small></span><em>进行中</em></div>
+        <div><i></i><span><b>生成针对性内容</b><small>约 10 分钟练习</small></span><em>等待</em></div>
+        <div><i></i><span><b>匹配卡片风格</b><small>根据年龄与使用场景</small></span><em>等待</em></div>
+        <div><i></i><span><b>检查与保存</b><small>学情隔离、版式和可打印性</small></span><em>等待</em></div>
+      </div>
+      <button class="primary-button finish-generate" id="finishGenerate" type="button" disabled>生成中…</button>
+    </section>
+  </div>
+
+  <div class="modal-backdrop" id="feedbackModal" aria-hidden="true">
+    <section class="modal feedback-modal" role="dialog" aria-modal="true" aria-labelledby="feedbackTitle">
+      <button class="modal-close" data-close type="button" aria-label="关闭">×</button>
+      <p class="eyebrow">SENT TO STUDENT</p><h2 id="feedbackTitle">卡片已发送到 Maya 学生端</h2><p class="modal-intro">学生完成后只需选择一次感受，系统会据此调整下一张卡片。</p>
+      <div class="feedback-options"><button type="button">太简单</button><button class="active" type="button">正合适</button><button type="button">有点难</button></div>
+      <button class="primary-button wide" data-close type="button">完成演示</button>
+    </section>
+  </div>
+
+  <div class="toast" id="toast" role="status"><i>✓</i><span>操作已完成</span></div>
+  <script src="./app.js"></script>
+</body>
+</html>

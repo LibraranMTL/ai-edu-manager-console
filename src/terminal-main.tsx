@@ -41,8 +41,9 @@ type TerminalConfig = {
   autoDelivery?: { enabled?: boolean; folder?: string; target?: UploadTarget | null };
   agentCapture?: Partial<AgentCaptureState>;
 };
-type CaptureSource = { id: string; name: string; type: 'screen' | 'window' };
-type CaptureSession = { id: string; status: string; sourceName: string; count: number; files: string[]; target?: UploadTarget; courseId?: string; courseProvider?: string; courseUrl?: string; courseStartedAt?: string; courseCompletedAt?: string };
+type CaptureSource = { id: string; name: string; type: 'screen' | 'window'; available?: boolean; blocked?: boolean; blockReason?: string };
+type CaptureItem = { id: string; path: string; filename: string; capturedAt: string; sequence: number };
+type CaptureSession = { id: string; status: string; sourceName: string; sourceType?: 'screen' | 'window'; count: number; files: string[]; items?: CaptureItem[]; target?: UploadTarget; startedAt?: string; endedAt?: string; deliveryStatus?: string; courseId?: string; courseProvider?: string; courseUrl?: string; courseStartedAt?: string; courseCompletedAt?: string };
 type Course = { courseId: string; name: string; provider: string; url: string; allowedHosts: string[]; coverUrl: string; summary: string; gradeRange: string[]; languages: string[]; accountRequirement: string; legalNotice: string };
 type CourseCatalogResponse = { ok: boolean; catalogVersion?: string; studentId?: string; courses?: Course[]; disclaimer?: string };
 type Progress = { status: string; current?: number; total?: number; filename?: string; success?: number; failed?: number; pending?: number; delivered?: number };
@@ -122,7 +123,7 @@ type TerminalBridge = {
   listCaptureSources: () => Promise<CaptureSource[]>;
   startCapture: (input: Record<string, unknown>) => Promise<CaptureSession>;
   stopCapture: () => Promise<CaptureSession | null>;
-  uploadCapture: (input: { files: string[]; target: UploadTarget; captureSessionId: string; courseId?: string; courseUrl?: string; courseStartedAt?: string; courseCompletedAt?: string }) => Promise<{ success?: number; failed?: number; total?: number }>;
+  uploadCapture: (input: { files: string[]; captureItems?: CaptureItem[]; target: UploadTarget; captureSessionId: string; sourceName?: string; sourceType?: string; startedAt?: string; endedAt?: string; courseId?: string; courseUrl?: string; courseStartedAt?: string; courseCompletedAt?: string }) => Promise<{ success?: number; failed?: number; total?: number }>;
   onUploadProgress: (handler: (payload: Progress) => void) => void;
   onAutoDelivery: (handler: (payload: Progress) => void) => void;
   onCaptureChanged: (handler: (payload: CaptureSession) => void) => void;
@@ -872,7 +873,7 @@ function TerminalApp() {
       if (captureSession?.status === 'capturing') {
         const stopped = await api.stopCapture();
         setCaptureSession(stopped);
-        setMessage(`采集已结束，共保留 ${stopped?.count || 0} 张截图。请选择资料目标后上传。`);
+        setMessage(`采集已结束，共保留 ${stopped?.count || 0} 张截图。系统正在后台送达并整理，无需再次确认。`);
       } else {
         if (!captureSourceId) {
           await loadCaptureSources();
@@ -905,8 +906,13 @@ function TerminalApp() {
     try {
       const result = await api.uploadCapture({
         files: captureSession.files,
+        captureItems: captureSession.items,
         target: selectedTarget,
         captureSessionId: captureSession.id,
+        sourceName: captureSession.sourceName,
+        sourceType: captureSession.sourceType,
+        startedAt: captureSession.startedAt,
+        endedAt: captureSession.endedAt,
         courseId: captureSession.courseId,
         courseUrl: captureSession.courseUrl,
         courseStartedAt: captureSession.courseStartedAt,
@@ -1059,12 +1065,12 @@ function TerminalApp() {
           <button className="terminal-secondary" onClick={loadCaptureSources} disabled={busy || captureSession?.status === 'capturing'}>选择采集屏幕</button>
           <select value={captureSourceId} onChange={(event) => setCaptureSourceId(event.target.value)} disabled={captureSession?.status === 'capturing'}>
             <option value="">选择屏幕或窗口</option>
-            {captureSources.map((source) => <option value={source.id} key={source.id}>{source.name}</option>)}
+            {captureSources.map((source) => <option value={source.id} key={source.id} disabled={source.blocked || source.available === false}>{source.name}</option>)}
           </select>
           <button className={captureSession?.status === 'capturing' ? 'terminal-danger' : 'terminal-primary'} onClick={toggleCapture} disabled={busy || !selectedTarget}>
             {captureSession?.status === 'capturing' ? '结束采集' : '开始采集'}
           </button>
-          <button className="terminal-secondary" onClick={uploadCapture} disabled={busy || captureSession?.status !== 'completed' || captureSession.courseId !== openedCourse?.courseId || !captureSession.files?.length}>确认入库</button>
+          <button className="terminal-secondary" onClick={uploadCapture} disabled={busy || captureSession?.status !== 'completed' || captureSession.courseId !== openedCourse?.courseId || !captureSession.files?.length}>提前重试送达</button>
         </section>
         <div className="terminal-course-browser-placeholder">课程网页在隔离视图中加载。非白名单跳转、下载、弹窗和权限申请会被阻止。</div>
         {message ? <div className="terminal-toast" role="status">{message}</div> : null}
@@ -1100,7 +1106,7 @@ function TerminalApp() {
             <div>
               <h3 id="agent-capture-title">自动会话记忆</h3>
               <p>{config.terminalMode === 'personal'
-                ? '一次授权后，自动采集本机受支持 Agent 的新会话，并只归档到当前绑定学生。不会读取授权前历史、系统提示、密钥或任务中心上下文。'
+                ? '一次授权后，采集本机受支持 Agent 的后续会话，并只归档到当前绑定学生。已打开的 Codex 会话在 Hook 已生效时，从下一条提问开始采集；不扫描授权前历史、系统提示、密钥或任务中心上下文。'
                 : '共享终端不支持自动会话采集，避免不同学生之间混入会话。'}</p>
               <small>{config.terminalMode === 'personal'
                 ? (agentCapture.enabled
@@ -1183,15 +1189,15 @@ function TerminalApp() {
         </div> : <div className="terminal-empty-state">共享终端不会持续监测文件夹，避免下一名学生接手后沿用上一人的投递目标。普通文件仍可使用“上传学习资料”。</div>) : null}
 
         {activeWorkspace === 'capture' ? <div className="student-tool-form">
-          <p>主动选择学习屏幕或应用窗口。结束采集后，再确认上传到当前学生本人或已关联项目。</p>
+          <p>主动选择学习屏幕或应用窗口。结束采集后系统会自动送达到当前学生本人或已关联项目，失败时后台自动恢复。</p>
           <div className="capture-row">
             <button className="terminal-secondary" onClick={loadCaptureSources} disabled={busy || captureSession?.status === 'capturing'}>刷新屏幕列表</button>
             <select value={captureSourceId} onFocus={() => { if (!captureSources.length) void loadCaptureSources(); }} onChange={(event) => setCaptureSourceId(event.target.value)} disabled={captureSession?.status === 'capturing'}>
               <option value="">{captureSources.length ? '选择屏幕或窗口' : '点击加载屏幕和窗口'}</option>
-              {captureSources.map((source) => <option value={source.id} key={source.id}>{source.name}</option>)}
+              {captureSources.map((source) => <option value={source.id} key={source.id} disabled={source.blocked || source.available === false}>{source.name}</option>)}
             </select>
             <button className={captureSession?.status === 'capturing' ? 'terminal-danger' : 'terminal-primary'} onClick={toggleCapture} disabled={busy || !selectedTarget}>{captureSession?.status === 'capturing' ? `结束采集（${captureSession.count}）` : '开始屏幕采集'}</button>
-            <button className="terminal-secondary" onClick={uploadCapture} disabled={busy || captureSession?.status !== 'completed' || !captureSession.files?.length}>上传采集资料</button>
+            <button className="terminal-secondary" onClick={uploadCapture} disabled={busy || captureSession?.status !== 'completed' || !captureSession.files?.length}>提前重试送达</button>
           </div>
         </div> : null}
 

@@ -30,9 +30,10 @@ test('staged runtime is dependency-free after Vite has bundled renderer dependen
   assert.doesNotMatch(releaseScript, /runtimePackage\.(?:dependencies|devDependencies)/);
   assert.match(releaseScript, /Minimal runtime package unexpectedly contains node_modules/);
   assert.match(releaseScript, /app\.asar exceeds 20 MiB/);
-  assert.deepEqual(packageJson.build.asarUnpack, ['electron/invoke-agent.ps1']);
-  assert.match(releaseScript, /asarUnpack: \['electron\/invoke-agent\.ps1'\]/);
+  assert.deepEqual(packageJson.build.asarUnpack, ['electron/invoke-agent.ps1', 'electron/capture-timeline-ocr.ps1']);
+  assert.match(releaseScript, /asarUnpack: \['electron\/invoke-agent\.ps1', 'electron\/capture-timeline-ocr\.ps1'\]/);
   assert.match(releaseScript, /Packaged Agent parameter bridge is missing/);
+  assert.match(releaseScript, /Packaged timeline OCR bridge is missing/);
 });
 
 test('Windows release keeps the approved multilingual locale set', () => {

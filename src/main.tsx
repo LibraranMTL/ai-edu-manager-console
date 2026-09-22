@@ -59,7 +59,7 @@ import { DigestStatusCard, type DigestWorkflowStatus } from './DigestStatusCard'
 const studentLoginQrDataUrlCache = new Map<string, string>();
 const loadQrCode = () => import('qrcode').then((module) => module.default);
 
-type Section = 'home' | 'courses' | 'init' | 'inbox' | 'assets' | 'projects-new' | 'projects-existing' | 'growth' | 'reports' | 'archive' | 'qa' | 'memory' | 'capture' | 'soul' | 'rules' | 'conversation' | 'tasks' | 'settings';
+type Section = 'home' | 'courses' | 'init' | 'inbox' | 'assets' | 'projects-new' | 'projects-existing' | 'growth' | 'reports' | 'archive' | 'qa' | 'memory' | 'capture' | 'agent-capabilities' | 'soul' | 'rules' | 'conversation' | 'tasks' | 'settings';
 type CourseSubmenu = 'learning' | 'management';
 type SettingsSubmenu = 'basic' | 'connection' | 'collaboration' | 'agent-qa';
 type ProjectWorkflowTarget = 'workspace' | 'assets' | 'digest' | 'knowledge' | 'evidence' | 'promotion';
@@ -93,7 +93,16 @@ type PublishingSourceType = 'learning_report' | 'archive_file';
 type PublishingFormat = 'pdf' | 'png' | 'markdown';
 type RuntimePlatform = 'android' | 'windows' | 'web' | string;
 type ProjectDashboardFocus = 'all' | 'active' | 'materials' | 'knowledge' | 'contributions' | 'risks' | 'digest';
-type GrowthView = 'abilities' | 'projects' | 'evidence';
+type GrowthView = 'abilities' | 'projects' | 'evidence' | 'learning';
+type LearningTrajectory = {
+  ok: boolean;
+  message?: string;
+  events: Array<{ eventId: string; occurredAt: string; taskType: string; evidence: string; evidenceRefs: Array<{ sourceType: string; sourceId: string }>; errors: Array<{ id: string; description: string }>; performance: Record<string, number | null>; knowledgePoint: { id: string; label: string } }>;
+  states: Array<{ knowledgePoint: { id: string; label: string }; state: string; scores?: { conceptualUnderstanding?: number | null; proceduralFluency?: number | null; methodSelection?: number | null; transfer?: number | null; retentionConfidence?: number | null }; confidence: number; evidenceCount: number; reviewPriority: string; recommendedReviewAt: string; retentionNote: string; errorPatterns: Array<{ id: string; description: string; count: number }> }>;
+  historyMarkdown?: string;
+  historyCandidatePath?: string;
+  rejections?: Array<{ at: string; code: string; index: number; batchId: string }>;
+};
 type ProjectPageMode = 'list' | 'detail';
 type ProjectKnowledgeCategoryId = 'all' | 'concept' | 'entity' | 'summary' | 'qa' | 'synthesis';
 
@@ -802,6 +811,7 @@ type AgentKnowledgeResult = {
   message?: string;
   durationMs?: number;
   prompt?: string;
+  learningContext?: string;
   cachedQuery?: boolean;
 };
 
@@ -904,6 +914,7 @@ type AndroidBridge = {
   getCaptureTimelineDates?: (inputJson: string) => Promise<string>;
   getCaptureTimeline?: (inputJson: string) => Promise<string>;
   getCaptureTimelineSegments?: (inputJson: string) => Promise<string>;
+  getLearningAnalytics?: (inputJson: string) => Promise<string>;
   getCaptureTimelineProcessingState?: (inputJson: string) => Promise<string>;
   retryCaptureTimelineProcessing?: (inputJson: string) => Promise<string>;
   reportCaptureTimelinePerformance?: (inputJson: string) => Promise<string>;
@@ -935,6 +946,8 @@ type AndroidBridge = {
   confirmProjectWorkspaceRelocation?: (projectId: string, workspacePath: string) => string;
   rollbackProjectWorkspaceRelocation?: (projectId: string) => string;
   rebindProjectKnowledgeSpace?: (projectId: string) => string;
+  rebindProjectRoot?: (projectId: string) => string;
+  rebindProjectRaw?: (projectId: string) => string;
   getRemovedProjects?: () => string;
   restoreRemovedProject?: (snapshotPath: string) => string;
   exportProjectPackage?: (projectId: string) => string;
@@ -1129,6 +1142,7 @@ type AndroidBridge = {
   retryStudentMaterialPathRecovery?: (studentId: string) => string;
   selectStudentMaterialPath?: (studentId: string, materialId: string) => string;
   syncStudentDigestResult?: (studentId: string) => string;
+  supplementCompletedStudentDigestLearningEvents?: (studentId: string) => Promise<string>;
   startDigestWorkflow?: (scopeType: 'student' | 'project', scopeId: string, executor?: string) => Promise<string>;
   getDigestWorkflowStatus?: (scopeType: 'student' | 'project', scopeId: string) => string;
   getDigestWorkflowCommand?: (scopeType: 'student' | 'project', scopeId: string) => string;
@@ -1147,6 +1161,10 @@ type AndroidBridge = {
   queryAgentKnowledge?: (optionsJson: string) => Promise<string>;
   getAgentKnowledgeDiagnostics?: () => string;
   prepareAgentKnowledgeAccess?: (studentId: string) => string;
+  getAgentCapabilityManagement?: (studentId: string) => string;
+  setAgentCapabilityAuthorization?: (studentId: string, action: 'read' | 'write' | 'revoke') => string;
+  reviewAgentWriteIntent?: (studentId: string, intentId: string) => string;
+  decideAgentWriteIntent?: (studentId: string, intentId: string, digest: string, action: 'approve' | 'reject') => string;
   getAgentMemoryState?: (studentId: string) => string;
   deleteEmptyAgentMemorySessions?: (studentId: string, sessionId?: string) => string;
   setAgentMemoryAutomation?: (studentId: string, enabled: boolean) => string;
@@ -2911,6 +2929,23 @@ type AgentMemorySessionState = {
   summary?: { total: number; active: number; empty?: number; pendingHandoffs: number };
   message?: string;
 };
+type AgentWriteIntentView = {
+  id: string;
+  name: string;
+  status: string;
+  studentId: string;
+  projectId?: string;
+  inputDigest: string;
+  createdAt: string;
+  preview?: { filename?: string; bytes?: number; title?: string; reportId?: string; messageCount?: number };
+};
+type AgentCapabilityManagement = {
+  ok: boolean;
+  revoked?: boolean;
+  capabilities?: string[];
+  pending?: AgentWriteIntentView[];
+  message?: string;
+};
 type AgentSourceRecord = {
   id: string;
   assetType: 'rule' | 'memory' | 'persona' | 'conversation' | 'extract';
@@ -3150,6 +3185,7 @@ const zhCnText = {
   'nav.knowledge': '智能体知识管理',
   'nav.memory': 'Agent记忆管理',
   'nav.capture': 'Agent会话自动采集',
+  'nav.agentCapabilities': 'Agent调用能力设置',
   'nav.soul': 'Agent人设管理',
   'nav.rules': 'Agent规则管理',
   'nav.conversation': '对话资料箱',
@@ -3226,6 +3262,7 @@ const uiTranslations: Record<LanguageCode, Partial<Record<TranslationKey, string
     'nav.knowledge': '智能體知識管理',
     'nav.memory': 'Agent 記憶管理',
     'nav.capture': 'Agent會話自動擷取',
+    'nav.agentCapabilities': 'Agent呼叫能力設定',
     'nav.soul': 'Agent人設管理',
     'nav.rules': 'Agent規則管理',
     'nav.conversation': '對話資料箱',
@@ -3296,6 +3333,7 @@ const uiTranslations: Record<LanguageCode, Partial<Record<TranslationKey, string
     'nav.knowledge': 'Agent Knowledge',
     'nav.memory': 'Agent Memory Management',
     'nav.capture': 'Agent Conversation Capture',
+    'nav.agentCapabilities': 'Agent Capability Settings',
     'nav.soul': 'Agent Persona Management',
     'nav.rules': 'Agent Rule Management',
     'nav.conversation': 'Conversation Inbox',
@@ -3365,6 +3403,7 @@ const uiTranslations: Record<LanguageCode, Partial<Record<TranslationKey, string
     'nav.knowledge': 'Connaissances agent',
     'nav.memory': 'Gestion de la mémoire Agent',
     'nav.capture': 'Capture auto des conversations Agent',
+    'nav.agentCapabilities': 'Paramètres des capacités Agent',
     'nav.soul': 'Gestion du profil Agent',
     'nav.rules': 'Gestion des règles Agent',
     'nav.conversation': 'Boîte de conversations',
@@ -3433,6 +3472,7 @@ const uiTranslations: Record<LanguageCode, Partial<Record<TranslationKey, string
     'nav.knowledge': 'Conocimiento del agente',
     'nav.memory': 'Gestión de memoria Agent',
     'nav.capture': 'Captura automática de conversaciones Agent',
+    'nav.agentCapabilities': 'Configuración de capacidades Agent',
     'nav.soul': 'Gestión de perfil Agent',
     'nav.rules': 'Gestión de reglas Agent',
     'nav.conversation': 'Bandeja de conversaciones',
@@ -3501,6 +3541,7 @@ const uiTranslations: Record<LanguageCode, Partial<Record<TranslationKey, string
     'nav.knowledge': 'エージェント知識管理',
     'nav.memory': 'Agent記憶管理',
     'nav.capture': 'Agent会話の自動収集',
+    'nav.agentCapabilities': 'Agent呼び出し機能の設定',
     'nav.soul': 'Agentペルソナ管理',
     'nav.rules': 'Agentルール管理',
     'nav.conversation': '会話資料ボックス',
@@ -3569,6 +3610,7 @@ const uiTranslations: Record<LanguageCode, Partial<Record<TranslationKey, string
     'nav.knowledge': '에이전트 지식 관리',
     'nav.memory': 'Agent 메모리 관리',
     'nav.capture': 'Agent 대화 자동 수집',
+    'nav.agentCapabilities': 'Agent 호출 기능 설정',
     'nav.soul': 'Agent 페르소나 관리',
     'nav.rules': 'Agent 규칙 관리',
     'nav.conversation': '대화 자료함',
@@ -3637,6 +3679,7 @@ const uiTranslations: Record<LanguageCode, Partial<Record<TranslationKey, string
     'nav.knowledge': 'Quản lý tri thức Agent',
     'nav.memory': 'Quản lý bộ nhớ Agent',
     'nav.capture': 'Tự động thu thập hội thoại Agent',
+    'nav.agentCapabilities': 'Cài đặt khả năng gọi Agent',
     'nav.soul': 'Quản lý hồ sơ Agent',
     'nav.rules': 'Quản lý quy tắc Agent',
     'nav.conversation': 'Hộp tư liệu hội thoại',
@@ -3705,6 +3748,7 @@ const uiTranslations: Record<LanguageCode, Partial<Record<TranslationKey, string
     'nav.knowledge': 'Pengurusan pengetahuan Agent',
     'nav.memory': 'Pengurusan memori Agent',
     'nav.capture': 'Tangkap perbualan Agent automatik',
+    'nav.agentCapabilities': 'Tetapan keupayaan panggilan Agent',
     'nav.soul': 'Pengurusan persona Agent',
     'nav.rules': 'Pengurusan peraturan Agent',
     'nav.conversation': 'Peti bahan perbualan',
@@ -4532,6 +4576,38 @@ ${lp.root}/
 5. 高频复用答案回写到 \`咨询精华库/\` 或 \`综合库/\`
 6. 更新 \`log.md\`
 
+## 6.1 纵向学习分析 Protocol
+
+Agent 负责理解证据并输出结构化候选；主机代码负责学生隔离、稳定 ID、去重、持久化和确定性计算。不要由 Agent 直接写最终掌握分数或修改知识状态账本。
+
+对每个有明确来源、能反映具体知识点表现的学习互动，随消化回执输出 \`learningEvents\`。没有足够证据时不输出事件，不能仅因一次答对就认定掌握，也不能因长期未复测就断言遗忘。
+
+每条事件至少包含：
+
+\`\`\`json
+{
+  "studentId": "当前消化批次 scope.id",
+  "subject": "Mathematics",
+  "knowledgePoint": { "id": "MATH.CALC.DIFF.STATIONARY_POINT", "label": "Stationary points" },
+  "occurredAt": "2026-01-14T10:00:00+08:00",
+  "taskId": "可选的稳定任务 ID",
+  "taskType": "concept_question",
+  "performance": {
+    "conceptualUnderstanding": 0,
+    "proceduralFluency": 0,
+    "methodSelection": 0,
+    "transfer": 0,
+    "hintLevel": 0
+  },
+  "errors": [{ "id": "WHY_DERIVATIVE_EQUALS_ZERO", "description": "可核对的错误表现" }],
+  "evidence": "简短证据说明",
+  "evidenceRefs": [{ "sourceType": "digest_material", "sourceId": "当前批次 materialId" }],
+  "recommendedNextStep": "下一次最小复测建议"
+}
+\`\`\`
+
+\`studentId\` 必须逐字复制当前消化批次的 \`scope.id\`，不得从姓名推断。评分统一使用 0–4；未知写 \`null\`，不要猜测。分别评价概念理解、程序熟练度、方法选择、迁移和提示程度。知识点优先使用系统 taxonomy 的 canonical ID；无法映射时可给稳定外部 ID 和明确标签，不得用相近名称制造多个知识点。分析时按 \`occurredAt ASC\` 比较不同日期的事件，区分独立完成、提示后完成、正确、提交和未知。重复错误只在跨证据再次出现时标记 recurring；保持置信度下降不等于确认遗忘。
+
 ## 7. 学情报告 Protocol
 
 学情报告是面向家长、学生和教师的成果表达层，不替代摘要库、实体库、概念库、综合库和咨询精华库。
@@ -5175,12 +5251,12 @@ function buildConsultCommand(student: Student) {
   if (tool.id === 'codex') {
     return `/咨询，我想咨询
 
-请在学生知识库目录「${p.root}」中工作，优先读取 AGENTS.md、AGENT.md 和学情分析汇总目录，再回答我的问题。`;
+请在学生知识库目录「${p.root}」中工作，优先读取 AGENTS.md、AGENT.md 和学情分析汇总目录。涉及具体知识点的长期表现时，再读取 .edu-manager/learning-analytics 中该学生的结构化事件与状态，按 occurredAt 升序比较，并保留证据、不确定性、提示依赖和复测边界。`;
   }
   if (tool.id === 'claude-code') {
     return `/咨询，我想咨询
 
-请在学生知识库目录「${p.root}」中工作，优先读取 CLAUDE.md、AGENT.md 和学情分析汇总目录，再回答我的问题。`;
+请在学生知识库目录「${p.root}」中工作，优先读取 CLAUDE.md、AGENT.md 和学情分析汇总目录。涉及具体知识点的长期表现时，再读取 .edu-manager/learning-analytics 中该学生的结构化事件与状态，按 occurredAt 升序比较，并保留证据、不确定性、提示依赖和复测边界。`;
   }
   return activeTemplateFiles['consult-prompt.md']
     ? renderTemplateText(activeTemplateFiles['consult-prompt.md'] || '', student)
@@ -5216,7 +5292,7 @@ function buildSystemTemplates(): TemplateFiles {
     'init-step-1.md': folderStep,
     'init-step-2.md': agentStep,
     'digest-prompt.md': digestPrompt,
-    'consult-prompt.md': '/咨询，我想咨询',
+    'consult-prompt.md': '/咨询，我想咨询\n\n涉及具体知识点的长期表现时，请读取当前学生知识库 .edu-manager/learning-analytics 中的结构化事件与状态，按 occurredAt 升序比较；区分独立完成、提示后完成、正确、提交和未知，保留证据引用与不确定性。',
   };
 }
 
@@ -5537,6 +5613,10 @@ function App() {
   const growthLoadSerial = useRef(0);
   const growthLoadedStudentId = useRef('');
   const [growthView, setGrowthView] = useState<GrowthView>('abilities');
+  const [learningTrajectory, setLearningTrajectory] = useState<LearningTrajectory | null>(null);
+  const [learningBusy, setLearningBusy] = useState(false);
+  const [learningPointId, setLearningPointId] = useState('');
+  const learningLoadSerial = useRef(0);
   const [growthSearch, setGrowthSearch] = useState('');
   const [growthEvidenceStatusFilter, setGrowthEvidenceStatusFilter] = useState('all');
   const [growthEvidenceRiskFilter, setGrowthEvidenceRiskFilter] = useState<'attention' | 'all' | 'low'>('attention');
@@ -5657,6 +5737,9 @@ function App() {
   const [agentCenter, setAgentCenter] = useState<AgentCenterState | null>(null);
   const [agentCenterMessage, setAgentCenterMessage] = useState('');
   const [agentMemoryState, setAgentMemoryState] = useState<AgentMemorySessionState | null>(null);
+  const [agentCapabilityManagement, setAgentCapabilityManagement] = useState<AgentCapabilityManagement | null>(null);
+  const [agentWriteReview, setAgentWriteReview] = useState<{ intent: AgentWriteIntentView; reviewInput: unknown } | null>(null);
+  const [agentCapabilityMessage, setAgentCapabilityMessage] = useState('');
   const [agentKnowledgeMenuOpen, setAgentKnowledgeMenuOpen] = useState(false);
   const [educationArchiveMenuOpen, setEducationArchiveMenuOpen] = useState(false);
   const [collaborationMenuOpen, setCollaborationMenuOpen] = useState(false);
@@ -6052,7 +6135,7 @@ function App() {
   );
   const platformCourseEditAllowed = !isWindows || licenseCapability('platform_course_edit');
   const platformCoursePublishAllowed = !isWindows || licenseCapability('platform_course_publish');
-  const restrictedSections = new Set<Section>(['init', 'inbox', 'assets', 'projects-new', 'projects-existing', 'growth', 'qa', 'memory', 'capture', 'soul', 'rules', 'conversation', 'tasks']);
+  const restrictedSections = new Set<Section>(['init', 'inbox', 'assets', 'projects-new', 'projects-existing', 'growth', 'qa', 'memory', 'capture', 'agent-capabilities', 'soul', 'rules', 'conversation', 'tasks']);
   const isLicenseRestrictedSection = isWindows && !windowsLicenseActive && (restrictedSections.has(activeSection) || (activeSection === 'settings' && settingsSubmenu === 'agent-qa'));
   const licenseRestrictionText = effectiveLicenseStatus?.message || 'Windows 主机尚未激活。未激活状态仅支持首页、系统设置和已有档案/报告的只读浏览。';
   // The knowledge manager remains usable without a local Agent. Web tools and
@@ -6391,6 +6474,9 @@ function App() {
 
   const growthMaturityLabel = (value?: string) => value === 'established' ? '已形成' : value === 'emerging' ? '正在形成' : value === 'observing' ? '观察中' : '证据不足';
   const growthTrendLabel = (value?: string) => value === 'improving' ? '持续增强' : value === 'stable' ? '保持稳定' : '尚不足以判断';
+  const learningStateLabel = (value: string) => ({ introduced: '初次接触', developing: '正在形成', practiced: '持续练习', mostly_mastered: '基本掌握', mastered: '有较强证据', unstable: '表现波动', needs_review: '建议复测' } as Record<string, string>)[value] || value;
+  const learningScoreLabel = (value: number | null | undefined) => value == null ? '待观察' : `${Math.round(value * 100)}%`;
+  const reviewPriorityLabel = (value: string) => ({ high: '高', medium: '中', low: '低' } as Record<string, string>)[value] || value;
   const contributionStatusLabel = (value?: string) => value === 'published' ? '已发布' : value === 'pending' ? '待审核' : '尚未形成';
 
   useEffect(() => {
@@ -7884,6 +7970,58 @@ function App() {
     }
   };
 
+  const refreshAgentCapabilityManagement = (studentId = selectedStudent?.id) => {
+    if (!studentId) return;
+    const raw = bridge()?.getAgentCapabilityManagement?.(studentId);
+    if (!raw) return;
+    try {
+      const result = JSON.parse(raw) as AgentCapabilityManagement;
+      setAgentCapabilityManagement(result);
+      if (!result.ok) setAgentCapabilityMessage(result.message || '读取 Agent 外部能力授权失败。');
+    } catch { setAgentCapabilityMessage('Agent 外部能力状态解析失败。'); }
+  };
+
+  const changeAgentCapabilityAuthorization = (action: 'read' | 'write' | 'revoke') => {
+    if (!selectedStudent) return;
+    const prompt = action === 'read'
+      ? `为“${selectedStudent.name}”授权外部 Agent 读取资料目录、任务状态和报告？仍只限该学生及其单学生项目。`
+      : action === 'write'
+        ? `为“${selectedStudent.name}”授权外部 Agent 提交资料、待办和报告草稿预览？每次实际写入仍须在这里审核批准。`
+        : `撤销“${selectedStudent.name}”的外部 Agent 调用授权？已安装的工具将无法继续调用，重新开启需再次授权。`;
+    if (!window.confirm(prompt)) return;
+    const raw = bridge()?.setAgentCapabilityAuthorization?.(selectedStudent.id, action);
+    if (!raw) { setAgentCapabilityMessage('当前环境不支持 Agent 外部能力授权。'); return; }
+    try {
+      const result = JSON.parse(raw) as { ok?: boolean; message?: string };
+      setAgentCapabilityMessage(result.message || (result.ok ? '授权状态已更新。' : '更新授权失败。'));
+      if (result.ok) { setAgentWriteReview(null); refreshAgentCapabilityManagement(selectedStudent.id); }
+    } catch { setAgentCapabilityMessage('Agent 授权结果解析失败。'); }
+  };
+
+  const reviewAgentWrite = (intent: AgentWriteIntentView) => {
+    if (!selectedStudent) return;
+    const raw = bridge()?.reviewAgentWriteIntent?.(selectedStudent.id, intent.id);
+    if (!raw) { setAgentCapabilityMessage('当前环境不支持审核 Agent 写入。'); return; }
+    try {
+      const result = JSON.parse(raw) as { ok?: boolean; intent?: AgentWriteIntentView; reviewInput?: unknown; message?: string };
+      if (!result.ok || !result.intent) { setAgentCapabilityMessage(result.message || '读取写入预览失败。'); return; }
+      setAgentWriteReview({ intent: result.intent, reviewInput: result.reviewInput });
+    } catch { setAgentCapabilityMessage('写入预览解析失败。'); }
+  };
+
+  const decideAgentWrite = (action: 'approve' | 'reject') => {
+    if (!selectedStudent || !agentWriteReview) return;
+    const { intent } = agentWriteReview;
+    if (!window.confirm(action === 'approve' ? `批准“${selectedStudent.name}”的 ${intent.name} 写入？核对目标与预览后，Agent 才能执行。` : '拒绝并清除这条待写入内容？')) return;
+    const raw = bridge()?.decideAgentWriteIntent?.(selectedStudent.id, intent.id, intent.inputDigest, action);
+    if (!raw) { setAgentCapabilityMessage('当前环境不支持审批 Agent 写入。'); return; }
+    try {
+      const result = JSON.parse(raw) as { ok?: boolean; message?: string };
+      setAgentCapabilityMessage(result.message || (result.ok ? '已处理写入意图。' : '处理失败。'));
+      if (result.ok) { setAgentWriteReview(null); refreshAgentCapabilityManagement(selectedStudent.id); }
+    } catch { setAgentCapabilityMessage('Agent 审批结果解析失败。'); }
+  };
+
   const clearEmptyAgentSessions = (sessionId = '') => {
     if (!selectedStudent) return;
     const prompt = sessionId ? '清理这条无授权消息的已结束会话？' : '批量清理无授权消息的已结束会话？有内容及采集中的会话不会删除。';
@@ -8545,6 +8683,33 @@ ${sourceText}`;
     }
   };
 
+  const previewLearningRuleMigration = () => {
+    if (!selectedStudent || ruleFileName.toLowerCase() !== 'agent.md') {
+      setRuleMessage('请先选择 AGENT.md，再预览纵向学习协议迁移。');
+      return;
+    }
+    const generated = rawBuildAgentMd(selectedStudent);
+    const protocol = generated.match(/## 6\.1 纵向学习分析 Protocol[\s\S]*?(?=\n## 7\. 学情报告 Protocol)/)?.[0]?.trim();
+    if (!protocol) {
+      setRuleMessage('当前模板缺少纵向学习协议，未修改现有规则。');
+      return;
+    }
+    const start = '<!-- edu-manager:learning-analytics:start -->';
+    const end = '<!-- edu-manager:learning-analytics:end -->';
+    const block = `${start}\n${protocol}\n${end}`;
+    const startAt = ruleContent.indexOf(start);
+    const endAt = ruleContent.indexOf(end);
+    if (startAt >= 0 && endAt > startAt) {
+      setRuleContent(`${ruleContent.slice(0, startAt)}${block}${ruleContent.slice(endAt + end.length)}`);
+      setRuleMessage('已在编辑区更新托管协议；请核对后点击“保存规则文件”。保存前不会写入磁盘。');
+    } else if (ruleContent.includes('## 6.1 纵向学习分析 Protocol')) {
+      setRuleMessage('当前 AGENT.md 已含纵向学习协议。未覆盖已有文字；如需更新请先人工比对。');
+    } else {
+      setRuleContent(`${ruleContent.trimEnd()}\n\n${block}\n`);
+      setRuleMessage('已在编辑区追加纵向学习协议，原有规则保持不变；请核对后保存。主机会为旧文件留快照。');
+    }
+  };
+
   useEffect(() => {
     const storageRaw = bridge()?.getStorageConfig?.();
     if (storageRaw) {
@@ -8764,6 +8929,11 @@ ${sourceText}`;
     if (!isWindows || !selectedId) return;
     bridge()?.prepareAgentKnowledgeAccess?.(selectedId);
   }, [isWindows, selectedId]);
+
+  useEffect(() => {
+    setAgentWriteReview(null);
+    if (isWindows && selectedId && activeSection === 'agent-capabilities') refreshAgentCapabilityManagement(selectedId);
+  }, [isWindows, selectedId, activeSection]);
 
   useEffect(() => {
     const payload = hostServiceStatus?.pairPayloadText;
@@ -9475,6 +9645,26 @@ ${sourceText}`;
     setDigestWorkflowBusyKey('');
   };
 
+  const removeStudentMaterialFromDigest = (student: Student, materialId: string, fileName = '') => {
+    if (!materialId || !window.confirm(`从待处理列表移除“${fileName || '该资料'}”？\n\n只移除资料记录，保留原始文件和文件资产；后续可重新导入。`)) return;
+    const key = digestWorkflowKey('student', student.id);
+    setDigestWorkflowBusyKey(key);
+    const raw = bridge()?.removeMaterialImportRecords?.(student.id, JSON.stringify([materialId]));
+    let ok = false;
+    let message = '资料记录移除失败。';
+    try {
+      const result = raw ? JSON.parse(raw) as { ok?: boolean; message?: string } : null;
+      ok = Boolean(result?.ok);
+      message = result?.message || message;
+    } catch {
+      message = '资料记录移除结果无法解析。';
+    }
+    refreshDigestWorkflow('student', student.id);
+    refreshHostServiceStatus();
+    showActionNotice(ok, ok ? '已从待处理列表移除' : '无法移除资料记录', message);
+    setDigestWorkflowBusyKey('');
+  };
+
   const copyDigestWorkflowCommandFromPage = async (scopeType: 'student' | 'project', scopeId: string) => {
     const raw = bridge()?.getDigestWorkflowCommand?.(scopeType, scopeId);
     if (!raw) {
@@ -9644,6 +9834,28 @@ ${sourceText}`;
     window.setTimeout(() => setDigestMessage(''), 3600);
   };
 
+  const supplementCompletedDigestLearningEvents = async (student: Student) => {
+    const supplement = bridge()?.supplementCompletedStudentDigestLearningEvents;
+    if (!supplement) {
+      setDigestMessage('当前主机版本不支持已完成批次学习事件补录。');
+      return;
+    }
+    const key = digestWorkflowKey('student', student.id);
+    setDigestWorkflowBusyKey(key);
+    try {
+      const result = JSON.parse(await supplement(student.id)) as { ok?: boolean; message?: string };
+      setDigestMessage(result.message || (result.ok ? '学习事件补录已完成。' : '学习事件补录失败。'));
+      if (result.ok) {
+        refreshDigestWorkflow('student', student.id);
+        refreshHostTimeline();
+      }
+    } catch {
+      setDigestMessage('学习事件补录结果读取失败。');
+    } finally {
+      setDigestWorkflowBusyKey('');
+    }
+  };
+
   const applyDigestAuditResult = (raw?: string) => {
     if (!raw) {
       setDigestAuditMessage('当前环境不支持消化覆盖审计。');
@@ -9765,8 +9977,10 @@ ${sourceText}`;
       const result = JSON.parse(raw) as AgentKnowledgeResult;
       setAgentKnowledgeResult(result);
       refreshAgentKnowledgeDiagnostics();
-      if (result.ok && (result.resources?.length || 0) > 0 && result.prompt) {
-        await copyText(result.prompt, `已准备 ${result.resources?.length || 0} 条带来源知识，并打开 ${selectedStudentTool.name}。`);
+      if ((result.resources?.length || result.learningContext) && result.prompt) {
+        await copyText(result.prompt, result.learningContext && !(result.resources?.length)
+          ? `已准备本机纵向学习证据，并打开 ${selectedStudentTool.name}；知识库查询状态请在下方核对。`
+          : `已准备 ${result.resources?.length || 0} 条带来源知识，并打开 ${selectedStudentTool.name}。`);
         selectedStudentAdapter.open(openExternal);
       }
     } catch (error) {
@@ -11220,6 +11434,18 @@ ${sourceText}`;
     } catch { setProjectMessage('项目知识空间绑定结果解析失败。'); }
   };
 
+  const rebindSelectedProjectDirectory = (kind: 'root' | 'raw') => {
+    if (!selectedProject) return;
+    const label = kind === 'root' ? '项目根目录' : '项目原始资料库';
+    const raw = (kind === 'root' ? bridge()?.rebindProjectRoot : bridge()?.rebindProjectRaw)?.(selectedProject.id);
+    if (!raw) return setProjectMessage(`当前环境不支持更换${label}。`);
+    try {
+      const result = JSON.parse(raw) as { ok?: boolean; cancelled?: boolean; projects?: LearningProject[]; message?: string };
+      if (Array.isArray(result.projects)) setProjects(result.projects);
+      if (!result.cancelled) setProjectMessage(result.message || (result.ok ? `${label}已更换。` : `${label}更换失败。`));
+    } catch { setProjectMessage(`${label}更换结果解析失败。`); }
+  };
+
   const rollbackSelectedProjectWorkspace = () => {
     if (!selectedProject) return;
     const raw = bridge()?.rollbackProjectWorkspaceRelocation?.(selectedProject.id);
@@ -12422,6 +12648,32 @@ ${JSON.stringify(items, null, 2)}
       if (requestId === growthLoadSerial.current) setGrowthLoading(false);
     }
   };
+
+  const refreshLearningTrajectory = async (student = selectedStudent) => {
+    if (!student) return;
+    const requestId = ++learningLoadSerial.current;
+    const getAnalytics = bridge()?.getLearningAnalytics;
+    if (!getAnalytics) {
+      setLearningTrajectory({ ok: false, message: '当前主机版本不支持纵向学习分析。', events: [], states: [] });
+      return;
+    }
+    setLearningBusy(true);
+    try {
+      const result = JSON.parse(await getAnalytics(JSON.stringify({ studentId: student.id }))) as LearningTrajectory;
+      if (requestId === learningLoadSerial.current) setLearningTrajectory(result);
+    } catch {
+      if (requestId === learningLoadSerial.current) setLearningTrajectory({ ok: false, message: '学习轨迹读取失败，请重试。', events: [], states: [] });
+    } finally {
+      if (requestId === learningLoadSerial.current) setLearningBusy(false);
+    }
+  };
+
+  useEffect(() => {
+    setLearningTrajectory(null);
+    setLearningPointId('');
+    if (activeSection === 'growth' && growthView === 'learning' && selectedStudent) void refreshLearningTrajectory(selectedStudent);
+    return () => { learningLoadSerial.current += 1; };
+  }, [activeSection, growthView, selectedStudent?.id]);
 
   useEffect(() => {
     if (activeSection !== 'growth' || !selectedStudent) return;
@@ -14244,7 +14496,10 @@ ${JSON.stringify(items, null, 2)}
     { id: 'memory' as const, label: t('nav.memory'), icon: Clipboard },
     { id: 'soul' as const, label: t('nav.soul'), icon: Bot },
     { id: 'rules' as const, label: t('nav.rules'), icon: ListChecks },
-    ...(isWindows ? [{ id: 'capture' as const, label: t('nav.capture'), icon: MessageCircle }] : []),
+    ...(isWindows ? [
+      { id: 'capture' as const, label: t('nav.capture'), icon: MessageCircle },
+      { id: 'agent-capabilities' as const, label: t('nav.agentCapabilities'), icon: Settings },
+    ] : []),
     { id: 'conversation' as const, label: t('nav.conversation'), icon: MessageCircle },
   ];
   const courseCatalogCourses = courseCatalogState?.catalog?.courses || [];
@@ -14281,6 +14536,7 @@ ${JSON.stringify(items, null, 2)}
       qa: 'nav.qa',
       memory: 'nav.memory',
       capture: 'nav.memory',
+      'agent-capabilities': 'nav.agentCapabilities',
       soul: 'nav.soul',
       rules: 'nav.rules',
       conversation: 'nav.conversation',
@@ -14298,6 +14554,7 @@ ${JSON.stringify(items, null, 2)}
     if (activeSection === 'reports') return '查看和管理基于已确认成长数据生成的学情报告。';
     if (activeSection === 'qa') return '按授权范围检索本机与协作知识，并保留来源依据。';
     if (activeSection === 'capture') return '授权后自动采集 Agent 对话的新轮次，不回扫授权前历史。';
+    if (activeSection === 'agent-capabilities') return '管理当前学生的外部 Agent 调用授权，并审核每次受控写入。';
     if (activeSection === 'settings' && settingsSubmenu === 'collaboration') return '管理设备信任、共享范围与多端协作。';
     if (activeSection === 'settings' && settingsSubmenu === 'agent-qa') return '配置当前学生的 Agent 问答与远程咨询。';
     if (activeSection === 'settings') return t(isWindows ? 'settings.description.windows' : 'settings.description.android');
@@ -14471,7 +14728,7 @@ ${JSON.stringify(items, null, 2)}
           )}
           <div className="nav-group-block">
             <button
-              className={`${activeSection === 'memory' || activeSection === 'capture' || activeSection === 'soul' || activeSection === 'rules' || activeSection === 'conversation' ? 'nav-item nav-group active' : 'nav-item nav-group'}${isWindows && !windowsLicenseActive ? ' locked' : ''}`}
+              className={`${activeSection === 'memory' || activeSection === 'capture' || activeSection === 'agent-capabilities' || activeSection === 'soul' || activeSection === 'rules' || activeSection === 'conversation' ? 'nav-item nav-group active' : 'nav-item nav-group'}${isWindows && !windowsLicenseActive ? ' locked' : ''}`}
               onClick={() => { setAgentKnowledgeMenuOpen((value) => !value); setEducationArchiveMenuOpen(false); setProjectMenuOpen(false); setCollaborationMenuOpen(false); setCourseMenuOpen(false); setSettingsMenuOpen(false); }}
               title={isWindows && !windowsLicenseActive ? '智能体知识管理需要激活后使用' : t('nav.knowledge')}
               aria-expanded={agentKnowledgeMenuOpen}
@@ -15768,8 +16025,10 @@ ${JSON.stringify(items, null, 2)}
               onCheck={() => syncDigestResult(selectedStudent)}
               onPaste={() => importDigestWorkflowTextFromPage('student', selectedStudent.id)}
               onOpenKnowledge={() => openStudentRoot(selectedStudent)}
+              onSupplementLearningEvents={isWindows ? () => void supplementCompletedDigestLearningEvents(selectedStudent) : undefined}
               onRetryPathCheck={() => retryStudentMaterialPathRecoveryFromPage(selectedStudent)}
               onSelectMaterialPath={(materialId) => selectStudentMaterialPathFromPage(selectedStudent, materialId)}
+              onRemoveMaterial={(materialId, fileName) => removeStudentMaterialFromDigest(selectedStudent, materialId, fileName)}
               advancedActions={<>
                 <button className="secondary compact" onClick={() => copyDigestWorkflowCommandFromPage('student', selectedStudent.id)}><Clipboard size={16} />复制当前批次指令</button>
                 <button className="secondary compact" onClick={() => markDigestSubmitted(selectedStudent)}><CheckCircle2 size={16} />仅登记批次</button>
@@ -16030,7 +16289,7 @@ ${JSON.stringify(items, null, 2)}
                         <div>
                           <strong>{session.sourceName}</strong>
                           <span>{new Date(session.startedAt).toLocaleString('zh-CN')} · 保留 {session.screenshotCount} 张 · 去重 {session.deduplicatedCount} 张{session.promotionTargetName ? ` · 已进入${session.archiveStatus === 'project_raw' ? '项目' : '学生'}：${session.promotionTargetName}` : ''}</span>
-                          {session.visionStatus && <span>视觉整理：{session.visionStatus === 'running' ? '后台处理中' : session.visionStatus === 'completed' ? (session.visionObservationCount ? `已完成 · ${session.visionObservationCount} 段观察` : '已处理，暂无可靠观察') : session.visionStatus === 'degraded' ? `部分降级 · ${session.visionObservationCount || 0} 段观察` : session.visionStatus === 'retry_scheduled' ? '等待自动重试' : session.visionStatus === 'waiting_idle' ? '等待设备空闲' : '等待采集结束'}{session.visionFailedBatchCount ? ` · ${session.visionFailedBatchCount} 批证据不足` : ''}</span>}
+                          {session.visionStatus && <span>视觉整理：{session.visionStatus === 'running' ? '后台处理中' : session.visionStatus === 'completed' ? (session.visionObservationCount ? `已完成 · ${session.visionObservationCount} 段观察` : '已处理，暂无可靠观察') : session.visionStatus === 'degraded' ? `部分降级 · ${session.visionObservationCount || 0} 段观察` : session.visionStatus === 'waiting_visual_capability' ? '视觉服务暂不可用；已按需尝试本机 OCR，后台等待恢复' : session.visionStatus === 'waiting_resource' ? '采集期间暂停；结束后自动续接' : session.visionStatus === 'retry_scheduled' ? '等待自动重试' : session.visionStatus === 'waiting_idle' ? '等待设备空闲' : '等待采集结束'}{session.visionFailedBatchCount ? ` · ${session.visionFailedBatchCount} 批证据不足` : ''}</span>}
                         </div>
                         <span className={`status-badge ${session.status}`}>{session.status === 'promoted' ? `已整理${session.activitySegmentCount ? ` · ${session.activitySegmentCount} 段` : ''}` : session.status === 'completed' ? '后台自动整理中' : session.status === 'interrupted' ? '已中断' : session.status}</span>
                         <button className="icon-button" onClick={() => bridge()?.openCaptureInbox?.(session.id)} aria-label="打开该会话采集箱"><FolderOpen size={17} /></button>
@@ -16974,6 +17233,8 @@ ${JSON.stringify(items, null, 2)}
                           <Copy size={15} />
                           复制项目
                         </button>
+                        <button className="secondary compact" onClick={() => rebindSelectedProjectDirectory('root')} title="修改项目根目录逻辑绑定；不移动或删除原文件"><FolderOpen size={15} />更换项目根目录</button>
+                        <button className="secondary compact" onClick={() => rebindSelectedProjectDirectory('raw')} title="修改项目原始资料库逻辑绑定；不移动或删除原文件"><Archive size={15} />更换原始资料库</button>
                         <button className="secondary compact" onClick={relocateSelectedProjectWorkspace} title="修改该项目绑定的工作空间来源目录；不移动原文件或项目知识空间"><FolderOpen size={15} />更换工作空间</button>
                         <button className="secondary compact" onClick={rebindSelectedProjectKnowledge} title="绑定本机已有项目知识空间；不移动工作空间或知识文件"><BookOpen size={15} />绑定知识空间</button>
                         <button className="secondary compact" onClick={exportSelectedProject}><FileDown size={15} />导出项目</button>
@@ -17684,7 +17945,7 @@ ${JSON.stringify(items, null, 2)}
             <div className="panel-heading">
               <div>
                 <h2>{selectedStudent.name} · 成长模型</h2>
-                <p>集中查看能力画像、项目贡献和成长证据；学情报告仅作为这些已确认数据的表达输出。</p>
+                <p>查看能力画像、项目贡献、成长证据与知识轨迹；学情报告仍须经过独立校验后发布。</p>
               </div>
               <Sparkles size={22} />
             </div>
@@ -17737,14 +17998,52 @@ ${JSON.stringify(items, null, 2)}
                 <button className={growthView === 'abilities' ? 'active' : ''} onClick={() => setGrowthView('abilities')}><Gauge size={18} />能力画像</button>
                 <button className={growthView === 'projects' ? 'active' : ''} onClick={() => setGrowthView('projects')}><FolderOpen size={18} />项目贡献</button>
                 <button className={growthView === 'evidence' ? 'active' : ''} onClick={() => setGrowthView('evidence')}><ListChecks size={18} />成长证据</button>
+                <button className={growthView === 'learning' ? 'active' : ''} onClick={() => setGrowthView('learning')}><BookOpen size={18} />知识轨迹</button>
               </div>
               <div className="growth-filters">
-                <input value={growthSearch} onChange={(event) => setGrowthSearch(event.target.value)} placeholder="搜索能力、项目或证据" />
+                <input value={growthSearch} onChange={(event) => setGrowthSearch(event.target.value)} placeholder={growthView === 'learning' ? '搜索知识点名称或 ID' : '搜索能力、项目或证据'} />
                 {growthView === 'projects' && <select value={growthProjectStatusFilter} onChange={(event) => setGrowthProjectStatusFilter(event.target.value)}><option value="all">全部贡献状态</option><option value="published">已发布</option><option value="pending">待审核</option><option value="not_started">尚未形成</option></select>}
                 {growthView === 'evidence' && <select value={growthEvidenceStatusFilter} onChange={(event) => setGrowthEvidenceStatusFilter(event.target.value)}><option value="all">全部证据状态</option><option value="pending">待审核</option><option value="confirmed">已确认</option><option value="watching">观察中</option><option value="rejected">已驳回</option></select>}
                 {growthView === 'evidence' && <select value={growthEvidenceRiskFilter} onChange={(event) => setGrowthEvidenceRiskFilter(event.target.value as 'attention' | 'all' | 'low')}><option value="attention">默认：只看需关注</option><option value="low">低风险批量候选</option><option value="all">全部证据</option></select>}
                 {growthView === 'evidence' && <select value={growthAbilityFilter} onChange={(event) => setGrowthAbilityFilter(event.target.value)}><option value="all">全部能力</option>{(growthIndex?.abilities ?? []).map((ability) => <option key={ability.name} value={ability.name}>{ability.name}</option>)}</select>}
+                {growthView === 'learning' && <button className="secondary compact" type="button" onClick={() => void refreshLearningTrajectory()} disabled={learningBusy}><RefreshCw size={16} />刷新轨迹</button>}
               </div>
+
+              {growthView === 'learning' && <div className="learning-trajectory">
+                <div className="notice muted">仅汇总有学生归属和可核对来源的学习事件。模型估计不等于考试成绩；复测日期只是建议，不会自动创建任务或断言遗忘。</div>
+                {learningBusy && <div className="notice muted" role="status">正在读取学习轨迹…</div>}
+                {learningTrajectory?.message && !learningTrajectory.ok && <div className="notice">{learningTrajectory.message}</div>}
+                {learningTrajectory?.ok && <>
+                  <div className="learning-point-grid">
+                    {[...learningTrajectory.states].filter((state) => !growthSearch.trim() || `${state.knowledgePoint.label} ${state.knowledgePoint.id}`.toLocaleLowerCase('zh-CN').includes(growthSearch.trim().toLocaleLowerCase('zh-CN'))).sort((a, b) => ({ high: 0, medium: 1, low: 2 }[a.reviewPriority as 'high' | 'medium' | 'low'] ?? 3) - ({ high: 0, medium: 1, low: 2 }[b.reviewPriority as 'high' | 'medium' | 'low'] ?? 3)).map((state) => (
+                      <button className={`growth-card learning-point-card ${learningPointId === state.knowledgePoint.id ? 'selected' : ''}`} key={state.knowledgePoint.id} type="button" onClick={() => setLearningPointId(state.knowledgePoint.id)}>
+                        <strong>{state.knowledgePoint.label}</strong>
+                        <small>{state.knowledgePoint.id}</small>
+                        <span>状态：{learningStateLabel(state.state)} · 证据 {state.evidenceCount} 条</span>
+                        <small>复测优先级 {reviewPriorityLabel(state.reviewPriority)} · 模型置信度 {Math.round(state.confidence * 100)}%</small>
+                      </button>
+                    ))}
+                  </div>
+                  {!learningTrajectory.states.length && <div className="empty-state">暂无通过来源校验的知识点事件。完成有结构化回执的学习资料消化后再查看。</div>}
+                  {(learningTrajectory.rejections?.length || 0) > 0 && <details className="growth-index-details"><summary>异常回执 {learningTrajectory.rejections?.length} 条（需修正来源后重新提交）</summary><div className="download-list growth-list">{learningTrajectory.rejections?.slice(-20).reverse().map((item, index) => <div className="download-item" key={`${item.at}-${item.batchId}-${item.index}-${index}`}><span><strong>{item.code}</strong><small>{item.at} · 批次 {item.batchId || '未知'} · 项目序号 {item.index}</small></span></div>)}</div></details>}
+                  {learningTrajectory.states.filter((state) => state.knowledgePoint.id === learningPointId).map((state) => <div className="learning-point-detail" key={state.knowledgePoint.id}>
+                    <h3>{state.knowledgePoint.label} · 历史证据</h3>
+                    <p>分维度证据估计：概念理解 {learningScoreLabel(state.scores?.conceptualUnderstanding)} · 程序熟练 {learningScoreLabel(state.scores?.proceduralFluency)} · 方法选择 {learningScoreLabel(state.scores?.methodSelection)} · 迁移 {learningScoreLabel(state.scores?.transfer)}。未知维度不按零分计算。</p>
+                    <p>{state.retentionNote || '保持情况需用后续独立表现核验。'}</p>
+                    <p>建议复测：{state.recommendedReviewAt ? new Date(state.recommendedReviewAt).toLocaleString('zh-CN') : '待补证据'}。请先核对来源，再由用户决定是否建立正式任务。</p>
+                    {state.errorPatterns.length > 0 && <p>观察到的错误：{state.errorPatterns.map((error) => `${error.description || error.id}（${error.count} 次）`).join('；')}</p>}
+                    <div className="download-list growth-list">
+                      {learningTrajectory.events.filter((event) => event.knowledgePoint.id === state.knowledgePoint.id).map((event) => <div className="download-item" key={event.eventId}>
+                        <span><strong>{new Date(event.occurredAt).toLocaleString('zh-CN')} · {event.taskType || '学习互动'}</strong>
+                          <small>{event.evidence || '无简述；请回查来源。'}</small>
+                          <small>提示程度：{event.performance.hintLevel ?? '未知'} · 来源：{event.evidenceRefs.map((ref) => `${ref.sourceType}:${ref.sourceId}`).join('、')}</small>
+                          <small>事件 ID：{event.eventId}</small></span>
+                      </div>)}
+                    </div>
+                  </div>)}
+                  {learningTrajectory.historyMarkdown && <details className="growth-index-details"><summary>历史变化报告候选（未发布）</summary><div className="actions compact-actions"><button className="secondary compact" onClick={() => copyText(learningTrajectory.historyMarkdown || '', '已复制历史变化候选。')}>复制候选</button></div><section className="markdown-reader"><MarkdownView content={learningTrajectory.historyMarkdown} /></section></details>}
+                </>}
+              </div>}
 
               {growthView === 'abilities' && <div className="growth-card-grid">
                 {filteredGrowthAbilities.map((ability) => (
@@ -18402,7 +18701,7 @@ ${JSON.stringify(items, null, 2)}
                         : `已查询协作主机${agentKnowledgeResult.transport === 'tailscale' ? '（Tailscale）' : '（局域网）'}，但未找到依据`
                     )}
                     {agentKnowledgeResult.source === 'offline_snapshot' && '已使用带时间标记的离线快照'}
-                    {agentKnowledgeResult.source === 'waiting' && '暂未取得可用知识'}
+                    {agentKnowledgeResult.source === 'waiting' && (agentKnowledgeResult.learningContext ? '已取得本机纵向证据；知识库查询待恢复' : '暂未取得可用知识')}
                   </strong>
                   <span>
                     {agentKnowledgeResult.ok
@@ -18413,6 +18712,7 @@ ${JSON.stringify(items, null, 2)}
                 {agentKnowledgeResult.source === 'offline_snapshot' && (
                   <div className="notice muted">快照时间：{formatDateTime(agentKnowledgeResult.cachedAt || agentKnowledgeResult.servedAt)}</div>
                 )}
+                {agentKnowledgeResult.learningContext && <details className="growth-index-details"><summary>本机纵向学习证据（候选）</summary><pre className="inline-pre">{agentKnowledgeResult.learningContext}</pre><button className="secondary compact" type="button" onClick={() => copyText(agentKnowledgeResult.prompt || '', '已复制包含纵向证据的咨询提示。')}>复制含证据提示</button></details>}
                 {(agentKnowledgeResult.resources || []).length > 0 ? (
                   <div className="agent-knowledge-sources">
                     {(agentKnowledgeResult.resources || []).map((resource, index) => (
@@ -18609,6 +18909,50 @@ ${JSON.stringify(items, null, 2)}
             </div>
             {digestMessage && <div className="notice">{digestMessage}</div>}
             </>}
+          </section>
+        )}
+
+        {!shouldBlockForAgentInstall && !isLicenseRestrictedSection && activeSection === 'agent-capabilities' && selectedStudent && (
+          <section className="panel qa-panel">
+            <div className="panel-heading">
+              <div>
+                <h2>{t('nav.agentCapabilities')}</h2>
+                <p>为当前学生管理外部 Agent 查询与草稿写入授权；每条写入都需单独预览审核。</p>
+              </div>
+              <Settings size={22} />
+            </div>
+            <section className="material-source-panel" aria-label="Agent 外部能力授权与写入审核">
+              <div className="mini-heading">
+                <strong>外部 Agent 能力与写入审核</strong>
+                <span>主机限定当前学生与单学生项目。只读授权和受控写入授权分开；每条写入仍需预览批准，正式报告与知识发布不会由此开放。</span>
+              </div>
+              <div className="actions compact-actions">
+                <button className="secondary compact" type="button" disabled={agentCapabilityManagement?.capabilities?.includes('archive:read')} onClick={() => changeAgentCapabilityAuthorization('read')}>授权只读查询</button>
+                <button className="secondary compact" type="button" disabled={agentCapabilityManagement?.capabilities?.includes('material:upload')} onClick={() => changeAgentCapabilityAuthorization('write')}>授权受控草稿写入</button>
+                <button className="secondary compact" type="button" onClick={() => refreshAgentCapabilityManagement()}>刷新待审核</button>
+                <button className="secondary compact" type="button" disabled={!agentCapabilityManagement?.capabilities?.length} onClick={() => changeAgentCapabilityAuthorization('revoke')}>撤销外部授权</button>
+                <span className="muted">{agentCapabilityManagement?.revoked ? '已撤销' : `当前能力 ${agentCapabilityManagement?.capabilities?.length ?? 0} 项`} · 待审核 {agentCapabilityManagement?.pending?.length ?? 0} 条</span>
+              </div>
+              {agentCapabilityMessage && <div className="notice">{agentCapabilityMessage}</div>}
+              {(agentCapabilityManagement?.pending || []).map((intent) => (
+                <div className="actions compact-actions" key={intent.id}>
+                  <span>{intent.name} · {intent.preview?.filename || intent.preview?.title || intent.preview?.reportId || `${intent.preview?.messageCount ?? 0} 条消息`} · {intent.projectId || selectedStudent.id} · {intent.status === 'recoverable' ? '执行待恢复' : '待审核'}</span>
+                  <button className="secondary compact" type="button" onClick={() => reviewAgentWrite(intent)}>查看预览</button>
+                </div>
+              ))}
+              {agentWriteReview && agentWriteReview.intent.studentId === selectedStudent.id && (
+                <div className="notice muted">
+                  <strong>写入目标：{agentWriteReview.intent.projectId || selectedStudent.name} · {agentWriteReview.intent.name}</strong>
+                  <div>摘要：{agentWriteReview.intent.inputDigest}</div>
+                  <textarea aria-label="Agent 写入预览内容" readOnly rows={12} value={JSON.stringify(agentWriteReview.reviewInput, null, 2)} style={{ width: '100%', resize: 'vertical' }} />
+                  <div className="actions compact-actions">
+                    {agentWriteReview.intent.status === 'pending_approval' && <button className="primary compact" type="button" onClick={() => decideAgentWrite('approve')}>批准本次写入</button>}
+                    {agentWriteReview.intent.status === 'pending_approval' && <button className="secondary compact" type="button" onClick={() => decideAgentWrite('reject')}>拒绝并清除</button>}
+                    <button className="secondary compact" type="button" onClick={() => setAgentWriteReview(null)}>关闭预览</button>
+                  </div>
+                </div>
+              )}
+            </section>
           </section>
         )}
 
@@ -18880,10 +19224,10 @@ ${JSON.stringify(items, null, 2)}
           </section>
         )}
 
-        {!shouldBlockForAgentInstall && !isLicenseRestrictedSection && (activeSection === 'memory' || activeSection === 'capture') && !selectedStudent && (
+        {!shouldBlockForAgentInstall && !isLicenseRestrictedSection && (activeSection === 'memory' || activeSection === 'capture' || activeSection === 'agent-capabilities') && !selectedStudent && (
           <section className="panel qa-panel">
             <div className="empty-state">
-              请先新建或选择学生档案，再使用{activeSection === 'capture' ? t('nav.capture') : t('nav.memory')}。
+              请先新建或选择学生档案，再使用{activeSection === 'capture' ? t('nav.capture') : activeSection === 'agent-capabilities' ? t('nav.agentCapabilities') : t('nav.memory')}。
               <div className="actions"><button className="secondary" onClick={() => setActiveSection('init')}>{t('nav.init')}</button></div>
             </div>
           </section>
@@ -19060,6 +19404,7 @@ ${JSON.stringify(items, null, 2)}
               <button className="primary" onClick={saveAgentRule}>保存规则文件</button>
               <button className="secondary" onClick={() => refreshAgentRules()}>刷新规则文件</button>
               <button className="secondary" onClick={() => copyText(ruleContent, '已复制规则文件内容。')}>复制规则内容</button>
+              <button className="secondary" onClick={previewLearningRuleMigration}>预览加入纵向学习协议</button>
               <button className="secondary" onClick={() => openStudentRoot(selectedStudent)}>打开知识库目录</button>
               <button className="secondary" onClick={() => generateAgentRule('AGENTS.md')}>生成 AGENTS.md</button>
               <button className="secondary" onClick={() => generateAgentRule('CLAUDE.md')}>生成 CLAUDE.md</button>

@@ -51,6 +51,9 @@ contextBridge.exposeInMainWorld('AndroidBridge', {
   getCaptureTimelineSegments(inputJson) {
     return ipcRenderer.invoke('bridge:getCaptureTimelineSegments', inputJson);
   },
+  getLearningAnalytics(inputJson) {
+    return ipcRenderer.invoke('bridge:getLearningAnalytics', inputJson);
+  },
   getCaptureTimelineProcessingState(inputJson) {
     return ipcRenderer.invoke('bridge:getCaptureTimelineProcessingState', inputJson);
   },
@@ -143,6 +146,12 @@ contextBridge.exposeInMainWorld('AndroidBridge', {
   },
   rebindProjectKnowledgeSpace(projectId) {
     return ipcRenderer.sendSync('bridge:rebindProjectKnowledgeSpace', projectId);
+  },
+  rebindProjectRoot(projectId) {
+    return ipcRenderer.sendSync('bridge:rebindProjectRoot', projectId);
+  },
+  rebindProjectRaw(projectId) {
+    return ipcRenderer.sendSync('bridge:rebindProjectRaw', projectId);
   },
   getRemovedProjects() {
     return ipcRenderer.sendSync('bridge:getRemovedProjects');
@@ -707,6 +716,9 @@ contextBridge.exposeInMainWorld('AndroidBridge', {
   syncStudentDigestResult(studentId) {
     return ipcRenderer.sendSync('bridge:syncStudentDigestResult', studentId);
   },
+  supplementCompletedStudentDigestLearningEvents(studentId) {
+    return ipcRenderer.invoke('bridge:supplementCompletedStudentDigestLearningEvents', studentId);
+  },
   startDigestWorkflow(scopeType, scopeId, executor) {
     return ipcRenderer.invoke('bridge:startDigestWorkflow', scopeType, scopeId, executor);
   },
@@ -760,6 +772,18 @@ contextBridge.exposeInMainWorld('AndroidBridge', {
   },
   prepareAgentKnowledgeAccess(studentId) {
     return ipcRenderer.sendSync('bridge:prepareAgentKnowledgeAccess', studentId);
+  },
+  getAgentCapabilityManagement(studentId) {
+    return ipcRenderer.sendSync('bridge:getAgentCapabilityManagement', studentId);
+  },
+  setAgentCapabilityAuthorization(studentId, action) {
+    return ipcRenderer.sendSync('bridge:setAgentCapabilityAuthorization', studentId, action);
+  },
+  reviewAgentWriteIntent(studentId, intentId) {
+    return ipcRenderer.sendSync('bridge:reviewAgentWriteIntent', studentId, intentId);
+  },
+  decideAgentWriteIntent(studentId, intentId, digest, action) {
+    return ipcRenderer.sendSync('bridge:decideAgentWriteIntent', studentId, intentId, digest, action);
   },
   getAgentMemoryState(studentId) {
     return ipcRenderer.sendSync('bridge:getAgentMemoryState', studentId);

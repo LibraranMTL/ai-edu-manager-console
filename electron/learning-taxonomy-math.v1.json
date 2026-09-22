@@ -1,0 +1,22 @@
+{
+  "schema": "edu-manager.knowledge-taxonomy.v1",
+  "version": "math.v1",
+  "points": [
+    { "id": "MATH.CALC.DIFF.BASIC", "label": "Basic differentiation", "subject": "Mathematics", "aliases": ["basic differentiation", "基础微分", "基本求导"] },
+    { "id": "MATH.CALC.DIFF.CHAIN_RULE", "label": "Chain rule", "subject": "Mathematics", "aliases": ["chain rule", "链式法则"] },
+    { "id": "MATH.CALC.DIFF.PRODUCT_RULE", "label": "Product rule", "subject": "Mathematics", "aliases": ["product rule", "乘积法则"] },
+    { "id": "MATH.CALC.DIFF.QUOTIENT_RULE", "label": "Quotient rule", "subject": "Mathematics", "aliases": ["quotient rule", "商法则"] },
+    { "id": "MATH.CALC.DIFF.STATIONARY_POINT", "label": "Stationary points", "subject": "Mathematics", "aliases": ["stationary point", "stationary points", "驻点", "平稳点"] },
+    { "id": "MATH.CALC.DIFF.MAXIMUM_MINIMUM", "label": "Maximum and minimum", "subject": "Mathematics", "aliases": ["maximum minimum differentiation", "maximum and minimum", "极大极小", "最大值最小值"] },
+    { "id": "MATH.CALC.DIFF.SECOND_DERIVATIVE", "label": "Second derivative", "subject": "Mathematics", "aliases": ["second derivative", "二阶导数"] },
+    { "id": "MATH.CALC.INT.BASIC", "label": "Basic integration", "subject": "Mathematics", "aliases": ["basic integration", "基础积分"] },
+    { "id": "MATH.CALC.INT.DEFINITE", "label": "Definite integration", "subject": "Mathematics", "aliases": ["definite integration", "定积分"] },
+    { "id": "MATH.CALC.INT.SUBSTITUTION", "label": "Integration by substitution", "subject": "Mathematics", "aliases": ["substitution", "integration by substitution", "换元积分", "换元法"] },
+    { "id": "MATH.STAT.MEAN", "label": "Mean", "subject": "Mathematics", "aliases": ["mean", "平均数", "均值"] },
+    { "id": "MATH.STAT.STANDARD_DEVIATION", "label": "Standard deviation", "subject": "Mathematics", "aliases": ["standard deviation", "标准差"] },
+    { "id": "MATH.STAT.QUARTILES", "label": "Quartiles", "subject": "Mathematics", "aliases": ["quartiles", "四分位数"] },
+    { "id": "MATH.STAT.IQR", "label": "Interquartile range", "subject": "Mathematics", "aliases": ["iqr", "interquartile range", "四分位距"] },
+    { "id": "MATH.STAT.OUTLIERS", "label": "Outliers", "subject": "Mathematics", "aliases": ["outliers", "异常值", "离群值"] },
+    { "id": "MATH.PROB.BINOMIAL", "label": "Binomial distribution", "subject": "Mathematics", "aliases": ["binomial distribution", "二项分布"] }
+  ]
+}

@@ -20,6 +20,7 @@ function normalizeAgentAccessGrantStore(value = {}) {
   return {
     schema: AGENT_ACCESS_GRANT_SCHEMA,
     updatedAt: boundedId(value.updatedAt, 80),
+    disabledStudentIds: uniqueIds(value.disabledStudentIds),
     grants: grants
       .map((grant) => ({
         grantId: boundedId(grant?.grantId),
@@ -48,7 +49,7 @@ function resolveAgentAccessGrant(storeValue, token) {
   const tokenHash = hashAgentAccessToken(rawToken);
   const store = normalizeAgentAccessGrantStore(storeValue);
   const grant = store.grants.find((item) => !item.revokedAt && timingSafeHashEqual(item.tokenHash, tokenHash));
-  if (!grant) return null;
+  if (!grant || store.disabledStudentIds.includes(grant.studentId)) return null;
   return {
     type: 'agent_grant',
     grantId: grant.grantId,
@@ -65,7 +66,7 @@ function issueAgentAccessGrant(storeValue, options = {}) {
   if (!studentId) throw new Error('studentId is required for an Agent access grant.');
   const now = boundedId(options.now || new Date().toISOString(), 80);
   const allowedProjectIds = uniqueIds(options.allowedProjectIds);
-  const capabilities = uniqueIds(options.capabilities || [
+  const requestedCapabilities = uniqueIds(options.capabilities || [
     'knowledge:query',
     'conversation:submit',
     'memory:read',
@@ -73,6 +74,7 @@ function issueAgentAccessGrant(storeValue, options = {}) {
     'handoff:manage',
   ]);
   const store = normalizeAgentAccessGrantStore(storeValue);
+  if (store.disabledStudentIds.includes(studentId) && !options.reauthorize) throw new Error('Agent access revoked for this student. Explicit reauthorization is required.');
   const existingToken = String(options.existingToken || '').trim();
   const existing = existingToken.startsWith(AGENT_ACCESS_TOKEN_PREFIX)
     ? store.grants.find((item) => (
@@ -81,6 +83,7 @@ function issueAgentAccessGrant(storeValue, options = {}) {
       && timingSafeHashEqual(item.tokenHash, hashAgentAccessToken(existingToken))
     ))
     : null;
+  const capabilities = existing && !options.capabilities ? existing.capabilities : requestedCapabilities;
   const token = existing
     ? existingToken
     : `${AGENT_ACCESS_TOKEN_PREFIX}${(options.randomBytes || crypto.randomBytes)(32).toString('hex')}`;
@@ -103,9 +106,16 @@ function issueAgentAccessGrant(storeValue, options = {}) {
   return {
     token,
     grant: nextGrant,
-    store: { schema: AGENT_ACCESS_GRANT_SCHEMA, updatedAt: now, grants },
+    store: { schema: AGENT_ACCESS_GRANT_SCHEMA, updatedAt: now, disabledStudentIds: store.disabledStudentIds.filter((id) => id !== studentId), grants },
     reused: Boolean(existing),
   };
+}
+
+function revokeAgentAccessGrant(storeValue, studentId, now = new Date().toISOString()) {
+  const id = boundedId(studentId);
+  if (!id) throw new Error('studentId is required.');
+  const store = normalizeAgentAccessGrantStore(storeValue);
+  return { ...store, updatedAt: now, disabledStudentIds: uniqueIds([...store.disabledStudentIds, id]), grants: store.grants.map((grant) => grant.studentId === id ? { ...grant, revokedAt: now, updatedAt: now } : grant) };
 }
 
 module.exports = {
@@ -115,4 +125,5 @@ module.exports = {
   issueAgentAccessGrant,
   normalizeAgentAccessGrantStore,
   resolveAgentAccessGrant,
+  revokeAgentAccessGrant,
 };

@@ -1,10 +1,10 @@
 {
   "versionCode": 86,
   "versionName": "0.6.16",
-  "windowsVersionCode": 228,
-  "windowsVersionName": "0.17.9",
+  "windowsVersionCode": 229,
+  "windowsVersionName": "0.17.10",
   "windowsReleaseStatus": "stable",
-  "windowsUrl": "https://www.greatbg.com/download/AI-edu-manager-console-Windows-0.17.9.zip",
+  "windowsUrl": "https://www.greatbg.com/download/AI-edu-manager-console-Windows-0.17.10.zip",
   "windowsTerminalVersionCode": 227,
   "windowsTerminalVersionName": "0.17.8",
   "windowsTerminalReleaseStatus": "candidate",
@@ -26,5 +26,5 @@
   "managerApkVersionCode": 23,
   "managerApkVersionName": "0.2.3",
   "apkUrl": "https://www.greatbg.com/download/AI-edu-manager-tablet-terminal-0.6.16.apk",
-  "notes": "Windows 主机端 0.17.9 正式发布：Agent 会话自动采集支持一次 Hook 信任后自动复用，已打开会话从授权后的下一轮开始采集且不回扫历史；同时优化学习时间线、界面导航和项目绑定学生性能。Windows 学生端仍为 0.17.8 候选版，官网学生端正式下载保持 0.16.10。"
+  "notes": "Windows 主机端 0.17.10：已完成批次可校验并补录 Agent 后写的学习事件，不重复消化原材料；保留原有逐学生、逐批次和证据范围校验。Windows 学生端官网正式下载仍为 0.16.10。"
 }

@@ -3589,7 +3589,7 @@ pre {
 
 .growth-view-tabs {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 8px;
 }
 
@@ -3689,6 +3689,15 @@ pre {
   grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
   gap: 12px;
 }
+
+.learning-trajectory { display: grid; gap: 14px; min-width: 0; }
+.learning-point-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 240px), 1fr)); gap: 12px; }
+.learning-point-card { text-align: left; }
+.learning-point-card.selected { outline: 2px solid var(--accent); outline-offset: 2px; }
+.learning-point-detail { min-width: 0; padding: 18px; border: 1px solid var(--accent-border); border-radius: 14px; background: var(--page); }
+.learning-point-detail h3 { margin-top: 0; }
+.learning-point-detail .download-item small { overflow-wrap: anywhere; }
+@media (max-width: 760px) { .growth-view-tabs { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 
 .growth-card {
   display: grid;
@@ -7044,6 +7053,26 @@ textarea:focus {
 .digest-status-main small {
   display: block;
   color: var(--muted-text, #718079);
+}
+
+.digest-learning-event-supplement {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 12px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: rgba(54, 132, 91, 0.07);
+  color: var(--muted-text, #62736c);
+}
+
+.digest-learning-event-supplement > span {
+  flex: 1;
+}
+
+@media (max-width: 700px) {
+  .digest-learning-event-supplement { align-items: stretch; flex-direction: column; }
 }
 
 .digest-status-badge {

@@ -43,15 +43,27 @@ function messageContent(message) {
 function normalizeMessage(message, index, sessionId) {
   const content = messageContent(message);
   if (!content) return null;
-  const role = normalizeRole(message?.role || message?.author || message?.speaker);
-  const occurredAt = text(message?.occurredAt || message?.createdAt || message?.timestamp || message?.time, 80);
+  const originalRole = text(message?.originalRole || message?.role || message?.author || message?.speaker, 40);
+  const role = normalizeRole(originalRole);
+  const rawOccurredAt = text(message?.occurredAt || message?.createdAt || message?.timestamp || message?.time, 80);
+  const occurredAt = Number.isFinite(Date.parse(rawOccurredAt)) ? rawOccurredAt : '';
+  const claimedActorType = text(message?.claimedActorType || message?.actorType
+    || (['student', 'parent', 'teacher'].includes(originalRole.toLowerCase()) ? originalRole : ''), 20).toLowerCase();
+  const actorEvidence = text(message?.actorEvidence, 240);
+  const supportedActor = ['student', 'parent', 'teacher'].includes(claimedActorType);
   const messageId = text(message?.messageId || message?.id, 200)
     || stableId('agent-message', sessionId, index, role, content);
   return {
     messageId,
     role,
+    originalRole,
+    actorType: supportedActor && actorEvidence ? claimedActorType : 'unknown',
+    claimedActorType: supportedActor ? claimedActorType : '',
+    actorEvidence,
     content,
-    occurredAt: Number.isFinite(Date.parse(occurredAt)) ? occurredAt : '',
+    occurredAt,
+    reportedOccurredAt: rawOccurredAt,
+    timeSource: occurredAt ? 'source_message' : 'unknown',
     locator: text(message?.locator, 200) || `message:${index + 1}`,
   };
 }
@@ -132,8 +144,9 @@ function normalizeAgentConversationSubmission(input = {}) {
   if (scopeType && !['student', 'project'].includes(scopeType)) throw new Error('对话目标只能是学生或项目。');
   const submittedAt = text(input.submittedAt || new Date().toISOString(), 80);
   if (!Number.isFinite(Date.parse(submittedAt))) throw new Error('对话提交时间无效。');
-  const contentDigest = sha256(JSON.stringify(messages.map(({ messageId, role, content, occurredAt }) => ({
+  const contentDigest = sha256(JSON.stringify(messages.map(({ messageId, role, content, occurredAt, actorType, actorEvidence }) => ({
     messageId, role, content, occurredAt,
+    ...(actorType !== 'unknown' && actorEvidence ? { actorType, actorEvidence } : {}),
   }))));
   const attachments = (Array.isArray(input.attachments) ? input.attachments : [])
     .slice(0, MAX_ATTACHMENTS)

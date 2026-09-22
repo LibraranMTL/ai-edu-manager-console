@@ -49,8 +49,10 @@ type Props = {
   onCheck?: () => void;
   onPaste?: () => void;
   onOpenKnowledge?: () => void;
+  onSupplementLearningEvents?: () => void;
   onRetryPathCheck?: () => void;
   onSelectMaterialPath?: (materialId: string) => void;
+  onRemoveMaterial?: (materialId: string, fileName?: string) => void;
   advancedActions?: ReactNode;
 };
 
@@ -63,7 +65,7 @@ const labels: Record<DigestUserStatus, string> = {
   needs_help: '需要补充',
 };
 
-export function DigestStatusCard({ status, busy, manualText = '', onManualTextChange, onStart, onRetry, onCheck, onPaste, onOpenKnowledge, onRetryPathCheck, onSelectMaterialPath, advancedActions }: Props) {
+export function DigestStatusCard({ status, busy, manualText = '', onManualTextChange, onStart, onRetry, onCheck, onPaste, onOpenKnowledge, onSupplementLearningEvents, onRetryPathCheck, onSelectMaterialPath, onRemoveMaterial, advancedActions }: Props) {
   const primary = status.userStatus === 'partial' || status.userStatus === 'needs_help'
     ? { label: '重试未完成项', action: onRetry, disabled: !status.canRetry }
     : status.userStatus === 'completed'
@@ -85,6 +87,12 @@ export function DigestStatusCard({ status, busy, manualText = '', onManualTextCh
         </div>
         <button className="primary compact" onClick={primary.action} disabled={busy || primary.disabled}>{busy ? '正在准备…' : primary.label}</button>
       </div>
+      {status.userStatus === 'completed' && onSupplementLearningEvents && (
+        <div className="digest-learning-event-supplement">
+          <span>已有 Agent 在完成后补写学习事件回执？可只校验并补录事件，不重新消化原材料。</span>
+          <button className="secondary compact" onClick={onSupplementLearningEvents} disabled={busy}>已完成批次学习事件补录</button>
+        </div>
+      )}
       {preflight && (Number(preflight.repairedCount || 0) > 0 || Number(preflight.blockedCount || 0) > 0 || Number(preflight.deferredCount || 0) > 0) && (
         <div className="digest-material-preflight">
           <strong>资料路径预检</strong>
@@ -98,6 +106,9 @@ export function DigestStatusCard({ status, busy, manualText = '', onManualTextCh
               <span>{issue.fileName || issue.materialId || '未命名资料'}：{issue.label || '路径需要确认'}</span>
               {issue.materialId && !issue.retryable && onSelectMaterialPath && (
                 <button className="secondary compact" onClick={() => onSelectMaterialPath(issue.materialId || '')}>手工选择文件</button>
+              )}
+              {issue.materialId && onRemoveMaterial && (
+                <button className="secondary compact danger" onClick={() => onRemoveMaterial(issue.materialId || '', issue.fileName || issue.materialId)}>从待处理列表移除</button>
               )}
             </div>
           ))}

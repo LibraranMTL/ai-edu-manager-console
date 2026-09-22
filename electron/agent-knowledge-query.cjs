@@ -155,6 +155,7 @@ function normalizeKnowledgeResult(query, route = {}, options = {}) {
   return {
     schema: AGENT_KNOWLEDGE_RESULT_SCHEMA,
     ok: Boolean(route.ok && hasKnowledge),
+    lookupCompleted: Boolean(route.ok),
     queryId: query.queryId,
     question: query.question,
     scope: {
@@ -206,10 +207,13 @@ function buildGroundedAgentPrompt(result = {}) {
     `请回答这个教育问题：${result.question || ''}`,
     result.scope?.type === 'team'
       ? '查询范围：系统设置允许的本机团队与远程协作团队；明确学生时仍只查询该学生及其关联项目'
-      : result.scope?.name ? `查询范围：仅限学生“${result.scope.name}”及其关联项目` : '',
+      : result.coverage?.limited
+        ? `查询范围：仅限学生“${result.scope?.name || result.scope?.id || ''}”的本机学生档案和已授权的单学生项目；未授权或多人项目未查询。`
+        : result.scope?.name ? `查询范围：仅限学生“${result.scope.name}”及其关联项目` : '',
     '',
     `知识来源：${knowledgeSourceLabel(result)}`,
     freshnessNote,
+    result.warning || '',
     '',
     citations || '当前没有找到可引用的知识。请明确说明依据不足，不要编造。',
     '',

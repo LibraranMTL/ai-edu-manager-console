@@ -1,7 +1,7 @@
 ﻿<manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="com.qxmatrix.eduterminal"
-    android:versionCode="86"
-    android:versionName="0.6.16">
+    android:versionCode="87"
+    android:versionName="0.6.17">
 
     <uses-sdk
         android:minSdkVersion="23"
@@ -119,6 +119,10 @@
             android:foregroundServiceType="mediaProjection" />
         <service
             android:name=".AutoDeliveryJobService"
+            android:exported="false"
+            android:permission="android.permission.BIND_JOB_SERVICE" />
+        <service
+            android:name=".CaptureAutoDeliveryJobService"
             android:exported="false"
             android:permission="android.permission.BIND_JOB_SERVICE" />
         <service

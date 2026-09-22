@@ -47,7 +47,7 @@ test('P1 UI and native MCP expose one-time authorization, full messages and six 
   assert.match(ui, /Codex、QClaw、WorkBuddy、OpenClaw、Claude Code 和 Hermes/);
   assert.match(ui, /查看采集的对话内容/);
   assert.match(ui, /session\.messages/);
-  assert.match(main, /\.workbuddy', '\.mcp\.json'/);
+  assert.match(main, /\.workbuddy', 'mcp\.json'/);
   assert.match(main, /\.openclaw', 'openclaw\.json'/);
   assert.match(main, /upsertOpenClawMcpServer/);
   for (const name of [

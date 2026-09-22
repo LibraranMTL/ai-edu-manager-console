@@ -54,6 +54,20 @@ test('D4-B ordinary question is versioned, bounded and scope-isolated', () => {
   assert.throws(() => normalizeAgentKnowledgeQuestion({ scopeType: 'student', scopeId: '', question: '问题' }), /缺少学生或项目范围/);
 });
 
+test('limited Agent knowledge prompt states that unapproved projects were not queried', () => {
+  const prompt = buildGroundedAgentPrompt({
+    question: '获奖时间是什么？',
+    scope: { type: 'student', id: 'student-1', name: '测试学生' },
+    source: 'local',
+    coverage: { limited: true, reason: 'linked_projects_excluded' },
+    warning: '部分关联项目未获授权或属于多人项目，已从本次查询中排除。',
+    resources: [],
+  });
+  assert.match(prompt, /已授权的单学生项目/);
+  assert.match(prompt, /未授权或多人项目未查询/);
+  assert.doesNotMatch(prompt, /仅限学生“测试学生”及其关联项目/);
+});
+
 test('explicit student names route only through the active global broker', () => {
   const students = [
     { id: 'student-hunter', name: 'Hunter' },
@@ -141,7 +155,7 @@ test('D4-B P0-P1 is wired to ordinary QA, authenticated Agent API and lazy diagn
   const main = fs.readFileSync(path.join(root, 'electron', 'main.cjs'), 'utf8');
   const preload = fs.readFileSync(path.join(root, 'electron', 'preload.cjs'), 'utf8');
   const ui = fs.readFileSync(path.join(root, 'src', 'main.tsx'), 'utf8');
-  const localCheck = main.indexOf('if (!args.forceRemote)');
+  const localCheck = main.indexOf('if (!args.forceRemote || args.localOnly)');
   const bindingResolution = main.indexOf('resolveRemoteArchiveBinding(scopeType, localScopeId', localCheck);
   assert.ok(localCheck >= 0 && bindingResolution > localCheck, 'local knowledge must be checked before collaboration endpoint resolution');
   assert.match(main, /pathname === '\/api\/agent\/knowledge\/query'/);
@@ -187,7 +201,7 @@ test('QClaw and Codex receive workspace and user-discoverable MCP registrations 
   assert.match(main, /codexGlobalConfigPath/);
   assert.match(main, /qclawAgent\?\.workspace/);
   assert.match(main, /\[mcp_servers\.\$\{serverName\}\]/);
-  assert.match(main, /const toolNames = \['query_education_knowledge', 'submit_education_conversation', 'get_recent_education_context'/);
+  assert.match(main, /const toolNames = \['query_education_knowledge', 'submit_education_conversation', 'list_education_archive', 'get_education_task_status', 'execute_education_write', 'get_education_write_status'/);
   assert.match(main, /allowedTools: toolNames/);
   assert.match(main, /AGENTS\.md/);
   assert.match(bridge, /query_education_knowledge/);

@@ -41,6 +41,15 @@ function visionResultPath(rootPath, studentId, sessionId) {
   return path.join(rootPath, 'vision', safeId(studentId), `${safeId(sessionId)}.json`);
 }
 
+function bundleFingerprint(bundle) {
+  return crypto.createHash('sha256').update(JSON.stringify({
+    studentId: String(bundle.studentId || ''), projectId: String(bundle.projectId || ''),
+    sourceSessionId: String(bundle.sourceSessionId || ''), sourceHashes: bundle.sourceHashes || {},
+    visionBatches: (bundle.visionBatches || []).map((batch) => ({ batchId: batch.batchId, eventIds: batch.eventIds || [] })),
+    segmentRefs: (bundle.segmentRefs || []).map((segment) => ({ segmentId: segment.segmentId, sourceEventIds: segment.sourceEventIds || [] })),
+  })).digest('hex');
+}
+
 function pathWithin(root, target) {
   const relative = path.relative(path.resolve(root), path.resolve(target));
   return relative !== '' && relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative);
@@ -159,6 +168,15 @@ function appendLocalOcrFallback(state, bundle, batch, ocrItems) {
   state.deliveryRecords = [...(state.deliveryRecords || []), ...deliveryRecords];
 }
 
+async function verifiedLocalOcrItems(ocrFallback, prepared) {
+  const accepted = [];
+  for (const item of await ocrFallback(prepared) || []) {
+    const frame = prepared.find((candidate) => String(candidate.eventId) === String(item?.eventId));
+    if (frame && (await hashFile(frame.source)).toLowerCase() === frame.expected) accepted.push(item);
+  }
+  return accepted;
+}
+
 function visionPrompt(bundle, batch) {
   const segments = (bundle.segmentRefs || []).filter((segment) => (segment.sourceEventIds || [])
     .some((id) => batch.frames.some((frame) => String(frame.eventId) === String(id))));
@@ -168,6 +186,19 @@ function visionPrompt(bundle, batch) {
 
 async function runBundleVision(options) {
   const { rootPath, bundle, manifest, executable, execute, prepareImage, isAuthorized, onProgress } = options;
+  const providerId = String(options.providerId || 'codex');
+  if (!['codex', 'workbuddy', 'qclaw'].includes(providerId)) throw new Error('vision_provider_unsupported');
+  const processingLocation = String(options.processingLocation || (providerId === 'codex' ? 'codex_service' : 'unknown'));
+  const providerVerifiedAt = Date.parse(options.providerCapability?.verifiedAt || '');
+  if (providerId !== 'codex' && (options.providerCapability?.providerId !== providerId
+    || options.providerCapability?.status !== 'passed'
+    || options.providerCapability?.readOnlyIsolation !== 'verified'
+    || options.providerCapability?.processingLocation !== processingLocation
+    || !processingLocation || processingLocation === 'unknown'
+    || !Number.isFinite(providerVerifiedAt) || providerVerifiedAt > Date.now()
+    || Date.now() - providerVerifiedAt > 7 * 24 * 60 * 60_000)) {
+    throw new Error('vision_provider_safety_not_verified');
+  }
   if (!bundle?.studentId || !bundle?.sourceSessionId || !bundle?.bundleId) throw new Error('vision_scope_missing');
   if (!manifest || String(manifest.studentId) !== String(bundle.studentId)
     || String(manifest.sourceSessionId) !== String(bundle.sourceSessionId)
@@ -176,22 +207,43 @@ async function runBundleVision(options) {
   if (!isAuthorized()) return { ok: false, reason: 'authorization_missing' };
   const target = visionResultPath(rootPath, bundle.studentId, bundle.sourceSessionId);
   const previous = readJson(target, {});
-  const sameBundle = previous.bundleId === bundle.bundleId && previous.consentEpoch === options.consentEpoch;
+  const fingerprint = bundleFingerprint(bundle);
+  const sameBundle = previous.bundleId === bundle.bundleId && previous.consentEpoch === options.consentEpoch
+    && String(previous.providerId || 'codex') === providerId
+    && previous.bundleFingerprint === fingerprint;
   const state = sameBundle ? previous : {
     schema: VISION_SCHEMA, studentId: String(bundle.studentId), projectId: String(bundle.projectId || ''),
-    sessionId: String(bundle.sourceSessionId), bundleId: String(bundle.bundleId), consentEpoch: String(options.consentEpoch || ''),
+    sessionId: String(bundle.sourceSessionId), bundleId: String(bundle.bundleId), bundleFingerprint: fingerprint,
+    providerId, processingLocation,
+    consentEpoch: String(options.consentEpoch || ''),
     completedBatchIds: [], deliveryRecords: [], timelineObservations: [], behaviorLabels: [], failures: [],
-    failedBatchIds: [],
+    failedBatchIds: [], ocrCompletedBatchIds: [], visualCompletedEventIds: [],
   };
   state.failedBatchIds ||= [];
+  state.ocrCompletedBatchIds ||= [];
+  state.visualCompletedEventIds ||= [];
   const manifestFrames = new Map((manifest.keyFrames || []).map((frame) => [String(frame.eventId), frame]));
   const rawDir = String(options.rawDir || '');
   for (const batch of selectImageBatches(bundle)) {
     if ((state.completedBatchIds || []).includes(batch.batchId)) continue;
     if (!isAuthorized()) return { ok: false, reason: 'authorization_revoked', state };
+    if (options.shouldYield?.()) {
+      state.status = 'waiting_resource';
+      state.nextRetryAt = new Date(Date.now() + 30_000).toISOString();
+      state.updatedAt = new Date().toISOString();
+      atomicWriteJson(target, state);
+      return { ok: false, reason: 'resource_yield', state };
+    }
+    const completedVisual = new Set(state.visualCompletedEventIds.map(String));
+    const pendingFrames = batch.frames.filter((frame) => !completedVisual.has(String(frame.eventId)));
+    if (!pendingFrames.length) {
+      state.completedBatchIds.push(batch.batchId);
+      atomicWriteJson(target, state);
+      continue;
+    }
     const prepared = [];
     let batchBytes = 0;
-    for (const frame of batch.frames) {
+    for (const frame of pendingFrames) {
       const source = String(manifestFrames.get(String(frame.eventId))?.evidencePath || '');
       const expected = String(bundle.sourceHashes?.[frame.eventId] || '').toLowerCase();
       if (!source || !rawDir || !realPathWithin(rawDir, source) || !fs.existsSync(source)
@@ -216,7 +268,21 @@ async function runBundleVision(options) {
       atomicWriteJson(target, state);
       continue;
     }
-    const requestId = `vision-${crypto.createHash('sha1').update(`${bundle.bundleId}|${batch.batchId}|${prepared.map((frame) => frame.expected).join('|')}`).digest('hex').slice(0, 24)}`;
+    if (options.localOcrOnly) {
+      if (!state.ocrCompletedBatchIds.includes(batch.batchId) && options.ocrFallback && isAuthorized()) {
+        try {
+          const ocrItems = await verifiedLocalOcrItems(options.ocrFallback, prepared);
+          if (isAuthorized()) appendLocalOcrFallback(state, bundle, { ...batch, frames: prepared }, ocrItems);
+        } catch { /* A local OCR failure does not block facts or later visual recovery. */ }
+        state.ocrCompletedBatchIds.push(batch.batchId);
+      }
+      state.status = 'waiting_visual_capability';
+      state.nextRetryAt = new Date(Date.now() + 5 * 60_000).toISOString();
+      state.updatedAt = new Date().toISOString();
+      atomicWriteJson(target, state);
+      continue;
+    }
+    const requestId = `vision-${crypto.createHash('sha1').update(`${providerId}|${options.consentEpoch || ''}|${bundle.bundleId}|${batch.batchId}|${prepared.map((frame) => frame.expected).join('|')}`).digest('hex').slice(0, 24)}`;
     const actualBatch = { ...batch, frames: prepared };
     const submitted = prepareImage ? await Promise.all(prepared.map((frame, index) => prepareImage(frame, index, requestId)))
       : prepared.map((frame) => ({ path: frame.source, submittedHash: frame.expected, bytes: frame.bytes }));
@@ -238,7 +304,7 @@ async function runBundleVision(options) {
       const deliveryRecords = prepared.map((frame, index) => ({
         eventId: String(frame.eventId), contentHash: frame.expected, submittedHash: submitted[index].submittedHash,
         submittedBytes: Number(submitted[index].bytes || 0), requestId,
-        provider: 'codex', processingLocation: 'codex_service', readOnly: true,
+        provider: providerId, processingLocation, readOnly: true,
         status: 'cli_completed_with_attachment', completedAt: new Date().toISOString(),
       }));
       const byDelivery = new Map([...state.deliveryRecords, ...deliveryRecords]
@@ -249,7 +315,16 @@ async function runBundleVision(options) {
       const sanitized = sanitizeObservationResponse(parsed, actualBatch, bundle);
       state.timelineObservations = mergeObservations([...state.timelineObservations, ...sanitized.observations]);
       state.behaviorLabels = [...state.behaviorLabels, ...sanitized.behaviorLabels];
-      state.completedBatchIds.push(batch.batchId);
+      state.visualCompletedEventIds = [...new Set([...state.visualCompletedEventIds, ...prepared.map((frame) => String(frame.eventId))])];
+      if (prepared.length === pendingFrames.length) state.completedBatchIds.push(batch.batchId);
+      else {
+        const attempts = (state.failures || []).filter((item) => item.batchId === batch.batchId && item.code === 'image_missing_or_changed').length + 1;
+        state.failures.push({ batchId: batch.batchId, code: 'image_missing_or_changed', attempt: attempts });
+        if (attempts >= 3) {
+          state.completedBatchIds.push(batch.batchId);
+          state.failedBatchIds = [...new Set([...state.failedBatchIds, batch.batchId])];
+        } else state.nextRetryAt = new Date(Date.now() + Math.min(30, 2 ** attempts) * 60_000).toISOString();
+      }
       state.updatedAt = new Date().toISOString();
       atomicWriteJson(target, state);
       onProgress?.(state);
@@ -263,7 +338,7 @@ async function runBundleVision(options) {
           byDelivery.set(key, {
           eventId: String(frame.eventId), contentHash: frame.expected, submittedHash: String(submitted[index]?.submittedHash || ''),
           submittedBytes: Number(submitted[index]?.bytes || 0), requestId,
-          provider: 'codex', processingLocation: 'codex_service', readOnly: true,
+          provider: providerId, processingLocation, readOnly: true,
           status: 'unknown', attemptedAt: new Date().toISOString(),
           });
         }
@@ -276,7 +351,7 @@ async function runBundleVision(options) {
         state.failedBatchIds = [...new Set([...(state.failedBatchIds || []), batch.batchId])];
         state.nextRetryAt = '';
         if (options.ocrFallback && isAuthorized()) {
-          try { appendLocalOcrFallback(state, bundle, actualBatch, await options.ocrFallback(prepared)); }
+          try { appendLocalOcrFallback(state, bundle, actualBatch, await verifiedLocalOcrItems(options.ocrFallback, prepared)); }
           catch { /* OCR failure is isolated; other batches and facts continue. */ }
         }
       } else state.nextRetryAt = new Date(Date.now() + Math.min(30, 2 ** attempts) * 60_000).toISOString();
@@ -289,7 +364,8 @@ async function runBundleVision(options) {
     }
   }
   const allResolved = state.completedBatchIds.length === selectImageBatches(bundle).length;
-  state.status = allResolved ? state.failedBatchIds?.length ? 'degraded' : 'completed' : 'retry_scheduled';
+  state.status = allResolved ? state.failedBatchIds?.length ? 'degraded' : 'completed'
+    : options.localOcrOnly ? 'waiting_visual_capability' : 'retry_scheduled';
   if (allResolved) state.nextRetryAt = '';
   state.updatedAt = new Date().toISOString();
   atomicWriteJson(target, state);

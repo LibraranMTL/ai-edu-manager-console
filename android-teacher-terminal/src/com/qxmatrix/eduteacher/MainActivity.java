@@ -112,8 +112,8 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
     static final int REQUEST_IMPORT_CONNECTION_BACKUP = 8109;
     static final int REQUEST_CAPTURE_STUDENT_QR = 8110;
     static final int REQUEST_AUTO_DELIVERY_FOLDER = 8111;
-    static final String VERSION_NAME = "0.1.1";
-    static final int VERSION_CODE = 2;
+    static final String VERSION_NAME = "0.1.2";
+    static final int VERSION_CODE = 3;
     static final String CONNECTION_BACKUP_KIND = "ai-edu-manager-teacher-connection-backup";
     static final int CONNECTION_BACKUP_VERSION = 1;
     static final String UPDATE_MANIFEST_URL = "https://www.greatbg.com/download/edu-manager-version.json";
@@ -151,6 +151,7 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
     private static final String PREF_HOST_MACHINE_CODE = "host_machine_code";
     private static final String PREF_HOST_DISPLAY_NAME = "host_display_name";
     private static final String PREF_PENDING_CONVERSATION_TEXT = "pending_conversation_text";
+    private static final String PREF_CAPTURE_AUTO_DELIVERY_DEFAULT = "capture_auto_delivery_default";
     private static final int MAX_CONVERSATION_CHARS = 60000;
     private static final String CACHE_ARCHIVE_FILES_PREFIX = "archive_files_";
     private static final String CACHE_MARKDOWN_PREFIX = "markdown_";
@@ -321,6 +322,7 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
     TextView captureStatusText;
     String pendingCaptureMode = "smart";
     int pendingCaptureDurationMinutes = 30;
+    boolean pendingCaptureAutoDelivery = false;
     String pendingCaptureProjectId = "";
     String pendingCaptureProjectName = "";
     boolean uploadInProgress = false;
@@ -734,7 +736,7 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
 
         captureCard = card();
         captureCard.addView(label("屏幕资料采集"));
-        captureCard.addView(label("授权后可按智能混合、内容变化或固定间隔模式连续采集；结果先保存在本机采集箱，确认后可上传到学生原始资料库或绑定项目原始资料库。"));
+        captureCard.addView(label("授权后可按智能混合、内容变化或固定间隔模式连续采集；可选择在结束后自动投递本次截图，离线时后台重试。"));
         LinearLayout captureRow = row();
         captureStartButton = button("开始屏幕采集", true);
         capturePauseButton = button("暂停/继续", false);
@@ -2618,7 +2620,8 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
                     .putExtra("course_id", activeCourse == null ? "" : activeCourse.id)
                     .putExtra("course_provider", activeCourse == null ? "" : activeCourse.provider)
                     .putExtra("course_url", activeCourse == null ? "" : activeCourse.currentUrl)
-                    .putExtra("course_started_at", activeCourse == null ? 0L : activeCourseStartedAt);
+                    .putExtra("course_started_at", activeCourse == null ? 0L : activeCourseStartedAt)
+                    .putExtra("auto_delivery", pendingCaptureAutoDelivery);
                 getSharedPreferences(CaptureProjectionService.PREFS, MODE_PRIVATE).edit()
                     .putString(CaptureProjectionService.KEY_PROJECT_ID, pendingCaptureProjectId)
                     .putString(CaptureProjectionService.KEY_PROJECT_NAME, pendingCaptureProjectName)
@@ -2626,6 +2629,7 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
                     .putString(CaptureProjectionService.KEY_COURSE_PROVIDER, activeCourse == null ? "" : activeCourse.provider)
                     .putString(CaptureProjectionService.KEY_COURSE_URL, activeCourse == null ? "" : activeCourse.currentUrl)
                     .putLong(CaptureProjectionService.KEY_COURSE_STARTED_AT, activeCourse == null ? 0L : activeCourseStartedAt)
+                    .putBoolean("auto_delivery_enabled", pendingCaptureAutoDelivery)
                     .putString("capture_student_id", selectedStudent == null ? "" : selectedStudent.id)
                     .apply();
                 if (Build.VERSION.SDK_INT >= 26) startForegroundService(serviceIntent);
@@ -3206,8 +3210,12 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
         int dedup = prefs.getInt(CaptureProjectionService.KEY_DEDUP, 0);
         int highlighted = prefs.getInt(CaptureProjectionService.KEY_HIGHLIGHTED, 0);
         String mode = prefs.getString("mode", "smart");
+        boolean autoDelivery = prefs.getBoolean("auto_delivery_enabled", false);
+        String autoDeliveryStatus = prefs.getString(CaptureAutoDeliveryJobService.KEY_STATUS, "");
         String stateLabel = "capturing".equals(state) ? "正在采集" : "paused".equals(state) ? "已暂停" : "completed".equals(state) ? "待上传" : "尚未启动";
-        captureStatusText.setText("采集状态：" + stateLabel + " · 模式 " + captureModeLabel(mode) + " · 检测 " + candidate + " · 保留 " + saved + " · 去重 " + dedup + " · 重点 " + highlighted);
+        captureStatusText.setText("采集状态：" + stateLabel + " · 模式 " + captureModeLabel(mode) + " · 检测 " + candidate + " · 保留 " + saved + " · 去重 " + dedup + " · 重点 " + highlighted
+            + "\n结束后：" + (autoDelivery ? "自动投递（离线会重试）" : "保留本机，手动上传")
+            + (autoDeliveryStatus.length() > 0 ? "\n自动投递：" + autoDeliveryStatus : ""));
         boolean active = "capturing".equals(state) || "paused".equals(state);
         captureStartButton.setText(active ? "结束采集" : "开始屏幕采集");
         capturePauseButton.setEnabled(active);
@@ -3336,6 +3344,32 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
                     int checked = ((AlertDialog) dialog).getListView().getCheckedItemPosition();
                     if (checked < 0) checked = 1;
                     pendingCaptureDurationMinutes = minutes[checked];
+                    showCaptureAutoDeliveryDialog();
+                }
+            })
+            .setNegativeButton("取消", null)
+            .show();
+    }
+
+    void showCaptureAutoDeliveryDialog() {
+        final boolean lastChoice = getSharedPreferences(PREFS, MODE_PRIVATE).getBoolean(PREF_CAPTURE_AUTO_DELIVERY_DEFAULT, false);
+        final String target = pendingCaptureProjectName.length() > 0
+            ? "学生“" + (selectedStudent == null ? "" : selectedStudent.name) + "”的项目“" + pendingCaptureProjectName + "”"
+            : (selectedStudent == null ? "当前学生资料库" : "学生“" + selectedStudent.name + "”的资料库");
+        final String[] choices = new String[] {
+            "采集结束后自动投递到" + target + "（离线时后台重试）",
+            "保留在本机采集箱，稍后手动上传"
+        };
+        new AlertDialog.Builder(this)
+            .setTitle("确认学生与采集投递")
+            .setSingleChoiceItems(choices, lastChoice ? 0 : 1, null)
+            .setPositiveButton("授权并开始", new DialogInterface.OnClickListener() {
+                @Override public void onClick(DialogInterface dialog, int which) {
+                    int checked = ((AlertDialog) dialog).getListView().getCheckedItemPosition();
+                    pendingCaptureAutoDelivery = checked == 0;
+                    getSharedPreferences(PREFS, MODE_PRIVATE).edit()
+                        .putBoolean(PREF_CAPTURE_AUTO_DELIVERY_DEFAULT, pendingCaptureAutoDelivery)
+                        .apply();
                     requestScreenCapturePermission();
                 }
             })

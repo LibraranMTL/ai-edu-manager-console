@@ -21,6 +21,16 @@ test('all four learning reports have idempotent weekly or monthly tasks', () => 
   assert.match(main, /new Set\(\['published', 'current', 'updated', 'active'\]\)\.has\(reportStatus\)/);
 });
 
+test('periodic reports read bounded learning candidates without promoting them to citeable evidence', () => {
+  assert.match(main, /buildLearningReportCandidateContext\(normalized\.rootPath/);
+  assert.match(main, /learningCandidate,/);
+  assert.match(main, /本周期纵向学习轨迹候选（不是可引用证据白名单）/);
+  assert.match(main, /未在上方白名单确认的事件 ID 和来源 ID 不得写成/);
+  assert.doesNotMatch(main, /eligibleEvidenceIds: learningCandidate/);
+  assert.match(ui, /分维度证据估计：概念理解/);
+  assert.match(ui, /未知维度不按零分计算/);
+});
+
 test('new report drafts are validated and automatically published without routine review', () => {
   assert.match(main, /task\.kind === 'weekly_action' \|\| PERIODIC_REPORT_TASKS\[task\.kind\]/);
   assert.match(main, /validateSectionedReport/);

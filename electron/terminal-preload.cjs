@@ -38,6 +38,7 @@ contextBridge.exposeInMainWorld('terminalBridge', {
   listCaptureSources: () => ipcRenderer.invoke('terminal:list-capture-sources'),
   startCapture: (input) => ipcRenderer.invoke('terminal:start-capture', input),
   stopCapture: () => ipcRenderer.invoke('terminal:stop-capture'),
+  captureControl: (action) => ipcRenderer.invoke('terminal:capture-control', action),
   uploadCapture: (input) => ipcRenderer.invoke('terminal:upload-capture', input),
   onUploadProgress: (handler) => ipcRenderer.on('terminal:upload-progress', (_event, payload) => handler(payload)),
   onAutoDelivery: (handler) => ipcRenderer.on('terminal:auto-delivery', (_event, payload) => handler(payload)),

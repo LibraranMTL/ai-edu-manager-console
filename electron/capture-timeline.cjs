@@ -3,6 +3,7 @@ const fs = require('fs');
 const path = require('path');
 
 const TIMELINE_SCHEMA = 'edu-manager.learner-event.v1';
+const TEMPORAL_SCHEMA = 'edu-manager.temporal-event.v1';
 const eventIdCache = new Map();
 
 function safeId(value) {
@@ -19,6 +20,32 @@ function localDateKey(value) {
   const month = String(valid.getMonth() + 1).padStart(2, '0');
   const day = String(valid.getDate()).padStart(2, '0');
   return `${year}-${month}-${day}`;
+}
+
+function validReportedTime(value) {
+  const raw = String(value || '').trim();
+  if (!raw) return null;
+  const milliseconds = Date.parse(raw);
+  if (!Number.isFinite(milliseconds)) return null;
+  return { raw, iso: new Date(milliseconds).toISOString() };
+}
+
+function reportedTimePrecision(raw) {
+  if (!/(?:Z|[+-]\d{2}:?\d{2})$/i.test(raw)) return 'timezone_unspecified';
+  if (/\.\d+(?:Z|[+-]\d{2}:?\d{2})$/i.test(raw)) return 'subsecond';
+  if (/T\d{2}:\d{2}:\d{2}/i.test(raw)) return 'second';
+  return 'minute_or_coarser';
+}
+
+function explicitActor(session, item) {
+  const claimedActorType = String(item.actorType || session.actorType || '').trim().toLowerCase();
+  const actorEvidence = String(item.actorEvidence || session.actorEvidence || '').trim().slice(0, 240);
+  const allowed = new Set(['student', 'parent', 'teacher']);
+  return {
+    actorType: allowed.has(claimedActorType) && actorEvidence ? claimedActorType : 'unknown',
+    claimedActorType: allowed.has(claimedActorType) ? claimedActorType : '',
+    actorEvidence,
+  };
 }
 
 function timelineStudentRoot(rootPath, studentId) {
@@ -73,15 +100,48 @@ function knownEventIds(filePath) {
 }
 
 function captureEventFromSessionItem(session = {}, item = {}) {
-  const capturedAt = String(item.capturedAt || item.uploadedAt || session.startedAt || new Date().toISOString());
-  const eventId = String(item.id || item.captureItemId || `${session.id || 'capture'}-${capturedAt}`);
+  const processedAt = new Date().toISOString();
+  const reportedCapture = validReportedTime(item.capturedAt);
+  const reportedUpload = validReportedTime(item.uploadedAt);
+  const reportedSessionStart = validReportedTime(session.startedAt);
+  // A screenshot cannot be captured well after its host-side receipt. Preserve
+  // the device value for audit, but do not treat its interval as measured time.
+  const clockStatus = reportedCapture && reportedUpload
+    && Date.parse(reportedCapture.iso) - Date.parse(reportedUpload.iso) > 5 * 60_000
+    ? 'suspected_future_capture' : reportedCapture && reportedUpload ? 'not_future_skewed'
+      : 'not_comparable';
+  const timeSource = reportedCapture ? 'captured_at' : reportedUpload ? 'uploaded_at'
+    : reportedSessionStart ? 'session_started_at' : 'processing_at';
+  const selectedTime = reportedCapture || reportedUpload || reportedSessionStart || { raw: processedAt, iso: processedAt };
+  const capturedAt = selectedTime.iso;
+  const legacyEventTime = String(item.capturedAt || item.uploadedAt || session.startedAt || '');
+  const fallbackId = legacyEventTime ? `${session.id || 'capture'}-${legacyEventTime}`
+    : `capture-${crypto.createHash('sha1').update([
+      session.id || '', item.sequence ?? '', item.contentHash || item.sha1 || '', item.path || '',
+    ].join('|')).digest('hex').slice(0, 24)}`;
+  const eventId = String(item.id || item.captureItemId || fallbackId);
+  const actor = explicitActor(session, item);
   return {
     schema: TIMELINE_SCHEMA,
+    temporalSchema: TEMPORAL_SCHEMA,
     id: eventId,
     eventType: 'capture',
     occurredAt: capturedAt,
+    reportedCapturedAt: String(item.reportedCapturedAtRaw || item.capturedAt || '').trim().slice(0, 80),
+    reportedUploadedAt: String(item.uploadedAt || '').trim().slice(0, 80),
+    receivedAt: reportedUpload?.iso || '',
+    receivedAtSource: String(item.receivedAtSource || '').trim().slice(0, 40),
+    processedAt,
+    timeSource,
+    timePrecision: reportedCapture ? reportedTimePrecision(reportedCapture.raw) : 'event_time_unknown',
+    captureTimeStatus: String(item.captureTimeStatus || (reportedCapture ? 'device_reported' : 'unknown')).trim().slice(0, 40),
+    clockStatus,
+    localDateTimeZone: Intl.DateTimeFormat().resolvedOptions().timeZone || '',
+    reportedClockOffsetMs: Number.isFinite(Number(item.clockOffsetMs)) && item.clockOffsetMs !== '' && item.clockOffsetMs != null
+      ? Number(item.clockOffsetMs) : null,
     date: localDateKey(capturedAt),
     studentId: String(session.studentId || ''),
+    deviceId: String(item.deviceId || session.deviceId || ''),
     studentName: String(session.studentName || ''),
     sessionId: String(session.id || item.captureSessionId || ''),
     sessionName: String(session.name || ''),
@@ -93,6 +153,11 @@ function captureEventFromSessionItem(session = {}, item = {}) {
     courseId: String(session.courseId || ''),
     courseName: String(session.courseName || ''),
     courseUrl: String(session.courseUrl || ''),
+    taskId: String(item.taskId || session.taskId || ''),
+    taskVersion: String(item.taskVersion || session.taskVersion || ''),
+    conceptIds: (Array.isArray(item.conceptIds) ? item.conceptIds : Array.isArray(session.conceptIds) ? session.conceptIds : [])
+      .map((value) => String(value || '').trim()).filter(Boolean).slice(0, 20),
+    ...actor,
     reason: String(item.reason || 'interval'),
     difference: Number(item.difference || 0),
     highlighted: Boolean(item.isHighlighted),
@@ -283,6 +348,7 @@ function deleteSessionEvents(rootPath, studentId, sessionId) {
 
 module.exports = {
   TIMELINE_SCHEMA,
+  TEMPORAL_SCHEMA,
   appendCaptureItem,
   appendEvent,
   captureEventFromSessionItem,

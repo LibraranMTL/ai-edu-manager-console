@@ -9,6 +9,8 @@ const {
   atomicWriteJson,
   buildMemory,
   buildSegments,
+  bundleMarkdown,
+  captureEvidenceRoot,
   findKnowledgeLinks,
   persistSemanticResult,
   preSegmentEvents,
@@ -42,6 +44,17 @@ function fixtureSession(root) {
   return { id: 'session-semantic', studentId: 'student-1', studentName: '测试学生', sourceName: '数学课程', courseName: '二次函数', archiveStatus: 'candidate', items };
 }
 
+test('timeline digest requests learning events in the existing segment receipt only with verified performance evidence', () => {
+  const markdown = bundleMarkdown({ studentName: '测试学生' }, {
+    bundleId: 'bundle-1', studentId: 'student-1', sourceSessionId: 'session-1', createdAt: '2026-09-21T00:00:00.000Z',
+    keyFrames: [], sourceHashes: {}, processingWindows: [], allowedEvidenceRefs: [],
+  }, [{ segmentId: 'segment-1', startedAt: '2026-09-21T00:00:00.000Z', endedAt: '2026-09-21T00:01:00.000Z', sourceEventIds: ['event-1'], keyEventIds: [] }]);
+  assert.match(markdown, /"learningEvents": \[\]/);
+  assert.match(markdown, /仅当本活动段有已核验的题目、提交结果、教师反馈或同范围授权对话/);
+  assert.match(markdown, /仅看见题目、网页、操作界面、提交按钮或截图变化时，保持 learningEvents 为空/);
+  assert.match(markdown, /不得引用本次系统消化任务会话/);
+});
+
 test('two-stage segmentation selects bounded keyframes and builds semantic segments', () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'edu-semantic-unit-'));
   try {
@@ -62,6 +75,28 @@ test('two-stage segmentation selects bounded keyframes and builds semantic segme
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
+});
+
+test('T0 marks long unobserved intervals and substitute timestamps without inventing learning duration', () => {
+  const session = { id: 'time-gap', studentId: 'student-gap' };
+  const first = captureEventFromSessionItem(session, { id: 'a', capturedAt: '2026-09-10T01:00:00.000Z' });
+  const second = captureEventFromSessionItem(session, { id: 'b', capturedAt: '2026-09-10T01:10:00.000Z' });
+  const groups = preSegmentEvents([first, second]).map((events) => ({ events, keyFrames: selectKeyFrames(events) }));
+  const segments = buildSegments(session, groups, new Map(), { factualOnly: true });
+  assert.equal(segments.length, 2);
+  assert.equal(segments[1].gapBeforeMs, 10 * 60_000);
+  assert.equal(segments[1].gapBeforeStatus, 'unobserved_interval');
+  const uploaded = captureEventFromSessionItem(session, { id: 'b', uploadedAt: '2026-09-10T01:10:00.000Z' });
+  const uncertainGroups = preSegmentEvents([first, uploaded]).map((events) => ({ events, keyFrames: selectKeyFrames(events) }));
+  const uncertainSegments = buildSegments(session, uncertainGroups, new Map(), { factualOnly: true });
+  assert.equal(uncertainSegments[1].gapBeforeStatus, 'time_uncertain');
+  assert.equal(uncertainSegments[1].uncertainTimeEventCount, 1);
+  const future = captureEventFromSessionItem(session, { id: 'c', capturedAt: '2026-09-10T01:20:00.000Z', uploadedAt: '2026-09-10T01:11:00.000Z' });
+  assert.equal(future.clockStatus, 'suspected_future_capture');
+  const skewedGroups = preSegmentEvents([first, future]).map((events) => ({ events, keyFrames: selectKeyFrames(events) }));
+  const skewedSegments = buildSegments(session, skewedGroups, new Map(), { factualOnly: true });
+  assert.equal(skewedSegments[1].gapBeforeStatus, 'time_uncertain');
+  assert.equal(skewedSegments[1].uncertainTimeEventCount, 1);
 });
 
 test('semantic persistence queries activity segments instead of screenshot rows', () => {
@@ -268,7 +303,7 @@ test('recognition cache pruning retains referenced artifacts and removes cache-o
   }
 });
 
-test('worker creates vision batches of at most eight and reuses evidence already inside formal raw storage', async () => {
+test('worker creates vision batches of at most eight and isolates evidence from formal raw storage', async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'edu-semantic-batches-'));
   try {
     const rawDir = path.join(root, 'raw');
@@ -287,7 +322,8 @@ test('worker creates vision batches of at most eight and reuses evidence already
     const result = await processSession(root, session);
     assert.ok(result.bundle.visionBatches.every((batch) => batch.eventIds.length <= 8));
     assert.equal(result.bundle.sourceHashes[result.bundle.keyFrames[0].eventId], result.bundle.keyFrames[0].contentHash);
-    assert.ok(result.publishedEvidencePaths.every((evidencePath) => session.items.some((item) => item.path === evidencePath)));
+    assert.ok(result.publishedEvidencePaths.every((evidencePath) => evidencePath.startsWith(captureEvidenceRoot(root, session.studentId, session.id))));
+    assert.ok(result.publishedEvidencePaths.every((evidencePath) => fs.existsSync(evidencePath)));
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }

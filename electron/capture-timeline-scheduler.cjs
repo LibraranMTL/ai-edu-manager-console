@@ -18,6 +18,7 @@ class CaptureTimelineScheduler {
     this.rootPath = String(options.rootPath || '');
     this.workerPath = String(options.workerPath || path.join(__dirname, 'capture-timeline-worker.cjs'));
     this.getResourceSnapshot = typeof options.getResourceSnapshot === 'function' ? options.getResourceSnapshot : () => ({});
+    this.acquirePermit = typeof options.acquirePermit === 'function' ? options.acquirePermit : () => () => {};
     this.loadSession = typeof options.loadSession === 'function' ? options.loadSession : () => null;
     this.onProgress = typeof options.onProgress === 'function' ? options.onProgress : () => {};
     this.onComplete = typeof options.onComplete === 'function' ? options.onComplete : () => {};
@@ -42,8 +43,8 @@ class CaptureTimelineScheduler {
     this.started = false;
     if (this.timer) clearInterval(this.timer);
     this.timer = null;
-    for (const item of this.running.values()) item.worker.terminate();
-    for (const item of this.reportRunning.values()) item.worker.terminate();
+    for (const item of this.running.values()) { item.worker.terminate(); item.releasePermit?.(); }
+    for (const item of this.reportRunning.values()) { item.worker.terminate(); item.releasePermit?.(); }
     this.running.clear();
     this.reportRunning.clear();
   }
@@ -170,15 +171,24 @@ class CaptureTimelineScheduler {
   runReportRepair(item) {
     const key = `${item.studentId}:${item.sessionId}`;
     if (this.reportRunning.has(key)) return;
+    const releasePermit = this.acquirePermit({ kind: 'report_projection', studentId: item.studentId, sessionId: item.sessionId });
+    if (!releasePermit) return;
     this.reportQueue.delete(key);
     writeReportRepairJob(this.rootPath, { ...item, state: 'running', nextRetryAt: '', requiresUserAction: false });
-    const worker = new Worker(this.workerPath, { workerData: { mode: 'report_rebuild', rootPath: this.rootPath, studentId: item.studentId, sessionId: item.sessionId, dates: item.dates } });
-    const running = { ...item, worker, settled: false };
+    let worker;
+    try { worker = new Worker(this.workerPath, { workerData: { mode: 'report_rebuild', rootPath: this.rootPath, studentId: item.studentId, sessionId: item.sessionId, dates: item.dates } }); }
+    catch {
+      releasePermit();
+      this.enqueueReportRepair({ ...item, attempt: item.attempt + 1, nextRetryAt: new Date(Date.now() + RECOVERY_DELAY).toISOString() });
+      return;
+    }
+    const running = { ...item, worker, settled: false, releasePermit };
     this.reportRunning.set(key, running);
     const settle = (result) => {
       if (running.settled) return;
       running.settled = true;
       this.reportRunning.delete(key);
+      running.releasePermit();
       if (result?.ok) writeReportRepairJob(this.rootPath, { ...item, state: 'completed', completedAt: new Date().toISOString(), nextRetryAt: '', requiresUserAction: false });
       else this.enqueueReportRepair({ ...item, attempt: item.attempt + 1, nextRetryAt: new Date(Date.now() + RECOVERY_DELAY).toISOString() });
       this.tick();
@@ -194,9 +204,17 @@ class CaptureTimelineScheduler {
   run(item) {
     const sessionId = String(item.session.id);
     if (this.running.has(sessionId)) return;
+    const releasePermit = this.acquirePermit({ kind: 'timeline', studentId: item.session.studentId, sessionId });
+    if (!releasePermit) return;
     this.queue.delete(sessionId);
-    const worker = new Worker(this.workerPath, { workerData: { rootPath: this.rootPath, session: item.session, attempt: item.attempt } });
-    const running = { ...item, worker, settled: false };
+    let worker;
+    try { worker = new Worker(this.workerPath, { workerData: { rootPath: this.rootPath, session: item.session, attempt: item.attempt } }); }
+    catch (error) {
+      releasePermit();
+      this.fail(item, error.message);
+      return;
+    }
+    const running = { ...item, worker, settled: false, releasePermit };
     this.running.set(sessionId, running);
     worker.on('message', async (message) => {
       if (running.settled) return;
@@ -208,15 +226,18 @@ class CaptureTimelineScheduler {
         running.settled = true;
         this.running.delete(sessionId);
         if (message.result?.yielded) {
+          running.releasePermit();
           this.enqueue(item.session, { delayMs: 30_000, attempt: item.attempt, state: 'retry_scheduled', recoveryTrigger: 'resource_available' });
           return;
         }
         try {
           await this.onComplete(message.result, item.session);
         } catch (error) {
+          running.releasePermit();
           this.fail(item, `Timeline bundle publication failed: ${error.message}`);
           return;
         }
+        running.releasePermit();
         if (message.result?.state === 'partial_completed' || message.result?.state === 'degraded') {
           this.enqueue(item.session, { dueAt: Date.now() + RECOVERY_DELAY, attempt: item.attempt + 1, state: 'recovery_scheduled', recoveryTrigger: 'timer_or_dependency_available' });
         }
@@ -235,6 +256,7 @@ class CaptureTimelineScheduler {
     const running = this.running.get(sessionId);
     if (running) running.settled = true;
     this.running.delete(sessionId);
+    running?.releasePermit?.();
     const attempt = Math.max(1, Number(item.attempt || 1));
     const fastDelay = FAST_RETRY_DELAYS[attempt - 1];
     const delay = fastDelay || RECOVERY_DELAY;

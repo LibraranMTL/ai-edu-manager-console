@@ -125,6 +125,23 @@ test('compatibility mapping rejects cross-student evidence and indexes', () => {
   );
 });
 
+test('local review evidence with the same student name can follow a migrated student id', () => {
+  const migratedStudent = { id: '1783691970902-赵书源', name: '赵书源' };
+  const mapped = mapGrowthEvidenceReviewToEducationClaims({
+    student: migratedStudent,
+    review: { candidates: [{
+      id: 'legacy-zhao-001',
+      studentId: '1783695772310-赵书源',
+      studentName: '赵书源',
+      title: '历史项目观察',
+      content: '历史记录属于同一学生。',
+      status: 'pending',
+    }] },
+  });
+  assert.equal(mapped.growthEvidence[0].studentId, mapped.profile.id);
+  assert.equal(mapped.claims[0].subjectId, mapped.profile.id);
+});
+
 test('legacy paths become explicit source URIs without changing the original path field', () => {
   assert.equal(sourceUriFromLegacyPath('fixture://student-a/work', 'e1'), 'fixture://student-a/work');
   assert.equal(sourceUriFromLegacyPath('', 'e1'), 'legacy-review://growth-evidence/e1');

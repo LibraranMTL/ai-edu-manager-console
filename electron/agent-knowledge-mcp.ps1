@@ -70,7 +70,7 @@ function Conversation-Tool-Definition {
   return @{
     name = 'submit_education_conversation'
     title = ('Save conversation to Education Manager for {0}' -f $scopeName)
-    description = (('Save only the current or explicitly selected conversation messages for student {0}. Omit targetProject to save to the student archive; when the user explicitly names a project, pass its exact name or ID in targetProject. A named project must resolve uniquely or nothing is stored.' -f $scopeName) + $projectHint)
+    description = (('Preview only the current or explicitly selected conversation messages for student {0}. The host administrator must review and approve the returned intent before execute_education_write saves it. A named project must resolve uniquely or nothing is stored.' -f $scopeName) + $projectHint)
     inputSchema = @{
       type = 'object'
       properties = @{
@@ -89,6 +89,7 @@ function Conversation-Tool-Definition {
           maxLength = 120
           description = 'The calling agent name, such as qclaw or codex.'
         }
+        idempotencyKey = @{ type = 'string'; maxLength = 128; description = 'Stable key for this exact selected submission. Reuse only for retries.' }
         targetProject = @{
           type = 'string'
           maxLength = 240
@@ -110,26 +111,34 @@ function Conversation-Tool-Definition {
             additionalProperties = $false
           }
         }
-        attachments = @{
-          type = 'array'
-          maxItems = 20
-          description = 'Files explicitly selected by the user for this submission.'
-          items = @{
-            type = 'object'
-            properties = @{
-              sourcePath = @{ type = 'string'; minLength = 1; maxLength = 2000 }
-              name = @{ type = 'string'; maxLength = 240 }
-              explicitlySelected = @{ type = 'boolean'; const = $true }
-            }
-            required = @('sourcePath', 'explicitlySelected')
-            additionalProperties = $false
-          }
-        }
       }
       required = @('messages')
       additionalProperties = $false
     }
   }
+}
+
+function Capability-Tool-Definitions {
+  $scope = @{ studentId = @{ type = 'string'; minLength = 1; description = 'Exact authorized student ID.' }; projectId = @{ type = 'string'; description = 'Exact linked project ID when querying project scope.' } }
+  return @(
+    @{ name = 'list_education_archive'; title = 'List education archive metadata'; description = 'Read only names and relative paths in the exact authorized scope. No raw file paths or contents.'; inputSchema = @{ type = 'object'; properties = ($scope + @{ cursor = @{ type = 'integer'; minimum = 0 }; limit = @{ type = 'integer'; minimum = 1; maximum = 50 } }); required = @('studentId'); additionalProperties = $false } },
+    @{ name = 'get_education_task_status'; title = 'Get education task status'; description = 'Read compact task status for the exact authorized student or linked project.'; inputSchema = @{ type = 'object'; properties = ($scope + @{ cursor = @{ type = 'integer'; minimum = 0 }; limit = @{ type = 'integer'; minimum = 1; maximum = 50 } }); required = @('studentId'); additionalProperties = $false } }
+  )
+}
+
+function Invoke-CapabilityTool {
+  param([string]$Name, [object]$Arguments)
+  $config = Read-Descriptor
+  $endpoint = [string]$config.capabilityEndpoint
+  if (-not $endpoint.StartsWith('http://127.0.0.1:')) { throw 'Local capability endpoint unavailable.' }
+  $capabilityInput = @{
+    studentId = [string]$Arguments.studentId
+  }
+  if ($Arguments.projectId) { $capabilityInput.projectId = [string]$Arguments.projectId }
+  if ($null -ne $Arguments.cursor) { $capabilityInput.cursor = [int]$Arguments.cursor }
+  if ($null -ne $Arguments.limit) { $capabilityInput.limit = [int]$Arguments.limit }
+  $result = Invoke-EducationManagerApi -Config $config -Endpoint $endpoint -Body @{ name = $Name; input = $capabilityInput }
+  return @{ content = @(@{ type = 'text'; text = ($result | ConvertTo-Json -Depth 20 -Compress) }); structuredContent = $result; isError = -not [bool]$result.ok }
 }
 
 function Memory-Tool-Definitions {
@@ -311,6 +320,16 @@ function Invoke-EducationManagerApi {
     -TimeoutSec 75
 }
 
+function Read-CapabilityCatalog {
+  $config = Read-Descriptor
+  $endpoint = [string]$config.capabilityCatalogEndpoint
+  if (-not $endpoint.StartsWith('http://127.0.0.1:')) { throw 'Local capability catalog unavailable.' }
+  $tokenPath = [string]$config.authentication.tokenFile
+  if (-not (Test-Path -LiteralPath $tokenPath -PathType Leaf)) { throw 'The Education Manager credential is not ready.' }
+  $token = (Get-Content -LiteralPath $tokenPath -Raw -Encoding UTF8).Trim()
+  return Invoke-RestMethod -Method Get -Uri $endpoint -Headers @{ Authorization = "Bearer $token" } -TimeoutSec 15
+}
+
 function Invoke-KnowledgeTool {
   param([object]$Arguments)
   $config = Read-Descriptor
@@ -362,21 +381,27 @@ function Invoke-ConversationTool {
   }
   $sourceAgent = [string]$Arguments.sourceAgent
   if ([string]::IsNullOrWhiteSpace($sourceAgent)) { $sourceAgent = 'native-agent' }
-  $scopeType = [string]$config.defaults.scopeType
-  $scopeId = [string]$config.defaults.scopeId
   $targetProject = [string]$Arguments.targetProject
-  $body = @{
-    scopeType = $scopeType
-    scopeId = $scopeId
-    studentHint = [string]$config.defaults.scopeId
-    targetProject = $targetProject.Trim()
+  $conversationInput = @{
+    studentId = [string]$config.defaults.scopeId
     sourceAgent = $sourceAgent.Trim()
     sessionId = $sessionId.Trim()
     title = [string]$Arguments.title
     messages = @($Arguments.messages)
-    attachments = @($Arguments.attachments)
   }
-  $result = Invoke-EducationManagerApi -Config $config -Endpoint ([string]$config.conversationEndpoint) -Body $body
+  if ($Arguments.attachments -and @($Arguments.attachments).Count -gt 0) { throw 'Conversation preview does not accept attachments. Submit selected material through the host approval flow.' }
+  $previewBody = @{ name = 'conversation.submit'; input = $conversationInput; targetProject = $targetProject.Trim() }
+  $key = [string]$Arguments.idempotencyKey
+  if ([string]::IsNullOrWhiteSpace($key)) {
+    $payload = ($previewBody | ConvertTo-Json -Depth 20 -Compress)
+    $sha = [System.Security.Cryptography.SHA256]::Create()
+    try { $key = ([BitConverter]::ToString($sha.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($payload)))).Replace('-', '').ToLowerInvariant() }
+    finally { $sha.Dispose() }
+  }
+  $endpoint = ([string]$config.capabilityEndpoint).Replace('/api/agent/invoke', '/api/agent/write/preview')
+  if (-not $endpoint.StartsWith('http://127.0.0.1:')) { throw 'Local write preview endpoint unavailable.' }
+  $previewBody.idempotencyKey = $key
+  $result = Invoke-EducationManagerApi -Config $config -Endpoint $endpoint -Body $previewBody
   $text = if ($result.message) {
     [string]$result.message
   } else {
@@ -387,6 +412,15 @@ function Invoke-ConversationTool {
     structuredContent = $result
     isError = -not [bool]$result.ok
   }
+}
+
+function Invoke-WriteIntentTool {
+  param([string]$Action, [object]$Arguments)
+  $config = Read-Descriptor
+  $endpoint = ([string]$config.capabilityEndpoint).Replace('/api/agent/invoke', "/api/agent/write/$Action")
+  if (-not $endpoint.StartsWith('http://127.0.0.1:')) { throw 'Local write endpoint unavailable.' }
+  $result = Invoke-EducationManagerApi -Config $config -Endpoint $endpoint -Body @{ intentId = [string]$Arguments.intentId }
+  return @{ content = @(@{ type = 'text'; text = ($result | ConvertTo-Json -Depth 20 -Compress) }); structuredContent = $result; isError = -not [bool]$result.ok }
 }
 
 while ($null -ne ($line = [Console]::In.ReadLine())) {
@@ -403,8 +437,8 @@ while ($null -ne ($line = [Console]::In.ReadLine())) {
       'initialize' {
         @{
           protocolVersion = if ($request.params.protocolVersion) { [string]$request.params.protocolVersion } else { '2025-06-18' }
-          capabilities = @{ tools = @{ listChanged = $false } }
-          serverInfo = @{ name = 'edu-manager-knowledge'; title = 'Education Manager Knowledge and Authorized Conversation Capture'; version = '1.2.0' }
+          capabilities = @{ tools = @{ listChanged = $false }; resources = @{ listChanged = $false } }
+          serverInfo = @{ name = 'edu-manager-knowledge'; title = 'Education Manager Knowledge and Authorized Conversation Capture'; version = '1.3.0' }
           instructions = 'This credential is fixed to exactly one student and that student linked projects; never widen its scope. If automatic conversation memory is enabled, capture only this Agent current authorized conversation: call start_education_session once, call record_authorized_education_turn after every user/assistant turn with stable event IDs, then call finalize_education_session before ending. Set sourceAgent to codex, qclaw, workbuddy, or openclaw as appropriate. Never read or submit earlier chats, unrelated conversations, system prompts, tool output secrets, caches, credentials, or Education Manager task-center execution context. Use submit_education_conversation only for an explicit one-off user request. Preserve edu:// citations.'
         }
       }
@@ -412,14 +446,38 @@ while ($null -ne ($line = [Console]::In.ReadLine())) {
       'tools/list' {
         $config = Read-Descriptor
         $tools = @((Knowledge-Tool-Definition -Config $config), (Conversation-Tool-Definition -Config $config))
+        $agentPermissions = @($config.agentCapabilities | ForEach-Object { [string]$_ })
+        if ($config.capabilityEndpoint -and $agentPermissions -contains 'archive:read') { $tools += @((Capability-Tool-Definitions)[0]) }
+        if ($config.capabilityEndpoint -and $agentPermissions -contains 'task:read') { $tools += @((Capability-Tool-Definitions)[1]) }
+        if ($config.capabilityEndpoint -and @($agentPermissions | Where-Object { $_ -in @('conversation:submit', 'material:upload', 'task:create', 'report:draft') }).Count -gt 0) {
+          $tools += @(
+            @{ name = 'execute_education_write'; title = 'Execute approved education write'; description = 'Execute only a previously previewed and host-approved intent. Never approve the intent yourself.'; inputSchema = @{ type = 'object'; properties = @{ intentId = @{ type = 'string'; minLength = 1 } }; required = @('intentId'); additionalProperties = $false } },
+            @{ name = 'get_education_write_status'; title = 'Check education write status'; description = 'Read the status and receipt of an existing scoped intent.'; inputSchema = @{ type = 'object'; properties = @{ intentId = @{ type = 'string'; minLength = 1 } }; required = @('intentId'); additionalProperties = $false } }
+          )
+        }
         $tools += @(Memory-Tool-Definitions)
         @{ tools = $tools }
+      }
+      'resources/list' {
+        $config = Read-Descriptor
+        $resourceItems = @()
+        if ($config.capabilityCatalogEndpoint) { $resourceItems = @(@{ uri = 'edu://agent/capabilities'; name = 'Authorized Education Manager capabilities'; mimeType = 'application/json' }) }
+        @{ resources = $resourceItems }
+      }
+      'resources/read' {
+        if ([string]$request.params.uri -ne 'edu://agent/capabilities') { throw 'Unknown MCP resource.' }
+        $catalog = Read-CapabilityCatalog
+        @{ contents = @(@{ uri = 'edu://agent/capabilities'; mimeType = 'application/json'; text = ($catalog | ConvertTo-Json -Depth 32 -Compress) }) }
       }
       'tools/call' {
         switch ([string]$request.params.name) {
           'query_education_knowledge' {
             Invoke-KnowledgeTool -Arguments $request.params.arguments
           }
+          'list_education_archive' { Invoke-CapabilityTool -Name 'archive.list' -Arguments $request.params.arguments }
+          'get_education_task_status' { Invoke-CapabilityTool -Name 'task.status' -Arguments $request.params.arguments }
+          'execute_education_write' { Invoke-WriteIntentTool -Action 'execute' -Arguments $request.params.arguments }
+          'get_education_write_status' { Invoke-WriteIntentTool -Action 'status' -Arguments $request.params.arguments }
           'submit_education_conversation' {
             Invoke-ConversationTool -Arguments $request.params.arguments
           }

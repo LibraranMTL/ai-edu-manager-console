@@ -4,7 +4,7 @@ const os = require('node:os');
 const path = require('node:path');
 const test = require('node:test');
 const { processSession } = require('../electron/capture-timeline-worker.cjs');
-const { deleteSemanticSession, querySegments, reconcileDigestResult } = require('../electron/capture-timeline-semantic.cjs');
+const { bundlePath, captureEvidenceRoot, deleteSemanticSession, processingWindowPath, querySegments, reconcileDigestResult, visionManifestPath } = require('../electron/capture-timeline-semantic.cjs');
 const { readReports, reportRepairJobPath, writeReportRepairJob } = require('../electron/capture-timeline-reports.cjs');
 const { deleteSessionEvents, localDateKey, rebuildSessionTimeline } = require('../electron/capture-timeline.cjs');
 const { createAgentMemoryStore } = require('../electron/agent-memory-v1.cjs');
@@ -28,20 +28,177 @@ function sessionFixture(root, count = 12) {
   };
 }
 
-test('digest-first bundle selects at most twenty frames and never performs pre-digest OCR', async () => {
+test('digest-first processing windows preserve late evidence with at most twenty frames each and no pre-digest OCR', async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'edu-digest-first-'));
   try {
     const result = await processSession(root, sessionFixture(root, 100));
     assert.equal(result.ok, true);
-    assert.ok(result.keyFrameCount <= 20);
+    assert.ok(result.bundle.processingWindows.length > 1);
+    assert.ok(result.bundle.processingWindows.every((window) => window.keyFrameCount <= 20 && window.sourceEventCount <= 240));
+    assert.equal(result.bundle.processingWindows.reduce((sum, window) => sum + window.keyFrameCount, 0), result.keyFrameCount);
+    assert.ok(result.bundle.processingWindows.at(-1).sourceEventIds.includes('event-99'));
+    assert.ok(result.bundle.processingWindows.at(-1).keyEventIds.some((id) => Number(id.split('-')[1]) >= 80));
     assert.equal(result.recognizedKeyFrameCount, 0);
     assert.ok(result.segments.every((segment) => segment.recognitionStatus === 'pending_digest' && segment.category === 'unknown'));
     assert.equal(fs.existsSync(path.join(root, 'recognition')), false);
     assert.ok(result.bundle.visionBatches.every((batch) => batch.eventIds.length <= 8));
+    for (const segment of result.segments) {
+      assert.ok(result.bundle.visionBatches.some((batch) => segment.keyEventIds.every((id) => batch.eventIds.includes(id))),
+        `visual comparison for ${segment.segmentId} must stay in one bounded request`);
+    }
+    for (const window of result.bundle.processingWindows) {
+      const windowPath = processingWindowPath(root, 'student-1', 'capture-test', window.windowId);
+      const record = JSON.parse(fs.readFileSync(windowPath, 'utf8'));
+      assert.equal(record.windowId, window.windowId);
+      assert.ok(record.keyFrames.length <= 20);
+      const published = result.publishedWindowPaths.find((unit) => unit.windowId === window.windowId);
+      assert.ok(published && fs.existsSync(published.path));
+      const windowText = fs.readFileSync(published.path, 'utf8');
+      for (const segmentId of window.segmentIds) assert.ok(windowText.includes(segmentId));
+    }
     const markdown = fs.readFileSync(result.publishedBundlePath, 'utf8');
     for (const segment of result.segments) assert.ok(markdown.includes(segment.segmentId));
     assert.ok(markdown.includes('timelineObservations'));
     assert.ok(!markdown.includes('可选视觉复核批次'));
+    const rawEntries = fs.readdirSync(path.join(root, 'raw', '屏幕学习会话'));
+    assert.ok(rawEntries.every((name) => name.endsWith('.md')), 'formal raw folder must contain no image or path-bearing vision manifest');
+    assert.equal(rawEntries.length, result.bundle.processingWindows.length);
+    const visionManifest = JSON.parse(fs.readFileSync(visionManifestPath(root, 'student-1', 'capture-test'), 'utf8'));
+    assert.ok(visionManifest.keyFrames.every((frame) => frame.evidencePath.startsWith(captureEvidenceRoot(root, 'student-1', 'capture-test'))));
+    assert.ok(visionManifest.keyFrames.every((frame) => fs.existsSync(frame.evidencePath)));
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test('window-level formal digest settles independently and leaves later windows searchable', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'edu-window-settlement-'));
+  try {
+    const session = sessionFixture(root, 100);
+    const processed = await processSession(root, session);
+    assert.ok(processed.bundle.processingWindows.length > 1);
+    const settleWindow = (window, batchId) => reconcileDigestResult(root, {
+      studentId: session.studentId, sessionId: session.id, bundleId: processed.bundle.bundleId,
+      windowId: window.windowId, digestBatchId: batchId,
+      receipt: { timelineResults: window.segmentIds.map((segmentId) => ({ segmentId })) },
+    });
+    const first = processed.bundle.processingWindows[0];
+    assert.equal(settleWindow(first, 'window-batch-1').ok, true);
+    let aggregate = JSON.parse(fs.readFileSync(bundlePath(root, session.studentId, session.id), 'utf8'));
+    assert.equal(aggregate.status, 'partial_completed');
+    assert.equal(aggregate.windowDigestStates[first.windowId].status, 'completed');
+    assert.equal(aggregate.digestBatchId, '');
+    const later = processed.bundle.processingWindows.at(-1);
+    const laterDate = processed.segments.find((segment) => later.segmentIds.includes(segment.segmentId)).date;
+    const laterSegment = querySegments(root, { studentId: session.studentId, date: laterDate, sessionId: session.id, segmentId: later.segmentIds[0] }).segments[0];
+    assert.ok(laterSegment);
+    assert.equal(laterSegment.digestStatus, 'not_submitted');
+    for (const window of processed.bundle.processingWindows.slice(1)) assert.equal(settleWindow(window, `window-batch-${window.ordinal}`).ok, true);
+    aggregate = JSON.parse(fs.readFileSync(bundlePath(root, session.studentId, session.id), 'utf8'));
+    assert.equal(aggregate.status, 'completed');
+    assert.ok(aggregate.digestBatchId);
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test('vision-only observations do not falsely mark formal window digestion complete', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'edu-window-vision-only-'));
+  try {
+    const session = sessionFixture(root, 2);
+    const processed = await processSession(root, session);
+    assert.equal(reconcileDigestResult(root, {
+      studentId: session.studentId, sessionId: session.id, bundleId: processed.bundle.bundleId,
+      visionOnly: true, receipt: { timelineObservations: [] },
+    }).ok, true);
+    const bundle = JSON.parse(fs.readFileSync(bundlePath(root, session.studentId, session.id), 'utf8'));
+    assert.equal(bundle.status, 'pending_digest');
+    assert.equal(bundle.digestBatchId, '');
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test('reprocessing and late frames retain settled unchanged windows', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'edu-window-resume-'));
+  try {
+    const session = sessionFixture(root, 100);
+    const first = await processSession(root, session);
+    const settledWindow = first.bundle.processingWindows[0];
+    assert.equal(reconcileDigestResult(root, {
+      studentId: session.studentId, sessionId: session.id, bundleId: first.bundle.bundleId,
+      windowId: settledWindow.windowId, digestBatchId: 'settled-first',
+      receipt: { timelineResults: settledWindow.segmentIds.map((segmentId) => ({ segmentId })) },
+    }).ok, true);
+    const replay = await processSession(root, session);
+    assert.equal(replay.bundle.windowDigestStates[settledWindow.windowId].status, 'completed');
+    const lateFile = path.join(root, 'late.png');
+    fs.writeFileSync(lateFile, Buffer.alloc(64, 7));
+    session.items.push({ id: 'late-event', path: lateFile, capturedAt: new Date(Date.parse(session.endedAt) + 60_000).toISOString() });
+    const extended = await processSession(root, session);
+    assert.equal(extended.bundle.windowDigestStates[settledWindow.windowId].status, 'completed');
+    for (const oldWindow of replay.bundle.processingWindows.filter((window) => !extended.bundle.processingWindows.some((next) => next.windowId === window.windowId))) {
+      const oldRaw = replay.publishedWindowPaths.find((unit) => unit.windowId === oldWindow.windowId)?.path;
+      assert.ok(oldRaw && !fs.existsSync(oldRaw), 'revised source must retire stale raw window material');
+      assert.ok(fs.existsSync(path.join(path.dirname(bundlePath(root, session.studentId, session.id)), 'retired', path.basename(oldRaw))));
+    }
+    const date = extended.segments.find((segment) => segment.segmentId === settledWindow.segmentIds[0]).date;
+    const segment = querySegments(root, { studentId: session.studentId, date, sessionId: session.id, segmentId: settledWindow.segmentIds[0] }).segments[0];
+    assert.equal(segment.digestStatus, 'completed');
+    assert.ok(extended.bundle.processingWindows.at(-1).sourceEventIds.includes('late-event'));
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test('changing a source frame without changing its event ID invalidates settled digest', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'edu-window-content-revision-'));
+  try {
+    const session = sessionFixture(root, 2);
+    const first = await processSession(root, session);
+    const window = first.bundle.processingWindows[0];
+    assert.equal(reconcileDigestResult(root, {
+      studentId: session.studentId, sessionId: session.id, bundleId: first.bundle.bundleId,
+      windowId: window.windowId, digestBatchId: 'settled-original',
+      receipt: { timelineResults: window.segmentIds.map((segmentId) => ({ segmentId })) },
+    }).ok, true);
+    const unchanged = await processSession(root, session);
+    assert.equal(unchanged.bundle.windowDigestStates[window.windowId].status, 'completed');
+    fs.writeFileSync(session.items[0].path, 'frame-0-revised-with-new-content');
+    const revised = await processSession(root, session);
+    assert.notEqual(revised.bundle.sourceRevision, unchanged.bundle.sourceRevision);
+    assert.notEqual(revised.bundle.windowDigestStates[window.windowId]?.status, 'completed');
+    const date = revised.segments.find((segment) => segment.segmentId === window.segmentIds[0]).date;
+    const segment = querySegments(root, {
+      studentId: session.studentId, date, sessionId: session.id, segmentId: window.segmentIds[0],
+    }).segments[0];
+    assert.notEqual(segment.digestStatus, 'completed');
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test('long continuous capture windows replay deterministically across day boundaries', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'edu-digest-windows-'));
+  try {
+    const session = sessionFixture(root, 510);
+    session.items[300].capturedAt = new Date(2026, 8, 13, 0, 0, 0).toISOString();
+    for (let index = 301; index < session.items.length; index += 1) {
+      session.items[index].capturedAt = new Date(2026, 8, 13, 0, index - 300, 0).toISOString();
+    }
+    const first = await processSession(root, session);
+    const second = await processSession(root, session);
+    assert.deepEqual(first.bundle.processingWindows.map((window) => window.windowId), second.bundle.processingWindows.map((window) => window.windowId));
+    assert.deepEqual(first.bundle.segmentIds, second.bundle.segmentIds);
+    assert.equal(first.bundle.processingWindows.flatMap((window) => window.sourceEventIds).length, session.items.length);
+    assert.ok(first.bundle.processingWindows.every((window) => window.sourceEventCount <= 240 && window.keyFrameCount <= 20));
+    assert.ok(first.bundle.processingWindows.every((window) => new Set(window.sourceEventIds.map((id) => id.startsWith('event-') ? Number(id.slice(6)) >= 300 : false)).size === 1));
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test('revised pending source index retires only its stale derived window manifests', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'edu-digest-window-revision-'));
+  try {
+    const session = sessionFixture(root, 100);
+    const first = await processSession(root, session);
+    const stalePaths = first.bundle.processingWindows.map((window) => processingWindowPath(root, session.studentId, session.id, window.windowId));
+    assert.ok(stalePaths.length > 1);
+    session.items = session.items.slice(0, 2);
+    const revised = await processSession(root, session);
+    const retained = new Set(revised.bundle.processingWindows.map((window) => processingWindowPath(root, session.studentId, session.id, window.windowId)));
+    assert.ok(stalePaths.some((target) => !retained.has(target)));
+    assert.ok(stalePaths.filter((target) => !retained.has(target)).every((target) => !fs.existsSync(target)));
+    assert.ok([...retained].every((target) => fs.existsSync(target)));
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });
 
@@ -148,6 +305,8 @@ test('cross-midnight facts land in separate local days and one session report', 
     session.endedAt = session.items[1].capturedAt;
     rebuildSessionTimeline(root, session);
     const processed = await processSession(root, session);
+    assert.equal(processed.segments[1].gapBeforeMs, 2 * 60_000);
+    assert.equal(processed.segments[1].gapBeforeStatus, 'bounded_interval');
     reconcileDigestResult(root, { studentId: session.studentId, sessionId: session.id, bundleId: processed.bundle.bundleId, digestBatchId: 'digest-midnight', receipt: { timelineObservations: [] } });
     const first = readReports(root, session.studentId, '2026-09-12', session.id);
     const second = readReports(root, session.studentId, '2026-09-13', session.id);
@@ -164,10 +323,13 @@ test('deleting a session removes its report and recomputes affected day totals',
     const date = localDateKey(session.startedAt);
     rebuildSessionTimeline(root, session);
     const processed = await processSession(root, session);
+    const windowPath = processingWindowPath(root, session.studentId, session.id, processed.bundle.processingWindows[0].windowId);
+    assert.ok(fs.existsSync(windowPath));
     reconcileDigestResult(root, { studentId: session.studentId, sessionId: session.id, bundleId: processed.bundle.bundleId, digestBatchId: 'digest-delete', receipt: { timelineObservations: [] } });
     assert.equal(readReports(root, session.studentId, date).day.behaviorReport.screenshotCount, 2);
     deleteSessionEvents(root, session.studentId, session.id);
     deleteSemanticSession(root, session.studentId, session.id);
+    assert.equal(fs.existsSync(windowPath), false);
     assert.equal(readReports(root, session.studentId, date, session.id).session, null);
     assert.equal(readReports(root, session.studentId, date).day.behaviorReport.screenshotCount, 0);
   } finally { fs.rmSync(root, { recursive: true, force: true }); }

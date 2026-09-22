@@ -26,6 +26,7 @@ test('Agent access grant is student-scoped and stores only the token hash', () =
     allowedAllStudents: false,
   });
   assert.equal(resolveAgentAccessGrant(issued.store, 'eak_wrong'), null);
+  assert.equal(resolveAgentAccessGrant({ ...issued.store, disabledStudentIds: ['student-a'] }, issued.token), null);
 });
 
 test('Agent access grant reuses a valid student token and rotates a mismatched token', () => {
@@ -34,6 +35,9 @@ test('Agent access grant reuses a valid student token and rotates a mismatched t
   assert.equal(reused.token, first.token);
   assert.equal(reused.reused, true);
   assert.deepEqual(reused.grant.allowedProjectIds, ['p2']);
+  const legacy = issueAgentAccessGrant({}, { studentId: 'student-c', capabilities: ['knowledge:query'], randomUUID: () => 'legacy' });
+  const preserved = issueAgentAccessGrant(legacy.store, { studentId: 'student-c', existingToken: legacy.token });
+  assert.deepEqual(preserved.grant.capabilities, ['knowledge:query']);
   const rotated = issueAgentAccessGrant(reused.store, { studentId: 'student-b', existingToken: first.token, randomBytes: () => Buffer.alloc(32, 2), randomUUID: () => 'two' });
   assert.notEqual(rotated.token, first.token);
   assert.equal(resolveAgentAccessGrant(rotated.store, rotated.token).studentId, 'student-b');

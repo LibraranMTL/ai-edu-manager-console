@@ -35,6 +35,21 @@ test('D4-C submission is versioned, bounded and idempotent for the same selected
   assert.equal(first.messages.length, 2);
 });
 
+test('T0 preserves original speaker while requiring evidence before attributing a student action', () => {
+  const base = { sourceAgent: 'qclaw', sourceNodeId: 'node-a', sessionId: 'actor-session',
+    messages: [{ id: 'm1', role: 'student', content: '我先试算一次。', occurredAt: '2026-09-10T03:04:00.000Z' }] };
+  const unknown = normalizeAgentConversationSubmission(base);
+  assert.equal(unknown.messages[0].role, 'user');
+  assert.equal(unknown.messages[0].originalRole, 'student');
+  assert.equal(unknown.messages[0].claimedActorType, 'student');
+  assert.equal(unknown.messages[0].actorType, 'unknown');
+  assert.equal(unknown.messages[0].timeSource, 'source_message');
+  const supported = normalizeAgentConversationSubmission({ ...base, messages: [{ ...base.messages[0], actorEvidence: '已验证的学生账号' }] });
+  assert.equal(supported.messages[0].actorType, 'student');
+  assert.notEqual(supported.contentDigest, unknown.contentDigest, '新的行为人证据必须使旧去重键失效');
+  assert.equal(normalizeAgentConversationSubmission(supported).contentDigest, supported.contentDigest);
+});
+
 test('D4-C only retains explicitly selected attachments and traceable candidate quotes', () => {
   const submission = normalizeAgentConversationSubmission({
     sourceAgent: 'codex',
@@ -158,7 +173,9 @@ test('D4-C project targeting never falls back to another student or the student 
   assert.match(bridge, /targetProject/);
   assert.match(bridge, /targetProject = \$targetProject\.Trim\(\)/);
   assert.doesNotMatch(bridge, /\$config\.defaults\.projects[\s\S]{0,800}Nothing was stored/);
-  assert.match(bridge, /studentHint = \[string\]\$config\.defaults\.scopeId/);
+  assert.match(bridge, /studentId = \[string\]\$config\.defaults\.scopeId/);
+  assert.match(main, /body\.name !== 'conversation\.submit'/);
+  assert.match(main, /matches\.length !== 1 \|\| !projectAllowed\(request, matches\[0\]\)/);
   assert.match(main, /projects: linkedProjects/);
   assert.match(main, /resolveLinkedConversationProject/);
   assert.match(main, /target\.message \|\| '暂时无法唯一确定学生或项目/);

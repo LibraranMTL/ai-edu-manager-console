@@ -94,6 +94,7 @@ public class CaptureProjectionService extends Service {
     private long courseCompletedAt;
     private long endedAt;
     private String endReason = "";
+    private boolean autoDelivery;
 
     @Override
     public void onCreate() {
@@ -138,6 +139,7 @@ public class CaptureProjectionService extends Service {
         courseProvider = safeExtra(intent, "course_provider");
         courseUrl = safeExtra(intent, "course_url");
         courseStartedAt = intent.getLongExtra("course_started_at", 0L);
+        autoDelivery = intent.getBooleanExtra("auto_delivery", false);
         durationMs = Math.max(60000L, intent.getLongExtra("duration_ms", 30L * 60L * 1000L));
         configurePolicy(mode);
         startedAt = System.currentTimeMillis();
@@ -313,6 +315,7 @@ public class CaptureProjectionService extends Service {
             metadata.put("captureItemId", "android-item-" + now);
             metadata.put("sessionId", sessionId);
             metadata.put("capturedAt", now);
+            metadata.put("sequence", savedCount);
             metadata.put("highlighted", highlighted);
             metadata.put("difference", difference);
             metadata.put("sourceType", "android_screenshot");
@@ -354,6 +357,7 @@ public class CaptureProjectionService extends Service {
         editor.putString(KEY_COURSE_URL, courseUrl);
         editor.putLong(KEY_COURSE_STARTED_AT, courseStartedAt);
         editor.putLong(KEY_COURSE_COMPLETED_AT, courseCompletedAt);
+        editor.putBoolean("auto_delivery_enabled", autoDelivery);
         editor.apply();
         writeSessionMetadata(status);
         CaptureTileService.requestRefresh(this);
@@ -384,6 +388,7 @@ public class CaptureProjectionService extends Service {
             metadata.put("startedAt", startedAt);
             metadata.put("endedAt", endedAt);
             metadata.put("endReason", endReason);
+            metadata.put("autoDelivery", autoDelivery);
             metadata.put("candidateCount", candidateCount);
             metadata.put("savedCount", savedCount);
             metadata.put("dedupCount", dedupCount);
@@ -476,6 +481,7 @@ public class CaptureProjectionService extends Service {
         endReason = reason == null ? "" : reason;
         saveState("completed");
         getSharedPreferences(PREFS, MODE_PRIVATE).edit().putString("end_reason", endReason).apply();
+        if (autoDelivery && savedCount > 0 && sessionDir != null) CaptureAutoDeliveryJobService.schedule(this, sessionDir);
         stopForeground(true);
         stopSelf();
     }

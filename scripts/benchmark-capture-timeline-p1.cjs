@@ -75,7 +75,8 @@ async function run() {
     const p95QueryMs = queryMs[Math.floor(queryMs.length * 0.95)] || 0;
     const checks = {
       workerOutsideMainKeepsTimerDriftUnder100Ms: Math.max(first.maximumTimerDriftMs, second.maximumTimerDriftMs) < 100,
-      oneHundredFramesUseAtMostTwentyKeyframes: Number(first.result.keyFrameCount || 0) <= 20,
+      eachProcessingWindowUsesAtMostTwentyKeyframes: first.result.bundle.processingWindows.every((window) => window.keyFrameCount <= 20),
+      lateFramesRemainCovered: first.result.bundle.processingWindows.at(-1)?.sourceEventIds.includes(`benchmark-event-${FRAME_COUNT - 1}`),
       preDigestDoesNotRunOcr: Number(first.result.recognizedKeyFrameCount || 0) === 0 && !fs.existsSync(path.join(root, 'recognition')),
       repeatRunRetainsBundleIdentity: first.result.bundle.bundleId === second.result.bundle.bundleId
         && JSON.stringify(first.result.bundle.sourceHashes) === JSON.stringify(second.result.bundle.sourceHashes),
@@ -91,6 +92,8 @@ async function run() {
         secondRunMs: round(second.durationMs),
         maximumTimerDriftMs: round(Math.max(first.maximumTimerDriftMs, second.maximumTimerDriftMs)),
         keyFrameCount: Number(first.result.keyFrameCount || 0),
+        processingWindowCount: first.result.bundle.processingWindows.length,
+        maximumWindowKeyFrames: Math.max(0, ...first.result.bundle.processingWindows.map((window) => window.keyFrameCount)),
         preDigestRecognitionCount: Number(first.result.recognizedKeyFrameCount || 0),
         semanticQueryP95Ms: round(p95QueryMs),
         returnedSegments: Number(page?.segments?.length || 0),

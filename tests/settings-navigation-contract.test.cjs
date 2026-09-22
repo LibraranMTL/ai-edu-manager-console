@@ -8,7 +8,7 @@ const renderer = fs.readFileSync(path.join(root, 'src', 'main.tsx'), 'utf8');
 const styles = fs.readFileSync(path.join(root, 'src', 'styles.css'), 'utf8');
 
 test('Windows sidebar groups education, projects, Agent knowledge, collaboration, courses and settings', () => {
-  for (const label of ['教育档案', '学情资料', '项目知识管理', '新建项目', '已有项目', 'Agent会话自动采集', '知识查询', '协作设置', 'Agent问答设置']) {
+  for (const label of ['教育档案', '学情资料', '项目知识管理', '新建项目', '已有项目', 'Agent会话自动采集', 'Agent调用能力设置', '知识查询', '协作设置', 'Agent问答设置']) {
     assert.match(renderer, new RegExp(label));
   }
   assert.match(renderer, /type SettingsSubmenu = 'basic' \| 'connection' \| 'collaboration' \| 'agent-qa'/);
@@ -55,6 +55,23 @@ test('collaboration and Q&A reuse their existing state without a duplicate works
   assert.match(renderer, /<details className="advanced-options archive-advanced-options" open=\{!isWindows\}>/);
 });
 
+test('Agent capability authorization has its own knowledge-management page, separate from conversation capture', () => {
+  const knowledgeItems = renderer.slice(renderer.indexOf('const knowledgeNavItems = ['), renderer.indexOf('const courseCatalogCourses ='));
+  assert.match(knowledgeItems, /id: 'agent-capabilities' as const, label: t\('nav.agentCapabilities'\)/);
+  const capabilityPageStart = renderer.indexOf("activeSection === 'agent-capabilities' && selectedStudent && (");
+  const capturePageStart = renderer.indexOf("(activeSection === 'memory' || activeSection === 'capture') && selectedStudent && (");
+  assert.ok(capabilityPageStart > 0 && capturePageStart > capabilityPageStart);
+  const capabilityPage = renderer.slice(capabilityPageStart, capturePageStart);
+  assert.match(capabilityPage, /外部 Agent 能力与写入审核/);
+  assert.match(capabilityPage, /授权只读查询/);
+  assert.match(capabilityPage, /批准本次写入/);
+  const capturePageEnd = renderer.indexOf("(activeSection === 'memory' || activeSection === 'capture' || activeSection === 'agent-capabilities') && !selectedStudent", capturePageStart);
+  assert.ok(capturePageEnd > capturePageStart);
+  assert.doesNotMatch(renderer.slice(capturePageStart, capturePageEnd), /外部 Agent 能力与写入审核/);
+  assert.match(renderer, /activeSection === 'agent-capabilities'\) refreshAgentCapabilityManagement\(selectedId\)/);
+  assert.match(renderer, /'agent-capabilities'\s*,\s*'soul'/);
+});
+
 test('license affordances, archive warning and narrow navigation remain visible', () => {
   const collaborationNav = renderer.slice(renderer.indexOf('title={t(\'nav.collaboration\')}'), renderer.indexOf("aria-label={t('nav.collaboration')}") );
   assert.doesNotMatch(collaborationNav, /locked/);
@@ -66,7 +83,7 @@ test('license affordances, archive warning and narrow navigation remain visible'
 });
 
 test('new navigation labels exist in all nine supported language tables', () => {
-  for (const key of ['nav.education', 'nav.projects', 'nav.projects.new', 'nav.projects.existing', 'nav.growth', 'nav.archive', 'nav.qa', 'nav.qa.settings', 'nav.collaboration', 'nav.collaboration.settings', 'nav.courses', 'nav.courses.learning', 'nav.courses.management', 'nav.capture', 'nav.settings.basic', 'nav.settings.connection']) {
+  for (const key of ['nav.education', 'nav.projects', 'nav.projects.new', 'nav.projects.existing', 'nav.growth', 'nav.archive', 'nav.qa', 'nav.qa.settings', 'nav.collaboration', 'nav.collaboration.settings', 'nav.courses', 'nav.courses.learning', 'nav.courses.management', 'nav.capture', 'nav.agentCapabilities', 'nav.settings.basic', 'nav.settings.connection']) {
     assert.equal((renderer.match(new RegExp(`'${key.replaceAll('.', '\\.')}':`, 'g')) || []).length, 9, `${key} should cover zh-CN plus eight locales`);
   }
 });

@@ -31,3 +31,20 @@ test('Windows student terminal reads reports and archives through the scoped stu
   assert.match(ui, /学情报告、教育档案与项目知识/);
   assert.match(ui, /只读取当前学生/);
 });
+
+test('Windows student terminal capture opens a floating setup panel and a native topmost control bar', () => {
+  const build = read('scripts', 'build-windows-terminal-release.cjs');
+  assert.match(ui, /className="student-capture-flyout"/);
+  assert.match(ui, /采集策略/);
+  assert.match(ui, /最长采集时长/);
+  assert.match(ui, /mode: captureMode/);
+  assert.match(ui, /durationMinutes: captureDuration/);
+  assert.match(ui, /右下角浮动控制条可暂停、重点截取或结束/);
+  assert.match(main, /normalizeCaptureOptions\(input\)/);
+  assert.match(main, /captureControlWindow = new BrowserWindow/);
+  assert.match(main, /captureControlWindow\.setAlwaysOnTop\(true, 'floating'\)/);
+  assert.match(main, /duration_complete/);
+  assert.match(main, /terminal:capture-control/);
+  assert.match(preload, /captureControl/);
+  assert.match(build, /capture-protocol\.cjs/);
+});

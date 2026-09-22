@@ -1,0 +1,294 @@
+{
+  "schema": "edu-manager.p1-working-tree-audit.v1",
+  "capturedAt": "2026-09-16T21:37:33.8174210+08:00",
+  "head": "23b82af8f540f07b0e01e483eff13f08fa6a41d2",
+  "baselineInstaller": {
+    "path": "release/windows/AI-edu-manager-console-Windows-0.17.9.exe",
+    "sha256": "06B860D885D709463049F8B4C98E051A72844A4EDA7747E3DD850D55F8E54179"
+  },
+  "scope": "git porcelain modified/untracked entries, excluding this new audit file and ignored/dependency files; untracked nested directories recorded as directories",
+  "entries": [
+    {
+      "state": "M",
+      "path": "CHANGELOG.md",
+      "type": "file",
+      "sha256": "D54BDA33C82F7A53301422DA79D14293DDA070B97F6C6527F84C589C3ED20D6A"
+    },
+    {
+      "state": "M",
+      "path": "android-tablet-terminal/AndroidManifest.xml",
+      "type": "file",
+      "sha256": "988FFA040FF54E9197F04283192C17AB72641EBB5A7DCFE2F891CC0219BD57A0"
+    },
+    {
+      "state": "M",
+      "path": "android-tablet-terminal/README.md",
+      "type": "file",
+      "sha256": "4E9D7C86097A5BB3F3C7645C0EE8353B4113866CCA5375EFC7ECA74AB2465EAF"
+    },
+    {
+      "state": "M",
+      "path": "android-tablet-terminal/build.ps1",
+      "type": "file",
+      "sha256": "7404A99C8DA6B3B05F9F99F837493C514287D88B239D0A3B3C55CF027EAAAA32"
+    },
+    {
+      "state": "M",
+      "path": "android-tablet-terminal/src/com/qxmatrix/eduterminal/CaptureProjectionService.java",
+      "type": "file",
+      "sha256": "F157BC9D639605FF1094EF6AD1968A2AC58F1528CEADCD105821E0B62B405ADA"
+    },
+    {
+      "state": "M",
+      "path": "android-tablet-terminal/src/com/qxmatrix/eduterminal/MainActivity.java",
+      "type": "file",
+      "sha256": "EF407781359953D025E7F67BBD84D87AE43B4DDD7F8AAAFAB9706039E3C4D1A7"
+    },
+    {
+      "state": "M",
+      "path": "android-teacher-terminal/AndroidManifest.xml",
+      "type": "file",
+      "sha256": "293AA1F7722A4CB2C668EFB0557607F849A71C212A3AE443B62763870CBEB0A4"
+    },
+    {
+      "state": "M",
+      "path": "android-teacher-terminal/README.md",
+      "type": "file",
+      "sha256": "0D2DAF247B9B69BF15C8E5D48236F89026017B324A658979D8DE444F9BDC283A"
+    },
+    {
+      "state": "M",
+      "path": "android-teacher-terminal/build.ps1",
+      "type": "file",
+      "sha256": "682E6DCEFE1C05CD52D2A49FEDC176324559A0635313B0BACE9E0A6E4086A6A2"
+    },
+    {
+      "state": "M",
+      "path": "android-teacher-terminal/src/com/qxmatrix/eduteacher/CaptureProjectionService.java",
+      "type": "file",
+      "sha256": "4BBF4694FF0EDEEF8079DCE9B0E5B0788CA53A01D5BE9B911E812E1502BD6BC5"
+    },
+    {
+      "state": "M",
+      "path": "android-teacher-terminal/src/com/qxmatrix/eduteacher/MainActivity.java",
+      "type": "file",
+      "sha256": "600958AD2A6F2582667567DA26732434BA9C65782CA65CCA92E156DEEC771FA5"
+    },
+    {
+      "state": "M",
+      "path": "docs/delivery/Windows-0.17.9-屏幕采集消化优先与双报告-P1优化实施方案.md",
+      "type": "file",
+      "sha256": "7AFE324E7A169735FD7091AD64D6D55B925E7140485A69D3E0DA887E0AB02E24"
+    },
+    {
+      "state": "M",
+      "path": "electron/agent-conversation-submission.cjs",
+      "type": "file",
+      "sha256": "87544B7D82380C860773D35AD737DB31DA506AEC836F1F35ABCF42DE5A7EC2ED"
+    },
+    {
+      "state": "M",
+      "path": "electron/capture-timeline-scheduler.cjs",
+      "type": "file",
+      "sha256": "758E8A27FFC87386A0E3EC10EC5100E79DA760B180B4C894F590EDA7EA02AA56"
+    },
+    {
+      "state": "M",
+      "path": "electron/capture-timeline-semantic.cjs",
+      "type": "file",
+      "sha256": "205B88ADB39B5CB5DE9ADBF36E45B77E73263E8F9773B8E427043137FBC28AD5"
+    },
+    {
+      "state": "M",
+      "path": "electron/capture-timeline-vision.cjs",
+      "type": "file",
+      "sha256": "CDA1DF505DAC2862EE1A1BB4B158A293EDCCBCECAA0E7801C105073AB6A6FF5B"
+    },
+    {
+      "state": "M",
+      "path": "electron/capture-timeline-worker.cjs",
+      "type": "file",
+      "sha256": "1D427281B5470C9A543A12D5AA81D449D941E61208E24D218FB4F20475ECE8E7"
+    },
+    {
+      "state": "M",
+      "path": "electron/capture-timeline.cjs",
+      "type": "file",
+      "sha256": "4188D5F0719A9B7FF314D8B7EEC191C7A094AD3F2F5F0D6B98A9BF407EED390F"
+    },
+    {
+      "state": "M",
+      "path": "electron/main.cjs",
+      "type": "file",
+      "sha256": "A1260153B7BFA100D9813D450537FEABB704C57CA01D227229E118EBDE0152A6"
+    },
+    {
+      "state": "M",
+      "path": "electron/terminal-main.cjs",
+      "type": "file",
+      "sha256": "D44E13173BA7FCDADEA201BD4D3ABE4EB69BBD433BE018B2392C27E0A2B4C271"
+    },
+    {
+      "state": "M",
+      "path": "electron/terminal-preload.cjs",
+      "type": "file",
+      "sha256": "D62C0D4D7775365D0A78601A9393999223C99B6BB390461F8587734AF84D267E"
+    },
+    {
+      "state": "M",
+      "path": "scripts/benchmark-capture-timeline-p1.cjs",
+      "type": "file",
+      "sha256": "52BDC250A5BDBA6B6BC66F3592B8E843B973C6FE680D5DD06E1027A131E1DFFE"
+    },
+    {
+      "state": "M",
+      "path": "scripts/build-windows-terminal-release.cjs",
+      "type": "file",
+      "sha256": "2780B0CAC3E43FA3858F88896F1AB293BFCAEDDFB7403A37D3A181C5978C487B"
+    },
+    {
+      "state": "M",
+      "path": "src/main.tsx",
+      "type": "file",
+      "sha256": "1672D043AB1DC078121BEE4A53FB6C1B2BC42859D52C08D58A4E8383AB106768"
+    },
+    {
+      "state": "M",
+      "path": "src/terminal-main.tsx",
+      "type": "file",
+      "sha256": "C7DFD25584D931D186E36C6756891996603AA0C6D675B3A4955DFC6F583081DA"
+    },
+    {
+      "state": "M",
+      "path": "src/terminal-styles.css",
+      "type": "file",
+      "sha256": "54880F4A46A0A23FB5DE5B1F1CF11FD8225F6952E0DE71E2A804B02997BA5717"
+    },
+    {
+      "state": "M",
+      "path": "tests/agent-conversation-submission.test.cjs",
+      "type": "file",
+      "sha256": "0431484B8EA1FE57778AC6BD11475271EC07551715F31744CF390FA20CED9524"
+    },
+    {
+      "state": "M",
+      "path": "tests/android-agent-conversation-import-contract.test.cjs",
+      "type": "file",
+      "sha256": "8B0AB5860E0A780DFCDD0384088EC7A4F93AC086E5DAD8B5896BBE0B829165EE"
+    },
+    {
+      "state": "M",
+      "path": "tests/android-standalone-device-migration-contract.test.cjs",
+      "type": "file",
+      "sha256": "F80434883D7D125E613B8F0B0821D49EF787579B8D9EA0A508F1C2C484E10905"
+    },
+    {
+      "state": "M",
+      "path": "tests/android-teacher-terminal-contract.test.cjs",
+      "type": "file",
+      "sha256": "48029CAB2556D9639EFC0AFD5D4FE27A50CB7F8DE168ABCC06F937262E89BC0B"
+    },
+    {
+      "state": "M",
+      "path": "tests/capture-timeline-digest-first.test.cjs",
+      "type": "file",
+      "sha256": "892067B180B9B42244B8140F2E6BBBB9E0E72430352C14686BB1F0EAD28D4C3A"
+    },
+    {
+      "state": "M",
+      "path": "tests/capture-timeline-semantic.test.cjs",
+      "type": "file",
+      "sha256": "D67EFA4E03481EE6AC3943256160F647945402428C441C0F676CA619543E882C"
+    },
+    {
+      "state": "M",
+      "path": "tests/capture-timeline-vision.test.cjs",
+      "type": "file",
+      "sha256": "E335A85C65EB51092FCB0AF2D2682CD6224A7F5B70FDB81F7DDBA52760BA7988"
+    },
+    {
+      "state": "M",
+      "path": "tests/capture-timeline.test.cjs",
+      "type": "file",
+      "sha256": "8D027B99269D03E02B629F53119625BD4B1A4094782CA60AA02DCDB87108F12F"
+    },
+    {
+      "state": "M",
+      "path": "tests/student-portable-migration.test.cjs",
+      "type": "file",
+      "sha256": "58DE14685E0350FE2F649F8F7EAAD3BBF7131682195848DEEC6EE3D500B6E4CD"
+    },
+    {
+      "state": "M",
+      "path": "tests/windows-terminal-student-home-contract.test.cjs",
+      "type": "file",
+      "sha256": "FA6F5AE476043D26C187AFA3D16B24DDE2A752989F01E3BCD08EB1D9D9AACC07"
+    },
+    {
+      "state": "??",
+      "path": "android-tablet-terminal/src/com/qxmatrix/eduterminal/CaptureAutoDeliveryJobService.java",
+      "type": "file",
+      "sha256": "1AA2EFCA5F0D669F284816DDE63FAE34BB13B06EF71C425549D6A63AF0646CCA"
+    },
+    {
+      "state": "??",
+      "path": "android-teacher-terminal/src/com/qxmatrix/eduteacher/CaptureAutoDeliveryJobService.java",
+      "type": "file",
+      "sha256": "5B328D87DA1F935E884F5D39A9460B86113944EDC1E8C889B5DC672EAFF87E36"
+    },
+    {
+      "state": "??",
+      "path": "docs/delivery/Android-0.6.17-0.1.2-端侧自动采集候选验收.md",
+      "type": "file",
+      "sha256": "33F6054592646FCB3F8E306C73D8CDB50FAE2A170CD6D56290AEDDFF19460FBC"
+    },
+    {
+      "state": "??",
+      "path": "docs/delivery/P1-T-个人行为预测与数据采集规范-讨论参考-2026-09-16.md",
+      "type": "file",
+      "sha256": "3061198E7ED1E3776901C5446E5FBBF9EFF7EE61C70444B1419EDCEF1AECEF3B"
+    },
+    {
+      "state": "??",
+      "path": "docs/delivery/P1-T-单学生时序学习证据与纵向预测实施方案-2026-09-16.md",
+      "type": "file",
+      "sha256": "A42B3BDF8B6DA563138D9653552E03B3C4A3615E98272E8293855FD61AF3A285"
+    },
+    {
+      "state": "??",
+      "path": "docs/delivery/Windows-P1-上游闭环与T0-启动实施记录-2026-09-16.md",
+      "type": "file",
+      "sha256": "BF7ABAA3F5C70A5A2D127549F5239FFB4678FFABE5C43A6D6E284CE5F1AF1D63"
+    },
+    {
+      "state": "??",
+      "path": "docs/research/Android本地文件智能体调研-2026-07-24/sources-mobileclaw/ChenKuanSun-mobileClaw/",
+      "type": "directory",
+      "sha256": null
+    },
+    {
+      "state": "??",
+      "path": "docs/research/Android本地文件智能体调研-2026-07-24/sources-mobileclaw/aohp-os-MobileClaw/",
+      "type": "directory",
+      "sha256": null
+    },
+    {
+      "state": "??",
+      "path": "electron/capture-heavy-work-gate.cjs",
+      "type": "file",
+      "sha256": "E1AF182222510C140F739B71141204A85A1003A011632ABF951EB0609DF18E16"
+    },
+    {
+      "state": "??",
+      "path": "tests/android-edge-auto-capture-delivery-contract.test.cjs",
+      "type": "file",
+      "sha256": "797DFDCBE0C21DAB174E67B9124BCB7DED23389C5551A3819AF600B649D04599"
+    },
+    {
+      "state": "??",
+      "path": "tests/capture-heavy-work-gate.test.cjs",
+      "type": "file",
+      "sha256": "969871444FD7F4AB87B0219E139C89BAA2CC6E228A5ADA0D9C617CD1A818B99C"
+    }
+  ]
+}

@@ -4,9 +4,9 @@
 
 - 应用名称：AI教育管家教师端
 - 包名：com.qxmatrix.eduteacher
-- 版本：0.1.1
-- APK 文件名：AI-edu-manager-teacher-terminal-0.1.1.apk
-- APK SHA-256：53599B3F08B71A2E11D28E03A45F49BA7A9D5B3B7D09450B6FC49BB6CC2D2F56
+- 候选版本：0.1.2
+- 候选 APK 文件名：AI-edu-manager-teacher-terminal-0.1.2-edge-auto-capture-20260915.apk
+- 候选 APK SHA-256：047CC28125B457EB4DA1D411B884041DF9593D34008B9C4E32D084924BCBBD1F
 
 ## 功能
 
@@ -22,6 +22,8 @@
 教师端使用独立紫红色图标、独立包名、独立偏好与缓存空间，以及独立更新清单字段 `teacherTerminal*`。
 
 0.1.1 的对话导入只接收教师主动分享或粘贴的正文，不读取其他应用私有聊天记录、不抓取分享链接、不推断附件；失败时保留一份本地草稿供重试。
+
+0.1.2 候选版新增已授权屏幕采集会话的自动投递。教师必须先明确选择学生、可选的关联项目与“自动投递”选项，再完成 Android 系统录屏授权；采集结束后，后台网络任务只投递该学生、该会话目录中的截图，断网时由系统调度重试。教师可从通知栏暂停、查看高亮或停止，主机仍会复核学生和项目范围。
 
 面向教师的安装和操作说明见 `docs/delivery/Android教师终端操作手册.md`；Windows 主机配套要求和交付证据见 `docs/delivery/Windows-0.15.10-教师终端支持升级验收.md`。
 

@@ -27,6 +27,8 @@ type StudentProgress = { submittedTodayCount?: number; recentUploadCount7?: numb
 type Student = { id: string; name: string; grade?: string; rawFileCount?: number; archiveFileCount?: number; pendingDigestCount?: number; processedDigestCount?: number; submittedTodayCount?: number; recentUploadCount7?: number; recentUploadTrend?: number; activeDays30?: number; knowledgeAssetCount?: number; newSinceLastDigestCount?: number; progress?: StudentProgress };
 type Project = { id: string; name: string; studentIds?: string[]; status?: string };
 type UploadTarget = { type: 'student' | 'project'; id: string; name: string; studentId: string };
+type CaptureMode = 'smart' | 'change' | 'interval';
+type CaptureOptions = { mode?: CaptureMode; policyName?: string; durationMinutes?: number };
 type TerminalConfig = {
   connected: boolean;
   hostUrl: string;
@@ -43,7 +45,7 @@ type TerminalConfig = {
 };
 type CaptureSource = { id: string; name: string; type: 'screen' | 'window'; available?: boolean; blocked?: boolean; blockReason?: string };
 type CaptureItem = { id: string; path: string; filename: string; capturedAt: string; sequence: number };
-type CaptureSession = { id: string; status: string; sourceName: string; sourceType?: 'screen' | 'window'; count: number; files: string[]; items?: CaptureItem[]; target?: UploadTarget; startedAt?: string; endedAt?: string; deliveryStatus?: string; courseId?: string; courseProvider?: string; courseUrl?: string; courseStartedAt?: string; courseCompletedAt?: string };
+type CaptureSession = { id: string; status: string; sourceName: string; sourceType?: 'screen' | 'window'; count: number; files: string[]; items?: CaptureItem[]; target?: UploadTarget; startedAt?: string; plannedEndAt?: string; endedAt?: string; endReason?: string; deliveryStatus?: string; options?: CaptureOptions; candidateFrameCount?: number; deduplicatedCount?: number; highlightedCount?: number; courseId?: string; courseProvider?: string; courseUrl?: string; courseStartedAt?: string; courseCompletedAt?: string };
 type Course = { courseId: string; name: string; provider: string; url: string; allowedHosts: string[]; coverUrl: string; summary: string; gradeRange: string[]; languages: string[]; accountRequirement: string; legalNotice: string };
 type CourseCatalogResponse = { ok: boolean; catalogVersion?: string; studentId?: string; courses?: Course[]; disclaimer?: string };
 type Progress = { status: string; current?: number; total?: number; filename?: string; success?: number; failed?: number; pending?: number; delivered?: number };
@@ -83,6 +85,12 @@ type PairingState = {
   pendingRequest?: PendingPairRequest | null;
   pendingInvite?: PendingPairRequest | null;
   lastResult?: { status: string; message?: string; updatedAt?: string } | null;
+};
+
+const CAPTURE_MODE_COPY: Record<CaptureMode, { label: string; description: string }> = {
+  smart: { label: '智能混合（推荐）', description: '内容变化优先，并在较长时间无变化时补存，适合网课、PPT、教材和网页。' },
+  change: { label: '内容变化', description: '只在明显翻页、滚动或窗口内容变化时保留截图。' },
+  interval: { label: '固定间隔', description: '按固定间隔保留截图，仍会跳过完全相同的画面。' },
 };
 
 type TerminalBridge = {
@@ -303,6 +311,9 @@ function TerminalApp() {
   const [captureSources, setCaptureSources] = useState<CaptureSource[]>([]);
   const [captureSourceId, setCaptureSourceId] = useState('');
   const [captureSession, setCaptureSession] = useState<CaptureSession | null>(null);
+  const [capturePanelOpen, setCapturePanelOpen] = useState(false);
+  const [captureMode, setCaptureMode] = useState<CaptureMode>('smart');
+  const [captureDuration, setCaptureDuration] = useState(30);
   const [loginId, setLoginId] = useState('');
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [requiresLogin, setRequiresLogin] = useState(true);
@@ -726,6 +737,16 @@ function TerminalApp() {
     setCaptureSourceId((current) => current || sources[0]?.id || '');
   };
 
+  const openCapturePanel = () => {
+    if (captureSession?.status === 'capturing' || captureSession?.status === 'paused') {
+      setMessage('屏幕采集正在进行中；请使用屏幕右下角的浮动控制条暂停、重点截取或结束。');
+      return;
+    }
+    setActiveWorkspace(null);
+    setCapturePanelOpen(true);
+    if (!captureSources.length) void loadCaptureSources();
+  };
+
   const showLearningReports = async () => {
     if (!api) return;
     setBusy(true);
@@ -888,10 +909,12 @@ function TerminalApp() {
           studentId: selectedStudentId,
           projectId: selectedTarget.type === 'project' ? selectedTarget.id : '',
           target: selectedTarget,
-          intervalSeconds: 15,
+          mode: captureMode,
+          durationMinutes: captureDuration,
         });
         setCaptureSession(session);
-        setMessage(`正在采集“${session.sourceName}”，每 15 秒保存一张截图。`);
+        setCapturePanelOpen(false);
+        setMessage(`正在采集“${session.sourceName}” · ${session.options?.policyName || CAPTURE_MODE_COPY[captureMode].label} · 最长 ${session.options?.durationMinutes || captureDuration} 分钟。右下角浮动控制条可暂停、重点截取或结束。`);
       }
     } catch (error) {
       setMessage(`屏幕采集失败：${(error as Error).message}`);
@@ -1067,6 +1090,12 @@ function TerminalApp() {
             <option value="">选择屏幕或窗口</option>
             {captureSources.map((source) => <option value={source.id} key={source.id} disabled={source.blocked || source.available === false}>{source.name}</option>)}
           </select>
+          <select value={captureMode} onChange={(event) => setCaptureMode(event.target.value as CaptureMode)} disabled={captureSession?.status === 'capturing'} aria-label="采集策略">
+            {Object.entries(CAPTURE_MODE_COPY).map(([mode, copy]) => <option value={mode} key={mode}>{copy.label}</option>)}
+          </select>
+          <select value={captureDuration} onChange={(event) => setCaptureDuration(Number(event.target.value))} disabled={captureSession?.status === 'capturing'} aria-label="采集时长">
+            {[15, 30, 45, 60, 90, 120].map((minutes) => <option value={minutes} key={minutes}>最长 {minutes} 分钟</option>)}
+          </select>
           <button className={captureSession?.status === 'capturing' ? 'terminal-danger' : 'terminal-primary'} onClick={toggleCapture} disabled={busy || !selectedTarget}>
             {captureSession?.status === 'capturing' ? '结束采集' : '开始采集'}
           </button>
@@ -1150,7 +1179,7 @@ function TerminalApp() {
         <section className="student-action-grid" aria-label="学生端常用功能">
           <StudentActionTile icon={Upload} title="上传学习资料" description="作业、试卷、笔记或项目文件" meta={uploadProgress?.status === 'uploading' ? `上传中 ${uploadProgress.current || 0}/${uploadProgress.total || 0}` : `今日已提交 ${submittedToday} 份`} tone="tone-upload" disabled={busy || !selectedTarget} onClick={uploadFiles} />
           <StudentActionTile icon={BookOpen} title="我的课程" description="继续已分配的精选课程" meta={`${courses.length} 门可用课程`} tone="tone-course" active={activeWorkspace === 'courses'} onClick={() => revealWorkspace('courses')} />
-          <StudentActionTile icon={MonitorUp} title="屏幕资料采集" description="截取学习屏幕或应用窗口" meta={captureSession?.status === 'capturing' ? `采集中 · ${captureSession.count} 张` : captureSession?.status === 'completed' ? `${captureSession.count} 张待上传` : '需要时主动开启'} tone="tone-capture" active={activeWorkspace === 'capture'} onClick={() => revealWorkspace('capture')} />
+          <StudentActionTile icon={MonitorUp} title="屏幕资料采集" description="截取学习屏幕或应用窗口" meta={captureSession?.status === 'capturing' ? `采集中 · ${captureSession.count} 张` : captureSession?.status === 'paused' ? `已暂停 · ${captureSession.count} 张` : captureSession?.status === 'completed' ? `${captureSession.count} 张待上传` : '需要时主动开启'} tone="tone-capture" active={capturePanelOpen || captureSession?.status === 'capturing' || captureSession?.status === 'paused'} onClick={openCapturePanel} />
           <StudentActionTile icon={FolderSync} title="自动投递" description={config.terminalMode === 'personal' ? '监测指定文件夹中的新资料' : '共享终端不持续监测文件夹'} meta={config.terminalMode === 'personal' ? (autoEnabled ? '已开启' : '未开启') : '个人终端可用'} tone="tone-auto" active={activeWorkspace === 'auto-delivery'} onClick={() => revealWorkspace('auto-delivery')} />
           <StudentActionTile icon={TrendingUp} title="成长模型" description="查看能力与项目成长证据" meta="只读查看" tone="tone-growth" active={activeWorkspace === 'documents' && documentMode === 'growth'} disabled={busy} onClick={() => openDocumentWorkspace('growth')} />
           <StudentActionTile icon={FileText} title="学情报告" description="查看掌握情况和学习建议" meta="只读查看" tone="tone-report" active={activeWorkspace === 'documents' && documentMode === 'reports'} disabled={busy} onClick={() => openDocumentWorkspace('reports')} />
@@ -1158,6 +1187,40 @@ function TerminalApp() {
           <StudentActionTile icon={LibraryBig} title="项目知识" description="阅读本人关联项目的知识资料" meta={`${knowledgeProjects.length} 个关联项目`} tone="tone-knowledge" active={activeWorkspace === 'documents' && documentMode === 'project-knowledge'} disabled={busy} onClick={() => openDocumentWorkspace('project-knowledge')} />
         </section>
       </section>
+
+      {capturePanelOpen ? <aside className="student-capture-flyout" role="dialog" aria-modal="false" aria-labelledby="student-capture-flyout-title">
+        <header>
+          <div><span className="student-capture-flyout-eyebrow">主动采集</span><h2 id="student-capture-flyout-title">屏幕资料采集</h2></div>
+          <button className="student-workspace-close" type="button" onClick={() => setCapturePanelOpen(false)} aria-label="关闭屏幕采集浮动面板"><X size={19} /></button>
+        </header>
+        <p>只采集你主动选择的学习屏幕或应用窗口。开始后，右下角会显示始终置顶的控制条；不会录屏、读取私聊或采集敏感窗口。</p>
+        <div className="student-capture-flyout-fields">
+          <label>
+            <span>采集屏幕或窗口</span>
+            <select value={captureSourceId} onFocus={() => { if (!captureSources.length) void loadCaptureSources(); }} onChange={(event) => setCaptureSourceId(event.target.value)} disabled={busy} aria-label="采集屏幕或窗口">
+              <option value="">{captureSources.length ? '请选择屏幕或窗口' : '正在读取可采集屏幕…'}</option>
+              {captureSources.map((source) => <option value={source.id} key={source.id} disabled={source.blocked || source.available === false}>{source.name}{source.blocked ? '（已排除）' : ''}</option>)}
+            </select>
+          </label>
+          <label>
+            <span>采集策略</span>
+            <select value={captureMode} onChange={(event) => setCaptureMode(event.target.value as CaptureMode)} disabled={busy} aria-label="采集策略">
+              {Object.entries(CAPTURE_MODE_COPY).map(([mode, copy]) => <option value={mode} key={mode}>{copy.label}</option>)}
+            </select>
+          </label>
+          <label>
+            <span>最长采集时长</span>
+            <select value={captureDuration} onChange={(event) => setCaptureDuration(Number(event.target.value))} disabled={busy} aria-label="最长采集时长">
+              {[15, 30, 45, 60, 90, 120].map((minutes) => <option value={minutes} key={minutes}>{minutes} 分钟</option>)}
+            </select>
+          </label>
+        </div>
+        <small className="student-capture-policy-hint">{CAPTURE_MODE_COPY[captureMode].description}</small>
+        <footer>
+          <button className="terminal-secondary" type="button" onClick={loadCaptureSources} disabled={busy}>刷新屏幕</button>
+          <button className="terminal-primary" type="button" onClick={toggleCapture} disabled={busy || !selectedTarget || !captureSourceId}>{busy ? '正在启动…' : `开始采集（最长 ${captureDuration} 分钟）`}</button>
+        </footer>
+      </aside> : null}
 
       {activeWorkspace ? <section className="student-workspace-panel" ref={workspaceRef} aria-label="当前功能工作区">
         <header className="student-workspace-heading">
@@ -1189,14 +1252,9 @@ function TerminalApp() {
         </div> : <div className="terminal-empty-state">共享终端不会持续监测文件夹，避免下一名学生接手后沿用上一人的投递目标。普通文件仍可使用“上传学习资料”。</div>) : null}
 
         {activeWorkspace === 'capture' ? <div className="student-tool-form">
-          <p>主动选择学习屏幕或应用窗口。结束采集后系统会自动送达到当前学生本人或已关联项目，失败时后台自动恢复。</p>
+          <p>屏幕资料采集使用浮动控制面板：先选择屏幕、策略和时长；开始后通过右下角置顶控制条暂停、重点截取或结束。资料只会送达到当前学生本人或已关联项目。</p>
           <div className="capture-row">
-            <button className="terminal-secondary" onClick={loadCaptureSources} disabled={busy || captureSession?.status === 'capturing'}>刷新屏幕列表</button>
-            <select value={captureSourceId} onFocus={() => { if (!captureSources.length) void loadCaptureSources(); }} onChange={(event) => setCaptureSourceId(event.target.value)} disabled={captureSession?.status === 'capturing'}>
-              <option value="">{captureSources.length ? '选择屏幕或窗口' : '点击加载屏幕和窗口'}</option>
-              {captureSources.map((source) => <option value={source.id} key={source.id} disabled={source.blocked || source.available === false}>{source.name}</option>)}
-            </select>
-            <button className={captureSession?.status === 'capturing' ? 'terminal-danger' : 'terminal-primary'} onClick={toggleCapture} disabled={busy || !selectedTarget}>{captureSession?.status === 'capturing' ? `结束采集（${captureSession.count}）` : '开始屏幕采集'}</button>
+            <button className="terminal-primary" onClick={openCapturePanel} disabled={busy || !selectedTarget}>{captureSession?.status === 'capturing' || captureSession?.status === 'paused' ? '查看采集状态' : '打开浮动采集面板'}</button>
             <button className="terminal-secondary" onClick={uploadCapture} disabled={busy || captureSession?.status !== 'completed' || !captureSession.files?.length}>提前重试送达</button>
           </div>
         </div> : null}

@@ -1,4 +1,4 @@
-const { app, BrowserWindow, clipboard, desktopCapturer, dialog, ipcMain, shell } = require('electron');
+const { app, BrowserWindow, clipboard, desktopCapturer, dialog, ipcMain, screen, shell } = require('electron');
 const crypto = require('crypto');
 const dgram = require('dgram');
 const fs = require('fs');
@@ -45,6 +45,7 @@ const {
   terminalLifecyclePaths,
 } = require('./student-agent-lifecycle.cjs');
 const { AUTO_CAPTURE_AGENT_IDS } = require('./agent-adapter-registry.cjs');
+const { captureSaveDecision, normalizeCaptureOptions } = require('./capture-protocol.cjs');
 
 app.setName('AI Education Student Terminal');
 
@@ -60,6 +61,7 @@ let autoDeliveryBusy = false;
 let captureDeliveryTimer = null;
 let captureDeliveryBusy = false;
 let activeCapture = null;
+let captureControlWindow = null;
 let courseView = null;
 let activeCourse = null;
 let effectiveCourseCache = [];
@@ -1282,24 +1284,58 @@ async function runAutoDelivery() {
   }
 }
 
-async function captureFrame(session) {
+function captureSignature(image) {
+  const bitmap = image.resize({ width: 16, height: 16, quality: 'good' }).toBitmap();
+  const signature = [];
+  for (let offset = 0; offset + 3 < bitmap.length; offset += 4) {
+    signature.push(Math.round((bitmap[offset + 2] * 0.299) + (bitmap[offset + 1] * 0.587) + (bitmap[offset] * 0.114)));
+  }
+  return signature;
+}
+
+function publicCaptureSession(session) {
+  if (!session) return null;
+  return { ...session, timer: undefined, stopTimer: undefined, lastSavedSignature: undefined };
+}
+
+async function captureFrame(session, input = {}) {
+  if (!session || session !== activeCapture || session.status !== 'capturing') return false;
   const sources = await desktopCapturer.getSources({ types: [session.sourceType], thumbnailSize: { width: 1600, height: 900 } });
   const source = sources.find((item) => item.id === session.sourceId);
   if (!source || source.thumbnail.isEmpty()) return false;
-  const capturedAt = new Date().toISOString();
+  const now = Date.now();
+  const signature = captureSignature(source.thumbnail);
+  const decision = captureSaveDecision(session, {
+    now,
+    signature,
+    force: Boolean(input.force),
+    highlight: Boolean(input.highlight),
+    options: session.options,
+  });
+  session.candidateFrameCount += 1;
+  if (!decision.save) {
+    session.deduplicatedCount += 1;
+    session.lastDecision = decision.reason;
+    session.updatedAt = new Date(now).toISOString();
+    return false;
+  }
+  const capturedAt = new Date(now).toISOString();
   const content = source.thumbnail.toJPEG(84);
   const contentHash = crypto.createHash('sha1').update(content).digest('hex');
-  if (session.lastContentHash === contentHash) return false;
   const itemId = `${session.id}-${session.items.length + 1}`;
   const filename = `capture-${capturedAt.replace(/\D/g, '').slice(0, 14)}-${session.items.length + 1}.jpg`;
   const target = path.join(session.folder, filename);
   fs.writeFileSync(target, content);
   session.files.push(target);
-  session.items.push({ id: itemId, path: target, filename, capturedAt, sequence: session.items.length + 1, hashAlgorithm: 'sha1', contentHash });
+  session.items.push({ id: itemId, path: target, filename, capturedAt, sequence: session.items.length + 1, highlighted: Boolean(input.highlight), reason: decision.reason, hashAlgorithm: 'sha1', contentHash });
   session.lastContentHash = contentHash;
+  session.lastSavedSignature = signature;
+  session.lastSavedAt = now;
+  session.lastDecision = decision.reason;
   session.count = session.files.length;
   session.updatedAt = new Date().toISOString();
-  notify('terminal:capture-changed', { ...session, timer: undefined });
+  notify('terminal:capture-changed', publicCaptureSession(session));
+  updateCaptureControlWindow();
   return true;
 }
 
@@ -1308,6 +1344,11 @@ async function startCapture(input = {}) {
   const sourceId = String(input.sourceId || '');
   const sourceType = input.sourceType === 'window' ? 'window' : 'screen';
   if (!sourceId) throw new Error('请选择需要采集的屏幕或窗口。');
+  const config = readConfig();
+  if (!config.currentStudent?.id || String(input.studentId || '') !== String(config.currentStudent.id)) throw new Error('屏幕采集只能属于当前登录学生。');
+  const target = normalizeUploadTarget(input.target);
+  if (!target || String(target.studentId || '') !== String(config.currentStudent.id)) throw new Error('请先选择当前学生本人或其关联项目作为资料目标。');
+  if (target.type === 'project' && String(target.id || '') !== String(input.projectId || '')) throw new Error('采集项目目标不一致，请重新选择。');
   const availableSources = await desktopCapturer.getSources({ types: ['screen', 'window'], thumbnailSize: { width: 1, height: 1 } });
   const selectedSource = availableSources.find((source) => source.id === sourceId);
   if (!selectedSource) throw new Error('所选采集来源已不可用，请重新选择。');
@@ -1315,6 +1356,8 @@ async function startCapture(input = {}) {
   const id = `windows-terminal-capture-${Date.now()}-${crypto.randomBytes(3).toString('hex')}`;
   const folder = path.join(captureRoot(), id);
   fs.mkdirSync(folder, { recursive: true });
+  const options = normalizeCaptureOptions(input);
+  const startedAt = new Date().toISOString();
   const session = {
     id,
     status: 'capturing',
@@ -1323,35 +1366,81 @@ async function startCapture(input = {}) {
     sourceName: deidentifyCaptureSourceName(selectedSource.name || input.sourceName, sourceType),
     studentId: String(input.studentId || ''),
     projectId: String(input.projectId || ''),
-    target: normalizeUploadTarget(input.target),
+    target,
     folder,
     files: [],
     items: [],
     count: 0,
-    startedAt: new Date().toISOString(),
+    startedAt,
+    plannedEndAt: new Date(Date.now() + (options.durationMinutes * 60 * 1000)).toISOString(),
+    options,
+    candidateFrameCount: 0,
+    deduplicatedCount: 0,
+    highlightedCount: 0,
     courseId: activeCourse?.courseId || '',
     courseProvider: activeCourse?.provider || '',
     courseUrl: activeCourse?.currentUrl || activeCourse?.url || '',
     courseStartedAt: activeCourse?.startedAt || '',
   };
   activeCapture = session;
-  await captureFrame(session);
-  session.timer = setInterval(() => { void captureFrame(session); }, Math.max(5000, Number(input.intervalSeconds || 15) * 1000));
-  return { ...session, timer: undefined };
+  await captureFrame(session, { force: true });
+  session.timer = setInterval(() => { void captureFrame(session); }, options.sampleIntervalMs);
+  session.stopTimer = setTimeout(() => { stopCapture('duration_complete'); }, Math.max(1000, Date.parse(session.plannedEndAt) - Date.now()));
+  updateCaptureControlWindow();
+  return publicCaptureSession(session);
 }
 
-function stopCapture() {
+function stopCapture(reason = 'manual') {
   if (!activeCapture) return null;
   clearInterval(activeCapture.timer);
+  clearTimeout(activeCapture.stopTimer);
   activeCapture.status = 'completed';
   activeCapture.endedAt = new Date().toISOString();
   activeCapture.courseCompletedAt = activeCapture.endedAt;
-  const result = { ...activeCapture, timer: undefined };
+  activeCapture.endReason = reason;
+  const result = publicCaptureSession(activeCapture);
   activeCapture = null;
+  updateCaptureControlWindow();
   const queued = queueCaptureDelivery(result, { resetAttempt: true });
   notify('terminal:capture-changed', { ...result, deliveryStatus: queued ? 'queued' : 'empty' });
   if (queued) void runCaptureDeliveryQueue();
   return { ...result, deliveryStatus: queued ? 'queued' : 'empty' };
+}
+
+function captureControlHtml(session) {
+  const paused = session.status === 'paused';
+  const escapeHtml = (value) => String(value || '').replace(/[&<>"']/g, (character) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[character]));
+  const sourceName = escapeHtml(session.sourceName || '已授权屏幕');
+  const policyName = escapeHtml(session.options?.policyName || '智能混合');
+  return `<!doctype html><html><head><meta charset="utf-8"><style>*{box-sizing:border-box}body{margin:0;font-family:"Microsoft YaHei",sans-serif;background:transparent;color:#172a27}.bar{height:72px;padding:10px 12px;display:flex;align-items:center;gap:10px;background:#fbfaff;border:1px solid #d9ccff;border-left:4px solid #7c3aed;border-radius:10px;box-shadow:0 12px 30px rgba(56,35,91,.22);-webkit-app-region:drag}.state{min-width:0;flex:1;display:grid;gap:3px}.state strong{font-size:13px}.state span{font-size:11px;color:#64748b;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.dot{width:9px;height:9px;border-radius:50%;background:${paused ? '#d97706' : '#ef4444'};box-shadow:0 0 0 4px ${paused ? 'rgba(217,119,6,.12)' : 'rgba(239,68,68,.12)'}}button{width:34px;height:34px;border:1px solid #d9ccff;background:white;color:#6d28d9;border-radius:7px;font-size:15px;cursor:pointer;-webkit-app-region:no-drag}button:hover{background:#f1eaff}button.end{color:#b42318;border-color:#fecaca}</style></head><body><div class="bar"><i class="dot"></i><div class="state"><strong>${paused ? '采集已暂停' : '正在采集'} · ${session.count || 0} 张</strong><span>${sourceName} · ${policyName}</span></div><button title="重点截取" id="highlight">★</button><button title="${paused ? '继续采集' : '暂停采集'}" id="pause">${paused ? '▶' : 'Ⅱ'}</button><button title="打开采集箱" id="folder">▣</button><button class="end" title="结束并整理" id="stop">■</button></div><script>const call=(action)=>window.terminalBridge.captureControl(action);document.getElementById('highlight').onclick=()=>call('highlight');document.getElementById('pause').onclick=()=>call('${paused ? 'resume' : 'pause'}');document.getElementById('folder').onclick=()=>call('folder');document.getElementById('stop').onclick=()=>call('stop');</script></body></html>`;
+}
+
+function updateCaptureControlWindow() {
+  if (!activeCapture) {
+    if (captureControlWindow && !captureControlWindow.isDestroyed()) captureControlWindow.close();
+    captureControlWindow = null;
+    return;
+  }
+  if (!captureControlWindow || captureControlWindow.isDestroyed()) {
+    const workArea = screen.getPrimaryDisplay().workArea;
+    captureControlWindow = new BrowserWindow({
+      width: 460,
+      height: 72,
+      x: Math.max(workArea.x, workArea.x + workArea.width - 480),
+      y: Math.max(workArea.y, workArea.y + workArea.height - 102),
+      frame: false,
+      transparent: true,
+      resizable: false,
+      alwaysOnTop: true,
+      skipTaskbar: true,
+      show: false,
+      webPreferences: { preload: path.join(__dirname, 'terminal-preload.cjs'), contextIsolation: true, nodeIntegration: false },
+    });
+    captureControlWindow.setAlwaysOnTop(true, 'floating');
+    captureControlWindow.once('ready-to-show', () => captureControlWindow?.showInactive());
+    captureControlWindow.on('closed', () => { captureControlWindow = null; });
+  }
+  captureControlWindow.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(captureControlHtml(activeCapture))}`);
 }
 
 function publicTailscaleStatus(status = findWindowsTailscaleInstall()) {
@@ -1483,6 +1572,38 @@ function registerIpc() {
   });
   ipcMain.handle('terminal:start-capture', (_event, input) => startCapture(input));
   ipcMain.handle('terminal:stop-capture', () => stopCapture());
+  ipcMain.handle('terminal:capture-control', async (_event, action) => {
+    if (!activeCapture) return { ok: false, message: '当前没有正在运行的屏幕采集。' };
+    if (action === 'highlight') {
+      const saved = await captureFrame(activeCapture, { force: true, highlight: true });
+      if (saved) {
+        activeCapture.highlightedCount += 1;
+        notify('terminal:capture-changed', publicCaptureSession(activeCapture));
+      }
+      updateCaptureControlWindow();
+      return { ok: saved, message: saved ? '已保存重点页面。' : '重点页面未保存。' };
+    }
+    if (action === 'pause') {
+      activeCapture.status = 'paused';
+      activeCapture.updatedAt = new Date().toISOString();
+      notify('terminal:capture-changed', publicCaptureSession(activeCapture));
+      updateCaptureControlWindow();
+      return { ok: true, message: '采集已暂停。' };
+    }
+    if (action === 'resume') {
+      activeCapture.status = 'capturing';
+      activeCapture.updatedAt = new Date().toISOString();
+      notify('terminal:capture-changed', publicCaptureSession(activeCapture));
+      updateCaptureControlWindow();
+      return { ok: true, message: '采集已继续。' };
+    }
+    if (action === 'folder') {
+      const error = await shell.openPath(activeCapture.folder);
+      return { ok: !error, message: error || '已打开本次采集箱。' };
+    }
+    if (action === 'stop') return { ok: true, session: stopCapture('floating_control'), message: '采集已结束，正在后台送达并整理。' };
+    return { ok: false, message: '未知采集控制操作。' };
+  });
   ipcMain.handle('terminal:upload-capture', (_event, input) => uploadPaths(input?.files || [], input?.target, {
     sourceType: 'windows_terminal_course_capture',
     captureSessionId: input?.captureSessionId || '',

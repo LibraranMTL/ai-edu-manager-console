@@ -51,7 +51,7 @@ try {
   $releaseDir = Join-Path $projectRoot 'release\tablet-terminal'
   $unsignedApk = Join-Path $buildDir 'tablet-terminal-unsigned.apk'
   $alignedApk = Join-Path $buildDir 'tablet-terminal-aligned.apk'
-  $finalApk = Join-Path $releaseDir 'AI-edu-manager-tablet-terminal-0.6.16.apk'
+  $finalApk = Join-Path $releaseDir 'AI-edu-manager-tablet-terminal-0.6.17.apk'
   $keystore = Join-Path $scriptRoot 'debug.keystore'
 
   Remove-Item -LiteralPath $buildDir -Recurse -Force -ErrorAction SilentlyContinue
@@ -70,6 +70,7 @@ try {
     (Join-Path $scriptRoot 'src\com\qxmatrix\eduterminal\CaptureProjectionService.java'),
     (Join-Path $scriptRoot 'src\com\qxmatrix\eduterminal\CaptureStorage.java'),
     (Join-Path $scriptRoot 'src\com\qxmatrix\eduterminal\AutoDeliveryJobService.java'),
+    (Join-Path $scriptRoot 'src\com\qxmatrix\eduterminal\CaptureAutoDeliveryJobService.java'),
     (Join-Path $scriptRoot 'src\com\qxmatrix\eduterminal\CaptureTileService.java'),
     (Join-Path $genDir 'com\qxmatrix\eduterminal\R.java')
   )
@@ -136,7 +137,7 @@ try {
 
   $realReleaseDir = Join-Path $realProjectRoot 'release\tablet-terminal'
   New-Item -ItemType Directory -Force -Path $realReleaseDir | Out-Null
-  $realFinalApk = Join-Path $realReleaseDir 'AI-edu-manager-tablet-terminal-0.6.16.apk'
+  $realFinalApk = Join-Path $realReleaseDir 'AI-edu-manager-tablet-terminal-0.6.17.apk'
   Get-Item -LiteralPath $realFinalApk | Format-List FullName,Length,LastWriteTime
 } finally {
   cmd /c "subst $drive /d" | Out-Null

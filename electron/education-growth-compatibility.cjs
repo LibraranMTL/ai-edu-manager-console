@@ -158,7 +158,22 @@ function mapGrowthEvidenceReviewToEducationClaims({ student, review = {}, source
   const studentIdentity = portableStudentIdentity(legacyStudentId);
   const studentId = studentIdentity.id;
   const items = Array.isArray(review.candidates) ? review.candidates : [];
-  const mapped = items.map((item) => mapLegacyEvidenceItem(item, { studentId, legacyStudentId, sourceSchema: 'edu-manager.growth-evidence-review.v1' }));
+  // A student's local review file can outlive an ID migration. Rebind only
+  // when the record carries the same explicit student name; a mismatched
+  // named record remains a cross-student error and is never silently merged.
+  const studentName = String(student?.name || '').trim();
+  const mapped = items.map((item) => {
+    const itemStudentId = String(item?.studentId || '').trim();
+    const itemStudentName = String(item?.studentName || '').trim();
+    const compatibleLegacyId = itemStudentId && itemStudentId !== legacyStudentId && studentName && itemStudentName === studentName
+      ? itemStudentId
+      : legacyStudentId;
+    return mapLegacyEvidenceItem({ ...item, studentId: itemStudentId && itemStudentId !== legacyStudentId && itemStudentName === studentName ? studentId : item.studentId }, {
+      studentId,
+      legacyStudentId: compatibleLegacyId,
+      sourceSchema: 'edu-manager.growth-evidence-review.v1',
+    });
+  });
   const reviewQueue = mapped.filter((item) => item.issues.some((entry) => entry.code === 'LEGACY_REVIEW_AUDIT_MISSING')).map((item) => ({
     evidenceId: item.claim?.id || item.idMapping.id,
     legacyStatus: 'confirmed',

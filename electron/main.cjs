@@ -1,5 +1,7 @@
 ﻿const { app, BrowserWindow, clipboard, dialog, ipcMain, shell } = require('electron');
 const fs = require('fs');
+const { screen } = require('electron');
+const { captureControlBounds, loadVisibleCaptureControlWindow } = require('./capture-control-window.cjs');
 const { powerMonitor } = require('electron');
 const { desktopCapturer, globalShortcut, Menu, Tray } = require('electron');
 const path = require('path');
@@ -9,6 +11,7 @@ const https = require('https');
 const net = require('net');
 const dgram = require('dgram');
 const crypto = require('crypto');
+const { isDeepStrictEqual } = require('node:util');
 const { Worker } = require('worker_threads');
 const { pathToFileURL } = require('url');
 const { WebContentsView, session } = require('electron');
@@ -72,6 +75,7 @@ const {
   resolveStudentBaseDir,
 } = require('./storage-root.cjs');
 const { mergeOpenAiToolInstall, selectNewestCodexCliCandidate } = require('./openai-tool-install.cjs');
+const { countProjectFiles } = require('./project-file-count.cjs');
 const { mergeAssetReferences, recentAssetTrend } = require('./asset-statistics.cjs');
 const { lanDiscoveryBroadcastTargets } = require('./lan-discovery.cjs');
 const { createStudentPortableMigrationManager } = require('./student-portable-migration.cjs');
@@ -263,6 +267,7 @@ const { studentTerminalProgress: buildStudentTerminalProgress } = require('./stu
 const { buildStudentGrowthSummary } = require('./student-growth-summary.cjs');
 const { normalizeMaterialStatus } = require('./material-status.cjs');
 const { discoverStudentRawMaterials } = require('./student-raw-discovery.cjs');
+const { mergeMaterialFromUpload, reconcileCompletedMaterialRevisions } = require('./material-ledger-reconciliation.cjs');
 const {
   inventoryRawFiles,
   isPathInside: isStudentMaterialPathInside,
@@ -5255,16 +5260,15 @@ function upsertStudentMaterialsFromUploads(student, uploadRecords) {
     const previous = byId.get(id);
     const incoming = materialRecordFromUpload(record);
     byId.set(id, previous
-      ? {
+      ? mergeMaterialFromUpload(previous, {
           ...incoming,
-          ...previous,
-          // materials.json is authoritative for the current physical path;
-          // the upload record remains an audit source for workflow status.
+          // materials.json owns a repaired physical path, while the upload
+          // audit row owns the latest fingerprint for a stable capture ID.
           status: normalizeUploadStatus(record.status || previous.status),
           statusUpdatedAt: record.statusUpdatedAt || previous.statusUpdatedAt || incoming.statusUpdatedAt,
           digestedAt: record.digestedAt || previous.digestedAt || '',
           digestBatchId: record.digestBatchId || previous.digestBatchId || '',
-        }
+        })
       : incoming);
   });
   const materials = Array.from(byId.values()).sort((a, b) => String(b.uploadedAt || '').localeCompare(String(a.uploadedAt || '')));
@@ -5305,10 +5309,36 @@ function upsertStudentMaterialsFromUploads(student, uploadRecords) {
 }
 
 function syncStudentMaterialsFromUploadRecords(student, options = {}) {
-  const records = readUploadRecords().filter((record) => String(record.studentId) === String(student.id));
+  const allRecords = readUploadRecords();
+  const records = allRecords.filter((record) => String(record.studentId) === String(student.id));
   upsertStudentMaterialsFromUploads(student, records.map((record) => ({ ...record, rawPath: student.rawPath || getRawDir(student.name) })));
   discoverStudentRawFiles(student, options);
-  return readStudentMaterials(student);
+  const reconciliation = reconcileCompletedMaterialRevisions(readStudentMaterials(student), allRecords);
+  if (reconciliation.reconciled.length) {
+    writeStudentMaterials(student, reconciliation.materials);
+    writeUploadRecords(reconciliation.uploadRecords);
+    const pendingCount = reconciliation.materials.filter((item) => normalizeUploadStatus(item.status) === 'pending_digest').length;
+    const submittedCount = reconciliation.materials.filter((item) => ['submitted', 'digesting'].includes(normalizeUploadStatus(item.status))).length;
+    const currentState = readStudentDigestState(student);
+    writeStudentDigestState(student, {
+      status: submittedCount ? 'digesting' : pendingCount ? 'pending' : currentState.lastDigestAt ? 'completed' : 'idle',
+      message: `已自动结算 ${reconciliation.reconciled.length} 条被最终修订覆盖的旧资料记录。${pendingCount ? `仍有 ${pendingCount} 份资料待处理。` : '当前没有重复待处理资料。'}`,
+      materialRevisionReconciliation: {
+        count: reconciliation.reconciled.length,
+        reconciledAt: new Date().toISOString(),
+        items: reconciliation.reconciled.slice(0, 100),
+      },
+    });
+    appendHostTimeline({
+      type: 'material_revision_reconciled',
+      title: 'Material revisions reconciled',
+      detail: `${reconciliation.reconciled.length} superseded record(s) settled`,
+      studentId: String(student.id),
+      studentName: student.name,
+      count: reconciliation.reconciled.length,
+    });
+  }
+  return reconciliation.reconciled.length ? reconciliation.materials : readStudentMaterials(student);
 }
 
 function sha1File(file) {
@@ -10860,9 +10890,11 @@ function updateCaptureControlWindow() {
     return;
   }
   if (!captureControlWindow || captureControlWindow.isDestroyed()) {
+    const display = mainWindow && !mainWindow.isDestroyed()
+      ? screen.getDisplayMatching(mainWindow.getBounds())
+      : screen.getPrimaryDisplay();
     captureControlWindow = new BrowserWindow({
-      width: 450,
-      height: 68,
+      ...captureControlBounds(display.workArea, 450, 68),
       frame: false,
       transparent: true,
       resizable: false,
@@ -10876,10 +10908,12 @@ function updateCaptureControlWindow() {
       },
     });
     captureControlWindow.setAlwaysOnTop(true, 'floating');
-    captureControlWindow.once('ready-to-show', () => captureControlWindow?.showInactive());
     captureControlWindow.on('closed', () => { captureControlWindow = null; });
   }
-  captureControlWindow.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(captureControlHtml(session))}`);
+  const window = captureControlWindow;
+  loadVisibleCaptureControlWindow(window, captureControlHtml(session),
+    () => captureControlWindow === window && Boolean(activeCaptureRuntime?.session),
+    (error) => console.warn('屏幕采集控制条加载失败：', error));
 }
 
 async function listCaptureSources() {
@@ -11952,11 +11986,13 @@ function ensureProjectWorkspace(project) {
   return ensured;
 }
 
-function getProjects() {
-  const projects = readProjects().map(normalizeProject).map((project) => {
+async function getProjects() {
+  const projects = [];
+  for (const project of readProjects().map(normalizeProject)) {
     const records = readProjectKnowledgeReview(project).records;
-    const rawMaterialCount = collectProjectRawFiles(project.rawPath).length;
-    const knowledgeFileCount = [
+    const rawMaterialCount = await countProjectFiles(project.rawPath);
+    let knowledgeFileCount = 0;
+    for (const dir of [
       project.conceptPath,
       project.entityPath,
       project.summaryPath,
@@ -11964,7 +12000,7 @@ function getProjects() {
       project.synthesisPath,
       project.reportPath,
       project.contributionPath,
-    ].reduce((sum, dir) => sum + collectProjectRawFiles(dir).length, 0);
+    ]) knowledgeFileCount += await countProjectFiles(dir);
     const knowledgeKinds = new Set(records.filter((item) => !['rejected', 'invalid'].includes(item.status)).map((item) => item.kind));
     const knowledgeCoverage = Math.round((knowledgeKinds.size / 5) * 100);
     const pendingKnowledgeCount = records.filter((item) => ['ai_generated', 'pending_review'].includes(item.status)).length;
@@ -11980,7 +12016,7 @@ function getProjects() {
         : '',
       records.some((item) => ['ai_generated', 'pending_review'].includes(item.status) && Date.now() - Date.parse(item.generatedAt || 0) > 7 * 86400000) ? '知识待审核超过 7 天' : '',
     ].filter(Boolean);
-    return {
+    projects.push({
       ...project,
       dashboard: {
         rawMaterialCount,
@@ -11995,8 +12031,8 @@ function getProjects() {
         riskCount: riskReasons.length,
         riskReasons,
       },
-    };
-  });
+    });
+  }
   return JSON.stringify({ ok: true, projects });
 }
 
@@ -15890,7 +15926,8 @@ function upsertTaskCandidates(candidates, options = {}) {
     store.tasks = store.tasks.filter((task) => !(
       task.kind === 'student_digest'
       && !activeStudentDigestIds.has(String(task.id))
-      && ['queued', 'pending', 'approved'].includes(normalizeTaskStatus(task.status))
+      && (['queued', 'pending', 'approved'].includes(normalizeTaskStatus(task.status))
+        || (normalizeTaskStatus(task.status) === 'blocked' && task.error?.code === 'MATERIAL_PREFLIGHT_BLOCKED'))
     ));
     if (store.tasks.length !== before) changed = true;
   }
@@ -18649,13 +18686,15 @@ function currentLifecycleInstallFingerprint(options = {}) {
 
 function reconcileAuthorizedLifecycleAdapters(options = {}) {
   try {
-    const fingerprint = currentLifecycleInstallFingerprint(options);
-    if (!options.force && fingerprint === agentLifecycleInstallFingerprint) return false;
-    agentLifecycleInstallFingerprint = fingerprint;
+    // Do not probe installed Agent applications until lifecycle capture is
+    // actually authorized; these probes may launch synchronous OS processes.
     const descriptor = safeReadJson(activeAgentKnowledgeDescriptorPath(), {});
     if (descriptor?.lifecycleCapture?.enabled !== true) return false;
     const studentId = String(descriptor?.defaults?.scopeId || '');
     if (!studentId || !findStudentByKey(studentId)) return false;
+    const fingerprint = currentLifecycleInstallFingerprint(options);
+    if (!options.force && fingerprint === agentLifecycleInstallFingerprint) return false;
+    agentLifecycleInstallFingerprint = fingerprint;
     const prepared = parseJsonObject(prepareAgentKnowledgeAccess(studentId, { activateGlobal: true, captureEnabled: true }));
     if (!prepared.ok) return false;
     notify('onNativeAgentMemoryChanged', JSON.stringify({ studentId, reason: 'adapter_reconciled' }));
@@ -20083,7 +20122,22 @@ function executeTaskByAdapter(taskId, requestedExecutor = '') {
       let batch = readDigestBatch(studentDigestBatchPath(student));
       if (!batch || String(batch.batchId || '') !== String(currentState.digestBatchId || '') || !['submitted', 'digesting'].includes(normalizeDigestStateStatus(currentState.status))) {
         const registered = registerStudentDigestBatch(student.id, { includeSubmitted: true });
-        if (!registered.ok) return JSON.stringify(registered);
+        if (!registered.ok) {
+          if (registered.needsPathRepair && !registered.retryable) {
+            const blockedStore = readTaskStore();
+            const blocked = transitionTaskInStore(blockedStore, refreshed.id, 'blocked', {
+              error: { code: 'MATERIAL_PREFLIGHT_BLOCKED', message: registered.message },
+              message: registered.message,
+              result: null,
+            }, 'digest_preflight_blocked');
+            if (blocked.ok) {
+              writeTaskStore(blockedStore);
+              notify('onNativeTaskCenterChanged', JSON.stringify({ taskId: refreshed.id, status: 'blocked' }));
+              return JSON.stringify({ ...registered, blocked: true, task: blocked.task });
+            }
+          }
+          return JSON.stringify(registered);
+        }
         batch = registered.batch;
       }
       refreshed = attachDigestBatchToTask(refreshed.id, batch, studentDigestBatchPath(student), studentDigestReceiptPath(student)) || refreshed;
@@ -22213,8 +22267,11 @@ function writeTemplateFiles(dir, templates, overwrite) {
   fs.mkdirSync(dir, { recursive: true });
   for (const key of templateFileKeys()) {
     const file = path.join(dir, key);
-    if (!overwrite && fs.existsSync(file)) continue;
-    fs.writeFileSync(file, String(templates[key] || ''), 'utf8');
+    const content = String(templates[key] || '');
+    if (fs.existsSync(file)) {
+      if (!overwrite || fs.readFileSync(file, 'utf8') === content) continue;
+    }
+    fs.writeFileSync(file, content, 'utf8');
   }
 }
 
@@ -24635,6 +24692,7 @@ function syncStudentsIndex(studentsJson) {
       const existing = existingById.get(String(student.id));
       return toHostStudent({
         ...student,
+        createdAt: student.createdAt || existing?.createdAt || '',
         loginId: student.loginId || existing?.loginId || '',
         loginIdVersion: student.loginIdVersion || existing?.loginIdVersion || 1,
         loginIdIssuedAt: student.loginIdIssuedAt || existing?.loginIdIssuedAt || '',
@@ -24643,7 +24701,7 @@ function syncStudentsIndex(studentsJson) {
     const ensured = ensureStudentLoginIds(merged);
     const students = ensured.students;
     assertStudentCapacity(students, currentStudents, '同步学生档案');
-    writeStudentsIndex(students);
+    if (!isDeepStrictEqual(students, currentStudents)) writeStudentsIndex(students);
     const validIds = new Set(students.map((student) => String(student.id)));
     const migrated = migrateTerminalDevices(readDevices(), Array.from(validIds));
     if (migrated.changed) writeDevices(migrated.devices);
@@ -24732,31 +24790,56 @@ function getTailscaleUrls(port) {
 }
 
 let tailscaleDnsUrlCache = { port: 0, expiresAt: 0, urls: [] };
+let tailscaleDnsRequest = null;
+
+function refreshTailscaleDnsUrls(port) {
+  if (tailscaleDnsRequest) return;
+  const request = { port, settled: false };
+  tailscaleDnsRequest = request;
+  let output = '';
+  let child;
+  let timeout;
+  const finish = (urls, ttlMs) => {
+    if (request.settled) return;
+    request.settled = true;
+    clearTimeout(timeout);
+    tailscaleDnsRequest = null;
+    const previous = tailscaleDnsUrlCache.port === port ? tailscaleDnsUrlCache.urls : [];
+    tailscaleDnsUrlCache = { port, expiresAt: Date.now() + ttlMs, urls };
+    if (JSON.stringify(previous) !== JSON.stringify(urls)) {
+      notify('onNativeHostServiceChanged', getHostServiceStatus());
+    }
+  };
+  try {
+    child = spawn('tailscale.exe', ['status', '--json'], { windowsHide: true, stdio: ['ignore', 'pipe', 'ignore'] });
+    timeout = setTimeout(() => child.kill(), 5_000);
+    timeout.unref?.();
+    child.stdout.on('data', (chunk) => {
+      output += chunk.toString('utf8');
+      if (Buffer.byteLength(output, 'utf8') > 2 * 1024 * 1024) child.kill();
+    });
+    child.once('error', () => finish([], 60_000));
+    child.once('close', (code) => {
+      if (code !== 0) return finish([], 60_000);
+      try {
+        const status = JSON.parse(output);
+        const dnsName = String(status?.Self?.DNSName || '').trim().replace(/\.$/, '').toLowerCase();
+        const urls = dnsName && /^[a-z0-9.-]+\.ts\.net$/.test(dnsName) ? [`http://${dnsName}:${port}`] : [];
+        finish(urls, 5 * 60_000);
+      } catch {
+        finish([], 60_000);
+      }
+    });
+  } catch {
+    finish([], 60_000);
+  }
+}
 
 function getTailscaleDnsUrls(port) {
-  if (tailscaleDnsUrlCache.port === port && tailscaleDnsUrlCache.expiresAt > Date.now()) {
-    return [...tailscaleDnsUrlCache.urls];
+  if (tailscaleDnsUrlCache.port !== port || tailscaleDnsUrlCache.expiresAt <= Date.now()) {
+    refreshTailscaleDnsUrls(port);
   }
-  try {
-    const result = spawnSync('tailscale.exe', ['status', '--json'], {
-      encoding: 'utf8',
-      windowsHide: true,
-      timeout: 5_000,
-      maxBuffer: 2 * 1024 * 1024,
-    });
-    if (result.status !== 0 || !String(result.stdout || '').trim()) {
-      tailscaleDnsUrlCache = { port, expiresAt: Date.now() + 60_000, urls: [] };
-      return [];
-    }
-    const status = JSON.parse(result.stdout);
-    const dnsName = String(status?.Self?.DNSName || '').trim().replace(/\.$/, '').toLowerCase();
-    const urls = dnsName && /^[a-z0-9.-]+\.ts\.net$/.test(dnsName) ? [`http://${dnsName}:${port}`] : [];
-    tailscaleDnsUrlCache = { port, expiresAt: Date.now() + 5 * 60_000, urls };
-    return [...urls];
-  } catch {
-    tailscaleDnsUrlCache = { port, expiresAt: Date.now() + 60_000, urls: [] };
-    return [];
-  }
+  return tailscaleDnsUrlCache.port === port ? [...tailscaleDnsUrlCache.urls] : [];
 }
 
 function getHostConnectionMode() {
@@ -30051,11 +30134,9 @@ function licensedInvoke(action, handler) {
 function deferredInvoke(handler) {
   return new Promise((resolve) => {
     setImmediate(() => {
-      try {
-        resolve(handler());
-      } catch (error) {
+      Promise.resolve().then(handler).then(resolve, (error) => {
         resolve(JSON.stringify({ ok: false, message: `读取数据失败：${error.message}` }));
-      }
+      });
     });
   });
 }

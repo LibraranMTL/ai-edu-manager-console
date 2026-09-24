@@ -42,9 +42,11 @@ test('Windows student terminal capture opens a floating setup panel and a native
   assert.match(ui, /右下角浮动控制条可暂停、重点截取或结束/);
   assert.match(main, /normalizeCaptureOptions\(input\)/);
   assert.match(main, /captureControlWindow = new BrowserWindow/);
-  assert.match(main, /captureControlWindow\.setAlwaysOnTop\(true, 'floating'\)/);
+  assert.match(main, /loadVisibleCaptureControlWindow\(window, captureControlHtml\(activeCapture\)/);
+  assert.match(main, /screen\.getDisplayMatching\(mainWindow\.getBounds\(\)\)/);
   assert.match(main, /duration_complete/);
   assert.match(main, /terminal:capture-control/);
   assert.match(preload, /captureControl/);
   assert.match(build, /capture-protocol\.cjs/);
+  assert.match(build, /capture-control-window\.cjs/);
 });

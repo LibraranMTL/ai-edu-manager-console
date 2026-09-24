@@ -88,6 +88,16 @@ test('task center renders protocol details, heartbeat, inputs, outputs and histo
   assert.match(ui, /openLearningReport\('daily', student\)/);
 });
 
+test('digest preflight failures are persisted and rendered beside the task action', () => {
+  assert.match(main, /MATERIAL_PREFLIGHT_BLOCKED/);
+  assert.match(main, /digest_preflight_blocked/);
+  assert.match(main, /status: 'blocked'/);
+  assert.match(ui, /taskOperationFeedback/);
+  assert.match(ui, /正在检查资料、权限和 Agent 可用状态/);
+  assert.match(ui, /正在检查资料…/);
+  assert.match(ui, /aria-live="polite"/);
+});
+
 test('managed OpenClaw cron is disabled externally and scheduled by the task center', () => {
   assert.match(main, /isManagedOpenClawCronJob/);
   assert.match(main, /\['cron', 'disable', definition\.id/);

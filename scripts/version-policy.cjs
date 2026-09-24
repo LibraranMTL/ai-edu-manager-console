@@ -8,14 +8,16 @@ function parseVersion(value) {
 
 function validateWindowsVersion(value) {
   const version = parseVersion(value);
-  if (version.patch < 1 || version.patch > 10) {
-    throw new Error(`Windows 版本修订号必须为 1-10：${value}`);
+  const oneTimeException = version.major === 0 && version.minor === 17 && version.patch === 11;
+  if (version.patch < 1 || (version.patch > 10 && !oneTimeException)) {
+    throw new Error(`Windows 版本修订号必须为 1-10（0.17.11 为指定例外）：${value}`);
   }
   return version;
 }
 
 function nextWindowsVersion(value) {
   const version = validateWindowsVersion(value);
+  if (version.major === 0 && version.minor === 17 && version.patch === 10) return '0.17.11';
   if (version.patch < 10) return `${version.major}.${version.minor}.${version.patch + 1}`;
   return `${version.major}.${version.minor + 1}.1`;
 }

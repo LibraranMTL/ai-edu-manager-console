@@ -10,6 +10,9 @@ const ui = fs.readFileSync(path.join(root, 'src', 'DigestStatusCard.tsx'), 'utf8
 
 test('main process wires authoritative path recovery into student digest registration', () => {
   assert.match(main, /require\('\.\/material-path-recovery\.cjs'\)/);
+  assert.match(main, /require\('\.\/material-ledger-reconciliation\.cjs'\)/);
+  assert.match(main, /mergeMaterialFromUpload/);
+  assert.match(main, /reconcileCompletedMaterialRevisions/);
   assert.match(main, /function preflightStudentDigestMaterials/);
   assert.match(main, /const preflight = preflightStudentDigestMaterials\(normalized, options\)/);
   assert.match(main, /selectDigestBatchFiles/);

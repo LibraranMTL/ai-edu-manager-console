@@ -5637,6 +5637,8 @@ function App() {
   const [selectedTaskId, setSelectedTaskId] = useState('');
   const taskDetailPanelRef = React.useRef<HTMLElement | null>(null);
   const [taskExecutorDraft, setTaskExecutorDraft] = useState('');
+  const [taskExecutionBusyId, setTaskExecutionBusyId] = useState('');
+  const [taskOperationFeedback, setTaskOperationFeedback] = useState<{ taskId: string; tone: 'working' | 'success' | 'error'; message: string } | null>(null);
   const [taskResultPasteText, setTaskResultPasteText] = useState('');
   const [sharedInboxCount, setSharedInboxCount] = useState(0);
   const [compatibility, setCompatibility] = useState<Record<string, unknown> | null>(null);
@@ -12784,6 +12786,7 @@ ${JSON.stringify(items, null, 2)}
   const viewTaskCenterItem = (task: TaskCenterItem) => {
     setSelectedTaskId(task.id);
     setTaskExecutorDraft('auto');
+    setTaskOperationFeedback(null);
     setTaskResultPasteText('');
     setCollaborationResultFiles([]);
     window.setTimeout(() => {
@@ -12834,12 +12837,16 @@ ${JSON.stringify(items, null, 2)}
 
   const applyTaskOperationResult = (raw: string | undefined, fallback: string, sourceTask?: TaskCenterItem, returnToProject = false) => {
     if (!raw) {
-      setScheduleMessage('当前环境不支持该任务中心操作。');
+      const message = '当前环境不支持该任务中心操作。';
+      setScheduleMessage(message);
+      if (sourceTask) setTaskOperationFeedback({ taskId: sourceTask.id, tone: 'error', message });
       return false;
     }
     try {
       const result = JSON.parse(raw) as { ok?: boolean; message?: string; fallback?: boolean };
-      setScheduleMessage(result.message || (result.ok ? fallback : '任务操作失败。'));
+      const message = result.message || (result.ok ? fallback : '任务操作失败。');
+      setScheduleMessage(message);
+      if (sourceTask) setTaskOperationFeedback({ taskId: sourceTask.id, tone: result.ok ? 'success' : 'error', message });
       window.setTimeout(refreshTaskCenter, 220);
       if (result.ok && returnToProject && sourceTask?.sourceType === 'project') {
         refreshProjects();
@@ -12852,14 +12859,27 @@ ${JSON.stringify(items, null, 2)}
       }
       return Boolean(result.ok);
     } catch {
-      setScheduleMessage('任务中心操作结果解析失败。');
+      const message = '任务中心操作结果解析失败。';
+      setScheduleMessage(message);
+      if (sourceTask) setTaskOperationFeedback({ taskId: sourceTask.id, tone: 'error', message });
       return false;
     }
   };
 
   const executeTaskFromCenter = async (task: TaskCenterItem) => {
+    if (taskExecutionBusyId) return;
     const executor = taskExecutorDraft || task.requestedExecutor || task.executor || '';
-    applyTaskOperationResult(await bridge()?.executeTask?.(task.id, executor), '任务已提交执行。');
+    setTaskExecutionBusyId(task.id);
+    setTaskOperationFeedback({ taskId: task.id, tone: 'working', message: '正在检查资料、权限和 Agent 可用状态…' });
+    try {
+      applyTaskOperationResult(await bridge()?.executeTask?.(task.id, executor), '任务已提交执行。', task);
+    } catch (error) {
+      const message = `执行任务失败：${error instanceof Error ? error.message : String(error)}`;
+      setScheduleMessage(message);
+      setTaskOperationFeedback({ taskId: task.id, tone: 'error', message });
+    } finally {
+      setTaskExecutionBusyId('');
+    }
   };
 
   const approveTaskFromCenter = (task: TaskCenterItem, decision: 'approved' | 'rejected', reason = '') => {
@@ -12890,15 +12910,15 @@ ${JSON.stringify(items, null, 2)}
   };
 
   const retryTaskFromCenter = (task: TaskCenterItem) => {
-    applyTaskOperationResult(bridge()?.retryTask?.(task.id), '任务已进入待处理队列。');
+    applyTaskOperationResult(bridge()?.retryTask?.(task.id), '任务已进入待处理队列。', task);
   };
 
   const cancelTaskFromCenter = (task: TaskCenterItem) => {
-    applyTaskOperationResult(bridge()?.cancelTask?.(task.id, '用户点击忽略本次。'), '已忽略本次任务。');
+    applyTaskOperationResult(bridge()?.cancelTask?.(task.id, '用户点击忽略本次。'), '已忽略本次任务。', task);
   };
 
   const importTaskResultFromCenter = (task: TaskCenterItem) => {
-    applyTaskOperationResult(bridge()?.importTaskResult?.(task.id), '任务结果已导入。');
+    applyTaskOperationResult(bridge()?.importTaskResult?.(task.id), '任务结果已导入。', task);
   };
 
   const importTaskResultTextFromCenter = (task: TaskCenterItem) => {
@@ -12906,7 +12926,7 @@ ${JSON.stringify(items, null, 2)}
       setScheduleMessage('请先粘贴 Agent 返回的执行结果。');
       return;
     }
-    const imported = applyTaskOperationResult(bridge()?.importTaskResultText?.(task.id, taskResultPasteText), '粘贴结果已导入。');
+    const imported = applyTaskOperationResult(bridge()?.importTaskResultText?.(task.id, taskResultPasteText), '粘贴结果已导入。', task);
     if (imported) setTaskResultPasteText('');
   };
 
@@ -12919,12 +12939,12 @@ ${JSON.stringify(items, null, 2)}
   };
 
   const openTaskResultFromCenter = (task: TaskCenterItem) => {
-    applyTaskOperationResult(bridge()?.openTaskResultPath?.(task.id), '任务结果已打开。');
+    applyTaskOperationResult(bridge()?.openTaskResultPath?.(task.id), '任务结果已打开。', task);
   };
 
   const submitDailyFeedbackFromCenter = (task: TaskCenterItem, status: 'completed' | 'partial' | 'skipped') => {
     const preset = { completed: '本周计划已完成。', partial: '本周计划部分完成。', skipped: '本周计划已跳过。' }[status];
-    applyTaskOperationResult(bridge()?.submitDailyActionFeedback?.(task.id, status, preset), '行动反馈已保存。');
+    applyTaskOperationResult(bridge()?.submitDailyActionFeedback?.(task.id, status, preset), '行动反馈已保存。', task);
   };
 
   const generateMaintenanceReportForStudent = (student: Student) => {
@@ -19972,6 +19992,11 @@ ${JSON.stringify(items, null, 2)}
                      <div><small>执行批次</small><strong>{selectedTask.executionId || '-'}</strong></div>
                    </div>
                   {selectedTask.routeDecision && <div className="notice muted">路由：{selectedTask.routeDecision.selectedAdapter} · {selectedTask.routeDecision.reason}</div>}
+                  {taskOperationFeedback?.taskId === selectedTask.id && (
+                    <div className={taskOperationFeedback.tone === 'error' ? 'notice error' : taskOperationFeedback.tone === 'success' ? 'notice success' : 'notice muted'} role="status" aria-live="polite">
+                      {taskOperationFeedback.message}
+                    </div>
+                  )}
                   {selectedTask.routeDecision?.candidates && (
                     <div className="task-route-candidates">
                       {selectedTask.routeDecision.candidates.map((candidate) => (
@@ -20138,7 +20163,7 @@ ${JSON.stringify(items, null, 2)}
                       <div className="notice muted task-simple-action-note">无需填写审批意见。直接选择下面的操作，系统会自动记录时间、状态和预设原因；完整状态历史仍可展开查看。</div>
                       <div className="task-detail-actions">
                         {selectedTask.approval?.required && selectedTask.approval.status !== 'approved' && selectedTask.status !== 'reviewing' && <button className="workflow-action next" onClick={() => approveTaskFromCenter(selectedTask, 'approved')}><ShieldCheck size={16} />允许执行</button>}
-                        {!['running', 'waiting_result', 'reviewing', 'succeeded'].includes(selectedTask.status) && (!selectedTask.approval?.required || selectedTask.approval.status === 'approved') && <button className="workflow-action next" onClick={() => executeTaskFromCenter(selectedTask)}><Zap size={16} />下一步：执行任务</button>}
+                        {!['running', 'waiting_result', 'reviewing', 'succeeded'].includes(selectedTask.status) && (!selectedTask.approval?.required || selectedTask.approval.status === 'approved') && <button className="workflow-action next" disabled={taskExecutionBusyId === selectedTask.id} onClick={() => executeTaskFromCenter(selectedTask)}><Zap size={16} />{taskExecutionBusyId === selectedTask.id ? '正在检查资料…' : '下一步：执行任务'}</button>}
                         {selectedTask.status === 'reviewing' && selectedTaskAutoValidated && <span className="notice muted">系统正在校验并自动发布，无需人工操作。</span>}
                         {selectedTask.status === 'reviewing' && !selectedTaskAutoValidated && <button className="workflow-action next" onClick={() => approveTaskFromCenter(selectedTask, 'approved')}><CheckCircle2 size={16} />确认完成</button>}
                         {selectedTask.status === 'reviewing' && !selectedTaskAutoValidated && <button className="workflow-action optional" onClick={() => approveTaskFromCenter(selectedTask, 'rejected', '内容需要修改。')}><RefreshCw size={16} />需要修改</button>}

@@ -1,10 +1,10 @@
 {
   "versionCode": 86,
   "versionName": "0.6.16",
-  "windowsVersionCode": 229,
-  "windowsVersionName": "0.17.10",
-  "windowsReleaseStatus": "stable",
-  "windowsUrl": "https://www.greatbg.com/download/AI-edu-manager-console-Windows-0.17.10.zip",
+  "windowsVersionCode": 231,
+  "windowsVersionName": "0.18.1",
+  "windowsReleaseStatus": "candidate",
+  "windowsUrl": "https://www.greatbg.com/download/AI-edu-manager-console-Windows-0.17.11.zip",
   "windowsTerminalVersionCode": 227,
   "windowsTerminalVersionName": "0.17.8",
   "windowsTerminalReleaseStatus": "candidate",
@@ -26,5 +26,5 @@
   "managerApkVersionCode": 23,
   "managerApkVersionName": "0.2.3",
   "apkUrl": "https://www.greatbg.com/download/AI-edu-manager-tablet-terminal-0.6.16.apk",
-  "notes": "Windows 主机端 0.17.10：已完成批次可校验并补录 Agent 后写的学习事件，不重复消化原材料；保留原有逐学生、逐批次和证据范围校验。Windows 学生端官网正式下载仍为 0.16.10。"
+  "notes": "Windows 主机端 0.18.1 候选版：修复旧资料指纹覆盖最新修订导致每日资料消化预检失败的问题，自动结算已被完成修订取代的旧记录，并为任务执行增加即时状态和明确错误反馈。官网正式下载仍为 Windows 主机端 0.17.11。"
 }

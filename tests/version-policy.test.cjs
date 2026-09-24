@@ -6,16 +6,20 @@ const { validateWindowsVersion, nextWindowsVersion } = require('../scripts/versi
 
 const root = path.join(__dirname, '..');
 
-test('Windows versions advance from patch 1 through 10 then increment minor', () => {
+test('Windows versions advance from patch 1 through 10, with the requested 0.17.11 exception', () => {
   assert.equal(nextWindowsVersion('0.8.1'), '0.8.2');
   assert.equal(nextWindowsVersion('0.8.9'), '0.8.10');
   assert.equal(nextWindowsVersion('0.8.10'), '0.9.1');
   assert.equal(nextWindowsVersion('0.9.10'), '0.10.1');
+  assert.equal(nextWindowsVersion('0.17.10'), '0.17.11');
+  assert.equal(nextWindowsVersion('0.17.11'), '0.18.1');
 });
 
 test('Windows release policy rejects zero and patch numbers above 10', () => {
   assert.throws(() => validateWindowsVersion('0.8.0'), /1-10/);
   assert.throws(() => validateWindowsVersion('0.8.11'), /1-10/);
+  assert.deepEqual(validateWindowsVersion('0.17.11'), { major: 0, minor: 17, patch: 11 });
+  assert.throws(() => validateWindowsVersion('0.17.12'), /1-10/);
   assert.throws(() => validateWindowsVersion('0.8'), /无效版本号/);
 });
 
@@ -24,7 +28,7 @@ test('host package and both release manifests use one host version while termina
   const releaseManifest = JSON.parse(fs.readFileSync(path.join(root, 'release', 'edu-manager-version.json'), 'utf8'));
   const windowsManifest = JSON.parse(fs.readFileSync(path.join(root, 'release', 'windows', 'edu-manager-version.json'), 'utf8'));
   const downloadPage = fs.readFileSync(path.join(root, 'release', '网站文件', 'download.html'), 'utf8');
-  assert.equal(packageJson.version, '0.17.10');
+  assert.equal(packageJson.version, '0.18.1');
   assert.equal(releaseManifest.windowsVersionName, packageJson.version);
   assert.equal(windowsManifest.windowsVersionName, packageJson.version);
   assert.equal(releaseManifest.windowsTerminalVersionName, windowsManifest.windowsTerminalVersionName);

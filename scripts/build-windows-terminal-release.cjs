@@ -124,6 +124,7 @@ function build() {
   for (const relative of [
     'electron/terminal-main.cjs',
     'electron/terminal-preload.cjs',
+    'electron/capture-control-window.cjs',
     'electron/student-agent-lifecycle.cjs',
     'electron/agent-adapter-registry.cjs',
     'electron/capture-protocol.cjs',
@@ -169,6 +170,7 @@ function build() {
   for (const expected of [
     '\\electron\\terminal-main.cjs',
     '\\electron\\terminal-preload.cjs',
+    '\\electron\\capture-control-window.cjs',
     '\\electron\\student-agent-lifecycle.cjs',
     '\\electron\\agent-adapter-registry.cjs',
     '\\electron\\capture-protocol.cjs',

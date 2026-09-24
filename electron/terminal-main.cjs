@@ -1,5 +1,6 @@
 const { app, BrowserWindow, clipboard, desktopCapturer, dialog, ipcMain, screen, shell } = require('electron');
 const crypto = require('crypto');
+const { captureControlBounds, loadVisibleCaptureControlWindow } = require('./capture-control-window.cjs');
 const dgram = require('dgram');
 const fs = require('fs');
 const http = require('http');
@@ -1422,12 +1423,11 @@ function updateCaptureControlWindow() {
     return;
   }
   if (!captureControlWindow || captureControlWindow.isDestroyed()) {
-    const workArea = screen.getPrimaryDisplay().workArea;
+    const display = mainWindow && !mainWindow.isDestroyed()
+      ? screen.getDisplayMatching(mainWindow.getBounds())
+      : screen.getPrimaryDisplay();
     captureControlWindow = new BrowserWindow({
-      width: 460,
-      height: 72,
-      x: Math.max(workArea.x, workArea.x + workArea.width - 480),
-      y: Math.max(workArea.y, workArea.y + workArea.height - 102),
+      ...captureControlBounds(display.workArea, 460, 72),
       frame: false,
       transparent: true,
       resizable: false,
@@ -1437,10 +1437,12 @@ function updateCaptureControlWindow() {
       webPreferences: { preload: path.join(__dirname, 'terminal-preload.cjs'), contextIsolation: true, nodeIntegration: false },
     });
     captureControlWindow.setAlwaysOnTop(true, 'floating');
-    captureControlWindow.once('ready-to-show', () => captureControlWindow?.showInactive());
     captureControlWindow.on('closed', () => { captureControlWindow = null; });
   }
-  captureControlWindow.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(captureControlHtml(activeCapture))}`);
+  const window = captureControlWindow;
+  loadVisibleCaptureControlWindow(window, captureControlHtml(activeCapture),
+    () => captureControlWindow === window && Boolean(activeCapture),
+    (error) => console.warn('学生端屏幕采集控制条加载失败：', error));
 }
 
 function publicTailscaleStatus(status = findWindowsTailscaleInstall()) {

@@ -68,6 +68,11 @@ test('authorized lifecycle conversations expose direct delivery and trash contro
   assert.match(ui, /manageCapturedConversation/);
   assert.match(ui, /管理全部对话资料/);
   assert.match(ui, /会话结束后可投递或移除/);
+  assert.match(ui, /已投递会话仍保留/);
+  const delivery = main.slice(main.indexOf('async function deliverConversationMaterials'), main.indexOf('function readConversationCandidateRegistry'));
+  assert.match(delivery, /writeConversationDeliveries\(student, \{ deliveries \}\)/);
+  assert.doesNotMatch(delivery, /materialLifecycleStatus\s*=/);
+  assert.doesNotMatch(delivery, /manageConversationImports\(/);
 });
 
 test('delivered workspace also includes promoted conversations without material delivery', () => {

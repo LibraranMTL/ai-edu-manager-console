@@ -21504,7 +21504,6 @@ function agentMemoryState(studentId) {
     const student = findStudentByKey(studentId);
     if (!student) return JSON.stringify({ ok: false, message: '未找到学生。' });
     const store = agentMemoryStore();
-    drainAgentLifecycleQueue();
     const activeDescriptor = safeReadJson(activeAgentKnowledgeDescriptorPath(), {});
     const captureTarget = studentCaptureStatus(activeDescriptor, student.id);
     const authorizedSessions = store.listSessions({ studentId: String(student.id), limit: 100 })
@@ -21512,7 +21511,7 @@ function agentMemoryState(studentId) {
     const visibleSessions = [
       ...authorizedSessions.filter((item) => (item.messages || []).length || item.conversationReceipt),
       ...authorizedSessions.filter((item) => !(item.messages || []).length && !item.conversationReceipt),
-    ].slice(0, 30);
+    ].slice(0, 8);
     const visibleAssetIds = new Set(visibleSessions.map((session) => String(session.conversationReceipt?.assetId || '')).filter(Boolean));
     const imports = visibleAssetIds.size ? (readJsonFile(conversationIndexPath(student), { imports: [] }).imports || []) : [];
     const importByAssetId = new Map(imports.map((item) => [String(item.assetId || ''), item]));
@@ -21543,7 +21542,19 @@ function agentMemoryState(studentId) {
       const candidateCount = candidateCountByAssetId.get(assetId) || 0;
       const promotedCount = promotedCountByAssetId.get(assetId) || 0;
       return {
-        ...session,
+        sessionId: session.sessionId,
+        agentId: session.agentId,
+        origin: session.origin,
+        title: session.title,
+        projectId: session.projectId,
+        status: session.status,
+        startedAt: session.startedAt,
+        updatedAt: session.updatedAt,
+        messages: Array.isArray(session.messages) ? session.messages : [],
+        capturedChars: session.capturedChars,
+        conversationReceipt: session.conversationReceipt,
+        summary: session.summary,
+        handoff: session.handoff,
         materialLifecycleStatus: imported?.lifecycleStatus || session.materialLifecycleStatus || 'active',
         materialAvailable: Boolean(assetId && imported),
         materialDependencies: {
@@ -35516,7 +35527,8 @@ ipcMain.on('bridge:getAgentCapabilityManagement', (event, studentId) => { licens
 ipcMain.on('bridge:setAgentCapabilityAuthorization', (event, studentId, action) => { licensedIpc(event, 'Agent 外部能力授权', () => setAgentCapabilityAuthorization(studentId, action)); });
 ipcMain.on('bridge:reviewAgentWriteIntent', (event, studentId, intentId) => { licensedIpc(event, 'Agent 写入意图审核', () => reviewAgentWriteIntent(studentId, intentId)); });
 ipcMain.on('bridge:decideAgentWriteIntent', (event, studentId, intentId, digest, action) => { licensedIpc(event, 'Agent 写入意图审批', () => decideAgentWriteIntent(studentId, intentId, digest, action)); });
-ipcMain.on('bridge:getAgentMemoryState', (event, studentId) => { event.returnValue = agentMemoryState(studentId); });
+ipcMain.handle('bridge:getAgentMemoryState', (_event, studentId) =>
+  licensedInvoke('读取 Agent 会话自动采集状态', () => agentMemoryState(studentId)));
 ipcMain.on('bridge:deleteEmptyAgentMemorySessions', (event, studentId, sessionId) => { licensedIpc(event, '清理空的 Agent 授权会话', () => deleteEmptyAgentMemorySessions(studentId, sessionId)); });
 ipcMain.on('bridge:setAgentMemoryAutomation', (event, studentId, enabled) => { licensedIpc(event, 'Agent 自动会话记忆', () => setAgentMemoryAutomation(studentId, enabled)); });
 ipcMain.on('bridge:activateAgentMemoryCapture', (event, studentId) => { licensedIpc(event, '切换 Agent 自动会话采集对象', () => activateAgentMemoryCapture(studentId)); });

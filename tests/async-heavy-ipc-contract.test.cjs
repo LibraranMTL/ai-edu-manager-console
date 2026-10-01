@@ -18,6 +18,7 @@ const routes = [
   'getProjects',
   'importProjectRawFiles',
   'importProjectAssets',
+  'getAgentMemoryState',
 ];
 
 test('heavy bridge operations use invoke/handle instead of synchronous IPC', () => {
@@ -42,6 +43,8 @@ test('renderer awaits heavy work and exposes non-blocking busy feedback', () => 
   assert.match(renderer, /await importFiles\(targetProjectId\)/);
   assert.match(renderer, /const importSelectedAssetsToProject = async/);
   assert.match(renderer, /await importAssets\(targetProjectId, JSON\.stringify\(selectedIds\)\)/);
+  assert.match(renderer, /const refreshAgentMemoryState = \(studentId = selectedStudent\?\.id\): Promise<void>/);
+  assert.match(renderer, /await bridge\(\)\?\.getAgentMemoryState\?\.\(requestStudentId\)/);
   assert.match(renderer, /activeSection === 'assets'\) void refreshAssets\(\)/);
   assert.doesNotMatch(renderer, /refreshLicenseStatus\(\);\s*refreshAssets\(\)/);
   assert.match(renderer, /const generateCrossProjectKnowledgeLinks = async/);

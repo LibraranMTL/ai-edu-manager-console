@@ -40,6 +40,12 @@ test('P1 authorized Agent conversations are captured and archived without task-c
 
 test('P1 UI and native MCP expose one-time authorization, full messages and six Agent registrations', () => {
   assert.match(preload, /getAgentMemoryState\(studentId\)/);
+  assert.match(preload, /ipcRenderer\.invoke\('bridge:getAgentMemoryState', studentId\)/);
+  assert.doesNotMatch(preload, /ipcRenderer\.sendSync\('bridge:getAgentMemoryState'/);
+  assert.match(main, /ipcMain\.handle\('bridge:getAgentMemoryState'/);
+  const stateReader = main.slice(main.indexOf('function agentMemoryState(studentId)'), main.indexOf('function openCodexHookReview()'));
+  assert.doesNotMatch(stateReader, /drainAgentLifecycleQueue\(\)/);
+  assert.match(stateReader, /\.slice\(0, 8\)/);
   assert.match(preload, /setAgentMemoryAutomation\(studentId, enabled\)/);
   assert.match(preload, /activateAgentMemoryCapture\(studentId\)/);
   assert.match(preload, /openCodexHookReview\(\)/);
@@ -47,6 +53,9 @@ test('P1 UI and native MCP expose one-time authorization, full messages and six 
   assert.match(ui, /Codex、QClaw、WorkBuddy、OpenClaw、Claude Code 和 Hermes/);
   assert.match(ui, /查看采集的对话内容/);
   assert.match(ui, /session\.messages/);
+  assert.match(ui, /const AgentMemorySessionRow = memo/);
+  assert.match(ui, /setTargetSelection\(event\.target\.value\)/);
+  assert.doesNotMatch(ui, /agentSessionTargetSelections/);
   assert.match(main, /\.workbuddy', 'mcp\.json'/);
   assert.match(main, /\.openclaw', 'openclaw\.json'/);
   assert.match(main, /upsertOpenClawMcpServer/);

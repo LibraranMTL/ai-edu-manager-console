@@ -975,7 +975,7 @@ contextBridge.exposeInMainWorld('AndroidBridge', {
     return ipcRenderer.sendSync('bridge:decideAgentWriteIntent', studentId, intentId, digest, action);
   },
   getAgentMemoryState(studentId) {
-    return ipcRenderer.sendSync('bridge:getAgentMemoryState', studentId);
+    return ipcRenderer.invoke('bridge:getAgentMemoryState', studentId);
   },
   deleteEmptyAgentMemorySessions(studentId, sessionId = '') {
     return ipcRenderer.sendSync('bridge:deleteEmptyAgentMemorySessions', studentId, sessionId);

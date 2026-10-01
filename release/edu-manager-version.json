@@ -1,10 +1,10 @@
 {
   "versionCode": 86,
   "versionName": "0.6.16",
-  "windowsVersionCode": 244,
-  "windowsVersionName": "0.19.4",
+  "windowsVersionCode": 245,
+  "windowsVersionName": "0.19.5",
   "windowsReleaseStatus": "stable",
-  "windowsUrl": "https://www.greatbg.com/download/AI-edu-manager-console-Windows-0.19.4.zip",
+  "windowsUrl": "https://www.greatbg.com/download/AI-edu-manager-console-Windows-0.19.5.zip",
   "windowsTerminalVersionCode": 235,
   "windowsTerminalVersionName": "0.18.5",
   "windowsTerminalReleaseStatus": "candidate",
@@ -26,5 +26,5 @@
   "managerApkVersionCode": 23,
   "managerApkVersionName": "0.2.3",
   "apkUrl": "https://www.greatbg.com/download/AI-edu-manager-tablet-terminal-0.6.16.apk",
-  "notes": "Windows 主机端 0.19.4：资料收件箱支持自选下载文件夹、搜索分页与批量投递；成功核验后归档原件，失败保留并可重试，分享资料继续按学生隔离。包含新版导航、个性化选题、规划与比赛研究、学习卡片及云端文档入口。用户已确认真机测试通过；其他端正式下载保持不变。"
+  "notes": "Windows 主机端 0.19.5：修复 AI 会话自动采集投递目标下拉菜单卡顿；状态读取改为异步并缩减返回数据，后台刷新期间仍可操作。投递成功后原会话继续保留并显示回执。其他端版本保持不变。"
 }

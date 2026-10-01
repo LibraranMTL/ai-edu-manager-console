@@ -1,10 +1,10 @@
 {
   "versionCode": 86,
   "versionName": "0.6.16",
-  "windowsVersionCode": 230,
-  "windowsVersionName": "0.17.11",
+  "windowsVersionCode": 244,
+  "windowsVersionName": "0.19.4",
   "windowsReleaseStatus": "stable",
-  "windowsUrl": "https://www.greatbg.com/download/AI-edu-manager-console-Windows-0.17.11.zip",
+  "windowsUrl": "https://www.greatbg.com/download/AI-edu-manager-console-Windows-0.19.4.zip",
   "windowsTerminalVersionCode": 227,
   "windowsTerminalVersionName": "0.17.8",
   "windowsTerminalReleaseStatus": "candidate",
@@ -26,5 +26,5 @@
   "managerApkVersionCode": 23,
   "managerApkVersionName": "0.2.3",
   "apkUrl": "https://www.greatbg.com/download/AI-edu-manager-tablet-terminal-0.6.16.apk",
-  "notes": "Windows 主机端 0.17.11：修复屏幕采集浮动控制条显示，并减少启动阶段项目文件读取、重复写入和同步外部命令等待；学习事件补录及既有学生范围校验保持不变。Windows 学生端官网正式下载仍为 0.16.10。"
+  "notes": "Windows 主机端 0.19.4：资料收件箱支持自选下载文件夹、搜索分页与批量投递；成功核验后归档原件，失败保留并可重试，分享资料继续按学生隔离。包含新版导航、个性化选题、规划与比赛研究、学习卡片及云端文档入口。用户已确认真机测试通过；其他端正式下载保持不变。"
 }

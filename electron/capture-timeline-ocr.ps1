@@ -1,6 +1,7 @@
 param(
   [Parameter(Mandatory = $true)][string]$ImagePath,
-  [Parameter(Mandatory = $false)][string]$ThumbnailPath = ''
+  [Parameter(Mandatory = $false)][string]$ThumbnailPath = '',
+  [Parameter(Mandatory = $false)][string]$LanguageTag = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -72,9 +73,20 @@ try {
   $stream = Await-WinRt ($file.OpenAsync([Windows.Storage.FileAccessMode]::Read)) ([Windows.Storage.Streams.IRandomAccessStream])
   try {
     $decoder = Await-WinRt ([Windows.Graphics.Imaging.BitmapDecoder]::CreateAsync($stream)) ([Windows.Graphics.Imaging.BitmapDecoder])
+    if ([long]$decoder.PixelWidth * [long]$decoder.PixelHeight -gt 25000000 -or
+        $decoder.PixelWidth -gt [Windows.Media.Ocr.OcrEngine]::MaxImageDimension -or
+        $decoder.PixelHeight -gt [Windows.Media.Ocr.OcrEngine]::MaxImageDimension) {
+      throw 'Image dimensions exceed the safe OCR limit.'
+    }
     $bitmap = Await-WinRt ($decoder.GetSoftwareBitmapAsync()) ([Windows.Graphics.Imaging.SoftwareBitmap])
     try {
-      $engine = [Windows.Media.Ocr.OcrEngine]::TryCreateFromUserProfileLanguages()
+      if ($LanguageTag) {
+        [void][Windows.Globalization.Language, Windows.Globalization, ContentType = WindowsRuntime]
+        $language = New-Object Windows.Globalization.Language($LanguageTag)
+        $engine = [Windows.Media.Ocr.OcrEngine]::TryCreateFromLanguage($language)
+      } else {
+        $engine = [Windows.Media.Ocr.OcrEngine]::TryCreateFromUserProfileLanguages()
+      }
       if (-not $engine) { throw 'No Windows OCR language is installed.' }
       $result = Await-WinRt ($engine.RecognizeAsync($bitmap)) ([Windows.Media.Ocr.OcrResult])
       ConvertTo-JsonResult @{

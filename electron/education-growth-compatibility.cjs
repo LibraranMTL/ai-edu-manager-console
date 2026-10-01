@@ -6,6 +6,7 @@ const {
 } = require('./education-domain-protocol.cjs');
 const { normalizeEducationObject } = require('./education-domain-schemas.cjs');
 const { buildEducationClaimHistoryView } = require('./education-governance.cjs');
+const { fixedEvidenceProjection, requiresFixedReportEvidence } = require('./project-evidence-reference.cjs');
 
 const COMPATIBILITY_SCHEMA = 'edu-manager.education-growth-compatibility.v1';
 const PORTABLE_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
@@ -77,15 +78,33 @@ function mapLegacyEvidenceItem(item = {}, options = {}) {
   const legacyStatus = String(item.status || 'pending');
   const audit = reviewAudit(item);
   const source = evidenceSemantics(item);
-  const originalSourcePath = String(item.sourcePath || '');
+  const fixed = requiresFixedReportEvidence(item, options.projects || []);
+  const reference = fixed ? fixedEvidenceProjection(item) : null;
+  if (reference?.sourceBinding && reference.sourceBinding.studentId !== legacyStudentId) {
+    throw new KnowledgeEngineContractError('CROSS_STUDENT_EVIDENCE', '固定来源绑定不能按同名学生或协议ID静默重绑定。');
+  }
+  let fixedSources = [];
+  if (fixed && reference.sourceBinding && typeof options.resolveFixedSources === 'function') {
+    try { fixedSources = options.resolveFixedSources(item) || []; } catch {}
+  }
+  const fixedAvailable = fixed && reference.sourceBinding && Array.isArray(fixedSources) && fixedSources.length > 0
+    && fixedSources.every((entry) => entry.available);
+  const fixedFields = fixed ? { ...reference, requiresProjectConfirmation: true,
+    sourceMaterials: fixedAvailable ? fixedEvidenceProjection({ sourceMaterials: fixedSources.filter((entry) => entry.materialId) }).sourceMaterials : reference.sourceMaterials,
+    sourceResolution: fixedAvailable ? 'fixed_metadata_verified' : typeof options.resolveFixedSources === 'function' ? 'fixed_unavailable' : 'fixed_unverified',
+    sourceLocatorKind: 'review_record_only', sourceOpenable: false } : {};
+  // The existing review URI locates a record, not an openable original. Fixed
+  // documents are addressed by the separate binding/version fields, never a path.
+  const originalSourcePath = fixed ? '' : String(item.sourcePath || '');
   const sourceUri = sourceUriFromLegacyPath(originalSourcePath, idMapping.id);
   const issues = [];
   if (idMapping.remapped) issues.push({ code: 'LEGACY_ID_REMAPPED', severity: 'warning', legacyId: idMapping.legacyId, protocolId: idMapping.id });
-  if (!originalSourcePath) issues.push({ code: 'LEGACY_PRIMARY_SOURCE_MISSING', severity: 'warning', evidenceId: idMapping.id });
+  if (!fixed && !originalSourcePath) issues.push({ code: 'LEGACY_PRIMARY_SOURCE_MISSING', severity: 'warning', evidenceId: idMapping.id });
+  if (fixed && !fixedAvailable) issues.push({ code: 'FIXED_SOURCE_NOT_VERIFIED', severity: 'warning', evidenceId: idMapping.id });
   if (source.inferred) issues.push({ code: 'LEGACY_SOURCE_SEMANTICS_INFERRED', severity: 'info', evidenceId: idMapping.id, sourceType: source.sourceType, actorRole: source.actorRole });
   if (legacyStatus === 'confirmed' && !audit.complete) issues.push({ code: 'LEGACY_REVIEW_AUDIT_MISSING', severity: 'warning', evidenceId: idMapping.id });
 
-  const status = legacyStatus === 'confirmed' && audit.complete ? 'confirmed' : LEGACY_STATUS_TO_CLAIM_STATUS[legacyStatus] || 'candidate';
+  const status = legacyStatus === 'confirmed' && audit.complete && (!fixed || fixedAvailable) ? 'confirmed' : LEGACY_STATUS_TO_CLAIM_STATUS[legacyStatus] || 'candidate';
   const observedAt = String(item.observedAt || item.updatedAt || item.createdAt || '');
   const claimInput = {
     id: idMapping.id,
@@ -97,6 +116,7 @@ function mapLegacyEvidenceItem(item = {}, options = {}) {
     scope: item.projectId || item.projectName ? 'context' : observedAt ? 'period' : 'event',
     validFrom: observedAt,
     confidence: String(item.confidence || 'legacy-unknown'),
+    ...fixedFields,
     evidence: [{
       id: `${idMapping.id}:source:0`,
       sourceUri,
@@ -105,6 +125,7 @@ function mapLegacyEvidenceItem(item = {}, options = {}) {
       excerpt: String(item.content || item.title || ''),
       observedAt,
       originalSourcePath,
+      ...fixedFields,
     }],
     review: audit.review,
     counterEvidence: [],
@@ -147,12 +168,13 @@ function mapLegacyEvidenceItem(item = {}, options = {}) {
     status,
     sourceUri,
     sourcePath: originalSourcePath,
+    ...fixedFields,
     review: audit.review,
   });
   return { claim: validation.claim, validation, issues, idMapping, historyView, domainEvidence };
 }
 
-function mapGrowthEvidenceReviewToEducationClaims({ student, review = {}, sourcePath = '' } = {}) {
+function mapGrowthEvidenceReviewToEducationClaims({ student, review = {}, sourcePath = '', projects = [], resolveFixedSources } = {}) {
   const legacyStudentId = String(student?.id || '').trim();
   if (!legacyStudentId) throw new KnowledgeEngineContractError('MISSING_STUDENT_ID', '成长证据审核映射必须指定 student.id。');
   const studentIdentity = portableStudentIdentity(legacyStudentId);
@@ -163,6 +185,10 @@ function mapGrowthEvidenceReviewToEducationClaims({ student, review = {}, source
   // named record remains a cross-student error and is never silently merged.
   const studentName = String(student?.name || '').trim();
   const mapped = items.map((item) => {
+    if (requiresFixedReportEvidence(item, projects) && item.sourceBinding?.studentId
+      && String(item.sourceBinding.studentId) !== legacyStudentId) {
+      throw new KnowledgeEngineContractError('CROSS_STUDENT_EVIDENCE', '固定来源身份不允许按姓名推定迁移。');
+    }
     const itemStudentId = String(item?.studentId || '').trim();
     const itemStudentName = String(item?.studentName || '').trim();
     const compatibleLegacyId = itemStudentId && itemStudentId !== legacyStudentId && studentName && itemStudentName === studentName
@@ -172,6 +198,7 @@ function mapGrowthEvidenceReviewToEducationClaims({ student, review = {}, source
       studentId,
       legacyStudentId: compatibleLegacyId,
       sourceSchema: 'edu-manager.growth-evidence-review.v1',
+      projects, resolveFixedSources,
     });
   });
   const reviewQueue = mapped.filter((item) => item.issues.some((entry) => entry.code === 'LEGACY_REVIEW_AUDIT_MISSING')).map((item) => ({
@@ -209,7 +236,7 @@ function mapGrowthEvidenceReviewToEducationClaims({ student, review = {}, source
   };
 }
 
-function mapGrowthIndexV2ToDomainSnapshot({ student, index = {}, sourcePath = '' } = {}) {
+function mapGrowthIndexV2ToDomainSnapshot({ student, index = {}, sourcePath = '', projects: currentProjects = [], resolveFixedSources } = {}) {
   const legacyStudentId = String(student?.id || index.studentId || '').trim();
   if (!legacyStudentId) throw new KnowledgeEngineContractError('MISSING_STUDENT_ID', 'growth-index 映射必须指定 student.id 或 index.studentId。');
   if (index.studentId && String(index.studentId) !== legacyStudentId) {
@@ -219,6 +246,7 @@ function mapGrowthIndexV2ToDomainSnapshot({ student, index = {}, sourcePath = ''
     student: { id: legacyStudentId, name: student?.name || index.studentName || '' },
     review: { version: index.version || 2, updatedAt: index.updatedAt || '', candidates: Array.isArray(index.evidence) ? index.evidence : [] },
     sourcePath,
+    projects: currentProjects, resolveFixedSources,
   });
   const projects = (Array.isArray(index.projects) ? index.projects : []).map((item) => ({
     schema: 'edu-manager.learning-project.v1',

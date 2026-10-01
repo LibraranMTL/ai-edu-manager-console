@@ -1,4 +1,5 @@
 const crypto = require('crypto');
+const { fixedEvidenceProjection } = require('./project-evidence-reference.cjs');
 
 const KNOWN_STATUSES = new Set(['pending', 'confirmed', 'watching', 'rejected']);
 
@@ -17,8 +18,12 @@ function normalizeStatus(value) {
 
 function parseLegacyGrowthEvidenceMarkdown(content, sourceFile = '成长证据.md') {
   const results = [];
+  let managedRow = false;
   for (const rawLine of String(content || '').split(/\r?\n/)) {
     const line = rawLine.trim();
+    if (/^<!-- evidence:.+ -->$/.test(line)) { managedRow = true; continue; }
+    if (!line) continue;
+    if (managedRow) { managedRow = false; if (line.startsWith('|')) continue; }
     if (!line.startsWith('|') || !line.endsWith('|')) continue;
     const cells = line.slice(1, -1).split('|').map((cell) => cell.trim());
     if (cells.length < 5) continue;
@@ -136,6 +141,7 @@ function buildGrowthIndexV2({ student, growthDir, review, projects = [], sourceF
     projectId: item.projectId || '',
     projectName: item.projectName || '',
     sourcePath: item.sourcePath || '',
+    ...fixedEvidenceProjection(item),
     confidence: item.confidence || '',
     note: item.note || '',
     riskLevel: item.riskLevel || '',

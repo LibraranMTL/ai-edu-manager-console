@@ -7,6 +7,8 @@ const root = path.resolve(__dirname, '..');
 const packageJson = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
 const releaseScript = fs.readFileSync(path.join(root, 'scripts', 'build-windows-release.cjs'), 'utf8');
 const terminalReleaseScript = fs.readFileSync(path.join(root, 'scripts', 'build-windows-terminal-release.cjs'), 'utf8');
+const pdfRuntimeScript = fs.readFileSync(path.join(root, 'scripts', 'build-project-material-pdf.cjs'), 'utf8');
+const pdfWorker = fs.readFileSync(path.join(root, 'electron', 'project-material-pdf-worker.cjs'), 'utf8');
 
 test('Windows release builds through an isolated local staging directory', () => {
   assert.equal(packageJson.scripts['build:win'], 'pnpm test && node scripts/build-windows-release.cjs');
@@ -30,10 +32,18 @@ test('staged runtime is dependency-free after Vite has bundled renderer dependen
   assert.doesNotMatch(releaseScript, /runtimePackage\.(?:dependencies|devDependencies)/);
   assert.match(releaseScript, /Minimal runtime package unexpectedly contains node_modules/);
   assert.match(releaseScript, /app\.asar exceeds 20 MiB/);
-  assert.deepEqual(packageJson.build.asarUnpack, ['electron/invoke-agent.ps1', 'electron/capture-timeline-ocr.ps1']);
-  assert.match(releaseScript, /asarUnpack: \['electron\/invoke-agent\.ps1', 'electron\/capture-timeline-ocr\.ps1'\]/);
+  assert.deepEqual(packageJson.build.asarUnpack, ['electron/invoke-agent.ps1', 'electron/capture-timeline-ocr.ps1', 'electron/project-knowledge-guard.ps1']);
+  assert.match(releaseScript, /asarUnpack: \['electron\/invoke-agent\.ps1', 'electron\/capture-timeline-ocr\.ps1', 'electron\/project-knowledge-guard\.ps1'\]/);
   assert.match(releaseScript, /Packaged Agent parameter bridge is missing/);
   assert.match(releaseScript, /Packaged timeline OCR bridge is missing/);
+  assert.match(releaseScript, /Packaged knowledge commit guard is missing/);
+  assert.match(releaseScript, /bundleMaterialExtractor\(stageRoot, locateEsbuildModule\(\)\)/);
+  assert.match(releaseScript, /stagePdfRuntime\(stageRoot\)/);
+  assert.match(releaseScript, /extraResources: \[\{ from: 'material-pdf-runtime', to: 'material-pdf-runtime' \}\]/);
+  assert.match(releaseScript, /pdfRuntime: pdfRuntimeAudit/);
+  assert.match(pdfRuntimeScript, /`canvas\/\$\{name\}`/);
+  assert.doesNotMatch(pdfRuntimeScript, /`node_modules\/@napi-rs\/canvas\/\$\{name\}`/);
+  assert.match(pdfWorker, /path\.join\(runtimeRoot, 'canvas'\)/);
 });
 
 test('Windows release keeps the approved multilingual locale set', () => {

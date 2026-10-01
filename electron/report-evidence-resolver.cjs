@@ -1,6 +1,8 @@
 const { evidenceMarkers } = require('./report-auto-publication.cjs');
+const { requiresFixedReportEvidence } = require('./project-evidence-reference.cjs');
 
 function splitEvidenceSources(evidence = {}) {
+  if (requiresFixedReportEvidence(evidence)) return [];
   const sources = [
     ...(Array.isArray(evidence.sourcePaths) ? evidence.sourcePaths : []),
     evidence.sourceUri,
@@ -27,7 +29,9 @@ function resolveReportEvidence(options = {}) {
       missingIds.push(evidenceId);
       continue;
     }
-    const sources = splitEvidenceSources(item).map((source, sourceIndex) => {
+    const sources = requiresFixedReportEvidence(item)
+      ? (typeof options.resolveFixedSources === 'function' ? options.resolveFixedSources(item) : []).map((source, sourceIndex) => ({ ...source, id: `${evidenceId}:${sourceIndex}` }))
+      : splitEvidenceSources(item).map((source, sourceIndex) => {
       const resolved = typeof options.resolveSource === 'function'
         ? options.resolveSource(source, item)
         : { available: false, location: source };

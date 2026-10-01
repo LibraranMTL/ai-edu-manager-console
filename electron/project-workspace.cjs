@@ -1,6 +1,7 @@
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
+const { relativeMaterialPath } = require('./project-material-contract.cjs');
 
 function canonicalPath(value) {
   const resolved = path.resolve(String(value || ''));
@@ -73,16 +74,30 @@ function sha1FileAsync(filePath) {
   });
 }
 
+function compareTraversalPath(left, right) {
+  const a = left.split('/');
+  const b = right.split('/');
+  for (let index = 0; index < Math.min(a.length, b.length); index++) {
+    if (a[index] !== b[index]) return a[index] < b[index] ? -1 : 1;
+  }
+  return Math.sign(a.length - b.length);
+}
+
 async function collectWorkspaceFiles(rootPath, options = {}) {
   const root = canonicalPath(rootPath);
   const excludedRoots = (options.excludedRoots || []).map(canonicalPath);
-  const limit = Math.max(1, Number(options.limit || 5000));
+  const limit = Math.min(10000, Math.max(1, Math.floor(Number(options.limit || 5000))));
+  const afterRelativePath = options.afterRelativePath
+    ? relativeMaterialPath(options.afterRelativePath) : '';
   const files = [];
-  const stack = [root];
+  const stack = [{ dir: root, entries: null, index: 0 }];
   let visited = 0;
   let skippedLinks = 0;
   let skippedUnavailable = 0;
+  let skippedDirectories = 0;
   let skippedGenerated = 0;
+  let limitReached = false;
+  let nextCursor = '';
   const excludedDirectoryNames = new Set((options.excludedDirectoryNames || [
     '.git',
     '.cache',
@@ -93,38 +108,48 @@ async function collectWorkspaceFiles(rootPath, options = {}) {
     'out',
     'win-unpacked',
   ]).map((item) => String(item).toLocaleLowerCase('en-US')));
-  while (stack.length && files.length < limit) {
-    if (options.isCancelled?.()) return { cancelled: true, files, visited, skippedLinks, skippedUnavailable, skippedGenerated, limitReached: false };
-    const dir = stack.pop();
-    let entries = [];
-    try { entries = await fs.promises.readdir(dir, { withFileTypes: true }); } catch { continue; }
-    for (const entry of entries) {
-      if (options.isCancelled?.()) return { cancelled: true, files, visited, skippedLinks, skippedUnavailable, skippedGenerated, limitReached: false };
-      const fullPath = path.join(dir, entry.name);
-      if (entry.isSymbolicLink()) { skippedLinks += 1; continue; }
-      if (entry.isDirectory()) {
-        if (entry.name === '.edu-manager' || excludedDirectoryNames.has(entry.name.toLocaleLowerCase('en-US'))) {
-          skippedGenerated += 1;
-          continue;
-        }
-        if (excludedRoots.some((excluded) => isPathInside(excluded, fullPath))) continue;
-        stack.push(fullPath);
-      } else if (entry.isFile()) {
-        let stat;
-        try {
-          stat = await fs.promises.stat(fullPath);
-        } catch {
-          // Build tools, cloud drives and editors can replace a file between
-          // readdir and stat. One volatile file must not abort the workspace.
-          skippedUnavailable += 1;
-          continue;
-        }
-        files.push({ filename: entry.name, path: fullPath, size: stat.size, mtimeMs: stat.mtimeMs, relativePath: path.relative(root, fullPath).replace(/\\/g, '/') });
-        visited += 1;
-        if (visited % 25 === 0) options.onProgress?.({ phase: 'listing', visited, currentPath: fullPath, percent: 0 });
-        if (files.length >= limit) break;
-      }
+  while (stack.length) {
+    if (options.isCancelled?.()) return { cancelled: true, files, visited, skippedLinks,
+      skippedUnavailable, skippedDirectories, skippedGenerated, limitReached: false, nextCursor: '' };
+    const frame = stack[stack.length - 1];
+    if (!frame.entries) {
+      try {
+        frame.entries = (await fs.promises.readdir(frame.dir, { withFileTypes: true }))
+          .sort((left, right) => left.name < right.name ? -1 : left.name > right.name ? 1 : 0);
+      } catch { skippedDirectories += 1; stack.pop(); continue; }
     }
+    if (frame.index >= frame.entries.length) { stack.pop(); continue; }
+    const entry = frame.entries[frame.index++];
+    const fullPath = path.join(frame.dir, entry.name);
+    if (entry.isSymbolicLink()) { skippedLinks += 1; continue; }
+    if (entry.isDirectory()) {
+      if (entry.name === '.edu-manager' || excludedDirectoryNames.has(entry.name.toLocaleLowerCase('en-US'))) {
+        skippedGenerated += 1;
+        continue;
+      }
+      if (excludedRoots.some((excluded) => isPathInside(excluded, fullPath))) continue;
+      stack.push({ dir: fullPath, entries: null, index: 0 });
+      continue;
+    }
+    if (!entry.isFile()) continue;
+    const relativePath = path.relative(root, fullPath).replace(/\\/g, '/');
+    if (afterRelativePath && compareTraversalPath(relativePath, afterRelativePath) <= 0) continue;
+    let stat;
+    try { stat = await fs.promises.stat(fullPath); }
+    catch {
+      // A volatile file does not abort this page. The next fresh scan may find it.
+      skippedUnavailable += 1;
+      continue;
+    }
+    if (!stat.isFile()) { skippedUnavailable += 1; continue; }
+    if (files.length >= limit) { limitReached = true; break; }
+    files.push({ filename: entry.name, path: fullPath, size: stat.size,
+      mtimeMs: stat.mtimeMs, fileKey: `${stat.dev}:${stat.ino}`, nlink: stat.nlink,
+      relativePath });
+    nextCursor = relativePath;
+    visited += 1;
+    if (visited % 25 === 0) options.onProgress?.({ phase: 'listing', visited,
+      currentPath: fullPath, percent: 0 });
   }
   return {
     cancelled: false,
@@ -132,8 +157,10 @@ async function collectWorkspaceFiles(rootPath, options = {}) {
     visited,
     skippedLinks,
     skippedUnavailable,
+    skippedDirectories,
     skippedGenerated,
-    limitReached: files.length >= limit && stack.length > 0,
+    limitReached,
+    nextCursor: limitReached ? nextCursor : '',
   };
 }
 

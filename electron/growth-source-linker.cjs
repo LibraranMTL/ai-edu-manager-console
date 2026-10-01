@@ -1,5 +1,6 @@
 const crypto = require('node:crypto');
 const path = require('node:path');
+const { fixedEvidenceProjection, bindingMatchesEvidence } = require('./project-evidence-reference.cjs');
 
 const SYSTEM_GROWTH_RULE_VERSION = 'p5-growth-link-v1';
 
@@ -70,6 +71,10 @@ function projectStudentGrowthCandidates(options = {}) {
       if (String(evidence?.studentId || '') !== studentId) continue;
       const sourcePaths = (Array.isArray(evidence?.sourcePaths) ? evidence.sourcePaths : []).map(String).filter(Boolean);
       if (!sourcePaths.length || !String(evidence?.observation || '').trim()) continue;
+      const fixed = project.materialStorageMode === 'workspace-v1' || Boolean(evidence.sourceBinding);
+      const reference = fixedEvidenceProjection({ ...evidence, requiresProjectConfirmation: fixed });
+      const bound = reference.sourceBinding?.projectId === String(project.id) && reference.sourceBinding?.studentId === studentId
+        && bindingMatchesEvidence(reference.sourceBinding, evidence);
       candidates.push({
         id: `project-student-${String(project.id || '')}-${studentId}`,
         studentId,
@@ -78,8 +83,9 @@ function projectStudentGrowthCandidates(options = {}) {
         ability: String(evidence.ability || '待标注'),
         projectId: String(project.id || ''),
         projectName: String(project.name || ''),
-        sourcePath: sourcePaths.join('；'),
-        status: 'watching',
+        sourcePath: fixed ? '' : sourcePaths.join('；'),
+        ...(fixed ? reference : {}),
+        status: fixed ? evidence.status === 'rejected' ? 'rejected' : bound && ['verified', 'published'].includes(evidence.status) ? 'confirmed' : 'pending' : 'watching',
         confidence: String(evidence.confidence || '项目证据·继续观察'),
         epistemicType: 'observation',
         sourceKind: 'project_student_evidence',
@@ -87,7 +93,7 @@ function projectStudentGrowthCandidates(options = {}) {
           ruleVersion: SYSTEM_GROWTH_RULE_VERSION,
           decision: 'project_evidence_observation',
           sourceMaterialIds: [],
-          sourcePaths,
+          sourcePaths: fixed ? [] : sourcePaths,
           verifiedAt: String(evidence.updatedAt || project.updatedAt || ''),
         },
         createdAt: String(evidence.createdAt || evidence.updatedAt || project.updatedAt || ''),
@@ -122,11 +128,14 @@ function mergeGrowthCandidates(review = {}, candidates = []) {
       continue;
     }
     const existing = next.candidates[index];
+    const fixed = Boolean(candidate.requiresProjectConfirmation);
+    const sameBinding = fixed && candidate.sourceBinding?.bindingId && candidate.sourceBinding.bindingId === existing.sourceBinding?.bindingId;
     const protectedStatus = ['confirmed', 'rejected'].includes(String(existing.status));
     const merged = {
       ...existing,
       ...candidate,
-      status: protectedStatus ? existing.status : candidate.status,
+      status: !fixed && protectedStatus ? existing.status : candidate.status,
+      ...(fixed ? { sourceMaterials: sameBinding ? fixedEvidenceProjection(existing).sourceMaterials : candidate.sourceMaterials || [] } : {}),
       createdAt: existing.createdAt || candidate.createdAt || '',
     };
     if (JSON.stringify(existing) !== JSON.stringify(merged)) {

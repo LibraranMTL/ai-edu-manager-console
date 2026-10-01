@@ -28,7 +28,7 @@ test('host package and both release manifests use one host version while termina
   const releaseManifest = JSON.parse(fs.readFileSync(path.join(root, 'release', 'edu-manager-version.json'), 'utf8'));
   const windowsManifest = JSON.parse(fs.readFileSync(path.join(root, 'release', 'windows', 'edu-manager-version.json'), 'utf8'));
   const downloadPage = fs.readFileSync(path.join(root, 'release', '网站文件', 'download.html'), 'utf8');
-  assert.equal(packageJson.version, '0.18.1');
+  assert.equal(packageJson.version, '0.19.4');
   assert.equal(releaseManifest.windowsVersionName, packageJson.version);
   assert.equal(windowsManifest.windowsVersionName, packageJson.version);
   assert.equal(releaseManifest.windowsTerminalVersionName, windowsManifest.windowsTerminalVersionName);

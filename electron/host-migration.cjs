@@ -4,6 +4,11 @@ const path = require('path');
 const { pipeline } = require('stream/promises');
 const { Readable, Transform } = require('stream');
 const { rebaseStoragePath, remapStorageTree } = require('./storage-root.cjs');
+const { validateRegistry } = require('./project-materials.cjs');
+const { identifier, positiveVersion, sha256 } = require('./project-material-contract.cjs');
+const { prepareMigrationStateInstall, installMigrationStateFiles, commitMigrationStateInstall,
+  rollbackMigrationStateInstall } = require('./host-migration-state-install.cjs');
+const { stageRestoredDataGeneration } = require('./host-data-generation.cjs');
 
 const PACKAGE_SCHEMA = 'edu-manager.migration-package.v1';
 const MANIFEST_SCHEMA = 'edu-manager.migration-manifest.v1';
@@ -58,9 +63,39 @@ function sha256File(filePath) {
   });
 }
 
+function validateRequiredDirectories(sources, directories = []) {
+  const checked = new Set();
+  for (const directory of directories) {
+    if (!directory.rootPath || !path.isAbsolute(directory.rootPath)) throw new Error('完整项目迁移的必需目录路径无效。');
+    const root = path.resolve(directory.rootPath);
+    const coveringSource = sources.find((source) => isSameOrInside(source.rootPath, root)
+      && !(source.includeRelativePaths || []).length
+      && !path.relative(source.rootPath, root).split(path.sep).some((part) => [...DEFAULT_EXCLUDES, ...(source.excludeNames || [])].includes(part)));
+    if (!coveringSource) throw new Error(`完整项目迁移缺少必需目录的打包范围：${directory.label || root}`);
+    let current = root;
+    while (!checked.has(current)) {
+      let stat;
+      try { stat = fs.lstatSync(current); }
+      catch (error) { throw new Error(`完整项目迁移的必需目录不可访问：${directory.label || root}（${error.code || error.message}）`); }
+      if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error(`完整项目迁移的必需目录不是普通目录或包含链接：${directory.label || root}`);
+      checked.add(current);
+      const parent = path.dirname(current);
+      if (parent === current) break;
+      current = parent;
+    }
+  }
+}
+
+function requiredSourceFile(source, filePath) {
+  return (source.requiredDirectories || []).some((item) => isSameOrInside(item.rootPath, filePath));
+}
+
 function walkFiles(rootPath, options = {}) {
   const root = path.resolve(rootPath);
-  if (!fs.existsSync(root) || !fs.statSync(root).isDirectory()) return [];
+  if (!fs.existsSync(root) || !fs.statSync(root).isDirectory()) {
+    if (options.required) throw new Error(`必需迁移目录不可访问：${options.label || root}`);
+    return [];
+  }
   const excludes = new Set([...DEFAULT_EXCLUDES, ...(options.excludeNames || [])]);
   const included = Array.isArray(options.includeRelativePaths) && options.includeRelativePaths.length
     ? new Set(options.includeRelativePaths.map((item) => portableRelative(item).toLocaleLowerCase('en-US')))
@@ -76,7 +111,10 @@ function walkFiles(rootPath, options = {}) {
       const relativePath = relativeDir ? path.join(relativeDir, entry.name) : entry.name;
       const absolutePath = path.join(root, relativePath);
       const stat = fs.lstatSync(absolutePath);
-      if (stat.isSymbolicLink()) continue;
+      if (stat.isSymbolicLink()) {
+        if (requiredSourceFile(options, absolutePath)) throw new Error(`完整项目迁移不能忽略链接资料，请先显式收存或修复：${relativePath}`);
+        continue;
+      }
       if (stat.isDirectory()) queue.push(relativePath);
       else if (stat.isFile()) {
         const portable = relativePath.replace(/\\/g, '/');
@@ -87,13 +125,14 @@ function walkFiles(rootPath, options = {}) {
   return files;
 }
 
-function inspectMigrationSources(sources = []) {
+function inspectMigrationSources(sources = [], { requiredDirectories = [] } = {}) {
+  validateRequiredDirectories(sources, requiredDirectories);
   const inspected = [];
   let fileCount = 0;
   let totalBytes = 0;
   let largestFileBytes = 0;
   for (const source of sources) {
-    const files = walkFiles(source.rootPath, source);
+    const files = walkFiles(source.rootPath, { ...source, requiredDirectories });
     const bytes = files.reduce((sum, item) => sum + item.size, 0);
     fileCount += files.length;
     totalBytes += bytes;
@@ -128,7 +167,7 @@ async function compareSourceSnapshot(source, expectedFiles = [], expectedHashes 
       modified.push(expected.relativePath);
       continue;
     }
-    if (current.mtimeMs === expected.mtimeMs) continue;
+    if (current.mtimeMs === expected.mtimeMs && !requiredSourceFile(source, current.absolutePath)) continue;
     const expectedHash = expectedHashes.get(expected.relativePath);
     if (!expectedHash || await sha256File(current.absolutePath) !== expectedHash) modified.push(expected.relativePath);
     else metadataOnly.push(expected.relativePath);
@@ -200,6 +239,9 @@ async function createMigrationPackage(options = {}) {
   if (!destinationParent || !fs.existsSync(destinationParent) || !fs.statSync(destinationParent).isDirectory()) throw new Error('请选择有效的迁移包保存目录。');
   const password = String(options.password || '');
   if (password && password.length < 8) throw new Error('迁移包密码至少需要 8 个字符。');
+  const requiredDirectories = Array.isArray(options.requiredDirectories) ? options.requiredDirectories : [];
+  const sources = (Array.isArray(options.sources) ? options.sources : []).map((source) => ({ ...source, requiredDirectories }));
+  validateRequiredDirectories(sources, requiredDirectories);
   const migrationId = `migration-${Date.now()}-${crypto.randomBytes(4).toString('hex')}`;
   const finalRoot = path.join(destinationParent, `${packageStem(new Date(), options.packagePrefix)}-${migrationId.slice(-8)}`);
   const writingRoot = `${finalRoot}.writing`;
@@ -212,10 +254,8 @@ async function createMigrationPackage(options = {}) {
     }
   }
   if (fs.existsSync(finalRoot) || fs.existsSync(writingRoot)) throw new Error('迁移包目标目录已存在，请重新选择保存位置。');
-  fs.mkdirSync(path.join(writingRoot, 'payload'), { recursive: true });
   const salt = password ? crypto.randomBytes(16) : null;
   const key = password ? deriveKey(password, salt) : null;
-  const sources = Array.isArray(options.sources) ? options.sources : [];
   const virtualFiles = Array.isArray(options.virtualFiles) ? options.virtualFiles : [];
   const sourceFiles = sources.flatMap((source) => walkFiles(source.rootPath, source).map((file) => ({ source, file })));
   const sourceSnapshots = new Map(sources.map((source) => [source, sourceFiles.filter((item) => item.source === source).map((item) => item.file)]));
@@ -226,6 +266,7 @@ async function createMigrationPackage(options = {}) {
   const manifestFiles = [];
   const sourceChangeWarnings = [];
   try {
+    fs.mkdirSync(path.join(writingRoot, 'payload'), { recursive: true });
     progressEmitter(options.onProgress, { phase: 'exporting', totalFiles, completedFiles, completedBytes });
     for (const item of sourceFiles) {
       const scopeId = safeId(item.source.id);
@@ -262,8 +303,12 @@ async function createMigrationPackage(options = {}) {
     }
     for (const source of sources) {
       const comparison = await compareSourceSnapshot(source, sourceSnapshots.get(source), sourceHashes.get(source));
+      if ([...comparison.added, ...comparison.removed, ...comparison.modified].some((relative) => requiredSourceFile(source, path.join(source.rootPath, relative)))) {
+        throw new Error(`完整项目资料在导出期间发生变化，请停止相关编辑或任务后重试：${source.label || source.id}`);
+      }
       if (comparison.added.length || comparison.removed.length || comparison.modified.length) sourceChangeWarnings.push(snapshotChangeWarning(source, comparison));
     }
+    validateRequiredDirectories(sources, requiredDirectories);
     const manifest = {
       schema: String(options.manifestSchema || MANIFEST_SCHEMA),
       migrationId,
@@ -279,6 +324,7 @@ async function createMigrationPackage(options = {}) {
       identityPolicy: String(options.identityPolicy || 'new-host-identity-and-license-reactivation'),
       payloadLayout: 'flat-sha256-v2',
       files: manifestFiles,
+      requiredDirectories: requiredDirectories.map((item) => ({ projectId: String(item.projectId || ''), field: String(item.field || ''), label: String(item.label || ''), rootPath: path.resolve(item.rootPath) })),
       externalSources: sources.filter((item) => item.kind === 'external').map((item) => ({ id: safeId(item.id), label: String(item.label || ''), sourceRoot: path.resolve(item.rootPath) })),
       unresolvedExternalSources: (options.unresolvedExternalSources || []).map((item) => ({ id: safeId(item.id), label: String(item.label || ''), sourceRoot: path.resolve(item.rootPath || '') })),
       sourceChangesDuringExport: sourceChangeWarnings,
@@ -407,7 +453,10 @@ function versionIsNewer(source, target) {
 
 function remapAllStorageStrings(input, sourceRoot, targetRoot) {
   const visit = (value) => {
-    if (typeof value === 'string') return rebaseStoragePath(value, sourceRoot, targetRoot, { platform: process.platform });
+    if (typeof value === 'string') {
+      const next = rebaseStoragePath(value, sourceRoot, targetRoot, { platform: process.platform });
+      return next === value.trim() ? value : next;
+    }
     if (Array.isArray(value)) return value.map(visit);
     if (!value || typeof value !== 'object') return value;
     return Object.fromEntries(Object.entries(value).map(([key, child]) => [key, visit(child)]));
@@ -439,40 +488,86 @@ function remapJsonFile(filePath, sourceManagedRoot, targetManagedRoot, sourceUse
   atomicJson(filePath, next);
 }
 
+function isImmutableMigrationData(relativePath) {
+  const parts = String(relativePath || '').replace(/\\/gu, '/').toLowerCase().split('/');
+  // These records contain content hashes, fixed evidence selections or recovery
+  // preimages. A migration changes their location, never their recorded bytes.
+  if (parts.some((part) => ['project-materials', 'asset-version-snapshots', 'growth-recovery'].includes(part))) return true;
+  const archive = parts.lastIndexOf('education-archive-versions');
+  return archive >= 0 && parts.slice(archive + 1).join('/') !== 'latest.json';
+}
+
 function isPortableMetadataJson(relativePath) {
-  const normalized = String(relativePath || '').replace(/\\/gu, '/').toLowerCase();
+  const normalized = String(relativePath || '').replace(/\\/gu, '/').toLowerCase()
+    .replace(/(?:^|.*\/)\.edu-manager\/migrated-external\/[^/]+\//u, '');
+  if (isImmutableMigrationData(normalized)) return false;
   const name = path.posix.basename(normalized);
   return normalized.startsWith('.edu-manager/')
     || normalized.includes('/.edu-manager/')
     || normalized.startsWith('.ai-manager/')
     || normalized.includes('/.ai-manager/')
-    || ['growth-index.json', '成长证据审核.json'].includes(name);
+    || normalized.endsWith('/education-archive-versions/latest.json')
+    || (path.posix.basename(path.posix.dirname(normalized)) === '成长模型'
+      && ['growth-index.json', '成长证据审核.json'].includes(name));
 }
 
-function installStateFiles(stateStage, userDataDir, rollbackRoot) {
-  const files = walkFiles(stateStage);
-  const installed = [];
-  for (const item of files) {
-    const target = targetInside(userDataDir, item.relativePath);
-    const backup = targetInside(rollbackRoot, item.relativePath);
-    fs.mkdirSync(path.dirname(target), { recursive: true });
-    if (fs.existsSync(target)) {
-      fs.mkdirSync(path.dirname(backup), { recursive: true });
-      fs.copyFileSync(target, backup);
+function validateRestoredMaterialData(restoredEntries) {
+  const key = (file) => process.platform === 'win32' ? file.toLowerCase() : file;
+  const readRecord = (file) => {
+    if (fs.statSync(file).size > 64 * 1024 * 1024) throw new Error('项目恢复元数据超过64MiB，需受控处理，未启用恢复数据。');
+    return JSON.parse(fs.readFileSync(file, 'utf8'));
+  };
+  const requireSnapshot = (directory, relative, hash, size) => {
+    sha256(hash);
+    const source = restoredEntries.get(key(targetInside(directory, relative)));
+    if (!source || source.entry.sha256 !== hash || (size !== undefined && source.entry.size !== size)) {
+      throw new Error(`项目固定来源缺失或校验不符：${relative}`);
     }
-    const temporary = `${target}.${process.pid}.migration`;
-    fs.copyFileSync(item.absolutePath, temporary);
-    fs.renameSync(temporary, target);
-    installed.push({ target, backup: fs.existsSync(backup) ? backup : '', existed: fs.existsSync(backup) });
+  };
+  let registries = 0;
+  let fixedVersions = 0;
+  for (const { target, originalPath } of restoredEntries.values()) {
+    const normalized = String(originalPath).replace(/\\/gu, '/');
+    if (/\/project-materials\/(archive-transactions|commits)\/[^/]+\/journal\.json$/iu.test(`/${normalized}`)) {
+      const journal = readRecord(target);
+      const archive = journal.schema === 'edu-manager.project-archive-transaction.v1';
+      const knowledge = journal.schema === 'edu-manager.project-knowledge-commit.v1';
+      if ((!archive && !knowledge) || !(archive ? ['committed', 'abandoned'] : ['committed', 'aborted']).includes(journal.state)) {
+        throw new Error('迁移包包含未结算或未知的项目提交事务。请先在来源主机完成恢复，再重新导出；当前暂存保留，未启用旧路径事务。');
+      }
+    }
+    if (!/(?:^|\/)project-materials\/registry\.json$/iu.test(normalized)) continue;
+    const index = readRecord(target);
+    validateRegistry(index, identifier(index.projectId, '项目ID'));
+    const directory = path.dirname(target);
+    const versions = new Map();
+    for (const material of index.materials) {
+      if (!Array.isArray(material.versions)) throw new Error('项目资料版本登记无效。');
+      for (const version of material.versions) {
+        positiveVersion(version.version); sha256(version.sha256);
+        const versionKey = JSON.stringify([material.materialId, version.version]);
+        if (versions.has(versionKey)) throw new Error('项目资料版本登记重复。');
+        versions.set(versionKey, version);
+        if (!version.snapshot) continue;
+        if (version.snapshot !== `snapshots/${version.sha256}`) throw new Error('项目固定原文快照位置无效。');
+        requireSnapshot(directory, version.snapshot, version.sha256, version.size);
+        fixedVersions += 1;
+      }
+    }
+    for (const binding of index.evidenceBindings || []) {
+      if (binding.projectId !== index.projectId || !Array.isArray(binding.materials) || !Array.isArray(binding.knowledge)) throw new Error('项目证据绑定范围或结构无效。');
+      for (const ref of binding.materials) {
+        const version = versions.get(JSON.stringify([ref.materialId, ref.version]));
+        if (!version?.snapshot || version.sha256 !== ref.sha256) throw new Error('项目证据的固定原文版本缺失。');
+      }
+      for (const ref of binding.knowledge) {
+        if (ref.snapshot !== `evidence-knowledge/${ref.sha256}.md`) throw new Error('项目证据知识快照位置无效。');
+        requireSnapshot(directory, ref.snapshot, ref.sha256);
+      }
+    }
+    registries += 1;
   }
-  return installed;
-}
-
-function rollbackStateFiles(installed) {
-  for (const item of [...installed].reverse()) {
-    if (item.existed && fs.existsSync(item.backup)) fs.copyFileSync(item.backup, item.target);
-    else if (!item.existed && fs.existsSync(item.target)) fs.rmSync(item.target, { force: true });
-  }
+  return { registries, fixedVersions };
 }
 
 async function restoreMigrationPackage(options = {}) {
@@ -503,12 +598,19 @@ async function restoreMigrationPackage(options = {}) {
   fs.mkdirSync(managedStage, { recursive: true });
   fs.mkdirSync(stateStage, { recursive: true });
   const externalMappings = [];
+  const restoredEntries = new Map();
+  const externalById = new Map();
   let completedFiles = 0;
   let completedBytes = 0;
   const totalFiles = checked.manifest.files.length;
-  let installed = [];
+  let journalPath = '';
   let activatedRoot = false;
   try {
+    for (const external of checked.manifest.externalSources || []) {
+      const id = safeId(external.id);
+      if (externalById.has(id)) throw new Error(`迁移包包含重复外部来源身份：${id}`);
+      externalById.set(id, external);
+    }
     progressEmitter(options.onProgress, { phase: 'restoring', totalFiles, completedFiles, completedBytes });
     for (const entry of checked.manifest.files) {
       let target;
@@ -516,6 +618,17 @@ async function restoreMigrationPackage(options = {}) {
       else if (entry.category === 'external') target = targetInside(path.join(managedStage, '.edu-manager', 'migrated-external', safeId(entry.scopeId)), entry.relativePath);
       else if (entry.category === 'state') target = targetInside(stateStage, entry.destinationRelativePath || entry.relativePath);
       else throw new Error(`迁移包包含未知数据类别：${entry.category}`);
+      const targetKey = process.platform === 'win32' ? target.toLowerCase() : target;
+      if (restoredEntries.has(targetKey)) throw new Error(`迁移包包含重复目标：${entry.relativePath}`);
+      // Classify using ORIGINAL provenance, not the destination's management
+      // wrapper: every external original lives under migrated-external there.
+      const external = entry.category === 'external'
+        ? externalById.get(safeId(entry.scopeId)) : null;
+      if (entry.category === 'external' && !external?.sourceRoot) throw new Error(`迁移包缺少外部来源身份：${entry.scopeId}`);
+      const originalPath = entry.category === 'external'
+        ? `${String(external.sourceRoot).replace(/\\/gu, '/')}/${entry.relativePath}`
+        : entry.category === 'state' ? entry.destinationRelativePath || entry.relativePath : entry.relativePath;
+      restoredEntries.set(targetKey, { target, entry, originalPath });
       await restorePayloadEntry(checked, entry, target, key);
       completedFiles += 1;
       completedBytes += Number(entry.size || 0);
@@ -524,9 +637,19 @@ async function restoreMigrationPackage(options = {}) {
     for (const external of checked.manifest.externalSources || []) {
       externalMappings.push({ sourceRoot: external.sourceRoot, targetRoot: path.join(targetRoot, '.edu-manager', 'migrated-external', safeId(external.id)) });
     }
-    for (const item of walkFiles(stateStage)) {
-      if (path.extname(item.absolutePath).toLowerCase() !== '.json') continue;
-      try { remapJsonFile(item.absolutePath, checked.manifest.source?.managedRoot || '', targetRoot, checked.manifest.source?.userDataRoot || '', userDataDir, externalMappings); } catch (error) { throw new Error(`迁移状态文件无法重映射：${item.relativePath}（${error.message}）`); }
+    // Required roots may be empty (a new knowledge space, for example). They
+    // still belong to the project's storage contract and must survive restore.
+    for (const directory of checked.manifest.requiredDirectories || []) {
+      if (!directory.rootPath || !path.isAbsolute(directory.rootPath)) throw new Error('迁移包的必需项目目录无效。');
+      let mapped = rebaseStoragePath(directory.rootPath, checked.manifest.source?.managedRoot || '', targetRoot);
+      for (const external of externalMappings) mapped = rebaseStoragePath(mapped, external.sourceRoot, external.targetRoot);
+      if (!isSameOrInside(targetRoot, mapped)) throw new Error(`迁移包的必需项目目录未映射到恢复范围：${directory.label || directory.field}`);
+      const relative = path.relative(targetRoot, mapped);
+      fs.mkdirSync(relative ? targetInside(managedStage, relative) : managedStage, { recursive: true });
+    }
+    for (const { target, entry, originalPath } of restoredEntries.values()) {
+      if (entry.category !== 'state' || path.extname(target).toLowerCase() !== '.json' || isImmutableMigrationData(originalPath)) continue;
+      try { remapJsonFile(target, checked.manifest.source?.managedRoot || '', targetRoot, checked.manifest.source?.userDataRoot || '', userDataDir, externalMappings); } catch (error) { throw new Error(`迁移状态文件无法重映射：${entry.relativePath}（${error.message}）`); }
     }
     const studentStatePath = path.join(stateStage, 'students.json');
     const maxActiveStudents = Number(options.maxActiveStudents || 0);
@@ -535,40 +658,46 @@ async function restoreMigrationPackage(options = {}) {
       const activeCount = (Array.isArray(restoredStudents) ? restoredStudents : []).filter((student) => student?.archived !== true && String(student?.status || '').toLowerCase() !== 'archived').length;
       if (activeCount > maxActiveStudents) throw new Error(`迁移包包含 ${activeCount} 名活跃学生，超过当前授权上限 ${maxActiveStudents} 名。请升级授权后再恢复。`);
     }
-    const dataFiles = walkFiles(managedStage);
-    for (const item of dataFiles) {
-      const expected = checked.manifest.files.find((entry) => entry.category !== 'state' && (
-        entry.category === 'managed'
-          ? entry.relativePath === item.relativePath
-          : item.relativePath.replace(/\\/g, '/').endsWith(`/${safeId(entry.scopeId)}/${entry.relativePath}`)
-      ));
-      if (expected && await sha256File(item.absolutePath) !== expected.sha256) throw new Error(`暂存数据复核失败：${item.relativePath}`);
-    }
     let remappedMetadataFiles = 0;
-    for (const item of dataFiles) {
-      if (path.extname(item.absolutePath).toLowerCase() !== '.json' || !isPortableMetadataJson(item.relativePath)) continue;
+    let preservedDataFiles = 0;
+    for (const { target, entry, originalPath } of restoredEntries.values()) {
+      if (entry.category === 'state' && !isImmutableMigrationData(originalPath)) continue;
+      if (await sha256File(target) !== entry.sha256) throw new Error(`暂存数据复核失败：${entry.relativePath}`);
+      if (entry.category === 'state' || path.extname(target).toLowerCase() !== '.json' || !isPortableMetadataJson(originalPath)) {
+        preservedDataFiles += 1;
+        continue;
+      }
       try {
-        remapJsonFile(item.absolutePath, checked.manifest.source?.managedRoot || '', targetRoot, checked.manifest.source?.userDataRoot || '', userDataDir, externalMappings, true);
+        // Only path maps use arbitrary keys for paths. Observations, selected
+        // evidence paths and other free text must not be rewritten recursively.
+        const pathMap = /(?:^|\/)(?:[^/]+-)?pathmap\.json$/iu.test(String(originalPath).replace(/\\/gu, '/'));
+        remapJsonFile(target, checked.manifest.source?.managedRoot || '', targetRoot, checked.manifest.source?.userDataRoot || '', userDataDir, externalMappings, pathMap);
         remappedMetadataFiles += 1;
       } catch (error) {
-        throw new Error(`迁移知识元数据无法重映射：${item.relativePath}（${error.message}）`);
+        throw new Error(`迁移知识元数据无法重映射：${entry.relativePath}（${error.message}）`);
       }
     }
-    if (fs.existsSync(targetRoot)) fs.rmdirSync(targetRoot);
-    fs.renameSync(managedStage, targetRoot);
-    activatedRoot = true;
+    // Package integrity alone cannot prove that a registry's pinned versions
+    // were actually included. Validate the graph before activating any data.
+    const materialValidation = validateRestoredMaterialData(restoredEntries);
     const currentSettingsPath = path.join(userDataDir, 'settings.json');
     const currentSettings = fs.existsSync(currentSettingsPath) ? JSON.parse(fs.readFileSync(currentSettingsPath, 'utf8')) : {};
-    installed = installStateFiles(stateStage, userDataDir, rollbackRoot);
-    const existingSettingsPath = path.join(userDataDir, 'settings.json');
-    const restoredSettings = fs.existsSync(existingSettingsPath) ? JSON.parse(fs.readFileSync(existingSettingsPath, 'utf8')) : {};
-    atomicJson(existingSettingsPath, {
+    const stagedSettingsPath = path.join(stateStage, 'settings.json');
+    const restoredSettings = fs.existsSync(stagedSettingsPath) ? JSON.parse(fs.readFileSync(stagedSettingsPath, 'utf8')) : {};
+    atomicJson(stagedSettingsPath, {
       ...restoredSettings,
       ...(currentSettings.license ? { license: currentSettings.license } : {}),
       ...(currentSettings.apiToken ? { apiToken: currentSettings.apiToken } : {}),
       studentBaseDir: targetRoot,
       archiveRoot: targetRoot,
     });
+    stageRestoredDataGeneration(stateStage, migrationId);
+    journalPath = prepareMigrationStateInstall({ stateStage, managedStage, userDataDir, rollbackRoot, targetRoot, migrationId });
+    if (fs.existsSync(targetRoot)) fs.rmdirSync(targetRoot);
+    fs.renameSync(managedStage, targetRoot);
+    activatedRoot = true;
+    installMigrationStateFiles(journalPath, stateStage, (relativePath) => progressEmitter(options.onProgress,
+      { phase: 'installing-state', current: relativePath, totalFiles, completedFiles, completedBytes }));
     const unresolvedExternal = (checked.manifest.unresolvedExternalSources || []).map((item) => ({ ...item, action: 'needs_relocation' }));
     const report = {
       schema: REPORT_SCHEMA,
@@ -580,20 +709,35 @@ async function restoreMigrationPackage(options = {}) {
       fileCount: totalFiles,
       totalBytes: completedBytes,
       remappedMetadataFiles,
+      preservedDataFiles,
+      materialValidation,
+      requiredDirectoryCount: (checked.manifest.requiredDirectories || []).length,
       externalMappings,
       unresolvedExternal,
       sensitiveDataRestored: false,
       nextActions: ['重新激活 License', '重新连接学生终端', '重新授权跨主机协作', ...(unresolvedExternal.length ? ['重新定位未打包的外部目录'] : [])],
     };
     atomicJson(path.join(targetRoot, '.edu-manager', 'migration-report.json'), report);
-    if (fs.existsSync(stateStage)) fs.rmSync(stateStage, { recursive: true, force: true });
-    if (fs.existsSync(stageRoot) && fs.readdirSync(stageRoot).length === 0) fs.rmdirSync(stageRoot);
-    progressEmitter(options.onProgress, { phase: 'completed', totalFiles, completedFiles, completedBytes, targetRoot });
+    commitMigrationStateInstall(journalPath);
+    // The committed journal is the recovery boundary. Cleanup and UI progress
+    // cannot turn a completed restore into a rollback.
+    try {
+      const activationMarker = path.join(targetRoot, '.edu-manager', `migration-activation-${migrationId}.json`);
+      if (fs.existsSync(activationMarker)) fs.rmSync(activationMarker, { force: true });
+      if (fs.existsSync(stateStage)) fs.rmSync(stateStage, { recursive: true, force: true });
+      if (fs.existsSync(stageRoot) && fs.readdirSync(stageRoot).length === 0) fs.rmdirSync(stageRoot);
+      progressEmitter(options.onProgress, { phase: 'completed', totalFiles, completedFiles, completedBytes, targetRoot });
+    } catch { /* A leftover staging directory can be inspected later. */ }
     return { ok: true, ...report, rollbackPath: rollbackRoot };
   } catch (error) {
-    if (installed.length) rollbackStateFiles(installed);
     let recoveryPath = stageRoot;
-    if (activatedRoot && fs.existsSync(targetRoot)) {
+    if (journalPath) {
+      try { recoveryPath = rollbackMigrationStateInstall(journalPath, userDataDir).recoveryPath; }
+      catch (rollbackError) {
+        throw Object.assign(new Error(`${error.message}；自动回滚未完成：${rollbackError.message}`),
+          { code: 'migration_recovery_required', recoveryPath: rollbackRoot });
+      }
+    } else if (activatedRoot && fs.existsSync(targetRoot)) {
       recoveryPath = `${targetRoot}.migration-unactivated-${Date.now()}`;
       fs.renameSync(targetRoot, recoveryPath);
     }

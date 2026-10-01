@@ -10,7 +10,7 @@ const { issueAgentAccessGrant, resolveAgentAccessGrant, revokeAgentAccessGrant }
 const { normalizeAgentKnowledgeQuestion, normalizeKnowledgeResult } = require('../electron/agent-knowledge-query.cjs');
 const { run: runCli } = require('../electron/agent-capability-cli.cjs');
 
-const auth = { type: 'agent_grant', grantId: 'g1', allowedStudentIds: ['s1'], allowedProjectIds: ['p1'], capabilities: ['knowledge:query', 'archive:read', 'task:read', 'student:read', 'project:read', 'report:read'] };
+const auth = { type: 'agent_grant', grantId: 'g1', allowedStudentIds: ['s1'], allowedProjectIds: ['p1'], capabilities: ['knowledge:query', 'archive:read', 'task:read', 'student:read', 'project:read', 'report:read', 'research:search'] };
 const project = { id: 'p1', studentIds: ['s1'] };
 
 test('Agent token has a closed route allowlist, including migration and upload denial', () => {
@@ -36,6 +36,7 @@ test('Every capability requires exact student, project and operation scope', () 
   for (const name of Object.keys(CAPABILITIES).filter((item) => CAPABILITIES[item].risk === 'read')) {
     const input = { studentId: 's1' };
     if (name === 'knowledge.query') input.question = 'What happened?';
+    if (name === 'research.search') Object.assign(input, { query: 'official admissions requirements', region: 'Beijing' });
     if (name === 'project.overview') input.projectId = 'p1';
     if (name === 'report.read') input.reportId = 'profile';
     assert.equal(authorizeCapability(auth, name, input, project).ok, true, name);

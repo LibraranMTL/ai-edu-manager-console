@@ -17,6 +17,7 @@ function mergeExternalMigrationCandidates(candidates = []) {
   for (const candidate of sorted) {
     const parent = merged.find((item) => sameOrInside(item.rootPath, candidate.rootPath));
     const reference = {
+      rootPath: candidate.rootPath,
       label: candidate.label,
       ownerType: candidate.ownerType,
       ownerId: candidate.ownerId,
@@ -39,4 +40,20 @@ function mergeExternalMigrationCandidates(candidates = []) {
   return merged;
 }
 
-module.exports = { mergeExternalMigrationCandidates, sameOrInside };
+function projectMigrationRequirements(projects = [], readMaterialIndex = () => ({ materials: [] })) {
+  const directories = [];
+  for (const project of projects) {
+    if (project.materialStorageMode !== 'workspace-v1') continue;
+    const index = readMaterialIndex(project);
+    const fields = [['projectRootPath', '项目根目录'], ['workspacePath', '项目工作空间'],
+      ['managerPath', '项目管理记录'], ['knowledgeRootPath', '项目知识空间']];
+    if ((index.materials || []).some((item) => item.location?.kind === 'legacy_raw')) fields.push(['rawPath', '仍被引用的旧原始资料目录']);
+    for (const [field, label] of fields) {
+      if (!project[field] || !path.isAbsolute(project[field])) throw new Error(`项目“${project.name || project.id}”的${label}未配置有效路径，不能创建完整迁移包。`);
+      directories.push({ projectId: String(project.id), field, label: `${label}：${project.name || project.id}`, rootPath: path.resolve(project[field]) });
+    }
+  }
+  return directories;
+}
+
+module.exports = { mergeExternalMigrationCandidates, sameOrInside, projectMigrationRequirements };

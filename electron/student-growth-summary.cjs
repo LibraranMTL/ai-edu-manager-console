@@ -17,12 +17,14 @@ const PROJECT_STATUS_LABELS = {
   pending: '积累中',
   not_started: '尚无成长证据',
 };
+const { fixedEvidenceProjection, requiresFixedReportEvidence } = require('./project-evidence-reference.cjs');
 
 function limitedArray(value, limit) {
   return (Array.isArray(value) ? value : []).slice(0, limit);
 }
 
 function buildStudentGrowthSummary(student, index = {}, options = {}) {
+  if (index.studentId && String(index.studentId) !== String(student?.id)) throw new Error('成长索引不属于当前学生。');
   const abilityLimit = Number.isFinite(options.abilityLimit) ? options.abilityLimit : 12;
   const projectLimit = Number.isFinite(options.projectLimit) ? options.projectLimit : 12;
   const evidenceLimit = Number.isFinite(options.evidenceLimit) ? options.evidenceLimit : 10;
@@ -31,7 +33,7 @@ function buildStudentGrowthSummary(student, index = {}, options = {}) {
     .filter((item) => ['confirmed', 'watching'].includes(String(item?.status || '')));
   const abilities = Array.isArray(index.abilities) ? index.abilities : [];
   const projects = Array.isArray(index.projects) ? index.projects : [];
-  const projectStatus = (item) => String(item?.status || item?.reviewStatus || 'not_started');
+  const projectStatus = (item) => String(item?.reviewStatus || item?.status || 'not_started');
 
   return {
     ok: true,
@@ -71,12 +73,14 @@ function buildStudentGrowthSummary(student, index = {}, options = {}) {
       updatedAt: String(item?.updatedAt || item?.publishedAt || ''),
     })),
     recentEvidence: limitedArray(visibleEvidence, evidenceLimit).map((item) => ({
+      evidenceId: String(item?.id || ''),
       title: String(item?.title || '成长证据'),
       status: String(item?.status || ''),
       statusLabel: item?.status === 'confirmed' ? '已确认' : '观察中',
       ability: String(item?.ability || '待标注'),
       projectName: String(item?.projectName || ''),
       updatedAt: String(item?.updatedAt || item?.createdAt || ''),
+      ...(requiresFixedReportEvidence(item) ? { projectId: String(item.projectId || ''), ...fixedEvidenceProjection(item) } : {}),
     })),
   };
 }

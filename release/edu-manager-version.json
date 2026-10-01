@@ -1,12 +1,12 @@
 {
   "versionCode": 86,
   "versionName": "0.6.16",
-  "windowsVersionCode": 231,
-  "windowsVersionName": "0.18.1",
-  "windowsReleaseStatus": "candidate",
-  "windowsUrl": "https://www.greatbg.com/download/AI-edu-manager-console-Windows-0.17.11.zip",
-  "windowsTerminalVersionCode": 227,
-  "windowsTerminalVersionName": "0.17.8",
+  "windowsVersionCode": 244,
+  "windowsVersionName": "0.19.4",
+  "windowsReleaseStatus": "stable",
+  "windowsUrl": "https://www.greatbg.com/download/AI-edu-manager-console-Windows-0.19.4.zip",
+  "windowsTerminalVersionCode": 235,
+  "windowsTerminalVersionName": "0.18.5",
   "windowsTerminalReleaseStatus": "candidate",
   "windowsTerminalUrl": "https://www.greatbg.com/download/AI-edu-manager-student-terminal-Windows-0.16.10.exe",
   "terminalApkUrl": "https://www.greatbg.com/download/AI-edu-manager-tablet-terminal-0.6.16.apk",
@@ -26,5 +26,5 @@
   "managerApkVersionCode": 23,
   "managerApkVersionName": "0.2.3",
   "apkUrl": "https://www.greatbg.com/download/AI-edu-manager-tablet-terminal-0.6.16.apk",
-  "notes": "Windows 主机端 0.18.1 候选版：修复旧资料指纹覆盖最新修订导致每日资料消化预检失败的问题，自动结算已被完成修订取代的旧记录，并为任务执行增加即时状态和明确错误反馈。官网正式下载仍为 Windows 主机端 0.17.11。"
+  "notes": "Windows 主机端 0.19.4：资料收件箱支持自选下载文件夹、搜索分页与批量投递；成功核验后归档原件，失败保留并可重试，分享资料继续按学生隔离。包含新版导航、个性化选题、规划与比赛研究、学习卡片及云端文档入口。用户已确认真机测试通过；其他端正式下载保持不变。"
 }

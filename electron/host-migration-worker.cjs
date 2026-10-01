@@ -15,7 +15,7 @@ parentPort.on('message', async (message) => {
   try {
     let result;
     if (message.action === 'inspect-sources') {
-      result = inspectMigrationSources(message.options?.sources || []);
+      result = inspectMigrationSources(message.options?.sources || [], { requiredDirectories: message.options?.requiredDirectories || [] });
     } else if (message.action === 'create') {
       result = await createMigrationPackage({
         ...(message.options || {}),

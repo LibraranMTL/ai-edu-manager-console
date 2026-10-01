@@ -15,7 +15,7 @@ test('conversation inbox exposes one-confirmation delivery to student and linked
   assert.match(main, /bridge:deliverConversationMaterials/);
   assert.match(preload, /deliverConversationMaterials/);
   assert.match(ui, /确认投递所选/);
-  assert.match(ui, /投递到关联项目原始资料库/);
+  assert.match(ui, /投递到关联项目/);
 });
 
 test('conversation share links use bounded safe fetching and a paste fallback', () => {
@@ -48,7 +48,7 @@ test('conversation workspace unifies attribution, imports, candidates, deliverie
 
 test('conversation imports support dependency-aware trash, restore, and permanent delete', () => {
   assert.match(main, /function conversationImportDependencySummary/);
-  assert.match(main, /canPermanentlyDelete:\s*matchingDeliveries\.length === 0 && promoted === 0/);
+  assert.match(main, /canPermanentlyDelete:\s*!registeredProjectOriginal && matchingDeliveries\.length === 0 && promoted === 0/);
   assert.match(main, /retainedCandidates/);
   assert.match(main, /updateArchivedAssetLifecycle/);
   assert.match(main, /function purgeQueuedAgentLifecycleSession/);

@@ -30,7 +30,7 @@ test('duplicate filesystem setup steps are hidden from the optional Agent connec
 test('student creation has one plain-language entry and one internal route', () => {
   assert.match(source, /'nav\.init': '新建学生档案'/);
   assert.match(source, /\{ id: 'init' as const, label: t\('nav\.init'\), icon: Plus \}/);
-  assert.match(source, /aria-label=\{t\('students\.add'\)\} onClick=\{\(\) => setActiveSection\('init'\)\}/);
+  assert.match(source, /<button className="primary" type="button" disabled=\{!windowsLicenseActive\} onClick=\{\(\) => \{ setStudentPanelOpen\(false\); setActiveSection\('init'\); \}\}><Plus size=\{18\} \/>新建学生档案<\/button>/);
   assert.match(source, /activeSection === 'init' && \(/);
   assert.doesNotMatch(source, /'nav\.new'/);
   assert.doesNotMatch(source, /setActiveSection\('new'\)/);

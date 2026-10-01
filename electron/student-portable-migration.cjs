@@ -181,8 +181,13 @@ function createStudentPortableMigrationManager(options) {
       filePath: path.join(sessionDir, `student-${safeId(student.id)}.edu-migration.zip`),
     };
     sessions.set(id, session);
-    fs.promises.mkdir(sessionDir, { recursive: true })
-      .then(() => build(session, student, projects));
+    const run = typeof options.runBackground === 'function' ? options.runBackground : (work) => work();
+    try {
+      Promise.resolve(run(async () => {
+        await fs.promises.mkdir(sessionDir, { recursive: true });
+        await build(session, student, projects);
+      })).catch((error) => { session.status = 'failed'; session.message = `生成迁移包失败：${error.message}`; });
+    } catch (error) { session.status = 'failed'; session.message = `生成迁移包失败：${error.message}`; }
     return publicSession(session);
   }
 

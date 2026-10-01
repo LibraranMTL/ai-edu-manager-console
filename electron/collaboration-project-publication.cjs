@@ -67,6 +67,10 @@ function normalizePublicationEntry(input = {}, lineageId = '') {
     sourceAssetIds: [...new Set((Array.isArray(input.sourceAssetIds) ? input.sourceAssetIds : []).map((value) => compactText(value)).filter(Boolean))],
     sourceRelativePaths: [...new Set((Array.isArray(input.sourceRelativePaths) ? input.sourceRelativePaths : []).map(safeRelativePath).filter(Boolean))],
   };
+  if (input.sourceMaterial !== undefined) {
+    entry.sourceMaterial = { materialId: compactText(input.sourceMaterial?.materialId, 256),
+      version: input.sourceMaterial?.version, sha256: compactText(input.sourceMaterial?.sha256, 64).toLowerCase() };
+  }
   return entry;
 }
 
@@ -158,6 +162,11 @@ function validateProjectPublication(publication, options = {}) {
       continue;
     }
     if (!/^[a-f0-9]{64}$/.test(entry.sha256 || '')) errors.push(`项目分发对象摘要无效：${entry.relativePath}`);
+    if (entry.sourceMaterial !== undefined && (entry.kind !== 'raw_material'
+      || !entry.sourceMaterial?.materialId || !Number.isSafeInteger(entry.sourceMaterial.version)
+      || entry.sourceMaterial.version < 1 || entry.sourceMaterial.sha256 !== entry.sha256)) {
+      errors.push(`项目资料身份或版本无效：${entry.relativePath}`);
+    }
     const pathKey = `${entry.kind}|${entry.relativePath.toLowerCase()}`;
     if (paths.has(pathKey)) errors.push(`项目分发路径重复：${entry.relativePath}`);
     paths.add(pathKey);

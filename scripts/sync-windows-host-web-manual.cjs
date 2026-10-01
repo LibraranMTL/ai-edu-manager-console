@@ -160,7 +160,9 @@ function manualMenu(currentHref) {
 
 const fallbackTemplatePath = path.join(websiteRoot, 'android-student-manual.html');
 
-for (const spec of manualSpecs) {
+// Host-only releases must not regenerate manuals belonging to other products.
+const selectedManualSpecs = process.argv.includes('--host-only') ? manualSpecs.slice(0, 1) : manualSpecs;
+for (const spec of selectedManualSpecs) {
   const source = fs.readFileSync(spec.sourcePath, 'utf8');
   const rendered = renderMarkdown(source);
 

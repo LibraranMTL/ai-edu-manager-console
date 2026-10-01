@@ -8,11 +8,16 @@ const read = (relativePath) => fs.readFileSync(path.join(root, relativePath), 'u
 
 test('existing projects use a student-filtered list before opening a separate detail page', () => {
   const source = read('src/main.tsx');
+  const styles = read('src/styles.css');
   assert.match(source, /type ProjectPageMode = 'list' \| 'detail'/);
   assert.match(source, /projectStudentFilterId === 'all'/);
   assert.match(source, /projects\.filter\(\(project\) => \(project\.studentIds \|\| \[\]\)\.includes\(projectStudentFilterId\)\)/);
   assert.match(source, /projectPageMode === 'list' \? \(/);
   assert.match(source, /className="projects-existing-only project-index-page"/);
+  assert.match(source, /className="project-student-filter"/);
+  assert.match(source, /htmlFor="project-student-filter"/);
+  assert.match(source, /id="project-student-filter" aria-label="按学生筛选项目"/);
+  assert.match(styles, /\.project-student-filter select\s*\{[\s\S]*pointer-events:\s*auto/);
   assert.match(source, /onClick=\{\(\) => openProjectDetail\(project\.id\)\}/);
   assert.match(source, /className="projects-existing-only project-detail-page"/);
   assert.match(source, /返回项目列表/);

@@ -15,10 +15,12 @@ test('project evidence confirmation updates ledger and growth index as one recov
   assert.match(ui, /result\.growthIndex.*setGrowthIndex\(result\.growthIndex\)/);
 });
 
-test('growth index self-heals on demand without startup all-student repair', () => {
+test('growth index reads queue stale repair without synchronously rebuilding or startup all-student repair', () => {
   assert.match(main, /growthSourceFingerprint\(review, projects\)/);
   assert.match(main, /growthIndexNeedsRebuild\(index, fingerprint\)/);
-  assert.match(main, /createGrowthRecoverySnapshot\(normalized, 'stale-index-rebuild'\)/);
+  assert.match(main, /queueGrowthRefreshOnRead\(studentId, 'stale_index_on_read'\)/);
+  const getter = main.slice(main.indexOf('function getGrowthIndex('), main.indexOf('function getGrowthModelSnapshot('));
+  assert.doesNotMatch(getter, /rebuildGrowthIndex\(|repairMigratedStudentMetadata\(|createGrowthRecoverySnapshot\(/);
   assert.match(main, /function repairStaleGrowthIndexes\(studentIds = \[\]\)/);
   assert.doesNotMatch(main, /setTimeout\(\(\) => \{\s*try \{ repairStaleGrowthIndexes/);
   assert.match(main, /startGrowthRefreshMonitor\(\)/);

@@ -22,7 +22,7 @@ test('D3 only includes raw materials and verified knowledge, and imports publica
   assert.match(main, /kind: 'raw_material'/);
   assert.match(main, /kind: 'knowledge_snapshot'/);
   assert.match(main, /function ingestImportedProjectPublications/);
-  assert.match(main, /const projectImport = ingestImportedProjectPublications\(\)/);
+  assert.match(main, /const projectImport = await ingestImportedProjectPublications\(\)/);
   assert.match(main, /projectLineageId/);
 });
 
@@ -68,7 +68,7 @@ test('D3 preserves workspace screening state across a relocated synchronized dir
 test('D3 carries digest completion and suppresses deleted collaboration lineages', () => {
   assert.match(main, /function projectPublicationDigestBaseline/);
   assert.match(main, /function restoreProjectPublicationDigestBaseline/);
-  assert.match(main, /digestBaseline: projectPublicationDigestBaseline\(project\)/);
+  assert.match(main, /digestBaseline: projectPublicationDigestBaseline\(project, sourceFiles\)/);
   assert.match(main, /isProjectLineageDismissed\(store, publication\.lineageId\)/);
   assert.match(main, /dismissProjectLineage\(/);
   assert.match(main, /restoreProjectLineage\(/);

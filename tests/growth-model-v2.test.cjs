@@ -45,7 +45,7 @@ test('growth index v2 separates abilities, contributions and evidence', () => {
 });
 
 test('growth page owns growth data and does not render report cards', () => {
-  const growthStart = ui.indexOf("isWindows && activeSection === 'growth' && selectedStudent");
+  const growthStart = ui.indexOf("isWindows && (activeSection === 'growth' || activeSection === 'knowledge-mastery') && selectedStudent");
   const reportsStart = ui.indexOf("activeSection === 'reports' && selectedStudent", growthStart);
   assert.ok(growthStart >= 0 && reportsStart > growthStart, 'growth and report pages should remain distinct');
   const growthPage = ui.slice(growthStart, reportsStart);
@@ -53,6 +53,8 @@ test('growth page owns growth data and does not render report cards', () => {
   assert.match(growthPage, />能力画像</);
   assert.match(growthPage, />项目贡献</);
   assert.match(growthPage, />成长证据</);
+  assert.match(growthPage, /activeSection === 'knowledge-mastery'/);
+  assert.match(growthPage, /只展示有学生归属和可核对来源的知识轨迹/);
   assert.doesNotMatch(growthPage, /learningReportDefinitions\.map/);
   assert.match(preload, /openGrowthModelDir\(studentId\)/);
   assert.match(main, /bridge:openGrowthModelDir/);

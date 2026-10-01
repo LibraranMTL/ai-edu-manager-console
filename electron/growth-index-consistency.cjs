@@ -1,5 +1,6 @@
 const crypto = require('node:crypto');
 const path = require('node:path');
+const { fixedEvidenceProjection } = require('./project-evidence-reference.cjs');
 
 function stableJson(value) {
   if (Array.isArray(value)) return `[${value.map(stableJson).join(',')}]`;
@@ -18,6 +19,7 @@ function growthSourceFingerprint(review, projects = []) {
     title: String(item?.title || ''),
     content: String(item?.content || ''),
     sourcePath: String(item?.sourcePath || ''),
+    ...fixedEvidenceProjection(item),
     confidence: String(item?.confidence || ''),
     epistemicType: String(item?.epistemicType || ''),
     systemDecision: String(item?.systemVerification?.decision || ''),
@@ -36,6 +38,8 @@ function growthSourceFingerprint(review, projects = []) {
       status: String(item?.status || ''),
       ability: String(item?.ability || ''),
       observation: String(item?.observation || ''),
+      ...fixedEvidenceProjection(item),
+      sourcePaths: Array.isArray(item?.sourcePaths) ? [...item.sourcePaths].map(String).sort() : [],
       sourcePath: String(item?.sourcePath || ''),
       updatedAt: String(item?.updatedAt || item?.createdAt || ''),
     })).sort((a, b) => a.id.localeCompare(b.id)),

@@ -23,8 +23,9 @@ test('Windows sidebar groups education, projects, Agent knowledge, collaboration
   const nav = renderer.slice(renderer.indexOf('<nav className="nav-list"'), renderer.indexOf('</nav>'));
   assert.ok(nav.indexOf("aria-label={t('nav.education')}") < nav.indexOf("<span>{t('nav.projects')}</span>"));
   assert.ok(nav.indexOf("aria-label={t('nav.collaboration')}") < nav.indexOf("activeSection === 'assets'"));
-  assert.ok(nav.indexOf("aria-label={t('nav.courses')}") < nav.indexOf('系统设置子菜单'));
-  assert.ok(!nav.slice(nav.indexOf('系统设置子菜单')).includes("t('nav.collaboration')"));
+  const fixedNav = nav.slice(nav.indexOf('className="v12-fixed-navigation"'), nav.indexOf('{navItems.map'));
+  assert.ok(fixedNav.indexOf("label: '精选课程'") < fixedNav.indexOf('<span>系统设置</span>'));
+  assert.ok(!fixedNav.slice(fixedNav.indexOf('系统设置子菜单')).includes("t('nav.collaboration')"));
   assert.match(renderer, /setSettingsMenuOpen\(true\)/);
   assert.doesNotMatch(renderer, /<aside className="settings-submenu-nav"/);
   assert.doesNotMatch(styles, /\.settings-submenu-nav/);
@@ -46,11 +47,10 @@ test('collaboration and Q&A reuse their existing state without a duplicate works
   assert.doesNotMatch(renderer, /edu-manager-knowledge-workspace-view/);
   assert.doesNotMatch(renderer, /workspace-view-switcher/);
   assert.doesNotMatch(styles, /\.workspace-view-switcher/);
-  assert.match(renderer, /aria-label=\{t\('nav.collaboration'\)\}/);
-  assert.match(renderer, /onClick=\{\(\) => openSettingsSubmenu\('collaboration'\)\}/);
+  assert.match(renderer, /knowledge-collaboration', label: '知识协作', section: 'settings', action: \(\) => openSettingsSubmenu\('collaboration'\)/);
   assert.match(renderer, /activeSection === 'qa' && <>\s*<form className="agent-knowledge-query"/);
-  assert.match(renderer, /settingsSubmenu === 'agent-qa'\) \|\| \(!isWindows && activeSection === 'qa'\)\) && <>\s*<details className="advanced-diagnostics"/);
-  assert.match(renderer, /activeSection === 'capture' \|\| \(!isWindows && activeSection === 'memory'\)/);
+  assert.match(renderer, /settingsSubmenu === 'agent-qa' && agentSettingsTab === 'qa'/);
+  assert.match(renderer, /activeSection === 'capture' \|\| \(!isWindows && showingAgentMemory\)/);
   assert.match(renderer, /<details className="advanced-options growth-advanced-options">/);
   assert.match(renderer, /<details className="advanced-options archive-advanced-options" open=\{!isWindows\}>/);
 });
@@ -58,17 +58,18 @@ test('collaboration and Q&A reuse their existing state without a duplicate works
 test('Agent capability authorization has its own knowledge-management page, separate from conversation capture', () => {
   const knowledgeItems = renderer.slice(renderer.indexOf('const knowledgeNavItems = ['), renderer.indexOf('const courseCatalogCourses ='));
   assert.match(knowledgeItems, /id: 'agent-capabilities' as const, label: t\('nav.agentCapabilities'\)/);
-  const capabilityPageStart = renderer.indexOf("activeSection === 'agent-capabilities' && selectedStudent && (");
-  const capturePageStart = renderer.indexOf("(activeSection === 'memory' || activeSection === 'capture') && selectedStudent && (");
+  assert.match(renderer, /\['capabilities', 'Agent调用能力设置'\]/);
+  const capabilityPageStart = renderer.indexOf('showingAgentCapabilities && selectedStudent && (');
+  const capturePageStart = renderer.indexOf("(showingAgentMemory || activeSection === 'capture') && selectedStudent && (");
   assert.ok(capabilityPageStart > 0 && capturePageStart > capabilityPageStart);
   const capabilityPage = renderer.slice(capabilityPageStart, capturePageStart);
   assert.match(capabilityPage, /外部 Agent 能力与写入审核/);
   assert.match(capabilityPage, /授权只读查询/);
   assert.match(capabilityPage, /批准本次写入/);
-  const capturePageEnd = renderer.indexOf("(activeSection === 'memory' || activeSection === 'capture' || activeSection === 'agent-capabilities') && !selectedStudent", capturePageStart);
+  const capturePageEnd = renderer.indexOf("(showingAgentMemory || activeSection === 'capture' || showingAgentCapabilities) && !selectedStudent", capturePageStart);
   assert.ok(capturePageEnd > capturePageStart);
   assert.doesNotMatch(renderer.slice(capturePageStart, capturePageEnd), /外部 Agent 能力与写入审核/);
-  assert.match(renderer, /activeSection === 'agent-capabilities'\) refreshAgentCapabilityManagement\(selectedId\)/);
+  assert.match(renderer, /agentSettingsTab === 'capabilities'[\s\S]{0,80}refreshAgentCapabilityManagement\(selectedId\)/);
   assert.match(renderer, /'agent-capabilities'\s*,\s*'soul'/);
 });
 

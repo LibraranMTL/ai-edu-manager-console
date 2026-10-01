@@ -1,0 +1,17 @@
+.research-card-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 320px), 1fr)); gap: 18px; margin: 18px 0; }
+.research-field h4 { margin: 12px 0 6px; }
+.planning-favorites-nav { display: flex; flex-wrap: wrap; gap: 10px; margin: 16px 0; }
+.planning-favorites-nav button[aria-pressed="true"] { background: var(--accent-soft, #ede8ff); border-color: var(--accent, #7436ef); color: var(--accent, #7436ef); }
+.favorite-version { font-size: 13px; opacity: .85; }
+@media (max-width: 640px) {
+  .planning-panel .panel-heading { flex-wrap: wrap; }
+  .planning-panel .panel-heading > div { flex: 1 1 100%; }
+  .planning-panel .panel-heading button { white-space: nowrap; flex-shrink: 0; }
+  .planning-panel .panel-heading h3 { min-width: 0; }
+}
+.research-card-grid li { line-height: 1.7; overflow-wrap: anywhere; }
+.research-share { max-width: 420px; font-size: 13px; }
+.research-share p { margin: 6px 0; }
+.research-dialog-backdrop { position: fixed; inset: 0; z-index: 300; background: #102a2acc; display: grid; place-items: center; padding: 24px; }
+.research-dialog { width: min(900px, 95vw); max-height: 90vh; overflow-y: auto; }
+.research-dialog pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 50vh; overflow-y: auto; padding: 16px; background: #f5f8f8; color: #183633; border-radius: 12px; font-size: 13px; }

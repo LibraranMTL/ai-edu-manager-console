@@ -26,9 +26,12 @@ test('collaboration tasks are exposed through bridge and use dedicated task-cent
   assert.match(main, /activeCollaborationHelpBinding/);
   assert.match(main, /ipcMain\.handle\('bridge:createRemoteCollaborationTask'/);
   assert.match(main, /ipcMain\.handle\('bridge:updateRemoteCollaborationTask'/);
+  assert.match(main, /ipcMain\.handle\('bridge:resolveCollaborationTaskAttachments'/);
   assert.match(preload, /ipcRenderer\.invoke\('bridge:createRemoteCollaborationTask'/);
   assert.match(preload, /ipcRenderer\.invoke\('bridge:updateRemoteCollaborationTask'/);
+  assert.match(preload, /ipcRenderer\.invoke\('bridge:resolveCollaborationTaskAttachments'/);
   assert.match(renderer, /const raw = await pending/);
+  assert.match(renderer, /const raw = await bridge\(\)\?\.resolveCollaborationTaskAttachments/);
   assert.match(main, /adopt_project/);
   assert.match(main, /无需重复复制/);
   assert.match(taskProtocol, /edu-manager\.knowledge-contribution\.v1/);

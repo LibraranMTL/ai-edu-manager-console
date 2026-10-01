@@ -151,11 +151,30 @@ test('legacy paths become explicit source URIs without changing the original pat
 test('Electron read responses expose compatibility views without replacing legacy payloads', () => {
   const main = fs.readFileSync(path.join(__dirname, '..', 'electron', 'main.cjs'), 'utf8');
   assert.match(main, /mapGrowthEvidenceReviewToEducationClaims\(\{ student: normalized, review, sourcePath: growthEvidenceReviewPath\(normalized\) \}\)/);
-  assert.match(main, /mapGrowthIndexV2ToDomainSnapshot\(\{ student: normalized, index, sourcePath:/);
+  assert.match(main, /mapGrowthIndexV2ToDomainSnapshot\(\{ student: normalized, index, sourcePath, \.\.\.sources/);
   assert.match(main, /\{ ok: true, automatic, review, protocolCompatibility, riskAssessment, path:/);
   assert.match(main, /\{ ok: true, index, protocolCompatibility, path:/);
   assert.match(main, /item\.reviewerRole = item\.review\.reviewerRole/);
   assert.match(main, /item\.reviewHistory = \[/);
   assert.match(main, /reviewerId: 'system-risk-policy'/);
   assert.match(main, /并记录本机人工审核/);
+});
+
+test('fixed source identity survives compatibility mapping without path fallback or unverified formal confirmation', () => {
+  const binding = { schema: 'edu-manager.project-evidence-binding.v1', projectId: 'p1', studentId: student.id,
+    bindingId: `evidence-binding-${'a'.repeat(64)}`, evidenceHash: 'b'.repeat(64), path: 'D:/not-authority' };
+  const candidate = { id: 'bound-1', studentId: student.id, projectId: 'p1', title: 'Fixed observation', content: 'Observed in project',
+    status: 'confirmed', sourcePath: 'D:/not-authority', sourceBinding: binding, sourceMaterials: [{ materialId: 'm1', version: 2, sha256: 'c'.repeat(64), path: 'D:/not-authority' }],
+    updatedAt: '2026-09-29T00:00:00.000Z', review: { reviewerRole: 'teacher', reviewerId: 't1', reviewedAt: '2026-09-29T00:00:00.000Z' } };
+  const result = mapGrowthEvidenceReviewToEducationClaims({ student, review: { candidates: [candidate] } });
+  assert.equal(result.claims[0].status, 'candidate'); assert.equal(result.claims[0].sourceResolution, 'fixed_unverified');
+  assert.equal(result.claims[0].sourceBinding.bindingId, binding.bindingId);
+  assert.equal(result.claims[0].evidence[0].sourceMaterials[0].version, 2);
+  assert.equal(result.growthEvidence[0].sourceBinding.bindingId, binding.bindingId);
+  assert.equal(result.claims[0].sourceOpenable, false);
+  assert.doesNotMatch(JSON.stringify(result), /D:\/not-authority/);
+  assert.equal(result.issues.some((issue) => issue.code === 'LEGACY_PRIMARY_SOURCE_MISSING'), false);
+  assert.ok(result.issues.some((issue) => issue.code === 'FIXED_SOURCE_NOT_VERIFIED'));
+  assert.throws(() => mapGrowthEvidenceReviewToEducationClaims({ student,
+    review: { candidates: [{ ...candidate, studentName: student.name, studentId: 'old-same-name', sourceBinding: { ...binding, studentId: 'old-same-name' } }] } }), { code: 'CROSS_STUDENT_EVIDENCE' });
 });

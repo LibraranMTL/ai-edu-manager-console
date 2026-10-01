@@ -2,7 +2,7 @@ const assert = require('node:assert/strict');
 const path = require('node:path');
 const test = require('node:test');
 
-const { mergeExternalMigrationCandidates } = require('../electron/migration-source-plan.cjs');
+const { mergeExternalMigrationCandidates, projectMigrationRequirements } = require('../electron/migration-source-plan.cjs');
 
 test('student sibling knowledge summary and raw directories remain separate required migration sources', () => {
   const base = path.resolve('D:\\legacy-student');
@@ -31,4 +31,30 @@ test('a parent project directory covers nested project paths without swallowing 
   assert.equal(sources.length, 2);
   assert.equal(sources.find((item) => item.rootPath === path.join(base, 'projects')).references.length, 2);
   assert.equal(sources.find((item) => item.rootPath === path.join(base, 'student-summary')).required, true);
+});
+
+test('new-mode requirements include separate roots and do not require an unused legacy raw directory', () => {
+  const root = path.resolve('synthetic-migration-project');
+  const project = { id: 'p1', name: 'Synthetic', materialStorageMode: 'workspace-v1', projectRootPath: root,
+    workspacePath: path.join(root, 'workspace'), managerPath: path.join(root, 'manager'), knowledgeRootPath: path.join(root, 'knowledge') };
+  let reads = 0;
+  const requirements = projectMigrationRequirements([project, { id: 'legacy' }], () => { reads++; return { materials: [] }; });
+  assert.equal(reads, 1);
+  assert.deepEqual(requirements.map((item) => item.field), ['projectRootPath', 'workspacePath', 'managerPath', 'knowledgeRootPath']);
+  assert.equal(requirements.every((item) => item.projectId === 'p1'), true);
+  assert.throws(() => projectMigrationRequirements([project], () => ({ materials: [{ location: { kind: 'legacy_raw' } }] })), /旧原始资料目录/);
+  project.rawPath = path.join(root, 'old-raw');
+  assert.equal(projectMigrationRequirements([project], () => ({ materials: [{ location: { kind: 'legacy_raw' } }] })).at(-1).rootPath, project.rawPath);
+  assert.throws(() => projectMigrationRequirements([{ ...project, workspacePath: '' }]), /项目工作空间/);
+});
+
+test('merging a required project child makes its external parent required and preserves exact child provenance', () => {
+  const root = path.resolve('synthetic-external-parent');
+  const sources = mergeExternalMigrationCandidates([
+    { rootPath: root, ownerType: 'project_root', ownerId: 'legacy', required: false },
+    { rootPath: path.join(root, 'nested'), ownerType: 'project_workspace', ownerId: 'new', required: true },
+  ]);
+  assert.equal(sources.length, 1);
+  assert.equal(sources[0].required, true);
+  assert.equal(sources[0].references[1].rootPath, path.join(root, 'nested'));
 });

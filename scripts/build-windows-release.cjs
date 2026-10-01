@@ -243,7 +243,8 @@ function writeRuntimePackage() {
       electronLanguages,
       directories: { output: 'out' },
       files: ['dist/**/*', 'electron/**/*', 'package.json'],
-      asarUnpack: ['electron/invoke-agent.ps1', 'electron/capture-timeline-ocr.ps1'],
+      extraResources: [{ from: 'material-pdf-runtime', to: 'material-pdf-runtime' }],
+      asarUnpack: ['electron/invoke-agent.ps1', 'electron/capture-timeline-ocr.ps1', 'electron/project-knowledge-guard.ps1'],
       win: {
         artifactName: `${artifactBase}.\${ext}`,
         icon: 'public/brand/robogala.ico',
@@ -342,6 +343,8 @@ function build() {
     copyDirectoryFiles(path.join(repoRoot, 'electron'), path.join(stageRoot, 'electron'));
     compileLifecycleHook(path.join(stageRoot, 'electron', 'agent-lifecycle-hook.cs'), path.join(stageRoot, 'electron', 'agent-lifecycle-hook.exe'));
     bundleCourseImportRuntime();
+    require('./build-project-material-extractor.cjs').bundleMaterialExtractor(stageRoot, locateEsbuildModule());
+    require('./build-project-material-pdf.cjs').stagePdfRuntime(stageRoot);
     fs.mkdirSync(path.join(stageRoot, 'public', 'brand'), { recursive: true });
     fs.copyFileSync(path.join(repoRoot, 'public', 'brand', 'robogala.ico'), path.join(stageRoot, 'public', 'brand', 'robogala.ico'));
     recordPhase('write-runtime-package');
@@ -373,11 +376,20 @@ function build() {
 
     recordPhase('audit-package');
     const asar = locateAsarModule();
+    const pdfRuntimeAudit = require('./build-project-material-pdf.cjs').auditPdfRuntime(
+      path.join(unpackedRoot, 'resources', 'material-pdf-runtime'), path.join(stageRoot, 'material-pdf-runtime'));
     const asarFiles = asar.listPackage(appAsar);
     const packagedNodeModules = asarFiles.filter((name) => /^\\node_modules(?:\\|$)/.test(name));
     if (packagedNodeModules.length) throw new Error(`Minimal runtime package unexpectedly contains node_modules (${packagedNodeModules.length} entries).`);
     if (!asarFiles.includes('\\electron\\main.cjs') || !asarFiles.includes('\\dist\\index.html')) {
       throw new Error('Packaged app is missing its main process or renderer entry.');
+    }
+    for (const relative of ['electron/growth-current-view.cjs', 'electron/report-evidence-archive.cjs', 'electron/project-evidence-reference.cjs', 'electron/project-archive-runtime.cjs', 'electron/project-archive-startup.cjs', 'electron/project-archive-transaction.cjs', 'electron/project-material-evidence.cjs', 'electron/project-material-access.cjs', 'electron/project-material-promotion.cjs', 'electron/project-material-extract.cjs', 'electron/project-material-extract-worker.cjs',
+      'electron/project-material-pdf.cjs', 'electron/project-material-pdf-worker.cjs']) {
+      if (!asarFiles.includes(`\\${relative.replaceAll('/', '\\')}`)) throw new Error(`Packaged material extraction runtime is missing: ${relative}`);
+      const staged = fs.readFileSync(path.join(stageRoot, relative));
+      const packaged = asar.extractFile(appAsar, relative);
+      if (!staged.equals(packaged)) throw new Error(`Packaged material extraction runtime differs from verified stage: ${relative}`);
     }
     for (const required of [
       '\\electron\\agent-lifecycle-hook.exe',
@@ -400,6 +412,13 @@ function build() {
     const unpackedTimelineOcr = path.join(unpackedRoot, 'resources', 'app.asar.unpacked', 'electron', 'capture-timeline-ocr.ps1');
     if (!fs.existsSync(unpackedTimelineOcr)) {
       throw new Error(`Packaged timeline OCR bridge is missing: ${unpackedTimelineOcr}`);
+    }
+    const unpackedKnowledgeGuard = path.join(unpackedRoot, 'resources', 'app.asar.unpacked', 'electron', 'project-knowledge-guard.ps1');
+    if (!fs.existsSync(unpackedKnowledgeGuard)) {
+      throw new Error(`Packaged knowledge commit guard is missing: ${unpackedKnowledgeGuard}`);
+    }
+    if (sha256(unpackedKnowledgeGuard) !== sha256(path.join(repoRoot, 'electron', 'project-knowledge-guard.ps1'))) {
+      throw new Error('Packaged knowledge commit guard differs from the verified source');
     }
     const asarBytes = fs.statSync(appAsar).size;
     if (asarBytes > 20 * 1024 * 1024) throw new Error(`app.asar exceeds 20 MiB: ${(asarBytes / 1024 / 1024).toFixed(2)} MiB`);
@@ -469,6 +488,7 @@ function build() {
       },
       package: {
         asarBytes,
+        pdfRuntime: pdfRuntimeAudit,
         asarFiles: asarFiles.length,
         nodeModuleFiles: packagedNodeModules.length,
         agentBridge: unpackedAgentBridge,

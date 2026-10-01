@@ -250,6 +250,7 @@ function conversationSubmissionReceipt(submission, input = {}) {
     projectId: text(input.projectId, 240),
     interactionId: text(input.interactionId, 240),
     assetId: text(input.assetId, 240),
+    materialId: text(input.materialId, 240),
     candidateCounts: {
       organized: Math.max(0, Number(input.organized || 0)),
       watching: Math.max(0, Number(input.watching || 0)),

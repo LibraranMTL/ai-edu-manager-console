@@ -10,7 +10,7 @@ const androidTerminal = fs.readFileSync(path.join(root, 'android-tablet-terminal
 
 test('host raw student and project uploads stream to bounded temporary files', () => {
   assert.match(main, /require\('\.\/streaming-upload\.cjs'\)/);
-  assert.match(main, /streamRequestToFile\(request, \{ targetPath: target, maxBytes: MAX_UPLOAD_BYTES, expectedBytes \}\)/);
+  assert.equal([...main.matchAll(/streamRequestToFile\(request, \{ targetPath: target, maxBytes: MAX_UPLOAD_BYTES,[\s\S]{0,100}?expectedSha256: declaredSha256 \}\)/g)].length, 2);
   assert.match(main, /function readRequestBuffer\(request, maxBytes = MAX_UPLOAD_BYTES \+ 1024 \* 1024\)/);
   assert.doesNotMatch(main, /function readRequestBuffer\(request, maxBytes = 300 \* 1024 \* 1024\)/);
 });

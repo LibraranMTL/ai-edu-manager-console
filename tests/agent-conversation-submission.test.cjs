@@ -100,6 +100,7 @@ test('D4-C receipt separates automatic organization from attention items', () =>
   const receipt = conversationSubmissionReceipt(submission, {
     status: 'stored',
     studentId: 'student-1',
+    materialId: 'material-1',
     organized: 2,
     watching: 1,
     attention: 1,
@@ -110,6 +111,7 @@ test('D4-C receipt separates automatic organization from attention items', () =>
     attention: 1,
     duplicate: 0,
   });
+  assert.equal(receipt.materialId, 'material-1');
 });
 
 test('manual student attribution overrides stale hints and removes ambiguous project targeting', () => {
@@ -142,9 +144,11 @@ test('D4-C integration reuses immutable conversation governance and direct colla
   assert.match(main, /saveAgentProjectConversationImport/);
   assert.match(main, /target\.project\s*\?\s*saveAgentProjectConversationImport/);
   assert.match(main, /path\.join\(ensuredProject\.rawPath, 'Agent对话资料'\)/);
-  assert.match(main, /materializationVersion: target\.project \? 2 : 1/);
-  assert.match(main, /existingProjectMaterialized/);
-  assert.match(main, /对话已保存到项目“\$\{target\.project\.name\}”原始资料库/);
+  assert.match(main, /materializationVersion: target\.project \? \(isWorkspaceMaterialProject\(target\.project\) \? 3 : 2\) : 1/);
+  assert.match(main, /idempotency_scope_conflict/);
+  assert.match(main, /requiredVersion = target\.project \? \(isWorkspaceMaterialProject\(target\.project\) \? 3 : 2\) : 1/);
+  assert.match(main, /isWorkspaceMaterialProject\(target\.project\) \? '工作空间' : '原始资料库'/);
+  assert.match(main, /saveWorkspaceAgentProjectConversationImport/);
   assert.match(main, /queueDirectCollaborationDelivery/);
   assert.match(main, /agent_conversation_submission/);
   assert.match(main, /ingestImportedAgentConversationSubmissions/);

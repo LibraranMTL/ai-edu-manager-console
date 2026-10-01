@@ -49,7 +49,7 @@ test('material organization is a guided workflow with advanced tools kept availa
   assert.match(ui, /高级筛选、保存策略与批量操作/);
   assert.match(ui, /projectStageFeedback\.assets/);
   assert.match(ui, /projectStagingItemReviewable/);
-  assert.match(ui, /份已加入\/处理/);
+  assert.match(ui, /份已采用\/处理/);
   assert.match(ui, /disabled=\{!projectStagingItemReviewable\(item\)\}/);
   assert.match(ui, /请先选择尚未完成处理、需要加入项目知识库的资料/);
 });

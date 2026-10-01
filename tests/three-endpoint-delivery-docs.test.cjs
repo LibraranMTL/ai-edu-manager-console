@@ -9,6 +9,8 @@ const website = path.join(root, 'release', '网站文件');
 function read(relativePath) {
   return fs.readFileSync(path.join(root, relativePath), 'utf8');
 }
+const publicManifest = JSON.parse(read(path.join('release', '网站文件', 'edu-manager-version.json')));
+const hostArtifact = new URL(publicManifest.windowsUrl).pathname.split('/').pop();
 
 test('download page presents four product families and five client builds', () => {
   const html = read(path.join('release', '网站文件', 'download.html'));
@@ -19,7 +21,7 @@ test('download page presents four product families and five client builds', () =
     'Android 学生端',
     'Android 教师端',
     'Android 单机版',
-    'v0.17.11',
+    `v${publicManifest.windowsVersionName}`,
     'v0.6.16',
     'v0.1.1',
     'v1.2.2',
@@ -68,7 +70,7 @@ test('download page omits historical release notes and acceptance details', () =
 test('download page links the current artifacts and canonical web manuals exist', () => {
   const download = read(path.join('release', '网站文件', 'download.html'));
   for (const artifact of [
-    ['../download/AI-edu-manager-console-Windows-0.17.11.zip', path.join('release', 'windows', 'AI-edu-manager-console-Windows-0.17.11.zip')],
+    [`../download/${hostArtifact}`, path.join('release', 'windows', hostArtifact)],
     ['../download/AI-edu-manager-student-terminal-Windows-0.16.10.exe', path.join('release', 'windows-terminal', 'AI-edu-manager-student-terminal-Windows-0.16.10.exe')],
     ['../download/AI-edu-manager-tablet-terminal-0.6.16.apk', path.join('release', 'tablet-terminal', 'AI-edu-manager-tablet-terminal-0.6.16.apk')],
     ['../download/AI-edu-manager-teacher-terminal-0.1.1.apk', path.join('release', 'teacher-terminal', 'AI-edu-manager-teacher-terminal-0.1.1.apk')],

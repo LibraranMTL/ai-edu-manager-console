@@ -18,7 +18,9 @@ function functionBody(source, functionName, nextFunctionName) {
 
 test('learning projects expose a discoverable safe delete and restore workflow', () => {
   assert.match(preload, /deleteLearningProject\(projectId\)/);
+  assert.match(preload, /previewLearningProjectRemoval\(projectId\)/);
   assert.match(main, /bridge:deleteLearningProject/);
+  assert.match(main, /bridge:previewLearningProjectRemoval/);
   assert.match(ui, />\s*删除项目\s*</);
   assert.match(ui, />已删除项目</);
   assert.match(ui, /这是安全删除/);
@@ -32,7 +34,8 @@ test('project deletion removes only the index record and writes a recoverable sn
   assert.match(body, /dismissProjectLineage/);
   assert.match(body, /停止自动重新接收该项目谱系/);
   assert.match(body, /preservedPaths/);
-  assert.match(body, /writeProjects\(nextProjects\)/);
+  assert.match(body, /commitProjectRecordOperation\('remove', project\.id, entries/);
+  assert.match(body, /target: projectsPath\(\)/);
   assert.doesNotMatch(body, /rmSync|rmdirSync|unlinkSync/);
 });
 

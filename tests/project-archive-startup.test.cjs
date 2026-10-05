@@ -189,8 +189,10 @@ test('actual startup body does not launch any writer or business window until re
       recoverInterruptedProjectMaterialMigrations: async () => calls.push('material-migration'),
       getCloudReportRuntime: () => { calls.push('cloud'); return Promise.resolve(); },
       ensureCaptureTimelineScheduler: () => ({ start: () => calls.push('capture') }), captureVisionConsent: () => ({ enabled: false }),
-      readCollaborationState: () => ({ enabled: false }), taskAutomationEnabled: () => false, process: { env: {} } };
-    for (const name of ['createWindow', 'createCaptureTray', 'registerCaptureShortcuts', 'restoreHeavyTaskRetries', 'startDigestWorkflowMonitor', 'startGrowthRefreshMonitor',
+      readCollaborationState: () => ({ enabled: false }), taskAutomationEnabled: () => false, process: { env: {} },
+      screen: { on: () => calls.push('screen-listener') }, setInterval: () => 1,
+      positionQuickCaptureWindow: () => calls.push('quick-capture-position') };
+    for (const name of ['createWindow', 'createCaptureTray', 'loadQuickCaptureSettings', 'updateCaptureControlWindow', 'registerCaptureShortcuts', 'restoreHeavyTaskRetries', 'startDigestWorkflowMonitor', 'startGrowthRefreshMonitor',
       'startDirectDeliveryMonitor', 'startAgentLifecycleDrainMonitor', 'startAgentLifecycleInstallMonitor', 'startStudentArchiveSyncWatchers', 'scheduleTeamKnowledgeIndexWarmup']) ctx[name] = () => calls.push(name);
     Function('scope', `with (scope) { ${source.slice(start, end)} }`)(ctx);
     await new Promise((resolve) => setImmediate(resolve)); assert.deepEqual(calls, []);

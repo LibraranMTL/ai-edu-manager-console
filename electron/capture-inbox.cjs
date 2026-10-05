@@ -40,6 +40,7 @@ function createCaptureInbox({ resolveStudentDir, deliver }) {
       if (!Buffer.isBuffer(bytes) || !bytes.length || bytes.length > MAX_BYTES) throw Error('单项资料须为 1 字节至 20 MiB');
       const sha256 = crypto.createHash('sha256').update(bytes).digest('hex');
       const event = String(input.sourceEventId || '').slice(0, 100), device = String(input.sourceDeviceId || 'windows-host').slice(0, 100);
+      if (event && value.items.some(item => item.sourceEventId === event && item.sourceDeviceId === device && item.sha256 !== sha256)) throw Error('同一提交编号对应不同内容，未接收');
       const duplicate = value.items.find(item => event && item.sourceEventId === event && item.sourceDeviceId === device && item.sha256 === sha256);
       if (duplicate) return { item: duplicate, duplicate: true };
       const itemId = crypto.randomUUID(), controlledObjectId = itemId + ext;
@@ -84,6 +85,8 @@ function createCaptureInbox({ resolveStudentDir, deliver }) {
       await scanIncoming(id, root, value);
       return value.items.filter(item => item.studentId === String(id)).map(({ controlledObjectId, ...item }) => item);
     }),
+    listStored: id => mutate(id, async (_root, value) => value.items.filter(item => item.studentId === String(id))
+      .map(({ controlledObjectId, ...item }) => item)),
     receive: (id, input) => mutate(id, (root, value) => receiveInto(id, input, root, value)),
     transcribe: (id, itemId, engine, consent) => mutate(id, async (root, value) => {
       const item = value.items.find(item => item.itemId === itemId && item.studentId === String(id));

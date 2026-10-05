@@ -2,7 +2,8 @@
 const fs = require('fs');
 const { safeStorage } = require('electron');
 const { screen } = require('electron');
-const { captureControlBounds, loadVisibleCaptureControlWindow } = require('./capture-control-window.cjs');
+const { captureControlBounds } = require('./capture-control-window.cjs');
+const { routeForAction, clampQuickCaptureBounds, locateQuickCaptureBounds, publicQuickCaptureState } = require('./quick-capture-window.cjs');
 const { powerMonitor } = require('electron');
 const { desktopCapturer, globalShortcut, Menu, Tray } = require('electron');
 const path = require('path');
@@ -757,7 +758,21 @@ let taskCenterSnapshotCache = { at: 0, value: '' };
 let taskRuntimeMigrationChecked = false;
 let activeCaptureRuntime = null;
 let captureTray = null;
-let captureControlWindow = null;
+let quickCaptureWindow = null;
+let quickCaptureLoaded = false;
+let quickCaptureEnabled = false;
+let quickCaptureExpanded = false;
+let quickCaptureActiveAction = '';
+const QUICK_CAPTURE_COLLAPSED_HEIGHT = 72;
+const QUICK_CAPTURE_EXPANDED_HEIGHT = 160;
+let quickCaptureStudentId = '';
+let quickCaptureStudentName = '';
+let quickCaptureDismissedSessionId = '';
+let quickCapturePendingCount = 0;
+let quickCaptureCountStatus = 'unknown';
+let quickCaptureCountStudentId = '';
+let quickCapturePosition = null;
+let quickCaptureCountTimer = null;
 let captureTimelineScheduler = null;
 const captureHeavyWorkGate = new CaptureHeavyWorkGate();
 let captureTimelinePerformanceSignals = { rendererLatencyMs: 0, rendererReportedAt: 0 };
@@ -10703,6 +10718,7 @@ function createWindow() {
     if (courseFullscreen) exitCourseFullscreen('system');
   });
   mainWindow.on('closed', () => {
+    if (quickCaptureWindow && !quickCaptureWindow.isDestroyed()) quickCaptureWindow.destroy();
     if (courseView) {
       try { courseView.webContents.close(); } catch {}
       courseView = null;
@@ -11920,6 +11936,10 @@ function updateCaptureTray() {
     { label: active ? `${session.status === 'paused' ? '采集已暂停' : '正在采集'} · ${session.sourceName}` : '当前没有采集会话', enabled: false },
     { type: 'separator' },
     { label: '打开教育管家', click: showMainWindow },
+    { label: quickCaptureWindow?.isVisible() ? '隐藏快捷采集工具条' : '显示快捷采集工具条', click: () => {
+      if (quickCaptureWindow?.isVisible()) setQuickCaptureEnabled(false);
+      else void showQuickCaptureNearMainWindow();
+    } },
     { label: '项目资料恢复', click: () => { void showProjectArchiveRecoveryDialog(); } },
     { label: '打开采集箱', click: () => openCaptureInbox(session?.id || '') },
     { type: 'separator' },
@@ -11946,52 +11966,246 @@ function createCaptureTray() {
   updateCaptureTray();
 }
 
-function captureControlHtml(session) {
-  const paused = session.status === 'paused';
-  const sourceName = String(session.sourceName || '屏幕').replace(/[&<>"']/g, (character) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[character]));
-  return `<!doctype html><html><head><meta charset="utf-8"><style>
-    *{box-sizing:border-box}body{margin:0;font-family:"Microsoft YaHei",sans-serif;background:transparent;color:#172a27}
-    .bar{height:68px;padding:10px 12px;display:flex;align-items:center;gap:10px;background:#fbfaff;border:1px solid #d9ccff;border-left:4px solid #7c3aed;border-radius:8px;box-shadow:0 12px 30px rgba(56,35,91,.22);-webkit-app-region:drag}
-    .state{min-width:0;flex:1;display:grid;gap:2px}.state strong{font-size:13px}.state span{font-size:11px;color:#64748b;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-    .dot{width:9px;height:9px;border-radius:50%;background:${paused ? '#d97706' : '#ef4444'};box-shadow:0 0 0 4px ${paused ? 'rgba(217,119,6,.12)' : 'rgba(239,68,68,.12)'}}
-    button{width:34px;height:34px;border:1px solid #d9ccff;background:white;color:#6d28d9;border-radius:6px;font-size:15px;cursor:pointer;-webkit-app-region:no-drag}button:hover{background:#f1eaff}button.end{color:#b42318;border-color:#fecaca}
-  </style></head><body><div class="bar"><i class="dot"></i><div class="state"><strong>${paused ? '采集已暂停' : '正在采集'} · ${session.screenshotCount} 张</strong><span>${sourceName}</span></div>
-  <button title="重点截取" id="highlight">★</button><button title="${paused ? '继续采集' : '暂停采集'}" id="pause">${paused ? '▶' : 'Ⅱ'}</button><button title="打开采集箱" id="folder">▣</button><button class="end" title="结束并整理" id="stop">■</button></div>
-  <script>const id=${JSON.stringify(session.id)};document.getElementById('highlight').onclick=()=>window.AndroidBridge.highlightCaptureSession(id);document.getElementById('pause').onclick=()=>window.AndroidBridge.${paused ? 'resumeCaptureSession' : 'pauseCaptureSession'}(id);document.getElementById('folder').onclick=()=>window.AndroidBridge.openCaptureInbox(id);document.getElementById('stop').onclick=()=>window.AndroidBridge.stopCaptureSession(id);</script></body></html>`;
-}
-
 function updateCaptureControlWindow() {
-  const session = activeCaptureRuntime?.session;
-  if (!session) {
-    if (captureControlWindow && !captureControlWindow.isDestroyed()) captureControlWindow.close();
-    captureControlWindow = null;
+  const active = activeCaptureRuntime?.session;
+  const shouldShow = quickCaptureEnabled || (active && quickCaptureDismissedSessionId !== active.id);
+  if (!shouldShow) {
+    if (quickCaptureWindow && !quickCaptureWindow.isDestroyed()) quickCaptureWindow.hide();
+    updateCaptureTray();
     return;
   }
-  if (!captureControlWindow || captureControlWindow.isDestroyed()) {
+  if (!quickCaptureWindow || quickCaptureWindow.isDestroyed()) {
     const display = mainWindow && !mainWindow.isDestroyed()
       ? screen.getDisplayMatching(mainWindow.getBounds())
       : screen.getPrimaryDisplay();
-    captureControlWindow = new BrowserWindow({
-      ...captureControlBounds(display.workArea, 450, 68),
-      frame: false,
-      transparent: true,
-      resizable: false,
-      alwaysOnTop: true,
-      skipTaskbar: true,
-      show: false,
-      webPreferences: {
-        preload: path.join(__dirname, 'preload.cjs'),
-        contextIsolation: true,
-        nodeIntegration: false,
-      },
+    const width = active ? 610 : 520;
+    const initial = captureControlBounds(display.workArea, width, 86);
+    const bounds = clampQuickCaptureBounds(display.workArea, { ...initial, ...quickCapturePosition,
+      height: quickCaptureExpanded ? QUICK_CAPTURE_EXPANDED_HEIGHT : QUICK_CAPTURE_COLLAPSED_HEIGHT });
+    quickCaptureWindow = new BrowserWindow({
+      ...bounds, frame: false, transparent: false, backgroundColor: '#f8fcfa', resizable: false, alwaysOnTop: true,
+      skipTaskbar: true, show: false, autoHideMenuBar: true,
+      webPreferences: { preload: path.join(__dirname, 'quick-capture-preload.cjs'), contextIsolation: true, nodeIntegration: false, sandbox: true },
     });
-    captureControlWindow.setAlwaysOnTop(true, 'floating');
-    captureControlWindow.on('closed', () => { captureControlWindow = null; });
+    const window = quickCaptureWindow;
+    window.setAlwaysOnTop(true, 'floating');
+    window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+    window.webContents.on('did-finish-load', () => {
+      if (quickCaptureWindow !== window) return;
+      quickCaptureLoaded = true;
+      sendQuickCaptureState();
+      if (!window.isVisible()) window.showInactive();
+      void refreshQuickCaptureCount();
+    });
+    window.on('moved', () => {
+      if (quickCaptureWindow !== window || window.isDestroyed()) return;
+      positionQuickCaptureWindow();
+      const current = window.getBounds();
+      quickCapturePosition = { x: current.x, y: current.y };
+      saveQuickCaptureSettings();
+    });
+    window.on('closed', () => { if (quickCaptureWindow === window) quickCaptureWindow = null; quickCaptureLoaded = false; });
+    void window.loadFile(path.join(__dirname, 'quick-capture.html')).catch(error => console.warn('快捷采集工具条加载失败：', error));
+  } else {
+    const [currentWidth, currentHeight] = quickCaptureWindow.getSize();
+    const width = active ? 610 : 520;
+    const height = quickCaptureExpanded ? QUICK_CAPTURE_EXPANDED_HEIGHT : QUICK_CAPTURE_COLLAPSED_HEIGHT;
+    if (currentWidth !== width || currentHeight !== height) resizeQuickCaptureWindow(width, height);
+    if (!quickCaptureWindow.isVisible() && quickCaptureLoaded) {
+      quickCaptureWindow.showInactive();
+      void refreshQuickCaptureCount();
+    }
   }
-  const window = captureControlWindow;
-  loadVisibleCaptureControlWindow(window, captureControlHtml(session),
-    () => captureControlWindow === window && Boolean(activeCaptureRuntime?.session),
-    (error) => console.warn('屏幕采集控制条加载失败：', error));
+  sendQuickCaptureState();
+  updateCaptureTray();
+}
+
+function quickCaptureSettingsPath() {
+  return path.join(app.getPath('userData'), 'quick-capture-settings.json');
+}
+
+function loadQuickCaptureSettings() {
+  try {
+    const saved = JSON.parse(fs.readFileSync(quickCaptureSettingsPath(), 'utf8'));
+    quickCaptureEnabled = saved.enabled === true;
+    if (Number.isFinite(saved.x) && Number.isFinite(saved.y)) quickCapturePosition = { x: saved.x, y: saved.y };
+  } catch { quickCaptureEnabled = false; }
+}
+
+function saveQuickCaptureSettings() {
+  writeJsonAtomic(quickCaptureSettingsPath(), {
+    schema: 'edu-manager.quick-capture-settings.v1',
+    enabled: quickCaptureEnabled,
+    x: quickCapturePosition?.x ?? null,
+    y: quickCapturePosition?.y ?? null,
+  });
+}
+
+function quickCaptureStudent() {
+  return { id: quickCaptureStudentId, name: quickCaptureStudentName };
+}
+
+function quickCaptureState() {
+  const student = quickCaptureStudent();
+  return publicQuickCaptureState({
+    student,
+    session: activeCaptureRuntime?.session,
+    visible: Boolean(quickCaptureWindow && !quickCaptureWindow.isDestroyed() && quickCaptureWindow.isVisible()),
+    expanded: quickCaptureExpanded,
+    activeAction: quickCaptureActiveAction,
+    pendingCount: quickCaptureCountStudentId === student.id ? quickCapturePendingCount : 0,
+    countStatus: quickCaptureCountStudentId === student.id ? quickCaptureCountStatus : 'unknown',
+  });
+}
+
+function sendQuickCaptureState() {
+  if (quickCaptureLoaded && quickCaptureWindow && !quickCaptureWindow.isDestroyed()) {
+    quickCaptureWindow.webContents.send('quick-capture:state', quickCaptureState());
+  }
+}
+
+async function refreshQuickCaptureCount() {
+  if (!quickCaptureWindow || quickCaptureWindow.isDestroyed() || !quickCaptureWindow.isVisible()) return;
+  const studentId = String(quickCaptureStudent().id || '');
+  if (!studentId) return;
+  quickCaptureCountStudentId = studentId;
+  quickCaptureCountStatus = 'loading';
+  sendQuickCaptureState();
+  try {
+    const items = await getCaptureInbox().listStored(studentId);
+    if (studentId !== String(quickCaptureStudent().id || '')) return;
+    quickCapturePendingCount = items.filter(item => !['delivered', 'trashed'].includes(item.status)).length;
+    quickCaptureCountStatus = 'ready';
+  } catch {
+    if (studentId !== String(quickCaptureStudent().id || '')) return;
+    quickCapturePendingCount = 0;
+    quickCaptureCountStatus = 'unavailable';
+  }
+  sendQuickCaptureState();
+}
+
+function positionQuickCaptureWindow() {
+  if (!quickCaptureWindow || quickCaptureWindow.isDestroyed()) return;
+  const bounds = quickCaptureWindow.getBounds();
+  const workArea = screen.getDisplayMatching(bounds).workArea;
+  const clamped = clampQuickCaptureBounds(workArea, bounds);
+  if (clamped.x !== bounds.x || clamped.y !== bounds.y) quickCaptureWindow.setPosition(clamped.x, clamped.y);
+}
+
+function resizeQuickCaptureWindow(width, height) {
+  const window = quickCaptureWindow;
+  if (!window || window.isDestroyed()) return;
+  const applyBounds = () => {
+    if (quickCaptureWindow !== window || window.isDestroyed()) return;
+    const current = window.getBounds();
+    const workArea = screen.getDisplayMatching(current).workArea;
+    const next = clampQuickCaptureBounds(workArea, { ...current, width, height });
+    window.setBounds(next, false);
+  };
+  applyBounds();
+  setTimeout(() => {
+    if (quickCaptureWindow !== window || window.isDestroyed()) return;
+    const current = window.getBounds();
+    if (current.width !== width || current.height !== height) applyBounds();
+  }, 80);
+}
+
+function setQuickCaptureEnabled(enabled, { locate = false } = {}) {
+  quickCaptureEnabled = Boolean(enabled);
+  if (enabled) quickCaptureDismissedSessionId = '';
+  else if (activeCaptureRuntime?.session) quickCaptureDismissedSessionId = activeCaptureRuntime.session.id;
+  if (enabled && locate) {
+    const mainBounds = mainWindow && !mainWindow.isDestroyed() ? mainWindow.getBounds() : screen.getPrimaryDisplay().workArea;
+    const display = screen.getDisplayMatching(mainBounds);
+    const bounds = locateQuickCaptureBounds(mainBounds, display.workArea,
+      activeCaptureRuntime?.session ? 610 : 520,
+      quickCaptureExpanded ? QUICK_CAPTURE_EXPANDED_HEIGHT : QUICK_CAPTURE_COLLAPSED_HEIGHT);
+    quickCapturePosition = { x: bounds.x, y: bounds.y };
+    if (quickCaptureWindow && !quickCaptureWindow.isDestroyed()) quickCaptureWindow.setBounds(bounds);
+  }
+  saveQuickCaptureSettings();
+  updateCaptureControlWindow();
+  return quickCaptureState();
+}
+
+async function showQuickCaptureNearMainWindow() {
+  setQuickCaptureEnabled(true, { locate: true });
+  const window = quickCaptureWindow;
+  if (!window || window.isDestroyed()) return { ok: false, message: '快捷采集工具条窗口未创建，请重试。' };
+  if (!quickCaptureLoaded) {
+    const loaded = await new Promise((resolve) => {
+      let timer;
+      const finish = (ok) => {
+        clearTimeout(timer);
+        window.webContents.removeListener('did-finish-load', onLoad);
+        window.webContents.removeListener('did-fail-load', onFailure);
+        window.removeListener('closed', onFailure);
+        resolve(ok);
+      };
+      const onLoad = () => finish(true);
+      const onFailure = () => finish(false);
+      window.webContents.once('did-finish-load', onLoad);
+      window.webContents.once('did-fail-load', onFailure);
+      window.once('closed', onFailure);
+      timer = setTimeout(() => finish(false), 5000);
+      if (quickCaptureLoaded) finish(true);
+    });
+    if (!loaded) return { ok: false, message: '快捷采集工具条加载失败或超时，请关闭程序后重试。' };
+  }
+  if (window.isDestroyed()) return { ok: false, message: '快捷采集工具条窗口已关闭，请重试。' };
+  window.setAlwaysOnTop(true, 'floating');
+  window.setOpacity(1);
+  window.show();
+  window.moveTop();
+  window.focus();
+  sendQuickCaptureState();
+  return { ok: window.isVisible(), bounds: window.getBounds(), message: window.isVisible() ? '' : '快捷采集工具条未能显示，请检查当前桌面。' };
+}
+
+function sendQuickCaptureNavigation(tabId) {
+  const studentId = quickCaptureStudentId;
+  if (tabId !== 'students' && !readStudentsIndex().some(student => String(student.id) === studentId)) {
+    return { ok: false, message: '请先在主窗口选择有效学生。' };
+  }
+  showMainWindow();
+  if (!mainWindow || mainWindow.isDestroyed()) return { ok: false, message: '主窗口暂不可用。' };
+  mainWindow.webContents.send('quick-capture:navigate', { tabId, studentId });
+  return { ok: true };
+}
+
+async function handleQuickCaptureAction(event, action) {
+  if (!quickCaptureWindow || quickCaptureWindow.isDestroyed() || event.sender !== quickCaptureWindow.webContents) {
+    return { ok: false, message: '工具条窗口已失效。' };
+  }
+  if (action === 'hide') { setQuickCaptureEnabled(false); return { ok: true }; }
+  if (action === 'more') {
+    quickCaptureExpanded = !quickCaptureExpanded;
+    resizeQuickCaptureWindow(activeCaptureRuntime?.session ? 610 : 520,
+      quickCaptureExpanded ? QUICK_CAPTURE_EXPANDED_HEIGHT : QUICK_CAPTURE_COLLAPSED_HEIGHT);
+    sendQuickCaptureState();
+    if (quickCaptureExpanded) void refreshQuickCaptureCount();
+    return { ok: true };
+  }
+  if (action === 'students') return sendQuickCaptureNavigation('students');
+  const locked = licenseRequiredJson('快捷采集');
+  if (locked) return JSON.parse(locked);
+  const session = activeCaptureRuntime?.session;
+  if (['pause', 'stop', 'highlight', 'capture-inbox'].includes(action)) {
+    if (!session) return { ok: false, message: '当前没有屏幕采集会话。' };
+    const result = action === 'capture-inbox' ? openCaptureInbox(session.id)
+      : action === 'stop' ? await stopCaptureSession(session.id)
+      : action === 'highlight' ? await highlightCaptureSession(session.id)
+      : session.status === 'paused' ? await resumeCaptureSession(session.id) : await pauseCaptureSession(session.id);
+    return JSON.parse(result);
+  }
+  const tabId = routeForAction(action);
+  if (!tabId) return { ok: false, message: '未知的快捷采集操作。' };
+  const result = sendQuickCaptureNavigation(tabId);
+  if (result.ok) {
+    quickCaptureActiveAction = action;
+    sendQuickCaptureState();
+  }
+  return result;
 }
 
 async function listCaptureSources() {
@@ -12007,8 +12221,9 @@ async function listCaptureSources() {
         id: source.id,
         name: source.name,
         type: source.id.startsWith('screen:') ? 'screen' : 'window',
-        blocked: !source.id.startsWith('screen:') && isSensitiveCaptureSourceName(source.name),
-        blockReason: !source.id.startsWith('screen:') && isSensitiveCaptureSourceName(source.name) ? '该窗口可能包含密码、凭据或私人通信，已自动排除。' : '',
+        blocked: !source.id.startsWith('screen:') && (isSensitiveCaptureSourceName(source.name) || String(source.name || '').includes('快捷采集')),
+        blockReason: !source.id.startsWith('screen:') && String(source.name || '').includes('快捷采集') ? '不能把快捷采集工具条自身作为采集来源。'
+          : !source.id.startsWith('screen:') && isSensitiveCaptureSourceName(source.name) ? '该窗口可能包含密码、凭据或私人通信，已自动排除。' : '',
         thumbnail: source.thumbnail?.isEmpty() ? '' : source.thumbnail.toDataURL(),
       })),
     });
@@ -32707,6 +32922,147 @@ function handleStudentGrowthSummary(request, response, studentId) {
   }
 }
 
+function terminalLearningStudent(request, response, studentId = '') {
+  if (!requireAuth(request, response)) return null;
+  const auth = request.authContext;
+  const isTeacher = auth.type === 'device' && auth.deviceRole === 'teacher';
+  if (auth.type !== 'student_session' && !isTeacher) {
+    sendJson(response, 403, { ok: false, code: 'STUDENT_SESSION_REQUIRED', message: '请先进入学生空间。' });
+    return null;
+  }
+  const id = isTeacher ? String(studentId || '') : String(auth.studentId || '');
+  if (!id || (studentId && String(studentId) !== id) || !isStudentAllowed(request, id)) {
+    sendJson(response, 403, { ok: false, code: 'STUDENT_SCOPE_DENIED', message: '当前会话无权访问该学生。' });
+    return null;
+  }
+  const student = findStudent(id);
+  if (!student) sendJson(response, 404, { ok: false, code: 'STUDENT_NOT_FOUND' });
+  return student || null;
+}
+
+async function handleTerminalPractice(request, response, action, cardId = '') {
+  const student = terminalLearningStudent(request, response);
+  if (!student) return;
+  try {
+    const id = String(student.id);
+    if (request.method === 'GET') {
+      const dashboard = await getPracticeCards().dashboard(id);
+      sendJson(response, 200, { ok: true, studentId: id, dashboard });
+      return;
+    }
+    const body = JSON.parse((await readRequestBuffer(request, 14 * 1024 * 1024)).toString('utf8') || '{}');
+    if (action === 'start') {
+      const card = await getPracticeCards().start(id, cardId);
+      sendJson(response, 200, { ok: true, studentId: id, card });
+    } else if (action === 'attempt') {
+      const result = await getPracticeCards().submit(id, cardId, body);
+      sendJson(response, 200, { ok: true, studentId: id, ...result });
+    }
+  } catch (error) {
+    sendJson(response, 400, { ok: false, code: 'PRACTICE_INVALID', message: String(error.message || error).slice(0, 240) });
+  }
+}
+
+function handleTerminalPlanning(request, response, kind, studentId = '') {
+  const student = terminalLearningStudent(request, response, studentId);
+  if (!student) return;
+  try {
+    const id = String(student.id), service = planningGuidanceService();
+    const result = kind === 'guidance' ? service.getGuidancePlan(id)
+      : kind === 'topics' ? service.getTopicSuggestions(id)
+      : kind === 'competitions' ? service.getCompetitionRecommendations(id)
+      : null;
+    if (!result) return sendJson(response, 404, { ok: false, code: 'UNKNOWN_PLANNING_KIND' });
+    const current = result.current ? Object.fromEntries([
+      'id', 'version', 'createdAt', 'verifiedAt', 'findings', 'nearTermActions',
+      'conditions', 'limitations', 'alternatives', 'notice',
+    ].filter(key => Object.hasOwn(result.current, key)).map(key => [key, result.current[key]])) : null;
+    if (current && Array.isArray(result.current.candidates)) {
+      const keys = kind === 'topics'
+        ? ['id', 'title', 'category', 'realWorldProblem', 'fitReason', 'path', 'expectedOutcomes', 'durationWeeks', 'difficulty', 'feasibility', 'verifyItems']
+        : ['id', 'name', 'category', 'scope', 'organizer', 'officialUrl', 'eligibility', 'deadline', 'season', 'fees', 'status', 'matchReasons', 'preparation', 'risks', 'missing', 'sourceUrls'];
+      current.candidates = result.current.candidates.map(candidate => Object.fromEntries(
+        keys.filter(key => Object.hasOwn(candidate, key)).map(key => [key, candidate[key]])));
+    }
+    if (current && Array.isArray(result.current.sources)) current.sources = result.current.sources.map(source => ({
+      url: source.url || '', title: source.title || '', fetchedAt: source.fetchedAt || '', official: Boolean(source.official),
+    }));
+    sendJson(response, 200, { ok: true, studentId: id, current,
+      needsRefresh: Boolean(result.needsRefresh), configurationWarning: result.configurationWarning || '',
+      latestCheck: result.latestCheck ? { checkedAt: result.latestCheck.checkedAt || '', status: result.latestCheck.status || '' } : null });
+  } catch (error) {
+    sendJson(response, 400, { ok: false, code: 'PLANNING_UNAVAILABLE', message: String(error.message || error).slice(0, 240) });
+  }
+}
+
+async function handleTerminalPlanningFavorites(request, response, kind) {
+  const student = terminalLearningStudent(request, response);
+  if (!student) return;
+  if (!['topics', 'competitions'].includes(kind)) return sendJson(response, 404, { ok: false, code: 'FAVORITE_KIND_INVALID' });
+  try {
+    const service = planningGuidanceService();
+    let result;
+    if (request.method === 'GET') result = service.getPlanningFavorites(String(student.id), kind);
+    else {
+      const body = JSON.parse((await readRequestBuffer(request, 32 * 1024)).toString('utf8') || '{}');
+      result = service.setPlanningFavorite(String(student.id), kind, body.versionId, body.candidateId, body.saved);
+    }
+    sendJson(response, 200, { ok: true, studentId: String(student.id), favorites: result.favorites, unchanged: Boolean(result.unchanged) });
+  } catch (error) {
+    sendJson(response, 400, { ok: false, code: error.code || 'FAVORITE_INVALID', message: String(error.message || error).slice(0, 240) });
+  }
+}
+
+async function handleTerminalInbox(request, response) {
+  const student = terminalLearningStudent(request, response);
+  if (!student) return;
+  try {
+    const id = String(student.id), inbox = getCaptureInbox();
+    if (request.method === 'GET') return sendJson(response, 200, { ok: true, studentId: id, items: await inbox.listStored(id) });
+    const body = JSON.parse((await readRequestBuffer(request, 32 * 1024)).toString('utf8') || '{}');
+    const text = String(body.text || '').trim(), eventId = String(body.eventId || '');
+    if (!text || text.length > 10000 || !/^[A-Za-z0-9_-]{8,100}$/.test(eventId)) throw Error('分享内容或提交编号无效');
+    const title = String(body.title || '学生分享').replace(/[\x00-\x1f<>:"/\\|?*]/g, '_').slice(0, 80);
+    const sourceDeviceId = String(request.authContext.deviceId || 'student-session');
+    const previous = (await inbox.listStored(id)).find(item => item.sourceEventId === eventId && item.sourceDeviceId === sourceDeviceId);
+    if (previous && (previous.sha256 !== crypto.createHash('sha256').update(text, 'utf8').digest('hex') || previous.originalName !== `${title || '学生分享'}.md`)) {
+      return sendJson(response, 409, { ok: false, code: 'INBOX_EVENT_CONFLICT', message: '同一提交编号对应的内容已变化，请重新发送。' });
+    }
+    const received = await inbox.receive(id, { name: `${title || '学生分享'}.md`, sourceChannel: 'share',
+      sourceEventId: eventId, sourceDeviceId, bytes: Buffer.from(text, 'utf8') });
+    const { controlledObjectId: _controlledObjectId, ...item } = received.item;
+    return sendJson(response, 200, { ok: true, studentId: id, duplicate: received.duplicate, item });
+  } catch (error) {
+    return sendJson(response, 400, { ok: false, code: 'INBOX_INVALID', message: String(error.message || error).slice(0, 240) });
+  }
+}
+
+async function handleTeacherLearningOverview(request, response, url) {
+  if (!requireAuth(request, response)) return;
+  if (request.authContext?.type !== 'device' || request.authContext.deviceRole !== 'teacher') {
+    return sendJson(response, 403, { ok: false, code: 'TEACHER_REQUIRED' });
+  }
+  const offset = Number(url.searchParams.get('offset') || 0);
+  const limit = Number(url.searchParams.get('limit') || 50);
+  if (!Number.isInteger(offset) || offset < 0 || !Number.isInteger(limit) || limit < 1 || limit > 50) {
+    return sendJson(response, 400, { ok: false, code: 'PAGE_INVALID' });
+  }
+  const students = readStudentsIndex().filter(student => student.archived !== true && student.status !== 'archived');
+  const items = [];
+  for (const student of students.slice(offset, offset + limit)) {
+    try {
+      const dashboard = await getPracticeCards().dashboard(String(student.id));
+      items.push({ studentId: String(student.id), studentName: String(student.name || ''),
+        currentCardStatus: dashboard.current?.status || 'none',
+        completedCount: dashboard.history.filter(card => card.status === 'completed').length });
+    } catch (error) {
+      items.push({ studentId: String(student.id), studentName: String(student.name || ''),
+        currentCardStatus: 'unavailable', completedCount: 0, warning: String(error.message || error).slice(0, 120) });
+    }
+  }
+  return sendJson(response, 200, { ok: true, total: students.length, offset, limit, items });
+}
+
 function handleDigestStatus(request, response, studentId) {
   if (!requireStudentAccess(request, response, studentId)) return;
   const student = findStudent(studentId);
@@ -34600,6 +34956,49 @@ function handleHostRequest(request, response) {
   if (request.method === 'GET' && pathname === '/api/student-session/me') {
     return handleStudentSessionMe(request, response);
   }
+  if (request.method === 'GET' && pathname === '/api/student-session/capabilities') {
+    const student = terminalLearningStudent(request, response);
+    if (!student) return;
+    sendJson(response, 200, { ok: true, studentId: String(student.id), hostId: getHostIdentity().hostId, dataGeneration: hostDataGenerationId(), capabilities: {
+      practice: true, planningRead: true, planningFavorites: true, remoteInbox: true,
+    } });
+    return;
+  }
+  const teacherCapabilitiesMatch = pathname.match(/^\/api\/teacher\/students\/([^/]+)\/capabilities$/);
+  if (request.method === 'GET' && teacherCapabilitiesMatch) {
+    if (!requireAuth(request, response)) return;
+    if (request.authContext?.type !== 'device' || request.authContext.deviceRole !== 'teacher') {
+      return sendJson(response, 403, { ok: false, code: 'TEACHER_REQUIRED' });
+    }
+    const student = terminalLearningStudent(request, response, teacherCapabilitiesMatch[1]);
+    if (!student) return;
+    return sendJson(response, 200, { ok: true, studentId: String(student.id), hostId: getHostIdentity().hostId, dataGeneration: hostDataGenerationId(), capabilities: { planningRead: true } });
+  }
+  if (request.method === 'GET' && pathname === '/api/teacher/learning-overview') {
+    return handleTeacherLearningOverview(request, response, url);
+  }
+  if (request.method === 'GET' && pathname === '/api/student-session/practice') {
+    return handleTerminalPractice(request, response, 'dashboard');
+  }
+  const terminalPracticeAction = pathname.match(/^\/api\/student-session\/practice\/([^/]+)\/(start|attempt)$/);
+  if (request.method === 'POST' && terminalPracticeAction) {
+    return handleTerminalPractice(request, response, terminalPracticeAction[2], terminalPracticeAction[1]);
+  }
+  const terminalPlanningMatch = pathname.match(/^\/api\/student-session\/planning\/(guidance|topics|competitions)$/);
+  if (request.method === 'GET' && terminalPlanningMatch) {
+    return handleTerminalPlanning(request, response, terminalPlanningMatch[1]);
+  }
+  const terminalFavoritesMatch = pathname.match(/^\/api\/student-session\/planning-favorites\/(topics|competitions)$/);
+  if (['GET', 'POST'].includes(request.method) && terminalFavoritesMatch) {
+    return handleTerminalPlanningFavorites(request, response, terminalFavoritesMatch[1]);
+  }
+  if (['GET', 'POST'].includes(request.method) && pathname === '/api/student-session/inbox') {
+    return handleTerminalInbox(request, response);
+  }
+  const teacherPlanningMatch = pathname.match(/^\/api\/teacher\/students\/([^/]+)\/planning\/(guidance|topics|competitions)$/);
+  if (request.method === 'GET' && teacherPlanningMatch) {
+    return handleTerminalPlanning(request, response, teacherPlanningMatch[2], teacherPlanningMatch[1]);
+  }
   if (request.method === 'POST' && pathname === '/api/student-session/logout') {
     return handleStudentSessionLogout(request, response);
   }
@@ -35600,6 +35999,21 @@ ipcMain.on('bridge:closeCourseView', (event) => { event.returnValue = closeCours
 ipcMain.on('bridge:setCourseCaptureSetupVisible', (event, visible) => { event.returnValue = setCourseCaptureSetupVisible(visible); });
 ipcMain.on('bridge:setCourseViewLayout', (event, layoutJson) => { event.returnValue = setCourseViewLayout(layoutJson); });
 ipcMain.on('bridge:getCaptureCenterState', (event) => { event.returnValue = getCaptureCenterState(); });
+ipcMain.handle('bridge:showQuickCapture', async (event) => {
+  if (!mainWindow || mainWindow.isDestroyed() || event.sender !== mainWindow.webContents) return JSON.stringify({ ok: false, message: '主窗口范围无效。' });
+  const locked = licenseRequiredJson('快捷采集工具条');
+  return locked || JSON.stringify(await showQuickCaptureNearMainWindow());
+});
+ipcMain.handle('bridge:setQuickCaptureContext', (event, studentId) => {
+  if (!mainWindow || mainWindow.isDestroyed() || event.sender !== mainWindow.webContents) return JSON.stringify({ ok: false, message: '主窗口范围无效。' });
+  const student = readStudentsIndex().find(item => String(item.id) === String(studentId || ''));
+  quickCaptureStudentId = student ? String(student.id) : '';
+  quickCaptureStudentName = student ? String(student.name || '') : '';
+  sendQuickCaptureState();
+  if (quickCaptureWindow?.isVisible()) void refreshQuickCaptureCount();
+  return JSON.stringify({ ok: true, studentId: quickCaptureStudentId });
+});
+ipcMain.handle('quick-capture:action', (event, action) => handleQuickCaptureAction(event, action));
 ipcMain.on('bridge:setCaptureVisionConsent', (event, inputJson) => { licensedIpc(event, '截图视觉服务授权', () => setCaptureVisionConsent(inputJson)); });
 ipcMain.on('bridge:openCaptureInbox', (event, sessionId) => { event.returnValue = openCaptureInbox(sessionId); });
 ipcMain.handle('bridge:listCaptureSources', async () => listCaptureSources());
@@ -35638,6 +36052,11 @@ ipcMain.handle('bridge:deleteCaptureSession', async (_event, sessionId) => {
 const qaIsolated = process.argv.includes('--qa-isolated');
 const hasSingleInstanceLock = qaIsolated || app.requestSingleInstanceLock();
 
+function scheduleQuickCaptureQaReveal() {
+  if (!qaIsolated || !process.argv.includes('--qa-show-quick-capture')) return;
+  setTimeout(() => { void showQuickCaptureNearMainWindow(); }, 500);
+}
+
 if (!hasSingleInstanceLock) {
   app.quit();
 } else {
@@ -35666,6 +36085,12 @@ if (!hasSingleInstanceLock) {
       detail: '请保留原上传请求与文件；同编号同字节重试可以继续登记。内容或项目范围变化时，不会自动认作已接收。',
       buttons: ['知道了'] });
     createCaptureTray();
+    loadQuickCaptureSettings();
+    updateCaptureControlWindow();
+    if (typeof scheduleQuickCaptureQaReveal === 'function') scheduleQuickCaptureQaReveal();
+    quickCaptureCountTimer = setInterval(() => { void refreshQuickCaptureCount(); }, 60_000);
+    screen.on('display-metrics-changed', positionQuickCaptureWindow);
+    screen.on('display-removed', positionQuickCaptureWindow);
     registerCaptureShortcuts();
     ensureCaptureTimelineScheduler().start();
     restoreHeavyTaskRetries();
@@ -35726,8 +36151,10 @@ app.on('before-quit', (event) => {
   stopStudentArchiveSyncWatchers();
   flushEducationArchiveVersions();
   flushStudentArchiveSyncs();
-  if (captureControlWindow && !captureControlWindow.isDestroyed()) captureControlWindow.destroy();
-  captureControlWindow = null;
+  if (quickCaptureCountTimer) clearInterval(quickCaptureCountTimer);
+  quickCaptureCountTimer = null;
+  if (quickCaptureWindow && !quickCaptureWindow.isDestroyed()) quickCaptureWindow.destroy();
+  quickCaptureWindow = null;
   if (captureTray && !captureTray.isDestroyed()) captureTray.destroy();
   captureTray = null;
   if (activeCaptureRuntime) {

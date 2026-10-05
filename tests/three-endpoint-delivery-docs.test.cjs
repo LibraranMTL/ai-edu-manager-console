@@ -11,6 +11,7 @@ function read(relativePath) {
 }
 const publicManifest = JSON.parse(read(path.join('release', '网站文件', 'edu-manager-version.json')));
 const hostArtifact = new URL(publicManifest.windowsUrl).pathname.split('/').pop();
+const publishedHostVersion = hostArtifact.match(/Windows-(\d+\.\d+\.\d+)/)?.[1];
 
 test('download page presents four product families and five client builds', () => {
   const html = read(path.join('release', '网站文件', 'download.html'));
@@ -21,7 +22,7 @@ test('download page presents four product families and five client builds', () =
     'Android 学生端',
     'Android 教师端',
     'Android 单机版',
-    `v${publicManifest.windowsVersionName}`,
+    `v${publicManifest.windowsReleaseStatus === 'candidate' ? publishedHostVersion : publicManifest.windowsVersionName}`,
     'v0.6.16',
     'v0.1.1',
     'v1.2.2',

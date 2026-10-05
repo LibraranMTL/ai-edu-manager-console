@@ -49,12 +49,14 @@ test('a completed load cannot reopen a stopped or replaced capture control', asy
   assert.equal(window.calls.filter(([name]) => name === 'showInactive').length, 1);
 });
 
-test('both Windows capture entrypoints use the visible control and host display position', () => {
+test('host uses one quick capture window while the student terminal keeps its capture control', () => {
   const root = path.resolve(__dirname, '..');
   const host = fs.readFileSync(path.join(root, 'electron', 'main.cjs'), 'utf8');
   const terminal = fs.readFileSync(path.join(root, 'electron', 'terminal-main.cjs'), 'utf8');
-  for (const source of [host, terminal]) {
-    assert.match(source, /screen\.getDisplayMatching\(mainWindow\.getBounds\(\)\)/);
-    assert.match(source, /loadVisibleCaptureControlWindow\(window, captureControlHtml\(/);
-  }
+  assert.match(host, /screen\.getDisplayMatching\(mainWindow\.getBounds\(\)\)/);
+  assert.match(host, /quickCaptureWindow = new BrowserWindow/);
+  assert.match(host, /quick-capture-preload\.cjs/);
+  assert.doesNotMatch(host, /captureControlWindow = new BrowserWindow/);
+  assert.match(terminal, /screen\.getDisplayMatching\(mainWindow\.getBounds\(\)\)/);
+  assert.match(terminal, /loadVisibleCaptureControlWindow\(window, captureControlHtml\(/);
 });

@@ -28,7 +28,8 @@ test('course capture is bound to the active course and switches to the existing 
   assert.match(main, /bridge:setCourseCaptureSetupVisible/);
   assert.match(main, /courseCaptureSetupVisible = false;[\s\S]*courseView\.setBounds\(courseViewBounds\(\)\)/);
   assert.match(main, /courseCaptureSetupVisible = Boolean\(activeCourse\)/);
-  assert.match(main, /function captureControlHtml\(session\)/);
+  assert.match(main, /function updateCaptureControlWindow\(\)/);
+  assert.match(main, /quickCaptureWindow = new BrowserWindow/);
   assert.match(main, /String\(activeCourse\.courseId\) !== requestedCourseId/);
   assert.match(main, /courseId: course\?\.courseId \|\| ''/);
   assert.match(main, /courseProvider: runtime\.session\.courseProvider/);

@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'self';">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>快捷采集</title>
+  <style>
+    *{box-sizing:border-box}html,body{margin:0;width:100%;height:100%;background:transparent;font-family:"Microsoft YaHei",system-ui,sans-serif;color:#172b27}
+    .shell{height:100%;padding:5px 10px;border:1px solid #b9d9cd;border-radius:14px;background:#f8fcfa;box-shadow:0 10px 24px rgba(18,59,48,.22);overflow:hidden}
+    .bar{display:flex;align-items:center;gap:7px;min-height:56px;-webkit-app-region:drag}
+    .identity{display:grid;min-width:95px;max-width:124px;gap:2px;margin-right:3px}.identity strong{font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.identity span{font-size:10px;color:#617b72}
+    .brand{width:32px;height:32px;display:grid;place-items:center;background:#164f40;border-radius:10px;color:white;font-weight:700;font-size:18px;flex:none}
+    button{font:inherit;cursor:pointer;-webkit-app-region:no-drag}button:focus-visible{outline:3px solid #6f4de0;outline-offset:2px}
+    .action{height:36px;padding:0 10px;border:1px solid #c8ddd4;border-radius:10px;background:#fff;color:#155143;font-size:12px;font-weight:700;white-space:nowrap}
+    .action:hover{background:#e5f4ed}.action:disabled{opacity:.48;cursor:not-allowed}.action.selected{background:#1d6652;color:white;border-color:#1d6652;box-shadow:0 4px 12px rgba(29,102,82,.2)}.action.selected:hover{background:#164f40}
+    .icon{width:30px;height:30px;border:0;border-radius:9px;background:transparent;color:#45675b;font-size:19px}.icon:hover{background:#e5f4ed}
+    .spacer{flex:1}[hidden]{display:none!important}.details{display:none;border-top:1px solid #d9e8e0;padding-top:9px;margin-top:8px}.details.open{display:block}
+    .links{display:flex;gap:7px;flex-wrap:wrap}.notice{font-size:11px;color:#587068;margin:7px 0 0}.capture{display:none;min-width:0;flex:1}.capture.open{display:grid;gap:2px}.capture strong{font-size:12px}.capture span{font-size:10px;color:#5a746a;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.danger{color:#a32f28;border-color:#eec6c1}
+    .capture strong{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.message{position:absolute;left:12px;right:12px;bottom:3px;color:#a32f28;font-size:10px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;pointer-events:none}
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <div class="bar">
+      <div class="brand" aria-hidden="true">教</div>
+      <div class="identity"><strong id="student">选择学生</strong><span>快捷采集 · 先接收后投递</span></div>
+      <div id="idle-actions" class="links">
+        <button class="action needs-student" data-action="screen" aria-pressed="false">屏幕采集</button>
+        <button class="action needs-student" data-action="audio" aria-pressed="false" title="打开录音采集页面，不在浮条录音">录音</button>
+        <button class="action needs-student" data-action="photo" aria-pressed="false">拍照</button>
+      </div>
+      <div id="capture" class="capture" aria-live="polite"><strong id="capture-state"></strong><span id="capture-source"></span></div>
+      <div id="capture-actions" class="links" hidden>
+        <button class="action" data-action="highlight" title="重点截取">★</button>
+        <button class="action" id="pause" data-action="pause">暂停</button>
+        <button class="action" data-action="capture-inbox" title="打开本次屏幕采集箱">采集箱</button>
+        <button class="action danger" data-action="stop">结束</button>
+      </div>
+      <span class="spacer" id="spacer"></span>
+      <button class="icon" id="more" data-action="more" aria-label="更多采集方式" aria-expanded="false" aria-controls="details" title="更多采集方式">⋯</button>
+      <button class="icon" data-action="hide" aria-label="隐藏工具条" title="隐藏工具条（可从托盘恢复）">×</button>
+    </div>
+    <div id="details" class="details">
+      <div class="links">
+        <button class="action needs-student" data-action="import" aria-pressed="false">本机文件导入</button>
+        <button class="action needs-student" data-action="inbox" aria-pressed="false" id="inbox">资料收件箱</button>
+        <button class="action needs-student" data-action="conversation" aria-pressed="false">对话收集箱</button>
+        <button class="action needs-student" data-action="automatic" aria-pressed="false">会话自动采集</button>
+        <button class="action" data-action="students">切换学生</button>
+      </div>
+      <p class="notice">录音跳转主机页面；文件导入和资料投递仍需确认学生与目标。屏幕采集为截图，不是录像。</p>
+    </div>
+    <div id="message" class="message" role="status" aria-live="polite"></div>
+  </div>
+  <script src="quick-capture-renderer.js"></script>
+</body>
+</html>

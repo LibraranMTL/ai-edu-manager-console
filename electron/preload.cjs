@@ -1,6 +1,13 @@
 const { contextBridge, ipcRenderer } = require('electron');
 
 contextBridge.exposeInMainWorld('AndroidBridge', {
+  showQuickCapture() { return ipcRenderer.invoke('bridge:showQuickCapture'); },
+  setQuickCaptureContext(studentId) { return ipcRenderer.invoke('bridge:setQuickCaptureContext', studentId); },
+  onQuickCaptureNavigate(callback) {
+    const listener = (_event, payload) => callback(payload);
+    ipcRenderer.on('quick-capture:navigate', listener);
+    return () => ipcRenderer.removeListener('quick-capture:navigate', listener);
+  },
   getDownloadInboxSettings() { return ipcRenderer.invoke('bridge:getDownloadInboxSettings'); },
   configureDownloadInbox(action) { return ipcRenderer.invoke('bridge:configureDownloadInbox', action); },
   listDownloadInboxFiles() { return ipcRenderer.invoke('bridge:listDownloadInboxFiles'); },

@@ -1017,6 +1017,9 @@ type AndroidBridge = {
   getMaterialImportRecords?: (studentId: string) => string;
   removeMaterialImportRecords?: (studentId: string, recordIdsJson: string) => string;
   getCaptureCenterState?: () => string;
+  showQuickCapture?: () => Promise<string>;
+  setQuickCaptureContext?: (studentId: string) => Promise<string>;
+  onQuickCaptureNavigate?: (callback: (payload: { tabId: string; studentId: string }) => void) => () => void;
   setCaptureVisionConsent?: (inputJson: string) => string;
   onCaptureChanged?: (callback: (payload: string) => void) => () => void;
   listCaptureSources?: () => Promise<string>;
@@ -5705,6 +5708,7 @@ function App() {
   const [importMessage, setImportMessage] = useState('');
   const [pendingImportStudentId, setPendingImportStudentId] = useState('');
   const [digestMessage, setDigestMessage] = useState('');
+  const [quickCaptureMessage, setQuickCaptureMessage] = useState('');
   const [clipboardNotice, setClipboardNotice] = useState<ClipboardNotice | null>(null);
   const [studentSaveMessage, setStudentSaveMessage] = useState('');
   const [agentConnectionMessage, setAgentConnectionMessage] = useState('');
@@ -6364,7 +6368,26 @@ function App() {
 
   useEffect(() => {
     selectedStudentIdRef.current = selectedStudent?.id || '';
+    if (isWindows) void bridge()?.setQuickCaptureContext?.(selectedStudent?.id || '');
   }, [selectedStudent?.id]);
+  useEffect(() => {
+    if (!isWindows) return;
+    const sectionByTab: Record<string, Section> = {
+      'screen-capture': 'inbox', 'photo-upload': 'photo-upload', 'audio-capture': 'audio-capture',
+      'materials-import': 'inbox', 'share-capture': 'share-capture',
+      'conversation-collection': 'conversation', 'session-auto-capture': 'capture',
+    };
+    const unsubscribe = bridge()?.onQuickCaptureNavigate?.(({ tabId, studentId }) => {
+      if (tabId === 'students') { setStudentPanelOpen(true); return; }
+      if (!sectionByTab[tabId] || !students.some(student => student.id === studentId)) return;
+      if (selectedStudentIdRef.current !== studentId) setSelectedId(studentId);
+      setNavigationGroup('collection');
+      setActivePageTab(tabId);
+      setActiveSection(sectionByTab[tabId]);
+      if (tabId === 'screen-capture') setCaptureView('sessions');
+    });
+    return () => { unsubscribe?.(); };
+  }, [isWindows, students]);
 
   useEffect(() => {
     growthLoadSerial.current += 1;
@@ -15430,7 +15453,7 @@ ${JSON.stringify(items, null, 2)}
     if (activeSection === 'share-capture') return '归集自选文件夹中的下载文件及当前学生分享资料，明确选择学生和目标后投递。';
     if (activeSection === 'audio-capture') return '保存录音，配置本地或云端转写引擎；转写后核对并选择目标投递。';
     if (activeSection === 'learning-cards') return '根据正式学情依据生成练习卡，支持文件作答、图片/PDF分享与打印；练习记录待审核，不自动判定掌握。';
-    if (activeSection === 'photo-upload') return '该能力仍在建设中；当前版本不会展示无法完成的伪操作。';
+    if (activeSection === 'photo-upload') return '打开本机摄像头拍照，原件先进入当前学生收件箱，确认目标后再投递。';
     if (activeSection === 'projects-new' || activeSection === 'projects-existing') return t('projects.subtitle');
     if (activeSection === 'courses') return courseSubmenu === 'learning' ? '查看机构已启用并分配给当前学生的课程。' : '导入、维护并向当前机构学生分发课程。';
     if (activeSection === 'growth') return '查看当前学生的能力画像、项目贡献和成长证据。';
@@ -17106,8 +17129,15 @@ ${JSON.stringify(items, null, 2)}
                 <h2>{activePageTab === 'screen-capture' ? '屏幕采集' : activePageTab === 'materials-import' ? '资料导入' : '收集与整理'}</h2>
                 <p>{activePageTab === 'screen-capture' ? '采集屏幕或指定应用窗口，结束后自动整理到当前学生或关联项目。' : activePageTab === 'materials-import' ? '只处理本机文件与来源目录；导入前请确认当前学生和目标资料库。' : '选择一种采集方式；所有资料都按当前学生隔离，并在进入正式档案前保留来源。'}</p>
               </div>
+              {isWindows && activePageTab === 'collection-overview' && (
+                <button className="secondary compact" type="button" disabled={!windowsLicenseActive || !bridge()?.showQuickCapture}
+                  onClick={() => { setQuickCaptureMessage('正在定位快捷采集工具条…'); void bridge()?.showQuickCapture?.().then((raw) => { try { const result = JSON.parse(raw); setQuickCaptureMessage(result.ok ? '快捷采集工具条已显示在教育管家主窗口上方区域。' : result.message || '快捷采集工具条暂不可用。'); } catch { setQuickCaptureMessage('快捷采集工具条启动结果无法解析。'); } }).catch(() => setQuickCaptureMessage('快捷采集工具条启动失败，请重试。')); }}>
+                  显示／定位快捷采集工具条
+                </button>
+              )}
               <FileDown size={22} />
             </div>
+            {activePageTab === 'collection-overview' && quickCaptureMessage && <div className="notice" role="status">{quickCaptureMessage}</div>}
             {activePageTab === 'collection-overview' && <><div className="collection-channel-grid" aria-label="资料采集方式">
               {[
                 { id: 'materials-import', label: '资料导入', Icon: FolderInput, detail: '本机文件与来源目录' },

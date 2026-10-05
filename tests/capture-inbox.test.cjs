@@ -14,6 +14,11 @@ test('capture reception is student-scoped, event-idempotent, hash-checked and tr
     const input = { name: '机器人.md', sourceChannel: 'share', sourceEventId: 'event1', bytes: Buffer.from('原始资料') };
     const received = await api.receive('a', input);
     assert.equal((await api.receive('a', input)).duplicate, true); assert.deepEqual(await api.list('b'), []);
+    await fs.writeFile(path.join(root, 'a/capture-inbox/incoming', 'later.md'), '尚未扫描');
+    assert.equal((await api.listStored('a')).length, 1);
+    assert.equal((await fs.readFile(path.join(root, 'a/capture-inbox/incoming', 'later.md'), 'utf8')), '尚未扫描');
+    await fs.unlink(path.join(root, 'a/capture-inbox/incoming', 'later.md'));
+    await assert.rejects(api.receive('a', { ...input, bytes: Buffer.from('同编号但不同内容') }), /同一提交编号/);
     assert.equal((await api.change('b', [received.item.itemId], 'deliver', {})).results[0].ok, false);
     await api.change('a', [received.item.itemId], 'deliver', {}); await api.change('a', [received.item.itemId], 'deliver', {}); assert.equal(deliveries, 1);
     await api.change('a', [received.item.itemId], 'trash'); api = create(); assert.equal((await api.list('a'))[0].status, 'trashed');

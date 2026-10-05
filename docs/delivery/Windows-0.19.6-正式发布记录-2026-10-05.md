@@ -44,4 +44,4 @@
 
 ## Git
 
-本次发布只会精确暂存 Windows 主机运行时、相关测试、版本清单、官网页面和发布技术文档；不会使用 `git add .`。正式发布提交与远端推送结果将在完成后补记。
+主发布提交为 `69bc2ac881441ff885033dcd21f61e51a73d9098`（`Release Windows host 0.19.6 with quick capture toolbar`），已推送到 `origin/release/windows-0.6.5-cleanup`。该提交精确包含 32 个 Windows 主机运行时、相关测试、版本清单、官网页面和发布技术文档文件；未使用 `git add .`，其余 Android、云端、Windows 轻终端及其他候选工作树内容仍保持未暂存。

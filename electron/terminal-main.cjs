@@ -20,7 +20,15 @@ const {
   normalizeHostUrl,
   normalizeUploadTarget,
   projectsForStudent,
+  publicTerminalUploadQueue,
+  readTerminalUploadQueue,
+  recoverTerminalUploadQueue,
+  stageTerminalUpload,
   stableUploadId,
+  terminalUploadAcknowledgement,
+  terminalUploadNextAction,
+  verifyTerminalStagedCopy,
+  writeTerminalUploadQueue,
 } = require('./terminal-upload.cjs');
 const { createPairRequest, machineCode } = require('./pairing-protocol.cjs');
 const { lanDiscoveryBroadcastTargets } = require('./lan-discovery.cjs');
@@ -54,11 +62,17 @@ const TERMINAL_VERSION = app.getVersion();
 const terminalUserData = () => app.getPath('userData');
 const configPath = () => path.join(terminalUserData(), 'terminal-config.json');
 const deliveryPath = () => path.join(terminalUserData(), 'delivery-ledger.json');
+const terminalUploadQueuePath = () => path.join(terminalUserData(), 'terminal-upload-queue.json');
+const terminalUploadStagingRoot = () => path.join(terminalUserData(), 'terminal-upload-staging');
+const practiceAttemptQueuePath = () => path.join(terminalUserData(), 'practice-attempt-queue.json');
 const captureRoot = () => path.join(terminalUserData(), 'screen-captures');
 const captureDeliveryQueuePath = () => path.join(terminalUserData(), 'capture-delivery-queue.json');
 let mainWindow = null;
 let autoDeliveryTimer = null;
 let autoDeliveryBusy = false;
+let terminalUploadTimer = null;
+let terminalUploadBusy = false;
+let terminalUploadMutation = Promise.resolve();
 let captureDeliveryTimer = null;
 let captureDeliveryBusy = false;
 let activeCapture = null;
@@ -99,6 +113,77 @@ function writeJson(filePath, value) {
   const temporary = `${filePath}.tmp`;
   fs.writeFileSync(temporary, JSON.stringify(value, null, 2), 'utf8');
   fs.renameSync(temporary, filePath);
+}
+
+function remoteStateCachePath() {
+  return path.join(terminalUserData(), 'remote-state-cache.json');
+}
+
+function projectMaterialCachePath() {
+  return path.join(terminalUserData(), 'project-material-view-cache.json');
+}
+
+function cacheScope(config = readConfig()) {
+  return { hostId: String(config.hostScope?.hostId || ''),
+    dataGeneration: String(config.hostScope?.dataGeneration || ''),
+    studentId: String(config.currentStudent?.id || '') };
+}
+
+function sameCacheScope(left, right) {
+  return Boolean(left?.hostId && left?.dataGeneration && left?.studentId
+    && left.hostId === right.hostId && left.dataGeneration === right.dataGeneration
+    && left.studentId === right.studentId);
+}
+
+function cacheFallbackAllowed(error) {
+  return !Number(error?.status) || Number(error.status) >= 500;
+}
+
+function saveRemoteStateCache(payload, config = readConfig()) {
+  const scope = cacheScope(config);
+  if (!scope.hostId || !scope.dataGeneration || !scope.studentId) return;
+  writeJson(remoteStateCachePath(), { version: 1, scope, cachedAt: new Date().toISOString(),
+    payload: { students: payload.students || (payload.student ? [payload.student] : []),
+      projects: payload.projects || [], student: payload.student || config.currentStudent || null,
+      device: payload.device || null } });
+}
+
+function loadRemoteStateCache(config = readConfig()) {
+  const cached = readJson(remoteStateCachePath(), null);
+  if (!cached || cached.version !== 1 || !sameCacheScope(cached.scope, cacheScope(config))) return null;
+  const age = Date.now() - Date.parse(cached.cachedAt || '');
+  if (!Number.isFinite(age) || age < 0 || age > 24 * 60 * 60 * 1000) return null;
+  return cached;
+}
+
+function projectViewCacheKey(projectId, query, config = readConfig()) {
+  const scope = cacheScope(config);
+  return JSON.stringify([scope.hostId, scope.dataGeneration, scope.studentId, String(projectId),
+    String(query?.view || 'materials'), String(query?.search || ''), String(query?.categoryId || ''),
+    Number(query?.offset ?? 0), Number(query?.limit ?? 50)]);
+}
+
+function saveProjectMaterialViewCache(projectId, query, payload, config = readConfig()) {
+  if (!['materials', 'pending', 'knowledge'].includes(String(query?.view || 'materials'))) return;
+  const scope = cacheScope(config);
+  if (!scope.hostId || !scope.dataGeneration || !scope.studentId) return;
+  const store = readJson(projectMaterialCachePath(), { version: 1, entries: [] });
+  const key = projectViewCacheKey(projectId, query, config);
+  const entries = (Array.isArray(store.entries) ? store.entries : []).filter((item) => item.key !== key);
+  entries.push({ key, scope, cachedAt: new Date().toISOString(), payload });
+  writeJson(projectMaterialCachePath(), { version: 1, entries: entries.slice(-80) });
+}
+
+function loadProjectMaterialViewCache(projectId, query, config = readConfig()) {
+  if (!['materials', 'pending', 'knowledge'].includes(String(query?.view || 'materials'))) return null;
+  const store = readJson(projectMaterialCachePath(), { entries: [] });
+  const key = projectViewCacheKey(projectId, query, config);
+  const found = (Array.isArray(store.entries) ? store.entries : []).find((item) => item.key === key
+    && sameCacheScope(item.scope, cacheScope(config)));
+  if (!found) return null;
+  const age = Date.now() - Date.parse(found.cachedAt || '');
+  if (!Number.isFinite(age) || age < 0 || age > 24 * 60 * 60 * 1000) return null;
+  return found;
 }
 
 function deviceId() {
@@ -216,6 +301,7 @@ async function requestJson(route, options = {}) {
       ...(options.body ? { 'Content-Type': 'application/json' } : {}),
     },
     body: options.body ? JSON.stringify(options.body) : undefined,
+    ...(options.timeoutMs ? { signal: AbortSignal.timeout(Number(options.timeoutMs)) } : {}),
   });
   const text = await response.text();
   let payload = {};
@@ -224,9 +310,125 @@ async function requestJson(route, options = {}) {
   if (!response.ok || payload.ok === false) {
     const error = new Error(payload.message || `HTTP ${response.status}`);
     error.status = response.status;
+    error.code = String(payload.code || '');
+    error.retryable = payload.retryable;
+    error.payload = payload;
     throw error;
   }
   return payload;
+}
+
+function normalizedHostScope(value = {}, hostUrl = '') {
+  return {
+    hostId: String(value.hostId || '').trim(),
+    dataGeneration: String(value.dataGeneration || '').trim(),
+    hostUrl: normalizeHostUrl(hostUrl || value.hostUrl),
+    observedAt: String(value.observedAt || ''),
+  };
+}
+
+async function observeHostScope(hostUrl = readConfig().hostUrl) {
+  const normalizedUrl = normalizeHostUrl(hostUrl);
+  if (!normalizedUrl) throw new Error('尚未设置有效的主机地址。');
+  const health = await requestJson('/api/health', { hostUrl: normalizedUrl, timeoutMs: 10000 });
+  const scope = normalizedHostScope({
+    hostId: health.hostId,
+    dataGeneration: health.dataGeneration || (health.hostId ? 'legacy-unverified' : ''),
+    observedAt: new Date().toISOString(),
+  }, normalizedUrl);
+  if (!scope.hostId) {
+    const error = new Error('当前主机不提供可核实的固定身份；旧上传方式仍需在升级主机后才能安全进入持久队列。');
+    error.code = 'upload_queue_unsupported';
+    throw error;
+  }
+  return scope;
+}
+
+async function bindCurrentHostScope(hostUrl, expectedHostId = '') {
+  const observed = await observeHostScope(hostUrl);
+  if (expectedHostId && observed.hostId !== String(expectedHostId)) {
+    const error = new Error('连接响应与主机身份不一致，未更新上传目标。');
+    error.code = 'host_identity_changed';
+    throw error;
+  }
+  writeConfig({ hostScope: observed, observedHostScope: observed });
+  return observed;
+}
+
+async function hostScopeAfterPairing(hostUrl, expectedHostId = '') {
+  try { return await bindCurrentHostScope(hostUrl, expectedHostId); }
+  catch (error) {
+    const fallback = normalizedHostScope({ hostId: expectedHostId,
+      dataGeneration: expectedHostId ? 'legacy-unverified' : '' }, hostUrl);
+    writeConfig({ hostScope: fallback, observedHostScope: fallback,
+      uploadQueueWarning: `主机身份或资料代次尚未核实：${error.message}` });
+    return fallback;
+  }
+}
+
+async function inspectCurrentHostScope(options = {}) {
+  const config = readConfig();
+  const observed = await observeHostScope(config.hostUrl);
+  const bound = normalizedHostScope(config.hostScope, config.hostUrl);
+  if (!bound.hostId && options.adoptIfMissing !== false) {
+    writeConfig({ hostScope: observed, observedHostScope: observed });
+    return { bound: observed, observed, changed: false, adopted: true };
+  }
+  writeConfig({ observedHostScope: observed });
+  return {
+    bound,
+    observed,
+    changed: Boolean(bound.hostId && (bound.hostId !== observed.hostId || bound.dataGeneration !== observed.dataGeneration)),
+    hostChanged: Boolean(bound.hostId && bound.hostId !== observed.hostId),
+    generationChanged: Boolean(bound.hostId === observed.hostId && bound.dataGeneration !== observed.dataGeneration),
+  };
+}
+
+function withTerminalUploadMutation(operation) {
+  const next = terminalUploadMutation.then(operation, operation);
+  terminalUploadMutation = next.catch(() => {});
+  return next;
+}
+
+function currentStudentUploadQueue() {
+  const config = readConfig();
+  const studentId = String(config.currentStudent?.id || '');
+  const queue = readTerminalUploadQueue(terminalUploadQueuePath());
+  const scopedItems = studentId ? queue.items.filter((item) => item.studentId === studentId) : [];
+  const unscopedLegacy = studentId ? queue.items.filter((item) => !item.studentId && item.migrationIssues?.length)
+    .map((item) => ({ ...item, filename: '旧上传记录（归属待补充）', target: normalizeUploadTarget({}),
+      lastError: '旧上传记录缺少学生或目标归属，已暂停且未删除；请由原使用者或主机管理员核对。' })) : [];
+  const scoped = { ...queue, items: [...scopedItems, ...unscopedLegacy] };
+  return {
+    ...publicTerminalUploadQueue(scoped),
+    hostScope: normalizedHostScope(config.hostScope, config.hostUrl),
+    observedHostScope: normalizedHostScope(config.observedHostScope, config.hostUrl),
+  };
+}
+
+function notifyTerminalUploadQueue() {
+  notify('terminal:upload-queue-changed', currentStudentUploadQueue());
+}
+
+async function mutateTerminalUploadQueue(update) {
+  return withTerminalUploadMutation(async () => {
+    const queue = readTerminalUploadQueue(terminalUploadQueuePath());
+    const result = await update(queue);
+    writeTerminalUploadQueue(terminalUploadQueuePath(), queue);
+    notifyTerminalUploadQueue();
+    return result;
+  });
+}
+
+async function acknowledgeCurrentHostGeneration() {
+  const state = await inspectCurrentHostScope({ adoptIfMissing: false });
+  if (state.bound.hostId && state.bound.hostId !== state.observed.hostId) {
+    throw new Error('当前连接的是另一台主机，请重新配对；旧待上传资料不会自动改投。');
+  }
+  writeConfig({ hostScope: state.observed, observedHostScope: state.observed, uploadQueueWarning: '' });
+  notifyTerminalUploadQueue();
+  return { ok: true, queue: currentStudentUploadQueue(),
+    message: '已确认当前主机资料代次。旧代次中结果不明的记录仍保留，不会自动重放。' };
 }
 
 function publicAgentCaptureState(config = readConfig()) {
@@ -684,6 +886,7 @@ async function pollPendingPairRequest() {
         pendingPairRequest: null,
         lastPairingResult: { status: 'accepted', message: '主机已接受连接。', updatedAt: new Date().toISOString() },
       });
+      await hostScopeAfterPairing(pending.hostUrl, pending.hostId);
     } else if (['rejected', 'cancelled', 'expired'].includes(status)) {
       writeConfig({
         pendingPairRequest: null,
@@ -745,6 +948,7 @@ async function acceptPendingPairInvite() {
     pendingPairRequest: null,
     lastPairingResult: { status: 'accepted', message: '已接受主机邀请并完成连接。', updatedAt: new Date().toISOString() },
   });
+  await hostScopeAfterPairing(invite.hostUrl, invite.hostId);
   notifyPairingChanged();
   return { ok: true, message: payload.message || '已接受主机邀请并完成连接。', state: terminalPairingState(), config: publicConfig() };
 }
@@ -798,6 +1002,7 @@ async function pairWithHost(input = {}) {
     terminalMode: payload.device?.terminalMode || 'shared',
     deviceName: input.deviceName || config.deviceName,
   });
+  await hostScopeAfterPairing(parsed.hostUrl);
   return { ...payload, config: publicConfig() };
 }
 
@@ -838,6 +1043,7 @@ async function loginStudent(loginId) {
   const payload = await requestJson('/api/student-session/login', { method: 'POST', body: { loginId }, deviceToken: true });
   const next = writeConfig({ sessionToken: payload.token, currentStudent: payload.student || null, terminalMode: payload.terminalMode || readConfig().terminalMode });
   if (next.terminalMode === 'personal' && next.agentCapture?.enabled) void refreshPersonalAgentCapture();
+  void runTerminalUploadQueue();
   return { ...payload, config: publicConfig() };
 }
 
@@ -845,6 +1051,7 @@ async function autoLoginStudent() {
   const payload = await requestJson('/api/student-session/auto', { method: 'POST', body: {}, deviceToken: true });
   const next = writeConfig({ sessionToken: payload.token, currentStudent: payload.student || null, terminalMode: 'personal' });
   if (next.agentCapture?.enabled) void refreshPersonalAgentCapture();
+  void runTerminalUploadQueue();
   return { ...payload, config: publicConfig() };
 }
 
@@ -863,7 +1070,17 @@ async function logoutStudent() {
 
 async function loadRemoteState() {
   let config = readConfig();
-  const modePayload = await requestJson('/api/device/mode', { deviceToken: true });
+  try { await inspectCurrentHostScope({ adoptIfMissing: true }); config = readConfig(); }
+  catch (error) { writeConfig({ uploadQueueWarning: `上传队列暂未核实主机状态：${error.message}` }); }
+  let modePayload;
+  try { modePayload = await requestJson('/api/device/mode', { deviceToken: true }); }
+  catch (error) {
+    const cached = cacheFallbackAllowed(error) ? loadRemoteStateCache(config) : null;
+    if (cached && config.sessionToken && config.currentStudent?.id) return { ok: true, ...cached.payload,
+      offline: true, cachedAt: cached.cachedAt, message: '主机当前不可达，显示24小时内的只读授权缓存；分类、下载和证据确认已停用。',
+      config: publicConfig() };
+    throw error;
+  }
   const terminalMode = modePayload.device?.terminalMode || config.terminalMode || 'shared';
   if (terminalMode !== config.terminalMode) config = writeConfig({ terminalMode, sessionToken: '', currentStudent: null });
   if (!config.sessionToken && terminalMode === 'personal' && modePayload.device?.boundStudentId) {
@@ -878,10 +1095,18 @@ async function loadRemoteState() {
     if (payload.student) {
       const next = writeConfig({ currentStudent: payload.student });
       if (next.terminalMode === 'personal' && next.agentCapture?.enabled) void refreshPersonalAgentCapture();
+      void runTerminalUploadQueue();
     }
-    return { ...payload, students: payload.students || (payload.student ? [payload.student] : []), projects: payload.projects || [], device: modePayload.device || null, config: publicConfig() };
+    const result = { ...payload, students: payload.students || (payload.student ? [payload.student] : []),
+      projects: payload.projects || [], device: modePayload.device || null };
+    saveRemoteStateCache(result, readConfig());
+    return { ...result, config: publicConfig() };
   } catch (error) {
-    writeConfig({ sessionToken: '', currentStudent: null });
+    const cached = cacheFallbackAllowed(error) ? loadRemoteStateCache(config) : null;
+    if (cached) return { ok: true, ...cached.payload, offline: true, cachedAt: cached.cachedAt,
+      message: '主机当前不可达，显示24小时内的只读授权缓存；分类、下载和证据确认已停用。',
+      config: publicConfig() };
+    if ([401, 403].includes(Number(error?.status))) writeConfig({ sessionToken: '', currentStudent: null });
     return { ok: true, requiresLogin: true, students: [], projects: [], device: modePayload.device || null, config: publicConfig(), message: error.message };
   }
 }
@@ -891,6 +1116,126 @@ function currentStudentSession() {
   const studentId = String(config.currentStudent?.id || '').trim();
   if (!config.sessionToken || !studentId) throw new Error('请先扫码或输入学生 ID。');
   return { config, studentId };
+}
+
+async function loadTerminalLearningCapabilities() {
+  const { config } = currentStudentSession();
+  try { return await requestJson('/api/student-session/capabilities', { token: config.sessionToken }); }
+  catch (error) { if (error.status === 404) return { ok: true, capabilities: {} }; throw error; }
+}
+
+async function loadTerminalPractice() {
+  const { config } = currentStudentSession();
+  const synchronization = await drainPracticeAttemptQueue().catch(error => ({ pending: 0, warning: error.message }));
+  return { ...await requestJson('/api/student-session/practice', { token: config.sessionToken }), synchronization };
+}
+
+function practiceScope(config, studentId) {
+  const hostId = String(config.hostScope?.hostId || '');
+  const dataGeneration = String(config.hostScope?.dataGeneration || '');
+  if (!hostId || !dataGeneration || !studentId) throw new Error('主机身份或学生范围尚未核实，不能暂存作答。');
+  return `${hostId}:${dataGeneration}:${studentId}`;
+}
+
+function readPracticeAttemptQueue() {
+  const value = readJson(practiceAttemptQueuePath(), { version: 1, items: [] });
+  if (value.version !== 1 || !Array.isArray(value.items)) throw new Error('练习提交队列格式无效');
+  return value;
+}
+
+function savePracticeAttemptQueue(queue) { writeJson(practiceAttemptQueuePath(), queue); }
+
+async function drainPracticeAttemptQueue() {
+  const { config, studentId } = currentStudentSession();
+  const scope = practiceScope(config, studentId);
+  const queue = readPracticeAttemptQueue();
+  for (const item of queue.items.filter(item => item.scope === scope && !item.rejected)) {
+    try {
+      await requestJson(`/api/student-session/practice/${encodeURIComponent(item.cardId)}/attempt`, {
+        method: 'POST', body: item.input, token: config.sessionToken, timeoutMs: 30000,
+      });
+      queue.items = queue.items.filter(current => current.input.attemptId !== item.input.attemptId);
+      savePracticeAttemptQueue(queue);
+    } catch (error) {
+      if (error.status === 400) {
+        item.rejected = true;
+        item.error = String(error.message || '主机拒绝了暂存作答').slice(0, 240);
+        savePracticeAttemptQueue(queue);
+      }
+      break;
+    }
+  }
+  return { pending: queue.items.filter(item => item.scope === scope && !item.rejected).length,
+    rejected: queue.items.filter(item => item.scope === scope && item.rejected).map(item => ({ attemptId: item.input.attemptId,
+      cardId: item.cardId, answer: item.input.answer, error: item.error })) };
+}
+
+async function startTerminalPractice(cardId) {
+  const { config } = currentStudentSession();
+  if (!/^[0-9a-f-]{36}$/i.test(String(cardId || ''))) throw new Error('卡片编号无效');
+  return requestJson(`/api/student-session/practice/${encodeURIComponent(cardId)}/start`, {
+    method: 'POST', body: {}, token: config.sessionToken,
+  });
+}
+
+async function submitTerminalPractice(cardId, input) {
+  const { config, studentId } = currentStudentSession();
+  if (!/^[0-9a-f-]{36}$/i.test(String(cardId || ''))) throw new Error('卡片编号无效');
+  if (!/^[A-Za-z0-9_-]{8,100}$/.test(String(input?.attemptId || '')) || typeof input?.answer !== 'string' || !input.answer.trim() || input.answer.length > 10000) throw new Error('请填写有效作答。');
+  const scope = practiceScope(config, studentId);
+  const queue = readPracticeAttemptQueue();
+  const existing = queue.items.find(item => item.input.attemptId === input.attemptId);
+  if (existing && (existing.scope !== scope || existing.cardId !== cardId || JSON.stringify(existing.input) !== JSON.stringify(input))) throw new Error('提交编号已用于其他作答。');
+  if (!existing) {
+    if (queue.items.length >= 20) throw new Error('本机待确认练习达到上限，请先连接主机同步。');
+    queue.items.push({ scope, cardId, input, createdAt: new Date().toISOString() });
+    savePracticeAttemptQueue(queue);
+  }
+  try {
+    const result = await requestJson(`/api/student-session/practice/${encodeURIComponent(cardId)}/attempt`, {
+      method: 'POST', body: input, token: config.sessionToken, timeoutMs: 30000,
+    });
+    queue.items = queue.items.filter(item => item.input.attemptId !== input.attemptId);
+    savePracticeAttemptQueue(queue);
+    return result;
+  } catch (error) {
+    if (error.status === 400) {
+      queue.items = queue.items.filter(item => item.input.attemptId !== input.attemptId);
+      savePracticeAttemptQueue(queue);
+      throw error;
+    }
+    return { ok: true, studentId, pending: true, message: '作答已保存在本机，连接恢复后按同一提交编号核对。' };
+  }
+}
+
+async function loadTerminalPlanning(kind) {
+  const { config } = currentStudentSession();
+  if (!['guidance', 'topics', 'competitions'].includes(kind)) throw new Error('不支持的规划内容');
+  return requestJson(`/api/student-session/planning/${kind}`, { token: config.sessionToken });
+}
+
+async function loadTerminalPlanningFavorites(kind) {
+  const { config } = currentStudentSession();
+  if (!['topics', 'competitions'].includes(kind)) throw new Error('不支持的收藏类型');
+  return requestJson(`/api/student-session/planning-favorites/${kind}`, { token: config.sessionToken });
+}
+
+async function setTerminalPlanningFavorite(kind, versionId, candidateId, saved) {
+  const { config } = currentStudentSession();
+  if (!['topics', 'competitions'].includes(kind)) throw new Error('不支持的收藏类型');
+  return requestJson(`/api/student-session/planning-favorites/${kind}`, {
+    method: 'POST', token: config.sessionToken, body: { versionId, candidateId, saved },
+  });
+}
+
+async function loadTerminalInbox() {
+  const { config } = currentStudentSession();
+  return requestJson('/api/student-session/inbox', { token: config.sessionToken });
+}
+
+async function submitTerminalInbox(input) {
+  const { config } = currentStudentSession();
+  return requestJson('/api/student-session/inbox', { method: 'POST', token: config.sessionToken, body: input });
 }
 
 async function loadEffectiveCourses() {
@@ -1010,6 +1355,129 @@ async function loadProjectKnowledgeFile(projectId, relativePath) {
   return requestJson(`/api/projects/${encodeURIComponent(normalizedProjectId)}/archive/file?path=${encodeURIComponent(normalizedPath)}`, { token: config.sessionToken });
 }
 
+function projectMaterialRoute(projectId, suffix = '') {
+  const normalizedProjectId = String(projectId || '').trim();
+  if (!normalizedProjectId) throw new Error('请选择关联项目。');
+  return `/api/projects/${encodeURIComponent(normalizedProjectId)}${suffix}`;
+}
+
+async function loadProjectMaterialView(projectId, query = {}) {
+  const { config } = currentStudentSession();
+  const params = new URLSearchParams({
+    view: String(query?.view || 'materials'), offset: String(query?.offset ?? 0),
+    limit: String(query?.limit ?? 50), search: String(query?.search || ''),
+    categoryId: String(query?.categoryId || ''),
+  });
+  try {
+    const payload = await requestJson(`${projectMaterialRoute(projectId, '/material-views')}?${params}`, { token: config.sessionToken });
+    saveProjectMaterialViewCache(projectId, query, payload, config);
+    return payload;
+  } catch (error) {
+    const cached = cacheFallbackAllowed(error) ? loadProjectMaterialViewCache(projectId, query, config) : null;
+    if (!cached) throw error;
+    return { ...cached.payload, cached: true, cachedAt: cached.cachedAt,
+      message: '主机当前不可达，显示24小时内的只读授权缓存。' };
+  }
+}
+
+async function readProjectKnowledgeDocument(projectId, documentId) {
+  const { config } = currentStudentSession();
+  const normalizedDocumentId = String(documentId || '').trim();
+  if (!normalizedDocumentId) throw new Error('请选择项目知识。');
+  return requestJson(`${projectMaterialRoute(projectId, '/knowledge/document')}?documentId=${encodeURIComponent(normalizedDocumentId)}`,
+    { token: config.sessionToken });
+}
+
+async function loadProjectClassificationSuggestions(projectId, query = {}) {
+  const { config } = currentStudentSession();
+  const params = new URLSearchParams({ status: String(query?.status || 'pending'),
+    offset: String(query?.offset ?? 0), limit: String(query?.limit ?? 50) });
+  return requestJson(`${projectMaterialRoute(projectId, '/materials/classification-suggestions')}?${params}`,
+    { token: config.sessionToken });
+}
+
+async function submitProjectClassificationSuggestions(projectId, input = {}) {
+  const { config } = currentStudentSession();
+  return requestJson(projectMaterialRoute(projectId, '/materials/classification-suggestions'), {
+    token: config.sessionToken, method: 'POST', body: input,
+  });
+}
+
+async function applyRemoteProjectClassifications(projectId, input = {}) {
+  const { config } = currentStudentSession();
+  return requestJson(projectMaterialRoute(projectId, '/materials/classifications:batch'), {
+    token: config.sessionToken, method: 'POST', body: input,
+  });
+}
+
+async function loadProjectMaterialOrganization(projectId) {
+  const { config } = currentStudentSession();
+  return requestJson(projectMaterialRoute(projectId, '/materials/organization'), {
+    token: config.sessionToken,
+  });
+}
+
+async function runRemoteProjectMaterialOrganization(projectId, input = {}) {
+  const { config } = currentStudentSession();
+  return requestJson(projectMaterialRoute(projectId, '/materials/organization:run'), {
+    token: config.sessionToken, method: 'POST', body: input,
+  });
+}
+
+async function retryRemoteProjectMaterialOrganization(projectId, operationId, input = {}) {
+  const { config } = currentStudentSession();
+  const normalizedOperationId = String(operationId || '').trim();
+  if (!normalizedOperationId) throw new Error('请选择自动整理操作。');
+  return requestJson(projectMaterialRoute(projectId,
+    `/materials/organization/${encodeURIComponent(normalizedOperationId)}/retry`), {
+    token: config.sessionToken, method: 'POST', body: input,
+  });
+}
+
+async function downloadProjectMaterialVersion(projectId, materialId, version, title) {
+  const { config } = currentStudentSession();
+  const normalizedMaterialId = String(materialId || '').trim();
+  const normalizedVersion = Number(version);
+  if (!normalizedMaterialId || !Number.isSafeInteger(normalizedVersion) || normalizedVersion < 1) {
+    throw new Error('资料身份或版本无效。');
+  }
+  const hostUrl = normalizeHostUrl(config.hostUrl);
+  const route = projectMaterialRoute(projectId,
+    `/materials/${encodeURIComponent(normalizedMaterialId)}/versions/${normalizedVersion}/download`);
+  const response = await fetch(`${hostUrl}${route}`, { headers: { Authorization: `Bearer ${config.sessionToken}` } });
+  if (!response.ok) {
+    const payload = await response.json().catch(() => ({}));
+    throw new Error(payload.message || `下载失败（HTTP ${response.status}）。`);
+  }
+  const contentLength = Number(response.headers.get('content-length') || 0);
+  if (!Number.isSafeInteger(contentLength) || contentLength < 0 || contentLength > 128 * 1024 * 1024) {
+    throw new Error('资料副本超过Windows轻终端本次下载上限。');
+  }
+  if (String(response.headers.get('x-edu-material-id') || '') !== normalizedMaterialId
+    || Number(response.headers.get('x-edu-material-version')) !== normalizedVersion) {
+    throw new Error('主机返回的资料身份或版本与请求不一致。');
+  }
+  const bytes = Buffer.from(await response.arrayBuffer());
+  if (contentLength && bytes.length !== contentLength) throw new Error('资料副本接收不完整。');
+  const declaredHash = String(response.headers.get('x-edu-material-sha256') || '');
+  const actualHash = crypto.createHash('sha256').update(bytes).digest('hex');
+  if (!/^[a-f0-9]{64}$/.test(declaredHash) || actualHash !== declaredHash) {
+    throw new Error('资料副本校验失败，未保存。');
+  }
+  const sourceName = path.basename(String(title || `项目资料-${normalizedMaterialId}`)).replace(/[\r\n]/g, '_');
+  const extension = path.extname(sourceName);
+  const suggestedName = `${path.basename(sourceName, extension)}-本地副本-v${normalizedVersion}${extension}`;
+  const selection = await dialog.showSaveDialog(mainWindow, { title: '保存项目资料本地副本',
+    defaultPath: suggestedName, buttonLabel: '保存本地副本' });
+  if (selection.canceled || !selection.filePath) return { ok: false, canceled: true, message: '已取消下载。' };
+  const handle = await fs.promises.open(selection.filePath, 'wx');
+  try { await handle.writeFile(bytes); await handle.sync(); }
+  finally { await handle.close(); }
+  shell.showItemInFolder(selection.filePath);
+  return { ok: true, materialId: normalizedMaterialId, version: normalizedVersion, sha256: actualHash,
+    message: '已保存本地副本；编辑此副本不会自动同步或覆盖主机原文。' };
+}
+
 function uploadFile(filePath, target, metadata = {}) {
   return new Promise((resolve, reject) => {
     try {
@@ -1030,6 +1498,8 @@ function uploadFile(filePath, target, metadata = {}) {
           'Content-Type': 'application/octet-stream',
           'Content-Length': stat.size,
           'X-Upload-Id': uploadId,
+          ...(metadata.sha256 ? { 'X-Edu-Content-Sha256': String(metadata.sha256) } : {}),
+          ...(metadata.dataGeneration ? { 'X-Edu-Data-Generation': String(metadata.dataGeneration) } : {}),
           'User-Agent': `AI-Education-Windows-Terminal/${TERMINAL_VERSION}`,
         },
       }, (response) => {
@@ -1040,11 +1510,40 @@ function uploadFile(filePath, target, metadata = {}) {
           let payload = {};
           try { payload = raw ? JSON.parse(raw) : {}; }
           catch { payload = { ok: false, message: raw || `HTTP ${response.statusCode}` }; }
-          if ((response.statusCode || 500) >= 400 || payload.ok === false) reject(new Error(payload.message || `HTTP ${response.statusCode}`));
-          else resolve({ ...payload, uploadId, sourcePath: filePath });
+          if ((response.statusCode || 500) >= 400 || payload.ok === false) {
+            const error = new Error(payload.message || `HTTP ${response.statusCode}`);
+            error.status = response.statusCode;
+            error.code = String(payload.code || '');
+            error.retryable = payload.retryable;
+            error.payload = payload;
+            reject(error);
+            return;
+          }
+          const acknowledgement = terminalUploadAcknowledgement({
+            hostId: metadata.hostId,
+            dataGeneration: metadata.dataGeneration,
+            target,
+            studentId: metadata.studentId || target.studentId || (target.type === 'student' ? target.id : ''),
+            uploadId,
+            size: stat.size,
+            sha256: metadata.sha256,
+          }, payload, { source: 'upload' });
+          if (!acknowledgement.ok) {
+            const legacy = acknowledgement.code === 'legacy_upload_result_unverifiable';
+            const error = new Error(legacy
+              ? '旧版主机返回了成功状态，但没有可核对的逐文件回执；结果保留为待核对。'
+              : `上传响应缺少或不匹配可核对回执（${acknowledgement.code}）；结果保留为待核对。`);
+            error.code = acknowledgement.code;
+            error.payload = payload;
+            error.receiptUnverified = true;
+            reject(error);
+            return;
+          }
+          resolve({ ...payload, uploadId, verifiedReceipt: acknowledgement.receipt });
         });
       });
       request.on('error', reject);
+      request.setTimeout(120000, () => request.destroy(Object.assign(new Error('上传等待主机响应超时，接收结果需要核对。'), { code: 'upload_timeout' })));
       fs.createReadStream(filePath).on('error', reject).pipe(request);
     } catch (error) {
       reject(error);
@@ -1052,34 +1551,265 @@ function uploadFile(filePath, target, metadata = {}) {
   });
 }
 
+function uploadReceiptRoute(item) {
+  const params = new URLSearchParams({
+    targetType: item.target.type,
+    targetId: item.target.id,
+    studentId: item.studentId,
+    uploadId: item.uploadId,
+  });
+  return `/api/uploads/receipt?${params.toString()}`;
+}
+
+function terminalUploadRetryAt(attempt) {
+  const delays = [15_000, 60_000, 5 * 60_000, 15 * 60_000];
+  return new Date(Date.now() + delays[Math.min(Math.max(0, Number(attempt || 1) - 1), delays.length - 1)]).toISOString();
+}
+
+function terminalReceiptNeedsManualReview(code) {
+  const value = String(code || '');
+  return ['host_identity_changed', 'host_data_generation_changed', 'receipt_query_unsupported'].includes(value)
+    || /^receipt_.*_(?:missing|mismatch|ambiguous)$/.test(value);
+}
+
+async function updateTerminalUploadItem(identity, patch) {
+  return mutateTerminalUploadQueue((queue) => {
+    const index = queue.items.findIndex((item) => item.queueId === identity.queueId
+      && item.hostId === identity.hostId && item.dataGeneration === identity.dataGeneration);
+    if (index < 0) return null;
+    queue.items[index] = { ...queue.items[index], ...patch, updatedAt: new Date().toISOString() };
+    return queue.items[index];
+  });
+}
+
+function cleanupReceivedUploadCopy(item) {
+  const root = path.resolve(terminalUploadStagingRoot());
+  const target = path.resolve(String(item.stagingPath || ''));
+  const relative = path.relative(root, target);
+  if (!relative || relative.startsWith('..') || path.isAbsolute(relative)) return false;
+  const verified = verifyTerminalStagedCopy(item);
+  if (!verified.ok) return false;
+  try {
+    fs.unlinkSync(target);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function verifyQueuedUploadReceipt(item) {
+  const config = readConfig();
+  return requestJson(uploadReceiptRoute(item), { token: config.sessionToken, timeoutMs: 15000 });
+}
+
+async function runTerminalUploadQueue(options = {}) {
+  if (terminalUploadBusy) return { ok: true, skipped: true, reason: 'busy' };
+  const config = readConfig();
+  const currentStudentId = String(config.currentStudent?.id || '');
+  if (!config.hostUrl || !config.sessionToken || !currentStudentId) return { ok: true, skipped: true, reason: 'no_session' };
+  terminalUploadBusy = true;
+  try {
+    let scopeState;
+    try {
+      scopeState = await inspectCurrentHostScope({ adoptIfMissing: true });
+    } catch (error) {
+      return { ok: false, offline: true, message: error.message };
+    }
+    const explicitIds = new Set((options.queueIds || []).map(String));
+    const queue = readTerminalUploadQueue(terminalUploadQueuePath());
+    const candidates = queue.items.filter((item) => item.state !== 'received'
+      && item.studentId === currentStudentId
+      && (!explicitIds.size || explicitIds.has(item.queueId))
+      && (explicitIds.size || (Date.parse(item.nextAttemptAt || '') || 0) <= Date.now()));
+    const outcomes = [];
+    for (const item of candidates) {
+      if (item.migrationIssues?.length || item.pauseCode === 'legacy_queue_incomplete') {
+        outcomes.push({ queueId: item.queueId, state: 'receipt_unknown', code: 'legacy_queue_incomplete' });
+        continue;
+      }
+      const stagedVerification = verifyTerminalStagedCopy(item);
+      if (!stagedVerification.ok) {
+        const missing = stagedVerification.code === 'staging_copy_missing';
+        await updateTerminalUploadItem(item, { state: 'receipt_unknown', pauseCode: stagedVerification.code,
+          lastError: missing
+            ? '本机待上传副本缺失，请重新选择原文件；记录未自动删除。'
+            : stagedVerification.code === 'staging_copy_changed'
+              ? '本机稳定待上传副本的大小或 SHA-256 已变化，未读取原文件替代，也未自动上传。'
+              : `本机稳定待上传副本暂不可读取：${stagedVerification.message || '未知错误'}`,
+          nextAttemptAt: '' });
+        outcomes.push({ queueId: item.queueId, state: 'receipt_unknown', code: stagedVerification.code });
+        continue;
+      }
+      if (item.hostId !== scopeState.observed.hostId) {
+        await updateTerminalUploadItem(item, { state: 'receipt_unknown', pauseCode: 'host_identity_changed',
+          lastError: '当前连接的主机与排队时不同，未自动重放。', nextAttemptAt: '' });
+        outcomes.push({ queueId: item.queueId, state: 'receipt_unknown', code: 'host_identity_changed' });
+        continue;
+      }
+
+      const generationChanged = item.dataGeneration !== scopeState.observed.dataGeneration;
+      const mustCheckReceipt = generationChanged || item.state === 'receipt_unknown' || item.state === 'uploading' || item.attempt > 0;
+      if (mustCheckReceipt) {
+        try {
+          const receipt = await verifyQueuedUploadReceipt(item);
+          const decision = terminalUploadNextAction(item, scopeState.observed, receipt);
+          if (decision.code === 'host_identity_changed') {
+            await updateTerminalUploadItem(item, { state: 'receipt_unknown', pauseCode: 'host_identity_changed',
+              lastError: '回执来自不同主机，未自动重放。', nextAttemptAt: '' });
+            outcomes.push({ queueId: item.queueId, state: 'receipt_unknown', code: 'host_identity_changed' });
+            continue;
+          }
+          const verifiedReceipt = terminalUploadAcknowledgement(item, receipt, { source: 'query' });
+          if (decision.action === 'received' && verifiedReceipt.ok) {
+            await updateTerminalUploadItem(item, { state: 'received', pauseCode: '', lastError: '',
+              receivedAt: String(verifiedReceipt.receipt.receivedAt || new Date().toISOString()), nextAttemptAt: '',
+              receipt: verifiedReceipt.receipt });
+            cleanupReceivedUploadCopy(item);
+            outcomes.push({ queueId: item.queueId, state: 'received', receiptChecked: true });
+            continue;
+          }
+          if (decision.action !== 'upload') {
+            const code = decision.code;
+            await updateTerminalUploadItem(item, { state: 'receipt_unknown', pauseCode: code,
+              lastError: code === 'host_data_generation_changed'
+                ? '主机资料代次已变化，原回执未能核实；请在上传记录中核对后决定。'
+                : '主机回执尚不能核实接收字节，未自动重传。',
+              nextAttemptAt: terminalReceiptNeedsManualReview(code) ? '' : terminalUploadRetryAt(item.attempt + 1) });
+            outcomes.push({ queueId: item.queueId, state: 'receipt_unknown', code });
+            continue;
+          }
+        } catch (error) {
+          if ([404, 405, 501].includes(Number(error.status))) error.code = 'receipt_query_unsupported';
+          const decision = terminalUploadNextAction(item, scopeState.observed, null, error);
+          const code = decision.code;
+          await updateTerminalUploadItem(item, { state: 'receipt_unknown', pauseCode: code,
+            lastError: code === 'host_data_generation_changed'
+              ? '主机资料代次已变化且原回执暂无法核对，未自动重放。'
+              : code === 'receipt_query_unsupported'
+                ? '旧版主机不支持逐文件回执查询；结果保留为人工待核对，且不会自动重传。'
+              : `接收结果暂无法核对：${error.message}`,
+            nextAttemptAt: terminalReceiptNeedsManualReview(code)
+              ? '' : terminalUploadRetryAt(item.attempt + 1) });
+          outcomes.push({ queueId: item.queueId, state: 'receipt_unknown', code });
+          continue;
+        }
+      }
+
+      const attempt = Number(item.attempt || 0) + 1;
+      await updateTerminalUploadItem(item, { state: 'uploading', pauseCode: '', lastError: '', attempt,
+        lastAttemptAt: new Date().toISOString(), nextAttemptAt: '' });
+      try {
+        const response = await uploadFile(item.stagingPath, item.target, {
+          ...item.metadata,
+          uploadId: item.uploadId,
+          sourceType: item.sourceType,
+          sha256: item.sha256,
+          hostId: item.hostId,
+          dataGeneration: item.dataGeneration,
+          studentId: item.studentId,
+        });
+        const verified = terminalUploadAcknowledgement(item, response, { source: 'upload' });
+        if (!verified.ok) {
+          const error = new Error(`上传响应回执不能完整核对（${verified.code}）。`);
+          error.code = verified.code;
+          error.receiptUnverified = true;
+          throw error;
+        }
+        await updateTerminalUploadItem(item, { state: 'received', pauseCode: '', lastError: '',
+          receivedAt: String(verified.receipt.receivedAt || new Date().toISOString()), nextAttemptAt: '',
+          receipt: verified.receipt });
+        cleanupReceivedUploadCopy(item);
+        outcomes.push({ queueId: item.queueId, state: 'received' });
+      } catch (error) {
+        const pause = ['host_data_generation_changed', 'host_identity_changed', 'project_unavailable', 'student_unavailable'].includes(error.code);
+        await updateTerminalUploadItem(item, { state: 'receipt_unknown', pauseCode: String(error.code || 'upload_response_unknown'),
+          lastError: error.code === 'legacy_upload_result_unverifiable'
+            ? '旧版主机返回了成功状态但没有可核对回执；保留本机副本并等待人工核对。'
+            : String(error.message || error),
+          nextAttemptAt: pause ? '' : terminalUploadRetryAt(attempt) });
+        outcomes.push({ queueId: item.queueId, state: 'receipt_unknown', code: error.code || 'upload_response_unknown' });
+      }
+    }
+    return { ok: outcomes.every((item) => item.state === 'received'), outcomes };
+  } finally {
+    terminalUploadBusy = false;
+    notifyTerminalUploadQueue();
+  }
+}
+
 async function uploadPaths(paths, target, metadata = {}) {
   const normalizedTarget = normalizeUploadTarget(target);
   const files = (Array.isArray(paths) ? paths : []).filter((filePath) => isTerminalUploadFile(filePath));
   const results = [];
+  let config = readConfig();
+  if (!config.hostScope?.hostId || !config.hostScope?.dataGeneration) {
+    try { await inspectCurrentHostScope({ adoptIfMissing: true }); config = readConfig(); }
+    catch (error) {
+      return { ok: false, success: 0, failed: files.length, pending: 0, total: files.length,
+        results: files.map((filePath) => ({ ok: false, filename: path.basename(filePath), message: error.message })) };
+    }
+  }
+  const hostScope = normalizedHostScope(config.hostScope, config.hostUrl);
+  const observedScope = normalizedHostScope(config.observedHostScope, config.hostUrl);
+  if (observedScope.hostId && (observedScope.hostId !== hostScope.hostId
+    || observedScope.dataGeneration !== hostScope.dataGeneration)) {
+    const reason = observedScope.hostId !== hostScope.hostId
+      ? '当前连接的主机身份与原绑定不同，请重新配对；文件尚未加入新主机队列。'
+      : '主机资料代次已变化，请先在“资料上传记录”核对并确认当前代次。';
+    return { ok: false, success: 0, failed: files.length, pending: 0, total: files.length,
+      results: files.map((filePath) => ({ ok: false, filename: path.basename(filePath), message: reason })) };
+  }
   for (let index = 0; index < files.length; index += 1) {
     const filePath = files[index];
     const captureItem = Array.isArray(metadata.captureItems)
       ? metadata.captureItems.find((item) => path.resolve(String(item.path || '')) === path.resolve(filePath))
       : null;
-    notify('terminal:upload-progress', { status: 'uploading', current: index + 1, total: files.length, filename: path.basename(filePath) });
+    notify('terminal:upload-progress', { status: 'queued', current: index + 1, total: files.length, filename: path.basename(filePath) });
     try {
+      const stat = fs.statSync(filePath);
+      if (stat.size > 100 * 1024 * 1024) throw new Error(`文件超过 100 MB：${path.basename(filePath)}`);
+      const itemMetadata = {
+        ...metadata,
+        captureItems: undefined,
+        captureItemId: captureItem?.id || (metadata.captureSessionId ? `${metadata.captureSessionId}-${index + 1}` : metadata.captureItemId),
+        capturedAt: captureItem?.capturedAt || metadata.capturedAt || '',
+        captureSequence: captureItem?.sequence || index + 1,
+        captureHighlighted: Boolean(captureItem?.highlighted),
+      };
+      const uploadId = metadata.uploadId && files.length === 1
+        ? String(metadata.uploadId)
+        : stableUploadId({ path: filePath, size: stat.size, mtimeMs: stat.mtimeMs }, normalizedTarget);
+      const queued = await withTerminalUploadMutation(() => stageTerminalUpload({
+        sourcePath: filePath,
+        queuePath: terminalUploadQueuePath(),
+        stagingDir: terminalUploadStagingRoot(),
+        target: normalizedTarget,
+        hostId: hostScope.hostId,
+        dataGeneration: hostScope.dataGeneration,
+        hostUrl: hostScope.hostUrl,
+        deviceId: deviceId(),
+        studentId: String(config.currentStudent?.id || normalizedTarget.studentId || ''),
+        uploadId,
+        sourceType: metadata.sourceType,
+        metadata: itemMetadata,
+      }));
       results.push({
         ok: true,
-        filePath,
-        result: await uploadFile(filePath, normalizedTarget, {
-          ...metadata,
-          captureItems: undefined,
-          captureItemId: captureItem?.id || (metadata.captureSessionId ? `${metadata.captureSessionId}-${index + 1}` : metadata.captureItemId),
-          capturedAt: captureItem?.capturedAt || metadata.capturedAt || '',
-          captureSequence: captureItem?.sequence || index + 1,
-          captureHighlighted: Boolean(captureItem?.highlighted),
-        }),
+        queueId: queued.queueId,
+        filename: queued.filename,
       });
     } catch (error) {
-      results.push({ ok: false, filePath, message: error.message });
+      results.push({ ok: false, filename: path.basename(filePath), message: error.message });
     }
   }
-  const success = results.filter((item) => item.ok).length;
+  notifyTerminalUploadQueue();
+  const queueIds = results.filter((item) => item.ok).map((item) => item.queueId);
+  if (queueIds.length) await runTerminalUploadQueue({ queueIds });
+  const queueAfter = readTerminalUploadQueue(terminalUploadQueuePath());
+  const finalById = new Map(queueAfter.items.map((item) => [item.queueId, item]));
+  const success = results.filter((item) => item.ok && finalById.get(item.queueId)?.state === 'received').length;
+  const pending = results.filter((item) => item.ok && finalById.get(item.queueId)?.state !== 'received').length;
+  const failed = results.filter((item) => !item.ok).length;
   let completion = null;
   if (success === results.length && metadata.captureSessionId) {
     try {
@@ -1091,12 +1821,13 @@ async function uploadPaths(paths, target, metadata = {}) {
   const summary = {
     ok: success === results.length && (!metadata.captureSessionId || completion?.ok),
     success,
-    failed: results.length - success,
+    failed,
+    pending,
     total: results.length,
-    results,
+    results: results.map((item) => ({ ...item, state: item.ok ? finalById.get(item.queueId)?.state || 'queued' : 'failed' })),
     completion,
   };
-  notify('terminal:upload-progress', { status: summary.ok ? 'succeeded' : 'failed', ...summary });
+  notify('terminal:upload-progress', { status: summary.ok ? 'succeeded' : pending ? 'receipt_unknown' : 'failed', ...summary });
   return summary;
 }
 
@@ -1270,9 +2001,15 @@ async function runAutoDelivery() {
     let failed = 0;
     for (const file of candidates) {
       try {
-        const result = await uploadFile(file.path, auto.target, { uploadId: file.uploadId, sourceType: 'windows_terminal_auto_folder' });
-        ledger.delivered[file.uploadId] = { path: file.path, deliveredAt: new Date().toISOString(), result };
-        delete ledger.failures[file.uploadId];
+        const result = await uploadPaths([file.path], auto.target, { uploadId: file.uploadId, sourceType: 'windows_terminal_auto_folder' });
+        if (result.success === 1) {
+          ledger.delivered[file.uploadId] = { path: file.path, deliveredAt: new Date().toISOString(), uploadId: file.uploadId };
+          delete ledger.failures[file.uploadId];
+        } else {
+          failed += 1;
+          ledger.failures[file.uploadId] = { path: file.path, failedAt: new Date().toISOString(),
+            message: result.pending ? '已保留稳定副本，接收结果待核对。' : result.results?.[0]?.message || '投递未完成' };
+        }
       } catch (error) {
         failed += 1;
         ledger.failures[file.uploadId] = { path: file.path, failedAt: new Date().toISOString(), message: error.message };
@@ -1520,11 +2257,20 @@ function registerIpc() {
     }
     writeConfig({
       hostUrl: '', token: '', sessionToken: '', currentStudent: null,
+      hostScope: null, observedHostScope: null,
       pendingPairRequest: null, pendingPairInvite: null,
       agentCapture: { enabled: false, registrations: {}, warnings: [], pending: 0, message: '已断开主机，自动会话采集已停止。' },
     });
     return { ok: true, config: publicConfig() };
   });
+  ipcMain.handle('terminal:get-upload-queue', () => currentStudentUploadQueue());
+  ipcMain.handle('terminal:retry-upload-queue', async () => {
+    const result = await runTerminalUploadQueue({ queueIds: currentStudentUploadQueue().items
+      .filter((item) => item.state !== 'received')
+      .map((item) => item.queueId) });
+    return { ...result, queue: currentStudentUploadQueue() };
+  });
+  ipcMain.handle('terminal:acknowledge-upload-generation', () => acknowledgeCurrentHostGeneration());
   ipcMain.handle('terminal:choose-files', async (_event, target) => {
     const result = await dialog.showOpenDialog(mainWindow, { title: '选择要上传到主机的学习资料', properties: ['openFile', 'multiSelections'], filters: [{ name: '学习资料', extensions: ['jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp', 'pdf', 'txt', 'md', 'doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx', 'csv', 'zip'] }] });
     if (result.canceled) return { ok: false, cancelled: true, total: 0 };
@@ -1547,6 +2293,15 @@ function registerIpc() {
     return { ok: true, autoDelivery };
   });
   ipcMain.handle('terminal:run-auto-delivery', async () => { await runAutoDelivery(); return { ok: true }; });
+  ipcMain.handle('terminal:learning-capabilities', () => loadTerminalLearningCapabilities());
+  ipcMain.handle('terminal:practice-dashboard', () => loadTerminalPractice());
+  ipcMain.handle('terminal:practice-start', (_event, cardId) => startTerminalPractice(cardId));
+  ipcMain.handle('terminal:practice-submit', (_event, cardId, input) => submitTerminalPractice(cardId, input));
+  ipcMain.handle('terminal:planning-view', (_event, kind) => loadTerminalPlanning(kind));
+  ipcMain.handle('terminal:planning-favorites', (_event, kind) => loadTerminalPlanningFavorites(kind));
+  ipcMain.handle('terminal:set-planning-favorite', (_event, kind, versionId, candidateId, saved) => setTerminalPlanningFavorite(kind, versionId, candidateId, saved));
+  ipcMain.handle('terminal:learning-inbox', () => loadTerminalInbox());
+  ipcMain.handle('terminal:submit-learning-inbox', (_event, input) => submitTerminalInbox(input));
   ipcMain.handle('terminal:list-learning-reports', () => loadLearningReports());
   ipcMain.handle('terminal:get-growth-summary', () => loadGrowthSummary());
   ipcMain.handle('terminal:read-learning-report', (_event, reportId) => loadLearningReport(reportId));
@@ -1554,6 +2309,17 @@ function registerIpc() {
   ipcMain.handle('terminal:read-archive-file', (_event, relativePath) => loadArchiveFile(relativePath));
   ipcMain.handle('terminal:list-project-knowledge-files', (_event, projectId) => loadProjectKnowledgeFiles(projectId));
   ipcMain.handle('terminal:read-project-knowledge-file', (_event, projectId, relativePath) => loadProjectKnowledgeFile(projectId, relativePath));
+  ipcMain.handle('terminal:get-project-material-view', (_event, projectId, query) => loadProjectMaterialView(projectId, query));
+  ipcMain.handle('terminal:read-project-knowledge-document', (_event, projectId, documentId) => readProjectKnowledgeDocument(projectId, documentId));
+  ipcMain.handle('terminal:get-project-classification-suggestions', (_event, projectId, query) => loadProjectClassificationSuggestions(projectId, query));
+  ipcMain.handle('terminal:submit-project-classification-suggestions', (_event, projectId, input) => submitProjectClassificationSuggestions(projectId, input));
+  ipcMain.handle('terminal:apply-project-classifications', (_event, projectId, input) => applyRemoteProjectClassifications(projectId, input));
+  ipcMain.handle('terminal:get-project-material-organization', (_event, projectId) => loadProjectMaterialOrganization(projectId));
+  ipcMain.handle('terminal:run-project-material-organization', (_event, projectId, input) => runRemoteProjectMaterialOrganization(projectId, input));
+  ipcMain.handle('terminal:retry-project-material-organization', (_event, projectId, operationId, input) =>
+    retryRemoteProjectMaterialOrganization(projectId, operationId, input));
+  ipcMain.handle('terminal:download-project-material-version', (_event, projectId, materialId, version, title) =>
+    downloadProjectMaterialVersion(projectId, materialId, version, title));
   ipcMain.handle('terminal:list-courses', () => loadEffectiveCourses());
   ipcMain.handle('terminal:open-course', (_event, courseId) => openTerminalCourse(courseId));
   ipcMain.handle('terminal:close-course', () => closeTerminalCourse());
@@ -1653,15 +2419,18 @@ function createWindow() {
 }
 
 app.whenReady().then(() => {
+  recoverTerminalUploadQueue(terminalUploadQueuePath());
   registerIpc();
   startTerminalDiscovery();
   createWindow();
   autoDeliveryTimer = setInterval(() => { void runAutoDelivery(); }, 15000);
+  terminalUploadTimer = setInterval(() => { void runTerminalUploadQueue(); }, 15000);
   captureDeliveryTimer = setInterval(() => { void runCaptureDeliveryQueue(); }, 15000);
   pairStatusTimer = setInterval(() => { void pollPendingPairRequest(); }, 2000);
   agentCaptureDrainTimer = setInterval(() => { void runAgentCaptureDrain(); }, 2000);
   agentCaptureInstallTimer = setInterval(() => { void refreshPersonalAgentCapture(); }, 120000);
   void runAutoDelivery();
+  void runTerminalUploadQueue();
   void runCaptureDeliveryQueue();
   void pollPendingPairRequest();
   void refreshPersonalAgentCapture();
@@ -1669,6 +2438,7 @@ app.whenReady().then(() => {
 
 app.on('before-quit', () => {
   if (autoDeliveryTimer) clearInterval(autoDeliveryTimer);
+  if (terminalUploadTimer) clearInterval(terminalUploadTimer);
   if (captureDeliveryTimer) clearInterval(captureDeliveryTimer);
   if (pairStatusTimer) clearInterval(pairStatusTimer);
   if (agentCaptureDrainTimer) clearInterval(agentCaptureDrainTimer);

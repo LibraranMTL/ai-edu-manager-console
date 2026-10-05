@@ -7,8 +7,8 @@ const { validateWindowsVersion } = require('./version-policy.cjs');
 const { compileLifecycleHook } = require('./compile-lifecycle-hook.cjs');
 
 const repoRoot = path.resolve(__dirname, '..');
-const sourcePackage = JSON.parse(fs.readFileSync(path.join(repoRoot, 'package.json'), 'utf8'));
-const version = String(sourcePackage.version);
+const terminalVersion = JSON.parse(fs.readFileSync(path.join(repoRoot, 'windows-terminal-version.json'), 'utf8'));
+const version = String(terminalVersion.versionName);
 validateWindowsVersion(version);
 const candidateTag = String(process.env.EDU_WINDOWS_CANDIDATE_TAG || '').trim().replace(/[^a-zA-Z0-9._-]+/g, '-').replace(/^-+|-+$/g, '');
 const artifactBase = `AI-edu-manager-student-terminal-Windows-${version}${candidateTag && candidateTag !== version ? `-${candidateTag}` : ''}`;

@@ -23,9 +23,9 @@ test('download page presents four product families and five client builds', () =
     'Android 教师端',
     'Android 单机版',
     `v${publicManifest.windowsReleaseStatus === 'candidate' ? publishedHostVersion : publicManifest.windowsVersionName}`,
-    'v0.6.16',
-    'v0.1.1',
-    'v1.2.2',
+    'v0.6.19',
+    'v0.1.4',
+    'v1.2.5',
     'windows-host-manual.html',
     'windows-student-manual.html',
     'android-student-manual.html',
@@ -72,10 +72,10 @@ test('download page links the current artifacts and canonical web manuals exist'
   const download = read(path.join('release', '网站文件', 'download.html'));
   for (const artifact of [
     [`../download/${hostArtifact}`, path.join('release', 'windows', hostArtifact)],
-    ['../download/AI-edu-manager-student-terminal-Windows-0.16.10.exe', path.join('release', 'windows-terminal', 'AI-edu-manager-student-terminal-Windows-0.16.10.exe')],
-    ['../download/AI-edu-manager-tablet-terminal-0.6.16.apk', path.join('release', 'tablet-terminal', 'AI-edu-manager-tablet-terminal-0.6.16.apk')],
-    ['../download/AI-edu-manager-teacher-terminal-0.1.1.apk', path.join('release', 'teacher-terminal', 'AI-edu-manager-teacher-terminal-0.1.1.apk')],
-    ['../download/AI-Education-Manager-Android-Standalone-1.2.2-release.apk', path.join('android-standalone-manager', 'delivery', 'AI-Education-Manager-Android-Standalone-1.2.2-release.apk')],
+    ['../download/AI-edu-manager-student-terminal-Windows-0.18.6.exe', path.join('release', 'windows-terminal', 'AI-edu-manager-student-terminal-Windows-0.18.6.exe')],
+    ['../download/AI-edu-manager-tablet-terminal-0.6.19.apk', path.join('release', 'tablet-terminal', 'AI-edu-manager-tablet-terminal-0.6.19.apk')],
+    ['../download/AI-edu-manager-teacher-terminal-0.1.4.apk', path.join('release', 'teacher-terminal', 'AI-edu-manager-teacher-terminal-0.1.4.apk')],
+    ['../download/AI-Education-Manager-Android-Standalone-1.2.5-release.apk', path.join('android-standalone-manager', 'delivery', 'AI-Education-Manager-Android-Standalone-1.2.5-release.apk')],
   ]) {
     assert.match(download, new RegExp(artifact[0].replaceAll('.', '\\.')));
     if (artifact[1]) {
@@ -171,12 +171,12 @@ test('web manuals are synchronized to the current product workflows', () => {
 
   assert.match(windowsStudent, /配套主机：Windows 主机 0\.17\.7/u);
   assert.match(androidStudent, /配套主机：Windows 主机端 0\.17\.7/u);
-  assert.match(androidTeacher, /适用版本：Android 教师端 0\.1\.1/u);
+  assert.match(androidTeacher, /适用版本：Android 教师端 0\.1\.4/u);
   assert.match(androidStudent, /导入智能体对话/u);
   assert.match(androidTeacher, /导入智能体对话/u);
   assert.match(androidTeacher, /不是把文件发送到学生设备/u);
   assert.match(androidTeacher, /在主机暂时不可连接时仍可从缓存查看/u);
-  assert.match(androidStandalone, /适用版本：Android 单机版 1\.2\.2/u);
+  assert.match(androidStandalone, /适用版本：Android 单机版 1\.2\.5/u);
   assert.match(androidStandalone, /Android 单机版是一套不依赖 Windows 主机的完整教育管家/u);
   for (const manual of [windowsStudent, androidStudent, androidTeacher, androidStandalone]) {
     assert.match(manual, /android-teacher-manual\.html/u);
@@ -218,6 +218,6 @@ test('Windows student web manual keeps its table of contents aligned with the ar
   assert.match(manual, /align-items:start/u);
   assert.match(manual, /h2\[id\] \{ scroll-margin-top:92px; \}/u);
   assert.match(manual, /@media\(max-width:820px\)/u);
-  assert.match(manual, /适用版本：Windows 学生终端 0\.16\.10/u);
+  assert.match(manual, /适用版本：Windows 学生终端 0\.18\.6/u);
   assert.doesNotMatch(manual, /118\.px|24\.px|1\.\.%|\.\.9\.6/u);
 });

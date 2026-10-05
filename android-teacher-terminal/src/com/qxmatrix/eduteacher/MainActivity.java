@@ -69,7 +69,9 @@ import com.google.zxing.RGBLuminanceSource;
 import com.google.zxing.Result;
 import com.google.zxing.common.GlobalHistogramBinarizer;
 import com.google.zxing.common.HybridBinarizer;
+import com.qxmatrix.projectmaterials.ProjectMaterialsDialog;
 
+import java.io.BufferedInputStream;
 import java.io.BufferedReader;
 import java.io.File;
 import java.io.FileInputStream;
@@ -112,8 +114,8 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
     static final int REQUEST_IMPORT_CONNECTION_BACKUP = 8109;
     static final int REQUEST_CAPTURE_STUDENT_QR = 8110;
     static final int REQUEST_AUTO_DELIVERY_FOLDER = 8111;
-    static final String VERSION_NAME = "0.1.2";
-    static final int VERSION_CODE = 3;
+    static final String VERSION_NAME = "0.1.4";
+    static final int VERSION_CODE = 5;
     static final String CONNECTION_BACKUP_KIND = "ai-edu-manager-teacher-connection-backup";
     static final int CONNECTION_BACKUP_VERSION = 1;
     static final String UPDATE_MANIFEST_URL = "https://www.greatbg.com/download/edu-manager-version.json";
@@ -148,6 +150,7 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
     private static final String PREF_DEVICE_ID = "device_id";
     private static final String PREF_LAST_CONNECTED_AT = "last_connected_at";
     private static final String PREF_HOST_DEVICE_ID = "host_device_id";
+    private static final String PREF_HOST_DATA_GENERATION = "host_data_generation";
     private static final String PREF_HOST_MACHINE_CODE = "host_machine_code";
     private static final String PREF_HOST_DISPLAY_NAME = "host_display_name";
     private static final String PREF_PENDING_CONVERSATION_TEXT = "pending_conversation_text";
@@ -332,6 +335,11 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
     TextView conversationImportStatusText;
     String captureUploadVisualState = "idle";
     UploadTarget lastFailedUploadTarget = null;
+    ProjectMaterialUploadQueue materialUploadQueue = null;
+    long uploadUiScopeGeneration = 0L;
+    String activeUploadTargetType = "";
+    String activeUploadTargetId = "";
+    String activeUploadStudentId = "";
     final List<Uri> captureUploadUrisInFlight = new ArrayList<Uri>();
     final List<NearbyHost> lastNearbyHosts = new ArrayList<NearbyHost>();
     volatile boolean waitingForHostInvite = false;
@@ -346,6 +354,7 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
         setTitle("AI教育管家教师端");
         buildUi();
         loadPrefs();
+        initializeMaterialUploadQueue();
         handleIncomingShare(getIntent());
         maybeStartCaptureFromIntent(getIntent());
     }
@@ -975,7 +984,7 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
         quickArchiveButton.setOnClickListener(this);
 
         LinearLayout projectKnowledgeEntryCard = card();
-        quickProjectKnowledgeButton = button("打开项目知识库", true);
+        quickProjectKnowledgeButton = button("项目资料与知识", true);
         LinearLayout projectKnowledgeEntryRow = row();
         projectKnowledgeEntryRow.addView(quickProjectKnowledgeButton);
         projectKnowledgeEntryCard.addView(projectKnowledgeEntryRow);
@@ -987,6 +996,16 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
         educationContent.addView(collapsiblePanel("成长模型", "只读查看能力画像、项目贡献和近期成长证据。", growthCard));
         educationContent.addView(collapsiblePanel("学情档案", "打开所选学生的教育档案。", archiveEntryCard));
         educationContent.addView(collapsiblePanel("项目知识库", "打开所选学生已经关联的项目知识。", projectKnowledgeEntryCard));
+        Button planningButton = button("查看规划、选题与比赛", true);
+        educationContent.addView(planningButton);
+        planningButton.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View view) { openTerminalLearning(); }
+        });
+        Button learningOverviewButton = button("全部学生练习进展", true);
+        learningOverviewButton.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View view) { showTeacherLearningOverview(0); }
+        });
+        educationContent.addView(learningOverviewButton);
         educationContent.addView(archiveCard);
         root.addView(collapsiblePanel("教育档案", "随时查看所选学生的报告、成长模型、档案和关联项目知识。", educationContent));
 
@@ -1205,15 +1224,7 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
             scrollToView(archiveCard);
             status("已打开当前学生的学情档案。");
         } else if (view == quickProjectKnowledgeButton) {
-            refreshArchiveSources();
-            if (archiveSourceProjects.isEmpty()) {
-                status("当前学生还没有关联项目知识库。");
-            } else {
-                archiveCard.setVisibility(View.VISIBLE);
-                archiveSourceSpinner.setSelection(1);
-                scrollToView(archiveCard);
-                status("已打开项目知识库，可在“查看内容”中切换本人关联项目。");
-            }
+            openProjectMaterialsCenter();
         } else if (view == quickContactButton) {
             updateContactCard();
             scrollToView(contactCard);
@@ -1737,6 +1748,62 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
         }
         archiveSourceSpinner.setSelection(selected, false);
         updatingArchiveSources = false;
+    }
+
+    void openProjectMaterialsCenter() {
+        refreshArchiveSources();
+        if (archiveSourceProjects.isEmpty()) {
+            status("当前学生还没有关联项目资料。");
+            return;
+        }
+        final List<LearningProject> available = new ArrayList<LearningProject>(archiveSourceProjects);
+        if (available.size() == 1) {
+            openProjectMaterialsProject(available.get(0));
+            return;
+        }
+        String[] labels = new String[available.size()];
+        for (int i = 0; i < available.size(); i++) {
+            LearningProject item = available.get(i);
+            labels[i] = item.name + (item.supportsMaterialViews() ? " · 四视图" : " · 旧版知识库")
+                + item.migrationLabel();
+        }
+        new AlertDialog.Builder(this).setTitle("选择项目")
+            .setItems(labels, new DialogInterface.OnClickListener() {
+                @Override public void onClick(DialogInterface dialog, int which) {
+                    if (which >= 0 && which < available.size()) openProjectMaterialsProject(available.get(which));
+                }
+            }).setNegativeButton("取消", null).show();
+    }
+
+    void openProjectMaterialsProject(final LearningProject project) {
+        if (project == null) return;
+        if (!project.supportsMaterialViews()) {
+            archiveCard.setVisibility(View.VISIBLE);
+            int index = archiveSourceProjects.indexOf(project);
+            if (index >= 0) archiveSourceSpinner.setSelection(index + 1);
+            scrollToView(archiveCard);
+            status("running".equals(project.materialMigrationState)
+                ? "Windows主机正在迁移历史资料；本端只读等待。"
+                : "该项目仍使用旧版知识库视图；请在Windows主机预览并执行受控迁移。");
+            return;
+        }
+        ProjectMaterialsDialog.open(new ProjectMaterialsDialog.Bridge() {
+            @Override public Activity activity() { return MainActivity.this; }
+            @Override public String baseUrl() { return normalizedBaseUrl(); }
+            @Override public String token() { return dataToken(); }
+            @Override public String hostId() { return materialHostId(); }
+            @Override public String dataGeneration() { return materialHostGeneration(); }
+            @Override public String principalScope() {
+                return selectedStudent == null ? "teacher" : "teacher-student:" + selectedStudent.id;
+            }
+            @Override public JSONObject getJson(String url) throws Exception {
+                return MainActivity.this.getJson(url, dataToken());
+            }
+            @Override public JSONObject postJson(String url, JSONObject body) throws Exception {
+                return MainActivity.this.postJson(url, body, dataToken());
+            }
+            @Override public void status(String message) { MainActivity.this.status(message); }
+        }, project.asMaterialProject());
     }
 
     void selectStudentArchiveSource() {
@@ -3736,11 +3803,7 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
     }
 
     void retryFailedUploads() {
-        if (failedUploadUris.size() == 0) {
-            toast("没有失败资料需要重试。");
-            return;
-        }
-        uploadMaterials(new ArrayList<Uri>(failedUploadUris), true);
+        processMaterialUploadQueue(true, true);
     }
 
     void uploadMaterial(Uri uri) {
@@ -3797,16 +3860,251 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
         }
         String base = normalizedBaseUrl();
         String token = dataToken();
-        if (base.length() == 0 || token.length() == 0) {
-            toast("请先连接主机服务。");
+        if (!uploadTargetMatchesCurrentSelection(target)) {
+            toast("学生或项目选择已变化，请重新选择上传位置。");
+            return;
+        }
+        if (base.length() == 0) {
+            toast("请先保存主机连接地址。");
+            return;
+        }
+        if (materialUploadQueue == null) initializeMaterialUploadQueue();
+        if (materialUploadQueue == null) {
+            toast("本机上传队列当前不可用，请检查存储空间后重试。");
             return;
         }
         uploadInProgress = true;
+        activeUploadTargetType = target.type;
+        activeUploadTargetId = target.id;
+        activeUploadStudentId = target.studentId;
+        ProjectMaterialUploadQueue.UiScope uiScope = new ProjectMaterialUploadQueue.UiScope(
+            ++uploadUiScopeGeneration, target.studentId, target.type, target.id,
+            base, sha256Text(token));
         captureUploadVisualState = "uploading";
         refreshCaptureUi();
-        status("准备上传 " + uris.size() + " 个资料...");
-        setUploadQueueText("上传队列：0/" + uris.size() + "，准备开始。");
-        new Thread(new UploadMaterialsTask(this, base, token, target, new ArrayList<Uri>(uris), reloadAfterFinish)).start();
+        status("正在保存 " + uris.size() + " 个资料到本机上传队列...");
+        setUploadQueueText("上传队列：正在固定学生、项目、主机和文件内容。");
+        new Thread(new UploadMaterialsTask(this, base, token, target, new ArrayList<Uri>(uris),
+            reloadAfterFinish, uiScope)).start();
+    }
+
+    boolean uploadTargetMatchesCurrentSelection(UploadTarget target) {
+        if (target == null || selectedStudent == null || !target.studentId.equals(selectedStudent.id)) return false;
+        if ("student".equals(target.type)) return target.id.equals(selectedStudent.id);
+        if (!"project".equals(target.type)) return false;
+        for (LearningProject project : projects) {
+            if (target.id.equals(project.id) && !"sealed".equals(project.status)
+                && project.studentIds.contains(selectedStudent.id)) return true;
+        }
+        return false;
+    }
+
+    boolean isUploadUiScopeCurrent(ProjectMaterialUploadQueue.UiScope scope) {
+        if (scope == null || !scope.matches(uploadUiScopeGeneration,
+            selectedStudent == null ? "" : selectedStudent.id,
+            activeUploadTargetType, activeUploadTargetId,
+            normalizedBaseUrl(), sha256Text(dataToken()), materialHostId(), materialHostGeneration())) return false;
+        return uploadTargetMatchesCurrentSelection(new UploadTarget(
+            scope.targetType, scope.targetId, scope.targetId, scope.studentId));
+    }
+
+    void invalidateUploadUiScopeIfStudentChanged() {
+        String currentStudentId = selectedStudent == null ? "" : selectedStudent.id;
+        if (activeUploadStudentId.length() > 0 && !activeUploadStudentId.equals(currentStudentId)) {
+            uploadUiScopeGeneration++;
+            activeUploadTargetType = "";
+            activeUploadTargetId = "";
+            activeUploadStudentId = "";
+        }
+    }
+
+    void initializeMaterialUploadQueue() {
+        try {
+            materialUploadQueue = new ProjectMaterialUploadQueue(
+                new File(getFilesDir(), "project-material-upload-queue-v1"), 100L * 1024L * 1024L);
+            materialUploadQueue.recoverInterrupted();
+            refreshMaterialUploadQueueUi();
+        } catch (Exception error) {
+            materialUploadQueue = null;
+            setUploadQueueText("上传队列不可用：" + error.getMessage());
+        }
+    }
+
+    void rememberMaterialHostState(JSONObject response) {
+        if (response == null) return;
+        String hostId = response.optString("hostId", "").trim();
+        String generation = response.optString("dataGeneration", "").trim();
+        SharedPreferences.Editor editor = getSharedPreferences(PREFS, MODE_PRIVATE).edit();
+        if (hostId.length() > 0) editor.putString(PREF_HOST_DEVICE_ID, hostId);
+        if (hostId.length() > 0 && generation.length() > 0) {
+            editor.putString(PREF_HOST_DATA_GENERATION, generation);
+        } else {
+            // Never combine a newly observed (or unidentified) host with another host's saved generation.
+            editor.remove(PREF_HOST_DATA_GENERATION);
+        }
+        editor.apply();
+    }
+
+    ProjectMaterialUploadQueue.RuntimeScope verifyMaterialRuntimeScope(String base, String token) throws Exception {
+        String currentBase = base == null ? "" : base.trim();
+        String currentToken = token == null ? "" : token.trim();
+        if (currentBase.length() == 0 || currentToken.length() == 0) {
+            throw new Exception("当前主机地址或设备凭据为空");
+        }
+        // Resolve the public host identity before attaching a bearer token. This keeps a
+        // credential issued by a newly paired host from ever being sent to an old URL.
+        JSONObject response = getJson(currentBase + "/api/health", "");
+        String observedHostId = response.optString("hostId", "").trim();
+        String observedGeneration = response.optString("dataGeneration", "").trim();
+        String credentialHostId = materialHostId();
+        if (observedHostId.length() == 0 || observedGeneration.length() == 0) {
+            throw new Exception("当前主机未返回可核验的主机身份和资料代次");
+        }
+        if (credentialHostId.length() == 0 || !observedHostId.equals(credentialHostId)) {
+            throw new Exception("当前地址对应的主机与设备凭据绑定主机不一致，请重新连接主机");
+        }
+        rememberMaterialHostState(response);
+        ProjectMaterialUploadQueue.RuntimeScope runtime = new ProjectMaterialUploadQueue.RuntimeScope(
+            observedHostId, observedGeneration,
+            deviceId(), currentBase, true);
+        if (!runtime.complete()) throw new Exception("当前主机未返回可核验的主机身份和资料代次");
+        return runtime;
+    }
+
+    String materialHostId() {
+        return getSharedPreferences(PREFS, MODE_PRIVATE).getString(PREF_HOST_DEVICE_ID, "").trim();
+    }
+
+    String materialHostGeneration() {
+        return getSharedPreferences(PREFS, MODE_PRIVATE).getString(PREF_HOST_DATA_GENERATION, "").trim();
+    }
+
+    void refreshMaterialUploadQueueUi() {
+        if (materialUploadQueue == null) return;
+        try {
+            List<ProjectMaterialUploadQueue.Item> items = materialUploadQueue.list();
+            int pending = 0;
+            int received = 0;
+            int unknown = 0;
+            int paused = 0;
+            int failed = 0;
+            for (ProjectMaterialUploadQueue.Item item : items) {
+                if (ProjectMaterialUploadQueue.STATE_RECEIVED.equals(item.state)) received++;
+                else if (ProjectMaterialUploadQueue.STATE_RECEIPT_UNKNOWN.equals(item.state)) unknown++;
+                else if (ProjectMaterialUploadQueue.STATE_PAUSED_AUTH.equals(item.state)
+                    || ProjectMaterialUploadQueue.STATE_PAUSED_SCOPE.equals(item.state)) paused++;
+                else if (ProjectMaterialUploadQueue.STATE_FAILED.equals(item.state)) failed++;
+                else pending++;
+            }
+            StringBuilder summary = new StringBuilder("持久上传记录：待处理 " + pending + " · 待核对 " + unknown
+                + " · 已暂停 " + paused + " · 已接收 " + received + " · 失败 " + failed + "。"
+                + (unknown > 0 ? "\n待核对项会保留原学生/项目和原请求，先查回执，不会整批盲目重传。" : ""));
+            int shown = 0;
+            for (int i = items.size() - 1; i >= 0 && shown < 5; i--) {
+                ProjectMaterialUploadQueue.Item item = items.get(i);
+                summary.append("\n").append(shown + 1).append(". ").append(item.filename)
+                    .append(" → ").append(item.targetName.length() > 0 ? item.targetName : item.targetId)
+                    .append("〔学生 ").append(item.studentId).append("〕· ").append(materialQueueStateLabel(item.state));
+                shown++;
+            }
+            if (items.size() > shown) summary.append("\n…另有 ").append(items.size() - shown).append(" 条本机上传记录");
+            setUploadQueueText(summary.toString());
+            if (retryFailedUploadButton != null) {
+                retryFailedUploadButton.setVisibility((pending + unknown + paused) > 0 ? View.VISIBLE : View.GONE);
+                retryFailedUploadButton.setEnabled(!uploadInProgress && (pending + unknown + paused) > 0);
+                retryFailedUploadButton.setText(paused > 0 ? "授权恢复后继续核对" : "继续上传队列");
+            }
+        } catch (Exception error) {
+            setUploadQueueText("上传队列读取失败：" + error.getMessage());
+        }
+    }
+
+    String materialQueueStateLabel(String state) {
+        if (ProjectMaterialUploadQueue.STATE_RECEIVED.equals(state)) return "主机已接收";
+        if (ProjectMaterialUploadQueue.STATE_RECEIPT_UNKNOWN.equals(state)) return "接收结果待核对";
+        if (ProjectMaterialUploadQueue.STATE_PAUSED_AUTH.equals(state)) return "授权失效，已暂停";
+        if (ProjectMaterialUploadQueue.STATE_PAUSED_SCOPE.equals(state)) return "原目标不可用，已暂停";
+        if (ProjectMaterialUploadQueue.STATE_FAILED.equals(state)) return "本机资料异常";
+        if (ProjectMaterialUploadQueue.STATE_UPLOADING.equals(state)) return "上传中";
+        if (ProjectMaterialUploadQueue.STATE_QUERYING.equals(state)) return "正在查询回执";
+        return "已存本机，待上传";
+    }
+
+    void processMaterialUploadQueue(boolean reloadAfterFinish, boolean resumeAuthorization) {
+        if (uploadInProgress) {
+            toast("已有资料队列正在处理，请稍候。");
+            return;
+        }
+        if (materialUploadQueue == null) initializeMaterialUploadQueue();
+        if (materialUploadQueue == null) return;
+        final String token = dataToken();
+        final String base = normalizedBaseUrl();
+        if (token.length() == 0) {
+            toast("设备授权不可用，队列仍保存在本机；请重新连接主机后继续。");
+            refreshMaterialUploadQueueUi();
+            return;
+        }
+        uploadInProgress = true;
+        final boolean reload = reloadAfterFinish;
+        final boolean resume = resumeAuthorization;
+        setUploadQueueText("上传队列：正在逐项查询原回执并处理未接收项...");
+        new Thread(new Runnable() {
+            @Override public void run() {
+                try {
+                    ProjectMaterialUploadQueue.RuntimeScope runtime = verifyMaterialRuntimeScope(base, token);
+                    if (resume) materialUploadQueue.resumeAuthorization(runtime.hostId, runtime.deviceId);
+                    ProjectMaterialUploadQueue.BatchResult result = materialUploadQueue.process(
+                        new TeacherMaterialQueueTransport(MainActivity.this, runtime, token), runtime, 100);
+                    final String message = "队列核对完成：已接收 " + result.received + "，待核对 "
+                        + result.unknown + "，等待重试 " + result.waiting + "，失败/暂停 "
+                        + (result.failed + result.pausedAuthorization) + "。";
+                    runOnUiThread(new Runnable() {
+                        @Override public void run() {
+                            uploadInProgress = false;
+                            status(message);
+                            refreshMaterialUploadQueueUi();
+                            if (reload) loadStudents();
+                        }
+                    });
+                } catch (final Exception error) {
+                    runOnUiThread(new Runnable() {
+                        @Override public void run() {
+                            uploadInProgress = false;
+                            status("上传队列处理失败：" + error.getMessage());
+                            refreshMaterialUploadQueueUi();
+                        }
+                    });
+                }
+            }
+        }).start();
+    }
+
+    String materialUploadExtraQuery(Uri uri) throws Exception {
+        boolean captureFile = "file".equals(uri.getScheme()) && uri.getPath() != null
+            && uri.getPath().contains("screen-captures");
+        if (!captureFile) return "&sourceType=android_terminal_file";
+        SharedPreferences capturePrefs = getSharedPreferences(CaptureProjectionService.PREFS, Activity.MODE_PRIVATE);
+        JSONObject itemMetadata = readCaptureItemMetadata(uri);
+        JSONObject sessionMetadata = readCaptureSessionMetadata(uri);
+        String sessionId = itemMetadata.optString("sessionId", sessionMetadata.optString("sessionId",
+            capturePrefs.getString(CaptureProjectionService.KEY_SESSION_ID, "")));
+        StringBuilder query = new StringBuilder("&sourceType=android_screenshot&captureSessionId=")
+            .append(encode(sessionId));
+        String courseId = itemMetadata.optString("courseId", sessionMetadata.optString("courseId",
+            capturePrefs.getString(CaptureProjectionService.KEY_COURSE_ID, "")));
+        if (courseId.length() > 0) {
+            String courseUrl = itemMetadata.optString("courseUrl", sessionMetadata.optString("courseUrl",
+                capturePrefs.getString(CaptureProjectionService.KEY_COURSE_URL, "")));
+            long courseStartedAt = itemMetadata.optLong("courseStartedAt", sessionMetadata.optLong("courseStartedAt",
+                capturePrefs.getLong(CaptureProjectionService.KEY_COURSE_STARTED_AT, 0L)));
+            long courseCompletedAt = sessionMetadata.optLong("courseCompletedAt",
+                capturePrefs.getLong(CaptureProjectionService.KEY_COURSE_COMPLETED_AT, 0L));
+            query.append("&courseId=").append(encode(courseId))
+                .append("&courseUrl=").append(encode(courseUrl))
+                .append("&courseStartedAt=").append(encode(String.valueOf(courseStartedAt)))
+                .append("&courseCompletedAt=").append(encode(String.valueOf(courseCompletedAt)));
+        }
+        return query.toString();
     }
 
     void setUploadQueueText(String text) {
@@ -3906,12 +4204,10 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
         getSharedPreferences(PREFS, MODE_PRIVATE).edit().putString(PREF_LAST_CONNECTED_AT, time).apply();
     }
 
-    void applyUploadResult(int success, int total, List<Uri> failed, List<String> failureLabels, UploadTarget target) {
+    void applyUploadResult(int success, int total, List<Uri> failed, List<String> failureLabels,
+                           UploadTarget target, ProjectMaterialUploadQueue.UiScope uiScope) {
         uploadInProgress = false;
-        captureUploadVisualState = failed.size() > 0 ? "failed" : "succeeded";
-        lastFailedUploadTarget = failed.size() > 0 ? target : null;
-        failedUploadUris.clear();
-        failedUploadUris.addAll(failed);
+        boolean uiScopeCurrent = isUploadUiScopeCurrent(uiScope);
         if (captureUploadUrisInFlight.size() > 0) {
             HashSet<String> failedValues = new HashSet<String>();
             for (Uri uri : failed) failedValues.add(uri.toString());
@@ -3924,8 +4220,16 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
             }
             capturePrefs.edit().putStringSet("uploaded_paths", uploadedPaths).apply();
             captureUploadUrisInFlight.clear();
-            refreshCaptureUi();
+            if (uiScopeCurrent) refreshCaptureUi();
         }
+        if (!uiScopeCurrent) {
+            refreshMaterialUploadQueueUi();
+            return;
+        }
+        captureUploadVisualState = failed.size() > 0 ? "failed" : "succeeded";
+        lastFailedUploadTarget = failed.size() > 0 ? target : null;
+        failedUploadUris.clear();
+        failedUploadUris.addAll(failed);
         StringBuilder text = new StringBuilder();
         String targetName = target == null ? (selectedStudent == null ? "当前学生原始资料库" : selectedStudent.name + "原始资料库") : target.name;
         if (success == total) text.append("最近上传结果：全部成功，").append(success).append(" 个资料已进入主机。");
@@ -3949,6 +4253,50 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
                 }
             }, 1800L);
         }
+    }
+
+    private void openTerminalLearning() {
+        final String studentId = selectedStudent == null ? "" : selectedStudent.id;
+        final String base = normalizedBaseUrl(), token = dataToken();
+        com.qxmatrix.terminallearning.TerminalLearningDialog.open(this,
+            new com.qxmatrix.terminallearning.TerminalLearningDialog.Transport() {
+                @Override public JSONObject get(String route) throws Exception { return getJson(base + route, token); }
+                @Override public JSONObject post(String route, JSONObject body) throws Exception { return postJson(base + route, body, token); }
+                @Override public String hostId() { return base; }
+            }, studentId, true);
+    }
+
+    private void showTeacherLearningOverview(final int offset) {
+        final String base = normalizedBaseUrl(), token = dataToken();
+        new Thread(new Runnable() { @Override public void run() {
+            String text;
+            int next = -1;
+            try {
+                JSONObject result = getJson(base + "/api/teacher/learning-overview?offset=" + offset + "&limit=50", token);
+                JSONArray items = result.optJSONArray("items");
+                StringBuilder out = new StringBuilder("仅展示练习状态，不据此判断掌握程度。\n\n");
+                if (items != null) for (int i = 0; i < items.length(); i++) {
+                    JSONObject item = items.optJSONObject(i); if (item == null) continue;
+                    String status = item.optString("currentCardStatus");
+                    out.append(item.optString("studentName")).append("：")
+                            .append("ready".equals(status) ? "待开始" : "started".equals(status) ? "正在作答" : "completed".equals(status) ? "已提交" : "none".equals(status) ? "暂无卡片" : "暂不可用")
+                            .append("，已提交 ").append(item.optInt("completedCount")).append(" 张\n");
+                }
+                text = out.toString();
+                if (offset + (items == null ? 0 : items.length()) < result.optInt("total")) next = offset + items.length();
+            } catch (Exception error) { text = "当前主机暂不支持或无法读取练习进展：" + error.getMessage(); }
+            final String content = text; final int nextOffset = next;
+            runOnUiThread(new Runnable() { @Override public void run() {
+                ScrollView scroll = new ScrollView(MainActivity.this);
+                TextView view = new TextView(MainActivity.this); view.setText(content); view.setTextSize(16); view.setPadding(dp(18), dp(12), dp(18), dp(12));
+                scroll.addView(view);
+                AlertDialog.Builder builder = new AlertDialog.Builder(MainActivity.this).setTitle("学生练习进展").setView(scroll).setNegativeButton("关闭", null);
+                if (nextOffset >= 0) builder.setPositiveButton("下一页", new DialogInterface.OnClickListener() {
+                    @Override public void onClick(DialogInterface dialog, int which) { showTeacherLearningOverview(nextOffset); }
+                });
+                builder.show();
+            }});
+        }}).start();
     }
 
     JSONObject getJson(String urlText, String token) throws Exception {
@@ -5155,6 +5503,8 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
             ? "教师设备尚未获得教师终端角色，请重新配对。"
             : (allStudents.size() > 0 ? "已读取 " + allStudents.size() + " 个学生。" : "主机服务中还没有学生。"));
         authorizationPollsRemaining = 0;
+        refreshMaterialUploadQueueUi();
+        if (!uploadInProgress && dataToken().length() > 0) processMaterialUploadQueue(false, true);
     }
 
     void applyStudentFilter(String query) {
@@ -5184,6 +5534,7 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
     }
 
     void applySelectedStudentState() {
+        invalidateUploadUiScopeIfStudentChanged();
         showingProjectKnowledge = false;
         selectedKnowledgeProjectId = "";
         selectedKnowledgeProjectName = "";
@@ -5923,14 +6274,38 @@ class LearningProject {
     final String id;
     final String name;
     final String status;
+    final String materialStorageMode;
+    final String materialMigrationState;
+    final JSONObject materialOperations;
     final List<String> studentIds = new ArrayList<String>();
 
     LearningProject(JSONObject json) {
         this.id = json.optString("id", "");
         this.name = json.optString("name", this.id);
         this.status = json.optString("status", "active");
+        this.materialStorageMode = json.optString("materialStorageMode", "legacy");
+        this.materialMigrationState = json.optString("materialMigrationState", "not_started");
+        JSONObject capabilities = json.optJSONObject("materialCapabilities");
+        JSONObject operations = capabilities == null ? null : capabilities.optJSONObject("operations");
+        this.materialOperations = operations == null ? new JSONObject() : operations;
         JSONArray array = json.optJSONArray("studentIds");
         if (array != null) for (int i = 0; i < array.length(); i++) studentIds.add(array.optString(i, ""));
+    }
+
+    boolean supportsMaterialViews() {
+        return "workspace-v1".equals(materialStorageMode) && materialOperations.optBoolean("list", false);
+    }
+
+    String migrationLabel() {
+        if ("running".equals(materialMigrationState)) return " · 主机迁移中";
+        if ("partial".equals(materialMigrationState)) return " · 部分统一";
+        if ("attention".equals(materialMigrationState)) return " · 迁移待核对";
+        return "";
+    }
+
+    ProjectMaterialsDialog.ProjectRef asMaterialProject() {
+        return new ProjectMaterialsDialog.ProjectRef(id, name, status, materialStorageMode,
+            materialMigrationState, materialOperations);
     }
 }
 
@@ -6494,6 +6869,7 @@ class TeacherBootstrapTask implements Runnable {
             }
 
             JSONObject projectsJson = activity.getJson(base + "/api/projects", deviceToken);
+            activity.rememberMaterialHostState(projectsJson);
             List<LearningProject> projects = new ArrayList<LearningProject>();
             JSONArray projectArray = projectsJson.optJSONArray("projects");
             if (projectArray != null) {
@@ -6932,79 +7308,299 @@ class UploadMaterialsTask implements Runnable {
     private final UploadTarget target;
     private final List<Uri> uris;
     private final boolean reloadAfterFinish;
+    private final ProjectMaterialUploadQueue.UiScope uiScope;
 
-    UploadMaterialsTask(MainActivity activity, String base, String token, UploadTarget target, List<Uri> uris, boolean reloadAfterFinish) {
+    UploadMaterialsTask(MainActivity activity, String base, String token, UploadTarget target,
+                        List<Uri> uris, boolean reloadAfterFinish,
+                        ProjectMaterialUploadQueue.UiScope uiScope) {
         this.activity = activity;
         this.base = base;
         this.token = token;
         this.target = target;
         this.uris = uris;
         this.reloadAfterFinish = reloadAfterFinish;
+        this.uiScope = uiScope;
     }
 
     @Override
     public void run() {
-        int success = 0;
-        ArrayList<String> failures = new ArrayList<String>();
-        ArrayList<String> failureLabels = new ArrayList<String>();
-        ArrayList<Uri> failedUris = new ArrayList<Uri>();
-        ArrayList<Uri> uploadedUris = new ArrayList<Uri>();
+        final ArrayList<String> requestIds = new ArrayList<String>();
+        final ArrayList<Uri> requestUris = new ArrayList<Uri>();
+        final ArrayList<String> enqueueFailures = new ArrayList<String>();
+        ProjectMaterialUploadQueue.RuntimeScope verifiedRuntime = null;
+        String runtimeProblem = "";
+        try {
+            verifiedRuntime = activity.verifyMaterialRuntimeScope(base, token);
+            uiScope.bindRuntime(verifiedRuntime);
+        } catch (Exception error) {
+            runtimeProblem = error.getMessage() == null ? "当前主机范围不可核验" : error.getMessage();
+        }
+        final String fixedHostId = verifiedRuntime == null ? "" : verifiedRuntime.hostId;
+        final String fixedGeneration = verifiedRuntime == null ? "" : verifiedRuntime.dataGeneration;
         for (int i = 0; i < uris.size(); i++) {
-            Uri uri = uris.get(i);
-            String fileName = activity.displayName(uri);
+            final Uri uri = uris.get(i);
+            final String fileName = activity.displayName(uri);
             try {
-                activity.runOnUiThread(new StatusTask(activity, "正在上传 " + (i + 1) + "/" + uris.size() + "：" + fileName));
-                activity.runOnUiThread(new UploadQueueStatusTask(activity, "上传队列：" + (i + 1) + "/" + uris.size() + "，正在上传：" + fileName));
+                activity.runOnUiThread(new UploadQueueStatusTask(activity, "上传队列：正在保存 "
+                    + (i + 1) + "/" + uris.size() + " 到本机稳定副本：" + fileName, uiScope));
                 boolean captureFile = "file".equals(uri.getScheme()) && uri.getPath() != null && uri.getPath().contains("screen-captures");
-                String uploadId = "android-" + Integer.toHexString((uri.toString() + "|" + target.type + "|" + target.id).hashCode());
-                String url = "project".equals(target.type)
-                    ? base + "/api/projects/" + activity.encode(target.id) + "/materials?filename=" + activity.encode(fileName) + "&studentId=" + activity.encode(target.studentId)
-                    : base + "/api/students/" + activity.encode(target.id) + "/materials?filename=" + activity.encode(fileName);
-                url += "&uploadId=" + activity.encode(uploadId);
-                if (captureFile) {
-                    SharedPreferences capturePrefs = activity.getSharedPreferences(CaptureProjectionService.PREFS, Activity.MODE_PRIVATE);
-                    JSONObject itemMetadata = activity.readCaptureItemMetadata(uri);
-                    JSONObject sessionMetadata = activity.readCaptureSessionMetadata(uri);
-                    String sessionId = itemMetadata.optString("sessionId", sessionMetadata.optString("sessionId", capturePrefs.getString(CaptureProjectionService.KEY_SESSION_ID, "")));
-                    url += "&sourceType=android_screenshot&captureSessionId=" + activity.encode(sessionId);
-                    String courseId = itemMetadata.optString("courseId", sessionMetadata.optString("courseId", capturePrefs.getString(CaptureProjectionService.KEY_COURSE_ID, "")));
-                    String courseUrl = itemMetadata.optString("courseUrl", sessionMetadata.optString("courseUrl", capturePrefs.getString(CaptureProjectionService.KEY_COURSE_URL, "")));
-                    long courseStartedAt = itemMetadata.optLong("courseStartedAt", sessionMetadata.optLong("courseStartedAt", capturePrefs.getLong(CaptureProjectionService.KEY_COURSE_STARTED_AT, 0L)));
-                    long courseCompletedAt = sessionMetadata.optLong("courseCompletedAt", capturePrefs.getLong(CaptureProjectionService.KEY_COURSE_COMPLETED_AT, 0L));
-                    if (courseId.length() > 0) {
-                        url += "&courseId=" + activity.encode(courseId)
-                            + "&courseUrl=" + activity.encode(courseUrl)
-                            + "&courseStartedAt=" + activity.encode(String.valueOf(courseStartedAt))
-                            + "&courseCompletedAt=" + activity.encode(String.valueOf(courseCompletedAt));
-                    }
-                } else {
-                    url += "&sourceType=android_terminal_file";
-                }
-                activity.postFile(url, token, uri);
-                success += 1;
-                uploadedUris.add(uri);
-                activity.runOnUiThread(new UploadQueueStatusTask(activity, "上传队列：" + success + "/" + uris.size() + " 已成功，剩余 " + (uris.size() - i - 1) + " 个。"));
+                ProjectMaterialUploadQueue.EnqueueRequest request = new ProjectMaterialUploadQueue.EnqueueRequest();
+                request.hostId = fixedHostId;
+                request.hostBaseUrl = base;
+                request.dataGeneration = fixedGeneration;
+                request.deviceId = activity.deviceId();
+                request.studentId = target.studentId;
+                request.targetType = target.type;
+                request.targetId = target.id;
+                request.targetName = target.name;
+                request.filename = fileName;
+                request.sourceType = captureFile ? "android_screenshot" : "android_terminal_file";
+                request.extraQuery = activity.materialUploadExtraQuery(uri);
+                ProjectMaterialUploadQueue.Item queued = activity.materialUploadQueue.enqueue(request,
+                    new ProjectMaterialUploadQueue.Source() {
+                        @Override public InputStream open() throws Exception {
+                            return activity.openUriInput(uri);
+                        }
+                    });
+                requestIds.add(queued.requestId);
+                requestUris.add(uri);
             } catch (Exception error) {
-                failures.add(fileName + "：" + error.getMessage());
-                failureLabels.add(fileName);
-                failedUris.add(uri);
+                enqueueFailures.add(fileName + "：" + error.getMessage());
             }
         }
-        activity.pendingSharedUris.removeAll(uploadedUris);
-        if (failures.size() == 0) {
-            activity.pendingSharedUris.clear();
-            activity.runOnUiThread(new StatusTask(activity, "上传完成：" + success + " 个资料已进入" + target.name + "。"));
-            activity.runOnUiThread(new ToastTask(activity, "上传完成：" + success + " 个资料。"));
+        if (verifiedRuntime != null) {
+            try {
+                activity.materialUploadQueue.process(
+                    new TeacherMaterialQueueTransport(activity, verifiedRuntime, token), verifiedRuntime, 100);
+            } catch (Exception error) {
+                enqueueFailures.add("队列处理：" + error.getMessage());
+            }
         } else {
-            String firstFailure = failures.get(0);
-            activity.runOnUiThread(new StatusTask(activity, "上传完成 " + success + "/" + uris.size() + " 个；失败 " + failures.size() + " 个。首个失败：" + firstFailure));
-            activity.runOnUiThread(new ToastTask(activity, "部分资料上传失败，请检查主机连接后重试。"));
+            enqueueFailures.add("当前主机身份/资料代次不可核验，未发起网络上传；每项稳定副本均已保留等待人工核对（"
+                + runtimeProblem + "）");
         }
-        activity.runOnUiThread(new UploadResultTask(activity, success, uris.size(), failedUris, failureLabels, target));
-        activity.runOnUiThread(new UploadQueueStatusTask(activity, "上传队列：完成，成功 " + success + " 个，失败 " + failures.size() + " 个。"));
-        activity.runOnUiThread(new ClearSharedUploadTask(activity));
+
+        int success = 0;
+        ArrayList<Uri> failedUris = new ArrayList<Uri>();
+        ArrayList<String> failureLabels = new ArrayList<String>();
+        ArrayList<Uri> uploadedUris = new ArrayList<Uri>();
+        try {
+            List<ProjectMaterialUploadQueue.Item> queueItems = activity.materialUploadQueue.list();
+            for (int i = 0; i < requestIds.size(); i++) {
+                ProjectMaterialUploadQueue.Item matched = null;
+                for (ProjectMaterialUploadQueue.Item item : queueItems) {
+                    if (requestIds.get(i).equals(item.requestId)) { matched = item; break; }
+                }
+                Uri uri = requestUris.get(i);
+                if (matched != null && ProjectMaterialUploadQueue.STATE_RECEIVED.equals(matched.state)) {
+                    success++;
+                    uploadedUris.add(uri);
+                } else {
+                    failedUris.add(uri);
+                    String state = matched == null ? "queue_record_missing" : matched.state;
+                    failureLabels.add(activity.displayName(uri) + "（" + state + "）");
+                }
+            }
+        } catch (Exception error) {
+            enqueueFailures.add("读取逐项回执：" + error.getMessage());
+            for (Uri uri : requestUris) if (!failedUris.contains(uri) && !uploadedUris.contains(uri)) {
+                failedUris.add(uri);
+                failureLabels.add(activity.displayName(uri) + "（待核对）");
+            }
+        }
+        for (String failure : enqueueFailures) failureLabels.add(failure);
+        activity.pendingSharedUris.removeAll(uploadedUris);
+        int unresolved = uris.size() - success;
+        if (unresolved == 0) {
+            activity.runOnUiThread(new StatusTask(activity, "上传完成：" + success + " 个资料已进入" + target.name + "。", uiScope));
+            activity.runOnUiThread(new ToastTask(activity, "上传完成：" + success + " 个资料。", uiScope));
+        } else {
+            activity.runOnUiThread(new StatusTask(activity, "本批资料已逐项结算：主机已接收 " + success
+                + "/" + uris.size() + "，其余 " + unresolved + " 个保留在本机队列等待核对。", uiScope));
+            activity.runOnUiThread(new ToastTask(activity, "部分资料尚未确认接收，已保留原范围和本机副本。", uiScope));
+        }
+        activity.runOnUiThread(new UploadResultTask(activity, success, uris.size(), failedUris,
+            failureLabels, target, uiScope));
+        activity.runOnUiThread(new Runnable() {
+            @Override public void run() { activity.refreshMaterialUploadQueueUi(); }
+        });
+        activity.runOnUiThread(new ClearSharedUploadTask(activity, uiScope));
         if (reloadAfterFinish) {
-            activity.runOnUiThread(new StartLoadStudentsTask(activity));
+            activity.runOnUiThread(new StartLoadStudentsTask(activity, uiScope));
+        }
+    }
+}
+
+class TeacherMaterialQueueTransport implements ProjectMaterialUploadQueue.Transport {
+    private final MainActivity activity;
+    private final ProjectMaterialUploadQueue.RuntimeScope runtime;
+    private final String token;
+
+    TeacherMaterialQueueTransport(MainActivity activity, ProjectMaterialUploadQueue.RuntimeScope runtime, String token) {
+        this.activity = activity;
+        this.runtime = runtime;
+        this.token = token == null ? "" : token;
+    }
+
+    @Override
+    public ProjectMaterialUploadQueue.ReceiptResult queryReceipt(ProjectMaterialUploadQueue.Item item)
+        throws ProjectMaterialUploadQueue.QueueTransportException {
+        try {
+            assertRuntimeItem(item);
+            String url = runtime.baseUrl + "/api/uploads/receipt?targetType=" + activity.encode(item.targetType)
+                + "&targetId=" + activity.encode(item.targetId)
+                + "&studentId=" + activity.encode(item.studentId)
+                + "&uploadId=" + activity.encode(item.requestId);
+            JSONObject json = requestJson("GET", url, item, null, true);
+            JSONObject receipt = json.optJSONObject("receipt");
+            return new ProjectMaterialUploadQueue.ReceiptResult(
+                json.optString("status", ""), json.optString("hostId", ""),
+                json.optString("dataGeneration", ""),
+                json.optString("targetType", ""), json.optString("targetId", ""),
+                json.optString("studentId", ""), receiptIdentifier(json, receipt),
+                receipt == null ? -1L : receipt.optLong("size", -1L),
+                receipt == null ? "" : receipt.optString("sha256", ""),
+                receipt == null ? "" : receipt.optString("materialId", ""),
+                receipt == null ? 0 : receipt.optInt("materialVersion", 0));
+        } catch (ProjectMaterialUploadQueue.QueueTransportException error) {
+            throw error;
+        } catch (Exception error) {
+            throw ProjectMaterialUploadQueue.QueueTransportException.retryable("receipt_query_failed", error.getMessage());
+        }
+    }
+
+    @Override
+    public ProjectMaterialUploadQueue.UploadResult upload(ProjectMaterialUploadQueue.Item item, File stablePayload)
+        throws ProjectMaterialUploadQueue.QueueTransportException {
+        try {
+            assertRuntimeItem(item);
+            UploadTarget target = new UploadTarget(item.targetType, item.targetId, item.targetName, item.studentId);
+            String url = legacyCompatibleUploadUrl(runtime.baseUrl, target, item.filename);
+            url += "&uploadId=" + activity.encode(item.requestId) + item.extraQuery;
+            JSONObject json = requestJson("POST", url, item, stablePayload, false);
+            JSONObject file = null;
+            JSONArray files = json.optJSONArray("files");
+            if (files != null && files.length() == 1) file = files.optJSONObject(0);
+            JSONObject evidence = file == null ? json : file;
+            String receiptStatus = consistentField(json, evidence, "receiptStatus");
+            String receiptId = receiptIdentifier(json, evidence);
+            boolean legacy = receiptStatus.length() == 0 || json.optString("hostId", "").length() == 0
+                || json.optString("dataGeneration", "").length() == 0
+                || json.optString("targetType", "").length() == 0
+                || json.optString("targetId", "").length() == 0
+                || json.optString("studentId", "").length() == 0
+                || receiptId.length() == 0 || evidence.optLong("size", -1L) < 0
+                || evidence.optString("sha256", "").length() == 0
+                || (files != null && files.length() != 1);
+            return new ProjectMaterialUploadQueue.UploadResult(
+                receiptStatus, json.optString("hostId", ""), json.optString("dataGeneration", ""),
+                json.optString("targetType", ""), json.optString("targetId", ""),
+                json.optString("studentId", ""), receiptId,
+                evidence.optLong("size", -1L), evidence.optString("sha256", ""),
+                evidence.optString("materialId", ""), evidence.optInt("materialVersion", 0), legacy);
+        } catch (ProjectMaterialUploadQueue.QueueTransportException error) {
+            throw error;
+        } catch (Exception error) {
+            throw ProjectMaterialUploadQueue.QueueTransportException.unknown(error.getMessage());
+        }
+    }
+
+    private String legacyCompatibleUploadUrl(String base, UploadTarget target, String fileName) throws Exception {
+        return "project".equals(target.type)
+            ? base + "/api/projects/" + activity.encode(target.id) + "/materials?filename=" + activity.encode(fileName)
+                + "&studentId=" + activity.encode(target.studentId)
+            : base + "/api/students/" + activity.encode(target.id) + "/materials?filename=" + activity.encode(fileName);
+    }
+
+    private void assertRuntimeItem(ProjectMaterialUploadQueue.Item item)
+        throws ProjectMaterialUploadQueue.QueueTransportException {
+        if (runtime == null || !runtime.complete() || token.trim().length() == 0 || item == null
+            || !runtime.hostId.equals(item.hostId)
+            || !runtime.dataGeneration.equals(item.dataGeneration)
+            || !runtime.deviceId.equals(item.deviceId)) {
+            throw ProjectMaterialUploadQueue.QueueTransportException.permanent("runtime_scope_changed",
+                "当前运行主机、资料代次或设备凭据与排队记录不一致；未联系记录中的旧主机。");
+        }
+    }
+
+    private String consistentField(JSONObject outer, JSONObject evidence, String name) {
+        String outerValue = outer == null ? "" : outer.optString(name, "").trim();
+        String evidenceValue = evidence == null ? "" : evidence.optString(name, "").trim();
+        if (outerValue.length() > 0 && evidenceValue.length() > 0 && !outerValue.equals(evidenceValue)) return "";
+        return outerValue.length() > 0 ? outerValue : evidenceValue;
+    }
+
+    private String receiptIdentifier(JSONObject outer, JSONObject evidence) {
+        ArrayList<String> values = new ArrayList<String>();
+        for (JSONObject source : new JSONObject[] { outer, evidence }) {
+            if (source == null) continue;
+            for (String name : new String[] { "uploadId", "receiptId", "clientRequestId" }) {
+                String value = source.optString(name, "").trim();
+                if (value.length() > 0 && !values.contains(value)) values.add(value);
+            }
+        }
+        return values.size() == 1 ? values.get(0) : "";
+    }
+
+    private JSONObject requestJson(String method, String url, ProjectMaterialUploadQueue.Item item,
+                                   File payload, boolean receiptQuery)
+        throws ProjectMaterialUploadQueue.QueueTransportException {
+        HttpURLConnection connection = null;
+        boolean uploadStarted = false;
+        try {
+            connection = (HttpURLConnection) new URL(url).openConnection();
+            connection.setConnectTimeout(8000);
+            connection.setReadTimeout(payload == null ? 15000 : 45000);
+            connection.setRequestMethod(method);
+            connection.setRequestProperty("Accept", "application/json");
+            if (token.length() > 0) connection.setRequestProperty("Authorization", "Bearer " + token);
+            if (item.dataGeneration.length() > 0) {
+                connection.setRequestProperty("X-Edu-Data-Generation", item.dataGeneration);
+            }
+            if (payload != null) {
+                connection.setDoOutput(true);
+                connection.setRequestProperty("Content-Type", "application/octet-stream");
+                connection.setRequestProperty("X-Edu-Content-Sha256", item.sha256);
+                connection.setFixedLengthStreamingMode(item.size);
+                InputStream input = new BufferedInputStream(new FileInputStream(payload));
+                OutputStream output = connection.getOutputStream();
+                uploadStarted = true;
+                try {
+                    byte[] buffer = new byte[16384];
+                    int read;
+                    while ((read = input.read(buffer)) != -1) output.write(buffer, 0, read);
+                    output.flush();
+                } finally {
+                    try { input.close(); } catch (Exception ignored) {}
+                    try { output.close(); } catch (Exception ignored) {}
+                }
+            }
+            int code = connection.getResponseCode();
+            InputStream stream = code >= 200 && code < 300 ? connection.getInputStream() : connection.getErrorStream();
+            String text = activity.readStream(stream);
+            JSONObject json = text.length() > 0 ? new JSONObject(text) : new JSONObject();
+            if (code >= 200 && code < 300 && json.optBoolean("ok", true)) return json;
+            String errorCode = json.optString("code", "http_" + code);
+            String message = json.optString("message", "HTTP " + code);
+            if (code == 401 || code == 403) throw ProjectMaterialUploadQueue.QueueTransportException.auth(message);
+            if (receiptQuery && code == 404) {
+                throw ProjectMaterialUploadQueue.QueueTransportException.receiptUnsupported(message);
+            }
+            if (code == 408 || code == 425 || code == 429 || code >= 500) {
+                if (uploadStarted) throw ProjectMaterialUploadQueue.QueueTransportException.unknown(message);
+                throw ProjectMaterialUploadQueue.QueueTransportException.retryable(errorCode, message);
+            }
+            if ("host_data_generation_changed".equals(errorCode) || "upload_in_progress".equals(errorCode)) {
+                throw ProjectMaterialUploadQueue.QueueTransportException.unknown(message);
+            }
+            throw ProjectMaterialUploadQueue.QueueTransportException.permanent(errorCode, message);
+        } catch (ProjectMaterialUploadQueue.QueueTransportException error) {
+            throw error;
+        } catch (Exception error) {
+            if (uploadStarted) throw ProjectMaterialUploadQueue.QueueTransportException.unknown(error.getMessage());
+            throw ProjectMaterialUploadQueue.QueueTransportException.retryable("network_unavailable", error.getMessage());
+        } finally {
+            if (connection != null) connection.disconnect();
         }
     }
 }
@@ -7016,19 +7612,23 @@ class UploadResultTask implements Runnable {
     private final List<Uri> failed;
     private final List<String> failureLabels;
     private final UploadTarget target;
+    private final ProjectMaterialUploadQueue.UiScope uiScope;
 
-    UploadResultTask(MainActivity activity, int success, int total, List<Uri> failed, List<String> failureLabels, UploadTarget target) {
+    UploadResultTask(MainActivity activity, int success, int total, List<Uri> failed,
+                     List<String> failureLabels, UploadTarget target,
+                     ProjectMaterialUploadQueue.UiScope uiScope) {
         this.activity = activity;
         this.success = success;
         this.total = total;
         this.failed = failed;
         this.failureLabels = failureLabels;
         this.target = target;
+        this.uiScope = uiScope;
     }
 
     @Override
     public void run() {
-        activity.applyUploadResult(success, total, failed, failureLabels, target);
+        activity.applyUploadResult(success, total, failed, failureLabels, target, uiScope);
     }
 }
 
@@ -7051,72 +7651,91 @@ class ConnectionSummaryTask implements Runnable {
 
 class StartLoadStudentsTask implements Runnable {
     private final MainActivity activity;
+    private final ProjectMaterialUploadQueue.UiScope uiScope;
 
-    StartLoadStudentsTask(MainActivity activity) {
+    StartLoadStudentsTask(MainActivity activity, ProjectMaterialUploadQueue.UiScope uiScope) {
         this.activity = activity;
+        this.uiScope = uiScope;
     }
 
     @Override
     public void run() {
-        activity.loadStudents();
+        if (activity.isUploadUiScopeCurrent(uiScope)) activity.loadStudents();
     }
 }
 
 class ClearSharedUploadTask implements Runnable {
     private final MainActivity activity;
+    private final ProjectMaterialUploadQueue.UiScope uiScope;
 
-    ClearSharedUploadTask(MainActivity activity) {
+    ClearSharedUploadTask(MainActivity activity, ProjectMaterialUploadQueue.UiScope uiScope) {
         this.activity = activity;
+        this.uiScope = uiScope;
     }
 
     @Override
     public void run() {
-        activity.updateSharedUploadButton();
+        if (activity.isUploadUiScopeCurrent(uiScope)) activity.updateSharedUploadButton();
     }
 }
 
 class StatusTask implements Runnable {
     private final MainActivity activity;
     private final String message;
+    private final ProjectMaterialUploadQueue.UiScope uiScope;
 
     StatusTask(MainActivity activity, String message) {
+        this(activity, message, null);
+    }
+
+    StatusTask(MainActivity activity, String message, ProjectMaterialUploadQueue.UiScope uiScope) {
         this.activity = activity;
         this.message = message;
+        this.uiScope = uiScope;
     }
 
     @Override
     public void run() {
-        activity.status(message);
+        if (uiScope == null || activity.isUploadUiScopeCurrent(uiScope)) activity.status(message);
     }
 }
 
 class UploadQueueStatusTask implements Runnable {
     private final MainActivity activity;
     private final String message;
+    private final ProjectMaterialUploadQueue.UiScope uiScope;
 
-    UploadQueueStatusTask(MainActivity activity, String message) {
+    UploadQueueStatusTask(MainActivity activity, String message,
+                          ProjectMaterialUploadQueue.UiScope uiScope) {
         this.activity = activity;
         this.message = message;
+        this.uiScope = uiScope;
     }
 
     @Override
     public void run() {
-        activity.setUploadQueueText(message);
+        if (activity.isUploadUiScopeCurrent(uiScope)) activity.setUploadQueueText(message);
     }
 }
 
 class ToastTask implements Runnable {
     private final MainActivity activity;
     private final String message;
+    private final ProjectMaterialUploadQueue.UiScope uiScope;
 
     ToastTask(MainActivity activity, String message) {
+        this(activity, message, null);
+    }
+
+    ToastTask(MainActivity activity, String message, ProjectMaterialUploadQueue.UiScope uiScope) {
         this.activity = activity;
         this.message = message;
+        this.uiScope = uiScope;
     }
 
     @Override
     public void run() {
-        activity.toast(message);
+        if (uiScope == null || activity.isUploadUiScopeCurrent(uiScope)) activity.toast(message);
     }
 }
 

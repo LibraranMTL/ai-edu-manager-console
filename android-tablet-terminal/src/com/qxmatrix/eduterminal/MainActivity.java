@@ -74,6 +74,7 @@ import com.google.zxing.RGBLuminanceSource;
 import com.google.zxing.Result;
 import com.google.zxing.common.GlobalHistogramBinarizer;
 import com.google.zxing.common.HybridBinarizer;
+import com.qxmatrix.projectmaterials.ProjectMaterialsDialog;
 
 import java.io.BufferedReader;
 import java.io.File;
@@ -117,8 +118,8 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
     static final int REQUEST_IMPORT_CONNECTION_BACKUP = 8109;
     static final int REQUEST_CAPTURE_STUDENT_QR = 8110;
     static final int REQUEST_AUTO_DELIVERY_FOLDER = 8111;
-    static final String VERSION_NAME = "0.6.17";
-    static final int VERSION_CODE = 87;
+    static final String VERSION_NAME = "0.6.19";
+    static final int VERSION_CODE = 89;
     static final String CONNECTION_BACKUP_KIND = "ai-edu-manager-tablet-connection-backup";
     static final int CONNECTION_BACKUP_VERSION = 1;
     static final String UPDATE_MANIFEST_URL = "https://www.greatbg.com/download/edu-manager-version.json";
@@ -146,6 +147,7 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
     private static final String PREF_SERVER_URL = "server_url";
     private static final String PREF_API_TOKEN = "api_token";
     private static final String PREF_STUDENT_SESSION_TOKEN = "student_session_token";
+    private static final String PREF_STUDENT_SESSION_ID = "student_session_student_id";
     private static final String PREF_TERMINAL_MODE = "terminal_mode";
     private static final String PREF_REMOTE_URL = "remote_url";
     private static final String PREF_ENDPOINT_CANDIDATES = "endpoint_candidates";
@@ -158,6 +160,7 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
     private static final String PREF_HOST_DEVICE_ID = "host_device_id";
     private static final String PREF_HOST_MACHINE_CODE = "host_machine_code";
     private static final String PREF_HOST_DISPLAY_NAME = "host_display_name";
+    private static final String PREF_HOST_DATA_GENERATION = "host_data_generation";
     private static final String PREF_PENDING_CONVERSATION_TEXT = "pending_conversation_text";
     private static final String PREF_CAPTURE_AUTO_DELIVERY_DEFAULT = "capture_auto_delivery_default";
     private static final int MAX_CONVERSATION_CHARS = 60000;
@@ -333,6 +336,7 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
     String pendingCaptureProjectId = "";
     String pendingCaptureProjectName = "";
     boolean uploadInProgress = false;
+    ProjectMaterialUploadQueue projectMaterialUploadQueue;
     boolean conversationSubmitInProgress = false;
     String pendingConversationText = "";
     String conversationLastResult = "";
@@ -353,6 +357,7 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
         setTitle("AI教育管家平板终端");
         buildUi();
         loadPrefs();
+        initializeProjectMaterialUploadQueue();
         handleIncomingShare(getIntent());
         maybeStartCaptureFromIntent(getIntent());
     }
@@ -1047,7 +1052,7 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
         quickArchiveButton.setOnClickListener(this);
 
         LinearLayout projectKnowledgeEntryCard = card();
-        quickProjectKnowledgeButton = button("打开项目知识库", true);
+        quickProjectKnowledgeButton = button("项目资料与知识", true);
         LinearLayout projectKnowledgeEntryRow = row();
         projectKnowledgeEntryRow.addView(quickProjectKnowledgeButton);
         projectKnowledgeEntryCard.addView(projectKnowledgeEntryRow);
@@ -1059,6 +1064,11 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
         educationContent.addView(collapsiblePanel("成长模型", "只读查看能力画像、项目贡献和近期成长证据。", growthCard));
         educationContent.addView(collapsiblePanel("学情档案", "打开当前学生自己的教育档案。", archiveEntryCard));
         educationContent.addView(collapsiblePanel("项目知识库", "打开当前学生已经关联的项目知识。", projectKnowledgeEntryCard));
+        Button learningButton = button("学习卡片与规划", true);
+        educationContent.addView(learningButton);
+        learningButton.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View view) { openTerminalLearning(); }
+        });
         educationContent.addView(archiveCard);
         root.addView(collapsiblePanel("教育档案", "报告、成长模型、档案和项目知识均为当前学生只读内容。", educationContent));
 
@@ -1287,15 +1297,7 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
             scrollToView(archiveCard);
             status("已打开当前学生的学情档案。");
         } else if (view == quickProjectKnowledgeButton) {
-            refreshArchiveSources();
-            if (archiveSourceProjects.isEmpty()) {
-                status("当前学生还没有关联项目知识库。");
-            } else {
-                archiveCard.setVisibility(View.VISIBLE);
-                archiveSourceSpinner.setSelection(1);
-                scrollToView(archiveCard);
-                status("已打开项目知识库，可在“查看内容”中切换本人关联项目。");
-            }
+            openProjectMaterialsCenter();
         } else if (view == quickContactButton) {
             openPanelPath("教育管家对话", "QQ / 企业微信");
             updateContactCard();
@@ -1533,6 +1535,7 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
             refreshArchiveSources();
             loadCourses();
             loadArchiveFiles();
+            resumeProjectMaterialUploadQueue();
         } else if (parent == archiveSourceSpinner && !updatingArchiveSources) {
             if (position <= 0 || position - 1 >= archiveSourceProjects.size()) {
                 showingProjectKnowledge = false;
@@ -1658,10 +1661,12 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
         getSharedPreferences(PREFS, MODE_PRIVATE).edit()
             .putString(PREF_TERMINAL_MODE, terminalMode)
             .putString(PREF_STUDENT_SESSION_TOKEN, studentSessionToken)
+            .putString(PREF_STUDENT_SESSION_ID, studentJson == null ? "" : studentJson.optString("id", ""))
             .apply();
         applyStudents(result, projectResult, null, false);
         updateStudentSessionUi();
         if (studentLoginInput != null) studentLoginInput.setText("");
+        resumeProjectMaterialUploadQueue();
     }
 
     void clearStudentSession(String message) {
@@ -1683,7 +1688,10 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
         currentMarkdown = "";
         updateMarkdownDisplay("\u8bf7\u5148\u626b\u7801\u6216\u8f93\u5165\u5b66\u751f ID\u3002");
         if (growthSummaryText != null) growthSummaryText.setText("进入学生空间后，可从 Windows 主机读取自己的成长模型。");
-        getSharedPreferences(PREFS, MODE_PRIVATE).edit().remove(PREF_STUDENT_SESSION_TOKEN).apply();
+        getSharedPreferences(PREFS, MODE_PRIVATE).edit()
+            .remove(PREF_STUDENT_SESSION_TOKEN)
+            .remove(PREF_STUDENT_SESSION_ID)
+            .apply();
         updateStudentSessionUi();
         updateSharedUploadButton();
         refreshCaptureUi();
@@ -1891,6 +1899,62 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
         }
         archiveSourceSpinner.setSelection(selected, false);
         updatingArchiveSources = false;
+    }
+
+    void openProjectMaterialsCenter() {
+        refreshArchiveSources();
+        if (archiveSourceProjects.isEmpty()) {
+            status("当前学生还没有关联项目资料。");
+            return;
+        }
+        final List<LearningProject> available = new ArrayList<LearningProject>(archiveSourceProjects);
+        if (available.size() == 1) {
+            openProjectMaterialsProject(available.get(0));
+            return;
+        }
+        String[] labels = new String[available.size()];
+        for (int i = 0; i < available.size(); i++) {
+            LearningProject item = available.get(i);
+            labels[i] = item.name + (item.supportsMaterialViews() ? " · 四视图" : " · 旧版知识库")
+                + item.migrationLabel();
+        }
+        new AlertDialog.Builder(this).setTitle("选择项目")
+            .setItems(labels, new DialogInterface.OnClickListener() {
+                @Override public void onClick(DialogInterface dialog, int which) {
+                    if (which >= 0 && which < available.size()) openProjectMaterialsProject(available.get(which));
+                }
+            }).setNegativeButton("取消", null).show();
+    }
+
+    void openProjectMaterialsProject(final LearningProject project) {
+        if (project == null) return;
+        if (!project.supportsMaterialViews()) {
+            archiveCard.setVisibility(View.VISIBLE);
+            int index = archiveSourceProjects.indexOf(project);
+            if (index >= 0) archiveSourceSpinner.setSelection(index + 1);
+            scrollToView(archiveCard);
+            status("running".equals(project.materialMigrationState)
+                ? "Windows主机正在迁移历史资料；本端只读等待。"
+                : "该项目仍使用旧版知识库视图；请在Windows主机预览并执行受控迁移。");
+            return;
+        }
+        ProjectMaterialsDialog.open(new ProjectMaterialsDialog.Bridge() {
+            @Override public Activity activity() { return MainActivity.this; }
+            @Override public String baseUrl() { return normalizedBaseUrl(); }
+            @Override public String token() { return dataToken(); }
+            @Override public String hostId() { return connectedHostId(); }
+            @Override public String dataGeneration() { return connectedHostDataGeneration(); }
+            @Override public String principalScope() {
+                return selectedStudent == null ? "student:unknown" : "student:" + selectedStudent.id;
+            }
+            @Override public JSONObject getJson(String url) throws Exception {
+                return MainActivity.this.getJson(url, dataToken());
+            }
+            @Override public JSONObject postJson(String url, JSONObject body) throws Exception {
+                return MainActivity.this.postJson(url, body, dataToken());
+            }
+            @Override public void status(String message) { MainActivity.this.status(message); }
+        }, project.asMaterialProject());
     }
 
     void selectStudentArchiveSource() {
@@ -3057,9 +3121,13 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
             sharedUploadButton.setEnabled(false);
         }
         if (retryFailedUploadButton != null) {
-            retryFailedUploadButton.setText("重试失败资料(" + failedUploadUris.size() + ")");
-            retryFailedUploadButton.setVisibility(failedUploadUris.size() > 0 ? View.VISIBLE : View.GONE);
-            retryFailedUploadButton.setEnabled(selectedStudent != null && failedUploadUris.size() > 0);
+            SharedPreferences queuePrefs = getSharedPreferences(PREFS, MODE_PRIVATE);
+            int durableCount = queuePrefs.getInt(ProjectMaterialUploadJobService.KEY_PENDING_COUNT, 0)
+                + queuePrefs.getInt(ProjectMaterialUploadJobService.KEY_PAUSED_COUNT, 0);
+            int actionCount = Math.max(failedUploadUris.size(), durableCount);
+            retryFailedUploadButton.setText("核对待处理资料(" + actionCount + ")");
+            retryFailedUploadButton.setVisibility(actionCount > 0 ? View.VISIBLE : View.GONE);
+            retryFailedUploadButton.setEnabled(selectedStudent != null && actionCount > 0);
         }
     }
 
@@ -3313,6 +3381,9 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
         super.onResume();
         refreshCaptureUi();
         updateAutoDeliveryUi();
+        refreshProjectMaterialQueueStatus();
+        ProjectMaterialUploadJobService.schedule(this);
+        ProjectMaterialUploadJobService.runNow(this);
         if ("personal".equals(terminalMode) && getSharedPreferences(AutoDeliveryJobService.PREFS, MODE_PRIVATE).getBoolean(AutoDeliveryJobService.KEY_ENABLED, false)) {
             AutoDeliveryJobService.schedule(this);
             AutoDeliveryJobService.runNow(this, false);
@@ -3862,6 +3933,61 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
         chooseUploadTarget(uris, true, true);
     }
 
+    void initializeProjectMaterialUploadQueue() {
+        try {
+            projectMaterialUploadQueue = new ProjectMaterialUploadQueue(
+                new File(getFilesDir(), ProjectMaterialUploadJobService.QUEUE_DIRECTORY));
+            projectMaterialUploadQueue.recoverInterrupted();
+            refreshProjectMaterialQueueStatus();
+            ProjectMaterialUploadJobService.schedule(this);
+        } catch (Exception error) {
+            projectMaterialUploadQueue = null;
+            setUploadQueueText("上传队列不可用：" + safeErrorMessage(error));
+        }
+    }
+
+    void resumeProjectMaterialUploadQueue() {
+        if (projectMaterialUploadQueue == null || selectedStudent == null || dataToken().length() == 0) {
+            refreshProjectMaterialQueueStatus();
+            return;
+        }
+        ProjectMaterialUploadJobService.schedule(this);
+        ProjectMaterialUploadJobService.runNow(this);
+        if (uploadQueueText != null) uploadQueueText.postDelayed(new Runnable() {
+            @Override public void run() {
+                refreshProjectMaterialQueueStatus();
+                refreshCaptureUi();
+            }
+        }, 1200L);
+    }
+
+    void refreshProjectMaterialQueueStatus() {
+        if (uploadQueueText == null) return;
+        SharedPreferences prefs = getSharedPreferences(PREFS, MODE_PRIVATE);
+        String message = prefs.getString(ProjectMaterialUploadJobService.KEY_STATUS, "");
+        if (message.length() == 0) {
+            try {
+                int waiting = 0;
+                int paused = 0;
+                if (projectMaterialUploadQueue != null) {
+                    for (ProjectMaterialUploadQueue.Entry entry : projectMaterialUploadQueue.list()) {
+                        if (entry.state == ProjectMaterialUploadQueue.State.RECEIVED) continue;
+                        if (entry.state == ProjectMaterialUploadQueue.State.PAUSED_PERMISSION
+                            || entry.state == ProjectMaterialUploadQueue.State.PAUSED_RECEIPT
+                            || entry.state == ProjectMaterialUploadQueue.State.FAILED_PERMANENT) paused += 1;
+                        else waiting += 1;
+                    }
+                }
+                message = waiting == 0 && paused == 0 ? "上传队列：暂无待处理资料。"
+                    : "上传队列：待处理 " + waiting + " 个，暂停待核对 " + paused + " 个。";
+            } catch (Exception error) {
+                message = "上传队列状态读取失败：" + safeErrorMessage(error);
+            }
+        }
+        setUploadQueueText(message);
+        updateSharedUploadButton();
+    }
+
     void uploadPendingSharedMaterials() {
         if (pendingSharedUris.size() == 0) {
             toast("没有待上传的分享资料。");
@@ -3871,11 +3997,12 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
     }
 
     void retryFailedUploads() {
-        if (failedUploadUris.size() == 0) {
-            toast("没有失败资料需要重试。");
-            return;
+        if (failedUploadUris.size() > 0) {
+            uploadMaterials(new ArrayList<Uri>(failedUploadUris), true);
+        } else {
+            toast("正在核对持久上传队列；不确定的资料会先查询主机回执。");
+            resumeProjectMaterialUploadQueue();
         }
-        uploadMaterials(new ArrayList<Uri>(failedUploadUris), true);
     }
 
     void uploadMaterial(Uri uri) {
@@ -3930,18 +4057,55 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
             toast("已有资料正在上传，请稍候。");
             return;
         }
-        String base = normalizedBaseUrl();
-        String token = dataToken();
-        if (base.length() == 0 || token.length() == 0) {
+        if (normalizedBaseUrl().length() == 0 || dataToken().length() == 0) {
             toast("请先连接主机服务。");
+            return;
+        }
+        if (connectedHostId().length() == 0 || connectedHostDataGeneration().length() == 0) {
+            toast("请先重新连接主机，取得资料队列身份和数据代次。");
+            connectAndLoadStudents();
+            return;
+        }
+        if (projectMaterialUploadQueue == null) initializeProjectMaterialUploadQueue();
+        if (projectMaterialUploadQueue == null) {
+            toast("本机持久上传队列不可用，未读取所选资料。");
             return;
         }
         uploadInProgress = true;
         captureUploadVisualState = "uploading";
         refreshCaptureUi();
-        status("准备上传 " + uris.size() + " 个资料...");
-        setUploadQueueText("上传队列：0/" + uris.size() + "，准备开始。");
-        new Thread(new UploadMaterialsTask(this, base, token, target, new ArrayList<Uri>(uris), reloadAfterFinish)).start();
+        status("正在将 " + uris.size() + " 个资料安全复制到本机持久队列...");
+        setUploadQueueText("上传队列：0/" + uris.size() + "，正在建立本机私有稳定副本。");
+        new Thread(new EnqueueProjectMaterialsTask(this, target, new ArrayList<Uri>(uris),
+            reloadAfterFinish)).start();
+    }
+
+    QueuedMaterialDescriptor queuedMaterialDescriptor(Uri uri) throws Exception {
+        boolean captureFile = "file".equals(uri.getScheme()) && uri.getPath() != null
+            && uri.getPath().contains("screen-captures");
+        if (!captureFile) return new QueuedMaterialDescriptor("android_terminal_file", "", uri.toString());
+        SharedPreferences capturePrefs = getSharedPreferences(CaptureProjectionService.PREFS, MODE_PRIVATE);
+        JSONObject itemMetadata = readCaptureItemMetadata(uri);
+        JSONObject sessionMetadata = readCaptureSessionMetadata(uri);
+        String sessionId = itemMetadata.optString("sessionId", sessionMetadata.optString("sessionId",
+            capturePrefs.getString(CaptureProjectionService.KEY_SESSION_ID, "")));
+        StringBuilder query = new StringBuilder();
+        query.append("captureSessionId=").append(encode(sessionId));
+        String courseId = itemMetadata.optString("courseId", sessionMetadata.optString("courseId",
+            capturePrefs.getString(CaptureProjectionService.KEY_COURSE_ID, "")));
+        String courseUrl = itemMetadata.optString("courseUrl", sessionMetadata.optString("courseUrl",
+            capturePrefs.getString(CaptureProjectionService.KEY_COURSE_URL, "")));
+        long courseStartedAt = itemMetadata.optLong("courseStartedAt", sessionMetadata.optLong("courseStartedAt",
+            capturePrefs.getLong(CaptureProjectionService.KEY_COURSE_STARTED_AT, 0L)));
+        long courseCompletedAt = sessionMetadata.optLong("courseCompletedAt",
+            capturePrefs.getLong(CaptureProjectionService.KEY_COURSE_COMPLETED_AT, 0L));
+        if (courseId.length() > 0) {
+            query.append("&courseId=").append(encode(courseId))
+                .append("&courseUrl=").append(encode(courseUrl))
+                .append("&courseStartedAt=").append(encode(String.valueOf(courseStartedAt)))
+                .append("&courseCompletedAt=").append(encode(String.valueOf(courseCompletedAt)));
+        }
+        return new QueuedMaterialDescriptor("android_screenshot", query.toString(), uri.toString());
     }
 
     void setUploadQueueText(String text) {
@@ -4084,6 +4248,17 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
                 }
             }, 1800L);
         }
+    }
+
+    private void openTerminalLearning() {
+        final String studentId = selectedStudent == null ? "" : selectedStudent.id;
+        final String base = normalizedBaseUrl(), token = dataToken();
+        com.qxmatrix.terminallearning.TerminalLearningDialog.open(this,
+            new com.qxmatrix.terminallearning.TerminalLearningDialog.Transport() {
+                @Override public JSONObject get(String route) throws Exception { return getJson(base + route, token); }
+                @Override public JSONObject post(String route, JSONObject body) throws Exception { return postJson(base + route, body, token); }
+                @Override public String hostId() { return base; }
+            }, studentId, false);
     }
 
     JSONObject getJson(String urlText, String token) throws Exception {
@@ -4367,6 +4542,30 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
             .putString(PREF_HOST_DISPLAY_NAME, displayName == null ? "" : displayName)
             .apply();
         if (machineCodeText != null) machineCodeText.setText(connectedIdentityText());
+    }
+
+    void rememberHostProtocolState(JSONObject health) throws Exception {
+        String hostId = health == null ? "" : health.optString("hostId", "").trim();
+        String generation = health == null ? "" : health.optString("dataGeneration", "").trim();
+        if (hostId.length() == 0 || generation.length() == 0) {
+            getSharedPreferences(PREFS, MODE_PRIVATE).edit()
+                .remove(PREF_HOST_DEVICE_ID)
+                .remove(PREF_HOST_DATA_GENERATION)
+                .apply();
+            throw new Exception("主机未提供资料队列身份或数据代次，请先升级 Windows 主机。");
+        }
+        getSharedPreferences(PREFS, MODE_PRIVATE).edit()
+            .putString(PREF_HOST_DEVICE_ID, hostId)
+            .putString(PREF_HOST_DATA_GENERATION, generation)
+            .apply();
+    }
+
+    String connectedHostId() {
+        return getSharedPreferences(PREFS, MODE_PRIVATE).getString(PREF_HOST_DEVICE_ID, "").trim();
+    }
+
+    String connectedHostDataGeneration() {
+        return getSharedPreferences(PREFS, MODE_PRIVATE).getString(PREF_HOST_DATA_GENERATION, "").trim();
     }
 
     String connectedIdentityText() {
@@ -5301,6 +5500,7 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
         } else {
             authorizationPollsRemaining = 0;
         }
+        resumeProjectMaterialUploadQueue();
     }
 
     void loadCourses() {
@@ -6363,14 +6563,38 @@ class LearningProject {
     final String id;
     final String name;
     final String status;
+    final String materialStorageMode;
+    final String materialMigrationState;
+    final JSONObject materialOperations;
     final List<String> studentIds = new ArrayList<String>();
 
     LearningProject(JSONObject json) {
         this.id = json.optString("id", "");
         this.name = json.optString("name", this.id);
         this.status = json.optString("status", "active");
+        this.materialStorageMode = json.optString("materialStorageMode", "legacy");
+        this.materialMigrationState = json.optString("materialMigrationState", "not_started");
+        JSONObject capabilities = json.optJSONObject("materialCapabilities");
+        JSONObject operations = capabilities == null ? null : capabilities.optJSONObject("operations");
+        this.materialOperations = operations == null ? new JSONObject() : operations;
         JSONArray array = json.optJSONArray("studentIds");
         if (array != null) for (int i = 0; i < array.length(); i++) studentIds.add(array.optString(i, ""));
+    }
+
+    boolean supportsMaterialViews() {
+        return "workspace-v1".equals(materialStorageMode) && materialOperations.optBoolean("list", false);
+    }
+
+    String migrationLabel() {
+        if ("running".equals(materialMigrationState)) return " · 主机迁移中";
+        if ("partial".equals(materialMigrationState)) return " · 部分统一";
+        if ("attention".equals(materialMigrationState)) return " · 迁移待核对";
+        return "";
+    }
+
+    ProjectMaterialsDialog.ProjectRef asMaterialProject() {
+        return new ProjectMaterialsDialog.ProjectRef(id, name, status, materialStorageMode,
+            materialMigrationState, materialOperations);
     }
 }
 
@@ -6385,6 +6609,18 @@ class UploadTarget {
         this.id = id;
         this.name = name;
         this.studentId = studentId;
+    }
+}
+
+class QueuedMaterialDescriptor {
+    final String sourceType;
+    final String attributionQuery;
+    final String sourceReference;
+
+    QueuedMaterialDescriptor(String sourceType, String attributionQuery, String sourceReference) {
+        this.sourceType = sourceType;
+        this.attributionQuery = attributionQuery;
+        this.sourceReference = sourceReference;
     }
 }
 
@@ -6619,6 +6855,7 @@ class ConnectTask implements Runnable {
                 "正在尝试" + activity.connectionChannelLabel(attemptBase) + "主机地址（" + (attemptIndex + 1) + "/" + bases.size() + "）..."));
             try {
                 JSONObject health = activity.getJson(base + "/api/health", null);
+                activity.rememberHostProtocolState(health);
                 String token = activity.apiToken();
                 if (token.length() == 0) throw new Exception("缺少设备授权信息，请重新粘贴 Windows 连接信息或扫码绑定。");
                 JSONObject heartbeat = activity.postJson(base + "/api/device/heartbeat", new JSONObject(), token);
@@ -7289,87 +7526,101 @@ class LoadLearningReportTask implements Runnable {
     }
 }
 
-class UploadMaterialsTask implements Runnable {
+class EnqueueProjectMaterialsTask implements Runnable {
     private final MainActivity activity;
-    private final String base;
-    private final String token;
     private final UploadTarget target;
     private final List<Uri> uris;
     private final boolean reloadAfterFinish;
+    private final String hostId;
+    private final String dataGeneration;
+    private final String deviceId;
+    private final String studentId;
 
-    UploadMaterialsTask(MainActivity activity, String base, String token, UploadTarget target, List<Uri> uris, boolean reloadAfterFinish) {
+    EnqueueProjectMaterialsTask(MainActivity activity, UploadTarget target, List<Uri> uris,
+                                boolean reloadAfterFinish) {
         this.activity = activity;
-        this.base = base;
-        this.token = token;
         this.target = target;
         this.uris = uris;
         this.reloadAfterFinish = reloadAfterFinish;
+        this.hostId = activity.connectedHostId();
+        this.dataGeneration = activity.connectedHostDataGeneration();
+        this.deviceId = activity.deviceId();
+        this.studentId = target.studentId;
     }
 
     @Override
     public void run() {
-        int success = 0;
+        int queued = 0;
         ArrayList<String> failures = new ArrayList<String>();
         ArrayList<String> failureLabels = new ArrayList<String>();
         ArrayList<Uri> failedUris = new ArrayList<Uri>();
-        ArrayList<Uri> uploadedUris = new ArrayList<Uri>();
+        ArrayList<Uri> copiedUris = new ArrayList<Uri>();
         for (int i = 0; i < uris.size(); i++) {
             Uri uri = uris.get(i);
             String fileName = activity.displayName(uri);
+            InputStream input = null;
             try {
-                activity.runOnUiThread(new StatusTask(activity, "正在上传 " + (i + 1) + "/" + uris.size() + "：" + fileName));
-                activity.runOnUiThread(new UploadQueueStatusTask(activity, "上传队列：" + (i + 1) + "/" + uris.size() + "，正在上传：" + fileName));
-                boolean captureFile = "file".equals(uri.getScheme()) && uri.getPath() != null && uri.getPath().contains("screen-captures");
-                String uploadId = "android-" + Integer.toHexString((uri.toString() + "|" + target.type + "|" + target.id).hashCode());
-                String url = "project".equals(target.type)
-                    ? base + "/api/projects/" + activity.encode(target.id) + "/materials?filename=" + activity.encode(fileName) + "&studentId=" + activity.encode(target.studentId)
-                    : base + "/api/students/" + activity.encode(target.id) + "/materials?filename=" + activity.encode(fileName);
-                url += "&uploadId=" + activity.encode(uploadId);
-                if (captureFile) {
-                    SharedPreferences capturePrefs = activity.getSharedPreferences(CaptureProjectionService.PREFS, Activity.MODE_PRIVATE);
-                    JSONObject itemMetadata = activity.readCaptureItemMetadata(uri);
-                    JSONObject sessionMetadata = activity.readCaptureSessionMetadata(uri);
-                    String sessionId = itemMetadata.optString("sessionId", sessionMetadata.optString("sessionId", capturePrefs.getString(CaptureProjectionService.KEY_SESSION_ID, "")));
-                    url += "&sourceType=android_screenshot&captureSessionId=" + activity.encode(sessionId);
-                    String courseId = itemMetadata.optString("courseId", sessionMetadata.optString("courseId", capturePrefs.getString(CaptureProjectionService.KEY_COURSE_ID, "")));
-                    String courseUrl = itemMetadata.optString("courseUrl", sessionMetadata.optString("courseUrl", capturePrefs.getString(CaptureProjectionService.KEY_COURSE_URL, "")));
-                    long courseStartedAt = itemMetadata.optLong("courseStartedAt", sessionMetadata.optLong("courseStartedAt", capturePrefs.getLong(CaptureProjectionService.KEY_COURSE_STARTED_AT, 0L)));
-                    long courseCompletedAt = sessionMetadata.optLong("courseCompletedAt", capturePrefs.getLong(CaptureProjectionService.KEY_COURSE_COMPLETED_AT, 0L));
-                    if (courseId.length() > 0) {
-                        url += "&courseId=" + activity.encode(courseId)
-                            + "&courseUrl=" + activity.encode(courseUrl)
-                            + "&courseStartedAt=" + activity.encode(String.valueOf(courseStartedAt))
-                            + "&courseCompletedAt=" + activity.encode(String.valueOf(courseCompletedAt));
-                    }
-                } else {
-                    url += "&sourceType=android_terminal_file";
-                }
-                activity.postFile(url, token, uri);
-                success += 1;
-                uploadedUris.add(uri);
-                activity.runOnUiThread(new UploadQueueStatusTask(activity, "上传队列：" + success + "/" + uris.size() + " 已成功，剩余 " + (uris.size() - i - 1) + " 个。"));
+                activity.runOnUiThread(new StatusTask(activity, "正在安全保存 " + (i + 1) + "/" + uris.size() + "：" + fileName));
+                activity.runOnUiThread(new UploadQueueStatusTask(activity, "上传队列：" + (i + 1) + "/" + uris.size() + "，正在建立私有稳定副本：" + fileName));
+                QueuedMaterialDescriptor descriptor = activity.queuedMaterialDescriptor(uri);
+                input = activity.openUriInput(uri);
+                if (input == null) throw new SecurityException("文件读取授权已失效");
+                ProjectMaterialUploadQueue.Metadata metadata = new ProjectMaterialUploadQueue.Metadata(
+                    hostId, dataGeneration, deviceId, studentId, target.type, target.id, fileName,
+                    descriptor.sourceType, descriptor.attributionQuery, descriptor.sourceReference);
+                activity.projectMaterialUploadQueue.enqueue(input, metadata);
+                queued += 1;
+                copiedUris.add(uri);
+                activity.runOnUiThread(new UploadQueueStatusTask(activity, "上传队列：已安全保存 " + queued + "/" + uris.size() + "，等待主机回执核对。"));
             } catch (Exception error) {
-                failures.add(fileName + "：" + error.getMessage());
+                String detail = error instanceof SecurityException
+                    ? "读取权限失效，已暂停；请重新选择该文件"
+                    : activity.safeErrorMessage(error);
+                failures.add(fileName + "：" + detail);
                 failureLabels.add(fileName);
                 failedUris.add(uri);
+            } finally {
+                if (input != null) try { input.close(); } catch (Exception ignored) {}
             }
         }
-        activity.pendingSharedUris.removeAll(uploadedUris);
-        if (failures.size() == 0) {
-            activity.pendingSharedUris.clear();
-            activity.runOnUiThread(new StatusTask(activity, "上传完成：" + success + " 个资料已进入" + target.name + "。"));
-            activity.runOnUiThread(new ToastTask(activity, "上传完成：" + success + " 个资料。"));
-        } else {
-            String firstFailure = failures.get(0);
-            activity.runOnUiThread(new StatusTask(activity, "上传完成 " + success + "/" + uris.size() + " 个；失败 " + failures.size() + " 个。首个失败：" + firstFailure));
-            activity.runOnUiThread(new ToastTask(activity, "部分资料上传失败，请检查主机连接后重试。"));
-        }
-        activity.runOnUiThread(new UploadResultTask(activity, success, uris.size(), failedUris, failureLabels, target));
-        activity.runOnUiThread(new UploadQueueStatusTask(activity, "上传队列：完成，成功 " + success + " 个，失败 " + failures.size() + " 个。"));
-        activity.runOnUiThread(new ClearSharedUploadTask(activity));
-        if (reloadAfterFinish) {
-            activity.runOnUiThread(new StartLoadStudentsTask(activity));
-        }
+        activity.pendingSharedUris.removeAll(copiedUris);
+        final int queuedCount = queued;
+        final ArrayList<Uri> finalFailedUris = failedUris;
+        final ArrayList<String> finalFailureLabels = failureLabels;
+        final String firstFailure = failures.size() > 0 ? failures.get(0) : "";
+        activity.runOnUiThread(new Runnable() {
+            @Override public void run() {
+                activity.uploadInProgress = false;
+                activity.failedUploadUris.clear();
+                activity.failedUploadUris.addAll(finalFailedUris);
+                activity.captureUploadUrisInFlight.clear();
+                activity.captureUploadVisualState = finalFailedUris.size() > 0 ? "failed" : "idle";
+                activity.updateSharedUploadButton();
+                activity.refreshCaptureUi();
+                if (queuedCount > 0) {
+                    activity.status("已将 " + queuedCount + " 个资料安全保存到本机持久队列；主机接收结果将按回执核对。");
+                    activity.toast("资料已进入持久上传队列。");
+                    ProjectMaterialUploadJobService.schedule(activity);
+                    ProjectMaterialUploadJobService.runNow(activity);
+                }
+                if (finalFailureLabels.size() > 0) {
+                    activity.uploadResultText.setText("本机入队失败 " + finalFailureLabels.size()
+                        + " 个，未发送到主机。首个失败：" + firstFailure);
+                } else {
+                    activity.uploadResultText.setText("最近操作：" + queuedCount
+                        + " 个资料已建立本机私有稳定副本，正在等待主机确认回执。\n固定目标：" + target.name + "。");
+                }
+                activity.refreshProjectMaterialQueueStatus();
+                if (reloadAfterFinish && queuedCount > 0) {
+                    activity.uploadQueueText.postDelayed(new Runnable() {
+                        @Override public void run() {
+                            activity.refreshProjectMaterialQueueStatus();
+                            activity.loadStudents();
+                        }
+                    }, 1800L);
+                }
+            }
+        });
     }
 }
 

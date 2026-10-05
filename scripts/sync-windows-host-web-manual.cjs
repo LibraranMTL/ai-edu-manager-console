@@ -160,8 +160,18 @@ function manualMenu(currentHref) {
 
 const fallbackTemplatePath = path.join(websiteRoot, 'android-student-manual.html');
 
-// Host-only releases must not regenerate manuals belonging to other products.
-const selectedManualSpecs = process.argv.includes('--host-only') ? manualSpecs.slice(0, 1) : manualSpecs;
+// Scoped releases must not regenerate manuals belonging to other products.
+const selectedManualSpecs = process.argv.includes('--host-only')
+  ? manualSpecs.slice(0, 1)
+  : process.argv.includes('--android-standalone-only')
+    ? manualSpecs.filter(({ currentHref }) => currentHref === './android-standalone-manual.html')
+    : process.argv.includes('--terminal-clients-only')
+      ? manualSpecs.filter(({ currentHref }) => [
+        './windows-student-manual.html',
+        './android-student-manual.html',
+        './android-teacher-manual.html',
+      ].includes(currentHref))
+    : manualSpecs;
 for (const spec of selectedManualSpecs) {
   const source = fs.readFileSync(spec.sourcePath, 'utf8');
   const rendered = renderMarkdown(source);

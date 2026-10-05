@@ -326,15 +326,17 @@ const { createCaptureInbox } = require('./capture-inbox.cjs');
 const { createAudioTranscription } = require('./audio-transcription.cjs');
 const { createObsidianVaults } = require('./obsidian-vault.cjs');
 const { createPracticeCards } = require('./practice-cards.cjs');
+const { checkedLanguageProfile } = require('./practice-language.cjs');
 let practiceCardsRuntime;
 function getPracticeCards() {
   return practiceCardsRuntime ||= createPracticeCards({
     resolveStudentDir: async id => { const student = findStudent(String(id || '')); if (!student) throw new Error('当前学生不存在'); return studentAiManagerDir(student); },
+    readLanguageProfile: async id => { const student = findStudent(String(id || '')); if (!student) throw new Error('当前学生不存在'); return checkedLanguageProfile(student.languageProfile); },
     snapshot: async id => {
       const student = findStudent(String(id || '')); if (!student) throw new Error('当前学生不存在');
       const value = planningGuidanceService().evidenceSnapshot(student);
       const { deidentifyResearchInput } = require('./planning-guidance.cjs');
-      return { ...value, learningSignals: JSON.parse(redactStudentGeneration(value.learningSignals, student)), confirmedGrowthSignals: JSON.parse(redactStudentGeneration(value.confirmedGrowthSignals, student)), profile: JSON.parse(redactStudentGeneration(deidentifyResearchInput(student, value), student)) };
+      return { ...value, languageProfile: checkedLanguageProfile(student.languageProfile), learningSignals: JSON.parse(redactStudentGeneration(value.learningSignals, student)), confirmedGrowthSignals: JSON.parse(redactStudentGeneration(value.confirmedGrowthSignals, student)), profile: JSON.parse(redactStudentGeneration(deidentifyResearchInput(student, value), student)) };
     },
     generate: async input => {
       await refreshAdapterCapabilities(true); const capability = adapterCapabilities().codex;
@@ -28182,6 +28184,7 @@ function toHostStudent(student) {
     phone: String(student.phone || ''),
     email: String(student.email || ''),
     goal: String(student.goal || ''),
+    ...(student.languageProfile == null ? {} : { languageProfile: checkedLanguageProfile(student.languageProfile) }),
     birthDate: /^\d{4}-\d{2}-\d{2}$/.test(String(student.birthDate || '')) ? String(student.birthDate) : '',
     manualAgeBand: String(student.manualAgeBand || ''),
     currentRegion: String(student.currentRegion || ''),
@@ -28239,6 +28242,7 @@ function syncStudentsIndex(studentsJson) {
       const existing = existingById.get(String(student.id));
       return toHostStudent({
         ...student,
+        languageProfile: Object.hasOwn(student, 'languageProfile') ? student.languageProfile : existing?.languageProfile,
         createdAt: student.createdAt || existing?.createdAt || '',
         loginId: student.loginId || existing?.loginId || '',
         loginIdVersion: student.loginIdVersion || existing?.loginIdVersion || 1,

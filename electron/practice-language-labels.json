@@ -1,0 +1,16 @@
+{
+  "zh-CN": {
+    "name": "简体中文", "brand": "AI教育管家 · 每日针对性练习", "minutes": "分钟",
+    "rationale": "为什么练", "prompt": "练习题目", "writing": "我的作答",
+    "hint": "提示", "explanation": "参考答案与解析", "download": "学习卡片",
+    "footer": "分享／打印版仅包含练习内容与空白作答区。练习结果需要核验，不等于稳定掌握。",
+    "subjects": { "数学": "数学", "语文": "语文", "英语": "英语", "物理": "物理", "化学": "化学", "生物": "生物", "历史": "历史", "地理": "地理" }
+  },
+  "en": {
+    "name": "English", "brand": "AI Education Manager · Targeted practice", "minutes": "minutes",
+    "rationale": "Why this practice", "prompt": "Practice task", "writing": "My response",
+    "hint": "Hint", "explanation": "Reference answer and explanation", "download": "Learning-card",
+    "footer": "This print/share version contains the exercise and a blank response area. Practice results require review and do not establish lasting mastery.",
+    "subjects": { "数学": "Mathematics", "语文": "Chinese", "英语": "English", "物理": "Physics", "化学": "Chemistry", "生物": "Biology", "历史": "History", "地理": "Geography" }
+  }
+}

@@ -10,7 +10,7 @@ const ADMIN = 'test-private-admin-0192-1234567890';
 test('answer file storage is student-scoped, hashed, idempotent and not mastery evidence', async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(),'answer-file-'));
   try {
-    const api = createPracticeCards({ resolveStudentDir: async id => { if(!['a','b'].includes(id)) throw Error('student'); return path.join(root,id); }, snapshot: async () => ({ profile: {}, learningSignals:['正式报告：复习方程'],confirmedGrowthSignals:[],sourceIds:['r1'],inputFingerprint:'fp' }), generate: async ({schema}) => schema.required.includes('passed') ? {passed:true,reason:'通过'} : {title:'方程',subject:'数学',knowledgePoint:'一次方程',rationale:'正式报告依据',minutes:10,prompt:'2x+3=7',hint:'移项',answer:'x=2',explanation:'减3再除2',sourceRefs:['E0']} });
+    const api = createPracticeCards({ resolveStudentDir: async id => { if(!['a','b'].includes(id)) throw Error('student'); return path.join(root,id); }, snapshot: async () => ({ profile: {}, learningSignals:['正式报告：复习方程'],confirmedGrowthSignals:[],sourceIds:['r1'],inputFingerprint:'fp' }), generate: async ({schema}) => schema.required.includes('passed') ? {passed:true,languagePassed:true,reason:'通过'} : {title:'方程',subject:'数学',knowledgePoint:'一次方程',rationale:'正式报告依据',minutes:10,prompt:'2x+3=7',hint:'移项',answer:'x=2',explanation:'减3再除2',sourceRefs:['E0']} });
     await api.savePlan('a',{subject:'数学',range:'auto',minutes:10,template:'clear',focus:'',autoEnabled:false});
     const {card} = await api.generate('a'); await api.start('a',card.id);
     const input = {attemptId:'answer-file-0192',attachment:{name:'作答.txt',base64:Buffer.from('x=2').toString('base64')},difficulty:'right',confidence:3};

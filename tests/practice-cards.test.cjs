@@ -11,7 +11,7 @@ test('practice content uses evidence and independent review, hides answers until
   let fingerprint = 'fp1', calls = 0, reject = false;
   const create = () => createPracticeCards({ resolveStudentDir: async id => { if (!['a', 'b'].includes(id)) throw Error('student invalid'); return path.join(root, id); },
     snapshot: async id => ({ profile: { grade: '八年级' }, inputFingerprint: fingerprint, learningSignals: id === 'a' ? ['正式报告：方程移项需复习'] : [], confirmedGrowthSignals: [], sourceIds: ['report:a:正式报告'] }),
-    generate: async ({ schema }) => { calls++; return schema.required.includes('passed') ? { passed: !reject, reason: '单一知识点，可解，依据适配' } : { title: '移项练习', subject: '数学', knowledgePoint: '一次方程', rationale: '复习报告所示需求，不推断掌握', minutes: 10, sourceRefs: ['E0'], prompt: '解方程 2x+3=7', hint: '两边先减 3', answer: 'x=2', explanation: '两边减 3 再除以 2' }; } });
+    generate: async ({ schema }) => { calls++; return schema.required.includes('passed') ? { passed: !reject, languagePassed: true, reason: '单一知识点，可解，依据适配' } : { title: '移项练习', subject: '数学', knowledgePoint: '一次方程', rationale: '复习报告所示需求，不推断掌握', minutes: 10, sourceRefs: ['E0'], prompt: '解方程 2x+3=7', hint: '两边先减 3', answer: 'x=2', explanation: '两边减 3 再除以 2' }; } });
   let api = create();
   try {
     await api.savePlan('a', plan); await api.savePlan('b', plan); await assert.rejects(api.generate('b'), /证据/);

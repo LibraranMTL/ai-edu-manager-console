@@ -7,6 +7,8 @@ import type { DownloadInboxApi } from './DownloadInboxPanel';
 const DownloadInboxPanel = React.lazy(() => import('./DownloadInboxPanel').then(module => ({ default: module.DownloadInboxPanel })));
 const CaptureInboxPanel = React.lazy(() => import('./CaptureInboxPanel').then(module => ({ default: module.CaptureInboxPanel })));
 import type { PracticeApi } from './PracticeCardsPanel';
+import { PracticeLanguageFields } from './PracticeLanguageFields';
+import type { PracticeLanguageProfile } from './PracticeLanguageFields';
 import { boundedWork } from './bounded-work';
 const PracticeCardsPanel = React.lazy(() => import('./PracticeCardsPanel').then(module => ({ default: module.PracticeCardsPanel })));
 import type { ResearchApi, GuidanceSections } from './PlanningResearchPanels';
@@ -175,6 +177,7 @@ type AgentToolAdapter = {
 };
 
 type Student = {
+  languageProfile?: PracticeLanguageProfile;
   id: string;
   loginId?: string;
   loginIdVersion?: number;
@@ -9518,6 +9521,7 @@ ${sourceText}`;
       phone: student.phone ?? '',
       email: student.email ?? '',
       goal: student.goal,
+      languageProfile: student.languageProfile,
       birthDate: student.birthDate,
       manualAgeBand: student.manualAgeBand,
       currentRegion: student.currentRegion,
@@ -16369,7 +16373,7 @@ ${JSON.stringify(items, null, 2)}
             projects={projects.filter(project => (project.studentIds || []).map(String).includes(String(selectedStudent.id)) && project.status !== 'sealed').map(project => ({ id: String(project.id), name: project.name }))} /></React.Suspense>
         )}
         {!shouldBlockForAgentInstall && !isLicenseRestrictedSection && activeSection === 'learning-cards' && selectedStudent && (
-          <React.Suspense fallback={<section className="panel">正在加载学习卡片…</section>}><PracticeCardsPanel key={selectedStudent.id} studentId={selectedStudent.id} api={bridge() as PracticeApi} /></React.Suspense>
+          <React.Suspense fallback={<section className="panel">正在加载学习卡片…</section>}><PracticeCardsPanel key={selectedStudent.id} studentId={selectedStudent.id} languageRevision={`${selectedStudent.languageProfile?.primaryLanguage || ''}:${selectedStudent.languageProfile?.supportLanguage || ''}`} onOpenStudentProfile={() => { setNavigationGroup('home'); setActivePageTab('student-profile'); setActiveSection('archive'); }} api={bridge() as PracticeApi} /></React.Suspense>
         )}
         {!shouldBlockForAgentInstall && !isLicenseRestrictedSection && ['photo-upload', 'audio-capture', 'learning-cards'].includes(activeSection) && !selectedStudent && (
           <section className="panel feature-under-construction">
@@ -16953,6 +16957,7 @@ ${JSON.stringify(items, null, 2)}
                 <label>个人兴趣<input value={(draft.interests || []).join('、')} onChange={(event) => setDraft({ ...draft, interests: event.target.value.split(/[、,，]/).map((item) => item.trim()).filter(Boolean) })} placeholder="例如：机器人、生态、写作" /></label>
                 <label>学科特长<input value={(draft.subjectStrengths || []).join('、')} onChange={(event) => setDraft({ ...draft, subjectStrengths: event.target.value.split(/[、,，]/).map((item) => item.trim()).filter(Boolean) })} placeholder="只填写有资料依据的优势" /></label>
                 <label>职业方向<input value={(draft.careerDirections || []).join('、')} onChange={(event) => setDraft({ ...draft, careerDirections: event.target.value.split(/[、,，]/).map((item) => item.trim()).filter(Boolean) })} placeholder="例如：工程、医学、设计（可为空）" /></label>
+                {isWindows && <PracticeLanguageFields value={draft.languageProfile} onChange={(languageProfile) => setDraft({ ...draft, languageProfile })} />}
                 <fieldset className="wide planning-route-fieldset"><legend>规划路径</legend>{([['domestic', '境内'], ['hongkong_macau', '港澳'], ['international', '国际']] as const).map(([route, label]) => <label className="checkbox-line" key={route}><input type="checkbox" checked={(draft.planningRoutes || []).includes(route)} onChange={(event) => setDraft({ ...draft, planningRoutes: event.target.checked ? [...new Set([...(draft.planningRoutes || []), route])] : (draft.planningRoutes || []).filter((item) => item !== route) })} /><span>{label}</span></label>)}</fieldset>
               </div>
 
@@ -19688,6 +19693,7 @@ ${JSON.stringify(items, null, 2)}
                   <label>个人兴趣<input value={(studentEditDraft.interests || []).join('、')} onChange={(event) => setStudentEditDraft({ ...studentEditDraft, interests: event.target.value.split(/[、,，]/).map((item) => item.trim()).filter(Boolean) })} placeholder="例如：机器人、生态、写作" /></label>
                   <label>学科特长<input value={(studentEditDraft.subjectStrengths || []).join('、')} onChange={(event) => setStudentEditDraft({ ...studentEditDraft, subjectStrengths: event.target.value.split(/[、,，]/).map((item) => item.trim()).filter(Boolean) })} placeholder="只填写有资料依据的优势" /></label>
                   <label>职业方向<input value={(studentEditDraft.careerDirections || []).join('、')} onChange={(event) => setStudentEditDraft({ ...studentEditDraft, careerDirections: event.target.value.split(/[、,，]/).map((item) => item.trim()).filter(Boolean) })} placeholder="例如：工程、医学、设计（可为空）" /></label>
+                  {isWindows && <PracticeLanguageFields value={studentEditDraft.languageProfile} onChange={(languageProfile) => setStudentEditDraft({ ...studentEditDraft, languageProfile })} />}
                   <fieldset className="wide planning-route-fieldset"><legend>规划路径</legend>{([['domestic', '境内'], ['hongkong_macau', '港澳'], ['international', '国际']] as const).map(([route, label]) => <label className="checkbox-line" key={route}><input type="checkbox" checked={(studentEditDraft.planningRoutes || []).includes(route)} onChange={(event) => setStudentEditDraft({ ...studentEditDraft, planningRoutes: event.target.checked ? [...new Set([...(studentEditDraft.planningRoutes || []), route])] : (studentEditDraft.planningRoutes || []).filter((item) => item !== route) })} /><span>{label}</span></label>)}</fieldset>
                 </div>
                 <div className="actions">

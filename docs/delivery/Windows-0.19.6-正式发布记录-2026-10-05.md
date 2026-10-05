@@ -39,7 +39,7 @@
 - 正式下载地址：`https://www.greatbg.com/download/AI-edu-manager-console-Windows-0.19.6.exe` 和 `https://www.greatbg.com/download/AI-edu-manager-console-Windows-0.19.6.zip`。
 - 官网下载页、两份 Windows 主机手册及 `/education/`、`/download/` 下的版本清单已更新；同时发布 SHA-256 文本和构建审计 JSON。
 - 发布前线上备份保留在 `/www/backup/ai-edu-0.19.6-20261005-085834-qingdao/`；上传暂存目录 `/tmp/ai-edu-0.19.6-20261005-20261005-085834` 已在验收通过后删除。
-- 9 个服务器落盘文件通过 SHA-256 校验；5 个公网小文件的正文 SHA-256 与本地一致。公网 EXE／ZIP 的 `Content-Length` 分别为 98954616 和 98965220，分段读取均返回 HTTP 206 和 1024 字节。
+- 10 个服务器落盘文件（含最终发布审计 JSON）通过 SHA-256 校验；6 个公网小文件的正文 SHA-256 与本地一致。公网 EXE／ZIP 的 `Content-Length` 分别为 98954616 和 98965220，分段读取均返回 HTTP 206 和 1024 字节。
 - Web 服务配置未改变，无需重启或重载。云端报告服务未部署新版本。
 
 ## Git

@@ -4,6 +4,7 @@ const { safeStorage } = require('electron');
 const { screen } = require('electron');
 const { captureControlBounds } = require('./capture-control-window.cjs');
 const { routeForAction, clampQuickCaptureBounds, locateQuickCaptureBounds, publicQuickCaptureState } = require('./quick-capture-window.cjs');
+const { createQuickCaptureDirect } = require('./quick-capture-direct.cjs');
 const { powerMonitor } = require('electron');
 const { desktopCapturer, globalShortcut, Menu, Tray } = require('electron');
 const path = require('path');
@@ -765,6 +766,11 @@ let quickCaptureLoaded = false;
 let quickCaptureEnabled = false;
 let quickCaptureExpanded = false;
 let quickCaptureActiveAction = '';
+let quickCaptureSetupOpen = false;
+let quickPhotoWindow = null;
+let quickPhotoContext = null;
+let quickCaptureDirect = null;
+let captureStartPending = false;
 const QUICK_CAPTURE_COLLAPSED_HEIGHT = 72;
 const QUICK_CAPTURE_EXPANDED_HEIGHT = 160;
 let quickCaptureStudentId = '';
@@ -10720,6 +10726,7 @@ function createWindow() {
     if (courseFullscreen) exitCourseFullscreen('system');
   });
   mainWindow.on('closed', () => {
+    if (quickPhotoWindow && !quickPhotoWindow.isDestroyed()) quickPhotoWindow.destroy();
     if (quickCaptureWindow && !quickCaptureWindow.isDestroyed()) quickCaptureWindow.destroy();
     if (courseView) {
       try { courseView.webContents.close(); } catch {}
@@ -11970,6 +11977,7 @@ function createCaptureTray() {
 
 function updateCaptureControlWindow() {
   const active = activeCaptureRuntime?.session;
+  if (active) quickCaptureSetupOpen = false;
   const shouldShow = quickCaptureEnabled || (active && quickCaptureDismissedSessionId !== active.id);
   if (!shouldShow) {
     if (quickCaptureWindow && !quickCaptureWindow.isDestroyed()) quickCaptureWindow.hide();
@@ -11980,10 +11988,10 @@ function updateCaptureControlWindow() {
     const display = mainWindow && !mainWindow.isDestroyed()
       ? screen.getDisplayMatching(mainWindow.getBounds())
       : screen.getPrimaryDisplay();
-    const width = active ? 610 : 520;
+    const width = active || quickCaptureSetupOpen ? 610 : 520;
     const initial = captureControlBounds(display.workArea, width, 86);
     const bounds = clampQuickCaptureBounds(display.workArea, { ...initial, ...quickCapturePosition,
-      height: quickCaptureExpanded ? QUICK_CAPTURE_EXPANDED_HEIGHT : QUICK_CAPTURE_COLLAPSED_HEIGHT });
+      height: quickCaptureSetupOpen ? 500 : quickCaptureExpanded ? QUICK_CAPTURE_EXPANDED_HEIGHT : QUICK_CAPTURE_COLLAPSED_HEIGHT });
     quickCaptureWindow = new BrowserWindow({
       ...bounds, frame: false, transparent: false, backgroundColor: '#f8fcfa', resizable: false, alwaysOnTop: true,
       skipTaskbar: true, show: false, autoHideMenuBar: true,
@@ -11992,11 +12000,13 @@ function updateCaptureControlWindow() {
     const window = quickCaptureWindow;
     window.setAlwaysOnTop(true, 'floating');
     window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+    window.webContents.on('will-navigate', event => event.preventDefault());
     window.webContents.on('did-finish-load', () => {
       if (quickCaptureWindow !== window) return;
       quickCaptureLoaded = true;
       sendQuickCaptureState();
       if (!window.isVisible()) window.showInactive();
+      updateCaptureControlWindow();
       void refreshQuickCaptureCount();
     });
     window.on('moved', () => {
@@ -12010,8 +12020,8 @@ function updateCaptureControlWindow() {
     void window.loadFile(path.join(__dirname, 'quick-capture.html')).catch(error => console.warn('快捷采集工具条加载失败：', error));
   } else {
     const [currentWidth, currentHeight] = quickCaptureWindow.getSize();
-    const width = active ? 610 : 520;
-    const height = quickCaptureExpanded ? QUICK_CAPTURE_EXPANDED_HEIGHT : QUICK_CAPTURE_COLLAPSED_HEIGHT;
+    const width = active || quickCaptureSetupOpen ? 610 : 520;
+    const height = quickCaptureSetupOpen ? 500 : quickCaptureExpanded ? QUICK_CAPTURE_EXPANDED_HEIGHT : QUICK_CAPTURE_COLLAPSED_HEIGHT;
     if (currentWidth !== width || currentHeight !== height) resizeQuickCaptureWindow(width, height);
     if (!quickCaptureWindow.isVisible() && quickCaptureLoaded) {
       quickCaptureWindow.showInactive();
@@ -12049,7 +12059,7 @@ function quickCaptureStudent() {
 
 function quickCaptureState() {
   const student = quickCaptureStudent();
-  return publicQuickCaptureState({
+  return { ...publicQuickCaptureState({
     student,
     session: activeCaptureRuntime?.session,
     visible: Boolean(quickCaptureWindow && !quickCaptureWindow.isDestroyed() && quickCaptureWindow.isVisible()),
@@ -12057,7 +12067,7 @@ function quickCaptureState() {
     activeAction: quickCaptureActiveAction,
     pendingCount: quickCaptureCountStudentId === student.id ? quickCapturePendingCount : 0,
     countStatus: quickCaptureCountStudentId === student.id ? quickCaptureCountStatus : 'unknown',
-  });
+  }), setupOpen: quickCaptureSetupOpen, photoOpen: Boolean(quickPhotoWindow && !quickPhotoWindow.isDestroyed()), photoStudentName: quickPhotoContext?.student.name || '' };
 }
 
 function sendQuickCaptureState() {
@@ -12114,14 +12124,19 @@ function resizeQuickCaptureWindow(width, height) {
 
 function setQuickCaptureEnabled(enabled, { locate = false } = {}) {
   quickCaptureEnabled = Boolean(enabled);
+  if (!enabled) {
+    quickCaptureSetupOpen = false;
+    quickCaptureDirect?.invalidateScreen();
+    if (quickPhotoWindow && !quickPhotoWindow.isDestroyed()) quickPhotoWindow.close();
+  }
   if (enabled) quickCaptureDismissedSessionId = '';
   else if (activeCaptureRuntime?.session) quickCaptureDismissedSessionId = activeCaptureRuntime.session.id;
   if (enabled && locate) {
     const mainBounds = mainWindow && !mainWindow.isDestroyed() ? mainWindow.getBounds() : screen.getPrimaryDisplay().workArea;
     const display = screen.getDisplayMatching(mainBounds);
     const bounds = locateQuickCaptureBounds(mainBounds, display.workArea,
-      activeCaptureRuntime?.session ? 610 : 520,
-      quickCaptureExpanded ? QUICK_CAPTURE_EXPANDED_HEIGHT : QUICK_CAPTURE_COLLAPSED_HEIGHT);
+      activeCaptureRuntime?.session || quickCaptureSetupOpen ? 610 : 520,
+      quickCaptureSetupOpen ? 500 : quickCaptureExpanded ? QUICK_CAPTURE_EXPANDED_HEIGHT : QUICK_CAPTURE_COLLAPSED_HEIGHT);
     quickCapturePosition = { x: bounds.x, y: bounds.y };
     if (quickCaptureWindow && !quickCaptureWindow.isDestroyed()) quickCaptureWindow.setBounds(bounds);
   }
@@ -12175,12 +12190,63 @@ function sendQuickCaptureNavigation(tabId) {
   return { ok: true };
 }
 
-async function handleQuickCaptureAction(event, action) {
+function getQuickCaptureDirect() {
+  if (!quickCaptureDirect) quickCaptureDirect = createQuickCaptureDirect({
+    currentStudent: () => quickCaptureStudentId,
+    findStudent: id => readStudentsIndex().find(s => String(s.id) === id),
+    projects: () => readProjects(),
+    sources: async () => {
+      const result = JSON.parse(await listCaptureSources());
+      if (!result.ok) throw Error(result.message);
+      return result.sources;
+    },
+    startScreen: async (input, validateContext) => JSON.parse(await startCaptureSession(JSON.stringify(input), validateContext)),
+    receivePhoto: (studentId, input) => getCaptureInbox().receive(studentId, input),
+  });
+  return quickCaptureDirect;
+}
+
+function showQuickPhotoWindow() {
+  if (quickPhotoWindow && !quickPhotoWindow.isDestroyed()) {
+    quickPhotoWindow.show(); quickPhotoWindow.focus(); return { ok: true };
+  }
+  const context = getQuickCaptureDirect().createPhotoSession();
+  const anchor = quickCaptureWindow.getBounds();
+  const area = screen.getDisplayMatching(anchor).workArea;
+  const bounds = clampQuickCaptureBounds(area, { x: anchor.x, y: anchor.y + anchor.height + 8, width: 560, height: 570 });
+  const window = new BrowserWindow({ ...bounds, title: '快捷拍照', backgroundColor: '#f8fcfa',
+    show: false, alwaysOnTop: true, autoHideMenuBar: true, resizable: true, minWidth: 360, minHeight: 440,
+    webPreferences: { preload: path.join(__dirname, 'quick-photo-preload.cjs'), partition: 'quick-photo', contextIsolation: true, nodeIntegration: false, sandbox: true },
+  });
+  quickPhotoWindow = window; quickPhotoContext = context;
+  let cameraAllowed = false;
+  window.allowQuickCamera = () => { cameraAllowed = true; };
+  window.webContents.session.setPermissionCheckHandler((contents, permission, _origin, details) =>
+    !window.isDestroyed() && contents === window.webContents && window.isVisible() && cameraAllowed && permission === 'media' && details.mediaType === 'video');
+  window.webContents.session.setPermissionRequestHandler((contents, permission, callback, details) =>
+    callback(!window.isDestroyed() && contents === window.webContents && window.isVisible() && cameraAllowed && permission === 'media' && details.mediaTypes?.length > 0 && details.mediaTypes.every(type => type === 'video')));
+  window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+  window.webContents.on('will-navigate', event => event.preventDefault());
+  window.once('ready-to-show', () => { if (!window.isDestroyed()) { window.show(); window.focus(); } });
+  window.on('closed', () => {
+    getQuickCaptureDirect().closePhoto(context.token);
+    if (quickPhotoWindow === window) { quickPhotoWindow = null; quickPhotoContext = null; }
+    sendQuickCaptureState();
+  });
+  window.webContents.on('render-process-gone', () => { if (!window.isDestroyed()) window.destroy(); });
+  void window.loadFile(path.join(__dirname, 'quick-photo.html')).catch(() => { if (!window.isDestroyed()) window.destroy(); });
+  sendQuickCaptureState();
+  return { ok: true };
+}
+
+async function handleQuickCaptureAction(event, action, input = {}) {
   if (!quickCaptureWindow || quickCaptureWindow.isDestroyed() || event.sender !== quickCaptureWindow.webContents) {
     return { ok: false, message: '工具条窗口已失效。' };
   }
   if (action === 'hide') { setQuickCaptureEnabled(false); return { ok: true }; }
   if (action === 'more') {
+    quickCaptureSetupOpen = false;
+    quickCaptureDirect?.invalidateScreen();
     quickCaptureExpanded = !quickCaptureExpanded;
     resizeQuickCaptureWindow(activeCaptureRuntime?.session ? 610 : 520,
       quickCaptureExpanded ? QUICK_CAPTURE_EXPANDED_HEIGHT : QUICK_CAPTURE_COLLAPSED_HEIGHT);
@@ -12188,9 +12254,30 @@ async function handleQuickCaptureAction(event, action) {
     if (quickCaptureExpanded) void refreshQuickCaptureCount();
     return { ok: true };
   }
+  if (action === 'close-screen') {
+    quickCaptureSetupOpen = false; quickCaptureDirect?.invalidateScreen(); updateCaptureControlWindow(); return { ok: true };
+  }
   if (action === 'students') return sendQuickCaptureNavigation('students');
   const locked = licenseRequiredJson('快捷采集');
   if (locked) return JSON.parse(locked);
+  if (['screen', 'start-screen', 'photo'].includes(action)) {
+    try {
+      if (action === 'photo') {
+        quickCaptureSetupOpen = false; quickCaptureDirect?.invalidateScreen();
+        const result = showQuickPhotoWindow(); quickCaptureActiveAction = action; updateCaptureControlWindow(); return result;
+      }
+      if (activeCaptureRuntime) return { ok: false, message: '已有屏幕采集，请先结束当前会话。' };
+      if (action === 'screen') {
+        const setup = await getQuickCaptureDirect().prepareScreen();
+        quickCaptureSetupOpen = true; quickCaptureExpanded = false; quickCaptureActiveAction = action;
+        updateCaptureControlWindow();
+        return { ok: true, setup };
+      }
+      const result = await getQuickCaptureDirect().start(input);
+      if (result.ok) { quickCaptureSetupOpen = false; updateCaptureControlWindow(); }
+      return result;
+    } catch (error) { return { ok: false, message: error.message }; }
+  }
   const session = activeCaptureRuntime?.session;
   if (['pause', 'stop', 'highlight', 'capture-inbox'].includes(action)) {
     if (!session) return { ok: false, message: '当前没有屏幕采集会话。' };
@@ -12202,6 +12289,7 @@ async function handleQuickCaptureAction(event, action) {
   }
   const tabId = routeForAction(action);
   if (!tabId) return { ok: false, message: '未知的快捷采集操作。' };
+  quickCaptureSetupOpen = false; quickCaptureDirect?.invalidateScreen(); updateCaptureControlWindow();
   const result = sendQuickCaptureNavigation(tabId);
   if (result.ok) {
     quickCaptureActiveAction = action;
@@ -12223,8 +12311,9 @@ async function listCaptureSources() {
         id: source.id,
         name: source.name,
         type: source.id.startsWith('screen:') ? 'screen' : 'window',
-        blocked: !source.id.startsWith('screen:') && (isSensitiveCaptureSourceName(source.name) || String(source.name || '').includes('快捷采集')),
+        blocked: !source.id.startsWith('screen:') && (isSensitiveCaptureSourceName(source.name) || /快捷采集|快捷拍照/.test(String(source.name || ''))),
         blockReason: !source.id.startsWith('screen:') && String(source.name || '').includes('快捷采集') ? '不能把快捷采集工具条自身作为采集来源。'
+          : !source.id.startsWith('screen:') && String(source.name || '').includes('快捷拍照') ? '不能把拍照预览窗作为采集来源。'
           : !source.id.startsWith('screen:') && isSensitiveCaptureSourceName(source.name) ? '该窗口可能包含密码、凭据或私人通信，已自动排除。' : '',
         thumbnail: source.thumbnail?.isEmpty() ? '' : source.thumbnail.toDataURL(),
       })),
@@ -12362,13 +12451,17 @@ function scheduleCaptureRuntime(runtime) {
   runtime.stopTimer = setTimeout(() => { void stopCaptureSession(runtime.session.id, 'duration_complete'); }, remaining);
 }
 
-async function startCaptureSession(optionsJson) {
+async function startCaptureSession(optionsJson, validateContext = () => {}) {
+  if (captureStartPending) return JSON.stringify({ ok: false, message: '屏幕采集正在启动，请稍候。' });
+  captureStartPending = true;
+  let createdRuntime = null;
   try {
     if (activeCaptureRuntime) return JSON.stringify({ ok: false, message: '已有采集会话正在运行，请先结束当前会话。' });
     const input = JSON.parse(optionsJson || '{}');
     const sourceId = String(input.sourceId || '');
     if (!sourceId) return JSON.stringify({ ok: false, message: '请选择采集屏幕或应用窗口。' });
     const sourcesResult = JSON.parse(await listCaptureSources());
+    validateContext();
     const source = (sourcesResult.sources || []).find((item) => item.id === sourceId);
     if (!source) return JSON.stringify({ ok: false, message: '选中的采集来源当前不可用。' });
     if (source.blocked) return JSON.stringify({ ok: false, message: source.blockReason || '该窗口涉及敏感信息，已自动排除。' });
@@ -12424,6 +12517,7 @@ async function startCaptureSession(optionsJson) {
     fs.mkdirSync(session.inboxPath, { recursive: true });
     persistCaptureSession(session);
     const runtime = { session, busy: false, timer: null, stopTimer: null, lastSavedAt: 0, lastSavedSignature: null };
+    createdRuntime = runtime;
     activeCaptureRuntime = runtime;
     captureTimelineScheduler?.yieldForCapture();
     courseCaptureSetupVisible = false;
@@ -12432,9 +12526,11 @@ async function startCaptureSession(optionsJson) {
     await captureFrame(runtime, { force: true });
     return JSON.stringify({ ok: true, session: captureSessionSummary(runtime.session), message: `已开始采集“${source.name}”。` });
   } catch (error) {
-    activeCaptureRuntime = null;
+    if (createdRuntime && activeCaptureRuntime === createdRuntime) {
+      clearInterval(createdRuntime.timer); clearTimeout(createdRuntime.stopTimer); activeCaptureRuntime = null;
+    }
     return JSON.stringify({ ok: false, message: `启动屏幕采集失败：${error.message}` });
-  }
+  } finally { captureStartPending = false; }
 }
 
 function pauseCaptureSession(sessionId) {
@@ -36011,13 +36107,29 @@ ipcMain.handle('bridge:showQuickCapture', async (event) => {
 ipcMain.handle('bridge:setQuickCaptureContext', (event, studentId) => {
   if (!mainWindow || mainWindow.isDestroyed() || event.sender !== mainWindow.webContents) return JSON.stringify({ ok: false, message: '主窗口范围无效。' });
   const student = readStudentsIndex().find(item => String(item.id) === String(studentId || ''));
+  if (quickCaptureStudentId !== String(student?.id || '')) {
+    quickCaptureSetupOpen = false; quickCaptureDirect?.invalidateScreen();
+  }
   quickCaptureStudentId = student ? String(student.id) : '';
   quickCaptureStudentName = student ? String(student.name || '') : '';
-  sendQuickCaptureState();
+  updateCaptureControlWindow();
   if (quickCaptureWindow?.isVisible()) void refreshQuickCaptureCount();
   return JSON.stringify({ ok: true, studentId: quickCaptureStudentId });
 });
-ipcMain.handle('quick-capture:action', (event, action) => handleQuickCaptureAction(event, action));
+ipcMain.handle('quick-capture:action', (event, action, input) => handleQuickCaptureAction(event, action, input));
+ipcMain.handle('quick-photo:action', async (event, action, input) => {
+  if (!quickPhotoWindow || quickPhotoWindow.isDestroyed() || event.sender !== quickPhotoWindow.webContents) return { ok: false, message: '拍照窗口已失效。' };
+  if (action === 'context') return { ok: true, student: quickPhotoContext.student };
+  if (action === 'close') { quickPhotoWindow.close(); return { ok: true }; }
+  const locked = licenseRequiredJson('快捷拍照'); if (locked) return JSON.parse(locked);
+  try {
+    if (action === 'camera') { quickPhotoWindow.allowQuickCamera(); return { ok: true }; }
+    if (action !== 'save') return { ok: false, message: '未知的拍照操作。' };
+    const data = await getQuickCaptureDirect().savePhoto(quickPhotoContext.token, input);
+    void refreshQuickCaptureCount();
+    return { ok: true, itemId: data.item.itemId, message: '已保存到该学生的照片收件箱，可在拍照上传页面投递。' };
+  } catch (error) { return { ok: false, message: error.message }; }
+});
 ipcMain.on('bridge:setCaptureVisionConsent', (event, inputJson) => { licensedIpc(event, '截图视觉服务授权', () => setCaptureVisionConsent(inputJson)); });
 ipcMain.on('bridge:openCaptureInbox', (event, sessionId) => { event.returnValue = openCaptureInbox(sessionId); });
 ipcMain.handle('bridge:listCaptureSources', async () => listCaptureSources());
@@ -36156,6 +36268,7 @@ app.on('before-quit', (event) => {
   flushEducationArchiveVersions();
   flushStudentArchiveSyncs();
   if (quickCaptureCountTimer) clearInterval(quickCaptureCountTimer);
+  if (quickPhotoWindow && !quickPhotoWindow.isDestroyed()) quickPhotoWindow.destroy();
   quickCaptureCountTimer = null;
   if (quickCaptureWindow && !quickCaptureWindow.isDestroyed()) quickCaptureWindow.destroy();
   quickCaptureWindow = null;

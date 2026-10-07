@@ -1,10 +1,10 @@
 {
   "versionCode": 89,
   "versionName": "0.6.19",
-  "windowsVersionCode": 248,
-  "windowsVersionName": "0.19.8",
+  "windowsVersionCode": 249,
+  "windowsVersionName": "0.19.9",
   "windowsReleaseStatus": "stable",
-  "windowsUrl": "https://www.greatbg.com/download/AI-edu-manager-console-Windows-0.19.8.zip",
+  "windowsUrl": "https://www.greatbg.com/download/AI-edu-manager-console-Windows-0.19.9.zip",
   "windowsTerminalVersionCode": 236,
   "windowsTerminalVersionName": "0.18.6",
   "windowsTerminalReleaseStatus": "stable",
@@ -28,5 +28,5 @@
   "managerApkReleaseStatus": "internal",
   "managerApkNotes": "旧 Android 控制台仅供内部装机和测试，当前不提供公网安装包。",
   "apkUrl": "https://www.greatbg.com/download/AI-edu-manager-tablet-terminal-0.6.19.apk",
-  "notes": "Windows 主机 0.19.8 已通过用户真机测试：学习卡片沿用学生学习语言，支持正在进行与待练新卡切换，并在复核通过后更新未开始的待练卡；保留原卡片与作答记录。其他客户端版本及发布状态不变。程序尚未进行代码签名。"
+  "notes": "Windows 主机 0.19.9 已通过用户真机测试：快捷工具条可直接选择来源并启动屏幕采集，悬浮拍照支持预览、重拍与确认保存；录音仍进入原页面。其他客户端版本不变，程序尚未进行代码签名。"
 }

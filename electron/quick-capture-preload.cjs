@@ -1,8 +1,9 @@
 'use strict';
 const { contextBridge, ipcRenderer } = require('electron');
+const result = value => typeof value === 'string' ? JSON.parse(value) : value;
 
 contextBridge.exposeInMainWorld('QuickCapture', {
-  invoke(action) { return ipcRenderer.invoke('quick-capture:action', String(action || '')); },
+  invoke(action, input) { return ipcRenderer.invoke('quick-capture:action', String(action || ''), input).then(result); },
   onState(callback) {
     const listener = (_event, state) => callback(state);
     ipcRenderer.on('quick-capture:state', listener);

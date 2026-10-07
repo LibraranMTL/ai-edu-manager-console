@@ -2,7 +2,7 @@
 <html lang="zh-CN">
 <head>
   <meta charset="utf-8">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'self';">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src data:; style-src 'unsafe-inline'; script-src 'self';">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>快捷采集</title>
   <style>
@@ -18,6 +18,8 @@
     .spacer{flex:1}[hidden]{display:none!important}.details{display:none;border-top:1px solid #d9e8e0;padding-top:9px;margin-top:8px}.details.open{display:block}
     .links{display:flex;gap:7px;flex-wrap:wrap}.notice{font-size:11px;color:#587068;margin:7px 0 0}.capture{display:none;min-width:0;flex:1}.capture.open{display:grid;gap:2px}.capture strong{font-size:12px}.capture span{font-size:10px;color:#5a746a;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.danger{color:#a32f28;border-color:#eec6c1}
     .capture strong{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.message{position:absolute;left:12px;right:12px;bottom:3px;color:#a32f28;font-size:10px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;pointer-events:none}
+    .shell{display:flex;flex-direction:column}.bar{flex-shrink:0}.setup{min-height:0;flex:1;overflow:auto;border-top:1px solid #d9e8e0;padding:12px 0 16px}.setup-head{display:flex;align-items:center;justify-content:space-between;gap:8px}.setup h2{font-size:16px;margin:0}.setup p{font-size:12px;line-height:1.5;color:#617b72;margin:7px 0}.sources{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;max-height:200px;overflow:auto;margin:10px 0}.source{padding:5px;border:1px solid #c8ddd4;border-radius:9px;background:white;text-align:left;min-width:0;color:#172b27}.source[aria-pressed="true"]{border:2px solid #1d6652;background:#e5f4ed}.source:disabled{opacity:.5;cursor:not-allowed}.source img{width:100%;height:68px;object-fit:contain;background:#edf3f0;border-radius:4px}.source span{display:block;font-size:11px;white-space:nowrap;text-overflow:ellipsis;overflow:hidden;margin:4px 1px}.fields{display:grid;grid-template-columns:2fr 1fr;gap:10px}.fields label,.strategy{font-size:12px;display:grid;gap:5px;color:#45675b}select{width:100%;padding:7px;border:1px solid #c8ddd4;border-radius:7px;background:#fff;color:#172b27;min-width:0}.setup-footer{display:flex;justify-content:space-between;align-items:end;gap:12px;margin-top:10px}.primary{background:#1d6652;color:#fff;border-color:#1d6652}.setup-message{min-height:18px;color:#a32f28!important}.photo-active::after{content:' ●';color:#cf5f28}
+    .setup{display:flex;flex-direction:column;overflow:hidden;padding:10px 0 6px}.setup-head,.fields,.setup-footer,.setup>p{flex-shrink:0}.sources{flex:1;min-height:64px;max-height:180px;grid-auto-rows:min-content}.setup-message{min-height:0;margin:0!important}.setup-message:empty{display:none}
   </style>
 </head>
 <body>
@@ -41,6 +43,15 @@
       <button class="icon" id="more" data-action="more" aria-label="更多采集方式" aria-expanded="false" aria-controls="details" title="更多采集方式">⋯</button>
       <button class="icon" data-action="hide" aria-label="隐藏工具条" title="隐藏工具条（可从托盘恢复）">×</button>
     </div>
+    <section id="screen-setup" class="setup" aria-label="屏幕采集设置" hidden>
+      <div class="setup-head"><h2>选择屏幕或窗口</h2><div><button class="action" data-action="screen">刷新来源</button> <button class="icon" data-action="close-screen" aria-label="收起屏幕设置">×</button></div></div>
+      <p id="setup-student"></p>
+      <div id="sources" class="sources" role="group" aria-label="可采集来源"></div>
+      <div class="fields"><label>关联范围<select id="screen-project"><option value="">学生屏幕采集箱</option></select></label><label>采集时长<select id="screen-duration"><option value="15">15 分钟</option><option value="30" selected>30 分钟</option><option value="60">60 分钟</option><option value="90">90 分钟</option><option value="120">120 分钟</option></select></label></div>
+      <div class="setup-footer"><label class="strategy">采集策略<select id="screen-mode"><option value="smart">智能混合（推荐）</option><option value="change">内容变化时保存</option><option value="interval">固定间隔</option></select></label><button class="action primary" data-action="start-screen" id="start-screen" disabled>开始采集</button></div>
+      <p>采集截图，不录制视频。原件保存在本次采集箱，关联项目不自动投递。</p>
+      <p id="setup-message" class="setup-message" role="status"></p>
+    </section>
     <div id="details" class="details">
       <div class="links">
         <button class="action needs-student" data-action="import" aria-pressed="false">本机文件导入</button>

@@ -12179,14 +12179,14 @@ async function showQuickCaptureNearMainWindow() {
   return { ok: window.isVisible(), bounds: window.getBounds(), message: window.isVisible() ? '' : '快捷采集工具条未能显示，请检查当前桌面。' };
 }
 
-function sendQuickCaptureNavigation(tabId) {
+function sendQuickCaptureNavigation(tabId, inboxTab) {
   const studentId = quickCaptureStudentId;
   if (tabId !== 'students' && !readStudentsIndex().some(student => String(student.id) === studentId)) {
     return { ok: false, message: '请先在主窗口选择有效学生。' };
   }
   showMainWindow();
   if (!mainWindow || mainWindow.isDestroyed()) return { ok: false, message: '主窗口暂不可用。' };
-  mainWindow.webContents.send('quick-capture:navigate', { tabId, studentId });
+  mainWindow.webContents.send('quick-capture:navigate', { tabId, studentId, ...(inboxTab === 'shares' ? { inboxTab } : {}) });
   return { ok: true };
 }
 
@@ -12202,8 +12202,32 @@ function getQuickCaptureDirect() {
     },
     startScreen: async (input, validateContext) => JSON.parse(await startCaptureSession(JSON.stringify(input), validateContext)),
     receivePhoto: (studentId, input) => getCaptureInbox().receive(studentId, input),
+    takeScreenshot: acquireQuickScreenshot,
+    receiveScreenshot: (studentId, input) => getCaptureInbox().receive(studentId, input),
   });
   return quickCaptureDirect;
+}
+
+async function acquireQuickScreenshot(sourceId, validateContext) {
+  const toolbar = quickCaptureWindow, photo = quickPhotoWindow;
+  const photoVisible = photo && !photo.isDestroyed() && photo.isVisible();
+  try {
+    if (toolbar && !toolbar.isDestroyed()) toolbar.hide();
+    if (photoVisible) photo.hide();
+    await new Promise(resolve => setTimeout(resolve, 200));
+    validateContext();
+    const sources = await desktopCapturer.getSources({ types: [sourceId.startsWith('screen:') ? 'screen' : 'window'],
+      thumbnailSize: { width: 4096, height: 4096 }, fetchWindowIcons: false });
+    validateContext();
+    const locked = licenseRequiredJson('快捷截屏'); if (locked) throw Error(JSON.parse(locked).message || '请激活授权后重试。');
+    const source = sources.find(item => item.id === sourceId);
+    if (!source || source.thumbnail.isEmpty()) throw Error('截屏来源已关闭或不可用，请刷新来源。');
+    if (!sourceId.startsWith('screen:') && (isSensitiveCaptureSourceName(source.name) || /快捷采集|快捷拍照/.test(source.name))) throw Error('该窗口不允许采集，请选择其他来源。');
+    return { bytes: source.thumbnail.toPNG(), sourceName: deidentifiedCaptureSourceName({ ...source, type: sourceId.startsWith('screen:') ? 'screen' : 'window' }), capturedAt: new Date().toISOString() };
+  } finally {
+    if (photoVisible && quickPhotoWindow === photo && !photo.isDestroyed() && quickCaptureEnabled) photo.showInactive();
+    if (quickCaptureWindow === toolbar && toolbar && !toolbar.isDestroyed()) updateCaptureControlWindow();
+  }
 }
 
 function showQuickPhotoWindow() {
@@ -12258,9 +12282,13 @@ async function handleQuickCaptureAction(event, action, input = {}) {
     quickCaptureSetupOpen = false; quickCaptureDirect?.invalidateScreen(); updateCaptureControlWindow(); return { ok: true };
   }
   if (action === 'students') return sendQuickCaptureNavigation('students');
+  if (action === 'screenshot-inbox') {
+    quickCaptureSetupOpen = false; quickCaptureDirect?.invalidateScreen(); updateCaptureControlWindow();
+    return sendQuickCaptureNavigation('share-capture', 'shares');
+  }
   const locked = licenseRequiredJson('快捷采集');
   if (locked) return JSON.parse(locked);
-  if (['screen', 'start-screen', 'photo'].includes(action)) {
+  if (['screen', 'start-screen', 'take-screen', 'save-screen', 'photo'].includes(action)) {
     try {
       if (action === 'photo') {
         quickCaptureSetupOpen = false; quickCaptureDirect?.invalidateScreen();
@@ -12272,6 +12300,12 @@ async function handleQuickCaptureAction(event, action, input = {}) {
         quickCaptureSetupOpen = true; quickCaptureExpanded = false; quickCaptureActiveAction = action;
         updateCaptureControlWindow();
         return { ok: true, setup };
+      }
+      if (action === 'take-screen') return await getQuickCaptureDirect().screenshot(input);
+      if (action === 'save-screen') {
+        const data = await getQuickCaptureDirect().saveScreenshot(input);
+        void refreshQuickCaptureCount();
+        return { ok: true, itemId: data.item.itemId, message: '已保存到该学生资料收件箱，可继续截屏或在资料收件箱中投递。' };
       }
       const result = await getQuickCaptureDirect().start(input);
       if (result.ok) { quickCaptureSetupOpen = false; updateCaptureControlWindow(); }
@@ -21824,13 +21858,14 @@ function agentMemoryState(studentId) {
     const visibleSessions = [
       ...authorizedSessions.filter((item) => (item.messages || []).length || item.conversationReceipt),
       ...authorizedSessions.filter((item) => !(item.messages || []).length && !item.conversationReceipt),
-    ].slice(0, 8);
+    ];
     const visibleAssetIds = new Set(visibleSessions.map((session) => String(session.conversationReceipt?.assetId || '')).filter(Boolean));
     const imports = visibleAssetIds.size ? (readJsonFile(conversationIndexPath(student), { imports: [] }).imports || []) : [];
     const importByAssetId = new Map(imports.map((item) => [String(item.assetId || ''), item]));
     const deliveries = visibleAssetIds.size ? (readConversationDeliveries(student).deliveries || []) : [];
     const candidates = visibleAssetIds.size ? (readConversationCandidateRegistry(student).candidates || []) : [];
     const deliveryCountByAssetId = new Map();
+    const deliveryHistoryByAssetId = new Map();
     const candidateCountByAssetId = new Map();
     const promotedCountByAssetId = new Map();
     for (const delivery of deliveries) {
@@ -21838,6 +21873,10 @@ function agentMemoryState(studentId) {
       if (!visibleAssetIds.has(assetId)) continue;
       if (delivery.sourceScopeType !== 'student' || String(delivery.sourceScopeId || '') !== String(student.id)) continue;
       deliveryCountByAssetId.set(assetId, (deliveryCountByAssetId.get(assetId) || 0) + 1);
+      const history = deliveryHistoryByAssetId.get(assetId) || [];
+      history.push({ targetType: String(delivery.targetType || ''), targetId: String(delivery.targetId || ''),
+        targetName: String(delivery.targetName || ''), deliveredAt: String(delivery.deliveredAt || '') });
+      deliveryHistoryByAssetId.set(assetId, history);
     }
     for (const candidate of candidates) {
       const assetId = String(candidate?.source?.assetId || '');
@@ -21870,6 +21909,8 @@ function agentMemoryState(studentId) {
         handoff: session.handoff,
         materialLifecycleStatus: imported?.lifecycleStatus || session.materialLifecycleStatus || 'active',
         materialAvailable: Boolean(assetId && imported),
+        materialDeliveries: (deliveryHistoryByAssetId.get(assetId) || [])
+          .sort((a, b) => b.deliveredAt.localeCompare(a.deliveredAt)).slice(0, 20),
         materialDependencies: {
           deliveryCount,
           candidateCount,
@@ -35715,6 +35756,8 @@ ipcMain.on('bridge:saveAgentConversationImport', (event, studentId, content, too
 ipcMain.handle('bridge:deliverConversationMaterials', (_event, studentId, requestJson) =>
   licensedInvoke('对话资料投递', () => deliverConversationMaterials(studentId, requestJson)));
 ipcMain.on('bridge:manageConversationImports', (event, studentId, requestJson) => { licensedIpc(event, '对话资料治理', () => manageConversationImports(studentId, requestJson)); });
+ipcMain.handle('bridge:manageConversationImportsAsync', (_event, studentId, requestJson) =>
+  licensedInvoke('对话资料治理', () => manageConversationImports(studentId, requestJson)));
 ipcMain.handle('bridge:importConversationShareUrl', (_event, studentId, url, tool) => licensedInvoke('对话分享链接导入', () => importConversationShareUrl(studentId, url, tool)));
 ipcMain.on('bridge:selectAgentConversationFiles', (event, studentId, tool) => { licensedIpc(event, '对话历史导入', () => selectAgentConversationFiles(studentId, tool)); });
 ipcMain.on('bridge:saveConversationExtract', (event, studentId, extractJson, tool) => { licensedIpc(event, '对话历史提取', () => saveConversationExtract(studentId, extractJson, tool)); });

@@ -21,6 +21,47 @@ function fixture(overrides = {}) {
 }
 const screenInput = setup => ({ token: setup.token, sourceId: 'screen:1', projectId: 'pa', durationMinutes: 30, mode: 'smart' });
 const jpeg = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0, 0, 0xff, 0xd9]).toString('base64');
+const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aL1sAAAAASUVORK5CYII=', 'base64');
+
+test('single screenshot has no writes before confirmation, validates target and saves host-owned bytes', async () => {
+  const writes = []; const f = fixture({ takeScreenshot: async (_id, validate) => { validate(); return { bytes: png, capturedAt: '2026-10-08T00:00:00Z', sourceName: '已授权屏幕' }; },
+    receiveScreenshot: async (id, input) => { writes.push({ id, input }); return { item: { itemId: 'shot' } }; } });
+  const setup = await f.service.prepareScreen();
+  await assert.rejects(f.service.screenshot({ ...screenInput(setup), projectId: 'pb' }), /未关联/);
+  const shot = await f.service.screenshot(screenInput(setup));
+  assert.equal(writes.length, 0); assert.equal(f.starts.length, 0);
+  await f.service.saveScreenshot({ token: setup.token, shotId: shot.shotId, studentId: 'b', base64: 'malicious', projectId: 'pb' });
+  assert.equal(writes[0].id, 'a'); assert.ok(writes[0].input.bytes.equals(png));
+  assert.deepEqual(writes[0].input.suggestedTarget, { type: 'project', id: 'pa' });
+});
+
+test('late screenshots, cancelled previews, replaced previews and sealed project cannot be saved', async () => {
+  let finish; const f = fixture({ takeScreenshot: () => new Promise(resolve => { finish = resolve; }) });
+  const setup = await f.service.prepareScreen(); const pending = f.service.screenshot(screenInput(setup));
+  f.select('b'); f.select('a'); finish({ bytes: png }); await assert.rejects(pending, /已变化/);
+  const g = fixture({ takeScreenshot: async () => ({ bytes: png }) }); const next = await g.service.prepareScreen();
+  const first = await g.service.screenshot(screenInput(next)), second = await g.service.screenshot(screenInput(next));
+  await assert.rejects(g.service.saveScreenshot({ token: next.token, shotId: first.shotId }), /失效/);
+  g.projectList[0].status = 'sealed'; await assert.rejects(g.service.saveScreenshot({ token: next.token, shotId: second.shotId }), /封存/);
+  g.service.invalidateScreen(); await assert.rejects(g.service.saveScreenshot({ token: next.token, shotId: second.shotId }), /已变化/);
+});
+
+test('screenshot failure can retry, concurrent acquisition is rejected, receipt retry creates one item', async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'quick-screen-test-'));
+  try {
+    let fail = true, finish; const inbox = createCaptureInbox({ resolveStudentDir: async id => path.join(root, id), deliver: () => { throw Error('No auto delivery'); } });
+    const f = fixture({ takeScreenshot: async () => { if (fail) throw Error('来源关闭'); await new Promise(resolve => { finish = resolve; }); return { bytes: png }; }, receiveScreenshot: (id, input) => inbox.receive(id, input) });
+    const setup = await f.service.prepareScreen(); await assert.rejects(f.service.screenshot(screenInput(setup)), /来源关闭/);
+    fail = false; const pending = f.service.screenshot(screenInput(setup));
+    await assert.rejects(f.service.screenshot(screenInput(setup)), /正在执行/); finish(); const shot = await pending;
+    const input = { token: setup.token, shotId: shot.shotId };
+    const [one, two] = await Promise.all([f.service.saveScreenshot(input), f.service.saveScreenshot(input)]);
+    assert.equal(one.item.itemId, two.item.itemId); assert.equal(two.duplicate, true);
+    const records = await inbox.listStored('a'); assert.equal(records.length, 1); assert.equal(records[0].status, 'ready');
+    assert.equal(records[0].sourceChannel, 'screen'); assert.deepEqual(records[0].suggestedTarget, { type: 'project', id: 'pa' });
+    assert.equal((await inbox.listStored('b')).length, 0);
+  } finally { await fs.rm(root, { recursive: true, force: true }); }
+});
 
 test('screen setup lists only associated live projects, start derives student from host context', async () => {
   const f = fixture(); const setup = await f.service.prepareScreen();

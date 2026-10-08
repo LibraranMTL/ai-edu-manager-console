@@ -35,7 +35,7 @@ function createCaptureInbox({ resolveStudentDir, deliver }) {
       const name = path.basename(String(input.name || '').replace(/\\/g, '/')).replace(/[\x00-\x1f<>:"/\\|?*]/g, '_').slice(0, 120);
       const ext = path.extname(name).toLowerCase();
       if (!name || !allowed.has(ext)) throw Error('收件箱不支持该文件类型');
-      if (!['photo', 'audio', 'share', 'student_web', 'auto_folder', 'android_share'].includes(input.sourceChannel)) throw Error('来源渠道无效');
+      if (!['screen', 'photo', 'audio', 'share', 'student_web', 'auto_folder', 'android_share'].includes(input.sourceChannel)) throw Error('来源渠道无效');
       const bytes = input.bytes;
       if (!Buffer.isBuffer(bytes) || !bytes.length || bytes.length > MAX_BYTES) throw Error('单项资料须为 1 字节至 20 MiB');
       const sha256 = crypto.createHash('sha256').update(bytes).digest('hex');
@@ -47,6 +47,11 @@ function createCaptureInbox({ resolveStudentDir, deliver }) {
       await fs.writeFile(path.join(root, 'objects', controlledObjectId), bytes, { flag: 'wx', mode: 0o600 });
       const item = { itemId, studentId: String(id), sourceChannel: input.sourceChannel, sourceEventId: event, sourceDeviceId: device,
         receivedAt: new Date().toISOString(), originalName: name, byteSize: bytes.length, sha256, controlledObjectId, status: 'ready', revision: 1, selectedTarget: null, lastReceiptId: '', lastError: '' };
+      if (input.sourceChannel === 'screen') {
+        item.captureSourceName = String(input.captureSourceName || '').slice(0, 80);
+        item.capturedAt = String(input.capturedAt || '').slice(0, 40);
+        item.suggestedTarget = input.suggestedTarget || { type: 'student' };
+      }
       value.items.unshift(item); await save(root, value); return { item, duplicate: false };
   }
   async function scanIncoming(id, root, value) {

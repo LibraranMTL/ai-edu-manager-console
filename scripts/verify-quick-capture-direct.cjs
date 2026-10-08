@@ -8,7 +8,7 @@ const vm = require('node:vm');
 const assert = require('node:assert/strict');
 const { createRequire } = require('node:module');
 const root = path.resolve(__dirname, '..');
-const output = path.join(root, 'output', 'playwright', 'quick-capture-direct-20261006');
+const output = path.join(root, 'output', 'playwright', 'quick-screenshot-20261008');
 const fixtureRoot = path.join(output, 'fixtures', String(Date.now()));
 fs.mkdirSync(output, { recursive: true });
 app.setPath('userData', path.join(output, 'user-data'));
@@ -18,6 +18,7 @@ const source = fs.readFileSync(path.join(root, 'electron', 'main.cjs'), 'utf8');
 const { createCaptureInbox } = require('../electron/capture-inbox.cjs');
 const inbox = createCaptureInbox({ resolveStudentDir: async id => path.join(fixtureRoot, id), deliver: async () => { throw Error('No automatic delivery permitted'); } });
 const checks = [];
+let navigation = null;
 let scope;
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 async function until(check, label) {
@@ -39,6 +40,12 @@ const heightNear = (window, height) => Math.abs(window.getSize()[1] - height) <=
 
 app.whenReady().then(async () => {
   const modules = createRequire(path.join(root, 'electron', 'main.cjs'));
+  const { createCanvas } = require('@napi-rs/canvas');
+  const canvas = createCanvas(900, 500), ctx = canvas.getContext('2d');
+  ctx.fillStyle = '#edf7f2'; ctx.fillRect(0, 0, 900, 500); ctx.fillStyle = '#164f40'; ctx.font = 'bold 40px sans-serif';
+  ctx.fillText('Quick screenshot - synthetic source', 40, 90); ctx.font = '24px sans-serif';
+  ctx.fillText('Preview before save / student scoped', 40, 150); ctx.strokeRect(40, 200, 820, 230);
+  const sourceImage = require('electron').nativeImage.createFromBuffer(canvas.toBuffer('image/png'));
   scope = vm.createContext({ BrowserWindow, screen, fs, path, crypto: require('node:crypto'), console, setTimeout, clearTimeout,
     __dirname: path.join(root, 'electron'), require: modules,
     ...require('../electron/quick-capture-window.cjs'), ...require('../electron/capture-control-window.cjs'),
@@ -52,6 +59,8 @@ app.whenReady().then(async () => {
     readStudentsIndex: () => [{ id: 'qa-a', name: '测试学生甲' }, { id: 'qa-b', name: '测试学生乙' }],
     readProjects: () => [{ id: 'qa-project', name: '测试项目', studentIds: ['qa-a'] }],
     licenseRequiredJson: () => '', getCaptureInbox: () => inbox, showMainWindow: () => { throw Error('Unexpected main-window navigation'); },
+    desktopCapturer: { getSources: async () => [{ id: 'screen:0', name: '合成屏幕', thumbnail: sourceImage }] },
+    isSensitiveCaptureSourceName: () => false, deidentifiedCaptureSourceName: () => '已授权屏幕',
     listCaptureSources: async () => JSON.stringify({ ok: true, sources: Array.from({ length: 8 }, (_, i) => ({ id: `screen:${i}`, name: `合成验收来源 ${i + 1}`, type: i < 2 ? 'screen' : 'window', thumbnail: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aL1sAAAAASUVORK5CYII=', blocked: i === 7, blockReason: i === 7 ? '敏感窗口' : '' })) }),
     startCaptureSession: async (json, validate) => {
       validate(); const input = JSON.parse(json);
@@ -83,6 +92,26 @@ app.whenReady().then(async () => {
   check('source selection survives state refresh', await run(bar, 'document.querySelector(".source").getAttribute("aria-pressed") === "true"'));
   await capture(bar, '02-screen-setup');
   check('screen start button fits viewport', await run(bar, 'document.getElementById("start-screen").getBoundingClientRect().bottom <= innerHeight'));
+  check('quick screenshot defaults with duration hidden', await run(bar, 'document.getElementById("duration-field").hidden && !document.getElementById("quick-controls").hidden'));
+  await click(bar, '#take-screen');
+  await until(() => run(bar, '!document.getElementById("shot-preview").hidden'), 'screenshot preview');
+  check('preview before save creates no receipt or session', (await inbox.listStored('qa-a')).length === 0 && scope.activeCaptureRuntime === null);
+  check('toolbar is restored after taking screenshot', bar.isVisible());
+  check('quick preview controls fit viewport', await run(bar, 'document.getElementById("save-screen").getBoundingClientRect().bottom <= innerHeight'));
+  await capture(bar, '09-quick-preview');
+  await click(bar, '#take-screen');
+  await until(() => run(bar, '!document.getElementById("shot-preview").hidden && !document.getElementById("take-screen").disabled'), 'retake completed');
+  await click(bar, '#save-screen');
+  await until(async () => (await inbox.listStored('qa-a')).length === 1, 'quick screenshot receipt');
+  check('quick save enters screen receipt only', (await inbox.listStored('qa-a'))[0].sourceChannel === 'screen' && scope.activeCaptureRuntime === null);
+  await capture(bar, '10-quick-saved');
+  scope.mainWindow = { isDestroyed: () => false, webContents: { send: (_channel, payload) => { navigation = payload; } } };
+  scope.showMainWindow = () => {};
+  await click(bar, '#shot-inbox');
+  check('view receipt opens current student shares rather than downloads', navigation?.tabId === 'share-capture' && navigation?.inboxTab === 'shares' && navigation?.studentId === 'qa-a');
+  scope.mainWindow = null;
+  await click(bar, '[data-action="screen"]'); await until(() => run(bar, 'document.querySelectorAll(".source").length === 8'), 'sources reopened'); await click(bar, '.source');
+  await click(bar, '#mode-continuous');
   await click(bar, '#start-screen');
   await until(() => Boolean(scope.activeCaptureRuntime), 'screen started');
   check('screen started for correct student', scope.activeCaptureRuntime.session.studentId === 'qa-a');
@@ -110,11 +139,11 @@ app.whenReady().then(async () => {
   await click(photo, '#take');
   await until(() => run(photo, '!document.getElementById("save").hidden'), 'shot ready');
   check('camera released after shutter', await run(photo, 'document.getElementById("camera").srcObject === null'));
-  check('shutter does not save automatically', (await inbox.listStored('qa-a')).length === 0);
+  check('shutter does not save automatically', (await inbox.listStored('qa-a')).filter(item => item.sourceChannel === 'photo').length === 0);
   await capture(photo, '06-shot-confirm');
   scope.quickCaptureStudentId = 'qa-b'; scope.quickCaptureStudentName = '测试学生乙'; scope.sendQuickCaptureState();
   await click(photo, '#save');
-  await until(async () => (await inbox.listStored('qa-a')).length === 1, 'photo saved');
+  await until(async () => (await inbox.listStored('qa-a')).filter(item => item.sourceChannel === 'photo').length === 1, 'photo saved');
   check('photo stays with original student after switch', (await inbox.listStored('qa-b')).length === 0);
   await capture(photo, '07-saved');
   check('photo controls fit viewport', await run(photo, 'document.getElementById("close").getBoundingClientRect().bottom <= innerHeight'));
@@ -128,6 +157,21 @@ app.whenReady().then(async () => {
   await capture(photo, '08-camera-denied');
   await click(photo, '#close'); await until(() => scope.quickPhotoWindow === null, 'photo closed');
   check('photo window session revoked on close', scope.quickPhotoContext === null);
+  // Exercise the native Windows capturer against this explicitly created public fixture only.
+  const nativeSource = new BrowserWindow({ width: 700, height: 420, show: true, title: 'P1 Quick Screenshot Public Fixture', webPreferences: { sandbox: true } });
+  await nativeSource.loadURL('data:text/html,' + encodeURIComponent('<html><body style="background:#edf7f2;font:24px sans-serif"><h1>P1 Public Test Window</h1><p>Native single screenshot acceptance fixture.</p></body></html>'));
+  await sleep(400);
+  const nativeCapturer = require('electron').desktopCapturer;
+  const nativeSources = await nativeCapturer.getSources({ types: ['window'], thumbnailSize: { width: 320, height: 180 } });
+  const ownSource = nativeSources.find(item => item.name.includes('P1 Quick Screenshot Public Fixture'));
+  assert.ok(ownSource, 'native fixture source exists');
+  scope.desktopCapturer = nativeCapturer;
+  scope.quickCaptureSetupOpen = true; scope.updateCaptureControlWindow();
+  const nativeSetup = await scope.getQuickCaptureDirect().prepareScreen();
+  const nativeShot = await scope.getQuickCaptureDirect().screenshot({ token: nativeSetup.token, sourceId: ownSource.id });
+  const nativePreview = require('electron').nativeImage.createFromDataURL(nativeShot.preview);
+  check('native public-window screenshot has nonempty image and restores toolbar', !nativePreview.isEmpty() && nativePreview.getSize().width > 300 && bar.isVisible());
+  nativeSource.destroy(); scope.quickCaptureDirect.invalidateScreen(); scope.quickCaptureSetupOpen = false; scope.updateCaptureControlWindow();
   fs.writeFileSync(path.join(output, 'result.json'), JSON.stringify({ ok: true, syntheticHardware: true, checks }, null, 2));
   console.log(JSON.stringify({ ok: true, checks, output }, null, 2));
 }).catch(error => {

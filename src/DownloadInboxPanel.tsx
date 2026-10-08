@@ -16,11 +16,12 @@ async function unwrap<T>(work?: Promise<string>): Promise<T> {
   if (!work) throw Error('此功能需要更新后的 Windows 主机');
   const value = JSON.parse(await work); if (!value.ok) throw Error(value.message || '操作失败'); return value.data;
 }
-export function DownloadInboxPanel({ studentId, students, projects, api }: {
+export function DownloadInboxPanel({ studentId, students, projects, api, openSharesRequest = 0 }: {
   studentId: string; students: { id: string; name: string }[];
-  projects: { id: string; name: string; studentIds: string[]; status?: string }[]; api?: DownloadInboxApi;
+  projects: { id: string; name: string; studentIds: string[]; status?: string }[]; api?: DownloadInboxApi; openSharesRequest?: number;
 }) {
   const [tab, setTab] = useState<'downloads' | 'shares'>('downloads');
+  useEffect(() => { if (openSharesRequest) setTab('shares'); }, [openSharesRequest]);
   const [folder, setFolder] = useState(''), [files, setFiles] = useState<DownloadFile[]>([]), [skipped, setSkipped] = useState(0);
   const [selected, setSelected] = useState<string[]>([]), [targetStudent, setTargetStudent] = useState(''), [target, setTarget] = useState('student');
   const [search, setSearch] = useState(''), [filter, setFilter] = useState('pending'), [sort, setSort] = useState('latest'), [page, setPage] = useState(1);
@@ -63,7 +64,7 @@ export function DownloadInboxPanel({ studentId, students, projects, api }: {
       <button role="tab" aria-selected={tab === 'downloads'} className={tab === 'downloads' ? 'primary' : 'secondary'} onClick={() => setTab('downloads')}>下载文件</button>
       <button role="tab" aria-selected={tab === 'shares'} className={tab === 'shares' ? 'primary' : 'secondary'} onClick={() => setTab('shares')}>分享资料</button>
     </div>
-    {tab === 'shares' ? studentId ? <React.Suspense fallback={<p>正在加载分享资料…</p>}><CaptureInboxPanel key={studentId} studentId={studentId} mode="share" api={api}
+    {tab === 'shares' ? studentId ? <React.Suspense fallback={<p>正在加载分享资料…</p>}><CaptureInboxPanel key={`${studentId}:${openSharesRequest}`} studentId={studentId} mode="share" api={api}
       projects={projects.filter(project => project.studentIds.map(String).includes(studentId) && !['sealed', 'archived'].includes(project.status || ''))} /></React.Suspense> : <p>请先选择或新建学生档案，分享资料按学生隔离。</p> : <>
       <section className="material-source-panel"><strong>下载文件收件箱</strong><p style={{ overflowWrap: 'anywhere' }}>{folder || '尚未关联文件夹'}</p>
         <div className="actions"><button className="primary" disabled={busy} onClick={() => void run(() => configure('choose'))}>{folder ? '更换文件夹' : '选择／新建文件夹'}</button>

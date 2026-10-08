@@ -45,7 +45,8 @@ test('P1 UI and native MCP expose one-time authorization, full messages and six 
   assert.match(main, /ipcMain\.handle\('bridge:getAgentMemoryState'/);
   const stateReader = main.slice(main.indexOf('function agentMemoryState(studentId)'), main.indexOf('function openCodexHookReview()'));
   assert.doesNotMatch(stateReader, /drainAgentLifecycleQueue\(\)/);
-  assert.match(stateReader, /\.slice\(0, 8\)/);
+  assert.doesNotMatch(stateReader, /\.slice\(0, 8\)/);
+  assert.match(stateReader, /limit: 100/);
   assert.match(preload, /setAgentMemoryAutomation\(studentId, enabled\)/);
   assert.match(preload, /activateAgentMemoryCapture\(studentId\)/);
   assert.match(preload, /openCodexHookReview\(\)/);

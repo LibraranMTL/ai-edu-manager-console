@@ -1,10 +1,10 @@
 {
   "versionCode": 89,
   "versionName": "0.6.19",
-  "windowsVersionCode": 249,
-  "windowsVersionName": "0.19.9",
+  "windowsVersionCode": 250,
+  "windowsVersionName": "0.19.10",
   "windowsReleaseStatus": "stable",
-  "windowsUrl": "https://www.greatbg.com/download/AI-edu-manager-console-Windows-0.19.9.zip",
+  "windowsUrl": "https://www.greatbg.com/download/AI-edu-manager-console-Windows-0.19.10.zip",
   "windowsTerminalVersionCode": 236,
   "windowsTerminalVersionName": "0.18.6",
   "windowsTerminalReleaseStatus": "stable",
@@ -28,5 +28,5 @@
   "managerApkReleaseStatus": "internal",
   "managerApkNotes": "旧 Android 控制台仅供内部装机和测试，当前不提供公网安装包。",
   "apkUrl": "https://www.greatbg.com/download/AI-edu-manager-tablet-terminal-0.6.19.apk",
-  "notes": "Windows 主机 0.19.9 已通过用户真机测试：快捷工具条可直接选择来源并启动屏幕采集，悬浮拍照支持预览、重拍与确认保存；录音仍进入原页面。其他客户端版本不变，程序尚未进行代码签名。"
+  "notes": "Windows 主机 0.19.10 已通过用户真机测试：快捷工具条新增快速截屏；自动会话采集支持待投递、已投递、全部和回收站分类，以及逐条、多选、跨页全选、批量投递、恢复和回收。成功项自动归入已投递并保留来源与投递回执。其他客户端版本不变，程序尚未进行代码签名。"
 }

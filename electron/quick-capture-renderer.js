@@ -4,9 +4,27 @@ let screenSetup = null;
 let selectedSource = '';
 let working = false;
 let latestState = {};
+let captureMode = 'quick';
+let screenshot = null;
+function clearScreenshot() {
+  screenshot = null; $('shot-image').removeAttribute('src'); $('shot-preview').hidden = true;
+  $('sources').hidden = false; $('choose-again').hidden = true; $('save-screen').hidden = true;
+  $('shot-inbox').hidden = true; $('screen-project').disabled = false; $('take-screen').textContent = '立即截取';
+}
+function renderMode() {
+  const quick = captureMode === 'quick';
+  $('mode-quick').setAttribute('aria-pressed', String(quick)); $('mode-continuous').setAttribute('aria-pressed', String(!quick));
+  $('duration-field').hidden = quick; $('continuous-controls').hidden = quick; $('quick-controls').hidden = !quick;
+  $('screen-project').options[0].text = quick ? '学生资料收件箱' : '学生屏幕采集箱';
+  $('screen-help').textContent = quick ? '截取一次，预览确认后保存到学生资料收件箱；关联项目作为投递提示。' : '原件保存在本次采集箱，关联项目不自动投递。';
+}
+for (const mode of ['quick', 'continuous']) $( `mode-${mode}`).addEventListener('click', () => {
+  if (working) return; captureMode = mode; clearScreenshot(); renderMode(); $('setup-message').textContent = '';
+});
+$('choose-again').addEventListener('click', () => { if (!working) { clearScreenshot(); $('setup-message').textContent = ''; } });
 function renderSetup(setup) {
-  screenSetup = setup; selectedSource = '';
-  $('setup-student').textContent = `资料所属：${setup.student.name} · 开始后固定归属`;
+  screenSetup = setup; selectedSource = ''; clearScreenshot();
+  $('setup-student').textContent = `资料所属：${setup.student.name} · 切换学生将清除未保存预览`;
   $('sources').replaceChildren();
   for (const source of setup.sources) {
     const button = document.createElement('button'); button.className = 'source'; button.type = 'button';
@@ -16,8 +34,10 @@ function renderSetup(setup) {
     button.addEventListener('click', () => {
       if (working) return;
       selectedSource = source.id;
+      clearScreenshot();
       $('sources').querySelectorAll('button').forEach(item => item.setAttribute('aria-pressed', String(item === button)));
       $('start-screen').disabled = false;
+      $('take-screen').disabled = false;
       $('setup-message').textContent = '';
     });
     $('sources').append(button);
@@ -25,11 +45,13 @@ function renderSetup(setup) {
   $('screen-project').replaceChildren(new Option('学生屏幕采集箱', ''));
   setup.projects.forEach(project => $('screen-project').add(new Option(`${project.name} · 项目关联`, project.id)));
   $('start-screen').disabled = true;
+  $('take-screen').disabled = true;
+  renderMode();
   $('setup-message').textContent = setup.sources.some(source => !source.blocked) ? '' : '暂无可用来源，请打开需要采集的窗口后刷新。';
 }
 function render(state) {
   latestState = state;
-  if (!state.setupOpen) { screenSetup = null; selectedSource = ''; }
+  if (!state.setupOpen) { screenSetup = null; selectedSource = ''; clearScreenshot(); }
   $('screen-setup').hidden = !state.setupOpen;
   const photoButton = document.querySelector('[data-action="photo"]');
   photoButton.classList.toggle('photo-active', Boolean(state.photoOpen));
@@ -71,18 +93,31 @@ document.addEventListener('click', async event => {
   if (!button || button.disabled) return;
   if (working && !['hide', 'close-screen'].includes(button.dataset.action)) return;
   $('message').textContent = '';
+  $('setup-message').classList.remove('receipt');
   const action = button.dataset.action;
-  const input = action === 'start-screen' && screenSetup ? { token: screenSetup.token, sourceId: selectedSource,
-    projectId: $('screen-project').value, durationMinutes: Number($('screen-duration').value), mode: $('screen-mode').value } : undefined;
-  const isWork = ['screen', 'start-screen', 'photo'].includes(action);
+  const input = ['start-screen', 'take-screen', 'save-screen'].includes(action) && screenSetup ? { token: screenSetup.token, sourceId: selectedSource,
+    shotId: screenshot?.shotId, projectId: $('screen-project').value, durationMinutes: Number($('screen-duration').value), mode: $('screen-mode').value } : undefined;
+  const requestToken = screenSetup?.token;
+  const isWork = ['screen', 'start-screen', 'take-screen', 'save-screen', 'photo'].includes(action);
+  if (action === 'take-screen') { clearScreenshot(); $('setup-message').textContent = '正在截取…'; }
   if (isWork) { working = true; button.disabled = true; }
   try {
     const result = await window.QuickCapture.invoke(action, input);
     if (result?.setup && latestState.setupOpen && result.setup.student.id === latestState.studentId) renderSetup(result.setup);
+    if (action === 'take-screen' && result?.ok && latestState.setupOpen && screenSetup?.token === requestToken) {
+      screenshot = result; $('shot-image').src = result.preview; $('shot-preview').hidden = false; $('sources').hidden = true;
+      $('choose-again').hidden = false; $('save-screen').hidden = false; $('save-screen').disabled = false;
+      $('screen-project').disabled = true; $('take-screen').textContent = '重新截取'; $('setup-message').textContent = '请确认截图内容，再保存原件。';
+    }
+    if (action === 'save-screen' && result?.ok && latestState.setupOpen && screenSetup?.token === requestToken) {
+      $('save-screen').disabled = true; $('save-screen').hidden = true; $('shot-inbox').hidden = false;
+      $('setup-message').textContent = result.message;
+      $('setup-message').classList.add('receipt');
+    }
     if (!result?.ok) {
       $('message').textContent = result?.message || '操作未完成';
       if (latestState.setupOpen) $('setup-message').textContent = result?.message || '操作未完成';
     }
   } catch (error) { $('message').textContent = error?.message || '操作未完成'; }
-  finally { if (isWork) { working = false; button.disabled = button.id === 'start-screen' ? !selectedSource : button.classList.contains('needs-student') && !latestState.studentId; } }
+  finally { if (isWork) { working = false; button.disabled = ['start-screen', 'take-screen'].includes(button.id) ? !selectedSource : button.classList.contains('needs-student') && !latestState.studentId; } }
 });

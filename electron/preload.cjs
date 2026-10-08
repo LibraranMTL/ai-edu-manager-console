@@ -458,6 +458,9 @@ contextBridge.exposeInMainWorld('AndroidBridge', {
   manageConversationImports(studentId, requestJson) {
     return ipcRenderer.sendSync('bridge:manageConversationImports', studentId, requestJson);
   },
+  manageConversationImportsAsync(studentId, requestJson) {
+    return ipcRenderer.invoke('bridge:manageConversationImportsAsync', studentId, requestJson);
+  },
   importConversationShareUrl(studentId, url, tool) {
     return ipcRenderer.invoke('bridge:importConversationShareUrl', studentId, url, tool);
   },

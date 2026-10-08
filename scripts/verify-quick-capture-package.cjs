@@ -6,8 +6,10 @@ const net = require('node:net');
 const { spawn, spawnSync } = require('node:child_process');
 const assert = require('node:assert/strict');
 const root = path.resolve(__dirname, '..');
-const directory = path.join(root, 'release/windows/candidates/quick-capture-direct-20261006');
-const audit = JSON.parse(fs.readFileSync(path.join(directory, 'AI-edu-manager-console-Windows-0.19.9-quick-capture-direct-20261006-build-audit.json'), 'utf8'));
+const version = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8')).version;
+const candidateTag = process.env.EDU_WINDOWS_CANDIDATE_TAG || 'quick-screenshot-20261008';
+const directory = path.join(root, 'release/windows/candidates', candidateTag);
+const audit = JSON.parse(fs.readFileSync(path.join(directory, `AI-edu-manager-console-Windows-${version}-${candidateTag}-build-audit.json`), 'utf8'));
 const qa = fs.mkdtempSync(path.join(root, '.codex_tmp/quick-capture-package-'));
 const userData = path.join(qa, 'user-data'), studentBaseDir = path.join(qa, 'students');
 fs.mkdirSync(userData); fs.mkdirSync(studentBaseDir);
@@ -38,7 +40,7 @@ async function main() {
   const pnpm = path.join(root, 'node_modules/.pnpm');
   const asar = require(path.join(pnpm, fs.readdirSync(pnpm).find(name => name.startsWith('@electron+asar@')), 'node_modules/@electron/asar'));
   const archive = path.join(audit.stagingRoot, 'out/win-unpacked/resources/app.asar');
-  const archivedFilesMatchSource = ['main.cjs', 'quick-capture-direct.cjs', 'quick-capture.html', 'quick-capture-preload.cjs', 'quick-capture-renderer.js', 'quick-photo.html', 'quick-photo-preload.cjs', 'quick-photo-renderer.js'];
+  const archivedFilesMatchSource = ['main.cjs', 'preload.cjs', 'capture-inbox.cjs', 'quick-capture-direct.cjs', 'quick-capture.html', 'quick-capture-preload.cjs', 'quick-capture-renderer.js', 'quick-photo.html', 'quick-photo-preload.cjs', 'quick-photo-renderer.js'];
   for (const file of archivedFilesMatchSource) assert.ok(asar.extractFile(archive, `electron/${file}`).equals(fs.readFileSync(path.join(root, 'electron', file))), `package mismatch: ${file}`);
   const server = net.createServer(); await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   const port = server.address().port; await new Promise(resolve => server.close(resolve));
@@ -60,12 +62,19 @@ async function main() {
   }
   let visible;
   for (let attempt = 0; attempt < 40; attempt++) {
-    visible = await evaluate(send, 'document.body.innerText.includes("0.19.9")'); if (visible) break; await sleep(250);
+    visible = await evaluate(send, `document.body.innerText.includes(${JSON.stringify(version)})`); if (visible) break; await sleep(250);
   }
   assert.ok(visible, 'version shown');
   const storage = JSON.parse(await evaluate(send, 'window.AndroidBridge.getStorageConfig()'));
   assert.equal(storage.baseDir, studentBaseDir); assert.equal(storage.taskAutomationEnabled, false);
+  const sessionBatchBridgeAvailable = await evaluate(send, 'typeof window.AndroidBridge.manageConversationImportsAsync === "function"');
+  if (candidateTag.startsWith('session-')) assert.equal(sessionBatchBridgeAvailable, true);
   assert.equal(await evaluate(bar, 'typeof window.QuickCapture.invoke'), 'function');
+  // The host context is delivered asynchronously after the renderer's initial load.
+  for (let attempt = 0; attempt < 40; attempt++) {
+    if (await evaluate(bar, 'document.querySelectorAll(".needs-student:not(:disabled)").length === 0')) break;
+    await sleep(250);
+  }
   assert.equal(await evaluate(bar, 'document.querySelectorAll(".needs-student:not(:disabled)").length'), 0);
   await evaluate(bar, 'window.QuickCapture.invoke("more")'); await sleep(200);
   const expanded = await evaluate(bar, 'innerHeight');
@@ -75,8 +84,8 @@ async function main() {
     const shot = await channel('Page.captureScreenshot', { format: 'png' });
     fs.writeFileSync(path.join(qa, `${label}.png`), Buffer.from(shot.data, 'base64'));
   }
-  const verification = { ok: true, packageVersion: '0.19.9', executableSha256: sha256, archivedFilesMatchSource,
-    isolatedLaunch: { versionVisible: visible, storage, toolbarReady: true, noStudentActionsDisabled: true, expanded, collapsed },
+  const verification = { ok: true, packageVersion: version, executableSha256: sha256, archivedFilesMatchSource,
+    isolatedLaunch: { versionVisible: visible, storage, toolbarReady: true, sessionBatchBridgeAvailable, noStudentActionsDisabled: true, expanded, collapsed },
     boundary: 'Real portable EXE startup with empty isolated data; physical camera, actual student license and real capture remain device acceptance items.', qa, testedAt: new Date().toISOString() };
   fs.mkdirSync(path.dirname(verificationOutput), { recursive: true });
   fs.writeFileSync(verificationOutput, JSON.stringify(verification, null, 2));

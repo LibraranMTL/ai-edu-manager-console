@@ -10,6 +10,7 @@ import type { PracticeApi } from './PracticeCardsPanel';
 import { PracticeLanguageFields } from './PracticeLanguageFields';
 import type { PracticeLanguageProfile } from './PracticeLanguageFields';
 import { boundedWork } from './bounded-work';
+import { canSelectCapturedSession, matchesCapturedSessionTab, runCapturedSessionBatch, type CapturedSessionTab } from './agent-session-batch';
 const PracticeCardsPanel = React.lazy(() => import('./PracticeCardsPanel').then(module => ({ default: module.PracticeCardsPanel })));
 import type { ResearchApi, GuidanceSections } from './PlanningResearchPanels';
 const CompetitionRecommendationsPanel = React.lazy(() => import('./PlanningResearchPanels').then(module => ({ default: module.CompetitionRecommendationsPanel })));
@@ -1022,7 +1023,7 @@ type AndroidBridge = {
   getCaptureCenterState?: () => string;
   showQuickCapture?: () => Promise<string>;
   setQuickCaptureContext?: (studentId: string) => Promise<string>;
-  onQuickCaptureNavigate?: (callback: (payload: { tabId: string; studentId: string }) => void) => () => void;
+  onQuickCaptureNavigate?: (callback: (payload: { tabId: string; studentId: string; inboxTab?: 'shares' }) => void) => () => void;
   setCaptureVisionConsent?: (inputJson: string) => string;
   onCaptureChanged?: (callback: (payload: string) => void) => () => void;
   listCaptureSources?: () => Promise<string>;
@@ -1156,6 +1157,7 @@ type AndroidBridge = {
   saveAgentConversationImport?: (studentId: string, content: string, tool: AgentToolId, sourcePath?: string) => string;
   deliverConversationMaterials?: (studentId: string, requestJson: string) => Promise<string>;
   manageConversationImports?: (studentId: string, requestJson: string) => string;
+  manageConversationImportsAsync?: (studentId: string, requestJson: string) => Promise<string>;
   importConversationShareUrl?: (studentId: string, url: string, tool: AgentToolId) => Promise<string>;
   selectAgentConversationFiles?: (studentId: string, tool: AgentToolId) => string;
   saveConversationExtract?: (studentId: string, extractJson: string, tool: AgentToolId) => string;
@@ -3059,6 +3061,7 @@ type AgentMemorySessionState = {
     }>;
     capturedChars?: number;
     materialLifecycleStatus?: 'active' | 'trashed';
+    materialDeliveries?: Array<{ targetType: string; targetId: string; targetName: string; deliveredAt: string }>;
     materialAvailable?: boolean;
     materialDependencies?: {
       deliveryCount: number;
@@ -5606,12 +5609,18 @@ type AgentMemorySession = NonNullable<AgentMemorySessionState['sessions']>[numbe
 const AgentMemorySessionRow = memo(function AgentMemorySessionRow({
   session,
   projects,
+  checked,
+  busy,
+  onToggle,
   onDeliver,
   onManage,
   onClearEmpty,
 }: {
   session: AgentMemorySession;
   projects: Array<Pick<LearningProject, 'id' | 'name'>>;
+  checked: boolean;
+  busy: boolean;
+  onToggle: (sessionId: string) => void;
   onDeliver: (session: AgentMemorySession, selection: string) => void | Promise<void>;
   onManage: (session: AgentMemorySession, action: 'trash' | 'restore' | 'delete') => void;
   onClearEmpty: (sessionId: string) => void;
@@ -5626,12 +5635,22 @@ const AgentMemorySessionRow = memo(function AgentMemorySessionRow({
 
   return (
     <div className="candidate-row">
+      <input type="checkbox" style={{ width: 20, height: 20 }} aria-label={`选择会话：${session.title || session.sessionId}`} checked={checked}
+        disabled={busy || !canSelectCapturedSession(session)} onChange={() => onToggle(session.sessionId)} />
       <div className="candidate-main">
         <strong>{session.title || session.summary?.objective || '授权 Agent 会话'}</strong>
         <span>{agentToolProfiles[session.agentId as AgentToolId]?.name || session.agentId} · {session.materialLifecycleStatus === 'trashed' ? '回收站' : session.status === 'active' ? '采集中' : session.conversationReceipt ? '已保存到对话资料箱' : session.status === 'completed' ? '已结束' : session.status === 'failed' ? '采集失败' : '已取消'}</span>
         <small>{session.updatedAt ? formatDateTime(session.updatedAt) : '时间未知'}{session.projectId ? ` · 项目 ${session.projectId}` : ''}</small>
         <small>{session.messages?.length ?? 0} 条授权消息{session.conversationReceipt?.message ? ` · ${session.conversationReceipt.message}` : ''}</small>
         {session.conversationReceipt?.assetId && <small>资料投递 {session.materialDependencies?.deliveryCount ?? 0} 次 · 知识候选 {session.materialDependencies?.candidateCount ?? 0} 条{Number(session.materialDependencies?.deliveryCount || 0) > 0 ? ' · 已投递会话仍保留' : ''}</small>}
+        {Number(session.materialDependencies?.deliveryCount || 0) > 0 && <details className="agent-memory-conversation">
+          <summary>已投递 · 查看投递时间和目标</summary>
+          {session.materialDeliveries?.length ? <ul>{session.materialDeliveries.map((delivery, index) => <li key={`${delivery.targetType}:${delivery.targetId}:${index}`}>
+            {delivery.targetType === 'project' ? `项目：${delivery.targetName || delivery.targetId}` : '学生原始资料库'}
+            {' · '}{delivery.deliveredAt ? formatDateTime(delivery.deliveredAt) : '时间未记录'}
+          </li>)}</ul> : <small>已有投递记录；详细回执暂不可用。</small>}
+          {(session.materialDependencies?.deliveryCount || 0) > 20 && <small>显示最近 20 条投递记录。</small>}
+        </details>}
         {(session.messages?.length ?? 0) > 0 && (
           <details className="agent-memory-conversation">
             <summary>查看采集的对话内容</summary>
@@ -5646,7 +5665,7 @@ const AgentMemorySessionRow = memo(function AgentMemorySessionRow({
           </details>
         )}
       </div>
-      <div className="actions compact-actions agent-memory-actions">
+      <fieldset disabled={busy} className="actions compact-actions agent-memory-actions" style={{ border: 0, padding: 0, margin: 0, minWidth: 0 }}>
         {session.status === 'active'
           ? <span className="muted">会话结束后可投递或移除</span>
           : !session.materialAvailable && (session.messages?.length ?? 0) === 0 && !session.conversationReceipt
@@ -5666,10 +5685,90 @@ const AgentMemorySessionRow = memo(function AgentMemorySessionRow({
                   <button className="primary compact" onClick={() => void onDeliver(session, targetSelection)}>投递到所选位置</button>
                   <button className="secondary compact" onClick={() => onManage(session, 'trash')}>移入回收站</button>
                 </>}
-      </div>
+      </fieldset>
     </div>
   );
-}, (previous, next) => previous.session === next.session && previous.projects === next.projects);
+});
+
+function AgentMemorySessionList({ sessions, projects, onDeliver, onManage, onClearEmpty }: {
+  sessions: AgentMemorySession[];
+  projects: Array<Pick<LearningProject, 'id' | 'name'>>;
+  onDeliver: (sessions: AgentMemorySession[], target: string, progress: (message: string) => void) => Promise<string[]>;
+  onManage: (sessions: AgentMemorySession[], action: 'trash' | 'restore' | 'delete', progress: (message: string) => void) => Promise<string[]>;
+  onClearEmpty: (sessionId: string) => void;
+}) {
+  const [tab, setTab] = useState<CapturedSessionTab>('pending');
+  const [selectedIds, setSelectedIds] = useState<string[]>([]);
+  const [page, setPage] = useState(0);
+  const [target, setTarget] = useState('student');
+  const [busy, setBusy] = useState(false);
+  const busyRef = useRef(false);
+  const [message, setMessage] = useState('');
+  const filtered = sessions.filter(session => matchesCapturedSessionTab(session, tab));
+  const selectable = filtered.filter(canSelectCapturedSession);
+  const selectedSet = new Set(selectedIds);
+  const selected = selectable.filter(session => selectedSet.has(session.sessionId));
+  const currentPage = Math.min(page, Math.max(0, Math.ceil(filtered.length / 20) - 1));
+  const visible = filtered.slice(currentPage * 20, (currentPage + 1) * 20);
+  const deliveryTarget = target === 'student' || projects.some(project => `project:${project.id}` === target) ? target : 'student';
+  const toggle = useCallback((id: string) => setSelectedIds(current => current.includes(id) ? current.filter(value => value !== id) : [...current, id]), []);
+  const perform = async (items: AgentMemorySession[], action: 'deliver' | 'trash' | 'restore' | 'delete', destination = deliveryTarget) => {
+    if (busyRef.current || !items.length) return;
+    busyRef.current = true;
+    setBusy(true);
+    setMessage('');
+    try {
+      const succeeded = action === 'deliver' ? await onDeliver(items, destination, setMessage) : await onManage(items, action, setMessage);
+      setSelectedIds(current => current.filter(id => !succeeded.includes(id)));
+    } catch { setMessage('操作中断，请刷新会话列表后重试。'); }
+    finally { busyRef.current = false; setBusy(false); }
+  };
+  return <div className="agent-session-batch">
+    <div className="actions compact-actions" role="group" aria-label="自动会话列表范围">
+      {(['pending', 'delivered', 'all', 'trash'] as const).map(value => <button key={value} className={tab === value ? 'primary' : 'secondary'} aria-pressed={tab === value} disabled={busy}
+        onClick={() => { setTab(value); setSelectedIds([]); setPage(0); setMessage(''); }}>
+        {{ pending: '待投递', delivered: '已投递', all: '全部', trash: '回收站' }[value]}（{sessions.filter(session => matchesCapturedSessionTab(session, value)).length}）
+      </button>)}
+    </div>
+    <fieldset disabled={busy} style={{ border: 0, padding: '12px 0', margin: 0, minWidth: 0 }}>
+      <div className="actions compact-actions">
+        <label className="checkbox-line"><input type="checkbox" aria-label="全选当前列表可操作会话" checked={selectable.length > 0 && selected.length === selectable.length}
+          ref={element => { if (element) element.indeterminate = selected.length > 0 && selected.length < selectable.length; }}
+          disabled={!selectable.length} onChange={event => setSelectedIds(event.target.checked ? selectable.map(session => session.sessionId) : [])} />全选当前列表</label>
+        <button className="secondary compact" disabled={!visible.some(canSelectCapturedSession)} onClick={() => setSelectedIds(current => [...new Set([...current, ...visible.filter(canSelectCapturedSession).map(session => session.sessionId)])])}>选择本页</button>
+        <button className="secondary compact" disabled={!selected.length} onClick={() => setSelectedIds([])}>取消选择</button>
+        <span>已选 {selected.length} 条 · 当前列表 {filtered.length} 条</span>
+      </div>
+      <div className="actions compact-actions">
+        {tab !== 'trash' ? <>
+          <label>统一投递目标<select aria-label="批量投递目标" value={deliveryTarget} onChange={event => setTarget(event.target.value)}>
+            <option value="student">学生原始资料库</option>
+            {projects.map(project => <option key={project.id} value={`project:${project.id}`}>项目：{project.name}</option>)}
+          </select></label>
+          <button className="primary" disabled={!selected.length} onClick={() => void perform(selected, 'deliver')}>投递选中会话</button>
+          <button className="secondary" disabled={!selected.length} onClick={() => void perform(selected, 'trash')}>选中移入回收站</button>
+        </> : <>
+          <button className="secondary" disabled={!selected.length} onClick={() => void perform(selected, 'restore')}>恢复选中会话</button>
+          <button className="danger" disabled={!selected.some(session => session.materialDependencies?.canPermanentlyDelete)} onClick={() => void perform(selected, 'delete')}>彻底删除选中可删除项</button>
+        </>}
+      </div>
+    </fieldset>
+    <small>展示最近 100 条授权会话，每页 20 条；全选包含当前列表的所有分页。采集中及未归档会话不可勾选。{tab === 'trash' ? '存在资料投递或已晋升知识的记录会保留。' : '成功投递后归入“已投递”，原记录保留，可再次投递到其他项目。'}</small>
+    {(busy || message) && <p role="status" aria-live="polite">{message || '正在处理所选会话…'}</p>}
+    <div className="candidate-list">
+      {visible.map(session => <AgentMemorySessionRow key={session.sessionId} session={session} projects={projects}
+        checked={selected.some(item => item.sessionId === session.sessionId)} busy={busy} onToggle={toggle}
+        onDeliver={(item, destination) => perform([item], 'deliver', destination)}
+        onManage={(item, action) => void perform([item], action)} onClearEmpty={onClearEmpty} />)}
+      {!filtered.length && <div className="empty-state compact">{{ pending: '暂无待投递会话，可在“已投递”查看已处理记录。', delivered: '暂无已投递会话。', all: '尚无授权会话记录。授权前历史不会被扫描。', trash: '回收站为空。' }[tab]}</div>}
+    </div>
+    {filtered.length > 20 && <div className="actions compact-actions">
+      <button className="secondary" disabled={busy || currentPage === 0} onClick={() => setPage(currentPage - 1)}>上一页</button>
+      <span>第 {currentPage + 1} / {Math.ceil(filtered.length / 20)} 页</span>
+      <button className="secondary" disabled={busy || (currentPage + 1) * 20 >= filtered.length} onClick={() => setPage(currentPage + 1)}>下一页</button>
+    </div>}
+  </div>;
+}
 
 function App() {
   const [students, setStudents] = useState<Student[]>(loadStudents);
@@ -5712,6 +5811,7 @@ function App() {
   const [pendingImportStudentId, setPendingImportStudentId] = useState('');
   const [digestMessage, setDigestMessage] = useState('');
   const [quickCaptureMessage, setQuickCaptureMessage] = useState('');
+  const [quickSharesRequest, setQuickSharesRequest] = useState(0);
   const [clipboardNotice, setClipboardNotice] = useState<ClipboardNotice | null>(null);
   const [studentSaveMessage, setStudentSaveMessage] = useState('');
   const [agentConnectionMessage, setAgentConnectionMessage] = useState('');
@@ -6380,13 +6480,14 @@ function App() {
       'materials-import': 'inbox', 'share-capture': 'share-capture',
       'conversation-collection': 'conversation', 'session-auto-capture': 'capture',
     };
-    const unsubscribe = bridge()?.onQuickCaptureNavigate?.(({ tabId, studentId }) => {
+    const unsubscribe = bridge()?.onQuickCaptureNavigate?.(({ tabId, studentId, inboxTab }) => {
       if (tabId === 'students') { setStudentPanelOpen(true); return; }
       if (!sectionByTab[tabId] || !students.some(student => student.id === studentId)) return;
       if (selectedStudentIdRef.current !== studentId) setSelectedId(studentId);
       setNavigationGroup('collection');
       setActivePageTab(tabId);
       setActiveSection(sectionByTab[tabId]);
+      if (tabId === 'share-capture' && inboxTab === 'shares') setQuickSharesRequest(value => value + 1);
       if (tabId === 'screen-capture') setCaptureView('sessions');
     });
     return () => { unsubscribe?.(); };
@@ -8494,72 +8595,48 @@ function App() {
     }
   };
 
-  const deliverCapturedConversation = async (session: AgentMemorySession, selection: string) => {
-    if (!selectedStudent || !session.conversationReceipt?.assetId || !session.materialAvailable) return;
+  const processCapturedConversations = async (requested: AgentMemorySession[], action: 'deliver' | 'trash' | 'restore' | 'delete', selection: string, progress: (message: string) => void): Promise<string[]> => {
+    const studentId = selectedStudent?.id;
+    if (!studentId || selectedStudentIdRef.current !== studentId || agentMemoryState?.studentId !== studentId) return [];
+    // Re-resolve the selection against the current student's latest loaded state.
+    const requestedIds = new Set(requested.map(session => session.sessionId));
+    const sessions = (agentMemoryState.sessions || []).filter(session => requestedIds.has(session.sessionId));
     const projectId = selection.startsWith('project:') ? selection.slice('project:'.length) : '';
     if (projectId && !conversationLinkedProjects.some((project) => project.id === projectId)) {
-      setAgentCenterMessage('所选项目已不再与当前学生关联，未投递会话。');
-      return;
+      progress('所选项目已不再与当前学生关联，未投递会话。');
+      return [];
     }
-    let raw: string | undefined;
-    try {
-      raw = await bridge()?.deliverConversationMaterials?.(selectedStudent.id, JSON.stringify({
-        sources: [{ sourceScopeType: 'student', sourceScopeId: selectedStudent.id, assetId: session.conversationReceipt.assetId }],
-        targetType: projectId ? 'project' : 'student',
-        targetId: projectId || selectedStudent.id,
-      }));
-    } catch {
-      setAgentCenterMessage('会话投递中断，请查询投递记录后重试。');
-      return;
-    }
-    if (!raw) {
-      setAgentCenterMessage('当前环境不支持自动会话资料投递。');
-      return;
-    }
-    try {
-      const result = JSON.parse(raw) as { ok?: boolean; message?: string };
-      setAgentCenterMessage(result.message || (result.ok ? '会话已投递。' : '会话投递失败。'));
-      if (result.ok) {
-        refreshAgentMemoryState(selectedStudent.id);
-        refreshConversationCenter(selectedStudent.id);
-        if (projectId) refreshProjects();
-        else refreshAssets();
+    if (action === 'trash' && !window.confirm(`将选中的 ${sessions.length} 条自动采集会话移入回收站？已投递资料和已晋升知识不会被删除。`)) return [];
+    if (action === 'delete') {
+      const deletable = sessions.filter(session => canSelectCapturedSession(session) && session.materialLifecycleStatus === 'trashed' && session.materialDependencies?.canPermanentlyDelete);
+      if (!deletable.length) {
+        progress('所选会话存在下游依赖或尚未移入回收站，不能彻底删除。');
+        return [];
       }
-    } catch {
-      setAgentCenterMessage('自动会话投递结果解析失败。');
+      if (!window.confirm(`彻底删除 ${deletable.length} 条会话的原文、本地会话记忆及未晋升知识候选？另 ${sessions.length - deletable.length} 条不符合条件，将保留。此操作不可撤销。`)) return [];
     }
+    const api = bridge();
+    const label = { deliver: '投递', trash: '移入回收站', restore: '恢复', delete: '彻底删除' }[action];
+    const result = await runCapturedSessionBatch({ studentId, sessions, action, target: selection,
+      isCurrent: () => selectedStudentIdRef.current === studentId,
+      invoke: async request => action === 'deliver' ? api?.deliverConversationMaterials?.(studentId, request) : api?.manageConversationImportsAsync?.(studentId, request),
+      onProgress: (done, total) => { if (selectedStudentIdRef.current === studentId) progress(`正在${label}：${done} / ${total} 条`); },
+    });
+    if (selectedStudentIdRef.current === studentId) {
+      progress(`${label}成功 ${result.succeeded.length} 条；未完成 ${result.remaining} 条；保留不符合条件项 ${result.skipped} 条。${result.errors.slice(0, 3).join('；')}`);
+      // Always reload: a failed response may have followed a successful disk write.
+      await refreshAgentMemoryState(studentId);
+      if (selectedStudentIdRef.current !== studentId) return result.succeeded;
+      refreshConversationCenter(studentId);
+      if (action === 'deliver' && result.succeeded.length) {
+        if (projectId) refreshProjects(); else refreshAssets();
+      }
+    }
+    return result.succeeded;
   };
 
-  const manageCapturedConversation = (session: NonNullable<AgentMemorySessionState['sessions']>[number], action: 'trash' | 'restore' | 'delete') => {
-    if (!selectedStudent || !session.conversationReceipt?.assetId || !session.materialAvailable) return;
-    if (action === 'trash' && !window.confirm(`将自动采集会话“${session.title || session.sessionId}”移入回收站？已投递资料和已晋升知识不会被删除。`)) return;
-    if (action === 'delete') {
-      if (!session.materialDependencies?.canPermanentlyDelete) {
-        setAgentCenterMessage('该会话仍关联资料投递或已晋升知识，不能彻底删除；请先处理下游依赖。');
-        return;
-      }
-      if (!window.confirm(`彻底删除自动采集会话“${session.title || session.sessionId}”的原文、本地会话记忆及未晋升知识候选？此操作不可撤销。`)) return;
-    }
-    const raw = bridge()?.manageConversationImports?.(selectedStudent.id, JSON.stringify({
-      action,
-      confirmPermanentDelete: action === 'delete',
-      sources: [{ sourceScopeType: 'student', sourceScopeId: selectedStudent.id, assetId: session.conversationReceipt.assetId }],
-    }));
-    if (!raw) {
-      setAgentCenterMessage('当前环境不支持自动会话删除管理。');
-      return;
-    }
-    try {
-      const result = JSON.parse(raw) as { ok?: boolean; message?: string };
-      setAgentCenterMessage(result.message || (result.ok ? '会话已处理。' : '会话处理失败。'));
-      if (result.ok) {
-        refreshAgentMemoryState(selectedStudent.id);
-        refreshConversationCenter(selectedStudent.id);
-      }
-    } catch {
-      setAgentCenterMessage('自动会话管理结果解析失败。');
-    }
-  };
+  const deliverCapturedConversation = (sessions: AgentMemorySession[], selection: string, progress: (message: string) => void) => processCapturedConversations(sessions, 'deliver', selection, progress);
+  const manageCapturedConversation = (sessions: AgentMemorySession[], action: 'trash' | 'restore' | 'delete', progress: (message: string) => void) => processCapturedConversations(sessions, action, 'student', progress);
 
   const updateAgentMemoryAutomation = (enabled: boolean) => {
     if (!selectedStudent) return;
@@ -16362,7 +16439,7 @@ ${JSON.stringify(items, null, 2)}
         )}
 
         {!shouldBlockForAgentInstall && !isLicenseRestrictedSection && activeSection === 'share-capture' && (
-          <React.Suspense fallback={<section className="panel">正在加载资料收件箱…</section>}><DownloadInboxPanel studentId={String(selectedStudent?.id || '')}
+          <React.Suspense fallback={<section className="panel">正在加载资料收件箱…</section>}><DownloadInboxPanel studentId={String(selectedStudent?.id || '')} openSharesRequest={quickSharesRequest}
             students={students.filter(student => student.archived !== true && student.status !== 'archived').map(student => ({ id: String(student.id), name: student.name }))}
             projects={projects.map(project => ({ id: String(project.id), name: project.name, studentIds: (project.studentIds || []).map(String), status: project.status }))}
             api={bridge() as DownloadInboxApi} /></React.Suspense>
@@ -20336,19 +20413,10 @@ ${JSON.stringify(items, null, 2)}
                   );
                 })}
               </div>
-              <div className="candidate-list">
-                {(agentMemoryState?.sessions ?? []).slice(0, 8).map((session) => (
-                  <AgentMemorySessionRow
-                    key={`${selectedStudent.id}:${session.sessionId}`}
-                    session={session}
-                    projects={conversationLinkedProjects}
-                    onDeliver={deliverCapturedConversation}
-                    onManage={manageCapturedConversation}
-                    onClearEmpty={clearEmptyAgentSessions}
-                  />
-                ))}
-                {(agentMemoryState?.sessions ?? []).length === 0 && <div className="empty-state compact">尚无已授权 Agent 会话。开启后可开始新会话；已打开的 Codex 或 QClaw 会话若接入已生效，可继续提问并从该轮开始采集。授权前历史不会被扫描。</div>}
-              </div>
+              <AgentMemorySessionList key={selectedStudent.id}
+                sessions={agentMemoryState?.studentId === selectedStudent.id ? agentMemoryState.sessions || [] : []}
+                projects={conversationLinkedProjects} onDeliver={deliverCapturedConversation}
+                onManage={manageCapturedConversation} onClearEmpty={clearEmptyAgentSessions} />
             </section>}
             {showingAgentMemory && <>
             <div className="form-grid compact-grid">

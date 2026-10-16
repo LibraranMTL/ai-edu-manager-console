@@ -2,9 +2,11 @@
 const fs = require('node:fs/promises');
 const path = require('node:path');
 const crypto = require('node:crypto');
+const { hashStableFile } = require('./project-materials.cjs');
+const { realDirectory } = require('./download-inbox.cjs');
 const MAX_BYTES = 20 * 1024 * 1024;
 const allowed = new Set(['.jpg', '.jpeg', '.png', '.webp', '.wav', '.mp3', '.m4a', '.ogg', '.webm', '.mp4', '.pdf', '.docx', '.txt', '.md']);
-function createCaptureInbox({ resolveStudentDir, deliver }) {
+function createCaptureInbox({ resolveStudentDir, deliver, onReceived = () => {} }) {
   const queues = new Map();
   const scanStatus = new Map();
   async function scope(id) {
@@ -52,7 +54,11 @@ function createCaptureInbox({ resolveStudentDir, deliver }) {
         item.capturedAt = String(input.capturedAt || '').slice(0, 40);
         item.suggestedTarget = input.suggestedTarget || { type: 'student' };
       }
-      value.items.unshift(item); await save(root, value); return { item, duplicate: false };
+      value.items.unshift(item); await save(root, value);
+      // Existing reception remains authoritative; routing is a recoverable
+      // follow-up notification and never makes a saved upload fail.
+      Promise.resolve().then(() => onReceived(id, item)).catch(() => {});
+      return { item, duplicate: false };
   }
   async function scanIncoming(id, root, value) {
     const incoming = path.join(root, 'incoming'), skipped = [];
@@ -72,9 +78,12 @@ function createCaptureInbox({ resolveStudentDir, deliver }) {
         const result = await receiveInto(id, { name: entry.name, sourceChannel: 'auto_folder', sourceEventId: eventId, bytes }, root, value);
         const latest = await fs.lstat(file);
         if (latest.size !== after.size || latest.mtimeMs !== after.mtimeMs) throw Error('资料在接收期间变化，保留目录中的原件');
-        // Move only this validated file; keep a recoverable directory copy as well
-        // as the immutable controlled object. Never overwrite a prior receipt.
-        const archived = path.join(root, 'received', `${crypto.randomUUID()}${path.extname(entry.name)}`);
+        // Retain the staging copy until verified delivery; record its exact identity
+        // before moving so recovery can clean it without a directory-wide sweep.
+        const archivedName = `${crypto.randomUUID()}${path.extname(entry.name)}`;
+        const archived = path.join(root, 'received', archivedName);
+        result.item.receivedCopies = [...(result.item.receivedCopies || []), archivedName];
+        await save(root, value);
         await fs.rename(file, archived);
         if (!result.duplicate) received++;
       } catch (error) { skipped.push({ filename: entry.name, reason: error.message }); }
@@ -92,15 +101,60 @@ function createCaptureInbox({ resolveStudentDir, deliver }) {
     }),
     listStored: id => mutate(id, async (_root, value) => value.items.filter(item => item.studentId === String(id))
       .map(({ controlledObjectId, ...item }) => item)),
+    resolveStored: (id, itemId) => mutate(id, async (root, value) => {
+      const item = value.items.find(entry => entry.itemId === itemId && entry.studentId === String(id) && entry.status !== 'trashed');
+      if (!item || item.transferredToStudent) throw Error('分享资料不存在、已回收或已更正给其他学生');
+      if (item.objectReleased && item.receipt?.path) {
+        await realDirectory(path.dirname(item.receipt.path));
+        const stat = await fs.lstat(item.receipt.path);
+        if (!stat.isFile() || stat.isSymbolicLink() || (await hashStableFile(item.receipt.path)).sha256 !== item.sha256) throw Error('分享登记原件校验失败');
+        return { path: item.receipt.path, stat, sha256: item.sha256 };
+      }
+      const file = path.join(root, 'objects', item.controlledObjectId);
+      if (path.dirname(file) !== path.join(root, 'objects')) throw Error('分享资料范围无效');
+      const stat = await fs.lstat(file); if (!stat.isFile() || stat.isSymbolicLink()) throw Error('分享原件不可用');
+      return { path: file, stat, sha256: item.sha256 };
+    }),
+    acknowledgeStored: (id, itemId, sha256, receipt, target) => mutate(id, async (root, value) => {
+      const item = value.items.find(entry => entry.itemId === itemId && entry.studentId === String(id) && entry.sha256 === sha256 && entry.status !== 'trashed');
+      if (!item || !receipt?.ok) throw Error('分享资料登记回执范围无效');
+      await realDirectory(path.dirname(receipt.path));
+      if ((await fs.lstat(receipt.path)).isSymbolicLink() || (await hashStableFile(receipt.path)).sha256 !== sha256) throw Error('分享投递副本校验失败');
+      Object.assign(item, { status: 'delivered', selectedTarget: target, receipt, lastReceiptId: receipt.recordId, lastError: '', revision: item.revision + 1,
+        transferredToStudent: target.studentId !== String(id) ? target.studentId : '', objectReleased: true });
+      // Commit the verified replacement before releasing the temporary object. A crash leaves an extra copy, never a lost original.
+      await save(root, value);
+      const object = path.join(root, 'objects', item.controlledObjectId);
+      if (path.dirname(object) !== path.join(root, 'objects')) throw Error('分享原件范围无效');
+      await realDirectory(path.dirname(object));
+      try {
+        const stat = await fs.lstat(object);
+        if (!stat.isFile() || stat.isSymbolicLink() || (await hashStableFile(object)).sha256 !== sha256) throw Error('分享原件变化，已保留副本');
+        if (path.resolve(object) !== path.resolve(receipt.path)) await fs.unlink(object);
+      } catch (error) { if (error.code !== 'ENOENT') throw error; }
+      for (const name of item.receivedCopies || []) {
+        const archived = path.join(root, 'received', name);
+        if (path.dirname(archived) !== path.join(root, 'received')) throw Error('分享中转副本范围无效');
+        await realDirectory(path.dirname(archived));
+        try {
+          const stat = await fs.lstat(archived);
+          if (!stat.isFile() || stat.isSymbolicLink() || (await hashStableFile(archived)).sha256 !== sha256) throw Error('分享中转副本变化，已保留');
+          if (path.resolve(archived) !== path.resolve(receipt.path)) await fs.unlink(archived);
+        } catch (error) { if (error.code !== 'ENOENT') throw error; }
+      }
+      return { ok: true };
+    }),
     receive: (id, input) => mutate(id, (root, value) => receiveInto(id, input, root, value)),
     transcribe: (id, itemId, engine, consent) => mutate(id, async (root, value) => {
       const item = value.items.find(item => item.itemId === itemId && item.studentId === String(id));
-      if (!item || item.sourceChannel !== 'audio' || item.status === 'trashed' || !['.webm', '.wav', '.mp3', '.m4a', '.ogg', '.mp4'].includes(path.extname(item.originalName).toLowerCase())) throw Error('请选当前学生未回收的录音原件');
+      if (!item || item.transferredToStudent || item.sourceChannel !== 'audio' || item.status === 'trashed' || !['.webm', '.wav', '.mp3', '.m4a', '.ogg', '.mp4'].includes(path.extname(item.originalName).toLowerCase())) throw Error('请选当前学生未回收的录音原件');
       const sourceEventId = 'transcript:' + crypto.createHash('sha256').update(item.itemId + ':' + item.sha256).digest('hex');
       const existing = value.items.find(item => item.sourceEventId === sourceEventId);
       if (existing) return { itemId: existing.itemId, duplicate: true, message: '此音频已有转写副本，未重复调用引擎；可在录音列表查看并投递。' };
-      const object = path.join(root, 'objects', item.controlledObjectId);
-      if (path.dirname(object) !== path.join(root, 'objects') || (await fs.lstat(object)).isSymbolicLink()) throw Error('录音原件范围无效');
+      const object = item.objectReleased && item.receipt?.path ? item.receipt.path : path.join(root, 'objects', item.controlledObjectId);
+      if (!item.objectReleased && path.dirname(object) !== path.join(root, 'objects')) throw Error('录音原件范围无效');
+      await realDirectory(path.dirname(object));
+      if ((await fs.lstat(object)).isSymbolicLink()) throw Error('录音原件范围无效');
       const objectStat = await fs.stat(object); if (!objectStat.isFile() || objectStat.size > MAX_BYTES || !objectStat.size) throw Error('录音原件大小无效');
       const bytes = await fs.readFile(object);
       if (crypto.createHash('sha256').update(bytes).digest('hex') !== item.sha256) throw Error('录音原件哈希校验失败');

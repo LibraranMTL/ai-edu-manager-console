@@ -68,7 +68,8 @@ test('new process context recovers confirmation after rollback or lost acknowled
   for (const phase of ['afterPrepared', 'afterFilesWritten', 'afterFinalized']) {
     const f = await fixture(t); const main = f.create({ createProjectArchiveTransactions: (options) => createProjectArchiveTransactions({ ...options,
       hooks: { [phase]: () => { throw new Error('injected interruption'); } } }) });
-    const preview = await main.call(); assert.equal((await main.call(f.evidence, preview.bindingId)).ok, false);
+    const preview = await main.call(); const interrupted = await main.call(f.evidence, preview.bindingId);
+    assert.equal(interrupted.ok, false); assert.match(interrupted.message, /injected interruption/, JSON.stringify(interrupted));
     assert.equal(main.runtime.status().phase, 'blocked');
     const restored = f.create({}, true); const state = await restored.runtime.recover(() => restored.startup.initialize());
     assert.equal(state.ready, true, JSON.stringify(state.issues)); assert.equal(state.recovered.length, 1);

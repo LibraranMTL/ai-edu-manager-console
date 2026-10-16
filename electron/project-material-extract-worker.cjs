@@ -122,7 +122,7 @@ function relationshipMap(bytes, owner) {
 
 async function extractOffice(bytes, format) {
   const files = await officeArchive(bytes, format), output = textCollector();
-  let hasContent = false;
+  let hasContent = false, coverage = 'partial';
   const warnings = ['仅提取文档可读正文；图片、图表、嵌入对象和版式不作为已完整识别的证据。'];
   if (format === 'docx') {
     const body = paragraphText(files.get('word/document.xml'));
@@ -133,6 +133,9 @@ async function extractOffice(bytes, format) {
       if (text) { hasContent = true; output.add(`\n\n[附加部件 ${name}]\n${text}`); }
     }
     warnings.push('修订删除内容不计入正文；批注与脚注单独标注，不能推断为最终定稿。');
+    const xml = files.get('word/document.xml').toString('utf8');
+    coverage = extras.length === 0 && !/<(?:[A-Za-z0-9]+:)?(?:drawing|pict|object|oMath|oMathPara|del|ins|altChunk|fldChar|sym|footnoteReference|endnoteReference)\b/.test(xml)
+      && ![...files.keys()].some(name => /^word\/(?:media|embeddings|charts)\//.test(name)) ? 'complete' : 'partial';
   } else if (format === 'pptx') {
     const links = relationshipMap(files.get('ppt/_rels/presentation.xml.rels'), 'ppt/presentation.xml');
     const slideIds = [];
@@ -181,7 +184,7 @@ async function extractOffice(bytes, format) {
     warnings.push('公式不执行，缓存结果可能过期；隐藏表已明确标注，超链接不抓取外部内容。');
   }
   invariant(hasContent, 'empty_source', 'Office文档没有可提取正文；可能仅含图片，不能标记已消化。');
-  return { text: output.value(), warnings };
+  return { text: output.value(), warnings, coverage };
 }
 
 async function extractDocument({ input, format }) {

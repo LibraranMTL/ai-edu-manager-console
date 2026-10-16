@@ -24,24 +24,34 @@ test('all execution paths use the adapter registry and Codex is sandboxed', () =
     assert.match(main, new RegExp(`${adapter}: \\{ \\.\\.\\.common, id: '${adapter}'`));
   }
   assert.match(main, /status: adapterTaskStatus, readResult: adapterTaskResult/);
-  assert.match(main, /const sandboxMode = task\.input\?\.remoteLocalExecution \? 'read-only' : 'workspace-write'/);
+  assert.match(main, /const sandboxMode = hostDraftMode \|\| task\.input\?\.remoteLocalExecution \? 'read-only' : 'workspace-write'/);
   assert.match(main, /\['exec', '--sandbox', sandboxMode/);
   assert.doesNotMatch(main, /--full-auto/);
   assert.match(main, /codexAuthHealthy/);
   assert.match(main, /function submitWorkBuddyTask/);
-  assert.match(main, /buildWorkBuddyInvocation/);
+  assert.match(main, /buildWorkBuddyTaskDeepLink/);
+  assert.match(main, /workbuddy_desktop_handoff_opened/);
+  assert.match(main, /permissionMode: 'default'/);
+  assert.match(main, /已请求打开 WorkBuddy。请检查输入框后发送/);
+  assert.doesNotMatch(main, /summary: '任务已在 WorkBuddy 桌面端打开并预填/);
+  assert.match(main, /handoffState: 'awaiting_user_send'/);
+  assert.match(ui, /待在 WorkBuddy 发送/);
+  assert.doesNotMatch(main, /probeWorkBuddyAuthorization/);
   assert.match(main, /error loading configuration\|unknown variant/);
   assert.match(main, /function probeExecutable[\s\S]*resolveNodeCommandShim\(executable, args\)/);
+  assert.match(main, /providerSupportsProfile\(configuredProjectAgent, DIGEST_PROFILE\) \? configuredProjectAgent : 'codex'/);
+  assert.match(main, /activeAdapterTask\('codex'/);
+  assert.match(main, /hostValidatedDraftPrompt\(command\)/);
 });
 
-test('manual and QClaw results enforce the current execution identity', () => {
+test('manual and Agent results enforce the current execution identity', () => {
   assert.match(main, /validateExternalTaskResultIdentity\(task, payload\)/);
   assert.match(main, /validateExternalTaskResultIdentity\(task, payload, \{ allowedStatuses: \['waiting_result'\] \}\)/);
   assert.match(main, /qclaw_inbox_prepared/);
   assert.match(main, /manual_execution_prepared/);
-  assert.match(main, /quarantineQClawPayload/);
-  assert.match(main, /discoverTaskPayloads/);
-  assert.match(main, /archiveQClawPayload/);
+  assert.match(main, /quarantineAgentPayload/);
+  assert.match(main, /discoverAgentTaskPayloads/);
+  assert.match(main, /archiveAgentPayload/);
   assert.match(main, /'processed', kind === 'claim' \? 'claims' : 'results'/);
 });
 
@@ -86,6 +96,39 @@ test('task center renders protocol details, heartbeat, inputs, outputs and histo
   assert.match(ui, /从文件导入/);
   assert.match(ui, /refreshLearningReports\(student\)/);
   assert.match(ui, /openLearningReport\('daily', student\)/);
+  assert.match(main, /function deleteTaskHistory\(taskId\)/);
+  assert.match(main, /task_history_deleted/);
+  assert.match(preload, /deleteTaskHistory\(taskId\)/);
+  assert.match(ui, /删除历史任务/);
+  assert.match(ui, /学生资料、协作审计、已生成产物和远端记录不会删除/);
+  assert.match(main, /\['succeeded', 'cancelled'\]\.includes\(normalized\)/);
+});
+
+test('unstarted collaboration cards can be deleted without being recreated by inbox mirroring', () => {
+  assert.match(ui, /删除未开始任务/);
+  assert.match(main, /index < 0 && deletedTaskCandidateSuppressed\(store, mirrored\)/);
+  assert.match(ui, /远端记录不会删除/);
+});
+
+test('batch cleanup deletes safe unstarted tasks in one step and can select the full filtered result', () => {
+  assert.match(main, /function resolveTaskGovernanceSelection\(/);
+  assert.match(main, /request\.selection !== 'filtered'/);
+  assert.match(main, /matched\.slice\(0, 1000\)/);
+  assert.match(main, /eligibilitySignature\(current\) !== eligibilitySignature\(saved\)/);
+  assert.match(ui, /选择当前筛选全部/);
+  assert.match(ui, /删除可安全清理的任务/);
+  assert.match(ui, /task-batch-feedback/);
+  assert.match(ui, /从未启动、已结束或已归档的任务可直接删除/);
+});
+
+test('inactive students do not generate task cards and old inactive cards leave the current queue', () => {
+  assert.match(main, /const taskCardStudents = students\.filter\(\(student\) => !studentTaskCardsSuppressed\(student\)\)/);
+  assert.match(main, /if \(studentTaskCardsSuppressed\(toHostStudent\(student\)\)\) return \[\]/);
+  assert.match(main, /reconcileInactiveStudents: true/);
+  assert.match(main, /inactive_student_task_archived/);
+  assert.match(main, /!\['running', 'waiting_result', 'reviewing'\]\.includes\(normalizeTaskStatus\(task\.status\)\)/);
+  assert.match(ui, /“不活跃”始终不生成新的任务卡/);
+  assert.equal((ui.match(/students\.filter\(\(student\) => student\.activityStatus !== 'inactive'\)\.map/g) || []).length, 2);
 });
 
 test('digest preflight failures are persisted and rendered beside the task action', () => {

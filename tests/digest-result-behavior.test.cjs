@@ -39,6 +39,58 @@ test('strict student result confirms only matching files and keeps partial remai
   assert.deepEqual(result.remaining.map((file) => file.materialId), ['m2']);
 });
 
+test('an Agent whole-batch initialization failure cannot be mistaken for partial completion', () => {
+  const current = batch();
+  const receipt = {
+    protocolVersion: '1.2',
+    status: 'completed',
+    message: '用户粘贴 Agent 执行结果。',
+    data: {
+      items: [
+        { 本批消化未完成: '本地工具初始化失败，无法读取 `AGENT.md` 和批次清单，失败回执也无法写入。' },
+        { 已处理文件: '0 个。知识库、原始资料和正式教育档案均未修改。需恢复本地文件访问环境后重试本批次。' },
+      ],
+      schema: 'edu-manager.digest-result.v1',
+      studentId: 's1',
+      digestBatchId: 'digest-1',
+    },
+    schema: 'edu-manager.digest-result.v1',
+    studentId: 's1',
+    digestBatchId: 'digest-1',
+  };
+  const result = validateDigestResult({
+    batch: current,
+    currentFiles: current.files,
+    receipt,
+    assumeAllOnCompletion: true,
+    inferredArtifacts: ['D:/knowledge/index.md'],
+  });
+  assert.equal(result.ok, false);
+  assert.equal(result.code, 'batch_execution_failed');
+  assert.equal(result.retryable, true);
+  assert.equal(result.remaining.length, 2);
+  assert.match(result.message, /初始化失败|未处理/);
+});
+
+test('a real partial result still settles identified files when another file fails', () => {
+  const current = batch();
+  const result = validateDigestResult({
+    batch: current,
+    currentFiles: current.files,
+    receipt: {
+      status: 'partial',
+      studentId: 's1',
+      digestBatchId: 'digest-1',
+      processed: [{ materialId: 'm1', relativePath: 'a.pdf', sha1: HASH_A }],
+      failed: [{ materialId: 'm2', relativePath: 'b.pdf', sha1: HASH_B, message: '单文件读取失败，稍后重试' }],
+    },
+  });
+  assert.equal(result.ok, true);
+  assert.equal(result.code, 'partial');
+  assert.deepEqual(result.confirmed.map((file) => file.materialId), ['m1']);
+  assert.deepEqual(result.remaining.map((file) => file.materialId), ['m2']);
+});
+
 test('permissive result ignores batch drift but rejects changed source content and duplicate entries', () => {
   const current = batch();
   const oldBatch = validateDigestResult({ batch: current, currentFiles: current.files, requireMaterialId: true, receipt: { status: 'completed', studentId: 's1', digestBatchId: 'old', processed: [{ materialId: 'm1', relativePath: 'a.pdf', sha1: HASH_A }] } });

@@ -3,18 +3,19 @@ const path = require('node:path');
 const TASK_PROTOCOL_VERSION = '1.2';
 
 const TASK_STATUS_TRANSITIONS = Object.freeze({
-  draft: ['pending', 'cancelled'],
-  pending: ['approved', 'cancelled', 'blocked'],
-  approved: ['queued', 'running', 'waiting_result', 'cancelled', 'blocked'],
-  queued: ['running', 'waiting_result', 'cancelled', 'timed_out', 'blocked'],
+  draft: ['pending', 'cancelled', 'archived'],
+  pending: ['approved', 'cancelled', 'blocked', 'archived'],
+  approved: ['queued', 'running', 'waiting_result', 'cancelled', 'blocked', 'archived'],
+  queued: ['running', 'waiting_result', 'cancelled', 'timed_out', 'blocked', 'archived'],
   running: ['waiting_result', 'reviewing', 'failed', 'timed_out', 'cancelled'],
   waiting_result: ['running', 'reviewing', 'failed', 'timed_out', 'cancelled'],
   reviewing: ['succeeded', 'failed', 'pending', 'cancelled'],
-  succeeded: ['pending'],
-  failed: ['pending', 'approved', 'cancelled'],
-  blocked: ['pending', 'approved', 'cancelled'],
-  cancelled: ['pending'],
-  timed_out: ['pending', 'approved', 'cancelled'],
+  succeeded: ['pending', 'archived'],
+  failed: ['pending', 'approved', 'cancelled', 'archived'],
+  blocked: ['pending', 'approved', 'cancelled', 'archived'],
+  cancelled: ['pending', 'archived'],
+  timed_out: ['pending', 'approved', 'cancelled', 'archived'],
+  archived: ['cancelled'],
 });
 
 function validateTaskTransition(currentStatus, nextStatus) {

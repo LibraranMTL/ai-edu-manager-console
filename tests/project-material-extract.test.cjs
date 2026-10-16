@@ -8,7 +8,7 @@ const { createRequire } = require('node:module');
 const ExcelJS = require('exceljs');
 const JSZip = createRequire(require.resolve('exceljs'))('jszip');
 const { createProjectMaterialStore } = require('../electron/project-materials.cjs');
-const { createProjectMaterialExtractor, runDocumentWorker, runImageOcr } = require('../electron/project-material-extract.cjs');
+const { createProjectMaterialExtractor, reuseMaterialExtraction, runDocumentWorker, runImageOcr } = require('../electron/project-material-extract.cjs');
 const { bundleMaterialExtractor } = require('../scripts/build-project-material-extractor.cjs');
 
 async function fixture(t) {
@@ -34,6 +34,84 @@ async function archive(entries) {
   for (const [name, value] of Object.entries(entries)) zip.file(name, value);
   return zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' });
 }
+
+test('inbox and project extraction scopes currently OCR identical bytes separately, then cache locally', async t => {
+  const inbox = await fixture(t), project = await fixture(t); let calls = 0;
+  const bytes = Buffer.from('synthetic image bytes; injected OCR runner only');
+  const source = await inbox.add('image.png', bytes), target = await project.add('image.png', bytes);
+  const imageRunner = async () => { calls++; return { text: 'synthetic OCR text', warnings: [] }; };
+  const a = createProjectMaterialExtractor({ store: inbox.store, imageRunner });
+  const b = createProjectMaterialExtractor({ store: project.store, imageRunner });
+  assert.equal(source.sha256, target.sha256);
+  assert.equal((await a.extract(source)).cacheHit, false);
+  assert.equal((await b.extract(target)).cacheHit, false);
+  assert.equal(calls, 2); // Same implementation is not a cross-stage cache bridge.
+  assert.equal((await a.extract(source)).cacheHit, true);
+  assert.equal((await b.extract(target)).cacheHit, true); assert.equal(calls, 2);
+});
+async function handoffFixture(t, options = {}) {
+  const inbox = await fixture(t), project = await fixture(t); let calls = 0;
+  const sourceInput = await inbox.add('image.png', 'synthetic image'), destinationInput = await project.add('image.png', 'synthetic image');
+  const full = { text: '完整OCR正文'.repeat(16000), warnings: ['版式未被完整理解'], language: 'zh-CN', languageFallback: false };
+  const imageRunner = async () => { calls++; return full; };
+  const source = createProjectMaterialExtractor({ store: inbox.store, imageRunner });
+  const destination = createProjectMaterialExtractor({ store: project.store, imageRunner, ...options });
+  const request = { source, destination, sourceInput, destinationInput, studentId: 'a', sourceStudentId: 'a', authorize: async () => true };
+  return { inbox, project, full, request, calls: () => calls };
+}
+test('authorized full extraction handoff avoids a second OCR and preserves >200KiB text, warnings and provenance', async t => {
+  const f = await handoffFixture(t), r = f.request;
+  await r.source.extract(r.sourceInput);
+  assert.equal((await reuseMaterialExtraction(r)).reused, true);
+  assert.equal((await reuseMaterialExtraction(r)).reason, 'already_cached');
+  const result = await r.destination.extract(r.destinationInput);
+  assert.equal(result.cacheHit, true); assert.equal(result.text, f.full.text);
+  assert.deepEqual(result.warnings, f.full.warnings); assert.equal(result.language, 'zh-CN'); assert.equal(f.calls(), 1);
+  const record = JSON.parse(await fs.readFile(path.join(f.project.store.directory, 'extraction-cache', `${result.cacheKey}.json`)));
+  assert.equal(record.provenance.studentId, 'a'); assert.equal(record.provenance.version, r.destinationInput.version);
+});
+for (const [name, options] of [['parser version', { parserVersion: 'new-parser' }], ['OCR language', { ocrLanguage: 'en-US' }]]) {
+  test(`handoff rejects changed ${name} and digestion safely re-extracts`, async t => {
+    const f = await handoffFixture(t, options), r = f.request; await r.source.extract(r.sourceInput);
+    assert.equal((await reuseMaterialExtraction(r)).reason, 'extraction_identity_mismatch');
+    assert.equal((await r.destination.extract(r.destinationInput)).cacheHit, false); assert.equal(f.calls(), 2);
+  });
+}
+test('handoff rejects cross-student, revoked authorization and forged extractor capabilities', async t => {
+  const f = await handoffFixture(t), r = f.request; await r.source.extract(r.sourceInput);
+  await assert.rejects(reuseMaterialExtraction({ ...r, studentId: 'b' }), { code: 'scope_mismatch' });
+  await assert.rejects(reuseMaterialExtraction({ ...r, authorize: async () => false }), { code: 'forbidden' });
+  await assert.rejects(reuseMaterialExtraction({ ...r, source: { result: f.full } }), { code: 'invalid_scope' });
+  let checks = 0;
+  await assert.rejects(reuseMaterialExtraction({ ...r, authorize: async () => ++checks < 3 }), { code: 'forbidden' });
+  assert.equal((await r.destination.extract(r.destinationInput)).cacheHit, false); assert.equal(f.calls(), 2);
+});
+test('handoff validates both fixed versions and format, without OCR on missing source cache', async t => {
+  const f = await handoffFixture(t), r = f.request;
+  assert.equal((await reuseMaterialExtraction(r)).reason, 'full_extraction_unavailable'); assert.equal(f.calls(), 0);
+  await r.source.extract(r.sourceInput);
+  for (const field of ['sourceInput', 'destinationInput']) {
+    await assert.rejects(reuseMaterialExtraction({ ...r, [field]: { ...r[field], sha256: '0'.repeat(64) } }), { code: 'source_changed' });
+    await assert.rejects(reuseMaterialExtraction({ ...r, [field]: { ...r[field], version: 2 } }), { code: 'version_missing' });
+    await assert.rejects(reuseMaterialExtraction({ ...r, [field]: { ...r[field], location: { relativePath: 'fake.txt' } } }), { code: 'source_changed' });
+  }
+  assert.equal(f.calls(), 1);
+});
+for (const mode of ['tampered', 'truncated']) test(`handoff never imports ${mode} extraction`, async t => {
+  const f = await handoffFixture(t), r = f.request, result = await r.source.extract(r.sourceInput);
+  const file = path.join(f.inbox.store.directory, 'extraction-cache', `${result.cacheKey}.json`);
+  const record = JSON.parse(await fs.readFile(file));
+  if (mode === 'tampered') record.result.text = 'changed';
+  else { record.result.truncated = true; record.resultHash = crypto.createHash('sha256').update(JSON.stringify(record.result)).digest('hex'); }
+  await fs.writeFile(file, JSON.stringify(record));
+  assert.equal((await reuseMaterialExtraction(r)).reused, false); assert.equal(f.calls(), 1);
+});
+test('cache capacity failure does not truncate a handoff or change material registration', async t => {
+  const f = await handoffFixture(t, { cacheLimitBytes: 100 }), r = f.request;
+  await r.source.extract(r.sourceInput); const before = await f.project.store.read();
+  assert.equal((await reuseMaterialExtraction(r)).reason, 'cache_not_stored');
+  assert.deepEqual(await f.project.store.read(), before); assert.equal(f.calls(), 1);
+});
 const docx = (text) => archive({ 'word/document.xml': `<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>${text}</w:t></w:r></w:p></w:body></w:document>` });
 
 test('fixed-version extraction is reused across service instances without rewriting the registry', async (t) => {
@@ -206,10 +284,19 @@ test('actual Windows OCR reads an extensionless fixed PNG snapshot and reuses it
     ['-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(code, 'utf16le').toString('base64')], { windowsHide: true, timeout: 15000 });
   const input = await f.add('ocr.png', await fs.readFile(file));
   assert.equal(path.extname(input.path), '');
-  const extractor = createProjectMaterialExtractor({ store: f.store });
+  let ocrCalls = 0;
+  const imageRunner = (...args) => { ocrCalls++; return runImageOcr(...args); };
+  const extractor = createProjectMaterialExtractor({ store: f.store, imageRunner });
   const result = await extractor.extract(input);
   assert.match(result.text, /温\s*度/); assert.match(result.text, /20\s+25\s+30/);
   assert.equal((await extractor.extract(input)).cacheHit, true);
+  const project = await fixture(t), projectInput = await project.add('ocr.png', await fs.readFile(file));
+  const destination = createProjectMaterialExtractor({ store: project.store, imageRunner });
+  assert.equal((await reuseMaterialExtraction({ source: extractor, destination, sourceInput: input, destinationInput: projectInput,
+    sourceStudentId: 'a', studentId: 'a', authorize: async () => true })).reused, true);
+  const digestInput = await destination.extract(projectInput);
+  assert.equal(digestInput.cacheHit, true); assert.equal(digestInput.text, result.text);
+  assert.deepEqual(digestInput.warnings, result.warnings); assert.equal(ocrCalls, 1);
   await assert.rejects(runImageOcr(input, { language: 'invalid command;' }), { code: 'invalid_extraction_options' });
 });
 

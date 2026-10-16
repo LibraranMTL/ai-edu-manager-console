@@ -79,7 +79,7 @@ export function DigestStatusCard({ status, busy, manualText = '', onManualTextCh
   return (
     <section className={`digest-status-card is-${status.userStatus}`}>
       <div className="digest-status-main">
-        <span className="digest-status-badge">{labels[status.userStatus] || status.label || '待处理'}</span>
+        <span className="digest-status-badge">{status.label || labels[status.userStatus] || '待处理'}</span>
         <div>
           <strong>{status.scopeName || '资料消化'}</strong>
           <p>{status.message || (status.userStatus === 'pending' ? `有 ${status.pendingCount || 0} 项资料等待处理。` : '系统正在更新资料处理状态。')}</p>

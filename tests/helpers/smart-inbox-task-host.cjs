@@ -1,0 +1,50 @@
+'use strict';
+// Execute the actual main-process callbacks without booting a production profile.
+// No replacement transition/upsert/read/write implementation is used here.
+const fs = require('node:fs');
+const path = require('node:path');
+const vm = require('node:vm');
+const crypto = require('node:crypto');
+
+async function createTaskHost(root, options = {}) {
+  const runtime = options.runtime || path.resolve(__dirname, '../../electron');
+  const source = fs.readFileSync(path.join(runtime, 'main.cjs'), 'utf8');
+  const client = require(path.join(runtime, 'task-io-client.cjs')).createTaskIoClient();
+  const file = path.join(root, 'task-center', 'tasks.json');
+  const service = require(path.join(runtime, 'task-store-service.cjs')).createTaskStoreService({
+    request: async (...args) => {
+      await options.beforeRequest?.(...args);
+      return client.request(...args);
+    },
+  });
+  try { await service.initialize(file); } catch (e) { client.close(); throw e; }
+  const context = vm.createContext({ fs, path, crypto, structuredClone,
+    ...require(path.join(runtime, 'task-protocol.cjs')),
+    ...require(path.join(runtime, 'task-history-policy.cjs')),
+    ...require(path.join(runtime, 'task-store-compaction.cjs')),
+    taskStoreGuard: service,
+    taskProgressBuffer: require(path.join(runtime, 'task-progress-buffer.cjs')).createTaskProgressBuffer(),
+    taskStorePath: () => file, taskCenterDirPath: () => path.dirname(file),
+    sha1Text: value => crypto.createHash('sha1').update(String(value)).digest('hex'),
+    taskNow: () => new Date().toISOString(), taskChildProcesses: new Map(),
+    TASK_TERMINAL_STATUSES: new Set(['succeeded', 'failed', 'blocked', 'cancelled', 'timed_out', 'archived']),
+    taskCenterSnapshotCache: {}, taskLegacySnapshot: '',
+  });
+  for (const name of ['normalizeTaskStatus', 'taskStatusGroup', 'taskRiskForKind', 'normalizeTaskEnvelope',
+    'readTaskStore', 'writeTaskStore', 'writeTaskStoreDurably', 'appendTaskEvent', 'transitionTaskInStore', 'upsertTaskCandidates']) {
+    let start = source.indexOf(`function ${name}(`);
+    if (start < 0) throw Error(`Missing production function ${name}`);
+    if (source.slice(start - 6, start) === 'async ') start -= 6;
+    vm.runInContext(source.slice(start, source.indexOf('\n}', start) + 2), context);
+  }
+  const start = source.indexOf('      async beginBatch(source, manual, batch = {}) {');
+  const end = source.indexOf('      agent: {', start);
+  if (start < 0 || end < 0) throw Error('Missing production batch callbacks');
+  const callbacks = vm.runInContext(`({${source.slice(start, end)}})`, context);
+  return { ...callbacks, context, file, service, client,
+    disk: () => JSON.parse(fs.readFileSync(file, 'utf8')),
+    events: () => fs.readFileSync(path.join(path.dirname(file), 'events.jsonl'), 'utf8').trim().split('\n').filter(Boolean).map(JSON.parse),
+    async close() { try { await service.flush(); } finally { client.close(); } },
+  };
+}
+module.exports = { createTaskHost };

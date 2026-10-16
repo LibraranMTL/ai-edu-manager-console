@@ -43,7 +43,8 @@ function previewIntent(storeValue, { name, input, idempotencyKey, grantId }, now
   const pending = store.intents.filter((item) => item.status !== 'completed' && Date.parse(item.expiresAt) > Date.parse(now));
   if (pending.length >= 20 || pending.reduce((sum, item) => sum + JSON.stringify(item.input || {}).length, 0) + JSON.stringify(input).length > 20 * 1024 * 1024) return { ok: false, code: 'PENDING_INTENT_LIMIT' };
   const intent = { id: `agent-intent-${crypto.randomUUID()}`, schema: WRITE_INTENT_SCHEMA, name, input, inputDigest, idempotencyKey, grantId, studentId: input.studentId, projectId: input.projectId || '', status: 'pending_approval', createdAt: now, expiresAt: new Date(Date.parse(now) + 24 * 60 * 60 * 1000).toISOString(), approvedAt: '', executedAt: '', receipt: null };
-  return { ok: true, store: { ...store, intents: [...store.intents.filter((item) => item.status !== 'pending_approval' || Date.parse(item.expiresAt) > Date.parse(now)), intent].slice(-500) }, intent, reused: false };
+  // Completed records are durable idempotency tombstones, not a rolling UI list.
+  return { ok: true, store: { ...store, intents: [...store.intents, intent] }, intent, reused: false };
 }
 
 function approveIntent(storeValue, id, expectedDigest, now = new Date().toISOString()) {
@@ -76,7 +77,7 @@ function beginExecution(storeValue, id, grantId, now = new Date().toISOString())
   if (!intent) return { ok: false, code: 'INTENT_NOT_FOUND' };
   if (intent.grantId !== grantId) return { ok: false, code: 'INTENT_SCOPE_DENIED' };
   if (intent.status === 'completed') return { ok: true, store, intent, duplicate: true };
-  if (Date.parse(intent.expiresAt) <= Date.parse(now)) return { ok: false, code: 'INTENT_EXPIRED' };
+  if (intent.status !== 'recoverable' && Date.parse(intent.expiresAt) <= Date.parse(now)) return { ok: false, code: 'INTENT_EXPIRED' };
   if (!['approved', 'recoverable'].includes(intent.status)) return { ok: false, code: 'INTENT_NOT_APPROVED' };
   intent.status = 'executing';
   return { ok: true, store, intent, duplicate: false };
@@ -105,7 +106,7 @@ function expireIntents(storeValue, now = new Date().toISOString()) {
   const store = normalizeStore(storeValue);
   let changed = false;
   for (const intent of store.intents) {
-    if (!['completed', 'rejected', 'expired'].includes(intent.status) && Date.parse(intent.expiresAt) <= Date.parse(now)) {
+    if (['pending_approval', 'approved'].includes(intent.status) && Date.parse(intent.expiresAt) <= Date.parse(now)) {
       intent.status = 'expired';
       intent.input = null;
       changed = true;

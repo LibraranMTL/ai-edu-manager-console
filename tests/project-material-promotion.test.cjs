@@ -261,12 +261,12 @@ test('internal task adapter waits for asynchronous preflight and settles the exi
   let store = { tasks: [{ id: 'task1', sourceId: 'p1', status: 'approved', attempt: 0, input: { operation: 'execute_archive_plan', plan: { items: [] } } }] };
   const processes = new Map();
   const context = vm.createContext({ crypto, fs, setInterval, clearInterval,
-    readTaskStore: () => structuredClone(store), writeTaskStore: (value) => { store = structuredClone(value); }, taskNow: () => new Date().toISOString(),
+    readTaskStore: () => structuredClone(store), writeTaskStoreDurably: async (value) => { store = structuredClone(value); }, assertTaskDispatchCurrent() {}, taskNow: () => new Date().toISOString(),
     transitionTaskInStore: (value, id, status, patch) => { const task = value.tasks.find((item) => item.id === id); Object.assign(task, patch, { status }); return { ok: true, task }; },
     performProjectPromotionPlan: () => pending, heartbeatTask() {}, notify() {}, taskChildProcesses: processes,
     normalizeTaskResult: (_task, output) => output });
   vm.runInContext(extract('submitInternalTask'), context);
-  const submitted = context.submitInternalTask(store.tasks[0]);
+  const submitted = await context.submitInternalTask(store.tasks[0]);
   assert.equal(submitted.ok, true); assert.equal(store.tasks[0].status, 'running');
   const running = processes.get('task1'); assert.equal(running.materialRuntime.canCancel, false);
   resolve(JSON.stringify({ ok: true, results: [], message: 'synthetic done' }));

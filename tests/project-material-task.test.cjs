@@ -119,6 +119,19 @@ test('failed sandbox probe never invokes Agent or creates a batch', async (t) =>
   assert.equal((await f.store.read()).materials[0].processing.state, 'pending');
 });
 
+test('host-mediated no-tool isolation continues automatically and records degraded evidence', windowsOnly, async (t) => {
+  const f = await fixture(t);
+  let received;
+  const result = await createProjectMaterialTask({ ...f.options,
+    verifySandbox: async () => ({ passed: false, mode: 'host-mediated-no-tools', executable: 'synthetic.exe', executableSha256: 'synthetic' }),
+    execute: async (options) => { received = options.sandboxEvidence; return f.execute(options); },
+  }).run();
+  assert.equal(result.fullyCommitted, true);
+  assert.equal(received.mode, 'host-mediated-no-tools');
+  assert.equal(f.checkpoint.isolationMode, 'host-mediated-no-tools');
+  assert.equal(f.checkpoint.sandboxVerified, false);
+});
+
 test('task refresh keeps interrupted commit checkpoints but not a previous completed cycle', () => {
   const current = { kind: 'project_digest', sourceId: 'p1', status: 'failed',
     input: { materialExecution: { phase: 'committing', batchId: 'b1' } } };
@@ -156,6 +169,20 @@ test('unsupported source does not block valid sources or falsely complete the wh
   assert.equal(f.checkpoint.phase, 'partial');
   const retry = await createProjectMaterialTask({ ...f.options, checkpoint: f.checkpoint, executionId: 'e2' }).run();
   assert.equal(retry.fullyCommitted, false); assert.equal(f.calls, 1); // No repeated AI for successful source.
+});
+
+test('a stable source edit refreshes its registered version and continues without manual repair', windowsOnly, async (t) => {
+  const f = await fixture(t);
+  const source = path.join(f.project.workspacePath, 'a.txt');
+  await fs.writeFile(source, 'SYNTHETIC updated before digest');
+  const result = await createProjectMaterialTask(f.options).run();
+  assert.equal(result.fullyCommitted, true);
+  assert.equal(result.remainingCount, 0);
+  assert.equal(result.failures.length, 0);
+  const updated = (await f.store.read()).materials.find((item) => item.materialId === f.item.materialId);
+  assert.equal(updated.version, 2);
+  assert.equal(updated.processing.state, 'completed');
+  assert.equal(updated.processing.processedVersion, 2);
 });
 
 test('batch size uses extracted text bytes and pre-extracted text reaches the executor unchanged', windowsOnly, async (t) => {
@@ -208,29 +235,41 @@ test('PDF pages pass through the default source adapter and settle the same immu
   assert.deepEqual(await fs.readFile(file), bytes);
 });
 
-test('host task adapter persists checkpoints and settles through the existing task-center result path', windowsOnly, async (t) => {
+for (const fallback of [false, true]) test(`host task adapter persists checkpoints and settles; WorkBuddy auth fallback=${fallback}`, windowsOnly, async (t) => {
   const f = await fixture(t);
   const main = await fs.readFile(path.join(__dirname, '../electron/main.cjs'), 'utf8');
-  const start = main.indexOf('function submitProjectMaterialTask('), end = main.indexOf('\nfunction submitCodexTask(', start);
+  const start = main.indexOf('async function submitProjectMaterialTask('), end = main.indexOf('\nfunction submitCodexTask(', start);
   let store = { tasks: [{ id: 'task-p1', kind: 'project_digest', sourceId: 'p1', sourceType: 'project', status: 'approved', attempt: 0, input: {}, requestedExecutor: 'codex' }] };
   let released = 0, settled = 0;
   const runs = new Map();
-  const context = vm.createContext({ crypto: require('node:crypto'), AbortController, setInterval, clearInterval,
+  const context = vm.createContext({ crypto: require('node:crypto'), fs: require('node:fs'), AbortController, setInterval, clearInterval,
+    require: name => name === './smart-inbox-agent.cjs' ? { routingRuntimeHash: async () => 'synthetic-runtime' } : require(path.join(__dirname, '../electron', name)),
+    findStudentByKey: () => ({ id: 's1', agentTool: 'codex' }), readProjects: () => [f.project], normalizeProject: p => p,
+    agentControlPolicy: () => ({ primary: fallback ? 'workbuddy' : 'codex', fallbacks: fallback ? ['codex'] : [], enabled: true, desktopHandoff: false, version: 0 }),
+    classificationAdapter: async id => id === 'workbuddy' ? { id, runtime: { cliPath: f.project.agentPath, configDir: f.root } } : { id: 'codex', executable: 'C:\\synthetic.exe', authScope: 'synthetic', authVersion: 1 },
+    workBuddyQualification: { peek: () => ({ ready: false, code: 'AUTHENTICATION_REQUIRED', message: 'Authentication required' }) },
     adapterCapabilities: () => ({ codex: { available: true, authorized: true, exePath: 'C:\\synthetic.exe' } }),
     mutableProject: () => ({ project: f.project }), captureHeavyWorkGate: { tryAcquire: () => () => { released++; } }, captureTimelineResourceSnapshot: () => ({}),
     licenseRequiredJson: () => null, validateTaskPermissionDeclaration: () => ({ ok: true }), taskPathAllowed: () => true,
-    readTaskStore: () => structuredClone(store), writeTaskStore: (value) => { store = structuredClone(value); },
-    taskNow: () => new Date().toISOString(), taskChildProcesses: runs, heartbeatTask() {}, notify() {},
+    readTaskStore: () => structuredClone(store), writeTaskStoreDurably: async (value) => { store = structuredClone(value); },
+    circuitDecision: require('../electron/task-executor-circuit.cjs').circuitDecision,
+    recordCircuitOutcome: require('../electron/task-executor-circuit.cjs').recordCircuitOutcome,
+    providerSupportsProfile: require('../electron/agent-invocation-service.cjs').providerSupportsProfile,
+    aiExecutorRegistry: () => require('../electron/ai-executor-registry.cjs').executorRegistry(),
+    DIGEST_PROFILE: require('../electron/agent-invocation-service.cjs').DIGEST_PROFILE,
+    taskNow: () => new Date().toISOString(), taskChildProcesses: runs, activeAdapterTask: () => null, heartbeatTask() {}, notify() {},
     transitionTaskInStore: (value, id, status, patch) => { const task = value.tasks.find((item) => item.id === id); Object.assign(task, patch, { status }); return { ok: true, task }; },
     createProjectMaterialTask: (options) => createProjectMaterialTask({ ...options, verifySandbox: f.options.verifySandbox, execute: f.execute }),
     normalizeTaskResult: (task, output) => output,
     commitValidatedTaskResult: (value, task, output, validation) => { settled++; task.status = validation.valid ? 'succeeded' : 'failed'; task.result = output; },
   });
+  store.runtime = { agentQualifications: { codex: { 'digest_host_mediated.v1': { ready: true, runtimeHash: 'synthetic-runtime', authScope: JSON.stringify(['synthetic', 1]), expiresAt: new Date(Date.now() + 60000).toISOString() } } } };
   vm.runInContext(main.slice(start, end), context);
-  const dispatched = context.submitProjectMaterialTask(store.tasks[0], f.project, 'codex');
+  const dispatched = await context.submitProjectMaterialTask(store.tasks[0], f.project, 'auto');
   assert.equal(dispatched.ok, true); assert.equal(store.tasks[0].status, 'running');
   await runs.get('task-p1').completion;
   assert.equal(settled, 1); assert.equal(store.tasks[0].status, 'succeeded');
   assert.equal(store.tasks[0].input.materialExecution.phase, 'committed');
   assert.equal(released, 1); assert.equal(runs.size, 0);
+  assert.deepEqual(Array.from(store.tasks[0].routeDecision.attempts, a => a.providerId), fallback ? ['workbuddy', 'codex'] : ['codex']);
 });

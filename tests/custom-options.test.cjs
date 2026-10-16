@@ -26,6 +26,9 @@ test('student-specific storage isolates subjects and custom launches do not gran
     assert.equal(saved.webResearch, false); assert.equal(saved.structuredTasks, false);
     await api.openTool(saved.id); assert.equal(opened, saved.target);
     await assert.rejects(api.addTool({ name: 'test', kind: 'web', target: 'https://example.org/' }));
+    const updated = await api.updateTool(saved.id, { name: 'Test CLI', kind: 'cli', target: process.execPath, args: ['--version'] });
+    assert.equal(updated[0].id, saved.id); assert.equal(updated[0].kind, 'cli'); assert.deepEqual(updated[0].args, ['--version']);
+    await api.updateTool(saved.id, { name: 'Test Web', kind: 'web', target: 'https://example.org/' });
     await api.removeTool(saved.id); await assert.rejects(api.openTool(saved.id));
   } finally { await fs.rm(root, { recursive: true, force: true }); }
 });

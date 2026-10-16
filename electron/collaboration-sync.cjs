@@ -72,6 +72,7 @@ function forbiddenSyncPath(relativePath) {
     || lower.includes('/executions/')
     || lower.includes('/qclaw-inbox/')
     || lower.includes('/qclaw-results/')
+    || /(^|\/)(agent-inbox|agent-results|workbuddy-outbox|manual-outbox)\//.test(lower)
     || lower.endsWith('.lock')
     || lower.endsWith('.tmp');
 }

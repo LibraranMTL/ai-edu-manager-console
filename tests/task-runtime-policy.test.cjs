@@ -84,6 +84,23 @@ test('same-cycle terminal tasks stay terminal while a new cycle resets execution
   assert.equal(newCycle.resetExecution, true);
 });
 
+test('candidate refresh cannot replace active or prepared execution runtime', () => {
+  const active = candidateRuntimeDecision(
+    { status: 'running', executionId: 'run-1', startedAt: '2026-10-10T00:00:00Z', idempotencyKey: 'cycle-1' },
+    { status: 'pending', idempotencyKey: 'cycle-2' },
+  );
+  assert.equal(active.preserveRuntime, true);
+  assert.equal(active.nextStatus, 'running');
+  assert.equal(active.newCycle, false);
+
+  const prepared = candidateRuntimeDecision(
+    { status: 'approved', executionId: 'run-1', idempotencyKey: 'cycle-1' },
+    { status: 'pending', idempotencyKey: 'cycle-1' },
+  );
+  assert.equal(prepared.preservePreparedExecution, true);
+  assert.equal(prepared.nextStatus, 'approved');
+});
+
 test('runtime repair restores manual waits, recovers orphans and clamps retry storms', () => {
   const store = {
     tasks: [
@@ -108,6 +125,15 @@ test('runtime repair restores manual waits, recovers orphans and clamps retry st
         attempt: 0,
         maxAttempts: 3,
       },
+      {
+        id: 'stale-pending',
+        status: 'pending',
+        adapterId: 'codex',
+        executionId: 'old-run',
+        startedAt: '2026-07-23T00:00:00Z',
+        attempt: 1,
+        maxAttempts: 3,
+      },
     ],
   };
   const result = repairTaskRuntimeStore(store, '2026-07-23T02:00:00Z');
@@ -117,6 +143,10 @@ test('runtime repair restores manual waits, recovers orphans and clamps retry st
   assert.equal(store.tasks[0].autoRetry, false);
   assert.equal(store.tasks[1].status, 'pending');
   assert.equal(store.tasks[1].executionId, '');
+  assert.equal(store.tasks[2].status, 'pending');
+  assert.equal(store.tasks[2].executionId, '');
+  assert.equal(store.tasks[2].startedAt, '');
+  assert.equal(store.tasks[2].attempt, 1);
 });
 
 test('noisy repeated events are collapsed without dropping distinct audit events', () => {

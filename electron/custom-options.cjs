@@ -25,7 +25,11 @@ function tool(input) {
     if (url.protocol !== 'https:' || url.username || url.password) throw new Error('网页工具须使用不含凭据的 HTTPS 地址');
     return { name, kind: 'web', target: url.href };
   }
-  if (input.kind !== 'exe' || !path.win32.isAbsolute(target) || !/\.exe$/i.test(target) || target.startsWith('\\\\')) throw new Error('请选择本机绝对路径的 EXE；不支持命令脚本或网络共享');
+  if (!['exe', 'cli'].includes(input.kind) || !path.win32.isAbsolute(target) || !/\.exe$/i.test(target) || target.startsWith('\\\\')) throw new Error('请选择本机绝对路径的 EXE；不支持命令脚本或网络共享');
+  if (input.kind === 'cli') {
+    if (!Array.isArray(input.args) || input.args.length > 64 || input.args.some(v => typeof v !== 'string' || v.length > 4096 || /[\x00\r\n]/.test(v))) throw Error('CLI 参数必须为独立字符串数组');
+    return { name, kind: 'cli', target, args: input.args };
+  }
   return { name, kind: 'exe', target };
 }
 function createCustomOptions({ toolsDir, resolveStudentDir, launchWeb, launchExe }) {
@@ -56,15 +60,33 @@ function createCustomOptions({ toolsDir, resolveStudentDir, launchWeb, launchExe
     addTool: input => mutate(async () => {
       const value = tool(input), items = await listTools();
       if (items.length >= 40 || items.some(item => item.name.toLowerCase() === value.name.toLowerCase())) throw new Error('工具名称重复或已达到 40 个工具上限');
-      if (value.kind === 'exe' && !(await fs.stat(value.target)).isFile()) throw new Error('EXE 文件不存在');
-      items.push({ id: `custom:${crypto.randomUUID()}`, ...value, createdAt: Date.now(), structuredTasks: false, webResearch: false });
+      if (value.kind !== 'web' && !(await fs.stat(value.target)).isFile()) throw new Error('EXE 文件不存在');
+      items.push({ id: `custom:${crypto.randomUUID()}`, ...value, manifestVersion: 1, createdAt: Date.now(), structuredTasks: false, webResearch: false });
+      return write(toolsDir, 'custom-agent-tools.json', items);
+    }),
+    updateTool: (id, input) => mutate(async () => {
+      const value = tool(input), items = await listTools(), index = items.findIndex(item => item.id === id);
+      if (index < 0) throw new Error('自定义工具不存在');
+      if (items.some((item, itemIndex) => itemIndex !== index && item.name.toLowerCase() === value.name.toLowerCase())) throw new Error('工具名称重复');
+      if (value.kind !== 'web' && !(await fs.stat(value.target)).isFile()) throw new Error('EXE 文件不存在');
+      const prior = items[index], runtimeUnchanged = prior.kind === value.kind && prior.target === value.target
+        && JSON.stringify(prior.args || []) === JSON.stringify(value.args || []);
+      items[index] = { id: prior.id, ...value, manifestVersion: 1, createdAt: prior.createdAt || Date.now(), updatedAt: Date.now(),
+        structuredTasks: false, webResearch: false, ...(runtimeUnchanged && prior.verification ? { verification: prior.verification } : {}) };
       return write(toolsDir, 'custom-agent-tools.json', items);
     }),
     removeTool: id => mutate(async () => write(toolsDir, 'custom-agent-tools.json', (await listTools()).filter(item => item.id !== id))),
+    verifyTool: (id, verification) => mutate(async () => {
+      const items = await listTools(), saved = items.find(item => item.id === id);
+      if (!saved || saved.kind !== 'cli') throw Error('CLI 工具不存在');
+      saved.verification = verification;
+      return write(toolsDir, 'custom-agent-tools.json', items);
+    }),
     openTool: async id => {
       const saved = (await listTools()).find(item => item.id === id);
       if (!saved) throw new Error('自定义工具不存在');
       const value = tool(saved);
+      if (value.kind === 'cli') throw Error('标准 CLI 通过任务输入执行，不单独打开');
       if (value.kind === 'web') await launchWeb(value.target);
       else { if (!(await fs.stat(value.target)).isFile()) throw new Error('EXE 文件已移动或删除'); await launchExe(value.target); }
       return { opened: true, structuredTasks: false, webResearch: false };

@@ -1,0 +1,18 @@
+.smart-inbox { display: grid; gap: 14px; font-family: system-ui, "Microsoft YaHei", sans-serif; }
+.smart-inbox p { margin: 4px 0; line-height: 1.6; }
+.smart-inbox button { font: inherit; cursor: pointer; }
+.smart-inbox button:not(.primary):not(.secondary) {
+  min-height: 36px; padding: 6px 12px; border: 1px solid var(--panel-border, #b9d9d2);
+  border-radius: 10px; background: var(--accent-soft, #f3faf8); color: var(--accent-dark, #0f5e58);
+}
+.smart-inbox button:disabled { cursor: default; opacity: .5; }
+.smart-inbox label:has(> input[type="checkbox"]) { display: flex; align-items: flex-start; gap: 8px; font-weight: 500; }
+.smart-inbox input[type="checkbox"] { width: 18px; height: 18px; min-height: 18px; flex: 0 0 18px; margin: 2px 0; padding: 0; accent-color: #0f766e; }
+.smart-inbox details { padding: 10px 0; }
+.smart-inbox details > summary { cursor: pointer; color: var(--accent-dark, #0f5e58); }
+.smart-inbox details[open] > summary { margin-bottom: 12px; }
+.smart-inbox details > label { margin: 10px 0; }
+.smart-inbox th, .smart-inbox td { padding: 12px 8px; text-align: left; vertical-align: top; border-bottom: 1px solid var(--panel-border, #dbe5e1); }
+.smart-inbox td small { margin-top: 5px; color: var(--text-muted, #586c67); line-height: 1.5; }
+.smart-inbox td button { margin: 0 5px 5px 0; }
+.smart-inbox [role="status"] { padding: 10px 12px; background: var(--accent-soft, #f3faf8); border-radius: 10px; overflow-wrap: anywhere; }

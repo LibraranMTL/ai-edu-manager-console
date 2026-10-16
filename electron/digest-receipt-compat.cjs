@@ -12,6 +12,9 @@ function receiptBatchId(payload) {
 
 function isDigestReceiptPayload(payload) {
   if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return false;
+  // A digest batch manifest also has batchId + files, but it is an input
+  // contract, never evidence that those files were processed.
+  if (String(payload.schema || '') === 'edu-manager.digest-batch.v1') return false;
   if (['processed', 'digestedFiles', 'digestFiles', 'items', 'processedFiles', 'completedFiles', 'successfulFiles', 'files', 'results', 'failed', 'failures', 'errors']
     .some((key) => Array.isArray(payload[key]))) return true;
   const status = String(payload.status || payload.digestStatus || payload.state || '');

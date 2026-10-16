@@ -19,7 +19,7 @@ test('download public view stays reachable without a student and shares retain t
   assert.match(main, /label: '资料收件箱', section: 'share-capture'/);
   assert.match(main, /React\.lazy\(\(\) => import\('\.\/DownloadInboxPanel'\)/);
   assert.match(panel, /useState<'downloads' \| 'shares'>\('downloads'\)/);
-  assert.match(panel, /CaptureInboxPanel key=\{studentId\}/);
+  assert.match(panel, /CaptureInboxPanel key=\{`\$\{studentId\}:\$\{openSharesRequest\}`\}/);
   assert.match(panel, /useEffect\([^\n]+\[studentId\]/);
   assert.match(panel, /全选当前页/); assert.match(panel, /上一页/); assert.match(panel, /请选择学生/);
   assert.doesNotMatch(panel, /setInterval|watch\(/);

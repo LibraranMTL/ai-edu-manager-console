@@ -56,6 +56,72 @@ function normalizeResultStatus(value, hasItems = false, message = '') {
   return hasItems ? 'partial' : status;
 }
 
+function digestPayloadScore(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return -1;
+  let score = 0;
+  if (String(value.schema || '') === DIGEST_RESULT_SCHEMA) score += 100;
+  if (value.digestBatchId || value.batchId || value.batch_id || value.taskBatchId) score += 15;
+  if (value.studentId || value.projectId || value.scope?.id) score += 10;
+  if (['processed', 'digestedFiles', 'digestFiles', 'items', 'processedFiles', 'completedFiles', 'successfulFiles', 'files', 'results', 'failed', 'failures', 'errors']
+    .some((key) => Array.isArray(value[key]))) score += 40;
+  if (value.status || value.digestStatus || value.state || value.resultStatus || value.outcome) score += 5;
+  return score;
+}
+
+function selectDigestPayload(value, depth = 0, seen = new Set()) {
+  if (!value || typeof value !== 'object' || Array.isArray(value) || depth > 4 || seen.has(value)) return value;
+  seen.add(value);
+  let best = value;
+  let bestScore = digestPayloadScore(value);
+  for (const key of ['digestResult', 'structuredOutput', 'data', 'payload', 'result', 'response']) {
+    const nested = value[key];
+    if (!nested || typeof nested !== 'object' || Array.isArray(nested)) continue;
+    const candidate = selectDigestPayload(nested, depth + 1, seen);
+    const score = digestPayloadScore(candidate);
+    if (score > bestScore) {
+      best = candidate;
+      bestScore = score;
+    }
+  }
+  return best;
+}
+
+function collectReceiptText(value, depth = 0, seen = new Set(), output = []) {
+  if (value === null || value === undefined || depth > 5 || output.join('').length > 12000) return output;
+  if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
+    output.push(String(value));
+    return output;
+  }
+  if (typeof value !== 'object' || seen.has(value)) return output;
+  seen.add(value);
+  if (Array.isArray(value)) {
+    for (const item of value) collectReceiptText(item, depth + 1, seen, output);
+    return output;
+  }
+  for (const [key, item] of Object.entries(value)) {
+    output.push(String(key));
+    collectReceiptText(item, depth + 1, seen, output);
+  }
+  return output;
+}
+
+function explicitBatchFailure(data, processed, failed) {
+  const identifiableProcessed = processed.filter((item) => item.materialId || item.relativePath || item.sha1);
+  if (identifiableProcessed.length) return null;
+  const status = String(data?.status || data?.digestStatus || data?.state || data?.resultStatus || data?.outcome || '').trim().toLowerCase();
+  const parts = collectReceiptText(data).map((item) => item.trim()).filter(Boolean);
+  const text = parts.join('；');
+  const explicitStatus = ['failed', 'error', '失败'].includes(status);
+  const failureSignal = /(本批[^；]{0,20}未完成|整批[^；]{0,20}失败|工具[^；]{0,20}初始化失败|无法读取[^；]{0,40}(?:批次|AGENT\.md)|无法写入[^；]{0,30}(?:回执|结果)|(?:已处理文件|处理文件)[^；]{0,12}(?:0\s*个|为?\s*0)|(?:0\s*个|零个)[^；]{0,30}(?:已处理|处理成功)|均未修改|需[^；]{0,30}重试|initiali[sz]ation failed|processed\s*(?:files?)?\s*[:=]\s*0)/i.test(text);
+  if (!explicitStatus && !failureSignal) return null;
+  const detail = parts.find((item) => /(初始化失败|未完成|无法读取|无法写入|0\s*个|未修改|重试|failed|error)/i.test(item)) || 'Agent 明确报告本批资料未完成。';
+  return {
+    code: 'batch_execution_failed',
+    message: `Agent 未处理本批资料：${detail}`,
+    failedCount: failed.length,
+  };
+}
+
 function normalizeDigestResult(receipt, batch) {
   let envelope = null;
   let data = receipt && typeof receipt === 'object' && !Array.isArray(receipt) ? receipt : {};
@@ -69,6 +135,7 @@ function normalizeDigestResult(receipt, batch) {
   } catch {
     // Strict digest validation below remains authoritative for malformed receipts.
   }
+  data = selectDigestPayload(data);
   const scope = batch?.scope || {};
   const processed = receiptItems(data).map((item) => normalizeReceiptItem(item));
   const failedItems = Array.isArray(data.failed) ? data.failed
@@ -77,6 +144,7 @@ function normalizeDigestResult(receipt, batch) {
         : [];
   const failed = failedItems.map((item) => normalizeReceiptItem(item, 'failed'));
   const message = String(data.message || data.summary || data.detail || data.content || '');
+  const executionFailure = explicitBatchFailure(data, processed, failed);
   return {
     schema: String(data.schema || DIGEST_RESULT_SCHEMA),
     protocolVersion: String(data.protocolVersion || ''),
@@ -87,12 +155,13 @@ function normalizeDigestResult(receipt, batch) {
       type: String(data.scope?.type || (data.studentId ? 'student' : data.projectId ? 'project' : scope.type || '')),
       id: String(data.scope?.id || data.studentId || data.projectId || scope.id || ''),
     },
-    status: normalizeResultStatus(data.status || data.digestStatus || data.state || data.resultStatus || data.outcome, processed.length > 0 || failed.length > 0, message),
+    status: executionFailure ? 'failed' : normalizeResultStatus(data.status || data.digestStatus || data.state || data.resultStatus || data.outcome, processed.length > 0 || failed.length > 0, message),
     processed,
     failed,
     artifacts: Array.isArray(data.artifacts) ? data.artifacts : [],
     completedAt: String(data.completedAt || ''),
-    message,
+    message: executionFailure?.message || message,
+    executionFailure,
     envelope: envelope ? {
       schema: envelope.schema,
       sourceFormat: envelope.sourceFormat,
@@ -110,6 +179,22 @@ function validateDigestResult(options = {}) {
     return { ok: false, code: 'batch_missing', message: '当前严格消化批次不存在或为空。', confirmed: [], remaining: [] };
   }
   const result = normalizeDigestResult(options.receipt, batch);
+
+  if (result.executionFailure) {
+    return {
+      ok: false,
+      code: result.executionFailure.code,
+      message: result.executionFailure.message,
+      result,
+      confirmed: [],
+      ignored: [],
+      invalid: [],
+      failed: [],
+      remaining: batch.files,
+      rejected: [],
+      retryable: true,
+    };
+  }
 
   const currentFiles = Array.isArray(options.currentFiles) ? options.currentFiles : batch.files;
   const normalizedKey = (value) => normalizeRelativePath(value).toLowerCase();

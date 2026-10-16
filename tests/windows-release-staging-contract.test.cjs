@@ -31,7 +31,7 @@ test('staged runtime is dependency-free after Vite has bundled renderer dependen
   assert.match(releaseScript, /files: \['dist\/\*\*\/\*', 'electron\/\*\*\/\*', 'package\.json'\]/);
   assert.doesNotMatch(releaseScript, /runtimePackage\.(?:dependencies|devDependencies)/);
   assert.match(releaseScript, /Minimal runtime package unexpectedly contains node_modules/);
-  assert.match(releaseScript, /app\.asar exceeds 20 MiB/);
+  assert.match(releaseScript, /app\.asar exceeds 21 MiB/);
   assert.deepEqual(packageJson.build.asarUnpack, ['electron/invoke-agent.ps1', 'electron/capture-timeline-ocr.ps1', 'electron/project-knowledge-guard.ps1']);
   assert.match(releaseScript, /asarUnpack: \['electron\/invoke-agent\.ps1', 'electron\/capture-timeline-ocr\.ps1', 'electron\/project-knowledge-guard\.ps1'\]/);
   assert.match(releaseScript, /Packaged Agent parameter bridge is missing/);
@@ -51,6 +51,18 @@ test('Windows release keeps the approved multilingual locale set', () => {
     assert.match(releaseScript, new RegExp(`['"]${locale}['"]`));
   }
   assert.match(releaseScript, /Electron locale mismatch/);
+});
+
+test('package size optimization preserves runtime behavior and legal notices', () => {
+  assert.match(releaseScript, /compression: 'maximum'/);
+  for (const script of [releaseScript, fs.readFileSync(path.join(root, 'scripts/build-project-material-extractor.cjs'), 'utf8'), fs.readFileSync(path.join(root, 'scripts/build-practice-runtime.cjs'), 'utf8')]) {
+    assert.match(script, /minifyWhitespace: true/);
+    assert.match(script, /legalComments: 'inline'/);
+    assert.doesNotMatch(script, /minifyIdentifiers: true|minifySyntax: true/);
+  }
+  assert.match(releaseScript, /'electron\/agent-report-read.cjs'/);
+  assert.match(pdfRuntimeScript, /\['cmaps', 'standard_fonts', 'wasm'\]/);
+  assert.match(pdfRuntimeScript, /'LICENSE', 'package.json'/);
 });
 
 test('Windows host and student packages use the Robogala publisher metadata', () => {

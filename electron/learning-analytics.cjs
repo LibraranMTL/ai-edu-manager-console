@@ -200,7 +200,10 @@ function normalizeLearningEvent(input, context = {}) {
     transfer: boundedScore(source.transfer),
     hintLevel: boundedScore(source.hintLevel ?? source.hint_level ?? source.hint),
   };
-  if (SCORE_KEYS.every((key) => performance[key] === null)) return { ok: false, code: 'performance_missing' };
+  const practiceReview = context.allowPracticeReview === true && input?.practiceReview?.episodeId && ['correct','mostly_correct','partial','needs_correction','undetermined'].includes(input?.outcome)
+    ? { episodeId: String(input.practiceReview.episodeId).slice(0, 120), resultRef: String(input.practiceReview.resultRef).slice(0, 64),
+      attemptId: String(input.practiceReview.attemptId).slice(0, 120), source: String(input.practiceReview.source), sequence: Number(input.practiceReview.sequence), assistance: input.practiceReview.assistance || { status: 'unknown' } } : null;
+  if (SCORE_KEYS.every((key) => performance[key] === null) && !practiceReview) return { ok: false, code: 'performance_missing' };
   const taskType = String(input?.taskType || input?.task_type || input?.task?.type || 'unknown').trim().slice(0, 80);
   const taskId = String(input?.taskId || input?.task_id || input?.task?.id || '').trim().slice(0, 160);
   const errors = normalizeErrors(input?.errors || input?.errorTypes || input?.error_types);
@@ -219,6 +222,7 @@ function normalizeLearningEvent(input, context = {}) {
     taskType,
     taskDifficulty: boundedScore(input?.taskDifficulty ?? input?.task_difficulty ?? input?.task?.difficulty),
     performance,
+    ...(practiceReview ? { practiceReview, outcome: input.outcome } : {}),
     errors,
     evidence: String(input?.evidence || '').trim().slice(0, 2000),
     evidenceRefs,
@@ -240,6 +244,7 @@ function scoreEvent(event) {
     weighted += (Number(value) / 4) * weights[key];
     used += weights[key];
   }
+  if (!used && event.practiceReview) return null;
   const evidenceScore = used ? weighted / used : 0;
   const hintPenalty = Number(event.performance?.hintLevel ?? 0) * 0.04;
   return Math.max(0, Math.min(1, evidenceScore - hintPenalty));
@@ -252,10 +257,18 @@ function retentionConfidence(days) {
   return Math.max(0.35, 0.55 - ((days - 90) / 275) * 0.2);
 }
 
+function effectiveLearningEvents(events) {
+  const episodes = new Map();
+  for (const event of events) if (event.practiceReview) {
+    const key = `${event.studentId}:${event.practiceReview.episodeId}`;
+    if (!episodes.has(key) || event.practiceReview.sequence > episodes.get(key).practiceReview.sequence) episodes.set(key, event);
+  }
+  return events.filter(event => !event.practiceReview || episodes.get(`${event.studentId}:${event.practiceReview.episodeId}`) === event);
+}
 function computeKnowledgeState(studentId, knowledgePoint, events, options = {}) {
-  const ordered = [...events].sort((left, right) => Date.parse(left.occurredAt) - Date.parse(right.occurredAt));
+  const ordered = effectiveLearningEvents(events).sort((left, right) => Date.parse(left.occurredAt) - Date.parse(right.occurredAt));
   const asOf = Number.isFinite(Date.parse(options.asOf || '')) ? new Date(options.asOf) : new Date();
-  const recent = ordered.slice(-8);
+  const recent = ordered.filter(event => scoreEvent(event) !== null).slice(-8);
   let totalWeight = 0;
   let masteryTotal = 0;
   for (let index = 0; index < recent.length; index += 1) {
@@ -295,13 +308,14 @@ function computeKnowledgeState(studentId, knowledgePoint, events, options = {}) 
     && event.performance?.hintLevel != null && Number(event.performance.hintLevel) <= 1);
   const scoreSpread = recent.length >= 2 ? Math.max(...recent.map(scoreEvent)) - Math.min(...recent.map(scoreEvent)) : 0;
   let state = 'introduced';
+  if (ordered.length && !recent.length) state = 'practiced';
   if (currentMastery >= 0.84 && independentStrong.length >= 2 && transferStrong.length >= 1) state = 'mastered';
   else if (currentMastery >= 0.72) state = 'mostly_mastered';
   else if (currentMastery >= 0.52) state = 'practiced';
   else if (currentMastery >= 0.28) state = 'developing';
   if (scoreSpread >= 0.5 && recent.length >= 3) state = 'unstable';
   if (retention < 0.55 && ordered.length) state = 'needs_review';
-  const completeness = ordered.length ? recent.reduce((sum, event) => sum + SCORE_KEYS.filter((key) => event.performance?.[key] != null).length / SCORE_KEYS.length, 0) / recent.length : 0;
+  const completeness = recent.length ? recent.reduce((sum, event) => sum + SCORE_KEYS.filter((key) => event.performance?.[key] != null).length / SCORE_KEYS.length, 0) / recent.length : 0;
   const confidence = Math.max(0, Math.min(1, (1 - Math.exp(-ordered.length / 3)) * completeness * (0.7 + 0.3 * retention)));
   const reviewPriority = retention < 0.55 || recurringErrors.length >= 2 ? 'high'
     : retention < 0.8 || recurringErrors.length ? 'medium' : 'low';
@@ -317,8 +331,8 @@ function computeKnowledgeState(studentId, knowledgePoint, events, options = {}) 
     state,
     scores: {
       ...dimensionScores,
-      masteryEvidence: Number(evidenceMastery.toFixed(4)),
-      currentMastery: Number(currentMastery.toFixed(4)),
+      masteryEvidence: recent.length ? Number(evidenceMastery.toFixed(4)) : null,
+      currentMastery: recent.length ? Number(currentMastery.toFixed(4)) : null,
       retentionConfidence: Number(retention.toFixed(4)),
     },
     confidence: Number(confidence.toFixed(4)),
@@ -379,13 +393,27 @@ function buildLearningReportCandidateContext(studentRootPath, input = {}) {
   };
 }
 
+function cachedKnowledgeStates(studentRootPath, studentId, groups, options = {}) {
+  const previous = readJson(statesPath(studentRootPath), { states: [] });
+  const cache = new Map((previous.studentId === String(studentId) ? previous.states || [] : []).map(state => [state.knowledgePoint.id, state]));
+  const asOf = Number.isFinite(Date.parse(options.asOf || '')) ? options.asOf : new Date().toISOString();
+  // Event versions and the evaluation day invalidate derived state. Only changed
+  // points are recomputed on writes; daily reads retain time-decay semantics.
+  return [...groups.values()].map(events => {
+    const version = crypto.createHash('sha256').update(JSON.stringify(events)).digest('hex');
+    const old = cache.get(events[0].knowledgePoint.id);
+    if (old?.projectionVersion === 2 && old.inputVersion === version && old.updatedAt.slice(0, 10) === asOf.slice(0, 10) && !options.asOf) return old;
+    return { ...computeKnowledgeState(studentId, events[0].knowledgePoint, events, { ...options, asOf }), inputVersion: version, projectionVersion: 2 };
+  });
+}
 function rebuildDerived(studentRootPath, studentId, allEvents, options = {}) {
+  allEvents = effectiveLearningEvents(allEvents);
   const byKnowledgePoint = new Map();
   for (const event of allEvents.filter((item) => String(item.studentId) === String(studentId))) {
     const id = String(event.knowledgePoint?.id || '');
     if (id) (byKnowledgePoint.get(id) || byKnowledgePoint.set(id, []).get(id)).push(event);
   }
-  const states = [...byKnowledgePoint.entries()].map(([, events]) => computeKnowledgeState(studentId, events[0].knowledgePoint, events, options));
+  const states = cachedKnowledgeStates(studentRootPath, studentId, byKnowledgePoint, options);
   const misconceptions = states.flatMap((state) => state.errorPatterns.map((error) => ({
     misconceptionId: `${state.knowledgePoint.id}.${error.id}`,
     studentId: String(studentId),
@@ -428,6 +456,8 @@ function appendLearningEvents(studentRootPath, input = {}) {
         && existing.occurredAt === event.occurredAt
         && JSON.stringify(existing.evidenceRefs) === JSON.stringify(event.evidenceRefs)
         && JSON.stringify(existing.performance) === JSON.stringify(event.performance)
+        && JSON.stringify(existing.practiceReview) === JSON.stringify(event.practiceReview)
+        && existing.outcome === event.outcome
         && JSON.stringify(existing.errors) === JSON.stringify(event.errors);
       if (!sameOrigin) {
         rejected.push({ index: rawEvents.findIndex((item) => String(item?.eventId || item?.event_id || item?.idempotencyKey || item?.idempotency_key) === event.eventId), code: 'event_id_conflict' });
@@ -449,6 +479,36 @@ function appendLearningEvents(studentRootPath, input = {}) {
   }
   const derived = rebuildDerived(studentRootPath, studentId, events, input);
   return { ok: true, accepted: newlyAccepted, rejected, deduplicatedTotal: events.length, ...derived };
+}
+
+function applyPracticeLearningReview(studentRootPath, studentId, { attempt, result, point }) {
+  if (attempt.studentId !== studentId || (!result.qualityPassed && result.source !== 'human') || !attempt.reviewRef) return { ok: false, message: '评阅归属或质量不符合学习事件写入条件' };
+  const current = readEventLedger(studentRootPath, studentId);
+  if (!current.ok) return current;
+  const eventId = `card-${crypto.createHash('sha256').update(`${studentId}:${attempt.rootAttemptId}:${attempt.reviewRef}`).digest('hex')}`;
+  if (current.events.some(event => event.eventId === eventId)) return { ok: true, duplicate: true };
+  const backup = path.join(analyticsDir(studentRootPath), 'before-learning-cards-0.20.1');
+  fs.mkdirSync(backup, { recursive: true });
+  if (fs.lstatSync(backup).isSymbolicLink()) return {ok:false,message:'学习事件备份目录不能使用链接'};
+  if (!fs.existsSync(path.join(backup,'manifest.json'))) {
+    const copied=[];
+    for(const source of [eventsPath(studentRootPath),statesPath(studentRootPath),misconceptionsPath(studentRootPath),historyCandidatePath(studentRootPath)]) {
+      if(!fs.existsSync(source))continue;
+      if(fs.lstatSync(source).isSymbolicLink())return {ok:false,message:'学习事件文件不能使用链接'};
+      try{fs.copyFileSync(source,path.join(backup,path.basename(source)),fs.constants.COPYFILE_EXCL);}catch(error){if(error.code!=='EEXIST')throw error;}
+      copied.push(path.basename(source));
+    }
+    atomicWriteJson(path.join(backup,'manifest.json'),{studentId,createdAt:new Date().toISOString(),files:copied});
+  }
+  const sequence = Math.max(0, ...current.events.filter(event => event.practiceReview?.episodeId === attempt.rootAttemptId).map(event => event.practiceReview.sequence || 0)) + 1;
+  const outcome = result.judgement;
+  const event = { eventId, studentId, knowledgePoint: point, subject: point.subject, occurredAt: attempt.submittedAt,
+    taskId: attempt.rootAttemptId, taskType: 'learning_card', performance: {}, outcome,
+    practiceReview: { episodeId: attempt.rootAttemptId, resultRef: attempt.reviewRef, attemptId: attempt.attemptId, source: result.source, sequence, assistance: attempt.assistance },
+    evidenceRefs: [{ sourceType: 'practice_attempt', sourceId: attempt.attemptId }],
+    recommendedNextStep: result.suggestions.join('\n'), evidence: result.summary };
+  const receipt = appendLearningEvents(studentRootPath, { studentId, events: [event], allowPracticeReview: true });
+  return { ...receipt, ok: receipt.ok && receipt.rejected.length === 0 };
 }
 
 function removeLearningEventsBySource(studentRootPath, input = {}) {
@@ -477,25 +537,26 @@ function queryLearningTrajectory(studentRootPath, input = {}) {
   if ((input.knowledgePointId || input.knowledgePoint) && !point) return { ok: false, code: 'knowledge_point_unmapped', events: [], states: [] };
   const document = readEventLedger(studentRootPath, studentId);
   if (!document.ok) return { ok: false, code: document.code, events: [], states: [], misconceptions: [], message: '学习事件账本异常，未返回可能不完整的轨迹。' };
-  let events = (document.events || []).filter((event) => String(event.studentId) === studentId);
+  let events = effectiveLearningEvents((document.events || []).filter((event) => String(event.studentId) === studentId));
   if (input.subject) events = events.filter((event) => String(event.subject).toLocaleLowerCase('zh-CN') === String(input.subject).toLocaleLowerCase('zh-CN'));
   if (point) events = events.filter((event) => String(event.knowledgePoint?.id) === point.id);
   if (input.from) events = events.filter((event) => Date.parse(event.occurredAt) >= Date.parse(input.from));
   if (input.to) events = events.filter((event) => Date.parse(event.occurredAt) <= Date.parse(input.to));
   events.sort((left, right) => Date.parse(left.occurredAt) - Date.parse(right.occurredAt));
-  const allEvents = (document.events || []).filter((event) => String(event.studentId) === studentId);
+  const allEvents = effectiveLearningEvents((document.events || []).filter((event) => String(event.studentId) === studentId));
   const pointEvents = new Map();
   for (const event of allEvents) {
     const id = String(event.knowledgePoint?.id || '');
     if (id && (!point || point.id === id)) (pointEvents.get(id) || pointEvents.set(id, []).get(id)).push(event);
   }
-  const states = [...pointEvents.values()].map((items) => computeKnowledgeState(studentId, items[0].knowledgePoint, items, { asOf: input.asOf }));
+  const states = cachedKnowledgeStates(studentRootPath, studentId, pointEvents, { asOf: input.asOf });
   const misconceptions = states.flatMap((state) => state.errorPatterns.map((error) => ({
     misconceptionId: `${state.knowledgePoint.id}.${error.id}`, studentId,
     knowledgePointId: state.knowledgePoint.id, errorId: error.id, description: error.description,
     occurrences: error.count, firstSeen: error.firstSeen, lastSeen: error.lastSeen,
     status: error.count >= 2 ? 'recurring' : 'unverified',
   })));
+  events = effectiveLearningEvents(events);
   return { ok: true, studentId, order: 'occurredAt ASC', events, states, misconceptions,
     rejections: readJson(rejectionsPath(studentRootPath), { records: [] }).records || [],
     historyCandidatePath: historyCandidatePath(studentRootPath),
@@ -532,6 +593,8 @@ function collectLearningEvents(value, depth = 0) {
 }
 
 module.exports = {
+  effectiveLearningEvents,
+  applyPracticeLearningReview,
   KNOWLEDGE_STATE_SCHEMA,
   LEARNING_EVENT_SCHEMA,
   MISCONCEPTION_SCHEMA,

@@ -1,0 +1,42 @@
+import React,{useEffect,useRef,useState} from 'react';
+import {PublicationAudience,currentAudience,Audience} from './PublicationAudience';
+import './publication.css';
+const labels:Record<string,string>={published:'已发布',withdrawn:'已停止新使用',draft:'待发布',personal:'仅自己可见',legacy:'沿用原课程分配'};
+export function PublicationManager({studentId,action,platformDrafts=false,onEdit}:{studentId:string;action:(id:string,name:string,input:any)=>Promise<any>;platformDrafts?:boolean;onEdit?:(item:any)=>void}) {
+  const [kind,setKind]=useState('all'),[status,setStatus]=useState('all'),[search,setSearch]=useState(''),[page,setPage]=useState(1),[data,setData]=useState<any>({items:[],students:[],total:0,counts:null});
+  const [shareScope,setShareScope]=useState('institution'),[loading,setLoading]=useState(true);
+  const [selected,setSelected]=useState<any>(null),[audience,setAudience]=useState<Audience>(currentAudience(studentId)),[busy,setBusy]=useState(false),[message,setMessage]=useState('');
+  const request=useRef(0),receipt=useRef(crypto.randomUUID());
+  const [batch,setBatch]=useState<any>(null),[batchAudience,setBatchAudience]=useState<any>(null);
+  const audienceText=(a:any)=>!a?'尚未分配':a.type==='all'?'全部本机学生':a.type==='grade'?`${a.grade} 年级`:`指定 ${a.studentIds?.length||0} 名学生`;
+  async function call(name:string,input:any){const raw=await action(studentId,name,input),result=typeof raw==='string'?JSON.parse(raw):raw;if(result.ok===false)throw Error(result.message||'操作未完成');return result.data??result;}
+  async function refresh(){const sequence=++request.current;setLoading(true);try{const result=await call('list',{kind,status,search,page});if(sequence===request.current)setData(result);}finally{if(sequence===request.current)setLoading(false);}}
+  useEffect(()=>{setSelected(null);setMessage('');const timer=setTimeout(()=>{if(studentId)void refresh().catch(e=>setMessage(e.message));},search?250:0);return()=>{clearTimeout(timer);request.current++;};},[studentId,kind,status,search,page]);
+  async function run(name:string,item:any){setBusy(true);setMessage('');try{const retryBatch=item.resume||batch;const targetAudience=item.resume?.audience||(item.retry?batchAudience:audience);const result=await call(name,{kind:item.kind,id:item.id,revision:item.revision,expectedContentHash:item.expectedContentHash,expectedBatchHash:item.expectedBatchHash,audience:targetAudience,requestId:item.retry?retryBatch.requestId:receipt.current});
+    if(name==='publishPlatformDrafts'){setBatch(result);setBatchAudience(targetAudience);setMessage(result.complete?'全部课程已发布。':'部分项目未完成，可只重试失败项；修改草稿后请重新开始发布。');}else setMessage(name==='withdraw'?'已停止新使用，历史学习与作答保留。':name==='publish'&&item.kind==='card'?'卡片已发布，已配对学生刷新卡片资源即可查看。':'已保存，已配对学生刷新目录即可查看。');
+    receipt.current=crypto.randomUUID();setSelected(null);await refresh();}catch(e){setMessage((e as Error).message);}finally{setBusy(false);}}
+  async function prepare(item:any){if(busy)return;setBusy(true);setMessage('');try{
+    const draft=await call('prepareSharedDraft',{kind:'card',id:item.id,entryType:item.entryType,revision:item.revision,contentHash:item.contentHash,scope:shareScope});
+    await refresh();setMessage('已准备发布草稿，原个人卡片保留；请检查正文、图片及版权后再发布。');
+    if(onEdit)onEdit(draft);else{setSelected(draft);setAudience(currentAudience(studentId));receipt.current=crypto.randomUUID();}
+  }catch(e){setMessage((e as Error).message);}finally{setBusy(false);}}
+  const personal=selected?.kind==='card'&&selected.scope==='personal';
+  return <section className="publication-manager panel"><header><div><h3>课程与卡片发布</h3><p>统一查看本机发布和学生范围；课程与卡片仍在原编辑器制作。</p></div><button className="secondary" disabled={busy||!studentId} onClick={()=>void refresh().catch(e=>setMessage(e.message))}>刷新发布列表</button></header>
+    {platformDrafts&&studentId?<button disabled={busy} onClick={()=>{setSelected({kind:'platformDrafts',title:'发布全部平台课程草稿',expectedBatchHash:data.expectedBatchHash});setAudience(currentAudience(studentId));receipt.current=crypto.randomUUID();}}>发布平台课程草稿给学生</button>:null}
+    {batch?<section aria-label="逐项发布结果"><ul>{batch.items.map((r:any)=><li key={r.id}>{r.title}：{r.status==='success'?'已发布':`未完成 · ${r.message}`}</li>)}</ul>{!batch.complete?<button disabled={busy} onClick={()=>void run('publishPlatformDrafts',{retry:true})}>只重试失败项</button>:null}</section>:null}
+    {data.pendingBatches?.filter((b:any)=>b.requestId!==batch?.requestId).map((b:any)=><p key={b.requestId}>有未完成发布：{b.items.filter((r:any)=>r.status!=='success').map((r:any)=>r.title).join('、')}<button disabled={busy} onClick={()=>void run('publishPlatformDrafts',{retry:true,resume:b})}>继续未完成发布</button></p>)}
+    {!studentId?<p>请先选择当前学生。</p>:<><div className="publication-filters"><label>类型<select value={kind} onChange={e=>{setKind(e.target.value);setPage(1);}}><option value="all">课程与卡片</option><option value="course">课程（{data.counts?.course??'…'}）</option><option value="card">本机卡片（{data.counts?.card??'…'}）</option></select></label><label>状态<select value={status} onChange={e=>{setStatus(e.target.value);setPage(1);}}><option value="all">全部状态</option>{Object.entries(labels).map(([v,n])=><option key={v} value={v}>{n}</option>)}</select></label><label>搜索<input value={search} onChange={e=>{setSearch(e.target.value);setPage(1);}} placeholder="课程或卡片名称"/></label></div>
+    {data.cardSummary?<p className="muted">本机卡片包含当前学生的个人卡片／草稿 {data.cardSummary.personal} 项，以及有权管理的机构／平台卡片／草稿 {data.cardSummary.shared} 项；不含内置推荐、外部导入和历史练习实例。</p>:null}
+    {message?<p role="status">{message}</p>:null}{loading?<p role="status">正在读取发布列表…</p>:null}<div className="publication-list">{data.items.map((item:any)=><article key={`${item.kind}:${item.id}`}><div><small>{item.kind==='course'?'课程':item.scope==='personal'?'我的卡片':'学习卡片'} · {labels[item.status]}{item.version?` · v${item.version}`:''}</small><h4>{item.title}</h4><p>{item.subject}</p></div><button className="secondary" disabled={busy||loading} onClick={()=>{setSelected(item);setShareScope('institution');setAudience(item.audience||currentAudience(studentId));receipt.current=crypto.randomUUID();}}>{item.scope==='personal'?'准备发布':item.status==='draft'||item.status==='legacy'?'发布给学生':'管理发布'}</button></article>)}</div>
+    {!loading&&data.counts&&!data.items.length?<p>{search||status!=='all'?'没有符合当前筛选条件的记录；可清空搜索或选择全部状态。':kind==='card'?'暂无当前学生的本机卡片。可到“学习卡片 → 卡片资源”制作我的卡片或机构／平台草稿。':'暂无符合条件的发布。可先在课程或卡片编辑器制作内容。'}</p>:null}
+    <div className="publication-pagination"><button disabled={page<=1} onClick={()=>setPage(p=>p-1)}>上一页</button><span>{page} / {Math.max(1,Math.ceil(data.total/20))}</span><button disabled={page*20>=data.total} onClick={()=>setPage(p=>p+1)}>下一页</button></div>
+    {selected?<section className="publication-selection"><h4>{selected.title}</h4><p>当前：{labels[selected.status]||'待发布'} · {selected.version?`v${selected.version}`:'首次发布'} · {personal?'仅当前学生可见':audienceText(selected.audience)}</p>{onEdit&&selected.kind!=='platformDrafts'?<button disabled={busy} onClick={()=>onEdit(selected)}>{selected.kind==='card'&&selected.status!=='draft'?'编辑为新版本':'去编辑内容'}</button>:null}
+      {personal?<><p>先复制教学内容为发布草稿，原个人卡片与作答保留。请在编辑器检查正文和图片中的姓名、个性化信息及版权，确认后再发布。</p><label>发布类别<select disabled={busy} value={shareScope} onChange={e=>setShareScope(e.target.value)}><option value="institution">机构卡片</option>{data.capabilities?.platform?<option value="platform">平台卡片</option>:null}</select></label><button disabled={busy} onClick={()=>void prepare(selected)}>生成发布草稿并编辑</button></>:<PublicationAudience students={data.students} value={audience} onChange={value=>{setAudience(value);receipt.current=crypto.randomUUID();}}/>}<div className="actions">
+      {selected.kind==='course'?<button disabled={busy} onClick={()=>void run('publish',selected)}>发布当前课程版本</button>:null}
+      {selected.kind==='card'&&selected.status==='draft'&&!personal?<button disabled={busy} onClick={()=>void run('publish',selected)}>发布卡片给学生</button>:null}
+      {selected.kind==='platformDrafts'?<button disabled={busy} onClick={()=>void run('publishPlatformDrafts',selected)}>确认发布平台课程草稿</button>:null}
+      {selected.status==='published'?<><button disabled={busy} onClick={()=>void run('assign',selected)}>保存学生范围</button><button className="secondary" disabled={busy} onClick={()=>void run('withdraw',selected)}>停止新使用</button></>:null}
+      {selected.kind==='card'&&selected.status==='withdrawn'?<p>恢复内容请在卡片管理中编辑为新版本再发布。</p>:null}
+      <button className="secondary" disabled={busy} onClick={()=>setSelected(null)}>收起</button></div></section>:null}</>}
+  </section>;
+}

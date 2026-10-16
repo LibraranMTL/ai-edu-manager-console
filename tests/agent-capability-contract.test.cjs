@@ -28,7 +28,8 @@ test('Agent token has a closed route allowlist, including migration and upload d
     ['POST', '/api/agent/unknown'],
   ]) assert.deepEqual(agentRouteDecision(auth, method, path), { allowed: false, code: 'AGENT_ROUTE_DENIED' });
   assert.equal(agentRouteDecision(auth, 'POST', '/api/agent/invoke').allowed, true);
-  assert.equal(Object.keys(LEGACY_AGENT_ROUTES).length, 15);
+  assert.equal(Object.keys(LEGACY_AGENT_ROUTES).length, 16);
+  assert.equal(agentRouteDecision(auth, 'POST', '/api/agent/connector').allowed, true);
   assert.deepEqual(agentRouteDecision({ ...auth, capabilities: [] }, 'POST', '/api/agent/knowledge/query'), { allowed: false, code: 'CAPABILITY_DENIED' });
 });
 
@@ -231,19 +232,23 @@ test('MCP read and conversation preview use the same scoped host contract', { ti
   }
 });
 
-test('Host approval UI is wired through licensed IPC without exposing bearer tokens', () => {
+test('Host compatibility approval IPC remains licensed while R21 connector owns the review UI', () => {
   const root = path.join(__dirname, '..');
   const main = fs.readFileSync(path.join(root, 'electron', 'main.cjs'), 'utf8');
   const preload = fs.readFileSync(path.join(root, 'electron', 'preload.cjs'), 'utf8');
   const renderer = fs.readFileSync(path.join(root, 'src', 'main.tsx'), 'utf8');
+  const connector = fs.readFileSync(path.join(root, 'src', 'ExternalAgentConnector.tsx'), 'utf8');
   for (const method of ['getAgentCapabilityManagement', 'setAgentCapabilityAuthorization', 'reviewAgentWriteIntent', 'decideAgentWriteIntent']) {
     assert.match(main, new RegExp(`bridge:${method}`));
     assert.match(preload, new RegExp(`bridge:${method}`));
     assert.match(renderer, new RegExp(method));
   }
-  assert.match(renderer, /agentWriteReview\.intent\.inputDigest/);
-  assert.match(renderer, /window\.confirm\(action === 'approve'/);
-  assert.doesNotMatch(renderer, /agentKnowledgeTokenPath|ensureApiToken/);
+  assert.match(renderer, /<ExternalAgentConnector api=/);
+  assert.doesNotMatch(renderer, /外部写入审核|agentWriteReview\.intent\.inputDigest/);
+  assert.match(connector, /inputDigest: o\.inputDigest, decision: 'approve'/);
+  assert.match(connector, /inputDigest: o\.inputDigest, decision: 'reject'/);
+  assert.match(connector, /查看待确认内容/);
+  assert.doesNotMatch(`${renderer}\n${connector}`, /agentKnowledgeTokenPath|ensureApiToken/);
   assert.match(main, /const decision = knowledgeCapabilityDecision\(result\)/);
   assert.match(main, /outcome = decision\.outcome/);
   assert.match(main, /freshness: name === 'knowledge\.query' \? knowledgeCapabilityFreshness\(result\) : 'live'/);

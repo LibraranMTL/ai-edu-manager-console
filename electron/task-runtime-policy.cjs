@@ -1,5 +1,6 @@
+const { recoverableResearchBlock } = require('./research-task-policy.cjs');
 const ACTIVE_TASK_STATUSES = new Set(['running', 'waiting_result']);
-const TERMINAL_TASK_STATUSES = new Set(['succeeded', 'failed', 'blocked', 'cancelled', 'timed_out']);
+const TERMINAL_TASK_STATUSES = new Set(['succeeded', 'failed', 'blocked', 'cancelled', 'timed_out', 'archived']);
 const NOISY_EVENT_TYPES = new Set([
   'adapter_heartbeat',
   'task_heartbeat_lost',
@@ -12,7 +13,7 @@ const NOISY_EVENT_TYPES = new Set([
 function taskExecutionClass(task) {
   const adapterId = String(task?.adapterId || '');
   const mode = String(task?.executionMode || '');
-  if (adapterId === 'manual' || mode === 'manual') return 'manual';
+  if (adapterId === 'manual' || mode === 'manual' || mode === 'desktop_handoff' || mode === 'agent_handoff') return 'manual';
   if (mode === 'automatic') return 'process';
   if (adapterId === 'qclaw' || mode === 'inbox') return 'inbox';
   if (adapterId === 'internal' || mode === 'internal') return 'internal';
@@ -20,6 +21,7 @@ function taskExecutionClass(task) {
 }
 
 function taskTimeoutDecision(task, nowValue = Date.now()) {
+  if (task?.recoveryState === 'unknown') return { enabled: false, due: false, kind: 'reconciling' };
   if (!ACTIVE_TASK_STATUSES.has(String(task?.status || '')) || !task?.startedAt) {
     return { enabled: false, due: false, kind: 'inactive' };
   }
@@ -28,13 +30,16 @@ function taskTimeoutDecision(task, nowValue = Date.now()) {
     return { enabled: false, due: false, kind: 'manual_wait' };
   }
   const now = Number(nowValue);
+  const resumedAt = Date.parse(task.resumedAt || '');
+  if (Number.isFinite(resumedAt) && now < resumedAt + 60000) return { enabled: false, due: false, kind: 'resume_grace' };
+  const suspendedMs = Math.max(0, Number(task.suspendedDurationMs) || 0);
   const startedAt = Date.parse(task.startedAt);
   if (!Number.isFinite(startedAt)) {
     return { enabled: false, due: false, kind: 'orphan' };
   }
   if (executionClass === 'inbox') {
     const resultTimeoutSeconds = Math.max(900, Number(task.resultTimeoutSeconds || 24 * 60 * 60));
-    const timeoutAt = startedAt + resultTimeoutSeconds * 1000;
+    const timeoutAt = startedAt + resultTimeoutSeconds * 1000 + suspendedMs;
     return {
       enabled: true,
       due: now > timeoutAt,
@@ -49,8 +54,8 @@ function taskTimeoutDecision(task, nowValue = Date.now()) {
   const heartbeatAt = Date.parse(task.lastHeartbeatAt || task.startedAt);
   const timeoutSeconds = Math.max(30, Number(task.timeoutSeconds || 900));
   const heartbeatTimeoutSeconds = Math.max(30, Number(task.heartbeatTimeoutSeconds || Math.min(timeoutSeconds, 180)));
-  const executionTimeoutAt = startedAt + timeoutSeconds * 1000;
-  const heartbeatTimeoutAt = (Number.isFinite(heartbeatAt) ? heartbeatAt : startedAt) + heartbeatTimeoutSeconds * 1000;
+  const executionTimeoutAt = startedAt + timeoutSeconds * 1000 + suspendedMs;
+  const heartbeatTimeoutAt = Math.max(Number.isFinite(heartbeatAt) ? heartbeatAt : startedAt, Number.isFinite(resumedAt) ? resumedAt : 0) + heartbeatTimeoutSeconds * 1000;
   const timeoutAt = Math.min(executionTimeoutAt, heartbeatTimeoutAt);
   const heartbeatLost = heartbeatTimeoutAt <= executionTimeoutAt;
   return {
@@ -75,16 +80,27 @@ function candidateRuntimeDecision(current, candidate) {
   const active = ACTIVE_TASK_STATUSES.has(currentStatus);
   const orphan = active && (!current?.executionId || !current?.startedAt);
   const preserveExecution = active && !orphan;
-  const newCycle = Boolean(candidateCycle && candidateCycle !== currentCycle && !preserveExecution);
-  const preserveTerminal = TERMINAL_TASK_STATUSES.has(currentStatus) && !newCycle;
+  // A failed run can already be prepared for its next adapter while the
+  // candidate builder still describes the generic pending card. Keep that
+  // prepared runtime intact until it launches; otherwise a UI refresh can
+  // silently replace the selected adapter and retry state.
+  const preservePreparedExecution = ['approved', 'queued'].includes(currentStatus)
+    && Boolean(current?.executionId);
+  const preserveRuntime = current?.recoveryState === 'unknown' || preserveExecution || preservePreparedExecution;
+  const newCycle = Boolean(candidateCycle && candidateCycle !== currentCycle && !preserveRuntime);
+  const refreshBlock = recoverableResearchBlock(current) && ['blocked', 'pending', 'queued'].includes(sourceStatus);
+  const preserveTerminal = TERMINAL_TASK_STATUSES.has(currentStatus) && !newCycle && !refreshBlock;
   const safeSourceStatus = orphan && ACTIVE_TASK_STATUSES.has(sourceStatus) ? 'pending' : sourceStatus;
   return {
     newCycle,
     orphan,
     preserveExecution,
+    preservePreparedExecution,
+    preserveRuntime,
     preserveTerminal,
+    refreshBlock,
     resetExecution: newCycle || orphan,
-    nextStatus: preserveExecution || preserveTerminal ? currentStatus : safeSourceStatus,
+    nextStatus: preserveRuntime || preserveTerminal ? currentStatus : safeSourceStatus,
   };
 }
 
@@ -92,6 +108,7 @@ function repairTaskRuntimeStore(store, now = new Date().toISOString()) {
   if (!store || !Array.isArray(store.tasks)) return { changed: false, repairs: [] };
   const repairs = [];
   for (const task of store.tasks) {
+    if (task.recoveryState === 'unknown') continue;
     const executionClass = taskExecutionClass(task);
     const maxAttempts = Math.max(1, Number(task.maxAttempts || 1));
     const attempt = Math.max(0, Number(task.attempt || 0));
@@ -116,6 +133,17 @@ function repairTaskRuntimeStore(store, now = new Date().toISOString()) {
       task.updatedAt = now;
       repairs.push({ taskId: task.id, type: 'orphan_execution_recovered' });
       continue;
+    }
+    if (['draft', 'pending', 'approved', 'queued'].includes(String(task.status || ''))
+      && task.executionId) {
+      task.executionId = '';
+      task.adapterId = '';
+      task.startedAt = '';
+      task.completedAt = '';
+      task.lastHeartbeatAt = '';
+      task.nextRetryAt = '';
+      task.updatedAt = now;
+      repairs.push({ taskId: task.id, type: 'stale_execution_identity_cleared' });
     }
     if (String(task.status || '') === 'timed_out'
       && String(task.error?.code || '') === 'HEARTBEAT_LOST'

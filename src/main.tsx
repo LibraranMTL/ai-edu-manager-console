@@ -1,9 +1,14 @@
 ﻿import React, { useEffect, useMemo, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { CloudDocumentsPanel } from './CloudDocumentsPanel';
-import { CustomAgentToolsPanel, CustomSubjectsEditor, customResult, type CustomOptionsApi, type CustomSubject } from './CustomOptionsPanels';
+const PublicationManager = React.lazy(() => import('./PublicationManager').then(module => ({default:module.PublicationManager})));
+import { CustomSubjectsEditor, customResult, type CustomOptionsApi, type CustomSubject } from './CustomOptionsPanels';
 import type { CaptureApi } from './CaptureInboxPanel';
 import type { DownloadInboxApi } from './DownloadInboxPanel';
+import type { AgentControlApi } from './AgentControlCenter';
+import { AgentHandoffChoice } from './AgentHandoffChoice';
+const AgentControlCenter = React.lazy(() => import('./AgentControlCenter').then(module => ({ default: module.AgentControlCenter })));
+const ExternalAgentConnector = React.lazy(() => import('./ExternalAgentConnector'));
 const DownloadInboxPanel = React.lazy(() => import('./DownloadInboxPanel').then(module => ({ default: module.DownloadInboxPanel })));
 const CaptureInboxPanel = React.lazy(() => import('./CaptureInboxPanel').then(module => ({ default: module.CaptureInboxPanel })));
 import type { PracticeApi } from './PracticeCardsPanel';
@@ -82,7 +87,9 @@ type Section = 'home' | 'student-overview' | 'collection-overview' | 'photo-uplo
 type NavigationGroup = 'home' | 'collection' | 'learning' | 'projects' | 'guidance' | 'knowledge' | 'courses' | 'settings';
 type CourseSubmenu = 'learning' | 'management';
 type SettingsSubmenu = 'basic' | 'connection' | 'collaboration' | 'agent-qa';
-type AgentSettingsTab = 'qa' | 'tools' | 'rules' | 'memory' | 'persona' | 'capabilities';
+type AgentSettingsTab = 'tools' | 'data' | 'connection';
+type AgentDataTab = 'memory' | 'rules' | 'persona';
+type AgentConnectionTab = 'connector' | 'qa';
 type GuidanceTab = 'overview' | 'pathways' | 'schools' | 'majors' | 'careers' | 'history' | 'settings';
 type ProjectWorkflowTarget = 'workspace' | 'assets' | 'digest' | 'knowledge' | 'evidence' | 'promotion';
 type ThemeName = 'blue' | 'pink' | 'green' | 'purple' | 'orange';
@@ -98,6 +105,8 @@ type AgentToolId =
   | 'codex'
   | 'claude-code'
   | 'hermes'
+  | 'trae'
+  | 'qoder-work'
   | 'chatgpt'
   | 'claude'
   | 'doubao'
@@ -165,7 +174,7 @@ type AgentToolAdapter = {
   id: AgentToolId;
   profile: AgentToolProfile;
   statusKey: keyof AgentToolInstallStatus | 'claudeCode';
-  openedKey?: 'qclawOpened' | 'marvisOpened' | 'hohuOpened' | 'openclawOpened' | 'imaCopilotOpened' | 'workbuddyOpened' | 'codexOpened' | 'claudeCodeOpened' | 'hermesOpened';
+  openedKey?: 'qclawOpened' | 'marvisOpened' | 'hohuOpened' | 'openclawOpened' | 'imaCopilotOpened' | 'workbuddyOpened' | 'codexOpened' | 'claudeCodeOpened' | 'hermesOpened' | 'traeOpened' | 'qoderWorkOpened';
   canOpenLocally: boolean;
   getInstall: (status: AgentToolInstallStatus | null) => AgentToolInstall | undefined;
   isOpened: (openState: Partial<Record<AgentToolId, boolean>>) => boolean;
@@ -178,6 +187,8 @@ type AgentToolAdapter = {
 };
 
 type Student = {
+  activityStatus?: 'active' | 'paused' | 'inactive';
+  pauseAutomaticTasksWhenInactive?: boolean;
   languageProfile?: PracticeLanguageProfile;
   id: string;
   loginId?: string;
@@ -829,6 +840,11 @@ type ScheduleLedgerState = {
 };
 
 type TaskCenterItem = {
+  resolution?: { kind: string; title: string; instruction: string; retrySafe: boolean } | null;
+  phaseLabel?: string;
+  awaitingSend?: boolean;
+  hasResult?: boolean;
+  nextAction?: string;
   protocolVersion?: string;
   id: string;
   title: string;
@@ -837,7 +853,7 @@ type TaskCenterItem = {
   sourceId: string;
   sourceName: string;
   status: 'draft' | 'pending' | 'approved' | 'queued' | 'running' | 'waiting_result' | 'reviewing' | 'succeeded' | 'failed' | 'blocked' | 'cancelled' | 'timed_out' | string;
-  statusGroup?: 'actionable' | 'running' | 'scheduled' | 'completed' | string;
+  statusGroup?: 'actionable' | 'running' | 'scheduled' | 'completed' | 'archived' | string;
   trigger: 'schedule' | 'event' | 'manual' | string;
   executor: string;
   executionMode: 'direct' | 'adapter' | 'manual' | 'review' | string;
@@ -875,15 +891,23 @@ type TaskCenterItem = {
 };
 
 type TaskCenterState = {
+  storageFault?: { message: string; code: string } | null;
+  ready?: boolean;
+  page?: number;
+  pageCount?: number;
+  filteredTotal?: number;
+  executors?: string[];
   protocolVersion?: string;
   generatedAt?: string;
   automationEnabled?: boolean;
   executionMode?: 'automatic' | 'manual' | string;
   tasks: TaskCenterItem[];
   history: Array<Partial<ScheduleLedgerEntry> & { id: string; taskId?: string; title?: string; at?: string; detail?: string; sourceType?: string; sourceId?: string; sourceName?: string; executor?: string; status?: string; kind?: string }>;
-  summary: { total: number; actionable: number; running: number; scheduled: number; completed: number };
+  summary: { total: number; actionable: number; running: number; scheduled: number; completed: number; archived?: number };
   capabilities?: Record<string, { id: string; label: string; available: boolean; authorized?: boolean; automatic: boolean; inbox: boolean; structuredResult: boolean; gateway?: boolean; gatewayHealthy?: boolean; cron?: boolean; healthMessage?: string; permissionEnforcement?: string; hidden?: boolean }>;
   taskStorePath?: string;
+  agentInboxPath?: string;
+  agentResultPath?: string;
   qclawInboxPath?: string;
   qclawResultPath?: string;
 };
@@ -1330,6 +1354,9 @@ type AndroidBridge = {
   recordScheduledTaskAction?: (studentId: string, kind: string, commandText: string) => string;
   getStudentScheduleLedger?: (studentId: string) => string;
   getTaskCenter?: () => string;
+  getTaskPage?: (query: { page: number; status: string; source: string; executor: string }) => Promise<string>;
+  getTaskDetail?: (taskId: string) => Promise<string>;
+  reopenTaskHandoff?: (taskId: string, executionId: string, action: string) => Promise<string>;
   getTaskCenterAsync?: (force?: boolean, quick?: boolean) => Promise<string>;
   getTaskStatusesAsync?: (taskIds: string[]) => Promise<string>;
   archiveAccessRpc?: (requestJson: string) => Promise<string>;
@@ -1355,11 +1382,20 @@ type AndroidBridge = {
   approveTask?: (taskId: string, decision: 'approved' | 'rejected', note?: string) => string;
   retryTask?: (taskId: string) => string;
   cancelTask?: (taskId: string, note?: string) => string;
+  deleteTaskHistory?: (taskId: string) => string;
+  previewTaskGovernanceBatch?: (request: { action: 'cancel' | 'archive' | 'delete' | 'restore'; ids?: string[]; selection?: 'explicit' | 'filtered'; query?: { status: string; source: string; executor: string } }) => Promise<string>;
+  commitTaskGovernanceBatch?: (request: { token: string; reason?: string }) => Promise<string>;
   importTaskResult?: (taskId: string) => string;
   importTaskResultText?: (taskId: string, content: string) => string;
+  importTaskResultTextAsync?: (taskId: string, content: string) => Promise<string>;
+  importTaskResultFileAsync?: (taskId: string) => Promise<string>;
+  confirmTaskExternalStopped?: (taskId: string, executionId: string) => Promise<string>;
+  detectWorkBuddyBackgroundAuthorization?: (confirmed: boolean) => Promise<string>;
+  detectCodexBackgroundAuthorization?: (confirmed: boolean) => Promise<string>;
   syncQClawTaskResults?: () => string;
+  syncAgentTaskResults?: (agentId?: string) => string;
   submitDailyActionFeedback?: (taskId: string, status: string, note?: string) => string;
-  openTaskCenterPath?: (kind: 'root' | 'qclaw-inbox' | 'qclaw-results' | 'manual-outbox' | 'events') => string;
+  openTaskCenterPath?: (kind: 'root' | 'agent-inbox' | 'agent-results' | 'qclaw-inbox' | 'qclaw-results' | 'manual-outbox' | 'events', agentId?: string) => string;
   openTaskResultPath?: (taskId: string) => string;
   generateStudentMaintenanceReport?: (studentId: string) => string;
   getHostTimeline?: () => string;
@@ -2375,6 +2411,8 @@ type AgentToolInstallStatus = {
   codex?: AgentToolInstall;
   claudeCode?: AgentToolInstall;
   hermes?: AgentToolInstall;
+  trae?: AgentToolInstall;
+  qoderWork?: AgentToolInstall;
   chatgpt?: AgentToolInstall;
   claude?: AgentToolInstall;
   doubao?: AgentToolInstall;
@@ -2704,6 +2742,62 @@ const agentToolProfiles: Record<AgentToolId, AgentToolProfile> = {
     personaTargetLabel: 'WorkBuddy Agent 人设 / 工作区说明',
     memoryTargetLabel: 'WorkBuddy 长期记忆 / 背景资料',
   },
+  trae: {
+    id: 'trae',
+    name: 'TRAE IDE / TraeCode',
+    category: 'local-cli',
+    supportsLocalFiles: true,
+    supportsAgentCreation: true,
+    supportsPersonaSetting: true,
+    supportsMemorySetting: true,
+    supportsScheduledTask: false,
+    supportsSubAgent: true,
+    supportsProjectRules: true,
+    supportsMemoryFile: true,
+    supportsPersonaFile: true,
+    supportsConversationExport: true,
+    supportsMemoryPaste: true,
+    supportsSoulPaste: true,
+    openMode: 'cli',
+    ruleFiles: ['AGENTS.md', 'AGENT.md', '.trae/rules'],
+    memoryLocations: ['%USERPROFILE%\\.trae'],
+    personaLocations: ['%USERPROFILE%\\.trae'],
+    conversationLocations: ['%USERPROFILE%\\.trae'],
+    installUrls: { windows: 'https://www.trae.cn/ide/download' },
+    openLabel: '打开 TRAE IDE / TraeCode',
+    copyTargetLabel: '发送到 TraeCode CLI 或 TRAE Agent',
+    digestTargetLabel: 'TraeCode CLI 可在沙箱中自动执行；仅有 IDE 时使用受控交接',
+    personaTargetLabel: 'TRAE 规则 / Agent 配置',
+    memoryTargetLabel: 'TRAE 项目记忆',
+  },
+  'qoder-work': {
+    id: 'qoder-work',
+    name: 'Qoder Work',
+    category: 'local-app',
+    supportsLocalFiles: true,
+    supportsAgentCreation: true,
+    supportsPersonaSetting: true,
+    supportsMemorySetting: true,
+    supportsScheduledTask: true,
+    supportsSubAgent: true,
+    supportsProjectRules: true,
+    supportsMemoryFile: true,
+    supportsPersonaFile: true,
+    supportsConversationExport: true,
+    supportsMemoryPaste: true,
+    supportsSoulPaste: true,
+    openMode: 'exe',
+    ruleFiles: ['AGENTS.md', 'AGENT.md'],
+    memoryLocations: ['%USERPROFILE%\\.qoder'],
+    personaLocations: ['%USERPROFILE%\\.qoder'],
+    conversationLocations: ['%USERPROFILE%\\.qoder'],
+    installUrls: { windows: 'https://qoderwork.com/', web: 'https://qoderwork.com/' },
+    openLabel: '打开 Qoder Work',
+    copyTargetLabel: '发送到 Qoder CLI 或 QoderWork 任务',
+    digestTargetLabel: 'Qoder CLI 可自动执行；仅有 QoderWork 桌面端时使用受控交接',
+    personaTargetLabel: 'Qoder Agent / Skills 配置',
+    memoryTargetLabel: 'Qoder 项目上下文',
+  },
   codex: {
     id: 'codex',
     name: 'ChatGPT / Codex',
@@ -2936,7 +3030,7 @@ const legacyAgentToolIds = new Set<AgentToolId>(['chatgpt', 'coze', 'fastgpt']);
 const agentToolOptions = Object.values(agentToolProfiles).filter((tool) => !legacyAgentToolIds.has(tool.id));
 
 function getAgentToolProfile(value?: AgentToolId) {
-  const profile = agentToolProfiles[value ?? 'qclaw'] ?? agentToolProfiles.qclaw;
+  const profile = agentToolProfiles[value ?? 'workbuddy'] ?? agentToolProfiles.workbuddy;
   if (activeStorageConfig.platform === 'windows' && ['marvis', 'hohu', 'ima.copilot', 'workbuddy'].includes(profile.id)) {
     return {
       ...profile,
@@ -2949,6 +3043,7 @@ function getAgentToolProfile(value?: AgentToolId) {
 
 function installStatusKeyForTool(toolId: AgentToolId): keyof AgentToolInstallStatus | 'claudeCode' {
   if (toolId === 'ima.copilot') return 'imaCopilot';
+  if (toolId === 'qoder-work') return 'qoderWork';
   return toolId === 'claude-code' ? 'claudeCode' : toolId;
 }
 
@@ -2956,7 +3051,8 @@ function openedKeyForTool(toolId: AgentToolId): AgentToolAdapter['openedKey'] {
   if (toolId === 'ima.copilot') return 'imaCopilotOpened';
   if (toolId === 'claude-code') return 'claudeCodeOpened';
   if (toolId === 'hermes') return 'hermesOpened';
-  if (['qclaw', 'marvis', 'hohu', 'openclaw', 'workbuddy', 'codex'].includes(toolId)) return `${toolId}Opened` as AgentToolAdapter['openedKey'];
+  if (toolId === 'qoder-work') return 'qoderWorkOpened';
+  if (['qclaw', 'marvis', 'hohu', 'openclaw', 'workbuddy', 'codex', 'trae'].includes(toolId)) return `${toolId}Opened` as AgentToolAdapter['openedKey'];
   return undefined;
 }
 
@@ -2999,7 +3095,7 @@ function buildAgentToolAdapter(toolId: AgentToolId): AgentToolAdapter {
 }
 
 function getAgentToolAdapter(toolId?: AgentToolId) {
-  return buildAgentToolAdapter(toolId ?? 'qclaw');
+  return buildAgentToolAdapter(toolId ?? 'workbuddy');
 }
 
 type ArchiveKeywordConfig = Record<'summary' | 'report' | 'qa', string>;
@@ -3126,23 +3222,6 @@ type AgentMemorySessionState = {
     lastVerifiedEventAt?: string;
   };
   summary?: { total: number; active: number; empty?: number; pendingHandoffs: number };
-  message?: string;
-};
-type AgentWriteIntentView = {
-  id: string;
-  name: string;
-  status: string;
-  studentId: string;
-  projectId?: string;
-  inputDigest: string;
-  createdAt: string;
-  preview?: { filename?: string; bytes?: number; title?: string; reportId?: string; messageCount?: number };
-};
-type AgentCapabilityManagement = {
-  ok: boolean;
-  revoked?: boolean;
-  capabilities?: string[];
-  pending?: AgentWriteIntentView[];
   message?: string;
 };
 type AgentSourceRecord = {
@@ -3404,7 +3483,7 @@ const zhCnText = {
   'nav.agentCapabilities': 'Agent调用能力设置',
   'nav.soul': 'Agent人设管理',
   'nav.rules': 'Agent规则管理',
-  'nav.conversation': '对话资料箱',
+  'nav.conversation': '对话分享资料箱',
   'nav.settings.basic': '基础设置',
   'nav.settings.connection': '主机连接',
   'nav.expand': '展开',
@@ -4061,10 +4140,10 @@ const defaultDraft: StudentDraft = {
   subjectStrengths: [],
   careerDirections: [],
   digestTime: '21:30',
-  agentTool: 'qclaw',
+  agentTool: 'workbuddy',
   storageMode: 'app_private',
   knowledgeBaseMode: 'standard',
-  agentBindingMode: 'subAgent',
+  agentBindingMode: 'mainChat',
   rootPathLabel: 'Downloads/AI教育管家/学生资料/张三知识库',
   remoteChannel: 'none',
   remoteContact: '',
@@ -4093,10 +4172,10 @@ const seedStudents: Student[] = [
     email: '',
     goal: '金融方向潜力发展与日常学习资料整理',
     digestTime: '21:30',
-    agentTool: 'qclaw',
+    agentTool: 'workbuddy',
     storageMode: 'app_private',
     knowledgeBaseMode: 'standard',
-    agentBindingMode: 'subAgent',
+    agentBindingMode: 'mainChat',
     rootPathLabel: 'Downloads/AI教育管家/学生资料/张三知识库',
     remoteChannel: 'none',
     remoteContact: '',
@@ -4309,7 +4388,7 @@ function normalizeStudents(parsed: Student[]) {
   return parsed.map((student) => ({
       ...student,
       schemaVersion: student.schemaVersion ?? initSchemaVersion,
-      agentTool: agentToolProfiles[student.agentTool] ? student.agentTool : 'qclaw',
+      agentTool: agentToolProfiles[student.agentTool] ? student.agentTool : 'workbuddy',
       storageMode: student.storageMode ?? 'app_private',
       knowledgeBaseMode: student.knowledgeBaseMode ?? 'standard',
       rootPath: student.rootPath ?? undefined,
@@ -4325,7 +4404,7 @@ function normalizeStudents(parsed: Student[]) {
       digestStatus: student.digestStatus ?? 'idle',
       digestMessage: student.digestMessage ?? '',
       materialSources: Array.isArray(student.materialSources) ? student.materialSources : [],
-      agentBindingMode: student.agentBindingMode ?? agentBindingModeForTool(agentToolProfiles[student.agentTool] ? student.agentTool : 'qclaw'),
+      agentBindingMode: student.agentBindingMode ?? agentBindingModeForTool(agentToolProfiles[student.agentTool] ? student.agentTool : 'workbuddy'),
       agentName: student.agentName ?? '',
       agentNote: student.agentNote ?? '',
       memoryConfig: student.memoryConfig ?? {
@@ -4572,7 +4651,7 @@ function buildAiAgentScanPrompt(student: Student, targetKind: AgentKnowledgeKind
     {
       "path": "C:\\\\Users\\\\...\\\\MEMORY.md",
       "kind": "${targetKind}",
-      "tool": "qclaw",
+      "tool": "workbuddy",
       "score": 90,
       "reasons": ["内容包含学生姓名", "内容包含 AGENT.md 路径"],
       "preview": "不超过 120 字的摘要预览"
@@ -4580,7 +4659,7 @@ function buildAiAgentScanPrompt(student: Student, targetKind: AgentKnowledgeKind
   ]
 }
 
-tool 只能使用：qclaw、marvis、hohu、openclaw、ima.copilot、workbuddy、codex、claude-code、hermes、claude、doubao。
+tool 只能使用：qclaw、marvis、hohu、openclaw、ima.copilot、workbuddy、codex、claude-code、hermes、trae、qoder-work、claude、doubao。
 kind 只能使用：memory、soul、rule、conversation。`;
 }
 
@@ -4636,7 +4715,7 @@ function normalizeAiScanCandidate(item: Record<string, unknown>, fallbackKind?: 
   const filePath = String(item.path || item.filePath || item.absolutePath || item.fullPath || '').trim();
   if (!filePath) return null;
   const rawTool = String(item.tool || item.agentTool || item.sourceTool || '').toLowerCase();
-  const tool = agentToolProfiles[rawTool as AgentToolId] ? (rawTool as AgentToolId) : 'qclaw';
+  const tool = agentToolProfiles[rawTool as AgentToolId] ? (rawTool as AgentToolId) : 'workbuddy';
   const rawKind = String(item.kind || item.type || item.category || item.fileType || fallbackKind || '').toLowerCase();
   const inferredKind =
     /conversation|chat|history|transcript|对话|聊天|会话/.test(rawKind) ? 'conversation'
@@ -5182,7 +5261,7 @@ function buildLogMd(student: StudentDraft) {
 `;
 }
 
-function buildQclawPrompt(student: StudentDraft) {
+function buildAgentPrompt(student: StudentDraft) {
   const p = pathsForStudent(student);
   const tool = getAgentToolProfile(student.agentTool);
   const agentMd = buildAgentMd(student);
@@ -5347,7 +5426,7 @@ ${buildDigestCommand(student)}
 
 function buildToolPrompt(student: StudentDraft) {
   const tool = getAgentToolProfile(student.agentTool);
-  return tool.supportsAgentCreation ? buildQclawPrompt(student) : buildMarvisPrompt(student);
+  return tool.supportsAgentCreation ? buildAgentPrompt(student) : buildMarvisPrompt(student);
 }
 
 function buildInitSteps(student: StudentDraft): Array<{ id: InitStepId; title: string; description: string; prompt: string }> {
@@ -5443,7 +5522,7 @@ function buildDigestCommand(student: string | StudentDraft) {
     return renderTemplateText(activeTemplateFiles['digest-prompt.md'] || '', student);
   }
   const p = typeof student === 'string' ? pathsFor(student) : pathsForStudent(student);
-  const tool = typeof student === 'string' ? agentToolProfiles.qclaw : getAgentToolProfile(student.agentTool);
+  const tool = typeof student === 'string' ? agentToolProfiles.workbuddy : getAgentToolProfile(student.agentTool);
   const projectRule =
     tool.id === 'codex'
       ? `\n请先在学生知识库根目录执行，并优先读取 ${joinDisplayPath(p.root, 'AGENTS.md')} 和 ${p.agent}。\n`
@@ -5507,7 +5586,7 @@ function buildSystemTemplates(): TemplateFiles {
     grade: '{{grade}}',
     school: '{{school}}',
     goal: '{{goal}}',
-    agentTool: 'qclaw',
+    agentTool: 'workbuddy',
     agentName: '{{agentName}}',
     rootPath: '{{rootPath}}',
     rawPath: '{{rawPath}}',
@@ -5780,7 +5859,9 @@ function App() {
   const [navigationGroup, setNavigationGroup] = useState<NavigationGroup>('home');
   const [activePageTab, setActivePageTab] = useState('home');
   const [studentPanelOpen, setStudentPanelOpen] = useState(false);
-  const [agentSettingsTab, setAgentSettingsTab] = useState<AgentSettingsTab>('qa');
+  const [agentSettingsTab, setAgentSettingsTab] = useState<AgentSettingsTab>('tools');
+  const [agentDataTab, setAgentDataTab] = useState<AgentDataTab>('memory');
+  const [agentConnectionTab, setAgentConnectionTab] = useState<AgentConnectionTab>('connector');
   const [guidanceTab, setGuidanceTab] = useState<GuidanceTab>('overview');
   const [topicSuggestionSet, setTopicSuggestionSet] = useState<TopicSuggestionSet | null>(null);
   const [topicSuggestionMessage, setTopicSuggestionMessage] = useState('');
@@ -5825,6 +5906,8 @@ function App() {
   const [codexOpened, setCodexOpened] = useState(false);
   const [claudeCodeOpened, setClaudeCodeOpened] = useState(false);
   const [hermesOpened, setHermesOpened] = useState(false);
+  const [traeOpened, setTraeOpened] = useState(false);
+  const [qoderWorkOpened, setQoderWorkOpened] = useState(false);
   const [obsidianOpened, setObsidianOpened] = useState(false);
   const [checkingUpdate, setCheckingUpdate] = useState(false);
   const [updateInfo, setUpdateInfo] = useState<UpdateInfo | null>(null);
@@ -6011,7 +6094,7 @@ function App() {
     scanExistingWorkspace: true,
     knowledgeMode: 'managed' as 'managed' | 'adopted',
     knowledgeRootPath: '',
-    agentTool: 'qclaw' as AgentToolId,
+    agentTool: 'workbuddy' as AgentToolId,
   });
   const [customProjectWorkspaceTemplates, setCustomProjectWorkspaceTemplates] = useState<Array<{ id: string; name: string; description: string; folders: string[]; knowledgeStrategy: string; growthStrategy: string; deliverables: string[] }>>(() => {
     try {
@@ -6074,13 +6157,18 @@ function App() {
   const [scheduleLedger, setScheduleLedger] = useState<ScheduleLedgerState>({ entries: [] });
   const [scheduleMessage, setScheduleMessage] = useState('');
   const [maintenanceReportPreview, setMaintenanceReportPreview] = useState('');
-  const [taskCenter, setTaskCenter] = useState<TaskCenterState>({ tasks: [], history: [], summary: { total: 0, actionable: 0, running: 0, scheduled: 0, completed: 0 } });
-  const [taskCenterStatusFilter, setTaskCenterStatusFilter] = useState<'all' | 'actionable' | 'running' | 'scheduled' | 'completed'>('actionable');
+  const [taskCenter, setTaskCenter] = useState<TaskCenterState>({ ready: false, tasks: [], history: [], summary: { total: 0, actionable: 0, running: 0, scheduled: 0, completed: 0, archived: 0 } });
+  const [taskCenterStatusFilter, setTaskCenterStatusFilter] = useState<'all' | 'actionable' | 'running' | 'scheduled' | 'completed' | 'archived'>('actionable');
   const [taskCenterSourceFilter, setTaskCenterSourceFilter] = useState<'all' | 'student' | 'project'>('all');
   const [taskCenterExecutorFilter, setTaskCenterExecutorFilter] = useState('all');
   const [taskCenterDisplayLimit, setTaskCenterDisplayLimit] = useState(30);
+  const [taskCenterPage, setTaskCenterPage] = useState(1);
+  const [taskDetail, setTaskDetail] = useState<TaskCenterItem | null>(null);
+  const [taskDetailError, setTaskDetailError] = useState('');
   const [taskCenterRefreshing, setTaskCenterRefreshing] = useState(false);
   const taskCenterRequestRef = React.useRef(0);
+  const taskCenterQueryRef = React.useRef({ page: taskCenterPage, status: taskCenterStatusFilter, source: taskCenterSourceFilter, executor: taskCenterExecutorFilter });
+  taskCenterQueryRef.current = { page: taskCenterPage, status: taskCenterStatusFilter, source: taskCenterSourceFilter, executor: taskCenterExecutorFilter };
   const activeSectionRef = React.useRef<Section>(activeSection);
   const selectedStudentIdRef = React.useRef('');
   const [selectedTaskId, setSelectedTaskId] = useState('');
@@ -6088,7 +6176,25 @@ function App() {
   const [taskExecutorDraft, setTaskExecutorDraft] = useState('');
   const [taskExecutionBusyId, setTaskExecutionBusyId] = useState('');
   const [taskOperationFeedback, setTaskOperationFeedback] = useState<{ taskId: string; tone: 'working' | 'success' | 'error'; message: string } | null>(null);
+  const [selectedTaskBatchIds, setSelectedTaskBatchIds] = useState<string[]>([]);
+  const [taskBatchAllFiltered, setTaskBatchAllFiltered] = useState(false);
+  const [taskBatchFeedback, setTaskBatchFeedback] = useState<{ tone: 'working' | 'success' | 'error'; message: string } | null>(null);
+  const [taskBatchBusy, setTaskBatchBusy] = useState(false);
   const [taskResultPasteText, setTaskResultPasteText] = useState('');
+  const [taskImportBusyId, setTaskImportBusyId] = useState('');
+  const taskImportLock = useRef(false);
+  const taskSelectionRef = useRef(selectedTaskId);
+  taskSelectionRef.current = selectedTaskId;
+  const taskImportFeedbackRef = useRef<HTMLDivElement>(null);
+  const taskPasteDrafts = useRef(new Map<string, string>());
+  const taskPasteOwner = useRef(selectedTaskId);
+  useEffect(() => {
+    if (taskPasteOwner.current !== selectedTaskId) {
+      taskPasteDrafts.current.set(taskPasteOwner.current, taskResultPasteText);
+      taskPasteOwner.current = selectedTaskId;
+      setTaskResultPasteText(taskPasteDrafts.current.get(selectedTaskId) || '');
+    }
+  }, [selectedTaskId, taskResultPasteText]);
   const [sharedInboxCount, setSharedInboxCount] = useState(0);
   const [compatibility, setCompatibility] = useState<Record<string, unknown> | null>(null);
   const [storageConfig, setStorageConfig] = useState<StorageConfig>(activeStorageConfig);
@@ -6112,7 +6218,7 @@ function App() {
   const [adoptScanResult, setAdoptScanResult] = useState<KnowledgeBaseScanResult | null>(null);
   const [adoptPaths, setAdoptPaths] = useState({ agentPath: '', rawPath: '', summaryPath: '', outputPath: '' });
   const [adoptMessage, setAdoptMessage] = useState('');
-  const [agentBindingMode, setAgentBindingMode] = useState<AgentBindingMode>('subAgent');
+  const [agentBindingMode, setAgentBindingMode] = useState<AgentBindingMode>('mainChat');
   const [agentNameDraft, setAgentNameDraft] = useState('');
   const [agentNoteDraft, setAgentNoteDraft] = useState('');
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
@@ -6191,9 +6297,6 @@ function App() {
   const [agentMemoryState, setAgentMemoryState] = useState<AgentMemorySessionState | null>(null);
   const agentMemoryRefreshControlRef = useRef(new Map<string, { promise: Promise<void>; rerun: boolean }>());
   const agentMemoryPayloadRef = useRef(new Map<string, string>());
-  const [agentCapabilityManagement, setAgentCapabilityManagement] = useState<AgentCapabilityManagement | null>(null);
-  const [agentWriteReview, setAgentWriteReview] = useState<{ intent: AgentWriteIntentView; reviewInput: unknown } | null>(null);
-  const [agentCapabilityMessage, setAgentCapabilityMessage] = useState('');
   const [agentKnowledgeMenuOpen, setAgentKnowledgeMenuOpen] = useState(false);
   const [educationArchiveMenuOpen, setEducationArchiveMenuOpen] = useState(false);
   const [collaborationMenuOpen, setCollaborationMenuOpen] = useState(false);
@@ -6215,7 +6318,7 @@ function App() {
   const [sourceFilter, setSourceFilter] = useState<'all' | 'memory' | 'persona' | 'rule' | 'conversation' | 'extract'>('all');
   const [sourceToolFilter, setSourceToolFilter] = useState<AgentToolId | 'all'>('all');
   const [conversationCenter, setConversationCenter] = useState<AgentConversationState | null>(null);
-  const [conversationTool, setConversationTool] = useState<AgentToolId>('qclaw');
+  const [conversationTool, setConversationTool] = useState<AgentToolId>('workbuddy');
   const [conversationText, setConversationText] = useState('');
   const [conversationShareUrl, setConversationShareUrl] = useState('');
   const [conversationShareBusy, setConversationShareBusy] = useState(false);
@@ -6233,10 +6336,10 @@ function App() {
   const [conversationCandidateFilter, setConversationCandidateFilter] = useState<'pending' | 'blocked' | 'promoted' | 'all'>('pending');
   const [selectedConversationCandidateIds, setSelectedConversationCandidateIds] = useState<string[]>([]);
   const [conversationMessage, setConversationMessage] = useState('');
-  const [memorySourceTool, setMemorySourceTool] = useState<AgentToolId>('qclaw');
+  const [memorySourceTool, setMemorySourceTool] = useState<AgentToolId>('workbuddy');
   const [memorySourceText, setMemorySourceText] = useState('');
   const [unifiedMemoryText, setUnifiedMemoryText] = useState('');
-  const [soulSourceTool, setSoulSourceTool] = useState<AgentToolId>('qclaw');
+  const [soulSourceTool, setSoulSourceTool] = useState<AgentToolId>('workbuddy');
   const [soulSourceText, setSoulSourceText] = useState('');
   const [unifiedSoulText, setUnifiedSoulText] = useState('');
   const [soulDiff, setSoulDiff] = useState<{ onlyUnified?: string[]; onlySource?: string[]; message?: string } | null>(null);
@@ -6318,8 +6421,14 @@ function App() {
     return candidates.filter((item) => item.status === conversationCandidateFilter);
   }, [conversationCandidateFilter, conversationCenter?.governance?.candidates]);
   const selectedConversationCandidateSet = useMemo(() => new Set(selectedConversationCandidateIds), [selectedConversationCandidateIds]);
-  const taskCenterExecutors = useMemo(() => Array.from(new Set(taskCenter.tasks.map((task) => task.executor).filter(Boolean))), [taskCenter.tasks]);
-  const visibleTaskCenterItems = useMemo(() => taskCenter.tasks.filter((task) => {
+  const taskCenterExecutors = useMemo(() => Array.from(new Set([
+    ...(taskCenter.executors || []),
+    ...Object.values(taskCenter.capabilities || {}).filter((adapter) => !adapter.hidden).map((adapter) => adapter.id),
+    ...taskCenter.tasks.map((task) => task.executor).filter(Boolean),
+  ])), [taskCenter.tasks, taskCenter.capabilities, taskCenter.executors]);
+  const taskChannelAgent = taskCenter.capabilities?.[taskCenterExecutorFilter] ? taskCenterExecutorFilter : '';
+  const taskChannelLabel = taskChannelAgent ? taskCenter.capabilities?.[taskChannelAgent]?.label || taskChannelAgent : '全部 Agent';
+  const visibleTaskCenterItems = useMemo(() => taskCenter.page ? taskCenter.tasks : taskCenter.tasks.filter((task) => {
     const statusMatches = taskCenterStatusFilter === 'all'
       || task.statusGroup === taskCenterStatusFilter
       || (taskCenterStatusFilter === 'actionable' && ['draft', 'pending', 'approved', 'failed', 'blocked', 'timed_out'].includes(task.status))
@@ -6329,9 +6438,13 @@ function App() {
     const sourceMatches = taskCenterSourceFilter === 'all' || task.sourceType === taskCenterSourceFilter;
     const executorMatches = taskCenterExecutorFilter === 'all' || task.executor === taskCenterExecutorFilter;
     return statusMatches && sourceMatches && executorMatches;
-  }), [taskCenter.tasks, taskCenterExecutorFilter, taskCenterSourceFilter, taskCenterStatusFilter]);
+  }), [taskCenter.tasks, taskCenter.page, taskCenterExecutorFilter, taskCenterSourceFilter, taskCenterStatusFilter]);
   const displayedTaskCenterItems = visibleTaskCenterItems.slice(0, taskCenterDisplayLimit);
-  const selectedTask = taskCenter.tasks.find((task) => task.id === selectedTaskId) ?? null;
+  const selectedTaskBatchIdSet = useMemo(() => new Set(selectedTaskBatchIds), [selectedTaskBatchIds]);
+  const taskBatchSelectionCount = taskBatchAllFiltered ? Number(taskCenter.filteredTotal || 0) : selectedTaskBatchIds.length;
+  const selectedTask = bridge()?.getTaskDetail
+    ? (taskDetail?.id === selectedTaskId ? taskDetail : null)
+    : taskCenter.tasks.find((task) => task.id === selectedTaskId) ?? null;
   const selectedTaskAutoValidated = selectedTask?.completionPolicy === 'auto_after_validation';
   const selectedCollaborationTask = selectedTask?.kind === 'collaboration_assignment'
     ? selectedTask.input?.collaborationTask as {
@@ -6462,8 +6575,8 @@ function App() {
   const bundle = useMemo(() => buildBundle(effectiveDraft), [effectiveDraft, storageConfig]);
   const draftPaths = bundle.paths;
 
-  const selectedStudentTool = selectedStudent ? getAgentToolProfile(selectedStudent.agentTool) : agentToolProfiles.qclaw;
-  const selectedStudentAdapter = selectedStudent ? getAgentToolAdapter(selectedStudent.agentTool) : getAgentToolAdapter('qclaw');
+  const selectedStudentTool = selectedStudent ? getAgentToolProfile(selectedStudent.agentTool) : agentToolProfiles.workbuddy;
+  const selectedStudentAdapter = selectedStudent ? getAgentToolAdapter(selectedStudent.agentTool) : getAgentToolAdapter('workbuddy');
   const selectedStudentPaths = selectedStudent ? pathsForStudent(selectedStudent) : pathsFor(draft.name);
   useEffect(() => {
     activeSectionRef.current = activeSection;
@@ -6485,7 +6598,7 @@ function App() {
       if (!sectionByTab[tabId] || !students.some(student => student.id === studentId)) return;
       if (selectedStudentIdRef.current !== studentId) setSelectedId(studentId);
       setNavigationGroup('collection');
-      setActivePageTab(tabId);
+      setActivePageTab(tabId === 'conversation-collection' || tabId === 'session-auto-capture' ? 'ai-conversation' : tabId);
       setActiveSection(sectionByTab[tabId]);
       if (tabId === 'share-capture' && inboxTab === 'shares') setQuickSharesRequest(value => value + 1);
       if (tabId === 'screen-capture') setCaptureView('sessions');
@@ -6607,6 +6720,8 @@ function App() {
     codex: codexOpened,
     'claude-code': claudeCodeOpened,
     hermes: hermesOpened,
+    trae: traeOpened,
+    'qoder-work': qoderWorkOpened,
     chatgpt: false,
     claude: false,
     doubao: false,
@@ -7560,6 +7675,11 @@ function App() {
     setEditingDirectCourseId('');
   };
 
+  const [publicationEdit,setPublicationEdit]=useState<any>(null);
+  const editPublication=(item:any)=>{
+    if(item.kind==='card'){setPublicationEdit(item);setActiveSection('learning-cards');setActivePageTab('learning-cards');}
+    else {const course=courseCatalogState?.catalog?.courses?.find((c:any)=>c.courseId===item.id);if(course){if(course.type==='tenant_custom')editCustomCourse(course);else editPlatformCourse(course);}}
+  };
   const editCustomCourse = (course: CourseCatalogItem) => {
     if (course.type !== 'tenant_custom') {
       setCourseCatalogMessage('平台精选课程需使用平台版权限编辑。');
@@ -8528,58 +8648,6 @@ function App() {
     return control.promise;
   };
 
-  const refreshAgentCapabilityManagement = (studentId = selectedStudent?.id) => {
-    if (!studentId) return;
-    const raw = bridge()?.getAgentCapabilityManagement?.(studentId);
-    if (!raw) return;
-    try {
-      const result = JSON.parse(raw) as AgentCapabilityManagement;
-      setAgentCapabilityManagement(result);
-      if (!result.ok) setAgentCapabilityMessage(result.message || '读取 Agent 外部能力授权失败。');
-    } catch { setAgentCapabilityMessage('Agent 外部能力状态解析失败。'); }
-  };
-
-  const changeAgentCapabilityAuthorization = (action: 'read' | 'write' | 'revoke') => {
-    if (!selectedStudent) return;
-    const prompt = action === 'read'
-      ? `为“${selectedStudent.name}”授权外部 Agent 读取资料目录、任务状态和报告？仍只限该学生及其单学生项目。`
-      : action === 'write'
-        ? `为“${selectedStudent.name}”授权外部 Agent 提交资料、待办和报告草稿预览？每次实际写入仍须在这里审核批准。`
-        : `撤销“${selectedStudent.name}”的外部 Agent 调用授权？已安装的工具将无法继续调用，重新开启需再次授权。`;
-    if (!window.confirm(prompt)) return;
-    const raw = bridge()?.setAgentCapabilityAuthorization?.(selectedStudent.id, action);
-    if (!raw) { setAgentCapabilityMessage('当前环境不支持 Agent 外部能力授权。'); return; }
-    try {
-      const result = JSON.parse(raw) as { ok?: boolean; message?: string };
-      setAgentCapabilityMessage(result.message || (result.ok ? '授权状态已更新。' : '更新授权失败。'));
-      if (result.ok) { setAgentWriteReview(null); refreshAgentCapabilityManagement(selectedStudent.id); }
-    } catch { setAgentCapabilityMessage('Agent 授权结果解析失败。'); }
-  };
-
-  const reviewAgentWrite = (intent: AgentWriteIntentView) => {
-    if (!selectedStudent) return;
-    const raw = bridge()?.reviewAgentWriteIntent?.(selectedStudent.id, intent.id);
-    if (!raw) { setAgentCapabilityMessage('当前环境不支持审核 Agent 写入。'); return; }
-    try {
-      const result = JSON.parse(raw) as { ok?: boolean; intent?: AgentWriteIntentView; reviewInput?: unknown; message?: string };
-      if (!result.ok || !result.intent) { setAgentCapabilityMessage(result.message || '读取写入预览失败。'); return; }
-      setAgentWriteReview({ intent: result.intent, reviewInput: result.reviewInput });
-    } catch { setAgentCapabilityMessage('写入预览解析失败。'); }
-  };
-
-  const decideAgentWrite = (action: 'approve' | 'reject') => {
-    if (!selectedStudent || !agentWriteReview) return;
-    const { intent } = agentWriteReview;
-    if (!window.confirm(action === 'approve' ? `批准“${selectedStudent.name}”的 ${intent.name} 写入？核对目标与预览后，Agent 才能执行。` : '拒绝并清除这条待写入内容？')) return;
-    const raw = bridge()?.decideAgentWriteIntent?.(selectedStudent.id, intent.id, intent.inputDigest, action);
-    if (!raw) { setAgentCapabilityMessage('当前环境不支持审批 Agent 写入。'); return; }
-    try {
-      const result = JSON.parse(raw) as { ok?: boolean; message?: string };
-      setAgentCapabilityMessage(result.message || (result.ok ? '已处理写入意图。' : '处理失败。'));
-      if (result.ok) { setAgentWriteReview(null); refreshAgentCapabilityManagement(selectedStudent.id); }
-    } catch { setAgentCapabilityMessage('Agent 审批结果解析失败。'); }
-  };
-
   const clearEmptyAgentSessions = (sessionId = '') => {
     if (!selectedStudent) return;
     const prompt = sessionId ? '清理这条无授权消息的已结束会话？' : '批量清理无授权消息的已结束会话？有内容及采集中的会话不会删除。';
@@ -9410,7 +9478,7 @@ ${sourceText}`;
       const raw = bridge()?.getAppStatus?.();
       if (!raw) return;
       try {
-        const status = JSON.parse(raw) as { qclawOpened?: boolean; marvisOpened?: boolean; hohuOpened?: boolean; openclawOpened?: boolean; imaCopilotOpened?: boolean; workbuddyOpened?: boolean; codexOpened?: boolean; claudeCodeOpened?: boolean; hermesOpened?: boolean; obsidianOpened?: boolean };
+        const status = JSON.parse(raw) as { qclawOpened?: boolean; marvisOpened?: boolean; hohuOpened?: boolean; openclawOpened?: boolean; imaCopilotOpened?: boolean; workbuddyOpened?: boolean; codexOpened?: boolean; claudeCodeOpened?: boolean; hermesOpened?: boolean; traeOpened?: boolean; qoderWorkOpened?: boolean; obsidianOpened?: boolean };
         setQclawOpened(Boolean(status.qclawOpened));
         setMarvisOpened(Boolean(status.marvisOpened));
         setHohuOpened(Boolean(status.hohuOpened));
@@ -9420,6 +9488,8 @@ ${sourceText}`;
         setCodexOpened(Boolean(status.codexOpened));
         setClaudeCodeOpened(Boolean(status.claudeCodeOpened));
         setHermesOpened(Boolean(status.hermesOpened));
+        setTraeOpened(Boolean(status.traeOpened));
+        setQoderWorkOpened(Boolean(status.qoderWorkOpened));
         setObsidianOpened(Boolean(status.obsidianOpened));
       } catch {
         // Ignore bridge JSON parse errors.
@@ -9480,11 +9550,6 @@ ${sourceText}`;
     if (!isWindows || !selectedId) return;
     bridge()?.prepareAgentKnowledgeAccess?.(selectedId);
   }, [isWindows, selectedId]);
-
-  useEffect(() => {
-    setAgentWriteReview(null);
-    if (isWindows && selectedId && (activeSection === 'agent-capabilities' || (activeSection === 'settings' && settingsSubmenu === 'agent-qa' && agentSettingsTab === 'capabilities'))) refreshAgentCapabilityManagement(selectedId);
-  }, [isWindows, selectedId, activeSection, agentSettingsTab, settingsSubmenu]);
 
   useEffect(() => {
     const payload = hostServiceStatus?.pairPayloadText;
@@ -9553,15 +9618,15 @@ ${sourceText}`;
 
   useEffect(() => {
     const settingsAgentView = activeSection === 'settings' && settingsSubmenu === 'agent-qa' ? agentSettingsTab : null;
-    if (activeSection === 'memory' || activeSection === 'capture' || activeSection === 'soul' || activeSection === 'qa' || activeSection === 'conversation' || settingsAgentView === 'memory' || settingsAgentView === 'persona' || settingsAgentView === 'qa') {
+    if (activeSection === 'memory' || activeSection === 'capture' || activeSection === 'soul' || activeSection === 'qa' || activeSection === 'conversation' || settingsAgentView === 'data' || settingsAgentView === 'connection' || settingsAgentView === 'tools') {
       refreshAgentCenter();
       refreshSourceRegistry();
-      if (activeSection === 'memory' || activeSection === 'capture' || settingsAgentView === 'memory') refreshAgentMemoryState();
+      if (activeSection === 'memory' || activeSection === 'capture' || (settingsAgentView === 'data' && agentDataTab === 'memory') || settingsAgentView === 'tools') refreshAgentMemoryState();
     }
-  }, [activeSection, agentSettingsTab, selectedId, settingsSubmenu]);
+  }, [activeSection, agentDataTab, agentSettingsTab, selectedId, settingsSubmenu]);
 
   useEffect(() => {
-    if (activeSection === 'rules' || (activeSection === 'settings' && settingsSubmenu === 'agent-qa' && agentSettingsTab === 'rules')) {
+    if (activeSection === 'rules' || (activeSection === 'settings' && settingsSubmenu === 'agent-qa' && agentSettingsTab === 'data' && agentDataTab === 'rules')) {
       refreshAgentRules();
       refreshSourceRegistry();
     }
@@ -9569,15 +9634,26 @@ ${sourceText}`;
       refreshConversationCenter();
       refreshAgentConversationInbox();
     }
-  }, [activeSection, agentSettingsTab, selectedId, settingsSubmenu]);
+  }, [activeSection, agentDataTab, agentSettingsTab, selectedId, settingsSubmenu]);
 
   useEffect(() => {
     if (activeSection !== 'tasks') return undefined;
     void refreshTaskCenter(false, true);
+    const taskWindow = window as unknown as { onNativeTaskCenterChanged?: () => void };
+    let changeTimer: number | undefined;
+    const onChange = () => {
+      if (document.hidden || changeTimer !== undefined) return;
+      changeTimer = window.setTimeout(() => { changeTimer = undefined; void refreshTaskCenter(false); }, 250);
+    };
+    taskWindow.onNativeTaskCenterChanged = onChange;
     const timer = window.setInterval(() => {
       if (!document.hidden) void refreshTaskCenter(false);
     }, 60000);
-    return () => window.clearInterval(timer);
+    return () => {
+      window.clearInterval(timer);
+      if (changeTimer !== undefined) window.clearTimeout(changeTimer);
+      if (taskWindow.onNativeTaskCenterChanged === onChange) delete taskWindow.onNativeTaskCenterChanged;
+    };
   }, [activeSection]);
 
   useEffect(() => {
@@ -9610,6 +9686,8 @@ ${sourceText}`;
       subjectStrengths: student.subjectStrengths,
       careerDirections: student.careerDirections,
       digestTime: student.digestTime,
+      activityStatus: student.activityStatus || 'active',
+      pauseAutomaticTasksWhenInactive: student.pauseAutomaticTasksWhenInactive !== false,
       agentTool: student.agentTool,
       storageMode: student.storageMode,
       rootPathLabel: student.rootPathLabel,
@@ -10894,6 +10972,8 @@ ${sourceText}`;
     if (app === 'codex') setCodexOpened((value) => value || Boolean(ok));
     if (app === 'claude-code') setClaudeCodeOpened((value) => value || Boolean(ok));
     if (app === 'hermes') setHermesOpened((value) => value || Boolean(ok));
+    if (app === 'trae') setTraeOpened((value) => value || Boolean(ok));
+    if (app === 'qoder-work') setQoderWorkOpened((value) => value || Boolean(ok));
     if (app === 'obsidian') setObsidianOpened((value) => value || Boolean(ok));
     const urls: Record<AgentToolId | 'obsidian' | 'tailscale', string> = {
       qclaw: 'qclaw://',
@@ -10905,6 +10985,8 @@ ${sourceText}`;
       codex: 'https://chatgpt.com/codex',
       'claude-code': 'https://www.anthropic.com/claude-code',
       hermes: 'https://hermes-agent.nousresearch.com/',
+      trae: 'https://www.trae.cn/ide/download',
+      'qoder-work': 'https://qoderwork.com/',
       chatgpt: 'https://chatgpt.com/',
       claude: 'https://claude.ai/',
       doubao: 'https://www.doubao.com/',
@@ -11942,7 +12024,7 @@ ${sourceText}`;
           scanExistingWorkspace: true,
           knowledgeMode: 'managed',
           knowledgeRootPath: '',
-          agentTool: 'qclaw',
+          agentTool: 'workbuddy',
         });
         setProjectKnowledgeAdoptionPreview(null);
       }
@@ -13425,7 +13507,7 @@ ${JSON.stringify(items, null, 2)}
 
   const refreshTaskCenter = async (force = false, quick = false) => {
     const api = bridge();
-    if (!api?.getTaskCenterAsync && !api?.getTaskCenter) {
+    if (!api?.getTaskPage && !api?.getTaskCenterAsync && !api?.getTaskCenter) {
       setScheduleMessage('当前环境不支持统一任务中心。');
       return;
     }
@@ -13433,22 +13515,32 @@ ${JSON.stringify(items, null, 2)}
     taskCenterRequestRef.current = requestId;
     setTaskCenterRefreshing(true);
     try {
-      const raw = api.getTaskCenterAsync
+      const raw = api.getTaskPage
+        ? await api.getTaskPage(taskCenterQueryRef.current)
+        : api.getTaskCenterAsync
         ? await api.getTaskCenterAsync(force, quick)
         : api.getTaskCenter?.();
       if (requestId !== taskCenterRequestRef.current || !raw) return;
       const result = JSON.parse(raw) as TaskCenterState & { ok?: boolean; message?: string };
       if (result.tasks) {
         setTaskCenter({
+          ready: result.ready,
+          storageFault: result.storageFault,
+          page: result.page,
+          pageCount: result.pageCount,
+          filteredTotal: result.filteredTotal,
+          executors: result.executors,
           protocolVersion: result.protocolVersion,
           generatedAt: result.generatedAt,
           automationEnabled: result.automationEnabled,
           executionMode: result.executionMode,
           tasks: result.tasks,
           history: result.history || [],
-          summary: result.summary || { total: result.tasks.length, actionable: 0, running: 0, scheduled: 0, completed: 0 },
+          summary: result.summary || { total: result.tasks.length, actionable: 0, running: 0, scheduled: 0, completed: 0, archived: 0 },
           capabilities: result.capabilities,
           taskStorePath: result.taskStorePath,
+          agentInboxPath: result.agentInboxPath,
+          agentResultPath: result.agentResultPath,
           qclawInboxPath: result.qclawInboxPath,
           qclawResultPath: result.qclawResultPath,
         });
@@ -13485,13 +13577,38 @@ ${JSON.stringify(items, null, 2)}
     setSelectedTaskId(task.id);
     setTaskExecutorDraft('auto');
     setTaskOperationFeedback(null);
-    setTaskResultPasteText('');
     setCollaborationResultFiles([]);
     window.setTimeout(() => {
       taskDetailPanelRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
       taskDetailPanelRef.current?.focus({ preventScroll: true });
     }, 80);
   };
+
+  useEffect(() => {
+    if (!selectedTaskId || !bridge()?.getTaskDetail) { setTaskDetail(null); return; }
+    let cancelled = false;
+    setTaskDetailError('');
+    void bridge()!.getTaskDetail!(selectedTaskId).then(raw => {
+      if (cancelled) return;
+      const result = JSON.parse(raw);
+      if (!result.ok) { setTaskDetail(null); setTaskDetailError(result.message || '任务详情读取失败。'); return; }
+      setTaskDetail(result.task);
+      setTaskCenter(current => ({ ...current, history: result.history || [] }));
+    }).catch(error => { if (!cancelled) { setTaskDetail(null); setTaskDetailError(String(error)); } });
+    return () => { cancelled = true; };
+  }, [selectedTaskId, taskCenter.generatedAt]);
+
+  useEffect(() => {
+    setTaskCenterPage(1);
+    setSelectedTaskBatchIds([]);
+    setTaskBatchAllFiltered(false);
+    setTaskBatchFeedback(null);
+  }, [taskCenterStatusFilter, taskCenterSourceFilter, taskCenterExecutorFilter]);
+  useEffect(() => {
+    if (activeSection !== 'tasks' || !bridge()?.getTaskPage) return;
+    void refreshTaskCenter();
+    return () => { taskCenterRequestRef.current += 1; };
+  }, [activeSection, taskCenterPage, taskCenterStatusFilter, taskCenterSourceFilter, taskCenterExecutorFilter]);
 
   const handleTaskCenterAction = (task: TaskCenterItem) => {
     if (task.sourceType === 'student') {
@@ -13615,25 +13732,94 @@ ${JSON.stringify(items, null, 2)}
     applyTaskOperationResult(bridge()?.cancelTask?.(task.id, '用户点击忽略本次。'), '已忽略本次任务。', task);
   };
 
-  const importTaskResultFromCenter = (task: TaskCenterItem) => {
-    applyTaskOperationResult(bridge()?.importTaskResult?.(task.id), '任务结果已导入。', task);
-  };
-
-  const importTaskResultTextFromCenter = (task: TaskCenterItem) => {
-    if (!taskResultPasteText.trim()) {
-      setScheduleMessage('请先粘贴 Agent 返回的执行结果。');
-      return;
+  const deleteTaskHistoryFromCenter = (task: TaskCenterItem) => {
+    const unstartedCollaboration = task.status === 'pending' && task.kind === 'collaboration_assignment'
+      && (task.adapterId || task.executor || 'manual') === 'manual' && Number(task.attempt || 0) === 0 && !task.executionId && !task.result;
+    const noun = unstartedCollaboration ? '未开始任务' : '历史任务';
+    if (!window.confirm(`确认删除${noun}“${task.title}”吗？\n\n任务卡及其可见状态历史会移除；学生资料、协作审计、已生成产物和远端记录不会删除，也不会因再次扫描而重建该任务卡。`)) return;
+    const deleted = applyTaskOperationResult(bridge()?.deleteTaskHistory?.(task.id), '历史任务已删除。', task);
+    if (deleted) {
+      setSelectedTaskId('');
+      setTaskOperationFeedback(null);
     }
-    const imported = applyTaskOperationResult(bridge()?.importTaskResultText?.(task.id, taskResultPasteText), '粘贴结果已导入。', task);
-    if (imported) setTaskResultPasteText('');
   };
 
-  const syncQClawResultsFromCenter = () => {
-    applyTaskOperationResult(bridge()?.syncQClawTaskResults?.(), 'QClaw 结果同步完成。');
+  const runTaskGovernanceBatch = async (action: 'cancel' | 'archive' | 'delete' | 'restore') => {
+    const api = bridge();
+    if (!taskBatchSelectionCount || !api?.previewTaskGovernanceBatch || !api?.commitTaskGovernanceBatch || taskBatchBusy) return;
+    setTaskBatchBusy(true);
+    setTaskBatchFeedback({ tone: 'working', message: '正在核对所选任务状态…' });
+    try {
+      const rawPreview = await api.previewTaskGovernanceBatch(taskBatchAllFiltered
+        ? { action, selection: 'filtered', query: { status: taskCenterStatusFilter, source: taskCenterSourceFilter, executor: taskCenterExecutorFilter } }
+        : { action, selection: 'explicit', ids: selectedTaskBatchIds });
+      const preview = JSON.parse(rawPreview) as { ok?: boolean; token?: string; eligible?: Array<{ id: string; title: string }>; skipped?: Array<{ id: string; reason: string }>; message?: string; matchedCount?: number; truncated?: boolean };
+      if (!preview.ok || !preview.token) {
+        setTaskBatchFeedback({ tone: 'error', message: preview.message || '批量预览失败。' });
+        return;
+      }
+      const eligibleCount = preview.eligible?.length || 0;
+      const skippedCount = preview.skipped?.length || 0;
+      const reasonCounts = new Map<string, number>();
+      for (const item of preview.skipped || []) reasonCounts.set(item.reason, (reasonCounts.get(item.reason) || 0) + 1);
+      const reasons = [...reasonCounts].map(([reason, count]) => `${reason}（${count} 项）`).join('；');
+      const truncation = preview.truncated ? '；当前最多一次处理 1000 项' : '';
+      const previewMessage = `可${{ cancel: '取消', archive: '归档', delete: '删除', restore: '恢复' }[action]} ${eligibleCount} 项，跳过 ${skippedCount} 项${reasons ? `：${reasons}` : ''}${truncation}。`;
+      setTaskBatchFeedback({ tone: eligibleCount ? 'working' : 'error', message: previewMessage });
+      if (!eligibleCount) return;
+      const destructive = action === 'delete';
+      const detail = skippedCount ? `，另有 ${skippedCount} 项因正在执行、结果未知或状态不符而自动跳过` : '';
+      if (!window.confirm(`${destructive ? '删除不可恢复；已生成产物和审计日志仍保留。' : ''}确认${{ cancel: '取消', archive: '归档', delete: '删除', restore: '恢复' }[action]} ${eligibleCount} 个任务${detail}吗？`)) {
+        setTaskBatchFeedback({ tone: 'working', message: `${previewMessage}已取消提交，任务未变更。` });
+        return;
+      }
+      const rawCommit = await api.commitTaskGovernanceBatch({ token: preview.token, reason: '用户在统一任务队列批量操作' });
+      const result = JSON.parse(rawCommit) as { ok?: boolean; message?: string; processedCount?: number; skipped?: Array<{ id: string; reason: string }> };
+      setTaskBatchFeedback({ tone: result.ok ? 'success' : 'error', message: result.message || (result.ok ? '批量操作完成。' : '批量操作失败。') });
+      if (result.ok) {
+        setSelectedTaskBatchIds([]);
+        setTaskBatchAllFiltered(false);
+        await refreshTaskCenter(true);
+      }
+    } catch (error) {
+      setTaskBatchFeedback({ tone: 'error', message: `批量操作失败：${error instanceof Error ? error.message : String(error)}` });
+    } finally { setTaskBatchBusy(false); }
   };
 
-  const openTaskCenterFolder = (kind: 'root' | 'qclaw-inbox' | 'qclaw-results' | 'manual-outbox' | 'events') => {
-    applyTaskOperationResult(bridge()?.openTaskCenterPath?.(kind), '任务目录已打开。');
+  const importTaskResultFromCenter = (task: TaskCenterItem) => importTaskResultForCenter(task, true);
+  const importTaskResultTextFromCenter = (task: TaskCenterItem) => importTaskResultForCenter(task, false);
+  const importTaskResultForCenter = async (task: TaskCenterItem, fromFile: boolean) => {
+    if (taskImportLock.current || (!fromFile && !taskResultPasteText.trim())) return;
+    taskImportLock.current = true;
+    const submittedText = taskResultPasteText;
+    setTaskImportBusyId(task.id);
+    setTaskOperationFeedback({ taskId: task.id, tone: 'working', message: fromFile ? '请选择结果文件，随后校验批次及内容…' : '正在校验结果与当前批次，请稍候；无需重复点击…' });
+    try {
+      const host = bridge();
+      const raw = fromFile
+        ? await (host?.importTaskResultFileAsync?.(task.id) ?? host?.importTaskResult?.(task.id))
+        : await (host?.importTaskResultTextAsync?.(task.id, submittedText) ?? host?.importTaskResultText?.(task.id, submittedText));
+      const parsed = raw ? JSON.parse(raw) : { ok: false, message: '主机未返回导入回执。输入已保留，请检查主机连接。' };
+      setScheduleMessage(parsed.message || '导入结束，请查看任务详情。');
+      setTaskOperationFeedback({ taskId: task.id, tone: parsed.ok ? 'success' : 'error', message: parsed.message || '导入未完成，内容已保留。' });
+      if (taskSelectionRef.current === task.id) window.requestAnimationFrame(() => taskImportFeedbackRef.current?.scrollIntoView({ block: 'nearest' }));
+      if (parsed.ok && !fromFile && taskSelectionRef.current === task.id) setTaskResultPasteText(current => current === submittedText ? '' : current);
+      if (taskSelectionRef.current === task.id && host?.getTaskDetail) {
+        const detail = JSON.parse(await host.getTaskDetail(task.id));
+        if (taskSelectionRef.current === task.id && detail.ok && detail.task) setTaskDetail(detail.task);
+      }
+      refreshTaskCenter();
+    } catch (error) {
+      setTaskOperationFeedback({ taskId: task.id, tone: 'error', message: `导入未完成，输入已保留：${error instanceof Error ? error.message : String(error)}` });
+    } finally { taskImportLock.current = false; setTaskImportBusyId(''); }
+  };
+
+  const syncAgentResultsFromCenter = () => {
+    applyTaskOperationResult(bridge()?.syncAgentTaskResults?.(taskChannelAgent), `${taskChannelLabel} 结果同步完成。`);
+  };
+
+  const openTaskCenterFolder = (kind: 'root' | 'agent-inbox' | 'agent-results' | 'manual-outbox' | 'events') => {
+    applyTaskOperationResult(bridge()?.openTaskCenterPath?.(kind, taskChannelAgent), '任务目录已打开。');
   };
 
   const openTaskResultFromCenter = (task: TaskCenterItem) => {
@@ -14257,6 +14443,8 @@ ${JSON.stringify(items, null, 2)}
       codex: 'https://chatgpt.com/codex',
       'claude-code': 'https://www.anthropic.com/claude-code',
       hermes: 'https://hermes-agent.nousresearch.com/',
+      trae: 'https://www.trae.cn/ide/download',
+      'qoder-work': 'https://qoderwork.com/',
       chatgpt: 'https://chatgpt.com/',
       claude: 'https://claude.ai/',
       doubao: 'https://www.doubao.com/',
@@ -14694,7 +14882,7 @@ ${JSON.stringify(items, null, 2)}
       return;
     }
     const cleanName = sanitizeName(studentEditDraft.name);
-    const confirmed = window.confirm(`确认将「${selectedStudent.name}」的本机知识库目录迁移/重命名为「${cleanName}知识库」吗？\n\n这会移动本机目录；建议先确认 QClaw/Marvis/Hohu/OpenClaw 没有正在处理该学生资料。`);
+    const confirmed = window.confirm(`确认将「${selectedStudent.name}」的本机知识库目录迁移/重命名为「${cleanName}知识库」吗？\n\n这会移动本机目录；建议先确认所选 Agent 没有正在处理该学生资料。`);
     if (!confirmed) return;
     const raw = bridge()?.migrateStudentWorkspace?.(selectedStudent.id, cleanName);
     if (!raw) {
@@ -15383,14 +15571,19 @@ ${JSON.stringify(items, null, 2)}
     else if (activeSection === 'guidance') setNavigationGroup('guidance');
     else if (activeSection === 'cloud-documents') { setNavigationGroup('learning'); setActivePageTab('learning-reports'); }
     else if (activeSection === 'courses') setNavigationGroup('courses');
+    else if (activeSection === 'conversation' || activeSection === 'capture') { setNavigationGroup('collection'); setActivePageTab('ai-conversation'); }
     else if (activeSection === 'settings' && settingsSubmenu !== 'collaboration') setNavigationGroup('settings');
   }, [activeSection, settingsSubmenu]);
 
   const agentSettingsPanel = activeSection === 'settings' && settingsSubmenu === 'agent-qa' ? agentSettingsTab : null;
-  const showingAgentRules = activeSection === 'rules' || agentSettingsPanel === 'rules';
-  const showingAgentMemory = activeSection === 'memory' || agentSettingsPanel === 'memory';
-  const showingAgentPersona = activeSection === 'soul' || agentSettingsPanel === 'persona';
-  const showingAgentCapabilities = activeSection === 'agent-capabilities' || agentSettingsPanel === 'capabilities';
+  const showingAgentRules = activeSection === 'rules' || (agentSettingsPanel === 'data' && agentDataTab === 'rules');
+  const showingAgentMemory = activeSection === 'memory' || (agentSettingsPanel === 'data' && agentDataTab === 'memory') || activeSection === 'capture';
+  const showingAgentPersona = activeSection === 'soul' || (agentSettingsPanel === 'data' && agentDataTab === 'persona');
+  const showingAgentControl = agentSettingsPanel === 'tools';
+  const openAgentControl = () => { setNavigationGroup('settings'); setSettingsSubmenu('agent-qa'); setAgentSettingsTab('tools'); setActivePageTab('settings-agent'); setActiveSection('settings'); };
+  useEffect(() => {
+    if (activeSection === 'agent-capabilities') { setNavigationGroup('settings'); setSettingsSubmenu('agent-qa'); setAgentSettingsTab('connection'); setAgentConnectionTab('connector'); setActivePageTab('settings-agent'); setActiveSection('settings'); }
+  }, [activeSection, agentSettingsPanel]);
 
   const workspaceTabs: Partial<Record<NavigationGroup, Array<{ id: string; label: string; section: Section; action?: () => void }>>> = {
     collection: [
@@ -15398,15 +15591,14 @@ ${JSON.stringify(items, null, 2)}
       { id: 'photo-upload', label: '拍照上传', section: 'photo-upload' },
       { id: 'screen-capture', label: '屏幕采集', section: 'inbox', action: () => setCaptureView('sessions') },
       { id: 'audio-capture', label: '录音采集', section: 'audio-capture' },
-      { id: 'conversation-collection', label: '对话收集', section: 'conversation' },
-      { id: 'session-auto-capture', label: '会话自动采集', section: 'capture' },
+      { id: 'ai-conversation', label: 'AI对话采集', section: 'conversation' },
       { id: 'share-capture', label: '资料收件箱', section: 'share-capture' }, // 原“分享采集”路由保持兼容。
       { id: 'materials-organize', label: '资料整理', section: 'tasks' },
     ],
     learning: [
       { id: 'learning-reports', label: '学情报告', section: 'reports' },
-      { id: 'knowledge-mastery', label: '知识点掌握', section: 'knowledge-mastery', action: () => setGrowthView('learning') },
       { id: 'learning-materials', label: '学习资料', section: 'archive' },
+      { id: 'knowledge-mastery', label: '知识点掌握', section: 'knowledge-mastery', action: () => setGrowthView('learning') },
       { id: 'learning-cards', label: '学习卡片', section: 'learning-cards' },
     ],
     projects: [
@@ -15446,12 +15638,11 @@ ${JSON.stringify(items, null, 2)}
     ] : []),
   ];
   const knowledgeNavItems = [
-    { id: 'memory' as const, label: t('nav.memory'), icon: Clipboard },
+    ...(!isWindows ? [{ id: 'memory' as const, label: t('nav.memory'), icon: Clipboard }] : []),
     { id: 'soul' as const, label: t('nav.soul'), icon: Bot },
     { id: 'rules' as const, label: t('nav.rules'), icon: ListChecks },
     ...(isWindows ? [
       { id: 'capture' as const, label: t('nav.capture'), icon: MessageCircle },
-      { id: 'agent-capabilities' as const, label: t('nav.agentCapabilities'), icon: Settings },
     ] : []),
     { id: 'conversation' as const, label: t('nav.conversation'), icon: MessageCircle },
   ];
@@ -15487,7 +15678,7 @@ ${JSON.stringify(items, null, 2)}
     if (section === 'courses') return t('nav.courses');
     if (section === 'projects-new') return t('nav.projects.new');
     if (section === 'projects-existing') return t('nav.projects.existing');
-    if (section === 'capture') return t('nav.capture');
+    if (section === 'capture' || section === 'conversation') return 'AI对话采集';
     if (section === 'settings' && settingsSubmenu === 'collaboration') return t('nav.collaboration.settings');
     if (section === 'settings' && settingsSubmenu === 'agent-qa') return 'Agent设置管理';
     const map: Record<Section, TranslationKey> = {
@@ -15543,7 +15734,8 @@ ${JSON.stringify(items, null, 2)}
     if (activeSection === 'reports') return '查看和管理基于已确认成长数据生成的学情报告。';
     if (activeSection === 'cloud-documents') return '按本机获得的学生许可查看云端报告，无需建立本地学生档案。';
     if (activeSection === 'qa') return '按授权范围检索本机与协作知识，并保留来源依据。';
-    if (activeSection === 'capture') return '授权后自动采集 Agent 对话的新轮次，不回扫授权前历史。';
+    if (activeSection === 'capture') return '在 AI 对话采集中授权并接收 Agent 对话的新轮次，不回扫授权前历史。';
+    if (activeSection === 'conversation') return '在 AI 对话采集中导入分享对话、确认归属，并将资料投递到学生或关联项目。';
     if (activeSection === 'agent-capabilities') return '管理当前学生的外部 Agent 调用授权，并审核每次受控写入。';
     if (activeSection === 'settings' && settingsSubmenu === 'collaboration') return '管理设备信任、共享范围与多端协作。';
     if (activeSection === 'settings' && settingsSubmenu === 'agent-qa') return '集中管理 Agent 问答、工具、规则、记忆、人设和调用能力。';
@@ -15967,6 +16159,25 @@ ${JSON.stringify(items, null, 2)}
           </nav>
         )}
 
+        {isWindows && navigationGroup === 'collection' && activePageTab === 'ai-conversation' && (
+          <nav className="workspace-page-tabs" aria-label="AI对话采集分页面">
+            <button
+              type="button"
+              className={activeSection === 'conversation' ? 'workspace-page-tab active' : 'workspace-page-tab'}
+              onClick={() => openWorkspaceTab('collection', 'ai-conversation', 'conversation')}
+            >
+              对话分享资料箱
+            </button>
+            <button
+              type="button"
+              className={activeSection === 'capture' ? 'workspace-page-tab active' : 'workspace-page-tab'}
+              onClick={() => openWorkspaceTab('collection', 'ai-conversation', 'capture')}
+            >
+              Agent会话自动采集
+            </button>
+          </nav>
+        )}
+
         {activeBackgroundWork && (
           <div className="background-work-banner" role="status" aria-live="polite">
             <RefreshCw size={16} />
@@ -15991,7 +16202,7 @@ ${JSON.stringify(items, null, 2)}
                   <article className="install-option" key={tool.id}>
                     <strong>{tool.name}</strong>
                     <span>{tool.supportsScheduledTask ? '推荐默认工具，支持本机目录、Agent 创建和定时资料消化。' : '可使用同一个 Windows 本机知识库目录，资料消化按手动指令执行。'}</span>
-                    <button className={tool.id === 'qclaw' ? 'primary' : 'secondary'} onClick={() => openToolDownload(tool.id)}>
+                    <button className={tool.id === 'workbuddy' ? 'primary' : 'secondary'} onClick={() => openToolDownload(tool.id)}>
                       <ExternalLink size={18} />
                       {t('install.download')} {tool.name}
                     </button>
@@ -16124,7 +16335,7 @@ ${JSON.stringify(items, null, 2)}
                 <div className="panel-heading">
                   <div>
                     <h2>首次使用清单</h2>
-                    <p>按顺序完成后，平板即可上传资料到主机，QClaw 可消化原始资料并沉淀档案。</p>
+                    <p>按顺序完成后，平板即可上传资料到主机，所选 Agent 可消化原始资料并沉淀档案。</p>
                   </div>
                   <ListChecks size={22} />
                 </div>
@@ -16440,6 +16651,7 @@ ${JSON.stringify(items, null, 2)}
 
         {!shouldBlockForAgentInstall && !isLicenseRestrictedSection && activeSection === 'share-capture' && (
           <React.Suspense fallback={<section className="panel">正在加载资料收件箱…</section>}><DownloadInboxPanel studentId={String(selectedStudent?.id || '')} openSharesRequest={quickSharesRequest}
+            onOpenAgentControl={openAgentControl}
             students={students.filter(student => student.archived !== true && student.status !== 'archived').map(student => ({ id: String(student.id), name: student.name }))}
             projects={projects.map(project => ({ id: String(project.id), name: project.name, studentIds: (project.studentIds || []).map(String), status: project.status }))}
             api={bridge() as DownloadInboxApi} /></React.Suspense>
@@ -16450,7 +16662,7 @@ ${JSON.stringify(items, null, 2)}
             projects={projects.filter(project => (project.studentIds || []).map(String).includes(String(selectedStudent.id)) && project.status !== 'sealed').map(project => ({ id: String(project.id), name: project.name }))} /></React.Suspense>
         )}
         {!shouldBlockForAgentInstall && !isLicenseRestrictedSection && activeSection === 'learning-cards' && selectedStudent && (
-          <React.Suspense fallback={<section className="panel">正在加载学习卡片…</section>}><PracticeCardsPanel key={selectedStudent.id} studentId={selectedStudent.id} languageRevision={`${selectedStudent.languageProfile?.primaryLanguage || ''}:${selectedStudent.languageProfile?.supportLanguage || ''}`} onOpenStudentProfile={() => { setNavigationGroup('home'); setActivePageTab('student-profile'); setActiveSection('archive'); }} api={bridge() as PracticeApi} /></React.Suspense>
+          <React.Suspense fallback={<section className="panel">正在加载学习卡片…</section>}><PracticeCardsPanel key={selectedStudent.id} initialPublication={publicationEdit} onPublicationConsumed={()=>setPublicationEdit(null)} studentId={selectedStudent.id} languageRevision={`${selectedStudent.languageProfile?.primaryLanguage || ''}:${selectedStudent.languageProfile?.supportLanguage || ''}`} onOpenStudentProfile={() => { setNavigationGroup('home'); setActivePageTab('student-profile'); setActiveSection('archive'); }} api={bridge() as PracticeApi} /></React.Suspense>
         )}
         {!shouldBlockForAgentInstall && !isLicenseRestrictedSection && ['photo-upload', 'audio-capture', 'learning-cards'].includes(activeSection) && !selectedStudent && (
           <section className="panel feature-under-construction">
@@ -16597,6 +16809,7 @@ ${JSON.stringify(items, null, 2)}
               </section>
             ) : null}
 
+            {!courseBrowser.open && courseSubmenu === 'management' && courseManagementAllowed && isWindows ? <React.Suspense fallback={<p>正在加载发布管理…</p>}><PublicationManager onEdit={editPublication} key={selectedStudent?.id} platformDrafts={platformCoursePublishAllowed&&Boolean(courseCatalogState?.platformDrafts?.length||courseCatalogState?.platformDeletions?.length)} studentId={selectedStudent?.id||''} action={(id,name,input)=>(bridge() as any).publicationAction(id,name,input)}/></React.Suspense> : null}
             {!courseBrowser.open ? (
               courseSubmenu === 'learning' ? (
                 <>
@@ -17075,7 +17288,7 @@ ${JSON.stringify(items, null, 2)}
                     </label>
                     <label className="wide">
                       绑定备注
-                      <input value={agentNoteDraft} onChange={(event) => setAgentNoteDraft(event.target.value)} placeholder="例如：旧 QClaw Agent 已存在，仅更新 Soul 工作规则" />
+                      <input value={agentNoteDraft} onChange={(event) => setAgentNoteDraft(event.target.value)} placeholder="例如：学生 Agent 已存在，仅更新 Soul 工作规则" />
                     </label>
                   </div>
                   <div className="actions compact-actions">
@@ -18924,7 +19137,7 @@ ${JSON.stringify(items, null, 2)}
                         <span>开始后由系统自动提交、等待和校验；普通情况下无需复制指令或检查回执。</span>
                       </div>
                       <div className="form-grid compact-grid">
-                        <label>使用 Agent<select value={selectedProject.agentTool || 'qclaw'} onChange={(event) => {
+                        <label>使用 Agent<select value={selectedProject.agentTool || 'workbuddy'} onChange={(event) => {
                           const agentTool = event.target.value as AgentToolId;
                           setProjectEditDraft((current) => ({ ...current, agentTool } as typeof current & { agentTool: AgentToolId }));
                           const raw = bridge()?.updateProjectMetadata?.(selectedProject.id, JSON.stringify({ ...projectEditDraft, agentTool }));
@@ -19199,9 +19412,9 @@ ${JSON.stringify(items, null, 2)}
               <Sparkles size={22} />
             </div>
             {growthLoading && <div className="notice muted" role="status">正在后台读取成长模型，页面可继续操作…</div>}
-            <div className="actions growth-primary-action">
-              <button className="secondary" onClick={() => { activeSection === 'knowledge-mastery' ? void refreshLearningTrajectory(selectedStudent) : void refreshSelectedGrowthModel(selectedStudent, true); }} disabled={growthLoading || learningBusy}><RefreshCw size={18} />刷新{activeSection === 'knowledge-mastery' ? '知识轨迹' : '成长模型'}</button>
-            </div>
+            {activeSection === 'growth' && <div className="actions growth-primary-action">
+              <button className="secondary" onClick={() => void refreshSelectedGrowthModel(selectedStudent, true)} disabled={growthLoading}><RefreshCw size={18} />刷新成长模型</button>
+            </div>}
             {activeSection === 'growth' && <details className="advanced-options growth-advanced-options">
               <summary>高级选项</summary>
             <div className="archive-grid">
@@ -19354,12 +19567,15 @@ ${JSON.stringify(items, null, 2)}
               </div>
               <FileText size={22} />
             </div>
-            <div className="archive-grid">
+            <details className="advanced-options reports-advanced-options">
+              <summary>高级</summary>
+              <div className="archive-grid">
               <InfoPanel icon={<UserRound />} title="当前学生" value={`${selectedStudent.name} · ${selectedStudent.grade}`} />
               <InfoPanel icon={<BookOpen />} title="报告目录" value={learningReportFolder || selectedStudentPaths.reportDir} />
               <InfoPanel icon={<Archive />} title="报告数量" value={`${learningReports.length || learningReportDefinitions.length} 份`} />
               <InfoPanel icon={<ListChecks />} title="报告提醒" value={learningReportHealth?.message || '刷新后显示报告健康度'} />
-            </div>
+              </div>
+            </details>
             <div className="actions">
               <button className="primary" onClick={() => updateCurrentLearningReports(selectedStudent)} disabled={!windowsLicenseActive || learningReportUpdating}>
                 <RefreshCw size={18} className={learningReportUpdating ? 'spin' : ''} />
@@ -19738,6 +19954,8 @@ ${JSON.stringify(items, null, 2)}
                     每日消化时间
                     <input type="time" value={studentEditDraft.digestTime} onChange={(event) => setStudentEditDraft({ ...studentEditDraft, digestTime: event.target.value })} />
                   </label>
+                  <label>学生参与状态<select value={studentEditDraft.activityStatus || 'active'} onChange={event=>setStudentEditDraft({...studentEditDraft,activityStatus:event.target.value as 'active'|'paused'|'inactive'})}><option value="active">活跃</option><option value="paused">暂停</option><option value="inactive">不活跃</option></select></label>
+                  <label className="wide"><span><input type="checkbox" checked={studentEditDraft.pauseAutomaticTasksWhenInactive!==false} onChange={event=>setStudentEditDraft({...studentEditDraft,pauseAutomaticTasksWhenInactive:event.target.checked})}/> 暂停状态下，暂停该学生的周期自动任务</span><small className="inline-hint">“不活跃”始终不生成新的任务卡；“暂停”可用此开关决定是否停止定时报告、自动重试及资料续批。正在执行的批次安全完成，不删除资料，仍可手动处理。</small></label>
                   <label className="wide">
                     当前目标
                     <textarea value={studentEditDraft.goal} onChange={(event) => setStudentEditDraft({ ...studentEditDraft, goal: event.target.value })} />
@@ -19948,27 +20166,38 @@ ${JSON.stringify(items, null, 2)}
         {!shouldBlockForAgentInstall && !isLicenseRestrictedSection && activeSection === 'settings' && settingsSubmenu === 'agent-qa' && (
           <nav className="agent-settings-tabs" aria-label="Agent 设置管理">
             {([
-              ['qa', 'Agent问答设置'], ['tools', 'Agent工具控制'], ['rules', 'Agent规则管理'],
-              ['memory', 'Agent记忆管理'], ['persona', 'Agent人设管理'], ['capabilities', 'Agent调用能力设置'],
+              ['tools', 'AI 接入与调度中心'], ['data', 'Agent 数据管理'], ['connection', 'Agent连接管理'],
             ] as Array<[AgentSettingsTab, string]>).map(([id, label]) => <button type="button" className={agentSettingsTab === id ? 'active' : ''} key={id} onClick={() => setAgentSettingsTab(id)}>{label}</button>)}
           </nav>
         )}
 
-        {!shouldBlockForAgentInstall && !isLicenseRestrictedSection && activeSection === 'settings' && settingsSubmenu === 'agent-qa' && agentSettingsTab === 'tools' && (
-          <section className="panel tool-home-panel">
-            <div className="panel-heading"><div><h2>Agent 工具控制</h2><p>选择默认 Agent，检查本机状态并打开工具；联网研究能力需另行通过真实 URL 与结构化结果探测。</p></div><Bot size={22} /></div>
-            <AgentToolCompactSelector value={draft.agentTool} onChange={(toolId) => { setDraft({ ...draft, agentTool: toolId }); setAgentBindingMode(agentBindingModeForTool(toolId)); }} label="默认 Agent 工具" />
-            <div className="agent-status-compact-list">
-              {agentToolOptions.map((baseTool) => { const tool = getAgentToolProfile(baseTool.id); const install = installForTool(tool.id); const opened = toolOpenState[tool.id]; return (
-                <article className="agent-status-line" key={tool.id}><div className="agent-status-main"><strong>{tool.name}</strong><span>{install?.installed ? `已安装${install.version ? ` ${install.version}` : ''}` : '未检测到安装'}</span>{(install?.appPath || install?.exePath) && <small>{install.appPath || install.exePath}</small>}</div><span className={tool.openMode === 'url' || opened ? 'status ok' : 'status warn'}>{tool.openMode === 'url' ? '在线入口' : opened ? '已打开' : '未打开'}</span><div className="agent-status-actions"><button className="primary compact" type="button" onClick={() => getAgentToolAdapter(tool.id).open(openExternal)}><ExternalLink size={16} />打开</button><button className="secondary compact" type="button" onClick={() => openToolDownload(tool.id)}>{tool.openMode === 'url' ? '入口' : '下载'}</button></div></article>
-              ); })}
-            </div>
-            <div className="actions"><button className="secondary" type="button" onClick={refreshInstallStatus}><RefreshCw size={18} />重新检测安装状态</button></div>
-            <CustomAgentToolsPanel api={bridge() as CustomOptionsApi} />
-          </section>
+        {!shouldBlockForAgentInstall && !isLicenseRestrictedSection && activeSection === 'settings' && settingsSubmenu === 'agent-qa' && agentSettingsTab === 'data' && (
+          <nav className="agent-settings-tabs agent-settings-subtabs" aria-label="Agent 数据管理">
+            {([['memory', '记忆管理'], ['rules', '规则管理'], ['persona', '人设管理']] as Array<[AgentDataTab, string]>).map(([id, label]) => <button type="button" className={agentDataTab === id ? 'active' : ''} key={id} onClick={() => setAgentDataTab(id)}>{label}</button>)}
+          </nav>
         )}
 
-        {!shouldBlockForAgentInstall && !isLicenseRestrictedSection && (activeSection === 'qa' || (activeSection === 'settings' && settingsSubmenu === 'agent-qa' && agentSettingsTab === 'qa')) && selectedStudent && (
+        {!shouldBlockForAgentInstall && !isLicenseRestrictedSection && activeSection === 'settings' && settingsSubmenu === 'agent-qa' && agentSettingsTab === 'connection' && (
+          <nav className="agent-settings-tabs agent-settings-subtabs" aria-label="Agent 连接管理">
+            {([['connector', '外部 Agent 连接器'], ['qa', 'Agent问答设置']] as Array<[AgentConnectionTab, string]>).map(([id, label]) => <button type="button" className={agentConnectionTab === id ? 'active' : ''} key={id} onClick={() => setAgentConnectionTab(id)}>{label}</button>)}
+          </nav>
+        )}
+
+        {!shouldBlockForAgentInstall && !isLicenseRestrictedSection && activeSection === 'settings' && settingsSubmenu === 'agent-qa' && agentSettingsTab === 'tools' && (
+          <React.Suspense fallback={<section className="panel">正在加载 AI 中心…</section>}><AgentControlCenter
+            api={bridge() as AgentControlApi}
+            onOpenTool={id => getAgentToolAdapter(id as AgentToolId).open(openExternal)}
+            onDownloadTool={id => openToolDownload(id as AgentToolId)}
+            onTasks={() => setActiveSection('tasks')} onCapture={() => setActiveSection('capture')} /></React.Suspense>
+        )}
+
+        {!shouldBlockForAgentInstall && !isLicenseRestrictedSection && activeSection === 'settings' && settingsSubmenu === 'agent-qa' && agentSettingsTab === 'connection' && agentConnectionTab === 'connector' && (
+          <React.Suspense fallback={<section className="panel">正在加载外部 Agent 连接器…</section>}>
+            <ExternalAgentConnector api={bridge() as AgentControlApi} />
+          </React.Suspense>
+        )}
+
+        {!shouldBlockForAgentInstall && !isLicenseRestrictedSection && (activeSection === 'qa' || (activeSection === 'settings' && settingsSubmenu === 'agent-qa' && agentSettingsTab === 'connection' && agentConnectionTab === 'qa')) && selectedStudent && (
           <section className="panel qa-panel">
             <div className="panel-heading">
               <div>
@@ -20163,7 +20392,7 @@ ${JSON.stringify(items, null, 2)}
             <section className="remote-config">
               <div className="mini-heading">
                 <strong>远控联系绑定</strong>
-                <span>这里只记录给平板端显示的联系入口；实际 QClaw 远控绑定仍在企业微信或 QQ 中完成。</span>
+                <span>这里只记录给平板端显示的联系入口；请在所选 Agent 支持的沟通渠道中完成实际绑定。</span>
               </div>
               <div className="form-grid compact-grid">
                 <label>
@@ -20207,16 +20436,16 @@ ${JSON.stringify(items, null, 2)}
                 />
               </label>
               <div className="notice muted">
-                绑定建议：先在 QClaw 中完成企微或 QQ 远控绑定；确认可收到“/咨询，我想咨询”后，把状态改为“已绑定”。
+                绑定建议：先在所选 Agent 支持的渠道中完成绑定；确认能收到并回复测试消息后，把状态改为“已绑定”。
                 {selectedStudent.remoteBoundAt ? ` 已绑定时间：${selectedStudent.remoteBoundAt}` : ''}
               </div>
               <div className="remote-wizard">
                 <strong>绑定向导</strong>
                 <ol>
-                  <li>在 QClaw 中打开该学生的「AI教育管家」Agent。</li>
+                  <li>在所选 Agent 中打开该学生的教育管家会话。</li>
                   <li>按实际远控方式选择企业微信、QQ 或两者，并填写联系人、群或客服备注。</li>
                   <li>在企业微信或 QQ 中发送测试消息：/咨询，我想咨询。</li>
-                  <li>确认 QClaw 能收到并回复后，将绑定状态改为“已绑定”。</li>
+                  <li>确认所选 Agent 能收到并回复后，将绑定状态改为“已绑定”。</li>
                 </ol>
                 <div className="actions compact-actions">
                   <button className="secondary" onClick={copyConsultCommand}>
@@ -20242,51 +20471,7 @@ ${JSON.stringify(items, null, 2)}
           </section>
         )}
 
-        {!shouldBlockForAgentInstall && !isLicenseRestrictedSection && showingAgentCapabilities && selectedStudent && (
-          <section className="panel qa-panel">
-            <div className="panel-heading">
-              <div>
-                <h2>{t('nav.agentCapabilities')}</h2>
-                <p>为当前学生管理外部 Agent 查询与草稿写入授权；每条写入都需单独预览审核。</p>
-              </div>
-              <Settings size={22} />
-            </div>
-            <section className="material-source-panel" aria-label="Agent 外部能力授权与写入审核">
-              <div className="mini-heading">
-                <strong>外部 Agent 能力与写入审核</strong>
-                <span>主机限定当前学生与单学生项目。只读授权和受控写入授权分开；每条写入仍需预览批准，正式报告与知识发布不会由此开放。</span>
-              </div>
-              <div className="actions compact-actions">
-                <button className="secondary compact" type="button" disabled={agentCapabilityManagement?.capabilities?.includes('archive:read')} onClick={() => changeAgentCapabilityAuthorization('read')}>授权只读查询</button>
-                <button className="secondary compact" type="button" disabled={agentCapabilityManagement?.capabilities?.includes('material:upload')} onClick={() => changeAgentCapabilityAuthorization('write')}>授权受控草稿写入</button>
-                <button className="secondary compact" type="button" onClick={() => refreshAgentCapabilityManagement()}>刷新待审核</button>
-                <button className="secondary compact" type="button" disabled={!agentCapabilityManagement?.capabilities?.length} onClick={() => changeAgentCapabilityAuthorization('revoke')}>撤销外部授权</button>
-                <span className="muted">{agentCapabilityManagement?.revoked ? '已撤销' : `当前能力 ${agentCapabilityManagement?.capabilities?.length ?? 0} 项`} · 待审核 {agentCapabilityManagement?.pending?.length ?? 0} 条</span>
-              </div>
-              {agentCapabilityMessage && <div className="notice">{agentCapabilityMessage}</div>}
-              {(agentCapabilityManagement?.pending || []).map((intent) => (
-                <div className="actions compact-actions" key={intent.id}>
-                  <span>{intent.name} · {intent.preview?.filename || intent.preview?.title || intent.preview?.reportId || `${intent.preview?.messageCount ?? 0} 条消息`} · {intent.projectId || selectedStudent.id} · {intent.status === 'recoverable' ? '执行待恢复' : '待审核'}</span>
-                  <button className="secondary compact" type="button" onClick={() => reviewAgentWrite(intent)}>查看预览</button>
-                </div>
-              ))}
-              {agentWriteReview && agentWriteReview.intent.studentId === selectedStudent.id && (
-                <div className="notice muted">
-                  <strong>写入目标：{agentWriteReview.intent.projectId || selectedStudent.name} · {agentWriteReview.intent.name}</strong>
-                  <div>摘要：{agentWriteReview.intent.inputDigest}</div>
-                  <textarea aria-label="Agent 写入预览内容" readOnly rows={12} value={JSON.stringify(agentWriteReview.reviewInput, null, 2)} style={{ width: '100%', resize: 'vertical' }} />
-                  <div className="actions compact-actions">
-                    {agentWriteReview.intent.status === 'pending_approval' && <button className="primary compact" type="button" onClick={() => decideAgentWrite('approve')}>批准本次写入</button>}
-                    {agentWriteReview.intent.status === 'pending_approval' && <button className="secondary compact" type="button" onClick={() => decideAgentWrite('reject')}>拒绝并清除</button>}
-                    <button className="secondary compact" type="button" onClick={() => setAgentWriteReview(null)}>关闭预览</button>
-                  </div>
-                </div>
-              )}
-            </section>
-          </section>
-        )}
-
-        {!shouldBlockForAgentInstall && !isLicenseRestrictedSection && (showingAgentMemory || activeSection === 'capture') && selectedStudent && (
+        {!shouldBlockForAgentInstall && !isLicenseRestrictedSection && showingAgentMemory && selectedStudent && (
           <section className="panel qa-panel">
             <div className="panel-heading">
               <div>
@@ -20310,20 +20495,13 @@ ${JSON.stringify(items, null, 2)}
                 <span>一次授权后，系统会自动探测并接入 Codex、QClaw、WorkBuddy、OpenClaw、Claude Code 和 Hermes。新会话可采集；已打开的 Codex、QClaw 会话在接入生效时，从授权后的后续轮次开始采集。不会扫描授权前历史、系统提示、密钥、其他聊天或教育管家任务执行上下文。</span>
               </div>
               <div className="actions compact-actions">
-                <label className={agentMemoryState?.settings?.automationEnabled ? 'task-automation-toggle' : 'task-automation-toggle manual'}>
-                  <input
-                    type="checkbox"
-                    checked={agentMemoryState?.settings?.automationEnabled === true}
-                    onChange={(event) => updateAgentMemoryAutomation(event.target.checked)}
-                  />
-                  <span>{agentMemoryState?.settings?.automationEnabled ? '已授权采集' : '尚未授权'}</span>
-                </label>
+                <button className="secondary compact" onClick={openAgentControl}>在 AI 接入与调度中心管理全局授权（{agentMemoryState?.settings?.automationEnabled ? '已授权' : '未授权'}）</button>
                 {agentMemoryState?.settings?.automationEnabled && !agentMemoryState?.captureTarget?.isCurrentStudent && (
                   <button className="primary compact" onClick={activateSelectedAgentMemoryCapture}>切换到{selectedStudent.name}</button>
                 )}
                 {agentMemoryState?.captureTarget?.isCurrentStudent && <span className="capture-target-badge">当前采集对象</span>}
                 <button className="secondary compact" onClick={() => refreshAgentMemoryState()}>刷新会话</button>
-                <button className="secondary compact" onClick={() => setActiveSection('conversation')}>管理全部对话资料</button>
+                <button className="secondary compact" onClick={() => openWorkspaceTab('collection', 'ai-conversation', 'conversation')}>管理全部对话资料</button>
                 <span className="muted">最近 {agentMemoryState?.summary?.total ?? 0} 个授权会话 · {agentMemoryState?.summary?.active ?? 0} 个采集中</span>
                 {(agentMemoryState?.summary?.empty ?? 0) > 0 && <button className="secondary compact" onClick={() => clearEmptyAgentSessions()}>清理空会话（{agentMemoryState?.summary?.empty}）</button>}
               </div>
@@ -20418,7 +20596,7 @@ ${JSON.stringify(items, null, 2)}
                 projects={conversationLinkedProjects} onDeliver={deliverCapturedConversation}
                 onManage={manageCapturedConversation} onClearEmpty={clearEmptyAgentSessions} />
             </section>}
-            {showingAgentMemory && <>
+            {showingAgentMemory && <details><summary>高级记忆文件管理：扫描、备份与合并</summary>
             <div className="form-grid compact-grid">
               <label>
                 来源 Agent 工具
@@ -20435,7 +20613,7 @@ ${JSON.stringify(items, null, 2)}
             </div>
             <label className="wide-field">
               粘贴来源 Memory
-              <textarea value={memorySourceText} onChange={(event) => setMemorySourceText(event.target.value)} placeholder="从 QClaw / Hohu / Marvis / OpenClaw 复制该学生 Memory 后粘贴到这里。" />
+              <textarea value={memorySourceText} onChange={(event) => setMemorySourceText(event.target.value)} placeholder="从所选 Agent 复制该学生 Memory 后粘贴到这里。" />
             </label>
             <div className="actions compact-actions">
               <button className="primary" onClick={saveMemorySource}>保存来源 Memory</button>
@@ -20449,12 +20627,12 @@ ${JSON.stringify(items, null, 2)}
             <div className="ai-scan-box">
               <div className="mini-heading">
                 <strong>AI 辅助扫描</strong>
-                <span>把“AI 扫描指令”复制到 QClaw / Marvis / OpenClaw / Hohu 执行，再把 JSON 结果粘贴回来。</span>
+                <span>把“AI 扫描指令”复制到所选 Agent 执行，再把 JSON 结果粘贴回来。</span>
               </div>
               <textarea
                 value={aiScanResultText}
                 onChange={(event) => setAiScanResultText(event.target.value)}
-                placeholder='粘贴 AI 返回的 JSON，例如：{"candidates":[{"path":"C:\\Users\\...\\.qclaw\\workspace-agent-xxx\\MEMORY.md","kind":"memory","tool":"qclaw","score":90,"reasons":["内容包含学生姓名"]}]}'
+                placeholder='粘贴 AI 返回的 JSON，例如：{"candidates":[{"path":"C:\\Users\\...\\.qclaw\\workspace-agent-xxx\\MEMORY.md","kind":"memory","tool":"workbuddy","score":90,"reasons":["内容包含学生姓名"]}]}'
               />
               <div className="actions compact-actions">
                 <button className="secondary" onClick={() => parseAiAgentScanResult('memory')}>导入 AI 扫描结果</button>
@@ -20505,12 +20683,11 @@ ${JSON.stringify(items, null, 2)}
             {sourceRegistryPanel}
             {agentScanMessage && showingAgentMemory && <div className="notice muted">{agentScanMessage}</div>}
             {agentCenterMessage && <div className="notice">{agentCenterMessage}</div>}
-            </>}
-            {activeSection === 'capture' && agentCenterMessage && <div className="notice">{agentCenterMessage}</div>}
+            </details>}
           </section>
         )}
 
-        {!shouldBlockForAgentInstall && !isLicenseRestrictedSection && (showingAgentMemory || activeSection === 'capture' || showingAgentCapabilities) && !selectedStudent && (
+        {!shouldBlockForAgentInstall && !isLicenseRestrictedSection && (showingAgentMemory || activeSection === 'capture') && !selectedStudent && (
           <section className="panel qa-panel">
             <div className="empty-state">
               请先新建或选择学生档案，再使用{activeSection === 'capture' ? t('nav.capture') : activeSection === 'agent-capabilities' ? t('nav.agentCapabilities') : t('nav.memory')}。
@@ -20569,7 +20746,7 @@ ${JSON.stringify(items, null, 2)}
               <textarea
                 value={aiScanResultText}
                 onChange={(event) => setAiScanResultText(event.target.value)}
-                placeholder='粘贴 AI 返回的 JSON，例如：{"candidates":[{"path":"C:\\Users\\...\\.qclaw\\workspace-agent-xxx\\Soul.md","kind":"soul","tool":"qclaw","score":90,"reasons":["内容包含 AGENT.md 路径"]}]}'
+                placeholder='粘贴 AI 返回的 JSON，例如：{"candidates":[{"path":"C:\\Users\\...\\.qclaw\\workspace-agent-xxx\\Soul.md","kind":"soul","tool":"workbuddy","score":90,"reasons":["内容包含 AGENT.md 路径"]}]}'
               />
               <div className="actions compact-actions">
                 <button className="secondary" onClick={() => parseAiAgentScanResult('soul')}>导入 AI 扫描结果</button>
@@ -20788,7 +20965,7 @@ ${JSON.stringify(items, null, 2)}
           <section className="panel qa-panel">
             <div className="panel-heading">
               <div>
-                <h2>对话资料箱</h2>
+                <h2>对话分享资料箱</h2>
                 <p>导入后自动整理主题；勾选资料并确认一次，即可投递到当前学生或关联项目的原始资料库。</p>
               </div>
               <MessageCircle size={22} />
@@ -20854,7 +21031,7 @@ ${JSON.stringify(items, null, 2)}
                 <input
                   value={conversationShareUrl}
                   onChange={(event) => setConversationShareUrl(event.target.value)}
-                  placeholder="粘贴 ChatGPT、QClaw、Codex 等对话分享链接"
+                  placeholder="粘贴所选 Agent 的对话分享链接"
                   aria-label="对话分享链接"
                 />
                 <button className="primary" disabled={conversationShareBusy} onClick={() => void importConversationFromShareUrl()}>
@@ -21099,14 +21276,14 @@ ${JSON.stringify(items, null, 2)}
               </div>
               {(conversationCenter?.index?.imports ?? []).slice(0, 6).map((item) => (
                 <div className="source-row" key={item.path}>
-                  <strong>导入 · {getAgentToolProfile(item.tool || 'qclaw').name}</strong>
+                  <strong>导入 · {item.tool ? agentToolProfiles[item.tool]?.name || '未标注 Agent' : '未标注 Agent'}</strong>
                   <span>{item.size ? formatFileSize(item.size) : ''}</span>
                   <small>{item.importedAt ? new Date(item.importedAt).toLocaleString('zh-CN') : ''} {item.path}</small>
                 </div>
               ))}
               {(conversationCenter?.index?.extracts ?? []).slice(0, 6).map((item) => (
                 <div className="source-row" key={item.path}>
-                  <strong>提取 · {getAgentToolProfile(item.tool || 'qclaw').name}</strong>
+                  <strong>提取 · {item.tool ? agentToolProfiles[item.tool]?.name || '未标注 Agent' : '未标注 Agent'}</strong>
                   <span>记忆 {item.memoryCount ?? 0} / 人设 {item.soulCount ?? 0} / 问答 {item.qaCount ?? 0}</span>
                   <small>{item.importedAt ? new Date(item.importedAt).toLocaleString('zh-CN') : ''} {item.path}</small>
                 </div>
@@ -21117,7 +21294,7 @@ ${JSON.stringify(items, null, 2)}
           </section>
         )}
 
-        {!shouldBlockForAgentInstall && !isLicenseRestrictedSection && (activeSection === 'qa' || (activeSection === 'settings' && settingsSubmenu === 'agent-qa' && agentSettingsTab === 'qa')) && !selectedStudent && (
+        {!shouldBlockForAgentInstall && !isLicenseRestrictedSection && (activeSection === 'qa' || (activeSection === 'settings' && settingsSubmenu === 'agent-qa' && agentSettingsTab === 'connection' && agentConnectionTab === 'qa')) && !selectedStudent && (
           <section className="panel qa-panel">
             <div className="empty-state">请先新建或选择学生档案，再使用{activeSection === 'qa' ? '知识查询' : 'Agent问答设置'}。</div>
           </section>
@@ -21128,22 +21305,25 @@ ${JSON.stringify(items, null, 2)}
             <div className="panel-heading">
               <div>
                 <h2>{isWindows ? '资料整理' : '任务中心'}</h2>
+                <button className="secondary compact" type="button" onClick={openAgentControl}>AI 接入与调度中心</button>
                 <p>统一管理学生与学习项目的自动整理、定时任务、事件触发任务、Agent执行和人工审核。</p>
               </div>
               <ListChecks size={22} />
             </div>
+            {taskCenter.storageFault && <div className="notice error" role="alert">任务存储故障，已暂停新任务派发：{taskCenter.storageFault.message}。请检查磁盘及目录权限，恢复后重启主机；不要删除账本或反复重试。</div>}
             <div className="task-center-summary" aria-label="任务中心概览">
               {[
                 { id: 'all' as const, label: '全部任务', value: taskCenter.summary.total, icon: <ListChecks size={18} /> },
                 { id: 'actionable' as const, label: '待处理', value: taskCenter.summary.actionable, icon: <Zap size={18} /> },
-                { id: 'running' as const, label: '执行中/等待', value: taskCenter.summary.running, icon: <RefreshCw size={18} /> },
+                { id: 'running' as const, label: '进行中', value: taskCenter.summary.running, icon: <RefreshCw size={18} /> },
                 { id: 'scheduled' as const, label: '已计划', value: taskCenter.summary.scheduled, icon: <Clock3 size={18} /> },
                 { id: 'completed' as const, label: '已完成', value: taskCenter.summary.completed, icon: <CheckCircle2 size={18} /> },
+                { id: 'archived' as const, label: '已归档', value: taskCenter.summary.archived || 0, icon: <Archive size={18} /> },
               ].map((item) => (
                 <button className={taskCenterStatusFilter === item.id ? 'task-center-stat active' : 'task-center-stat'} key={item.id} onClick={() => setTaskCenterStatusFilter(item.id)}>
                   {item.icon}
                   <span>{item.label}</span>
-                  <strong>{item.value}</strong>
+                  <strong>{taskCenter.ready === false ? '…' : item.value}</strong>
                   <ChevronRight size={16} />
                 </button>
               ))}
@@ -21151,7 +21331,7 @@ ${JSON.stringify(items, null, 2)}
             <section className="material-source-panel task-center-board">
               <div className="mini-heading">
                 <strong>统一任务队列</strong>
-                <span>协议 {taskCenter.protocolVersion || '1.0'}；支持 WorkBuddy、Codex、OpenClaw 自动执行，兼容 QClaw 收件箱和人工任务包，所有结果统一校验。</span>
+                <span>支持 Codex、OpenClaw 自动执行，WorkBuddy 桌面预填，其他 Agent 使用通用任务包；结果统一回收校验。点击 Agent 卡片或筛选执行器，可切换对应收件箱与结果目录。</span>
               </div>
               <div className="task-center-toolbar">
                 <label className={taskCenter.automationEnabled === false ? 'task-automation-toggle manual' : 'task-automation-toggle'} title="关闭后仅停止后台自动扫描与定时调度；主动点击处理时仍会即时检测并调用已绑定 Agent。">
@@ -21159,8 +21339,9 @@ ${JSON.stringify(items, null, 2)}
                   <span>{taskCenter.automationEnabled === false ? '仅手动启动' : '自动运行'}</span>
                 </label>
                 <button className="secondary compact" onClick={() => openTaskCenterFolder('root')}><FolderOpen size={15} />任务仓库</button>
-                <button className="secondary compact" onClick={() => openTaskCenterFolder('qclaw-inbox')}><Inbox size={15} />QClaw 收件箱</button>
-                <button className="secondary compact" onClick={syncQClawResultsFromCenter}><RefreshCw size={15} />同步 QClaw 结果</button>
+                <button className="secondary compact" onClick={() => openTaskCenterFolder('agent-inbox')}><Inbox size={15} />{taskChannelLabel} 收件箱</button>
+                <button className="secondary compact" onClick={syncAgentResultsFromCenter}><RefreshCw size={15} />同步{taskChannelLabel}结果</button>
+                <button className="secondary compact" onClick={() => openTaskCenterFolder('agent-results')}><FolderOpen size={15} />{taskChannelLabel} 结果目录</button>
                 <button className="secondary compact" onClick={() => openTaskCenterFolder('manual-outbox')}><Clipboard size={15} />人工任务包</button>
                 <button className="secondary compact" onClick={() => openTaskCenterFolder('events')}><FileText size={15} />审计日志</button>
               </div>
@@ -21176,10 +21357,11 @@ ${JSON.stringify(items, null, 2)}
                 <label>状态
                   <select value={taskCenterStatusFilter} onChange={(event) => setTaskCenterStatusFilter(event.target.value as typeof taskCenterStatusFilter)}>
                     <option value="all">全部</option>
-                    <option value="actionable">待处理/阻塞</option>
-                    <option value="running">执行中/等待结果</option>
+                    <option value="actionable">需要处理／待整理</option>
+                    <option value="running">进行中</option>
                     <option value="scheduled">已计划</option>
                     <option value="completed">已完成</option>
+                    <option value="archived">已归档</option>
                   </select>
                 </label>
                 <label>来源
@@ -21199,21 +21381,67 @@ ${JSON.stringify(items, null, 2)}
                   <RefreshCw size={16} />{taskCenterRefreshing ? '刷新中…' : '刷新任务'}
                 </button>
               </div>
+              <div className="task-center-toolbar" aria-label="批量任务治理">
+                <label className="checkbox-line">
+                  <input type="checkbox" checked={taskBatchAllFiltered || (displayedTaskCenterItems.length > 0 && displayedTaskCenterItems.every((task) => selectedTaskBatchIdSet.has(task.id)))}
+                    onChange={(event) => {
+                      setTaskBatchAllFiltered(false);
+                      setTaskBatchFeedback(null);
+                      setSelectedTaskBatchIds((current) => event.target.checked
+                        ? [...new Set([...current, ...displayedTaskCenterItems.map((task) => task.id)])]
+                        : current.filter((id) => !displayedTaskCenterItems.some((task) => task.id === id)));
+                    }} />
+                  <span>{taskBatchAllFiltered ? `已选择当前筛选全部 ${taskBatchSelectionCount} 项` : `选择本页（已选 ${selectedTaskBatchIds.length}）`}</span>
+                </label>
+                {!taskBatchAllFiltered && Number(taskCenter.filteredTotal || 0) > displayedTaskCenterItems.length && (
+                  <button className="secondary compact" disabled={taskBatchBusy} onClick={() => {
+                    setTaskBatchAllFiltered(true);
+                    setSelectedTaskBatchIds([]);
+                    setTaskBatchFeedback(null);
+                  }}>选择当前筛选全部 {taskCenter.filteredTotal} 项</button>
+                )}
+                <button className="secondary compact" disabled={!taskBatchSelectionCount || taskBatchBusy} onClick={() => void runTaskGovernanceBatch('cancel')}>批量取消</button>
+                <button className="secondary compact" disabled={!taskBatchSelectionCount || taskBatchBusy} onClick={() => void runTaskGovernanceBatch('archive')}><Archive size={15} />批量归档</button>
+                {taskCenterStatusFilter === 'archived' && <button className="secondary compact" disabled={!taskBatchSelectionCount || taskBatchBusy} onClick={() => void runTaskGovernanceBatch('restore')}>恢复为已取消</button>}
+                <button className="secondary compact" disabled={!taskBatchSelectionCount || taskBatchBusy} onClick={() => void runTaskGovernanceBatch('delete')}><Trash2 size={15} />删除可安全清理的任务</button>
+                {taskBatchSelectionCount > 0 && <button className="secondary compact" disabled={taskBatchBusy} onClick={() => {
+                  setSelectedTaskBatchIds([]);
+                  setTaskBatchAllFiltered(false);
+                  setTaskBatchFeedback(null);
+                }}>清除选择</button>}
+                <small>从未启动、已结束或已归档的任务可直接删除；执行中、等待结果、审核中或结果未知的任务自动跳过。</small>
+                {taskBatchFeedback && <div className={`notice task-batch-feedback ${taskBatchFeedback.tone === 'error' ? 'error' : taskBatchFeedback.tone === 'success' ? 'success' : 'muted'}`} role="status" aria-live="polite">{taskBatchFeedback.message}</div>}
+              </div>
               <div className="task-center-list">
                 {displayedTaskCenterItems.map((task) => {
-                  const statusLabel = task.status === 'reviewing' && task.completionPolicy === 'auto_after_validation'
+                  const workBuddyAwaitingSend = task.status === 'waiting_result'
+                    && task.adapterId === 'workbuddy'
+                    && task.executionMode === 'desktop_handoff'
+                    && task.result?.handoffState === 'awaiting_user_send';
+                  const statusLabel = task.phaseLabel || (workBuddyAwaitingSend
+                    ? '待在 WorkBuddy 发送'
+                    : task.status === 'reviewing' && task.completionPolicy === 'auto_after_validation'
                     ? '自动校验中'
-                    : ({ draft: '草稿', pending: '待处理', approved: '已批准', queued: '已计划', running: '执行中', waiting_result: '等待结果', reviewing: '待审核', succeeded: '已完成', failed: '失败', blocked: '阻塞', cancelled: '已取消', timed_out: '已超时' } as Record<string, string>)[task.status] || task.status;
+                    : ({ draft: '草稿', pending: '待处理', approved: '已批准', queued: '已计划', running: '执行中', waiting_result: '等待结果', reviewing: '待审核', succeeded: '已完成', failed: '失败', blocked: '阻塞', cancelled: '已取消', timed_out: '已超时', archived: '已归档' } as Record<string, string>)[task.status] || task.status);
                   const triggerLabel = ({ schedule: '定时', event: '事件触发', manual: '手动' } as Record<string, string>)[task.trigger] || task.trigger;
                   const modeLabel = ({ direct: '直接执行', adapter: '适配器执行', manual: '人工执行', review: '人工审核' } as Record<string, string>)[task.executionMode] || task.executionMode;
                   const executorLabel = task.executor === 'human-review' ? '人工审核' : agentToolProfiles[task.executor as AgentToolId]?.name || task.executor;
                   return (
                     <article className="task-center-item" key={task.id}>
                       <div className="task-center-item-main">
+                        <input aria-label={`选择任务 ${task.title}`} type="checkbox" checked={taskBatchAllFiltered || selectedTaskBatchIdSet.has(task.id)} onChange={(event) => {
+                          setTaskBatchFeedback(null);
+                          if (taskBatchAllFiltered) {
+                            setTaskBatchAllFiltered(false);
+                            setSelectedTaskBatchIds(displayedTaskCenterItems.filter((item) => item.id !== task.id).map((item) => item.id));
+                            return;
+                          }
+                          setSelectedTaskBatchIds((current) => event.target.checked ? [...new Set([...current, task.id])] : current.filter((id) => id !== task.id));
+                        }} />
                         <span className={`task-center-status ${task.status}`}>{statusLabel}</span>
                         <div>
                           <strong>{task.title}</strong>
-                          <small>{task.detail}</small>
+                          <small>{task.nextAction || task.detail}</small>
                         </div>
                       </div>
                       <div className="task-center-meta">
@@ -21232,19 +21460,28 @@ ${JSON.stringify(items, null, 2)}
                     </article>
                   );
                 })}
-                {visibleTaskCenterItems.length === 0 && <div className="empty-state compact">当前筛选条件下没有任务。</div>}
+                {visibleTaskCenterItems.length === 0 && <div className="empty-state compact">{taskCenter.ready === false || taskCenterRefreshing ? '任务快照正在加载…' : '当前筛选条件下没有任务。'}</div>}
+                {taskCenter.page && <div className="task-center-row-actions">
+                  <button className="secondary compact" disabled={taskCenterRefreshing || taskCenter.page <= 1} onClick={() => setTaskCenterPage(Math.max(1, (taskCenter.page || 1) - 1))}>上一页</button>
+                  <span>第 {taskCenter.page} / {taskCenter.pageCount || 1} 页 · 共 {taskCenter.filteredTotal || 0} 项</span>
+                  <button className="secondary compact" disabled={taskCenterRefreshing || taskCenter.page >= (taskCenter.pageCount || 1)} onClick={() => setTaskCenterPage((taskCenter.page || 1) + 1)}>下一页</button>
+                </div>}
                 {visibleTaskCenterItems.length > displayedTaskCenterItems.length && (
                   <button className="secondary compact" onClick={() => setTaskCenterDisplayLimit((current) => current + 30)}>
                     再显示 30 项（尚有 {visibleTaskCenterItems.length - displayedTaskCenterItems.length} 项）
                   </button>
                 )}
               </div>
+              {selectedTaskId && !selectedTask && <div className="notice muted">{taskDetailError || '正在读取任务详情…'}</div>}
               {selectedTask && (
                 <section className="task-detail-panel" ref={taskDetailPanelRef} tabIndex={-1}>
                   <div className="mini-heading">
                     <strong>{selectedTask.title}</strong>
-                    <span>{selectedTask.id} · 协议 {selectedTask.protocolVersion || '1.0'}</span>
+                    <span>{selectedTask.phaseLabel || selectedTask.status}</span>
                   </div>
+                  <details className="task-detail-data">
+                  <summary>诊断详情</summary>
+                  <p>{selectedTask.id} · 协议 {selectedTask.protocolVersion || '1.0'}</p>
                   <div className="task-detail-grid">
                     <div><small>状态</small><strong>{selectedTask.status}</strong></div>
                     <div><small>风险</small><strong>{selectedTask.riskLevel || 'low'}</strong></div>
@@ -21258,11 +21495,20 @@ ${JSON.stringify(items, null, 2)}
                      <div><small>执行批次</small><strong>{selectedTask.executionId || '-'}</strong></div>
                    </div>
                   {selectedTask.routeDecision && <div className="notice muted">路由：{selectedTask.routeDecision.selectedAdapter} · {selectedTask.routeDecision.reason}</div>}
+                  {['workbuddy', 'codex'].includes(String(selectedTask.adapterId || selectedTask.executor || '')) && <p className="notice muted">无需单独检测 Agent。启动或重试任务时，系统会先用不含学生资料的合成请求自动完成安全校验；通过后才发送本任务资料。</p>}
+                  </details>
                   {taskOperationFeedback?.taskId === selectedTask.id && (
-                    <div className={taskOperationFeedback.tone === 'error' ? 'notice error' : taskOperationFeedback.tone === 'success' ? 'notice success' : 'notice muted'} role="status" aria-live="polite">
+                    <div ref={taskImportFeedbackRef} className={taskOperationFeedback.tone === 'error' ? 'notice error' : taskOperationFeedback.tone === 'success' ? 'notice success' : 'notice muted'} role="status" aria-live="polite">
                       {taskOperationFeedback.message}
                     </div>
                   )}
+                  {selectedTask.resolution && <div className="notice muted"><strong>{selectedTask.resolution.title}</strong><p>{selectedTask.resolution.instruction}</p><button className="secondary compact" onClick={() => copyText(selectedTask.resolution!.instruction)}>复制处置说明</button>
+                    {selectedTask.resolution.kind === 'unknown' && selectedTask.status === 'cancelled' && <button className="secondary compact" onClick={async () => {
+                      if (!window.confirm('请先在原 Agent 中核对：此任务尚未发送，或确实已经停止。\n\n只有核对完成才点击确定。系统将记录您的确认，不代表自动验证了远端状态，也不会立即重新执行。')) return;
+                      try { applyTaskOperationResult(await bridge()?.confirmTaskExternalStopped?.(selectedTask.id, selectedTask.executionId || ''), '已记录核对结果。', selectedTask); }
+                      catch { setTaskOperationFeedback({ taskId: selectedTask.id, tone: 'error', message: '核对记录未保存，请重试。' }); }
+                    }}>我已核对外部未发送或已停止</button>}
+                  </div>}
                   {selectedTask.routeDecision?.candidates && (
                     <div className="task-route-candidates">
                       {selectedTask.routeDecision.candidates.map((candidate) => (
@@ -21270,12 +21516,23 @@ ${JSON.stringify(items, null, 2)}
                       ))}
                     </div>
                   )}
+                   {selectedTask.status === 'waiting_result' && selectedTask.adapterId === 'workbuddy' && selectedTask.executionMode === 'desktop_handoff' && selectedTask.result?.handoffState === 'awaiting_user_send' && (
+                     <div className="notice muted">已请求桌面交接，但尚未确认输入框内容、发送或执行。请检查 WorkBuddy；看不到内容时可复制本次指令。</div>
+                   )}
+                   {selectedTask.awaitingSend && <div className="task-center-row-actions">
+                     {['open', 'copy'].map(action => <button key={action} className="secondary compact" onClick={async () => {
+                       try {
+                         const raw = await bridge()?.reopenTaskHandoff?.(selectedTask.id, selectedTask.executionId || '', action);
+                         if (raw) applyTaskOperationResult(raw, '交接请求已处理。', selectedTask);
+                       } catch (error) { setScheduleMessage(`交接失败：${String(error)}`); }
+                     }}>{action === 'open' ? '重新打开原任务' : '复制本次指令'}</button>)}
+                   </div>}
                    {selectedTask.error?.message && <div className="notice error">{selectedTask.error.code || 'ERROR'}：{selectedTask.error.message}</div>}
                    {selectedTask.result?.validation && <div className={selectedTask.result.validation.valid ? 'notice success' : 'notice error'}>{selectedTask.result.validation.message || '结果校验已完成。'}</div>}
-                   <div className={selectedTask.result ? 'task-result-summary has-result' : 'task-result-summary'}>
+                   <div className={selectedTask.hasResult ? 'task-result-summary has-result' : 'task-result-summary'}>
                      <div>
-                       <small>Agent 反馈结果</small>
-                       <strong>{selectedTask.result?.summary || selectedTask.result?.message || '尚未收到 Agent 反馈'}</strong>
+                       <small>{selectedTask.awaitingSend ? '交接状态' : 'Agent 反馈结果'}</small>
+                       <strong>{selectedTask.awaitingSend ? selectedTask.nextAction : selectedTask.result?.summary || selectedTask.result?.message || '尚未收到 Agent 反馈'}</strong>
                        {selectedTask.result?.feedback && (
                          <span>
                            行动反馈：{({ completed: '已完成', partial: '部分完成', skipped: '已跳过' } as Record<string, string>)[selectedTask.result.feedback.status || ''] || selectedTask.result.feedback.status || '已提交'}
@@ -21285,7 +21542,7 @@ ${JSON.stringify(items, null, 2)}
                        )}
                        {selectedTask.result?.completedAt && <span>结果时间：{String(selectedTask.result.completedAt)}</span>}
                      </div>
-                     {selectedTask.result && <button className="secondary compact" onClick={() => openTaskResultFromCenter(selectedTask)}><ExternalLink size={15} />打开结果文件</button>}
+                     {selectedTask.hasResult && <button className="secondary compact" onClick={() => openTaskResultFromCenter(selectedTask)}><ExternalLink size={15} />打开结果文件</button>}
                    </div>
                    <details className="task-detail-data">
                      <summary>查看任务输入、预期输出与权限</summary>
@@ -21421,6 +21678,9 @@ ${JSON.stringify(items, null, 2)}
                           {Object.values(taskCenter.capabilities || {}).filter((adapter) => !adapter.hidden || selectedTask.requestedExecutor === adapter.id).map((adapter) => <option key={adapter.id} value={adapter.id}>{adapter.label}{adapter.available && adapter.authorized !== false ? '' : '（不可用或未授权，将降级）'}</option>)}
                         </select>
                       </label>
+                      {selectedTask.status === 'waiting_result' && selectedTask.executionId?.startsWith('handoff-select-') && <AgentHandoffChoice
+                        api={bridge() as AgentControlApi} taskId={selectedTask.id} refresh={() => refreshTaskCenter()}
+                        openTool={id => getAgentToolAdapter(id as AgentToolId).open(openExternal)} />}
                       {['waiting_result', 'running'].includes(selectedTask.status) && (
                         <label>粘贴 Agent 结果
                           <textarea value={taskResultPasteText} onChange={(event) => setTaskResultPasteText(event.target.value)} placeholder="粘贴 Agent 返回的 JSON 或文字结果。系统仍会校验当前执行批次、实际产物和输出结构。" />
@@ -21433,10 +21693,15 @@ ${JSON.stringify(items, null, 2)}
                         {selectedTask.status === 'reviewing' && selectedTaskAutoValidated && <span className="notice muted">系统正在校验并自动发布，无需人工操作。</span>}
                         {selectedTask.status === 'reviewing' && !selectedTaskAutoValidated && <button className="workflow-action next" onClick={() => approveTaskFromCenter(selectedTask, 'approved')}><CheckCircle2 size={16} />确认完成</button>}
                         {selectedTask.status === 'reviewing' && !selectedTaskAutoValidated && <button className="workflow-action optional" onClick={() => approveTaskFromCenter(selectedTask, 'rejected', '内容需要修改。')}><RefreshCw size={16} />需要修改</button>}
-                        {['waiting_result', 'running'].includes(selectedTask.status) && <button className={taskResultPasteText.trim() ? 'workflow-action next' : 'workflow-action blocked'} onClick={() => importTaskResultTextFromCenter(selectedTask)} disabled={!taskResultPasteText.trim()}><Clipboard size={16} />下一步：导入粘贴结果</button>}
-                        {['waiting_result', 'running'].includes(selectedTask.status) && <button className="secondary" onClick={() => importTaskResultFromCenter(selectedTask)}><FileDown size={16} />从文件导入</button>}
+                        {['waiting_result', 'running'].includes(selectedTask.status) && <button className={taskResultPasteText.trim() ? 'workflow-action next' : 'workflow-action blocked'} onClick={() => importTaskResultTextFromCenter(selectedTask)} disabled={!taskResultPasteText.trim() || Boolean(taskImportBusyId)}><Clipboard size={16} />{taskImportBusyId === selectedTask.id ? '正在校验，请稍候…' : '下一步：导入粘贴结果'}</button>}
+                        {['waiting_result', 'running'].includes(selectedTask.status) && <button className="secondary" disabled={Boolean(taskImportBusyId)} onClick={() => importTaskResultFromCenter(selectedTask)}><FileDown size={16} />从文件导入</button>}
                         {['failed', 'blocked', 'timed_out', 'cancelled'].includes(selectedTask.status) && <button className="workflow-action next" onClick={() => retryTaskFromCenter(selectedTask)}><RefreshCw size={16} />重新执行</button>}
                         {!['succeeded', 'cancelled'].includes(selectedTask.status) && <button className="workflow-action optional" onClick={() => cancelTaskFromCenter(selectedTask)}><X size={16} />忽略本次</button>}
+                        {(['succeeded', 'failed', 'blocked', 'cancelled', 'timed_out'].includes(selectedTask.status)
+                          || (selectedTask.status === 'pending' && selectedTask.kind === 'collaboration_assignment'
+                            && (selectedTask.adapterId || selectedTask.executor || 'manual') === 'manual'
+                            && Number(selectedTask.attempt || 0) === 0 && !selectedTask.executionId && !selectedTask.result))
+                          && <button className="danger" onClick={() => deleteTaskHistoryFromCenter(selectedTask)}><Trash2 size={16} />{selectedTask.status === 'pending' ? '删除未开始任务' : '删除历史任务'}</button>}
                         {selectedTask.kind === 'weekly_action' && selectedTask.status === 'succeeded' && <button className="workflow-action next" onClick={() => submitDailyFeedbackFromCenter(selectedTask, 'completed')}><CheckCircle2 size={16} />本周已完成</button>}
                         {selectedTask.kind === 'weekly_action' && selectedTask.status === 'succeeded' && <button className="workflow-action optional" onClick={() => submitDailyFeedbackFromCenter(selectedTask, 'partial')}>部分完成</button>}
                         {selectedTask.kind === 'weekly_action' && selectedTask.status === 'succeeded' && <button className="workflow-action optional" onClick={() => submitDailyFeedbackFromCenter(selectedTask, 'skipped')}>本周跳过</button>}
@@ -21469,7 +21734,7 @@ ${JSON.stringify(items, null, 2)}
               <span>普通情况下只需开始一次，提交、等待和结果同步由系统完成。</span>
             </div>
             <div className="task-list">
-              {students.map((student) => (
+              {students.filter((student) => student.activityStatus !== 'inactive').map((student) => (
                 <div className="task-row" key={student.id}>
                   <span>{student.name}</span>
                   <strong>{student.digestTime}</strong>
@@ -21492,7 +21757,7 @@ ${JSON.stringify(items, null, 2)}
               </div>
             )}
             <div className="task-list">
-              {students.map((student) => {
+              {students.filter((student) => student.activityStatus !== 'inactive').map((student) => {
                 const paths = pathsForStudent(student);
                 return (
                   <div className="task-row" key={`${student.id}-lint`}>
@@ -22259,7 +22524,7 @@ ${JSON.stringify(items, null, 2)}
             </div>}
             {(!isWindows || settingsSubmenu === 'basic') && <div className="notice muted">
               {isWindows
-                ? 'QClaw、Marvis、Hohu、OpenClaw、ChatGPT / Codex 和 Claude Code 将使用同一个本机学生知识库目录。系统会选择可用磁盘；无 D 盘时自动使用 Windows 文档\\学生资料。'
+                ? 'WorkBuddy、Codex、OpenClaw 等所选 Agent 可使用同一个本机学生知识库目录。系统会选择可用磁盘；无 D 盘时自动使用 Windows 文档\\学生资料。'
                 : String(compatibility?.message ?? '在 Android APK 中可查看完整兼容性检测结果。')}
             </div>}
             {isWindows && settingsSubmenu === 'basic' && (

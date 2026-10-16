@@ -1,5 +1,5 @@
 const path = require('node:path');
-const { appendLearningEvents, loadTaxonomy, normalizeLearningEvent } = require('./learning-analytics.cjs');
+const { appendLearningEvents, collectLearningEvents, loadTaxonomy, normalizeLearningEvent } = require('./learning-analytics.cjs');
 
 function insideRoot(root, file) {
   const relative = path.relative(path.resolve(root), path.resolve(file));
@@ -94,4 +94,67 @@ function supplementCompletedDigestLearningEvents(input = {}) {
   };
 }
 
-module.exports = { supplementCompletedDigestLearningEvents };
+function reconcileCompletedDigestLearningReceipts(input = {}) {
+  const studentId = String(input.studentId || '');
+  const batch = input.batch;
+  const files = Array.isArray(batch?.files) ? batch.files : [];
+  if (!studentId || batch?.scope?.type !== 'student' || String(batch.scope.id) !== studentId
+    || batch.status !== 'completed' || !files.length) {
+    return { ok: false, code: 'completed_batch_required', checkedFingerprints: [], message: '仅支持当前学生的已完成资料批次。' };
+  }
+  const checkedBefore = new Set((Array.isArray(input.checkedFingerprints) ? input.checkedFingerprints : []).map(String));
+  const candidates = (Array.isArray(input.candidates) ? input.candidates : [])
+    .filter((candidate) => candidate && String(candidate.fingerprint || '') && !checkedBefore.has(String(candidate.fingerprint)));
+  if (!candidates.length) return { ok: true, skipped: true, checkedFingerprints: [], accepted: 0, rejected: [], message: '没有新的已完成批次回执需要重对账。' };
+
+  const checkedFingerprints = [];
+  const receiptRejections = [];
+  const events = [];
+  for (const candidate of candidates) {
+    const fingerprint = String(candidate.fingerprint);
+    checkedFingerprints.push(fingerprint);
+    const payload = candidate.payload;
+    const receiptStudentId = String(payload?.studentId || payload?.scope?.id || payload?.data?.studentId || '');
+    const receiptBatchId = String(payload?.digestBatchId || payload?.batchId || payload?.data?.digestBatchId || payload?.data?.batchId || '');
+    const receiptStatus = String(payload?.status || payload?.data?.status || '').toLowerCase();
+    if (receiptStudentId !== studentId || receiptBatchId !== String(batch.batchId)
+      || (receiptStatus && receiptStatus !== 'completed')) {
+      receiptRejections.push({ fingerprint, code: 'receipt_scope_mismatch' });
+      continue;
+    }
+    events.push(...collectLearningEvents(payload));
+  }
+  if (!events.length) {
+    return {
+      ok: true,
+      skipped: true,
+      batchId: String(batch.batchId),
+      checkedFingerprints,
+      receiptCount: candidates.length,
+      accepted: 0,
+      rejected: [],
+      receiptRejections,
+      message: '新回执不含学习事件，已记录检查指纹。',
+    };
+  }
+
+  const receipt = {
+    status: 'completed',
+    studentId,
+    digestBatchId: String(batch.batchId),
+    processed: files.map((file) => String(file.materialId || '')).filter(Boolean),
+    learningEvents: events,
+  };
+  const result = supplementCompletedDigestLearningEvents({ ...input, receipt });
+  return {
+    ...result,
+    checkedFingerprints,
+    receiptCount: candidates.length,
+    receiptRejections,
+    message: result.ok
+      ? `迟到回执重对账完成：检查 ${candidates.length} 份新回执，新增入账 ${result.accepted || 0} 条学习事件。`
+      : result.message,
+  };
+}
+
+module.exports = { reconcileCompletedDigestLearningReceipts, supplementCompletedDigestLearningEvents };

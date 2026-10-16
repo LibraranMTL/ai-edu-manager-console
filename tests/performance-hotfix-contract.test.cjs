@@ -7,14 +7,16 @@ const root = path.resolve(__dirname, '..');
 const main = fs.readFileSync(path.join(root, 'electron', 'main.cjs'), 'utf8');
 const renderer = fs.readFileSync(path.join(root, 'src', 'main.tsx'), 'utf8');
 
-test('idle QClaw synchronization does not rewrite the task store', () => {
-  const syncBody = main.match(/function syncQClawTaskResults\(\) \{([\s\S]*?)\n\}\n\nfunction/)?.[1] || '';
-  assert.match(syncBody, /if \(imported \|\| claimed \|\| rejected\) writeTaskStore\(store\);/);
+test('idle Agent synchronization does not rewrite the task store', () => {
+  const syncBody = main.match(/function consumeAgentTaskResults\([^)]*\) \{([\s\S]*?)\n\}/)?.[1] || '';
+  assert.match(syncBody, /if \(imported \|\| claimed \|\| rejected\) await taskStoreGuard.flush\(\);/);
+  assert.ok(syncBody.indexOf('await writeTaskStoreDurably(store)') < syncBody.indexOf('await archiveAgentPayload'));
 });
 
 test('manual submission persists without referring to QClaw synchronization counters', () => {
-  const manualBody = main.match(/function submitManualTask\([^)]*\) \{([\s\S]*?)\n\}\n\nfunction/)?.[1] || '';
-  assert.match(manualBody, /writeTaskStore\(store\);/);
+  const manualBody = main.match(/function submitManualTask\([^)]*\) \{([\s\S]*?)\n\}/)?.[1] || '';
+  assert.match(manualBody, /await writeTaskStoreDurably\(store\)/);
+  assert.ok(manualBody.indexOf('await writeTaskStoreDurably') < manualBody.indexOf('writeTaskPacket'));
   assert.doesNotMatch(manualBody, /imported|claimed|rejected/);
 });
 

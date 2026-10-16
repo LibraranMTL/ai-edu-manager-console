@@ -137,7 +137,8 @@ function createAgentMemoryStore(options = {}) {
   }
 
   function getSettings(studentId) {
-    return normalizeSettings(readJson(settingsPath(studentId), {}));
+    const saved = normalizeSettings(readJson(settingsPath(studentId), {}));
+    return typeof options.resolveSettings === 'function' ? normalizeSettings(options.resolveSettings(studentId, saved)) : saved;
   }
 
   function updateSettings(studentId, patch = {}) {
@@ -409,6 +410,7 @@ function createAgentMemoryStore(options = {}) {
       generatedAt: clock(),
       sessions: relevant.map((session) => ({
         sessionId: session.sessionId,
+        projectId: session.projectId || '',
         agentId: session.agentId,
         taskId: session.taskId,
         status: session.status,

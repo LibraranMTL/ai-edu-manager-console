@@ -42,6 +42,7 @@ function createCourseCatalogStore(options = {}) {
   const platformAssetsDir = path.join(root, 'platform-assets');
   const platformPackagesDir = path.join(root, 'platform-packages');
   const platformPackageIndexPath = path.join(platformPackagesDir, 'index.json');
+  const publications = options.enablePublications ? require('./course-publications.cjs').createCoursePublications(path.join(root, 'publications')) : null;
   const publicKeyPath = existingPath(resourceRoots.map((item) => path.join(item, 'course-catalog', 'public-key.pem')));
   const packagedCatalogPath = existingPath(resourceRoots.map((item) => path.join(item, 'course-catalog', 'catalog.json')));
   const publicKey = publicKeyPath ? fs.readFileSync(publicKeyPath, 'utf8') : '';
@@ -337,7 +338,14 @@ function createCourseCatalogStore(options = {}) {
   function coursesForStudent(student = {}) {
     const catalog = combinedCatalog();
     if (!catalog) return [];
-    return effectiveCourses(catalog, readPolicy(catalog), student);
+    const policy = readPolicy(catalog);
+    // Once explicitly published, its audience is authoritative. Keep legacy
+    // enable/order controls, but do not intersect two independent student lists.
+    if (publications) for (const record of publications.records()) {
+      if(policy.courseRules[record.resourceId])policy.courseRules[record.resourceId]={...policy.courseRules[record.resourceId],studentIds:[],gradeRange:[]};
+    }
+    const courses = effectiveCourses(catalog, policy, student);
+    return publications ? publications.project(courses, student) : courses;
   }
 
   function findCourse(courseId, student = null) {
@@ -387,6 +395,7 @@ function createCourseCatalogStore(options = {}) {
       updatedAt: new Date().toISOString(),
       courses: [...byId.values()],
     };
+    if (publications) publications.registerDrafts(incoming.filter(course => !current.courses.some(old => old.courseId === course.courseId)));
     writeJsonAtomic(customCatalogPath, value);
     audit({
       action: String(mergeOptions.action || 'tenant_custom_excel_import'),
@@ -425,6 +434,12 @@ function createCourseCatalogStore(options = {}) {
   return {
     assetPath,
     assetPathByFilename,
+    publications,
+    startPublishedCourse: (courseId, student) => {
+      const course = coursesForStudent(student).find(c => c.courseId === courseId);
+      if (!course) throw Error('课程未分配给当前学生或已停止新使用');
+      return publications ? publications.pin(course, student) : course;
+    },
     combinedCatalog,
     customAssetsDir,
     ensureCatalog,

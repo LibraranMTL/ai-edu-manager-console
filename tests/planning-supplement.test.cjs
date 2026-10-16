@@ -38,7 +38,7 @@ test('actual host competition task dispatch has permitted student-scoped operati
   const declaration = host.match(/const TASK_OPERATION_ALLOWLIST = ([\s\S]*?\n});/)[1];
   const allowlist = vm.runInNewContext(`(${declaration})`, { Set });
   assert.equal(validatePermissionDeclaration({ kind: 'competition_research_check', permissions: { read: ['D:/synthetic/a'], write: ['D:/synthetic/a/planning-guidance'], operations: ['read_planning_evidence', 'write_planning_suggestions'] } }, allowlist).ok, true);
-  assert.match(host, /refreshed.kind === 'competition_research_check'\) return JSON.stringify\(submitCompetitionResearchTask/);
+  assert.match(host, /refreshed.kind === 'competition_research_check'\) return JSON.stringify\(\(await submitCompetitionResearchTask/);
   assert.match(host, /await taskChildProcesses.get\(taskId\)\?\.completion/);
   assert.match(host, /kill\(\) \{ this.killed = true; controller.abort\(\)/);
   assert.match(host, /void runCompetitionResearchSchedule\(\)/);

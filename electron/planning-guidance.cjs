@@ -5,6 +5,12 @@ const { validateTopicOutput, redact } = require('./structured-generation.cjs');
 const researchContent = require('./research-content.cjs');
 const { createPlanningFavorites } = require('./planning-favorites.cjs');
 
+function researchExecutionContext(request = {}) {
+  const context = request.executionContext || {};
+  return Object.fromEntries(['taskId', 'executionId', 'researchRunId'].filter(key => typeof context[key] === 'string')
+    .map(key => [key, context[key].slice(0, 200)]));
+}
+
 const TOPIC_SCHEMA = 'edu-manager.topic-suggestion-set.v1';
 const GUIDANCE_SCHEMA = 'edu-manager.guidance-plan-version.v1';
 const SNAPSHOT_SCHEMA = 'edu-manager.planning-evidence-snapshot.v1';
@@ -281,6 +287,7 @@ function createPlanningGuidanceService(options) {
   const resolveStudentDir = options.resolveStudentDir;
   const evidenceProvider = options.evidenceProvider || (() => ({}));
   const researchProviders = options.researchProviders || (() => []);
+  const authorizeResearch = options.authorizeResearch || (() => {});
   const pendingGuidance = new Map();
   const pendingTopics = new Map();
   const pendingCompetitions = new Map();
@@ -489,7 +496,7 @@ function createPlanningGuidanceService(options) {
     const guidanceInputFingerprint = fingerprint({ evidence: snapshot.inputFingerprint, preferences: preferencesFingerprint });
     const capabilities = getResearchCapabilityStatus();
     const checkedAt = iso(now());
-    const baseReceipt = { id: `guidance-check-${Date.now()}-${snapshot.inputFingerprint.slice(0, 8)}`, taskType: 'guidance_research_check', studentId: String(student.id), trigger: cleanText(request.trigger || 'manual', 40), checkedAt, inputFingerprint: guidanceInputFingerprint };
+    const baseReceipt = { ...researchExecutionContext(request), id: `guidance-check-${Date.now()}-${snapshot.inputFingerprint.slice(0, 8)}`, taskType: 'guidance_research_check', studentId: String(student.id), trigger: cleanText(request.trigger || 'manual', 40), checkedAt, inputFingerprint: guidanceInputFingerprint };
     const provider = researchProviders().find((item) => capabilities.usableProviderIds.includes(item.id) && typeof item.search === 'function');
     if (!provider) {
       const receipt = { ...baseReceipt, status: 'unavailable', code: 'RESEARCH_CAPABILITY_UNAVAILABLE', message: capabilities.message };
@@ -503,7 +510,9 @@ function createPlanningGuidanceService(options) {
       queryInput.targetRegions = preferences.targetRegions;
       queryInput.focusAreas = preferences.focusAreas;
       queryInput.purpose = 'guidance';
+      authorizeResearch(studentId);
       const raw = await provider.search({ schema: 'research.search.request.v1', queryInput: JSON.parse(redact(queryInput, student)), timeoutMs: 300_000, signal: request.signal });
+      authorizeResearch(studentId);
       if (request.signal?.aborted) throw Object.assign(new Error('研究已取消，历史版本不受影响。'), { code: 'RESEARCH_CANCELLED' });
       const currentStudent = requireStudent(studentId);
       const latestStore = readStore(currentStudent);
@@ -594,13 +603,15 @@ function createPlanningGuidanceService(options) {
     let store = readStore(student);
     const preferencesFingerprint = fingerprint(store.competitionPreferences || {});
     const checkedAt = iso(now());
-    const base = { id: `competition-check-${crypto.randomUUID()}`, taskType: 'competition_research_check', studentId: String(student.id), checkedAt, inputFingerprint: snapshot.inputFingerprint, trigger: cleanText(request.trigger || 'manual', 40) };
+    const base = { ...researchExecutionContext(request), id: `competition-check-${crypto.randomUUID()}`, taskType: 'competition_research_check', studentId: String(student.id), checkedAt, inputFingerprint: snapshot.inputFingerprint, trigger: cleanText(request.trigger || 'manual', 40) };
     try {
       const capability = getResearchCapabilityStatus();
       const provider = researchProviders().find(x => capability.usableProviderIds.includes(x.id));
       if (!provider) throw new Error(capability.message);
       const queryInput = JSON.parse(redact({ ...deidentifyResearchInput(student, snapshot), purpose: 'competition_recommendation' }, student));
+      authorizeResearch(studentId);
       const raw = await provider.search({ schema: 'research.search.request.v1', queryInput, timeoutMs: 180000, signal: request.signal });
+      authorizeResearch(studentId);
       if (request.signal?.aborted) throw new Error('比赛研究已取消');
       const latestStudent = requireStudent(studentId);
       store = readStore(latestStudent);

@@ -14,6 +14,8 @@ const {
 
 test('active adapter list adds Hermes and excludes retired FastGPT and Coze choices', () => {
   assert.equal(ACTIVE_AGENT_TOOL_IDS.includes('hermes'), true);
+  assert.equal(ACTIVE_AGENT_TOOL_IDS.includes('trae'), true);
+  assert.equal(ACTIVE_AGENT_TOOL_IDS.includes('qoder-work'), true);
   assert.equal(ACTIVE_AGENT_TOOL_IDS.includes('fastgpt'), false);
   assert.equal(ACTIVE_AGENT_TOOL_IDS.includes('coze'), false);
   assert.deepEqual(LEGACY_AGENT_SOURCE_IDS, ['coze', 'fastgpt']);

@@ -64,7 +64,7 @@ function createDownloadInbox({ dataDir, forbiddenRoots = () => [], validateTarge
     if (!stat.isFile() || stat.isSymbolicLink() || identity(stat) !== binding.identity) throw Error('文件已变化，请刷新后重新选择');
     const reason = policy(binding.name, stat);
     if (reason) throw Error(reason);
-    if (Date.now() - stat.mtimeMs < stableAgeMs) throw Error('文件仍在写入，请稍后刷新');
+    if (stableAgeMs > 0 && Date.now() - stat.mtimeMs < stableAgeMs) throw Error('文件仍在写入，请稍后刷新');
     return { folder, file, stat };
   }
   function publicOperation(entry) {
@@ -84,11 +84,11 @@ function createDownloadInbox({ dataDir, forbiddenRoots = () => [], validateTarge
         if (!entry.isFile() || entry.isSymbolicLink() || temporary(entry.name) || entry.name.includes(':')) { skipped++; return null; }
         try {
           const stat = await fs.lstat(path.join(folder, entry.name));
-          if (!stat.isFile() || stat.isSymbolicLink() || Date.now() - stat.mtimeMs < stableAgeMs) { skipped++; return null; }
+          if (!stat.isFile() || stat.isSymbolicLink() || (stableAgeMs > 0 && Date.now() - stat.mtimeMs < stableAgeMs)) { skipped++; return null; }
           const key = identity(stat), id = fileId(folder + '\0' + entry.name + '\0' + key);
           bindings.set(id, { folder, name: entry.name, identity: key });
           const operation = records.operations.findLast(item => item.folder === folder && item.name === entry.name && item.identity === key);
-          return { fileId: id, name: entry.name, byteSize: stat.size, modifiedAt: new Date(stat.mtimeMs).toISOString(),
+          return { fileId: id, identity: key, name: entry.name, byteSize: stat.size, modifiedAt: new Date(stat.mtimeMs).toISOString(),
             type: path.extname(entry.name).slice(1).toUpperCase(), status: operation?.status === 'delivering' ? 'interrupted' : operation?.status || 'pending',
             message: policy(entry.name, stat) || operation?.message || '', supported: !policy(entry.name, stat), selectable: true,
             targetName: operation?.targetName || '', operationId: operation?.operationId || '' };
@@ -202,6 +202,10 @@ function createDownloadInbox({ dataDir, forbiddenRoots = () => [], validateTarge
       const config = { schema: 'DownloadInboxSettings.v1', folder: resolved }; await persist(settingsFile, config); bindings.clear(); return config;
     }),
     list,
+    selection: id => serial(async () => { const binding = bindings.get(id);
+      if (!binding || binding.folder !== await activeFolder()) throw Error('选择已失效，请刷新');
+      try { await resolveFile(binding); } catch (error) { if (error.code !== 'ENOENT') throw error; }
+      return { ...binding, locator: binding.name }; }),
     deliver: (ids, target) => serial(() => batch(ids, target)),
     trash: (ids, confirmed) => serial(async () => {
       if (confirmed !== true || !Array.isArray(ids) || !ids.length || ids.length > 100) throw Error('回收须确认且每批最多 100 项');
@@ -211,7 +215,7 @@ function createDownloadInbox({ dataDir, forbiddenRoots = () => [], validateTarge
           const binding = bindings.get(id), folder = await activeFolder();
           if (!binding || binding.folder !== folder) throw Error('选择已失效，请刷新');
           const file = path.join(folder, binding.name), stat = await fs.lstat(file);
-          if (!stat.isFile() || stat.isSymbolicLink() || identity(stat) !== binding.identity || Date.now() - stat.mtimeMs < stableAgeMs) throw Error('文件已变化或仍在写入');
+          if (!stat.isFile() || stat.isSymbolicLink() || identity(stat) !== binding.identity || (stableAgeMs > 0 && Date.now() - stat.mtimeMs < stableAgeMs)) throw Error('文件已变化或仍在写入');
           await trash(file); bindings.delete(id); results.push({ fileId: id, ok: true });
         } catch (error) { results.push({ fileId: id, ok: false, message: error.message }); }
       }

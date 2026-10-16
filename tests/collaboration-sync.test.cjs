@@ -21,6 +21,13 @@ function tempDir() {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'edu-collaboration-'));
 }
 
+test('all Agent task handoff channels stay host-local', () => {
+  for (const dir of ['agent-inbox/workbuddy', 'agent-results/codex', 'manual-outbox', 'workbuddy-outbox']) {
+    assert.equal(forbiddenSyncPath(`${dir}/task.json`), true);
+    assert.equal(forbiddenSyncPath(`task-center/${dir}/task.json`), true);
+  }
+});
+
 test('controlled collaboration layout isolates writable node namespaces', () => {
   const root = tempDir();
   const layout = ensureCollaborationLayout(root, 'node-a');

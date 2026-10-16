@@ -7,6 +7,13 @@ const http = require('http');
 const https = require('https');
 const os = require('os');
 const path = require('path');
+// Explicit isolation for candidate acceptance; normal installations are unchanged.
+const isolatedUserData = app.commandLine.getSwitchValue('user-data-dir');
+if (isolatedUserData) {
+  if (!path.isAbsolute(isolatedUserData) || path.resolve(isolatedUserData) === path.parse(path.resolve(isolatedUserData)).root) throw Error('隔离用户目录必须为非根目录的绝对路径');
+  fs.mkdirSync(isolatedUserData, { recursive: true });
+  app.setPath('userData', path.resolve(isolatedUserData));
+}
 const { WebContentsView, session } = require('electron');
 const {
   coursePartition,
@@ -1121,7 +1128,14 @@ function currentStudentSession() {
 async function loadTerminalLearningCapabilities() {
   const { config } = currentStudentSession();
   try { return await requestJson('/api/student-session/capabilities', { token: config.sessionToken }); }
-  catch (error) { if (error.status === 404) return { ok: true, capabilities: {} }; throw error; }
+  catch (error) {
+    if(error.status===404)return {ok:true,capabilities:{}};
+    if(cacheFallbackAllowed(error)){
+      const drafts=await require('./terminal-practice-drafts.cjs').createTerminalPracticeDrafts(path.join(terminalUserData(),'practice-drafts')).list(cacheScope(config));
+      if(drafts.length)return {ok:true,capabilities:{publications:true},offline:true};
+    }
+    throw error;
+  }
 }
 
 async function loadTerminalPractice() {
@@ -1264,10 +1278,13 @@ function closeTerminalCourse(reason = 'user') {
 }
 
 async function openTerminalCourse(courseId) {
-  const { studentId } = currentStudentSession();
+  const { studentId, config } = currentStudentSession();
   const payload = await loadEffectiveCourses();
-  const course = (payload.courses || []).find((item) => item.courseId === String(courseId || ''));
+  let course = (payload.courses || []).find((item) => item.courseId === String(courseId || ''));
   if (!course || String(payload.studentId || '') !== studentId) throw new Error('该课程未分配给当前学生或已下架。');
+  try {const pinned=await requestJson('/api/student-session/course-start',{method:'POST',body:{courseId},token:config.sessionToken});course={...course,...pinned.course};}
+  catch(error){if(error.status!==404)throw error;}
+  if(currentStudentSession().config.sessionToken!==config.sessionToken)throw Error('学生已切换，请重新打开课程');
   closeTerminalCourse('switch');
   const partition = coursePartition(course.courseId);
   const courseSession = session.fromPartition(partition, { cache: true });
@@ -2295,6 +2312,32 @@ function registerIpc() {
   ipcMain.handle('terminal:run-auto-delivery', async () => { await runAutoDelivery(); return { ok: true }; });
   ipcMain.handle('terminal:learning-capabilities', () => loadTerminalLearningCapabilities());
   ipcMain.handle('terminal:practice-dashboard', () => loadTerminalPractice());
+  const practiceDrafts=require('./terminal-practice-drafts.cjs').createTerminalPracticeDrafts(path.join(terminalUserData(),'practice-drafts'));
+  ipcMain.handle('terminal:publication-action', async (event,action,input={}) => {
+    const {config,studentId}=currentStudentSession();
+    const scope=cacheScope(config);
+    if(input.studentId&&input.studentId!==studentId)throw Error('学生已切换，请重新打开');
+    const scopeToken=crypto.createHash('sha256').update(JSON.stringify(scope)).digest('hex');
+    if(action==='localDraftContext')return {scopeToken};
+    if(action.startsWith('localDraft')&&input.scopeToken!==scopeToken)throw Error('主机或学生范围已变化，请重新打开卡片');
+    const assertScope=()=>{const now=currentStudentSession();if(!sameCacheScope(scope,cacheScope(now.config))||now.config.sessionToken!==config.sessionToken)throw Error('学生或主机已切换，请重新打开');};
+    if(action==='localDraftLoad')return {data:await practiceDrafts.load(scope,input.cardId)};
+    if(action==='localDraftList')return {data:await practiceDrafts.list(scope)};
+    if(action==='localDraftSave')return practiceDrafts.save(scope,input.cardId,input);
+    if(action==='localDraftClear')return practiceDrafts.clear(scope,input.cardId,input.attemptId);
+    if(action==='export') {
+      if(!['pdf','print'].includes(input.format))throw Error('不支持的输出格式');
+      const response=await requestJson('/api/student-session/publications',{method:'POST',body:{action:'printable',input:{key:input.key,cardId:input.cardId}},token:config.sessionToken,timeoutMs:90000});
+      assertScope();if(response.ok===false)throw Error(response.message||'读取卡片失败');
+      const value=response.data??response;
+      return require('./practice-card-export.cjs').renderPracticeCard({card:value.card,htmlOverride:value.html,format:input.format,BrowserWindow,dialog,parent:BrowserWindow.fromWebContents(event.sender),tempRoot:app.getPath('temp'),assertScope});
+    }
+    if(!['list','detail','file','save','startResource','workspace','history','start','submit','assistance','attempts','feedback','retry','historicalFile','attachment'].includes(action))throw Error('学生端不支持此操作');
+    const result=await requestJson('/api/student-session/publications',{method:'POST',body:{action,input},token:config.sessionToken,timeoutMs:30000});
+    const current=currentStudentSession();
+    if(current.studentId!==studentId||current.config.sessionToken!==config.sessionToken)throw Error('学生已切换，请重新打开');
+    return result;
+  });
   ipcMain.handle('terminal:practice-start', (_event, cardId) => startTerminalPractice(cardId));
   ipcMain.handle('terminal:practice-submit', (_event, cardId, input) => submitTerminalPractice(cardId, input));
   ipcMain.handle('terminal:planning-view', (_event, kind) => loadTerminalPlanning(kind));

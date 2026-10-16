@@ -30,6 +30,7 @@ contextBridge.exposeInMainWorld('terminalBridge', {
   runAutoDelivery: () => ipcRenderer.invoke('terminal:run-auto-delivery'),
   getLearningCapabilities: () => ipcRenderer.invoke('terminal:learning-capabilities'),
   getPracticeDashboard: () => ipcRenderer.invoke('terminal:practice-dashboard'),
+  publicationAction: (action,input) => ipcRenderer.invoke('terminal:publication-action',action,input),
   startPracticeCard: (cardId) => ipcRenderer.invoke('terminal:practice-start', cardId),
   submitPracticeCard: (cardId, input) => ipcRenderer.invoke('terminal:practice-submit', cardId, input),
   getPlanningView: (kind) => ipcRenderer.invoke('terminal:planning-view', kind),

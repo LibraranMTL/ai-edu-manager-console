@@ -12,7 +12,22 @@ test('material runner uses readonly CLI and no user MCP/config/rules or writable
   for (const option of ['--ignore-user-config', '--ignore-rules', '--output-schema', '--ephemeral', '--json']) assert.ok(args.includes(option));
   for (const option of ['--add-dir', '--dangerously-bypass-approvals-and-sandbox', '--output-last-message']) assert.equal(args.includes(option), false);
   assert.ok(args.includes('approval_policy="never"'));
-  for (const flag of ['shell_tool', 'unified_exec', 'browser_use', 'plugins', 'hooks', 'tool_search', 'builtin_mcp']) {
+  for (const flag of ['shell_tool', 'unified_exec', 'browser_use', 'plugins', 'hooks', 'tool_search', 'skill_search',
+    'memories', 'computer_use', 'view_image', 'sleep_tool', 'workspace_dependencies', 'code_mode_host']) {
+    assert.ok(args.includes(`features.${flag}=false`));
+  }
+});
+
+test('host-mediated fallback bypasses broken OS sandbox without exposing tools or writable roots', () => {
+  const args = codexMaterialInvocation({ cwd: path.resolve('fixture'), schemaPath: path.resolve('fixture/schema.json'),
+    isolationMode: 'host-mediated-no-tools' });
+  assert.equal(args[args.indexOf('--sandbox') + 1], 'danger-full-access');
+  for (const option of ['--ignore-user-config', '--ignore-rules', '--output-schema', '--ephemeral', '--json']) assert.ok(args.includes(option));
+  for (const option of ['--add-dir', '--dangerously-bypass-approvals-and-sandbox', '--output-last-message']) assert.equal(args.includes(option), false);
+  assert.ok(args.includes('approval_policy="never"'));
+  for (const flag of ['shell_tool', 'unified_exec', 'browser_use', 'browser_use_external', 'in_app_browser',
+    'apps', 'plugins', 'hooks', 'image_generation', 'tool_search', 'skill_search', 'memories', 'computer_use',
+    'view_image', 'sleep_tool', 'workspace_dependencies', 'code_mode_host', 'multi_agent']) {
     assert.ok(args.includes(`features.${flag}=false`));
   }
 });
@@ -25,6 +40,13 @@ test('unexpected execution or external tool activity rejects even a later succes
   }
 });
 
+test('non-fatal diagnostic items do not hide a valid completed structured result', () => {
+  const response = { schema: RESULT_SCHEMA, projectId: 'p', batchId: 'b', artifacts: [] };
+  const diagnostic = JSON.stringify({ type: 'item.completed', item: { type: 'error', message: 'local discovery warning' } });
+  const message = JSON.stringify({ type: 'item.completed', item: { type: 'agent_message', text: JSON.stringify(response) } });
+  assert.deepEqual(parseCodexMaterialEvents(`${diagnostic}\n${message}\n{"type":"turn.completed"}`), response);
+});
+
 test('only a completed turn with valid final JSON yields a result', () => {
   const response = { schema: RESULT_SCHEMA, projectId: 'p', batchId: 'b', artifacts: [] };
   const message = JSON.stringify({ type: 'item.completed', item: { type: 'agent_message', text: JSON.stringify(response) } });
@@ -33,6 +55,17 @@ test('only a completed turn with valid final JSON yields a result', () => {
   assert.throws(() => parseCodexMaterialEvents(message), { code: 'agent_incomplete' });
   assert.throws(() => parseCodexMaterialEvents(`${message}\n{"type":"turn.failed"}`), { code: 'agent_failed' });
   assert.throws(() => parseCodexMaterialEvents('not json'), { code: 'invalid_agent_stream' });
+});
+
+test('Codex failure guidance separates network, login and quota without leaking vendor text', () => {
+  for (const [message, expected] of [['stream disconnected: connection reset secret=sample-token', /网络连接/],
+    ['Authentication token expired secret=sample-token', /后台登录/], ['429 quota exceeded secret=sample-token', /额度/]]) {
+    assert.throws(() => parseCodexMaterialEvents(JSON.stringify({ type: 'turn.failed', error: { message } })), error => {
+      assert.equal(error.code, 'agent_failed'); assert.match(error.message, expected);
+      assert.equal(error.message.includes('sample-token'), false); return true;
+    });
+  }
+  assert.throws(() => parseCodexMaterialEvents('{"type":"error","message":"connection reset"}\n{"type":"turn.completed"}'), { code: 'agent_failed' });
 });
 
 async function fixture(t) {

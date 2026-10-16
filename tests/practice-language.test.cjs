@@ -9,7 +9,7 @@ const vm = require('node:vm');
 const hostSource = require('node:fs').readFileSync(path.join(__dirname, '../electron/main.cjs'), 'utf8');
 function hostFixture() {
   const state = { students: [{ id: 'a', name: '测试甲', languageProfile: { primaryLanguage: 'en', supportLanguage: 'zh-CN' } }], writes: 0 };
-  const context = vm.createContext({ path, checkedLanguageProfile, sanitizeName: value => String(value), isKnownAgentSource: () => true, isActiveAgentTool: () => true,
+  const context = vm.createContext({ path, checkedLanguageProfile, studentActivity: require('../electron/student-automation-policy.cjs').studentActivity, sanitizeName: value => String(value), isKnownAgentSource: () => true, isActiveAgentTool: () => true,
     getStudentRootDir: name => path.join(os.tmpdir(), 'qa-no-write', name), getRawDir: name => name + '/raw', getSummaryDir: name => name + '/summary', normalizeMaterialSources: value => value || [],
     readStudentsIndex: () => state.students, ensureStudentLoginIds: students => ({ students }), assertStudentCapacity: () => {}, isDeepStrictEqual: require('node:util').isDeepStrictEqual,
     writeStudentsIndex: students => { state.students = JSON.parse(JSON.stringify(students)); state.writes++; }, readDevices: () => [], migrateTerminalDevices: () => ({ changed: false }), writeDevices: () => { throw Error('不得改动设备'); } });
@@ -20,6 +20,9 @@ test('real Windows student normalization preserves language preferences for olde
   const { state, sync } = hostFixture();
   assert.equal(sync([{ id: 'a', name: '测试甲', goal: '更新目标' }]).ok, true);
   assert.deepEqual(state.students[0].languageProfile, { primaryLanguage: 'en', supportLanguage: 'zh-CN' });
+  state.students[0].activityStatus='paused';state.students[0].pauseAutomaticTasksWhenInactive=false;
+  assert.equal(sync([{id:'a',name:'测试甲',goal:'旧客户端更新'}]).ok,true);
+  assert.equal(state.students[0].activityStatus,'paused');assert.equal(state.students[0].pauseAutomaticTasksWhenInactive,false);
   assert.equal(sync([{ id: 'a', name: '测试甲', languageProfile: { primaryLanguage: 'zh-CN', supportLanguage: 'zh-CN' } }]).ok, true);
   assert.deepEqual(state.students[0].languageProfile, { primaryLanguage: 'zh-CN', supportLanguage: '' });
   const before = JSON.stringify(state.students), writes = state.writes;

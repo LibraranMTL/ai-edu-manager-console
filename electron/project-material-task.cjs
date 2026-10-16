@@ -78,7 +78,7 @@ function createProjectMaterialTask({ project, executionId, checkpoint = {}, onCh
       try {
         await check();
         let receipt;
-        if (state.batchId && ['output_ready', 'committing', 'committed'].includes(state.phase)) {
+        if (state.batchId && ['output_ready', 'committing', 'committed', 'conflict'].includes(state.phase)) {
           const loaded = await workspace.readBatch(state.batchId);
           batch = loaded.manifest;
           const receiptPath = await safePath(loaded.paths.root, 'task-receipt.json');
@@ -105,15 +105,35 @@ function createProjectMaterialTask({ project, executionId, checkpoint = {}, onCh
           for (const item of pending) {
             await check();
             try {
-              invariant(item.size <= 32 * 1024 * 1024, 'input_limit', '资料超过单次提取容量，需要分段处理。');
-              await store.snapshot(item.materialId, item.version);
-              const input = await store.resolve(item.materialId, item.version);
-              const text = await extract(input);
+              let current = item;
+              let input;
+              let text;
+              for (let refreshAttempt = 0; refreshAttempt < 2; refreshAttempt++) {
+                try {
+                  invariant(current.size <= 32 * 1024 * 1024, 'input_limit', '资料超过单次提取容量，需要分段处理。');
+                  await store.snapshot(current.materialId, current.version);
+                  input = await store.resolve(current.materialId, current.version);
+                  text = await extract(input);
+                  break;
+                } catch (error) {
+                  if (error.code !== 'source_changed' || refreshAttempt > 0) throw error;
+                  // User-maintained project sources may change after discovery.
+                  // Freeze stable new bytes as a new version and continue. The
+                  // store still rejects path, version, and concurrent-write races.
+                  const refreshed = await store.registerFiles([{
+                    materialId: current.materialId,
+                    expectedVersion: current.version,
+                    location: current.location,
+                  }]);
+                  current = refreshed.result[0];
+                  await check();
+                }
+              }
               invariant(typeof text === 'string' && text.trim(), 'empty_source', '没有可消化正文。');
               const size = Buffer.byteLength(text);
               invariant(size <= 4 * 1024 * 1024, 'input_limit', '单份提取正文超过批次限制。');
               if (textBytes + size > 4 * 1024 * 1024) break;
-              selected.push(item); textBytes += size;
+              selected.push(current); textBytes += size;
               texts.set(`${input.materialId}:${input.version}:${input.sha256}`, text);
               if (selected.length === 20) break;
             } catch (error) {
@@ -137,7 +157,9 @@ function createProjectMaterialTask({ project, executionId, checkpoint = {}, onCh
             targets: selected.flatMap((item) => KNOWLEDGE_DIRS.map((dir) => ({
               relativePath: `${dir}/${crypto.createHash('sha256').update(item.materialId).digest('hex').slice(0, 24)}.md`, materialIds: [item.materialId] }))) });
           await writeJsonAtomic(path.join(path.dirname(batch.manifestPath), 'task-rules.json'), { schema: RULES, ...rules });
-          await persist({ phase: 'prepared', batchId: batch.batchId, ruleVersion: rules.version, materialCount: selected.length, extractionFailures: failures });
+          await persist({ phase: 'prepared', batchId: batch.batchId, ruleVersion: rules.version, materialCount: selected.length,
+            isolationMode: evidence.mode || (evidence.passed ? 'os-read-only' : ''), sandboxVerified: evidence.passed === true,
+            extractionFailures: failures });
           await markSources('running');
           await check();
           await persist({ phase: 'running' });

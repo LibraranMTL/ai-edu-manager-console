@@ -5,6 +5,7 @@ node_modules/
 # Frontend and Electron build output
 dist/
 dist-terminal/
+cloud-report-service/web-dist/
 output/
 .playwright-cli/
 release/**

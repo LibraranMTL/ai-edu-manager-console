@@ -124,6 +124,11 @@ function build() {
   for (const relative of [
     'electron/terminal-main.cjs',
     'electron/terminal-preload.cjs',
+    'electron/terminal-practice-drafts.cjs',
+    'electron/practice-card-export.cjs',
+    'electron/practice-language-labels.json',
+    'electron/practice-print-window.cjs',
+    'electron/practice-print-preload.cjs',
     'electron/capture-control-window.cjs',
     'electron/student-agent-lifecycle.cjs',
     'electron/agent-adapter-registry.cjs',
@@ -142,6 +147,7 @@ function build() {
     'public/brand/robogala.ico',
   ]) copyFile(relative);
   compileLifecycleHook(path.join(stageRoot, 'electron', 'agent-lifecycle-hook.cs'), path.join(stageRoot, 'electron', 'agent-lifecycle-hook.exe'));
+  require('./build-practice-runtime.cjs').bundlePracticeRuntime(stageRoot, require('node:module').createRequire(require.resolve('vite/package.json'))('esbuild'), {minify:true});
   writeRuntimePackage();
 
   process.stdout.write('[windows-terminal-release] package-electron\n');
@@ -170,6 +176,11 @@ function build() {
   for (const expected of [
     '\\electron\\terminal-main.cjs',
     '\\electron\\terminal-preload.cjs',
+    '\\electron\\terminal-practice-drafts.cjs',
+    '\\electron\\practice-card-export.cjs',
+    '\\electron\\practice-print-window.cjs',
+    '\\electron\\practice-print-preload.cjs',
+    '\\electron\\practice-rich-text.mjs',
     '\\electron\\capture-control-window.cjs',
     '\\electron\\student-agent-lifecycle.cjs',
     '\\electron\\agent-adapter-registry.cjs',
@@ -190,10 +201,17 @@ function build() {
     if (!asarFiles.includes(expected)) throw new Error(`Terminal package is missing ${expected}.`);
   }
   const asarBytes = fs.statSync(asarPath).size;
-  if (asarBytes > 3 * 1024 * 1024) throw new Error(`Terminal app.asar exceeds 3 MiB: ${asarBytes}`);
+  // Publication reader adds lazy PDF.js (~1.7 MiB) and bundled offline math fonts.
+  // Keep a bounded 5 MiB budget and the independent no-node_modules check above.
+  if (asarBytes > 5 * 1024 * 1024) throw new Error(`Terminal app.asar exceeds 5 MiB: ${asarBytes}`);
+  for (const pattern of [/StudentPublishedCards-.*\.js$/, /pdf\.worker.*\.mjs$/, /KaTeX_Main-Regular.*\.woff2$/]) {
+    if (!asarFiles.some(name=>pattern.test(name))) throw new Error(`Terminal publication reader asset missing: ${pattern}`);
+  }
 
   const releaseArtifact = path.join(releaseDir, artifactName);
   publishFile(stagedArtifact, releaseArtifact);
+  const zipArtifact=path.join(releaseDir, `${artifactBase}.zip`);
+  run('powershell.exe',['-NoProfile','-NonInteractive','-Command',`Compress-Archive -LiteralPath '${releaseArtifact.replaceAll("'","''")}' -DestinationPath '${zipArtifact.replaceAll("'","''")}' -Force`]);
   const audit = {
     version,
     candidateTag,
@@ -202,6 +220,7 @@ function build() {
     electronLanguages,
     package: { asarBytes, asarFiles: asarFiles.length, nodeModuleFiles: nodeModuleFiles.length },
     artifact: { path: releaseArtifact, bytes: fs.statSync(releaseArtifact).size, sha256: sha256(releaseArtifact) },
+    zip: { path: zipArtifact, bytes: fs.statSync(zipArtifact).size, sha256: sha256(zipArtifact) },
   };
   fs.writeFileSync(path.join(releaseDir, `${artifactName.replace(/\.exe$/, '')}-build-audit.json`), `${JSON.stringify(audit, null, 2)}\n`, 'utf8');
   process.stdout.write(`[windows-terminal-release] complete\n${JSON.stringify(audit, null, 2)}\n`);

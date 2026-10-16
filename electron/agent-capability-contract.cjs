@@ -8,7 +8,7 @@ const CAPABILITIES = Object.freeze({
   'student.overview': { permission: 'student:read', risk: 'read', scope: ['student'], schema: { type: 'object', required: ['studentId'], properties: { studentId: { type: 'string' } }, additionalProperties: false } },
   'project.overview': { permission: 'project:read', risk: 'read', scope: ['project'], schema: { type: 'object', required: ['studentId', 'projectId'], properties: { studentId: { type: 'string' }, projectId: { type: 'string' } }, additionalProperties: false } },
   'report.list': { permission: 'report:read', risk: 'read', scope: ['student'], schema: { type: 'object', required: ['studentId'], properties: { studentId: { type: 'string' } }, additionalProperties: false } },
-  'report.read': { permission: 'report:read', risk: 'read', scope: ['student'], schema: { type: 'object', required: ['studentId', 'reportId'], properties: { studentId: { type: 'string' }, reportId: { type: 'string' } }, additionalProperties: false } },
+  'report.read': { permission: 'report:read', risk: 'read', scope: ['student'], schema: { type: 'object', required: ['studentId', 'reportId'], properties: { studentId: { type: 'string' }, reportId: { type: 'string', description: '使用 report.list 返回的 id；整体画像为 profile，不是本地路径。' }, offset: { type: 'integer', minimum: 0, maximum: 10000000 }, limit: { type: 'integer', minimum: 1, maximum: 65536 }, contentHash: { type: 'string', maxLength: 64, description: '后续页必须原样携带第一页返回的 contentHash；内容变化时从第一页重读。' } }, additionalProperties: false } },
   'conversation.submit': { permission: 'conversation:submit', risk: 'write', approval: 'host', idempotency: 'required', scope: ['student', 'project'], schema: { type: 'object', required: ['studentId', 'messages'], properties: { studentId: { type: 'string' }, projectId: { type: 'string' }, messages: { type: 'array', minItems: 1, maxItems: 100, items: { type: 'object', required: ['role', 'content'], properties: { role: { type: 'string', enum: ['user', 'assistant'] }, content: { type: 'string', minLength: 1, maxLength: 20000 } }, additionalProperties: false } }, sourceAgent: { type: 'string' }, title: { type: 'string' }, sessionId: { type: 'string' } }, additionalProperties: false } },
   'material.upload': { permission: 'material:upload', risk: 'write', approval: 'host', idempotency: 'required', scope: ['student', 'project'], schema: { type: 'object', required: ['studentId', 'filename', 'contentBase64'], properties: { studentId: { type: 'string' }, projectId: { type: 'string' }, filename: { type: 'string' }, contentBase64: { type: 'string', maxLength: 2800000 } }, additionalProperties: false } },
   'task.create': { permission: 'task:create', risk: 'write', approval: 'host', idempotency: 'required', scope: ['student', 'project'], schema: { type: 'object', required: ['studentId', 'title', 'detail'], properties: { studentId: { type: 'string' }, projectId: { type: 'string' }, title: { type: 'string' }, detail: { type: 'string' } }, additionalProperties: false } },
@@ -16,6 +16,7 @@ const CAPABILITIES = Object.freeze({
 });
 
 const LEGACY_AGENT_ROUTES = Object.freeze({
+  'POST /api/agent/connector': 'contract:invoke',
   'POST /api/agent/knowledge/query': 'knowledge:query',
   'POST /api/agent/conversation/submit': 'conversation:submit',
   'POST /api/agent/memory/session/start': 'memory:write',
@@ -52,7 +53,7 @@ function validateCapabilityInput(name, input) {
   if (!spec) return { ok: false, code: 'UNKNOWN_CAPABILITY' };
   if (!input || typeof input !== 'object' || Array.isArray(input)) return { ok: false, code: 'INVALID_INPUT' };
   const properties = spec.schema.properties;
-  for (const key of Object.keys(input)) if (!(key in properties)) return { ok: false, code: 'INVALID_INPUT' };
+  for (const key of Object.keys(input)) if (!Object.hasOwn(properties, key)) return { ok: false, code: 'INVALID_INPUT' };
   for (const key of spec.schema.required) {
     const value = input[key];
     if (properties[key].type === 'string' && (typeof value !== 'string' || !value.trim())) return { ok: false, code: 'INVALID_INPUT' };

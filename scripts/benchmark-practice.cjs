@@ -1,0 +1,18 @@
+const fs=require('node:fs/promises'),path=require('node:path'),os=require('node:os'),{performance}=require('node:perf_hooks');
+const {createPracticeCards}=require('../electron/practice-cards.cjs'),{createCardResources}=require('../electron/card-resources.cjs'),{builtinResources}=require('../electron/card-builtin-resources.cjs'),{encodeCardPackage}=require('../electron/card-resource-package.cjs');
+(async()=>{
+ const root=await fs.mkdtemp(path.join(os.tmpdir(),'edu-card-benchmark-'));let resources;
+ try{
+ const practice=createPracticeCards({resolveStudentDir:async id=>{if(id!=='benchmark')throw Error('scope');return root;},resolveResource:key=>resources.resolve(key),generate:()=>{throw Error('No model in benchmark');}});
+ resources=createCardResources({directory:path.join(root,'resources'),license:()=>({active:true,edition:'FAMILY'}),student:id=>({id}),students:()=>[],instantiate:(id,r)=>practice.instantiate(id,r)});
+ const base=builtinResources()[0];const cards=Array.from({length:200},(_,i)=>({...base,publisherId:'benchmark-publisher',cardId:`card-${i}`,scope:'platform'}));await resources.importBytes(encodeCardPackage(cards));
+ const instance=await resources.start('benchmark','benchmark-publisher:card-0:1');await practice.submit('benchmark',instance.id,{attemptId:'seed-answer',answer:'2'});
+ const file=path.join(root,'practice-cards/store.json'),index=JSON.parse(await fs.readFile(file));const seed=index.attempts[0];index.attempts=Array.from({length:1000},(_,i)=>({...seed,attemptId:`synthetic-${i}`,rootAttemptId:`synthetic-${i}`,processingStatus:'completed'}));await fs.writeFile(file,JSON.stringify(index));
+ async function sample(work,n=40){const times=[];await work();for(let i=0;i<n;i++){const before=performance.now();await work(i);times.push(performance.now()-before);}times.sort((a,b)=>a-b);return {samples:n,p50Ms:+times[Math.ceil(n*.5)-1].toFixed(2),p95Ms:+times[Math.ceil(n*.95)-1].toFixed(2),maxMs:+times.at(-1).toFixed(2)};}
+ const workspace=await sample(()=>practice.workspace('benchmark')),list=await sample(()=>practice.listAttempts('benchmark')),catalog=await sample(()=>resources.list('benchmark',{filter:'all'}));
+ const bytes=Buffer.alloc(10*1024*1024,32);Buffer.from([137,80,78,71,13,10,26,10]).copy(bytes);let counter=0;
+ const submission=await sample(async()=>{const card=await resources.start('benchmark','benchmark-publisher:card-1:1');const start=performance.now();bytes.writeUInt32LE(counter,8);const base64=bytes.toString('base64');await practice.submit('benchmark',card.id,{attemptId:`large-answer-${counter++}`,attachment:{name:'synthetic.png',base64}});return performance.now()-start;},20);
+ const report={at:new Date().toISOString(),scope:'Synthetic backend timings; not rendered first-screen P95 or specified 4-core/8GB device acceptance. Save includes instance lookup plus acknowledgement; no model.',hardware:{platform:os.platform(),cpu:os.cpus()[0].model,logicalProcessors:os.cpus().length,memoryGiB:+(os.totalmem()/1024**3).toFixed(1)},fixture:{attempts:1000,importedResources:200,attachmentBytes:bytes.length},workspace,list,catalog,submission};
+ const output=path.resolve(__dirname,'../output/card-verification');await fs.mkdir(output,{recursive:true});await fs.writeFile(path.join(output,'benchmark.json'),JSON.stringify(report,null,2));console.log(JSON.stringify(report,null,2));
+ }finally{if(path.dirname(root)!==await fs.realpath(os.tmpdir())||!path.basename(root).startsWith('edu-card-benchmark-'))throw Error('Unexpected cleanup scope');await fs.rm(root,{recursive:true,force:true});}
+})().catch(error=>{console.error(error);process.exitCode=1;});

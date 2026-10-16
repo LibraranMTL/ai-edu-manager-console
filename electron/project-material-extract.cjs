@@ -15,6 +15,8 @@ const CACHE_LIMIT = 256 * 1024 * 1024;
 const IMAGE_FORMATS = new Set(['jpg', 'jpeg', 'png', 'bmp', 'tif', 'tiff', 'webp']);
 const DOCUMENT_FORMATS = new Set(['txt', 'md', 'csv', 'json', 'jsonl', 'yaml', 'yml', 'xml', 'html', 'htm', 'log', 'docx', 'pptx', 'xlsx']);
 const sha = (value) => crypto.createHash('sha256').update(value).digest('hex');
+// In-process host capabilities only. No renderer/Agent-supplied cache records.
+const extractionCapabilities = new WeakMap();
 const cancelled = () => new MaterialError('cancelled', '资料提取已取消。');
 
 // Resource admission only; the existing task center still owns task lifecycle.
@@ -75,8 +77,12 @@ async function runImageOcr(input, { signal, timeoutMs = 45000, language = 'zh-CN
       let result;
       try { result = JSON.parse(String(stdout).trim().split(/\r?\n/).at(-1)); }
       catch { reject(new MaterialError('ocr_failed', '本机OCR返回无效结果。')); return; }
-      if (!result.ok) { reject(new MaterialError('ocr_failed', '本机OCR未成功识别；原文保持已保存。', { diagnostic: String(result.error || '').slice(0, 1000) })); return; }
-      resolve({ text: result.text, warnings: ['图片文字由OCR识别，可能存在漏字或误识别；图示和版式未被完整理解。'], language: result.language });
+      if (!result.ok) {
+        const reason=String(result.error || '');
+        const message=reason.includes('No Windows OCR language')?'本机未安装可用的 OCR 语言包。请在 Windows 语言设置中安装文字识别组件，或改为文字作答。':reason.includes('dimensions exceed')?'图片尺寸超过本机 OCR 限制，请裁剪或缩小图片后提交修改稿。':'本机 OCR 未成功识别，请查看原件、重新上传清晰图片或改为文字作答。';
+        reject(new MaterialError('ocr_failed', message, { diagnostic: reason.slice(0,1000) }));return;
+      }
+      resolve({ text: result.text, warnings: ['图片文字由OCR识别，可能存在漏字或误识别；图示和版式未被完整理解。',...(result.languageFallback?[`本机未安装所选 OCR 语言 ${language}，已使用 ${result.language} 本地识别。请核对识别正文，必要时安装对应语言包或改为文字作答。`]:[])], language: result.language, languageFallback: result.languageFallback===true });
     });
   });
 }
@@ -106,12 +112,12 @@ function createProjectMaterialExtractor({ store, parserVersion = EXTRACTOR_VERSI
     const resolved = await store.resolve(input.materialId, input.version);
     invariant(resolved.sha256 === input.sha256 && resolved.size === input.size
       && path.resolve(resolved.path) === path.resolve(input.path), 'source_changed', '提取来源不是该资料登记的固定版本。');
+    invariant(!resolved.location || path.extname(resolved.location.relativePath || '').toLowerCase() === path.extname(input.location?.relativePath || '').toLowerCase(),
+      'source_changed', '资料格式与固定版本登记不一致。');
     // resolve() already hashes and verifies this exact version. Do not perform
     // a second identical full read here; cache hits still verify the source.
   }
-  async function extract(input, { signal, timeoutMs } = {}) {
-    invariant(!signal?.aborted, 'cancelled', '资料提取已取消。');
-    await verify(input);
+  async function describe(input) {
     const format = path.extname(input.location?.relativePath || '').slice(1).toLowerCase();
     invariant(DOCUMENT_FORMATS.has(format) || IMAGE_FORMATS.has(format) || format === 'pdf', 'unsupported', '此格式暂不支持自动提取，原文保持已保存。');
     const image = IMAGE_FORMATS.has(format);
@@ -120,18 +126,52 @@ function createProjectMaterialExtractor({ store, parserVersion = EXTRACTOR_VERSI
     if (format === 'pdf') options.pdfParser = 'pdfjs6.3.289-canvas1.0.9-paged-v1';
     const keyData = { schema: CACHE_SCHEMA, projectId: store.projectId, sha256: input.sha256, format, parserVersion, options };
     const key = sha(JSON.stringify(keyData)), root = await cacheRoot();
+    return { keyData, key, root, format, image };
+  }
+  async function readCached(input, descriptor) {
+    await verify(input);
+    const { key, keyData, root } = descriptor;
+    const target = await safePath(root, `${key}.json`, { allowMissing: true });
+    let cached;
+    try {
+      const stat = await fs.stat(target);
+      if (stat.size <= 4 * TEXT_LIMIT) cached = JSON.parse(await fs.readFile(target, 'utf8'));
+    } catch (error) { if (!(error instanceof SyntaxError) && error.code !== 'ENOENT') throw error; }
+    if (cached?.key !== key || Object.keys(keyData).some(k => JSON.stringify(cached[k]) !== JSON.stringify(keyData[k]))
+      || cached.resultHash !== sha(JSON.stringify(cached.result))) return null;
+    try { checkResult(cached.result); } catch { return null; }
+    await verify(input); return cached;
+  }
+  async function saveCached(record, { root, key }, beforeWrite = async () => {}) {
+    let cacheStored = false;
+    await withCommitLock(`extraction-cache-write:${root}`, async () => {
+      const bytes = Buffer.byteLength(JSON.stringify(record));
+      if (bytes > cacheLimitBytes) return;
+      const entries = [];
+      for (const name of await fs.readdir(root)) {
+        if (!/^[a-f0-9]{64}\.json$/.test(name) || name === `${key}.json`) continue;
+        const file = await safePath(root, name), stat = await fs.stat(file).catch(() => null);
+        if (stat?.isFile()) entries.push({ file, size: stat.size, age: stat.mtimeMs });
+      }
+      await beforeWrite();
+      let total = entries.reduce((sum, entry) => sum + entry.size, 0) + bytes;
+      for (const entry of entries.sort((a, b) => a.age - b.age)) {
+        if (total <= cacheLimitBytes) break;
+        await fs.unlink(entry.file); total -= entry.size;
+      }
+      const target = await safePath(root, `${key}.json`, { allowMissing: true });
+      await writeJsonAtomic(target, record); cacheStored = true;
+    }).catch((error) => { if (!['ENOSPC', 'EACCES', 'EPERM'].includes(error.code)) throw error; });
+    return cacheStored;
+  }
+  async function extract(input, { signal, timeoutMs } = {}) {
+    invariant(!signal?.aborted, 'cancelled', '资料提取已取消。');
+    await verify(input);
+    const descriptor = await describe(input), { keyData, key, root, format, image } = descriptor;
     return withCommitLock(`extraction:${root}:${key}`, async () => {
       invariant(!signal?.aborted, 'cancelled', '资料提取已取消。');
-      const target = await safePath(root, `${key}.json`, { allowMissing: true });
-      let cached;
-      try {
-        const stat = await fs.stat(target);
-        if (stat.size <= 4 * TEXT_LIMIT) cached = JSON.parse(await fs.readFile(target, 'utf8'));
-      } catch (error) { if (!(error instanceof SyntaxError) && error.code !== 'ENOENT') throw error; }
-      if (cached?.key === key && cached.schema === CACHE_SCHEMA && cached.resultHash === sha(JSON.stringify(cached.result))) {
-        try { checkResult(cached.result); } catch { cached = null; }
-        if (cached) { await verify(input); return { ...cached.result, cacheHit: true, cacheKey: key, parserVersion }; }
-      }
+      const cached = await readCached(input, descriptor);
+      if (cached) return { ...cached.result, cacheHit: true, cacheKey: key, parserVersion };
       const release = await acquire(signal);
       let result;
       try {
@@ -147,24 +187,7 @@ function createProjectMaterialExtractor({ store, parserVersion = EXTRACTOR_VERSI
       // Cache-only eviction never touches originals, snapshots, ledgers or
       // knowledge. A cache write failure must not turn valid extraction into
       // an AI failure; it is reported as a non-cached result for this attempt.
-      let cacheStored = false;
-      await withCommitLock(`extraction-cache-write:${root}`, async () => {
-        const bytes = Buffer.byteLength(JSON.stringify(record));
-        if (bytes > cacheLimitBytes) return;
-        const entries = [];
-        for (const name of await fs.readdir(root)) {
-          if (!/^[a-f0-9]{64}\.json$/.test(name) || name === `${key}.json`) continue;
-          const file = await safePath(root, name), stat = await fs.stat(file).catch(() => null);
-          if (stat?.isFile()) entries.push({ file, size: stat.size, age: stat.mtimeMs });
-        }
-        let total = entries.reduce((sum, entry) => sum + entry.size, 0) + bytes;
-        for (const entry of entries.sort((a, b) => a.age - b.age)) {
-          if (total <= cacheLimitBytes) break;
-          await fs.unlink(entry.file); total -= entry.size;
-        }
-        await safePath(root, `${key}.json`, { allowMissing: true });
-        await writeJsonAtomic(target, record); cacheStored = true;
-      }).catch((error) => { if (!['ENOSPC', 'EACCES', 'EPERM'].includes(error.code)) throw error; });
+      const cacheStored = await saveCached(record, descriptor);
       return { ...result, cacheHit: false, cacheStored, cacheKey: key, parserVersion };
     });
   }
@@ -172,7 +195,38 @@ function createProjectMaterialExtractor({ store, parserVersion = EXTRACTOR_VERSI
     const result = await extract(input, options);
     return result.warnings.length ? `[提取范围与限制]\n${result.warnings.join('\n')}\n\n[正文]\n${result.text}` : result.text;
   }
-  return { extract, extractText };
+  const api = { extract, extractText };
+  extractionCapabilities.set(api, { verify, describe, readCached, saveCached });
+  return api;
 }
 
-module.exports = { createProjectMaterialExtractor, runDocumentWorker, runImageOcr, EXTRACTOR_VERSION, CACHE_SCHEMA };
+// Copies a verified full extraction into a separately scoped project cache.
+// Never calls a parser on a miss, accepts arbitrary JSON, or transfers AI analysis.
+async function reuseMaterialExtraction({ source, destination, sourceInput, destinationInput, sourceStudentId, studentId, authorize }) {
+  invariant(typeof studentId === 'string' && studentId && sourceStudentId === studentId && typeof authorize === 'function',
+    'scope_mismatch', '完整提取复用必须属于同一授权学生。');
+  const a = extractionCapabilities.get(source), b = extractionCapabilities.get(destination);
+  invariant(a && b, 'invalid_scope', '提取复用仅允许宿主持有的提取器。');
+  const allowed = async () => invariant(await authorize() === true, 'forbidden', '资料提取复用授权已变化。');
+  await allowed(); await a.verify(sourceInput); await b.verify(destinationInput);
+  const from = await a.describe(sourceInput), to = await b.describe(destinationInput);
+  for (const field of ['schema', 'sha256', 'format', 'parserVersion', 'options']) {
+    if (JSON.stringify(from.keyData[field]) !== JSON.stringify(to.keyData[field])) return { reused: false, reason: 'extraction_identity_mismatch' };
+  }
+  return withCommitLock(`extraction:${to.root}:${to.key}`, async () => {
+    const cached = await a.readCached(sourceInput, from);
+    if (!cached || cached.result.truncated === true) return { reused: false, reason: 'full_extraction_unavailable' };
+    await allowed();
+    if (await b.readCached(destinationInput, to)) return { reused: true, reason: 'already_cached' };
+    const record = { ...to.keyData, key: to.key, createdAt: new Date().toISOString(), result: cached.result, resultHash: cached.resultHash,
+      provenance: { kind: 'student-authorized-intake', studentId, sourceProjectId: sourceInput.projectId,
+        sourceMaterialId: sourceInput.materialId, sourceVersion: sourceInput.version,
+        materialId: destinationInput.materialId, version: destinationInput.version, sourceKey: from.key } };
+    const stored = await b.saveCached(record, to, async () => {
+      await a.verify(sourceInput); await b.verify(destinationInput); await allowed();
+    });
+    return { reused: stored, reason: stored ? 'full_extraction_reused' : 'cache_not_stored' };
+  });
+}
+
+module.exports = { createProjectMaterialExtractor, reuseMaterialExtraction, runDocumentWorker, runImageOcr, EXTRACTOR_VERSION, CACHE_SCHEMA, acquireExtractionSlot: acquire };

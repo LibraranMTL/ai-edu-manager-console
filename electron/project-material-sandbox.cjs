@@ -6,6 +6,26 @@ const { invariant, MaterialError } = require('./project-material-contract.cjs');
 const { hashStableFile } = require('./project-materials.cjs');
 
 const verified = new Map();
+const STRICT_SANDBOX_ENV = 'EDU_REQUIRE_MATERIAL_OS_SANDBOX';
+
+function hostMediatedEvidence(executable, executableSha256, details = {}) {
+  return {
+    schema: 'edu-manager.project-material-isolation.v2',
+    executable,
+    executableSha256,
+    passed: false,
+    mode: 'host-mediated-no-tools',
+    degraded: true,
+    reason: 'os_sandbox_unavailable',
+    details,
+    measuredAt: new Date().toISOString(),
+  };
+}
+
+function strictSandboxRequired() {
+  return process.env[STRICT_SANDBOX_ENV] === '1';
+}
+
 async function verifyMaterialSandbox(executable, { spawnProcess = spawn, signal } = {}) {
   invariant(process.platform === 'win32' && path.isAbsolute(executable || '') && /\.exe$/i.test(executable),
     'sandbox_unavailable', '统一资料消化需要可验证的Windows原生执行器。');
@@ -25,29 +45,44 @@ async function verifyMaterialSandbox(executable, { spawnProcess = spawn, signal 
     // the native read-only policy and require observed denial, not exit alone.
     const args = ['sandbox', 'windows', '-c', 'sandbox_mode="read-only"', '--',
       'powershell.exe', '-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')];
-    const output = await new Promise((resolve, reject) => {
-      const child = spawnProcess(executable, args, { cwd: root, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
-      let stdout = '', stderr = '', done = false;
-      const finish = (error, value) => {
-        if (done) return; done = true; clearTimeout(timer); signal?.removeEventListener('abort', cancel);
-        error ? reject(error) : resolve(value);
-      };
-      const cancel = () => { child.kill(); finish(new MaterialError('cancelled', '任务已取消。')); };
-      const timer = setTimeout(() => { child.kill(); finish(new MaterialError('sandbox_timeout', '隔离验证超时，未运行资料消化。')); }, 30000);
-      signal?.addEventListener('abort', cancel, { once: true });
-      child.stdout.on('data', (chunk) => { stdout = (stdout + chunk).slice(-65536); });
-      child.stderr.on('data', (chunk) => { stderr = (stderr + chunk).slice(-4096); });
-      child.on('error', (error) => finish(error));
-      child.on('close', (code) => finish(null, { code, stdout, stderr }));
-    });
+    let output;
+    try {
+      output = await new Promise((resolve, reject) => {
+        const child = spawnProcess(executable, args, { cwd: root, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
+        let stdout = '', stderr = '', done = false;
+        const finish = (error, value) => {
+          if (done) return; done = true; clearTimeout(timer); signal?.removeEventListener('abort', cancel);
+          error ? reject(error) : resolve(value);
+        };
+        const cancel = () => { child.kill(); finish(new MaterialError('cancelled', '任务已取消。')); };
+        const timer = setTimeout(() => { child.kill(); finish(new MaterialError('sandbox_timeout', '隔离验证超时。')); }, 30000);
+        signal?.addEventListener('abort', cancel, { once: true });
+        child.stdout.on('data', (chunk) => { stdout = (stdout + chunk).slice(-65536); });
+        child.stderr.on('data', (chunk) => { stderr = (stderr + chunk).slice(-4096); });
+        child.on('error', (error) => finish(error));
+        child.on('close', (code) => finish(null, { code, stdout, stderr }));
+      });
+    } catch (error) {
+      if (error?.code === 'cancelled' || strictSandboxRequired()) throw error;
+      const evidence = hostMediatedEvidence(executable, executableSha256, {
+        probeCode: error?.code || 'sandbox_probe_failed',
+        diagnostic: String(error?.message || error).slice(-4096),
+      });
+      if (spawnProcess === spawn) { verified.clear(); verified.set(key, evidence); }
+      return evidence;
+    }
     let result;
     try { result = JSON.parse(output.stdout.trim()); } catch { result = {}; }
     const unchanged = (await Promise.all(files.map((file) => fs.readFile(file, 'utf8')))).every((text) => text === 'SYNTHETIC PROBE');
-    invariant(output.code === 0 && unchanged && result.results?.length === 2
-      && result.results.every((item) => item.read === true && item.denied === true),
-    'sandbox_unverified', '未证实此执行器的只读隔离，不能开始项目消化。', { exitCode: output.code, diagnostic: output.stderr, result });
-    const evidence = { schema: 'edu-manager.project-material-sandbox-probe.v1', executable, executableSha256,
-      passed: true, unchanged, measuredAt: new Date().toISOString() };
+    const passed = output.code === 0 && unchanged && result.results?.length === 2
+      && result.results.every((item) => item.read === true && item.denied === true);
+    const details = { exitCode: output.code, diagnostic: output.stderr, result };
+    if (!passed && strictSandboxRequired()) throw new MaterialError('sandbox_unverified',
+      '未证实此执行器的只读隔离，不能开始项目消化。', details);
+    const evidence = passed
+      ? { schema: 'edu-manager.project-material-isolation.v2', executable, executableSha256,
+        passed: true, mode: 'os-read-only', unchanged, measuredAt: new Date().toISOString() }
+      : hostMediatedEvidence(executable, executableSha256, details);
     if (spawnProcess === spawn) { verified.clear(); verified.set(key, evidence); }
     return evidence;
   } finally {
@@ -57,4 +92,4 @@ async function verifyMaterialSandbox(executable, { spawnProcess = spawn, signal 
     await fs.rm(resolved, { recursive: true, force: true });
   }
 }
-module.exports = { verifyMaterialSandbox };
+module.exports = { verifyMaterialSandbox, hostMediatedEvidence, strictSandboxRequired, STRICT_SANDBOX_ENV };

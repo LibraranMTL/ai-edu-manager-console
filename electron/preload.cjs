@@ -9,12 +9,25 @@ contextBridge.exposeInMainWorld('AndroidBridge', {
     return () => ipcRenderer.removeListener('quick-capture:navigate', listener);
   },
   getDownloadInboxSettings() { return ipcRenderer.invoke('bridge:getDownloadInboxSettings'); },
+  smartInboxAction(action, input) { return ipcRenderer.invoke('bridge:smartInboxAction', action, input); },
+  agentControlAction(action, input) { return ipcRenderer.invoke('bridge:agentControlAction', action, input); },
+  onSmartInboxChanged(callback) {
+    const listener = () => callback(); ipcRenderer.on('smart-inbox:changed', listener);
+    return () => ipcRenderer.removeListener('smart-inbox:changed', listener);
+  },
   configureDownloadInbox(action) { return ipcRenderer.invoke('bridge:configureDownloadInbox', action); },
   listDownloadInboxFiles() { return ipcRenderer.invoke('bridge:listDownloadInboxFiles'); },
   deliverDownloadInboxFiles(ids, target) { return ipcRenderer.invoke('bridge:deliverDownloadInboxFiles', ids, target); },
   trashDownloadInboxFiles(ids) { return ipcRenderer.invoke('bridge:trashDownloadInboxFiles', ids); },
   openDownloadInboxFolder() { return ipcRenderer.invoke('bridge:openDownloadInboxFolder'); },
   getPracticeDashboard(id) { return ipcRenderer.invoke('bridge:getPracticeDashboard', id); },
+  practiceAction(id, action, input) { return ipcRenderer.invoke('bridge:practiceAction', id, action, input); },
+  publicationAction(id, action, input) { return ipcRenderer.invoke('bridge:publicationAction', id, action, input); },
+  onPracticeChanged(callback) {
+    const listener = (_event, payload) => callback(payload);
+    ipcRenderer.on('onNativePracticeChanged', listener);
+    return () => ipcRenderer.removeListener('onNativePracticeChanged', listener);
+  },
   cancelGuidanceResearch(id) { return ipcRenderer.invoke('bridge:cancelGuidanceResearch', id); },
   exportPracticeCard(id, cardId, format) { return ipcRenderer.invoke('bridge:exportPracticeCard', id, cardId, format); },
   savePracticePlan(id, plan) { return ipcRenderer.invoke('bridge:savePracticePlan', id, plan); },
@@ -951,6 +964,15 @@ contextBridge.exposeInMainWorld('AndroidBridge', {
   getTaskCenter() {
     return ipcRenderer.sendSync('bridge:getTaskCenter');
   },
+  getTaskPage(query = {}) {
+    return ipcRenderer.invoke('bridge:getTaskPage', query);
+  },
+  getTaskDetail(taskId) {
+    return ipcRenderer.invoke('bridge:getTaskDetail', String(taskId));
+  },
+  reopenTaskHandoff(taskId, executionId, action = 'open') {
+    return ipcRenderer.invoke('bridge:reopenTaskHandoff', String(taskId), String(executionId), action);
+  },
   getTaskCenterAsync(force = false, quick = false) {
     return ipcRenderer.invoke('bridge:getTaskCenterAsync', Boolean(force), Boolean(quick));
   },
@@ -1026,20 +1048,47 @@ contextBridge.exposeInMainWorld('AndroidBridge', {
   cancelTask(taskId, note) {
     return ipcRenderer.sendSync('bridge:cancelTask', taskId, note);
   },
+  deleteTaskHistory(taskId) {
+    return ipcRenderer.sendSync('bridge:deleteTaskHistory', taskId);
+  },
+  previewTaskGovernanceBatch(request) {
+    return ipcRenderer.invoke('bridge:previewTaskGovernanceBatch', request);
+  },
+  commitTaskGovernanceBatch(request) {
+    return ipcRenderer.invoke('bridge:commitTaskGovernanceBatch', request);
+  },
   importTaskResult(taskId) {
     return ipcRenderer.sendSync('bridge:importTaskResult', taskId);
   },
   importTaskResultText(taskId, content) {
     return ipcRenderer.sendSync('bridge:importTaskResultText', taskId, content);
   },
+  importTaskResultTextAsync(taskId, content) {
+    return ipcRenderer.invoke('bridge:importTaskResultTextAsync', taskId, content);
+  },
+  importTaskResultFileAsync(taskId) {
+    return ipcRenderer.invoke('bridge:importTaskResultFileAsync', taskId);
+  },
+  confirmTaskExternalStopped(taskId, executionId) {
+    return ipcRenderer.invoke('bridge:confirmTaskExternalStopped', taskId, executionId);
+  },
+  detectWorkBuddyBackgroundAuthorization(confirmed) {
+    return ipcRenderer.invoke('bridge:detectWorkBuddyBackgroundAuthorization', confirmed);
+  },
+  detectCodexBackgroundAuthorization(confirmed) {
+    return ipcRenderer.invoke('bridge:detectCodexBackgroundAuthorization', confirmed);
+  },
   syncQClawTaskResults() {
     return ipcRenderer.sendSync('bridge:syncQClawTaskResults');
+  },
+  syncAgentTaskResults(agentId = '') {
+    return ipcRenderer.sendSync('bridge:syncAgentTaskResults', agentId);
   },
   submitDailyActionFeedback(taskId, status, note) {
     return ipcRenderer.sendSync('bridge:submitDailyActionFeedback', taskId, status, note);
   },
-  openTaskCenterPath(kind) {
-    return ipcRenderer.sendSync('bridge:openTaskCenterPath', kind);
+  openTaskCenterPath(kind, agentId = '') {
+    return ipcRenderer.sendSync('bridge:openTaskCenterPath', kind, agentId);
   },
   openTaskResultPath(taskId) {
     return ipcRenderer.sendSync('bridge:openTaskResultPath', taskId);

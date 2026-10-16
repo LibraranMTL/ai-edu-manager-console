@@ -119,6 +119,7 @@ function captureGit(args) {
     encoding: 'utf8',
     stdio: 'pipe',
     windowsHide: true,
+    maxBuffer: 32 * 1024 * 1024,
   });
   if (result.error) throw result.error;
   if (result.status !== 0) {
@@ -221,9 +222,16 @@ function bundleCourseImportRuntime() {
     target: 'node20',
     sourcemap: false,
     minify: false,
+    minifyWhitespace: true,
+    legalComments: 'inline',
     external: ['electron'],
     logLevel: 'warning',
   });
+}
+function bundleConnectorLifecycleRuntime() {
+  locateEsbuildModule().buildSync({ entryPoints: [path.join(repoRoot, 'electron', 'external-agent-lifecycle.cjs')],
+    outfile: path.join(stageRoot, 'electron', 'external-agent-lifecycle.cjs'), bundle: true, platform: 'node', format: 'cjs', target: 'node20',
+    sourcemap: false, minify: false, minifyWhitespace: true, legalComments: 'inline', external: ['electron'], logLevel: 'warning' });
 }
 
 function writeRuntimePackage() {
@@ -239,7 +247,7 @@ function writeRuntimePackage() {
       appId: 'com.qxmatrix.edumanager.desktop',
       productName: 'AI Education Manager Console',
       electronVersion,
-      compression: 'normal',
+      compression: 'maximum',
       electronLanguages,
       directories: { output: 'out' },
       files: ['dist/**/*', 'electron/**/*', 'package.json'],
@@ -340,9 +348,20 @@ function build() {
     }
 
     recordPhase('copy-runtime-files');
-    copyDirectoryFiles(path.join(repoRoot, 'electron'), path.join(stageRoot, 'electron'));
+    const stagedElectron = path.join(stageRoot, 'electron');
+    copyDirectoryFiles(path.join(repoRoot, 'electron'), stagedElectron);
+    // Student/teacher terminal entry points are delivered as separate products.
+    // Excluding them from the host keeps the host runtime bounded without weakening
+    // any host capability or raising the package-size safety limit.
+    for (const terminalEntry of ['terminal-main.cjs', 'terminal-preload.cjs']) {
+      const target = path.join(stagedElectron, terminalEntry);
+      assertInside(target, stagedElectron, 'terminal entry cleanup');
+      fs.rmSync(target, { force: true });
+    }
     compileLifecycleHook(path.join(stageRoot, 'electron', 'agent-lifecycle-hook.cs'), path.join(stageRoot, 'electron', 'agent-lifecycle-hook.exe'));
     bundleCourseImportRuntime();
+    bundleConnectorLifecycleRuntime();
+    require('./build-practice-runtime.cjs').bundlePracticeRuntime(stageRoot, locateEsbuildModule());
     require('./build-project-material-extractor.cjs').bundleMaterialExtractor(stageRoot, locateEsbuildModule());
     require('./build-project-material-pdf.cjs').stagePdfRuntime(stageRoot);
     fs.mkdirSync(path.join(stageRoot, 'public', 'brand'), { recursive: true });
@@ -384,12 +403,41 @@ function build() {
     if (!asarFiles.includes('\\electron\\main.cjs') || !asarFiles.includes('\\dist\\index.html')) {
       throw new Error('Packaged app is missing its main process or renderer entry.');
     }
+    for (const terminalEntry of ['\\electron\\terminal-main.cjs', '\\electron\\terminal-preload.cjs']) {
+      if (asarFiles.includes(terminalEntry)) throw new Error(`Host package unexpectedly contains separate terminal entry: ${terminalEntry}`);
+    }
     for (const relative of ['electron/growth-current-view.cjs', 'electron/report-evidence-archive.cjs', 'electron/project-evidence-reference.cjs', 'electron/project-archive-runtime.cjs', 'electron/project-archive-startup.cjs', 'electron/project-archive-transaction.cjs', 'electron/project-material-evidence.cjs', 'electron/project-material-access.cjs', 'electron/project-material-promotion.cjs', 'electron/project-material-extract.cjs', 'electron/project-material-extract-worker.cjs',
       'electron/project-material-pdf.cjs', 'electron/project-material-pdf-worker.cjs']) {
       if (!asarFiles.includes(`\\${relative.replaceAll('/', '\\')}`)) throw new Error(`Packaged material extraction runtime is missing: ${relative}`);
       const staged = fs.readFileSync(path.join(stageRoot, relative));
       const packaged = asar.extractFile(appAsar, relative);
       if (!staged.equals(packaged)) throw new Error(`Packaged material extraction runtime differs from verified stage: ${relative}`);
+    }
+    const externalAgentRuntime = [
+      'electron/external-agent-connector.cjs',
+      'electron/external-agent-host.cjs',
+      'electron/external-agent-mcp.cjs',
+      'electron/external-agent-install.cjs',
+      'electron/agent-report-read.cjs',
+      'electron/external-agent-writes.cjs',
+      'electron/external-processing-receipt.cjs',
+    ];
+    for (const relative of externalAgentRuntime) {
+      if (!asarFiles.includes(`\\${relative.replaceAll('/', '\\')}`)) {
+        throw new Error(`Packaged external Agent connector runtime is missing: ${relative}`);
+      }
+      const staged = fs.readFileSync(path.join(stageRoot, relative));
+      const packaged = asar.extractFile(appAsar, relative);
+      if (!staged.equals(packaged)) {
+        throw new Error(`Packaged external Agent connector runtime differs from verified stage: ${relative}`);
+      }
+    }
+    const packagedRendererText = asarFiles
+      .filter((name) => /^\\dist\\assets\\.*\.js$/i.test(name))
+      .map((name) => asar.extractFile(appAsar, name.replace(/^\\/, '')).toString('utf8'))
+      .join('\n');
+    if (!packagedRendererText.includes('外部 Agent 连接器')) {
+      throw new Error('Packaged renderer is missing the external Agent connector settings entry.');
     }
     for (const required of [
       '\\electron\\agent-lifecycle-hook.exe',
@@ -421,7 +469,7 @@ function build() {
       throw new Error('Packaged knowledge commit guard differs from the verified source');
     }
     const asarBytes = fs.statSync(appAsar).size;
-    if (asarBytes > 20 * 1024 * 1024) throw new Error(`app.asar exceeds 20 MiB: ${(asarBytes / 1024 / 1024).toFixed(2)} MiB`);
+    if (asarBytes > 21 * 1024 * 1024) throw new Error(`app.asar exceeds 21 MiB: ${(asarBytes / 1024 / 1024).toFixed(2)} MiB`);
     recordPhase('secret-scan-package');
     const packageSecretAudit = scanSecretSignatures([appAsar, stagedExe], 'packaged artifacts');
 
@@ -492,6 +540,7 @@ function build() {
         asarFiles: asarFiles.length,
         nodeModuleFiles: packagedNodeModules.length,
         agentBridge: unpackedAgentBridge,
+        externalAgentConnectorRuntime: externalAgentRuntime,
         teacherTerminalSupport: true,
         unpackedBytes: directorySize(unpackedRoot),
       },

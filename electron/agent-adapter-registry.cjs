@@ -11,6 +11,8 @@ const ACTIVE_AGENT_TOOL_IDS = Object.freeze([
   'claude',
   'doubao',
   'hermes',
+  'trae',
+  'qoder-work',
 ]);
 
 // Legacy IDs remain readable so an upgrade never relabels historical sources or

@@ -14,6 +14,7 @@ const https = require('https');
 const net = require('net');
 const dgram = require('dgram');
 const crypto = require('crypto');
+const { RESEARCH_KINDS, researchResultValidation, researchRetryPatch, researchTaskDue } = require('./research-task-policy.cjs');
 // Portable acceptance runs must never share live students or encrypted credentials.
 const isolatedUserData = app.commandLine.getSwitchValue('user-data-dir');
 if (isolatedUserData) {
@@ -22,7 +23,37 @@ if (isolatedUserData) {
   app.setPath('userData', path.resolve(isolatedUserData));
 }
 const { isDeepStrictEqual } = require('node:util');
+const { studentActivity, studentAutomaticTasksPaused, studentTaskCardsSuppressed, inactiveStudentTaskCardRetirable, automaticStudentTaskBlocked } = require('./student-automation-policy.cjs');
+const { deletedTaskCandidateSuppressed, removeHistoricalTaskRecord } = require('./task-history-policy.cjs');
+const { archiveTaskRecord, batchGovernancePreview, governanceEligibility,
+  isLegacySmartInboxOrphan, restoreArchivedTask } = require('./task-governance-policy.cjs');
 const { Worker } = require('worker_threads');
+const { createTaskIoClient } = require('./task-io-client.cjs');
+const { createTaskProgressBuffer } = require('./task-progress-buffer.cjs');
+const { taskPresentation } = require('./task-read-model.cjs');
+const { resultIdentityFeedback } = require('./task-resolution.cjs');
+const { createTaskStoreService } = require('./task-store-service.cjs');
+const taskIoClient = createTaskIoClient({ onInboxChanged: () => {
+  if (taskReadMaintenanceStopped) return;
+  taskInboxDirty = true;
+  taskInboxLastScan = 0;
+  syncAgentTaskResults();
+} });
+const taskStoreGuard = createTaskStoreService({ request: (...args) => taskIoClient.request(...args),
+  onFault: fault => console.error('Task storage paused:', fault.message) });
+const taskProgressBuffer = createTaskProgressBuffer();
+let taskProgressTimer = null;
+let taskSnapshotRefresh = null;
+let taskLegacySnapshot = '';
+let taskInboxPromise = null;
+let taskInboxTimer = null;
+let taskInboxDirty = false;
+let taskReadMaintenanceTimer = null;
+let taskReadMaintenanceRunning = false;
+let taskReadMaintenanceStopped = false;
+let taskCatalogRefreshedAt = 0;
+let taskInboxLastScan = 0;
+const taskGovernancePreviews = new Map();
 const { pathToFileURL } = require('url');
 const { WebContentsView, session } = require('electron');
 const { createCourseCatalogStore } = require('./course-catalog-store.cjs');
@@ -85,6 +116,12 @@ const {
   resolveStudentBaseDir,
 } = require('./storage-root.cjs');
 const { mergeOpenAiToolInstall, selectNewestCodexCliCandidate } = require('./openai-tool-install.cjs');
+const {
+  extractHostValidatedDraft,
+  hostValidatedDraftPrompt,
+  isHostValidatedDraftTask,
+  validateHostDraftShape,
+} = require('./codex-task-policy.cjs');
 const { countProjectFiles } = require('./project-file-count.cjs');
 const {
   isWorkspaceMaterialProject, normalizeMaterialConfiguration, readProjectMaterialIndexSync,
@@ -144,8 +181,9 @@ const { mergeAssetReferences, recentAssetTrend } = require('./asset-statistics.c
 const { queryUploadReceipt, verifiedSource } = require('./upload-receipt-query.cjs');
 const { lanDiscoveryBroadcastTargets } = require('./lan-discovery.cjs');
 const { createStudentPortableMigrationManager } = require('./student-portable-migration.cjs');
-const { createPlanningGuidanceService } = require('./planning-guidance.cjs');
-const { createCodexResearchSearch } = require('./planning-research.cjs');
+ const { createPlanningGuidanceService } = require('./planning-guidance.cjs');
+ const { createCodexResearchSearch } = require('./planning-research.cjs');
+ const { PROFILE: WORKBUDDY_RESEARCH_PROFILE, createWorkBuddyResearchSearch, verifyWorkBuddyResearch } = require('./workbuddy-research.cjs');
 const { spawn, spawnSync } = require('child_process');
 const { createInstallProbeCache } = require('./install-probe-cache.cjs');
 const {
@@ -195,7 +233,10 @@ const {
   collectLearningEvents,
   queryLearningTrajectory,
 } = require('./learning-analytics.cjs');
-const { supplementCompletedDigestLearningEvents } = require('./completed-digest-learning-events.cjs');
+const {
+  reconcileCompletedDigestLearningReceipts,
+  supplementCompletedDigestLearningEvents,
+} = require('./completed-digest-learning-events.cjs');
 const { CaptureTimelineScheduler, adaptiveConcurrency } = require('./capture-timeline-scheduler.cjs');
 const { CaptureHeavyWorkGate } = require('./capture-heavy-work-gate.cjs');
 const { runWindowsOcr: runCaptureWindowsOcr } = require('./capture-timeline-worker.cjs');
@@ -229,7 +270,12 @@ const {
   selectQClawAgentId,
   upsertQClawNativeMcpServer,
 } = require('./qclaw-runtime.cjs');
-const { buildWorkBuddyInvocation, discoverWorkBuddyRuntime } = require('./workbuddy-runtime.cjs');
+const { buildWorkBuddyTaskDeepLink, discoverWorkBuddyRuntime, createWorkBuddyProbeCache } = require('./workbuddy-runtime.cjs');
+const workBuddyProbeCache = createWorkBuddyProbeCache();
+const { createWorkBuddyQualification, createWorkBuddyStructuredAdapter, executeMaterialWorkBuddy } = require('./workbuddy-controlled.cjs');
+const workBuddyQualification = createWorkBuddyQualification();
+const { studentControlledProject, registerStudentControlledBatch, finalizeStudentControlledDigest } = require('./student-controlled-material.cjs');
+const { buildQoderInvocation, buildTraeInvocation, modernAgentRuntime } = require('./modern-agent-runtime.cjs');
 const {
   issueAgentAccessGrant,
   normalizeAgentAccessGrantStore,
@@ -322,15 +368,72 @@ const { completionBlockers, singleStudentEvidenceDraft } = require('./project-co
 const { weekRange, monthRange, reportIsCurrent, validateSectionedReport, publishValidatedReport: publishValidatedReportBase } = require('./learning-report-workflow.cjs');
 const { createCloudReportRuntime } = require('./cloud-report-runtime.cjs');
 const { createCustomOptions } = require('./custom-options.cjs');
-const { createCodexStructuredGenerator, redact: redactStudentGeneration } = require('./structured-generation.cjs');
+const { createCodexStructuredGenerator, createLlmApiStructuredGenerator, redact: redactStudentGeneration } = require('./structured-generation.cjs');
+const builtinStructuredProvider = require('./builtin-structured-provider.cjs');
 const { createCaptureInbox } = require('./capture-inbox.cjs');
 const { createAudioTranscription } = require('./audio-transcription.cjs');
 const { createObsidianVaults } = require('./obsidian-vault.cjs');
 const { createPracticeCards } = require('./practice-cards.cjs');
 const { checkedLanguageProfile } = require('./practice-language.cjs');
 let practiceCardsRuntime;
+async function generateLearningCardThroughControl(input, scope) {
+  const student = findStudentByKey(String(scope?.studentId || ''));
+  if (!student) throw Error('当前学生不存在');
+  assertAgentProfileAllowed(student.id, LEARNING_CARD_PROFILE);
+  await refreshAdapterCapabilities(true);
+  const policy = agentControlPolicy(student, LEARNING_CARD_PROFILE);
+  const assertCurrent = () => {
+    assertAgentProfileAllowed(student.id, LEARNING_CARD_PROFILE);
+    const latest = findStudentByKey(String(student.id));
+    if (JSON.stringify(agentControlPolicy(latest, LEARNING_CARD_PROFILE)) !== JSON.stringify(policy)) throw Object.assign(Error('执行期间全局授权或路由发生变化，已停止后续调用'), { code: 'AGENT_POLICY_CHANGED' });
+  };
+  const providers = require('./agent-control-plane.cjs').providersFor(policy, LEARNING_CARD_PROFILE);
+  if (!providers.length) throw Error('学习卡片没有已授权执行器，请前往 Agent 接入与调度中心设置');
+  const failures = [];
+  const release = captureHeavyWorkGate.tryAcquire({ kind: 'agent_generation', studentId: student.id,
+    sessionId: `practice-card-${crypto.randomUUID()}`, snapshot: captureTimelineResourceSnapshot() });
+  if (!release) throw new Error('后台正在处理资料；请稍后生成学习卡片，现有卡片不会改变');
+  try {
+    for (const providerId of providers) {
+      assertCurrent();
+      try {
+        if (providerId === 'codex') {
+          const capability = adapterCapabilities().codex;
+          const status = agentProfileStatus({ providerId, profile: LEARNING_CARD_PROFILE, capability,
+            circuit: readTaskStore().runtime?.circuits?.codex });
+          if (!status.automaticReady || !capability?.exePath) throw Object.assign(Error(status.message), { code: 'AGENT_UNAVAILABLE' });
+          const value = await createCodexStructuredGenerator({ executable: capability.exePath, spawnProcess: spawnAdapterProcess, terminateProcess: terminateCaptureVisionProcess })(input);
+          assertCurrent(); return value;
+        }
+        if (providerId === 'workbuddy') {
+          const connected = await classificationAdapter(providerId);
+          if (!connected || connected.unavailable) throw Object.assign(Error(connected?.message || 'WorkBuddy 后台通道尚未连接'), { code: connected?.code || 'AGENT_UNAVAILABLE' });
+          const qualification = await workBuddyQualification.checkProfile(connected.runtime, LEARNING_CARD_PROFILE);
+          await persistWorkBuddyControlledStatus(connected.runtime, null, qualification, [LEARNING_CARD_PROFILE]);
+          if (!qualification.ready) throw Object.assign(Error(qualification.message || 'WorkBuddy 学习卡片合同未通过'), { code: qualification.code || 'AGENT_UNAVAILABLE' });
+          const provider = await createWorkBuddyStructuredAdapter({ runtime: connected.runtime, qualification });
+          const value = await createLlmApiStructuredGenerator({ provider })(input);
+          assertCurrent(); return value;
+        }
+        if (providerId === 'llm-api' || providerId.startsWith('custom:') || builtinStructuredProvider.PROVIDERS.includes(providerId)) {
+          const adapter = await classificationAdapter(providerId);
+          if (!adapter || adapter.unavailable) throw Object.assign(Error(adapter?.message || '结构化执行器尚未连接'), { code: adapter?.code || 'AGENT_UNAVAILABLE' });
+          if (adapter.structuredBuiltin) await ensureBuiltinStructuredQualification(adapter, LEARNING_CARD_PROFILE);
+          const value = await createLlmApiStructuredGenerator({ provider: adapter })(input);
+          assertCurrent(); return value;
+        }
+        throw Object.assign(Error('此执行器尚未接入学习卡片合同'), { code: 'AGENT_UNAVAILABLE' });
+      } catch (error) {
+        failures.push(`${providerId}:${error.code || error.message}`);
+        if (!require('./agent-control-plane.cjs').safeToRetry(error)) throw error;
+      }
+    }
+    throw Error(`已授权的学习卡片执行器均未完成生成：${failures.join('；')}`);
+  } finally { release(); }
+}
 function getPracticeCards() {
   return practiceCardsRuntime ||= createPracticeCards({
+    resolveResource: key => getCardResources().resolve(key),
     resolveStudentDir: async id => { const student = findStudent(String(id || '')); if (!student) throw new Error('当前学生不存在'); return studentAiManagerDir(student); },
     readLanguageProfile: async id => { const student = findStudent(String(id || '')); if (!student) throw new Error('当前学生不存在'); return checkedLanguageProfile(student.languageProfile); },
     snapshot: async id => {
@@ -339,15 +442,93 @@ function getPracticeCards() {
       const { deidentifyResearchInput } = require('./planning-guidance.cjs');
       return { ...value, languageProfile: checkedLanguageProfile(student.languageProfile), learningSignals: JSON.parse(redactStudentGeneration(value.learningSignals, student)), confirmedGrowthSignals: JSON.parse(redactStudentGeneration(value.confirmedGrowthSignals, student)), profile: JSON.parse(redactStudentGeneration(deidentifyResearchInput(student, value), student)) };
     },
-    generate: async input => {
-      await refreshAdapterCapabilities(true); const capability = adapterCapabilities().codex;
-      if (!capability?.available || !capability.authorized || !capability.exePath) throw new Error('Codex 结构化生成不可用；请完成 CLI 登录并检测');
-      return createCodexStructuredGenerator({ executable: capability.exePath, spawnProcess: spawnAdapterProcess, terminateProcess: terminateCaptureVisionProcess })(input);
+    generate: generateLearningCardThroughControl,
+    enqueueReview: (id, attemptId, retry) => getPracticeTaskHost().enqueue(id, attemptId, retry),
+    applyLearning: async (id, input) => {
+      const student = findStudent(String(id)); if (!student) throw Error('当前学生不存在');
+      return require('./learning-analytics.cjs').applyPracticeLearningReview(student.rootPath || getStudentRootDir(student.name), id, input);
     },
   });
 }
+let practiceTaskHost;
+let cardResourcesRuntime;
+function getCardResources() {
+  return cardResourcesRuntime ||= require('./card-resources.cjs').createCardResources({
+    directory: path.join(app.getPath('userData'), 'card-resources'), license: publicLicenseStatus,
+    student: id => findStudent(String(id)), students: () => readStudentsIndex().map(toHostStudent),
+    instantiate: (id, resource) => getPracticeCards().instantiate(id, resource),
+    personalCard: async (id, cardId) => { const card = await getPracticeCards().teachingCard(id, cardId); const student = findStudent(String(id)); if (!student) throw Error('当前学生不存在'); return { ...card, content: JSON.parse(redactStudentGeneration(card.content, student)) }; },
+  });
+}
+async function handleCardResourceAction(event, id, action, input) {
+  const api = getCardResources(), parent = BrowserWindow.fromWebContents(event.sender);
+  if (action === 'resourceList') return api.list(id, input);
+  if (action === 'resourcePublicationContext') return api.publicationContext(id);
+  if (action === 'resourcePublish') return api.publish(id,input.id,input);
+  if (action === 'resourceWithdraw') return api.withdraw(id,input.key);
+  if (action === 'resourceDetail') return api.detail(id, input.key);
+  if (action === 'resourceStart') return api.start(id, input.key);
+  if (action === 'resourceSave') return api.save(id, input.key);
+  if (action === 'resourceFile') return api.file(id, input.key);
+  if (action === 'resourceDraftFile') return api.draftFile(id, input.id);
+  if (action === 'resourceHistoricalFile') return api.historicalFile(id, input.cardId);
+  if (action === 'resourceExport') {
+    const resource=await api.detail(id,input.key),card={...resource,id:resource.cardId,status:'ready'};
+    const options={card,format:input.format,BrowserWindow,dialog,parent,tempRoot:app.getPath('temp')};
+    return resource.type==='document' ? require('./practice-document.cjs').renderOriginal({...options,file:await api.file(id,input.key)}) : require('./practice-card-export.cjs').renderPracticeCard(options);
+  }
+  if (action === 'resourceDrafts') return api.drafts(id);
+  if (action === 'resourceDraft') return api.draft(id, input.id);
+  if (action === 'resourceDeleteDraft') {
+    await api.draft(id,input.id);
+    const choice=await dialog.showMessageBox(parent,{type:'question',buttons:['取消','删除草稿'],defaultId:0,cancelId:0,message:'删除这份未发布草稿？',detail:'已发布卡片和历史作答不会删除。删除后可在当前页面撤销。'});
+    return choice.response===1 ? api.deleteDraft(id,input.id,input.revision) : {cancelled:true};
+  }
+  if (action === 'resourceRestoreDraft') return api.restoreDraft(id,input.id);
+  if (action === 'resourceNewDraft') return api.newDraft(id, input);
+  if (action === 'resourceSaveDraft') return api.saveDraft(id, input.id, input);
+  if (action === 'resourceEditVersion') return api.editVersion(id, input.key);
+  if (action === 'resourceAssign') return api.assign(id, input.key, input);
+  if (action === 'resourceExportBundle') {
+    const bytes=await api.exportBundle(id,input.keys);const choice=await dialog.showSaveDialog(parent,{title:'导出已发布卡片合集',defaultPath:'学习卡片合集.edu-cardpkg',filters:[{name:'教育管家卡片包',extensions:['edu-cardpkg']}]});
+    if(choice.canceled||!choice.filePath)return {cancelled:true};await fs.promises.writeFile(choice.filePath.endsWith('.edu-cardpkg')?choice.filePath:`${choice.filePath}.edu-cardpkg`,bytes);return {exported:true};
+  }
+  if (action === 'resourceSaveOriginal') {
+    const file=await api.file(id,input.key);const choice=await dialog.showSaveDialog(parent,{title:'另存原版卡片',defaultPath:`学习卡片${file.extension}`});if(choice.canceled||!choice.filePath)return {cancelled:true};await fs.promises.writeFile(choice.filePath,Buffer.from(file.base64,'base64'));return {saved:true};
+  }
+  if (action === 'resourceImport') {
+    const choice = await dialog.showOpenDialog(parent, { title:'导入离线卡片包', properties:['openFile'], filters:[{name:'教育管家卡片包',extensions:['edu-cardpkg']}] });
+    if (choice.canceled || !choice.filePaths[0]) return { cancelled:true };
+    const stat = await fs.promises.lstat(choice.filePaths[0]); if (!stat.isFile() || stat.isSymbolicLink() || stat.size > 64*1024*1024) throw Error('请选择不超过 64 MiB 的普通卡片包文件');
+    return api.importBytes(await fs.promises.readFile(choice.filePaths[0]));
+  }
+  if (action === 'resourceAttach') {
+    const choice = await dialog.showOpenDialog(parent, { title:'选择 PDF 或图片卡片', properties:['openFile'], filters:[{name:'原版卡片',extensions:['pdf','png','jpg','jpeg']}] });
+    if (choice.canceled || !choice.filePaths[0]) return { cancelled:true };
+    const file=choice.filePaths[0],stat=await fs.promises.lstat(file); if(!stat.isFile()||stat.isSymbolicLink()||stat.size>10*1024*1024)throw Error('文件需要为不超过 10 MiB 的普通文件');
+    return api.attachDraftFile(id,input.id,await fs.promises.readFile(file),path.extname(file).toLowerCase().replace('.jpeg','.jpg'));
+  }
+  throw Error('不支持的卡片资源操作');
+}
+function getPracticeTaskHost() {
+  return practiceTaskHost ||= require('./practice-task-host.cjs').createPracticeTaskHost({
+    runtime: getPracticeCards, student: id => findStudent(String(id)), studentDirectory: studentAiManagerDir,
+    read: readTaskStore, write: writeTaskStoreDurably, flush: () => taskStoreGuard.flush(), upsert: upsertTaskCandidates, transition: transitionTaskInStore,
+    execute: executeTaskByAdapter, running: taskChildProcesses, active: () => Boolean(publicLicenseStatus().active),
+    acquire: task => captureHeavyWorkGate.tryAcquire({ kind: 'agent_codex', studentId: task.sourceId, sessionId: task.id, snapshot: captureTimelineResourceSnapshot() }),
+    retryLater: scheduleHeavyTaskRetry, heartbeat: (id, execution) => heartbeatTask(id, execution, '学习卡片评阅', false),
+    notify: studentId => { if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('onNativePracticeChanged', JSON.stringify({ studentId })); },
+  });
+}
 let captureInboxRuntime;
-let audioTranscriptionRuntime, obsidianVaultRuntime;
+let audioTranscriptionRuntime, obsidianVaultRuntime, llmApiRuntime;
+function getLlmApiProvider() {
+  return llmApiRuntime ||= require('./llm-api-provider.cjs').createLlmApiProvider({
+    directory: path.join(app.getPath('userData'), 'llm-api'),
+    protect: value => { if (!safeStorage.isEncryptionAvailable()) throw Error('本机安全存储不可用，不能保存 LLM API 密钥'); return safeStorage.encryptString(value).toString('base64'); },
+    unprotect: value => safeStorage.decryptString(Buffer.from(value, 'base64')),
+  });
+}
 function getAudioTranscription() {
   return audioTranscriptionRuntime ||= createAudioTranscription({
     directory: path.join(app.getPath('userData'), 'audio-transcription'),
@@ -369,6 +550,8 @@ function getObsidianVaults() {
 }
 function getCaptureInbox() {
   return captureInboxRuntime ||= createCaptureInbox({
+    onReceived: (id, item) => ['share', 'android_share', 'student_web', 'auto_folder'].includes(item.sourceChannel)
+      ? getSmartInbox().then(engine => engine.notifySource('share', id)) : undefined,
     resolveStudentDir: async id => { const student = findStudent(String(id || '')); if (!student) throw new Error('当前学生不存在'); return studentAiManagerDir(student); },
     deliver: async (id, object, target, item) => {
       const copyDir = path.join(path.dirname(path.dirname(object)), 'delivery', item.itemId);
@@ -397,6 +580,7 @@ async function deliverDownloadSnapshot(snapshot, context, operation, checkpoint)
     // Existing workspace importer retains registration, asset binding and digest policy.
     await importWorkspaceMaterialSourceFiles(student, project, [snapshot], [], {
       sourceNameOverride: '下载文件收件箱', knownFingerprint: operation.fingerprint,
+      intakeAssociation: operation.sourceId ? { itemId: operation.id, operationId: operation.operationId } : null,
     });
     const host = createProjectMaterialHost(project);
     for (const material of (await host.store.read()).materials) {
@@ -460,6 +644,217 @@ function getDownloadInbox() {
     validateTarget: async target => { const locked = licenseRequiredJson('投递下载资料'); if (locked) throw Error('当前许可不允许投递资料'); return downloadInboxTarget(target); },
     deliver: deliverDownloadSnapshot, trash: file => shell.trashItem(file),
   });
+}
+let smartInboxHostRuntime, smartInboxReady;
+let legacyIntakeBridge;
+function getLegacyIntakeBridge() {
+  return legacyIntakeBridge ||= require('./smart-inbox-legacy.cjs').createLegacyIntakeBridge({
+    ready: getSmartInbox,
+    download: getDownloadInbox, capture: getCaptureInbox,
+  });
+}
+function getSmartInbox() {
+  if (!smartInboxHostRuntime) {
+    const root = path.join(app.getPath('userData'), 'smart-inbox');
+    smartInboxHostRuntime = require('./smart-inbox-host.cjs').createSmartInboxHost({
+      directory: root, student: id => findStudentByKey(id), students: () => readStudentsIndex(),
+      async profile(student) {
+        const file = growthIndexPath(student);
+        try {
+          const stat = await fs.promises.lstat(file); if (!stat.isFile() || stat.isSymbolicLink() || stat.size > 2 * 1024 * 1024) return null;
+          const index = JSON.parse(await fs.promises.readFile(file, 'utf8'));
+          if (String(index.studentId) !== String(student.id) || index.schema !== 'edu-manager.growth-model.v2') return null;
+          return { source: 'growth-index.v2', updatedAt: index.updatedAt, abilities: (index.abilities || []).slice(0, 12).map(a => ({
+            name: String(a.name || '').slice(0, 100), maturity: a.maturity, confirmedCount: a.confirmedCount, evidenceCount: a.evidenceCount,
+          })), use: '辅助排序，不作为确定性分类证据' };
+        } catch (error) { if (error.code === 'ENOENT' || error instanceof SyntaxError) return null; throw error; }
+      },
+      projects: () => readProjects().map(normalizeProject), isWorkspace: isWorkspaceMaterialProject,
+      canWrite: () => publicLicenseStatus().active && projectArchiveRuntime.status().ready && !taskStoreGuard.status(),
+      externalReferences(project, material, originalPath) {
+        const reasons = [], assets = readAssetIndex();
+        for (const link of material.links.assets || []) {
+          const asset = assets.find(a => a.assetId === link.assetId);
+          if (!asset) { reasons.push('asset_reference_missing'); continue; }
+          for (const ref of asset.references || []) {
+            if (ref.path && path.resolve(ref.path).toLowerCase() === path.resolve(originalPath).toLowerCase()
+              && !(ref.spaceType === 'project' && String(ref.spaceId) === String(project.id)
+                && ['project_raw_direct', 'project_raw_conversation', 'project_raw_accepted', 'raw', 'project_raw'].includes(ref.role))) reasons.push('external_asset_reference');
+          }
+        }
+        // Old unbound path-based evidence cannot be disproved by registry lookup.
+        if ((project.studentEvidence || []).some(e => !e.sourceBinding?.bindingId)) reasons.push('legacy_student_evidence');
+        return reasons;
+      },
+      async projectAssociationChanged(project, result, originalPath) {
+        if (result.status !== 'withdrawn') return;
+        const current = readProjects().map(normalizeProject).find(p => String(p.id) === String(project.id));
+        if (!current || current.managerPath !== project.managerPath || current.workspacePath !== project.workspacePath) throw Error('项目配置变化，关联投影等待核对');
+        const registry = await createProjectMaterialHost(current).store.read();
+        const material = registry.materials.find(m => m.materialId === result.oldRecordId);
+        if (material?.adoption.state !== 'excluded' || material.intakeReroute?.requestKey !== result.requestKey) return;
+        const assets = readAssetIndex();
+        const linked = new Set((material.links.assets || []).map(l => l.assetId));
+        for (const asset of assets.filter(a => linked.has(a.assetId))) asset.references = (asset.references || []).filter(ref =>
+          !(ref.spaceType === 'project' && String(ref.spaceId) === String(project.id) && ref.path
+            && path.resolve(ref.path).toLowerCase() === path.resolve(originalPath).toLowerCase()
+            && ['project_raw_direct', 'project_raw_conversation', 'project_raw_accepted', 'raw', 'project_raw'].includes(ref.role)));
+        for (const asset of assets.filter(a => linked.has(a.assetId))) asset.linkedProjects = (asset.linkedProjects || []).filter(id =>
+          String(id) !== String(project.id) || asset.references.some(r => r.spaceType === 'project' && String(r.spaceId) === String(project.id)));
+        writeAssetIndex(assets);
+        const remaining = new Set(registry.materials.filter(m => m.adoption.state === 'accepted').flatMap(m => (m.links.assets || []).map(l => l.assetId)));
+        updateProjectRecord(project.id, p => ({ ...p, assetIds: (p.assetIds || []).filter(id => !linked.has(id) || remaining.has(id)),
+          digestState: projectMaterialDigestProjection(p, registry), updatedAt: taskNow() }));
+      },
+      async projectAssociationRestored(project, materialId) {
+        const current = readProjects().map(normalizeProject).find(p => String(p.id) === String(project.id));
+        if (!current || current.managerPath !== project.managerPath || current.workspacePath !== project.workspacePath) throw Error('项目配置变化，关联恢复等待核对');
+        const host = createProjectMaterialHost(current);
+        await projectMaterialAssetCompatibility(current, host).syncAccepted(materialId);
+        const registry = await host.store.read();
+        updateProjectRecord(current.id, p => ({ ...p, digestState: projectMaterialDigestProjection(p, registry) }));
+      },
+      materialHost: createProjectMaterialHost, capture: getCaptureInbox,
+      legacySettings: () => getDownloadInbox().getSettings(),
+      forbiddenRoots: () => [app.getPath('userData'), process.env.SystemRoot, process.env.ProgramFiles, process.env['ProgramFiles(x86)'],
+        ...readStudentsIndex().flatMap(s => [s.rootPath || getStudentRootDir(s.name), s.rawPath, s.summaryPath]),
+        ...readProjects().flatMap(p => [p.workspacePath, p.rawPath, p.managerPath, p.knowledgeRootPath])],
+      automaticAllowed: id => publicLicenseStatus().active && taskAutomationEnabled() && projectArchiveRuntime.status().ready && taskPowerRecovery.canDispatch() && !taskStoreGuard.status()
+        && (!id || !automaticStudentTaskBlocked({ sourceType: 'student', sourceId: id }, findStudentByKey(id))),
+      validateTarget: target => { if (!publicLicenseStatus().active) throw Error('当前许可不允许投递'); return downloadInboxTarget(target); },
+      deliver: deliverDownloadSnapshot, resolveConversation: resolveConversationInboxAsset, deliverConversation: deliverConversationMaterials,
+      async conversations(student) {
+        const locations = [{ file: conversationIndexPath(student), type: 'student', id: String(student.id) },
+          ...readProjects().map(normalizeProject).filter(p => p.studentIds?.map(String).includes(String(student.id)))
+            .map(p => ({ file: projectConversationIndexPath(p), type: 'project', id: String(p.id) }))];
+        const result = [], deliveries = readConversationDeliveries(student).deliveries || [];
+        for (const loc of locations) {
+          let index; try { index = JSON.parse(await fs.promises.readFile(loc.file, 'utf8')); } catch (error) { if (error.code === 'ENOENT') continue; throw error; }
+          result.push(...(index.imports || []).map(e => ({ ...e, sourceScopeType: loc.type, sourceScopeId: loc.id,
+            alreadyDelivered: deliveries.some(d => d.assetId === e.assetId && d.sourceScopeId === loc.id) })));
+        }
+        return result;
+      },
+      acquire(source, manual) {
+        if (!publicLicenseStatus().active || !projectArchiveRuntime.status().ready || !taskPowerRecovery.canDispatch() || taskStoreGuard.status() || taskChildProcesses.size || digestWorkflowRunning) return null;
+        if (!manual && source.studentId && automaticStudentTaskBlocked({ sourceType: 'student', sourceId: source.studentId }, findStudentByKey(source.studentId))) return null;
+        return captureHeavyWorkGate.tryAcquire({ kind: 'agent_codex', studentId: source.studentId || 'shared-intake', sessionId: `intake-${source.id}`, snapshot: captureTimelineResourceSnapshot() });
+      },
+      waitingReason(source, manual) {
+        if (!publicLicenseStatus().active) return '许可未激活，自动分析已暂停';
+        if (!projectArchiveRuntime.status().ready || taskStoreGuard.status()) return '资料或任务存储尚未就绪，等待恢复后继续';
+        if (!taskPowerRecovery.canDispatch()) return '设备恢复检查尚未完成，稍后继续';
+        if (!manual && source.studentId && automaticStudentTaskBlocked({ sourceType: 'student', sourceId: source.studentId }, findStudentByKey(source.studentId))) return '该学生已暂停或不活跃，自动分析暂停；如需自动处理，请在学生设置恢复。也可立即扫描进行一次手动分析。';
+        return '等待后台资源空闲（采集、消化或其他重任务可能占用），稍后继续';
+      },
+      async beginBatch(source, manual, batch = {}) {
+        const batchKey = sha1Text(JSON.stringify({ sourceId: source.id, sourceRevision: batch.sourceRevision || source.revision || '',
+          items: batch.items || [] })).slice(0, 20);
+        const id = `intake-${batchKey}`, executionId = crypto.randomUUID();
+        const store = readTaskStore();
+        let task = store.tasks.find((item) => item.id === id);
+        if (!task) {
+          task = normalizeTaskEnvelope({ id, title: `资料分类 · ${source.name}`, kind: 'smart_material_intake', sourceType: 'student', sourceId: source.studentId || '', sourceName: source.name,
+          status: 'pending', executor: 'internal', executionMode: 'internal', trigger: manual ? 'manual' : 'scheduled', idempotencyKey: id,
+          input: { sourceId: source.id, batchKey, itemIds: (batch.items || []).map((item) => item.id) }, permissions: { read: [], write: [], operations: ['classify_materials'] }, timeoutSeconds: 1800, heartbeatTimeoutSeconds: 1800, autoRetry: false, completionPolicy: 'validated', riskLevel: 'low' });
+          store.tasks.push(task);
+        } else if (['failed', 'blocked', 'timed_out'].includes(task.status)) {
+          const reset = transitionTaskInStore(store, id, 'approved', { error: null, result: null, executionId: '', completedAt: '' }, 'intake_retry_admitted');
+          if (!reset.ok) throw Error(`资料批次未能恢复：${reset.message}`);
+        } else if (task.status === 'cancelled') {
+          const reset = transitionTaskInStore(store, id, 'pending', { error: null, result: null, executionId: '', completedAt: '' }, 'intake_retry_reset');
+          if (!reset.ok) throw Error(`资料批次未能恢复：${reset.message}`);
+        } else if (['running', 'waiting_result', 'reviewing', 'succeeded', 'archived'].includes(task.status)) {
+          throw Error('同一资料批次已有执行或结果，未重复创建任务。');
+        }
+        // acquire() has admitted this source-scoped internal batch. Record that
+        // admission using the existing protocol; pending -> running is forbidden.
+        // This does not approve any document target or external Agent operation.
+        if (task.status === 'pending') {
+          const approved = transitionTaskInStore(store, id, 'approved', {}, 'intake_admitted');
+          if (!approved.ok) throw Error(`资料批次未能登记：${approved.message}`);
+        }
+        const changed = transitionTaskInStore(store, id, 'running', { executionId, executor: 'internal', adapterId: 'internal', executionMode: 'internal', startedAt: taskNow(), lastHeartbeatAt: taskNow() }, 'intake_started');
+        if (!changed.ok) throw Error(`资料批次未能登记：${changed.message}`);
+        await writeTaskStoreDurably(store);
+        taskChildProcesses.set(id, { smartIntake: true, executionId, releaseHeavyPermit: () => {}, child: { kill() { void smartInboxHostRuntime.engine.pause(source.id); return true; } } });
+        return id;
+      },
+      async endBatch(id, error, summary) {
+        if (!id) return;
+        try {
+          const store = readTaskStore(), task = store.tasks.find(t => t.id === id);
+          if (task?.status === 'running') {
+            if (error) transitionTaskInStore(store, id, 'failed', { error: { code: 'INTAKE_FAILED', message: error.message }, autoRetry: false }, 'intake_failed');
+            else { transitionTaskInStore(store, id, 'reviewing', {}, 'intake_checked'); transitionTaskInStore(store, id, 'succeeded', { result: { summary: `本批检查 ${summary?.count || 0} 份资料，需确认项请在资料收件箱查看。` } }, 'intake_finished'); }
+            await writeTaskStoreDurably(store);
+          }
+        } finally { taskChildProcesses.delete(id); }
+      },
+      agent: {
+        route: id => agentClassificationRoute(findStudentByKey(id)),
+        validateRoute: (id, expected) => {
+          const student = findStudentByKey(id);
+          if (!student || student.archived || student.status === 'archived'
+            || JSON.stringify(agentClassificationRoute(student)) !== JSON.stringify(expected)) {
+            throw Object.assign(Error('学生或备用 Agent 授权已变化，未发送正文'), { code: 'ROUTE_CHANGED' });
+          }
+        },
+        select: (id, providerId) => classificationAdapter(providerId || String(findStudentByKey(id)?.agentTool || '')),
+        circuit: id => circuitDecision(readTaskStore().runtime?.circuits?.[id]),
+        qualification: {
+          async load(id, runtimeHash) {
+            const saved = readTaskStore().runtime?.agentQualifications?.[String(id)]?.[CLASSIFICATION_PROFILE];
+            return saved?.runtimeHash === runtimeHash && Date.parse(saved.expiresAt) > Date.now()
+              ? { ...saved, ok: saved.ready === true, until: Date.parse(saved.expiresAt) } : null;
+          },
+          async save(id, runtimeHash, result) {
+            const store = readTaskStore(); store.runtime ||= {}; store.runtime.agentQualifications ||= {};
+            store.runtime.agentQualifications[id] ||= {};
+            store.runtime.agentQualifications[id][CLASSIFICATION_PROFILE] = { ...createAgentQualification({
+              providerId: id, profile: CLASSIFICATION_PROFILE, runtimeHash, ready: result.ready === true,
+              mode: 'host-mediated-no-tools', message: result.message || '', measuredAt: result.measuredAt,
+              ttlMs: Math.max(60_000, Number(result.until || 0) - Date.now()),
+            }), code: result.code || '', runtimeScope: result.runtimeScope, contract: 'routing-recovery-v2' };
+            if (result.ready) { store.runtime.circuits ||= {}; store.runtime.circuits[id] = completeCircuitProbe(store.runtime.circuits[id], true); }
+            await writeTaskStoreDurably(store);
+          },
+        },
+        async outcome(id, result) { const store = readTaskStore(); store.runtime ||= {}; store.runtime.circuits ||= {};
+          store.runtime.circuits[id] = recordCircuitOutcome(store.runtime.circuits[id], result); await writeTaskStoreDurably(store); },
+        spawnProcess: spawnAdapterProcess,
+      },
+      async reconcile(item) {
+        const context = downloadInboxTarget(item.target);
+        if (context.project && isWorkspaceMaterialProject(context.project)) {
+          const store = createProjectMaterialHost(context.project).store;
+          const material = (await store.read()).materials.find(m => m.sha256 === item.fingerprint.sha256 && m.adoption.state === 'accepted');
+          if (material) { const found = await store.resolve(material.materialId); return { ok: true, path: found.path, recordId: material.materialId }; }
+        }
+        if (['history', 'session'].includes(item.sourceType)) {
+          const found = readConversationDeliveries(context.student).deliveries.find(d => d.assetId === JSON.parse(item.locator).assetId && d.targetType === item.target.type && String(d.targetId) === String(item.target.id || item.target.studentId));
+          if (found) return { ok: true, path: found.path, recordId: found.materialId || found.id };
+        }
+        const found = readUploadRecords().find(r => r.id === `download-${item.operationId}` && String(r.studentId) === item.target.studentId && String(r.projectId || '') === String(item.target.id || ''));
+        return found ? { ok: true, path: found.path, recordId: found.id } : null;
+      },
+      async recordCorrection(item, previous, result) {
+        appendTaskEvent('', 'intake_rerouted', { itemId: item.id, previousRecordId: previous.receipt.recordId, recordId: item.receipt.recordId,
+          associationStatus: result.status, referencesPreserved: result.retained, retentionReasons: result.reasons || [] });
+        await taskStoreGuard.flush();
+      },
+      changed: () => { if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('smart-inbox:changed'); },
+      onError: error => console.warn('资料归集等待处理：', error.message),
+    });
+    smartInboxReady = smartInboxHostRuntime.initialize().then(async () => {
+      for (const student of readStudentsIndex().filter(s => s.classificationFallback?.enabled === true)) {
+        try { await smartInboxHostRuntime.engine.resumeAgent(String(student.id), `startup-fallback-${crypto.randomUUID()}`); }
+        catch (error) { console.warn('备用 Agent 启动恢复未完成：', error.message); }
+      }
+      await smartInboxHostRuntime.engine.tick();
+    });
+  }
+  return smartInboxReady.then(() => smartInboxHostRuntime.engine);
 }
 let customOptionsRuntime;
 function getCustomOptions() {
@@ -535,7 +930,8 @@ const {
   selectDigestBatchFiles,
 } = require('./material-path-recovery.cjs');
 const { duplicateKnowledgeRawFiles } = require('./project-publication-reconciliation.cjs');
-const { discoverTaskPayloads } = require('./task-result-inbox.cjs');
+const { agentTaskChannel, discoverAgentTaskPayloads, taskResultDelivery, taskResultCommand,
+  validateTaskChannelIdentity, handoffAgentCapabilities } = require('./agent-task-channel.cjs');
 const {
   buildKnowledgeGovernanceRun,
   collectRecentKnowledgeArtifacts,
@@ -724,6 +1120,8 @@ let workbuddyOpened = false;
 let codexOpened = false;
 let claudeCodeOpened = false;
 let hermesOpened = false;
+let traeOpened = false;
+let qoderWorkOpened = false;
 let obsidianOpened = false;
 let hostServer = null;
 let hostDiscoverySocket = null;
@@ -738,7 +1136,43 @@ let hostServiceLastError = '';
 let todayUploadCount = 0;
 let uploadCountDate = new Date().toISOString().slice(0, 10);
 const taskChildProcesses = new Map();
-const heavyTaskRetryTimers = new Map();
+const builtinStructuredQualifications = new Map();
+const { taskRetryDecision, taskRetryEligible, unknownExecutionPatch, reconcileInterruptedExecutions } = require('./task-recovery-policy.cjs');
+const { circuitDecision, recordCircuitOutcome, completeCircuitProbe } = require('./task-executor-circuit.cjs');
+const { CLASSIFICATION_PROFILE, DIGEST_PROFILE, LEARNING_CARD_PROFILE, providerSupportsProfile, agentProfileStatus,
+  createAgentQualification, validAgentQualification } = require('./agent-invocation-service.cjs');
+const { createTaskPowerRecovery, shiftExecutionDeadlines } = require('./task-power-recovery.cjs');
+const { taskActiveDeadlines } = require('./task-active-deadlines.cjs');
+const taskPowerRecovery = createTaskPowerRecovery({
+  persist: async power => { const store = readTaskStore(); store.runtime = { ...store.runtime, power }; await writeTaskStoreDurably(store); },
+  reconcile: async ({ elapsed, stillCurrent }) => {
+    // Drain matching receipts first; the same execution IDs remain authoritative.
+    taskInboxLastScan = 0; syncAgentTaskResults(); await taskInboxPromise;
+    if (!stillCurrent()) return;
+    const ids = readTaskStore().tasks.filter(t => ['running', 'waiting_result'].includes(t.status)).map(t => t.id);
+    for (let offset = 0; offset < ids.length && stillCurrent(); offset += 20) {
+      const store = readTaskStore();
+      for (const id of ids.slice(offset, offset + 20)) {
+        const index = store.tasks.findIndex(t => t.id === id), task = store.tasks[index];
+        if (!task) continue;
+        store.tasks[index] = shiftExecutionDeadlines(task, elapsed);
+      }
+      reconcileInterruptedExecutions({ tasks: store.tasks.filter(t => ids.slice(offset, offset + 20).includes(t.id)) }, new Set([...taskChildProcesses].map(([id, run]) => `${id}:${run.executionId}`)), taskNow());
+      await writeTaskStoreDurably(store);
+      await new Promise(resolve => setImmediate(resolve));
+    }
+  },
+  onReady: () => { taskActiveDeadlines.resume(); restoreBusinessTaskRetries(); restoreHeavyTaskRetries(); notify('onNativeTaskCenterChanged', JSON.stringify({ resumed: true })); },
+  onError: error => console.warn('Task resume reconciliation paused:', error.message),
+});
+const businessTaskRetryQueue = require('./task-retry-queue.cjs').createTaskRetryQueue({
+  run: resumeBusinessTaskRetry,
+  onError: (error, taskId) => console.warn(`Business recovery ${taskId}:`, error.message),
+});
+const heavyTaskRetryQueue = require('./task-retry-queue.cjs').createTaskRetryQueue({
+  run: resumeResourceDeferredTask,
+  onError: (error, taskId) => console.warn(`Resource wait ${taskId}:`, error.message),
+});
 let taskSchedulerTimer = null;
 let taskSchedulerStartupTimer = null;
 let taskSchedulerRunning = false;
@@ -816,6 +1250,7 @@ function courseCatalogStore() {
     courseCatalogStoreInstance = createCourseCatalogStore({
       userDataDir: app.getPath('userData'),
       appVersion: APP_VERSION,
+      enablePublications: true,
       resourceRoots: [
         path.join(__dirname, '..', 'dist'),
         path.join(__dirname, '..', 'public'),
@@ -853,6 +1288,8 @@ const WEB_AGENT_TOOL_URLS = {
   chatgpt: 'https://chatgpt.com/',
   claude: 'https://claude.ai/',
   doubao: 'https://www.doubao.com/',
+  trae: 'https://www.trae.cn/ide/download',
+  'qoder-work': 'https://qoderwork.com/',
 };
 const MAX_UPLOAD_BYTES = 100 * 1024 * 1024;
 const ALLOWED_UPLOAD_EXTENSIONS = new Set([
@@ -889,6 +1326,9 @@ const taskStorePath = () => path.join(taskCenterDirPath(), 'tasks.json');
 const taskEventLogPath = () => path.join(taskCenterDirPath(), 'events.jsonl');
 const taskExecutionDirPath = () => path.join(taskCenterDirPath(), 'executions');
 const taskManualOutboxPath = () => path.join(taskCenterDirPath(), 'manual-outbox');
+const agentTaskInboxPath = (agentId = '') => agentTaskChannel(taskCenterDirPath(), agentId).inboxPath;
+const agentTaskResultPath = (agentId = '') => agentTaskChannel(taskCenterDirPath(), agentId).resultPath;
+const workbuddyTaskOutboxPath = () => agentTaskInboxPath('workbuddy');
 const qclawTaskInboxPath = () => path.join(taskCenterDirPath(), 'qclaw-inbox');
 const qclawTaskResultPath = () => path.join(taskCenterDirPath(), 'qclaw-results');
 const openClawCronRegistryPath = () => path.join(taskCenterDirPath(), 'openclaw-managed-cron.json');
@@ -1858,6 +2298,10 @@ function mirrorCollaborationTaskToTaskCenter(task) {
     autoRetry: remoteLocalExecution,
     updatedAt: task.updatedAt,
   }, current);
+  // A collaboration record can remain in the append-only collaboration store
+  // after its local task card is removed. Respect the task-center tombstone so
+  // a later inbox scan does not recreate the deleted card.
+  if (index < 0 && deletedTaskCandidateSuppressed(store, mirrored)) return;
   if (index >= 0) store.tasks[index] = mirrored;
   else store.tasks.push(mirrored);
   writeTaskStore(store);
@@ -6818,7 +7262,7 @@ function findSourceForPath(sources, filePath) {
 }
 
 async function importWorkspaceMaterialSourceFiles(student, project, paths, sourceList,
-  { sourceType = 'host_material_source', sourceNameOverride = '', knownFingerprint = null } = {}) {
+  { sourceType = 'host_material_source', sourceNameOverride = '', knownFingerprint = null, intakeAssociation = null } = {}) {
   if (!['host_material_source', 'host_manual_import'].includes(sourceType)) {
     throw Object.assign(new Error('主机导入来源类型无效。'), { code: 'invalid_source_type' });
   }
@@ -6889,7 +7333,7 @@ async function importWorkspaceMaterialSourceFiles(student, project, paths, sourc
       }
       const registered = await host.registerTerminalUpload(staged.target, {
         eventId: staged.uploadId, studentId: String(student.id), deviceId: 'local-host',
-        sourceType, intent: 'active',
+        sourceType, intent: 'active', intakeAssociation,
       });
       const asset = upsertAssetFromFile(staged.target, {
         studentId: String(student.id), studentName: student.name,
@@ -7690,7 +8134,7 @@ function syncStrictStudentDigestResult(student, state, batch, options = {}) {
   });
   if (!validation.ok) {
     const nextState = writeStudentDigestState(student, {
-      status: options.markFailed ? 'failed' : 'digesting',
+      status: options.markFailed || validation.code === 'batch_execution_failed' ? 'failed' : 'digesting',
       message: validation.message,
       strictValidation: { ok: false, code: validation.code, rejected: validation.rejected || [], checkedAt: new Date().toISOString() },
     });
@@ -7844,6 +8288,16 @@ function syncStrictStudentDigestResult(student, state, batch, options = {}) {
 function syncStudentDigestResult(studentId, options = {}) {
   const student = readStudentsIndex().find((item) => String(item.id) === String(studentId));
   if (!student) return JSON.stringify({ ok: false, message: 'Student not found.' });
+  const lateLearningEvents = reconcileCompletedStudentDigestLearningReceipts(student, { force: true });
+  if (lateLearningEvents && (!lateLearningEvents.ok || lateLearningEvents.accepted > 0)) {
+    return JSON.stringify({
+      ...lateLearningEvents,
+      strict: true,
+      updated: 0,
+      state: readStudentDigestState(student),
+      records: readUploadRecords(),
+    });
+  }
   // Read the Agent receipt before refreshing upload records. Material refreshes
   // update counters and must never erase a completed receipt from the Agent.
   const state = readStudentDigestState(student);
@@ -7915,11 +8369,11 @@ function syncStudentDigestResult(studentId, options = {}) {
     lastDigestAt: effectiveDigestStatus === 'completed' ? (state.lastDigestAt || (latestDigestMs ? new Date(latestDigestMs).toISOString() : now)) : (state.lastDigestAt || ''),
     digestBatchId: batchId,
     message: changed > 0
-      ? `已同步 QClaw 消化结果，${changed} 份资料标记为已消化。请检查四份学情报告是否已更新。${reportReminder}`
+      ? `已同步 Agent 消化结果，${changed} 份资料标记为已消化。请检查四份学情报告是否已更新。${reportReminder}`
       : timedOutCount > 0
-        ? `有 ${timedOutCount} 份资料提交消化超过 4 小时未完成。请检查 QClaw 任务、digest-state.json 和 log.md。`
+        ? `有 ${timedOutCount} 份资料提交消化超过 4 小时未完成。请检查所选 Agent 的任务、digest-state.json 和 log.md。`
       : openCount > 0
-        ? `仍有 ${openCount} 份资料待消化；如 QClaw 已完成，请确认 digest-state.json 或 log.md 已更新。`
+        ? `仍有 ${openCount} 份资料待消化；如所选 Agent 已完成，请确认 digest-state.json 或 log.md 已更新。`
         : '暂无待消化资料。',
     rawPath,
     summaryPath,
@@ -7980,6 +8434,122 @@ function supplementCompletedStudentDigestLearningEvents(studentId) {
     });
   }
   return JSON.stringify(result);
+}
+
+const completedDigestLearningReconcileAt = new Map();
+
+function completedStudentDigestBatchEntries(student) {
+  const currentFile = studentDigestBatchPath(student);
+  const archiveDir = studentDigestBatchArchiveDir(student);
+  const files = [currentFile];
+  try {
+    files.push(...fs.readdirSync(archiveDir, { withFileTypes: true })
+      .filter((entry) => entry.isFile() && entry.name.toLowerCase().endsWith('.json'))
+      .map((entry) => path.join(archiveDir, entry.name))
+      .sort((left, right) => {
+        try { return fs.statSync(right).mtimeMs - fs.statSync(left).mtimeMs; }
+        catch { return 0; }
+      })
+      .slice(0, 32));
+  } catch {
+    // A student without archived batches has nothing historical to reconcile.
+  }
+  const byBatchId = new Map();
+  for (const file of files) {
+    const batch = readDigestBatch(file);
+    if (!batch?.batchId || String(batch.status || '').toLowerCase() !== 'completed' || byBatchId.has(String(batch.batchId))) continue;
+    byBatchId.set(String(batch.batchId), { batch, file, current: path.resolve(file) === path.resolve(currentFile) });
+  }
+  return [...byBatchId.values()];
+}
+
+function reconcileCompletedStudentDigestLearningReceipts(student, options = {}) {
+  const studentKey = String(student?.id || '');
+  const nowMs = Date.now();
+  if (!options.force && nowMs - Number(completedDigestLearningReconcileAt.get(studentKey) || 0) < 30_000) return null;
+  completedDigestLearningReconcileAt.set(studentKey, nowMs);
+  const entries = completedStudentDigestBatchEntries(student);
+  if (!entries.length) return null;
+  const materials = readStudentMaterials(student);
+  const results = [];
+  for (const entry of entries) {
+    const receiptSet = discoverDigestReceipts({
+      managerDir: studentManagerDir(student),
+      canonicalFile: studentDigestReceiptPath(student),
+      archiveRoot: path.join(studentManagerDir(student), 'digest-receipts'),
+      batchId: entry.batch.batchId,
+      batch: entry.batch,
+    });
+    for (const candidate of receiptSet.candidates) {
+      const archiveDir = studentDigestReceiptArchiveDir(student, entry.batch.batchId);
+      fs.mkdirSync(archiveDir, { recursive: true });
+      const archivePath = path.join(archiveDir, `${candidate.fingerprint}.json`);
+      if (!fs.existsSync(archivePath)) writeJsonAtomic(archivePath, candidate.payload);
+    }
+    const result = reconcileCompletedDigestLearningReceipts({
+      studentId: String(student.id),
+      studentRootPath: student.rootPath || getStudentRootDir(student.name),
+      rawRoot: student.rawPath || getRawDir(student.name),
+      batch: entry.batch,
+      candidates: receiptSet.candidates,
+      checkedFingerprints: entry.batch.learningEventReceiptFingerprints,
+      materials,
+      hashFile: sha1File,
+    });
+    if (!result.checkedFingerprints?.length) continue;
+    results.push({ batchId: String(entry.batch.batchId), result });
+    const checkedAt = new Date().toISOString();
+    const nextBatch = {
+      ...entry.batch,
+      learningEventReceiptFingerprints: [...new Set([
+        ...(entry.batch.learningEventReceiptFingerprints || []).map(String),
+        ...result.checkedFingerprints.map(String),
+      ])],
+      learningEventReconciliation: {
+        checkedAt,
+        receiptCount: Number(result.receiptCount || 0),
+        acceptedCount: Number(result.accepted || 0),
+        rejectedCount: Number((result.rejected || []).length + (result.receiptRejections || []).length),
+        message: result.message,
+      },
+    };
+    writeJsonAtomic(entry.file, nextBatch);
+    if (entry.current) {
+      fs.mkdirSync(studentDigestBatchArchiveDir(student), { recursive: true });
+      writeJsonAtomic(path.join(studentDigestBatchArchiveDir(student), `${safeFilename(entry.batch.batchId)}.json`), nextBatch);
+    }
+  }
+  if (!results.length) return { ok: true, skipped: true, accepted: 0, rejected: [], message: '没有新的迟到回执需要重对账。' };
+  const accepted = results.reduce((sum, item) => sum + Number(item.result.accepted || 0), 0);
+  const rejected = results.flatMap((item) => [
+    ...(item.result.rejected || []).map((rejection) => ({ ...rejection, batchId: item.batchId })),
+    ...(item.result.receiptRejections || []).map((rejection) => ({ ...rejection, batchId: item.batchId })),
+  ]);
+  const ok = results.every((item) => item.result.ok);
+  const checkedAt = new Date().toISOString();
+  const message = ok
+    ? `已自动重对账 ${results.length} 个已完成批次的迟到回执；新增 ${accepted} 条学习事件，拒绝 ${rejected.length} 条。`
+    : `迟到回执重对账未完成；${results.filter((item) => !item.result.ok).map((item) => `${item.batchId}：${item.result.message}`).join('；')}`;
+  writeStudentDigestState(student, {
+    lateLearningEventReconciliation: {
+      checkedAt,
+      batchCount: results.length,
+      acceptedCount: accepted,
+      rejectedCount: rejected.length,
+      message,
+    },
+  });
+  if (accepted > 0 || rejected.length > 0 || !ok) {
+    appendHostTimeline({
+      type: ok ? 'digest_late_learning_events_reconciled' : 'digest_late_learning_events_blocked',
+      title: ok ? '已完成批次迟到回执重对账' : '已完成批次迟到回执被阻止',
+      detail: message,
+      studentId: String(student.id),
+      studentName: student.name,
+      count: accepted,
+    });
+  }
+  return { ok, lateReceiptReconciliation: true, accepted, rejected, results, message };
 }
 
 function readDigestReceiptFile(file) {
@@ -10026,6 +10596,10 @@ function sanitizeName(value) {
 }
 
 function notify(callbackName, payload) {
+  if (['onNativeTaskCenterChanged', 'onNativeDigestWorkflowChanged'].includes(callbackName) && taskStoreGuard.pending()) {
+    void taskStoreGuard.flush().then(() => notify(callbackName, payload)).catch(error => console.warn('Task change not published:', error.message));
+    return;
+  }
   if (!mainWindow || mainWindow.isDestroyed()) return;
   mainWindow.webContents.executeJavaScript(
     `window.${callbackName} && window.${callbackName}(${JSON.stringify(payload)})`,
@@ -10256,6 +10830,46 @@ function importOfflineCourseCatalog() {
   return JSON.stringify(result);
 }
 
+let platformLocalPublishPending;
+function platformPublishItems(){return [...platformCourseDraftStore().list().map(d=>({id:d.courseId,title:d.course.name,kind:'draft',draft:d})),...platformCourseDraftStore().listDeletions().map(d=>({id:d.courseId,title:d.courseId,kind:'deletion',deletion:d}))];}
+async function publishPlatformCoursesLocally(input={}) {
+  if(platformLocalPublishPending)throw Error('平台课程正在发布，请等待当前发布完成');
+  const locked=platformCourseCapabilityRequiredJson('platform_course_publish','PLATFORM_COURSE_PUBLISH_REQUIRED');
+  if(locked)throw Error(JSON.parse(locked).message);
+  platformLocalPublishPending=(async()=>{
+    const people=readStudentsIndex().map(toHostStudent),id=String(input.studentId||'');
+    if(!people.some(s=>String(s.id)===id))throw Error('请选择当前学生');
+    const audience=require('./publication-policy.cjs').normalizeAudience(input.audience,people,id);
+    const requestId=String(input.requestId||'');if(!/^[A-Za-z0-9_-]{8,100}$/.test(requestId))throw Error('发布事务编号无效');
+    const directory=path.join(app.getPath('userData'),'platform-course-authoring','local-published');
+    const result=await require('./publication-batch.cjs').runPublicationBatch({directory,requestId,audience,studentId:id,items:platformPublishItems(),expectedHash:input.expectedBatchHash,
+      checkCurrent:item=>{
+        const current=platformPublishItems().find(v=>v.id===item.id&&v.kind===item.kind);
+        if(current&&JSON.stringify(current)!==JSON.stringify(item))throw Error('草稿内容已变化，请重新开始发布');
+        if(item.kind==='draft'&&!item.draft.validation?.ok)throw Error('草稿未通过校验，请修正后重新发布');
+        if(!current){const installed=courseCatalogStore().state().platformCatalog?.courses.find(c=>c.courseId===item.id),hash=require('./course-publications.cjs').courseContentHash;
+          if(item.kind==='draft'?(!installed||hash(installed)!==hash({...item.draft.course,coverAsset:`platform-assets/${path.basename(item.draft.course.coverAsset)}`})):!!installed)throw Error('原草稿已移除或内容已变化，请重新开始发布');}
+      },
+      execute:async(item,itemRequest)=>{
+        const lockedNow=platformCourseCapabilityRequiredJson('platform_course_publish','PLATFORM_COURSE_PUBLISH_REQUIRED');if(lockedNow)throw Error(JSON.parse(lockedNow).message);
+        const store=courseCatalogStore(),drafts=item.kind==='draft'?[item.draft]:[],deletedCourseIds=item.kind==='deletion'?[item.id]:[];
+        store.publications.registerDrafts(drafts.map(d=>d.course));
+        const baseCatalog=store.state().platformCatalog||{catalogVersion:'',courses:[]};
+        const baseHash=crypto.createHash('sha256').update(JSON.stringify(baseCatalog)).digest('hex').slice(0,16);
+        const outputPath=path.join(directory,`${itemRequest}-${baseHash}.edu-coursepkg`),assets={};
+        for(const course of [...(store.state().platformCatalog?.courses||[]),...drafts.map(d=>d.course)])assets[course.coverAsset]=platformCourseDraftStore().assetPath(course.coverAsset)||store.assetPath(course.coverAsset);
+        const built=await require('./course-publish-worker.cjs').runCoursePublishWorker({options:{drafts,deletedCourseIds,baseCatalog,issuedAt:new Date().toISOString(),hostVersion:APP_VERSION,minHostVersion:APP_VERSION,outputPath,releaseNotes:input.releaseNotes||''},assets,storeOptions:{userDataDir:app.getPath('userData'),appVersion:APP_VERSION,resourceRoots:[path.join(__dirname,'..','dist'),path.join(__dirname,'..','public')]}});
+        if(store.state().platformCatalog?.catalogVersion!==built.catalogVersion)throw Error('课程目录已变化，请刷新核对');
+        if(item.kind==='draft'){
+          const source=store.combinedCatalog()?.courses.find(c=>c.courseId===item.id);if(!source)throw Error('发布后的课程缺失');
+          store.publications.publish(source,{audience,requestId:itemRequest},readStudentsIndex().map(toHostStudent),id);
+          const current=platformCourseDraftStore().list().find(d=>d.courseId===item.id);if(current?.draftRevision===item.draft.draftRevision)platformCourseDraftStore().remove(item.id);
+        }else platformCourseDraftStore().cancelDeletion(item.id);
+      }});
+    notify('onNativeCourseCatalogChanged',{action:'local_published'});
+    return {...result,message:result.complete?'课程已发布给所选学生。':'部分课程未完成，请查看逐项结果并重试失败项。'};
+  })().finally(()=>{platformLocalPublishPending=null;});return platformLocalPublishPending;
+}
 function publishPlatformCourseCatalog(releaseNotes = '') {
   const locked = platformCourseCapabilityRequiredJson('platform_course_publish', 'PLATFORM_COURSE_PUBLISH_REQUIRED');
   if (locked) return locked;
@@ -13456,7 +14070,11 @@ function normalizeProject(project, options = {}) {
   // Metadata consumers (scope grants, report citations, archive descriptors)
   // must not recursively hash unrelated raw materials. Digest workflows retain
   // the default fresh content check, including detection of external edits.
-  const fileDigestState = options?.metadataOnly === true ? {} : readProjectDigestState({ ...project, name: cleanName, projectRootPath: paths.projectRootPath });
+  // A newly-created workspace-v1 project has no caller supplied id.  The
+  // material registry is id-scoped, so always pass the generated id (and the
+  // resolved workspace paths) into the very first registry read.
+  const normalizedProjectScope = { ...project, id: projectId, name: cleanName, ...paths, projectRootPath: paths.projectRootPath };
+  const fileDigestState = options?.metadataOnly === true ? {} : readProjectDigestState(normalizedProjectScope);
   const digestState = project.digestState && typeof project.digestState === 'object'
     ? { ...project.digestState, ...fileDigestState }
     : fileDigestState;
@@ -13481,7 +14099,7 @@ function normalizeProject(project, options = {}) {
       managerDeviceIds: Array.isArray(project.materialAccess?.managerDeviceIds)
         ? [...new Set(project.materialAccess.managerDeviceIds.map(String).filter(Boolean))].slice(0, 100) : [],
     },
-    agentTool: String(project.agentTool || 'qclaw'),
+    agentTool: String(project.agentTool || 'workbuddy'),
     projectRootPath: paths.projectRootPath,
     managerPath: paths.managerPath,
     workspacePath: paths.workspacePath,
@@ -13538,7 +14156,7 @@ function normalizeProject(project, options = {}) {
       updatedAt: String(item?.updatedAt || ''),
     })).filter((item) => item.studentId) : [],
     automation: {
-      enabled: false,
+      enabled: project.automation?.enabled === true,
       onWorkspaceChange: project.automation?.onWorkspaceChange !== false,
       onStatusChange: Boolean(project.automation?.onStatusChange),
       intervalMinutes: Math.max(15, Math.min(10080, Number(project.automation?.intervalMinutes || 1440))),
@@ -13726,11 +14344,12 @@ function createProject(optionsJson) {
       knowledgeAdoption: knowledgeScan ? { adoptedAt: new Date().toISOString(), originalAgentPath: knowledgeScan.agentPath, originalPathmapPath: knowledgeScan.pathmapPath, metadataPath: knowledgeScan.metadataPath, identitySource: knowledgeScan.identitySource, inventory: knowledgeScan.inventory, warnings: knowledgeScan.warnings } : null,
       knowledgeStrategy: options.knowledgeStrategy || '',
       growthStrategy: options.growthStrategy || '',
-      agentTool: String(options.agentTool || 'qclaw'),
+      agentTool: String(options.agentTool || 'workbuddy'),
       deliverables: Array.isArray(options.deliverables) ? options.deliverables.map(String).filter(Boolean) : [],
       materialStorageMode: 'workspace-v1',
       materialRegistryVersion: 1,
       materialMigrationState: 'complete',
+      automation: { enabled: taskAutomationEnabled(), onWorkspaceChange: true, onStatusChange: false, intervalMinutes: 1440 },
     }));
     if (knowledgeScan) {
       const pathmap = adoptionPathmap(project, knowledgeScan);
@@ -13769,7 +14388,7 @@ function updateProjectMetadata(projectId, metadataJson) {
         objective: String(metadata.objective ?? project.objective ?? ''),
         knowledgeStrategy: String(metadata.knowledgeStrategy ?? project.knowledgeStrategy ?? ''),
         growthStrategy: String(metadata.growthStrategy ?? project.growthStrategy ?? ''),
-        agentTool: String(metadata.agentTool || project.agentTool || 'qclaw'),
+        agentTool: String(metadata.agentTool || project.agentTool || 'workbuddy'),
         updatedAt: now,
       });
       return updated;
@@ -14001,6 +14620,7 @@ function rebindProjectKnowledgeSpace(projectId) {
       synthesisPath: scan.paths.synthesisPath,
       reportPath: path.join(scan.rootPath, '项目报告'),
       contributionPath: path.join(scan.rootPath, '知识贡献'),
+      promotionPath: path.join(scan.rootPath, '知识贡献', '知识贡献申请.md'),
       agentPath: scan.agentPath || project.agentPath,
       knowledgeAdoption: {
         ...(project.knowledgeAdoption || {}),
@@ -14029,6 +14649,7 @@ function rebindProjectKnowledgeSpace(projectId) {
           synthesisPath: project.synthesisPath,
           reportPath: project.reportPath,
           contributionPath: project.contributionPath,
+          promotionPath: project.promotionPath,
           agentPath: project.agentPath,
           knowledgeAdoption: project.knowledgeAdoption,
         },
@@ -15490,7 +16111,7 @@ async function runProjectAutomationSweep() {
       const scannedProject = readProjects().map(normalizeProject).find((item) => String(item.id) === String(project.id));
       if (project.automation?.enabled && scannedProject?.digestState?.pendingCount > 0
         && scannedProject.digestState.status !== 'digesting') {
-        try { execution = JSON.parse(executeProjectDigest(project.id)); } catch { execution = { ok: false, message: '自动执行结果解析失败。' }; }
+        try { execution = JSON.parse(executeProjectDigest(project.id, { automatic: true })); } catch { execution = { ok: false, message: '自动执行结果解析失败。' }; }
       }
       const refreshed = readProjects().map(normalizeProject);
       const intervalMinutes = project.automation.intervalMinutes || 1440;
@@ -15868,7 +16489,7 @@ function getProjectDigestCommand(projectId) {
       || String(request.digestBatchId || '') !== String(state.digestBatchId)) {
       return JSON.stringify({ ok: false, message: '请先登记当前待消化批次，再生成 Agent 指令。' });
     }
-    const agentToolNames = { qclaw: 'QClaw', marvis: 'Marvis', hohu: 'Hohu', 'ima.copilot': 'IMA Copilot', workbuddy: 'WorkBuddy', codex: 'Codex', claude: 'Claude Code', gemini: 'Gemini CLI' };
+    const agentToolNames = { qclaw: 'QClaw', marvis: 'Marvis', hohu: 'Hohu', 'ima.copilot': 'IMA Copilot', workbuddy: 'WorkBuddy', codex: 'Codex', trae: 'TRAE IDE / TraeCode', 'qoder-work': 'Qoder Work', claude: 'Claude Code', gemini: 'Gemini CLI' };
     const agentToolName = agentToolNames[ensured.agentTool] || ensured.agentTool || '所选 Agent';
     const command = `/消化项目资料
 
@@ -15920,16 +16541,16 @@ ${(state.submittedFiles || []).map((file) => `- ${file.relativePath || file.file
   }
 }
 
-function executeProjectDigest(projectId) {
+function executeProjectDigest(projectId, executionOptions = {}) {
   try {
     const access = mutableProject(projectId, '执行项目资料消化');
     if (access.error) return access.error;
     const project = ensureProjectWorkspace(access.project);
     const current = readProjectDigestState(project);
     if (current.status === 'digesting') return JSON.stringify({ ok: false, message: '该项目正在执行消化，请勿重复提交。' });
-    upsertTaskCandidates(buildTaskCenterCandidates(), { reconcileStudentDigests: true, reconcileWeeklyActions: true });
+    upsertTaskCandidates(buildTaskCenterCandidates(), { reconcileStudentDigests: true, reconcileWeeklyActions: true, reconcileInactiveStudents: true });
     const taskId = taskStableId('project_digest', 'project', project.id);
-    const result = JSON.parse(executeTaskByAdapter(taskId, project.agentTool || ''));
+    const result = JSON.parse(executeTaskByAdapter(taskId, project.agentTool || '', executionOptions));
     if (!result.ok) return JSON.stringify(result);
     if (isWorkspaceMaterialProject(project)) return JSON.stringify({ ...result, digestState: readProjectDigestState(project) });
     const stateStatus = result.task?.status === 'running' ? 'digesting' : result.task?.status === 'waiting_result' ? 'submitted' : current.status;
@@ -18625,7 +19246,7 @@ function ensureGrowthModelForStudent(student, fileIo = fs) {
   return { dir, created };
 }
 
-const TASK_TERMINAL_STATUSES = new Set(['succeeded', 'failed', 'blocked', 'cancelled', 'timed_out']);
+const TASK_TERMINAL_STATUSES = new Set(['succeeded', 'failed', 'blocked', 'cancelled', 'timed_out', 'archived']);
 
 function taskNow() {
   return new Date().toISOString();
@@ -18678,10 +19299,11 @@ function normalizeTaskStatus(status) {
 
 function taskStatusGroup(status) {
   const normalized = normalizeTaskStatus(status);
+  if (normalized === 'archived') return 'archived';
   if (['draft', 'pending', 'approved', 'blocked', 'failed', 'timed_out'].includes(normalized)) return 'actionable';
   if (['running', 'waiting_result', 'reviewing'].includes(normalized)) return 'running';
   if (normalized === 'queued') return 'scheduled';
-  if (normalized === 'succeeded') return 'completed';
+  if (['succeeded', 'cancelled'].includes(normalized)) return 'completed';
   return 'actionable';
 }
 
@@ -18696,6 +19318,7 @@ function taskRequiresApproval(task) {
 }
 
 const TASK_OPERATION_ALLOWLIST = {
+  practice_attempt_review: new Set(['read', 'review_practice']),
   daily_action: new Set(['read', 'create_draft']),
   weekly_action: new Set(['read', 'create_draft']),
   learning_profile: new Set(['read', 'create_draft']),
@@ -18713,6 +19336,9 @@ const TASK_OPERATION_ALLOWLIST = {
   collaboration_assignment: new Set(['read']),
   publication_enhancement: new Set(['read', 'create_draft']),
   competition_research_check: new Set(['read_planning_evidence', 'write_planning_suggestions']),
+  guidance_research_check: new Set(['read_planning_evidence', 'write_planning_suggestions']),
+  guidance_plan_refresh: new Set(['read_planning_evidence', 'write_planning_suggestions']),
+  topic_suggestion_refresh: new Set(['read_planning_evidence', 'write_planning_suggestions']),
 };
 
 function canonicalTaskPath(value) {
@@ -18770,6 +19396,8 @@ function normalizeTaskEnvelope(task, current = {}) {
     status: normalizeTaskStatus(task?.status || current.status || 'pending'),
     statusGroup: '',
     trigger: String(task?.trigger || current.trigger || 'manual'),
+    automaticExecution: task?.automaticExecution ?? current.automaticExecution ?? null,
+    recovery: Object.prototype.hasOwnProperty.call(task || {}, 'recovery') ? task.recovery : current.recovery || null,
     priority: String(task?.priority || current.priority || 'normal'),
     riskLevel,
     executor: String(task?.executor || current.executor || 'manual'),
@@ -18803,6 +19431,14 @@ function normalizeTaskEnvelope(task, current = {}) {
     startedAt: String(task?.startedAt ?? current.startedAt ?? ''),
     completedAt: String(task?.completedAt ?? current.completedAt ?? ''),
     lastHeartbeatAt: String(task?.lastHeartbeatAt ?? current.lastHeartbeatAt ?? ''),
+    lastProgressAt: String(task?.lastProgressAt ?? current.lastProgressAt ?? ''),
+    progressSource: String(task?.progressSource ?? current.progressSource ?? ''),
+    recoveryState: String(task?.recoveryState ?? current.recoveryState ?? ''),
+    recoveryReason: String(task?.recoveryReason ?? current.recoveryReason ?? ''),
+    recoveryCheckedAt: String(task?.recoveryCheckedAt ?? current.recoveryCheckedAt ?? ''),
+    suspendedDurationMs: task?.executionId && task.executionId !== current.executionId ? 0 : Math.max(0, Number(task?.suspendedDurationMs ?? current.suspendedDurationMs) || 0),
+    resumedAt: task?.executionId && task.executionId !== current.executionId ? '' : String(task?.resumedAt ?? current.resumedAt ?? ''),
+    retryRecovery: Object.prototype.hasOwnProperty.call(task || {}, 'retryRecovery') ? task.retryRecovery : current.retryRecovery || null,
     nextRetryAt: String(task?.nextRetryAt ?? current.nextRetryAt ?? ''),
     resourceDeferredAt: String(task?.resourceDeferredAt ?? current.resourceDeferredAt ?? ''),
     resourceRetryAt: String(task?.resourceRetryAt ?? current.resourceRetryAt ?? ''),
@@ -18815,21 +19451,24 @@ function normalizeTaskEnvelope(task, current = {}) {
     error: Object.prototype.hasOwnProperty.call(task || {}, 'error')
       ? (task?.error && typeof task.error === 'object' ? task.error : null)
       : (current.error || null),
+    archive: Object.prototype.hasOwnProperty.call(task || {}, 'archive')
+      ? (task?.archive && typeof task.archive === 'object' ? task.archive : null)
+      : (current.archive || null),
   };
   merged.statusGroup = taskStatusGroup(merged.status);
   return merged;
 }
 
 function ensureTaskCenterWorkspace() {
-  for (const dir of [taskCenterDirPath(), taskExecutionDirPath(), taskManualOutboxPath(), qclawTaskInboxPath(), qclawTaskResultPath()]) fs.mkdirSync(dir, { recursive: true });
+  for (const dir of [taskCenterDirPath(), taskExecutionDirPath(), taskManualOutboxPath(), agentTaskInboxPath(), agentTaskResultPath(), workbuddyTaskOutboxPath()]) fs.mkdirSync(dir, { recursive: true });
   const readme = path.join(taskCenterDirPath(), 'README.md');
-  const readmeContent = `# AI 教育管家统一任务中心\n\n协议版本：${TASK_PROTOCOL_VERSION}\n\n- tasks.json：标准任务包与执行历史。\n- events.jsonl：只追加的任务事件审计日志。\n- executions：自动执行日志。\n- qclaw-inbox：QClaw 待领取任务包。\n- qclaw-results：QClaw 领取回执与结果回写目录。\n- manual-outbox：不支持自动接口时的人工任务包。\n- migration-backups：协议升级前的任务账本备份。\n\nQClaw 领取任务时，可写入 \`<taskId>.claim.json\`，必须包含 protocolVersion、taskId、executionId、agentId 和 claimedAt。完成后写入 \`<taskId>.result.json\`：\n\n\`\`\`json\n{\n  "protocolVersion": "${TASK_PROTOCOL_VERSION}",\n  "taskId": "任务 ID",\n  "executionId": "任务包中的 executionId",\n  "status": "completed",\n  "message": "执行摘要",\n  "artifacts": [{ "path": "产物路径" }],\n  "validation": { "passed": true }\n}\n\`\`\`\n\n协议版本、任务 ID、执行批次任一不匹配时，结果会进入 rejected 目录，不会改变任务状态。所有结果仍需由任务中心校验和审核，Agent 不得直接发布高风险结果。\n`;
-  if (!fs.existsSync(readme) || !fs.readFileSync(readme, 'utf8').includes(`协议版本：${TASK_PROTOCOL_VERSION}`)) fs.writeFileSync(readme, readmeContent, 'utf8');
+  const readmeContent = `# AI 教育管家统一任务中心\n\n协议版本：${TASK_PROTOCOL_VERSION}\n\n- tasks.json：标准任务包与执行历史。\n- events.jsonl：只追加的任务事件审计日志。\n- executions：自动执行日志。\n- agent-inbox/<agentId>：按所选 Agent 分开的任务包（含 WorkBuddy 桌面预填）。\n- agent-results/<agentId>：所有 Agent 的领取回执与结果回写目录。\n- workbuddy-outbox：旧版 WorkBuddy 任务包保留目录。\n- qclaw-inbox：旧版 QClaw 待领取任务包（兼容）。\n- qclaw-results：旧版 QClaw 回执（继续兼容读取）。\n- manual-outbox：不支持自动接口时的人工任务包。\n- migration-backups：协议升级前的任务账本备份。\n\n所选 Agent 领取任务时，可写入 \`<taskId>.claim.json\`，必须包含 protocolVersion、taskId、executionId、agentId 和 claimedAt。完成后写入 \`<taskId>.result.json\`：\n\n\`\`\`json\n{\n  "protocolVersion": "${TASK_PROTOCOL_VERSION}",\n  "taskId": "任务 ID",\n  "executionId": "任务包中的 executionId",\n  "status": "completed",\n  "message": "执行摘要",\n  "artifacts": [{ "path": "产物路径" }],\n  "validation": { "passed": true }\n}\n\`\`\`\n\n协议版本、任务 ID、执行批次任一不匹配时，结果会进入 rejected 目录，不会改变任务状态。所有结果仍需由任务中心校验和审核，Agent 不得直接发布高风险结果。\n`;
+  if (!fs.existsSync(readme) || fs.readFileSync(readme, 'utf8') !== readmeContent) fs.writeFileSync(readme, readmeContent, 'utf8');
 }
 
 function readTaskStore() {
-  ensureTaskCenterWorkspace();
-  const parsed = safeReadJson(taskStorePath(), {});
+  const stored = taskStoreGuard.read(taskStorePath());
+  const parsed = stored.value;
   if (parsed.protocolVersion && parsed.protocolVersion !== TASK_PROTOCOL_VERSION && fs.existsSync(taskStorePath())) {
     const backupDir = path.join(taskCenterDirPath(), 'migration-backups');
     const backupPath = path.join(backupDir, `tasks-${String(parsed.protocolVersion).replace(/[^0-9A-Za-z._-]/g, '_')}-to-${TASK_PROTOCOL_VERSION}.json`);
@@ -18838,42 +19477,56 @@ function readTaskStore() {
       fs.copyFileSync(taskStorePath(), backupPath);
     }
   }
-  return {
+  return taskStoreGuard.track({
     protocolVersion: TASK_PROTOCOL_VERSION,
     updatedAt: String(parsed.updatedAt || ''),
+    runtime: parsed.runtime && typeof parsed.runtime === 'object' ? parsed.runtime : {},
     tasks: Array.isArray(parsed.tasks) ? parsed.tasks.map((task) => normalizeTaskEnvelope(task, task)) : [],
     history: Array.isArray(parsed.history) ? parsed.history : [],
-  };
+    deletedTasks: Array.isArray(parsed.deletedTasks) ? parsed.deletedTasks.slice(0, 500) : [],
+  }, stored.revision);
 }
 
-function writeTaskStore(store) {
+function writeTaskStore(store, options = {}) {
+  taskProgressBuffer.apply(store);
   compactDigestTaskStore(store);
   const normalized = {
     protocolVersion: TASK_PROTOCOL_VERSION,
     updatedAt: taskNow(),
     tasks: (store.tasks || []).map((task) => normalizeTaskEnvelope(task, task)),
+    runtime: store.runtime && typeof store.runtime === 'object' ? store.runtime : {},
     history: (store.history || []).slice(0, 500),
+    deletedTasks: (store.deletedTasks || []).slice(0, 500),
   };
-  writeJsonFile(taskStorePath(), normalized);
-  taskCenterSnapshotCache = { at: 0, value: '' };
+  taskStoreGuard.write(taskStorePath(), store, normalized);
+  taskProgressBuffer.clear();
+  if (!options.progressOnly) {
+    taskCenterSnapshotCache = { at: 0, value: '' };
+    taskLegacySnapshot = '';
+  }
   return normalized;
 }
 
-function appendTaskEvent(taskId, type, detail = {}, executionId = '') {
-  const eventPath = taskEventLogPath();
-  fs.mkdirSync(path.dirname(eventPath), { recursive: true });
-  try {
-    const stat = fs.statSync(eventPath);
-    if (stat.size >= 5 * 1024 * 1024) {
-      const archiveDir = path.join(taskCenterDirPath(), 'event-archives');
-      fs.mkdirSync(archiveDir, { recursive: true });
-      fs.renameSync(eventPath, path.join(archiveDir, `events-${timestampForFilename()}.jsonl`));
-    }
-  } catch {
-    // The first event has no existing log to rotate.
+async function writeTaskStoreDurably(store, options = {}) {
+  const normalized = writeTaskStore(store, options);
+  await taskStoreGuard.flush();
+  return normalized;
+}
+
+function assertTaskDispatchCurrent(taskId, executionId) {
+  taskStoreGuard.assertHealthy();
+  const task = readTaskStore().tasks.find(item => item.id === taskId);
+  if (!task || task.executionId !== executionId || !['running', 'waiting_result'].includes(task.status)
+    || !taskPowerRecovery.canDispatch() || !publicLicenseStatus().active
+    || (task.automaticExecution && automaticStudentTaskBlocked(task, findStudentByKey(task.sourceId)))) {
+    throw Object.assign(new Error('保存期间执行状态、授权或学生活动状态已变化，未发送任务。'), { code: 'DISPATCH_STATE_CHANGED' });
   }
+  return task;
+}
+
+function appendTaskEvent(taskId, type, detail = {}, executionId = '') {
   const event = { id: `event-${Date.now()}-${crypto.randomBytes(3).toString('hex')}`, taskId: String(taskId || ''), executionId: String(executionId || ''), type: String(type || 'updated'), at: taskNow(), detail };
-  fs.appendFileSync(eventPath, `${JSON.stringify(event)}\n`, 'utf8');
+  taskStoreGuard.appendEvent(event);
   return event;
 }
 
@@ -18884,18 +19537,15 @@ function repairTaskCenterRuntimeState() {
     ensureTaskCenterWorkspace();
     const store = readTaskStore();
     const repairedAt = taskNow();
+    const interrupted = reconcileInterruptedExecutions(store,
+      new Set([...taskChildProcesses].map(([id, run]) => `${id}:${run.executionId}`)), repairedAt);
     const repair = repairTaskRuntimeStore(store, repairedAt);
+    repair.repairs.push(...interrupted);
+    repair.changed ||= interrupted.length > 0;
     const eventPath = taskEventLogPath();
-    const rawEvents = fs.existsSync(eventPath)
-      ? fs.readFileSync(eventPath, 'utf8').split(/\r?\n/).filter(Boolean)
-      : [];
-    const parsedEvents = rawEvents.flatMap((line) => {
-      try { return [JSON.parse(line)]; }
-      catch { return []; }
-    });
-    const compactedEvents = compactTaskEvents(parsedEvents, { maxEvents: 2000 });
-    const eventsChanged = compactedEvents.length !== parsedEvents.length || parsedEvents.length !== rawEvents.length;
-    if (!repair.changed && !eventsChanged) return { ok: true, skipped: true };
+    // The Worker owns log rotation. Never parse/rewrite all historical events
+    // here while queued appends may be in flight.
+    if (!repair.changed) return { ok: true, skipped: true };
 
     const backupDir = path.join(taskCenterDirPath(), 'migration-backups', `runtime-p0-${timestampForFilename()}`);
     fs.mkdirSync(backupDir, { recursive: true });
@@ -18931,14 +19581,11 @@ function repairTaskCenterRuntimeState() {
       at: repairedAt,
       detail: {
         repairs: repair.repairs,
-        originalEventCount: parsedEvents.length,
-        compactedEventCount: compactedEvents.length,
         backupDir,
       },
     };
-    const finalEvents = compactTaskEvents([...compactedEvents, summaryEvent], { maxEvents: 2000 });
-    fs.writeFileSync(eventPath, `${finalEvents.map((event) => JSON.stringify(event)).join('\n')}\n`, 'utf8');
-    return { ok: true, repairs: repair.repairs, backupDir, eventCount: finalEvents.length };
+    taskStoreGuard.appendEvent(summaryEvent);
+    return { ok: true, repairs: repair.repairs, backupDir };
   } catch (error) {
     taskRuntimeMigrationChecked = false;
     return { ok: false, message: `任务运行时修复失败：${error.message}` };
@@ -18990,6 +19637,7 @@ function upsertTaskCandidates(candidates, options = {}) {
   let changed = false;
   for (const candidate of candidates) {
     const current = byId.get(String(candidate.id));
+    if (!current && deletedTaskCandidateSuppressed(store, candidate)) continue;
     if (!current) {
       const created = normalizeTaskEnvelope(candidate);
       store.tasks.push(created);
@@ -19000,13 +19648,29 @@ function upsertTaskCandidates(candidates, options = {}) {
     }
     const runtime = candidateRuntimeDecision(current, candidate);
     const preserveRequestedOperation = taskRequiresApproval(current) && current.input?.operation && !TASK_TERMINAL_STATUSES.has(current.status);
-    const merged = normalizeTaskEnvelope({
+    const runtimeCandidate = runtime.preserveRuntime ? {
       ...candidate,
+      status: current.status,
+      executor: current.executor,
+      requestedExecutor: current.requestedExecutor,
+      executionMode: current.executionMode,
+      automaticExecution: current.automaticExecution,
+      idempotencyKey: current.idempotencyKey,
+      input: current.input,
+      expectedOutput: current.expectedOutput,
+      permissions: current.permissions,
+      timeoutSeconds: current.timeoutSeconds,
+      heartbeatTimeoutSeconds: current.heartbeatTimeoutSeconds,
+      resultTimeoutSeconds: current.resultTimeoutSeconds,
+      completionPolicy: current.completionPolicy,
+    } : candidate;
+    const merged = normalizeTaskEnvelope({
+      ...runtimeCandidate,
       status: runtime.nextStatus,
-      input: preserveRequestedOperation ? current.input : materialTaskCheckpointForCandidate(current, candidate) || candidate.input,
-      executionMode: runtime.preserveExecution ? current.executionMode : candidate.executionMode,
-      expectedOutput: preserveRequestedOperation ? current.expectedOutput : candidate.expectedOutput,
-      permissions: preserveRequestedOperation ? current.permissions : candidate.permissions,
+      input: runtime.preserveRuntime || preserveRequestedOperation ? current.input : materialTaskCheckpointForCandidate(current, candidate) || candidate.input,
+      executionMode: runtime.preserveRuntime ? current.executionMode : candidate.executionMode,
+      expectedOutput: runtime.preserveRuntime || preserveRequestedOperation ? current.expectedOutput : candidate.expectedOutput,
+      permissions: runtime.preserveRuntime || preserveRequestedOperation ? current.permissions : candidate.permissions,
       result: runtime.resetExecution ? null : current.result,
       approval: current.approval,
       attempt: runtime.resetExecution ? 0 : current.attempt,
@@ -19015,8 +19679,16 @@ function upsertTaskCandidates(candidates, options = {}) {
       adapterId: runtime.resetExecution ? '' : current.adapterId,
       routeDecision: runtime.resetExecution ? null : current.routeDecision,
       routeAttempts: runtime.resetExecution ? [] : current.routeAttempts,
-      error: runtime.resetExecution ? null : current.error,
+      error: runtime.refreshBlock ? candidate.error || null : runtime.resetExecution ? null : current.error,
       autoRetry: runtime.resetExecution ? candidate.autoRetry : current.autoRetry,
+      recovery: runtime.resetExecution ? null : current.recovery || null,
+      startedAt: runtime.preserveRuntime ? current.startedAt : undefined,
+      completedAt: runtime.preserveRuntime ? current.completedAt : undefined,
+      lastHeartbeatAt: runtime.preserveRuntime ? current.lastHeartbeatAt : undefined,
+      nextRetryAt: runtime.preserveRuntime ? current.nextRetryAt : undefined,
+      resourceDeferredAt: runtime.preserveRuntime ? current.resourceDeferredAt : undefined,
+      resourceRetryAt: runtime.preserveRuntime ? current.resourceRetryAt : undefined,
+      resourceAdapterId: runtime.preserveRuntime ? current.resourceAdapterId : undefined,
     }, current);
     if (runtime.resetExecution) {
       Object.assign(merged, {
@@ -19056,8 +19728,9 @@ function upsertTaskCandidates(candidates, options = {}) {
   if (options.reconcileWeeklyActions) {
     const periodicKinds = new Set(['weekly_action', ...Object.keys(PERIODIC_REPORT_TASKS)]);
     const activeWeeklyIds = new Set(candidates.filter((task) => periodicKinds.has(task.kind)).map((task) => String(task.id)));
-    const retired = store.tasks.filter((task) => task.kind === 'daily_action'
-      || (periodicKinds.has(task.kind) && !activeWeeklyIds.has(String(task.id))));
+    const retired = store.tasks.filter((task) => !['running', 'waiting_result', 'reviewing'].includes(normalizeTaskStatus(task.status))
+      && (task.kind === 'daily_action'
+        || (periodicKinds.has(task.kind) && !activeWeeklyIds.has(String(task.id)))));
     if (retired.length) {
       const retiredAt = taskNow();
       for (const task of retired) {
@@ -19075,6 +19748,33 @@ function upsertTaskCandidates(candidates, options = {}) {
           at: retiredAt,
           detail: task.kind === 'daily_action' ? '已迁移为每周行动建议；旧每日任务退出当前队列。' : '上一周期报告任务已退出当前队列。',
         });
+      }
+      const retiredIds = new Set(retired.map((task) => String(task.id)));
+      store.tasks = store.tasks.filter((task) => !retiredIds.has(String(task.id)));
+      changed = true;
+    }
+  }
+  if (options.reconcileInactiveStudents) {
+    const inactiveStudentIds = new Set(readStudentsIndex().filter(studentTaskCardsSuppressed).map((student) => String(student.id)));
+    const retired = store.tasks.filter((task) => inactiveStudentIds.has(String(task.sourceId)) && inactiveStudentTaskCardRetirable(task));
+    if (retired.length) {
+      const retiredAt = taskNow();
+      for (const task of retired) {
+        store.history.unshift({
+          id: `history-${Date.now()}-${crypto.randomBytes(3).toString('hex')}`,
+          taskId: task.id,
+          executionId: task.executionId || '',
+          kind: task.kind,
+          title: task.title,
+          sourceType: task.sourceType,
+          sourceId: task.sourceId,
+          sourceName: task.sourceName,
+          executor: task.executor,
+          status: 'archived',
+          at: retiredAt,
+          detail: '学生已设为不活跃；周期任务卡已从当前队列移除。',
+        });
+        appendTaskEvent(task.id, 'inactive_student_task_archived', { previousStatus: task.status, sourceId: task.sourceId }, task.executionId);
       }
       const retiredIds = new Set(retired.map((task) => String(task.id)));
       store.tasks = store.tasks.filter((task) => !retiredIds.has(String(task.id)));
@@ -19146,8 +19846,8 @@ function buildPeriodicLearningReportTask(student, kind, sharedEvidence = null) {
     trigger: sourceChanged ? 'event' : 'schedule',
     priority: kind === 'learning_changes' ? 'medium' : 'normal',
     riskLevel: 'low',
-    executor: String(normalized.agentTool || 'qclaw'),
-    requestedExecutor: String(normalized.agentTool || 'qclaw'),
+    executor: String(normalized.agentTool || 'workbuddy'),
+    requestedExecutor: String(normalized.agentTool || 'workbuddy'),
     executionMode: 'adapter',
     scheduledAt: String(normalized.digestTime || '21:30'),
     scheduleKey: period.key,
@@ -19236,8 +19936,8 @@ function buildWeeklyActionTask(student, sharedEvidence = null) {
     trigger: 'schedule',
     priority: 'high',
     riskLevel: 'low',
-    executor: String(normalized.agentTool || 'qclaw'),
-    requestedExecutor: String(normalized.agentTool || 'qclaw'),
+    executor: String(normalized.agentTool || 'workbuddy'),
+    requestedExecutor: String(normalized.agentTool || 'workbuddy'),
     executionMode: 'adapter',
     scheduledAt: String(normalized.digestTime || '21:30'),
     scheduleKey: week.key,
@@ -19272,6 +19972,7 @@ function buildWeeklyActionTask(student, sharedEvidence = null) {
 }
 
 function currentLearningReportTaskCandidates(student) {
+  if (studentTaskCardsSuppressed(toHostStudent(student))) return [];
   const eligibleEvidence = reportEligibleEvidence(toHostStudent(student));
   return [
     buildWeeklyActionTask(student, eligibleEvidence),
@@ -19432,6 +20133,22 @@ function directReportExecutionCommand(task, command) {
   return `${normalizedCommand}\n\n自动发布补充要求：本次执行必须实际写入或更新系统校验区文件；即使已存在内容相同的文件，也要按当前学生、成长指纹和报告周期重新写入，不能只返回“无需更新”。在结论性章节引用 watching 证据时，每一处都必须明确写“待观察”“继续观察”“观察中”“待确认”或“不能据此形成正式结论”；行动建议、观察点和依据来源可以引用 watching 证据，但只能用于安排核验、收集或观察，不得升级为已确认事实。`;
 }
 
+function persistHostValidatedCodexDraft(task, output) {
+  if (!isHostValidatedDraftTask(task)) return { attempted: false, ok: true };
+  const content = extractHostValidatedDraft(output);
+  if (!content) return { attempted: true, ok: false, message: 'Codex 未返回带受控标记的完整报告。' };
+  const shape = validateHostDraftShape(task, content);
+  if (!shape.ok) return { attempted: true, ok: false, message: shape.message };
+  const target = canonicalTaskPath(task.expectedOutput?.draftPath || '');
+  const declared = (task.permissions?.write || []).map(canonicalTaskPath).filter(Boolean);
+  if (!target || !declared.some((root) => taskPathAllowed(target, [root]))) {
+    return { attempted: true, ok: false, message: '报告目标不在任务声明的写入范围内。' };
+  }
+  fs.mkdirSync(path.dirname(target), { recursive: true });
+  fs.writeFileSync(target, content, 'utf8');
+  return { attempted: true, ok: true, path: target, message: 'Codex 内容已由宿主校验后写入系统校验区。' };
+}
+
 function probeExecutable(executable, args, timeout = 2500) {
   if (!executable) return { ok: false, output: '', error: 'executable_not_found' };
   try {
@@ -19487,6 +20204,10 @@ function parseOpenClawModelReadiness(modelProbe) {
   return { ready: true, model: configured, message: `模型 ${configured}` };
 }
 
+function openClawGatewayHealthy(probe) {
+  return Boolean(probe?.ok && !/ECONNREFUSED|connectivity probe:\s*failed|RPC probe:\s*failed|capability:\s*unknown|state Disabled/i.test(String(probe.output || '')));
+}
+
 async function verifyOpenClawModel(modelProbe) {
   const parsed = parseOpenClawModelReadiness(modelProbe);
   if (!parsed.ready || !parsed.model.startsWith('ollama/')) return parsed;
@@ -19516,43 +20237,540 @@ function probeLocalPort(port, timeout = 1200) {
   });
 }
 
+async function persistWorkBuddyControlledStatus(runtime, authorization, qualification, profiles = [DIGEST_PROFILE]) {
+  let runtimeHash = String(qualification?.cliHash || '');
+  if (!runtimeHash && runtime?.cliPath) {
+    try { runtimeHash = (await hashStableFile(runtime.cliPath)).sha256; } catch { /* unavailable runtime stays unqualified */ }
+  }
+  const store = readTaskStore(); store.runtime ||= {}; store.runtime.circuits ||= {};
+  store.runtime.agentQualifications ||= {}; store.runtime.agentQualifications.workbuddy ||= {};
+  for (const profile of profiles) {
+    store.runtime.agentQualifications.workbuddy[profile] = createAgentQualification({
+      providerId: 'workbuddy', profile, runtimeHash, ready: qualification?.ready === true,
+      mode: qualification?.mode || 'host-mediated-no-tools', message: qualification?.message || authorization?.message || '',
+      measuredAt: qualification?.measuredAt, ttlMs: qualification?.ready ? 30 * 60 * 1000 : 5 * 60 * 1000,
+    });
+    store.runtime.agentQualifications.workbuddy[profile].authScope = JSON.stringify([runtime?.configDir || '', runtime?.authVersion || 0]);
+  }
+  if (authorization) store.runtime.circuits.workbuddy = authorization.authorized
+    ? completeCircuitProbe(store.runtime.circuits.workbuddy, qualification?.ready === true)
+    : { ...store.runtime.circuits.workbuddy, version: 1, phase: 'authorization', failures: 0, until: '', updatedAt: taskNow() };
+  await writeTaskStoreDurably(store);
+}
+
+async function detectWorkBuddyBackgroundAuthorization(confirmed = false) {
+  if (confirmed !== true) return JSON.stringify({ ok: false, message: '检测可能消耗模型额度，需要用户主动确认。' });
+  if (taskChildProcesses.size || captureHeavyWorkGate.state().length) return JSON.stringify({ ok: false, message: '后台正在处理资料，请完成后再检测，避免探测与资料分析争抢资源。' });
+  const release = captureHeavyWorkGate.tryAcquire({ kind: 'agent_probe', studentId: '', sessionId: 'workbuddy-probe', snapshot: captureTimelineResourceSnapshot() });
+  if (!release) return JSON.stringify({ ok: false, message: '当前资源不足，请稍后检测。' });
+  try {
+    const install = findAgentToolInstall('workbuddy');
+    const runtime = discoverWorkBuddyRuntime(install.exePath || '', { findExecutable: findExecutableInPath, hostNodePath: process.execPath });
+    if (runtime.cliPath) runtime.version = String(fs.statSync(runtime.cliPath).mtimeMs);
+    const result = await workBuddyProbeCache.detect(runtime, { force: true });
+    const qualification = result.authorized ? await workBuddyQualification.check(runtime, { force: true }) : { ready: false };
+    await persistWorkBuddyControlledStatus(runtime, result, qualification);
+    return JSON.stringify({ ok: result.authorized, authorized: result.authorized, automaticReady: qualification.ready,
+      message: qualification.ready ? '后台授权和无工具结构化检测通过；已启用受控项目与学生资料自动处理。分类任务会按独立输出合同使用合成资料自行复检。'
+        : `${qualification.message || result.message} 可继续使用桌面交接；请登录后重新检测。` });
+  } catch (error) { return JSON.stringify({ ok: false, message: `后台检测失败：${error.message}` }); }
+  finally { release(); }
+}
+
+async function detectCodexBackgroundAuthorization(confirmed = false) {
+  const { detectCodexAuthorization } = require('./agent-authorization-detection.cjs');
+  const result = await detectCodexAuthorization({
+    confirmed,
+    busy: Boolean(taskChildProcesses.size || captureHeavyWorkGate.state().length),
+    acquire: () => captureHeavyWorkGate.tryAcquire({ kind: 'agent_probe', studentId: '', sessionId: 'codex-probe', snapshot: captureTimelineResourceSnapshot() }),
+    refreshCapabilities: () => refreshAdapterCapabilities(true),
+    probe: executable => require('./task-circuit-probe.cjs').probeControlledCodex(executable),
+    readStore: readTaskStore,
+    writeStore: writeTaskStoreDurably,
+    now: taskNow,
+  });
+  return JSON.stringify(result);
+}
+
+function currentStudentAgentStatus(student, profile = CLASSIFICATION_PROFILE) {
+  const providerId = String(student?.agentTool || '');
+  const capability = (adapterCapabilityCache.value || baseAdapterCapabilities())[providerId]
+    || { id: providerId, label: providerId || 'Agent', available: false, authorized: false };
+  const runtime = readTaskStore().runtime || {};
+  const qualification = runtime.agentQualifications?.[providerId]?.[profile] || null;
+  const status = agentProfileStatus({ providerId, profile, capability,
+    circuit: runtime.circuits?.[providerId], qualification });
+  if (profile === CLASSIFICATION_PROFILE) {
+    const valid = qualification?.contract === 'routing-recovery-v2' && qualification.ready && Date.parse(qualification.expiresAt) > Date.now();
+    if (!valid && status.state === 'ready') Object.assign(status, { state: 'qualification_required', automaticReady: false, message: '下次分析前自动完成安全校验' });
+    return { ...status, fallback: student.classificationFallback || { enabled: false, version: 0 },
+      login: classificationAuth().status(providerId) };
+  }
+  return status;
+}
+
+let agentControlStoreRuntime;
+function agentControlStore() {
+  return agentControlStoreRuntime ||= require('./agent-control-plane.cjs').createAgentControlStore(path.join(app.getPath('userData'), 'agent-control', 'policies.json'));
+}
+function aiExecutorRegistry() {
+  const service = require('./ai-executor-registry.cjs');
+  return service.executorRegistry(service.customToolsFrom(path.join(app.getPath('userData'), 'custom-options', 'custom-agent-tools.json')));
+}
+function effectiveAgentGrant(token) {
+  if (String(token).startsWith('eak_r21_')) {
+    try { return externalConnectorStore().auth(token); } catch { return null; }
+  }
+  const grant = resolveAgentAccessGrant(readAgentAccessGrantStore(), token);
+  if (!grant) return null;
+  let inbound;
+  try { inbound = externalConnectorStore().read(); } catch { return null; }
+  if (inbound.legacyDenied || inbound.policy.status === 'revoked' || inbound.policy.paused) return null;
+  if (inbound.policy.status === 'active') {
+    const limits = inbound.policy.restrictions;
+    if (limits.expiresAt && Date.parse(limits.expiresAt) <= Date.now() || limits.excludedStudentIds.includes(grant.studentId)) return null;
+    grant.capabilities = grant.capabilities.filter(p => require('./external-agent-connector.cjs').PRESETS[inbound.policy.preset].includes(p) && !limits.disabledPermissions.includes(p));
+    grant.allowedProjectIds = grant.allowedProjectIds.filter(p => !limits.excludedProjectIds.includes(p));
+  }
+  const global = agentControlStore().read().global;
+  if (!global) return grant;
+  const student = findStudentByKey(String(grant.studentId || grant.allowedStudentIds?.[0] || ''));
+  if (!global.enabled || !student || student.archived || student.status === 'archived') return null;
+  // Legacy credentials keep their issued scope; a global outbound switch cannot
+  // grant them new inbound permissions or new projects.
+  return grant;
+}
+function agentControlPolicy(student, profile, project = null) {
+  return require('./agent-control-plane.cjs').resolvePolicy(agentControlStore().read(),
+    { studentId: String(student.id), projectId: project?.id || '' }, profile, student, project, aiExecutorRegistry());
+}
+function agentClassificationRoute(student) {
+  if (!student) return { providers: [], policyVersion: 0 };
+  const policy = agentControlPolicy(student, CLASSIFICATION_PROFILE);
+  return { providers: require('./agent-control-plane.cjs').providersFor(policy, CLASSIFICATION_PROFILE),
+    policyVersion: policy.inherited ? `legacy:${Number(student.classificationFallback?.version || 0)}` : `center:${policy.version}` };
+}
+function assertAgentProfileAllowed(studentId, profile) {
+  const student = findStudentByKey(String(studentId || ''));
+  const policy = student ? agentControlPolicy(student, profile) : null;
+  const allowed = policy ? require('./agent-control-plane.cjs').providersFor(policy, profile) : [];
+  const researchReady = profile !== 'research.v1' || planningResearchProviders().some(provider => allowed.includes(provider.id)
+    && provider.available && provider.authorized && provider.webResearch && provider.structuredResult && typeof provider.search === 'function');
+  if (!student || student.archived || student.status === 'archived' || !policy.enabled || !allowed.length || !researchReady)
+    throw Object.assign(Error('此学生的任务授权已停用，请在 Agent 接入与调度中心管理。'), { code: 'AGENT_SCOPE_DENIED' });
+}
+async function agentControlAction(action, input = {}) {
+  if (action.startsWith('external:')) return externalConnectorAction(action.slice(9), input);
+  if (action === 'loginStatus') {
+    if (!['codex', 'workbuddy'].includes(input.providerId)) throw Error('不支持的 Agent');
+    return { login: classificationAuth().status(input.providerId) };
+  }
+  // Connections and authorization are host-global, including an empty student library.
+  const student = { id: '', agentTool: '' }, project = null;
+  const service = require('./agent-control-plane.cjs');
+  const scope = { studentId: '', projectId: '' }, registry = aiExecutorRegistry();
+  if (action === 'saveGlobal') {
+    if (!agentControlStore().read().global) {
+      const grantsFile = path.join(app.getPath('userData'), 'agent-access-grants.json');
+      if (fs.existsSync(grantsFile) && !fs.existsSync(grantsFile + '.pre-global.bak')) fs.copyFileSync(grantsFile, grantsFile + '.pre-global.bak', fs.constants.COPYFILE_EXCL);
+    }
+    const global = await agentControlStore().saveGlobal(input.settings || {}, registry);
+    smartInboxHostRuntime?.routing?.invalidate();
+    adapterCapabilityCache.at = 0;
+    // R21 inbound connections are authorized separately. Never expand or
+    // resurrect legacy student tokens while saving outbound dispatch settings.
+    const target = activeCaptureTarget(safeReadJson(activeAgentKnowledgeDescriptorPath(), {}));
+    if (global.enabled && target.studentId) prepareAgentKnowledgeAccess(target.studentId, { activateGlobal: true });
+    if (!global.enabled && target.studentId) {
+      const targetStudent = findStudentByKey(target.studentId);
+      if (targetStudent) setLifecycleDescriptorEnabled(targetStudent, false);
+    }
+    notify('onNativeTaskCenterChanged', JSON.stringify({ reason: 'global_agent_policy_changed' }));
+    return { global, message: global.enabled ? '已一次授权全部现有及未来有效学生。会话归属仍需明确选择；旧会话和未知执行不会重新派发。' : '已全局停用；新的任务、外部查询、写入及会话采集已阻止。' };
+  }
+  if (action === 'addTool') { await getCustomOptions().addTool(input.tool); adapterCapabilityCache.at = 0; notify('onNativeTaskCenterChanged', JSON.stringify({ reason: 'executor_registry_changed' })); return { message: '已添加执行器；标准 CLI 验证后才能自动执行。' }; }
+  if (action === 'editTool') { await getCustomOptions().updateTool(input.providerId, input.tool); adapterCapabilityCache.at = 0; smartInboxHostRuntime?.routing?.invalidate(); notify('onNativeTaskCenterChanged', JSON.stringify({ reason: 'executor_registry_changed' })); return { message: '已更新执行器；程序、接入方式或参数变化后需重新验证自动合同。' }; }
+  if (action === 'removeTool') { await getCustomOptions().removeTool(input.providerId); adapterCapabilityCache.at = 0; notify('onNativeTaskCenterChanged', JSON.stringify({ reason: 'executor_registry_changed' })); return { message: '已移除工具；已有任务和资料保持不变。' }; }
+  if (action === 'openTool') { await getCustomOptions().openTool(input.providerId); return { message: '已打开自定义工具。' }; }
+  if (action === 'handoffTarget') {
+    const task = readTaskStore().tasks.find(t => t.id === input.taskId), global = agentControlStore().read().global;
+    const executor = registry.find(p => p.id === input.providerId && p.handoff);
+    const providerMode = global?.providerModes?.[input.providerId] || (global?.disabledProviders?.includes(input.providerId) ? 'disabled' : 'manual_only');
+    if (!executor || global && (!global.enabled || providerMode === 'disabled')) throw Error('交接目标未启用');
+    if (!task || task.status !== 'waiting_result' || !String(task.executionId).startsWith('handoff-select-') || task.routeDecision?.stage !== 'desktop_handoff') throw Error('任务已经交接或执行归属发生变化，请刷新后查看');
+    const permission = validateTaskPermissionDeclaration(task);
+    if (!permission.ok) throw Error(permission.message);
+    if (taskDispatchPending.has(task.id)) throw Error('本任务正在准备交接，请勿重复发送');
+    const work = submitAgentHandoffTask(task, taskCommandFor(task), executor.id);
+    taskDispatchPending.set(task.id, work);
+    try {
+      const result = await work;
+      notify('onNativeTaskCenterChanged', JSON.stringify({ taskId: task.id }));
+      if (!result.ok) throw Error(result.message || '未完成交接');
+      return { ...result, custom: executor.custom, openable: !executor.custom || executor.connection !== 'cli', providerId: executor.id };
+    } finally { taskDispatchPending.delete(task.id); }
+  }
+  if (action === 'verifyCli') {
+    const executor = registry.find(p => p.id === input.providerId && p.connection === 'cli');
+    if (!executor) throw Error('标准 CLI 不存在');
+    const verification = await require('./standard-cli-provider.cjs').verify(executor.tool);
+    await getCustomOptions().verifyTool(executor.id, verification);
+    return { message: 'CLI 连接协议已验证；分类、消化及卡片在执行时分别校验任务合同。' };
+  }
+  if (action === 'resumeTask') {
+    const task = readTaskStore().tasks.find(t => t.id === input.taskId);
+    if (!task || !['student_digest', 'project_digest'].includes(task.kind)
+      || !['blocked', 'failed', 'pending'].includes(task.status) || task.recoveryState === 'unknown') throw Error('此任务需在任务队列核对，不能从中心直接恢复');
+    return JSON.parse(executeTaskByAdapter(task.id, 'auto'));
+  }
+  if (action === 'savePolicy') {
+    throw Error('逐学生授权已合并，请刷新并使用全局授权');
+  }
+  if (action === 'saveLlmApi') {
+    const settings = await getLlmApiProvider().save(input.settings || {});
+    adapterCapabilityCache.at = 0;
+    smartInboxHostRuntime?.routing?.invalidate();
+    return { settings, message: settings.researchSupported
+      ? 'LLM API 配置已加密保存；请分别执行结构化连接测试和联网研究合同测试。'
+      : 'LLM API 配置已加密保存；此兼容协议可执行结构化生成，但不具备可核验的联网研究合同。' };
+  }
+  if (action === 'verifyResearch') {
+    if (!['llm-api', 'workbuddy'].includes(input.providerId)) throw Error('此执行器没有独立的联网研究合同测试');
+    if (taskChildProcesses.size || captureHeavyWorkGate.state().length) throw Error('后台任务运行中，请稍后验证');
+    const release = captureHeavyWorkGate.tryAcquire({ kind: 'agent_probe', studentId: '', sessionId: `${input.providerId}-research-center`, snapshot: captureTimelineResourceSnapshot() });
+    if (!release) throw Error('资源繁忙，请稍后验证');
+    try {
+      if (input.providerId === 'workbuddy') {
+        const connected = await classificationAdapter('workbuddy');
+        if (!connected || connected.unavailable) throw Object.assign(Error(connected?.message || 'WorkBuddy 后台通道尚未连接'), { code: connected?.code || 'AGENT_UNAVAILABLE' });
+        let result;
+        try { result = await verifyWorkBuddyResearch({ runtime: connected.runtime, spawnProcess: spawnAdapterProcess }); }
+        catch (error) {
+          await persistWorkBuddyControlledStatus(connected.runtime, null, { ready: false, profile: WORKBUDDY_RESEARCH_PROFILE, mode: 'host-mediated-verified-web-search', message: error.message }, [WORKBUDDY_RESEARCH_PROFILE]);
+          throw error;
+        }
+        await persistWorkBuddyControlledStatus(connected.runtime, null, result, [WORKBUDDY_RESEARCH_PROFILE]);
+        adapterCapabilityCache.at = 0;
+        void refreshAdapterCapabilities(true).catch(error => console.warn('[agent-center] capability refresh after WorkBuddy research failed:', error.message));
+        return { ...result, message: result.message };
+      }
+      const result = await getLlmApiProvider().verifyResearch();
+      adapterCapabilityCache.at = 0;
+      await refreshAdapterCapabilities(true);
+      return { ...result, message: result.message };
+    } finally { release(); }
+  }
+  if (action === 'verifyBuiltin') {
+    if (!builtinStructuredProvider.PROVIDERS.includes(input.providerId)) throw Error('此执行器不使用内置结构化合同');
+    if (taskChildProcesses.size || captureHeavyWorkGate.state().length) throw Error('后台任务运行中，请稍后验证');
+    const release = captureHeavyWorkGate.tryAcquire({ kind: 'agent_probe', studentId: '',
+      sessionId: `builtin-contract-${input.providerId}`, snapshot: captureTimelineResourceSnapshot() });
+    if (!release) throw Error('资源繁忙，请稍后验证');
+    try {
+      const adapter = await classificationAdapter(input.providerId);
+      if (!adapter || adapter.unavailable) throw Object.assign(Error(adapter?.message || '自动通道不可用'), { code: adapter?.code || 'AGENT_UNAVAILABLE' });
+      const executor = registry.find(item => item.id === input.providerId);
+      for (const profile of executor?.automaticProfiles || []) await ensureBuiltinStructuredQualification(adapter, profile, { force: true });
+      return { message: `${executor.label} 已通过分类、资料消化和学习卡片合成合同；真实任务仍会核对运行时指纹与授权。` };
+    } finally { release(); }
+  }
+  if (action === 'authorize' || action === 'verify') {
+    if (input.providerId === 'llm-api') {
+      if (action === 'authorize') throw Error('LLM API 请在本页填写地址、模型和密钥');
+      if (taskChildProcesses.size || captureHeavyWorkGate.state().length) throw Error('后台任务运行中，请稍后验证');
+      const release = captureHeavyWorkGate.tryAcquire({ kind: 'agent_probe', studentId: String(student.id), sessionId: 'llm-api-center', snapshot: captureTimelineResourceSnapshot() });
+      if (!release) throw Error('资源繁忙，请稍后验证');
+      try {
+        const result = await getLlmApiProvider().verify();
+        adapterCapabilityCache.at = 0; smartInboxHostRuntime?.routing?.invalidate();
+        for (const item of readStudentsIndex().filter(s => !s.archived && s.status !== 'archived')) {
+          if (agentClassificationRoute(item).providers.includes('llm-api')) await (await getSmartInbox()).resumeAgent(String(item.id), `center-${crypto.randomUUID()}`);
+        }
+        return { ...result, message: result.message };
+      } finally { release(); }
+    }
+    if (!['codex', 'workbuddy'].includes(input.providerId)) throw Error('此执行器请通过官方客户端管理连接');
+    const adapter = await classificationAdapter(input.providerId);
+    if (action === 'authorize') return classificationAuth().start(input.providerId, adapter, String(input.requestId || ''));
+    if (taskChildProcesses.size || captureHeavyWorkGate.state().length) throw Error('后台任务运行中，请稍后验证');
+    await classificationAuth().invalidate(input.providerId, String(input.requestId || ''));
+    const engine = await getSmartInbox();
+    smartInboxHostRuntime.routing.invalidate();
+    const release = captureHeavyWorkGate.tryAcquire({ kind: 'agent_probe', studentId: String(student.id), sessionId: 'agent-center', snapshot: captureTimelineResourceSnapshot() });
+    if (!release) throw Error('资源繁忙，请稍后验证');
+    try { await smartInboxHostRuntime.routing.qualify(await classificationAdapter(input.providerId)); }
+    finally { release(); }
+    classificationAuth().complete(input.providerId);
+    const eligibleStudents = readStudentsIndex().filter(item => !item.archived && item.status !== 'archived'
+      && agentClassificationRoute(item).providers.includes(input.providerId));
+    void (async () => {
+      for (const item of eligibleStudents) await engine.resumeAgent(String(item.id), `center-${crypto.randomUUID()}`);
+    })().catch(error => console.warn(`[agent-center] ${input.providerId} verified but background resume failed:`, error.message));
+    return { message: eligibleStudents.length
+      ? `已验证连接；${eligibleStudents.length} 个学生的分类待办正在后台恢复。消化、卡片和联网研究仍在执行前按各自合同验证。`
+      : '已验证连接；当前没有需要恢复的分类待办。消化、卡片和联网研究仍在执行前按各自合同验证。' };
+  }
+  if (action !== 'snapshot') throw Error('不支持的中心操作');
+  const store = agentControlStore().read(), runtime = readTaskStore().runtime || {};
+  const capabilities = typeof registeredAdapterCapabilities === 'function' ? registeredAdapterCapabilities() : {};
+  const profiles = Object.entries(service.PROFILES).map(([id, spec]) => ({ id, ...spec, providers: registry.filter(p => p.automaticProfiles.includes(id)).map(p => p.id), policy: service.resolvePolicy(store, scope, id, student, project, registry) }));
+  const providers = await Promise.all(registry.map(async executor => {
+    const { id } = executor;
+    if (!['codex', 'workbuddy', 'llm-api'].includes(id)) {
+      const installed = executor.custom ? executor.connection === 'web' || fs.existsSync(executor.tool.target) : Boolean(findAgentToolInstall(id)?.exePath);
+      const verified = executor.custom && executor.connection === 'cli' && await require('./standard-cli-provider.cjs').createAdapter(executor.tool).then(() => true, () => false);
+      const channel = capabilities[id] || {};
+      const channelAutomatic = Boolean(channel.automatic && channel.available && channel.authorized);
+      const builtin = builtinStructuredProvider.PROVIDERS.includes(id);
+      const qualifications = profiles.map(p => {
+        const record = runtime.agentQualifications?.[id]?.[p.id];
+        const ready = p.providers.includes(id) && record?.ready && record.runtimeHash
+          && Date.parse(record.expiresAt || '') > Date.now();
+        return { profile: p.id, supported: p.providers.includes(id), state: !p.providers.includes(id) ? '手工交接'
+          : ready ? '已通过合成合同，执行前复核' : channelAutomatic ? '执行前使用合成数据验证' : '自动通道未连接，保留手工交接' };
+      });
+      const allReady = executor.automaticProfiles.length > 0 && executor.automaticProfiles.every(profile => qualifications.find(item => item.profile === profile)?.state.startsWith('已通过'));
+      return { ...executor, installed: installed || Boolean(channel.available), channelAutomatic,
+        state: executor.connection === 'cli' ? verified ? 'ready' : 'qualification_required'
+          : builtin && channelAutomatic ? allReady ? 'ready' : 'channel_ready' : channelAutomatic ? 'channel_ready' : 'manual',
+        message: executor.connection === 'cli' ? '标准 JSON CLI；本机可信程序，非操作系统沙箱。合成验证及实际结果均由宿主校验。'
+          : builtin && channelAutomatic ? `${channel.healthMessage || '自动通道已连接'}；分类、消化和学习卡片按任务类型分别验证后自动执行。`
+            : channelAutomatic ? `${channel.healthMessage || '自动通道已连接'}；尚未通过教育结构化任务合同，当前教育任务仍使用手工交接。`
+            : `手工交接：打开工具、复制任务，完成后在同一任务导入结果。${channel.healthMessage ? ` ${channel.healthMessage}` : ''}`,
+        qualifications };
+    }
+    if (id === 'llm-api') {
+      const settings = await getLlmApiProvider().get();
+      const checked = settings.lastCheck?.ok && settings.lastCheck.runtimeHash === settings.runtimeHash;
+      return { ...executor, installed: settings.configured, state: checked ? 'ready' : settings.configured ? 'qualification_required' : 'unavailable',
+        message: checked ? settings.lastCheck.message : settings.configured ? '配置已保存；需要使用合成数据验证结构化输出。' : '尚未配置 API 地址、模型和密钥。', settings,
+        qualifications: profiles.map(p => ({ profile: p.id, supported: p.providers.includes(id), state: p.id === 'research.v1'
+          ? !settings.researchSupported ? '当前协议不支持联网研究' : settings.researchReady ? '联网研究合同已验证，执行时逐次复核来源' : '待联网研究合同验证'
+          : p.providers.includes(id) ? (checked ? '已验证结构化连接，执行时按任务合同复核' : '待合成验证') : '未支持' })) };
+    }
+    const adapter = await classificationAdapter(id);
+    const saved = runtime.agentQualifications?.[id]?.[CLASSIFICATION_PROFILE];
+    const status = require('./agent-invocation-service.cjs').classificationSavedStatus(currentStudentAgentStatus({ ...student, agentTool: id }), adapter, saved);
+    return { ...executor, installed: !adapter?.unavailable,
+      state: status.state, message: status.message, login: classificationAuth().status(id),
+      qualifications: profiles.map(p => ({ profile: p.id, supported: p.providers.includes(id),
+        state: runtime.agentQualifications?.[id]?.[p.id]?.ready && Date.parse(runtime.agentQualifications[id][p.id].expiresAt) > Date.now() ? '已保存验证，执行前复核' : '执行前验证' })) };
+  }));
+  const tasks = readTaskStore().tasks.filter(t => t.routeDecision || t.executionMode === 'automatic').slice(-30).reverse()
+    .map(t => ({ id: t.id, title: t.title, status: t.status, route: t.routeDecision || null, error: t.error?.message || '' }));
+  const legacyPrimary = readStudentsIndex().find(s => registry.some(p => p.id === s.agentTool))?.agentTool || 'workbuddy';
+  const global = service.normalizeGlobal(store.global || service.globalDefaults(legacyPrimary), registry);
+  const known = new Set(registry.map(p => p.id));
+  return { scope, profiles, providers, tasks, global: { ...global, order: global.order.filter(id => known.has(id)), disabledProviders: global.disabledProviders.filter(id => known.has(id)),
+      providerModes: Object.fromEntries(Object.entries(global.providerModes).filter(([id]) => known.has(id))),
+      providerProfiles: Object.fromEntries(Object.entries(global.providerProfiles).filter(([id]) => known.has(id))) },
+    pendingCount: readAgentWriteIntents().intents.filter(i => ['pending_approval', 'recoverable'].includes(i.status)).length,
+    history: (store.history || []).slice(-20).reverse() };
+}
+
+let classificationAuthRuntime;
+function classificationAuth() {
+  return classificationAuthRuntime ||= require('./classification-auth.cjs').createClassificationAuth({
+    directory: path.join(app.getPath('userData'), 'classification-auth'), spawn: spawnAdapterProcess,
+    openUrl: url => shell.openExternal(url),
+    changed: () => { if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('smart-inbox:changed'); },
+  });
+}
+async function classificationAdapter(providerId) {
+  if (String(providerId).startsWith('custom:')) {
+    const executor = aiExecutorRegistry().find(p => p.id === providerId && p.connection === 'cli');
+    if (!executor) return { id: providerId, unavailable: true, code: 'AGENT_UNAVAILABLE', message: '标准 CLI 已删除或不是自动通道' };
+    try { return await require('./standard-cli-provider.cjs').createAdapter(executor.tool); }
+    catch (error) { return { id: providerId, unavailable: true, code: error.code || 'AGENT_UNAVAILABLE', message: error.message }; }
+  }
+  if (!['workbuddy', 'codex', 'llm-api', ...builtinStructuredProvider.PROVIDERS].includes(providerId)) return null;
+  if (providerId === 'llm-api') {
+    try {
+      const runtime = await getLlmApiProvider().runtime();
+      return { id: providerId, runtimeHash: runtime.runtimeHash, authScope: new URL(runtime.baseUrl).host,
+        authVersion: runtime.revision, generate: async options => {
+          if ((await getLlmApiProvider().runtime()).runtimeHash !== runtime.runtimeHash) throw Object.assign(Error('API 连接配置已变化，停止本次调用'), { code: 'AGENT_POLICY_CHANGED' });
+          return getLlmApiProvider().generate(options);
+        } };
+    } catch (error) {
+      return { id: providerId, unavailable: true, code: error.code || 'LLM_API_CONFIGURATION_REQUIRED', message: error.message };
+    }
+  }
+  if (builtinStructuredProvider.PROVIDERS.includes(providerId)) {
+    try {
+      const capabilities = await refreshCapabilitiesForExplicitExecution(providerId);
+      const capability = capabilities?.[providerId] || {};
+      if (!capability.available || !capability.authorized || !capability.automatic) {
+        return { id: providerId, unavailable: true, code: 'AGENT_UNAVAILABLE', message: capability.healthMessage || `${providerId} 自动通道尚未连接` };
+      }
+      let runtime;
+      if (providerId === 'openclaw') runtime = {
+        executable: capability.exePath,
+        local: !capability.gatewayHealthy,
+        authScope: capability.exePath,
+        authVersion: capability.model || '',
+      };
+      else if (providerId === 'claude-code') runtime = {
+        executable: capability.exePath,
+        authScope: capability.authScope || path.join(os.homedir(), '.claude'),
+        authVersion: capability.version || capability.authVersion || '',
+      };
+      else if (providerId === 'qclaw') {
+        const discovered = discoverQClawRuntime(capability.exePath || findAgentToolInstall('qclaw').exePath || '');
+        const agentId = discovered.agents.find(item => item.id === 'main')?.id || discovered.agents[0]?.id || 'main';
+        runtime = { ...discovered, agentId, env: qclawRuntimeEnv(discovered), authScope: discovered.stateDir, authVersion: discovered.port };
+      } else runtime = {
+        cliPath: capability.cliPath,
+        authScope: capability.cliPath,
+        authVersion: capability.version || '',
+      };
+      return await builtinStructuredProvider.createAdapter({ id: providerId, runtime, spawnProcess: spawnAdapterProcess });
+    } catch (error) {
+      return { id: providerId, unavailable: true, code: error.code || 'AGENT_UNAVAILABLE', message: error.message };
+    }
+  }
+  const auth = await classificationAuth().read(providerId);
+  if (providerId === 'codex') {
+    // Authorization and explicit verification must not race the startup scan:
+    // an older PATH CLI may reject config written by the newer Desktop CLI.
+    const install = await refreshPreferredCodexCliInstall();
+    return install.exePath ? { id: providerId, executable: install.exePath,
+      authScope: process.env.CODEX_HOME || path.join(os.homedir(), '.codex'), authVersion: auth.version }
+      : { id: providerId, unavailable: true, code: 'AGENT_UNAVAILABLE', message: '未找到 Codex CLI' };
+  }
+  const install = findAgentToolInstall('workbuddy');
+  const runtime = classificationAuth().apply(discoverWorkBuddyRuntime(install.exePath || '', { findExecutable: findExecutableInPath, hostNodePath: process.execPath }), auth);
+  runtime.authVersion = auth.version || 0;
+  return runtime.available ? { id: providerId, runtime, authScope: runtime.authRoot || runtime.configDir, authVersion: auth.version }
+    : { id: providerId, unavailable: true, code: 'AGENT_UNAVAILABLE', message: '未找到 WorkBuddy CLI' };
+}
+
+async function ensureBuiltinStructuredQualification(adapter, profile, options = {}) {
+  if (!adapter?.structuredBuiltin) return null;
+  const key = `${adapter.id}:${profile}:${adapter.runtimeHash}`;
+  const saved = readTaskStore().runtime?.agentQualifications?.[adapter.id]?.[profile];
+  if (!options.force && validAgentQualification(saved, { providerId: adapter.id, profile, runtimeHash: adapter.runtimeHash })) return saved;
+  if (builtinStructuredQualifications.has(key)) return builtinStructuredQualifications.get(key);
+  const operation = (async () => {
+    let result, error;
+    try { result = await builtinStructuredProvider.qualifyProfile(adapter, profile, options); }
+    catch (caught) { error = caught; }
+    const store = readTaskStore(); store.runtime ||= {}; store.runtime.agentQualifications ||= {}; store.runtime.agentQualifications[adapter.id] ||= {};
+    const record = createAgentQualification({
+      providerId: adapter.id,
+      profile,
+      runtimeHash: adapter.runtimeHash,
+      ready: !error && result?.ready === true,
+      mode: result?.mode || 'host-mediated-no-tools',
+      message: error?.message || result?.message || '',
+      ttlMs: error ? 5 * 60 * 1000 : 30 * 60 * 1000,
+    });
+    record.contract = builtinStructuredProvider.CONTRACT;
+    store.runtime.agentQualifications[adapter.id][profile] = record;
+    await writeTaskStoreDurably(store);
+    if (error) throw error;
+    return record;
+  })();
+  builtinStructuredQualifications.set(key, operation);
+  try { return await operation; } finally { builtinStructuredQualifications.delete(key); }
+}
+
 function baseAdapterCapabilities(previous = {}) {
   const codex = mergeOpenAiToolInstall(findPreferredCodexCliInstall(), findOpenAiDesktopInstall());
   const openclawCli = findExecutableInPath(['openclaw.cmd', 'openclaw.exe', 'openclaw']);
   const qclaw = findAgentToolInstall('qclaw');
   const qclawRuntime = discoverQClawRuntime(qclaw.exePath || '');
   const workbuddy = findAgentToolInstall('workbuddy');
+  const claudeCode = findAgentToolInstall('claude-code');
   const workbuddyRuntime = discoverWorkBuddyRuntime(workbuddy.exePath || '', { findExecutable: findExecutableInPath, hostNodePath: process.execPath });
+  const traeInstall = findAgentToolInstall('trae');
+  const qoderInstall = findAgentToolInstall('qoder-work');
+  const traeRuntime = modernAgentRuntime({
+    desktop: /\.exe$/i.test(traeInstall.exePath || '') && !/traecli/i.test(path.basename(traeInstall.exePath || '')) ? traeInstall : {},
+    cliPath: findExecutableInPath(['traecli.exe', 'traecli.cmd', 'traecli']),
+  });
+  const qoderRuntime = modernAgentRuntime({
+    desktop: /\.exe$/i.test(qoderInstall.exePath || '') && /qoderwork/i.test(path.basename(qoderInstall.exePath || '')) ? qoderInstall : {},
+    cliPath: findExecutableInPath(['qoder.cmd', 'qoder.exe', 'qoder']),
+  });
   const previousCodex = previous.codex || {};
   const previousOpenClaw = previous.openclaw || {};
   const previousQClaw = previous.qclaw || {};
+  const previousLlmApi = previous['llm-api'] || {};
+  const previousClaudeCode = previous['claude-code'] || {};
   return {
     internal: { id: 'internal', label: '教育管家内部执行器', available: true, authorized: true, automatic: true, cli: false, gateway: false, gatewayHealthy: true, cron: false, polling: false, inbox: false, cancel: false, structuredResult: true, webResearch: false, permissionEnforcement: 'strict', hidden: true, exePath: '' },
+    ...handoffAgentCapabilities(),
     codex: { id: 'codex', label: 'Codex', available: Boolean(codex.installed && codex.exePath), authorized: previousCodex.exePath === codex.exePath ? previousCodex.authorized !== false : Boolean(codex.installed && codex.exePath), automatic: true, cli: true, gateway: false, gatewayHealthy: false, cron: false, polling: true, inbox: false, cancel: true, structuredResult: false, webResearch: false, permissionEnforcement: 'workspace', healthPending: true, healthMessage: previousCodex.exePath === codex.exePath && previousCodex.healthMessage ? previousCodex.healthMessage : 'CLI 已发现，正在验证配置与登录状态', exePath: codex.exePath || '' },
+    'llm-api': { id: 'llm-api', label: 'LLM API', available: Boolean(previousLlmApi.available), authorized: Boolean(previousLlmApi.authorized), automatic: true,
+      cli: false, gateway: true, gatewayHealthy: Boolean(previousLlmApi.gatewayHealthy), cron: false, polling: false, inbox: false, cancel: true,
+      structuredResult: true, webResearch: Boolean(previousLlmApi.webResearch), researchReady: Boolean(previousLlmApi.researchReady),
+      permissionEnforcement: previousLlmApi.webResearch ? 'host-mediated-verified-web-search' : 'host-mediated-no-tools', healthPending: false,
+      healthMessage: previousLlmApi.healthMessage || '尚未配置并验证 LLM API', model: previousLlmApi.model || '', protocol: previousLlmApi.protocol || 'openai-chat', endpointHost: previousLlmApi.endpointHost || '', hidden: true },
     workbuddy: {
       id: 'workbuddy',
       label: 'WorkBuddy',
       installed: Boolean(workbuddy.installed),
-      available: Boolean(workbuddyRuntime.available),
-      authorized: Boolean(workbuddyRuntime.available),
-      automatic: true,
+      available: Boolean(workbuddy.exePath),
+      authorized: Boolean(workbuddy.exePath),
+      automatic: false,
+      requiresUserAction: true,
+      automaticAuthorized: false,
       cli: Boolean(workbuddyRuntime.available),
       gateway: false,
       gatewayHealthy: false,
       cron: false,
-      polling: true,
-      inbox: false,
-      cancel: true,
-      structuredResult: true,
+      polling: false,
+      inbox: true,
+      cancel: false,
+      structuredResult: false,
       webResearch: false,
-      permissionEnforcement: 'declared_and_validated',
+      permissionEnforcement: 'desktop_default_and_validated',
       healthPending: false,
-      healthMessage: workbuddyRuntime.available ? '已连接本机 WorkBuddy CLI' : workbuddy.installed ? '已安装 WorkBuddy，但未找到可执行 CLI' : '未安装 WorkBuddy',
+      healthMessage: workbuddyRuntime.desktopSessionAvailable
+        ? 'WorkBuddy 桌面通道可交接；需检查输入框并发送，领取后由教育管家校验结果'
+        : workbuddy.exePath ? 'WorkBuddy 已安装；桌面交接需确认登录及发送，不代表后台授权可用' : '未安装 WorkBuddy',
       exePath: workbuddy.exePath || '',
       cliPath: workbuddyRuntime.cliPath || '',
       nodePath: workbuddyRuntime.nodePath || '',
       runtimeMode: workbuddyRuntime.mode || '',
       useElectronNode: Boolean(workbuddyRuntime.useElectronNode),
+      productConfigPath: workbuddyRuntime.productConfigPath || '',
+      configDir: workbuddyRuntime.configDir || '',
+      desktopSessionAvailable: Boolean(workbuddyRuntime.desktopSessionAvailable),
+    },
+    trae: {
+      id: 'trae', label: 'TRAE IDE / TraeCode', installed: traeRuntime.installed,
+      available: traeRuntime.installed, authorized: traeRuntime.installed,
+      automatic: traeRuntime.automatic, requiresUserAction: !traeRuntime.automatic,
+      cli: Boolean(traeRuntime.cliPath), inbox: !traeRuntime.automatic, polling: traeRuntime.automatic,
+      cancel: traeRuntime.automatic, structuredResult: true, webResearch: false,
+      permissionEnforcement: traeRuntime.automatic ? 'native_sandbox_and_validated' : 'desktop_handoff_and_validated',
+      handoffOnly: !traeRuntime.automatic, healthPending: false,
+      healthMessage: traeRuntime.automatic ? 'TraeCode CLI 可用；任务可在原生沙箱中自动执行'
+        : traeRuntime.desktopPath ? 'TRAE IDE 已安装；未发现 TraeCode CLI，任务仅做桌面交接' : '未安装 TRAE IDE / TraeCode CLI',
+      exePath: traeRuntime.desktopPath, cliPath: traeRuntime.cliPath,
+    },
+    'qoder-work': {
+      id: 'qoder-work', label: 'Qoder Work', installed: qoderRuntime.installed,
+      available: qoderRuntime.installed, authorized: qoderRuntime.installed,
+      automatic: qoderRuntime.automatic, requiresUserAction: !qoderRuntime.automatic,
+      cli: Boolean(qoderRuntime.cliPath), inbox: !qoderRuntime.automatic, polling: qoderRuntime.automatic,
+      cancel: qoderRuntime.automatic, structuredResult: true, webResearch: false,
+      permissionEnforcement: qoderRuntime.automatic ? 'cli_tools_and_validated' : 'desktop_handoff_and_validated',
+      handoffOnly: !qoderRuntime.automatic, healthPending: false,
+      healthMessage: qoderRuntime.automatic ? 'Qoder CLI 可用；任务可自动执行并返回 JSON'
+        : qoderRuntime.desktopPath ? 'QoderWork 已安装；官方未提供外部自动发送接口，任务将做桌面交接' : '未安装 QoderWork / Qoder CLI',
+      exePath: qoderRuntime.desktopPath, cliPath: qoderRuntime.cliPath,
+    },
+    'claude-code': {
+      id: 'claude-code', label: 'Claude Code', installed: Boolean(claudeCode.installed), available: Boolean(claudeCode.exePath),
+      authorized: previousClaudeCode.exePath === claudeCode.exePath ? Boolean(previousClaudeCode.authorized) : false,
+      automatic: true, requiresUserAction: false, cli: Boolean(claudeCode.exePath), gateway: false, gatewayHealthy: false,
+      cron: false, polling: true, inbox: false, cancel: true, structuredResult: true, webResearch: false,
+      permissionEnforcement: 'native-safe-restricted-no-tools-and-host-validated', healthPending: Boolean(claudeCode.exePath),
+      healthMessage: claudeCode.exePath ? 'Claude Code CLI 已发现，正在验证官方登录状态' : '未找到 Claude Code CLI',
+      exePath: claudeCode.exePath || '', version: claudeCode.version || '', authScope: path.join(os.homedir(), '.claude'),
     },
     openclaw: { id: 'openclaw', label: 'OpenClaw', available: Boolean(openclawCli), authorized: previousOpenClaw.exePath === openclawCli ? Boolean(previousOpenClaw.authorized) : false, automatic: true, cli: Boolean(openclawCli), gateway: previousOpenClaw.exePath === openclawCli ? Boolean(previousOpenClaw.gateway) : false, gatewayHealthy: previousOpenClaw.exePath === openclawCli ? Boolean(previousOpenClaw.gatewayHealthy) : false, cron: previousOpenClaw.exePath === openclawCli ? Boolean(previousOpenClaw.cron) : false, polling: true, inbox: false, cancel: true, structuredResult: true, webResearch: false, permissionEnforcement: 'declared_and_validated', healthPending: true, healthMessage: previousOpenClaw.exePath === openclawCli && previousOpenClaw.healthMessage ? previousOpenClaw.healthMessage : 'CLI 已发现，正在验证模型与连接状态', model: previousOpenClaw.model || '', exePath: openclawCli || '' },
     qclaw: {
@@ -19599,16 +20817,22 @@ function refreshAdapterCapabilities(force = false) {
     };
     const openclaw = base.openclaw;
     const qclaw = base.qclaw;
-    const [codexAuth, openclawHelp, openclawModel, gatewayHelp, cronHelp, qclawGatewayHealthy] = await Promise.all([
+    const workbuddy = base.workbuddy;
+    const claudeCode = base['claude-code'];
+    const [codexAuth, claudeAuth, openclawHelp, openclawModel, gatewayHelp, cronHelp, qclawGatewayHealthy, llmSettings] = await Promise.all([
       codex.exePath ? probeExecutableAsync(codex.exePath, ['login', 'status'], 4000) : Promise.resolve({ ok: false, output: '' }),
+      claudeCode.exePath ? probeExecutableAsync(claudeCode.exePath, ['auth', 'status'], 5000) : Promise.resolve({ ok: false, output: '' }),
       openclaw.exePath ? probeExecutableAsync(openclaw.exePath, ['agent', '--help'], 5000) : Promise.resolve({ ok: false, output: '' }),
       openclaw.exePath ? probeExecutableAsync(openclaw.exePath, ['config', 'get', 'agents.defaults.model'], 7000) : Promise.resolve({ ok: false, output: '' }),
       openclaw.exePath ? probeExecutableAsync(openclaw.exePath, ['gateway', '--help'], 5000) : Promise.resolve({ ok: false, output: '' }),
       openclaw.exePath ? probeExecutableAsync(openclaw.exePath, ['cron', '--help'], 5000) : Promise.resolve({ ok: false, output: '' }),
       qclaw.cli && qclaw.gatewayPort ? probeLocalPort(qclaw.gatewayPort) : Promise.resolve(false),
+      getLlmApiProvider().get(),
     ]);
     const codexAuthHealthy = Boolean(codexAuth.ok
       && !/(error loading configuration|unknown variant|not logged in|unauthorized|authentication failed)/i.test(String(codexAuth.output || '')));
+    const claudeAuthHealthy = Boolean(claudeAuth.ok
+      && !/(not logged in|unauthorized|authentication failed|login required)/i.test(String(claudeAuth.output || '')));
     const [openclawModelReady, gatewayStatus] = await Promise.all([
       verifyOpenClawModel(openclawModel),
       gatewayHelp.ok ? probeExecutableAsync(openclaw.exePath, ['gateway', 'status'], 6000) : Promise.resolve({ ok: false, output: '' }),
@@ -19616,7 +20840,25 @@ function refreshAdapterCapabilities(force = false) {
     const value = {
       ...base,
       codex: { ...codex, authorized: codexAuthHealthy, healthPending: false, healthMessage: codexAuthHealthy ? 'CLI 已授权' : `CLI 配置或授权异常${codexAuth.output || codexAuth.error ? `：${String(codexAuth.output || codexAuth.error).slice(0, 160)}` : ''}` },
-      openclaw: { ...openclaw, available: Boolean(openclaw.exePath && openclawHelp.ok), authorized: Boolean(openclaw.exePath && openclawHelp.ok && openclawModelReady.ready), cli: Boolean(openclaw.exePath && openclawHelp.ok), gateway: Boolean(gatewayHelp.ok), gatewayHealthy: Boolean(gatewayStatus.ok), cron: Boolean(cronHelp.ok), healthPending: false, healthMessage: !openclawModelReady.ready ? openclawModelReady.message : gatewayHelp.ok ? (gatewayStatus.ok ? `Gateway 正常；${openclawModelReady.message}` : `CLI 本地模式；${openclawModelReady.message}`) : `仅 CLI；${openclawModelReady.message}`, model: openclawModelReady.model },
+      'claude-code': { ...claudeCode, available: Boolean(claudeCode.exePath), authorized: claudeAuthHealthy,
+        automatic: Boolean(claudeCode.exePath && claudeAuthHealthy), healthPending: false,
+        healthMessage: claudeAuthHealthy ? 'Claude Code CLI 已通过官方登录状态检查；教育任务仍按合同逐项验证'
+          : claudeCode.exePath ? `Claude Code CLI 未取得有效授权${claudeAuth.output || claudeAuth.error ? `：${String(claudeAuth.output || claudeAuth.error).slice(0, 160)}` : ''}` : '未找到 Claude Code CLI' },
+      workbuddy: {
+        ...workbuddy,
+        healthPending: false,
+      },
+      'llm-api': {
+        ...base['llm-api'], available: Boolean(llmSettings.configured), authorized: Boolean(llmSettings.configured),
+        gatewayHealthy: Boolean(llmSettings.lastCheck?.ok), model: llmSettings.model || '',
+        protocol: llmSettings.protocol || 'openai-chat', webResearch: Boolean(llmSettings.researchReady), researchReady: Boolean(llmSettings.researchReady),
+        permissionEnforcement: llmSettings.researchReady ? 'host-mediated-verified-web-search' : 'host-mediated-no-tools',
+        endpointHost: llmSettings.baseUrl ? new URL(llmSettings.baseUrl).host : '',
+        healthMessage: llmSettings.lastCheck?.ok
+          ? `${llmSettings.lastCheck.message}${llmSettings.researchReady ? ` ${llmSettings.lastResearchCheck.message}` : llmSettings.researchSupported ? ' 联网研究尚未验证。' : ' 当前协议不支持联网研究。'}`
+          : llmSettings.configured ? '配置已保存，等待合成结构化验证' : '尚未配置 LLM API',
+      },
+      openclaw: { ...openclaw, available: Boolean(openclaw.exePath && openclawHelp.ok), authorized: Boolean(openclaw.exePath && openclawHelp.ok && openclawModelReady.ready), cli: Boolean(openclaw.exePath && openclawHelp.ok), gateway: Boolean(gatewayHelp.ok), gatewayHealthy: openClawGatewayHealthy(gatewayStatus), cron: Boolean(cronHelp.ok), healthPending: false, healthMessage: !openclawModelReady.ready ? openclawModelReady.message : gatewayHelp.ok ? (openClawGatewayHealthy(gatewayStatus) ? `Gateway 正常；${openclawModelReady.message}` : `CLI 本地模式；${openclawModelReady.message}`) : `仅 CLI；${openclawModelReady.message}`, model: openclawModelReady.model },
       qclaw: {
         ...qclaw,
         available: Boolean(qclaw.cli && qclawGatewayHealthy),
@@ -19644,7 +20886,24 @@ function refreshAdapterCapabilities(force = false) {
 function adapterCapabilities(force = false) {
   if (!adapterCapabilityCache.value) adapterCapabilityCache.value = baseAdapterCapabilities();
   if (taskAutomationEnabled() || force) void refreshAdapterCapabilities(force);
-  return adapterCapabilityCache.value;
+  return registeredAdapterCapabilities();
+}
+
+// Read-only projection: listing tasks must never probe connections or dispatch work.
+function registeredAdapterCapabilities() {
+  const global = agentControlStore().read().global;
+  const capabilities = Object.fromEntries(Object.entries(adapterCapabilityCache.value || {}).filter(([id]) => !id.startsWith('custom:')));
+  for (const executor of aiExecutorRegistry()) {
+    const existing = capabilities[executor.id] || {};
+    const mode = global?.providerModes?.[executor.id] || (global?.disabledProviders?.includes(executor.id) ? 'disabled' : executor.automaticProfiles.length ? 'automatic_preferred' : 'manual_only');
+    capabilities[executor.id] = { ...existing, id: executor.id, label: executor.label,
+      automaticProfiles: executor.automaticProfiles, handoffOnly: !executor.automaticProfiles.length,
+      automatic: Boolean(existing.automatic && executor.automaticProfiles.length && mode === 'automatic_preferred'),
+      ...(executor.custom ? { available: true, authorized: true, automatic: false, inbox: executor.handoff, structuredResult: true } : {}),
+      hidden: false,
+      ...(global && (!global.enabled || mode === 'disabled') ? { authorized: false, automatic: false } : {}) };
+  }
+  return capabilities;
 }
 
 async function refreshCapabilitiesForExplicitExecution(requestedExecutor = '') {
@@ -19677,8 +20936,13 @@ function routeTask(task, requestedExecutor = '', excludedAdapters = []) {
   const routingMode = ['auto', 'smart'].includes(requestedInput) ? 'smart' : requestedInput === 'rule' ? 'rule' : requestedInput === 'confirm' ? 'confirm' : 'fixed';
   const requested = routingMode === 'fixed' ? requestedInput : '';
   const excluded = new Set((excludedAdapters || []).map(String));
+  const global = agentControlStore().read().global;
+  if (global) for (const id of global.disabledProviders) excluded.add(id);
+  const circuits = readTaskStore().runtime?.circuits || {};
+  for (const [id, state] of Object.entries(circuits)) if (!circuitDecision(state).allowed) excluded.add(id);
   const history = readTaskStore().history || [];
-  const candidates = Object.values(capabilities).filter((adapter) => !adapter.hidden || requested === adapter.id || (task.executionMode === 'internal' && adapter.id === 'internal')).map((adapter) => {
+  const candidates = Object.values(capabilities).filter((adapter) => (!adapter.hidden || requested === adapter.id || (task.executionMode === 'internal' && adapter.id === 'internal'))
+    && (!adapter.handoffOnly || requested === adapter.id) && (adapter.id !== 'qclaw' || requested === 'qclaw')).map((adapter) => {
     let score = adapter.available && adapter.authorized && !excluded.has(adapter.id) ? 40 : -1000;
     if (requested && adapter.id === requested) score += 50;
     if (adapter.automatic) score += 20;
@@ -19689,7 +20953,7 @@ function routeTask(task, requestedExecutor = '', excludedAdapters = []) {
     if (routingMode === 'rule') {
       if (task.kind === 'weekly_action' && adapter.id === 'openclaw') score += 40;
       if (['student_digest', 'project_digest'].includes(task.kind) && adapter.id === 'codex') score += 35;
-      if (task.executionMode === 'inbox' && adapter.id === 'qclaw') score += 35;
+      if (task.executionMode === 'inbox' && adapter.inbox) score += 35;
     }
     const executions = history.filter((entry) => entry.executor === adapter.id && entry.taskId && ['succeeded', 'failed', 'timed_out', 'cancelled'].includes(String(entry.status)));
     const successes = executions.filter((entry) => entry.status === 'succeeded').length;
@@ -19724,6 +20988,9 @@ function routeTask(task, requestedExecutor = '', excludedAdapters = []) {
 
 function writeTaskPacket(task, dir, command) {
   fs.mkdirSync(dir, { recursive: true });
+  const resultDelivery = taskResultDelivery(taskCenterDirPath(), task);
+  fs.mkdirSync(path.dirname(resultDelivery.resultPath), { recursive: true });
+  command = taskResultCommand(command, resultDelivery);
   const packetPath = path.join(dir, `${task.id}.task.json`);
   const promptPath = path.join(dir, `${task.id}.prompt.md`);
   let contextBundle = null;
@@ -19740,6 +21007,7 @@ function writeTaskPacket(task, dir, command) {
   writeJsonFile(packetPath, {
     ...task,
     command,
+    resultDelivery,
     archiveAccess: {
       schema: ARCHIVE_ACCESS_SCHEMA,
       mode: 'embedded_read_only',
@@ -19752,7 +21020,7 @@ function writeTaskPacket(task, dir, command) {
     exportedAt: taskNow(),
   });
   fs.writeFileSync(promptPath, `# ${task.title}\n\n任务 ID：${task.id}\n协议版本：${task.protocolVersion}\n\n${command}\n\n## 档案上下文\n\n任务包 archiveAccess.contextBundle 已附带当前范围内的最小知识上下文。引用资料时保留 edu:// URI；没有依据的内容标记为“待观察”。\n\n## 结果回写\n\n请返回 TaskResult JSON，并保留 taskId、executionId、status、artifacts、validation 和 message。\n`, 'utf8');
-  return { packetPath, promptPath };
+  return { packetPath, promptPath, command, resultDelivery };
 }
 
 let archiveAccessCache = null;
@@ -20594,6 +21862,8 @@ function writeAgentAccessGrantStore(store) {
 }
 
 function ensureStudentAgentAccessToken(student, allowedProjectIds = [], options = {}) {
+  const global = agentControlStore().read().global;
+  if (global && !global.enabled) throw Error('AI 接入与调度中心已全局停用');
   const tokenPath = agentKnowledgeTokenPath(student);
   let existingToken = '';
   try { existingToken = fs.existsSync(tokenPath) ? fs.readFileSync(tokenPath, 'utf8').trim() : ''; } catch { existingToken = ''; }
@@ -21211,23 +22481,24 @@ function installAgentKnowledgeMcpRegistrations(student, options = {}) {
 
   const codexConfigPath = path.join(root, '.codex', 'config.toml');
   const codexGlobalConfigPath = path.join(os.homedir(), '.codex', 'config.toml');
-  const codexProjectRegistered = installCodexMcpServer(
+  const codexManaged = Boolean(unifiedKnowledgeRegistrations().codex);
+  const codexProjectRegistered = !codexManaged && installCodexMcpServer(
     codexConfigPath,
     agentKnowledgeServerName(student, true),
     command,
-    args,
+    unifiedKnowledgeArgs('codex', args),
   );
-  const codexGlobalRegistered = activateGlobal
+  const codexGlobalRegistered = activateGlobal && !codexManaged
     ? installCodexMcpServer(
       codexGlobalConfigPath,
       agentKnowledgeServerName(student, true),
       command,
-      activeArgs,
+      unifiedKnowledgeArgs('codex', activeArgs),
       { replaceEducationManagerServers: true },
     )
     : false;
   const codexHooksPath = path.join(os.homedir(), '.codex', 'hooks.json');
-  const codexLifecycleRegistered = activateGlobal
+  const codexLifecycleRegistered = activateGlobal && !codexManaged
     ? upsertLifecycleCommandHooks(codexHooksPath, 'codex')
     : false;
   const codexHookIdentity = currentCodexHookIdentity();
@@ -21250,6 +22521,8 @@ function installAgentKnowledgeMcpRegistrations(student, options = {}) {
 
   const workbuddyConfigPath = path.join(os.homedir(), '.workbuddy', 'mcp.json');
   const codebuddyConfigPath = path.join(os.homedir(), '.codebuddy', '.mcp.json');
+  const traeProjectConfigPath = path.join(root, '.trae', 'mcp.json');
+  const qoderProjectConfigPath = path.join(root, '.mcp.json');
   const openclawConfigPath = path.join(os.homedir(), '.openclaw', 'openclaw.json');
   let workbuddyRegistered = false;
   let workbuddyLifecycleRegistered = false;
@@ -21259,22 +22532,28 @@ function installAgentKnowledgeMcpRegistrations(student, options = {}) {
   let openclawWarning = '';
   let hermesLifecycleRegistered = false;
   let hermesWarning = '';
+  let traeRegistered = false;
+  let traeWarning = '';
+  let qoderRegistered = false;
+  let qoderWarning = '';
   if (activateGlobal) {
     try {
+      if (!unifiedKnowledgeRegistrations().workbuddy) {
       workbuddyRegistered = upsertMcporterServer(
         workbuddyConfigPath,
         agentKnowledgeServerName(student, true),
-        activeServer,
+        unifiedKnowledgeServer('workbuddy', activeServer),
         { replaceEducationManagerServers: true },
       );
       workbuddyRegistered = upsertMcporterServer(
         codebuddyConfigPath,
         agentKnowledgeServerName(student, true),
-        activeServer,
+        unifiedKnowledgeServer('workbuddy', activeServer),
         { replaceEducationManagerServers: true },
       ) || workbuddyRegistered;
       workbuddyLifecycleRegistered = upsertLifecycleCommandHooks(path.join(os.homedir(), '.workbuddy', 'settings.json'), 'workbuddy');
       workbuddyLifecycleRegistered = upsertLifecycleCommandHooks(path.join(os.homedir(), '.codebuddy', 'settings.json'), 'workbuddy') || workbuddyLifecycleRegistered;
+      }
     } catch (error) {
       workbuddyWarning = `WorkBuddy 已有无法安全合并的 MCP 配置：${error.message}`;
     }
@@ -21295,6 +22574,28 @@ function installAgentKnowledgeMcpRegistrations(student, options = {}) {
       } catch (error) {
         hermesWarning = `Hermes 生命周期插件暂未接通：${error.message}`;
       }
+    }
+    try {
+      // TRAE officially loads project MCP servers from .trae/mcp.json.
+      traeRegistered = upsertMcporterServer(
+        traeProjectConfigPath,
+        agentKnowledgeServerName(student, true),
+        projectServer,
+        { replaceEducationManagerServers: true },
+      );
+    } catch (error) {
+      traeWarning = `TRAE 项目 MCP 配置无法安全合并：${error.message}`;
+    }
+    try {
+      // Qoder CLI officially loads project MCP servers from .mcp.json.
+      qoderRegistered = upsertMcporterServer(
+        qoderProjectConfigPath,
+        agentKnowledgeServerName(student, true),
+        projectServer,
+        { replaceEducationManagerServers: true },
+      );
+    } catch (error) {
+      qoderWarning = `Qoder 项目 MCP 配置无法安全合并：${error.message}`;
     }
   }
 
@@ -21353,6 +22654,12 @@ function installAgentKnowledgeMcpRegistrations(student, options = {}) {
     hermesLifecycleRegistered,
     hermesPluginDir: hermesLifecyclePluginDir(),
     hermesWarning,
+    traeProjectConfigPath,
+    traeRegistered,
+    traeWarning,
+    qoderProjectConfigPath,
+    qoderRegistered,
+    qoderWarning,
     toolName: 'query_education_knowledge',
     toolNames,
   };
@@ -21466,6 +22773,10 @@ function prepareAgentKnowledgeAccess(studentId, options = {}) {
         openclawLifecycleRegistered: registration.openclawLifecycleRegistered,
         qclawLifecycleRegistered: registration.qclawLifecycleRegistered,
         hermesLifecycleRegistered: registration.hermesLifecycleRegistered,
+        traeConfig: registration.traeProjectConfigPath,
+        traeRegistered: registration.traeRegistered,
+        qoderConfig: registration.qoderProjectConfigPath,
+        qoderRegistered: registration.qoderRegistered,
         bridge: registration.bridgePath,
         lifecycleHook: registration.activeLifecycleHookPath,
       },
@@ -21487,7 +22798,7 @@ function prepareAgentKnowledgeAccess(studentId, options = {}) {
       descriptorPath: agentKnowledgeDescriptorPath(student),
       rulePath,
       registration,
-      message: `已为 Codex、QClaw、WorkBuddy、OpenClaw、Claude Code、Hermes 准备生命周期自动采集。${[registration.qclawWarning, registration.workbuddyWarning, registration.openclawWarning, registration.claudeCodeWarning, registration.hermesWarning].filter(Boolean).join('；')}`,
+      message: `已为现有 Agent 准备知识工具；Codex、QClaw、WorkBuddy、OpenClaw、Claude Code、Hermes 支持生命周期采集，TRAE 与 Qoder 已接入项目级 MCP 和统一任务回写。${[registration.qclawWarning, registration.workbuddyWarning, registration.openclawWarning, registration.claudeCodeWarning, registration.hermesWarning, registration.traeWarning, registration.qoderWarning].filter(Boolean).join('；')}`,
     });
   } catch (error) {
     return JSON.stringify({ ok: false, message: `准备 Agent 知识调用失败：${error.message}` });
@@ -21540,6 +22851,12 @@ function agentMemoryStore() {
   if (!agentMemoryStoreInstance) {
     agentMemoryStoreInstance = createAgentMemoryStore({
       rootDir: path.join(app.getPath('userData'), 'agent-memory-v1'),
+      resolveSettings: (_studentId, saved) => {
+        const global = agentControlStore().read().global;
+        return global ? { ...saved, automationEnabled: global.enabled,
+          allowedAgents: aiExecutorRegistry().filter(p => p.capture && !global.disabledProviders.includes(p.id)).map(p => p.id),
+          captureEpoch: global.captureEpoch, captureAuthorizedAt: global.authorizedAt } : saved;
+      },
     });
   }
   return agentMemoryStoreInstance;
@@ -21579,6 +22896,7 @@ function finalizeStoredLifecycleSession(student, session, options = {}) {
 function processAgentLifecycleEnvelope(rawEnvelope) {
   const event = normalizeLifecycleEnvelope(rawEnvelope);
   if (!event) return { ok: true, ignored: true };
+  if (unifiedKnowledgeRegistrations()[event.sourceAgent]) return { ok: true, ignored: true, message: 'Unified connector uses explicit session scope; legacy active-student capture is disabled.' };
   const student = findStudentByKey(event.scopeId);
   if (!student) return { ok: false, discard: true, message: 'Lifecycle student scope no longer exists.' };
   const descriptor = safeReadJson(agentKnowledgeDescriptorPath(student), {});
@@ -22157,6 +23475,7 @@ function activateAgentMemoryCapture(studentId) {
 }
 
 function setAgentMemoryAutomation(studentId, enabled) {
+  if (agentControlStore().read().global) return JSON.stringify({ ok: false, message: '会话采集已纳入全局授权，请在 AI 接入与调度中心管理。' });
   try {
     const student = findStudentByKey(studentId);
     if (!student) return JSON.stringify({ ok: false, message: '未找到学生。' });
@@ -22562,6 +23881,8 @@ function normalizeTaskResult(task, payload = {}, validation = null, defaults = {
     metrics: { durationMs, estimatedCost: Number(payload.metrics?.estimatedCost || defaults.estimatedCost || 0), qualityScore: validation?.valid ? 100 : 0, ...(payload.metrics || {}) },
     completedAt,
     importedFrom: payload.importedFrom || defaults.importedFrom || '',
+    handoffState: String(defaults.handoffState || ''),
+    requiresUserAction: Boolean(defaults.requiresUserAction),
   };
 }
 
@@ -22570,14 +23891,16 @@ function commitValidatedTaskResult(store, task, result, validation, options = {}
   if (!successful) {
     const issuePath = persistReportIssue(task, validation);
     const failedResult = { ...result, status: 'failed' };
-    return transitionTaskInStore(store, task.id, 'failed', {
+    return transitionTaskInStore(store, task.id, options.recoveryUnresolved ? task.status : 'failed', {
       result: { ...failedResult, issuePath },
       error: options.error || { code: 'RESULT_INVALID', message: failedResult.summary || validation?.message || '结果校验未通过。' },
       lastHeartbeatAt: taskNow(),
     }, options.event || 'task_result_failed');
   }
   const reviewingResult = { ...result, status: 'reviewing' };
-  const reviewing = transitionTaskInStore(store, task.id, 'reviewing', { result: reviewingResult, error: null, lastHeartbeatAt: taskNow() }, options.event || 'task_result_validated');
+  const reviewing = transitionTaskInStore(store, task.id, 'reviewing', { result: reviewingResult, error: null, lastHeartbeatAt: taskNow(),
+    recoveryState: task.recoveryState === 'unknown' ? 'result_validated' : task.recoveryState || '', nextRetryAt: '', retryRecovery: null,
+  }, options.event || 'task_result_validated');
   if (!reviewing.ok) return reviewing;
   if (isAutoPublishReportTask(task)) {
     const publication = autoPublishValidatedReport(task, validation);
@@ -22604,7 +23927,7 @@ function commitValidatedTaskResult(store, task, result, validation, options = {}
       completedAt: acceptedAt,
     }, 'publication_enhancement_auto_accepted');
   }
-  if (!shouldAutoAccept(task, validation)) return reviewing;
+  if (!shouldAutoAccept(task, validation) && !RESEARCH_KINDS.has(task.kind)) return reviewing;
   const acceptedAt = taskNow();
   return transitionTaskInStore(store, task.id, 'succeeded', {
     result: { ...reviewingResult, status: 'succeeded', autoAcceptedAt: acceptedAt, summary: options.autoSummary || reviewingResult.summary || '资料处理完成。' },
@@ -22782,8 +24105,14 @@ function validateTaskCompletion(task, startedAt = '', resultPayload = null) {
 
 function adapterRuntimeFailureMessage(adapterId, output, errorOutput = '') {
   const combined = `${String(output || '')}\n${String(errorOutput || '')}`;
+  if (String(adapterId) === 'workbuddy' && workBuddyAuthenticationRequired(output, errorOutput)) {
+    return 'WorkBuddy CLI 尚未登录，请先在 WorkBuddy 中完成 CLI 登录后重试。';
+  }
   if (String(adapterId) === 'codex' && /requires a newer version of Codex/i.test(combined)) {
     return '当前 Codex CLI 版本过旧，不能运行已配置模型。请升级 Codex 后重试。';
+  }
+  if (String(adapterId) === 'codex' && /setup refresh had errors|helper_unknown_error/i.test(combined)) {
+    return 'Codex 工作区隔离助手初始化失败；任务将保留并按单任务串行方式重试。';
   }
   if (/unsupported model|model .* (?:is not supported|not found)|invalid_request_error/i.test(combined)) {
     return '当前 Agent 无法使用已配置模型，请检查模型配置或升级 Agent 后重试。';
@@ -22791,46 +24120,80 @@ function adapterRuntimeFailureMessage(adapterId, output, errorOutput = '') {
   return '';
 }
 
-function finalizeAdapterExecution(taskId, executionId, adapterId, code, output, errorOutput = '') {
+async function finalizeAdapterExecution(taskId, executionId, adapterId, code, output, errorOutput = '', executionStopped = false) {
   const store = readTaskStore();
   const task = store.tasks.find((item) => item.id === taskId);
   if (!task || task.executionId !== executionId || !['running', 'waiting_result'].includes(task.status)) return;
   const runtimeFailure = adapterRuntimeFailureMessage(adapterId, output, errorOutput);
-  const validation = Number(code) === 0 && !runtimeFailure
+  const hostDraft = Number(code) === 0 && !runtimeFailure && adapterId === 'codex'
+    ? persistHostValidatedCodexDraft(task, output)
+    : { attempted: false, ok: true };
+  const hostDraftFailure = hostDraft.attempted && !hostDraft.ok ? hostDraft.message : '';
+  const completionFailure = runtimeFailure || hostDraftFailure;
+  const failureCode = runtimeFailure ? 'AGENT_RUNTIME_INCOMPATIBLE' : hostDraftFailure ? 'HOST_DRAFT_INVALID' : `EXIT_${code}`;
+  const validation = Number(code) === 0 && !completionFailure
     ? validateTaskCompletion(task, task.startedAt, String(output || ''))
-    : { valid: false, artifacts: [], checkedAt: taskNow(), message: runtimeFailure || `Agent 退出码 ${code}。` };
-  const successful = Number(code) === 0 && !runtimeFailure && validation.valid;
+    : { valid: false, artifacts: [], checkedAt: taskNow(), message: completionFailure || `Agent 退出码 ${code}。` };
+  const successful = Number(code) === 0 && !completionFailure && validation.valid;
+  store.runtime ||= {}; store.runtime.circuits ||= {};
+  store.runtime.circuits[adapterId] = recordCircuitOutcome(store.runtime.circuits[adapterId], {
+    success: successful, executionId, failure: { code: failureCode,
+      message: `${completionFailure || errorOutput || ''}\n${validation.message || ''}`, category: Number(code) === 0 ? 'validation' : '' },
+  });
   const result = normalizeTaskResult(task, {
     executionId,
     status: successful ? 'reviewing' : 'failed',
     adapterId,
-    summary: runtimeFailure || (Number(code) === 0 ? (validation.valid ? ((shouldAutoAccept(task, validation) || isAutoPublishReportTask(task)) ? '任务完成并已通过自动校验。' : 'Agent 执行完成，等待审核。') : validation.message) : `Agent 退出码 ${code}。`),
+    summary: completionFailure || (Number(code) === 0 ? (validation.valid ? ((shouldAutoAccept(task, validation) || isAutoPublishReportTask(task)) ? '任务完成并已通过自动校验。' : 'Agent 执行完成，等待审核。') : validation.message) : `Agent 退出码 ${code}。`),
     output: String(output || '').slice(-20000),
     errorOutput: String(errorOutput || '').slice(-10000),
     structuredOutput: validation.structuredOutput || validation.domainSync || null,
     artifacts: validation.artifacts,
     logReference: task.result?.logPath || '',
-    failureReason: successful ? null : { category: runtimeFailure ? 'compatibility' : Number(code) === 0 ? 'validation' : code === -1 ? 'launch' : 'process', code: runtimeFailure ? 'AGENT_RUNTIME_INCOMPATIBLE' : `EXIT_${code}`, detail: String(runtimeFailure || errorOutput || validation.message || '').slice(-2000) },
+    failureReason: successful ? null : { category: runtimeFailure ? 'compatibility' : Number(code) === 0 ? 'validation' : code === -1 ? 'launch' : 'process', code: failureCode, detail: String(completionFailure || errorOutput || validation.message || '').slice(-2000) },
   }, validation, { estimatedCost: estimatedAdapterCost(adapterId, task.startedAt ? Date.now() - Date.parse(task.startedAt) : 0) });
-  const retryDelayMs = Math.max(0, Number(task.retryBackoffSeconds || 0)) * 1000;
-  const mayAutoRetry = !successful && task.autoRetry !== false && Number(task.attempt || 0) < Number(task.maxAttempts || 1);
-  const nextRetryAt = mayAutoRetry ? new Date(Date.now() + retryDelayMs).toISOString() : '';
+  const retryPlan = successful ? null : taskRetryDecision(task, {
+    code: failureCode, message: `${completionFailure || errorOutput || ''}\n${validation.message || ''}`,
+    category: Number(code) === 0 ? 'validation' : '',
+  }, { stopConfirmed: executionStopped, retryAfter: /(?:^|\n)\s*Retry-After:\s*([^\r\n]+)/i.exec(errorOutput)?.[1] });
   const committed = commitValidatedTaskResult(store, task, result, validation, {
     successful,
-    error: successful ? null : { code: runtimeFailure ? 'AGENT_RUNTIME_INCOMPATIBLE' : `EXIT_${code}`, message: result.summary },
+    recoveryUnresolved: retryPlan?.recoveryState === 'unknown',
+    error: successful ? null : { code: failureCode, message: result.summary },
     event: 'adapter_completed',
     autoSummary: isAutoPublishReportTask(task) ? '报告已通过自动校验。' : '资料处理完成并已通过自动校验。',
   });
   const nextStatus = committed.task?.status || (successful ? 'reviewing' : 'failed');
   if (!successful) {
     const failedTask = store.tasks.find((item) => item.id === taskId);
-    if (failedTask) failedTask.nextRetryAt = nextRetryAt;
+    if (failedTask) Object.assign(failedTask, retryPlan);
   }
-  writeTaskStore(store);
+  (await writeTaskStoreDurably(store));
   if (successful) publishCompletedRemoteCollaborationTask(taskId);
   notify('onNativeTaskCenterChanged', JSON.stringify({ taskId, status: nextStatus }));
   if (isDigestTask(task)) notify('onNativeDigestWorkflowChanged', JSON.stringify({ scopeType: task.sourceType, scopeId: task.sourceId, status: nextStatus, taskId }));
-  if (mayAutoRetry) setTimeout(() => fallbackTaskAfterFailure(taskId, adapterId, result.summary), Math.min(retryDelayMs, 30000) + 100);
+  if (retryPlan?.nextRetryAt) scheduleBusinessTaskRetry(store.tasks.find(item => item.id === taskId));
+}
+
+function scheduleBusinessTaskRetry(task) {
+  if (!taskRetryEligible(task, Infinity)) return;
+  businessTaskRetryQueue.schedule(String(task.id), task.adapterId, Math.max(0, Date.parse(task.nextRetryAt) - Date.now()));
+}
+
+function restoreBusinessTaskRetries() {
+  // Only resume explicitly persisted, versioned decisions. Do not restart old failures.
+  for (const task of readTaskStore().tasks) scheduleBusinessTaskRetry(task);
+}
+
+function resumeBusinessTaskRetry(taskId, adapterId) {
+  if (!taskAutomationEnabled() || !publicLicenseStatus().active || !projectArchiveRuntime.status().ready || taskStoreGuard.status()) {
+    businessTaskRetryQueue.schedule(taskId, adapterId, 60000);
+    return;
+  }
+  const task = readTaskStore().tasks.find(item => item.id === String(taskId));
+  if (!taskRetryEligible(task)) return;
+  if (automaticStudentTaskBlocked(task, findStudentByKey(task.sourceId))) return;
+  fallbackTaskAfterFailure(task.id, adapterId, task.error?.message || '计划重试');
 }
 
 function fallbackTaskAfterFailure(taskId, failedAdapter, reason = '') {
@@ -22838,6 +24201,8 @@ function fallbackTaskAfterFailure(taskId, failedAdapter, reason = '') {
     const store = readTaskStore();
     const task = store.tasks.find((item) => item.id === String(taskId));
     if (!task || !['failed', 'timed_out', 'blocked'].includes(task.status)) return { ok: false, skipped: true };
+    if (!taskRetryEligible(task)) return { ok: false, skipped: true, message: '尚未到达安全重试时间，或上次执行需要核对。' };
+    if (task.automaticExecution !== false && automaticStudentTaskBlocked(task,findStudentByKey(task.sourceId))) return {ok:true,skipped:true,reason:'student_automation_paused'};
     if (task.autoRetry === false || Number(task.attempt || 0) >= Number(task.maxAttempts || 1)) {
       task.nextRetryAt = '';
       task.autoRetry = false;
@@ -22849,18 +24214,17 @@ function fallbackTaskAfterFailure(taskId, failedAdapter, reason = '') {
     const attempted = [...new Set([...(task.routeAttempts || []), String(failedAdapter || '')].filter(Boolean))];
     const decision = routeTask(task, 'auto', attempted);
     const nextAdapter = selectFallbackAdapter(decision, attempted, task.attempt, task.maxAttempts);
-    const retryAt = taskNow();
     const prepared = transitionTaskInStore(store, task.id, 'approved', {
       routeDecision: { ...decision, selectedAdapter: nextAdapter, reason: `${reason || '执行失败'}；自动降级为 ${adapterCapabilities()[nextAdapter]?.label || '人工执行'}。` },
       routeAttempts: attempted,
-      nextRetryAt: retryAt,
+      nextRetryAt: '', retryRecovery: null,
       error: null,
       completedAt: '',
     }, 'runtime_fallback_prepared');
     if (!prepared.ok) return prepared;
     writeTaskStore(store);
     appendTaskEvent(task.id, 'runtime_fallback', { failedAdapter, nextAdapter, reason, attempt: task.attempt }, task.executionId);
-    return JSON.parse(executeTaskByAdapter(task.id, nextAdapter));
+    return JSON.parse(executeTaskByAdapter(task.id, nextAdapter, {automatic:task.automaticExecution!==false}));
   } catch (error) {
     appendTaskEvent(taskId, 'runtime_fallback_failed', { failedAdapter, reason, error: error.message });
     return { ok: false, message: error.message };
@@ -22901,16 +24265,20 @@ function spawnAdapterProcess(executable, args, options = {}) {
 
 function heartbeatTask(taskId, executionId, detail = '', recordEvent = true) {
   const running = taskChildProcesses.get(String(taskId));
-  const now = Date.now();
-  if (running && now - Number(running.lastHeartbeatWrite || 0) < 5000) return;
-  const store = readTaskStore();
-  const task = store.tasks.find((item) => item.id === String(taskId));
-  if (!task || task.executionId !== String(executionId) || !['running', 'waiting_result'].includes(task.status)) return;
-  task.lastHeartbeatAt = taskNow();
-  task.updatedAt = task.lastHeartbeatAt;
-  writeTaskStore(store);
-  if (running) running.lastHeartbeatWrite = now;
-  if (recordEvent) appendTaskEvent(task.id, 'adapter_heartbeat', { adapterId: task.adapterId, detail: String(detail || '').slice(0, 200) }, executionId);
+  if (!running || running.executionId !== String(executionId)) return;
+  const meaningful = ['extracted', 'batch_completed', 'result_validated', 'committed'].includes(detail);
+  taskProgressBuffer.record(String(taskId), String(executionId), taskNow(), String(detail), meaningful);
+  if (!taskProgressTimer) {
+    taskProgressTimer = setTimeout(() => {
+      taskProgressTimer = null;
+      try {
+        const entries = taskProgressBuffer.entries();
+        if (entries.length) taskStoreGuard.writeProgress(taskStorePath(), entries);
+        taskProgressBuffer.clear();
+      } catch (error) { console.warn('Task progress persistence failed:', error.message); }
+    }, 15000);
+    taskProgressTimer.unref?.();
+  }
 }
 
 function clearTaskProcessHeartbeat(taskId) {
@@ -22918,23 +24286,45 @@ function clearTaskProcessHeartbeat(taskId) {
   if (running?.heartbeatTimer) clearInterval(running.heartbeatTimer);
 }
 
+function activeAdapterTask(adapterId, excludeTaskId = '') {
+  return [...taskChildProcesses.entries()].find(([taskId, run]) => String(taskId) !== String(excludeTaskId)
+    && String(run?.adapterId || '') === String(adapterId || '')) || null;
+}
+
+function deferTaskForAdapter(task, adapterId, message) {
+  const deferredStore = readTaskStore();
+  const deferredTask = deferredStore.tasks.find((item) => String(item.id) === String(task.id));
+  if (deferredTask) {
+    deferredTask.resourceDeferredAt ||= taskNow();
+    deferredTask.resourceRetryAt = new Date(Date.now() + 15_000).toISOString();
+    deferredTask.resourceAdapterId = adapterId;
+    deferredTask.updatedAt = taskNow();
+    writeTaskStore(deferredStore);
+  }
+  scheduleHeavyTaskRetry(task.id, adapterId);
+  return { ok: true, deferred: true, taskId: task.id, task: deferredTask || task, retryAfterMs: 15_000, message };
+}
+
 function scheduleHeavyTaskRetry(taskId, adapterId) {
-  const key = String(taskId || '');
-  if (!key || heavyTaskRetryTimers.has(key)) return;
-  const timer = setTimeout(() => {
-    heavyTaskRetryTimers.delete(key);
+  heavyTaskRetryQueue.schedule(String(taskId || ''), adapterId);
+}
+
+function resumeResourceDeferredTask(key, adapterId) {
+    const task = readTaskStore().tasks.find((item) => String(item.id) === key);
+    if (!task || !['pending', 'approved', 'queued'].includes(String(task.status || ''))) return;
+    if (task.automaticExecution !== false && !taskAutomationEnabled()) return;
+    if (!projectArchiveRuntime.status().ready) { scheduleHeavyTaskRetry(key, adapterId); return; }
     // Do not re-run routing, batch freezing, or capability reads while the
     // foreground is capturing or the shared heavy-work capacity is full.
-    if (captureHeavyWorkGate.state().length >= adaptiveConcurrency(captureTimelineResourceSnapshot())) {
+    if ((adapterId === 'codex' && activeAdapterTask('codex', key))
+      || (adapterId === 'workbuddy' && readTaskStore().tasks.some(item => item.id !== key
+        && item.adapterId === 'workbuddy' && item.executionMode === 'desktop_handoff'
+        && ['running', 'waiting_result'].includes(item.status)))
+      || captureHeavyWorkGate.state().length >= adaptiveConcurrency(captureTimelineResourceSnapshot())) {
       scheduleHeavyTaskRetry(key, adapterId);
       return;
     }
-    const task = readTaskStore().tasks.find((item) => String(item.id) === key);
-    if (!task || !['pending', 'approved', 'queued'].includes(String(task.status || ''))) return;
-    executeTaskByAdapter(key, adapterId);
-  }, 15_000);
-  timer.unref?.();
-  heavyTaskRetryTimers.set(key, timer);
+    executeTaskByAdapter(key, adapterId, {automatic:task.automaticExecution!==false});
 }
 
 function restoreHeavyTaskRetries() {
@@ -22945,7 +24335,10 @@ function restoreHeavyTaskRetries() {
   }
 }
 
-function launchCommandAdapter(task, adapterId, executable, args, cwd, stdinText = '', processOptions = {}) {
+async function launchCommandAdapter(task, adapterId, executable, args, cwd, stdinText = '', processOptions = {}) {
+  if (adapterId === 'codex' && activeAdapterTask('codex', task.id)) {
+    return deferTaskForAdapter(task, adapterId, '已有一个 Codex 任务在执行；本任务已排队，将在前一任务结束后自动启动。');
+  }
   const releaseHeavyPermit = captureHeavyWorkGate.tryAcquire({
     kind: `agent_${adapterId}`,
     studentId: task.sourceType === 'student' ? String(task.sourceId || '') : `project:${String(task.sourceId || task.id)}`,
@@ -22960,27 +24353,31 @@ function launchCommandAdapter(task, adapterId, executable, args, cwd, stdinText 
       deferredTask.resourceRetryAt = new Date(Date.now() + 15_000).toISOString();
       deferredTask.resourceAdapterId = adapterId;
       deferredTask.updatedAt = taskNow();
-      writeTaskStore(deferredStore);
+      (await writeTaskStoreDurably(deferredStore));
     }
     scheduleHeavyTaskRetry(task.id, adapterId);
     return { ok: true, deferred: true, taskId: task.id, retryAfterMs: 15_000, message: '后台资源繁忙，任务已排队并将在资源恢复后自动重试。' };
   }
-  const pendingRetry = heavyTaskRetryTimers.get(String(task.id));
-  if (pendingRetry) clearTimeout(pendingRetry);
-  heavyTaskRetryTimers.delete(String(task.id));
-  const store = readTaskStore();
+  heavyTaskRetryQueue.delete(String(task.id));
   const executionId = `run-${Date.now()}-${crypto.randomBytes(4).toString('hex')}`;
   const logDir = path.join(taskExecutionDirPath(), task.id);
-  fs.mkdirSync(logDir, { recursive: true });
   const logPath = path.join(logDir, `${executionId}.log`);
-  const transition = transitionTaskInStore(store, task.id, 'running', { executionId, adapterId, executor: adapterId,
+  let store, transition;
+  try {
+    store = readTaskStore();
+    fs.mkdirSync(logDir, { recursive: true });
+    transition = transitionTaskInStore(store, task.id, 'running', { executionId, adapterId, executor: adapterId,
     executionMode: 'automatic', attempt: task.attempt + 1, startedAt: taskNow(), lastHeartbeatAt: taskNow(),
     resourceDeferredAt: '', resourceRetryAt: '', resourceAdapterId: '', error: null, result: { logPath } }, 'adapter_started');
+  } catch (error) { releaseHeavyPermit(); throw error; }
   if (!transition.ok) { releaseHeavyPermit(); return transition; }
-  writeTaskStore(store);
-  fs.writeFileSync(logPath, `task: ${task.id}\nexecution: ${executionId}\nadapter: ${adapterId}\nstarted: ${taskNow()}\n\n`, 'utf8');
+  try {
+    (await writeTaskStoreDurably(store));
+    fs.writeFileSync(logPath, `task: ${task.id}\nexecution: ${executionId}\nadapter: ${adapterId}\nstarted: ${taskNow()}\n\n`, 'utf8');
+  } catch (error) { releaseHeavyPermit(); throw error; }
   let child;
   try {
+    assertTaskDispatchCurrent(task.id, executionId);
     child = spawnAdapterProcess(executable, args, {
       cwd: cwd || taskCenterDirPath(),
       windowsHide: true,
@@ -22989,7 +24386,7 @@ function launchCommandAdapter(task, adapterId, executable, args, cwd, stdinText 
     });
   } catch (error) {
     releaseHeavyPermit();
-    finalizeAdapterExecution(task.id, executionId, adapterId, -1, '', error.message);
+    (await finalizeAdapterExecution(task.id, executionId, adapterId, -1, '', error.message, true));
     return { ok: false, message: `启动 ${adapterId} 失败：${error.message}` };
   }
   const heartbeatTimer = setInterval(() => heartbeatTask(task.id, executionId, 'process_alive', false), 30 * 1000);
@@ -23021,7 +24418,7 @@ function launchCommandAdapter(task, adapterId, executable, args, cwd, stdinText 
   if (stdinText) child.stdin?.end(stdinText, 'utf8');
   else child.stdin?.end();
   let finalized = false;
-  const finish = (code, error = null) => {
+  const finish = async (code, error = null) => {
     if (finalized) return;
     finalized = true;
     logWritable = false;
@@ -23029,10 +24426,13 @@ function launchCommandAdapter(task, adapterId, executable, args, cwd, stdinText 
     clearTaskProcessHeartbeat(task.id);
     taskChildProcesses.delete(task.id);
     releaseHeavyPermit();
-    finalizeAdapterExecution(task.id, executionId, adapterId, Number(code), stdout, error ? `${stderr}\n${error.message}` : stderr);
+    // A local launcher exiting does not prove remote tool work stopped. Only a
+    // failure before a process existed is a confirmed non-execution here.
+    (await finalizeAdapterExecution(task.id, executionId, adapterId, Number(code), stdout, error ? `${stderr}\n${error.message}` : stderr, Boolean(error && !child.pid)));
   };
-  child.on('error', (error) => finish(-1, error));
-  child.on('close', (code) => finish(code == null ? -1 : code));
+  const settle = (code, error) => { void finish(code, error).catch(failure => console.error('Task completion retained in execution log:', failure.message)); };
+  child.on('error', (error) => settle(-1, error));
+  child.on('close', (code) => settle(code == null ? -1 : code));
   return { ok: true, task: transition.task, executionId, logPath, message: `已通过 ${adapterId} 启动任务。` };
 }
 
@@ -23044,39 +24444,193 @@ function submitOpenClawTask(task, command) {
   return launchCommandAdapter(task, 'openclaw', capability.exePath, ['agent', ...modeArgs, '--message', command, '--json', '--timeout', String(task.timeoutSeconds), '--session-key', sessionKey], task.input?.knowledgeRoot || taskCenterDirPath());
 }
 
-function submitProjectMaterialTask(task, project, requestedExecutor = '') {
-  const chosen = ['', 'auto', 'smart'].includes(String(requestedExecutor))
-    ? String(project.agentTool || task.requestedExecutor || '') : String(requestedExecutor);
-  if (chosen !== 'codex') return { ok: false, code: 'controlled_adapter_required',
-    message: '此项目需要已经验证隔离能力的执行器；当前仅支持受控Codex通道，请明确选择该执行器。不会静默切换其他Agent。' };
-  const capability = adapterCapabilities().codex;
-  if (!capability?.available || !capability.authorized || !/\.exe$/i.test(capability.exePath || '')) {
-    return { ok: false, code: 'agent_unavailable', message: '受控Codex原生执行器尚未就绪，资料已保留。' };
+async function submitProjectMaterialTask(task, project, requestedExecutor = '', controlledScope = null) {
+  const student = controlledScope?.student || (project.studentIds?.length === 1 ? findStudentByKey(String(project.studentIds[0])) : null);
+  if (!student) return { ok: false, code: 'AGENT_SCOPE_DENIED', message: '自动消化需要明确的单学生授权范围。' };
+  const routeProject = controlledScope?.student ? null : project;
+  const policy = agentControlPolicy(student, DIGEST_PROFILE, routeProject);
+  const identity = JSON.stringify(policy);
+  const current = () => {
+    const latestStudent = findStudentByKey(String(student.id));
+    const latestProject = routeProject ? readProjects().map(normalizeProject).find(p => String(p.id) === String(project.id)) : null;
+    return latestStudent && !latestStudent.archived && latestStudent.status !== 'archived'
+      && (!routeProject || latestProject?.studentIds?.length === 1 && String(latestProject.studentIds[0]) === String(student.id) && !['archived', 'sealed'].includes(latestProject.status))
+      && JSON.stringify(agentControlPolicy(latestStudent, DIGEST_PROFILE, latestProject)) === identity;
+  };
+  const recovery = task.input?.materialExecution;
+  if (policy.enabled && recovery?.batchId && ['output_ready', 'committing', 'committed', 'conflict'].includes(recovery.phase)) {
+    return submitProjectMaterialAttempt(task, project, task.adapterId || task.executor || policy.primary, { ...controlledScope, policyCurrent: current, commitRecovery: true });
   }
-  const access = mutableProject(project.id, '执行受控项目资料消化');
+  const previous = new Set(task.routeAttempts || []);
+  const remaining = require('./agent-control-plane.cjs').providersFor(policy, DIGEST_PROFILE).filter(id => !previous.has(id));
+  const dispatchPolicy = { ...policy, global: true, providers: remaining };
+  const result = await require('./agent-control-plane.cjs').dispatchAgent({ policy: dispatchPolicy, profile: DIGEST_PROFILE,
+    requested: requestedExecutor, current,
+    attempt: providerId => submitProjectMaterialAttempt(task, project, providerId, { ...controlledScope, policyCurrent: current }),
+    handoff: async () => {
+      const store = readTaskStore(), currentTask = store.tasks.find(t => t.id === task.id);
+      if (currentTask?.status === 'waiting_result') return { ok: true, task: currentTask };
+      const transition = transitionTaskInStore(store, task.id, 'waiting_result', { executionId: `handoff-select-${crypto.randomUUID()}`,
+        adapterId: 'manual', executor: 'manual', executionMode: 'manual', autoRetry: false, nextRetryAt: '', result: null,
+        message: '后台通道不可用；请在同一任务选择一个手工交接目标，尚未发送资料。' }, 'handoff_target_required');
+      if (transition.ok) await writeTaskStoreDurably(store);
+      return { ...transition, message: '等待选择手工交接目标，未自动打开任何应用。' };
+    },
+    record: async decision => {
+      const store = readTaskStore(), item = store.tasks.find(t => t.id === task.id);
+      if (!item) throw Error('任务已移除');
+      item.routeDecision = { mode: 'smart', selectedAdapter: decision.providerId, profile: DIGEST_PROFILE,
+        policyVersion: policy.version, reason: decision.stage === 'desktop_handoff' ? '后台不可用，按授权转桌面手工发送' : '按中心授权顺序选择执行器',
+        attempts: decision.attempts, stage: decision.stage, decidedAt: taskNow() };
+      await writeTaskStoreDurably(store);
+    },
+  });
+  if (!result.ok) {
+    const store = readTaskStore(), item = store.tasks.find(t => t.id === task.id);
+    if (item && ['approved', 'queued', 'pending', 'blocked'].includes(item.status)) {
+      transitionTaskInStore(store, task.id, 'blocked', {
+        ...(['possibly_sent', 'unknown'].includes(result.stage) || result.code === 'EXECUTION_UNRESOLVED' ? { recoveryState: 'unknown', autoRetry: false } : {}),
+        error: { code: result.code || 'AGENT_ROUTE_BLOCKED', message: result.message },
+        nextRetryAt: '', autoRetry: false, message: result.message }, 'agent_route_blocked');
+      await writeTaskStoreDurably(store);
+      if (controlledScope?.student) writeStudentDigestState(student, { status: 'failed', message: result.message });
+      notify('onNativeTaskCenterChanged', JSON.stringify({ taskId: task.id, status: 'blocked' }));
+    }
+  }
+  return result;
+}
+
+async function submitProjectMaterialAttempt(task, project, requestedExecutor = '', controlledScope = null) {
+  const commitRecovery = controlledScope?.commitRecovery === true;
+  const controlledStudent = controlledScope?.student || null;
+  const controlledBatch = controlledScope?.batch || null;
+  const policyStudent = controlledStudent || (project.studentIds?.length === 1 ? findStudentByKey(String(project.studentIds[0])) : null);
+  const policyProject = controlledStudent ? null : project;
+  const chosen = ['', 'auto', 'smart'].includes(String(requestedExecutor))
+    ? String(task.requestedExecutor || project.agentTool || '') : String(requestedExecutor);
+  if (!commitRecovery && !providerSupportsProfile(chosen, DIGEST_PROFILE, aiExecutorRegistry())) return { ok: false, code: 'controlled_adapter_required',
+    message: '此项目需要已连接且通过资料消化合同验证的结构化执行器，请在 AI 接入与调度中心确认连接状态。' };
+  const adapter = commitRecovery ? { id: chosen } : await classificationAdapter(chosen);
+  const capability = { ...adapterCapabilities()[chosen], ...(chosen === 'codex' ? { exePath: adapter?.executable } : {}) };
+  if (!commitRecovery && (!adapter || adapter.unavailable || (chosen === 'codex' && !capability.exePath))) {
+    return { ok: false, code: 'agent_unavailable', message: '所选受控执行器尚未就绪，资料已保留。' };
+  }
+  const circuit = circuitDecision(readTaskStore().runtime?.circuits?.[chosen]);
+  // Authorization is rechecked with synthetic content at this explicit task
+  // boundary. Resource/network cooldowns still block execution.
+  if (!commitRecovery && !circuit.allowed && circuit.category !== 'authorization') {
+    return { ok: false, code: 'EXECUTOR_CIRCUIT_OPEN', message: circuit.reason };
+  }
+  if (!commitRecovery && chosen === 'codex') {
+    const runtimeHash = await require('./smart-inbox-agent.cjs').routingRuntimeHash(adapter);
+    const authScope = JSON.stringify([adapter.authScope || '', adapter.authVersion || 0]);
+    const saved = readTaskStore().runtime?.agentQualifications?.codex?.[DIGEST_PROFILE];
+    if (!saved?.ready || saved.runtimeHash !== runtimeHash || saved.authScope !== authScope || Date.parse(saved.expiresAt) <= Date.now()) {
+      const release = !taskChildProcesses.size && captureHeavyWorkGate.tryAcquire({ kind: 'agent_probe', studentId: '', sessionId: `qualification-${task.id}`, snapshot: captureTimelineResourceSnapshot() });
+      if (!release) return deferTaskForAdapter(task, chosen, '后台资源忙，稍后验证并继续。');
+      try {
+        const probe = await require('./task-circuit-probe.cjs').probeControlledCodex(adapter.executable);
+        const latest = readTaskStore(); latest.runtime ||= {}; latest.runtime.agentQualifications ||= {}; latest.runtime.agentQualifications.codex ||= {};
+        latest.runtime.agentQualifications.codex[DIGEST_PROFILE] = { ...createAgentQualification({ providerId: chosen, profile: DIGEST_PROFILE,
+          runtimeHash, ready: probe.passed, message: probe.message }), authScope };
+        await writeTaskStoreDurably(latest);
+        if (!probe.passed) return { ok: false, code: probe.code === 'execution_unknown' ? 'EXECUTION_UNRESOLVED' : 'AGENT_UNAVAILABLE', message: probe.message };
+      } finally { release(); }
+    }
+  }
+  let workBuddyRuntime, qualification;
+  if (!commitRecovery && chosen === 'workbuddy') {
+    workBuddyRuntime = (await classificationAdapter('workbuddy'))?.runtime;
+    if (!workBuddyRuntime) return { ok: false, code: 'AGENT_UNAVAILABLE', message: 'WorkBuddy 后台连接未就绪' };
+    if (workBuddyRuntime.cliPath) workBuddyRuntime.version = String(fs.statSync(workBuddyRuntime.cliPath).mtimeMs);
+    qualification = workBuddyQualification.peek(workBuddyRuntime);
+    if (!qualification) {
+      const saved = readTaskStore().runtime?.agentQualifications?.workbuddy?.[DIGEST_PROFILE];
+      if (saved?.ready && saved.authScope === JSON.stringify([workBuddyRuntime.configDir || '', workBuddyRuntime.authVersion || 0]) && Date.parse(saved.expiresAt) > Date.now()) qualification = await workBuddyQualification.adopt(workBuddyRuntime, { ...saved, cliHash: saved.runtimeHash });
+    }
+    if (!qualification) {
+      // Recheck only the selected executor at an explicit task boundary. The
+      // probe and qualification use synthetic content and run before any
+      // student text is extracted or sent.
+      const releaseProbe = !taskChildProcesses.size && captureHeavyWorkGate.tryAcquire({ kind: 'agent_probe',
+        studentId: '', sessionId: `qualification-${task.id}`, snapshot: captureTimelineResourceSnapshot() });
+      if (!releaseProbe) return deferTaskForAdapter(task, chosen, '后台资源忙，空闲后自动校验 WorkBuddy 并继续。');
+      try {
+        const auth = await workBuddyProbeCache.detect(workBuddyRuntime);
+        qualification = auth.authorized ? await workBuddyQualification.check(workBuddyRuntime) : { ready: false,
+          code: auth.executionUnknown ? 'execution_unknown' : 'AUTHENTICATION_REQUIRED', message: auth.message };
+        await persistWorkBuddyControlledStatus(workBuddyRuntime, auth, qualification);
+      } finally { releaseProbe(); }
+    }
+    if (!qualification?.ready) return {
+      ok: false,
+      code: qualification?.code === 'execution_unknown' ? 'EXECUTION_UNRESOLVED' : qualification?.code === 'SENSITIVE_REVIEW_REQUIRED' ? 'SENSITIVE_REVIEW_REQUIRED' : /登录|auth/i.test(String(qualification?.message || '')) ? 'AUTHENTICATION_REQUIRED' : 'WORKBUDDY_QUALIFICATION_REQUIRED',
+      message: `${qualification?.message || 'WorkBuddy 自动安全校验暂未通过。'} 请在官方 WorkBuddy 中保持登录后重新开始任务；系统会自动复检，不需要单独检测。未发送学生或项目原文。`,
+    };
+  }
+  if (!commitRecovery && chosen === 'llm-api') {
+    const settings = await getLlmApiProvider().get();
+    const runtime = adapter && !adapter.unavailable ? await getLlmApiProvider().runtime() : null;
+    if (!runtime || !settings.lastCheck?.ok || settings.lastCheck.runtimeHash !== runtime.runtimeHash) {
+      const releaseProbe = !taskChildProcesses.size && captureHeavyWorkGate.tryAcquire({ kind: 'agent_probe', studentId: '',
+        sessionId: `qualification-${task.id}`, snapshot: captureTimelineResourceSnapshot() });
+      if (!releaseProbe) return deferTaskForAdapter(task, chosen, '后台资源忙，空闲后自动验证 LLM API 并继续。');
+      try { await getLlmApiProvider().verify(); }
+      catch (error) { return { ok: false, code: error.code || 'LLM_API_CONFIGURATION_REQUIRED', stage: error.stage || 'not_sent', message: error.message }; }
+      finally { releaseProbe(); }
+    }
+  }
+  if (!commitRecovery && adapter?.structuredBuiltin) {
+    const releaseProbe = !taskChildProcesses.size && captureHeavyWorkGate.tryAcquire({ kind: 'agent_probe', studentId: '',
+      sessionId: `qualification-${task.id}-${chosen}`, snapshot: captureTimelineResourceSnapshot() });
+    if (!releaseProbe) return deferTaskForAdapter(task, chosen, `后台资源忙，空闲后自动验证 ${capability.label || chosen} 的资料消化合同。`);
+    try { await ensureBuiltinStructuredQualification(adapter, DIGEST_PROFILE); }
+    catch (error) { return { ok: false, code: error.code || 'AGENT_CONTRACT_REQUIRED', stage: error.stage || 'not_sent', message: error.message }; }
+    finally { releaseProbe(); }
+  }
+  if (activeAdapterTask(chosen, task.id)) {
+    return deferTaskForAdapter(task, chosen, '已有执行器任务在运行；受控项目资料任务已排队等待。');
+  }
+  const access = controlledStudent ? { project } : mutableProject(project.id, '执行受控项目资料消化');
   if (access.error) return JSON.parse(access.error);
-  const releaseHeavyPermit = captureHeavyWorkGate.tryAcquire({ kind: 'agent_codex', studentId: `project:${project.id}`,
+  const releaseHeavyPermit = captureHeavyWorkGate.tryAcquire({ kind: `agent_${chosen}`, studentId: `project:${project.id}`,
     sessionId: task.id, snapshot: captureTimelineResourceSnapshot() });
-  if (!releaseHeavyPermit) return { ok: false, code: 'resource_busy', retryable: true, message: '后台处理资源暂忙，原资料保持待处理。' };
+  if (!releaseHeavyPermit) return deferTaskForAdapter(task, chosen, '后台正在处理其他资料，本任务已排队，空闲后自动继续。');
   const executionId = `material-${crypto.randomUUID()}`;
-  const store = readTaskStore();
-  const transition = transitionTaskInStore(store, task.id, 'running', { executionId, adapterId: 'codex', executor: 'codex',
+  let store, transition;
+  try {
+    store = readTaskStore();
+    transition = transitionTaskInStore(store, task.id, 'running', { executionId, adapterId: chosen, executor: chosen,
     executionMode: 'automatic', attempt: Number(task.attempt || 0) + 1, startedAt: taskNow(), lastHeartbeatAt: taskNow(),
-    autoRetry: false, nextRetryAt: '', error: null, result: null }, 'controlled_material_started');
+    autoRetry: false, nextRetryAt: '', resourceDeferredAt: '', resourceRetryAt: '', resourceAdapterId: '', error: null, result: null }, 'controlled_material_started');
+  } catch (error) { releaseHeavyPermit(); throw error; }
   if (!transition.ok) { releaseHeavyPermit(); return transition; }
-  writeTaskStore(store);
+  try { (await writeTaskStoreDurably(store)); } catch (error) { releaseHeavyPermit(); throw error; }
   const controller = new AbortController();
   const scope = (value) => JSON.stringify([value?.id, value?.status, value?.studentIds, value?.workspacePath,
     value?.rawPath, value?.managerPath, value?.knowledgeRootPath, value?.agentPath, value?.materialStorageMode]);
   const expectedScope = scope(project);
   let runtime;
   try { runtime = createProjectMaterialTask({ project, executionId, executable: capability.exePath,
+    ...(chosen === 'workbuddy' ? {
+      verifySandbox: async () => {
+        if (!workBuddyQualification.peek(workBuddyRuntime)?.ready) throw new Error('WorkBuddy 受控检测已过期，请重新检测');
+        return qualification;
+      },
+      execute: options => executeMaterialWorkBuddy({ ...options, runtime: workBuddyRuntime, qualification }),
+    } : {}),
+    ...(typeof adapter.generate === 'function' ? {
+      verifySandbox: async () => ({ passed: false, mode: 'host-mediated-no-tools', providerId: chosen }),
+      execute: options => require('./project-material-agent.cjs').executeMaterialLlmApi({ ...options, provider: adapter }),
+    } : {}),
     timeoutMs: Math.max(30, Number(task.timeoutSeconds || 900)) * 1000, signal: controller.signal,
     checkpoint: task.input?.materialExecution || {},
     authorize: async () => {
       const currentTask = readTaskStore().tasks.find((item) => item.id === task.id);
-      const currentAccess = mutableProject(project.id, '继续受控项目消化');
-      return !currentAccess.error && scope(currentAccess.project) === expectedScope
+      const latestStudent = controlledStudent ? readStudentsIndex().map(toHostStudent).find(item => String(item.id) === String(controlledStudent.id)) : null;
+      const currentAccess = controlledStudent ? { project: latestStudent ? studentControlledProject(latestStudent, project.managerPath) : null, error: latestStudent ? '' : 'missing' }
+        : mutableProject(project.id, '继续受控项目消化');
+      return (!controlledScope?.policyCurrent || controlledScope.policyCurrent()) && !currentAccess.error && scope(currentAccess.project) === expectedScope
         && currentTask?.executionId === executionId && currentTask.status === 'running'
         && !licenseRequiredJson('继续受控项目消化') && validateTaskPermissionDeclaration(currentTask).ok
         && taskPathAllowed(project.knowledgeRootPath, currentTask.permissions?.write || [])
@@ -23088,13 +24642,13 @@ function submitProjectMaterialTask(task, project, requestedExecutor = '') {
       if (!current || current.executionId !== executionId || current.status !== 'running') throw Object.assign(new Error('执行归属已失效。'), { code: 'cancelled' });
       current.input = { ...current.input, materialExecution: checkpoint, digestBatchId: checkpoint.batchId || '' };
       current.lastHeartbeatAt = taskNow();
-      writeTaskStore(currentStore);
+      (await writeTaskStoreDurably(currentStore));
     },
   }); } catch (error) {
     releaseHeavyPermit();
     const failedStore = readTaskStore();
     transitionTaskInStore(failedStore, task.id, 'failed', { error: { code: error.code || 'MATERIAL_SETUP_FAILED', message: error.message } }, 'controlled_material_setup_failed');
-    writeTaskStore(failedStore);
+    (await writeTaskStoreDurably(failedStore));
     return { ok: false, message: error.message };
   }
   const child = { killed: false, kill() {
@@ -23103,85 +24657,196 @@ function submitProjectMaterialTask(task, project, requestedExecutor = '') {
   } };
   const heartbeatTimer = setInterval(() => heartbeatTask(task.id, executionId, '受控资料处理', false), 5000);
   heartbeatTimer.unref?.();
-  const running = { child, executionId, adapterId: 'codex', heartbeatTimer, releaseHeavyPermit,
+  const running = { child, executionId, adapterId: chosen, heartbeatTimer, releaseHeavyPermit,
     materialRuntime: runtime, lastHeartbeatWrite: Date.now() };
   taskChildProcesses.set(task.id, running);
-  running.completion = runtime.run().then((output) => {
+  let safeApiFallback = null;
+  running.completion = runtime.run().then(async (output) => {
     const currentStore = readTaskStore();
     const current = currentStore.tasks.find((item) => item.id === task.id);
     if (!current || current.executionId !== executionId || current.status !== 'running') return;
-    const validation = { valid: output.fullyCommitted, checkedAt: taskNow(), artifacts: [],
+    if (controlledStudent) await finalizeStudentControlledDigest({ student: controlledStudent, batch: controlledBatch,
+      receiptPath: studentDigestReceiptPath(controlledStudent), summaryPath: controlledStudent.summaryPath || getSummaryDir(controlledStudent.name), output, now: taskNow });
+    const studentValidation = controlledStudent ? validateTaskCompletion(current, current.startedAt, null) : null;
+    const validation = studentValidation || { valid: output.fullyCommitted, checkedAt: taskNow(), artifacts: [],
       message: output.fullyCommitted ? `本次资料已全部校验提交；项目仍有 ${output.remainingCount} 份待处理。`
         : output.failures?.length ? `可处理资料已继续执行；${output.failures.length} 份资料提取异常，项目仍有 ${output.remainingCount} 份待处理。请查看逐项原因。`
           : '部分知识提交存在冲突，已保留成功产物及未完成项。' };
     const result = normalizeTaskResult(current, { status: 'reviewing', structuredOutput: output, summary: validation.message }, validation);
     commitValidatedTaskResult(currentStore, current, result, validation, { successful: output.fullyCommitted,
       event: 'controlled_material_finished', autoSummary: validation.message });
-    writeTaskStore(currentStore);
-  }).catch((error) => {
+    currentStore.runtime ||= {}; currentStore.runtime.circuits ||= {};
+    currentStore.runtime.circuits[chosen] = recordCircuitOutcome(currentStore.runtime.circuits[chosen], { success: true, executionId });
+    (await writeTaskStoreDurably(currentStore));
+  }).catch(async (error) => {
     const currentStore = readTaskStore();
     const current = currentStore.tasks.find((item) => item.id === task.id);
     if (!current || current.executionId !== executionId || current.status !== 'running') return;
-    transitionTaskInStore(currentStore, task.id, error.code === 'cancelled' ? 'cancelled' : 'failed', {
+    currentStore.runtime ||= {}; currentStore.runtime.circuits ||= {};
+    currentStore.runtime.circuits[chosen] = recordCircuitOutcome(currentStore.runtime.circuits[chosen], { success: false,
+      executionId, failure: { code: error.code, message: `${error.message} ${error.details?.diagnostic || ''}` } });
+    const unknown = error.stage === 'unknown' || ['execution_unknown', 'EXECUTION_UNRESOLVED', 'LLM_API_TIMEOUT_UNKNOWN', 'LLM_API_TRANSPORT_UNKNOWN'].includes(error.code);
+    transitionTaskInStore(currentStore, task.id, unknown ? current.status : ['cancelled', 'AGENT_CANCELLED'].includes(error.code) ? 'cancelled' : 'failed', {
+      ...(unknown ? unknownExecutionPatch(current, 'controlled_stop_unconfirmed') : {}),
       error: { code: error.code || 'MATERIAL_EXECUTION_FAILED', message: error.message }, nextRetryAt: '', autoRetry: false,
     }, 'controlled_material_failed');
-    writeTaskStore(currentStore);
+    const latestPolicy = policyStudent ? agentControlPolicy(policyStudent, DIGEST_PROFILE, policyProject) : null;
+    const apiAllowed = latestPolicy?.enabled && !commitRecovery;
+    const definite = require('./agent-control-plane.cjs').safeToRetry(error)
+      && !['output_ready', 'committing', 'committed', 'conflict'].includes(current.input?.materialExecution?.phase);
+    if (apiAllowed && definite && (!controlledScope?.policyCurrent || controlledScope.policyCurrent())) {
+      const prepared = transitionTaskInStore(currentStore, task.id, 'approved', { executionId: '', adapterId: '', executor: '',
+        error: null, message: '执行器明确失败；按全局顺序尝试下一通道，最后为手工交接。',
+        routeAttempts: [...new Set([...(current.routeAttempts || []), ...(current.routeDecision?.attempts || []).filter(a => a.stage === 'not_sent').map(a => a.providerId), chosen])],
+      }, 'controlled_material_api_fallback_prepared');
+      if (prepared.ok) safeApiFallback = prepared.task;
+    }
+    (await writeTaskStoreDurably(currentStore));
   }).finally(() => {
     clearInterval(heartbeatTimer); releaseHeavyPermit();
     if (taskChildProcesses.get(task.id) === running) taskChildProcesses.delete(task.id);
     notify('onNativeTaskCenterChanged', JSON.stringify({ taskId: task.id }));
-    notify('onNativeDigestWorkflowChanged', JSON.stringify({ scopeType: 'project', scopeId: project.id, taskId: task.id }));
+    notify('onNativeDigestWorkflowChanged', JSON.stringify({ scopeType: controlledStudent ? 'student' : 'project', scopeId: controlledStudent?.id || project.id, taskId: task.id }));
+    if (safeApiFallback) setImmediate(() => { void submitProjectMaterialTask(safeApiFallback, project, 'auto', controlledScope)
+      .catch(error => console.warn('LLM API fallback paused:', error.message)); });
   });
+  void running.completion.catch(error => console.warn('Controlled result retained; settlement paused:', error.message));
   return { ok: true, task: transition.task, message: '已进入受控处理：验证隔离能力、固定来源版本，然后校验提交知识。' };
 }
 
 function submitCodexTask(task, command) {
   const capability = adapterCapabilities().codex;
   if (!capability.available || !capability.exePath) return { ok: false, unavailable: true, message: 'Codex CLI 不可用。' };
-  const cwd = canonicalTaskPath(task.input?.knowledgeRoot || (task.sourceType === 'project' ? readProjects().map(normalizeProject).find((item) => String(item.id) === task.sourceId)?.knowledgeRootPath : '') || taskCenterDirPath());
-  const writableRoots = [...new Set((task.permissions?.write || []).map(canonicalTaskPath).filter(Boolean))];
+  const hostDraftMode = isHostValidatedDraftTask(task);
+  const cwd = hostDraftMode
+    ? taskCenterDirPath()
+    : canonicalTaskPath(task.input?.knowledgeRoot || (task.sourceType === 'project' ? readProjects().map(normalizeProject).find((item) => String(item.id) === task.sourceId)?.knowledgeRootPath : '') || taskCenterDirPath());
+  const writableRoots = hostDraftMode ? [] : [...new Set((task.permissions?.write || []).map(canonicalTaskPath).filter(Boolean))];
   const addDirArgs = writableRoots.filter((root) => !taskPathWithin(root, cwd)).flatMap((root) => ['--add-dir', root]);
-  const sandboxMode = task.input?.remoteLocalExecution ? 'read-only' : 'workspace-write';
+  const sandboxMode = hostDraftMode || task.input?.remoteLocalExecution ? 'read-only' : 'workspace-write';
   const args = ['exec', '--sandbox', sandboxMode, '--skip-git-repo-check', '--ephemeral', '-C', cwd, ...addDirArgs, '-'];
-  return launchCommandAdapter(task, 'codex', capability.exePath, args, cwd, command);
+  return launchCommandAdapter(task, 'codex', capability.exePath, args, cwd, hostDraftMode ? hostValidatedDraftPrompt(command) : command);
 }
 
-function submitWorkBuddyTask(task, command) {
+async function savePreparedTaskResult(task) {
+  const store = readTaskStore();
+  const current = store.tasks.find(item => item.id === task.id);
+  if (!current || current.executionId !== task.executionId || !['running', 'waiting_result'].includes(current.status)) {
+    throw Object.assign(new Error('交接批次已变化，旧结果未覆盖当前任务。'), { code: 'DISPATCH_STATE_CHANGED' });
+  }
+  current.result = task.result;
+  await writeTaskStoreDurably(store);
+  return current;
+}
+
+async function submitWorkBuddyTask(task, command) {
+  const waiting = readTaskStore().tasks.find(item => item.id !== task.id && item.adapterId === 'workbuddy'
+    && item.executionMode === 'desktop_handoff' && ['running', 'waiting_result'].includes(item.status));
+  if (waiting) return deferTaskForAdapter(task, 'workbuddy', `已排队，等待 WorkBuddy 当前任务“${waiting.title}”结束后自动打开。`);
   const capability = adapterCapabilities().workbuddy;
   const runtime = discoverWorkBuddyRuntime(capability?.exePath || findAgentToolInstall('workbuddy').exePath || '', {
     findExecutable: findExecutableInPath,
     hostNodePath: process.execPath,
   });
-  if (!runtime.available) return { ok: false, unavailable: true, message: 'WorkBuddy CLI 不可用。' };
+  if (!runtime.exePath || !fs.existsSync(runtime.exePath)) return { ok: false, unavailable: true, message: 'WorkBuddy 桌面程序不可用。' };
   const cwd = canonicalTaskPath(task.input?.knowledgeRoot || taskCenterDirPath());
-  const expectedFiles = new Set([
-    task.expectedOutput?.draftPath,
-    task.expectedOutput?.publishPath,
-    task.expectedOutput?.path,
-  ].map(canonicalTaskPath).filter(Boolean));
-  const taskDirectory = (value) => {
-    const target = canonicalTaskPath(value);
-    if (!target) return '';
-    try { if (fs.existsSync(target) && fs.statSync(target).isFile()) return path.dirname(target); } catch { /* Treat unresolved targets as declared paths. */ }
-    return expectedFiles.has(target) || path.extname(target) ? path.dirname(target) : target;
-  };
-  const additionalRoots = [...new Set([
-    ...(task.permissions?.read || []),
-    ...(task.permissions?.write || []),
-  ].map(taskDirectory).filter(Boolean).filter((root) => !taskPathWithin(root, cwd)))];
-  const invocation = buildWorkBuddyInvocation(runtime, {
-    cwd,
-    additionalRoots,
-    command,
-    maxTurns: Math.ceil(Number(task.timeoutSeconds || 900) / 60),
-    baseEnv: process.env,
+  const store = readTaskStore();
+  const executionId = `workbuddy-${Date.now()}-${crypto.randomBytes(4).toString('hex')}`;
+  const transition = transitionTaskInStore(store, task.id, 'waiting_result', {
+    executionId,
+    adapterId: 'workbuddy',
+    executor: 'workbuddy',
+    executionMode: 'desktop_handoff',
+    attempt: task.attempt + 1,
+    startedAt: taskNow(),
+    lastHeartbeatAt: taskNow(),
+    resultTimeoutSeconds: 0,
+    autoRetry: false,
+    nextRetryAt: '',
+    result: null,
+  }, 'workbuddy_desktop_handoff_prepared');
+  if (!transition.ok) return transition;
+  Object.assign(transition.task, { resourceDeferredAt: '', resourceRetryAt: '', resourceAdapterId: '' });
+  await writeTaskStoreDurably(store);
+  assertTaskDispatchCurrent(task.id, executionId);
+  let packet;
+  try {
+    packet = writeTaskPacket(transition.task, workbuddyTaskOutboxPath(), command);
+    const desktopCommand = packet.command.length <= 7000
+      ? packet.command
+      : `请执行教育管家任务 ${task.id}。完整任务指令保存在：${packet.promptPath}\n请先读取该文件，严格遵守其中的资料范围、输出路径和结果回写要求。`;
+    const deepLink = buildWorkBuddyTaskDeepLink(runtime, {
+      command: desktopCommand,
+      cwd,
+      welcomeMode: 'work',
+      permissionMode: 'default',
+    });
+    if (!deepLink) throw Error('WorkBuddy 桌面任务入口初始化失败。');
+    await new Promise((resolve, reject) => {
+      const child = spawn(runtime.exePath, [deepLink], { detached: true, stdio: 'ignore', windowsHide: false, shell: false });
+      child.once('error', reject);
+      child.once('spawn', () => { child.unref(); resolve(); });
+    });
+  } catch (error) {
+    const failedStore = readTaskStore();
+    const current = failedStore.tasks.find(item => item.id === task.id);
+    if (current?.executionId === executionId && current.status === 'waiting_result') transitionTaskInStore(failedStore, task.id, 'failed', {
+      error: { code: 'WORKBUDDY_DESKTOP_LAUNCH_FAILED', message: error.message },
+      lastHeartbeatAt: taskNow(),
+      result: { packet, handoffState: 'launch_failed', requiresUserAction: true, summary: packet ? '未能打开 WorkBuddy。指令已保留，可重新打开或复制。' : '未能生成 WorkBuddy 交接包，尚未发送任务，请重试。' },
+    }, 'workbuddy_desktop_handoff_failed');
+    (await writeTaskStoreDurably(failedStore));
+    notify('onNativeTaskCenterChanged', JSON.stringify({ taskId: task.id }));
+    return { ok: false, message: `WorkBuddy 桌面端启动失败：${error.message}` };
+  }
+  transition.task.result = normalizeTaskResult(transition.task, {
+    executionId,
+    status: 'waiting_result',
+    artifacts: [],
+  }, null, {
+    summary: '已请求打开 WorkBuddy 并尝试预填，尚未确认发送或执行。请检查输入框后发送；未看到内容时可复制本次指令。',
+    handoffState: 'awaiting_user_send',
+    requiresUserAction: true,
   });
-  if (!invocation) return { ok: false, unavailable: true, message: 'WorkBuddy 执行参数初始化失败。' };
-  const launched = launchCommandAdapter(task, 'workbuddy', invocation.executable, invocation.args, invocation.cwd, invocation.stdinText, { env: invocation.env });
-  return launched.ok ? { ...launched, message: '已交给 WorkBuddy 自动执行；完成后由教育管家校验并登记产物。' } : launched;
+  transition.task.result.packet = packet;
+  await savePreparedTaskResult(transition.task);
+  appendTaskEvent(task.id, 'workbuddy_desktop_handoff_opened', {
+    executionId,
+    packet,
+    desktopSessionAvailable: Boolean(runtime.desktopSessionAvailable),
+  }, executionId);
+  return {
+    ok: true,
+    task: transition.task,
+    packet,
+    message: '已请求打开 WorkBuddy。请检查输入框后发送；尚未确认领取，不代表已经执行。',
+  };
 }
 
-function submitQClawInboxTask(task, command) {
+async function submitModernAgentTask(task, command, agentId) {
+  const capability = adapterCapabilities()[agentId];
+  if (!capability?.available) return { ok: false, unavailable: true, message: `${capability?.label || agentId} 不可用。` };
+  const cwd = canonicalTaskPath(task.input?.knowledgeRoot || (task.sourceType === 'project'
+    ? readProjects().map(normalizeProject).find((item) => String(item.id) === String(task.sourceId))?.knowledgeRootPath : '') || taskCenterDirPath());
+  const readOnly = isHostValidatedDraftTask(task) || task.input?.remoteLocalExecution
+    || !Array.isArray(task.permissions?.write) || task.permissions.write.length === 0;
+  const additionalRoots = [...new Set([...(task.permissions?.read || []), ...(task.permissions?.write || [])]
+    .map(canonicalTaskPath).filter(Boolean))];
+  const invocation = agentId === 'trae'
+    ? buildTraeInvocation({ cliPath: capability.cliPath }, { cwd, command, readOnly })
+    : buildQoderInvocation({ cliPath: capability.cliPath }, { cwd, command, readOnly, additionalRoots });
+  if (invocation) {
+    return (await launchCommandAdapter(task, agentId, invocation.executable, invocation.args, invocation.cwd, invocation.stdinText));
+  }
+  const handoff = (await submitAgentHandoffTask(task, command, agentId));
+  if (handoff.ok) {
+    openApp(agentId);
+    return { ...handoff, message: `已打开 ${capability.label} 并复制任务指令。当前桌面版没有可验证的外部自动发送接口，请粘贴后发送；结果仍由教育管家自动校验。` };
+  }
+  return handoff;
+}
+
+async function submitQClawInboxTask(task, command) {
   const store = readTaskStore();
   const executionId = `qclaw-${Date.now()}-${crypto.randomBytes(4).toString('hex')}`;
   const transition = transitionTaskInStore(store, task.id, 'waiting_result', {
@@ -23198,16 +24863,18 @@ function submitQClawInboxTask(task, command) {
     result: null,
   }, 'qclaw_inbox_prepared');
   if (!transition.ok) return transition;
+  await writeTaskStoreDurably(store);
+  assertTaskDispatchCurrent(task.id, executionId);
   const packet = writeTaskPacket(transition.task, qclawTaskInboxPath(), command);
   transition.task.result = normalizeTaskResult(transition.task, { executionId, status: 'waiting_result', artifacts: [] }, null, { summary: '任务已写入 QClaw 收件箱。' });
   transition.task.result.packet = packet;
-  writeTaskStore(store);
+  await savePreparedTaskResult(transition.task);
   appendTaskEvent(task.id, 'qclaw_inbox_written', { executionId, packet }, executionId);
   return transition.ok ? { ok: true, task: transition.task, packet, message: '任务已写入 QClaw 任务收件箱，等待领取和结果回写。' } : transition;
 }
 
-function submitQClawTask(task, command) {
-  if (process.env.EDU_QCLAW_INBOX_BRIDGE === '1') return submitQClawInboxTask(task, command);
+async function submitQClawTask(task, command) {
+  if (process.env.EDU_QCLAW_INBOX_BRIDGE === '1') return (await submitQClawInboxTask(task, command));
   const capability = adapterCapabilities().qclaw;
   const runtime = discoverQClawRuntime(capability.exePath || findAgentToolInstall('qclaw').exePath || '');
   if (runtime.available && capability.gatewayHealthy) {
@@ -23226,7 +24893,7 @@ function submitQClawTask(task, command) {
       '--session-key',
       sessionKey,
     ];
-    const launched = launchCommandAdapter(
+    const launched = (await launchCommandAdapter(
       task,
       'qclaw',
       runtime.nodePath,
@@ -23234,12 +24901,12 @@ function submitQClawTask(task, command) {
       task.input?.knowledgeRoot || taskCenterDirPath(),
       '',
       { env: qclawRuntimeEnv(runtime) },
-    );
+    ));
     return launched.ok
       ? { ...launched, message: `已交给 QClaw 的「${agentId}」自动执行；完成回执将由系统自动校验。` }
       : launched;
   }
-  const fallback = submitManualTask(task, command, 'QClaw 已安装，但自动执行 Gateway 尚未连接。');
+  const fallback = (await submitManualTask(task, command, 'QClaw 已安装，但自动执行 Gateway 尚未连接。'));
   if (fallback.ok) {
     openApp('qclaw');
     appendTaskEvent(task.id, 'qclaw_manual_fallback', { gatewayPort: runtime.port || 0, reason: capability.healthMessage || 'gateway_unavailable' }, fallback.task?.executionId || '');
@@ -23249,7 +24916,7 @@ function submitQClawTask(task, command) {
     : fallback;
 }
 
-function submitManualTask(task, command, reason = '') {
+async function submitManualTask(task, command, reason = '') {
   const store = readTaskStore();
   const executionId = `manual-${Date.now()}-${crypto.randomBytes(4).toString('hex')}`;
   const transition = transitionTaskInStore(store, task.id, 'waiting_result', {
@@ -23266,30 +24933,70 @@ function submitManualTask(task, command, reason = '') {
     result: null,
   }, 'manual_execution_prepared');
   if (transition.ok) {
+    await writeTaskStoreDurably(store);
+    assertTaskDispatchCurrent(task.id, executionId);
     const packet = writeTaskPacket(transition.task, taskManualOutboxPath(), command);
-    clipboard.writeText(command);
+    clipboard.writeText(packet.command);
     transition.task.result = normalizeTaskResult(transition.task, { executionId, status: 'manual_required', artifacts: [] }, null, { summary: '任务已降级为人工执行。' });
     transition.task.result.packet = packet;
-    writeTaskStore(store);
+    await savePreparedTaskResult(transition.task);
     appendTaskEvent(task.id, 'manual_packet_exported', { executionId, packet }, executionId);
-    return { ok: true, task: transition.task, packet, command, fallback: true, message: `${reason || '任务已转为人工执行。'}任务指令已复制，并导出人工任务包。` };
+    return { ok: true, task: transition.task, packet, command: packet.command, fallback: true, message: `${reason || '任务已转为人工执行。'}任务指令已复制，并导出人工任务包。` };
   }
   return transition;
 }
 
-function submitInternalTask(task) {
+async function submitAgentHandoffTask(task, command, agentId) {
+  const capability = aiExecutorRegistry().find(p => p.id === agentId && p.handoff);
+  if (!capability) return { ok: false, message: '未找到该 Agent 的任务交接通道。' };
+  const global = agentControlStore().read().global;
+  if (global && (!global.enabled || global.disabledProviders.includes(agentId))) return { ok: false, code: 'AGENT_SCOPE_DENIED', message: '全局授权或所选执行器已停用。' };
+  if (task.sourceType === 'student') {
+    const sourceStudent = findStudentByKey(String(task.sourceId));
+    if (!sourceStudent || sourceStudent.archived || sourceStudent.status === 'archived') return { ok: false, code: 'AGENT_SCOPE_DENIED', message: '学生范围已失效，未发送资料。' };
+  }
+  if (task.sourceType === 'project' && mutableProject(task.sourceId, '手工交接任务').error) return { ok: false, code: 'AGENT_SCOPE_DENIED', message: '项目范围已封存或不可访问。' };
+  const store = readTaskStore();
+  const executionId = `${agentId}-${Date.now()}-${crypto.randomBytes(4).toString('hex')}`;
+  const transition = transitionTaskInStore(store, task.id, 'waiting_result', {
+    executionId, adapterId: agentId, executor: agentId, executionMode: 'agent_handoff',
+    attempt: task.attempt + 1, startedAt: taskNow(), lastHeartbeatAt: taskNow(),
+    resultTimeoutSeconds: 0, autoRetry: false, nextRetryAt: '', result: null,
+  }, 'agent_handoff_prepared');
+  if (!transition.ok) return transition;
+  await writeTaskStoreDurably(store);
+  assertTaskDispatchCurrent(task.id, executionId);
+  const packet = writeTaskPacket(transition.task, agentTaskInboxPath(agentId), command);
+  clipboard.writeText(packet.command);
+  transition.task.result = normalizeTaskResult(transition.task, { executionId, status: 'waiting_result', artifacts: [] }, null,
+    { summary: `已为 ${capability.label} 准备任务包，等待发送及结果回写。` });
+  transition.task.result.packet = packet;
+  await savePreparedTaskResult(transition.task);
+  appendTaskEvent(task.id, 'agent_handoff_exported', { agentId, packet }, executionId);
+  return { ok: true, task: transition.task, packet, command: packet.command,
+    message: `已复制 ${capability.label} 任务指令，请粘贴到该 Agent 执行；结果回写后自动校验，也可导入返回的结果。` };
+}
+
+async function submitInternalTask(task) {
   const store = readTaskStore();
   const executionId = `internal-${Date.now()}-${crypto.randomBytes(4).toString('hex')}`;
   const transition = transitionTaskInStore(store, task.id, 'running', { executionId, adapterId: 'internal', executor: 'internal', executionMode: 'internal', attempt: task.attempt + 1, startedAt: taskNow(), lastHeartbeatAt: taskNow(), error: null }, 'internal_operation_started');
   if (!transition.ok) return transition;
-  writeTaskStore(store);
+  (await writeTaskStoreDurably(store));
   const context = { taskId: task.id, executionId };
+  assertTaskDispatchCurrent(task.id, executionId);
   let operation;
   if (task.input?.operation === 'execute_archive_plan') operation = performProjectPromotionPlan(task.sourceId, JSON.stringify(task.input?.plan || {}), context);
   else if (task.input?.operation === 'publish_growth_evidence') operation = performPublishProjectPromotion(task.sourceId, context);
   else if (task.input?.operation === 'rollback_promotion') operation = performRollbackProjectPromotionRun(task.sourceId, task.input?.runId, context);
+  else if (task.input?.operation === 'topic_suggestion_refresh' && task.kind === 'topic_suggestion_refresh'
+    && task.sourceType === 'student' && String(task.input?.studentId) === String(task.sourceId)) {
+    // The internal adapter performs a local evidence-based refresh, not a hidden
+    // model call that bypasses the shared Agent queue or user's executor choice.
+    operation = JSON.stringify(planningGuidanceService().refreshTopicSuggestions(task.sourceId));
+  }
   else operation = JSON.stringify({ ok: false, message: `未知内部操作：${task.input?.operation || '-'}` });
-  const finish = (serialized) => {
+  const finish = async (serialized) => {
   const operationResult = JSON.parse(serialized);
   const nextStore = readTaskStore();
   const current = nextStore.tasks.find((item) => item.id === task.id);
@@ -23302,13 +25009,17 @@ function submitInternalTask(task) {
   ].filter(Boolean))];
   const artifacts = changedPaths.map((file) => ({ path: file, exists: fs.existsSync(file), size: fs.existsSync(file) && fs.statSync(file).isFile() ? fs.statSync(file).size : 0, modifiedAt: fs.existsSync(file) ? fs.statSync(file).mtime.toISOString() : '' }));
   const validation = { valid: Boolean(operationResult.ok), artifacts, checkedAt: taskNow(), message: operationResult.message || (operationResult.ok ? '内部操作校验通过。' : '内部操作失败。') };
-  const result = normalizeTaskResult(current || transition.task, { status: operationResult.ok ? 'reviewing' : 'failed', structuredOutput: operationResult, artifacts, fileChanges: changedPaths.map((file) => ({ path: file, operation: 'created_or_updated' })) }, validation, { adapterId: 'internal', executionId, summary: operationResult.message });
-  const nextStatus = operationResult.ok ? 'reviewing' : 'failed';
+  const nextStatus = operationResult.ok ? task.kind === 'topic_suggestion_refresh' ? 'succeeded' : 'reviewing' : 'failed';
+  const result = normalizeTaskResult(current || transition.task, { status: nextStatus, structuredOutput: operationResult, artifacts, fileChanges: changedPaths.map((file) => ({ path: file, operation: 'created_or_updated' })) }, validation, { adapterId: 'internal', executionId, summary: operationResult.message });
+  if (nextStatus === 'succeeded') {
+    const checked = transitionTaskInStore(nextStore, task.id, 'reviewing', { result }, 'local_topic_validated');
+    if (!checked.ok) return checked;
+  }
   const completed = transitionTaskInStore(nextStore, task.id, nextStatus, { result, lastHeartbeatAt: taskNow(), error: operationResult.ok ? null : { code: 'INTERNAL_OPERATION_FAILED', message: operationResult.message || '内部操作失败。' } }, 'internal_operation_completed');
-  writeTaskStore(nextStore);
+  (await writeTaskStoreDurably(nextStore));
   if (operationResult.ok && operationResult.transactionId) void projectArchiveStartupManager().complete(operationResult.transactionId).catch(() => {});
   notify('onNativeTaskCenterChanged', JSON.stringify({ taskId: task.id, status: nextStatus }));
-  return { ...completed, message: operationResult.ok ? '内部操作已执行，等待结果审核。' : operationResult.message };
+  return { ...completed, message: nextStatus === 'succeeded' ? `${operationResult.message} 仅更新待选建议，未形成正式成长结论。` : operationResult.ok ? '内部操作已执行，等待结果审核。' : operationResult.message };
   };
   if (operation && typeof operation.then === 'function') {
     const heartbeatTimer = setInterval(() => heartbeatTask(task.id, executionId, '固定归档来源版本', false), 5000);
@@ -23324,6 +25035,7 @@ function submitInternalTask(task) {
       if (taskChildProcesses.get(task.id) === running) taskChildProcesses.delete(task.id);
       notify('onNativeTaskCenterChanged', JSON.stringify({ taskId: task.id }));
     });
+    void running.completion.catch(error => console.warn('Internal result retained; settlement paused:', error.message));
     return { ok: true, task: transition.task, message: '正在校验并固定归档来源版本；完成后进入结果审核。' };
   }
   return finish(operation);
@@ -23331,23 +25043,50 @@ function submitInternalTask(task) {
 
 function getAgentExecutionAdapters() {
   const common = { status: adapterTaskStatus, readResult: adapterTaskResult };
-  return {
+  const adapters = {
+    ...Object.fromEntries(Object.keys(handoffAgentCapabilities()).map((id) => [id, {
+      ...common, id, capabilities: () => adapterCapabilities()[id],
+      submit: (task, command) => submitAgentHandoffTask(task, command, id),
+      cancel: () => ({ ok: true }), health: () => adapterCapabilities()[id],
+    }])),
     internal: { ...common, id: 'internal', capabilities: () => adapterCapabilities().internal, submit: (task, command) => submitInternalTask(task, command), cancel: () => ({ ok: false, message: '内部同步操作不可中途取消。' }), health: () => adapterCapabilities().internal },
     openclaw: { ...common, id: 'openclaw', capabilities: () => adapterCapabilities().openclaw, submit: (task, command) => submitOpenClawTask(task, command), cancel: (task) => cancelRunningAdapterTask(task.id), health: () => adapterCapabilities(true).openclaw },
     codex: { ...common, id: 'codex', capabilities: () => adapterCapabilities().codex, submit: (task, command) => submitCodexTask(task, command), cancel: (task) => cancelRunningAdapterTask(task.id), health: () => adapterCapabilities(true).codex },
     workbuddy: { ...common, id: 'workbuddy', capabilities: () => adapterCapabilities().workbuddy, submit: (task, command) => submitWorkBuddyTask(task, command), cancel: (task) => cancelRunningAdapterTask(task.id), health: () => adapterCapabilities(true).workbuddy },
+    trae: { ...common, id: 'trae', capabilities: () => adapterCapabilities().trae, submit: (task, command) => submitModernAgentTask(task, command, 'trae'), cancel: (task) => cancelRunningAdapterTask(task.id), health: () => adapterCapabilities(true).trae },
+    'qoder-work': { ...common, id: 'qoder-work', capabilities: () => adapterCapabilities()['qoder-work'], submit: (task, command) => submitModernAgentTask(task, command, 'qoder-work'), cancel: (task) => cancelRunningAdapterTask(task.id), health: () => adapterCapabilities(true)['qoder-work'] },
     qclaw: { ...common, id: 'qclaw', capabilities: () => adapterCapabilities().qclaw, submit: (task, command) => submitQClawTask(task, command), cancel: () => ({ ok: false, message: 'QClaw 收件箱任务需要在 QClaw 侧停止。' }), health: () => adapterCapabilities(true).qclaw },
     manual: { ...common, id: 'manual', capabilities: () => adapterCapabilities().manual, submit: (task, command, context = {}) => submitManualTask(task, command, context.reason), cancel: () => ({ ok: true }), health: () => adapterCapabilities().manual },
   };
+  for (const executor of aiExecutorRegistry()) {
+    if (adapters[executor.id]) continue;
+    adapters[executor.id] = { ...common, id: executor.id, capabilities: () => adapterCapabilities()[executor.id],
+      submit: (task, command) => executor.handoff ? submitAgentHandoffTask(task, command, executor.id)
+        : { ok: false, code: 'UNSUPPORTED_TASK_CONTRACT', message: '此通道仅支持中心列出的结构化任务，请使用对应任务入口。' },
+      cancel: task => cancelRunningAdapterTask(task.id), health: () => adapterCapabilities()[executor.id] };
+  }
+  return adapters;
 }
 
 function cancelRunningAdapterTask(taskId) {
   const running = taskChildProcesses.get(String(taskId));
   if (!running?.child || running.child.killed) return { ok: false, message: '没有正在运行的进程。' };
   clearTaskProcessHeartbeat(taskId);
+  running.child.once?.('close', () => {
+    try {
+      const store = readTaskStore();
+      const task = store.tasks.find(item => item.id === String(taskId));
+      if (task?.executionId === running.executionId && task.recoveryState === 'unknown' && task.status === 'cancelled') {
+        // A launcher exiting does not prove its children or remote job stopped.
+        task.error = { code: 'CANCEL_STOP_UNCONFIRMED', message: '本机启动进程已退出；请核对原工具是否仍有子进程或远端任务。已取消结果不会自动入库。' };
+        writeTaskStore(store);
+        notify('onNativeTaskCenterChanged', JSON.stringify({ taskId }));
+      }
+    } catch (error) { console.error('取消状态保存失败', error.message); }
+    if (taskChildProcesses.get(String(taskId)) === running) taskChildProcesses.delete(String(taskId));
+  });
   running.child.kill();
-  taskChildProcesses.delete(String(taskId));
-  return { ok: true };
+  return { ok: true, stopConfirmed: false, message: '已请求停止，等待进程退出确认。' };
 }
 
 function adapterTaskStatus(task) {
@@ -23375,51 +25114,175 @@ function attachDigestBatchToTask(taskId, batch, manifestPath, receiptPath) {
   return store.tasks[index];
 }
 
-function submitCompetitionResearchTask(task) {
+function submitCompetitionResearchTask(task) { return submitResearchTask(task, 'competition'); }
+function submitGuidanceResearchTask(task) { return submitResearchTask(task, 'guidance'); }
+
+async function submitResearchTask(task, type) {
+  const capability = planningGuidanceService().getResearchCapabilityStatus();
+  if (!capability.available) {
+    const blockedStore = readTaskStore();
+    const blocked = transitionTaskInStore(blockedStore, task.id, 'blocked', {
+      error: { code: 'RESEARCH_CAPABILITY_UNAVAILABLE', message: capability.message }, nextRetryAt: '',
+    }, 'research_capability_blocked');
+    if (blocked.ok) (await writeTaskStoreDurably(blockedStore));
+    return { ...blocked, ok: false, blocked: true, message: capability.message };
+  }
+  const existing = [...taskChildProcesses.values()].find(run => run.researchType === type && run.studentId === task.sourceId);
+  if (existing) return { ok: true, task: readTaskStore().tasks.find(t => t.id === existing.taskId), message: '已复用当前学生的研究任务。' };
   const controller = new AbortController();
-  const executionId = `competition-${crypto.randomUUID()}`;
+  const executionId = `research-${crypto.randomUUID()}`;
   const store = readTaskStore();
-  const started = transitionTaskInStore(store, task.id, 'running', { executionId, adapterId: 'internal', executor: 'internal', executionMode: 'internal', attempt: Number(task.attempt || 0) + 1, startedAt: taskNow(), lastHeartbeatAt: taskNow(), error: null }, 'competition_research_started');
-  if (!started.ok) return started;
-  writeTaskStore(store);
-  const heartbeatTimer = setInterval(() => heartbeatTask(task.id, executionId, '比赛官方来源研究', false), 5000);
-  heartbeatTimer.unref?.();
-  const running = { executionId, adapterId: 'internal', heartbeatTimer, child: { killed: false, kill() { this.killed = true; controller.abort(); return true; } }, completion: null };
-  taskChildProcesses.set(task.id, running);
-  running.completion = planningGuidanceService().refreshCompetitionRecommendations(task.sourceId, { signal: controller.signal, trigger: task.trigger || 'schedule' }).then(output => {
-    const currentStore = readTaskStore(), current = currentStore.tasks.find(item => item.id === task.id);
-    if (!current || current.executionId !== executionId || current.status !== 'running') return;
-    const validation = { valid: Boolean(output.ok), checkedAt: taskNow(), message: output.message, artifacts: [] };
-    const result = normalizeTaskResult(current, { structuredOutput: { receipt: output.receipt, versionId: output.current?.id }, artifacts: [], fileChanges: [] }, validation, { adapterId: 'internal', executionId, summary: output.message });
-    transitionTaskInStore(currentStore, task.id, output.ok ? 'succeeded' : 'failed', { result, lastHeartbeatAt: taskNow(), error: output.ok ? null : { code: 'COMPETITION_RESEARCH_FAILED', message: output.message } }, 'competition_research_completed');
-    writeTaskStore(currentStore);
-  }).catch(error => {
-    const currentStore = readTaskStore(), current = currentStore.tasks.find(item => item.id === task.id);
-    if (current?.executionId === executionId && current.status === 'running') {
-      transitionTaskInStore(currentStore, task.id, 'failed', { error: { code: 'COMPETITION_RESEARCH_FAILED', message: error.message } }, 'competition_research_failed'); writeTaskStore(currentStore);
+  const tasks = type === 'guidance'
+    ? store.tasks.filter(t => t.sourceId === task.sourceId && ['guidance_research_check', 'guidance_plan_refresh'].includes(t.kind)
+      && (t.id === task.id || ['pending', 'queued', 'approved', 'blocked'].includes(t.status)
+        || (t.status === 'failed' && t.executionId === task.executionId)))
+    : [store.tasks.find(t => t.id === task.id)];
+  const startedIds = [];
+  for (const current of tasks) {
+    if (!current || ['cancelled', 'running', 'waiting_result'].includes(current.status)) continue;
+    if (!['approved', 'queued'].includes(current.status)) {
+      const prepared = transitionTaskInStore(store, current.id, 'approved', {}, 'research_task_prepared');
+      if (!prepared.ok) return prepared;
     }
-  }).finally(() => { clearInterval(heartbeatTimer); if (taskChildProcesses.get(task.id) === running) taskChildProcesses.delete(task.id); notify('onNativeTaskCenterChanged', JSON.stringify({ taskId: task.id })); });
-  return { ok: true, task: started.task, message: '正在异步研究比赛官方来源；可在任务中心取消。' };
+    const started = transitionTaskInStore(store, current.id, 'running', {
+      executionId, adapterId: 'internal', executor: 'internal', executionMode: 'internal',
+      attempt: Number(current.attempt || 0) + 1, startedAt: taskNow(), lastHeartbeatAt: taskNow(),
+      automaticExecution: task.automaticExecution, error: null, result: null, autoRetry: false, nextRetryAt: '',
+    }, `${type}_research_started`);
+    if (!started.ok) return started;
+    startedIds.push(current.id);
+  }
+  if (!startedIds.includes(task.id)) return { ok: false, message: '当前研究任务不能启动。' };
+  (await writeTaskStoreDurably(store));
+  const heartbeatTimer = setInterval(() => startedIds.forEach(id => heartbeatTask(id, executionId, '官方来源研究', false)), 5000);
+  heartbeatTimer.unref?.();
+  const running = { executionId, adapterId: 'internal', heartbeatTimer, researchType: type, studentId: task.sourceId, taskId: task.id,
+    child: { killed: false, kill() { this.killed = true; controller.abort(); return true; } }, completion: null };
+  startedIds.forEach(id => taskChildProcesses.set(id, running));
+  const context = { signal: controller.signal, trigger: task.trigger || 'schedule',
+    executionContext: { taskId: task.id, executionId, researchRunId: executionId } };
+  running.completion = Promise.resolve().then(() => type === 'competition'
+    ? planningGuidanceService().refreshCompetitionRecommendations(task.sourceId, context)
+    : planningGuidanceService().refreshGuidancePlan(task.sourceId, context)).then(async output => {
+    if (controller.signal.aborted) throw Object.assign(new Error('研究已取消。'), { code: 'RESEARCH_CANCELLED' });
+    const identityMatches = output.receipt?.taskId === task.id && output.receipt?.executionId === executionId;
+    if (!identityMatches) output = { ...output, ok: false, message: '研究回执与当前执行批次不匹配。' };
+    const currentStore = readTaskStore();
+    for (const id of startedIds) {
+      const current = currentStore.tasks.find(item => item.id === id);
+      if (!current || current.executionId !== executionId || current.status !== 'running') continue;
+      const receipt = output.receipt && { ...output.receipt, taskId: id };
+      const validation = { ...researchResultValidation(current, { ...output, receipt }), checkedAt: taskNow() };
+      const result = normalizeTaskResult(current, { structuredOutput: { receipt, versionId: output.current?.id }, artifacts: [], fileChanges: [] },
+        validation, { adapterId: 'internal', executionId, summary: output.message });
+      const committed = commitValidatedTaskResult(currentStore, current, result, validation, {
+        successful: validation.valid, event: `${type}_research_completed`, autoSummary: output.message,
+        error: { code: output.receipt?.code || 'RESEARCH_RESULT_INVALID', message: output.message },
+      });
+      if (!committed.ok) throw new Error(`研究任务收尾失败：${committed.message}`);
+      Object.assign(committed.task, validation.valid ? { autoRetry: false, nextRetryAt: '' }
+        : researchRetryPatch(current, output.receipt));
+    }
+    (await writeTaskStoreDurably(currentStore));
+    return output;
+  }).catch(async error => {
+    const currentStore = readTaskStore();
+    for (const id of startedIds) {
+      const current = currentStore.tasks.find(item => item.id === id);
+      if (current?.executionId !== executionId || !['running', 'reviewing'].includes(current.status)) continue;
+      const failed = transitionTaskInStore(currentStore, id, controller.signal.aborted ? 'cancelled' : 'failed', {
+        error: { code: error.code || 'RESEARCH_EXECUTION_FAILED', message: error.message },
+        ...researchRetryPatch(current, error),
+      }, `${type}_research_failed`);
+      if (!failed.ok) appendTaskEvent(id, 'research_settlement_rejected', { message: failed.message }, executionId);
+    }
+    (await writeTaskStoreDurably(currentStore));
+    return { ok: false, message: error.message };
+  }).finally(() => {
+    clearInterval(heartbeatTimer);
+    for (const id of startedIds) if (taskChildProcesses.get(id) === running) taskChildProcesses.delete(id);
+    notify('onNativeTaskCenterChanged', JSON.stringify({ taskId: task.id }));
+  });
+  void running.completion.catch(error => console.warn('Research result retained; settlement paused:', error.message));
+  return { ok: true, task: store.tasks.find(t => t.id === task.id), message: '正在异步核验官方来源；结果通过校验后自动完成。' };
 }
 
-function executeTaskByAdapter(taskId, requestedExecutor = '') {
+async function refreshGuidanceThroughTask(studentId, request = {}) {
+  await refreshAdapterCapabilities(true);
+  upsertTaskCandidates(buildTaskCenterCandidates(), { reconcileInactiveStudents: true });
+  const taskId = taskStableId('guidance_research_check', 'student', studentId);
+  const active = taskChildProcesses.get(taskId);
+  if (active) return await active.completion;
+  const student = findStudentByKey(studentId);
+  if (!student) return { ok: false, message: '未找到学生。' };
+  const store = readTaskStore();
+  let task = store.tasks.find(t => t.id === taskId);
+  if (!task) {
+    task = normalizeTaskEnvelope({ id: taskId, kind: 'guidance_research_check', title: `${student.name}规划来源检查`,
+      sourceType: 'student', sourceId: String(studentId), status: 'pending', executor: 'internal', trigger: 'manual',
+      input: { studentId: String(studentId) }, permissions: { read: [studentAiManagerDir(student)],
+        write: [path.join(studentAiManagerDir(student), 'planning-guidance')], operations: ['read_planning_evidence', 'write_planning_suggestions'] } });
+    store.tasks.push(task);
+  } else if (['succeeded', 'failed', 'cancelled', 'timed_out', 'blocked'].includes(task.status)) {
+    const prepared = transitionTaskInStore(store, taskId, 'pending', { attempt: 0, error: null, autoRetry: false, nextRetryAt: '' }, 'research_manual_refresh');
+    if (!prepared.ok) return prepared;
+  }
+  const manualTask = store.tasks.find(t => t.id === taskId);
+  manualTask.trigger = 'manual';
+  manualTask.automaticExecution = false;
+  writeTaskStore(store);
+  const submitted = JSON.parse(executeTaskByAdapter(taskId, 'internal'));
+  if (!submitted.ok) return submitted;
+  const running = taskChildProcesses.get(taskId);
+  return running ? await running.completion : submitted;
+}
+
+const taskDispatchPending = new Map();
+function executeTaskByAdapter(taskId, requestedExecutor = '', executionOptions = {}) {
+  const id = String(taskId);
+  if (taskDispatchPending.has(id)) return JSON.stringify({ ok: true, queued: true, taskId: id, message: '本次启动正在保存和检查，请稍候。' });
+  const work = projectArchiveRuntime.track(() => Promise.resolve().then(() => executeTaskByAdapterCore(id, requestedExecutor, executionOptions)));
+  taskDispatchPending.set(id, work);
+  void work.then(result => {
+    notify('onNativeTaskCenterChanged', JSON.stringify({ taskId: id, dispatchResult: JSON.parse(result) }));
+  }).catch(error => console.warn('Task dispatch paused:', error.message)).finally(() => taskDispatchPending.delete(id));
+  return JSON.stringify({ ok: true, queued: true, taskId: id, message: '已登记启动请求；执行批次保存成功后开始处理。' });
+}
+
+async function executeTaskByAdapterCore(taskId, requestedExecutor = '', executionOptions = {}) {
   try {
+    if (!taskPowerRecovery.canDispatch()) return JSON.stringify({ ok: false, code: 'POWER_RECONCILING', message: '电脑恢复后正在核对结果，资料已保留，核对完成后继续。' });
     projectArchiveRuntime.assertAccess();
     const store = readTaskStore();
     const task = store.tasks.find((item) => String(item.id) === String(taskId));
     if (!task) return JSON.stringify({ ok: false, message: '未找到任务。' });
+    const globalPolicy = agentControlStore().read().global;
+    if (globalPolicy && !globalPolicy.enabled && task.kind !== 'project_archive') return JSON.stringify({ ok: false, code: 'AGENT_SCOPE_DENIED', message: 'AI 接入与调度中心已全局停用。' });
+    if (executionOptions.automatic && automaticStudentTaskBlocked(task,findStudentByKey(task.sourceId))) return JSON.stringify({ok:true,skipped:true,reason:'student_automation_paused',message:'该学生已暂停周期自动任务；仍可手动执行。'});
+    if (task.recoveryState === 'unknown') return JSON.stringify({ ok: false, code: 'EXECUTION_UNRESOLVED', message: '上次外部执行尚未确认停止；请先核对，不能重复派发同一批资料。' });
+    const unresolved = store.tasks.find(item => item.id !== task.id && item.recoveryState === 'unknown'
+      && item.sourceType === task.sourceType && item.sourceId === task.sourceId);
+    if (unresolved) return JSON.stringify({ ok: false, code: 'SOURCE_EXECUTION_UNRESOLVED', message: `同一资料范围还有“${unresolved.title}”需要核对外部执行状态；其他学生任务不受影响。` });
+    task.automaticExecution = executionOptions.automatic===true;
     const permissionCheck = validateTaskPermissionDeclaration(task);
     if (!permissionCheck.ok) return JSON.stringify({ ok: false, blocked: true, message: permissionCheck.message });
     if (['running', 'waiting_result'].includes(task.status)) return JSON.stringify({ ok: false, message: '任务已经在执行或等待结果。' });
     if (taskRequiresApproval(task) && task.approval?.status !== 'approved') return JSON.stringify({ ok: false, approvalRequired: true, message: '该任务属于高风险操作，必须先审批。' });
     if (['draft', 'pending', 'failed', 'blocked', 'timed_out', 'cancelled'].includes(task.status)) {
       const approvalStatus = taskRequiresApproval(task) ? task.approval?.status : 'not_required';
-      const transition = transitionTaskInStore(store, task.id, 'approved', { approval: { ...(task.approval || {}), required: taskRequiresApproval(task), status: approvalStatus } }, 'task_prepared');
+      const transition = transitionTaskInStore(store, task.id, 'approved', { routeAttempts: [], approval: { ...(task.approval || {}), required: taskRequiresApproval(task), status: approvalStatus } }, 'task_prepared');
       if (!transition.ok) return JSON.stringify(transition);
-      writeTaskStore(store);
     }
+    (await writeTaskStoreDurably(store));
     let refreshed = readTaskStore().tasks.find((item) => item.id === task.id);
-    if (refreshed.kind === 'competition_research_check') return JSON.stringify(submitCompetitionResearchTask(refreshed));
+    if (refreshed.kind === 'practice_attempt_review') return JSON.stringify(await getPracticeTaskHost().submit(refreshed));
+    if (refreshed.kind === 'competition_research_check') return JSON.stringify((await submitCompetitionResearchTask(refreshed)));
+    if (['guidance_research_check', 'guidance_plan_refresh'].includes(refreshed.kind)) return JSON.stringify((await submitGuidanceResearchTask(refreshed)));
+    const explicitHandoff = aiExecutorRegistry().find(p => p.id === requestedExecutor && p.handoff && !p.automaticProfiles.length);
+    if (explicitHandoff) {
+      if (globalPolicy?.disabledProviders.includes(explicitHandoff.id)) return JSON.stringify({ ok: false, code: 'AGENT_SCOPE_DENIED', message: '执行器已停用' });
+      return JSON.stringify(await submitAgentHandoffTask(refreshed, taskCommandFor(refreshed), explicitHandoff.id));
+    }
     if (refreshed.kind === 'student_digest') {
       const student = readStudentsIndex().map(toHostStudent).find((item) => String(item.id) === refreshed.sourceId);
       if (!student) return JSON.stringify({ ok: false, message: '未找到学生档案。' });
@@ -23436,7 +25299,7 @@ function executeTaskByAdapter(taskId, requestedExecutor = '') {
               result: null,
             }, 'digest_preflight_blocked');
             if (blocked.ok) {
-              writeTaskStore(blockedStore);
+              (await writeTaskStoreDurably(blockedStore));
               notify('onNativeTaskCenterChanged', JSON.stringify({ taskId: refreshed.id, status: 'blocked' }));
               return JSON.stringify({ ...registered, blocked: true, task: blocked.task });
             }
@@ -23446,11 +25309,18 @@ function executeTaskByAdapter(taskId, requestedExecutor = '') {
         batch = registered.batch;
       }
       refreshed = attachDigestBatchToTask(refreshed.id, batch, studentDigestBatchPath(student), studentDigestReceiptPath(student)) || refreshed;
+      const selected = String(requestedExecutor || 'auto');
+      if (providerSupportsProfile(String(student.agentTool || ''), DIGEST_PROFILE) || agentControlPolicy(student, DIGEST_PROFILE).version > 0) {
+        const controlledProject = studentControlledProject(student, path.join(studentManagerDir(student), 'controlled-materials'));
+        const host = createProjectMaterialHost(controlledProject);
+        await registerStudentControlledBatch(host, batch, student.id);
+        return JSON.stringify(await submitProjectMaterialTask(refreshed, controlledProject, selected, { student, batch }));
+      }
     }
     if (refreshed.kind === 'project_digest') {
       const project = readProjects().map(normalizeProject).find((item) => String(item.id) === refreshed.sourceId);
       if (project) {
-        if (isWorkspaceMaterialProject(project)) return JSON.stringify(submitProjectMaterialTask(refreshed, project, requestedExecutor));
+        if (isWorkspaceMaterialProject(project)) return JSON.stringify((await submitProjectMaterialTask(refreshed, project, requestedExecutor)));
         const ensured = ensureProjectWorkspace(project);
         const currentDigest = readProjectDigestState(ensured);
         if (currentDigest.pendingCount > 0 && !['submitted', 'digesting'].includes(currentDigest.status)) {
@@ -23469,7 +25339,7 @@ function executeTaskByAdapter(taskId, requestedExecutor = '') {
       const confirmStore = readTaskStore();
       const confirmTask = confirmStore.tasks.find((item) => item.id === refreshed.id);
       Object.assign(confirmTask, { routeDecision, routingMode: 'confirm', updatedAt: taskNow() });
-      writeTaskStore(confirmStore);
+      (await writeTaskStoreDurably(confirmStore));
       return JSON.stringify({ ok: true, confirmationRequired: true, task: confirmTask, routeDecision, message: `${routeDecision.reason}请在执行器下拉框中确认具体执行器。` });
     }
     const adapterId = routeDecision.selectedAdapter;
@@ -23477,16 +25347,58 @@ function executeTaskByAdapter(taskId, requestedExecutor = '') {
     const nextStore = readTaskStore();
     const taskIndex = nextStore.tasks.findIndex((item) => item.id === refreshed.id);
     nextStore.tasks[taskIndex] = normalizeTaskEnvelope({ ...refreshed, routeDecision, routingMode: routeDecision.mode, adapterId, executor: adapterId, executionMode: adapterId === 'internal' ? 'internal' : adapterId === 'manual' ? 'manual' : adapterId === 'qclaw' ? 'inbox' : 'automatic', routeAttempts: [...new Set([...(refreshed.routeAttempts || []), adapterId])] }, refreshed);
-    writeTaskStore(nextStore);
+    (await writeTaskStoreDurably(nextStore));
     const routedTask = readTaskStore().tasks.find((item) => item.id === refreshed.id);
+    const registered = aiExecutorRegistry().find(p => p.id === adapterId);
+    if (registered?.handoff && !registered.automaticProfiles.length) return JSON.stringify(await submitAgentHandoffTask(routedTask, command, adapterId));
     const adapter = getAgentExecutionAdapters()[adapterId] || getAgentExecutionAdapters().manual;
     const capability = adapter.capabilities();
     const selectedAdapter = capability.available && capability.authorized ? adapter : getAgentExecutionAdapters().manual;
-    const result = selectedAdapter.submit(routedTask, command, { reason: selectedAdapter.id === adapterId ? routeDecision.reason : `${routeDecision.reason}所选适配器当前不可用，已降级。` });
+    const result = await selectedAdapter.submit(routedTask, command, { reason: selectedAdapter.id === adapterId ? routeDecision.reason : `${routeDecision.reason}所选适配器当前不可用，已降级。` });
+    await taskStoreGuard.flush();
     return JSON.stringify(result);
   } catch (error) {
     return JSON.stringify({ ok: false, message: `执行任务失败：${error.message}` });
   }
+}
+
+let taskCircuitProbeRunning = false;
+async function checkTaskExecutorCircuits() {
+  if (taskCircuitProbeRunning || !taskPowerRecovery.canDispatch() || !taskAutomationEnabled()
+    || !publicLicenseStatus().active || taskStoreGuard.status() || taskChildProcesses.size || taskDispatchPending.size
+    || captureHeavyWorkGate.state().length) return;
+  const circuits = readTaskStore().runtime?.circuits || {};
+  // No capability discovery on page reads, and no probing all fallback tools.
+  const entry = Object.entries(circuits).find(([id, state]) => ['codex', 'workbuddy'].includes(id)
+    && (circuitDecision(state).probeDue || (state.phase === 'half_open' && Date.now() - Date.parse(state.updatedAt || '') > 30000))
+    && adapterCapabilityCache.value?.[id]?.authorized);
+  if (!entry) return;
+  const [id] = entry;
+  const release = captureHeavyWorkGate.tryAcquire({ kind: 'agent_probe', studentId: '', sessionId: `circuit-${id}`, snapshot: captureTimelineResourceSnapshot() });
+  if (!release) return;
+  taskCircuitProbeRunning = true;
+  try {
+    const store = readTaskStore(); store.runtime.circuits[id] = { ...store.runtime.circuits[id], phase: 'half_open', updatedAt: taskNow() };
+    await writeTaskStoreDurably(store);
+    let passed = false;
+    if (id === 'codex') passed = (await require('./task-circuit-probe.cjs').probeControlledCodex(adapterCapabilityCache.value.codex.exePath)).passed;
+    else {
+      const runtime = discoverWorkBuddyRuntime(adapterCapabilityCache.value.workbuddy.exePath, { findExecutable: findExecutableInPath, hostNodePath: process.execPath });
+      if (runtime.cliPath) runtime.version = String(fs.statSync(runtime.cliPath).mtimeMs);
+      const authorized = await workBuddyProbeCache.detect(runtime, { force: true });
+      const qualification = authorized.authorized
+        ? await workBuddyQualification.check(runtime, { force: true })
+        : { ready: false, message: authorized.message };
+      passed = authorized.authorized && qualification.ready;
+      await persistWorkBuddyControlledStatus(runtime, authorized, qualification);
+      if (!authorized.authorized && authorized.authRequired) {
+        return;
+      }
+    }
+    const latest = readTaskStore(); latest.runtime.circuits[id] = completeCircuitProbe(latest.runtime.circuits[id], passed);
+    await writeTaskStoreDurably(latest);
+  } catch (error) { console.warn('Circuit health check paused:', error.message); }
+  finally { taskCircuitProbeRunning = false; release(); }
 }
 
 async function executeTaskByAdapterWithFreshCapabilities(taskId, requestedExecutor = '') {
@@ -23497,7 +25409,8 @@ async function executeTaskByAdapterWithFreshCapabilities(taskId, requestedExecut
     automationEnabled: taskAutomationEnabled(),
     requestedExecutor: explicitExecutor,
   });
-  return executeTaskByAdapter(taskId, requestedExecutor);
+  executeTaskByAdapter(taskId, requestedExecutor);
+  return taskDispatchPending.get(String(taskId));
 }
 
 function approveTask(taskId, decision, note = '') {
@@ -23547,7 +25460,8 @@ function retryTask(taskId) {
     const task = store.tasks.find((item) => item.id === String(taskId));
     if (!task) return JSON.stringify({ ok: false, message: '未找到任务。' });
     if (!['failed', 'blocked', 'timed_out', 'cancelled'].includes(task.status)) return JSON.stringify({ ok: false, message: '只有失败、阻塞、超时或已取消任务可以重试。' });
-    const transition = transitionTaskInStore(store, task.id, 'pending', { error: null, result: null, executionId: '', adapterId: '', routeAttempts: [], nextRetryAt: '', completedAt: '', attempt: 0, autoRetry: false }, 'task_retried');
+    if (task.recoveryState === 'unknown') return JSON.stringify({ ok: false, code: 'EXECUTION_UNRESOLVED', message: '上次执行状态不明。请先核对原工具；当前批次编号和结果保持不变。' });
+    const transition = transitionTaskInStore(store, task.id, 'pending', { error: null, result: null, executionId: '', adapterId: '', routeAttempts: [], nextRetryAt: '', retryRecovery: null, completedAt: '', attempt: 0, autoRetry: false }, 'task_retried');
     writeTaskStore(store);
     return JSON.stringify({ ...transition, message: '任务已重置为待处理；本次只在用户点击后执行，不会后台连环重试。' });
   } catch (error) {
@@ -23555,7 +25469,7 @@ function retryTask(taskId) {
   }
 }
 
-function cancelTask(taskId, note = '') {
+async function cancelTask(taskId, note = '') {
   try {
     const materialRun = taskChildProcesses.get(String(taskId));
     if (materialRun?.materialRuntime && !materialRun.materialRuntime.canCancel) {
@@ -23564,54 +25478,224 @@ function cancelTask(taskId, note = '') {
     const store = readTaskStore();
     const task = store.tasks.find((item) => item.id === String(taskId));
     const adapter = task ? getAgentExecutionAdapters()[task.adapterId] : null;
-    if (adapter?.cancel) adapter.cancel(task);
-    const transition = transitionTaskInStore(store, String(taskId), 'cancelled', { error: { code: 'CANCELLED', message: String(note || '用户取消任务。') } }, 'task_cancelled');
+    const uncertain = task?.executionId && !String(task.executionId).startsWith('handoff-select-') && ['running', 'waiting_result'].includes(task.status);
+    const transition = transitionTaskInStore(store, String(taskId), 'cancelled', {
+      recoveryState: uncertain ? 'unknown' : task?.recoveryState || '',
+      error: { code: uncertain ? 'CANCEL_STOP_UNCONFIRMED' : 'CANCELLED', message: uncertain ? '本机已停止接收此批次，但尚未确认外部任务停止。请到原工具核对。' : String(note || '用户取消任务。') } }, 'task_cancelled');
     if (transition.ok) {
-      writeTaskStore(store);
+      await writeTaskStoreDurably(store);
+      // Persist the revoked batch before signalling an external process. A storage
+      // fault must not leave an apparently running task whose process was killed.
+      const current = readTaskStore().tasks.find(item => item.id === String(taskId));
+      if (current?.status === 'cancelled' && current.executionId === task.executionId && adapter?.cancel) adapter.cancel(task);
     }
-    return JSON.stringify({ ...transition, message: transition.ok ? '任务已取消。' : transition.message });
+    return JSON.stringify({ ...transition, message: transition.ok ? uncertain ? '已撤销本机任务，尚未确认外部停止；不会自动重跑同一批资料。' : '任务已取消。' : transition.message });
   } catch (error) {
     return JSON.stringify({ ok: false, message: `取消任务失败：${error.message}` });
   }
 }
 
-function acceptImportedTaskResult(taskId, payload, source = {}) {
+function deleteTaskHistory(taskId) {
+  try {
+    const store = readTaskStore();
+    const removed = removeHistoricalTaskRecord(store, String(taskId), taskNow());
+    if (!removed.ok) return JSON.stringify(removed);
+    writeTaskStore(store);
+    appendTaskEvent(removed.task.id, 'task_history_deleted', {
+      title: removed.task.title,
+      kind: removed.task.kind,
+      sourceType: removed.task.sourceType,
+      sourceId: removed.task.sourceId,
+      previousStatus: removed.task.status,
+      idempotencyKey: removed.task.idempotencyKey,
+      removedHistoryCount: removed.removedHistoryCount,
+      artifactsPreserved: true,
+    }, removed.task.executionId);
+    notify('onNativeTaskCenterChanged', JSON.stringify({ taskId: removed.task.id, deleted: true }));
+    return JSON.stringify({ ok: true, taskId: removed.task.id, removedHistoryCount: removed.removedHistoryCount,
+      message: '历史任务已从任务中心移除；学生资料、任务产物和审计事件均保留。' });
+  } catch (error) {
+    return JSON.stringify({ ok: false, message: `删除历史任务失败：${error.message}` });
+  }
+}
+
+function pruneTaskGovernancePreviews(nowValue = Date.now()) {
+  for (const [token, preview] of taskGovernancePreviews) {
+    if (nowValue - Number(preview.createdAt || 0) > 5 * 60 * 1000) taskGovernancePreviews.delete(token);
+  }
+}
+
+function resolveTaskGovernanceSelection(store, request = {}) {
+  if (request.selection !== 'filtered') {
+    const ids = [...new Set((Array.isArray(request.ids) ? request.ids : []).map(String).filter(Boolean))];
+    return { ids: ids.slice(0, 1000), matchedCount: ids.length, truncated: ids.length > 1000, selection: 'explicit' };
+  }
+  const query = request.query && typeof request.query === 'object' ? request.query : {};
+  const status = ['all', 'actionable', 'running', 'scheduled', 'completed', 'archived'].includes(String(query.status || ''))
+    ? String(query.status) : 'all';
+  const source = ['all', 'student', 'project'].includes(String(query.source || '')) ? String(query.source) : 'all';
+  const executor = String(query.executor || 'all').slice(0, 200);
+  const matched = (store.tasks || []).filter((task) => {
+    const presentation = taskPresentation(task);
+    return (status === 'all' || presentation.statusGroup === status)
+      && (source === 'all' || String(task.sourceType || '') === source)
+      && (executor === 'all' || String(task.executor || '') === executor);
+  }).map((task) => String(task.id)).filter(Boolean);
+  return { ids: matched.slice(0, 1000), matchedCount: matched.length, truncated: matched.length > 1000,
+    selection: 'filtered', query: { status, source, executor } };
+}
+
+function previewTaskGovernanceBatch(request = {}) {
+  pruneTaskGovernancePreviews();
+  const action = String(request.action || 'archive');
+  if (!['cancel', 'archive', 'delete', 'restore'].includes(action)) return { ok: false, message: '不支持的批量操作。' };
+  const store = readTaskStore();
+  const selection = resolveTaskGovernanceSelection(store, request);
+  const ids = selection.ids;
+  if (!ids.length) return { ok: false, message: '请先选择任务。' };
+  const preview = batchGovernancePreview(store.tasks, ids, action);
+  const token = crypto.randomUUID();
+  taskGovernancePreviews.set(token, { ...preview, ...selection, ids, action, sequence: taskStoreGuard.sequence(), createdAt: Date.now() });
+  return { ok: true, token, expiresInSeconds: 300, ...selection, ...preview };
+}
+
+async function commitTaskGovernanceBatch(request = {}) {
+  pruneTaskGovernancePreviews();
+  const token = String(request.token || '');
+  const saved = taskGovernancePreviews.get(token);
+  if (!saved) return { ok: false, code: 'PREVIEW_EXPIRED', message: '批量预览已过期，请重新预览。' };
+  taskGovernancePreviews.delete(token);
+  if (saved.sequence !== taskStoreGuard.sequence()) return { ok: false, code: 'TASK_STORE_CHANGED', message: '任务队列已变化，请重新预览后提交。' };
+  const store = readTaskStore();
+  const current = batchGovernancePreview(store.tasks, saved.ids, saved.action);
+  const eligibilitySignature = (preview) => JSON.stringify({
+    eligible: preview.eligible.map((item) => item.id).sort(),
+    skipped: preview.skipped.map((item) => `${item.id}:${item.reason}`).sort(),
+  });
+  if (eligibilitySignature(current) !== eligibilitySignature(saved)) {
+    return { ok: false, code: 'ELIGIBILITY_CHANGED', message: '任务状态已变化，请重新预览。' };
+  }
+  const processed = [];
+  const now = taskNow();
+  for (const item of current.eligible) {
+    const task = store.tasks.find((entry) => String(entry.id) === item.id);
+    if (!task) continue;
+    if (saved.action === 'cancel') {
+      task.status = 'cancelled'; task.statusGroup = 'completed'; task.completedAt = now; task.updatedAt = now;
+      task.autoRetry = false; task.nextRetryAt = ''; task.error = { code: 'BATCH_CANCELLED', message: '用户批量取消未启动任务。' };
+    } else if (saved.action === 'archive') archiveTaskRecord(task, String(request.reason || '用户批量归档'), now);
+    else if (saved.action === 'restore') restoreArchivedTask(task, now);
+    else if (saved.action === 'delete') {
+      const removed = removeHistoricalTaskRecord(store, item.id, now);
+      if (!removed.ok) continue;
+    }
+    processed.push(item.id);
+  }
+  await writeTaskStoreDurably(store);
+  for (const taskId of processed) appendTaskEvent(taskId, `task_batch_${saved.action}`, { batchSize: processed.length, skippedCount: current.skipped.length });
+  notify('onNativeTaskCenterChanged', JSON.stringify({ batchAction: saved.action, taskIds: processed }));
+  return { ok: true, action: saved.action, processedCount: processed.length, skipped: current.skipped,
+    message: `已${{ cancel: '取消', archive: '归档', delete: '删除', restore: '恢复' }[saved.action]} ${processed.length} 个任务。` };
+}
+
+async function migrateTaskQueueGovernance() {
+  const store = readTaskStore();
+  const runtime = store.runtime && typeof store.runtime === 'object' ? store.runtime : (store.runtime = {});
+  if (runtime.taskGovernanceMigration?.version === 1) return runtime.taskGovernanceMigration;
+  const now = taskNow();
+  const legacyInboxOrphans = store.tasks.filter((task) => isLegacySmartInboxOrphan(task, Date.now()));
+  const idleProjectCards = store.tasks.filter((task) => String(task.kind || '') === 'project_digest'
+    && Number(task.count || 0) === 0 && String(task.status || '') === 'queued'
+    && governanceEligibility(task, 'archive').ok);
+  const candidates = [...new Map([...legacyInboxOrphans, ...idleProjectCards].map((task) => [task.id, task])).values()];
+  const backupDir = path.join(taskCenterDirPath(), 'migration-backups', `task-governance-r17-${timestampForFilename()}`);
+  fs.mkdirSync(backupDir, { recursive: true });
+  if (fs.existsSync(taskStorePath())) fs.copyFileSync(taskStorePath(), path.join(backupDir, 'tasks.before.json'));
+  if (fs.existsSync(taskEventLogPath())) fs.copyFileSync(taskEventLogPath(), path.join(backupDir, 'events.before.jsonl'));
+  for (const task of candidates) archiveTaskRecord(task, 'R17 自动归档：旧版下载资料入口产生且从未启动的孤儿任务', now);
+  runtime.taskGovernanceMigration = { version: 1, migratedAt: now, archivedCount: candidates.length,
+    legacyInboxArchivedCount: legacyInboxOrphans.length, idleProjectArchivedCount: idleProjectCards.length, backupDir };
+  await writeTaskStoreDurably(store);
+  const report = { ...runtime.taskGovernanceMigration, taskIds: candidates.map((task) => task.id),
+    protectedStatuses: ['running', 'waiting_result', 'reviewing'], unknownResultsProtected: true };
+  fs.writeFileSync(path.join(backupDir, 'migration-report.json'), `${JSON.stringify(report, null, 2)}\n`, 'utf8');
+  return report;
+}
+
+async function acceptImportedTaskResult(taskId, payload, source = {}) {
   const store = readTaskStore();
   const task = store.tasks.find((item) => item.id === String(taskId));
   const identity = validateExternalTaskResultIdentity(task, payload);
   if (!identity.ok) {
     appendTaskEvent(taskId, 'external_result_rejected', { source: source.kind || 'manual_import', file: source.path || '', code: identity.code, message: identity.message }, task?.executionId || '');
-    return { ok: false, rejected: true, code: identity.code, message: identity.message };
+    return resultIdentityFeedback(task, payload, identity);
   }
   const validation = validateTaskCompletion(task, task.startedAt, payload);
   const successful = payload.status !== 'failed' && validation.valid;
+  const failureMessage = !validation.valid ? validation.message || '宿主校验未通过。' : 'Agent 已报告执行失败，不能仅凭文件存在认定任务完成。';
   const importedFrom = source.path || source.kind || 'manual_import';
   const result = normalizeTaskResult(task, { ...payload, importedFrom, status: successful ? 'reviewing' : 'failed' }, validation, { importedFrom });
   const transition = commitValidatedTaskResult(store, task, result, validation, {
     successful,
-    error: successful ? null : { code: 'RESULT_INVALID', message: payload.message || validation.message },
+    error: successful ? null : { code: 'RESULT_INVALID', message: failureMessage },
     event: source.event || 'task_result_imported',
     autoSummary: '资料处理结果已导入并通过自动校验。',
   });
-  writeTaskStore(store);
+  if (!transition.ok) return { ...transition, ok: false, accepted: false, message: `结果未提交：${transition.message || '任务状态不允许提交'}。输入已保留。` };
+  await writeTaskStoreDurably(store);
   if (successful) publishCompletedRemoteCollaborationTask(taskId);
   const nextStatus = transition.task?.status || (successful ? 'reviewing' : 'failed');
   if (isDigestTask(task)) notify('onNativeDigestWorkflowChanged', JSON.stringify({ scopeType: task.sourceType, scopeId: task.sourceId, status: nextStatus, taskId: task.id }));
-  return { ...transition, message: nextStatus === 'succeeded' ? '资料结果已导入并自动完成。' : nextStatus === 'reviewing' ? '结果已导入，等待审核。' : '结果已导入，但校验未通过。' };
+  return { ...transition, ok: Boolean(transition.ok && successful), accepted: true, validationPassed: Boolean(successful),
+    message: !successful ? `结果已保存为未通过校验，尚未完成任务：${failureMessage} 粘贴内容已保留。`
+      : nextStatus === 'succeeded' ? '资料结果已导入并自动完成。' : '结果已导入，等待审核。' };
 }
 
-function importTaskResult(taskId) {
+function confirmTaskExternalStopped(taskId, executionId) {
+  try {
+    const store = readTaskStore();
+    const task = store.tasks.find(item => item.id === String(taskId));
+    if (!task || task.executionId !== String(executionId) || task.status !== 'cancelled' || task.recoveryState !== 'unknown') return JSON.stringify({ ok: false, message: '任务批次或状态已变化，请刷新后核对。' });
+    if (taskChildProcesses.has(task.id)) return JSON.stringify({ ok: false, message: '本机仍在等待该进程退出，不能用人工确认替代进程退出。' });
+    task.recoveryState = 'user_confirmed_stopped';
+    task.error = { code: 'CANCELLED', message: '用户已在外部工具核对未发送或已停止；未自动重跑。' };
+    appendTaskEvent(task.id, 'external_stop_user_confirmed', { source: 'explicit_user_confirmation', automaticRetry: false }, task.executionId);
+    writeTaskStore(store);
+    return JSON.stringify({ ok: true, message: '已记录您的核对确认，保留原批次历史。如需继续，请手动重新执行。' });
+  } catch (error) { return JSON.stringify({ ok: false, message: `核对记录保存失败：${error.message}` }); }
+}
+
+async function importTaskResult(taskId) {
   try {
     const selected = dialog.showOpenDialogSync(mainWindow, { title: '导入 Agent 任务结果', properties: ['openFile'], filters: [{ name: 'TaskResult JSON', extensions: ['json'] }] });
     if (!selected?.[0]) return JSON.stringify({ ok: false, message: '未选择结果文件。' });
     const payload = safeReadJson(selected[0], null);
-    return JSON.stringify(acceptImportedTaskResult(taskId, payload, { kind: 'manual_file', path: selected[0], event: 'task_result_file_imported' }));
+    return JSON.stringify(await acceptImportedTaskResult(taskId, payload, { kind: 'manual_file', path: selected[0], event: 'task_result_file_imported' }));
   } catch (error) {
     return JSON.stringify({ ok: false, message: `导入任务结果失败：${error.message}` });
   }
 }
 
-function importTaskResultText(taskId, content) {
+async function importTaskResultFileAsync(taskId) {
+  try {
+    const selected = await dialog.showOpenDialog(mainWindow, { title: '导入 Agent 任务结果', properties: ['openFile'], filters: [{ name: 'TaskResult JSON', extensions: ['json'] }] });
+    if (selected.canceled || !selected.filePaths?.[0]) return JSON.stringify({ ok: false, cancelled: true, message: '未选择结果文件。' });
+    const file = selected.filePaths[0];
+    const handle = await fs.promises.open(file, 'r');
+    let text;
+    try {
+      const stat = await handle.stat();
+      if (!stat.isFile() || stat.size > 1024 * 1024) throw new Error('结果 JSON 必须小于 1 MB；原始资料请通过资料入口上传。');
+      const bytes = Buffer.alloc(1024 * 1024 + 1);
+      const { bytesRead } = await handle.read(bytes, 0, bytes.length, 0);
+      if (bytesRead > 1024 * 1024) throw new Error('结果文件读取期间超过 1 MB。');
+      text = bytes.subarray(0, bytesRead).toString('utf8').replace(/^\uFEFF/, '');
+    } finally { await handle.close(); }
+    return JSON.stringify(await acceptImportedTaskResult(taskId, JSON.parse(text), { kind: 'manual_file', path: file, event: 'task_result_file_imported' }));
+  } catch (error) { return JSON.stringify({ ok: false, message: `导入失败：${error.message} 未清空粘贴内容。` }); }
+}
+
+async function importTaskResultText(taskId, content) {
   try {
     const text = String(content || '').trim();
     if (!text) return JSON.stringify({ ok: false, message: '请先粘贴 Agent 返回的执行结果。' });
@@ -23639,14 +25723,14 @@ function importTaskResultText(taskId, content) {
           output: text,
           data: parsed && typeof parsed === 'object' ? parsed : undefined,
         };
-    return JSON.stringify(acceptImportedTaskResult(task.id, payload, { kind: 'manual_paste', event: 'task_result_text_imported' }));
+    return JSON.stringify(await acceptImportedTaskResult(task.id, payload, { kind: 'manual_paste', event: 'task_result_text_imported' }));
   } catch (error) {
     return JSON.stringify({ ok: false, message: `导入粘贴结果失败：${error.message}` });
   }
 }
 
-function quarantineQClawPayload(file, reason) {
-  const rejectedDir = path.join(qclawTaskResultPath(), 'rejected');
+function quarantineAgentPayload(file, reason) {
+  const rejectedDir = path.join(path.dirname(file), 'rejected');
   fs.mkdirSync(rejectedDir, { recursive: true });
   const parsed = path.parse(file);
   const nonce = crypto.randomBytes(3).toString('hex');
@@ -23656,47 +25740,71 @@ function quarantineQClawPayload(file, reason) {
   return target;
 }
 
-function archiveQClawPayload(file, kind) {
-  const archiveDir = path.join(qclawTaskResultPath(), 'processed', kind === 'claim' ? 'claims' : 'results');
-  fs.mkdirSync(archiveDir, { recursive: true });
+async function archiveAgentPayload(file, kind) {
+  const archiveDir = path.join(path.dirname(file), 'processed', kind === 'claim' ? 'claims' : 'results');
+  await fs.promises.mkdir(archiveDir, { recursive: true });
   const parsed = path.parse(file);
   const target = path.join(archiveDir, `${parsed.name}-${timestampForFilename()}-${crypto.randomBytes(3).toString('hex')}${parsed.ext}`);
-  fs.renameSync(file, target);
+  // Keep the inbox original until the ledger durably points to the archive.
+  await fs.promises.copyFile(file, target, fs.constants.COPYFILE_EXCL);
   return target;
 }
 
-function syncQClawTaskResults() {
+async function consumeAgentTaskResults(agentId, discovered) {
   try {
-    fs.mkdirSync(qclawTaskResultPath(), { recursive: true });
-    const discovered = discoverTaskPayloads(qclawTaskResultPath());
-    const store = readTaskStore();
+    const channel = agentTaskChannel(taskCenterDirPath(), agentId);
     let imported = 0;
     let claimed = 0;
     let rejected = 0;
     for (const candidate of discovered.claims) {
+      const store = readTaskStore();
       const { file, payload } = candidate;
       const task = store.tasks.find((item) => item.id === String(payload?.taskId || ''));
-      const identity = validateExternalTaskResultIdentity(task, payload, { allowedStatuses: ['waiting_result'] });
+      const executionIdentity = validateExternalTaskResultIdentity(task, payload, { allowedStatuses: ['waiting_result'] });
+      const identity = executionIdentity.ok ? validateTaskChannelIdentity(task, payload, candidate.channel) : executionIdentity;
       if (!identity.ok) {
-        const rejectedPath = quarantineQClawPayload(file, identity);
-        appendTaskEvent(payload?.taskId || '', 'qclaw_claim_rejected', { code: identity.code, message: identity.message, rejectedPath }, task?.executionId || '');
+        const rejectedPath = quarantineAgentPayload(file, identity);
+        appendTaskEvent(payload?.taskId || '', 'agent_claim_rejected', { agentId: candidate.channel.agentId, code: identity.code, message: identity.message, rejectedPath }, task?.executionId || '');
         rejected += 1;
         continue;
       }
-      const transition = transitionTaskInStore(store, task.id, 'running', { lastHeartbeatAt: taskNow(), result: { ...(task.result || {}), claimFile: file, claimedBy: payload.agentId || 'qclaw', claimedAt: payload.claimedAt || taskNow() } }, 'qclaw_task_claimed');
+      const transition = transitionTaskInStore(store, task.id, 'running', { lastHeartbeatAt: taskNow(), result: { ...(task.result || {}), claimFile: file, claimedBy: payload.agentId || candidate.channel.agentId, claimedAt: payload.claimedAt || taskNow(), handoffState: 'claimed_running', requiresUserAction: false } }, 'agent_task_claimed');
       if (transition.ok) {
-        const archivedFile = archiveQClawPayload(file, 'claim');
-        if (transition.task?.result) transition.task.result.claimFile = archivedFile;
+        await writeTaskStoreDurably(store);
+        const archivedFile = await archiveAgentPayload(file, 'claim');
+        const current = readTaskStore();
+        const received = current.tasks.find(item => item.id === task.id && item.executionId === task.executionId);
+        if (received?.result?.claimFile === file) {
+          received.result.claimFile = archivedFile;
+          await writeTaskStoreDurably(current);
+          await fs.promises.unlink(file);
+        }
         claimed += 1;
       }
     }
     for (const candidate of discovered.results) {
+      const store = readTaskStore();
       const { file, payload } = candidate;
       const task = store.tasks.find((item) => item.id === String(payload?.taskId || ''));
-      const identity = validateExternalTaskResultIdentity(task, payload);
+      const receiptHash = crypto.createHash('sha256').update(JSON.stringify(payload ?? null)).digest('hex');
+      if (task && payload && task.executionId === payload.executionId && task.result?.receiptHash === receiptHash
+        && validateTaskChannelIdentity(task, payload, candidate.channel).ok) {
+        // Crash after commit but before inbox cleanup: recover the saved receipt
+        // without reapplying learning events or treating it as a failed attempt.
+        const archivedFile = await archiveAgentPayload(file, 'result');
+        const recovered = readTaskStore();
+        const current = recovered.tasks.find(item => item.id === task.id);
+        if (current?.executionId === task.executionId && current.result?.receiptHash === receiptHash) {
+          current.result.resultFile = archivedFile; current.result.importedFrom = archivedFile;
+          await writeTaskStoreDurably(recovered); await fs.promises.unlink(file);
+        }
+        continue;
+      }
+      const executionIdentity = validateExternalTaskResultIdentity(task, payload);
+      const identity = executionIdentity.ok ? validateTaskChannelIdentity(task, payload, candidate.channel) : executionIdentity;
       if (!identity.ok) {
-        const rejectedPath = quarantineQClawPayload(file, identity);
-        appendTaskEvent(payload?.taskId || '', 'qclaw_result_rejected', { code: identity.code, message: identity.message, rejectedPath }, task?.executionId || '');
+        const rejectedPath = quarantineAgentPayload(file, identity);
+        appendTaskEvent(payload?.taskId || '', 'agent_result_rejected', { agentId: candidate.channel.agentId, code: identity.code, message: identity.message, rejectedPath }, task?.executionId || '');
         rejected += 1;
         continue;
       }
@@ -23704,27 +25812,70 @@ function syncQClawTaskResults() {
       const successful = payload.status !== 'failed' && validation.valid;
       const result = normalizeTaskResult(task, { ...payload, resultFile: file, status: successful ? 'reviewing' : 'failed' }, validation, { importedFrom: file });
       result.resultFile = file;
+      result.receiptHash = receiptHash;
       const transition = commitValidatedTaskResult(store, task, result, validation, {
         successful,
-        error: successful ? null : { code: 'QCLAW_RESULT_INVALID', message: payload.message || validation.message },
-        event: 'qclaw_result_synced',
+        error: successful ? null : { code: 'AGENT_RESULT_INVALID', message: payload.message || validation.message },
+        event: 'agent_result_synced',
         autoSummary: '资料处理完成并已通过自动校验。',
       });
       if (transition.ok) {
-        const archivedFile = archiveQClawPayload(file, 'result');
-        if (transition.task?.result) {
-          transition.task.result.resultFile = archivedFile;
-          transition.task.result.importedFrom = archivedFile;
+        await writeTaskStoreDurably(store);
+        const archivedFile = await archiveAgentPayload(file, 'result');
+        const current = readTaskStore();
+        const received = current.tasks.find(item => item.id === task.id && item.executionId === task.executionId);
+        if (received?.result?.resultFile === file) {
+          received.result.resultFile = archivedFile;
+          received.result.importedFrom = archivedFile;
+          await writeTaskStoreDurably(current);
+          await fs.promises.unlink(file);
         }
         imported += 1;
       }
       if (transition.ok && isDigestTask(task)) notify('onNativeDigestWorkflowChanged', JSON.stringify({ scopeType: task.sourceType, scopeId: task.sourceId, status: transition.task?.status || '', taskId: task.id }));
     }
-    if (imported || claimed || rejected) writeTaskStore(store);
-    return JSON.stringify({ ok: true, claimed, imported, rejected, inboxPath: qclawTaskInboxPath(), resultPath: qclawTaskResultPath(), message: imported || claimed || rejected ? `QClaw 同步完成：领取 ${claimed} 项，结果 ${imported} 项，拒绝过期或无效包 ${rejected} 项。` : '没有新的 QClaw 任务领取或结果。' });
+    if (imported || claimed || rejected) await taskStoreGuard.flush();
+    if (imported || claimed || rejected) notify('onNativeTaskCenterChanged', JSON.stringify({ agentId, imported, claimed, rejected }));
+    return JSON.stringify({ ok: true, claimed, imported, rejected, ...channel, message: imported || claimed || rejected ? `Agent 同步完成：领取 ${claimed} 项，结果 ${imported} 项，拒绝过期或无效包 ${rejected} 项。` : '没有新的 Agent 任务领取或结果。' });
   } catch (error) {
-    return JSON.stringify({ ok: false, message: `同步 QClaw 结果失败：${error.message}` });
+    return JSON.stringify({ ok: false, message: `同步 Agent 结果失败：${error.message}` });
   }
+}
+
+function syncAgentTaskResults(agentId = '') {
+  // A synchronous compatibility request only schedules work; it never reads result files.
+  if (taskReadMaintenanceStopped) return JSON.stringify({ ok: false, message: '任务中心正在关闭。' });
+  if (!taskInboxPromise && (agentId || Date.now() - taskInboxLastScan >= 60000)) {
+    taskInboxDirty = false;
+    taskInboxLastScan = Date.now();
+    taskInboxPromise = taskIoClient.request(taskStorePath(), 'inbox', { agentId }).then(async discovered => {
+      if (!Array.isArray(discovered.claims) || !Array.isArray(discovered.results)) throw new Error(discovered.message || '回执扫描失败');
+      for (const kind of ['claims', 'results']) {
+        for (const candidate of discovered[kind]) {
+          await new Promise(resolve => setImmediate(resolve));
+          if (taskReadMaintenanceStopped) return;
+          if (!fs.existsSync(candidate.file)) continue;
+          await consumeAgentTaskResults(candidate.channel.agentId, { claims: [], results: [], [kind]: [candidate] });
+        }
+      }
+      if (discovered.deferred && !taskInboxTimer) {
+        taskInboxTimer = setTimeout(() => { taskInboxTimer = null; taskInboxLastScan = 0; syncAgentTaskResults(); }, 1000);
+        taskInboxTimer.unref?.();
+      }
+    }).catch(error => console.warn('Task inbox scan:', error.message)).finally(() => {
+      taskInboxPromise = null;
+      if (taskInboxDirty && !taskReadMaintenanceStopped && !taskInboxTimer) {
+        taskInboxTimer = setTimeout(() => { taskInboxTimer = null; taskInboxLastScan = 0; syncAgentTaskResults(); }, 1000);
+        taskInboxTimer.unref?.();
+      }
+    });
+  }
+  return JSON.stringify({ ok: true, pending: true, message: '已请求后台检查回执；有效结果将自动更新。' });
+}
+
+// Retain the IPC alias for older clients and already exported QClaw bridges.
+function syncQClawTaskResults() {
+  return syncAgentTaskResults('qclaw');
 }
 
 function submitDailyActionFeedback(taskId, status, note = '') {
@@ -23759,6 +25910,8 @@ function submitDailyActionFeedback(taskId, status, note = '') {
 }
 
 function enforceTaskTimeouts(store) {
+  if (!taskPowerRecovery.canDispatch()) return false;
+  taskProgressBuffer.apply(store);
   const now = Date.now();
   let changed = false;
   for (const task of store.tasks) {
@@ -23768,22 +25921,22 @@ function enforceTaskTimeouts(store) {
     if (running?.materialRuntime && !running.materialRuntime.canCancel) continue;
     if (running) {
       clearTaskProcessHeartbeat(task.id);
+      running.controller?.abort();
       if (running.child && !running.child.killed) {
         try { running.child.kill(); } catch { /* Timeout state still applies. */ }
       }
-      taskChildProcesses.delete(task.id);
+      // Keep ownership and the resource permit until the runner reports exit.
     }
-    const mayAutoRetry = task.autoRetry !== false && Number(task.attempt || 0) < Number(task.maxAttempts || 1);
-    const nextRetryAt = mayAutoRetry ? new Date(now + Number(task.retryBackoffSeconds || 0) * 1000).toISOString() : '';
     const eventType = timeout.kind === 'heartbeat' ? 'task_heartbeat_lost' : timeout.kind === 'result_wait' ? 'task_result_wait_timed_out' : 'task_timed_out';
-    const transition = transitionTaskInStore(store, task.id, 'timed_out', {
-      error: timeout.error,
-      nextRetryAt,
-      autoRetry: mayAutoRetry,
+    // Keep the same execution receivable while quarantined, so a matching late
+    // result can still be validated. Cancelled/superseded executions stay closed.
+    const transition = transitionTaskInStore(store, task.id, task.status, {
+      ...unknownExecutionPatch(task, timeout.kind),
+      error: { code: timeout.error.code, message: `${timeout.error.message} 已请求停止，尚未确认外部完成或停止；请核对原工具及回执，不会自动重跑。` },
     }, eventType);
     if (transition.ok) {
       changed = true;
-      if (mayAutoRetry) setTimeout(() => fallbackTaskAfterFailure(task.id, task.adapterId, timeout.error.message), Math.min(Number(task.retryBackoffSeconds || 0) * 1000, 30000) + 100);
+      businessTaskRetryQueue.delete(String(task.id));
     }
   }
   return changed;
@@ -23792,7 +25945,7 @@ function enforceTaskTimeouts(store) {
 function getTaskCenterCapabilities() {
   const adapters = adapterCapabilities();
   const automationEnabled = taskAutomationEnabled();
-  return JSON.stringify({ ok: true, protocolVersion: TASK_PROTOCOL_VERSION, adapters, automationEnabled, executionMode: automationEnabled ? 'automatic' : 'manual', qclawInboxPath: qclawTaskInboxPath(), qclawResultPath: qclawTaskResultPath(), taskStorePath: taskStorePath() });
+  return JSON.stringify({ ok: true, protocolVersion: TASK_PROTOCOL_VERSION, adapters, automationEnabled, executionMode: automationEnabled ? 'automatic' : 'manual', agentInboxPath: agentTaskInboxPath(), agentResultPath: agentTaskResultPath(), qclawInboxPath: qclawTaskInboxPath(), qclawResultPath: qclawTaskResultPath(), taskStorePath: taskStorePath() });
 }
 
 function isManagedOpenClawCronJob(job) {
@@ -23934,14 +26087,18 @@ function syncOpenClawCronTasks(force = false) {
   return promise;
 }
 
-function openTaskCenterPath(kind = 'root') {
+function openTaskCenterPath(kind = 'root', agentId = '') {
   try {
-    const target = kind === 'qclaw-inbox' ? qclawTaskInboxPath()
+    const target = kind === 'agent-inbox' && agentId === 'qclaw' ? qclawTaskInboxPath()
+      : kind === 'agent-inbox' && agentId === 'manual' ? taskManualOutboxPath()
+      : kind === 'agent-inbox' ? agentTaskInboxPath(agentId)
+      : kind === 'agent-results' ? agentTaskResultPath(agentId)
+      : kind === 'qclaw-inbox' ? qclawTaskInboxPath()
       : kind === 'qclaw-results' ? qclawTaskResultPath()
         : kind === 'manual-outbox' ? taskManualOutboxPath()
           : kind === 'events' ? taskEventLogPath()
             : taskCenterDirPath();
-    const folder = path.extname(target) ? path.dirname(target) : target;
+    const folder = kind === 'events' ? path.dirname(target) : target;
     fs.mkdirSync(folder, { recursive: true });
     shell.openPath(folder);
     return JSON.stringify({ ok: true, path: folder, message: `已打开 ${folder}` });
@@ -23954,15 +26111,13 @@ function openTaskResultPath(taskId) {
   try {
     const task = readTaskStore().tasks.find((item) => String(item.id) === String(taskId));
     if (!task) return JSON.stringify({ ok: false, message: '未找到任务。' });
+    if (!taskPresentation(task).hasResult) return JSON.stringify({ ok: false, message: '尚无已校验的结果文件。任务指令和诊断日志不是整理结果。' });
     const result = task.result && typeof task.result === 'object' ? task.result : {};
     const artifacts = Array.isArray(result.artifacts) ? result.artifacts : [];
     const fileChanges = Array.isArray(result.fileChanges) ? result.fileChanges : [];
     const candidates = [
       result.resultFile,
       result.importedFrom,
-      result.logReference,
-      result.packet?.packetPath,
-      result.packet?.promptPath,
       ...artifacts.map((item) => item?.path),
       ...fileChanges.map((item) => item?.path),
       task.expectedOutput?.publishPath,
@@ -23997,6 +26152,31 @@ function scheduledTimeReached(value) {
   return now.getHours() * 60 + now.getMinutes() >= Number(match[1]) * 60 + Number(match[2]);
 }
 
+async function reopenTaskHandoff(taskId, executionId, action = 'open') {
+  const task = readTaskStore().tasks.find(item => item.id === String(taskId));
+  if (!task || task.executionId !== String(executionId) || !taskPresentation(task).awaitingSend) return JSON.stringify({ ok: false, message: '任务状态或执行批次已变化，请刷新后操作。' });
+  if (!['open', 'copy'].includes(action)) return JSON.stringify({ ok: false, message: '不支持的交接操作。' });
+  const file = canonicalTaskPath(task.result?.packet?.promptPath);
+  if (!file || !taskPathWithin(file, taskCenterDirPath())) return JSON.stringify({ ok: false, message: '本次任务指令路径无效。' });
+  const real = await fs.promises.realpath(file);
+  if (!taskPathWithin(real, await fs.promises.realpath(taskCenterDirPath()))) return JSON.stringify({ ok: false, message: '任务指令超出允许目录。' });
+  if ((await fs.promises.stat(real)).size > 1024 * 1024) return JSON.stringify({ ok: false, message: '任务指令文件过大。' });
+  const command = await fs.promises.readFile(real, 'utf8');
+  const current = readTaskStore().tasks.find(item => item.id === task.id);
+  if (current?.executionId !== executionId || !taskPresentation(current).awaitingSend) return JSON.stringify({ ok: false, message: '任务已发生变化，未重复交接。' });
+  if (action === 'copy') { clipboard.writeText(command); return JSON.stringify({ ok: true, message: '已复制本次执行指令，请检查后发送。' }); }
+  if (task.adapterId !== 'workbuddy') return JSON.stringify({ ok: false, message: '当前工具请使用复制指令。' });
+  const install = findAgentToolInstall('workbuddy');
+  if (!install.exePath) return JSON.stringify({ ok: false, message: '未找到 WorkBuddy，请使用复制指令。' });
+  const prompt = command.length <= 7000 ? command : `请执行教育管家任务 ${task.id}。完整任务指令保存在：${real}\n请读取该文件并遵守资料范围和结果回写要求。`;
+  const deepLink = buildWorkBuddyTaskDeepLink(install, { command: prompt, cwd: task.input?.knowledgeRoot || taskCenterDirPath(), permissionMode: 'default' });
+  await new Promise((resolve, reject) => {
+    const child = spawn(install.exePath, [deepLink], { detached: true, stdio: 'ignore', windowsHide: false, shell: false });
+    child.once('error', reject); child.once('spawn', () => { child.unref(); resolve(); });
+  });
+  return JSON.stringify({ ok: true, message: '已请求打开原批次，请检查输入框后发送；未创建重复任务。' });
+}
+
 async function runUnifiedTaskScheduler() {
   if (!projectArchiveRuntime.status().ready) return { ok: true, skipped: true, reason: 'archive_busy' };
   repairTaskCenterRuntimeState();
@@ -24006,30 +26186,36 @@ async function runUnifiedTaskScheduler() {
   taskSchedulerRunning = true;
   try {
     if (!publicLicenseStatus().active) return { ok: false, skipped: true, message: '许可证未激活，自动任务未执行。' };
-    void runProjectAutomationSweep();
-    syncQClawTaskResults();
+    syncAgentTaskResults();
     await syncOpenClawCronTasks();
+    await refreshAdapterCapabilities(false);
     if (!taskAutomationEnabled()) return { ok: true, skipped: true, message: '调度过程中已切换为仅手动模式，未启动新任务。' };
-    const store = upsertTaskCandidates(buildTaskCenterCandidates(), { reconcileStudentDigests: true, reconcileWeeklyActions: true });
+    await runProjectAutomationSweep();
+    restoreHeavyTaskRetries();
+    restoreBusinessTaskRetries();
+    const store = upsertTaskCandidates(buildTaskCenterCandidates(), { reconcileStudentDigests: true, reconcileWeeklyActions: true, reconcileInactiveStudents: true });
+    const automationStudents = new Map(readStudentsIndex().map(s=>[String(s.id),s]));
+    const automaticAllowed = task => !task.recovery?.manualOnly && !automaticStudentTaskBlocked(task,automationStudents.get(String(task.sourceId)));
     if (enforceTaskTimeouts(store)) writeTaskStore(store);
     const retryDue = readTaskStore().tasks.filter((task) => ['failed', 'timed_out', 'blocked'].includes(task.status)
-      && task.autoRetry !== false
-      && Number(task.attempt || 0) < Number(task.maxAttempts || 1)
-      && task.nextRetryAt
-      && Date.parse(task.nextRetryAt) <= Date.now());
+      && automaticAllowed(task) && !RESEARCH_KINDS.has(task.kind)
+      && taskRetryEligible(task));
     for (const task of retryDue) fallbackTaskAfterFailure(task.id, task.adapterId, task.error?.message || '计划重试');
-    const scheduledReportKinds = new Set(['weekly_action', ...Object.keys(PERIODIC_REPORT_TASKS), 'openclaw_cron']);
-    const due = readTaskStore().tasks.filter((task) => scheduledReportKinds.has(task.kind)
+    const scheduledReportKinds = new Set(['weekly_action', ...Object.keys(PERIODIC_REPORT_TASKS), 'openclaw_cron',
+      'maintenance_lint', 'topic_suggestion_refresh', 'student_digest']);
+    const due = readTaskStore().tasks.filter((task) => automaticAllowed(task) && scheduledReportKinds.has(task.kind)
       && ['pending', 'approved', 'queued'].includes(task.status)
       && Number(task.attempt || 0) === 0
       && (!isAutoPublishReportTask(task) || Boolean(task.input?.growthFingerprint))
-      && (task.kind === 'openclaw_cron' ? Date.parse(task.scheduledAt || '') <= Date.now() : scheduledTimeReached(task.scheduledAt)));
+      && (['student_digest', 'topic_suggestion_refresh'].includes(task.kind)
+        || (task.kind === 'openclaw_cron' ? Date.parse(task.scheduledAt || '') <= Date.now() : scheduledTimeReached(task.scheduledAt))));
     const results = due.map((task) => {
-      try { return JSON.parse(executeTaskByAdapter(task.id, 'auto')); }
+      try { return JSON.parse(executeTaskByAdapter(task.id, 'auto', {automatic:true})); }
       catch (error) { return { ok: false, taskId: task.id, message: error.message }; }
     });
     // Reuse the existing licensed/manual-mode-aware scheduler. Research remains async and serial.
     void runCompetitionResearchSchedule();
+    if (typeof getSmartInbox === 'function') void getSmartInbox().then(engine => engine.tick()).catch(error => console.warn('资料归集调度：', error.message));
     if (results.length) appendHostTimeline({ type: 'unified_task_scheduler', title: 'Unified task scheduler', detail: `due tasks ${results.length}`, count: results.length });
     notify('onNativeTaskCenterChanged', JSON.stringify({ scheduled: results.length, at: taskNow() }));
     return { ok: true, results, message: results.length ? `已调度 ${results.length} 个到期任务。` : '当前没有到期的统一任务。' };
@@ -24042,7 +26228,13 @@ async function runUnifiedTaskScheduler() {
 
 function startUnifiedTaskScheduler() {
   stopUnifiedTaskScheduler();
+  if (process.env.EDU_DISABLE_TASK_SCHEDULER !== '1' && publicLicenseStatus().active) {
+    setImmediate(async () => { for (const student of readStudentsIndex().map(toHostStudent)) {
+      try { await getPracticeTaskHost().recover(String(student.id)); } catch (error) { console.warn('Practice recovery:', error.message); }
+    } });
+  }
   if (process.env.EDU_DISABLE_TASK_SCHEDULER === '1' || !taskAutomationEnabled()) return;
+  try { restoreBusinessTaskRetries(); } catch (error) { console.warn('Task retry recovery paused:', error.message); }
   taskSchedulerStartupTimer = setTimeout(() => { void runUnifiedTaskScheduler(); }, 30 * 1000);
   taskSchedulerTimer = setInterval(() => { void runUnifiedTaskScheduler(); }, 15 * 60 * 1000);
 }
@@ -24055,12 +26247,24 @@ async function runCompetitionResearchSchedule() {
     await refreshAdapterCapabilities(false);
     const service = planningGuidanceService();
     if (!service.getResearchCapabilityStatus().available) return;
-    for (const candidate of service.competitionTaskCandidates()) {
+    upsertTaskCandidates(buildTaskCenterCandidates(), { reconcileInactiveStudents: true });
+    const retryCandidates = readTaskStore().tasks.filter(task => ['failed', 'blocked'].includes(task.status) && researchTaskDue(task)
+      && task.kind !== 'guidance_plan_refresh').map(task => ({ taskType: task.kind, studentId: task.sourceId, scheduledAt: task.scheduledAt }));
+    const candidates = [...service.competitionTaskCandidates(), ...service.taskCandidates().filter(item => item.taskType === 'guidance_research_check'), ...retryCandidates];
+    const seen = new Set();
+    for (const candidate of candidates) {
+      const key = `${candidate.taskType}:${candidate.studentId}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
       if (!taskAutomationEnabled() || !publicLicenseStatus().active) break;
-      if (service.getCompetitionRecommendations(candidate.studentId).preferences.automaticMonthlyCheck === false) continue;
-      if (!scheduledTimeReached(candidate.scheduledAt)) continue;
+      if (studentAutomaticTasksPaused(findStudentByKey(candidate.studentId))) continue;
+      if (candidate.taskType === 'competition_research_check' && service.getCompetitionRecommendations(candidate.studentId).preferences.automaticMonthlyCheck === false) continue;
+      if (candidate.taskType === 'guidance_research_check' && service.getGuidancePlan(candidate.studentId).preferences.automaticMonthlyCheck === false) continue;
+      if (!scheduledTimeReached(candidate.scheduledAt || findStudentByKey(candidate.studentId)?.digestTime || '21:30')) continue;
       const taskId = taskStableId(candidate.taskType, 'student', candidate.studentId);
-      executeTaskByAdapter(taskId, 'internal');
+      if (!researchTaskDue(readTaskStore().tasks.find(task => task.id === taskId))) continue;
+      executeTaskByAdapter(taskId, 'internal', {automatic:true});
+      await taskDispatchPending.get(String(taskId));
       await taskChildProcesses.get(taskId)?.completion;
       notify('onNativeTaskCenterChanged', JSON.stringify({ competitionResearch: true, at: taskNow() }));
     }
@@ -24160,10 +26364,18 @@ function getStudentScheduleLedger(studentId) {
 }
 
 function buildTaskCenterCandidates() {
+  const iterator = taskCenterCandidateBatches();
+  let step = iterator.next();
+  while (!step.done) step = iterator.next();
+  return step.value;
+}
+
+function* taskCenterCandidateBatches() {
   const students = readStudentsIndex().map(toHostStudent);
+  const taskCardStudents = students.filter((student) => !studentTaskCardsSuppressed(student));
   const projects = readProjects().map(normalizeProject);
   const tasks = [];
-  for (const student of students) {
+  for (const student of taskCardStudents) {
     const materials = readStudentMaterials(student);
     const digestState = readStudentDigestState(student);
     const pendingCount = materials.filter((item) => normalizeUploadStatus(item.status) === 'pending_digest').length;
@@ -24180,13 +26392,13 @@ function buildTaskCenterCandidates() {
         id: taskStableId('student_digest', 'student', student.id),
         title: `${student.name}每日资料消化`, kind: 'student_digest', sourceType: 'student', sourceId: String(student.id), sourceName: student.name,
         status: digestStatus === 'digesting' ? 'running' : digestStatus === 'submitted' || submittedCount > 0 ? 'waiting_result' : 'pending',
-        trigger: 'event', executor: String(student.agentTool || 'qclaw'), requestedExecutor: String(student.agentTool || 'qclaw'), executionMode: 'adapter',
+        trigger: 'event', executor: String(student.agentTool || 'workbuddy'), requestedExecutor: String(student.agentTool || 'workbuddy'), executionMode: 'adapter',
         scheduledAt: String(student.digestTime || '21:30'), count: pendingCount || submittedCount,
         idempotencyKey: studentDigestKey,
         completionPolicy: 'auto_after_validation',
-        input: { studentId: String(student.id), knowledgeRoot: student.rootPath || getStudentRootDir(student.name), rawPath: student.rawPath || getRawDir(student.name), digestBatchId: digestState.digestBatchId || '', manifestPath: studentDigestBatchPath(student) },
+        input: { studentId: String(student.id), knowledgeRoot: student.rootPath || getStudentRootDir(student.name), rawPath: student.rawPath || getRawDir(student.name), digestBatchId: digestState.digestBatchId || '', manifestPath: studentDigestBatchPath(student), controlledMaterial: providerSupportsProfile(String(student.agentTool || ''), DIGEST_PROFILE) },
         expectedOutput: { type: 'digest_receipt_v1', path: studentDigestReceiptPath(student), statePath: studentDigestStatePath(student) },
-        permissions: { read: [student.rootPath || getStudentRootDir(student.name)], write: [student.summaryPath || getSummaryDir(student.name), studentManagerDir(student)], operations: ['read', 'write_knowledge'] },
+        permissions: { read: [student.rootPath || getStudentRootDir(student.name)], write: [student.rootPath || getStudentRootDir(student.name), student.summaryPath || getSummaryDir(student.name), studentManagerDir(student)], operations: ['read', 'write_knowledge'] },
         detail: pendingCount > 0 ? `有 ${pendingCount} 份资料等待消化。` : `有 ${submittedCount} 份资料等待 Agent 回执。`, action: 'student_digest',
       }));
     }
@@ -24214,15 +26426,18 @@ function buildTaskCenterCandidates() {
       }));
     }
     tasks.push(...currentLearningReportTaskCandidates(student));
+    const maintenanceWeek = weekRange(new Date());
     tasks.push(normalizeTaskEnvelope({
       id: taskStableId('maintenance_lint', 'student', student.id),
       title: `${student.name}知识库维护检查`, kind: 'maintenance_lint', sourceType: 'student', sourceId: String(student.id), sourceName: student.name,
-      status: 'queued', trigger: 'schedule', executor: String(student.agentTool || 'qclaw'), requestedExecutor: String(student.agentTool || 'qclaw'), executionMode: 'adapter', scheduledAt: '每周',
+      status: 'queued', trigger: 'schedule', executor: String(student.agentTool || 'workbuddy'), requestedExecutor: String(student.agentTool || 'workbuddy'), executionMode: 'adapter', scheduledAt: String(student.digestTime || '21:30'),
+      idempotencyKey: `maintenance_lint:${student.id}:${maintenanceWeek.key}`,
       input: { studentId: String(student.id), knowledgeRoot: student.rootPath || getStudentRootDir(student.name) },
       expectedOutput: { type: 'markdown', path: studentMaintenanceReportPath(student) },
       permissions: { read: [student.rootPath || getStudentRootDir(student.name)], write: [studentMaintenanceReportPath(student)], operations: ['read', 'create_report'] },
       detail: '检查路径、规则、索引、断链和成长模型健康度。', action: 'student_maintenance',
     }));
+    yield;
   }
   for (const project of projects) {
     const digestState = project.digestState || {};
@@ -24233,11 +26448,13 @@ function buildTaskCenterCandidates() {
       : (digestState.pendingFiles || []).length
         ? digestIdempotencyKey({ type: 'project', id: String(project.id) }, (digestState.pendingFiles || []).map((file) => ({ materialId: `project-${crypto.createHash('sha1').update(`${project.id}|${file.relativePath}`).digest('hex').slice(0, 20)}`, ...file })))
         : `project_digest:${project.id}:idle`;
-    tasks.push(normalizeTaskEnvelope({
+    const configuredProjectAgent = String(project.agentTool || 'workbuddy');
+    const projectDigestExecutor = providerSupportsProfile(configuredProjectAgent, DIGEST_PROFILE) ? configuredProjectAgent : 'codex';
+    if (pendingDigest > 0 || ['digesting', 'submitted', 'failed'].includes(digestStatus)) tasks.push(normalizeTaskEnvelope({
       id: taskStableId('project_digest', 'project', project.id),
       title: `${project.name}项目资料消化`, kind: 'project_digest', sourceType: 'project', sourceId: String(project.id), sourceName: project.name,
       status: digestStatus === 'digesting' ? 'running' : digestStatus === 'submitted' ? 'waiting_result' : digestStatus === 'failed' ? 'blocked' : pendingDigest > 0 ? 'pending' : 'queued',
-      trigger: project.automation?.enabled ? 'schedule' : 'manual', executor: String(project.agentTool || 'qclaw'), requestedExecutor: String(project.agentTool || 'qclaw'), executionMode: 'adapter',
+      trigger: project.automation?.enabled ? 'schedule' : 'manual', executor: projectDigestExecutor, requestedExecutor: projectDigestExecutor, executionMode: 'adapter',
       scheduledAt: project.automation?.enabled ? String(project.automation.nextRunAt || '等待调度') : '', count: pendingDigest,
       idempotencyKey: projectDigestKey,
       completionPolicy: 'auto_after_validation',
@@ -24290,9 +26507,12 @@ function buildTaskCenterCandidates() {
       permissions: { read: [project.knowledgeRootPath].filter(Boolean), write: promotionTargets, operations: ['publish_growth_evidence', 'archive_project'] },
       approval: { required: true, status: project.publishedAt ? 'approved' : 'pending' },
     }));
+    yield;
   }
   const researchCapability = planningGuidanceService().getResearchCapabilityStatus();
   for (const candidate of planningGuidanceService().taskCandidates()) {
+    const sourceStudent = taskCardStudents.find((item) => String(item.id) === String(candidate.studentId));
+    if (!sourceStudent) continue;
     const isTopic = candidate.taskType === 'topic_suggestion_refresh';
     const isResearch = candidate.taskType === 'guidance_research_check';
     const isCompetition = candidate.taskType === 'competition_research_check';
@@ -24309,12 +26529,12 @@ function buildTaskCenterCandidates() {
       executor: isTopic ? 'internal' : 'auto',
       requestedExecutor: isTopic ? 'internal' : 'auto',
       executionMode: isTopic ? 'internal' : 'adapter',
-      scheduledAt: isTopic ? '学生资料实质变化后' : '每月日常任务时间后的首次可用调度',
+      scheduledAt: isTopic ? '学生资料实质变化后' : (candidate.scheduledAt || sourceStudent.digestTime || '21:30'),
       idempotencyKey: candidate.idempotencyKey,
       input: { studentId: candidate.studentId, operation: candidate.taskType },
-      permissions: { read: [studentAiManagerDir(students.find((item) => String(item.id) === candidate.studentId) || { name: candidate.sourceName })],
-        write: isCompetition ? [path.join(studentAiManagerDir(students.find((item) => String(item.id) === candidate.studentId) || { name: candidate.sourceName }), 'planning-guidance')] : [],
-        operations: isCompetition ? ['read_planning_evidence', 'write_planning_suggestions'] : ['read_planning_evidence'] },
+      permissions: { read: [studentAiManagerDir(sourceStudent)],
+        write: [path.join(studentAiManagerDir(sourceStudent), 'planning-guidance')],
+        operations: ['read_planning_evidence', 'write_planning_suggestions'] },
       detail: isTopic
         ? '依据学生档案和已确认成长证据生成科创与社会实践候选；采用只准备项目草稿。'
         : researchCapability.available ? '检查官方来源，并仅在输入或来源实质变化时生成新规划版本。' : '未发现通过真实 URL 与结构化结果探测的联网研究执行器，上一有效版本将继续保留。',
@@ -24326,88 +26546,77 @@ function buildTaskCenterCandidates() {
   return tasks;
 }
 
-function getTaskCenter(options = {}) {
-  const force = Boolean(options?.force);
-  if (!force && taskCenterSnapshotCache.value && Date.now() - taskCenterSnapshotCache.at < 30_000) {
-    return taskCenterSnapshotCache.value;
-  }
-  if (options?.quick && !force) {
-    const store = readTaskStore();
-    const tasks = store.tasks.slice().sort((a, b) => String(b.updatedAt || '').localeCompare(String(a.updatedAt || '')));
-    const summary = {
-      total: tasks.length,
-      actionable: tasks.filter((task) => task.statusGroup === 'actionable').length,
-      running: tasks.filter((task) => task.statusGroup === 'running').length,
-      scheduled: tasks.filter((task) => task.statusGroup === 'scheduled').length,
-      completed: tasks.filter((task) => task.statusGroup === 'completed').length,
-    };
-    return JSON.stringify({ ok: true, protocolVersion: TASK_PROTOCOL_VERSION, generatedAt: store.updatedAt || taskNow(),
-      tasks, history: store.history.slice(0, 100), summary, automationEnabled: taskAutomationEnabled(),
-      executionMode: taskAutomationEnabled() ? 'automatic' : 'manual', message: '已显示任务快照；后台将继续更新。' });
-  }
-  repairTaskCenterRuntimeState();
-  const performanceStartedAt = Date.now();
-  const performanceMarks = {};
+// Read-model maintenance is independent of page reads and never dispatches an Agent.
+// Manual mode still needs a task catalogue and incoming receipt collection.
+async function maintainTaskReadModel() {
+  if (taskReadMaintenanceRunning || taskReadMaintenanceStopped || !projectArchiveRuntime.status().ready) return;
+  taskReadMaintenanceRunning = true;
   try {
-    syncQClawTaskResults();
-    performanceMarks.qclawSyncMs = Date.now() - performanceStartedAt;
-    let store = upsertTaskCandidates(buildTaskCenterCandidates(), { reconcileStudentDigests: true, reconcileWeeklyActions: true });
-    performanceMarks.candidateBuildMs = Date.now() - performanceStartedAt - performanceMarks.qclawSyncMs;
-    if (enforceTaskTimeouts(store)) store = writeTaskStore(store);
-    const tasks = store.tasks.slice().sort((a, b) => {
-      const groupOrder = { actionable: 0, running: 1, scheduled: 2, completed: 3 };
-      return Number(groupOrder[a.statusGroup] ?? 9) - Number(groupOrder[b.statusGroup] ?? 9) || String(b.updatedAt).localeCompare(String(a.updatedAt));
-    });
-    const studentsById = new Map(readStudentsIndex().map((student) => [String(student.id), toHostStudent(student)]));
-    const feedbackByStudent = new Map();
-    const renderedTasks = tasks.map((task) => {
-      if (task.kind !== 'weekly_action' || task.sourceType !== 'student') return task;
-      const student = studentsById.get(String(task.sourceId));
-      if (!student) return task;
-      if (!feedbackByStudent.has(String(task.sourceId))) feedbackByStudent.set(String(task.sourceId), readDailyActionFeedback(student));
-      const feedback = feedbackByStudent.get(String(task.sourceId)).find((entry) => String(entry.taskId || '') === String(task.id)
-        || (String(entry.date || '') && String(entry.date) === String(task.input?.date || '')));
-      if (!feedback) return task;
-      return {
-        ...task,
-        result: {
-          ...(task.result || {}),
-          summary: task.result?.summary || '每周行动建议已发布并收到行动反馈。',
-          feedback,
-        },
-      };
-    });
-    const legacyHistory = [];
-    for (const student of readStudentsIndex().map(toHostStudent)) {
-      const ledger = readStudentScheduleLedger(student);
-      legacyHistory.push(...ledger.entries.map((entry) => ({ ...entry, sourceType: 'student', sourceId: String(student.id), sourceName: student.name, executor: String(student.agentTool || 'qclaw'), at: entry.lastCopiedAt || entry.copiedAt || entry.day || '' })));
+    await taskIoClient.request(taskStorePath(), 'watch');
+    if (taskReadMaintenanceStopped) return;
+    syncAgentTaskResults();
+    void checkTaskExecutorCircuits();
+    if (Date.now() - taskCatalogRefreshedAt < 60_000) return;
+    const iterator = taskCenterCandidateBatches();
+    let step = iterator.next();
+    while (!step.done) {
+      await new Promise(resolve => setImmediate(resolve));
+      if (taskReadMaintenanceStopped) return;
+      step = iterator.next();
     }
-    const history = [...store.history, ...legacyHistory].sort((a, b) => String(b.at || b.lastCopiedAt || b.copiedAt || b.day || '').localeCompare(String(a.at || a.lastCopiedAt || a.copiedAt || a.day || ''))).slice(0, 100);
-    const summary = {
-      total: tasks.length,
-      actionable: tasks.filter((task) => task.statusGroup === 'actionable').length,
-      running: tasks.filter((task) => task.statusGroup === 'running').length,
-      scheduled: tasks.filter((task) => task.statusGroup === 'scheduled').length,
-      completed: tasks.filter((task) => task.statusGroup === 'completed').length,
-    };
-    const automationEnabled = taskAutomationEnabled();
-    const capabilities = adapterCapabilities();
-    performanceMarks.totalMs = Date.now() - performanceStartedAt;
-    const snapshot = JSON.stringify({ ok: true, protocolVersion: TASK_PROTOCOL_VERSION, generatedAt: taskNow(), tasks: renderedTasks, history, summary, capabilities, automationEnabled, executionMode: automationEnabled ? 'automatic' : 'manual', performance: performanceMarks, taskStorePath: taskStorePath(), qclawInboxPath: qclawTaskInboxPath(), qclawResultPath: qclawTaskResultPath(), message: `任务中心已汇总 ${renderedTasks.length} 项标准任务和 ${history.length} 条执行记录；当前为${automationEnabled ? '自动运行' : '仅手动'}模式。` });
-    taskCenterSnapshotCache = { at: Date.now(), value: snapshot };
-    return snapshot;
-  } catch (error) {
-    return JSON.stringify({ ok: false, tasks: [], history: [], message: `读取任务中心失败：${error.message}` });
+    const store = upsertTaskCandidates(step.value, { reconcileStudentDigests: true, reconcileWeeklyActions: true, reconcileInactiveStudents: true });
+    if (!fs.existsSync(taskStorePath())) writeTaskStore(store);
+    taskCatalogRefreshedAt = Date.now();
+    notify('onNativeTaskCenterChanged', JSON.stringify({ snapshot: true, at: taskNow() }));
+  } catch (error) { console.warn('Task catalogue maintenance:', error.message); }
+  finally { taskReadMaintenanceRunning = false; }
+}
+
+function startTaskReadMaintenance() {
+  if (process.env.EDU_DISABLE_TASK_SCHEDULER === '1' || taskReadMaintenanceTimer) return;
+  taskReadMaintenanceStopped = false;
+  const tick = async () => {
+    await maintainTaskReadModel();
+    if (typeof smartInboxHostRuntime !== 'undefined' && smartInboxHostRuntime?.engine.hasPendingWork()) void smartInboxHostRuntime.engine.tick().catch(error => console.warn('资料批次等待资源：', error.message));
+    if (!taskReadMaintenanceStopped) {
+      taskReadMaintenanceTimer = setTimeout(tick, 60_000);
+      taskReadMaintenanceTimer.unref?.();
+    }
+  };
+  taskReadMaintenanceTimer = setTimeout(tick, 5_000);
+  taskReadMaintenanceTimer.unref?.();
+}
+
+async function getTaskPage(query = {}, op = 'list') {
+  try {
+    const result = await taskIoClient.request(taskStorePath(), op, query && typeof query === 'object' ? query : {});
+    if (!['list', 'legacy'].includes(op)) return JSON.stringify(result);
+    const snapshot = { ...result, automationEnabled: taskAutomationEnabled(),
+      storageFault: taskStoreGuard.status(),
+      capabilities: registeredAdapterCapabilities(),
+      executionMode: taskAutomationEnabled() ? 'automatic' : 'manual',
+      message: result.ok ? (result.ready ? '已显示任务快照；后台持续更新。' : '正在等待任务快照初始化…') : result.message };
+    const raw = JSON.stringify(snapshot);
+    if (op === 'legacy') taskLegacySnapshot = raw;
+    return raw;
+  } catch (error) { return JSON.stringify({ ok: false, ready: false, message: error.message }); }
+}
+
+function getTaskCenter(options = {}) {
+  // Compatibility getter is read-only too. Never scan, probe, or settle jobs on a page read.
+  if (!taskSnapshotRefresh) {
+    taskSnapshotRefresh = getTaskPage({}, 'legacy').finally(() => { taskSnapshotRefresh = null; });
   }
+  return taskLegacySnapshot || JSON.stringify({ ok: true, ready: false, tasks: [], history: [],
+    summary: { total: 0, actionable: 0, running: 0, scheduled: 0, completed: 0, archived: 0 },
+    message: '任务快照正在加载，请稍候。' });
 }
 
 function getTaskStatuses(taskIds = []) {
   try {
     const ids = new Set((Array.isArray(taskIds) ? taskIds : []).map(String).filter(Boolean).slice(0, 32));
     if (!ids.size) return JSON.stringify({ ok: true, tasks: [], generatedAt: taskNow() });
-    syncQClawTaskResults();
     const store = readTaskStore();
-    if (enforceTaskTimeouts(store)) writeTaskStore(store);
     const tasks = store.tasks
       .filter((task) => ids.has(String(task.id)))
       .map((task) => ({
@@ -24439,6 +26648,8 @@ function digestBusinessSnapshot(scopeType, scopeId) {
   }
   const student = readStudentsIndex().map(toHostStudent).find((item) => String(item.id) === String(scopeId));
   if (!student) return { ok: false, message: '未找到学生档案。' };
+  try { reconcileCompletedStudentDigestLearningReceipts(student); }
+  catch (error) { console.warn('Completed digest late receipt reconciliation:', error.message); }
   syncStudentMaterialsFromUploadRecords(student);
   const state = readStudentDigestState(student);
   const materials = readStudentMaterials(student);
@@ -24449,7 +26660,9 @@ function getDigestWorkflowStatusObject(scopeType, scopeId) {
   const business = digestBusinessSnapshot(scopeType, scopeId);
   if (!business.ok) return business;
   const task = readTaskStore().tasks.find((item) => String(item.id) === digestTaskId(scopeType, scopeId)) || null;
-  const userStatus = digestUserStatus(task?.status, business.state?.status, business.pendingCount, business.submittedCount);
+  const deferred = Boolean(task?.resourceDeferredAt && ['pending', 'approved', 'queued'].includes(task.status));
+  const awaitingUserSend = task?.status === 'waiting_result' && task?.result?.handoffState === 'awaiting_user_send';
+  const userStatus = deferred ? 'processing' : digestUserStatus(task?.status, business.state?.status, business.pendingCount, business.submittedCount);
   const manualMessage = task?.status === 'waiting_result' && task?.adapterId === 'manual'
     ? task?.result?.summary || '任务指令已复制；Agent 完成后系统会自动扫描输出和知识更新，不需要粘贴结果。'
     : '';
@@ -24464,8 +26677,10 @@ function getDigestWorkflowStatusObject(scopeType, scopeId) {
     manualRequired: task?.status === 'waiting_result' && task?.adapterId === 'manual',
     command: task?.result?.packet?.promptPath ? '' : '',
     userStatus,
-    label: userStatusLabel(userStatus),
-    message: task?.error?.code === 'EXIT_4294770688'
+    label: deferred ? '排队中' : awaitingUserSend ? '待发送' : userStatusLabel(userStatus),
+    message: deferred ? '已排队，当前任务结束或后台资源空闲后会自动继续。'
+      : awaitingUserSend ? '资料已在 WorkBuddy 中准备好，请点击一次发送；完成后系统会自动收取结果。'
+      : task?.error?.code === 'EXIT_4294770688'
       ? 'Agent 启动失败：旧版参数桥接器无法从安装包内访问。请使用修订版后点击“重试未完成项”。'
       : task?.error?.message || manualMessage || business.state?.message || task?.result?.summary || '',
     canStart: userStatus === 'pending' && business.pendingCount > 0,
@@ -24478,7 +26693,7 @@ function prepareDigestWorkflow(scopeType, scopeId) {
   const business = digestBusinessSnapshot(scopeType, scopeId);
   if (!business.ok) return business;
   if (business.pendingCount <= 0 && !Number(business.submittedCount || 0)) return { ok: false, skipped: true, completed: true, taskId: digestTaskId(scopeType, scopeId), message: '当前没有待处理资料。' };
-  upsertTaskCandidates(buildTaskCenterCandidates(), { reconcileStudentDigests: true });
+  upsertTaskCandidates(buildTaskCenterCandidates(), { reconcileStudentDigests: true, reconcileInactiveStudents: true });
   const store = readTaskStore();
   const taskId = digestTaskId(scopeType, scopeId);
   const task = store.tasks.find((item) => item.id === taskId);
@@ -24549,8 +26764,8 @@ function resetDigestWorkflow(scopeType, scopeId) {
   return { ok: true, taskId: prepared.taskId, task, message: '未完成资料已准备重新处理。' };
 }
 
-function executeDigestTask(taskId, requestedExecutor = 'auto') {
-  const result = JSON.parse(executeTaskByAdapter(taskId, requestedExecutor));
+function executeDigestTask(taskId, requestedExecutor = 'auto', options) {
+  const result = JSON.parse(executeTaskByAdapter(taskId, requestedExecutor, options));
   const task = result.task || readTaskStore().tasks.find((item) => item.id === String(taskId));
   if (result.ok && task && isDigestTask(task)) notify('onNativeDigestWorkflowChanged', JSON.stringify({ scopeType: task.sourceType, scopeId: task.sourceId, status: task.status, taskId: task.id }));
   return { ...result, workflow: task ? getDigestWorkflowStatusObject(task.sourceType, task.sourceId) : null };
@@ -24558,6 +26773,7 @@ function executeDigestTask(taskId, requestedExecutor = 'auto') {
 
 function configuredDigestExecutor(scopeType, scopeId, requestedExecutor = 'auto') {
   if (!['', 'auto', 'smart'].includes(String(requestedExecutor || 'auto'))) return String(requestedExecutor);
+  if (agentControlStore().read().global) return 'auto';
   if (String(scopeType) === 'project') {
     const project = readProjectsForDigestLookup().find((item) => String(item.id) === String(scopeId));
     return String(project?.agentTool || 'manual');
@@ -24607,8 +26823,8 @@ function reconcileDigestWorkflows() {
       isDigestTask(task) && ['running', 'waiting_result', 'reviewing'].includes(String(task.status))
     ));
     if (!activeBeforeScan.length) return { ok: true, idle: true, results: [] };
-    if (activeBeforeScan.some((task) => task.adapterId === 'qclaw' || task.executionMode === 'inbox')) {
-      syncQClawTaskResults();
+    if (activeBeforeScan.some((task) => ['inbox', 'desktop_handoff', 'agent_handoff', 'manual'].includes(task.executionMode))) {
+      syncAgentTaskResults();
     }
     const store = readTaskStore();
     let changed = compactDigestTaskStore(store);
@@ -24666,7 +26882,7 @@ function reconcileDigestWorkflows() {
       }
       if (task.status === 'running'
         && task.executionMode === 'automatic'
-        && ['codex', 'openclaw', 'qclaw'].includes(task.adapterId)
+        && ['codex', 'workbuddy', 'openclaw', 'qclaw'].includes(task.adapterId)
         && !taskChildProcesses.has(task.id)) {
         const failed = transitionTaskInStore(store, task.id, 'failed', { error: { code: 'EXECUTION_INTERRUPTED', message: '应用关闭后原执行已中断，请重试未完成项。' }, nextRetryAt: '' }, 'digest_execution_interrupted');
         changed = changed || failed.ok;
@@ -24694,10 +26910,10 @@ const digestOrchestrator = createDigestOrchestrator({
   reconcile: reconcileDigestWorkflows,
 });
 
-function startDigestWorkflow(scopeType, scopeId, requestedExecutor = 'auto') {
+function startDigestWorkflow(scopeType, scopeId, requestedExecutor = 'auto', options) {
   try {
     projectArchiveRuntime.assertAccess();
-    const result = digestOrchestrator.start(scopeType, scopeId, configuredDigestExecutor(scopeType, scopeId, requestedExecutor));
+    const result = digestOrchestrator.start(scopeType, scopeId, configuredDigestExecutor(scopeType, scopeId, requestedExecutor), options);
     scheduleDigestWorkflowMonitor(5_000);
     return JSON.stringify(result);
   }
@@ -24706,10 +26922,11 @@ function startDigestWorkflow(scopeType, scopeId, requestedExecutor = 'auto') {
 
 function scheduleStudentDigestContinuation(studentId) {
   const key = String(studentId || '');
-  if (!key || studentDigestContinuationTimers.has(key)) return;
+  if (!key || !taskAutomationEnabled() || studentAutomaticTasksPaused(findStudentByKey(key)) || studentDigestContinuationTimers.has(key)) return;
   const timer = setTimeout(async () => {
     studentDigestContinuationTimers.delete(key);
     try {
+      if (!taskAutomationEnabled() || studentAutomaticTasksPaused(findStudentByKey(key))) return;
       if (!projectArchiveRuntime.status().ready || activeCaptureRuntime || captureTimelineScheduler?.state().running.length) {
         scheduleStudentDigestContinuation(key);
         return;
@@ -24725,7 +26942,7 @@ function scheduleStudentDigestContinuation(studentId) {
         scheduleStudentDigestContinuation(key);
         return;
       }
-      await startDigestWorkflowWithFreshCapabilities('student', key, executor);
+      await startDigestWorkflowWithFreshCapabilities('student', key, executor, {automatic:true});
     } catch {
       // Pending materials remain visible and can be retried from the UI.
     }
@@ -24733,10 +26950,14 @@ function scheduleStudentDigestContinuation(studentId) {
   studentDigestContinuationTimers.set(key, timer);
 }
 
-async function startDigestWorkflowWithFreshCapabilities(scopeType, scopeId, requestedExecutor = 'auto') {
+async function startDigestWorkflowWithFreshCapabilities(scopeType, scopeId, requestedExecutor = 'auto', options = {}) {
+  if (options.automatic && !taskAutomationEnabled()) return JSON.stringify({ ok: true, skipped: true, reason: 'automation_disabled' });
+  if(options.automatic&&scopeType==='student'&&studentAutomaticTasksPaused(findStudentByKey(scopeId)))return JSON.stringify({ok:true,skipped:true,reason:'student_automation_paused'});
   const executor = configuredDigestExecutor(scopeType, scopeId, requestedExecutor);
   await refreshCapabilitiesForExplicitExecution(executor);
-  return startDigestWorkflow(scopeType, scopeId, executor);
+  if (options.automatic && !taskAutomationEnabled()) return JSON.stringify({ ok: true, skipped: true, reason: 'automation_disabled' });
+  if(options.automatic&&scopeType==='student'&&studentAutomaticTasksPaused(findStudentByKey(scopeId)))return JSON.stringify({ok:true,skipped:true,reason:'student_automation_paused'});
+  return startDigestWorkflow(scopeType, scopeId, executor, options);
 }
 
 function getDigestWorkflowStatus(scopeType, scopeId) {
@@ -24759,10 +26980,10 @@ async function retryDigestWorkflowWithFreshCapabilities(scopeType, scopeId, requ
   return retryDigestWorkflow(scopeType, scopeId, executor);
 }
 
-function importDigestWorkflowResultText(scopeType, scopeId, content) {
+async function importDigestWorkflowResultText(scopeType, scopeId, content) {
   try {
     const taskId = digestTaskId(scopeType, scopeId);
-    const result = JSON.parse(importTaskResultText(taskId, content));
+    const result = JSON.parse(await importTaskResultText(taskId, content));
     return JSON.stringify({ ...result, workflow: getDigestWorkflowStatusObject(scopeType, scopeId) });
   } catch (error) {
     return JSON.stringify({ ok: false, message: `导入资料处理结果失败：${error.message}` });
@@ -25823,7 +28044,7 @@ function agentSoulUnifiedPath(student) {
 }
 
 function agentSourceDir(baseDir, tool) {
-  return path.join(baseDir, 'sources', isKnownAgentSource(tool) ? tool : 'qclaw');
+  return path.join(baseDir, 'sources', isKnownAgentSource(tool) ? tool : 'unknown');
 }
 
 function sha1Text(value) {
@@ -25923,7 +28144,7 @@ function appendAgentSourceRecord(student, record) {
       id: record.id || `${Date.now()}-${Math.random().toString(16).slice(2)}`,
       studentId: String(student.id || ''),
       assetType: record.assetType || 'memory',
-      tool: isKnownAgentSource(record.tool) ? record.tool : 'qclaw',
+      tool: isKnownAgentSource(record.tool) ? record.tool : (student.agentTool || 'unknown'),
       sourceType: record.sourceType || 'manualPaste',
       sourcePath: record.sourcePath || '',
       targetPath: record.targetPath || '',
@@ -26005,7 +28226,7 @@ function ensureAgentCenter(student) {
 }
 
 function importExistingAgentFile(student, filename, baseDir, currentName) {
-  const tool = isKnownAgentSource(student.agentTool) ? student.agentTool : 'qclaw';
+  const tool = isKnownAgentSource(student.agentTool) ? student.agentTool : 'workbuddy';
   const source = path.join(student.rootPath || getStudentRootDir(student.name), filename);
   const target = path.join(agentSourceDir(baseDir, tool), currentName);
   if (fs.existsSync(source) && !fs.existsSync(target)) {
@@ -26097,7 +28318,7 @@ function saveAgentMemorySource(studentId, tool, content, mode) {
     const student = findStudentByKey(studentId);
     if (!student) return JSON.stringify({ ok: false, message: '未找到学生。' });
     ensureAgentCenter(student);
-    const safeTool = isKnownAgentSource(tool) ? tool : 'qclaw';
+    const safeTool = isKnownAgentSource(tool) ? tool : 'workbuddy';
     const dir = agentSourceDir(agentMemoryDir(student), safeTool);
     const file = path.join(dir, 'current.Memory.md');
     const snapshot = snapshotCurrentFile(file, path.join(dir, 'snapshots'));
@@ -26155,7 +28376,7 @@ function saveAgentSoulSource(studentId, tool, content) {
     const student = findStudentByKey(studentId);
     if (!student) return JSON.stringify({ ok: false, message: '未找到学生。' });
     ensureAgentCenter(student);
-    const safeTool = isKnownAgentSource(tool) ? tool : 'qclaw';
+    const safeTool = isKnownAgentSource(tool) ? tool : 'workbuddy';
     const dir = agentSourceDir(agentSoulDir(student), safeTool);
     const file = path.join(dir, 'current.Soul.md');
     const snapshot = snapshotCurrentFile(file, path.join(dir, 'snapshots'));
@@ -26194,7 +28415,7 @@ function compareAgentSoulSource(studentId, tool) {
     const student = findStudentByKey(studentId);
     if (!student) return JSON.stringify({ ok: false, message: '未找到学生。' });
     ensureAgentCenter(student);
-    const safeTool = isKnownAgentSource(tool) ? tool : 'qclaw';
+    const safeTool = isKnownAgentSource(tool) ? tool : 'workbuddy';
     const sourceFile = path.join(agentSourceDir(agentSoulDir(student), safeTool), 'current.Soul.md');
     const unified = fs.existsSync(agentSoulUnifiedPath(student)) ? fs.readFileSync(agentSoulUnifiedPath(student), 'utf8') : '';
     const source = fs.existsSync(sourceFile) ? fs.readFileSync(sourceFile, 'utf8') : '';
@@ -26284,7 +28505,7 @@ function saveAgentRuleFile(studentId, fileName, content) {
     fs.writeFileSync(file, String(content || ''), 'utf8');
     appendAgentSourceRecord(student, {
       assetType: 'rule',
-      tool: student.agentTool || 'qclaw',
+      tool: student.agentTool || 'workbuddy',
       sourceType: snapshot ? 'manualPaste' : 'manualPaste',
       targetPath: file,
       hash: sha1Text(content || ''),
@@ -26408,7 +28629,7 @@ function shouldSkipAgentScanDir(name) {
   ].includes(String(name || '').toLowerCase());
 }
 
-function inferAgentToolFromPath(filePath) {
+function inferAgentToolFromPath(filePath, fallback = 'workbuddy') {
   const lower = String(filePath || '').toLowerCase();
   if (lower.includes('claude-code') || lower.includes('.claude')) return 'claude-code';
   if (lower.includes('ima.copilot') || lower.includes('\\ima\\') || lower.includes('/ima/') || lower.includes('.ima')) return 'ima.copilot';
@@ -26424,7 +28645,7 @@ function inferAgentToolFromPath(filePath) {
   if (lower.includes('marvis')) return 'marvis';
   if (lower.includes('hohu')) return 'hohu';
   if (lower.includes('qclaw')) return 'qclaw';
-  return 'qclaw';
+  return isKnownAgentSource(fallback) ? fallback : 'workbuddy';
 }
 
 function inferAgentKnowledgeKind(fileName) {
@@ -26517,7 +28738,7 @@ function scanAgentKnowledgeFiles(studentId) {
         const scored = scoreAgentKnowledgeCandidate(student, item.path, item.name, item.kind, preview);
         candidates.push({
           ...item,
-          tool: inferAgentToolFromPath(item.path),
+          tool: inferAgentToolFromPath(item.path, student.agentTool),
           score: scored.score,
           reasons: scored.reasons,
           mtime: stat.mtime.toISOString(),
@@ -26546,7 +28767,7 @@ function importAgentKnowledgeFile(studentId, filePath, tool, kind) {
   try {
     const student = findStudentByKey(studentId);
     if (!student) return JSON.stringify({ ok: false, message: '未找到学生。' });
-    const safeTool = isKnownAgentSource(tool) ? tool : inferAgentToolFromPath(filePath);
+    const safeTool = isKnownAgentSource(tool) ? tool : inferAgentToolFromPath(filePath, student.agentTool);
     const safeKind = ['soul', 'rule', 'conversation'].includes(kind) ? kind : 'memory';
     if (!filePath || !fs.existsSync(filePath) || !fs.statSync(filePath).isFile()) {
       return JSON.stringify({ ok: false, message: '候选文件不存在或不可读取。' });
@@ -26906,7 +29127,7 @@ function resolveConversationInboxAsset(student, request) {
     : null;
 }
 
-async function registerWorkspaceConversationDelivery(student, project, resolved, deliveryId, contentHash) {
+async function registerWorkspaceConversationDelivery(student, project, resolved, deliveryId, contentHash, intakeAssociation = null) {
   const sourcePath = path.resolve(resolved.asset.storedPath);
   if ((await sha256FileDirect(sourcePath)) !== contentHash) {
     throw Object.assign(new Error('对话资产原文已变化，不能沿用旧投递身份。'), { code: 'source_changed' });
@@ -26951,7 +29172,7 @@ async function registerWorkspaceConversationDelivery(student, project, resolved,
       kind: 'workspace', rootId: 'workspace', relativePath,
     }, source: { eventId: deliveryId, type: 'conversation_delivery', studentId: String(student.id),
       deviceId: 'local-host', conversationDeliveryId: deliveryId,
-      conversationAssetId: String(resolved.asset.id) } }], { intent: 'active' });
+      conversationAssetId: String(resolved.asset.id), ...(intakeAssociation ? { intakeAssociation: { ...intakeAssociation, studentId: String(student.id) } } : {}) } }], { intent: 'active' });
     file = sourcePath;
     materialId = record.materialId;
   } else {
@@ -26984,7 +29205,7 @@ async function registerWorkspaceConversationDelivery(student, project, resolved,
     const registered = await host.registerTerminalUpload(file, {
       eventId: staged.uploadId, studentId: String(student.id), deviceId: 'local-host',
       sourceType: 'conversation_delivery', intent: 'active',
-      conversationDeliveryId: deliveryId, conversationAssetId: String(resolved.asset.id),
+      conversationDeliveryId: deliveryId, conversationAssetId: String(resolved.asset.id), intakeAssociation,
     });
     materialId = registered.material.materialId;
   }
@@ -27003,7 +29224,7 @@ async function registerWorkspaceConversationDelivery(student, project, resolved,
   return { path: file, materialId, assetId: asset.assetId, deduplicated: false };
 }
 
-async function deliverConversationMaterials(studentId, requestJson) {
+async function deliverConversationMaterials(studentId, requestJson, intakeSnapshot = null) {
   try {
     const student = findStudentByKey(studentId);
     if (!student) return JSON.stringify({ ok: false, message: '未找到学生。' });
@@ -27036,8 +29257,16 @@ async function deliverConversationMaterials(studentId, requestJson) {
     let deduplicated = 0;
     const results = [];
     for (const source of sources) {
-      const resolved = resolveConversationInboxAsset(student, source);
+      let resolved = resolveConversationInboxAsset(student, source);
       if (!resolved) continue;
+      // Only the internal intake adapter supplies this third argument; IPC keeps
+      // its existing two-argument contract. Import the analyzed immutable bytes.
+      if (intakeSnapshot) {
+        if (sources.length !== 1 || String(resolved.asset.id) !== String(intakeSnapshot.assetId)) throw Error('会话快照与授权资料不一致');
+        const frozen = await hashStableFile(intakeSnapshot.path);
+        if (frozen.sha256 !== intakeSnapshot.sha256) throw Error('会话固定快照校验失败');
+        resolved = { ...resolved, asset: { ...resolved.asset, storedPath: intakeSnapshot.path, contentHash: frozen.sha256 } };
+      }
       const contentHash = String(resolved.asset.contentHash || sha256Text(fs.readFileSync(resolved.asset.storedPath)));
       const deliveryId = stableGovernanceId(
         'conversation-delivery',
@@ -27059,7 +29288,7 @@ async function deliverConversationMaterials(studentId, requestJson) {
       const sourcePath = path.resolve(resolved.asset.storedPath);
       if (workspaceDelivery) {
         const accepted = await registerWorkspaceConversationDelivery(student, targetProject,
-          resolved, deliveryId, contentHash);
+          resolved, deliveryId, contentHash, intakeSnapshot?.intakeAssociation || null);
         const delivery = {
           id: deliveryId, studentId: String(student.id), assetId: String(resolved.asset.id),
           interactionId: String(resolved.asset.interactionId || ''),
@@ -27270,11 +29499,11 @@ function getAgentConversationCenter(studentId) {
   }
 }
 
-function saveAgentConversationImport(studentId, content, tool = 'qclaw', sourcePath = '', options = {}) {
+function saveAgentConversationImport(studentId, content, tool = 'workbuddy', sourcePath = '', options = {}) {
   try {
     const student = findStudentByKey(studentId);
     if (!student) return JSON.stringify({ ok: false, message: '未找到学生。' });
-    const safeTool = isKnownAgentSource(tool) ? tool : 'qclaw';
+    const safeTool = isKnownAgentSource(tool) ? tool : 'workbuddy';
     if (!String(content || '').trim()) return JSON.stringify({ ok: false, message: '对话历史不能为空。' });
     fs.mkdirSync(agentConversationImportsDir(student), { recursive: true });
     fs.mkdirSync(conversationInteractionsDir(student), { recursive: true });
@@ -27322,6 +29551,7 @@ function saveAgentConversationImport(studentId, content, tool = 'qclaw', sourceP
       confidence: 70,
       notes: `导入对话历史；Interaction ${normalized.interaction.id}；ConversationAsset ${normalized.asset.id}`,
     });
+    void getSmartInbox().then(engine => engine.notifySource(options.lifecycleCapture === true ? 'session' : 'history', student.id)).catch(error => console.warn('会话分类等待后续扫描：', error.message));
     return JSON.stringify({ ok: true, path: file, interaction: normalized.interaction, asset: normalized.asset, analysis, governance: conversationGovernanceState(student), message: `已保存不可变对话资产，共定位 ${normalized.interaction.messageCount} 条消息，并完成主题整理。` });
   } catch (error) {
     return JSON.stringify({ ok: false, message: `保存对话历史失败：${error.message}` });
@@ -27352,7 +29582,7 @@ async function readBoundedResponseText(response, maxBytes = 5 * 1024 * 1024) {
   return Buffer.concat(chunks).toString('utf8');
 }
 
-async function importConversationShareUrl(studentId, rawUrl, tool = 'qclaw') {
+async function importConversationShareUrl(studentId, rawUrl, tool = 'workbuddy') {
   const student = findStudentByKey(studentId);
   if (!student) return JSON.stringify({ ok: false, message: '未找到学生。' });
   const initial = validateConversationShareUrl(rawUrl);
@@ -27541,10 +29771,10 @@ async function saveWorkspaceAgentProjectConversationImportUnlocked(student, proj
   }
 }
 
-function saveAgentProjectConversationImport(student, project, content, tool = 'qclaw', sourcePath = '') {
+function saveAgentProjectConversationImport(student, project, content, tool = 'workbuddy', sourcePath = '') {
   try {
     const ensuredProject = ensureProjectWorkspace(project);
-    const safeTool = isKnownAgentSource(tool) ? tool : 'qclaw';
+    const safeTool = isKnownAgentSource(tool) ? tool : 'workbuddy';
     if (!String(content || '').trim()) return { ok: false, message: '对话历史不能为空。' };
     const governanceDir = projectConversationGovernanceDir(ensuredProject);
     const interactionsDir = path.join(governanceDir, 'interactions');
@@ -27883,13 +30113,13 @@ function persistAgentConversationSubmission(input, options = {}) {
       target.student,
       target.project,
       conversationSubmissionContent(submission),
-      isKnownAgentSource(submission.sourceAgent) ? submission.sourceAgent : 'qclaw',
+      isKnownAgentSource(submission.sourceAgent) ? submission.sourceAgent : (target.student.agentTool || 'workbuddy'),
       options.sourcePath || '',
     )
     : parseJsonObject(saveAgentConversationImport(
       target.student.id,
       conversationSubmissionContent(submission),
-      isKnownAgentSource(submission.sourceAgent) ? submission.sourceAgent : 'qclaw',
+      isKnownAgentSource(submission.sourceAgent) ? submission.sourceAgent : (target.student.agentTool || 'workbuddy'),
       options.sourcePath || '',
       { lifecycleCapture: options.lifecycleCapture === true, sessionId: submission.sessionId },
     ));
@@ -27981,11 +30211,11 @@ async function assignAgentConversationSubmission(submissionId, scopeType, scopeI
   }
 }
 
-function selectAgentConversationFiles(studentId, tool = 'qclaw') {
+function selectAgentConversationFiles(studentId, tool = 'workbuddy') {
   try {
     const student = findStudentByKey(studentId);
     if (!student) return JSON.stringify({ ok: false, message: '未找到学生。' });
-    const safeTool = isKnownAgentSource(tool) ? tool : 'qclaw';
+    const safeTool = isKnownAgentSource(tool) ? tool : 'workbuddy';
     const result = dialog.showOpenDialogSync(mainWindow, {
       title: '选择对话历史文件',
       properties: ['openFile', 'multiSelections'],
@@ -28037,11 +30267,11 @@ function appendTextSection(file, title, content, fileIo = fs) {
   fileIo.appendFileSync(file, section, 'utf8');
 }
 
-function saveConversationExtract(studentId, extractJson, tool = 'qclaw') {
+function saveConversationExtract(studentId, extractJson, tool = 'workbuddy') {
   try {
     const student = findStudentByKey(studentId);
     if (!student) return JSON.stringify({ ok: false, message: '未找到学生。' });
-    const safeTool = isKnownAgentSource(tool) ? tool : 'qclaw';
+    const safeTool = isKnownAgentSource(tool) ? tool : 'workbuddy';
     let parsed = {};
     try {
       parsed = JSON.parse(extractJsonLikeText(extractJson || '{}'));
@@ -28249,7 +30479,7 @@ function ingestKnowledgeCandidateEnvelope(studentId, envelopeJson = '{}') {
     if (!sourceUri || !contentHash) return JSON.stringify({ ok: false, message: '多源候选必须提供稳定来源 URI 和内容哈希。' });
     const sourceId = String(envelope.source?.sourceId || stableGovernanceId(`${sourceType}-asset`, student.id, sourceUri, contentHash));
     const source = { ...(envelope.source || {}), type: sourceType, sourceType, sourceId, assetId: sourceId, sourceUri, contentHash };
-    const built = buildKnowledgeCandidates(envelope, { studentId: student.id, tool: envelope.tool || 'qclaw', source, sourceContent });
+    const built = buildKnowledgeCandidates(envelope, { studentId: student.id, tool: envelope.tool || 'workbuddy', source, sourceContent });
     if (!built.candidates.length) return JSON.stringify({ ok: false, message: '没有可登记的逐条候选。' });
     fs.mkdirSync(conversationAssetsDir(student), { recursive: true });
     const assetPath = path.join(conversationAssetsDir(student), `${sourceId}.json`);
@@ -28280,6 +30510,7 @@ function getStudentsIndex() {
 
 function writeStudentsIndex(students) {
   writeJsonAtomic(studentsPath(), students);
+  taskCenterSnapshotCache = { at: 0, value: '' };
 }
 
 function findStudentByKey(studentKey) {
@@ -28295,8 +30526,8 @@ function toHostStudent(student) {
   const remoteChannel = ['none', 'wecom', 'qq', 'both'].includes(channel) ? channel : 'none';
   const bindingStatus = String(student.remoteBindingStatus || 'unbound').toLowerCase();
   const remoteBindingStatus = ['unbound', 'pending', 'bound'].includes(bindingStatus) ? bindingStatus : 'unbound';
-  const tool = String(student.agentTool || 'qclaw').toLowerCase();
-  const agentTool = isKnownAgentSource(tool) ? tool : 'qclaw';
+  const tool = String(student.agentTool || 'workbuddy').toLowerCase();
+  const agentTool = isKnownAgentSource(tool) ? tool : 'workbuddy';
   const mode = String(student.knowledgeBaseMode || 'standard').toLowerCase() === 'adopted' ? 'adopted' : 'standard';
   const rootPath = student.rootPath || getStudentRootDir(cleanName);
   const rawPath = student.rawPath || getRawDir(cleanName);
@@ -28333,8 +30564,11 @@ function toHostStudent(student) {
     subjectStrengths: Array.isArray(student.subjectStrengths) ? [...new Set(student.subjectStrengths.map((item) => String(item || '').trim()).filter(Boolean))].slice(0, 20) : [],
     careerDirections: Array.isArray(student.careerDirections) ? [...new Set(student.careerDirections.map((item) => String(item || '').trim()).filter(Boolean))].slice(0, 20) : [],
     digestTime: String(student.digestTime || '21:30'),
+    activityStatus: studentActivity(student),
+    pauseAutomaticTasksWhenInactive: student.pauseAutomaticTasksWhenInactive !== false,
     agentTool,
     agentToolLegacy: !isActiveAgentTool(agentTool),
+    classificationFallback: student.classificationFallback || { enabled: false, version: 0 },
     agentBindingMode: ['subAgent', 'mainChat'].includes(bindingMode) ? bindingMode : 'subAgent',
     agentName: String(student.agentName || ''),
     agentNote: String(student.agentNote || ''),
@@ -28379,7 +30613,10 @@ function syncStudentsIndex(studentsJson) {
       const existing = existingById.get(String(student.id));
       return toHostStudent({
         ...student,
+        classificationFallback: existing?.classificationFallback || { enabled: false, version: 0 },
         languageProfile: Object.hasOwn(student, 'languageProfile') ? student.languageProfile : existing?.languageProfile,
+        activityStatus: Object.hasOwn(student, 'activityStatus') ? student.activityStatus : studentActivity(existing || student),
+        pauseAutomaticTasksWhenInactive: Object.hasOwn(student, 'pauseAutomaticTasksWhenInactive') ? student.pauseAutomaticTasksWhenInactive : existing?.pauseAutomaticTasksWhenInactive,
         createdAt: student.createdAt || existing?.createdAt || '',
         loginId: student.loginId || existing?.loginId || '',
         loginIdVersion: student.loginIdVersion || existing?.loginIdVersion || 1,
@@ -28442,16 +30679,36 @@ function planningEvidenceSummary(student) {
 
 function planningResearchProviders() {
   const capabilities = adapterCapabilities();
-  return ['workbuddy', 'codex', 'openclaw'].map((id) => ({
-    id,
-    label: capabilities[id]?.label || id,
-    available: Boolean(capabilities[id]?.available),
-    authorized: Boolean(capabilities[id]?.authorized),
-    structuredResult: id === 'codex' && Boolean(capabilities[id]?.exePath),
-    webResearch: id === 'codex' && Boolean(capabilities[id]?.exePath),
-    healthMessage: id === 'codex' ? (capabilities[id]?.authorized ? '已接通联网研究；点击手动更新后检查网页来源与结果。' : capabilities[id]?.healthMessage || '请先登录 Codex CLI。') : '当前版本尚未接入该工具的联网研究接口；可使用 Codex CLI。',
-    ...(id === 'codex' && capabilities[id]?.exePath ? { search: createCodexResearchSearch({ executable: capabilities[id].exePath, spawnProcess: spawnAdapterProcess, terminateProcess: terminateCaptureVisionProcess }) } : {}),
-  }));
+  const registry = aiExecutorRegistry(), global = agentControlStore().read().global || require('./agent-control-plane.cjs').globalDefaults('codex');
+  const routed = require('./ai-executor-registry.cjs').routeProviders(global, 'research.v1', registry);
+  const visible = [...new Set([...routed, 'codex', 'llm-api', 'workbuddy', 'openclaw'])];
+  const workbuddyQualification = readTaskStore().runtime?.agentQualifications?.workbuddy?.[WORKBUDDY_RESEARCH_PROFILE];
+  const workbuddyReady = Boolean(workbuddyQualification?.ready && workbuddyQualification.runtimeHash && Date.parse(workbuddyQualification.expiresAt || '') > Date.now());
+  return visible.map((id) => {
+    const ready = id === 'codex' ? Boolean(capabilities[id]?.exePath)
+      : id === 'llm-api' ? Boolean(capabilities[id]?.researchReady) : id === 'workbuddy' ? workbuddyReady : false;
+    return {
+      id,
+      label: capabilities[id]?.label || id,
+      available: id === 'workbuddy' ? Boolean(capabilities[id]?.available && ready) : Boolean(capabilities[id]?.available),
+      authorized: id === 'workbuddy' ? Boolean(ready) : Boolean(capabilities[id]?.authorized),
+      structuredResult: ready,
+      webResearch: ready,
+      healthMessage: id === 'codex'
+        ? (capabilities[id]?.authorized ? '已接通联网研究；每次结果检查网页来源。' : capabilities[id]?.healthMessage || '请先登录 Codex CLI。')
+        : id === 'llm-api' ? capabilities[id]?.healthMessage || '请在 AI 接入与调度中心配置并验证联网研究合同。'
+          : id === 'workbuddy' ? ready ? '联网研究合同已验证；仅允许 WebSearch/WebFetch，结果逐次核验实际抓取 URL。' : '请在 AI 接入与调度中心验证 WorkBuddy 联网研究合同。'
+            : '当前版本尚未接入该工具的联网研究合同；保留手工交接。',
+      ...(id === 'codex' && capabilities[id]?.exePath ? { search: createCodexResearchSearch({ executable: capabilities[id].exePath, spawnProcess: spawnAdapterProcess, terminateProcess: terminateCaptureVisionProcess }) } : {}),
+      ...(id === 'llm-api' && capabilities[id]?.researchReady ? { search: input => getLlmApiProvider().search(input) } : {}),
+      ...(id === 'workbuddy' && ready ? { search: async input => {
+        const connected = await classificationAdapter('workbuddy');
+        if (!connected || connected.unavailable) throw Object.assign(Error(connected?.message || 'WorkBuddy 后台通道尚未连接'), { code: connected?.code || 'AGENT_UNAVAILABLE' });
+        const search = await createWorkBuddyResearchSearch({ runtime: connected.runtime, qualification: workbuddyQualification, spawnProcess: spawnAdapterProcess });
+        return search(input);
+      } } : {}),
+    };
+  });
 }
 
 function planningGuidanceService() {
@@ -28466,6 +30723,7 @@ function planningGuidanceService() {
       resolveStudentDir: (student) => studentAiManagerDir(student),
       evidenceProvider: planningEvidenceSummary,
       researchProviders: planningResearchProviders,
+      authorizeResearch: id => assertAgentProfileAllowed(id, 'research.v1'),
       topicGenerator: async input => {
         await refreshAdapterCapabilities(true);
         const capability = adapterCapabilities().codex;
@@ -29268,8 +31526,35 @@ function findAgentToolInstallUncached(toolId) {
         path.join(os.homedir(), '.hermes'),
       ],
     },
+    trae: {
+      displayNeedle: 'trae',
+      exeNames: ['TRAE.exe', 'Trae.exe', 'trae.exe', 'traecli.exe', 'traecli.cmd'],
+      roots: [
+        'C:\\Program Files\\TRAE',
+        'D:\\Program Files\\TRAE',
+        path.join(os.homedir(), 'AppData', 'Local', 'Programs', 'TRAE'),
+        path.join(os.homedir(), 'AppData', 'Local', 'Trae'),
+        path.join(os.homedir(), 'AppData', 'Roaming', 'npm'),
+        path.join(os.homedir(), '.trae'),
+      ],
+    },
+    'qoder-work': {
+      displayNeedle: 'qoder',
+      exeNames: ['QoderWork.exe', 'qoderwork.exe', 'Qoder.exe', 'qoder.exe', 'qoder.cmd'],
+      roots: [
+        'C:\\Program Files\\QoderWork',
+        'D:\\Program Files\\QoderWork',
+        'C:\\Program Files\\Qoder',
+        'D:\\Program Files\\Qoder',
+        path.join(os.homedir(), 'AppData', 'Local', 'Programs', 'QoderWork'),
+        path.join(os.homedir(), 'AppData', 'Local', 'Programs', 'Qoder'),
+        path.join(os.homedir(), 'AppData', 'Roaming', 'npm'),
+        path.join(os.homedir(), '.qoder'),
+      ],
+    },
   };
-  const meta = toolMeta[toolId] || toolMeta.qclaw;
+  const meta = toolMeta[toolId];
+  if (!meta) return { installed: false, version: '', exePath: '', installLocation: '' };
   const displayNeedle = meta.displayNeedle;
   const exeNames = meta.exeNames;
   const matchesRegistryEntry = (entry) => {
@@ -29279,7 +31564,7 @@ function findAgentToolInstallUncached(toolId) {
     }
     return haystack.includes(displayNeedle);
   };
-  if (['codex', 'claude-code', 'hermes'].includes(toolId)) {
+  if (['codex', 'claude-code', 'hermes', 'trae', 'qoder-work'].includes(toolId)) {
     const pathExe = findExecutableInPath(exeNames);
     if (pathExe) {
       return {
@@ -29441,10 +31726,12 @@ function getAgentToolInstallStatus() {
   const codex = mergeOpenAiToolInstall(findPreferredCodexCliInstall(), findOpenAiDesktopInstall());
   const claudeCode = findAgentToolInstall('claude-code');
   const hermes = findAgentToolInstall('hermes');
+  const trae = findAgentToolInstall('trae');
+  const qoderWork = findAgentToolInstall('qoder-work');
   const webTool = (url, label = '网页入口') => ({ installed: false, available: true, openable: true, version: label, exePath: url, installLocation: url });
   const tailscale = findTailscaleInstall();
-  const localTools = { qclaw, openclaw, workbuddy, hermes, hohu, 'ima.copilot': imaCopilot, marvis, codex, 'claude-code': claudeCode };
-  const recommendedTool = Object.entries(localTools).find(([, tool]) => tool.installed)?.[0] || 'qclaw';
+  const localTools = { workbuddy, codex, trae, 'qoder-work': qoderWork, openclaw, hermes, 'claude-code': claudeCode, hohu, 'ima.copilot': imaCopilot, marvis };
+  const recommendedTool = Object.entries(localTools).find(([, tool]) => tool.installed)?.[0] || 'workbuddy';
   return JSON.stringify({
     qclaw,
     marvis,
@@ -29455,12 +31742,14 @@ function getAgentToolInstallStatus() {
     codex,
     claudeCode,
     hermes,
+    trae,
+    qoderWork,
     chatgpt: codex,
     claude: webTool(WEB_AGENT_TOOL_URLS.claude),
     doubao: webTool(WEB_AGENT_TOOL_URLS.doubao),
     tailscale,
     probing: installProbeCache.pending,
-    anyInstalled: Object.values(localTools).some((item) => item.installed),
+    anyInstalled: qclaw.installed || Object.values(localTools).some((item) => item.installed),
     recommendedTool,
   });
 }
@@ -29582,6 +31871,26 @@ function openApp(appName) {
       shell.openPath(defaultStudentBaseDir()).catch(() => {});
     } else {
       shell.openExternal('https://hermes-agent.nousresearch.com/').catch(() => {});
+    }
+    return true;
+  }
+  if (appName === 'trae') {
+    traeOpened = true;
+    const install = findAgentToolInstall('trae');
+    if (install.exePath && fs.existsSync(install.exePath) && /\.exe$/i.test(install.exePath)) {
+      spawn(install.exePath, [defaultStudentBaseDir()], { detached: true, stdio: 'ignore' }).unref();
+    } else {
+      shell.openExternal(WEB_AGENT_TOOL_URLS.trae).catch(() => {});
+    }
+    return true;
+  }
+  if (appName === 'qoder-work') {
+    qoderWorkOpened = true;
+    const install = findAgentToolInstall('qoder-work');
+    if (install.exePath && fs.existsSync(install.exePath) && /\.exe$/i.test(install.exePath)) {
+      spawn(install.exePath, [], { detached: true, stdio: 'ignore' }).unref();
+    } else {
+      shell.openExternal(WEB_AGENT_TOOL_URLS['qoder-work']).catch(() => {});
     }
     return true;
   }
@@ -31192,7 +33501,7 @@ function authContext(request) {
   const match = /^Bearer\s+(.+)$/i.exec(header);
   const token = match ? match[1].trim() : '';
   if (!token) return null;
-  const agentGrant = resolveAgentAccessGrant(readAgentAccessGrantStore(), token);
+  const agentGrant = effectiveAgentGrant(token);
   if (agentGrant) return agentGrant;
   if (token === ensureApiToken()) {
     return { type: 'admin', allowedStudentIds: null };
@@ -34531,14 +36840,280 @@ async function invokeAgentCapability(request, name, input) {
     const file = learningReportPathForStudent(student, report);
     if (!fs.existsSync(file)) return { ok: false, code: 'REPORT_NOT_FOUND' };
     const content = fs.readFileSync(file, 'utf8');
-    result = { id: report.id, title: report.title, content: content.slice(0, 64 * 1024), truncated: content.length > 64 * 1024, uri: `edu://student/${encodeURIComponent(input.studentId)}/report/${encodeURIComponent(report.id)}` };
+    const page = require('./agent-report-read.cjs').reportPage(content, input);
+    if (!page.ok) return page;
+    const { ok, ...reportContent } = page;
+    result = { id: report.id, title: report.title, ...reportContent, uri: `edu://student/${encodeURIComponent(input.studentId)}/report/${encodeURIComponent(report.id)}` };
   }
   return agentCapabilityReceipt(name, input, result, outcome);
 }
 
+let externalConnectorRuntime, externalWriterRuntime, externalGatewayRuntime;
+function externalConnectorStore() {
+  return externalConnectorRuntime ||= require('./external-agent-connector.cjs').createConnectorStore(
+    path.join(app.getPath('userData'), 'external-connectors', 'authorization.json'), {
+      students: () => readStudentsIndex(), projects: () => readProjects().map(normalizeProject),
+      legacyFiles: [agentAccessGrantStorePath(), agentWriteIntentPath(), path.join(app.getPath('userData'), 'agent-control', 'policies.json')],
+    });
+}
+async function externalProcessingStatus(intent) {
+  const result = intent.receipt?.result || {};
+  const base = { saved: intent.status === 'completed', receiptId: intent.id, materialId: result.materialId || '', assetId: result.assetId || '',
+    digestTaskId: '', digest: 'not_applicable', index: 'not_applicable', knowledgeRefs: [] };
+  if (!['material.upload', 'conversation.submit'].includes(intent.name)) return base;
+  const scopeType = intent.projectId ? 'project' : 'student', scopeId = intent.projectId || intent.studentId;
+  const workflow = getDigestWorkflowStatusObject(scopeType, scopeId);
+  let material, knowledgeRefs = [];
+  if (intent.projectId) {
+    const project = readProjects().map(normalizeProject).find(p => String(p.id) === intent.projectId);
+    if (project && isWorkspaceMaterialProject(project)) {
+      const host = createProjectMaterialHost(project);
+      const registry = await host.store.read();
+      material = registry.materials.find(m => m.materialId === result.materialId);
+      knowledgeRefs = require('./external-processing-receipt.cjs').projectKnowledgeRefs(material, registry, intent.projectId);
+      if (knowledgeRefs.length) {
+        await host.store.resolve(material.materialId);
+        const checked = await Promise.all(knowledgeRefs.map(async ref => {
+          try { const file = await safeProjectMaterialPath(project.knowledgeRootPath, ref.relativePath); return await sha256FileDirect(file) === ref.sha256 ? ref : null; } catch { return null; }
+        }));
+        knowledgeRefs = checked.filter(Boolean);
+      }
+    }
+  } else {
+    const student = findStudent(intent.studentId);
+    if (student) material = readStudentMaterials(student).find(m => m.uploadId === intent.id || m.id === result.materialId || m.assetId === result.assetId && result.assetId);
+  }
+  const processed = material?.processing ? material.processing.state === 'completed' && material.processing.processedVersion === material.version : material?.status === 'processed';
+  const verification = intent.indexVerification;
+  const verified = knowledgeRefs.length && verification?.refsFingerprint === require('./external-processing-receipt.cjs').refsFingerprint(knowledgeRefs);
+  return { ...base, digestTaskId: workflow.taskId || '', materialVersion: material?.version || null, knowledgeRefs,
+    digest: processed ? 'completed' : material?.processing?.state || material?.status || (workflow.taskStatus === 'running' ? 'processing' : 'pending'),
+    index: verified ? verification.status : processed ? knowledgeRefs.length ? 'registered' : 'unverified' : 'not_started', taskStatus: workflow.taskStatus || '',
+    message: processed ? '资料消化已确认；检索命中需独立验证，不把已保存标为已索引。' : workflow.message || '已保存，等待现有资料消化流程。' };
+}
+async function scheduleExternalProcessing(intent) {
+  if (!['material.upload', 'conversation.submit'].includes(intent.name)) return;
+  const scopeType = intent.projectId ? 'project' : 'student', scopeId = intent.projectId || intent.studentId;
+  prepareDigestWorkflow(scopeType, scopeId);
+  if (!taskAutomationEnabled()) return;
+  if (intent.projectId) {
+    const project = readProjects().map(normalizeProject).find(p => String(p.id) === intent.projectId);
+    if (project?.automation?.enabled) scheduleCaptureProjectDigest(intent.projectId);
+  } else scheduleStudentDigestContinuation(intent.studentId);
+}
+function externalConnectorWriter() {
+  return externalWriterRuntime ||= require('./external-agent-writes.cjs').createExternalWriter({
+    load: readAgentWriteIntents, save: writeAgentWriteIntents,
+    authenticate: (token, body, intent, readOnly) => intent
+      ? externalConnectorStore().resolveOperation(token, body, intent, readOnly)
+      : externalConnectorStore().resolve(token, body.sessionId, body.contextRevision, body.targetStudentId),
+    project: id => readProjects().map(normalizeProject).find(p => String(p.id) === id),
+    apply: applyAgentWriteIntent, processing: externalProcessingStatus, schedule: scheduleExternalProcessing,
+    verify: async (intent, auth, question) => {
+      const state = await externalProcessingStatus(intent);
+      if (!state.knowledgeRefs.length) return { status: 'unverified', reason: 'source_links_unavailable' };
+      const result = await invokeAgentCapability({ authContext: auth }, 'knowledge.query', { studentId: intent.studentId, ...(intent.projectId ? { projectId: intent.projectId } : {}), question });
+      const fresh = await externalProcessingStatus(intent);
+      const receipts = require('./external-processing-receipt.cjs');
+      if (receipts.refsFingerprint(fresh.knowledgeRefs) !== receipts.refsFingerprint(state.knowledgeRefs)) return { status: 'unverified', reason: 'source_changed_during_query' };
+      return receipts.verifiedIndex(fresh.knowledgeRefs, result);
+    },
+  });
+}
+function externalConnectorGateway() {
+  return externalGatewayRuntime ||= require('./external-agent-host.cjs').createExternalGateway({ connectors: externalConnectorStore(), writer: externalConnectorWriter(),
+    invoke: invokeAgentCapability, memory: agentMemoryStore, projects: () => readProjects().map(normalizeProject) });
+}
+function externalConnectionDirectory(connectionId) {
+  const id = String(connectionId || '');
+  if (!/^external-[0-9a-f-]{36}$/i.test(id)) throw Error('外部连接编号无效');
+  return path.join(app.getPath('userData'), 'external-connectors', id);
+}
+function unifiedKnowledgeRegistrations() {
+  const file = path.join(app.getPath('userData'), 'external-connectors', 'installed-hosts.json');
+  if (!fs.existsSync(file)) return {};
+  const result = JSON.parse(fs.readFileSync(file, 'utf8'));
+  if (!result || Array.isArray(result) || Object.keys(result).some(k => !['codex', 'workbuddy'].includes(k))) throw Error('统一连接安装记录损坏，已停止自动改写');
+  return result;
+}
+function unifiedKnowledgeArgs(host, args) {
+  const binding = unifiedKnowledgeRegistrations()[host];
+  return binding ? [...args, '-ConnectorConfig', path.join(externalConnectionDirectory(binding.connectionId), 'connection.json')] : args;
+}
+function unifiedKnowledgeServer(host, server) {
+  const binding = unifiedKnowledgeRegistrations()[host];
+  if (!binding) return server;
+  const { allowedTools, ...rest } = server;
+  return { ...rest, args: unifiedKnowledgeArgs(host, server.args), description: '教育管家统一知识连接：按已授权会话范围访问' };
+}
+function externalHostInstallOptions(host, connectionId) {
+  return { home: os.homedir(), codexHome: process.env.CODEX_HOME || undefined, host, connectionId, bridgePath: activeAgentKnowledgeMcpBridgePath(),
+    descriptorPath: activeAgentKnowledgeDescriptorPath(), connectionConfig: path.join(externalConnectionDirectory(connectionId), 'connection.json'),
+    projectConfigPaths: host === 'codex' ? readStudentsIndex().map(s => path.join(s.rootPath || getStudentRootDir(s.name), '.codex', 'config.toml')) : [] };
+}
+function externalHostStatuses() {
+  const installed = unifiedKnowledgeRegistrations();
+  for (const [host, record] of Object.entries(installed)) {
+    if (!record.connectionId || record.status === 'uninstalled') continue;
+    if (record.status === 'uninstall_pending') {
+      const check = require('./external-agent-install.cjs').inspectRemoval(externalHostInstallOptions(host, record.connectionId));
+      record.configurationStatus = check.status;
+      if (check.status === 'removed') {
+        record.status = 'uninstalled';
+        record.message = '已检测到 Agent 配置已移除，旧授权仍已撤销。可以重新安装；不会恢复旧凭据。';
+      } else record.message = check.message || '授权已撤销，Agent 中仍有受管配置，请点击“卸载并撤权”完成移除。';
+      continue;
+    }
+    const check = require('./external-agent-install.cjs').inspect(externalHostInstallOptions(host, record.connectionId));
+    record.configurationStatus = check.status;
+    if (check.message) record.message = check.message;
+  }
+  return installed;
+}
+let externalHostActionBusy = false;
+async function externalHostLifecycleAction(action, input) {
+  if (externalHostActionBusy) throw Error('连接器正在处理安装或验证，请稍后重试');
+  if (!['codex', 'workbuddy'].includes(input.hostType)) throw Error('不支持的 Agent 类型');
+  if (action !== 'verifyInstalled' && input.confirmed !== true) throw Error('请确认连接器配置变更');
+  externalHostActionBusy = true;
+  try {
+    const host = input.hostType, store = externalConnectorStore(), installer = require('./external-agent-install.cjs');
+    const save = installed => writeJsonAtomic(path.join(app.getPath('userData'), 'external-connectors', 'installed-hosts.json'), installed);
+    const installed = unifiedKnowledgeRegistrations(), previous = installed[host];
+    if (action === 'uninstallInstalled') {
+      // Revoke first; even a malformed/locked host config must not retain access.
+      for (const c of store.snapshot().connections.filter(c => c.hostType === host && c.status !== 'revoked')) await store.action('connection', { connectionId: c.connectionId, status: 'revoked' });
+      installed[host] = { ...previous, status: 'uninstall_pending', uninstalledAt: new Date().toISOString() }; save(installed);
+      try {
+        const options = previous?.connectionId ? externalHostInstallOptions(host, previous.connectionId) : { home: os.homedir(), codexHome: process.env.CODEX_HOME || undefined, host, projectConfigPaths: host === 'codex' ? readStudentsIndex().map(s => path.join(s.rootPath || getStudentRootDir(s.name), '.codex', 'config.toml')) : [] };
+        const result = installer.uninstall(options);
+        installed[host] = { ...previous, ...result }; save(installed);
+        return { message: '已卸载此 Agent 的受管连接并撤销其全部 R21 凭据，旧连接立即失效；学生资料和其他 Agent 不变。配置备份保留，旧自动注册已阻止。请重启 Agent 清除工具缓存。' };
+      } catch (error) { installed[host].message = `授权已撤销，但配置移除未完成：${error.message}`; save(installed); throw Error(installed[host].message); }
+    }
+    const snapshot = store.snapshot();
+    if (snapshot.policy.status !== 'active' || snapshot.policy.paused) throw Error('请先保存并启用全局授权');
+    if (!hostServer) { const status = JSON.parse(startHostService({ preserveUsageMode: true })); if (!status.running) throw Error('主机服务未能启动，请检查主机服务设置'); }
+    if (action === 'verifyInstalled') {
+      if (!previous?.connectionId || ['uninstalled', 'uninstall_pending'].includes(previous.status)) throw Error('请先安装连接器');
+      try {
+        const result = await installer.verify(externalHostInstallOptions(host, previous.connectionId));
+        installed[host] = { ...previous, ...result }; save(installed); return result;
+      } catch (error) { installed[host] = { ...previous, status: 'verification_failed', message: error.message }; save(installed); throw error; }
+    }
+    // Preflight every file before issuing a credential or changing the registry.
+    const probeId = previous?.connectionId || 'external-00000000-0000-0000-0000-000000000000';
+    installer.plan(externalHostInstallOptions(host, probeId));
+    let connection = snapshot.connections.find(c => c.connectionId === previous?.connectionId);
+    if (connection?.status === 'disabled') throw Error('此连接已停用，请先在连接管理中明确启用；修复不会扩大授权');
+    if (!connection) connection = snapshot.connections.find(c => c.hostType === host && c.status === 'active');
+    const old = connection;
+    if (!connection || connection.status === 'revoked' || !fs.existsSync(path.join(externalConnectionDirectory(connection.connectionId), 'credential'))) {
+      if (connection && connection.status !== 'revoked') await store.action('connection', { connectionId: connection.connectionId, status: 'revoked' });
+      const created = await store.action('createConnection', { hostType: host, label: `${host} · edu-manager-knowledge` });
+      try {
+        if (old) await store.action('connection', { connectionId: created.connectionId, status: snapshot.policy.inheritForNewConnections ? 'active' : 'disabled', restrictions: old.restrictions });
+        writeExternalConnectionRuntimeConfig(created.connectionId, created.token);
+      } catch (error) { await store.action('connection', { connectionId: created.connectionId, status: 'revoked' }); throw error; }
+      connection = store.snapshot().connections.find(c => c.connectionId === created.connectionId);
+    }
+    const configPath = writeExternalConnectionRuntimeConfig(connection.connectionId), options = externalHostInstallOptions(host, connection.connectionId);
+    fs.mkdirSync(path.dirname(options.bridgePath), { recursive: true });
+    if (fs.existsSync(options.bridgePath) && !fs.existsSync(options.bridgePath + '.pre-r21.bak')) fs.copyFileSync(options.bridgePath, options.bridgePath + '.pre-r21.bak', fs.constants.COPYFILE_EXCL);
+    fs.copyFileSync(path.join(__dirname, 'agent-knowledge-mcp.ps1'), options.bridgePath);
+    installed[host] = { ...previous, connectionId: connection.connectionId, status: 'upgrade_pending' }; save(installed);
+    const result = installer.install(options);
+    installed[host] = { ...result, connectionId: connection.connectionId }; save(installed);
+    // Installation and protocol verification are separate facts. Keep a working
+    // install when the service is unavailable, exposing a retryable state.
+    try {
+      const verification = await installer.verify(options);
+      installed[host] = { ...installed[host], ...verification }; save(installed);
+      return { ...verification, configPath, message: `已安装／更新同一个 edu-manager-knowledge。${verification.message}` };
+    } catch (error) {
+      installed[host] = { ...installed[host], status: 'verification_failed', message: error.message }; save(installed);
+      return { configPath, message: `配置已安装，但连接验证未通过：${error.message}。可点击验证连接或修复连接；不要重复添加另一套 MCP。` };
+    }
+  } finally { externalHostActionBusy = false; }
+}
+function writeExternalConnectionRuntimeConfig(connectionId, token = '') {
+  const directory = externalConnectionDirectory(connectionId);
+  const credentialFile = path.join(directory, 'credential');
+  fs.mkdirSync(directory, { recursive: true });
+  if (token) fs.writeFileSync(credentialFile, token, { flag: 'wx', mode: 0o600 });
+  if (!fs.existsSync(credentialFile)) throw Error(`外部连接 ${connectionId} 缺少本机凭据文件`);
+  // Copy the two stdio modules outside asar so Node-mode Electron can launch
+  // them reliably. Host startup refreshes the executable after portable updates.
+  for (const file of ['external-agent-mcp.cjs', 'agent-capability-contract.cjs']) fs.copyFileSync(path.join(__dirname, file), path.join(directory, file));
+  writeJsonAtomic(path.join(directory, 'connection.json'), { schema: 'edu-manager.external-connection.v1', connectionId,
+    endpoint: `http://127.0.0.1:${getHostServicePort()}/api/agent/connector`, credentialFile,
+    runtimeExecutable: process.execPath, runtimeScript: path.join(directory, 'external-agent-mcp.cjs') });
+  const configPath = path.join(directory, 'mcp-config.json');
+  writeJsonAtomic(configPath, { mcpServers: { 'edu-manager-knowledge': { command: process.execPath,
+    args: [path.join(directory, 'external-agent-mcp.cjs'), path.join(directory, 'connection.json')], env: { ELECTRON_RUN_AS_NODE: '1' } } } });
+  return configPath;
+}
+function refreshExternalConnectionRuntimeConfigs() {
+  const snapshot = externalConnectorStore().snapshot();
+  if (snapshot.policy.status !== 'active' || snapshot.policy.paused) return { refreshed: 0, failed: [] };
+  let refreshed = 0;
+  const failed = [];
+  for (const connection of snapshot.connections.filter(item => item.status !== 'revoked')) {
+    try { writeExternalConnectionRuntimeConfig(connection.connectionId); refreshed++; }
+    catch (error) { failed.push({ connectionId: connection.connectionId, message: error.message }); }
+  }
+  return { refreshed, failed };
+}
+async function externalConnectorAction(action, input) {
+  if (action === 'deleteConnection' && externalHostActionBusy) throw Error('连接器正在处理安装或验证，请稍后再删除记录');
+  if (['installHost', 'repairInstalled', 'upgradeInstalled', 'verifyInstalled', 'uninstallInstalled'].includes(action)) return externalHostLifecycleAction(action, input);
+  if (['execute', 'retryProcessing', 'verifyIndex'].includes(action)) {
+    const intent = readAgentWriteIntents().intents.find(i => i.id === input.intentId && i.connectionId);
+    if (!intent || !/^external-[a-f0-9-]+$/.test(intent.connectionId)) throw Error('未找到外部连接写入记录');
+    const token = fs.readFileSync(path.join(app.getPath('userData'), 'external-connectors', intent.connectionId, 'credential'), 'utf8').trim();
+    return externalConnectorWriter()[action](token, { ...input, sessionId: intent.sessionId, contextRevision: intent.contextRevision });
+  }
+  if (action === 'readWrite') {
+    const intent = readAgentWriteIntents().intents.find(i => i.id === input.intentId && i.connectionId);
+    if (!intent) throw Error('未找到写入记录');
+    return { preview: intent.name === 'material.upload' ? { ...intent.input, contentBase64: '[文件字节省略；请核对文件名、大小及来源]' } : intent.input };
+  }
+  if (action === 'snapshot') {
+    const snapshot = externalConnectorStore().snapshot();
+    const records = readAgentWriteIntents().intents.filter(i => i.connectionId).slice(-30).reverse();
+    return { ...snapshot, installedHosts: externalHostStatuses(), operations: await Promise.all(records.map(async intent => {
+      let processing = null;
+      try { if (intent.status === 'completed') processing = await externalProcessingStatus(intent); }
+      catch { processing = { saved: true, digest: 'unavailable', index: 'unverified', message: '后续处理状态暂不可读，保存回执仍保留；请修复资料状态后重试。' }; }
+      return { ...publicIntent(intent), processing };
+    })) };
+  }
+  if (action === 'reviewWrite') {
+    const intent = readAgentWriteIntents().intents.find(i => i.id === input.intentId && i.connectionId);
+    if (!intent) throw Error('未找到外部连接写入记录');
+    return parseJsonObject(decideAgentWriteIntent(intent.studentId, intent.id, input.inputDigest, input.decision));
+  }
+  if (['createConnection', 'upgradeInstalled'].includes(action) && !hostServer) {
+    const status = JSON.parse(startHostService({ preserveUsageMode: true }));
+    if (!status.running) throw Error(status.message || hostServiceLastError || '主机服务未能启动，暂不能建立外部连接');
+  }
+  const result = await externalConnectorStore().action(action, input);
+  if (action === 'createConnection') {
+    try {
+      const configPath = writeExternalConnectionRuntimeConfig(result.connectionId, result.token);
+      return { message: '已生成凭据和配置，尚未安装进 Agent。已有 edu-manager-knowledge 请使用原位升级，不要追加第二套。', configPath };
+    } catch (error) {
+      await externalConnectorStore().action('connection', { connectionId: result.connectionId, status: 'revoked' }); throw error;
+    }
+  }
+  return result;
+}
 function agentWriteIntentPath() { return path.join(app.getPath('userData'), 'agent-write-intents.json'); }
 function readAgentWriteIntents() {
-  const expired = expireIntents(safeReadJson(agentWriteIntentPath(), {}));
+  const file = agentWriteIntentPath();
+  const value = fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, 'utf8')) : {};
+  if (fs.existsSync(file) && (!Array.isArray(value.intents) || value.schema !== require('./agent-write-intents.cjs').WRITE_INTENT_SCHEMA)) throw Error('写入台账损坏，已阻止执行；请恢复台账而非重复提交。');
+  const expired = expireIntents(value);
   if (expired.changed) writeAgentWriteIntents(expired.store);
   return expired.store;
 }
@@ -34555,6 +37130,7 @@ function getAgentCapabilityManagement(studentId) {
 }
 
 function setAgentCapabilityAuthorization(studentId, action) {
+  if (agentControlStore().read().global) return JSON.stringify({ ok: false, message: '请在 AI 接入与调度中心统一启用或停用，不再逐学生授权。' });
   const student = findStudent(String(studentId || ''));
   if (!student) return JSON.stringify({ ok: false, message: '未找到学生。' });
   if (action === 'revoke') {
@@ -34597,6 +37173,7 @@ function decideAgentWriteIntent(studentId, intentId, digest, action) {
 }
 
 function agentWriteAuthorization(request, name, input) {
+  if (agentControlStore().read().global?.enabled === false) return { ok: false, code: 'AGENT_SCOPE_DENIED' };
   const project = input?.projectId ? readProjects().map(normalizeProject).find((item) => String(item.id) === String(input.projectId)) : null;
   const authorization = authorizeCapability(request.authContext, name, input, project);
   if (!authorization.ok) return authorization;
@@ -34607,6 +37184,7 @@ function agentWriteAuthorization(request, name, input) {
 }
 
 function agentIntentScopeAllowed(request, intent) {
+  if (agentControlStore().read().global?.enabled === false) return false;
   if (!intent || request.authContext?.grantId !== intent.grantId || !isStudentAllowed(request, intent.studentId)) return false;
   const permission = CAPABILITIES[intent.name]?.permission;
   if (!permission || !request.authContext.capabilities.includes(permission)) return false;
@@ -34721,7 +37299,7 @@ async function applyAgentWriteIntent(intent) {
     const submission = { scopeType: project ? 'project' : 'student', scopeId: project?.id || String(student.id), studentHint: String(student.id), sourceAgent: input.sourceAgent || 'native-agent', sessionId: input.sessionId || intent.id, title: input.title || 'Agent 对话', messages: input.messages, submissionId: intent.id, idempotencyKey: intent.id };
     const result = parseJsonObject(await submitAgentConversation(JSON.stringify(submission)));
     if (!result.ok || result.awaitingAttribution) throw new Error(result.message || '对话归属未能确认。');
-    return { submissionId: intent.id, status: result.receipt?.status || 'stored', duplicate: Boolean(result.deduplicated) };
+    return { submissionId: intent.id, materialId: result.receipt?.materialId || '', assetId: result.receipt?.assetId || '', status: result.receipt?.status || 'stored', duplicate: Boolean(result.deduplicated) };
   }
   if (intent.name === 'material.upload') {
     const bytes = Buffer.from(input.contentBase64, 'base64');
@@ -34828,12 +37406,12 @@ async function handleAgentWriteExecute(request, response) {
     try {
       const result = await applyAgentWriteIntent(begun.intent);
       const receipt = { schema: CONTRACT_VERSION, capability: begun.intent.name, intentId: id, studentId: begun.intent.studentId, projectId: begun.intent.projectId, source: `edu://student/${encodeURIComponent(begun.intent.studentId)}`, evidence: result?.source ? [result.source] : [], freshness: 'live', at: new Date().toISOString(), result };
-      const finished = finishExecution(begun.store, id, receipt);
+      const finished = finishExecution(readAgentWriteIntents(), id, receipt);
       writeAgentWriteIntents(finished.store);
       appendHostTimeline({ type: 'agent_write_executed', title: 'Agent write executed', detail: `${request.authContext.grantId}: ${begun.intent.name}; ${id}`, studentId: begun.intent.studentId, projectId: begun.intent.projectId });
       sendJson(response, 200, { ok: true, intent: publicIntent(finished.intent) });
     } catch (error) {
-      const recovery = recoverExecution(begun.store, id);
+      const recovery = recoverExecution(readAgentWriteIntents(), id);
       if (recovery.ok) writeAgentWriteIntents(recovery.store);
       sendJson(response, 500, { ok: false, code: 'WRITE_RECOVERABLE', message: String(error.message || '').slice(0, 160), intentId: id });
     } finally { activeAgentWriteIntents.delete(id); }
@@ -34857,6 +37435,7 @@ async function handleAgentCapabilityInvoke(request, response) {
 async function handleAgentGrantManage(request, response) {
   if (!requireAuth(request, response)) return;
   if (request.authContext.type !== 'admin') { sendJson(response, 403, { ok: false, code: 'ADMIN_REQUIRED' }); return; }
+  if (agentControlStore().read().global) { sendJson(response, 409, { ok: false, code: 'GLOBAL_POLICY_ACTIVE', message: '请使用 AI 接入与调度中心统一授权' }); return; }
   try {
     const body = await parseJsonBody(request);
     const student = findStudent(String(body.studentId || ''));
@@ -34918,16 +37497,23 @@ function handleHostRequest(request, response) {
   const localHostCaller = ['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(String(request.socket?.remoteAddress || ''));
   const agentToken = agentTokenFromAuthorization(request.headers.authorization);
   if (agentToken) {
-    const grant = resolveAgentAccessGrant(readAgentAccessGrantStore(), agentToken);
+    const grant = effectiveAgentGrant(agentToken);
     if (!grant) { sendJson(response, 401, { ok: false, code: 'AGENT_GRANT_REVOKED' }); return; }
     const decision = agentRouteDecision(grant, request.method, pathname);
     const rateAllowed = agentRequestRateAllowed(grant.grantId);
+    if (agentToken.startsWith('eak_r21_') && pathname !== '/api/agent/connector') { sendJson(response, 403, { ok: false, code: 'CONNECTOR_SESSION_REQUIRED' }); return; }
     if (!rateAllowed || !decision.allowed || !localHostCaller) {
       const code = !rateAllowed ? 'RATE_LIMITED' : !decision.allowed ? decision.code : 'LOCAL_ONLY';
       appendHostTimeline({ type: 'agent_access_denied', title: 'Agent access denied', detail: `${grant.grantId}: ${request.method} ${pathname.slice(0, 120)}; ${code}` });
       sendJson(response, code === 'RATE_LIMITED' ? 429 : 403, { ok: false, code });
       return;
     }
+  }
+  if (request.method === 'POST' && pathname === '/api/agent/connector') {
+    if (!localHostCaller || !agentToken.startsWith('eak_r21_')) { sendJson(response, 403, { ok: false, code: 'EXTERNAL_CONNECTION_REQUIRED' }); return; }
+    return parseJsonBody(request).then(body => externalConnectorGateway()(agentToken, body)).then(result => {
+      sendJson(response, result.ok === false ? 403 : 200, result);
+    }).catch(error => sendJson(response, 400, { ok: false, code: error.code || 'CONNECTOR_ERROR', message: String(error.message || '').slice(0, 180) }));
   }
   if (request.method === 'POST' && pathname === '/api/agent/grants/manage') {
     if (!localHostCaller) { sendJson(response, 403, { ok: false, code: 'LOCAL_ONLY' }); return; }
@@ -35101,7 +37687,7 @@ function handleHostRequest(request, response) {
     const student = terminalLearningStudent(request, response);
     if (!student) return;
     sendJson(response, 200, { ok: true, studentId: String(student.id), hostId: getHostIdentity().hostId, dataGeneration: hostDataGenerationId(), capabilities: {
-      practice: true, planningRead: true, planningFavorites: true, remoteInbox: true,
+      practice: true, publications: true, planningRead: true, planningFavorites: true, remoteInbox: true,
     } });
     return;
   }
@@ -35117,6 +37703,27 @@ function handleHostRequest(request, response) {
   }
   if (request.method === 'GET' && pathname === '/api/teacher/learning-overview') {
     return handleTeacherLearningOverview(request, response, url);
+  }
+  if (request.method === 'POST' && pathname === '/api/student-session/course-start') {
+    return (async()=>{
+    const student=terminalLearningStudent(request,response);if(!student)return;
+    try{const body=await parseJsonBody(request);const store=courseCatalogStore(),course=store.findCourse(String(body.courseId||''),student);
+      if(!course||!courseAllowedByCurrentPlan(course))throw Error('课程未分配或当前授权不可用');
+      return sendJson(response,200,{ok:true,studentId:String(student.id),course:store.startPublishedCourse(course.courseId,student)});
+    }catch(error){return sendJson(response,400,{ok:false,message:error.message});}
+    })();
+  }
+  if (request.method === 'POST' && pathname === '/api/student-session/publications') {
+    return (async()=>{
+    const student=terminalLearningStudent(request,response);if(!student)return;
+    if(request.authContext.type!=='student_session')return sendJson(response,403,{ok:false,message:'请进入学生空间'});
+    try {
+      const body=JSON.parse((await readRequestBuffer(request,14*1024*1024)).toString('utf8')||'{}');
+      const execute=require('./student-publications.cjs').createStudentPublications({cards:getCardResources(),practice:getPracticeCards()});
+      const data=await execute(String(student.id),body.action,body.input||{});
+      return sendJson(response,200,{ok:true,studentId:String(student.id),data});
+    }catch(error){return sendJson(response,400,{ok:false,message:String(error.message||error).slice(0,240)});}
+    })();
   }
   if (request.method === 'GET' && pathname === '/api/student-session/practice') {
     return handleTerminalPractice(request, response, 'dashboard');
@@ -35336,6 +37943,10 @@ function startHostService(options = {}) {
       hostServiceLastError = '';
       startHostDiscovery();
       prepareAllAgentKnowledgeAccess();
+      const connectorRefresh = refreshExternalConnectionRuntimeConfigs();
+      if (connectorRefresh.failed.length) {
+        console.error('外部 Agent 连接配置刷新未全部完成', connectorRefresh.failed);
+      }
       notify('onNativeHostServiceChanged', getHostServiceStatus());
     });
     return getHostServiceStatus();
@@ -35552,7 +38163,12 @@ function licensedIpc(event, action, handler) {
     return;
   }
   try {
-    event.returnValue = handler();
+    const before = taskStoreGuard.sequence();
+    const result = handler();
+    if (result?.then || taskStoreGuard.sequence() !== before) {
+      void projectArchiveRuntime.track(() => Promise.resolve(result).then(async value => { if (taskStoreGuard.sequence() !== before) await taskStoreGuard.flush(); event.returnValue = value; }))
+        .catch(error => { event.returnValue = JSON.stringify({ ok: false, message: `${action}未保存：${error.message}` }); });
+    } else event.returnValue = result;
   } catch (error) {
     event.returnValue = JSON.stringify({ ok: false, message: `${action}失败：${error.message}` });
   }
@@ -35564,7 +38180,11 @@ function licensedInvoke(action, handler) {
   return new Promise((resolve) => {
     setImmediate(() => {
       try {
-        resolve(handler());
+        const before = taskStoreGuard.sequence();
+        Promise.resolve(handler()).then(async value => {
+          if (taskStoreGuard.sequence() !== before) await taskStoreGuard.flush();
+          resolve(value);
+        }).catch(error => resolve(JSON.stringify({ ok: false, message: `${action}未保存：${error.message}` })));
       } catch (error) {
         resolve(JSON.stringify({ ok: false, message: `${action}失败：${error.message}` }));
       }
@@ -35730,7 +38350,7 @@ ipcMain.on('bridge:initStudentWorkspace', (event, studentName, agentMd, indexMd,
 ipcMain.on('bridge:openApp', (event, appName) => { event.returnValue = openApp(appName); });
 ipcMain.on('bridge:openExternalUrl', (event, url) => { event.returnValue = openExternalUrl(url); });
 ipcMain.on('bridge:getAppStatus', (event) => {
-  event.returnValue = JSON.stringify({ qclawOpened, marvisOpened, hohuOpened, openclawOpened, imaCopilotOpened, workbuddyOpened, codexOpened, claudeCodeOpened, hermesOpened, obsidianOpened });
+  event.returnValue = JSON.stringify({ qclawOpened, marvisOpened, hohuOpened, openclawOpened, imaCopilotOpened, workbuddyOpened, codexOpened, claudeCodeOpened, hermesOpened, traeOpened, qoderWorkOpened, obsidianOpened });
 });
 ipcMain.on('bridge:getStorageConfig', (event) => { event.returnValue = getStorageConfig(); });
 ipcMain.on('bridge:getTemplateCenter', (event, systemTemplatesJson) => { event.returnValue = getTemplateCenter(systemTemplatesJson); });
@@ -35806,6 +38426,107 @@ async function customOptionsInvoke(action, operation) {
   catch (error) { return JSON.stringify({ ok: false, message: error.message }); }
 }
 ipcMain.handle('bridge:getCustomSubjects', (_event, id) => customOptionsInvoke('读取学科分类', api => api.getSubjects(id)));
+ipcMain.handle('bridge:agentControlAction', (_event, action, input = {}) => licensedInvoke('Agent 接入与调度中心', () => planningResultAsync(async () => ({ ok: true, data: await agentControlAction(action, input) }))));
+ipcMain.handle('bridge:smartInboxAction', (event, action, input = {}) => licensedInvoke('智能资料收件箱', () => planningResultAsync(async () => {
+  const engine = await getSmartInbox();
+  let data;
+  if (action === 'sources') data = { ...await engine.sources(), recommended: ['documents', 'pictures'].map(key => ({ key, path: app.getPath(key), name: key === 'documents' ? '文档' : '图片' })) };
+  else if (action === 'list') data = await engine.list(input);
+  else if (action === 'detail') data = await engine.detail(input.id);
+  else if (action === 'context') data = await smartInboxHostRuntime.context(input.studentId);
+  else if (action === 'agentStatus') {
+    const student = findStudentByKey(String(input.studentId || ''));
+    if (!student) throw Error('当前学生不存在或已失去访问权限');
+    const policy = agentControlPolicy(student, CLASSIFICATION_PROFILE);
+    data = currentStudentAgentStatus({ ...student, agentTool: policy.primary, classificationFallback: {
+      enabled: policy.enabled && policy.fallbacks.length > 0, providerId: policy.fallbacks[0] || '', version: policy.version,
+    } }, CLASSIFICATION_PROFILE);
+    const service = require('./agent-invocation-service.cjs');
+    async function savedStatus(status) {
+      const adapter = await classificationAdapter(status.providerId);
+      const saved = readTaskStore().runtime?.agentQualifications?.[status.providerId]?.[CLASSIFICATION_PROFILE];
+      return service.classificationSavedStatus(status, adapter, saved);
+    }
+    data = await savedStatus(data);
+    const fallback = data.fallback?.enabled ? await savedStatus(currentStudentAgentStatus({ ...student, agentTool: data.fallback.providerId }, CLASSIFICATION_PROFILE)) : null;
+    data = service.classificationRouteStatus(data, fallback);
+    if (!policy.enabled) Object.assign(data, { state: 'unsupported', automaticReady: false, message: '此学生的资料分类已在 Agent 中心停用。' });
+  }
+  else if (['saveFallback', 'authorizeAgent', 'continueAgent'].includes(action)) {
+    const student = findStudentByKey(String(input.studentId || ''));
+    if (!student || String(student.id) !== String(input.studentId) || student.archived || student.status === 'archived') throw Error('当前学生不存在或已失去访问权限');
+    if (!/^[a-zA-Z0-9_-]{1,120}$/.test(String(input.requestId || ''))) throw Error('缺少有效请求编号');
+    const policy = student.classificationFallback || { enabled: false, version: 0 };
+    if (action === 'saveFallback') {
+      if (agentControlPolicy(student, CLASSIFICATION_PROFILE).version > 0) throw Error('此学生已使用统一设置，请在 Agent 接入与调度中心修改备用策略');
+      const requestHash = crypto.createHash('sha256').update(JSON.stringify([input.enabled === true, input.providerId, input.version])).digest('hex');
+      if (policy.requestId === input.requestId && policy.requestHash !== requestHash) throw Error('请求编号不能用于不同设置');
+      if (Number(input.version) !== policy.version && policy.requestId !== input.requestId) throw Error('备用设置已变化，请刷新');
+      const providerId = input.providerId;
+      if (input.enabled && (!['workbuddy', 'codex'].includes(providerId) || providerId === student.agentTool || input.confirmed !== true)) throw Error('请确认允许所选备用 Agent 处理此学生资料');
+      if (policy.requestId !== input.requestId) {
+        const students = readStudentsIndex();
+        const current = students.find(s => String(s.id) === String(student.id));
+        current.classificationFallback = { enabled: input.enabled === true, providerId: input.enabled ? providerId : '', version: policy.version + 1,
+          requestId: input.requestId, requestHash, authorizedAt: taskNow() };
+        writeStudentsIndex(students);
+      }
+      data = input.enabled ? await engine.resumeAgent(String(student.id), input.requestId) : { count: 0 };
+      data.message = input.enabled ? `备用 Agent 已启用；已恢复 ${data.count} 项，跳过 ${data.skipped || 0} 项，失败 ${data.failed || 0} 项。${Object.keys(data.skipReasons || {}).join('、')}` : '备用切换已关闭';
+    } else {
+      const providerId = String(input.providerId || student.agentTool);
+      const allowed = agentClassificationRoute(student).providers;
+      if (!allowed.includes(providerId)) throw Error('此 Agent 不在当前学生授权范围');
+      const adapter = await classificationAdapter(providerId);
+      if (!adapter || adapter.unavailable) throw Error(adapter?.message || '执行器不可用');
+      if (action === 'authorizeAgent') {
+        data = await classificationAuth().start(providerId, adapter, input.requestId);
+      } else {
+        const release = captureHeavyWorkGate.tryAcquire({ kind: 'agent_probe', studentId: String(student.id), sessionId: 'classification-recovery', snapshot: captureTimelineResourceSnapshot() });
+        if (!release) throw Error('后台资源繁忙，资料已保留，请稍后继续');
+        try {
+          const login = classificationAuth().status(providerId);
+          const cached = readTaskStore().runtime?.agentQualifications?.[providerId]?.[CLASSIFICATION_PROFILE];
+          if (login || cached?.code === 'AUTHENTICATION_REQUIRED') {
+            await classificationAuth().invalidate(providerId, input.requestId);
+            smartInboxHostRuntime.routing.invalidate();
+          }
+          await smartInboxHostRuntime.routing.qualify(await classificationAdapter(providerId));
+        } finally { release(); }
+        data = await engine.resumeAgent(String(student.id), input.requestId);
+        for (const other of readStudentsIndex().filter(s => String(s.id) !== String(student.id) && !s.archived && s.status !== 'archived'
+          && agentClassificationRoute(s).providers.includes(providerId))) {
+          try { await engine.resumeAgent(String(other.id), `${input.requestId}-${crypto.createHash('sha256').update(String(other.id)).digest('hex').slice(0, 12)}`); }
+          catch (error) { console.warn('Agent共享登录恢复等待处理：', error.message); }
+        }
+        data.message = `授权校验通过，已恢复 ${data.count} 项；跳过 ${data.skipped || 0} 项，失败 ${data.failed || 0} 项。${Object.keys(data.skipReasons || {}).join('、')}。历史未知执行仍需核对。`;
+      }
+    }
+  }
+  else if (action === 'saveSource') data = await engine.updateSource(input);
+  else if (action === 'pause') data = await engine.pause(input.id);
+  else if (action === 'detach') data = await engine.detach(input.id);
+  else if (action === 'defaults') data = await engine.setDefaults(input);
+  else if (action === 'scan') data = await engine.requestScan(input.id);
+  else if (action === 'decide') data = await engine.decide(input);
+  else if (action === 'detectAgent') {
+    const student = findStudentByKey(String(input.studentId || ''));
+    if (!student) throw Error('当前学生不存在或已失去访问权限');
+    const adapterId = String(student.agentTool || '');
+    if (!['codex', 'workbuddy'].includes(adapterId)) throw Error('当前学生配置的 Agent 不支持受控后台检测，请在学生设置中选择 Codex 或 WorkBuddy。');
+    const raw = adapterId === 'codex'
+      ? await detectCodexBackgroundAuthorization(input.confirmed === true)
+      : await detectWorkBuddyBackgroundAuthorization(input.confirmed === true);
+    data = { ...JSON.parse(raw), adapterId };
+  }
+  else if (action === 'open') { const file = await engine.openOriginal(input.id); shell.showItemInFolder(file); data = { ok: true }; }
+  else if (action === 'choose') {
+    const parent = BrowserWindow.fromWebContents(event.sender);
+    const picked = await dialog.showOpenDialog(parent, { title: '选择资料来源文件夹', defaultPath: input.recommended === 'pictures' ? app.getPath('pictures') : app.getPath('documents'), properties: ['openDirectory'] });
+    data = { canceled: picked.canceled, folder: picked.filePaths[0] || '' };
+  } else throw Error('不支持的资料收件箱操作');
+  return { ok: true, data };
+})));
 ipcMain.handle('bridge:getDownloadInboxSettings', () => licensedInvoke('读取下载收件箱', () => planningResultAsync(async () => ({ ok: true, data: await getDownloadInbox().getSettings() }))));
 ipcMain.handle('bridge:configureDownloadInbox', (_event, action) => licensedInvoke('配置下载收件箱', () => planningResultAsync(async () => {
   if (action === 'disconnect') return { ok: true, data: await getDownloadInbox().configure('') };
@@ -35814,8 +38535,8 @@ ipcMain.handle('bridge:configureDownloadInbox', (_event, action) => licensedInvo
   if (result.canceled) return { ok: true, data: { ...await getDownloadInbox().getSettings(), canceled: true } };
   return { ok: true, data: await getDownloadInbox().configure(result.filePaths[0]) };
 })));
-ipcMain.handle('bridge:listDownloadInboxFiles', () => licensedInvoke('浏览下载文件', () => planningResultAsync(async () => ({ ok: true, data: await getDownloadInbox().list() }))));
-ipcMain.handle('bridge:deliverDownloadInboxFiles', (_event, ids, target) => licensedInvoke('投递下载文件', () => planningResultAsync(async () => ({ ok: true, data: await getDownloadInbox().deliver(ids, target) }))));
+ipcMain.handle('bridge:listDownloadInboxFiles', () => licensedInvoke('浏览下载文件', () => planningResultAsync(async () => ({ ok: true, data: await getLegacyIntakeBridge().downloadList() }))));
+ipcMain.handle('bridge:deliverDownloadInboxFiles', (_event, ids, target) => licensedInvoke('投递下载文件', () => planningResultAsync(async () => ({ ok: true, data: await getLegacyIntakeBridge().deliverDownloads(ids, target) }))));
 ipcMain.handle('bridge:trashDownloadInboxFiles', (_event, ids) => licensedInvoke('回收下载文件', () => planningResultAsync(async () => {
   if (!Array.isArray(ids) || !ids.length || ids.length > 100) throw Error('每次请选择 1 至 100 个文件');
   const result = await dialog.showMessageBox(mainWindow, { type: 'warning', title: '移入 Windows 回收站',
@@ -35845,6 +38566,54 @@ ipcMain.handle('bridge:captureInboxOpen', (_event, id) => licensedInvoke('打开
   if (error) throw new Error('无法打开当前学生分享接收目录');
   return { ok: true, data: info };
 })));
+ipcMain.handle('bridge:publicationAction', (_event, id, action, input = {}) => licensedInvoke('课程与卡片发布', () => planningResultAsync(async () => {
+  if(action==='publishPlatformDrafts')return {ok:true,data:await publishPlatformCoursesLocally({...input,studentId:String(id||'')})};
+  const service = require('./publication-center.cjs').createPublicationCenter({courses:courseCatalogStore,cards:getCardResources,students:()=>readStudentsIndex().map(toHostStudent),license:publicLicenseStatus});
+  const data = await service.execute(String(id||''),action,input);
+  if(action==='list'&&hasCapability(publicLicenseStatus(),'platform_course_publish')){
+    const batches=require('./publication-batch.cjs');data.expectedBatchHash=batches.batchHash(platformPublishItems());
+    data.pendingBatches=await batches.incompletePublicationBatches(path.join(app.getPath('userData'),'platform-course-authoring','local-published'),String(id||''));
+  }
+  if(action!=='list')notify('onNativeCourseCatalogChanged',{action:'publication_changed'});
+  return {ok:true,data};
+})));
+ipcMain.handle('bridge:practiceAction', (event, id, action, input = {}) => licensedInvoke('学习卡片', () => planningResultAsync(async () => {
+  id = String(id || ''); if (!findStudent(id)) throw Error('当前学生不存在');
+  const api = getPracticeCards(); let data;
+  if (String(action).startsWith('resource')) data = await handleCardResourceAction(event, id, action, input);
+  else if (action === 'workspace') data = await api.workspace(id, input);
+  else if (action === 'cardChoices') data = await api.cardChoices(id);
+  else if (action === 'attempts') data = await api.listAttempts(id, input);
+  else if (action === 'detail') data = await api.attemptDetail(id, input.attemptId);
+  else if (action === 'assistance') data = await api.assistance(id, input.cardId, input.kind);
+  else if (action === 'retry') data = await api.requestReview(id, input.attemptId);
+  else if (action === 'confirm') data = await api.confirmReview(id, input.attemptId, input);
+  else if (action === 'previewDocx') {
+    if(typeof input.base64!=='string'||input.base64.length>14*1024*1024||!/^[A-Za-z0-9+/]*={0,2}$/.test(input.base64))throw Error('预览文件无效或超限');
+    data=await require('./practice-document.cjs').previewDocx({bytes:Buffer.from(input.base64,'base64'),tempRoot:app.getPath('temp')});
+  }
+  else if (action === 'exportAttempt') {
+    const detail=await api.attemptDetail(id,input.attemptId);
+    const choice=await dialog.showSaveDialog(BrowserWindow.fromWebContents(event.sender),{title:'独立导出作答与反馈（含个人资料，请妥善保存）',defaultPath:`作答-${input.attemptId}.json`,filters:[{name:'作答存档',extensions:['json']}]});
+    if(choice.canceled||!choice.filePath)data={cancelled:true};
+    else {const attachment=detail.attachment?await api.attachment(id,input.attemptId):null;await fs.promises.writeFile(choice.filePath,JSON.stringify({schema:'edu-manager.practice-archive.v1',...detail,original:attachment?{name:attachment.name,extension:attachment.extension,base64:attachment.bytes.toString('base64')}:null},null,2));data={saved:true};}
+  }
+  else if (action === 'cancel') {
+    data = JSON.parse(await cancelTask(getPracticeTaskHost().taskId(id, input.attemptId), '用户取消卡片评阅'));
+    if (!data.ok) throw Error(data.message || '取消未完成');
+    await api.markCancelled(id, input.attemptId);
+  } else if (action === 'attachment' || action === 'saveAttachment') {
+    const file = await api.attachment(id, input.attemptId);
+    if (action === 'saveAttachment') {
+      const chosen = await dialog.showSaveDialog(BrowserWindow.fromWebContents(event.sender), { title: '另存作答原件', defaultPath: file.name });
+      if (chosen.canceled || !chosen.filePath) data = { cancelled: true };
+      else { await fs.promises.writeFile(chosen.filePath, file.bytes); data = { saved: true }; }
+    } else if (file.extension === '.docx') {
+      data = await require('./practice-document.cjs').previewDocx({bytes:file.bytes,tempRoot:app.getPath('temp')});
+    } else data = { base64: file.bytes.toString('base64'), extension: file.extension, name: file.name };
+  } else throw Error('不支持的学习卡片操作');
+  return { ok: true, data };
+})));
 ipcMain.handle('bridge:getPracticeDashboard', (_event, id) => licensedInvoke('读取学习卡片', () => planningResultAsync(async () => ({ ok: true, data: await getPracticeCards().dashboard(id) }))));
 ipcMain.handle('bridge:savePracticePlan', (_event, id, plan) => licensedInvoke('保存练习计划', () => planningResultAsync(async () => ({ ok: true, data: await getPracticeCards().savePlan(id, plan) }))));
 ipcMain.handle('bridge:generatePracticeCard', (_event, id) => licensedInvoke('生成学习卡片', () => planningResultAsync(async () => ({ ok: true, data: await getPracticeCards().generate(id) }))));
@@ -35854,6 +38623,13 @@ ipcMain.handle('bridge:exportPracticeCard', (event, id, cardId, format) => licen
   const card = await getPracticeCards().exportCard(id, cardId);
   const student = findStudent(String(id || '')); if (!student) throw Error('当前学生不存在');
   card.content = JSON.parse(redactStudentGeneration(card.content, student));
+  if (card.resourceRef) {
+    const resource=await getCardResources().resolve(card.resourceRef.key);
+    if(resource.type==='document') {
+      const file=await getCardResources().historicalFile(id,card.id);
+      return {ok:true,data:await require('./practice-document.cjs').renderOriginal({file,card,format,BrowserWindow,dialog,parent:BrowserWindow.fromWebContents(event.sender),tempRoot:app.getPath('temp')})};
+    }
+  }
   const data = await require('./practice-card-export.cjs').renderPracticeCard({ card, format, BrowserWindow, dialog, parent: BrowserWindow.fromWebContents(event.sender), tempRoot: app.getPath('temp') });
   return { ok: true, data };
 })));
@@ -35861,7 +38637,9 @@ ipcMain.handle('bridge:captureInboxReceive', (_event, id, input) => licensedInvo
   if (typeof input?.base64 !== 'string' || input.base64.length > 28 * 1024 * 1024 || !/^[A-Za-z0-9+/]*={0,2}$/.test(input.base64)) throw new Error('采集字节无效或超限');
   return { ok: true, data: await getCaptureInbox().receive(id, { ...input, bytes: Buffer.from(input.base64, 'base64') }) };
 })));
-ipcMain.handle('bridge:captureInboxChange', (_event, id, ids, action, target) => licensedInvoke('处理采集资料', () => planningResultAsync(async () => ({ ok: true, data: await getCaptureInbox().change(id, ids, action, target) }))));
+ipcMain.handle('bridge:captureInboxChange', (_event, id, ids, action, target) => licensedInvoke('处理采集资料', () => planningResultAsync(async () => ({ ok: true, data: action === 'deliver'
+  ? await getLegacyIntakeBridge().deliverShares(String(id), ids, target)
+  : await getCaptureInbox().change(id, ids, action, target) }))));
 ipcMain.handle('bridge:saveCustomSubjects', (_event, id, items) => customOptionsInvoke('保存学科分类', api => api.saveSubjects(id, items)));
 ipcMain.handle('bridge:listCustomAgentTools', () => customOptionsInvoke('读取自定义工具', api => api.listTools()));
 ipcMain.handle('bridge:addCustomAgentTool', (_event, input) => customOptionsInvoke('添加自定义工具', api => api.addTool(input)));
@@ -35932,7 +38710,7 @@ ipcMain.handle('bridge:setPlanningFavorite', (_event, studentId, kind, versionId
 ipcMain.handle('bridge:refreshTopicSuggestions', (_event, studentId, requestJson) => licensedInvoke('更新选题建议', () => planningResultAsync(() => planningGuidanceService().refreshAgentTopicSuggestions(studentId, JSON.parse(requestJson || '{}')))));
 ipcMain.handle('bridge:prepareProjectDraftFromSuggestion', (_event, studentId, suggestionId, versionId) => licensedInvoke('从选题建议准备项目草稿', () => planningResult(() => planningGuidanceService().prepareProjectDraftFromSuggestion(studentId, suggestionId, versionId))));
 ipcMain.handle('bridge:getGuidancePlan', (_event, studentId) => licensedInvoke('读取规划与指导', () => planningResult(() => planningGuidanceService().getGuidancePlan(studentId))));
-ipcMain.handle('bridge:refreshGuidancePlan', (_event, studentId, requestJson) => licensedInvoke('更新规划与指导', () => planningResultAsync(async () => { await refreshAdapterCapabilities(true); return planningGuidanceService().refreshGuidancePlan(studentId, JSON.parse(requestJson || '{}')); })));
+ipcMain.handle('bridge:refreshGuidancePlan', (_event, studentId, requestJson) => licensedInvoke('更新规划与指导', () => planningResultAsync(async () => refreshGuidanceThroughTask(studentId, JSON.parse(requestJson || '{}')))));
 ipcMain.handle('bridge:getGuidanceHistory', (_event, studentId) => licensedInvoke('读取规划版本历史', () => planningResult(() => planningGuidanceService().getGuidanceHistory(studentId))));
 ipcMain.handle('bridge:saveGuidancePreferences', (_event, studentId, preferencesJson) => licensedInvoke('保存规划更新偏好', () => planningResult(() => planningGuidanceService().saveGuidancePreferences(studentId, JSON.parse(preferencesJson || '{}')))));
 ipcMain.handle('bridge:getResearchCapabilityStatus', () => licensedInvoke('检查联网研究能力', () => planningResultAsync(async () => { await refreshAdapterCapabilities(true); return planningGuidanceService().getResearchCapabilityStatus(); })));
@@ -36054,8 +38832,11 @@ ipcMain.on('bridge:syncStudentDigestAudit', (event, studentId) => { licensedIpc(
 ipcMain.on('bridge:recordScheduledTaskAction', (event, studentId, kind, commandText) => { licensedIpc(event, '定时任务账本', () => recordScheduledTaskAction(studentId, kind, commandText)); });
 ipcMain.on('bridge:getStudentScheduleLedger', (event, studentId) => { event.returnValue = getStudentScheduleLedger(studentId); });
 ipcMain.on('bridge:getTaskCenter', (event) => { event.returnValue = getTaskCenter(); });
-ipcMain.handle('bridge:getTaskCenterAsync', (_event, force, quick) => getTaskCenter({ force: Boolean(force), quick: Boolean(quick) }));
-ipcMain.handle('bridge:getTaskStatusesAsync', (_event, taskIds) => getTaskStatuses(taskIds));
+ipcMain.handle('bridge:getTaskCenterAsync', () => getTaskPage({}, 'legacy'));
+ipcMain.handle('bridge:getTaskPage', (_event, query) => getTaskPage(query));
+ipcMain.handle('bridge:getTaskDetail', (_event, taskId) => getTaskPage({ id: String(taskId || '') }, 'detail'));
+ipcMain.handle('bridge:reopenTaskHandoff', (_event, taskId, executionId, action) => licensedInvoke('重新交接当前任务', () => reopenTaskHandoff(taskId, executionId, action)));
+ipcMain.handle('bridge:getTaskStatusesAsync', (_event, taskIds) => getTaskPage({ ids: Array.isArray(taskIds) ? taskIds.slice(0, 32).map(String) : [] }, 'statuses'));
 ipcMain.handle('bridge:archiveAccessRpc', (_event, requestJson) => archiveAccessRpc(requestJson));
 ipcMain.handle('bridge:remoteArchiveAccessRpc', (_event, requestJson) => remoteArchiveAccessRpc(requestJson));
 ipcMain.handle('bridge:queryAgentKnowledge', (_event, optionsJson) => queryAgentKnowledge(optionsJson));
@@ -36081,11 +38862,22 @@ ipcMain.handle('bridge:executeTask', (_event, taskId, executor) => licensedInvok
 ipcMain.on('bridge:approveTask', (event, taskId, decision, note) => { licensedIpc(event, '任务审批', () => approveTask(taskId, decision, note)); });
 ipcMain.on('bridge:retryTask', (event, taskId) => { licensedIpc(event, '任务重试', () => retryTask(taskId)); });
 ipcMain.on('bridge:cancelTask', (event, taskId, note) => { licensedIpc(event, '取消任务', () => cancelTask(taskId, note)); });
+ipcMain.on('bridge:deleteTaskHistory', (event, taskId) => { licensedIpc(event, '删除历史任务', () => deleteTaskHistory(taskId)); });
+ipcMain.handle('bridge:previewTaskGovernanceBatch', (_event, request) =>
+  licensedInvoke('预览批量任务操作', () => JSON.stringify(previewTaskGovernanceBatch(request))));
+ipcMain.handle('bridge:commitTaskGovernanceBatch', (_event, request) =>
+  licensedInvoke('提交批量任务操作', async () => JSON.stringify(await commitTaskGovernanceBatch(request))));
 ipcMain.on('bridge:importTaskResult', (event, taskId) => { licensedIpc(event, '导入任务结果', () => importTaskResult(taskId)); });
 ipcMain.on('bridge:importTaskResultText', (event, taskId, content) => { licensedIpc(event, '粘贴任务结果', () => importTaskResultText(taskId, content)); });
-ipcMain.on('bridge:syncQClawTaskResults', (event) => { licensedIpc(event, '同步 QClaw 任务结果', () => syncQClawTaskResults()); });
+ipcMain.handle('bridge:importTaskResultTextAsync', (_event, taskId, content) => licensedInvoke('粘贴任务结果', () => importTaskResultText(taskId, content)));
+ipcMain.handle('bridge:confirmTaskExternalStopped', (_event, taskId, executionId) => licensedInvoke('核对任务停止', () => confirmTaskExternalStopped(taskId, executionId)));
+ipcMain.handle('bridge:detectWorkBuddyBackgroundAuthorization', (_event, confirmed) => licensedInvoke('检测 WorkBuddy 后台授权', () => detectWorkBuddyBackgroundAuthorization(confirmed)));
+ipcMain.handle('bridge:detectCodexBackgroundAuthorization', (_event, confirmed) => licensedInvoke('检测 Codex 后台授权', () => detectCodexBackgroundAuthorization(confirmed)));
+ipcMain.handle('bridge:importTaskResultFileAsync', (_event, taskId) => licensedInvoke('导入任务结果', () => importTaskResultFileAsync(taskId)));
+ipcMain.on('bridge:syncQClawTaskResults', (event) => { licensedIpc(event, '同步旧版任务结果', () => syncQClawTaskResults()); });
+ipcMain.on('bridge:syncAgentTaskResults', (event, agentId) => { licensedIpc(event, '同步 Agent 任务结果', () => syncAgentTaskResults(agentId)); });
 ipcMain.on('bridge:submitDailyActionFeedback', (event, taskId, status, note) => { licensedIpc(event, '每日行动反馈', () => submitDailyActionFeedback(taskId, status, note)); });
-ipcMain.on('bridge:openTaskCenterPath', (event, kind) => { event.returnValue = openTaskCenterPath(kind); });
+ipcMain.on('bridge:openTaskCenterPath', (event, kind, agentId) => { event.returnValue = openTaskCenterPath(kind, agentId); });
 ipcMain.on('bridge:openTaskResultPath', (event, taskId) => { event.returnValue = openTaskResultPath(taskId); });
 ipcMain.on('bridge:generateStudentMaintenanceReport', (event, studentId) => { licensedIpc(event, '定时维护报告', () => generateStudentMaintenanceReport(studentId)); });
 ipcMain.on('bridge:getHostTimeline', (event) => { event.returnValue = getHostTimeline(); });
@@ -36233,9 +39025,14 @@ if (!hasSingleInstanceLock) {
   app.whenReady().then(async () => {
     if (!await prepareHostMigrationStateStartup()) return;
     if (!await prepareProjectRecordLifecycleStartup()) return;
+    ensureTaskCenterWorkspace();
+    await taskStoreGuard.initialize(taskStorePath());
     if (!await prepareProjectArchiveStartup()) return;
+    await migrateTaskQueueGovernance();
     await prepareProjectUploadIntakeStartup();
     await recoverInterruptedProjectMaterialMigrations();
+    powerMonitor.on('suspend', () => { taskIoClient.pause(); taskActiveDeadlines.pause(); void taskPowerRecovery.suspend(); });
+    powerMonitor.on('resume', () => { taskIoClient.resume(); void taskPowerRecovery.resume(); });
     void getCloudReportRuntime().catch(() => { /* Cloud sync is optional; local report flow remains available. */ });
     createWindow();
     if (projectUploadRecoveryIssues.length) void dialog.showMessageBox({ type: 'warning',
@@ -36255,13 +39052,23 @@ if (!hasSingleInstanceLock) {
     restoreHeavyTaskRetries();
     if (captureVisionConsent().enabled) scheduleCaptureVisionSweep(60_000);
     startDigestWorkflowMonitor();
+    startTaskReadMaintenance();
     startGrowthRefreshMonitor();
     startDirectDeliveryMonitor();
     startAgentLifecycleDrainMonitor();
     startAgentLifecycleInstallMonitor();
     const collaboration = readCollaborationState();
-    if (collaboration.enabled && collaboration.bindings.some((item) => item.status === 'active' && !item.revokedAt)) {
-      startHostService({ preserveUsageMode: true });
+    const collaborationNeedsHost = collaboration.enabled && collaboration.bindings.some((item) => item.status === 'active' && !item.revokedAt);
+    let externalConnectorNeedsHost = false;
+    try {
+      const external = externalConnectorStore().snapshot();
+      externalConnectorNeedsHost = external.policy.status === 'active' && !external.policy.paused
+        && external.connections.some(item => item.status === 'active');
+    } catch (error) {
+      console.error('读取外部 Agent 连接状态失败', error);
+    }
+    if (collaborationNeedsHost || externalConnectorNeedsHost) startHostService({ preserveUsageMode: true });
+    if (collaborationNeedsHost) {
       readStudentsIndex().forEach((student, index) => scheduleStudentArchiveSync(student.id, 15_000 + index * 250));
     }
     startStudentArchiveSyncWatchers();
@@ -36277,8 +39084,28 @@ if (!hasSingleInstanceLock) {
 }
 
 let materialQuitPending = false;
+let taskStoreQuitReady = false;
+let smartInboxQuitReady = false, smartInboxQuitPending = false;
 app.on('before-quit', (event) => {
   if (!projectArchiveStartupReady) return;
+  if (typeof smartInboxHostRuntime !== 'undefined' && smartInboxHostRuntime && !smartInboxQuitReady) {
+    event.preventDefault();
+    if (!smartInboxQuitPending) {
+      smartInboxQuitPending = true; stopUnifiedTaskScheduler();
+      void smartInboxHostRuntime.engine.close().catch(error => console.error('资料归集退出核对：', error.message)).finally(() => { smartInboxQuitReady = true; app.quit(); });
+    }
+    return;
+  }
+  // Recheck on every quit pass: a protected material commit may enqueue new
+  // writes after an earlier barrier, while quit was waiting for that commit.
+  if (taskStoreGuard.pending() && !taskStoreGuard.status()) {
+    event.preventDefault();
+    taskReadMaintenanceStopped = true;
+    stopUnifiedTaskScheduler(); stopDigestWorkflowMonitor();
+    void taskStoreGuard.flush().then(() => { taskStoreQuitReady = true; app.quit(); })
+      .catch(error => { console.error('Task shutdown storage fault:', error.message); taskStoreQuitReady = true; app.quit(); });
+    return;
+  }
   if (projectArchiveRuntime.status().phase === 'maintenance') {
     event.preventDefault();
     if (!materialQuitPending) {
@@ -36300,6 +39127,15 @@ app.on('before-quit', (event) => {
     return;
   }
   cloudReportRuntime?.close();
+  taskReadMaintenanceStopped = true;
+  if (taskReadMaintenanceTimer) clearTimeout(taskReadMaintenanceTimer);
+  taskReadMaintenanceTimer = null;
+  if (taskInboxTimer) clearTimeout(taskInboxTimer);
+  taskInboxTimer = null;
+  if (taskProgressTimer) clearTimeout(taskProgressTimer);
+  taskProgressTimer = null;
+  taskIoClient.close();
+  businessTaskRetryQueue.close();
   globalShortcut.unregisterAll();
   stopGrowthRefreshMonitor();
   captureTimelineScheduler?.stop();
@@ -36336,8 +39172,7 @@ app.on('before-quit', (event) => {
     running?.releaseHeavyPermit?.();
   }
   taskChildProcesses.clear();
-  for (const timer of heavyTaskRetryTimers.values()) clearTimeout(timer);
-  heavyTaskRetryTimers.clear();
+  heavyTaskRetryQueue.close();
   if (hostServer) {
     hostServer.close();
     hostServer = null;

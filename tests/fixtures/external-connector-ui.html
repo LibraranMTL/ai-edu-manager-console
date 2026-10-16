@@ -1,0 +1,25 @@
+<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><title>连接器界面隔离验收</title><link rel="stylesheet" href="/src/styles.css"><link rel="stylesheet" href="/src/agent-control-center.css"></head>
+<body><main style="max-width:1150px;margin:auto;padding:24px"><div id="root" class="agent-control-center"></div></main><script type="module">
+import React from '/node_modules/.vite/deps/react.js';
+import ReactDOM from '/node_modules/.vite/deps/react-dom_client.js';
+import Connector from '/src/ExternalAgentConnector.tsx';
+const restrictions={excludedStudentIds:[],excludedProjectIds:[],disabledPermissions:[],expiresAt:'',requireWriteConfirmation:false};
+const s={policy:{status:'active',preset:'full',accessMode:'session_bound',paused:false,revision:1,inheritForNewStudents:true,inheritForNewConnections:true,restrictions},installedHosts:{},permissions:[],presets:{read:[],read_memory:[],full:Array(13).fill('')},connections:[],sessions:[],students:[],projects:[],operations:[]};
+window.qaActions=[]; window.qaFailNext=false;
+const api={agentControlAction:async(action,input)=>{
+  window.qaActions.push({action,input});let message='状态已刷新';
+  if(window.qaFailNext && action!=='external:snapshot'){window.qaFailNext=false;return JSON.stringify({ok:false,message:'模拟配置冲突：请修复原配置后重试'});}
+  if(action==='external:savePolicy')s.policy={...input,revision:s.policy.revision+1};
+  if(['external:installHost','external:repairInstalled'].includes(action)){
+    s.installedHosts[input.hostType]={status:'bridge_verified',connectionId:input.hostType,verifiedAt:new Date().toISOString()};
+    if(!s.connections.some(c=>c.connectionId===input.hostType))s.connections.push({connectionId:input.hostType,label:input.hostType,hostType:input.hostType,status:'active',restrictions});
+    else s.connections.find(c=>c.connectionId===input.hostType).status='active';message='本机通道已验证';
+  }
+  if(action==='external:verifyInstalled')message='验证通过';
+  if(action==='external:uninstallInstalled'){s.installedHosts[input.hostType].status='uninstalled';s.connections.find(c=>c.connectionId===input.hostType).status='revoked';message='已卸载并撤权';}
+  if(action==='external:connection'){s.connections.find(c=>c.connectionId===input.connectionId).status=input.status;message='连接已更新';}
+  if(action==='external:deleteConnection'){s.connections=s.connections.filter(c=>c.connectionId!==input.connectionId);s.sessions=s.sessions.filter(c=>c.connectionId!==input.connectionId);message='已删除撤销的连接记录；资料和审计保留';}
+  return JSON.stringify({ok:true,data:action==='external:snapshot'?s:{message}});
+}};
+ReactDOM.createRoot(document.getElementById('root')).render(React.createElement(Connector,{api}));
+</script></body></html>

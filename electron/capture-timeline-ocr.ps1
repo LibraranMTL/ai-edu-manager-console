@@ -80,12 +80,23 @@ try {
     }
     $bitmap = Await-WinRt ($decoder.GetSoftwareBitmapAsync()) ([Windows.Graphics.Imaging.SoftwareBitmap])
     try {
+      $languageFallback = $false
+      $availableLanguages = @([Windows.Media.Ocr.OcrEngine]::AvailableRecognizerLanguages)
       if ($LanguageTag) {
         [void][Windows.Globalization.Language, Windows.Globalization, ContentType = WindowsRuntime]
         $language = New-Object Windows.Globalization.Language($LanguageTag)
         $engine = [Windows.Media.Ocr.OcrEngine]::TryCreateFromLanguage($language)
+        if (-not $engine) {
+          $primaryLanguage = $LanguageTag.Split('-')[0]
+          $compatibleLanguage = $availableLanguages | Where-Object { $_.LanguageTag.Split('-')[0] -eq $primaryLanguage } | Select-Object -First 1
+          if ($compatibleLanguage) { $engine = [Windows.Media.Ocr.OcrEngine]::TryCreateFromLanguage($compatibleLanguage) }
+        }
       } else {
         $engine = [Windows.Media.Ocr.OcrEngine]::TryCreateFromUserProfileLanguages()
+      }
+      if (-not $engine -and $availableLanguages.Count -gt 0) {
+        $engine = [Windows.Media.Ocr.OcrEngine]::TryCreateFromLanguage($availableLanguages[0])
+        $languageFallback = $true
       }
       if (-not $engine) { throw 'No Windows OCR language is installed.' }
       $result = Await-WinRt ($engine.RecognizeAsync($bitmap)) ([Windows.Media.Ocr.OcrResult])
@@ -93,6 +104,8 @@ try {
         ok = $true
         text = [string]$result.Text
         language = [string]$engine.RecognizerLanguage.LanguageTag
+        requestedLanguage = $LanguageTag
+        languageFallback = $languageFallback
         thumbnailAvailable = [bool]($ThumbnailPath -and [System.IO.File]::Exists([System.IO.Path]::GetFullPath($ThumbnailPath)))
       }
     } finally {

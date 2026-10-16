@@ -1,0 +1,49 @@
+.agent-control-center { min-width: 0; }
+.agent-control-center > section { border-top: 1px solid #d5e0ea; margin-top: 24px; padding-top: 12px; }
+.agent-control-center input[type=checkbox] { width: 18px; height: 18px; min-height: 18px; max-width: 18px; padding: 0; flex-shrink: 0; display: inline-block; margin-right: 8px; }
+.agent-control-center > section > label { display: flex; align-items: center; gap: 8px; }
+.agent-control-center input:not([type=checkbox]), .agent-control-center textarea, .agent-control-center select { width: 100%; min-width: 0; box-sizing: border-box; }
+.agent-control-center ol li { margin: 8px 0; }
+.agent-control-center h4 { margin: 0; }
+.agent-provider-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; margin: 18px 0; }
+.agent-provider-picker { display: grid; grid-template-columns: minmax(260px, 460px) minmax(220px, 1fr); align-items: end; gap: 16px; margin: 18px 0; }
+.agent-provider-picker > label { display: grid; gap: 8px; font-weight: 650; }
+.agent-provider-picker-summary { display: grid; gap: 6px; min-height: 48px; padding: 11px 14px; border: 1px solid #d5e0ea; border-radius: 12px; background: #f8fbff; }
+.agent-provider-picker-summary span { color: #60758a; }
+.agent-selected-provider { display: grid; gap: 14px; margin: 0 0 18px; }
+.agent-policy { border: 1px solid #cddae8; border-radius: 14px; padding: 18px; background: #f8fbff; min-width: 0; overflow-wrap: anywhere; }
+.agent-policy h3 { margin-top: 0; }
+.agent-policy label { display: block; margin: 12px 0; line-height: 1.6; }
+.agent-policy input[type=checkbox] { display: inline-block; width: auto; margin: 0 8px 0 0; vertical-align: middle; }
+.agent-control-center button { border: 1px solid #b7c8da; border-radius: 8px; padding: 9px 12px; color: #163c5c; background: #fff; cursor: pointer; }
+.agent-control-center button.primary { background: #165fa2; border-color: #165fa2; color: #fff; }
+.agent-control-center button:disabled { opacity: 1; background: #e7edf3; color: #64778a; border-color: #d3dfe9; cursor: default; }
+.agent-control-center .panel-heading > button { flex-shrink: 0; white-space: nowrap; }
+.agent-control-center .actions { display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0; }
+.agent-control-center .provider-operation { margin: 8px 0 0; }
+.agent-control-center .provider-operation.running { border-color: #93c5fd; background: #eff6ff; color: #1e3a8a; }
+.agent-control-center .provider-operation.pending { border-color: #93c5fd; background: #eff6ff; color: #1e3a8a; }
+.agent-control-center .provider-operation.success { border-color: #86efac; background: #f0fdf4; color: #14532d; }
+.agent-control-center .provider-operation.error { border-color: #fca5a5; background: #fef2f2; color: #7f1d1d; }
+.agent-control-center .qualification-ready, .agent-control-center .qualification-pending { border-radius: 10px; padding: 10px 12px; }
+.agent-control-center .qualification-ready { background: #e7f7ee; color: #17633a; }
+.agent-control-center .qualification-pending { background: #fff5db; color: #715312; }
+.agent-control-center .qualification-list { margin-top: 12px; border-top: 1px dashed #c6d5e3; }
+.agent-control-center .qualification-list p { margin: 8px 0; }
+@media (max-width: 740px) {
+  .agent-provider-grid { grid-template-columns: minmax(0, 1fr); }
+  .agent-provider-picker { grid-template-columns: minmax(0, 1fr); align-items: stretch; }
+  .agent-control-center .panel-heading { flex-wrap: wrap; gap: 12px; }
+}
+.agent-policy select { width: 100%; margin-top: 6px; }
+.agent-control-center details { border-top: 1px solid #d5e0ea; padding: 16px 0; }
+.agent-control-center summary { cursor: pointer; font-weight: 600; }
+.agent-table-scroll { overflow-x: auto; }
+.agent-table-scroll table { width: 100%; border-collapse: collapse; }
+.agent-table-scroll td, .agent-table-scroll th { text-align: left; padding: 12px; border-bottom: 1px solid #d5e0ea; }
+.external-agent-connector { border: 1px solid #a9c8d3; border-radius: 16px; padding: 20px; background: #f4fafb; margin-bottom: 28px; }
+.external-agent-connector > label, .external-agent-connector fieldset label { display: block; margin: 10px 0; }
+.external-agent-connector fieldset { border: 1px solid #c5d9de; border-radius: 10px; margin: 12px 0; padding: 14px; min-width: 0; }
+.external-agent-connector select, .external-agent-connector input:not([type=checkbox]) { max-width: 100%; }
+.external-agent-connector .agent-policy { margin: 12px 0; }
+.agent-control-center > .external-agent-connector > label { display: grid; gap: 8px; }

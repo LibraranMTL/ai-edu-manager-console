@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
+const StudentPublishedCards = React.lazy(() => import('./StudentPublishedCards').then(module => ({default:module.StudentPublishedCards})));
 import {
   Archive,
   ArrowRight,
@@ -407,6 +408,7 @@ function TerminalApp() {
   const openPractice = async () => {
     if (!api || !selectedStudentId) return;
     setActiveWorkspace('practice'); setLearningBusy(true);
+    if (learningCapabilities.publications && (api as any).publicationAction) { setLearningBusy(false); return; }
     try {
       const result = await api.getPracticeDashboard();
       if (result.studentId === selectedStudentId) setPracticeDashboard(result.dashboard);
@@ -1464,7 +1466,8 @@ function TerminalApp() {
           </div>
         </div> : null}
 
-        {activeWorkspace === 'practice' ? <div className="student-tool-form">
+        {activeWorkspace === 'practice' && (learningCapabilities as any).publications && (api as any)?.publicationAction ? <React.Suspense fallback={<p>正在读取卡片资源…</p>}><StudentPublishedCards key={selectedStudentId} studentId={selectedStudentId} action={(name,input)=>(api as any).publicationAction(name,input)}/></React.Suspense> : null}
+        {activeWorkspace === 'practice' && !(learningCapabilities as any).publications ? <div className="student-tool-form">
           {rejectedPracticeAttempts.map(item => <details key={item.attemptId}><summary>一份暂存作答未获主机接收（原文保留）</summary><p>{item.error}</p><textarea readOnly value={item.answer} rows={4} aria-label="未接收的原始作答" /></details>)}
           {learningBusy ? <p>正在读取学习卡片…</p> : null}
           {!learningBusy && !practiceDashboard?.current ? <p>当前没有已投递的学习卡片。主机准备好练习后会显示在这里。</p> : null}

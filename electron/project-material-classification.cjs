@@ -346,7 +346,7 @@ function createProjectMaterialClassification(project, store) {
     };
   }
 
-  async function applyBatch(items, { actorId, idempotencyKey, canWrite = false } = {}) {
+  async function applyBatch(items, { actorId, idempotencyKey, canWrite = false, automatic = false } = {}) {
     identifier(actorId, '操作人ID');
     identifier(idempotencyKey, '请求ID');
     invariant(Array.isArray(items) && items.length > 0 && items.length <= 200,
@@ -356,7 +356,7 @@ function createProjectMaterialClassification(project, store) {
       'duplicate_material', '同一批分类操作不能重复资料。');
     if (!canWrite) return { projectId: project.id, idempotencyKey, registryRevision: (await store.read()).revision,
       results: normalized.map((item) => ({ materialId: item.materialId, ok: false, code: 'forbidden' })) };
-    const payloadHash = hash({ projectId: project.id, actorId, items: normalized });
+    const payloadHash = hash({ projectId: project.id, actorId, items: normalized, ...(automatic ? { automatic: true } : {}) });
     const operationId = `classification-operation-${hash([project.id, actorId, idempotencyKey]).slice(0, 32)}`;
     const committed = await store.mutate((index) => {
       ensureState(index);
@@ -382,11 +382,12 @@ function createProjectMaterialClassification(project, store) {
           || !compare(suggestion.tags, item.tags))) {
           return { materialId: item.materialId, ok: false, code: 'suggestion_mismatch' };
         }
+        if (automatic && material.classification?.manualLocked) return { materialId: item.materialId, ok: false, code: 'manual_locked' };
         const before = { classification: clone(material.classification || {
           categoryId: '', tags: [], source: '', manualLocked: false }),
           organizationState: material.organizationState || 'unclassified' };
         const after = { classification: { ...before.classification,
-          categoryId: item.categoryId, tags: item.tags, source: 'manual', manualLocked: true,
+          categoryId: item.categoryId, tags: item.tags, source: automatic ? 'rule' : 'manual', manualLocked: !automatic,
           actorId, changedAt: now(), ruleVersion: suggestion?.ruleVersion || '' },
           organizationState: 'classified' };
         let changed = false;

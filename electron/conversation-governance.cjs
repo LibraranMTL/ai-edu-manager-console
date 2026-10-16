@@ -93,7 +93,7 @@ function parseConversationMessages(content, interactionId) {
   }));
 }
 
-function normalizeConversationImport({ studentId, tool = 'qclaw', content = '', sourcePath = '', importedAt = new Date().toISOString() } = {}) {
+function normalizeConversationImport({ studentId, tool = 'workbuddy', content = '', sourcePath = '', importedAt = new Date().toISOString() } = {}) {
   const normalizedContent = String(content || '').replace(/^\uFEFF/, '');
   const contentHash = hashText(normalizedContent);
   const interactionId = stableId('interaction', studentId, tool, contentHash);
@@ -105,7 +105,7 @@ function normalizeConversationImport({ studentId, tool = 'qclaw', content = '', 
       schema: INTERACTION_SCHEMA,
       id: interactionId,
       studentId: String(studentId || ''),
-      tool: String(tool || 'qclaw'),
+      tool: String(tool || 'workbuddy'),
       sessionId: stableId('session', studentId, tool, contentHash),
       sourceUri,
       contentHash,
@@ -190,7 +190,7 @@ function extractCandidateGroups(parsed = {}) {
   return result;
 }
 
-function buildKnowledgeCandidates(parsed = {}, { studentId = '', tool = 'qclaw', source = {}, sourceContent = '', createdAt = new Date().toISOString() } = {}) {
+function buildKnowledgeCandidates(parsed = {}, { studentId = '', tool = 'workbuddy', source = {}, sourceContent = '', createdAt = new Date().toISOString() } = {}) {
   const groups = extractCandidateGroups(parsed).slice(0, MAX_CANDIDATES_PER_IMPORT);
   const candidates = [];
   const seen = new Set();
@@ -207,7 +207,7 @@ function buildKnowledgeCandidates(parsed = {}, { studentId = '', tool = 'qclaw',
       target,
       content,
       status: 'pending',
-      tool: String(tool || 'qclaw'),
+      tool: String(tool || 'workbuddy'),
       fingerprint,
       source: candidateSource(item, source),
       conflictWith: Array.isArray(item?.conflictWith) ? item.conflictWith.map(String) : [],
@@ -215,7 +215,7 @@ function buildKnowledgeCandidates(parsed = {}, { studentId = '', tool = 'qclaw',
       expiresAt: String(item?.expiresAt || ''),
       createdAt,
       updatedAt: createdAt,
-      history: [{ action: 'created', at: createdAt, actorRole: 'agent', actorId: String(tool || 'qclaw') }],
+      history: [{ action: 'created', at: createdAt, actorRole: 'agent', actorId: String(tool || 'workbuddy') }],
     };
     candidate.risk = assessCandidateRisk(candidate, sourceContent);
     candidates.push(candidate);

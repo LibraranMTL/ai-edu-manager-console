@@ -4,7 +4,10 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const test = require('node:test');
-const { supplementCompletedDigestLearningEvents } = require('../electron/completed-digest-learning-events.cjs');
+const {
+  reconcileCompletedDigestLearningReceipts,
+  supplementCompletedDigestLearningEvents,
+} = require('../electron/completed-digest-learning-events.cjs');
 const { eventsPath } = require('../electron/learning-analytics.cjs');
 
 function fixture() {
@@ -49,6 +52,45 @@ test('completed batch supplements validated learning events once without changin
   } finally { fs.rmSync(input.root, { recursive: true, force: true }); }
 });
 
+test('completed batch reconciles only unseen late receipt fingerprints and remains idempotent', () => {
+  const input = fixture();
+  try {
+    const candidates = [
+      { fingerprint: 'settlement-without-events', payload: { status: 'completed', studentId: 'student-1', digestBatchId: 'batch-1' } },
+      { fingerprint: 'late-learning-event', payload: input.receipt },
+    ];
+    const first = reconcileCompletedDigestLearningReceipts({ ...input, candidates, checkedFingerprints: ['settlement-without-events'] });
+    assert.equal(first.ok, true);
+    assert.equal(first.accepted, 1);
+    assert.deepEqual(first.checkedFingerprints, ['late-learning-event']);
+    assert.equal(JSON.parse(fs.readFileSync(eventsPath(input.root), 'utf8')).events.length, 1);
+
+    const second = reconcileCompletedDigestLearningReceipts({
+      ...input,
+      candidates,
+      checkedFingerprints: ['settlement-without-events', ...first.checkedFingerprints],
+    });
+    assert.equal(second.ok, true);
+    assert.equal(second.skipped, true);
+    assert.deepEqual(second.checkedFingerprints, []);
+    assert.equal(JSON.parse(fs.readFileSync(eventsPath(input.root), 'utf8')).events.length, 1);
+  } finally { fs.rmSync(input.root, { recursive: true, force: true }); }
+});
+
+test('completed batch records unseen no-event receipts without touching the learning ledger', () => {
+  const input = fixture();
+  try {
+    const result = reconcileCompletedDigestLearningReceipts({
+      ...input,
+      candidates: [{ fingerprint: 'no-events', payload: { status: 'completed', studentId: 'student-1', digestBatchId: 'batch-1' } }],
+    });
+    assert.equal(result.ok, true);
+    assert.equal(result.skipped, true);
+    assert.deepEqual(result.checkedFingerprints, ['no-events']);
+    assert.equal(fs.existsSync(eventsPath(input.root)), false);
+  } finally { fs.rmSync(input.root, { recursive: true, force: true }); }
+});
+
 test('completed batch supplement rejects a different student or batch receipt', () => {
   const input = fixture();
   try {
@@ -89,4 +131,7 @@ test('completed batch supplement is reachable from the licensed Windows console 
   assert.match(preload, /supplementCompletedStudentDigestLearningEvents\(studentId\)[\s\S]*?ipcRenderer\.invoke\('bridge:supplementCompletedStudentDigestLearningEvents'/);
   assert.match(ui, /onSupplementLearningEvents=\{isWindows \?/);
   assert.match(card, /status\.userStatus === 'completed' && onSupplementLearningEvents/);
+  assert.match(main, /function reconcileCompletedStudentDigestLearningReceipts\(student, options = \{\}\)/);
+  assert.match(main, /learningEventReceiptFingerprints/);
+  assert.match(main, /try \{ reconcileCompletedStudentDigestLearningReceipts\(student\); \}/);
 });

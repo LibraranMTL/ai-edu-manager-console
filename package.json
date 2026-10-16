@@ -1,6 +1,6 @@
 {
   "name": "edu-manager-launcher",
-  "version": "0.19.10",
+  "version": "0.21.1",
   "private": true,
   "type": "module",
   "main": "electron/main.cjs",
@@ -26,6 +26,7 @@
   "dependencies": {
     "@napi-rs/canvas": "1.0.9",
     "exceljs": "4.4.0",
+    "katex": "0.16.47",
     "lucide-react": "^0.468.0",
     "mermaid": "^11.16.0",
     "pdfjs-dist": "6.3.289",
@@ -33,6 +34,7 @@
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
     "saxes": "6.0.0",
+    "smol-toml": "^1.9.1",
     "vite": "^6.0.7",
     "yauzl": "3.4.0"
   },

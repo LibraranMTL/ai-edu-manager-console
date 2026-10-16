@@ -5,6 +5,7 @@ const path = require('path');
 
 const root = path.resolve(__dirname, '..');
 const renderer = fs.readFileSync(path.join(root, 'src', 'main.tsx'), 'utf8');
+const controlCenter = fs.readFileSync(path.join(root, 'src', 'GlobalAgentControlCenter.tsx'), 'utf8');
 const preload = fs.readFileSync(path.join(root, 'electron', 'preload.cjs'), 'utf8');
 const main = fs.readFileSync(path.join(root, 'electron', 'main.cjs'), 'utf8');
 const capability = fs.readFileSync(path.join(root, 'electron', 'agent-capability-contract.cjs'), 'utf8');
@@ -18,7 +19,11 @@ test('Windows v1.2 exposes exactly eight fixed first-level menu labels', () => {
 });
 
 test('page tabs preserve requested information architecture and construction states', () => {
-  ['收集总览', '资料导入', '拍照上传', '屏幕采集', '录音采集', '对话收集', '会话自动采集', '分享采集', '资料整理'].forEach((label) => assert.match(renderer, new RegExp(label)));
+  ['收集总览', '资料导入', '拍照上传', '屏幕采集', '录音采集', 'AI对话采集', '对话分享资料箱', 'Agent会话自动采集', '分享采集', '资料整理'].forEach((label) => assert.match(renderer, new RegExp(label)));
+  const collectionTabs = renderer.slice(renderer.indexOf('collection: ['), renderer.indexOf('learning: ['));
+  assert.match(collectionTabs, /id: 'ai-conversation', label: 'AI对话采集'/);
+  assert.doesNotMatch(collectionTabs, /id: 'conversation-collection'/);
+  assert.doesNotMatch(collectionTabs, /id: 'session-auto-capture'/);
   ['学情报告', '云端文档', '知识点掌握', '学习资料', '学习卡片'].forEach((label) => assert.match(renderer, new RegExp(label)));
   ['选题建议', '新建项目', '项目知识管理', '成长模型'].forEach((label) => assert.match(renderer, new RegExp(label)));
   ['规划总览', '升学路径', '择校建议', '专业探索', '职业发展', '更新记录与设置'].forEach((label) => assert.match(renderer, new RegExp(label)));
@@ -39,11 +44,27 @@ test('review corrections keep page responsibilities isolated', () => {
   ['全部', '实体', '概念', '综合', '摘要', '问答精华'].forEach((label) => assert.match(renderer, new RegExp(`label: '${label}'`)));
 });
 
+test('learning report navigation and compact controls match the requested layout', () => {
+  const learningTabs = renderer.slice(renderer.indexOf('learning: ['), renderer.indexOf('projects: ['));
+  assert.ok(learningTabs.indexOf("id: 'learning-reports'") < learningTabs.indexOf("id: 'learning-materials'"));
+  assert.ok(learningTabs.indexOf("id: 'learning-materials'") < learningTabs.indexOf("id: 'knowledge-mastery'"));
+  assert.ok(learningTabs.indexOf("id: 'knowledge-mastery'") < learningTabs.indexOf("id: 'learning-cards'"));
+  const masteryStart = renderer.indexOf("!shouldBlockForAgentInstall && !isLicenseRestrictedSection && isWindows && (activeSection === 'growth' || activeSection === 'knowledge-mastery')");
+  const mastery = renderer.slice(masteryStart, renderer.indexOf("activeSection === 'cloud-documents'", masteryStart));
+  assert.match(mastery, /activeSection === 'growth' && <div className="actions growth-primary-action">/);
+  assert.equal((mastery.match(/刷新轨迹/g) || []).length, 1);
+  const reports = renderer.slice(renderer.indexOf("activeSection === 'reports' && selectedStudent"), renderer.indexOf('learning-report-layout'));
+  assert.match(reports, /<details className="advanced-options reports-advanced-options">\s*<summary>高级<\/summary>\s*<div className="archive-grid">/);
+});
+
 test('student dock and agent settings expose the requested management surfaces', () => {
   assert.match(renderer, /current-student-dock/);
   assert.match(renderer, /查看编辑当前档案/);
   assert.match(renderer, /新建学生档案/);
-  ['Agent问答设置', 'Agent工具控制', 'Agent规则管理', 'Agent记忆管理', 'Agent人设管理', 'Agent调用能力设置'].forEach((label) => assert.match(renderer, new RegExp(label)));
+  ['AI 接入与调度中心', 'Agent 数据管理', 'Agent连接管理'].forEach((label) => assert.match(renderer, new RegExp(label)));
+  for (const label of ['外部 Agent 连接器', 'Agent记忆管理', '规则管理', '人设管理', 'Agent问答设置']) assert.match(renderer, new RegExp(label));
+  assert.doesNotMatch(renderer, /外部写入审核|外部 Agent 能力与写入审核/);
+  assert.match(controlCenter, /自定义 Agent 工具/);
   assert.match(renderer, /settings-update-section/);
 });
 
@@ -63,17 +84,23 @@ test('all planning APIs are asynchronous end to end', () => {
   });
 });
 
-test('research routing is explicit and QClaw is not assumed to support it', () => {
+test('research routing includes separately verified WorkBuddy and never assumes QClaw support', () => {
   assert.match(main, /webResearch: false/);
-  assert.match(main, /\['workbuddy', 'codex', 'openclaw'\]\.map/);
-  assert.doesNotMatch(main, /\['workbuddy', 'codex', 'openclaw', 'qclaw'\]\.map/);
+  assert.match(main, /\[\.\.\.routed, 'codex', 'llm-api', 'workbuddy', 'openclaw'\]/);
+  assert.match(main, /id === 'workbuddy' \? workbuddyReady/);
+  assert.match(main, /createWorkBuddyResearchSearch/);
+  assert.match(main, /verifyWorkBuddyResearch/);
+  assert.doesNotMatch(main, /'qclaw'.*researchReady/);
   assert.match(capability, /'research\.search'/);
   assert.match(main, /RESEARCH_CAPABILITY_UNAVAILABLE/);
+  assert.match(main, /const install = await refreshPreferredCodexCliInstall\(\)/);
+  assert.match(main, /background resume failed/);
 });
 
 test('planning tasks are represented in the existing task center contract', () => {
   assert.match(main, /topic_suggestion_refresh/);
   assert.match(main, /guidance_research_check/);
   assert.match(planning, /guidance_plan_refresh/);
-  assert.match(main, /每月日常任务时间后的首次可用调度/);
+  assert.match(main, /const sourceStudent = taskCardStudents\.find/);
+  assert.match(main, /candidate\.scheduledAt \|\| sourceStudent\.digestTime \|\| '21:30'/);
 });

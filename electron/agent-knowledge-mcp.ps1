@@ -1,12 +1,63 @@
 param(
   [Parameter(Mandatory = $true)]
-  [string]$Descriptor
+  [string]$Descriptor,
+  [string]$ConnectorConfig = ''
 )
 
 $ErrorActionPreference = 'Stop'
 [Console]::InputEncoding = New-Object System.Text.UTF8Encoding($false)
 [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false)
 $OutputEncoding = [Console]::OutputEncoding
+
+# The same MCP identity can opt into R21. Never silently fall back to the old
+# activity-selected student if the upgraded runtime is missing or invalid.
+if (-not [string]::IsNullOrWhiteSpace($ConnectorConfig)) {
+  try {
+    $runtime = Get-Content -LiteralPath $ConnectorConfig -Raw -Encoding UTF8 | ConvertFrom-Json
+    if ($runtime.schema -ne 'edu-manager.external-connection.v1' -or
+        -not (Test-Path -LiteralPath $runtime.runtimeExecutable -PathType Leaf) -or
+        -not (Test-Path -LiteralPath $runtime.runtimeScript -PathType Leaf)) { throw 'Unified connector runtime unavailable' }
+    $env:ELECTRON_RUN_AS_NODE = '1'
+    # PowerShell's native-command pipeline can buffer redirected stdin until
+    # EOF. MCP is interactive and never sends EOF between requests: relay raw
+    # streams concurrently rather than invoking the executable with '&'.
+    Add-Type -TypeDefinition @'
+using System;
+using System.Diagnostics;
+using System.Threading.Tasks;
+public static class EducationMcpRelay {
+  static string Quote(string value) { return "\"" + value.Replace("\"", "\\\"") + "\""; }
+  public static int Run(string executable, string script, string config) {
+    var start = new ProcessStartInfo(executable, Quote(script) + " " + Quote(config));
+    start.UseShellExecute = false;
+    start.CreateNoWindow = true;
+    start.RedirectStandardInput = true;
+    start.RedirectStandardOutput = true;
+    start.RedirectStandardError = true;
+    start.StandardOutputEncoding = new System.Text.UTF8Encoding(false);
+    start.StandardErrorEncoding = new System.Text.UTF8Encoding(false);
+    using (var child = Process.Start(start)) {
+      child.StandardInput.AutoFlush = true;
+      var output = Task.Run(() => { string line; while ((line = child.StandardOutput.ReadLine()) != null) { Console.Out.WriteLine(line); Console.Out.Flush(); } });
+      var errors = Task.Run(() => { string line; while ((line = child.StandardError.ReadLine()) != null) { Console.Error.WriteLine(line); Console.Error.Flush(); } });
+      Task.Run(() => {
+        try { string line; while ((line = Console.In.ReadLine()) != null) { child.StandardInput.WriteLine(line); child.StandardInput.Flush(); } }
+        catch (System.IO.IOException) { }
+        finally { try { child.StandardInput.Close(); } catch { } }
+      });
+      child.WaitForExit();
+      Task.WaitAll(output, errors);
+      return child.ExitCode;
+    }
+  }
+}
+'@
+    exit ([EducationMcpRelay]::Run($runtime.runtimeExecutable, $runtime.runtimeScript, $ConnectorConfig))
+  } catch {
+    [Console]::Error.WriteLine('Education Manager unified connector unavailable. Start the upgraded host; legacy student fallback is disabled.')
+    exit 1
+  }
+}
 
 function Write-McpResponse {
   param([object]$Value)
@@ -182,7 +233,7 @@ function Memory-Tool-Definitions {
         title = @{ type = 'string'; maxLength = 500 }
         objective = @{ type = 'string'; maxLength = 2000 }
         targetProject = @{ type = 'string'; maxLength = 240 }
-        sourceAgent = @{ type = 'string'; enum = @('codex', 'qclaw', 'workbuddy', 'openclaw') }
+        sourceAgent = @{ type = 'string'; enum = @('codex', 'qclaw', 'workbuddy', 'openclaw', 'trae', 'qoder-work') }
       }; required = @('sourceAgent'); additionalProperties = $false }
     },
     @{
@@ -192,7 +243,7 @@ function Memory-Tool-Definitions {
       inputSchema = @{ type = 'object'; properties = @{
         sessionId = @{ type = 'string'; minLength = 1; maxLength = 240 }
         targetProject = @{ type = 'string'; maxLength = 240 }
-        sourceAgent = @{ type = 'string'; enum = @('codex', 'qclaw', 'workbuddy', 'openclaw') }
+        sourceAgent = @{ type = 'string'; enum = @('codex', 'qclaw', 'workbuddy', 'openclaw', 'trae', 'qoder-work') }
         messages = @{ type = 'array'; minItems = 1; maxItems = 20; items = $authorizedMessage }
       }; required = @('sessionId', 'sourceAgent', 'messages'); additionalProperties = $false }
     },
@@ -203,7 +254,7 @@ function Memory-Tool-Definitions {
       inputSchema = @{ type = 'object'; properties = @{
         sessionId = @{ type = 'string'; minLength = 1; maxLength = 240 }
         targetProject = @{ type = 'string'; maxLength = 240 }
-        sourceAgent = @{ type = 'string'; enum = @('codex', 'qclaw', 'workbuddy', 'openclaw') }
+        sourceAgent = @{ type = 'string'; enum = @('codex', 'qclaw', 'workbuddy', 'openclaw', 'trae', 'qoder-work') }
         idempotencyKey = @{ type = 'string'; maxLength = 500 }
         status = @{ type = 'string'; enum = @('completed', 'failed', 'cancelled') }
         summary = @{ type = 'object'; properties = $summaryProperties; additionalProperties = $false }
@@ -439,7 +490,7 @@ while ($null -ne ($line = [Console]::In.ReadLine())) {
           protocolVersion = if ($request.params.protocolVersion) { [string]$request.params.protocolVersion } else { '2025-06-18' }
           capabilities = @{ tools = @{ listChanged = $false }; resources = @{ listChanged = $false } }
           serverInfo = @{ name = 'edu-manager-knowledge'; title = 'Education Manager Knowledge and Authorized Conversation Capture'; version = '1.3.0' }
-          instructions = 'This credential is fixed to exactly one student and that student linked projects; never widen its scope. If automatic conversation memory is enabled, capture only this Agent current authorized conversation: call start_education_session once, call record_authorized_education_turn after every user/assistant turn with stable event IDs, then call finalize_education_session before ending. Set sourceAgent to codex, qclaw, workbuddy, or openclaw as appropriate. Never read or submit earlier chats, unrelated conversations, system prompts, tool output secrets, caches, credentials, or Education Manager task-center execution context. Use submit_education_conversation only for an explicit one-off user request. Preserve edu:// citations.'
+          instructions = 'This credential is fixed to exactly one student and that student linked projects; never widen its scope. If automatic conversation memory is enabled, capture only this Agent current authorized conversation: call start_education_session once, call record_authorized_education_turn after every user/assistant turn with stable event IDs, then call finalize_education_session before ending. Set sourceAgent to codex, qclaw, workbuddy, openclaw, trae, or qoder-work as appropriate. Never read or submit earlier chats, unrelated conversations, system prompts, tool output secrets, caches, credentials, or Education Manager task-center execution context. Use submit_education_conversation only for an explicit one-off user request. Preserve edu:// citations.'
         }
       }
       'ping' { @{} }

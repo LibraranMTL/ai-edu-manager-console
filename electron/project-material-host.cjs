@@ -127,7 +127,7 @@ function createProjectMaterialHost(project, { externalRoots = {} } = {}) {
     conversationDeliveryId = '', conversationAssetId = '', conversationInteractionId = '', agentIntentId = '',
     publicationId = '', publicationObjectId = '', publicationSourceNodeId = '',
     publicationMaterialId = '', publicationMaterialVersion = 0,
-    collaborationTaskId = '', collaborationAttachmentObjectId = '' } = {}) {
+    collaborationTaskId = '', collaborationAttachmentObjectId = '', intakeAssociation = null } = {}) {
     identifier(eventId, '上传事件ID');
     const relative = path.relative(project.workspacePath, path.resolve(filePath)).replace(/\\/g, '/');
     const inbox = normalizeMaterialConfiguration(project).inboxRelativePath;
@@ -142,6 +142,7 @@ function createProjectMaterialHost(project, { externalRoots = {} } = {}) {
     }
     const { result: [material], revision } = await store.registerFiles([{ location, source: {
       eventId, type: sourceType, studentId: String(studentId), deviceId: String(deviceId),
+      ...(intakeAssociation ? { intakeAssociation: { itemId: String(intakeAssociation.itemId), studentId: String(studentId), operationId: String(intakeAssociation.operationId) } } : {}),
       ...(sourceType === 'capture_import' ? { captureSessionId: String(captureSessionId),
         captureItemId: String(captureItemId) } : {}),
       ...(sourceType === 'conversation_delivery' ? { conversationDeliveryId: String(conversationDeliveryId),

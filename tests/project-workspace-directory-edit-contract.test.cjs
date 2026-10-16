@@ -13,6 +13,7 @@ test('project detail exposes separate workspace and knowledge-space binding cont
   assert.match(ui, /<BookOpen size=\{15\} \/>绑定知识空间<\/button>/);
   assert.match(ui, /rebindSelectedProjectKnowledge/);
   assert.match(main, /function rebindProjectKnowledgeSpace\(projectId\)/);
+  assert.match(main, /promotionPath: path\.join\(scan\.rootPath, '知识贡献', '知识贡献申请\.md'\)/);
   assert.match(main, /bridge:rebindProjectKnowledgeSpace/);
   assert.match(preload, /rebindProjectKnowledgeSpace\(projectId\)/);
   const editStart = ui.indexOf('{projectEditOpen && (');

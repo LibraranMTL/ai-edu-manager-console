@@ -61,6 +61,42 @@ test('receipt discovery uses structured content instead of one exact filename', 
   }
 });
 
+test('digest batch manifests are never rediscovered as successful receipts', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'edu-p4-batch-not-receipt-'));
+  try {
+    const current = batch();
+    fs.writeFileSync(path.join(dir, 'digest-batch.json'), JSON.stringify({
+      schema: 'edu-manager.digest-batch.v1',
+      batchId: current.batchId,
+      status: 'submitted',
+      files: current.files,
+    }));
+    fs.writeFileSync(path.join(dir, 'digest-result.json'), JSON.stringify({
+      schema: 'edu-manager.digest-result.v1',
+      digestBatchId: current.batchId,
+      studentId: 'student-1',
+      items: [
+        { 本批消化未完成: '本地工具初始化失败，无法读取 AGENT.md 和批次清单。' },
+        { 已处理文件: '0 个。知识库未修改，需恢复后重试本批次。' },
+      ],
+    }));
+    const found = discoverDigestReceipts({ managerDir: dir, batchId: current.batchId, batch: current });
+    assert.equal(found.candidates.length, 1);
+    const validation = validateDigestResult({
+      batch: current,
+      currentFiles: current.files,
+      receipt: mergeDigestReceipts(found.candidates, current),
+      assumeAllOnCompletion: true,
+      inferredArtifacts: ['D:/knowledge/index.md'],
+    });
+    assert.equal(validation.ok, false);
+    assert.equal(validation.code, 'batch_execution_failed');
+    assert.equal(validation.remaining.length, 2);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('multiple QClaw receipt fragments merge and keep changed source files pending', () => {
   const current = batch();
   const merged = mergeDigestReceipts([

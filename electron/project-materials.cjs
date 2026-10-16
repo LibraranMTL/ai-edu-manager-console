@@ -303,7 +303,10 @@ function createProjectMaterialStore({ projectId, managerPath, roots, hooks = {} 
           record.versions.push({ version: record.version, sha256: record.sha256, sha1: record.sha1,
             size: record.size, registeredAt: now(), snapshot: null });
         }
-        if (!existing) { data.materials.push(record); byId.set(record.materialId, record); }
+        if (!existing) {
+          if (source?.intakeAssociation?.itemId && source.intakeAssociation.studentId === source.studentId) record.intakeOrigin = clone(source.intakeAssociation);
+          data.materials.push(record); byId.set(record.materialId, record);
+        }
         byPath.set(targetKey, record);
         return record;
       });

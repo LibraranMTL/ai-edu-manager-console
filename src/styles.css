@@ -5422,6 +5422,11 @@ pre {
   align-items: center;
 }
 
+.task-center-toolbar .task-batch-feedback {
+  flex: 1 0 100%;
+  margin: 0;
+}
+
 .task-automation-toggle {
   min-height: 34px;
   display: inline-flex;

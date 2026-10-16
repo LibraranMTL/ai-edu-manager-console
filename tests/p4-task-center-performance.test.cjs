@@ -12,7 +12,10 @@ test('task center refresh is asynchronous, cached and does not block the rendere
   assert.match(preload, /ipcRenderer\.invoke\('bridge:getTaskCenterAsync'/);
   assert.match(main, /ipcMain\.handle\('bridge:getTaskCenterAsync'/);
   assert.match(main, /taskCenterSnapshotCache/);
-  assert.match(main, /Date\.now\(\) - taskCenterSnapshotCache\.at < 30_000/);
+  assert.match(main, /await taskIoClient\.request\(taskStorePath\(\), op/);
+  const worker = fs.readFileSync(path.join(root, 'electron', 'task-io-worker.cjs'), 'utf8');
+  assert.match(worker, /if \(cache\?\.key === key\) return cache\.value/);
+  assert.match(preload, /ipcRenderer\.invoke\('bridge:getTaskPage'/);
   assert.match(renderer, /const refreshTaskCenter = async \(force = false, quick = false\)/);
   assert.match(renderer, /taskCenterRequestRef/);
 });
@@ -33,7 +36,9 @@ test('large task data is bounded in storage, transfer and rendering', () => {
 });
 
 test('audit events are rotated into retained archive files before the active log grows unbounded', () => {
-  assert.match(main, /stat\.size >= 5 \* 1024 \* 1024/);
-  assert.match(main, /event-archives/);
-  assert.match(main, /fs\.renameSync\(eventPath/);
+  const writer = fs.readFileSync(path.join(root, 'electron', 'task-store-writer.cjs'), 'utf8');
+  assert.match(writer, /stat\?\.size >= 5 \* 1024 \* 1024/);
+  assert.match(writer, /event-archives/);
+  assert.match(writer, /await io.rename\(eventFile/);
+  assert.match(main, /taskStoreGuard.appendEvent\(event\)/);
 });

@@ -70,12 +70,13 @@ function createDigestOrchestrator(dependencies = {}) {
     return fn;
   };
   return {
-    start(scopeType, scopeId, requestedExecutor = 'auto') {
+    start(scopeType, scopeId, requestedExecutor = 'auto', options) {
       const prepare = requireFn('prepare');
       const execute = requireFn('execute');
       const prepared = prepare(scopeType, scopeId);
       if (!prepared?.ok) return prepared;
-      return execute(prepared.taskId, requestedExecutor);
+      if (prepared.alreadyRunning) return prepared;
+      return options ? execute(prepared.taskId, requestedExecutor, options) : execute(prepared.taskId, requestedExecutor);
     },
     status(scopeType, scopeId) {
       return requireFn('status')(scopeType, scopeId);

@@ -5,6 +5,8 @@ const test = require('node:test');
 
 const root = path.resolve(__dirname, '..');
 const renderer = fs.readFileSync(path.join(root, 'src', 'main.tsx'), 'utf8');
+const controlCenter = fs.readFileSync(path.join(root, 'src', 'GlobalAgentControlCenter.tsx'), 'utf8');
+const externalConnector = fs.readFileSync(path.join(root, 'src', 'ExternalAgentConnector.tsx'), 'utf8');
 const styles = fs.readFileSync(path.join(root, 'src', 'styles.css'), 'utf8');
 
 test('Windows sidebar groups education, projects, Agent knowledge, collaboration, courses and settings', () => {
@@ -49,28 +51,41 @@ test('collaboration and Q&A reuse their existing state without a duplicate works
   assert.doesNotMatch(styles, /\.workspace-view-switcher/);
   assert.match(renderer, /knowledge-collaboration', label: '知识协作', section: 'settings', action: \(\) => openSettingsSubmenu\('collaboration'\)/);
   assert.match(renderer, /activeSection === 'qa' && <>\s*<form className="agent-knowledge-query"/);
-  assert.match(renderer, /settingsSubmenu === 'agent-qa' && agentSettingsTab === 'qa'/);
+  assert.match(renderer, /settingsSubmenu === 'agent-qa' && agentSettingsTab === 'connection' && agentConnectionTab === 'qa'/);
   assert.match(renderer, /activeSection === 'capture' \|\| \(!isWindows && showingAgentMemory\)/);
   assert.match(renderer, /<details className="advanced-options growth-advanced-options">/);
   assert.match(renderer, /<details className="advanced-options archive-advanced-options" open=\{!isWindows\}>/);
 });
 
-test('Agent capability authorization has its own knowledge-management page, separate from conversation capture', () => {
+test('external connector owns inbound authorization and write review under Agent connection management', () => {
   const knowledgeItems = renderer.slice(renderer.indexOf('const knowledgeNavItems = ['), renderer.indexOf('const courseCatalogCourses ='));
-  assert.match(knowledgeItems, /id: 'agent-capabilities' as const, label: t\('nav.agentCapabilities'\)/);
-  assert.match(renderer, /\['capabilities', 'Agent调用能力设置'\]/);
-  const capabilityPageStart = renderer.indexOf('showingAgentCapabilities && selectedStudent && (');
-  const capturePageStart = renderer.indexOf("(showingAgentMemory || activeSection === 'capture') && selectedStudent && (");
-  assert.ok(capabilityPageStart > 0 && capturePageStart > capabilityPageStart);
-  const capabilityPage = renderer.slice(capabilityPageStart, capturePageStart);
-  assert.match(capabilityPage, /外部 Agent 能力与写入审核/);
-  assert.match(capabilityPage, /授权只读查询/);
-  assert.match(capabilityPage, /批准本次写入/);
-  const capturePageEnd = renderer.indexOf("(showingAgentMemory || activeSection === 'capture' || showingAgentCapabilities) && !selectedStudent", capturePageStart);
-  assert.ok(capturePageEnd > capturePageStart);
-  assert.doesNotMatch(renderer.slice(capturePageStart, capturePageEnd), /外部 Agent 能力与写入审核/);
-  assert.match(renderer, /agentSettingsTab === 'capabilities'[\s\S]{0,80}refreshAgentCapabilityManagement\(selectedId\)/);
+  assert.doesNotMatch(knowledgeItems, /id: 'agent-capabilities'/);
+  for (const label of ['Agent 数据管理', 'Agent连接管理', '外部 Agent 连接器', 'Agent记忆管理']) assert.match(renderer, new RegExp(label));
+  assert.match(controlCenter, /自定义 Agent 工具/);
+  assert.match(renderer, /type AgentConnectionTab = 'connector' \| 'qa'/);
+  assert.match(renderer, /\['connector', '外部 Agent 连接器'\]/);
+  assert.match(renderer, /agentSettingsTab === 'connection' && agentConnectionTab === 'connector'[\s\S]{0,220}<ExternalAgentConnector api=/);
+  assert.doesNotMatch(renderer, /外部写入审核|外部 Agent 能力与写入审核|showingAgentCapabilities/);
+  assert.doesNotMatch(controlCenter, /<ExternalAgentConnector|import\('\.\/ExternalAgentConnector'\)/);
+  for (const label of ['每次写入前确认', '写入记录与异常', '查看待确认内容', '确认批准此项', '拒绝并清除待写内容']) assert.match(externalConnector, new RegExp(label));
+  assert.match(renderer, /activeSection === 'agent-capabilities'[\s\S]{0,220}setAgentConnectionTab\('connector'\)/);
   assert.match(renderer, /'agent-capabilities'\s*,\s*'soul'/);
+});
+
+test('executor connection settings use one Agent selector without changing provider controls', () => {
+  const section = controlCenter.slice(controlCenter.indexOf('<section aria-label="执行器与连接设置">'), controlCenter.indexOf('<section aria-label="默认调度顺序">'));
+  assert.match(section, /aria-label="选择 Agent／执行器"/);
+  assert.match(section, /<optgroup label="内置 Agent">/);
+  assert.match(section, /<optgroup label="LLM API">/);
+  assert.match(section, /<optgroup label="自定义 Agent 工具">/);
+  assert.match(section, /providerCard\(selectedProvider\)/);
+  assert.match(section, /selectedProvider\.id === 'llm-api'/);
+  assert.doesNotMatch(section, /snapshot\.providers\.map\(providerCard\)/);
+  for (const action of ['连接／授权', '验证连接', '验证 CLI 协议', '打开工具', '官网／下载', '移除工具']) assert.match(controlCenter, new RegExp(action));
+  for (const label of ['自动优先', '仅手工交接', '停用', '选择参与自动调度的任务合同', '验证联网研究合同', '编辑接入方式与连接设置']) assert.match(controlCenter, new RegExp(label));
+  assert.match(controlCenter, /providerOperation/);
+  assert.match(controlCenter, /通常需要 1–2 分钟，请勿重复点击/);
+  assert.match(controlCenter, /aria-live="polite"/);
 });
 
 test('license affordances, archive warning and narrow navigation remain visible', () => {

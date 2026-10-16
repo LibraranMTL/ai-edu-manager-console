@@ -160,6 +160,7 @@ test('startup blocks rather than overwrite user changes after a partial commit',
   const f = await hostFixture(t);
   f.ctx.createProjectArchiveTransactions = (options) => createProjectArchiveTransactions({ ...options, hooks: { afterFinalized: () => { throw new Error('lost acknowledgement'); } } });
   const failed = await f.main.execute(f.input); assert.equal(failed.ok, false);
+  assert.match(failed.message, /lost acknowledgement/, JSON.stringify(failed));
   fs.appendFileSync(path.join(f.student.summaryPath, '项目归档记录.md'), '\nhuman note');
   f.mutateTask((task) => { task.status = 'failed'; }); f.ctx.createProjectArchiveTransactions = createProjectArchiveTransactions;
   const state = await f.startup.initialize(); assert.equal(state.ready, false); assert.ok(state.issues.some((issue) => issue.code === 'recovery_conflict'));
@@ -185,6 +186,8 @@ test('actual startup body does not launch any writer or business window until re
   for (const ready of [false, true]) {
     let release; const waiting = new Promise((resolve) => { release = resolve; }); const calls = [];
     const ctx = { app: { whenReady: () => Promise.resolve(), quit: () => calls.push('quit') }, dialog: { showErrorBox: () => calls.push('startup-error') }, prepareHostMigrationStateStartup: async () => true, prepareProjectRecordLifecycleStartup: async () => true, prepareProjectArchiveStartup: () => waiting,
+      ensureTaskCenterWorkspace() {}, taskStoreGuard: { initialize: async () => {} }, taskStorePath: () => 'synthetic-task-store', powerMonitor: { on() {} }, taskPowerRecovery: {},
+      migrateTaskQueueGovernance: async () => calls.push('task-governance-migration'),
       prepareProjectUploadIntakeStartup: async () => [], projectUploadRecoveryIssues: [],
       recoverInterruptedProjectMaterialMigrations: async () => calls.push('material-migration'),
       getCloudReportRuntime: () => { calls.push('cloud'); return Promise.resolve(); },
@@ -192,12 +195,12 @@ test('actual startup body does not launch any writer or business window until re
       readCollaborationState: () => ({ enabled: false }), taskAutomationEnabled: () => false, process: { env: {} },
       screen: { on: () => calls.push('screen-listener') }, setInterval: () => 1,
       positionQuickCaptureWindow: () => calls.push('quick-capture-position') };
-    for (const name of ['createWindow', 'createCaptureTray', 'loadQuickCaptureSettings', 'updateCaptureControlWindow', 'registerCaptureShortcuts', 'restoreHeavyTaskRetries', 'startDigestWorkflowMonitor', 'startGrowthRefreshMonitor',
+    for (const name of ['createWindow', 'createCaptureTray', 'loadQuickCaptureSettings', 'updateCaptureControlWindow', 'registerCaptureShortcuts', 'restoreHeavyTaskRetries', 'startDigestWorkflowMonitor', 'startTaskReadMaintenance', 'startGrowthRefreshMonitor',
       'startDirectDeliveryMonitor', 'startAgentLifecycleDrainMonitor', 'startAgentLifecycleInstallMonitor', 'startStudentArchiveSyncWatchers', 'scheduleTeamKnowledgeIndexWarmup']) ctx[name] = () => calls.push(name);
     Function('scope', `with (scope) { ${source.slice(start, end)} }`)(ctx);
     await new Promise((resolve) => setImmediate(resolve)); assert.deepEqual(calls, []);
     release(ready); await new Promise((resolve) => setImmediate(resolve));
-    if (ready) { assert.ok(calls.includes('createWindow')); assert.ok(calls.includes('startGrowthRefreshMonitor')); }
+    if (ready) { assert.ok(calls.includes('createWindow')); assert.ok(calls.includes('startGrowthRefreshMonitor')); assert.ok(calls.includes('startTaskReadMaintenance')); assert.ok(!calls.includes('startup-error')); }
     else assert.deepEqual(calls, []);
   }
 });

@@ -1,9 +1,11 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import type { CaptureApi } from './CaptureInboxPanel';
+import type { SmartInboxApi } from './SmartInboxPanel';
+const SmartInboxPanel = React.lazy(() => import('./SmartInboxPanel').then(module => ({ default: module.SmartInboxPanel })));
 const CaptureInboxPanel = React.lazy(() => import('./CaptureInboxPanel').then(module => ({ default: module.CaptureInboxPanel })));
 type DownloadFile = { fileId: string; name: string; type: string; byteSize: number; modifiedAt: string; status: string; message: string; supported: boolean; selectable: boolean; targetName?: string; archivePath?: string };
 type Result = { results: { ok: boolean; message?: string; status?: string }[]; canceled?: boolean };
-export type DownloadInboxApi = CaptureApi & {
+export type DownloadInboxApi = CaptureApi & SmartInboxApi & {
   getDownloadInboxSettings?: () => Promise<string>;
   configureDownloadInbox?: (action: 'choose' | 'disconnect') => Promise<string>;
   listDownloadInboxFiles?: () => Promise<string>;
@@ -11,14 +13,21 @@ export type DownloadInboxApi = CaptureApi & {
   trashDownloadInboxFiles?: (ids: string[]) => Promise<string>;
   openDownloadInboxFolder?: () => Promise<string>;
 };
-const labels: Record<string, string> = { pending: '待处理', preparing: '准备中', delivering: '投递中', interrupted: '上次未完成，可重试', failed: '投递失败，可重试', archive_pending: '已投递，原件待归档', delivered: '已投递并归档' };
+const labels: Record<string, string> = { pending: '待处理', review: '待确认', preparing: '准备中', delivering: '投递中', interrupted: '上次未完成，可重试', failed: '投递失败，可重试', archive_pending: '已投递，原件待核对', delivered: '已投递', execution_unknown: '执行待核对', delivery_reconcile: '投递待核对' };
 async function unwrap<T>(work?: Promise<string>): Promise<T> {
   if (!work) throw Error('此功能需要更新后的 Windows 主机');
   const value = JSON.parse(await work); if (!value.ok) throw Error(value.message || '操作失败'); return value.data;
 }
-export function DownloadInboxPanel({ studentId, students, projects, api, openSharesRequest = 0 }: {
+export function DownloadInboxPanel(props: React.ComponentProps<typeof LegacyDownloadInboxPanel>) {
+  const [quickLegacy, setQuickLegacy] = useState(Boolean(props.openSharesRequest));
+  useEffect(() => { if (props.openSharesRequest) setQuickLegacy(true); }, [props.openSharesRequest]);
+  if (!props.api?.smartInboxAction) return <LegacyDownloadInboxPanel {...props} />;
+  if (quickLegacy) return <><button className="secondary" onClick={() => setQuickLegacy(false)}>返回智能资料收件箱</button><LegacyDownloadInboxPanel {...props} /></>;
+  return <React.Suspense fallback={<section className="panel">正在加载资料收件箱…</section>}><SmartInboxPanel key={props.studentId} {...props} api={props.api} legacy={<LegacyDownloadInboxPanel {...props} />} /></React.Suspense>;
+}
+function LegacyDownloadInboxPanel({ studentId, students, projects, api, openSharesRequest = 0 }: {
   studentId: string; students: { id: string; name: string }[];
-  projects: { id: string; name: string; studentIds: string[]; status?: string }[]; api?: DownloadInboxApi; openSharesRequest?: number;
+  projects: { id: string; name: string; studentIds: string[]; status?: string }[]; api?: DownloadInboxApi; openSharesRequest?: number; onOpenAgentControl?: () => void;
 }) {
   const [tab, setTab] = useState<'downloads' | 'shares'>('downloads');
   useEffect(() => { if (openSharesRequest) setTab('shares'); }, [openSharesRequest]);
@@ -72,7 +81,7 @@ export function DownloadInboxPanel({ studentId, students, projects, api, openSha
           <button className="secondary" disabled={busy || !folder} onClick={() => void run(refresh)}>刷新</button>
           <button className="secondary" disabled={busy || !folder} onClick={() => void run(() => configure('disconnect'))}>断开关联</button></div>
         <p>在 WPS 的“另存为”或浏览器下载保存时选择此目录。可在资源管理器中右键文件夹，手动固定到“快速访问／主页”。本功能不改变其他软件的保存设置。</p>
-        <p>只列出直接文件，不扫描子目录；成功投递后原件移入此目录下的“已投递”，失败保留原件。临时文件、链接或仍在写入的文件已跳过 {skipped} 项。</p>
+        <p>与智能收件箱共用投递记录。专用中转目录投递校验成功后只保留受管原件；普通来源保留原件。已投递资料可回到“已投递”中纠正。临时文件、链接或仍在写入的文件已跳过 {skipped} 项。</p>
       </section>
       {folder ? <>
         <div className="form-grid"><label>搜索文件<input aria-label="搜索下载文件" value={search} onChange={event => { setSearch(event.target.value); setPage(1); }} /></label>

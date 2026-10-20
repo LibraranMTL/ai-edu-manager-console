@@ -5,6 +5,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 const policy = require('../electron/task-recovery-policy.cjs');
+const recoveryExperience = require('../electron/task-recovery-experience.cjs');
 const { createTaskRetryQueue } = require('../electron/task-retry-queue.cjs');
 const { taskTimeoutDecision, repairTaskRuntimeStore } = require('../electron/task-runtime-policy.cjs');
 const source = fs.readFileSync(path.join(__dirname, '../electron/main.cjs'), 'utf8');
@@ -70,6 +71,8 @@ test('actual timeout handler retains process ownership, cancels once and never s
   const runner = { child: { killed: false, kill() { kills++; } } };
   const context = { Date, taskProgressBuffer: { apply() {} }, taskTimeoutDecision: () => ({ enabled: true, due: true, kind: 'execution', error: { code: 'TASK_TIMEOUT', message: '超时' } }),
     taskChildProcesses: new Map([['t', runner]]), clearTaskProcessHeartbeat() {}, unknownExecutionPatch: policy.unknownExecutionPatch,
+    taskExecutionClass: recoveryExperience.taskExecutionClass, internalStoppedPatch: recoveryExperience.internalStoppedPatch,
+    executionProvenance: recoveryExperience.executionProvenance, appendTaskEvent() {},
     businessTaskRetryQueue: { delete() {} }, transitionTaskInStore: (_store, _id, status, patch) => { Object.assign(t, patch, { status }); writes++; return { ok: true }; },
     setTimeout() { assert.fail('per-task retry timer forbidden'); } };
   assert.equal(load('enforceTaskTimeouts', context)({ tasks: [t] }), true);
@@ -127,7 +130,9 @@ test('dispatch persistence/read failures release capacity and never spawn an Age
 test('host normalization preserves recovery metadata across write and restart', () => {
   const t = task(); Object.assign(t, policy.taskRetryDecision(t, { code: '503' }, { now: 0, random: () => 0, stopConfirmed: true }));
   const context = { TASK_PROTOCOL_VERSION: '1.2', taskNow: () => 'now', normalizeTaskStatus: x => x,
-    taskRiskForKind: () => 'low', taskStatusGroup: () => 'actionable' };
+    taskRiskForKind: () => 'low', taskStatusGroup: () => 'actionable',
+    executionProvenance: recoveryExperience.executionProvenance, recoveryBudget: recoveryExperience.recoveryBudget,
+    recoveryPlan: recoveryExperience.recoveryPlan };
   const normalize = load('normalizeTaskEnvelope', context);
   const saved = normalize(t, t);
   assert.deepEqual(saved.retryRecovery, t.retryRecovery);

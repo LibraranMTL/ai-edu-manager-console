@@ -14,28 +14,55 @@ class FileAssetService(private val context: Context) {
     private val assets = AssetIndexRepository(context)
 
     fun importToStudent(studentId: String, sourceUri: Uri, sourceName: String = "Android 手动导入"): JSONObject {
-        val student = students.requireExact(studentId)
+        students.requireExact(studentId)
         val metadata = sourceMetadata(sourceUri)
-        require(metadata.size in 0..MAX_FILE_BYTES) { "单个文件不能超过 100 MB" }
-        val bytes = context.contentResolver.openInputStream(sourceUri)?.use { it.readBytes() }
+        require(metadata.size in -1..MAX_FILE_BYTES) { "单个文件不能超过 100 MB" }
+        val bytes = context.contentResolver.openInputStream(sourceUri)?.use { it.readBytesBounded(MAX_FILE_BYTES.toInt()) }
             ?: error("无法读取所选文件")
+        return importValidatedBytes(studentId, metadata.name, bytes, context.contentResolver.getType(sourceUri) ?: mimeType(metadata.name), sourceName, sourceUri.toString())
+    }
+
+    /** Imports exactly the bytes validated by the caller; never re-opens a mutable provider URI. */
+    fun importValidatedBytes(studentId: String, name: String, bytes: ByteArray, mime: String, sourceName: String, sourceRef: String = "", sourceEventId: String = ""): JSONObject = synchronized(StudentWorkLocks.forStudent(studentId)) {
+        val student = students.requireExact(studentId)
         require(bytes.size.toLong() <= MAX_FILE_BYTES) { "单个文件不能超过 100 MB" }
         val store = SafWorkspaceStore(context, Uri.parse(student.storageRootUri))
-        val filename = uniqueFilename(store, student.paths.rawPath, safeFilename(metadata.name))
-        val logicalPath = "${student.paths.rawPath}/$filename"
-        val mimeType = context.contentResolver.getType(sourceUri) ?: mimeType(filename)
-        store.writeBytesSafely(logicalPath, bytes, mimeType)
+        // Default content idempotency; capture/import adapters may supply their stable event ID.
+        val hash = ScopedContentPolicy.hash(bytes)
+        val eventKey = ScopedContentPolicy.hash("$studentId:${sourceEventId.ifBlank { hash }}".toByteArray())
+        val operationId = "intake:$eventKey"
+        val db = BusinessDatabase.get(context); BusinessRestoreRecovery.recover(context, db)
+        val previous = db.ledger().exactIntent(studentId, operationId)
+        val intent = previous ?: FileOperationIntentEntity(operationId, studentId, "intake", eventKey,
+            "${student.paths.rawPath}/${uniqueFilename(store, student.paths.rawPath, safeFilename(name))}", hash, "prepared", System.currentTimeMillis(), System.currentTimeMillis())
+            .also { db.ledger().prepareIntent(it) }
+        require(intent.kind == "intake" && intent.expectedSha256 == hash && intent.state in setOf("prepared", "committed")) { "相同来源事件内容冲突或需要人工恢复；不覆盖原件" }
+        require(intent.targetRef.startsWith("${student.paths.rawPath}/")) { "目录已变化，请核对原导入任务" }
+        val logicalPath = intent.targetRef; val filename = logicalPath.substringAfterLast('/')
+        val materialId = "material-intake-$eventKey"
+        if (store.exists(logicalPath)) require(store.openInputStream(logicalPath).use { ScopedContentPolicy.hash(it.readBytesBounded(MAX_FILE_BYTES.toInt())) } == hash) { "已归档原件已修改，不覆盖" }
+        else { require(intent.state != "committed") { "已登记原件缺失，请先恢复来源" }; store.writeBytesSafely(logicalPath, bytes, mime) }
+        if (intent.state == "committed") {
+            val existing = StudentMaterialRepository(context, student).list().singleOrNull { it.getString("id") == materialId } ?: error("导入已提交但登记缺失，请核对，不重复创建")
+            val asset = assets.forStudent(studentId).singleOrNull { it.optString("sha1") == existing.getString("sha1") } ?: error("导入资产登记缺失，请核对")
+            IntakeRegistry(context).register(studentId, sourceName, "$sourceRef:${sourceEventId.ifBlank { hash }}", hash, logicalPath, student.storageRootUri, existing.getString("uploadedAt"))
+            return@synchronized JSONObject().put("ok", true).put("reused", true).put("material", existing).put("asset", asset)
+        }
         val sha1 = digest("SHA-1", bytes)
         val now = Timestamp.now()
-        val materialId = "material-${UUID.randomUUID()}"
         val material = JSONObject()
             .put("id", materialId).put("studentId", student.id).put("studentName", student.name)
             .put("fileName", filename).put("path", filename).put("absolutePath", logicalPath)
             .put("size", bytes.size).put("sha1", sha1).put("uploadedAt", now)
+            .put("sourceSha256", hash).put("sourceEventId", eventKey).put("intakeOperationId", operationId)
             .put("sourceDevice", "Android 平板").put("sourceDeviceId", "android-local")
-            .put("sourcePath", sourceUri.toString()).put("sourceName", sourceName)
+            .put("sourcePath", sourceRef).put("sourceName", sourceName)
             .put("status", MaterialStatus.PENDING_DIGEST.wireValue).put("statusUpdatedAt", now)
             .put("digestedAt", "").put("digestBatchId", "")
+        StudentMaterialRepository(context, student).list().singleOrNull { it.optString("id") == materialId }?.let { retained ->
+            require(retained.optString("sourceSha256") == hash && retained.getString("absolutePath") == logicalPath) { "导入恢复登记冲突" }
+            retained.keys().forEach { key -> material.put(key, retained.get(key)) }
+        }
         StudentMaterialRepository(context, student).upsert(material)
 
         val reference = JSONObject()
@@ -48,13 +75,15 @@ class FileAssetService(private val context: Context) {
             .put("size", bytes.size).put("type", materialType(filename)).put("path", logicalPath)
             .put("ownerStudentId", student.id).put("ownerStudentName", student.name)
             .put("linkedStudents", JSONArray().put(student.id)).put("linkedProjects", JSONArray())
-            .put("references", JSONArray().put(reference)).put("sourcePath", sourceUri.toString())
+            .put("references", JSONArray().put(reference)).put("sourcePath", sourceRef)
             .put("sourceName", sourceName).put("sourceType", if (sourceName.contains("拍照")) "camera_photo" else "local_file")
             .put("captureSessionId", "").put("captureItemId", "").put("courseId", "")
             .put("courseProvider", "").put("courseUrl", "").put("courseStartedAt", "").put("courseCompletedAt", "")
             .put("uploadedAt", now).put("updatedAt", now).put("status", "active")
         val indexed = assets.upsertBySha1(asset)
-        return JSONObject().put("ok", true).put("material", material).put("asset", indexed)
+        IntakeRegistry(context).register(studentId, sourceName, "$sourceRef:${sourceEventId.ifBlank { hash }}", hash, logicalPath, student.storageRootUri, now)
+        require(db.ledger().compareAndSetIntent(operationId, studentId, "prepared", "committed", System.currentTimeMillis()) == 1) { "导入登记状态已变化，原件保留" }
+        JSONObject().put("ok", true).put("material", material).put("asset", indexed)
     }
 
     fun materials(studentId: String): List<JSONObject> {
@@ -140,7 +169,12 @@ class FileAssetService(private val context: Context) {
             .put("digestedAt", "").put("digestBatchId", "").put("captureSessionId", captureSessionId)
             .put("captureItemId", captureItemId).put("projectId", projectId).put("projectName", projectName)
             .put("courseId", courseId).put("courseProvider", courseProvider).put("courseUrl", courseUrl)
-        StudentMaterialRepository(context, student).upsert(material)
+        val contentHash = ScopedContentPolicy.hash(bytes)
+        material.put("sourceSha256", contentHash).put("sourceEventId", captureItemId).put("sourceChannel", if (courseCapture) "course_screen" else "screen")
+        val prior = StudentMaterialRepository(context, student).list().singleOrNull { it.optString("id") == materialId }
+        if (prior != null) require((if (prior.optString("sourceSha256").isBlank()) prior.optString("sha1") == sha1 else prior.getString("sourceSha256") == contentHash) && prior.getString("absolutePath") == logicalPath) { "采集事件原件冲突" }
+        IntakeRegistry(context).register(studentId, if (courseCapture) "course_screen" else "screen", captureItemId, contentHash, logicalPath, student.storageRootUri, prior?.optString("uploadedAt") ?: now, projectId)
+        StudentMaterialRepository(context, student).upsert(prior?.apply { put("sourceSha256", contentHash) } ?: material)
         val reference = JSONObject().put("id", materialId).put("spaceType", "student").put("spaceId", student.id)
             .put("spaceName", student.name).put("workspaceId", student.id).put("logicalPath", "@RAW_DIR/$relativePath")
             .put("role", "student_raw").put("path", logicalPath).put("source", sourceName).put("linkedAt", now)
@@ -155,13 +189,13 @@ class FileAssetService(private val context: Context) {
         return JSONObject().put("ok", true).put("material", material).put("asset", assets.upsertBySha1(asset))
     }
 
-    fun readMaterialBytes(studentId: String, materialId: String): ByteArray {
+    fun readMaterialBytes(studentId: String, materialId: String, maximum: Int = MAX_FILE_BYTES.toInt()): ByteArray {
         val student = students.requireExact(studentId)
         val material = StudentMaterialRepository(context, student).list().singleOrNull { it.optString("id") == materialId }
             ?: throw NoSuchElementException("未找到指定资料")
         val logicalPath = material.optString("absolutePath")
         require(logicalPath == student.paths.rawPath || logicalPath.startsWith("${student.paths.rawPath}/")) { "资料路径超出学生原始资料库" }
-        return SafWorkspaceStore(context, Uri.parse(student.storageRootUri)).readBytes(logicalPath)
+        return SafWorkspaceStore(context, Uri.parse(student.storageRootUri)).openInputStream(logicalPath).use { it.readBytesBounded(maximum) }
     }
 
     fun transitionMaterial(studentId: String, materialId: String, next: MaterialStatus): JSONObject {

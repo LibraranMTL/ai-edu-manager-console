@@ -20,7 +20,9 @@ function stagePdfRuntime(stageRoot) {
     const target = path.join(root, relative); fs.mkdirSync(path.dirname(target), { recursive: true });
     fs.copyFileSync(source, target);
   }
-  for (const name of ['pdf.mjs', 'pdf.worker.mjs']) copy(path.join(pdf, 'legacy', 'build', name), `pdfjs/legacy/build/${name}`);
+  // Use the pinned upstream production builds, keeping the existing filenames
+  // and local worker resolution. Fonts, CMaps, WASM and licenses remain intact.
+  for (const name of ['pdf.mjs', 'pdf.worker.mjs']) copy(path.join(pdf, 'legacy', 'build', name.replace('.mjs', '.min.mjs')), `pdfjs/legacy/build/${name}`);
   for (const dir of ['cmaps', 'standard_fonts', 'wasm']) {
     for (const file of filesUnder(path.join(pdf, dir))) copy(file, path.join('pdfjs', dir, path.relative(path.join(pdf, dir), file)));
   }
@@ -40,7 +42,7 @@ function stagePdfRuntime(stageRoot) {
     size: fs.statSync(file).size, sha256: crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex') }));
   const bytes = entries.reduce((sum, entry) => sum + entry.size, 0);
   if (bytes > 64 * 1024 * 1024) throw new Error('PDF runtime exceeds its 64 MiB audited budget.');
-  const manifest = { schema: 'edu-manager.pdf-runtime.v1', pdfjs: '6.3.289', canvas: '1.0.9', platform: 'win32-x64', bytes, entries };
+  const manifest = { schema: 'edu-manager.pdf-runtime.v1', pdfjs: '6.3.289', canvas: '1.0.9', platform: 'win32-x64', upstreamBuild: 'legacy-minified', bytes, entries };
   fs.writeFileSync(path.join(root, 'manifest.json'), JSON.stringify(manifest, null, 2));
   return root;
 }

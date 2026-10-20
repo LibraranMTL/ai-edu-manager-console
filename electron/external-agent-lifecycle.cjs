@@ -19,7 +19,7 @@ function read(file) {
   return fs.readFileSync(file, 'utf8');
 }
 function managedServer(server) {
-  return server && Array.isArray(server.args) && server.args.some(a => typeof a === 'string' && /(?:^|[\\/])agent-knowledge-mcp\.ps1$/i.test(a));
+  return server && Array.isArray(server.args) && server.args.some(a => typeof a === 'string' && /(?:^|[\\/])(?:agent-knowledge-mcp\.ps1|external-agent-mcp\.cjs)$/i.test(a));
 }
 function transform(before, host, command, args, remove = false) {
   let source = before ?? '';
@@ -71,13 +71,17 @@ function launchArgs({ bridgePath, descriptorPath, connectionConfig }) {
   return ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', bridgePath, '-Descriptor', descriptorPath, '-ConnectorConfig', connectionConfig];
 }
 function plan(options, remove = false) {
-  const { home, host, projectConfigPaths = [] } = options, args = launchArgs(options), primary = registrations(home, host, options.codexHome);
+  const { home, host, projectConfigPaths = [] } = options;
+  const directNode = Boolean(options.runtimeExecutable && options.runtimeScript && !options.useElectronNode);
+  const command = directNode ? options.runtimeExecutable : 'powershell.exe';
+  const args = directNode ? [options.runtimeScript, options.connectionConfig] : launchArgs(options);
+  const primary = registrations(home, host, options.codexHome);
   // Remove owned project overrides from known education workspaces; otherwise
   // they shadow the unified global server with a fixed-student credential.
   const files = [...new Set([...primary, ...(host === 'codex' ? projectConfigPaths.filter(fs.existsSync) : [])])];
   return files.map(file => {
     const before = read(file);
-    try { return { file, before, after: transform(before, host, 'powershell.exe', args, remove || !primary.includes(file)) }; }
+    try { return { file, before, after: transform(before, host, command, args, remove || !primary.includes(file)) }; }
     catch (error) { throw Error(`${file}：${error.message}`); }
   });
 }
@@ -123,7 +127,8 @@ async function verify(options, { timeoutMs = 20000 } = {}) {
   const check = inspect(options);
   if (check.status !== 'configured') throw Error(check.message || '连接配置缺失或已变化，请先安装或修复');
   const { spawn } = require('node:child_process'), readline = require('node:readline');
-  const child = spawn('powershell.exe', launchArgs(options), { windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
+  const directNode = Boolean(options.runtimeExecutable && options.runtimeScript && !options.useElectronNode);
+  const child = spawn(directNode ? options.runtimeExecutable : 'powershell.exe', directNode ? [options.runtimeScript, options.connectionConfig] : launchArgs(options), { windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
   let next = 0, total = 0; const pending = new Map();
   const lines = readline.createInterface({ input: child.stdout });
   const fail = message => { for (const p of pending.values()) { clearTimeout(p.timer); p.reject(Error(message)); } pending.clear(); };

@@ -2,16 +2,20 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const { writeJsonAtomic } = require('./project-materials.cjs');
-const SCHEMA = 'edu-manager.agent-control.v3';
+const SCHEMA = 'edu-manager.agent-control.v4';
 const registryService = require('./ai-executor-registry.cjs');
 const PROFILES = Object.freeze(Object.fromEntries(Object.entries(registryService.PROFILES).map(([id, spec]) => [id,
   { ...spec, providers: registryService.executorRegistry().filter(p => p.automaticProfiles.includes(id)).map(p => p.id) }])));
 // Compatibility export; inbound permissions have one authoritative R21 catalog.
 const GLOBAL_CAPABILITIES = require('./external-agent-connector.cjs').PERMISSIONS.map(p => p.id);
 const PROVIDER_MODES = Object.freeze(['automatic_preferred', 'manual_only', 'disabled']);
-function globalDefaults(primary = 'workbuddy') { return { enabled: false, version: 0, order: [...new Set([primary, 'workbuddy', 'codex'])], disabledProviders: [], providerModes: {}, providerProfiles: {}, desktopHandoff: true, authorizedAt: '', captureEpoch: '' }; }
+function globalDefaults(primary = 'workbuddy') { return { enabled: false, version: 0, order: [...new Set([primary, 'workbuddy', 'codex'])], disabledProviders: [], providerModes: {}, providerProfiles: {}, desktopHandoff: true, authorizedAt: '', captureEpoch: '', capturedConversationRouting: { enabled: true, authorizedAt: '' } }; }
 function normalizeGlobal(global, registry = registryService.executorRegistry()) {
   const value = { ...global, disabledProviders: Array.isArray(global?.disabledProviders) ? global.disabledProviders : [], providerModes: { ...(global?.providerModes || {}) }, providerProfiles: { ...(global?.providerProfiles || {}) } };
+  value.capturedConversationRouting = {
+    enabled: typeof global?.capturedConversationRouting?.enabled === 'boolean' ? global.capturedConversationRouting.enabled : Boolean(global?.enabled),
+    authorizedAt: String(global?.capturedConversationRouting?.authorizedAt || ''),
+  };
   const known = new Set(registry.map(provider => provider.id));
   value.providerModes = Object.fromEntries(Object.entries(value.providerModes).filter(([id]) => known.has(id)));
   value.providerProfiles = Object.fromEntries(Object.entries(value.providerProfiles).filter(([id]) => known.has(id)));
@@ -51,7 +55,7 @@ function createAgentControlStore(file) {
   const read = () => {
     try {
       const value = JSON.parse(fs.readFileSync(file, 'utf8'));
-      if (![SCHEMA, 'edu-manager.agent-control.v2', 'edu-manager.agent-control.v1'].includes(value.schema) || !value.policies || Array.isArray(value.policies)) throw Error('invalid schema');
+      if (![SCHEMA, 'edu-manager.agent-control.v3', 'edu-manager.agent-control.v2', 'edu-manager.agent-control.v1'].includes(value.schema) || !value.policies || Array.isArray(value.policies)) throw Error('invalid schema');
       return value;
     } catch (error) {
       if (error.code === 'ENOENT') return { schema: SCHEMA, revision: 0, policies: {}, history: [] };
@@ -59,11 +63,44 @@ function createAgentControlStore(file) {
     }
   };
   return { read,
+    migrate(registry = registryService.executorRegistry()) {
+      const operation = queue.then(async () => {
+        const store = read();
+        if (!store.global) {
+          if (store.schema !== SCHEMA) {
+            store.schema = SCHEMA;
+            store.revision = Number(store.revision || 0) + 1;
+            await fs.promises.mkdir(path.dirname(file), { recursive: true });
+            await writeJsonAtomic(file, store);
+          }
+          return null;
+        }
+        if (store.schema === SCHEMA && typeof store.global.capturedConversationRouting?.enabled === 'boolean') return normalizeGlobal(store.global, registry);
+        const at = new Date().toISOString();
+        const previous = normalizeGlobal(store.global, registry);
+        const routing = {
+          enabled: Boolean(store.global.enabled),
+          authorizedAt: store.global.enabled ? at : '',
+        };
+        const next = { ...previous, version: Number(previous.version || 0) + 1, updatedAt: at, capturedConversationRouting: routing };
+        await fs.promises.mkdir(path.dirname(file), { recursive: true });
+        if (fs.existsSync(file) && !fs.existsSync(file + '.pre-v4.bak')) await fs.promises.copyFile(file, file + '.pre-v4.bak', fs.constants.COPYFILE_EXCL);
+        store.schema = SCHEMA;
+        store.global = next;
+        store.revision = Number(store.revision || 0) + 1;
+        store.history = [...(store.history || []), { scope: { type: 'global' }, profile: 'captured_conversation_routing', policy: next, previous, at, migration: 'v4' }].slice(-200);
+        await writeJsonAtomic(file, store);
+        return next;
+      });
+      queue = operation.catch(() => {}); return operation;
+    },
     saveGlobal(input, registry = registryService.executorRegistry()) {
       const operation = queue.then(async () => {
         const store = read(), prior = normalizeGlobal(store.global || globalDefaults(input.order?.[0]), registry);
         if (Number(input.version) !== prior.version) throw fail('POLICY_CONFLICT', '设置已变化，请刷新后重试');
         if (typeof input.enabled !== 'boolean' || !Array.isArray(input.order) || !Array.isArray(input.disabledProviders)) throw fail('INVALID_POLICY', '全局设置无效');
+        const requestedRouting = input.capturedConversationRouting || prior.capturedConversationRouting;
+        if (typeof requestedRouting?.enabled !== 'boolean') throw fail('INVALID_POLICY', '自动会话资料路由设置无效');
         const known = new Set(registry.map(p => p.id));
         if ([...input.order, ...input.disabledProviders].some(id => !known.has(id))) throw fail('UNSUPPORTED_PROVIDER', '工具已变化，请刷新列表');
         const requestedModes = { ...prior.providerModes, ...(input.providerModes || {}) };
@@ -79,11 +116,14 @@ function createAgentControlStore(file) {
           requestedProfiles[provider.id] = [...new Set(profiles)];
         }
         const at = new Date().toISOString(), newlyEnabled = input.enabled && !prior.enabled;
+        const routingNewlyEnabled = input.enabled && requestedRouting.enabled && (newlyEnabled || !prior.capturedConversationRouting.enabled);
         const next = { enabled: input.enabled, order: [...new Set(input.order)].filter(id => id !== 'llm-api'),
           disabledProviders: registry.filter(provider => requestedModes[provider.id] === 'disabled').map(provider => provider.id),
           providerModes: requestedModes, providerProfiles: requestedProfiles, desktopHandoff: input.desktopHandoff !== false,
           version: prior.version + 1, updatedAt: at, authorizedAt: newlyEnabled ? at : prior.authorizedAt,
-          captureEpoch: newlyEnabled ? require('node:crypto').randomUUID() : prior.captureEpoch };
+          captureEpoch: newlyEnabled ? require('node:crypto').randomUUID() : prior.captureEpoch,
+          capturedConversationRouting: { enabled: requestedRouting.enabled,
+            authorizedAt: routingNewlyEnabled ? at : String(requestedRouting.authorizedAt || prior.capturedConversationRouting.authorizedAt || '') } };
         await fs.promises.mkdir(path.dirname(file), { recursive: true });
         if (fs.existsSync(file) && !fs.existsSync(file + '.pre-global.bak')) await fs.promises.copyFile(file, file + '.pre-global.bak', fs.constants.COPYFILE_EXCL);
         if (!store.global) { store.legacyPolicies = store.policies; store.policies = {}; }

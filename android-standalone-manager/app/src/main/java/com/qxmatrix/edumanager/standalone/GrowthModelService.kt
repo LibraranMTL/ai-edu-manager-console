@@ -144,13 +144,31 @@ class GrowthModelService(private val context: Context) {
         val student = students.requireExact(studentId)
         val result = generateReportSet(student)
         require(result.evidence.isNotEmpty()) { "当前没有已确认的成长证据。请先消化资料并在成长模型中确认至少一条证据，再生成正式学情报告。" }
+        val prepared = result.reports.map { report -> report.definition to reportPublished(student, report.definition, report.sections, result.evidence) }
         val published = JSONArray()
-        result.reports.forEach { report ->
-            val target = "${reportRoot(student)}/${report.definition.fileName}"
-            val content = reportPublished(student, report.definition, report.sections, result.evidence)
-            store(student).writeBytesSafely(target, content.toByteArray(), "text/markdown")
-            published.put(target)
+        CloudReportSync.withPublicationLock {
+            val sync = CloudReportSync(context)
+            val publicationId = runCatching { sync.beginPublication(student.id) }.getOrElse { error ->
+                sync.pauseAfterSnapshotFailure(student.id, error)
+                null
+            }
+            prepared.forEach { (definition, content) ->
+                val target = "${reportRoot(student)}/${definition.fileName}"
+                store(student).writeBytesSafely(target, content.toByteArray(), "text/markdown")
+                published.put(target)
+            }
+            if (publicationId != null) {
+                val readBack = prepared.map { (definition, content) ->
+                    val actual = store(student).readBytes("${reportRoot(student)}/${definition.fileName}").toString(Charsets.UTF_8)
+                    check(actual == content) { "${definition.title}写入后校验失败，整组报告未提交云端同步" }
+                    actual
+                }
+                runCatching { sync.commitPublication(student.id, publicationId, readBack) }
+                    .onFailure { sync.pauseAfterSnapshotFailure(student.id, it) }
+            }
         }
+        runCatching { CloudReportSync.enqueueAfterCompletePublication(context, student.id) }
+        runCatching { StudioAutomation.enqueueCheck(context, student.id) } // Worker sends nothing without prior per-student consent.
         val message = if (result.warnings.isEmpty()) {
             "四份正式学情报告已生成并发布，可直接查看、导出或打印。"
         } else {

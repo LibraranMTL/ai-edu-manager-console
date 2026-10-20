@@ -1,10 +1,12 @@
 'use strict';
 const { agentBlockReason } = require('./agent-invocation-service.cjs');
+const { recoveryPlan } = require('./task-recovery-experience.cjs');
 
 // Explain failures without changing evidence, execution identity or authorizations.
 function taskResolution(task = {}) {
   const message = String(task.error?.message || task.result?.validation?.message || '');
   const coded = task.error?.code ? agentBlockReason(task.error.code, message) : null;
+  const plan = recoveryPlan(task);
   if (task.status === 'succeeded' || (task.status === 'cancelled' && task.recoveryState !== 'unknown')) return null;
   if (/executionId|执行批次不一致|执行批次.*不匹配/i.test(message)) return {
     kind: 'stale_result', title: '结果属于其他执行批次',
@@ -28,10 +30,16 @@ function taskResolution(task = {}) {
   };
   if (coded && coded.code !== 'UNCLASSIFIED') return {
     kind: coded.category, title: ({ qualification: '等待自动安全校验', resource: '等待后台资源', source: '资料来源需要处理', security: '需要人工安全确认' })[coded.category] || '任务需要处理',
-    instruction: coded.action, retrySafe: coded.automatic,
+    instruction: coded.action, retrySafe: coded.automatic, owner: coded.automatic ? 'system' : 'user', plan,
   };
-  if (task.recoveryState === 'unknown') return { kind: 'unknown', title: '正在核对上次执行',
-    instruction: '尚不能确认外部任务已停止。先核对原工具及回执；不要重复派发同一批资料。其他学生任务可以继续。', retrySafe: false };
+  if (task.recoveryState === 'unknown') return {
+    kind: 'unknown',
+    title: plan.state === 'automatic' ? '系统正在自动核对' : `需要在 ${plan.providerLabel} 确认一次`,
+    instruction: [plan.summary, plan.nextAction].filter(Boolean).join(' '),
+    retrySafe: false,
+    owner: plan.owner,
+    plan,
+  };
   return null;
 }
 

@@ -8,9 +8,7 @@ import android.security.keystore.KeyProperties
 import android.util.Base64
 import org.json.JSONArray
 import org.json.JSONObject
-import java.net.HttpURLConnection
 import java.net.URI
-import java.net.URL
 import java.io.ByteArrayOutputStream
 import java.security.KeyStore
 import javax.crypto.Cipher
@@ -46,20 +44,25 @@ data class AgentConfigurationSnapshot(
     val encryptedCredential: String,
 )
 
-class AgentConfigurationStore(context: Context) {
-    private val preferences = context.applicationContext.getSharedPreferences("local_agent", Context.MODE_PRIVATE)
+class AgentConfigurationStore(context: Context, namespace: String = "local_agent") {
+    private val appContext = context.applicationContext
+    private val gatewayEligible = namespace == "local_agent"
+    init { require(namespace in setOf("local_agent", "local_asr")) }
+    private val preferences = context.applicationContext.getSharedPreferences(namespace, Context.MODE_PRIVATE)
+    private val keyAlias = if (namespace == "local_agent") KEY_ALIAS else "edu_manager_asr_api_key_v1"
 
     fun save(endpoint: String, model: String, apiKey: String) {
         saveOrUpdate(endpoint, model, apiKey)
     }
 
     fun saveOrUpdate(endpoint: String, model: String, apiKey: String?, visionModel: String = "") {
-        val normalized = endpoint.trim().trimEnd('/')
-        val uri = URI(normalized)
-        require(uri.scheme == "https" || (uri.scheme == "http" && uri.host in setOf("127.0.0.1", "localhost"))) { "Agent 接口必须使用 HTTPS（本机回环地址除外）" }
-        require(uri.rawQuery == null && uri.rawFragment == null) { "Agent 接口不能包含查询参数或片段" }
+        val normalized = ModelEndpointPolicy.normalize(endpoint)
         require(model.isNotBlank()) { "模型名称不能为空" }
-        val credential = apiKey?.trim().takeUnless { it.isNullOrBlank() } ?: load()?.apiKey
+        val provided = apiKey?.trim().takeUnless { it.isNullOrBlank() }
+        val previous = if (provided == null) load() else null
+        val credential = provided ?: previous?.takeIf {
+            ModelEndpointPolicy.mayReuseCredential(it.endpoint, normalized)
+        }?.apiKey
         require(!credential.isNullOrBlank()) { "API Key 不能为空" }
         preferences.edit().putString("endpoint", normalized).putString("model", model.trim())
             .putString("vision_model", visionModel.trim()).putString("credential", encrypt(credential)).commit().also { check(it) }
@@ -67,6 +70,7 @@ class AgentConfigurationStore(context: Context) {
 
     fun load(): AgentConfiguration? {
         val endpoint = preferences.getString("endpoint", "").orEmpty(); val model = preferences.getString("model", "").orEmpty(); val encrypted = preferences.getString("credential", "").orEmpty()
+        if (gatewayEligible && GatewaySettings(appContext).enabled() && model.isNotBlank()) return AgentConfiguration(GatewaySettings(appContext).endpoint(), model, "", preferences.getString("vision_model", "").orEmpty())
         if (endpoint.isBlank() || model.isBlank() || encrypted.isBlank()) return null
         return AgentConfiguration(endpoint, model, decrypt(encrypted), preferences.getString("vision_model", "").orEmpty())
     }
@@ -81,10 +85,7 @@ class AgentConfigurationStore(context: Context) {
     /** Migrates only non-secret routing metadata. A new device must enter its own API key. */
     fun restorePublicProfile(profile: AgentPublicConfiguration?) {
         if (profile == null) return
-        val normalized = profile.endpoint.trim().trimEnd('/')
-        val uri = URI(normalized)
-        require(uri.scheme == "https" || (uri.scheme == "http" && uri.host in setOf("127.0.0.1", "localhost"))) { "Agent 接口必须使用 HTTPS（本机回环地址除外）" }
-        require(uri.rawQuery == null && uri.rawFragment == null) { "Agent 接口不能包含查询参数或片段" }
+        val normalized = ModelEndpointPolicy.normalize(profile.endpoint)
         require(profile.model.isNotBlank()) { "模型名称不能为空" }
         check(preferences.edit().putString("endpoint", normalized).putString("model", profile.model.trim())
             .putString("vision_model", profile.visionModel.trim()).remove("credential").commit())
@@ -115,7 +116,7 @@ class AgentConfigurationStore(context: Context) {
     fun clear() {
         check(preferences.edit().clear().commit())
         val keyStore = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
-        if (keyStore.containsAlias(KEY_ALIAS)) keyStore.deleteEntry(KEY_ALIAS)
+        if (keyStore.containsAlias(keyAlias)) keyStore.deleteEntry(keyAlias)
     }
 
     private fun encrypt(value: String): String {
@@ -131,9 +132,9 @@ class AgentConfigurationStore(context: Context) {
 
     private fun secretKey(): SecretKey {
         val keyStore = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
-        (keyStore.getKey(KEY_ALIAS, null) as? SecretKey)?.let { return it }
+        (keyStore.getKey(keyAlias, null) as? SecretKey)?.let { return it }
         val generator = KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES, "AndroidKeyStore")
-        generator.init(KeyGenParameterSpec.Builder(KEY_ALIAS, KeyProperties.PURPOSE_ENCRYPT or KeyProperties.PURPOSE_DECRYPT)
+        generator.init(KeyGenParameterSpec.Builder(keyAlias, KeyProperties.PURPOSE_ENCRYPT or KeyProperties.PURPOSE_DECRYPT)
             .setBlockModes(KeyProperties.BLOCK_MODE_GCM).setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE).build())
         return generator.generateKey()
     }
@@ -145,22 +146,32 @@ interface AgentAdapter {
     fun execute(systemPrompt: String, userPrompt: String): String
 }
 
-class OpenAiCompatibleAgentAdapter(private val configuration: AgentConfiguration) : AgentAdapter {
+class OpenAiCompatibleAgentAdapter(
+    private val configuration: AgentConfiguration,
+    context: Context? = null,
+    private val studentId: String = "",
+    private val taskId: String = "",
+) : AgentAdapter {
+    private val provider: ModelProvider = context?.let { ModelRuntime.provider(it, configuration) }
+        ?: CompatibleModelProvider(configuration.endpoint, configuration.apiKey)
     override fun execute(systemPrompt: String, userPrompt: String): String {
         return request(JSONArray().put(JSONObject().put("role", "system").put("content", systemPrompt)).put(JSONObject().put("role", "user").put("content", userPrompt)), configuration.model)
     }
 
-    fun testConnection(): String = execute("你是连接测试工具。只回复 OK。", "连接测试")
+    fun testConnection(): String = execute("你是连接测试工具。只回复 OK。", "连接测试").also {
+        require(it.trim() == "OK") { "文本测试返回内容未符合预期；不能标记为通过" }
+    }
 
     fun testVisionConnection(): String {
         require(configuration.visionModel.isNotBlank()) { "尚未配置视觉模型" }
-        val image = generatedTestImage()
+        val count = java.security.SecureRandom().nextInt(3) + 2
+        val image = generatedTestImage(count)
         return executeVision(
             "你是视觉模型连接测试工具。不要推断任何个人信息。",
-            "这是一张应用生成的测试图片。只回复 VISION_OK。",
+            "统计图片中红色正方形的个数，只输出一个阿拉伯数字，不要解释。",
             image,
             "image/png",
-        )
+        ).also { require(it.trim() == count.toString()) { "视觉测试未正确读取随机图片内容；不能标记为通过" } }
     }
 
     fun executeVision(systemPrompt: String, prompt: String, imageBytes: ByteArray, mimeType: String): String {
@@ -172,36 +183,31 @@ class OpenAiCompatibleAgentAdapter(private val configuration: AgentConfiguration
     }
 
     private fun request(messages: JSONArray, model: String): String {
-        val url = URL(resolveChatCompletionsUrl(configuration.endpoint))
-        val connection = (url.openConnection() as HttpURLConnection).apply {
-            requestMethod = "POST"; connectTimeout = 30_000; readTimeout = 180_000; doOutput = true
-            setRequestProperty("Content-Type", "application/json; charset=utf-8"); setRequestProperty("Authorization", "Bearer ${configuration.apiKey}")
-        }
-        val payload = JSONObject().put("model", model).put("temperature", 0.2)
-            .put("messages", messages)
-        connection.outputStream.use { it.write(payload.toString().toByteArray()) }
-        val status = connection.responseCode
-        val response = (if (status in 200..299) connection.inputStream else connection.errorStream)?.bufferedReader()?.use { it.readText() }.orEmpty()
-        if (status !in 200..299) {
-            val requestId = connection.getHeaderField("x-request-id").orEmpty().ifBlank { connection.getHeaderField("x-tt-logid").orEmpty() }
-            error("Agent 服务请求失败（HTTP $status）：${safeErrorDetail(response)}${if (requestId.isBlank()) "" else "；请求 ID $requestId"}")
-        }
-        return JSONObject(response).getJSONArray("choices").getJSONObject(0).getJSONObject("message").getString("content")
+        return provider.generate(ModelRequest(model, messages, studentId, taskId)).text
     }
 
-    private fun safeErrorDetail(response: String): String {
-        val parsed = runCatching { JSONObject(response) }.getOrNull()
-        val error = parsed?.optJSONObject("error")
-        val code = error?.optString("code").orEmpty().ifBlank { parsed?.optString("code").orEmpty() }
-        val message = error?.optString("message").orEmpty().ifBlank { parsed?.optString("message").orEmpty() }
-        return listOf(code, message).filter { it.isNotBlank() }.joinToString(" · ").ifBlank { "服务未返回可读错误信息" }.take(600)
+    fun executeStructured(systemPrompt: String, userPrompt: String, schema: JSONObject, schemaVersion: String,
+                          cancellation: ModelCancellation = ModelCancellation()): ModelResponse {
+        val messages = JSONArray().put(JSONObject().put("role", "system").put("content", systemPrompt))
+            .put(JSONObject().put("role", "user").put("content", userPrompt))
+        return provider.generate(ModelRequest(configuration.model, messages, studentId, taskId,
+            promptVersion = "structured-v1", schemaVersion = schemaVersion, jsonSchema = schema, cancellation = cancellation))
+    }
+
+    fun webResearch(publicQuery: String, cancellation: ModelCancellation = ModelCancellation()): ModelResponse {
+        val messages = JSONArray().put(JSONObject().put("role", "system").put("content", "查询公开信息，区分来源事实与推断；不要编造来源。"))
+            .put(JSONObject().put("role", "user").put("content", publicQuery))
+        return provider.generate(ModelRequest(configuration.model, messages, studentId, taskId,
+            promptVersion = "research-v1", webResearch = true, cancellation = cancellation))
     }
 
     companion object {
         /** 128x128 application-generated PNG; large enough for common vision-model limits and contains no user data. */
-        private fun generatedTestImage(): ByteArray {
+        private fun generatedTestImage(count: Int): ByteArray {
             val bitmap = Bitmap.createBitmap(128, 128, Bitmap.Config.ARGB_8888)
-            bitmap.eraseColor(Color.rgb(36, 150, 150))
+            bitmap.eraseColor(Color.WHITE)
+            val canvas = android.graphics.Canvas(bitmap); val paint = android.graphics.Paint().apply { color = Color.RED }
+            for (index in 0 until count) { val y = (index + 1) * 128f / (count + 1); canvas.drawRect(52f, y - 8f, 68f, y + 8f, paint) }
             val output = ByteArrayOutputStream()
             bitmap.compress(Bitmap.CompressFormat.PNG, 100, output)
             bitmap.recycle()

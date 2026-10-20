@@ -1,5 +1,6 @@
 const {test}=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs'),path=require('node:path'),vm=require('node:vm');
 const policy=require('../electron/student-automation-policy.cjs');
+const {taskExecutionUnresolved}=require('../electron/task-recovery-policy.cjs');
 const source=fs.readFileSync(path.join(__dirname,'../electron/main.cjs'),'utf8');
 function fn(name){const match=new RegExp(`(?:async )?function ${name}\\(`).exec(source);assert(match);const end=source.indexOf('\n}',match.index);return source.slice(match.index,end+2);}
 test('student activity policy defaults compatible, explicit pause is opt-out and archived is blocked',()=>{
@@ -27,7 +28,7 @@ test('actual scheduler only starts active students and propagates automatic orig
 });
 test('execution rechecks latest activity but manual routing and submitted homework remain usable',async()=>{
  let checks=0;const task={id:'t',sourceId:'a',sourceType:'student',kind:'weekly_action'};
- const ctx={...policy,agentControlStore:()=>({read:()=>({})}),taskPowerRecovery:{canDispatch:()=>true},projectArchiveRuntime:{assertAccess(){}},readTaskStore:()=>({tasks:[task]}),findStudentByKey:()=>({activityStatus:'paused'}),validateTaskPermissionDeclaration:()=>{checks++;return {ok:false,message:'manual reached permissions'};}};
+ const ctx={...policy,taskExecutionUnresolved,agentControlStore:()=>({read:()=>({})}),taskPowerRecovery:{canDispatch:()=>true},projectArchiveRuntime:{assertAccess(){}},readTaskStore:()=>({tasks:[task]}),findStudentByKey:()=>({activityStatus:'paused'}),validateTaskPermissionDeclaration:()=>{checks++;return {ok:false,message:'manual reached permissions'};}};
  vm.createContext(ctx);vm.runInContext(fn('executeTaskByAdapterCore'),ctx);
  assert.equal(JSON.parse(await ctx.executeTaskByAdapterCore('t','auto',{automatic:true})).reason,'student_automation_paused');assert.equal(checks,0);
  assert.equal(JSON.parse(await ctx.executeTaskByAdapterCore('t','auto')).message,'manual reached permissions');assert.equal(checks,1);

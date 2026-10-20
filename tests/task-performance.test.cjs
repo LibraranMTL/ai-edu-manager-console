@@ -31,8 +31,15 @@ test('10k tasks are filtered and paginated before returning a whitelist summary'
 });
 test('unacknowledged handoff has no result and does not occupy a compute slot', () => {
   const task = { status: 'waiting_result', executionMode: 'desktop_handoff', result: { packet: { packetPath: 'task.json' } } };
-  assert.deepEqual(taskPresentation(task), { statusGroup: 'actionable', phaseLabel: '等待发送确认', awaitingSend: true,
-    hasResult: false, occupiesExecutionSlot: false, resolution: null, nextAction: '请在桌面工具检查任务内容并发送；未收到领取确认。' });
+  const presentation = taskPresentation(task);
+  assert.equal(presentation.statusGroup, 'actionable');
+  assert.equal(presentation.userGroup, 'needs_help');
+  assert.equal(presentation.phaseLabel, '等待发送确认');
+  assert.equal(presentation.awaitingSend, true);
+  assert.equal(presentation.hasResult, false);
+  assert.equal(presentation.occupiesExecutionSlot, false);
+  assert.equal(presentation.resolution, null);
+  assert.equal(presentation.nextAction, '请在桌面工具检查任务内容并发送；未收到领取确认。');
   assert.equal(taskPresentation({ ...task, result: { claimedAt: 'now' } }).awaitingSend, false);
 });
 test('progress buffering never changes ordering, crosses execution identities, or revives completed tasks', () => {

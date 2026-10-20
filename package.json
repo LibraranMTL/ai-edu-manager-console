@@ -1,6 +1,6 @@
 {
   "name": "edu-manager-launcher",
-  "version": "0.21.1",
+  "version": "0.21.2",
   "private": true,
   "type": "module",
   "main": "electron/main.cjs",
@@ -16,6 +16,7 @@
     "benchmark:capture-p0": "node --expose-gc scripts/benchmark-capture-timeline.cjs",
     "benchmark:capture-p1": "node scripts/benchmark-capture-timeline-p1.cjs",
     "benchmark:cloud": "node scripts/benchmark-cloud-reports.cjs",
+    "benchmark:assets": "node scripts/benchmark-asset-index.cjs",
     "preview": "vite preview --host 0.0.0.0",
     "desktop": "electron .",
     "build:win": "pnpm test && node scripts/build-windows-release.cjs",

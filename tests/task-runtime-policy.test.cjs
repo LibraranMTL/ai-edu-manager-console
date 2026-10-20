@@ -84,6 +84,31 @@ test('same-cycle terminal tasks stay terminal while a new cycle resets execution
   assert.equal(newCycle.resetExecution, true);
 });
 
+test('confirmed stop survives fingerprint drift within one schedule window but not a genuinely new window', () => {
+  const current = {
+    status: 'cancelled',
+    recoveryState: 'host_confirmed_stopped',
+    idempotencyKey: 'competition:student:old-fingerprint:2026-10',
+    executionId: 'old-run',
+  };
+  const sameMonth = candidateRuntimeDecision(current, {
+    status: 'pending',
+    idempotencyKey: 'competition:student:new-fingerprint:2026-10',
+  });
+  assert.equal(sameMonth.confirmedStopProtected, true);
+  assert.equal(sameMonth.newCycle, false);
+  assert.equal(sameMonth.preserveTerminal, true);
+  assert.equal(sameMonth.nextStatus, 'cancelled');
+
+  const nextMonth = candidateRuntimeDecision(current, {
+    status: 'pending',
+    idempotencyKey: 'competition:student:new-fingerprint:2026-11',
+  });
+  assert.equal(nextMonth.confirmedStopProtected, false);
+  assert.equal(nextMonth.newCycle, true);
+  assert.equal(nextMonth.nextStatus, 'pending');
+});
+
 test('candidate refresh cannot replace active or prepared execution runtime', () => {
   const active = candidateRuntimeDecision(
     { status: 'running', executionId: 'run-1', startedAt: '2026-10-10T00:00:00Z', idempotencyKey: 'cycle-1' },

@@ -2,7 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import './agent-control-center.css';
 type ProviderMode = 'automatic_preferred' | 'manual_only' | 'disabled';
 type LoginStatus = { state: string; message: string };
-type Global = { enabled: boolean; version: number; order: string[]; disabledProviders: string[]; providerModes: Record<string, ProviderMode>; providerProfiles: Record<string, string[]>; desktopHandoff: boolean };
+type Global = { enabled: boolean; version: number; order: string[]; disabledProviders: string[]; providerModes: Record<string, ProviderMode>; providerProfiles: Record<string, string[]>; desktopHandoff: boolean; capturedConversationRouting: { enabled: boolean; authorizedAt: string } };
 type ApiSettings = { revision: number; protocol: string; protocolLabel: string; baseUrl: string; model: string; configured: boolean; hasApiKey: boolean;
   researchSupported: boolean; researchReady: boolean; lastResearchCheck?: { message?: string; checkedAt?: string; sourceCount?: number } | null };
 type Provider = { id: string; label: string; connection: string; adapterKind: string; custom: boolean; automaticProfiles: string[]; handoff: boolean; installed: boolean; state: string; message: string;
@@ -10,11 +10,12 @@ type Provider = { id: string; label: string; connection: string; adapterKind: st
   tool?: { name: string; kind: string; target: string; args?: string[] } };
 type Snapshot = { global: Global; pendingCount: number; profiles: { id: string; label: string }[]; providers: Provider[];
   tasks: { id: string; title: string; status: string; error: string; route?: { reason: string; selectedAdapter: string; stage: string; attempts?: { providerId: string; code: string }[] } }[];
-  history: { at: string; policy: { enabled: boolean; version: number } }[] };
+  history: { at: string; policy: { enabled: boolean; version: number } }[];
+  authorizationRestore?: { phase: string; message: string } };
 export type AgentControlApi = { agentControlAction?: (action: string, input: unknown) => Promise<string> };
 type Run = (action: string, extra?: Record<string, unknown>) => Promise<void>;
 type ProviderOperation = { providerId: string; action: string; state: 'running' | 'pending' | 'success' | 'error'; message: string };
-const states: Record<string, string> = { ready: '连接已验证', channel_ready: '自动通道已连接', login_required: '后台待认证', qualification_required: '待验证', unavailable: '未连接', cooldown: '暂时冷却', manual: '手工交接' };
+const states: Record<string, string> = { ready: '已连接', checking: '正在检查', channel_ready: '自动通道已连接', login_required: '需要重新授权', qualification_required: '等待自动复核', unavailable: '未连接', cooldown: '暂时冷却', manual: '手工交接' };
 function LlmApiEditor({ provider, busy, run }: { provider: Provider; busy: boolean; run: Run }) {
   const settings = provider.settings!;
   const [protocol, setProtocol] = useState(settings.protocol), [baseUrl, setBaseUrl] = useState(settings.baseUrl), [model, setModel] = useState(settings.model);
@@ -132,7 +133,11 @@ export function AgentControlCenter({ api, onOpenTool, onDownloadTool, onTasks, o
     {provider.automaticProfiles.length > 0 && <details className="qualification-list"><summary>选择参与自动调度的任务合同</summary>{provider.automaticProfiles.map(profile => <label key={profile}><input type="checkbox" disabled={busy || draft!.providerModes[provider.id] !== 'automatic_preferred'} checked={(draft!.providerProfiles[provider.id] || []).includes(profile)} onChange={e => { const selected = draft!.providerProfiles[provider.id] || []; const next = e.target.checked ? [...new Set([...selected, profile])] : selected.filter(id => id !== profile); void act('saveGlobal', { settings: { ...snapshot!.global, providerProfiles: { ...snapshot!.global.providerProfiles, [provider.id]: next } } }); }} />{snapshot!.profiles.find(p => p.id === profile)?.label || profile}</label>)}</details>}
     {provider.qualifications?.length ? <details className="qualification-list"><summary>查看各任务合同状态</summary>{provider.qualifications.map(item => <p key={item.profile}><strong>{snapshot!.profiles.find(p => p.id === item.profile)?.label || item.profile}</strong>：{item.state}</p>)}</details> : null}
     <div className="actions">
-      {['codex', 'workbuddy'].includes(provider.id) && <><button disabled={busy || provider.login?.state === 'running'} onClick={() => void act('authorize', { providerId: provider.id })}>连接／授权</button><button className={provider.login ? 'primary' : ''} disabled={busy || !provider.installed} onClick={() => void act('verify', { providerId: provider.id })}>{provider.login ? '我已完成登录，继续' : '验证连接'}</button></>}
+      {['codex', 'workbuddy'].includes(provider.id) && <>
+        {(provider.state === 'login_required' || provider.state === 'unavailable') && <button disabled={busy || !provider.installed || provider.login?.state === 'running'} onClick={() => void act('authorize', { providerId: provider.id })}>连接／授权</button>}
+        <button className={provider.login ? 'primary' : ''} disabled={busy || !provider.installed || provider.state === 'checking'} onClick={() => void act('verify', { providerId: provider.id })}>{provider.login ? '我已完成登录，继续' : '检查连接'}</button>
+        {!['login_required', 'unavailable'].includes(provider.state) && <details><summary>高级</summary><p>仅在更换账号或凭据已撤销时使用；普通检查不会改变授权版本。</p><button disabled={busy || provider.login?.state === 'running'} onClick={() => void act('authorize', { providerId: provider.id })}>更换账号／重新授权</button></details>}
+      </>}
       {provider.id === 'workbuddy' && <button disabled={busy || !provider.installed} onClick={() => void act('verifyResearch', { providerId: provider.id })}>验证联网研究合同</button>}
       {provider.adapterKind === 'builtin-structured' && <button disabled={busy} onClick={() => void act('verifyBuiltin', { providerId: provider.id })}>检测并验证三类合同</button>}
       {provider.connection === 'cli' && <button disabled={busy} onClick={() => void act('verifyCli', { providerId: provider.id })}>验证 CLI 协议</button>}
@@ -142,7 +147,7 @@ export function AgentControlCenter({ api, onOpenTool, onDownloadTool, onTasks, o
     </div>
     {provider.login && <div className={`notice provider-operation ${['failed', 'expired', 'closed'].includes(provider.login.state) ? 'error' : 'pending'}`} role="status" aria-live="polite">
       <p>{provider.login.message}</p><small>{provider.login.state === 'finished'
-        ? '官方登录流程已完成，点击上方“我已完成登录，继续”验证任务合同；已有有效后台登录时无需再次打开登录页。'
+        ? '官方登录流程已完成，点击上方“我已完成登录，继续”检查任务合同；已有有效后台登录时无需再次打开登录页。'
         : '在官方浏览器页面完成登录，再点击上方“我已完成登录，继续”。若登录页未打开，请等待状态更新；启动失败或超时后可重新点击“连接／授权”。'}</small>
     </div>}
     {providerOperation?.providerId === provider.id && !(providerOperation.action === 'authorize' && provider.login) && <p role={providerOperation.state === 'error' ? 'alert' : 'status'} aria-live="polite"
@@ -150,7 +155,7 @@ export function AgentControlCenter({ api, onOpenTool, onDownloadTool, onTasks, o
     {provider.custom && <CustomToolEditor busy={busy} run={run} provider={provider} />}
   </article>;
   return <section className="panel agent-control-center" aria-label={title}>
-    <div className="panel-heading"><div><h2>{title}</h2><small>R24 · Windows 候选</small><p>{description}</p></div><button disabled={busy} onClick={() => void act('snapshot')}>刷新状态</button></div>
+    <div className="panel-heading"><div><h2>{title}</h2><small>R25 · Windows 0.21.2 候选</small><p>{description}</p></div><button disabled={busy} onClick={() => void act('snapshot')}>刷新状态</button></div>
     {message && <p role="status" className="notice">{message}</p>}
     {!snapshot || !draft ? <p>正在读取已保存状态…</p> : <>
       {view === 'management' && <>
@@ -160,6 +165,8 @@ export function AgentControlCenter({ api, onOpenTool, onDownloadTool, onTasks, o
       {view === 'center' && <>
       <section aria-label="全局授权"><h3>1. 全局授权</h3>
         <label><input type="checkbox" disabled={busy} checked={draft.enabled} onChange={e => void act('saveGlobal', { settings: { ...snapshot.global, enabled: e.target.checked } })} />启用管家调用 Agent 的任务与原有会话采集</label>
+        <label><input type="checkbox" disabled={busy || !draft.enabled} checked={draft.capturedConversationRouting.enabled} onChange={e => void act('saveGlobal', { settings: { ...snapshot.global, capturedConversationRouting: { ...snapshot.global.capturedConversationRouting, enabled: e.target.checked } } })} />自动采集会话完成后进入资料收件箱；高可信资料自动投递</label>
+        <p>自动会话仅处理本次授权边界后的新会话；手工导入／分享对话只生成分类建议，不自动投递。{draft.capturedConversationRouting.authorizedAt ? ` 当前边界：${new Date(draft.capturedConversationRouting.authorizedAt).toLocaleString()}` : ''}</p>
         <p>这是内部任务调度设置，不会扩大外部连接器或旧凭据权限。官方登录、密钥和 Hook 信任仅在失效时重新连接。</p>
         {!draft.version && <p className="notice">尚未迁移，当前沿用旧策略。首次启用会备份旧策略并改用全局设置；不会重复派发正在执行或等待结果的任务。</p>}
         <button onClick={onCapture}>管理会话归属与自动采集</button>

@@ -54,7 +54,12 @@ test('W12 accepts either an Agent base URL or a complete chat completions URL', 
   const agent = read('AgentAdapter.kt');
   assert.match(agent, /resolveChatCompletionsUrl/);
   assert.match(agent, /endsWith\("\/chat\/completions"/);
-  assert.match(agent, /safeErrorDetail/);
-  assert.match(agent, /x-request-id/);
+  const provider = read('ModelProvider.kt');
+  assert.match(agent, /CompatibleModelProvider/);
+  assert.match(provider, /x-request-id/);
+  assert.match(provider, /模型服务返回 HTTP/);
+  assert.match(provider, /safeId\(http\.requestId\)/);
+  assert.match(provider, /instanceFollowRedirects = false/);
+  assert.doesNotMatch(provider, /error\(http\.body\)|println|Log\.|printStackTrace/);
   assert.doesNotMatch(agent, /URL\("\$\{configuration\.endpoint\}\/chat\/completions"\)/);
 });

@@ -38,7 +38,7 @@ function createProjectDigestWorkspace({ store, knowledgeRoot, allowedDirectories
     return { root, manifest, output };
   }
 
-  async function prepare({ materialIds, ruleVersion, targets }) {
+  async function prepare({ materialIds, ruleVersion, scopeFingerprint = '', targets }) {
     identifier(ruleVersion, '规则版本');
     invariant(Array.isArray(materialIds) && materialIds.length > 0 && materialIds.length <= 200
       && new Set(materialIds).size === materialIds.length, 'invalid_sources', '消化来源数量或身份重复。');
@@ -78,6 +78,7 @@ function createProjectDigestWorkspace({ store, knowledgeRoot, allowedDirectories
     const batchId = `batch-${crypto.randomUUID()}`;
     const paths = await batchPaths(batchId, { create: true });
     const manifest = { schema: BATCH_SCHEMA, projectId: store.projectId, batchId,
+      ...(scopeFingerprint ? { scopeFingerprint: String(scopeFingerprint) } : {}),
       state: 'preparing', ruleVersion, createdAt: new Date().toISOString(), sources, baselines };
     await writeJsonAtomic(paths.manifest, manifest);
     await store.mutate((index) => {
@@ -109,6 +110,8 @@ function createProjectDigestWorkspace({ store, knowledgeRoot, allowedDirectories
     const { paths, manifest } = await readBatch(batchId);
     invariant(receipt?.schema === RESULT_SCHEMA && receipt.batchId === batchId
       && receipt.projectId === store.projectId, 'receipt_scope_mismatch', '输出回执必须明确匹配当前项目及批次。');
+    if (manifest.scopeFingerprint) invariant(receipt.scopeFingerprint === manifest.scopeFingerprint,
+      'receipt_scope_mismatch', '输出回执与冻结项目范围不一致。');
     invariant(Array.isArray(receipt.artifacts) && receipt.artifacts.length > 0 && receipt.artifacts.length <= 200,
       'invalid_artifacts', '输出必须逐项声明真实知识文件和来源。');
     const artifacts = [];

@@ -18,7 +18,7 @@ const EXTRACTION_ERRORS = new Set(['unsupported', 'unsupported_encoding', 'unsup
 
 // One task-center execution, not a second scheduler. Checkpoints are persisted
 // by the caller in the existing task record; sources remain in the registry.
-function createProjectMaterialTask({ project, executionId, checkpoint = {}, onCheckpoint, authorize,
+function createProjectMaterialTask({ project, executionId, executionScope = null, checkpoint = {}, onCheckpoint, authorize,
   executable, signal, execute = executeMaterialCodex, verifySandbox = verifyMaterialSandbox,
   extractSource, timeoutMs, hooks = {} }) {
   const { store } = createProjectMaterialHost(project);
@@ -154,6 +154,7 @@ function createProjectMaterialTask({ project, executionId, checkpoint = {}, onCh
           });
           if (!selected.length) continue;
           batch = await workspace.prepare({ materialIds: selected.map((item) => item.materialId), ruleVersion: rules.version,
+            scopeFingerprint: executionScope?.scopeFingerprint || '',
             targets: selected.flatMap((item) => KNOWLEDGE_DIRS.map((dir) => ({
               relativePath: `${dir}/${crypto.createHash('sha256').update(item.materialId).digest('hex').slice(0, 24)}.md`, materialIds: [item.materialId] }))) });
           await writeJsonAtomic(path.join(path.dirname(batch.manifestPath), 'task-rules.json'), { schema: RULES, ...rules });

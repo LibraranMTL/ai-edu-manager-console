@@ -57,6 +57,8 @@ data class StudentRecord(
     val paths: StudentWorkspacePaths,
     val adoptedAt: String,
     val createdAt: String,
+    val planningProfile: StudentPlanningProfile = StudentPlanningProfile(),
+    val preservedFields: String = "{}",
 ) {
     fun toJson(): JSONObject = JSONObject().apply {
         put("id", id)
@@ -70,8 +72,8 @@ data class StudentRecord(
         put("email", "")
         put("goal", goal)
         put("digestTime", "21:30")
-        put("agentTool", "qclaw")
-        put("agentBindingMode", "subAgent")
+        put("agentTool", "workbuddy")
+        put("agentBindingMode", "mainChat")
         put("agentName", "")
         put("agentNote", "")
         put("knowledgeBaseMode", knowledgeBaseMode)
@@ -93,6 +95,18 @@ data class StudentRecord(
         put("remoteBindingStatus", "unbound")
         put("remoteBoundAt", "")
         put("createdAt", createdAt)
+        // Preserve optional/future Windows fields on Android read-modify-write.
+        val original = JSONObject(preservedFields)
+        val managed = setOf("id", "name", "grade", "school", "goal", "knowledgeBaseMode", "storageRootUri",
+            "pathDialect", "rootPath", "rawPath", "summaryPath", "agentPath", "outputPath", "adoptedAt", "createdAt")
+        original.keys().forEach { key -> if (key !in managed && key !in StudentPlanningProfile.keys) put(key, original.get(key)) }
+        // No forced validation/migration of a legacy record during an unrelated write.
+        if (planningProfile == StudentPlanningProfile.fromJson(original)) {
+            StudentPlanningProfile.keys.forEach { key -> if (original.has(key)) put(key, original.get(key)) }
+        } else {
+            val profile = planningProfile.toJson()
+            profile.keys().forEach { key -> put(key, profile.get(key)) }
+        }
     }
 
     companion object {
@@ -166,6 +180,8 @@ data class StudentRecord(
                 ),
                 adoptedAt = value.optString("adoptedAt"),
                 createdAt = value.optString("createdAt"),
+                planningProfile = StudentPlanningProfile.fromJson(value),
+                preservedFields = value.toString(),
             )
         }
 

@@ -40,7 +40,7 @@ test('host migration IPC exposes plan, plain export, inspection and staged resto
 
 test('project migration state uses the project index envelope and still reads legacy arrays', () => {
   assert.match(main, /\['projects\.json', \{ version: 1, updatedAt: new Date\(\)\.toISOString\(\), projects: readProjects\(\) \}\]/);
-  assert.match(main, /if \(Array\.isArray\(parsed\)\) return parsed/);
+  assert.match(main, /const projects = Array\.isArray\(parsed\) \? parsed : Array\.isArray\(parsed\.projects\) \? parsed\.projects : \[\]/);
 });
 
 test('migration security separates machine identity and private credentials from portable data', () => {
@@ -53,6 +53,14 @@ test('migration security separates machine identity and private credentials from
   assert.match(renderer, /新电脑需要重新激活并重新连接终端/);
   assert.doesNotMatch(main.slice(main.indexOf('function migrationStateVirtualFiles'), main.indexOf('function migrationStateDirectorySources')), /collaborationDirectSecretsPath/);
   assert.doesNotMatch(main.slice(main.indexOf('function migrationStateVirtualFiles'), main.indexOf('function migrationStateDirectorySources')), /hostIdentityPath/);
+});
+
+test('host migration carries a consistent SQLite asset snapshot instead of a full JSON index', () => {
+  const section = main.slice(main.indexOf('function migrationStateVirtualFiles'), main.indexOf('function migrationStateDirectorySources'));
+  assert.match(section, /migration-assets\/asset-index\.sqlite3/);
+  assert.doesNotMatch(section, /asset-index\.json/);
+  assert.match(main, /await assetStore\(\)\.backupTo\(snapshotPath\)/);
+  assert.match(main, /assetStore\(\)\.importSnapshot\(sqliteSnapshot/);
 });
 
 test('complete migration includes every registered student directory and defaults project directories on', () => {

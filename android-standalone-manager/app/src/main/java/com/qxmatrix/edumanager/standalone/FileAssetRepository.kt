@@ -5,45 +5,66 @@ import android.net.Uri
 import org.json.JSONArray
 import org.json.JSONObject
 
-class StudentMaterialRepository(context: Context, private val student: StudentRecord) {
+class StudentMaterialRepository(private val context: Context, private val student: StudentRecord) {
     private val store = SafWorkspaceStore(context, Uri.parse(student.storageRootUri))
     private val filePath = child(student.paths.rootPath, ".edu-manager/materials.json")
 
-    fun list(): List<JSONObject> = readRoot().optJSONArray("materials").toObjects().map { source ->
+    private fun legacy(): List<JSONObject> {
+        val root = readRoot(); require(root.getString("studentId") == student.id) { "资料索引学生不匹配，停止读取和写入" }
+        val array = root.getJSONArray("materials")
+        val records = List(array.length()) { array.getJSONObject(it) }
+        require(records.all { it.getString("studentId") == student.id && it.getString("id").isNotBlank() } && records.map { it.getString("id") }.distinct().size == records.size) { "资料索引条目不完整或重复" }
+        return records.map { source ->
         val item = JSONObject(source.toString())
         val alreadyDigested = item.optString("digestedAt").isNotBlank() ||
-            item.optString("digestArtifactPath").isNotBlank() || item.optString("digestBatchId").isNotBlank()
+            item.optString("digestArtifactPath").isNotBlank()
         if (alreadyDigested && MaterialStatus.normalize(item.optString("status")) == MaterialStatus.PENDING_DIGEST) {
             item.put("status", MaterialStatus.PROCESSED.wireValue)
         }
         item
+        }
     }
 
-    fun upsert(material: JSONObject): List<JSONObject> {
+    private fun <T> access(action: (RoomMaterialStore) -> T): T = MaterialDatabaseAccess.run {
+        synchronized(MaterialDatabaseAccess.lock(student.id)) {
+            StudentIndexRepository(context).requireExact(student.id)
+            val db = BusinessDatabase.get(context); BusinessRestoreRecovery.recover(context, db)
+            val room = RoomMaterialStore(db, student.id); room.migrate(::legacy); action(room)
+        }
+    }
+    fun list(): List<JSONObject> = access { it.list() }
+    fun repairProjection() = access { room -> write(room.list()); room.projectionComplete() }
+
+    fun upsert(material: JSONObject): List<JSONObject> = access { room ->
         require(material.getString("studentId") == student.id) { "资料不能写入其他学生档案" }
-        val items = list().toMutableList()
+        val items = room.change { items ->
         val index = items.indexOfFirst { it.optString("id") == material.getString("id") }
         if (index >= 0) items[index] = material else items.add(0, material)
-        write(items)
-        return items
+            items.toList()
+        }
+        write(items); room.projectionComplete(); items
     }
 
-    fun transition(materialId: String, next: MaterialStatus): JSONObject {
-        val items = list().toMutableList()
+    fun transition(materialId: String, next: MaterialStatus): JSONObject = access { room ->
+        val result = room.change { items ->
         val index = items.indexOfFirst { it.optString("id") == materialId }
         require(index >= 0) { "未找到指定资料" }
         val current = MaterialStatus.normalize(items[index].optString("status"))
         require(current.canTransitionTo(next)) { "不允许从 ${current.wireValue} 转换到 ${next.wireValue}" }
         items[index].put("status", next.wireValue).put("statusUpdatedAt", Timestamp.now())
-        write(items)
-        return items[index]
+            items[index]
+        }
+        write(room.list()); room.projectionComplete(); result
     }
 
-    fun patch(materialId: String, values: JSONObject): JSONObject {
-        val items = list().toMutableList(); val index = items.indexOfFirst { it.optString("id") == materialId }
+    fun patch(materialId: String, values: JSONObject): JSONObject = access { room ->
+        val result = room.change { items ->
+        val index = items.indexOfFirst { it.optString("id") == materialId }
         require(index >= 0) { "未找到指定资料" }
         values.keys().forEach { key -> if (key !in setOf("id", "studentId", "absolutePath")) items[index].put(key, values.opt(key)) }
-        items[index].put("statusUpdatedAt", Timestamp.now()); write(items); return items[index]
+        items[index].put("statusUpdatedAt", Timestamp.now()); items[index]
+        }
+        write(room.list()); room.projectionComplete(); result
     }
 
     private fun readRoot(): JSONObject = if (store.exists(filePath)) JSONObject(store.readBytes(filePath).toString(Charsets.UTF_8))
@@ -64,11 +85,15 @@ class StudentMaterialRepository(context: Context, private val student: StudentRe
 class AssetIndexRepository(context: Context) {
     private val state = PrivateStateStore(context)
 
-    fun list(): List<JSONObject> = try {
-        JSONObject(state.readBytes(PATH).toString(Charsets.UTF_8)).optJSONArray("assets").toObjects()
-    } catch (_: Exception) { emptyList() }
+    fun list(): List<JSONObject> = synchronized(LOCK) {
+        val bytes = state.readIfPresent(PATH) ?: return@synchronized emptyList()
+        val array = JSONObject(bytes.toString(Charsets.UTF_8)).getJSONArray("assets")
+        List(array.length()) { array.getJSONObject(it) }.also { items ->
+            require(items.all { it.getString("assetId").isNotBlank() } && items.map { it.getString("assetId") }.distinct().size == items.size) { "资产索引损坏，停止写入" }
+        }
+    }
 
-    fun upsertBySha1(candidate: JSONObject): JSONObject {
+    fun upsertBySha1(candidate: JSONObject): JSONObject = synchronized(LOCK) {
         val assets = list().toMutableList()
         val index = assets.indexOfFirst { it.optString("sha1") == candidate.getString("sha1") }
         val merged = if (index < 0) candidate else merge(assets[index], candidate)
@@ -77,7 +102,7 @@ class AssetIndexRepository(context: Context) {
         val root = JSONObject().put("version", 1).put("updatedAt", Timestamp.now())
             .put("assets", JSONArray().also { array -> assets.forEach(array::put) })
         state.writeBytes(PATH, (root.toString(2) + "\n").toByteArray())
-        return merged
+        merged
     }
 
     fun forStudent(studentId: String): List<JSONObject> = list().filter { asset ->
@@ -104,6 +129,7 @@ class AssetIndexRepository(context: Context) {
     companion object {
         private const val PATH = "asset-index.json"
         private const val MAX_ASSET_RECORDS = 50_000
+        private val LOCK = Any()
     }
 }
 

@@ -6,6 +6,17 @@ import org.junit.Test
 
 class StudentModelsTest {
     @Test
+    fun defaultAgentIsPortableAndExistingBindingsSurviveRoundTrip() {
+        val json = StudentRecord.create("测试", "", "", "", "standard", "content://tree/root").toJson()
+        assertEquals("workbuddy", json.getString("agentTool"))
+        assertEquals("mainChat", json.getString("agentBindingMode"))
+        json.put("agentTool", "qclaw").put("agentBindingMode", "subAgent")
+        val restored = StudentRecord.fromJson(json).toJson()
+        assertEquals("qclaw", restored.getString("agentTool"))
+        assertEquals("subAgent", restored.getString("agentBindingMode"))
+    }
+
+    @Test
     fun standardPathsMatchTheWindowsStudentWorkspaceContract() {
         val paths = StudentWorkspacePaths.standard("张三")
         assertEquals("张三知识库", paths.rootPath)

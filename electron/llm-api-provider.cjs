@@ -80,22 +80,59 @@ function parseJsonContent(content) {
   catch { throw Object.assign(Error('LLM API 最终内容不是有效 JSON'), { code: 'LLM_API_INVALID_RESULT' }); }
 }
 
+function boundedUsage(value) {
+  if (!value || typeof value !== 'object') return null;
+  const usage = {};
+  for (const key of ['prompt_tokens', 'completion_tokens', 'total_tokens', 'input_tokens', 'output_tokens']) {
+    const amount = Number(value[key]);
+    if (Number.isFinite(amount) && amount >= 0) usage[key] = amount;
+  }
+  return Object.keys(usage).length ? usage : null;
+}
+
+function responseDiagnostics(result, protocol = DEFAULT_PROTOCOL) {
+  const requestId = String(result?.id || '').slice(0, 160);
+  if (protocol === 'openai-chat') {
+    const choices = Array.isArray(result?.choices) ? result.choices : [];
+    const choice = choices[0] || null;
+    let content = choice?.message?.content;
+    if (Array.isArray(content)) content = content.filter(item => item?.type === 'text' || item?.type === 'output_text').map(item => item.text || '').join('');
+    return { protocol, requestId, finishReason: String(choice?.finish_reason || '').slice(0, 80), choiceCount: choices.length,
+      contentPresent: typeof content === 'string' && content.length > 0, contentLength: typeof content === 'string' ? content.length : 0,
+      usage: boundedUsage(result?.usage) };
+  }
+  if (protocol === 'openai-responses') {
+    const content = String(result?.output_text || '') || (Array.isArray(result?.output) ? result.output.flatMap(item => item?.content || []).filter(item => item?.type === 'output_text').map(item => item.text || '').join('') : '');
+    return { protocol, requestId, finishReason: String(result?.status || '').slice(0, 80), choiceCount: Array.isArray(result?.output) ? result.output.length : 0,
+      contentPresent: Boolean(content), contentLength: content.length, usage: boundedUsage(result?.usage) };
+  }
+  const content = Array.isArray(result?.content) ? result.content.filter(item => item?.type === 'text').map(item => item.text || '').join('') : '';
+  return { protocol, requestId, finishReason: String(result?.stop_reason || '').slice(0, 80), choiceCount: Array.isArray(result?.content) ? result.content.length : 0,
+    contentPresent: Boolean(content), contentLength: content.length, usage: boundedUsage(result?.usage) };
+}
+
+function invalidResponse(message, result, protocol, reason) {
+  return Object.assign(Error(message), { code: 'LLM_API_INVALID_RESPONSE', diagnostics: { ...responseDiagnostics(result, protocol), reason } });
+}
+
 function structuredContent(result, protocol = DEFAULT_PROTOCOL) {
   if (protocol === 'openai-chat') {
     const choice = Array.isArray(result?.choices) ? result.choices[0] : null;
-    if (!choice || ['length', 'content_filter', 'tool_calls'].includes(String(choice.finish_reason || ''))) {
-      throw Object.assign(Error('LLM API 输出不完整或请求了未授权工具，结果未采用'), { code: 'LLM_API_INVALID_RESPONSE' });
-    }
+    if (!choice) throw invalidResponse('LLM API 响应缺少候选结果，请稍后重试', result, protocol, 'missing_choice');
+    const finishReason = String(choice.finish_reason || '');
+    if (finishReason === 'length') throw invalidResponse('LLM API 输出达到长度上限，结构化结果未完成；请重试', result, protocol, 'output_limit');
+    if (finishReason === 'content_filter') throw invalidResponse('LLM API 输出被服务方内容策略拦截，结果未采用', result, protocol, 'content_filter');
+    if (finishReason === 'tool_calls') throw invalidResponse('LLM API 请求了当前合同未授权的工具，结果未采用', result, protocol, 'unauthorized_tool_call');
     let content = choice.message?.content;
     if (Array.isArray(content)) content = content.filter(item => item?.type === 'text' || item?.type === 'output_text').map(item => item.text || '').join('');
     return parseJsonContent(content);
   }
   if (protocol === 'openai-responses') {
-    if (['failed', 'cancelled', 'incomplete'].includes(String(result?.status || ''))) throw Object.assign(Error('LLM API Responses 输出未完成，结果未采用'), { code: 'LLM_API_INVALID_RESPONSE' });
+    if (['failed', 'cancelled', 'incomplete'].includes(String(result?.status || ''))) throw invalidResponse('LLM API Responses 输出未完成，结果未采用', result, protocol, 'incomplete_response');
     const content = String(result?.output_text || '') || (Array.isArray(result?.output) ? result.output.flatMap(item => item?.content || []).filter(item => item?.type === 'output_text').map(item => item.text || '').join('') : '');
     return parseJsonContent(content);
   }
-  if (['max_tokens', 'tool_use', 'pause_turn', 'refusal'].includes(String(result?.stop_reason || ''))) throw Object.assign(Error('Anthropic Messages 输出未完成，结果未采用'), { code: 'LLM_API_INVALID_RESPONSE' });
+  if (['max_tokens', 'tool_use', 'pause_turn', 'refusal'].includes(String(result?.stop_reason || ''))) throw invalidResponse('Anthropic Messages 输出未完成，结果未采用', result, protocol, 'incomplete_response');
   const content = Array.isArray(result?.content) ? result.content.filter(item => item?.type === 'text').map(item => item.text || '').join('') : '';
   return parseJsonContent(content);
 }
@@ -272,14 +309,27 @@ function createLlmApiProvider({ directory, protect, unprotect, request = fetch, 
   async function verify() {
     const before = fingerprint(await load());
     const schema = { type: 'object', additionalProperties: false, required: ['ok', 'code'], properties: { ok: { type: 'boolean' }, code: { type: 'string' } } };
-    const result = await generate({ prompt: '这是无学生资料的连接检测。返回 ok=true 且 code="edu-llm-42"。', schema, timeoutMs: 60000, maxOutputTokens: 256 });
-    if (result?.ok !== true || result?.code !== 'edu-llm-42') throw Error('LLM API 已响应，但结构化合成检测未通过');
-    return serialize(async () => {
-      const state = await load(), checkedAt = now().toISOString();
-      if (fingerprint(state) !== before) throw Error('API 配置在测试期间变化，请重新测试');
-      state.lastCheck = { ok: true, checkedAt, runtimeHash: fingerprint(state), message: '结构化合成检测通过；分类、消化和学习卡片仍按各自合同校验。' };
-      await atomicWrite(state); return { ...publicState(state), message: state.lastCheck.message };
-    });
+    try {
+      const result = await generate({ prompt: '这是无学生资料的连接检测。返回 ok=true 且 code="edu-llm-42"。', schema, timeoutMs: 60000, maxOutputTokens: 2048 });
+      if (result?.ok !== true || result?.code !== 'edu-llm-42') throw Object.assign(Error('LLM API 已响应，但结构化合成检测未通过'), { code: 'LLM_API_CONTRACT_MISMATCH' });
+      return serialize(async () => {
+        const state = await load(), checkedAt = now().toISOString();
+        if (fingerprint(state) !== before) throw Error('API 配置在测试期间变化，请重新测试');
+        state.lastCheck = { ok: true, checkedAt, runtimeHash: fingerprint(state), message: '结构化合成检测通过；分类、消化和学习卡片仍按各自合同校验。' };
+        await atomicWrite(state); return { ...publicState(state), message: state.lastCheck.message };
+      });
+    } catch (error) {
+      await serialize(async () => {
+        const state = await load();
+        if (fingerprint(state) !== before) return;
+        const diagnostics = error?.diagnostics && typeof error.diagnostics === 'object' ? error.diagnostics : null;
+        state.lastCheck = { ok: false, checkedAt: now().toISOString(), runtimeHash: fingerprint(state),
+          code: String(error?.code || 'LLM_API_VERIFY_FAILED').slice(0, 80), message: String(error?.message || 'LLM API 结构化合成检测失败').slice(0, 300),
+          ...(diagnostics ? { diagnostics } : {}) };
+        await atomicWrite(state);
+      }).catch(() => {});
+      throw error;
+    }
   }
   async function verifyResearch() {
     const before = fingerprint(await load()), profile = await runtime();

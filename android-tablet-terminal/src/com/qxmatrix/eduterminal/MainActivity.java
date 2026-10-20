@@ -262,7 +262,7 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
     Button refreshGrowthButton;
     Button openWeComButton;
     Button openQQButton;
-    Button openQClawButton;
+    Button openAgentButton;
     Button openMarvisButton;
     Button copyConsultPromptButton;
     Button copyDigestPromptButton;
@@ -860,10 +860,10 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
 
         LinearLayout agentDialogCard = card();
         agentDialogCard.addView(label("本机 Agent"));
-        openQClawButton = button("打开 QClaw", false);
+        openAgentButton = button("选择 Agent", false);
         openMarvisButton = button("打开 Mavis", false);
         LinearLayout agentDialogRow = row();
-        agentDialogRow.addView(openQClawButton);
+        agentDialogRow.addView(openAgentButton);
         agentDialogRow.addView(openMarvisButton);
         agentDialogCard.addView(agentDialogRow);
 
@@ -877,13 +877,13 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
         promptDialogCard.addView(promptDialogRow);
         openWeComButton.setOnClickListener(this);
         openQQButton.setOnClickListener(this);
-        openQClawButton.setOnClickListener(this);
+        openAgentButton.setOnClickListener(this);
         openMarvisButton.setOnClickListener(this);
         copyConsultPromptButton.setOnClickListener(this);
         copyDigestPromptButton.setOnClickListener(this);
         openWeComButton.setEnabled(false);
         openQQButton.setEnabled(false);
-        openQClawButton.setEnabled(true);
+        openAgentButton.setEnabled(true);
         openMarvisButton.setEnabled(true);
         copyConsultPromptButton.setEnabled(false);
         copyDigestPromptButton.setEnabled(false);
@@ -1040,7 +1040,7 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
 
         LinearLayout dialogueContent = stack();
         dialogueContent.addView(collapsiblePanel("QQ / 企业微信", "打开当前学生绑定的联系入口。", contactCard));
-        dialogueContent.addView(collapsiblePanel("QClaw / Mavis", "打开本机已有的教育 Agent。", agentDialogCard));
+        dialogueContent.addView(collapsiblePanel("Agent 对话", "打开本机已有的教育 Agent。", agentDialogCard));
         dialogueContent.addView(collapsiblePanel("咨询与消化提示", "按需复制咨询提示或资料消化提示。", promptDialogCard));
         root.addView(collapsiblePanel("教育管家对话", "联系入口、Agent 和提示词集中在这里。", dialogueContent));
 
@@ -1393,8 +1393,8 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
             openWeCom();
         } else if (view == openQQButton) {
             openQQ();
-        } else if (view == openQClawButton) {
-            openQClaw();
+        } else if (view == openAgentButton) {
+            chooseAgentApp();
         } else if (view == openMarvisButton) {
             openMarvis();
         } else if (view == openObsidianButton) {
@@ -5171,14 +5171,25 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
         openExternalApp(new String[] {"com.tencent.mobileqq", "com.tencent.minihd.qq", "com.tencent.tim"}, "mqq://", "QQ");
     }
 
-    void openQClaw() {
-        openAgentApp(
-            new String[] {"com.tencent.qclaw", "com.tencent.qclaw.android", "com.tencent.qclawapp", "com.qclaw.app", "com.tencent.claw"},
-            "qclaw://",
-            "https://qclaw.qq.com/",
-            "QClaw",
-            new String[] {"qclaw", "claw", "q爪"}
-        );
+    void chooseAgentApp() {
+        Intent query = new Intent(Intent.ACTION_MAIN);
+        query.addCategory(Intent.CATEGORY_LAUNCHER);
+        final List<android.content.pm.ResolveInfo> apps = new ArrayList<android.content.pm.ResolveInfo>();
+        for (android.content.pm.ResolveInfo item : getPackageManager().queryIntentActivities(query, 0)) {
+            if (item.activityInfo != null && !getPackageName().equals(item.activityInfo.packageName)) apps.add(item);
+        }
+        java.util.Collections.sort(apps, new android.content.pm.ResolveInfo.DisplayNameComparator(getPackageManager()));
+        if (apps.isEmpty()) { toast("未发现可打开的应用，请先安装需要使用的 Agent。"); return; }
+        String[] labels = new String[apps.size()];
+        for (int i = 0; i < apps.size(); i++) labels[i] = apps.get(i).loadLabel(getPackageManager()) + " · " + apps.get(i).activityInfo.packageName;
+        new AlertDialog.Builder(this).setTitle("选择已安装的 Agent 应用").setItems(labels, new android.content.DialogInterface.OnClickListener() {
+          @Override public void onClick(android.content.DialogInterface dialog, int which) {
+            android.content.pm.ActivityInfo selected = apps.get(which).activityInfo;
+            Intent launch = new Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER);
+            launch.setClassName(selected.packageName, selected.name);
+            try { startActivity(launch); } catch (Exception error) { toast("无法打开所选应用：" + error.getMessage()); }
+          }
+        }).setNegativeButton("取消", null).show();
     }
 
     void openMarvis() {

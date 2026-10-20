@@ -106,7 +106,16 @@ function createSmartInboxHost(h) {
         .filter(i => ['share', 'android_share', 'student_web', 'auto_folder'].includes(i.sourceChannel) && !['trashed', 'delivered'].includes(i.status))
         .map(i => ({ locator: i.itemId, name: i.originalName }));
       const entries = await h.conversations(student(source.studentId));
-      return entries.filter(e => e.lifecycleStatus !== 'trashed' && Boolean(e.sourceType === 'authorized_lifecycle') === (source.type === 'session') && !e.alreadyDelivered)
+      const activationAt = Date.parse(source.activationAt || '');
+      return entries.filter(e => e.lifecycleStatus !== 'trashed'
+        && e.sourceScopeType !== 'project'
+        && !['already_scoped', 'before_authorization'].includes(e.routingDisposition)
+        && (!Number.isFinite(activationAt) || (() => {
+          const eventAt = Date.parse(e.capturedSessionStartedAt || e.importedAt || '');
+          return Number.isFinite(eventAt) && eventAt >= activationAt;
+        })())
+        && Boolean(e.sourceType === 'authorized_lifecycle') === (source.type === 'session')
+        && !e.alreadyDelivered)
         .map(e => ({ name: path.basename(e.path || `${e.assetId}.md`), locator: JSON.stringify({ assetId: e.assetId, sourceScopeType: e.sourceScopeType, sourceScopeId: e.sourceScopeId }) }));
     },
     resolveEvent,

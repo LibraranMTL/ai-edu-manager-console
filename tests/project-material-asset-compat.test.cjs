@@ -96,18 +96,59 @@ test('compatibility repair restores project asset membership after an interrupte
   assert.equal(f.upserts, 1);
 });
 
-test('host compatibility adapter refuses a new asset when the old index is full', async (t) => {
+test('host compatibility adapter accepts assets beyond the former 5000-row JSON cap', async (t) => {
   const f = await fixture(t);
   const assets = Array.from({ length: 5000 }, (_, index) => ({
     assetId: `other-${index}`, sha1: `other-${index}`, references: [],
   }));
   let writes = 0;
   const scope = { createProjectMaterialAssetCompatibility, ProjectMaterialError: MaterialError,
-    readAssetIndex: () => assets, upsertAssetFromFile: () => { writes++; throw new Error('must not write'); },
-    updateProjectRecord: () => { throw new Error('must not update'); }, mergeUnique: (values) => [...new Set(values)] };
+    readAssetIndex: () => assets, upsertAssetFromFile: (file, context) => { writes++; return { assetId: 'asset-new', sha1: f.record.sha1, size: f.record.size, references: [{ spaceType: 'project', spaceId: f.project.id, path: file, role: context.role }] }; },
+    updateProjectRecord: (_id, change) => { f.project = change(f.project); return { project: f.project }; }, mergeUnique: (values) => [...new Set(values)] };
   bind(scope, 'projectMaterialAssetCompatibility');
-  await assert.rejects(scope.projectMaterialAssetCompatibility(f.project, f.host)
-    .syncAccepted(f.record.materialId), { code: 'asset_index_full' });
-  assert.equal(writes, 0);
+  const result = await scope.projectMaterialAssetCompatibility(f.project, f.host).syncAccepted(f.record.materialId);
+  assert.equal(result.assetId, 'asset-new');
+  assert.equal(writes, 1);
+  assert.ok(f.project.assetIds.includes('asset-new'));
   assert.equal((await f.host.store.read()).materials[0].adoption.state, 'accepted');
+});
+
+test('repairAll processes every missing project reference beyond 5000 with one index read', async () => {
+  const total = 5_101;
+  const project = { id: 'p-large', name: 'Large synthetic project' };
+  const materials = Array.from({ length: total }, (_, index) => ({
+    materialId: `material-${index}`, version: 1, sha1: String(index).padStart(40, '0'), sha256: String(index).padStart(64, '0'),
+    size: index + 1, availability: 'available', adoption: { state: 'accepted' }, links: { assets: [] }, location: { index },
+  }));
+  let reads = 0;
+  const host = {
+    store: {
+      read: async () => { reads += 1; return { materials }; },
+      locationPath: async (location) => path.resolve(os.tmpdir(), `material-${location.index}.txt`),
+      resolve: async (materialId) => {
+        const index = Number(materialId.slice('material-'.length));
+        return { path: path.resolve(os.tmpdir(), `${materialId}.txt`), version: 1, sha1: materials[index].sha1,
+          sha256: materials[index].sha256, size: materials[index].size };
+      },
+    },
+    bindUploadedAsset: async () => {},
+  };
+  let writes = 0;
+  const progress = [];
+  const adapter = createProjectMaterialAssetCompatibility(project, host, {
+    findAsset: () => undefined,
+    hasProjectAsset: () => false,
+    upsertAsset: async (file, context) => {
+      const index = Number(path.basename(file).match(/\d+/)[0]); writes += 1;
+      return { assetId: `asset-${index}`, sha1: materials[index].sha1, size: materials[index].size,
+        references: [{ spaceType: 'project', spaceId: project.id, path: file, role: context.role }] };
+    },
+    addProjectAsset: async () => {},
+  });
+  const result = await adapter.repairAll({ batchSize: 100, onProgress: item => progress.push(item) });
+  assert.equal(reads, 1);
+  assert.equal(writes, total);
+  assert.equal(result.linked, total);
+  assert.equal(result.remaining, 0);
+  assert.equal(progress.at(-1).processed, total);
 });

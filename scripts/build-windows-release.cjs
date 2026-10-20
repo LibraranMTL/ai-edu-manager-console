@@ -5,6 +5,10 @@ const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 const { validateWindowsVersion } = require('./version-policy.cjs');
 const { compileLifecycleHook } = require('./compile-lifecycle-hook.cjs');
+const { bundleSkillArchiveRuntime } = require('./build-skill-runtime.cjs');
+const { MAX_WINDOWS_ARTIFACT_BYTES, assertWindowsArtifactBudget } = require('./windows-artifact-budget.cjs');
+const { compactWindowsRuntime } = require('./compact-windows-runtime.cjs');
+const { compactPngResources } = require('./compact-png-resources.cjs');
 
 const repoRoot = path.resolve(__dirname, '..');
 const packageJson = JSON.parse(fs.readFileSync(path.join(repoRoot, 'package.json'), 'utf8'));
@@ -20,8 +24,17 @@ for (const manifestPath of [
   path.join(repoRoot, 'release', 'windows', 'edu-manager-version.json'),
 ]) {
   const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
-  if (String(manifest.windowsVersionName || '') !== version) {
+  if (!candidateTag && String(manifest.windowsVersionName || '') !== version) {
     throw new Error(`${manifestPath} 的 Windows 版本与 package.json 不一致。`);
+  }
+  if (candidateTag && !['stable', 'release'].includes(String(manifest.windowsReleaseStatus || '').toLowerCase())) {
+    throw new Error(`${manifestPath} 必须继续指向正式版；候选构建不得改写线上更新清单。`);
+  }
+  if (candidateTag && String(manifest.windowsVersionName || '') === version) {
+    throw new Error(`${manifestPath} 已指向本次候选版本；请恢复上一正式版后再构建候选。`);
+  }
+  if (candidateTag && String(manifest.windowsUrl || '').includes(candidateTag)) {
+    throw new Error(`${manifestPath} 不得指向候选标识 ${candidateTag}。`);
   }
 }
 const artifactBase = `AI-edu-manager-console-Windows-${version}${candidateTag && candidateTag !== version ? `-${candidateTag}` : ''}`;
@@ -36,6 +49,10 @@ const releaseDir = candidateTag
 const lockPath = path.join(stageBase, 'build.lock');
 const phaseLogPath = path.join(stageBase, 'build-phases.log');
 const electronLanguages = ['zh-CN', 'zh-TW', 'en-US', 'en-GB', 'fr', 'es', 'es-419', 'ja', 'ko', 'vi', 'ms'];
+const cloudReportRuntime = [
+  'cloud-report-service/remote-result-contract.cjs',
+  'cloud-report-service/v2-contract.cjs',
+];
 
 function assertInside(target, parent, label) {
   const resolvedTarget = path.resolve(target);
@@ -48,7 +65,7 @@ function assertInside(target, parent, label) {
 function run(command, args, options = {}) {
   const result = spawnSync(command, args, {
     cwd: repoRoot,
-    env: process.env,
+    env: options.env || process.env,
     encoding: 'utf8',
     stdio: options.capture ? 'pipe' : 'inherit',
     windowsHide: true,
@@ -69,8 +86,8 @@ function resolvePackageBin(packageName, binName = packageName) {
   return path.resolve(path.dirname(manifestPath), relativeBin);
 }
 
-function runPackageBin(packageName, binName, args) {
-  return run(process.execPath, [resolvePackageBin(packageName, binName), ...args]);
+function runPackageBin(packageName, binName, args, options = {}) {
+  return run(process.execPath, [resolvePackageBin(packageName, binName), ...args], options);
 }
 
 function walkFiles(root) {
@@ -250,7 +267,7 @@ function writeRuntimePackage() {
       compression: 'maximum',
       electronLanguages,
       directories: { output: 'out' },
-      files: ['dist/**/*', 'electron/**/*', 'package.json'],
+      files: ['dist/**/*', 'electron/**/*', 'cloud-report-service/**/*', 'package.json'],
       extraResources: [{ from: 'material-pdf-runtime', to: 'material-pdf-runtime' }],
       asarUnpack: ['electron/invoke-agent.ps1', 'electron/capture-timeline-ocr.ps1', 'electron/project-knowledge-guard.ps1'],
       win: {
@@ -326,6 +343,7 @@ function build() {
       ...walkFiles(path.join(repoRoot, 'electron')),
       ...walkFiles(path.join(repoRoot, 'src')),
       ...walkFiles(path.join(repoRoot, 'public')),
+      ...cloudReportRuntime.map((relative) => path.join(repoRoot, relative)),
       ...walkFiles(path.join(repoRoot, 'tools', 'license-admin-app')),
       ...walkFiles(path.join(repoRoot, 'scripts')),
     ], 'source');
@@ -335,6 +353,7 @@ function build() {
 
     recordPhase('build-renderer');
     runPackageBin('vite', 'vite', ['build', '--outDir', stageDist, '--emptyOutDir']);
+    const pngCompaction = compactPngResources(stageDist);
 
     recordPhase('audit-renderer');
     const distFiles = walkFiles(stageDist);
@@ -350,6 +369,11 @@ function build() {
     recordPhase('copy-runtime-files');
     const stagedElectron = path.join(stageRoot, 'electron');
     copyDirectoryFiles(path.join(repoRoot, 'electron'), stagedElectron);
+    for (const relative of cloudReportRuntime) {
+      const destination = path.join(stageRoot, relative);
+      fs.mkdirSync(path.dirname(destination), { recursive: true });
+      fs.copyFileSync(path.join(repoRoot, relative), destination);
+    }
     // Student/teacher terminal entry points are delivered as separate products.
     // Excluding them from the host keeps the host runtime bounded without weakening
     // any host capability or raising the package-size safety limit.
@@ -361,11 +385,13 @@ function build() {
     compileLifecycleHook(path.join(stageRoot, 'electron', 'agent-lifecycle-hook.cs'), path.join(stageRoot, 'electron', 'agent-lifecycle-hook.exe'));
     bundleCourseImportRuntime();
     bundleConnectorLifecycleRuntime();
+    bundleSkillArchiveRuntime(repoRoot, stageRoot, locateEsbuildModule());
     require('./build-practice-runtime.cjs').bundlePracticeRuntime(stageRoot, locateEsbuildModule());
     require('./build-project-material-extractor.cjs').bundleMaterialExtractor(stageRoot, locateEsbuildModule());
     require('./build-project-material-pdf.cjs').stagePdfRuntime(stageRoot);
     fs.mkdirSync(path.join(stageRoot, 'public', 'brand'), { recursive: true });
     fs.copyFileSync(path.join(repoRoot, 'public', 'brand', 'robogala.ico'), path.join(stageRoot, 'public', 'brand', 'robogala.ico'));
+    const runtimeCompaction = compactWindowsRuntime(stageRoot, locateEsbuildModule());
     recordPhase('write-runtime-package');
     writeRuntimePackage();
     recordPhase('secret-scan-stage');
@@ -386,7 +412,11 @@ function build() {
       }
       electronBuilderArgs.push(`--config.electronDist=${electronDist}`);
     }
-    runPackageBin('electron-builder', 'electron-builder', electronBuilderArgs);
+    // BCJ2 is a reversible x86-code filter supported by the pinned builder.
+    // It changes archive encoding only; no runtime files or features are removed.
+    runPackageBin('electron-builder', 'electron-builder', electronBuilderArgs, {
+      env: { ...process.env, ELECTRON_BUILDER_7Z_FILTER: 'BCJ2' },
+    });
 
     const unpackedRoot = path.join(stageOutput, 'win-unpacked');
     const appAsar = path.join(unpackedRoot, 'resources', 'app.asar');
@@ -432,12 +462,60 @@ function build() {
         throw new Error(`Packaged external Agent connector runtime differs from verified stage: ${relative}`);
       }
     }
+    const assetIndexRuntime = [
+      'electron/asset-index-store.cjs',
+      'electron/asset-index-worker.cjs',
+    ];
+    for (const relative of assetIndexRuntime) {
+      if (!asarFiles.includes(`\\${relative.replaceAll('/', '\\')}`)) {
+        throw new Error(`Packaged SQLite asset index runtime is missing: ${relative}`);
+      }
+      const staged = fs.readFileSync(path.join(stageRoot, relative));
+      const packaged = asar.extractFile(appAsar, relative);
+      if (!staged.equals(packaged)) {
+        throw new Error(`Packaged SQLite asset index runtime differs from verified stage: ${relative}`);
+      }
+    }
+    const skillLibraryRuntime = [
+      'electron/skill-package-inspector.cjs',
+      'electron/skill-library-store.cjs',
+      'electron/skill-discovery-adapters.cjs',
+      'electron/skill-install-adapters.cjs',
+      'electron/skill-archive-extractor.cjs',
+      'electron/skill-scan-worker.cjs',
+      'electron/skill-library-service.cjs',
+    ];
+    for (const relative of skillLibraryRuntime) {
+      if (!asarFiles.includes(`\\${relative.replaceAll('/', '\\')}`)) {
+        throw new Error(`Packaged Skill library runtime is missing: ${relative}`);
+      }
+      const staged = fs.readFileSync(path.join(stageRoot, relative));
+      const packaged = asar.extractFile(appAsar, relative);
+      if (!staged.equals(packaged)) {
+        throw new Error(`Packaged Skill library runtime differs from verified stage: ${relative}`);
+      }
+    }
+    for (const relative of cloudReportRuntime) {
+      if (!asarFiles.includes(`\\${relative.replaceAll('/', '\\')}`)) {
+        throw new Error(`Packaged cloud result runtime is missing: ${relative}`);
+      }
+      const staged = fs.readFileSync(path.join(stageRoot, relative));
+      const packaged = asar.extractFile(appAsar, relative);
+      if (!staged.equals(packaged)) {
+        throw new Error(`Packaged cloud result runtime differs from verified stage: ${relative}`);
+      }
+    }
     const packagedRendererText = asarFiles
       .filter((name) => /^\\dist\\assets\\.*\.js$/i.test(name))
       .map((name) => asar.extractFile(appAsar, name.replace(/^\\/, '')).toString('utf8'))
       .join('\n');
     if (!packagedRendererText.includes('外部 Agent 连接器')) {
       throw new Error('Packaged renderer is missing the external Agent connector settings entry.');
+    }
+    for (const marker of ['Skills管理', 'Skill存档管理', 'QClaw']) {
+      if (!packagedRendererText.includes(marker)) {
+        throw new Error(`Packaged renderer is missing the Skill management marker: ${marker}`);
+      }
     }
     for (const required of [
       '\\electron\\agent-lifecycle-hook.exe',
@@ -480,16 +558,27 @@ function build() {
       fs.writeFileSync(target, asar.extractFile(appAsar, relative));
       run(process.execPath, ['--check', target]);
     }
+    const isolatedSkillRuntime = path.join(syntaxDir, 'skill-runtime');
+    fs.mkdirSync(isolatedSkillRuntime, { recursive: true });
+    for (const relative of skillLibraryRuntime) {
+      fs.writeFileSync(path.join(isolatedSkillRuntime, path.basename(relative)), asar.extractFile(appAsar, relative));
+    }
+    const isolatedService = path.join(isolatedSkillRuntime, 'skill-library-service.cjs');
+    run(process.execPath, ['-e', `require(${JSON.stringify(isolatedService)})`]);
+    const skillRuntimeReport = path.join(stageRoot, 'skill-packaged-runtime-verification.json');
+    run(process.execPath, [path.join(repoRoot, 'scripts', 'verify-skill-asar.cjs'), path.join(appAsar, 'electron'), skillRuntimeReport]);
+    const skillRuntimeVerification = JSON.parse(fs.readFileSync(skillRuntimeReport, 'utf8'));
     const packagedCourseImport = asar.extractFile(appAsar, 'electron/course-custom-import.cjs').toString('utf8');
     if (/require\((['"])exceljs\1\)/.test(packagedCourseImport)) {
       throw new Error('Packaged course import runtime still depends on an external exceljs module.');
     }
     const packagedMain = asar.extractFile(appAsar, 'electron/main.cjs').toString('utf8');
-    for (const marker of ['teacher-terminal-v1', 'teacherTerminalStudentRecord', "deviceRole === 'teacher'"]) {
+    for (const marker of ['teacher-terminal-v1', 'teacherTerminalStudentRecord']) {
       if (!packagedMain.includes(marker)) {
         throw new Error(`Packaged Windows host is missing teacher-terminal support: ${marker}`);
       }
     }
+    if (!/deviceRole\s*===\s*['"]teacher['"]/.test(packagedMain)) throw new Error('Packaged Windows host is missing teacher role check');
 
     const localeDir = path.join(unpackedRoot, 'locales');
     const locales = fs.readdirSync(localeDir).filter((name) => name.endsWith('.pak')).map((name) => name.replace(/\.pak$/, '')).sort();
@@ -501,6 +590,8 @@ function build() {
     recordPhase('create-zip');
     const stagedZip = path.join(stageOutput, `${artifactBase}.zip`);
     createZip(stagedExe, stagedZip);
+    assertWindowsArtifactBudget(stagedExe);
+    assertWindowsArtifactBudget(stagedZip);
     fs.mkdirSync(releaseDir, { recursive: true });
     let effectiveReleaseDir = releaseDir;
     let releaseExe = path.join(effectiveReleaseDir, `${artifactBase}.exe`);
@@ -523,6 +614,10 @@ function build() {
     const audit = {
       version,
       candidateTag,
+      artifactSizeLimitBytes: MAX_WINDOWS_ARTIFACT_BYTES,
+      archiveCodeFilter: 'BCJ2',
+      runtimeCompaction,
+      pngCompaction,
       builtAt: new Date().toISOString(),
       sourceControl,
       stagingRoot: stageRoot,
@@ -541,6 +636,10 @@ function build() {
         nodeModuleFiles: packagedNodeModules.length,
         agentBridge: unpackedAgentBridge,
         externalAgentConnectorRuntime: externalAgentRuntime,
+        assetIndexRuntime,
+        skillLibraryRuntime,
+        skillRuntimeVerification,
+        cloudReportRuntime,
         teacherTerminalSupport: true,
         unpackedBytes: directorySize(unpackedRoot),
       },

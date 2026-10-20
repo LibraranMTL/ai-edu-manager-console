@@ -117,6 +117,91 @@ function validateReportDraftForAutoPublish(options = {}) {
   };
 }
 
+function replaceFrontmatterValue(content, key, value) {
+  const text = String(content || '');
+  const match = text.match(/^---\r?\n([\s\S]*?)\r?\n---/u);
+  if (!match) return text;
+  const line = `${key}: ${value}`;
+  const expression = new RegExp(`^${String(key).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}:\\s*.*$`, 'im');
+  const block = expression.test(match[1]) ? match[1].replace(expression, line) : `${match[1]}\n${line}`;
+  return `${text.slice(0, match.index)}---\n${block}\n---${text.slice(match.index + match[0].length)}`;
+}
+
+// Only make deterministic, evidence-conservative corrections. Identity or
+// growth-version mismatches are never rewritten because the body could belong
+// to another student or source revision.
+function repairReportDraftForAutoPublish(options = {}) {
+  const original = String(options.content || '');
+  const expectedStudentId = String(options.studentId || '');
+  const expectedFingerprint = String(options.expectedFingerprint || '');
+  const growthIndex = options.growthIndex || {};
+  if (!original || frontmatterValue(original, 'student_id') !== expectedStudentId
+    || frontmatterValue(original, 'growth_fingerprint') !== expectedFingerprint
+    || String(growthIndex.sourceFingerprint || '') !== expectedFingerprint) {
+    return { changed: false, content: original, corrections: [], reason: 'identity_or_version_mismatch' };
+  }
+
+  let content = original;
+  const corrections = [];
+  const expectedDate = String(options.expectedDate || '');
+  const status = frontmatterValue(content, 'status').toLowerCase();
+  if (!['generated', 'pending_review', 'draft', '待审核'].includes(status)) {
+    content = replaceFrontmatterValue(content, 'status', 'pending_review');
+    corrections.push('normalized_status');
+  }
+  if (options.weekly === true) {
+    if (expectedDate && frontmatterValue(content, 'date') !== expectedDate) {
+      content = replaceFrontmatterValue(content, 'date', expectedDate);
+      corrections.push('normalized_date');
+    }
+    if (Number.isNaN(Date.parse(frontmatterValue(content, 'generated_at')))) {
+      content = replaceFrontmatterValue(content, 'generated_at', String(options.now || new Date().toISOString()));
+      corrections.push('normalized_generated_at');
+    }
+  } else if (expectedDate && !/^\d{4}-\d{2}-\d{2}$/u.test(frontmatterValue(content, 'updated'))) {
+    content = replaceFrontmatterValue(content, 'updated', expectedDate);
+    corrections.push('normalized_updated');
+  }
+
+  for (const section of Array.isArray(options.requiredSections) ? options.requiredSections : []) {
+    const escaped = String(section).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const heading = new RegExp(`^##\\s+${escaped}\\s*$`, 'im');
+    if (heading.test(content)) continue;
+    content = `${content.trimEnd()}\n\n## ${section}\n\n资料不足，继续积累。\n`;
+    corrections.push(`added_section:${section}`);
+  }
+
+  const evidenceById = new Map((Array.isArray(growthIndex.evidence) ? growthIndex.evidence : [])
+    .map(item => [String(item.id || ''), item]));
+  let section = '';
+  const lines = content.split(/\r?\n/u).map((line) => {
+    const heading = line.match(/^##\s+(.+?)\s*$/u);
+    if (heading) { section = heading[1].trim(); return line; }
+    const ids = [...line.matchAll(/\[依据[:：]\s*([^\]]+)\]/gu)]
+      .flatMap(match => match[1].split(/[,，、;\s]+/u)).map(id => id.trim()).filter(Boolean);
+    if (!ids.length) return line;
+    const unusable = ids.filter((id) => {
+      const evidence = evidenceById.get(id);
+      return !evidence || !['confirmed', 'watching'].includes(String(evidence.status || ''))
+        || String(evidence.riskLevel || '') === 'high'
+        || (Array.isArray(evidence.conflicts) && evidence.conflicts.length)
+        || (typeof options.sourceAccessible === 'function' && !options.sourceAccessible(evidence));
+    });
+    if (unusable.length) {
+      corrections.push(`neutralized_unusable_evidence:${unusable.join(',')}`);
+      return '资料不足；该项依据未通过自动校验，不形成正式结论。';
+    }
+    const hasWatching = ids.some(id => String(evidenceById.get(id)?.status || '') === 'watching');
+    if (hasWatching && !NON_CONCLUSION_REPORT_SECTIONS.has(section) && !WATCHING_QUALIFIER_PATTERN.test(line)) {
+      corrections.push(`neutralized_watching_claim:${ids.join(',')}`);
+      return `该项仍待观察，不能据此形成正式结论。[依据:${ids.join(',')}]`;
+    }
+    return line;
+  });
+  content = lines.join('\n');
+  return { changed: content !== original, content, corrections: [...new Set(corrections)] };
+}
+
 module.exports = {
   CONSERVATIVE_REPORT_PATTERN,
   NON_CONCLUSION_REPORT_SECTIONS,
@@ -125,5 +210,6 @@ module.exports = {
   frontmatterValue,
   frontmatterValueFromFile,
   reportContentFingerprint,
+  repairReportDraftForAutoPublish,
   validateReportDraftForAutoPublish,
 };

@@ -103,7 +103,7 @@ test('host receipt endpoint enforces project and student authorization before re
     findStudent: (studentId) => ['s1', 's2'].includes(studentId) ? { id: studentId } : null,
     readProjects: () => [{ id: 'p1', status: 'active', studentIds: ['s1'] }],
     normalizeProject: (value) => value, isWorkspaceMaterialProject: () => false, projectAllowed: () => true,
-    readUploadRecords: () => [f.studentRecord], readAssetIndex: () => [f.asset],
+    readUploadRecords: () => [f.studentRecord], assetStore: () => ({ queryDetails: () => [f.asset] }),
     sendJson: (_response, status, body) => replies.push({ status, body }) };
   bind(scope, 'handleUploadReceiptQuery');
   const url = (targetType, targetId, studentId = 's1') => new URL(`http://localhost/api/uploads/receipt?targetType=${targetType}&targetId=${targetId}&studentId=${studentId}&uploadId=request-1`);
@@ -130,7 +130,9 @@ test('actual student upload retry accepts matching bytes and rejects a changed b
     requireMatchingUploadGeneration: () => true,
     findStudent: () => ({ id: 's1', name: 'Synthetic', rawPath: path.dirname(f.file) }),
     courseUploadAttribution: () => ({}), remoteCaptureAttribution: () => null,
-    readUploadRecords: () => [f.studentRecord], readAssetIndex: () => [f.asset], countFiles: () => 1,
+    readUploadRecords: () => [f.studentRecord], assetStore: () => ({
+      queryDetails: () => [f.asset], findByFingerprint: () => f.asset,
+    }), countFiles: () => 1,
     getHostIdentity: () => ({ hostId: 'host-1' }),
     hostDataGenerationId: () => 'generation-1', todayUploadCount: 1,
     sendJson: (_response, status, body) => replies.push({ status, body }) };
@@ -176,10 +178,10 @@ test('actual first student upload returns a verifiable path-free host receipt', 
     courseUploadAttribution: () => ({}), remoteCaptureAttribution: () => null,
     readUploadRecords: () => [], assertUploadFileAllowed: () => {}, uniqueTargetFile: () => target,
     addUploadRecords: (records) => { recorded = records; },
-    readAssetIndex: () => recorded.map((record) => ({
-      assetId: 'asset-new', sha1: record.sha1, ownerStudentId: 's1', linkedStudents: ['s1'],
-      references: [{ id: record.id, studentId: 's1', contentSha256: record.contentSha256 }],
-    })),
+    assetStore: () => ({ findByFingerprint: () => recorded.length ? ({
+      assetId: 'asset-new', sha1: recorded[0].sha1, ownerStudentId: 's1', linkedStudents: ['s1'],
+      references: [{ id: recorded[0].id, studentId: 's1', contentSha256: recorded[0].contentSha256 }],
+    }) : null }),
     resetUploadCounterIfNeeded: () => {}, todayUploadCount: 2, countFiles: () => 2,
     getHostIdentity: () => ({ hostId: 'host-1' }), hostDataGenerationId: () => 'generation-1',
     notify: () => {}, getHostServiceStatus: () => '{}',
@@ -249,7 +251,8 @@ test('actual project upload retry refuses changed bytes before creating another 
     courseUploadAttribution: () => ({}), remoteCaptureAttribution: () => null,
     ensureProjectWorkspace: (value) => value, isWorkspaceMaterialProject: () => false,
     activeProjectUploadIds: new Set(), assertUploadFileAllowed: () => {},
-    readAssetIndex: () => [f.asset], sendJson: (_response, status, body) => replies.push({ status, body }) };
+    assetStore: () => ({ queryDetails: () => [f.asset] }),
+    sendJson: (_response, status, body) => replies.push({ status, body }) };
   for (const name of ['sha256FileDirect', 'handleProjectMaterialUpload']) bind(scope, name);
   const changed = 'synthetic changed!';
   const request = Object.assign(Readable.from([Buffer.from(changed)]),

@@ -55,6 +55,7 @@ class LicenseManager(private val context: Context) {
         require(current.active) { current.message }
         return current
     }
+    internal fun gatewayLicenseToken(): String { requireActive(); return preferences.getString(KEY_TOKEN, "").orEmpty().also { require(it.isNotBlank()) } }
 
     fun requireCanAddStudent(currentActiveStudents: Int) {
         val current = requireActive()

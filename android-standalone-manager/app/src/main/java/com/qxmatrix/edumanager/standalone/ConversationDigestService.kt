@@ -42,7 +42,7 @@ class ConversationDigestService(private val context: Context) {
                 SafWorkspaceStore(context, Uri.parse(project.projectRootUri)).readBytes(project.paths.agentPath).toString(Charsets.UTF_8)
             }
             val config = requireNotNull(AgentConfigurationStore(context).load()) { "尚未配置 Agent 模型" }
-            val response = OpenAiCompatibleAgentAdapter(config).execute(
+            val response = OpenAiCompatibleAgentAdapter(config, context, student.id, task.getString("id")).execute(
                 "你是 AI 教育管家的对话消化 Agent。严格遵守 AGENT.md，只形成有来源、可审核的候选知识；只输出 JSON。",
                 buildPrompt(record, student, project, rules, content),
             )

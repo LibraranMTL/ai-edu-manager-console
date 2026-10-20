@@ -8,6 +8,19 @@ const { REPORTS, uploadPublishedReports } = require('./cloud-report-sync.cjs');
 const { sourceProof } = require('./cloud-device-proof.cjs');
 const { DEFAULT_CLOUD_SERVER, checkedServerUrl, cloudRequestUrl } = require('./cloud-endpoint.cjs');
 
+const DEFAULT_PROFILE_FIELDS = Object.freeze(['displayName', 'grade', 'school', 'learningGoal', 'currentRegion', 'phone', 'email', 'birthday', 'address', 'guardian']);
+const MATERIAL_CATEGORIES = Object.freeze(['learning_report', 'learning_material', 'topic_suggestion', 'competition_recommendation', 'learning_card']);
+const DEFAULT_MATERIAL_CATEGORIES = Object.freeze(['learning_report']);
+
+function normalizedUploadScope(input = {}) {
+  const requestedProfileFields = Array.isArray(input.profileFields) ? input.profileFields : DEFAULT_PROFILE_FIELDS;
+  const profileFields = DEFAULT_PROFILE_FIELDS.filter(field => requestedProfileFields.includes(field));
+  if (!profileFields.includes('displayName')) profileFields.unshift('displayName');
+  const requestedMaterialCategories = Array.isArray(input.materialCategories) ? input.materialCategories : DEFAULT_MATERIAL_CATEGORIES;
+  const materialCategories = MATERIAL_CATEGORIES.filter(category => requestedMaterialCategories.includes(category));
+  return { profileFields, materialCategories };
+}
+
 async function request(base, route, token = '', options = {}) {
   const method = options.method || 'GET';
   const response = await fetch(cloudRequestUrl(base, route), {
@@ -24,8 +37,11 @@ async function request(base, route, token = '', options = {}) {
   return data;
 }
 
-function createCloudReportRuntime({ dataDir, protect, unprotect, resolveReportDir }) {
+function createCloudReportRuntime({ dataDir, protect, unprotect, resolveReportDir, resolveStudentProfile,
+  ensureLocalStudentFromCloudProfile }) {
   if (!dataDir || !protect || !unprotect || !resolveReportDir) throw new Error('缺少云同步运行时依赖');
+  const v2ProfileEnabled = typeof resolveStudentProfile === 'function';
+  const autoBindingEnabled = typeof ensureLocalStudentFromCloudProfile === 'function';
   const stateFile = path.join(dataDir, 'cloud-report-state.json');
   const cacheRoot = path.join(dataDir, 'cloud-report-cache');
   const timers = new Map();
@@ -34,7 +50,8 @@ function createCloudReportRuntime({ dataDir, protect, unprotect, resolveReportDi
   const watchers = new Map();
   const rerun = new Set();
   const documentUploads = new Map();
-  let state = { version: 1, serverUrl: '', sourceToken: '', sourceDeviceId: '', viewerToken: '', bindings: {} };
+  let state = { version: 1, serverUrl: '', sourceToken: '', sourceDeviceId: '', viewerToken: '', bindings: {},
+    cloudBindings: {}, pendingReceipts: [], syncCursors: {}, bindingIssues: {}, uploadScopePreferences: {} };
   let saveChain = Promise.resolve();
   let closed = false;
 
@@ -78,13 +95,24 @@ function createCloudReportRuntime({ dataDir, protect, unprotect, resolveReportDi
       state.viewerToken = ''; state.viewerPrivateKey = ''; state.viewerDeviceId = '';
       await save();
     }
+    state.cloudBindings ||= {};
+    state.pendingReceipts ||= [];
+    state.syncCursors ||= {};
+    state.bindingIssues ||= {};
+    state.uploadScopePreferences ||= {};
     for (const [studentId, binding] of Object.entries(state.bindings)) {
+      if (Number(binding.contractVersion) >= 2) {
+        binding.profileFields = DEFAULT_PROFILE_FIELDS.filter(field => (binding.profileFields || DEFAULT_PROFILE_FIELDS).includes(field));
+        if (!binding.profileFields.includes('displayName')) binding.profileFields.unshift('displayName');
+        binding.materialCategories = MATERIAL_CATEGORIES.filter(category => (binding.materialCategories || DEFAULT_MATERIAL_CATEGORIES).includes(category));
+      }
       if (!state.sourcePrivateKey || binding.sourceDeviceId !== state.sourceDeviceId) {
         binding.enabled = false; binding.lastError = '请重新开通带设备签名的来源许可'; continue;
       }
       if (binding.enabled) { schedule(studentId, 3000); void ensureWatcher(studentId); }
       else if (binding.pendingServerWriteState === false) schedule(studentId, 3000);
     }
+    if (state.viewerToken) setTimeout(() => { void reconcileAuthorizedStudents().catch(() => {}); void flushPendingReceipts().catch(() => {}); }, 3000);
   }
   async function ensureWatcher(studentId) {
     if (watchers.has(studentId) || !state.bindings[studentId]?.enabled) return;
@@ -98,7 +126,8 @@ function createCloudReportRuntime({ dataDir, protect, unprotect, resolveReportDi
       watchers.set(studentId, watcher);
     } catch { /* Startup reconciliation and publication events remain available. */ }
   }
-  async function enrollSource({ serverUrl, enrollmentCode, localStudentId }) {
+  async function enrollSource({ serverUrl, enrollmentCode, localStudentId, profileFields = DEFAULT_PROFILE_FIELDS,
+    materialCategories = DEFAULT_MATERIAL_CATEGORIES }) {
     const base = checkedServerUrl(serverUrl);
     const reportDir = await resolveReportDir(localStudentId);
     if (!reportDir) throw new Error('本机学生不存在');
@@ -109,7 +138,11 @@ function createCloudReportRuntime({ dataDir, protect, unprotect, resolveReportDi
         privateKeyEncoding: { type: 'pkcs8', format: 'pem' }, publicKeyEncoding: { type: 'spki', format: 'pem' } });
       state.sourcePrivateKey = protect(keys.privateKey); await save();
     }
+    const selectedScope = normalizedUploadScope({ profileFields, materialCategories });
+    const selectedProfileFields = selectedScope.profileFields;
+    const selectedMaterialCategories = selectedScope.materialCategories;
     const body = { enrollmentCode: String(enrollmentCode || '').trim().toUpperCase(),
+      ...(v2ProfileEnabled ? { contractVersion: 2, profileFields: selectedProfileFields, materialCategories: selectedMaterialCategories } : {}),
       publicKey: crypto.createPublicKey(unprotect(state.sourcePrivateKey)).export({ type: 'spki', format: 'pem' }) };
     const route = '/v1/source-enrollments/redeem';
     let result;
@@ -122,12 +155,38 @@ function createCloudReportRuntime({ dataDir, protect, unprotect, resolveReportDi
     state.serverUrl = base;
     state.sourceToken = protect(result.deviceToken);
     state.sourceDeviceId = result.deviceId;
+    state.uploadScopePreferences[localStudentId] = selectedScope;
     state.bindings[localStudentId] = { cloudStudentId: result.cloudStudentId, sourceDeviceId: result.deviceId, enabled: true, hashes: {},
+      contractVersion: v2ProfileEnabled ? 2 : 1, profileFields: selectedProfileFields, materialCategories: selectedMaterialCategories,
       pendingServerWriteState: null, lastSyncAt: 0, lastError: '' };
     await save();
+    if (v2ProfileEnabled) await syncStudentProfile(localStudentId, true);
     void ensureWatcher(localStudentId);
     schedule(localStudentId, 0);
     return { cloudStudentId: result.cloudStudentId, enabled: true };
+  }
+  async function syncStudentProfile(localStudentId, force = false) {
+    const binding = state.bindings[localStudentId];
+    if (!binding?.enabled || Number(binding.contractVersion) < 2) return null;
+    const source = await resolveStudentProfile(localStudentId);
+    if (!source) throw new Error('本机学生基础信息不存在');
+    const profile = {
+      displayName: source.displayName || source.name,
+      grade: source.grade, school: source.school, learningGoal: source.learningGoal || source.goal,
+      currentRegion: source.currentRegion, phone: source.phone, email: source.email,
+      birthday: source.birthday || source.birthDate, address: source.address,
+      guardian: typeof source.guardian === 'string' ? source.guardian : source.guardian ? JSON.stringify(source.guardian) : '',
+    };
+    for (const key of Object.keys(profile)) if (!binding.profileFields.includes(key) || !String(profile[key] || '').trim()) delete profile[key];
+    const fingerprint = crypto.createHash('sha256').update(JSON.stringify(Object.keys(profile).sort().map(key => [key, profile[key]]))).digest('hex');
+    if (!force && binding.profileFingerprint === fingerprint) return { unchanged: true, profileRevisionId: binding.profileRevisionId || '' };
+    const route = `/v2/students/${binding.cloudStudentId}/profile`;
+    const result = await sourceRequest(route, { profile, fields: Object.keys(profile) });
+    binding.profileFingerprint = fingerprint;
+    binding.profileRevisionId = result.profileRevisionId;
+    binding.profileSyncedAt = Date.now();
+    await save();
+    return result;
   }
   async function reconcileWriteState(studentId) {
     const binding = state.bindings[studentId];
@@ -135,6 +194,43 @@ function createCloudReportRuntime({ dataDir, protect, unprotect, resolveReportDi
     await sourceRequest('/v1/grants/write-state', { cloudStudentId: binding.cloudStudentId, enabled: binding.pendingServerWriteState });
     binding.pendingServerWriteState = null;
     await save();
+  }
+  async function reconcileUploadScope(studentId) {
+    const binding = state.bindings[studentId];
+    const pending = binding?.pendingUploadScope;
+    if (!pending || Number(binding.contractVersion) < 2) return;
+    const result = await sourceRequest('/v2/source-upload-scope', {
+      cloudStudentId: binding.cloudStudentId,
+      profileFields: pending.profileFields,
+      materialCategories: pending.materialCategories,
+    });
+    binding.profileFields = result.profileFields;
+    binding.materialCategories = result.materialCategories;
+    binding.pendingUploadScope = null;
+    binding.profileFingerprint = '';
+    binding.lastError = '';
+    await save();
+  }
+  async function setUploadScope(studentId, input = {}) {
+    const binding = state.bindings[studentId];
+    if (!binding && !(await resolveReportDir(studentId))) throw new Error('本机学生不存在');
+    const { profileFields, materialCategories } = normalizedUploadScope(input);
+    state.uploadScopePreferences[studentId] = { profileFields, materialCategories };
+    if (!binding || Number(binding.contractVersion) < 2) {
+      await save();
+      return status(studentId);
+    }
+    binding.pendingUploadScope = { profileFields, materialCategories };
+    await save();
+    try { await reconcileUploadScope(studentId); }
+    catch (error) {
+      binding.lastError = `上传范围待云端确认：${error.message}`;
+      await save();
+      if (binding.enabled) schedule(studentId, 30000);
+      throw error;
+    }
+    if (binding.enabled) schedule(studentId, 0);
+    return status(studentId);
   }
   async function setUpload(studentId, enabled) {
     const binding = state.bindings[studentId];
@@ -186,9 +282,11 @@ function createCloudReportRuntime({ dataDir, protect, unprotect, resolveReportDi
     inFlight.set(studentId, controller);
     try {
       await reconcileWriteState(studentId);
+      await reconcileUploadScope(studentId);
       if (!binding.enabled || controller.signal.aborted) return;
       const reportDir = await resolveReportDir(studentId);
       if (!reportDir) throw new Error('本机学生目录不存在');
+      await syncStudentProfile(studentId);
       const result = await uploadPublishedReports({ serverUrl: state.serverUrl, deviceToken: token('source'),
         reportDir, localStudentId: studentId, cloudStudentId: binding.cloudStudentId,
         signal: AbortSignal.any([controller.signal, AbortSignal.timeout(60000)]),
@@ -233,7 +331,7 @@ function createCloudReportRuntime({ dataDir, protect, unprotect, resolveReportDi
     await save();
     return { pairingCode: result.pairingCode, expiresAt: result.expiresAt, deviceId: result.deviceId };
   }
-  async function approvePairing(pairingCode, localStudentIds) {
+  async function approvePairing(pairingCode, localStudentIds, options = {}) {
     if (!state.sourceToken) throw new Error('本机尚未开通学生报告上传');
     const ids = [...new Set(Array.isArray(localStudentIds) ? localStudentIds : [])];
     if (!ids.length || ids.length > 20) throw new Error('请选择要授权的学生');
@@ -242,7 +340,14 @@ function createCloudReportRuntime({ dataDir, protect, unprotect, resolveReportDi
       if (!binding || !binding.enabled) throw new Error('选择的学生尚未开通上传');
       return binding.cloudStudentId;
     });
-    return sourceRequest('/v1/pairings/approve', { pairingCode: String(pairingCode || '').trim(), cloudStudentIds });
+    const singleBinding = ids.length === 1 ? state.bindings[ids[0]] : null;
+    return sourceRequest('/v1/pairings/approve', { pairingCode: String(pairingCode || '').trim(), cloudStudentIds,
+      ...(v2ProfileEnabled ? {
+        contractVersion: 2,
+        profileFields: DEFAULT_PROFILE_FIELDS.filter(field => (options.profileFields || singleBinding?.profileFields || DEFAULT_PROFILE_FIELDS).includes(field)),
+        materialCategories: MATERIAL_CATEGORIES.filter(category => (options.materialCategories || singleBinding?.materialCategories || DEFAULT_MATERIAL_CATEGORIES).includes(category)),
+      } : {}),
+    });
   }
   async function listCloudStudents() {
     if (!state.viewerToken) return [];
@@ -258,7 +363,71 @@ function createCloudReportRuntime({ dataDir, protect, unprotect, resolveReportDi
       }
     }
     if (changed) await save();
-    return students;
+    if (autoBindingEnabled) await reconcileAuthorizedStudents(students);
+    return students.map(student => ({ ...student, localBinding: state.cloudBindings[student.id] || null,
+      bindingIssue: state.bindingIssues[student.id] || '' }));
+  }
+  async function reconcileAuthorizedStudents(provided) {
+    if (!state.viewerToken) return [];
+    const students = provided || (await request(state.serverUrl, '/v1/students', token('viewer'),
+      { headers: viewerProof('GET', '/v1/students') })).students.filter(item => item.scope === 'cloud_document.read');
+    const outcomes = [];
+    for (const student of students) {
+      if (!student.profileRevisionId) continue;
+      const existing = state.cloudBindings[student.id];
+      if (existing?.profileRevisionId === student.profileRevisionId) { outcomes.push(existing); continue; }
+      try {
+        const profileRoute = `/v2/students/${student.id}/profile`;
+        const profile = await request(state.serverUrl, profileRoute, token('viewer'), { headers: viewerProof('GET', profileRoute) });
+        if (!autoBindingEnabled) continue;
+        const ensured = await ensureLocalStudentFromCloudProfile(profile);
+        if (!ensured?.localStudentId) throw new Error(ensured?.message || '未能建立本机学生档案');
+        const receiptRoute = `/v2/students/${student.id}/binding-receipts`;
+        const binding = await request(state.serverUrl, receiptRoute, token('viewer'), { method: 'POST',
+          headers: viewerProof('POST', receiptRoute), body: { localStudentId: ensured.localStudentId, profileRevisionId: profile.profileRevisionId } });
+        state.cloudBindings[student.id] = { ...binding, status: ensured.status || 'ready', updatedAt: Date.now() };
+        delete state.bindingIssues[student.id];
+        outcomes.push(state.cloudBindings[student.id]);
+      } catch (error) {
+        state.bindingIssues[student.id] = String(error.message || error);
+        outcomes.push({ cloudStudentId: student.id, status: 'needs_review', message: state.bindingIssues[student.id] });
+      }
+    }
+    await save();
+    return outcomes;
+  }
+  async function queueTransferReceipt(input) {
+    const idempotencyKey = input.idempotencyKey || `download:${input.cloudStudentId}:${input.objectType}:${input.objectId}:${input.revisionId || ''}`;
+    if (!state.pendingReceipts.some(item => item.idempotencyKey === idempotencyKey)) {
+      state.pendingReceipts.push({ ...input, idempotencyKey, queuedAt: Date.now() });
+      await save();
+    }
+    await flushPendingReceipts();
+  }
+  async function flushPendingReceipts() {
+    if (!state.viewerToken || !state.pendingReceipts.length) return;
+    for (const receipt of [...state.pendingReceipts]) {
+      const route = '/v2/transfer-receipts';
+      try {
+        await request(state.serverUrl, route, token('viewer'), { method: 'POST', headers: viewerProof('POST', route), body: receipt });
+        state.pendingReceipts = state.pendingReceipts.filter(item => item.idempotencyKey !== receipt.idempotencyKey);
+        await save();
+      } catch (error) {
+        if (error.status && error.status < 500 && error.status !== 429) {
+          receipt.lastError = String(error.message || error);
+          await save();
+        }
+        break;
+      }
+    }
+  }
+  async function refreshChanges(cloudStudentId) {
+    const cursor = state.syncCursors[cloudStudentId] || '';
+    const route = `/v2/students/${cloudStudentId}/changes${cursor ? `?cursor=${encodeURIComponent(cursor)}` : ''}`;
+    const result = await request(state.serverUrl, route, token('viewer'), { headers: viewerProof('GET', route) });
+    state.syncCursors[cloudStudentId] = result.nextCursor || cursor;
+    await save();
+    return result;
   }
   async function listCachedStudents() {
     let entries;
@@ -316,6 +485,8 @@ function createCloudReportRuntime({ dataDir, protect, unprotect, resolveReportDi
     const temp = `${target}.${crypto.randomUUID()}.tmp`;
     try { await fs.writeFile(temp, content, { flag: 'wx' }); await fs.rename(temp, target); }
     finally { await fs.rm(temp, { force: true }); }
+    await queueTransferReceipt({ cloudStudentId, objectType: 'learning_report', objectId: revisionId,
+      revisionId, action: 'download', status: 'downloaded' });
     return { path: target, content: content.toString('utf8'), revisionId };
   }
   async function downloadCloudDocument(cloudStudentId, documentId) {
@@ -346,8 +517,113 @@ function createCloudReportRuntime({ dataDir, protect, unprotect, resolveReportDi
     const temp = `${target}.${crypto.randomUUID()}.tmp`;
     try { await fs.writeFile(temp, content, { flag: 'wx' }); await fs.rename(temp, target); }
     finally { await fs.rm(temp, { force: true }); }
+    await queueTransferReceipt({ cloudStudentId, objectType: 'document', objectId: documentId,
+      action: 'download', status: 'downloaded' });
     return { path: target, contentType, content: contentType === 'text/markdown' && content.length <= 512 * 1024
       ? content.toString('utf8') : '', documentId };
+  }
+  async function uploadCloudMaterial(localStudentId, material) {
+    const binding = state.bindings[localStudentId];
+    if (!binding?.enabled || Number(binding.contractVersion) < 2) throw new Error('当前学生尚未开通新版资料同步');
+    const category = String(material?.category || '');
+    if (!binding.materialCategories?.includes(category)) throw new Error('该资料类别未授权上传');
+    const bytes = Buffer.isBuffer(material.bytes) ? material.bytes : Buffer.from(String(material.content || ''), 'utf8');
+    if (!bytes.length || bytes.length > 20 * 1024 * 1024) throw new Error('资料大小无效');
+    const materialId = String(material.materialId || '');
+    const idempotencyKey = String(material.idempotencyKey || '');
+    if (!/^[A-Za-z0-9:_-]{8,160}$/.test(materialId) || !/^[A-Za-z0-9:_-]{8,200}$/.test(idempotencyKey)) throw new Error('资料标识或提交编号无效');
+    const route = `/v2/students/${binding.cloudStudentId}/materials`;
+    const response = await fetch(cloudRequestUrl(state.serverUrl, route), { redirect: 'error', method: 'POST',
+      headers: { authorization: `Bearer ${token('source')}`, ...sourceHeaders('POST', route, bytes),
+        'content-type': material.contentType || 'text/markdown', 'x-document-name': encodeURIComponent(String(material.displayName || '资料.md')),
+        'x-material-category': category, 'x-material-id': materialId, 'x-idempotency-key': idempotencyKey,
+        ...(material.projectId ? { 'x-project-id': String(material.projectId), 'x-scope-fingerprint': String(material.scopeFingerprint || '') } : {}) },
+      body: bytes, signal: AbortSignal.timeout(60000) });
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(result.error || `资料同步失败（HTTP ${response.status}）`);
+    return result;
+  }
+  async function listCloudMaterials(cloudStudentId, { category = '', history = false, cursor = '' } = {}) {
+    if (!state.viewerToken) throw new Error('尚未开通云端学生下载许可');
+    const query = new URLSearchParams();
+    if (category) query.set('category', category);
+    if (history) query.set('history', '1');
+    if (cursor) query.set('cursor', cursor);
+    const route = `/v2/students/${cloudStudentId}/materials${query.size ? `?${query}` : ''}`;
+    return request(state.serverUrl, route, token('viewer'), { headers: viewerProof('GET', route) });
+  }
+  async function downloadCloudMaterial(cloudStudentId, revisionId) {
+    if (!/^cs_[a-f0-9]{32}$/.test(cloudStudentId) || !/^material_rev_[a-f0-9]{48}$/.test(revisionId)) throw new Error('云端资料标识无效');
+    const route = `/v2/material-revisions/${revisionId}/content`;
+    const response = await fetch(cloudRequestUrl(state.serverUrl, route), { redirect: 'error',
+      headers: { authorization: `Bearer ${token('viewer')}`, ...viewerProof('GET', route) }, signal: AbortSignal.timeout(30000) });
+    if (!response.ok) throw new Error(`资料下载失败（HTTP ${response.status}）`);
+    if (response.headers.get('x-cloud-student-id') !== cloudStudentId) throw new Error('资料学生归属不一致');
+    const expectedSha = response.headers.get('x-content-sha256');
+    const content = Buffer.from(await response.arrayBuffer());
+    if (!/^[a-f0-9]{64}$/.test(expectedSha || '') || crypto.createHash('sha256').update(content).digest('hex') !== expectedSha) throw new Error('云端资料校验失败');
+    const category = String(response.headers.get('x-material-category') || '');
+    const extensions = { 'text/markdown': '.md', 'application/pdf': '.pdf',
+      'application/vnd.openxmlformats-officedocument.wordprocessingml.document': '.docx' };
+    const contentType = String(response.headers.get('content-type') || '').split(';')[0];
+    const suffix = extensions[contentType];
+    if (!MATERIAL_CATEGORIES.includes(category) || !suffix) throw new Error('云端资料类别或类型无效');
+    const dir = path.join(cacheRoot, cloudStudentId, 'materials', category);
+    await fs.mkdir(dir, { recursive: true });
+    const target = path.join(dir, `${revisionId}${suffix}`);
+    const temp = `${target}.${crypto.randomUUID()}.tmp`;
+    try { await fs.writeFile(temp, content, { flag: 'wx' }); await fs.rename(temp, target); }
+    finally { await fs.rm(temp, { force: true }); }
+    await queueTransferReceipt({ cloudStudentId, objectType: category, objectId: response.headers.get('x-material-id') || '',
+      revisionId, action: 'download', status: 'downloaded' });
+    return { path: target, revisionId, category, contentType, content: contentType === 'text/markdown' && content.length <= 512 * 1024 ? content.toString('utf8') : '' };
+  }
+  function cloudStudentIdsForLocalStudents(localStudentIds) {
+    const resolved = [];
+    for (const localStudentId of [...new Set((Array.isArray(localStudentIds) ? localStudentIds : []).map(String))]) {
+      const sourceBinding = state.bindings[localStudentId];
+      const viewerBinding = Object.entries(state.cloudBindings).find(([, binding]) => String(binding?.localStudentId || '') === localStudentId);
+      const cloudStudentId = sourceBinding?.cloudStudentId || viewerBinding?.[0] || '';
+      if (!cloudStudentId) throw new Error(`项目学生 ${localStudentId} 尚未建立云端稳定身份绑定`);
+      resolved.push(cloudStudentId);
+    }
+    return [...new Set(resolved)].sort();
+  }
+  async function issueRemoteAgentSession({ provider, cloudStudentId, cloudStudentIds, projectId = '', scopeFingerprint = '',
+    taskId, executionId, taskType, idempotencyKey, materialCategories = DEFAULT_MATERIAL_CATEGORIES,
+    lifetimeMs = 15 * 60 * 1000 }) {
+    if (!state.viewerToken) throw new Error('尚未开通本机云端下载许可');
+    if (!['codex', 'workbuddy'].includes(provider)) throw new Error('远程 Agent 仅支持 Codex 或 WorkBuddy');
+    const route = '/v2/agent-sessions';
+    return request(state.serverUrl, route, token('viewer'), { method: 'POST', headers: viewerProof('POST', route),
+      body: { provider, cloudStudentId, cloudStudentIds, projectId, scopeFingerprint, taskId, executionId, taskType, idempotencyKey,
+        materialCategories: MATERIAL_CATEGORIES.filter(category => materialCategories.includes(category)), lifetimeMs } });
+  }
+  async function remoteAgentSessionStatus(sessionId) {
+    if (!state.viewerToken) throw new Error('尚未开通本机云端下载许可');
+    const route = `/v2/agent-sessions/${sessionId}`;
+    return request(state.serverUrl, route, token('viewer'), { headers: viewerProof('GET', route) });
+  }
+  async function revokeRemoteAgentSession(sessionId) {
+    if (!state.viewerToken) throw new Error('尚未开通本机云端下载许可');
+    const route = '/v2/agent-sessions/revoke';
+    return request(state.serverUrl, route, token('viewer'), { method: 'POST', headers: viewerProof('POST', route), body: { sessionId } });
+  }
+  async function listCloudInbox(cursor = '') {
+    if (!state.viewerToken) return { submissions: [], nextCursor: '' };
+    const route = `/v2/inbox${cursor ? `?cursor=${encodeURIComponent(cursor)}` : ''}`;
+    return request(state.serverUrl, route, token('viewer'), { headers: viewerProof('GET', route) });
+  }
+  async function leaseCloudInboxSubmission(submissionId) {
+    if (!state.viewerToken) throw new Error('尚未开通本机云端下载许可');
+    const route = `/v2/inbox/${submissionId}/lease`;
+    return request(state.serverUrl, route, token('viewer'), { method: 'POST', headers: viewerProof('POST', route), body: {} });
+  }
+  async function settleCloudInboxSubmission(submissionId, { leaseId, status, reason = '' }) {
+    if (!state.viewerToken) throw new Error('尚未开通本机云端下载许可');
+    const route = `/v2/inbox/${submissionId}/settle`;
+    return request(state.serverUrl, route, token('viewer'), { method: 'POST', headers: viewerProof('POST', route),
+      body: { leaseId, status, reason } });
   }
   function uploadSharedDocument(localStudentId, document) {
     const key = `${localStudentId}:${document.sha256}`;
@@ -401,10 +677,18 @@ function createCloudReportRuntime({ dataDir, protect, unprotect, resolveReportDi
   }
   function status(studentId) {
     const binding = state.bindings[studentId];
+    const savedUploadScope = state.uploadScopePreferences?.[studentId] || null;
     return binding ? { configured: binding.sourceDeviceId === state.sourceDeviceId, enabled: binding.enabled, cloudStudentId: binding.cloudStudentId,
       lastSyncAt: binding.lastSyncAt, serverVerifiedAt: binding.serverVerifiedAt || 0, syncing: syncJobs.has(studentId), lastError: binding.lastError, skipped: binding.skipped || [],
       lastUploaded: binding.lastUploaded || 0, lastUnchanged: binding.lastUnchanged || 0, lastReady: binding.lastReady || 0,
-      pendingServerWriteState: binding.pendingServerWriteState } : { configured: false, enabled: false };
+      pendingServerWriteState: binding.pendingServerWriteState,
+      profileFields: binding.profileFields || DEFAULT_PROFILE_FIELDS,
+      materialCategories: binding.materialCategories || DEFAULT_MATERIAL_CATEGORIES,
+      pendingUploadScope: binding.pendingUploadScope || null, savedUploadScope,
+      uploadScopePersistence: Number(binding.contractVersion) >= 2
+        ? (binding.pendingUploadScope ? 'pending_cloud' : 'cloud_confirmed') : 'local_requires_upgrade' } : { configured: false, enabled: false,
+        profileFields: DEFAULT_PROFILE_FIELDS, materialCategories: DEFAULT_MATERIAL_CATEGORIES, savedUploadScope,
+        uploadScopePersistence: savedUploadScope ? 'local_requires_enrollment' : 'default' };
   }
   function close() {
     closed = true;
@@ -412,9 +696,13 @@ function createCloudReportRuntime({ dataDir, protect, unprotect, resolveReportDi
     for (const controller of inFlight.values()) controller.abort();
     for (const watcher of watchers.values()) watcher.close();
   }
-  return { load, close, enrollSource, setUpload, schedule, syncStudent, syncNow, status, settings, saveSettings, checkConnection,
+  return { load, close, enrollSource, setUpload, setUploadScope, schedule, syncStudent, syncNow, status, settings, saveSettings, checkConnection,
     createPairing, approvePairing, listCloudStudents, listCloudReports, downloadCloudReport,
-    listCloudDocuments, listCloudDocumentPage, downloadCloudDocument, listCachedStudents, clearCloudCache, uploadSharedDocument };
+    listCloudDocuments, listCloudDocumentPage, downloadCloudDocument, listCachedStudents, clearCloudCache, uploadSharedDocument,
+    syncStudentProfile, reconcileAuthorizedStudents, refreshChanges, flushPendingReceipts,
+    uploadCloudMaterial, listCloudMaterials, downloadCloudMaterial,
+    cloudStudentIdsForLocalStudents, issueRemoteAgentSession, remoteAgentSessionStatus, revokeRemoteAgentSession, listCloudInbox,
+    leaseCloudInboxSubmission, settleCloudInboxSubmission };
 }
 
-module.exports = { createCloudReportRuntime, checkedServerUrl };
+module.exports = { createCloudReportRuntime, checkedServerUrl, DEFAULT_PROFILE_FIELDS, MATERIAL_CATEGORIES, DEFAULT_MATERIAL_CATEGORIES };

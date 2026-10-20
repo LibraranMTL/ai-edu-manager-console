@@ -8,14 +8,15 @@ const main = fs.readFileSync(path.join(root, 'electron', 'main.cjs'), 'utf8');
 const preload = fs.readFileSync(path.join(root, 'electron', 'preload.cjs'), 'utf8');
 const ui = fs.readFileSync(path.join(root, 'src', 'main.tsx'), 'utf8');
 
-test('conversation inbox exposes one-confirmation delivery to student and linked projects', () => {
+test('conversation delivery remains an internal compatibility path while the smart inbox is the only primary UI', () => {
   assert.match(main, /function deliverConversationMaterials/);
   assert.match(main, /project\.studentIds[\s\S]*student\.id/);
   assert.match(main, /Agent对话资料/);
   assert.match(main, /bridge:deliverConversationMaterials/);
   assert.match(preload, /deliverConversationMaterials/);
-  assert.match(ui, /确认投递所选/);
-  assert.match(ui, /投递到关联项目/);
+  assert.doesNotMatch(ui, /确认投递所选/);
+  assert.doesNotMatch(ui, /投递到关联项目/);
+  assert.match(ui, /前往资料收件箱/);
 });
 
 test('conversation share links use bounded safe fetching and a paste fallback', () => {
@@ -61,13 +62,13 @@ test('conversation imports support dependency-aware trash, restore, and permanen
   assert.match(ui, /manageConversationMaterials/);
 });
 
-test('authorized lifecycle conversations expose direct delivery and trash controls', () => {
+test('authorized lifecycle conversations expose preview and trash controls but route delivery through the smart inbox', () => {
   assert.match(main, /lifecycleCapture: true/);
   assert.match(main, /sourceType: options\.lifecycleCapture === true \? 'authorized_lifecycle'/);
-  assert.match(ui, /deliverCapturedConversation/);
+  assert.doesNotMatch(ui, /deliverCapturedConversation/);
   assert.match(ui, /manageCapturedConversation/);
-  assert.match(ui, /管理全部对话资料/);
-  assert.match(ui, /会话结束后可投递或移除/);
+  assert.match(ui, /前往资料收件箱/);
+  assert.match(ui, /会话结束后自动进入资料收件箱/);
   assert.match(ui, /已投递会话仍保留/);
   const delivery = main.slice(main.indexOf('async function deliverConversationMaterials'), main.indexOf('function readConversationCandidateRegistry'));
   assert.match(delivery, /writeConversationDeliveries\(student, \{ deliveries \}\)/);

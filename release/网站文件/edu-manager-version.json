@@ -1,10 +1,10 @@
 {
   "versionCode": 89,
   "versionName": "0.6.19",
-  "windowsVersionCode": 261,
-  "windowsVersionName": "0.21.1",
+  "windowsVersionCode": 262,
+  "windowsVersionName": "0.21.2",
   "windowsReleaseStatus": "stable",
-  "windowsUrl": "https://www.greatbg.com/download/AI-edu-manager-console-Windows-0.21.1.zip",
+  "windowsUrl": "https://www.greatbg.com/download/AI-edu-manager-console-Windows-0.21.2.zip",
   "windowsTerminalVersionCode": 236,
   "windowsTerminalVersionName": "0.18.6",
   "windowsTerminalReleaseStatus": "stable",
@@ -28,5 +28,5 @@
   "managerApkReleaseStatus": "internal",
   "managerApkNotes": "旧 Android 控制台仅供内部装机和测试，当前不提供公网安装包。",
   "apkUrl": "https://www.greatbg.com/download/AI-edu-manager-tablet-terminal-0.6.19.apk",
-  "notes": "Windows 0.21.1 统一管理 Agent、LLM API、全局授权和调度，扩展 WorkBuddy、Codex、OpenClaw、QClaw、TRAE、Qoder 的受控自动任务；支持联网研究、学习卡片、队列自动治理和跨页批量归档或安全删除，并修复新建 workspace-v1 项目的项目 ID 传递。其他客户端已发布版本不变。"
+  "notes": "Windows 0.21.2 增加授权自动恢复、多学生项目范围校验、任务异常自恢复、云端同步分级授权与成果收件箱、Agent 伴侣和 Skills 管理，并将资料索引迁入 SQLite 以改善大列表性能。默认云端教育资料仅开启学情报告，健康资料保持独立授权；未知结果不会自动重跑。Windows 包仍未进行 Authenticode 签名，其他客户端已发布版本不变。"
 }

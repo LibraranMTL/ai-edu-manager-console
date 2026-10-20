@@ -1,6 +1,6 @@
 ﻿import React, { useEffect, useMemo, useState } from 'react';
 import { createRoot } from 'react-dom/client';
-import { CloudDocumentsPanel } from './CloudDocumentsPanel';
+const CloudDocumentsPanel = React.lazy(() => import('./CloudDocumentsPanel').then(module => ({ default: module.CloudDocumentsPanel })));
 const PublicationManager = React.lazy(() => import('./PublicationManager').then(module => ({default:module.PublicationManager})));
 import { CustomSubjectsEditor, customResult, type CustomOptionsApi, type CustomSubject } from './CustomOptionsPanels';
 import type { CaptureApi } from './CaptureInboxPanel';
@@ -9,6 +9,7 @@ import type { AgentControlApi } from './AgentControlCenter';
 import { AgentHandoffChoice } from './AgentHandoffChoice';
 const AgentControlCenter = React.lazy(() => import('./AgentControlCenter').then(module => ({ default: module.AgentControlCenter })));
 const ExternalAgentConnector = React.lazy(() => import('./ExternalAgentConnector'));
+const SkillManagementPanel = React.lazy(() => import('./SkillManagementPanel'));
 const DownloadInboxPanel = React.lazy(() => import('./DownloadInboxPanel').then(module => ({ default: module.DownloadInboxPanel })));
 const CaptureInboxPanel = React.lazy(() => import('./CaptureInboxPanel').then(module => ({ default: module.CaptureInboxPanel })));
 import type { PracticeApi } from './PracticeCardsPanel';
@@ -87,9 +88,8 @@ type Section = 'home' | 'student-overview' | 'collection-overview' | 'photo-uplo
 type NavigationGroup = 'home' | 'collection' | 'learning' | 'projects' | 'guidance' | 'knowledge' | 'courses' | 'settings';
 type CourseSubmenu = 'learning' | 'management';
 type SettingsSubmenu = 'basic' | 'connection' | 'collaboration' | 'agent-qa';
-type AgentSettingsTab = 'tools' | 'data' | 'connection';
+type AgentSettingsTab = 'tools' | 'data' | 'connection' | 'cloud' | 'skills';
 type AgentDataTab = 'memory' | 'rules' | 'persona';
-type AgentConnectionTab = 'connector' | 'qa';
 type GuidanceTab = 'overview' | 'pathways' | 'schools' | 'majors' | 'careers' | 'history' | 'settings';
 type ProjectWorkflowTarget = 'workspace' | 'assets' | 'digest' | 'knowledge' | 'evidence' | 'promotion';
 type ThemeName = 'blue' | 'pink' | 'green' | 'purple' | 'orange';
@@ -340,6 +340,7 @@ type AssetRecord = {
   filename: string;
   type: string;
   sha1?: string;
+  sha256?: string;
   size?: number;
   path: string;
   ownerStudentId?: string;
@@ -357,6 +358,8 @@ type AssetRecord = {
     path: string;
     source?: string;
     linkedAt?: string;
+    state?: string;
+    quarantineOperationId?: string;
   }>;
   sourcePath?: string;
   sourceAvailability?: 'available' | 'missing' | 'unavailable';
@@ -374,6 +377,9 @@ type AssetRecord = {
   governanceDecisionNote?: string;
   governanceDecisionAt?: string;
   staleReferenceCount?: number;
+  sha256ReadyCount?: number;
+  sha256PendingCount?: number;
+  fingerprintConflictCount?: number;
   duplicateReferenceCount?: number;
   duplicateAssetCount?: number;
   recommendedKeepAssetId?: string;
@@ -386,9 +392,55 @@ type AssetIndexState = {
   ok?: boolean;
   assets: AssetRecord[];
   total?: number;
+  referenceTotal?: number;
   duplicateGroups?: number;
+  issueCount?: number;
+  highRiskCount?: number;
+  staleReferenceCount?: number;
+  facets?: { sources?: Array<{ value: string; count: number }>; types?: Array<{ value: string; count: number }> };
+  health?: string;
+  lastRebuildAt?: string;
+  nextCursor?: string;
   recentTrend?: AssetRecentTrend;
   message?: string;
+};
+
+type AssetRebuildJob = {
+  jobId: string;
+  status: string;
+  phase: string;
+  discovered?: number;
+  processed?: number;
+  added?: number;
+  changed?: number;
+  skipped?: number;
+  failed?: number;
+  currentPath?: string;
+  phaseTotal?: number;
+  phaseProcessed?: number;
+  currentScopeType?: string;
+  currentScopeId?: string;
+  currentScopeName?: string;
+  error?: string;
+};
+
+type AssetDuplicateGroup = {
+  assetId: string;
+  filename: string;
+  sha1: string;
+  sha256?: string;
+  size?: number;
+  pathCount: number;
+  referenceCount: number;
+  paths: string[];
+};
+
+type AssetDuplicateOperation = {
+  operationId: string;
+  status: string;
+  error?: string;
+  summary?: { eligibleCount?: number; blockedCount?: number; reclaimableBytes?: number; completedCount?: number; failedCount?: number; blocked?: Array<{ assetId?: string; path?: string; reason: string }> };
+  entries?: Array<{ entryId: string; assetId: string; keepPath: string; sourcePath: string; quarantinePath: string; size: number; status: string; error?: string }>;
 };
 
 type AssetTrendDay = {
@@ -840,7 +892,11 @@ type ScheduleLedgerState = {
 };
 
 type TaskCenterItem = {
-  resolution?: { kind: string; title: string; instruction: string; retrySafe: boolean } | null;
+  resolution?: { kind: string; title: string; instruction: string; retrySafe: boolean; owner?: 'system' | 'user' | string; plan?: TaskRecoveryPlan } | null;
+  userGroup?: 'automatic' | 'needs_help' | 'history' | string;
+  recoveryPlan?: TaskRecoveryPlan;
+  executionProvenance?: { version?: number; executionClass?: string; providerId?: string; providerLabel?: string; externalRunRef?: string; querySupport?: boolean; cancelSupport?: boolean; openSupport?: boolean; dispatchStage?: string };
+  recoveryBudget?: { executionAttempts?: number; correctionAttempts?: number; providerSwitches?: number; receiptQueries?: number; deadlineAt?: string; limits?: Record<string, number> };
   phaseLabel?: string;
   awaitingSend?: boolean;
   hasResult?: boolean;
@@ -874,6 +930,7 @@ type TaskCenterItem = {
   lastHeartbeatAt?: string;
   completedAt?: string;
   nextRetryAt?: string;
+  recoveryState?: string;
   heartbeatTimeoutSeconds?: number;
   retryBackoffSeconds?: number;
   autoRetry?: boolean;
@@ -890,6 +947,22 @@ type TaskCenterItem = {
   executionId?: string;
 };
 
+type TaskRecoveryPlan = {
+  version?: number;
+  state?: 'automatic' | 'needs_user' | 'resolved' | string;
+  owner?: 'system' | 'user' | string;
+  cause?: string;
+  action?: string;
+  summary?: string;
+  nextAction?: string;
+  nextWakeAt?: string;
+  providerLabel?: string;
+  userSteps?: string[];
+  canOpen?: boolean;
+  canConfirmStopped?: boolean;
+  canRetry?: boolean;
+};
+
 type TaskCenterState = {
   storageFault?: { message: string; code: string } | null;
   ready?: boolean;
@@ -904,6 +977,7 @@ type TaskCenterState = {
   tasks: TaskCenterItem[];
   history: Array<Partial<ScheduleLedgerEntry> & { id: string; taskId?: string; title?: string; at?: string; detail?: string; sourceType?: string; sourceId?: string; sourceName?: string; executor?: string; status?: string; kind?: string }>;
   summary: { total: number; actionable: number; running: number; scheduled: number; completed: number; archived?: number };
+  userSummary?: { automatic: number; needs_help: number; history: number };
   capabilities?: Record<string, { id: string; label: string; available: boolean; authorized?: boolean; automatic: boolean; inbox: boolean; structuredResult: boolean; gateway?: boolean; gatewayHealthy?: boolean; cron?: boolean; healthMessage?: string; permissionEnforcement?: string; hidden?: boolean }>;
   taskStorePath?: string;
   agentInboxPath?: string;
@@ -1036,6 +1110,7 @@ type StudentOfflineMigrationPlan = {
 };
 
 type AndroidBridge = {
+  skillLibraryAction?: (action: string, input: unknown) => Promise<string>;
   copyText?: (value: string) => Promise<string>;
   exportTextFile?: (filename: string, content: string) => string;
   importFiles?: (studentName: string, targetJson?: string) => boolean | string;
@@ -1046,7 +1121,7 @@ type AndroidBridge = {
   removeMaterialImportRecords?: (studentId: string, recordIdsJson: string) => string;
   getCaptureCenterState?: () => string;
   showQuickCapture?: () => Promise<string>;
-  setQuickCaptureContext?: (studentId: string) => Promise<string>;
+  setQuickCaptureContext?: (studentId: string, context?: { connectionPrompts?: Record<string, string> }) => Promise<string>;
   onQuickCaptureNavigate?: (callback: (payload: { tabId: string; studentId: string; inboxTab?: 'shares' }) => void) => () => void;
   setCaptureVisionConsent?: (inputJson: string) => string;
   onCaptureChanged?: (callback: (payload: string) => void) => () => void;
@@ -1072,13 +1147,26 @@ type AndroidBridge = {
   deleteCaptureSession?: (sessionId: string) => Promise<string>;
   openCaptureInbox?: (sessionId?: string) => string;
   getAssetIndex?: () => Promise<string>;
+  getAssetSummary?: (filter?: Record<string, unknown>) => Promise<string>;
+  listAssets?: (request?: Record<string, unknown>) => Promise<string>;
+  searchAssets?: (request?: Record<string, unknown>) => Promise<string>;
+  getAssetDetail?: (assetId: string) => Promise<string>;
   rebuildAssetIndex?: () => Promise<string>;
+  getAssetRebuildStatus?: (jobId?: string) => Promise<string>;
+  cancelAssetIndexRebuild?: (jobId?: string) => Promise<string>;
+  onAssetIndexProgress?: (callback: (job: AssetRebuildJob) => void) => (() => void);
+  listDuplicateGroups?: (request?: Record<string, unknown>) => Promise<string>;
+  prepareDuplicateCleanup?: (request?: Record<string, unknown>) => Promise<string>;
+  applyDuplicateCleanup?: (operationId: string, entryIds?: string[]) => Promise<string>;
+  getDuplicateCleanupStatus?: (operationId: string) => Promise<string>;
+  restoreDuplicateCleanup?: (operationId: string, entryIds?: string[]) => Promise<string>;
+  onDuplicateCleanupProgress?: (callback: (progress: { operationId: string; status: string; processed?: number; total?: number; completed?: number; failed?: number; currentPath?: string; error?: string }) => void) => (() => void);
   analyzeAssetGovernance?: () => Promise<string>;
-  cleanupAssetReferences?: (assetId: string) => string;
-  createAssetVersionSnapshot?: (assetId: string) => string;
-  markAssetGovernanceDecision?: (assetId: string, decision: string, note?: string) => string;
+  cleanupAssetReferences?: (assetId: string) => Promise<string>;
+  createAssetVersionSnapshot?: (assetId: string) => Promise<string>;
+  markAssetGovernanceDecision?: (assetId: string, decision: string, note?: string) => Promise<string>;
   generateKnowledgeArchitectureReport?: () => string;
-  getProjects?: () => Promise<string>;
+  getProjects?: (options?: { detailProjectId?: string }) => Promise<string>;
   getTopicSuggestions?: (studentId: string) => Promise<string>;
   getPlanningFavorites?: ResearchApi['getPlanningFavorites'];
   setPlanningFavorite?: ResearchApi['setPlanningFavorite'];
@@ -1235,17 +1323,26 @@ type AndroidBridge = {
   cleanupProjectMaterialMigrationBackups?: (projectId: string, requestJson: string) => Promise<string>;
   openProjectMaterialOriginal?: (projectId: string, materialId: string, version: number) => Promise<string>;
   listLearningReports?: (studentId: string) => string;
-  cloudReportEnrollSource?: (input: { serverUrl: string; enrollmentCode: string; localStudentId: string }) => Promise<string>;
+  cloudReportEnrollSource?: (input: { serverUrl: string; enrollmentCode: string; localStudentId: string; profileFields?: string[]; materialCategories?: string[] }) => Promise<string>;
   cloudReportSetUpload?: (studentId: string, enabled: boolean) => Promise<string>;
+  cloudReportSetUploadScope?: (studentId: string, input: { profileFields: string[]; materialCategories: string[] }) => Promise<string>;
   cloudReportStatus?: (studentId: string) => Promise<string>;
   cloudReportSyncNow?: (studentId: string) => Promise<string>;
   cloudReportCreatePairing?: (serverUrl: string) => Promise<string>;
-  cloudReportApprovePairing?: (pairingCode: string, studentIds: string[]) => Promise<string>;
+  cloudReportApprovePairing?: (pairingCode: string, studentIds: string[], options?: { profileFields: string[]; materialCategories: string[] }) => Promise<string>;
   cloudReportListStudents?: () => Promise<string>;
   cloudReportListReports?: (cloudStudentId: string, cursor?: string) => Promise<string>;
   cloudReportDownload?: (cloudStudentId: string, revisionId: string) => Promise<string>;
   cloudReportListDocuments?: (cloudStudentId: string) => Promise<string>;
   cloudReportDownloadDocument?: (cloudStudentId: string, documentId: string, reveal?: boolean) => Promise<string>;
+  cloudReportListMaterials?: (cloudStudentId: string, options?: { category?: string; history?: boolean; cursor?: string }) => Promise<string>;
+  cloudReportDownloadMaterial?: (cloudStudentId: string, revisionId: string, reveal?: boolean) => Promise<string>;
+  cloudReportIssueRemoteAgent?: (input: unknown) => Promise<string>;
+  cloudReportRemoteAgentStatus?: (sessionId: string) => Promise<string>;
+  cloudReportRevokeRemoteAgent?: (sessionId: string) => Promise<string>;
+  cloudReportListInbox?: (cursor?: string, recover?: boolean) => Promise<string>;
+  cloudReportLeaseInbox?: (submissionId: string) => Promise<string>;
+  cloudReportSettleInbox?: (submissionId: string, input: unknown) => Promise<string>;
   cloudReportListCachedStudents?: () => Promise<string>;
   cloudReportClearCache?: (cloudStudentId: string) => Promise<string>;
   updateLearningReports?: (studentId: string) => Promise<string>;
@@ -1277,6 +1374,7 @@ type AndroidBridge = {
   importDownloadFiles?: (studentName: string, pathsJson: string) => string;
   openApp?: (app: AgentToolId | 'obsidian' | 'tailscale') => boolean;
   getAppStatus?: () => string;
+  getAppStatusAsync?: () => Promise<string>;
   getStudents?: () => string;
   syncStudents?: (studentsJson: string) => string;
   selectKnowledgeBaseRoot?: () => string;
@@ -1399,8 +1497,8 @@ type AndroidBridge = {
   openTaskResultPath?: (taskId: string) => string;
   generateStudentMaintenanceReport?: (studentId: string) => string;
   getHostTimeline?: () => string;
-  backupHostData?: (studentsJson?: string) => string;
-  restoreHostData?: () => string;
+  backupHostData?: (studentsJson?: string) => Promise<string>;
+  restoreHostData?: () => Promise<string>;
   getHostMigrationPlan?: () => Promise<string>;
   createHostMigrationPackage?: (optionsJson: string) => Promise<string>;
   getStudentOfflineMigrationPlan?: (studentId: string) => Promise<string>;
@@ -3433,6 +3531,17 @@ function formatDateTime(value?: string) {
   return Number.isFinite(timestamp) ? new Date(timestamp).toLocaleString('zh-CN') : value;
 }
 
+function friendlyTaskHistoryDetail(detail?: string, executor?: string) {
+  const text = String(detail || '').trim();
+  if (!text) return '无补充说明';
+  if (!/原工具|未确认外部任务停止|核对.*回执/.test(text)) return text;
+  const provider = ({ internal: 'AI 教育管家内置流程', codex: 'Codex', workbuddy: 'WorkBuddy', qclaw: 'QClaw', manual: '人工任务包' } as Record<string, string>)[String(executor || '')]
+    || String(executor || '对应执行工具');
+  if (executor === 'internal') return '旧版记录：当时未完成内置任务停止确认；新版会自动核对，当前状态以任务详情为准。';
+  if (executor === 'manual') return '旧版记录：当时未完成任务包状态确认；当前状态以任务详情为准。';
+  return `旧版记录：当时尚未确认 ${provider} 批次停止；当前状态和具体核对步骤以任务详情为准。`;
+}
+
 const themeOptions: Array<{ id: ThemeName; label: string }> = [
   { id: 'blue', label: '蓝色系' },
   { id: 'pink', label: '粉色系' },
@@ -3469,7 +3578,7 @@ const zhCnText = {
   'nav.reports': '学情报告',
   'nav.archive': '学情资料',
   'nav.qa': '知识查询',
-  'nav.qa.settings': 'Agent问答设置',
+  'nav.agent.settings': 'Agent设置管理',
   'nav.collaboration': '知识协作',
   'nav.collaboration.settings': '协作设置',
   'nav.courses': '精选课程',
@@ -3546,7 +3655,7 @@ const uiTranslations: Record<LanguageCode, Partial<Record<TranslationKey, string
     'nav.reports': '學情報告',
     'nav.archive': '學情資料',
     'nav.qa': '知識查詢',
-    'nav.qa.settings': 'Agent問答設定',
+    'nav.agent.settings': 'Agent設定管理',
     'nav.collaboration': '知識協作',
     'nav.collaboration.settings': '協作設定',
     'nav.courses': '精選課程',
@@ -3617,7 +3726,7 @@ const uiTranslations: Record<LanguageCode, Partial<Record<TranslationKey, string
     'nav.reports': 'Learning Reports',
     'nav.archive': 'Learning Records',
     'nav.qa': 'Knowledge Search',
-    'nav.qa.settings': 'Agent Q&A Settings',
+    'nav.agent.settings': 'Agent Settings',
     'nav.collaboration': 'Knowledge Collaboration',
     'nav.collaboration.settings': 'Collaboration Settings',
     'nav.courses': 'Featured Courses',
@@ -3687,7 +3796,7 @@ const uiTranslations: Record<LanguageCode, Partial<Record<TranslationKey, string
     'nav.reports': 'Rapports',
     'nav.archive': 'Données scolaires',
     'nav.qa': 'Recherche de connaissances',
-    'nav.qa.settings': 'Paramètres Q&R Agent',
+    'nav.agent.settings': 'Paramètres Agent',
     'nav.collaboration': 'Collaboration des connaissances',
     'nav.collaboration.settings': 'Paramètres de collaboration',
     'nav.courses': 'Cours sélectionnés',
@@ -3756,7 +3865,7 @@ const uiTranslations: Record<LanguageCode, Partial<Record<TranslationKey, string
     'nav.reports': 'Informes',
     'nav.archive': 'Datos académicos',
     'nav.qa': 'Búsqueda de conocimiento',
-    'nav.qa.settings': 'Ajustes de preguntas Agent',
+    'nav.agent.settings': 'Ajustes del Agent',
     'nav.collaboration': 'Colaboración de conocimiento',
     'nav.collaboration.settings': 'Ajustes de colaboración',
     'nav.courses': 'Cursos destacados',
@@ -3825,7 +3934,7 @@ const uiTranslations: Record<LanguageCode, Partial<Record<TranslationKey, string
     'nav.reports': '学習レポート',
     'nav.archive': '学習資料',
     'nav.qa': '知識検索',
-    'nav.qa.settings': 'Agent問答設定',
+    'nav.agent.settings': 'Agent設定管理',
     'nav.collaboration': '知識コラボレーション',
     'nav.collaboration.settings': 'コラボレーション設定',
     'nav.courses': 'おすすめコース',
@@ -3894,7 +4003,7 @@ const uiTranslations: Record<LanguageCode, Partial<Record<TranslationKey, string
     'nav.reports': '학습 보고서',
     'nav.archive': '학습 자료',
     'nav.qa': '지식 검색',
-    'nav.qa.settings': 'Agent Q&A 설정',
+    'nav.agent.settings': 'Agent 설정 관리',
     'nav.collaboration': '지식 협업',
     'nav.collaboration.settings': '협업 설정',
     'nav.courses': '추천 강좌',
@@ -3963,7 +4072,7 @@ const uiTranslations: Record<LanguageCode, Partial<Record<TranslationKey, string
     'nav.reports': 'Báo cáo học tập',
     'nav.archive': 'Tài liệu học tập',
     'nav.qa': 'Tra cứu tri thức',
-    'nav.qa.settings': 'Cài đặt hỏi đáp Agent',
+    'nav.agent.settings': 'Quản lý cài đặt Agent',
     'nav.collaboration': 'Cộng tác tri thức',
     'nav.collaboration.settings': 'Cài đặt cộng tác',
     'nav.courses': 'Khóa học nổi bật',
@@ -4032,7 +4141,7 @@ const uiTranslations: Record<LanguageCode, Partial<Record<TranslationKey, string
     'nav.reports': 'Laporan pembelajaran',
     'nav.archive': 'Bahan pembelajaran',
     'nav.qa': 'Carian pengetahuan',
-    'nav.qa.settings': 'Tetapan soal jawab Agent',
+    'nav.agent.settings': 'Pengurusan tetapan Agent',
     'nav.collaboration': 'Kerjasama pengetahuan',
     'nav.collaboration.settings': 'Tetapan kerjasama',
     'nav.courses': 'Kursus pilihan',
@@ -5687,31 +5796,19 @@ type AgentMemorySession = NonNullable<AgentMemorySessionState['sessions']>[numbe
 
 const AgentMemorySessionRow = memo(function AgentMemorySessionRow({
   session,
-  projects,
   checked,
   busy,
   onToggle,
-  onDeliver,
   onManage,
   onClearEmpty,
 }: {
   session: AgentMemorySession;
-  projects: Array<Pick<LearningProject, 'id' | 'name'>>;
   checked: boolean;
   busy: boolean;
   onToggle: (sessionId: string) => void;
-  onDeliver: (session: AgentMemorySession, selection: string) => void | Promise<void>;
   onManage: (session: AgentMemorySession, action: 'trash' | 'restore' | 'delete') => void;
   onClearEmpty: (sessionId: string) => void;
 }) {
-  const [targetSelection, setTargetSelection] = useState('student');
-
-  useEffect(() => {
-    if (!targetSelection.startsWith('project:')) return;
-    const projectId = targetSelection.slice('project:'.length);
-    if (!projects.some((project) => project.id === projectId)) setTargetSelection('student');
-  }, [projects, targetSelection]);
-
   return (
     <div className="candidate-row">
       <input type="checkbox" style={{ width: 20, height: 20 }} aria-label={`选择会话：${session.title || session.sessionId}`} checked={checked}
@@ -5746,7 +5843,7 @@ const AgentMemorySessionRow = memo(function AgentMemorySessionRow({
       </div>
       <fieldset disabled={busy} className="actions compact-actions agent-memory-actions" style={{ border: 0, padding: 0, margin: 0, minWidth: 0 }}>
         {session.status === 'active'
-          ? <span className="muted">会话结束后可投递或移除</span>
+          ? <span className="muted">会话结束后自动进入资料收件箱</span>
           : !session.materialAvailable && (session.messages?.length ?? 0) === 0 && !session.conversationReceipt
             ? <button className="danger compact" onClick={() => onClearEmpty(session.sessionId)}>删除空会话</button>
           : !session.materialAvailable
@@ -5757,11 +5854,6 @@ const AgentMemorySessionRow = memo(function AgentMemorySessionRow({
                   <button className="danger compact" disabled={!session.materialDependencies?.canPermanentlyDelete} title={session.materialDependencies?.canPermanentlyDelete ? '删除对话原文、本地会话记忆及未晋升候选' : '仍关联资料投递或已晋升知识，不能彻底删除'} onClick={() => onManage(session, 'delete')}>彻底删除</button>
                 </>
               : <>
-                  <select aria-label={`${session.title || '授权会话'}投递目标`} value={targetSelection} onChange={(event) => setTargetSelection(event.target.value)}>
-                    <option value="student">学生原始资料库</option>
-                    {projects.map((project) => <option value={`project:${project.id}`} key={project.id}>项目：{project.name}</option>)}
-                  </select>
-                  <button className="primary compact" onClick={() => void onDeliver(session, targetSelection)}>投递到所选位置</button>
                   <button className="secondary compact" onClick={() => onManage(session, 'trash')}>移入回收站</button>
                 </>}
       </fieldset>
@@ -5769,17 +5861,14 @@ const AgentMemorySessionRow = memo(function AgentMemorySessionRow({
   );
 });
 
-function AgentMemorySessionList({ sessions, projects, onDeliver, onManage, onClearEmpty }: {
+function AgentMemorySessionList({ sessions, onManage, onClearEmpty }: {
   sessions: AgentMemorySession[];
-  projects: Array<Pick<LearningProject, 'id' | 'name'>>;
-  onDeliver: (sessions: AgentMemorySession[], target: string, progress: (message: string) => void) => Promise<string[]>;
   onManage: (sessions: AgentMemorySession[], action: 'trash' | 'restore' | 'delete', progress: (message: string) => void) => Promise<string[]>;
   onClearEmpty: (sessionId: string) => void;
 }) {
   const [tab, setTab] = useState<CapturedSessionTab>('pending');
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [page, setPage] = useState(0);
-  const [target, setTarget] = useState('student');
   const [busy, setBusy] = useState(false);
   const busyRef = useRef(false);
   const [message, setMessage] = useState('');
@@ -5789,15 +5878,14 @@ function AgentMemorySessionList({ sessions, projects, onDeliver, onManage, onCle
   const selected = selectable.filter(session => selectedSet.has(session.sessionId));
   const currentPage = Math.min(page, Math.max(0, Math.ceil(filtered.length / 20) - 1));
   const visible = filtered.slice(currentPage * 20, (currentPage + 1) * 20);
-  const deliveryTarget = target === 'student' || projects.some(project => `project:${project.id}` === target) ? target : 'student';
   const toggle = useCallback((id: string) => setSelectedIds(current => current.includes(id) ? current.filter(value => value !== id) : [...current, id]), []);
-  const perform = async (items: AgentMemorySession[], action: 'deliver' | 'trash' | 'restore' | 'delete', destination = deliveryTarget) => {
+  const perform = async (items: AgentMemorySession[], action: 'trash' | 'restore' | 'delete') => {
     if (busyRef.current || !items.length) return;
     busyRef.current = true;
     setBusy(true);
     setMessage('');
     try {
-      const succeeded = action === 'deliver' ? await onDeliver(items, destination, setMessage) : await onManage(items, action, setMessage);
+      const succeeded = await onManage(items, action, setMessage);
       setSelectedIds(current => current.filter(id => !succeeded.includes(id)));
     } catch { setMessage('操作中断，请刷新会话列表后重试。'); }
     finally { busyRef.current = false; setBusy(false); }
@@ -5806,7 +5894,7 @@ function AgentMemorySessionList({ sessions, projects, onDeliver, onManage, onCle
     <div className="actions compact-actions" role="group" aria-label="自动会话列表范围">
       {(['pending', 'delivered', 'all', 'trash'] as const).map(value => <button key={value} className={tab === value ? 'primary' : 'secondary'} aria-pressed={tab === value} disabled={busy}
         onClick={() => { setTab(value); setSelectedIds([]); setPage(0); setMessage(''); }}>
-        {{ pending: '待投递', delivered: '已投递', all: '全部', trash: '回收站' }[value]}（{sessions.filter(session => matchesCapturedSessionTab(session, value)).length}）
+        {{ pending: '待处理', delivered: '已处理', all: '全部', trash: '回收站' }[value]}（{sessions.filter(session => matchesCapturedSessionTab(session, value)).length}）
       </button>)}
     </div>
     <fieldset disabled={busy} style={{ border: 0, padding: '12px 0', margin: 0, minWidth: 0 }}>
@@ -5820,11 +5908,6 @@ function AgentMemorySessionList({ sessions, projects, onDeliver, onManage, onCle
       </div>
       <div className="actions compact-actions">
         {tab !== 'trash' ? <>
-          <label>统一投递目标<select aria-label="批量投递目标" value={deliveryTarget} onChange={event => setTarget(event.target.value)}>
-            <option value="student">学生原始资料库</option>
-            {projects.map(project => <option key={project.id} value={`project:${project.id}`}>项目：{project.name}</option>)}
-          </select></label>
-          <button className="primary" disabled={!selected.length} onClick={() => void perform(selected, 'deliver')}>投递选中会话</button>
           <button className="secondary" disabled={!selected.length} onClick={() => void perform(selected, 'trash')}>选中移入回收站</button>
         </> : <>
           <button className="secondary" disabled={!selected.length} onClick={() => void perform(selected, 'restore')}>恢复选中会话</button>
@@ -5832,14 +5915,13 @@ function AgentMemorySessionList({ sessions, projects, onDeliver, onManage, onCle
         </>}
       </div>
     </fieldset>
-    <small>展示最近 100 条授权会话，每页 20 条；全选包含当前列表的所有分页。采集中及未归档会话不可勾选。{tab === 'trash' ? '存在资料投递或已晋升知识的记录会保留。' : '成功投递后归入“已投递”，原记录保留，可再次投递到其他项目。'}</small>
+    <small>展示最近 100 条授权会话，每页 20 条；全选包含当前列表的所有分页。采集中及未归档会话不可勾选。{tab === 'trash' ? '存在资料投递或已晋升知识的记录会保留。' : '分类、投递、改投和异常恢复统一在资料收件箱完成。'}</small>
     {(busy || message) && <p role="status" aria-live="polite">{message || '正在处理所选会话…'}</p>}
     <div className="candidate-list">
-      {visible.map(session => <AgentMemorySessionRow key={session.sessionId} session={session} projects={projects}
+      {visible.map(session => <AgentMemorySessionRow key={session.sessionId} session={session}
         checked={selected.some(item => item.sessionId === session.sessionId)} busy={busy} onToggle={toggle}
-        onDeliver={(item, destination) => perform([item], 'deliver', destination)}
         onManage={(item, action) => void perform([item], action)} onClearEmpty={onClearEmpty} />)}
-      {!filtered.length && <div className="empty-state compact">{{ pending: '暂无待投递会话，可在“已投递”查看已处理记录。', delivered: '暂无已投递会话。', all: '尚无授权会话记录。授权前历史不会被扫描。', trash: '回收站为空。' }[tab]}</div>}
+      {!filtered.length && <div className="empty-state compact">{{ pending: '暂无待处理会话，可在“已处理”查看历史记录。', delivered: '暂无已处理会话。', all: '尚无授权会话记录。授权前历史不会被扫描。', trash: '回收站为空。' }[tab]}</div>}
     </div>
     {filtered.length > 20 && <div className="actions compact-actions">
       <button className="secondary" disabled={busy || currentPage === 0} onClick={() => setPage(currentPage - 1)}>上一页</button>
@@ -5861,7 +5943,6 @@ function App() {
   const [studentPanelOpen, setStudentPanelOpen] = useState(false);
   const [agentSettingsTab, setAgentSettingsTab] = useState<AgentSettingsTab>('tools');
   const [agentDataTab, setAgentDataTab] = useState<AgentDataTab>('memory');
-  const [agentConnectionTab, setAgentConnectionTab] = useState<AgentConnectionTab>('connector');
   const [guidanceTab, setGuidanceTab] = useState<GuidanceTab>('overview');
   const [topicSuggestionSet, setTopicSuggestionSet] = useState<TopicSuggestionSet | null>(null);
   const [topicSuggestionMessage, setTopicSuggestionMessage] = useState('');
@@ -6019,6 +6100,19 @@ function App() {
   const [assetTypeFilter, setAssetTypeFilter] = useState('all');
   const [assetDuplicateOnly, setAssetDuplicateOnly] = useState(false);
   const [selectedAssetId, setSelectedAssetId] = useState('');
+  const [selectedAssetDetail, setSelectedAssetDetail] = useState<AssetRecord | null>(null);
+  const [assetCursor, setAssetCursor] = useState('');
+  const [assetCursorHistory, setAssetCursorHistory] = useState<string[]>([]);
+  const [assetRebuildJob, setAssetRebuildJob] = useState<AssetRebuildJob | null>(null);
+  const assetProgressRefreshAtRef = useRef(0);
+  const [assetDuplicateGroups, setAssetDuplicateGroups] = useState<AssetDuplicateGroup[]>([]);
+  const [assetDuplicateTotal, setAssetDuplicateTotal] = useState(0);
+  const [assetDuplicateCursor, setAssetDuplicateCursor] = useState('');
+  const [assetDuplicateNextCursor, setAssetDuplicateNextCursor] = useState('');
+  const [assetDuplicateCursorHistory, setAssetDuplicateCursorHistory] = useState<string[]>([]);
+  const [selectedDuplicateAssetIds, setSelectedDuplicateAssetIds] = useState<string[]>([]);
+  const [assetDuplicateOperation, setAssetDuplicateOperation] = useState<AssetDuplicateOperation | null>(null);
+  const [assetDuplicateBusy, setAssetDuplicateBusy] = useState(false);
   const [projects, setProjects] = useState<LearningProject[]>([]);
   const [projectMessage, setProjectMessage] = useState('');
   const [projectStageFeedback, setProjectStageFeedback] = useState<Partial<Record<ProjectWorkflowTarget, string>>>({});
@@ -6158,7 +6252,7 @@ function App() {
   const [scheduleMessage, setScheduleMessage] = useState('');
   const [maintenanceReportPreview, setMaintenanceReportPreview] = useState('');
   const [taskCenter, setTaskCenter] = useState<TaskCenterState>({ ready: false, tasks: [], history: [], summary: { total: 0, actionable: 0, running: 0, scheduled: 0, completed: 0, archived: 0 } });
-  const [taskCenterStatusFilter, setTaskCenterStatusFilter] = useState<'all' | 'actionable' | 'running' | 'scheduled' | 'completed' | 'archived'>('actionable');
+  const [taskCenterStatusFilter, setTaskCenterStatusFilter] = useState<'all' | 'automatic' | 'needs_help' | 'history'>('needs_help');
   const [taskCenterSourceFilter, setTaskCenterSourceFilter] = useState<'all' | 'student' | 'project'>('all');
   const [taskCenterExecutorFilter, setTaskCenterExecutorFilter] = useState('all');
   const [taskCenterDisplayLimit, setTaskCenterDisplayLimit] = useState(30);
@@ -6328,8 +6422,6 @@ function App() {
   const [conversationWorkspaceTab, setConversationWorkspaceTab] = useState<'awaiting' | 'inbox' | 'candidates' | 'delivered' | 'trash'>('inbox');
   const [conversationAttributionTargets, setConversationAttributionTargets] = useState<Record<string, string>>({});
   const [selectedConversationAssetKeys, setSelectedConversationAssetKeys] = useState<string[]>([]);
-  const [conversationDeliveryTargetType, setConversationDeliveryTargetType] = useState<'student' | 'project'>('student');
-  const [conversationDeliveryProjectId, setConversationDeliveryProjectId] = useState('');
   const [conversationExtractText, setConversationExtractText] = useState('');
   const [conversationExtractPreview, setConversationExtractPreview] = useState<ConversationExtractPreview | null>(null);
   const [conversationExtractTargets, setConversationExtractTargets] = useState({ memory: true, soul: true, qa: true, todos: true });
@@ -6430,11 +6522,10 @@ function App() {
   const taskChannelLabel = taskChannelAgent ? taskCenter.capabilities?.[taskChannelAgent]?.label || taskChannelAgent : '全部 Agent';
   const visibleTaskCenterItems = useMemo(() => taskCenter.page ? taskCenter.tasks : taskCenter.tasks.filter((task) => {
     const statusMatches = taskCenterStatusFilter === 'all'
-      || task.statusGroup === taskCenterStatusFilter
-      || (taskCenterStatusFilter === 'actionable' && ['draft', 'pending', 'approved', 'failed', 'blocked', 'timed_out'].includes(task.status))
-      || (taskCenterStatusFilter === 'running' && ['running', 'waiting_result', 'reviewing'].includes(task.status))
-      || (taskCenterStatusFilter === 'scheduled' && task.status === 'queued')
-      || (taskCenterStatusFilter === 'completed' && task.status === 'succeeded');
+      || task.userGroup === taskCenterStatusFilter
+      || (taskCenterStatusFilter === 'needs_help' && task.statusGroup === 'actionable')
+      || (taskCenterStatusFilter === 'automatic' && ['running', 'scheduled'].includes(String(task.statusGroup)))
+      || (taskCenterStatusFilter === 'history' && ['completed', 'archived'].includes(String(task.statusGroup)));
     const sourceMatches = taskCenterSourceFilter === 'all' || task.sourceType === taskCenterSourceFilter;
     const executorMatches = taskCenterExecutorFilter === 'all' || task.executor === taskCenterExecutorFilter;
     return statusMatches && sourceMatches && executorMatches;
@@ -6584,20 +6675,26 @@ function App() {
 
   useEffect(() => {
     selectedStudentIdRef.current = selectedStudent?.id || '';
-    if (isWindows) void bridge()?.setQuickCaptureContext?.(selectedStudent?.id || '');
-  }, [selectedStudent?.id]);
+    if (!isWindows) return;
+    const connectionPrompts = selectedStudent ? Object.fromEntries(agentToolOptions.map((profile) => {
+      const full = buildInitSteps({ ...selectedStudent, agentTool: profile.id }).find((step) => step.id === 'full');
+      return [profile.id, full?.prompt || ''];
+    }).filter(([, prompt]) => Boolean(prompt))) : {};
+    void bridge()?.setQuickCaptureContext?.(selectedStudent?.id || '', { connectionPrompts });
+  }, [selectedStudent]);
   useEffect(() => {
     if (!isWindows) return;
     const sectionByTab: Record<string, Section> = {
       'screen-capture': 'inbox', 'photo-upload': 'photo-upload', 'audio-capture': 'audio-capture',
       'materials-import': 'inbox', 'share-capture': 'share-capture',
       'conversation-collection': 'conversation', 'session-auto-capture': 'capture',
+      'learning-materials': 'archive',
     };
     const unsubscribe = bridge()?.onQuickCaptureNavigate?.(({ tabId, studentId, inboxTab }) => {
       if (tabId === 'students') { setStudentPanelOpen(true); return; }
       if (!sectionByTab[tabId] || !students.some(student => student.id === studentId)) return;
       if (selectedStudentIdRef.current !== studentId) setSelectedId(studentId);
-      setNavigationGroup('collection');
+      setNavigationGroup(tabId === 'learning-materials' ? 'learning' : 'collection');
       setActivePageTab(tabId === 'conversation-collection' || tabId === 'session-auto-capture' ? 'ai-conversation' : tabId);
       setActiveSection(sectionByTab[tabId]);
       if (tabId === 'share-capture' && inboxTab === 'shares') setQuickSharesRequest(value => value + 1);
@@ -6801,59 +6898,32 @@ function App() {
     });
   }, [hostServiceStatus?.recentUploads, hostUploadDateFilter, hostUploadDeviceFilter, hostUploadRecords, hostUploadSearch, hostUploadStatusFilter, hostUploadStudentFilter]);
 
-  const studentScopedAssets = useMemo(() => (
-    (assetIndex.assets ?? []).filter((asset) => {
-      if (assetStudentFilter === 'all') return true;
-      if (String(asset.ownerStudentId || '') === assetStudentFilter) return true;
-      if ((asset.linkedStudents ?? []).map(String).includes(assetStudentFilter)) return true;
-      return (asset.references ?? []).some((reference) => (
-        reference.spaceType === 'student' && String(reference.spaceId || '') === assetStudentFilter
-      ));
-    })
-  ), [assetIndex.assets, assetStudentFilter]);
-
-  const filteredAssets = useMemo(() => {
-    const keyword = assetSearch.trim().toLowerCase();
-    return studentScopedAssets.filter((asset) => {
-      if (assetDuplicateOnly && Number(asset.duplicateCount ?? 1) <= 1) return false;
-      if (assetSourceFilter !== 'all' && String(asset.sourceName || '未标注来源') !== assetSourceFilter) return false;
-      if (assetTypeFilter !== 'all' && String(asset.type || 'file') !== assetTypeFilter) return false;
-      if (!keyword) return true;
-      return [asset.filename, asset.path, asset.ownerStudentName, asset.sourceName, asset.sha1, asset.governanceAction, asset.governanceReason]
-        .filter(Boolean)
-        .some((value) => String(value).toLowerCase().includes(keyword));
-    });
-  }, [assetDuplicateOnly, assetSearch, assetSourceFilter, assetTypeFilter, studentScopedAssets]);
-
-  const assetSources = useMemo(() => (
-    Array.from(new Set((assetIndex.assets ?? []).map((asset) => String(asset.sourceName || '未标注来源')).filter(Boolean))).sort()
-  ), [assetIndex.assets]);
-
-  const assetTypes = useMemo(() => (
-    Array.from(new Set((assetIndex.assets ?? []).map((asset) => String(asset.type || 'file')).filter(Boolean))).sort()
-  ), [assetIndex.assets]);
-
-  const assetGovernanceStats = useMemo(() => {
-    const issueAssets = studentScopedAssets.filter((asset) => asset.governanceAction && asset.governanceAction !== '无需处理');
-    const highRiskCount = issueAssets.filter((asset) => asset.governanceRisk === 'high').length;
-    const staleReferenceCount = issueAssets.reduce((total, asset) => total + Number(asset.staleReferenceCount || 0), 0);
-    return { issueCount: issueAssets.length, highRiskCount, staleReferenceCount };
-  }, [studentScopedAssets]);
-  const assetScopedDuplicateGroups = useMemo(() => {
-    const counts = new Map<string, number>();
-    for (const asset of studentScopedAssets) {
-      if (asset.sha1) counts.set(asset.sha1, (counts.get(asset.sha1) ?? 0) + 1);
-    }
-    return Array.from(counts.values()).filter((count) => count > 1).length;
-  }, [studentScopedAssets]);
-  const assetScopedTrend = useMemo(() => calculateAssetRecentTrend(studentScopedAssets), [studentScopedAssets]);
+  const studentScopedAssets = assetIndex.assets ?? [];
+  const filteredAssets = studentScopedAssets;
+  const assetSources = useMemo(() => (assetIndex.facets?.sources ?? []).map((item) => item.value), [assetIndex.facets?.sources]);
+  const assetTypes = useMemo(() => (assetIndex.facets?.types ?? []).map((item) => item.value), [assetIndex.facets?.types]);
+  const assetGovernanceStats = {
+    issueCount: Number(assetIndex.issueCount || 0),
+    highRiskCount: Number(assetIndex.highRiskCount || 0),
+    staleReferenceCount: Number(assetIndex.staleReferenceCount || 0),
+  };
+  const assetFiltersActive = assetStudentFilter !== 'all'
+    || assetSourceFilter !== 'all'
+    || assetTypeFilter !== 'all'
+    || assetDuplicateOnly
+    || Boolean(assetSearch.trim());
+  const assetScopedDuplicateGroups = Number(assetIndex.duplicateGroups || 0);
+  const assetScopedTrend = assetIndex.recentTrend ?? calculateAssetRecentTrend([]);
+  const duplicatePageAssetIds = assetDuplicateGroups.map((group) => group.assetId);
+  const allDuplicatePageSelected = duplicatePageAssetIds.length > 0
+    && duplicatePageAssetIds.every((assetId) => selectedDuplicateAssetIds.includes(assetId));
   const assetWorkflowSteps = useMemo(() => {
     return [
-      { title: '登记资产', value: `${studentScopedAssets.length} 个`, detail: '导入、上传、补建索引都会登记 SHA-1 与来源' },
-      { title: '识别引用', value: `${studentScopedAssets.reduce((sum, asset) => sum + Number(asset.references?.length ?? asset.referenceCount ?? 0), 0)} 条`, detail: '连接学生档案、项目知识空间和资料来源' },
+      { title: assetFiltersActive ? '筛选资产' : '登记资产', value: `${assetIndex.total ?? 0} 个`, detail: assetFiltersActive ? '当前数字仅代表所选筛选条件的匹配结果' : '导入、上传、补建索引都会登记 SHA-1 与来源' },
+      { title: '识别引用', value: `${assetIndex.referenceTotal ?? 0} 条`, detail: '连接学生档案、项目知识空间和资料来源' },
       { title: '治理候选', value: `${assetGovernanceStats.issueCount} 个`, detail: '重复、失效引用、无引用资产只提示不自动删除' },
     ];
-  }, [assetGovernanceStats.issueCount, studentScopedAssets]);
+  }, [assetFiltersActive, assetGovernanceStats.issueCount, assetIndex.referenceTotal, assetIndex.total]);
 
   const selectedProject = projects.find((project) => project.id === selectedProjectId) ?? projects[0] ?? null;
   const studentFilteredProjects = useMemo(() => (
@@ -6923,20 +6993,7 @@ function App() {
   const selectedProjectWorkspaceFolders = selectedProject?.workspaceFolders?.length
     ? selectedProject.workspaceFolders
     : selectedProjectWorkspaceTemplate.folders;
-  const selectedAsset = filteredAssets.find((asset) => asset.assetId === selectedAssetId) ?? filteredAssets[0] ?? null;
-  const duplicateAssetGroups = useMemo(() => {
-    const groups = new Map<string, AssetRecord[]>();
-    for (const asset of filteredAssets) {
-      if (!asset.sha1) continue;
-      const current = groups.get(asset.sha1) ?? [];
-      current.push(asset);
-      groups.set(asset.sha1, current);
-    }
-    return Array.from(groups.entries())
-      .map(([sha1, assets]) => ({ sha1, assets }))
-      .filter((group) => group.assets.length > 1)
-      .sort((a, b) => b.assets.length - a.assets.length);
-  }, [filteredAssets]);
+  const selectedAsset = selectedAssetDetail ?? filteredAssets.find((asset) => asset.assetId === selectedAssetId) ?? filteredAssets[0] ?? null;
   const deferredProjectAssetSearch = useDeferredValue(projectAssetSearch.trim().toLocaleLowerCase('zh-CN'));
   const projectCandidateAssetMatches = useMemo(() => {
     const selectedAssetIds = new Set(selectedProject?.assetIds ?? []);
@@ -8703,7 +8760,6 @@ function App() {
     return result.succeeded;
   };
 
-  const deliverCapturedConversation = (sessions: AgentMemorySession[], selection: string, progress: (message: string) => void) => processCapturedConversations(sessions, 'deliver', selection, progress);
   const manageCapturedConversation = (sessions: AgentMemorySession[], action: 'trash' | 'restore' | 'delete', progress: (message: string) => void) => processCapturedConversations(sessions, action, 'student', progress);
 
   const updateAgentMemoryAutomation = (enabled: boolean) => {
@@ -8961,50 +9017,6 @@ ${sourceText}`;
     setSelectedConversationAssetKeys((current) => current.includes(key)
       ? current.filter((value) => value !== key)
       : [...current, key]);
-  };
-
-  const deliverSelectedConversationMaterials = async () => {
-    if (!selectedStudent) return;
-    const selected = (conversationCenter?.index?.imports ?? []).filter((item) => selectedConversationAssetKeySet.has(conversationAssetKey(item)));
-    if (!selected.length) {
-      setConversationMessage('请先勾选要投递的对话资料。');
-      return;
-    }
-    if (conversationDeliveryTargetType === 'project' && !conversationDeliveryProjectId) {
-      setConversationMessage('请选择一个与当前学生关联的项目。');
-      return;
-    }
-    let raw: string | undefined;
-    try {
-      raw = await bridge()?.deliverConversationMaterials?.(selectedStudent.id, JSON.stringify({
-        sources: selected.map((item) => ({
-          sourceScopeType: item.sourceScopeType || 'student',
-          sourceScopeId: item.sourceScopeId || selectedStudent.id,
-          assetId: item.assetId,
-        })),
-        targetType: conversationDeliveryTargetType,
-        targetId: conversationDeliveryTargetType === 'project' ? conversationDeliveryProjectId : selectedStudent.id,
-      }));
-    } catch {
-      setConversationMessage('对话资料投递中断，请查询投递记录后重试。');
-      return;
-    }
-    if (!raw) {
-      setConversationMessage('当前环境不支持对话资料投递。');
-      return;
-    }
-    try {
-      const result = JSON.parse(raw) as { ok?: boolean; message?: string };
-      setConversationMessage(result.message || (result.ok ? '对话资料已投递。' : '对话资料投递失败。'));
-      if (result.ok) {
-        setSelectedConversationAssetKeys([]);
-        refreshConversationCenter(selectedStudent.id);
-        if (conversationDeliveryTargetType === 'project') refreshProjects();
-        else refreshAssets();
-      }
-    } catch {
-      setConversationMessage('对话资料投递结果解析失败。');
-    }
   };
 
   const manageConversationMaterials = (action: 'trash' | 'restore' | 'delete', explicitItems?: AgentConversationImport[]) => {
@@ -9341,8 +9353,77 @@ ${sourceText}`;
   }, []);
 
   useEffect(() => {
-    if (activeSection === 'assets') void refreshAssets();
+    if (activeSection === 'assets') void refreshAssets(assetCursor);
+    if (activeSection === 'assets') {
+      void refreshDuplicateGroups(assetDuplicateCursor);
+      void bridge()?.getAssetRebuildStatus?.('').then((raw) => {
+        const result = JSON.parse(raw) as { ok?: boolean; job?: AssetRebuildJob | null };
+        if (result.ok && result.job) setAssetRebuildJob(result.job);
+      }).catch(() => {});
+    }
   }, [activeSection]);
+
+  useEffect(() => {
+    if (activeSection !== 'assets') return undefined;
+    const timer = window.setTimeout(() => {
+      setAssetCursor('');
+      setAssetCursorHistory([]);
+      setAssetDuplicateCursor('');
+      setAssetDuplicateCursorHistory([]);
+      void refreshAssets('');
+      void refreshDuplicateGroups('');
+    }, 300);
+    return () => window.clearTimeout(timer);
+  }, [activeSection, assetSearch, assetStudentFilter, assetSourceFilter, assetTypeFilter, assetDuplicateOnly]);
+
+  useEffect(() => {
+    if (!selectedAssetId || !bridge()?.getAssetDetail) {
+      setSelectedAssetDetail(null);
+      return undefined;
+    }
+    let cancelled = false;
+    void bridge()!.getAssetDetail!(selectedAssetId).then((raw) => {
+      if (cancelled) return;
+      const result = JSON.parse(raw) as { ok?: boolean; asset?: AssetRecord };
+      setSelectedAssetDetail(result.ok ? result.asset ?? null : null);
+    }).catch(() => { if (!cancelled) setSelectedAssetDetail(null); });
+    return () => { cancelled = true; };
+  }, [selectedAssetId]);
+
+  useEffect(() => bridge()?.onAssetIndexProgress?.((job) => {
+    setAssetRebuildJob(job);
+    setAssetBusyAction(['completed', 'failed', 'cancelled'].includes(job.status) ? '' : 'rebuild');
+    const terminal = ['completed', 'failed', 'cancelled'].includes(job.status);
+    const currentTime = Date.now();
+    if (!terminal && activeSection === 'assets' && currentTime - assetProgressRefreshAtRef.current >= 1000) {
+      assetProgressRefreshAtRef.current = currentTime;
+      void refreshAssets(assetCursor);
+      void refreshDuplicateGroups(assetDuplicateCursor);
+    }
+    if (job.status === 'completed') {
+      setAssetMessage('资产索引补建完成。');
+      void refreshAssets('');
+      void refreshDuplicateGroups('');
+    } else if (job.status === 'failed') setAssetMessage(`资产索引补建失败：${job.error || '请查看诊断信息。'}`);
+    else if (job.status === 'cancelled') setAssetMessage('资产索引补建已取消，已写入的有效记录保持不变。');
+  }), [activeSection, assetCursor, assetDuplicateCursor]);
+
+  useEffect(() => bridge()?.onDuplicateCleanupProgress?.((progress) => {
+    if (progress.operationId !== assetDuplicateOperation?.operationId) return;
+    setAssetMessage(progress.status === 'applying'
+      ? `正在安全隔离：${progress.processed ?? 0}/${progress.total ?? 0}${progress.currentPath ? ` · ${progress.currentPath}` : ''}`
+      : progress.status === 'completed' ? '重复文件已移入可恢复隔离区。'
+        : progress.error || `重复文件治理状态：${progress.status}`);
+    if (['completed', 'partial', 'failed'].includes(progress.status)) {
+      setAssetDuplicateBusy(false);
+      void bridge()?.getDuplicateCleanupStatus?.(progress.operationId).then((raw) => {
+        const result = JSON.parse(raw) as { ok?: boolean; operation?: AssetDuplicateOperation };
+        if (result.ok && result.operation) setAssetDuplicateOperation(result.operation);
+      });
+      void refreshAssets('');
+      void refreshDuplicateGroups('');
+    }
+  }), [assetDuplicateOperation?.operationId]);
 
   useEffect(() => {
     if (!['init', 'settings'].includes(activeSection) || installStatus) return undefined;
@@ -9473,41 +9554,52 @@ ${sourceText}`;
       }
     }
 
-    const timer = window.setInterval(() => {
+    let appStatusPending = false;
+    let appStatusDisposed = false;
+    const timer = window.setInterval(async () => {
       if (document.hidden) return;
-      const raw = bridge()?.getAppStatus?.();
-      if (!raw) return;
+      if (appStatusPending || appStatusDisposed) return;
+      appStatusPending = true;
       try {
-        const status = JSON.parse(raw) as { qclawOpened?: boolean; marvisOpened?: boolean; hohuOpened?: boolean; openclawOpened?: boolean; imaCopilotOpened?: boolean; workbuddyOpened?: boolean; codexOpened?: boolean; claudeCodeOpened?: boolean; hermesOpened?: boolean; traeOpened?: boolean; qoderWorkOpened?: boolean; obsidianOpened?: boolean };
-        setQclawOpened(Boolean(status.qclawOpened));
-        setMarvisOpened(Boolean(status.marvisOpened));
-        setHohuOpened(Boolean(status.hohuOpened));
-        setOpenclawOpened(Boolean(status.openclawOpened));
-        setImaCopilotOpened(Boolean(status.imaCopilotOpened));
-        setWorkbuddyOpened(Boolean(status.workbuddyOpened));
-        setCodexOpened(Boolean(status.codexOpened));
-        setClaudeCodeOpened(Boolean(status.claudeCodeOpened));
-        setHermesOpened(Boolean(status.hermesOpened));
-        setTraeOpened(Boolean(status.traeOpened));
-        setQoderWorkOpened(Boolean(status.qoderWorkOpened));
-        setObsidianOpened(Boolean(status.obsidianOpened));
-      } catch {
-        // Ignore bridge JSON parse errors.
-      }
-      const inboxRaw = bridge()?.getSharedInboxStatus?.();
-      if (inboxRaw) {
+        const statusApi = bridge();
+        const raw = statusApi?.getAppStatusAsync ? await statusApi.getAppStatusAsync() : statusApi?.getAppStatus?.();
+        if (appStatusDisposed) return;
+        if (!raw) return;
         try {
-          const inbox = JSON.parse(inboxRaw) as { count?: number };
-          setSharedInboxCount(Number(inbox.count ?? 0));
+          const status = JSON.parse(raw) as { qclawOpened?: boolean; marvisOpened?: boolean; hohuOpened?: boolean; openclawOpened?: boolean; imaCopilotOpened?: boolean; workbuddyOpened?: boolean; codexOpened?: boolean; claudeCodeOpened?: boolean; hermesOpened?: boolean; traeOpened?: boolean; qoderWorkOpened?: boolean; obsidianOpened?: boolean };
+          setQclawOpened(Boolean(status.qclawOpened));
+          setMarvisOpened(Boolean(status.marvisOpened));
+          setHohuOpened(Boolean(status.hohuOpened));
+          setOpenclawOpened(Boolean(status.openclawOpened));
+          setImaCopilotOpened(Boolean(status.imaCopilotOpened));
+          setWorkbuddyOpened(Boolean(status.workbuddyOpened));
+          setCodexOpened(Boolean(status.codexOpened));
+          setClaudeCodeOpened(Boolean(status.claudeCodeOpened));
+          setHermesOpened(Boolean(status.hermesOpened));
+          setTraeOpened(Boolean(status.traeOpened));
+          setQoderWorkOpened(Boolean(status.qoderWorkOpened));
+          setObsidianOpened(Boolean(status.obsidianOpened));
         } catch {
-          // Ignore inbox JSON parse errors.
+          // Ignore bridge JSON parse errors.
         }
-      }
+        const inboxRaw = bridge()?.getSharedInboxStatus?.();
+        if (inboxRaw) {
+          try {
+            const inbox = JSON.parse(inboxRaw) as { count?: number };
+            setSharedInboxCount(Number(inbox.count ?? 0));
+          } catch {
+            // Ignore inbox JSON parse errors.
+          }
+        }
+      } catch {
+        // A rejected background read must not clear the last known state.
+      } finally { appStatusPending = false; }
     }, 10000);
     const hostTimer = window.setInterval(() => {
       if (!document.hidden && activeSectionRef.current === 'settings') refreshHostServiceStatus();
     }, 60000);
     return () => {
+      appStatusDisposed = true;
       window.clearInterval(timer);
       window.clearInterval(hostTimer);
       delete (window as unknown as { onNativeImportResult?: (payload: string | NativeImportResult) => void }).onNativeImportResult;
@@ -11635,19 +11727,98 @@ ${sourceText}`;
     }
   };
 
-  const refreshAssets = async () => {
-    const raw = await bridge()?.getAssetIndex?.();
-    if (!raw) {
+  const refreshAssets = async (cursorOverride = assetCursor) => {
+    const api = bridge();
+    if (!api?.getAssetSummary || !api.listAssets || !api.searchAssets) {
       setAssetMessage('当前环境不支持文件资产中心。');
       return;
     }
     try {
-      const result = JSON.parse(raw) as AssetIndexState;
-      setAssetIndex({ ...result, assets: result.assets ?? [] });
-      setAssetMessage(result.message || `已读取 ${result.assets?.length ?? 0} 个资产。`);
+      const filter = {
+        studentId: assetStudentFilter,
+        sourceName: assetSourceFilter,
+        type: assetTypeFilter,
+        duplicateOnly: assetDuplicateOnly,
+      };
+      const request = { ...filter, query: assetSearch.trim(), cursor: cursorOverride, pageSize: 50, sort: 'updated_desc' };
+      const [summaryRaw, pageRaw] = await Promise.all([
+        api.getAssetSummary(filter),
+        assetSearch.trim() ? api.searchAssets(request) : api.listAssets(request),
+      ]);
+      const summary = JSON.parse(summaryRaw) as AssetIndexState;
+      const page = JSON.parse(pageRaw) as { ok?: boolean; items?: AssetRecord[]; total?: number; nextCursor?: string; message?: string };
+      setAssetIndex({ ...summary, total: page.total ?? summary.total, assets: page.items ?? [], nextCursor: page.nextCursor ?? '' });
+      setSelectedAssetDetail(null);
+      setSelectedAssetId((current) => (page.items ?? []).some((item) => item.assetId === current) ? current : page.items?.[0]?.assetId ?? '');
+      setAssetMessage(page.message || `已读取 ${page.items?.length ?? 0} 个资产，共 ${page.total ?? summary.total ?? 0} 个。`);
     } catch {
       setAssetMessage('资产索引解析失败。');
     }
+  };
+
+  const refreshDuplicateGroups = async (cursorOverride = assetDuplicateCursor) => {
+    const action = bridge()?.listDuplicateGroups;
+    if (!action) return;
+    try {
+      const raw = await action({ studentId: assetStudentFilter, cursor: cursorOverride, pageSize: 50 });
+      const result = JSON.parse(raw) as { ok?: boolean; items?: AssetDuplicateGroup[]; total?: number; nextCursor?: string };
+      if (!result.ok) return;
+      setAssetDuplicateGroups(result.items ?? []);
+      setAssetDuplicateTotal(result.total ?? 0);
+      setAssetDuplicateCursor(cursorOverride);
+      setAssetIndex((current) => ({ ...current, duplicateGroups: result.total ?? current.duplicateGroups }));
+      setSelectedDuplicateAssetIds((current) => current.filter((id) => (result.items ?? []).some((item) => item.assetId === id)));
+      setAssetDuplicateNextCursor(result.nextCursor ?? '');
+    } catch {
+      setAssetMessage('重复文件分组读取失败。');
+    }
+  };
+
+  const prepareDuplicateCleanup = async () => {
+    const action = bridge()?.prepareDuplicateCleanup;
+    if (!action || !selectedDuplicateAssetIds.length || assetDuplicateBusy) return;
+    setAssetDuplicateBusy(true);
+    setAssetMessage('正在重新校验所选重复文件，请稍候…');
+    try {
+      const raw = await action({ assetIds: selectedDuplicateAssetIds, studentId: assetStudentFilter });
+      const result = JSON.parse(raw) as { ok?: boolean; operation?: AssetDuplicateOperation; message?: string };
+      if (!result.ok || !result.operation) throw new Error(result.message || '无法生成安全处理预览。');
+      setAssetDuplicateOperation(result.operation);
+      setAssetMessage(`安全预览已生成：可隔离 ${result.operation.summary?.eligibleCount ?? 0} 个，受保护 ${result.operation.summary?.blockedCount ?? 0} 个。`);
+    } catch (error) { setAssetMessage(error instanceof Error ? error.message : '无法生成安全处理预览。'); }
+    finally { setAssetDuplicateBusy(false); }
+  };
+
+  const applyDuplicateCleanup = async () => {
+    const operation = assetDuplicateOperation;
+    const action = bridge()?.applyDuplicateCleanup;
+    const entryIds = operation?.entries?.filter((item) => item.status === 'eligible').map((item) => item.entryId) ?? [];
+    if (!action || !operation || !entryIds.length || assetDuplicateBusy) return;
+    if (!window.confirm(`确认把 ${entryIds.length} 个严格校验通过的同空间副本移入可恢复隔离区？不会永久删除文件。`)) return;
+    setAssetDuplicateBusy(true);
+    try {
+      const raw = await action(operation.operationId, entryIds);
+      const result = JSON.parse(raw) as { ok?: boolean; operation?: AssetDuplicateOperation; message?: string };
+      if (!result.ok) throw new Error(result.message || '无法启动隔离任务。');
+      setAssetDuplicateOperation(result.operation ?? operation);
+      setAssetMessage(result.message || '重复文件隔离任务已开始。');
+    } catch (error) { setAssetMessage(error instanceof Error ? error.message : '无法启动隔离任务。'); setAssetDuplicateBusy(false); }
+  };
+
+  const restoreDuplicateCleanup = async () => {
+    const operation = assetDuplicateOperation;
+    const action = bridge()?.restoreDuplicateCleanup;
+    if (!action || !operation || assetDuplicateBusy) return;
+    setAssetDuplicateBusy(true);
+    try {
+      const raw = await action(operation.operationId, operation.entries?.filter((item) => item.status === 'quarantined').map((item) => item.entryId) ?? []);
+      const result = JSON.parse(raw) as { ok?: boolean; operation?: AssetDuplicateOperation; message?: string };
+      if (!result.ok) throw new Error(result.message || '恢复失败。');
+      setAssetDuplicateOperation(result.operation ?? operation);
+      setAssetMessage(result.message || '隔离文件已恢复。');
+      await Promise.all([refreshAssets(''), refreshDuplicateGroups('')]);
+    } catch (error) { setAssetMessage(error instanceof Error ? error.message : '恢复失败。'); }
+    finally { setAssetDuplicateBusy(false); }
   };
 
   const rebuildAssets = async () => {
@@ -11661,13 +11832,11 @@ ${sourceText}`;
     setAssetMessage('正在扫描并补建资产索引，请稍候…');
     try {
       const raw = await action();
-      const result = JSON.parse(raw) as AssetIndexState;
-      setAssetIndex({ ...result, assets: result.assets ?? [] });
-      setAssetMessage(result.message || '资产索引已补建。');
+      const result = JSON.parse(raw) as { ok?: boolean; job?: AssetRebuildJob; message?: string };
+      setAssetRebuildJob(result.job ?? null);
+      setAssetMessage(result.message || '资产索引补建已开始。');
     } catch {
       setAssetMessage('补建资产索引结果解析失败。');
-    } finally {
-      setAssetBusyAction('');
     }
   };
 
@@ -11683,11 +11852,11 @@ ${sourceText}`;
     try {
       const raw = await action();
       const result = JSON.parse(raw) as AssetIndexState & { content?: string; reportPath?: string; issueCount?: number };
-      setAssetIndex({ ...result, assets: result.assets ?? [] });
       setAssetMessage(result.message || `已生成资产治理建议，需治理 ${result.issueCount ?? 0} 个资产。`);
       if (result.content) {
         setAssetGovernancePreview(result.content);
       }
+      await refreshAssets('');
     } catch {
       setAssetMessage('资产治理建议结果解析失败。');
     } finally {
@@ -11695,36 +11864,38 @@ ${sourceText}`;
     }
   };
 
-  const cleanupSelectedAssetReferences = () => {
+  const cleanupSelectedAssetReferences = async () => {
     if (!selectedAsset) {
       setAssetMessage('请先选择一个资产。');
       return;
     }
-    const raw = bridge()?.cleanupAssetReferences?.(selectedAsset.assetId);
-    if (!raw) {
+    const action = bridge()?.cleanupAssetReferences;
+    if (!action) {
       setAssetMessage('当前环境不支持资产引用清理。');
       return;
     }
     try {
+      const raw = await action(selectedAsset.assetId);
       const result = JSON.parse(raw) as AssetIndexState & { removed?: number; message?: string };
-      setAssetIndex({ ...result, assets: result.assets ?? [] });
       setAssetMessage(result.message || `已清理 ${result.removed ?? 0} 条失效或重复引用。`);
+      await refreshAssets(assetCursor);
     } catch {
       setAssetMessage('资产引用清理结果解析失败。');
     }
   };
 
-  const snapshotSelectedAssetVersions = () => {
+  const snapshotSelectedAssetVersions = async () => {
     if (!selectedAsset) {
       setAssetMessage('请先选择一个资产。');
       return;
     }
-    const raw = bridge()?.createAssetVersionSnapshot?.(selectedAsset.assetId);
-    if (!raw) {
+    const action = bridge()?.createAssetVersionSnapshot;
+    if (!action) {
       setAssetMessage('当前环境不支持资产版本快照。');
       return;
     }
     try {
+      const raw = await action(selectedAsset.assetId);
       const result = JSON.parse(raw) as { ok?: boolean; content?: string; message?: string };
       setAssetMessage(result.message || (result.ok ? '已生成资产版本快照。' : '资产版本快照生成失败。'));
       if (result.content) setAssetGovernancePreview(result.content);
@@ -11733,20 +11904,21 @@ ${sourceText}`;
     }
   };
 
-  const markSelectedAssetGovernance = (decision: 'keep' | 'duplicate_watch' | 'manual_review' | 'archive_watch' | 'resolved') => {
+  const markSelectedAssetGovernance = async (decision: 'keep' | 'duplicate_watch' | 'manual_review' | 'archive_watch' | 'resolved') => {
     if (!selectedAsset) {
       setAssetMessage('请先选择一个资产。');
       return;
     }
-    const raw = bridge()?.markAssetGovernanceDecision?.(selectedAsset.assetId, decision, '');
-    if (!raw) {
+    const action = bridge()?.markAssetGovernanceDecision;
+    if (!action) {
       setAssetMessage('当前环境不支持资产治理人工决策。');
       return;
     }
     try {
+      const raw = await action(selectedAsset.assetId, decision, '');
       const result = JSON.parse(raw) as AssetIndexState & { decisionLabel?: string; message?: string };
-      setAssetIndex({ ...result, assets: result.assets ?? [] });
       setAssetMessage(result.message || `已标记资产治理决策：${result.decisionLabel || decision}。`);
+      await refreshAssets(assetCursor);
     } catch {
       setAssetMessage('资产治理人工决策结果解析失败。');
     }
@@ -11769,8 +11941,9 @@ ${sourceText}`;
     }
   };
 
-  const refreshProjects = async () => {
-    const raw = await bridge()?.getProjects?.();
+  const refreshProjects = async (detailProjectId?: string) => {
+    const requestedDetailId = detailProjectId ?? (activeSectionRef.current === 'projects' ? selectedProjectId : '');
+    const raw = await bridge()?.getProjects?.({ detailProjectId: requestedDetailId });
     if (!raw) {
       setProjectMessage('当前环境不支持学习项目管理。');
       return;
@@ -11789,6 +11962,10 @@ ${sourceText}`;
       setProjectMessage('学习项目数据解析失败。');
     }
   };
+
+  useEffect(() => {
+    if (activeSection === 'projects') void refreshProjects(selectedProjectId);
+  }, [activeSection, selectedProjectId]);
 
   const publishProjectToTargets = async (targetNodeIds: string[]) => {
     if (!selectedProject || projectPublicationBusy || !bridge()?.publishCollaborationProject) return;
@@ -14608,8 +14785,8 @@ ${JSON.stringify(items, null, 2)}
     }
   };
 
-  const backupHostData = () => {
-    const raw = bridge()?.backupHostData?.(JSON.stringify(students));
+  const backupHostData = async () => {
+    const raw = await bridge()?.backupHostData?.(JSON.stringify(students));
     if (!raw) {
       setHostServiceMessage('当前环境不支持备份主机数据。');
       return;
@@ -14623,9 +14800,9 @@ ${JSON.stringify(items, null, 2)}
     }
   };
 
-  const restoreHostData = () => {
-    if (!window.confirm('确认从状态备份 JSON 恢复主机数据吗？\n\n恢复会覆盖当前学生索引、设备授权和上传记录；此备份不包含工作空间原文、固定版本文件或知识文档，不能代替完整迁移包。')) return;
-    const raw = bridge()?.restoreHostData?.();
+  const restoreHostData = async () => {
+    if (!window.confirm('确认从状态备份恢复主机数据吗？\n\n恢复会覆盖当前学生索引、设备授权、上传记录和资产索引；此备份不包含工作空间原文、固定版本文件或知识文档，不能代替完整迁移包。')) return;
+    const raw = await bridge()?.restoreHostData?.();
     if (!raw) {
       setHostServiceMessage('当前环境不支持恢复主机数据。');
       return;
@@ -15569,7 +15746,10 @@ ${JSON.stringify(items, null, 2)}
     if (activeSection === 'home') { setNavigationGroup('home'); setActivePageTab('home'); }
     else if (activeSection === 'topic-suggestions' || activeSection === 'competition-recommendations' || activeSection === 'projects-new' || activeSection === 'projects-existing') setNavigationGroup('projects');
     else if (activeSection === 'guidance') setNavigationGroup('guidance');
-    else if (activeSection === 'cloud-documents') { setNavigationGroup('learning'); setActivePageTab('learning-reports'); }
+    else if (activeSection === 'cloud-documents') {
+      setNavigationGroup('settings'); setSettingsSubmenu('agent-qa'); setAgentSettingsTab('cloud');
+      setActivePageTab('settings-agent'); setActiveSection('settings');
+    }
     else if (activeSection === 'courses') setNavigationGroup('courses');
     else if (activeSection === 'conversation' || activeSection === 'capture') { setNavigationGroup('collection'); setActivePageTab('ai-conversation'); }
     else if (activeSection === 'settings' && settingsSubmenu !== 'collaboration') setNavigationGroup('settings');
@@ -15577,12 +15757,13 @@ ${JSON.stringify(items, null, 2)}
 
   const agentSettingsPanel = activeSection === 'settings' && settingsSubmenu === 'agent-qa' ? agentSettingsTab : null;
   const showingAgentRules = activeSection === 'rules' || (agentSettingsPanel === 'data' && agentDataTab === 'rules');
-  const showingAgentMemory = activeSection === 'memory' || (agentSettingsPanel === 'data' && agentDataTab === 'memory') || activeSection === 'capture';
+  const showingAgentMemoryManagement = activeSection === 'memory' || (agentSettingsPanel === 'data' && agentDataTab === 'memory');
+  const showingAgentMemory = showingAgentMemoryManagement || activeSection === 'capture';
   const showingAgentPersona = activeSection === 'soul' || (agentSettingsPanel === 'data' && agentDataTab === 'persona');
   const showingAgentControl = agentSettingsPanel === 'tools';
   const openAgentControl = () => { setNavigationGroup('settings'); setSettingsSubmenu('agent-qa'); setAgentSettingsTab('tools'); setActivePageTab('settings-agent'); setActiveSection('settings'); };
   useEffect(() => {
-    if (activeSection === 'agent-capabilities') { setNavigationGroup('settings'); setSettingsSubmenu('agent-qa'); setAgentSettingsTab('connection'); setAgentConnectionTab('connector'); setActivePageTab('settings-agent'); setActiveSection('settings'); }
+    if (activeSection === 'agent-capabilities') { setNavigationGroup('settings'); setSettingsSubmenu('agent-qa'); setAgentSettingsTab('connection'); setActivePageTab('settings-agent'); setActiveSection('settings'); }
   }, [activeSection, agentSettingsPanel]);
 
   const workspaceTabs: Partial<Record<NavigationGroup, Array<{ id: string; label: string; section: Section; action?: () => void }>>> = {
@@ -15674,7 +15855,7 @@ ${JSON.stringify(items, null, 2)}
     if (section === 'topic-suggestions') return '选题建议';
     if (section === 'competition-recommendations') return '推荐比赛';
     if (section === 'guidance') return '规划与指导';
-    if (section === 'cloud-documents') return '云端文档';
+    if (section === 'cloud-documents') return '云端同步设置';
     if (section === 'courses') return t('nav.courses');
     if (section === 'projects-new') return t('nav.projects.new');
     if (section === 'projects-existing') return t('nav.projects.existing');
@@ -15732,10 +15913,10 @@ ${JSON.stringify(items, null, 2)}
     if (activeSection === 'archive' && activePageTab === 'student-profile') return '查看和编辑当前学生的基本资料与规划信息。';
     if (activeSection === 'archive') return '浏览当前学生的档案资料；路径与 Agent 工具信息已收纳至高级选项。';
     if (activeSection === 'reports') return '查看和管理基于已确认成长数据生成的学情报告。';
-    if (activeSection === 'cloud-documents') return '按本机获得的学生许可查看云端报告，无需建立本地学生档案。';
+    if (activeSection === 'cloud-documents') return '管理学生基础信息、五类学习资料和接收主机授权；健康资料保持独立许可。';
     if (activeSection === 'qa') return '按授权范围检索本机与协作知识，并保留来源依据。';
     if (activeSection === 'capture') return '在 AI 对话采集中授权并接收 Agent 对话的新轮次，不回扫授权前历史。';
-    if (activeSection === 'conversation') return '在 AI 对话采集中导入分享对话、确认归属，并将资料投递到学生或关联项目。';
+    if (activeSection === 'conversation') return '在 AI 对话采集中导入分享对话、确认归属和知识候选；分类、投递与改投统一在资料收件箱处理。';
     if (activeSection === 'agent-capabilities') return '管理当前学生的外部 Agent 调用授权，并审核每次受控写入。';
     if (activeSection === 'settings' && settingsSubmenu === 'collaboration') return '管理设备信任、共享范围与多端协作。';
     if (activeSection === 'settings' && settingsSubmenu === 'agent-qa') return '集中管理 Agent 问答、工具、规则、记忆、人设和调用能力。';
@@ -16048,7 +16229,7 @@ ${JSON.stringify(items, null, 2)}
                   <LinkIcon size={17} /><span>{t('nav.settings.connection')}</span>
                 </button>
                 <button className={activeSection === 'settings' && settingsSubmenu === 'agent-qa' ? 'nav-item sub-nav-item active' : 'nav-item sub-nav-item'} onClick={() => openSettingsSubmenu('agent-qa')}>
-                  <MessageCircle size={17} /><span>{t('nav.qa.settings')}</span>
+                  <MessageCircle size={17} /><span>{t('nav.agent.settings')}</span>
                 </button>
               </div>
             )}
@@ -18054,12 +18235,15 @@ ${JSON.stringify(items, null, 2)}
               <Archive size={22} />
             </div>
             <div className="archive-grid">
-              <InfoPanel icon={<Archive />} title="资产总数" value={`${studentScopedAssets.length} 个`} />
+              <InfoPanel icon={<Archive />} title={assetFiltersActive ? '当前筛选资产' : '资产总数'} value={`${assetIndex.total ?? 0} 个`} />
               <InfoPanel icon={<ListChecks />} title="重复文件组" value={`${assetScopedDuplicateGroups} 组`} />
               <InfoPanel icon={<UserRound />} title="学生过滤" value={assetStudentFilter === 'all' ? '全部学生' : students.find((student) => student.id === assetStudentFilter)?.name ?? '当前筛选'} />
               <InfoPanel icon={<AlertTriangle />} title="治理候选" value={`${assetGovernanceStats.issueCount} 个`} />
               <InfoPanel icon={<ShieldCheck />} title="高风险" value={`${assetGovernanceStats.highRiskCount} 个`} />
               <InfoPanel icon={<LinkIcon />} title="失效引用" value={`${assetGovernanceStats.staleReferenceCount} 条`} />
+              <InfoPanel icon={<ShieldCheck />} title="SHA-256 已就绪" value={`${assetIndex.sha256ReadyCount ?? 0} 个`} />
+              <InfoPanel icon={<AlertTriangle />} title="待补指纹" value={`${assetIndex.sha256PendingCount ?? 0} 个`} />
+              <InfoPanel icon={<AlertTriangle />} title="指纹冲突" value={`${assetIndex.fingerprintConflictCount ?? 0} 个`} />
             </div>
             <AssetTrendChart trend={assetScopedTrend} />
             <div className="workflow-rail asset-workflow">
@@ -18081,6 +18265,11 @@ ${JSON.stringify(items, null, 2)}
                 <Archive size={18} />
                 {assetBusyAction === 'rebuild' ? '正在补建…' : '扫描并补建资产索引'}
               </button>
+              {assetRebuildJob && ['running', 'queued', 'cancelling'].includes(assetRebuildJob.status) && (
+                <button className="secondary" onClick={() => void bridge()?.cancelAssetIndexRebuild?.(assetRebuildJob.jobId)} disabled={assetRebuildJob.status === 'cancelling'}>
+                  {assetRebuildJob.status === 'cancelling' ? '正在取消…' : '取消补建'}
+                </button>
+              )}
               <button className="secondary" onClick={() => void analyzeAssets()} disabled={Boolean(assetBusyAction)}>
                 <ListChecks size={18} />
                 {assetBusyAction === 'analyze' ? '正在分析…' : '生成治理建议'}
@@ -18124,7 +18313,7 @@ ${JSON.stringify(items, null, 2)}
               </label>
             </div>
             <div className="download-list asset-list">
-              {filteredAssets.slice(0, 160).map((asset) => (
+              {filteredAssets.map((asset) => (
                 <button className={selectedAsset?.assetId === asset.assetId ? 'download-item active' : 'download-item'} key={asset.assetId} onClick={() => setSelectedAssetId(asset.assetId)}>
                   <span>
                     <strong>{asset.filename}</strong>
@@ -18139,7 +18328,28 @@ ${JSON.stringify(items, null, 2)}
               ))}
               {filteredAssets.length === 0 && <div className="empty-state">暂无资产记录。导入资料、学生终端上传或点击“扫描并补建资产索引”后会在这里显示。</div>}
             </div>
-            {filteredAssets.length > 160 && <div className="notice muted">当前仅显示前 160 条资产，可通过搜索、学生过滤或重复文件过滤缩小范围。</div>}
+            <div className="actions compact-actions">
+              <button className="secondary compact" disabled={assetCursorHistory.length === 0} onClick={() => {
+                const previous = assetCursorHistory.at(-1) ?? '';
+                setAssetCursorHistory((items) => items.slice(0, -1));
+                setAssetCursor(previous);
+                void refreshAssets(previous);
+              }}>上一页</button>
+              <span className="notice muted">本页 {filteredAssets.length} 条 · 共 {assetIndex.total ?? 0} 条</span>
+              <button className="secondary compact" disabled={!assetIndex.nextCursor} onClick={() => {
+                const next = assetIndex.nextCursor ?? '';
+                setAssetCursorHistory((items) => [...items, assetCursor]);
+                setAssetCursor(next);
+                void refreshAssets(next);
+              }}>下一页</button>
+            </div>
+            {assetRebuildJob && <div className="notice muted">
+              补建状态：{({ enumerating: '枚举', hashing: '读取指纹', writing: '写库', validating: '兼容验证', completed: '完成', interrupted: '已中断', failed: '失败', cancelled: '已取消' } as Record<string, string>)[assetRebuildJob.phase] || assetRebuildJob.phase}
+              {assetRebuildJob.phaseTotal ? ` · 阶段进度 ${assetRebuildJob.phaseProcessed ?? 0}/${assetRebuildJob.phaseTotal}` : ''}
+              {` · 已处理 ${assetRebuildJob.processed ?? 0} · 新增 ${assetRebuildJob.added ?? 0} · 更新 ${assetRebuildJob.changed ?? 0} · 跳过 ${assetRebuildJob.skipped ?? 0} · 失败 ${assetRebuildJob.failed ?? 0}`}
+              {assetRebuildJob.currentScopeName ? ` · 当前项目 ${assetRebuildJob.currentScopeName}` : ''}
+              {assetRebuildJob.currentPath ? ` · ${assetRebuildJob.currentPath}` : ''}
+            </div>}
             {selectedAsset && (
               <section className="material-source-panel">
                 <div className="mini-heading">
@@ -18202,24 +18412,69 @@ ${JSON.stringify(items, null, 2)}
                 <MarkdownView content={assetGovernancePreview} />
               </section>
             )}
-            {duplicateAssetGroups.length > 0 && (
+            {(assetDuplicateGroups.length > 0 || assetDuplicateOperation) && (
               <section className="material-source-panel">
                 <div className="mini-heading">
                   <strong>重复文件分组</strong>
-                  <span>仅做治理提示，不会自动删除物理文件。</span>
+                  <span>共 {assetDuplicateTotal} 组；仅在用户确认后移入可恢复隔离区，不会永久删除。</span>
+                </div>
+                <div className="actions compact-actions">
+                  <label className="checkbox-line">
+                    <input
+                      type="checkbox"
+                      checked={allDuplicatePageSelected}
+                      disabled={assetDuplicateGroups.length === 0 || assetDuplicateBusy}
+                      onChange={(event) => {
+                        const pageIds = new Set(duplicatePageAssetIds);
+                        setSelectedDuplicateAssetIds((items) => event.target.checked
+                          ? [...new Set([...items, ...duplicatePageAssetIds])]
+                          : items.filter((assetId) => !pageIds.has(assetId)));
+                      }}
+                    />
+                    全选本页（{assetDuplicateGroups.length} 组）
+                  </label>
+                  <button className="secondary compact" type="button" disabled={!selectedDuplicateAssetIds.length || assetDuplicateBusy} onClick={() => setSelectedDuplicateAssetIds([])}>
+                    清空选择（{selectedDuplicateAssetIds.length}）
+                  </button>
+                  <span className="notice muted">为保证预览和隔离安全，每次最多处理当前页 50 组。</span>
                 </div>
                 <div className="download-list">
-                  {duplicateAssetGroups.slice(0, 20).map((group) => (
-                    <div className="download-item" key={group.sha1}>
+                  {assetDuplicateGroups.map((group) => (
+                    <label className="download-item" key={group.assetId}>
+                      <input type="checkbox" checked={selectedDuplicateAssetIds.includes(group.assetId)} onChange={(event) => setSelectedDuplicateAssetIds((items) => event.target.checked ? [...new Set([...items, group.assetId])] : items.filter((id) => id !== group.assetId))} />
                       <span>
-                        <strong>{group.assets.length} 份重复文件</strong>
+                        <strong>{group.pathCount} 个重复物理位置 · {group.filename}</strong>
                         <small>SHA-1：{group.sha1}</small>
-                        <small>建议：保留引用最多或所在目录最稳定的一份，其他文件先标记为重复观察，不自动删除。</small>
-                        <small>候选保留：{group.assets[0]?.path || '待确认'}</small>
+                        <small>{group.sha256 ? `SHA-256：${group.sha256}` : 'SHA-256 尚未补齐，本组不能隔离。'}</small>
+                        <small>{group.paths.slice(0, 3).join(' · ')}{group.paths.length > 3 ? ` 等 ${group.paths.length} 个路径` : ''}</small>
                       </span>
-                    </div>
+                    </label>
                   ))}
+                  {assetDuplicateGroups.length === 0 && <div className="empty-state">当前筛选下没有仍处于活动状态的重复组；可在下方查看或恢复最近一次隔离操作。</div>}
                 </div>
+                <div className="actions compact-actions">
+                  <button className="primary compact" type="button" disabled={!selectedDuplicateAssetIds.length || assetDuplicateBusy} onClick={() => void prepareDuplicateCleanup()}>
+                    {assetDuplicateBusy ? '正在校验…' : '生成安全处理预览'}
+                  </button>
+                  <button className="secondary compact" disabled={assetDuplicateCursorHistory.length === 0} onClick={() => {
+                    const previous = assetDuplicateCursorHistory.at(-1) ?? '';
+                    setAssetDuplicateCursorHistory((items) => items.slice(0, -1));
+                    void refreshDuplicateGroups(previous);
+                  }}>上一页</button>
+                  <button className="secondary compact" disabled={!assetDuplicateNextCursor} onClick={() => {
+                    setAssetDuplicateCursorHistory((items) => [...items, assetDuplicateCursor]);
+                    void refreshDuplicateGroups(assetDuplicateNextCursor);
+                  }}>下一页</button>
+                </div>
+                {assetDuplicateOperation && <section className="notice muted">
+                  <strong>安全处理预览：可隔离 {assetDuplicateOperation.summary?.eligibleCount ?? 0} 个，受保护 {assetDuplicateOperation.summary?.blockedCount ?? 0} 个，预计释放 {formatFileSize(assetDuplicateOperation.summary?.reclaimableBytes ?? 0)}</strong>
+                  {(assetDuplicateOperation.entries ?? []).map((entry) => <div key={entry.entryId}><small>保留：{entry.keepPath}<br />隔离：{entry.sourcePath} · {entry.status}{entry.error ? ` · ${entry.error}` : ''}</small></div>)}
+                  {(assetDuplicateOperation.summary?.blocked ?? []).slice(0, 20).map((item, index) => <div key={`${item.assetId}-${item.path}-${index}`}><small>受保护：{item.path || item.assetId || '资产'} · {item.reason}</small></div>)}
+                  <div className="actions compact-actions">
+                    {assetDuplicateOperation.status === 'prepared' && <button className="primary compact" disabled={assetDuplicateBusy || !(assetDuplicateOperation.summary?.eligibleCount)} onClick={() => void applyDuplicateCleanup()}>确认并移入隔离区</button>}
+                    {['completed', 'partial', 'interrupted'].includes(assetDuplicateOperation.status) && (assetDuplicateOperation.entries ?? []).some((item) => item.status === 'quarantined') && <button className="secondary compact" disabled={assetDuplicateBusy} onClick={() => void restoreDuplicateCleanup()}>恢复已隔离文件</button>}
+                  </div>
+                </section>}
               </section>
             )}
             {assetMessage && <div className="notice">{assetMessage}</div>}
@@ -18328,7 +18583,7 @@ ${JSON.stringify(items, null, 2)}
                 <div className="workflow-step">
                   <span className="workflow-index">3</span>
                   <strong>资产</strong>
-                  <em>{assetIndex.assets.length} 个</em>
+                  <em>{assetIndex.total ?? 0} 个</em>
                   <small>记录文件来源、SHA-1 和引用关系</small>
                 </div>
                 <div className="workflow-step">
@@ -19553,10 +19808,14 @@ ${JSON.stringify(items, null, 2)}
         )}
 
         {!shouldBlockForAgentInstall && isWindows && activeSection === 'cloud-documents' && (
-          <><div className="actions"><button className="secondary" onClick={() => setActiveSection('reports')}>返回学情报告</button></div><CloudDocumentsPanel api={bridge()} localStudents={students.map((student) => ({ id: student.id, name: student.name }))} /></>
+          <><div className="actions"><button className="secondary" onClick={() => setActiveSection('reports')}>返回学情报告</button></div><React.Suspense fallback={<section className="panel">正在加载云端同步设置…</section>}><CloudDocumentsPanel api={bridge()} localStudents={students.map((student) => ({
+            id: student.id, name: student.name, grade: student.grade, school: student.school, goal: student.goal,
+            currentRegion: student.currentRegion, phone: student.phone, email: student.email, birthDate: student.birthDate,
+            address: student.address, guardian: student.guardian,
+          }))} /></React.Suspense></>
         )}
 
-        {!shouldBlockForAgentInstall && isWindows && activeSection === 'reports' && !selectedStudent && <section className="panel"><h2>学情报告</h2><p>本地报告需要选择学生；云端文档仍可使用独立下载许可。</p><button className="secondary" onClick={() => setActiveSection('cloud-documents')}>云端文档</button></section>}
+        {!shouldBlockForAgentInstall && isWindows && activeSection === 'reports' && !selectedStudent && <section className="panel"><h2>学情报告</h2><p>本地报告需要选择学生；云端同步设置仍可使用独立下载许可。</p><button className="secondary" onClick={() => setActiveSection('cloud-documents')}>云端同步设置</button></section>}
 
         {!shouldBlockForAgentInstall && activeSection === 'reports' && selectedStudent && (
           <section className="panel reports-panel">
@@ -20166,7 +20425,7 @@ ${JSON.stringify(items, null, 2)}
         {!shouldBlockForAgentInstall && !isLicenseRestrictedSection && activeSection === 'settings' && settingsSubmenu === 'agent-qa' && (
           <nav className="agent-settings-tabs" aria-label="Agent 设置管理">
             {([
-              ['tools', 'AI 接入与调度中心'], ['data', 'Agent 数据管理'], ['connection', 'Agent连接管理'],
+              ['tools', 'AI 接入与调度中心'], ['data', 'Agent 数据管理'], ['connection', 'Agent连接管理'], ['cloud', '云端同步设置'], ['skills', 'Skills管理'],
             ] as Array<[AgentSettingsTab, string]>).map(([id, label]) => <button type="button" className={agentSettingsTab === id ? 'active' : ''} key={id} onClick={() => setAgentSettingsTab(id)}>{label}</button>)}
           </nav>
         )}
@@ -20174,12 +20433,6 @@ ${JSON.stringify(items, null, 2)}
         {!shouldBlockForAgentInstall && !isLicenseRestrictedSection && activeSection === 'settings' && settingsSubmenu === 'agent-qa' && agentSettingsTab === 'data' && (
           <nav className="agent-settings-tabs agent-settings-subtabs" aria-label="Agent 数据管理">
             {([['memory', '记忆管理'], ['rules', '规则管理'], ['persona', '人设管理']] as Array<[AgentDataTab, string]>).map(([id, label]) => <button type="button" className={agentDataTab === id ? 'active' : ''} key={id} onClick={() => setAgentDataTab(id)}>{label}</button>)}
-          </nav>
-        )}
-
-        {!shouldBlockForAgentInstall && !isLicenseRestrictedSection && activeSection === 'settings' && settingsSubmenu === 'agent-qa' && agentSettingsTab === 'connection' && (
-          <nav className="agent-settings-tabs agent-settings-subtabs" aria-label="Agent 连接管理">
-            {([['connector', '外部 Agent 连接器'], ['qa', 'Agent问答设置']] as Array<[AgentConnectionTab, string]>).map(([id, label]) => <button type="button" className={agentConnectionTab === id ? 'active' : ''} key={id} onClick={() => setAgentConnectionTab(id)}>{label}</button>)}
           </nav>
         )}
 
@@ -20191,18 +20444,32 @@ ${JSON.stringify(items, null, 2)}
             onTasks={() => setActiveSection('tasks')} onCapture={() => setActiveSection('capture')} /></React.Suspense>
         )}
 
-        {!shouldBlockForAgentInstall && !isLicenseRestrictedSection && activeSection === 'settings' && settingsSubmenu === 'agent-qa' && agentSettingsTab === 'connection' && agentConnectionTab === 'connector' && (
+        {!shouldBlockForAgentInstall && !isLicenseRestrictedSection && isWindows && activeSection === 'settings' && settingsSubmenu === 'agent-qa' && agentSettingsTab === 'cloud' && (
+          <React.Suspense fallback={<section className="panel">正在加载云端同步设置…</section>}><CloudDocumentsPanel api={bridge()} localStudents={students.map((student) => ({
+            id: student.id, name: student.name, grade: student.grade, school: student.school, goal: student.goal,
+            currentRegion: student.currentRegion, phone: student.phone, email: student.email, birthDate: student.birthDate,
+            address: student.address, guardian: student.guardian,
+          }))} /></React.Suspense>
+        )}
+
+        {!shouldBlockForAgentInstall && !isLicenseRestrictedSection && isWindows && activeSection === 'settings' && settingsSubmenu === 'agent-qa' && agentSettingsTab === 'skills' && (
+          <React.Suspense fallback={<section className="panel">正在加载 Skills 管理…</section>}>
+            <SkillManagementPanel api={bridge() || {}} />
+          </React.Suspense>
+        )}
+
+        {!shouldBlockForAgentInstall && !isLicenseRestrictedSection && activeSection === 'settings' && settingsSubmenu === 'agent-qa' && agentSettingsTab === 'connection' && (
           <React.Suspense fallback={<section className="panel">正在加载外部 Agent 连接器…</section>}>
             <ExternalAgentConnector api={bridge() as AgentControlApi} />
           </React.Suspense>
         )}
 
-        {!shouldBlockForAgentInstall && !isLicenseRestrictedSection && (activeSection === 'qa' || (activeSection === 'settings' && settingsSubmenu === 'agent-qa' && agentSettingsTab === 'connection' && agentConnectionTab === 'qa')) && selectedStudent && (
+        {!shouldBlockForAgentInstall && !isLicenseRestrictedSection && activeSection === 'qa' && selectedStudent && (
           <section className="panel qa-panel">
             <div className="panel-heading">
               <div>
-                <h2>{!isWindows ? '教育管家问答' : activeSection === 'qa' ? t('nav.qa') : t('nav.qa.settings')}</h2>
-                <p>{activeSection === 'qa' ? '输入问题，按授权范围查询本机与协作知识，并把带来源的内容交给 Agent。' : '设置当前学生的 Agent 问答与远程咨询；高级诊断仅供排查。'}</p>
+                <h2>{!isWindows ? '教育管家问答' : t('nav.qa')}</h2>
+                <p>输入问题，按授权范围查询本机与协作知识，并把带来源的内容交给 Agent。</p>
               </div>
               <MessageCircle size={22} />
             </div>
@@ -20297,7 +20564,7 @@ ${JSON.stringify(items, null, 2)}
               </div>
             )}
             </>}
-            {((activeSection === 'settings' && settingsSubmenu === 'agent-qa') || (!isWindows && activeSection === 'qa')) && <>
+            {!isWindows && <>
             <details className="advanced-diagnostics" open={agentKnowledgeDiagnosticsOpen} onToggle={(event) => {
               const open = event.currentTarget.open;
               setAgentKnowledgeDiagnosticsOpen(open);
@@ -20501,7 +20768,7 @@ ${JSON.stringify(items, null, 2)}
                 )}
                 {agentMemoryState?.captureTarget?.isCurrentStudent && <span className="capture-target-badge">当前采集对象</span>}
                 <button className="secondary compact" onClick={() => refreshAgentMemoryState()}>刷新会话</button>
-                <button className="secondary compact" onClick={() => openWorkspaceTab('collection', 'ai-conversation', 'conversation')}>管理全部对话资料</button>
+                <button className="secondary compact" onClick={() => openWorkspaceTab('collection', 'share-capture', 'share-capture')}>前往资料收件箱</button>
                 <span className="muted">最近 {agentMemoryState?.summary?.total ?? 0} 个授权会话 · {agentMemoryState?.summary?.active ?? 0} 个采集中</span>
                 {(agentMemoryState?.summary?.empty ?? 0) > 0 && <button className="secondary compact" onClick={() => clearEmptyAgentSessions()}>清理空会话（{agentMemoryState?.summary?.empty}）</button>}
               </div>
@@ -20593,10 +20860,9 @@ ${JSON.stringify(items, null, 2)}
               </div>
               <AgentMemorySessionList key={selectedStudent.id}
                 sessions={agentMemoryState?.studentId === selectedStudent.id ? agentMemoryState.sessions || [] : []}
-                projects={conversationLinkedProjects} onDeliver={deliverCapturedConversation}
                 onManage={manageCapturedConversation} onClearEmpty={clearEmptyAgentSessions} />
             </section>}
-            {showingAgentMemory && <details><summary>高级记忆文件管理：扫描、备份与合并</summary>
+            {showingAgentMemoryManagement && <details><summary>高级记忆文件管理：扫描、备份与合并</summary>
             <div className="form-grid compact-grid">
               <label>
                 来源 Agent 工具
@@ -20966,7 +21232,7 @@ ${JSON.stringify(items, null, 2)}
             <div className="panel-heading">
               <div>
                 <h2>对话分享资料箱</h2>
-                <p>导入后自动整理主题；勾选资料并确认一次，即可投递到当前学生或关联项目的原始资料库。</p>
+                <p>导入后自动整理主题并生成分类建议；资料分类、投递与改投统一在资料收件箱处理。</p>
               </div>
               <MessageCircle size={22} />
             </div>
@@ -21043,7 +21309,7 @@ ${JSON.stringify(items, null, 2)}
             {(['inbox', 'delivered', 'trash'] as const).includes(conversationWorkspaceTab as 'inbox' | 'delivered' | 'trash') && <section className="material-source-panel">
               <div className="mini-heading">
                 <strong>已导入对话资料</strong>
-                <span>系统已自动归纳主题并给出项目建议；普通使用只需勾选后确认投递。</span>
+                <span>系统已自动归纳主题并给出项目建议；资料分类、投递和改投统一在资料收件箱处理。</span>
               </div>
               <div className="actions compact-actions">
                 <input value={conversationInboxSearch} onChange={(event) => setConversationInboxSearch(event.target.value)} placeholder="搜索标题、主题或来源" />
@@ -21089,19 +21355,7 @@ ${JSON.stringify(items, null, 2)}
                 {conversationInboxItems.length === 0 && <div className="empty-state compact">暂无符合条件的对话资料，可从分享链接、粘贴内容或文件导入。</div>}
               </div>
               {conversationWorkspaceTab !== 'trash' ? <div className="actions compact-actions">
-                <select value={conversationDeliveryTargetType} onChange={(event) => setConversationDeliveryTargetType(event.target.value as 'student' | 'project')}>
-                  <option value="student">投递到当前学生原始资料库</option>
-                  <option value="project">投递到关联项目</option>
-                </select>
-                {conversationDeliveryTargetType === 'project' && (
-                  <select value={conversationDeliveryProjectId} onChange={(event) => setConversationDeliveryProjectId(event.target.value)}>
-                    <option value="">选择关联项目</option>
-                    {conversationLinkedProjects.map((project) => <option value={project.id} key={project.id}>{project.name}</option>)}
-                  </select>
-                )}
-                <button className="primary" onClick={deliverSelectedConversationMaterials}>
-                  确认投递所选（{selectedConversationAssetKeys.length}）
-                </button>
+                <button className="primary" onClick={() => openWorkspaceTab('collection', 'share-capture', 'share-capture')}>前往资料收件箱</button>
                 <button className="secondary" onClick={() => manageConversationMaterials('trash')}>移入回收站</button>
               </div> : <div className="actions compact-actions">
                 <button className="secondary" onClick={() => manageConversationMaterials('restore')}>恢复所选</button>
@@ -21294,9 +21548,9 @@ ${JSON.stringify(items, null, 2)}
           </section>
         )}
 
-        {!shouldBlockForAgentInstall && !isLicenseRestrictedSection && (activeSection === 'qa' || (activeSection === 'settings' && settingsSubmenu === 'agent-qa' && agentSettingsTab === 'connection' && agentConnectionTab === 'qa')) && !selectedStudent && (
+        {!shouldBlockForAgentInstall && !isLicenseRestrictedSection && activeSection === 'qa' && !selectedStudent && (
           <section className="panel qa-panel">
-            <div className="empty-state">请先新建或选择学生档案，再使用{activeSection === 'qa' ? '知识查询' : 'Agent问答设置'}。</div>
+            <div className="empty-state">请先新建或选择学生档案，再使用知识查询。</div>
           </section>
         )}
 
@@ -21313,12 +21567,9 @@ ${JSON.stringify(items, null, 2)}
             {taskCenter.storageFault && <div className="notice error" role="alert">任务存储故障，已暂停新任务派发：{taskCenter.storageFault.message}。请检查磁盘及目录权限，恢复后重启主机；不要删除账本或反复重试。</div>}
             <div className="task-center-summary" aria-label="任务中心概览">
               {[
-                { id: 'all' as const, label: '全部任务', value: taskCenter.summary.total, icon: <ListChecks size={18} /> },
-                { id: 'actionable' as const, label: '待处理', value: taskCenter.summary.actionable, icon: <Zap size={18} /> },
-                { id: 'running' as const, label: '进行中', value: taskCenter.summary.running, icon: <RefreshCw size={18} /> },
-                { id: 'scheduled' as const, label: '已计划', value: taskCenter.summary.scheduled, icon: <Clock3 size={18} /> },
-                { id: 'completed' as const, label: '已完成', value: taskCenter.summary.completed, icon: <CheckCircle2 size={18} /> },
-                { id: 'archived' as const, label: '已归档', value: taskCenter.summary.archived || 0, icon: <Archive size={18} /> },
+                { id: 'automatic' as const, label: '自动处理中', value: taskCenter.userSummary?.automatic ?? taskCenter.summary.running + taskCenter.summary.scheduled, icon: <RefreshCw size={18} /> },
+                { id: 'needs_help' as const, label: '需要你帮助', value: taskCenter.userSummary?.needs_help ?? taskCenter.summary.actionable, icon: <Zap size={18} /> },
+                { id: 'history' as const, label: '历史记录', value: taskCenter.userSummary?.history ?? taskCenter.summary.completed + (taskCenter.summary.archived || 0), icon: <Archive size={18} /> },
               ].map((item) => (
                 <button className={taskCenterStatusFilter === item.id ? 'task-center-stat active' : 'task-center-stat'} key={item.id} onClick={() => setTaskCenterStatusFilter(item.id)}>
                   {item.icon}
@@ -21331,7 +21582,7 @@ ${JSON.stringify(items, null, 2)}
             <section className="material-source-panel task-center-board">
               <div className="mini-heading">
                 <strong>统一任务队列</strong>
-                <span>支持 Codex、OpenClaw 自动执行，WorkBuddy 桌面预填，其他 Agent 使用通用任务包；结果统一回收校验。点击 Agent 卡片或筛选执行器，可切换对应收件箱与结果目录。</span>
+                <span>系统会优先自动补全、修正、切换或安全重试；只有自动处理无法继续时，任务才会进入“需要你帮助”。共 {taskCenter.summary.total} 项。</span>
               </div>
               <div className="task-center-toolbar">
                 <label className={taskCenter.automationEnabled === false ? 'task-automation-toggle manual' : 'task-automation-toggle'} title="关闭后仅停止后台自动扫描与定时调度；主动点击处理时仍会即时检测并调用已绑定 Agent。">
@@ -21357,11 +21608,9 @@ ${JSON.stringify(items, null, 2)}
                 <label>状态
                   <select value={taskCenterStatusFilter} onChange={(event) => setTaskCenterStatusFilter(event.target.value as typeof taskCenterStatusFilter)}>
                     <option value="all">全部</option>
-                    <option value="actionable">需要处理／待整理</option>
-                    <option value="running">进行中</option>
-                    <option value="scheduled">已计划</option>
-                    <option value="completed">已完成</option>
-                    <option value="archived">已归档</option>
+                    <option value="automatic">自动处理中</option>
+                    <option value="needs_help">需要你帮助</option>
+                    <option value="history">历史记录</option>
                   </select>
                 </label>
                 <label>来源
@@ -21402,7 +21651,7 @@ ${JSON.stringify(items, null, 2)}
                 )}
                 <button className="secondary compact" disabled={!taskBatchSelectionCount || taskBatchBusy} onClick={() => void runTaskGovernanceBatch('cancel')}>批量取消</button>
                 <button className="secondary compact" disabled={!taskBatchSelectionCount || taskBatchBusy} onClick={() => void runTaskGovernanceBatch('archive')}><Archive size={15} />批量归档</button>
-                {taskCenterStatusFilter === 'archived' && <button className="secondary compact" disabled={!taskBatchSelectionCount || taskBatchBusy} onClick={() => void runTaskGovernanceBatch('restore')}>恢复为已取消</button>}
+                {taskCenterStatusFilter === 'history' && <button className="secondary compact" disabled={!taskBatchSelectionCount || taskBatchBusy} onClick={() => void runTaskGovernanceBatch('restore')}>恢复已归档任务</button>}
                 <button className="secondary compact" disabled={!taskBatchSelectionCount || taskBatchBusy} onClick={() => void runTaskGovernanceBatch('delete')}><Trash2 size={15} />删除可安全清理的任务</button>
                 {taskBatchSelectionCount > 0 && <button className="secondary compact" disabled={taskBatchBusy} onClick={() => {
                   setSelectedTaskBatchIds([]);
@@ -21480,7 +21729,7 @@ ${JSON.stringify(items, null, 2)}
                     <span>{selectedTask.phaseLabel || selectedTask.status}</span>
                   </div>
                   <details className="task-detail-data">
-                  <summary>诊断详情</summary>
+                  <summary>技术详情（供排障使用）</summary>
                   <p>{selectedTask.id} · 协议 {selectedTask.protocolVersion || '1.0'}</p>
                   <div className="task-detail-grid">
                     <div><small>状态</small><strong>{selectedTask.status}</strong></div>
@@ -21493,7 +21742,9 @@ ${JSON.stringify(items, null, 2)}
                      <div><small>下次重试</small><strong>{selectedTask.nextRetryAt || '未计划'}</strong></div>
                      <div><small>路由模式</small><strong>{selectedTask.routingMode || selectedTask.routeDecision?.mode || 'smart'}</strong></div>
                      <div><small>执行批次</small><strong>{selectedTask.executionId || '-'}</strong></div>
+                     <div><small>技术代码</small><strong>{selectedTask.error?.code || '-'}</strong></div>
                    </div>
+                  {selectedTask.error?.message && <div className="notice muted">{selectedTask.error.message}</div>}
                   {selectedTask.routeDecision && <div className="notice muted">路由：{selectedTask.routeDecision.selectedAdapter} · {selectedTask.routeDecision.reason}</div>}
                   {['workbuddy', 'codex'].includes(String(selectedTask.adapterId || selectedTask.executor || '')) && <p className="notice muted">无需单独检测 Agent。启动或重试任务时，系统会先用不含学生资料的合成请求自动完成安全校验；通过后才发送本任务资料。</p>}
                   </details>
@@ -21502,12 +21753,20 @@ ${JSON.stringify(items, null, 2)}
                       {taskOperationFeedback.message}
                     </div>
                   )}
-                  {selectedTask.resolution && <div className="notice muted"><strong>{selectedTask.resolution.title}</strong><p>{selectedTask.resolution.instruction}</p><button className="secondary compact" onClick={() => copyText(selectedTask.resolution!.instruction)}>复制处置说明</button>
-                    {selectedTask.resolution.kind === 'unknown' && selectedTask.status === 'cancelled' && <button className="secondary compact" onClick={async () => {
-                      if (!window.confirm('请先在原 Agent 中核对：此任务尚未发送，或确实已经停止。\n\n只有核对完成才点击确定。系统将记录您的确认，不代表自动验证了远端状态，也不会立即重新执行。')) return;
+                  {selectedTask.resolution && <div className={selectedTask.recoveryPlan?.owner === 'system' ? 'notice success task-recovery-card' : 'notice muted task-recovery-card'}><strong>{selectedTask.resolution.title}</strong><p>{selectedTask.resolution.instruction}</p>
+                    {Boolean(selectedTask.recoveryPlan?.userSteps?.length) && <ol>{selectedTask.recoveryPlan?.userSteps?.map((step) => <li key={step}>{step}</li>)}</ol>}
+                    {selectedTask.recoveryPlan?.nextWakeAt && <small>下次自动检查：{formatDateTime(selectedTask.recoveryPlan.nextWakeAt)}</small>}
+                    {selectedTask.recoveryPlan?.owner === 'user' && <button className="secondary compact" onClick={() => copyText(selectedTask.resolution!.instruction)}>复制操作步骤</button>}
+                    {selectedTask.recoveryPlan?.canOpen && <button className="secondary compact" onClick={async () => {
+                      try { applyTaskOperationResult(await bridge()?.reopenTaskHandoff?.(selectedTask.id, selectedTask.executionId || '', 'open'), '已打开任务来源。', selectedTask); }
+                      catch { setTaskOperationFeedback({ taskId: selectedTask.id, tone: 'error', message: `暂时无法打开 ${selectedTask.recoveryPlan?.providerLabel || '任务来源'}。` }); }
+                    }}>打开 {selectedTask.recoveryPlan.providerLabel || '任务来源'}</button>}
+                    {selectedTask.recoveryPlan?.canConfirmStopped && selectedTask.status === 'cancelled' && <button className="secondary compact" onClick={async () => {
+                      const provider = selectedTask.recoveryPlan?.providerLabel || '外部执行工具';
+                      if (!window.confirm(`请确认你已在 ${provider} 中找到本批次，并确认它未发送或已经停止。\n\n确认后系统仍不会自动重跑，迟到结果也不会被采用。`)) return;
                       try { applyTaskOperationResult(await bridge()?.confirmTaskExternalStopped?.(selectedTask.id, selectedTask.executionId || ''), '已记录核对结果。', selectedTask); }
                       catch { setTaskOperationFeedback({ taskId: selectedTask.id, tone: 'error', message: '核对记录未保存，请重试。' }); }
-                    }}>我已核对外部未发送或已停止</button>}
+                    }}>已确认停止</button>}
                   </div>}
                   {selectedTask.routeDecision?.candidates && (
                     <div className="task-route-candidates">
@@ -21527,12 +21786,15 @@ ${JSON.stringify(items, null, 2)}
                        } catch (error) { setScheduleMessage(`交接失败：${String(error)}`); }
                      }}>{action === 'open' ? '重新打开原任务' : '复制本次指令'}</button>)}
                    </div>}
-                   {selectedTask.error?.message && <div className="notice error">{selectedTask.error.code || 'ERROR'}：{selectedTask.error.message}</div>}
+                   {selectedTask.error?.message && !selectedTask.resolution && <div className={selectedTask.status === 'cancelled' ? 'notice muted' : 'notice error'}>{selectedTask.status === 'cancelled' ? '处理说明：' : '任务未完成：'}{selectedTask.error.message}</div>}
                    {selectedTask.result?.validation && <div className={selectedTask.result.validation.valid ? 'notice success' : 'notice error'}>{selectedTask.result.validation.message || '结果校验已完成。'}</div>}
                    <div className={selectedTask.hasResult ? 'task-result-summary has-result' : 'task-result-summary'}>
                      <div>
-                       <small>{selectedTask.awaitingSend ? '交接状态' : 'Agent 反馈结果'}</small>
-                       <strong>{selectedTask.awaitingSend ? selectedTask.nextAction : selectedTask.result?.summary || selectedTask.result?.message || '尚未收到 Agent 反馈'}</strong>
+                       <small>{selectedTask.awaitingSend ? '交接状态' : '本次处理结果'}</small>
+                       <strong>{selectedTask.awaitingSend ? selectedTask.nextAction : selectedTask.result?.summary || selectedTask.result?.message
+                         || (selectedTask.status === 'cancelled' ? '本次未采用任何结果；已有有效版本不受影响。'
+                           : selectedTask.recoveryState === 'unknown' ? '系统正在核对回执；不会重复发送，也不会采用批次不明的结果。'
+                             : '本次尚未生成可采用的结果。')}</strong>
                        {selectedTask.result?.feedback && (
                          <span>
                            行动反馈：{({ completed: '已完成', partial: '部分完成', skipped: '已跳过' } as Record<string, string>)[selectedTask.result.feedback.status || ''] || selectedTask.result.feedback.status || '已提交'}
@@ -21554,7 +21816,7 @@ ${JSON.stringify(items, null, 2)}
                    <details className="task-detail-data">
                      <summary>查看状态流转历史（{selectedTaskHistory.length}）</summary>
                      <div className="download-list compact-list">
-                       {selectedTaskHistory.map((entry) => <div className="download-item" key={entry.id}><span><strong>{entry.status || entry.kind || '状态更新'}</strong><small>{entry.at || '-'} · {entry.executor || selectedTask.executor || '-'}</small><small>{entry.detail || '无补充说明'}</small></span></div>)}
+                       {selectedTaskHistory.map((entry) => <div className="download-item" key={entry.id}><span><strong>{entry.status || entry.kind || '状态更新'}</strong><small>{entry.at || '-'} · {entry.executor || selectedTask.executor || '-'}</small><small>{friendlyTaskHistoryDetail(entry.detail, entry.executor || selectedTask.executor)}</small></span></div>)}
                        {selectedTaskHistory.length === 0 && <div className="empty-state compact">暂无历史记录。</div>}
                      </div>
                    </details>
@@ -21670,14 +21932,14 @@ ${JSON.stringify(items, null, 2)}
                     </>
                   ) : (
                     <>
-                      <label>执行器
+                      {!['succeeded', 'cancelled', 'archived'].includes(selectedTask.status) && <label>执行器
                         <select value={taskExecutorDraft} onChange={(event) => setTaskExecutorDraft(event.target.value)}>
                           <option value="auto">智能路由（自动执行）</option>
                           <option value="rule">规则路由（按任务类型）</option>
                           <option value="confirm">智能推荐（人工确认）</option>
                           {Object.values(taskCenter.capabilities || {}).filter((adapter) => !adapter.hidden || selectedTask.requestedExecutor === adapter.id).map((adapter) => <option key={adapter.id} value={adapter.id}>{adapter.label}{adapter.available && adapter.authorized !== false ? '' : '（不可用或未授权，将降级）'}</option>)}
                         </select>
-                      </label>
+                      </label>}
                       {selectedTask.status === 'waiting_result' && selectedTask.executionId?.startsWith('handoff-select-') && <AgentHandoffChoice
                         api={bridge() as AgentControlApi} taskId={selectedTask.id} refresh={() => refreshTaskCenter()}
                         openTool={id => getAgentToolAdapter(id as AgentToolId).open(openExternal)} />}
@@ -21686,16 +21948,18 @@ ${JSON.stringify(items, null, 2)}
                           <textarea value={taskResultPasteText} onChange={(event) => setTaskResultPasteText(event.target.value)} placeholder="粘贴 Agent 返回的 JSON 或文字结果。系统仍会校验当前执行批次、实际产物和输出结构。" />
                         </label>
                       )}
-                      <div className="notice muted task-simple-action-note">无需填写审批意见。直接选择下面的操作，系统会自动记录时间、状态和预设原因；完整状态历史仍可展开查看。</div>
+                      <div className="notice muted task-simple-action-note">{['succeeded', 'cancelled', 'archived'].includes(selectedTask.status)
+                        ? '本次处理已结束。这里仅保留结果说明和历史记录，不会自动重新执行。'
+                        : '无需填写审批意见。直接选择下面的操作，系统会自动记录时间、状态和预设原因；完整状态历史仍可展开查看。'}</div>
                       <div className="task-detail-actions">
                         {selectedTask.approval?.required && selectedTask.approval.status !== 'approved' && selectedTask.status !== 'reviewing' && <button className="workflow-action next" onClick={() => approveTaskFromCenter(selectedTask, 'approved')}><ShieldCheck size={16} />允许执行</button>}
-                        {!['running', 'waiting_result', 'reviewing', 'succeeded'].includes(selectedTask.status) && (!selectedTask.approval?.required || selectedTask.approval.status === 'approved') && <button className="workflow-action next" disabled={taskExecutionBusyId === selectedTask.id} onClick={() => executeTaskFromCenter(selectedTask)}><Zap size={16} />{taskExecutionBusyId === selectedTask.id ? '正在检查资料…' : '下一步：执行任务'}</button>}
+                        {!['running', 'waiting_result', 'reviewing', 'succeeded', 'cancelled', 'archived'].includes(selectedTask.status) && (!selectedTask.approval?.required || selectedTask.approval.status === 'approved') && <button className="workflow-action next" disabled={taskExecutionBusyId === selectedTask.id} onClick={() => executeTaskFromCenter(selectedTask)}><Zap size={16} />{taskExecutionBusyId === selectedTask.id ? '正在检查资料…' : '下一步：执行任务'}</button>}
                         {selectedTask.status === 'reviewing' && selectedTaskAutoValidated && <span className="notice muted">系统正在校验并自动发布，无需人工操作。</span>}
                         {selectedTask.status === 'reviewing' && !selectedTaskAutoValidated && <button className="workflow-action next" onClick={() => approveTaskFromCenter(selectedTask, 'approved')}><CheckCircle2 size={16} />确认完成</button>}
                         {selectedTask.status === 'reviewing' && !selectedTaskAutoValidated && <button className="workflow-action optional" onClick={() => approveTaskFromCenter(selectedTask, 'rejected', '内容需要修改。')}><RefreshCw size={16} />需要修改</button>}
                         {['waiting_result', 'running'].includes(selectedTask.status) && <button className={taskResultPasteText.trim() ? 'workflow-action next' : 'workflow-action blocked'} onClick={() => importTaskResultTextFromCenter(selectedTask)} disabled={!taskResultPasteText.trim() || Boolean(taskImportBusyId)}><Clipboard size={16} />{taskImportBusyId === selectedTask.id ? '正在校验，请稍候…' : '下一步：导入粘贴结果'}</button>}
                         {['waiting_result', 'running'].includes(selectedTask.status) && <button className="secondary" disabled={Boolean(taskImportBusyId)} onClick={() => importTaskResultFromCenter(selectedTask)}><FileDown size={16} />从文件导入</button>}
-                        {['failed', 'blocked', 'timed_out', 'cancelled'].includes(selectedTask.status) && <button className="workflow-action next" onClick={() => retryTaskFromCenter(selectedTask)}><RefreshCw size={16} />重新执行</button>}
+                        {['failed', 'blocked', 'timed_out'].includes(selectedTask.status) && <button className="workflow-action next" onClick={() => retryTaskFromCenter(selectedTask)}><RefreshCw size={16} />重新执行</button>}
                         {!['succeeded', 'cancelled'].includes(selectedTask.status) && <button className="workflow-action optional" onClick={() => cancelTaskFromCenter(selectedTask)}><X size={16} />忽略本次</button>}
                         {(['succeeded', 'failed', 'blocked', 'cancelled', 'timed_out'].includes(selectedTask.status)
                           || (selectedTask.status === 'pending' && selectedTask.kind === 'collaboration_assignment'
@@ -21722,7 +21986,7 @@ ${JSON.stringify(items, null, 2)}
                     <span>
                       <strong>{entry.sourceName || '任务中心'} · {entry.title || entry.kind}</strong>
                       <small>{entry.status || '-'} · {entry.executor || '人工'}{entry.copyCount ? ` · 执行/复制 ${entry.copyCount} 次` : ''}</small>
-                      <small>{entry.at || entry.lastCopiedAt || entry.copiedAt || entry.day || '-'}{entry.detail ? ` · ${entry.detail}` : ''}</small>
+                      <small>{entry.at || entry.lastCopiedAt || entry.copiedAt || entry.day || '-'}{entry.detail ? ` · ${friendlyTaskHistoryDetail(entry.detail, entry.executor)}` : ''}</small>
                     </span>
                   </div>
                 ))}

@@ -45,7 +45,7 @@ test('renderer awaits heavy work and exposes non-blocking busy feedback', () => 
   assert.match(renderer, /await importAssets\(targetProjectId, JSON\.stringify\(selectedIds\)\)/);
   assert.match(renderer, /const refreshAgentMemoryState = \(studentId = selectedStudent\?\.id\): Promise<void>/);
   assert.match(renderer, /await bridge\(\)\?\.getAgentMemoryState\?\.\(requestStudentId\)/);
-  assert.match(renderer, /activeSection === 'assets'\) void refreshAssets\(\)/);
+  assert.match(renderer, /activeSection === 'assets'\) void refreshAssets\(assetCursor\)/);
   assert.doesNotMatch(renderer, /refreshLicenseStatus\(\);\s*refreshAssets\(\)/);
   assert.match(renderer, /const generateCrossProjectKnowledgeLinks = async/);
   assert.match(renderer, /materialSourceBusyAction === 'scan' \? '正在扫描…'/);

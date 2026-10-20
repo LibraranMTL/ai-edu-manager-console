@@ -7,6 +7,16 @@ import org.junit.Test
 
 class ProjectModelsTest {
     @Test
+    fun agentSelectionSurvivesAndroidReadWriteWithoutBeingReplacedByQClaw() {
+        val json = ProjectRecord.create("测试", "研究", "", "", emptyList(), "content://base").toJson()
+        assertEquals("workbuddy", json.getString("agentTool"))
+        for (agent in listOf("codex", "workbuddy", "qclaw", "claude-code")) {
+            json.put("agentTool", agent)
+            assertEquals(agent, ProjectRecord.fromJson(json).toJson().getString("agentTool"))
+        }
+    }
+
+    @Test
     fun managedPathsMatchWindowsProjectWorkspaceAndKnowledgeSchema() {
         val p = ProjectPaths.managed("火星研究")
         assertEquals("学习项目/火星研究项目知识库/项目工作空间", p.workspacePath)

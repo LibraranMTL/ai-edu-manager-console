@@ -1234,7 +1234,7 @@ public class MainActivity extends Activity {
         public void copyText(String value) {
             ClipboardManager clipboard = (ClipboardManager) activity.getSystemService(Context.CLIPBOARD_SERVICE);
             if (clipboard != null) {
-                clipboard.setPrimaryClip(ClipData.newPlainText("QClaw 初始化指令", value));
+                clipboard.setPrimaryClip(ClipData.newPlainText("Agent 初始化指令", value));
                 Toast.makeText(activity, "已复制到剪贴板", Toast.LENGTH_SHORT).show();
             }
         }

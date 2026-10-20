@@ -94,6 +94,15 @@ test('host writes only declared staged Markdown and returns source metadata with
     artifacts: [{ ...response.artifacts[0], content: '# Changed' }] }), { code: 'staging_conflict' });
 });
 
+test('v2 project results must echo the frozen project scope fingerprint', async (t) => {
+  const { batch, response } = await fixture(t);
+  batch.scopeFingerprint = 'f'.repeat(64);
+  assert.ok(outputSchema(batch).required.includes('scopeFingerprint'));
+  await assert.rejects(stageMaterialResponse(batch, response), { code: 'receipt_scope_mismatch' });
+  const receipt = await stageMaterialResponse(batch, { ...response, scopeFingerprint: batch.scopeFingerprint });
+  assert.equal(receipt.scopeFingerprint, batch.scopeFingerprint);
+});
+
 test('invalid final artifact prevents even earlier valid artifacts from being written', async (t) => {
   const { batch, response } = await fixture(t);
   response.artifacts.push({ relativePath: '../escape.md', content: '# Nope', sources: batch.sources });

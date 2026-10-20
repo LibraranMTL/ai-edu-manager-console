@@ -66,7 +66,7 @@ try {
   Copy-Item -LiteralPath $builtApk -Destination $verificationApk
 
   $signatureOutput = (& $apksigner verify --verbose --print-certs --print-certs-pem $verificationApk 2>&1 | Out-String)
-  if ($LASTEXITCODE -ne 0 -or $signatureOutput -notmatch 'Verifies' -or $signatureOutput -notmatch 'Verified using v2 scheme \(APK Signature Scheme v2\): true') {
+  if ($LASTEXITCODE -ne 0 -or $signatureOutput -notmatch 'Verifies' -or $signatureOutput -notmatch 'Verified using v1 scheme \(JAR signing\): true' -or $signatureOutput -notmatch 'Verified using v2 scheme \(APK Signature Scheme v2\): true') {
     throw 'APK signature verification failed or APK Signature Scheme v2 is not enabled.'
   }
   if ($signatureOutput -match 'Android Debug') {
@@ -92,7 +92,8 @@ try {
     throw 'Unable to read the release certificate identity or SHA-256 fingerprint.'
   }
 
-  $previousReleaseMetadata = Get-ChildItem -LiteralPath $deliveryRoot -File -Filter 'AI-Education-Manager-Android-Standalone-*-release.json' -ErrorAction SilentlyContinue |
+  # Candidate output directories must still be checked against the original release identity.
+  $previousReleaseMetadata = Get-ChildItem -LiteralPath (Join-Path $projectRoot 'delivery') -File -Filter 'AI-Education-Manager-Android-Standalone-*-release.json' -ErrorAction SilentlyContinue |
     Sort-Object LastWriteTime -Descending
   foreach ($previousMetadataFile in $previousReleaseMetadata) {
     $previousMetadata = Get-Content -LiteralPath $previousMetadataFile.FullName -Raw -Encoding UTF8 | ConvertFrom-Json

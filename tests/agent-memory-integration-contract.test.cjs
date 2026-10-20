@@ -55,7 +55,7 @@ test('P1 UI and native MCP expose one-time authorization, full messages and six 
   assert.match(ui, /查看采集的对话内容/);
   assert.match(ui, /session\.messages/);
   assert.match(ui, /const AgentMemorySessionRow = memo/);
-  assert.match(ui, /setTargetSelection\(event\.target\.value\)/);
+  assert.doesNotMatch(ui, /setTargetSelection\(event\.target\.value\)/);
   assert.doesNotMatch(ui, /agentSessionTargetSelections/);
   assert.match(main, /\.workbuddy', 'mcp\.json'/);
   assert.match(main, /\.openclaw', 'openclaw\.json'/);

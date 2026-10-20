@@ -122,6 +122,11 @@ test('cancelled PDF OCR stops the child work and removes its exact temporary pag
 
 test('staged PDF runtime uses only copied renderer dependencies and its manifest detects corruption', { skip: process.platform !== 'win32' || process.arch !== 'x64' }, async (t) => {
   const f = await fixture(t), runtimeRoot = stagePdfRuntime(path.join(f.root, 'stage'));
+  const pdfRoot = path.dirname(require.resolve('pdfjs-dist/package.json'));
+  for (const name of ['pdf.mjs', 'pdf.worker.mjs']) {
+    assert.deepEqual(await fs.readFile(path.join(runtimeRoot, 'pdfjs/legacy/build', name)),
+      await fs.readFile(path.join(pdfRoot, 'legacy/build', name.replace('.mjs', '.min.mjs'))));
+  }
   const evidence = auditPdfRuntime(runtimeRoot, runtimeRoot);
   assert.ok(evidence.bytes < 64 * 1024 * 1024);
   const input = await f.add(pdfFixture(['text', 'scan']));

@@ -5,7 +5,7 @@ const fs = require('node:fs/promises');
 const path = require('node:path');
 const os = require('node:os');
 const crypto = require('node:crypto');
-const { checkedEndpoint, endpointUrl, completionUrl, createLlmApiProvider, researchEvidence } = require('../electron/llm-api-provider.cjs');
+const { checkedEndpoint, endpointUrl, completionUrl, createLlmApiProvider, structuredContent, researchEvidence } = require('../electron/llm-api-provider.cjs');
 const { executeMaterialLlmApi } = require('../electron/project-material-agent.cjs');
 
 async function fixture(t, request) {
@@ -48,11 +48,46 @@ test('structured generation sends no tools and parses bounded JSON output', asyn
   assert.deepEqual(stages, ['possibly_sent', 'result_received']);
 });
 
-test('verification persists only a successful synthetic structured check', async t => {
-  const { provider } = await fixture(t, async () => new Response(JSON.stringify({ id: 'verify', choices: [{ finish_reason: 'stop', message: { content: '{"ok":true,"code":"edu-llm-42"}' } }] }), { status: 200 }));
+test('chat completion failures distinguish truncation, filtering, tool calls and missing choices', () => {
+  const cases = [
+    [{ id: 'req-length', choices: [{ finish_reason: 'length', message: { content: 'partial private content' } }], usage: { prompt_tokens: 10, completion_tokens: 256, total_tokens: 266, ignored: 'x' } }, 'output_limit', /长度上限/],
+    [{ id: 'req-filter', choices: [{ finish_reason: 'content_filter', message: { content: '' } }] }, 'content_filter', /内容策略/],
+    [{ id: 'req-tools', choices: [{ finish_reason: 'tool_calls', message: { content: '' } }] }, 'unauthorized_tool_call', /未授权的工具/],
+    [{ id: 'req-empty', choices: [] }, 'missing_choice', /缺少候选/],
+  ];
+  for (const [response, reason, message] of cases) {
+    assert.throws(() => structuredContent(response, 'openai-chat'), error => {
+      assert.equal(error.code, 'LLM_API_INVALID_RESPONSE'); assert.match(error.message, message);
+      assert.equal(error.diagnostics.reason, reason); assert.equal(error.diagnostics.requestId, response.id);
+      assert.doesNotMatch(JSON.stringify(error.diagnostics), /partial private content/);
+      return true;
+    });
+  }
+});
+
+test('verification uses a reasoning-safe output budget and persists only a successful synthetic structured check', async t => {
+  let requestBody;
+  const { provider } = await fixture(t, async (_url, options) => {
+    requestBody = JSON.parse(options.body);
+    return new Response(JSON.stringify({ id: 'verify', choices: [{ finish_reason: 'stop', message: { content: '{"ok":true,"code":"edu-llm-42"}' } }] }), { status: 200 });
+  });
   await provider.save({ revision: 0, baseUrl: 'http://127.0.0.1:11434/v1', model: 'local-fixture' });
   const checked = await provider.verify();
+  assert.equal(requestBody.max_tokens, 2048);
   assert.equal(checked.lastCheck.ok, true); assert.match(checked.message, /结构化合成检测通过/);
+});
+
+test('failed verification persists redacted response diagnostics without response content', async t => {
+  const response = { id: 'req-length', choices: [{ finish_reason: 'length', message: { content: 'partial private content' } }],
+    usage: { prompt_tokens: 10, completion_tokens: 2048, total_tokens: 2058, ignored: 'x' } };
+  const { root, provider } = await fixture(t, async () => new Response(JSON.stringify(response), { status: 200 }));
+  await provider.save({ revision: 0, baseUrl: 'http://127.0.0.1:11434/v1', model: 'local-fixture' });
+  await assert.rejects(provider.verify(), /长度上限/);
+  const checked = await provider.get();
+  assert.equal(checked.lastCheck.ok, false); assert.equal(checked.lastCheck.code, 'LLM_API_INVALID_RESPONSE');
+  assert.equal(checked.lastCheck.diagnostics.reason, 'output_limit'); assert.equal(checked.lastCheck.diagnostics.requestId, 'req-length');
+  assert.deepEqual(checked.lastCheck.diagnostics.usage, { prompt_tokens: 10, completion_tokens: 2048, total_tokens: 2058 });
+  assert.doesNotMatch(await fs.readFile(path.join(root, 'provider.json'), 'utf8'), /partial private content/);
 });
 
 test('legacy settings migrate to chat completions without silently enabling research', async t => {

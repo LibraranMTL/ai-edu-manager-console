@@ -62,10 +62,18 @@ test('student dock and agent settings expose the requested management surfaces',
   assert.match(renderer, /查看编辑当前档案/);
   assert.match(renderer, /新建学生档案/);
   ['AI 接入与调度中心', 'Agent 数据管理', 'Agent连接管理'].forEach((label) => assert.match(renderer, new RegExp(label)));
-  for (const label of ['外部 Agent 连接器', 'Agent记忆管理', '规则管理', '人设管理', 'Agent问答设置']) assert.match(renderer, new RegExp(label));
+  for (const label of ['外部 Agent 连接器', 'Agent记忆管理', '规则管理', '人设管理', 'Agent设置管理']) assert.match(renderer, new RegExp(label));
+  assert.doesNotMatch(renderer, /Agent问答设置|agentConnectionTab/);
   assert.doesNotMatch(renderer, /外部写入审核|外部 Agent 能力与写入审核/);
   assert.match(controlCenter, /自定义 Agent 工具/);
   assert.match(renderer, /settings-update-section/);
+});
+
+test('advanced memory file management is shown only in Agent memory settings, not session auto capture', () => {
+  assert.match(renderer, /const showingAgentMemoryManagement = activeSection === 'memory' \|\| \(agentSettingsPanel === 'data' && agentDataTab === 'memory'\);/);
+  assert.match(renderer, /const showingAgentMemory = showingAgentMemoryManagement \|\| activeSection === 'capture';/);
+  assert.match(renderer, /\{showingAgentMemoryManagement && <details><summary>高级记忆文件管理：扫描、备份与合并<\/summary>/);
+  assert.doesNotMatch(renderer, /\{showingAgentMemory && <details><summary>高级记忆文件管理：扫描、备份与合并<\/summary>/);
 });
 
 test('student overview is read-only and planning adoption prepares existing project draft', () => {

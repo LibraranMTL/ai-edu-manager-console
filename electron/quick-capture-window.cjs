@@ -8,6 +8,7 @@ const ROUTES = Object.freeze({
   inbox: 'share-capture',
   conversation: 'conversation-collection',
   automatic: 'session-auto-capture',
+  archive: 'learning-materials',
 });
 
 function routeForAction(action) {
@@ -20,8 +21,8 @@ function normalizeQuickCaptureAction(action) {
 }
 
 function clampQuickCaptureBounds(workArea, bounds) {
-  const width = Math.min(Math.max(Number(bounds.width) || 520, 320), Math.max(320, workArea.width));
-  const height = Math.min(Math.max(Number(bounds.height) || 86, 70), Math.max(70, workArea.height));
+  const width = Math.min(Math.max(Number(bounds.width) || 340, 300), Math.max(300, workArea.width));
+  const height = Math.min(Math.max(Number(bounds.height) || 34, 34), Math.max(34, workArea.height));
   const requestedX = Number.isFinite(Number(bounds.x)) ? Number(bounds.x) : workArea.x;
   const requestedY = Number.isFinite(Number(bounds.y)) ? Number(bounds.y) : workArea.y;
   return {
@@ -32,13 +33,13 @@ function clampQuickCaptureBounds(workArea, bounds) {
   };
 }
 
-function locateQuickCaptureBounds(mainBounds, workArea, width = 520, height = 86) {
+function locateQuickCaptureBounds(mainBounds, workArea, width = 340, height = 34) {
   const centeredX = Number(mainBounds?.x || 0) + Math.round((Number(mainBounds?.width || width) - width) / 2);
   const belowHeaderY = Number(mainBounds?.y || 0) + 72;
   return clampQuickCaptureBounds(workArea, { x: centeredX, y: belowHeaderY, width, height });
 }
 
-function publicQuickCaptureState({ student, session, visible, expanded, activeAction = '', pendingCount = 0, countStatus = 'unknown' }) {
+function publicQuickCaptureState({ student, session, visible, expanded, activeAction = '', pendingCount = 0, countStatus = 'unknown', companion = null }) {
   return {
     visible: Boolean(visible),
     expanded: Boolean(expanded),
@@ -55,6 +56,7 @@ function publicQuickCaptureState({ student, session, visible, expanded, activeAc
     } : null,
     pendingCount: Math.max(0, Number(pendingCount) || 0),
     countStatus: String(countStatus || 'unknown'),
+    companion: companion && typeof companion === 'object' ? companion : null,
   };
 }
 

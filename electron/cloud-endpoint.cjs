@@ -12,7 +12,7 @@ function checkedServerUrl(value) {
   return url.origin + url.pathname.replace(/\/+$/, '');
 }
 function cloudRequestUrl(base, route) {
-  if (!/^\/(?:v1(?:\/|\?)|health(?:\?|$))/.test(route) || route.includes('..') || route.includes('\\')) throw new Error('云端请求路径无效');
+  if (!/^\/(?:v[12](?:\/|\?)|health(?:\?|$))/.test(route) || route.includes('..') || route.includes('\\')) throw new Error('云端请求路径无效');
   return checkedServerUrl(base) + route;
 }
 module.exports = { DEFAULT_CLOUD_SERVER, checkedServerUrl, cloudRequestUrl };

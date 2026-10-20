@@ -63,15 +63,13 @@ test('asset rebuild repairs workspace registry links without scanning old raw di
     appendHostTimeline: () => {},
   };
   bind(scope, 'projectMaterialAssetCompatibility');
-  bind(scope, 'rebuildAssetIndex');
-  const result = JSON.parse(await scope.rebuildAssetIndex());
-  assert.equal(result.ok, true);
-  assert.equal(result.partial, false);
-  assert.equal(result.projectMaterialCompatibility[0].linked, 1);
-  assert.equal(result.total, 1);
+  const result = await scope.projectMaterialAssetCompatibility(currentProject, host).repair({ limit: 100 });
+  assert.equal(result.linked, 1);
+  assert.equal(result.remaining, 0);
   assert.ok(currentProject.assetIds.includes(assets[0].assetId));
   const index = await host.store.read();
   assert.equal(index.materials[0].materialId, registered.materialId);
   assert.equal(index.materials[0].links.assets[0].assetId, assets[0].assetId);
   assert.equal(assets[0].references[0].path, original);
+  assert.match(main, /new Worker\(path\.join\(__dirname, 'asset-index-worker\.cjs'\)\)/);
 });

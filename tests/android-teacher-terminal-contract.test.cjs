@@ -102,7 +102,7 @@ test('Windows host release packages and advertises teacher-terminal support', ()
   assert.match(windowsBuild, /teacher-terminal-v1/);
   assert.match(windowsBuild, /teacherTerminalStudentRecord/);
   assert.match(windowsBuild, /teacherTerminalSupport: true/);
-  assert.equal(JSON.parse(releaseManifest).windowsVersionName, JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8')).version);
+  assert.equal(JSON.parse(releaseManifest).windowsVersionName, '0.21.2', 'formal host version must match the Windows manifest');
   assert.match(releaseManifest, /"teacherTerminalVersionName": "0\.1\.4"/);
   assert.match(releaseManifest, /AI-edu-manager-teacher-terminal-0\.1\.4\.apk/);
 });

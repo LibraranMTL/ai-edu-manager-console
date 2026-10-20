@@ -50,6 +50,8 @@ class SafWorkspaceStore(
         return resolver.openInputStream(document.uri) ?: throw FileNotFoundException(relativePath)
     }
 
+    fun document(relativePath: String): DocumentFile? = find(WorkspacePath.segments(relativePath))
+
     data class WorkspaceFile(
         val name: String,
         val relativePath: String,
@@ -57,6 +59,36 @@ class SafWorkspaceStore(
         val lastModified: Long,
         val mimeType: String,
     )
+
+    /** Lists ordinary files for local project indexing. Hidden control folders are excluded by default. */
+    fun listFiles(
+        relativeRoot: String,
+        maximum: Int = 5_000,
+        maximumDepth: Int = 24,
+        includeHidden: Boolean = false,
+    ): List<WorkspaceFile> {
+        require(maximum in 1..50_001 && maximumDepth in 1..32)
+        val normalizedRoot = WorkspacePath.segments(relativeRoot).joinToString("/")
+        val rootDocument = find(WorkspacePath.segments(normalizedRoot)) ?: return emptyList()
+        val output = mutableListOf<WorkspaceFile>()
+        fun add(document: DocumentFile, logical: String) {
+            output += WorkspaceFile(document.name.orEmpty(), logical, document.length().coerceAtLeast(0),
+                document.lastModified(), document.type.orEmpty())
+        }
+        fun walk(document: DocumentFile, prefix: String, depth: Int) {
+            if (depth > maximumDepth || output.size >= maximum) return
+            document.listFiles().sortedBy { it.name.orEmpty().lowercase() }.forEach { child ->
+                if (output.size >= maximum) return
+                val name = child.name.orEmpty()
+                if (name.isBlank() || (!includeHidden && name.startsWith("."))) return@forEach
+                val logical = if (prefix.isBlank()) name else "$prefix/$name"
+                if (child.isDirectory) walk(child, logical, depth + 1) else if (child.isFile) add(child, logical)
+            }
+        }
+        if (rootDocument.isFile) add(rootDocument, normalizedRoot)
+        else if (rootDocument.isDirectory) walk(rootDocument, normalizedRoot, 0)
+        return output
+    }
 
     /** Lists bounded collaboration-safe text assets without exposing absolute provider paths. */
     fun listTextFiles(
@@ -165,6 +197,30 @@ class SafWorkspaceStore(
      */
     fun writeBytesSafely(relativePath: String, bytes: ByteArray, mimeType: String): DocumentFile {
         return writeStreamSafely(relativePath, mimeType) { output -> output.write(bytes) }
+    }
+
+    /** Publishes a new file without replacing any existing user file. */
+    fun writeStreamNewSafely(relativePath: String, mimeType: String, copy: (java.io.OutputStream) -> Unit): DocumentFile {
+        val parts = WorkspacePath.segments(relativePath)
+        val fileName = parts.last()
+        val parent = resolveDirectory(parts.dropLast(1), create = true)
+        require(parent.findFile(fileName) == null) { "目标文件已存在，未覆盖：$relativePath" }
+        val token = UUID.randomUUID().toString().replace("-", "").take(12)
+        val temporary = requireNotNull(parent.createFile(mimeType, "edu-new-$token")) {
+            "目标目录无法创建临时文件：$relativePath"
+        }
+        try {
+            resolver.openOutputStream(temporary.uri, "w")?.use { output -> copy(output); output.flush() }
+                ?: error("The document provider could not open the temporary file")
+            if (parent.findFile(fileName) != null || !temporary.renameTo(fileName)) {
+                temporary.delete()
+                error("目标文件在发布前已被占用，未覆盖：$relativePath")
+            }
+            return requireNotNull(parent.findFile(fileName)) { "Written file is not visible: $relativePath" }
+        } catch (error: Throwable) {
+            temporary.delete()
+            throw error
+        }
     }
 
     fun writeStreamSafely(relativePath: String, mimeType: String, copy: (java.io.OutputStream) -> Unit): DocumentFile {

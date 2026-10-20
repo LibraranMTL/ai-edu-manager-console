@@ -7,15 +7,15 @@ import java.util.UUID
 object TaskProtocol {
     const val VERSION = "1.2"
     val transitions = mapOf(
-        "draft" to setOf("pending", "cancelled"), "pending" to setOf("approved", "cancelled", "blocked"),
-        "approved" to setOf("queued", "running", "waiting_result", "cancelled", "blocked"),
-        "queued" to setOf("running", "waiting_result", "cancelled", "timed_out", "blocked"),
+        "draft" to setOf("pending", "cancelled", "archived"), "pending" to setOf("approved", "cancelled", "blocked", "archived"),
+        "approved" to setOf("queued", "running", "waiting_result", "cancelled", "blocked", "archived"),
+        "queued" to setOf("running", "waiting_result", "cancelled", "timed_out", "blocked", "archived"),
         "running" to setOf("waiting_result", "reviewing", "failed", "timed_out", "cancelled"),
         "waiting_result" to setOf("running", "reviewing", "failed", "timed_out", "cancelled"),
         "reviewing" to setOf("succeeded", "failed", "pending", "cancelled"),
-        "succeeded" to setOf("pending"), "failed" to setOf("pending", "approved", "cancelled"),
-        "blocked" to setOf("pending", "approved", "cancelled"), "cancelled" to setOf("pending"),
-        "timed_out" to setOf("pending", "approved", "cancelled"),
+        "succeeded" to setOf("pending", "archived"), "failed" to setOf("pending", "approved", "cancelled", "archived"),
+        "blocked" to setOf("pending", "approved", "cancelled", "archived"), "cancelled" to setOf("pending", "archived"),
+        "timed_out" to setOf("pending", "approved", "cancelled", "archived"), "archived" to setOf("cancelled"),
     )
 
     fun validateTransition(current: String, next: String) {
@@ -70,6 +70,6 @@ object TaskProtocol {
     }
 
     private fun statusGroup(status: String) = when (status) {
-        "succeeded" -> "completed"; "failed", "cancelled", "timed_out" -> "ended"; "running", "waiting_result", "reviewing" -> "active"; else -> "pending"
+        "succeeded" -> "completed"; "archived" -> "archived"; "failed", "cancelled", "timed_out" -> "ended"; "running", "waiting_result", "reviewing" -> "active"; else -> "pending"
     }
 }

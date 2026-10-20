@@ -16,9 +16,9 @@ function createProjectMaterialAssetCompatibility(project, host, { findAsset, ups
     && typeof upsertAsset === 'function' && typeof addProjectAsset === 'function',
   'invalid_adapter', '项目资产兼容适配器配置无效。');
 
-  async function syncAccepted(materialId) {
+  async function syncAccepted(materialId, preparedIndex = null) {
     identifier(materialId, '资料ID');
-    const index = await host.store.read();
+    const index = preparedIndex || await host.store.read();
     const record = index.materials.find((item) => item.materialId === materialId);
     invariant(record?.adoption.state === 'accepted', 'source_not_adopted', '只有已采用资料可建立旧资产引用。');
     const source = await host.store.resolve(materialId);
@@ -70,7 +70,41 @@ function createProjectMaterialAssetCompatibility(project, host, { findAsset, ups
     return { linked: results.length, failed, remaining: Math.max(0, missing.length - results.length) };
   }
 
-  return { syncAccepted, repair };
+  async function repairAll({ batchSize = 100, onProgress = () => {}, shouldCancel = () => false } = {}) {
+    invariant(Number.isSafeInteger(batchSize) && batchSize >= 1 && batchSize <= 100,
+      'invalid_limit', '兼容关联批次每次最多处理100份资料。');
+    const index = await host.store.read();
+    const accepted = index.materials.filter((item) => item.adoption.state === 'accepted'
+      && !['missing', 'unavailable'].includes(item.availability));
+    const missing = [];
+    for (const item of accepted) {
+      let sourcePath = '';
+      try { sourcePath = await host.store.locationPath(item.location); }
+      catch { missing.push(item); continue; }
+      if (!(item.links.assets || []).some((link) => link.version === item.version
+        && link.sha256 === item.sha256
+        && validProjectReference(findAsset(link.assetId), project, {
+          path: sourcePath, sha1: item.sha1, size: item.size,
+        }) && (!hasProjectAsset || hasProjectAsset(link.assetId)))) missing.push(item);
+    }
+    const results = [];
+    const failed = [];
+    for (let offset = 0; offset < missing.length; offset += batchSize) {
+      const batch = missing.slice(offset, offset + batchSize);
+      for (const record of batch) {
+        if (shouldCancel()) throw Object.assign(new Error('资产索引补建已取消。'), { code: 'asset_scan_cancelled' });
+        try { results.push(await syncAccepted(record.materialId, index)); }
+        catch (error) { failed.push({ materialId: record.materialId,
+          code: error.code || 'asset_compat_failed', message: error.message }); }
+      }
+      await onProgress({ total: missing.length, processed: Math.min(offset + batch.length, missing.length),
+        linked: results.length, failed: failed.length });
+    }
+    if (!missing.length) await onProgress({ total: 0, processed: 0, linked: 0, failed: 0 });
+    return { linked: results.length, failed, remaining: 0, total: missing.length, processed: missing.length };
+  }
+
+  return { syncAccepted, repair, repairAll };
 }
 
 module.exports = { createProjectMaterialAssetCompatibility, validProjectReference };

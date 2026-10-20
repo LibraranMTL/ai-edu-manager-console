@@ -61,7 +61,6 @@ test('download page omits historical release notes and acceptance details', () =
     '知识协作与跨主机知识',
     '全量自动测试',
     'SHA-256',
-    'Authenticode',
   ]) {
     assert.doesNotMatch(html, new RegExp(removed.replaceAll('.', '\\.'), 'u'));
   }

@@ -393,7 +393,8 @@ test('R21: actual stdio MCP process negotiates, filters tools and completes idem
 test('R21: portable host refreshes active MCP connection paths and endpoint after every restart', () => {
   const source = fs.readFileSync(path.join(__dirname, '../electron/main.cjs'), 'utf8');
   assert.match(source, /function writeExternalConnectionRuntimeConfig\(connectionId, token = ''\)/);
-  assert.match(source, /command: process\.execPath/);
+  assert.match(source, /command: runtime\.executable/);
+  assert.match(source, /runtimeKind: runtime\.useElectronNode \? 'electron-node' : 'node'/);
   assert.match(source, /endpoint: `http:\/\/127\.0\.0\.1:\$\{getHostServicePort\(\)\}\/api\/agent\/connector`/);
   assert.match(source, /hostServer\.listen[\s\S]*refreshExternalConnectionRuntimeConfigs\(\)/);
   assert.match(source, /externalConnectorNeedsHost = external\.policy\.status === 'active'[\s\S]*startHostService\(\{ preserveUsageMode: true \}\)/);

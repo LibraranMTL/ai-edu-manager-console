@@ -36,6 +36,10 @@ class SafRootGrant(context: Context) {
     }
 
     fun currentRootUri(): Uri? = preferences.getString(ROOT_URI_KEY, null)?.let(Uri::parse)
+    /** Restore an existing preference checkpoint; a revoked grant remains visibly unavailable. */
+    internal fun restoreDefaultForRollback(uri: Uri?) {
+        check(preferences.edit().apply { if (uri == null) remove(ROOT_URI_KEY) else putString(ROOT_URI_KEY, uri.toString()) }.commit())
+    }
 
     fun setDefaultRoot(uri: Uri) {
         require(appContext.contentResolver.persistedUriPermissions.any { it.uri == uri && it.isReadPermission && it.isWritePermission }) {

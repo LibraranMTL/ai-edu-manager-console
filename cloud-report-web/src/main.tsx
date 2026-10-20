@@ -7,8 +7,19 @@ type Student = { id: string; displayName: string };
 type Report = { revisionId: string; reportType: string; originDeviceId: string; originPlatform: string; publishedAt: string; receivedAt: number; filename: string };
 type Document = { documentId: string; displayName: string; contentType: string; byteSize: number; createdAt: number; deletedAt: number | null };
 type Grant = { deviceId: string; kind: string; scope: string; createdAt: number; revokedAt: number | null; expiresAt: number | null };
+type V2Grant = { deviceId: string; scope: string; category: string; fields: string[]; objectScope: string[]; createdAt: number; revokedAt: number | null; expiresAt: number | null; policyVersion: number };
+type CloudProfile = { profileRevisionId: string; profile: Record<string, string>; fields: string[]; updatedAt: number };
+type RemoteOperation = { sessionId?: string; submissionId?: string; provider: string; taskType?: string; projectId: string; status: string; updatedAt: number; quarantinedReason?: string };
 type AuditEvent = { id: number; occurredAt: number; actorId: string; action: string; studentId: string | null; targetId: string | null };
 const names: Record<string, string> = { learning_profile: '整体画像', learning_change: '历史变化', weekly_action: '每周行动建议', stage_summary: '阶段总结' };
+const profileFieldOptions = [
+  ['displayName', '姓名'], ['grade', '年级'], ['school', '学校'], ['learningGoal', '学习目标'], ['currentRegion', '当前地区'],
+  ['phone', '手机号'], ['email', '邮箱'], ['birthday', '生日'], ['address', '地址'], ['guardian', '监护人信息'],
+] as const;
+const materialCategoryOptions = [
+  ['learning_report', '学情报告'], ['learning_material', '学习资料'], ['topic_suggestion', '选题建议'],
+  ['competition_recommendation', '比赛推荐'], ['learning_card', '学习卡片'],
+] as const;
 const auditNames: Record<string, string> = {
   'student.create': '创建云端学生', 'source.enrollment.create': '生成来源端开通码',
   'source.enrollment.redeem': '来源端完成开通', 'grant.issue.report.write': '开通报告上传许可',
@@ -49,6 +60,13 @@ function App() {
   const [enrollmentCode, setEnrollmentCode] = useState('');
   const [pairingCode, setPairingCode] = useState('');
   const [grants, setGrants] = useState<Grant[]>([]);
+  const [v2Grants, setV2Grants] = useState<V2Grant[]>([]);
+  const [cloudProfile, setCloudProfile] = useState<CloudProfile | null>(null);
+  const [remoteOperations, setRemoteOperations] = useState<{ sessions: RemoteOperation[]; inbox: RemoteOperation[] }>({ sessions: [], inbox: [] });
+  const [downloadProfileFields, setDownloadProfileFields] = useState<string[]>(profileFieldOptions.map(([id]) => id));
+  // Preserve the existing report flow, but never opt users into newly added
+  // document categories without an explicit selection.
+  const [downloadCategories, setDownloadCategories] = useState<string[]>(['learning_report']);
   const [auditEvents, setAuditEvents] = useState<AuditEvent[]>([]);
   const [auditCursor, setAuditCursor] = useState('');
   const [preview, setPreview] = useState('');
@@ -99,12 +117,18 @@ function App() {
   }
   async function loadGrants(studentId = selectedId) {
     if (!studentId) return;
-    const [result, capacity] = await Promise.all([
+    const [result, capacity, v2Result, profileResult, remoteResult] = await Promise.all([
       api(`/v1/students/${studentId}/grants`).then(response => response.json()),
       api(`/v1/students/${studentId}/storage`).then(response => response.json()),
+      api(`/v2/students/${studentId}/grants`).then(response => response.json()),
+      api(`/v2/students/${studentId}/profile-status`).then(response => response.json()).then(result => result.profile),
+      api(`/v2/admin/task-status?studentId=${encodeURIComponent(studentId)}`).then(response => response.json()),
     ]);
     if (selectedIdRef.current !== studentId) return;
     setGrants(result.grants);
+    setV2Grants(v2Result.grants);
+    setCloudProfile(profileResult);
+    setRemoteOperations(remoteResult);
     setStorage(capacity);
   }
   async function loadAudit(studentId = selectedId, cursor = '') {
@@ -179,7 +203,7 @@ function App() {
     </details>
     <div className="workspace">
       <aside className="student-sidebar"><div className="sidebar-title"><strong>学生</strong><span>{students.length}</span></div>
-        {students.map(student => <button className={student.id === selectedId ? 'selected' : ''} key={student.id} onClick={() => { selectedIdRef.current = student.id; setSelectedId(student.id); setReports([]); setDocuments([]); setGrants([]); setAuditEvents([]); setAuditCursor(''); setSelectedReportId(''); setEnrollmentCode(''); setPairingCode(''); }}>{student.displayName}</button>)}
+        {students.map(student => <button className={student.id === selectedId ? 'selected' : ''} key={student.id} onClick={() => { selectedIdRef.current = student.id; setSelectedId(student.id); setReports([]); setDocuments([]); setGrants([]); setV2Grants([]); setCloudProfile(null); setAuditEvents([]); setAuditCursor(''); setSelectedReportId(''); setEnrollmentCode(''); setPairingCode(''); }}>{student.displayName}</button>)}
         <form className="add-student" onSubmit={event => { event.preventDefault(); void act(async () => {
           const result = await (await api('/v1/students', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ displayName: newName }) })).json();
           setNewName(''); await loadStudents(); setSelectedId(result.id);
@@ -196,10 +220,17 @@ function App() {
             })}>生成来源端开通码</button></div>
           {enrollmentCode && <div className="enrollment-code"><span>在 Android 单机版或 Windows 主机输入此码，为当前学生开通自动上传</span><strong>{enrollmentCode}</strong><button onClick={() => { void navigator.clipboard.writeText(enrollmentCode); setMessage('开通码已复制。'); }}>复制</button></div>}
           <details className="permission-panel"><summary>Windows主机下载许可</summary>
-            <p>由接收 Windows 主机出示 8 位配对码。确认后，该主机一年内可下载这个学生的报告和其他文档；无需逐份开通。到期后重新配对即可续期。</p>
+            <p>由接收 Windows 主机出示 8 位配对码。确认后，该主机一年内只能下载下方勾选的学生基础信息和材料；健康资料不会随此许可开放。</p>
+            <fieldset className="scope-options"><legend>允许下载的学生基础信息</legend>{profileFieldOptions.map(([id, label]) => <label key={id}>
+              <input type="checkbox" checked={downloadProfileFields.includes(id)} disabled={id === 'displayName'} onChange={event => setDownloadProfileFields(current => event.target.checked ? [...new Set([...current, id])] : current.filter(item => item !== id))} />{label}{id === 'displayName' ? '（建档必需）' : ''}
+            </label>)}</fieldset>
+            <fieldset className="scope-options"><legend>允许下载的材料</legend>{materialCategoryOptions.map(([id, label]) => <label key={id}>
+              <input type="checkbox" checked={downloadCategories.includes(id)} onChange={event => setDownloadCategories(current => event.target.checked ? [...new Set([...current, id])] : current.filter(item => item !== id))} />{label}
+            </label>)}</fieldset>
             <form onSubmit={event => { event.preventDefault(); void act(async () => {
               await api('/v1/pairings/approve', { method: 'POST', headers: { 'content-type': 'application/json' },
-                body: JSON.stringify({ pairingCode: pairingCode.trim(), cloudStudentIds: [selectedId] }) });
+                body: JSON.stringify({ pairingCode: pairingCode.trim(), cloudStudentIds: [selectedId], contractVersion: 2,
+                  profileFields: downloadProfileFields, materialCategories: downloadCategories }) });
               setPairingCode(''); await loadGrants(); setMessage('已为这台 Windows 主机开通当前学生的下载许可。');
             }); }}><input aria-label="Windows 主机配对码" inputMode="numeric" pattern="[0-9]{8}" maxLength={8}
               placeholder="输入 Windows 主机出示的 8 位配对码" value={pairingCode} onChange={event => setPairingCode(event.target.value)} required />
@@ -213,6 +244,30 @@ function App() {
                       await loadGrants(); setMessage('下载许可已撤销。'); }); }}>撤销许可</button></div>)}
               {!grants.some(item => item.kind === 'viewer' && item.scope === 'cloud_document.read' && item.revokedAt === null && (item.expiresAt == null || item.expiresAt > Date.now())) && <p>尚无有效的接收设备许可。</p>}
             </div>
+            <div className="grant-list"><strong>新版资料授权</strong>
+              {v2Grants.filter(item => item.revokedAt === null && item.scope.endsWith('.read')).map(item => <div key={`${item.deviceId}:${item.scope}:${item.category}`}>
+                <span title={item.deviceId}>Windows 主机 · {item.deviceId.slice(-8)} · {item.scope === 'student_profile.read' ? `基础信息 ${item.fields.length} 项` : materialCategoryOptions.find(([id]) => id === item.category)?.[1] || item.category}</span>
+                <button disabled={busy} onClick={() => { if (!window.confirm('撤销这项新版资料许可？已合法下载的本机副本不会自动删除。')) return; void act(async () => {
+                  await api('/v2/grants/revoke', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ deviceId: item.deviceId,
+                    cloudStudentId: selectedId, scope: item.scope, category: item.category }) }); await loadGrants(); setMessage('新版资料许可已撤销。');
+                }); }}>撤销</button></div>)}
+              {!v2Grants.some(item => item.revokedAt === null && item.scope.endsWith('.read')) && <p>尚无新版资料授权。</p>}
+            </div>
+          </details>
+          <details className="permission-panel"><summary>已同步的学生基础信息</summary>
+            {cloudProfile ? <><p>当前版本：{cloudProfile.profileRevisionId.slice(-8)} · {new Date(cloudProfile.updatedAt).toLocaleString('zh-CN')}</p>
+              <dl className="profile-grid">{profileFieldOptions.filter(([id]) => cloudProfile.fields.includes(id)).map(([id, label]) => <React.Fragment key={id}><dt>{label}</dt><dd>{cloudProfile.profile[id]}</dd></React.Fragment>)}</dl></>
+              : <p>尚未收到新版学生基础信息。旧版报告上传不代表基础信息已经同步。</p>}
+            <p>健康资料采用独立逐项许可，本页不会默认开放。</p>
+          </details>
+          <details className="permission-panel"><summary>云端成果收件箱与远程任务</summary>
+            <p>这里显示云端的处理状态，不会把“结果未知”自动当作失败重跑。</p>
+            <div className="grant-list"><strong>远程 Agent 任务</strong>{remoteOperations.sessions.map(item => <div key={item.sessionId}>
+              <span>{item.provider === 'codex' ? 'Codex' : 'WorkBuddy'} · {item.taskType || '任务'} · {item.status} · {new Date(item.updatedAt).toLocaleString('zh-CN')}</span>
+            </div>)}{remoteOperations.sessions.length === 0 && <p>当前学生没有远程 Agent 任务。</p>}</div>
+            <div className="grant-list"><strong>成果收件箱</strong>{remoteOperations.inbox.map(item => <div key={item.submissionId}>
+              <span>{item.provider === 'codex' ? 'Codex' : 'WorkBuddy'} · {item.status} · {new Date(item.updatedAt).toLocaleString('zh-CN')}{item.quarantinedReason ? ` · ${item.quarantinedReason}` : ''}</span>
+            </div>)}{remoteOperations.inbox.length === 0 && <p>当前学生没有待接收成果。</p>}</div>
           </details>
           <details className="permission-panel"><summary>来源设备安全管理</summary><p>撤销设备会终止该设备所有学生的云端许可。恢复须使用管理员重新签发的开通码。</p>
             {grants.filter(item => item.kind === 'source' && item.revokedAt === null).map(item => <div key={item.deviceId}>

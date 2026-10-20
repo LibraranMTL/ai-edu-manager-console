@@ -1,0 +1,24 @@
+[Unit]
+Description=AI Education Manager Cloud Documents
+After=network.target
+
+[Service]
+Type=simple
+User=edu-cloud
+Group=edu-cloud
+WorkingDirectory=/opt/edu-cloud-documents/current
+EnvironmentFile=/opt/edu-cloud-documents/service.env
+ExecStart=/opt/edu-cloud-documents/runtime/node-v24.21.0-linux-x64/bin/node /opt/edu-cloud-documents/current/http.cjs
+Restart=on-failure
+RestartSec=5
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/edu-cloud-documents /var/backups/edu-cloud-documents /var/log/edu-cloud-documents
+MemoryMax=512M
+TasksMax=64
+
+[Install]
+WantedBy=multi-user.target

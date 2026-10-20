@@ -219,6 +219,18 @@ async function writeVirtual(content, targetPath, key) {
   return { size: buffer.length, sha256: sha256Buffer(buffer), iv: iv.toString('base64'), authTag: cipher.getAuthTag().toString('base64') };
 }
 
+async function writeVirtualFile(sourcePath, targetPath, key) {
+  const resolved = path.resolve(String(sourcePath || ''));
+  const stat = fs.lstatSync(resolved);
+  if (!path.isAbsolute(resolved) || !stat.isFile() || stat.isSymbolicLink()) {
+    throw new Error(`迁移状态快照必须是普通文件：${sourcePath}`);
+  }
+  const plainSha256 = await sha256File(resolved);
+  const cryptoMeta = key ? await copyEncrypted(resolved, targetPath, key) : await copyPlain(resolved, targetPath);
+  if (await sha256File(resolved) !== plainSha256) throw new Error(`迁移状态快照在导出期间发生变化：${path.basename(resolved)}`);
+  return { size: stat.size, sha256: plainSha256, ...cryptoMeta };
+}
+
 function packageStem(date = new Date(), prefix = 'AI-Edu-Migrate') {
   const compactTimestamp = date.toISOString().slice(0, 19).replace(/[-:T]/g, '');
   const safePrefix = String(prefix || 'AI-Edu-Migrate').trim().replace(/[^a-z0-9_-]+/gi, '-').replace(/^-+|-+$/g, '') || 'AI-Edu-Migrate';
@@ -295,7 +307,9 @@ async function createMigrationPackage(options = {}) {
       const relativePath = portableRelative(virtual.relativePath);
       const payloadRelativePath = payloadObjectRelativePath(category, scopeId, relativePath, Boolean(key));
       const payloadPath = targetInside(path.join(writingRoot, 'payload'), payloadRelativePath);
-      const meta = await writeVirtual(virtual.content, payloadPath, key);
+      const meta = virtual.sourcePath
+        ? await writeVirtualFile(virtual.sourcePath, payloadPath, key)
+        : await writeVirtual(virtual.content, payloadPath, key);
       manifestFiles.push({ category, scopeId, relativePath, destinationRelativePath: relativePath, payloadRelativePath, size: meta.size, sha256: meta.sha256, storedSha256: await sha256File(payloadPath), virtual: true, ...meta });
       completedFiles += 1;
       completedBytes += meta.size;
@@ -410,6 +424,7 @@ async function inspectMigrationPackage(packageRoot) {
     externalSources: checked.manifest.externalSources || [],
     storedVerified,
     sourceManagedRoot: checked.manifest.source?.managedRoot || '',
+    sourceUserDataRoot: checked.manifest.source?.userDataRoot || '',
   };
 }
 

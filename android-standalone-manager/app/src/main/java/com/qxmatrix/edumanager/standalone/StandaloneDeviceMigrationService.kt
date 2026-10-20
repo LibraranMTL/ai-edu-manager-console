@@ -64,6 +64,7 @@ class StandaloneDeviceMigrationService : Service() {
     }
 
     private fun exportTo(destinationUri: Uri) {
+        PendingAudioBackupGuard.requireArchived(this)
         val license = LicenseManager(this).requireActive()
         val roots = collectRoots()
         require(roots.isNotEmpty()) { "请先授权单机版资料根目录" }
@@ -141,6 +142,10 @@ class StandaloneDeviceMigrationService : Service() {
 
     private fun importFrom(sourceUri: Uri, targetUri: Uri) {
         val license = LicenseManager(this).requireActive()
+        BusinessRestoreRecovery.recover(this)
+        PrivateStateStore(this).readIfPresent("projects.json")?.let {
+            require(JSONObject(it.toString(Charsets.UTF_8)).getJSONArray("projects").length() == 0) { "本机已有项目记录，不能覆盖接管" }
+        }
         require(StudentIndexRepository(this).list().isEmpty() && ProjectRepository(this).list().isEmpty()) {
             "新平板接管只允许导入到没有学生档案和学习项目的单机版；请勿合并两个家庭资料库"
         }
@@ -226,6 +231,7 @@ class StandaloneDeviceMigrationService : Service() {
             val oldSkin = UiPreferences(this).skin(); val oldLayout = UiPreferences(this).layoutMode()
             val oldAgent = AgentConfigurationStore(this).snapshotForRollback()
             try {
+                BusinessDatabaseBackup(this).restoreStaged(stage) {
                 stage.walkTopDown().filter(File::isFile).forEach { file ->
                     val relative = file.relativeTo(stage).invariantSeparatorsPath; PrivateStateStore(this).writeBytes(relative, file.readBytes()); applied += relative
                 }
@@ -236,7 +242,9 @@ class StandaloneDeviceMigrationService : Service() {
                 }
                 val agent = descriptor.optJSONObject("agentPublic")
                 AgentConfigurationStore(this).restorePublicProfile(agent?.let(AgentPublicConfiguration::fromJson))
+                PublicSettingsSnapshot.apply(this, stage)
                 SafRootGrant(this).setDefaultRoot(targetUri)
+                }
             } catch (error: Throwable) {
                 rollbackState(snapshot, applied)
                 UiPreferences(this).setSkin(oldSkin); UiPreferences(this).setLayoutMode(oldLayout)
@@ -273,10 +281,16 @@ class StandaloneDeviceMigrationService : Service() {
     }
 
     private fun collectStateSources(): List<Source> {
-        val root = File(filesDir, "education-manager-state"); if (!root.isDirectory) return emptyList()
-        return root.walkTopDown().filter(File::isFile).mapNotNull { file ->
+        val businessSnapshot = BusinessDatabaseBackup(this).exportBytes()
+        val snapshotSource = Source("state", "app-state", BusinessDatabaseBackup.SNAPSHOT_PATH, BusinessDatabaseBackup.SNAPSHOT_PATH,
+            businessSnapshot.size.toLong(), 0, { java.io.ByteArrayInputStream(businessSnapshot) }, { businessSnapshot.size.toLong() }, { 0L })
+        val generated = listOf(PublicSettingsSnapshot.PATH to PublicSettingsSnapshot.exportBytes(this), CollaborationArchiveSnapshot.PATH to CollaborationArchiveSnapshot.exportBytes(this)).map { (path, bytes) ->
+            Source("state", "app-state", path, path, bytes.size.toLong(), 0, { java.io.ByteArrayInputStream(bytes) }, { bytes.size.toLong() }, { 0L })
+        }
+        val root = File(filesDir, "education-manager-state"); if (!root.isDirectory) return listOf(snapshotSource) + generated
+        return listOf(snapshotSource) + generated + root.walkTopDown().filter(File::isFile).mapNotNull { file ->
             val relative = file.relativeTo(root).invariantSeparatorsPath
-            if (file.name.endsWith(".bak") || file.name.endsWith(".new") || StandaloneDeviceMigrationContract.excludedStatePrefixes.any { relative.startsWith(it) }) null
+            if (relative in setOf(BusinessDatabaseBackup.SNAPSHOT_PATH, PublicSettingsSnapshot.PATH, CollaborationArchiveSnapshot.PATH) || relative.startsWith("audio-capture/") || relative.startsWith(BusinessRestoreRecovery.PREFIX) || file.name.endsWith(".bak") || file.name.endsWith(".new") || StandaloneDeviceMigrationContract.excludedStatePrefixes.any { relative.startsWith(it) }) null
             else Source("state", "app-state", relative, relative, file.length(), file.lastModified(), { FileInputStream(file) }, { file.length() }, { file.lastModified() })
         }.toList()
     }
@@ -366,6 +380,9 @@ class StandaloneDeviceMigrationService : Service() {
         }
         val assets = File(stage, "asset-index.json")
         if (assets.isFile && replacements.isNotEmpty()) { val json = JSONObject(assets.readText()); rewriteStrings(json, replacements.sortedByDescending { it.first.length }); assets.writeText(json.toString(2)) }
+        BusinessDatabaseBackup.remapSnapshot(File(stage, BusinessDatabaseBackup.SNAPSHOT_PATH)) {
+            rewriteStrings(it, replacements.sortedByDescending { replacement -> replacement.first.length })
+        }
     }
 
     private fun rewriteStrings(value: Any?, replacements: List<Pair<String, String>>): Any? {
@@ -385,7 +402,7 @@ class StandaloneDeviceMigrationService : Service() {
     private fun rollbackState(snapshot: Map<String, ByteArray>, applied: List<String>) {
         val root = File(filesDir, "education-manager-state").canonicalFile
         applied.filterNot(snapshot::containsKey).forEach { relative -> runCatching { safeLocal(root, relative).delete() } }
-        snapshot.forEach { (relative, bytes) -> PrivateStateStore(this).writeBytes(relative, bytes) }
+        snapshot.filterKeys { !it.startsWith(BusinessRestoreRecovery.PREFIX) }.forEach { (relative, bytes) -> PrivateStateStore(this).writeBytes(relative, bytes) }
     }
 
     private fun safeLocal(root: File, relative: String): File {

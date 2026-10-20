@@ -2,6 +2,8 @@
     xmlns:tools="http://schemas.android.com/tools">
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.CAMERA" />
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <uses-feature android:name="android.hardware.microphone" android:required="false" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
@@ -41,6 +43,16 @@
             android:resizeableActivity="true" />
         <activity
             android:name=".RawMaterialBrowserActivity"
+            android:exported="false"
+            android:resizeableActivity="true" />
+        <activity
+            android:name=".TaskCenterActivity"
+            android:exported="false"
+            android:resizeableActivity="true" />
+        <activity android:name=".LearningStudioActivity" android:exported="false" android:resizeableActivity="true" />
+        <activity android:name=".AudioIntakeActivity" android:exported="false" android:resizeableActivity="true" />
+        <activity
+            android:name=".ProjectMaterialsActivity"
             android:exported="false"
             android:resizeableActivity="true" />
         <activity

@@ -32,7 +32,7 @@ test('large task data is bounded in storage, transfer and rendering', () => {
   assert.match(main, /\.slice\(0, 100\)/);
   assert.match(renderer, /visibleTaskCenterItems\.slice\(0, taskCenterDisplayLimit\)/);
   assert.match(renderer, /current \+ 30/);
-  assert.match(renderer, /useState<[^>]+>\('actionable'\)/);
+  assert.match(renderer, /useState<[^>]+>\('needs_help'\)/);
 });
 
 test('audit events are rotated into retained archive files before the active log grows unbounded', () => {

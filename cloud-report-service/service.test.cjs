@@ -61,6 +61,22 @@ test('per-student capacity counts report revisions and trashed documents but all
   assert.equal((await call('GET', `/v1/students/${other.id}/storage`, ADMIN)).body.usedBytes, 0);
 }, { maxStudentBytes: Buffer.byteLength(CONTENT) + 4 }));
 
+test('streamed summary replay reuses receipt and cannot resurrect a withdrawn document', async () => fixture(async ({ call, base }) => {
+  const student = (await call('POST', '/v1/students', ADMIN, { displayName: '摘要幂等测试' })).body;
+  const upload = async () => {
+    const response = await fetch(`${base}/v1/students/${student.id}/documents`, { method: 'POST',
+      headers: { authorization: `Bearer ${ADMIN}`, 'content-type': 'text/markdown', 'x-document-name': 'planning-summary.md' }, body: '# 候选摘要\n待核验' });
+    assert.equal(response.status, 201); return response.json();
+  };
+  const first = await upload(); const second = await upload();
+  assert.equal(second.documentId, first.documentId); assert.equal(second.duplicate, true);
+  assert.equal((await call('GET', `/v1/students/${student.id}/documents`, ADMIN)).body.documents.length, 1);
+  await call('PATCH', `/v1/documents/${first.documentId}`, ADMIN, { deleted: true });
+  const replay = await upload(); assert.equal(replay.documentId, first.documentId); assert.equal(replay.withdrawn, true);
+  assert.equal((await call('GET', `/v1/students/${student.id}/documents`, ADMIN)).body.documents.length, 0);
+  assert.equal((await call('GET', `/v1/students/${student.id}/documents?trash=1`, ADMIN)).body.documents.length, 1);
+}));
+
 async function fixture(fn, serviceOptions = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cloud-report-test-'));
   let clock = Date.parse('2026-09-25T00:00:00Z');

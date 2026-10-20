@@ -27,6 +27,13 @@ class PrivateStateStore(context: Context) {
 
     fun readBytes(relativePath: String): ByteArray = AtomicFile(resolve(relativePath)).openRead().use { it.readBytes() }
 
+    /** Interrupted first writes are not new-user state. AtomicFile recovers .bak on openRead. */
+    fun readIfPresent(relativePath: String): ByteArray? {
+        val file = resolve(relativePath)
+        if (!file.exists() && !File(file.path + ".bak").exists() && !File(file.path + ".new").exists()) return null
+        return readBytes(relativePath)
+    }
+
     private fun resolve(relativePath: String): File =
         WorkspacePath.segments(relativePath).fold(root) { current, segment -> File(current, segment) }
 }

@@ -174,7 +174,7 @@ class EducationPublicationActivity : Activity() {
         Thread {
             val result = runCatching {
                 require(template.id != "formal") { "正式报告无需 Agent 精选" }
-                val response = OpenAiCompatibleAgentAdapter(configuration).execute(
+                val response = OpenAiCompatibleAgentAdapter(configuration, this, student.id).execute(
                     "你是教育内容出版工具。只能从用户提供的报告中逐字选择完整句子，不得改写、补充或推断。只输出 JSON。",
                     "从下面报告选择最多 8 个最重要的原文句子。返回 {\"quotes\":[\"逐字原句\"]}。\n\n${validated.markdown.take(60_000)}",
                 )

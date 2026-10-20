@@ -58,7 +58,9 @@ test('actual project upload writes a new-mode original to the inbox and returns 
     findStudent: () => ({ id: 'student-1', name: 'Student' }), isStudentAllowed: () => true,
     courseUploadAttribution: () => ({}), remoteCaptureAttribution: () => null,
     ensureProjectWorkspace: (value) => value, assertUploadFileAllowed: () => {},
-    readAssetIndex: () => assets,
+    assetStore: () => ({ queryDetails: ({ referenceId = '', referenceSpaceId = '' } = {}) => assets.filter((asset) =>
+      (asset.references || []).some((reference) => (!referenceId || reference.id === referenceId)
+        && (!referenceSpaceId || reference.spaceId === referenceSpaceId))) }),
     uniqueTargetFile: (directory, filename) => {
       const target = path.join(directory, filename);
       return fs.existsSync(target) ? path.join(directory, `${path.parse(filename).name} (1)${path.extname(filename)}`) : target;

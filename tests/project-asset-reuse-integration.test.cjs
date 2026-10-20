@@ -54,7 +54,8 @@ test('actual asset reuse binds workspace and external sources without new legacy
   let projects = [project];
   const scope = { fs, path, crypto, readProjects: () => projects, normalizeProject: (value) => value,
     mutableProject: () => ({ project: projects[0] }), ensureProjectWorkspace: (value) => value,
-    readAssetIndex: () => assets, isWorkspaceMaterialProject, createProjectMaterialHost,
+    assetStore: () => ({ detailsByIds: (ids) => ids.map((id) => assets.find((asset) => asset.assetId === id)).filter(Boolean) }),
+    isWorkspaceMaterialProject, createProjectMaterialHost,
     grantProjectAssetRoot, selectReusableAssetPath, canonicalIsPathInside: inside,
     upsertAssetFromFile: (file, context) => {
       const original = assets.find((item) => item.path === file);

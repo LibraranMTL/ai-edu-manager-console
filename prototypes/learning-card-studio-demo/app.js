@@ -1,7 +1,7 @@
 (() => {
   const qs = (selector, root = document) => root.querySelector(selector);
   const qsa = (selector, root = document) => [...root.querySelectorAll(selector)];
-  const pageTitles = { studio: '学习卡片', resources: '资源中心', history: '使用记录' };
+  const pageTitles = { studio: '学习卡片 / 今日卡片', resources: '学习卡片 / 模板', history: '学习卡片 / 使用记录' };
   let toastTimer = null;
   let generationTimers = [];
 
@@ -22,6 +22,9 @@
   }
 
   qsa('[data-page]').forEach((button) => button.addEventListener('click', () => switchPage(button.dataset.page)));
+  qsa('[data-core-section]').forEach((button) => button.addEventListener('click', () => {
+    showToast(`“${button.textContent.trim()}”为教育管家现有功能，本 Demo 保持原状`, 'i');
+  }));
 
   function openModal(id) {
     const modal = qs(`#${id}`);
@@ -135,27 +138,18 @@
     qsa('.feedback-options button').forEach((item) => item.classList.toggle('active', item === button));
   }));
 
-  qsa('.category-row button').forEach((button) => button.addEventListener('click', () => {
-    qsa('.category-row button').forEach((item) => item.classList.toggle('active', item === button));
-    const filter = button.dataset.filter;
-    qsa('.resource-item').forEach((item) => item.hidden = filter !== 'all' && item.dataset.category !== filter);
+  qsa('.use-template').forEach((button) => button.addEventListener('click', () => {
+    const theme = button.dataset.template;
+    qsa('.use-template').forEach((item) => {
+      item.classList.toggle('added', item.dataset.template === theme);
+      item.textContent = item.dataset.template === theme ? '当前使用' : '使用此模板';
+    });
+    qsa('[data-theme]').forEach((item) => item.classList.toggle('active', item.dataset.theme === theme));
+    qs('#learningSheet').className = `learning-sheet theme-${theme}`;
+    qs('#canvasStage').dataset.device = theme === 'mono' ? 'mono' : 'a4';
+    showToast('模板已应用到今日卡片');
   }));
 
-  qs('#resourceSearch').addEventListener('input', (event) => {
-    const query = event.target.value.trim().toLowerCase();
-    qsa('.resource-item').forEach((item) => item.hidden = query && !item.dataset.search.toLowerCase().includes(query) && !item.textContent.toLowerCase().includes(query));
-  });
-
-  qsa('.add-resource').forEach((button) => button.addEventListener('click', () => {
-    if (button.classList.contains('added') || button.textContent.includes('已添加')) {
-      showToast('该资源已在你的模板中');
-      return;
-    }
-    button.classList.add('added');
-    button.textContent = '已添加';
-    showToast(`“${button.dataset.name}”已添加到模板`);
-  }));
-
-  qs('#creatorInfo').addEventListener('click', () => showToast('创作者计划：当前为邀请制，仅开放模板与内容包', 'i'));
+  qs('#templateBoundary').addEventListener('click', () => showToast('首版仅包含三套官方模板，不加载第三方代码或外部市场', 'i'));
   qs('#studentSwitch').addEventListener('click', () => showToast('Demo 仅展示一个虚构学生，避免增加选择流程', 'i'));
 })();

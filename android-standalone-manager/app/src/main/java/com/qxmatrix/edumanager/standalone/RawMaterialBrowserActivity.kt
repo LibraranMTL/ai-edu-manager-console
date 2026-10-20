@@ -35,7 +35,8 @@ class RawMaterialBrowserActivity : Activity() {
         student = StudentIndexRepository(this).requireExact(requireNotNull(intent.getStringExtra(EXTRA_STUDENT_ID)))
         store = SafWorkspaceStore(this, Uri.parse(student.storageRootUri))
         startPath = intent.getStringExtra(EXTRA_START_PATH).orEmpty().ifBlank { student.paths.rawPath }.trimEnd('/')
-        require(startPath == student.paths.rootPath || startPath == student.paths.rawPath || startPath.startsWith("${student.paths.rootPath.trimEnd('/')}/")) { "浏览路径超出当前学生范围" }
+        val allowed = listOf(student.paths.rootPath, student.paths.rawPath, student.paths.summaryPath, student.paths.outputPath).filter(String::isNotBlank)
+        require(allowed.any { startPath == it || startPath.startsWith("${it.trimEnd('/')}/") }) { "浏览路径超出当前学生范围" }
         browserTitle = intent.getStringExtra(EXTRA_TITLE).orEmpty().ifBlank { "${student.name} · 原始资料库" }
 
         val root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(16), dp(16), dp(16), dp(16)); setBackgroundColor(palette.page) }
@@ -86,6 +87,12 @@ class RawMaterialBrowserActivity : Activity() {
         AlertDialog.Builder(this).setTitle(name)
             .setMessage("大小：${Formatter.formatFileSize(this, file.length())}\n类型：$mime\n\n原文件不会在浏览过程中被移动或修改。")
             .setNegativeButton("关闭", null)
+            .setNeutralButton("分享／导出原件") { _, _ ->
+                val share = Intent(Intent.ACTION_SEND).setType(mime).putExtra(Intent.EXTRA_STREAM, file.uri)
+                    .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                share.clipData = android.content.ClipData.newUri(contentResolver, name, file.uri)
+                runCatching { startActivity(Intent.createChooser(share, "选择保存或分享应用（仅此原件）")) }.onFailure { statusView.text = "没有可用导出应用，原件保留" }
+            }
             .setPositiveButton("打开原文件") { _, _ -> openFile(file.uri, mime) }
             .show()
     }

@@ -12,7 +12,7 @@ class ConversationImportService(private val context: Context) {
     private val projects = ProjectRepository(context)
     private val privateState = PrivateStateStore(context)
 
-    fun save(studentId: String, projectId: String, sourceAgent: String, content: String, sourcePath: String = ""): JSONObject {
+    fun save(studentId: String, projectId: String, sourceAgent: String, content: String, sourcePath: String = ""): JSONObject = synchronized(INDEX_LOCK) {
         val student = students.requireExact(studentId)
         val project = projectId.takeIf { it.isNotBlank() }?.let(projects::requireExact)
         require(project == null || student.id in project.studentIds) { "所选学习项目未绑定当前学生" }
@@ -24,17 +24,20 @@ class ConversationImportService(private val context: Context) {
         val assetId = "conversation-${hash.take(24)}"
         val scopeType = if (project == null) "student" else "project"
         val scopeId = project?.id ?: student.id
-        val recordId = recordId(hash, scopeType, scopeId)
+        val recordId = ConversationSourceIdentityPolicy.key(hash, scopeType, scopeId, student.id)
         val index = readIndex()
         index.optJSONArray("imports").toObjects().firstOrNull {
-            it.optString("contentHash") == hash && it.optString("scopeType") == scopeType && it.optString("scopeId") == scopeId
-        }?.let { return JSONObject().put("ok", true).put("deduplicated", true).put("record", normalizeRecord(it)).put("message", "相同对话已经保存，本次未生成重复记录。") }
+            it.optString("studentId") == student.id && it.optString("contentHash") == hash && it.optString("scopeType") == scopeType && it.optString("scopeId") == scopeId
+        }?.let {
+            IntakeRegistry(context).register(student.id, "explicit_conversation", recordId, hash, it.getString("contentPath"), project?.knowledgeRootUri ?: student.storageRootUri, it.getString("importedAt"), project?.id.orEmpty())
+            return@synchronized JSONObject().put("ok", true).put("deduplicated", true).put("record", normalizeRecord(it)).put("message", "相同对话已经保存，本次未生成重复记录。")
+        }
 
         val rootUri = project?.knowledgeRootUri ?: student.storageRootUri
         val rawRoot = project?.paths?.rawPath ?: student.paths.rawPath
         val folder = "$rawRoot/Agent对话资料"
         val contentPath = "$folder/$assetId.md"
-        val metadataPath = "$folder/$assetId.meta.json"
+        val metadataPath = "$folder/$recordId.meta.json"
         val importedAt = Timestamp.now()
         val safeAgent = sourceAgent.trim().take(80).ifBlank { "其他Agent" }
         val messageCount = estimateMessageCount(normalized)
@@ -52,12 +55,14 @@ class ConversationImportService(private val context: Context) {
             .put("lifecycleStatus", "active").put("trashedAt", "").put("restoredAt", "")
             .put("explicitUserSave", true)
         val store = SafWorkspaceStore(context, Uri.parse(rootUri))
-        store.writeBytesSafely(contentPath, bytes, "text/markdown")
+        if (store.exists(contentPath)) require(sha256(store.readBytes(contentPath)) == hash) { "已有对话原件已变化，不覆盖" }
+        else store.writeBytesSafely(contentPath, bytes, "text/markdown")
+        IntakeRegistry(context).register(student.id, "explicit_conversation", recordId, hash, contentPath, rootUri, importedAt, project?.id.orEmpty())
         store.writeBytesSafely(metadataPath, (record.toString(2) + "\n").toByteArray(), "application/json")
         index.getJSONArray("imports").put(record)
         index.put("updatedAt", importedAt)
         writeIndex(index)
-        return JSONObject().put("ok", true).put("deduplicated", false).put("record", record)
+        JSONObject().put("ok", true).put("deduplicated", false).put("record", record)
             .put("message", "对话已保存到教育管家，共记录 $messageCount 条消息定位；知识内容保持候选状态。")
     }
 
@@ -141,17 +146,25 @@ class ConversationImportService(private val context: Context) {
         return JSONObject().put("ok", true).put("deleted", true).put("tombstone", tombstone)
     }
 
-    private fun readIndex(): JSONObject = try {
-        JSONObject(privateState.readBytes(INDEX_PATH).toString(Charsets.UTF_8)).also {
-            if (!it.has("imports")) it.put("imports", JSONArray())
+    private fun room(): RoomConversationStore {
+        val db = BusinessDatabase.get(context); BusinessRestoreRecovery.recover(context, db)
+        return RoomConversationStore(db) { ids -> val known = students.list().map { it.id }.toSet(); require(ids.all { it in known }) { "对话登记指向不存在的学生" } }
+    }
+    private fun readIndex(): JSONObject = MaterialDatabaseAccess.run { room().read { legacyIndex().apply { put("imports", JSONArray(getJSONArray("imports").toObjects().map(::normalizeRecord))) } } }
+    private fun legacyIndex(): JSONObject {
+        val bytes = privateState.readIfPresent(INDEX_PATH) ?: return JSONObject().put("schema", "edu-manager.android-conversation-index.v2").put("imports", JSONArray()).put("deletions", JSONArray()).put("updatedAt", "")
+        return JSONObject(bytes.toString(Charsets.UTF_8)).also {
+            val imports = it.getJSONArray("imports")
+            for (i in 0 until imports.length()) require(imports.getJSONObject(i).getString("studentId").isNotBlank()) { "对话登记缺少学生作用域，停止写入" }
             if (!it.has("deletions")) it.put("deletions", JSONArray())
             it.put("schema", "edu-manager.android-conversation-index.v2")
         }
-    } catch (_: Exception) {
-        JSONObject().put("schema", "edu-manager.android-conversation-index.v2").put("imports", JSONArray()).put("deletions", JSONArray()).put("updatedAt", "")
     }
 
-    private fun writeIndex(index: JSONObject) = privateState.writeBytes(INDEX_PATH, (index.toString(2) + "\n").toByteArray())
+    private fun writeIndex(index: JSONObject) = MaterialDatabaseAccess.run {
+        val room = room(); room.write(index)
+        privateState.writeBytes(INDEX_PATH, (index.toString(2) + "\n").toByteArray()); room.projectionComplete()
+    }
 
     private fun normalizeRecord(input: JSONObject): JSONObject = JSONObject(input.toString()).apply {
         if (optString("recordId").isBlank()) put("recordId", recordId(optString("contentHash"), optString("scopeType"), optString("scopeId")))
@@ -167,7 +180,7 @@ class ConversationImportService(private val context: Context) {
         if (!has("restoredAt")) put("restoredAt", "")
     }
 
-    private fun updateRecord(recordId: String, transform: (JSONObject) -> JSONObject): JSONObject {
+    private fun updateRecord(recordId: String, transform: (JSONObject) -> JSONObject): JSONObject = synchronized(INDEX_LOCK) {
         val index = readIndex(); val records = index.getJSONArray("imports").toObjects().toMutableList()
         val position = records.indexOfFirst { normalizeRecord(it).optString("recordId") == recordId }
         require(position >= 0) { "未找到指定对话记录" }
@@ -175,7 +188,7 @@ class ConversationImportService(private val context: Context) {
         records[position] = next
         index.put("imports", JSONArray(records)).put("updatedAt", Timestamp.now())
         writeIndex(index)
-        return next
+        next
     }
 
     private fun recordId(hash: String, scopeType: String, scopeId: String): String =
@@ -213,5 +226,5 @@ class ConversationImportService(private val context: Context) {
 
     private data class ConversationAccess(val rootUri: String, val rawRoot: String)
 
-    companion object { private const val INDEX_PATH = "conversation-imports.json"; private const val MAX_BYTES = 5 * 1024 * 1024 }
+    companion object { private const val INDEX_PATH = "conversation-imports.json"; private const val MAX_BYTES = 5 * 1024 * 1024; private val INDEX_LOCK = Any() }
 }

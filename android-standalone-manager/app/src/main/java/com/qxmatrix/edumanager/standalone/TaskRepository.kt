@@ -1,48 +1,44 @@
 package com.qxmatrix.edumanager.standalone
 
 import android.content.Context
-import org.json.JSONArray
 import org.json.JSONObject
 import java.util.UUID
 
-class TaskRepository(context: Context) {
-    private val state = PrivateStateStore(context)
-
-    fun list(): List<JSONObject> = readStore().getJSONArray("tasks").toObjects()
-
-    fun create(input: JSONObject): JSONObject {
-        val task = TaskProtocol.envelope(input)
-        TaskProtocol.validatePermissions(task, OPERATION_ALLOWLIST)
-        val store = readStore(); val tasks = store.getJSONArray("tasks").toObjects().toMutableList()
-        require(tasks.none { it.getString("id") == task.getString("id") }) { "任务 ID 已存在" }
-        tasks.add(0, task); writeStore(store, tasks); appendEvent(task, "task_created", JSONObject())
-        return task
+/** Protocol 1.2 is unchanged; task-center/tasks.json and task-center/events.jsonl are import-only. */
+class TaskRepository internal constructor(private val store: TaskLedgerStore) {
+    constructor(context: Context) : this(RoomTaskLedgerStore(context))
+    fun list(): List<JSONObject> = store.transaction { store.all() }
+    fun hasActiveForStudent(studentId: String, projectIds: List<String>): Boolean {
+        require(studentId.isNotBlank()); return store.transaction { store.hasActive(studentId, projectIds) }
     }
-
-    fun approve(taskId: String): JSONObject = transition(taskId, "approved", JSONObject().put("approval", JSONObject().put("required", true).put("status", "approved").put("reviewerRole", "administrator").put("reviewerId", "local-user").put("approvedAt", Timestamp.now())))
-
-    fun start(taskId: String): JSONObject {
+    fun listForStudent(studentId: String, projectIds: List<String>, limit: Int = 100): List<JSONObject> {
+        require(studentId.isNotBlank()) { "请先选择学生" }
+        return store.transaction { store.scoped(studentId, projectIds, limit) }
+    }
+    fun events(taskId: String, limit: Int = 30) = store.transaction { requireExact(taskId); store.events(taskId, limit) }
+    fun create(input: JSONObject): JSONObject = store.transaction {
+        val task = TaskProtocol.envelope(input); LegacyTaskCodec.validateTask(task)
+        require(store.exact(task.getString("id")) == null) { "任务 ID 已存在" }
+        store.insert(task); appendEvent(task, "task_created", JSONObject()); task
+    }
+    fun approve(taskId: String): JSONObject = store.transaction {
+        transition(taskId, "approved", JSONObject().put("approval", JSONObject().put("required", true).put("status", "approved").put("reviewerRole", "administrator").put("reviewerId", "local-user").put("approvedAt", Timestamp.now())))
+    }
+    fun start(taskId: String): JSONObject = store.transaction {
         val task = requireExact(taskId)
-        if (task.optString("status") == "pending" && task.getJSONObject("approval").optBoolean("required")) {
-            require(task.getJSONObject("approval").optString("status") == "approved") { "高风险任务必须先由用户批准" }
-        }
-        val current = requireExact(taskId)
-        require(current.optString("status") in setOf("pending", "approved", "queued", "failed", "blocked", "timed_out")) { "任务当前不能启动" }
-        if (current.optString("status") == "pending") transition(taskId, "approved")
-        return transition(taskId, "running", JSONObject().put("executionId", "execution-${UUID.randomUUID()}").put("startedAt", Timestamp.now()).put("lastHeartbeatAt", Timestamp.now()).put("attempt", current.optInt("attempt") + 1))
+        if (task.getJSONObject("approval").optBoolean("required")) require(task.getJSONObject("approval").optString("status") == "approved") { "高风险任务必须先由用户批准" }
+        require(task.optString("status") in setOf("pending", "approved", "queued", "failed", "blocked", "timed_out")) { "任务当前不能启动" }
+        if (task.optString("status") in setOf("pending", "failed", "blocked", "timed_out")) transition(taskId, "approved")
+        transition(taskId, "running", JSONObject().put("executionId", "execution-${UUID.randomUUID()}").put("startedAt", Timestamp.now()).put("lastHeartbeatAt", Timestamp.now()).put("attempt", task.optInt("attempt") + 1))
     }
-
-    fun acceptResult(taskId: String, payload: JSONObject): JSONObject {
+    fun acceptResult(taskId: String, payload: JSONObject): JSONObject = store.transaction {
         val task = requireExact(taskId); TaskProtocol.validateExternalResult(task, payload)
-        val reviewing = transition(taskId, "reviewing", JSONObject().put("result", payload))
+        transition(taskId, "reviewing", JSONObject().put("result", payload))
         val passed = payload.optJSONObject("validation")?.optBoolean("passed") == true
-        return transition(taskId, if (passed) "succeeded" else "failed", JSONObject().put("result", payload).put("completedAt", Timestamp.now()))
+        transition(taskId, if (passed) "succeeded" else "failed", JSONObject().put("result", payload).put("completedAt", Timestamp.now()))
     }
-
-    fun requireExact(taskId: String): JSONObject = list().singleOrNull { it.optString("id") == taskId }
-        ?: throw NoSuchElementException("未找到指定任务 ID：$taskId")
-
-    fun authorize(taskId: String, executionId: String, operation: String, logicalPath: String, write: Boolean): JSONObject {
+    fun requireExact(taskId: String): JSONObject = store.transaction { store.exact(taskId) ?: throw NoSuchElementException("未找到指定任务 ID：$taskId") }
+    fun authorize(taskId: String, executionId: String, operation: String, logicalPath: String, write: Boolean): JSONObject = store.transaction {
         val task = requireExact(taskId)
         require(task.optString("executionId") == executionId) { "任务执行上下文无效或已过期" }
         require(task.optString("status") == "running") { "文件工具只允许由运行中的任务调用" }
@@ -52,35 +48,26 @@ class TaskRepository(context: Context) {
         val path = WorkspacePath.normalized(logicalPath)
         val roots = permissions.getJSONArray(if (write) "write" else "read").strings().map(WorkspacePath::normalized)
         require(roots.any { path == it || path.startsWith("${it.trimEnd('/')}/") }) { "文件工具目标超出任务授权范围" }
-        return task
+        task
     }
-
+    /** Running tasks are not claimed to be cancelled without cooperative worker cancellation. */
+    fun cancelQueued(taskId: String, studentId: String): JSONObject = store.transaction {
+        val task = requireExact(taskId)
+        require(LegacyTaskCodec.studentId(task) == studentId) { "学生作用域已变化" }
+        require(task.getString("status") in setOf("draft", "pending", "approved", "queued", "blocked")) { "仅能取消尚未执行的任务" }
+        transition(taskId, "cancelled", JSONObject().put("autoRetry", false).put("completedAt", Timestamp.now()))
+    }
     private fun transition(taskId: String, nextStatus: String, patch: JSONObject = JSONObject()): JSONObject {
-        val store = readStore(); val tasks = store.getJSONArray("tasks").toObjects().toMutableList(); val index = tasks.indexOfFirst { it.optString("id") == taskId }
-        require(index >= 0) { "未找到任务" }; val current = tasks[index]; TaskProtocol.validateTransition(current.optString("status"), nextStatus)
+        val current = requireExact(taskId); TaskProtocol.validateTransition(current.optString("status"), nextStatus)
         val nextInput = JSONObject(current.toString()).put("status", nextStatus)
         patch.keys().forEach { nextInput.put(it, patch.opt(it)) }
-        val next = TaskProtocol.envelope(nextInput, current); tasks[index] = next; writeStore(store, tasks); appendEvent(next, "status_changed", JSONObject().put("from", current.optString("status")).put("to", nextStatus)); return next
+        val next = TaskProtocol.envelope(nextInput, current); store.replace(current, next)
+        appendEvent(next, "status_changed", JSONObject().put("from", current.optString("status")).put("to", nextStatus)); return next
     }
-
-    private fun readStore(): JSONObject = try { JSONObject(state.readBytes(TASKS).toString(Charsets.UTF_8)) } catch (_: Exception) {
-        JSONObject().put("protocolVersion", TaskProtocol.VERSION).put("updatedAt", "").put("tasks", JSONArray()).put("history", JSONArray())
-    }
-
-    private fun writeStore(previous: JSONObject, tasks: List<JSONObject>) {
-        val next = JSONObject().put("protocolVersion", TaskProtocol.VERSION).put("updatedAt", Timestamp.now())
-            .put("tasks", JSONArray().also { a -> tasks.forEach(a::put) }).put("history", previous.optJSONArray("history") ?: JSONArray())
-        state.writeBytes(TASKS, (next.toString(2) + "\n").toByteArray())
-    }
-
     private fun appendEvent(task: JSONObject, type: String, detail: JSONObject) {
-        val event = JSONObject().put("id", "event-${UUID.randomUUID()}").put("taskId", task.getString("id")).put("executionId", task.optString("executionId")).put("type", type).put("at", Timestamp.now()).put("detail", detail)
-        val old = try { state.readBytes(EVENTS).toString(Charsets.UTF_8).trimEnd() } catch (_: Exception) { "" }
-        state.writeBytes(EVENTS, ((if (old.isBlank()) "" else "$old\n") + event + "\n").toByteArray())
+        store.event(JSONObject().put("id", "event-${UUID.randomUUID()}").put("taskId", task.getString("id")).put("executionId", task.optString("executionId")).put("type", type).put("at", Timestamp.now()).put("detail", detail))
     }
-
     companion object {
-        private const val TASKS = "task-center/tasks.json"; private const val EVENTS = "task-center/events.jsonl"
         val OPERATION_ALLOWLIST = mapOf("student_digest" to setOf("read_file", "write_knowledge", "update_index"), "project_digest" to setOf("read_file", "write_project_knowledge", "update_index"), "ocr_extract" to setOf("read_file", "write_ocr_result", "vision_analyze"))
     }
 }

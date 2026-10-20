@@ -1,4 +1,5 @@
 const { recoverableResearchBlock } = require('./research-task-policy.cjs');
+const { taskExecutionUnresolved, unknownExecutionPatch } = require('./task-recovery-policy.cjs');
 const ACTIVE_TASK_STATUSES = new Set(['running', 'waiting_result']);
 const TERMINAL_TASK_STATUSES = new Set(['succeeded', 'failed', 'blocked', 'cancelled', 'timed_out', 'archived']);
 const NOISY_EVENT_TYPES = new Set([
@@ -9,6 +10,12 @@ const NOISY_EVENT_TYPES = new Set([
   'manual_execution_prepared',
   'manual_packet_exported',
 ]);
+const CONFIRMED_STOP_STATES = new Set(['host_confirmed_stopped', 'manual_packet_closed', 'user_confirmed_stopped']);
+
+function scheduledCycleScope(value) {
+  const parts = String(value || '').split(':').reverse();
+  return parts.find(part => /^\d{4}(?:-(?:\d{2}(?:-\d{2})?|W\d{2}))?$/.test(part)) || '';
+}
 
 function taskExecutionClass(task) {
   const adapterId = String(task?.adapterId || '');
@@ -21,7 +28,7 @@ function taskExecutionClass(task) {
 }
 
 function taskTimeoutDecision(task, nowValue = Date.now()) {
-  if (task?.recoveryState === 'unknown') return { enabled: false, due: false, kind: 'reconciling' };
+  if (taskExecutionUnresolved(task)) return { enabled: false, due: false, kind: 'reconciling' };
   if (!ACTIVE_TASK_STATUSES.has(String(task?.status || '')) || !task?.startedAt) {
     return { enabled: false, due: false, kind: 'inactive' };
   }
@@ -84,10 +91,24 @@ function candidateRuntimeDecision(current, candidate) {
   // candidate builder still describes the generic pending card. Keep that
   // prepared runtime intact until it launches; otherwise a UI refresh can
   // silently replace the selected adapter and retry state.
-  const preservePreparedExecution = ['approved', 'queued'].includes(currentStatus)
-    && Boolean(current?.executionId);
-  const preserveRuntime = current?.recoveryState === 'unknown' || preserveExecution || preservePreparedExecution;
-  const newCycle = Boolean(candidateCycle && candidateCycle !== currentCycle && !preserveRuntime);
+  // Approval is a prepared dispatch, including the async preflight before an
+  // executionId exists. A background candidate refresh must not demote it to
+  // blocked while qualification is in flight (blocked -> running is illegal).
+  const preservePreparedExecution = currentStatus === 'approved'
+    || currentStatus === 'queued' && Boolean(current?.executionId);
+  const preserveRuntime = taskExecutionUnresolved(current) || preserveExecution || preservePreparedExecution;
+  // A confirmed stop is durable for the whole scheduled window. Source
+  // fingerprints can legitimately change while the app is running (or when a
+  // newer host calculates them more precisely); that alone must never turn a
+  // quarantined execution back into an automatic dispatch. A genuinely new
+  // dated window can create a fresh task, and an explicit user retry follows a
+  // separate transition instead of passing through candidate refresh.
+  const currentScope = scheduledCycleScope(currentCycle);
+  const candidateScope = scheduledCycleScope(candidateCycle);
+  const confirmedStopProtected = TERMINAL_TASK_STATUSES.has(currentStatus)
+    && CONFIRMED_STOP_STATES.has(String(current?.recoveryState || ''))
+    && (!currentScope || !candidateScope || currentScope === candidateScope);
+  const newCycle = Boolean(candidateCycle && candidateCycle !== currentCycle && !preserveRuntime && !confirmedStopProtected);
   const refreshBlock = recoverableResearchBlock(current) && ['blocked', 'pending', 'queued'].includes(sourceStatus);
   const preserveTerminal = TERMINAL_TASK_STATUSES.has(currentStatus) && !newCycle && !refreshBlock;
   const safeSourceStatus = orphan && ACTIVE_TASK_STATUSES.has(sourceStatus) ? 'pending' : sourceStatus;
@@ -98,6 +119,7 @@ function candidateRuntimeDecision(current, candidate) {
     preservePreparedExecution,
     preserveRuntime,
     preserveTerminal,
+    confirmedStopProtected,
     refreshBlock,
     resetExecution: newCycle || orphan,
     nextStatus: preserveRuntime || preserveTerminal ? currentStatus : safeSourceStatus,
@@ -108,6 +130,11 @@ function repairTaskRuntimeStore(store, now = new Date().toISOString()) {
   if (!store || !Array.isArray(store.tasks)) return { changed: false, repairs: [] };
   const repairs = [];
   for (const task of store.tasks) {
+    if (taskExecutionUnresolved(task) && task.recoveryState !== 'unknown') {
+      const priorError = task.error;
+      Object.assign(task, unknownExecutionPatch(task, 'legacy_unconfirmed_stop', now), { error: priorError, updatedAt: now });
+      repairs.push({ taskId: task.id, type: 'unresolved_marker_repaired' });
+    }
     if (task.recoveryState === 'unknown') continue;
     const executionClass = taskExecutionClass(task);
     const maxAttempts = Math.max(1, Number(task.maxAttempts || 1));

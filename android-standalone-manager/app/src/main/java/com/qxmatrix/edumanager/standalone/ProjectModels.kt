@@ -42,11 +42,14 @@ data class ProjectRecord(
     val projectRootUri: String, val knowledgeRootUri: String, val workspaceRootUri: String,
     val workspaceMode: String, val knowledgeMode: String, val knowledgeSpaceId: String,
     val paths: ProjectPaths, val knowledgeAdoption: JSONObject?, val createdAt: String,
+    val materialStorageMode: String = "legacy", val materialRegistryVersion: Int = 1,
+    val materialMigrationState: String = "not_started",
+    val agentTool: String = "workbuddy",
 ) {
     fun toJson(): JSONObject = JSONObject().apply {
         put("id", id); put("name", name); put("storageName", name); put("type", type)
         put("description", description); put("objective", objective); put("status", status)
-        put("studentIds", JSONArray(studentIds)); put("studentNames", JSONArray(studentNames)); put("agentTool", "qclaw")
+        put("studentIds", JSONArray(studentIds)); put("studentNames", JSONArray(studentNames)); put("agentTool", agentTool)
         put("projectRootUri", projectRootUri); put("knowledgeRootUri", knowledgeRootUri); put("workspaceRootUri", workspaceRootUri)
         put("pathDialect", "android-saf-relative-v1")
         put("projectRootPath", paths.projectRootPath); put("managerPath", paths.managerPath); put("workspacePath", paths.workspacePath)
@@ -61,6 +64,8 @@ data class ProjectRecord(
         put("growthStrategy", "关注主动学习、问题解决和成果表达。")
         put("deliverables", JSONArray(listOf("项目总结", "最终成果")))
         put("studentEvidence", JSONArray()); put("assetIds", JSONArray()); put("stagingItems", JSONArray())
+        put("materialStorageMode", materialStorageMode); put("materialRegistryVersion", materialRegistryVersion)
+        put("materialMigrationState", materialMigrationState); put("inboxRelativePath", "收件箱")
         put("digestState", JSONObject().put("status", "idle").put("pendingCount", 0))
         put("automation", JSONObject().put("enabled", false).put("onWorkspaceChange", true).put("onStatusChange", false).put("intervalMinutes", 1440))
         put("promotionPath", child(paths.contributionPath, "知识贡献申请.md"))
@@ -72,7 +77,8 @@ data class ProjectRecord(
             val clean = StudentNamePolicy.sanitize(name); val isAdopted = adopted != null; val now = Timestamp.now()
             return ProjectRecord("project-${UUID.randomUUID()}", clean, type.ifBlank { "学习项目" }, description.trim(), objective.trim(),
                 students.map { it.id }, students.map { it.name }, "active", baseUri, if (isAdopted) adoptedUri else baseUri, baseUri,
-                "managed", if (isAdopted) "adopted" else "managed", if (isAdopted) knowledgeSpaceId else "", if (isAdopted) ProjectPaths.adoptedKnowledge(clean, adopted!!) else ProjectPaths.managed(clean), adoption, now)
+                "managed", if (isAdopted) "adopted" else "managed", if (isAdopted) knowledgeSpaceId else "", if (isAdopted) ProjectPaths.adoptedKnowledge(clean, adopted!!) else ProjectPaths.managed(clean), adoption, now,
+                materialStorageMode = "workspace-v1", materialRegistryVersion = 1, materialMigrationState = "complete")
         }
 
         fun fromJson(json: JSONObject): ProjectRecord = ProjectRecord(
@@ -83,7 +89,9 @@ data class ProjectRecord(
             ProjectPaths(json.getString("projectRootPath"), json.getString("managerPath"), json.getString("workspacePath"), json.getString("stagingPath"), json.optString("knowledgeRootPath"),
                 json.getString("rawPath"), json.getString("conceptPath"), json.getString("entityPath"), json.getString("summaryPath"), json.getString("qaPath"), json.getString("synthesisPath"),
                 json.getString("reportPath"), json.getString("contributionPath"), json.getString("agentPath"), json.getString("outputPath")),
-            json.optJSONObject("knowledgeAdoption"), json.optString("createdAt"))
+            json.optJSONObject("knowledgeAdoption"), json.optString("createdAt"),
+            json.optString("materialStorageMode", "legacy"), json.optInt("materialRegistryVersion", 1),
+            json.optString("materialMigrationState", "not_started"), json.optString("agentTool", "workbuddy"))
 
         private fun child(root: String, path: String) = if (root.isBlank()) path else "$root/$path"
     }

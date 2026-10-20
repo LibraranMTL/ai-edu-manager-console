@@ -45,15 +45,24 @@ test('W16 digest follows student and project AGENT rules without cross-scope pub
   assert.match(digest, /project\.paths\.qaPath/);
 });
 
-test('formal Android source matches its release record and preserves the W16 baseline', () => {
+test('Android source matches its release or explicit candidate record and preserves the W16 baseline', () => {
   const build = fs.readFileSync(path.join(__dirname, '..', 'android-standalone-manager', 'app', 'build.gradle.kts'), 'utf8');
   const versionName = build.match(/versionName = "(\d+\.\d+\.\d+)"/)?.[1];
   const versionCode = Number(build.match(/versionCode = (\d+)/)?.[1]);
   assert.ok(versionName, 'Android standalone versionName must be semantic');
   assert.ok(versionCode >= 26, 'W16 must not regress below code 26');
-  const releaseRecord = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'android-standalone-manager', 'delivery', `AI-Education-Manager-Android-Standalone-${versionName}-release.json`), 'utf8'));
+  const project = path.join(__dirname, '..', 'android-standalone-manager');
+  const formalPath = path.join(project, 'delivery', `AI-Education-Manager-Android-Standalone-${versionName}-release.json`);
+  const candidate = !fs.existsSync(formalPath);
+  const releaseRecord = JSON.parse(fs.readFileSync(candidate ? path.join(project, 'candidate.json') : formalPath, 'utf8'));
   assert.equal(releaseRecord.versionName, versionName);
   assert.equal(releaseRecord.versionCode, versionCode);
-  assert.equal(releaseRecord.releaseStatus, 'release');
+  assert.equal(releaseRecord.releaseStatus, candidate ? 'candidate' : 'release');
+  if (candidate) {
+    const previous = JSON.parse(fs.readFileSync(path.join(project, 'delivery', `AI-Education-Manager-Android-Standalone-${releaseRecord.previousFormalVersion}-release.json`), 'utf8'));
+    assert.equal(previous.releaseStatus, 'release');
+    assert.ok(previous.versionCode < versionCode);
+    assert.match(previous.certificateSha256, /^[A-Fa-f0-9]{64}$/);
+  }
   assert.match(build, /isMinifyEnabled = true/);
 });

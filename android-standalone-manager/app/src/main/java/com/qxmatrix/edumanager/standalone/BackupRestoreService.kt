@@ -31,6 +31,7 @@ class BackupRestoreService(private val context: Context) {
     private val random = SecureRandom()
 
     fun exportPackage(destination: Uri, password: CharArray): JSONObject {
+        PendingAudioBackupGuard.requireArchived(context)
         val migrationId = "migration-${System.currentTimeMillis()}-${UUID.randomUUID().toString().take(8)}"
         val manifestFiles = JSONArray(); var totalBytes = 0L
         var key: ByteArray? = null
@@ -82,6 +83,13 @@ class BackupRestoreService(private val context: Context) {
         try {
             require(password.size >= 8) { "备份密码至少需要 8 个字符" }
             val target = requireNotNull(DocumentFile.fromTreeUri(context, targetRoot)) { "恢复目标目录不可用" }
+            BusinessRestoreRecovery.recover(context)
+            PrivateStateStore(context).readIfPresent("projects.json")?.let {
+                require(JSONObject(it.toString(Charsets.UTF_8)).getJSONArray("projects").length() == 0) { "本机已有项目记录，不能覆盖恢复" }
+            }
+            require(StudentIndexRepository(context).list().isEmpty() && ProjectRepository(context).list().isEmpty()) {
+                "恢复只允许在没有学生档案和项目的空白单机版中进行，不能覆盖另一个家庭的资料"
+            }
             require(target.listFiles().isEmpty()) { "恢复目标目录必须为空，避免覆盖现有家庭资料" }
             context.contentResolver.openInputStream(source)?.use { input -> FileOutputStream(localZip).use { input.copyTo(it) } } ?: error("无法读取备份包")
             ZipFile(localZip).use { zip ->
@@ -104,7 +112,7 @@ class BackupRestoreService(private val context: Context) {
                 val stateSnapshot = snapshotPrivateState()
                 try {
                     restoreManagedFiles(stage, entries, targetRoot)
-                    applyStagedState(stage)
+                    BusinessDatabaseBackup(context).restoreStaged(File(stage, "state/app-state")) { applyStagedState(stage) }
                 } catch (error: Throwable) {
                     restorePrivateSnapshot(stateSnapshot); throw error
                 }
@@ -139,8 +147,8 @@ class BackupRestoreService(private val context: Context) {
     private fun cleanupFailedDestination(destination: Uri, roots: List<RootSpec>): Boolean {
         val resolver = context.contentResolver
         runCatching { resolver.openOutputStream(destination, "wt")?.use { } }
-        if (runCatching { DocumentsContract.deleteDocument(resolver, destination) }.getOrDefault(false)) return true
-        if (runCatching { resolver.delete(destination, null, null) > 0 }.getOrDefault(false)) return true
+        if (runCatching { DocumentsContract.deleteDocument(resolver, destination) }.getOrDefault(false)) { return true }
+        if (runCatching { resolver.delete(destination, null, null) > 0 }.getOrDefault(false)) { return true }
         val destinationId = runCatching { DocumentsContract.getDocumentId(destination) }.getOrNull() ?: return false
         for (root in roots) {
             val rootUri = Uri.parse(root.originalUri)
@@ -159,6 +167,12 @@ class BackupRestoreService(private val context: Context) {
 
     private fun collectSources(roots: List<RootSpec>): List<Source> {
         val output = mutableListOf<Source>()
+        val businessSnapshot = BusinessDatabaseBackup(context).exportBytes()
+        output += Source("state", "app-state", BusinessDatabaseBackup.SNAPSHOT_PATH, BusinessDatabaseBackup.SNAPSHOT_PATH,
+            businessSnapshot.size.toLong()) { ByteArrayInputStream(businessSnapshot) }
+        listOf(PublicSettingsSnapshot.PATH to PublicSettingsSnapshot.exportBytes(context), CollaborationArchiveSnapshot.PATH to CollaborationArchiveSnapshot.exportBytes(context)).forEach { (path, bytes) ->
+            output += Source("state", "app-state", path, path, bytes.size.toLong()) { ByteArrayInputStream(bytes) }
+        }
         roots.forEach { root ->
             val document = requireNotNull(DocumentFile.fromTreeUri(context, Uri.parse(root.originalUri))) { "已授权资料根目录不可用" }
             walkDocument(document, "") { file, relative ->
@@ -168,6 +182,7 @@ class BackupRestoreService(private val context: Context) {
         val stateRoot = File(context.filesDir, "education-manager-state")
         if (stateRoot.isDirectory) stateRoot.walkTopDown().filter { it.isFile && !it.name.endsWith(".bak") && !it.name.endsWith(".new") }.forEach { file ->
             val relative = file.relativeTo(stateRoot).invariantSeparatorsPath
+            if (relative in setOf(BusinessDatabaseBackup.SNAPSHOT_PATH, PublicSettingsSnapshot.PATH, CollaborationArchiveSnapshot.PATH) || relative.startsWith(BusinessRestoreRecovery.PREFIX) || relative.startsWith("audio-capture/")) return@forEach
             output += Source("state", "app-state", relative, relative, file.length()) { FileInputStream(file) }
         }
         return output
@@ -245,6 +260,9 @@ class BackupRestoreService(private val context: Context) {
         }
         val assets = File(stage, "state/app-state/asset-index.json")
         if (assets.isFile && replacements.isNotEmpty()) { val value = JSONObject(assets.readText()); rewriteStrings(value, replacements.sortedByDescending { it.first.length }); assets.writeText(value.toString(2)) }
+        BusinessDatabaseBackup.remapSnapshot(File(stage, "state/app-state/${BusinessDatabaseBackup.SNAPSHOT_PATH}")) {
+            rewriteStrings(it, replacements.sortedByDescending { replacement -> replacement.first.length })
+        }
     }
 
     private fun rewriteStrings(value: Any?, replacements: List<Pair<String, String>>): Any? {
@@ -257,8 +275,8 @@ class BackupRestoreService(private val context: Context) {
     }
 
     private fun snapshotPrivateState(): Map<String, ByteArray> { val root = File(context.filesDir, "education-manager-state"); return if (!root.isDirectory) emptyMap() else root.walkTopDown().filter(File::isFile).associate { it.relativeTo(root).invariantSeparatorsPath to it.readBytes() } }
-    private fun restorePrivateSnapshot(snapshot: Map<String, ByteArray>) { snapshot.forEach { (path, bytes) -> PrivateStateStore(context).writeBytes(path, bytes) } }
-    private fun applyStagedState(stage: File) { val root = File(stage, "state/app-state"); if (root.isDirectory) root.walkTopDown().filter(File::isFile).forEach { PrivateStateStore(context).writeBytes(it.relativeTo(root).invariantSeparatorsPath, it.readBytes()) } }
+    private fun restorePrivateSnapshot(snapshot: Map<String, ByteArray>) { snapshot.filterKeys { !it.startsWith(BusinessRestoreRecovery.PREFIX) }.forEach { (path, bytes) -> PrivateStateStore(context).writeBytes(path, bytes) } }
+    private fun applyStagedState(stage: File) { val root = File(stage, "state/app-state"); if (root.isDirectory) root.walkTopDown().filter(File::isFile).forEach { PrivateStateStore(context).writeBytes(it.relativeTo(root).invariantSeparatorsPath, it.readBytes()) }; PublicSettingsSnapshot.apply(context, root) }
 
     private fun deriveKey(password: CharArray, salt: ByteArray): ByteArray = SCrypt.generate(String(password).toByteArray(Charsets.UTF_8), salt, 16384, 8, 1, 32)
     private fun putBytes(zip: ZipOutputStream, name: String, bytes: ByteArray) { zip.putNextEntry(ZipEntry(name)); zip.write(bytes); zip.closeEntry() }

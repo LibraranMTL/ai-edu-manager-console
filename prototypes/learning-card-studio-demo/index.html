@@ -3,38 +3,41 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>AI教育管家 ·学习卡片工作室 Demo</title>
+  <title>AI教育管家 · 学习卡片模块 Demo</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='16' fill='%23246c55'/%3E%3Cpath d='M17 18h18c7 0 12 5 12 12v16H29c-7 0-12-5-12-12V18Zm8 8v8c0 3 2 5 5 5h9v-8c0-3-2-5-5-5h-9Z' fill='white'/%3E%3C/svg%3E" />
   <link rel="stylesheet" href="./styles.css" />
 </head>
 <body>
   <div class="demo-ribbon">
-    <span>示意 Demo · 全部学生与学情数据均为虚构</span>
-    <span>不连接真实账号，不上传任何资料</span>
+    <span>嵌入式模块 Demo · 全部学生与学情数据均为虚构</span>
+    <span>教育管家正式功能不受影响 · 不连接真实账号</span>
   </div>
 
   <div class="app-shell">
     <aside class="sidebar">
       <div class="brand">
         <div class="brand-mark" aria-hidden="true"><i></i><b></b></div>
-        <div><strong>AI教育管家</strong><small>Learning Studio</small></div>
+        <div><strong>AI教育管家</strong><small>Windows 主机端</small></div>
       </div>
 
-      <nav aria-label="主要导航">
-        <button class="nav-item active" data-page="studio" type="button"><span>01</span><b>学习卡片</b></button>
-        <button class="nav-item" data-page="resources" type="button"><span>02</span><b>资源中心</b><em>12</em></button>
-        <button class="nav-item" data-page="history" type="button"><span>03</span><b>使用记录</b></button>
+      <nav aria-label="教育管家主要导航">
+        <button class="nav-item core-nav-item" data-core-section="home" type="button"><span>⌂</span><b>首页</b></button>
+        <button class="nav-item core-nav-item" data-core-section="inbox" type="button"><span>↓</span><b>资料收集</b><em>3</em></button>
+        <button class="nav-item core-nav-item" data-core-section="reports" type="button"><span>▤</span><b>学情报告</b></button>
+        <button class="nav-item active" type="button"><span>▰</span><b>学习卡片</b><em>1</em></button>
+        <button class="nav-item core-nav-item" data-core-section="tasks" type="button"><span>✓</span><b>任务中心</b></button>
       </nav>
 
       <div class="core-links">
-        <p>教育管家</p>
-        <button type="button">学生档案</button>
-        <button type="button">学情报告</button>
-        <button type="button">任务中心</button>
+        <p>知识与设置</p>
+        <button class="core-nav-item" data-core-section="archive" type="button">教育档案</button>
+        <button class="core-nav-item" data-core-section="courses" type="button">课程</button>
+        <button class="core-nav-item" data-core-section="settings" type="button">系统设置</button>
       </div>
 
       <div class="sidebar-foot">
         <div class="local-status"><i></i><span><b>本地数据空间</b><small>学生资料未离开本机</small></span></div>
-        <div class="account"><span>LC</span><div><b>Learning Coach</b><small>School workspace</small></div><button type="button">⌄</button></div>
+        <div class="account"><span>LC</span><div><b>Learning Coach</b><small>机构工作区</small></div><button type="button">⌄</button></div>
       </div>
     </aside>
 
@@ -50,14 +53,24 @@
         </div>
       </header>
 
+      <div class="module-bar" aria-label="学习卡片模块导航">
+        <div class="module-identity"><span>学习卡片</span><small>原生模块 · 当前学生独立</small></div>
+        <nav class="module-tabs">
+          <button class="active" data-page="studio" type="button">今日卡片</button>
+          <button data-page="history" type="button">使用记录</button>
+          <button data-page="resources" type="button">模板</button>
+        </nav>
+        <div class="module-health"><i></i> 模块正常</div>
+      </div>
+
       <section class="page active" data-page-panel="studio">
         <div class="page-heading">
           <div>
-            <p class="eyebrow">TODAY · 09 SEP 2026</p>
-            <h1>一张真正适合 Maya 的卡片</h1>
-            <p>系统从已确认的学情证据中选择一个重点，自动匹配内容、难度与版式。</p>
+            <p class="eyebrow">TODAY · 28 SEP 2026</p>
+            <h1>今日学习卡片</h1>
+            <p>基于 Maya 最新确认的学情证据，聚焦一个学习重点，预计 10 分钟完成。</p>
           </div>
-          <div class="value-note"><span>预计节省</span><strong>18 min</strong><small>相对手工整理</small></div>
+          <div class="value-note"><span>今日状态</span><strong>已生成</strong><small>来源完整 · 可以发送</small></div>
         </div>
 
         <div class="evidence-rail">
@@ -135,7 +148,7 @@
                   <i></i><i></i>
                 </section>
 
-                <footer class="sheet-footer"><span>Based on verified learning evidence · ENG-GR-042</span><b>Made for Maya · 09.09.2026</b></footer>
+                <footer class="sheet-footer"><span>Based on verified learning evidence · ENG-GR-042</span><b>Made for Maya · 28.09.2026</b></footer>
               </article>
             </div>
           </section>
@@ -174,43 +187,37 @@
 
       <section class="page" data-page-panel="resources">
         <div class="resource-heading">
-          <div><p class="eyebrow">CURATED RESOURCES</p><h1>教学资源中心</h1><p>选择经过审核的模板和活动包，无需安装插件。</p></div>
-          <div class="resource-search"><span>⌕</span><input id="resourceSearch" type="search" placeholder="搜索学科、年龄或风格" /></div>
+          <div><p class="eyebrow">BUILT-IN TEMPLATES</p><h1>卡片模板</h1><p>首版提供三套官方模板，系统根据年龄、学科和输出场景自动推荐。</p></div>
+          <div class="template-safety"><i>✓</i><span><b>全部为内置资源</b><small>不安装插件，不执行第三方代码</small></span></div>
         </div>
 
-        <div class="category-row">
-          <button class="active" data-filter="all" type="button">全部</button>
-          <button data-filter="language" type="button">语言学习</button>
-          <button data-filter="stem" type="button">数学与科学</button>
-          <button data-filter="print" type="button">黑白打印</button>
-          <button data-filter="school" type="button">学校品牌</button>
+        <div class="template-rulebar">
+          <span><b>自动推荐</b> 森林手账</span>
+          <span><b>可调整项</b> 风格、色彩、显示区块</span>
+          <span><b>保持一致</b> 题目、答案和来源</span>
         </div>
 
         <div class="resource-feature">
-          <div class="feature-copy"><span>本周精选 · 官方模板</span><h2>把一个薄弱点，变成一场小小探索</h2><p>森林手账包含语言、科学与阅读三种活动版式，自动适配 A4 和学生端。</p><button class="primary-button add-resource" data-name="森林手账" type="button">已添加 · 当前使用</button></div>
+          <div class="feature-copy"><span>系统推荐 · 当前模板</span><h2>森林手账</h2><p>温和、图文均衡，适合语言、阅读和低龄科学内容；自动适配 A4 与学生端。</p><button class="primary-button use-template" data-template="forest" type="button">当前使用</button></div>
           <div class="feature-art" aria-label="原创森林手账模板预览"><div class="mini-sheet"><span>FIELD NOTES</span><h3>Explore<br>one idea.</h3><i></i><i></i><b></b></div><div class="mini-leaf leaf-a"></div><div class="mini-leaf leaf-b"></div></div>
         </div>
 
         <div class="resource-grid" id="resourceGrid">
-          <article class="resource-item" data-category="language" data-search="英语 词汇 语言 vocabulary">
+          <article class="resource-item" data-category="language" data-search="亲和 图文 语言 vocabulary">
             <div class="resource-preview preview-words"><span>WORD LAB</span><b>context</b><i>meaning · example · your turn</i></div>
-            <div class="resource-info"><p><span>语言学习</span><small>官方</small></p><h3>Vocabulary Lab</h3><p>用语境、搭配和个人表达掌握词汇。</p><button class="add-resource" data-name="Vocabulary Lab" type="button">添加到模板</button></div>
+            <div class="resource-info"><p><span>亲和图文</span><small>官方 · v1</small></p><h3>森林手账</h3><p>图文均衡，适合语言、阅读和低龄科学。</p><button class="use-template added" data-template="forest" type="button">当前使用</button></div>
           </article>
           <article class="resource-item" data-category="stem" data-search="数学 科学 图解 stem">
             <div class="resource-preview preview-logic"><span>THINK IN STEPS</span><div><i>1</i><b>→</b><i>2</i><b>→</b><i>3</i></div><em>show your thinking</em></div>
-            <div class="resource-info"><p><span>数学与科学</span><small>教师创作</small></p><h3>清晰推理</h3><p>把计算过程拆成可以检查的步骤。</p><button class="add-resource" data-name="清晰推理" type="button">添加到模板</button></div>
+            <div class="resource-info"><p><span>清晰学术</span><small>官方 · v1</small></p><h3>清晰推理</h3><p>低干扰、高信息密度，突出步骤和结论。</p><button class="use-template" data-template="academic" type="button">使用此模板</button></div>
           </article>
           <article class="resource-item" data-category="print" data-search="黑白 打印 单词 卡片 print">
             <div class="resource-preview preview-mono"><span>01</span><h4>decorate</h4><p>/ˈdekəreɪt/</p><i></i><i></i></div>
-            <div class="resource-info"><p><span>黑白打印</span><small>学校精选</small></p><h3>Ink Saver</h3><p>高对比线稿设计，适合家庭打印。</p><button class="add-resource" data-name="Ink Saver" type="button">添加到模板</button></div>
-          </article>
-          <article class="resource-item" data-category="school" data-search="学校 品牌 校本 school">
-            <div class="resource-preview preview-school"><span>NORTHSTAR</span><i></i><b>WEEKLY<br>REVIEW</b><em>school edition</em></div>
-            <div class="resource-info"><p><span>学校品牌</span><small>机构模板</small></p><h3>Northstar School Kit</h3><p>校徽、课程色与教师反馈统一呈现。</p><button class="add-resource" data-name="Northstar School Kit" type="button">添加到模板</button></div>
+            <div class="resource-info"><p><span>黑白打印</span><small>官方 · v1</small></p><h3>黑白练习</h3><p>高对比线稿与答题区，适合家庭打印。</p><button class="use-template" data-template="mono" type="button">使用此模板</button></div>
           </article>
         </div>
 
-        <div class="creator-strip"><div><span>TEACHER CREATOR</span><h2>把你的教学方法，做成可复用资源</h2><p>首阶段仅支持模板与内容包；平台负责版本、安全和版权审核。</p></div><button class="quiet-button" id="creatorInfo" type="button">了解创作者计划</button></div>
+        <div class="creator-strip"><div><span>FIRST RELEASE BOUNDARY</span><h2>先验证学习闭环，再开放更多模板</h2><p>首版不提供外部插件、模板市场和第三方图片 API，避免增加系统与使用复杂度。</p></div><button class="quiet-button" id="templateBoundary" type="button">查看首版边界</button></div>
       </section>
 
       <section class="page" data-page-panel="history">
@@ -222,7 +229,7 @@
 
         <div class="history-list">
           <div class="history-row header"><span>日期与学科</span><span>练习重点</span><span>用时</span><span>学生反馈</span><span>结果</span></div>
-          <div class="history-row"><span><b>09 Sep</b><small>English</small></span><span><b>Past continuous</b><small>ENG-GR-042</small></span><span>进行中</span><span>—</span><span><em class="status current">今日</em></span></div>
+          <div class="history-row"><span><b>28 Sep</b><small>English</small></span><span><b>Past continuous</b><small>ENG-GR-042</small></span><span>进行中</span><span>—</span><span><em class="status current">今日</em></span></div>
           <div class="history-row"><span><b>08 Sep</b><small>Mathematics</small></span><span><b>Fraction as operator</b><small>M-FRAC-018</small></span><span>9 min</span><span>正合适</span><span><em class="status done">已完成</em></span></div>
           <div class="history-row"><span><b>07 Sep</b><small>English</small></span><span><b>Evidence in paragraphs</b><small>ENG-WR-031</small></span><span>12 min</span><span>有点难</span><span><em class="status adjusted">已调低难度</em></span></div>
           <div class="history-row"><span><b>05 Sep</b><small>Science</small></span><span><b>Particle model</b><small>SCI-CH-014</small></span><span>11 min</span><span>正合适</span><span><em class="status done">已完成</em></span></div>

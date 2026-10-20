@@ -18,14 +18,14 @@ class StudentDigestOrchestrator(private val context: Context) {
         return digest(studentId, materialIds)
     }
 
-    private fun digest(studentId: String, selectedMaterialIds: Set<String>?): JSONObject {
+    private fun digest(studentId: String, selectedMaterialIds: Set<String>?): JSONObject = synchronized(StudentWorkLocks.forStudent(studentId)) {
         val student = students.requireExact(studentId)
         val materials = files.materials(studentId).filter {
             MaterialStatus.normalize(it.optString("status")) == MaterialStatus.PENDING_DIGEST &&
                 (selectedMaterialIds == null || it.optString("id") in selectedMaterialIds)
         }
         require(materials.isNotEmpty()) { "当前没有待消化资料" }
-        val eligible = materials.filter { it.optString("fileName").substringAfterLast('.', "").lowercase() in setOf("txt", "md", "csv", "json") || it.optString("ocrStatus") == "completed" }
+        val eligible = materials.filter { it.optString("fileName").substringAfterLast('.', "").lowercase() in setOf("txt", "md", "csv", "json") || it.optString("ocrStatus") == "completed" }.take(20)
         require(eligible.isNotEmpty()) { "当前待消化资料需要先经过 W7 OCR/文档解析" }
         val expectedPath = "${student.paths.summaryPath}/摘要库/消化结果.md"
         val task = tasks.create(JSONObject()
@@ -38,26 +38,52 @@ class StudentDigestOrchestrator(private val context: Context) {
                 .put("operations", JSONArray(listOf("read_file", "write_knowledge", "update_index")))))
         val running = tasks.start(task.getString("id")); val executionId = running.getString("executionId")
         eligible.forEach { files.transitionMaterial(studentId, it.getString("id"), MaterialStatus.SUBMITTED); files.transitionMaterial(studentId, it.getString("id"), MaterialStatus.DIGESTING) }
-        return try {
+        try {
             val store = SafWorkspaceStore(context, Uri.parse(student.storageRootUri))
             val rules = store.readBytes(student.paths.agentPath).toString(Charsets.UTF_8)
             val sourceContents = eligible.map { material ->
+                val original = files.readMaterialBytes(studentId, material.getString("id"))
+                material.put("digestSourceSha256", ScopedContentPolicy.hash(original))
                 val content = if (material.optString("ocrStatus") == "completed" && material.optString("ocrPath").isNotBlank()) {
                     JSONObject(files.readLogicalBytes(studentId, material.getString("ocrPath")).toString(Charsets.UTF_8)).optString("text")
-                } else files.readMaterialBytes(studentId, material.getString("id")).toString(Charsets.UTF_8)
-                val bounded = content.take(100_000)
+                } else original.toString(Charsets.UTF_8)
+                material.put("digestTextSha256", ScopedContentPolicy.hash(content.toByteArray()))
+                val bounded = content.take(6_000)
                 material to bounded
             }
             val adapterConfig = requireNotNull(AgentConfigurationStore(context).load()) { "尚未配置 Agent 模型" }
-            val response = OpenAiCompatibleAgentAdapter(adapterConfig).execute(
-                "你是 AI 教育管家的资料消化 Agent。严格遵守 AGENT.md；只形成可审计知识候选，不发布正式教育结论。只输出 JSON。",
-                buildPrompt(student, rules, sourceContents),
-            )
-            val parsed = parseJsonResponse(response)
-            val artifactPath = "${student.paths.summaryPath}/摘要库/消化-${executionId}.md"
-            store.writeBytesSafely(artifactPath, digestMarkdown(student, parsed, sourceContents).toByteArray(), "text/markdown")
+            val prompt = buildPrompt(student, rules, sourceContents)
+            val cacheKey = ScopedContentPolicy.fingerprint(JSONObject().put("strategy", "student-digest-v3").put("studentId", studentId)
+                .put("endpoint", adapterConfig.endpoint).put("model", adapterConfig.model).put("prompt", prompt)
+                .put("fullTextHashes", JSONArray(sourceContents.map { it.first.getString("digestTextSha256") })))
+            val content = ScopedContentRepository(context); val db = BusinessDatabase.get(context)
+            val cached = content.checkpoint(studentId, "digest_result", cacheKey)
+            val markerKey = "digest-request:$studentId:$cacheKey"
+            val parsed = if (cached != null) cached.getJSONObject("result") else {
+                require(UnknownOutcomePolicy.retryAllowed(db.tasks().metadata(markerKey)?.let(::JSONObject), selectedMaterialIds != null)) { "上次相同资料消化结果未知，请到任务中心核对并单次授权，再手动选择资料消化；不会自动重试" }
+                db.tasks().metadata(BusinessMetadataEntity(markerKey, JSONObject().put("state", "unknown").put("taskId", task.getString("id")).toString()))
+                val response = OpenAiCompatibleAgentAdapter(adapterConfig, context, student.id, task.getString("id")).execute(
+                    "你是 AI 教育管家的资料消化 Agent。严格遵守 AGENT.md；只形成可审计知识候选，不发布正式教育结论。只输出 JSON。", prompt)
+                parseJsonResponse(response).also { result ->
+                    DigestEvidencePolicy.validate(result, sourceContents.associate { it.first.getString("id") to it.second })
+                    content.saveCheckpoint(studentId, "digest_result", cacheKey, JSONObject().put("result", result)
+                        .put("markdown", digestMarkdown(student, result, sourceContents)).put("sourceFingerprint", cacheKey))
+                    db.tasks().metadata(BusinessMetadataEntity(markerKey, JSONObject().put("state", "succeeded").toString()))
+                }
+            }
+            DigestEvidencePolicy.validate(parsed, sourceContents.associate { it.first.getString("id") to it.second })
+            sourceContents.forEach { (material, _) ->
+                require(ScopedContentPolicy.hash(files.readMaterialBytes(studentId, material.getString("id"))) == material.getString("digestSourceSha256")) { "来源已变化，拒绝写入迟到结果" }
+                if (material.optString("ocrStatus") == "completed" && material.optString("ocrPath").isNotBlank()) {
+                    val text = JSONObject(files.readLogicalBytes(studentId, material.getString("ocrPath")).toString(Charsets.UTF_8)).optString("text")
+                    require(ScopedContentPolicy.hash(text.toByteArray()) == material.getString("digestTextSha256")) { "OCR 来源已变化，原版本保留" }
+                }
+            }
+            val artifactPath = "${student.paths.summaryPath}/摘要库/消化-${cacheKey.take(24)}.md"
+            val markdown = requireNotNull(content.checkpoint(studentId, "digest_result", cacheKey)).getString("markdown")
+            store.writeBytesSafely(artifactPath, markdown.toByteArray(), "text/markdown")
             updateWikiIndexes(store, student, artifactPath)
-            registerKnowledge(student, sourceContents, parsed)
+            registerKnowledge(student, sourceContents, parsed, cacheKey)
             registerGrowthEvidence(student, sourceContents, parsed)
             eligible.forEach {
                 files.patchMaterial(studentId, it.getString("id"), JSONObject()
@@ -85,7 +111,7 @@ class StudentDigestOrchestrator(private val context: Context) {
     private fun buildPrompt(student: StudentRecord, rules: String, sources: List<Pair<JSONObject, String>>): String = buildString {
         appendLine("学生 ID：${student.id}"); appendLine("学生姓名：${student.name}"); appendLine("\nAGENT.md：\n$rules")
         appendLine("\n本批资料：")
-        sources.forEach { (material, content) -> appendLine("\n--- ${material.getString("fileName")} | ${material.getString("sha1")} ---\n$content") }
+        sources.forEach { (material, content) -> appendLine("\n--- ${material.getString("fileName")} | materialId=${material.getString("id")} | sha256=${material.getString("digestSourceSha256")} | fragment=前6000字符 ---\n$content") }
         appendLine("""
 
             返回格式：
@@ -104,6 +130,7 @@ class StudentDigestOrchestrator(private val context: Context) {
             val title = candidate.optString("title").trim(); val observation = candidate.optString("observation").trim()
             if (title.isBlank() || observation.isBlank()) continue
             val excerpt = candidate.optString("excerpt").trim()
+            require(excerpt.isNotBlank() && sources.single { it.first.getString("id") == material.getString("id") }.second.contains(excerpt)) { "成长观察缺少真实原文摘录，不登记" }
             val content = if (excerpt.isBlank() || observation.contains(excerpt)) observation else "$observation\n\n原文摘录：$excerpt"
             growth.addAutomaticCandidate(
                 studentId = student.id,
@@ -117,7 +144,7 @@ class StudentDigestOrchestrator(private val context: Context) {
         }
     }
 
-    private fun registerKnowledge(student: StudentRecord, sources: List<Pair<JSONObject, String>>, parsed: JSONObject) {
+    private fun registerKnowledge(student: StudentRecord, sources: List<Pair<JSONObject, String>>, parsed: JSONObject, cacheKey: String) {
         val engine = StudentWorkspaceService(context).knowledgeEngine(student.id)
         val uriByMaterial = mutableMapOf<String, String>()
         sources.forEach { (material, content) ->
@@ -128,16 +155,22 @@ class StudentDigestOrchestrator(private val context: Context) {
         for (index in 0 until claims.length()) {
             val candidate = claims.optJSONObject(index) ?: continue; val materialId = candidate.optString("sourceMaterialId"); val sourceUri = uriByMaterial[materialId] ?: continue
             val predicate = candidate.optString("predicate").trim(); if (predicate.isBlank() || candidate.optString("value").isBlank()) continue
-            val evidence = JSONArray().put(JSONObject().put("id", "evidence-${UUID.randomUUID()}").put("sourceUri", sourceUri).put("excerpt", candidate.optString("excerpt")).put("observedAt", Timestamp.now()))
-            engine.upsertClaim(JSONObject().put("id", "claim-${UUID.randomUUID()}").put("subjectId", engine.subjectId).put("predicate", predicate).put("value", candidate.optString("value"))
+            require(candidate.optString("excerpt").isNotBlank() && sources.single { it.first.getString("id") == materialId }.second.contains(candidate.getString("excerpt"))) { "知识声明没有真实原文摘录，不登记" }
+            val source = sources.single { it.first.getString("id") == materialId }.first
+            val identity = ScopedContentPolicy.hash("$cacheKey:$materialId:$predicate:${candidate.optString("value")}".toByteArray()).take(24)
+            val evidence = JSONArray().put(JSONObject().put("id", "evidence-$identity").put("sourceUri", sourceUri).put("excerpt", candidate.optString("excerpt")).put("observedAt", Timestamp.now())
+                .put("sourceSha256", source.getString("digestSourceSha256")).put("fragment", "前6000字符").put("processingVersion", "student-digest-v2"))
+            engine.upsertClaim(JSONObject().put("id", "claim-$identity").put("subjectId", engine.subjectId).put("predicate", predicate).put("value", candidate.optString("value"))
                 .put("status", "candidate").put("confidence", candidate.optString("confidence", "unknown")).put("evidence", evidence).put("generatedBy", "local-agent"))
         }
     }
 
     private fun updateWikiIndexes(store: SafWorkspaceStore, student: StudentRecord, artifactPath: String) {
         val indexPath = "${student.paths.summaryPath}/index.md"; val logPath = "${student.paths.summaryPath}/log.md"
-        val index = store.readBytes(indexPath).toString(Charsets.UTF_8).trimEnd() + "\n\n- [${Timestamp.now()}] $artifactPath\n"
-        val log = store.readBytes(logPath).toString(Charsets.UTF_8).trimEnd() + "\n- ${Timestamp.now()}：完成一批资料消化，产物 $artifactPath。\n"
+        val previousIndex = store.readBytes(indexPath).toString(Charsets.UTF_8).trimEnd()
+        val previousLog = store.readBytes(logPath).toString(Charsets.UTF_8).trimEnd()
+        val index = if (previousIndex.contains(artifactPath)) previousIndex else previousIndex + "\n\n- [${Timestamp.now()}] $artifactPath\n"
+        val log = if (previousLog.contains(artifactPath)) previousLog else previousLog + "\n- ${Timestamp.now()}：完成一批资料消化，产物 $artifactPath。\n"
         store.writeBytesSafely(indexPath, index.toByteArray(), "text/markdown"); store.writeBytesSafely(logPath, log.toByteArray(), "text/markdown")
     }
 
@@ -160,7 +193,7 @@ class StudentDigestOrchestrator(private val context: Context) {
 
         ## 来源
 
-        ${sources.joinToString("\n") { (m, _) -> "- ${m.getString("fileName")}（${m.getString("sha1")}）" }}
+        ${sources.joinToString("\n") { (m, _) -> "- ${m.getString("fileName")} · ${m.getString("id")} · SHA256 ${m.getString("digestSourceSha256")} · 前6000字符 · student-digest-v2" }}
     """.trimIndent() + "\n"
 
     private fun parseJsonResponse(text: String): JSONObject {

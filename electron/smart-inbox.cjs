@@ -176,6 +176,8 @@ function createSmartInbox(host) {
       const record = { ...old, id: old?.id || (trusted && input.id) || crypto.randomUUID(), type, folder,
         name: String(input.name || old?.name || path.basename(folder) || type).slice(0, 120), studentId, target: selectedTarget,
         enabled: Boolean(enabled), automatic: Boolean(input.automatic ?? old?.automatic ?? false), detached: false,
+        managedRouting: Boolean(input.managedRouting ?? old?.managedRouting),
+        activationAt: String(input.activationAt ?? old?.activationAt ?? ''),
         staging: Boolean(input.staging ?? old?.staging), originalMode: mode, schedule,
         confidenceThreshold: P.confidenceThreshold(input.confidenceThreshold ?? old?.confidenceThreshold ?? .95),
         recursive: Boolean(input.recursive ?? old?.recursive), allHistory: Boolean(input.allHistory ?? old?.allHistory),
@@ -210,6 +212,42 @@ function createSmartInbox(host) {
       if (!sources.has(id)) await updateSource({ id, type, studentId: String(student.id), name: `${student.name} · ${{ share: '分享资料', history: '对话历史', session: '自动会话' }[type]}`, enabled: false }, { trusted: true });
     }
   }
+  async function syncConversationRouting({ enabled = false, authorizedAt = '' } = {}, students = []) {
+    await bootstrap({ students });
+    const effective = Boolean(enabled && authorizedAt);
+    const validStudentIds = new Set(students.map(student => String(student.id)));
+    for (const source of sources.values()) {
+      if (!source.managedRouting || !['history', 'session'].includes(source.type) || validStudentIds.has(String(source.studentId))) continue;
+      if (source.enabled || source.nextRunAt || source.pendingManual || source.manualWork) await save('sources', {
+        ...source, enabled: false, nextRunAt: '', pendingManual: false, manualWork: false,
+        waitingReason: '学生不活跃或已归档，已停止新的会话分类与投递。', revision: source.revision + 1, updatedAt: iso(),
+      });
+    }
+    for (const student of students) for (const type of ['history', 'session']) {
+      const id = `${type}-${P.digest(String(student.id)).slice(0, 24)}`;
+      const old = sources.get(id);
+      if (!old) continue;
+      const desired = {
+        enabled: effective,
+        automatic: type === 'session',
+        managedRouting: true,
+        activationAt: String(authorizedAt || ''),
+        confidenceThreshold: .95,
+      };
+      if (old.enabled === desired.enabled && old.automatic === desired.automatic && old.managedRouting === true
+        && String(old.activationAt || '') === desired.activationAt && Number(old.confidenceThreshold || .95) === .95) continue;
+      const activationMs = Date.parse(desired.activationAt);
+      if (Number.isFinite(activationMs) && String(old.activationAt || '') !== desired.activationAt) {
+        for (const item of items.values()) {
+          if (item.sourceId !== id || item.receipt || !['pending', 'retry'].includes(item.status) || Date.parse(item.modifiedAt || item.createdAt || '') >= activationMs) continue;
+          await save('items', { ...item, status: 'ignored', manualLocked: true, revision: item.revision + 1,
+            message: '此对话早于本次自动处理授权边界，未回溯分类或投递；原始对话资产仍保留。',
+            lastDecision: { action: 'authorization_boundary', at: iso() } });
+        }
+      }
+      await updateSource({ ...old, ...desired }, { trusted: true });
+    }
+  }
   async function resolveSourceFile(source, locator) {
     if (!['folder', 'download'].includes(source.type)) return host.resolveEvent(source, locator);
     const folder = await folderAllowed(source.folder), file = path.resolve(folder, locator);
@@ -236,7 +274,8 @@ function createSmartInbox(host) {
     }
   }
   async function discover(source) {
-    const generation = source.revision, floor = source.allHistory ? 0 : Date.parse(source.createdAt) - 30 * 86400000;
+    const activationFloor = Date.parse(source.activationAt || '');
+    const generation = source.revision, floor = Number.isFinite(activationFloor) ? activationFloor : source.allHistory ? 0 : Date.parse(source.createdAt) - 30 * 86400000;
     let count = 0;
     const seen = new Set();
     async function receive(entry) {
@@ -398,6 +437,7 @@ function createSmartInbox(host) {
     if (item.studentConfirmation && selected.studentId !== item.studentId) throw Error('目标超出已确认学生范围，不能跨学生投递');
     await host.validateTarget(selected);
     if (['execution_unknown', 'delivery_reconcile', 'delivering', 'analyzing'].includes(item.status)) throw Error('上一执行结果尚未核对，不能重新投递');
+    if (automatic) await checkCurrent(item, source, true);
     if (item.receipt && P.sameTarget(item.target, selected)) {
       await verifyReceipt(item, item.receipt);
       if (selected.categoryId) await host.applyCategory?.(item, automatic);
@@ -702,7 +742,7 @@ function createSmartInbox(host) {
     });
   }
   return {
-    init, bootstrap, updateSource, tick, decide,
+    init, bootstrap, syncConversationRouting, updateSource, tick, decide,
     async intakeManual(sourceId, entries) {
       await init();
       return serial(async () => {

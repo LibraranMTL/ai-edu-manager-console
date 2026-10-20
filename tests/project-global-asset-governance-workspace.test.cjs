@@ -22,16 +22,16 @@ test('global asset advice never merges workspace project document identities by 
   fs.writeFileSync(kept, 'same bytes');
   const absent = path.join(root, 'missing.txt');
   const assets = [
-    { assetId: 'new-project-asset', filename: 'new.txt', path: absent, sha1: 'same-sha1',
+    { assetId: 'new-project-asset', filename: 'new.txt', path: absent, sha1: 'new-sha1',
       references: [{ spaceType: 'project', spaceId: 'new-project', path: absent, role: 'project_raw' }] },
-    { assetId: 'legacy-asset', filename: 'legacy.txt', path: kept, sha1: 'same-sha1',
+    { assetId: 'legacy-asset', filename: 'legacy.txt', path: kept, sha1: 'legacy-sha1',
       references: [{ spaceType: 'project', spaceId: 'legacy-project', path: kept, role: 'project_raw' }] },
   ];
-  let saved = null;
+  const saved = new Map();
   const reportPath = path.join(root, 'report.md');
   const scope = { fs, path,
-    readAssetIndex: () => assets,
-    writeAssetIndex: (value) => { saved = value; },
+    assetStore: () => ({ detailBatches: function *() { yield assets; },
+      patchAsset: (id, value) => saved.set(id, value), summary: () => ({ duplicateGroups: 0 }) }),
     readProjects: () => [{ id: 'new-project', materialStorageMode: 'workspace-v1' },
       { id: 'legacy-project', materialStorageMode: 'legacy' }],
     normalizeProjectMetadata: (value) => value,
@@ -42,14 +42,14 @@ test('global asset advice never merges workspace project document identities by 
   bind(scope, 'analyzeAssetGovernance');
   const result = JSON.parse(scope.analyzeAssetGovernance());
   assert.equal(result.ok, true, result.message);
-  assert.equal(saved[0].recommendedKeepAssetId, '');
-  assert.equal(saved[1].recommendedKeepAssetId, '');
-  assert.match(saved[0].governanceAction, /项目资料登记中核对来源/);
-  assert.doesNotMatch(saved[1].governanceAction, /合并/);
-  assert.match(fs.readFileSync(reportPath, 'utf8'), /不能按SHA-1合并身份/);
+  assert.equal(saved.get('new-project-asset').recommendedKeepAssetId, '');
+  assert.equal(saved.get('legacy-asset').recommendedKeepAssetId, '');
+  assert.match(saved.get('new-project-asset').governanceAction, /项目资料登记中核对来源/);
+  assert.doesNotMatch(saved.get('legacy-asset').governanceAction, /合并/);
+  assert.match(fs.readFileSync(reportPath, 'utf8'), /不能仅按指纹清理原件/);
 });
 
-test('legacy-only asset duplicate advice remains available', (t) => {
+test('same-content physical paths remain references rather than duplicate asset rows', (t) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'edu-project-asset-governance-'));
   t.after(() => {
     assert.equal(path.dirname(root), path.resolve(os.tmpdir()));
@@ -58,16 +58,23 @@ test('legacy-only asset duplicate advice remains available', (t) => {
   });
   const kept = path.join(root, 'kept.txt');
   fs.writeFileSync(kept, 'same bytes');
-  let saved = [];
+  const second = path.join(root, 'copy.txt');
+  fs.writeFileSync(second, 'same bytes');
+  const assets = [{ assetId: 'a', filename: 'a.txt', path: kept, sha1: 'same-sha1', references: [
+    { spaceType: 'student', spaceId: 's1', role: 'raw', path: kept },
+    { spaceType: 'student', spaceId: 's1', role: 'raw', path: second },
+  ] }];
+  const saved = new Map();
   const scope = { fs, path,
-    readAssetIndex: () => [{ assetId: 'a', filename: 'a.txt', path: kept, sha1: 'same-sha1', references: [] },
-      { assetId: 'b', filename: 'b.txt', path: path.join(root, 'missing.txt'), sha1: 'same-sha1', references: [] }],
-    writeAssetIndex: (value) => { saved = value; }, readProjects: () => [],
+    assetStore: () => ({ detailBatches: function *() { yield assets; },
+      patchAsset: (id, value) => saved.set(id, value), summary: () => ({ duplicateGroups: 1 }) }),
+    readProjects: () => [],
     normalizeProjectMetadata: (value) => value, isWorkspaceMaterialProject: () => false,
     assetGovernanceReportPath: () => path.join(root, 'report.md'),
     assetIndexSummary: () => ({ ok: true }), mdCell: (value) => String(value || ''), appendHostTimeline: () => {} };
   bind(scope, 'analyzeAssetGovernance');
   assert.equal(JSON.parse(scope.analyzeAssetGovernance()).ok, true);
-  assert.equal(saved[0].recommendedKeepAssetId, 'a');
-  assert.match(saved[1].governanceAction, /合并/);
+  assert.equal(saved.get('a').duplicateAssetCount, 2);
+  assert.doesNotMatch(saved.get('a').governanceAction, /合并/);
+  assert.match(fs.readFileSync(scope.assetGovernanceReportPath(), 'utf8'), /多路径内容组 \| 1/);
 });

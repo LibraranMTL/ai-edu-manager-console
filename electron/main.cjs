@@ -5,6 +5,9 @@ const { screen } = require('electron');
 const { captureControlBounds } = require('./capture-control-window.cjs');
 const { routeForAction, clampQuickCaptureBounds, locateQuickCaptureBounds, publicQuickCaptureState } = require('./quick-capture-window.cjs');
 const { createQuickCaptureDirect } = require('./quick-capture-direct.cjs');
+const { ACTIONS: COMPANION_ACTIONS, MODE_GROUPS: COMPANION_MODE_GROUPS, readSettings: readCompanionSettings,
+  writeSettings: writeCompanionSettings, targetCatalog: companionTargetCatalog, normalizeCustomTarget,
+  createCompanionPromptPacket, genericConnectionPrompt, validTargetId } = require('./companion-toolbar.cjs');
 const { powerMonitor } = require('electron');
 const { desktopCapturer, globalShortcut, Menu, Tray } = require('electron');
 const path = require('path');
@@ -14,6 +17,7 @@ const https = require('https');
 const net = require('net');
 const dgram = require('dgram');
 const crypto = require('crypto');
+const { DatabaseSync } = require('node:sqlite');
 const { RESEARCH_KINDS, researchResultValidation, researchRetryPatch, researchTaskDue } = require('./research-task-policy.cjs');
 // Portable acceptance runs must never share live students or encrypted credentials.
 const isolatedUserData = app.commandLine.getSwitchValue('user-data-dir');
@@ -23,10 +27,11 @@ if (isolatedUserData) {
   app.setPath('userData', path.resolve(isolatedUserData));
 }
 const { isDeepStrictEqual } = require('node:util');
+const { detectedWindowsPaths, logicalPathReplacement, replaceDetectedPathSpans } = require('./rule-path-health.cjs');
 const { studentActivity, studentAutomaticTasksPaused, studentTaskCardsSuppressed, inactiveStudentTaskCardRetirable, automaticStudentTaskBlocked } = require('./student-automation-policy.cjs');
 const { deletedTaskCandidateSuppressed, removeHistoricalTaskRecord } = require('./task-history-policy.cjs');
 const { archiveTaskRecord, batchGovernancePreview, governanceEligibility,
-  isLegacySmartInboxOrphan, restoreArchivedTask } = require('./task-governance-policy.cjs');
+  isLegacySmartInboxOrphan, restoreArchivedTask, queueGovernanceCandidates } = require('./task-governance-policy.cjs');
 const { Worker } = require('worker_threads');
 const { createTaskIoClient } = require('./task-io-client.cjs');
 const { createTaskProgressBuffer } = require('./task-progress-buffer.cjs');
@@ -177,7 +182,12 @@ const { createProjectEvidenceService, evidenceRevision, sourceBindingRef, eviden
 const { requiresFixedReportEvidence, resolveFixedEvidenceSources, resolveHistoricalEvidenceSources, verifyFixedEvidenceFile } = require('./project-evidence-reference.cjs');
 const { readArchivedReportEvidence, archivedReportIndex } = require('./report-evidence-archive.cjs');
 const { createProjectMaterialTask, materialTaskCheckpointForCandidate } = require('./project-material-task.cjs');
+const { CONTRACT_VERSION: PROJECT_SCOPE_CONTRACT_VERSION, buildProjectExecutionScope, sameProjectExecutionScope,
+  projectScopePermissions, pathWithinProjectScope } = require('./project-execution-scope.cjs');
+const { planCloudStudentBinding } = require('./cloud-student-binding.cjs');
 const { mergeAssetReferences, recentAssetTrend } = require('./asset-statistics.cjs');
+const { createAssetIndexStore } = require('./asset-index-store.cjs');
+const { createAssetDuplicateGovernance } = require('./asset-duplicate-governance.cjs');
 const { queryUploadReceipt, verifiedSource } = require('./upload-receipt-query.cjs');
 const { lanDiscoveryBroadcastTargets } = require('./lan-discovery.cjs');
 const { createStudentPortableMigrationManager } = require('./student-portable-migration.cjs');
@@ -367,6 +377,7 @@ const { PROJECT_SCREENING_PARSER_VERSION, buildProjectScreeningPreview } = requi
 const { completionBlockers, singleStudentEvidenceDraft } = require('./project-completion.cjs');
 const { weekRange, monthRange, reportIsCurrent, validateSectionedReport, publishValidatedReport: publishValidatedReportBase } = require('./learning-report-workflow.cjs');
 const { createCloudReportRuntime } = require('./cloud-report-runtime.cjs');
+const { processCloudInbox } = require('./cloud-inbox-consumer.cjs');
 const { createCustomOptions } = require('./custom-options.cjs');
 const { createCodexStructuredGenerator, createLlmApiStructuredGenerator, redact: redactStudentGeneration } = require('./structured-generation.cjs');
 const builtinStructuredProvider = require('./builtin-structured-provider.cjs');
@@ -647,6 +658,19 @@ function getDownloadInbox() {
 }
 let smartInboxHostRuntime, smartInboxReady;
 let legacyIntakeBridge;
+function capturedConversationRoutingPolicy(global) {
+  const routing = global?.capturedConversationRouting || {};
+  return {
+    enabled: Boolean(global?.enabled && routing.enabled),
+    authorizedAt: global?.enabled && routing.enabled ? String(routing.authorizedAt || '') : '',
+  };
+}
+function globalConversationCaptureAuthorized() {
+  return Boolean(agentControlStore().read().global?.enabled);
+}
+function studentConversationCaptureBlocked(student) {
+  return !student || student.archived === true || student.status === 'archived' || studentActivity(student) === 'inactive';
+}
 function getLegacyIntakeBridge() {
   return legacyIntakeBridge ||= require('./smart-inbox-legacy.cjs').createLegacyIntakeBridge({
     ready: getSmartInbox,
@@ -672,9 +696,9 @@ function getSmartInbox() {
       projects: () => readProjects().map(normalizeProject), isWorkspace: isWorkspaceMaterialProject,
       canWrite: () => publicLicenseStatus().active && projectArchiveRuntime.status().ready && !taskStoreGuard.status(),
       externalReferences(project, material, originalPath) {
-        const reasons = [], assets = readAssetIndex();
+        const reasons = [];
         for (const link of material.links.assets || []) {
-          const asset = assets.find(a => a.assetId === link.assetId);
+          const asset = assetStore().getAssetDetail(link.assetId);
           if (!asset) { reasons.push('asset_reference_missing'); continue; }
           for (const ref of asset.references || []) {
             if (ref.path && path.resolve(ref.path).toLowerCase() === path.resolve(originalPath).toLowerCase()
@@ -693,15 +717,15 @@ function getSmartInbox() {
         const registry = await createProjectMaterialHost(current).store.read();
         const material = registry.materials.find(m => m.materialId === result.oldRecordId);
         if (material?.adoption.state !== 'excluded' || material.intakeReroute?.requestKey !== result.requestKey) return;
-        const assets = readAssetIndex();
         const linked = new Set((material.links.assets || []).map(l => l.assetId));
-        for (const asset of assets.filter(a => linked.has(a.assetId))) asset.references = (asset.references || []).filter(ref =>
-          !(ref.spaceType === 'project' && String(ref.spaceId) === String(project.id) && ref.path
-            && path.resolve(ref.path).toLowerCase() === path.resolve(originalPath).toLowerCase()
-            && ['project_raw_direct', 'project_raw_conversation', 'project_raw_accepted', 'raw', 'project_raw'].includes(ref.role)));
-        for (const asset of assets.filter(a => linked.has(a.assetId))) asset.linkedProjects = (asset.linkedProjects || []).filter(id =>
-          String(id) !== String(project.id) || asset.references.some(r => r.spaceType === 'project' && String(r.spaceId) === String(project.id)));
-        writeAssetIndex(assets);
+        for (const assetId of linked) {
+          const asset = assetStore().getAssetDetail(assetId);
+          if (!asset) continue;
+          assetStore().replaceReferences(asset.assetId, (asset.references || []).filter(ref =>
+            !(ref.spaceType === 'project' && String(ref.spaceId) === String(project.id) && ref.path
+              && path.resolve(ref.path).toLowerCase() === path.resolve(originalPath).toLowerCase()
+              && ['project_raw_direct', 'project_raw_conversation', 'project_raw_accepted', 'raw', 'project_raw'].includes(ref.role))));
+        }
         const remaining = new Set(registry.materials.filter(m => m.adoption.state === 'accepted').flatMap(m => (m.links.assets || []).map(l => l.assetId)));
         updateProjectRecord(project.id, p => ({ ...p, assetIds: (p.assetIds || []).filter(id => !linked.has(id) || remaining.has(id)),
           digestState: projectMaterialDigestProjection(p, registry), updatedAt: taskNow() }));
@@ -721,7 +745,12 @@ function getSmartInbox() {
         ...readProjects().flatMap(p => [p.workspacePath, p.rawPath, p.managerPath, p.knowledgeRootPath])],
       automaticAllowed: id => publicLicenseStatus().active && taskAutomationEnabled() && projectArchiveRuntime.status().ready && taskPowerRecovery.canDispatch() && !taskStoreGuard.status()
         && (!id || !automaticStudentTaskBlocked({ sourceType: 'student', sourceId: id }, findStudentByKey(id))),
-      validateTarget: target => { if (!publicLicenseStatus().active) throw Error('当前许可不允许投递'); return downloadInboxTarget(target); },
+      validateTarget: target => {
+        if (!publicLicenseStatus().active) throw Error('当前许可不允许投递');
+        const resolved = downloadInboxTarget(target);
+        if (studentConversationCaptureBlocked(resolved.student)) throw Error('该学生不活跃或已归档，已停止新的资料分类与投递');
+        return resolved;
+      },
       deliver: deliverDownloadSnapshot, resolveConversation: resolveConversationInboxAsset, deliverConversation: deliverConversationMaterials,
       async conversations(student) {
         const locations = [{ file: conversationIndexPath(student), type: 'student', id: String(student.id) },
@@ -731,12 +760,15 @@ function getSmartInbox() {
         for (const loc of locations) {
           let index; try { index = JSON.parse(await fs.promises.readFile(loc.file, 'utf8')); } catch (error) { if (error.code === 'ENOENT') continue; throw error; }
           result.push(...(index.imports || []).map(e => ({ ...e, sourceScopeType: loc.type, sourceScopeId: loc.id,
-            alreadyDelivered: deliveries.some(d => d.assetId === e.assetId && d.sourceScopeId === loc.id) })));
+            routingDisposition: loc.type === 'project' ? 'already_scoped' : String(e.routingDisposition || ''),
+            alreadyDelivered: deliveries.some(d => d.assetId === e.assetId && d.sourceScopeId === loc.id
+              || e.hash && d.contentHash === e.hash) })));
         }
         return result;
       },
       acquire(source, manual) {
         if (!publicLicenseStatus().active || !projectArchiveRuntime.status().ready || !taskPowerRecovery.canDispatch() || taskStoreGuard.status() || taskChildProcesses.size || digestWorkflowRunning) return null;
+        if (source.studentId && studentConversationCaptureBlocked(findStudentByKey(source.studentId))) return null;
         if (!manual && source.studentId && automaticStudentTaskBlocked({ sourceType: 'student', sourceId: source.studentId }, findStudentByKey(source.studentId))) return null;
         return captureHeavyWorkGate.tryAcquire({ kind: 'agent_codex', studentId: source.studentId || 'shared-intake', sessionId: `intake-${source.id}`, snapshot: captureTimelineResourceSnapshot() });
       },
@@ -744,7 +776,8 @@ function getSmartInbox() {
         if (!publicLicenseStatus().active) return '许可未激活，自动分析已暂停';
         if (!projectArchiveRuntime.status().ready || taskStoreGuard.status()) return '资料或任务存储尚未就绪，等待恢复后继续';
         if (!taskPowerRecovery.canDispatch()) return '设备恢复检查尚未完成，稍后继续';
-        if (!manual && source.studentId && automaticStudentTaskBlocked({ sourceType: 'student', sourceId: source.studentId }, findStudentByKey(source.studentId))) return '该学生已暂停或不活跃，自动分析暂停；如需自动处理，请在学生设置恢复。也可立即扫描进行一次手动分析。';
+        if (source.studentId && studentConversationCaptureBlocked(findStudentByKey(source.studentId))) return '该学生不活跃或已归档，已停止新的会话采集、分类和投递；已有资料保持不变。';
+        if (!manual && source.studentId && automaticStudentTaskBlocked({ sourceType: 'student', sourceId: source.studentId }, findStudentByKey(source.studentId))) return '该学生处于暂停状态，资料已排队；恢复活跃后自动续接分类与投递。';
         return '等待后台资源空闲（采集、消化或其他重任务可能占用），稍后继续';
       },
       async beginBatch(source, manual, batch = {}) {
@@ -846,7 +879,9 @@ function getSmartInbox() {
       changed: () => { if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('smart-inbox:changed'); },
       onError: error => console.warn('资料归集等待处理：', error.message),
     });
-    smartInboxReady = smartInboxHostRuntime.initialize().then(async () => {
+    smartInboxReady = agentControlStore().migrate(aiExecutorRegistry()).then(() => smartInboxHostRuntime.initialize()).then(async () => {
+      await smartInboxHostRuntime.engine.syncConversationRouting(
+        capturedConversationRoutingPolicy(agentControlStore().read().global), readStudentsIndex().filter(student => !studentConversationCaptureBlocked(student)));
       for (const student of readStudentsIndex().filter(s => s.classificationFallback?.enabled === true)) {
         try { await smartInboxHostRuntime.engine.resumeAgent(String(student.id), `startup-fallback-${crypto.randomUUID()}`); }
         catch (error) { console.warn('备用 Agent 启动恢复未完成：', error.message); }
@@ -874,6 +909,26 @@ function getCustomOptions() {
 }
 let cloudReportRuntime;
 let cloudReportRuntimePromise;
+let cloudInboxRecoveryPromise;
+
+function recoverCloudInboxResults(runtime) {
+  if (cloudInboxRecoveryPromise) return cloudInboxRecoveryPromise;
+  cloudInboxRecoveryPromise = processCloudInbox({ runtime, resolveScope: async (item) => {
+    const project = readProjects().map(normalizeProject).find(candidate => String(candidate.id) === String(item.projectId || ''));
+    if (!project) return { scope: null, cloudStudentIds: [], authorizedProvider: false };
+    const taskType = String(item.taskType || DIGEST_PROFILE);
+    const scope = freezeGlobalProjectExecutionScope(project, taskType);
+    const policy = globalProjectAgentPolicy(project, taskType);
+    const authorizedProviders = policy?.enabled ? [policy.primary, ...(policy.fallbacks || [])].filter(Boolean) : [];
+    const task = readTaskStore().tasks.find(candidate => String(candidate.id) === String(item.taskId || ''));
+    const taskCurrent = Boolean(task && ['running', 'waiting_result'].includes(String(task.status)) &&
+      String(task.executionId || '') === String(item.executionId || '') && String(task.sourceType || '') === 'project' &&
+      String(task.sourceId || task.projectId || '') === String(item.projectId || ''));
+    return { scope, cloudStudentIds: runtime.cloudStudentIdsForLocalStudents(scope.studentIds),
+      authorizedProvider: authorizedProviders.includes(String(item.provider || '')), taskCurrent };
+  } }).finally(() => { cloudInboxRecoveryPromise = null; });
+  return cloudInboxRecoveryPromise;
+}
 
 function getCloudReportRuntime() {
   if (!app.isReady()) return Promise.reject(new Error('云端文档服务尚未就绪'));
@@ -887,8 +942,17 @@ function getCloudReportRuntime() {
         const student = findStudent(studentId);
         return student ? learningReportDirForStudent(student) : '';
       },
+      resolveStudentProfile: (studentId) => {
+        const student = findStudentByKey(studentId);
+        return student ? { ...student, displayName: student.name, learningGoal: student.goal } : null;
+      },
+      ensureLocalStudentFromCloudProfile: ensureLocalStudentFromCloudProfile,
     });
-    cloudReportRuntimePromise = cloudReportRuntime.load().then(() => cloudReportRuntime);
+    cloudReportRuntimePromise = cloudReportRuntime.load().then(() => {
+      const recoveryTimer = setTimeout(() => { void recoverCloudInboxResults(cloudReportRuntime).catch(() => { /* Keep unknown outcomes leased for later reconciliation. */ }); }, 8000);
+      recoveryTimer.unref?.();
+      return cloudReportRuntime;
+    });
   }
   return cloudReportRuntimePromise;
 }
@@ -906,7 +970,7 @@ function publishValidatedReport(options) {
   }
   return result;
 }
-const { evidenceMarkers, frontmatterValueFromFile, reportContentFingerprint, validateReportDraftForAutoPublish } = require('./report-auto-publication.cjs');
+const { evidenceMarkers, frontmatterValueFromFile, reportContentFingerprint, repairReportDraftForAutoPublish, validateReportDraftForAutoPublish } = require('./report-auto-publication.cjs');
 const { resolveReportEvidence } = require('./report-evidence-resolver.cjs');
 const { discoverArchiveVersions, recoverPlaceholderReportsFromArchive, reportHasSubstantiveContent, restoreArchiveVersion, writeArchiveVersion } = require('./education-archive-version.cjs');
 const { analyzeArchiveMarkdownContent, summarizeArchiveContentHealth } = require('./archive-content-health.cjs');
@@ -1137,7 +1201,8 @@ let todayUploadCount = 0;
 let uploadCountDate = new Date().toISOString().slice(0, 10);
 const taskChildProcesses = new Map();
 const builtinStructuredQualifications = new Map();
-const { taskRetryDecision, taskRetryEligible, unknownExecutionPatch, reconcileInterruptedExecutions } = require('./task-recovery-policy.cjs');
+const { taskRetryDecision, taskRetryEligible, unknownExecutionPatch, reconcileInterruptedExecutions, taskExecutionUnresolved } = require('./task-recovery-policy.cjs');
+const { executionProvenance, internalStoppedPatch, recoveryBudget, recoveryPlan, taskExecutionClass } = require('./task-recovery-experience.cjs');
 const { circuitDecision, recordCircuitOutcome, completeCircuitProbe } = require('./task-executor-circuit.cjs');
 const { CLASSIFICATION_PROFILE, DIGEST_PROFILE, LEARNING_CARD_PROFILE, providerSupportsProfile, agentProfileStatus,
   createAgentQualification, validAgentQualification } = require('./agent-invocation-service.cjs');
@@ -1191,6 +1256,7 @@ const studentArchiveSyncWatchers = new Map();
 const studentArchiveSyncSuppressedUntil = new Map();
 let studentArchiveWatcherRefreshTimer = null;
 let adapterCapabilityCache = { at: 0, value: null, refreshing: null };
+let persistedAuthorizationRestore = { phase: 'idle', restored: {}, message: '' };
 let taskCenterSnapshotCache = { at: 0, value: '' };
 let taskRuntimeMigrationChecked = false;
 let activeCaptureRuntime = null;
@@ -1201,12 +1267,18 @@ let quickCaptureEnabled = false;
 let quickCaptureExpanded = false;
 let quickCaptureActiveAction = '';
 let quickCaptureSetupOpen = false;
+let quickCapturePopoverWindow = null;
+let quickCapturePopoverLoaded = false;
+let quickCapturePopoverMode = '';
+let quickCaptureConnectionPrompts = Object.create(null);
+const quickCapturePreparedPrompts = new Map();
 let quickPhotoWindow = null;
 let quickPhotoContext = null;
 let quickCaptureDirect = null;
 let captureStartPending = false;
-const QUICK_CAPTURE_COLLAPSED_HEIGHT = 72;
-const QUICK_CAPTURE_EXPANDED_HEIGHT = 160;
+const QUICK_CAPTURE_COLLAPSED_HEIGHT = 34;
+const QUICK_CAPTURE_EXPANDED_HEIGHT = 34;
+const QUICK_CAPTURE_PREFERRED_WIDTH = 340;
 let quickCaptureStudentId = '';
 let quickCaptureStudentName = '';
 let quickCaptureDismissedSessionId = '';
@@ -1306,6 +1378,42 @@ const devicesPath = () => path.join(app.getPath('userData'), 'devices.json');
 const uploadRecordsPath = () => path.join(app.getPath('userData'), 'upload-records.json');
 const hostTimelinePath = () => path.join(app.getPath('userData'), 'host-timeline.json');
 const assetIndexPath = () => path.join(app.getPath('userData'), 'asset-index.json');
+const assetDatabasePath = () => path.join(app.getPath('userData'), 'asset-index.sqlite3');
+let assetStoreInstance;
+function assetStore() {
+  if (!assetStoreInstance) assetStoreInstance = createAssetIndexStore({
+    dbPath: assetDatabasePath(),
+    legacyJsonPath: assetIndexPath(),
+  });
+  return assetStoreInstance;
+}
+let assetDuplicateGovernanceInstance;
+function assetDuplicateAuthorizedRoots() {
+  const roots = [];
+  for (const student of readStudentsIndex().filter(item => item.archived !== true && item.status !== 'archived')) {
+    const root = student.rawPath || getRawDir(student.name);
+    if (root) roots.push({ spaceType: 'student', spaceId: String(student.id || ''), path: root });
+  }
+  for (const rawProject of readProjects()) {
+    const project = normalizeProject(rawProject);
+    if (['sealed', 'removed'].includes(String(project.status))) continue;
+    for (const root of [...new Set([project.rawPath, project.workspacePath].filter(Boolean))]) {
+      roots.push({ spaceType: 'project', spaceId: String(project.id || ''), path: root });
+    }
+  }
+  return roots;
+}
+function assetDuplicateGovernance() {
+  if (!assetDuplicateGovernanceInstance) assetDuplicateGovernanceInstance = createAssetDuplicateGovernance({
+    store: assetStore(),
+    quarantineRoot: path.join(app.getPath('userData'), 'asset-quarantine'),
+    authorizedRoots: assetDuplicateAuthorizedRoots,
+    notify(payload) {
+      if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('asset-duplicates:progress', payload);
+    },
+  });
+  return assetDuplicateGovernanceInstance;
+}
 const assetGovernanceReportPath = () => path.join(app.getPath('userData'), 'asset-governance-report.md');
 const projectsPath = () => path.join(app.getPath('userData'), 'projects.json');
 const removedProjectRegistryPath = () => path.join(app.getPath('userData'), 'removed-projects.json');
@@ -5372,14 +5480,7 @@ function saveCollaborationGrant(optionsJson) {
 }
 
 function studentAssetsForCollaboration(studentId) {
-  const id = String(studentId || '');
-  return readAssetIndex().filter((asset) => (
-    String(asset.ownerStudentId || '') === id
-    || (Array.isArray(asset.linkedStudents) && asset.linkedStudents.map(String).includes(id))
-    || (Array.isArray(asset.references) && asset.references.some((reference) => (
-      reference?.spaceType === 'student' && String(reference?.spaceId || '') === id
-    )))
-  ));
+  return assetStore().queryDetails({ studentId: String(studentId || '') });
 }
 
 function getCollaborationStudentMaterialStats(studentId, viewerNodeId = '', allowedProjectIdsJson = '[]') {
@@ -5967,13 +6068,12 @@ function scanAbsolutePathsInRuleFiles(student) {
   const knownPaths = Object.values(studentWorkspacePathmap(student)).filter(Boolean);
   const seen = new Set();
   const findings = [];
-  const windowsPathRe = /[A-Za-z]:[\\/][^\r\n<>"|]+/g;
   for (const filePath of files) {
     const text = readSmallTextFile(filePath);
     if (!text) continue;
-    const matches = text.match(windowsPathRe) || [];
-    for (const rawMatch of matches) {
-      const detectedPath = cleanDetectedWindowsPath(rawMatch);
+    const matches = detectedWindowsPaths(text);
+    for (const detected of matches) {
+      const detectedPath = detected.detectedPath;
       if (!detectedPath) continue;
       const key = `${filePath}|${detectedPath}`.toLowerCase();
       if (seen.has(key)) continue;
@@ -5983,6 +6083,7 @@ function scanAbsolutePathsInRuleFiles(student) {
       findings.push({
         filePath,
         detectedPath,
+        repairable: detected.repairable,
         exists,
         matchesCurrentPath,
         status: exists && matchesCurrentPath ? 'ok' : 'warning',
@@ -5993,17 +6094,7 @@ function scanAbsolutePathsInRuleFiles(student) {
 }
 
 function replacementForDetectedPath(student, detectedPath) {
-  const value = String(detectedPath || '').replace(/\//g, '\\').toLowerCase();
-  const rootName = path.basename(student.rootPath || getStudentRootDir(student.name)).toLowerCase();
-  const name = sanitizeName(student.name).toLowerCase();
-  if (value.endsWith('\\agent.md') || value.endsWith('/agent.md')) return '@AGENT_FILE';
-  if (value.includes('原始资料库') || value.includes('raw') || value.includes('materials')) return '@RAW_DIR';
-  if (value.includes('学情分析汇总') || value.includes('summary') || value.includes('report') || value.includes('汇总')) return '@SUMMARY_DIR';
-  if (value.includes('输出结果') || value.includes('output') || value.includes('result')) return '@OUTPUT_DIR';
-  if (value.includes('成长模型') || value.includes('growth')) return '@GROWTH_DIR';
-  if (rootName && value.includes(rootName)) return '@KB_ROOT';
-  if (name && (value.includes(`${name}知识库`.toLowerCase()) || value.includes(`${name}知識庫`.toLowerCase()))) return '@KB_ROOT';
-  return '';
+  return logicalPathReplacement(detectedPath, studentWorkspacePathmap(student));
 }
 
 function repairStudentStalePaths(studentId) {
@@ -6017,6 +6108,14 @@ function repairStudentStalePaths(studentId) {
     const byFile = new Map();
     const skipped = [];
     for (const item of stalePaths) {
+      if (item.matchesCurrentPath && !item.exists) {
+        skipped.push({ ...item, reason: '当前知识库中的文件尚未找到；保留原路径，不能通过改写路径隐藏资料缺失' });
+        continue;
+      }
+      if (item.repairable === false) {
+        skipped.push({ ...item, reason: '路径边界不完整，保留原文等待核对' });
+        continue;
+      }
       if (['index.md', 'log.md'].includes(path.basename(item.filePath).toLowerCase())) {
         skipped.push({ ...item, reason: '索引和历史日志只报告旧路径，不执行全文替换' });
         continue;
@@ -6033,10 +6132,7 @@ function repairStudentStalePaths(studentId) {
     for (const [filePath, replacements] of byFile.entries()) {
       const original = readSmallTextFile(filePath);
       if (!original) continue;
-      let next = original;
-      for (const item of replacements) {
-        next = next.split(item.detectedPath).join(item.replacement);
-      }
+      const next = replaceDetectedPathSpans(original, replacements);
       if (next === original) continue;
       const backupPath = `${filePath}.bak-${timestampForFilename()}`;
       fs.copyFileSync(filePath, backupPath);
@@ -6468,43 +6564,40 @@ function sha1File(file) {
 }
 
 function readAssetIndex(fileIo = fs) {
-  if (fileIo === fs) projectArchiveRuntime.assertFile(assetIndexPath());
-  if (fileIo !== fs) {
+  if (fileIo === fs && typeof projectArchiveRuntime !== 'undefined' && projectArchiveRuntime?.assertFile) projectArchiveRuntime.assertFile(assetIndexPath());
+  if (fileIo !== fs || typeof assetStore !== 'function') {
     if (!fileIo.existsSync(assetIndexPath())) return [];
     const parsed = JSON.parse(fileIo.readFileSync(assetIndexPath(), 'utf8'));
     if (!Array.isArray(parsed.assets)) throw new Error('资产索引结构损坏，不能覆盖。');
     return parsed.assets;
   }
-  try {
-    const parsed = JSON.parse(fs.readFileSync(assetIndexPath(), 'utf8'));
-    if (!Array.isArray(parsed.assets)) throw new Error('资产索引结构损坏，不能覆盖。');
-    return parsed.assets;
-  } catch (error) {
-    if (error.code === 'ENOENT') return [];
-    throw error;
-  }
+  return assetStore().readAll();
 }
 
 function writeAssetIndex(assets, fileIo = fs) {
-  if (fileIo !== fs) {
+  if (fileIo !== fs || typeof assetStore !== 'function') {
     // A durable archive must not silently discard unrelated existing assets.
-    fileIo.writeFileSync(assetIndexPath(), JSON.stringify({ version: 1, updatedAt: new Date().toISOString(), assets }), 'utf8');
+    const payload = { version: 1, updatedAt: new Date().toISOString(), assets };
+    if (fileIo === fs && typeof writeJsonAtomic === 'function') writeJsonAtomic(assetIndexPath(), payload);
+    else fileIo.writeFileSync(assetIndexPath(), JSON.stringify(payload), 'utf8');
     return;
   }
-  writeJsonAtomic(assetIndexPath(), {
-    version: 1,
-    updatedAt: new Date().toISOString(),
-    assets: assets.slice(0, 5000),
-  });
+  assetStore().replaceAll(assets);
 }
 
 function readProjects() {
-  projectArchiveRuntime.assertFile(projectsPath());
+  const file = projectsPath();
+  projectArchiveRuntime.assertFile(file);
   try {
-    const parsed = JSON.parse(fs.readFileSync(projectsPath(), 'utf8'));
-    if (Array.isArray(parsed)) return parsed;
-    return Array.isArray(parsed.projects) ? parsed.projects : [];
+    const stat = fs.statSync(file);
+    const cached = readProjects.cache || { file: '', mtimeMs: -1, size: -1, projects: [] };
+    if (cached.file === file && cached.mtimeMs === stat.mtimeMs && cached.size === stat.size) return cached.projects;
+    const parsed = JSON.parse(fs.readFileSync(file, 'utf8'));
+    const projects = Array.isArray(parsed) ? parsed : Array.isArray(parsed.projects) ? parsed.projects : [];
+    readProjects.cache = { file, mtimeMs: stat.mtimeMs, size: stat.size, projects };
+    return projects;
   } catch {
+    readProjects.cache = { file, mtimeMs: -1, size: -1, projects: [] };
     return [];
   }
 }
@@ -6532,6 +6625,7 @@ function writeProjects(projects) {
     updatedAt: new Date().toISOString(),
     projects,
   });
+  readProjects.cache = { file: '', mtimeMs: -1, size: -1, projects: [] };
   projectDigestLookupCache = { mtimeMs: -1, size: -1, projects: [] };
   const affectedStudentIds = changedGrowthProjectStudentIds(previousProjects, projects);
   if (affectedStudentIds.length) markGrowthStudentsDirty(affectedStudentIds, 'project_growth_source_changed');
@@ -6622,7 +6716,8 @@ function upsertAssetFromFile(filePath, context = {}, fileIo = fs) {
     || `${stat.dev}:${stat.ino}` !== context.verifiedFingerprint.fileKey)) throw Error('资料在异步校验后发生变化');
   const sha1 = stagedBytes ? crypto.createHash('sha1').update(stagedBytes).digest('hex') : context.verifiedFingerprint?.sha1 || sha1File(filePath);
   const now = new Date().toISOString();
-  const assets = readAssetIndex(fileIo);
+  const useSqlite = fileIo === fs && typeof assetStore === 'function';
+  const assets = useSqlite ? null : readAssetIndex(fileIo);
   let logicalRef = { workspaceId: '', logicalPath: '' };
   if (context.studentId) {
     const student = readStudentsIndex().find((item) => String(item.id) === String(context.studentId));
@@ -6631,7 +6726,10 @@ function upsertAssetFromFile(filePath, context = {}, fileIo = fs) {
       logicalRef = { workspaceId: resolved.workspaceId || '', logicalPath: resolved.logicalPath || '' };
     }
   }
-  const existingIndex = sha1
+  const existingAsset = useSqlite
+    ? assetStore().findByFingerprint({ sha1, sha256: context.contentSha256 || '', path: filePath })
+    : null;
+  const existingIndex = useSqlite ? (existingAsset ? 0 : -1) : sha1
     ? assets.findIndex((item) => String(item.sha1 || '') === sha1)
     : assets.findIndex((item) => path.resolve(item.path || '') === path.resolve(filePath));
   const reference = normalizeAssetReference({
@@ -6650,7 +6748,7 @@ function upsertAssetFromFile(filePath, context = {}, fileIo = fs) {
     path: filePath,
     source: context.sourceName || context.uploadSource || '',
   });
-  const base = existingIndex >= 0 ? assets[existingIndex] : {};
+  const base = useSqlite ? existingAsset || {} : existingIndex >= 0 ? assets[existingIndex] : {};
   const references = [
     ...(Array.isArray(base.references) ? base.references : []),
     ...(reference ? [reference] : []),
@@ -6668,6 +6766,7 @@ function upsertAssetFromFile(filePath, context = {}, fileIo = fs) {
     assetId: base.assetId || `asset-${(sha1 || crypto.randomBytes(8).toString('hex')).slice(0, 16)}`,
     filename: path.basename(filePath),
     sha1,
+    sha256: context.contentSha256 || context.verifiedFingerprint?.sha256 || base.sha256 || '',
     size: stat.size,
     type: materialTypeForFile(filePath),
     path: filePath,
@@ -6692,6 +6791,7 @@ function upsertAssetFromFile(filePath, context = {}, fileIo = fs) {
     updatedAt: now,
     status: context.status || base.status || 'active',
   };
+  if (useSqlite) return assetStore().upsertAsset(asset, dedupedReferences, [base.assetId].filter(Boolean));
   if (existingIndex >= 0) assets[existingIndex] = asset;
   else assets.unshift(asset);
   writeAssetIndex(assets, fileIo);
@@ -6739,50 +6839,25 @@ function registerAssetsFromUploadRecords(records) {
   return assets;
 }
 
-function assetIndexSummary() {
-  const assets = readAssetIndex();
-  const shaCounts = new Map();
-  const versionGroups = assetVersionGroups(assets);
-  assets.forEach((asset) => {
-    if (!asset.sha1) return;
-    shaCounts.set(asset.sha1, (shaCounts.get(asset.sha1) || 0) + 1);
-  });
-  return {
-    ok: true,
-    assets: assets.map((asset) => ({
-      ...asset,
-      duplicateCount: asset.sha1 ? shaCounts.get(asset.sha1) || 1 : 1,
-      referenceCount: Array.isArray(asset.references) ? asset.references.length : 0,
-      versionCount: (versionGroups.get(`${asset.ownerStudentId || 'global'}|${String(asset.filename || '').toLowerCase()}`) || []).length,
-      versionGroupKey: `${asset.ownerStudentId || 'global'}|${String(asset.filename || '').toLowerCase()}`,
-    })),
-    total: assets.length,
-    duplicateGroups: Array.from(shaCounts.values()).filter((count) => count > 1).length,
-    recentTrend: recentAssetTrend(assets),
-  };
+function assetIndexSummary(filter = {}, includeAssets = false) {
+  return assetStore().summary(filter);
 }
 
 function cleanupAssetReferences(assetId) {
   try {
-    const assets = readAssetIndex();
-    const index = assets.findIndex((asset) => String(asset.assetId) === String(assetId));
-    if (index < 0) return JSON.stringify({ ok: false, message: '未找到资产。' });
-    const asset = assets[index];
+    const asset = assetStore().getAssetDetail(assetId);
+    if (!asset) return JSON.stringify({ ok: false, code: 'asset_not_found', message: '未找到资产。' });
     const references = Array.isArray(asset.references) ? asset.references : [];
     const before = references.length;
     const nextReferences = Array.from(new Map(references
       .filter((ref) => !ref.path || fs.existsSync(ref.path))
       .map((ref) => [`${ref.spaceType}|${ref.spaceId}|${ref.role}|${ref.path}`, ref])).values());
-    assets[index] = {
-      ...asset,
-      references: nextReferences,
-      linkedStudents: mergeUnique(nextReferences.filter((ref) => ref.spaceType === 'student').map((ref) => ref.spaceId)),
-      linkedProjects: mergeUnique(nextReferences.filter((ref) => ref.spaceType === 'project').map((ref) => ref.spaceId)),
+    assetStore().replaceReferences(asset.assetId, nextReferences);
+    assetStore().patchAsset(asset.assetId, {
       updatedAt: new Date().toISOString(),
       governanceAction: '',
       governanceReason: '',
-    };
-    writeAssetIndex(assets);
+    });
     appendHostTimeline({ type: 'asset_references_cleaned', title: 'Asset references cleaned', detail: asset.filename, count: before - nextReferences.length });
     return JSON.stringify({
       ...assetIndexSummary(),
@@ -6797,11 +6872,9 @@ function cleanupAssetReferences(assetId) {
 
 function createAssetVersionSnapshot(assetId) {
   try {
-    const assets = readAssetIndex();
-    const asset = assets.find((item) => String(item.assetId) === String(assetId));
-    if (!asset) return JSON.stringify({ ok: false, message: '未找到资产。' });
-    const key = `${asset.ownerStudentId || 'global'}|${String(asset.filename || '').toLowerCase()}`;
-    const group = (assetVersionGroups(assets).get(key) || []).sort((a, b) => String(a.uploadedAt || '').localeCompare(String(b.uploadedAt || '')));
+    const asset = assetStore().getAssetDetail(assetId);
+    if (!asset) return JSON.stringify({ ok: false, code: 'asset_not_found', message: '未找到资产。' });
+    const group = assetStore().listVersionGroup(asset.assetId);
     const report = `# ${asset.filename} 版本关系快照\n\n生成时间：${new Date().toISOString()}\n\n| 序号 | 资产编号 | SHA-1 | 大小 | 路径 | 上传时间 | 引用数 |\n| ---: | --- | --- | ---: | --- | --- | ---: |\n${group.map((item, index) => `| ${index + 1} | ${mdCell(item.assetId)} | ${mdCell(item.sha1 || '-')} | ${Number(item.size || 0)} | ${mdCell(item.path)} | ${mdCell(item.uploadedAt || '-')} | ${Array.isArray(item.references) ? item.references.length : 0} |`).join('\n') || '| 1 | - | - | 0 | - | - | 0 |'}\n\n> 版本快照只记录同学生、同文件名资产之间的关系，不会移动、删除或覆盖任何物理文件。\n`;
     const file = path.join(app.getPath('userData'), 'asset-version-snapshots', `${safeFilename(asset.filename)}-${timestampForFilename()}.md`);
     fs.mkdirSync(path.dirname(file), { recursive: true });
@@ -6823,21 +6896,17 @@ function markAssetGovernanceDecision(assetId, decision, note = '') {
       resolved: '已处理',
     };
     const nextDecision = allowed[String(decision)] ? String(decision) : 'manual_review';
-    const assets = readAssetIndex();
-    const index = assets.findIndex((asset) => String(asset.assetId) === String(assetId));
-    if (index < 0) return JSON.stringify({ ok: false, message: '未找到资产。' });
+    const asset = assetStore().getAssetDetail(assetId);
+    if (!asset) return JSON.stringify({ ok: false, code: 'asset_not_found', message: '未找到资产。' });
     const now = new Date().toISOString();
-    const asset = assets[index];
-    assets[index] = {
-      ...asset,
+    assetStore().patchAsset(asset.assetId, {
       governanceDecision: nextDecision,
       governanceDecisionLabel: allowed[nextDecision],
       governanceDecisionNote: String(note || ''),
       governanceDecisionAt: now,
       governanceStatus: nextDecision === 'resolved' ? 'resolved' : asset.governanceStatus || 'reviewed',
       updatedAt: now,
-    };
-    writeAssetIndex(assets);
+    });
     const decisionFile = path.join(app.getPath('userData'), 'asset-governance-decisions.md');
     writeTextIfMissing(decisionFile, `# 文件资产治理人工决策记录\n\n| 时间 | 资产 | 文件 | 决策 | 备注 | 路径 |\n| --- | --- | --- | --- | --- | --- |\n`);
     fs.appendFileSync(decisionFile, `| ${now} | ${mdCell(asset.assetId)} | ${mdCell(asset.filename)} | ${mdCell(allowed[nextDecision])} | ${mdCell(note || '-')} | ${mdCell(asset.path)} |\n`, 'utf8');
@@ -6857,96 +6926,59 @@ function markAssetGovernanceDecision(assetId, decision, note = '') {
 
 function analyzeAssetGovernance() {
   try {
-    const assets = readAssetIndex();
     const workspaceProjectIds = new Set(readProjects().map(normalizeProjectMetadata)
       .filter(isWorkspaceMaterialProject).map((project) => String(project.id)));
     const belongsToWorkspaceProject = (asset) => (asset.references || []).some((ref) =>
       ref.spaceType === 'project' && workspaceProjectIds.has(String(ref.spaceId)));
     const now = new Date().toISOString();
-    const shaGroups = new Map();
-    for (const asset of assets) {
-      if (!asset.sha1) continue;
-      const current = shaGroups.get(asset.sha1) || [];
-      current.push(asset);
-      shaGroups.set(asset.sha1, current);
+    const issueAssets = [];
+    let totalCount = 0;
+    let missingCount = 0;
+    let staleRefCount = 0;
+    for (const batch of assetStore().detailBatches(250)) {
+      for (const asset of batch) {
+        totalCount += 1;
+        const references = Array.isArray(asset.references) ? asset.references : [];
+        const staleReferenceCount = references.filter((ref) => ref.path && !fs.existsSync(ref.path)).length;
+        const missingFile = Boolean(asset.path && !fs.existsSync(asset.path));
+        const distinctPathCount = new Set(references.map((ref) => ref.path).filter(Boolean)).size;
+        missingCount += Number(missingFile);
+        staleRefCount += staleReferenceCount;
+        let governanceAction = '无需处理';
+        let governanceRisk = 'low';
+        const reasons = [];
+        if (belongsToWorkspaceProject(asset)) {
+          governanceAction = missingFile || staleReferenceCount ? '请在项目资料登记中核对来源' : '无需处理';
+          governanceRisk = missingFile || staleReferenceCount ? 'medium' : 'low';
+          reasons.push('新版项目资料以项目登记的资料ID、版本和原件解析为准；不能凭旧资产主路径或相同指纹建议合并、移出或清理项目原件。');
+        } else {
+          if (missingFile && references.length === 0) {
+            governanceAction = '建议移出索引'; governanceRisk = 'high';
+            reasons.push('资产物理文件不存在，且没有引用记录。');
+          } else if (missingFile) {
+            governanceAction = '建议修复路径或重新补建索引'; governanceRisk = 'high';
+            reasons.push('资产主路径不存在，但仍有关联引用。');
+          }
+          if (staleReferenceCount > 0) {
+            governanceAction = governanceAction === '无需处理' ? '建议清理失效引用' : `${governanceAction}；建议清理失效引用`;
+            if (governanceRisk !== 'high') governanceRisk = 'medium';
+            reasons.push(`${staleReferenceCount} 条引用路径不存在。`);
+          }
+          if (!missingFile && references.length === 0) {
+            governanceAction = governanceAction === '无需处理' ? '建议补充引用或归档观察' : governanceAction;
+            if (governanceRisk === 'low') governanceRisk = 'medium';
+            reasons.push('资产存在但没有学生或项目引用。');
+          }
+        }
+        const next = { ...asset, governanceAction,
+          governanceReason: reasons.join(' ') || '资产路径和引用关系正常。', governanceRisk,
+          staleReferenceCount, duplicateReferenceCount: 0, duplicateAssetCount: Math.max(1, distinctPathCount),
+          recommendedKeepAssetId: '', governanceReviewedAt: now };
+        assetStore().patchAsset(asset.assetId, next);
+        if (governanceAction !== '无需处理') issueAssets.push(next);
+      }
     }
-    const keepBySha = new Map();
-    for (const [sha1, group] of shaGroups.entries()) {
-      if (group.length <= 1 || group.some(belongsToWorkspaceProject)) continue;
-      const sorted = [...group].sort((a, b) => {
-        const existsDiff = Number(fs.existsSync(b.path || '')) - Number(fs.existsSync(a.path || ''));
-        if (existsDiff) return existsDiff;
-        const refDiff = (Array.isArray(b.references) ? b.references.length : 0) - (Array.isArray(a.references) ? a.references.length : 0);
-        if (refDiff) return refDiff;
-        return String(b.updatedAt || '').localeCompare(String(a.updatedAt || ''));
-      });
-      keepBySha.set(sha1, sorted[0]?.assetId || '');
-    }
-    const nextAssets = assets.map((asset) => {
-      const references = Array.isArray(asset.references) ? asset.references : [];
-      const referenceKeys = references.map((ref) => `${ref.spaceType}|${ref.spaceId}|${ref.role}|${ref.path}`);
-      const duplicateReferenceCount = referenceKeys.length - new Set(referenceKeys).size;
-      const staleReferenceCount = references.filter((ref) => ref.path && !fs.existsSync(ref.path)).length;
-      const missingFile = Boolean(asset.path && !fs.existsSync(asset.path));
-      const duplicateAssetCount = asset.sha1 ? (shaGroups.get(asset.sha1) || []).length : 1;
-      if (belongsToWorkspaceProject(asset)) return {
-        ...asset,
-        governanceAction: missingFile || staleReferenceCount
-          ? '请在项目资料登记中核对来源' : '无需处理',
-        governanceReason: '新版项目资料以项目登记的资料ID、版本和原件解析为准；不能凭旧资产主路径或相同SHA-1建议合并、移出或清理项目原件。',
-        governanceRisk: missingFile || staleReferenceCount ? 'medium' : 'low',
-        staleReferenceCount, duplicateReferenceCount, duplicateAssetCount,
-        recommendedKeepAssetId: '', governanceReviewedAt: now,
-      };
-      let governanceAction = '无需处理';
-      let riskLevel = 'low';
-      const reasons = [];
-      if (missingFile && references.length === 0) {
-        governanceAction = '建议移出索引';
-        riskLevel = 'high';
-        reasons.push('资产物理文件不存在，且没有引用记录。');
-      } else if (missingFile) {
-        governanceAction = '建议修复路径或重新补建索引';
-        riskLevel = 'high';
-        reasons.push('资产主路径不存在，但仍有关联引用。');
-      }
-      if (duplicateAssetCount > 1 && keepBySha.has(asset.sha1)) {
-        governanceAction = governanceAction === '无需处理' ? '建议合并重复资产记录' : `${governanceAction}；建议合并重复资产记录`;
-        riskLevel = riskLevel === 'high' ? 'high' : 'medium';
-        reasons.push(`发现 ${duplicateAssetCount} 条相同 SHA-1 的资产记录。`);
-      }
-      if (staleReferenceCount > 0) {
-        governanceAction = governanceAction === '无需处理' ? '建议清理失效引用' : `${governanceAction}；建议清理失效引用`;
-        riskLevel = riskLevel === 'high' ? 'high' : 'medium';
-        reasons.push(`${staleReferenceCount} 条引用路径不存在。`);
-      }
-      if (duplicateReferenceCount > 0) {
-        governanceAction = governanceAction === '无需处理' ? '建议去重引用' : `${governanceAction}；建议去重引用`;
-        riskLevel = riskLevel === 'high' ? 'high' : 'medium';
-        reasons.push(`${duplicateReferenceCount} 条引用疑似重复。`);
-      }
-      if (!missingFile && references.length === 0) {
-        governanceAction = governanceAction === '无需处理' ? '建议补充引用或归档观察' : governanceAction;
-        riskLevel = riskLevel === 'low' ? 'medium' : riskLevel;
-        reasons.push('资产存在但没有学生或项目引用。');
-      }
-      return {
-        ...asset,
-        governanceAction,
-        governanceReason: reasons.join(' ') || '资产路径和引用关系正常。',
-        governanceRisk: riskLevel,
-        staleReferenceCount,
-        duplicateReferenceCount,
-        duplicateAssetCount,
-        recommendedKeepAssetId: asset.sha1 ? keepBySha.get(asset.sha1) || '' : '',
-        governanceReviewedAt: now,
-      };
-    });
-    writeAssetIndex(nextAssets);
-    const issueAssets = nextAssets.filter((asset) => asset.governanceAction && asset.governanceAction !== '无需处理');
-    const duplicateGroups = Array.from(shaGroups.values()).filter((group) => group.length > 1);
-    const missingCount = nextAssets.filter((asset) => asset.path && !fs.existsSync(asset.path)).length;
-    const staleRefCount = nextAssets.reduce((total, asset) => total + Number(asset.staleReferenceCount || 0), 0);
+    const duplicateGroupCount = assetStore().summary().duplicateGroups;
     const rowsFor = (list) => list.map((asset) => `| ${mdCell(asset.filename)} | ${mdCell(asset.governanceRisk)} | ${mdCell(asset.governanceAction)} | ${mdCell(asset.governanceReason)} | ${mdCell(asset.recommendedKeepAssetId || '-')} | ${mdCell(asset.path)} |`).join('\n') || '| 暂无 | - | - | - | - | - |';
     const report = `# 文件资产中心治理建议
 
@@ -6956,9 +6988,9 @@ function analyzeAssetGovernance() {
 
 | 指标 | 数量 |
 | --- | ---: |
-| 资产总数 | ${nextAssets.length} |
+| 资产总数 | ${totalCount} |
 | 需治理资产 | ${issueAssets.length} |
-| 重复资产组 | ${duplicateGroups.length} |
+| 多路径内容组 | ${duplicateGroupCount} |
 | 主路径不存在 | ${missingCount} |
 | 失效引用 | ${staleRefCount} |
 
@@ -6968,16 +7000,10 @@ function analyzeAssetGovernance() {
 | --- | --- | --- | --- | --- | --- |
 ${rowsFor(issueAssets)}
 
-## 全量资产检查结果
-
-| 文件 | 风险 | 建议 | 理由 | 建议保留资产 | 路径 |
-| --- | --- | --- | --- | --- | --- |
-${rowsFor(nextAssets)}
-
 ## 处理原则
 
 - 本报告只提供治理建议，不会自动删除、移动、合并任何物理文件。
-- 对仅属旧资产合同的重复文件，优先保留路径存在、引用次数更多、更新时间更新的资产记录；新版项目资料须按项目登记逐份核对，不能按SHA-1合并身份。
+- 相同内容的多个物理路径作为同一资产的引用保留；新版项目资料须按项目登记逐份核对，不能仅按指纹清理原件。
 - 对失效引用，建议先确认原文件是否迁移，再通过“扫描并补建资产索引”刷新。
 `;
     fs.writeFileSync(assetGovernanceReportPath(), report, 'utf8');
@@ -6989,7 +7015,7 @@ ${rowsFor(nextAssets)}
       issueCount: issueAssets.length,
       missingCount,
       staleReferenceCount: staleRefCount,
-      message: `已生成资产治理建议：需治理 ${issueAssets.length} 个资产，重复组 ${duplicateGroups.length} 组，失效引用 ${staleRefCount} 条。`,
+      message: `已生成资产治理建议：需治理 ${issueAssets.length} 个资产，多路径内容组 ${duplicateGroupCount} 组，失效引用 ${staleRefCount} 条。`,
     });
   } catch (error) {
     return JSON.stringify({ ok: false, message: `生成资产治理建议失败：${error.message}` });
@@ -7019,87 +7045,127 @@ function isAllowedMaterialFile(filePath) {
   return isAllowedUploadFile(path.basename(filePath));
 }
 
-async function rebuildAssetIndex() {
+const assetRebuildJobs = new Map();
+let activeAssetRebuildJobId = '';
+
+function publicAssetRebuildJob(job) {
+  return job ? { jobId: job.jobId, status: job.status, phase: job.phase, startedAt: job.startedAt,
+    updatedAt: job.updatedAt, finishedAt: job.finishedAt || '', discovered: job.discovered || 0,
+    processed: job.processed || 0, added: job.added || 0, changed: job.changed || 0,
+    skipped: job.skipped || 0, failed: job.failed || 0, currentPath: job.currentPath || '',
+    phaseTotal: job.phaseTotal || 0, phaseProcessed: job.phaseProcessed || 0,
+    currentScopeType: job.currentScopeType || '', currentScopeId: job.currentScopeId || '', currentScopeName: job.currentScopeName || '',
+    error: job.error || '', cancelled: Boolean(job.cancelled), summary: job.summary || null } : null;
+}
+
+function publishAssetRebuildJob(job) {
+  job.updatedAt = new Date().toISOString();
+  try { assetStore().updateScan(job.jobId, { status: job.status, phase: job.phase, discovered: job.discovered || 0,
+    processed: job.processed || 0, added: job.added || 0, changed: job.changed || 0, skipped: job.skipped || 0,
+    failed: job.failed || 0, current_path: job.currentPath || '', error: job.error || '', cancelled: job.cancelled ? 1 : 0,
+    finished_at: job.finishedAt || '', phase_total: job.phaseTotal || 0, phase_processed: job.phaseProcessed || 0,
+    current_scope_type: job.currentScopeType || '', current_scope_id: job.currentScopeId || '',
+    current_scope_name: job.currentScopeName || '' }); } catch { /* UI progress remains available even if persistence fails. */ }
+  if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('asset-index:progress', publicAssetRebuildJob(job));
+}
+
+function checkAssetRebuildCancellation(job, currentPath = '') {
+  if (!job) return;
+  job.currentPath = currentPath || job.currentPath;
+  if (job.cancelled) throw Object.assign(new Error('资产索引补建已取消。'), { code: 'asset_scan_cancelled' });
+}
+
+async function performAssetIndexRebuild(job = null) {
   try {
-  const existing = readAssetIndex();
-  const next = new Map(existing.map((asset) => [asset.assetId, asset]));
-  const uploadRecords = readUploadRecords();
-  registerAssetsFromUploadRecords(uploadRecords);
-  const students = readStudentsIndex();
-  for (const student of students) {
-    const materials = readStudentMaterials(student);
-    for (const material of materials) {
-      if (material.absolutePath && fs.existsSync(material.absolutePath)) {
-        const asset = upsertAssetFromFile(material.absolutePath, {
-          studentId: String(student.id || ''),
-          studentName: student.name || '',
-          sourcePath: material.sourcePath || '',
-          sourceName: material.sourceName || '学生原始资料库',
-          uploadedAt: material.uploadedAt || '',
-          referenceId: material.id || '',
-          role: 'student_raw',
-        });
-        if (asset) next.set(asset.assetId, asset);
-      }
-    }
-    const rawDir = student.rawPath || getRawDir(student.name);
-    if (rawDir && fs.existsSync(rawDir)) {
-      const rawFiles = [];
-      collectFilesRecursive(rawDir, rawFiles, 8);
-      for (const rawFile of rawFiles) {
-        if (!isAllowedMaterialFile(rawFile)) continue;
-        const asset = upsertAssetFromFile(rawFile, {
-          studentId: String(student.id || ''),
-          studentName: student.name || '',
-          sourceName: '学生原始资料库扫描',
-          role: 'student_raw_scanned',
-          referenceId: `scan-${student.id}-${crypto.createHash('sha1').update(rawFile).digest('hex').slice(0, 12)}`,
-        });
-        if (asset) next.set(asset.assetId, asset);
-      }
-    }
+  if (job) { job.phase = 'enumerating'; publishAssetRebuildJob(job); }
+  registerAssetsFromUploadRecords(readUploadRecords());
+  const roots = [];
+  for (const student of readStudentsIndex().filter(item => item.archived !== true && item.status !== 'archived')) {
+    const root = student.rawPath || getRawDir(student.name);
+    if (root && fs.existsSync(root)) roots.push({ path: root, maxDepth: 8, context: {
+      studentId: String(student.id || ''), studentName: student.name || '', spaceType: 'student',
+      sourceName: '学生原始资料库扫描', role: 'student_raw_scanned',
+    } });
   }
   const projects = readProjects().map(normalizeProject);
+  for (const project of projects.filter(item => !['sealed', 'removed'].includes(String(item.status)))) {
+    const candidates = [...new Set([project.rawPath, project.workspacePath].filter(Boolean))];
+    for (const root of candidates) if (fs.existsSync(root)) roots.push({ path: root, maxDepth: 8, context: {
+      projectId: String(project.id || ''), projectName: project.name || '', spaceType: 'project',
+      sourceName: '项目资料目录扫描', role: 'project_raw_scanned',
+    } });
+  }
+  await new Promise((resolve, reject) => {
+    const worker = new Worker(path.join(__dirname, 'asset-index-worker.cjs'));
+    if (job) job.worker = worker;
+    worker.on('message', message => {
+      if (message.type === 'progress') {
+        if (job) { job.phase = message.phase; job.discovered = message.discovered || 0;
+          job.phaseTotal = message.discovered || 0; job.phaseProcessed = 0; publishAssetRebuildJob(job); }
+        return;
+      }
+      if (message.type === 'batch') {
+        if (job) { job.phase = 'writing'; job.discovered = message.discovered; job.currentPath = message.currentPath; }
+        try {
+          let batchFailures = 0;
+          assetStore().transaction(() => {
+            for (const item of message.batch) {
+              try {
+                const previous = assetStore().findByFingerprint({ sha1: item.fingerprint.sha1, sha256: item.fingerprint.sha256, path: item.file });
+                const context = { ...item.context, contentSha256: item.fingerprint.sha256, verifiedFingerprint: item.fingerprint,
+                  referenceId: `scan-${crypto.createHash('sha1').update(`${item.context.studentId || item.context.projectId}|${item.file}`).digest('hex').slice(0, 20)}` };
+                const asset = upsertAssetFromFile(item.file, context);
+                if (asset && job) previous ? job.changed += 1 : job.added += 1;
+              } catch { batchFailures += 1; }
+            }
+          });
+          if (job) { job.databaseFailures = (job.databaseFailures || 0) + batchFailures;
+            job.processed = message.processed; job.phaseTotal = message.discovered; job.phaseProcessed = message.processed;
+            job.skipped = message.skipped; job.failed = message.failed + job.databaseFailures; publishAssetRebuildJob(job); }
+        } catch (error) { worker.terminate(); reject(error); }
+        return;
+      }
+      if (message.type === 'file-error' && job) { job.failed = message.failed + (job.databaseFailures || 0); job.currentPath = message.file; publishAssetRebuildJob(job); }
+      if (message.type === 'cancelled') reject(Object.assign(new Error('资产索引补建已取消。'), { code: 'asset_scan_cancelled' }));
+      if (message.type === 'error') reject(new Error(message.message));
+      if (message.type === 'completed') {
+        if (job) { job.discovered = message.discovered; job.processed = message.processed; job.skipped = message.skipped; job.failed = message.failed + (job.databaseFailures || 0); job.worker = null; }
+        resolve();
+      }
+    });
+    worker.on('error', reject);
+    worker.on('exit', code => { if (code !== 0 && !job?.cancelled) reject(new Error(`资产扫描 Worker 异常退出：${code}`)); });
+    worker.postMessage({ type: 'start', roots });
+  });
+  if (job) { job.phase = 'validating'; job.phaseTotal = 0; job.phaseProcessed = 0; publishAssetRebuildJob(job); }
   const compatibility = [];
-  for (const project of projects) {
-    if (isWorkspaceMaterialProject(project)) {
-      let linked = 0;
-      let remaining = 0;
-      const failed = [];
-      try {
-        for (let batch = 0; batch < 50; batch++) {
-          const current = readProjects().map(normalizeProject).find((item) => String(item.id) === String(project.id));
-          if (!current || !isWorkspaceMaterialProject(current)) break;
-          const result = await projectMaterialAssetCompatibility(current,
-            createProjectMaterialHost(current)).repair({ limit: 100 });
-          linked += result.linked;
-          remaining = result.remaining;
-          failed.push(...result.failed);
-          if (!result.linked || !result.remaining) break;
-        }
-      } catch (error) { failed.push({ code: error.code || 'asset_compat_failed', message: error.message }); }
-      compatibility.push({ projectId: project.id, linked, remaining, failed });
-      continue;
-    }
-    const rawDir = project.rawPath || projectPathsFor(project.name, project.projectRootPath, project).rawPath;
-    if (!rawDir || !fs.existsSync(rawDir)) continue;
-    const rawFiles = [];
-    collectFilesRecursive(rawDir, rawFiles, 8);
-    for (const rawFile of rawFiles) {
-      if (!isAllowedMaterialFile(rawFile)) continue;
-      const asset = upsertAssetFromFile(rawFile, {
-        projectId: String(project.id || ''),
-        projectName: project.name || '',
-        sourceName: '项目原始资料库扫描',
-        role: 'project_raw_scanned',
-        referenceId: `scan-${project.id}-${crypto.createHash('sha1').update(rawFile).digest('hex').slice(0, 12)}`,
+  for (const project of projects.filter(isWorkspaceMaterialProject)) {
+    checkAssetRebuildCancellation(job, project.workspacePath || project.name || '项目资料');
+    try {
+      if (job) { job.currentScopeType = 'project'; job.currentScopeId = String(project.id); job.currentScopeName = project.name || '';
+        job.currentPath = project.workspacePath || project.name || '项目资料'; publishAssetRebuildJob(job); }
+      const result = await projectMaterialAssetCompatibility(project, createProjectMaterialHost(project)).repairAll({
+        batchSize: 100,
+        shouldCancel: () => Boolean(job?.cancelled),
+        onProgress: async progress => {
+          if (!job) return;
+          job.phaseTotal = progress.total; job.phaseProcessed = progress.processed;
+          job.failed += Math.max(0, progress.failed - (job.currentCompatibilityFailed || 0));
+          job.currentCompatibilityFailed = progress.failed;
+          publishAssetRebuildJob(job);
+        },
       });
-      if (asset) next.set(asset.assetId, asset);
+      if (job) job.currentCompatibilityFailed = 0;
+      compatibility.push({ projectId: project.id, linked: result.linked, remaining: result.remaining, failed: result.failed });
+    } catch (error) {
+      if (error.code === 'asset_scan_cancelled') throw error;
+      compatibility.push({ projectId: project.id, linked: 0, remaining: 0, failed: [{ code: error.code || 'asset_compat_failed', message: error.message }] });
     }
   }
-  readAssetIndex().forEach((asset) => next.set(asset.assetId, asset));
-  writeAssetIndex(Array.from(next.values()).sort((a, b) => String(b.updatedAt || '').localeCompare(String(a.updatedAt || ''))));
+  if (job) { job.currentScopeType = ''; job.currentScopeId = ''; job.currentScopeName = ''; job.phaseTotal = 0; job.phaseProcessed = 0; }
   const summary = assetIndexSummary();
+  assetStore().setMeta('last_rebuild_at', new Date().toISOString());
+  assetStore().setMeta('database_state', 'ready');
   const incomplete = compatibility.filter((item) => item.remaining || item.failed.length);
   appendHostTimeline({ type: 'asset_index_rebuilt', title: 'Asset index rebuilt', detail: `${summary.total} asset(s)` });
   return JSON.stringify({ ...summary, partial: incomplete.length > 0, projectMaterialCompatibility: compatibility,
@@ -7110,6 +7176,93 @@ async function rebuildAssetIndex() {
     return JSON.stringify({ ok: false, code: error.code || 'asset_rebuild_failed',
       message: `补建资产索引失败：${error.message}` });
   }
+}
+
+function startAssetIndexRebuild() {
+  if (activeAssetRebuildJobId) {
+    const active = assetRebuildJobs.get(activeAssetRebuildJobId);
+    if (active && active.status === 'running') return JSON.stringify({ ok: false, code: 'asset_scan_busy', job: publicAssetRebuildJob(active), message: '资产索引补建正在进行。' });
+  }
+  const jobId = `asset-scan-${Date.now()}-${crypto.randomBytes(4).toString('hex')}`;
+  const job = { jobId, status: 'running', phase: 'queued', startedAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
+    discovered: 0, processed: 0, added: 0, changed: 0, skipped: 0, failed: 0, cancelled: false, currentPath: '', error: '',
+    phaseTotal: 0, phaseProcessed: 0, currentScopeType: '', currentScopeId: '', currentScopeName: '' };
+  assetRebuildJobs.set(jobId, job);
+  activeAssetRebuildJobId = jobId;
+  assetStore().beginScan(jobId);
+  publishAssetRebuildJob(job);
+  setImmediate(async () => {
+    try {
+      const result = JSON.parse(await performAssetIndexRebuild(job));
+      job.summary = result;
+      job.status = job.cancelled ? 'cancelled' : result.ok === false ? 'failed' : 'completed';
+      job.phase = job.status;
+      job.error = result.ok === false ? result.message || '资产索引补建失败。' : '';
+      job.failed += result.ok === false ? 1 : 0;
+    } catch (error) {
+      job.status = error.code === 'asset_scan_cancelled' ? 'cancelled' : 'failed';
+      job.phase = job.status;
+      job.error = error.message;
+      job.failed += job.status === 'failed' ? 1 : 0;
+    } finally {
+      job.finishedAt = new Date().toISOString();
+      if (activeAssetRebuildJobId === jobId) activeAssetRebuildJobId = '';
+      publishAssetRebuildJob(job);
+    }
+  });
+  return JSON.stringify({ ok: true, job: publicAssetRebuildJob(job), message: '资产索引补建已在后台开始。' });
+}
+
+function getAssetRebuildStatus(jobId = '') {
+  const job = jobId ? assetRebuildJobs.get(String(jobId)) : activeAssetRebuildJobId ? assetRebuildJobs.get(activeAssetRebuildJobId) : null;
+  const persisted = !job ? assetStore().scanStatus(String(jobId || '')) : null;
+  return JSON.stringify({ ok: true, job: job ? publicAssetRebuildJob(job) : persisted });
+}
+
+function cancelAssetIndexRebuild(jobId = '') {
+  const id = String(jobId || activeAssetRebuildJobId);
+  const job = assetRebuildJobs.get(id);
+  if (!job || job.status !== 'running') return JSON.stringify({ ok: false, code: 'asset_not_found', message: '没有可取消的资产补建任务。' });
+  job.cancelled = true;
+  job.worker?.postMessage({ type: 'cancel' });
+  job.phase = 'cancelling';
+  publishAssetRebuildJob(job);
+  return JSON.stringify({ ok: true, job: publicAssetRebuildJob(job), message: '已请求取消资产索引补建。' });
+}
+
+function listDuplicateAssetGroups(request = {}) {
+  return JSON.stringify(assetDuplicateGovernance().listGroups(request));
+}
+
+async function prepareDuplicateAssetCleanup(request = {}) {
+  const operation = await assetDuplicateGovernance().prepare(request);
+  return JSON.stringify({ ok: true, operation });
+}
+
+function startDuplicateAssetCleanup(operationId, entryIds = []) {
+  const governance = assetDuplicateGovernance();
+  const operation = governance.status(operationId);
+  if (!operation) return JSON.stringify({ ok: false, code: 'asset_not_found', message: '重复文件治理预览不存在。' });
+  setImmediate(() => {
+    void governance.apply(operationId, Array.isArray(entryIds) ? entryIds : [])
+      .catch(error => {
+        try { assetStore().updateDuplicateOperation(operationId, { status: 'failed', finishedAt: new Date().toISOString(), error: error.message }); } catch { /* Persist best effort. */ }
+        if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('asset-duplicates:progress', {
+          operationId, status: 'failed', error: error.message, code: error.code || 'asset_cleanup_failed',
+        });
+      });
+  });
+  return JSON.stringify({ ok: true, operation: { ...operation, status: 'queued' }, message: '重复文件隔离任务已开始。' });
+}
+
+function getDuplicateAssetCleanupStatus(operationId) {
+  const operation = assetDuplicateGovernance().status(operationId);
+  return JSON.stringify(operation ? { ok: true, operation } : { ok: false, code: 'asset_not_found', message: '未找到重复文件治理任务。' });
+}
+
+async function restoreDuplicateAssetCleanup(operationId, entryIds = []) {
+  const operation = await assetDuplicateGovernance().restore(operationId, Array.isArray(entryIds) ? entryIds : []);
+  return JSON.stringify({ ok: true, operation, message: operation.error || '已完成重复文件恢复。' });
 }
 
 function isPathInside(parent, child) {
@@ -9008,7 +9161,8 @@ function collectEducationArchiveBackups(students) {
   return backups;
 }
 
-function backupHostData(studentsJson) {
+async function backupHostData(studentsJson) {
+  let target = '';
   try {
     let backupStudents = readStudentsIndex();
     if (studentsJson) {
@@ -9024,7 +9178,8 @@ function backupHostData(studentsJson) {
     delete backupSettings.courseCatalogPrivateKey;
     const payload = {
       kind: 'ai-edu-manager-host-backup',
-      version: APP_VERSION,
+      version: 2,
+      appVersion: APP_VERSION,
       exportedAt: new Date().toISOString(),
       storage: {
         schema: 'edu-manager.host-backup-storage.v1',
@@ -9037,19 +9192,49 @@ function backupHostData(studentsJson) {
       students: backupStudents,
       devices: readDevices(),
       uploadRecords: readUploadRecords(),
-      assets: readAssetIndex(),
       projects: readProjects(),
       timeline: readHostTimeline(),
       educationArchives: collectEducationArchiveBackups(backupStudents),
     };
-    const target = path.join(downloadsDir(), `AI-edu-manager-host-backup-${timestampForFilename()}.json`);
-    fs.writeFileSync(target, JSON.stringify(payload, null, 2), 'utf8');
+    target = path.join(downloadsDir(), `AI-edu-manager-host-backup-${timestampForFilename()}.sqlite3`);
+    await assetStore().backupTo(target);
+    const container = new DatabaseSync(target);
+    try {
+      container.exec(`CREATE TABLE IF NOT EXISTS host_backup_manifest(key TEXT PRIMARY KEY,value TEXT NOT NULL) STRICT;
+        CREATE TABLE IF NOT EXISTS host_backup_state(key TEXT PRIMARY KEY,json TEXT NOT NULL) STRICT;`);
+      const putManifest = container.prepare('INSERT OR REPLACE INTO host_backup_manifest(key,value) VALUES(?,?)');
+      putManifest.run('kind', payload.kind); putManifest.run('version', '2');
+      putManifest.run('app_version', APP_VERSION); putManifest.run('exported_at', payload.exportedAt);
+      const putState = container.prepare('INSERT OR REPLACE INTO host_backup_state(key,json) VALUES(?,?)');
+      for (const [key, value] of Object.entries(payload)) {
+        if (['kind', 'version', 'appVersion', 'exportedAt'].includes(key)) continue;
+        putState.run(key, JSON.stringify(value));
+      }
+      const integrity = container.prepare('PRAGMA integrity_check').get();
+      if (Object.values(integrity || {})[0] !== 'ok') throw Error('备份容器完整性检查失败。');
+    } finally { container.close(); }
     appendHostTimeline({ type: 'backup_created', title: 'Backup created', detail: target });
     return JSON.stringify({ ok: true, path: target, backupScope: 'state_only',
-      message: '已生成主机状态备份（JSON）；不包含工作空间原文、固定版本文件或知识文档。完整资料备份请使用换机迁移包。' });
+      message: '已生成主机状态备份（SQLite v2）；包含一致的资产数据库快照，不包含工作空间原文、固定版本文件或知识文档。完整资料备份请使用换机迁移包。' });
   } catch (error) {
+    if (target && fs.existsSync(target)) fs.rmSync(target, { force: true });
     return JSON.stringify({ ok: false, message: error.message });
   }
+}
+
+function readHostBackupContainer(file) {
+  if (path.extname(file).toLowerCase() === '.json') return JSON.parse(fs.readFileSync(file, 'utf8'));
+  const container = new DatabaseSync(file, { readOnly: true });
+  try {
+    const integrity = container.prepare('PRAGMA integrity_check').get();
+    if (Object.values(integrity || {})[0] !== 'ok') throw Error('备份容器完整性检查失败。');
+    const manifest = Object.fromEntries(container.prepare('SELECT key,value FROM host_backup_manifest').all().map(row => [row.key, row.value]));
+    if (manifest.kind !== 'ai-edu-manager-host-backup' || Number(manifest.version) !== 2) throw Error('Unsupported backup file.');
+    const parsed = { kind: manifest.kind, version: 2, appVersion: manifest.app_version,
+      exportedAt: manifest.exported_at, __sqliteAssetBackup: file };
+    for (const row of container.prepare('SELECT key,json FROM host_backup_state').all()) parsed[row.key] = JSON.parse(row.json);
+    return parsed;
+  } finally { container.close(); }
 }
 
 function restoreHostData() {
@@ -9057,10 +9242,10 @@ function restoreHostData() {
     const result = dialog.showOpenDialogSync(mainWindow, {
       title: 'Select host backup file',
       properties: ['openFile'],
-      filters: [{ name: 'JSON', extensions: ['json'] }],
+      filters: [{ name: '教育管家状态备份', extensions: ['sqlite3', 'json'] }],
     });
     if (!result || !result[0]) return JSON.stringify({ ok: false, message: 'No backup file selected.' });
-    const parsed = JSON.parse(fs.readFileSync(result[0], 'utf8'));
+    const parsed = readHostBackupContainer(result[0]);
     if (parsed.kind !== 'ai-edu-manager-host-backup') throw new Error('Unsupported backup file.');
     if (Array.isArray(parsed.projects) && parsed.projects.some((project) =>
       project?.materialStorageMode === 'workspace-v1')) return JSON.stringify({ ok: false,
@@ -9119,7 +9304,9 @@ function restoreHostData() {
     if (Array.isArray(parsed.students)) writeStudentsIndex(restoredStudentRecords);
     if (Array.isArray(parsed.devices)) writeDevices(parsed.devices);
     if (Array.isArray(parsed.uploadRecords)) writeUploadRecords(restoredUploadRecords);
-    if (Array.isArray(parsed.assets)) writeAssetIndex(restoredAssets);
+    let restoredAssetCount = 0;
+    if (parsed.__sqliteAssetBackup) restoredAssetCount = assetStore().importSnapshot(parsed.__sqliteAssetBackup, remapValue).assetCount;
+    else if (Array.isArray(parsed.assets)) { writeAssetIndex(restoredAssets); restoredAssetCount = restoredAssets.length; }
     if (Array.isArray(parsed.projects)) writeProjects(restoredProjects);
     if (Array.isArray(parsed.timeline)) writeHostTimeline(parsed.timeline);
     let restoredEducationArchives = 0;
@@ -9142,7 +9329,7 @@ function restoreHostData() {
       students: Array.isArray(parsed.students) ? parsed.students.length : 0,
       devices: Array.isArray(parsed.devices) ? parsed.devices.length : 0,
       uploadRecords: Array.isArray(parsed.uploadRecords) ? parsed.uploadRecords.length : 0,
-      assets: Array.isArray(parsed.assets) ? parsed.assets.length : 0,
+      assets: restoredAssetCount,
       projects: Array.isArray(parsed.projects) ? parsed.projects.length : 0,
       educationArchives: restoredEducationArchives,
       studentRecords: restoredStudentRecords,
@@ -9229,12 +9416,11 @@ function sanitizeMigrationSettings(input) {
   return sanitized;
 }
 
-function migrationStateVirtualFiles() {
+function migrationStateVirtualFiles(assetSnapshotPath = '') {
   const stateFiles = [
     ['settings.json', sanitizeMigrationSettings(readSettings())],
     ['students.json', readStudentsIndex()],
     ['upload-records.json', readUploadRecords()],
-    ['asset-index.json', readAssetIndex()],
     ['projects.json', { version: 1, updatedAt: new Date().toISOString(), projects: readProjects() }],
     ['removed-projects.json', readRemovedProjectRegistry()],
     ['host-timeline.json', readHostTimeline()],
@@ -9247,12 +9433,19 @@ function migrationStateVirtualFiles() {
     ['student-archive-sync-state.json', safeReadJson(studentArchiveSyncStatePath(), {})],
     ['education-publications.json', safeReadJson(educationPublicationIndexPath(), {})],
   ];
-  return stateFiles.map(([relativePath, value]) => ({
+  const files = stateFiles.map(([relativePath, value]) => ({
     kind: 'state',
     id: 'host-state',
     relativePath,
     content: `${JSON.stringify(value, null, 2)}\n`,
   }));
+  if (assetSnapshotPath) files.push({
+    kind: 'state',
+    id: 'host-state',
+    relativePath: 'migration-assets/asset-index.sqlite3',
+    sourcePath: assetSnapshotPath,
+  });
+  return files;
 }
 
 function migrationStateDirectorySources() {
@@ -9405,17 +9598,28 @@ async function createHostMigrationPackage(event, optionsJson) {
     const selectedIds = new Set((options.externalSourceIds || []).map(String));
     const result = await withHostMigrationMaintenance(async () => {
       const sourceState = hostMigrationSources(options.externalSourceIds || []);
-      return runHostMigrationWorker('create', {
-        destinationParent: selected.filePaths[0],
-        managedRoot: sourceState.managedRoot,
-        userDataRoot: app.getPath('userData'),
-        appVersion: APP_VERSION,
-        hostDisplayName: getHostIdentity().displayName,
-        sources: sourceState.sources,
-        requiredDirectories: sourceState.requiredDirectories,
-        virtualFiles: migrationStateVirtualFiles(),
-        unresolvedExternalSources: sourceState.external.filter((item) => !item.required && !selectedIds.has(item.id)),
-      }, (payload) => emitHostMigrationProgress(event, payload));
+      const snapshotRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'edu-asset-migration-'));
+      const snapshotPath = path.join(snapshotRoot, 'asset-index.sqlite3');
+      try {
+        await assetStore().backupTo(snapshotPath);
+        return await runHostMigrationWorker('create', {
+          destinationParent: selected.filePaths[0],
+          managedRoot: sourceState.managedRoot,
+          userDataRoot: app.getPath('userData'),
+          appVersion: APP_VERSION,
+          hostDisplayName: getHostIdentity().displayName,
+          sources: sourceState.sources,
+          requiredDirectories: sourceState.requiredDirectories,
+          virtualFiles: migrationStateVirtualFiles(snapshotPath),
+          unresolvedExternalSources: sourceState.external.filter((item) => !item.required && !selectedIds.has(item.id)),
+        }, (payload) => emitHostMigrationProgress(event, payload));
+      } finally {
+        const resolvedTemp = path.resolve(os.tmpdir());
+        const resolvedSnapshotRoot = path.resolve(snapshotRoot);
+        if (path.dirname(resolvedSnapshotRoot) === resolvedTemp && path.basename(resolvedSnapshotRoot).startsWith('edu-asset-migration-')) {
+          fs.rmSync(resolvedSnapshotRoot, { recursive: true, force: true });
+        }
+      }
     });
     appendHostTimeline({ type: 'migration_package_created', title: 'Migration package created', detail: result.packagePath, migrationId: result.migrationId, fileCount: result.fileCount, totalBytes: result.totalBytes });
     const changeWarningCount = Array.isArray(result.sourceChangeWarnings) ? result.sourceChangeWarnings.length : 0;
@@ -9565,6 +9769,23 @@ async function restoreHostMigrationPackage(event, optionsJson) {
         currentAppVersion: APP_VERSION,
         maxActiveStudents: Number(activeLicense.maxActiveStudents || activeLicense.studentLimit || 0),
       }, (payload) => emitHostMigrationProgress(event, payload));
+      if (typeof assetStore === 'function') {
+        const sqliteSnapshot = path.join(app.getPath('userData'), 'migration-assets', 'asset-index.sqlite3');
+        if (fs.existsSync(sqliteSnapshot)) {
+          assetStore().importSnapshot(sqliteSnapshot, (asset) => {
+            let remapped = remapStorageTree(asset, inspected.sourceManagedRoot, targetRoot, { platform: process.platform }).value;
+            if (inspected.sourceUserDataRoot) remapped = remapStorageTree(remapped, inspected.sourceUserDataRoot, app.getPath('userData'), { platform: process.platform }).value;
+            for (const mapping of result.externalMappings || []) {
+              remapped = remapStorageTree(remapped, mapping.sourceRoot, mapping.targetRoot, { platform: process.platform }).value;
+            }
+            return remapped;
+          });
+        } else {
+          const restoredLegacyAssets = safeReadJson(assetIndexPath(), null);
+          if (!restoredLegacyAssets || !Array.isArray(restoredLegacyAssets.assets)) throw Error('迁移包缺少可导入的资产状态。');
+          assetStore().replaceAll(restoredLegacyAssets.assets);
+        }
+      }
       courseCatalogStoreInstance = null;
       platformCourseDraftStoreInstance = null;
       licenseTrustStoreInstance = null;
@@ -9604,6 +9825,16 @@ function resetHostApiToken() {
 
 function exportHostLogs() {
   try {
+    const assetSample = assetStore().listAssets({ pageSize: 20 }).items.map((asset) => ({
+      assetId: asset.assetId,
+      filename: path.basename(asset.filename || asset.path || ''),
+      sha1Prefix: String(asset.sha1 || '').slice(0, 12),
+      type: asset.type,
+      status: asset.status,
+      referenceCount: asset.referenceCount,
+      governanceRisk: asset.governanceRisk || '',
+      updatedAt: asset.updatedAt || '',
+    }));
     const payload = {
       kind: 'ai-edu-manager-host-diagnostics',
       version: APP_VERSION,
@@ -9613,7 +9844,8 @@ function exportHostLogs() {
       students: readStudentsIndex(),
       devices: readDevices().map(publicDevice),
       uploadRecords: readUploadRecords(),
-      assets: readAssetIndex(),
+      assetIndex: { summary: assetIndexSummary(), scan: assetStore().scanStatus(), sample: assetSample,
+        note: '诊断导出只包含摘要和有限脱敏样本，不包含完整资产或引用路径。' },
       projects: readProjects(),
       timeline: readHostTimeline(),
       paths: {
@@ -9776,23 +10008,15 @@ function remapAdoptedStudentMetadata(student, oldRoots, newRoot) {
   }
 
   try {
-    const assets = readAssetIndex();
+    const assets = assetStore().queryDetails({ studentId: String(student.id || '') });
     let changed = 0;
-    const next = assets.map((asset) => {
-      const belongsToStudent = String(asset.ownerStudentId || '') === String(student.id || '')
-        || (asset.linkedStudents || []).some((id) => String(id) === String(student.id || ''))
-        || (asset.references || []).some((reference) => (
-          reference.spaceType === 'student'
-          && String(reference.spaceId || '') === String(student.id || '')
-        ));
-      if (!belongsToStudent) return asset;
+    for (const asset of assets) {
       const result = remap(asset);
       changed += result.changed;
-      return result.value;
-    });
+      if (result.changed) assetStore().upsertAsset(result.value, result.value.references, result.value.aliases || []);
+    }
     if (changed) {
-      writeAssetIndex(next);
-      changedFiles.push(assetIndexPath());
+      changedFiles.push(assetDatabasePath());
     }
   } catch (error) {
     warnings.push(`资料资产索引：${error.message}`);
@@ -11696,17 +11920,13 @@ async function registerCaptureTimelineBundle(result, originalSession) {
       existingUploadRecords.filter((record) => retiredIds.has(String(record.id))).map((record) => ({ ...record, rawPath: target.rawDir })));
   }
   if (target.targetMode === 'project_raw') {
-    const assets = readAssetIndex();
-    let changed = false;
+    const assets = assetStore().queryDetails({ projectId: String(target.project.id),
+      captureSessionId: String(current.id) });
     for (const asset of assets) {
-      if (String(asset.captureSessionId || '') !== String(current.id) || !asset.captureWindowId
-        || currentWindowIds.has(String(asset.captureWindowId)) || !(asset.linkedProjects || []).map(String).includes(String(target.project.id))
+      if (!asset.captureWindowId || currentWindowIds.has(String(asset.captureWindowId))
         || asset.status === 'removed') continue;
-      asset.status = 'removed';
-      asset.updatedAt = now;
-      changed = true;
+      assetStore().patchAsset(asset.assetId, { status: 'removed', updatedAt: now });
     }
-    if (changed) writeAssetIndex(assets);
   }
   const units = !hasLegacyRecord && windowUnits.length ? windowUnits : [{
     windowId: '', path: result.publishedBundlePath, segmentIds: result.bundle?.segmentIds || [],
@@ -12602,8 +12822,8 @@ function updateCaptureControlWindow() {
     const display = mainWindow && !mainWindow.isDestroyed()
       ? screen.getDisplayMatching(mainWindow.getBounds())
       : screen.getPrimaryDisplay();
-    const width = active || quickCaptureSetupOpen ? 610 : 520;
-    const initial = captureControlBounds(display.workArea, width, 86);
+    const width = quickCapturePreferredWidth(display.workArea, Boolean(active));
+    const initial = captureControlBounds(display.workArea, width, QUICK_CAPTURE_COLLAPSED_HEIGHT);
     const bounds = clampQuickCaptureBounds(display.workArea, { ...initial, ...quickCapturePosition,
       height: quickCaptureSetupOpen ? 500 : quickCaptureExpanded ? QUICK_CAPTURE_EXPANDED_HEIGHT : QUICK_CAPTURE_COLLAPSED_HEIGHT });
     quickCaptureWindow = new BrowserWindow({
@@ -12634,7 +12854,8 @@ function updateCaptureControlWindow() {
     void window.loadFile(path.join(__dirname, 'quick-capture.html')).catch(error => console.warn('快捷采集工具条加载失败：', error));
   } else {
     const [currentWidth, currentHeight] = quickCaptureWindow.getSize();
-    const width = active || quickCaptureSetupOpen ? 610 : 520;
+    const display = screen.getDisplayMatching(quickCaptureWindow.getBounds());
+    const width = quickCapturePreferredWidth(display.workArea, Boolean(active));
     const height = quickCaptureSetupOpen ? 500 : quickCaptureExpanded ? QUICK_CAPTURE_EXPANDED_HEIGHT : QUICK_CAPTURE_COLLAPSED_HEIGHT;
     if (currentWidth !== width || currentHeight !== height) resizeQuickCaptureWindow(width, height);
     if (!quickCaptureWindow.isVisible() && quickCaptureLoaded) {
@@ -12648,6 +12869,93 @@ function updateCaptureControlWindow() {
 
 function quickCaptureSettingsPath() {
   return path.join(app.getPath('userData'), 'quick-capture-settings.json');
+}
+
+function companionSettingsPath() {
+  return path.join(app.getPath('userData'), 'agent-companion-settings.json');
+}
+
+function currentCompanionSettings(targets = companionTargets(), projects = companionProjects()) {
+  const settings = readCompanionSettings(companionSettingsPath());
+  const ids = new Set(targets.map(item => item.id));
+  if (!ids.has(settings.selectedTargetId)) settings.selectedTargetId = 'generic';
+  if (settings.scope === 'project' && !projects.some(item => item.id === settings.projectId)) {
+    settings.scope = 'conversation'; settings.projectId = '';
+  }
+  return settings;
+}
+
+function saveCompanionSettings(patch = {}) {
+  const current = readCompanionSettings(companionSettingsPath());
+  return writeCompanionSettings(companionSettingsPath(), { ...current, ...patch });
+}
+
+function companionProjects() {
+  const studentId = String(quickCaptureStudentId || '');
+  if (!studentId) return [];
+  return readProjects().filter(project => (project.studentIds || []).map(String).includes(studentId))
+    .map(project => ({ id: String(project.id || ''), name: String(project.name || project.id || '').slice(0, 80) }))
+    .filter(project => project.id && project.name);
+}
+
+function companionNativeCapabilities() {
+  const student = readStudentsIndex().find(item => String(item.id) === String(quickCaptureStudentId || ''));
+  if (!student) return {};
+  // Inbound MCP authorization is independent of outbound automatic-task authorization.
+  // Use the live effective policy so paused/revoked/excluded students cannot inherit legacy grants.
+  let managed = {};
+  try {
+    const store = externalConnectorStore().read();
+    const installed = unifiedKnowledgeRegistrations();
+    const { effective } = require('./external-agent-connector.cjs');
+    for (const provider of ['codex', 'workbuddy']) {
+      const record = installed[provider];
+      const connection = store.connections.find(item => item.connectionId === record?.connectionId);
+      if (!record && !store.connections.some(item => item.hostType === provider)) continue;
+      managed[provider] = { managed: true, connected: false, verified: false, query: false, archive: false, status: '连接未启用或当前学生未授权' };
+      if (!connection || !['bridge_verified', 'configured_restart_required'].includes(record?.status)) continue;
+      try {
+        const grant = effective(store, connection, [student], [], { studentId: String(student.id) });
+        managed[provider] = { managed: true, connected: Boolean(hostServer), verified: Boolean(hostServer && record.status === 'bridge_verified'),
+          query: Boolean(hostServer && grant.capabilities.includes('knowledge:query')),
+          archive: Boolean(hostServer && grant.capabilities.includes('material:upload') && grant.capabilities.includes('conversation:submit')),
+          status: !hostServer ? '已配置 · 主机服务未运行' : record.status === 'bridge_verified' ? '桥接已验证 · 已授权当前学生' : '已配置 · 请重启智能体后连接' };
+      } catch { /* Effective authorization stays closed. */ }
+    }
+  } catch { return { codex: { managed: true, status: '连接状态不可读' }, workbuddy: { managed: true, status: '连接状态不可读' } }; }
+  try {
+    const descriptor = JSON.parse(fs.readFileSync(agentKnowledgeDescriptorPath(student), 'utf8'));
+    if (String(descriptor?.defaults?.scopeId || '') !== String(student.id)) return managed;
+    const tool = descriptor.nativeTool || {};
+    const mapped = {
+      codex: tool.codexRegistered,
+      workbuddy: tool.workbuddyRegistered,
+      openclaw: tool.openclawRegistered,
+      qclaw: tool.qclawRegistered || tool.qclawNativeRegistered,
+      'claude-code': tool.claudeCodeLifecycleRegistered,
+      codebuddy: tool.workbuddyRegistered,
+      trae: tool.traeRegistered,
+      qoder: tool.qoderRegistered,
+    };
+    return { ...Object.fromEntries(Object.entries(mapped).map(([id, ready]) => [id, { query: Boolean(ready), archive: Boolean(ready) }])), ...managed };
+  } catch { return managed; }
+}
+
+function companionTargets() {
+  const settings = readCompanionSettings(companionSettingsPath());
+  return companionTargetCatalog({ capabilities: registeredAdapterCapabilities(), native: companionNativeCapabilities(), customTargets: settings.customTargets });
+}
+
+function companionPublicState() {
+  // Capture counters refresh frequently. The bar needs no disk-backed target/project discovery.
+  return { popoverMode: quickCapturePopoverMode };
+}
+
+function quickCapturePreferredWidth(workArea, active = false) {
+  const available = Number(workArea?.width) || QUICK_CAPTURE_PREFERRED_WIDTH;
+  if (quickCaptureSetupOpen) return Math.min(610, Math.max(360, available));
+  if (active) return Math.min(430, Math.max(340, available));
+  return Math.min(QUICK_CAPTURE_PREFERRED_WIDTH, Math.max(300, available));
 }
 
 function loadQuickCaptureSettings() {
@@ -12681,6 +12989,7 @@ function quickCaptureState() {
     activeAction: quickCaptureActiveAction,
     pendingCount: quickCaptureCountStudentId === student.id ? quickCapturePendingCount : 0,
     countStatus: quickCaptureCountStudentId === student.id ? quickCaptureCountStatus : 'unknown',
+    companion: companionPublicState(),
   }), setupOpen: quickCaptureSetupOpen, photoOpen: Boolean(quickPhotoWindow && !quickPhotoWindow.isDestroyed()), photoStudentName: quickPhotoContext?.student.name || '' };
 }
 
@@ -12688,6 +12997,127 @@ function sendQuickCaptureState() {
   if (quickCaptureLoaded && quickCaptureWindow && !quickCaptureWindow.isDestroyed()) {
     quickCaptureWindow.webContents.send('quick-capture:state', quickCaptureState());
   }
+}
+
+function closeQuickCapturePopover() {
+  quickCapturePopoverMode = '';
+  const window = quickCapturePopoverWindow;
+  quickCapturePopoverWindow = null; quickCapturePopoverLoaded = false;
+  if (window && !window.isDestroyed()) window.close();
+  sendQuickCaptureState();
+}
+
+function companionPopoverState() {
+  if (['collect', 'organize', 'settings'].includes(quickCapturePopoverMode)) return { mode: quickCapturePopoverMode };
+  const targets = companionTargets();
+  const projects = companionProjects();
+  const settings = currentCompanionSettings(targets, projects);
+  const selected = targets.find(item => item.id === settings.selectedTargetId) || targets[0];
+  return {
+    mode: quickCapturePopoverMode,
+    selectedTargetId: selected.id,
+    targetCapabilities: selected.capabilities,
+    targets,
+    scope: settings.scope,
+    projectId: settings.projectId,
+    projects,
+    modeGroups: COMPANION_MODE_GROUPS,
+    actions: Object.fromEntries(Object.entries(COMPANION_ACTIONS).map(([id, item]) => [id, {
+      label: item.label,
+      summary: String(item.summary || item.task || '').slice(0, 52),
+      configMode: item.configMode || (COMPANION_MODE_GROUPS.some(group => ['verify', 'plan'].includes(group.id) && group.actions.includes(id)) ? 'goal' : 'session'),
+    }])),
+  };
+}
+
+function sendCompanionPopoverState() {
+  if (quickCapturePopoverLoaded && quickCapturePopoverWindow && !quickCapturePopoverWindow.isDestroyed()) {
+    quickCapturePopoverWindow.webContents.send('companion-popover:state', companionPopoverState());
+  }
+  sendQuickCaptureState();
+}
+
+function showQuickCapturePopover(mode) {
+  if (!quickCaptureWindow || quickCaptureWindow.isDestroyed()) return { ok: false, message: '工具条窗口已失效。' };
+  const allowed = new Set(['targets', 'scope', 'learning', 'collect', 'organize', 'settings']);
+  if (!allowed.has(mode)) return { ok: false, message: '未知面板。' };
+  if (quickCapturePopoverWindow && !quickCapturePopoverWindow.isDestroyed() && quickCapturePopoverMode === mode) {
+    quickCapturePopoverWindow.show(); quickCapturePopoverWindow.focus(); sendCompanionPopoverState(); return { ok: true };
+  }
+  closeQuickCapturePopover(); quickCapturePopoverMode = mode;
+  const anchor = quickCaptureWindow.getBounds();
+  const area = screen.getDisplayMatching(anchor).workArea;
+  const size = mode === 'learning' ? { width: 350, height: 310 } : mode === 'targets' ? { width: 300, height: 350 }
+    : mode === 'scope' ? { width: 280, height: 230 } : { width: 240, height: mode === 'settings' ? 110 : 210 };
+  size.width = Math.min(size.width, area.width); size.height = Math.min(size.height, area.height);
+  const below = anchor.y + anchor.height + 6;
+  const y = below + size.height <= area.y + area.height ? below : Math.max(area.y, anchor.y - size.height - 6);
+  const x = Math.max(area.x, Math.min(anchor.x, area.x + area.width - size.width));
+  const window = new BrowserWindow({ x, y, ...size, frame: false, transparent: true, resizable: false, alwaysOnTop: true,
+    skipTaskbar: true, show: false, parent: quickCaptureWindow,
+    webPreferences: { preload: path.join(__dirname, 'companion-popover-preload.cjs'), contextIsolation: true, nodeIntegration: false, sandbox: true,
+      partition: 'companion-panels', zoomFactor: 1 },
+  });
+  quickCapturePopoverWindow = window;
+  window.setAlwaysOnTop(true, 'floating');
+  window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+  window.webContents.on('will-navigate', event => event.preventDefault());
+  window.webContents.on('did-finish-load', () => {
+    if (quickCapturePopoverWindow !== window) return;
+    quickCapturePopoverLoaded = true; sendCompanionPopoverState(); window.show(); window.focus();
+  });
+  if (['collect', 'organize', 'settings'].includes(mode)) {
+    window.on('blur', () => setTimeout(() => { if (quickCapturePopoverWindow === window && !window.isDestroyed() && !window.webContents.isDevToolsOpened()) closeQuickCapturePopover(); }, 140));
+  }
+  window.on('closed', () => { if (quickCapturePopoverWindow === window) { quickCapturePopoverWindow = null; quickCapturePopoverLoaded = false; quickCapturePopoverMode = ''; sendQuickCaptureState(); } });
+  void window.loadFile(path.join(__dirname, 'companion-popover.html')).catch(() => closeQuickCapturePopover());
+  return { ok: true };
+}
+
+function copyCompanionText(text, successMessage = '提示词已复制，可粘贴到当前 Agent。') {
+  try {
+    const value = String(text || '');
+    if (!value) return { ok: false, message: '没有可复制的内容。' };
+    clipboard.writeText(value);
+    const normalize = input => String(input || '').replace(/\r\n/g, '\n');
+    const ok = normalize(clipboard.readText()) === normalize(value);
+    return { ok, message: ok ? successMessage : '剪贴板写入后校验失败，请重试。' };
+  } catch (error) { return { ok: false, message: `复制失败：${error.message}` }; }
+}
+
+function selectedCompanionTarget() {
+  const targets = companionTargets();
+  const settings = currentCompanionSettings(targets);
+  return targets.find(item => item.id === settings.selectedTargetId) || targets[0];
+}
+
+function prepareCompanionAction(actionId, config = {}) {
+  const student = readStudentsIndex().find(item => String(item.id) === String(quickCaptureStudentId || ''));
+  if (!student) return { ok: false, message: '请先在教育管家选择学生。' };
+  const targets = companionTargets(), projects = companionProjects();
+  const settings = currentCompanionSettings(targets, projects);
+  const target = targets.find(item => item.id === settings.selectedTargetId) || targets[0];
+  const project = settings.scope === 'project' ? projects.find(item => item.id === settings.projectId) : null;
+  try {
+    for (const [id, item] of quickCapturePreparedPrompts) if (Date.parse(item.expiresAt) <= Date.now()) quickCapturePreparedPrompts.delete(id);
+    const packet = createCompanionPromptPacket({ actionId, student, target, scope: settings.scope, project, config });
+    quickCapturePreparedPrompts.set(packet.promptId, packet);
+    const result = copyCompanionText(packet.promptText);
+    return { ...result, ...(result.ok ? { promptId: packet.promptId, expiresAt: packet.expiresAt } : {}) };
+  }
+  catch (error) { return { ok: false, message: error.message }; }
+}
+
+function copyCompanionSetupInstruction() {
+  const student = readStudentsIndex().find(item => String(item.id) === String(quickCaptureStudentId || ''));
+  if (!student) return { ok: false, message: '请先在教育管家选择学生。' };
+  const target = selectedCompanionTarget();
+  const configuredProviderId = String(student.agentTool || '').toLowerCase();
+  const selectedProviderId = target.kind === 'builtin' ? String(target.providerId || '') : '';
+  const providerId = String(quickCaptureConnectionPrompts[configuredProviderId] || '') ? configuredProviderId : selectedProviderId;
+  const verifiedPrompt = String(quickCaptureConnectionPrompts[providerId] || '');
+  const prompt = verifiedPrompt || genericConnectionPrompt(student);
+  return copyCompanionText(prompt, verifiedPrompt ? `已复制当前学生的 ${providerId} 完整 Agent 连接指令。` : '已复制当前学生的通用 Agent 协作指令。');
 }
 
 async function refreshQuickCaptureCount() {
@@ -12742,6 +13172,7 @@ function setQuickCaptureEnabled(enabled, { locate = false } = {}) {
     quickCaptureSetupOpen = false;
     quickCaptureDirect?.invalidateScreen();
     if (quickPhotoWindow && !quickPhotoWindow.isDestroyed()) quickPhotoWindow.close();
+    closeQuickCapturePopover();
   }
   if (enabled) quickCaptureDismissedSessionId = '';
   else if (activeCaptureRuntime?.session) quickCaptureDismissedSessionId = activeCaptureRuntime.session.id;
@@ -12749,7 +13180,7 @@ function setQuickCaptureEnabled(enabled, { locate = false } = {}) {
     const mainBounds = mainWindow && !mainWindow.isDestroyed() ? mainWindow.getBounds() : screen.getPrimaryDisplay().workArea;
     const display = screen.getDisplayMatching(mainBounds);
     const bounds = locateQuickCaptureBounds(mainBounds, display.workArea,
-      activeCaptureRuntime?.session || quickCaptureSetupOpen ? 610 : 520,
+      quickCapturePreferredWidth(display.workArea, Boolean(activeCaptureRuntime?.session)),
       quickCaptureSetupOpen ? 500 : quickCaptureExpanded ? QUICK_CAPTURE_EXPANDED_HEIGHT : QUICK_CAPTURE_COLLAPSED_HEIGHT);
     quickCapturePosition = { x: bounds.x, y: bounds.y };
     if (quickCaptureWindow && !quickCaptureWindow.isDestroyed()) quickCaptureWindow.setBounds(bounds);
@@ -12882,16 +13313,13 @@ async function handleQuickCaptureAction(event, action, input = {}) {
     return { ok: false, message: '工具条窗口已失效。' };
   }
   if (action === 'hide') { setQuickCaptureEnabled(false); return { ok: true }; }
-  if (action === 'more') {
-    quickCaptureSetupOpen = false;
-    quickCaptureDirect?.invalidateScreen();
-    quickCaptureExpanded = !quickCaptureExpanded;
-    resizeQuickCaptureWindow(activeCaptureRuntime?.session ? 610 : 520,
-      quickCaptureExpanded ? QUICK_CAPTURE_EXPANDED_HEIGHT : QUICK_CAPTURE_COLLAPSED_HEIGHT);
-    sendQuickCaptureState();
-    if (quickCaptureExpanded) void refreshQuickCaptureCount();
-    return { ok: true };
-  }
+  if (action === 'close-popover') { closeQuickCapturePopover(); return { ok: true }; }
+  if (action === 'learning') return showQuickCapturePopover('learning');
+  if (action === 'collect-menu') return showQuickCapturePopover('collect');
+  if (action === 'organize-menu') return showQuickCapturePopover('organize');
+  if (action === 'ai-settings') return showQuickCapturePopover('settings');
+  if (action === 'scope') return showQuickCapturePopover('scope');
+  if (action === 'learning-mode') return showQuickCapturePopover('learning');
   if (action === 'close-screen') {
     quickCaptureSetupOpen = false; quickCaptureDirect?.invalidateScreen(); updateCaptureControlWindow(); return { ok: true };
   }
@@ -12902,6 +13330,7 @@ async function handleQuickCaptureAction(event, action, input = {}) {
   }
   const locked = licenseRequiredJson('快捷采集');
   if (locked) return JSON.parse(locked);
+  if (['digest', 'flashcards', 'quiz', 'mindmap'].includes(action)) return prepareCompanionAction(action);
   if (['screen', 'start-screen', 'take-screen', 'save-screen', 'photo'].includes(action)) {
     try {
       if (action === 'photo') {
@@ -14078,8 +14507,9 @@ function normalizeProject(project, options = {}) {
   const digestState = project.digestState && typeof project.digestState === 'object'
     ? { ...project.digestState, ...fileDigestState }
     : fileDigestState;
-  const storedStagingItems = Array.isArray(project.stagingItems) ? project.stagingItems.map(normalizeProjectStagingItem) : [];
-  const stagingItems = isWorkspaceMaterialProject(project)
+  const includeStaging = options?.includeStaging !== false;
+  const storedStagingItems = includeStaging && Array.isArray(project.stagingItems) ? project.stagingItems.map(normalizeProjectStagingItem) : [];
+  const stagingItems = !includeStaging ? [] : isWorkspaceMaterialProject(project)
     ? projectStagingProjection({ id: projectId, workspacePath: paths.workspacePath,
       rawPath: paths.rawPath, stagingPath: paths.stagingPath },
       readProjectMaterialIndexSync({ id: projectId, managerPath: paths.managerPath }), storedStagingItems)
@@ -14242,8 +14672,13 @@ function ensureProjectWorkspace(project) {
 }
 
 async function getProjects() {
+  const options = arguments[0] || {};
+  const requestedDetailId = /^[A-Za-z0-9._-]{1,180}$/.test(String(options?.detailProjectId || '')) ? String(options.detailProjectId) : '';
   const projects = [];
-  for (const project of readProjects().map(normalizeProject)) {
+  for (const storedProject of readProjects()) {
+    const includeStaging = Boolean(requestedDetailId && String(storedProject.id || '') === requestedDetailId);
+    const project = normalizeProject(storedProject, { includeStaging });
+    const dashboardStagingItems = includeStaging ? project.stagingItems || [] : Array.isArray(storedProject.stagingItems) ? storedProject.stagingItems : [];
     const records = readProjectKnowledgeReview(project).records;
     const rawMaterialCount = isWorkspaceMaterialProject(project)
       ? project.digestState.rawFileCount : await countProjectFiles(project.rawPath);
@@ -14260,7 +14695,7 @@ async function getProjects() {
     const knowledgeKinds = new Set(records.filter((item) => !['rejected', 'invalid'].includes(item.status)).map((item) => item.kind));
     const knowledgeCoverage = Math.round((knowledgeKinds.size / 5) * 100);
     const pendingKnowledgeCount = records.filter((item) => ['ai_generated', 'pending_review'].includes(item.status)).length;
-    const pendingStagingCount = (project.stagingItems || []).filter((item) => !['promoted', 'analyzed', 'discarded'].includes(item.status)).length;
+    const pendingStagingCount = dashboardStagingItems.filter((item) => !['promoted', 'analyzed', 'discarded'].includes(String(item?.status || ''))).length;
     const riskReasons = [
       !project.studentIds.length ? '未绑定学生' : '',
       !project.assetIds.length ? '无正式资产' : '',
@@ -14274,13 +14709,15 @@ async function getProjects() {
     ].filter(Boolean);
     projects.push({
       ...project,
+      workspaceScanSnapshot: includeStaging ? project.workspaceScanSnapshot : {},
+      stagingItemsDeferred: !includeStaging && dashboardStagingItems.length > 0,
       dashboard: {
         rawMaterialCount,
         knowledgeCount: knowledgeFileCount,
         indexedKnowledgeCount: records.length,
         pendingKnowledgeCount,
         pendingStagingCount,
-        acceptedStagingCount: (project.stagingItems || []).filter((item) => item.reviewStatus === 'accepted' && !item.promotedAssetId).length,
+        acceptedStagingCount: dashboardStagingItems.filter((item) => item?.reviewStatus === 'accepted' && !item?.promotedAssetId).length,
         contributionReady: fs.existsSync(project.promotionPath || ''),
         contributionStatus: project.publishedAt ? 'published' : fs.existsSync(project.promotionPath || '') ? 'ready' : 'not_generated',
         knowledgeCoverage,
@@ -15382,20 +15819,14 @@ function emitProjectScanProgress(sender, payload) {
 }
 
 function projectMaterialAssetCompatibility(project, host) {
-  const assets = readAssetIndex();
-  const assetById = new Map(assets.map((asset) => [asset.assetId, asset]));
   const projectAssetIds = new Set((project.assetIds || []).map(String));
+  const compatibilityAssets = typeof assetStore === 'function' ? null : readAssetIndex();
   return createProjectMaterialAssetCompatibility(project, host, {
-    findAsset: (assetId) => assetById.get(assetId),
+    findAsset: (assetId) => typeof assetStore === 'function'
+      ? assetStore().getAssetDetail(assetId) || undefined
+      : compatibilityAssets.find(asset => String(asset.assetId) === String(assetId)),
     hasProjectAsset: (assetId) => projectAssetIds.has(assetId),
-    upsertAsset: (sourcePath, context) => {
-      const currentAssets = readAssetIndex();
-      if (currentAssets.length >= 5000 && !currentAssets.some((asset) => asset.sha1 === context.contentSha1)) {
-        throw new ProjectMaterialError('asset_index_full',
-          '旧资产索引已达容量上限，资料保持已采用，不能为兼容引用挤掉其他资产。');
-      }
-      return upsertAssetFromFile(sourcePath, context);
-    },
+    upsertAsset: (sourcePath, context) => upsertAssetFromFile(sourcePath, context),
     addProjectAsset: async (assetId) => {
       if (projectAssetIds.has(assetId)) return;
       updateProjectRecord(project.id, (item) => ({ ...item,
@@ -16193,7 +16624,7 @@ async function importProjectAssets(projectId, assetIdsJson) {
     const assetIds = JSON.parse(assetIdsJson || '[]');
     if (!Array.isArray(assetIds) || !assetIds.length) return JSON.stringify({ ok: false, message: '请先选择要导入项目知识空间的资产。' });
     const ensured = ensureProjectWorkspace(project);
-    const assets = readAssetIndex();
+    const assets = assetStore().detailsByIds(assetIds);
     if (isWorkspaceMaterialProject(ensured)) {
       const imported = [];
       const skipped = [];
@@ -16724,9 +17155,9 @@ function syncProjectDigestResult(projectId) {
         completedAt,
       });
       governancePaths = persistKnowledgeGovernanceRun(ensured.managerPath || path.join(ensured.projectRootPath, '.edu-manager'), governanceRun);
-      const captureAssets = readAssetIndex().filter((asset) => ['capture_session_bundle', 'capture_processing_window'].includes(asset.sourceType)
-        && (asset.linkedProjects || []).map(String).includes(String(ensured.id))
-        && asset.captureSessionId
+      const captureAssets = assetStore().queryDetails({ projectId: String(ensured.id),
+        sourceTypes: ['capture_session_bundle', 'capture_processing_window'] }).filter((asset) =>
+        asset.captureSessionId
         && asset.captureBundleId);
       const reconciliationResults = [];
       for (const file of confirmed) {
@@ -17273,7 +17704,7 @@ function approveAndPromoteProjectStagingItems(projectId, itemIdsJson, sourceStra
     if (!beforeProject) return JSON.stringify({ ok: false, message: '未找到学习项目。' });
     const ensured = ensureProjectWorkspace(beforeProject);
     const projectsSnapshot = fs.existsSync(projectsPath()) ? fs.readFileSync(projectsPath()) : null;
-    const assetsSnapshot = fs.existsSync(assetIndexPath()) ? fs.readFileSync(assetIndexPath()) : null;
+    const assetsSnapshot = readAssetIndex();
     const digestSnapshot = fs.existsSync(projectDigestStatePath(ensured)) ? fs.readFileSync(projectDigestStatePath(ensured)) : null;
     const rawFilesBefore = new Set(collectProjectRawFiles(ensured.rawPath).map((file) => path.resolve(file.path).toLocaleLowerCase('zh-CN')));
     const reviewed = JSON.parse(reviewProjectStagingItems(projectId, itemIdsJson, 'accepted', sourceStrategy, note));
@@ -17281,8 +17712,7 @@ function approveAndPromoteProjectStagingItems(projectId, itemIdsJson, sourceStra
     const promoted = JSON.parse(promoteProjectStagingItems(projectId, itemIdsJson));
     if (!promoted.ok) {
       if (projectsSnapshot) fs.writeFileSync(projectsPath(), projectsSnapshot);
-      if (assetsSnapshot) fs.writeFileSync(assetIndexPath(), assetsSnapshot);
-      else if (fs.existsSync(assetIndexPath())) fs.rmSync(assetIndexPath(), { force: true });
+      writeAssetIndex(assetsSnapshot);
       if (digestSnapshot) fs.writeFileSync(projectDigestStatePath(ensured), digestSnapshot);
       else if (fs.existsSync(projectDigestStatePath(ensured))) fs.rmSync(projectDigestStatePath(ensured), { force: true });
       for (const file of collectProjectRawFiles(ensured.rawPath)) {
@@ -17900,7 +18330,7 @@ function generateProjectPromotion(projectId, fileIo = fs) {
     const rawAssets = isWorkspaceMaterialProject(ensured)
       ? projectMaterialPromotionItems(ensured).map((item) => ({ assetId: item.materialId, filename: item.title,
         type: `项目资料 v${item.materialVersion}`, path: item.displayPath }))
-      : readAssetIndex().filter((asset) => (asset.references || []).some((ref) => ref.spaceType === 'project' && String(ref.spaceId) === String(ensured.id)));
+      : assetStore().queryDetails({ projectId: String(ensured.id) });
     const stagingEvidence = isWorkspaceMaterialProject(ensured) ? [] : projectStagingEvidenceItems(ensured);
     const governanceItems = isWorkspaceMaterialProject(ensured) ? [] : (ensured.stagingItems || []).filter((item) => item.governanceAction || item.aiAction).map(normalizeProjectStagingItem);
     const today = new Date().toISOString().slice(0, 10);
@@ -17926,7 +18356,7 @@ function projectPromotionPlan(projectId) {
     const ensured = ensureProjectWorkspace(project);
     const students = readStudentsIndex().filter((student) => ensured.studentIds.includes(String(student.id)));
     const rawAssets = isWorkspaceMaterialProject(ensured) ? []
-      : readAssetIndex().filter((asset) => (asset.references || []).some((ref) => ref.spaceType === 'project' && String(ref.spaceId) === String(ensured.id)));
+      : assetStore().queryDetails({ projectId: String(ensured.id) });
     const knowledgeReview = readProjectKnowledgeReview(ensured);
     const items = isWorkspaceMaterialProject(ensured) ? projectMaterialPromotionItems(ensured) : [];
     for (const asset of rawAssets) {
@@ -18107,6 +18537,7 @@ function performProjectPromotionPlan(projectId, planJson, taskContext = null, pr
     const transaction = hostTransaction ? hostTransaction.transactions.begin(hostTransaction.metadata) : null;
     const fileIo = transaction?.io || fs;
     if (transaction) {
+      fileIo.writeFileSync(assetIndexPath(), JSON.stringify({ version: 1, updatedAt: new Date().toISOString(), assets: readAssetIndex() }), 'utf8');
       const captured = JSON.parse(fileIo.readFileSync(projectsPath(), 'utf8'));
       if (JSON.stringify(Array.isArray(captured) ? captured : captured.projects) !== JSON.stringify(storedProjects)) {
         throw new Error('归档准备期间项目登记已变化，请重新执行。');
@@ -18486,6 +18917,7 @@ function projectPublicationTransactionHost(project, taskContext, archivePrepared
   const metadata = { operation, scopeKey, bindings: bindingsFor(project), studentIds: students.map((item) => String(item.id)),
     taskContext: { taskId: taskContext?.taskId, executionId: taskContext?.executionId },
     ...(archivePrepared ? { planIdentity: archivePrepared.identity } : {}) };
+  const preservedLegacyAssetJson = archivePrepared && fs.existsSync(assetIndexPath()) ? fs.readFileSync(assetIndexPath()) : null;
   const authority = async (record) => {
     const current = mutableProject(project.id, '恢复或提交发布事务');
     if (current.error || scope(current.project) !== scopeKey || record.scopeKey !== scopeKey
@@ -18514,6 +18946,17 @@ function projectPublicationTransactionHost(project, taskContext, archivePrepared
       student.summaryPath || getSummaryDir(student.name), ...(archivePrepared ? [student.rawPath || getRawDir(student.name)] : []),
       growthModelDirForStudent(toHostStudent(student))])],
     files: [projectsPath(), growthRefreshStatePath(), ...(archivePrepared ? [assetIndexPath()] : [])], authorize: authority, authorizeLocked: async () => taskAllowed(),
+    hooks: archivePrepared ? {
+      afterFinalized: async () => {
+        const staged = JSON.parse(fs.readFileSync(assetIndexPath(), 'utf8'));
+        if (!Array.isArray(staged.assets)) throw Error('归档资产变更单元损坏，未写入 SQLite。');
+        if (typeof assetStore === 'function') {
+          if (preservedLegacyAssetJson) fs.writeFileSync(assetIndexPath(), preservedLegacyAssetJson);
+          else fs.rmSync(assetIndexPath(), { force: true });
+          assetStore().replaceAll(staged.assets);
+        }
+      },
+    } : {},
     sourceGuards: async () => {
       const current = mutableProject(project.id, '核对发布来源');
       if (current.error) throw new Error('发布来源项目已失效。');
@@ -19439,6 +19882,9 @@ function normalizeTaskEnvelope(task, current = {}) {
     suspendedDurationMs: task?.executionId && task.executionId !== current.executionId ? 0 : Math.max(0, Number(task?.suspendedDurationMs ?? current.suspendedDurationMs) || 0),
     resumedAt: task?.executionId && task.executionId !== current.executionId ? '' : String(task?.resumedAt ?? current.resumedAt ?? ''),
     retryRecovery: Object.prototype.hasOwnProperty.call(task || {}, 'retryRecovery') ? task.retryRecovery : current.retryRecovery || null,
+    recoveryBudget: task?.recoveryBudget && typeof task.recoveryBudget === 'object' ? task.recoveryBudget : (current.recoveryBudget || null),
+    recoveryPlan: task?.recoveryPlan && typeof task.recoveryPlan === 'object' ? task.recoveryPlan : (current.recoveryPlan || null),
+    executionProvenance: task?.executionProvenance && typeof task.executionProvenance === 'object' ? task.executionProvenance : (current.executionProvenance || null),
     nextRetryAt: String(task?.nextRetryAt ?? current.nextRetryAt ?? ''),
     resourceDeferredAt: String(task?.resourceDeferredAt ?? current.resourceDeferredAt ?? ''),
     resourceRetryAt: String(task?.resourceRetryAt ?? current.resourceRetryAt ?? ''),
@@ -19456,6 +19902,12 @@ function normalizeTaskEnvelope(task, current = {}) {
       : (current.archive || null),
   };
   merged.statusGroup = taskStatusGroup(merged.status);
+  // Some contract tests and compatibility hosts load this standalone function.
+  // Preserve existing metadata there; the production host always has the
+  // unified recovery helpers loaded above.
+  if (typeof executionProvenance === 'function') merged.executionProvenance = executionProvenance(merged);
+  if (typeof recoveryBudget === 'function') merged.recoveryBudget = recoveryBudget(merged, now);
+  if (typeof recoveryPlan === 'function') merged.recoveryPlan = recoveryPlan(merged, now);
   return merged;
 }
 
@@ -19648,7 +20100,8 @@ function upsertTaskCandidates(candidates, options = {}) {
     }
     const runtime = candidateRuntimeDecision(current, candidate);
     const preserveRequestedOperation = taskRequiresApproval(current) && current.input?.operation && !TASK_TERMINAL_STATUSES.has(current.status);
-    const runtimeCandidate = runtime.preserveRuntime ? {
+    const preserveExecutionEnvelope = runtime.preserveRuntime || runtime.preserveTerminal;
+    const runtimeCandidate = preserveExecutionEnvelope ? {
       ...candidate,
       status: current.status,
       executor: current.executor,
@@ -19667,10 +20120,10 @@ function upsertTaskCandidates(candidates, options = {}) {
     const merged = normalizeTaskEnvelope({
       ...runtimeCandidate,
       status: runtime.nextStatus,
-      input: runtime.preserveRuntime || preserveRequestedOperation ? current.input : materialTaskCheckpointForCandidate(current, candidate) || candidate.input,
-      executionMode: runtime.preserveRuntime ? current.executionMode : candidate.executionMode,
-      expectedOutput: runtime.preserveRuntime || preserveRequestedOperation ? current.expectedOutput : candidate.expectedOutput,
-      permissions: runtime.preserveRuntime || preserveRequestedOperation ? current.permissions : candidate.permissions,
+      input: preserveExecutionEnvelope || preserveRequestedOperation ? current.input : materialTaskCheckpointForCandidate(current, candidate) || candidate.input,
+      executionMode: preserveExecutionEnvelope ? current.executionMode : candidate.executionMode,
+      expectedOutput: preserveExecutionEnvelope || preserveRequestedOperation ? current.expectedOutput : candidate.expectedOutput,
+      permissions: preserveExecutionEnvelope || preserveRequestedOperation ? current.permissions : candidate.permissions,
       result: runtime.resetExecution ? null : current.result,
       approval: current.approval,
       attempt: runtime.resetExecution ? 0 : current.attempt,
@@ -19682,13 +20135,23 @@ function upsertTaskCandidates(candidates, options = {}) {
       error: runtime.refreshBlock ? candidate.error || null : runtime.resetExecution ? null : current.error,
       autoRetry: runtime.resetExecution ? candidate.autoRetry : current.autoRetry,
       recovery: runtime.resetExecution ? null : current.recovery || null,
-      startedAt: runtime.preserveRuntime ? current.startedAt : undefined,
-      completedAt: runtime.preserveRuntime ? current.completedAt : undefined,
-      lastHeartbeatAt: runtime.preserveRuntime ? current.lastHeartbeatAt : undefined,
-      nextRetryAt: runtime.preserveRuntime ? current.nextRetryAt : undefined,
-      resourceDeferredAt: runtime.preserveRuntime ? current.resourceDeferredAt : undefined,
-      resourceRetryAt: runtime.preserveRuntime ? current.resourceRetryAt : undefined,
-      resourceAdapterId: runtime.preserveRuntime ? current.resourceAdapterId : undefined,
+      // Candidate cards have normalized empty defaults. They are not an
+      // execution result and must never erase a quarantine or retry proof.
+      recoveryState: runtime.resetExecution ? '' : current.recoveryState,
+      recoveryReason: runtime.resetExecution ? '' : current.recoveryReason,
+      recoveryCheckedAt: runtime.resetExecution ? '' : current.recoveryCheckedAt,
+      recoveryBudget: runtime.resetExecution ? null : current.recoveryBudget,
+      recoveryPlan: runtime.resetExecution ? null : current.recoveryPlan,
+      executionProvenance: runtime.resetExecution ? null : current.executionProvenance,
+      retryRecovery: runtime.resetExecution ? null : current.retryRecovery,
+      archive: runtime.preserveTerminal ? current.archive : candidate.archive,
+      startedAt: preserveExecutionEnvelope ? current.startedAt : undefined,
+      completedAt: preserveExecutionEnvelope ? current.completedAt : undefined,
+      lastHeartbeatAt: preserveExecutionEnvelope ? current.lastHeartbeatAt : undefined,
+      nextRetryAt: runtime.resetExecution ? '' : current.nextRetryAt,
+      resourceDeferredAt: preserveExecutionEnvelope ? current.resourceDeferredAt : undefined,
+      resourceRetryAt: preserveExecutionEnvelope ? current.resourceRetryAt : undefined,
+      resourceAdapterId: preserveExecutionEnvelope ? current.resourceAdapterId : undefined,
     }, current);
     if (runtime.resetExecution) {
       Object.assign(merged, {
@@ -20344,6 +20807,25 @@ function agentControlPolicy(student, profile, project = null) {
   return require('./agent-control-plane.cjs').resolvePolicy(agentControlStore().read(),
     { studentId: String(student.id), projectId: project?.id || '' }, profile, student, project, aiExecutorRegistry());
 }
+function globalProjectAgentPolicy(project, profile = DIGEST_PROFILE) {
+  const store = agentControlStore().read();
+  if (!store.global) return null;
+  return require('./agent-control-plane.cjs').resolvePolicy(store,
+    { studentId: '', projectId: String(project?.id || '') }, profile, null, project, aiExecutorRegistry());
+}
+function freezeGlobalProjectExecutionScope(project, taskProfile = DIGEST_PROFILE) {
+  const store = agentControlStore().read();
+  return buildProjectExecutionScope({ project, globalPolicy: store.global,
+    students: readStudentsIndex(), taskProfile, now: taskNow });
+}
+function currentGlobalProjectExecutionScope(frozen, taskProfile = DIGEST_PROFILE) {
+  try {
+    const project = readProjects().map(normalizeProject).find(item => String(item.id) === String(frozen?.projectId || ''));
+    if (!project) return null;
+    const current = freezeGlobalProjectExecutionScope(project, taskProfile);
+    return sameProjectExecutionScope(frozen, current) ? current : null;
+  } catch { return null; }
+}
 function agentClassificationRoute(student) {
   if (!student) return { providers: [], policyVersion: 0 };
   const policy = agentControlPolicy(student, CLASSIFICATION_PROFILE);
@@ -20369,20 +20851,25 @@ async function agentControlAction(action, input = {}) {
   const student = { id: '', agentTool: '' }, project = null;
   const service = require('./agent-control-plane.cjs');
   const scope = { studentId: '', projectId: '' }, registry = aiExecutorRegistry();
+  await agentControlStore().migrate(registry);
   if (action === 'saveGlobal') {
     if (!agentControlStore().read().global) {
       const grantsFile = path.join(app.getPath('userData'), 'agent-access-grants.json');
       if (fs.existsSync(grantsFile) && !fs.existsSync(grantsFile + '.pre-global.bak')) fs.copyFileSync(grantsFile, grantsFile + '.pre-global.bak', fs.constants.COPYFILE_EXCL);
     }
     const global = await agentControlStore().saveGlobal(input.settings || {}, registry);
+    const inbox = await getSmartInbox();
+    await inbox.syncConversationRouting(capturedConversationRoutingPolicy(global), readStudentsIndex().filter(student => !studentConversationCaptureBlocked(student)));
     smartInboxHostRuntime?.routing?.invalidate();
     adapterCapabilityCache.at = 0;
     // R21 inbound connections are authorized separately. Never expand or
     // resurrect legacy student tokens while saving outbound dispatch settings.
     const target = activeCaptureTarget(safeReadJson(activeAgentKnowledgeDescriptorPath(), {}));
     if (global.enabled && target.studentId) prepareAgentKnowledgeAccess(target.studentId, { activateGlobal: true });
-    if (!global.enabled && target.studentId) {
-      const targetStudent = findStudentByKey(target.studentId);
+    if (!global.enabled) {
+      drainAgentLifecycleQueue();
+      for (const captureStudent of readStudentsIndex()) finalizeActiveLifecycleSessionsForStudent(captureStudent, 'global-authorization-disabled');
+      const targetStudent = target.studentId ? findStudentByKey(target.studentId) : null;
       if (targetStudent) setLifecycleDescriptorEnabled(targetStudent, false);
     }
     notify('onNativeTaskCenterChanged', JSON.stringify({ reason: 'global_agent_policy_changed' }));
@@ -20493,7 +20980,6 @@ async function agentControlAction(action, input = {}) {
     const adapter = await classificationAdapter(input.providerId);
     if (action === 'authorize') return classificationAuth().start(input.providerId, adapter, String(input.requestId || ''));
     if (taskChildProcesses.size || captureHeavyWorkGate.state().length) throw Error('后台任务运行中，请稍后验证');
-    await classificationAuth().invalidate(input.providerId, String(input.requestId || ''));
     const engine = await getSmartInbox();
     smartInboxHostRuntime.routing.invalidate();
     const release = captureHeavyWorkGate.tryAcquire({ kind: 'agent_probe', studentId: String(student.id), sessionId: 'agent-center', snapshot: captureTimelineResourceSnapshot() });
@@ -20507,11 +20993,14 @@ async function agentControlAction(action, input = {}) {
       for (const item of eligibleStudents) await engine.resumeAgent(String(item.id), `center-${crypto.randomUUID()}`);
     })().catch(error => console.warn(`[agent-center] ${input.providerId} verified but background resume failed:`, error.message));
     return { message: eligibleStudents.length
-      ? `已验证连接；${eligibleStudents.length} 个学生的分类待办正在后台恢复。消化、卡片和联网研究仍在执行前按各自合同验证。`
-      : '已验证连接；当前没有需要恢复的分类待办。消化、卡片和联网研究仍在执行前按各自合同验证。' };
+      ? `连接仍然有效；${eligibleStudents.length} 个学生的分类待办正在后台恢复。此次检查没有更改授权版本。`
+      : '连接仍然有效；当前没有需要恢复的分类待办。此次检查没有更改授权版本。' };
   }
   if (action !== 'snapshot') throw Error('不支持的中心操作');
   const store = agentControlStore().read(), runtime = readTaskStore().runtime || {};
+  const authorizationRestore = typeof persistedAuthorizationRestore === 'undefined'
+    ? { phase: 'ready', restored: {}, message: '' }
+    : persistedAuthorizationRestore;
   const capabilities = typeof registeredAdapterCapabilities === 'function' ? registeredAdapterCapabilities() : {};
   const profiles = Object.entries(service.PROFILES).map(([id, spec]) => ({ id, ...spec, providers: registry.filter(p => p.automaticProfiles.includes(id)).map(p => p.id), policy: service.resolvePolicy(store, scope, id, student, project, registry) }));
   const providers = await Promise.all(registry.map(async executor => {
@@ -20542,8 +21031,10 @@ async function agentControlAction(action, input = {}) {
     if (id === 'llm-api') {
       const settings = await getLlmApiProvider().get();
       const checked = settings.lastCheck?.ok && settings.lastCheck.runtimeHash === settings.runtimeHash;
-      return { ...executor, installed: settings.configured, state: checked ? 'ready' : settings.configured ? 'qualification_required' : 'unavailable',
-        message: checked ? settings.lastCheck.message : settings.configured ? '配置已保存；需要使用合成数据验证结构化输出。' : '尚未配置 API 地址、模型和密钥。', settings,
+      const restoring = ['restoring', 'checking'].includes(authorizationRestore.phase)
+        && authorizationRestore.restored?.[id] === true;
+      return { ...executor, installed: settings.configured, state: restoring ? 'checking' : checked ? 'ready' : settings.configured ? 'qualification_required' : 'unavailable',
+        message: restoring ? authorizationRestore.message : checked ? settings.lastCheck.message : settings.lastCheck?.ok === false ? `最近验证失败：${settings.lastCheck.message}` : settings.configured ? '配置已保存；将在真实任务前使用合成数据自动复核。' : '尚未配置 API 地址、模型和密钥。', settings,
         qualifications: profiles.map(p => ({ profile: p.id, supported: p.providers.includes(id), state: p.id === 'research.v1'
           ? !settings.researchSupported ? '当前协议不支持联网研究' : settings.researchReady ? '联网研究合同已验证，执行时逐次复核来源' : '待联网研究合同验证'
           : p.providers.includes(id) ? (checked ? '已验证结构化连接，执行时按任务合同复核' : '待合成验证') : '未支持' })) };
@@ -20551,8 +21042,12 @@ async function agentControlAction(action, input = {}) {
     const adapter = await classificationAdapter(id);
     const saved = runtime.agentQualifications?.[id]?.[CLASSIFICATION_PROFILE];
     const status = require('./agent-invocation-service.cjs').classificationSavedStatus(currentStudentAgentStatus({ ...student, agentTool: id }), adapter, saved);
+    const restoring = ['restoring', 'checking'].includes(authorizationRestore.phase)
+      && authorizationRestore.restored?.[id] === true;
     return { ...executor, installed: !adapter?.unavailable,
-      state: status.state, message: status.message, login: classificationAuth().status(id),
+      state: restoring ? 'checking' : status.state,
+      message: restoring ? authorizationRestore.message : status.message,
+      login: classificationAuth().status(id),
       qualifications: profiles.map(p => ({ profile: p.id, supported: p.providers.includes(id),
         state: runtime.agentQualifications?.[id]?.[p.id]?.ready && Date.parse(runtime.agentQualifications[id][p.id].expiresAt) > Date.now() ? '已保存验证，执行前复核' : '执行前验证' })) };
   }));
@@ -20565,7 +21060,7 @@ async function agentControlAction(action, input = {}) {
       providerModes: Object.fromEntries(Object.entries(global.providerModes).filter(([id]) => known.has(id))),
       providerProfiles: Object.fromEntries(Object.entries(global.providerProfiles).filter(([id]) => known.has(id))) },
     pendingCount: readAgentWriteIntents().intents.filter(i => ['pending_approval', 'recoverable'].includes(i.status)).length,
-    history: (store.history || []).slice(-20).reverse() };
+    history: (store.history || []).slice(-20).reverse(), authorizationRestore };
 }
 
 let classificationAuthRuntime;
@@ -20575,6 +21070,37 @@ function classificationAuth() {
     openUrl: url => shell.openExternal(url),
     changed: () => { if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('smart-inbox:changed'); },
   });
+}
+async function restorePersistedAgentAuthorization() {
+  persistedAuthorizationRestore = { phase: 'restoring', restored: {}, message: '正在恢复已保存的 Agent 与 API 授权…' };
+  const restored = {};
+  for (const providerId of ['codex', 'workbuddy']) {
+    try {
+      const descriptor = await classificationAuth().read(providerId);
+      restored[providerId] = Number(descriptor?.version || 0) > 0 || Boolean(descriptor?.root || descriptor?.cliPath);
+    } catch (error) {
+      restored[providerId] = false;
+      console.warn(`[agent-center] failed to restore ${providerId} descriptor:`, error.message);
+    }
+  }
+  try {
+    const settings = await getLlmApiProvider().get();
+    restored['llm-api'] = settings.configured === true;
+  } catch (error) {
+    restored['llm-api'] = false;
+    console.warn('[agent-center] failed to restore LLM API descriptor:', error.message);
+  }
+  persistedAuthorizationRestore = { phase: 'checking', restored, message: '已恢复本机授权，正在后台检查连接状态…' };
+  return restored;
+}
+async function finishPersistedAuthorizationHealthCheck() {
+  try {
+    await refreshAdapterCapabilities(true);
+    persistedAuthorizationRestore = { ...persistedAuthorizationRestore, phase: 'ready', message: '已恢复本机授权；任务合同将在执行前自动复核。' };
+  } catch (error) {
+    persistedAuthorizationRestore = { ...persistedAuthorizationRestore, phase: 'ready', message: '已恢复本机授权；当前无法完成健康检查，将在任务执行前自动重试。' };
+  }
+  if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('smart-inbox:changed');
 }
 async function classificationAdapter(providerId) {
   if (String(providerId).startsWith('custom:')) {
@@ -20856,7 +21382,7 @@ function refreshAdapterCapabilities(force = false) {
         endpointHost: llmSettings.baseUrl ? new URL(llmSettings.baseUrl).host : '',
         healthMessage: llmSettings.lastCheck?.ok
           ? `${llmSettings.lastCheck.message}${llmSettings.researchReady ? ` ${llmSettings.lastResearchCheck.message}` : llmSettings.researchSupported ? ' 联网研究尚未验证。' : ' 当前协议不支持联网研究。'}`
-          : llmSettings.configured ? '配置已保存，等待合成结构化验证' : '尚未配置 LLM API',
+          : llmSettings.lastCheck?.ok === false ? `最近验证失败：${llmSettings.lastCheck.message}` : llmSettings.configured ? '配置已保存，等待合成结构化验证' : '尚未配置 LLM API',
       },
       openclaw: { ...openclaw, available: Boolean(openclaw.exePath && openclawHelp.ok), authorized: Boolean(openclaw.exePath && openclawHelp.ok && openclawModelReady.ready), cli: Boolean(openclaw.exePath && openclawHelp.ok), gateway: Boolean(gatewayHelp.ok), gatewayHealthy: openClawGatewayHealthy(gatewayStatus), cron: Boolean(cronHelp.ok), healthPending: false, healthMessage: !openclawModelReady.ready ? openclawModelReady.message : gatewayHelp.ok ? (openClawGatewayHealthy(gatewayStatus) ? `Gateway 正常；${openclawModelReady.message}` : `CLI 本地模式；${openclawModelReady.message}`) : `仅 CLI；${openclawModelReady.message}`, model: openclawModelReady.model },
       qclaw: {
@@ -22881,7 +23407,7 @@ function finalizeStoredLifecycleSession(student, session, options = {}) {
       occurredAt: message.occurredAt,
     })),
     submittedAt: String(options.occurredAt || new Date().toISOString()),
-  }, { lifecycleCapture: true });
+  }, { lifecycleCapture: true, sessionStartedAt: session.startedAt });
   store.finalizeSession({
     studentId: String(student.id),
     projectId: '',
@@ -22896,9 +23422,11 @@ function finalizeStoredLifecycleSession(student, session, options = {}) {
 function processAgentLifecycleEnvelope(rawEnvelope) {
   const event = normalizeLifecycleEnvelope(rawEnvelope);
   if (!event) return { ok: true, ignored: true };
+  if (!globalConversationCaptureAuthorized()) return { ok: false, discard: true, message: 'Global Agent authorization is disabled.' };
   if (unifiedKnowledgeRegistrations()[event.sourceAgent]) return { ok: true, ignored: true, message: 'Unified connector uses explicit session scope; legacy active-student capture is disabled.' };
   const student = findStudentByKey(event.scopeId);
   if (!student) return { ok: false, discard: true, message: 'Lifecycle student scope no longer exists.' };
+  if (studentConversationCaptureBlocked(student)) return { ok: false, discard: true, message: 'Lifecycle capture stopped because the student is inactive or archived.' };
   const descriptor = safeReadJson(agentKnowledgeDescriptorPath(student), {});
   if (
     String(descriptor?.defaults?.scopeId || '') !== String(student.id)
@@ -22992,6 +23520,7 @@ function studentTerminalCaptureDevice(request) {
 }
 
 function processStudentTerminalLifecycleEnvelope(request, rawEnvelope) {
+  if (!globalConversationCaptureAuthorized()) throw new Error('全局 Agent 授权已停用，新的自动会话采集已停止。');
   const device = studentTerminalCaptureDevice(request);
   if (!device.agentCaptureEnabled || String(device.agentCaptureStudentId || '') !== String(request.authContext.studentId)) {
     throw new Error('当前个人终端尚未授权自动会话采集。');
@@ -23009,6 +23538,7 @@ function processStudentTerminalLifecycleEnvelope(request, rawEnvelope) {
   if (!event) return { ok: true, ignored: true };
   const student = findStudentByKey(request.authContext.studentId);
   if (!student) throw new Error('当前学生已经不存在。');
+  if (studentConversationCaptureBlocked(student)) throw new Error('当前学生不活跃或已归档，已停止新的自动会话采集。');
   const settings = agentMemoryStore().getSettings(String(student.id));
   if (!settings.automationEnabled || !settings.allowedAgents.includes(event.sourceAgent)) {
     throw new Error('当前学生尚未开启授权 Agent 自动会话采集。');
@@ -23412,6 +23942,7 @@ function activateAgentMemoryCapture(studentId) {
   const previousDescriptorExists = fs.existsSync(activeAgentKnowledgeDescriptorPath());
   const previousDescriptor = safeReadJson(activeAgentKnowledgeDescriptorPath(), null);
   try {
+    if (!globalConversationCaptureAuthorized()) return JSON.stringify({ ok: false, code: 'GLOBAL_AUTH_DISABLED', message: '请先在 AI 接入与调度中心启用全局授权。' });
     const student = findStudentByKey(studentId);
     if (!student) return JSON.stringify({ ok: false, code: 'STUDENT_NOT_FOUND', message: '未找到学生。' });
     const settings = agentMemoryStore().getSettings(String(student.id));
@@ -23569,6 +24100,9 @@ async function handleAgentMemoryRequest(request, response, action) {
     const agentId = String(body.sourceAgent || body.agentId || '').trim().toLowerCase();
     const captureAction = ['start', 'append', 'finalize'].includes(action);
     if (captureAction) {
+      if (!globalConversationCaptureAuthorized()) throw new Error('全局 Agent 授权已停用，新的自动会话采集已停止。');
+      const captureStudent = findStudentByKey(scope.studentId);
+      if (studentConversationCaptureBlocked(captureStudent)) throw new Error('当前学生不活跃或已归档，已停止新的自动会话采集。');
       const settings = store.getSettings(scope.studentId);
       if (!settings.automationEnabled) throw new Error('当前学生尚未开启授权 Agent 自动会话采集。');
       if (!AUTO_CAPTURE_AGENT_IDS.includes(agentId) || !settings.allowedAgents.includes(agentId)) {
@@ -23627,7 +24161,7 @@ async function handleAgentMemoryRequest(request, response, action) {
           })),
           contentSummary: body.contentSummary || body.summary?.objective || session.summary?.objective,
           submittedAt: body.submittedAt || new Date().toISOString(),
-        }, { lifecycleCapture: true });
+        }, { lifecycleCapture: true, sessionStartedAt: session.startedAt });
         const finalized = store.finalizeSession({ ...body, ...scope, agentId, idempotencyKey: finalizationKey });
         store.attachConversationReceipt({ ...scope, sessionId: session.sessionId, receipt: archived.receipt });
         result = {
@@ -23758,6 +24292,30 @@ function validateReportAutoPublication(task, content) {
   });
 }
 
+function repairReportAutoPublicationDraft(task, content) {
+  const student = readStudentsIndex().map(toHostStudent)
+    .find((item) => String(item.id) === String(task.sourceId));
+  if (!student) return { changed: false, content, corrections: [], reason: 'student_missing' };
+  const growthIndex = safeReadJson(growthIndexPath(student), {});
+  const eligibleIds = Array.isArray(task.input?.eligibleEvidenceIds) ? new Set(task.input.eligibleEvidenceIds.map(String)) : null;
+  const validationGrowthIndex = eligibleIds
+    ? { ...growthIndex, evidence: (Array.isArray(growthIndex.evidence) ? growthIndex.evidence : []).filter((item) => eligibleIds.has(String(item.id || ''))) }
+    : growthIndex;
+  const sourceContext = { student, projects: reportProjectsForStudent(student), verifyFixedBytes: true,
+    fixedBudget: { remaining: 256 * 1024 * 1024 }, fixedResults: new Map() };
+  return repairReportDraftForAutoPublish({
+    content,
+    studentId: String(task.sourceId || ''),
+    expectedFingerprint: String(task.input?.growthFingerprint || ''),
+    growthIndex: validationGrowthIndex,
+    requiredSections: task.expectedOutput?.requiredSections || [],
+    weekly: task.kind === 'weekly_action',
+    expectedDate: String(task.input?.date || taskToday()),
+    now: taskNow(),
+    sourceAccessible: (evidence) => reportEvidenceSourceAccessible(task, evidence, sourceContext),
+  });
+}
+
 function reportIssuePath(task) {
   return path.join(taskCenterDirPath(), 'report-issues', `${safeFilename(task.id)}.json`);
 }
@@ -23832,11 +24390,12 @@ function validateTaskArtifacts(task, startedAt = '', resultPayload = null) {
   let valid = artifacts.some((item) => item.exists && item.size > 0 && (!startedAt || Date.parse(item.modifiedAt) >= Date.parse(startedAt) - 1000));
   const schemaErrors = [];
   let reportValidation = null;
+  let autoCorrections = [];
   if (task.kind === 'weekly_action' || PERIODIC_REPORT_TASKS[task.kind]) {
     const draft = artifacts.find((item) => item.path === task.expectedOutput?.draftPath);
     valid = Boolean(draft?.exists && draft.size > 0 && (!startedAt || Date.parse(draft.modifiedAt) >= Date.parse(startedAt) - 1000));
     if (valid) {
-      const content = fs.readFileSync(draft.path, 'utf8');
+      let content = fs.readFileSync(draft.path, 'utf8');
       if (task.kind === 'weekly_action') {
         const schema = validateDailyActionDocument(content, {
           expectedDate: String(task.input?.date || ''),
@@ -23850,10 +24409,38 @@ function validateTaskArtifacts(task, startedAt = '', resultPayload = null) {
         reportValidation = validateReportAutoPublication(task, content);
         schemaErrors.push(...reportValidation.errors);
       }
+      const budget = recoveryBudget(task);
+      if (schemaErrors.length && isAutoPublishReportTask(task)
+        && budget.correctionAttempts < budget.limits.correctionAttempts) {
+        const repaired = repairReportAutoPublicationDraft(task, content);
+        if (repaired.changed) {
+          const temporaryPath = `${draft.path}.auto-repair-${process.pid}-${Date.now()}`;
+          try {
+            fs.writeFileSync(temporaryPath, repaired.content, 'utf8');
+            fs.renameSync(temporaryPath, draft.path);
+          } finally {
+            if (fs.existsSync(temporaryPath)) try { fs.unlinkSync(temporaryPath); } catch {}
+          }
+          content = repaired.content;
+          autoCorrections = repaired.corrections;
+          task.recoveryBudget = { ...budget, correctionAttempts: budget.correctionAttempts + 1 };
+          schemaErrors.length = 0;
+          if (task.kind === 'weekly_action') schemaErrors.push(...validateDailyActionDocument(content, {
+            expectedDate: String(task.input?.date || ''), requiredSections: task.expectedOutput?.requiredSections || [],
+          }).errors);
+          else schemaErrors.push(...validateSectionedReport(content, task.expectedOutput?.requiredSections || []).errors);
+          if (!schemaErrors.length) {
+            reportValidation = validateReportAutoPublication(task, content);
+            schemaErrors.push(...reportValidation.errors);
+          }
+        }
+      }
       valid = schemaErrors.length === 0;
     }
   }
-  return { valid, artifacts, schemaErrors, reportValidation, checkedAt: taskNow(), message: valid ? '产物与输出结构校验通过。' : schemaErrors.length ? `输出结构校验失败：${schemaErrors.join('；')}。` : '未检测到符合要求的新产物。' };
+  return { valid, artifacts, schemaErrors, reportValidation, autoCorrections, checkedAt: taskNow(), message: valid
+    ? autoCorrections.length ? `系统已自动修正 ${autoCorrections.length} 项安全问题，产物校验通过。` : '产物与输出结构校验通过。'
+    : schemaErrors.length ? `输出结构校验失败：${schemaErrors.join('；')}。` : '未检测到符合要求的新产物。' };
 }
 
 function normalizeTaskResult(task, payload = {}, validation = null, defaults = {}) {
@@ -24445,28 +25032,62 @@ function submitOpenClawTask(task, command) {
 }
 
 async function submitProjectMaterialTask(task, project, requestedExecutor = '', controlledScope = null) {
-  const student = controlledScope?.student || (project.studentIds?.length === 1 ? findStudentByKey(String(project.studentIds[0])) : null);
-  if (!student) return { ok: false, code: 'AGENT_SCOPE_DENIED', message: '自动消化需要明确的单学生授权范围。' };
+  let projectExecutionScope = controlledScope?.projectExecutionScope || task.input?.projectExecutionScope || null;
+  const globalPolicy = !controlledScope?.student && typeof globalProjectAgentPolicy === 'function'
+    ? globalProjectAgentPolicy(project, DIGEST_PROFILE) : null;
+  if (!controlledScope?.student && globalPolicy?.enabled) {
+    try {
+      if (!projectExecutionScope) projectExecutionScope = freezeGlobalProjectExecutionScope(project, DIGEST_PROFILE);
+      else if (!currentGlobalProjectExecutionScope(projectExecutionScope, DIGEST_PROFILE)) {
+        return { ok: false, code: 'PROJECT_SCOPE_CHANGED', stage: 'not_sent',
+          message: '项目成员、知识空间或全局授权已变化，本批次未发送。请由最新项目范围创建新任务。' };
+      }
+    } catch (error) {
+      return { ok: false, code: error.code || 'PROJECT_SCOPE_INVALID', stage: 'not_sent', message: error.message };
+    }
+  }
+  const projectScoped = projectExecutionScope?.contractVersion === 'edu-manager.agent-capabilities.v2';
+  const student = controlledScope?.student || (!projectScoped && project.studentIds?.length === 1 ? findStudentByKey(String(project.studentIds[0])) : null);
+  if (!student && !projectScoped) return { ok: false, code: 'AGENT_SCOPE_DENIED', message: '旧版授权只允许单学生项目；请先迁移到全局授权。' };
   const routeProject = controlledScope?.student ? null : project;
-  const policy = agentControlPolicy(student, DIGEST_PROFILE, routeProject);
+  const policy = projectScoped ? globalPolicy : agentControlPolicy(student, DIGEST_PROFILE, routeProject);
+  if (!policy?.enabled) return { ok: false, code: 'AGENT_SCOPE_DENIED', stage: 'not_sent', message: '全局 Agent 授权未启用，项目任务未发送。' };
   const identity = JSON.stringify(policy);
   const current = () => {
+    if (projectScoped) {
+      const latestPolicy = globalProjectAgentPolicy(project, DIGEST_PROFILE);
+      return Boolean(currentGlobalProjectExecutionScope(projectExecutionScope, DIGEST_PROFILE)
+        && JSON.stringify(latestPolicy) === identity);
+    }
     const latestStudent = findStudentByKey(String(student.id));
     const latestProject = routeProject ? readProjects().map(normalizeProject).find(p => String(p.id) === String(project.id)) : null;
     return latestStudent && !latestStudent.archived && latestStudent.status !== 'archived'
       && (!routeProject || latestProject?.studentIds?.length === 1 && String(latestProject.studentIds[0]) === String(student.id) && !['archived', 'sealed'].includes(latestProject.status))
       && JSON.stringify(agentControlPolicy(latestStudent, DIGEST_PROFILE, latestProject)) === identity;
   };
+  const effectiveScope = { ...(controlledScope || {}), projectExecutionScope, policyCurrent: current };
+  if (projectScoped) {
+    const scopeStore = readTaskStore(), scopedTask = scopeStore.tasks.find(item => item.id === task.id);
+    if (!scopedTask) return { ok: false, code: 'TASK_NOT_FOUND', stage: 'not_sent', message: '任务已移除。' };
+    if (scopedTask.input?.projectExecutionScope
+      && scopedTask.input.projectExecutionScope.scopeFingerprint !== projectExecutionScope.scopeFingerprint) {
+      return { ok: false, code: 'PROJECT_SCOPE_CHANGED', stage: 'not_sent', message: '任务已冻结为其他项目范围，本批次未发送。' };
+    }
+    scopedTask.input = { ...scopedTask.input, projectExecutionScope };
+    scopedTask.permissions = projectScopePermissions(projectExecutionScope);
+    task = structuredClone(scopedTask);
+    await writeTaskStoreDurably(scopeStore);
+  }
   const recovery = task.input?.materialExecution;
   if (policy.enabled && recovery?.batchId && ['output_ready', 'committing', 'committed', 'conflict'].includes(recovery.phase)) {
-    return submitProjectMaterialAttempt(task, project, task.adapterId || task.executor || policy.primary, { ...controlledScope, policyCurrent: current, commitRecovery: true });
+    return submitProjectMaterialAttempt(task, project, task.adapterId || task.executor || policy.primary, { ...effectiveScope, commitRecovery: true });
   }
   const previous = new Set(task.routeAttempts || []);
   const remaining = require('./agent-control-plane.cjs').providersFor(policy, DIGEST_PROFILE).filter(id => !previous.has(id));
   const dispatchPolicy = { ...policy, global: true, providers: remaining };
   const result = await require('./agent-control-plane.cjs').dispatchAgent({ policy: dispatchPolicy, profile: DIGEST_PROFILE,
     requested: requestedExecutor, current,
-    attempt: providerId => submitProjectMaterialAttempt(task, project, providerId, { ...controlledScope, policyCurrent: current }),
+    attempt: providerId => submitProjectMaterialAttempt(task, project, providerId, effectiveScope),
     handoff: async () => {
       const store = readTaskStore(), currentTask = store.tasks.find(t => t.id === task.id);
       if (currentTask?.status === 'waiting_result') return { ok: true, task: currentTask };
@@ -24504,7 +25125,9 @@ async function submitProjectMaterialAttempt(task, project, requestedExecutor = '
   const commitRecovery = controlledScope?.commitRecovery === true;
   const controlledStudent = controlledScope?.student || null;
   const controlledBatch = controlledScope?.batch || null;
-  const policyStudent = controlledStudent || (project.studentIds?.length === 1 ? findStudentByKey(String(project.studentIds[0])) : null);
+  const projectExecutionScope = controlledScope?.projectExecutionScope || task.input?.projectExecutionScope || null;
+  const projectScoped = projectExecutionScope?.contractVersion === 'edu-manager.agent-capabilities.v2';
+  const policyStudent = controlledStudent || (!projectScoped && project.studentIds?.length === 1 ? findStudentByKey(String(project.studentIds[0])) : null);
   const policyProject = controlledStudent ? null : project;
   const chosen = ['', 'auto', 'smart'].includes(String(requestedExecutor))
     ? String(task.requestedExecutor || project.agentTool || '') : String(requestedExecutor);
@@ -24602,7 +25225,8 @@ async function submitProjectMaterialAttempt(task, project, requestedExecutor = '
     store = readTaskStore();
     transition = transitionTaskInStore(store, task.id, 'running', { executionId, adapterId: chosen, executor: chosen,
     executionMode: 'automatic', attempt: Number(task.attempt || 0) + 1, startedAt: taskNow(), lastHeartbeatAt: taskNow(),
-    autoRetry: false, nextRetryAt: '', resourceDeferredAt: '', resourceRetryAt: '', resourceAdapterId: '', error: null, result: null }, 'controlled_material_started');
+    autoRetry: false, nextRetryAt: '', resourceDeferredAt: '', resourceRetryAt: '', resourceAdapterId: '', error: null, result: null,
+    ...(projectScoped ? { input: { ...task.input, projectExecutionScope }, permissions: projectScopePermissions(projectExecutionScope) } : {}) }, 'controlled_material_started');
   } catch (error) { releaseHeavyPermit(); throw error; }
   if (!transition.ok) { releaseHeavyPermit(); return transition; }
   try { (await writeTaskStoreDurably(store)); } catch (error) { releaseHeavyPermit(); throw error; }
@@ -24612,6 +25236,7 @@ async function submitProjectMaterialAttempt(task, project, requestedExecutor = '
   const expectedScope = scope(project);
   let runtime;
   try { runtime = createProjectMaterialTask({ project, executionId, executable: capability.exePath,
+    executionScope: projectScoped ? projectExecutionScope : null,
     ...(chosen === 'workbuddy' ? {
       verifySandbox: async () => {
         if (!workBuddyQualification.peek(workBuddyRuntime)?.ready) throw new Error('WorkBuddy 受控检测已过期，请重新检测');
@@ -24630,11 +25255,17 @@ async function submitProjectMaterialAttempt(task, project, requestedExecutor = '
       const latestStudent = controlledStudent ? readStudentsIndex().map(toHostStudent).find(item => String(item.id) === String(controlledStudent.id)) : null;
       const currentAccess = controlledStudent ? { project: latestStudent ? studentControlledProject(latestStudent, project.managerPath) : null, error: latestStudent ? '' : 'missing' }
         : mutableProject(project.id, '继续受控项目消化');
-      return (!controlledScope?.policyCurrent || controlledScope.policyCurrent()) && !currentAccess.error && scope(currentAccess.project) === expectedScope
+      const scopeCurrent = projectScoped
+        ? Boolean(currentGlobalProjectExecutionScope(projectExecutionScope, DIGEST_PROFILE))
+        : scope(currentAccess.project) === expectedScope;
+      return (!controlledScope?.policyCurrent || controlledScope.policyCurrent()) && !currentAccess.error && scopeCurrent
         && currentTask?.executionId === executionId && currentTask.status === 'running'
         && !licenseRequiredJson('继续受控项目消化') && validateTaskPermissionDeclaration(currentTask).ok
         && taskPathAllowed(project.knowledgeRootPath, currentTask.permissions?.write || [])
-        && taskPathAllowed(project.managerPath, currentTask.permissions?.write || []);
+        && (projectScoped
+          ? (currentTask.permissions?.read || []).every(item => pathWithinProjectScope(item, projectExecutionScope))
+            && (currentTask.permissions?.write || []).every(item => pathWithinProjectScope(item, projectExecutionScope))
+          : taskPathAllowed(project.managerPath, currentTask.permissions?.write || []));
     },
     onCheckpoint: async (checkpoint) => {
       const currentStore = readTaskStore();
@@ -24665,6 +25296,16 @@ async function submitProjectMaterialAttempt(task, project, requestedExecutor = '
     const currentStore = readTaskStore();
     const current = currentStore.tasks.find((item) => item.id === task.id);
     if (!current || current.executionId !== executionId || current.status !== 'running') return;
+    if (projectScoped && (!currentGlobalProjectExecutionScope(projectExecutionScope, DIGEST_PROFILE)
+      || (controlledScope?.policyCurrent && !controlledScope.policyCurrent()))) {
+      transitionTaskInStore(currentStore, task.id, 'failed', {
+        recoveryState: 'quarantined', autoRetry: false, nextRetryAt: '',
+        resultDisposition: 'result_quarantined',
+        error: { code: 'scope_changed_after_send', message: '项目成员、知识空间或授权在结果提交前发生变化；结果已隔离，未采纳且不会重复派发。' },
+      }, 'project_scope_changed_after_send');
+      await writeTaskStoreDurably(currentStore);
+      return;
+    }
     if (controlledStudent) await finalizeStudentControlledDigest({ student: controlledStudent, batch: controlledBatch,
       receiptPath: studentDigestReceiptPath(controlledStudent), summaryPath: controlledStudent.summaryPath || getSummaryDir(controlledStudent.name), output, now: taskNow });
     const studentValidation = controlledStudent ? validateTaskCompletion(current, current.startedAt, null) : null;
@@ -24685,12 +25326,21 @@ async function submitProjectMaterialAttempt(task, project, requestedExecutor = '
     currentStore.runtime ||= {}; currentStore.runtime.circuits ||= {};
     currentStore.runtime.circuits[chosen] = recordCircuitOutcome(currentStore.runtime.circuits[chosen], { success: false,
       executionId, failure: { code: error.code, message: `${error.message} ${error.details?.diagnostic || ''}` } });
+    const scopeChanged = projectScoped && error.code === 'project_scope_changed';
+    const scopeChangedAfterSend = scopeChanged && ['running', 'output_ready', 'committing'].includes(runtime?.phase);
     const unknown = error.stage === 'unknown' || ['execution_unknown', 'EXECUTION_UNRESOLVED', 'LLM_API_TIMEOUT_UNKNOWN', 'LLM_API_TRANSPORT_UNKNOWN'].includes(error.code);
     transitionTaskInStore(currentStore, task.id, unknown ? current.status : ['cancelled', 'AGENT_CANCELLED'].includes(error.code) ? 'cancelled' : 'failed', {
       ...(unknown ? unknownExecutionPatch(current, 'controlled_stop_unconfirmed') : {}),
-      error: { code: error.code || 'MATERIAL_EXECUTION_FAILED', message: error.message }, nextRetryAt: '', autoRetry: false,
+      ...(scopeChanged ? { recoveryState: scopeChangedAfterSend ? 'quarantined' : 'stopped',
+        resultDisposition: scopeChangedAfterSend ? 'result_quarantined' : 'not_sent' } : {}),
+      error: { code: scopeChanged ? (scopeChangedAfterSend ? 'scope_changed_after_send' : 'scope_changed_before_send') : error.code || 'MATERIAL_EXECUTION_FAILED',
+        message: scopeChangedAfterSend
+          ? '项目范围在正文发送后发生变化；返回结果已隔离，未写入项目知识空间，也不会自动重复派发。'
+          : scopeChanged ? '项目范围在正文发送前发生变化；本批次已停止且未发送。' : error.message },
+      nextRetryAt: '', autoRetry: false,
     }, 'controlled_material_failed');
-    const latestPolicy = policyStudent ? agentControlPolicy(policyStudent, DIGEST_PROFILE, policyProject) : null;
+    const latestPolicy = projectScoped ? globalProjectAgentPolicy(project, DIGEST_PROFILE)
+      : policyStudent ? agentControlPolicy(policyStudent, DIGEST_PROFILE, policyProject) : null;
     const apiAllowed = latestPolicy?.enabled && !commitRecovery;
     const definite = require('./agent-control-plane.cjs').safeToRetry(error)
       && !['output_ready', 'committing', 'committed', 'conflict'].includes(current.input?.materialExecution?.phase);
@@ -25049,7 +25699,7 @@ function getAgentExecutionAdapters() {
       submit: (task, command) => submitAgentHandoffTask(task, command, id),
       cancel: () => ({ ok: true }), health: () => adapterCapabilities()[id],
     }])),
-    internal: { ...common, id: 'internal', capabilities: () => adapterCapabilities().internal, submit: (task, command) => submitInternalTask(task, command), cancel: () => ({ ok: false, message: '内部同步操作不可中途取消。' }), health: () => adapterCapabilities().internal },
+    internal: { ...common, id: 'internal', capabilities: () => adapterCapabilities().internal, submit: (task, command) => submitInternalTask(task, command), cancel: (task) => cancelInternalTask(task), health: () => adapterCapabilities().internal },
     openclaw: { ...common, id: 'openclaw', capabilities: () => adapterCapabilities().openclaw, submit: (task, command) => submitOpenClawTask(task, command), cancel: (task) => cancelRunningAdapterTask(task.id), health: () => adapterCapabilities(true).openclaw },
     codex: { ...common, id: 'codex', capabilities: () => adapterCapabilities().codex, submit: (task, command) => submitCodexTask(task, command), cancel: (task) => cancelRunningAdapterTask(task.id), health: () => adapterCapabilities(true).codex },
     workbuddy: { ...common, id: 'workbuddy', capabilities: () => adapterCapabilities().workbuddy, submit: (task, command) => submitWorkBuddyTask(task, command), cancel: (task) => cancelRunningAdapterTask(task.id), health: () => adapterCapabilities(true).workbuddy },
@@ -25068,6 +25718,22 @@ function getAgentExecutionAdapters() {
   return adapters;
 }
 
+function cancelInternalTask(task) {
+  const running = taskChildProcesses.get(String(task?.id || ''));
+  if (!running) return { ok: true, stopConfirmed: true, message: '内置任务已不在运行。' };
+  if (running.materialRuntime && !running.materialRuntime.canCancel) {
+    return { ok: false, stopConfirmed: false, message: '知识正在校验提交，暂不能取消。' };
+  }
+  if (running.researchType === 'competition') {
+    try { planningGuidanceService().cancelCompetitionResearch(running.studentId); } catch {}
+  } else if (running.researchType === 'guidance') {
+    try { planningGuidanceService().cancelGuidanceResearch(running.studentId); } catch {}
+  }
+  clearTaskProcessHeartbeat(task?.id);
+  const stopped = running.child?.killed || running.child?.kill?.() !== false;
+  return { ok: stopped, stopConfirmed: stopped, message: stopped ? '内置任务已停止；迟到结果不会被采用。' : '内置任务暂未停止。' };
+}
+
 function cancelRunningAdapterTask(taskId) {
   const running = taskChildProcesses.get(String(taskId));
   if (!running?.child || running.child.killed) return { ok: false, message: '没有正在运行的进程。' };
@@ -25078,7 +25744,8 @@ function cancelRunningAdapterTask(taskId) {
       const task = store.tasks.find(item => item.id === String(taskId));
       if (task?.executionId === running.executionId && task.recoveryState === 'unknown' && task.status === 'cancelled') {
         // A launcher exiting does not prove its children or remote job stopped.
-        task.error = { code: 'CANCEL_STOP_UNCONFIRMED', message: '本机启动进程已退出；请核对原工具是否仍有子进程或远端任务。已取消结果不会自动入库。' };
+        const source = executionProvenance(task).providerLabel;
+        task.error = { code: 'CANCEL_STOP_UNCONFIRMED', message: `本机启动进程已退出，但 ${source} 的任务状态尚未确认。系统将先查询回执；已取消结果不会自动入库。` };
         writeTaskStore(store);
         notify('onNativeTaskCenterChanged', JSON.stringify({ taskId }));
       }
@@ -25259,8 +25926,8 @@ async function executeTaskByAdapterCore(taskId, requestedExecutor = '', executio
     const globalPolicy = agentControlStore().read().global;
     if (globalPolicy && !globalPolicy.enabled && task.kind !== 'project_archive') return JSON.stringify({ ok: false, code: 'AGENT_SCOPE_DENIED', message: 'AI 接入与调度中心已全局停用。' });
     if (executionOptions.automatic && automaticStudentTaskBlocked(task,findStudentByKey(task.sourceId))) return JSON.stringify({ok:true,skipped:true,reason:'student_automation_paused',message:'该学生已暂停周期自动任务；仍可手动执行。'});
-    if (task.recoveryState === 'unknown') return JSON.stringify({ ok: false, code: 'EXECUTION_UNRESOLVED', message: '上次外部执行尚未确认停止；请先核对，不能重复派发同一批资料。' });
-    const unresolved = store.tasks.find(item => item.id !== task.id && item.recoveryState === 'unknown'
+    if (taskExecutionUnresolved(task)) return JSON.stringify({ ok: false, code: 'EXECUTION_UNRESOLVED', message: recoveryPlan(task).nextAction || '系统正在核对上次执行，不会重复派发同一批资料。' });
+    const unresolved = store.tasks.find(item => item.id !== task.id && taskExecutionUnresolved(item)
       && item.sourceType === task.sourceType && item.sourceId === task.sourceId);
     if (unresolved) return JSON.stringify({ ok: false, code: 'SOURCE_EXECUTION_UNRESOLVED', message: `同一资料范围还有“${unresolved.title}”需要核对外部执行状态；其他学生任务不受影响。` });
     task.automaticExecution = executionOptions.automatic===true;
@@ -25460,7 +26127,7 @@ function retryTask(taskId) {
     const task = store.tasks.find((item) => item.id === String(taskId));
     if (!task) return JSON.stringify({ ok: false, message: '未找到任务。' });
     if (!['failed', 'blocked', 'timed_out', 'cancelled'].includes(task.status)) return JSON.stringify({ ok: false, message: '只有失败、阻塞、超时或已取消任务可以重试。' });
-    if (task.recoveryState === 'unknown') return JSON.stringify({ ok: false, code: 'EXECUTION_UNRESOLVED', message: '上次执行状态不明。请先核对原工具；当前批次编号和结果保持不变。' });
+    if (task.recoveryState === 'unknown') return JSON.stringify({ ok: false, code: 'EXECUTION_UNRESOLVED', message: recoveryPlan(task).nextAction || '系统正在核对上次执行；当前批次编号和结果保持不变。' });
     const transition = transitionTaskInStore(store, task.id, 'pending', { error: null, result: null, executionId: '', adapterId: '', routeAttempts: [], nextRetryAt: '', retryRecovery: null, completedAt: '', attempt: 0, autoRetry: false }, 'task_retried');
     writeTaskStore(store);
     return JSON.stringify({ ...transition, message: '任务已重置为待处理；本次只在用户点击后执行，不会后台连环重试。' });
@@ -25478,18 +26145,35 @@ async function cancelTask(taskId, note = '') {
     const store = readTaskStore();
     const task = store.tasks.find((item) => item.id === String(taskId));
     const adapter = task ? getAgentExecutionAdapters()[task.adapterId] : null;
-    const uncertain = task?.executionId && !String(task.executionId).startsWith('handoff-select-') && ['running', 'waiting_result'].includes(task.status);
+    const uncertain = task?.executionId && !String(task.executionId).startsWith('handoff-select-') && ['running', 'waiting_result', 'reviewing'].includes(task.status);
     const transition = transitionTaskInStore(store, String(taskId), 'cancelled', {
       recoveryState: uncertain ? 'unknown' : task?.recoveryState || '',
-      error: { code: uncertain ? 'CANCEL_STOP_UNCONFIRMED' : 'CANCELLED', message: uncertain ? '本机已停止接收此批次，但尚未确认外部任务停止。请到原工具核对。' : String(note || '用户取消任务。') } }, 'task_cancelled');
+      error: { code: uncertain ? 'CANCEL_STOP_UNCONFIRMED' : 'CANCELLED', message: uncertain ? '本机已停止接收此批次，系统正在确认执行来源是否已经停止。' : String(note || '用户取消任务。') } }, 'task_cancelled');
+    let stop = null;
     if (transition.ok) {
       await writeTaskStoreDurably(store);
       // Persist the revoked batch before signalling an external process. A storage
       // fault must not leave an apparently running task whose process was killed.
       const current = readTaskStore().tasks.find(item => item.id === String(taskId));
-      if (current?.status === 'cancelled' && current.executionId === task.executionId && adapter?.cancel) adapter.cancel(task);
+      if (current?.status === 'cancelled' && current.executionId === task.executionId && adapter?.cancel) {
+        stop = await Promise.resolve(adapter.cancel(task));
+        if (stop?.stopConfirmed === true) {
+          const confirmedStore = readTaskStore();
+          const confirmed = confirmedStore.tasks.find(item => item.id === String(taskId));
+          if (confirmed?.status === 'cancelled' && confirmed.executionId === task.executionId) {
+            Object.assign(confirmed, internalStoppedPatch(confirmed, taskNow()));
+            await writeTaskStoreDurably(confirmedStore);
+            appendTaskEvent(confirmed.id, 'task_stop_confirmed', { source: taskExecutionClass(task), message: stop.message }, confirmed.executionId);
+            transition.task = confirmed;
+          }
+        }
+      }
     }
-    return JSON.stringify({ ...transition, message: transition.ok ? uncertain ? '已撤销本机任务，尚未确认外部停止；不会自动重跑同一批资料。' : '任务已取消。' : transition.message });
+    return JSON.stringify({ ...transition, message: transition.ok
+      ? stop?.stopConfirmed === true
+        ? '任务已停止；未采用不完整结果，上一有效版本保持不变。'
+        : uncertain ? '已停止本机接收，系统会先查询回执；不会自动重跑同一批资料。' : '任务已取消。'
+      : transition.message });
   } catch (error) {
     return JSON.stringify({ ok: false, message: `取消任务失败：${error.message}` });
   }
@@ -25531,13 +26215,13 @@ function resolveTaskGovernanceSelection(store, request = {}) {
     return { ids: ids.slice(0, 1000), matchedCount: ids.length, truncated: ids.length > 1000, selection: 'explicit' };
   }
   const query = request.query && typeof request.query === 'object' ? request.query : {};
-  const status = ['all', 'actionable', 'running', 'scheduled', 'completed', 'archived'].includes(String(query.status || ''))
+  const status = ['all', 'actionable', 'running', 'scheduled', 'completed', 'archived', 'automatic', 'needs_help', 'history'].includes(String(query.status || ''))
     ? String(query.status) : 'all';
   const source = ['all', 'student', 'project'].includes(String(query.source || '')) ? String(query.source) : 'all';
   const executor = String(query.executor || 'all').slice(0, 200);
   const matched = (store.tasks || []).filter((task) => {
     const presentation = taskPresentation(task);
-    return (status === 'all' || presentation.statusGroup === status)
+    return (status === 'all' || presentation.statusGroup === status || presentation.userGroup === status)
       && (source === 'all' || String(task.sourceType || '') === source)
       && (executor === 'all' || String(task.executor || '') === executor);
   }).map((task) => String(task.id)).filter(Boolean);
@@ -25601,22 +26285,28 @@ async function commitTaskGovernanceBatch(request = {}) {
 async function migrateTaskQueueGovernance() {
   const store = readTaskStore();
   const runtime = store.runtime && typeof store.runtime === 'object' ? store.runtime : (store.runtime = {});
-  if (runtime.taskGovernanceMigration?.version === 1) return runtime.taskGovernanceMigration;
+  if (Number(runtime.taskGovernanceMigration?.version || 0) >= 2) return runtime.taskGovernanceMigration;
   const now = taskNow();
-  const legacyInboxOrphans = store.tasks.filter((task) => isLegacySmartInboxOrphan(task, Date.now()));
-  const idleProjectCards = store.tasks.filter((task) => String(task.kind || '') === 'project_digest'
-    && Number(task.count || 0) === 0 && String(task.status || '') === 'queued'
-    && governanceEligibility(task, 'archive').ok);
-  const candidates = [...new Map([...legacyInboxOrphans, ...idleProjectCards].map((task) => [task.id, task])).values()];
-  const backupDir = path.join(taskCenterDirPath(), 'migration-backups', `task-governance-r17-${timestampForFilename()}`);
+  const inboxDir = path.join(app.getPath('userData'), 'smart-inbox', 'items');
+  // Fail closed if metadata cannot be read; never equate a parse/permission
+  // failure with an empty inbox. No model calls or task dispatch in migration.
+  const inboxItems = fs.existsSync(inboxDir) ? fs.readdirSync(inboxDir).filter(name => name.endsWith('.json'))
+    .map(name => JSON.parse(fs.readFileSync(path.join(inboxDir, name), 'utf8'))) : null;
+  const projects = readProjects().map(normalizeProject).map(project => ({ ...project, digestState: readProjectDigestState(project) }));
+  const { candidates, skipped } = queueGovernanceCandidates(store, { inboxItems, projects,
+    hasExecutionArtifacts: task => fs.existsSync(path.join(taskExecutionDirPath(), task.id))
+      || Boolean(task.input?.manifestPath && fs.existsSync(task.input.manifestPath))
+      || Boolean(task.expectedOutput?.path && fs.existsSync(task.expectedOutput.path)) });
+  const backupDir = path.join(taskCenterDirPath(), 'migration-backups', `task-governance-p0-v2-${timestampForFilename()}`);
   fs.mkdirSync(backupDir, { recursive: true });
   if (fs.existsSync(taskStorePath())) fs.copyFileSync(taskStorePath(), path.join(backupDir, 'tasks.before.json'));
   if (fs.existsSync(taskEventLogPath())) fs.copyFileSync(taskEventLogPath(), path.join(backupDir, 'events.before.jsonl'));
-  for (const task of candidates) archiveTaskRecord(task, 'R17 自动归档：旧版下载资料入口产生且从未启动的孤儿任务', now);
-  runtime.taskGovernanceMigration = { version: 1, migratedAt: now, archivedCount: candidates.length,
-    legacyInboxArchivedCount: legacyInboxOrphans.length, idleProjectArchivedCount: idleProjectCards.length, backupDir };
+  for (const { task, reason } of candidates) archiveTaskRecord(task, reason, now);
+  runtime.taskGovernanceMigration = { version: 2, migratedAt: now, archivedCount: candidates.length,
+    legacyInboxArchivedCount: candidates.filter(item => item.task.kind === 'smart_material_intake').length,
+    idleProjectArchivedCount: candidates.filter(item => item.task.kind === 'project_digest').length, skipped, backupDir };
   await writeTaskStoreDurably(store);
-  const report = { ...runtime.taskGovernanceMigration, taskIds: candidates.map((task) => task.id),
+  const report = { ...runtime.taskGovernanceMigration, taskIds: candidates.map(({ task }) => task.id),
     protectedStatuses: ['running', 'waiting_result', 'reviewing'], unknownResultsProtected: true };
   fs.writeFileSync(path.join(backupDir, 'migration-report.json'), `${JSON.stringify(report, null, 2)}\n`, 'utf8');
   return report;
@@ -25656,6 +26346,7 @@ function confirmTaskExternalStopped(taskId, executionId) {
     const store = readTaskStore();
     const task = store.tasks.find(item => item.id === String(taskId));
     if (!task || task.executionId !== String(executionId) || task.status !== 'cancelled' || task.recoveryState !== 'unknown') return JSON.stringify({ ok: false, message: '任务批次或状态已变化，请刷新后核对。' });
+    if (typeof taskExecutionClass === 'function' && taskExecutionClass(task) === 'internal') return JSON.stringify({ ok: false, message: '这是内置任务，停止状态应由系统确认，不需要人工核对。请刷新任务状态。' });
     if (taskChildProcesses.has(task.id)) return JSON.stringify({ ok: false, message: '本机仍在等待该进程退出，不能用人工确认替代进程退出。' });
     task.recoveryState = 'user_confirmed_stopped';
     task.error = { code: 'CANCELLED', message: '用户已在外部工具核对未发送或已停止；未自动重跑。' };
@@ -25842,6 +26533,26 @@ async function consumeAgentTaskResults(agentId, discovered) {
   }
 }
 
+async function recordUnknownReceiptChecks(agentId = '') {
+  const store = readTaskStore();
+  const now = taskNow();
+  let changed = false;
+  for (const task of store.tasks) {
+    if (task.recoveryState !== 'unknown' || taskExecutionClass(task) === 'internal') continue;
+    const provenance = executionProvenance(task);
+    if (!provenance.querySupport || (agentId && provenance.providerId !== String(agentId))) continue;
+    const budget = recoveryBudget(task, now);
+    if (budget.receiptQueries >= budget.limits.receiptQueries) continue;
+    task.recoveryBudget = { ...budget, receiptQueries: budget.receiptQueries + 1 };
+    task.recoveryCheckedAt = now;
+    task.recoveryPlan = recoveryPlan(task, now);
+    task.updatedAt = now;
+    changed = true;
+  }
+  if (changed) await writeTaskStoreDurably(store);
+  return changed;
+}
+
 function syncAgentTaskResults(agentId = '') {
   // A synchronous compatibility request only schedules work; it never reads result files.
   if (taskReadMaintenanceStopped) return JSON.stringify({ ok: false, message: '任务中心正在关闭。' });
@@ -25858,6 +26569,7 @@ function syncAgentTaskResults(agentId = '') {
           await consumeAgentTaskResults(candidate.channel.agentId, { claims: [], results: [], [kind]: [candidate] });
         }
       }
+      await recordUnknownReceiptChecks(agentId);
       if (discovered.deferred && !taskInboxTimer) {
         taskInboxTimer = setTimeout(() => { taskInboxTimer = null; taskInboxLastScan = 0; syncAgentTaskResults(); }, 1000);
         taskInboxTimer.unref?.();
@@ -25927,12 +26639,19 @@ function enforceTaskTimeouts(store) {
       }
       // Keep ownership and the resource permit until the runner reports exit.
     }
+    if (taskExecutionClass(task) === 'internal') {
+      Object.assign(task, internalStoppedPatch(task, new Date(now).toISOString()));
+      appendTaskEvent(task.id, 'internal_task_timed_out_stopped', { timeoutKind: timeout.kind, automaticRetry: false }, task.executionId);
+      changed = true;
+      businessTaskRetryQueue.delete(String(task.id));
+      continue;
+    }
     const eventType = timeout.kind === 'heartbeat' ? 'task_heartbeat_lost' : timeout.kind === 'result_wait' ? 'task_result_wait_timed_out' : 'task_timed_out';
     // Keep the same execution receivable while quarantined, so a matching late
     // result can still be validated. Cancelled/superseded executions stay closed.
     const transition = transitionTaskInStore(store, task.id, task.status, {
       ...unknownExecutionPatch(task, timeout.kind),
-      error: { code: timeout.error.code, message: `${timeout.error.message} 已请求停止，尚未确认外部完成或停止；请核对原工具及回执，不会自动重跑。` },
+      error: { code: timeout.error.code, message: `${timeout.error.message} 已请求停止，系统将先查询 ${executionProvenance(task).providerLabel} 的回执；不会自动重跑。` },
     }, eventType);
     if (transition.ok) {
       changed = true;
@@ -26450,6 +27169,9 @@ function* taskCenterCandidateBatches() {
         : `project_digest:${project.id}:idle`;
     const configuredProjectAgent = String(project.agentTool || 'workbuddy');
     const projectDigestExecutor = providerSupportsProfile(configuredProjectAgent, DIGEST_PROFILE) ? configuredProjectAgent : 'codex';
+    const globalProjectScopeEnabled = Boolean(isWorkspaceMaterialProject(project)
+      && agentControlStore().read().global?.enabled
+      && Number(agentControlStore().read().global?.version || 0) > 0);
     if (pendingDigest > 0 || ['digesting', 'submitted', 'failed'].includes(digestStatus)) tasks.push(normalizeTaskEnvelope({
       id: taskStableId('project_digest', 'project', project.id),
       title: `${project.name}项目资料消化`, kind: 'project_digest', sourceType: 'project', sourceId: String(project.id), sourceName: project.name,
@@ -26458,9 +27180,15 @@ function* taskCenterCandidateBatches() {
       scheduledAt: project.automation?.enabled ? String(project.automation.nextRunAt || '等待调度') : '', count: pendingDigest,
       idempotencyKey: projectDigestKey,
       completionPolicy: 'auto_after_validation',
-      input: { projectId: String(project.id), knowledgeRoot: project.knowledgeRootPath, rawPath: project.rawPath, digestBatchId: digestState.digestBatchId || '', manifestPath: projectDigestRequestPath(project), controlledMaterial: isWorkspaceMaterialProject(project) },
-      expectedOutput: { type: 'project_digest_receipt', path: projectDigestReceiptPath(project) },
-      permissions: isWorkspaceMaterialProject(project)
+      input: { projectId: String(project.id), knowledgeRoot: project.knowledgeRootPath,
+        ...(globalProjectScopeEnabled ? { projectScopeContract: PROJECT_SCOPE_CONTRACT_VERSION } : { rawPath: project.rawPath }),
+        digestBatchId: digestState.digestBatchId || '', manifestPath: projectDigestRequestPath(project), controlledMaterial: isWorkspaceMaterialProject(project) },
+      expectedOutput: globalProjectScopeEnabled
+        ? { type: 'project_digest_host_receipt', hostManaged: true }
+        : { type: 'project_digest_receipt', path: projectDigestReceiptPath(project) },
+      permissions: globalProjectScopeEnabled
+        ? { read: [project.knowledgeRootPath].filter(Boolean), write: [project.knowledgeRootPath].filter(Boolean), operations: ['read', 'write_project_knowledge'] }
+        : isWorkspaceMaterialProject(project)
         ? { read: [project.workspacePath, project.rawPath, project.knowledgeRootPath, project.managerPath, project.agentPath].filter(Boolean),
           write: [project.knowledgeRootPath, project.managerPath], operations: ['read', 'write_project_knowledge'] }
         : { read: [project.rawPath, project.knowledgeRootPath, projectDigestRequestPath(project)].filter(Boolean), write: [project.knowledgeRootPath, projectDigestReceiptPath(project)].filter(Boolean), operations: ['read', 'write_project_knowledge'] },
@@ -27027,11 +27755,7 @@ function generateStudentMaintenanceReport(studentId) {
     const normalized = toHostStudent(student);
     const health = JSON.parse(checkStudentPathHealth(studentId));
     const ledger = readStudentScheduleLedger(normalized);
-    const assets = readAssetIndex().filter((asset) =>
-      String(asset.ownerStudentId || '') === String(normalized.id)
-      || (Array.isArray(asset.linkedStudents) && asset.linkedStudents.includes(String(normalized.id)))
-      || (Array.isArray(asset.references) && asset.references.some((ref) => ref.spaceType === 'student' && String(ref.spaceId) === String(normalized.id)))
-    );
+    const assets = assetStore().queryDetails({ studentId: String(normalized.id) });
     const materials = readStudentMaterials(normalized);
     const openMaterials = materials.filter((item) => isOpenDigestStatus(item.status));
     const staleAssetRefs = assets.reduce((total, asset) => total + (Array.isArray(asset.references) ? asset.references.filter((ref) => ref.path && !fs.existsSync(ref.path)).length : 0), 0);
@@ -29509,6 +30233,10 @@ function saveAgentConversationImport(studentId, content, tool = 'workbuddy', sou
     fs.mkdirSync(conversationInteractionsDir(student), { recursive: true });
     fs.mkdirSync(conversationAssetsDir(student), { recursive: true });
     const normalized = normalizeConversationImport({ studentId: student.id, tool: safeTool, content, sourcePath });
+    const routing = capturedConversationRoutingPolicy(agentControlStore().read().global);
+    const sessionStartedAt = String(options.sessionStartedAt || '');
+    const routingDisposition = options.lifecycleCapture === true && routing.authorizedAt && sessionStartedAt
+      && Date.parse(sessionStartedAt) < Date.parse(routing.authorizedAt) ? 'before_authorization' : '';
     const analysis = conversationAnalysisFor(student, normalized.content);
     const currentIndex = readJsonFile(conversationIndexPath(student), { version: 2, imports: [], extracts: [] });
     const duplicate = (currentIndex.imports || []).find((item) => item.assetId === normalized.asset.id || item.hash === normalized.asset.contentHash);
@@ -29538,6 +30266,8 @@ function saveAgentConversationImport(studentId, content, tool = 'workbuddy', sou
       messageCount: normalized.interaction.messageCount,
       sourceType: options.lifecycleCapture === true ? 'authorized_lifecycle' : /^https?:\/\//i.test(String(sourcePath || '')) ? 'share_link' : sourcePath ? 'file' : 'paste',
       sourceSessionId: options.lifecycleCapture === true ? String(options.sessionId || '') : '',
+      capturedSessionStartedAt: sessionStartedAt,
+      routingDisposition,
       sourceUrl: /^https?:\/\//i.test(String(sourcePath || '')) ? sourcePath : '',
       analysis,
     });
@@ -29751,6 +30481,7 @@ async function saveWorkspaceAgentProjectConversationImportUnlocked(student, proj
         importedAt: normalized.asset.importedAt, hash: normalized.asset.contentHash,
         size: normalized.asset.size, messageCount: normalized.interaction.messageCount,
         sourceType: /^https?:\/\//i.test(String(sourcePath || '')) ? 'share_link' : sourcePath ? 'file' : 'agent_submission',
+        routingDisposition: 'already_scoped',
         sourceUrl: /^https?:\/\//i.test(String(sourcePath || '')) ? sourcePath : '', analysis,
       }, ...(Array.isArray(currentIndex.imports) ? currentIndex.imports : []).filter((item) =>
         item.assetId !== normalized.asset.id && item.hash !== normalized.asset.contentHash)].slice(0, 200),
@@ -29857,6 +30588,7 @@ function saveAgentProjectConversationImport(student, project, content, tool = 'w
         size: normalized.asset.size,
         messageCount: normalized.interaction.messageCount,
         sourceType: /^https?:\/\//i.test(String(sourcePath || '')) ? 'share_link' : sourcePath ? 'file' : 'agent_submission',
+        routingDisposition: 'already_scoped',
         sourceUrl: /^https?:\/\//i.test(String(sourcePath || '')) ? sourcePath : '',
         analysis,
       }, ...(Array.isArray(currentIndex.imports) ? currentIndex.imports : []).filter((item) => (
@@ -30509,8 +31241,9 @@ function getStudentsIndex() {
 }
 
 function writeStudentsIndex(students) {
-  writeJsonAtomic(studentsPath(), students);
+  const operation = writeJsonAtomic(studentsPath(), students);
   taskCenterSnapshotCache = { at: 0, value: '' };
+  return operation;
 }
 
 function findStudentByKey(studentKey) {
@@ -30603,6 +31336,60 @@ function toHostStudent(student) {
   };
 }
 
+function ensureLocalStudentFromCloudProfile(envelope) {
+  const students = readStudentsIndex();
+  const plan = planCloudStudentBinding({ students, envelope, sanitizeName });
+  const { cloudStudentId, profileRevisionId, profile, cleanName } = plan;
+  if (plan.action === 'conflict') {
+    if (plan.reason === 'same_name_different_identity') {
+      throw new Error(`本机已有同名学生“${cleanName}”，但没有相同云端学生标识；为避免误合并，请在云端同步设置中选择现有档案或创建新档案`);
+    }
+    throw new Error('检测到多份本机档案绑定同一云端学生，请先在学生管理中处理');
+  }
+  const applyProfile = (student) => toHostStudent({
+    ...student,
+    name: cleanName,
+    grade: profile.grade ?? student.grade,
+    school: profile.school ?? student.school,
+    goal: profile.learningGoal ?? student.goal,
+    currentRegion: profile.currentRegion ?? student.currentRegion,
+    phone: profile.phone ?? student.phone,
+    email: profile.email ?? student.email,
+    birthDate: profile.birthday ?? student.birthDate,
+    address: profile.address ?? student.address,
+    guardian: profile.guardian ?? student.guardian,
+    cloudIdentity: {
+      cloudStudentId, profileRevisionId, source: 'authorized_cloud_profile',
+      authorizedFields: Array.isArray(envelope.fields) ? [...envelope.fields] : Object.keys(profile),
+      syncedAt: new Date().toISOString(),
+    },
+  });
+  if (plan.action === 'update') {
+    const updated = applyProfile(plan.student);
+    writeStudentsIndex(students.map(student => String(student.id) === String(updated.id) ? updated : student));
+    return { localStudentId: String(updated.id), status: 'updated', profileRevisionId };
+  }
+  assertCanAddStudent('云端授权自动建档');
+  const initialized = JSON.parse(initStudentWorkspace(cleanName,
+    `# ${cleanName} AI教育管家\n\n本档案由已授权的云端学生基础信息自动建立。\n`,
+    `# ${cleanName} 学情分析汇总\n`, `# ${cleanName} 知识更新日志\n`));
+  if (!initialized.ok) throw new Error(initialized.message || '本机学生工作区创建失败');
+  const localStudentId = plan.localStudentId;
+  if (students.some(student => String(student.id) === localStudentId)) throw new Error('本机学生标识冲突，请人工核对');
+  const created = applyProfile({
+    id: localStudentId, name: cleanName, createdAt: new Date().toISOString(), status: 'ready',
+    schemaVersion: 1, storageMode: 'app_private', knowledgeBaseMode: 'standard',
+    rootPath: initialized.rootPath, rawPath: initialized.rawPath, summaryPath: initialized.summaryPath,
+    agentPath: initialized.agentPath, outputPath: initialized.outputPath,
+    agentTool: 'workbuddy', agentBindingMode: 'subAgent', agentName: `${cleanName} AI教育管家`,
+  });
+  assertStudentCapacity([created, ...students], students, '云端授权自动建档');
+  writeStudentsIndex([created, ...students]);
+  appendHostTimeline({ type: 'cloud_student_profile_created', title: '已按云端授权建立学生档案',
+    detail: profileRevisionId, studentId: localStudentId, studentName: cleanName });
+  return { localStudentId, status: 'created', profileRevisionId };
+}
+
 function syncStudentsIndex(studentsJson) {
   try {
     const parsed = JSON.parse(studentsJson || '[]');
@@ -30626,7 +31413,33 @@ function syncStudentsIndex(studentsJson) {
     const ensured = ensureStudentLoginIds(merged);
     const students = ensured.students;
     assertStudentCapacity(students, currentStudents, '同步学生档案');
-    if (!isDeepStrictEqual(students, currentStudents)) writeStudentsIndex(students);
+    const nextById = new Map(students.map((student) => [String(student.id), student]));
+    const becomingBlocked = currentStudents.filter((student) => !studentConversationCaptureBlocked(student)
+      && studentConversationCaptureBlocked(nextById.get(String(student.id))));
+    const becomingActive = students.filter((student) => !studentConversationCaptureBlocked(student)
+      && studentConversationCaptureBlocked(existingById.get(String(student.id))));
+    const activeDescriptor = safeReadJson(activeAgentKnowledgeDescriptorPath(), {});
+    const originalCaptureStudentId = String(activeDescriptor?.defaults?.scopeId || '');
+    if (becomingBlocked.length) drainAgentLifecycleQueue();
+    for (const student of becomingBlocked) {
+      finalizeActiveLifecycleSessionsForStudent(student, 'student-inactive');
+      setLifecycleDescriptorEnabled(student, false);
+      notify('onNativeAgentMemoryChanged', JSON.stringify({ studentId: String(student.id), reason: 'student_inactive' }));
+    }
+    const writeOperation = !isDeepStrictEqual(students, currentStudents) ? writeStudentsIndex(students) : Promise.resolve();
+    void Promise.resolve(writeOperation).then(async () => {
+      const global = agentControlStore().read().global;
+      for (const student of becomingActive) {
+        if (!global?.enabled || originalCaptureStudentId !== String(student.id)) continue;
+        const currentDescriptor = safeReadJson(activeAgentKnowledgeDescriptorPath(), {});
+        if (String(currentDescriptor?.defaults?.scopeId || '') !== String(student.id)) continue;
+        const prepared = parseJsonObject(prepareAgentKnowledgeAccess(student.id, { activateGlobal: true, captureEnabled: true }));
+        if (prepared.ok) notify('onNativeAgentMemoryChanged', JSON.stringify({ studentId: String(student.id), reason: 'student_reactivated' }));
+      }
+      const engine = await getSmartInbox();
+      await engine.syncConversationRouting(capturedConversationRoutingPolicy(global), students.filter(student => !studentConversationCaptureBlocked(student)));
+      await engine.tick();
+    }).catch(error => console.warn('学生状态变更后的会话路由恢复未完成：', error.message));
     const validIds = new Set(students.map((student) => String(student.id)));
     const migrated = migrateTerminalDevices(readDevices(), Array.from(validIds));
     if (migrated.changed) writeDevices(migrated.devices);
@@ -34853,7 +35666,8 @@ function handleUploadReceiptQuery(request, response, url) {
   const result = queryUploadReceipt({ targetType, targetId, studentId, uploadId,
     deviceId: request.authContext.deviceId || '', admin,
     records: targetType === 'student' ? readUploadRecords() : [],
-    assets: targetType === 'project' ? readAssetIndex() : [], materials });
+    assets: targetType === 'project' ? assetStore().queryDetails({ referenceId: uploadId,
+      referenceSpaceType: 'project', referenceSpaceId: targetId }) : [], materials });
   sendJson(response, 200, { ok: true, hostId: getHostIdentity().hostId, dataGeneration: hostDataGenerationId(), ...result });
 }
 
@@ -34944,7 +35758,8 @@ async function handleProjectMaterialUpload(request, response, projectId, url) {
       assertUploadFileAllowed(file.filename, file.content?.length || expectedBytes);
       const requestedUploadId = requestUploadId;
       const uploadId = requestedUploadId && files.length === 1 ? requestedUploadId : (requestedUploadId ? `${requestedUploadId}-${fileIndex + 1}` : '');
-      const matchingAssets = uploadId ? readAssetIndex().flatMap((asset) => (asset.references || [])
+      const matchingAssets = uploadId ? assetStore().queryDetails({ referenceId: uploadId,
+        referenceSpaceType: 'project', referenceSpaceId: String(ensured.id) }).flatMap((asset) => (asset.references || [])
         .filter((reference) => String(reference.id) === uploadId && reference.spaceType === 'project'
           && String(reference.spaceId) === String(ensured.id))
         .map((reference) => ({ asset, reference }))) : [];
@@ -35573,7 +36388,11 @@ async function handleMaterialUpload(request, response, studentId, url) {
       const receiptFile = publicStudentUploadReceiptFile({
         ...existingUpload,
         sha256: incoming.sha256,
-        assetId: studentUploadAssetId(existingUpload, readAssetIndex()),
+        assetId: studentUploadAssetId(existingUpload, [
+          ...assetStore().queryDetails({ referenceId: existingUpload.id, studentId: String(studentId) }),
+          ...assetStore().queryDetails({ referenceId: existingUpload.uploadId, studentId: String(studentId) }),
+          assetStore().findByFingerprint({ sha1: existingUpload.sha1, sha256: existingUpload.contentSha256, path: existingUpload.path }),
+        ].filter(Boolean)),
         duplicate: true,
       });
       sendJson(response, 200, {
@@ -35651,11 +36470,11 @@ async function handleMaterialUpload(request, response, studentId, url) {
       skipMaterialRegistration: Boolean(remoteCapture),
     }));
     addUploadRecords(uploadRecords);
-    const indexedAssets = readAssetIndex();
     const receiptFiles = uploadRecords.map((record) => publicStudentUploadReceiptFile({
       ...record,
       sha256: record.contentSha256,
-      assetId: studentUploadAssetId(record, indexedAssets),
+      assetId: studentUploadAssetId(record, [assetStore().findByFingerprint({ sha1: record.sha1,
+        sha256: record.contentSha256, path: record.path })].filter(Boolean)),
       duplicate: false,
     }));
     if (remoteCapture) {
@@ -36849,6 +37668,9 @@ async function invokeAgentCapability(request, name, input) {
 }
 
 let externalConnectorRuntime, externalWriterRuntime, externalGatewayRuntime;
+function externalMcpRuntime() {
+  return externalMcpRuntime.cached ||= require('./external-mcp-runtime.cjs').resolveExternalMcpRuntime({ execPath: process.execPath });
+}
 function externalConnectorStore() {
   return externalConnectorRuntime ||= require('./external-agent-connector.cjs').createConnectorStore(
     path.join(app.getPath('userData'), 'external-connectors', 'authorization.json'), {
@@ -36947,8 +37769,10 @@ function unifiedKnowledgeServer(host, server) {
   return { ...rest, args: unifiedKnowledgeArgs(host, server.args), description: '教育管家统一知识连接：按已授权会话范围访问' };
 }
 function externalHostInstallOptions(host, connectionId) {
+  const runtime = externalMcpRuntime();
   return { home: os.homedir(), codexHome: process.env.CODEX_HOME || undefined, host, connectionId, bridgePath: activeAgentKnowledgeMcpBridgePath(),
     descriptorPath: activeAgentKnowledgeDescriptorPath(), connectionConfig: path.join(externalConnectionDirectory(connectionId), 'connection.json'),
+    runtimeExecutable: runtime.executable, runtimeScript: path.join(externalConnectionDirectory(connectionId), 'external-agent-mcp.cjs'), useElectronNode: runtime.useElectronNode,
     projectConfigPaths: host === 'codex' ? readStudentsIndex().map(s => path.join(s.rootPath || getStudentRootDir(s.name), '.codex', 'config.toml')) : [] };
 }
 function externalHostStatuses() {
@@ -37038,6 +37862,7 @@ async function externalHostLifecycleAction(action, input) {
 }
 function writeExternalConnectionRuntimeConfig(connectionId, token = '') {
   const directory = externalConnectionDirectory(connectionId);
+  const runtime = externalMcpRuntime();
   const credentialFile = path.join(directory, 'credential');
   fs.mkdirSync(directory, { recursive: true });
   if (token) fs.writeFileSync(credentialFile, token, { flag: 'wx', mode: 0o600 });
@@ -37047,10 +37872,10 @@ function writeExternalConnectionRuntimeConfig(connectionId, token = '') {
   for (const file of ['external-agent-mcp.cjs', 'agent-capability-contract.cjs']) fs.copyFileSync(path.join(__dirname, file), path.join(directory, file));
   writeJsonAtomic(path.join(directory, 'connection.json'), { schema: 'edu-manager.external-connection.v1', connectionId,
     endpoint: `http://127.0.0.1:${getHostServicePort()}/api/agent/connector`, credentialFile,
-    runtimeExecutable: process.execPath, runtimeScript: path.join(directory, 'external-agent-mcp.cjs') });
+    runtimeExecutable: runtime.executable, runtimeScript: path.join(directory, 'external-agent-mcp.cjs'), runtimeKind: runtime.useElectronNode ? 'electron-node' : 'node' });
   const configPath = path.join(directory, 'mcp-config.json');
-  writeJsonAtomic(configPath, { mcpServers: { 'edu-manager-knowledge': { command: process.execPath,
-    args: [path.join(directory, 'external-agent-mcp.cjs'), path.join(directory, 'connection.json')], env: { ELECTRON_RUN_AS_NODE: '1' } } } });
+  writeJsonAtomic(configPath, { mcpServers: { 'edu-manager-knowledge': { command: runtime.executable,
+    args: [path.join(directory, 'external-agent-mcp.cjs'), path.join(directory, 'connection.json')], ...(runtime.useElectronNode ? { env: { ELECTRON_RUN_AS_NODE: '1' } } : {}) } } });
   return configPath;
 }
 function refreshExternalConnectionRuntimeConfigs() {
@@ -38184,9 +39009,9 @@ function licensedInvoke(action, handler) {
         Promise.resolve(handler()).then(async value => {
           if (taskStoreGuard.sequence() !== before) await taskStoreGuard.flush();
           resolve(value);
-        }).catch(error => resolve(JSON.stringify({ ok: false, message: `${action}未保存：${error.message}` })));
+        }).catch(error => resolve(JSON.stringify({ ok: false, code: error.code || 'operation_failed', message: `${action}未保存：${error.message}` })));
       } catch (error) {
-        resolve(JSON.stringify({ ok: false, message: `${action}失败：${error.message}` }));
+        resolve(JSON.stringify({ ok: false, code: error.code || 'operation_failed', message: `${action}失败：${error.message}` }));
       }
     });
   });
@@ -38196,7 +39021,7 @@ function deferredInvoke(handler) {
   return new Promise((resolve) => {
     setImmediate(() => {
       Promise.resolve().then(handler).then(resolve, (error) => {
-        resolve(JSON.stringify({ ok: false, message: `读取数据失败：${error.message}` }));
+        resolve(JSON.stringify({ ok: false, code: error.code || 'read_failed', message: `读取数据失败：${error.message}` }));
       });
     });
   });
@@ -38227,14 +39052,31 @@ ipcMain.handle('bridge:scanMaterialSources', (_event, studentId, sourcesJson) =>
 ipcMain.handle('bridge:importMaterialSourceFiles', (_event, studentId, pathsJson, targetJson) => licensedInvoke('导入资料', () => importMaterialSourceFiles(studentId, pathsJson, targetJson)));
 ipcMain.on('bridge:getMaterialImportRecords', (event, studentId) => { event.returnValue = getMaterialImportRecords(studentId); });
 ipcMain.on('bridge:removeMaterialImportRecords', (event, studentId, recordIdsJson) => { licensedIpc(event, '移除资料记录', () => removeMaterialImportRecords(studentId, recordIdsJson)); });
-ipcMain.handle('bridge:getAssetIndex', () => deferredInvoke(() => JSON.stringify(assetIndexSummary())));
-ipcMain.handle('bridge:rebuildAssetIndex', () => licensedInvoke('资产索引补建', () => rebuildAssetIndex()));
+ipcMain.handle('bridge:getAssetIndex', () => deferredInvoke(() => {
+  const page = assetStore().listAssets({ pageSize: 100 });
+  return JSON.stringify({ ...assetIndexSummary(), ...page, assets: page.items, deprecated: true });
+}));
+ipcMain.handle('bridge:getAssetSummary', (_event, filter) => deferredInvoke(() => JSON.stringify(assetIndexSummary(filter || {}))));
+ipcMain.handle('bridge:listAssets', (_event, request) => deferredInvoke(() => JSON.stringify(assetStore().listAssets(request || {}))));
+ipcMain.handle('bridge:searchAssets', (_event, request) => deferredInvoke(() => JSON.stringify(assetStore().searchAssets(request || {}))));
+ipcMain.handle('bridge:getAssetDetail', (_event, assetId) => deferredInvoke(() => {
+  const asset = assetStore().getAssetDetail(assetId);
+  return JSON.stringify(asset ? { ok: true, asset } : { ok: false, code: 'asset_not_found', message: '未找到资产。' });
+}));
+ipcMain.handle('bridge:rebuildAssetIndex', () => licensedInvoke('资产索引补建', () => startAssetIndexRebuild()));
+ipcMain.handle('bridge:getAssetRebuildStatus', (_event, jobId) => deferredInvoke(() => getAssetRebuildStatus(jobId)));
+ipcMain.handle('bridge:cancelAssetIndexRebuild', (_event, jobId) => licensedInvoke('取消资产索引补建', () => cancelAssetIndexRebuild(jobId)));
+ipcMain.handle('bridge:listDuplicateGroups', (_event, request) => deferredInvoke(() => listDuplicateAssetGroups(request || {})));
+ipcMain.handle('bridge:prepareDuplicateCleanup', (_event, request) => licensedInvoke('重复文件安全处理预览', () => prepareDuplicateAssetCleanup(request || {})));
+ipcMain.handle('bridge:applyDuplicateCleanup', (_event, operationId, entryIds) => licensedInvoke('重复文件安全隔离', () => startDuplicateAssetCleanup(operationId, entryIds)));
+ipcMain.handle('bridge:getDuplicateCleanupStatus', (_event, operationId) => deferredInvoke(() => getDuplicateAssetCleanupStatus(operationId)));
+ipcMain.handle('bridge:restoreDuplicateCleanup', (_event, operationId, entryIds) => licensedInvoke('恢复隔离文件', () => restoreDuplicateAssetCleanup(operationId, entryIds)));
 ipcMain.handle('bridge:analyzeAssetGovernance', () => licensedInvoke('资产治理建议', () => analyzeAssetGovernance()));
-ipcMain.on('bridge:cleanupAssetReferences', (event, assetId) => { licensedIpc(event, '资产引用清理', () => cleanupAssetReferences(assetId)); });
-ipcMain.on('bridge:createAssetVersionSnapshot', (event, assetId) => { licensedIpc(event, '资产版本快照', () => createAssetVersionSnapshot(assetId)); });
-ipcMain.on('bridge:markAssetGovernanceDecision', (event, assetId, decision, note) => { licensedIpc(event, '资产治理人工决策', () => markAssetGovernanceDecision(assetId, decision, note)); });
+ipcMain.handle('bridge:cleanupAssetReferences', (_event, assetId) => licensedInvoke('资产引用清理', () => cleanupAssetReferences(assetId)));
+ipcMain.handle('bridge:createAssetVersionSnapshot', (_event, assetId) => licensedInvoke('资产版本快照', () => createAssetVersionSnapshot(assetId)));
+ipcMain.handle('bridge:markAssetGovernanceDecision', (_event, assetId, decision, note) => licensedInvoke('资产治理人工决策', () => markAssetGovernanceDecision(assetId, decision, note)));
 ipcMain.on('bridge:generateKnowledgeArchitectureReport', (event) => { licensedIpc(event, '知识关系图生成', () => generateKnowledgeArchitectureReport()); });
-ipcMain.handle('bridge:getProjects', () => deferredInvoke(() => getProjects()));
+ipcMain.handle('bridge:getProjects', (_event, options) => deferredInvoke(() => getProjects(options)));
 ipcMain.on('bridge:createProject', (event, optionsJson) => { licensedIpc(event, '学习项目创建', () => createProject(optionsJson)); });
 ipcMain.on('bridge:updateProjectMetadata', (event, projectId, metadataJson) => { licensedIpc(event, '编辑学习项目', () => updateProjectMetadata(projectId, metadataJson)); });
 ipcMain.on('bridge:previewLearningProjectRemoval', (event, projectId) => { licensedIpc(event, '检查项目移除依赖', () => previewLearningProjectRemoval(projectId)); });
@@ -38352,6 +39194,7 @@ ipcMain.on('bridge:openExternalUrl', (event, url) => { event.returnValue = openE
 ipcMain.on('bridge:getAppStatus', (event) => {
   event.returnValue = JSON.stringify({ qclawOpened, marvisOpened, hohuOpened, openclawOpened, imaCopilotOpened, workbuddyOpened, codexOpened, claudeCodeOpened, hermesOpened, traeOpened, qoderWorkOpened, obsidianOpened });
 });
+ipcMain.handle('bridge:getAppStatusAsync', () => JSON.stringify({ qclawOpened, marvisOpened, hohuOpened, openclawOpened, imaCopilotOpened, workbuddyOpened, codexOpened, claudeCodeOpened, hermesOpened, traeOpened, qoderWorkOpened, obsidianOpened }));
 ipcMain.on('bridge:getStorageConfig', (event) => { event.returnValue = getStorageConfig(); });
 ipcMain.on('bridge:getTemplateCenter', (event, systemTemplatesJson) => { event.returnValue = getTemplateCenter(systemTemplatesJson); });
 ipcMain.on('bridge:saveCustomTemplates', (event, templatesJson) => { licensedIpc(event, '模板管理', () => saveCustomTemplates(templatesJson)); });
@@ -38427,6 +39270,19 @@ async function customOptionsInvoke(action, operation) {
 }
 ipcMain.handle('bridge:getCustomSubjects', (_event, id) => customOptionsInvoke('读取学科分类', api => api.getSubjects(id)));
 ipcMain.handle('bridge:agentControlAction', (_event, action, input = {}) => licensedInvoke('Agent 接入与调度中心', () => planningResultAsync(async () => ({ ok: true, data: await agentControlAction(action, input) }))));
+let skillLibraryRuntime = null;
+function getSkillLibraryRuntime() {
+  return skillLibraryRuntime ||= require('./skill-library-service.cjs').createSkillLibraryService({
+    userDataDir: app.getPath('userData'),
+    homeDir: os.homedir(),
+    codexHome: process.env.CODEX_HOME || '',
+    dialog,
+    shell,
+    clipboard,
+    getParentWindow: () => mainWindow,
+  });
+}
+ipcMain.handle('bridge:skillLibraryAction', (_event, action, input = {}) => licensedInvoke('Skills 管理', () => planningResultAsync(async () => ({ ok: true, data: await getSkillLibraryRuntime().action(action, input) }))));
 ipcMain.handle('bridge:smartInboxAction', (event, action, input = {}) => licensedInvoke('智能资料收件箱', () => planningResultAsync(async () => {
   const engine = await getSmartInbox();
   let data;
@@ -38652,14 +39508,16 @@ ipcMain.handle('bridge:cloudReportEnrollSource', (_event, input) => cloudReportI
   (runtime) => runtime.enrollSource(input || {})));
 ipcMain.handle('bridge:cloudReportSetUpload', (_event, studentId, enabled) => cloudReportInvoke('设置报告云上传',
   (runtime) => runtime.setUpload(String(studentId || ''), enabled)));
+ipcMain.handle('bridge:cloudReportSetUploadScope', (_event, studentId, input) => cloudReportInvoke('保存学生云端上传范围',
+  (runtime) => runtime.setUploadScope(String(studentId || ''), input || {})));
 ipcMain.handle('bridge:cloudReportStatus', (_event, studentId) => cloudReportInvoke('读取报告云同步状态',
   (runtime) => runtime.status(String(studentId || ''))));
 ipcMain.handle('bridge:cloudReportSyncNow', (_event, studentId) => cloudReportInvoke('立即核验并上传正式报告',
   (runtime) => runtime.syncNow(String(studentId || ''))));
 ipcMain.handle('bridge:cloudReportCreatePairing', (_event, serverUrl) => cloudReportInvoke('创建云端下载配对码',
   (runtime) => runtime.createPairing(serverUrl)));
-ipcMain.handle('bridge:cloudReportApprovePairing', (_event, pairingCode, studentIds) => cloudReportInvoke('确认云端学生下载许可',
-  (runtime) => runtime.approvePairing(pairingCode, studentIds)));
+ipcMain.handle('bridge:cloudReportApprovePairing', (_event, pairingCode, studentIds, options) => cloudReportInvoke('确认云端学生下载许可',
+  (runtime) => runtime.approvePairing(pairingCode, studentIds, options || {})));
 ipcMain.handle('bridge:cloudReportListStudents', () => cloudReportInvoke('读取云端许可学生',
   (runtime) => runtime.listCloudStudents()));
 ipcMain.handle('bridge:cloudReportListReports', (_event, cloudStudentId, cursor) => cloudReportInvoke('读取云端学情报告',
@@ -38674,6 +39532,45 @@ ipcMain.handle('bridge:cloudReportDownloadDocument', (_event, cloudStudentId, do
     if (reveal === true) shell.showItemInFolder(result.path);
     return result;
   }));
+ipcMain.handle('bridge:cloudReportListMaterials', (_event, cloudStudentId, options) => cloudReportInvoke('读取云端学习资料',
+  (runtime) => runtime.listCloudMaterials(String(cloudStudentId || ''), options && typeof options === 'object' ? options : {})));
+ipcMain.handle('bridge:cloudReportDownloadMaterial', (_event, cloudStudentId, revisionId, reveal) => cloudReportInvoke('下载云端学习资料',
+  async (runtime) => {
+    const result = await runtime.downloadCloudMaterial(String(cloudStudentId || ''), String(revisionId || ''));
+    if (reveal === true) shell.showItemInFolder(result.path);
+    return result;
+  }));
+ipcMain.handle('bridge:cloudReportIssueRemoteAgent', (_event, input) => cloudReportInvoke('创建远程 Agent 项目任务', async (runtime) => {
+  const project = readProjects().map(normalizeProject).find(item => String(item.id) === String(input?.projectId || ''));
+  if (!project) throw Error('学习项目不存在');
+  const task = readTaskStore().tasks.find(item => String(item.id) === String(input?.taskId || ''));
+  if (!task || !['running', 'waiting_result'].includes(String(task.status)) ||
+      String(task.executionId || '') !== String(input?.executionId || '') ||
+      String(task.sourceType || '') !== 'project' || String(task.sourceId || task.projectId || '') !== String(project.id)) {
+    throw Error('远程 Agent 任务与当前执行批次或项目不一致');
+  }
+  const frozen = freezeGlobalProjectExecutionScope(project, String(input?.taskType || DIGEST_PROFILE));
+  const policy = globalProjectAgentPolicy(project, String(input?.taskType || DIGEST_PROFILE));
+  const provider = String(input?.provider || '');
+  if (!policy?.enabled || ![policy.primary, ...(policy.fallbacks || [])].includes(provider)) throw Error('该 Agent 不在当前项目全局授权范围');
+  const cloudStudentIds = runtime.cloudStudentIdsForLocalStudents(frozen.studentIds);
+  return runtime.issueRemoteAgentSession({ provider, cloudStudentIds, projectId: frozen.projectId,
+    scopeFingerprint: frozen.scopeFingerprint, taskId: String(input?.taskId || ''), executionId: String(input?.executionId || ''), taskType: String(input?.taskType || ''),
+    idempotencyKey: String(input?.idempotencyKey || ''), materialCategories: input?.materialCategories });
+}));
+ipcMain.handle('bridge:cloudReportRemoteAgentStatus', (_event, sessionId) => cloudReportInvoke('查询远程 Agent 任务状态',
+  runtime => runtime.remoteAgentSessionStatus(String(sessionId || ''))));
+ipcMain.handle('bridge:cloudReportRevokeRemoteAgent', (_event, sessionId) => cloudReportInvoke('停止远程 Agent 新访问',
+  runtime => runtime.revokeRemoteAgentSession(String(sessionId || ''))));
+ipcMain.handle('bridge:cloudReportListInbox', (_event, cursor, recover) => cloudReportInvoke('读取云端成果收件箱',
+  async (runtime) => {
+    if (recover === true) await recoverCloudInboxResults(runtime);
+    return runtime.listCloudInbox(String(cursor || ''));
+  }));
+ipcMain.handle('bridge:cloudReportLeaseInbox', (_event, submissionId) => cloudReportInvoke('领取云端成果',
+  runtime => runtime.leaseCloudInboxSubmission(String(submissionId || ''))));
+ipcMain.handle('bridge:cloudReportSettleInbox', (_event, submissionId, input) => cloudReportInvoke('确认云端成果处置',
+  runtime => runtime.settleCloudInboxSubmission(String(submissionId || ''), input || {})));
 async function localCloudCacheInvoke(action, operation) {
   try { return JSON.stringify({ ok: true, data: await operation(await getCloudReportRuntime()) }); }
   catch (error) { return JSON.stringify({ ok: false, message: `${action}失败：${error.message}` }); }
@@ -38881,9 +39778,9 @@ ipcMain.on('bridge:openTaskCenterPath', (event, kind, agentId) => { event.return
 ipcMain.on('bridge:openTaskResultPath', (event, taskId) => { event.returnValue = openTaskResultPath(taskId); });
 ipcMain.on('bridge:generateStudentMaintenanceReport', (event, studentId) => { licensedIpc(event, '定时维护报告', () => generateStudentMaintenanceReport(studentId)); });
 ipcMain.on('bridge:getHostTimeline', (event) => { event.returnValue = getHostTimeline(); });
-ipcMain.on('bridge:backupHostData', (event, studentsJson) => { licensedIpc(event, '主机数据备份', () => backupHostData(studentsJson)); });
+ipcMain.handle('bridge:backupHostData', (_event, studentsJson) => licensedInvoke('主机数据备份', () => backupHostData(studentsJson)));
 ipcMain.handle('bridge:inspectProjectUploadRecovery', () => licensedInvoke('检查项目资料接收恢复', () => inspectProjectUploadRecovery()));
-ipcMain.on('bridge:restoreHostData', (event) => { licensedIpc(event, '主机数据恢复', () => restoreHostData()); });
+ipcMain.handle('bridge:restoreHostData', () => licensedInvoke('主机数据恢复', () => restoreHostData()));
 ipcMain.handle('bridge:getHostMigrationPlan', () => licensedInvoke('换机迁移分析', () => getHostMigrationPlan()));
 ipcMain.handle('bridge:createHostMigrationPackage', (event, optionsJson) => licensedInvoke('创建换机迁移包', () => createHostMigrationPackage(event, optionsJson)));
 ipcMain.handle('bridge:getStudentOfflineMigrationPlan', (_event, studentId) => licensedInvoke('分析 Android 学生迁移', () => getStudentOfflineMigrationPlan(studentId)));
@@ -38939,19 +39836,85 @@ ipcMain.handle('bridge:showQuickCapture', async (event) => {
   const locked = licenseRequiredJson('快捷采集工具条');
   return locked || JSON.stringify(await showQuickCaptureNearMainWindow());
 });
-ipcMain.handle('bridge:setQuickCaptureContext', (event, studentId) => {
+ipcMain.handle('bridge:setQuickCaptureContext', (event, studentId, context = {}) => {
   if (!mainWindow || mainWindow.isDestroyed() || event.sender !== mainWindow.webContents) return JSON.stringify({ ok: false, message: '主窗口范围无效。' });
   const student = readStudentsIndex().find(item => String(item.id) === String(studentId || ''));
   if (quickCaptureStudentId !== String(student?.id || '')) {
     quickCaptureSetupOpen = false; quickCaptureDirect?.invalidateScreen();
+    closeQuickCapturePopover();
+    quickCapturePreparedPrompts.clear();
   }
   quickCaptureStudentId = student ? String(student.id) : '';
   quickCaptureStudentName = student ? String(student.name || '') : '';
+  quickCaptureConnectionPrompts = Object.fromEntries(Object.entries(context?.connectionPrompts || {})
+    .filter(([providerId, prompt]) => /^[a-z0-9][a-z0-9_-]{0,39}$/.test(providerId) && typeof prompt === 'string' && prompt.length <= 120000)
+    .map(([providerId, prompt]) => [providerId, prompt]));
   updateCaptureControlWindow();
   if (quickCaptureWindow?.isVisible()) void refreshQuickCaptureCount();
   return JSON.stringify({ ok: true, studentId: quickCaptureStudentId });
 });
 ipcMain.handle('quick-capture:action', (event, action, input) => handleQuickCaptureAction(event, action, input));
+ipcMain.handle('companion-popover:action', async (event, action, input = {}) => {
+  if (!quickCapturePopoverWindow || quickCapturePopoverWindow.isDestroyed() || event.sender !== quickCapturePopoverWindow.webContents) {
+    return { ok: false, message: '面板窗口已失效。' };
+  }
+  if (action === 'close') { closeQuickCapturePopover(); return { ok: true }; }
+  if (action === 'resize') {
+    if (input.mode !== quickCapturePopoverMode || !Number.isFinite(input.height)) return { ok: false };
+    const anchor = quickCaptureWindow.getBounds(), area = screen.getDisplayMatching(anchor).workArea;
+    const bounds = quickCapturePopoverWindow.getBounds();
+    const height = Math.min(Math.max(Math.ceil(input.height), 70), area.height);
+    const below = anchor.y + anchor.height + 4;
+    const y = below + height <= area.y + area.height ? below : Math.max(area.y, anchor.y - height - 4);
+    if (bounds.height !== height || bounds.y !== y) quickCapturePopoverWindow.setBounds({ ...bounds, height, y });
+    return { ok: true };
+  }
+  if (action === 'open-targets') return showQuickCapturePopover('targets');
+  if (action === 'copy-persona') {
+    const locked = licenseRequiredJson('智能体人设');
+    return locked ? JSON.parse(locked) : copyCompanionSetupInstruction();
+  }
+  if (action === 'select-target') {
+    const id = validTargetId(input.id);
+    if (!id || !companionTargets().some(item => item.id === id)) return { ok: false, message: '目标 Agent 不存在。' };
+    saveCompanionSettings({ selectedTargetId: id, scope: 'conversation', projectId: '' });
+    sendCompanionPopoverState(); return { ok: true, message: '已切换目标 Agent；资料范围已重置为当前对话。' };
+  }
+  if (action === 'select-scope') {
+    const scope = ['conversation', 'student', 'project'].includes(input.scope) ? input.scope : '';
+    if (!scope) return { ok: false, message: '资料范围无效。' };
+    if (!readStudentsIndex().some(item => String(item.id) === String(quickCaptureStudentId))) return { ok: false, message: '请先选择学生。' };
+    const projectId = scope === 'project' ? String(input.projectId || '') : '';
+    if (scope === 'project' && !companionProjects().some(item => item.id === projectId)) return { ok: false, message: '项目范围无效。' };
+    saveCompanionSettings({ scope, projectId }); sendCompanionPopoverState(); return { ok: true, message: '资料范围已更新。' };
+  }
+  if (action === 'add-custom') {
+    try {
+      const target = normalizeCustomTarget(input);
+      const settings = readCompanionSettings(companionSettingsPath());
+      saveCompanionSettings({ customTargets: [...settings.customTargets, target].slice(-20), selectedTargetId: target.id, scope: 'conversation', projectId: '' });
+      sendCompanionPopoverState(); return { ok: true, message: '已添加；自定义 Agent 仅启用复制模式。' };
+    } catch (error) { return { ok: false, message: error.message }; }
+  }
+  if (action === 'copy-mode') {
+    const locked = licenseRequiredJson('学习模式');
+    return locked ? JSON.parse(locked) : prepareCompanionAction(String(input.actionId || ''), input.config || {});
+  }
+  if (action === 'toolbar-action') {
+    const route = String(input.action || '');
+    const allowed = new Set(['screen', 'audio', 'photo', 'conversation', 'scope', 'digest', 'inbox', 'archive']);
+    if (!allowed.has(route)) return { ok: false, message: '未知的工具条操作。' };
+    closeQuickCapturePopover();
+    return handleQuickCaptureAction({ sender: quickCaptureWindow?.webContents }, route);
+  }
+  if (action === 'route') {
+    const route = String(input.action || '');
+    const result = route === 'students' ? sendQuickCaptureNavigation('students') : sendQuickCaptureNavigation(routeForAction(route));
+    if (result.ok) closeQuickCapturePopover();
+    return result;
+  }
+  return { ok: false, message: '未知操作。' };
+});
 ipcMain.handle('quick-photo:action', async (event, action, input) => {
   if (!quickPhotoWindow || quickPhotoWindow.isDestroyed() || event.sender !== quickPhotoWindow.webContents) return { ok: false, message: '拍照窗口已失效。' };
   if (action === 'context') return { ok: true, student: quickPhotoContext.student };
@@ -39028,13 +39991,28 @@ if (!hasSingleInstanceLock) {
     ensureTaskCenterWorkspace();
     await taskStoreGuard.initialize(taskStorePath());
     if (!await prepareProjectArchiveStartup()) return;
+    assetStore();
+    await assetDuplicateGovernance().recover();
     await migrateTaskQueueGovernance();
+    // Runtime reconciliation is a startup safety step, not an automation
+    // feature.  It must run even when the user has selected manual-only mode
+    // (or acceptance testing has disabled the scheduler), otherwise an old
+    // internal execution can stay mislabeled as an external unknown result.
+    // The repair only settles the existing execution identity; it never
+    // dispatches a replacement task.
+    const startupTaskRepair = repairTaskCenterRuntimeState();
+    if (!startupTaskRepair.ok) console.error(startupTaskRepair.message);
     await prepareProjectUploadIntakeStartup();
     await recoverInterruptedProjectMaterialMigrations();
+    // Restore only persisted descriptors before rendering. Health and task
+    // contract checks remain asynchronous and never turn an expired contract
+    // into a request for a new official login.
+    await restorePersistedAgentAuthorization();
     powerMonitor.on('suspend', () => { taskIoClient.pause(); taskActiveDeadlines.pause(); void taskPowerRecovery.suspend(); });
     powerMonitor.on('resume', () => { taskIoClient.resume(); void taskPowerRecovery.resume(); });
     void getCloudReportRuntime().catch(() => { /* Cloud sync is optional; local report flow remains available. */ });
     createWindow();
+    void finishPersistedAuthorizationHealthCheck();
     if (projectUploadRecoveryIssues.length) void dialog.showMessageBox({ type: 'warning',
       title: '项目上传有待核对的恢复记录',
       message: `${projectUploadRecoveryIssues.length} 项上传记录尚不能自动结算。原件与恢复记录均已保留。`,
@@ -39074,7 +40052,6 @@ if (!hasSingleInstanceLock) {
     startStudentArchiveSyncWatchers();
     scheduleTeamKnowledgeIndexWarmup(3_000);
     if (process.env.EDU_DISABLE_TASK_SCHEDULER !== '1' && taskAutomationEnabled()) {
-      void refreshAdapterCapabilities(true);
       startUnifiedTaskScheduler();
     }
   }).catch((error) => {
@@ -39176,6 +40153,11 @@ app.on('before-quit', (event) => {
   if (hostServer) {
     hostServer.close();
     hostServer = null;
+  }
+  if (assetStoreInstance) {
+    try { assetStoreInstance.close(); } catch (error) { console.error('关闭资产数据库失败：', error.message); }
+    assetStoreInstance = null;
+    assetDuplicateGovernanceInstance = null;
   }
 });
 

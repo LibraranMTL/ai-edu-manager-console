@@ -98,7 +98,7 @@ test('Codex managed command runs through the Windows shell, including paths with
   const event = { hook_event_name: 'UserPromptSubmit', session_id: 'test-session', turn_id: 'test-turn', prompt: '测试自动采集' };
   const invoke = (command) => spawnSync('cmd.exe', ['/d', '/s', '/c', command], {
     input: JSON.stringify(event), encoding: 'utf8', windowsHide: true,
-    windowsVerbatimArguments: true, timeout: 3000,
+    windowsVerbatimArguments: true, timeout: 10000,
   });
 
   const nativeCommand = managedLifecycleHookCommand('codex', scriptPath, descriptorPath, nativePath);

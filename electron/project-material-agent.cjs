@@ -9,10 +9,11 @@ const { RESULT_SCHEMA } = require('./project-material-digest.cjs');
 
 function outputSchema(batch) {
   return { type: 'object', additionalProperties: false,
-    required: ['schema', 'projectId', 'batchId', 'status', 'message', 'artifacts'], properties: {
+    required: ['schema', 'projectId', 'batchId', ...(batch.scopeFingerprint ? ['scopeFingerprint'] : []), 'status', 'message', 'artifacts'], properties: {
       schema: { type: 'string', enum: [RESULT_SCHEMA] },
       status: { type: 'string', enum: ['completed', 'failed'] }, message: { type: 'string' },
       projectId: { type: 'string', enum: [batch.projectId] }, batchId: { type: 'string', enum: [batch.batchId] },
+      ...(batch.scopeFingerprint ? { scopeFingerprint: { type: 'string', enum: [batch.scopeFingerprint] } } : {}),
       artifacts: { type: 'array', items: { type: 'object', additionalProperties: false,
         required: ['relativePath', 'content', 'sources'], properties: {
           relativePath: { type: 'string', enum: batch.baselines.map((item) => item.relativePath) }, content: { type: 'string' },
@@ -85,6 +86,8 @@ function parseCodexMaterialEvents(stdout) {
 async function stageMaterialResponse(batch, response) {
   invariant(response?.schema === RESULT_SCHEMA && response.projectId === batch.projectId && response.batchId === batch.batchId,
     'receipt_scope_mismatch', 'Agent结果与当前项目批次不符。');
+  if (batch.scopeFingerprint) invariant(response.scopeFingerprint === batch.scopeFingerprint,
+    'receipt_scope_mismatch', 'Agent结果与冻结项目范围不一致。');
   invariant(response.status === 'completed', 'agent_failed', String(response.message || 'Agent没有成功处理资料。').slice(0, 1000));
   invariant(Array.isArray(response.artifacts) && response.artifacts.length > 0 && response.artifacts.length <= 200,
     'invalid_artifacts', 'Agent未提供有效知识清单。');
@@ -131,6 +134,7 @@ async function stageMaterialResponse(batch, response) {
       }
     }
     return { schema: RESULT_SCHEMA, projectId: batch.projectId, batchId: batch.batchId,
+      ...(batch.scopeFingerprint ? { scopeFingerprint: batch.scopeFingerprint } : {}),
       artifacts: files.map(({ relativePath, sources }) => ({ relativePath, sources })) };
   });
 }
@@ -202,6 +206,7 @@ async function materialPrompt({ batch, projectRules = '', extractSource = extrac
     '将知识以JSON中的Markdown content字段返回，不写文件。项目知识由主机校验后提交。',
     '每项输出必须引用真实资料ID、版本和SHA-256。覆盖所列目标；无法可靠消化时status=failed，message说明原因，artifacts为空。不能把错误说明作为知识产物，不能虚构知识或贡献。',
     JSON.stringify({ projectId: batch.projectId, batchId: batch.batchId,
+      ...(batch.scopeFingerprint ? { scopeFingerprint: batch.scopeFingerprint } : {}),
       sources: contents, targets: batch.baselines, rules: String(projectRules).slice(0, 32000) }),
   ].join('\n\n');
 }

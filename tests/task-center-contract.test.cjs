@@ -84,7 +84,7 @@ test('task center renders protocol details, heartbeat, inputs, outputs and histo
   for (const marker of ['最近心跳', '查看任务输入、预期输出与权限', '查看标准结果与文件变更', '查看状态流转历史']) {
     assert.match(ui, new RegExp(marker));
   }
-  assert.match(ui, /Agent 反馈结果/);
+  assert.match(ui, /本次处理结果/);
   assert.match(ui, /scrollIntoView/);
   assert.match(ui, /打开结果文件/);
   assert.match(main, /function openTaskResultPath/);

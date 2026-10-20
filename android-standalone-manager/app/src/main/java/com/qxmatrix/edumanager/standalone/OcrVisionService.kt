@@ -20,7 +20,7 @@ class OcrVisionService(private val context: Context) {
     private val tasks = TaskRepository(context)
     private val tools = ControlledFileTools(context)
 
-    fun extract(studentId: String, materialId: String, includeVision: Boolean): JSONObject {
+    fun extract(studentId: String, materialId: String, includeVision: Boolean): JSONObject = synchronized(StudentWorkLocks.forStudent(studentId)) {
         val student = students.requireExact(studentId)
         val material = files.materials(studentId).singleOrNull { it.optString("id") == materialId } ?: error("未找到指定资料")
         val sourcePath = material.getString("absolutePath")
@@ -33,31 +33,66 @@ class OcrVisionService(private val context: Context) {
             .put("permissions", JSONObject().put("read", JSONArray(listOf(sourcePath))).put("write", JSONArray(listOf(outputRoot)))
                 .put("operations", JSONArray(listOf("read_file", "write_ocr_result") + if (includeVision) listOf("vision_analyze") else emptyList<String>()))))
         val running = tasks.start(task.getString("id")); val executionId = running.getString("executionId")
-        return try {
+        try {
             files.patchMaterial(student.id, materialId, JSONObject()
                 .put("ocrStatus", "running")
                 .put("ocrError", "")
                 .put("visionStatus", if (includeVision) "running" else material.optString("visionStatus", "not_requested"))
                 .put("visionError", ""))
             val bytes = tools.readStudentFile(task.getString("id"), executionId, student.id, sourcePath)
+            require(bytes.size <= 40_000_000) { "OCR 原件超过40 MB，请拆分" }
+            val sourceHash = ScopedContentPolicy.hash(bytes)
+            val checkpoints = ScopedContentRepository(context)
+            val pages = JSONArray(); var visionCalls = 0
+            val route = AgentConfigurationStore(context).publicProfile()
+            fun processPage(index: Int, bitmap: Bitmap, recognize: () -> String): String {
+                val key = "$materialId:$sourceHash:$index:mlkit-v1"
+                val checkpoint = checkpoints.checkpoint(studentId, "ocr_page", key) ?: JSONObject()
+                    .put("sourceSha256", sourceHash).put("page", index + 1).put("text", recognize()).put("processingVersion", "ocr-page-v1")
+                    .put("evidenceStatus", "machine_observed").also { checkpoints.saveCheckpoint(studentId, "ocr_page", key, it) }
+                var vision = ""; var error = ""; var state = "not_requested"
+                if (includeVision) {
+                    val visionKey = "$sourceHash:$index:${ScopedContentPolicy.hash("${route?.endpoint}:${route?.visionModel}".toByteArray())}"
+                    val cached = checkpoints.checkpoint(studentId, "vision_page", visionKey)
+                    val receiptId = "vision-page:${ScopedContentPolicy.hash(visionKey.toByteArray())}"
+                    if (cached != null) { vision = cached.getString("text"); state = "completed" }
+                    else if (BusinessDatabase.get(context).ledger().hasPossibleResult(studentId, receiptId)) { state = "needs_user"; error = "该页上次请求结果需核对，不自动重试" }
+                    else if (visionCalls >= 3) { state = "waiting_quota"; error = "每次最多新增3页视觉请求；已完成页保留，可手动继续" }
+                    else {
+                        visionCalls++
+                        val attempt = runCatching { analyzeVision("第${index + 1}页", previewJpeg(bitmap), studentId, receiptId) }
+                        attempt.onSuccess { text ->
+                            require(text.isNotBlank()); checkpoints.saveCheckpoint(studentId, "vision_page", visionKey,
+                                JSONObject().put("sourceSha256", sourceHash).put("page", index + 1).put("text", text).put("evidenceStatus", "machine_observed"))
+                            vision = text; state = "completed"
+                        }.onFailure { state = "needs_user"; error = it.message ?: "未完成" }
+                    }
+                }
+                pages.put(JSONObject().put("page", index + 1).put("sourceSha256", sourceHash).put("text", checkpoint.getString("text"))
+                    .put("visionSummary", vision).put("visionStatus", state).put("error", error).put("evidenceStatus", "machine_observed"))
+                return checkpoint.getString("text")
+            }
             val extension = material.getString("fileName").substringAfterLast('.', "").lowercase()
             val extracted = when (extension) {
-                "jpg", "jpeg", "png", "webp", "bmp" -> extractBitmap(requireNotNull(BitmapFactory.decodeByteArray(bytes, 0, bytes.size)) { "无法解码图片" })
-                "pdf" -> extractPdf(bytes)
+                "jpg", "jpeg", "png", "webp", "bmp" -> extractBitmap(decodeBounded(bytes), ::processPage)
+                "pdf" -> extractPdf(bytes, ::processPage)
                 else -> error("当前 OCR 支持图片和 PDF；Office 文档将在文件解析适配器中处理")
             }
-            val visionAttempt = if (includeVision) runCatching { analyzeVision(material.getString("fileName"), extracted.previewJpeg) } else null
-            val vision = visionAttempt?.getOrNull().orEmpty()
-            val visionError = visionAttempt?.exceptionOrNull()?.message.orEmpty()
+            require(ScopedContentPolicy.hash(files.readMaterialBytes(studentId, materialId)) == sourceHash) { "原件已变化，拒绝迟到解析结果" }
+            val pageObjects = (0 until pages.length()).map { pages.getJSONObject(it) }
+            val vision = pageObjects.filter { it.optString("visionSummary").isNotBlank() }.joinToString("\n\n") { "第${it.getInt("page")}页：${it.getString("visionSummary")}" }
+            val visionError = pageObjects.map { it.optString("error") }.filter(String::isNotBlank).distinct().joinToString("；")
             val visionStatus = when {
                 !includeVision -> "not_requested"
-                visionAttempt?.isSuccess == true -> "completed"
+                pageObjects.all { it.getString("visionStatus") == "completed" } -> "completed"
                 else -> "unavailable"
             }
             val result = JSONObject().put("schema", "edu-manager.ocr-result.v1").put("studentId", student.id).put("materialId", materialId)
                 .put("sourceSha1", material.getString("sha1")).put("ocrEngine", "mlkit-text-recognition-chinese-16.0.1")
+                .put("sourceSha256", sourceHash).put("pages", pages).put("processingVersion", "ocr-page-v1").put("evidenceStatus", "machine_observed")
                 .put("pageCount", extracted.pageCount).put("text", extracted.text).put("visionSummary", vision)
                 .put("visionStatus", visionStatus).put("visionError", visionError.take(800))
+                .put("visionRecoveryState", if (visionStatus == "unavailable") "needs_user" else visionStatus)
                 .put("createdAt", Timestamp.now()).put("candidateOnly", true)
             tools.writeStudentFile(task.getString("id"), executionId, student.id, outputPath, (result.toString(2) + "\n").toByteArray(), "application/json", "write_ocr_result")
             val markdownPath = "$outputRoot/$materialId.md"
@@ -70,7 +105,7 @@ class OcrVisionService(private val context: Context) {
             tools.writeStudentFile(task.getString("id"), executionId, student.id, markdownPath, markdown.toByteArray(), "text/markdown", "write_ocr_result")
             files.patchMaterial(student.id, materialId, JSONObject().put("ocrStatus", "completed").put("ocrPath", outputPath).put("ocrMarkdownPath", markdownPath)
                 .put("visionStatus", visionStatus).put("visionError", visionError.take(800)))
-            val message = if (visionStatus == "unavailable") "本地 OCR 完成；视觉模型未能处理图片" else "OCR/视觉解析完成"
+            val message = if (visionStatus == "unavailable") "本地逐页 OCR 已完成；部分视觉页等待额度或人工核对，已完成页保留" else "OCR/视觉解析完成"
             tasks.acceptResult(task.getString("id"), resultPayload(task.getString("id"), executionId, true, message, outputPath))
             JSONObject().put("ok", true).put("task", tasks.requireExact(task.getString("id"))).put("result", result).put("outputPath", outputPath)
         } catch (error: Throwable) {
@@ -80,15 +115,21 @@ class OcrVisionService(private val context: Context) {
         }
     }
 
-    private fun extractBitmap(bitmap: Bitmap): Extracted {
+    private fun decodeBounded(bytes: ByteArray): Bitmap {
+        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }; BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
+        require(bounds.outWidth > 0 && bounds.outHeight > 0)
+        var sample = 1; while (bounds.outWidth / sample > 2048 || bounds.outHeight / sample > 2048) sample *= 2
+        return requireNotNull(BitmapFactory.decodeByteArray(bytes, 0, bytes.size, BitmapFactory.Options().apply { inSampleSize = sample }))
+    }
+    private fun extractBitmap(bitmap: Bitmap, process: (Int, Bitmap, () -> String) -> String): Extracted {
         val recognizer = TextRecognition.getClient(ChineseTextRecognizerOptions.Builder().build())
         return try {
-            val text = Tasks.await(recognizer.process(InputImage.fromBitmap(bitmap, 0))).text
+            val text = process(0, bitmap) { Tasks.await(recognizer.process(InputImage.fromBitmap(bitmap, 0))).text }
             Extracted(text, 1, previewJpeg(bitmap))
-        } finally { recognizer.close() }
+        } finally { recognizer.close(); bitmap.recycle() }
     }
 
-    private fun extractPdf(bytes: ByteArray): Extracted {
+    private fun extractPdf(bytes: ByteArray, process: (Int, Bitmap, () -> String) -> String): Extracted {
         val temporary = File.createTempFile("ocr-", ".pdf", context.cacheDir).apply { writeBytes(bytes) }
         val recognizer = TextRecognition.getClient(ChineseTextRecognizerOptions.Builder().build())
         var preview = ByteArray(0)
@@ -98,11 +139,13 @@ class OcrVisionService(private val context: Context) {
                     require(renderer.pageCount <= MAX_PDF_PAGES) { "PDF 超过 $MAX_PDF_PAGES 页，请拆分后处理" }
                     val text = buildString {
                         for (index in 0 until renderer.pageCount) renderer.openPage(index).use { page ->
-                            val scale = (1600f / page.width).coerceAtMost(2f); val bitmap = Bitmap.createBitmap((page.width * scale).toInt().coerceAtLeast(1), (page.height * scale).toInt().coerceAtLeast(1), Bitmap.Config.ARGB_8888)
+                            val scale = minOf(1600f / page.width, 2048f / page.height, 2f); val bitmap = Bitmap.createBitmap((page.width * scale).toInt().coerceAtLeast(1), (page.height * scale).toInt().coerceAtLeast(1), Bitmap.Config.ARGB_8888)
+                            bitmap.eraseColor(android.graphics.Color.WHITE)
+                            try {
                             page.render(bitmap, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
                             if (index == 0) preview = previewJpeg(bitmap)
-                            appendLine("\n## 第 ${index + 1} 页\n"); appendLine(Tasks.await(recognizer.process(InputImage.fromBitmap(bitmap, 0))).text)
-                            bitmap.recycle()
+                            appendLine("\n## 第 ${index + 1} 页\n"); appendLine(process(index, bitmap) { Tasks.await(recognizer.process(InputImage.fromBitmap(bitmap, 0))).text })
+                            } finally { bitmap.recycle() }
                         }
                     }
                     Extracted(text.trim(), renderer.pageCount, preview)
@@ -111,10 +154,10 @@ class OcrVisionService(private val context: Context) {
         } finally { recognizer.close(); temporary.delete() }
     }
 
-    private fun analyzeVision(filename: String, previewJpeg: ByteArray): String {
+    private fun analyzeVision(filename: String, previewJpeg: ByteArray, studentId: String, taskId: String): String {
         require(previewJpeg.isNotEmpty()) { "没有可用于视觉理解的页面" }
         val config = requireNotNull(AgentConfigurationStore(context).load()) { "尚未配置支持视觉输入的 Agent 模型" }
-        return OpenAiCompatibleAgentAdapter(config).executeVision(
+        return OpenAiCompatibleAgentAdapter(config, context, studentId, taskId).executeVision(
             "你是教育资料视觉理解工具，只描述页面中可观察到的内容，不推断学生身份、人格、能力或诊断。",
             "请描述学习资料《$filename》的版面、图表、题目结构和需要人工核对之处。不要形成正式教育结论。",
             previewJpeg, "image/jpeg")

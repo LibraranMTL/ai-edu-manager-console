@@ -150,6 +150,30 @@ test('new migration package is password-free and restores through staging with p
   assert.equal(courses.courses[0].imagePath, path.join(targetUserData, 'course-catalog', 'custom-assets', 'cover.png'));
 });
 
+test('migration streams a SQLite state snapshot and restores it without JSON serialization', async (t) => {
+  const fx = fixture(t);
+  const snapshotPath = path.join(fx.root, 'asset-index.sqlite3');
+  const snapshot = crypto.randomBytes(512 * 1024);
+  fs.writeFileSync(snapshotPath, snapshot);
+  const options = exportOptions(fx);
+  options.virtualFiles.push({
+    kind: 'state',
+    id: 'host-state',
+    relativePath: 'migration-assets/asset-index.sqlite3',
+    sourcePath: snapshotPath,
+  });
+  const created = await createMigrationPackage(options);
+  const targetRoot = path.join(fx.root, 'sqlite-new', 'student-data');
+  const targetUserData = path.join(fx.root, 'sqlite-new-user-data');
+  fs.mkdirSync(targetUserData, { recursive: true });
+  await restoreMigrationPackage({ packageRoot: created.packagePath, targetRoot, userDataDir: targetUserData });
+  assert.deepEqual(fs.readFileSync(path.join(targetUserData, 'migration-assets', 'asset-index.sqlite3')), snapshot);
+  const manifest = JSON.parse(fs.readFileSync(path.join(created.packagePath, 'manifest.json'), 'utf8'));
+  const entry = manifest.files.find((item) => item.relativePath === 'migration-assets/asset-index.sqlite3');
+  assert.equal(entry.size, snapshot.length);
+  assert.equal(entry.sha256, crypto.createHash('sha256').update(snapshot).digest('hex'));
+});
+
 test('migration package uses short ASCII physical paths while restoring deep Chinese logical paths', async (t) => {
   const fx = fixture(t);
   const deepRelative = path.join('学生甲', '语文课程', '长期学习资料', '第一单元', '课堂记录', '作文修改建议.md');

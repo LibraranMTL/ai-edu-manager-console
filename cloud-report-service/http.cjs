@@ -7,6 +7,7 @@ const { createService, MAX_DOCUMENT_BYTES } = require('./service.cjs');
 const { startBackupScheduler } = require('./backup-scheduler.cjs');
 const { receiveDocument } = require('./document-stream.cjs');
 const { diskStatus } = require('./maintenance.cjs');
+const { createRemoteMcpHandler } = require('./remote-mcp.cjs');
 
 const MAX_JSON_BYTES = 3 * 1024 * 1024;
 const WEB_ROOT = path.join(__dirname, 'web-dist');
@@ -66,7 +67,12 @@ function bearer(req) {
 }
 
 function createHttpServer(options) {
+  const gateway = options.modelGateway;
+  if (gateway && (typeof gateway.issue !== 'function' || typeof gateway.generate !== 'function' || typeof gateway.close !== 'function')) {
+    throw new Error('Model gateway requires an explicitly configured authenticated adapter');
+  }
   const service = createService(options);
+  const handleRemoteMcp = createRemoteMcpHandler(service);
   let backupScheduler;
   try {
     if (options.backupRoot) backupScheduler = startBackupScheduler({
@@ -78,15 +84,34 @@ function createHttpServer(options) {
   } catch (error) { service.close(); throw error; }
   const pairingRates = new Map();
   const adminLoginRates = new Map();
+  const gatewayIssueRates = new Map();
   const server = http.createServer(async (req, res) => {
     try {
       const url = new URL(req.url, 'http://localhost');
       const route = url.pathname;
       const token = bearer(req);
+      if (req.method === 'POST' && route.startsWith('/model-gateway/')) {
+        if (!gateway) return json(res, 404, { error: '模型网关尚未配置' });
+        if (route === '/model-gateway/session') {
+          const ip = req.socket.remoteAddress || 'unknown'; const now = Date.now();
+          for (const [key, entry] of gatewayIssueRates) if (entry.until <= now) gatewayIssueRates.delete(key);
+          if (!gatewayIssueRates.has(ip) && gatewayIssueRates.size >= 2048) return json(res, 429, { error: '会话请求繁忙' });
+          const current = gatewayIssueRates.get(ip) || { until: now + 60000, count: 0 };
+          gatewayIssueRates.set(ip, current);
+          if (++current.count > 30) return json(res, 429, { error: '会话签发过于频繁' });
+          return json(res, 201, await gateway.issue(await readJson(req)));
+        }
+        if (route === '/model-gateway/generate') {
+          const body = await readJson(req);
+          if (!token || token !== body.token) return json(res, 401, { error: '网关凭据不一致' });
+          return json(res, 200, await gateway.generate(body));
+        }
+        return json(res, 404, { error: '模型网关接口不存在' });
+      }
       service.verifyViewerProof(token, req.method, req.url, req.headers);
       req.verifyBody = bytes => service.verifyBody(token, bytes, req.headers);
       if (['GET', 'DELETE'].includes(req.method)) req.verifyBody(Buffer.alloc(0));
-      if (req.method === 'GET' && route === '/health') return json(res, 200, { ok: true, service: 'edu-cloud-documents', version: '1.0.0' });
+      if (req.method === 'GET' && route === '/health') return json(res, 200, { ok: true, service: 'edu-cloud-documents', version: '2.1.0', contracts: [1, 2], schema: service.schemaStatus(), capabilities: ['profile-sync', 'material-sync', 'remote-agent-mcp', 'cloud-inbox'] });
       if (req.method === 'POST' && route === '/v1/admin/sessions') {
         const ip = req.socket.remoteAddress || 'unknown';
         const previous = adminLoginRates.get(ip);
@@ -122,6 +147,9 @@ function createHttpServer(options) {
         return json(res, 200, { storage: await diskStatus(options.dataDir), backup: backupScheduler?.status() || { enabled: false },
           retention: { automaticDeletion: options.pruneBackups === true, keep: options.backupKeep || 7, days: options.backupDays || 30 } });
       }
+      if (req.method === 'GET' && route === '/v2/admin/task-status') {
+        return json(res, 200, service.listRemoteOperations(token, url.searchParams.get('studentId') || ''));
+      }
       if (req.method === 'POST' && route === '/v1/students') {
         const body = await readJson(req);
         return json(res, 201, service.createStudent(token, body.displayName));
@@ -146,7 +174,7 @@ function createHttpServer(options) {
         if (++recent.count > 8) { pairingRates.set(key, recent); return json(res, 429, { error: '请稍后重试' }); }
         pairingRates.set(key, recent);
         const body = await readJson(req);
-        return json(res, 200, service.redeemSourceEnrollment(body.enrollmentCode, token, body.publicKey));
+        return json(res, 200, service.redeemSourceEnrollment(body.enrollmentCode, token, body.publicKey, body));
       }
       if (req.method === 'POST' && route === '/v1/pairings') {
         const ip = req.socket.remoteAddress || 'unknown';
@@ -165,7 +193,7 @@ function createHttpServer(options) {
         if (++recent.count > 10) { pairingRates.set(key, recent); return json(res, 429, { error: '配对确认过于频繁，请稍后重试' }); }
         pairingRates.set(key, recent);
         const body = await readJson(req);
-        return json(res, 200, service.approvePairing(token, body.pairingCode, body.cloudStudentIds));
+        return json(res, 200, service.approvePairing(token, body.pairingCode, body.cloudStudentIds, body));
       }
       if (req.method === 'POST' && route === '/v1/grants/revoke') {
         const body = await readJson(req);
@@ -179,8 +207,124 @@ function createHttpServer(options) {
         const body = await readJson(req);
         return json(res, 200, service.setOwnWrite(token, body.cloudStudentId, body.enabled));
       }
+      if (req.method === 'POST' && route === '/v2/source-upload-scope') {
+        return json(res, 200, service.setOwnUploadScope(token, await readJson(req)));
+      }
       if (req.method === 'GET' && route === '/v1/students') {
         return json(res, 200, { students: service.listStudents(token) });
+      }
+      if (req.method === 'POST' && route === '/v2/grants') {
+        return json(res, 201, service.issueV2Grant(token, await readJson(req)));
+      }
+      if (req.method === 'POST' && route === '/v2/grants/revoke') {
+        return json(res, 200, service.revokeV2Grant(token, await readJson(req)));
+      }
+      const v2GrantListMatch = route.match(/^\/v2\/students\/([a-zA-Z0-9_-]{8,96})\/grants$/);
+      if (req.method === 'GET' && v2GrantListMatch) {
+        return json(res, 200, { grants: service.listV2Grants(token, v2GrantListMatch[1]) });
+      }
+      const profileMatch = route.match(/^\/v2\/students\/([a-zA-Z0-9_-]{8,96})\/profile$/);
+      const profileStatusMatch = route.match(/^\/v2\/students\/([a-zA-Z0-9_-]{8,96})\/profile-status$/);
+      if (profileStatusMatch && req.method === 'GET') {
+        return json(res, 200, service.getStudentProfileStatus(token, profileStatusMatch[1]));
+      }
+      if (profileMatch && req.method === 'POST') {
+        return json(res, 201, service.uploadStudentProfile(token, profileMatch[1], await readJson(req)));
+      }
+      if (profileMatch && req.method === 'GET') {
+        return json(res, 200, service.getStudentProfile(token, profileMatch[1]));
+      }
+      const bindingMatch = route.match(/^\/v2\/students\/([a-zA-Z0-9_-]{8,96})\/binding-receipts$/);
+      if (bindingMatch && req.method === 'POST') {
+        return json(res, 201, service.recordBinding(token, bindingMatch[1], await readJson(req)));
+      }
+      if (req.method === 'POST' && route === '/v2/transfer-receipts') {
+        return json(res, 201, service.recordTransferReceipt(token, await readJson(req)));
+      }
+      const changeMatch = route.match(/^\/v2\/students\/([a-zA-Z0-9_-]{8,96})\/changes$/);
+      if (changeMatch && req.method === 'GET') {
+        return json(res, 200, service.listSyncEvents(token, changeMatch[1], url.searchParams.get('cursor') || ''));
+      }
+      const materialListMatch = route.match(/^\/v2\/students\/([a-zA-Z0-9_-]{8,96})\/materials$/);
+      if (materialListMatch && req.method === 'GET') {
+        return json(res, 200, service.listV2Materials(token, materialListMatch[1], {
+          category: url.searchParams.get('category') || '', history: url.searchParams.get('history') === '1',
+          cursor: url.searchParams.get('cursor') || '',
+        }));
+      }
+      if (materialListMatch && req.method === 'POST') {
+        const prepared = service.prepareV2Material(token, materialListMatch[1], {
+          category: String(req.headers['x-material-category'] || ''), materialId: String(req.headers['x-material-id'] || ''),
+          idempotencyKey: String(req.headers['x-idempotency-key'] || ''),
+          projectId: String(req.headers['x-project-id'] || ''), scopeFingerprint: String(req.headers['x-scope-fingerprint'] || ''),
+          displayName: decodeURIComponent(String(req.headers['x-document-name'] || '')),
+          contentType: String(req.headers['content-type'] || '').split(';')[0],
+        });
+        return json(res, 201, await receiveDocument(req, prepared, MAX_DOCUMENT_BYTES,
+          hash => service.verifyBodyHash(token, hash, req.headers)));
+      }
+      const materialContentMatch = route.match(/^\/v2\/material-revisions\/(material_rev_[a-f0-9]{48})\/content$/);
+      if (materialContentMatch && req.method === 'GET') {
+        const item = service.getV2Material(token, materialContentMatch[1]);
+        res.writeHead(200, {
+          'content-type': item.contentType === 'text/markdown' ? 'text/markdown; charset=utf-8' : item.contentType,
+          'content-length': item.content.length, 'x-content-sha256': item.contentSha256,
+          'x-cloud-student-id': item.cloudStudentId, 'x-material-category': item.category,
+          'x-material-id': item.materialId, 'x-revision-id': item.revisionId,
+          'cache-control': 'no-store', 'x-content-type-options': 'nosniff',
+        });
+        return res.end(item.content);
+      }
+      if (req.method === 'POST' && route === '/v2/agent-sessions') {
+        return json(res, 201, service.issueRemoteAgentSession(token, await readJson(req)));
+      }
+      if (req.method === 'POST' && route === '/v2/agent-sessions/revoke') {
+        const body = await readJson(req);
+        return json(res, 200, service.revokeRemoteAgentSession(token, body.sessionId));
+      }
+      const agentSessionStatusMatch = route.match(/^\/v2\/agent-sessions\/(agent_session_[a-f0-9]{32})$/);
+      if (agentSessionStatusMatch && req.method === 'GET') {
+        return json(res, 200, service.remoteAgentStatusForHost(token, agentSessionStatusMatch[1]));
+      }
+      if (req.method === 'POST' && route === '/v2/agent/task/acknowledge') {
+        return json(res, 200, service.remoteAgentAcknowledge(token));
+      }
+      if (req.method === 'POST' && route === '/v2/mcp') {
+        const response = handleRemoteMcp(token, await readJson(req));
+        if (response === null) { res.writeHead(204, { 'cache-control': 'no-store' }); return res.end(); }
+        return json(res, 200, response);
+      }
+      if (req.method === 'GET' && route === '/v2/agent/materials') {
+        return json(res, 200, service.listRemoteAgentMaterials(token, {
+          category: url.searchParams.get('category') || '', cursor: url.searchParams.get('cursor') || '',
+        }));
+      }
+      const agentMaterialContentMatch = route.match(/^\/v2\/agent\/material-revisions\/(material_rev_[a-f0-9]{48})\/content$/);
+      if (agentMaterialContentMatch && req.method === 'GET') {
+        const item = service.getRemoteAgentMaterial(token, agentMaterialContentMatch[1]);
+        res.writeHead(200, {
+          'content-type': item.contentType === 'text/markdown' ? 'text/markdown; charset=utf-8' : item.contentType,
+          'content-length': item.content.length, 'x-content-sha256': item.contentSha256,
+          'x-cloud-student-id': item.cloudStudentId, 'x-material-category': item.category,
+          'x-material-id': item.materialId, 'x-revision-id': item.revisionId,
+          'x-project-id': item.projectId, 'x-scope-fingerprint': item.scopeFingerprint,
+          'cache-control': 'no-store', 'x-content-type-options': 'nosniff',
+        });
+        return res.end(item.content);
+      }
+      if (req.method === 'POST' && route === '/v2/inbox/submissions') {
+        return json(res, 201, service.submitInboxResult(token, await readJson(req)));
+      }
+      if (req.method === 'GET' && route === '/v2/inbox') {
+        return json(res, 200, service.listInbox(token, url.searchParams.get('cursor') || ''));
+      }
+      const inboxLeaseMatch = route.match(/^\/v2\/inbox\/(submission_[a-f0-9]{32})\/lease$/);
+      if (inboxLeaseMatch && req.method === 'POST') {
+        return json(res, 200, service.leaseInboxSubmission(token, inboxLeaseMatch[1]));
+      }
+      const inboxSettleMatch = route.match(/^\/v2\/inbox\/(submission_[a-f0-9]{32})\/settle$/);
+      if (inboxSettleMatch && req.method === 'POST') {
+        return json(res, 200, service.settleInboxSubmission(token, inboxSettleMatch[1], await readJson(req)));
       }
       const storageMatch = route.match(/^\/v1\/students\/([a-zA-Z0-9_-]{8,96})\/storage$/);
       if (req.method === 'GET' && storageMatch) {
@@ -276,6 +420,7 @@ function createHttpServer(options) {
   return { server, service, close: async () => {
     await new Promise(resolve => server.close(resolve));
     await backupScheduler?.stop();
+    await gateway?.close();
     service.close();
   } };
 }
@@ -294,7 +439,8 @@ if (require.main === module) {
   if (host !== '127.0.0.1' && host !== '::1' && process.env.CLOUD_REPORT_BEHIND_HTTPS_PROXY !== '1') {
     throw new Error('Non-local binding requires CLOUD_REPORT_BEHIND_HTTPS_PROXY=1 and a real TLS reverse proxy');
   }
-  const app = createHttpServer({ dataDir, adminToken, maxStudentBytes, backupRoot, backupIntervalMs,
+  const gateway = require('./model-gateway-runtime.cjs').fromEnvironment(process.env, dataDir);
+  const app = createHttpServer({ dataDir, adminToken, maxStudentBytes, backupRoot, backupIntervalMs, modelGateway: gateway,
     auditRoot: process.env.CLOUD_REPORT_AUDIT_ROOT, auditKey: process.env.CLOUD_REPORT_AUDIT_KEY,
     pruneBackups: process.env.CLOUD_REPORT_PRUNE_BACKUPS === '1',
     backupKeep: Number(process.env.CLOUD_REPORT_BACKUP_KEEP || 7), backupDays: Number(process.env.CLOUD_REPORT_BACKUP_DAYS || 30) });

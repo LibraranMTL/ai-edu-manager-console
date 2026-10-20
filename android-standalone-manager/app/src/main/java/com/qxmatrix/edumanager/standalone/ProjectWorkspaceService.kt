@@ -99,7 +99,7 @@ class ProjectWorkspaceService(private val context: Context) {
         if (!store.exists(path)) store.writeBytesSafely(path, text.toByteArray(), "text/markdown")
     }
 
-    private fun projectAgent(project: ProjectRecord, bound: List<StudentRecord>) = "# ${project.name} 项目教育管家 AGENT.md\n\n## 绑定学生\n\n${bound.joinToString("\n") { "- ${it.name}：${it.id}" }.ifBlank { "- 暂未绑定学生" }}\n\n## 工作规则\n\n1. 所有资料消化只围绕本项目知识空间执行，不直接写入学生主档案。\n2. 只有确认知识贡献申请后，才把项目结论发布到学生主档案或成长模型。\n3. 原始资料保留来源，不删除、移动或覆盖。\n4. 每次资料消化后更新项目 index.md 和 log.md。\n"
+    private fun projectAgent(project: ProjectRecord, bound: List<StudentRecord>) = "# ${project.name} 项目教育管家 AGENT.md\n\n## 绑定学生\n\n${bound.joinToString("\n") { "- ${it.name}：${it.id}" }.ifBlank { "- 暂未绑定学生" }}\n\n## 工作规则\n\n1. 所有资料消化只围绕本项目知识空间执行，不直接写入学生主档案。\n2. 只有确认知识贡献申请后，才把项目结论发布到学生主档案或成长模型。\n3. 项目原件以项目资料登记中的资料ID、版本和校验值为准；工作空间分类只是项目管理视图，知识库分类是派生结果，两者不得互相替代。\n4. 自动分类只能形成带理由的建议；人工分类锁定后不得由后台覆盖。\n5. 物理整理只处理收件箱直属安全普通文件；不得覆盖同名文件，代码、网页、CAD和附件依赖保持原位。失败时保留原件并写明原因。\n6. 每次消化先固定输入版本，输出写入项目知识空间；分类完成不等于知识形成，知识形成不等于学生贡献确认。\n7. 历史迁移须先预览、逐项复核、保留备份；外部接管知识库和无法安全切换的提供者只做统一浏览，不强行移动。\n8. 每次资料消化后更新项目 index.md 和 log.md。\n"
     private fun workspaceIndex(project: ProjectRecord) = "# ${project.name} 项目工作空间结构\n\n项目工作空间用于人工项目管理；研究暂存用于候选资料；项目知识空间固定遵循 LLM Wiki Schema。\n"
     private fun bindingIndex(project: ProjectRecord, bound: List<StudentRecord>) = "# ${project.name} 项目绑定学生\n\n${bound.joinToString("\n") { "- ${it.name}（${it.id}）" }.ifBlank { "暂无绑定学生。" }}\n"
     private fun sha256(text: String) = MessageDigest.getInstance("SHA-256").digest(text.toByteArray()).joinToString("") { "%02x".format(it) }

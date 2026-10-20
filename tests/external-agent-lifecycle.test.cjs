@@ -122,7 +122,7 @@ async function mainFixture(t) {
     writeJsonAtomic: load('digest-batch.cjs').writeJsonAtomic, require: load, getHostServicePort: () => server.address().port });
   vm.runInContext('let externalConnectorRuntime; let hostServer = true; let externalHostActionBusy = false;', ctx);
   const source = fs.readFileSync(path.join(electron, 'main.cjs'), 'utf8');
-  for (const name of ['externalConnectorStore', 'externalConnectionDirectory', 'unifiedKnowledgeRegistrations', 'externalHostInstallOptions', 'externalHostStatuses', 'externalHostLifecycleAction', 'writeExternalConnectionRuntimeConfig', 'externalConnectorAction']) {
+  for (const name of ['externalConnectorStore', 'externalConnectionDirectory', 'unifiedKnowledgeRegistrations', 'externalMcpRuntime', 'externalHostInstallOptions', 'externalHostStatuses', 'externalHostLifecycleAction', 'writeExternalConnectionRuntimeConfig', 'externalConnectorAction']) {
     const start = source.search(new RegExp(`(?:async )?function ${name}\\(`));
     assert.ok(start >= 0, name); vm.runInContext(source.slice(start, source.indexOf('\n}', start) + 2), ctx);
   }

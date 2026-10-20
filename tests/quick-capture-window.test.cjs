@@ -13,10 +13,19 @@ test('quick capture routes only known collection actions', () => {
   assert.equal(routeForAction('import'), 'materials-import');
   assert.equal(routeForAction('inbox'), 'share-capture');
   assert.equal(routeForAction('automatic'), 'session-auto-capture');
+  assert.equal(routeForAction('archive'), 'learning-materials');
   assert.equal(routeForAction('../settings'), '');
   assert.equal(routeForAction('record-video'), '');
   assert.equal(normalizeQuickCaptureAction('audio'), 'audio');
   assert.equal(normalizeQuickCaptureAction('record-video'), '');
+});
+
+test('learning archive toolbar action opens the current student learning archive page', () => {
+  const host = read('electron', 'main.cjs');
+  const ui = read('src', 'main.tsx');
+  assert.doesNotMatch(host, /\['digest', 'flashcards', 'quiz', 'mindmap', 'archive'\]\.includes\(action\)/);
+  assert.match(ui, /'learning-materials': 'archive'/);
+  assert.match(ui, /tabId === 'learning-materials' \? 'learning' : 'collection'/);
 });
 
 test('quick capture stays on negative-coordinate secondary displays', () => {
@@ -56,41 +65,81 @@ test('quick capture uses mutually exclusive selected styles instead of a permane
   const host = read('electron', 'main.cjs');
   assert.doesNotMatch(html, /action primary needs-student/);
   assert.match(html, /\.action\.selected/);
-  assert.match(html, /data-action="screen" aria-pressed="false"/);
+  assert.match(html, /data-action="collect-menu"/);
   assert.match(renderer, /button\.dataset\.action === state\.activeAction/);
   assert.match(renderer, /classList\.toggle\('selected', selected\)/);
   assert.match(host, /quickCaptureActiveAction = action/);
   assert.match(host, /activeAction: quickCaptureActiveAction/);
 });
 
-test('collapsed quick capture toolbar is shorter and expands only for more actions', () => {
+test('agent companion toolbar uses approved single-row micro sizes', () => {
   const html = read('electron', 'quick-capture.html');
   const host = read('electron', 'main.cjs');
-  assert.match(host, /QUICK_CAPTURE_COLLAPSED_HEIGHT = 72/);
-  assert.match(host, /QUICK_CAPTURE_EXPANDED_HEIGHT = 160/);
+  assert.match(host, /QUICK_CAPTURE_COLLAPSED_HEIGHT = 34/);
+  assert.match(host, /QUICK_CAPTURE_EXPANDED_HEIGHT = 34/);
+  assert.match(host, /QUICK_CAPTURE_PREFERRED_WIDTH = 340/);
   assert.match(host, /quickCaptureExpanded \? QUICK_CAPTURE_EXPANDED_HEIGHT : QUICK_CAPTURE_COLLAPSED_HEIGHT/);
   assert.match(host, /function resizeQuickCaptureWindow\(width, height\)/);
   assert.match(host, /window\.setBounds\(next, false\)/);
   assert.match(host, /current\.width !== width \|\| current\.height !== height/);
   assert.match(host, /\}, 80\)/);
   assert.doesNotMatch(host, /quickCaptureWindow\.setSize\(activeCaptureRuntime/);
-  assert.match(html, /\.shell\{height:100%;padding:5px 10px/);
-  assert.match(html, /\.bar\{display:flex;align-items:center;gap:7px;min-height:56px/);
+  assert.match(html, /\.shell\{height:100%;padding:2px 3px/);
+  assert.match(html, /\.bar\{display:flex;align-items:center;gap:1px;height:28px;min-height:28px/);
+  assert.match(html, /data-action="collect-menu"/);
+  assert.match(html, /data-action="organize-menu"/);
+  assert.match(html, /data-action="learning"/);
+  assert.doesNotMatch(html, /id="learning-row"/);
 });
 
 test('recording is a page route, not a second floating recorder or video recording', () => {
   const html = read('electron', 'quick-capture.html');
+  const popoverRenderer = read('electron', 'companion-popover-renderer.js');
   const host = read('electron', 'main.cjs');
   const ui = read('src', 'main.tsx');
-  assert.match(html, /data-action="audio"/);
+  assert.match(html, /data-action="collect-menu"/);
+  assert.match(popoverRenderer, /\['audio','录音采集'\]/);
   assert.match(html, /data-action="capture-inbox"/);
-  assert.match(html, /录音跳转主机页面/);
+  assert.doesNotMatch(html, /录音跳转主机页面/);
   assert.doesNotMatch(html, /MediaRecorder|data-action="record-video"/);
   assert.match(host, /event\.sender !== quickCaptureWindow\.webContents/);
   assert.match(host, /getCaptureInbox\(\)\.listStored\(studentId\)/);
   assert.match(host, /不能把快捷采集工具条自身作为采集来源/);
   assert.match(ui, /onQuickCaptureNavigate/);
   assert.match(ui, /'audio-capture': 'audio-capture'/);
+});
+
+test('agent companion production surface keeps AI settings last and removes target and ellipsis controls', () => {
+  const html = read('electron', 'quick-capture.html');
+  const popover = read('electron', 'companion-popover.html');
+  const popoverRenderer = read('electron', 'companion-popover-renderer.js');
+  const preload = read('electron', 'companion-popover-preload.cjs');
+  const host = read('electron', 'main.cjs');
+  for (const action of ['collect-menu', 'organize-menu', 'learning', 'ai-settings']) {
+    assert.match(html, new RegExp(`data-action="${action}"`));
+  }
+  assert.ok(html.indexOf('data-action="ai-settings"') > html.indexOf('data-action="learning"'));
+  assert.ok(html.indexOf('data-action="hide"') > html.indexOf('data-action="ai-settings"'));
+  assert.doesNotMatch(html, /data-action="targets"|data-action="more"|>⋯<|>•••</);
+  assert.match(popoverRenderer, /renderCollect/);
+  assert.match(popoverRenderer, /renderOrganize/);
+  assert.match(popoverRenderer, /toolbar-action/);
+  assert.match(popover, /Agent 伴侣/);
+  assert.match(preload, /contextBridge\.exposeInMainWorld/);
+  assert.match(host, /nodeIntegration: false, sandbox: true/);
+  assert.match(host, /event\.sender !== quickCapturePopoverWindow\.webContents/);
+  assert.doesNotMatch(`${html}\n${read('electron', 'quick-capture-renderer.js')}`, /new KeyboardEvent|dispatchEvent\([^)]*keydown|sendKeys/i);
+});
+
+test('learning mode form adapts visual, verification and planning settings', () => {
+  const renderer = read('electron', 'companion-popover-renderer.js');
+  const host = read('electron', 'main.cjs');
+  assert.match(renderer, /selectedAction\.configMode==='visual'/);
+  assert.match(renderer, /\['1','1张'\].*\['2','2张'\].*\['auto','自动'\].*\['custom','自定义'\]/);
+  assert.match(renderer, /\['simple','简洁'\].*\['standard','标准'\].*\['anime','动漫'\]/);
+  assert.match(renderer, /selectedAction\.configMode!=='goal'/);
+  assert.match(renderer, /customQuantity/);
+  assert.match(host, /\['verify', 'plan'\]/);
 });
 
 test('explicit show relocates, foregrounds and acknowledges the floating window', () => {

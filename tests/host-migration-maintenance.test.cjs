@@ -21,10 +21,11 @@ class Response extends EventEmitter {
 }
 function hostScope(runtime) {
   const events = [];
-  const scope = { projectArchiveRuntime: runtime, activeCaptureRuntime: null, taskChildProcesses: new Map(), taskSchedulerRunning: false,
+  const scope = { fs, path, os, projectArchiveRuntime: runtime, activeCaptureRuntime: null, taskChildProcesses: new Map(), taskSchedulerRunning: false,
     digestWorkflowRunning: false, growthRefreshRunning: false, collaborationDirectDeliveryRunning: false,
     captureVisionRunning: false, captureTimelineScheduler: null, hostServer: null,
-    taskStorePath: () => 'synthetic-tasks.json', safeReadJson: () => ({ tasks: [] }),
+    taskStorePath: () => 'synthetic-tasks.json', assetIndexPath: () => 'synthetic-assets.json',
+    safeReadJson: (file) => file === 'synthetic-tasks.json' ? ({ tasks: [] }) : ({ assets: [] }),
     stopHostDiscovery: () => events.push('stop-discovery'), stopStudentArchiveSyncWatchers: () => events.push('stop-watchers'),
     refreshStudentArchiveSyncWatchers: () => { assert.equal(runtime.status().ready, true); events.push('resume-watchers'); },
     startHostService: () => events.push('resume-server'), notify() {}, getHostServiceStatus: () => '{}',
@@ -33,6 +34,8 @@ function hostScope(runtime) {
     emitHostMigrationProgress() {}, appendHostTimeline: (event) => events.push(event.type),
     hostMigrationSources: () => { assert.equal(runtime.status().phase, 'maintenance'); return { sources: [], external: [], requiredDirectories: [] }; },
     migrationStateVirtualFiles: () => { assert.equal(runtime.status().phase, 'maintenance'); return []; },
+    assetStore: () => ({ backupTo: async (file) => fs.writeFileSync(file, 'synthetic sqlite snapshot'),
+      importSnapshot: () => ({ assetCount: 0 }), replaceAll: () => {} }),
     publicLicenseStatus: () => ({ maxActiveStudents: 1 }), courseCatalogStoreInstance: {}, platformCourseDraftStoreInstance: {}, licenseTrustStoreInstance: {},
     invalidateArchiveAccessCache: () => { assert.equal(runtime.status().phase, 'maintenance'); events.push('invalidate'); },
     recoverInterruptedMigrationStateInstalls: () => ({ ready: true, recovered: [], issues: [] }),

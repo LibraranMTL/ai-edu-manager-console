@@ -17,7 +17,8 @@ test('Windows release builds through an isolated local staging directory', () =>
   assert.match(releaseScript, /EDU_WINDOWS_CANDIDATE_TAG/);
   assert.match(releaseScript, /'windows', 'candidates', candidateTag/);
   assert.match(releaseScript, /const electronBuilderArgs = \['--projectDir', stageRoot/);
-  assert.match(releaseScript, /runPackageBin\('electron-builder', 'electron-builder', electronBuilderArgs\)/);
+  assert.match(releaseScript, /runPackageBin\('electron-builder', 'electron-builder', electronBuilderArgs, \{/);
+  assert.match(releaseScript, /ELECTRON_BUILDER_7Z_FILTER: 'BCJ2'/);
   assert.match(releaseScript, /process\.env\.EDU_ELECTRON_DIST/);
   assert.match(releaseScript, /EDU_ELECTRON_DIST must reference/);
   assert.match(releaseScript, /resolvePackageBin/);
@@ -28,7 +29,7 @@ test('Windows release builds through an isolated local staging directory', () =>
 
 test('staged runtime is dependency-free after Vite has bundled renderer dependencies', () => {
   assert.match(releaseScript, /main: 'electron\/main\.cjs'/);
-  assert.match(releaseScript, /files: \['dist\/\*\*\/\*', 'electron\/\*\*\/\*', 'package\.json'\]/);
+  assert.match(releaseScript, /files: \['dist\/\*\*\/\*', 'electron\/\*\*\/\*', 'cloud-report-service\/\*\*\/\*', 'package\.json'\]/);
   assert.doesNotMatch(releaseScript, /runtimePackage\.(?:dependencies|devDependencies)/);
   assert.match(releaseScript, /Minimal runtime package unexpectedly contains node_modules/);
   assert.match(releaseScript, /app\.asar exceeds 21 MiB/);
@@ -41,6 +42,10 @@ test('staged runtime is dependency-free after Vite has bundled renderer dependen
   assert.match(releaseScript, /stagePdfRuntime\(stageRoot\)/);
   assert.match(releaseScript, /extraResources: \[\{ from: 'material-pdf-runtime', to: 'material-pdf-runtime' \}\]/);
   assert.match(releaseScript, /pdfRuntime: pdfRuntimeAudit/);
+  assert.match(releaseScript, /'cloud-report-service\/remote-result-contract\.cjs'/);
+  assert.match(releaseScript, /'cloud-report-service\/v2-contract\.cjs'/);
+  assert.match(releaseScript, /Packaged cloud result runtime is missing/);
+  assert.match(releaseScript, /Packaged cloud result runtime differs from verified stage/);
   assert.match(pdfRuntimeScript, /`canvas\/\$\{name\}`/);
   assert.doesNotMatch(pdfRuntimeScript, /`node_modules\/@napi-rs\/canvas\/\$\{name\}`/);
   assert.match(pdfWorker, /path\.join\(runtimeRoot, 'canvas'\)/);
@@ -87,6 +92,12 @@ test('release artifacts are published only after package audits pass', () => {
   const localeAudit = releaseScript.indexOf('Electron locale mismatch');
   const publish = releaseScript.indexOf('publishFile(stagedExe, releaseExe)');
   assert.ok(asarAudit > 0 && localeAudit > asarAudit && publish > localeAudit);
+  assert.ok(releaseScript.indexOf('assertWindowsArtifactBudget(stagedExe)') < publish);
+  assert.ok(releaseScript.indexOf('assertWindowsArtifactBudget(stagedZip)') < publish);
+  assert.match(releaseScript, /bundleSkillArchiveRuntime\(repoRoot, stageRoot, locateEsbuildModule\(\)\)/);
+  const skillsAudit = releaseScript.indexOf("'verify-skill-asar.cjs'");
+  assert.ok(skillsAudit > asarAudit && skillsAudit < publish);
+  assert.match(releaseScript, /skillRuntimeVerification,/);
   assert.match(releaseScript, /Copy verification failed/);
   assert.match(releaseScript, /Temporary release artifact remained after publish/);
   assert.match(releaseScript, /primary-artifact-locked-publish-optimized/);

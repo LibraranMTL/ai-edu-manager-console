@@ -186,8 +186,12 @@ test('actual startup body does not launch any writer or business window until re
   for (const ready of [false, true]) {
     let release; const waiting = new Promise((resolve) => { release = resolve; }); const calls = [];
     const ctx = { app: { whenReady: () => Promise.resolve(), quit: () => calls.push('quit') }, dialog: { showErrorBox: () => calls.push('startup-error') }, prepareHostMigrationStateStartup: async () => true, prepareProjectRecordLifecycleStartup: async () => true, prepareProjectArchiveStartup: () => waiting,
+      restorePersistedAgentAuthorization: async () => calls.push('auth-restore'),
+      finishPersistedAuthorizationHealthCheck: () => calls.push('auth-health'),
+      assetStore: () => ({}), assetDuplicateGovernance: () => ({ recover: async () => calls.push('asset-recovery') }),
       ensureTaskCenterWorkspace() {}, taskStoreGuard: { initialize: async () => {} }, taskStorePath: () => 'synthetic-task-store', powerMonitor: { on() {} }, taskPowerRecovery: {},
       migrateTaskQueueGovernance: async () => calls.push('task-governance-migration'),
+      repairTaskCenterRuntimeState: () => ({ ok: true, skipped: true }),
       prepareProjectUploadIntakeStartup: async () => [], projectUploadRecoveryIssues: [],
       recoverInterruptedProjectMaterialMigrations: async () => calls.push('material-migration'),
       getCloudReportRuntime: () => { calls.push('cloud'); return Promise.resolve(); },
@@ -200,7 +204,7 @@ test('actual startup body does not launch any writer or business window until re
     Function('scope', `with (scope) { ${source.slice(start, end)} }`)(ctx);
     await new Promise((resolve) => setImmediate(resolve)); assert.deepEqual(calls, []);
     release(ready); await new Promise((resolve) => setImmediate(resolve));
-    if (ready) { assert.ok(calls.includes('createWindow')); assert.ok(calls.includes('startGrowthRefreshMonitor')); assert.ok(calls.includes('startTaskReadMaintenance')); assert.ok(!calls.includes('startup-error')); }
+    if (ready) { assert.ok(calls.includes('createWindow')); assert.ok(calls.includes('startGrowthRefreshMonitor')); assert.ok(calls.includes('startTaskReadMaintenance')); assert.ok(!calls.includes('startup-error')); assert.ok(calls.indexOf('auth-restore') < calls.indexOf('createWindow')); assert.ok(calls.indexOf('auth-health') > calls.indexOf('createWindow')); }
     else assert.deepEqual(calls, []);
   }
 });

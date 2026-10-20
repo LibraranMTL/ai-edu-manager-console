@@ -1,0 +1,147 @@
+{
+  "version": "0.21.2",
+  "candidateTag": "",
+  "artifactSizeLimitBytes": 100000000,
+  "archiveCodeFilter": "BCJ2",
+  "runtimeCompaction": {
+    "files": 286,
+    "beforeBytes": 7717902,
+    "afterBytes": 6941456,
+    "identifiersPreserved": true,
+    "syntaxOptimizations": false
+  },
+  "pngCompaction": {
+    "filesChanged": 4,
+    "bytesSaved": 224462,
+    "scanlinesAndMetadataVerified": true
+  },
+  "builtAt": "2026-10-20T05:57:26.632Z",
+  "sourceControl": {
+    "commit": "ed1e2542280cff6b82eec8568daa6e0107f0762a",
+    "branch": "",
+    "dirty": false,
+    "changedPathCount": 0,
+    "statusSha256": "E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855"
+  },
+  "stagingRoot": "C:\\Users\\bxw00\\AppData\\Local\\AI-Education-Manager\\release-stage\\0.21.2",
+  "electronLanguages": [
+    "zh-CN",
+    "zh-TW",
+    "en-US",
+    "en-GB",
+    "fr",
+    "es",
+    "es-419",
+    "ja",
+    "ko",
+    "vi",
+    "ms"
+  ],
+  "dist": {
+    "files": 166,
+    "bytes": 10397116,
+    "assetFiles": 151,
+    "reachableAssets": 151,
+    "unreachableAssets": []
+  },
+  "package": {
+    "asarBytes": 19650378,
+    "pdfRuntime": {
+      "bytes": 32843153,
+      "files": 209,
+      "pdfjs": "6.3.289",
+      "canvas": "1.0.9"
+    },
+    "asarFiles": 543,
+    "nodeModuleFiles": 0,
+    "agentBridge": "C:\\Users\\bxw00\\AppData\\Local\\AI-Education-Manager\\release-stage\\0.21.2\\out\\win-unpacked\\resources\\app.asar.unpacked\\electron\\invoke-agent.ps1",
+    "externalAgentConnectorRuntime": [
+      "electron/external-agent-connector.cjs",
+      "electron/external-agent-host.cjs",
+      "electron/external-agent-mcp.cjs",
+      "electron/external-agent-install.cjs",
+      "electron/agent-report-read.cjs",
+      "electron/external-agent-writes.cjs",
+      "electron/external-processing-receipt.cjs"
+    ],
+    "assetIndexRuntime": [
+      "electron/asset-index-store.cjs",
+      "electron/asset-index-worker.cjs"
+    ],
+    "skillLibraryRuntime": [
+      "electron/skill-package-inspector.cjs",
+      "electron/skill-library-store.cjs",
+      "electron/skill-discovery-adapters.cjs",
+      "electron/skill-install-adapters.cjs",
+      "electron/skill-archive-extractor.cjs",
+      "electron/skill-scan-worker.cjs",
+      "electron/skill-library-service.cjs"
+    ],
+    "skillRuntimeVerification": {
+      "schema": "edu-manager.skill-packaged-runtime-verification.v1",
+      "verifiedAt": "2026-10-20T05:57:22.988Z",
+      "runtimeDir": "C:\\Users\\bxw00\\AppData\\Local\\AI-Education-Manager\\release-stage\\0.21.2\\out\\win-unpacked\\resources\\app.asar\\electron",
+      "fixtureRoot": "C:\\Users\\bxw00\\AppData\\Local\\Temp\\edu-skill-package-vaOknX",
+      "electron": "43.0.0",
+      "snapshotPassed": true,
+      "workerScanPassed": true,
+      "zipExtractPassed": true,
+      "zipTraversalBlocked": true,
+      "customRootMigrationPassed": true,
+      "driveRootParentMkdirAvoided": true,
+      "customRootRestartPassed": true,
+      "customRootNewWritesPassed": true,
+      "syntheticScans": [
+        {
+          "providerId": "codex",
+          "candidates": 1
+        },
+        {
+          "providerId": "workbuddy",
+          "candidates": 1
+        },
+        {
+          "providerId": "qclaw",
+          "candidates": 1
+        }
+      ],
+      "sourceAccess": "read-only; all receipts and fixture writes isolated",
+      "licenseAndRendererTested": false
+    },
+    "cloudReportRuntime": [
+      "cloud-report-service/remote-result-contract.cjs",
+      "cloud-report-service/v2-contract.cjs"
+    ],
+    "teacherTerminalSupport": true,
+    "unpackedBytes": 385329418
+  },
+  "secretScan": {
+    "source": {
+      "label": "source",
+      "files": 466,
+      "findings": 0
+    },
+    "stage": {
+      "label": "staged runtime",
+      "files": 743,
+      "findings": 0
+    },
+    "package": {
+      "label": "packaged artifacts",
+      "files": 2,
+      "findings": 0
+    }
+  },
+  "artifacts": {
+    "exe": {
+      "path": "D:\\群星矩阵文件\\智能体开发项目\\AI教育管家\\.release-worktree-windows-0.21.2\\release\\windows\\AI-edu-manager-console-Windows-0.21.2.exe",
+      "bytes": 99891333,
+      "sha256": "20E12EAAD035D7527D7574B7E95747861D73327D082446A75015CBEF3C93648B"
+    },
+    "zip": {
+      "path": "D:\\群星矩阵文件\\智能体开发项目\\AI教育管家\\.release-worktree-windows-0.21.2\\release\\windows\\AI-edu-manager-console-Windows-0.21.2.zip",
+      "bytes": 99900171,
+      "sha256": "B553BA3EA8227291B8AA243444246533BB45E89D2C4AFCBA027FFE33FD8614FC"
+    }
+  }
+}

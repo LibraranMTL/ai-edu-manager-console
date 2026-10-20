@@ -1,0 +1,191 @@
+{
+  "ok": true,
+  "packageVersion": "0.21.2",
+  "executableSha256": "20E12EAAD035D7527D7574B7E95747861D73327D082446A75015CBEF3C93648B",
+  "archivedFilesMatchSource": [
+    "main.cjs",
+    "preload.cjs",
+    "capture-inbox.cjs",
+    "quick-capture-direct.cjs",
+    "quick-capture.html",
+    "quick-capture-preload.cjs",
+    "quick-capture-renderer.js",
+    "companion-toolbar.cjs",
+    "companion-popover.html",
+    "companion-popover-preload.cjs",
+    "companion-popover-renderer.js",
+    "companion-logo.png",
+    "quick-photo.html",
+    "quick-photo-preload.cjs",
+    "quick-photo-renderer.js"
+  ],
+  "comparisonRoot": "D:\\群星矩阵文件\\智能体开发项目\\AI教育管家\\.release-worktree-windows-0.21.2",
+  "timing": {
+    "launchToVersionVisibleMs": 8024.069499999999,
+    "boundary": "Single isolated launch including portable extraction; not a universal performance guarantee."
+  },
+  "asyncStatusParity": {
+    "supported": true,
+    "equal": true
+  },
+  "isolatedLaunch": {
+    "versionVisible": true,
+    "storage": {
+      "platform": "windows",
+      "baseDir": "D:\\群星矩阵文件\\智能体开发项目\\AI教育管家\\.release-worktree-windows-0.21.2\\.codex_tmp\\quick-capture-package-HjuPGW\\students",
+      "usesAbsolutePaths": true,
+      "pathSeparator": "\\",
+      "hostServicePort": 18777,
+      "taskAutomationEnabled": false
+    },
+    "assetIndex": {
+      "health": "ok",
+      "total": 0,
+      "referenceTotal": 0,
+      "pageSizeBounded": true
+    },
+    "skillLibraryBridge": {
+      "available": true,
+      "licensedSnapshotReached": false,
+      "scope": "",
+      "providers": []
+    },
+    "toolbarReady": true,
+    "sessionBatchBridgeAvailable": true,
+    "noStudentActionsDisabled": true,
+    "compactHeight": 35,
+    "toolbarContract": {
+      "actions": [
+        "students",
+        "collect-menu",
+        "organize-menu",
+        "learning",
+        "highlight",
+        "pause",
+        "capture-inbox",
+        "stop",
+        "ai-settings",
+        "hide",
+        "screen",
+        "close-screen",
+        "start-screen",
+        "take-screen",
+        "save-screen",
+        "screenshot-inbox"
+      ],
+      "idleActions": [
+        "collect-menu",
+        "organize-menu",
+        "learning"
+      ],
+      "aiBeforeClose": true,
+      "hasEllipsis": false,
+      "hasTargetAgent": false
+    },
+    "learningContract": {
+      "tabs": [
+        "学习",
+        "互动",
+        "测验",
+        "核验",
+        "计划"
+      ],
+      "actions": [
+        "知识闪卡",
+        "思维导图",
+        "信息图",
+        "图表总结"
+      ]
+    },
+    "visualSettings": {
+      "labels": [
+        "数量",
+        "风格",
+        "自定义数量（1–50张）",
+        "本次目标（可选）"
+      ],
+      "quantity": [
+        "1张",
+        "2张",
+        "自动",
+        "自定义"
+      ],
+      "style": [
+        "简洁",
+        "标准",
+        "动漫"
+      ],
+      "hasDifficulty": false,
+      "hasDuration": false
+    },
+    "customQuantityInitiallyHidden": true,
+    "customQuantityVisible": true,
+    "goalOnlySettings": {
+      "核验": {
+        "hasDifficulty": false,
+        "hasDuration": false,
+        "hasQuantity": false,
+        "hasGoal": true
+      },
+      "计划": {
+        "hasDifficulty": false,
+        "hasDuration": false,
+        "hasQuantity": false,
+        "hasGoal": true
+      }
+    },
+    "syntheticStudentNameSwitch": true,
+    "logoLoaded": true,
+    "panelChecks": [
+      {
+        "title": "采集",
+        "height": 207,
+        "contentHeight": 205.07591247558594,
+        "buttonFont": 11,
+        "buttons": [
+          "快速截屏 / 连续采集",
+          "录音采集",
+          "拍照采集",
+          "AI 会话采集"
+        ]
+      },
+      {
+        "title": "整理",
+        "height": 207,
+        "contentHeight": 205.07591247558594,
+        "buttonFont": 11,
+        "buttons": [
+          "资料选择",
+          "消化资料",
+          "资料收件箱",
+          "学习归档"
+        ]
+      },
+      {
+        "title": "选择资料范围",
+        "height": 232,
+        "contentHeight": 230.45550537109375,
+        "buttonFont": 11,
+        "buttons": [
+          "当前对话只使用当前 Agent 对话中明确提供的内容",
+          "学生资料查询当前学生的已授权教育资料"
+        ]
+      },
+      {
+        "title": "AI设置",
+        "height": 109,
+        "contentHeight": 107.09745788574219,
+        "buttonFont": 11,
+        "buttons": [
+          "智能体人设",
+          "目标智能体"
+        ]
+      }
+    ],
+    "targetsReady": true,
+    "scopeSelection": "student and owned project accepted; foreign project denied"
+  },
+  "boundary": "Real portable EXE startup with synthetic isolated students; physical camera, actual student license and real capture remain device acceptance items.",
+  "qa": "D:\\群星矩阵文件\\智能体开发项目\\AI教育管家\\.release-worktree-windows-0.21.2\\.codex_tmp\\quick-capture-package-HjuPGW",
+  "testedAt": "2026-10-20T05:57:57.684Z"
+}

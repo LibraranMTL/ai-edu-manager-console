@@ -13,7 +13,9 @@ const directory = candidateTag
   : path.join(root, 'release/windows');
 const artifactStem = `AI-edu-manager-console-Windows-${version}${candidateTag ? `-${candidateTag}` : ''}`;
 const audit = JSON.parse(fs.readFileSync(path.join(directory, `${artifactStem}-build-audit.json`), 'utf8'));
-const qa = fs.mkdtempSync(path.join(root, '.codex_tmp/quick-capture-package-'));
+const qaRoot = path.join(root, '.codex_tmp');
+fs.mkdirSync(qaRoot, { recursive: true });
+const qa = fs.mkdtempSync(path.join(qaRoot, 'quick-capture-package-'));
 const userData = path.join(qa, 'user-data'), studentBaseDir = path.join(qa, 'students');
 fs.mkdirSync(userData); fs.mkdirSync(studentBaseDir);
 fs.writeFileSync(path.join(userData, 'settings.json'), JSON.stringify({ studentBaseDir, archiveRoot: studentBaseDir, taskAutomationEnabled: false }));

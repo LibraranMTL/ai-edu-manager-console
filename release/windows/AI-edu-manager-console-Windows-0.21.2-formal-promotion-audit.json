@@ -1,0 +1,32 @@
+{
+  "schema": "edu-manager.windows-formal-promotion.v1",
+  "version": "0.21.2",
+  "versionCode": 262,
+  "releaseStatus": "stable",
+  "builtAt": "2026-10-20T05:57:26.632Z",
+  "sourceCommit": "ed1e2542280cff6b82eec8568daa6e0107f0762a",
+  "sourceDirty": false,
+  "fullTests": {
+    "total": 2400,
+    "passed": 2399,
+    "failed": 0,
+    "skipped": 1
+  },
+  "isolatedLaunch": {
+    "passed": true,
+    "packageVersionVisible": "0.21.2",
+    "executableSha256": "20E12EAAD035D7527D7574B7E95747861D73327D082446A75015CBEF3C93648B"
+  },
+  "artifacts": {
+    "exe": {
+      "bytes": 99891333,
+      "sha256": "20E12EAAD035D7527D7574B7E95747861D73327D082446A75015CBEF3C93648B",
+      "authenticode": "NotSigned"
+    },
+    "zip": {
+      "bytes": 99900171,
+      "sha256": "B553BA3EA8227291B8AA243444246533BB45E89D2C4AFCBA027FFE33FD8614FC"
+    }
+  },
+  "distributionBoundary": "Controlled formal distribution from the official website; no public Authenticode certificate is present."
+}

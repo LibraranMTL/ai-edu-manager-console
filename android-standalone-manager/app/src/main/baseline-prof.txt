@@ -1,0 +1,6 @@
+HSPLcom/qxmatrix/edumanager/standalone/MainActivity;-><init>()V
+HSPLcom/qxmatrix/edumanager/standalone/MainActivity;->onCreate(Landroid/os/Bundle;)V
+HSPLcom/qxmatrix/edumanager/standalone/StandaloneNavigationKt;->label(Lcom/qxmatrix/edumanager/standalone/AppSection;Landroid/content/Context;)Ljava/lang/String;
+HSPLcom/qxmatrix/edumanager/standalone/StandalonePageControllers;->render(Lcom/qxmatrix/edumanager/standalone/AppSection;)V
+HSPLcom/qxmatrix/edumanager/standalone/StudentIndexRepository;->list()Ljava/util/List;
+HSPLcom/qxmatrix/edumanager/standalone/UiPreferences;->palette()Lcom/qxmatrix/edumanager/standalone/UiPalette;

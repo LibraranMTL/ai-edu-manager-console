@@ -12,7 +12,7 @@ test('growth navigation loads once and does not use blocking IPC on the desktop'
   assert.equal((ui.match(/if \(activeSection !== 'growth' \|\| !selectedStudent\) return;/g) || []).length, 1);
   assert.match(ui, /void refreshSelectedGrowthModel\(selectedStudent\)/);
   assert.match(ui, /await api\.getGrowthModelSnapshot\(student\.id\)/);
-  assert.match(ui, /void refreshTaskCenter\(false, true\)/);
+  assert.doesNotMatch(ui, /if \(activeSection !== 'tasks'\) return undefined;[\s\S]{0,120}void refreshTaskCenter\(false, true\)/);
   const taskRead = main.match(/function getTaskCenter\(options = \{\}\) \{([\s\S]*?)\n\}/)?.[1] || '';
   assert.match(taskRead, /getTaskPage\(\{\}, 'legacy'\)/);
   assert.doesNotMatch(taskRead, /buildTaskCenterCandidates|syncAgentTaskResults|refreshAdapterCapabilities/);

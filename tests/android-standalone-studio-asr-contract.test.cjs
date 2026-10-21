@@ -71,7 +71,8 @@ test('original intake records intent before write and reuses the same event', ()
 test('automation defaults off, reserves quota and uses shared student serialization', () => {
   const automation = read('StudioAutomation.kt');
   assert.match(automation, /\?: false/); assert.match(automation, /DAILY_CAP = 6/);
-  assert.match(automation, /setRequiresBatteryNotLow\(true\)/);
+  assert.match(automation, /BackgroundWorkPolicy\.remoteConstraints/);
+  assert.match(read('BackgroundWorkPolicy.kt'), /setRequiresBatteryNotLow\(true\)/);
   assert.match(read('LearningStudioService.kt'), /StudentWorkLocks.forStudent/);
   assert.match(read('BusinessDatabaseBackup.kt'), /restoreRequiresConsent/);
 });

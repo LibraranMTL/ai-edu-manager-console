@@ -21,7 +21,7 @@ class GrowthModelContractTest {
     }
 
     @Test
-    fun exposesTheFourAuthoritativeEvidenceReviewStates() {
-        assertEquals(setOf("pending", "confirmed", "watching", "rejected"), GrowthModelService.EVIDENCE_STATUSES)
+    fun exposesAutomaticAndAttentionEvidenceStates() {
+        assertEquals(setOf("pending", "confirmed", "watching", "needs_attention", "rejected"), GrowthModelService.EVIDENCE_STATUSES)
     }
 }

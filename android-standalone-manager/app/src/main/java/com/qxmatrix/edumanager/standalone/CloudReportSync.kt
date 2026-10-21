@@ -31,9 +31,9 @@ import javax.crypto.SecretKey
 import javax.crypto.spec.GCMParameterSpec
 
 data class CloudReportStatus(val configured: Boolean, val enabled: Boolean, val cloudStudentId: String,
-    val lastSyncAt: Long, val lastError: String, val pendingServerState: String)
+    val lastSyncAt: Long, val lastError: String, val pendingServerState: String, val materialCategories: Set<String>)
 
-/** Optional report-only cloud channel. It never reads raw materials or downloaded cloud caches. */
+/** Optional, independently scoped cloud channel. Raw materials are uploaded only after per-item selection. */
 class CloudReportSync(private val context: Context) {
     private val prefs = context.getSharedPreferences("cloud_report_v1", Context.MODE_PRIVATE)
     private val privateState = PrivateStateStore(context)
@@ -112,6 +112,7 @@ class CloudReportSync(private val context: Context) {
         lastSyncAt = prefs.getLong("lastSync:$studentId", 0),
         lastError = prefs.getString("lastError:$studentId", "").orEmpty(),
         pendingServerState = prefs.getString("pending:$studentId", "").orEmpty(),
+        materialCategories = prefs.getStringSet("categories:$studentId", setOf("learning_report")).orEmpty().toSet(),
     )
 
     fun enroll(studentId: String, serverUrl: String, code: String): CloudReportStatus {
@@ -134,6 +135,7 @@ class CloudReportSync(private val context: Context) {
             .putString("deviceId", result.getString("deviceId")).putString("bindingDevice:$studentId", result.getString("deviceId"))
             .putString("cloud:$studentId", cloudStudentId).putBoolean("enabled:$studentId", true)
             .putInt("contractVersion:$studentId", 2)
+            .putStringSet("categories:$studentId", defaultMaterialCategories.toSet())
             .putString("pending:$studentId", "").putString("lastError:$studentId", "")
             .apply { GrowthModelService.REPORTS.forEach { remove("hash:$studentId:${it.id}") } }.apply()
         schedule(studentId)
@@ -148,9 +150,42 @@ class CloudReportSync(private val context: Context) {
         prefs.edit().putBoolean("enabled:$studentId", enabled)
             .putString("pending:$studentId", if (enabled) "enable" else "disable").apply()
         if (!enabled) WorkManager.getInstance(context).cancelUniqueWork(workName(studentId))
+        CloudSyncReceiptStore(context).append(studentId, if (enabled) "queued" else "withdrawn", "upload-switch:$studentId",
+            if (enabled) "已等待发送" else "已关闭后续上传；云端既有资料未删除")
         schedule(studentId)
         return status(studentId)
     }
+
+    fun setUploadScope(studentId: String, categories: Set<String>): CloudReportStatus {
+        val current = status(studentId)
+        require(current.configured) { "请先为当前学生开通云同步" }
+        require(categories.isNotEmpty() && categories.all { it in MATERIAL_CATEGORIES }) { "资料类别无效" }
+        val result = post(server(), "/v2/source-upload-scope", token(), JSONObject()
+            .put("cloudStudentId", current.cloudStudentId).put("profileFields", JSONArray(defaultProfileFields))
+            .put("materialCategories", JSONArray(categories.sorted())))
+        val accepted = result.optJSONArray("materialCategories")?.let { values -> (0 until values.length()).map { values.getString(it) }.toSet() }
+            ?: error("云端未返回授权范围")
+        require(accepted == categories) { "云端授权范围与选择不一致" }
+        prefs.edit().putStringSet("categories:$studentId", accepted).apply()
+        CloudSyncReceiptStore(context).append(studentId, "queued", "scope:$studentId", "已更新 ${accepted.size} 类同步许可")
+        if (current.enabled) schedule(studentId)
+        return status(studentId)
+    }
+
+    fun selectRawMaterial(studentId: String, materialId: String, selected: Boolean) {
+        StudentIndexRepository(context).requireExact(studentId)
+        require(FileAssetService(context).materials(studentId).any { it.optString("id") == materialId }) { "未找到指定学习资料" }
+        val key = "selectedMaterials:$studentId"
+        val next = prefs.getStringSet(key, emptySet()).orEmpty().toMutableSet()
+        if ((materialId in next) == selected) return
+        if (selected) next += materialId else next -= materialId
+        prefs.edit().putStringSet(key, next).apply()
+        CloudSyncReceiptStore(context).append(studentId, if (selected) "queued" else "withdrawn", "material:$materialId",
+            if (selected) "已选择该原件等待发送" else "已取消该原件的后续发送")
+        if (selected && status(studentId).enabled) schedule(studentId)
+    }
+
+    fun selectedRawMaterials(studentId: String): Set<String> = prefs.getStringSet("selectedMaterials:$studentId", emptySet()).orEmpty().toSet()
 
     fun approvePairing(studentId: String, pairingCode: String): JSONObject {
         val state = status(studentId)
@@ -160,6 +195,44 @@ class CloudReportSync(private val context: Context) {
             .put("pairingCode", pairingCode.trim())
             .put("cloudStudentIds", JSONArray().put(state.cloudStudentId)))
     }
+
+    /** Explicitly creates a separate viewer identity; source/upload permission alone never grants inbox reads. */
+    fun enableCloudInbox(studentId: String): JSONObject {
+        val upload = status(studentId); require(upload.configured && upload.enabled) { "请先开启当前学生云同步" }
+        val pairing = post(server(), "/v1/pairings", null, JSONObject().put("publicKey", publicKey(INBOX_SIGNING_ALIAS)))
+        val approval = post(server(), "/v1/pairings/approve", token(), JSONObject()
+            .put("pairingCode", pairing.getString("pairingCode")).put("cloudStudentIds", JSONArray().put(upload.cloudStudentId))
+            .put("contractVersion", 2).put("profileFields", JSONArray(defaultProfileFields))
+            .put("materialCategories", JSONArray(upload.materialCategories.sorted())))
+        require(approval.getString("deviceId") == pairing.getString("deviceId")) { "成果收件箱设备确认不一致" }
+        prefs.edit().putString("inboxToken:$studentId", encrypt(pairing.getString("deviceToken")))
+            .putString("inboxDevice:$studentId", pairing.getString("deviceId")).apply()
+        return JSONObject().put("enabled", true).put("deviceId", pairing.getString("deviceId"))
+    }
+
+    fun cloudInboxEnabled(studentId: String): Boolean = prefs.getString("inboxToken:$studentId", "").orEmpty().isNotBlank() &&
+        prefs.getString("inboxDevice:$studentId", "").orEmpty().isNotBlank()
+
+    fun listCloudInbox(studentId: String): List<JSONObject> {
+        val cloud = status(studentId); require(cloud.configured && cloudInboxEnabled(studentId)) { "成果收件箱尚未开通" }
+        val result = viewerRequest(studentId, "GET", "/v2/inbox")
+        val rows = result.optJSONArray("submissions") ?: JSONArray()
+        return (0 until rows.length()).map { rows.getJSONObject(it) }.filter { item ->
+            val ids = item.optJSONArray("cloudStudentIds") ?: JSONArray().put(item.optString("cloudStudentId"))
+            (0 until ids.length()).any { ids.optString(it) == cloud.cloudStudentId }
+        }
+    }
+
+    fun leaseCloudInbox(studentId: String, submissionId: String): JSONObject {
+        require(Regex("^submission_[a-f0-9]{32}$").matches(submissionId)) { "成果标识无效" }
+        val result = viewerRequest(studentId, "POST", "/v2/inbox/$submissionId/lease", JSONObject())
+        require(result.optString("cloudStudentId") == status(studentId).cloudStudentId) { "成果不属于当前学生" }
+        return result
+    }
+
+    fun settleCloudInbox(studentId: String, submissionId: String, leaseId: String, accepted: Boolean, reason: String = ""): JSONObject =
+        viewerRequest(studentId, "POST", "/v2/inbox/$submissionId/settle", JSONObject().put("leaseId", leaseId)
+            .put("status", if (accepted) "committed" else "quarantined").put("reason", reason.take(500)))
 
     fun synchronize(studentId: String) {
         val state = status(studentId)
@@ -171,9 +244,12 @@ class CloudReportSync(private val context: Context) {
             prefs.edit().putString("pending:$studentId", "").apply()
         }
         if (!status(studentId).enabled) return
+        val hadError = state.lastError.isNotBlank()
         if (prefs.getInt("contractVersion:$studentId", 1) >= 2) synchronizeProfile(studentId, state.cloudStudentId)
-        val contents = snapshotForUpload(studentId)
+        val categories = status(studentId).materialCategories
+        val contents = if ("learning_report" in categories) snapshotForUpload(studentId) else emptyList()
         for ((index, definition) in GrowthModelService.REPORTS.withIndex()) {
+            if ("learning_report" !in categories) break
             if (!status(studentId).enabled) return
             val content = contents[index]
             val checked = EducationPublicationPolicy.validatePublishedReport(studentId, definition.title, content)
@@ -193,17 +269,23 @@ class CloudReportSync(private val context: Context) {
                 .put("contentSha256", hash).put("filename", definition.fileName).put("content", content)
             try { post(server(), "/v1/reports", token(), body) }
             catch (error: CloudHttpException) { if (error.status != 410) throw error }
-            if (prefs.getInt("contractVersion:$studentId", 1) >= 2) uploadLearningReportMaterial(
-                state.cloudStudentId, studentId, definition.id, definition.fileName, hash, content.toByteArray(Charsets.UTF_8)
+            if (prefs.getInt("contractVersion:$studentId", 1) >= 2) uploadMaterial(
+                state.cloudStudentId, studentId, definition.id, definition.fileName, hash, content.toByteArray(Charsets.UTF_8),
+                "learning_report", "text/markdown"
             )
             prefs.edit().putString("hash:$studentId:${definition.id}", hash).apply()
         }
+        synchronizeSelectedCategories(studentId, state.cloudStudentId)
         prefs.edit().putLong("lastSync:$studentId", System.currentTimeMillis())
             .putString("lastError:$studentId", "").apply()
+        val receipts = CloudSyncReceiptStore(context)
+        if (hadError) receipts.append(studentId, "network_recovered", "sync:$studentId", "网络恢复后已继续核对待发送内容")
+        receipts.append(studentId, "delivered", "sync:$studentId:${System.currentTimeMillis()}", "已送达当前许可范围内的更新")
     }
 
     fun recordFailure(studentId: String, message: String) {
         prefs.edit().putString("lastError:$studentId", message.take(300)).apply()
+        runCatching { CloudSyncReceiptStore(context).append(studentId, "failed", "sync:$studentId:${System.currentTimeMillis()}", message) }
     }
 
     private fun synchronizeProfile(studentId: String, cloudStudentId: String) {
@@ -226,15 +308,49 @@ class CloudReportSync(private val context: Context) {
         prefs.edit().putString("profileHash:$studentId", hash).apply()
     }
 
-    private fun uploadLearningReportMaterial(cloudStudentId: String, localStudentId: String, reportId: String,
-        filename: String, hash: String, bytes: ByteArray) {
+    private fun synchronizeSelectedCategories(studentId: String, cloudStudentId: String) {
+        val categories = status(studentId).materialCategories
+        val rows = ScopedContentRepository(context).list(studentId, listOf("artifact"), 100, 0)
+        rows.forEach { row ->
+            val payload = runCatching { JSONObject(row.payload) }.getOrNull() ?: return@forEach
+            val module = payload.optString("module")
+            val category = when (module) { "cards" -> "learning_card"; "topics" -> "topic_suggestion"; "competitions" -> "competition_recommendation"; else -> "" }
+            if (category.isBlank() || category !in categories) return@forEach
+            val body = if (module == "cards") LearningStudioPolicy.questionsOnly(payload) else payload.toString(2)
+            val bytes = body.toByteArray(Charsets.UTF_8); val hash = ScopedContentPolicy.hash(bytes)
+            val key = "materialHash:$studentId:$category:${row.id}"
+            if (prefs.getString(key, "") == hash) return@forEach
+            uploadMaterial(cloudStudentId, studentId, row.id, "${row.title}-${row.createdAt.take(10)}.${if (module == "cards") "md" else "json"}", hash, bytes,
+                category, if (module == "cards") "text/markdown" else "application/json", row.projectId)
+            prefs.edit().putString(key, hash).apply()
+        }
+        if ("learning_material" !in categories) return
+        val selected = selectedRawMaterials(studentId)
+        FileAssetService(context).materials(studentId).filter { it.optString("id") in selected }.forEach { material ->
+            val materialId = material.getString("id"); val expected = material.optString("sourceSha256")
+            val bytes = FileAssetService(context).readMaterialBytes(studentId, materialId, 20 * 1024 * 1024)
+            val hash = ScopedContentPolicy.hash(bytes); require(expected.isBlank() || expected == hash) { "${material.optString("fileName")} 原件已变化，停止上传" }
+            val key = "materialHash:$studentId:learning_material:$materialId"
+            if (prefs.getString(key, "") == hash) return@forEach
+            uploadMaterial(cloudStudentId, studentId, materialId, material.optString("fileName", "$materialId.bin"), hash, bytes,
+                "learning_material", "application/octet-stream", material.optString("projectId"))
+            prefs.edit().putString(key, hash).apply()
+        }
+    }
+
+    private fun uploadMaterial(cloudStudentId: String, localStudentId: String, reportId: String,
+        filename: String, hash: String, bytes: ByteArray, category: String, contentType: String, projectId: String = "") {
         val route = "/v2/students/$cloudStudentId/materials"
         val connection = (URL(server() + route).openConnection() as HttpURLConnection).apply {
             requestMethod = "POST"; connectTimeout = 15000; readTimeout = 15000; instanceFollowRedirects = false
-            doOutput = true; setFixedLengthStreamingMode(bytes.size); setRequestProperty("Content-Type", "text/markdown")
+            doOutput = true; setFixedLengthStreamingMode(bytes.size); setRequestProperty("Content-Type", contentType)
             setRequestProperty("X-Document-Name", java.net.URLEncoder.encode(filename, "UTF-8").replace("+", "%20"))
-            setRequestProperty("X-Material-Category", "learning_report"); setRequestProperty("X-Material-Id", "report:$reportId")
-            setRequestProperty("X-Idempotency-Key", "android:$localStudentId:$reportId:${hash.take(24)}")
+            setRequestProperty("X-Material-Category", category); setRequestProperty("X-Material-Id", "$category:$reportId")
+            setRequestProperty("X-Idempotency-Key", "android:$localStudentId:$category:$reportId:${hash.take(24)}")
+            if (projectId.isNotBlank()) {
+                setRequestProperty("X-Project-Id", projectId)
+                setRequestProperty("X-Scope-Fingerprint", projectScopeFingerprint(localStudentId, projectId))
+            }
             addSignedHeaders(this, "POST", route, bytes)
         }
         try {
@@ -381,13 +497,72 @@ class CloudReportSync(private val context: Context) {
         } finally { connection.disconnect() }
     }
 
-    private fun sourcePublicKey(): String {
+    private fun sourcePublicKey(): String = publicKey("cloud-report-sign-v1")
+
+    private fun publicKey(alias: String): String {
         val store = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
-        if (!store.containsAlias("cloud-report-sign-v1")) KeyPairGenerator.getInstance(KeyProperties.KEY_ALGORITHM_EC, "AndroidKeyStore").apply {
-            initialize(KeyGenParameterSpec.Builder("cloud-report-sign-v1", KeyProperties.PURPOSE_SIGN or KeyProperties.PURPOSE_VERIFY)
+        if (!store.containsAlias(alias)) KeyPairGenerator.getInstance(KeyProperties.KEY_ALGORITHM_EC, "AndroidKeyStore").apply {
+            initialize(KeyGenParameterSpec.Builder(alias, KeyProperties.PURPOSE_SIGN or KeyProperties.PURPOSE_VERIFY)
                 .setAlgorithmParameterSpec(ECGenParameterSpec("secp256r1")).setDigests(KeyProperties.DIGEST_SHA256).build())
         }.generateKeyPair()
-        return "-----BEGIN PUBLIC KEY-----\n" + Base64.encodeToString(store.getCertificate("cloud-report-sign-v1").publicKey.encoded, Base64.NO_WRAP) + "\n-----END PUBLIC KEY-----\n"
+        return "-----BEGIN PUBLIC KEY-----\n" + Base64.encodeToString(store.getCertificate(alias).publicKey.encoded, Base64.NO_WRAP) + "\n-----END PUBLIC KEY-----\n"
+    }
+
+    fun issueRemoteAgentSession(studentId: String, provider: String, taskType: String, categories: Set<String>, projectId: String = ""): JSONObject {
+        val cloud = status(studentId); require(cloud.configured && cloudInboxEnabled(studentId)) { "请先开通成果收件箱只读许可" }
+        require(provider in setOf("codex", "workbuddy")); require(taskType.matches(Regex("^[A-Za-z0-9._:-]{3,100}$")))
+        require(categories.isNotEmpty() && categories.all { it in cloud.materialCategories }) { "任务资料范围超出当前读取许可" }
+        if (projectId.isNotBlank()) require(ProjectRepository(context).list().any { it.id == projectId && studentId in it.studentIds }) { "项目不属于当前学生" }
+        val operation = UUID.randomUUID().toString().replace("-", "")
+        val body = JSONObject().put("provider", provider).put("cloudStudentId", cloud.cloudStudentId)
+            .put("projectId", projectId).put("scopeFingerprint", if (projectId.isBlank()) "" else projectScopeFingerprint(studentId, projectId))
+            .put("taskId", "android_task_$operation").put("executionId", "android_exec_$operation")
+            .put("taskType", taskType).put("idempotencyKey", "android_agent_$operation")
+            .put("materialCategories", JSONArray(categories.sorted())).put("lifetimeMs", 15 * 60 * 1000)
+        val result = viewerRequest(studentId, "POST", "/v2/agent-sessions", body)
+        val ids = prefs.getStringSet("agentSessions:$studentId", emptySet()).orEmpty().toMutableSet().apply { add(result.getString("sessionId")) }
+        prefs.edit().putStringSet("agentSessions:$studentId", ids).apply()
+        return result
+    }
+
+    fun remoteAgentStatuses(studentId: String): List<JSONObject> = prefs.getStringSet("agentSessions:$studentId", emptySet()).orEmpty().mapNotNull { id ->
+        runCatching { viewerRequest(studentId, "GET", "/v2/agent-sessions/$id") }.getOrNull()
+    }.sortedByDescending { it.optLong("updatedAt") }
+
+    fun revokeRemoteAgentSession(studentId: String, sessionId: String): JSONObject {
+        require(Regex("^agent_session_[a-f0-9]{32}$").matches(sessionId))
+        return viewerRequest(studentId, "POST", "/v2/agent-sessions/revoke", JSONObject().put("sessionId", sessionId))
+    }
+
+    private fun projectScopeFingerprint(studentId: String, projectId: String) = ScopedContentPolicy.hash("android-project-v1|$studentId|$projectId".toByteArray())
+
+    private fun viewerRequest(studentId: String, method: String, route: String, body: JSONObject? = null): JSONObject {
+        require(method in setOf("GET", "POST") && (route.startsWith("/v2/inbox") || route.startsWith("/v2/agent-sessions")))
+        val bytes = body?.toString()?.toByteArray(Charsets.UTF_8) ?: ByteArray(0)
+        val credential = decrypt(prefs.getString("inboxToken:$studentId", "").orEmpty().ifBlank { error("成果收件箱凭据缺失") })
+        val deviceId = prefs.getString("inboxDevice:$studentId", "").orEmpty().ifBlank { error("成果收件箱设备缺失") }
+        val connection = (URL(server() + route).openConnection() as HttpURLConnection).apply {
+            requestMethod = method; connectTimeout = 15000; readTimeout = 15000; instanceFollowRedirects = false
+            if (method == "POST") { doOutput = true; setFixedLengthStreamingMode(bytes.size); setRequestProperty("Content-Type", "application/json; charset=utf-8") }
+            val timestamp = System.currentTimeMillis().toString(); val nonce = UUID.randomUUID().toString().replace("-", "")
+            val hash = ScopedContentPolicy.hash(bytes)
+            val key = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }.getKey(INBOX_SIGNING_ALIAS, null) as? PrivateKey
+                ?: error("成果收件箱缺少设备私钥")
+            val signature = Signature.getInstance("SHA256withECDSA").run {
+                initSign(key); update("$method\n$route\n$timestamp\n$nonce\n$hash".toByteArray(Charsets.UTF_8)); sign()
+            }
+            setRequestProperty("Authorization", "Bearer $credential"); setRequestProperty("X-Cloud-Device-Id", deviceId)
+            setRequestProperty("X-Cloud-Timestamp", timestamp); setRequestProperty("X-Cloud-Nonce", nonce)
+            setRequestProperty("X-Cloud-Body-Sha256", hash)
+            setRequestProperty("X-Cloud-Signature", Base64.encodeToString(signature, Base64.NO_WRAP or Base64.NO_PADDING or Base64.URL_SAFE))
+        }
+        return try {
+            if (method == "POST") connection.outputStream.use { it.write(bytes) }
+            val code = connection.responseCode; val stream = if (code in 200..299) connection.inputStream else connection.errorStream
+            val result = JSONObject(stream?.use { it.readBytesBounded(1_048_576).toString(Charsets.UTF_8) } ?: "{}")
+            if (code !in 200..299) throw CloudHttpException(code, result.optString("error", "成果收件箱请求未完成"))
+            result
+        } finally { connection.disconnect() }
     }
 
     private fun secretKey(): SecretKey {
@@ -417,11 +592,12 @@ class CloudReportSync(private val context: Context) {
     }
 
     private fun schedule(studentId: String, policy: ExistingWorkPolicy) {
+        runCatching { CloudSyncReceiptStore(context).append(studentId, "queued", "work:$studentId:${System.currentTimeMillis()}", "等待联网后发送") }
         val work = OneTimeWorkRequestBuilder<CloudReportWorker>()
             .setInputData(workDataOf("studentId" to studentId))
-            .setConstraints(Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build())
+            .setConstraints(BackgroundWorkPolicy.remoteConstraints)
             .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, 30, TimeUnit.SECONDS).build()
-        WorkManager.getInstance(context).enqueueUniqueWork(workName(studentId), policy, work)
+        WorkManager.getInstance(context).enqueueUniqueWork(BackgroundWorkPolicy.uniqueName("cloud-report", studentId), policy, work)
     }
 
     fun resumePendingWork() {
@@ -431,13 +607,15 @@ class CloudReportSync(private val context: Context) {
     }
 
     companion object {
+        private const val INBOX_SIGNING_ALIAS = "cloud-inbox-sign-v1"
+        val MATERIAL_CATEGORIES = setOf("learning_report", "learning_material", "topic_suggestion", "competition_recommendation", "learning_card")
         private val publicationLock = Any()
         fun <T> withPublicationLock(action: () -> T): T = synchronized(publicationLock, action)
         fun enqueueAfterCompletePublication(context: Context, studentId: String) {
             val sync = CloudReportSync(context)
             if (sync.status(studentId).enabled) sync.schedule(studentId)
         }
-        private fun workName(studentId: String) = "cloud-report-$studentId"
+        private fun workName(studentId: String) = BackgroundWorkPolicy.uniqueName("cloud-report", studentId)
     }
 }
 

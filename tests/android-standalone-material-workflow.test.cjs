@@ -33,11 +33,31 @@ test('legacy migrated student IDs are mapped to stable portable knowledge subjec
 
 test('home cards preserve an exact actionable or needs-help material filter', () => {
   const activity = read('MainActivity.kt')
+  const policy = read('MaterialProcessingPolicy.kt')
   assert.match(activity, /renderSection\(AppSection\.MATERIALS, MaterialQueueFilter\.ACTION_REQUIRED\)/)
   assert.match(activity, /renderSection\(AppSection\.MATERIALS, MaterialQueueFilter\.NEEDS_HELP\)/)
-  assert.match(activity, /MaterialStatus\.FAILED/)
-  assert.match(activity, /visionStatus"\) in setOf\("failed", "unavailable"\)/)
+  assert.match(activity, /MaterialProcessingPolicy\.ocrNeedsHelp/)
+  assert.match(activity, /MaterialProcessingPolicy\.digestNeedsHelp/)
+  assert.match(policy, /!digestReady\(material\).*visualState in setOf\("failed", "unavailable", "needs_user"\)/s)
   assert.match(activity, /captureSessionId/)
+})
+
+test('OCR readiness and unknown digest recovery remain separate and recover exact materials', () => {
+  const ocr = read('OcrVisionService.kt')
+  const digest = read('StudentDigestOrchestrator.kt')
+  const recovery = read('UnknownOutcomeRecovery.kt')
+  const activity = read('MainActivity.kt')
+  const automatic = read('AutoDigestWorker.kt')
+  assert.match(ocr, /put\("digestReady", digestReady\)/)
+  assert.match(ocr, /put\("ocrStatus", ocrStatus\)/)
+  assert.match(digest, /MaterialProcessingPolicy::digestReady/)
+  assert.match(digest, /put\("digestRecoveryState", if \(unknownOutcome\) "needs_user" else "failed"\)/)
+  assert.match(recovery, /optJSONArray\("materialIds"\)/)
+  assert.match(recovery, /transitionMaterial\(studentId, materialId, MaterialStatus\.PENDING_DIGEST\)/)
+  assert.match(activity, /"OCR 需要补充"/)
+  assert.match(activity, /"消化结果待核对"/)
+  assert.match(automatic, /digestRecoveryState"\) != "authorized_retry"/)
+  assert.match(automatic, /explicitUserAction = false/)
 })
 
 test('material processing supports bounded multi-select, batch OCR, digest and retry', () => {
@@ -51,6 +71,31 @@ test('material processing supports bounded multi-select, batch OCR, digest and r
   assert.match(activity, /digestSelected/)
   assert.doesNotMatch(repository, /items\.take\(1000\)|assets\.take\(5000\)/)
   assert.match(repository, /MAX_MATERIAL_RECORDS = 20_000/)
+})
+
+test('file and camera intake leave the UI thread before touching the Room-backed ledger', () => {
+  const activity = read('MainActivity.kt')
+  const selectedImport = activity.slice(activity.indexOf('private fun importSelectedFiles'), activity.indexOf('private fun chooseStudentForAssets'))
+  const cameraImport = activity.slice(activity.indexOf('private fun importCapturedPhoto'), activity.indexOf('private fun importSelectedFiles'))
+  for (const source of [selectedImport, cameraImport]) {
+    assert.match(source, /lifecycleScope\.launch/)
+    assert.match(source, /withContext\(Dispatchers\.IO\)/)
+    assert.match(source, /fileAssetService\.importToStudent/)
+  }
+})
+
+test('legacy reports and growth documents remain discoverable without moving originals', () => {
+  const compatibility = read('StudentArchiveCompatibility.kt')
+  const reports = read('GrowthModelService.kt')
+  const browser = read('MarkdownBrowserActivity.kt')
+  assert.match(compatibility, /Read-only path compatibility/)
+  assert.match(compatibility, /教育档案\/学情报告/)
+  assert.match(compatibility, /教育档案\/成长模型/)
+  assert.match(reports, /reportDocumentPaths/)
+  assert.match(reports, /reportSearchRoots/)
+  assert.match(reports, /allowRoot\s*=\s*student\.knowledgeBaseMode\s*==\s*"adopted"/)
+  assert.match(browser, /StudentArchiveCompatibility\.archiveRoots/)
+  assert.doesNotMatch(compatibility, /writeBytes|delete|renameTo/)
 })
 
 test('raw material browser is read-only, student-rooted and registered in the manifest', () => {

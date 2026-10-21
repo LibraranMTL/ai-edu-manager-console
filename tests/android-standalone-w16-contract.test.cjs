@@ -9,10 +9,12 @@ const read = (name) => fs.readFileSync(path.join(java, name), 'utf8');
 
 test('W16 conversation history exposes browse, digest result and controlled deletion actions', () => {
   const main = read('MainActivity.kt');
+  const knowledge = read('ConversationKnowledgeActivity.kt');
   const browser = read('MarkdownBrowserActivity.kt');
-  for (const label of ['管理对话历史', '浏览对话原文', '进入消化流程', '查看消化结果', '移入回收站']) {
-    assert.match(main, new RegExp(label));
+  for (const label of ['浏览对话原文', '进入消化流程', '查看消化结果', '移入回收站']) {
+    assert.match(main + knowledge, new RegExp(label));
   }
+  assert.match(main, /对话资料与候选知识/);
   assert.match(browser, /MODE_CONVERSATION/);
   assert.match(browser, /MODE_CONVERSATION_DIGEST/);
   assert.match(browser, /EXTRA_CONVERSATION_ID/);

@@ -49,8 +49,8 @@ test('W8 report output chooser renders selectable rows without a competing messa
 });
 
 test('W8 growth and report surfaces keep user-facing states readable and print after page readiness', () => {
-  assert.match(activity, /growthStatusLabel/);
-  assert.match(activity, /已关联原始资料/);
+  assert.match(activity, /showGrowthAttention/);
+  assert.match(activity, /需要处理/);
   assert.match(activity, /暂无学情报告/);
   assert.doesNotMatch(activity, /证据状态已更新为 \$status/);
   const publication = fs.readFileSync(path.join(root, 'EducationPublicationActivity.kt'), 'utf8');
@@ -67,22 +67,21 @@ test('W8 repairs legacy source fields without confirming a historical report as 
   assert.match(evidencePolicy, /historical_secondary_source/);
   assert.match(evidencePolicy, /requiresPrimarySource/);
   assert.match(source, /attachCandidateSource/);
-  assert.match(activity, /历史报告不能作为自身证据/);
   assert.match(activity, /选择支撑这条证据的原始资料/);
-  assert.match(activity, /选择资料并确认/);
+  assert.match(activity, /关联已有资料/);
   assert.doesNotMatch(activity, /来源 URI\/文件标识（必填）/);
 });
 
-test('W8 automatically registers deduplicated digest evidence as pending review', () => {
+test('W8 automatically registers deduplicated digest evidence for risk handling', () => {
   assert.match(source, /fun addAutomaticCandidate/);
   assert.match(source, /automaticId/);
-  assert.match(source, /status", "pending"/);
+  assert.match(source, /applyAutomaticDecision/);
   for (const digest of [studentDigest, conversationDigest]) {
     assert.match(digest, /growthEvidence/);
     assert.match(digest, /addAutomaticCandidate/);
   }
-  assert.match(activity, /审核待确认成长证据/);
-  assert.match(activity, /高级：手工添加成长证据/);
+  assert.match(activity, /需要处理/);
+  assert.doesNotMatch(activity, /高级：手工添加成长证据/);
 });
 
 test('W8 direct report publication uses conservative complete-section fallbacks', () => {

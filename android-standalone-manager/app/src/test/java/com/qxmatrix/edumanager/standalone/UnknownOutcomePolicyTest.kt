@@ -9,6 +9,8 @@ class UnknownOutcomePolicyTest {
         assertTrue(UnknownOutcomePolicy.retryAllowed(null))
         assertFalse(UnknownOutcomePolicy.retryAllowed(JSONObject().put("state", "unknown")))
         assertFalse(UnknownOutcomePolicy.retryAllowed(JSONObject().put("state", "withdrawn")))
+        assertTrue(UnknownOutcomePolicy.retryAllowed(JSONObject().put("state", "received")))
+        assertTrue(UnknownOutcomePolicy.retryAllowed(JSONObject().put("state", "validation_failed")))
         assertTrue(UnknownOutcomePolicy.retryAllowed(JSONObject().put("state", "authorized_retry")))
         assertFalse(UnknownOutcomePolicy.retryAllowed(JSONObject().put("state", "authorized_retry"), false))
     }

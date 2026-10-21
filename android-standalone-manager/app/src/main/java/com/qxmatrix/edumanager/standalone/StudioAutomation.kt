@@ -58,13 +58,13 @@ class StudioAutomation(private val context: Context) {
         const val UNIQUE_WORK = "standalone-studio-daily"
         fun schedule(context: Context) {
             val request = PeriodicWorkRequestBuilder<StudioAutomationWorker>(24, TimeUnit.HOURS)
-                .setConstraints(Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).setRequiresBatteryNotLow(true).setRequiresStorageNotLow(true).build()).build()
+                .setConstraints(BackgroundWorkPolicy.remoteConstraints).build()
             WorkManager.getInstance(context).enqueueUniquePeriodicWork(UNIQUE_WORK, ExistingPeriodicWorkPolicy.KEEP, request)
         }
         fun enqueueCheck(context: Context, studentId: String) {
             val request = OneTimeWorkRequestBuilder<StudioAutomationWorker>().setInputData(Data.Builder().putString("studentId", studentId).build())
-                .setConstraints(Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).setRequiresBatteryNotLow(true).setRequiresStorageNotLow(true).build()).build()
-            WorkManager.getInstance(context).enqueueUniqueWork("studio-check:$studentId", ExistingWorkPolicy.KEEP, request)
+                .setConstraints(BackgroundWorkPolicy.remoteConstraints).build()
+            WorkManager.getInstance(context).enqueueUniqueWork(BackgroundWorkPolicy.uniqueName("studio-check", studentId), ExistingWorkPolicy.KEEP, request)
         }
     }
 }

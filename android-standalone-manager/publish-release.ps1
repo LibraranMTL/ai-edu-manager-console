@@ -4,6 +4,9 @@ param(
   [string]$DeviceSerial = '',
   [string]$OutputDirectory = '',
   [string]$CandidateTag = '',
+  [string]$PerformanceBaselinePath = '',
+  [string]$PerformanceResultPath = '',
+  [switch]$DeviceTestingOnly,
   [switch]$ResetSigningLocation
 )
 
@@ -107,6 +110,9 @@ try {
   if (-not [string]::IsNullOrWhiteSpace($DeviceSerial)) { $releaseArguments.DeviceSerial = $DeviceSerial }
   if (-not [string]::IsNullOrWhiteSpace($OutputDirectory)) { $releaseArguments.OutputDirectory = $OutputDirectory }
   if (-not [string]::IsNullOrWhiteSpace($CandidateTag)) { $releaseArguments.CandidateTag = $CandidateTag }
+  if (-not [string]::IsNullOrWhiteSpace($PerformanceBaselinePath)) { $releaseArguments.PerformanceBaselinePath = $PerformanceBaselinePath }
+  if (-not [string]::IsNullOrWhiteSpace($PerformanceResultPath)) { $releaseArguments.PerformanceResultPath = $PerformanceResultPath }
+  if ($DeviceTestingOnly) { $releaseArguments.DeviceTestingOnly = $true }
   & $releaseScript @releaseArguments
   if ($LASTEXITCODE -ne 0) { throw "Android release signing failed with exit code $LASTEXITCODE" }
 } finally {

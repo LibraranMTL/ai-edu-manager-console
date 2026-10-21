@@ -5,6 +5,7 @@ import android.app.AlertDialog
 import android.content.Intent
 import android.os.Bundle
 import android.widget.Button
+import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
@@ -19,7 +20,9 @@ class TaskCenterActivity : Activity() {
     private lateinit var status: TextView
     private val worker = Executors.newSingleThreadExecutor()
     private var generation = 0
-    private var filter = "all"
+    private var filter = "active"
+    private lateinit var query: EditText
+    private var offset = 0
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -30,27 +33,27 @@ class TaskCenterActivity : Activity() {
         status = text("正在读取当前学生任务…", 20f); root.addView(status)
         root.addView(text("仅当前学生及其关联项目。刷新不会重复处理；结果未知的任务需从原入口核对后恢复。", 13f))
         val controls = LinearLayout(this)
-        listOf("all" to "全部", "active" to "处理中", "help" to "需要处理", "done" to "已完成").forEach { (id, label) ->
-            controls.addView(button(label) { filter = id; refresh() }, LinearLayout.LayoutParams(0, -2, 1f))
+        listOf("active" to "处理中", "help" to "需要帮助", "history" to "历史记录").forEach { (id, label) ->
+            controls.addView(button(label) { filter = id; offset = 0; refresh() }, LinearLayout.LayoutParams(0, -2, 1f))
         }
         root.addView(controls)
+        query = EditText(this).apply { hint = "搜索任务、状态或项目"; setSingleLine(true) }
+        root.addView(query)
+        val paging = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        paging.addView(button("筛选／第一页") { offset = 0; refresh() }, LinearLayout.LayoutParams(0, -2, 1f))
+        paging.addView(button("上一页") { offset = (offset - PAGE_SIZE).coerceAtLeast(0); refresh() }, LinearLayout.LayoutParams(0, -2, 1f))
+        paging.addView(button("下一页") { offset += PAGE_SIZE; refresh() }, LinearLayout.LayoutParams(0, -2, 1f))
+        root.addView(paging)
         root.addView(button("刷新本机状态") { refresh() })
         root.addView(button("核对未知消化／云摘要结果（不自动重试）") { recoverUnknown() })
-        root.addView(button("查看本机 AI 安全上限（非账单）") {
-            worker.execute {
-                val result = runCatching {
-                    StudentIndexRepository(this).requireExact(studentId)
-                    val db = BusinessDatabase.get(this); BusinessRestoreRecovery.recover(this, db)
-                    listOf("text" to 600, "vision" to 300, "research" to 60, "asr" to 120).joinToString("\n") { (category, cap) ->
-                        "$category：${db.tasks().metadata("model-budget:${Timestamp.now().take(7)}:$category") ?: "0"} / $cap 次"
-                    } + "\n\n为整个家庭设备的保守安全上限，不是付费额度或费用估算。失败与未知预留不自动退还；实际权益以服务器为准。"
-                }
-                runOnUiThread { if (currentScope()) AlertDialog.Builder(this).setTitle("本月调用安全上限").setMessage(result.getOrElse { "读取失败，不能当作零用量" }).setPositiveButton("关闭", null).show() }
-            }
+        root.addView(button("高级详情（技术回执与安全上限）") {
+            showTechnicalDetails()
         })
         root.addView(button("修复当前学生资料清单副本（不移动原件）") {
             worker.execute {
-                val result = runCatching { StudentMaterialRepository(this, StudentIndexRepository(this).requireExact(studentId)).repairProjection() }
+                val result = runCatching {
+                    StudentMaterialRepository(this, StudentIndexRepository(this).requireExact(studentId)).repairProjection()
+                }
                 runOnUiThread { if (currentScope()) status.text = result.fold({ "清单副本已根据 Room 修复，原件未移动" }, { "副本修复未完成，Room 登记保留：${it.message}" }) }
             }
         })
@@ -75,9 +78,8 @@ class TaskCenterActivity : Activity() {
                 val tasks = TaskRepository(this).listForStudent(studentId, projects.map { it.id })
                 val jobs = projects.mapNotNull { project -> ProjectDigestQueue(this).latest(project.id)?.let { project to it } }
                 val db = BusinessDatabase.get(this)
-                Snapshot(student.name, tasks, jobs, db.ledger().calls(studentId), CloudReportSync(this).status(studentId),
-                    db.tasks().metadata("studio-auto-result:$studentId")?.let(::JSONObject),
-                    db.tasks().metadata("studio-budget:$studentId:${Timestamp.now().take(10)}")?.let { JSONObject(it).getInt("reserved") } ?: 0)
+                Snapshot(student.name, tasks, jobs, CloudReportSync(this).status(studentId),
+                    db.tasks().metadata("studio-auto-result:$studentId")?.let(::JSONObject))
             }
             runOnUiThread {
                 if (request != generation || !currentScope()) return@runOnUiThread
@@ -89,29 +91,29 @@ class TaskCenterActivity : Activity() {
     private fun matches(state: String) = when (filter) {
         "active" -> state in setOf("queued", "running", "waiting_network", "waiting_quota")
         "help" -> state in setOf("failed", "needs_user", "unknown")
-        "done" -> state in setOf("succeeded", "cancelled", "superseded")
-        else -> true
+        "history" -> state in setOf("succeeded", "cancelled", "superseded", "failed")
+        else -> state in setOf("queued", "running", "waiting_network", "waiting_quota")
     }
     private fun render(snapshot: Snapshot) {
         status.text = "${snapshot.name} · 任务中心"
         list.addView(text("资料任务（最近100条）", 18f))
+        val keyword = query.text.toString().trim()
         val tasks = snapshot.tasks.filter { matches(TaskCenterPolicy.viewState(it)) }
+            .filter { keyword.isBlank() || listOf(it.optString("title"), it.optString("status"), it.optString("message")).any { value -> value.contains(keyword, true) } }
+            .drop(offset).take(PAGE_SIZE)
         if (tasks.isEmpty()) list.addView(text("该筛选下没有任务。", 14f))
         tasks.forEach { task ->
             list.addView(button("${task.optString("title")} · ${TaskCenterPolicy.label(TaskCenterPolicy.viewState(task))}\n${task.optString("updatedAt")}") { details(task.getString("id")) })
         }
         list.addView(text("关联项目（每项目最近一次队列）", 18f))
-        snapshot.jobs.filter { matches(TaskCenterPolicy.viewState(it.second)) }.forEach { (project, job) ->
+        snapshot.jobs.filter { matches(TaskCenterPolicy.viewState(it.second)) }
+            .filter { keyword.isBlank() || it.first.name.contains(keyword, true) || it.second.optString("message").contains(keyword, true) }
+            .drop(offset).take(PAGE_SIZE).forEach { (project, job) ->
             list.addView(button("${project.name} · ${TaskCenterPolicy.label(TaskCenterPolicy.viewState(job))}\n${job.optString("message")}") {
                 if (currentScope()) startActivity(Intent(this, ProjectMaterialsActivity::class.java).putExtra(ProjectMaterialsActivity.EXTRA_PROJECT_ID, project.id))
             })
         }
-        list.addView(text("模型回执（最近50条；用量未知不计为0）", 18f))
-        list.addView(text("学习/规划今日预留请求 ${snapshot.reserved}/${StudioBudget.DAILY_CAP}；该上限不是金额估算，失败和未知请求不自动退款。", 14f))
         snapshot.automation?.let { list.addView(text("自动练习：${TaskCenterPolicy.label(it.optString("state"))}\n${it.optString("checkedAt")} · ${it.optString("message")}", 14f)) }
-        snapshot.calls.filter { matches(it.state) }.forEach { call ->
-            list.addView(text("${call.model} · ${TaskCenterPolicy.label(call.state)} · ${call.elapsedMs} ms\n输入 ${call.inputTokens?.toString() ?: "未知"} / 输出 ${call.outputTokens?.toString() ?: "未知"} Token${if (call.errorCode.isBlank()) "" else "\n${call.errorCode}"}", 14f))
-        }
         val cloud = snapshot.cloud
         list.addView(text("云端报告", 18f))
         list.addView(text(when {
@@ -121,6 +123,23 @@ class TaskCenterActivity : Activity() {
             cloud.pendingServerState.isNotBlank() -> "等待同步授权状态：${cloud.pendingServerState}"
             else -> "自动上传已开启；最近同步回执 ${if (cloud.lastSyncAt > 0) java.util.Date(cloud.lastSyncAt).toString() else "尚无"}"
         }, 14f))
+    }
+    private fun showTechnicalDetails() {
+        worker.execute {
+            val result = runCatching {
+                StudentIndexRepository(this).requireExact(studentId)
+                val db = BusinessDatabase.get(this); BusinessRestoreRecovery.recover(this, db)
+                val limits = listOf("text" to 600, "vision" to 300, "research" to 60, "asr" to 120).joinToString("\n") { (category, cap) ->
+                    "$category：${db.tasks().metadata("model-budget:${Timestamp.now().take(7)}:$category") ?: "0"} / $cap 次"
+                }
+                val reserved = db.tasks().metadata("studio-budget:$studentId:${Timestamp.now().take(10)}")?.let { JSONObject(it).optInt("reserved") } ?: 0
+                val calls = db.ledger().calls(studentId).take(50).joinToString("\n\n") { call ->
+                    "${call.model} · ${TaskCenterPolicy.label(call.state)} · ${call.elapsedMs} ms\n输入 ${call.inputTokens?.toString() ?: "未知"} / 输出 ${call.outputTokens?.toString() ?: "未知"}${if (call.errorCode.isBlank()) "" else " · ${call.errorCode}"}"
+                }.ifBlank { "暂无模型回执" }
+                "$limits\n学习/规划今日预留：$reserved/${StudioBudget.DAILY_CAP}\n\n最近模型回执：\n$calls\n\n以上为本机诊断和保守安全上限，不是账单；未知用量不计为 0，也不会自动重试。"
+            }
+            runOnUiThread { if (currentScope()) AlertDialog.Builder(this).setTitle("高级技术详情").setMessage(result.getOrElse { "读取失败，不能当作零用量" }).setPositiveButton("关闭", null).show() }
+        }
     }
     private fun details(taskId: String) {
         val request = generation
@@ -164,7 +183,10 @@ class TaskCenterActivity : Activity() {
                                 val text = note.text.toString()
                                 worker.execute {
                                     val saved = runCatching { require(currentScope()); UnknownOutcomeRecovery(this).authorize(studentId, row.name, ScopedContentPolicy.fingerprint(payload), text) }
-                                    runOnUiThread { if (currentScope()) saved.onSuccess { status.text = "已记录单次授权；请返回原入口操作，未自动重试" }.onFailure(::showError) }
+                                    runOnUiThread { if (currentScope()) saved.onSuccess { restored ->
+                                        status.text = if (restored > 0) "已记录单次授权；$restored 份相关资料已返回待消化列表，请返回资料页明确选择消化"
+                                        else "已记录单次授权；请返回原入口明确操作，未自动重试"
+                                    }.onFailure(::showError) }
                                 }
                             }.show()
                     }.show()
@@ -173,8 +195,11 @@ class TaskCenterActivity : Activity() {
         }
     }
     private fun text(value: String, size: Float) = TextView(this).apply { text = value; textSize = size; setTextColor(palette.text); setPadding(0, dp(8), 0, dp(8)) }
-    private fun button(label: String, action: () -> Unit) = Button(this).apply { text = label; isAllCaps = false; setTextColor(palette.accentDark); setOnClickListener { action() } }
+    private fun button(label: String, action: () -> Unit) = Button(this).apply { text = label; YouthUi.applyButton(this, palette, YouthButtonRole.COMPACT); setOnClickListener { action() } }
     private fun dp(value: Int) = (value * resources.displayMetrics.density).toInt()
-    private data class Snapshot(val name: String, val tasks: List<JSONObject>, val jobs: List<Pair<ProjectRecord, JSONObject>>, val calls: List<ModelCallEntity>, val cloud: CloudReportStatus, val automation: JSONObject?, val reserved: Int)
-    companion object { const val EXTRA_STUDENT_ID = "student_id" }
+    private data class Snapshot(val name: String, val tasks: List<JSONObject>, val jobs: List<Pair<ProjectRecord, JSONObject>>, val cloud: CloudReportStatus, val automation: JSONObject?)
+    companion object {
+        const val EXTRA_STUDENT_ID = "student_id"
+        private const val PAGE_SIZE = 50
+    }
 }

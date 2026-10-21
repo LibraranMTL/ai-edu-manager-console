@@ -6,6 +6,12 @@ import org.junit.Test
 
 class WorkspacePathTest {
     @Test
+    fun `authorized root is represented only when explicitly allowed`() {
+        assertEquals(emptyList<String>(), WorkspacePath.segments("", allowRoot = true))
+        assertThrows(IllegalArgumentException::class.java) { WorkspacePath.segments("") }
+    }
+
+    @Test
     fun normalizesWindowsSeparatorsWithoutChangingNames() {
         assertEquals("学生甲知识库/AGENT.md", WorkspacePath.normalized("学生甲知识库\\AGENT.md"))
     }

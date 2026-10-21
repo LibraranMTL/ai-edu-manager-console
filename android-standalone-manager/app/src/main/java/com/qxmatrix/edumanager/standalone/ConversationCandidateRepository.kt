@@ -7,6 +7,7 @@ import java.security.MessageDigest
 
 /** Review state for source-backed knowledge extracted from one immutable conversation. */
 class ConversationCandidateRepository(context: Context) {
+    private val appContext = context.applicationContext
     private val state = PrivateStateStore(context)
 
     fun list(studentId: String? = null, status: String? = null): List<JSONObject> = read().getJSONArray("candidates").toObjects()
@@ -85,7 +86,12 @@ class ConversationCandidateRepository(context: Context) {
         JSONObject().put("schema", "edu-manager.android-conversation-candidates.v1").put("candidates", JSONArray()).put("updatedAt", "")
     }
 
-    private fun write(value: JSONObject) = state.writeBytes(PATH, (value.toString(2) + "\n").toByteArray())
+    private fun write(value: JSONObject) {
+        state.writeBytes(PATH, (value.toString(2) + "\n").toByteArray())
+        value.getJSONArray("candidates").toObjects().groupBy { it.optString("studentId") }.forEach { (studentId, rows) ->
+            HighGrowthRoomStore(appContext).mirrorAsync(studentId, HighGrowthRoomStore.CONVERSATION_CANDIDATE, rows)
+        }
+    }
 
     private fun normalize(input: JSONObject): JSONObject = JSONObject(input.toString()).apply {
         if (!has("note")) put("note", "")

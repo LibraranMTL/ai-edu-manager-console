@@ -3,6 +3,7 @@ package com.qxmatrix.edumanager.standalone
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import org.json.JSONObject
 
 class StudentModelsTest {
     @Test
@@ -50,5 +51,20 @@ class StudentModelsTest {
     @Test
     fun sanitizesWindowsIllegalCharactersForCrossPlatformCompatibility() {
         assertEquals("张三测试", StudentNamePolicy.sanitize(" 张:三*测试 "))
+    }
+
+    @Test
+    fun legacyStudentWithoutExplicitPathsFallsBackToItsExistingWorkspaceLayout() {
+        val legacy = JSONObject()
+            .put("id", "student-legacy-1")
+            .put("name", "张三")
+            .put("knowledgeBaseMode", "standard")
+            .put("storageRootUri", "content://tree/root")
+            .put("rootPath", "旧版张三知识库")
+        val restored = StudentRecord.fromJson(legacy)
+        assertEquals("旧版张三知识库/张三原始资料库", restored.paths.rawPath)
+        assertEquals("旧版张三知识库/张三学情分析汇总", restored.paths.summaryPath)
+        assertEquals("旧版张三知识库/AGENT.md", restored.paths.agentPath)
+        assertEquals("旧版张三知识库/输出结果", restored.paths.outputPath)
     }
 }

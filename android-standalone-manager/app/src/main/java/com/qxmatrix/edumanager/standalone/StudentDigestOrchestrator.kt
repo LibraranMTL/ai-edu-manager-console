@@ -10,23 +10,27 @@ class StudentDigestOrchestrator(private val context: Context) {
     private val students = StudentIndexRepository(context)
     private val files = FileAssetService(context)
     private val tasks = TaskRepository(context)
+    private val digestSources = MaterialDigestSourceResolver(context, files)
 
-    fun digestPending(studentId: String): JSONObject = digest(studentId, null)
+    fun digestPending(studentId: String): JSONObject = digest(studentId, null, explicitUserAction = false)
 
-    fun digestSelected(studentId: String, materialIds: Set<String>): JSONObject {
+    fun digestSelected(studentId: String, materialIds: Set<String>, explicitUserAction: Boolean = true): JSONObject {
         require(materialIds.isNotEmpty()) { "没有选择要消化的资料" }
-        return digest(studentId, materialIds)
+        return digest(studentId, materialIds, explicitUserAction)
     }
 
-    private fun digest(studentId: String, selectedMaterialIds: Set<String>?): JSONObject = synchronized(StudentWorkLocks.forStudent(studentId)) {
+    private fun digest(studentId: String, selectedMaterialIds: Set<String>?, explicitUserAction: Boolean): JSONObject = synchronized(StudentWorkLocks.forStudent(studentId)) {
         val student = students.requireExact(studentId)
         val materials = files.materials(studentId).filter {
             MaterialStatus.normalize(it.optString("status")) == MaterialStatus.PENDING_DIGEST &&
                 (selectedMaterialIds == null || it.optString("id") in selectedMaterialIds)
         }
         require(materials.isNotEmpty()) { "当前没有待消化资料" }
-        val eligible = materials.filter { it.optString("fileName").substringAfterLast('.', "").lowercase() in setOf("txt", "md", "csv", "json") || it.optString("ocrStatus") == "completed" }.take(20)
-        require(eligible.isNotEmpty()) { "当前待消化资料需要先经过 W7 OCR/文档解析" }
+        val eligible = materials.filter(MaterialProcessingPolicy::digestReady).take(20)
+        require(eligible.isNotEmpty()) { "当前待消化资料需要先完成 OCR/文档解析；未识别到内容的资料请返回 OCR 补充处理" }
+        require(explicitUserAction || eligible.none { it.optString("digestRecoveryState") == "authorized_retry" }) {
+            "已授权的未知消化结果只能由用户在资料页明确选择后重试"
+        }
         val expectedPath = "${student.paths.summaryPath}/摘要库/消化结果.md"
         val task = tasks.create(JSONObject()
             .put("title", "${student.name} 资料消化").put("kind", "student_digest").put("sourceType", "student").put("sourceId", student.id).put("sourceName", student.name)
@@ -38,15 +42,15 @@ class StudentDigestOrchestrator(private val context: Context) {
                 .put("operations", JSONArray(listOf("read_file", "write_knowledge", "update_index")))))
         val running = tasks.start(task.getString("id")); val executionId = running.getString("executionId")
         eligible.forEach { files.transitionMaterial(studentId, it.getString("id"), MaterialStatus.SUBMITTED); files.transitionMaterial(studentId, it.getString("id"), MaterialStatus.DIGESTING) }
+        var unknownMarkerKey: String? = null
         try {
             val store = SafWorkspaceStore(context, Uri.parse(student.storageRootUri))
             val rules = store.readBytes(student.paths.agentPath).toString(Charsets.UTF_8)
             val sourceContents = eligible.map { material ->
                 val original = files.readMaterialBytes(studentId, material.getString("id"))
                 material.put("digestSourceSha256", ScopedContentPolicy.hash(original))
-                val content = if (material.optString("ocrStatus") == "completed" && material.optString("ocrPath").isNotBlank()) {
-                    JSONObject(files.readLogicalBytes(studentId, material.getString("ocrPath")).toString(Charsets.UTF_8)).optString("text")
-                } else original.toString(Charsets.UTF_8)
+                val content = digestSources.resolve(studentId, material)
+                require(content.isNotBlank()) { "${material.optString("fileName")} 没有可消化内容，请返回 OCR 补充处理" }
                 material.put("digestTextSha256", ScopedContentPolicy.hash(content.toByteArray()))
                 val bounded = content.take(6_000)
                 material to bounded
@@ -59,13 +63,26 @@ class StudentDigestOrchestrator(private val context: Context) {
             val content = ScopedContentRepository(context); val db = BusinessDatabase.get(context)
             val cached = content.checkpoint(studentId, "digest_result", cacheKey)
             val markerKey = "digest-request:$studentId:$cacheKey"
+            unknownMarkerKey = markerKey
             val parsed = if (cached != null) cached.getJSONObject("result") else {
-                require(UnknownOutcomePolicy.retryAllowed(db.tasks().metadata(markerKey)?.let(::JSONObject), selectedMaterialIds != null)) { "上次相同资料消化结果未知，请到任务中心核对并单次授权，再手动选择资料消化；不会自动重试" }
-                db.tasks().metadata(BusinessMetadataEntity(markerKey, JSONObject().put("state", "unknown").put("taskId", task.getString("id")).toString()))
+                val previous = db.tasks().metadata(markerKey)?.let(::JSONObject)
+                if (previous?.optString("state") == "unknown" && explicitUserAction && eligible.all(::hasLegacyLocalValidationFailure)) {
+                    db.tasks().metadata(BusinessMetadataEntity(markerKey, JSONObject(previous.toString())
+                        .put("state", "validation_failed").put("recoveredAt", Timestamp.now())
+                        .put("recoveryReason", "legacy-local-evidence-validation").toString()))
+                }
+                val retryState = db.tasks().metadata(markerKey)?.let(::JSONObject)
+                require(UnknownOutcomePolicy.retryAllowed(retryState, explicitUserAction)) { "上次相同资料消化结果未知，请到任务中心核对并单次授权；授权后资料会回到待消化列表，仍需由你明确选择消化" }
+                db.tasks().metadata(BusinessMetadataEntity(markerKey, JSONObject().put("state", "unknown").put("taskId", task.getString("id"))
+                    .put("materialIds", JSONArray(eligible.map { it.getString("id") })).toString()))
                 val response = OpenAiCompatibleAgentAdapter(adapterConfig, context, student.id, task.getString("id")).execute(
                     "你是 AI 教育管家的资料消化 Agent。严格遵守 AGENT.md；只形成可审计知识候选，不发布正式教育结论。只输出 JSON。", prompt)
-                parseJsonResponse(response).also { result ->
-                    DigestEvidencePolicy.validate(result, sourceContents.associate { it.first.getString("id") to it.second })
+                db.tasks().metadata(BusinessMetadataEntity(markerKey, JSONObject().put("state", "received").put("taskId", task.getString("id"))
+                    .put("materialIds", JSONArray(eligible.map { it.getString("id") })).put("receivedAt", Timestamp.now()).toString()))
+                DigestEvidencePolicy.sanitized(
+                    parseJsonResponse(response),
+                    sourceContents.associate { it.first.getString("id") to it.second },
+                ).also { result ->
                     content.saveCheckpoint(studentId, "digest_result", cacheKey, JSONObject().put("result", result)
                         .put("markdown", digestMarkdown(student, result, sourceContents)).put("sourceFingerprint", cacheKey))
                     db.tasks().metadata(BusinessMetadataEntity(markerKey, JSONObject().put("state", "succeeded").toString()))
@@ -74,10 +91,8 @@ class StudentDigestOrchestrator(private val context: Context) {
             DigestEvidencePolicy.validate(parsed, sourceContents.associate { it.first.getString("id") to it.second })
             sourceContents.forEach { (material, _) ->
                 require(ScopedContentPolicy.hash(files.readMaterialBytes(studentId, material.getString("id"))) == material.getString("digestSourceSha256")) { "来源已变化，拒绝写入迟到结果" }
-                if (material.optString("ocrStatus") == "completed" && material.optString("ocrPath").isNotBlank()) {
-                    val text = JSONObject(files.readLogicalBytes(studentId, material.getString("ocrPath")).toString(Charsets.UTF_8)).optString("text")
-                    require(ScopedContentPolicy.hash(text.toByteArray()) == material.getString("digestTextSha256")) { "OCR 来源已变化，原版本保留" }
-                }
+                val text = digestSources.resolve(studentId, material)
+                require(ScopedContentPolicy.hash(text.toByteArray()) == material.getString("digestTextSha256")) { "解析来源已变化，原版本保留" }
             }
             val artifactPath = "${student.paths.summaryPath}/摘要库/消化-${cacheKey.take(24)}.md"
             val markdown = requireNotNull(content.checkpoint(studentId, "digest_result", cacheKey)).getString("markdown")
@@ -89,23 +104,42 @@ class StudentDigestOrchestrator(private val context: Context) {
                 files.patchMaterial(studentId, it.getString("id"), JSONObject()
                     .put("digestedAt", Timestamp.now()).put("digestBatchId", executionId)
                     .put("digestArtifactPath", artifactPath).put("digestResult", parsed.optString("summary"))
-                    .put("digestAttemptedAt", Timestamp.now()).put("digestError", ""))
+                    .put("digestAttemptedAt", Timestamp.now()).put("digestError", "").put("digestRecoveryState", "completed"))
                 files.transitionMaterial(studentId, it.getString("id"), MaterialStatus.PROCESSED)
             }
             val result = resultPayload(task.getString("id"), executionId, true, "已消化 ${eligible.size} 份资料", artifactPath)
             tasks.acceptResult(task.getString("id"), result)
             JSONObject().put("ok", true).put("task", tasks.requireExact(task.getString("id"))).put("artifactPath", artifactPath).put("processed", eligible.size)
         } catch (error: Throwable) {
+            unknownMarkerKey?.let { marker ->
+                val metadata = BusinessDatabase.get(context).tasks().metadata(marker)?.let(::JSONObject)
+                if (metadata?.optString("state") == "received") {
+                    BusinessDatabase.get(context).tasks().metadata(BusinessMetadataEntity(marker, JSONObject(metadata.toString())
+                        .put("state", "validation_failed").put("failedAt", Timestamp.now())
+                        .put("message", (error.message ?: "本地结果校验失败").take(600)).toString()))
+                }
+            }
+            val unknownOutcome = unknownMarkerKey?.let { marker ->
+                BusinessDatabase.get(context).tasks().metadata(marker)?.let(::JSONObject)?.optString("state") == "unknown"
+            } == true
             eligible.forEach { material -> runCatching {
                 files.patchMaterial(studentId, material.getString("id"), JSONObject()
                     .put("digestAttemptedAt", Timestamp.now()).put("digestBatchId", executionId)
-                    .put("digestError", (error.message ?: "资料消化失败").take(600)))
+                    .put("digestError", (error.message ?: "资料消化失败").take(600))
+                    .put("digestRecoveryState", if (unknownOutcome) "needs_user" else "failed"))
                 files.transitionMaterial(studentId, material.getString("id"), MaterialStatus.FAILED)
             } }
             val result = resultPayload(task.getString("id"), executionId, false, error.message ?: "资料消化失败", "")
             runCatching { tasks.acceptResult(task.getString("id"), result) }
             throw error
         }
+    }
+
+    private fun hasLegacyLocalValidationFailure(material: JSONObject): Boolean {
+        val message = material.optString("digestError")
+        return message.contains("候选摘录不在固定输入片段中") ||
+            message.contains("成长观察缺少真实原文摘录") ||
+            message.contains("知识声明没有真实原文摘录")
     }
 
     private fun buildPrompt(student: StudentRecord, rules: String, sources: List<Pair<JSONObject, String>>): String = buildString {
@@ -130,7 +164,7 @@ class StudentDigestOrchestrator(private val context: Context) {
             val title = candidate.optString("title").trim(); val observation = candidate.optString("observation").trim()
             if (title.isBlank() || observation.isBlank()) continue
             val excerpt = candidate.optString("excerpt").trim()
-            require(excerpt.isNotBlank() && sources.single { it.first.getString("id") == material.getString("id") }.second.contains(excerpt)) { "成长观察缺少真实原文摘录，不登记" }
+            require(DigestEvidencePolicy.matchesExcerpt(sources.single { it.first.getString("id") == material.getString("id") }.second, excerpt)) { "成长观察缺少真实原文摘录，不登记" }
             val content = if (excerpt.isBlank() || observation.contains(excerpt)) observation else "$observation\n\n原文摘录：$excerpt"
             growth.addAutomaticCandidate(
                 studentId = student.id,
@@ -155,7 +189,7 @@ class StudentDigestOrchestrator(private val context: Context) {
         for (index in 0 until claims.length()) {
             val candidate = claims.optJSONObject(index) ?: continue; val materialId = candidate.optString("sourceMaterialId"); val sourceUri = uriByMaterial[materialId] ?: continue
             val predicate = candidate.optString("predicate").trim(); if (predicate.isBlank() || candidate.optString("value").isBlank()) continue
-            require(candidate.optString("excerpt").isNotBlank() && sources.single { it.first.getString("id") == materialId }.second.contains(candidate.getString("excerpt"))) { "知识声明没有真实原文摘录，不登记" }
+            require(DigestEvidencePolicy.matchesExcerpt(sources.single { it.first.getString("id") == materialId }.second, candidate.optString("excerpt"))) { "知识声明没有真实原文摘录，不登记" }
             val source = sources.single { it.first.getString("id") == materialId }.first
             val identity = ScopedContentPolicy.hash("$cacheKey:$materialId:$predicate:${candidate.optString("value")}".toByteArray()).take(24)
             val evidence = JSONArray().put(JSONObject().put("id", "evidence-$identity").put("sourceUri", sourceUri).put("excerpt", candidate.optString("excerpt")).put("observedAt", Timestamp.now())

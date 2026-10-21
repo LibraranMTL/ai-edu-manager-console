@@ -44,7 +44,8 @@ test('1.2.1 schedules constrained daily automatic digestion', () => {
 test('1.2.1 reuses governed conversation import from material collection', () => {
   const activity = read('MainActivity.kt');
   const matches = activity.match(/YouthAction\([^\n]*showConversationImportMenu\(\)/g) || [];
-  assert.ok(matches.length >= 2, 'conversation import should be reachable from both assistant and material collection');
+  assert.equal(matches.length, 1, 'conversation import should remain in material collection after assistant removal');
+  assert.match(activity, /对话资料与候选知识/);
 });
 
 test('1.2.1 vision diagnostics use a non-student image accepted by common model limits', () => {

@@ -8,16 +8,9 @@ const android = path.join(root, 'android-standalone-manager');
 const java = path.join(android, 'app', 'src', 'main', 'java', 'com', 'qxmatrix', 'edumanager', 'standalone');
 const read = (value) => fs.readFileSync(value, 'utf8');
 
-test('P5 registers an explicit user-started Android nearby foreground receiver', () => {
+test('1.3 removes the nearby collaboration receiver from the runtime surface', () => {
   const manifest = read(path.join(android, 'app', 'src', 'main', 'AndroidManifest.xml'));
-  const service = read(path.join(java, 'CollaborationNearbyService.kt'));
-  assert.match(manifest, /android:name="\.CollaborationNearbyService"/);
-  assert.match(manifest, /android:foregroundServiceType="dataSync"/);
-  assert.match(service, /ACTION_START/);
-  assert.match(service, /ACTION_STOP/);
-  assert.match(service, /START_NOT_STICKY/);
-  assert.match(service, /setOngoing\(true\)/);
-  assert.match(service, /附近知识协作/);
+  assert.doesNotMatch(manifest, /CollaborationNearbyService|CollaborationActivity|CollaborationQrScannerActivity/);
 });
 
 test('P5 Android peers discover one another over LAN or hotspot without Bluetooth', () => {

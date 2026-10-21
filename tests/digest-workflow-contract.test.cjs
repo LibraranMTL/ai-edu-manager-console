@@ -29,6 +29,10 @@ test('digest command copy uses the current frozen batch and reports clipboard fe
   assert.match(renderer, /复制当前批次指令/);
   assert.match(renderer, /await copyText\(result\.command/);
   assert.match(renderer, /showActionNotice\(false, '复制失败'/);
+  assert.match(renderer, /selectedProject\.materialStorageMode !== 'workspace-v1'[\s\S]*?复制当前批次指令/);
+  const commandFunction = main.slice(main.indexOf('function getDigestWorkflowCommand'), main.indexOf('function reconcileDigestWorkflows'));
+  assert.ok(commandFunction.indexOf('isWorkspaceMaterialProject(project)') < commandFunction.indexOf('attachDigestBatchToTask(task.id, request'),
+    'workspace projects must be rejected before the legacy command path mutates the task');
 });
 
 test('digest execution respects the bound Agent and terminal failures can be retried', () => {

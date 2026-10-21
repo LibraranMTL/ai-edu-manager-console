@@ -41,7 +41,10 @@ class LicenseQrScannerActivity : ComponentActivity() {
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) {
             startCamera()
         } else {
-            requestPermissions(arrayOf(Manifest.permission.CAMERA), REQUEST_CAMERA_PERMISSION)
+            PermissionRationale.request(this, Manifest.permission.CAMERA, REQUEST_CAMERA_PERMISSION,
+                R.string.permission_camera_title, R.string.permission_camera_reason) {
+                statusText.text = "未启用相机，可返回后粘贴激活码或从相册识别二维码。"
+            }
         }
     }
 

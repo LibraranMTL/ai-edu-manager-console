@@ -7,12 +7,15 @@ const root = path.join(__dirname, '..', 'android-standalone-manager', 'app', 'sr
 const javaRoot = path.join(root, 'java', 'com', 'qxmatrix', 'edumanager', 'standalone');
 const read = (name) => fs.readFileSync(path.join(javaRoot, name), 'utf8');
 
-test('W11 presents the agreed eight-section household tablet navigation', () => {
+test('W11 presents the streamlined personal-learning navigation', () => {
   const source = read('MainActivity.kt');
-  for (const label of ['教育档案', '资料收集与处理', '课程中心', 'AI助手问答', '成长模型', '学情报告', '学习项目', '系统设置']) {
-    assert.match(source, new RegExp(label));
+  const navigation = read('StandaloneNavigation.kt');
+  const strings = fs.readFileSync(path.join(root, 'res', 'values', 'strings.xml'), 'utf8');
+  for (const label of ['首页', '学生与档案', '资料', '学习', '报告', '项目与成果', '设置']) {
+    assert.match(strings, new RegExp(label));
   }
-  assert.match(source, /enum class AppSection/);
+  assert.doesNotMatch(source, /AI助手问答|AppSection\.ASSISTANT|renderAssistant/);
+  assert.match(navigation, /enum class AppSection/);
   assert.match(source, /Configuration\.ORIENTATION_LANDSCAPE/);
 });
 
@@ -43,16 +46,17 @@ test('W11 offers course learning with explicit system-authorized capture startup
   assert.match(learning, /handleCapturePrimary\(\)/);
 });
 
-test('W11 Agent configuration can be edited, tested, disabled and can launch capability apps', () => {
+test('W11 Agent configuration remains bounded while controlled gateway and launchers are removed', () => {
   const main = read('MainActivity.kt');
   const agent = read('AgentAdapter.kt');
-  for (const value of ['配置任务 Agent', '测试 Agent', '停用任务 Agent', '打开 PalmClaw', '打开 MobileClaw']) {
+  for (const value of ['配置任务 Agent', '测试 Agent', '停用任务 Agent']) {
     assert.match(main, new RegExp(value));
   }
+  assert.doesNotMatch(main, /受控模型网关|showGatewaySettings/);
   assert.match(agent, /fun saveOrUpdate/);
   assert.match(agent, /fun testConnection/);
   assert.match(agent, /fun clear\(\)/);
-  assert.match(main, /getLaunchIntentForPackage/);
+  assert.doesNotMatch(main, /getLaunchIntentForPackage|openAgentTool|Agent 工具适配/);
 });
 
 test('W11 exposes five skins and landscape, portrait and adaptive layouts', () => {

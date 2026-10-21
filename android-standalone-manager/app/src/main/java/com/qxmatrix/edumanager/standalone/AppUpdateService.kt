@@ -3,7 +3,6 @@ package com.qxmatrix.edumanager.standalone
 import android.content.Context
 import org.json.JSONObject
 import java.io.File
-import java.net.HttpURLConnection
 import java.net.URL
 import java.security.MessageDigest
 
@@ -36,10 +35,9 @@ class AppUpdateService(private val context: Context) {
         val temporary = File(directory, "standalone-${update.versionCode}.apk.part")
         val target = File(directory, "standalone-${update.versionCode}.apk")
         temporary.delete(); target.delete()
-        val connection = URL(update.apkUrl).openConnection() as HttpURLConnection
-        connection.connectTimeout = 10_000; connection.readTimeout = 60_000
-        connection.instanceFollowRedirects = true
-        connection.setRequestProperty("Accept", "application/vnd.android.package-archive, application/octet-stream")
+        val connection = UnifiedNetworkClient.openConnection(NetworkRequest(update.apkUrl,
+            headers = mapOf("Accept" to "application/vnd.android.package-archive, application/octet-stream"),
+            connectTimeoutMs = 10_000, readTimeoutMs = 60_000, maxResponseBytes = MAX_APK_BYTES, followRedirects = true))
         try {
             val code = connection.responseCode
             require(code in 200..299) { "下载新版 APK 失败：HTTP $code" }
@@ -67,14 +65,10 @@ class AppUpdateService(private val context: Context) {
     }
 
     private fun readJson(url: String): JSONObject {
-        val connection = URL(url).openConnection() as HttpURLConnection
-        connection.connectTimeout = 8_000; connection.readTimeout = 15_000
-        connection.setRequestProperty("Accept", "application/json")
-        try {
-            val code = connection.responseCode
-            require(code in 200..299) { "检查更新失败：HTTP $code" }
-            return JSONObject(connection.inputStream.bufferedReader(Charsets.UTF_8).use { it.readText() })
-        } finally { connection.disconnect() }
+        val response = UnifiedNetworkClient.execute(NetworkRequest(url, headers = mapOf("Accept" to "application/json"),
+            connectTimeoutMs = 8_000, readTimeoutMs = 15_000, maxResponseBytes = 1_000_000))
+        require(response.status in 200..299) { "检查更新失败：HTTP ${response.status}" }
+        return JSONObject(response.body.toString(Charsets.UTF_8))
     }
 
     private fun requireAllowedDownload(value: String) {

@@ -2,7 +2,8 @@ package com.qxmatrix.edumanager.standalone
 
 /** Validates logical paths before they are resolved inside a user-authorized SAF tree. */
 object WorkspacePath {
-    fun segments(relativePath: String): List<String> {
+    fun segments(relativePath: String, allowRoot: Boolean = false): List<String> {
+        if (relativePath.isBlank() && allowRoot) return emptyList()
         require(relativePath.isNotBlank()) { "Workspace path must not be blank" }
         require('\u0000' !in relativePath) { "Workspace path contains a null byte" }
         require(!relativePath.startsWith('/') && !relativePath.startsWith('\\')) {

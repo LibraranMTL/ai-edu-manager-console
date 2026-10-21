@@ -13,7 +13,6 @@ object PublicSettingsSnapshot {
         .put("agent", AgentConfigurationStore(context).publicProfile()?.toJson() ?: JSONObject.NULL)
         .put("asr", AgentConfigurationStore(context, "local_asr").publicProfile()?.toJson() ?: JSONObject.NULL).toString().toByteArray()
     fun apply(context: Context, root: File) {
-        GatewaySettings(context).disable() // New device must enroll its own non-exportable proof key.
         val file = File(root, PATH); if (!file.isFile) return
         val value = JSONObject(file.readText()); require(value.getString("schema") == "edu-manager.public-settings.v1")
         UiPreferences(context).apply { setSkin(UiSkin.from(value.getString("skin"))); setLayoutMode(UiLayoutMode.from(value.getString("layout"))) }

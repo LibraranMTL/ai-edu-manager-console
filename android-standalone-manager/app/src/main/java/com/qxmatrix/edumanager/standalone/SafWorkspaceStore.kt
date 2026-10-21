@@ -5,6 +5,7 @@ import android.net.Uri
 import androidx.documentfile.provider.DocumentFile
 import java.io.FileNotFoundException
 import java.io.InputStream
+import java.util.PriorityQueue
 import java.util.UUID
 
 /**
@@ -161,14 +162,21 @@ class SafWorkspaceStore(
 
     data class MarkdownFile(val name: String, val relativePath: String)
 
+    private data class ArchiveDirectory(
+        val document: DocumentFile,
+        val relativePath: String,
+        val depth: Int,
+        val priority: Int,
+    )
+
     /** Lists bounded Markdown documents below already-authorized logical roots. */
-    fun listMarkdownFiles(relativeRoots: List<String>, maximum: Int = 500, maximumDepth: Int = 12): List<MarkdownFile> {
+    fun listMarkdownFiles(relativeRoots: List<String>, maximum: Int = 500, maximumDepth: Int = 12, allowRoot: Boolean = false): List<MarkdownFile> {
         require(maximum in 1..2_000 && maximumDepth in 1..24)
         val result = linkedMapOf<String, MarkdownFile>()
-        relativeRoots.filter { it.isNotBlank() }.distinct().forEach { logicalRoot ->
+        relativeRoots.map { WorkspacePath.segments(it, allowRoot).joinToString("/") }
+            .filter { allowRoot || it.isNotBlank() }.distinct().forEach { normalized ->
             if (result.size >= maximum) return@forEach
-            val normalized = WorkspacePath.segments(logicalRoot).joinToString("/")
-            val document = find(WorkspacePath.segments(normalized)) ?: return@forEach
+            val document = find(WorkspacePath.segments(normalized, allowRoot)) ?: return@forEach
             if (document.isFile) {
                 val name = document.name.orEmpty()
                 if (name.endsWith(".md", true) || name.endsWith(".markdown", true)) result[normalized] = MarkdownFile(name, normalized)
@@ -189,6 +197,93 @@ class SafWorkspaceStore(
             if (child.isDirectory) walkMarkdown(child, relative, depth + 1, maximumDepth, maximum, output)
             else if (child.isFile && (name.endsWith(".md", true) || name.endsWith(".markdown", true))) output[relative] = MarkdownFile(name, relative)
         }
+    }
+
+    /**
+     * Finds legacy report/growth Markdown without recursively walking raw-material branches.
+     * Independent directory and entry budgets keep a large adopted USB tree responsive.
+     */
+    fun findArchiveMarkdownFiles(
+        relativeRoots: List<String>,
+        expectedFileNames: Set<String>,
+        pathTerms: Set<String>,
+        preferredTerms: Set<String>,
+        maximum: Int = 200,
+        maximumDepth: Int = 10,
+        maximumDirectories: Int = 120,
+        maximumEntries: Int = 4_000,
+        allowRoot: Boolean = false,
+    ): List<MarkdownFile> {
+        require(maximum in 1..500 && maximumDepth in 1..16)
+        require(maximumDirectories in 1..500 && maximumEntries in 1..20_000)
+        val normalizedNames = expectedFileNames.map(String::lowercase).toSet()
+        val normalizedPathTerms = pathTerms.map(String::lowercase).filter(String::isNotBlank)
+        val normalizedPreferredTerms = preferredTerms.map(String::lowercase).filter(String::isNotBlank)
+        val output = linkedMapOf<String, MarkdownFile>()
+        val queued = mutableSetOf<String>()
+        val visited = mutableSetOf<String>()
+        val queue = PriorityQueue(
+            compareByDescending<ArchiveDirectory> { it.priority }
+                .thenBy { it.depth }
+                .thenBy { it.relativePath.lowercase() },
+        )
+
+        fun isMarkdown(name: String): Boolean = name.endsWith(".md", true) || name.endsWith(".markdown", true)
+        fun matches(name: String, relativePath: String): Boolean {
+            val normalizedName = name.lowercase()
+            val normalizedPath = relativePath.replace('\\', '/').lowercase()
+            return normalizedName in normalizedNames || normalizedPathTerms.any { normalizedPath.contains(it) }
+        }
+        fun priority(relativePath: String): Int {
+            val normalized = relativePath.lowercase()
+            return normalizedPreferredTerms.count { normalized.contains(it) } * 100 - normalized.count { it == '/' }
+        }
+        fun shouldDescend(name: String, relativePath: String): Boolean {
+            if (name.isBlank() || name.startsWith('.')) return false
+            val normalizedName = name.lowercase()
+            val preferred = normalizedPreferredTerms.any {
+                normalizedName.contains(it) || relativePath.lowercase().contains(it)
+            }
+            if (preferred) return true
+            return ARCHIVE_SCAN_EXCLUDED_TERMS.none { normalizedName.contains(it) }
+        }
+        fun enqueue(document: DocumentFile, relativePath: String, depth: Int) {
+            val key = relativePath.replace('\\', '/').trim('/')
+            if (queued.add(key)) queue += ArchiveDirectory(document, key, depth, priority(key))
+        }
+
+        relativeRoots.map { WorkspacePath.segments(it, allowRoot).joinToString("/") }
+            .filter { allowRoot || it.isNotBlank() }.distinct().forEach { normalized ->
+                val document = find(WorkspacePath.segments(normalized, allowRoot)) ?: return@forEach
+                val name = document.name.orEmpty()
+                if (document.isFile && isMarkdown(name) && matches(name, normalized)) {
+                    output[normalized] = MarkdownFile(name, normalized)
+                } else if (document.isDirectory) {
+                    enqueue(document, normalized, 0)
+                }
+            }
+
+        var visitedDirectories = 0
+        var visitedEntries = 0
+        while (queue.isNotEmpty() && output.size < maximum && visitedDirectories < maximumDirectories && visitedEntries < maximumEntries) {
+            val directory = queue.remove()
+            if (!visited.add(directory.relativePath)) continue
+            visitedDirectories += 1
+            val children = directory.document.listFiles()
+            visitedEntries += children.size
+            children.forEach { child ->
+                if (output.size >= maximum || visitedEntries > maximumEntries) return@forEach
+                val name = child.name.orEmpty()
+                if (name.isBlank() || name.startsWith('.')) return@forEach
+                val relative = if (directory.relativePath.isBlank()) name else "${directory.relativePath}/$name"
+                if (child.isFile && isMarkdown(name) && matches(name, relative)) {
+                    output[relative] = MarkdownFile(name, relative)
+                } else if (child.isDirectory && directory.depth < maximumDepth && shouldDescend(name, relative)) {
+                    enqueue(child, relative, directory.depth + 1)
+                }
+            }
+        }
+        return output.values.sortedWith(compareBy<MarkdownFile>({ it.relativePath.lowercase() }, { it.name.lowercase() }))
     }
 
     /**
@@ -294,6 +389,10 @@ class SafWorkspaceStore(
     }
 
     companion object {
+        private val ARCHIVE_SCAN_EXCLUDED_TERMS = setOf(
+            "原始资料", "学习资料", "课程资料", "附件", "图片", "照片", "录音", "视频",
+            "ocr", "缓存", "cache", "temp", "temporary", "raw", "materials", "media", "attachments",
+        )
         private val COLLABORATION_TEXT_EXTENSIONS = setOf("md", "markdown", "json", "txt", "csv")
     }
 }

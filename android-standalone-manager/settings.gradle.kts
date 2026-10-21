@@ -16,3 +16,4 @@ dependencyResolutionManagement {
 
 rootProject.name = "AiEducationManagerStandalone"
 include(":app")
+include(":benchmark")

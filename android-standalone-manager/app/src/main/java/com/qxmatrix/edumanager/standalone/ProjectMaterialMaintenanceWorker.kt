@@ -41,8 +41,7 @@ class ProjectMaterialMaintenanceWorker(context: Context, parameters: WorkerParam
 
         fun schedule(context: Context) {
             val request = PeriodicWorkRequestBuilder<ProjectMaterialMaintenanceWorker>(24, TimeUnit.HOURS)
-                .setConstraints(Constraints.Builder().setRequiredNetworkType(NetworkType.NOT_REQUIRED)
-                    .setRequiresStorageNotLow(true).setRequiresBatteryNotLow(true).build()).build()
+                .setConstraints(BackgroundWorkPolicy.localConstraints).build()
             WorkManager.getInstance(context.applicationContext)
                 .enqueueUniquePeriodicWork(UNIQUE_WORK, ExistingPeriodicWorkPolicy.KEEP, request)
         }

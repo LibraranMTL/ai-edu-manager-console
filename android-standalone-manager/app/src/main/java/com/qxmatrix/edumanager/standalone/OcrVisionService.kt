@@ -87,10 +87,17 @@ class OcrVisionService(private val context: Context) {
                 pageObjects.all { it.getString("visionStatus") == "completed" } -> "completed"
                 else -> "unavailable"
             }
+            val digestText = MaterialProcessingPolicy.digestInput(JSONObject()
+                .put("text", extracted.text).put("visionSummary", vision))
+            val digestReady = digestText.isNotBlank()
+            val ocrStatus = if (digestReady) "completed" else "needs_user"
+            val ocrError = if (digestReady) "" else "未识别到可消化内容，请重新拍摄清晰图片，或补充视觉解析后重试"
             val result = JSONObject().put("schema", "edu-manager.ocr-result.v1").put("studentId", student.id).put("materialId", materialId)
                 .put("sourceSha1", material.getString("sha1")).put("ocrEngine", "mlkit-text-recognition-chinese-16.0.1")
                 .put("sourceSha256", sourceHash).put("pages", pages).put("processingVersion", "ocr-page-v1").put("evidenceStatus", "machine_observed")
                 .put("pageCount", extracted.pageCount).put("text", extracted.text).put("visionSummary", vision)
+                .put("digestText", digestText).put("digestReady", digestReady)
+                .put("digestInputKind", MaterialProcessingPolicy.inputKind(extracted.text, vision))
                 .put("visionStatus", visionStatus).put("visionError", visionError.take(800))
                 .put("visionRecoveryState", if (visionStatus == "unavailable") "needs_user" else visionStatus)
                 .put("createdAt", Timestamp.now()).put("candidateOnly", true)
@@ -103,11 +110,18 @@ class OcrVisionService(private val context: Context) {
             }
             val markdown = "# ${material.getString("fileName")} OCR 结果\n\n> 机器提取候选，需结合原文件核对。\n\n## 识别文字\n\n${extracted.text}\n\n$visionMarkdown"
             tools.writeStudentFile(task.getString("id"), executionId, student.id, markdownPath, markdown.toByteArray(), "text/markdown", "write_ocr_result")
-            files.patchMaterial(student.id, materialId, JSONObject().put("ocrStatus", "completed").put("ocrPath", outputPath).put("ocrMarkdownPath", markdownPath)
+            files.patchMaterial(student.id, materialId, JSONObject().put("ocrStatus", ocrStatus).put("ocrError", ocrError)
+                .put("ocrPath", outputPath).put("ocrMarkdownPath", markdownPath).put("digestReady", digestReady)
+                .put("digestInputKind", MaterialProcessingPolicy.inputKind(extracted.text, vision))
                 .put("visionStatus", visionStatus).put("visionError", visionError.take(800)))
-            val message = if (visionStatus == "unavailable") "本地逐页 OCR 已完成；部分视觉页等待额度或人工核对，已完成页保留" else "OCR/视觉解析完成"
-            tasks.acceptResult(task.getString("id"), resultPayload(task.getString("id"), executionId, true, message, outputPath))
-            JSONObject().put("ok", true).put("task", tasks.requireExact(task.getString("id"))).put("result", result).put("outputPath", outputPath)
+            val message = when {
+                !digestReady -> ocrError
+                visionStatus == "unavailable" -> "本地逐页 OCR 已完成且可消化；部分视觉页等待额度或人工核对，已完成页保留"
+                else -> "OCR/视觉解析完成"
+            }
+            tasks.acceptResult(task.getString("id"), resultPayload(task.getString("id"), executionId, digestReady, message, outputPath))
+            JSONObject().put("ok", digestReady).put("message", message).put("task", tasks.requireExact(task.getString("id")))
+                .put("result", result).put("outputPath", outputPath)
         } catch (error: Throwable) {
             files.patchMaterial(student.id, materialId, JSONObject().put("ocrStatus", "failed").put("ocrError", error.message ?: "解析失败"))
             runCatching { tasks.acceptResult(task.getString("id"), resultPayload(task.getString("id"), executionId, false, error.message ?: "解析失败", "")) }

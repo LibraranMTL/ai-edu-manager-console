@@ -45,8 +45,6 @@ data class AgentConfigurationSnapshot(
 )
 
 class AgentConfigurationStore(context: Context, namespace: String = "local_agent") {
-    private val appContext = context.applicationContext
-    private val gatewayEligible = namespace == "local_agent"
     init { require(namespace in setOf("local_agent", "local_asr")) }
     private val preferences = context.applicationContext.getSharedPreferences(namespace, Context.MODE_PRIVATE)
     private val keyAlias = if (namespace == "local_agent") KEY_ALIAS else "edu_manager_asr_api_key_v1"
@@ -70,7 +68,6 @@ class AgentConfigurationStore(context: Context, namespace: String = "local_agent
 
     fun load(): AgentConfiguration? {
         val endpoint = preferences.getString("endpoint", "").orEmpty(); val model = preferences.getString("model", "").orEmpty(); val encrypted = preferences.getString("credential", "").orEmpty()
-        if (gatewayEligible && GatewaySettings(appContext).enabled() && model.isNotBlank()) return AgentConfiguration(GatewaySettings(appContext).endpoint(), model, "", preferences.getString("vision_model", "").orEmpty())
         if (endpoint.isBlank() || model.isBlank() || encrypted.isBlank()) return null
         return AgentConfiguration(endpoint, model, decrypt(encrypted), preferences.getString("vision_model", "").orEmpty())
     }

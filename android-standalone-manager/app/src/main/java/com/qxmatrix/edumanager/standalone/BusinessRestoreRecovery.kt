@@ -39,7 +39,8 @@ object BusinessRestoreRecovery {
             }
         }
         val prefs = journal.getJSONObject("preferences")
-        prefs.optJSONObject("gateway")?.let { value -> if (value.optString("endpoint").isNotBlank()) GatewaySettings(context).save(value.getString("endpoint"), value.getBoolean("enabled")) else GatewaySettings(context).disable() }
+        // Legacy journals may still contain a gateway object. It is intentionally ignored:
+        // the controlled-gateway feature is no longer a runtime setting in the standalone app.
         SafRootGrant(context).restoreDefaultForRollback(prefs.optString("root").takeIf(String::isNotBlank)?.let(Uri::parse))
         UiPreferences(context).apply { setSkin(UiSkin.from(prefs.getString("skin"))); setLayoutMode(UiLayoutMode.from(prefs.getString("layout"))) }
         prefs.optJSONArray("homePins")?.let { pins -> context.getSharedPreferences(MainActivity.UI_CONTEXT_PREFS, Context.MODE_PRIVATE).edit().putStringSet("home_pins", List(pins.length()) { pins.getString(it) }.toSet()).commit() }
@@ -63,7 +64,6 @@ object BusinessRestoreRecovery {
         val agent = AgentConfigurationStore(context).snapshotForRollback()
         val asr = AgentConfigurationStore(context, "local_asr").snapshotForRollback()
         val prefs = JSONObject().put("root", SafRootGrant(context).currentRootUri()?.toString().orEmpty())
-            .put("gateway", JSONObject().put("endpoint", GatewaySettings(context).endpoint()).put("enabled", GatewaySettings(context).enabled()))
             .put("homePins", JSONArray(context.getSharedPreferences(MainActivity.UI_CONTEXT_PREFS, Context.MODE_PRIVATE).getStringSet("home_pins", emptySet()).orEmpty().toList()))
             .put("skin", UiPreferences(context).skin().wireValue).put("layout", UiPreferences(context).layoutMode().wireValue)
             .put("agent", JSONObject().put("endpoint", agent.endpoint).put("model", agent.model).put("visionModel", agent.visionModel).put("encryptedCredential", agent.encryptedCredential))

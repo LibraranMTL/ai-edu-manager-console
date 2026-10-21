@@ -8,43 +8,31 @@ const java = path.join(root, 'java', 'com', 'qxmatrix', 'edumanager', 'standalon
 const main = fs.readFileSync(path.join(java, 'MainActivity.kt'), 'utf8');
 const manifest = fs.readFileSync(path.join(root, 'AndroidManifest.xml'), 'utf8');
 
-test('W14 settings expose installation status for the four supported Agent tools', () => {
-  assert.match(main, /Agent 工具适配/);
-  assert.match(main, /已安装.*toolStates\.count/s);
-  assert.match(main, /installedAgentPackage/);
-  assert.match(main, /getLaunchIntentForPackage/);
-  for (const label of ['PalmClaw', 'MobileClaw', '豆包', 'ChatGPT / Codex']) {
-    assert.match(main, new RegExp(label.replace('/', '\\/')));
-  }
+test('W14 settings keep the bounded task Agent and remove external Agent-tool adaptation', () => {
+  for (const label of ['配置任务 Agent', '测试 Agent', '停用任务 Agent']) assert.match(main, new RegExp(label));
+  assert.doesNotMatch(main, /受控模型网关|showGatewaySettings|Agent 工具适配|installedAgentPackage|getLaunchIntentForPackage/);
 });
 
-test('W14 installed tools can be opened and missing tools offer allowlisted official HTTPS pages', () => {
-  assert.match(main, /if \(installedPackage == null\) "官方下载" else "打开应用"/);
-  assert.match(main, /Intent\(Intent\.ACTION_VIEW, uri\)/);
-  assert.match(main, /uri\.scheme != "https"/);
-  assert.match(main, /allowedDownloadHost/);
-  for (const url of [
-    'https://github.com/ModalityDance/PalmClaw/releases/latest',
-    'https://mobileclaw.cc/',
-    'https://www.doubao.com/download/',
-    'https://play.google.com/store/apps/details?id=com.openai.chatgpt',
-  ]) {
-    assert.match(main, new RegExp(url.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
-  }
+test('W14 conversation material paths remain available after assistant deletion', () => {
+  assert.match(main, /showConversationImportMenu/);
+  assert.match(main, /openConversationKnowledge/);
+  assert.match(main, /EXTRA_OPEN_CONVERSATION_IMPORT/);
+  assert.match(main, /renderSection\(AppSection\.MATERIALS\)\s*\n\s*showConversationImportMenu/);
 });
 
-test('W14 Android package visibility covers PalmClaw, MobileClaw, Doubao and ChatGPT', () => {
+test('W14 Android package visibility does not expose external AI apps', () => {
   for (const packageName of [
     'com.modalitydance.palmclaw',
     'ai.affiora.mobileclaw',
     'com.larus.nova',
     'com.openai.chatgpt',
   ]) {
-    assert.match(manifest, new RegExp(packageName.replaceAll('.', '\\.')));
+    assert.doesNotMatch(manifest, new RegExp(packageName.replaceAll('.', '\\.')));
   }
+  assert.doesNotMatch(manifest, /<queries>/);
 });
 
-test('W14 adapter explicitly avoids reading other apps private data', () => {
-  assert.match(main, /不读取账号、聊天记录或其他 App 的私有数据/);
+test('W14 does not request broad access to other apps private data', () => {
   assert.doesNotMatch(main, /READ_CALL_LOG|QUERY_ALL_PACKAGES/);
+  assert.doesNotMatch(manifest, /QUERY_ALL_PACKAGES/);
 });

@@ -24,7 +24,7 @@ class ProjectMaterialsActivity : Activity() {
     private lateinit var status: TextView
     private lateinit var list: LinearLayout
     private lateinit var tabs: LinearLayout
-    private var view = "materials"
+    private var view = "dashboard"
     private var pendingRelinkMaterialId: String? = null
     private var actualCategories: Map<String, String> = emptyMap()
     private var searchText = ""
@@ -66,12 +66,13 @@ class ProjectMaterialsActivity : Activity() {
                     queue.acknowledgeUnknown(project.id, job.getString("jobId")); "已结束未知任务；确需再次消化时请明确重新加入队列"
                 } }.show()
         }, matchWrap())
+        root.addView(button("项目关闭检查") { showCloseChecklist() }, matchWrap())
         val third = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         third.addView(button("修复目录授权") { rebindMenu() }, weighted())
         third.addView(button("导出显式项目包") { confirmProjectExport() }, weighted())
         root.addView(third, matchWrap())
         tabs = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; setPadding(0, dp(8), 0, dp(6)) }
-        listOf("materials" to "项目资料", "pending" to "待整理", "knowledge" to "项目知识", "contributions" to "贡献证据").forEach { (id, label) ->
+        listOf("dashboard" to "项目仪表盘", "materials" to "项目资料", "pending" to "待整理", "knowledge" to "项目知识", "contributions" to "贡献证据").forEach { (id, label) ->
             tabs.addView(button(label) { view = id; refresh() }.apply { tag = id }, weighted())
         }
         root.addView(tabs, matchWrap())
@@ -98,6 +99,7 @@ class ProjectMaterialsActivity : Activity() {
                 Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION) }
             background("正在导出可校验项目包") {
                 val result = StandaloneProjectPackageService(this).exportProject(project.id, destination)
+                ProjectDashboardService(this).recordBackup(project.id)
                 "项目包已导出：${result.files} 个文件，${result.bytes} 字节。它是显式离线副本，不会建立后台同步。"
             }
             return
@@ -151,11 +153,54 @@ class ProjectMaterialsActivity : Activity() {
             "统一原件 ${summary.optInt("materials")} · 需整理 ${summary.optInt("pending")} · 待消化 ${summary.optInt("digestPending")} · 来源异常 ${summary.optInt("unavailable")}\n迁移状态：${migrationLabel(summary.optString("migrationState"))} · 自动整理：${if (summary.optBoolean("organizationEnabled")) "已授权" else "未授权"}" +
                 if (digestJob == null) "" else "\n消化队列：${digestQueueLabel(digestJob.optString("status"))} · ${digestJob.optString("message")}"
         when (view) {
+            "dashboard" -> renderDashboardAsync()
             "materials", "pending" -> runCatching { service.list(project.id, view, searchText) }
                 .onSuccess(::renderMaterials).onFailure { empty("资料读取失败：${it.message}；原件未修改。") }
             "knowledge" -> renderKnowledge()
             else -> renderContributions()
         }
+    }
+
+    private fun renderDashboardAsync() {
+        list.addView(TextView(this).apply { text = "正在读取项目依据…"; textSize = 14f; setTextColor(palette.muted) }, matchWrap())
+        Thread {
+            val result = runCatching { ProjectDashboardService(this).dashboard(project.id) }
+            runOnUiThread {
+                if (isFinishing || isDestroyed || view != "dashboard") return@runOnUiThread
+                list.removeAllViews()
+                result.onFailure { empty("仪表盘读取失败：${it.message}") }.onSuccess { value ->
+                    list.addView(TextView(this).apply {
+                        text = "阶段：${value.optString("stage")}\n资料 ${value.optInt("materials")} · 知识 ${value.optInt("knowledge")} · 任务 ${value.optInt("tasks")} · 成果 ${value.optInt("outputs")}\n待处理资料 ${value.optInt("pendingMaterials")} · 待消化 ${value.optInt("pendingDigest")} · 贡献材料 ${value.optInt("contributions")}"
+                        textSize = 16f; setTextColor(palette.text); setPadding(dp(12), dp(14), dp(12), dp(14))
+                    }, matchWrap())
+                    val pending = value.getJSONArray("pendingItems")
+                    if (pending.length() == 0) empty("项目关闭检查已全部满足。") else for (index in 0 until pending.length()) {
+                        val item = pending.getJSONObject(index)
+                        list.addView(TextView(this).apply { text = "• ${item.optString("title")}：${item.optString("detail")}"; textSize = 14f; setTextColor(palette.text); setPadding(dp(10), dp(7), dp(10), dp(7)) }, matchWrap())
+                    }
+                }
+            }
+        }.start()
+    }
+
+    private fun showCloseChecklist() {
+        status.text = "正在执行项目关闭检查…"
+        Thread {
+            val dashboard = ProjectDashboardService(this); val result = runCatching { dashboard.closeChecklist(project.id) }
+            runOnUiThread {
+                result.onFailure { message("检查失败", it.message ?: "项目未改变") }.onSuccess { issues ->
+                    if (issues.length() > 0) {
+                        val detail = (0 until issues.length()).joinToString("\n") { index -> val item = issues.getJSONObject(index); "• ${item.optString("title")}：${item.optString("detail")}" }
+                        message("暂不能关闭项目", detail)
+                    } else AlertDialog.Builder(this).setTitle("关闭 ${project.name}？").setMessage("检查已通过。关闭后项目保留全部资料、知识、成果和历史，不执行删除。")
+                        .setNegativeButton("取消", null).setPositiveButton("确认关闭") { _, _ -> Thread {
+                            val closed = runCatching { dashboard.close(project.id) }
+                            runOnUiThread { closed.onSuccess { project = it; status.text = "项目已关闭并保留全部历史。"; refresh() }
+                                .onFailure { message("关闭未完成", it.message ?: "项目状态未改变") } }
+                        }.start() }.show()
+                }
+            }
+        }.start()
     }
 
     private fun renderMaterials(items: List<JSONObject>) {

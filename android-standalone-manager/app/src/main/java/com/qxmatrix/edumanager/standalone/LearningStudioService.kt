@@ -110,7 +110,21 @@ class LearningStudioService(private val context: Context, private val provider: 
             val row = repository.exact(studentId, id); require(row.sourceSha256 == hash) { "来源索引版本已变化，原版本保留" }
             ContentSourceResolver(context).readText(studentId, row)
         }
-        val payload = JSONObject().put("module", module).put("result", result).put("inputSnapshot", input).put("createdAt", Timestamp.now())
+        val previousVersionId = repository.list(studentId, listOf("artifact"), 100, 0).firstOrNull { row ->
+            runCatching { JSONObject(row.payload).optString("module") == module }.getOrDefault(false)
+        }?.id.orEmpty()
+        val verifiedAt = Timestamp.now()
+        val applicability = JSONArray((0 until result.getJSONArray("items").length()).map { index ->
+            val item = result.getJSONArray("items").getJSONObject(index)
+            when (module) {
+                "topics" -> item.optString("studentBasis")
+                "competitions" -> listOf(item.optString("eligibility"), item.optString("edition"), item.optString("deadline")).filter(String::isNotBlank).joinToString("；")
+                else -> "以当前学生档案、所选来源和生成时点为限"
+            }
+        })
+        val payload = JSONObject().put("module", module).put("result", result).put("inputSnapshot", input).put("createdAt", verifiedAt)
+            .put("previousVersionId", previousVersionId).put("provenance", JSONObject().put("verifiedAt", verifiedAt)
+                .put("applicabilityConditions", applicability).put("sourceIds", input.optJSONArray("sourceIds") ?: JSONArray()))
             .put("sources", JSONArray(response.sources.map { JSONObject().put("title", it.title).put("url", it.url).put("retrievedAt", Timestamp.now()).put("verification", "needs_user") }))
             .put("verification", if (research) "needs_user" else if (module == "cards") "model_reviewed_candidate" else "generated_candidate")
         repository.insertVersion(studentId, key, moduleLabels.getValue(module), payload)

@@ -85,6 +85,8 @@ object YouthUi {
             ),
         )
         button.isAllCaps = false
+        if (button.contentDescription.isNullOrBlank()) button.contentDescription = button.text
+        button.importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_YES
         button.textSize = if (compact) 15f else 16f
         button.typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
         button.letterSpacing = 0.015f

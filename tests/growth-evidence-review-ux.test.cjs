@@ -13,7 +13,7 @@ test('ordinary growth evidence is processed automatically without a renderer con
   assert.match(main, /function batchReviewGrowthEvidence\(studentId\)/);
   assert.match(main, /bridge:batchReviewGrowthEvidence/);
   assert.match(preload, /batchReviewGrowthEvidence\(studentId\)/);
-  assert.match(ui, /batchReviewGrowthEvidence\?: \(studentId: string\) => string/);
+  assert.match(ui, /batchReviewGrowthEvidence\?: \(studentId: string\) => Promise<string>/);
   assert.match(ui, /系统会自动确认来源完整且归属明确的低风险证据/);
   assert.doesNotMatch(ui, />一键处理本批次</);
   assert.doesNotMatch(ui, /确认一次处理本批成长证据吗/);

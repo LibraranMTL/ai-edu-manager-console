@@ -1,7 +1,10 @@
 param(
   [string]$DeviceSerial = '',
   [string]$OutputDirectory = '',
-  [string]$CandidateTag = ''
+  [string]$CandidateTag = '',
+  [string]$PerformanceBaselinePath = '',
+  [string]$PerformanceResultPath = '',
+  [switch]$DeviceTestingOnly
 )
 
 $ErrorActionPreference = 'Stop'
@@ -20,6 +23,15 @@ $jdkHome = Join-Path $repositoryRoot '.android-tools\jdk\jdk-21.0.11+10'
 $buildTools = Join-Path $repositoryRoot '.android-tools\sdk\build-tools\34.0.0'
 $apksigner = Join-Path $buildTools 'apksigner.bat'
 $aapt = Join-Path $buildTools 'aapt.exe'
+$performanceRoot = Join-Path $projectRoot 'delivery\verification\performance'
+$resolvedPerformanceBaseline = if ([string]::IsNullOrWhiteSpace($PerformanceBaselinePath)) { Join-Path $performanceRoot 'baseline.json' } else { [IO.Path]::GetFullPath($PerformanceBaselinePath) }
+$resolvedPerformanceResult = if ([string]::IsNullOrWhiteSpace($PerformanceResultPath)) { Join-Path $performanceRoot 'current.json' } else { [IO.Path]::GetFullPath($PerformanceResultPath) }
+if ($DeviceTestingOnly -and [string]::IsNullOrWhiteSpace($candidateTagValue)) {
+  throw 'DeviceTestingOnly requires CandidateTag so the artifact cannot be mistaken for a formal release.'
+}
+if (-not $DeviceTestingOnly) {
+  & (Join-Path $projectRoot 'verify-performance-gate.ps1') -BaselinePath $resolvedPerformanceBaseline -ResultPath $resolvedPerformanceResult
+}
 
 $requiredEnvironment = @(
   'EDU_ANDROID_KEYSTORE',
@@ -130,7 +142,10 @@ try {
   if (Test-Path -LiteralPath $finalPath) {
     throw "正式发布目标已存在，请先提升版本号，避免覆盖既有正式安装包：$finalPath"
   }
-  [System.IO.File]::Move($stagedPath, $finalPath)
+  # Bypass the Windows PowerShell file provider for the final same-directory
+  # publish. Provider moves/renames have intermittently failed on this Unicode
+  # workspace even though the already-verified staged APK is valid.
+  [IO.File]::Move($stagedPath, $finalPath)
 
   $artifact = Get-Item -LiteralPath $finalPath
   $artifactSha256 = (Get-FileHash -LiteralPath $finalPath -Algorithm SHA256).Hash
@@ -145,8 +160,9 @@ try {
     certificateDn = $certificateDn
     certificateSha256 = $certificateSha256
     signatureSchemes = @('v1', 'v2')
-    releaseStatus = if ([string]::IsNullOrWhiteSpace($candidateTagValue)) { 'release' } else { 'candidate' }
+    releaseStatus = if ($DeviceTestingOnly) { 'device-test-candidate' } elseif ([string]::IsNullOrWhiteSpace($candidateTagValue)) { 'release' } else { 'candidate' }
     candidateTag = $candidateTagValue
+    performanceGate = if ($DeviceTestingOnly) { 'pending-device-test-only' } else { 'passed' }
     builtAt = [DateTime]::UtcNow.ToString('yyyy-MM-ddTHH:mm:ss.fffZ')
   }
   $metadataPath = Join-Path $deliveryRoot "AI-Education-Manager-Android-Standalone-$versionName-$artifactLabel.json"

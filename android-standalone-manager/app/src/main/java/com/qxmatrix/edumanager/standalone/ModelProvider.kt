@@ -2,10 +2,8 @@ package com.qxmatrix.edumanager.standalone
 
 import org.json.JSONArray
 import org.json.JSONObject
-import java.net.HttpURLConnection
 import java.net.SocketTimeoutException
 import java.net.URI
-import java.net.URL
 import java.util.UUID
 import java.util.concurrent.CancellationException
 
@@ -59,30 +57,17 @@ fun interface ModelTransport { fun post(endpoint: String, apiKey: String, payloa
 class UrlConnectionModelTransport : ModelTransport {
     override fun post(endpoint: String, apiKey: String, payload: JSONObject, cancellation: ModelCancellation): ModelHttpResponse {
         cancellation.check()
-        val connection = (URL(endpoint).openConnection() as HttpURLConnection).apply {
-            requestMethod = "POST"; connectTimeout = 30_000; readTimeout = 180_000; doOutput = true
-            instanceFollowRedirects = false // Never forward credentials to a redirected endpoint.
-            setRequestProperty("Content-Type", "application/json; charset=utf-8")
-            setRequestProperty("Authorization", "Bearer $apiKey")
-        }
-        cancellation.attach { connection.disconnect() }
-        try {
-            cancellation.check()
-            connection.outputStream.use { it.write(payload.toString().toByteArray(Charsets.UTF_8)) }
-            val status = connection.responseCode
-            val input = if (status in 200..299) connection.inputStream else connection.errorStream
-            val response = input?.use { stream ->
-                val output = java.io.ByteArrayOutputStream(); val buffer = ByteArray(8192)
-                while (true) {
-                    cancellation.check(); val count = stream.read(buffer); if (count < 0) break
-                    require(output.size() + count <= 4 * 1024 * 1024) { "模型响应超过安全大小限制" }
-                    output.write(buffer, 0, count)
-                }
-                output.toString("UTF-8")
-            }.orEmpty()
-            cancellation.check()
-            return ModelHttpResponse(status, response, connection.getHeaderField("x-request-id").orEmpty())
-        } finally { cancellation.detach(); connection.disconnect() }
+        val response = UnifiedNetworkClient.execute(NetworkRequest(
+            url = endpoint,
+            method = "POST",
+            headers = mapOf("Content-Type" to "application/json; charset=utf-8", "Authorization" to "Bearer $apiKey"),
+            body = payload.toString().toByteArray(Charsets.UTF_8),
+            connectTimeoutMs = 30_000,
+            readTimeoutMs = 180_000,
+            maxResponseBytes = 4L * 1024 * 1024,
+            followRedirects = false,
+        ), cancellation)
+        return ModelHttpResponse(response.status, response.body.toString(Charsets.UTF_8), response.headers["x-request-id"]?.firstOrNull().orEmpty())
     }
 }
 

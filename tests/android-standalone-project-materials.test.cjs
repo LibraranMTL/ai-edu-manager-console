@@ -46,9 +46,11 @@ test('project digestion is persistent, resource constrained and consumes immutab
   const digest = read('LocalProjectDigestService.kt');
   assert.match(queue, /project-digest-queue\.json/);
   assert.match(queue, /frozenMaterials/);
-  assert.match(queue, /setRequiresStorageNotLow\(true\)/);
-  assert.match(queue, /setRequiresBatteryNotLow\(true\)/);
-  assert.match(queue, /setRequiredNetworkType\(NetworkType\.CONNECTED\)/);
+  assert.match(queue, /BackgroundWorkPolicy\.remoteConstraints/);
+  const policy = read('BackgroundWorkPolicy.kt');
+  assert.match(policy, /setRequiresStorageNotLow\(true\)/);
+  assert.match(policy, /setRequiresBatteryNotLow\(true\)/);
+  assert.match(policy, /NetworkType\.CONNECTED/);
   assert.match(queue, /resumePending/);
   assert.match(digest, /readFrozenVersionBytes/);
   assert.match(digest, /只提炼项目知识，不直接形成学生能力或贡献结论/);

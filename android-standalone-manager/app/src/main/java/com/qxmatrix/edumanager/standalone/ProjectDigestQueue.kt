@@ -24,7 +24,6 @@ class ProjectDigestQueue(context: Context) {
         val selectedStudent = appContext.getSharedPreferences(MainActivity.UI_CONTEXT_PREFS, Context.MODE_PRIVATE).getString(MainActivity.KEY_CURRENT_STUDENT_ID, "").orEmpty()
         val scopeStudent = selectedStudent.takeIf { it in project.studentIds } ?: project.studentIds.singleOrNull().orEmpty()
         if (scopeStudent.isNotBlank()) StudentIndexRepository(appContext).requireExact(scopeStudent)
-        if (GatewaySettings(appContext).enabled()) require(scopeStudent.isNotBlank()) { "请先选择项目中的确切学生，再排队使用受控网关" }
         val root = read()
         root.getJSONArray("jobs").objects().lastOrNull {
             it.optString("projectId") == projectId && it.optString("status") in ACTIVE
@@ -93,10 +92,13 @@ class ProjectDigestQueue(context: Context) {
     private fun schedule(job: JSONObject) {
         val request = OneTimeWorkRequestBuilder<ProjectDigestWorker>()
             .setInputData(Data.Builder().putString("jobId", job.getString("jobId")).build())
-            .setConstraints(Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED)
-                .setRequiresStorageNotLow(true).setRequiresBatteryNotLow(true).build())
+            .setConstraints(BackgroundWorkPolicy.remoteConstraints)
             .build()
-        WorkManager.getInstance(appContext).enqueueUniqueWork(workName(job.getString("jobId")), ExistingWorkPolicy.KEEP, request)
+        WorkManager.getInstance(appContext).enqueueUniqueWork(
+            if (job.optString("studentId").isNotBlank()) BackgroundWorkPolicy.uniqueName("project-digest", job.getString("studentId")) else workName(job.getString("jobId")),
+            ExistingWorkPolicy.KEEP,
+            request,
+        )
     }
 
     private fun read(): JSONObject {

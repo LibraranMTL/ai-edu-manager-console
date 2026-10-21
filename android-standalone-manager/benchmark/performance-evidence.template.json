@@ -1,0 +1,18 @@
+{
+  "schema": "edu-manager.android-performance.v1",
+  "status": "template",
+  "versionName": "1.3.2",
+  "deviceProfile": "replace-with-one-fixed-device-profile",
+  "allowedRegressionPercent": 10,
+  "metrics": [
+    { "id": "cold_startup_ms", "medianMs": 0 },
+    { "id": "warm_startup_ms", "medianMs": 0 },
+    { "id": "switch_student_ms", "medianMs": 0 },
+    { "id": "thousand_materials_ms", "medianMs": 0 },
+    { "id": "thousand_reports_ms", "medianMs": 0 },
+    { "id": "growth_snapshot_rebuild_ms", "medianMs": 0 },
+    { "id": "pdf_ocr_import_ms", "medianMs": 0 },
+    { "id": "background_sync_frame_ms", "medianMs": 0 },
+    { "id": "low_memory_restore_ms", "medianMs": 0 }
+  ]
+}

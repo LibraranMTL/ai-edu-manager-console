@@ -14,6 +14,12 @@ data class ScopedContentEntity(@PrimaryKey val id: String, val studentId: String
 @Dao interface ScopedContentDao {
     @Insert(onConflict = OnConflictStrategy.ABORT) fun insert(row: ScopedContentEntity)
     @Insert(onConflict = OnConflictStrategy.REPLACE) fun project(row: ScopedContentEntity)
+    @Query("SELECT COUNT(*) FROM scoped_content WHERE studentId=:studentId AND kind=:kind AND state!='removed'")
+    fun count(studentId: String, kind: String): Int
+    @Query("SELECT * FROM scoped_content WHERE studentId=:studentId AND kind=:kind AND state!='removed' ORDER BY updatedAt DESC,id LIMIT :limit OFFSET :offset")
+    fun page(studentId: String, kind: String, limit: Int, offset: Int): List<ScopedContentEntity>
+    @Query("SELECT * FROM scoped_content WHERE studentId=:studentId AND kind=:kind AND sourceKey IN (:sourceKeys)")
+    fun byKeys(studentId: String, kind: String, sourceKeys: List<String>): List<ScopedContentEntity>
     @Query("SELECT * FROM scoped_content WHERE studentId = :studentId AND id = :id") fun exact(studentId: String, id: String): ScopedContentEntity?
     @Query("SELECT * FROM scoped_content WHERE studentId = :studentId AND kind = :kind AND sourceKey = :key") fun byKey(studentId: String, kind: String, key: String): ScopedContentEntity?
     @Query("SELECT * FROM scoped_content WHERE studentId = :studentId AND kind IN (:kinds) AND state != 'removed' ORDER BY updatedAt DESC,id LIMIT :limit OFFSET :offset")

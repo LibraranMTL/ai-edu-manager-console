@@ -138,6 +138,24 @@ class ScopedContentRepository(private val context: Context,
                 .put("studentId", studentId).put("projectCreated", false).toString())
         dao.insert(row); row
     }
+    fun insertInboxCandidate(studentId: String, submissionId: String, provider: String, payload: JSONObject,
+        sourceFingerprint: String, projectId: String = ""): ScopedContentEntity = transaction(studentId) {
+        require(Regex("^submission_[a-f0-9]{32}$").matches(submissionId)) { "成果标识无效" }
+        require(provider.isNotBlank() && sourceFingerprint.matches(Regex("^[a-f0-9]{64}$"))) { "成果来源无效" }
+        if (projectId.isNotBlank()) require(ProjectRepository(context).list().any { it.id == projectId && studentId in it.studentIds }) { "成果项目不属于当前学生" }
+        val key = "cloud-inbox:$submissionId"
+        dao.byKey(studentId, "inbox_candidate", key)?.let { old ->
+            require(old.sourceSha256 == sourceFingerprint) { "同一成果编号内容不一致" }
+            return@transaction old
+        }
+        val now = Timestamp.now()
+        val wrapped = JSONObject().put("studentId", studentId).put("sourceId", submissionId).put("time", now)
+            .put("provider", provider).put("projectId", projectId).put("contentFingerprint", sourceFingerprint)
+            .put("status", "candidate").put("payload", payload)
+        val row = ScopedContentEntity("inbox-${UUID.randomUUID()}", studentId, "inbox_candidate", key,
+            "云端成果候选 · $provider", payload.toString(), "", "", sourceFingerprint, projectId, "candidate", now, now, wrapped.toString())
+        dao.insert(row); row
+    }
     fun ignore(studentId: String, versionId: String, itemIndex: Int): ScopedContentEntity = transaction(studentId) {
         val version = exact(studentId, versionId); require(version.kind == "artifact")
         val item = JSONObject(version.payload).getJSONObject("result").getJSONArray("items").getJSONObject(itemIndex)

@@ -41,13 +41,13 @@ test('W12 course cards retain imported cover bytes and display summaries', () =>
   assert.match(catalog, /state\.writeBytes\("\$COVER_ROOT\/\$cover"/);
 });
 
-test('W12 launches the real PalmClaw package before offering its official release page', () => {
+test('W12 removes external AI launch and download integration while retaining conversation import', () => {
   const main = read('MainActivity.kt');
   const manifest = fs.readFileSync(path.join(sourceRoot, 'AndroidManifest.xml'), 'utf8');
-  assert.match(main, /"com\.palmclaw"/);
-  assert.match(manifest, /<package android:name="com\.palmclaw"/);
-  assert.match(main, /if \(installedAgentPackage\(tool\) != null\).*launchAgentTool\(tool\)/s);
-  assert.match(main, /https:\/\/github\.com\/ModalityDance\/PalmClaw\/releases\/latest/);
+  assert.doesNotMatch(main, /getLaunchIntentForPackage|openOfficialAgentDownload|openAgentTool/);
+  assert.doesNotMatch(manifest, /<queries>|com\.palmclaw|com\.openai\.chatgpt/);
+  assert.match(main, /导入智能体对话/);
+  assert.match(main, /对话资料与候选知识/);
 });
 
 test('W12 accepts either an Agent base URL or a complete chat completions URL', () => {
@@ -55,11 +55,13 @@ test('W12 accepts either an Agent base URL or a complete chat completions URL', 
   assert.match(agent, /resolveChatCompletionsUrl/);
   assert.match(agent, /endsWith\("\/chat\/completions"/);
   const provider = read('ModelProvider.kt');
+  const network = read('UnifiedNetworkClient.kt');
   assert.match(agent, /CompatibleModelProvider/);
   assert.match(provider, /x-request-id/);
   assert.match(provider, /模型服务返回 HTTP/);
   assert.match(provider, /safeId\(http\.requestId\)/);
-  assert.match(provider, /instanceFollowRedirects = false/);
+  assert.match(provider, /followRedirects = false/);
+  assert.match(network, /instanceFollowRedirects = request\.followRedirects/);
   assert.doesNotMatch(provider, /error\(http\.body\)|println|Log\.|printStackTrace/);
   assert.doesNotMatch(agent, /URL\("\$\{configuration\.endpoint\}\/chat\/completions"\)/);
 });

@@ -32,6 +32,7 @@ test('Android standalone buttons share rounded accessible interaction states', (
 
 test('Android standalone uses adaptive youth-friendly action grids without removing skins', () => {
   const main = read('MainActivity.kt');
+  const navigation = read('StandaloneNavigation.kt');
   assert.match(main, /private fun addActionGrid/);
   assert.match(main, /GridLayout/);
   assert.match(main, /actionGridColumns/);
@@ -44,7 +45,7 @@ test('Android standalone uses adaptive youth-friendly action grids without remov
   assert.match(main, /configureSectionHeader\("选择一个方块，开始今天的资料整理"/);
   assert.match(main, /YouthUi\.applyStatusCard\(this, palette\)/);
   assert.match(main, /NAVIGATION_ACTIVE/);
-  assert.match(main, /val displayLabel: String get\(\) = "\$icon  \$label"/);
+  assert.match(navigation, /fun AppSection\.displayLabel/);
   assert.match(main, /uiPreferences\.skin\(\)\.backgroundResource\(\)/);
 });
 

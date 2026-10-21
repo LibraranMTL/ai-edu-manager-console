@@ -67,11 +67,30 @@ class MarkdownBrowserActivity : Activity() {
                 "问答精华" -> listOf("${student.paths.summaryPath}/问答精华库", "${student.paths.summaryPath}/问答库")
                 "概念库" -> listOf("${student.paths.summaryPath}/概念库")
                 "实体库" -> listOf("${student.paths.summaryPath}/实体库")
-                "成长模型" -> listOf("${student.paths.summaryPath}/成长模型")
-                "学情报告" -> listOf("${student.paths.summaryPath}/学情报告")
+                "成长模型", "学情报告" -> StudentArchiveCompatibility.archiveRoots(student, category) + StudentArchiveCompatibility.legacyArchiveRoots(student)
                 else -> listOf(student.paths.summaryPath)
             }
-            store.listMarkdownFiles(roots).map { Document(it.name, it.relativePath, student.storageRootUri) }
+            val exact = roots.filter(String::isNotBlank).asSequence().map { root ->
+                store.listMarkdownFiles(listOf(root), maximum = 500, maximumDepth = 6).filter { file -> when (category) {
+                    "成长模型" -> StudentArchiveCompatibility.isGrowthDocumentPath(file.relativePath)
+                    "学情报告" -> StudentArchiveCompatibility.isReportDocumentPath(file.relativePath)
+                    else -> true
+                } }
+            }.firstOrNull { it.isNotEmpty() }.orEmpty()
+            val discovered = if (exact.isNotEmpty() || category !in setOf("成长模型", "学情报告")) emptyList() else {
+                store.findArchiveMarkdownFiles(
+                    relativeRoots = StudentArchiveCompatibility.fallbackSearchRoots(student),
+                    expectedFileNames = StudentArchiveCompatibility.archiveDocumentNames(category),
+                    pathTerms = StudentArchiveCompatibility.archivePathTerms(category),
+                    preferredTerms = StudentArchiveCompatibility.archivePreferredTerms(student, category),
+                    allowRoot = student.knowledgeBaseMode == "adopted",
+                ).filter { file -> when (category) {
+                    "成长模型" -> StudentArchiveCompatibility.isGrowthDocumentPath(file.relativePath)
+                    else -> StudentArchiveCompatibility.isReportDocumentPath(file.relativePath)
+                } }
+            }
+            (exact + discovered).distinctBy { it.relativePath }
+                .map { Document(it.name, it.relativePath, student.storageRootUri) }
         }
         MODE_PROJECT -> {
             val project = ProjectRepository(this).requireExact(requireNotNull(intent.getStringExtra(EXTRA_PROJECT_ID)))

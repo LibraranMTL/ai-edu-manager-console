@@ -60,9 +60,23 @@ class ScreenCaptureActivity : Activity() {
     }
 
     private fun requestProjection() {
-        if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), REQUEST_NOTIFICATION)
+        if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+            PermissionRationale.request(this, Manifest.permission.POST_NOTIFICATIONS, REQUEST_NOTIFICATION,
+                R.string.permission_notification_title, R.string.permission_notification_reason) { requestCaptureProjection() }
+            return
+        }
+        requestCaptureProjection()
+    }
+
+    private fun requestCaptureProjection() {
         val manager = getSystemService(MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
         @Suppress("DEPRECATION") startActivityForResult(manager.createScreenCaptureIntent(), REQUEST_CAPTURE)
+    }
+
+    @Deprecated("API 23 compatibility")
+    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode == REQUEST_NOTIFICATION) requestCaptureProjection()
     }
 
     @Deprecated("API 23 compatibility")

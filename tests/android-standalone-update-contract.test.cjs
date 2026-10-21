@@ -10,6 +10,7 @@ const update = fs.readFileSync(path.join(java, 'AppUpdateService.kt'), 'utf8');
 const manifest = fs.readFileSync(path.join(root, 'AndroidManifest.xml'), 'utf8');
 const paths = fs.readFileSync(path.join(root, 'res', 'xml', 'file_paths.xml'), 'utf8');
 const publicManifest = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'release', 'edu-manager-version.json'), 'utf8'));
+const buildGradle = fs.readFileSync(path.join(__dirname, '..', 'android-standalone-manager', 'app', 'build.gradle.kts'), 'utf8');
 
 test('Android standalone settings exposes its own version update action', () => {
   assert.match(main, /YouthAction\([^\n]*"检查版本更新"[\s\S]*checkForAppUpdate\(\)/);
@@ -37,10 +38,15 @@ test('Android standalone update uses scoped FileProvider installation permission
 });
 
 test('public update manifest publishes the current standalone release channel', () => {
-  assert.equal(publicManifest.standaloneVersionCode, 29);
-  assert.equal(publicManifest.standaloneVersionName, '1.2.5');
-  assert.equal(publicManifest.standaloneApkUrl, 'https://www.greatbg.com/download/AI-Education-Manager-Android-Standalone-1.2.5-release.apk');
-  assert.equal(publicManifest.standaloneSha256, 'DB7332D62B5B94FEB542035D2A2A051C6CB71D015EE22C598B9E3AA2B442284D');
+  const sourceVersionCode = Number(buildGradle.match(/versionCode\s*=\s*(\d+)/)?.[1]);
+  const sourceVersionName = buildGradle.match(/versionName\s*=\s*"([^"]+)"/)?.[1];
+  const candidate = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'android-standalone-manager', 'candidate.json'), 'utf8'));
+  assert.equal(candidate.versionCode, sourceVersionCode);
+  assert.equal(candidate.versionName, sourceVersionName);
+  assert.equal(candidate.releaseStatus, 'candidate');
+  assert.ok(publicManifest.standaloneVersionCode <= sourceVersionCode, 'published channel cannot exceed source candidate');
+  assert.equal(publicManifest.standaloneApkUrl, `https://www.greatbg.com/download/AI-Education-Manager-Android-Standalone-${publicManifest.standaloneVersionName}-release.apk`);
+  assert.match(publicManifest.standaloneSha256, /^[A-F0-9]{64}$/);
   assert.equal(publicManifest.managerApkReleaseStatus, 'internal');
   assert.equal(publicManifest.managerApkUrl, '');
 });

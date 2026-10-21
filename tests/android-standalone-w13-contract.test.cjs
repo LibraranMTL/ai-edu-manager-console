@@ -57,7 +57,7 @@ test('W13 sidebar scrolls intermediate sections and pins system settings at the 
   const main = read('MainActivity.kt');
   assert.match(main, /filterNot \{ it == AppSection\.SETTINGS \}/);
   assert.match(main, /ScrollView\(this@MainActivity\).*LinearLayout\.LayoutParams\(ViewGroup\.LayoutParams\.MATCH_PARENT, 0, 1f\)/s);
-  assert.match(main, /val settings = themedButton\(AppSection\.SETTINGS\.displayLabel, YouthButtonRole\.NAVIGATION\)/);
+  assert.match(main, /val settings = themedButton\(AppSection\.SETTINGS\.displayLabel\(this@MainActivity\), YouthButtonRole\.NAVIGATION\)/);
 });
 
 test('W13 Agent conversations are explicit, immutable, deduplicated and shareable', () => {
@@ -65,10 +65,10 @@ test('W13 Agent conversations are explicit, immutable, deduplicated and shareabl
   const service = read('ConversationImportService.kt');
   const manifest = fs.readFileSync(path.join(root, 'AndroidManifest.xml'), 'utf8');
   assert.match(main, /导入智能体对话历史/);
-  assert.match(main, /打开豆包/);
+  assert.doesNotMatch(main, /打开豆包|打开 PalmClaw|ChatGPT \/ Codex/);
   assert.match(service, /explicitUserSave/);
   assert.match(service, /immutable/);
   assert.match(service, /相同对话已经保存/);
   assert.match(manifest, /android\.intent\.action\.SEND/);
-  assert.match(manifest, /com\.larus\.nova/);
+  assert.doesNotMatch(manifest, /com\.larus\.nova|com\.openai\.chatgpt|<queries>/);
 });

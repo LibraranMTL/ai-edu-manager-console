@@ -1,3 +1,24 @@
 <resources>
     <string name="app_name">AI教育管家</string>
+    <string name="section_home">首页</string>
+    <string name="section_archives">学生与档案</string>
+    <string name="section_materials">资料收集与处理</string>
+    <string name="section_learning">学习中心</string>
+    <string name="section_reports">学情报告</string>
+    <string name="section_projects">项目与成果</string>
+    <string name="section_settings">系统设置</string>
+    <string name="section_picker_title">七个业务域</string>
+    <string name="state_loading">正在加载…</string>
+    <string name="state_empty">暂无数据</string>
+    <string name="state_processing">后台处理中</string>
+    <string name="state_storage_grant_lost">资料目录授权已失效</string>
+    <string name="state_network_unavailable">网络暂时不可用</string>
+    <string name="state_source_preserved">操作未完成，原始数据已安全保留</string>
+    <string name="state_growth_attention">有成长证据需要处理</string>
+    <string name="permission_camera_title">使用相机添加学习资料</string>
+    <string name="permission_camera_reason">仅在你点击拍照时申请相机权限，照片仍归入当前学生的本地资料。</string>
+    <string name="permission_microphone_title">录制学习音频</string>
+    <string name="permission_microphone_reason">仅在你主动开始录音时申请麦克风权限，拒绝后不影响其他功能。</string>
+    <string name="permission_notification_title">显示后台任务进度</string>
+    <string name="permission_notification_reason">通知只用于你主动启动的录屏、迁移或长期任务，拒绝后仍可在应用内查看进度。</string>
 </resources>

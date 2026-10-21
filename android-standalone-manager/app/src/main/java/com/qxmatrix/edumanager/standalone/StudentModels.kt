@@ -163,6 +163,11 @@ data class StudentRecord(
         fun fromJson(value: JSONObject): StudentRecord {
             val mode = if (value.optString("knowledgeBaseMode") == "adopted") "adopted" else "standard"
             val name = StudentNamePolicy.sanitize(value.getString("name"))
+            val defaults = if (mode == "adopted") StudentWorkspacePaths.adopted(name) else StudentWorkspacePaths.standard(name)
+            val rootPath = value.optString("rootPath").ifBlank { defaults.rootPath }
+            fun legacyPath(key: String, leaf: String, fallback: String): String = value.optString(key).ifBlank {
+                if (rootPath.isBlank()) fallback else "$rootPath/$leaf"
+            }
             return StudentRecord(
                 id = value.getString("id"),
                 name = name,
@@ -172,11 +177,11 @@ data class StudentRecord(
                 knowledgeBaseMode = mode,
                 storageRootUri = value.getString("storageRootUri"),
                 paths = StudentWorkspacePaths(
-                    rootPath = value.optString("rootPath"),
-                    rawPath = value.optString("rawPath"),
-                    summaryPath = value.optString("summaryPath"),
-                    agentPath = value.optString("agentPath"),
-                    outputPath = value.optString("outputPath"),
+                    rootPath = rootPath,
+                    rawPath = legacyPath("rawPath", "${name}原始资料库", defaults.rawPath),
+                    summaryPath = legacyPath("summaryPath", "${name}学情分析汇总", defaults.summaryPath),
+                    agentPath = legacyPath("agentPath", "AGENT.md", defaults.agentPath),
+                    outputPath = legacyPath("outputPath", "输出结果", defaults.outputPath),
                 ),
                 adoptedAt = value.optString("adoptedAt"),
                 createdAt = value.optString("createdAt"),

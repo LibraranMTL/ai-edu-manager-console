@@ -75,15 +75,16 @@ class GrowthModelService(private val context: Context) {
             .put("confidence", confidence).put("generatedBy", generatedBy).put("createdAt", now).put("updatedAt", now)
             .put("review", JSONObject().put("status", "pending"))
         review.getJSONArray("candidates").put(candidate)
-        writeReview(student, review); appendDraftCandidate(student, candidate); rebuildIndex(studentId)
-        return candidate
+        val decided = applyAutomaticDecision(student, candidate)
+        writeReview(student, review); appendDraftCandidate(student, decided); rebuildIndex(studentId)
+        return decided
     }
 
     fun attachCandidateSource(studentId: String, evidenceId: String, materialId: String, sourceName: String): JSONObject {
         val student = students.requireExact(studentId); ensure(studentId)
         val review = readReview(student); val candidates = review.getJSONArray("candidates").toObjects()
         val item = candidates.singleOrNull { it.optString("id") == evidenceId } ?: error("未找到成长证据候选")
-        require(item.optString("status") in setOf("pending", "watching")) { "只能为待审核或继续观察的证据补充来源" }
+        require(item.optString("status") in setOf("pending", "watching", "needs_attention")) { "只能为待处理证据补充来源" }
         val sourceUri = "edu://student/${student.id}/raw/$materialId"; val now = Timestamp.now()
         item.put("sourceUri", sourceUri).put("sourceMaterialId", materialId).put("sourceName", sourceName)
             .put("sourceVerification", "provided_by_local_user").put("primarySourceStatus", "provided").put("updatedAt", now)
@@ -91,12 +92,27 @@ class GrowthModelService(private val context: Context) {
         history.put(JSONObject().put("action", "attach_source").put("sourceUri", sourceUri).put("sourceName", sourceName)
             .put("reviewerRole", "administrator").put("reviewerId", "local-user").put("reviewedAt", now))
         item.put("reviewHistory", history)
+        if (item.optString("status") == "needs_attention") applyAutomaticDecision(student, item)
         writeReview(student, JSONObject().put("version", 1).put("updatedAt", now).put("candidates", JSONArray(candidates)))
         rebuildIndex(studentId)
         return item
     }
 
-    fun candidates(studentId: String): List<JSONObject> { val student = students.requireExact(studentId); ensure(studentId); return readReview(student).getJSONArray("candidates").toObjects() }
+    fun candidates(studentId: String): List<JSONObject> {
+        val student = students.requireExact(studentId); ensure(studentId)
+        val review = readReview(student); var changed = false
+        review.getJSONArray("candidates").toObjects().filter { it.optString("status") == "pending" }.forEach {
+            applyAutomaticDecision(student, it); changed = true
+        }
+        if (changed) writeReview(student, review)
+        return review.getJSONArray("candidates").toObjects()
+    }
+
+    fun attentionCandidates(studentId: String): List<JSONObject> = candidates(studentId)
+        .filter { it.optString("status") == "needs_attention" || it.optJSONObject("risk")?.optString("level") == "high" }
+
+    fun excludeCandidate(studentId: String, evidenceId: String, note: String = "自动成长模型异常清单中排除"): JSONObject =
+        reviewCandidate(studentId, evidenceId, "rejected", note)
 
     fun reviewCandidate(studentId: String, evidenceId: String, status: String, note: String): JSONObject {
         require(status in EVIDENCE_STATUSES) { "不支持的成长证据状态" }
@@ -116,7 +132,7 @@ class GrowthModelService(private val context: Context) {
         val student = students.requireExact(studentId); ensure(studentId); val evidence = readReview(student).getJSONArray("candidates").toObjects()
         val relatedProjects = projects.list().filter { studentId in it.studentIds }
         val abilities = evidence.groupBy { it.optString("ability", "待标注") }.map { (name, items) ->
-            val confirmed = items.count { it.optString("status") == "confirmed" }; val watching = items.count { it.optString("status") == "watching" }
+            val confirmed = items.count(::publicationEligible); val watching = items.count { it.optString("status") == "watching" }
             JSONObject().put("abilityId", stableId("ability", name)).put("name", name).put("evidenceCount", items.size)
                 .put("pendingCount", items.count { it.optString("status") == "pending" }).put("confirmedCount", confirmed).put("watchingCount", watching).put("rejectedCount", items.count { it.optString("status") == "rejected" })
                 .put("projectIds", JSONArray(items.map { it.optString("projectId") }.filter(String::isNotBlank).distinct()))
@@ -133,10 +149,13 @@ class GrowthModelService(private val context: Context) {
                 .put("abilityNames", JSONArray(items.map { it.optString("ability") }.distinct())).put("knowledgeRootPath", project.paths.knowledgeRootPath).put("publishedAt", "") }
         val index = JSONObject().put("version", 2).put("schema", "edu-manager.growth-model.v2").put("studentId", student.id).put("studentName", student.name).put("updatedAt", Timestamp.now())
             .put("growthDir", growthRoot(student)).put("summary", JSONObject().put("evidenceCount", evidence.size).put("pendingCount", evidence.count { it.optString("status") == "pending" })
-                .put("confirmedCount", evidence.count { it.optString("status") == "confirmed" }).put("watchingCount", evidence.count { it.optString("status") == "watching" })
+                .put("confirmedCount", evidence.count(::publicationEligible)).put("watchingCount", evidence.count { it.optString("status") == "watching" })
+                .put("attentionCount", evidence.count { it.optString("status") == "needs_attention" })
                 .put("rejectedCount", evidence.count { it.optString("status") == "rejected" }).put("abilityCount", abilities.size).put("projectCount", projectRows.size))
             .put("abilities", JSONArray(abilities)).put("projects", JSONArray(projectRows)).put("evidence", JSONArray(evidence))
         val store = store(student); writeJson(store, "${growthRoot(student)}/growth-index.json", index); store.writeBytesSafely("${growthRoot(student)}/growth-index.md", growthIndexMarkdown(student, index).toByteArray(), "text/markdown")
+        HighGrowthRoomStore(context).mirrorAsync(studentId, HighGrowthRoomStore.GROWTH_SNAPSHOT, listOf(JSONObject(index.toString())
+            .put("sourceId", "growth-snapshot:current").put("time", index.getString("updatedAt"))))
         return index
     }
 
@@ -148,6 +167,15 @@ class GrowthModelService(private val context: Context) {
         val published = JSONArray()
         CloudReportSync.withPublicationLock {
             val sync = CloudReportSync(context)
+            val existing = runCatching { REPORTS.map { definition ->
+                val text = readPublishedReport(student.id, definition.id)
+                EducationPublicationPolicy.validatePublishedReport(student.id, definition.title, text)
+                definition to text
+            } }.getOrNull()
+            if (existing != null) {
+                val previousHash = ScopedContentPolicy.hash(existing.joinToString("|") { it.second }.toByteArray()).take(24)
+                LearningInsightsStore(context).archiveReportSet(student.id, "before-$previousHash", existing)
+            }
             val publicationId = runCatching { sync.beginPublication(student.id) }.getOrElse { error ->
                 sync.pauseAfterSnapshotFailure(student.id, error)
                 null
@@ -163,6 +191,8 @@ class GrowthModelService(private val context: Context) {
                     check(actual == content) { "${definition.title}写入后校验失败，整组报告未提交云端同步" }
                     actual
                 }
+                LearningInsightsStore(context).archiveReportSet(student.id, publicationId,
+                    prepared.mapIndexed { index, (definition, _) -> definition to readBack[index] })
                 runCatching { sync.commitPublication(student.id, publicationId, readBack) }
                     .onFailure { sync.pauseAfterSnapshotFailure(student.id, it) }
             }
@@ -181,7 +211,7 @@ class GrowthModelService(private val context: Context) {
 
     private fun generateReportSet(student: StudentRecord): GeneratedReportSet {
         val index = rebuildIndex(student.id)
-        val confirmed = index.getJSONArray("evidence").toObjects().filter { it.optString("status") == "confirmed" }
+        val confirmed = index.getJSONArray("evidence").toObjects().filter(::publicationEligible)
         val warnings = mutableListOf<String>()
         var modelReports = 0
         var fallbackSections = 0
@@ -208,9 +238,58 @@ class GrowthModelService(private val context: Context) {
     }
 
     fun readPublishedReport(studentId: String, reportId: String): String {
-        val student = students.requireExact(studentId); ensure(studentId)
+        val student = students.requireExact(studentId)
         val definition = REPORTS.singleOrNull { it.id == reportId } ?: error("未知学情报告")
-        return store(student).readBytes("${reportRoot(student)}/${definition.fileName}").toString(Charsets.UTF_8)
+        val workspace = store(student)
+        val direct = StudentArchiveCompatibility.reportDocumentPaths(student, definition.fileName).asSequence()
+            .mapNotNull { path -> runCatching { path to workspace.readBytes(path).toString(Charsets.UTF_8) }.getOrNull() }
+            .firstOrNull { (_, text) -> EducationPublicationPolicy.hasMeaningfulBody(text) }
+        direct?.let { return it.second }
+        val exactArchived = StudentArchiveCompatibility.reportSearchRoots(student).asSequence().map { root ->
+            workspace.listMarkdownFiles(listOf(root), maximum = 500, maximumDepth = 6)
+        }.firstOrNull { it.isNotEmpty() }.orEmpty()
+        val discoveredArchived = if (exactArchived.isNotEmpty()) emptyList() else workspace.findArchiveMarkdownFiles(
+            relativeRoots = StudentArchiveCompatibility.fallbackSearchRoots(student),
+            expectedFileNames = StudentArchiveCompatibility.archiveDocumentNames("学情报告"),
+            pathTerms = StudentArchiveCompatibility.archivePathTerms("学情报告"),
+            preferredTerms = StudentArchiveCompatibility.archivePreferredTerms(student, "学情报告"),
+            allowRoot = student.knowledgeBaseMode == "adopted",
+        )
+        val archived = (exactArchived + discoveredArchived).distinctBy { it.relativePath }.mapNotNull { file ->
+            val text = runCatching { workspace.readBytes(file.relativePath).toString(Charsets.UTF_8) }.getOrNull()
+                ?.takeIf(EducationPublicationPolicy::hasMeaningfulBody) ?: return@mapNotNull null
+            migratedReportRank(definition, file, text)?.let { rank -> Triple(rank, file.relativePath, text) }
+        }.sortedWith(compareBy<Triple<Int, String, String>> { it.first }.thenByDescending { it.second })
+            .firstOrNull()?.third
+        if (archived != null) return archived
+        ensure(studentId)
+        return workspace.readBytes("${reportRoot(student)}/${definition.fileName}").toString(Charsets.UTF_8)
+    }
+
+    private fun migratedReportRank(definition: LearningReportDefinition, file: SafWorkspaceStore.MarkdownFile, text: String): Int? {
+        val aliases = StudentArchiveCompatibility.reportNames(definition.fileName)
+        val normalizedPath = file.relativePath.replace('\\', '/')
+        val reportArea = normalizedPath.contains("/学情报告/") || normalizedPath.startsWith("学情报告/") ||
+            normalizedPath.contains("学情分析汇总") || normalizedPath.contains("/教育档案/") ||
+            normalizedPath.lowercase().contains("/reports/")
+        val declaredType = Regex("(?mi)^(?:type|report_type)\\s*:\\s*([^\\s#]+)").find(text)?.groupValues?.getOrNull(1)?.trim()?.lowercase().orEmpty()
+        val typeAliases = when (definition.id) {
+            "profile" -> setOf("learning_profile", "profile", "整体画像")
+            "changes" -> setOf("learning_change", "learning_changes", "changes", "历史变化")
+            "daily" -> setOf("weekly_action", "daily_action", "每日行动建议", "每周行动建议")
+            "stage" -> setOf("stage_summary", "learning_stage", "stage", "阶段总结")
+            else -> setOf(definition.type.lowercase())
+        }
+        val headingMatches = Regex("(?m)^#\\s+${Regex.escape(definition.title)}(?:\\s|$)").containsMatchIn(text)
+        return when {
+            reportArea && file.name == definition.fileName -> 0
+            reportArea && file.name in aliases -> 1
+            declaredType in typeAliases -> 2
+            file.name == definition.fileName -> 3
+            file.name in aliases -> 4
+            reportArea && headingMatches -> 5
+            else -> null
+        }
     }
 
     private fun readReview(student: StudentRecord): JSONObject {
@@ -219,7 +298,28 @@ class GrowthModelService(private val context: Context) {
         for (index in 0 until candidates.length()) candidates.optJSONObject(index)?.let { normalized.put(GrowthEvidencePolicy.normalizeCandidate(student.id, it)) }
         return source.put("candidates", normalized)
     }
-    private fun writeReview(student: StudentRecord, review: JSONObject) = writeJson(store(student), "${growthRoot(student)}/成长证据审核.json", review.put("version", 1).put("updatedAt", Timestamp.now()))
+    private fun writeReview(student: StudentRecord, review: JSONObject) {
+        val updated = review.put("version", 1).put("updatedAt", Timestamp.now())
+        writeJson(store(student), "${growthRoot(student)}/成长证据审核.json", updated)
+        HighGrowthRoomStore(context).mirrorAsync(student.id, HighGrowthRoomStore.GROWTH_EVIDENCE, updated.getJSONArray("candidates").toObjects())
+    }
+    private fun applyAutomaticDecision(student: StudentRecord, item: JSONObject): JSONObject {
+        val assessment = GrowthEvidenceRiskPolicy.assess(item)
+        val now = Timestamp.now()
+        item.put("risk", assessment.toJson()).put("status", assessment.suggestedStatus).put("updatedAt", now)
+            .put("automationDecision", JSONObject().put("schema", GrowthEvidenceRiskPolicy.SCHEMA)
+                .put("status", assessment.suggestedStatus).put("decidedAt", now).put("actor", "system-risk-policy"))
+        if (assessment.level == GrowthRiskLevel.LOW) appendConfirmedEvidence(student, item)
+        return item
+    }
+    private fun publicationEligible(item: JSONObject): Boolean {
+        if (item.optString("status") != "confirmed") return false
+        val automatic = item.optJSONObject("automationDecision")
+        if (automatic?.optString("status") == "confirmed" && item.optJSONObject("risk")?.optString("level") == "low") return true
+        val review = item.optJSONObject("review") ?: return false
+        return review.optString("status") == "approved" && review.optString("reviewerRole") in setOf("student", "parent", "teacher", "administrator")
+            && review.optString("reviewerId").isNotBlank() && review.optString("reviewedAt").isNotBlank()
+    }
     private fun appendDraftCandidate(student: StudentRecord, item: JSONObject) { val s = store(student); val p = "${growthRoot(student)}/成长证据草稿.md"; s.writeBytesSafely(p, (s.readBytes(p).toString(Charsets.UTF_8).trimEnd() + "\n\n- [${item.getString("id")}] ${item.getString("title")}（${item.getString("sourceUri")}）\n").toByteArray(), "text/markdown") }
     private fun appendConfirmedEvidence(student: StudentRecord, item: JSONObject) { val sourceUri = item.optString("sourceUri").trim(); require(sourceUri.isNotBlank()) { "成长证据缺少来源，不能写入正式成长模型" }; val s = store(student); val p = "${growthRoot(student)}/成长证据.md"; val marker = "<!-- evidence:${item.getString("id")} -->"; val old = s.readBytes(p).toString(Charsets.UTF_8); if (!old.contains(marker)) s.writeBytesSafely(p, (old.trimEnd() + "\n$marker\n| ${Timestamp.now().take(10)} | ${markdownCell(item.getString("title"))} | ${markdownCell(sourceUri)} | ${markdownCell(item.optString("ability", "待标注"))} | ${markdownCell(item.optString("confidence", "人工确认"))} |\n").toByteArray(), "text/markdown") }
     private fun reportTemplate(student: StudentRecord, d: LearningReportDefinition) = reportHeader(student, d, "draft") + d.sections.joinToString("\n\n") { "## $it\n\n${if (it == d.summaryHeading) "待生成。" else "- 待补充。"}" } + "\n"
@@ -240,7 +340,7 @@ class GrowthModelService(private val context: Context) {
     private fun markdownCell(value: String) = inlineText(value).replace("|", "｜")
 
     companion object {
-        val EVIDENCE_STATUSES = setOf("pending", "confirmed", "watching", "rejected")
+        val EVIDENCE_STATUSES = setOf("pending", "confirmed", "watching", "needs_attention", "rejected")
         val REPORTS = listOf(
             LearningReportDefinition("profile", "整体画像", "整体画像.md", "learning_profile", "家长 / 教师 / 学生", "一句话画像", listOf("一句话画像", "学习优势", "当前短板", "兴趣与动力", "学习习惯与执行力", "适合的学习方式", "家长沟通注意点", "依据来源")),
             LearningReportDefinition("changes", "历史变化", "历史变化.md", "learning_change", "家长 / 教师", "最近 7 天变化", listOf("最近 7 天变化", "最近 30 天变化", "能力变化", "习惯变化", "问题变化", "目标变化", "依据来源")),

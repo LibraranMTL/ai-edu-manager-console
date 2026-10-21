@@ -69,7 +69,7 @@ class AutoDigestSettingsStore(private val context: Context) {
             }
             val constraints = Constraints.Builder()
                 .setRequiredNetworkType(if (value.wifiOnly) NetworkType.UNMETERED else NetworkType.CONNECTED)
-                .setRequiresCharging(value.chargingOnly).build()
+                .setRequiresCharging(value.chargingOnly).setRequiresBatteryNotLow(true).setRequiresStorageNotLow(true).build()
             val request = PeriodicWorkRequestBuilder<AutoDigestWorker>(24, TimeUnit.HOURS)
                 .setInitialDelay((next.timeInMillis - now.timeInMillis).coerceAtLeast(1_000L), TimeUnit.MILLISECONDS)
                 .setConstraints(constraints).build()
@@ -103,10 +103,10 @@ class AutoDigestWorker(context: Context, parameters: WorkerParameters) : Worker(
             if (busy) { failures += "${student.name}：已有资料任务运行中"; return@forEach }
             val eligible = runCatching { files.materials(student.id) }.getOrDefault(emptyList()).filter {
                 MaterialStatus.normalize(it.optString("status")) == MaterialStatus.PENDING_DIGEST &&
-                    (it.optString("fileName").substringAfterLast('.', "").lowercase() in setOf("txt", "md", "csv", "json") || it.optString("ocrStatus") == "completed")
+                    MaterialProcessingPolicy.digestReady(it) && it.optString("digestRecoveryState") != "authorized_retry"
             }.take(settings.maximumPerStudent)
             if (eligible.isEmpty()) return@forEach
-            runCatching { StudentDigestOrchestrator(applicationContext).digestSelected(student.id, eligible.map { it.getString("id") }.toSet()) }
+            runCatching { StudentDigestOrchestrator(applicationContext).digestSelected(student.id, eligible.map { it.getString("id") }.toSet(), explicitUserAction = false) }
                 .onSuccess { processed += it.optInt("processed") }
                 .onFailure { failures += "${student.name}：${it.message ?: "消化失败"}" }
         }

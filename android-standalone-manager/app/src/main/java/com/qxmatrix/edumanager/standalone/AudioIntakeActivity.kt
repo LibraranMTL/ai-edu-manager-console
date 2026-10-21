@@ -42,7 +42,10 @@ class AudioIntakeActivity : Activity() {
         fun button(label: String, action: () -> Unit) { root.addView(Button(this).apply { text = label; setOnClickListener { if (current()) action() else finish() } }) }
         button("导入已有音频（不上传）") { startActivityForResult(Intent(Intent.ACTION_OPEN_DOCUMENT).setType("audio/*").addCategory(Intent.CATEGORY_OPENABLE), PICK_AUDIO) }
         button("开始本机录音（最长10分钟）") {
-            if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) requestPermissions(arrayOf(Manifest.permission.RECORD_AUDIO), MIC_PERMISSION) else startRecording()
+            if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+                PermissionRationale.request(this, Manifest.permission.RECORD_AUDIO, MIC_PERMISSION,
+                    R.string.permission_microphone_title, R.string.permission_microphone_reason) { status.text = "未启用麦克风，仍可使用其他资料导入功能。" }
+            } else startRecording()
         }
         button("停止录音并保存原件") { stopRecording(); saveRecording() }
         button("放弃未归档录音") {

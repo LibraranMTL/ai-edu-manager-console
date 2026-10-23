@@ -9,6 +9,8 @@ class ResearchAndCloudPolicyTest {
     @Test fun unknownOrInterruptedResearchNeverAutomaticallyRetriesChangedInputs() {
         assertTrue(ResearchUpdatePolicy.due(null, "new"))
         assertFalse(ResearchUpdatePolicy.due(JSONObject().put("state", "unknown").put("fingerprint", "old"), "new"))
+        assertFalse(ResearchUpdatePolicy.due(JSONObject().put("state", "waiting_receipt").put("fingerprint", "old"), "new"))
+        assertTrue(ResearchUpdatePolicy.due(JSONObject().put("state", "queued").put("fingerprint", "old"), "new"))
         assertFalse(ResearchUpdatePolicy.due(JSONObject().put("state", "succeeded").put("fingerprint", "same"), "same"))
         assertTrue(ResearchUpdatePolicy.due(JSONObject().put("state", "succeeded").put("fingerprint", "old"), "new"))
     }
@@ -21,14 +23,14 @@ class ResearchAndCloudPolicyTest {
     private fun payload() = JSONObject().put("module", "topics").put("profile", "SECRET_PROFILE")
         .put("sources", JSONArray().put("SECRET_SOURCE")).put("answer", "SECRET_ANSWER")
         .put("result", JSONObject().put("items", JSONArray().put(JSONObject().also { item ->
-            LearningStudioPolicy.fields.getValue("topics").forEach { item.put(it, "普通候选字段") }
+            LearningStudioPolicy.fields.getValue("topics").forEach { item.put(it, "普通参考字段") }
             item.put("title", "张同学 13812345678 a@example.com")
         })))
-    @Test fun cloudSummaryContainsOnlyPreviewedCandidateFieldsAndRedactsBasicIdentifiers() {
+    @Test fun cloudSummaryContainsOnlyReferenceFieldsAndRedactsBasicIdentifiers() {
         val text = CloudSummaryPolicy.summary(payload(), "张同学")
         assertFalse(text.contains("SECRET")); assertFalse(text.contains("张同学"))
         assertFalse(text.contains("13812345678")); assertFalse(text.contains("a@example.com"))
-        assertTrue(text.contains("候选"))
+        assertTrue(text.contains("仅供参考"))
     }
     @Test fun localPathsAndLargeSummariesAreRejectedBeforeUpload() {
         val value = payload(); value.getJSONObject("result").getJSONArray("items").getJSONObject(0).put("title", "D:\\private\\student.txt")

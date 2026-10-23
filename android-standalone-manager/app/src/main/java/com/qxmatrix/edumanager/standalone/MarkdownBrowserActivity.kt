@@ -15,9 +15,18 @@ import android.widget.Button
 import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.TextView
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 class MarkdownBrowserActivity : Activity() {
-    private data class Document(val title: String, val path: String, val rootUri: String, val content: String? = null)
+    private data class Document(
+        val title: String,
+        val path: String,
+        val rootUri: String,
+        val content: String? = null,
+        val lastModified: Long = 0L,
+    )
 
     private lateinit var titleView: TextView
     private lateinit var statusView: TextView
@@ -89,8 +98,15 @@ class MarkdownBrowserActivity : Activity() {
                     else -> StudentArchiveCompatibility.isReportDocumentPath(file.relativePath)
                 } }
             }
-            (exact + discovered).distinctBy { it.relativePath }
-                .map { Document(it.name, it.relativePath, student.storageRootUri) }
+            StudentArchiveCompatibility.newestFirst((exact + discovered).distinctBy { it.relativePath })
+                .map {
+                    Document(
+                        it.name,
+                        it.relativePath,
+                        student.storageRootUri,
+                        lastModified = StudentArchiveCompatibility.archiveDateMillis(it.lastModified, it.relativePath),
+                    )
+                }
         }
         MODE_PROJECT -> {
             val project = ProjectRepository(this).requireExact(requireNotNull(intent.getStringExtra(EXTRA_PROJECT_ID)))
@@ -151,12 +167,16 @@ class MarkdownBrowserActivity : Activity() {
         documents = value
         if (value.isEmpty()) { showFailure("当前目录没有可浏览的 Markdown 文档。") ; return }
         pickerButton.isEnabled = value.size > 1; modeButton.isEnabled = true
-        statusView.text = if (value.size == 1) "已打开 1 份文档" else "共 ${value.size} 份文档，可点击“选择文档”切换"
+        val archiveHint = if (intent.getStringExtra(EXTRA_MODE) == MODE_ARCHIVE) "，已按日期从新到旧排列" else ""
+        statusView.text = if (value.size == 1) "已打开 1 份文档$archiveHint" else "共 ${value.size} 份文档$archiveHint，可点击“选择文档”切换"
         openDocument(value.first())
     }
 
     private fun showPicker() {
-        AlertDialog.Builder(this).setTitle("选择 Markdown 文档").setItems(documents.map { "${it.title}\n${it.path}" }.toTypedArray()) { _, which -> openDocument(documents[which]) }.show()
+        AlertDialog.Builder(this).setTitle("选择 Markdown 文档").setItems(documents.map {
+            val date = if (it.lastModified > 0L) archiveDateFormat.format(Date(it.lastModified)) else "日期未知"
+            "${it.title} · $date\n${it.path}"
+        }.toTypedArray()) { _, which -> openDocument(documents[which]) }.show()
     }
 
     private fun openDocument(document: Document) {
@@ -187,5 +207,6 @@ class MarkdownBrowserActivity : Activity() {
         const val MODE_ARCHIVE = "archive"; const val MODE_PROJECT = "project"; const val MODE_REPORT = "report"; const val MODE_OCR = "ocr"; const val MODE_MATERIAL_DIGEST = "material_digest"; const val MODE_CONVERSATION = "conversation"; const val MODE_CONVERSATION_DIGEST = "conversation_digest"
         private const val MAX_MARKDOWN_BYTES = 2 * 1024 * 1024
         private const val MAX_CONVERSATION_BYTES = 5 * 1024 * 1024
+        private val archiveDateFormat = SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault())
     }
 }

@@ -8,8 +8,8 @@ object CloudSummaryPolicy {
         val module = payload.getString("module")
         require(module in LearningStudioPolicy.fields && module != "cards") { "仅支持选题/规划摘要" }
         val result = buildString {
-            appendLine("# ${LearningStudioService.moduleLabels[module]}候选摘要")
-            appendLine("候选建议，未人工核验；不代表已报名、录取、获奖或能力结论。")
+            appendLine("# ${LearningStudioService.moduleLabels[module]}参考摘要")
+            appendLine("以下内容仅供参考，不代表已报名、录取、获奖或能力结论。")
             val items = payload.getJSONObject("result").getJSONArray("items")
             require(items.length() in 1..10)
             for (index in 0 until items.length()) {
@@ -22,15 +22,15 @@ object CloudSummaryPolicy {
                         if (url.isNotBlank()) {
                             val uri = java.net.URI(url)
                             require(uri.scheme in setOf("https", "http") && !uri.host.isNullOrBlank() && uri.rawUserInfo == null)
-                            appendLine("$field 来源（待核验）：$url")
+                            appendLine("$field 来源：$url")
                         }
                     }
                 }
             }
         }
         val clean = LearningStudioPolicy.redact(result, studentName)
-        require(!Regex("(?i)(?:(?<![a-z0-9])[a-z]:[\\\\/]|file://|content://|(?<![a-z0-9:/])/(?:Users|home|storage)/)").containsMatchIn(clean)) { "摘要含本机路径，请先核对候选内容" }
-        require(clean.toByteArray().size <= 32_768) { "摘要超过32KB，请减少候选数量" }
+        require(!Regex("(?i)(?:(?<![a-z0-9])[a-z]:[\\\\/]|file://|content://|(?<![a-z0-9:/])/(?:Users|home|storage)/)").containsMatchIn(clean)) { "摘要含本机路径，不能上传" }
+        require(clean.toByteArray().size <= 32_768) { "摘要超过32KB，请减少建议数量" }
         return clean
     }
     fun matches(document: JSONObject, name: String, hash: String, device: String): Boolean =

@@ -33,9 +33,17 @@ class FileAssetService(private val context: Context) {
         val operationId = "intake:$eventKey"
         val db = BusinessDatabase.get(context); BusinessRestoreRecovery.recover(context, db)
         val previous = db.ledger().exactIntent(studentId, operationId)
-        val intent = previous ?: FileOperationIntentEntity(operationId, studentId, "intake", eventKey,
-            "${student.paths.rawPath}/${uniqueFilename(store, student.paths.rawPath, safeFilename(name))}", hash, "prepared", System.currentTimeMillis(), System.currentTimeMillis())
-            .also { db.ledger().prepareIntent(it) }
+        val intent = when {
+            previous == null -> FileOperationIntentEntity(operationId, studentId, "intake", eventKey,
+                "${student.paths.rawPath}/${uniqueFilename(store, student.paths.rawPath, safeFilename(name))}", hash, "prepared", System.currentTimeMillis(), System.currentTimeMillis())
+                .also { db.ledger().prepareIntent(it) }
+            previous.state == "rolled_back" -> {
+                require(previous.kind == "intake" && previous.expectedSha256 == hash) { "已删除资料的来源事件发生内容冲突" }
+                require(db.ledger().compareAndSetIntent(operationId, studentId, "rolled_back", "prepared", System.currentTimeMillis()) == 1) { "资料恢复状态已变化，请重试" }
+                previous.copy(state = "prepared", updatedAt = System.currentTimeMillis())
+            }
+            else -> previous
+        }
         require(intent.kind == "intake" && intent.expectedSha256 == hash && intent.state in setOf("prepared", "committed")) { "相同来源事件内容冲突或需要人工恢复；不覆盖原件" }
         require(intent.targetRef.startsWith("${student.paths.rawPath}/")) { "目录已变化，请核对原导入任务" }
         val logicalPath = intent.targetRef; val filename = logicalPath.substringAfterLast('/')
@@ -62,6 +70,14 @@ class FileAssetService(private val context: Context) {
         StudentMaterialRepository(context, student).list().singleOrNull { it.optString("id") == materialId }?.let { retained ->
             require(retained.optString("sourceSha256") == hash && retained.getString("absolutePath") == logicalPath) { "导入恢复登记冲突" }
             retained.keys().forEach { key -> material.put(key, retained.get(key)) }
+            if (MaterialStatus.normalize(material.optString("status")) == MaterialStatus.REMOVED) {
+                material.put("status", MaterialStatus.PENDING_DIGEST.wireValue)
+                    .put("statusUpdatedAt", now)
+                    .put("digestedAt", "")
+                    .put("digestBatchId", "")
+                material.remove("deletedAt")
+                material.remove("deletionReason")
+            }
         }
         StudentMaterialRepository(context, student).upsert(material)
 
@@ -94,6 +110,36 @@ class FileAssetService(private val context: Context) {
     fun assets(studentId: String): List<JSONObject> {
         students.requireExact(studentId)
         return assets.forStudent(studentId)
+    }
+
+    fun deleteStudentOriginal(studentId: String, logicalPath: String): JSONObject = synchronized(StudentWorkLocks.forStudent(studentId)) {
+        val student = students.requireExact(studentId)
+        val rawRoot = student.paths.rawPath.trimEnd('/')
+        val normalized = logicalPath.trim('/')
+        require(normalized.startsWith("$rawRoot/") && normalized != rawRoot) { "只能删除当前学生原始资料库中的单个文件" }
+        val materials = StudentMaterialRepository(context, student)
+        val material = materials.list().singleOrNull { it.optString("absolutePath").trim('/') == normalized }
+        material?.let {
+            val status = MaterialStatus.normalize(it.optString("status"))
+            require(status !in setOf(MaterialStatus.SUBMITTED, MaterialStatus.DIGESTING)) { "资料正在整理，请处理完成后再删除" }
+        }
+        val store = SafWorkspaceStore(context, Uri.parse(student.storageRootUri))
+        store.deleteFileIfExists(normalized)
+        val now = Timestamp.now()
+        assets.markStudentOriginalRemoved(student.id, normalized, material?.optString("sha1").orEmpty(), now)
+        if (material != null) {
+            materials.transition(material.getString("id"), MaterialStatus.REMOVED)
+            materials.patch(material.getString("id"), JSONObject().put("deletedAt", now).put("deletionReason", "user_deleted_original"))
+            val operationId = material.optString("intakeOperationId")
+            if (operationId.isNotBlank()) {
+                val ledger = BusinessDatabase.get(context).ledger()
+                if (ledger.compareAndSetIntent(operationId, student.id, "committed", "rolled_back", System.currentTimeMillis()) == 0) {
+                    ledger.compareAndSetIntent(operationId, student.id, "prepared", "rolled_back", System.currentTimeMillis())
+                }
+            }
+        }
+        JSONObject().put("ok", true).put("studentId", student.id).put("logicalPath", normalized)
+            .put("materialId", material?.optString("id").orEmpty()).put("deletedAt", now)
     }
 
     /** Registers course screenshots created by older builds without moving or rewriting originals. */

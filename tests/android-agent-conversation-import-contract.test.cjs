@@ -16,24 +16,25 @@ const studentManifest = read('android-tablet-terminal/AndroidManifest.xml');
 const teacherManifest = read('android-teacher-terminal/AndroidManifest.xml');
 const host = read('electron/main.cjs');
 
-test('student and teacher terminals expose one lightweight conversation-import entry', () => {
-  for (const source of [student, teacher]) {
-    assert.match(source, /collapsiblePanel\("导入智能体对话"/u);
-    assert.match(source, /conversationImportButton = button\("粘贴智能体对话", true\)/u);
-    assert.match(source, /setTitle\("发送智能体对话"\)/u);
-    assert.match(source, /setPositiveButton\("发送到主机"/u);
-    assert.doesNotMatch(source, /REQUEST_PICK_CONVERSATION|ConversationImportQueue|WorkManager/u);
-  }
+test('student exposes one governed conversation import entry while teacher keeps its lightweight import entry', () => {
+  const studentAssembly = student.slice(student.indexOf('collectionPage = workspacePage'), student.indexOf('FrameLayout.LayoutParams topParams'));
+  assert.doesNotMatch(studentAssembly, /教育管家对话|Agent 对话/u);
+  assert.equal((studentAssembly.match(/button\("导入对话", false\)/gu) || []).length, 1);
+  assert.match(student, /"粘贴对话文字", "导入 \.md \/ \.txt \/ \.json 文件", "导入公开 HTTPS 对话链接"/u);
+  assert.match(student, /REQUEST_IMPORT_CONVERSATION_FILE/u);
+  assert.match(teacher, /collapsiblePanel\("导入智能体对话"/u);
+  assert.match(teacher, /conversationImportButton = button\("粘贴智能体对话", true\)/u);
+  assert.doesNotMatch(student, /ConversationImportQueue|WorkManager/u);
+  assert.doesNotMatch(teacher, /REQUEST_PICK_CONVERSATION|ConversationImportQueue|WorkManager/u);
 });
 
-test('pure ACTION_SEND text is accepted without changing ordinary shared-file handling', () => {
-  for (const [source, manifest] of [[student, studentManifest], [teacher, teacherManifest]]) {
-    assert.match(manifest, /android\.intent\.action\.SEND/u);
-    assert.match(source, /intent\.getCharSequenceExtra\(Intent\.EXTRA_TEXT\)/u);
-    assert.match(source, /if \(uris\.size\(\) == 0 && sharedText != null/u);
-    assert.match(source, /pendingSharedUris\.addAll\(uris\)/u);
-    assert.match(source, /当前分享只有链接，请复制对话正文后再粘贴/u);
-  }
+test('ACTION_SEND text enters governed conversation import while generic shared files use offline staging', () => {
+  assert.match(studentManifest, /android\.intent\.action\.SEND/u);
+  assert.match(student, /acceptConversationDraft\(sharedText\.toString\(\)\)/u);
+  assert.match(student, /collectMaterials\(uris, "android_system_share"\)/u);
+  assert.match(teacherManifest, /android\.intent\.action\.SEND/u);
+  assert.match(teacher, /pendingSharedUris\.addAll\(uris\)/u);
+  assert.match(student, /previewConversationLink\(text\)/u);
 });
 
 test('conversation imports use the dedicated host endpoint and preserve one immutable original message', () => {
@@ -73,10 +74,19 @@ test('a failed request keeps one restart-safe draft and a successful receipt cle
   }
 });
 
+test('student public link preview is host mediated and bounded before submit', () => {
+  assert.match(student, /\/api\/student-session\/conversation-link\/preview/u);
+  assert.match(student, /对话文件超过 5 MB/u);
+  assert.match(host, /previewConversationShareUrl/u);
+  assert.match(host, /仅支持公开 HTTPS 对话链接/u);
+  assert.match(host, /dns\.promises\.lookup/u);
+  assert.match(host, /readBoundedResponseText\(response, 5 \* 1024 \* 1024\)/u);
+});
+
 test('release versions advance only the two Android terminals', () => {
-  assert.match(student, /VERSION_NAME = "0\.6\.19"/u);
-  assert.match(student, /VERSION_CODE = 89/u);
-  assert.match(studentManifest, /android:versionName="0\.6\.19"/u);
+  assert.match(student, /VERSION_NAME = "0\.6\.24"/u);
+  assert.match(student, /VERSION_CODE = 94/u);
+  assert.match(studentManifest, /android:versionName="0\.6\.24"/u);
   assert.match(teacher, /VERSION_NAME = "0\.1\.4"/u);
   assert.match(teacher, /VERSION_CODE = 5/u);
   assert.match(teacherManifest, /android:versionName="0\.1\.4"/u);

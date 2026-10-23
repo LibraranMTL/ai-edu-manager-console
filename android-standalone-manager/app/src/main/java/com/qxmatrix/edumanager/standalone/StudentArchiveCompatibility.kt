@@ -1,11 +1,18 @@
 package com.qxmatrix.edumanager.standalone
 
+import java.util.GregorianCalendar
+import java.util.TimeZone
+
 /**
  * Read-only path compatibility for student archives created by older Android or Windows builds.
  * The resolver never moves or rewrites a legacy document. New writes continue to use the current
  * summaryPath/成长模型 and summaryPath/学情报告 contract.
  */
 object StudentArchiveCompatibility {
+    private val pathDatePattern = Regex(
+        "(?<!\\d)(20\\d{2})[-_.年/]?(0[1-9]|1[0-2])[-_.月/]?(0[1-9]|[12]\\d|3[01])" +
+            "(?:[T _-]?([01]\\d|2[0-3])(?:[:时._-]?([0-5]\\d))?(?:[:分._-]?([0-5]\\d))?)?",
+    )
     private val reportAliases = mapOf(
         "整体画像.md" to setOf("整体画像.md", "学生画像.md", "学情画像.md"),
         "历史变化.md" to setOf("历史变化.md", "成长变化.md", "学情变化.md"),
@@ -54,6 +61,38 @@ object StudentArchiveCompatibility {
         archivePathTerms(category) + setOf(student.name, "知识库", "汇总", "档案", "archive", "summary")
 
     fun reportNames(fileName: String): Set<String> = reportAliases[fileName] ?: setOf(fileName)
+
+    /**
+     * Education archive documents are always presented newest first. SAF providers occasionally
+     * return 0 for old imported files, so a date embedded in the legacy path is used only as a
+     * deterministic fallback. Files with no usable date stay at the end and are ordered by path.
+     */
+    fun newestFirst(files: Collection<SafWorkspaceStore.MarkdownFile>): List<SafWorkspaceStore.MarkdownFile> =
+        files.sortedWith(
+            compareByDescending<SafWorkspaceStore.MarkdownFile> {
+                archiveDateMillis(it.lastModified, it.relativePath)
+            }.thenBy { it.relativePath.lowercase() },
+        )
+
+    fun archiveDateMillis(lastModified: Long, relativePath: String): Long {
+        if (lastModified > 0L) return lastModified
+        val match = pathDatePattern.findAll(relativePath.replace('\\', '/')).lastOrNull() ?: return 0L
+        val values = match.groupValues
+        return runCatching {
+            GregorianCalendar(TimeZone.getTimeZone("UTC")).apply {
+                isLenient = false
+                clear()
+                set(
+                    values[1].toInt(),
+                    values[2].toInt() - 1,
+                    values[3].toInt(),
+                    values[4].toIntOrNull() ?: 0,
+                    values[5].toIntOrNull() ?: 0,
+                    values[6].toIntOrNull() ?: 0,
+                )
+            }.timeInMillis
+        }.getOrDefault(0L)
+    }
 
     fun isReportDocumentPath(relativePath: String): Boolean {
         val normalized = relativePath.replace('\\', '/')

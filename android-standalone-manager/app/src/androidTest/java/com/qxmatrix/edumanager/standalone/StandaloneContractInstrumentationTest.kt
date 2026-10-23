@@ -32,13 +32,14 @@ class StandaloneContractInstrumentationTest {
         assertFalse(bundle.keySet().any { it.contains("key", true) || it.contains("license", true) || it.contains("credential", true) })
     }
 
-    @Test fun highRiskEvidenceCannotBecomeAnEffectiveAutomaticConclusion() {
+    @Test fun attributionConflictCannotBecomeAnEffectiveAutomaticConclusion() {
         val assessment = GrowthEvidenceRiskPolicy.assess(org.json.JSONObject()
-            .put("id", "agent-1")
+            .put("id", "attribution-1")
+            .put("studentId", "student-a")
+            .put("sourceStudentId", "student-b")
             .put("sourceUri", "content://material/1")
             .put("projectId", "project-1")
-            .put("ability", "表达")
-            .put("sourceType", "agent_inference"))
+            .put("ability", "表达"))
         assertEquals(GrowthRiskLevel.HIGH, assessment.level)
         assertEquals("needs_attention", assessment.suggestedStatus)
     }

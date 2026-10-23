@@ -79,7 +79,7 @@ class TaskLedgerRoomTest {
             JSONObject().put("protocolVersion", "1.2").put("tasks", JSONArray().put(old)).toString().toByteArray())
         val repo = TaskRepository(RoomTaskLedgerStore(context, db))
         val recovered = repo.list().single()
-        assertEquals("needs_user", TaskCenterPolicy.viewState(recovered)); assertFalse(recovered.getBoolean("autoRetry"))
+        assertEquals("failed", TaskCenterPolicy.viewState(recovered)); assertFalse(recovered.getBoolean("autoRetry"))
         val eventCount = db.tasks().events().size
         repo.list(); assertEquals(eventCount, db.tasks().events().size)
     }

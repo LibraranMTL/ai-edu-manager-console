@@ -81,7 +81,7 @@ class ScopedContentRoomTest {
     @Test fun attemptNeverClaimsMasteryAndDraftDoesNotCreateProject() = database { repo, db ->
         val card = repo.insertVersion("a", "cards", "cards", payload())
         val attempt = repo.attempt("a", card.id, JSONObject().put("text", "answer"))
-        assertEquals("pending_review", attempt.state)
+        assertEquals("recorded", attempt.state)
         assertTrue(JSONObject(attempt.payload).isNull("masteryConclusion"))
         assertEquals(card.payload, JSONObject(attempt.payload).getJSONObject("evidenceSnapshot").toString())
         val topic = repo.insertVersion("a", "topic", "topic", payload("topics"))

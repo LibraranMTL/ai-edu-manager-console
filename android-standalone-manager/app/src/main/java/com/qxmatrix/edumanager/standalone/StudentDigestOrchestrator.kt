@@ -12,18 +12,58 @@ class StudentDigestOrchestrator(private val context: Context) {
     private val tasks = TaskRepository(context)
     private val digestSources = MaterialDigestSourceResolver(context, files)
 
-    fun digestPending(studentId: String): JSONObject = digest(studentId, null, explicitUserAction = false)
+    fun digestPending(studentId: String): JSONObject = digestBatches(studentId, null, explicitUserAction = false)
 
     fun digestSelected(studentId: String, materialIds: Set<String>, explicitUserAction: Boolean = true): JSONObject {
         require(materialIds.isNotEmpty()) { "没有选择要消化的资料" }
-        return digest(studentId, materialIds, explicitUserAction)
+        return digestBatches(studentId, materialIds, explicitUserAction)
     }
 
-    private fun digest(studentId: String, selectedMaterialIds: Set<String>?, explicitUserAction: Boolean): JSONObject = synchronized(StudentWorkLocks.forStudent(studentId)) {
+    private fun digestBatches(studentId: String, selectedMaterialIds: Set<String>?, explicitUserAction: Boolean): JSONObject =
+        synchronized(StudentWorkLocks.forStudent(studentId)) {
+            students.requireExact(studentId)
+            val materials = files.materials(studentId).filter {
+                MaterialStatus.normalize(it.optString("status")) == MaterialStatus.PENDING_DIGEST &&
+                    MaterialProcessingPolicy.digestReady(it) &&
+                    (selectedMaterialIds == null || it.optString("id") in selectedMaterialIds)
+            }.take(20)
+            require(materials.isNotEmpty()) { "当前没有已准备好的待消化资料" }
+            val candidates = materials.map { material ->
+                val estimated = runCatching {
+                    digestSources.resolve(studentId, material).take(MaterialDigestBatchPlanner.MAX_CHARACTERS_PER_SOURCE).length
+                }.getOrDefault(MaterialDigestBatchPlanner.MAX_CHARACTERS_PER_SOURCE)
+                MaterialDigestCandidate(
+                    material.getString("id"),
+                    estimated.coerceAtLeast(1),
+                    material.optString("digestRecoveryMarker"),
+                )
+            }
+            val batches = MaterialDigestBatchPlanner.plan(candidates)
+            var processed = 0
+            val failures = JSONArray()
+            val results = JSONArray()
+            batches.forEachIndexed { index, ids ->
+                runCatching { digestOne(studentId, ids.toSet(), explicitUserAction) }
+                    .onSuccess { result ->
+                        processed += result.optInt("processed")
+                        results.put(JSONObject().put("batch", index + 1).put("materialIds", JSONArray(ids))
+                            .put("ok", true).put("taskId", result.optJSONObject("task")?.optString("id").orEmpty()))
+                    }
+                    .onFailure { error ->
+                        failures.put(JSONObject().put("batch", index + 1).put("materialIds", JSONArray(ids))
+                            .put("message", (error.message ?: "消化失败").take(600)))
+                    }
+            }
+            JSONObject().put("ok", failures.length() == 0).put("processed", processed)
+                .put("batchCount", batches.size).put("failedBatches", failures.length())
+                .put("batches", results).put("failures", failures)
+        }
+
+    private fun digestOne(studentId: String, selectedMaterialIds: Set<String>, explicitUserAction: Boolean): JSONObject {
         val student = students.requireExact(studentId)
         val materials = files.materials(studentId).filter {
             MaterialStatus.normalize(it.optString("status")) == MaterialStatus.PENDING_DIGEST &&
-                (selectedMaterialIds == null || it.optString("id") in selectedMaterialIds)
+                it.optString("id") in selectedMaterialIds
         }
         require(materials.isNotEmpty()) { "当前没有待消化资料" }
         val eligible = materials.filter(MaterialProcessingPolicy::digestReady).take(20)
@@ -43,7 +83,7 @@ class StudentDigestOrchestrator(private val context: Context) {
         val running = tasks.start(task.getString("id")); val executionId = running.getString("executionId")
         eligible.forEach { files.transitionMaterial(studentId, it.getString("id"), MaterialStatus.SUBMITTED); files.transitionMaterial(studentId, it.getString("id"), MaterialStatus.DIGESTING) }
         var unknownMarkerKey: String? = null
-        try {
+        return try {
             val store = SafWorkspaceStore(context, Uri.parse(student.storageRootUri))
             val rules = store.readBytes(student.paths.agentPath).toString(Charsets.UTF_8)
             val sourceContents = eligible.map { material ->
@@ -73,6 +113,7 @@ class StudentDigestOrchestrator(private val context: Context) {
                 }
                 val retryState = db.tasks().metadata(markerKey)?.let(::JSONObject)
                 require(UnknownOutcomePolicy.retryAllowed(retryState, explicitUserAction)) { "上次相同资料消化结果未知，请到任务中心核对并单次授权；授权后资料会回到待消化列表，仍需由你明确选择消化" }
+                consumeRecoveryAuthorizations(studentId, eligible)
                 db.tasks().metadata(BusinessMetadataEntity(markerKey, JSONObject().put("state", "unknown").put("taskId", task.getString("id"))
                     .put("materialIds", JSONArray(eligible.map { it.getString("id") })).toString()))
                 val response = OpenAiCompatibleAgentAdapter(adapterConfig, context, student.id, task.getString("id")).execute(
@@ -104,11 +145,13 @@ class StudentDigestOrchestrator(private val context: Context) {
                 files.patchMaterial(studentId, it.getString("id"), JSONObject()
                     .put("digestedAt", Timestamp.now()).put("digestBatchId", executionId)
                     .put("digestArtifactPath", artifactPath).put("digestResult", parsed.optString("summary"))
-                    .put("digestAttemptedAt", Timestamp.now()).put("digestError", "").put("digestRecoveryState", "completed"))
+                    .put("digestAttemptedAt", Timestamp.now()).put("digestError", "").put("digestRecoveryState", "completed")
+                    .put("digestRecoveryMarker", "").put("digestRecoveryAuthorizationId", ""))
                 files.transitionMaterial(studentId, it.getString("id"), MaterialStatus.PROCESSED)
             }
             val result = resultPayload(task.getString("id"), executionId, true, "已消化 ${eligible.size} 份资料", artifactPath)
             tasks.acceptResult(task.getString("id"), result)
+            runCatching { StudioAutomation.enqueueCheck(context, studentId) }
             JSONObject().put("ok", true).put("task", tasks.requireExact(task.getString("id"))).put("artifactPath", artifactPath).put("processed", eligible.size)
         } catch (error: Throwable) {
             unknownMarkerKey?.let { marker ->
@@ -126,12 +169,31 @@ class StudentDigestOrchestrator(private val context: Context) {
                 files.patchMaterial(studentId, material.getString("id"), JSONObject()
                     .put("digestAttemptedAt", Timestamp.now()).put("digestBatchId", executionId)
                     .put("digestError", (error.message ?: "资料消化失败").take(600))
-                    .put("digestRecoveryState", if (unknownOutcome) "needs_user" else "failed"))
+                    .put("digestRecoveryState", if (unknownOutcome) "needs_user" else "failed")
+                    .put("digestRecoveryMarker", if (unknownOutcome) unknownMarkerKey.orEmpty() else "")
+                    .put("digestRecoveryAuthorizationId", ""))
                 files.transitionMaterial(studentId, material.getString("id"), MaterialStatus.FAILED)
             } }
             val result = resultPayload(task.getString("id"), executionId, false, error.message ?: "资料消化失败", "")
             runCatching { tasks.acceptResult(task.getString("id"), result) }
             throw error
+        }
+    }
+
+    private fun consumeRecoveryAuthorizations(studentId: String, materials: List<JSONObject>) {
+        val authorized = materials.filter { it.optString("digestRecoveryState") == "authorized_retry" }
+        if (authorized.isEmpty()) return
+        val recovery = UnknownOutcomeRecovery(context)
+        authorized.groupBy { it.optString("digestRecoveryMarker") }.forEach { (marker, group) ->
+            require(marker.isNotBlank()) { "资料缺少对应的单次恢复授权，请重新到任务中心核对" }
+            val authorizationIds = group.map { it.optString("digestRecoveryAuthorizationId") }.toSet()
+            require(authorizationIds.size == 1 && authorizationIds.first().isNotBlank()) { "资料恢复授权不一致，请重新核对" }
+            recovery.consumeAuthorization(
+                studentId,
+                marker,
+                authorizationIds.first(),
+                group.map { it.getString("id") }.toSet(),
+            )
         }
     }
 

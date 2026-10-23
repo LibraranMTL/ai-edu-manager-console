@@ -1,0 +1,23 @@
+{
+  "schema": "edu-manager.android-release.v1",
+  "packageName": "com.qxmatrix.edumanager.standalone",
+  "versionName": "1.3.4",
+  "versionCode": 38,
+  "fileName": "AI-Education-Manager-Android-Standalone-1.3.4-release.apk",
+  "bytes": 68813724,
+  "sha256": "6E6CBE2D9B2031111E41B1949B5F83154AAC6B36BBA638DDAB145CBBC3AF7DD3",
+  "certificateDn": "CN=AI教育管家, OU=AI教育产品, O=嘉玛蓝（北京）科技有限公司, L=北京, S=北京, C=CN",
+  "certificateSha256": "647087C196380BED06FF285A95B29617DC5A31C4977A0C04DDBA895ADC67164F",
+  "signatureSchemes": ["v1", "v2"],
+  "releaseStatus": "release",
+  "performanceGate": "partial-macrobenchmark-coverage; full nine-metric baseline pending",
+  "physicalDevice": {
+    "manufacturer": "HUAWEI",
+    "model": "NAM-AL00",
+    "androidSdk": 31,
+    "automatedChecks": ["signature", "install", "coldLaunch", "processRunning", "installedVersion", "screenshot", "uiHierarchy"],
+    "manualSettingsAcceptance": "passed"
+  },
+  "publishedAt": "2026-10-23T09:07:30Z",
+  "publicUrl": "https://www.greatbg.com/download/AI-Education-Manager-Android-Standalone-1.3.4-release.apk"
+}

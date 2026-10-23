@@ -55,7 +55,7 @@ class CloudSyncActivity : Activity() {
                 list.removeAllViews()
                 result.onSuccess { (student, cloud, receipts) ->
                     status.text = "${student.name} · 云同步"
-                    list.addView(text("自动同步：${if (cloud.enabled) "已开启" else "已关闭"}\n许可范围：${cloud.materialCategories.map(::categoryLabel).joinToString("、").ifBlank { "未选择资料" }}\n最近送达：${if (cloud.lastSyncAt > 0) java.text.DateFormat.getDateTimeInstance().format(java.util.Date(cloud.lastSyncAt)) else "尚无"}${if (cloud.lastError.isBlank()) "" else "\n需要帮助：${cloud.lastError}"}", 15f))
+                    list.addView(text("自动同步：${if (cloud.enabled) "已开启" else "已关闭"}\n许可范围：${cloud.materialCategories.map(::categoryLabel).joinToString("、").ifBlank { "未选择资料" }}\n最近送达：${if (cloud.lastSyncAt > 0) java.text.DateFormat.getDateTimeInstance().format(java.util.Date(cloud.lastSyncAt)) else "尚无"}${if (cloud.lastError.isBlank()) "" else "\n最近同步未完成：${cloud.lastError}"}", 15f))
                     list.addView(text("同步结果", 18f))
                     if (receipts.isEmpty()) list.addView(text("暂无回执。", 14f))
                     receipts.forEach { row -> list.addView(text("${receiptLabel(row.optString("status"))} · ${row.optString("time")}\n${row.optString("detail")}", 14f)) }
@@ -227,7 +227,7 @@ class CloudSyncActivity : Activity() {
     }
 
     private fun categoryLabel(id: String) = when (id) { "learning_report" -> "学情报告"; "learning_material" -> "学习资料"; "topic_suggestion" -> "选题建议"; "competition_recommendation" -> "比赛推荐"; "learning_card" -> "学习卡片"; else -> id }
-    private fun receiptLabel(status: String) = when (status) { "queued" -> "等待发送"; "network_recovered" -> "网络恢复"; "delivered" -> "已送达"; "withdrawn" -> "已撤回后续发送"; "failed" -> "需要帮助"; else -> status }
+    private fun receiptLabel(status: String) = when (status) { "queued" -> "等待发送"; "network_recovered" -> "网络恢复"; "delivered" -> "已送达"; "withdrawn" -> "已撤回后续发送"; "failed" -> "同步未完成"; else -> status }
     private fun message(title: String, body: String) { AlertDialog.Builder(this).setTitle(title).setMessage(body).setPositiveButton("知道了", null).show() }
     private fun text(value: String, size: Float) = TextView(this).apply { text = value; textSize = size; setTextColor(palette.text); setPadding(0, dp(8), 0, dp(8)) }
     private fun button(label: String, action: () -> Unit) = Button(this).apply { text = label; YouthUi.applyButton(this, palette, YouthButtonRole.COMPACT); setOnClickListener { action() } }

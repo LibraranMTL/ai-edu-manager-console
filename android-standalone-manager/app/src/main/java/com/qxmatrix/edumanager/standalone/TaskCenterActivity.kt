@@ -31,9 +31,9 @@ class TaskCenterActivity : Activity() {
         val ui = UiPreferences(this); palette = ui.palette(); ui.applyOrientation(this)
         val root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(16), dp(14), dp(16), dp(12)); setBackgroundColor(palette.page) }
         status = text("正在读取当前学生任务…", 20f); root.addView(status)
-        root.addView(text("仅当前学生及其关联项目。刷新不会重复处理；结果未知的任务需从原入口核对后恢复。", 13f))
+        root.addView(text("仅显示当前学生及其关联项目。技术异常保留在历史记录中，只有学生或项目归属冲突需要用户确认。", 13f))
         val controls = LinearLayout(this)
-        listOf("active" to "处理中", "help" to "需要帮助", "history" to "历史记录").forEach { (id, label) ->
+        listOf("active" to "处理中", "help" to "归属待确认", "history" to "历史记录").forEach { (id, label) ->
             controls.addView(button(label) { filter = id; offset = 0; refresh() }, LinearLayout.LayoutParams(0, -2, 1f))
         }
         root.addView(controls)
@@ -45,7 +45,6 @@ class TaskCenterActivity : Activity() {
         paging.addView(button("下一页") { offset += PAGE_SIZE; refresh() }, LinearLayout.LayoutParams(0, -2, 1f))
         root.addView(paging)
         root.addView(button("刷新本机状态") { refresh() })
-        root.addView(button("核对未知消化／云摘要结果（不自动重试）") { recoverUnknown() })
         root.addView(button("高级详情（技术回执与安全上限）") {
             showTechnicalDetails()
         })
@@ -90,7 +89,7 @@ class TaskCenterActivity : Activity() {
     }
     private fun matches(state: String) = when (filter) {
         "active" -> state in setOf("queued", "running", "waiting_network", "waiting_quota")
-        "help" -> state in setOf("failed", "needs_user", "unknown")
+        "help" -> state == "needs_user"
         "history" -> state in setOf("succeeded", "cancelled", "superseded", "failed")
         else -> state in setOf("queued", "running", "waiting_network", "waiting_quota")
     }
@@ -113,7 +112,7 @@ class TaskCenterActivity : Activity() {
                 if (currentScope()) startActivity(Intent(this, ProjectMaterialsActivity::class.java).putExtra(ProjectMaterialsActivity.EXTRA_PROJECT_ID, project.id))
             })
         }
-        snapshot.automation?.let { list.addView(text("自动练习：${TaskCenterPolicy.label(it.optString("state"))}\n${it.optString("checkedAt")} · ${it.optString("message")}", 14f)) }
+        snapshot.automation?.let { list.addView(text("智能参考建议：${TaskCenterPolicy.label(it.optString("state"))}\n${it.optString("checkedAt")} · ${it.optString("message")}", 14f)) }
         val cloud = snapshot.cloud
         list.addView(text("云端报告", 18f))
         list.addView(text(when {
@@ -167,33 +166,6 @@ class TaskCenterActivity : Activity() {
         }
     }
     private fun showError(error: Throwable) { AlertDialog.Builder(this).setTitle("操作未完成").setMessage(error.message ?: "原记录保留").setPositiveButton("知道了", null).show() }
-    private fun recoverUnknown() {
-        worker.execute {
-            val result = runCatching { UnknownOutcomeRecovery(this).pending(studentId) }
-            runOnUiThread {
-                if (!currentScope()) return@runOnUiThread
-                result.onFailure(::showError).onSuccess { rows ->
-                    if (rows.isEmpty()) { status.text = "当前学生没有此类未知结果"; return@onSuccess }
-                    AlertDialog.Builder(this).setTitle("选择需核对的记录").setItems(rows.map { "${if (it.name.startsWith("digest-request:")) "资料消化" else "云摘要"} · ${it.name.takeLast(12)}" }.toTypedArray()) { _, index ->
-                        val row = rows[index]; val payload = JSONObject(row.payload)
-                        val note = android.widget.EditText(this).apply { hint = "填写已核对的账单、文件或云端清单结果"; minLines = 3 }
-                        AlertDialog.Builder(this).setTitle("允许下一次明确操作重试？")
-                            .setMessage("请先核对服务端账单、本机产物和云端回收站。再次发送可能重复计费；授权不删除原回执，也不会立即或后台重试。之后仍需返回原入口明确操作。\n\n记录：${row.name}\n${payload.toString(2)}")
-                            .setView(note).setNegativeButton("取消", null).setPositiveButton("已核对，单次授权") { _, _ ->
-                                val text = note.text.toString()
-                                worker.execute {
-                                    val saved = runCatching { require(currentScope()); UnknownOutcomeRecovery(this).authorize(studentId, row.name, ScopedContentPolicy.fingerprint(payload), text) }
-                                    runOnUiThread { if (currentScope()) saved.onSuccess { restored ->
-                                        status.text = if (restored > 0) "已记录单次授权；$restored 份相关资料已返回待消化列表，请返回资料页明确选择消化"
-                                        else "已记录单次授权；请返回原入口明确操作，未自动重试"
-                                    }.onFailure(::showError) }
-                                }
-                            }.show()
-                    }.show()
-                }
-            }
-        }
-    }
     private fun text(value: String, size: Float) = TextView(this).apply { text = value; textSize = size; setTextColor(palette.text); setPadding(0, dp(8), 0, dp(8)) }
     private fun button(label: String, action: () -> Unit) = Button(this).apply { text = label; YouthUi.applyButton(this, palette, YouthButtonRole.COMPACT); setOnClickListener { action() } }
     private fun dp(value: Int) = (value * resources.displayMetrics.density).toInt()

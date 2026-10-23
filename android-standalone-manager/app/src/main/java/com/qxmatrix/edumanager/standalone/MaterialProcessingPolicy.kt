@@ -5,6 +5,11 @@ import org.json.JSONObject
 /** Keeps OCR readiness, optional visual enrichment and digest recovery as separate states. */
 object MaterialProcessingPolicy {
     private val directDigestExtensions = setOf("txt", "md", "csv", "json")
+    private val attributionCodes = setOf(
+        "attribution_conflict", "student_attribution_conflict", "project_attribution_conflict",
+        "student_scope_mismatch", "project_scope_mismatch", "scope_conflict", "subject_scope_mismatch",
+    )
+    private val attributionMessage = Regex("归属(?:冲突|不一致|不明确)|不属于当前学生|未绑定当前学生|不得跨学生|学生范围不一致|项目范围不一致")
 
     fun digestReady(material: JSONObject): Boolean {
         val extension = material.optString("fileName").substringAfterLast('.', "").lowercase()
@@ -14,16 +19,27 @@ object MaterialProcessingPolicy {
             (material.optString("ocrPath").isNotBlank() || material.optString("ocrMarkdownPath").isNotBlank())
     }
 
-    fun ocrNeedsHelp(material: JSONObject): Boolean {
-        val ocrState = material.optString("ocrStatus")
-        if (ocrState in setOf("failed", "needs_user")) return true
-        val visualState = material.optString("visionStatus")
-        return !digestReady(material) && visualState in setOf("failed", "unavailable", "needs_user")
-    }
+    fun ocrNeedsHelp(material: JSONObject): Boolean = attributionConflict(material)
 
-    fun digestNeedsHelp(material: JSONObject): Boolean =
+    fun digestNeedsHelp(material: JSONObject): Boolean = attributionConflict(material)
+
+    fun awaitingAutomaticRecovery(material: JSONObject): Boolean = !attributionConflict(material) && (
         MaterialStatus.normalize(material.optString("status")) == MaterialStatus.FAILED ||
-            material.optString("digestRecoveryState") == "needs_user"
+            material.optString("digestRecoveryState") in setOf("needs_user", "unknown", "waiting_reconciliation") ||
+            material.optString("ocrStatus") in setOf("failed", "needs_user") ||
+            (!digestReady(material) && material.optString("visionStatus") in setOf("failed", "unavailable", "needs_user"))
+        )
+
+    fun attributionConflict(material: JSONObject): Boolean {
+        if (material.optBoolean("attributionConflict") || material.optBoolean("studentAttributionConflict") ||
+            material.optBoolean("projectAttributionConflict")) return true
+        val codes = sequenceOf("errorCode", "digestErrorCode", "ocrErrorCode", "conflictType", "automationAttentionReason")
+            .map { material.optString(it).trim().lowercase() }
+        if (codes.any { it in attributionCodes }) return true
+        val messages = sequenceOf("digestError", "ocrError", "visionError", "error", "message")
+            .map { material.optString(it) }.joinToString("\n")
+        return attributionMessage.containsMatchIn(messages)
+    }
 
     fun digestInput(result: JSONObject): String {
         result.optString("digestText").trim().takeIf(String::isNotBlank)?.let { return it }

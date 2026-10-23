@@ -45,9 +45,10 @@ test('W12 removes external AI launch and download integration while retaining co
   const main = read('MainActivity.kt');
   const manifest = fs.readFileSync(path.join(sourceRoot, 'AndroidManifest.xml'), 'utf8');
   assert.doesNotMatch(main, /getLaunchIntentForPackage|openOfficialAgentDownload|openAgentTool/);
-  assert.doesNotMatch(manifest, /<queries>|com\.palmclaw|com\.openai\.chatgpt/);
+  assert.doesNotMatch(manifest, /com\.palmclaw|com\.openai\.chatgpt|QUERY_ALL_PACKAGES/);
+  assert.match(manifest, /<queries>[\s\S]*android\.media\.action\.IMAGE_CAPTURE[\s\S]*<\/queries>/);
   assert.match(main, /导入智能体对话/);
-  assert.match(main, /对话资料与候选知识/);
+  assert.match(main, /对话整理结果/);
 });
 
 test('W12 accepts either an Agent base URL or a complete chat completions URL', () => {

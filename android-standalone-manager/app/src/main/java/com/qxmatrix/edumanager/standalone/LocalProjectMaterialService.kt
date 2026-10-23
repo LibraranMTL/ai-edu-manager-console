@@ -660,12 +660,17 @@ class LocalProjectMaterialService(private val context: Context) {
         }
     }
 
-    private fun writeRegistry(project: ProjectRecord, registry: JSONObject) = synchronized(LOCK) {
-        val store = controlStore(project); val path = registryPath(project)
-        val persisted = if (store.exists(path)) JSONObject(store.readBytes(path).toString(Charsets.UTF_8)).optInt("revision") else 0
-        require(persisted == registry.optInt("revision")) { "另一项任务已更新资料登记，停止覆盖；请刷新后重试" }
-        registry.put("revision", registry.optInt("revision") + 1).put("updatedAt", Timestamp.now())
-        store.writeBytesSafely(path, (registry.toString(2) + "\n").toByteArray(), "application/json")
+    private fun writeRegistry(project: ProjectRecord, registry: JSONObject) {
+        synchronized(LOCK) {
+            val store = controlStore(project); val path = registryPath(project)
+            val persisted = if (store.exists(path)) JSONObject(store.readBytes(path).toString(Charsets.UTF_8)).optInt("revision") else 0
+            require(persisted == registry.optInt("revision")) { "另一项任务已更新资料登记，停止覆盖；请刷新后重试" }
+            registry.put("revision", registry.optInt("revision") + 1).put("updatedAt", Timestamp.now())
+            store.writeBytesSafely(path, (registry.toString(2) + "\n").toByteArray(), "application/json")
+        }
+        context.getSharedPreferences("reference-suggestion-project-changes", Context.MODE_PRIVATE).edit()
+            .putString(project.id, registry.optString("updatedAt")).apply()
+        project.studentIds.forEach { StudioAutomation.enqueueCheck(context, it) }
     }
 
     private fun emptyRegistry(project: ProjectRecord) = JSONObject().put("schema", LocalProjectMaterialPolicy.SCHEMA)

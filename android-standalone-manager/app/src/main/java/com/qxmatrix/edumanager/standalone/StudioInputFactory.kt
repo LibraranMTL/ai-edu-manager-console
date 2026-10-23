@@ -6,7 +6,7 @@ import org.json.JSONObject
 
 data class PreparedStudioInput(val input: JSONObject, val research: Boolean, val allowed: MutableSet<String>, val frozenHashes: Map<String, String>)
 
-/** Same bounded, deidentified snapshot for the local preview, manual and automatic execution. */
+/** One bounded, deidentified snapshot for automatic reference suggestions and low-frequency refreshes. */
 class StudioInputFactory(private val context: Context, private val repository: ScopedContentRepository = ScopedContentRepository(context)) {
     fun prepare(studentId: String, module: String, selectedIds: List<String>, topic: String, count: Int, recent: Boolean, includeFeedback: Boolean = false): PreparedStudioInput {
         require(module in LearningStudioPolicy.fields && selectedIds.size <= 5 && count in 1..10)
@@ -30,10 +30,21 @@ class StudioInputFactory(private val context: Context, private val repository: S
         if (module != "cards") allowed += "profile"
         val profile = JSONObject(LearningStudioPolicy.redact(student.planningProfile.toJson().apply { remove("birthDate") }.toString(), student.name))
             .put("age", student.planningProfile.ageAt() ?: JSONObject.NULL).put("grade", LearningStudioPolicy.redact(student.grade, student.name))
+        val projectChanges = context.getSharedPreferences("reference-suggestion-project-changes", Context.MODE_PRIVATE)
+        val projects = JSONArray(ProjectRepository(context).list().filter { studentId in it.studentIds }.map { project ->
+            JSONObject().put("id", project.id)
+                .put("name", LearningStudioPolicy.redact(project.name, student.name).take(200))
+                .put("type", project.type.take(100)).put("status", project.status.take(100))
+                .put("description", LearningStudioPolicy.redact(project.description, student.name).take(1_000))
+                .put("objective", LearningStudioPolicy.redact(project.objective, student.name).take(1_000))
+                .put("changeToken", projectChanges.getString(project.id, "").orEmpty())
+        })
         val input = JSONObject().put("module", module).put("profile", profile).put("profileSourceId", "profile")
             .put("goal", LearningStudioPolicy.redact(student.goal, student.name)).put("topic", LearningStudioPolicy.redact(topic.take(500), student.name))
-            .put("sources", sources).put("mode", if (recent) "published_report_practice" else "selected_material_practice").put("count", count)
-            .put("strategy", "studio-v1").put("researchPeriod", if (research) Timestamp.now().take(7) else if (module == "cards") Timestamp.now().take(10) else "")
+            .put("projects", projects).put("sources", sources)
+            .put("mode", if (recent) "published_report_practice" else "reference_suggestion")
+            .put("count", count).put("strategy", "reference-suggestion-v2")
+            .put("refreshPeriod", Timestamp.now().take(7))
         if (includeFeedback) {
             require(module == "cards") { "人工审核回流仅用于练习，不自动用于规划判断" }
             input.put("humanReviewObservations", StudioFeedbackPolicy.observations(repository.list(studentId, listOf("review"), 100), studentId, frozen, student.name))

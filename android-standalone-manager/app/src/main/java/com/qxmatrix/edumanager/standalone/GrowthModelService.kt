@@ -85,9 +85,23 @@ class GrowthModelService(private val context: Context) {
         val review = readReview(student); val candidates = review.getJSONArray("candidates").toObjects()
         val item = candidates.singleOrNull { it.optString("id") == evidenceId } ?: error("未找到成长证据候选")
         require(item.optString("status") in setOf("pending", "watching", "needs_attention")) { "只能为待处理证据补充来源" }
+        val material = FileAssetService(context).materials(studentId).singleOrNull { it.optString("id") == materialId }
+            ?: error("所选资料不属于当前学生")
         val sourceUri = "edu://student/${student.id}/raw/$materialId"; val now = Timestamp.now()
         item.put("sourceUri", sourceUri).put("sourceMaterialId", materialId).put("sourceName", sourceName)
             .put("sourceVerification", "provided_by_local_user").put("primarySourceStatus", "provided").put("updatedAt", now)
+            .put("studentId", student.id)
+        val materialProjectId = material.optString("projectId")
+        if (materialProjectId.isNotBlank() && projects.list().any { it.id == materialProjectId && student.id in it.studentIds }) {
+            item.put("projectId", materialProjectId).put("projectName", projects.requireExact(materialProjectId).name)
+        }
+        listOf("attributionConflict", "studentAttributionConflict", "projectAttributionConflict", "sourceStudentId",
+            "declaredStudentId", "attributedStudentId", "sourceProjectId", "declaredProjectId", "attributedProjectId",
+            "conflictType", "scopeError", "errorCode").forEach(item::remove)
+        if (item.optString("automationAttentionReason") in setOf("attribution_conflict", "student_attribution_conflict",
+                "project_attribution_conflict", "student_scope_mismatch", "project_scope_mismatch", "scope_conflict")) {
+            item.remove("automationAttentionReason")
+        }
         val history = item.optJSONArray("reviewHistory") ?: JSONArray()
         history.put(JSONObject().put("action", "attach_source").put("sourceUri", sourceUri).put("sourceName", sourceName)
             .put("reviewerRole", "administrator").put("reviewerId", "local-user").put("reviewedAt", now))
@@ -101,7 +115,10 @@ class GrowthModelService(private val context: Context) {
     fun candidates(studentId: String): List<JSONObject> {
         val student = students.requireExact(studentId); ensure(studentId)
         val review = readReview(student); var changed = false
-        review.getJSONArray("candidates").toObjects().filter { it.optString("status") == "pending" }.forEach {
+        review.getJSONArray("candidates").toObjects().filter {
+            it.optString("status") == "pending" || it.optString("status") == "needs_attention" ||
+                it.optJSONObject("risk")?.optString("level") == "high"
+        }.forEach {
             applyAutomaticDecision(student, it); changed = true
         }
         if (changed) writeReview(student, review)

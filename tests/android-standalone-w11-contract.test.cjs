@@ -11,7 +11,7 @@ test('W11 presents the streamlined personal-learning navigation', () => {
   const source = read('MainActivity.kt');
   const navigation = read('StandaloneNavigation.kt');
   const strings = fs.readFileSync(path.join(root, 'res', 'values', 'strings.xml'), 'utf8');
-  for (const label of ['首页', '学生与档案', '资料', '学习', '报告', '项目与成果', '设置']) {
+  for (const label of ['首页', '管理学生档案', '收集整理', '学习行动', '学情报告', '项目成果', '系统设置']) {
     assert.match(strings, new RegExp(label));
   }
   assert.doesNotMatch(source, /AI助手问答|AppSection\.ASSISTANT|renderAssistant/);
@@ -46,10 +46,10 @@ test('W11 offers course learning with explicit system-authorized capture startup
   assert.match(learning, /handleCapturePrimary\(\)/);
 });
 
-test('W11 Agent configuration remains bounded while controlled gateway and launchers are removed', () => {
+test('W11 AI processing configuration remains bounded while controlled gateway and launchers are removed', () => {
   const main = read('MainActivity.kt');
   const agent = read('AgentAdapter.kt');
-  for (const value of ['配置任务 Agent', '测试 Agent', '停用任务 Agent']) {
+  for (const value of ['配置处理服务', '测试连接', '停用处理服务']) {
     assert.match(main, new RegExp(value));
   }
   assert.doesNotMatch(main, /受控模型网关|showGatewaySettings/);
@@ -69,7 +69,7 @@ test('W11 exposes five skins and landscape, portrait and adaptive layouts', () =
 
 test('W11 retains Windows course-package import as an advanced offline compatibility path', () => {
   const source = read('MainActivity.kt');
-  assert.match(source, /高级设置/);
+  assert.match(source, /高级与诊断/);
   assert.match(source, /导入离线课程包/);
   assert.match(source, /startPlatformCourseImport/);
 });

@@ -39,10 +39,10 @@ test('Android standalone uses adaptive youth-friendly action grids without remov
   assert.match(main, /YouthUi\.applyLearningCard/);
   assert.match(main, /\$\{student\.name\}的学习舱/);
   assert.match(main, /文件资产中心/);
-  assert.match(main, /OCR \/ 视觉解析/);
+  assert.match(main, /查看识别结果/);
   assert.match(main, /消化资料/);
-  assert.match(main, /spanColumns = 2/);
-  assert.match(main, /configureSectionHeader\("选择一个方块，开始今天的资料整理"/);
+  assert.match(main, /preferredColumns = 2/);
+  assert.match(main, /configureSectionHeader\("添加资料并查看自动整理进度"/);
   assert.match(main, /YouthUi\.applyStatusCard\(this, palette\)/);
   assert.match(main, /NAVIGATION_ACTIVE/);
   assert.match(navigation, /fun AppSection\.displayLabel/);
@@ -51,7 +51,7 @@ test('Android standalone uses adaptive youth-friendly action grids without remov
 
 test('Android standalone material hub follows the approved landscape card hierarchy', () => {
   const main = read('MainActivity.kt');
-  for (const label of ['文件资产中心', '本机导入', '拍照采集', '连续屏幕采集', 'OCR / 视觉解析', '消化资料', '导入智能体对话', '查看消化记录']) {
+  for (const label of ['文件资产中心', '导入文件', '拍照添加', '连续采集', '手动重新识别', '手动重新整理', '导入对话', '处理回执与记录']) {
     assert.match(main, new RegExp(label));
   }
   assert.match(main, /private fun chooseFileImport/);

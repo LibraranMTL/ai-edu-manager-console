@@ -1,5 +1,6 @@
 package com.qxmatrix.edumanager.standalone
 
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -39,5 +40,33 @@ class StudentArchiveCompatibilityTest {
         assertTrue(StudentArchiveCompatibility.archiveRoots(adopted, "学情报告").none(String::isBlank))
         assertTrue(StudentArchiveCompatibility.archivePathTerms("学情报告").contains("学情报告"))
         assertTrue(StudentArchiveCompatibility.archivePreferredTerms(adopted, "学情报告").contains("张三"))
+    }
+
+    @Test
+    fun educationArchiveDocumentsDefaultToNewestModifiedDate() {
+        val files = listOf(
+            SafWorkspaceStore.MarkdownFile("older.md", "报告/older.md", 1_000L),
+            SafWorkspaceStore.MarkdownFile("newer.md", "报告/newer.md", 3_000L),
+            SafWorkspaceStore.MarkdownFile("middle.md", "报告/middle.md", 2_000L),
+        )
+
+        assertEquals(
+            listOf("newer.md", "middle.md", "older.md"),
+            StudentArchiveCompatibility.newestFirst(files).map { it.name },
+        )
+    }
+
+    @Test
+    fun legacyArchiveDateInPathOrdersFilesWhoseProviderHasNoModifiedTime() {
+        val files = listOf(
+            SafWorkspaceStore.MarkdownFile("旧报告.md", "教育档案/2024-02-03-旧报告.md"),
+            SafWorkspaceStore.MarkdownFile("新报告.md", "教育档案/20251021_新报告.md"),
+            SafWorkspaceStore.MarkdownFile("日期未知.md", "教育档案/日期未知.md"),
+        )
+
+        assertEquals(
+            listOf("新报告.md", "旧报告.md", "日期未知.md"),
+            StudentArchiveCompatibility.newestFirst(files).map { it.name },
+        )
     }
 }

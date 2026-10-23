@@ -45,7 +45,7 @@ test('1.2.1 reuses governed conversation import from material collection', () =>
   const activity = read('MainActivity.kt');
   const matches = activity.match(/YouthAction\([^\n]*showConversationImportMenu\(\)/g) || [];
   assert.equal(matches.length, 1, 'conversation import should remain in material collection after assistant removal');
-  assert.match(activity, /对话资料与候选知识/);
+  assert.match(activity, /对话整理结果/);
 });
 
 test('1.2.1 vision diagnostics use a non-student image accepted by common model limits', () => {

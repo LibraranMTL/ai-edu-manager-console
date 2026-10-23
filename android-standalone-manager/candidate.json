@@ -1,8 +1,8 @@
 {
   "schema": "edu-manager.android-candidate.v1",
-  "versionName": "1.3.3",
-  "versionCode": 37,
+  "versionName": "1.3.4",
+  "versionCode": 38,
   "releaseStatus": "candidate",
-  "previousFormalVersion": "1.3.2",
-  "purpose": "Fix repeated OCR supplementation and candidate-excerpt validation failures; reuse verified OCR text on digest retry; read legacy migrated learning reports through their original archive roots without moving or overwriting source files"
+  "previousFormalVersion": "1.3.3",
+  "purpose": "Split material digestion into independently receipted bounded batches; recover legacy unknown-result associations safely; expose direct batch recovery without automatic retry; correct processing counts; sort education archive documents newest first"
 }

@@ -17,15 +17,24 @@ class MaterialProcessingPolicyTest {
         val material = JSONObject().put("fileName", "page.jpg").put("ocrStatus", "needs_user")
             .put("digestReady", false).put("visionStatus", "unavailable")
         assertFalse(MaterialProcessingPolicy.digestReady(material))
-        assertTrue(MaterialProcessingPolicy.ocrNeedsHelp(material))
+        assertFalse(MaterialProcessingPolicy.ocrNeedsHelp(material))
+        assertTrue(MaterialProcessingPolicy.awaitingAutomaticRecovery(material))
     }
 
     @Test fun unknownDigestIsNotReportedAsOcrFailure() {
         val material = JSONObject().put("fileName", "page.jpg").put("ocrStatus", "completed")
             .put("digestReady", true).put("visionStatus", "unavailable")
             .put("status", "failed").put("digestRecoveryState", "needs_user")
-        assertTrue(MaterialProcessingPolicy.digestNeedsHelp(material))
+        assertFalse(MaterialProcessingPolicy.digestNeedsHelp(material))
         assertFalse(MaterialProcessingPolicy.ocrNeedsHelp(material))
+        assertTrue(MaterialProcessingPolicy.awaitingAutomaticRecovery(material))
+    }
+
+    @Test fun onlyAttributionConflictNeedsUserHelp() {
+        val material = JSONObject().put("fileName", "page.jpg")
+            .put("status", "failed").put("errorCode", "student_scope_mismatch")
+        assertTrue(MaterialProcessingPolicy.digestNeedsHelp(material))
+        assertFalse(MaterialProcessingPolicy.awaitingAutomaticRecovery(material))
     }
 
     @Test fun digestInputKeepsBothMachineObservedSources() {

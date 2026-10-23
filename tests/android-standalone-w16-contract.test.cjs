@@ -14,7 +14,7 @@ test('W16 conversation history exposes browse, digest result and controlled dele
   for (const label of ['浏览对话原文', '进入消化流程', '查看消化结果', '移入回收站']) {
     assert.match(main + knowledge, new RegExp(label));
   }
-  assert.match(main, /对话资料与候选知识/);
+  assert.match(main, /对话整理结果/);
   assert.match(browser, /MODE_CONVERSATION/);
   assert.match(browser, /MODE_CONVERSATION_DIGEST/);
   assert.match(browser, /EXTRA_CONVERSATION_ID/);

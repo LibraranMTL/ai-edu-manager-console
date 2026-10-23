@@ -131,7 +131,19 @@ try {
 
   New-Item -ItemType Directory -Force -Path $deliveryRoot | Out-Null
   $artifactLabel = if ([string]::IsNullOrWhiteSpace($candidateTagValue)) { 'release' } else { $candidateTagValue }
-  $finalName = "AI-Education-Manager-Android-Standalone-$versionName-$artifactLabel.apk"
+  # Device-test candidates already live in a uniquely named candidate folder.
+  # Always use a short artifact name so Unicode workspace paths stay safely
+  # below the legacy Windows path limit during the final atomic copy.
+  $fileArtifactLabel = if ($DeviceTestingOnly) { 'device-test' } else { $artifactLabel }
+  $proposedFinalName = "AI-Education-Manager-Android-Standalone-$versionName-$fileArtifactLabel.apk"
+  # Keep the full candidate tag in metadata, but avoid Windows/tooling failures
+  # when a descriptive candidate directory and file name together approach
+  # MAX_PATH. Candidate directories are already unique, so a short file label
+  # remains unambiguous inside that directory.
+  if ((Join-Path $deliveryRoot $proposedFinalName).Length -ge 240) {
+    $fileArtifactLabel = 'candidate'
+  }
+  $finalName = "AI-Education-Manager-Android-Standalone-$versionName-$fileArtifactLabel.apk"
   $finalPath = Join-Path $deliveryRoot $finalName
   $stagedPath = Join-Path $deliveryRoot "$finalName.new"
   Copy-Item -LiteralPath $verificationApk -Destination $stagedPath -Force
@@ -142,10 +154,17 @@ try {
   if (Test-Path -LiteralPath $finalPath) {
     throw "正式发布目标已存在，请先提升版本号，避免覆盖既有正式安装包：$finalPath"
   }
-  # Bypass the Windows PowerShell file provider for the final same-directory
-  # publish. Provider moves/renames have intermittently failed on this Unicode
-  # workspace even though the already-verified staged APK is valid.
-  [IO.File]::Move($stagedPath, $finalPath)
+  # A same-directory rename has intermittently failed on this Unicode workspace.
+  # Copy the already-verified staged artifact, verify it again, and only then
+  # remove the staging file.
+  # Windows PowerShell Copy-Item can return to the prompt without producing the
+  # destination for these signed APK paths. Use the .NET API so failure is
+  # synchronous and explicit; overwrite stays disabled by design.
+  [IO.File]::Copy($stagedPath, $finalPath, $false)
+  if ((Get-FileHash -LiteralPath $finalPath -Algorithm SHA256).Hash -ne $verifiedSha256) {
+    throw 'The final delivery APK does not match the verified staged APK.'
+  }
+  [IO.File]::Delete($stagedPath)
 
   $artifact = Get-Item -LiteralPath $finalPath
   $artifactSha256 = (Get-FileHash -LiteralPath $finalPath -Algorithm SHA256).Hash
@@ -165,7 +184,7 @@ try {
     performanceGate = if ($DeviceTestingOnly) { 'pending-device-test-only' } else { 'passed' }
     builtAt = [DateTime]::UtcNow.ToString('yyyy-MM-ddTHH:mm:ss.fffZ')
   }
-  $metadataPath = Join-Path $deliveryRoot "AI-Education-Manager-Android-Standalone-$versionName-$artifactLabel.json"
+  $metadataPath = Join-Path $deliveryRoot "AI-Education-Manager-Android-Standalone-$versionName-$fileArtifactLabel.json"
   [IO.File]::WriteAllText($metadataPath, (($metadata | ConvertTo-Json -Depth 4) + "`n"), [Text.UTF8Encoding]::new($false))
 
   $deviceVerification = $null

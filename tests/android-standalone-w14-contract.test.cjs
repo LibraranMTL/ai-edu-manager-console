@@ -8,8 +8,8 @@ const java = path.join(root, 'java', 'com', 'qxmatrix', 'edumanager', 'standalon
 const main = fs.readFileSync(path.join(java, 'MainActivity.kt'), 'utf8');
 const manifest = fs.readFileSync(path.join(root, 'AndroidManifest.xml'), 'utf8');
 
-test('W14 settings keep the bounded task Agent and remove external Agent-tool adaptation', () => {
-  for (const label of ['配置任务 Agent', '测试 Agent', '停用任务 Agent']) assert.match(main, new RegExp(label));
+test('W14 settings keep the bounded AI processing service and remove external Agent-tool adaptation', () => {
+  for (const label of ['配置处理服务', '测试连接', '停用处理服务']) assert.match(main, new RegExp(label));
   assert.doesNotMatch(main, /受控模型网关|showGatewaySettings|Agent 工具适配|installedAgentPackage|getLaunchIntentForPackage/);
 });
 
@@ -29,7 +29,8 @@ test('W14 Android package visibility does not expose external AI apps', () => {
   ]) {
     assert.doesNotMatch(manifest, new RegExp(packageName.replaceAll('.', '\\.')));
   }
-  assert.doesNotMatch(manifest, /<queries>/);
+  assert.doesNotMatch(manifest, /QUERY_ALL_PACKAGES/);
+  assert.match(manifest, /<queries>[\s\S]*android\.media\.action\.IMAGE_CAPTURE[\s\S]*<\/queries>/);
 });
 
 test('W14 does not request broad access to other apps private data', () => {

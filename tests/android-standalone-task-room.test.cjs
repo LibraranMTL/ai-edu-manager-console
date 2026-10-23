@@ -16,7 +16,7 @@ test('task states and mutations preserve protocol while scoped lists use indexed
   assert.match(db, /studentId = :studentId OR \(studentId = '' AND projectId IN/);
   assert.match(db, /SELECT EXISTS/); assert.match(db, /revision = :expected/);
   assert.match(repository, /validateExternalResult/); assert.match(repository, /store.transaction/);
-  assert.match(read('TaskCenterPolicy.kt'), /process_interrupted/);
+  assert.match(read('TaskCenterPolicy.kt'), /attribution_conflict/);
   assert.match(read('TaskLedgerStore.kt'), /autoRetry", false/);
 });
 test('task center is local, lifecycle guarded and only cancels unstarted tasks', () => {

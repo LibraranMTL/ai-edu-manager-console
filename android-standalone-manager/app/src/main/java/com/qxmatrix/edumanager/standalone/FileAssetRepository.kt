@@ -98,11 +98,31 @@ class AssetIndexRepository(context: Context) {
         val index = assets.indexOfFirst { it.optString("sha1") == candidate.getString("sha1") }
         val merged = if (index < 0) candidate else merge(assets[index], candidate)
         if (index < 0) assets.add(0, merged) else assets[index] = merged
-        require(assets.size <= MAX_ASSET_RECORDS) { "文件资产索引超过 $MAX_ASSET_RECORDS 项，请先归档后继续导入" }
-        val root = JSONObject().put("version", 1).put("updatedAt", Timestamp.now())
-            .put("assets", JSONArray().also { array -> assets.forEach(array::put) })
-        state.writeBytes(PATH, (root.toString(2) + "\n").toByteArray())
+        write(assets)
         merged
+    }
+
+    fun markStudentOriginalRemoved(studentId: String, logicalPath: String, sha1: String, removedAt: String) = synchronized(LOCK) {
+        val assets = list().toMutableList()
+        val index = assets.indexOfFirst { asset ->
+            (sha1.isNotBlank() && asset.optString("sha1") == sha1) ||
+                asset.optJSONArray("references").toObjects().any { it.optString("spaceType") == "student" && it.optString("spaceId") == studentId && it.optString("path") == logicalPath }
+        }
+        if (index < 0) return@synchronized
+        val updated = JSONObject(assets[index].toString())
+        val references = JSONArray()
+        updated.optJSONArray("references").toObjects().forEach { source ->
+            val reference = JSONObject(source.toString())
+            if (reference.optString("spaceType") == "student" && reference.optString("spaceId") == studentId && reference.optString("path") == logicalPath) {
+                reference.put("role", "student_raw_removed").put("removedAt", removedAt)
+            }
+            references.put(reference)
+        }
+        updated.put("references", references).put("updatedAt", removedAt)
+        val hasLiveReference = references.toObjects().any { !it.optString("role").endsWith("_removed") }
+        if (!hasLiveReference && updated.optJSONArray("linkedProjects").strings().isEmpty()) updated.put("status", "removed").put("removedAt", removedAt)
+        assets[index] = updated
+        write(assets)
     }
 
     fun forStudent(studentId: String): List<JSONObject> = list().filter { asset ->
@@ -113,6 +133,8 @@ class AssetIndexRepository(context: Context) {
         put("linkedStudents", mergeStrings(existing.optJSONArray("linkedStudents"), candidate.optJSONArray("linkedStudents")))
         put("linkedProjects", mergeStrings(existing.optJSONArray("linkedProjects"), candidate.optJSONArray("linkedProjects")))
         put("references", mergeReferences(existing.optJSONArray("references"), candidate.optJSONArray("references")))
+        put("status", candidate.optString("status").ifBlank { existing.optString("status", "active") })
+        if (optString("status") != "removed") remove("removedAt")
         put("updatedAt", Timestamp.now())
     }
 
@@ -124,6 +146,13 @@ class AssetIndexRepository(context: Context) {
         (left.toObjects() + right.toObjects()).distinctBy {
             "${it.optString("spaceType")}|${it.optString("spaceId")}|${it.optString("role")}|${it.optString("path")}"
         }.forEach(output::put)
+    }
+
+    private fun write(assets: List<JSONObject>) {
+        require(assets.size <= MAX_ASSET_RECORDS) { "文件资产索引超过 $MAX_ASSET_RECORDS 项，请先归档后继续导入" }
+        val root = JSONObject().put("version", 1).put("updatedAt", Timestamp.now())
+            .put("assets", JSONArray().also { array -> assets.forEach(array::put) })
+        state.writeBytes(PATH, (root.toString(2) + "\n").toByteArray())
     }
 
     companion object {

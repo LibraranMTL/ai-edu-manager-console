@@ -19,7 +19,8 @@ class LearningInsightsActivity : Activity() {
     private lateinit var title: TextView
     private lateinit var list: LinearLayout
     private val worker = Executors.newSingleThreadExecutor()
-    private var view = "mastery"
+    private var view = TAB_MASTERY
+    private var requestedSourceId = ""
     private var generation = 0
     private lateinit var query: EditText
     private var offset = 0
@@ -28,16 +29,20 @@ class LearningInsightsActivity : Activity() {
         super.onCreate(savedInstanceState)
         studentId = intent.getStringExtra(EXTRA_STUDENT_ID).orEmpty()
         if (studentId.isBlank()) { finish(); return }
+        view = normalizeTab(savedInstanceState?.getString(STATE_TAB) ?: intent.getStringExtra(EXTRA_INITIAL_TAB))
+        requestedSourceId = intent.getStringExtra(EXTRA_SOURCE_ID).orEmpty()
         val ui = UiPreferences(this); ui.applyOrientation(this); palette = ui.palette()
         val root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(16), dp(14), dp(16), dp(12)); setBackgroundColor(palette.page) }
         title = text("正在读取学习依据…", 21f); root.addView(title)
-        root.addView(text("只读取已确认或已保存的本机事件；不会因打开、刷新或切换学生调用模型或联网批处理。", 13f))
+        root.addView(text("只读取已确认或已保存的本机依据；不会因打开、刷新或切换学生调用模型或联网批处理。", 13f))
         val tabs = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        listOf("mastery" to "知识点掌握", "timeline" to "学习时间线", "dimensions" to "维度变化", "reports" to "报告历史").forEach { (id, label) ->
+        listOf(TAB_MASTERY to "知识点掌握", TAB_TIMELINE to "学习时间线", TAB_DIMENSIONS to "维度变化", TAB_REPORTS to "报告历史").forEach { (id, label) ->
             tabs.addView(button(label) { view = id; offset = 0; refresh() }, LinearLayout.LayoutParams(0, -2, 1f))
         }
         root.addView(tabs)
         query = EditText(this).apply { hint = "搜索标题、状态、时间或来源"; setSingleLine(true) }
+        query.setText(savedInstanceState?.getString(STATE_QUERY).orEmpty())
+        offset = savedInstanceState?.getInt(STATE_OFFSET, 0) ?: 0
         root.addView(query)
         val paging = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         paging.addView(button("筛选／第一页") { offset = 0; refresh() }, LinearLayout.LayoutParams(0, -2, 1f))
@@ -51,6 +56,12 @@ class LearningInsightsActivity : Activity() {
     }
 
     override fun onResume() { super.onResume(); refresh() }
+    override fun onSaveInstanceState(outState: Bundle) {
+        outState.putString(STATE_TAB, view)
+        outState.putString(STATE_QUERY, query.text.toString().take(200))
+        outState.putInt(STATE_OFFSET, offset)
+        super.onSaveInstanceState(outState)
+    }
     override fun onPause() { generation++; super.onPause() }
     override fun onDestroy() { generation++; worker.shutdownNow(); super.onDestroy() }
 
@@ -77,6 +88,12 @@ class LearningInsightsActivity : Activity() {
                 result.onSuccess { (name, rows) ->
                     title.text = "$name · ${viewLabel()}"
                     if (rows.isEmpty()) list.addView(text(emptyLabel(), 15f)) else rows.forEach(::renderRow)
+                    if (requestedSourceId.isNotBlank()) {
+                        rows.firstOrNull(::matchesRequestedSource)?.let { row ->
+                            requestedSourceId = ""
+                            showEvidence(row)
+                        }
+                    }
                 }.onFailure { title.text = "学习分析读取失败"; list.addView(text(it.message ?: "原记录保留", 15f)) }
             }
         }
@@ -101,13 +118,60 @@ class LearningInsightsActivity : Activity() {
         val dialog = AlertDialog.Builder(this).setTitle(row.optString("title", viewLabel())).setMessage(message).setNegativeButton("关闭", null)
         when {
             projectId.isNotBlank() -> dialog.setPositiveButton("打开项目依据") { _, _ -> startActivity(Intent(this, ProjectMaterialsActivity::class.java).putExtra(ProjectMaterialsActivity.EXTRA_PROJECT_ID, projectId)) }
-            view == "mastery" -> dialog.setPositiveButton("打开学习卡片与作答") { _, _ -> startActivity(Intent(this, LearningStudioActivity::class.java).putExtra(LearningStudioActivity.EXTRA_STUDENT_ID, studentId).putExtra("module", "cards")) }
-            view == "timeline" -> dialog.setPositiveButton("打开资料与来源") { _, _ -> startActivity(Intent(this, MainActivity::class.java)) }
+            view == TAB_MASTERY -> dialog.setPositiveButton("打开学习卡片与作答") { _, _ -> startActivity(Intent(this, LearningStudioActivity::class.java).putExtra(LearningStudioActivity.EXTRA_STUDENT_ID, studentId).putExtra(LearningStudioActivity.EXTRA_INITIAL_MODE, "artifact").putExtra("module", "cards")) }
+            view == TAB_TIMELINE -> dialog.setPositiveButton("打开对应记录") { _, _ -> openTimelineSource(row) }
+            view == TAB_REPORTS -> dialog.setPositiveButton("打开这组报告") { _, _ -> openReportRevision(row) }
         }
         dialog.show()
     }
 
-    private fun viewLabel() = when (view) { "timeline" -> "学习时间线"; "dimensions" -> "维度变化"; "reports" -> "报告历史"; else -> "知识点掌握" }
+    private fun openTimelineSource(row: JSONObject) {
+        val sourceId = row.optString("sourceId")
+        when (row.optString("kind")) {
+            "conversation" -> startActivity(Intent(this, ConversationKnowledgeActivity::class.java)
+                .putExtra(ConversationKnowledgeActivity.EXTRA_STUDENT_ID, studentId)
+                .putExtra(ConversationKnowledgeActivity.EXTRA_RECORD_ID, sourceId))
+            "material" -> worker.execute {
+                val source = runCatching { ScopedContentRepository(this).exact(studentId, sourceId) }
+                runOnUiThread {
+                    source.onSuccess { record ->
+                        val parent = record.logicalPath.substringBeforeLast('/', "")
+                        startActivity(Intent(this, RawMaterialBrowserActivity::class.java)
+                            .putExtra(RawMaterialBrowserActivity.EXTRA_STUDENT_ID, studentId)
+                            .putExtra(RawMaterialBrowserActivity.EXTRA_START_PATH, parent)
+                            .putExtra(RawMaterialBrowserActivity.EXTRA_TITLE, "资料来源 · ${record.title}"))
+                    }.onFailure { AlertDialog.Builder(this).setTitle("来源暂时无法打开").setMessage(it.message ?: "原始记录仍保留").setPositiveButton("知道了", null).show() }
+                }
+            }
+            "attempt", "review", "artifact", "action", "action_event", "decision" -> startActivity(Intent(this, LearningStudioActivity::class.java)
+                .putExtra(LearningStudioActivity.EXTRA_STUDENT_ID, studentId)
+                .putExtra(LearningStudioActivity.EXTRA_INITIAL_MODE, row.optString("kind"))
+                .putExtra("module", "cards"))
+            else -> startActivity(Intent(this, MainActivity::class.java).putExtra(MainActivity.EXTRA_OPEN_SECTION, AppSection.MATERIALS.name))
+        }
+    }
+
+    private fun openReportRevision(row: JSONObject) {
+        val reports = row.optJSONArray("reports") ?: return
+        val items = (0 until reports.length()).map { reports.getJSONObject(it) }
+        AlertDialog.Builder(this).setTitle("选择报告").setItems(items.map { it.optString("title", "学情报告") }.toTypedArray()) { _, index ->
+            val report = items[index]
+            startActivity(Intent(this, MarkdownBrowserActivity::class.java)
+                .putExtra(MarkdownBrowserActivity.EXTRA_MODE, MarkdownBrowserActivity.MODE_REPORT)
+                .putExtra(MarkdownBrowserActivity.EXTRA_STUDENT_ID, studentId)
+                .putExtra(MarkdownBrowserActivity.EXTRA_REPORT_ID, report.optString("reportId"))
+                .putExtra(MarkdownBrowserActivity.EXTRA_TITLE, report.optString("title", "学情报告")))
+        }.setNegativeButton("关闭", null).show()
+    }
+
+    private fun matchesRequestedSource(row: JSONObject): Boolean {
+        if (row.optString("sourceId") == requestedSourceId) return true
+        val ids = row.optJSONArray("sourceIds") ?: return false
+        return (0 until ids.length()).any { ids.optString(it) == requestedSourceId }
+    }
+
+    private fun normalizeTab(raw: String?): String = raw?.takeIf { it in setOf(TAB_MASTERY, TAB_TIMELINE, TAB_DIMENSIONS, TAB_REPORTS) } ?: TAB_MASTERY
+    private fun viewLabel() = when (view) { TAB_TIMELINE -> "学习时间线"; TAB_DIMENSIONS -> "维度变化"; TAB_REPORTS -> "报告历史"; else -> "知识点掌握" }
     private fun emptyLabel() = when (view) {
         "mastery" -> "还没有学习卡片或作答。没有原始作答时不会标记为“较稳定”。"
         "reports" -> "还没有 1.2.9 之后发布的整组报告修订；现有报告不会被覆盖。"
@@ -119,6 +183,15 @@ class LearningInsightsActivity : Activity() {
 
     companion object {
         const val EXTRA_STUDENT_ID = "student_id"
+        const val EXTRA_INITIAL_TAB = "initial_tab"
+        const val EXTRA_SOURCE_ID = "source_id"
+        const val TAB_MASTERY = "mastery"
+        const val TAB_TIMELINE = "timeline"
+        const val TAB_DIMENSIONS = "dimensions"
+        const val TAB_REPORTS = "reports"
+        private const val STATE_TAB = "insights_tab"
+        private const val STATE_QUERY = "insights_query"
+        private const val STATE_OFFSET = "insights_offset"
         private const val PAGE_SIZE = 50
     }
 }

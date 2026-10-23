@@ -3,9 +3,11 @@ package com.qxmatrix.edumanager.standalone
 import android.Manifest
 import android.app.AlertDialog
 import android.content.BroadcastReceiver
+import android.content.ClipData
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.content.pm.PackageManager
 import android.content.res.ColorStateList
 import android.content.res.Configuration
 import android.graphics.BitmapFactory
@@ -83,6 +85,7 @@ class MainActivity : ComponentActivity() {
     }
     private var auxiliaryIndexesValidated = false
     private var activeMaterialQueueFilter = MaterialQueueFilter.ALL
+    private var activeMaterialWorkspaceTab = MaterialWorkspaceTab.ADD
     private val legacyCourseReconciliationAttempted = mutableSetOf<String>()
     private lateinit var rootStatus: TextView
     private lateinit var studentList: GridLayout
@@ -188,13 +191,23 @@ class MainActivity : ComponentActivity() {
             runCatching { BusinessDatabase.get(this@MainActivity).ledger().recoverInterruptedCalls(BusinessDatabase.processSession) }
         }
 
-        activeSection = AppSection.restore(savedInstanceState?.getString(STATE_SECTION) ?: uiState.section.name)
+        val restoredSectionRaw = savedInstanceState?.getString(STATE_SECTION) ?: uiState.section.name
+        val reopenStudentManager = restoredSectionRaw == AppSection.ARCHIVES.name
+        activeSection = AppSection.restore(restoredSectionRaw)
         uiState.section = activeSection
         activeMaterialQueueFilter = MaterialQueueFilter.restore(savedInstanceState?.getString(STATE_MATERIAL_FILTER) ?: uiState.materialFilter)
+        activeMaterialWorkspaceTab = MaterialWorkspaceTab.restore(savedInstanceState?.getString(STATE_MATERIAL_TAB) ?: uiState.materialTab)
+        uiState.materialAdvanced = savedInstanceState?.getBoolean(STATE_MATERIAL_ADVANCED, uiState.materialAdvanced) ?: uiState.materialAdvanced
+        AppSection.entries.forEach { section ->
+            val key = "$STATE_SCROLL_Y:${section.name}"
+            if (savedInstanceState?.containsKey(key) == true) uiState.setScrollY(section, savedInstanceState.getInt(key))
+        }
+        savedInstanceState?.getString(STATE_PENDING_IMPORT_STUDENT)?.takeIf(String::isNotBlank)?.let { pendingImportStudentId = it }
         savedInstanceState?.getString(STATE_PENDING_CAMERA_URI)?.takeIf(String::isNotBlank)?.let { pendingCameraUri = Uri.parse(it) }
+        savedInstanceState?.getString(STATE_PENDING_CAMERA_FILE)?.takeIf(String::isNotBlank)?.let { pendingCameraFile = File(it) }
         setContentView(buildAppShell())
         renderSection(activeSection)
-        mainScroll.post { mainScroll.scrollTo(0, savedInstanceState?.getInt(STATE_SCROLL_Y, uiState.scrollY) ?: uiState.scrollY) }
+        if (reopenStudentManager) sectionContent.post { renderSection(AppSection.ARCHIVES) }
         if (savedInstanceState == null) sectionContent.post { handleIncomingIntent(intent) }
     }
 
@@ -251,11 +264,18 @@ class MainActivity : ComponentActivity() {
     override fun onSaveInstanceState(outState: Bundle) {
         outState.putString(STATE_SECTION, activeSection.name)
         outState.putString(STATE_MATERIAL_FILTER, activeMaterialQueueFilter.name)
+        outState.putString(STATE_MATERIAL_TAB, activeMaterialWorkspaceTab.name)
+        outState.putBoolean(STATE_MATERIAL_ADVANCED, uiState.materialAdvanced)
         outState.putInt(STATE_SCROLL_Y, if (::mainScroll.isInitialized) mainScroll.scrollY else uiState.scrollY)
+        outState.putString(STATE_PENDING_IMPORT_STUDENT, pendingImportStudentId.orEmpty())
         outState.putString(STATE_PENDING_CAMERA_URI, pendingCameraUri?.toString().orEmpty())
+        outState.putString(STATE_PENDING_CAMERA_FILE, pendingCameraFile?.absolutePath.orEmpty())
+        AppSection.entries.forEach { section -> outState.putInt("$STATE_SCROLL_Y:${section.name}", uiState.scrollY(section)) }
         uiState.section = activeSection
         uiState.materialFilter = activeMaterialQueueFilter.name
+        uiState.materialTab = activeMaterialWorkspaceTab.name
         uiState.scrollY = outState.getInt(STATE_SCROLL_Y)
+        uiState.setScrollY(activeSection, outState.getInt(STATE_SCROLL_Y))
         uiState.pendingOperation = when {
             pendingCameraUri != null -> "camera_import"
             pendingImportStudentId != null -> "file_import"
@@ -384,7 +404,12 @@ class MainActivity : ComponentActivity() {
                 imageTintList = ColorStateList.valueOf(Color.WHITE)
                 scaleType = ImageView.ScaleType.CENTER_INSIDE
                 contentDescription = "群星矩阵"
-            }, LinearLayout.LayoutParams(dp(145), dp(58)))
+            }, LinearLayout.LayoutParams(dp(118), dp(58)))
+            top.addView(themedButton("⚙", YouthButtonRole.COMPACT) { renderSection(AppSection.SETTINGS) }.apply {
+                contentDescription = "打开系统设置"
+                minWidth = dp(48)
+                minHeight = dp(48)
+            }, LinearLayout.LayoutParams(dp(54), ViewGroup.LayoutParams.WRAP_CONTENT))
             root.addView(top, matchWrap())
         }
         val page = LinearLayout(this).apply {
@@ -430,13 +455,18 @@ class MainActivity : ComponentActivity() {
         root.addView(mainScroll, if (wideLayout) LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f) else LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
         if (!wideLayout) {
             val core = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; setBackgroundColor(palette.card) }
-            listOf(AppSection.HOME to "首页", AppSection.MATERIALS to "资料", AppSection.LEARNING to "学习", AppSection.PROJECTS to "项目").forEach { (section, label) ->
-                val button = themedButton(label, YouthButtonRole.COMPACT) { renderSection(section) }.apply { textSize = 14f; minHeight = dp(48) }
+            listOf(
+                AppSection.HOME to "首页",
+                AppSection.MATERIALS to "收集整理",
+                AppSection.REPORTS to "学情报告",
+                AppSection.LEARNING to "学习行动",
+                AppSection.PROJECTS to "项目成果",
+            ).forEach { (section, label) ->
+                val button = themedButton(label, YouthButtonRole.COMPACT) { renderSection(section) }
+                configurePortraitNavigationButton(button, label)
                 navigationButtons[section] = button
                 core.addView(button, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
             }
-            core.addView(themedButton("全部", YouthButtonRole.COMPACT) { showSectionPicker() }.apply { textSize = 14f; minHeight = dp(48) },
-                LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
             root.addView(core, matchWrap())
         }
         frame.addView(root, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
@@ -453,28 +483,25 @@ class MainActivity : ComponentActivity() {
         }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(88)))
         addView(currentStudentButton, matchWrap().apply { bottomMargin = dp(10) })
         val menu = LinearLayout(this@MainActivity).apply { orientation = LinearLayout.VERTICAL }
-        businessSections().filterNot { it == AppSection.SETTINGS }.forEach { section ->
+        primarySections().forEach { section ->
             val button = themedButton(section.displayLabel(this@MainActivity), YouthButtonRole.NAVIGATION) { renderSection(section) }
             navigationButtons[section] = button; menu.addView(button, matchWrap())
         }
         addView(ScrollView(this@MainActivity).apply { isFillViewport = true; addView(menu) }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
-        val settings = themedButton(AppSection.SETTINGS.displayLabel(this@MainActivity), YouthButtonRole.NAVIGATION) { renderSection(AppSection.SETTINGS) }
+        val settings = themedButton("⚙  设置", YouthButtonRole.NAVIGATION) { renderSection(AppSection.SETTINGS) }
+        settings.contentDescription = "打开系统设置"
         navigationButtons[AppSection.SETTINGS] = settings
         addView(settings, matchWrap())
     }
 
     private fun showSectionPicker() {
-        val sections = businessSections()
+        val sections = primarySections()
         AlertDialog.Builder(this).setTitle(R.string.section_picker_title).setItems(sections.map { it.label(this) }.toTypedArray()) { _, index -> renderSection(sections[index]) }
-            .setPositiveButton("固定常用入口") { _, _ ->
-                val choices = listOf(AppSection.ARCHIVES, AppSection.LEARNING, AppSection.REPORTS, AppSection.SETTINGS)
-                val prefs = getSharedPreferences(UI_CONTEXT_PREFS, MODE_PRIVATE)
-                val pins = prefs.getStringSet("home_pins", emptySet()).orEmpty().toMutableSet()
-                AlertDialog.Builder(this).setTitle("首页常用入口").setMultiChoiceItems(choices.map { it.label(this) }.toTypedArray(), BooleanArray(choices.size) { choices[it].name in pins }) { _, i, checked -> if (checked) pins += choices[i].name else pins -= choices[i].name }
-                    .setPositiveButton("保存") { _, _ -> prefs.edit().putStringSet("home_pins", pins).apply(); renderSection(AppSection.HOME) }.setNegativeButton("取消", null).show()
-            }.show()
+            .setNeutralButton("管理学生档案") { _, _ -> renderSection(AppSection.ARCHIVES) }
+            .setPositiveButton("设置") { _, _ -> renderSection(AppSection.SETTINGS) }
+            .show()
     }
-    private fun businessSections() = AppSection.entries.toList()
+    private fun primarySections() = PrimaryDestination.entries.map(PrimaryDestination::section)
 
     private fun navigationWidthDp(): Int = when {
         resources.configuration.screenWidthDp >= 1280 -> 220
@@ -534,6 +561,7 @@ class MainActivity : ComponentActivity() {
                 renderSection(activeSection)
             }
             .setNegativeButton("取消", null)
+            .setPositiveButton("管理学生档案") { _, _ -> renderSection(AppSection.ARCHIVES) }
             .show()
     }
 
@@ -542,27 +570,54 @@ class MainActivity : ComponentActivity() {
         if (student == null) showMessage("没有学生档案", emptyMessage) else action(student)
     }
 
-    private fun renderSection(section: AppSection, materialFilter: MaterialQueueFilter? = null) {
+    private fun renderSection(
+        section: AppSection,
+        materialFilter: MaterialQueueFilter? = null,
+        materialTab: MaterialWorkspaceTab? = null,
+    ) {
         if (!checkStudentIndex()) return
-        if (section == AppSection.MATERIALS) activeMaterialQueueFilter = materialFilter ?: MaterialQueueFilter.ALL
+        if (::mainScroll.isInitialized && ::sectionContent.isInitialized && sectionContent.childCount > 0) {
+            uiState.setScrollY(activeSection, mainScroll.scrollY)
+        }
+        if (section == AppSection.MATERIALS) {
+            if (materialFilter != null) activeMaterialQueueFilter = materialFilter
+            if (materialTab != null) activeMaterialWorkspaceTab = materialTab
+            else if (materialFilter != null) activeMaterialWorkspaceTab = MaterialWorkspaceTab.PROGRESS
+            uiState.materialFilter = activeMaterialQueueFilter.name
+            uiState.materialTab = activeMaterialWorkspaceTab.name
+        }
         activeSection = section; uiState.section = section; sectionTitle.text = section.label(this); sectionContent.removeAllViews(); clearOfflineMigrationViews()
         configureSectionHeader(defaultSectionSubtitle(section))
         if (::portraitSectionButton.isInitialized) portraitSectionButton.text = section.displayLabel(this)
         updateCurrentStudentButton()
         navigationButtons.forEach { (item, button) ->
             YouthUi.applyButton(button, palette, if (item == section) YouthButtonRole.NAVIGATION_ACTIVE else YouthButtonRole.NAVIGATION)
+            if (!wideLayout && item in primarySections()) configurePortraitNavigationButton(button, item.label(this))
         }
         pageControllers.render(section)
+        if (::mainScroll.isInitialized) mainScroll.post { mainScroll.scrollTo(0, uiState.scrollY(section)) }
     }
 
     private fun defaultSectionSubtitle(section: AppSection): String = when (section) {
-        AppSection.HOME -> "查看今天的资料进度和推荐操作"
-        AppSection.ARCHIVES -> "管理当前学生的独立教育档案"
-        AppSection.MATERIALS -> "选择一个方块，开始今天的资料整理"
-        AppSection.LEARNING -> "课程、学习卡片、作答反馈和学习分析"
-        AppSection.REPORTS -> "阅读画像、变化与行动建议"
-        AppSection.PROJECTS -> "学习项目、选题、比赛、成果与成长模型"
-        AppSection.SETTINGS -> "调整界面、Agent、存储与设备设置"
+        AppSection.HOME -> "查看收集、整理、报告和学习的完整进度"
+        AppSection.ARCHIVES -> "新建、接管、切换或迁移学生档案"
+        AppSection.MATERIALS -> "添加资料并查看自动整理进度"
+        AppSection.LEARNING -> "完成今日学习、反馈和复测"
+        AppSection.REPORTS -> "查看最新学情、历史变化和档案明细"
+        AppSection.PROJECTS -> "查看项目进展、规划、成果与成长模型"
+        AppSection.SETTINGS -> "调整自动处理、数据、应用与高级设置"
+    }
+
+    private fun configurePortraitNavigationButton(button: Button, label: String) {
+        button.text = if (label.length > 2) label.chunked(2).joinToString("\n") else label
+        button.contentDescription = label
+        button.textSize = 11f
+        button.maxLines = 2
+        button.ellipsize = null
+        button.gravity = Gravity.CENTER
+        button.textAlignment = View.TEXT_ALIGNMENT_CENTER
+        button.minHeight = dp(64)
+        button.setPadding(dp(2), dp(5), dp(2), dp(5))
     }
 
     private fun configureSectionHeader(subtitle: String, badges: List<String> = emptyList()) {
@@ -585,41 +640,66 @@ class MainActivity : ComponentActivity() {
         val queue = if (current == null) emptyList() else materialQueueItems(listOf(current))
         val pending = queue.count(::materialPending)
         val processing = queue.count(::materialProcessing)
+        val recovering = queue.count(::materialAutomaticRecovery)
         val needsHelp = queue.count(::materialNeedsHelp)
-        val completedOcr = queue.count { it.material.optString("ocrStatus") == "completed" }
         val projects = projectService.listProjects().size
-        sectionNote("从收集资料到形成档案，按卡片提示完成下一步；资料始终写入当前学生或明确选择的学习项目。")
+        sectionNote("收集资料后，系统自动整理并更新学情；学习结果会作为新证据回到整理流程。")
         sectionContent.addView(TextView(this).apply {
-            text = if (current == null) "还没有学生档案，请先建立或接管档案。" else "${current.name} · ${current.grade.ifBlank { "未填写年级" }}　资料 ${queue.size} · 待处理 $pending · 正在处理 $processing · 需补充 $needsHelp · 已完成识别 $completedOcr\n本机共有 ${students.size} 份学生档案 · $projects 个学习项目"
+            text = if (current == null) {
+                "还没有学生档案。建立或接管档案后，即可开始收集资料。"
+            } else {
+                "${current.name} · ${current.grade.ifBlank { "未填写年级" }}\n资料 ${queue.size} 份 · 等待整理 $pending · 正在整理 $processing · 自动恢复 $recovering · 归属待确认 $needsHelp\n本机共有 ${students.size} 份学生档案 · $projects 个学习项目"
+            }
             textSize = 16f; setTextColor(palette.text); setPadding(dp(18), dp(16), dp(18), dp(16)); YouthUi.applyStatusCard(this, palette)
         }, matchWrap())
-        sectionHeading("现在可以做什么")
-        val pins = getSharedPreferences(UI_CONTEXT_PREFS, MODE_PRIVATE).getStringSet("home_pins", emptySet()).orEmpty()
-        businessSections().filter { it.name in pins }.forEach { section -> sectionContent.addView(themedButton("常用 · ${section.label(this)}", YouthButtonRole.COMPACT) { renderSection(section) }, matchWrap()) }
-        sectionContent.addView(themedButton("当前学生 · 录音与独立音频转写", YouthButtonRole.COMPACT) {
-            withCurrentStudent { startActivity(Intent(this, AudioIntakeActivity::class.java).putExtra("studentId", it.id)) }
+        sectionHeading("学习闭环")
+        val stages = listOf(
+            PipelineStageUiState(
+                PipelineStage.COLLECTION,
+                if (queue.isEmpty()) PipelineUserStatus.EMPTY else PipelineUserStatus.READY,
+                "1　收集资料",
+                if (queue.isEmpty()) "添加作业、试卷、笔记、录音或对话" else "已收集 ${queue.size} 份，可继续添加",
+                if (queue.isEmpty()) "从这里开始" else "继续添加",
+            ),
+            PipelineStageUiState(
+                PipelineStage.DIGEST,
+                when { needsHelp > 0 -> PipelineUserStatus.NEEDS_HELP; processing + recovering > 0 -> PipelineUserStatus.PROCESSING; pending > 0 -> PipelineUserStatus.WAITING; else -> PipelineUserStatus.READY },
+                "2　整理消化",
+                when { needsHelp > 0 -> "$needsHelp 份资料归属需要确认"; processing > 0 -> "$processing 份资料正在自动整理"; recovering > 0 -> "$recovering 份资料等待系统恢复"; pending > 0 -> "$pending 份资料等待自动整理"; else -> "当前资料已完成整理" },
+                when { needsHelp > 0 -> "$needsHelp 份待确认"; processing > 0 -> "$processing 份处理中"; recovering > 0 -> "$recovering 份自动恢复"; pending > 0 -> "$pending 份等待"; else -> "已完成" },
+            ),
+            PipelineStageUiState(
+                PipelineStage.REPORT,
+                when { needsHelp > 0 -> PipelineUserStatus.NEEDS_HELP; pending + processing + recovering > 0 -> PipelineUserStatus.WAITING; else -> PipelineUserStatus.READY },
+                "3　学情报告",
+                when { needsHelp > 0 -> "确认资料归属后再更新"; pending + processing + recovering > 0 -> "资料整理完成后自动更新"; else -> "查看最新报告、依据和历史版本" },
+                when { needsHelp > 0 -> "归属待确认"; pending + processing + recovering > 0 -> "等待更新"; else -> "查看报告" },
+            ),
+            PipelineStageUiState(
+                PipelineStage.LEARNING,
+                if (current == null) PipelineUserStatus.EMPTY else PipelineUserStatus.READY,
+                "4　学习行动",
+                if (current == null) "建立学生档案后生成个人学习行动" else "继续课程、学习卡片、反馈和复测",
+                if (current == null) "尚未开始" else "开始学习",
+            ),
+        )
+        addActionGrid(stages.mapIndexed { index, stage ->
+            val action: () -> Unit = when (stage.stage) {
+                PipelineStage.COLLECTION -> { { renderSection(AppSection.MATERIALS, materialTab = MaterialWorkspaceTab.ADD) } }
+                PipelineStage.DIGEST -> { { renderSection(AppSection.MATERIALS, if (needsHelp > 0) MaterialQueueFilter.NEEDS_HELP else MaterialQueueFilter.ACTION_REQUIRED, MaterialWorkspaceTab.PROGRESS) } }
+                PipelineStage.REPORT -> { { renderSection(AppSection.REPORTS) } }
+                PipelineStage.LEARNING -> { { renderSection(AppSection.LEARNING) } }
+            }
+            YouthAction(listOf("＋", "✦", "☰", "▶")[index], stage.title, stage.summary, stage.badge, tone = index, action = action)
+        }, preferredColumns = 4)
+        sectionContent.addView(statusCard().apply {
+            text = "↺ 学习作答、反馈和复测会保存为新证据，并自动回到“整理消化”；满足条件后更新成长模型和下一批报告。"
         }, matchWrap())
-        sectionContent.addView(themedButton("当前学生 · 统一搜索、学习卡片与规划候选", YouthButtonRole.COMPACT) {
-            withCurrentStudent { startActivity(Intent(this, LearningStudioActivity::class.java).putExtra(LearningStudioActivity.EXTRA_STUDENT_ID, it.id)) }
-        }, matchWrap())
-        sectionContent.addView(themedButton("当前学生 · 掌握状态、时间线与报告历史", YouthButtonRole.COMPACT) {
-            withCurrentStudent { startActivity(Intent(this, LearningInsightsActivity::class.java).putExtra(LearningInsightsActivity.EXTRA_STUDENT_ID, it.id)) }
-        }, matchWrap())
-        sectionContent.addView(themedButton("当前学生 · 任务中心", YouthButtonRole.COMPACT) {
-            withCurrentStudent { startActivity(Intent(this, TaskCenterActivity::class.java).putExtra(TaskCenterActivity.EXTRA_STUDENT_ID, it.id)) }
-        }, matchWrap())
-        sectionContent.addView(themedButton("查看当前学生模型任务诊断", YouthButtonRole.COMPACT) {
-            withCurrentStudent { showModelCallDiagnostics(it) }
-        }, matchWrap())
-        val actionable = queue.count(::materialActionRequired)
+        sectionHeading("项目与成长")
         addActionGrid(listOf(
-            YouthAction("＋", "添加资料", "导入文件、拍照或连续采集屏幕", if (queue.isEmpty()) "从这里开始" else "继续添加") { renderSection(AppSection.MATERIALS) },
-            YouthAction("▶", "处理中", if (actionable > 0) "查看正在处理或等待下一步的资料" else "当前没有待处理资料", if (actionable > 0) "$actionable 份" else "已清空") { renderSection(AppSection.MATERIALS, MaterialQueueFilter.ACTION_REQUIRED) },
-            YouthAction("!", "需要补充", if (needsHelp > 0) "打开失败项并直接重试" else "当前没有需要补充的资料", if (needsHelp > 0) "$needsHelp 份" else "状态正常") { renderSection(AppSection.MATERIALS, MaterialQueueFilter.NEEDS_HELP) },
-            YouthAction("▣", "知识更新", "查看教育档案和学习项目中的最新沉淀") { renderSection(AppSection.ARCHIVES) },
-            YouthAction("↗", "成长变化", "查看自动生成且可追溯的成长模型") { renderSection(AppSection.PROJECTS) },
-            YouthAction("☰", "报告与档案", "浏览学情报告、资料摘要与综合汇总") { renderSection(AppSection.REPORTS) },
-        ))
+            YouthAction("◆", "项目进展", if (projects > 0) "查看 $projects 个项目的阶段、待办和成果" else "建立学习项目并汇总资料与成果", if (projects > 0) "$projects 个项目" else "尚无项目") { renderSection(AppSection.PROJECTS) },
+            YouthAction("↗", "成长变化", "查看自动生成且可追溯的成长模型", "项目成果末尾") { renderSection(AppSection.PROJECTS) },
+        ), preferredColumns = 2, colorful = false)
     }
 
     private fun renderArchives() {
@@ -739,27 +819,95 @@ class MainActivity : ComponentActivity() {
         val queue = selectedStudent()?.let { materialQueueItems(listOf(it)) }.orEmpty()
         val needsHelp = queue.count(::materialNeedsHelp)
         val ocrNeedsHelp = queue.count { MaterialProcessingPolicy.ocrNeedsHelp(it.material) }
-        val digestNeedsHelp = queue.count { MaterialProcessingPolicy.digestNeedsHelp(it.material) }
+        val recovering = queue.count(::materialAutomaticRecovery)
         val pending = queue.count(::materialPending)
+        val processing = queue.count(::materialProcessing)
         val digestReady = queue.count { materialPending(it) && digestEligible(it) }
-        configureSectionHeader("选择一个方块，开始今天的资料整理", listOf("$pending 待处理", "$needsHelp 需补充"))
-        addActionGrid(listOf(
-            YouthAction("📁", "文件资产中心", "浏览全部原始资料和处理状态", "${queue.size} 份", tone = 0) { chooseStudentForAssets() },
-            YouthAction("↑", "本机导入", "从平板、U盘选择学习资料", tone = 1) { chooseFileImport() },
-            YouthAction("📷", "拍照采集", "拍摄作业、试卷和课堂笔记", tone = 2) { choosePhotoImport() },
-            YouthAction("▣", "连续屏幕采集", "智能混合、画面变化或固定间隔", tone = 3) { startGeneralScreenCapture() },
-            YouthAction("◎", "OCR / 视觉解析", "识别文字、图表和页面重点", if (ocrNeedsHelp > 0) "$ocrNeedsHelp 份需补充" else "可多选", tone = 4) { chooseMaterialsForOcr() },
-            YouthAction("✦", "消化资料", "整理摘要并写入学生知识库", when { digestNeedsHelp > 0 -> "$digestNeedsHelp 份需核对"; digestReady > 0 -> "$digestReady 份待处理"; else -> "暂无待处理" }, tone = 5) { chooseMaterialsForDigest() },
-            YouthAction("💬", "导入智能体对话", "保存 PalmClaw、豆包等对话历史", tone = 1) { showConversationImportMenu() },
-            YouthAction("☰", "对话资料与候选知识", "查看已导入对话、消化结果和候选知识", tone = 0) { openConversationKnowledge() },
-            YouthAction("✓", "查看消化记录", "查看处理时间、资料和结果，可追溯每一步", tone = 0, spanColumns = 2) { chooseDigestHistoryStudent() },
-        ))
-        addActionGrid(listOf(
-            YouthAction("⌂", "浏览原始资料", "按目录查看照片、文档和课程截图") { chooseStudentForRawBrowser() },
-            YouthAction("▤", "查看识别结果", "浏览已经完成的 OCR 与视觉解析") { chooseOcrResult() },
-        ), preferredColumns = 2, colorful = false)
-        renderMaterialQueue()
-        reconcileLegacyCourseCapturesIfNeeded()
+        configureSectionHeader("添加资料并查看自动整理进度", listOf("$pending 等待", "${processing + recovering} 系统处理中", "$needsHelp 归属待确认"))
+        addMaterialWorkspaceTabs()
+        when (activeMaterialWorkspaceTab) {
+            MaterialWorkspaceTab.ADD -> {
+                sectionNote("选择一种方式添加资料。识别、理解、整理和档案更新会在已授权范围内自动继续。")
+                addActionGrid(listOf(
+                    YouthAction("↑", "导入文件", "从手机、平板或 U 盘添加文档、图片和学习资料", tone = 1) { chooseFileImport() },
+                    YouthAction("📷", "拍照添加", "拍摄作业、试卷、板书和课堂笔记", tone = 2) { choosePhotoImport() },
+                    YouthAction("▣", "连续采集", "连续收集课程或学习过程中的屏幕内容", tone = 3) { startGeneralScreenCapture() },
+                    YouthAction("◉", "录音与音频", "录制或导入独立学习音频", tone = 4) { withCurrentStudent { startActivity(Intent(this, AudioIntakeActivity::class.java).putExtra("studentId", it.id)) } },
+                    YouthAction("💬", "导入对话", "保存智能体对话历史并进入自动整理", tone = 5) { showConversationImportMenu() },
+                ))
+                sectionContent.addView(statusCard().apply {
+                    text = if (AutoDigestSettingsStore(this@MainActivity).load().enabled) {
+                        "✓ 资料自动处理已开启。添加完成后可离开本页，进度会在“处理进度”中更新。"
+                    } else {
+                        "资料已安全保存。自动处理当前已关闭，可在设置中开启，或在“高级”中手动处理。"
+                    }
+                }, matchWrap())
+            }
+            MaterialWorkspaceTab.PROGRESS -> {
+                sectionContent.addView(statusCard().apply {
+                    text = when {
+                        needsHelp > 0 -> "有 $needsHelp 份资料归属需要确认；其他资料仍会继续处理。"
+                        processing > 0 -> "正在自动整理 $processing 份资料，可以继续使用其他功能。"
+                        recovering > 0 -> "$recovering 份资料正在等待系统自动恢复，不需要人工处理。"
+                        pending > 0 -> "$pending 份资料正在等待整理。"
+                        queue.isEmpty() -> "还没有资料。请先到“添加资料”开始收集。"
+                        else -> "当前资料已经完成整理。"
+                    }
+                }, matchWrap())
+                renderMaterialQueue()
+                addActionGrid(listOf(YouthAction("☰", "任务历史", "查看等待、运行、完成、失败和归属待确认的记录") {
+                    withCurrentStudent { startActivity(Intent(this, TaskCenterActivity::class.java).putExtra(TaskCenterActivity.EXTRA_STUDENT_ID, it.id)) }
+                }), preferredColumns = 2, colorful = false)
+            }
+            MaterialWorkspaceTab.RESULTS -> {
+                sectionNote("查看最近整理结果、档案更新和报告状态；原始资料始终保留。")
+                val completed = queue.count { MaterialStatus.normalize(it.material.optString("status")) == MaterialStatus.PROCESSED }
+                sectionContent.addView(statusCard().apply {
+                    text = when {
+                        needsHelp > 0 -> "已整理 $completed 份；另有 $needsHelp 份归属需要确认，报告继续沿用上一有效版本。"
+                        pending + processing + recovering > 0 -> "已整理 $completed 份；其余资料完成后将自动更新档案和报告。"
+                        queue.isEmpty() -> "暂无整理结果。添加资料后会在这里显示。"
+                        else -> "已整理 $completed 份；可以查看档案、学情报告和学习时间线。"
+                    }
+                }, matchWrap())
+                addActionGrid(listOf(
+                    YouthAction("✓", "最近整理结果", "查看资料摘要、处理时间和归档结果") { chooseDigestHistoryStudent() },
+                    YouthAction("▣", "档案明细", "查看资料摘要、综合汇总和全部文件") { withCurrentStudent { openStudentArchive(it) } },
+                    YouthAction("☰", "学情报告", "查看最新报告、依据和历史版本") { renderSection(AppSection.REPORTS) },
+                    YouthAction("◷", "学习时间线", "查看资料、作答、反馈和项目事件") { openLearningInsights(LearningInsightsActivity.TAB_TIMELINE) },
+                    YouthAction("💬", "对话整理结果", "查看已导入对话、摘要和候选知识") { withCurrentStudent { openConversationKnowledge(it.id) } },
+                ), preferredColumns = 2, colorful = false)
+            }
+        }
+        sectionContent.addView(themedButton(if (uiState.materialAdvanced) "收起高级功能" else "高级", YouthButtonRole.COMPACT) {
+            uiState.materialAdvanced = !uiState.materialAdvanced
+            renderSection(AppSection.MATERIALS, activeMaterialQueueFilter, activeMaterialWorkspaceTab)
+        }, matchWrap())
+        if (uiState.materialAdvanced) {
+            sectionHeading("高级与诊断")
+            addActionGrid(buildList {
+                add(YouthAction("📁", "文件资产中心", "浏览原始资料、索引和内部处理状态", "${queue.size} 份") { chooseStudentForAssets() })
+                add(YouthAction("⌂", "浏览原始资料", "按目录查看照片、文档和课程截图") { chooseStudentForRawBrowser() })
+                add(YouthAction("▤", "查看识别结果", "浏览已完成的文字与视觉识别结果") { chooseOcrResult() })
+                add(YouthAction("◎", "手动重新识别", "仅在自动处理无法继续时使用", if (ocrNeedsHelp > 0) "$ocrNeedsHelp 份需帮助" else "手动工具") { chooseMaterialsForOcr() })
+                add(YouthAction("✦", "手动重新整理", "仅在自动处理关闭或需要重新处理时使用", if (digestReady > 0) "$digestReady 份可处理" else "手动工具") { chooseMaterialsForDigest() })
+                add(YouthAction("✓", "处理回执与记录", "查看每次整理的技术记录和结果") { chooseDigestHistoryStudent() })
+                add(YouthAction("↻", "检查旧版课程资料", "补充登记旧版本留下的课程截图") { reconcileLegacyCourseCapturesIfNeeded() })
+                add(YouthAction("⚙", "模型任务诊断", "查看当前学生的本机模型任务记录") { withCurrentStudent { showModelCallDiagnostics(it) } })
+            }, preferredColumns = 2, colorful = false)
+        }
+    }
+
+    private fun addMaterialWorkspaceTabs() {
+        val tabs = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        MaterialWorkspaceTab.entries.forEach { tab ->
+            tabs.addView(themedButton(tab.label, if (tab == activeMaterialWorkspaceTab) YouthButtonRole.PRIMARY else YouthButtonRole.COMPACT) {
+                activeMaterialWorkspaceTab = tab
+                uiState.materialTab = tab.name
+                renderSection(AppSection.MATERIALS, if (tab == MaterialWorkspaceTab.PROGRESS) activeMaterialQueueFilter else null, tab)
+            }.apply { minHeight = dp(48) }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        }
+        sectionContent.addView(tabs, matchWrap())
     }
 
     private fun reconcileLegacyCourseCapturesIfNeeded() {
@@ -807,11 +955,14 @@ class MainActivity : ComponentActivity() {
             item.material.optString("ocrStatus") == "running" || item.material.optString("visionStatus") == "running"
     }
 
+    private fun materialAutomaticRecovery(item: MaterialQueueItem): Boolean =
+        MaterialProcessingPolicy.awaitingAutomaticRecovery(item.material)
+
     private fun materialNeedsHelp(item: MaterialQueueItem): Boolean =
         MaterialProcessingPolicy.ocrNeedsHelp(item.material) || MaterialProcessingPolicy.digestNeedsHelp(item.material)
 
     private fun materialActionRequired(item: MaterialQueueItem): Boolean =
-        materialPending(item) || materialProcessing(item) || materialNeedsHelp(item)
+        materialProcessing(item) || materialAutomaticRecovery(item)
 
     private fun filteredMaterialQueue(): List<MaterialQueueItem> {
         val items = selectedStudent()?.let { materialQueueItems(listOf(it)) }.orEmpty()
@@ -826,13 +977,11 @@ class MainActivity : ComponentActivity() {
         val material = item.material
         val status = MaterialStatus.normalize(material.optString("status"))
         val workflow = when {
-            MaterialProcessingPolicy.ocrNeedsHelp(material) -> "OCR 需要补充"
-            material.optString("digestRecoveryState") == "needs_user" -> "消化结果待核对"
-            MaterialProcessingPolicy.digestNeedsHelp(material) -> "消化需要处理"
-            materialProcessing(item) -> "正在处理"
-            status == MaterialStatus.PENDING_DIGEST && MaterialProcessingPolicy.digestReady(material) -> "等待消化"
-            status == MaterialStatus.PENDING_DIGEST -> "等待 OCR/解析"
-            status == MaterialStatus.PROCESSED -> "已消化"
+            MaterialProcessingPolicy.attributionConflict(material) -> "归属需要确认"
+            MaterialProcessingPolicy.awaitingAutomaticRecovery(material) -> "等待系统恢复"
+            materialProcessing(item) -> "正在整理"
+            status == MaterialStatus.PENDING_DIGEST -> "等待整理"
+            status == MaterialStatus.PROCESSED -> "已归档"
             else -> status.wireValue
         }
         return "$workflow · ${material.optString("fileName")}"
@@ -840,7 +989,7 @@ class MainActivity : ComponentActivity() {
 
     private fun renderMaterialQueue() {
         val items = filteredMaterialQueue()
-        sectionHeading("资料队列 · ${activeMaterialQueueFilter.label}（${items.size}）")
+        sectionHeading("处理进度 · ${activeMaterialQueueFilter.label}（${items.size}）")
         if (activeMaterialQueueFilter != MaterialQueueFilter.ALL) {
             addAction("查看全部资料") { renderSection(AppSection.MATERIALS, MaterialQueueFilter.ALL) }
         }
@@ -848,7 +997,7 @@ class MainActivity : ComponentActivity() {
             sectionContent.addView(statusCard().apply { text = "当前筛选条件下没有资料。" }, matchWrap())
             return
         }
-        addAction("批量处理当前列表（${items.size}）") { showBatchMaterialPicker(items) }
+        if (uiState.materialAdvanced) addAction("手动批量处理当前列表（${items.size}）") { showBatchMaterialPicker(items) }
         val groups = items.groupBy { item ->
             val session = item.material.optString("captureSessionId").ifBlank { item.material.optString("id") }
             "${item.student.id}::$session"
@@ -863,8 +1012,8 @@ class MainActivity : ComponentActivity() {
             YouthAction(
                 if (help > 0) "!" else if (active > 0) "▶" else "▤",
                 "${first.student.name} · $source · ${group.size} 份",
-                "待处理 $pending · 处理中 $active · 需补充 $help\n${group.take(3).joinToString("\n") { materialWorkflowLabel(it) }}${if (group.size > 3) "\n……" else ""}",
-                when { help > 0 -> "$help 份需处理"; active > 0 -> "$active 份处理中"; else -> "查看资料" },
+                "等待 $pending · 整理中 $active · 需帮助 $help\n${group.take(3).joinToString("\n") { materialWorkflowLabel(it) }}${if (group.size > 3) "\n……" else ""}",
+                when { help > 0 -> "$help 份需帮助"; active > 0 -> "$active 份整理中"; else -> "查看资料" },
             ) { showMaterialActions(group) }
         }
         addActionGrid(cards, preferredColumns = 2, colorful = false)
@@ -876,97 +1025,175 @@ class MainActivity : ComponentActivity() {
     private fun renderLearning() {
         val catalog = runCatching { courseCatalogService.lastGoodCatalog() }.getOrNull()
         val assigned = workspaceService.listStudents().count { courseCatalogService.offlineSnapshot(it.id) != null }
-        sectionNote(if (catalog == null && assigned == 0) "课程、学习卡片、作答反馈和学习分析均绑定当前学生；尚未导入课程不影响学习卡片。" else "全局平台目录 ${catalog?.optString("catalogVersion").orEmpty().ifBlank { "未导入" }} · 已有 $assigned 名学生获得离线课程快照")
+        sectionNote("学习卡片、课程、作答反馈和复测都绑定当前学生；完成后会作为新证据回到整理流程。")
+        sectionHeading("今日学习")
         addActionGrid(listOf(
-            YouthAction("▶", "查看和学习课程", "显示课程封面和介绍；学习时可同时启动屏幕采集", "当前学生") { chooseStudentForCourses() },
-            YouthAction("↓", "导入离线课程包", "导入 Windows 平台发布的课程包") { startPlatformCourseImport() },
-            YouthAction("▤", "学习卡片", "生成、作答、反馈与复测") { withCurrentStudent { startActivity(Intent(this, LearningStudioActivity::class.java).putExtra(LearningStudioActivity.EXTRA_STUDENT_ID, it.id).putExtra("module", "cards")) } },
-            YouthAction("◎", "学习分析", "查看知识点掌握、证据时间线和维度变化") { withCurrentStudent { startActivity(Intent(this, LearningInsightsActivity::class.java).putExtra(LearningInsightsActivity.EXTRA_STUDENT_ID, it.id)) } },
-        ))
+            YouthAction("▶", "开始今日学习", "打开学习卡片和系统整理的下一步", "当前学生", tone = 0) { openLearningStudio("today") },
+            YouthAction("▤", "智能参考建议", "查看学习卡片、项目灵感和规划参考", tone = 1) { openLearningStudio("suggestions") },
+            YouthAction("✓", "下一步行动", "查看已经选入下一步的参考建议", tone = 2) { openLearningStudio("today") },
+            YouthAction("↻", "我的进展", "查看作答、反馈和行动记录", tone = 3) { openLearningStudio("progress") },
+        ), preferredColumns = 4)
+        sectionHeading("课程与分析")
+        sectionContent.addView(statusCard().apply {
+            text = if (catalog == null && assigned == 0) "尚未导入离线课程，不影响学习卡片和复测。" else "课程目录 ${catalog?.optString("catalogVersion").orEmpty().ifBlank { "本机快照" }} · 已为 $assigned 名学生保存课程快照"
+        }, matchWrap())
+        addActionGrid(listOf(
+            YouthAction("▶", "课程", "查看课程封面、介绍和学习选项") { chooseStudentForCourses() },
+            YouthAction("◎", "学习分析", "查看知识点掌握、学习时间线和维度变化") { openLearningInsights(LearningInsightsActivity.TAB_MASTERY) },
+            YouthAction("◷", "学习历史", "查看作答、进展、已留存内容和历史建议") { openLearningStudio("history") },
+        ), preferredColumns = 3, colorful = false)
+    }
+
+    private fun openLearningStudio(initialMode: String) {
+        withCurrentStudent { student ->
+            startActivity(Intent(this, LearningStudioActivity::class.java)
+                .putExtra(LearningStudioActivity.EXTRA_STUDENT_ID, student.id)
+                .putExtra(LearningStudioActivity.EXTRA_INITIAL_MODE, initialMode)
+                .putExtra("module", "cards"))
+        }
+    }
+
+    private fun openLearningInsights(initialTab: String) {
+        withCurrentStudent { student ->
+            startActivity(Intent(this, LearningInsightsActivity::class.java)
+                .putExtra(LearningInsightsActivity.EXTRA_STUDENT_ID, student.id)
+                .putExtra(LearningInsightsActivity.EXTRA_INITIAL_TAB, initialTab))
+        }
     }
 
     private fun addGrowthModelActions() {
         val student = selectedStudent()
         val attentionCount = student?.let { runCatching { GrowthModelService(this).attentionCandidates(it.id).size }.getOrDefault(0) } ?: 0
         sectionHeading("成长模型")
-        sectionNote("成长模型依据来源和风险规则自动更新；低风险自动采用，中风险继续观察，高风险只进入异常清单。")
+        sectionNote("成长模型自动更新；资料充分时自动采用，信息不足时继续观察，只有学生或项目归属冲突需要确认。")
         addActionGrid(listOf(
             YouthAction("↗", "成长模型概览", "查看能力维度、项目贡献和来源证据") { chooseGrowthStudent() },
-            YouthAction("!", "需要处理", "仅列出缺来源、冲突、敏感或 Agent 推断等高风险候选", if (attentionCount > 0) "$attentionCount 条" else "暂无异常") { withCurrentStudent { showGrowthAttention(it) } },
+            YouthAction("!", "归属待确认", "仅列出无法确定学生或学习项目归属的候选", if (attentionCount > 0) "$attentionCount 条" else "暂无冲突") { withCurrentStudent { showGrowthAttention(it) } },
         ), preferredColumns = 2, colorful = false)
     }
 
     private fun renderReports() {
-        sectionNote("整体画像、历史变化、每周行动建议和阶段总结继续以成长模型的已确认证据为依据。")
-        selectedStudent()?.let { runCatching { ReportScheduleStore(this).ensureDefaults(it.id) } }
+        val student = selectedStudent()
+        val queue = student?.let { materialQueueItems(listOf(it)) }.orEmpty()
+        val waiting = queue.count(::materialPending) + queue.count(::materialProcessing) + queue.count(::materialAutomaticRecovery)
+        val needsHelp = queue.count(::materialNeedsHelp)
+        sectionNote("四份报告继续引用同一有效成长快照整组更新；打开本页不会调用模型或覆盖旧报告。")
+        student?.let { runCatching { ReportScheduleStore(this).ensureDefaults(it.id) } }
+        sectionHeading("最新学情报告")
+        sectionContent.addView(statusCard().apply {
+            text = when {
+                student == null -> "请先建立或接管学生档案。"
+                needsHelp > 0 -> "有 $needsHelp 份资料归属待确认，当前继续沿用上一有效报告版本。"
+                waiting > 0 -> "有 $waiting 份资料正在整理；完成后自动更新下一批报告。"
+                queue.isEmpty() -> "尚无新资料。已有报告会继续保留，不会自动覆盖。"
+                else -> "资料已经整理完成，可以查看最新报告和本次依据。"
+            }
+        }, matchWrap())
+        addActionGrid(GrowthModelService.REPORTS.mapIndexed { index, definition ->
+            YouthAction(listOf("☰", "↗", "✓", "⌚")[index % 4], definition.title, "查看正文、依据和当前有效版本", "查看", tone = index) {
+                withCurrentStudent { openPublishedReport(it, definition) }
+            }
+        }, preferredColumns = 4)
+        sectionHeading("依据与历史")
+        sectionContent.addView(statusCard().apply {
+            text = when {
+                needsHelp > 0 -> "本次新增资料中有 $needsHelp 份未进入有效报告依据。"
+                waiting > 0 -> "本次有 $waiting 份新增资料等待完成整理。"
+                queue.isEmpty() -> "本次暂无新增依据。"
+                else -> "本次资料已归档；可从报告历史查看整组修订和依据指纹。"
+            }
+        }, matchWrap())
         addActionGrid(listOf(
-            YouthAction("☰", "查看学情报告", "浏览整体画像、历史变化、行动建议和阶段总结") { chooseReportStudent() },
-            YouthAction("◷", "报告历史", "查看四份报告的整组修订、生成时间和依据指纹") { withCurrentStudent { startActivity(Intent(this, LearningInsightsActivity::class.java).putExtra(LearningInsightsActivity.EXTRA_STUDENT_ID, it.id)) } },
-            YouthAction("⌚", "周期报告", "设置周报、月报和学期报告提醒或自动生成") { withCurrentStudent { showReportScheduleDialog(it) } },
-            YouthAction("✦", "生成并发布报告", "依据已确认成长证据，一键生成四份正式报告", "一键完成") { chooseStudentForReportPublication() },
+            YouthAction("◷", "报告历史", "查看四份报告的整组修订、生成周期和依据摘要") { openLearningInsights(LearningInsightsActivity.TAB_REPORTS) },
+            YouthAction("▣", "档案明细", "查看资料摘要、综合汇总、问答精华和全部文件") { withCurrentStudent { openStudentArchive(it) } },
             YouthAction("⇩", "导出、分享与打印", "输出正式报告、简明报告或成长卡片") { withCurrentStudent { chooseReportForPublication(it) } },
-            YouthAction("▣", "查看完整教育档案", "查看资料摘要、综合汇总、问答精华和全部文件") { withCurrentStudent { openStudentArchive(it) } },
-        ))
+            YouthAction("⋯", "更多", "周期设置、手动重新生成和云端报告") { withCurrentStudent { showReportMore(it) } },
+        ), preferredColumns = 2, colorful = false)
+    }
+
+    private fun openPublishedReport(student: StudentRecord, definition: LearningReportDefinition) {
+        startActivity(Intent(this, MarkdownBrowserActivity::class.java)
+            .putExtra(MarkdownBrowserActivity.EXTRA_MODE, MarkdownBrowserActivity.MODE_REPORT)
+            .putExtra(MarkdownBrowserActivity.EXTRA_STUDENT_ID, student.id)
+            .putExtra(MarkdownBrowserActivity.EXTRA_REPORT_ID, definition.id)
+            .putExtra(MarkdownBrowserActivity.EXTRA_TITLE, definition.title))
+    }
+
+    private fun showReportMore(student: StudentRecord) {
+        val actions = arrayOf("周期报告设置", "手动重新生成四份报告", "云端报告与下载许可")
+        AlertDialog.Builder(this).setTitle("更多报告操作").setItems(actions) { _, which -> when (which) {
+            0 -> showReportScheduleDialog(student)
+            1 -> confirmReportGeneration(student)
+            2 -> showCloudReportActions(student)
+        } }.setNegativeButton("关闭", null).show()
     }
 
     private fun renderProjects() {
-        sectionNote("学习项目、规划候选、比赛推荐和成果均保留来源；采用候选只建立草稿，不自动报名或发布。")
+        sectionNote("项目灵感、规划参考、比赛建议和成果均保留来源；建议只用于参考，不会自动报名、申请或发布。")
+        val projects = projectService.listProjects()
+        sectionContent.addView(statusCard().apply {
+            text = if (projects.isEmpty()) "当前学生尚无学习项目。可以从“管理项目”新建、接管或导入。" else "本机共有 ${projects.size} 个学习项目；先查看阶段和待办，再进入规划或成果。"
+        }, matchWrap())
         addActionGrid(listOf(
-            YouthAction("＋", "新建学习项目", "建立项目资料、研究暂存层和知识空间") { showProjectInputDialog(adoptKnowledge = false) },
-            YouthAction("⇢", "接管已有项目", "连接已有的 LLM Wiki 项目知识库") { showProjectInputDialog(adoptKnowledge = true) },
-            YouthAction("⇩", "导入项目包", "从另一台单机设备显式导入项目；保留资料身份并重映射本机目录") { startProjectPackageImport() },
-            YouthAction("⌂", "设置资料根目录", "选择学习项目控制目录的保存位置") { startTreePicker(REQUEST_WORKSPACE_ROOT) },
-        ))
+            YouthAction("◆", "当前项目概览", "查看项目阶段、资料、任务、成果和待处理事项", if (projects.isEmpty()) "尚无项目" else "${projects.size} 个项目") { if (projects.isEmpty()) showProjectManagement() else showProjectOverview() },
+            YouthAction("⚙", "管理项目", "新建、接管、导入项目或调整资料位置") { showProjectManagement() },
+        ), preferredColumns = 2, colorful = false)
         sectionHeading("已有学习项目")
         projectList = GridLayout(this).apply { columnCount = actionGridColumns(3); alignmentMode = GridLayout.ALIGN_BOUNDS }
         sectionContent.addView(projectList, matchWrap().apply { setMargins(dp(-6), 0, dp(-6), 0) }); refreshProjects()
         sectionHeading("规划与成果")
-        LearningStudioService.moduleLabels.filterKeys { it != "cards" }.forEach { (module, label) ->
-            sectionContent.addView(themedButton(label, YouthButtonRole.COMPACT) { withCurrentStudent { student ->
+        addActionGrid(LearningStudioService.moduleLabels.filterKeys { it != "cards" }.entries.mapIndexed { index, (module, label) ->
+            YouthAction(listOf("?", "☰", "↗", "⌂", "◎", "◆", "🏆")[index % 7], label, "查看参考建议、适用条件、来源和历史") { withCurrentStudent { student ->
                 startActivity(Intent(this, LearningStudioActivity::class.java).putExtra(LearningStudioActivity.EXTRA_STUDENT_ID, student.id).putExtra("module", module))
-            } }, matchWrap())
-        }
+            } }
+        }, preferredColumns = 3, colorful = false)
         addGrowthModelActions()
     }
 
+    private fun showProjectManagement() {
+        val actions = arrayOf("新建学习项目", "接管已有项目", "导入项目包", "设置资料根目录")
+        AlertDialog.Builder(this).setTitle("管理项目").setItems(actions) { _, which -> when (which) {
+            0 -> showProjectInputDialog(adoptKnowledge = false)
+            1 -> showProjectInputDialog(adoptKnowledge = true)
+            2 -> startProjectPackageImport()
+            3 -> startTreePicker(REQUEST_WORKSPACE_ROOT)
+        } }.setNegativeButton("关闭", null).show()
+    }
+
+    private fun showProjectOverview() {
+        val projects = projectService.listProjects()
+        if (projects.isEmpty()) { showProjectManagement(); return }
+        AlertDialog.Builder(this).setTitle("选择项目").setItems(projects.map { project ->
+            "${project.name}\n${project.status} · ${project.studentNames.joinToString().ifBlank { "暂未绑定学生" }}"
+        }.toTypedArray()) { _, index ->
+            rememberCurrentProject(projects[index].id)
+            openProjectMaterials(projects[index])
+        }.setNegativeButton("关闭", null).show()
+    }
+
     private fun renderSettings() {
-        sectionNote("界面、任务 Agent、目录授权、换机迁移和本机备份设置。密钥继续使用 Android Keystore 加密。")
-        val license = licenseManager.status()
-        sectionContent.addView(statusCard().apply {
-            text = "产品授权：${if (license.active) "已激活" else "未激活"}\n设备码：${licenseManager.deviceId()}\n学生席位：${license.maxActiveStudents}\n到期：${license.expiresAt.ifBlank { "永久" }}"
-        }, matchWrap())
-        addActionGrid(listOf(YouthAction("◆", "更换激活码", "已有资料不会删除；更换后重新验证产品授权") {
-            AlertDialog.Builder(this).setTitle("更换激活码")
-                .setMessage("清除当前激活码后将返回产品激活页。已有资料不会删除。确认继续吗？")
-                .setNegativeButton("取消", null)
-                .setPositiveButton("继续") { _, _ -> licenseManager.clear(); recreate() }
-                .show()
-        }), preferredColumns = 2, colorful = false)
-        sectionHeading("任务 Agent 服务")
+        sectionNote("日常学习无需进入设置。模型、密钥和诊断信息只在对应详情中显示，密钥继续使用 Android Keystore 加密。")
+        sectionHeading("AI 与自动处理")
         agentStatus = statusCard(); sectionContent.addView(agentStatus, matchWrap()); updateAgentStatus()
         addActionGrid(listOf(
-            YouthAction("⚙", "配置任务 Agent", "填写或修改文本与视觉模型服务") { showAgentConfigurationDialog() },
-            YouthAction("✓", "测试 Agent", "分别测试文本和视觉模型是否可用") { testAgentConfiguration() },
-            YouthAction("■", "停用任务 Agent", "停止使用已保存的任务 Agent 配置") { confirmClearAgentConfiguration() },
-            YouthAction("◷", "自动整理资料", "当前：${if (AutoDigestSettingsStore(this).load().enabled) "已开启" else "已关闭"}") { showAutoDigestSettings() },
-        ), preferredColumns = 2, colorful = false)
-        sectionHeading("界面与本机")
+            YouthAction("◷", "资料自动处理", "当前：${if (AutoDigestSettingsStore(this).load().enabled) "已开启" else "已关闭"}；控制识别、理解和整理") { showAutoDigestSettings() },
+            YouthAction("✦", "AI 处理服务", "查看服务状态，必要时配置、测试或停用") { showAiProcessingServiceMenu() },
+            YouthAction("▶", "智能参考建议", "设置自动更新、联网许可和学习提醒") { openLearningStudio("suggestions") },
+        ), preferredColumns = 3, colorful = false)
+
+        sectionHeading("数据与存储")
         addActionGrid(listOf(
-            YouthAction("◉", "界面皮肤", "当前：${uiPreferences.skin().label}") { showSkinDialog() },
-            YouthAction("▭", "页面布局", "当前：${uiPreferences.layoutMode().label}") { showLayoutDialog() },
-            YouthAction("↻", "检查版本更新", "检查并下载可覆盖安装的新版本") { checkForAppUpdate() },
-            YouthAction("⌂", "存储与目录授权", "设置学生档案和学习项目根目录") { startTreePicker(REQUEST_WORKSPACE_ROOT) },
+            YouthAction("⌂", "资料位置与目录授权", "设置学生档案和学习项目的本机根目录") { startTreePicker(REQUEST_WORKSPACE_ROOT) },
             YouthAction("▤", "存储空间", "查看原始资料、报告、缓存和迁移暂存占用") { showStorageManagement() },
         ), preferredColumns = 2, colorful = false)
-        sectionHeading("设备迁移与备份")
         val deviceMigration = StandaloneDeviceMigrationJournal(this).latest()
         if (deviceMigration != null) sectionContent.addView(statusCard().apply {
             text = "最近整机迁移：${if (deviceMigration.operation == StandaloneDeviceMigrationService.OPERATION_EXPORT) "导出" else "接管"} · ${deviceMigration.phase}\n" +
                 "${deviceMigration.completedFiles}/${deviceMigration.totalFiles} 个文件 · ${formatBytes(deviceMigration.completedBytes)}/${formatBytes(deviceMigration.totalBytes)}\n${deviceMigration.message}"
         }, matchWrap())
         val migrationActions = mutableListOf(
-            YouthAction("↑", "导出整机资料", "换新平板时导出完整迁移目录") { confirmDeviceMigrationExport() },
-            YouthAction("↓", "在新平板接管", "从迁移目录恢复档案、项目和课程") { startTreePicker(REQUEST_DEVICE_MIGRATION_SOURCE) },
+            YouthAction("↑", "导出整机资料", "换新设备时导出完整迁移目录") { confirmDeviceMigrationExport() },
+            YouthAction("↓", "在新设备接管", "从迁移目录恢复档案、项目和课程") { startTreePicker(REQUEST_DEVICE_MIGRATION_SOURCE) },
             YouthAction("▣", "加密备份", "生成可用于本机恢复的备份包") { promptBackupPassword() },
             YouthAction("↻", "备份恢复", "选择备份包恢复资料") { startRestorePackagePicker() },
         )
@@ -975,8 +1202,43 @@ class MainActivity : ComponentActivity() {
             showMessage("最近整机迁移", "迁移 ID：${deviceMigration.migrationId}\n操作：${deviceMigration.operation}\n状态：${deviceMigration.phase}\n文件：${deviceMigration.completedFiles}/${deviceMigration.totalFiles}\n容量：${formatBytes(deviceMigration.completedBytes)}/${formatBytes(deviceMigration.totalBytes)}\n${deviceMigration.message}")
         }
         addActionGrid(migrationActions, preferredColumns = 2, colorful = false)
-        sectionHeading("高级设置")
-        addActionGrid(listOf(YouthAction("↓", "导入离线课程包", "导入 Windows 平台发布的课程文件") { startPlatformCourseImport() }), preferredColumns = 2, colorful = false)
+
+        sectionHeading("应用设置")
+        val license = licenseManager.status()
+        sectionContent.addView(statusCard().apply {
+            text = "产品授权：${if (license.active) "已激活" else "未激活"}\n设备码：${licenseManager.deviceId()}\n学生席位：${license.maxActiveStudents}\n到期：${license.expiresAt.ifBlank { "永久" }}"
+        }, matchWrap())
+        addActionGrid(listOf(
+            YouthAction("◉", "界面皮肤", "当前：${uiPreferences.skin().label}") { showSkinDialog() },
+            YouthAction("▭", "页面布局", "当前：${uiPreferences.layoutMode().label}") { showLayoutDialog() },
+            YouthAction("↻", "检查版本更新", "检查并下载可覆盖安装的新版本") { checkForAppUpdate() },
+            YouthAction("◆", "产品授权", "更换激活码；已有资料不会删除") { confirmLicenseReplacement() },
+        ), preferredColumns = 2, colorful = false)
+
+        sectionHeading("高级与诊断")
+        addActionGrid(listOf(
+            YouthAction("✓", "连接测试", "测试文本和视觉处理服务是否可用") { testAgentConfiguration() },
+            YouthAction("☰", "任务回执", "查看当前学生的后台任务、异常和处理记录") { withCurrentStudent { startActivity(Intent(this, TaskCenterActivity::class.java).putExtra(TaskCenterActivity.EXTRA_STUDENT_ID, it.id)) } },
+            YouthAction("⚙", "模型任务诊断", "查看当前学生的本机模型任务记录") { withCurrentStudent { showModelCallDiagnostics(it) } },
+            YouthAction("↓", "导入离线课程包", "导入 Windows 平台发布的课程文件") { startPlatformCourseImport() },
+        ), preferredColumns = 2, colorful = false)
+    }
+
+    private fun showAiProcessingServiceMenu() {
+        AlertDialog.Builder(this).setTitle("AI 处理服务")
+            .setItems(arrayOf("配置处理服务", "测试连接", "停用处理服务")) { _, which -> when (which) {
+                0 -> showAgentConfigurationDialog()
+                1 -> testAgentConfiguration()
+                2 -> confirmClearAgentConfiguration()
+            } }.setNegativeButton("关闭", null).show()
+    }
+
+    private fun confirmLicenseReplacement() {
+        AlertDialog.Builder(this).setTitle("更换激活码")
+            .setMessage("清除当前激活码后将返回产品激活页。已有资料不会删除。确认继续吗？")
+            .setNegativeButton("取消", null)
+            .setPositiveButton("继续") { _, _ -> licenseManager.clear(); recreate() }
+            .show()
     }
 
     private fun showStorageManagement() {
@@ -1108,6 +1370,18 @@ class MainActivity : ComponentActivity() {
     }
     private fun dp(value: Int) = (value * resources.displayMetrics.density).toInt()
     private fun withAlpha(color: Int, alpha: Int) = Color.argb(alpha, Color.red(color), Color.green(color), Color.blue(color))
+
+    @Deprecated("Kept for API 23 compatibility without adding a second navigation framework")
+    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<String>, grantResults: IntArray) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode != REQUEST_CAMERA_IMPORT_PERMISSION) return
+        if (grantResults.firstOrNull() == PackageManager.PERMISSION_GRANTED) {
+            startCameraImport()
+        } else {
+            pendingImportStudentId = null
+            showMessage("未允许使用相机", "仍可继续使用文件导入等其他功能；下次点击拍照时可重新授权。")
+        }
+    }
 
     @Deprecated("Kept for API 23 compatibility without adding a second navigation framework")
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
@@ -1422,6 +1696,11 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun handleIncomingIntent(incoming: Intent) {
+        incoming.getStringExtra(EXTRA_OPEN_SECTION)?.let { raw ->
+            incoming.removeExtra(EXTRA_OPEN_SECTION)
+            renderSection(AppSection.restore(raw))
+            return
+        }
         val draftId = incoming.getStringExtra("studioDraftId")
         if (!draftId.isNullOrBlank()) {
             val studentId = incoming.getStringExtra("studioStudentId").orEmpty()
@@ -1437,10 +1716,10 @@ class MainActivity : ComponentActivity() {
                 runOnUiThread {
                     if (isFinishing || isDestroyed) return@runOnUiThread
                     result.onSuccess { input ->
-                        if (getSharedPreferences(UI_CONTEXT_PREFS, MODE_PRIVATE).getString(KEY_CURRENT_STUDENT_ID, "") != studentId) { showMessage("学生已变化", "请返回原学生草稿重试。"); return@onSuccess }
-                        if (rootGrant.currentRootUri() == null) { showMessage("请先选择资料根目录", "草稿已保留；授权目录后再从草稿打开。"); return@onSuccess }
+                        if (getSharedPreferences(UI_CONTEXT_PREFS, MODE_PRIVATE).getString(KEY_CURRENT_STUDENT_ID, "") != studentId) { showMessage("学生已变化", "请返回原学生的项目灵感重试。"); return@onSuccess }
+                        if (rootGrant.currentRootUri() == null) { showMessage("请先选择资料根目录", "项目灵感已保留；授权目录后可再次打开。"); return@onSuccess }
                         renderSection(AppSection.PROJECTS); showProjectInputDialog(false, input)
-                    }.onFailure { showMessage("草稿无法打开", it.message.orEmpty()) }
+                    }.onFailure { showMessage("项目灵感无法打开", it.message.orEmpty()) }
                 }
             }.start()
             return
@@ -1736,7 +2015,8 @@ class MainActivity : ComponentActivity() {
                 startActivity(Intent(this, RawMaterialBrowserActivity::class.java)
                     .putExtra(RawMaterialBrowserActivity.EXTRA_STUDENT_ID, student.id)
                     .putExtra(RawMaterialBrowserActivity.EXTRA_START_PATH, if (allFiles) student.paths.rootPath else student.paths.rawPath)
-                    .putExtra(RawMaterialBrowserActivity.EXTRA_TITLE, "${student.name} · ${categories[which]}"))
+                    .putExtra(RawMaterialBrowserActivity.EXTRA_TITLE, "${student.name} · ${categories[which]}")
+                    .putExtra(RawMaterialBrowserActivity.EXTRA_ALLOW_DELETE, !allFiles))
             } else startActivity(Intent(this, MarkdownBrowserActivity::class.java)
                 .putExtra(MarkdownBrowserActivity.EXTRA_MODE, MarkdownBrowserActivity.MODE_ARCHIVE)
                 .putExtra(MarkdownBrowserActivity.EXTRA_ARCHIVE_CATEGORY, categories[which])
@@ -1795,35 +2075,114 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun startCameraImport() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M &&
+            ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED
+        ) {
+            PermissionRationale.request(
+                this,
+                Manifest.permission.CAMERA,
+                REQUEST_CAMERA_IMPORT_PERMISSION,
+                R.string.permission_camera_title,
+                R.string.permission_camera_reason,
+                onDeclined = { pendingImportStudentId = null },
+            )
+            return
+        }
         val folder = File(cacheDir, "camera-import").apply { mkdirs() }
         val target = File(folder, "photo-${System.currentTimeMillis()}.jpg")
         val uri = FileProvider.getUriForFile(this, "$packageName.fileprovider", target)
         val intent = Intent(MediaStore.ACTION_IMAGE_CAPTURE).apply {
             putExtra(MediaStore.EXTRA_OUTPUT, uri)
+            clipData = ClipData.newRawUri("拍照导入", uri)
             addFlags(Intent.FLAG_GRANT_WRITE_URI_PERMISSION or Intent.FLAG_GRANT_READ_URI_PERMISSION)
-        }
-        if (intent.resolveActivity(packageManager) == null) {
-            pendingImportStudentId = null; showMessage("无法拍照", "本机没有可用的相机应用。"); return
         }
         pendingCameraFile = target; pendingCameraUri = uri
         @Suppress("DEPRECATION")
-        startActivityForResult(intent, REQUEST_CAPTURE_PHOTO)
+        runCatching { startActivityForResult(intent, REQUEST_CAPTURE_PHOTO) }
+            .onFailure {
+                pendingImportStudentId = null; pendingCameraFile = null; pendingCameraUri = null
+                target.delete()
+                showMessage("无法拍照", "无法打开本机相机，请确认系统相机可用后重试。")
+            }
     }
 
     private fun importCapturedPhoto() {
         val studentId = pendingImportStudentId; val uri = pendingCameraUri; val file = pendingCameraFile
-        pendingImportStudentId = null; pendingCameraUri = null; pendingCameraFile = null
         if (studentId == null || uri == null || file == null || !file.exists() || file.length() == 0L) {
-            file?.delete(); showMessage("拍照导入失败", "没有取得有效照片，请重试。"); return
+            clearPendingCameraImport(deleteFile = true); showMessage("拍照导入失败", "没有取得有效照片，请重试。"); return
+        }
+        showPhotoImportTarget(studentId, uri, file)
+    }
+
+    private fun showPhotoImportTarget(studentId: String, uri: Uri, file: File) {
+        val student = runCatching { StudentIndexRepository(this).requireExact(studentId) }
+            .getOrElse { clearPendingCameraImport(deleteFile = true); showMessage("无法确定资料归属", it.message ?: "学生档案已变化"); return }
+        val targets = buildList {
+            add(PhotoImportTarget("student", student.id, student.id, "${student.name} · 原始资料库"))
+            projectService.listProjects().filter { project ->
+                project.status == "active" && student.id in project.studentIds
+            }.forEach { project -> add(PhotoImportTarget("project", project.id, student.id, "${project.name} · 项目库")) }
+        }
+        // Keep every target to one line.  On smaller Huawei screens the platform
+        // AlertDialog gives a multi-line single-choice row all remaining height,
+        // which can leave following project rows effectively untappable.
+        val labels = targets.map { target ->
+            if (target.type == "student") "学生资料库 · ${student.name}"
+            else "项目库 · ${target.label.removeSuffix(" · 项目库")}"
+        }.toTypedArray()
+        var selected = 0
+        val dialog = AlertDialog.Builder(this)
+            .setTitle("选择拍照投递位置")
+            .setSingleChoiceItems(labels, selected) { _, which -> selected = which }
+            .setNegativeButton("取消投递") { _, _ -> clearPendingCameraImport(deleteFile = true) }
+            .setPositiveButton("确认投递") { _, _ -> commitCapturedPhoto(targets[selected], uri, file) }
+            .create()
+        dialog.setOnCancelListener { clearPendingCameraImport(deleteFile = true) }
+        dialog.show()
+    }
+
+    private fun commitCapturedPhoto(target: PhotoImportTarget, uri: Uri, file: File) {
+        if (selectedStudent()?.id != target.studentId) {
+            AlertDialog.Builder(this).setTitle("学生已变化")
+                .setMessage("照片属于拍照时选择的学生。请切回该学生后重新投递，或取消并删除临时照片。")
+                .setNegativeButton("取消并删除照片") { _, _ -> clearPendingCameraImport(deleteFile = true) }
+                .setPositiveButton("重新选择") { _, _ -> showPhotoImportTarget(target.studentId, uri, file) }
+                .show()
+            return
         }
         lifecycleScope.launch {
             val result = withContext(Dispatchers.IO) {
-                runCatching { fileAssetService.importToStudent(studentId, uri, "Android 拍照导入") }
-                    .also { file.delete() }
+                runCatching {
+                    when (target.type) {
+                        "student" -> fileAssetService.importToStudent(target.studentId, uri, "Android 拍照导入")
+                        "project" -> {
+                            val project = ProjectRepository(this@MainActivity).requireExact(target.id)
+                            require(project.status == "active" && target.studentId in project.studentIds) { "项目已关闭或不再属于当前学生" }
+                            LocalProjectMaterialService(this@MainActivity).importUri(project.id, uri, file.name, "image/jpeg")
+                        }
+                        else -> error("不支持的投递位置")
+                    }
+                }
             }
-            result.onSuccess { refreshStudents(); showMessage("拍照导入完成", "照片已保存到所选学生的原始资料库，并进入待消化队列。") }
-                .onFailure { showMessage("拍照导入失败", it.message ?: "未知错误") }
+            result.onSuccess {
+                clearPendingCameraImport(deleteFile = true); refreshStudents()
+                showMessage("拍照投递完成", if (target.type == "student")
+                    "照片已保存到 ${target.label}，并进入自动整理流程。"
+                else "照片已保存到 ${target.label}，并进入项目待整理列表。")
+            }.onFailure { error ->
+                AlertDialog.Builder(this@MainActivity).setTitle("拍照投递失败")
+                    .setMessage("${error.message ?: "未知错误"}\n\n照片仍临时保留，可重新选择投递位置。")
+                    .setNegativeButton("取消并删除照片") { _, _ -> clearPendingCameraImport(deleteFile = true) }
+                    .setPositiveButton("重新选择") { _, _ -> showPhotoImportTarget(target.studentId, uri, file) }
+                    .show()
+            }
         }
+    }
+
+    private fun clearPendingCameraImport(deleteFile: Boolean) {
+        val file = pendingCameraFile
+        pendingImportStudentId = null; pendingCameraUri = null; pendingCameraFile = null
+        if (deleteFile) runCatching { file?.delete() }
     }
 
     private fun importSelectedFiles(data: Intent) {
@@ -1857,7 +2216,8 @@ class MainActivity : ComponentActivity() {
     private fun chooseStudentForRawBrowser() {
         withCurrentStudent("请先新建或接管学生档案库。") { student ->
             startActivity(Intent(this, RawMaterialBrowserActivity::class.java)
-                .putExtra(RawMaterialBrowserActivity.EXTRA_STUDENT_ID, student.id))
+                .putExtra(RawMaterialBrowserActivity.EXTRA_STUDENT_ID, student.id)
+                .putExtra(RawMaterialBrowserActivity.EXTRA_ALLOW_DELETE, true))
         }
     }
 
@@ -1877,11 +2237,7 @@ class MainActivity : ComponentActivity() {
             if (item.optString("ocrStatus") == "completed" && item.optString("ocrMarkdownPath").isNotBlank()) {
                 builder.setPositiveButton("查看 OCR 结果") { _, _ -> openOcrResult(student.id, item.optString("id")) }
             }
-            if (item.optString("digestRecoveryState") == "needs_user") {
-                builder.setNeutralButton("前往任务中心核对") { _, _ ->
-                    startActivity(Intent(this, TaskCenterActivity::class.java).putExtra(TaskCenterActivity.EXTRA_STUDENT_ID, student.id))
-                }
-            } else if (MaterialProcessingPolicy.digestNeedsHelp(item) || MaterialProcessingPolicy.ocrNeedsHelp(item)) {
+            if (MaterialProcessingPolicy.digestNeedsHelp(item) || MaterialProcessingPolicy.ocrNeedsHelp(item)) {
                 builder.setNeutralButton("重新加入待处理") { _, _ -> retryFailedMaterials(listOf(MaterialQueueItem(student, item))) }
             }
             builder.show()
@@ -1931,7 +2287,8 @@ class MainActivity : ComponentActivity() {
 
     private fun chooseProjectStudents(input: ProjectInput, adoptKnowledge: Boolean) {
         val students = workspaceService.listStudents()
-        val checked = BooleanArray(students.size)
+        val currentStudentId = selectedStudent()?.id
+        val checked = BooleanArray(students.size) { index -> students[index].id == currentStudentId }
         AlertDialog.Builder(this).setTitle("绑定参与学生（可多选）")
             .setMultiChoiceItems(students.map { it.name }.toTypedArray(), checked) { _, which, value -> checked[which] = value }
             .setNegativeButton("取消", null)
@@ -2023,7 +2380,7 @@ class MainActivity : ComponentActivity() {
         val model = field("文本模型名称").apply { setText(existing?.model ?: publicProfile?.model.orEmpty()) }
         val visionModel = field("视觉模型名称（可选；必须支持图片输入）").apply { setText(existing?.visionModel ?: publicProfile?.visionModel.orEmpty()) }
         val key = field(if (existing == null) "API Key（换机后必须重新填写）" else "新 API Key（留空保持原密钥）").apply { inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD }
-        AlertDialog.Builder(this).setTitle("配置教育管家 Agent").setView(fields).setNegativeButton("取消", null)
+        AlertDialog.Builder(this).setTitle("配置 AI 处理服务").setView(fields).setNegativeButton("取消", null)
             .setPositiveButton("安全保存") { _, _ ->
                 runCatching { AgentConfigurationStore(this).saveOrUpdate(endpoint.text.toString(), model.text.toString(), key.text.toString(), visionModel.text.toString()) }
                     .onSuccess { key.text?.clear(); updateAgentStatus(); showMessage("配置完成", "凭据已使用 Android Keystore 加密保存。") }
@@ -2032,7 +2389,9 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun updateAgentStatus() {
-        if (::agentStatus.isInitialized) agentStatus.text = runCatching { AgentConfigurationStore(this).summary() }.getOrElse { "Agent 配置需要重新保存" }
+        if (::agentStatus.isInitialized) agentStatus.text = runCatching {
+            "AI 处理服务：${AgentConfigurationStore(this).summary().replace("Agent", "处理服务")}"
+        }.getOrElse { "AI 处理服务配置需要重新保存" }
     }
 
     private fun testAgentConfiguration() {
@@ -2412,7 +2771,13 @@ class MainActivity : ComponentActivity() {
 
     private fun chooseMaterialsForDigest() {
         val items = selectedStudent()?.let { materialQueueItems(listOf(it)) }.orEmpty().filter { materialPending(it) && digestEligible(it) }
-        if (items.isEmpty()) { showMessage("没有可消化资料", "当前没有已准备好的待消化资料；图片或 PDF 需要先完成 OCR。"); return }
+        if (items.isEmpty()) {
+            val student = selectedStudent()
+            val recovering = student?.let { materialQueueItems(listOf(it)).count(::materialAutomaticRecovery) } ?: 0
+            if (recovering > 0) showMessage("正在自动恢复", "$recovering 份资料的技术处理尚未完成；系统会保留原件和处理记录并自动继续。")
+            else showMessage("没有可消化资料", "当前没有已准备好的待消化资料；图片或 PDF 需要先完成 OCR。")
+            return
+        }
         showBatchMaterialPicker(items, MaterialBatchAction.DIGEST)
     }
 
@@ -2538,13 +2903,20 @@ class MainActivity : ComponentActivity() {
                 val student = group.first().student
                 runOnUiThread { progress.setMessage("${index + 1}/${groups.size} · ${student.name} · ${group.size} 份资料") }
                 runCatching { StudentDigestOrchestrator(this).digestSelected(student.id, group.map { it.material.getString("id") }.toSet()) }
-                    .onSuccess { completed += it.optInt("processed") }
+                    .onSuccess { result ->
+                        completed += result.optInt("processed")
+                        val failed = result.optJSONArray("failures")
+                        if (failed != null) for (failureIndex in 0 until failed.length()) {
+                            val failure = failed.optJSONObject(failureIndex) ?: continue
+                            failures += "${student.name} · 第 ${failure.optInt("batch")} 批：${failure.optString("message").ifBlank { "消化失败" }}"
+                        }
+                    }
                     .onFailure { failures += "${student.name}：${it.message ?: "消化失败"}" }
             }
             runOnUiThread {
                 progress.dismiss(); refreshStudents()
                 if (activeSection == AppSection.MATERIALS) renderSection(AppSection.MATERIALS, activeMaterialQueueFilter)
-                showMessage("批量消化完成", "已处理 $completed 份，失败 ${failures.size} 组；知识声明仍保持候选状态。${if (failures.isEmpty()) "" else "\n\n${failures.take(5).joinToString("\n")}"}")
+                showMessage("批量消化完成", "已处理 $completed 份，失败 ${failures.size} 个小批次；每批最多3份且拥有独立回执，知识声明仍保持候选状态。${if (failures.isEmpty()) "" else "\n\n${failures.take(5).joinToString("\n")}"}")
             }
         }.start()
     }
@@ -2886,22 +3258,20 @@ class MainActivity : ComponentActivity() {
         val candidates = runCatching { service.attentionCandidates(student.id) }
             .getOrElse { showMessage("异常清单不可用", it.message ?: "原数据保持不变"); return }
         if (candidates.isEmpty()) {
-            showMessage("没有需要处理的成长证据", "低风险证据已自动采用，中风险证据已自动进入继续观察。")
+            showMessage("没有归属冲突", "成长证据已自动采用或进入继续观察。")
             return
         }
-        AlertDialog.Builder(this).setTitle("需要处理的成长证据").setItems(candidates.map { item ->
-            val reasons = item.optJSONObject("risk")?.optJSONArray("reasons")?.strings().orEmpty().joinToString("、")
-            "${item.optString("title")} · ${reasons.ifBlank { "高风险" }}"
+        AlertDialog.Builder(this).setTitle("归属待确认的成长证据").setItems(candidates.map { item ->
+            "${item.optString("title")} · 学生或项目归属冲突"
         }.toTypedArray()) { _, index ->
             val item = candidates[index]
-            val reasons = item.optJSONObject("risk")?.optJSONArray("reasons")?.strings().orEmpty().joinToString("、")
             AlertDialog.Builder(this).setTitle(item.optString("title"))
-                .setMessage("风险原因：${reasons.ifBlank { "需要核对来源" }}\n来源：${item.optString("sourceUri").ifBlank { "缺少来源" }}\n\n${item.optString("content")}")
+                .setMessage("归属问题：学生或项目归属冲突\n当前来源：${item.optString("sourceUri").ifBlank { "未关联资料" }}\n\n${item.optString("content")}")
                 .setNegativeButton("关闭", null)
                 .setNeutralButton("排除候选") { _, _ -> runCatching { service.excludeCandidate(student.id, item.getString("id")) }
                     .onSuccess { showMessage("已排除", "候选仍保留在历史记录中，不会进入有效成长模型。") }
                     .onFailure { showMessage("未排除", it.message ?: "原记录保持不变") } }
-                .setPositiveButton("关联已有资料") { _, _ -> chooseGrowthCandidateSource(student, item) }
+                .setPositiveButton("关联当前学生资料") { _, _ -> chooseGrowthCandidateSource(student, item) }
                 .show()
         }.setNegativeButton("关闭", null).show()
     }
@@ -2919,7 +3289,7 @@ class MainActivity : ComponentActivity() {
                 showMessage("来源已补充", when (decision) {
                     "confirmed" -> "风险规则复核后已自动进入成长模型。"
                     "watching" -> "风险规则复核后已进入继续观察。"
-                    else -> "仍有其他高风险原因，候选不会自动进入成长模型。"
+                    else -> "归属仍不明确，候选暂不进入成长模型。"
                 })
             }
                 .onFailure { showMessage("补充来源失败", it.message ?: "未知错误") }
@@ -3092,6 +3462,7 @@ class MainActivity : ComponentActivity() {
 
     private data class StudentInput(val name: String, val grade: String, val school: String, val goal: String)
     private data class ProjectInput(val name: String, val type: String, val description: String, val objective: String, val studentIds: List<String>)
+    private data class PhotoImportTarget(val type: String, val id: String, val studentId: String, val label: String)
     private data class MaterialQueueItem(val student: StudentRecord, val material: JSONObject)
     private data class YouthAction(
         val icon: String,
@@ -3105,12 +3476,18 @@ class MainActivity : ComponentActivity() {
     companion object {
         const val STATE_SECTION = "active_section"
         const val STATE_MATERIAL_FILTER = "material_filter"
+        const val STATE_MATERIAL_TAB = "material_tab"
+        const val STATE_MATERIAL_ADVANCED = "material_advanced"
         const val STATE_SCROLL_Y = "section_scroll_y"
+        const val STATE_PENDING_IMPORT_STUDENT = "pending_import_student"
         const val STATE_PENDING_CAMERA_URI = "pending_camera_uri"
+        const val STATE_PENDING_CAMERA_FILE = "pending_camera_file"
         const val EXTRA_OPEN_CONVERSATION_IMPORT = "open_conversation_import"
+        const val EXTRA_OPEN_SECTION = "open_section"
         const val REQUEST_WORKSPACE_ROOT = 2101
         const val REQUEST_ADOPTED_ROOT = 2102
         const val REQUEST_IMPORT_FILES = 2103
+        const val REQUEST_CAMERA_IMPORT_PERMISSION = 2122
         const val REQUEST_CAPTURE_PHOTO = 2109
         const val REQUEST_ADOPTED_PROJECT_KNOWLEDGE = 2104
         const val REQUEST_PLATFORM_COURSE_PACKAGE = 2105
@@ -3140,8 +3517,13 @@ class MainActivity : ComponentActivity() {
     }
 
     private enum class MaterialQueueFilter(val label: String) {
-        ALL("全部"), ACTION_REQUIRED("处理中"), NEEDS_HELP("需要补充");
+        ALL("全部"), ACTION_REQUIRED("处理中"), NEEDS_HELP("归属待确认");
         companion object { fun restore(raw: String?): MaterialQueueFilter = entries.firstOrNull { it.name == raw } ?: ALL }
+    }
+
+    private enum class MaterialWorkspaceTab(val label: String) {
+        ADD("添加资料"), PROGRESS("处理进度"), RESULTS("整理结果");
+        companion object { fun restore(raw: String?): MaterialWorkspaceTab = entries.firstOrNull { it.name == raw } ?: ADD }
     }
 
     private enum class MaterialBatchAction(val label: String) {

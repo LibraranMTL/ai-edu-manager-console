@@ -55,7 +55,7 @@ class ScopedContentRepository(private val context: Context,
         val key = "action:$versionId:$itemIndex"
         dao.byKey(studentId, "action", key)?.let { return@transaction it }
         val payload = JSONObject().put("versionId", versionId).put("itemIndex", itemIndex).put("module", root.getString("module"))
-            .put("candidateSnapshot", root).put("itemSnapshot", item).put("formalOutcome", false)
+            .put("candidateSnapshot", root).put("suggestionSnapshot", root).put("itemSnapshot", item).put("formalOutcome", false)
         val row = ledger(studentId, "action", key, version, payload)
         require(dao.transition(studentId, row.id, "recorded", "planned", Timestamp.now()) == 1)
         row.copy(state = "planned")
@@ -103,7 +103,7 @@ class ScopedContentRepository(private val context: Context,
         }
         val now = Timestamp.now()
         val row = ScopedContentEntity("version-${UUID.randomUUID()}", studentId, "artifact", sourceKey, title, payload.toString(), "", "",
-            ScopedContentPolicy.fingerprint(payload), projectId, "candidate", now, now, payload.toString())
+            ScopedContentPolicy.fingerprint(payload), projectId, "available", now, now, payload.toString())
         dao.insert(row); row
     }
     fun favorite(studentId: String, versionId: String): ScopedContentEntity = transaction(studentId) {
@@ -115,16 +115,24 @@ class ScopedContentRepository(private val context: Context,
         dao.insert(favorite); favorite
     }
     fun removeFavorite(studentId: String, id: String) = transaction(studentId) { require(dao.favoriteState(studentId, id, "removed", Timestamp.now()) == 1) }
-    fun attempt(studentId: String, versionId: String, answer: JSONObject): ScopedContentEntity = transaction(studentId) {
-        val version = exact(studentId, versionId); require(version.kind == "artifact")
-        require(JSONObject(version.payload).getString("module") == "cards") { "只能提交学习卡片作答" }
-        require(answer.toString().toByteArray().size <= 200_000) { "作答内容过大" }
-        val now = Timestamp.now(); val id = "attempt-${UUID.randomUUID()}"
-        val payload = JSONObject().put("versionId", versionId).put("evidenceSnapshot", JSONObject(version.payload)).put("answer", answer)
-            .put("status", "pending_review").put("masteryConclusion", JSONObject.NULL)
-        val row = version.copy(id = id, kind = "attempt", sourceKey = id, state = "pending_review", createdAt = now, updatedAt = now,
-            bodyText = answer.toString(), payload = payload.toString())
-        dao.insert(row); row
+    fun attempt(studentId: String, versionId: String, answer: JSONObject): ScopedContentEntity {
+        val row = transaction(studentId) {
+            val version = exact(studentId, versionId); require(version.kind == "artifact")
+            require(JSONObject(version.payload).getString("module") == "cards") { "只能提交学习卡片作答" }
+            require(answer.toString().toByteArray().size <= 200_000) { "作答内容过大" }
+            val now = Timestamp.now(); val id = "attempt-${UUID.randomUUID()}"
+            val payload = JSONObject().put("versionId", versionId).put("evidenceSnapshot", JSONObject(version.payload)).put("answer", answer)
+                .put("status", "recorded").put("masteryConclusion", JSONObject.NULL)
+            version.copy(id = id, kind = "attempt", sourceKey = id, state = "recorded", createdAt = now, updatedAt = now,
+                bodyText = answer.toString(), payload = payload.toString()).also(dao::insert)
+        }
+        val event = JSONObject().put("sourceId", row.id).put("studentId", studentId).put("kind", "practice_attempt")
+            .put("title", "完成学习卡片作答").put("time", row.createdAt).put("status", "recorded")
+            .put("content", "作答已保存并进入学习反馈闭环")
+        event.put("contentFingerprint", ScopedContentPolicy.fingerprint(event))
+        HighGrowthRoomStore(context).mirrorAsync(studentId, HighGrowthRoomStore.LEARNING_EVENT, listOf(event))
+        StudioAutomation.enqueueCheck(context, studentId)
+        return row
     }
     fun draft(studentId: String, versionId: String, itemIndex: Int): ScopedContentEntity = transaction(studentId) {
         val version = exact(studentId, versionId); val root = JSONObject(version.payload)
@@ -133,9 +141,9 @@ class ScopedContentRepository(private val context: Context,
         val key = "draft:$versionId:$itemIndex"
         dao.byKey(studentId, "draft", key)?.let { return@transaction it }
         val now = Timestamp.now()
-        val row = version.copy(id = "draft-${UUID.randomUUID()}", kind = "draft", sourceKey = key, title = item.getString("title"), state = "needs_user",
+        val row = version.copy(id = "draft-${UUID.randomUUID()}", kind = "draft", sourceKey = key, title = item.getString("title"), state = "ready",
             createdAt = now, updatedAt = now, payload = JSONObject().put("candidate", item).put("versionId", versionId)
-                .put("studentId", studentId).put("projectCreated", false).toString())
+                .put("suggestion", item).put("studentId", studentId).put("projectCreated", false).toString())
         dao.insert(row); row
     }
     fun insertInboxCandidate(studentId: String, submissionId: String, provider: String, payload: JSONObject,

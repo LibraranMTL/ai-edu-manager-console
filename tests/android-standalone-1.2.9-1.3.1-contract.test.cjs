@@ -7,14 +7,15 @@ const app = path.join(__dirname, '..', 'android-standalone-manager', 'app');
 const java = path.join(app, 'src', 'main', 'java', 'com', 'qxmatrix', 'edumanager', 'standalone');
 const read = (name) => fs.readFileSync(path.join(java, name), 'utf8');
 
-test('1.3.3 code 37 keeps assistant and gateway removed while preserving conversation intake', () => {
+test('1.3.4 code 38 keeps assistant and gateway removed while preserving conversation intake', () => {
   const build = fs.readFileSync(path.join(app, 'build.gradle.kts'), 'utf8');
   const main = read('MainActivity.kt');
   const manifest = fs.readFileSync(path.join(app, 'src', 'main', 'AndroidManifest.xml'), 'utf8');
-  assert.match(build, /versionCode = 37/);
-  assert.match(build, /versionName = "1\.3\.3"/);
+  assert.match(build, /versionCode = 38/);
+  assert.match(build, /versionName = "1\.3\.4"/);
   assert.doesNotMatch(main, /AI助手问答|AppSection\.ASSISTANT|renderAssistant|Agent 工具适配|getLaunchIntentForPackage/);
-  assert.doesNotMatch(manifest, /<queries>|com\.palmclaw|com\.openai\.chatgpt/);
+  assert.doesNotMatch(manifest, /com\.palmclaw|com\.openai\.chatgpt|QUERY_ALL_PACKAGES/);
+  assert.match(manifest, /<queries>[\s\S]*android\.media\.action\.IMAGE_CAPTURE[\s\S]*<\/queries>/);
   assert.doesNotMatch(main, /受控模型网关|知识与协作|showGatewaySettings/);
   assert.ok(!fs.existsSync(path.join(java, 'ModelGatewayProvider.kt')));
   assert.ok(!fs.existsSync(path.join(java, 'ModelGatewaySessionClient.kt')));
@@ -74,7 +75,7 @@ test('report scheduling and project closure remain constrained and reviewable', 
   assert.match(policy, /setRequiresCharging\(true\)/);
   for (const item of ['待处理资料', '未确认知识', '成果未确认', '同步状态待核对', '备份未确认']) assert.match(project, new RegExp(item));
   assert.match(center, /"active" to "处理中"/);
-  assert.match(center, /"help" to "需要帮助"/);
+  assert.match(center, /"help" to "归属待确认"/);
   assert.match(center, /"history" to "历史记录"/);
   assert.match(center, /高级详情（技术回执与安全上限）/);
 });

@@ -44,6 +44,7 @@ function Invoke-AdbText {
 $verificationRoot = Join-Path ([IO.Path]::GetTempPath()) ("edu-physical-verify-" + [guid]::NewGuid().ToString('N'))
 $remoteScreenshot = $null
 $remoteUiDump = $null
+$localCaptureRoot = $null
 $selectedSerial = $null
 $previousJavaHome = $env:JAVA_HOME
 $previousPath = $env:PATH
@@ -54,14 +55,28 @@ try {
   $verificationApk = Join-Path $verificationRoot 'release.apk'
   Copy-Item -LiteralPath $resolvedApk -Destination $verificationApk
 
-  $signatureOutput = (& $apksigner verify --verbose --print-certs $verificationApk 2>&1 | Out-String)
+  $signatureOutput = (& $apksigner verify --verbose --print-certs --print-certs-pem $verificationApk 2>&1 | Out-String)
   if ($LASTEXITCODE -ne 0 -or $signatureOutput -notmatch 'Verified using v2 scheme \(APK Signature Scheme v2\): true') {
     throw 'The APK is not a valid v2-signed release candidate.'
   }
   if ($signatureOutput -match 'Android Debug') {
     throw 'Android Debug certificate detected; physical household acceptance requires the product Release certificate.'
   }
-  $certificateDn = [regex]::Match($signatureOutput, 'Signer #1 certificate DN:\s*(.+)').Groups[1].Value.Trim()
+  $certificatePem = [regex]::Match(
+    $signatureOutput,
+    '-----BEGIN CERTIFICATE-----\s*(.*?)\s*-----END CERTIFICATE-----',
+    [Text.RegularExpressions.RegexOptions]::Singleline
+  )
+  if (-not $certificatePem.Success) {
+    throw 'Unable to extract the Release certificate for Unicode-safe identity verification.'
+  }
+  $certificateRaw = [Convert]::FromBase64String(($certificatePem.Groups[1].Value -replace '\s', ''))
+  $certificate = [Security.Cryptography.X509Certificates.X509Certificate2]::new($certificateRaw)
+  try {
+    $certificateDn = $certificate.Subject
+  } finally {
+    $certificate.Dispose()
+  }
   $certificateSha256 = [regex]::Match($signatureOutput, 'Signer #1 certificate SHA-256 digest:\s*([a-fA-F0-9]{64})').Groups[1].Value.ToUpperInvariant()
   if ([string]::IsNullOrWhiteSpace($certificateDn) -or $certificateSha256.Length -ne 64) {
     throw 'Unable to read the product Release certificate identity.'
@@ -176,10 +191,18 @@ try {
   New-Item -ItemType Directory -Force -Path $evidenceRoot | Out-Null
   $remoteScreenshot = "/sdcard/edu-manager-acceptance-$timestamp.png"
   $remoteUiDump = "/sdcard/edu-manager-acceptance-$timestamp.xml"
+  # adb.exe cannot reliably create files beneath a long Unicode destination.
+  # Pull to an ASCII temporary directory first, then copy through PowerShell.
+  $localCaptureRoot = Join-Path ([IO.Path]::GetTempPath()) ("edu-device-capture-" + [guid]::NewGuid().ToString('N'))
+  New-Item -ItemType Directory -Path $localCaptureRoot | Out-Null
+  $localScreenshot = Join-Path $localCaptureRoot 'cold-launch.png'
+  $localUiDump = Join-Path $localCaptureRoot 'cold-launch-ui.xml'
   Invoke-AdbText -CommandArgs @('-s', $selectedSerial, 'shell', 'screencap', '-p', $remoteScreenshot) | Out-Null
-  Invoke-AdbText -CommandArgs @('-s', $selectedSerial, 'pull', $remoteScreenshot, (Join-Path $evidenceRoot 'cold-launch.png')) | Out-Null
+  Invoke-AdbText -CommandArgs @('-s', $selectedSerial, 'pull', $remoteScreenshot, $localScreenshot) | Out-Null
   Invoke-AdbText -CommandArgs @('-s', $selectedSerial, 'shell', 'uiautomator', 'dump', $remoteUiDump) | Out-Null
-  Invoke-AdbText -CommandArgs @('-s', $selectedSerial, 'pull', $remoteUiDump, (Join-Path $evidenceRoot 'cold-launch-ui.xml')) | Out-Null
+  Invoke-AdbText -CommandArgs @('-s', $selectedSerial, 'pull', $remoteUiDump, $localUiDump) | Out-Null
+  Copy-Item -LiteralPath $localScreenshot -Destination (Join-Path $evidenceRoot 'cold-launch.png') -Force
+  Copy-Item -LiteralPath $localUiDump -Destination (Join-Path $evidenceRoot 'cold-launch-ui.xml') -Force
   [IO.File]::WriteAllText((Join-Path $evidenceRoot 'package-dump.txt'), $packageDump + "`n", [Text.UTF8Encoding]::new($false))
   $appPidToken = ($appPid -split '\s+')[0]
   $rawLogOutput = Invoke-AdbText -CommandArgs @('-s', $selectedSerial, 'logcat', '-d', '-v', 'threadtime', '-t', '1000')
@@ -269,6 +292,9 @@ try {
   }
   if (Test-Path -LiteralPath $verificationRoot) {
     [IO.Directory]::Delete($verificationRoot, $true)
+  }
+  if ($null -ne $localCaptureRoot -and (Test-Path -LiteralPath $localCaptureRoot)) {
+    [IO.Directory]::Delete($localCaptureRoot, $true)
   }
   $env:JAVA_HOME = $previousJavaHome
   $env:PATH = $previousPath

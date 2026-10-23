@@ -20,11 +20,14 @@ class ProjectRepository(context: Context) {
         require(project.knowledgeMode != "adopted" || current.none { it.knowledgeMode == "adopted" && it.knowledgeRootUri == project.knowledgeRootUri }) { "该项目知识库已被其他项目接管" }
     }
 
-    fun add(project: ProjectRecord) = synchronized(LOCK) {
-        validateAdd(project)
-        val root = JSONObject().put("version", 1).put("updatedAt", Timestamp.now())
-            .put("projects", JSONArray().also { array -> (listOf(project) + list()).forEach { array.put(it.toJson()) } })
-        state.writeBytes(PATH, (root.toString(2) + "\n").toByteArray())
+    fun add(project: ProjectRecord) {
+        synchronized(LOCK) {
+            validateAdd(project)
+            val root = JSONObject().put("version", 1).put("updatedAt", Timestamp.now())
+                .put("projects", JSONArray().also { array -> (listOf(project) + list()).forEach { array.put(it.toJson()) } })
+            state.writeBytes(PATH, (root.toString(2) + "\n").toByteArray())
+        }
+        project.studentIds.forEach { StudioAutomation.enqueueCheck(appContext, it) }
     }
 
     fun addImportedIdempotent(project: ProjectRecord) = synchronized(LOCK) {
@@ -37,26 +40,33 @@ class ProjectRepository(context: Context) {
         add(project)
     }
 
-    fun detachStudent(studentId: String) = synchronized(LOCK) {
-        val current = list()
-        val next = current.map { project ->
-            if (studentId !in project.studentIds) project else project.copy(
-                studentIds = project.studentIds.filterNot { it == studentId },
-                studentNames = project.studentIds.filterNot { it == studentId }.mapNotNull { id ->
-                    StudentIndexRepository(context = appContext).list().singleOrNull { it.id == id }?.name
-                },
-            )
+    fun detachStudent(studentId: String) {
+        synchronized(LOCK) {
+            val current = list()
+            val next = current.map { project ->
+                if (studentId !in project.studentIds) project else project.copy(
+                    studentIds = project.studentIds.filterNot { it == studentId },
+                    studentNames = project.studentIds.filterNot { it == studentId }.mapNotNull { id ->
+                        StudentIndexRepository(context = appContext).list().singleOrNull { it.id == id }?.name
+                    },
+                )
+            }
+            writeAll(next)
         }
-        writeAll(next)
+        StudioAutomation.enqueueCheck(appContext, studentId)
     }
 
     fun requireExact(projectId: String): ProjectRecord = list().singleOrNull { it.id == projectId }
         ?: throw NoSuchElementException("未找到指定项目 ID：$projectId")
 
-    fun update(project: ProjectRecord) = synchronized(LOCK) {
-        val current = list()
-        require(current.any { it.id == project.id }) { "未找到指定项目 ID：${project.id}" }
-        writeAll(current.map { if (it.id == project.id) project else it })
+    fun update(project: ProjectRecord) {
+        val affected = synchronized(LOCK) {
+            val current = list()
+            val previous = current.singleOrNull { it.id == project.id } ?: error("未找到指定项目 ID：${project.id}")
+            writeAll(current.map { if (it.id == project.id) project else it })
+            (previous.studentIds + project.studentIds).distinct()
+        }
+        affected.forEach { StudioAutomation.enqueueCheck(appContext, it) }
     }
 
     private val appContext: Context = context.applicationContext

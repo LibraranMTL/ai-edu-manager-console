@@ -107,7 +107,14 @@ class AutoDigestWorker(context: Context, parameters: WorkerParameters) : Worker(
             }.take(settings.maximumPerStudent)
             if (eligible.isEmpty()) return@forEach
             runCatching { StudentDigestOrchestrator(applicationContext).digestSelected(student.id, eligible.map { it.getString("id") }.toSet(), explicitUserAction = false) }
-                .onSuccess { processed += it.optInt("processed") }
+                .onSuccess { result ->
+                    processed += result.optInt("processed")
+                    val batchFailures = result.optJSONArray("failures")
+                    if (batchFailures != null) for (index in 0 until batchFailures.length()) {
+                        failures += "${student.name} · 第 ${batchFailures.optJSONObject(index)?.optInt("batch")} 批：" +
+                            batchFailures.optJSONObject(index)?.optString("message").orEmpty().ifBlank { "消化失败" }
+                    }
+                }
                 .onFailure { failures += "${student.name}：${it.message ?: "消化失败"}" }
         }
         val summary = "处理 $processed 份${if (failures.isEmpty()) "" else "；未完成 ${failures.size} 组"}"

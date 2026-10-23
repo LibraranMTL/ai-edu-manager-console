@@ -34,4 +34,29 @@ class UnknownOutcomeRecoveryRoomTest {
             Unit
         }).get() } finally { db.close(); executor.shutdownNow() }
     }
+
+    @Test fun splitRetryConsumesOnlyItsOwnAuthorizedMaterials() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val db = Room.inMemoryDatabaseBuilder(context, BusinessDatabase::class.java).build()
+        val executor = Executors.newSingleThreadExecutor()
+        try { executor.submit(Callable {
+            val recovery = UnknownOutcomeRecovery(context, db) { require(it == "a") }
+            val marker = "digest-request:a:hash"
+            db.tasks().metadata(BusinessMetadataEntity(marker, JSONObject()
+                .put("state", "authorized_retry").put("authorizationId", "auth-1")
+                .put("materialIds", org.json.JSONArray(listOf("m1", "m2", "m3")))
+                .put("remainingMaterialIds", org.json.JSONArray(listOf("m1", "m2", "m3"))).toString()))
+
+            recovery.consumeAuthorization("a", marker, "auth-1", setOf("m1", "m2"))
+            val partial = JSONObject(db.tasks().metadata(marker)!!)
+            assertEquals("authorized_retry", partial.getString("state"))
+            assertEquals(listOf("m3"), (0 until partial.getJSONArray("remainingMaterialIds").length())
+                .map { partial.getJSONArray("remainingMaterialIds").getString(it) })
+
+            recovery.consumeAuthorization("a", marker, "auth-1", setOf("m3"))
+            assertEquals("retry_consumed", JSONObject(db.tasks().metadata(marker)!!).getString("state"))
+            assertEquals(2, db.tasks().metadataPrefix("recovery-consume:a:", "recovery-consume:a:\uffff").size)
+            Unit
+        }).get() } finally { db.close(); executor.shutdownNow() }
+    }
 }

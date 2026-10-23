@@ -1,13 +1,13 @@
 <resources>
     <string name="app_name">AI教育管家</string>
     <string name="section_home">首页</string>
-    <string name="section_archives">学生与档案</string>
-    <string name="section_materials">资料收集与处理</string>
-    <string name="section_learning">学习中心</string>
+    <string name="section_archives">管理学生档案</string>
+    <string name="section_materials">收集整理</string>
+    <string name="section_learning">学习行动</string>
     <string name="section_reports">学情报告</string>
-    <string name="section_projects">项目与成果</string>
+    <string name="section_projects">项目成果</string>
     <string name="section_settings">系统设置</string>
-    <string name="section_picker_title">七个业务域</string>
+    <string name="section_picker_title">学习流程</string>
     <string name="state_loading">正在加载…</string>
     <string name="state_empty">暂无数据</string>
     <string name="state_processing">后台处理中</string>

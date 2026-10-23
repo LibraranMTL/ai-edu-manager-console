@@ -32,5 +32,12 @@ test('W7 writes auditable OCR artifacts without directly publishing education cl
   assert.match(ocr, /edu-manager\.ocr-result\.v1/); assert.match(ocr, /sourceSha1/); assert.match(ocr, /ocrStatus/); assert.match(ocr, /candidateOnly/);
   assert.doesNotMatch(ocr, /upsertClaim|confirmed/);
   const digest = read('StudentDigestOrchestrator.kt');
-  assert.match(digest, /ocrStatus.*completed/); assert.match(digest, /readLogicalBytes/); assert.match(digest, /status", "candidate"/);
+  const policy = read('MaterialProcessingPolicy.kt');
+  const resolver = read('MaterialDigestSourceResolver.kt');
+  assert.match(digest, /MaterialProcessingPolicy::digestReady/);
+  assert.match(policy, /ocrStatus"\) == "completed"/);
+  assert.match(policy, /ocrPath[\s\S]*ocrMarkdownPath/);
+  assert.match(digest, /MaterialDigestSourceResolver/);
+  assert.match(resolver, /readLogicalBytes/);
+  assert.match(digest, /status", "candidate"/);
 });

@@ -12,10 +12,19 @@ class StandaloneNavigationTest {
     }
 
     @Test fun legacySectionsRestoreToNewDomains() {
+        assertEquals(AppSection.HOME, AppSection.restore("ARCHIVES"))
+        assertEquals(AppSection.SETTINGS, AppSection.restore("SETTINGS"))
         assertEquals(AppSection.LEARNING, AppSection.restore("COURSES"))
         assertEquals(AppSection.LEARNING, AppSection.restore("GROWTH"))
         assertEquals(AppSection.PROJECTS, AppSection.restore("PLANNING"))
         assertEquals(AppSection.MATERIALS, AppSection.restore("KNOWLEDGE"))
         assertEquals(AppSection.HOME, AppSection.restore("ASSISTANT"))
+    }
+
+    @Test fun primaryDestinationsFollowTheLearningLoop() {
+        assertEquals(
+            listOf(AppSection.HOME, AppSection.MATERIALS, AppSection.REPORTS, AppSection.LEARNING, AppSection.PROJECTS),
+            PrimaryDestination.entries.map(PrimaryDestination::section),
+        )
     }
 }

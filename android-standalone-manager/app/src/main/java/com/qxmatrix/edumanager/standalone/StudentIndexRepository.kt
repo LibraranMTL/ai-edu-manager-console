@@ -4,6 +4,7 @@ import android.content.Context
 
 /** The Windows students.json array contract, stored atomically in app-private state. */
 class StudentIndexRepository(context: Context) {
+    private val appContext = context.applicationContext
     private val stateStore = PrivateStateStore(context)
     private val licenseManager = LicenseManager(context)
     private val index = StudentIndexStore(object : StudentIndexStorage {
@@ -58,17 +59,21 @@ class StudentIndexRepository(context: Context) {
         current.filterNot { it.id == studentId } to target
     }
 
-    fun updateProfile(studentId: String, profile: StudentPlanningProfile): StudentRecord = index.mutate { current ->
-        val target = current.singleOrNull { it.id == studentId } ?: error("未找到指定学生")
-        profile.toJson() // Validate only explicitly edited V2 data.
-        val original = target.toJson()
-        val history = original.optJSONArray("planningProfileHistory") ?: org.json.JSONArray()
-        val previous = org.json.JSONObject()
-        StudentPlanningProfile.keys.forEach { key -> if (original.has(key)) previous.put(key, original.get(key)) }
-        history.put(org.json.JSONObject().put("savedAt", Timestamp.now()).put("previous", previous))
-        original.put("planningProfileHistory", history)
-        val updated = target.copy(planningProfile = profile, preservedFields = original.toString())
-        current.map { if (it.id == studentId) updated else it } to updated
+    fun updateProfile(studentId: String, profile: StudentPlanningProfile): StudentRecord {
+        val updated = index.mutate { current ->
+            val target = current.singleOrNull { it.id == studentId } ?: error("未找到指定学生")
+            profile.toJson() // Validate only explicitly edited V2 data.
+            val original = target.toJson()
+            val history = original.optJSONArray("planningProfileHistory") ?: org.json.JSONArray()
+            val previous = org.json.JSONObject()
+            StudentPlanningProfile.keys.forEach { key -> if (original.has(key)) previous.put(key, original.get(key)) }
+            history.put(org.json.JSONObject().put("savedAt", Timestamp.now()).put("previous", previous))
+            original.put("planningProfileHistory", history)
+            val next = target.copy(planningProfile = profile, preservedFields = original.toString())
+            current.map { if (it.id == studentId) next else it } to next
+        }
+        StudioAutomation.enqueueCheck(appContext, studentId)
+        return updated
     }
 
     companion object {

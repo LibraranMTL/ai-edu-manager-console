@@ -160,7 +160,11 @@ class SafWorkspaceStore(
         return true
     }
 
-    data class MarkdownFile(val name: String, val relativePath: String)
+    data class MarkdownFile(
+        val name: String,
+        val relativePath: String,
+        val lastModified: Long = 0L,
+    )
 
     private data class ArchiveDirectory(
         val document: DocumentFile,
@@ -179,7 +183,9 @@ class SafWorkspaceStore(
             val document = find(WorkspacePath.segments(normalized, allowRoot)) ?: return@forEach
             if (document.isFile) {
                 val name = document.name.orEmpty()
-                if (name.endsWith(".md", true) || name.endsWith(".markdown", true)) result[normalized] = MarkdownFile(name, normalized)
+                if (name.endsWith(".md", true) || name.endsWith(".markdown", true)) {
+                    result[normalized] = MarkdownFile(name, normalized, document.lastModified())
+                }
             } else if (document.isDirectory) {
                 walkMarkdown(document, normalized, 0, maximumDepth, maximum, result)
             }
@@ -195,7 +201,9 @@ class SafWorkspaceStore(
             if (name.startsWith(".")) return@forEach
             val relative = if (prefix.isBlank()) name else "$prefix/$name"
             if (child.isDirectory) walkMarkdown(child, relative, depth + 1, maximumDepth, maximum, output)
-            else if (child.isFile && (name.endsWith(".md", true) || name.endsWith(".markdown", true))) output[relative] = MarkdownFile(name, relative)
+            else if (child.isFile && (name.endsWith(".md", true) || name.endsWith(".markdown", true))) {
+                output[relative] = MarkdownFile(name, relative, child.lastModified())
+            }
         }
     }
 
@@ -223,6 +231,7 @@ class SafWorkspaceStore(
         val queued = mutableSetOf<String>()
         val visited = mutableSetOf<String>()
         val queue = PriorityQueue(
+            16,
             compareByDescending<ArchiveDirectory> { it.priority }
                 .thenBy { it.depth }
                 .thenBy { it.relativePath.lowercase() },
@@ -257,7 +266,7 @@ class SafWorkspaceStore(
                 val document = find(WorkspacePath.segments(normalized, allowRoot)) ?: return@forEach
                 val name = document.name.orEmpty()
                 if (document.isFile && isMarkdown(name) && matches(name, normalized)) {
-                    output[normalized] = MarkdownFile(name, normalized)
+                    output[normalized] = MarkdownFile(name, normalized, document.lastModified())
                 } else if (document.isDirectory) {
                     enqueue(document, normalized, 0)
                 }
@@ -277,7 +286,7 @@ class SafWorkspaceStore(
                 if (name.isBlank() || name.startsWith('.')) return@forEach
                 val relative = if (directory.relativePath.isBlank()) name else "${directory.relativePath}/$name"
                 if (child.isFile && isMarkdown(name) && matches(name, relative)) {
-                    output[relative] = MarkdownFile(name, relative)
+                    output[relative] = MarkdownFile(name, relative, child.lastModified())
                 } else if (child.isDirectory && directory.depth < maximumDepth && shouldDescend(name, relative)) {
                     enqueue(child, relative, directory.depth + 1)
                 }

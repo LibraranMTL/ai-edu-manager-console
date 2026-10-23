@@ -68,7 +68,7 @@ test('W8 repairs legacy source fields without confirming a historical report as 
   assert.match(evidencePolicy, /requiresPrimarySource/);
   assert.match(source, /attachCandidateSource/);
   assert.match(activity, /选择支撑这条证据的原始资料/);
-  assert.match(activity, /关联已有资料/);
+  assert.match(activity, /关联当前学生资料/);
   assert.doesNotMatch(activity, /来源 URI\/文件标识（必填）/);
 });
 

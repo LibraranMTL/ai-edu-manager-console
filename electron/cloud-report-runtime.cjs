@@ -12,6 +12,10 @@ const DEFAULT_PROFILE_FIELDS = Object.freeze(['displayName', 'grade', 'school', 
 const MATERIAL_CATEGORIES = Object.freeze(['learning_report', 'learning_material', 'topic_suggestion', 'competition_recommendation', 'learning_card']);
 const DEFAULT_MATERIAL_CATEGORIES = Object.freeze(['learning_report']);
 
+function usesV2UploadScope(binding) {
+  return Number(binding?.contractVersion || 1) >= 2;
+}
+
 function normalizedUploadScope(input = {}) {
   const requestedProfileFields = Array.isArray(input.profileFields) ? input.profileFields : DEFAULT_PROFILE_FIELDS;
   const profileFields = DEFAULT_PROFILE_FIELDS.filter(field => requestedProfileFields.includes(field));
@@ -101,7 +105,7 @@ function createCloudReportRuntime({ dataDir, protect, unprotect, resolveReportDi
     state.bindingIssues ||= {};
     state.uploadScopePreferences ||= {};
     for (const [studentId, binding] of Object.entries(state.bindings)) {
-      if (Number(binding.contractVersion) >= 2) {
+      if (usesV2UploadScope(binding)) {
         binding.profileFields = DEFAULT_PROFILE_FIELDS.filter(field => (binding.profileFields || DEFAULT_PROFILE_FIELDS).includes(field));
         if (!binding.profileFields.includes('displayName')) binding.profileFields.unshift('displayName');
         binding.materialCategories = MATERIAL_CATEGORIES.filter(category => (binding.materialCategories || DEFAULT_MATERIAL_CATEGORIES).includes(category));
@@ -167,7 +171,7 @@ function createCloudReportRuntime({ dataDir, protect, unprotect, resolveReportDi
   }
   async function syncStudentProfile(localStudentId, force = false) {
     const binding = state.bindings[localStudentId];
-    if (!binding?.enabled || Number(binding.contractVersion) < 2) return null;
+    if (!binding?.enabled || !usesV2UploadScope(binding)) return null;
     const source = await resolveStudentProfile(localStudentId);
     if (!source) throw new Error('本机学生基础信息不存在');
     const profile = {
@@ -198,7 +202,7 @@ function createCloudReportRuntime({ dataDir, protect, unprotect, resolveReportDi
   async function reconcileUploadScope(studentId) {
     const binding = state.bindings[studentId];
     const pending = binding?.pendingUploadScope;
-    if (!pending || Number(binding.contractVersion) < 2) return;
+    if (!pending || !usesV2UploadScope(binding)) return;
     const result = await sourceRequest('/v2/source-upload-scope', {
       cloudStudentId: binding.cloudStudentId,
       profileFields: pending.profileFields,
@@ -216,7 +220,7 @@ function createCloudReportRuntime({ dataDir, protect, unprotect, resolveReportDi
     if (!binding && !(await resolveReportDir(studentId))) throw new Error('本机学生不存在');
     const { profileFields, materialCategories } = normalizedUploadScope(input);
     state.uploadScopePreferences[studentId] = { profileFields, materialCategories };
-    if (!binding || Number(binding.contractVersion) < 2) {
+    if (!binding || !usesV2UploadScope(binding)) {
       await save();
       return status(studentId);
     }
@@ -366,6 +370,20 @@ function createCloudReportRuntime({ dataDir, protect, unprotect, resolveReportDi
     if (autoBindingEnabled) await reconcileAuthorizedStudents(students);
     return students.map(student => ({ ...student, localBinding: state.cloudBindings[student.id] || null,
       bindingIssue: state.bindingIssues[student.id] || '' }));
+  }
+  async function removeCloudStudent(cloudStudentId) {
+    if (!state.viewerToken) throw new Error('本机尚未开通云端下载许可');
+    const id = String(cloudStudentId || '');
+    if (!/^[a-zA-Z0-9_-]{8,96}$/.test(id)) throw new Error('云端学生标识无效');
+    const route = `/v1/viewer/students/${id}`;
+    const result = await request(state.serverUrl, route, token('viewer'), {
+      method: 'DELETE', headers: viewerProof('DELETE', route),
+    });
+    delete state.cloudBindings[id];
+    delete state.bindingIssues[id];
+    delete state.syncCursors[id];
+    await save();
+    return result;
   }
   async function reconcileAuthorizedStudents(provided) {
     if (!state.viewerToken) return [];
@@ -524,7 +542,7 @@ function createCloudReportRuntime({ dataDir, protect, unprotect, resolveReportDi
   }
   async function uploadCloudMaterial(localStudentId, material) {
     const binding = state.bindings[localStudentId];
-    if (!binding?.enabled || Number(binding.contractVersion) < 2) throw new Error('当前学生尚未开通新版资料同步');
+    if (!binding?.enabled || !usesV2UploadScope(binding)) throw new Error('当前学生尚未开通新版资料同步');
     const category = String(material?.category || '');
     if (!binding.materialCategories?.includes(category)) throw new Error('该资料类别未授权上传');
     const bytes = Buffer.isBuffer(material.bytes) ? material.bytes : Buffer.from(String(material.content || ''), 'utf8');
@@ -685,7 +703,7 @@ function createCloudReportRuntime({ dataDir, protect, unprotect, resolveReportDi
       profileFields: binding.profileFields || DEFAULT_PROFILE_FIELDS,
       materialCategories: binding.materialCategories || DEFAULT_MATERIAL_CATEGORIES,
       pendingUploadScope: binding.pendingUploadScope || null, savedUploadScope,
-      uploadScopePersistence: Number(binding.contractVersion) >= 2
+      uploadScopePersistence: usesV2UploadScope(binding)
         ? (binding.pendingUploadScope ? 'pending_cloud' : 'cloud_confirmed') : 'local_requires_upgrade' } : { configured: false, enabled: false,
         profileFields: DEFAULT_PROFILE_FIELDS, materialCategories: DEFAULT_MATERIAL_CATEGORIES, savedUploadScope,
         uploadScopePersistence: savedUploadScope ? 'local_requires_enrollment' : 'default' };
@@ -697,7 +715,7 @@ function createCloudReportRuntime({ dataDir, protect, unprotect, resolveReportDi
     for (const watcher of watchers.values()) watcher.close();
   }
   return { load, close, enrollSource, setUpload, setUploadScope, schedule, syncStudent, syncNow, status, settings, saveSettings, checkConnection,
-    createPairing, approvePairing, listCloudStudents, listCloudReports, downloadCloudReport,
+    createPairing, approvePairing, listCloudStudents, removeCloudStudent, listCloudReports, downloadCloudReport,
     listCloudDocuments, listCloudDocumentPage, downloadCloudDocument, listCachedStudents, clearCloudCache, uploadSharedDocument,
     syncStudentProfile, reconcileAuthorizedStudents, refreshChanges, flushPendingReceipts,
     uploadCloudMaterial, listCloudMaterials, downloadCloudMaterial,
@@ -705,4 +723,5 @@ function createCloudReportRuntime({ dataDir, protect, unprotect, resolveReportDi
     leaseCloudInboxSubmission, settleCloudInboxSubmission };
 }
 
-module.exports = { createCloudReportRuntime, checkedServerUrl, DEFAULT_PROFILE_FIELDS, MATERIAL_CATEGORIES, DEFAULT_MATERIAL_CATEGORIES };
+module.exports = { createCloudReportRuntime, checkedServerUrl, DEFAULT_PROFILE_FIELDS, MATERIAL_CATEGORIES, DEFAULT_MATERIAL_CATEGORIES,
+  usesV2UploadScope };

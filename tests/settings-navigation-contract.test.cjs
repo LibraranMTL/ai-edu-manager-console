@@ -8,6 +8,52 @@ const renderer = fs.readFileSync(path.join(root, 'src', 'main.tsx'), 'utf8');
 const controlCenter = fs.readFileSync(path.join(root, 'src', 'GlobalAgentControlCenter.tsx'), 'utf8');
 const externalConnector = fs.readFileSync(path.join(root, 'src', 'ExternalAgentConnector.tsx'), 'utf8');
 const styles = fs.readFileSync(path.join(root, 'src', 'styles.css'), 'utf8');
+const cloudAdmin = fs.readFileSync(path.join(root, 'cloud-report-web', 'src', 'main.tsx'), 'utf8');
+const cloudPanel = fs.readFileSync(path.join(root, 'src', 'CloudDocumentsPanel.tsx'), 'utf8');
+
+test('basic settings does not duplicate the Agent adapter registry', () => {
+  assert.doesNotMatch(renderer, /<strong>\{t\('settings\.agentAdapters'\)\}<\/strong>/);
+  const basicStatus = renderer.slice(renderer.indexOf("[t('settings.storageMode'), 'Windows 本机目录']"), renderer.indexOf(': [', renderer.indexOf("[t('settings.storageMode'), 'Windows 本机目录']")));
+  for (const duplicate of ['QClaw', 'Marvis', 'Hohu', 'OpenClaw', 'ima.copilot', 'WorkBuddy', 'ChatGPT / Codex', 'Claude Code', 'Tailscale 软件', 'installStatus']) {
+    assert.doesNotMatch(basicStatus, new RegExp(duplicate.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+  }
+  assert.match(basicStatus, /settings\.storageMode/);
+  assert.match(basicStatus, /settings\.licenseStatus/);
+  assert.match(basicStatus, /settings\.studentRoot/);
+});
+
+test('AI access center nests Agent tool control and dispatch without rendering both views', () => {
+  assert.match(renderer, /type AgentControlSubtab = 'tool-control' \| 'dispatch'/);
+  assert.match(renderer, /aria-label="AI 接入与调度中心"/);
+  assert.match(renderer, /\['tool-control', 'Agent工具控制'\], \['dispatch', 'AI接入与调度'\]/);
+  assert.match(renderer, /agentControlSubtab === 'tool-control' \? \(/);
+  assert.match(renderer, /<h2>Agent 工具控制<\/h2>/);
+  assert.match(renderer, /\) : \(\s*<React\.Suspense[\s\S]{0,260}<AgentControlCenter/);
+  const oldHome = renderer.slice(renderer.indexOf('!isWindows && <details className="home-advanced-tools"'), renderer.indexOf('<section className="panel update-panel">'));
+  assert.doesNotMatch(oldHome, /<h2>Agent 工具控制<\/h2>/);
+});
+
+test('host records and Android export live only in their settings destinations', () => {
+  const home = renderer.slice(renderer.indexOf("activeSection === 'home'"), renderer.indexOf("!isWindows && <details className=\"home-advanced-tools\""));
+  assert.doesNotMatch(home, /<h2>主机服务<\/h2>/);
+  assert.doesNotMatch(home, /className="upload-record-list"/);
+  const uploadRecordsIndex = renderer.indexOf('id="host-upload-records"');
+  const recentEventsIndex = renderer.indexOf('<strong>最近主机事件</strong>');
+  assert.ok(uploadRecordsIndex >= 0 && uploadRecordsIndex < recentEventsIndex);
+  const archive = renderer.slice(renderer.indexOf("activeSection === 'archive' && selectedStudent"), renderer.indexOf("activeSection === 'qa'"));
+  assert.doesNotMatch(archive, /导出到 Android 单机版（U盘）/);
+  const backup = renderer.slice(renderer.indexOf('<strong>备份与迁移</strong>'), renderer.indexOf('<strong>最近主机事件</strong>'));
+  assert.match(backup, /导出到 Android 单机版（U盘）/);
+  assert.match(backup, /studentOfflineMigrationStudentId/);
+});
+
+test('cloud student removal is explicit, recoverable on the server and non-destructive on the receiver', () => {
+  assert.match(cloudAdmin, /停用云端学生/);
+  assert.match(cloudAdmin, /恢复云端学生/);
+  assert.match(cloudAdmin, /原设备许可不会自动恢复/);
+  assert.match(cloudPanel, /从本机移除许可/);
+  assert.match(cloudPanel, /不会删除云端学生、本机学生档案或已经下载的副本/);
+});
 
 test('Windows sidebar groups education, projects, Agent knowledge, collaboration, courses and settings', () => {
   for (const label of ['教育档案', '学情资料', '项目知识管理', '新建项目', '已有项目', 'Agent会话自动采集', 'Agent调用能力设置', '知识查询', '协作设置', 'Agent设置管理']) {
@@ -67,7 +113,7 @@ test('external connector owns inbound authorization and write review under Agent
   assert.doesNotMatch(renderer, /外部写入审核|外部 Agent 能力与写入审核|showingAgentCapabilities/);
   assert.doesNotMatch(controlCenter, /<ExternalAgentConnector|import\('\.\/ExternalAgentConnector'\)/);
   for (const label of ['每次写入前确认', '写入记录与异常', '查看待确认内容', '确认批准此项', '拒绝并清除待写内容']) assert.match(externalConnector, new RegExp(label));
-  assert.match(renderer, /activeSection === 'agent-capabilities'[\s\S]{0,220}setAgentSettingsTab\('connection'\)/);
+  assert.match(renderer, /activeSection === 'agent-capabilities'[\s\S]{0,260}setAgentSettingsTab\('tools'\)[\s\S]{0,160}setAgentControlSubtab\('dispatch'\)/);
   assert.match(renderer, /'agent-capabilities'\s*,\s*'soul'/);
 });
 

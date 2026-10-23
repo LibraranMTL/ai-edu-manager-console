@@ -21,8 +21,8 @@ function normalizeQuickCaptureAction(action) {
 }
 
 function clampQuickCaptureBounds(workArea, bounds) {
-  const width = Math.min(Math.max(Number(bounds.width) || 340, 300), Math.max(300, workArea.width));
-  const height = Math.min(Math.max(Number(bounds.height) || 34, 34), Math.max(34, workArea.height));
+  const width = Math.min(Math.max(Number(bounds.width) || 252, 252), Math.max(252, workArea.width));
+  const height = Math.min(Math.max(Number(bounds.height) || 29, 29), Math.max(29, workArea.height));
   const requestedX = Number.isFinite(Number(bounds.x)) ? Number(bounds.x) : workArea.x;
   const requestedY = Number.isFinite(Number(bounds.y)) ? Number(bounds.y) : workArea.y;
   return {
@@ -33,7 +33,7 @@ function clampQuickCaptureBounds(workArea, bounds) {
   };
 }
 
-function locateQuickCaptureBounds(mainBounds, workArea, width = 340, height = 34) {
+function locateQuickCaptureBounds(mainBounds, workArea, width = 252, height = 29) {
   const centeredX = Number(mainBounds?.x || 0) + Math.round((Number(mainBounds?.width || width) - width) / 2);
   const belowHeaderY = Number(mainBounds?.y || 0) + 72;
   return clampQuickCaptureBounds(workArea, { x: centeredX, y: belowHeaderY, width, height });

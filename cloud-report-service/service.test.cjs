@@ -115,6 +115,46 @@ async function fixture(fn, serviceOptions = {}) {
   finally { await app.close(); fs.rmSync(dir, { recursive: true, force: true }); }
 }
 
+test('cloud student archive is recoverable but never restores revoked device grants', async () => fixture(async ({ call }) => {
+  const student = (await call('POST', '/v1/students', ADMIN, { displayName: '可恢复停用学生' })).body;
+  const source = (await call('POST', '/v1/devices/source', ADMIN, {})).body;
+  await call('POST', '/v1/grants/write', ADMIN, { deviceId: source.deviceId, cloudStudentId: student.id });
+  const viewer = (await call('POST', '/v1/pairings')).body;
+  await call('POST', '/v1/pairings/approve', source.deviceToken,
+    { pairingCode: viewer.pairingCode, cloudStudentIds: [student.id] });
+  assert.equal((await call('GET', '/v1/students', viewer.deviceToken)).body.students.length, 1);
+  const preview = await call('GET', `/v1/students/${student.id}/removal-preview`, ADMIN);
+  assert.equal(preview.status, 200);
+  assert.equal(preview.body.activeGrants, 2);
+  assert.equal((await call('DELETE', `/v1/students/${student.id}`, ADMIN)).status, 200);
+  assert.equal((await call('GET', '/v1/students', ADMIN)).body.students.length, 0);
+  const archived = await call('GET', '/v1/students?includeArchived=1', ADMIN);
+  assert.ok(archived.body.students[0].archivedAt);
+  assert.equal((await call('GET', '/v1/students', viewer.deviceToken)).body.students.length, 0);
+  assert.equal((await call('POST', `/v1/students/${student.id}/restore`, ADMIN)).body.grantsRestored, false);
+  assert.equal((await call('GET', '/v1/students', ADMIN)).body.students.length, 1);
+  assert.equal((await call('GET', '/v1/students', viewer.deviceToken)).body.students.length, 0);
+  assert.equal((await call('POST', '/v1/reports', source.deviceToken, {
+    cloudStudentId: student.id, originPlatform: 'android', reportType: 'learning_profile', sourceStatus: 'active',
+    content: CONTENT, contentSha256: crypto.createHash('sha256').update(CONTENT).digest('hex'), publishedAt: '2026-09-25',
+  })).status, 403);
+}));
+
+test('viewer can remove only its own student authorization without deleting cloud data', async () => fixture(async ({ call }) => {
+  const student = (await call('POST', '/v1/students', ADMIN, { displayName: '本机解除授权学生' })).body;
+  const source = (await call('POST', '/v1/devices/source', ADMIN, {})).body;
+  await call('POST', '/v1/grants/write', ADMIN, { deviceId: source.deviceId, cloudStudentId: student.id });
+  const viewer = (await call('POST', '/v1/pairings')).body;
+  await call('POST', '/v1/pairings/approve', source.deviceToken,
+    { pairingCode: viewer.pairingCode, cloudStudentIds: [student.id] });
+  const removed = await call('DELETE', `/v1/viewer/students/${student.id}`, viewer.deviceToken);
+  assert.equal(removed.status, 200);
+  assert.equal(removed.body.removed, true);
+  assert.equal((await call('GET', '/v1/students', viewer.deviceToken)).body.students.length, 0);
+  assert.equal((await call('GET', '/v1/students', source.deviceToken)).body.students.length, 1);
+  assert.equal((await call('GET', '/v1/students', ADMIN)).body.students.length, 1);
+}));
+
 test('one-time pairing, student isolation, repeated read, and revocation', async () => fixture(async ({ call }) => {
   const studentA = (await call('POST', '/v1/students', ADMIN, { displayName: '学生 A' })).body;
   const studentB = (await call('POST', '/v1/students', ADMIN, { displayName: '学生 B' })).body;

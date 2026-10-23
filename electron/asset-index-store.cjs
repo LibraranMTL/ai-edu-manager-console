@@ -5,7 +5,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { DatabaseSync, backup } = require('node:sqlite');
 
-const SCHEMA_VERSION = 2;
+const SCHEMA_VERSION = 4;
 const DEFAULT_PAGE_SIZE = 50;
 const MAX_PAGE_SIZE = 100;
 
@@ -36,23 +36,42 @@ const REFERENCE_FIELDS = [
   ['deviceId', 'device_id'], ['contentSha256', 'content_sha256'], ['logicalPath', 'logical_path'],
   ['role', 'role'], ['path', 'path'], ['source', 'source'], ['linkedAt', 'linked_at'],
   ['state', 'state'], ['quarantineOperationId', 'quarantine_operation_id'],
+  ['availabilityState', 'availability_state'], ['availabilityCheckedAt', 'availability_checked_at'],
 ];
 
 function text(value) { return String(value ?? ''); }
 function nowIso(now) { return new Date(now()).toISOString(); }
 function fingerprint(value) { return crypto.createHash('sha256').update(value).digest('hex'); }
 function json(value) { return JSON.stringify(value ?? {}); }
+function stableJson(value) {
+  if (Array.isArray(value)) return `[${value.map(stableJson).join(',')}]`;
+  if (value && typeof value === 'object') return `{${Object.keys(value).sort().map(key => `${JSON.stringify(key)}:${stableJson(value[key])}`).join(',')}}`;
+  return JSON.stringify(value ?? null);
+}
+function comparableRecord(value) {
+  let record = value && typeof value === 'object' ? { ...value } : {};
+  if (typeof value === 'string') {
+    try { record = JSON.parse(value || '{}'); } catch { record = {}; }
+  }
+  delete record.updatedAt;
+  delete record.references;
+  delete record.linkedStudents;
+  delete record.linkedProjects;
+  delete record.aliases;
+  return stableJson(record);
+}
 
-function cursorEncode(offset) {
-  return Buffer.from(JSON.stringify({ offset }), 'utf8').toString('base64url');
+function cursorEncode(value) {
+  return Buffer.from(JSON.stringify(value && typeof value === 'object' ? value : { offset: value }), 'utf8').toString('base64url');
 }
 
 function cursorDecode(value) {
-  if (!value) return 0;
+  if (!value) return null;
   try {
     const parsed = JSON.parse(Buffer.from(String(value), 'base64url').toString('utf8'));
-    return Math.max(0, Number(parsed.offset) || 0);
-  } catch { return 0; }
+    if (parsed && typeof parsed === 'object') return parsed;
+    return null;
+  } catch { return null; }
 }
 
 function normalizeReference(reference, fallback = {}) {
@@ -70,6 +89,7 @@ function normalizeReference(reference, fallback = {}) {
   normalized.source = normalized.source || text(fallback.source);
   normalized.linkedAt = normalized.linkedAt || text(fallback.linkedAt) || new Date().toISOString();
   normalized.state = normalized.state || text(fallback.state) || 'active';
+  normalized.availabilityState = normalized.availabilityState || text(fallback.availabilityState) || 'unchecked';
   return normalized;
 }
 
@@ -140,13 +160,18 @@ function schemaSql() {
       content_sha256 TEXT NOT NULL DEFAULT '', logical_path TEXT NOT NULL DEFAULT '', role TEXT NOT NULL DEFAULT '',
       path TEXT NOT NULL DEFAULT '', source TEXT NOT NULL DEFAULT '', linked_at TEXT NOT NULL DEFAULT '',
       state TEXT NOT NULL DEFAULT 'active', quarantine_operation_id TEXT NOT NULL DEFAULT '',
+      availability_state TEXT NOT NULL DEFAULT 'unchecked', availability_checked_at TEXT NOT NULL DEFAULT '',
       UNIQUE(asset_id, space_type, space_id, role, path)
     ) STRICT;
     CREATE INDEX IF NOT EXISTS asset_refs_asset ON asset_references(asset_id);
+    CREATE INDEX IF NOT EXISTS asset_refs_asset_state_path ON asset_references(asset_id,state,path);
     CREATE INDEX IF NOT EXISTS asset_refs_space ON asset_references(space_type, space_id);
+    CREATE INDEX IF NOT EXISTS asset_refs_space_state_asset ON asset_references(space_type,space_id,state,asset_id);
     CREATE INDEX IF NOT EXISTS asset_refs_student ON asset_references(student_id);
+    CREATE INDEX IF NOT EXISTS asset_refs_student_state_asset ON asset_references(student_id,state,asset_id);
     CREATE INDEX IF NOT EXISTS asset_refs_device ON asset_references(device_id);
     CREATE INDEX IF NOT EXISTS asset_refs_path ON asset_references(path);
+    CREATE INDEX IF NOT EXISTS asset_refs_availability ON asset_references(availability_state,asset_id);
     CREATE TABLE IF NOT EXISTS asset_aliases (
       old_asset_id TEXT PRIMARY KEY, asset_id TEXT NOT NULL REFERENCES assets(asset_id) ON DELETE CASCADE
     ) STRICT;
@@ -180,6 +205,179 @@ function schemaSql() {
     CREATE VIRTUAL TABLE IF NOT EXISTS asset_search USING fts5(
       asset_id UNINDEXED, filename, paths, owner_name, source_name, sha1, sha256, governance
     );
+    ${summarySchemaSql()}
+  `;
+}
+
+function summarySchemaSql() {
+  return `
+    CREATE TABLE IF NOT EXISTS asset_summary_rows (
+      asset_id TEXT PRIMARY KEY REFERENCES assets(asset_id) ON DELETE CASCADE,
+      owner_student_id TEXT NOT NULL DEFAULT '', source_name TEXT NOT NULL DEFAULT '',
+      asset_type TEXT NOT NULL DEFAULT 'file', governance_risk TEXT NOT NULL DEFAULT '',
+      issue_count INTEGER NOT NULL DEFAULT 0, high_risk_count INTEGER NOT NULL DEFAULT 0,
+      sha256_ready_count INTEGER NOT NULL DEFAULT 0, sha256_pending_count INTEGER NOT NULL DEFAULT 0,
+      fingerprint_conflict_count INTEGER NOT NULL DEFAULT 0,
+      reference_count INTEGER NOT NULL DEFAULT 0, path_count INTEGER NOT NULL DEFAULT 0,
+      stale_count INTEGER NOT NULL DEFAULT 0, unchecked_count INTEGER NOT NULL DEFAULT 0
+    ) STRICT;
+    CREATE INDEX IF NOT EXISTS asset_summary_owner ON asset_summary_rows(owner_student_id,asset_id);
+    CREATE INDEX IF NOT EXISTS asset_summary_source ON asset_summary_rows(source_name,asset_id);
+    CREATE INDEX IF NOT EXISTS asset_summary_type ON asset_summary_rows(asset_type,asset_id);
+    CREATE INDEX IF NOT EXISTS asset_summary_risk ON asset_summary_rows(governance_risk,asset_id);
+    CREATE TABLE IF NOT EXISTS asset_student_memberships (
+      asset_id TEXT NOT NULL REFERENCES assets(asset_id) ON DELETE CASCADE,
+      student_id TEXT NOT NULL, PRIMARY KEY(asset_id,student_id)
+    ) WITHOUT ROWID, STRICT;
+    CREATE INDEX IF NOT EXISTS asset_student_memberships_student ON asset_student_memberships(student_id,asset_id);
+    CREATE TABLE IF NOT EXISTS asset_summary_totals (
+      singleton INTEGER PRIMARY KEY CHECK(singleton=1), total INTEGER NOT NULL DEFAULT 0,
+      issue_count INTEGER NOT NULL DEFAULT 0, high_risk_count INTEGER NOT NULL DEFAULT 0,
+      sha256_ready_count INTEGER NOT NULL DEFAULT 0, sha256_pending_count INTEGER NOT NULL DEFAULT 0,
+      fingerprint_conflict_count INTEGER NOT NULL DEFAULT 0,
+      reference_total INTEGER NOT NULL DEFAULT 0, duplicate_groups INTEGER NOT NULL DEFAULT 0,
+      stale_count INTEGER NOT NULL DEFAULT 0, unchecked_count INTEGER NOT NULL DEFAULT 0
+    ) STRICT;
+    INSERT OR IGNORE INTO asset_summary_totals(singleton) VALUES(1);
+    CREATE TABLE IF NOT EXISTS asset_summary_facets (
+      kind TEXT NOT NULL, value TEXT NOT NULL, count INTEGER NOT NULL DEFAULT 0,
+      PRIMARY KEY(kind,value)
+    ) WITHOUT ROWID, STRICT;
+
+    CREATE TRIGGER IF NOT EXISTS asset_summary_rows_ai AFTER INSERT ON asset_summary_rows BEGIN
+      UPDATE asset_summary_totals SET total=total+1,issue_count=issue_count+NEW.issue_count,
+        high_risk_count=high_risk_count+NEW.high_risk_count,
+        sha256_ready_count=sha256_ready_count+NEW.sha256_ready_count,
+        sha256_pending_count=sha256_pending_count+NEW.sha256_pending_count,
+        fingerprint_conflict_count=fingerprint_conflict_count+NEW.fingerprint_conflict_count,
+        reference_total=reference_total+NEW.reference_count,
+        duplicate_groups=duplicate_groups+CASE WHEN NEW.path_count>1 THEN 1 ELSE 0 END,
+        stale_count=stale_count+NEW.stale_count,unchecked_count=unchecked_count+NEW.unchecked_count
+        WHERE singleton=1;
+      INSERT INTO asset_summary_facets(kind,value,count) VALUES('source',NEW.source_name,1)
+        ON CONFLICT(kind,value) DO UPDATE SET count=count+1;
+      INSERT INTO asset_summary_facets(kind,value,count) VALUES('type',NEW.asset_type,1)
+        ON CONFLICT(kind,value) DO UPDATE SET count=count+1;
+    END;
+    CREATE TRIGGER IF NOT EXISTS asset_summary_rows_au AFTER UPDATE ON asset_summary_rows BEGIN
+      UPDATE asset_summary_totals SET issue_count=issue_count-OLD.issue_count+NEW.issue_count,
+        high_risk_count=high_risk_count-OLD.high_risk_count+NEW.high_risk_count,
+        sha256_ready_count=sha256_ready_count-OLD.sha256_ready_count+NEW.sha256_ready_count,
+        sha256_pending_count=sha256_pending_count-OLD.sha256_pending_count+NEW.sha256_pending_count,
+        fingerprint_conflict_count=fingerprint_conflict_count-OLD.fingerprint_conflict_count+NEW.fingerprint_conflict_count,
+        reference_total=reference_total-OLD.reference_count+NEW.reference_count,
+        duplicate_groups=duplicate_groups-(CASE WHEN OLD.path_count>1 THEN 1 ELSE 0 END)+(CASE WHEN NEW.path_count>1 THEN 1 ELSE 0 END),
+        stale_count=stale_count-OLD.stale_count+NEW.stale_count,
+        unchecked_count=unchecked_count-OLD.unchecked_count+NEW.unchecked_count WHERE singleton=1;
+      UPDATE asset_summary_facets SET count=count-1 WHERE kind='source' AND value=OLD.source_name AND OLD.source_name<>NEW.source_name;
+      DELETE FROM asset_summary_facets WHERE kind='source' AND value=OLD.source_name AND count<=0;
+      INSERT INTO asset_summary_facets(kind,value,count) SELECT 'source',NEW.source_name,1 WHERE OLD.source_name<>NEW.source_name
+        ON CONFLICT(kind,value) DO UPDATE SET count=count+1;
+      UPDATE asset_summary_facets SET count=count-1 WHERE kind='type' AND value=OLD.asset_type AND OLD.asset_type<>NEW.asset_type;
+      DELETE FROM asset_summary_facets WHERE kind='type' AND value=OLD.asset_type AND count<=0;
+      INSERT INTO asset_summary_facets(kind,value,count) SELECT 'type',NEW.asset_type,1 WHERE OLD.asset_type<>NEW.asset_type
+        ON CONFLICT(kind,value) DO UPDATE SET count=count+1;
+    END;
+    CREATE TRIGGER IF NOT EXISTS asset_summary_rows_ad AFTER DELETE ON asset_summary_rows BEGIN
+      UPDATE asset_summary_totals SET total=total-1,issue_count=issue_count-OLD.issue_count,
+        high_risk_count=high_risk_count-OLD.high_risk_count,
+        sha256_ready_count=sha256_ready_count-OLD.sha256_ready_count,
+        sha256_pending_count=sha256_pending_count-OLD.sha256_pending_count,
+        fingerprint_conflict_count=fingerprint_conflict_count-OLD.fingerprint_conflict_count,
+        reference_total=reference_total-OLD.reference_count,
+        duplicate_groups=duplicate_groups-CASE WHEN OLD.path_count>1 THEN 1 ELSE 0 END,
+        stale_count=stale_count-OLD.stale_count,unchecked_count=unchecked_count-OLD.unchecked_count WHERE singleton=1;
+      UPDATE asset_summary_facets SET count=count-1 WHERE kind='source' AND value=OLD.source_name;
+      DELETE FROM asset_summary_facets WHERE kind='source' AND value=OLD.source_name AND count<=0;
+      UPDATE asset_summary_facets SET count=count-1 WHERE kind='type' AND value=OLD.asset_type;
+      DELETE FROM asset_summary_facets WHERE kind='type' AND value=OLD.asset_type AND count<=0;
+    END;
+
+    CREATE TRIGGER IF NOT EXISTS assets_summary_ai AFTER INSERT ON assets BEGIN
+      INSERT INTO asset_summary_rows(asset_id,owner_student_id,source_name,asset_type,governance_risk,
+        issue_count,high_risk_count,sha256_ready_count,sha256_pending_count,fingerprint_conflict_count)
+      VALUES(NEW.asset_id,NEW.owner_student_id,NEW.source_name,NEW.asset_type,NEW.governance_risk,
+        CASE WHEN NEW.governance_action<>'' AND NEW.governance_action<>'无需处理' THEN 1 ELSE 0 END,
+        CASE WHEN NEW.governance_risk='high' THEN 1 ELSE 0 END,CASE WHEN NEW.sha256<>'' THEN 1 ELSE 0 END,
+        CASE WHEN NEW.sha256='' THEN 1 ELSE 0 END,CASE WHEN NEW.governance_status='fingerprint_conflict' THEN 1 ELSE 0 END);
+      INSERT INTO asset_student_memberships(asset_id,student_id)
+        SELECT NEW.asset_id,NEW.owner_student_id WHERE NEW.owner_student_id<>'' ON CONFLICT(asset_id,student_id) DO NOTHING;
+    END;
+    CREATE TRIGGER IF NOT EXISTS assets_summary_au AFTER UPDATE ON assets BEGIN
+      UPDATE asset_summary_rows SET owner_student_id=NEW.owner_student_id,source_name=NEW.source_name,
+        asset_type=NEW.asset_type,governance_risk=NEW.governance_risk,
+        issue_count=CASE WHEN NEW.governance_action<>'' AND NEW.governance_action<>'无需处理' THEN 1 ELSE 0 END,
+        high_risk_count=CASE WHEN NEW.governance_risk='high' THEN 1 ELSE 0 END,
+        sha256_ready_count=CASE WHEN NEW.sha256<>'' THEN 1 ELSE 0 END,
+        sha256_pending_count=CASE WHEN NEW.sha256='' THEN 1 ELSE 0 END,
+        fingerprint_conflict_count=CASE WHEN NEW.governance_status='fingerprint_conflict' THEN 1 ELSE 0 END
+        WHERE asset_id=NEW.asset_id;
+      DELETE FROM asset_student_memberships WHERE asset_id=NEW.asset_id;
+      INSERT INTO asset_student_memberships(asset_id,student_id)
+        SELECT NEW.asset_id,NEW.owner_student_id WHERE NEW.owner_student_id<>'' ON CONFLICT(asset_id,student_id) DO NOTHING;
+      INSERT INTO asset_student_memberships(asset_id,student_id)
+        SELECT NEW.asset_id,student_id FROM asset_references WHERE asset_id=NEW.asset_id AND state='active' AND student_id<>''
+        ON CONFLICT(asset_id,student_id) DO NOTHING;
+      INSERT INTO asset_student_memberships(asset_id,student_id)
+        SELECT NEW.asset_id,space_id FROM asset_references WHERE asset_id=NEW.asset_id AND state='active' AND space_type='student' AND space_id<>''
+        ON CONFLICT(asset_id,student_id) DO NOTHING;
+    END;
+
+    CREATE TRIGGER IF NOT EXISTS asset_refs_summary_ai AFTER INSERT ON asset_references BEGIN
+      UPDATE asset_summary_rows SET
+        reference_count=(SELECT COUNT(*) FROM asset_references WHERE asset_id=NEW.asset_id AND state='active'),
+        path_count=(SELECT COUNT(DISTINCT path) FROM asset_references WHERE asset_id=NEW.asset_id AND state='active' AND path<>''),
+        stale_count=(SELECT COUNT(*) FROM asset_references WHERE asset_id=NEW.asset_id AND state='active' AND availability_state='missing'),
+        unchecked_count=(SELECT COUNT(*) FROM asset_references WHERE asset_id=NEW.asset_id AND state='active' AND availability_state='unchecked' AND path<>'')
+        WHERE asset_id=NEW.asset_id;
+      INSERT INTO asset_student_memberships(asset_id,student_id)
+        SELECT NEW.asset_id,NEW.student_id WHERE NEW.state='active' AND NEW.student_id<>'' ON CONFLICT(asset_id,student_id) DO NOTHING;
+      INSERT INTO asset_student_memberships(asset_id,student_id)
+        SELECT NEW.asset_id,NEW.space_id WHERE NEW.state='active' AND NEW.space_type='student' AND NEW.space_id<>''
+        ON CONFLICT(asset_id,student_id) DO NOTHING;
+    END;
+    CREATE TRIGGER IF NOT EXISTS asset_refs_summary_ad AFTER DELETE ON asset_references BEGIN
+      UPDATE asset_summary_rows SET
+        reference_count=(SELECT COUNT(*) FROM asset_references WHERE asset_id=OLD.asset_id AND state='active'),
+        path_count=(SELECT COUNT(DISTINCT path) FROM asset_references WHERE asset_id=OLD.asset_id AND state='active' AND path<>''),
+        stale_count=(SELECT COUNT(*) FROM asset_references WHERE asset_id=OLD.asset_id AND state='active' AND availability_state='missing'),
+        unchecked_count=(SELECT COUNT(*) FROM asset_references WHERE asset_id=OLD.asset_id AND state='active' AND availability_state='unchecked' AND path<>'')
+        WHERE asset_id=OLD.asset_id;
+      DELETE FROM asset_student_memberships WHERE asset_id=OLD.asset_id;
+      INSERT INTO asset_student_memberships(asset_id,student_id)
+        SELECT OLD.asset_id,owner_student_id FROM assets WHERE asset_id=OLD.asset_id AND owner_student_id<>''
+        ON CONFLICT(asset_id,student_id) DO NOTHING;
+      INSERT INTO asset_student_memberships(asset_id,student_id)
+        SELECT OLD.asset_id,student_id FROM asset_references WHERE asset_id=OLD.asset_id AND state='active' AND student_id<>''
+        ON CONFLICT(asset_id,student_id) DO NOTHING;
+      INSERT INTO asset_student_memberships(asset_id,student_id)
+        SELECT OLD.asset_id,space_id FROM asset_references WHERE asset_id=OLD.asset_id AND state='active' AND space_type='student' AND space_id<>''
+        ON CONFLICT(asset_id,student_id) DO NOTHING;
+    END;
+    CREATE TRIGGER IF NOT EXISTS asset_refs_summary_au AFTER UPDATE ON asset_references BEGIN
+      UPDATE asset_summary_rows SET
+        reference_count=(SELECT COUNT(*) FROM asset_references WHERE asset_id=OLD.asset_id AND state='active'),
+        path_count=(SELECT COUNT(DISTINCT path) FROM asset_references WHERE asset_id=OLD.asset_id AND state='active' AND path<>''),
+        stale_count=(SELECT COUNT(*) FROM asset_references WHERE asset_id=OLD.asset_id AND state='active' AND availability_state='missing'),
+        unchecked_count=(SELECT COUNT(*) FROM asset_references WHERE asset_id=OLD.asset_id AND state='active' AND availability_state='unchecked' AND path<>'')
+        WHERE asset_id=OLD.asset_id;
+      UPDATE asset_summary_rows SET
+        reference_count=(SELECT COUNT(*) FROM asset_references WHERE asset_id=NEW.asset_id AND state='active'),
+        path_count=(SELECT COUNT(DISTINCT path) FROM asset_references WHERE asset_id=NEW.asset_id AND state='active' AND path<>''),
+        stale_count=(SELECT COUNT(*) FROM asset_references WHERE asset_id=NEW.asset_id AND state='active' AND availability_state='missing'),
+        unchecked_count=(SELECT COUNT(*) FROM asset_references WHERE asset_id=NEW.asset_id AND state='active' AND availability_state='unchecked' AND path<>'')
+        WHERE asset_id=NEW.asset_id;
+      DELETE FROM asset_student_memberships WHERE asset_id IN (OLD.asset_id,NEW.asset_id);
+      INSERT INTO asset_student_memberships(asset_id,student_id)
+        SELECT asset_id,owner_student_id FROM assets WHERE asset_id IN (OLD.asset_id,NEW.asset_id) AND owner_student_id<>''
+        ON CONFLICT(asset_id,student_id) DO NOTHING;
+      INSERT INTO asset_student_memberships(asset_id,student_id)
+        SELECT asset_id,student_id FROM asset_references WHERE asset_id IN (OLD.asset_id,NEW.asset_id) AND state='active' AND student_id<>''
+        ON CONFLICT(asset_id,student_id) DO NOTHING;
+      INSERT INTO asset_student_memberships(asset_id,student_id)
+        SELECT asset_id,space_id FROM asset_references WHERE asset_id IN (OLD.asset_id,NEW.asset_id) AND state='active' AND space_type='student' AND space_id<>''
+        ON CONFLICT(asset_id,student_id) DO NOTHING;
+    END;
   `;
 }
 
@@ -191,16 +389,17 @@ function createSchema(db, journalMode = 'WAL') {
 
 function sqliteString(value) { return `'${String(value).replaceAll("'", "''")}'`; }
 
-function schemaUpgradeBackup(db, dbPath, now = Date.now) {
+function schemaUpgradeBackup(db, dbPath, targetVersion, now = Date.now) {
   const stamp = new Date(now()).toISOString().replace(/[:.]/g, '-');
-  const target = `${dbPath}.pre-schema-v2-${stamp}.sqlite3`;
+  let target = `${dbPath}.pre-schema-v${targetVersion}-${stamp}.sqlite3`;
+  if (fs.existsSync(target)) target = `${dbPath}.pre-schema-v${targetVersion}-${stamp}-${crypto.randomBytes(3).toString('hex')}.sqlite3`;
   db.exec(`VACUUM INTO ${sqliteString(target)}`);
   try { fs.chmodSync(target, 0o444); } catch { /* Windows may ignore POSIX write bits. */ }
   return target;
 }
 
 function migrateSchemaV1ToV2(db, dbPath, now = Date.now) {
-  const backupPath = schemaUpgradeBackup(db, dbPath, now);
+  const backupPath = schemaUpgradeBackup(db, dbPath, 2, now);
   try {
     db.exec(`BEGIN IMMEDIATE;
       ALTER TABLE asset_references ADD COLUMN state TEXT NOT NULL DEFAULT 'active';
@@ -252,6 +451,75 @@ function migrateSchemaV1ToV2(db, dbPath, now = Date.now) {
   }
 }
 
+function migrateSchemaV2ToV3(db, dbPath, now = Date.now) {
+  const backupPath = schemaUpgradeBackup(db, dbPath, 3, now);
+  try {
+    const referenceColumns = new Set(db.prepare('PRAGMA table_info(asset_references)').all().map(column => column.name));
+    const availabilityColumns = `${referenceColumns.has('availability_state') ? '' : "ALTER TABLE asset_references ADD COLUMN availability_state TEXT NOT NULL DEFAULT 'unchecked';"}
+      ${referenceColumns.has('availability_checked_at') ? '' : "ALTER TABLE asset_references ADD COLUMN availability_checked_at TEXT NOT NULL DEFAULT '';"}`;
+    db.exec(`BEGIN IMMEDIATE;
+      ${availabilityColumns}
+      CREATE INDEX IF NOT EXISTS asset_refs_availability ON asset_references(availability_state,asset_id);
+      DELETE FROM asset_search;
+      INSERT INTO asset_search(rowid,asset_id,filename,paths,owner_name,source_name,sha1,sha256,governance)
+      SELECT a.rowid,a.asset_id,a.filename,
+        TRIM(a.canonical_path || ' ' || COALESCE((SELECT GROUP_CONCAT(r.path,' ') FROM asset_references r
+          WHERE r.asset_id=a.asset_id AND r.state='active' AND r.path<>''),'')),
+        a.owner_student_name,a.source_name,a.sha1,a.sha256,
+        TRIM(a.governance_action || ' ' || a.governance_reason)
+      FROM assets a;
+      PRAGMA user_version=3;`);
+    const foreign = db.prepare('PRAGMA foreign_key_check').all();
+    const integrity = db.prepare('PRAGMA integrity_check').get();
+    if (foreign.length || Object.values(integrity || {})[0] !== 'ok') throw new Error('SQLite v3 schema integrity check failed');
+    db.exec('COMMIT');
+    return backupPath;
+  } catch (error) {
+    try { db.exec('ROLLBACK'); } catch { /* transaction already ended */ }
+    throw Object.assign(error, { code: 'asset_db_schema_upgrade_failed', backupPath });
+  }
+}
+
+function migrateSchemaV3ToV4(db, dbPath, now = Date.now) {
+  const backupPath = schemaUpgradeBackup(db, dbPath, 4, now);
+  try {
+    db.exec('BEGIN IMMEDIATE');
+    db.exec(summarySchemaSql());
+    db.exec(`
+      INSERT INTO asset_summary_rows(asset_id,owner_student_id,source_name,asset_type,governance_risk,
+        issue_count,high_risk_count,sha256_ready_count,sha256_pending_count,fingerprint_conflict_count,
+        reference_count,path_count,stale_count,unchecked_count)
+      SELECT a.asset_id,a.owner_student_id,a.source_name,a.asset_type,a.governance_risk,
+        CASE WHEN a.governance_action<>'' AND a.governance_action<>'无需处理' THEN 1 ELSE 0 END,
+        CASE WHEN a.governance_risk='high' THEN 1 ELSE 0 END,
+        CASE WHEN a.sha256<>'' THEN 1 ELSE 0 END,CASE WHEN a.sha256='' THEN 1 ELSE 0 END,
+        CASE WHEN a.governance_status='fingerprint_conflict' THEN 1 ELSE 0 END,
+        COALESCE(r.reference_count,0),COALESCE(r.path_count,0),COALESCE(r.stale_count,0),COALESCE(r.unchecked_count,0)
+      FROM assets a LEFT JOIN (
+        SELECT asset_id,COUNT(*) reference_count,COUNT(DISTINCT CASE WHEN path<>'' THEN path END) path_count,
+          SUM(CASE WHEN availability_state='missing' THEN 1 ELSE 0 END) stale_count,
+          SUM(CASE WHEN availability_state='unchecked' AND path<>'' THEN 1 ELSE 0 END) unchecked_count
+        FROM asset_references WHERE state='active' GROUP BY asset_id
+      ) r ON r.asset_id=a.asset_id;
+      INSERT OR IGNORE INTO asset_student_memberships(asset_id,student_id)
+        SELECT asset_id,owner_student_id FROM assets WHERE owner_student_id<>'';
+      INSERT OR IGNORE INTO asset_student_memberships(asset_id,student_id)
+        SELECT asset_id,student_id FROM asset_references WHERE state='active' AND student_id<>'';
+      INSERT OR IGNORE INTO asset_student_memberships(asset_id,student_id)
+        SELECT asset_id,space_id FROM asset_references WHERE state='active' AND space_type='student' AND space_id<>'';
+      PRAGMA user_version=4;
+    `);
+    const foreign = db.prepare('PRAGMA foreign_key_check').all();
+    const integrity = db.prepare('PRAGMA integrity_check').get();
+    if (foreign.length || Object.values(integrity || {})[0] !== 'ok') throw new Error('SQLite v4 schema integrity check failed');
+    db.exec('COMMIT');
+    return backupPath;
+  } catch (error) {
+    try { db.exec('ROLLBACK'); } catch { /* transaction already ended */ }
+    throw Object.assign(error, { code: 'asset_db_schema_upgrade_failed', backupPath });
+  }
+}
+
 function canonicalAsset(group) {
   const sha1 = text(group[0]?.sha1);
   const expected = sha1 ? `asset-${sha1.slice(0, 16)}` : '';
@@ -291,17 +559,23 @@ function mergeLegacyGroup(group) {
   return { canonical: merged, references: [...references.values()], aliases: group.map(item => text(item.assetId)).filter(Boolean) };
 }
 
-function openCheckedDatabase(dbPath, now = Date.now) {
+function openCheckedDatabase(dbPath, now = Date.now, quickCheck = true) {
   const db = new DatabaseSync(dbPath);
   db.exec('PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA busy_timeout=5000; PRAGMA foreign_keys=ON;');
   let version = Number(db.prepare('PRAGMA user_version').get().user_version || 0);
   if (version === 0) createSchema(db, 'WAL');
   else if (version === 1) migrateSchemaV1ToV2(db, dbPath, now);
   version = Number(db.prepare('PRAGMA user_version').get().user_version || 0);
+  if (version === 2) migrateSchemaV2ToV3(db, dbPath, now);
+  version = Number(db.prepare('PRAGMA user_version').get().user_version || 0);
+  if (version === 3) migrateSchemaV3ToV4(db, dbPath, now);
+  version = Number(db.prepare('PRAGMA user_version').get().user_version || 0);
   if (version !== SCHEMA_VERSION) throw Object.assign(new Error(`Unsupported asset database schema ${version}`), { code: 'asset_db_schema_unsupported' });
   db.exec(schemaSql());
-  const quick = db.prepare('PRAGMA quick_check').get();
-  if (!quick || Object.values(quick)[0] !== 'ok') throw Object.assign(new Error('Asset database quick_check failed'), { code: 'asset_db_corrupt' });
+  if (quickCheck) {
+    const quick = db.prepare('PRAGMA quick_check').get();
+    if (!quick || Object.values(quick)[0] !== 'ok') throw Object.assign(new Error('Asset database quick_check failed'), { code: 'asset_db_corrupt' });
+  }
   db.prepare(`INSERT INTO asset_index_meta(key,value) VALUES('schema_version',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value`).run(String(SCHEMA_VERSION));
   const openedAt = new Date().toISOString();
   db.prepare(`UPDATE asset_scan_runs SET status='interrupted',phase='interrupted',updated_at=?,finished_at=? WHERE status='running'`).run(openedAt, openedAt);
@@ -385,22 +659,57 @@ function makeStoreApi(db, options) {
   const now = options.now || Date.now;
   const summaryCache = new Map();
   const listCountCache = new Map();
+  const SUMMARY_CACHE_LIMIT = 64;
+  const LIST_COUNT_CACHE_LIMIT = 256;
+  let transactionDepth = 0;
+  const cacheGet = (cache, key) => {
+    if (!cache.has(key)) return undefined;
+    const value = cache.get(key);
+    cache.delete(key);
+    cache.set(key, value);
+    return value;
+  };
+  const cacheSet = (cache, key, value, limit) => {
+    if (cache.has(key)) cache.delete(key);
+    cache.set(key, value);
+    while (cache.size > limit) cache.delete(cache.keys().next().value);
+  };
   const invalidateSummary = () => { summaryCache.clear(); listCountCache.clear(); };
   const insertAsset = db.prepare(`INSERT INTO assets(${ASSET_COLUMNS.join(',')}) VALUES(${ASSET_COLUMNS.map(() => '?').join(',')})
     ON CONFLICT(asset_id) DO UPDATE SET ${ASSET_COLUMNS.filter(column => column !== 'asset_id').map(column => column === 'sha256'
       ? `sha256=CASE WHEN excluded.sha256<>'' THEN excluded.sha256 ELSE assets.sha256 END`
       : `${column}=excluded.${column}`).join(',')}`);
   const insertReference = db.prepare(`INSERT INTO asset_references(
-      reference_id,asset_id,space_type,space_id,space_name,workspace_id,student_id,device_id,content_sha256,logical_path,role,path,source,linked_at,state,quarantine_operation_id
-    ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+      reference_id,asset_id,space_type,space_id,space_name,workspace_id,student_id,device_id,content_sha256,logical_path,role,path,source,linked_at,state,quarantine_operation_id,availability_state,availability_checked_at
+    ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
     ON CONFLICT(asset_id,space_type,space_id,role,path) DO UPDATE SET
       reference_id=excluded.reference_id,space_name=excluded.space_name,workspace_id=excluded.workspace_id,
       student_id=excluded.student_id,device_id=excluded.device_id,
       content_sha256=CASE WHEN excluded.content_sha256<>'' THEN excluded.content_sha256 ELSE asset_references.content_sha256 END,
       logical_path=excluded.logical_path,source=excluded.source,
       linked_at=CASE WHEN asset_references.linked_at='' THEN excluded.linked_at ELSE asset_references.linked_at END,
-      state=excluded.state,quarantine_operation_id=excluded.quarantine_operation_id`);
+      state=excluded.state,quarantine_operation_id=excluded.quarantine_operation_id,
+      availability_state=CASE WHEN excluded.availability_state<>'unchecked' THEN excluded.availability_state ELSE asset_references.availability_state END,
+      availability_checked_at=CASE WHEN excluded.availability_checked_at<>'' THEN excluded.availability_checked_at ELSE asset_references.availability_checked_at END`);
   const insertAlias = db.prepare(`INSERT INTO asset_aliases(old_asset_id,asset_id) VALUES(?,?) ON CONFLICT(old_asset_id) DO UPDATE SET asset_id=excluded.asset_id`);
+  const selectAssetBySha256 = db.prepare("SELECT asset_id,sha1,sha256 FROM assets WHERE sha256<>'' AND sha256=? LIMIT 1");
+  const selectAssetBySha1 = db.prepare("SELECT asset_id,sha1,sha256 FROM assets WHERE sha1<>'' AND sha1=? LIMIT 1");
+  const selectReferenceByKey = db.prepare(`SELECT * FROM asset_references
+    WHERE asset_id=? AND space_type=? AND space_id=? AND role=? AND path=? LIMIT 1`);
+  const selectAlias = db.prepare('SELECT asset_id FROM asset_aliases WHERE old_asset_id=? LIMIT 1');
+
+  function referenceNeedsWrite(current, next) {
+    if (!current) return true;
+    const direct = [['spaceName','space_name'],['workspaceId','workspace_id'],['studentId','student_id'],
+      ['deviceId','device_id'],['logicalPath','logical_path'],['source','source'],['state','state'],
+      ['quarantineOperationId','quarantine_operation_id']];
+    if (direct.some(([field, column]) => text(next[field]) !== text(current[column]))) return true;
+    if (next.contentSha256 && text(next.contentSha256) !== text(current.content_sha256)) return true;
+    if (next.availabilityState && next.availabilityState !== 'unchecked'
+      && text(next.availabilityState) !== text(current.availability_state)) return true;
+    return Boolean(next.availabilityCheckedAt
+      && text(next.availabilityCheckedAt) !== text(current.availability_checked_at));
+  }
 
   function resolveAssetId(assetId) {
     const row = db.prepare(`SELECT asset_id FROM assets WHERE asset_id=? UNION ALL SELECT asset_id FROM asset_aliases WHERE old_asset_id=? LIMIT 1`).get(text(assetId), text(assetId));
@@ -412,46 +721,72 @@ function makeStoreApi(db, options) {
   }
 
   function refreshSearch(assetId) {
-    const row = db.prepare('SELECT * FROM assets WHERE asset_id=?').get(assetId);
+    const row = db.prepare('SELECT rowid search_rowid,* FROM assets WHERE asset_id=?').get(assetId);
     if (!row) return;
     const paths = db.prepare("SELECT path FROM asset_references WHERE asset_id=? AND path<>? AND state='active' ORDER BY row_id").all(assetId, '').map(item => item.path).join(' ');
-    db.prepare('DELETE FROM asset_search WHERE asset_id=?').run(assetId);
-    db.prepare('INSERT INTO asset_search(asset_id,filename,paths,owner_name,source_name,sha1,sha256,governance) VALUES(?,?,?,?,?,?,?,?)')
-      .run(assetId, row.filename, `${row.canonical_path} ${paths}`.trim(), row.owner_student_name, row.source_name, row.sha1, row.sha256, `${row.governance_action} ${row.governance_reason}`.trim());
+    db.prepare('DELETE FROM asset_search WHERE rowid=?').run(row.search_rowid);
+    db.prepare('INSERT INTO asset_search(rowid,asset_id,filename,paths,owner_name,source_name,sha1,sha256,governance) VALUES(?,?,?,?,?,?,?,?,?)')
+      .run(row.search_rowid, assetId, row.filename, `${row.canonical_path} ${paths}`.trim(), row.owner_student_name, row.source_name, row.sha1, row.sha256, `${row.governance_action} ${row.governance_reason}`.trim());
   }
 
   function upsertAsset(asset, references = asset?.references || [], aliases = [], settings = {}) {
-    invalidateSummary();
-    const source = asset && typeof asset === 'object' ? { ...asset } : {};
-    let canonicalId = text(source.assetId);
-    const sha256 = text(source.sha256);
-    const sha1 = text(source.sha1);
-    const bySha256 = sha256 ? db.prepare('SELECT asset_id,sha1,sha256 FROM assets WHERE sha256=? LIMIT 1').get(sha256) : null;
-    const bySha1 = sha1 ? db.prepare('SELECT asset_id,sha1,sha256 FROM assets WHERE sha1=? LIMIT 1').get(sha1) : null;
-    if (bySha1?.asset_id && sha256 && bySha1.sha256 && bySha1.sha256 !== sha256) {
-      db.prepare(`UPDATE assets SET governance_status='fingerprint_conflict',governance_risk='high',
-        governance_action='人工核对指纹冲突',governance_reason='同一 SHA-1 对应不同 SHA-256，已停止自动合并。' WHERE asset_id=?`).run(bySha1.asset_id);
-      throw Object.assign(new Error('同一 SHA-1 对应不同 SHA-256，已停止自动合并。'), { code: 'asset_fingerprint_conflict', assetId: bySha1.asset_id });
-    }
-    const existing = bySha256 || bySha1;
-    if (existing?.asset_id) canonicalId = text(existing.asset_id);
-    if (!canonicalId) canonicalId = `asset-${(sha256 || sha1 || crypto.randomBytes(16).toString('hex')).slice(0, 16)}`;
-    const current = db.prepare('SELECT * FROM assets WHERE asset_id=?').get(canonicalId);
-    if (current) source.assetId = canonicalId;
-    else source.assetId = canonicalId;
-    source.updatedAt = text(source.updatedAt) || nowIso(now);
-    const values = assetValues(source);
-    insertAsset.run(...ASSET_COLUMNS.map(column => values[column]));
-    insertAlias.run(canonicalId, canonicalId);
-    for (const alias of new Set([...(aliases || []), text(asset?.assetId)].filter(Boolean))) insertAlias.run(text(alias), canonicalId);
-    for (const raw of Array.isArray(references) ? references : []) {
-      const ref = normalizeReference(raw, { path: source.path, linkedAt: source.uploadedAt || source.updatedAt });
-      insertReference.run(ref.referenceId, canonicalId, ref.spaceType, ref.spaceId, ref.spaceName, ref.workspaceId,
-        ref.studentId, ref.deviceId, ref.contentSha256, ref.logicalPath, ref.role, ref.path, ref.source, ref.linkedAt,
-        ref.state, ref.quarantineOperationId);
-    }
-    if (settings.refreshSearch !== false) refreshSearch(canonicalId);
-    return getAssetDetail(canonicalId);
+    const execute = () => {
+      const input = asset && typeof asset === 'object' ? { ...asset } : {};
+      let canonicalId = text(input.assetId);
+      const sha256 = text(input.sha256);
+      const sha1 = text(input.sha1);
+      const bySha256 = sha256 ? selectAssetBySha256.get(sha256) : null;
+      const bySha1 = sha1 ? selectAssetBySha1.get(sha1) : null;
+      if (bySha1?.asset_id && sha256 && bySha1.sha256 && bySha1.sha256 !== sha256) {
+        db.prepare(`UPDATE assets SET governance_status='fingerprint_conflict',governance_risk='high',
+          governance_action='人工核对指纹冲突',governance_reason='同一 SHA-1 对应不同 SHA-256，已停止自动合并。' WHERE asset_id=?`).run(bySha1.asset_id);
+        return { __upsertError: Object.assign(new Error('同一 SHA-1 对应不同 SHA-256，已停止自动合并。'), { code: 'asset_fingerprint_conflict', assetId: bySha1.asset_id }) };
+      }
+      const existing = bySha256 || bySha1;
+      if (existing?.asset_id) canonicalId = text(existing.asset_id);
+      if (!canonicalId) canonicalId = `asset-${(sha256 || sha1 || crypto.randomBytes(16).toString('hex')).slice(0, 16)}`;
+      const current = db.prepare('SELECT * FROM assets WHERE asset_id=?').get(canonicalId);
+      const source = current ? { ...rowToAsset(current), ...input } : input;
+      source.assetId = canonicalId;
+      source.sha256 = sha256 || text(current?.sha256);
+      const requestedUpdatedAt = text(input.updatedAt) || nowIso(now);
+      source.updatedAt = text(current?.updated_at) || requestedUpdatedAt;
+      const normalizedReferences = (Array.isArray(references) ? references : []).map(raw =>
+        normalizeReference(raw, { path: source.path, linkedAt: source.uploadedAt || requestedUpdatedAt }));
+      const referencePlans = normalizedReferences.map(ref => ({ ref, current: selectReferenceByKey.get(canonicalId,
+        ref.spaceType, ref.spaceId, ref.role, ref.path) }));
+      const aliasesToWrite = [...new Set([canonicalId, ...(aliases || []), text(asset?.assetId)].filter(Boolean))]
+        .filter(alias => text(selectAlias.get(text(alias))?.asset_id) !== canonicalId);
+      const comparisonValues = assetValues(source);
+      const assetChanged = !current || ASSET_COLUMNS.some(column => !['updated_at', 'record_json'].includes(column)
+        && text(current[column]) !== text(comparisonValues[column]))
+        || comparableRecord(current.record_json) !== comparableRecord(source);
+      const referencesChanged = referencePlans.some(plan => referenceNeedsWrite(plan.current, plan.ref));
+      const changed = assetChanged || referencesChanged || aliasesToWrite.length > 0;
+      if (!changed) return settings.returnDetail === false
+        ? { assetId: canonicalId, changed: false }
+        : { ...getAssetDetail(canonicalId), changed: false };
+      invalidateSummary();
+      if (assetChanged || referencesChanged) {
+        source.updatedAt = requestedUpdatedAt;
+        const values = assetValues(source);
+        insertAsset.run(...ASSET_COLUMNS.map(column => values[column]));
+      }
+      for (const alias of aliasesToWrite) insertAlias.run(text(alias), canonicalId);
+      for (const { ref, current: currentReference } of referencePlans) {
+        if (!referenceNeedsWrite(currentReference, ref)) continue;
+        insertReference.run(ref.referenceId, canonicalId, ref.spaceType, ref.spaceId, ref.spaceName, ref.workspaceId,
+          ref.studentId, ref.deviceId, ref.contentSha256, ref.logicalPath, ref.role, ref.path, ref.source, ref.linkedAt,
+          ref.state, ref.quarantineOperationId, ref.availabilityState, ref.availabilityCheckedAt);
+      }
+      if ((assetChanged || referencesChanged) && settings.refreshSearch !== false) refreshSearch(canonicalId);
+      return settings.returnDetail === false
+        ? { assetId: canonicalId, changed: true }
+        : { ...getAssetDetail(canonicalId), changed: true };
+    };
+    const result = settings.transaction === false || transactionDepth > 0 || Boolean(db.isTransaction) ? execute() : transaction(execute);
+    if (result?.__upsertError) throw result.__upsertError;
+    return result;
   }
 
   function replaceAll(assets) {
@@ -556,12 +891,18 @@ function makeStoreApi(db, options) {
     const query = text(searchText).trim().slice(0, 200);
     if (query) {
       if (/^asset-[a-z0-9_-]+$/i.test(query)) { clauses.push(`(a.asset_id=? OR a.asset_id IN (SELECT asset_id FROM asset_aliases WHERE old_asset_id=?))`); params.push(query, query); }
-      else if (/^[a-f0-9]{40}$/i.test(query)) { clauses.push('a.sha1=?'); params.push(query.toLowerCase()); }
-      else if (/^[a-f0-9]{64}$/i.test(query)) { clauses.push('a.sha256=?'); params.push(query.toLowerCase()); }
+      else if (/^[a-f0-9]{40}$/i.test(query)) { clauses.push("a.sha1<>'' AND a.sha1=?"); params.push(query.toLowerCase()); }
+      else if (/^[a-f0-9]{64}$/i.test(query)) { clauses.push("a.sha256<>'' AND a.sha256=?"); params.push(query.toLowerCase()); }
       else if ([...query].length >= 3) {
         clauses.push(`a.asset_id IN (SELECT asset_id FROM asset_search WHERE asset_search MATCH ?)`);
         params.push(query.split(/\s+/).filter(Boolean).map(part => `"${part.replaceAll('"', '""')}"`).join(' AND '));
       } else {
+        const scoped = Boolean((request.studentId && request.studentId !== 'all')
+          || (request.sourceName && request.sourceName !== 'all') || (request.type && request.type !== 'all')
+          || (request.risk && request.risk !== 'all') || request.duplicateOnly);
+        if (!scoped) return { ok: false, code: 'asset_search_scope_required', items: [], total: 0,
+          pageSize: Math.min(MAX_PAGE_SIZE, Math.max(1, Number(request.pageSize || request.limit) || DEFAULT_PAGE_SIZE)),
+          nextCursor: '', message: '1～2 个字符的搜索请先选择学生、来源、类型、风险或重复项范围。' };
         const pattern = `%${query.replace(/[\\%_]/g, value => `\\${value}`)}%`;
         clauses.push(`(a.filename LIKE ? ESCAPE '\\' OR a.canonical_path LIKE ? ESCAPE '\\' OR a.owner_student_name LIKE ? ESCAPE '\\' OR a.source_name LIKE ? ESCAPE '\\')`);
         params.push(pattern, pattern, pattern, pattern);
@@ -570,23 +911,49 @@ function makeStoreApi(db, options) {
     const where = clauses.length ? `WHERE ${clauses.join(' AND ')}` : '';
     const countKey = JSON.stringify({ studentId: request.studentId || '', sourceName: request.sourceName || '',
       type: request.type || '', risk: request.risk || '', duplicateOnly: Boolean(request.duplicateOnly), query });
-    let total = listCountCache.get(countKey);
+    let total = cacheGet(listCountCache, countKey);
     if (total === undefined) {
       total = Number(db.prepare(`SELECT COUNT(*) count FROM assets a ${where}`).get(...params).count);
-      listCountCache.set(countKey, total);
+      cacheSet(listCountCache, countKey, total, LIST_COUNT_CACHE_LIMIT);
     }
     const limit = Math.min(MAX_PAGE_SIZE, Math.max(1, Number(request.pageSize || request.limit) || DEFAULT_PAGE_SIZE));
-    const offset = cursorDecode(request.cursor);
-    const order = request.sort === 'filename_asc' ? 'a.filename COLLATE NOCASE, a.asset_id'
-      : request.sort === 'size_desc' ? 'a.byte_size DESC, a.asset_id' : 'a.updated_at DESC, a.asset_id';
+    const sort = request.sort === 'filename_asc' || request.sort === 'size_desc' ? request.sort : 'updated_desc';
+    const signature = fingerprint(`${countKey}|${sort}`).slice(0, 16);
+    const decoded = cursorDecode(request.cursor);
+    const cursor = decoded?.v === 2 && decoded.signature === signature && decoded.sort === sort ? decoded : null;
+    const legacyOffset = decoded && Object.hasOwn(decoded, 'offset') ? Math.max(0, Number(decoded.offset) || 0) : 0;
+    const pageClauses = [...clauses];
+    const pageParams = [...params];
+    if (cursor?.key) {
+      if (sort === 'filename_asc') {
+        pageClauses.push(`(a.filename COLLATE NOCASE > ? COLLATE NOCASE OR (a.filename=? COLLATE NOCASE AND a.asset_id>?))`);
+        pageParams.push(text(cursor.key.filename), text(cursor.key.filename), text(cursor.key.assetId));
+      } else if (sort === 'size_desc') {
+        pageClauses.push(`(a.byte_size < ? OR (a.byte_size=? AND a.asset_id>?))`);
+        pageParams.push(Number(cursor.key.size) || 0, Number(cursor.key.size) || 0, text(cursor.key.assetId));
+      } else {
+        pageClauses.push(`(a.updated_at < ? OR (a.updated_at=? AND a.asset_id>?))`);
+        pageParams.push(text(cursor.key.updatedAt), text(cursor.key.updatedAt), text(cursor.key.assetId));
+      }
+    }
+    const pageWhere = pageClauses.length ? `WHERE ${pageClauses.join(' AND ')}` : '';
+    const order = sort === 'filename_asc' ? 'a.filename COLLATE NOCASE, a.asset_id'
+      : sort === 'size_desc' ? 'a.byte_size DESC, a.asset_id' : 'a.updated_at DESC, a.asset_id';
+    const offsetSql = !cursor && legacyOffset ? ' OFFSET ?' : '';
     const rows = db.prepare(`SELECT a.*,
       (SELECT COUNT(*) FROM asset_references r WHERE r.asset_id=a.asset_id AND r.state='active') reference_count,
       (SELECT COUNT(DISTINCT r.path) FROM asset_references r WHERE r.asset_id=a.asset_id AND r.state='active' AND r.path<>'') duplicate_count,
       (SELECT COUNT(*) FROM assets v WHERE v.owner_student_id=a.owner_student_id AND v.filename=a.filename COLLATE NOCASE) version_count
-      FROM assets a ${where} ORDER BY ${order} LIMIT ? OFFSET ?`).all(...params, limit, offset);
-    return { ok: true, items: rows.map(row => ({ ...rowToAsset(row), referenceCount: Number(row.reference_count),
+      FROM assets a ${pageWhere} ORDER BY ${order} LIMIT ?${offsetSql}`).all(...pageParams, limit + 1, ...(!cursor && legacyOffset ? [legacyOffset] : []));
+    const hasMore = rows.length > limit;
+    const pageRows = rows.slice(0, limit);
+    const last = pageRows.at(-1);
+    const nextCursor = hasMore && last ? cursorEncode({ v: 2, signature, sort, key: sort === 'filename_asc'
+      ? { filename: last.filename, assetId: last.asset_id } : sort === 'size_desc'
+        ? { size: Number(last.byte_size), assetId: last.asset_id } : { updatedAt: last.updated_at, assetId: last.asset_id } }) : '';
+    return { ok: true, items: pageRows.map(row => ({ ...rowToAsset(row), referenceCount: Number(row.reference_count),
       duplicateCount: Math.max(1, Number(row.duplicate_count)), versionCount: Number(row.version_count) })),
-      total, pageSize: limit, nextCursor: offset + rows.length < total ? cursorEncode(offset + rows.length) : '' };
+      total, pageSize: limit, nextCursor };
   }
 
   function getAssetDetail(assetId) {
@@ -608,8 +975,8 @@ function makeStoreApi(db, options) {
 
   function findByFingerprint({ sha256 = '', sha1 = '', path: assetPath = '' } = {}) {
     let row = null;
-    if (sha256) row = db.prepare('SELECT asset_id FROM assets WHERE sha256=? LIMIT 1').get(text(sha256));
-    if (!row && sha1) row = db.prepare('SELECT asset_id FROM assets WHERE sha1=? LIMIT 1').get(text(sha1));
+    if (sha256) row = db.prepare("SELECT asset_id FROM assets WHERE sha256<>'' AND sha256=? LIMIT 1").get(text(sha256));
+    if (!row && sha1) row = db.prepare("SELECT asset_id FROM assets WHERE sha1<>'' AND sha1=? LIMIT 1").get(text(sha1));
     if (!row && assetPath) row = db.prepare('SELECT asset_id FROM assets WHERE canonical_path=? LIMIT 1').get(text(assetPath));
     return row?.asset_id ? getAssetDetail(row.asset_id) : null;
   }
@@ -626,7 +993,7 @@ function makeStoreApi(db, options) {
         const ref = normalizeReference(raw, { path: asset?.path, linkedAt: asset?.uploadedAt || asset?.updatedAt });
         insertReference.run(ref.referenceId, resolvedId, ref.spaceType, ref.spaceId, ref.spaceName, ref.workspaceId,
           ref.studentId, ref.deviceId, ref.contentSha256, ref.logicalPath, ref.role, ref.path, ref.source, ref.linkedAt,
-          ref.state, ref.quarantineOperationId);
+          ref.state, ref.quarantineOperationId, ref.availabilityState, ref.availabilityCheckedAt);
       }
       refreshSearch(resolvedId);
       db.exec('COMMIT');
@@ -676,42 +1043,62 @@ function makeStoreApi(db, options) {
 
   function summary(filter = {}) {
     const cacheKey = JSON.stringify(filter || {});
-    const cached = summaryCache.get(cacheKey);
+    const cached = cacheGet(summaryCache, cacheKey);
     if (cached) return cached;
     const params = [];
-    const clauses = filterSql(filter, params);
+    const clauses = [];
+    if (filter.studentId && filter.studentId !== 'all') {
+      clauses.push('s.asset_id IN (SELECT asset_id FROM asset_student_memberships WHERE student_id=?)');
+      params.push(text(filter.studentId));
+    }
+    if (filter.sourceName && filter.sourceName !== 'all') { clauses.push('s.source_name=?'); params.push(text(filter.sourceName)); }
+    if (filter.type && filter.type !== 'all') { clauses.push('s.asset_type=?'); params.push(text(filter.type)); }
+    if (filter.risk && filter.risk !== 'all') { clauses.push('s.governance_risk=?'); params.push(text(filter.risk)); }
+    if (filter.duplicateOnly) clauses.push('s.path_count>1');
     const where = clauses.length ? `WHERE ${clauses.join(' AND ')}` : '';
-    const row = db.prepare(`SELECT COUNT(*) total,
-      COALESCE(SUM(CASE WHEN a.governance_action<>'' AND a.governance_action<>'无需处理' THEN 1 ELSE 0 END),0) issue_count,
-      COALESCE(SUM(CASE WHEN a.governance_risk='high' THEN 1 ELSE 0 END),0) high_risk_count,
-      COALESCE(SUM(CASE WHEN a.sha256<>'' THEN 1 ELSE 0 END),0) sha256_ready_count,
-      COALESCE(SUM(CASE WHEN a.sha256='' THEN 1 ELSE 0 END),0) sha256_pending_count,
-      COALESCE(SUM(CASE WHEN a.governance_status='fingerprint_conflict' THEN 1 ELSE 0 END),0) fingerprint_conflict_count
-      FROM assets a ${where}`).get(...params);
-    const referenceTotal = Number(db.prepare(`SELECT COUNT(*) count FROM asset_references r JOIN assets a ON a.asset_id=r.asset_id ${where ? `${where} AND` : 'WHERE'} r.state='active'`).get(...params).count);
-    const duplicateGroups = Number(db.prepare(`SELECT COUNT(*) count FROM (
-      SELECT r.asset_id FROM asset_references r JOIN assets a ON a.asset_id=r.asset_id
-      ${where ? `${where} AND` : 'WHERE'} r.state='active' AND r.path<>'' GROUP BY r.asset_id HAVING COUNT(DISTINCT r.path)>1
-    )`).get(...params).count);
-    const staleReferenceCount = Number(db.prepare(`SELECT COUNT(*) count FROM asset_references r JOIN assets a ON a.asset_id=r.asset_id
-      ${where ? `${where} AND` : 'WHERE'} r.path LIKE '__asset_missing__:%'`).get(...params).count);
-    const sourceFacets = db.prepare(`SELECT a.source_name value,COUNT(*) count FROM assets a ${where} GROUP BY a.source_name ORDER BY a.source_name`).all(...params);
-    const typeFacets = db.prepare(`SELECT a.asset_type value,COUNT(*) count FROM assets a ${where} GROUP BY a.asset_type ORDER BY a.asset_type`).all(...params);
+    const unfiltered = clauses.length === 0;
+    const row = unfiltered
+      ? db.prepare(`SELECT total,issue_count,high_risk_count,sha256_ready_count,sha256_pending_count,
+          fingerprint_conflict_count,reference_total,duplicate_groups,stale_count,unchecked_count
+          FROM asset_summary_totals WHERE singleton=1`).get()
+      : db.prepare(`SELECT COUNT(*) total,COALESCE(SUM(s.issue_count),0) issue_count,
+          COALESCE(SUM(s.high_risk_count),0) high_risk_count,
+          COALESCE(SUM(s.sha256_ready_count),0) sha256_ready_count,
+          COALESCE(SUM(s.sha256_pending_count),0) sha256_pending_count,
+          COALESCE(SUM(s.fingerprint_conflict_count),0) fingerprint_conflict_count,
+          COALESCE(SUM(s.reference_count),0) reference_total,
+          COALESCE(SUM(CASE WHEN s.path_count>1 THEN 1 ELSE 0 END),0) duplicate_groups,
+          COALESCE(SUM(s.stale_count),0) stale_count,COALESCE(SUM(s.unchecked_count),0) unchecked_count
+          FROM asset_summary_rows s ${where}`).get(...params);
+    const facets = unfiltered
+      ? db.prepare('SELECT kind,value,count FROM asset_summary_facets ORDER BY kind,value').all()
+      : db.prepare(`WITH scoped_assets AS MATERIALIZED (
+          SELECT s.source_name,s.asset_type FROM asset_summary_rows s ${where}
+        )
+        SELECT 'source' kind,source_name value,COUNT(*) count FROM scoped_assets GROUP BY source_name
+        UNION ALL
+        SELECT 'type' kind,asset_type value,COUNT(*) count FROM scoped_assets GROUP BY asset_type
+        ORDER BY kind,value`).all(...params);
+    const sourceFacets = facets.filter(item => item.kind === 'source');
+    const typeFacets = facets.filter(item => item.kind === 'type');
+    const referenceTotal = Number(row.reference_total || 0);
+    const duplicateGroups = Number(row.duplicate_groups || 0);
+    const staleReferenceCount = Number(row.stale_count || 0);
     const lastRebuild = db.prepare(`SELECT value FROM asset_index_meta WHERE key='last_rebuild_at'`).get();
     const result = { ok: true, total: Number(row.total), referenceTotal, duplicateGroups,
       issueCount: Number(row.issue_count), highRiskCount: Number(row.high_risk_count), staleReferenceCount,
+      uncheckedReferenceCount: Number(row.unchecked_count || 0),
       sha256ReadyCount: Number(row.sha256_ready_count), sha256PendingCount: Number(row.sha256_pending_count),
       fingerprintConflictCount: Number(row.fingerprint_conflict_count),
       facets: { sources: sourceFacets.map(item => ({ value: item.value || '未标注来源', count: Number(item.count) })),
         types: typeFacets.map(item => ({ value: item.value || 'file', count: Number(item.count) })) },
       health: 'ok', lastRebuildAt: text(lastRebuild?.value) };
-    summaryCache.set(cacheKey, result);
+    cacheSet(summaryCache, cacheKey, result, SUMMARY_CACHE_LIMIT);
     return result;
   }
 
   function listDuplicateGroups(request = {}) {
     const limit = Math.min(MAX_PAGE_SIZE, Math.max(1, Number(request.pageSize) || DEFAULT_PAGE_SIZE));
-    const offset = cursorDecode(request.cursor);
     const params = [];
     let scope = '';
     if (request.studentId && request.studentId !== 'all') {
@@ -723,16 +1110,42 @@ function makeStoreApi(db, options) {
       SELECT 1 FROM asset_references r WHERE r.asset_id=a.asset_id AND r.state='active' AND r.path<>''
       GROUP BY r.asset_id HAVING COUNT(DISTINCT r.path)>1
     ) ${scope}`;
-    const total = Number(db.prepare(`SELECT COUNT(*) count ${base}`).get(...params).count);
-    const rows = db.prepare(`SELECT a.asset_id ${base} ORDER BY a.updated_at DESC,a.asset_id LIMIT ? OFFSET ?`).all(...params, limit, offset);
-    const items = rows.map(row => {
-      const asset = getAssetDetail(row.asset_id);
-      const paths = [...new Set(asset.references.filter(ref => ref.state === 'active' && ref.path).map(ref => ref.path))];
-      return { assetId: asset.assetId, filename: asset.filename, sha1: asset.sha1, sha256: asset.sha256,
-        size: asset.size, pathCount: paths.length, referenceCount: asset.referenceCount,
-        paths, references: asset.references.filter(ref => ref.state === 'active') };
+    const countKey = `duplicates:${JSON.stringify({ studentId: request.studentId || 'all' })}`;
+    let total = cacheGet(listCountCache, countKey);
+    if (total === undefined) {
+      total = Number(db.prepare(`SELECT COUNT(*) count ${base}`).get(...params).count);
+      cacheSet(listCountCache, countKey, total, LIST_COUNT_CACHE_LIMIT);
+    }
+    const signature = fingerprint(countKey).slice(0, 16);
+    const decoded = cursorDecode(request.cursor);
+    const cursor = decoded?.v === 2 && decoded.signature === signature && decoded.sort === 'updated_desc' ? decoded : null;
+    const legacyOffset = decoded && Object.hasOwn(decoded, 'offset') ? Math.max(0, Number(decoded.offset) || 0) : 0;
+    const cursorClause = cursor?.key ? ` AND (a.updated_at < ? OR (a.updated_at=? AND a.asset_id>?))` : '';
+    const cursorParams = cursor?.key ? [text(cursor.key.updatedAt), text(cursor.key.updatedAt), text(cursor.key.assetId)] : [];
+    const offsetSql = !cursor && legacyOffset ? ' OFFSET ?' : '';
+    const rows = db.prepare(`SELECT a.asset_id,a.filename,a.sha1,a.sha256,a.byte_size,a.updated_at,a.governance_status,
+      (SELECT COUNT(DISTINCT r.path) FROM asset_references r WHERE r.asset_id=a.asset_id AND r.state='active' AND r.path<>'') path_count,
+      (SELECT COUNT(*) FROM asset_references r WHERE r.asset_id=a.asset_id AND r.state='active') reference_count,
+      (SELECT COUNT(DISTINCT CASE WHEN r.space_type IN ('student','project') AND r.space_id<>'' THEN r.space_type||':'||r.space_id END)
+        FROM asset_references r WHERE r.asset_id=a.asset_id AND r.state='active') scope_count,
+      (SELECT GROUP_CONCAT(sample.path,CHAR(10)) FROM (SELECT r.path FROM asset_references r
+        WHERE r.asset_id=a.asset_id AND r.state='active' AND r.path<>'' GROUP BY r.path ORDER BY r.path LIMIT 3) sample) path_samples
+      ${base}${cursorClause} ORDER BY a.updated_at DESC,a.asset_id LIMIT ?${offsetSql}`)
+      .all(...params, ...cursorParams, limit + 1, ...(!cursor && legacyOffset ? [legacyOffset] : []));
+    const hasMore = rows.length > limit;
+    const items = rows.slice(0, limit).map(row => {
+      const scopeProtected = Number(row.scope_count) > 1;
+      const status = !row.sha256 ? 'fingerprint_pending' : row.governance_status === 'fingerprint_conflict'
+        ? 'fingerprint_conflict' : scopeProtected ? 'scope_protected' : 'reviewable';
+      return { assetId: row.asset_id, filename: row.filename, sha1: row.sha1, sha256: row.sha256,
+        size: Number(row.byte_size), pathCount: Number(row.path_count), referenceCount: Number(row.reference_count),
+        pathSamples: text(row.path_samples).split('\n').filter(Boolean), status,
+        protectionReason: status === 'fingerprint_pending' ? '待补齐 SHA-256' : status === 'fingerprint_conflict'
+          ? '指纹冲突，需人工核对' : status === 'scope_protected' ? '跨学生或项目空间使用，受保护' : '' };
     });
-    return { ok: true, items, total, pageSize: limit, nextCursor: offset + items.length < total ? cursorEncode(offset + items.length) : '' };
+    const last = rows.slice(0, limit).at(-1);
+    return { ok: true, items, total, pageSize: limit, nextCursor: hasMore && last
+      ? cursorEncode({ v: 2, signature, sort: 'updated_desc', key: { updatedAt: last.updated_at, assetId: last.asset_id } }) : '' };
   }
 
   function createDuplicateOperation(operation, entries = []) {
@@ -768,6 +1181,37 @@ function makeStoreApi(db, options) {
       updatedAt: row.updated_at, finishedAt: row.finished_at, filter, summary: operationSummary, error: row.error, entries };
   }
 
+  function listDuplicateOperations(request = {}) {
+    const limit = Math.min(MAX_PAGE_SIZE, Math.max(1, Number(request.pageSize) || DEFAULT_PAGE_SIZE));
+    const signature = fingerprint('duplicate-operations:updated-desc').slice(0, 16);
+    const decoded = cursorDecode(request.cursor);
+    const cursor = decoded?.v === 2 && decoded.signature === signature ? decoded : null;
+    const params = [];
+    let where = '';
+    if (cursor?.key) {
+      where = 'WHERE updated_at < ? OR (updated_at=? AND operation_id>?)';
+      params.push(text(cursor.key.updatedAt), text(cursor.key.updatedAt), text(cursor.key.operationId));
+    }
+    const rows = db.prepare(`SELECT o.*,
+      (SELECT COUNT(*) FROM asset_duplicate_entries e WHERE e.operation_id=o.operation_id) entry_count,
+      (SELECT COUNT(*) FROM asset_duplicate_entries e WHERE e.operation_id=o.operation_id AND e.status='quarantined') quarantined_count,
+      (SELECT COUNT(*) FROM asset_duplicate_entries e WHERE e.operation_id=o.operation_id AND e.status IN ('failed','restore_failed','recovered')) failed_count
+      FROM asset_duplicate_operations o ${where} ORDER BY updated_at DESC,operation_id LIMIT ?`).all(...params, limit + 1);
+    const page = rows.slice(0, limit).map(row => {
+      let summary = {};
+      try { summary = JSON.parse(row.summary_json || '{}'); } catch { /* keep empty summary */ }
+      return { operationId: row.operation_id, status: row.status, createdAt: row.created_at,
+        confirmedAt: row.confirmed_at, updatedAt: row.updated_at, finishedAt: row.finished_at,
+        error: row.error, summary, entryCount: Number(row.entry_count),
+        quarantinedCount: Number(row.quarantined_count), failedCount: Number(row.failed_count) };
+    });
+    const last = rows.slice(0, limit).at(-1);
+    return { ok: true, items: page,
+      total: Number(db.prepare('SELECT COUNT(*) count FROM asset_duplicate_operations').get().count),
+      pageSize: limit, nextCursor: rows.length > limit && last ? cursorEncode({ v: 2, signature,
+        key: { updatedAt: last.updated_at, operationId: last.operation_id } }) : '' };
+  }
+
   function updateDuplicateOperation(operationId, patch = {}) {
     const allowed = { status: 'status', confirmedAt: 'confirmed_at', finishedAt: 'finished_at', error: 'error' };
     const entries = Object.entries(patch).filter(([key]) => allowed[key])
@@ -798,9 +1242,43 @@ function makeStoreApi(db, options) {
     return Number(result.changes || 0);
   }
 
+  function setReferenceAvailability(updates = [], checkedAt = nowIso(now)) {
+    const rows = Array.isArray(updates) ? updates : [];
+    if (!rows.length) return 0;
+    const statement = db.prepare(`UPDATE asset_references SET availability_state=?,availability_checked_at=?
+      WHERE asset_id=? AND path=? AND state='active'`);
+    let changed = 0;
+    transaction(() => {
+      for (const update of rows) changed += Number(statement.run(update.exists ? 'available' : 'missing', checkedAt,
+        resolveAssetId(update.assetId), text(update.path)).changes || 0);
+    });
+    invalidateSummary();
+    return changed;
+  }
+
   function rebuildSearchIndex() {
-    db.exec('DELETE FROM asset_search');
-    for (const row of db.prepare('SELECT asset_id FROM assets ORDER BY asset_id').iterate()) refreshSearch(row.asset_id);
+    db.exec(`DELETE FROM asset_search;
+      INSERT INTO asset_search(rowid,asset_id,filename,paths,owner_name,source_name,sha1,sha256,governance)
+      SELECT a.rowid,a.asset_id,a.filename,
+        TRIM(a.canonical_path || ' ' || COALESCE((SELECT GROUP_CONCAT(r.path,' ') FROM asset_references r
+          WHERE r.asset_id=a.asset_id AND r.state='active' AND r.path<>''),'')),
+        a.owner_student_name,a.source_name,a.sha1,a.sha256,
+        TRIM(a.governance_action || ' ' || a.governance_reason)
+      FROM assets a;`);
+  }
+
+  function transaction(fn) {
+    if (transactionDepth > 0 || Boolean(db.isTransaction)) return fn();
+    db.exec('BEGIN IMMEDIATE');
+    transactionDepth += 1;
+    try {
+      const result = fn();
+      db.exec('COMMIT');
+      return result;
+    } catch (error) {
+      try { db.exec('ROLLBACK'); } catch { /* transaction already ended */ }
+      throw error;
+    } finally { transactionDepth -= 1; }
   }
 
   function beginScan(runId) {
@@ -837,14 +1315,17 @@ function makeStoreApi(db, options) {
     searchAssets: request => listAssets(request, request?.query), getAssetDetail, findByFingerprint, summary,
     referencesFor, replaceReferences, patchAsset, listVersionGroup, importSnapshot,
     queryDetails, detailsByIds, detailBatches,
-    listDuplicateGroups, createDuplicateOperation, duplicateOperation, updateDuplicateOperation, updateDuplicateEntry, setReferenceQuarantine,
+    listDuplicateGroups, listDuplicateOperations, createDuplicateOperation, duplicateOperation, updateDuplicateOperation, updateDuplicateEntry, setReferenceQuarantine,
+    setReferenceAvailability,
     refreshSearch, rebuildSearchIndex, beginScan, updateScan, scanStatus, setMeta,
-    transaction(fn) { db.exec('BEGIN IMMEDIATE'); try { const result = fn(); db.exec('COMMIT'); return result; } catch (error) { db.exec('ROLLBACK'); throw error; } },
+    cacheStats: () => ({ summary: summaryCache.size, listCount: listCountCache.size,
+      summaryLimit: SUMMARY_CACHE_LIMIT, listCountLimit: LIST_COUNT_CACHE_LIMIT }),
+    transaction,
     backupTo, close() { db.close(); },
   };
 }
 
-function createAssetIndexStore({ dbPath, legacyJsonPath, now = Date.now }) {
+function createAssetIndexStore({ dbPath, legacyJsonPath, now = Date.now, quickCheck = true }) {
   let api = null;
   let migration = null;
   let initializationError = null;
@@ -853,7 +1334,7 @@ function createAssetIndexStore({ dbPath, legacyJsonPath, now = Date.now }) {
     if (initializationError) throw initializationError;
     try {
       if (!fs.existsSync(dbPath)) migration = migrateLegacyJson({ dbPath, legacyJsonPath, now });
-      const db = openCheckedDatabase(dbPath, now);
+      const db = openCheckedDatabase(dbPath, now, quickCheck);
       api = makeStoreApi(db, { dbPath, now });
       return api;
     } catch (error) {

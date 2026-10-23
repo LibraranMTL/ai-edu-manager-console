@@ -2,6 +2,7 @@ const crypto = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
 const { execFileSync } = require('node:child_process');
+const { resolvePnpmVirtualStore } = require('./pnpm-virtual-store.cjs');
 
 const repoRoot = path.resolve(__dirname, '..');
 const auditPath = path.join(repoRoot, 'release', 'windows', 'AI-edu-manager-console-Windows-0.17.9-build-audit.json');
@@ -49,7 +50,7 @@ function fromRoots(root, directories, files) {
 }
 
 function asarModule() {
-  const packages = path.join(repoRoot, 'node_modules', '.pnpm');
+  const packages = resolvePnpmVirtualStore(repoRoot);
   const folder = fs.readdirSync(packages).find((name) => name.startsWith('@electron+asar@'));
   if (!folder) throw new Error('@electron/asar is not installed');
   return require(path.join(packages, folder, 'node_modules', '@electron', 'asar'));

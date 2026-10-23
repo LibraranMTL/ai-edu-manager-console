@@ -29,6 +29,10 @@ type Material = {
     inferredFromPath?: boolean; tags: string[] };
   processing: { state: string; processedVersion: number };
   pendingReasons: string[];
+  recordKind: 'user_material' | 'system_generated';
+  automationDisposition: 'ignored' | 'auto_ready' | 'processing' | 'confirmation' | 'error' | 'completed';
+  automationReasons: string[];
+  contentGroupId: string;
   sourceTypes: string[];
   knowledge: Array<{ knowledgeId: string; version: number; commitId?: string }>;
   evidence: Array<{ studentId: string; status: string; ability: string }>;
@@ -60,8 +64,25 @@ type WorkspaceView = {
   items: Material[];
   knowledge: KnowledgeItem[];
   contributions: Contribution[];
-  counts: { materials: number; pending: number; knowledge: number; contributions: number; candidates: number;
-    unclassified: number; pathClassified: number; unavailable: number };
+  counts: { materials: number; uniqueContents?: number; systemGenerated?: number; pending: number; knowledge: number;
+    contributions: number; candidates: number; unclassified: number; pathClassified: number; unavailable: number };
+};
+type MaterialAutomationOverview = {
+  ok: boolean;
+  message?: string;
+  registryRevision: number;
+  businessMaterialCount: number;
+  uniqueContentCount: number;
+  systemGeneratedCount: number;
+  acceptedCount: number;
+  autoReady: number;
+  autoCompleted: number;
+  processing: number;
+  needsConfirmation: number;
+  errors: number;
+  digestPendingContentCount: number;
+  automation: { enabled: boolean; autoAdoptPathClassified: boolean; autoDigest: boolean; maxBatch: number };
+  job: null | { jobId: string; status: string; phase: string; processed: number; total: number; message: string };
 };
 type Suggestion = {
   suggestionId: string;
@@ -91,6 +112,7 @@ type MigrationItem = { itemId: string; materialId: string; title: string; source
   sourceRelativePath: string; targetRelativePath: string; action: string; status?: string; code: string; reason?: string;
   message?: string; retryable?: boolean; rollbackStatus?: string; size: number };
 type MigrationOperation = { operationId: string; previewId: string; status: string; createdAt: string; completedAt: string;
+  hasPhysicalCopies?: boolean;
   items: MigrationItem[]; counts: { total: number; succeeded: number; failed: number; attention: number; retryable: number; rolledBack: number } };
 type MigrationStatus = { ok: boolean; message?: string; migrationState: string; operations: MigrationOperation[];
   backups: { count: number; bytes: number; cleanupRequiresExplicitReview: boolean }; registryRevision: number };
@@ -100,6 +122,11 @@ type MigrationBackupInspection = { ok: boolean; message?: string; bytes: number;
   candidates: Array<{ candidateId: string; operationId: string; itemId: string; title: string; size: number; reason: string }> };
 type MaterialsBridge = {
   getProjectMaterialWorkspaceView?: (projectId: string, queryJson: string) => Promise<string>;
+  getProjectMaterialOverview?: (projectId: string) => Promise<string>;
+  listProjectMaterialExceptions?: (requestJson: string) => Promise<string>;
+  runProjectMaterialAutomation?: (projectId: string, requestJson: string) => Promise<string>;
+  getProjectMaterialAutomationStatus?: (jobId: string) => Promise<string>;
+  onProjectMaterialAutomationProgress?: (callback: (payload: string) => void) => () => void;
   getProjectClassificationSuggestions?: (projectId: string, queryJson: string) => Promise<string>;
   generateProjectClassificationSuggestions?: (projectId: string) => Promise<string>;
   applyProjectMaterialClassifications?: (projectId: string, requestJson: string) => Promise<string>;
@@ -129,6 +156,11 @@ const emptyView: WorkspaceView = {
   counts: { materials: 0, pending: 0, knowledge: 0, contributions: 0, candidates: 0,
     unclassified: 0, pathClassified: 0, unavailable: 0 },
 };
+const emptyAutomationOverview: MaterialAutomationOverview = { ok: true, registryRevision: 0,
+  businessMaterialCount: 0, uniqueContentCount: 0, systemGeneratedCount: 0, acceptedCount: 0,
+  autoReady: 0, autoCompleted: 0, processing: 0, needsConfirmation: 0, errors: 0,
+  digestPendingContentCount: 0,
+  automation: { enabled: false, autoAdoptPathClassified: false, autoDigest: false, maxBatch: 20 }, job: null };
 const emptyOrganization: OrganizationStatus = { ok: true,
   configuration: { enabled: false, maxBatch: 20, intervalMinutes: 1440, nextRunAt: '', lastRunAt: '', lastStatus: '', lastMessage: '' },
   capacity: { ok: true, availableBytes: null, reserveBytes: 64 * 1024 * 1024, code: '' }, operations: [], registryRevision: 0 };
@@ -175,6 +207,7 @@ export function ProjectMaterialsPanel({ project }: { project: ProjectRef }) {
   const [view, setView] = useState<WorkspaceView>(emptyView);
   const [suggestions, setSuggestions] = useState<Suggestion[]>([]);
   const [organization, setOrganization] = useState<OrganizationStatus>(emptyOrganization);
+  const [automationOverview, setAutomationOverview] = useState<MaterialAutomationOverview>(emptyAutomationOverview);
   const [migration, setMigration] = useState<MigrationStatus>({ ...emptyMigration,
     migrationState: project.materialMigrationState || 'not_started' });
   const [migrationPreview, setMigrationPreview] = useState<MigrationPreview | null>(null);
@@ -186,6 +219,7 @@ export function ProjectMaterialsPanel({ project }: { project: ProjectRef }) {
   const [results, setResults] = useState<ClassificationResult[]>([]);
   const [lastOperationId, setLastOperationId] = useState('');
   const requestSerial = useRef(0);
+  const autoStartedRevision = useRef(-1);
 
   const load = useCallback(async () => {
     if (storageMode !== 'workspace-v1') return;
@@ -199,7 +233,7 @@ export function ProjectMaterialsPanel({ project }: { project: ProjectRef }) {
     try {
       const query = { view: activeTab === 'pending' ? 'pending' : 'materials', search: deferredSearch,
         categoryId, offset: 0, limit: 100 };
-      const [viewRaw, suggestionsRaw, organizationRaw] = await Promise.all([
+      const [viewRaw, suggestionsRaw, organizationRaw, overviewRaw] = await Promise.all([
         api.getProjectMaterialWorkspaceView(project.id, JSON.stringify(query)),
         api.getProjectClassificationSuggestions
           ? api.getProjectClassificationSuggestions(project.id, JSON.stringify({ status: 'pending', offset: 0, limit: 100 }))
@@ -207,15 +241,20 @@ export function ProjectMaterialsPanel({ project }: { project: ProjectRef }) {
         api.getProjectMaterialOrganizationStatus
           ? api.getProjectMaterialOrganizationStatus(project.id)
           : Promise.resolve(JSON.stringify(emptyOrganization)),
+        api.getProjectMaterialOverview
+          ? api.getProjectMaterialOverview(project.id)
+          : Promise.resolve(JSON.stringify(emptyAutomationOverview)),
       ]);
       if (serial !== requestSerial.current) return;
       const nextView = parseResponse<WorkspaceView>(viewRaw);
       const nextSuggestions = parseResponse<SuggestionPage>(suggestionsRaw);
       const nextOrganization = parseResponse<OrganizationStatus>(organizationRaw);
+      const nextOverview = parseResponse<MaterialAutomationOverview>(overviewRaw);
       if (!nextView.ok) throw new Error(nextView.message || '项目资料读取失败。');
       setView(nextView);
       setSuggestions(nextSuggestions.ok ? nextSuggestions.items || [] : []);
       if (nextOrganization.ok) setOrganization(nextOrganization);
+      if (nextOverview.ok) setAutomationOverview(nextOverview);
       if (!nextSuggestions.ok) setMessage(nextSuggestions.message || '分类建议暂时无法读取。');
       else if (!nextOrganization.ok) setMessage(nextOrganization.message || '自动整理状态暂时无法读取。');
     } catch (error) {
@@ -245,12 +284,50 @@ export function ProjectMaterialsPanel({ project }: { project: ProjectRef }) {
     setLastOperationId('');
     setMessage('');
     setOrganization(emptyOrganization);
+    setAutomationOverview(emptyAutomationOverview);
+    autoStartedRevision.current = -1;
     setMigration({ ...emptyMigration, migrationState: project.materialMigrationState || 'not_started' });
     setMigrationPreview(null);
   }, [project.id]);
 
   useEffect(() => { void load(); }, [load]);
   useEffect(() => { void loadMigration(); }, [loadMigration]);
+
+  const runMaterialAutomation = useCallback(async (reason = 'manual') => {
+    const api = bridge();
+    if (!api?.runProjectMaterialAutomation || busy) return;
+    setBusy(true);
+    try {
+      const response = parseResponse<{ ok: boolean; message?: string; jobId?: string }>(
+        await api.runProjectMaterialAutomation(project.id, JSON.stringify({ reason,
+          maxBatch: automationOverview.automation.maxBatch,
+          idempotencyKey: requestId(`material-automation-${automationOverview.registryRevision}`) })));
+      if (!response.ok) throw new Error(response.message || '自动处理未启动。');
+      setMessage(response.message || '已进入后台资源队列。');
+    } catch (error) { setMessage(error instanceof Error ? error.message : '自动处理未启动。'); }
+    finally { setBusy(false); }
+  }, [automationOverview.automation.maxBatch, automationOverview.registryRevision, busy, project.id]);
+
+  useEffect(() => {
+    if (!automationOverview.automation.enabled || automationOverview.autoReady <= 0
+      || autoStartedRevision.current === automationOverview.registryRevision) return;
+    autoStartedRevision.current = automationOverview.registryRevision;
+    void runMaterialAutomation('page_entry');
+  }, [automationOverview.autoReady, automationOverview.automation.enabled,
+    automationOverview.registryRevision, runMaterialAutomation]);
+
+  useEffect(() => {
+    const api = bridge();
+    if (!api?.onProjectMaterialAutomationProgress) return undefined;
+    return api.onProjectMaterialAutomationProgress((payload) => {
+      try {
+        const progress = JSON.parse(payload) as { projectId: string; status: string; message: string };
+        if (progress.projectId !== project.id) return;
+        setMessage(progress.message || '项目资料正在后台处理。');
+        if (['completed', 'failed'].includes(progress.status)) void load();
+      } catch { /* ignore unrelated progress payloads */ }
+    });
+  }, [load, project.id]);
 
   const materialById = useMemo(() => new Map(view.items.map((item) => [item.materialId, item])), [view.items]);
   const suggestionByMaterial = useMemo(() => {
@@ -624,7 +701,7 @@ export function ProjectMaterialsPanel({ project }: { project: ProjectRef }) {
 
   const tabs: Array<{ id: TabId; label: string; count: number; icon: React.ReactNode }> = [
     { id: 'materials', label: '项目资料', count: view.counts.materials, icon: <Archive size={17} /> },
-    { id: 'pending', label: '待整理', count: view.counts.pending, icon: <Lightbulb size={17} /> },
+    { id: 'pending', label: '需确认', count: view.counts.pending, icon: <Lightbulb size={17} /> },
     { id: 'knowledge', label: '项目知识', count: view.counts.knowledge, icon: <BookOpen size={17} /> },
     { id: 'contributions', label: '贡献证据', count: view.counts.contributions, icon: <Users size={17} /> },
   ];
@@ -668,6 +745,30 @@ export function ProjectMaterialsPanel({ project }: { project: ProjectRef }) {
         </button>
       </header>
 
+      <section className="pm-automation-overview" aria-label="项目资料自动处理概况">
+        <div className="pm-overview-copy">
+          <span className="pm-eyebrow"><Bot size={15} />只审异常</span>
+          <strong>{automationOverview.businessMaterialCount} 个资料位置 · {automationOverview.uniqueContentCount} 种内容</strong>
+          <p>{automationOverview.systemGeneratedCount > 0
+            ? `${automationOverview.systemGeneratedCount} 个系统文件已从业务资料和迁移异常中排除。`
+            : '系统文件不会进入业务资料、知识来源或待确认列表。'}</p>
+        </div>
+        <div className="pm-overview-stats">
+          <span><b>{automationOverview.acceptedCount}</b>已采用</span>
+          <span><b>{automationOverview.processing}</b>后台处理中</span>
+          <span className={automationOverview.needsConfirmation ? 'attention' : ''}><b>{automationOverview.needsConfirmation}</b>需要你确认</span>
+          <span className={automationOverview.errors ? 'error' : ''}><b>{automationOverview.errors}</b>处理异常</span>
+        </div>
+        <div className="pm-overview-action">
+          <button type="button" className="primary compact" onClick={() => void runMaterialAutomation('manual')}
+            disabled={busy || project.status === 'sealed'}><Play size={15} />{busy ? '正在启动…' : '立即处理'}</button>
+          <small>{automationOverview.autoReady > 0
+            ? `${automationOverview.autoReady} 份低风险资料可自动采用；每批最多 ${automationOverview.automation.maxBatch} 份。`
+            : automationOverview.processing > 0 ? `${automationOverview.digestPendingContentCount} 种内容正在等待去重消化。`
+              : '当前仅保留确需判断的异常项。'}</small>
+        </div>
+      </section>
+
       {(migration.migrationState === 'partial' || migration.migrationState === 'attention'
         || migration.operations.length > 0) && <section className="pm-migration-status" aria-label="历史资料归一状态">
         <div><strong>{migration.migrationState === 'complete' ? '历史资料已归一' : migration.migrationState === 'attention' ? '迁移现场需要核对' : '历史资料部分统一'}</strong>
@@ -679,10 +780,12 @@ export function ProjectMaterialsPanel({ project }: { project: ProjectRef }) {
           <button type="button" className="primary compact" onClick={() => void executeMigration()} disabled={busy}>执行本批安全项</button></div>}
         {migration.operations.slice(0, 2).map((operation) => <div className="pm-migration-receipt" key={operation.operationId}><span>成功 {operation.counts.succeeded}/{operation.counts.total} · 异常 {operation.counts.failed + operation.counts.attention}</span>
           {operation.counts.retryable > 0 && <button type="button" className="secondary compact" onClick={() => void retryMigration(operation)} disabled={busy}>重试可恢复项</button>}
-          {operation.counts.succeeded > operation.counts.rolledBack && <button type="button" className="secondary compact" onClick={() => void rollbackMigration(operation)} disabled={busy}>安全回滚</button>}
+          {operation.hasPhysicalCopies && operation.counts.succeeded > operation.counts.rolledBack && <button type="button" className="secondary compact" onClick={() => void rollbackMigration(operation)} disabled={busy}>安全回滚</button>}
           {operation.items.filter((item) => item.status !== 'succeeded').slice(0, 4).map((item) => <small key={item.itemId}>{item.title}：{item.message || item.reason || item.code}</small>)}</div>)}
       </section>}
 
+      <details className="pm-advanced">
+        <summary>高级：物理整理、临时残件与操作记录</summary>
       <section className={`pm-automation ${organization.configuration.enabled ? 'enabled' : ''}`} aria-label="收件箱自动整理">
         <div className="pm-automation-state">
           <span className="pm-automation-icon">{organization.configuration.enabled ? <Power size={18} /> : <Bot size={18} />}</span>
@@ -713,6 +816,7 @@ export function ProjectMaterialsPanel({ project }: { project: ProjectRef }) {
             .map((item) => <small key={item.materialId}>{item.title}：{item.message || resultLabel[item.code] || item.code || '等待处理'}</small>)}
         </div>)}
       </section>
+      </details>
 
       <nav className="pm-tabs" aria-label="项目资料视图">
         {tabs.map((tab) => <button type="button" key={tab.id} className={activeTab === tab.id ? 'active' : ''}
@@ -787,7 +891,7 @@ export function ProjectMaterialsPanel({ project }: { project: ProjectRef }) {
                 </div>
               </article>;
             })}
-          </div> : <div className="pm-empty"><Archive size={28} /><strong>{activeTab === 'pending' ? '没有待整理资料' : '当前筛选下没有资料'}</strong>
+          </div> : <div className="pm-empty"><Archive size={28} /><strong>{activeTab === 'pending' ? '没有需要确认的资料' : '当前筛选下没有资料'}</strong>
             <span>{activeTab === 'pending' ? '采用、分类、来源和消化状态都已处理。' : '可调整搜索条件，或先扫描项目工作空间。'}</span></div>}
 
         <div className="pm-apply" aria-live="polite">

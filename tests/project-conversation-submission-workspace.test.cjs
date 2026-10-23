@@ -74,7 +74,7 @@ async function fixture(t) {
     projectWithNewInputs: (value) => value,
     readProjectDigestState: () => ({ status: 'pending' }),
     mergeUnique: (items) => [...new Set(items)],
-    readProjects: () => [currentProject], normalizeProject: (value) => value,
+    readProjects: () => [currentProject], readProjectMetadata: () => [currentProject], normalizeProject: (value) => value,
     normalizeProjectMetadata: (value) => value,
     findStudent: (id) => String(id) === student.id ? student : null,
     writeProjects: (projects) => { currentProject = projects.find((item) => item.id === project.id); },

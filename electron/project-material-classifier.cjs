@@ -53,6 +53,8 @@ function suggestProjectMaterialClassifications(index, { limit = 200 } = {}) {
     results.push({ materialId: material.materialId, expectedVersion: material.version,
       expectedRecordRevision: material.recordRevision, categoryId: best.category.categoryId,
       tags: [], needsConfirmation: true,
+      confidence: best.score >= 8 ? 'high' : best.score >= 4 ? 'medium' : 'low',
+      evidence: [...new Set(best.matches)].slice(0, 3),
       reason: `自动规则根据${[...new Set(best.matches)].slice(0, 3).join('、')}建议归入“${best.category.name}”；请人工确认，原件不会移动。` });
   }
   return { ruleVersion: RULE_VERSION, items: results };

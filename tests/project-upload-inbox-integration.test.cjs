@@ -53,7 +53,7 @@ test('actual project upload writes a new-mode original to the inbox and returns 
     },
     requireAuth: (request) => { request.authContext = { type: 'device', deviceId: 'device-1' }; return true; },
     requireMatchingUploadGeneration: () => true,
-    readProjects: () => projects, writeProjects: (next) => { projects = next; },
+    readProjects: () => projects, readProjectMetadata: () => projects, writeProjects: (next) => { projects = next; },
     normalizeProject: (value) => value, normalizeProjectMetadata: (value) => value, projectAllowed: () => true,
     findStudent: () => ({ id: 'student-1', name: 'Student' }), isStudentAllowed: () => true,
     courseUploadAttribution: () => ({}), remoteCaptureAttribution: () => null,

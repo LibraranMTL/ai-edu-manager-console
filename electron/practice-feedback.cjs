@@ -64,7 +64,9 @@ function createPracticeFeedback({ load, change, generate, now, publicCard, enque
       difficulty: input.difficulty, confidence: input.confidence, submittedAt: time(), parentAttemptId: parent?.attemptId || null,
       rootAttemptId: parent?.rootAttemptId || parent?.attemptId || input.attemptId, revision: parent ? (parent.revision || 1) + 1 : 1,
       assistance: { status: parent ? 'revised' : 'unknown', hintViewedAt: card.hintViewedAt || null, answerViewedAt: card.answerViewedAt || null },
-      reviewPolicy: value.plan?.reviewPolicy || 'agent_auto', allowImageReview: value.plan?.allowImageReview === true, reviewVersion: 1, processingStatus: 'submitted', learningStatus: 'not_applied',
+      reviewPolicy: value.plan?.reviewPolicy || 'agent_auto',
+      allowImageReview: value.plan?.allowImageReview === true || (input.allowImageReview === true && ['.png','.jpg','.jpeg'].includes(attachment?.extension)),
+      reviewVersion: 1, processingStatus: 'submitted', learningStatus: 'not_applied',
       evidenceStatus: 'pending_review', masteryConclusion: null };
   }
   async function extract(root, attempt, snapshot, signal) {

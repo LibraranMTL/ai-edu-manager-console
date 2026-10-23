@@ -3,7 +3,7 @@ import { createRoot } from 'react-dom/client';
 import './style.css';
 const serviceUrl = (route: string) => new URL(`.${route}`, new URL('.', window.location.href)).toString();
 
-type Student = { id: string; displayName: string };
+type Student = { id: string; displayName: string; archivedAt?: number | null };
 type Report = { revisionId: string; reportType: string; originDeviceId: string; originPlatform: string; publishedAt: string; receivedAt: number; filename: string };
 type Document = { documentId: string; displayName: string; contentType: string; byteSize: number; createdAt: number; deletedAt: number | null };
 type Grant = { deviceId: string; kind: string; scope: string; createdAt: number; revokedAt: number | null; expiresAt: number | null };
@@ -32,6 +32,7 @@ const auditNames: Record<string, string> = {
   'document.rename': '重命名其他文档', 'document.trash': '文档移入回收站', 'document.restore': '恢复文档',
   'report.withdraw': '撤回云端报告修订', 'admin.credential.rotate': '更换管理员凭据',
   'device.credential.rotate': '更换来源设备凭据', 'device.revoke': '撤销设备',
+  'student.archive': '停用云端学生', 'student.restore': '恢复云端学生',
 };
 
 function App() {
@@ -41,6 +42,7 @@ function App() {
   const [oldCredential, setOldCredential] = useState('');
   const [newCredential, setNewCredential] = useState('');
   const [students, setStudents] = useState<Student[]>([]);
+  const [showArchived, setShowArchived] = useState(false);
   const [selectedId, setSelectedId] = useState('');
   const selectedIdRef = useRef(selectedId);
   selectedIdRef.current = selectedId;
@@ -92,8 +94,8 @@ function App() {
     try { await task(); } catch (error) { setMessage((error as Error).message); }
     finally { setBusy(false); }
   }
-  async function loadStudents(accessToken = token) {
-    const result = await (await api('/v1/students', {}, accessToken)).json();
+  async function loadStudents(accessToken = token, includeArchived = showArchived) {
+    const result = await (await api(`/v1/students${includeArchived ? '?includeArchived=1' : ''}`, {}, accessToken)).json();
     const items = result.students as Student[];
     setStudents(items);
     setSelectedId(current => items.some(item => item.id === current) ? current : items[0]?.id || '');
@@ -140,9 +142,9 @@ function App() {
     setAuditEvents(current => cursor ? [...current, ...result.events] : result.events);
     setAuditCursor(result.nextCursor || '');
   }
-  useEffect(() => { if (token) void loadStudents().catch(error => setMessage((error as Error).message)); }, [token]);
-  useEffect(() => { setPreview(''); setPdfUrl(''); if (token && selectedId) void loadItems().catch(error => setMessage((error as Error).message)); }, [token, selectedId, tab, trash]);
-  useEffect(() => { setStorage(null); setGrants([]); if (token && selectedId) void loadGrants(selectedId).catch(error => setMessage((error as Error).message)); }, [token, selectedId]);
+  useEffect(() => { if (token) void loadStudents(token, showArchived).catch(error => setMessage((error as Error).message)); }, [token, showArchived]);
+  useEffect(() => { setPreview(''); setPdfUrl(''); if (token && selectedId && !selected?.archivedAt) void loadItems().catch(error => setMessage((error as Error).message)); }, [token, selectedId, selected?.archivedAt, tab, trash]);
+  useEffect(() => { setStorage(null); setGrants([]); if (token && selectedId && !selected?.archivedAt) void loadGrants(selectedId).catch(error => setMessage((error as Error).message)); }, [token, selectedId, selected?.archivedAt]);
   const filteredReports = useMemo(() => reports.filter(item =>
     (type === 'all' || item.reportType === type)
     && (source === 'all' || item.originPlatform === source)
@@ -203,7 +205,8 @@ function App() {
     </details>
     <div className="workspace">
       <aside className="student-sidebar"><div className="sidebar-title"><strong>学生</strong><span>{students.length}</span></div>
-        {students.map(student => <button className={student.id === selectedId ? 'selected' : ''} key={student.id} onClick={() => { selectedIdRef.current = student.id; setSelectedId(student.id); setReports([]); setDocuments([]); setGrants([]); setV2Grants([]); setCloudProfile(null); setAuditEvents([]); setAuditCursor(''); setSelectedReportId(''); setEnrollmentCode(''); setPairingCode(''); }}>{student.displayName}</button>)}
+        <label className="trash-toggle"><input type="checkbox" checked={showArchived} onChange={event => setShowArchived(event.target.checked)} />显示已停用学生</label>
+        {students.map(student => <button className={`${student.id === selectedId ? 'selected' : ''}${student.archivedAt ? ' archived' : ''}`} key={student.id} onClick={() => { selectedIdRef.current = student.id; setSelectedId(student.id); setReports([]); setDocuments([]); setGrants([]); setV2Grants([]); setCloudProfile(null); setAuditEvents([]); setAuditCursor(''); setSelectedReportId(''); setEnrollmentCode(''); setPairingCode(''); }}>{student.displayName}{student.archivedAt ? '（已停用）' : ''}</button>)}
         <form className="add-student" onSubmit={event => { event.preventDefault(); void act(async () => {
           const result = await (await api('/v1/students', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ displayName: newName }) })).json();
           setNewName(''); await loadStudents(); setSelectedId(result.id);
@@ -211,13 +214,26 @@ function App() {
       </aside>
       <main className="content">
         {message && <div className="notice" role="status">{message}</div>}
-        {selected ? <>
+        {selected ? (selected.archivedAt ? <section className="permission-panel">
+          <h2>{selected.displayName}</h2><p>该云端学生已停用。报告、文档和审计记录仍保留，但所有旧设备许可均已撤销。</p>
+          <button className="outline" disabled={busy} onClick={() => void act(async () => {
+            await api(`/v1/students/${selected.id}/restore`, { method: 'POST' });
+            await loadStudents(token, true); setMessage('云端学生已恢复；为安全起见，原设备许可不会自动恢复，需要重新开通。');
+          })}>恢复云端学生</button>
+        </section> : <>
           <div className="student-heading"><div><h2>{selected.displayName}</h2><p>报告来源与修订独立保存，下载许可按学生管理。</p>
             {storage && <small>已用 {(storage.usedBytes / 1024 / 1024).toFixed(1)} / {(storage.maxBytes / 1024 / 1024).toFixed(0)} MiB（含历史与回收站）</small>}</div>
-            <button className="outline" disabled={busy} onClick={() => void act(async () => {
+            <div className="student-heading-actions"><button className="outline" disabled={busy} onClick={() => void act(async () => {
               const result = await (await api('/v1/source-enrollments', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ cloudStudentId: selectedId }) })).json();
               setEnrollmentCode(result.enrollmentCode);
-            })}>生成来源端开通码</button></div>
+            })}>生成来源端开通码</button>
+            <button className="outline danger" disabled={busy} onClick={() => void act(async () => {
+              const preview = await (await api(`/v1/students/${selected.id}/removal-preview`)).json();
+              const confirmed = window.confirm(`停用云端学生“${selected.displayName}”？\n\n将撤销 ${preview.activeGrants + preview.activeV2Grants} 项设备许可、停止 ${preview.activeRemoteSessions} 个远程任务，并保留 ${preview.reports} 份报告和 ${preview.documents} 份文档。此操作可恢复，但许可不会自动恢复。`);
+              if (!confirmed) return;
+              await api(`/v1/students/${selected.id}`, { method: 'DELETE' });
+              setSelectedId(''); await loadStudents(token, showArchived); setMessage('云端学生已停用，所有资料仍保留，可在“显示已停用学生”中恢复。');
+            })}>停用云端学生</button></div></div>
           {enrollmentCode && <div className="enrollment-code"><span>在 Android 单机版或 Windows 主机输入此码，为当前学生开通自动上传</span><strong>{enrollmentCode}</strong><button onClick={() => { void navigator.clipboard.writeText(enrollmentCode); setMessage('开通码已复制。'); }}>复制</button></div>}
           <details className="permission-panel"><summary>Windows主机下载许可</summary>
             <p>由接收 Windows 主机出示 8 位配对码。确认后，该主机一年内只能下载下方勾选的学生基础信息和材料；健康资料不会随此许可开放。</p>
@@ -358,7 +374,7 @@ function App() {
             {/* Only an authenticated application/pdf Blob is allowed here. An iframe sandbox blocks Chromium's native PDF reader. */}
             <iframe className="pdf-preview" title="PDF 只读预览" referrerPolicy="no-referrer" src={pdfUrl} />
           </section>}
-        </> : <p className="empty">请先添加或选择学生。</p>}
+        </>) : <p className="empty">请先添加或选择学生。</p>}
       </main>
     </div>
   </div>;

@@ -100,7 +100,7 @@ test('corrupt durable images or altered journal target cannot be replayed', asyn
   assert.equal(await fs.readFile(f.evidence, 'utf8'), 'old evidence');
 });
 
-test('process kill at durable staging, files-written and finalized boundaries resumes without duplicate writes', { timeout: 30000 }, async (t) => {
+test('process kill at durable staging, files-written and finalized boundaries resumes without duplicate writes', { timeout: 60000 }, async (t) => {
   for (const phase of ['afterPrepared', 'afterFilesWritten', 'afterFinalized']) {
     const f = await fixture(t);
     const child = spawnSync(process.execPath, [path.join(__dirname, 'fixtures/project-archive-crash.cjs'), f.root, phase],

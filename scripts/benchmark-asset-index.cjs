@@ -12,11 +12,11 @@ function percentile(values, ratio) {
 }
 
 function timed(samples, fn) {
-  fn();
+  fn(-1);
   const values = [];
   for (let index = 0; index < samples; index += 1) {
     const start = performance.now();
-    fn();
+    fn(index);
     values.push(performance.now() - start);
   }
   return { samples: values.map(value => Number(value.toFixed(3))), p95Ms: Number(percentile(values, 0.95).toFixed(3)) };
@@ -55,6 +55,10 @@ function benchmark(count) {
         JSON.stringify({ assetId: id, sha1, sha256, filename, path: filePath, ownerStudentId: studentId, updatedAt }));
       insertReference.run(`ref-${index}`, id, 'student', studentId, `学生${index % 100}`, '', studentId,
         `device-${index % 8}`, sha256, `raw/${filename}`, 'raw', filePath, 'benchmark', updatedAt);
+      if (index % 10_000 === 0) {
+        insertReference.run(`ref-duplicate-${index}`, id, 'student', studentId, `学生${index % 100}`, '', studentId,
+          `device-${index % 8}`, sha256, `raw/副本-${filename}`, 'raw', `${filePath}-副本`, 'benchmark', updatedAt);
+      }
     }
     db.exec('COMMIT');
     db.exec('PRAGMA wal_checkpoint(TRUNCATE)');
@@ -63,12 +67,34 @@ function benchmark(count) {
     store.summary();
     const coldSummaryMs = performance.now() - coldSummaryStarted;
     const summary = timed(7, () => store.summary());
+    const filteredSummary = timed(7, index => store.summary({ studentId: `student-${(index + 20) % 100}` }));
     const firstPage = timed(7, () => store.listAssets({ pageSize: 50 }));
     const studentPage = timed(7, () => store.listAssets({ studentId: 'student-42', pageSize: 50 }));
+    const textSearch = timed(7, () => store.searchAssets({ query: '学生42', pageSize: 50 }));
+    const scopedShortSearch = timed(7, () => store.searchAssets({ query: '资', studentId: 'student-42', pageSize: 50 }));
+    const sha1Search = timed(7, () => store.searchAssets({ query: (42).toString(16).padStart(40, '0'), pageSize: 50 }));
+    const duplicateGroups = timed(7, () => store.listDuplicateGroups({ pageSize: 50 }));
+    const deepOffset = Math.max(0, Math.floor(count * 0.9));
+    const deepCursor = Buffer.from(JSON.stringify({ offset: deepOffset }), 'utf8').toString('base64url');
+    const deepPage = timed(7, () => store.listAssets({ cursor: deepCursor, pageSize: 50 }));
+    const batchStarted = performance.now();
+    store.transaction(() => {
+      for (let index = 0; index < 250; index += 1) {
+        const marker = `bench-upsert-${index}`;
+        const sha1 = (count + index + 1).toString(16).padStart(40, '0');
+        const sha256 = (count + index + 1).toString(16).padStart(64, '0');
+        store.upsertAsset({ assetId: marker, sha1, sha256, filename: `${marker}.txt`, path: `D:\\合成资料\\${marker}.txt`,
+          ownerStudentId: 'benchmark-upsert', sourceName: 'benchmark', updatedAt: new Date().toISOString() }, [], [], { refreshSearch: false, returnDetail: false });
+      }
+    });
+    const batchUpsert250Ms = performance.now() - batchStarted;
+    db.exec("DELETE FROM asset_aliases WHERE asset_id LIKE 'bench-upsert-%'; DELETE FROM assets WHERE asset_id LIKE 'bench-upsert-%';");
     const health = Object.values(db.prepare('PRAGMA integrity_check').get())[0];
     return { count, populatedMs: Number(populatedMs.toFixed(1)), databaseBytes: fs.statSync(dbPath).size,
       coldSummaryMs: Number(coldSummaryMs.toFixed(3)),
-      summary, firstPage, studentPage, integrityCheck: health };
+      batchUpsert250Ms: Number(batchUpsert250Ms.toFixed(3)),
+      summary, filteredSummary, firstPage, studentPage, textSearch, scopedShortSearch, sha1Search, duplicateGroups, deepPage,
+      integrityCheck: health };
   } finally {
     try { store.close(); } catch {}
     const resolvedRoot = path.resolve(root);
@@ -78,7 +104,37 @@ function benchmark(count) {
   }
 }
 
-const counts = process.argv.slice(2).map(Number).filter(value => Number.isSafeInteger(value) && value > 0);
-const report = { generatedAt: new Date().toISOString(), platform: process.platform, node: process.version,
-  results: (counts.length ? counts : [100000, 1000000]).map(benchmark) };
-process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
+function runBenchmark(args = process.argv.slice(2)) {
+  const counts = args.map(Number).filter(value => Number.isSafeInteger(value) && value > 0);
+  const selectedCounts = args.includes('--smoke') ? [5_000] : (counts.length ? counts : [100_000, 1_000_000]);
+  const report = {
+    schema: 'edu-manager.asset-index-benchmark.v2',
+    generatedAt: new Date().toISOString(),
+    platform: process.platform,
+    node: process.version,
+    machine: { logicalCpus: os.cpus().length, cpu: os.cpus()[0]?.model || '', memoryGiB: Number((os.totalmem() / (1024 ** 3)).toFixed(2)) },
+    targets: { coldSummaryMs: 200, filteredSummaryP95Ms: 200, firstPageP95Ms: 500, scopedShortSearchP95Ms: 500 },
+    results: selectedCounts.map(benchmark),
+  };
+  report.passed = report.results.every(result => result.integrityCheck === 'ok'
+    && result.coldSummaryMs <= report.targets.coldSummaryMs
+    && result.filteredSummary.p95Ms <= report.targets.filteredSummaryP95Ms
+    && result.firstPage.p95Ms <= report.targets.firstPageP95Ms
+    && result.scopedShortSearch.p95Ms <= report.targets.scopedShortSearchP95Ms);
+  return report;
+}
+
+if (require.main === module) {
+  const args = process.argv.slice(2);
+  const report = runBenchmark(args);
+  const outputArg = args.find(value => value.startsWith('--output='));
+  if (outputArg) {
+    const output = path.resolve(outputArg.slice('--output='.length));
+    fs.mkdirSync(path.dirname(output), { recursive: true });
+    fs.writeFileSync(output, `${JSON.stringify(report, null, 2)}\n`, 'utf8');
+  }
+  process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
+  if (args.includes('--assert-targets') && !report.passed) process.exitCode = 1;
+}
+
+module.exports = { benchmark, runBenchmark };

@@ -5,8 +5,9 @@ const Module = require('node:module');
 const fs = require('node:fs');
 const path = require('node:path');
 const { compactRuntimeSource } = require('./compact-windows-runtime.cjs');
+const { resolvePnpmVirtualStore } = require('./pnpm-virtual-store.cjs');
 const repo = path.resolve(__dirname, '..');
-const pnpm = path.join(repo, 'node_modules/.pnpm');
+const pnpm = resolvePnpmVirtualStore(repo);
 const esbuild = require(path.join(pnpm, fs.readdirSync(pnpm).find(n => n.startsWith('esbuild@')), 'node_modules/esbuild'));
 const original = Module._extensions['.cjs'] || Module._extensions['.js'];
 Module._extensions['.cjs'] = function(module, filename) {

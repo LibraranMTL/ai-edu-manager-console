@@ -54,7 +54,7 @@ async function fixture(t) {
     fs: fsSync, path, crypto, isDeepStrictEqual, projectUploadRecoveryIssues: [],
     createProjectMaterialHost, createProjectUploadIntake, stageProjectDirectImport,
     withProjectMaterialLock: withCommitLock,
-    readProjects: () => [currentProject], normalizeProject: (item) => item,
+    readProjects: () => [currentProject], readProjectMetadata: () => [currentProject], normalizeProject: (item) => item,
     normalizeProjectMetadata: (item) => item,
     isWorkspaceMaterialProject: (item) => item.materialStorageMode === 'workspace-v1',
     findStudent: () => null,

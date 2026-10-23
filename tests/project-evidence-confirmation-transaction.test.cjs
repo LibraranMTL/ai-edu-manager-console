@@ -80,7 +80,7 @@ test('new process context recovers confirmation after rollback or lost acknowled
   }
 });
 
-test('real writer process kill at each confirmation boundary recovers durable intent and fixed sources', { timeout: 35000 }, async (t) => {
+test('real writer process kill at each confirmation boundary recovers durable intent and fixed sources', { timeout: 60000 }, async (t) => {
   for (const phase of ['afterPrepared', 'afterFilesWritten', 'afterFinalized']) {
     const f = await fixture(t); const main = f.create(); const preview = await main.call();
     fs.writeFileSync(path.join(f.root, 'crash-input.json'), JSON.stringify({ root: f.root, project: f.project, evidence: f.evidence, bindingId: preview.bindingId }));

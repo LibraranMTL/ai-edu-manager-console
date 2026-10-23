@@ -23,16 +23,16 @@ test('download page presents four product families and five client builds', () =
     'Android 教师端',
     'Android 单机版',
     `v${publicManifest.windowsReleaseStatus === 'candidate' ? publishedHostVersion : publicManifest.windowsVersionName}`,
-    'v0.6.19',
+    'v0.6.24',
     'v0.1.4',
-    'v1.2.5',
+    `v${publicManifest.standaloneVersionName}`,
     'windows-host-manual.html',
     'windows-student-manual.html',
     'android-student-manual.html',
     'android-teacher-manual.html',
     'android-standalone-manual.html',
     '完整功能，支持主机—多终端部署',
-    '资料采集与上传、精选课程学习、学情报告查看',
+    '搜集上传、主机连接、教育档案、学习行动',
     '完整功能 · 家庭平板单机',
   ]) {
     assert.match(html, new RegExp(expected.replaceAll('.', '\\.'), 'u'));
@@ -69,12 +69,13 @@ test('download page omits historical release notes and acceptance details', () =
 
 test('download page links the current artifacts and canonical web manuals exist', () => {
   const download = read(path.join('release', '网站文件', 'download.html'));
+  const standaloneArtifact = new URL(publicManifest.standaloneApkUrl).pathname.split('/').pop();
   for (const artifact of [
     [`../download/${hostArtifact}`, path.join('release', 'windows', hostArtifact)],
     ['../download/AI-edu-manager-student-terminal-Windows-0.18.6.exe', path.join('release', 'windows-terminal', 'AI-edu-manager-student-terminal-Windows-0.18.6.exe')],
-    ['../download/AI-edu-manager-tablet-terminal-0.6.19.apk', path.join('release', 'tablet-terminal', 'AI-edu-manager-tablet-terminal-0.6.19.apk')],
+    ['../download/AI-edu-manager-tablet-terminal-0.6.24.apk', path.join('release', 'tablet-terminal', 'AI-edu-manager-tablet-terminal-0.6.24.apk')],
     ['../download/AI-edu-manager-teacher-terminal-0.1.4.apk', path.join('release', 'teacher-terminal', 'AI-edu-manager-teacher-terminal-0.1.4.apk')],
-    ['../download/AI-Education-Manager-Android-Standalone-1.2.5-release.apk', path.join('android-standalone-manager', 'delivery', 'AI-Education-Manager-Android-Standalone-1.2.5-release.apk')],
+    [`../download/${standaloneArtifact}`, path.join('android-standalone-manager', 'delivery', standaloneArtifact)],
   ]) {
     assert.match(download, new RegExp(artifact[0].replaceAll('.', '\\.')));
     if (artifact[1]) {
@@ -169,15 +170,20 @@ test('web manuals are synchronized to the current product workflows', () => {
   const androidStandalone = read(path.join('release', '网站文件', 'android-standalone-manual.html'));
 
   assert.match(windowsStudent, /配套主机：Windows 主机 0\.17\.7/u);
-  assert.match(androidStudent, /配套主机：Windows 主机端 0\.17\.7/u);
+  assert.match(androidStudent, /配套主机：Windows 主机端需开启学生终端协作服务/u);
+  assert.match(androidStudent, /适用版本：Android 学生端 0\.6\.24/u);
+  assert.match(androidStudent, /拍照 \/ 上传图片或文件/u);
   assert.match(androidTeacher, /适用版本：Android 教师端 0\.1\.4/u);
   assert.match(androidStudent, /导入智能体对话/u);
   assert.match(androidTeacher, /导入智能体对话/u);
   assert.match(androidTeacher, /不是把文件发送到学生设备/u);
   assert.match(androidTeacher, /在主机暂时不可连接时仍可从缓存查看/u);
-  assert.match(androidStandalone, /适用版本：Android 单机版 1\.2\.5/u);
-  assert.match(androidStandalone, /Android 单机版是一套不依赖 Windows 主机的完整教育管家/u);
-  for (const manual of [windowsStudent, androidStudent, androidTeacher, androidStandalone]) {
+  assert.match(
+    androidStandalone,
+    new RegExp(`正式版 ${publicManifest.standaloneVersionName.replaceAll('.', '\\.')}`, 'u'),
+  );
+  assert.match(androidStandalone, /单机版不依赖 Windows 主机/u);
+  for (const manual of [windowsStudent, androidStudent, androidTeacher]) {
     assert.match(manual, /android-teacher-manual\.html/u);
     assert.match(manual, /android-standalone-manual\.html/u);
   }

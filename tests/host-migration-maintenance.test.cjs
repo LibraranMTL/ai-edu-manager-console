@@ -24,8 +24,12 @@ function hostScope(runtime) {
   const scope = { fs, path, os, projectArchiveRuntime: runtime, activeCaptureRuntime: null, taskChildProcesses: new Map(), taskSchedulerRunning: false,
     digestWorkflowRunning: false, growthRefreshRunning: false, collaborationDirectDeliveryRunning: false,
     captureVisionRunning: false, captureTimelineScheduler: null, hostServer: null,
-    taskStorePath: () => 'synthetic-tasks.json', assetIndexPath: () => 'synthetic-assets.json',
-    safeReadJson: (file) => file === 'synthetic-tasks.json' ? ({ tasks: [] }) : ({ assets: [] }),
+    taskStorePath: () => 'synthetic-tasks.json', taskDatabasePath: () => 'synthetic-missing-task-state.sqlite3',
+    assetIndexPath: () => 'synthetic-assets.json', projectsPath: () => 'synthetic-projects.json',
+    safeReadJson: (file) => file === 'synthetic-tasks.json' ? ({ tasks: [] })
+      : file === 'synthetic-projects.json' ? [] : ({ assets: [] }),
+    taskStoreGuard: { flush: async () => {} }, readTaskStore: () => ({ tasks: [], history: [], runtime: {}, deletedTasks: [] }),
+    writeTaskStoreDurably: async () => {}, restoreTaskSnapshotEvents: () => {},
     stopHostDiscovery: () => events.push('stop-discovery'), stopStudentArchiveSyncWatchers: () => events.push('stop-watchers'),
     refreshStudentArchiveSyncWatchers: () => { assert.equal(runtime.status().ready, true); events.push('resume-watchers'); },
     startHostService: () => events.push('resume-server'), notify() {}, getHostServiceStatus: () => '{}',
@@ -36,6 +40,7 @@ function hostScope(runtime) {
     migrationStateVirtualFiles: () => { assert.equal(runtime.status().phase, 'maintenance'); return []; },
     assetStore: () => ({ backupTo: async (file) => fs.writeFileSync(file, 'synthetic sqlite snapshot'),
       importSnapshot: () => ({ assetCount: 0 }), replaceAll: () => {} }),
+    projectStateStore: () => ({ backupTo: async (file) => fs.writeFileSync(file, 'synthetic project sqlite snapshot'), replaceAll: () => {} }),
     publicLicenseStatus: () => ({ maxActiveStudents: 1 }), courseCatalogStoreInstance: {}, platformCourseDraftStoreInstance: {}, licenseTrustStoreInstance: {},
     invalidateArchiveAccessCache: () => { assert.equal(runtime.status().phase, 'maintenance'); events.push('invalidate'); },
     recoverInterruptedMigrationStateInstalls: () => ({ ready: true, recovered: [], issues: [] }),
@@ -129,7 +134,7 @@ test('actual maintenance resumes after worker failure but refuses active tasks w
   scope.taskChildProcesses.set('task-1', {});
   assert.match(JSON.parse(await scope.createHostMigrationPackage({}, '{}')).message, /不会强制终止/);
   assert.deepEqual(events, []); assert.equal(scope.taskChildProcesses.size, 1);
-  scope.taskChildProcesses.clear(); scope.safeReadJson = () => ({ tasks: [{ status: 'waiting_result' }] });
+  scope.taskChildProcesses.clear(); scope.readTaskStore = () => ({ tasks: [{ status: 'waiting_result' }] });
   assert.match(JSON.parse(await scope.createHostMigrationPackage({}, '{}')).message, /尚不能确认写入已停止/);
   assert.deepEqual(events, []);
 });

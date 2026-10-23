@@ -129,7 +129,7 @@ test('P3 host uses student-terminal wording and keeps legacy bridge aliases', ()
   assert.match(preload, /inviteLanTerminal/);
   assert.match(ui, /附近学生终端/);
   assert.match(ui, /Android 或 Windows 学生终端/);
-  assert.match(ui, /bridge\(\)\?\.findLanTerminals\?\.\(\) \?\? bridge\(\)\?\.findLanTablets/);
-  assert.match(ui, /bridge\(\)\?\.inviteLanTerminal\?\.\(terminalId\) \?\? bridge\(\)\?\.inviteLanTablet/);
+  assert.match(ui, /await bridge\(\)\?\.findLanTerminals\?\.\(\) \?\? await bridge\(\)\?\.findLanTablets/);
+  assert.match(ui, /await bridge\(\)\?\.inviteLanTerminal\?\.\(terminalId\) \?\? await bridge\(\)\?\.inviteLanTablet/);
   assert.match(styles, /\.pair-request-item button[\s\S]*?white-space: nowrap/);
 });

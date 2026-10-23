@@ -6,9 +6,11 @@ const { spawnSync } = require('node:child_process');
 const { validateWindowsVersion } = require('./version-policy.cjs');
 const { compileLifecycleHook } = require('./compile-lifecycle-hook.cjs');
 const { bundleSkillArchiveRuntime } = require('./build-skill-runtime.cjs');
-const { MAX_WINDOWS_ARTIFACT_BYTES, assertWindowsArtifactBudget } = require('./windows-artifact-budget.cjs');
+const { WINDOWS_ARTIFACT_WARNING_BYTES, WINDOWS_ARTIFACT_TARGET_BYTES, inspectWindowsArtifactBudget, assertWindowsArtifactBudget } = require('./windows-artifact-budget.cjs');
+const { auditWindowsResources } = require('./audit-windows-resources.cjs');
 const { compactWindowsRuntime } = require('./compact-windows-runtime.cjs');
 const { compactPngResources } = require('./compact-png-resources.cjs');
+const { resolvePnpmVirtualStore } = require('./pnpm-virtual-store.cjs');
 
 const repoRoot = path.resolve(__dirname, '..');
 const packageJson = JSON.parse(fs.readFileSync(path.join(repoRoot, 'package.json'), 'utf8'));
@@ -215,14 +217,14 @@ function reachableDistAssets(distRoot) {
 }
 
 function locateAsarModule() {
-  const pnpmRoot = path.join(repoRoot, 'node_modules', '.pnpm');
+  const pnpmRoot = resolvePnpmVirtualStore(repoRoot);
   const packageDir = fs.readdirSync(pnpmRoot).find((name) => name.startsWith('@electron+asar@'));
   if (!packageDir) throw new Error('Unable to locate @electron/asar in the pnpm store.');
   return require(path.join(pnpmRoot, packageDir, 'node_modules', '@electron', 'asar'));
 }
 
 function locateEsbuildModule() {
-  const pnpmRoot = path.join(repoRoot, 'node_modules', '.pnpm');
+  const pnpmRoot = resolvePnpmVirtualStore(repoRoot);
   const packageDir = fs.readdirSync(pnpmRoot).find((name) => name.startsWith('esbuild@'));
   if (!packageDir) throw new Error('Unable to locate esbuild in the pnpm store.');
   return require(path.join(pnpmRoot, packageDir, 'node_modules', 'esbuild'));
@@ -337,6 +339,8 @@ function build() {
   try {
     const sourceControl = sourceControlAudit();
     fs.writeFileSync(phaseLogPath, '', 'utf8');
+    recordPhase('audit-required-resources-source');
+    const sourceResourceAudit = auditWindowsResources({ repoRoot, strict: true });
     recordPhase('secret-scan-source');
     assertWindowsLicenseClosure(repoRoot, 'source');
     const sourceSecretAudit = scanSecretSignatures([
@@ -465,6 +469,10 @@ function build() {
     const assetIndexRuntime = [
       'electron/asset-index-store.cjs',
       'electron/asset-index-worker.cjs',
+      'electron/asset-state-worker.cjs',
+      'electron/asset-governance-worker.cjs',
+      'electron/asset-duplicate-governance.cjs',
+      'electron/file-fingerprint.cjs',
     ];
     for (const relative of assetIndexRuntime) {
       if (!asarFiles.includes(`\\${relative.replaceAll('/', '\\')}`)) {
@@ -474,6 +482,30 @@ function build() {
       const packaged = asar.extractFile(appAsar, relative);
       if (!staged.equals(packaged)) {
         throw new Error(`Packaged SQLite asset index runtime differs from verified stage: ${relative}`);
+      }
+    }
+    const performanceStorageRuntime = [
+      'electron/project-state-store.cjs',
+      'electron/project-state-worker.cjs',
+      'electron/project-state-io-client.cjs',
+      'electron/project-state-io-worker.cjs',
+      'electron/project-material-automation-client.cjs',
+      'electron/project-material-automation-worker.cjs',
+      'electron/task-state-store.cjs',
+      'electron/task-store-writer.cjs',
+      'electron/task-io-worker.cjs',
+      'electron/resource-coordinator.cjs',
+      'electron/task-schedule-window.cjs',
+      'electron/knowledge-projection-worker.cjs',
+    ];
+    for (const relative of performanceStorageRuntime) {
+      if (!asarFiles.includes(`\\${relative.replaceAll('/', '\\')}`)) {
+        throw new Error(`Packaged performance storage runtime is missing: ${relative}`);
+      }
+      const staged = fs.readFileSync(path.join(stageRoot, relative));
+      const packaged = asar.extractFile(appAsar, relative);
+      if (!staged.equals(packaged)) {
+        throw new Error(`Packaged performance storage runtime differs from verified stage: ${relative}`);
       }
     }
     const skillLibraryRuntime = [
@@ -586,12 +618,21 @@ function build() {
     if (JSON.stringify(locales) !== JSON.stringify(expectedLocales)) {
       throw new Error(`Electron locale mismatch. Expected ${expectedLocales.join(', ')}, found ${locales.join(', ')}`);
     }
+    recordPhase('audit-required-resources-package');
+    const packagedResourceAudit = auditWindowsResources({ repoRoot, packagedRoot: unpackedRoot, strict: true });
 
     recordPhase('create-zip');
     const stagedZip = path.join(stageOutput, `${artifactBase}.zip`);
     createZip(stagedExe, stagedZip);
     assertWindowsArtifactBudget(stagedExe);
     assertWindowsArtifactBudget(stagedZip);
+    const stagedArtifactBudgets = {
+      exe: inspectWindowsArtifactBudget(stagedExe),
+      zip: inspectWindowsArtifactBudget(stagedZip),
+    };
+    for (const budget of Object.values(stagedArtifactBudgets)) {
+      if (budget.status !== 'ok') process.stderr.write(`[windows-release] package-size-${budget.status} ${path.basename(budget.file)} ${budget.bytes}/${budget.targetBytes} bytes; advisory warning threshold ${budget.warningBytes}\n`);
+    }
     fs.mkdirSync(releaseDir, { recursive: true });
     let effectiveReleaseDir = releaseDir;
     let releaseExe = path.join(effectiveReleaseDir, `${artifactBase}.exe`);
@@ -614,7 +655,8 @@ function build() {
     const audit = {
       version,
       candidateTag,
-      artifactSizeLimitBytes: MAX_WINDOWS_ARTIFACT_BYTES,
+      artifactSizeWarningBytes: WINDOWS_ARTIFACT_WARNING_BYTES,
+      artifactSizeTargetBytes: WINDOWS_ARTIFACT_TARGET_BYTES,
       archiveCodeFilter: 'BCJ2',
       runtimeCompaction,
       pngCompaction,
@@ -637,6 +679,7 @@ function build() {
         agentBridge: unpackedAgentBridge,
         externalAgentConnectorRuntime: externalAgentRuntime,
         assetIndexRuntime,
+        performanceStorageRuntime,
         skillLibraryRuntime,
         skillRuntimeVerification,
         cloudReportRuntime,
@@ -648,9 +691,13 @@ function build() {
         stage: stageSecretAudit,
         package: packageSecretAudit,
       },
+      resourceAudit: {
+        source: sourceResourceAudit,
+        package: packagedResourceAudit,
+      },
       artifacts: {
-        exe: { path: releaseExe, bytes: fs.statSync(releaseExe).size, sha256: sha256(releaseExe) },
-        zip: { path: releaseZip, bytes: fs.statSync(releaseZip).size, sha256: sha256(releaseZip) },
+        exe: { path: releaseExe, bytes: fs.statSync(releaseExe).size, sha256: sha256(releaseExe), budget: stagedArtifactBudgets.exe },
+        zip: { path: releaseZip, bytes: fs.statSync(releaseZip).size, sha256: sha256(releaseZip), budget: stagedArtifactBudgets.zip },
       },
     };
     const auditPath = path.join(effectiveReleaseDir, `${artifactBase}-build-audit.json`);

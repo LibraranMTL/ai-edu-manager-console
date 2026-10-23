@@ -7,7 +7,7 @@ const project = { id: 'p1', inboxRelativePath: '收件箱', workspaceFolders: ['
     sourceBinding: { bindingId: 'binding-1' } }] };
 const material = (id, patch = {}) => ({ projectId: 'p1', materialId: id, version: 1, recordRevision: 2,
   location: { kind: 'workspace', rootId: 'workspace', relativePath: `收件箱/${id}.txt` },
-  size: 10, adoption: { state: 'accepted' }, classification: { categoryId: '', tags: [] },
+  size: 10, sha256: 'a'.repeat(64), adoption: { state: 'accepted' }, classification: { categoryId: '', tags: [] },
   organizationState: 'unclassified', processing: { state: 'pending' }, availability: 'available',
   sources: [{ type: 'terminal_upload' }], links: { knowledge: [] }, ...patch });
 
@@ -18,7 +18,8 @@ test('four-view projection keeps logical relationships without exposing host abs
       sources: [{ materialId: 'm2', version: 1, sha256: 'a'.repeat(64) }] }],
     evidenceBindings: [{ bindingId: 'binding-1', materials: [{ materialId: 'm2', version: 1, sha256: 'a'.repeat(64) }] }] };
   const view = projectMaterialWorkspaceView(project, index, { view: 'materials', limit: 20 });
-  assert.deepEqual(view.counts, { materials: 2, pending: 1, knowledge: 1, contributions: 1,
+  assert.deepEqual(view.counts, { materials: 2, uniqueContents: 1, systemGenerated: 0,
+    pending: 1, knowledge: 1, contributions: 1,
     candidates: 0, unclassified: 1, pathClassified: 0, unavailable: 0 });
   assert.equal(view.categories[1].categoryId, 'workspace-slot-02');
   assert.equal(view.items[1].classification.categoryName, '方案设计');

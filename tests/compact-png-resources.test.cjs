@@ -5,7 +5,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const zlib = require('node:zlib');
 const { compactPng, chunksOf } = require('../scripts/compact-png-resources.cjs');
-for (const name of ['robogala-hands.png', 'robogala-round.png', 'robogala-wordmark.png']) {
+for (const name of ['robogala-round.png', 'robogala-wordmark.png']) {
   test(`lossless PNG compaction preserves all scanlines and metadata: ${name}`, () => {
     const before = fs.readFileSync(path.join(__dirname, '../public/brand', name));
     const after = compactPng(before), a = chunksOf(before), b = chunksOf(after);
@@ -18,7 +18,7 @@ for (const name of ['robogala-hands.png', 'robogala-round.png', 'robogala-wordma
 }
 test('PNG optimizer rejects corrupt input instead of silently altering assets', () => {
   assert.throws(() => compactPng(Buffer.from('not png')), /signature/);
-  const original = fs.readFileSync(path.join(__dirname, '../public/brand/robogala-hands.png'));
+  const original = fs.readFileSync(path.join(__dirname, '../public/brand/robogala-round.png'));
   assert.throws(() => compactPng(original.subarray(0, 100)), /Truncated/);
   const corrupt = Buffer.from(original); corrupt[25] ^= 1;
   assert.throws(() => compactPng(corrupt), /CRC/);

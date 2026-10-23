@@ -4,20 +4,32 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { CaptureHeavyWorkGate } = require('../electron/capture-heavy-work-gate.cjs');
 
-test('shared heavy-work gate enforces adaptive capacity and serializes one student', () => {
+test('shared heavy-work gate allows only one disk or CPU heavy task', () => {
   const gate = new CaptureHeavyWorkGate();
   const idle = { availableMemoryRatio: 0.7, idleSeconds: 120, cpuPercent: 10 };
   const first = gate.tryAcquire({ kind: 'timeline', studentId: 'student-a', sessionId: 'a', snapshot: idle });
   assert.equal(typeof first, 'function');
   assert.equal(gate.tryAcquire({ kind: 'vision', studentId: 'student-a', sessionId: 'a', snapshot: idle }), null);
   const second = gate.tryAcquire({ kind: 'timeline', studentId: 'student-b', sessionId: 'b', snapshot: idle });
-  assert.equal(typeof second, 'function');
+  assert.equal(second, null);
   assert.equal(gate.tryAcquire({ kind: 'report_projection', studentId: 'student-c', sessionId: 'c', snapshot: idle }), null);
-  second();
   assert.equal(gate.tryAcquire({ kind: 'vision', studentId: 'student-c', sessionId: 'c', snapshot: { ...idle, captureActive: true } }), null);
   first();
   first();
+  const next = gate.tryAcquire({ kind: 'vision', studentId: 'student-a', sessionId: 'a', snapshot: idle });
+  assert.equal(typeof next, 'function');
+  next();
   assert.deepEqual(gate.state(), []);
+});
+
+test('network class permits two tasks while preserving the global adaptive cap', () => {
+  const gate = new CaptureHeavyWorkGate();
+  const idle = { availableMemoryRatio: 0.7, idleSeconds: 120, cpuPercent: 10 };
+  const first = gate.tryAcquire({ kind: 'upload', studentId: 'a', sessionId: 'a', resourceClass: 'network', snapshot: idle });
+  const second = gate.tryAcquire({ kind: 'download', studentId: 'b', sessionId: 'b', resourceClass: 'network', snapshot: idle });
+  assert.equal(typeof first, 'function'); assert.equal(typeof second, 'function');
+  assert.equal(gate.tryAcquire({ kind: 'sync', studentId: 'c', sessionId: 'c', resourceClass: 'network', snapshot: idle }), null);
+  first(); second();
 });
 
 test('Agent, vision, and timeline tasks share one capture-aware capacity', () => {

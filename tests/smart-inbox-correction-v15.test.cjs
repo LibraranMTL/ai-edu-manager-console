@@ -166,6 +166,6 @@ test('shared provider login survives switching students; route reports usable fa
     const status = policy.classificationRouteStatus({ studentId, providerId: 'workbuddy', state: 'login_required', fallback: { enabled: true } }, fallback);
     assert.equal(status.state, 'ready'); assert.equal(status.effectiveProviderId, 'codex');
   }
-  assert.equal(policy.classificationSavedStatus(fallback, adapter, { ...saved, expiresAt: '2020-01-01' }).state, 'qualification_required');
+  assert.equal(policy.classificationSavedStatus(fallback, adapter, { ...saved, ready: true, expiresAt: '2020-01-01' }).state, 'channel_ready');
   assert.equal(policy.classificationRouteStatus({ providerId: 'workbuddy', state: 'login_required', fallback: { enabled: false } }, fallback).state, 'login_required');
 });

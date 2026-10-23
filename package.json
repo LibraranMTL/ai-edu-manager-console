@@ -1,6 +1,6 @@
 {
   "name": "edu-manager-launcher",
-  "version": "0.21.2",
+  "version": "0.21.6",
   "private": true,
   "type": "module",
   "main": "electron/main.cjs",
@@ -12,14 +12,24 @@
     "build:cloud-web": "vite build --config cloud-report-web/vite.config.ts",
     "dev:cloud-web": "vite --config cloud-report-web/vite.config.ts",
     "test": "node --test tests/*.test.cjs cloud-report-service/*.test.cjs",
+    "test:windows": "node scripts/run-windows-tests.cjs",
+    "test:infrastructure": "node --test tests/windows-artifact-budget.test.cjs tests/windows-low-risk-infrastructure.test.cjs tests/windows-release-staging-contract.test.cjs",
+    "typecheck": "tsc --noEmit --pretty false",
+    "audit:resources": "node scripts/audit-windows-resources.cjs --strict",
+    "audit:structural-performance": "node scripts/audit-structural-performance-candidate.cjs",
+    "baseline:windows": "node scripts/verify-windows-build-baseline.cjs",
+    "verify:low-risk": "pnpm typecheck && pnpm audit:resources && pnpm test:infrastructure && pnpm benchmark:assets:smoke",
     "test:p6": "node scripts/run-p6-ten-scenario.cjs",
     "benchmark:capture-p0": "node --expose-gc scripts/benchmark-capture-timeline.cjs",
     "benchmark:capture-p1": "node scripts/benchmark-capture-timeline-p1.cjs",
     "benchmark:cloud": "node scripts/benchmark-cloud-reports.cjs",
     "benchmark:assets": "node scripts/benchmark-asset-index.cjs",
+    "benchmark:assets:smoke": "node scripts/benchmark-asset-index.cjs --smoke --assert-targets",
+    "benchmark:projects:release": "node scripts/benchmark-project-state.cjs 30000 100000 --assert-targets --output=artifacts/project-state-benchmark-release.json",
+    "acceptance:windows:ordinary": "node scripts/verify-windows-ordinary-hardware.cjs",
     "preview": "vite preview --host 0.0.0.0",
     "desktop": "electron .",
-    "build:win": "pnpm test && node scripts/build-windows-release.cjs",
+    "build:win": "pnpm typecheck && pnpm test:windows && pnpm audit:resources && pnpm benchmark:assets:smoke && pnpm benchmark:projects:release && node scripts/build-windows-release.cjs",
     "build:win-terminal": "pnpm test && node scripts/build-windows-terminal-release.cjs",
     "license-admin:desktop": "electron tools/license-admin-app",
     "build:license-admin": "node scripts/build-license-admin-qr-vendor.cjs && electron-builder --projectDir tools/license-admin-app --win portable --x64"
@@ -40,9 +50,12 @@
     "yauzl": "3.4.0"
   },
   "devDependencies": {
+    "@types/react": "19.0.14",
+    "@types/react-dom": "19.0.6",
     "@types/qrcode": "^1.5.6",
     "electron": "^43.0.0",
-    "electron-builder": "^26.15.3"
+    "electron-builder": "^26.15.3",
+    "typescript": "5.9.3"
   },
   "build": {
     "appId": "com.qxmatrix.edumanager.desktop",

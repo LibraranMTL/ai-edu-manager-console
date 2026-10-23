@@ -122,7 +122,8 @@ for (const bound of [false, true]) test(`discovery -> actual task center -> ${bo
     const row = (await engine.list()).rows[0];
     const result = await engine.decide({ requestId: 'confirm-then-analyze', action: 'confirm_student', items: [{ id: row.id, revision: row.revision, studentId: source.studentId }] });
     assert.equal(result.results[0].ok, true); await engine.tick();
-    assert.equal((await engine.list({ status: 'delivered' })).total, 1);
+    const delivered = await engine.list({ status: 'delivered' });
+    assert.equal(delivered.total, 1, JSON.stringify((await engine.list()).rows));
     assert.equal(host.disk().tasks.length, 2); assert.ok(host.disk().tasks.every(t => t.status === 'succeeded'));
     assert.equal(modelCalls, 1); assert.equal(deliveries, 1);
   }

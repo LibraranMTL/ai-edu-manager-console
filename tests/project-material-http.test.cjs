@@ -107,7 +107,7 @@ test('host HTTP handlers enforce project authorization, mode and safe list proje
   let registryReads = 0;
   const replies = [];
   const scope = {
-    readProjects: () => [project], normalizeProject: (item) => item, normalizeProjectMetadata: (item) => item,
+    readProjects: () => [project], readProjectMetadata: () => [project], normalizeProject: (item) => item, normalizeProjectMetadata: (item) => item,
     readProjectMaterialIndexSync: () => { registryReads++; return index; },
     requireAuth: (request) => Boolean(request.authContext),
     projectAllowed: (request) => request.authContext.allowedStudentIds?.includes('student-1'),

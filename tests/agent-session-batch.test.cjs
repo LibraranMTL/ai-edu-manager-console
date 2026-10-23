@@ -3,8 +3,9 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
+const { resolvePnpmVirtualStore } = require('../scripts/pnpm-virtual-store.cjs');
 const root = path.resolve(__dirname, '..');
-const pnpm = path.join(root, 'node_modules/.pnpm');
+const pnpm = resolvePnpmVirtualStore(root);
 const esbuild = require(path.join(pnpm, fs.readdirSync(pnpm).find(name => name.startsWith('esbuild@')), 'node_modules/esbuild'));
 const moduleContext = { exports: {} };
 vm.runInNewContext(esbuild.transformSync(fs.readFileSync(path.join(root, 'src/agent-session-batch.ts'), 'utf8'), { loader: 'ts', format: 'cjs' }).code, { module: moduleContext });
@@ -18,6 +19,7 @@ test('pending/delivered/all/trash classify actual receipts and preserve classifi
   assert.deepEqual(visibleTabs(pending), ['pending', 'all']);
   assert.deepEqual(visibleTabs(delivered), ['delivered', 'all']);
   assert.deepEqual(visibleTabs({ ...delivered, materialLifecycleStatus: 'trashed' }), ['trash']);
+  assert.deepEqual(visibleTabs({ ...delivered, status: 'deleted', materialLifecycleStatus: 'deleted' }), []);
   assert.deepEqual(visibleTabs({ ...delivered, materialLifecycleStatus: 'active' }), ['delivered', 'all']);
   assert.deepEqual(visibleTabs({ ...pending, materialLifecycleStatus: 'active' }), ['pending', 'all']);
 });

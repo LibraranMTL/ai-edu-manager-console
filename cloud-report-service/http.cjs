@@ -111,7 +111,7 @@ function createHttpServer(options) {
       service.verifyViewerProof(token, req.method, req.url, req.headers);
       req.verifyBody = bytes => service.verifyBody(token, bytes, req.headers);
       if (['GET', 'DELETE'].includes(req.method)) req.verifyBody(Buffer.alloc(0));
-      if (req.method === 'GET' && route === '/health') return json(res, 200, { ok: true, service: 'edu-cloud-documents', version: '2.1.0', contracts: [1, 2], schema: service.schemaStatus(), capabilities: ['profile-sync', 'material-sync', 'remote-agent-mcp', 'cloud-inbox'] });
+      if (req.method === 'GET' && route === '/health') return json(res, 200, { ok: true, service: 'edu-cloud-documents', version: '2.1.1', contracts: [1, 2], schema: service.schemaStatus(), capabilities: ['profile-sync', 'material-sync', 'remote-agent-mcp', 'cloud-inbox', 'student-archive', 'viewer-student-relinquish'] });
       if (req.method === 'POST' && route === '/v1/admin/sessions') {
         const ip = req.socket.remoteAddress || 'unknown';
         const previous = adminLoginRates.get(ip);
@@ -211,7 +211,23 @@ function createHttpServer(options) {
         return json(res, 200, service.setOwnUploadScope(token, await readJson(req)));
       }
       if (req.method === 'GET' && route === '/v1/students') {
-        return json(res, 200, { students: service.listStudents(token) });
+        return json(res, 200, { students: service.listStudents(token, { includeArchived: url.searchParams.get('includeArchived') === '1' }) });
+      }
+      const studentRemovalPreviewMatch = route.match(/^\/v1\/students\/([a-zA-Z0-9_-]{8,96})\/removal-preview$/);
+      if (req.method === 'GET' && studentRemovalPreviewMatch) {
+        return json(res, 200, service.studentRemovalPreview(token, studentRemovalPreviewMatch[1]));
+      }
+      const studentRestoreMatch = route.match(/^\/v1\/students\/([a-zA-Z0-9_-]{8,96})\/restore$/);
+      if (req.method === 'POST' && studentRestoreMatch) {
+        return json(res, 200, service.restoreStudent(token, studentRestoreMatch[1]));
+      }
+      const studentArchiveMatch = route.match(/^\/v1\/students\/([a-zA-Z0-9_-]{8,96})$/);
+      if (req.method === 'DELETE' && studentArchiveMatch) {
+        return json(res, 200, service.archiveStudent(token, studentArchiveMatch[1], url.searchParams.get('reason') || '管理员在云端文档页面停用'));
+      }
+      const viewerStudentMatch = route.match(/^\/v1\/viewer\/students\/([a-zA-Z0-9_-]{8,96})$/);
+      if (req.method === 'DELETE' && viewerStudentMatch) {
+        return json(res, 200, service.relinquishViewerStudent(token, viewerStudentMatch[1]));
       }
       if (req.method === 'POST' && route === '/v2/grants') {
         return json(res, 201, service.issueV2Grant(token, await readJson(req)));

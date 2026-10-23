@@ -20,7 +20,7 @@ test('renderer background refreshes are visibility-aware and avoid unrelated pag
   assert.match(renderer, /if \(document\.hidden\) return;/);
   assert.match(renderer, /activeSectionRef\.current === 'settings'/);
   assert.match(renderer, /activeSectionRef\.current === 'tasks'/);
-  assert.match(renderer, /}, 10000\);/);
+  assert.match(renderer, /const statusVisible = \['init', 'settings', 'memory', 'capture', 'qa', 'soul', 'rules', 'conversation', 'tasks'\]\.includes\(visibleSection\)/);
   assert.match(renderer, /}, 60000\);/);
   assert.match(renderer, /}, 30000\);/);
   assert.doesNotMatch(renderer, /setInterval\(refreshVisible, 15000\)/);

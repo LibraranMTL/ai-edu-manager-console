@@ -117,7 +117,7 @@ type TerminalBridge = {
   requestHostPair: (hostDeviceId: string) => Promise<{ ok: boolean; message?: string; state: PairingState }>;
   cancelPairRequest: () => Promise<{ ok: boolean; message?: string; state: PairingState }>;
   acceptPairInvite: () => Promise<{ ok: boolean; message?: string; state: PairingState; config?: TerminalConfig }>;
-  rejectPairInvite: () => Promise<{ ok: boolean; message?: string; state: PairingState }>;
+  rejectPairInvite: () => Promise<{ ok: boolean; message?: string; state: PairingState; config?: TerminalConfig }>;
   copyMachineCode: () => Promise<{ ok: boolean; value: string }>;
   pair: (input: Record<string, string>) => Promise<{ message?: string; config: TerminalConfig }>;
   disconnect: () => Promise<{ config: TerminalConfig }>;
@@ -375,7 +375,7 @@ function TerminalApp() {
   const [activeWorkspace, setActiveWorkspace] = useState<StudentWorkspace>(null);
   const [agentCapture, setAgentCapture] = useState<AgentCaptureState>({ enabled: false, active: false, registrations: {}, warnings: [], installedCount: 0, connectedCount: 0, pending: 0 });
   const [agentCaptureBusy, setAgentCaptureBusy] = useState(false);
-  const [learningCapabilities, setLearningCapabilities] = useState<{ practice?: boolean; planningRead?: boolean; planningFavorites?: boolean; remoteInbox?: boolean }>({});
+  const [learningCapabilities, setLearningCapabilities] = useState<{ practice?: boolean; publications?: boolean; planningRead?: boolean; planningFavorites?: boolean; remoteInbox?: boolean }>({});
   const [practiceDashboard, setPracticeDashboard] = useState<PracticeDashboard | null>(null);
   const [rejectedPracticeAttempts, setRejectedPracticeAttempts] = useState<Array<{ attemptId: string; cardId: string; answer: string; error: string }>>([]);
   const [practiceAnswer, setPracticeAnswer] = useState('');

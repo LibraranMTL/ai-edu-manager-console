@@ -11,7 +11,7 @@ const pdfRuntimeScript = fs.readFileSync(path.join(root, 'scripts', 'build-proje
 const pdfWorker = fs.readFileSync(path.join(root, 'electron', 'project-material-pdf-worker.cjs'), 'utf8');
 
 test('Windows release builds through an isolated local staging directory', () => {
-  assert.equal(packageJson.scripts['build:win'], 'pnpm test && node scripts/build-windows-release.cjs');
+  assert.equal(packageJson.scripts['build:win'], 'pnpm typecheck && pnpm test:windows && pnpm audit:resources && pnpm benchmark:assets:smoke && pnpm benchmark:projects:release && node scripts/build-windows-release.cjs');
   assert.match(releaseScript, /process\.env\.LOCALAPPDATA/);
   assert.match(releaseScript, /release-stage/);
   assert.match(releaseScript, /EDU_WINDOWS_CANDIDATE_TAG/);
@@ -102,4 +102,9 @@ test('release artifacts are published only after package audits pass', () => {
   assert.match(releaseScript, /Temporary release artifact remained after publish/);
   assert.match(releaseScript, /primary-artifact-locked-publish-optimized/);
   assert.match(releaseScript, /build-audit\.json/);
+  assert.match(releaseScript, /artifactSizeWarningBytes: WINDOWS_ARTIFACT_WARNING_BYTES/);
+  assert.match(releaseScript, /artifactSizeTargetBytes: WINDOWS_ARTIFACT_TARGET_BYTES/);
+  assert.doesNotMatch(releaseScript, /artifactSizeLimitBytes/);
+  assert.match(releaseScript, /auditWindowsResources\(\{ repoRoot, packagedRoot: unpackedRoot, strict: true \}\)/);
+  assert.match(releaseScript, /resourceAudit:/);
 });

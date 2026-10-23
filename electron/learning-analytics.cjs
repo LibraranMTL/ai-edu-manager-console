@@ -122,6 +122,17 @@ function canonicalKnowledgePoint(input, taxonomy = loadTaxonomy()) {
     subject: String(value.subject || ''),
     taxonomyVersion: String(value.taxonomyVersion || 'external.v1'),
   };
+  // Knowledge tracking is intentionally open-world.  Unknown names are
+  // registered immediately instead of entering a review queue.  The ID is
+  // stable for a normalized subject/name pair and therefore remains safe for
+  // idempotent re-imports and later taxonomy upgrades.
+  if (requestedLabel) {
+    const subject = String(value.subject || '通用').trim() || '通用';
+    const normalizedName = requestedLabel.normalize('NFKC').trim().toLocaleLowerCase('zh-CN').replace(/\s+/gu, ' ');
+    const subjectKey = subject.normalize('NFKC').trim().toUpperCase().replace(/[^A-Z0-9\u4E00-\u9FFF]+/gu, '_').replace(/^_+|_+$/g, '').slice(0, 32) || 'GENERAL';
+    const hash = crypto.createHash('sha1').update(`${subject}\n${normalizedName}`, 'utf8').digest('hex').slice(0, 16).toUpperCase();
+    return { id: `KNOWLEDGE.${subjectKey}.${hash}`, label: requestedLabel, subject, taxonomyVersion: 'open-world.v1' };
+  }
   return null;
 }
 
@@ -167,15 +178,22 @@ function evidenceAllowed(refs, allowedEvidenceRefs) {
 function normalizeLearningEvent(input, context = {}) {
   const studentId = String(context.studentId || input?.studentId || input?.student_id || '').trim();
   if (!studentId || (input?.studentId && String(input.studentId) !== studentId)) return { ok: false, code: 'student_scope_mismatch' };
-  const knowledgePoint = canonicalKnowledgePoint(input?.knowledgePoint || input?.knowledge_point || {
-    id: input?.knowledgePointId || input?.knowledge_point_id,
-    label: input?.knowledgePointLabel || input?.knowledge_point_label,
-    subject: input?.subject,
-  }, context.taxonomy);
+  const suppliedKnowledgePoint = input?.knowledgePoint || input?.knowledge_point;
+  const knowledgePoint = canonicalKnowledgePoint(suppliedKnowledgePoint && typeof suppliedKnowledgePoint === 'object'
+    ? { ...suppliedKnowledgePoint, subject: suppliedKnowledgePoint.subject || input?.subject }
+    : {
+      id: input?.knowledgePointId || input?.knowledge_point_id,
+      label: suppliedKnowledgePoint || input?.knowledgePointLabel || input?.knowledge_point_label,
+      subject: input?.subject,
+    }, context.taxonomy);
   if (!knowledgePoint) return { ok: false, code: 'knowledge_point_unmapped' };
-  const occurredAt = String(input?.occurredAt || input?.timestamp || input?.date || '').trim();
-  if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/i.test(occurredAt)
-    || !Number.isFinite(Date.parse(occurredAt))) return { ok: false, code: 'occurred_at_invalid' };
+  const suppliedOccurredAt = String(input?.occurredAt || input?.timestamp || input?.date || '').trim();
+  const occurredAtKnown = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/i.test(suppliedOccurredAt)
+    && Number.isFinite(Date.parse(suppliedOccurredAt));
+  const activityType = String(input?.activityType || input?.activity_type || '').trim();
+  const knowledgeActivity = ['material_exposure', 'practice', 'project_application', 'assessment', 'review', 'correction'].includes(activityType);
+  if (!occurredAtKnown && !knowledgeActivity) return { ok: false, code: 'occurred_at_invalid' };
+  const occurredAt = occurredAtKnown ? suppliedOccurredAt : String(context.recordedAt || input?.recordedAt || new Date().toISOString());
   const rawEvidenceRefs = input?.evidenceRefs || input?.evidence_refs || context.evidenceRefs;
   if (!Array.isArray(rawEvidenceRefs) || rawEvidenceRefs.some((ref) => !String(ref?.sourceType || ref?.type || '').trim()
     || !String(ref?.sourceId || ref?.id || '').trim())) return { ok: false, code: 'evidence_ref_invalid' };
@@ -203,11 +221,15 @@ function normalizeLearningEvent(input, context = {}) {
   const practiceReview = context.allowPracticeReview === true && input?.practiceReview?.episodeId && ['correct','mostly_correct','partial','needs_correction','undetermined'].includes(input?.outcome)
     ? { episodeId: String(input.practiceReview.episodeId).slice(0, 120), resultRef: String(input.practiceReview.resultRef).slice(0, 64),
       attemptId: String(input.practiceReview.attemptId).slice(0, 120), source: String(input.practiceReview.source), sequence: Number(input.practiceReview.sequence), assistance: input.practiceReview.assistance || { status: 'unknown' } } : null;
-  if (SCORE_KEYS.every((key) => performance[key] === null) && !practiceReview) return { ok: false, code: 'performance_missing' };
+  if (SCORE_KEYS.every((key) => performance[key] === null) && !practiceReview && !knowledgeActivity) return { ok: false, code: 'performance_missing' };
   const taskType = String(input?.taskType || input?.task_type || input?.task?.type || 'unknown').trim().slice(0, 80);
   const taskId = String(input?.taskId || input?.task_id || input?.task?.id || '').trim().slice(0, 160);
   const errors = normalizeErrors(input?.errors || input?.errorTypes || input?.error_types);
-  const idempotencySeed = [studentId, knowledgePoint.id, new Date(occurredAt).toISOString(), taskId, taskType,
+  // A source without a trustworthy activity timestamp must remain idempotent when
+  // it is rescanned later.  recordedAt is only a storage timestamp and must not
+  // turn the same source/knowledge-point pair into a new activity on every run.
+  const activityIdentityTime = occurredAtKnown ? new Date(occurredAt).toISOString() : 'time-unknown';
+  const idempotencySeed = [studentId, knowledgePoint.id, activityIdentityTime, taskId, taskType, activityType,
     JSON.stringify(performance), JSON.stringify(evidenceRefs.map((ref) => `${ref.sourceType}:${ref.sourceId}`).sort())].join('|');
   const eventId = String(input?.eventId || input?.event_id || input?.idempotencyKey || input?.idempotency_key || '').trim()
     || `learning-event-${crypto.createHash('sha1').update(idempotencySeed).digest('hex').slice(0, 24)}`;
@@ -220,6 +242,8 @@ function normalizeLearningEvent(input, context = {}) {
     occurredAt: new Date(occurredAt).toISOString(),
     taskId,
     taskType,
+    activityType: knowledgeActivity ? activityType : '',
+    activityOccurredAtKnown: occurredAtKnown,
     taskDifficulty: boundedScore(input?.taskDifficulty ?? input?.task_difficulty ?? input?.task?.difficulty),
     performance,
     ...(practiceReview ? { practiceReview, outcome: input.outcome } : {}),
@@ -244,7 +268,7 @@ function scoreEvent(event) {
     weighted += (Number(value) / 4) * weights[key];
     used += weights[key];
   }
-  if (!used && event.practiceReview) return null;
+  if (!used) return null;
   const evidenceScore = used ? weighted / used : 0;
   const hintPenalty = Number(event.performance?.hintLevel ?? 0) * 0.04;
   return Math.max(0, Math.min(1, evidenceScore - hintPenalty));
@@ -308,13 +332,13 @@ function computeKnowledgeState(studentId, knowledgePoint, events, options = {}) 
     && event.performance?.hintLevel != null && Number(event.performance.hintLevel) <= 1);
   const scoreSpread = recent.length >= 2 ? Math.max(...recent.map(scoreEvent)) - Math.min(...recent.map(scoreEvent)) : 0;
   let state = 'introduced';
-  if (ordered.length && !recent.length) state = 'practiced';
+  if (ordered.length && !recent.length) state = 'introduced';
   if (currentMastery >= 0.84 && independentStrong.length >= 2 && transferStrong.length >= 1) state = 'mastered';
   else if (currentMastery >= 0.72) state = 'mostly_mastered';
   else if (currentMastery >= 0.52) state = 'practiced';
   else if (currentMastery >= 0.28) state = 'developing';
   if (scoreSpread >= 0.5 && recent.length >= 3) state = 'unstable';
-  if (retention < 0.55 && ordered.length) state = 'needs_review';
+  if (retention < 0.55 && recent.length) state = 'needs_review';
   const completeness = recent.length ? recent.reduce((sum, event) => sum + SCORE_KEYS.filter((key) => event.performance?.[key] != null).length / SCORE_KEYS.length, 0) / recent.length : 0;
   const confidence = Math.max(0, Math.min(1, (1 - Math.exp(-ordered.length / 3)) * completeness * (0.7 + 0.3 * retention)));
   const reviewPriority = retention < 0.55 || recurringErrors.length >= 2 ? 'high'
@@ -451,9 +475,13 @@ function appendLearningEvents(studentRootPath, input = {}) {
   for (const event of accepted) {
     const existing = byId.get(event.eventId);
     if (existing) {
+      const sameActivityTime = existing.activityOccurredAtKnown === false && event.activityOccurredAtKnown === false
+        ? true
+        : existing.occurredAt === event.occurredAt;
       const sameOrigin = existing.studentId === event.studentId
         && existing.knowledgePoint?.id === event.knowledgePoint.id
-        && existing.occurredAt === event.occurredAt
+        && sameActivityTime
+        && String(existing.activityType || '') === String(event.activityType || '')
         && JSON.stringify(existing.evidenceRefs) === JSON.stringify(event.evidenceRefs)
         && JSON.stringify(existing.performance) === JSON.stringify(event.performance)
         && JSON.stringify(existing.practiceReview) === JSON.stringify(event.practiceReview)
@@ -563,6 +591,93 @@ function queryLearningTrajectory(studentRootPath, input = {}) {
     historyMarkdown: buildHistoryCandidate(studentId, states, allEvents), taxonomyVersion: taxonomy.version };
 }
 
+function knowledgeActivityType(event = {}) {
+  const explicit = String(event.activityType || '');
+  if (explicit) return explicit;
+  const type = String(event.taskType || '').toLocaleLowerCase('zh-CN');
+  if (/correct|订正/.test(type)) return 'correction';
+  if (/review|复习/.test(type)) return 'review';
+  if (/exam|assessment|quiz|test|测验|成果/.test(type)) return 'assessment';
+  if (/project|项目/.test(type)) return 'project_application';
+  if (/practice|card|exercise|练习|作业/.test(type)) return 'practice';
+  return 'material_exposure';
+}
+
+function knowledgeActivityProjection(studentRootPath, input = {}) {
+  const trajectory = queryLearningTrajectory(studentRootPath, input);
+  if (!trajectory.ok) return trajectory;
+  const rangeDays = Math.max(1, Math.min(366, Number(input.rangeDays || input.range || 7)));
+  const asOfMs = Number.isFinite(Date.parse(input.asOf || '')) ? Date.parse(input.asOf) : Date.now();
+  const fromMs = asOfMs - rangeDays * 86_400_000;
+  const allowedTypes = new Set((Array.isArray(input.activityTypes) ? input.activityTypes : []).map(String));
+  const events = trajectory.events.filter((event) => event.activityOccurredAtKnown !== false
+    && Number.isFinite(Date.parse(event.occurredAt))
+    && Date.parse(event.occurredAt) >= fromMs && Date.parse(event.occurredAt) <= asOfMs
+    && (!allowedTypes.size || allowedTypes.has(knowledgeActivityType(event))));
+  const days = new Map();
+  for (const event of events) {
+    const day = new Date(event.occurredAt).toISOString().slice(0, 10);
+    const current = days.get(day) || { date: day, total: 0, materialExposure: 0, studentActivity: 0, types: {} };
+    const type = knowledgeActivityType(event);
+    current.total += 1;
+    current.types[type] = Number(current.types[type] || 0) + 1;
+    if (type === 'material_exposure') current.materialExposure += 1;
+    else current.studentActivity += 1;
+    days.set(day, current);
+  }
+  const byPoint = new Map();
+  for (const event of events) {
+    const id = String(event.knowledgePoint?.id || '');
+    if (!id) continue;
+    const current = byPoint.get(id) || { knowledgePoint: event.knowledgePoint, activityCount: 0, activeDays: new Set(), materialExposureCount: 0, studentActivityCount: 0 };
+    const type = knowledgeActivityType(event);
+    current.activityCount += 1;
+    current.activeDays.add(new Date(event.occurredAt).toISOString().slice(0, 10));
+    if (type === 'material_exposure') current.materialExposureCount += 1;
+    else current.studentActivityCount += 1;
+    byPoint.set(id, current);
+  }
+  return {
+    ok: true,
+    studentId: trajectory.studentId,
+    rangeDays,
+    activityCount: events.length,
+    activeDays: new Set(events.map((event) => new Date(event.occurredAt).toISOString().slice(0, 10))).size,
+    materialExposureCount: events.filter((event) => knowledgeActivityType(event) === 'material_exposure').length,
+    studentActivityCount: events.filter((event) => knowledgeActivityType(event) !== 'material_exposure').length,
+    trend: [...days.values()].sort((left, right) => left.date.localeCompare(right.date)),
+    points: [...byPoint.values()].map((item) => ({ ...item, activeDays: item.activeDays.size }))
+      .sort((left, right) => right.activityCount - left.activityCount || String(left.knowledgePoint.label).localeCompare(String(right.knowledgePoint.label), 'zh-CN')),
+  };
+}
+
+function listStudentKnowledgePoints(studentRootPath, input = {}) {
+  const trajectory = queryLearningTrajectory(studentRootPath, input);
+  if (!trajectory.ok) return trajectory;
+  const activity = knowledgeActivityProjection(studentRootPath, { ...input, rangeDays: input.rangeDays || 7 });
+  const activityById = new Map((activity.points || []).map((item) => [item.knowledgePoint.id, item]));
+  const keyword = String(input.keyword || '').trim().toLocaleLowerCase('zh-CN');
+  const limit = Math.max(1, Math.min(100, Number(input.limit || 50)));
+  const offset = Math.max(0, Number(input.offset || 0));
+  const all = trajectory.states.map((state) => ({ ...state, activity: activityById.get(state.knowledgePoint.id) || {
+    activityCount: 0, activeDays: 0, materialExposureCount: 0, studentActivityCount: 0,
+  } })).filter((state) => !keyword || `${state.knowledgePoint.label} ${state.knowledgePoint.id} ${state.knowledgePoint.subject}`.toLocaleLowerCase('zh-CN').includes(keyword));
+  return { ok: true, studentId: trajectory.studentId, total: all.length, items: all.slice(offset, offset + limit), nextOffset: offset + limit < all.length ? offset + limit : null };
+}
+
+function rebuildKnowledgeProjection(studentRootPath, input = {}) {
+  const studentId = String(input.studentId || '').trim();
+  const current = readEventLedger(studentRootPath, studentId);
+  if (!current.ok) return { ok: false, code: current.code, studentId };
+  const total = current.events.length;
+  const cursor = Math.max(0, Math.min(total, Number(input.cursor || 0)));
+  const processed = Math.min(total, cursor + Math.max(1, Math.min(250, Number(input.limit || 250))));
+  if (processed < total) return { ok: true, studentId, processed, total, nextCursor: processed, complete: false };
+  const derived = rebuildDerived(studentRootPath, studentId, current.events, input);
+  return { ok: true, studentId, processed: total, total, nextCursor: null, complete: true,
+    knowledgePointCount: derived.states.length, misconceptionCount: derived.misconceptions.length };
+}
+
 function buildLearningConsultContext(studentRootPath, input = {}) {
   const question = String(input.question || '').trim();
   const taxonomy = loadTaxonomy();
@@ -609,10 +724,14 @@ module.exports = {
   eventsPath,
   rejectionsPath,
   historyCandidatePath,
+  knowledgeActivityProjection,
+  knowledgeActivityType,
+  listStudentKnowledgePoints,
   loadTaxonomy,
   misconceptionsPath,
   normalizeLearningEvent,
   queryLearningTrajectory,
+  rebuildKnowledgeProjection,
   removeLearningEventsBySource,
   retentionConfidence,
   scoreEvent,

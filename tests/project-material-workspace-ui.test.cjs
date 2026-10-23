@@ -24,6 +24,8 @@ test('Windows host project material center is wired through isolated asynchronou
     'rollbackProjectMaterialMigration', 'inspectProjectMaterialMigrationBackups',
     'cleanupProjectMaterialMigrationBackups',
     'openProjectMaterialOriginal',
+    'getProjectMaterialOverview', 'listProjectMaterialExceptions',
+    'runProjectMaterialAutomation', 'getProjectMaterialAutomationStatus',
   ];
   for (const method of methods) {
     assert.match(preload, new RegExp(`${method}\\(`));
@@ -38,7 +40,10 @@ test('Windows host project material center is wired through isolated asynchronou
 });
 
 test('four-view UI keeps suggestions human-controlled and classifications logically undoable', () => {
-  for (const label of ['项目资料', '待整理', '项目知识', '贡献证据']) assert.match(ui, new RegExp(label));
+  for (const label of ['项目资料', '需确认', '项目知识', '贡献证据']) assert.match(ui, new RegExp(label));
+  assert.match(ui, /只审异常/);
+  assert.match(ui, /立即处理/);
+  assert.match(ui, /系统文件已从业务资料和迁移异常中排除/);
   assert.match(ui, /为什么这样建议/);
   assert.match(ui, /确认分类并采用/);
   assert.match(ui, /仅保存分类/);

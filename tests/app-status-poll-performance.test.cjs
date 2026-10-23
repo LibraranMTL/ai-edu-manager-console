@@ -4,15 +4,16 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
+const { resolvePnpmVirtualStore } = require('../scripts/pnpm-virtual-store.cjs');
 const root = path.resolve(__dirname, '..');
 const ui = fs.readFileSync(path.join(root, 'src/main.tsx'), 'utf8');
-const pnpm = path.join(root, 'node_modules/.pnpm');
+const pnpm = resolvePnpmVirtualStore(root);
 const esbuild = require(path.join(pnpm, fs.readdirSync(pnpm).find(n => n.startsWith('esbuild@')), 'node_modules/esbuild'));
 const pollSource = ui.slice(ui.indexOf('let appStatusPending = false;'), ui.indexOf('const hostTimer = window.setInterval'));
-function fixture(api) {
+function fixture(api, section = 'settings') {
   let tick;
   const changes = [], document = { hidden: false };
-  const context = { document, bridge: () => api, window: { setInterval(callback, delay) { assert.equal(delay, 10000); tick = callback; return 1; } } };
+  const context = { document, bridge: () => api, activeSectionRef: { current: section }, window: { setInterval(callback, delay) { assert.equal(delay, 60000); tick = callback; return 1; } } };
   for (const [, name] of pollSource.matchAll(/\b(set[A-Z]\w+)\(/g)) context[name] = value => changes.push({ name, value });
   const code = esbuild.transformSync(`(() => { ${pollSource}; return { dispose() { appStatusDisposed = true; } }; })()`, { loader: 'ts' }).code;
   const controls = vm.runInNewContext(code, context);
@@ -35,7 +36,7 @@ test('hidden/disposed views do not poll or apply stale asynchronous responses', 
   assert.equal(f.changes.length, 0); await f.tick(); assert.equal(calls, 1);
 });
 test('legacy synchronous bridge remains supported and failed requests can retry', async () => {
-  const legacy = fixture({ getAppStatus: () => '{"workbuddyOpened":true}', getSharedInboxStatus: () => '{"count":4}' });
+  const legacy = fixture({ getAppStatus: () => '{"workbuddyOpened":true}', getSharedInboxStatus: () => '{"count":4}' }, 'inbox');
   await legacy.tick(); assert.equal(legacy.changes.find(c => c.name === 'setSharedInboxCount').value, 4);
   let count = 0;
   const retry = fixture({ async getAppStatusAsync() { if (++count === 1) throw Error('temporary'); return '{}'; } });

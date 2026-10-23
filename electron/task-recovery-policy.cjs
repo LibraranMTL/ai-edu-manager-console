@@ -30,7 +30,10 @@ function retryAfterTime(value, now) {
 function taskRetryDecision(task, failure, { now = Date.now(), random = Math.random, stopConfirmed = false, retryAfter } = {}) {
   const category = classifyTaskFailure(failure);
   const attempts = Math.max(0, Number(task.attempt || 0));
-  const limit = Math.min(3, Math.max(1, Number(task.maxAttempts || 1)));
+  // Two routing rounds of up to three providers.  The host resets the provider
+  // exclusion set between rounds while this global execution budget prevents
+  // unbounded retries.
+  const limit = Math.min(6, Math.max(1, Number(task.maxAttempts || 1)));
   const retryable = ['busy', 'rate_limit', 'network'].includes(category);
   const allowed = retryable && stopConfirmed && !taskExecutionUnresolved(task) && task.autoRetry !== false && attempts < limit;
   const earliest = Math.max(now + (attempts < 2 ? 60000 : 300000), retryAfterTime(retryAfter, now));
@@ -48,7 +51,7 @@ function taskRetryEligible(task, now = Date.now()) {
   return Boolean(saved?.version === VERSION && saved.stopConfirmed === true && !taskExecutionUnresolved(task)
     && retryStatuses.has(task.status) && task.autoRetry !== false
     && saved.cycleKey === cycle(task) && saved.executionId === String(task.executionId || '')
-    && saved.attempt === Number(task.attempt || 0) && Number(task.attempt || 0) < Math.min(3, Number(task.maxAttempts || 1))
+    && saved.attempt === Number(task.attempt || 0) && Number(task.attempt || 0) < Math.min(6, Number(task.maxAttempts || 1))
     && task.nextRetryAt && saved.nextRetryAt === task.nextRetryAt && Number.isFinite(Date.parse(task.nextRetryAt))
     && Date.parse(task.nextRetryAt) <= now);
 }

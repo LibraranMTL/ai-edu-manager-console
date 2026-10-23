@@ -86,10 +86,11 @@ test('permission declaration blocks traversal, undeclared operations and out-of-
   assert.equal(validatePermissionDeclaration({ ...base, expectedOutput: { draftPath: path.resolve('D:/other/daily.md') } }, allowlist).ok, false);
 });
 
-test('fallback excludes attempted adapters and ends at manual after the retry budget', () => {
+test('fallback excludes attempted adapters and ends at manual after three providers in one routing round', () => {
   assert.equal(selectFallbackAdapter({ selectedAdapter: 'openclaw' }, ['codex'], 1, 3), 'openclaw');
   assert.equal(selectFallbackAdapter({ selectedAdapter: 'openclaw' }, ['openclaw'], 1, 3), 'manual');
-  assert.equal(selectFallbackAdapter({ selectedAdapter: 'qclaw' }, [], 3, 3), 'manual');
+  assert.equal(selectFallbackAdapter({ selectedAdapter: 'qclaw' }, [], 3, 6), 'qclaw');
+  assert.equal(selectFallbackAdapter({ selectedAdapter: 'qclaw' }, ['codex', 'openclaw', 'workbuddy'], 3, 6), 'manual');
 });
 
 test('managed cron produces deterministic daily and interval occurrences', () => {

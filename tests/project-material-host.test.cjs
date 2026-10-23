@@ -214,7 +214,7 @@ test('publication transport preserves path-neutral material identity and rejects
 test('old digest command/receipt routes reject new-mode projects before any legacy mutation', async (t) => {
   const f = await fixture(t); const context = f.mainContext();
   context.mutableProject = () => ({ project: f.project });
-  context.readProjects = () => [f.project]; context.normalizeProject = (item) => item;
+  context.readProjects = () => [f.project]; context.readProjectMetadata = () => [f.project]; context.normalizeProject = (item) => item;
   context.ensureProjectWorkspace = () => { throw new Error('unsafe legacy workspace mutation'); };
   for (const name of ['getProjectDigestCommand', 'applyProjectDigestReceiptText', 'syncProjectDigestResult', 'registerProjectDigestBatch', 'writeProjectDigestState']) {
     vm.runInContext(extract(name), context);
@@ -236,7 +236,7 @@ async function publicationFixture(t, changeDuringPreparation) {
   const context = f.mainContext();
   Object.assign(context, require('../electron/collaboration-project-publication.cjs'), {
     app: { getPath: () => f.root },
-    readProjects: () => structuredClone(projects),
+    readProjects: () => structuredClone(projects), readProjectMetadata: () => structuredClone(projects),
     writeProjects: (value) => { projects = structuredClone(value); },
     normalizeProject: (value) => value, normalizeProjectMetadata: (value) => value,
     ensureProjectWorkspace: (value) => value,

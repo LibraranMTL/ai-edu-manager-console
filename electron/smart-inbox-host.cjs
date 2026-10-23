@@ -80,7 +80,7 @@ function createSmartInboxHost(h) {
     if (source.type === 'share') return h.capture().resolveStored(source.studentId, locator);
     const request = JSON.parse(locator);
     const resolved = h.resolveConversation(student(source.studentId), request);
-    if (!resolved) throw Error('会话资料已失效或不属于该学生');
+    if (!resolved) throw Object.assign(Error('源会话已移入回收站或彻底删除，不能继续投递；如仍在回收站，请先恢复会话。'), { code: 'original_missing' });
     const file = resolved.asset.storedPath, stat = await fs.lstat(file);
     if (!stat.isFile() || stat.isSymbolicLink()) throw Error('会话资料不是普通文件');
     const { realDirectory } = require('./download-inbox.cjs'); await realDirectory(path.dirname(file));

@@ -22,11 +22,20 @@ function mainContext(f, overrides = {}, { reuseProject = false } = {}) {
   const reviewFile = path.join(growthDir, 'review.json');
   const webContents = { mainFrame: {} }; const event = { sender: webContents, senderFrame: webContents.mainFrame };
   const runs = []; const runFile = path.join(f.project.contributionPath, 'promotion-run-log.json');
+  const readProjectRows = () => { const data = JSON.parse(fs.readFileSync(projectFile)); return Array.isArray(data) ? data : data.projects; };
+  const writeProjectRows = (rows) => fs.writeFileSync(projectFile, JSON.stringify(rows));
+  const projectStore = {
+    get: (id) => readProjectRows().find((item) => String(item.id) === String(id)) || null,
+    listMetadata: () => readProjectRows(),
+    upsert: (next) => writeProjectRows(readProjectRows().map((item) => String(item.id) === String(next.id) ? next : item)),
+  };
   const context = { ...evidenceApi, ...hostApi, createProjectArchiveTransactions, createProjectMaterialAccess, verifiedStudentEvidenceForPublication, fs, path, crypto,
     projectArchiveStartupReady: true, projectArchiveStartupManager: () => ({ register: async () => {}, complete: async () => {} }),
     projectArchiveRuntime: { run: (work) => work(), recover: (work) => work(), markPrepared() {}, assertFile() {}, status: () => ({ ready: true }) },
     mainWindow: { isDestroyed: () => false, webContents },
-    readProjects: () => { const data = JSON.parse(fs.readFileSync(projectFile)); return Array.isArray(data) ? data : data.projects; }, writeProjects: (rows) => fs.writeFileSync(projectFile, JSON.stringify(rows)),
+    readProjects: readProjectRows, readProjectMetadata: readProjectRows, writeProjects: writeProjectRows,
+    assertProjectStateReady() {}, projectStateStore: () => projectStore,
+    changedGrowthProjectStudentIds: () => [], markGrowthStudentsDirty() {},
     normalizeProject: (p) => p, normalizeProjectMetadata: (p) => p, writeProjectStagingIndex() {},
     projectsPath: () => projectFile, assetIndexPath: () => path.join(f.root, 'assets.json'), readStudentsIndex: () => [student], toHostStudent: (s) => s,
     growthEvidenceReviewPath: () => reviewFile, growthModelDirForStudent: () => growthDir,

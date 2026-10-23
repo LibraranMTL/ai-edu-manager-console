@@ -6,6 +6,7 @@ const {
 } = require('./project-material-contract.cjs');
 const { createProjectMaterialStore, validateRegistry } = require('./project-materials.cjs');
 const { readProjectExternalRoots } = require('./project-external-roots.cjs');
+const { projectMaterialRecordKind, materialContentGroupId } = require('./project-material-automation.cjs');
 
 const registryCache = new Map();
 const keyPath = (value) => process.platform === 'win32' ? value.toLowerCase() : value;
@@ -65,32 +66,55 @@ function readProjectMaterialIndexSync(project) {
 
 function projectMaterialDigestProjection(project, index) {
   validateRegistry(index, project.id);
-  const adopted = index.materials.filter((item) => item.adoption.state === 'accepted');
+  const business = index.materials.filter((item) => projectMaterialRecordKind(item) === 'user_material');
+  const adopted = business.filter((item) => item.adoption.state === 'accepted');
   const available = adopted.filter((item) => !['missing', 'unavailable'].includes(item.availability));
   const missing = adopted.filter((item) => item.availability === 'missing');
   const unavailable = adopted.filter((item) => item.availability === 'unavailable');
-  const pending = available.filter((item) => item.processing.state !== 'completed'
+  const pendingReferences = available.filter((item) => item.processing.state !== 'completed'
     || item.processing.processedVersion !== item.version);
-  const running = pending.filter((item) => item.processing.state === 'running');
-  const failed = pending.filter((item) => ['failed', 'unsupported'].includes(item.processing.state));
-  const asFile = (item) => ({ materialId: item.materialId, version: item.version, sha256: item.sha256,
+  const groupByContent = (records) => {
+    const groups = new Map();
+    for (const item of records) {
+      const key = `${String(item.sha256 || '').toLowerCase()}|${item.processing?.pipelineVersion || 'project-material-v1'}`;
+      const group = groups.get(key) || [];
+      group.push(item);
+      groups.set(key, group);
+    }
+    return [...groups.values()];
+  };
+  const pendingGroups = groupByContent(pendingReferences);
+  const runningGroups = pendingGroups.filter((group) => group.some((item) => item.processing.state === 'running'));
+  const failedGroups = pendingGroups.filter((group) => group.some((item) => ['failed', 'unsupported'].includes(item.processing.state)));
+  const asFile = (group) => {
+    const item = group[0];
+    return { materialId: item.materialId, version: item.version, sha256: item.sha256,
     sha1: item.sha1, size: item.size, filename: path.posix.basename(item.location.relativePath),
     relativePath: item.location.relativePath, locationKind: item.location.kind,
-    changeType: item.version > 1 ? 'modified' : 'added' });
+    changeType: item.version > 1 ? 'modified' : 'added',
+    contentGroupId: materialContentGroupId(project.id, item.sha256),
+    pipelineVersion: item.processing?.pipelineVersion || 'project-material-v1',
+    referenceCount: group.length,
+    referenceMaterialIds: group.map((record) => record.materialId),
+    referencePaths: group.map((record) => record.location.relativePath) };
+  };
   return { version: 3, projectId: project.id, projectName: project.name || '',
     materialStorageMode: 'workspace-v1', registryRevision: index.revision,
-    status: running.length ? 'digesting' : failed.length ? 'failed' : pending.length ? 'pending' : 'idle',
-    message: pending.length ? `有 ${pending.length} 份已采用资料待处理；文件变化由后台扫描核对。`
+    status: runningGroups.length ? 'digesting' : failedGroups.length ? 'failed' : pendingGroups.length ? 'pending' : 'idle',
+    message: pendingGroups.length ? `有 ${pendingGroups.length} 种已采用内容待处理（${pendingReferences.length} 个位置）；文件变化由后台扫描核对。`
       : missing.length || unavailable.length
         ? `有 ${missing.length} 份已采用原件缺失、${unavailable.length} 份来源暂不可访问，已暂停相应消化；请恢复来源后重新扫描。`
         : '暂无已登记的待处理资料。',
     rawPath: project.rawPath, digestFile: path.join(project.managerPath, 'project-materials', 'registry.json'),
-    rawFileCount: adopted.length, materialCount: index.materials.length,
+    rawFileCount: adopted.length, materialCount: business.length,
+    uniqueContentCount: new Set(business.map((item) => item.sha256)).size,
+    systemGeneratedCount: index.materials.length - business.length,
     missingCount: missing.length,
     unavailableCount: unavailable.length,
-    candidateCount: index.materials.filter((item) => item.adoption.state === 'candidate').length,
-    pendingCount: pending.length, submittedCount: running.length,
-    pendingFiles: pending.map(asFile), submittedFiles: running.map(asFile),
+    candidateCount: business.filter((item) => item.adoption.state === 'candidate').length,
+    pendingCount: pendingGroups.length, pendingReferenceCount: pendingReferences.length,
+    submittedCount: runningGroups.length,
+    pendingFiles: pendingGroups.map(asFile), submittedFiles: runningGroups.map(asFile),
     digestBatchId: '', digestSubmittedAt: '', lastDigestAt: index.commits.map((item) => item.committedAt || '').sort().at(-1) || '',
     digestedFiles: adopted.filter((item) => item.processing.state === 'completed').map((item) => item.materialId),
     digestManifest: {}, digestBatches: [], knowledgeGovernance: null, updatedAt: index.updatedAt || '' };

@@ -75,17 +75,19 @@ test('quick capture uses mutually exclusive selected styles instead of a permane
 test('agent companion toolbar uses approved single-row micro sizes', () => {
   const html = read('electron', 'quick-capture.html');
   const host = read('electron', 'main.cjs');
-  assert.match(host, /QUICK_CAPTURE_COLLAPSED_HEIGHT = 34/);
-  assert.match(host, /QUICK_CAPTURE_EXPANDED_HEIGHT = 34/);
-  assert.match(host, /QUICK_CAPTURE_PREFERRED_WIDTH = 340/);
+  assert.match(host, /QUICK_CAPTURE_COLLAPSED_HEIGHT = 29/);
+  assert.match(host, /QUICK_CAPTURE_EXPANDED_HEIGHT = 29/);
+  assert.match(host, /QUICK_CAPTURE_PREFERRED_WIDTH = 252/);
+  assert.match(host, /frame: false, useContentSize: true/);
   assert.match(host, /quickCaptureExpanded \? QUICK_CAPTURE_EXPANDED_HEIGHT : QUICK_CAPTURE_COLLAPSED_HEIGHT/);
   assert.match(host, /function resizeQuickCaptureWindow\(width, height\)/);
   assert.match(host, /window\.setBounds\(next, false\)/);
   assert.match(host, /current\.width !== width \|\| current\.height !== height/);
   assert.match(host, /\}, 80\)/);
   assert.doesNotMatch(host, /quickCaptureWindow\.setSize\(activeCaptureRuntime/);
-  assert.match(html, /\.shell\{height:100%;padding:2px 3px/);
-  assert.match(html, /\.bar\{display:flex;align-items:center;gap:1px;height:28px;min-height:28px/);
+  assert.match(html, /\.shell\{height:100%;padding:1px/);
+  assert.match(html, /\.bar\{display:flex;align-items:center;gap:0;height:26px;min-height:26px/);
+  assert.doesNotMatch(html, /\.action \.label\{display:none/);
   assert.match(html, /data-action="collect-menu"/);
   assert.match(html, /data-action="organize-menu"/);
   assert.match(html, /data-action="learning"/);

@@ -168,7 +168,7 @@ test('startup blocks rather than overwrite user changes after a partial commit',
   assert.equal(f.tasks()[0].status, 'failed');
 });
 
-test('native recovery gate offers diagnostics and exit without starting business services', async () => {
+test('native recovery gate offers diagnostics and keeps only project writes disabled', async () => {
   let checks = 0; let opened = ''; let quits = 0; const choices = [1, 0];
   const ctx = { projectArchiveStartupReady: false,
     projectArchiveRuntime: { recover: (work) => work() },
@@ -176,52 +176,26 @@ test('native recovery gate offers diagnostics and exit without starting business
     dialog: { showMessageBox: async () => ({ response: choices.shift() }) },
     shell: { openPath: async (file) => { opened = file; return ''; } }, app: { quit: () => { quits++; } } };
   bind(ctx, 'prepareProjectArchiveStartup'); assert.equal(await ctx.prepareProjectArchiveStartup(), false);
-  assert.equal(ctx.projectArchiveStartupReady, false); assert.equal(checks, 2); assert.equal(opened, 'synthetic-diagnostic.json'); assert.equal(quits, 1);
+  assert.equal(ctx.projectArchiveStartupReady, false); assert.equal(checks, 2); assert.equal(opened, 'synthetic-diagnostic.json'); assert.equal(quits, 0);
 });
 
-test('actual startup body does not launch any writer or business window until recovery readiness resolves', async () => {
-  const start = source.indexOf('  app.whenReady().then(async () => {');
-  const end = source.indexOf('\n  });', start) + 6;
+test('actual startup paints the shell before deferred database and recovery work', () => {
+  const start = source.indexOf('  app.whenReady().then(() => {');
+  const end = source.indexOf("app.on('before-quit'", start);
   assert.ok(start > 0 && end > start);
-  for (const ready of [false, true]) {
-    let release; const waiting = new Promise((resolve) => { release = resolve; }); const calls = [];
-    const ctx = { app: { whenReady: () => Promise.resolve(), quit: () => calls.push('quit') }, dialog: { showErrorBox: () => calls.push('startup-error') }, prepareHostMigrationStateStartup: async () => true, prepareProjectRecordLifecycleStartup: async () => true, prepareProjectArchiveStartup: () => waiting,
-      restorePersistedAgentAuthorization: async () => calls.push('auth-restore'),
-      finishPersistedAuthorizationHealthCheck: () => calls.push('auth-health'),
-      assetStore: () => ({}), assetDuplicateGovernance: () => ({ recover: async () => calls.push('asset-recovery') }),
-      ensureTaskCenterWorkspace() {}, taskStoreGuard: { initialize: async () => {} }, taskStorePath: () => 'synthetic-task-store', powerMonitor: { on() {} }, taskPowerRecovery: {},
-      migrateTaskQueueGovernance: async () => calls.push('task-governance-migration'),
-      repairTaskCenterRuntimeState: () => ({ ok: true, skipped: true }),
-      prepareProjectUploadIntakeStartup: async () => [], projectUploadRecoveryIssues: [],
-      recoverInterruptedProjectMaterialMigrations: async () => calls.push('material-migration'),
-      getCloudReportRuntime: () => { calls.push('cloud'); return Promise.resolve(); },
-      ensureCaptureTimelineScheduler: () => ({ start: () => calls.push('capture') }), captureVisionConsent: () => ({ enabled: false }),
-      readCollaborationState: () => ({ enabled: false }), taskAutomationEnabled: () => false, process: { env: {} },
-      screen: { on: () => calls.push('screen-listener') }, setInterval: () => 1,
-      positionQuickCaptureWindow: () => calls.push('quick-capture-position') };
-    for (const name of ['createWindow', 'createCaptureTray', 'loadQuickCaptureSettings', 'updateCaptureControlWindow', 'registerCaptureShortcuts', 'restoreHeavyTaskRetries', 'startDigestWorkflowMonitor', 'startTaskReadMaintenance', 'startGrowthRefreshMonitor',
-      'startDirectDeliveryMonitor', 'startAgentLifecycleDrainMonitor', 'startAgentLifecycleInstallMonitor', 'startStudentArchiveSyncWatchers', 'scheduleTeamKnowledgeIndexWarmup']) ctx[name] = () => calls.push(name);
-    Function('scope', `with (scope) { ${source.slice(start, end)} }`)(ctx);
-    await new Promise((resolve) => setImmediate(resolve)); assert.deepEqual(calls, []);
-    release(ready); await new Promise((resolve) => setImmediate(resolve));
-    if (ready) { assert.ok(calls.includes('createWindow')); assert.ok(calls.includes('startGrowthRefreshMonitor')); assert.ok(calls.includes('startTaskReadMaintenance')); assert.ok(!calls.includes('startup-error')); assert.ok(calls.indexOf('auth-restore') < calls.indexOf('createWindow')); assert.ok(calls.indexOf('auth-health') > calls.indexOf('createWindow')); }
-    else assert.deepEqual(calls, []);
-  }
+  const startup = source.slice(start, end);
+  assert.ok(startup.indexOf('createWindow();') < startup.indexOf('initializeProjectStateAsync()'));
+  assert.match(startup, /did-finish-load/);
+  assert.match(startup, /setTimeout\(\(\) => \{/);
+  assert.ok(startup.indexOf('businessStartupReady = true') > startup.indexOf('prepareProjectArchiveStartup()'));
 });
 
-test('project record recovery gates archive startup and the business window', async () => {
-  const start = source.indexOf('  app.whenReady().then(async () => {');
-  const end = source.indexOf('\n  });', start) + 6;
-  const calls = [];
-  const ctx = { app: { whenReady: () => Promise.resolve(), quit: () => calls.push('quit') },
-    dialog: { showErrorBox: () => calls.push('startup-error') },
-    prepareHostMigrationStateStartup: async () => { calls.push('migration'); return true; },
-    prepareProjectRecordLifecycleStartup: async () => { calls.push('record'); return false; },
-    prepareProjectArchiveStartup: async () => { calls.push('archive'); return true; },
-    createWindow: () => calls.push('window') };
-  Function('scope', `with (scope) { ${source.slice(start, end)} }`)(ctx);
-  await new Promise((resolve) => setImmediate(resolve));
-  assert.deepEqual(calls, ['migration', 'record']);
+test('project record recovery failure degrades only the project subsystem after the window opens', () => {
+  const startup = source.slice(source.indexOf('  app.whenReady().then(() => {'), source.indexOf("app.on('before-quit'"));
+  assert.ok(startup.indexOf('createWindow();') < startup.indexOf('prepareProjectRecordLifecycleStartup()'));
+  assert.match(startup, /phase: 'record_recovery_required'/);
+  assert.match(startup, /其他功能可继续使用/);
+  assert.doesNotMatch(startup, /record_recovery_required[\s\S]{0,300}app\.quit\(\)/);
 });
 
 test('cancelled journal survives task-settlement failure and is reconciled on the next startup without replay', async (t) => {

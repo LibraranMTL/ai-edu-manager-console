@@ -71,7 +71,7 @@ async function fixture(t) {
     readCaptureStore: () => ({ sessions: [{ id: session.id }] }),
     readCaptureSessionDetail: () => session,
     readStudentsIndex: () => [student],
-    readProjects: () => [currentProject],
+    readProjects: () => [currentProject], readProjectMetadata: () => [currentProject],
     normalizeProjectMetadata: (value) => value,
     findStudent: (id) => String(id) === student.id ? student : null,
     writeProjects: (projects) => { currentProject = projects.find((item) => item.id === project.id); },

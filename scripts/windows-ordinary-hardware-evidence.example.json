@@ -1,0 +1,9 @@
+{
+  "launchSucceeded": false,
+  "assetFirstScreenResponsive": false,
+  "rebuildRemainedInteractive": false,
+  "rebuildCancelSucceeded": false,
+  "backupRestoreSucceeded": false,
+  "physicalStudentFilesUnchanged": false,
+  "notes": "Copy this file outside the source tree, record hands-on results on an 8-16 GiB Windows machine with a standard SSD, and pass it to acceptance:windows:ordinary."
+}

@@ -2,8 +2,9 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const assert = require('node:assert/strict');
+const { resolvePnpmVirtualStore } = require('./pnpm-virtual-store.cjs');
 const root = path.resolve(__dirname, '..');
-const pnpm = path.join(root, 'node_modules/.pnpm');
+const pnpm = resolvePnpmVirtualStore(root);
 const asar = require(path.join(pnpm, fs.readdirSync(pnpm).find(n => n.startsWith('@electron+asar@')), 'node_modules/@electron/asar'));
 const { compactPng } = require('./compact-png-resources.cjs');
 const [baselineRoot, candidateRoot, output] = process.argv.slice(2).map(p => path.resolve(p));

@@ -6,6 +6,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 const { bundleSkillArchiveRuntime } = require('../scripts/build-skill-runtime.cjs');
+const { resolvePnpmVirtualStore } = require('../scripts/pnpm-virtual-store.cjs');
 const repo = path.resolve(__dirname, '..');
 
 test('release Skills service scans and parses ZIP without any source node_modules', async () => {
@@ -19,7 +20,7 @@ test('release Skills service scans and parses ZIP without any source node_module
   const red = spawnSync(process.execPath, args, { env, encoding: 'utf8', windowsHide: true, timeout: 20000 });
   assert.notEqual(red.status, 0, 'unbundled package must reproduce original regression');
   assert.match(red.stderr, /Cannot find module 'yauzl'/);
-  const pnpm = path.join(repo, 'node_modules/.pnpm');
+  const pnpm = resolvePnpmVirtualStore(repo);
   const esbuild = require(path.join(pnpm, fs.readdirSync(pnpm).find(name => name.startsWith('esbuild@')), 'node_modules/esbuild'));
   bundleSkillArchiveRuntime(repo, stage, esbuild);
   const green = spawnSync(process.execPath, args, { env, encoding: 'utf8', windowsHide: true, timeout: 20000 });

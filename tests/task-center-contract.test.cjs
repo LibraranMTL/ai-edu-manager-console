@@ -144,7 +144,8 @@ test('digest preflight failures are persisted and rendered beside the task actio
 test('managed OpenClaw cron is disabled externally and scheduled by the task center', () => {
   assert.match(main, /isManagedOpenClawCronJob/);
   assert.match(main, /\['cron', 'disable', definition\.id/);
-  assert.match(main, /scheduledReportKinds\.has\(task\.kind\)/);
+  assert.match(main, /automaticTaskWakeDecision\(task\)\.eligible/);
+  assert.match(main, /scheduleAutomaticTaskWakeups\(due\.map/);
   assert.match(main, /openclaw-managed-cron\.json/);
 });
 

@@ -5,7 +5,7 @@ type Schedule = { mode: 'manual' | 'interval' | 'daily' | 'weekly'; minutes: num
 type Target = { studentId: string; type: 'student' | 'project'; id: string; categoryId?: string };
 type Source = { id?: string; name: string; type?: string; folder: string; studentId: string; target: Target | null; enabled: boolean; automatic: boolean; confidenceThreshold?: number; staging: boolean; originalMode: string; recursive: boolean; allHistory: boolean; schedule: Schedule | null; detached?: boolean; managedRouting?: boolean; activationAt?: string; error?: string; waitingReason?: string; lastScanAt?: string; nextRunAt?: string };
 type Row = { id: string; revision: number; name: string; sourceId: string; sourceName: string; sourceType?: string; studentId: string; status: string; message: string; proposedTarget?: Target; target?: Target; reason?: string; size: number; manualLocked?: boolean; originalMissing?: boolean; blockReason?: { code: string; category: string; recoverable: boolean; message: string }; execution?: { stage: string; providerId: string; switched: boolean } };
-type AgentStatus = { providerId: string; label: string; effectiveProviderId?: string; state: 'ready' | 'login_required' | 'qualification_required' | 'cooldown' | 'unsupported' | 'unavailable'; automaticReady: boolean; message: string; fallbackStatus?: { state: string }; fallback?: { enabled: boolean; version: number; providerId?: string }; login?: { state: string; message: string } };
+type AgentStatus = { providerId: string; label: string; effectiveProviderId?: string; state: 'ready' | 'channel_ready' | 'login_required' | 'qualification_required' | 'cooldown' | 'unsupported' | 'unavailable'; automaticReady: boolean; message: string; fallbackStatus?: { state: string }; fallback?: { enabled: boolean; version: number; providerId?: string }; login?: { state: string; message: string } };
 export type SmartInboxApi = { smartInboxAction?: (action: string, input?: unknown) => Promise<string>; onSmartInboxChanged?: (callback: () => void) => () => void };
 const daily: Schedule = { mode: 'daily', minutes: 1440, time: '20:00', weekday: 1 };
 const statuses: Record<string, string> = { pending: '等待分析', analyzing: '分析中', review: '需要确认', delivered: '已投递', ignored: '已忽略', retry: '等待重试', delivering: '投递中', archive_pending: '原件／分类待核对', delivery_reconcile: '投递待核对', execution_unknown: '执行待核对' };
@@ -40,21 +40,32 @@ export function SmartInboxPanel({ studentId, students, projects, api, legacy, on
   function changeViewStudent(id: string) { viewStudentRef.current = id; setViewStudent(id); setTargetStudent(id); setTargetId(''); setSourceFilter(''); setPage(1); setSelected([]); setDetail(null); setAgentStatus(null); }
   const [categories, setCategories] = useState<{ categoryId: string; name: string }[]>([]), [detail, setDetail] = useState<Record<string, unknown> | null>(null);
   const mounted = useRef(true), generation = useRef(0), running = useRef(false), lastUndo = useRef<{ id: string; revision: number }[]>([]);
+  const refreshInFlight = useRef(new Map<string, Promise<void>>());
   const call = useCallback(async <T,>(action: string, input: unknown = {}): Promise<T> => {
     if (!api.smartInboxAction) throw Error('请更新Windows主机');
     const result = JSON.parse(await api.smartInboxAction(action, input)); if (!result.ok) throw Error(result.message || '操作未完成'); return result.data;
   }, [api]);
   useEffect(() => { mounted.current = true; return () => { mounted.current = false; generation.current++; }; }, []);
   const refresh = useCallback(async () => {
-    const request = ++generation.current;
-    const [state, list, currentAgentStatus] = await Promise.all([
-      call<{ sources: Source[]; defaults: { schedule: Schedule }; error: string }>('sources'),
-      call<{ rows: Row[]; total: number }>('list', { status: tab === 'delivered' ? 'delivered' : tab === 'ignored' ? 'ignored' : 'pending', sourceId: viewStudentRef.current === viewStudent ? sourceFilter : '', studentId: viewStudentRef.current, page: viewStudentRef.current === viewStudent ? page : 1 }),
-      viewStudentRef.current ? call<AgentStatus>('agentStatus', { studentId: viewStudentRef.current }) : Promise.resolve(null),
-    ]);
-    if (!mounted.current || request !== generation.current) return;
-    setSources(state.sources); setDefaults(state.defaults.schedule); setRows(list.rows); setTotal(list.total); setSelected([]); setAgentStatus(currentAgentStatus);
-    if (state.error) setMessage(state.error);
+    const student = viewStudentRef.current;
+    const key = JSON.stringify({ tab, sourceFilter: student === viewStudent ? sourceFilter : '', student, page: student === viewStudent ? page : 1 });
+    const pending = refreshInFlight.current.get(key);
+    if (pending) return pending;
+    const work = (async () => {
+      const request = ++generation.current;
+      const [state, list, currentAgentStatus] = await Promise.all([
+        call<{ sources: Source[]; defaults: { schedule: Schedule }; error: string }>('sources'),
+        call<{ rows: Row[]; total: number }>('list', { status: tab === 'delivered' ? 'delivered' : tab === 'ignored' ? 'ignored' : 'pending', sourceId: student === viewStudent ? sourceFilter : '', studentId: student, page: student === viewStudent ? page : 1 }),
+        student ? call<AgentStatus>('agentStatus', { studentId: student }) : Promise.resolve(null),
+      ]);
+      if (!mounted.current || request !== generation.current) return;
+      setSources(state.sources); setDefaults(state.defaults.schedule); setRows(list.rows); setTotal(list.total); setSelected([]); setAgentStatus(currentAgentStatus);
+      if (state.error) setMessage(state.error);
+    })();
+    refreshInFlight.current.set(key, work);
+    try { await work; } finally {
+      if (refreshInFlight.current.get(key) === work) refreshInFlight.current.delete(key);
+    }
   }, [call, page, sourceFilter, viewStudent, tab]);
   useEffect(() => { if (tab !== 'legacy') void refresh().catch(e => { if (mounted.current) setMessage(e.message); }); }, [refresh, tab]);
   useEffect(() => api.onSmartInboxChanged?.(() => { void refresh().catch(e => { if (mounted.current) setMessage(e.message); }); }), [api, refresh]);
@@ -94,6 +105,7 @@ export function SmartInboxPanel({ studentId, students, projects, api, legacy, on
   const authorizationRecovered = authorizationRows && agentStatus?.state === 'ready';
   return <section className="panel smart-inbox" aria-label="智能资料收件箱">
     <div className="panel-heading"><div><h2>资料收件箱</h2><p>一次配置来源，可信资料自动投递；需要判断的资料集中确认。</p></div><button disabled={busy} className="secondary" onClick={() => void run(refresh)}>刷新状态</button></div>
+    {message ? <p className="notice" role="status" aria-live="polite">{message}</p> : null}
     <div className="actions" role="tablist" aria-label="资料处理视图">{[['pending', '待处理'], ['delivered', '已投递'], ['sources', '来源管理'], ['ignored', '已忽略'], ['legacy', '原下载／分享入口']].map(([value, label]) => <button key={value} role="tab" aria-selected={tab === value} className={tab === value ? 'primary' : 'secondary'} onClick={() => { setTab(value); setPage(1); setSelected([]); setDetail(null); }}>{label}</button>)}</div>
     {tab === 'legacy' ? legacy : tab === 'sources' ? <>
       <p>新来源默认每天20:00检查最近30天资料，保留原件。关闭应用、休眠或系统繁忙时会延后执行。</p>
@@ -134,7 +146,7 @@ export function SmartInboxPanel({ studentId, students, projects, api, legacy, on
         {agentStatus.state === 'login_required' ? <><p>点击授权后自动打开官方登录页；不需要上传JSON或选择程序目录。</p><div className="actions"><button disabled={busy} onClick={() => void recoverAgent('authorizeAgent')}>{agentStatus.providerId === 'workbuddy' ? '自动准备并授权 WorkBuddy' : `重新授权 ${agentStatus.label}`}</button>
           <button disabled={busy} onClick={() => void recoverAgent('continueAgent')}>我已完成登录，继续</button></div></> : null}
         {agentStatus.login?.state === 'running' ? <p>{agentStatus.login.message}</p> : null}
-        {['ready', 'qualification_required'].includes(agentStatus.state) ? <button disabled={busy} onClick={() => void recoverAgent('continueAgent', { providerId: agentStatus.effectiveProviderId || agentStatus.providerId })}>继续待办（复用已有登录）</button> : null}
+        {['ready', 'channel_ready', 'qualification_required'].includes(agentStatus.state) ? <button disabled={busy} onClick={() => void recoverAgent('continueAgent', { providerId: agentStatus.effectiveProviderId || agentStatus.providerId })}>继续待办（复用已有登录）</button> : null}
         {['codex', 'workbuddy'].includes(agentStatus.providerId) ? <>
           <p>允许备用 Agent 后，本学生的资料可能提交给{agentStatus.providerId === 'workbuddy' ? ' Codex' : ' WorkBuddy'}。仅在主 Agent 尚未发送正文时切换；未知执行需先核对。</p>
           <button disabled={busy} onClick={() => void recoverAgent('saveFallback', { enabled: !agentStatus.fallback?.enabled,
@@ -162,7 +174,7 @@ export function SmartInboxPanel({ studentId, students, projects, api, legacy, on
         <label>项目<select value={targetId} onChange={e => setTargetId(e.target.value)}><option value="">学生原始资料库</option>{validProjects.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}</select></label>
         {categories.length ? <label>分类<select value={categoryId} onChange={e => setCategoryId(e.target.value)}><option value="">保留现有分类／新资料不指定</option>{categories.map(c => <option key={c.categoryId} value={c.categoryId}>{c.name || c.categoryId}</option>)}</select></label> : null}</div>
         {manualCrossStudent ? <p>将所选资料更正为{students.find(s => s.id === targetStudent)?.name}。旧建议作废；已有引用保留更正记录。</p> : null}
-        <button disabled={busy || !targetStudent || !selected.length || selectedRows.some(r => r.originalMissing || !['pending', 'review', 'retry', 'delivered'].includes(r.status))} onClick={() => void run(() => decide('correct'))}>{manualCrossStudent ? '更正学生并按此位置投递' : '按此位置投递／纠正'}</button></details> : null}
+        <button disabled={busy || !targetStudent || !selected.length || selectedRows.some(r => r.originalMissing || !['pending', 'review', 'retry', 'delivered'].includes(r.status))} onClick={() => void run(async () => { setMessage('正在校验原件并投递所选资料…'); await decide('correct'); })}>{manualCrossStudent ? '更正学生并按此位置投递' : '按此位置投递／纠正'}</button></details> : null}
       <div style={{ overflowX: 'auto' }}><table style={{ width: '100%' }}><thead><tr><th>选择</th><th>资料／来源</th><th>状态</th><th>投递位置与理由</th><th>操作</th></tr></thead><tbody>{rows.map(r => <tr key={r.id}><td><input type="checkbox" aria-label={`选择${r.name}`} checked={selected.includes(r.id)} onChange={e => setSelected(old => e.target.checked ? [...old, r.id] : old.filter(id => id !== r.id))} /></td>
         <td style={{ overflowWrap: 'anywhere', maxWidth: 300 }}>{r.name}<small style={{ display: 'block' }}>来源：{sourceTypes[r.sourceType || ''] || '自定义来源'} · {r.sourceName} · {(r.size / 1024).toFixed(1)} KiB</small><small style={{ display: 'block' }}>所属学生：{r.studentId ? students.find(s => String(s.id) === r.studentId)?.name || '已绑定学生' : '待确认（上方可批量确认）'}</small></td>
         <td>{r.originalMissing && r.status !== 'ignored' ? '原件已失效' : !r.studentId && ['pending', 'review'].includes(r.status) ? '待确认学生'
@@ -177,6 +189,5 @@ export function SmartInboxPanel({ studentId, students, projects, api, legacy, on
       <div className="actions"><button disabled={page <= 1 || busy} onClick={() => setPage(p => p - 1)}>上一页</button><span>第{page}页 · 共{total}项</span><button disabled={page * 25 >= total || busy} onClick={() => setPage(p => p + 1)}>下一页</button></div>
       {detail ? <details open><summary>资料诊断详情</summary><pre style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>{JSON.stringify(detail, null, 2)}</pre><button onClick={() => setDetail(null)}>关闭详情</button></details> : null}
     </>}
-    {message ? <p role="status">{message}</p> : null}
   </section>;
 }

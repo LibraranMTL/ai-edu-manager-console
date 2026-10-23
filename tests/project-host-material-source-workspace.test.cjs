@@ -37,7 +37,7 @@ async function fixture(t) {
   const scope = {
     fs: fsSync, path, crypto, projectUploadRecoveryIssues: [],
     createProjectMaterialHost, createProjectUploadIntake, stageProjectDirectImport,
-    readProjects: () => [currentProject], normalizeProject: (value) => value,
+    readProjects: () => [currentProject], readProjectMetadata: () => [currentProject], normalizeProject: (value) => value,
     normalizeProjectMetadata: (value) => value,
     isWorkspaceMaterialProject: (value) => value?.materialStorageMode === 'workspace-v1',
     findStudentByKey: (id) => String(id) === student.id ? student : null,

@@ -15,7 +15,7 @@ export function PracticeFilePreview({ file, payload, previewDocx }: { file?: Fil
         const pdfjs = await import('pdfjs-dist');
         const worker = await import('pdfjs-dist/build/pdf.worker.min.mjs?url'); pdfjs.GlobalWorkerOptions.workerSrc = worker.default;
         if (!active) return;
-        task = pdfjs.getDocument({ data: bytes, isEvalSupported: false, enableXfa: false });
+        task = pdfjs.getDocument({ data: bytes, isEvalSupported: false, enableXfa: false } as Parameters<typeof pdfjs.getDocument>[0]);
         const result = await task.promise; if (!active) { await result.destroy(); return; }
         document.current = result; setPages(result.numPages);
       } else if (['.png','.jpg','.jpeg'].includes(extension)) {

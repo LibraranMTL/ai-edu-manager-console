@@ -1,6 +1,8 @@
 const path = require('node:path');
 const { invariant } = require('./project-material-contract.cjs');
 const { categoryDefinitions, categoryForWorkspacePath } = require('./project-material-classification.cjs');
+const { projectMaterialRecordKind, materialContentGroupId,
+  automationDisposition } = require('./project-material-automation.cjs');
 
 function pendingReasons(record, effectiveClassification = record.classification) {
   const reasons = [];
@@ -48,6 +50,8 @@ function projectMaterialWorkspaceView(project, index, query = {}) {
       inferredFromPath: true } : record.classification;
     const category = categoryMap.get(effectiveClassification?.categoryId);
     const reasons = pendingReasons(record, effectiveClassification);
+    const recordKind = projectMaterialRecordKind(record);
+    const disposition = automationDisposition(project, { ...record, classification: effectiveClassification });
     return {
       materialId: record.materialId, version: record.version, recordRevision: record.recordRevision,
       title: path.posix.basename(record.location.relativePath), logicalPath: record.location.relativePath,
@@ -62,13 +66,19 @@ function projectMaterialWorkspaceView(project, index, query = {}) {
       processing: { state: record.processing?.state || 'pending',
         processedVersion: record.processing?.processedVersion || 0 },
       pendingReasons: reasons,
+      recordKind,
+      automationDisposition: disposition.state,
+      automationReasons: disposition.reasons,
+      contentGroupId: materialContentGroupId(project.id, record.sha256),
       sourceTypes: [...new Set((record.sources || []).map((item) => String(item.type || '')).filter(Boolean))],
       knowledge: (record.links?.knowledge || []).map((item) => ({ knowledgeId: item.knowledgeId,
         version: item.version, commitId: item.commitId })),
       evidence: evidenceByMaterial.get(record.materialId) || [],
     };
   });
-  const filtered = allMaterials.filter((item) => (view !== 'pending' || item.pendingReasons.length)
+  const businessMaterials = allMaterials.filter((item) => item.recordKind === 'user_material');
+  const filtered = businessMaterials.filter((item) => (view !== 'pending'
+      || ['confirmation', 'error'].includes(item.automationDisposition))
     && (!categoryId || item.classification.categoryId === categoryId)
     && (!search || `${item.title}\n${item.logicalPath}\n${item.classification.categoryName}`.toLocaleLowerCase().includes(search)));
   const knowledge = (index.knowledge || []).filter((item) => item.status !== 'recovery_conflict').map((item) => ({
@@ -86,13 +96,15 @@ function projectMaterialWorkspaceView(project, index, query = {}) {
         version: source.version, sha256: source.sha256 })),
       sourceStatus: binding ? 'fixed' : 'unverified' };
   });
-  const counts = { materials: allMaterials.length,
-    pending: allMaterials.filter((item) => item.pendingReasons.length).length,
+  const counts = { materials: businessMaterials.length,
+    uniqueContents: new Set(businessMaterials.map((item) => item.contentGroupId).filter(Boolean)).size,
+    systemGenerated: allMaterials.length - businessMaterials.length,
+    pending: businessMaterials.filter((item) => ['confirmation', 'error'].includes(item.automationDisposition)).length,
     knowledge: knowledge.length, contributions: contributions.length,
-    candidates: allMaterials.filter((item) => item.adoption === 'candidate').length,
-    unclassified: allMaterials.filter((item) => !item.classification.categoryId).length,
-    pathClassified: allMaterials.filter((item) => item.classification.source === 'workspace_path').length,
-    unavailable: allMaterials.filter((item) => ['missing', 'unavailable'].includes(item.availability)).length };
+    candidates: businessMaterials.filter((item) => item.adoption === 'candidate').length,
+    unclassified: businessMaterials.filter((item) => !item.classification.categoryId).length,
+    pathClassified: businessMaterials.filter((item) => item.classification.source === 'workspace_path').length,
+    unavailable: businessMaterials.filter((item) => ['missing', 'unavailable'].includes(item.availability)).length };
   return { projectId: project.id, registryRevision: index.revision, view, counts,
     categories: categories.filter((item) => item.active !== false).map((item) => ({
       categoryId: item.categoryId, name: item.name, relativePath: item.relativePath || '',

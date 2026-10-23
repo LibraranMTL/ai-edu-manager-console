@@ -107,14 +107,27 @@ test('Windows and Android student terminals expose one read-only growth view', (
   assert.match(android, /只读显示当前学生的能力画像、项目贡献和已确认或观察中的近期成长证据/);
 });
 
-test('Android student terminal groups daily functions into four collapsed sections', () => {
+test('Android student terminal exposes four primary workspaces and keeps secondary tools in More', () => {
   const android = fs.readFileSync(path.join(__dirname, '..', 'android-tablet-terminal', 'src', 'com', 'qxmatrix', 'eduterminal', 'MainActivity.java'), 'utf8');
-  assert.match(android, /collapsiblePanel\("基础设置"/);
-  assert.match(android, /collapsiblePanel\("资料搜集上传"/);
-  assert.match(android, /collapsiblePanel\("教育管家对话"/);
-  assert.match(android, /collapsiblePanel\("教育档案"/);
+  assert.match(android, /workspacePage\("搜集上传"/);
+  assert.match(android, /workspacePage\("主机连接"/);
+  assert.match(android, /workspacePage\("教育档案"/);
+  assert.match(android, /workspacePage\("学习行动"/);
+  assert.match(android, /workspacePage\("更多"/);
   assert.match(android, /collapsiblePanel\("学情档案"/);
-  assert.match(android, /collapsiblePanel\("项目知识库"/);
+  assert.match(android, /collapsiblePanel\("项目资料"/);
+  assert.ok(
+    android.indexOf('collapsiblePanel("学情档案"') < android.indexOf('collapsiblePanel("项目资料"'),
+    '项目资料应位于学情档案之后',
+  );
+  assert.ok(
+    android.indexOf('collapsiblePanel("项目资料"') < android.indexOf('collapsiblePanel("规划指导"'),
+    '规划指导应位于项目资料之后',
+  );
+  assert.match(android, /button\("升学路径", true\)/);
+  assert.match(android, /button\("专业探索", false\)/);
+  assert.match(android, /button\("职业发展", false\)/);
   assert.match(android, /body\.setVisibility\(View\.GONE\)/);
-  assert.doesNotMatch(android, /card\("常用操作"\)/);
+  const assembly = android.slice(android.indexOf('collectionPage = workspacePage'), android.indexOf('FrameLayout.LayoutParams topParams'));
+  assert.doesNotMatch(assembly, /教育管家对话|contactCard|agentDialogCard|promptDialogCard/);
 });

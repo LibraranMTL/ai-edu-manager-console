@@ -6,12 +6,13 @@ const path = require('node:path');
 
 const main = fs.readFileSync(path.join(__dirname, '../electron/main.cjs'), 'utf8');
 function bind(scope, name) {
-  const start = main.indexOf(`function ${name}(`);
+  const asyncStart = main.indexOf(`async function ${name}(`);
+  const start = asyncStart >= 0 ? asyncStart : main.indexOf(`function ${name}(`);
   assert.ok(start >= 0);
   scope[name] = Function('scope', `with (scope) { return (${main.slice(start, main.indexOf('\n}', start) + 2)}); }`)(scope);
 }
 
-test('global asset advice never merges workspace project document identities by shared SHA-1', (t) => {
+test('global asset advice never merges workspace project document identities by shared SHA-1', async (t) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'edu-project-asset-governance-'));
   t.after(() => {
     assert.equal(path.dirname(root), path.resolve(os.tmpdir()));
@@ -34,13 +35,14 @@ test('global asset advice never merges workspace project document identities by 
       patchAsset: (id, value) => saved.set(id, value), summary: () => ({ duplicateGroups: 0 }) }),
     readProjects: () => [{ id: 'new-project', materialStorageMode: 'workspace-v1' },
       { id: 'legacy-project', materialStorageMode: 'legacy' }],
-    normalizeProjectMetadata: (value) => value,
+    readProjectMetadata: () => [{ id: 'new-project', materialStorageMode: 'workspace-v1' },
+      { id: 'legacy-project', materialStorageMode: 'legacy' }], normalizeProjectMetadata: (value) => value,
     isWorkspaceMaterialProject: (value) => value.materialStorageMode === 'workspace-v1',
     assetGovernanceReportPath: () => reportPath,
     assetIndexSummary: () => ({ ok: true }),
     mdCell: (value) => String(value || ''), appendHostTimeline: () => {} };
   bind(scope, 'analyzeAssetGovernance');
-  const result = JSON.parse(scope.analyzeAssetGovernance());
+  const result = JSON.parse(await scope.analyzeAssetGovernance());
   assert.equal(result.ok, true, result.message);
   assert.equal(saved.get('new-project-asset').recommendedKeepAssetId, '');
   assert.equal(saved.get('legacy-asset').recommendedKeepAssetId, '');
@@ -49,7 +51,7 @@ test('global asset advice never merges workspace project document identities by 
   assert.match(fs.readFileSync(reportPath, 'utf8'), /不能仅按指纹清理原件/);
 });
 
-test('same-content physical paths remain references rather than duplicate asset rows', (t) => {
+test('same-content physical paths remain references rather than duplicate asset rows', async (t) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'edu-project-asset-governance-'));
   t.after(() => {
     assert.equal(path.dirname(root), path.resolve(os.tmpdir()));
@@ -68,12 +70,12 @@ test('same-content physical paths remain references rather than duplicate asset 
   const scope = { fs, path,
     assetStore: () => ({ detailBatches: function *() { yield assets; },
       patchAsset: (id, value) => saved.set(id, value), summary: () => ({ duplicateGroups: 1 }) }),
-    readProjects: () => [],
+    readProjects: () => [], readProjectMetadata: () => [],
     normalizeProjectMetadata: (value) => value, isWorkspaceMaterialProject: () => false,
     assetGovernanceReportPath: () => path.join(root, 'report.md'),
     assetIndexSummary: () => ({ ok: true }), mdCell: (value) => String(value || ''), appendHostTimeline: () => {} };
   bind(scope, 'analyzeAssetGovernance');
-  assert.equal(JSON.parse(scope.analyzeAssetGovernance()).ok, true);
+  assert.equal(JSON.parse(await scope.analyzeAssetGovernance()).ok, true);
   assert.equal(saved.get('a').duplicateAssetCount, 2);
   assert.doesNotMatch(saved.get('a').governanceAction, /合并/);
   assert.match(fs.readFileSync(scope.assetGovernanceReportPath(), 'utf8'), /多路径内容组 \| 1/);

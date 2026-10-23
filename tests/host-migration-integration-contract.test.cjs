@@ -38,9 +38,12 @@ test('host migration IPC exposes plan, plain export, inspection and staged resto
   assert.match(renderer, /result\.projectRecords/);
 });
 
-test('project migration state uses the project index envelope and still reads legacy arrays', () => {
-  assert.match(main, /\['projects\.json', \{ version: 1, updatedAt: new Date\(\)\.toISOString\(\), projects: readProjects\(\) \}\]/);
-  assert.match(main, /const projects = Array\.isArray\(parsed\) \? parsed : Array\.isArray\(parsed\.projects\) \? parsed\.projects : \[\]/);
+test('project migration state uses a consistent SQLite snapshot while restore still accepts legacy arrays', () => {
+  const section = main.slice(main.indexOf('function migrationStateVirtualFiles'), main.indexOf('function migrationStateDirectorySources'));
+  assert.match(section, /migration-projects\/project-state\.sqlite3/);
+  assert.doesNotMatch(section, /\['projects\.json'/);
+  assert.match(main, /const projects = Array\.isArray\(restoredLegacyProjects\) \? restoredLegacyProjects/);
+  assert.match(main, /Array\.isArray\(restoredLegacyProjects\?\.projects\) \? restoredLegacyProjects\.projects : null/);
 });
 
 test('migration security separates machine identity and private credentials from portable data', () => {

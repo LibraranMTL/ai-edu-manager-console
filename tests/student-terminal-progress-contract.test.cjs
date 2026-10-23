@@ -39,7 +39,8 @@ test('Windows and Android student homes show a gentle daily reminder with one-st
   assert.match(windows, /稍后再说/)
   assert.match(android, /今日学习资料提醒/)
   assert.match(android, /dailyReminderUploadButton/)
-  assert.match(android, /pickMaterial\(\)/)
+  assert.match(android, /dailyReminderUploadButton\) \{\s*startDirectUploadPicker\(\)/)
+  assert.match(android, /REQUEST_DIRECT_UPLOAD/)
   assert.match(android, /daily_reminder_dismissed_/)
 })
 

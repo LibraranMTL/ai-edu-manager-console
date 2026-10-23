@@ -4,6 +4,7 @@ const crypto = require('node:crypto');
 const fs = require('node:fs');
 const fsp = require('node:fs/promises');
 const path = require('node:path');
+const { hashStableFile } = require('./file-fingerprint.cjs');
 
 const PROTECTED_ROLES = new Set(['project_raw_accepted', 'project_material', 'student_raw', 'legacy_asset_path']);
 
@@ -19,29 +20,13 @@ function scopeKey(reference) {
   if (reference.spaceType === 'project' && reference.spaceId) return `project:${reference.spaceId}`;
   return '';
 }
-function fileKey(stat) { return `${stat.dev}:${stat.ino}`; }
-
-async function fingerprintFile(file) {
-  const sha1 = crypto.createHash('sha1');
-  const sha256 = crypto.createHash('sha256');
-  await new Promise((resolve, reject) => {
-    const stream = fs.createReadStream(file);
-    stream.on('data', chunk => { sha1.update(chunk); sha256.update(chunk); });
-    stream.on('error', reject);
-    stream.on('end', resolve);
-  });
-  return { sha1: sha1.digest('hex'), sha256: sha256.digest('hex') };
-}
-
 async function stableFingerprint(file) {
-  const before = await fsp.lstat(file);
-  if (!before.isFile() || before.isSymbolicLink()) throw codeError('asset_scope_protected', '路径不是可治理的普通文件。');
-  const hashes = await fingerprintFile(file);
-  const after = await fsp.lstat(file);
-  if (before.size !== after.size || before.mtimeMs !== after.mtimeMs || fileKey(before) !== fileKey(after)) {
-    throw codeError('asset_file_changed', '文件在指纹校验期间发生变化。');
+  try { return await hashStableFile(file, { rejectSymbolicLink: true }); }
+  catch (error) {
+    if (['linked_path', 'not_file'].includes(error.code)) throw codeError('asset_scope_protected', '路径不是可治理的普通文件。');
+    if (error.code === 'source_changed') throw codeError('asset_file_changed', '文件在指纹校验期间发生变化。');
+    throw error;
   }
-  return { ...hashes, size: after.size, mtimeMs: after.mtimeMs, fileKey: fileKey(after) };
 }
 
 async function copyVerified(source, destination, expected) {
@@ -137,7 +122,7 @@ function createAssetDuplicateGovernance({ store, quarantineRoot, authorizedRoots
           if (candidate === keep) continue;
           if (candidate.protected) { blocked.push({ assetId, path: candidate.path, reason: '权威原件角色受保护。' }); continue; }
           if (candidate.fileKey === keep.fileKey) { blocked.push({ assetId, path: candidate.path, reason: '与保留路径是同一硬链接文件。' }); continue; }
-          const entryId = `duplicate-${crypto.createHash('sha256').update(`${assetId}|${candidate.path}`).digest('hex').slice(0, 24)}`;
+          const entryId = `duplicate-${crypto.createHash('sha256').update(`${operationId}|${assetId}|${candidate.path}`).digest('hex').slice(0, 24)}`;
           entries.push({ entryId, assetId, keepPath: keep.path, sourcePath: candidate.path,
             quarantinePath: path.join(operationRoot, 'files', entryId, path.basename(candidate.path)),
             spaceType: candidate.spaceType, spaceId: candidate.spaceId, sha1: asset.sha1, sha256: asset.sha256,
@@ -239,6 +224,21 @@ function createAssetDuplicateGovernance({ store, quarantineRoot, authorizedRoots
     } finally { activeOperationId = ''; }
   }
 
+  async function retry(operationId, entryIds = []) {
+    if (activeOperationId) throw codeError('asset_operation_busy', '已有重复文件治理任务正在运行。');
+    const previous = store.duplicateOperation(operationId);
+    if (!previous) throw codeError('asset_not_found', '未找到要重试的重复文件治理任务。');
+    const selected = new Set((entryIds || []).map(String).filter(Boolean));
+    const retryable = previous.entries.filter(entry => ['failed', 'restore_failed', 'recovered'].includes(entry.status)
+      && (!selected.size || selected.has(entry.entryId)));
+    if (!retryable.length) throw codeError('asset_not_found', '当前操作没有可重新校验的失败项。');
+    return prepare({
+      assetIds: [...new Set(retryable.map(entry => entry.assetId))],
+      retryOfOperationId: previous.operationId,
+      retryEntryIds: retryable.map(entry => entry.entryId),
+    });
+  }
+
   async function recover() {
     const rows = store.db.prepare("SELECT operation_id FROM asset_duplicate_operations WHERE status='applying'").all();
     for (const row of rows) {
@@ -262,7 +262,16 @@ function createAssetDuplicateGovernance({ store, quarantineRoot, authorizedRoots
     }
   }
 
-  return { listGroups: request => store.listDuplicateGroups(request), prepare, apply, status: id => store.duplicateOperation(id), restore, recover };
+  return {
+    listGroups: request => store.listDuplicateGroups(request),
+    history: request => store.listDuplicateOperations(request),
+    prepare,
+    apply,
+    status: id => store.duplicateOperation(id),
+    restore,
+    retry,
+    recover,
+  };
 }
 
 module.exports = { createAssetDuplicateGovernance, stableFingerprint, inside, scopeKey, chooseKeep };

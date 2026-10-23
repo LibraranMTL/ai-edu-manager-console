@@ -25,6 +25,7 @@ export type CloudReportApi = {
   cloudReportCreatePairing?: (serverUrl: string) => Promise<string>;
   cloudReportApprovePairing?: (pairingCode: string, studentIds: string[], options?: { profileFields: string[]; materialCategories: string[] }) => Promise<string>;
   cloudReportListStudents?: () => Promise<string>;
+  cloudReportRemoveStudent?: (cloudStudentId: string) => Promise<string>;
   cloudReportListReports?: (cloudStudentId: string, cursor?: string) => Promise<string>;
   cloudReportDownload?: (cloudStudentId: string, revisionId: string) => Promise<string>;
   cloudReportListDocuments?: (cloudStudentId: string, cursor?: string) => Promise<string>;
@@ -156,11 +157,12 @@ export function CloudDocumentsPanel({ api, localStudents }: { api?: CloudReportA
   useEffect(() => { if (page === 'connection' && selectedLocalId) void refreshUploadStatus(selectedLocalId).catch(() => {}); }, [page, selectedLocalId]);
 
   const selectedLocal = localStudents.find(student => student.id === selectedLocalId);
-  const profilePreview = selectedLocal ? [
+  const profilePreviewRows: Array<[string, string, unknown]> = selectedLocal ? [
     ['displayName', '姓名', selectedLocal.name], ['grade', '年级', selectedLocal.grade], ['school', '学校', selectedLocal.school], ['learningGoal', '学习目标', selectedLocal.goal],
     ['currentRegion', '地区', selectedLocal.currentRegion], ['phone', '手机号', selectedLocal.phone], ['email', '邮箱', selectedLocal.email],
     ['birthday', '生日', selectedLocal.birthDate], ['address', '地址', selectedLocal.address], ['guardian', '监护人信息', typeof selectedLocal.guardian === 'string' ? selectedLocal.guardian : selectedLocal.guardian ? '已填写' : ''],
-  ].filter(([field, , value]) => profileFields.includes(field) && Boolean(value)) : [];
+  ] : [];
+  const profilePreview = profilePreviewRows.filter(([field, , value]) => profileFields.includes(field) && Boolean(value));
 
   function toggleSelection(current: string[], value: string, checked: boolean, update: (next: string[]) => void) {
     update(checked ? [...new Set([...current, value])] : current.filter(item => item !== value));
@@ -278,6 +280,18 @@ export function CloudDocumentsPanel({ api, localStudents }: { api?: CloudReportA
           <button className={tab === 'documents' ? 'active' : ''} onClick={() => setTab('documents')}>历史其他文档</button>
         </div><span>同一学生下载许可，无需逐份申请</span></div>
         {selectedCloudId ? <>
+          <div className="cloud-list-tools"><span>本机对该学生的云端下载许可</span>
+            <button className="secondary compact" disabled={busy} onClick={() => {
+              const student = cloudStudents.find(item => item.id === selectedCloudId);
+              if (!student || !window.confirm(`从本机移除“${student.displayName}”的云端许可？这不会删除云端学生、本机学生档案或已经下载的副本。`)) return;
+              void run(async () => {
+                await unwrap(api?.cloudReportRemoveStudent?.(student.id));
+                setReports([]); setDocuments([]); setMaterials([]); setPreview('');
+                await refreshStudents();
+                setNotice('已移除本机云端许可；已有本机档案和下载副本均已保留。');
+              });
+            }}>从本机移除许可</button>
+          </div>
           {tab === 'reports' ? <><div className="cloud-list-tools"><span>来自 Android 单机版或其他 Windows 主机</span>
             <button className="secondary compact" disabled={busy} onClick={() => void run(() => refreshReports(selectedCloudId))}>刷新报告</button></div>
           <div className="cloud-report-table-wrap"><table className="cloud-report-table"><thead><tr>

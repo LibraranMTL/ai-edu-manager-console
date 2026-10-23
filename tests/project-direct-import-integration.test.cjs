@@ -35,7 +35,7 @@ test('actual Windows direct-import path adopts in the workspace inbox and is ide
   let projects = [project];
   const assets = [];
   const scope = { fs, path, crypto, mainWindow: {}, projectUploadRecoveryIssues: [],
-    mutableProject: () => ({ project: projects[0] }), readProjects: () => projects,
+    mutableProject: () => ({ project: projects[0] }), readProjects: () => projects, readProjectMetadata: () => projects,
     writeProjects: (next) => { projects = next; }, normalizeProject: (value) => value,
     normalizeProjectMetadata: (value) => value, ensureProjectWorkspace: (value) => value,
     isWorkspaceMaterialProject, createProjectMaterialHost, createProjectUploadIntake,

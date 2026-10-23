@@ -5,6 +5,7 @@ const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 const { validateWindowsVersion } = require('./version-policy.cjs');
 const { compileLifecycleHook } = require('./compile-lifecycle-hook.cjs');
+const { resolvePnpmVirtualStore } = require('./pnpm-virtual-store.cjs');
 
 const repoRoot = path.resolve(__dirname, '..');
 const terminalVersion = JSON.parse(fs.readFileSync(path.join(repoRoot, 'windows-terminal-version.json'), 'utf8'));
@@ -61,7 +62,7 @@ function copyFile(relativePath) {
 }
 
 function locateAsarModule() {
-  const pnpmRoot = path.join(repoRoot, 'node_modules', '.pnpm');
+  const pnpmRoot = resolvePnpmVirtualStore(repoRoot);
   const packageDir = fs.readdirSync(pnpmRoot).find((name) => name.startsWith('@electron+asar@'));
   if (!packageDir) throw new Error('Unable to locate @electron/asar in the pnpm store.');
   return require(path.join(pnpmRoot, packageDir, 'node_modules', '@electron', 'asar'));

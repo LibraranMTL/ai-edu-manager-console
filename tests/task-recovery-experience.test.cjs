@@ -187,14 +187,16 @@ test('Windows host source routes internal cancellation to automatic confirmation
   assert.doesNotMatch(source, /请到原工具核对/);
 });
 
-test('runtime reconciliation runs before the business window even when the scheduler is disabled', () => {
+test('runtime reconciliation runs after task storage opens and before business readiness, independent of scheduler', () => {
   const source = fs.readFileSync(path.join(__dirname, '..', 'electron', 'main.cjs'), 'utf8');
   const startup = source.slice(source.indexOf('app.whenReady().then'), source.indexOf("app.on('before-quit'"));
   const repairAt = startup.indexOf('repairTaskCenterRuntimeState()');
-  const windowAt = startup.indexOf('createWindow()');
+  const storeAt = startup.indexOf('taskStoreGuard.initialize(taskStorePath())');
+  const readyAt = startup.indexOf('businessStartupReady = true');
   const schedulerGateAt = startup.indexOf("process.env.EDU_DISABLE_TASK_SCHEDULER !== '1'");
   assert(repairAt >= 0, 'startup must invoke runtime reconciliation');
-  assert(windowAt > repairAt, 'runtime reconciliation must finish before the business window opens');
+  assert(storeAt >= 0 && repairAt > storeAt, 'runtime reconciliation must run after the task database opens');
+  assert(readyAt > repairAt, 'runtime reconciliation must finish before task business writes are enabled');
   assert(schedulerGateAt > repairAt, 'runtime reconciliation must not depend on the scheduler gate');
 });
 

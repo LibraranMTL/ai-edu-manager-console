@@ -22,7 +22,8 @@ test('report task construction shares one governed evidence scan per student', (
   assert.match(main, /const eligibleEvidence = reportEligibleEvidence\(toHostStudent\(student\)\)/);
   assert.match(main, /buildWeeklyActionTask\(student, eligibleEvidence\)/);
   assert.match(main, /buildPeriodicLearningReportTask\(student, 'learning_profile', eligibleEvidence\)/);
-  assert.match(main, /tasks\.push\(\.\.\.currentLearningReportTaskCandidates\(student\)\)/);
+  assert.match(main, /tasks\.push\(\.\.\.currentLearningReportTaskCandidates\(student\)\.map/);
+  assert.match(main, /automationSuspended: periodicPaused/);
 });
 
 test('report execution retries compatible agents automatically before asking for attention', () => {
@@ -30,7 +31,7 @@ test('report execution retries compatible agents automatically before asking for
   const weeklyBuilder = main.slice(main.indexOf('function buildWeeklyActionTask'), main.indexOf('function currentLearningReportTaskCandidates'));
   for (const source of [reportBuilder, weeklyBuilder]) {
     assert.match(source, /autoRetry: true/);
-    assert.match(source, /maxAttempts: 3/);
+    assert.match(source, /maxAttempts: 6/);
     assert.match(source, /retryBackoffSeconds: 10/);
   }
   assert.match(main, /function fallbackTaskAfterFailure/);

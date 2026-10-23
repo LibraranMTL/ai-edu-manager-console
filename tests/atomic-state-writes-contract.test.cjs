@@ -12,7 +12,6 @@ for (const functionName of [
   'writeDevices',
   'writeUploadRecords',
   'writeStudentMaterials',
-  'writeProjects',
   'writeHostTimeline',
   'writeCaptureStore',
   'writeJsonFile',
@@ -24,6 +23,13 @@ for (const functionName of [
     assert.doesNotMatch(body, /fs\.writeFileSync\(/);
   });
 }
+
+test('writeProjects persists production data through SQLite without rewriting projects.json', () => {
+  const body = main.match(/function writeProjects\([^)]*\) \{([\s\S]*?)\n\}/)?.[1] || '';
+  assert.match(body, /projectStateStore\(\)\.replaceAll\(projects\)/);
+  assert.doesNotMatch(body, /fs\.writeFileSync\(/);
+  assert.doesNotMatch(body, /writeJsonAtomic\(/);
+});
 
 test('writeAssetIndex persists production data through SQLite and keeps virtual transaction writes atomic', () => {
   const body = main.match(/function writeAssetIndex\([^)]*\) \{([\s\S]*?)\n\}/)?.[1] || '';

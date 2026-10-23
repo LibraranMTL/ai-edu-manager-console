@@ -6,7 +6,10 @@ const test = require('node:test');
 const root = path.resolve(__dirname, '..');
 const preload = fs.readFileSync(path.join(root, 'electron', 'preload.cjs'), 'utf8');
 const main = fs.readFileSync(path.join(root, 'electron', 'main.cjs'), 'utf8');
-const renderer = fs.readFileSync(path.join(root, 'src', 'main.tsx'), 'utf8');
+const renderer = [
+  fs.readFileSync(path.join(root, 'src', 'main.tsx'), 'utf8'),
+  fs.readFileSync(path.join(root, 'src', 'AssetCenterPanel.tsx'), 'utf8'),
+].join('\n');
 
 const routes = [
   'scanMaterialSources',
@@ -50,6 +53,20 @@ test('renderer awaits heavy work and exposes non-blocking busy feedback', () => 
   assert.match(renderer, /const generateCrossProjectKnowledgeLinks = async/);
   assert.match(renderer, /materialSourceBusyAction === 'scan' \? '正在扫描…'/);
   assert.match(renderer, /materialSourceBusyAction === 'import' \? '正在导入…'/);
-  assert.match(renderer, /assetBusyAction === 'rebuild' \? '正在补建…'/);
+  assert.match(renderer, /m\.assetBusyAction === 'rebuild' \? '正在补建…'/);
   assert.match(renderer, /projectBusyAction === 'cross-project-index' \? '正在关联…'/);
+});
+
+test('production preload exposes no synchronous business IPC', () => {
+  assert.equal((preload.match(/ipcRenderer\.sendSync\s*\(/g) || []).length, 0);
+  assert.match(preload, /const invokeLegacy = \(channel, \.\.\.args\) => ipcRenderer\.invoke\('bridge:invokeLegacyAsync', channel, args\);/);
+  assert.match(main, /ipcMain\.handle\('bridge:invokeLegacyAsync'/);
+  assert.match(main, /if \(!projectArchiveRecoveryCallerAllowed\(event\)\).*code: 'forbidden'/);
+  assert.match(main, /const legacyAsyncHandlers = new Map\(\)/);
+  assert.match(main, /if \(name\.startsWith\('bridge:'\)\)/);
+  assert.match(main, /legacyAsyncHandlers\.set\(name, listener\)/);
+  assert.match(main, /const listener = name !== 'bridge:invokeLegacyAsync' \? legacyAsyncHandlers\.get\(name\) : null/);
+  assert.doesNotMatch(main, /ipcMain\.listeners\(name\)/);
+  assert.match(main, /if \(!listener\).*code: 'legacy_async_unavailable'/);
+  assert.match(main, /if \(!assigned\).*code: 'legacy_async_no_result'/);
 });

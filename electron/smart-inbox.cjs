@@ -256,21 +256,25 @@ function createSmartInbox(host) {
     const stat = await fs.lstat(file); if (!stat.isFile() || stat.isSymbolicLink()) throw Error('来源文件不是普通文件');
     return { path: file, stat };
   }
-  async function markMissing(item) {
+  async function markMissing(item, message = '原件已不存在，未分析或投递。可移除待办记录（保留操作历史，不删除文件）；恢复原件后请重新扫描。') {
     const current = items.get(item.id);
     // Never discard receipts or hide an unknown execution behind a missing-file state.
     if (!current || !['pending', 'review', 'retry'].includes(current.status) || current.receipt) return;
     if (current.originalMissing) return;
     await save('items', { ...current, originalMissing: true, status: 'review', revision: current.revision + 1,
       nextRetryAt: '', proposedTarget: null, suggestion: null,
-      message: '原件已不存在，未分析或投递。可移除待办记录（保留操作历史，不删除文件）；恢复原件后请重新扫描。' });
+      message });
   }
   async function resolveItemFile(item, source) {
     try { return await resolveSourceFile(source, item.locator); }
     catch (error) {
-      if (error.code !== 'ENOENT') throw error;
-      await markMissing(item);
-      throw Object.assign(Error('原件已不存在，请移除待办记录，或恢复原件后重新扫描'), { code: 'original_missing' });
+      if (!['ENOENT', 'original_missing'].includes(error.code)) throw error;
+      await markMissing(item, error.code === 'original_missing'
+        ? '源会话已移入回收站或彻底删除；如仍在回收站，请先恢复会话，否则请移除此待办记录。'
+        : undefined);
+      throw Object.assign(Error(error.code === 'original_missing'
+        ? '源会话已移入回收站或彻底删除；如仍在回收站，请先恢复会话，否则请移除此待办记录。'
+        : '原件已不存在，请移除待办记录，或恢复原件后重新扫描'), { code: 'original_missing' });
     }
   }
   async function discover(source) {
@@ -389,7 +393,17 @@ function createSmartInbox(host) {
     if (item.studentId && !P.studentScopeMatches(item, current)) throw Error('来源学生已变化，请人工核对历史资料');
     if (item.receipt) { await verifyReceipt(item, item.receipt); return; }
     const resolved = await resolveItemFile(item, current);
-    if (identity(resolved.stat) !== item.identity) throw Error('来源版本已变化，未投递旧建议');
+    if (identity(resolved.stat) !== item.identity) {
+      // Windows can change ctime when metadata or permissions are touched even
+      // though the file bytes and mtime remain unchanged. Preserve the fast
+      // identity path, then fall back to a stable content check before
+      // rejecting a manually reviewed suggestion.
+      if (!item.fingerprint?.sha256) throw Error('来源版本已变化，未投递旧建议');
+      const currentFingerprint = await hashStableFile(resolved.path);
+      if (currentFingerprint.size !== item.fingerprint.size || currentFingerprint.sha256 !== item.fingerprint.sha256) {
+        throw Error('来源版本已变化，未投递旧建议');
+      }
+    }
     if (item.fingerprint && (await hashStableFile(item.snapshotPath)).sha256 !== item.fingerprint.sha256) throw Error('快照校验失败');
   }
   async function verifyReceipt(item, receipt) {

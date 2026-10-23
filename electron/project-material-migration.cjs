@@ -7,6 +7,7 @@ const {
 const {
   hashStableFile, safePath, within, writeJsonAtomic,
 } = require('./project-materials.cjs');
+const { isSystemGeneratedMaterialPath } = require('./project-material-automation.cjs');
 
 const queues = new Map();
 const MAX_PREVIEW_FILES = 5000;
@@ -15,10 +16,6 @@ const PRESERVED_EXTENSIONS = new Set([
   '.html', '.htm', '.mhtml', '.css', '.js', '.mjs', '.cjs', '.json', '.xml',
   '.dwg', '.dxf', '.step', '.stp', '.blend', '.psd', '.indd', '.prproj',
 ]);
-const STAGING_GENERATED_NAMES = new Set([
-  'staging-index.json', '研究暂存清单.md', '研究暂存治理建议.md',
-]);
-
 const clone = (value) => structuredClone(value);
 const timestamp = () => new Date().toISOString();
 const digest = (value) => crypto.createHash('sha256').update(JSON.stringify(value)).digest('hex');
@@ -54,6 +51,8 @@ function publicOperation(operation) {
     operationId: operation.operationId, previewId: operation.previewId,
     status: operation.status, createdAt: operation.createdAt,
     completedAt: operation.completedAt || '', items,
+    hasPhysicalCopies: items.some((item) => ['migrate', 'associate_existing'].includes(item.action)
+      && item.status === 'succeeded'),
     counts: {
       total: items.length,
       succeeded: items.filter((item) => item.status === 'succeeded').length,
@@ -68,7 +67,7 @@ function publicOperation(operation) {
 
 function publicPreview(preview) {
   return {
-    previewId: preview.previewId, projectId: preview.projectId,
+    previewId: preview.previewId, projectId: preview.projectId, status: preview.status || 'current',
     createdAt: preview.createdAt, registryRevision: preview.registryRevision,
     truncated: Boolean(preview.truncated),
     items: preview.items.map((item) => ({
@@ -196,6 +195,7 @@ function createProjectMaterialMigration(project, store, hooks = {}) {
     }
     invariant(value.projectId === project.id && Array.isArray(value.items),
       'preview_corrupt', '迁移预览项目范围不符。');
+    invariant(value.status !== 'superseded', 'preview_superseded', '已有更新的迁移预览，请使用最新预览。');
     return value;
   }
 
@@ -222,8 +222,7 @@ function createProjectMaterialMigration(project, store, hooks = {}) {
         const absoluteKey = keyPath(absolute);
         if (excluded.some((item) => absoluteKey === item || absoluteKey.startsWith(`${item}${path.sep}`))) continue;
         const relativeRaw = current.relative ? `${current.relative}/${entry.name}` : entry.name;
-        if (root.rootId === 'legacy-staging'
-          && STAGING_GENERATED_NAMES.has(entry.name.toLocaleLowerCase('zh-CN'))) continue;
+        if (isSystemGeneratedMaterialPath(relativeRaw)) continue;
         if (entry.isDirectory()) {
           if (!entry.isSymbolicLink()) stack.push({ absolute, relative: relativeRaw });
           continue;
@@ -306,6 +305,7 @@ function createProjectMaterialMigration(project, store, hooks = {}) {
         await enumerateRoot(root, seen, registeredByLocation, workspaceByRelative, items);
       }
       for (const record of index.materials) {
+        if (isSystemGeneratedMaterialPath(record.location?.relativePath)) continue;
         if (items.some((item) => item.materialId === record.materialId)) continue;
         if (record.location.rootId === 'workspace') continue;
         items.push({ itemId: `migration-item-${digest(['registered', record.materialId]).slice(0, 32)}`,
@@ -317,9 +317,19 @@ function createProjectMaterialMigration(project, store, hooks = {}) {
       }
       const previewValue = { schema: 'edu-manager.project-material-migration-preview.v1',
         previewId: `migration-preview-${crypto.randomUUID()}`, projectId: project.id,
-        createdAt: now(), registryRevision: index.revision,
+        status: 'current', createdAt: now(), registryRevision: index.revision,
         truncated: items.length >= MAX_PREVIEW_FILES, items };
       await fsp.mkdir(migrationDirectory, { recursive: true });
+      for (const name of await fsp.readdir(migrationDirectory)) {
+        if (!/^migration-preview-[a-f0-9-]+\.json$/i.test(name)) continue;
+        const file = path.join(migrationDirectory, name);
+        try {
+          const previous = JSON.parse(await fsp.readFile(file, 'utf8'));
+          if (previous.projectId !== project.id || previous.status === 'superseded') continue;
+          await writeJsonAtomic(file, { ...previous, status: 'superseded', supersededAt: now(),
+            supersededBy: previewValue.previewId });
+        } catch { /* corrupt old previews remain untouched for diagnostics */ }
+      }
       await writeJsonAtomic(await planPath(previewValue.previewId), previewValue);
       return publicPreview(previewValue);
     });

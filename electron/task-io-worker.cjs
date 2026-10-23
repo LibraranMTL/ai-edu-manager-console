@@ -28,6 +28,9 @@ async function watchInbox(root) {
   return { ok: true, watching: watchers.size };
 }
 async function readStore(file) {
+  // Once store_open succeeds the Worker owns the authoritative SQLite-backed
+  // snapshot. Never fall back to the frozen migration input tasks.json.
+  if (cache?.authoritative && cache.value) return cache.value;
   let stat;
   try { stat = await fs.stat(file); } catch (error) { if (error.code === 'ENOENT') return null; throw error; }
   const key = `${file}:${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeMs}:${stat.ctimeMs}`;
@@ -38,9 +41,10 @@ async function readStore(file) {
   return value;
 }
 async function handle(message) {
-  if (['store_open', 'store_write', 'store_event', 'store_progress'].includes(message.op)) {
+  if (['store_open', 'store_write', 'store_event', 'store_progress', 'store_close'].includes(message.op)) {
     const result = await writer.request(message.file, message.op, message.query);
-    if (message.op === 'store_write') cache = { key: `${message.file}:${result.signature}`, value: message.query.value };
+    if (message.op === 'store_close') { cache = null; return result; }
+    if (message.op === 'store_write') cache = { key: `${message.file}:${result.signature}`, value: message.query.value, authoritative: true };
     else if (message.op === 'store_progress' && cache?.value) {
       for (const patch of message.query.entries || []) {
         const task = cache.value.tasks.find(item => String(item.id) === String(patch.taskId));
@@ -49,7 +53,7 @@ async function handle(message) {
         if (patch.lastProgressAt) { task.lastProgressAt = String(patch.lastProgressAt); task.progressSource = String(patch.progressSource || ''); }
       }
     }
-    else if (message.op === 'store_open') cache = { key: `${message.file}:${result.signature}`, value: result.value };
+    else if (message.op === 'store_open') cache = { key: `${message.file}:${result.signature}`, value: result.value, authoritative: true };
     return result;
   }
   if (message.op === 'inbox') return inbox.scan(path.dirname(message.file), message.query.agentId || '');
@@ -70,13 +74,15 @@ async function handle(message) {
     generatedAt: store.updatedAt, tasks: store.tasks, history: (store.history || []).slice(0, 100), summary: queryTaskSnapshot(store).summary };
   return queryTaskSnapshot(store, message.query);
 }
-// One queue owns the read cache. Heavy JSON parsing never runs in the UI/main process.
+// Durable writes stay strictly ordered. Read-only projections can run beside a
+// slow fsync so a page refresh never head-of-line blocks task controls.
 let queue = Promise.resolve();
 parentPort.on('message', message => {
-  if (message.op === 'inbox') {
-    // Directory I/O must not head-of-line block a cached page query.
+  if (!['store_open', 'store_write', 'store_event', 'store_progress', 'store_close'].includes(message.op)) {
     void handle(message).then(value => parentPort.postMessage({ id: message.id, value }), error =>
-      parentPort.postMessage({ id: message.id, value: { ok: false, message: `回执扫描失败：${error.message}` } }));
+      parentPort.postMessage({ id: message.id, value: { ok: false, message: message.op === 'inbox'
+        ? `回执扫描失败：${error.message}`
+        : `任务快照读取失败：${error.message}` } }));
     return;
   }
   queue = queue.then(async () => {

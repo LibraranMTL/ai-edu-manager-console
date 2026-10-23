@@ -73,10 +73,71 @@ test('search uses hashes and text without returning unbounded records', () => {
     assert.equal(first.total, 125);
     assert.equal(first.items.length, 100);
     assert.ok(first.nextCursor);
+    const cursor = JSON.parse(Buffer.from(first.nextCursor, 'base64url').toString('utf8'));
+    assert.equal(cursor.v, 2);
+    assert.equal(Object.hasOwn(cursor, 'offset'), false);
     const second = value.store.searchAssets({ query: '化学实验', studentId: 's1', pageSize: 100, cursor: first.nextCursor });
     assert.equal(second.items.length, 25);
     const exact = value.store.searchAssets({ query: (7).toString(16).padStart(40, '0') });
     assert.equal(exact.total, 1);
+    const unscopedShort = value.store.searchAssets({ query: '化', pageSize: 100 });
+    assert.equal(unscopedShort.ok, false);
+    assert.equal(unscopedShort.code, 'asset_search_scope_required');
+    assert.equal(unscopedShort.items.length, 0);
+    const scopedShort = value.store.searchAssets({ query: '化', studentId: 's1', pageSize: 100 });
+    assert.equal(scopedShort.ok, true);
+    assert.equal(scopedShort.total, 125);
+    assert.equal(scopedShort.items.length, 100);
+  } finally { value.close(); }
+});
+
+test('FTS refresh replaces the exact row and duplicate pages stay lightweight', () => {
+  const value = fixture();
+  try {
+    value.store.upsertAsset({ assetId: 'asset-search', sha1: 'c'.repeat(40), sha256: 'd'.repeat(64), filename: '旧标题.pdf', path: 'D:\\资料\\原件.pdf', updatedAt: '2026-10-19T01:00:00.000Z' }, [
+      { id: 'r1', spaceType: 'student', spaceId: 's1', role: 'raw', path: 'D:\\资料\\原件.pdf' },
+      { id: 'r2', spaceType: 'student', spaceId: 's1', role: 'raw', path: 'D:\\资料\\副本.pdf' },
+    ]);
+    assert.equal(value.store.searchAssets({ query: '旧标题' }).total, 1);
+    value.store.patchAsset('asset-search', { filename: '新标题.pdf', path: 'D:\\资料\\原件.pdf' });
+    assert.equal(value.store.searchAssets({ query: '旧标题' }).total, 0);
+    assert.equal(value.store.searchAssets({ query: '新标题' }).total, 1);
+    const groups = value.store.listDuplicateGroups({ pageSize: 10 });
+    assert.equal(groups.items.length, 1);
+    assert.deepEqual(Object.hasOwn(groups.items[0], 'references'), false);
+    assert.equal(groups.items[0].pathSamples.length, 2);
+  } finally { value.close(); }
+});
+
+test('single-asset upsert rolls back asset, aliases, and references together', () => {
+  const value = fixture();
+  try {
+    value.store.db.exec(`CREATE TRIGGER reject_asset_reference BEFORE INSERT ON asset_references
+      WHEN NEW.path='reject-path' BEGIN SELECT RAISE(ABORT,'rejected reference'); END;`);
+    assert.throws(() => value.store.upsertAsset({ assetId: 'asset-rollback', sha1: 'e'.repeat(40), filename: 'rollback.txt' }, [
+      { id: 'reject', spaceType: 'student', spaceId: 's1', role: 'raw', path: 'reject-path' },
+    ], ['legacy-rollback']), /rejected reference/);
+    assert.equal(value.store.getAssetDetail('asset-rollback'), null);
+    assert.equal(value.store.resolveAssetId('legacy-rollback'), '');
+  } finally { value.close(); }
+});
+
+test('reference availability drives stale counts and query caches remain bounded', () => {
+  const value = fixture();
+  try {
+    value.store.upsertAsset({ assetId: 'asset-health', sha1: 'f'.repeat(40), filename: 'health.txt' }, [
+      { id: 'health-ref', spaceType: 'student', spaceId: 's1', role: 'raw', path: 'D:\\missing.txt' },
+    ]);
+    assert.equal(value.store.summary().staleReferenceCount, 0);
+    assert.equal(value.store.summary().uncheckedReferenceCount, 1);
+    value.store.setReferenceAvailability([{ assetId: 'asset-health', path: 'D:\\missing.txt', exists: false }]);
+    assert.equal(value.store.summary().staleReferenceCount, 1);
+    assert.equal(value.store.summary().uncheckedReferenceCount, 0);
+    for (let index = 0; index < 80; index += 1) value.store.summary({ studentId: `student-${index}` });
+    for (let index = 0; index < 280; index += 1) value.store.listAssets({ studentId: `student-${index}`, query: `q-${index}`, pageSize: 1 });
+    const stats = value.store.cacheStats();
+    assert.ok(stats.summary <= stats.summaryLimit);
+    assert.ok(stats.listCount <= stats.listCountLimit);
   } finally { value.close(); }
 });
 

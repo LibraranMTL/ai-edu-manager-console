@@ -13,6 +13,7 @@ button:disabled { opacity: .5; cursor: not-allowed; }
 .sidebar-title { display: flex; align-items: center; justify-content: space-between; padding: 0 13px 15px; color: #516581; font-size: 14px; }
 .student-sidebar > button { display: block; width: 100%; background: transparent; border: 0; border-radius: 9px; text-align: left; padding: 13px 14px; font-size: 16px; color: #213454; }
 .student-sidebar > button.selected { background: #eaf2ff; color: #1263d8; font-weight: 700; }
+.student-sidebar > button.archived { color: #7b8798; text-decoration: line-through; }
 .add-student { margin-top: 25px; border-top: 1px solid #e5ebf4; padding: 20px 12px 0; }
 .add-student label, .login-box label { display: grid; gap: 8px; font-size: 13px; font-weight: 650; color: #526784; }
 .add-student input, .login-box input, .toolbar input, .toolbar select { border: 1px solid #cedaeb; border-radius: 7px; padding: 10px 12px; background: #fff; color: #182944; outline-color: #3177df; }
@@ -22,6 +23,8 @@ button:disabled { opacity: .5; cursor: not-allowed; }
 .student-heading { display: flex; justify-content: space-between; align-items: center; gap: 20px; margin-bottom: 23px; }
 .student-heading h2 { margin: 0 0 7px; font-size: 26px; }
 .student-heading p { color: #697d99; font-size: 14px; margin: 0; }
+.student-heading-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
+.student-heading-actions .danger { color: #a3212e; border-color: #e8a9af; background: #fff8f8; }
 .outline { background: #fff; color: #226cce; border: 1px solid #b9cdea; border-radius: 7px; padding: 9px 13px; font-size: 14px; font-weight: 650; }
 .enrollment-code { display: flex; align-items: center; gap: 15px; flex-wrap: wrap; padding: 14px 18px; margin: 0 0 20px; border: 1px solid #b7d5ff; background: #f1f7ff; border-radius: 8px; font-size: 13px; }
 .enrollment-code strong { font-size: 21px; letter-spacing: .1em; color: #115cc6; }

@@ -38,7 +38,8 @@ test('host and student capture both exclude sensitive application windows', () =
 
 test('resource scheduling uses measured latency, disk, cpu, memory, power and idle state', () => {
   assert.match(host, /fs\.statfsSync/);
-  assert.match(host, /app\.getAppMetrics\(\)/);
+  assert.match(host, /os\.cpus\(\)/);
+  assert.match(host, /cpuPercent/);
   assert.match(host, /rendererLatencyMs/);
   assert.match(preload, /reportCaptureTimelinePerformance/);
   assert.match(ui, /performance\.now\(\) - performanceStartedAt/);

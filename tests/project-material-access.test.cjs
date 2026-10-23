@@ -143,7 +143,7 @@ function mainContext(f, overrides = {}) {
   const opens = [];
   const context = vm.createContext({ path, createProjectMaterialAccess, saveSourceCopy, isWorkspaceMaterialProject,
     mainWindow: { isDestroyed: () => false, webContents },
-    readProjects: () => [f.project], normalizeProjectMetadata: (p) => p,
+    readProjects: () => [f.project], readProjectMetadata: () => [f.project], normalizeProjectMetadata: (p) => p,
     dialog: { showSaveDialog: async () => ({ filePath: path.join(f.root, 'copy.txt') }) },
     shell: { openPath: async (file) => { opens.push(file); return ''; } }, ...overrides });
   for (const name of ['localProjectSourceAccess', 'readProjectKnowledgeFileAsync', 'exportProjectKnowledgeSource']) vm.runInContext(extract(name), context);

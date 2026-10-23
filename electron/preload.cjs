@@ -1,6 +1,16 @@
 const { contextBridge, ipcRenderer } = require('electron');
 
+const invokeLegacy = (channel, ...args) => ipcRenderer.invoke('bridge:invokeLegacyAsync', channel, args);
+
 contextBridge.exposeInMainWorld('AndroidBridge', {
+  getAppBootstrap() { return ipcRenderer.invoke('bridge:getAppBootstrap'); },
+  getSubsystemStatus() { return ipcRenderer.invoke('bridge:getSubsystemStatus'); },
+  retrySubsystemInitialization(name) { return ipcRenderer.invoke('bridge:retrySubsystemInitialization', name); },
+  onSubsystemProgress(callback) {
+    const listener = (_event, payload) => callback(payload);
+    ipcRenderer.on('subsystem:progress', listener);
+    return () => ipcRenderer.removeListener('subsystem:progress', listener);
+  },
   showQuickCapture() { return ipcRenderer.invoke('bridge:showQuickCapture'); },
   setQuickCaptureContext(studentId, context) { return ipcRenderer.invoke('bridge:setQuickCaptureContext', studentId, context); },
   onQuickCaptureNavigate(callback) {
@@ -61,13 +71,13 @@ contextBridge.exposeInMainWorld('AndroidBridge', {
     return ipcRenderer.invoke('bridge:copyText', value);
   },
   exportTextFile(filename, content) {
-    return ipcRenderer.sendSync('bridge:exportTextFile', filename, content);
+    return invokeLegacy('bridge:exportTextFile', filename, content);
   },
   importFiles(studentName, targetJson) {
-    return ipcRenderer.sendSync('bridge:importFiles', studentName, targetJson);
+    return invokeLegacy('bridge:importFiles', studentName, targetJson);
   },
   pickMaterialSourceDir() {
-    return ipcRenderer.sendSync('bridge:pickMaterialSourceDir');
+    return invokeLegacy('bridge:pickMaterialSourceDir');
   },
   scanMaterialSources(studentId, sourcesJson) {
     return ipcRenderer.invoke('bridge:scanMaterialSources', studentId, sourcesJson);
@@ -76,16 +86,16 @@ contextBridge.exposeInMainWorld('AndroidBridge', {
     return ipcRenderer.invoke('bridge:importMaterialSourceFiles', studentId, pathsJson, targetJson);
   },
   getMaterialImportRecords(studentId) {
-    return ipcRenderer.sendSync('bridge:getMaterialImportRecords', studentId);
+    return invokeLegacy('bridge:getMaterialImportRecords', studentId);
   },
   removeMaterialImportRecords(studentId, recordIdsJson) {
-    return ipcRenderer.sendSync('bridge:removeMaterialImportRecords', studentId, recordIdsJson);
+    return invokeLegacy('bridge:removeMaterialImportRecords', studentId, recordIdsJson);
   },
   getCaptureCenterState() {
-    return ipcRenderer.sendSync('bridge:getCaptureCenterState');
+    return invokeLegacy('bridge:getCaptureCenterState');
   },
   setCaptureVisionConsent(inputJson) {
-    return ipcRenderer.sendSync('bridge:setCaptureVisionConsent', inputJson);
+    return invokeLegacy('bridge:setCaptureVisionConsent', inputJson);
   },
   onCaptureChanged(callback) {
     const listener = (_event, payload) => callback(payload);
@@ -109,6 +119,18 @@ contextBridge.exposeInMainWorld('AndroidBridge', {
   },
   getLearningAnalytics(inputJson) {
     return ipcRenderer.invoke('bridge:getLearningAnalytics', inputJson);
+  },
+  listStudentKnowledgePoints(inputJson) {
+    return ipcRenderer.invoke('bridge:listStudentKnowledgePoints', inputJson);
+  },
+  getKnowledgePointTrend(inputJson) {
+    return ipcRenderer.invoke('bridge:getKnowledgePointTrend', inputJson);
+  },
+  getStudentKnowledgeActivitySummary(studentId, range) {
+    return ipcRenderer.invoke('bridge:getStudentKnowledgeActivitySummary', studentId, range);
+  },
+  rebuildKnowledgeProjection(inputJson) {
+    return ipcRenderer.invoke('bridge:rebuildKnowledgeProjection', inputJson);
   },
   getCaptureTimelineProcessingState(inputJson) {
     return ipcRenderer.invoke('bridge:getCaptureTimelineProcessingState', inputJson);
@@ -153,7 +175,7 @@ contextBridge.exposeInMainWorld('AndroidBridge', {
     return ipcRenderer.invoke('bridge:deleteCaptureSession', sessionId);
   },
   openCaptureInbox(sessionId) {
-    return ipcRenderer.sendSync('bridge:openCaptureInbox', sessionId);
+    return invokeLegacy('bridge:openCaptureInbox', sessionId);
   },
   getAssetIndex() {
     return ipcRenderer.invoke('bridge:getAssetIndex');
@@ -187,6 +209,9 @@ contextBridge.exposeInMainWorld('AndroidBridge', {
   listDuplicateGroups(request) {
     return ipcRenderer.invoke('bridge:listDuplicateGroups', request || {});
   },
+  listDuplicateCleanupOperations(request) {
+    return ipcRenderer.invoke('bridge:listDuplicateCleanupOperations', request || {});
+  },
   prepareDuplicateCleanup(request) {
     return ipcRenderer.invoke('bridge:prepareDuplicateCleanup', request || {});
   },
@@ -198,6 +223,9 @@ contextBridge.exposeInMainWorld('AndroidBridge', {
   },
   restoreDuplicateCleanup(operationId, entryIds) {
     return ipcRenderer.invoke('bridge:restoreDuplicateCleanup', operationId, entryIds || []);
+  },
+  retryDuplicateCleanup(operationId, entryIds) {
+    return ipcRenderer.invoke('bridge:retryDuplicateCleanup', operationId, entryIds || []);
   },
   onDuplicateCleanupProgress(callback) {
     const handler = (_event, payload) => callback(payload);
@@ -217,10 +245,25 @@ contextBridge.exposeInMainWorld('AndroidBridge', {
     return ipcRenderer.invoke('bridge:markAssetGovernanceDecision', assetId, decision, note);
   },
   generateKnowledgeArchitectureReport() {
-    return ipcRenderer.sendSync('bridge:generateKnowledgeArchitectureReport');
+    return invokeLegacy('bridge:generateKnowledgeArchitectureReport');
   },
   getProjects(options) {
     return ipcRenderer.invoke('bridge:getProjects', options || {});
+  },
+  listProjects(request) {
+    return ipcRenderer.invoke('bridge:listProjects', request || {});
+  },
+  getProjectDetail(projectId) {
+    return ipcRenderer.invoke('bridge:getProjectDetail', projectId);
+  },
+  listProjectStagingItems(request) {
+    return ipcRenderer.invoke('bridge:listProjectStagingItems', request || {});
+  },
+  getProjectStagingSummary(projectId) {
+    return ipcRenderer.invoke('bridge:getProjectStagingSummary', projectId);
+  },
+  mutateProjectStagingItems(request) {
+    return ipcRenderer.invoke('bridge:mutateProjectStagingItems', request || {});
   },
   getTopicSuggestions(studentId) {
     return ipcRenderer.invoke('bridge:getTopicSuggestions', studentId);
@@ -258,91 +301,91 @@ contextBridge.exposeInMainWorld('AndroidBridge', {
     return ipcRenderer.invoke('bridge:getStudentOverview');
   },
   createProject(optionsJson) {
-    return ipcRenderer.sendSync('bridge:createProject', optionsJson);
+    return invokeLegacy('bridge:createProject', optionsJson);
   },
   updateProjectMetadata(projectId, metadataJson) {
-    return ipcRenderer.sendSync('bridge:updateProjectMetadata', projectId, metadataJson);
+    return invokeLegacy('bridge:updateProjectMetadata', projectId, metadataJson);
   },
   previewLearningProjectRemoval(projectId) {
-    return ipcRenderer.sendSync('bridge:previewLearningProjectRemoval', projectId);
+    return invokeLegacy('bridge:previewLearningProjectRemoval', projectId);
   },
   removeProjectRecord(projectId) {
-    return ipcRenderer.sendSync('bridge:removeProjectRecord', projectId);
+    return invokeLegacy('bridge:removeProjectRecord', projectId);
   },
   deleteLearningProject(projectId) {
-    return ipcRenderer.sendSync('bridge:deleteLearningProject', projectId);
+    return invokeLegacy('bridge:deleteLearningProject', projectId);
   },
   relocateProjectWorkspace(projectId) {
-    return ipcRenderer.sendSync('bridge:relocateProjectWorkspace', projectId);
+    return invokeLegacy('bridge:relocateProjectWorkspace', projectId);
   },
   confirmProjectWorkspaceRelocation(projectId, workspacePath) {
-    return ipcRenderer.sendSync('bridge:confirmProjectWorkspaceRelocation', projectId, workspacePath);
+    return invokeLegacy('bridge:confirmProjectWorkspaceRelocation', projectId, workspacePath);
   },
   rollbackProjectWorkspaceRelocation(projectId) {
-    return ipcRenderer.sendSync('bridge:rollbackProjectWorkspaceRelocation', projectId);
+    return invokeLegacy('bridge:rollbackProjectWorkspaceRelocation', projectId);
   },
   rebindProjectKnowledgeSpace(projectId) {
-    return ipcRenderer.sendSync('bridge:rebindProjectKnowledgeSpace', projectId);
+    return invokeLegacy('bridge:rebindProjectKnowledgeSpace', projectId);
   },
   rebindProjectRoot(projectId) {
-    return ipcRenderer.sendSync('bridge:rebindProjectRoot', projectId);
+    return invokeLegacy('bridge:rebindProjectRoot', projectId);
   },
   rebindProjectRaw(projectId) {
-    return ipcRenderer.sendSync('bridge:rebindProjectRaw', projectId);
+    return invokeLegacy('bridge:rebindProjectRaw', projectId);
   },
   getRemovedProjects() {
-    return ipcRenderer.sendSync('bridge:getRemovedProjects');
+    return invokeLegacy('bridge:getRemovedProjects');
   },
   restoreRemovedProject(snapshotPath) {
-    return ipcRenderer.sendSync('bridge:restoreRemovedProject', snapshotPath);
+    return invokeLegacy('bridge:restoreRemovedProject', snapshotPath);
   },
   exportProjectPackage(projectId) {
-    return ipcRenderer.sendSync('bridge:exportProjectPackage', projectId);
+    return invokeLegacy('bridge:exportProjectPackage', projectId);
   },
   importProjectPackage() {
-    return ipcRenderer.sendSync('bridge:importProjectPackage');
+    return invokeLegacy('bridge:importProjectPackage');
   },
   duplicateProject(projectId, name) {
-    return ipcRenderer.sendSync('bridge:duplicateProject', projectId, name);
+    return invokeLegacy('bridge:duplicateProject', projectId, name);
   },
   updateProjectStudentEvidence(projectId, studentId, evidenceJson) {
-    return ipcRenderer.sendSync('bridge:updateProjectStudentEvidence', projectId, studentId, evidenceJson);
+    return invokeLegacy('bridge:updateProjectStudentEvidence', projectId, studentId, evidenceJson);
   },
   updateProjectStudentEvidenceAsync(projectId, studentId, evidenceJson, bindingId = '') {
     return ipcRenderer.invoke('bridge:updateProjectStudentEvidenceAsync', projectId, studentId, evidenceJson, bindingId);
   },
   getProjectStudentEvidencePrompt(projectId) {
-    return ipcRenderer.sendSync('bridge:getProjectStudentEvidencePrompt', projectId);
+    return invokeLegacy('bridge:getProjectStudentEvidencePrompt', projectId);
   },
   getProjectCompletionWizard(projectId) {
-    return ipcRenderer.sendSync('bridge:getProjectCompletionWizard', projectId);
+    return invokeLegacy('bridge:getProjectCompletionWizard', projectId);
   },
   importProjectStudentEvidenceSuggestions(projectId, pastedText = '') {
-    return ipcRenderer.sendSync('bridge:importProjectStudentEvidenceSuggestions', projectId, pastedText);
+    return invokeLegacy('bridge:importProjectStudentEvidenceSuggestions', projectId, pastedText);
   },
   buildCrossProjectKnowledgeIndex() {
     return ipcRenderer.invoke('bridge:buildCrossProjectKnowledgeIndex');
   },
   pickProjectWorkspaceDir() {
-    return ipcRenderer.sendSync('bridge:pickProjectWorkspaceDir');
+    return invokeLegacy('bridge:pickProjectWorkspaceDir');
   },
   pickProjectKnowledgeBaseDir() {
-    return ipcRenderer.sendSync('bridge:pickProjectKnowledgeBaseDir');
+    return invokeLegacy('bridge:pickProjectKnowledgeBaseDir');
   },
   inspectProjectKnowledgeBase(rootPath) {
-    return ipcRenderer.sendSync('bridge:inspectProjectKnowledgeBase', rootPath);
+    return invokeLegacy('bridge:inspectProjectKnowledgeBase', rootPath);
   },
   updateProjectStatus(projectId, status) {
-    return ipcRenderer.sendSync('bridge:updateProjectStatus', projectId, status);
+    return invokeLegacy('bridge:updateProjectStatus', projectId, status);
   },
   updateProjectStudents(projectId, studentIdsJson) {
     return ipcRenderer.invoke('bridge:updateProjectStudents', projectId, studentIdsJson);
   },
   applyProjectWorkspaceTemplate(projectId, templateId, foldersJson, templateName, templateV2Json) {
-    return ipcRenderer.sendSync('bridge:applyProjectWorkspaceTemplate', projectId, templateId, foldersJson, templateName, templateV2Json);
+    return invokeLegacy('bridge:applyProjectWorkspaceTemplate', projectId, templateId, foldersJson, templateName, templateV2Json);
   },
   openProjectSpace(projectId, space) {
-    return ipcRenderer.sendSync('bridge:openProjectSpace', projectId, space);
+    return invokeLegacy('bridge:openProjectSpace', projectId, space);
   },
   scanProjectWorkspace(projectId, restart = false) {
     return ipcRenderer.invoke('bridge:scanProjectWorkspace', projectId, restart);
@@ -363,16 +406,16 @@ contextBridge.exposeInMainWorld('AndroidBridge', {
     return ipcRenderer.invoke('bridge:reviewProjectStagingItems', projectId, itemIdsJson, decision, sourceStrategy, note);
   },
   getProjectKnowledgeReview(projectId) {
-    return ipcRenderer.sendSync('bridge:getProjectKnowledgeReview', projectId);
+    return invokeLegacy('bridge:getProjectKnowledgeReview', projectId);
   },
   updateProjectKnowledgeReview(projectId, recordIdsJson, status, note) {
-    return ipcRenderer.sendSync('bridge:updateProjectKnowledgeReview', projectId, recordIdsJson, status, note);
+    return invokeLegacy('bridge:updateProjectKnowledgeReview', projectId, recordIdsJson, status, note);
   },
   getProjectUnifiedReview(projectId) {
-    return ipcRenderer.sendSync('bridge:getProjectUnifiedReview', projectId);
+    return invokeLegacy('bridge:getProjectUnifiedReview', projectId);
   },
   applyProjectUnifiedReview(projectId) {
-    return ipcRenderer.sendSync('bridge:applyProjectUnifiedReview', projectId);
+    return invokeLegacy('bridge:applyProjectUnifiedReview', projectId);
   },
   importProjectAssets(projectId, assetIdsJson) {
     return ipcRenderer.invoke('bridge:importProjectAssets', projectId, assetIdsJson);
@@ -381,16 +424,16 @@ contextBridge.exposeInMainWorld('AndroidBridge', {
     return ipcRenderer.invoke('bridge:importProjectRawFiles', projectId);
   },
   getProjectDigestCommand(projectId) {
-    return ipcRenderer.sendSync('bridge:getProjectDigestCommand', projectId);
+    return invokeLegacy('bridge:getProjectDigestCommand', projectId);
   },
   markProjectDigestSubmitted(projectId) {
-    return ipcRenderer.sendSync('bridge:markProjectDigestSubmitted', projectId);
+    return invokeLegacy('bridge:markProjectDigestSubmitted', projectId);
   },
   syncProjectDigestResult(projectId) {
-    return ipcRenderer.sendSync('bridge:syncProjectDigestResult', projectId);
+    return invokeLegacy('bridge:syncProjectDigestResult', projectId);
   },
   applyProjectDigestReceiptText(projectId, rawText) {
-    return ipcRenderer.sendSync('bridge:applyProjectDigestReceiptText', projectId, rawText);
+    return invokeLegacy('bridge:applyProjectDigestReceiptText', projectId, rawText);
   },
   importProjectStagingFiles(projectId) {
     return ipcRenderer.invoke('bridge:importProjectStagingFiles', projectId);
@@ -405,118 +448,118 @@ contextBridge.exposeInMainWorld('AndroidBridge', {
     return ipcRenderer.invoke('bridge:approveAndPromoteProjectStagingItems', projectId, itemIdsJson, sourceStrategy, note);
   },
   previewProjectStagingAiScreening(projectId, rawText) {
-    return ipcRenderer.sendSync('bridge:previewProjectStagingAiScreening', projectId, rawText);
+    return invokeLegacy('bridge:previewProjectStagingAiScreening', projectId, rawText);
   },
   applyProjectStagingAiScreening(projectId, rawText) {
-    return ipcRenderer.sendSync('bridge:applyProjectStagingAiScreening', projectId, rawText);
+    return invokeLegacy('bridge:applyProjectStagingAiScreening', projectId, rawText);
   },
   importProjectStagingAiScreening(projectId) {
-    return ipcRenderer.sendSync('bridge:importProjectStagingAiScreening', projectId);
+    return invokeLegacy('bridge:importProjectStagingAiScreening', projectId);
   },
   analyzeProjectStagingGovernance(projectId) {
-    return ipcRenderer.sendSync('bridge:analyzeProjectStagingGovernance', projectId);
+    return invokeLegacy('bridge:analyzeProjectStagingGovernance', projectId);
   },
   generateProjectPromotion(projectId) {
-    return ipcRenderer.sendSync('bridge:generateProjectPromotion', projectId);
+    return invokeLegacy('bridge:generateProjectPromotion', projectId);
   },
   getProjectPromotionPlan(projectId) {
-    return ipcRenderer.sendSync('bridge:getProjectPromotionPlan', projectId);
+    return invokeLegacy('bridge:getProjectPromotionPlan', projectId);
   },
   getProjectPromotionAudit(projectId) {
-    return ipcRenderer.sendSync('bridge:getProjectPromotionAudit', projectId);
+    return invokeLegacy('bridge:getProjectPromotionAudit', projectId);
   },
   executeProjectPromotionPlan(projectId, planJson) {
-    return ipcRenderer.sendSync('bridge:executeProjectPromotionPlan', projectId, planJson);
+    return invokeLegacy('bridge:executeProjectPromotionPlan', projectId, planJson);
   },
   publishProjectPromotion(projectId) {
-    return ipcRenderer.sendSync('bridge:publishProjectPromotion', projectId);
+    return invokeLegacy('bridge:publishProjectPromotion', projectId);
   },
   rollbackProjectPromotionRun(projectId, runId) {
-    return ipcRenderer.sendSync('bridge:rollbackProjectPromotionRun', projectId, runId);
+    return invokeLegacy('bridge:rollbackProjectPromotionRun', projectId, runId);
   },
   initStudentWorkspace(studentName, agentMd, indexMd, logMd) {
-    return ipcRenderer.sendSync('bridge:initStudentWorkspace', studentName, agentMd, indexMd, logMd);
+    return invokeLegacy('bridge:initStudentWorkspace', studentName, agentMd, indexMd, logMd);
   },
   openApp(app) {
-    return ipcRenderer.sendSync('bridge:openApp', app);
+    return invokeLegacy('bridge:openApp', app);
   },
   openExternalUrl(url) {
-    return ipcRenderer.sendSync('bridge:openExternalUrl', url);
+    return invokeLegacy('bridge:openExternalUrl', url);
   },
   getAppStatus() {
-    return ipcRenderer.sendSync('bridge:getAppStatus');
+    return invokeLegacy('bridge:getAppStatus');
   },
   getAppStatusAsync() {
     return ipcRenderer.invoke('bridge:getAppStatusAsync');
   },
   getStorageConfig() {
-    return ipcRenderer.sendSync('bridge:getStorageConfig');
+    return ipcRenderer.invoke('bridge:getStorageConfig');
   },
   getTemplateCenter(systemTemplatesJson) {
-    return ipcRenderer.sendSync('bridge:getTemplateCenter', systemTemplatesJson);
+    return ipcRenderer.invoke('bridge:getTemplateCenter', systemTemplatesJson);
   },
   saveCustomTemplates(templatesJson) {
-    return ipcRenderer.sendSync('bridge:saveCustomTemplates', templatesJson);
+    return invokeLegacy('bridge:saveCustomTemplates', templatesJson);
   },
   restoreSystemTemplates(systemTemplatesJson) {
-    return ipcRenderer.sendSync('bridge:restoreSystemTemplates', systemTemplatesJson);
+    return invokeLegacy('bridge:restoreSystemTemplates', systemTemplatesJson);
   },
   getAgentCenter(studentId) {
-    return ipcRenderer.sendSync('bridge:getAgentCenter', studentId);
+    return invokeLegacy('bridge:getAgentCenter', studentId);
   },
   saveAgentMemorySource(studentId, tool, content, mode) {
-    return ipcRenderer.sendSync('bridge:saveAgentMemorySource', studentId, tool, content, mode);
+    return invokeLegacy('bridge:saveAgentMemorySource', studentId, tool, content, mode);
   },
   mergeAgentMemory(studentId) {
-    return ipcRenderer.sendSync('bridge:mergeAgentMemory', studentId);
+    return invokeLegacy('bridge:mergeAgentMemory', studentId);
   },
   saveUnifiedMemory(studentId, content) {
-    return ipcRenderer.sendSync('bridge:saveUnifiedMemory', studentId, content);
+    return invokeLegacy('bridge:saveUnifiedMemory', studentId, content);
   },
   saveAgentSoulSource(studentId, tool, content) {
-    return ipcRenderer.sendSync('bridge:saveAgentSoulSource', studentId, tool, content);
+    return invokeLegacy('bridge:saveAgentSoulSource', studentId, tool, content);
   },
   saveUnifiedSoul(studentId, content) {
-    return ipcRenderer.sendSync('bridge:saveUnifiedSoul', studentId, content);
+    return invokeLegacy('bridge:saveUnifiedSoul', studentId, content);
   },
   compareAgentSoulSource(studentId, tool) {
-    return ipcRenderer.sendSync('bridge:compareAgentSoulSource', studentId, tool);
+    return invokeLegacy('bridge:compareAgentSoulSource', studentId, tool);
   },
   scanAgentKnowledgeFiles(studentId) {
-    return ipcRenderer.sendSync('bridge:scanAgentKnowledgeFiles', studentId);
+    return invokeLegacy('bridge:scanAgentKnowledgeFiles', studentId);
   },
   importAgentKnowledgeFile(studentId, filePath, tool, kind) {
-    return ipcRenderer.sendSync('bridge:importAgentKnowledgeFile', studentId, filePath, tool, kind);
+    return invokeLegacy('bridge:importAgentKnowledgeFile', studentId, filePath, tool, kind);
   },
   getAgentRules(studentId) {
-    return ipcRenderer.sendSync('bridge:getAgentRules', studentId);
+    return invokeLegacy('bridge:getAgentRules', studentId);
   },
   saveAgentRuleFile(studentId, fileName, content) {
-    return ipcRenderer.sendSync('bridge:saveAgentRuleFile', studentId, fileName, content);
+    return invokeLegacy('bridge:saveAgentRuleFile', studentId, fileName, content);
   },
   generateAgentRuleFile(studentId, fileName) {
-    return ipcRenderer.sendSync('bridge:generateAgentRuleFile', studentId, fileName);
+    return invokeLegacy('bridge:generateAgentRuleFile', studentId, fileName);
   },
   compareAgentRuleFiles(studentId, baseName, targetName) {
-    return ipcRenderer.sendSync('bridge:compareAgentRuleFiles', studentId, baseName, targetName);
+    return invokeLegacy('bridge:compareAgentRuleFiles', studentId, baseName, targetName);
   },
   getAgentSourceRegistry(studentId) {
-    return ipcRenderer.sendSync('bridge:getAgentSourceRegistry', studentId);
+    return invokeLegacy('bridge:getAgentSourceRegistry', studentId);
   },
   rollbackAgentSourceRecord(studentId, recordId) {
-    return ipcRenderer.sendSync('bridge:rollbackAgentSourceRecord', studentId, recordId);
+    return invokeLegacy('bridge:rollbackAgentSourceRecord', studentId, recordId);
   },
   getAgentConversationCenter(studentId) {
-    return ipcRenderer.sendSync('bridge:getAgentConversationCenter', studentId);
+    return invokeLegacy('bridge:getAgentConversationCenter', studentId);
   },
   saveAgentConversationImport(studentId, content, tool, sourcePath) {
-    return ipcRenderer.sendSync('bridge:saveAgentConversationImport', studentId, content, tool, sourcePath);
+    return invokeLegacy('bridge:saveAgentConversationImport', studentId, content, tool, sourcePath);
   },
   deliverConversationMaterials(studentId, requestJson) {
     return ipcRenderer.invoke('bridge:deliverConversationMaterials', studentId, requestJson);
   },
   manageConversationImports(studentId, requestJson) {
-    return ipcRenderer.sendSync('bridge:manageConversationImports', studentId, requestJson);
+    return invokeLegacy('bridge:manageConversationImports', studentId, requestJson);
   },
   manageConversationImportsAsync(studentId, requestJson) {
     return ipcRenderer.invoke('bridge:manageConversationImportsAsync', studentId, requestJson);
@@ -525,82 +568,82 @@ contextBridge.exposeInMainWorld('AndroidBridge', {
     return ipcRenderer.invoke('bridge:importConversationShareUrl', studentId, url, tool);
   },
   selectAgentConversationFiles(studentId, tool) {
-    return ipcRenderer.sendSync('bridge:selectAgentConversationFiles', studentId, tool);
+    return invokeLegacy('bridge:selectAgentConversationFiles', studentId, tool);
   },
   saveConversationExtract(studentId, extractJson, tool) {
-    return ipcRenderer.sendSync('bridge:saveConversationExtract', studentId, extractJson, tool);
+    return invokeLegacy('bridge:saveConversationExtract', studentId, extractJson, tool);
   },
   updateConversationKnowledgeCandidate(studentId, candidateId, action, payloadJson) {
-    return ipcRenderer.sendSync('bridge:updateConversationKnowledgeCandidate', studentId, candidateId, action, payloadJson);
+    return invokeLegacy('bridge:updateConversationKnowledgeCandidate', studentId, candidateId, action, payloadJson);
   },
   promoteConversationKnowledgeCandidates(studentId, requestJson) {
-    return ipcRenderer.sendSync('bridge:promoteConversationKnowledgeCandidates', studentId, requestJson);
+    return invokeLegacy('bridge:promoteConversationKnowledgeCandidates', studentId, requestJson);
   },
   rollbackConversationPromotion(studentId, transactionId) {
-    return ipcRenderer.sendSync('bridge:rollbackConversationPromotion', studentId, transactionId);
+    return invokeLegacy('bridge:rollbackConversationPromotion', studentId, transactionId);
   },
   ingestKnowledgeCandidateEnvelope(studentId, envelopeJson) {
-    return ipcRenderer.sendSync('bridge:ingestKnowledgeCandidateEnvelope', studentId, envelopeJson);
+    return invokeLegacy('bridge:ingestKnowledgeCandidateEnvelope', studentId, envelopeJson);
   },
   openStudentRootDir(studentId) {
-    return ipcRenderer.sendSync('bridge:openStudentRootDir', studentId);
+    return invokeLegacy('bridge:openStudentRootDir', studentId);
   },
   openGrowthModelDir(studentId) {
-    return ipcRenderer.sendSync('bridge:openGrowthModelDir', studentId);
+    return invokeLegacy('bridge:openGrowthModelDir', studentId);
   },
   checkStudentPathHealth(studentId) {
-    return ipcRenderer.sendSync('bridge:checkStudentPathHealth', studentId);
+    return invokeLegacy('bridge:checkStudentPathHealth', studentId);
   },
   repairStudentStalePaths(studentId) {
-    return ipcRenderer.sendSync('bridge:repairStudentStalePaths', studentId);
+    return invokeLegacy('bridge:repairStudentStalePaths', studentId);
   },
   checkAllStudentsPathHealth() {
-    return ipcRenderer.sendSync('bridge:checkAllStudentsPathHealth');
+    return invokeLegacy('bridge:checkAllStudentsPathHealth');
   },
   resolveStudentPath(studentId, logicalPath) {
-    return ipcRenderer.sendSync('bridge:resolveStudentPath', studentId, logicalPath);
+    return invokeLegacy('bridge:resolveStudentPath', studentId, logicalPath);
   },
   getLicenseStatus() {
-    return ipcRenderer.sendSync('bridge:getLicenseStatus');
+    return ipcRenderer.invoke('bridge:getLicenseStatus');
   },
   activateLicense(code) {
-    return ipcRenderer.sendSync('bridge:activateLicense', code);
+    return invokeLegacy('bridge:activateLicense', code);
   },
   importLicenseFile() {
-    return ipcRenderer.sendSync('bridge:importLicenseFile');
+    return invokeLegacy('bridge:importLicenseFile');
   },
   getLicenseTrustStatus() {
-    return ipcRenderer.sendSync('bridge:getLicenseTrustStatus');
+    return invokeLegacy('bridge:getLicenseTrustStatus');
   },
   deactivateLicense() {
-    return ipcRenderer.sendSync('bridge:deactivateLicense');
+    return invokeLegacy('bridge:deactivateLicense');
   },
   getAgentToolInstallStatus() {
-    return ipcRenderer.sendSync('bridge:getAgentToolInstallStatus');
+    return invokeLegacy('bridge:getAgentToolInstallStatus');
   },
   checkUpdate(manifestUrl, currentVersionCode) {
-    return ipcRenderer.sendSync('bridge:checkUpdate', manifestUrl, currentVersionCode);
+    return invokeLegacy('bridge:checkUpdate', manifestUrl, currentVersionCode);
   },
   downloadAndInstallUpdate(apkUrl) {
-    return ipcRenderer.sendSync('bridge:downloadAndInstallUpdate', apkUrl);
+    return invokeLegacy('bridge:downloadAndInstallUpdate', apkUrl);
   },
   pickArchiveRoot() {
-    return ipcRenderer.sendSync('bridge:pickArchiveRoot');
+    return invokeLegacy('bridge:pickArchiveRoot');
   },
   getArchiveRootStatus() {
-    return ipcRenderer.sendSync('bridge:getArchiveRootStatus');
+    return invokeLegacy('bridge:getArchiveRootStatus');
   },
   listMarkdownFiles(studentName) {
-    return ipcRenderer.sendSync('bridge:listMarkdownFiles', studentName);
+    return invokeLegacy('bridge:listMarkdownFiles', studentName);
   },
   readMarkdownFile(studentId, documentId) {
-    return ipcRenderer.sendSync('bridge:readMarkdownFile', studentId, documentId);
+    return invokeLegacy('bridge:readMarkdownFile', studentId, documentId);
   },
   listProjectKnowledgeFiles(projectId) {
-    return ipcRenderer.sendSync('bridge:listProjectKnowledgeFiles', projectId);
+    return invokeLegacy('bridge:listProjectKnowledgeFiles', projectId);
   },
   readProjectKnowledgeFile(projectId, documentId) {
-    return ipcRenderer.sendSync('bridge:readProjectKnowledgeFile', projectId, documentId);
+    return invokeLegacy('bridge:readProjectKnowledgeFile', projectId, documentId);
   },
   readProjectKnowledgeFileAsync(projectId, documentId) {
     return ipcRenderer.invoke('bridge:readProjectKnowledgeFileAsync', projectId, documentId);
@@ -610,6 +653,23 @@ contextBridge.exposeInMainWorld('AndroidBridge', {
   },
   getProjectMaterialWorkspaceView(projectId, queryJson) {
     return ipcRenderer.invoke('bridge:getProjectMaterialWorkspaceView', projectId, queryJson);
+  },
+  getProjectMaterialOverview(projectId) {
+    return ipcRenderer.invoke('bridge:getProjectMaterialOverview', projectId);
+  },
+  listProjectMaterialExceptions(requestJson) {
+    return ipcRenderer.invoke('bridge:listProjectMaterialExceptions', requestJson);
+  },
+  runProjectMaterialAutomation(projectId, requestJson) {
+    return ipcRenderer.invoke('bridge:runProjectMaterialAutomation', projectId, requestJson);
+  },
+  getProjectMaterialAutomationStatus(jobId) {
+    return ipcRenderer.invoke('bridge:getProjectMaterialAutomationStatus', jobId);
+  },
+  onProjectMaterialAutomationProgress(callback) {
+    const listener = (_event, payload) => callback(payload);
+    ipcRenderer.on('onProjectMaterialAutomationProgress', listener);
+    return () => ipcRenderer.removeListener('onProjectMaterialAutomationProgress', listener);
   },
   getProjectClassificationSuggestions(projectId, queryJson) {
     return ipcRenderer.invoke('bridge:getProjectClassificationSuggestions', projectId, queryJson);
@@ -669,7 +729,7 @@ contextBridge.exposeInMainWorld('AndroidBridge', {
     return ipcRenderer.invoke('bridge:openProjectMaterialOriginal', projectId, materialId, version);
   },
   listLearningReports(studentId) {
-    return ipcRenderer.sendSync('bridge:listLearningReports', studentId);
+    return invokeLegacy('bridge:listLearningReports', studentId);
   },
   cloudReportEnrollSource(input) {
     return ipcRenderer.invoke('bridge:cloudReportEnrollSource', input);
@@ -695,6 +755,9 @@ contextBridge.exposeInMainWorld('AndroidBridge', {
   },
   cloudReportListStudents() {
     return ipcRenderer.invoke('bridge:cloudReportListStudents');
+  },
+  cloudReportRemoveStudent(cloudStudentId) {
+    return ipcRenderer.invoke('bridge:cloudReportRemoveStudent', cloudStudentId);
   },
   cloudReportListReports(cloudStudentId, cursor) {
     return ipcRenderer.invoke('bridge:cloudReportListReports', cloudStudentId, cursor);
@@ -730,25 +793,25 @@ contextBridge.exposeInMainWorld('AndroidBridge', {
     return ipcRenderer.invoke('bridge:updateLearningReports', studentId);
   },
   readLearningReport(studentId, reportId) {
-    return ipcRenderer.sendSync('bridge:readLearningReport', studentId, reportId);
+    return invokeLegacy('bridge:readLearningReport', studentId, reportId);
   },
   getLearningReportEvidence(studentId, reportId) {
-    return ipcRenderer.sendSync('bridge:getLearningReportEvidence', studentId, reportId);
+    return invokeLegacy('bridge:getLearningReportEvidence', studentId, reportId);
   },
   openLearningReportEvidenceSource(studentId, reportId, evidenceId, sourceIndex) {
-    return ipcRenderer.sendSync('bridge:openLearningReportEvidenceSource', studentId, reportId, evidenceId, sourceIndex);
+    return invokeLegacy('bridge:openLearningReportEvidenceSource', studentId, reportId, evidenceId, sourceIndex);
   },
   exportEducationArchive(studentId) {
-    return ipcRenderer.sendSync('bridge:exportEducationArchive', studentId);
+    return invokeLegacy('bridge:exportEducationArchive', studentId);
   },
   exportLearningReport(studentId, reportId, format) {
     return ipcRenderer.invoke('bridge:exportLearningReport', studentId, reportId, format);
   },
   getEducationPublishingState(studentId, sourceType, sourceId) {
-    return ipcRenderer.sendSync('bridge:getEducationPublishingState', studentId, sourceType, sourceId);
+    return invokeLegacy('bridge:getEducationPublishingState', studentId, sourceType, sourceId);
   },
   getEducationPublicationEnhancementState(studentId, optionsJson) {
-    return ipcRenderer.sendSync('bridge:getEducationPublicationEnhancementState', studentId, optionsJson);
+    return invokeLegacy('bridge:getEducationPublicationEnhancementState', studentId, optionsJson);
   },
   startEducationPublicationEnhancement(studentId, optionsJson) {
     return ipcRenderer.invoke('bridge:startEducationPublicationEnhancement', studentId, optionsJson);
@@ -757,22 +820,22 @@ contextBridge.exposeInMainWorld('AndroidBridge', {
     return ipcRenderer.invoke('bridge:exportEducationPublication', studentId, optionsJson);
   },
   openEducationPublication(studentId, publicationId) {
-    return ipcRenderer.sendSync('bridge:openEducationPublication', studentId, publicationId);
+    return invokeLegacy('bridge:openEducationPublication', studentId, publicationId);
   },
   deleteEducationPublication(studentId, publicationId) {
-    return ipcRenderer.sendSync('bridge:deleteEducationPublication', studentId, publicationId);
+    return invokeLegacy('bridge:deleteEducationPublication', studentId, publicationId);
   },
   regenerateEducationPublication(studentId, publicationId) {
     return ipcRenderer.invoke('bridge:regenerateEducationPublication', studentId, publicationId);
   },
   ensureLearningReports(studentId) {
-    return ipcRenderer.sendSync('bridge:ensureLearningReports', studentId);
+    return invokeLegacy('bridge:ensureLearningReports', studentId);
   },
   ensureGrowthModel(studentId) {
-    return ipcRenderer.sendSync('bridge:ensureGrowthModel', studentId);
+    return invokeLegacy('bridge:ensureGrowthModel', studentId);
   },
   getGrowthEvidenceReview(studentId) {
-    return ipcRenderer.sendSync('bridge:getGrowthEvidenceReview', studentId);
+    return invokeLegacy('bridge:getGrowthEvidenceReview', studentId);
   },
   getGrowthEvidenceReviewAsync(studentId) {
     return ipcRenderer.invoke('bridge:getGrowthEvidenceReviewAsync', studentId);
@@ -781,88 +844,88 @@ contextBridge.exposeInMainWorld('AndroidBridge', {
     return ipcRenderer.invoke('bridge:getGrowthModelSnapshot', studentId);
   },
   updateGrowthEvidenceStatus(studentId, evidenceId, status, note) {
-    return ipcRenderer.sendSync('bridge:updateGrowthEvidenceStatus', studentId, evidenceId, status, note);
+    return invokeLegacy('bridge:updateGrowthEvidenceStatus', studentId, evidenceId, status, note);
   },
   batchReviewGrowthEvidence(studentId) {
-    return ipcRenderer.sendSync('bridge:batchReviewGrowthEvidence', studentId);
+    return invokeLegacy('bridge:batchReviewGrowthEvidence', studentId);
   },
   rebuildGrowthIndex(studentId) {
-    return ipcRenderer.sendSync('bridge:rebuildGrowthIndex', studentId);
+    return invokeLegacy('bridge:rebuildGrowthIndex', studentId);
   },
   getGrowthIndex(studentId) {
-    return ipcRenderer.sendSync('bridge:getGrowthIndex', studentId);
+    return invokeLegacy('bridge:getGrowthIndex', studentId);
   },
   getGrowthIndexAsync(studentId) {
     return ipcRenderer.invoke('bridge:getGrowthIndexAsync', studentId);
   },
   getStudents() {
-    return ipcRenderer.sendSync('bridge:getStudents');
+    return invokeLegacy('bridge:getStudents');
   },
   syncStudents(studentsJson) {
-    return ipcRenderer.sendSync('bridge:syncStudents', studentsJson);
+    return ipcRenderer.invoke('bridge:syncStudents', studentsJson);
   },
   selectKnowledgeBaseRoot() {
-    return ipcRenderer.sendSync('bridge:selectKnowledgeBaseRoot');
+    return invokeLegacy('bridge:selectKnowledgeBaseRoot');
   },
   scanKnowledgeBase(rootPath, studentName) {
-    return ipcRenderer.sendSync('bridge:scanKnowledgeBase', rootPath, studentName);
+    return invokeLegacy('bridge:scanKnowledgeBase', rootPath, studentName);
   },
   ensureAdoptedKnowledgeBase(optionsJson) {
-    return ipcRenderer.sendSync('bridge:ensureAdoptedKnowledgeBase', optionsJson);
+    return invokeLegacy('bridge:ensureAdoptedKnowledgeBase', optionsJson);
   },
   getHostServiceStatus() {
-    return ipcRenderer.sendSync('bridge:getHostServiceStatus');
+    return ipcRenderer.invoke('bridge:getHostServiceStatus');
   },
   setHostUsageMode(mode) {
-    return ipcRenderer.sendSync('bridge:setHostUsageMode', mode);
+    return invokeLegacy('bridge:setHostUsageMode', mode);
   },
   getHostServiceDiagnostics() {
-    return ipcRenderer.sendSync('bridge:getHostServiceDiagnostics');
+    return invokeLegacy('bridge:getHostServiceDiagnostics');
   },
   inspectProjectUploadRecovery() {
     return ipcRenderer.invoke('bridge:inspectProjectUploadRecovery');
   },
   repairHostService() {
-    return ipcRenderer.sendSync('bridge:repairHostService');
+    return invokeLegacy('bridge:repairHostService');
   },
   startHostService() {
-    return ipcRenderer.sendSync('bridge:startHostService');
+    return invokeLegacy('bridge:startHostService');
   },
   stopHostService() {
-    return ipcRenderer.sendSync('bridge:stopHostService');
+    return invokeLegacy('bridge:stopHostService');
   },
   setHostServicePort(port) {
-    return ipcRenderer.sendSync('bridge:setHostServicePort', port);
+    return invokeLegacy('bridge:setHostServicePort', port);
   },
   getHostConnectionInfo() {
-    return ipcRenderer.sendSync('bridge:getHostConnectionInfo');
+    return invokeLegacy('bridge:getHostConnectionInfo');
   },
   getHostDevices() {
-    return ipcRenderer.sendSync('bridge:getHostDevices');
+    return invokeLegacy('bridge:getHostDevices');
   },
   renameHostIdentity(displayName) {
-    return ipcRenderer.sendSync('bridge:renameHostIdentity', displayName);
+    return invokeLegacy('bridge:renameHostIdentity', displayName);
   },
   getCollaborationState() {
-    return ipcRenderer.sendSync('bridge:getCollaborationState');
+    return invokeLegacy('bridge:getCollaborationState');
   },
   setStudentArchiveSyncEnabled(studentId, enabled) {
-    return ipcRenderer.sendSync('bridge:setStudentArchiveSyncEnabled', studentId, enabled);
+    return invokeLegacy('bridge:setStudentArchiveSyncEnabled', studentId, enabled);
   },
   syncStudentArchiveNow(studentId) {
-    return ipcRenderer.sendSync('bridge:syncStudentArchiveNow', studentId);
+    return invokeLegacy('bridge:syncStudentArchiveNow', studentId);
   },
   setTeamKnowledgePolicy(optionsJson) {
-    return ipcRenderer.sendSync('bridge:setTeamKnowledgePolicy', optionsJson);
+    return invokeLegacy('bridge:setTeamKnowledgePolicy', optionsJson);
   },
   initializeCollaborationWorkspace() {
-    return ipcRenderer.sendSync('bridge:initializeCollaborationWorkspace');
+    return invokeLegacy('bridge:initializeCollaborationWorkspace');
   },
   setCollaborationEnabled(enabled) {
-    return ipcRenderer.sendSync('bridge:setCollaborationEnabled', enabled);
+    return invokeLegacy('bridge:setCollaborationEnabled', enabled);
   },
   openCollaborationPath(kind = 'nodeRoot') {
-    return ipcRenderer.sendSync('bridge:openCollaborationPath', kind);
+    return invokeLegacy('bridge:openCollaborationPath', kind);
   },
   scanCollaborationInbox() {
     return ipcRenderer.invoke('bridge:scanCollaborationInbox');
@@ -871,28 +934,28 @@ contextBridge.exposeInMainWorld('AndroidBridge', {
     return ipcRenderer.invoke('bridge:rebuildCollaborationIndex');
   },
   backupCollaborationState() {
-    return ipcRenderer.sendSync('bridge:backupCollaborationState');
+    return invokeLegacy('bridge:backupCollaborationState');
   },
   restoreLatestCollaborationState() {
-    return ipcRenderer.sendSync('bridge:restoreLatestCollaborationState');
+    return invokeLegacy('bridge:restoreLatestCollaborationState');
   },
   updateDirectDeliveryStatus(manifestId, action) {
-    return ipcRenderer.sendSync('bridge:updateDirectDeliveryStatus', manifestId, action);
+    return invokeLegacy('bridge:updateDirectDeliveryStatus', manifestId, action);
   },
   getRemoteCollaborationTasks() {
-    return ipcRenderer.sendSync('bridge:getRemoteCollaborationTasks');
+    return invokeLegacy('bridge:getRemoteCollaborationTasks');
   },
   getProjectPublicationOptions(projectId) {
-    return ipcRenderer.sendSync('bridge:getProjectPublicationOptions', projectId);
+    return invokeLegacy('bridge:getProjectPublicationOptions', projectId);
   },
   publishCollaborationProject(optionsJson) {
     return ipcRenderer.invoke('bridge:publishCollaborationProject', optionsJson);
   },
   selectCollaborationTaskFiles() {
-    return ipcRenderer.sendSync('bridge:selectCollaborationTaskFiles');
+    return invokeLegacy('bridge:selectCollaborationTaskFiles');
   },
   selectCollaborationResultFiles() {
-    return ipcRenderer.sendSync('bridge:selectCollaborationResultFiles');
+    return invokeLegacy('bridge:selectCollaborationResultFiles');
   },
   createRemoteCollaborationTask(optionsJson) {
     return ipcRenderer.invoke('bridge:createRemoteCollaborationTask', optionsJson);
@@ -904,91 +967,91 @@ contextBridge.exposeInMainWorld('AndroidBridge', {
     return ipcRenderer.invoke('bridge:resolveCollaborationTaskAttachments', taskId, decision, targetProjectId);
   },
   exportCollaborationStudentStats(studentId, targetNodeId) {
-    return ipcRenderer.sendSync('bridge:exportCollaborationStudentStats', studentId, targetNodeId);
+    return invokeLegacy('bridge:exportCollaborationStudentStats', studentId, targetNodeId);
   },
   createCollaborationBinding(optionsJson) {
-    return ipcRenderer.sendSync('bridge:createCollaborationBinding', optionsJson);
+    return invokeLegacy('bridge:createCollaborationBinding', optionsJson);
   },
   createCollaborationDeviceInvitation() {
-    return ipcRenderer.sendSync('bridge:createCollaborationDeviceInvitation');
+    return invokeLegacy('bridge:createCollaborationDeviceInvitation');
   },
   joinCollaborationDevice(value) {
     return ipcRenderer.invoke('bridge:joinCollaborationDevice', value);
   },
   createCollaborationStudentMappingOffer(deviceBindingId, studentId) {
-    return ipcRenderer.sendSync('bridge:createCollaborationStudentMappingOffer', deviceBindingId, studentId);
+    return invokeLegacy('bridge:createCollaborationStudentMappingOffer', deviceBindingId, studentId);
   },
   acceptCollaborationStudentMappingClipboard(studentId) {
-    return ipcRenderer.sendSync('bridge:acceptCollaborationStudentMappingClipboard', studentId);
+    return invokeLegacy('bridge:acceptCollaborationStudentMappingClipboard', studentId);
   },
   createManualCollaborationInvitation(studentId, localRole) {
-    return ipcRenderer.sendSync('bridge:createManualCollaborationInvitation', studentId, localRole);
+    return invokeLegacy('bridge:createManualCollaborationInvitation', studentId, localRole);
   },
   acceptManualCollaborationClipboard(studentId) {
-    return ipcRenderer.sendSync('bridge:acceptManualCollaborationClipboard', studentId);
+    return invokeLegacy('bridge:acceptManualCollaborationClipboard', studentId);
   },
   updateCollaborationBindingStatus(bindingId, status) {
-    return ipcRenderer.sendSync('bridge:updateCollaborationBindingStatus', bindingId, status);
+    return invokeLegacy('bridge:updateCollaborationBindingStatus', bindingId, status);
   },
   deleteRevokedCollaborationBindings(bindingId) {
-    return ipcRenderer.sendSync('bridge:deleteRevokedCollaborationBindings', bindingId);
+    return invokeLegacy('bridge:deleteRevokedCollaborationBindings', bindingId);
   },
   saveCollaborationGrant(optionsJson) {
-    return ipcRenderer.sendSync('bridge:saveCollaborationGrant', optionsJson);
+    return invokeLegacy('bridge:saveCollaborationGrant', optionsJson);
   },
   setCollaborationStatisticsSharing(studentId, enabled) {
-    return ipcRenderer.sendSync('bridge:setCollaborationStatisticsSharing', studentId, enabled);
+    return invokeLegacy('bridge:setCollaborationStatisticsSharing', studentId, enabled);
   },
   getCollaborationStudentMaterialStats(studentId, viewerNodeId = '', allowedProjectIdsJson = '[]') {
-    return ipcRenderer.sendSync('bridge:getCollaborationStudentMaterialStats', studentId, viewerNodeId, allowedProjectIdsJson);
+    return invokeLegacy('bridge:getCollaborationStudentMaterialStats', studentId, viewerNodeId, allowedProjectIdsJson);
   },
   findLanTablets() {
-    return ipcRenderer.sendSync('bridge:findLanTablets');
+    return invokeLegacy('bridge:findLanTablets');
   },
   findLanTerminals() {
-    return ipcRenderer.sendSync('bridge:findLanTerminals');
+    return invokeLegacy('bridge:findLanTerminals');
   },
   inviteLanTablet(tabletId) {
-    return ipcRenderer.sendSync('bridge:inviteLanTablet', tabletId);
+    return invokeLegacy('bridge:inviteLanTablet', tabletId);
   },
   inviteLanTerminal(terminalId) {
-    return ipcRenderer.sendSync('bridge:inviteLanTerminal', terminalId);
+    return invokeLegacy('bridge:inviteLanTerminal', terminalId);
   },
   acceptHostPairRequest(requestId) {
-    return ipcRenderer.sendSync('bridge:acceptHostPairRequest', requestId);
+    return invokeLegacy('bridge:acceptHostPairRequest', requestId);
   },
   rejectPairRequest(requestId) {
-    return ipcRenderer.sendSync('bridge:rejectPairRequest', requestId);
+    return invokeLegacy('bridge:rejectPairRequest', requestId);
   },
   getHostUploadRecords() {
-    return ipcRenderer.sendSync('bridge:getHostUploadRecords');
+    return invokeLegacy('bridge:getHostUploadRecords');
   },
   exportHostUploadRecords() {
-    return ipcRenderer.sendSync('bridge:exportHostUploadRecords');
+    return invokeLegacy('bridge:exportHostUploadRecords');
   },
   openHostUploadRecord(recordId) {
-    return ipcRenderer.sendSync('bridge:openHostUploadRecord', recordId);
+    return invokeLegacy('bridge:openHostUploadRecord', recordId);
   },
   clearHostUploadRecords() {
-    return ipcRenderer.sendSync('bridge:clearHostUploadRecords');
+    return invokeLegacy('bridge:clearHostUploadRecords');
   },
   setHostUploadRecordStatus(recordId, status) {
-    return ipcRenderer.sendSync('bridge:setHostUploadRecordStatus', recordId, status);
+    return invokeLegacy('bridge:setHostUploadRecordStatus', recordId, status);
   },
   markStudentDigestSubmitted(studentId) {
-    return ipcRenderer.sendSync('bridge:markStudentDigestSubmitted', studentId);
+    return invokeLegacy('bridge:markStudentDigestSubmitted', studentId);
   },
   getStudentMaterialPathIssues(studentId) {
-    return ipcRenderer.sendSync('bridge:getStudentMaterialPathIssues', studentId);
+    return invokeLegacy('bridge:getStudentMaterialPathIssues', studentId);
   },
   retryStudentMaterialPathRecovery(studentId) {
-    return ipcRenderer.sendSync('bridge:retryStudentMaterialPathRecovery', studentId);
+    return invokeLegacy('bridge:retryStudentMaterialPathRecovery', studentId);
   },
   selectStudentMaterialPath(studentId, materialId) {
-    return ipcRenderer.sendSync('bridge:selectStudentMaterialPath', studentId, materialId);
+    return invokeLegacy('bridge:selectStudentMaterialPath', studentId, materialId);
   },
   syncStudentDigestResult(studentId) {
-    return ipcRenderer.sendSync('bridge:syncStudentDigestResult', studentId);
+    return invokeLegacy('bridge:syncStudentDigestResult', studentId);
   },
   supplementCompletedStudentDigestLearningEvents(studentId) {
     return ipcRenderer.invoke('bridge:supplementCompletedStudentDigestLearningEvents', studentId);
@@ -997,34 +1060,34 @@ contextBridge.exposeInMainWorld('AndroidBridge', {
     return ipcRenderer.invoke('bridge:startDigestWorkflow', scopeType, scopeId, executor);
   },
   getDigestWorkflowStatus(scopeType, scopeId) {
-    return ipcRenderer.sendSync('bridge:getDigestWorkflowStatus', scopeType, scopeId);
+    return invokeLegacy('bridge:getDigestWorkflowStatus', scopeType, scopeId);
   },
   getDigestWorkflowCommand(scopeType, scopeId) {
-    return ipcRenderer.sendSync('bridge:getDigestWorkflowCommand', scopeType, scopeId);
+    return invokeLegacy('bridge:getDigestWorkflowCommand', scopeType, scopeId);
   },
   retryDigestWorkflow(scopeType, scopeId, executor) {
     return ipcRenderer.invoke('bridge:retryDigestWorkflow', scopeType, scopeId, executor);
   },
   importDigestWorkflowResultText(scopeType, scopeId, content) {
-    return ipcRenderer.sendSync('bridge:importDigestWorkflowResultText', scopeType, scopeId, content);
+    return invokeLegacy('bridge:importDigestWorkflowResultText', scopeType, scopeId, content);
   },
   getStudentDigestAudit(studentId) {
-    return ipcRenderer.sendSync('bridge:getStudentDigestAudit', studentId);
+    return invokeLegacy('bridge:getStudentDigestAudit', studentId);
   },
   generateStudentDigestAudit(studentId, selectedIdsJson) {
-    return ipcRenderer.sendSync('bridge:generateStudentDigestAudit', studentId, selectedIdsJson);
+    return invokeLegacy('bridge:generateStudentDigestAudit', studentId, selectedIdsJson);
   },
   syncStudentDigestAudit(studentId) {
-    return ipcRenderer.sendSync('bridge:syncStudentDigestAudit', studentId);
+    return invokeLegacy('bridge:syncStudentDigestAudit', studentId);
   },
   recordScheduledTaskAction(studentId, kind, commandText) {
-    return ipcRenderer.sendSync('bridge:recordScheduledTaskAction', studentId, kind, commandText);
+    return invokeLegacy('bridge:recordScheduledTaskAction', studentId, kind, commandText);
   },
   getStudentScheduleLedger(studentId) {
-    return ipcRenderer.sendSync('bridge:getStudentScheduleLedger', studentId);
+    return invokeLegacy('bridge:getStudentScheduleLedger', studentId);
   },
   getTaskCenter() {
-    return ipcRenderer.sendSync('bridge:getTaskCenter');
+    return ipcRenderer.invoke('bridge:getTaskCenter');
   },
   getTaskPage(query = {}) {
     return ipcRenderer.invoke('bridge:getTaskPage', query);
@@ -1051,67 +1114,67 @@ contextBridge.exposeInMainWorld('AndroidBridge', {
     return ipcRenderer.invoke('bridge:queryAgentKnowledge', optionsJson);
   },
   getAgentKnowledgeDiagnostics() {
-    return ipcRenderer.sendSync('bridge:getAgentKnowledgeDiagnostics');
+    return invokeLegacy('bridge:getAgentKnowledgeDiagnostics');
   },
   prepareAgentKnowledgeAccess(studentId) {
-    return ipcRenderer.sendSync('bridge:prepareAgentKnowledgeAccess', studentId);
+    return invokeLegacy('bridge:prepareAgentKnowledgeAccess', studentId);
   },
   getAgentCapabilityManagement(studentId) {
-    return ipcRenderer.sendSync('bridge:getAgentCapabilityManagement', studentId);
+    return invokeLegacy('bridge:getAgentCapabilityManagement', studentId);
   },
   setAgentCapabilityAuthorization(studentId, action) {
-    return ipcRenderer.sendSync('bridge:setAgentCapabilityAuthorization', studentId, action);
+    return invokeLegacy('bridge:setAgentCapabilityAuthorization', studentId, action);
   },
   reviewAgentWriteIntent(studentId, intentId) {
-    return ipcRenderer.sendSync('bridge:reviewAgentWriteIntent', studentId, intentId);
+    return invokeLegacy('bridge:reviewAgentWriteIntent', studentId, intentId);
   },
   decideAgentWriteIntent(studentId, intentId, digest, action) {
-    return ipcRenderer.sendSync('bridge:decideAgentWriteIntent', studentId, intentId, digest, action);
+    return invokeLegacy('bridge:decideAgentWriteIntent', studentId, intentId, digest, action);
   },
   getAgentMemoryState(studentId) {
     return ipcRenderer.invoke('bridge:getAgentMemoryState', studentId);
   },
   deleteEmptyAgentMemorySessions(studentId, sessionId = '') {
-    return ipcRenderer.sendSync('bridge:deleteEmptyAgentMemorySessions', studentId, sessionId);
+    return invokeLegacy('bridge:deleteEmptyAgentMemorySessions', studentId, sessionId);
   },
   setAgentMemoryAutomation(studentId, enabled) {
-    return ipcRenderer.sendSync('bridge:setAgentMemoryAutomation', studentId, Boolean(enabled));
+    return invokeLegacy('bridge:setAgentMemoryAutomation', studentId, Boolean(enabled));
   },
   activateAgentMemoryCapture(studentId) {
-    return ipcRenderer.sendSync('bridge:activateAgentMemoryCapture', studentId);
+    return invokeLegacy('bridge:activateAgentMemoryCapture', studentId);
   },
   openCodexHookReview() {
-    return ipcRenderer.sendSync('bridge:openCodexHookReview');
+    return invokeLegacy('bridge:openCodexHookReview');
   },
   submitAgentConversation(requestJson) {
     return ipcRenderer.invoke('bridge:submitAgentConversation', requestJson);
   },
   getAgentConversationSubmissionState() {
-    return ipcRenderer.sendSync('bridge:getAgentConversationSubmissionState');
+    return invokeLegacy('bridge:getAgentConversationSubmissionState');
   },
   assignAgentConversationSubmission(submissionId, scopeType, scopeId) {
     return ipcRenderer.invoke('bridge:assignAgentConversationSubmission', submissionId, scopeType, scopeId);
   },
   getTaskCenterCapabilities() {
-    return ipcRenderer.sendSync('bridge:getTaskCenterCapabilities');
+    return ipcRenderer.invoke('bridge:getTaskCenterCapabilities');
   },
   setTaskAutomationEnabled(enabled) {
-    return ipcRenderer.sendSync('bridge:setTaskAutomationEnabled', enabled);
+    return ipcRenderer.invoke('bridge:setTaskAutomationEnabled', enabled);
   },
   executeTask(taskId, executor) {
     return ipcRenderer.invoke('bridge:executeTask', taskId, executor);
   },
   approveTask(taskId, decision, note) {
-    return ipcRenderer.sendSync('bridge:approveTask', taskId, decision, note);
+    return ipcRenderer.invoke('bridge:approveTask', taskId, decision, note);
   },
   retryTask(taskId) {
-    return ipcRenderer.sendSync('bridge:retryTask', taskId);
+    return ipcRenderer.invoke('bridge:retryTask', taskId);
   },
   cancelTask(taskId, note) {
-    return ipcRenderer.sendSync('bridge:cancelTask', taskId, note);
+    return ipcRenderer.invoke('bridge:cancelTask', taskId, note);
   },
   deleteTaskHistory(taskId) {
-    return ipcRenderer.sendSync('bridge:deleteTaskHistory', taskId);
+    return ipcRenderer.invoke('bridge:deleteTaskHistory', taskId);
   },
   previewTaskGovernanceBatch(request) {
     return ipcRenderer.invoke('bridge:previewTaskGovernanceBatch', request);
@@ -1120,10 +1183,10 @@ contextBridge.exposeInMainWorld('AndroidBridge', {
     return ipcRenderer.invoke('bridge:commitTaskGovernanceBatch', request);
   },
   importTaskResult(taskId) {
-    return ipcRenderer.sendSync('bridge:importTaskResult', taskId);
+    return invokeLegacy('bridge:importTaskResult', taskId);
   },
   importTaskResultText(taskId, content) {
-    return ipcRenderer.sendSync('bridge:importTaskResultText', taskId, content);
+    return invokeLegacy('bridge:importTaskResultText', taskId, content);
   },
   importTaskResultTextAsync(taskId, content) {
     return ipcRenderer.invoke('bridge:importTaskResultTextAsync', taskId, content);
@@ -1141,25 +1204,25 @@ contextBridge.exposeInMainWorld('AndroidBridge', {
     return ipcRenderer.invoke('bridge:detectCodexBackgroundAuthorization', confirmed);
   },
   syncQClawTaskResults() {
-    return ipcRenderer.sendSync('bridge:syncQClawTaskResults');
+    return invokeLegacy('bridge:syncQClawTaskResults');
   },
   syncAgentTaskResults(agentId = '') {
-    return ipcRenderer.sendSync('bridge:syncAgentTaskResults', agentId);
+    return invokeLegacy('bridge:syncAgentTaskResults', agentId);
   },
   submitDailyActionFeedback(taskId, status, note) {
-    return ipcRenderer.sendSync('bridge:submitDailyActionFeedback', taskId, status, note);
+    return invokeLegacy('bridge:submitDailyActionFeedback', taskId, status, note);
   },
   openTaskCenterPath(kind, agentId = '') {
-    return ipcRenderer.sendSync('bridge:openTaskCenterPath', kind, agentId);
+    return invokeLegacy('bridge:openTaskCenterPath', kind, agentId);
   },
   openTaskResultPath(taskId) {
-    return ipcRenderer.sendSync('bridge:openTaskResultPath', taskId);
+    return invokeLegacy('bridge:openTaskResultPath', taskId);
   },
   generateStudentMaintenanceReport(studentId) {
-    return ipcRenderer.sendSync('bridge:generateStudentMaintenanceReport', studentId);
+    return invokeLegacy('bridge:generateStudentMaintenanceReport', studentId);
   },
   getHostTimeline() {
-    return ipcRenderer.sendSync('bridge:getHostTimeline');
+    return invokeLegacy('bridge:getHostTimeline');
   },
   backupHostData(studentsJson) {
     return ipcRenderer.invoke('bridge:backupHostData', studentsJson);
@@ -1196,52 +1259,52 @@ contextBridge.exposeInMainWorld('AndroidBridge', {
     return () => ipcRenderer.removeListener('student-offline-migration:progress', listener);
   },
   openHostMigrationRecord() {
-    return ipcRenderer.sendSync('bridge:openHostMigrationRecord');
+    return invokeLegacy('bridge:openHostMigrationRecord');
   },
   resetHostApiToken() {
-    return ipcRenderer.sendSync('bridge:resetHostApiToken');
+    return invokeLegacy('bridge:resetHostApiToken');
   },
   exportHostLogs() {
-    return ipcRenderer.sendSync('bridge:exportHostLogs');
+    return invokeLegacy('bridge:exportHostLogs');
   },
   openStudentRawDir(studentId) {
-    return ipcRenderer.sendSync('bridge:openStudentRawDir', studentId);
+    return invokeLegacy('bridge:openStudentRawDir', studentId);
   },
   migrateStudentWorkspace(studentId, newName) {
-    return ipcRenderer.sendSync('bridge:migrateStudentWorkspace', studentId, newName);
+    return invokeLegacy('bridge:migrateStudentWorkspace', studentId, newName);
   },
   rebindAdoptedStudentWorkspace(studentId, selectionMode) {
     return ipcRenderer.invoke('bridge:rebindAdoptedStudentWorkspace', studentId, selectionMode);
   },
   renameHostDevice(deviceId, name) {
-    return ipcRenderer.sendSync('bridge:renameHostDevice', deviceId, name);
+    return invokeLegacy('bridge:renameHostDevice', deviceId, name);
   },
   revokeHostDevice(deviceId) {
-    return ipcRenderer.sendSync('bridge:revokeHostDevice', deviceId);
+    return invokeLegacy('bridge:revokeHostDevice', deviceId);
   },
   restoreHostDevice(deviceId) {
-    return ipcRenderer.sendSync('bridge:restoreHostDevice', deviceId);
+    return invokeLegacy('bridge:restoreHostDevice', deviceId);
   },
   deleteHostDevice(deviceId) {
-    return ipcRenderer.sendSync('bridge:deleteHostDevice', deviceId);
+    return invokeLegacy('bridge:deleteHostDevice', deviceId);
   },
   setHostDeviceStudentAccess(deviceId, studentIdsJson) {
-    return ipcRenderer.sendSync('bridge:setHostDeviceStudentAccess', deviceId, studentIdsJson);
+    return invokeLegacy('bridge:setHostDeviceStudentAccess', deviceId, studentIdsJson);
   },
   setHostDeviceAccessMode(deviceId, optionsJson) {
-    return ipcRenderer.sendSync('bridge:setHostDeviceAccessMode', deviceId, optionsJson);
+    return invokeLegacy('bridge:setHostDeviceAccessMode', deviceId, optionsJson);
   },
   setHostDeviceTerminalMode(deviceId, terminalMode, boundStudentId) {
-    return ipcRenderer.sendSync('bridge:setHostDeviceTerminalMode', deviceId, terminalMode, boundStudentId);
+    return invokeLegacy('bridge:setHostDeviceTerminalMode', deviceId, terminalMode, boundStudentId);
   },
   getCourseCatalogState() {
-    return ipcRenderer.sendSync('bridge:getCourseCatalogState');
+    return ipcRenderer.invoke('bridge:getCourseCatalogState');
   },
   saveCourseInstitutionPolicy(policyJson) {
-    return ipcRenderer.sendSync('bridge:saveCourseInstitutionPolicy', policyJson);
+    return invokeLegacy('bridge:saveCourseInstitutionPolicy', policyJson);
   },
   importOfflineCourseCatalog() {
-    return ipcRenderer.sendSync('bridge:importOfflineCourseCatalog');
+    return invokeLegacy('bridge:importOfflineCourseCatalog');
   },
   exportCustomCourseTemplate() {
     return ipcRenderer.invoke('bridge:exportCustomCourseTemplate');
@@ -1256,7 +1319,7 @@ contextBridge.exposeInMainWorld('AndroidBridge', {
     return ipcRenderer.invoke('bridge:saveDirectCustomCourse', inputJson);
   },
   deleteCustomCourse(courseId) {
-    return ipcRenderer.sendSync('bridge:deleteCustomCourse', courseId);
+    return invokeLegacy('bridge:deleteCustomCourse', courseId);
   },
   selectPlatformCourseImage() {
     return ipcRenderer.invoke('bridge:selectPlatformCourseImage');
@@ -1265,33 +1328,33 @@ contextBridge.exposeInMainWorld('AndroidBridge', {
     return ipcRenderer.invoke('bridge:savePlatformCourseDraft', inputJson);
   },
   removePlatformCourseDraft(courseId) {
-    return ipcRenderer.sendSync('bridge:removePlatformCourseDraft', courseId);
+    return invokeLegacy('bridge:removePlatformCourseDraft', courseId);
   },
   queuePlatformCourseDeletion(courseId) {
-    return ipcRenderer.sendSync('bridge:queuePlatformCourseDeletion', courseId);
+    return invokeLegacy('bridge:queuePlatformCourseDeletion', courseId);
   },
   cancelPlatformCourseDeletion(courseId) {
-    return ipcRenderer.sendSync('bridge:cancelPlatformCourseDeletion', courseId);
+    return invokeLegacy('bridge:cancelPlatformCourseDeletion', courseId);
   },
   publishPlatformCourseCatalog(releaseNotes) {
-    return ipcRenderer.sendSync('bridge:publishPlatformCourseCatalog', releaseNotes);
+    return invokeLegacy('bridge:publishPlatformCourseCatalog', releaseNotes);
   },
   reExportPlatformCourseCatalog() {
-    return ipcRenderer.sendSync('bridge:reExportPlatformCourseCatalog');
+    return invokeLegacy('bridge:reExportPlatformCourseCatalog');
   },
   rollbackPlatformCourseCatalog() {
-    return ipcRenderer.sendSync('bridge:rollbackPlatformCourseCatalog');
+    return invokeLegacy('bridge:rollbackPlatformCourseCatalog');
   },
   openCourseView(courseId) {
-    return ipcRenderer.sendSync('bridge:openCourseView', courseId);
+    return invokeLegacy('bridge:openCourseView', courseId);
   },
   closeCourseView() {
-    return ipcRenderer.sendSync('bridge:closeCourseView');
+    return invokeLegacy('bridge:closeCourseView');
   },
   setCourseCaptureSetupVisible(visible) {
-    return ipcRenderer.sendSync('bridge:setCourseCaptureSetupVisible', visible);
+    return invokeLegacy('bridge:setCourseCaptureSetupVisible', visible);
   },
   setCourseViewLayout(layoutJson) {
-    return ipcRenderer.sendSync('bridge:setCourseViewLayout', layoutJson);
+    return invokeLegacy('bridge:setCourseViewLayout', layoutJson);
   },
 });

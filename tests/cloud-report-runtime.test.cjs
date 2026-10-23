@@ -13,6 +13,30 @@ const { sourceProof } = require('../electron/cloud-device-proof.cjs');
 const ADMIN = 'cloud-test-admin-token-keep-private-123456';
 const CONTENT = '---\ntype: learning_profile\nstatus: published\nupdated: 2026-09-25\n---\n\n# 整体画像\n\n## 学习优势\n\n- 已确认的数学建模练习持续推进。\n';
 
+test('legacy upload bindings without v2 scope arrays never enter v2 profile synchronization', async t => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'cloud-runtime-legacy-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  fs.writeFileSync(path.join(root, 'cloud-report-state.json'), JSON.stringify({
+    version: 1,
+    serverUrl: 'http://127.0.0.1:1',
+    sourceToken: 'legacy-token',
+    sourcePrivateKey: 'legacy-key',
+    sourceDeviceId: 'legacy-device',
+    bindings: {
+      legacy: { cloudStudentId: 'cloud-legacy', sourceDeviceId: 'legacy-device', enabled: true, hashes: {}, lastError: '' },
+    },
+  }));
+  let profileReads = 0;
+  const runtime = createCloudReportRuntime({ dataDir: root, protect: value => value, unprotect: value => value,
+    resolveReportDir: () => root, resolveStudentProfile: () => { profileReads++; return { displayName: '旧版学生' }; } });
+  t.after(() => runtime.close());
+  await runtime.load();
+  assert.equal(await runtime.syncStudentProfile('legacy'), null);
+  assert.equal(profileReads, 0);
+  assert.equal(runtime.status('legacy').uploadScopePersistence, 'local_requires_upgrade');
+  assert.deepEqual(runtime.status('legacy').profileFields, [...require('../electron/cloud-report-runtime.cjs').DEFAULT_PROFILE_FIELDS]);
+});
+
 test('one Windows host enrolls once, syncs, pairs, excludes own reports, and can turn upload off', async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'cloud-runtime-'));
   const serviceDir = path.join(root, 'service');
@@ -84,8 +108,8 @@ test('one Windows host enrolls once, syncs, pairs, excludes own reports, and can
     assert.equal((await receiver.downloadCloudDocument(student.id, upload.documentId)).content, sharedContent);
     await assert.rejects(runtime.uploadSharedDocument('other-student', shared), /当前学生/);
     await assert.rejects(runtime.uploadSharedDocument('local-one', { ...shared, sha256: '0'.repeat(64) }), /校验/);
-    await call('/v1/grants/revoke', ADMIN, { deviceId: remotePairing.deviceId,
-      cloudStudentId: student.id, scope: 'cloud_document.read' });
+    assert.equal((await receiver.removeCloudStudent(student.id)).removed, true);
+    assert.equal((await receiver.listCloudStudents()).length, 0);
     await assert.rejects(receiver.listCloudDocuments(student.id), /没有此学生的许可/);
     await assert.rejects(receiver.downloadCloudDocument(student.id, documentId), /HTTP 403/);
     assert.equal((await receiver.listCachedStudents()).find(item => item.cloudStudentId === student.id)?.displayName, '样例学生');

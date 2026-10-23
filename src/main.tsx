@@ -1,6 +1,8 @@
 ﻿import React, { useEffect, useMemo, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 const CloudDocumentsPanel = React.lazy(() => import('./CloudDocumentsPanel').then(module => ({ default: module.CloudDocumentsPanel })));
+const AssetCenterPanel = React.lazy(() => import('./AssetCenterPanel').then(module => ({ default: module.AssetCenterPanel })));
+const MarkdownViewChunk = React.lazy(() => import('./MarkdownView').then(module => ({ default: module.MarkdownView })));
 const PublicationManager = React.lazy(() => import('./PublicationManager').then(module => ({default:module.PublicationManager})));
 import { CustomSubjectsEditor, customResult, type CustomOptionsApi, type CustomSubject } from './CustomOptionsPanels';
 import type { CaptureApi } from './CaptureInboxPanel';
@@ -79,7 +81,13 @@ import {
 } from 'lucide-react';
 import './styles.css';
 import { DigestStatusCard, type DigestWorkflowStatus } from './DigestStatusCard';
-import { ProjectMaterialsPanel } from './ProjectMaterialsPanel';
+const ProjectMaterialsPanel = React.lazy(() => import('./ProjectMaterialsPanel').then(module => ({ default: module.ProjectMaterialsPanel })));
+
+function MarkdownView(props: { content: string; onMermaidNodeClick?: (nodeId: string) => boolean | void }) {
+  return <React.Suspense fallback={<article className="markdown-content"><div className="md-space" />正在加载内容…</article>}>
+    <MarkdownViewChunk {...props} />
+  </React.Suspense>;
+}
 
 const studentLoginQrDataUrlCache = new Map<string, string>();
 const loadQrCode = () => import('qrcode').then((module) => module.default);
@@ -90,6 +98,7 @@ type CourseSubmenu = 'learning' | 'management';
 type SettingsSubmenu = 'basic' | 'connection' | 'collaboration' | 'agent-qa';
 type AgentSettingsTab = 'tools' | 'data' | 'connection' | 'cloud' | 'skills';
 type AgentDataTab = 'memory' | 'rules' | 'persona';
+type AgentControlSubtab = 'tool-control' | 'dispatch';
 type GuidanceTab = 'overview' | 'pathways' | 'schools' | 'majors' | 'careers' | 'history' | 'settings';
 type ProjectWorkflowTarget = 'workspace' | 'assets' | 'digest' | 'knowledge' | 'evidence' | 'promotion';
 type ThemeName = 'blue' | 'pink' | 'green' | 'purple' | 'orange';
@@ -129,7 +138,8 @@ type LearningTrajectory = {
   ok: boolean;
   message?: string;
   events: Array<{ eventId: string; occurredAt: string; taskType: string; evidence: string; evidenceRefs: Array<{ sourceType: string; sourceId: string }>; errors: Array<{ id: string; description: string }>; performance: Record<string, number | null>; knowledgePoint: { id: string; label: string } }>;
-  states: Array<{ knowledgePoint: { id: string; label: string }; state: string; scores?: { conceptualUnderstanding?: number | null; proceduralFluency?: number | null; methodSelection?: number | null; transfer?: number | null; retentionConfidence?: number | null }; confidence: number; evidenceCount: number; reviewPriority: string; recommendedReviewAt: string; retentionNote: string; errorPatterns: Array<{ id: string; description: string; count: number }> }>;
+  states: Array<{ knowledgePoint: { id: string; label: string; subject?: string }; state: string; scores?: { conceptualUnderstanding?: number | null; proceduralFluency?: number | null; methodSelection?: number | null; transfer?: number | null; retentionConfidence?: number | null }; confidence: number; evidenceCount: number; reviewPriority: string; recommendedReviewAt: string; retentionNote: string; errorPatterns: Array<{ id: string; description: string; count: number }>; activity?: { activityCount: number; activeDays: number; materialExposureCount: number; studentActivityCount: number } }>;
+  activitySummary?: { activityCount: number; activeDays: number; materialExposureCount: number; studentActivityCount: number; trend: Array<{ date: string; total: number; materialExposure: number; studentActivity: number }> };
   historyMarkdown?: string;
   historyCandidatePath?: string;
   rejections?: Array<{ at: string; code: string; index: number; batchId: string }>;
@@ -173,7 +183,7 @@ type AgentToolProfile = {
 type AgentToolAdapter = {
   id: AgentToolId;
   profile: AgentToolProfile;
-  statusKey: keyof AgentToolInstallStatus | 'claudeCode';
+  statusKey?: keyof AgentToolInstallStatus;
   openedKey?: 'qclawOpened' | 'marvisOpened' | 'hohuOpened' | 'openclawOpened' | 'imaCopilotOpened' | 'workbuddyOpened' | 'codexOpened' | 'claudeCodeOpened' | 'hermesOpened' | 'traeOpened' | 'qoderWorkOpened';
   canOpenLocally: boolean;
   getInstall: (status: AgentToolInstallStatus | null) => AgentToolInstall | undefined;
@@ -199,6 +209,8 @@ type Student = {
   school: string;
   phone?: string;
   email?: string;
+  address?: string;
+  guardian?: string | Record<string, unknown>;
   goal: string;
   birthDate?: string;
   manualAgeBand?: string;
@@ -237,7 +249,8 @@ type Student = {
   remoteBindingStatus?: 'unbound' | 'pending' | 'bound';
   remoteBoundAt?: string;
   createdAt: string;
-  status: 'ready';
+  archived?: boolean;
+  status: 'ready' | 'archived';
   schemaVersion?: number;
   bundleExportedAt?: string;
   lastImportAt?: string;
@@ -392,11 +405,17 @@ type AssetIndexState = {
   ok?: boolean;
   assets: AssetRecord[];
   total?: number;
+  scopeTotal?: number;
+  queryTotal?: number;
   referenceTotal?: number;
   duplicateGroups?: number;
   issueCount?: number;
   highRiskCount?: number;
   staleReferenceCount?: number;
+  uncheckedReferenceCount?: number;
+  sha256ReadyCount?: number;
+  sha256PendingCount?: number;
+  fingerprintConflictCount?: number;
   facets?: { sources?: Array<{ value: string; count: number }>; types?: Array<{ value: string; count: number }> };
   health?: string;
   lastRebuildAt?: string;
@@ -432,7 +451,9 @@ type AssetDuplicateGroup = {
   size?: number;
   pathCount: number;
   referenceCount: number;
-  paths: string[];
+  pathSamples: string[];
+  status?: 'reviewable' | 'fingerprint_pending' | 'fingerprint_conflict' | 'scope_protected';
+  protectionReason?: string;
 };
 
 type AssetDuplicateOperation = {
@@ -441,6 +462,19 @@ type AssetDuplicateOperation = {
   error?: string;
   summary?: { eligibleCount?: number; blockedCount?: number; reclaimableBytes?: number; completedCount?: number; failedCount?: number; blocked?: Array<{ assetId?: string; path?: string; reason: string }> };
   entries?: Array<{ entryId: string; assetId: string; keepPath: string; sourcePath: string; quarantinePath: string; size: number; status: string; error?: string }>;
+};
+
+type AssetDuplicateOperationSummary = {
+  operationId: string;
+  status: string;
+  createdAt?: string;
+  updatedAt?: string;
+  finishedAt?: string;
+  error?: string;
+  entryCount: number;
+  quarantinedCount: number;
+  failedCount: number;
+  summary?: AssetDuplicateOperation['summary'];
 };
 
 type AssetTrendDay = {
@@ -648,6 +682,7 @@ type ProjectStagingItem = {
   reviewNote?: string;
   reviewedAt?: string;
   sourcePath?: string;
+  sourceAvailability?: 'available' | 'missing' | 'unavailable';
   addedAt?: string;
   updatedAt?: string;
   promotedAt?: string;
@@ -663,6 +698,12 @@ type ProjectStagingItem = {
   governanceAction?: string;
   governanceReason?: string;
   governanceReviewedAt?: string;
+};
+
+type ProjectStagingSummary = {
+  total: number;
+  byStatus: Record<string, number>;
+  byReviewStatus: Record<string, number>;
 };
 
 const projectStagingItemReviewable = (item: ProjectStagingItem) => !['promoted', 'analyzed'].includes(String(item.status));
@@ -898,6 +939,12 @@ type TaskCenterItem = {
   executionProvenance?: { version?: number; executionClass?: string; providerId?: string; providerLabel?: string; externalRunRef?: string; querySupport?: boolean; cancelSupport?: boolean; openSupport?: boolean; dispatchStage?: string };
   recoveryBudget?: { executionAttempts?: number; correctionAttempts?: number; providerSwitches?: number; receiptQueries?: number; deadlineAt?: string; limits?: Record<string, number> };
   phaseLabel?: string;
+  requiresUserAction?: boolean;
+  automationState?: 'waiting_dispatch' | 'waiting_resource' | 'retry_scheduled' | 'running' | 'manual_handoff' | 'approval_required' | 'execution_unknown' | 'blocked' | 'completed' | string;
+  automationReason?: string;
+  nextDispatchAt?: string;
+  currentAgent?: string;
+  attemptedToolCount?: number;
   awaitingSend?: boolean;
   hasResult?: boolean;
   nextAction?: string;
@@ -921,6 +968,7 @@ type TaskCenterItem = {
   priority?: string;
   riskLevel?: 'low' | 'medium' | 'high' | string;
   requestedExecutor?: string;
+  executorLocked?: boolean;
   timeoutSeconds?: number;
   idempotencyKey?: string;
   completionPolicy?: string;
@@ -1110,20 +1158,24 @@ type StudentOfflineMigrationPlan = {
 };
 
 type AndroidBridge = {
+  getAppBootstrap?: () => Promise<string>;
+  getSubsystemStatus?: () => Promise<string>;
+  retrySubsystemInitialization?: (name: string) => Promise<string>;
+  onSubsystemProgress?: (callback: (payload: { name: string; status: string; progress?: number; message?: string; error?: string }) => void) => () => void;
   skillLibraryAction?: (action: string, input: unknown) => Promise<string>;
   copyText?: (value: string) => Promise<string>;
-  exportTextFile?: (filename: string, content: string) => string;
-  importFiles?: (studentName: string, targetJson?: string) => boolean | string;
-  pickMaterialSourceDir?: () => string;
+  exportTextFile?: (filename: string, content: string) => Promise<string>;
+  importFiles?: (studentName: string, targetJson?: string) => Promise<boolean | string>;
+  pickMaterialSourceDir?: () => Promise<string>;
   scanMaterialSources?: (studentId: string, sourcesJson: string) => Promise<string>;
   importMaterialSourceFiles?: (studentId: string, pathsJson: string, targetJson?: string) => Promise<string>;
-  getMaterialImportRecords?: (studentId: string) => string;
-  removeMaterialImportRecords?: (studentId: string, recordIdsJson: string) => string;
-  getCaptureCenterState?: () => string;
+  getMaterialImportRecords?: (studentId: string) => Promise<string>;
+  removeMaterialImportRecords?: (studentId: string, recordIdsJson: string) => Promise<string>;
+  getCaptureCenterState?: () => Promise<string>;
   showQuickCapture?: () => Promise<string>;
   setQuickCaptureContext?: (studentId: string, context?: { connectionPrompts?: Record<string, string> }) => Promise<string>;
   onQuickCaptureNavigate?: (callback: (payload: { tabId: string; studentId: string; inboxTab?: 'shares' }) => void) => () => void;
-  setCaptureVisionConsent?: (inputJson: string) => string;
+  setCaptureVisionConsent?: (inputJson: string) => Promise<string>;
   onCaptureChanged?: (callback: (payload: string) => void) => () => void;
   listCaptureSources?: () => Promise<string>;
   getCaptureSessionSummaries?: (inputJson: string) => Promise<string>;
@@ -1131,6 +1183,10 @@ type AndroidBridge = {
   getCaptureTimeline?: (inputJson: string) => Promise<string>;
   getCaptureTimelineSegments?: (inputJson: string) => Promise<string>;
   getLearningAnalytics?: (inputJson: string) => Promise<string>;
+  listStudentKnowledgePoints?: (inputJson: string) => Promise<string>;
+  getKnowledgePointTrend?: (inputJson: string) => Promise<string>;
+  getStudentKnowledgeActivitySummary?: (studentId: string, range: number) => Promise<string>;
+  rebuildKnowledgeProjection?: (inputJson: string) => Promise<string>;
   getCaptureTimelineProcessingState?: (inputJson: string) => Promise<string>;
   retryCaptureTimelineProcessing?: (inputJson: string) => Promise<string>;
   reportCaptureTimelinePerformance?: (inputJson: string) => Promise<string>;
@@ -1145,7 +1201,7 @@ type AndroidBridge = {
   stopCaptureSession?: (sessionId: string) => Promise<string>;
   promoteCaptureSession?: (sessionId: string, targetMode?: 'project_raw' | 'student_raw') => Promise<string>;
   deleteCaptureSession?: (sessionId: string) => Promise<string>;
-  openCaptureInbox?: (sessionId?: string) => string;
+  openCaptureInbox?: (sessionId?: string) => Promise<string>;
   getAssetIndex?: () => Promise<string>;
   getAssetSummary?: (filter?: Record<string, unknown>) => Promise<string>;
   listAssets?: (request?: Record<string, unknown>) => Promise<string>;
@@ -1156,17 +1212,24 @@ type AndroidBridge = {
   cancelAssetIndexRebuild?: (jobId?: string) => Promise<string>;
   onAssetIndexProgress?: (callback: (job: AssetRebuildJob) => void) => (() => void);
   listDuplicateGroups?: (request?: Record<string, unknown>) => Promise<string>;
+  listDuplicateCleanupOperations?: (request?: Record<string, unknown>) => Promise<string>;
   prepareDuplicateCleanup?: (request?: Record<string, unknown>) => Promise<string>;
   applyDuplicateCleanup?: (operationId: string, entryIds?: string[]) => Promise<string>;
   getDuplicateCleanupStatus?: (operationId: string) => Promise<string>;
   restoreDuplicateCleanup?: (operationId: string, entryIds?: string[]) => Promise<string>;
+  retryDuplicateCleanup?: (operationId: string, entryIds?: string[]) => Promise<string>;
   onDuplicateCleanupProgress?: (callback: (progress: { operationId: string; status: string; processed?: number; total?: number; completed?: number; failed?: number; currentPath?: string; error?: string }) => void) => (() => void);
   analyzeAssetGovernance?: () => Promise<string>;
   cleanupAssetReferences?: (assetId: string) => Promise<string>;
   createAssetVersionSnapshot?: (assetId: string) => Promise<string>;
   markAssetGovernanceDecision?: (assetId: string, decision: string, note?: string) => Promise<string>;
-  generateKnowledgeArchitectureReport?: () => string;
+  generateKnowledgeArchitectureReport?: () => Promise<string>;
   getProjects?: (options?: { detailProjectId?: string }) => Promise<string>;
+  listProjects?: (request?: Record<string, unknown>) => Promise<string>;
+  getProjectDetail?: (projectId: string) => Promise<string>;
+  listProjectStagingItems?: (request?: Record<string, unknown>) => Promise<string>;
+  getProjectStagingSummary?: (projectId: string) => Promise<string>;
+  mutateProjectStagingItems?: (request?: Record<string, unknown>) => Promise<string>;
   getTopicSuggestions?: (studentId: string) => Promise<string>;
   getPlanningFavorites?: ResearchApi['getPlanningFavorites'];
   setPlanningFavorite?: ResearchApi['setPlanningFavorite'];
@@ -1185,121 +1248,121 @@ type AndroidBridge = {
   saveGuidancePreferences?: (studentId: string, preferencesJson?: string) => Promise<string>;
   getResearchCapabilityStatus?: () => Promise<string>;
   getStudentOverview?: () => Promise<string>;
-  createProject?: (optionsJson: string) => string;
-  updateProjectMetadata?: (projectId: string, metadataJson: string) => string;
-  previewLearningProjectRemoval?: (projectId: string) => string;
-  removeProjectRecord?: (projectId: string) => string;
-  deleteLearningProject?: (projectId: string) => string;
-  relocateProjectWorkspace?: (projectId: string) => string;
-  confirmProjectWorkspaceRelocation?: (projectId: string, workspacePath: string) => string;
-  rollbackProjectWorkspaceRelocation?: (projectId: string) => string;
-  rebindProjectKnowledgeSpace?: (projectId: string) => string;
-  rebindProjectRoot?: (projectId: string) => string;
-  rebindProjectRaw?: (projectId: string) => string;
-  getRemovedProjects?: () => string;
-  restoreRemovedProject?: (snapshotPath: string) => string;
-  exportProjectPackage?: (projectId: string) => string;
-  importProjectPackage?: () => string;
-  duplicateProject?: (projectId: string, name: string) => string;
-  updateProjectStudentEvidence?: (projectId: string, studentId: string, evidenceJson: string) => string;
+  createProject?: (optionsJson: string) => Promise<string>;
+  updateProjectMetadata?: (projectId: string, metadataJson: string) => Promise<string>;
+  previewLearningProjectRemoval?: (projectId: string) => Promise<string>;
+  removeProjectRecord?: (projectId: string) => Promise<string>;
+  deleteLearningProject?: (projectId: string) => Promise<string>;
+  relocateProjectWorkspace?: (projectId: string) => Promise<string>;
+  confirmProjectWorkspaceRelocation?: (projectId: string, workspacePath: string) => Promise<string>;
+  rollbackProjectWorkspaceRelocation?: (projectId: string) => Promise<string>;
+  rebindProjectKnowledgeSpace?: (projectId: string) => Promise<string>;
+  rebindProjectRoot?: (projectId: string) => Promise<string>;
+  rebindProjectRaw?: (projectId: string) => Promise<string>;
+  getRemovedProjects?: () => Promise<string>;
+  restoreRemovedProject?: (snapshotPath: string) => Promise<string>;
+  exportProjectPackage?: (projectId: string) => Promise<string>;
+  importProjectPackage?: () => Promise<string>;
+  duplicateProject?: (projectId: string, name: string) => Promise<string>;
+  updateProjectStudentEvidence?: (projectId: string, studentId: string, evidenceJson: string) => Promise<string>;
   updateProjectStudentEvidenceAsync?: (projectId: string, studentId: string, evidenceJson: string, bindingId?: string) => Promise<string>;
-  getProjectStudentEvidencePrompt?: (projectId: string) => string;
-  importProjectStudentEvidenceSuggestions?: (projectId: string, pastedText?: string) => string;
+  getProjectStudentEvidencePrompt?: (projectId: string) => Promise<string>;
+  importProjectStudentEvidenceSuggestions?: (projectId: string, pastedText?: string) => Promise<string>;
   buildCrossProjectKnowledgeIndex?: () => Promise<string>;
-  pickProjectWorkspaceDir?: () => string;
-  pickProjectKnowledgeBaseDir?: () => string;
-  inspectProjectKnowledgeBase?: (rootPath: string) => string;
-  updateProjectStatus?: (projectId: string, status: string) => string;
+  pickProjectWorkspaceDir?: () => Promise<string>;
+  pickProjectKnowledgeBaseDir?: () => Promise<string>;
+  inspectProjectKnowledgeBase?: (rootPath: string) => Promise<string>;
+  updateProjectStatus?: (projectId: string, status: string) => Promise<string>;
   updateProjectStudents?: (projectId: string, studentIdsJson: string) => Promise<string>;
-  applyProjectWorkspaceTemplate?: (projectId: string, templateId: string, foldersJson: string, templateName?: string, templateV2Json?: string) => string;
-  openProjectSpace?: (projectId: string, space: 'root' | 'workspace' | 'raw' | 'knowledge') => string;
+  applyProjectWorkspaceTemplate?: (projectId: string, templateId: string, foldersJson: string, templateName?: string, templateV2Json?: string) => Promise<string>;
+  openProjectSpace?: (projectId: string, space: 'root' | 'workspace' | 'raw' | 'knowledge') => Promise<string>;
   scanProjectWorkspace?: (projectId: string, restart?: boolean) => Promise<string>;
   relocateProjectMaterial?: (projectId: string, materialId: string, expectedVersion: number, expectedRecordRevision: number) => Promise<string>;
   cancelProjectWorkspaceScan?: (projectId: string) => Promise<string>;
   onProjectWorkspaceScanProgress?: (callback: (payload: { projectId: string; phase: string; visited?: number; total?: number; percent?: number; message?: string }) => void) => () => void;
   reviewProjectStagingItems?: (projectId: string, itemIdsJson: string, decision: string, sourceStrategy: string, note: string) => Promise<string>;
-  getProjectKnowledgeReview?: (projectId: string) => string;
-  updateProjectKnowledgeReview?: (projectId: string, recordIdsJson: string, status: string, note: string) => string;
-  getProjectUnifiedReview?: (projectId: string) => string;
-  applyProjectUnifiedReview?: (projectId: string) => string;
+  getProjectKnowledgeReview?: (projectId: string) => Promise<string>;
+  updateProjectKnowledgeReview?: (projectId: string, recordIdsJson: string, status: string, note: string) => Promise<string>;
+  getProjectUnifiedReview?: (projectId: string) => Promise<string>;
+  applyProjectUnifiedReview?: (projectId: string) => Promise<string>;
   importProjectAssets?: (projectId: string, assetIdsJson: string) => Promise<string>;
   importProjectRawFiles?: (projectId: string) => Promise<string>;
-  getProjectDigestCommand?: (projectId: string) => string;
-  markProjectDigestSubmitted?: (projectId: string) => string;
-  syncProjectDigestResult?: (projectId: string) => string;
-  applyProjectDigestReceiptText?: (projectId: string, rawText: string) => string;
+  getProjectDigestCommand?: (projectId: string) => Promise<string>;
+  markProjectDigestSubmitted?: (projectId: string) => Promise<string>;
+  syncProjectDigestResult?: (projectId: string) => Promise<string>;
+  applyProjectDigestReceiptText?: (projectId: string, rawText: string) => Promise<string>;
   importProjectStagingFiles?: (projectId: string) => Promise<string>;
   updateProjectStagingStatus?: (projectId: string, itemIdsJson: string, status: string) => Promise<string>;
   promoteProjectStagingItems?: (projectId: string, itemIdsJson: string) => Promise<string>;
   approveAndPromoteProjectStagingItems?: (projectId: string, itemIdsJson: string, sourceStrategy: string, note: string) => Promise<string>;
-  previewProjectStagingAiScreening?: (projectId: string, rawText: string) => string;
-  applyProjectStagingAiScreening?: (projectId: string, rawText: string) => string;
-  importProjectStagingAiScreening?: (projectId: string) => string;
-  analyzeProjectStagingGovernance?: (projectId: string) => string;
-  generateProjectPromotion?: (projectId: string) => string;
-  getProjectPromotionPlan?: (projectId: string) => string;
-  getProjectPromotionAudit?: (projectId: string) => string;
-  getProjectCompletionWizard?: (projectId: string) => string;
-  executeProjectPromotionPlan?: (projectId: string, planJson: string) => string;
-  publishProjectPromotion?: (projectId: string) => string;
-  rollbackProjectPromotionRun?: (projectId: string, runId: string) => string;
+  previewProjectStagingAiScreening?: (projectId: string, rawText: string) => Promise<string>;
+  applyProjectStagingAiScreening?: (projectId: string, rawText: string) => Promise<string>;
+  importProjectStagingAiScreening?: (projectId: string) => Promise<string>;
+  analyzeProjectStagingGovernance?: (projectId: string) => Promise<string>;
+  generateProjectPromotion?: (projectId: string) => Promise<string>;
+  getProjectPromotionPlan?: (projectId: string) => Promise<string>;
+  getProjectPromotionAudit?: (projectId: string) => Promise<string>;
+  getProjectCompletionWizard?: (projectId: string) => Promise<string>;
+  executeProjectPromotionPlan?: (projectId: string, planJson: string) => Promise<string>;
+  publishProjectPromotion?: (projectId: string) => Promise<string>;
+  rollbackProjectPromotionRun?: (projectId: string, runId: string) => Promise<string>;
   importImages?: (studentName: string) => boolean;
   takePhoto?: (studentName: string) => boolean;
-  initStudentWorkspace?: (studentName: string, agentMd: string, indexMd: string, logMd: string) => string;
-  getStorageConfig?: () => string;
-  getTemplateCenter?: (systemTemplatesJson: string) => string;
-  saveCustomTemplates?: (templatesJson: string) => string;
-  restoreSystemTemplates?: (systemTemplatesJson: string) => string;
-  getAgentCenter?: (studentId: string) => string;
-  saveAgentMemorySource?: (studentId: string, tool: AgentToolId, content: string, mode: 'file' | 'paste') => string;
-  mergeAgentMemory?: (studentId: string) => string;
-  saveUnifiedMemory?: (studentId: string, content: string) => string;
-  saveAgentSoulSource?: (studentId: string, tool: AgentToolId, content: string) => string;
-  saveUnifiedSoul?: (studentId: string, content: string) => string;
-  compareAgentSoulSource?: (studentId: string, tool: AgentToolId) => string;
-  scanAgentKnowledgeFiles?: (studentId: string) => string;
-  importAgentKnowledgeFile?: (studentId: string, filePath: string, tool: AgentToolId, kind: AgentKnowledgeKind) => string;
-  getAgentRules?: (studentId: string) => string;
-  saveAgentRuleFile?: (studentId: string, fileName: string, content: string) => string;
-  generateAgentRuleFile?: (studentId: string, fileName: string) => string;
-  compareAgentRuleFiles?: (studentId: string, baseName: string, targetName: string) => string;
-  getAgentSourceRegistry?: (studentId: string) => string;
-  rollbackAgentSourceRecord?: (studentId: string, recordId: string) => string;
-  getAgentConversationCenter?: (studentId: string) => string;
-  saveAgentConversationImport?: (studentId: string, content: string, tool: AgentToolId, sourcePath?: string) => string;
+  initStudentWorkspace?: (studentName: string, agentMd: string, indexMd: string, logMd: string) => Promise<string>;
+  getStorageConfig?: () => Promise<string>;
+  getTemplateCenter?: (systemTemplatesJson: string) => Promise<string>;
+  saveCustomTemplates?: (templatesJson: string) => Promise<string>;
+  restoreSystemTemplates?: (systemTemplatesJson: string) => Promise<string>;
+  getAgentCenter?: (studentId: string) => Promise<string>;
+  saveAgentMemorySource?: (studentId: string, tool: AgentToolId, content: string, mode: 'file' | 'paste') => Promise<string>;
+  mergeAgentMemory?: (studentId: string) => Promise<string>;
+  saveUnifiedMemory?: (studentId: string, content: string) => Promise<string>;
+  saveAgentSoulSource?: (studentId: string, tool: AgentToolId, content: string) => Promise<string>;
+  saveUnifiedSoul?: (studentId: string, content: string) => Promise<string>;
+  compareAgentSoulSource?: (studentId: string, tool: AgentToolId) => Promise<string>;
+  scanAgentKnowledgeFiles?: (studentId: string) => Promise<string>;
+  importAgentKnowledgeFile?: (studentId: string, filePath: string, tool: AgentToolId, kind: AgentKnowledgeKind) => Promise<string>;
+  getAgentRules?: (studentId: string) => Promise<string>;
+  saveAgentRuleFile?: (studentId: string, fileName: string, content: string) => Promise<string>;
+  generateAgentRuleFile?: (studentId: string, fileName: string) => Promise<string>;
+  compareAgentRuleFiles?: (studentId: string, baseName: string, targetName: string) => Promise<string>;
+  getAgentSourceRegistry?: (studentId: string) => Promise<string>;
+  rollbackAgentSourceRecord?: (studentId: string, recordId: string) => Promise<string>;
+  getAgentConversationCenter?: (studentId: string) => Promise<string>;
+  saveAgentConversationImport?: (studentId: string, content: string, tool: AgentToolId, sourcePath?: string) => Promise<string>;
   deliverConversationMaterials?: (studentId: string, requestJson: string) => Promise<string>;
-  manageConversationImports?: (studentId: string, requestJson: string) => string;
+  manageConversationImports?: (studentId: string, requestJson: string) => Promise<string>;
   manageConversationImportsAsync?: (studentId: string, requestJson: string) => Promise<string>;
   importConversationShareUrl?: (studentId: string, url: string, tool: AgentToolId) => Promise<string>;
-  selectAgentConversationFiles?: (studentId: string, tool: AgentToolId) => string;
-  saveConversationExtract?: (studentId: string, extractJson: string, tool: AgentToolId) => string;
-  updateConversationKnowledgeCandidate?: (studentId: string, candidateId: string, action: string, payloadJson: string) => string;
-  promoteConversationKnowledgeCandidates?: (studentId: string, requestJson: string) => string;
-  rollbackConversationPromotion?: (studentId: string, transactionId: string) => string;
-  ingestKnowledgeCandidateEnvelope?: (studentId: string, envelopeJson: string) => string;
-  openStudentRootDir?: (studentId: string) => string;
+  selectAgentConversationFiles?: (studentId: string, tool: AgentToolId) => Promise<string>;
+  saveConversationExtract?: (studentId: string, extractJson: string, tool: AgentToolId) => Promise<string>;
+  updateConversationKnowledgeCandidate?: (studentId: string, candidateId: string, action: string, payloadJson: string) => Promise<string>;
+  promoteConversationKnowledgeCandidates?: (studentId: string, requestJson: string) => Promise<string>;
+  rollbackConversationPromotion?: (studentId: string, transactionId: string) => Promise<string>;
+  ingestKnowledgeCandidateEnvelope?: (studentId: string, envelopeJson: string) => Promise<string>;
+  openStudentRootDir?: (studentId: string) => Promise<string>;
   openKnowledgeObsidian?: (kind: 'student' | 'project', id: string) => Promise<string>;
-  openGrowthModelDir?: (studentId: string) => string;
-  checkStudentPathHealth?: (studentId: string) => string;
-  repairStudentStalePaths?: (studentId: string) => string;
-  checkAllStudentsPathHealth?: () => string;
-  resolveStudentPath?: (studentId: string, logicalPath: string) => string;
-  getLicenseStatus?: () => string;
-  activateLicense?: (code: string) => string;
-  importLicenseFile?: () => string;
-  getLicenseTrustStatus?: () => string;
-  deactivateLicense?: () => string;
-  getAgentToolInstallStatus?: () => string;
-  openExternalUrl?: (url: string) => boolean;
+  openGrowthModelDir?: (studentId: string) => Promise<string>;
+  checkStudentPathHealth?: (studentId: string) => Promise<string>;
+  repairStudentStalePaths?: (studentId: string) => Promise<string>;
+  checkAllStudentsPathHealth?: () => Promise<string>;
+  resolveStudentPath?: (studentId: string, logicalPath: string) => Promise<string>;
+  getLicenseStatus?: () => Promise<string>;
+  activateLicense?: (code: string) => Promise<string>;
+  importLicenseFile?: () => Promise<string>;
+  getLicenseTrustStatus?: () => Promise<string>;
+  deactivateLicense?: () => Promise<string>;
+  getAgentToolInstallStatus?: () => Promise<string>;
+  openExternalUrl?: (url: string) => Promise<boolean>;
   getSharedInboxStatus?: () => string;
   consumeSharedImports?: (studentName: string) => string;
   getCompatibilityStatus?: () => string;
-  pickArchiveRoot?: () => boolean;
-  getArchiveRootStatus?: () => string;
-  listMarkdownFiles?: (studentName: string) => string;
-  readMarkdownFile?: (studentId: string, documentId: string) => string;
-  listProjectKnowledgeFiles?: (projectId: string) => string;
-  readProjectKnowledgeFile?: (projectId: string, documentId: string) => string;
+  pickArchiveRoot?: () => Promise<boolean>;
+  getArchiveRootStatus?: () => Promise<string>;
+  listMarkdownFiles?: (studentName: string) => Promise<string>;
+  readMarkdownFile?: (studentId: string, documentId: string) => Promise<string>;
+  listProjectKnowledgeFiles?: (projectId: string) => Promise<string>;
+  readProjectKnowledgeFile?: (projectId: string, documentId: string) => Promise<string>;
   readProjectKnowledgeFileAsync?: (projectId: string, documentId: string) => Promise<string>;
   exportProjectKnowledgeSource?: (projectId: string, documentId: string, knowledgeHash: string, materialId: string, version: number) => Promise<string>;
   getProjectMaterialWorkspaceView?: (projectId: string, queryJson: string) => Promise<string>;
@@ -1322,7 +1385,7 @@ type AndroidBridge = {
   inspectProjectMaterialMigrationBackups?: (projectId: string) => Promise<string>;
   cleanupProjectMaterialMigrationBackups?: (projectId: string, requestJson: string) => Promise<string>;
   openProjectMaterialOriginal?: (projectId: string, materialId: string, version: number) => Promise<string>;
-  listLearningReports?: (studentId: string) => string;
+  listLearningReports?: (studentId: string) => Promise<string>;
   cloudReportEnrollSource?: (input: { serverUrl: string; enrollmentCode: string; localStudentId: string; profileFields?: string[]; materialCategories?: string[] }) => Promise<string>;
   cloudReportSetUpload?: (studentId: string, enabled: boolean) => Promise<string>;
   cloudReportSetUploadScope?: (studentId: string, input: { profileFields: string[]; materialCategories: string[] }) => Promise<string>;
@@ -1331,6 +1394,7 @@ type AndroidBridge = {
   cloudReportCreatePairing?: (serverUrl: string) => Promise<string>;
   cloudReportApprovePairing?: (pairingCode: string, studentIds: string[], options?: { profileFields: string[]; materialCategories: string[] }) => Promise<string>;
   cloudReportListStudents?: () => Promise<string>;
+  cloudReportRemoveStudent?: (cloudStudentId: string) => Promise<string>;
   cloudReportListReports?: (cloudStudentId: string, cursor?: string) => Promise<string>;
   cloudReportDownload?: (cloudStudentId: string, revisionId: string) => Promise<string>;
   cloudReportListDocuments?: (cloudStudentId: string) => Promise<string>;
@@ -1346,112 +1410,112 @@ type AndroidBridge = {
   cloudReportListCachedStudents?: () => Promise<string>;
   cloudReportClearCache?: (cloudStudentId: string) => Promise<string>;
   updateLearningReports?: (studentId: string) => Promise<string>;
-  readLearningReport?: (studentId: string, reportId: LearningReportId) => string;
-  getLearningReportEvidence?: (studentId: string, reportId: LearningReportId) => string;
-  openLearningReportEvidenceSource?: (studentId: string, reportId: LearningReportId, evidenceId: string, sourceIndex: number) => string;
-  exportEducationArchive?: (studentId: string) => string;
+  readLearningReport?: (studentId: string, reportId: LearningReportId) => Promise<string>;
+  getLearningReportEvidence?: (studentId: string, reportId: LearningReportId) => Promise<string>;
+  openLearningReportEvidenceSource?: (studentId: string, reportId: LearningReportId, evidenceId: string, sourceIndex: number) => Promise<string>;
+  exportEducationArchive?: (studentId: string) => Promise<string>;
   exportLearningReport?: (studentId: string, reportId: LearningReportId, format: 'markdown' | 'pdf') => Promise<string>;
-  getEducationPublishingState?: (studentId: string, sourceType: PublishingSourceType, sourceId: string) => string;
-  getEducationPublicationEnhancementState?: (studentId: string, optionsJson: string) => string;
+  getEducationPublishingState?: (studentId: string, sourceType: PublishingSourceType, sourceId: string) => Promise<string>;
+  getEducationPublicationEnhancementState?: (studentId: string, optionsJson: string) => Promise<string>;
   startEducationPublicationEnhancement?: (studentId: string, optionsJson: string) => Promise<string>;
   exportEducationPublication?: (studentId: string, optionsJson: string) => Promise<string>;
-  openEducationPublication?: (studentId: string, publicationId: string) => string;
-  deleteEducationPublication?: (studentId: string, publicationId: string) => string;
+  openEducationPublication?: (studentId: string, publicationId: string) => Promise<string>;
+  deleteEducationPublication?: (studentId: string, publicationId: string) => Promise<string>;
   regenerateEducationPublication?: (studentId: string, publicationId: string) => Promise<string>;
-  ensureLearningReports?: (studentId: string) => string;
-  ensureGrowthModel?: (studentId: string) => string;
-  getGrowthEvidenceReview?: (studentId: string) => string;
+  ensureLearningReports?: (studentId: string) => Promise<string>;
+  ensureGrowthModel?: (studentId: string) => Promise<string>;
+  getGrowthEvidenceReview?: (studentId: string) => Promise<string>;
   getGrowthEvidenceReviewAsync?: (studentId: string) => Promise<string>;
   getGrowthModelSnapshot?: (studentId: string) => Promise<string>;
-  updateGrowthEvidenceStatus?: (studentId: string, evidenceId: string, status: string, note?: string) => string;
-  batchReviewGrowthEvidence?: (studentId: string) => string;
-  rebuildGrowthIndex?: (studentId: string) => string;
-  getGrowthIndex?: (studentId: string) => string;
+  updateGrowthEvidenceStatus?: (studentId: string, evidenceId: string, status: string, note?: string) => Promise<string>;
+  batchReviewGrowthEvidence?: (studentId: string) => Promise<string>;
+  rebuildGrowthIndex?: (studentId: string) => Promise<string>;
+  getGrowthIndex?: (studentId: string) => Promise<string>;
   getGrowthIndexAsync?: (studentId: string) => Promise<string>;
-  checkUpdate?: (manifestUrl: string, currentVersionCode: number) => boolean;
-  downloadAndInstallUpdate?: (apkUrl: string) => boolean;
+  checkUpdate?: (manifestUrl: string, currentVersionCode: number) => Promise<boolean>;
+  downloadAndInstallUpdate?: (apkUrl: string) => Promise<boolean>;
   scanDownloads?: () => string;
   importDownloadFiles?: (studentName: string, pathsJson: string) => string;
-  openApp?: (app: AgentToolId | 'obsidian' | 'tailscale') => boolean;
-  getAppStatus?: () => string;
+  openApp?: (app: AgentToolId | 'obsidian' | 'tailscale') => Promise<boolean>;
+  getAppStatus?: () => Promise<string>;
   getAppStatusAsync?: () => Promise<string>;
-  getStudents?: () => string;
-  syncStudents?: (studentsJson: string) => string;
-  selectKnowledgeBaseRoot?: () => string;
-  scanKnowledgeBase?: (rootPath: string, studentName: string) => string;
-  ensureAdoptedKnowledgeBase?: (optionsJson: string) => string;
-  getHostServiceStatus?: () => string;
-  setHostUsageMode?: (mode: 'host' | 'host_terminal') => string;
-  getHostServiceDiagnostics?: () => string;
+  getStudents?: () => Promise<string>;
+  syncStudents?: (studentsJson: string) => Promise<string>;
+  selectKnowledgeBaseRoot?: () => Promise<string>;
+  scanKnowledgeBase?: (rootPath: string, studentName: string) => Promise<string>;
+  ensureAdoptedKnowledgeBase?: (optionsJson: string) => Promise<string>;
+  getHostServiceStatus?: () => Promise<string>;
+  setHostUsageMode?: (mode: 'host' | 'host_terminal') => Promise<string>;
+  getHostServiceDiagnostics?: () => Promise<string>;
   inspectProjectUploadRecovery?: () => Promise<string>;
-  repairHostService?: () => string;
-  startHostService?: () => string;
-  stopHostService?: () => string;
-  setHostServicePort?: (port: number) => string;
-  getHostConnectionInfo?: () => string;
-  getHostDevices?: () => string;
-  renameHostIdentity?: (displayName: string) => string;
-  getCollaborationState?: () => string;
-  setStudentArchiveSyncEnabled?: (studentId: string, enabled: boolean) => string;
-  syncStudentArchiveNow?: (studentId: string) => string;
-  setTeamKnowledgePolicy?: (optionsJson: string) => string;
-  getRemoteCollaborationTasks?: () => string;
-  getProjectPublicationOptions?: (projectId: string) => string;
+  repairHostService?: () => Promise<string>;
+  startHostService?: () => Promise<string>;
+  stopHostService?: () => Promise<string>;
+  setHostServicePort?: (port: number) => Promise<string>;
+  getHostConnectionInfo?: () => Promise<string>;
+  getHostDevices?: () => Promise<string>;
+  renameHostIdentity?: (displayName: string) => Promise<string>;
+  getCollaborationState?: () => Promise<string>;
+  setStudentArchiveSyncEnabled?: (studentId: string, enabled: boolean) => Promise<string>;
+  syncStudentArchiveNow?: (studentId: string) => Promise<string>;
+  setTeamKnowledgePolicy?: (optionsJson: string) => Promise<string>;
+  getRemoteCollaborationTasks?: () => Promise<string>;
+  getProjectPublicationOptions?: (projectId: string) => Promise<string>;
   publishCollaborationProject?: (optionsJson: string) => Promise<string>;
-  selectCollaborationTaskFiles?: () => string;
-  selectCollaborationResultFiles?: () => string;
+  selectCollaborationTaskFiles?: () => Promise<string>;
+  selectCollaborationResultFiles?: () => Promise<string>;
   createRemoteCollaborationTask?: (optionsJson: string) => Promise<string>;
   updateRemoteCollaborationTask?: (taskId: string, type: string, message?: string, optionsJson?: string) => Promise<string>;
   resolveCollaborationTaskAttachments?: (taskId: string, decision: 'stage' | 'adopt' | 'adopt_project' | 'reject', targetProjectId?: string) => Promise<string>;
-  initializeCollaborationWorkspace?: () => string;
-  setCollaborationEnabled?: (enabled: boolean) => string;
-  openCollaborationPath?: (kind?: 'root' | 'nodeRoot' | 'outbox' | 'inbox' | 'receipts' | 'quarantine' | 'trash' | 'snapshots') => string;
+  initializeCollaborationWorkspace?: () => Promise<string>;
+  setCollaborationEnabled?: (enabled: boolean) => Promise<string>;
+  openCollaborationPath?: (kind?: 'root' | 'nodeRoot' | 'outbox' | 'inbox' | 'receipts' | 'quarantine' | 'trash' | 'snapshots') => Promise<string>;
   scanCollaborationInbox?: () => Promise<string>;
   rebuildCollaborationIndex?: () => Promise<string>;
-  backupCollaborationState?: () => string;
-  restoreLatestCollaborationState?: () => string;
-  updateDirectDeliveryStatus?: (manifestId: string, action: 'pause' | 'resume' | 'retry' | 'cancel') => string;
-  exportCollaborationStudentStats?: (studentId: string, targetNodeId: string) => string;
-  createCollaborationBinding?: (optionsJson: string) => string;
-  createCollaborationDeviceInvitation?: () => string;
+  backupCollaborationState?: () => Promise<string>;
+  restoreLatestCollaborationState?: () => Promise<string>;
+  updateDirectDeliveryStatus?: (manifestId: string, action: 'pause' | 'resume' | 'retry' | 'cancel') => Promise<string>;
+  exportCollaborationStudentStats?: (studentId: string, targetNodeId: string) => Promise<string>;
+  createCollaborationBinding?: (optionsJson: string) => Promise<string>;
+  createCollaborationDeviceInvitation?: () => Promise<string>;
   joinCollaborationDevice?: (value: string) => Promise<string>;
-  createCollaborationStudentMappingOffer?: (deviceBindingId: string, studentId: string) => string;
-  acceptCollaborationStudentMappingClipboard?: (studentId?: string) => string;
-  createManualCollaborationInvitation?: (studentId: string, localRole: 'educator' | 'learner_authority') => string;
-  acceptManualCollaborationClipboard?: (studentId?: string) => string;
-  updateCollaborationBindingStatus?: (bindingId: string, status: 'active' | 'paused' | 'revoked') => string;
-  deleteRevokedCollaborationBindings?: (bindingId?: string) => string;
-  saveCollaborationGrant?: (optionsJson: string) => string;
-  setCollaborationStatisticsSharing?: (studentId: string, enabled: boolean) => string;
-  getCollaborationStudentMaterialStats?: (studentId: string, viewerNodeId?: string, allowedProjectIdsJson?: string) => string;
-  findLanTablets?: () => string;
-  findLanTerminals?: () => string;
-  inviteLanTablet?: (tabletId: string) => string;
-  inviteLanTerminal?: (terminalId: string) => string;
-  acceptHostPairRequest?: (requestId: string) => string;
-  rejectPairRequest?: (requestId: string) => string;
-  getHostUploadRecords?: () => string;
-  exportHostUploadRecords?: () => string;
-  openHostUploadRecord?: (recordId: string) => string;
-  clearHostUploadRecords?: () => string;
-  setHostUploadRecordStatus?: (recordId: string, status: string) => string;
-  markStudentDigestSubmitted?: (studentId: string) => string;
-  getStudentMaterialPathIssues?: (studentId: string) => string;
-  retryStudentMaterialPathRecovery?: (studentId: string) => string;
-  selectStudentMaterialPath?: (studentId: string, materialId: string) => string;
-  syncStudentDigestResult?: (studentId: string) => string;
+  createCollaborationStudentMappingOffer?: (deviceBindingId: string, studentId: string) => Promise<string>;
+  acceptCollaborationStudentMappingClipboard?: (studentId?: string) => Promise<string>;
+  createManualCollaborationInvitation?: (studentId: string, localRole: 'educator' | 'learner_authority') => Promise<string>;
+  acceptManualCollaborationClipboard?: (studentId?: string) => Promise<string>;
+  updateCollaborationBindingStatus?: (bindingId: string, status: 'active' | 'paused' | 'revoked') => Promise<string>;
+  deleteRevokedCollaborationBindings?: (bindingId?: string) => Promise<string>;
+  saveCollaborationGrant?: (optionsJson: string) => Promise<string>;
+  setCollaborationStatisticsSharing?: (studentId: string, enabled: boolean) => Promise<string>;
+  getCollaborationStudentMaterialStats?: (studentId: string, viewerNodeId?: string, allowedProjectIdsJson?: string) => Promise<string>;
+  findLanTablets?: () => Promise<string>;
+  findLanTerminals?: () => Promise<string>;
+  inviteLanTablet?: (tabletId: string) => Promise<string>;
+  inviteLanTerminal?: (terminalId: string) => Promise<string>;
+  acceptHostPairRequest?: (requestId: string) => Promise<string>;
+  rejectPairRequest?: (requestId: string) => Promise<string>;
+  getHostUploadRecords?: () => Promise<string>;
+  exportHostUploadRecords?: () => Promise<string>;
+  openHostUploadRecord?: (recordId: string) => Promise<string>;
+  clearHostUploadRecords?: () => Promise<string>;
+  setHostUploadRecordStatus?: (recordId: string, status: string) => Promise<string>;
+  markStudentDigestSubmitted?: (studentId: string) => Promise<string>;
+  getStudentMaterialPathIssues?: (studentId: string) => Promise<string>;
+  retryStudentMaterialPathRecovery?: (studentId: string) => Promise<string>;
+  selectStudentMaterialPath?: (studentId: string, materialId: string) => Promise<string>;
+  syncStudentDigestResult?: (studentId: string) => Promise<string>;
   supplementCompletedStudentDigestLearningEvents?: (studentId: string) => Promise<string>;
   startDigestWorkflow?: (scopeType: 'student' | 'project', scopeId: string, executor?: string) => Promise<string>;
-  getDigestWorkflowStatus?: (scopeType: 'student' | 'project', scopeId: string) => string;
-  getDigestWorkflowCommand?: (scopeType: 'student' | 'project', scopeId: string) => string;
+  getDigestWorkflowStatus?: (scopeType: 'student' | 'project', scopeId: string) => Promise<string>;
+  getDigestWorkflowCommand?: (scopeType: 'student' | 'project', scopeId: string) => Promise<string>;
   retryDigestWorkflow?: (scopeType: 'student' | 'project', scopeId: string, executor?: string) => Promise<string>;
-  importDigestWorkflowResultText?: (scopeType: 'student' | 'project', scopeId: string, content: string) => string;
-  getStudentDigestAudit?: (studentId: string) => string;
-  generateStudentDigestAudit?: (studentId: string, selectedIdsJson: string) => string;
-  syncStudentDigestAudit?: (studentId: string) => string;
-  recordScheduledTaskAction?: (studentId: string, kind: string, commandText: string) => string;
-  getStudentScheduleLedger?: (studentId: string) => string;
-  getTaskCenter?: () => string;
+  importDigestWorkflowResultText?: (scopeType: 'student' | 'project', scopeId: string, content: string) => Promise<string>;
+  getStudentDigestAudit?: (studentId: string) => Promise<string>;
+  generateStudentDigestAudit?: (studentId: string, selectedIdsJson: string) => Promise<string>;
+  syncStudentDigestAudit?: (studentId: string) => Promise<string>;
+  recordScheduledTaskAction?: (studentId: string, kind: string, commandText: string) => Promise<string>;
+  getStudentScheduleLedger?: (studentId: string) => Promise<string>;
+  getTaskCenter?: () => Promise<string>;
   getTaskPage?: (query: { page: number; status: string; source: string; executor: string }) => Promise<string>;
   getTaskDetail?: (taskId: string) => Promise<string>;
   reopenTaskHandoff?: (taskId: string, executionId: string, action: string) => Promise<string>;
@@ -1460,43 +1524,43 @@ type AndroidBridge = {
   archiveAccessRpc?: (requestJson: string) => Promise<string>;
   remoteArchiveAccessRpc?: (requestJson: string) => Promise<string>;
   queryAgentKnowledge?: (optionsJson: string) => Promise<string>;
-  getAgentKnowledgeDiagnostics?: () => string;
-  prepareAgentKnowledgeAccess?: (studentId: string) => string;
-  getAgentCapabilityManagement?: (studentId: string) => string;
-  setAgentCapabilityAuthorization?: (studentId: string, action: 'read' | 'write' | 'revoke') => string;
-  reviewAgentWriteIntent?: (studentId: string, intentId: string) => string;
-  decideAgentWriteIntent?: (studentId: string, intentId: string, digest: string, action: 'approve' | 'reject') => string;
+  getAgentKnowledgeDiagnostics?: () => Promise<string>;
+  prepareAgentKnowledgeAccess?: (studentId: string) => Promise<string>;
+  getAgentCapabilityManagement?: (studentId: string) => Promise<string>;
+  setAgentCapabilityAuthorization?: (studentId: string, action: 'read' | 'write' | 'revoke') => Promise<string>;
+  reviewAgentWriteIntent?: (studentId: string, intentId: string) => Promise<string>;
+  decideAgentWriteIntent?: (studentId: string, intentId: string, digest: string, action: 'approve' | 'reject') => Promise<string>;
   getAgentMemoryState?: (studentId: string) => Promise<string>;
-  deleteEmptyAgentMemorySessions?: (studentId: string, sessionId?: string) => string;
-  setAgentMemoryAutomation?: (studentId: string, enabled: boolean) => string;
-  activateAgentMemoryCapture?: (studentId: string) => string;
-  openCodexHookReview?: () => string;
+  deleteEmptyAgentMemorySessions?: (studentId: string, sessionId?: string) => Promise<string>;
+  setAgentMemoryAutomation?: (studentId: string, enabled: boolean) => Promise<string>;
+  activateAgentMemoryCapture?: (studentId: string) => Promise<string>;
+  openCodexHookReview?: () => Promise<string>;
   submitAgentConversation?: (requestJson: string) => Promise<string>;
-  getAgentConversationSubmissionState?: () => string;
+  getAgentConversationSubmissionState?: () => Promise<string>;
   assignAgentConversationSubmission?: (submissionId: string, scopeType: 'student' | 'project', scopeId: string) => Promise<string>;
-  getTaskCenterCapabilities?: () => string;
-  setTaskAutomationEnabled?: (enabled: boolean) => string;
+  getTaskCenterCapabilities?: () => Promise<string>;
+  setTaskAutomationEnabled?: (enabled: boolean) => Promise<string>;
   executeTask?: (taskId: string, executor?: string) => Promise<string>;
-  approveTask?: (taskId: string, decision: 'approved' | 'rejected', note?: string) => string;
-  retryTask?: (taskId: string) => string;
-  cancelTask?: (taskId: string, note?: string) => string;
-  deleteTaskHistory?: (taskId: string) => string;
+  approveTask?: (taskId: string, decision: 'approved' | 'rejected', note?: string) => Promise<string>;
+  retryTask?: (taskId: string) => Promise<string>;
+  cancelTask?: (taskId: string, note?: string) => Promise<string>;
+  deleteTaskHistory?: (taskId: string) => Promise<string>;
   previewTaskGovernanceBatch?: (request: { action: 'cancel' | 'archive' | 'delete' | 'restore'; ids?: string[]; selection?: 'explicit' | 'filtered'; query?: { status: string; source: string; executor: string } }) => Promise<string>;
   commitTaskGovernanceBatch?: (request: { token: string; reason?: string }) => Promise<string>;
-  importTaskResult?: (taskId: string) => string;
-  importTaskResultText?: (taskId: string, content: string) => string;
+  importTaskResult?: (taskId: string) => Promise<string>;
+  importTaskResultText?: (taskId: string, content: string) => Promise<string>;
   importTaskResultTextAsync?: (taskId: string, content: string) => Promise<string>;
   importTaskResultFileAsync?: (taskId: string) => Promise<string>;
   confirmTaskExternalStopped?: (taskId: string, executionId: string) => Promise<string>;
   detectWorkBuddyBackgroundAuthorization?: (confirmed: boolean) => Promise<string>;
   detectCodexBackgroundAuthorization?: (confirmed: boolean) => Promise<string>;
-  syncQClawTaskResults?: () => string;
-  syncAgentTaskResults?: (agentId?: string) => string;
-  submitDailyActionFeedback?: (taskId: string, status: string, note?: string) => string;
-  openTaskCenterPath?: (kind: 'root' | 'agent-inbox' | 'agent-results' | 'qclaw-inbox' | 'qclaw-results' | 'manual-outbox' | 'events', agentId?: string) => string;
-  openTaskResultPath?: (taskId: string) => string;
-  generateStudentMaintenanceReport?: (studentId: string) => string;
-  getHostTimeline?: () => string;
+  syncQClawTaskResults?: () => Promise<string>;
+  syncAgentTaskResults?: (agentId?: string) => Promise<string>;
+  submitDailyActionFeedback?: (taskId: string, status: string, note?: string) => Promise<string>;
+  openTaskCenterPath?: (kind: 'root' | 'agent-inbox' | 'agent-results' | 'qclaw-inbox' | 'qclaw-results' | 'manual-outbox' | 'events', agentId?: string) => Promise<string>;
+  openTaskResultPath?: (taskId: string) => Promise<string>;
+  generateStudentMaintenanceReport?: (studentId: string) => Promise<string>;
+  getHostTimeline?: () => Promise<string>;
   backupHostData?: (studentsJson?: string) => Promise<string>;
   restoreHostData?: () => Promise<string>;
   getHostMigrationPlan?: () => Promise<string>;
@@ -1507,39 +1571,39 @@ type AndroidBridge = {
   restoreHostMigrationPackage?: (optionsJson: string) => Promise<string>;
   onHostMigrationProgress?: (callback: (payload: string) => void) => () => void;
   onStudentOfflineMigrationProgress?: (callback: (payload: string) => void) => () => void;
-  openHostMigrationRecord?: () => string;
-  resetHostApiToken?: () => string;
-  exportHostLogs?: () => string;
-  openStudentRawDir?: (studentId: string) => string;
-  migrateStudentWorkspace?: (studentId: string, newName: string) => string;
+  openHostMigrationRecord?: () => Promise<string>;
+  resetHostApiToken?: () => Promise<string>;
+  exportHostLogs?: () => Promise<string>;
+  openStudentRawDir?: (studentId: string) => Promise<string>;
+  migrateStudentWorkspace?: (studentId: string, newName: string) => Promise<string>;
   rebindAdoptedStudentWorkspace?: (studentId: string, selectionMode?: 'knowledge' | 'raw') => Promise<string>;
-  renameHostDevice?: (deviceId: string, name: string) => string;
-  revokeHostDevice?: (deviceId: string) => string;
-  restoreHostDevice?: (deviceId: string) => string;
-  deleteHostDevice?: (deviceId: string) => string;
-  setHostDeviceStudentAccess?: (deviceId: string, studentIdsJson: string) => string;
-  setHostDeviceAccessMode?: (deviceId: string, optionsJson: string) => string;
-  setHostDeviceTerminalMode?: (deviceId: string, terminalMode: 'personal' | 'shared', boundStudentId?: string) => string;
-  getCourseCatalogState?: () => string;
-  saveCourseInstitutionPolicy?: (policyJson: string) => string;
-  importOfflineCourseCatalog?: () => string;
+  renameHostDevice?: (deviceId: string, name: string) => Promise<string>;
+  revokeHostDevice?: (deviceId: string) => Promise<string>;
+  restoreHostDevice?: (deviceId: string) => Promise<string>;
+  deleteHostDevice?: (deviceId: string) => Promise<string>;
+  setHostDeviceStudentAccess?: (deviceId: string, studentIdsJson: string) => Promise<string>;
+  setHostDeviceAccessMode?: (deviceId: string, optionsJson: string) => Promise<string>;
+  setHostDeviceTerminalMode?: (deviceId: string, terminalMode: 'personal' | 'shared', boundStudentId?: string) => Promise<string>;
+  getCourseCatalogState?: () => Promise<string>;
+  saveCourseInstitutionPolicy?: (policyJson: string) => Promise<string>;
+  importOfflineCourseCatalog?: () => Promise<string>;
   exportCustomCourseTemplate?: () => Promise<string>;
   importCustomCourseExcel?: () => Promise<string>;
   selectCustomCourseImage?: () => Promise<string>;
   saveDirectCustomCourse?: (inputJson: string) => Promise<string>;
-  deleteCustomCourse?: (courseId: string) => string;
+  deleteCustomCourse?: (courseId: string) => Promise<string>;
   selectPlatformCourseImage?: () => Promise<string>;
   savePlatformCourseDraft?: (inputJson: string) => Promise<string>;
-  removePlatformCourseDraft?: (courseId: string) => string;
-  queuePlatformCourseDeletion?: (courseId: string) => string;
-  cancelPlatformCourseDeletion?: (courseId: string) => string;
-  publishPlatformCourseCatalog?: (releaseNotes: string) => string;
-  reExportPlatformCourseCatalog?: () => string;
-  rollbackPlatformCourseCatalog?: () => string;
-  openCourseView?: (courseId: string) => string;
-  closeCourseView?: () => string;
-  setCourseCaptureSetupVisible?: (visible: boolean) => string;
-  setCourseViewLayout?: (layoutJson: string) => string;
+  removePlatformCourseDraft?: (courseId: string) => Promise<string>;
+  queuePlatformCourseDeletion?: (courseId: string) => Promise<string>;
+  cancelPlatformCourseDeletion?: (courseId: string) => Promise<string>;
+  publishPlatformCourseCatalog?: (releaseNotes: string) => Promise<string>;
+  reExportPlatformCourseCatalog?: () => Promise<string>;
+  rollbackPlatformCourseCatalog?: () => Promise<string>;
+  openCourseView?: (courseId: string) => Promise<string>;
+  closeCourseView?: () => Promise<string>;
+  setCourseCaptureSetupVisible?: (visible: boolean) => Promise<string>;
+  setCourseViewLayout?: (layoutJson: string) => Promise<string>;
 };
 
 type UpdateInfo = {
@@ -3139,10 +3203,12 @@ function getAgentToolProfile(value?: AgentToolId) {
   return profile;
 }
 
-function installStatusKeyForTool(toolId: AgentToolId): keyof AgentToolInstallStatus | 'claudeCode' {
+function installStatusKeyForTool(toolId: AgentToolId): keyof AgentToolInstallStatus | undefined {
   if (toolId === 'ima.copilot') return 'imaCopilot';
   if (toolId === 'qoder-work') return 'qoderWork';
-  return toolId === 'claude-code' ? 'claudeCode' : toolId;
+  if (toolId === 'claude-code') return 'claudeCode';
+  if (toolId === 'coze' || toolId === 'fastgpt') return undefined;
+  return toolId;
 }
 
 function openedKeyForTool(toolId: AgentToolId): AgentToolAdapter['openedKey'] {
@@ -3165,7 +3231,7 @@ function buildAgentToolAdapter(toolId: AgentToolId): AgentToolAdapter {
     getInstall(status) {
       if (!status) return undefined;
       const key = installStatusKeyForTool(profile.id);
-      return status[key as keyof AgentToolInstallStatus] as AgentToolInstall | undefined;
+      return key ? status[key] as AgentToolInstall | undefined : undefined;
     },
     isOpened(openState) {
       if (profile.openMode === 'url') return true;
@@ -4224,7 +4290,7 @@ const projectKnowledgeCategories: Array<{ id: ProjectKnowledgeCategoryId; label:
   { id: 'synthesis', label: '综合汇总' },
 ];
 
-const learningReportDefinitions: Array<{ id: LearningReportId; title: string; fileName: string; description: string }> = [
+const learningReportDefinitions: Array<{ id: LearningReportId; title: string; fileName: string; description: string; cycle: string }> = [
   { id: 'profile', title: '整体画像', fileName: '整体画像.md', description: '了解学生当前优势、短板、学习方式和沟通注意点。', cycle: '每月更新；重要证据确认后提前更新' },
   { id: 'daily', title: '每周行动建议', fileName: '每日行动建议.md', description: '给学生、家长、老师的本周行动安排；保留原文件名兼容既有档案。', cycle: '每周更新；同一周只保留一个任务' },
   { id: 'changes', title: '历史变化', fileName: '历史变化.md', description: '查看最近 7 天、30 天和阶段性的能力与习惯变化。', cycle: '每周更新；新证据确认后增量更新' },
@@ -4543,15 +4609,6 @@ function loadStudents() {
   try {
     const localRaw = localStorage.getItem(storageKey);
     const localStudents = localRaw ? (JSON.parse(localRaw) as Student[]) : seedStudents;
-    const nativeRaw = bridge()?.getStudents?.();
-    if (nativeRaw) {
-      const nativeResult = JSON.parse(nativeRaw) as { ok?: boolean; students?: Student[] };
-      if (nativeResult.ok && Array.isArray(nativeResult.students) && nativeResult.students.length > 0) {
-        const nativeStudents = normalizeStudents(nativeResult.students);
-        localStorage.setItem(storageKey, JSON.stringify(nativeStudents));
-        return nativeStudents;
-      }
-    }
     return normalizeStudents(localStudents);
   } catch {
     return normalizeStudents(seedStudents);
@@ -5942,6 +5999,7 @@ function App() {
   const [activePageTab, setActivePageTab] = useState('home');
   const [studentPanelOpen, setStudentPanelOpen] = useState(false);
   const [agentSettingsTab, setAgentSettingsTab] = useState<AgentSettingsTab>('tools');
+  const [agentControlSubtab, setAgentControlSubtab] = useState<AgentControlSubtab>('tool-control');
   const [agentDataTab, setAgentDataTab] = useState<AgentDataTab>('memory');
   const [guidanceTab, setGuidanceTab] = useState<GuidanceTab>('overview');
   const [topicSuggestionSet, setTopicSuggestionSet] = useState<TopicSuggestionSet | null>(null);
@@ -6101,6 +6159,10 @@ function App() {
   const [assetDuplicateOnly, setAssetDuplicateOnly] = useState(false);
   const [selectedAssetId, setSelectedAssetId] = useState('');
   const [selectedAssetDetail, setSelectedAssetDetail] = useState<AssetRecord | null>(null);
+  const [assetDetailRefreshVersion, setAssetDetailRefreshVersion] = useState(0);
+  const assetListRequestRef = useRef(0);
+  const assetDuplicateRequestRef = useRef(0);
+  const assetDetailRequestRef = useRef(0);
   const [assetCursor, setAssetCursor] = useState('');
   const [assetCursorHistory, setAssetCursorHistory] = useState<string[]>([]);
   const [assetRebuildJob, setAssetRebuildJob] = useState<AssetRebuildJob | null>(null);
@@ -6112,8 +6174,11 @@ function App() {
   const [assetDuplicateCursorHistory, setAssetDuplicateCursorHistory] = useState<string[]>([]);
   const [selectedDuplicateAssetIds, setSelectedDuplicateAssetIds] = useState<string[]>([]);
   const [assetDuplicateOperation, setAssetDuplicateOperation] = useState<AssetDuplicateOperation | null>(null);
+  const [assetDuplicateHistory, setAssetDuplicateHistory] = useState<AssetDuplicateOperationSummary[]>([]);
   const [assetDuplicateBusy, setAssetDuplicateBusy] = useState(false);
   const [projects, setProjects] = useState<LearningProject[]>([]);
+  const projectListRequestRef = useRef(0);
+  const projectDetailAbortRef = useRef<AbortController | null>(null);
   const [projectMessage, setProjectMessage] = useState('');
   const [projectStageFeedback, setProjectStageFeedback] = useState<Partial<Record<ProjectWorkflowTarget, string>>>({});
   const [projectBusyAction, setProjectBusyAction] = useState('');
@@ -6207,6 +6272,15 @@ function App() {
   const [selectedProjectStagingIds, setSelectedProjectStagingIds] = useState<string[]>([]);
   const [projectStagingSearch, setProjectStagingSearch] = useState('');
   const [projectStagingStatusFilter, setProjectStagingStatusFilter] = useState<'all' | ProjectStagingStatus>('all');
+  const [projectStagingPageItems, setProjectStagingPageItems] = useState<ProjectStagingItem[]>([]);
+  const [projectStagingTotal, setProjectStagingTotal] = useState(0);
+  const [projectStagingCursor, setProjectStagingCursor] = useState('');
+  const [projectStagingNextCursor, setProjectStagingNextCursor] = useState('');
+  const [projectStagingCursorHistory, setProjectStagingCursorHistory] = useState<string[]>([]);
+  const [projectStagingSummary, setProjectStagingSummary] = useState<ProjectStagingSummary>({ total: 0, byStatus: {}, byReviewStatus: {} });
+  const [projectStagingLoading, setProjectStagingLoading] = useState(false);
+  const projectStagingRequestRef = useRef(0);
+  const projectStagingAbortRef = useRef<AbortController | null>(null);
   const [projectSourceStrategy, setProjectSourceStrategy] = useState<'full_copy' | 'reference_only' | 'snapshot'>('reference_only');
   const [projectScreeningPasteOpen, setProjectScreeningPasteOpen] = useState(false);
   const [projectScreeningRaw, setProjectScreeningRaw] = useState('');
@@ -6261,9 +6335,12 @@ function App() {
   const [taskDetailError, setTaskDetailError] = useState('');
   const [taskCenterRefreshing, setTaskCenterRefreshing] = useState(false);
   const taskCenterRequestRef = React.useRef(0);
+  const taskCenterInFlightRef = React.useRef(new Map<string, Promise<void>>());
+  const [taskAdvancedOpen, setTaskAdvancedOpen] = useState(false);
   const taskCenterQueryRef = React.useRef({ page: taskCenterPage, status: taskCenterStatusFilter, source: taskCenterSourceFilter, executor: taskCenterExecutorFilter });
   taskCenterQueryRef.current = { page: taskCenterPage, status: taskCenterStatusFilter, source: taskCenterSourceFilter, executor: taskCenterExecutorFilter };
   const activeSectionRef = React.useRef<Section>(activeSection);
+  const settingsSubmenuRef = React.useRef<SettingsSubmenu>(settingsSubmenu);
   const selectedStudentIdRef = React.useRef('');
   const [selectedTaskId, setSelectedTaskId] = useState('');
   const taskDetailPanelRef = React.useRef<HTMLElement | null>(null);
@@ -6333,6 +6410,7 @@ function App() {
   const [studentOfflineMigrationProgress, setStudentOfflineMigrationProgress] = useState<HostMigrationProgress | null>(null);
   const [studentOfflineMigrationBusy, setStudentOfflineMigrationBusy] = useState(false);
   const [studentOfflineMigrationMessage, setStudentOfflineMigrationMessage] = useState('');
+  const [studentOfflineMigrationStudentId, setStudentOfflineMigrationStudentId] = useState('');
   const [editingDeviceId, setEditingDeviceId] = useState('');
   const [deviceNameDraft, setDeviceNameDraft] = useState('');
   const [hostNameDraft, setHostNameDraft] = useState('');
@@ -6441,6 +6519,10 @@ function App() {
   const t = (key: TranslationKey) => uiTranslations[language]?.[key] ?? zhCnText[key] ?? key;
 
   const selectedStudent = students.find((item) => item.id === selectedId) ?? students[0];
+  useEffect(() => {
+    setStudentOfflineMigrationStudentId((current) => students.some((student) => student.id === current)
+      ? current : (selectedStudent?.id || students[0]?.id || ''));
+  }, [selectedStudent?.id, students]);
   const customSubjectStudentRef = useRef(selectedStudent?.id);
   customSubjectStudentRef.current = selectedStudent?.id;
   useEffect(() => {
@@ -6672,6 +6754,9 @@ function App() {
   useEffect(() => {
     activeSectionRef.current = activeSection;
   }, [activeSection]);
+  useEffect(() => {
+    settingsSubmenuRef.current = settingsSubmenu;
+  }, [settingsSubmenu]);
 
   useEffect(() => {
     selectedStudentIdRef.current = selectedStudent?.id || '';
@@ -6799,11 +6884,11 @@ function App() {
   }, [courseCaptureProjectId, courseCaptureProjects]);
   useEffect(() => {
     const waiting = Boolean(isWindows && courseBrowser.open && !captureCenter.activeSession);
-    bridge()?.setCourseCaptureSetupVisible?.(waiting);
+    void bridge()?.setCourseCaptureSetupVisible?.(waiting);
   }, [captureCenter.activeSession, courseBrowser.open, isWindows]);
   useEffect(() => {
     if (!isWindows || !courseBrowser.open) return;
-    bridge()?.setCourseViewLayout?.(JSON.stringify({ sidebarCollapsed, fullscreen: courseFullscreen }));
+    void bridge()?.setCourseViewLayout?.(JSON.stringify({ sidebarCollapsed, fullscreen: courseFullscreen }));
   }, [courseBrowser.open, courseFullscreen, isWindows, sidebarCollapsed]);
   const activeAgentAdapter = activeSection === 'init' ? selectedToolAdapter : selectedStudentAdapter;
   const activeAgentTool = activeAgentAdapter.profile;
@@ -6907,23 +6992,24 @@ function App() {
     highRiskCount: Number(assetIndex.highRiskCount || 0),
     staleReferenceCount: Number(assetIndex.staleReferenceCount || 0),
   };
-  const assetFiltersActive = assetStudentFilter !== 'all'
+  const assetScopeFiltersActive = assetStudentFilter !== 'all'
     || assetSourceFilter !== 'all'
     || assetTypeFilter !== 'all'
-    || assetDuplicateOnly
-    || Boolean(assetSearch.trim());
+    || assetDuplicateOnly;
+  const assetQueryActive = Boolean(assetSearch.trim());
+  const assetFiltersActive = assetScopeFiltersActive || assetQueryActive;
   const assetScopedDuplicateGroups = Number(assetIndex.duplicateGroups || 0);
   const assetScopedTrend = assetIndex.recentTrend ?? calculateAssetRecentTrend([]);
-  const duplicatePageAssetIds = assetDuplicateGroups.map((group) => group.assetId);
+  const duplicatePageAssetIds = assetDuplicateGroups.filter((group) => !group.status || group.status === 'reviewable').map((group) => group.assetId);
   const allDuplicatePageSelected = duplicatePageAssetIds.length > 0
     && duplicatePageAssetIds.every((assetId) => selectedDuplicateAssetIds.includes(assetId));
   const assetWorkflowSteps = useMemo(() => {
     return [
-      { title: assetFiltersActive ? '筛选资产' : '登记资产', value: `${assetIndex.total ?? 0} 个`, detail: assetFiltersActive ? '当前数字仅代表所选筛选条件的匹配结果' : '导入、上传、补建索引都会登记 SHA-1 与来源' },
+      { title: assetQueryActive ? '查询结果' : assetScopeFiltersActive ? '筛选资产' : '登记资产', value: `${assetIndex.queryTotal ?? assetIndex.total ?? 0} 个`, detail: assetQueryActive ? '包含搜索词与当前筛选条件' : assetScopeFiltersActive ? '当前数字仅代表所选筛选条件的匹配结果' : '导入、上传、补建索引都会登记 SHA-1 与来源' },
       { title: '识别引用', value: `${assetIndex.referenceTotal ?? 0} 条`, detail: '连接学生档案、项目知识空间和资料来源' },
       { title: '治理候选', value: `${assetGovernanceStats.issueCount} 个`, detail: '重复、失效引用、无引用资产只提示不自动删除' },
     ];
-  }, [assetFiltersActive, assetGovernanceStats.issueCount, assetIndex.referenceTotal, assetIndex.total]);
+  }, [assetGovernanceStats.issueCount, assetIndex.queryTotal, assetIndex.referenceTotal, assetIndex.total, assetQueryActive, assetScopeFiltersActive]);
 
   const selectedProject = projects.find((project) => project.id === selectedProjectId) ?? projects[0] ?? null;
   const studentFilteredProjects = useMemo(() => (
@@ -6993,7 +7079,8 @@ function App() {
   const selectedProjectWorkspaceFolders = selectedProject?.workspaceFolders?.length
     ? selectedProject.workspaceFolders
     : selectedProjectWorkspaceTemplate.folders;
-  const selectedAsset = selectedAssetDetail ?? filteredAssets.find((asset) => asset.assetId === selectedAssetId) ?? filteredAssets[0] ?? null;
+  const selectedAsset = selectedAssetDetail?.assetId === selectedAssetId
+    ? selectedAssetDetail : filteredAssets.find((asset) => asset.assetId === selectedAssetId) ?? filteredAssets[0] ?? null;
   const deferredProjectAssetSearch = useDeferredValue(projectAssetSearch.trim().toLocaleLowerCase('zh-CN'));
   const projectCandidateAssetMatches = useMemo(() => {
     const selectedAssetIds = new Set(selectedProject?.assetIds ?? []);
@@ -7006,7 +7093,10 @@ function App() {
     });
   }, [assetIndex.assets, deferredProjectAssetSearch, selectedProject?.assetIds]);
   const projectCandidateAssets = projectCandidateAssetMatches.slice(0, 120);
-  const projectStagingItems = selectedProject?.stagingItems ?? [];
+  // The project detail deliberately excludes the full staging collection. The
+  // renderer owns only one bounded page so memory/DOM cost is independent of
+  // the number of files in the project.
+  const projectStagingItems = projectStagingPageItems;
   const projectKnowledgeRisk = (record: ProjectKnowledgeRecord) => (
     ['ai_generated', 'pending_review'].includes(record.status)
     || String(record.confidence || '').toLowerCase() === 'low'
@@ -7023,17 +7113,9 @@ function App() {
       && (!projectKnowledgeRiskOnly || projectKnowledgeRisk(record))
     ))
   ), [projectKnowledgeRecords, projectKnowledgeRiskOnly, projectKnowledgeStatusFilter]);
-  const filteredProjectStagingItems = useMemo(() => {
-    const keyword = projectStagingSearch.trim().toLowerCase();
-    return projectStagingItems.filter((item) => {
-      if (projectStagingStatusFilter !== 'all' && item.status !== projectStagingStatusFilter) return false;
-      if (!keyword) return true;
-      return [item.filename, item.path, item.sourcePath, item.sha1, item.aiAction, item.aiReason, item.governanceAction, item.governanceReason]
-        .filter(Boolean)
-        .some((value) => String(value).toLowerCase().includes(keyword));
-    });
-  }, [projectStagingItems, projectStagingSearch, projectStagingStatusFilter]);
-  const selectedProjectStagingItems = projectStagingItems.filter((item) => selectedProjectStagingIds.includes(item.id) && projectStagingItemReviewable(item));
+  const filteredProjectStagingItems = projectStagingItems;
+  const selectedProjectStagingIdSet = useMemo(() => new Set(selectedProjectStagingIds), [selectedProjectStagingIds]);
+  const selectedProjectStagingItems = projectStagingItems.filter((item) => selectedProjectStagingIdSet.has(item.id) && projectStagingItemReviewable(item));
   const selectedProjectReviewableStagingIds = selectedProjectStagingItems.map((item) => item.id);
   const selectedProjectStagingDecisionJson = JSON.stringify(selectedProject?.materialStorageMode === 'workspace-v1'
     ? selectedProjectStagingItems.map((item) => ({ id: item.id, expectedVersion: item.materialVersion,
@@ -7055,11 +7137,7 @@ function App() {
     return { duplicateCount, actionCount: governanceCandidateIds.length, governanceCandidateIds, promotionCandidateIds };
   }, [projectStagingItems]);
   const projectStagingLifecycleStats = useMemo(() => {
-    const byStatus = projectStagingItems.reduce<Record<string, number>>((acc, item) => {
-      const key = String(item.status || 'collected');
-      acc[key] = (acc[key] || 0) + 1;
-      return acc;
-    }, {});
+    const byStatus = projectStagingSummary.byStatus || {};
     return {
       collected: byStatus.collected || 0,
       screened: byStatus.screened || 0,
@@ -7068,7 +7146,7 @@ function App() {
       promoted: byStatus.promoted || 0,
       discarded: byStatus.discarded || 0,
     };
-  }, [projectStagingItems]);
+  }, [projectStagingSummary]);
   const selectedProjectDigestState = selectedProject?.digestState ?? {};
   const projectStageCounts = useMemo(() => {
     const pendingStaging = projectStagingItems.filter((item) => !['analyzed', 'promoted', 'discarded'].includes(String(item.status))).length;
@@ -7178,21 +7256,25 @@ function App() {
     setProjectKnowledgeRecords([]);
     setProjectUnifiedReview(null);
     if (!selectedProject?.id) return;
-    const raw = bridge()?.getProjectKnowledgeReview?.(selectedProject.id);
-    if (!raw) return;
-    try {
-      const result = JSON.parse(raw) as { ok?: boolean; records?: ProjectKnowledgeRecord[] };
-      if (result.ok) setProjectKnowledgeRecords(result.records ?? []);
-    } catch {
-      // The project page remains usable when the optional review index is unavailable.
-    }
-    const reviewRaw = bridge()?.getProjectUnifiedReview?.(selectedProject.id);
-    if (reviewRaw) try {
-      const reviewResult = JSON.parse(reviewRaw) as { ok?: boolean; reviewPackage?: ProjectUnifiedReviewPackage };
-      if (reviewResult.ok && reviewResult.reviewPackage) setProjectUnifiedReview(reviewResult.reviewPackage);
-    } catch {
-      // Advanced controls remain available when the unified review view cannot load.
-    }
+    let cancelled = false;
+    void (async () => {
+      const raw = await bridge()?.getProjectKnowledgeReview?.(selectedProject.id);
+      if (!raw || cancelled) return;
+      try {
+        const result = JSON.parse(raw) as { ok?: boolean; records?: ProjectKnowledgeRecord[] };
+        if (result.ok) setProjectKnowledgeRecords(result.records ?? []);
+      } catch {
+        // The project page remains usable when the optional review index is unavailable.
+      }
+      const reviewRaw = await bridge()?.getProjectUnifiedReview?.(selectedProject.id);
+      if (reviewRaw && !cancelled) try {
+        const reviewResult = JSON.parse(reviewRaw) as { ok?: boolean; reviewPackage?: ProjectUnifiedReviewPackage };
+        if (reviewResult.ok && reviewResult.reviewPackage) setProjectUnifiedReview(reviewResult.reviewPackage);
+      } catch {
+        // Advanced controls remain available when the unified review view cannot load.
+      }
+    })();
+    return () => { cancelled = true; };
   }, [selectedProject?.id, selectedProject?.updatedAt]);
 
   useEffect(() => {
@@ -7308,9 +7390,9 @@ function App() {
     setProjectStageFeedback((current) => ({ ...current, [target]: message }));
   };
 
-  const refreshProjectUnifiedReview = (projectId = selectedProjectId) => {
+  const refreshProjectUnifiedReview = async (projectId = selectedProjectId) => {
     if (!projectId) return;
-    const raw = bridge()?.getProjectUnifiedReview?.(projectId);
+    const raw = await bridge()?.getProjectUnifiedReview?.(projectId);
     if (!raw) return;
     try {
       const result = JSON.parse(raw) as { ok?: boolean; automatic?: boolean; projects?: LearningProject[]; reviewPackage?: ProjectUnifiedReviewPackage; message?: string };
@@ -7370,6 +7452,20 @@ function App() {
 
   const selectVisibleProjectStagingItems = () => {
     setSelectedProjectStagingIds(filteredProjectStagingItems.filter(projectStagingItemReviewable).map((item) => item.id));
+  };
+
+  const goNextProjectStagingPage = () => {
+    if (!projectStagingNextCursor) return;
+    setProjectStagingCursorHistory((current) => [...current, projectStagingCursor]);
+    setProjectStagingCursor(projectStagingNextCursor);
+  };
+
+  const goPreviousProjectStagingPage = () => {
+    if (!projectStagingCursorHistory.length) return;
+    const previous = projectStagingCursorHistory[projectStagingCursorHistory.length - 1] || '';
+    setProjectStagingCursorHistory((current) => current.slice(0, -1));
+    setProjectStagingCursor(previous);
+    if (!previous) void refreshProjectStagingPage('');
   };
 
   const selectProjectGovernanceCandidates = () => {
@@ -7481,8 +7577,8 @@ function App() {
     return `${license.planLabel || license.plan || '已激活'}${license.expiresAt ? ` · 到期 ${new Date(license.expiresAt).toLocaleDateString('zh-CN')}` : ' · 永久'}`;
   };
 
-  const refreshLicenseStatus = () => {
-    const raw = bridge()?.getLicenseStatus?.();
+  const refreshLicenseStatus = async () => {
+    const raw = await bridge()?.getLicenseStatus?.();
     if (!raw) return;
     try {
       const result = JSON.parse(raw) as { ok?: boolean; license?: LicenseStatus; message?: string };
@@ -7493,12 +7589,12 @@ function App() {
     }
   };
 
-  const activateLicense = () => {
+  const activateLicense = async () => {
     if (!licenseCodeDraft.trim()) {
       setLicenseMessage('请先输入激活码。');
       return;
     }
-    const raw = bridge()?.activateLicense?.(licenseCodeDraft);
+    const raw = await bridge()?.activateLicense?.(licenseCodeDraft);
     if (!raw) {
       setLicenseMessage('当前环境不支持许可证激活。');
       return;
@@ -7514,10 +7610,10 @@ function App() {
     }
   };
 
-  const deactivateLicense = () => {
+  const deactivateLicense = async () => {
     const confirmed = window.confirm('确认移除本机许可证吗？平板终端会显示主机未激活。');
     if (!confirmed) return;
-    const raw = bridge()?.deactivateLicense?.();
+    const raw = await bridge()?.deactivateLicense?.();
     if (!raw) return;
     try {
       const result = JSON.parse(raw) as { ok?: boolean; message?: string; license?: LicenseStatus; status?: HostServiceStatus };
@@ -7529,8 +7625,8 @@ function App() {
     }
   };
 
-  const importLicenseFile = () => {
-    const raw = bridge()?.importLicenseFile?.();
+  const importLicenseFile = async () => {
+    const raw = await bridge()?.importLicenseFile?.();
     if (!raw) return setLicenseMessage('当前环境不支持 License 文件导入。');
     try {
       const result = JSON.parse(raw) as { ok?: boolean; message?: string; license?: LicenseStatus; status?: HostServiceStatus };
@@ -7540,8 +7636,8 @@ function App() {
     } catch { setLicenseMessage('License 文件导入失败。'); }
   };
 
-  const refreshLicenseTrustStatus = () => {
-    const raw = bridge()?.getLicenseTrustStatus?.();
+  const refreshLicenseTrustStatus = async () => {
+    const raw = await bridge()?.getLicenseTrustStatus?.();
     if (!raw) return;
     try {
       const result = JSON.parse(raw) as { ok?: boolean; issuers?: Array<{ keyId: string; fingerprint: string; status: string }> };
@@ -7549,10 +7645,10 @@ function App() {
     } catch { setLicenseMessage('读取可信签发方失败。'); }
   };
 
-  const syncStudentsToHost = (next: Student[]) => {
+  const syncStudentsToHost = async (next: Student[]) => {
     if (!bridge()?.syncStudents) return;
     try {
-      const raw = bridge()?.syncStudents?.(JSON.stringify(next));
+      const raw = await bridge()?.syncStudents?.(JSON.stringify(next));
       if (!raw) return;
       const result = JSON.parse(raw) as { ok?: boolean; message?: string };
       if (!result.ok && result.message) setHostServiceMessage(result.message);
@@ -7561,8 +7657,8 @@ function App() {
     }
   };
 
-  const refreshHostServiceStatus = () => {
-    const raw = bridge()?.getHostServiceStatus?.();
+  const refreshHostServiceStatus = async () => {
+    const raw = await bridge()?.getHostServiceStatus?.();
     if (!raw) return;
     try {
       const status = JSON.parse(raw) as HostServiceStatus;
@@ -7570,7 +7666,7 @@ function App() {
       setHomeMode(status.usageMode === 'host_terminal' ? 'host' : 'local');
       if (status.license) setLicenseStatus(status.license);
       setHostPortDraft(String(status.port || 18777));
-      if (activeSection === 'settings') {
+      if (activeSectionRef.current === 'settings' && settingsSubmenuRef.current === 'connection') {
         refreshHostUploadRecords();
         refreshHostTimeline();
       }
@@ -7598,8 +7694,8 @@ function App() {
     }
   };
 
-  const refreshCourseCatalog = () => {
-    const raw = bridge()?.getCourseCatalogState?.();
+  const refreshCourseCatalog = async () => {
+    const raw = await bridge()?.getCourseCatalogState?.();
     if (!raw) return;
     try {
       const state = JSON.parse(raw) as CourseCatalogState;
@@ -7627,9 +7723,9 @@ function App() {
     });
   };
 
-  const saveCoursePolicy = () => {
+  const saveCoursePolicy = async () => {
     if (!courseCatalogState?.policy) return;
-    const raw = bridge()?.saveCourseInstitutionPolicy?.(JSON.stringify(courseCatalogState.policy));
+    const raw = await bridge()?.saveCourseInstitutionPolicy?.(JSON.stringify(courseCatalogState.policy));
     if (!raw) {
       setCourseCatalogMessage('当前环境不支持课程机构设置。');
       return;
@@ -7643,8 +7739,8 @@ function App() {
     }
   };
 
-  const importCourseCatalog = () => {
-    const raw = bridge()?.importOfflineCourseCatalog?.();
+  const importCourseCatalog = async () => {
+    const raw = await bridge()?.importOfflineCourseCatalog?.();
     if (!raw) return;
     try {
       const result = JSON.parse(raw) as { ok?: boolean; cancelled?: boolean; message?: string; catalog?: { catalogVersion?: string } };
@@ -7810,10 +7906,10 @@ function App() {
     }
   };
 
-  const deleteCustomCourse = (course: CourseCatalogItem) => {
+  const deleteCustomCourse = async (course: CourseCatalogItem) => {
     if (course.type !== 'tenant_custom') return;
     if (!window.confirm(`确认永久删除机构精选课程“${course.name}”？\n\n删除后将同时清除该课程的启用、年级和学生分配设置；学生端不再显示。`)) return;
-    const raw = bridge()?.deleteCustomCourse?.(course.courseId);
+    const raw = await bridge()?.deleteCustomCourse?.(course.courseId);
     if (!raw) {
       setCourseCatalogMessage('当前环境不支持删除机构精选课程。');
       return;
@@ -7925,9 +8021,9 @@ function App() {
     }
   };
 
-  const removePlatformCourseDraft = (courseId: string) => {
+  const removePlatformCourseDraft = async (courseId: string) => {
     if (!window.confirm('删除该平台课程草稿？当前已发布课程不会被删除或修改。')) return;
-    const raw = bridge()?.removePlatformCourseDraft?.(courseId);
+    const raw = await bridge()?.removePlatformCourseDraft?.(courseId);
     if (!raw) return;
     try {
       const result = JSON.parse(raw) as { ok?: boolean; message?: string; state?: CourseCatalogState };
@@ -7939,9 +8035,9 @@ function App() {
     }
   };
 
-  const queuePlatformCourseDeletion = (course: CourseCatalogItem) => {
+  const queuePlatformCourseDeletion = async (course: CourseCatalogItem) => {
     if (!window.confirm(`确认删除平台精选课程“${course.name}”？\n\n该课程会先进入“待删除”，必须点击“发布并导出平台课程包”生成新版课程包后，删除才会正式生效。`)) return;
-    const raw = bridge()?.queuePlatformCourseDeletion?.(course.courseId);
+    const raw = await bridge()?.queuePlatformCourseDeletion?.(course.courseId);
     if (!raw) {
       setCourseCatalogMessage('当前环境不支持删除平台精选课程。');
       return;
@@ -7956,8 +8052,8 @@ function App() {
     }
   };
 
-  const cancelPlatformCourseDeletion = (courseId: string) => {
-    const raw = bridge()?.cancelPlatformCourseDeletion?.(courseId);
+  const cancelPlatformCourseDeletion = async (courseId: string) => {
+    const raw = await bridge()?.cancelPlatformCourseDeletion?.(courseId);
     if (!raw) return;
     try {
       const result = JSON.parse(raw) as { ok?: boolean; message?: string; state?: CourseCatalogState };
@@ -7968,7 +8064,7 @@ function App() {
     }
   };
 
-  const publishPlatformCourseCatalog = () => {
+  const publishPlatformCourseCatalog = async () => {
     const invoke = bridge()?.publishPlatformCourseCatalog;
     if (!invoke) {
       setCourseCatalogMessage('当前环境不支持平台课程发布。');
@@ -7977,7 +8073,7 @@ function App() {
     setPlatformPublishing(true);
     setCourseCatalogMessage('正在生成平台课程包并执行文件哈希与完整性回验…');
     try {
-      const result = JSON.parse(invoke(platformReleaseNotes)) as { ok?: boolean; cancelled?: boolean; message?: string; outputPath?: string; state?: CourseCatalogState };
+      const result = JSON.parse(await invoke(platformReleaseNotes)) as { ok?: boolean; cancelled?: boolean; message?: string; outputPath?: string; state?: CourseCatalogState };
       if (result.state) setCourseCatalogState(result.state);
       if (result.ok) setPlatformReleaseNotes('');
       setCourseCatalogMessage(result.message || (result.cancelled ? '已取消平台课程发布。' : result.ok ? `平台课程包已保存到 ${result.outputPath || '所选位置'}。` : '平台课程发布失败。'));
@@ -7988,7 +8084,7 @@ function App() {
     }
   };
 
-  const reExportPlatformCourseCatalog = () => {
+  const reExportPlatformCourseCatalog = async () => {
     const invoke = bridge()?.reExportPlatformCourseCatalog;
     if (!invoke) {
       setCourseCatalogMessage('当前环境不支持重新导出平台课程包。');
@@ -7997,7 +8093,7 @@ function App() {
     setPlatformPublishing(true);
     setCourseCatalogMessage('正在校验并重新导出当前已发布课程包…');
     try {
-      const result = JSON.parse(invoke()) as { ok?: boolean; cancelled?: boolean; message?: string; outputPath?: string; state?: CourseCatalogState };
+      const result = JSON.parse(await invoke()) as { ok?: boolean; cancelled?: boolean; message?: string; outputPath?: string; state?: CourseCatalogState };
       if (result.state) setCourseCatalogState(result.state);
       setCourseCatalogMessage(result.message || (result.cancelled ? '已取消重新导出。' : result.ok ? `课程包已重新导出到 ${result.outputPath || '所选位置'}。` : '重新导出失败。'));
     } catch (error) {
@@ -8020,12 +8116,12 @@ function App() {
     setCourseCatalogMessage('当前没有待发布修改，也没有已归档的原始平台课程包。请先新增或编辑平台课程并发布。');
   };
 
-  const rollbackPlatformCourseCatalog = () => {
+  const rollbackPlatformCourseCatalog = async () => {
     const invoke = bridge()?.rollbackPlatformCourseCatalog;
     if (!invoke || !window.confirm('确认从旧的平台课程包恢复课程目录？该操作会立即影响本机课程目录。')) return;
     setPlatformPublishing(true);
     try {
-      const result = JSON.parse(invoke()) as { ok?: boolean; cancelled?: boolean; message?: string; state?: CourseCatalogState };
+      const result = JSON.parse(await invoke()) as { ok?: boolean; cancelled?: boolean; message?: string; state?: CourseCatalogState };
       if (result.state) setCourseCatalogState(result.state);
       setCourseCatalogMessage(result.message || (result.cancelled ? '已取消课程目录恢复。' : result.ok ? '课程目录已恢复。' : '课程目录恢复失败。'));
     } catch (error) {
@@ -8035,8 +8131,8 @@ function App() {
     }
   };
 
-  const openHostCourse = (course: CourseCatalogItem) => {
-    const raw = bridge()?.openCourseView?.(course.courseId);
+  const openHostCourse = async (course: CourseCatalogItem) => {
+    const raw = await bridge()?.openCourseView?.(course.courseId);
     if (!raw) return;
     try {
       const result = JSON.parse(raw) as { ok?: boolean; message?: string };
@@ -8054,16 +8150,16 @@ function App() {
     }
   };
 
-  const closeHostCourse = () => {
-    bridge()?.closeCourseView?.();
-    bridge()?.setCourseCaptureSetupVisible?.(false);
+  const closeHostCourse = async () => {
+    await bridge()?.closeCourseView?.();
+    await bridge()?.setCourseCaptureSetupVisible?.(false);
     setCourseBrowser({ open: false });
     setCourseFullscreen(false);
     setCourseCaptureMessage('');
   };
 
-  const refreshHostUploadRecords = () => {
-    const raw = bridge()?.getHostUploadRecords?.();
+  const refreshHostUploadRecords = async () => {
+    const raw = await bridge()?.getHostUploadRecords?.();
     if (!raw) return;
     try {
       const result = JSON.parse(raw) as { ok?: boolean; records?: HostUploadRecord[] };
@@ -8073,8 +8169,8 @@ function App() {
     }
   };
 
-  const refreshHostTimeline = () => {
-    const raw = bridge()?.getHostTimeline?.();
+  const refreshHostTimeline = async () => {
+    const raw = await bridge()?.getHostTimeline?.();
     if (!raw) return;
     try {
       const result = JSON.parse(raw) as { ok?: boolean; events?: HostTimelineEvent[] };
@@ -8084,8 +8180,12 @@ function App() {
     }
   };
 
-  const refreshCollaborationState = () => {
-    const raw = bridge()?.getCollaborationState?.();
+  useEffect(() => {
+    if (activeSection === 'settings' && settingsSubmenu === 'connection') void refreshHostServiceStatus();
+  }, [activeSection, settingsSubmenu]);
+
+  const refreshCollaborationState = async () => {
+    const raw = await bridge()?.getCollaborationState?.();
     if (!raw) return;
     try {
       const result = JSON.parse(raw) as CollaborationState;
@@ -8096,8 +8196,8 @@ function App() {
     }
   };
 
-  const refreshAgentConversationInbox = () => {
-    const raw = bridge()?.getAgentConversationSubmissionState?.();
+  const refreshAgentConversationInbox = async () => {
+    const raw = await bridge()?.getAgentConversationSubmissionState?.();
     if (!raw) return;
     try {
       setAgentConversationInbox(JSON.parse(raw) as AgentConversationSubmissionState);
@@ -8262,7 +8362,7 @@ function App() {
   const createCollaborationDevicePairCode = async () => {
     setCollaborationPairingBusy(true);
     try {
-      const raw = bridge()?.createCollaborationDeviceInvitation?.();
+      const raw = await bridge()?.createCollaborationDeviceInvitation?.();
       applyCollaborationPairingResult(raw, 'device_invitation_ready');
       const connectionInfoText = raw
         ? (JSON.parse(raw) as { pairing?: { connectionInfoText?: string } }).pairing?.connectionInfoText
@@ -8314,7 +8414,7 @@ function App() {
     }
   };
 
-  const createSelectedStudentMapping = () => {
+  const createSelectedStudentMapping = async () => {
     const activeDeviceBindings = collaborationState?.state?.deviceBindings?.filter((item) => item.status === 'active' && !item.revokedAt) ?? [];
     const deviceBindingId = activeDeviceBindings.find((item) => item.deviceBindingId === selectedCollaborationDeviceId)?.deviceBindingId
       || activeDeviceBindings[0]?.deviceBindingId
@@ -8328,19 +8428,19 @@ function App() {
       return;
     }
     applyCollaborationPairingResult(
-      bridge()?.createCollaborationStudentMappingOffer?.(deviceBindingId, selectedStudent.id),
+      await bridge()?.createCollaborationStudentMappingOffer?.(deviceBindingId, selectedStudent.id),
       'student_mapping_offered',
     );
   };
 
-  const processSelectedStudentMappingClipboard = () => {
+  const processSelectedStudentMappingClipboard = async () => {
     applyCollaborationPairingResult(
-      bridge()?.acceptCollaborationStudentMappingClipboard?.(selectedStudent?.id),
+      await bridge()?.acceptCollaborationStudentMappingClipboard?.(selectedStudent?.id),
       'student_mapping_accepted',
     );
   };
 
-  const createGuidedCollaborationInvitation = (localRole: 'educator' | 'learner_authority') => {
+  const createGuidedCollaborationInvitation = async (localRole: 'educator' | 'learner_authority') => {
     if (!selectedStudent) {
       setCollaborationPairingFeedback({
         stage: 'error',
@@ -8352,7 +8452,7 @@ function App() {
     setCollaborationPairingBusy(true);
     try {
       applyCollaborationPairingResult(
-        bridge()?.createManualCollaborationInvitation?.(selectedStudent.id, localRole),
+        await bridge()?.createManualCollaborationInvitation?.(selectedStudent.id, localRole),
         'invitation_copied',
       );
     } finally {
@@ -8360,7 +8460,7 @@ function App() {
     }
   };
 
-  const continueGuidedCollaborationPairing = (expectedStage: 'acceptance_copied' | 'completed') => {
+  const continueGuidedCollaborationPairing = async (expectedStage: 'acceptance_copied' | 'completed') => {
     if (!selectedStudent) {
       setCollaborationPairingFeedback({
         stage: 'error',
@@ -8372,7 +8472,7 @@ function App() {
     setCollaborationPairingBusy(true);
     try {
       applyCollaborationPairingResult(
-        bridge()?.acceptManualCollaborationClipboard?.(selectedStudent.id),
+        await bridge()?.acceptManualCollaborationClipboard?.(selectedStudent.id),
         expectedStage,
       );
     } finally {
@@ -8405,8 +8505,8 @@ function App() {
     catch { setCollaborationMessage('重建协作索引中断，请检查接收状态后重试。'); }
   };
 
-  const updateDirectDeliveryFromSettings = (manifestId: string, action: 'pause' | 'resume' | 'retry' | 'cancel') => {
-    const raw = bridge()?.updateDirectDeliveryStatus?.(manifestId, action);
+  const updateDirectDeliveryFromSettings = async (manifestId: string, action: 'pause' | 'resume' | 'retry' | 'cancel') => {
+    const raw = await bridge()?.updateDirectDeliveryStatus?.(manifestId, action);
     if (!raw) {
       setCollaborationMessage('当前环境不支持发送队列管理。');
       return;
@@ -8459,8 +8559,8 @@ function App() {
     }
   };
 
-  const selectCollaborationTaskFiles = () => {
-    const raw = bridge()?.selectCollaborationTaskFiles?.();
+  const selectCollaborationTaskFiles = async () => {
+    const raw = await bridge()?.selectCollaborationTaskFiles?.();
     if (!raw) {
       setCollaborationMessage('当前环境不支持选择协作资料。');
       return;
@@ -8474,8 +8574,8 @@ function App() {
     }
   };
 
-  const selectCollaborationResultFiles = () => {
-    const raw = bridge()?.selectCollaborationResultFiles?.();
+  const selectCollaborationResultFiles = async () => {
+    const raw = await bridge()?.selectCollaborationResultFiles?.();
     if (!raw) {
       setScheduleMessage('当前环境不支持选择成果文件。');
       return;
@@ -8539,12 +8639,12 @@ function App() {
     }
   };
 
-  const refreshCollaborationMaterialStats = (studentId = selectedStudent?.id || '') => {
+  const refreshCollaborationMaterialStats = async (studentId = selectedStudent?.id || '') => {
     if (!studentId) {
       setCollaborationStats(null);
       return;
     }
-    const raw = bridge()?.getCollaborationStudentMaterialStats?.(studentId);
+    const raw = await bridge()?.getCollaborationStudentMaterialStats?.(studentId);
     if (!raw) return;
     try {
       const result = JSON.parse(raw) as { ok?: boolean; snapshot?: CollaborationMaterialStats; message?: string };
@@ -8612,8 +8712,8 @@ function App() {
     });
   };
 
-  const refreshInstallStatus = (payload?: unknown) => {
-    const raw = typeof payload === 'string' ? payload : bridge()?.getAgentToolInstallStatus?.();
+  const refreshInstallStatus = async (payload?: unknown) => {
+    const raw = typeof payload === 'string' ? payload : await bridge()?.getAgentToolInstallStatus?.();
     if (!raw) {
       setInstallStatus(null);
       return;
@@ -8642,8 +8742,8 @@ function App() {
     }
   };
 
-  const refreshTemplateCenter = () => {
-    const raw = bridge()?.getTemplateCenter?.(JSON.stringify(systemTemplateFiles));
+  const refreshTemplateCenter = async () => {
+    const raw = await bridge()?.getTemplateCenter?.(JSON.stringify(systemTemplateFiles));
     if (!raw) return;
     try {
       const result = JSON.parse(raw) as TemplateCenterState;
@@ -8654,9 +8754,9 @@ function App() {
     }
   };
 
-  const refreshAgentCenter = (studentId = selectedStudent?.id) => {
+  const refreshAgentCenter = async (studentId = selectedStudent?.id) => {
     if (!studentId) return;
-    const raw = bridge()?.getAgentCenter?.(studentId);
+    const raw = await bridge()?.getAgentCenter?.(studentId);
     if (!raw) return;
     try {
       const result = JSON.parse(raw) as AgentCenterState;
@@ -8705,11 +8805,11 @@ function App() {
     return control.promise;
   };
 
-  const clearEmptyAgentSessions = (sessionId = '') => {
+  const clearEmptyAgentSessions = async (sessionId = '') => {
     if (!selectedStudent) return;
     const prompt = sessionId ? '清理这条无授权消息的已结束会话？' : '批量清理无授权消息的已结束会话？有内容及采集中的会话不会删除。';
     if (!window.confirm(prompt)) return;
-    const raw = bridge()?.deleteEmptyAgentMemorySessions?.(selectedStudent.id, sessionId);
+    const raw = await bridge()?.deleteEmptyAgentMemorySessions?.(selectedStudent.id, sessionId);
     if (!raw) { setAgentCenterMessage('当前环境不支持清理空会话。'); return; }
     try {
       const result = JSON.parse(raw) as { ok?: boolean; message?: string };
@@ -8762,9 +8862,9 @@ function App() {
 
   const manageCapturedConversation = (sessions: AgentMemorySession[], action: 'trash' | 'restore' | 'delete', progress: (message: string) => void) => processCapturedConversations(sessions, action, 'student', progress);
 
-  const updateAgentMemoryAutomation = (enabled: boolean) => {
+  const updateAgentMemoryAutomation = async (enabled: boolean) => {
     if (!selectedStudent) return;
-    const raw = bridge()?.setAgentMemoryAutomation?.(selectedStudent.id, enabled);
+    const raw = await bridge()?.setAgentMemoryAutomation?.(selectedStudent.id, enabled);
     if (!raw) {
       setAgentCenterMessage('当前环境不支持自动会话记忆。');
       return;
@@ -8778,9 +8878,9 @@ function App() {
     }
   };
 
-  const activateSelectedAgentMemoryCapture = () => {
+  const activateSelectedAgentMemoryCapture = async () => {
     if (!selectedStudent) return;
-    const raw = bridge()?.activateAgentMemoryCapture?.(selectedStudent.id);
+    const raw = await bridge()?.activateAgentMemoryCapture?.(selectedStudent.id);
     if (!raw) {
       setAgentCenterMessage('当前环境不支持切换自动会话采集对象。');
       return;
@@ -8794,8 +8894,8 @@ function App() {
     }
   };
 
-  const openCodexHookReview = () => {
-    const raw = bridge()?.openCodexHookReview?.();
+  const openCodexHookReview = async () => {
+    const raw = await bridge()?.openCodexHookReview?.();
     if (!raw) {
       setAgentCenterMessage('当前环境无法打开 Codex CLI，请手动打开后输入 /hooks。');
       return;
@@ -8813,9 +8913,9 @@ function App() {
     }
   };
 
-  const refreshAgentRules = (studentId = selectedStudent?.id, preferredFileName = ruleFileName) => {
+  const refreshAgentRules = async (studentId = selectedStudent?.id, preferredFileName = ruleFileName) => {
     if (!studentId) return;
-    const raw = bridge()?.getAgentRules?.(studentId);
+    const raw = await bridge()?.getAgentRules?.(studentId);
     if (!raw) {
       setRuleMessage('当前环境不支持规则文件管理。');
       return;
@@ -8841,9 +8941,9 @@ function App() {
     }
   };
 
-  const refreshSourceRegistry = (studentId = selectedStudent?.id) => {
+  const refreshSourceRegistry = async (studentId = selectedStudent?.id) => {
     if (!studentId) return;
-    const raw = bridge()?.getAgentSourceRegistry?.(studentId);
+    const raw = await bridge()?.getAgentSourceRegistry?.(studentId);
     if (!raw) return;
     try {
       setSourceRegistry(JSON.parse(raw) as AgentSourceRegistryState);
@@ -8852,11 +8952,11 @@ function App() {
     }
   };
 
-  const rollbackSourceRecord = (recordId: string) => {
+  const rollbackSourceRecord = async (recordId: string) => {
     if (!selectedStudent) return;
     const confirmed = window.confirm('确认撤销这条来源记录吗？\n\n只会从 source-registry.json 中移除登记，不会删除目标文件。');
     if (!confirmed) return;
-    const raw = bridge()?.rollbackAgentSourceRecord?.(selectedStudent.id, recordId);
+    const raw = await bridge()?.rollbackAgentSourceRecord?.(selectedStudent.id, recordId);
     if (!raw) {
       setAgentCenterMessage('当前环境不支持撤销来源记录。');
       return;
@@ -8870,9 +8970,9 @@ function App() {
     }
   };
 
-  const refreshConversationCenter = (studentId = selectedStudent?.id) => {
+  const refreshConversationCenter = async (studentId = selectedStudent?.id) => {
     if (!studentId) return;
-    const raw = bridge()?.getAgentConversationCenter?.(studentId);
+    const raw = await bridge()?.getAgentConversationCenter?.(studentId);
     if (!raw) {
       setConversationMessage('当前环境不支持对话历史管理。');
       return;
@@ -8886,9 +8986,9 @@ function App() {
     }
   };
 
-  const generateAgentRule = (fileName: string) => {
+  const generateAgentRule = async (fileName: string) => {
     if (!selectedStudent) return;
-    const raw = bridge()?.generateAgentRuleFile?.(selectedStudent.id, fileName);
+    const raw = await bridge()?.generateAgentRuleFile?.(selectedStudent.id, fileName);
     if (!raw) {
       setRuleMessage('当前环境不支持生成规则模板。');
       return;
@@ -8906,9 +9006,9 @@ function App() {
     }
   };
 
-  const compareAgentRule = () => {
+  const compareAgentRule = async () => {
     if (!selectedStudent || !ruleFileName) return;
-    const raw = bridge()?.compareAgentRuleFiles?.(selectedStudent.id, 'AGENT.md', ruleFileName);
+    const raw = await bridge()?.compareAgentRuleFiles?.(selectedStudent.id, 'AGENT.md', ruleFileName);
     if (!raw) {
       setRuleMessage('当前环境不支持规则文件对比。');
       return;
@@ -8951,13 +9051,13 @@ function App() {
 ${sourceText}`;
   };
 
-  const saveConversationImport = () => {
+  const saveConversationImport = async () => {
     if (!selectedStudent) return;
     if (!conversationText.trim()) {
       setConversationMessage('请先粘贴或输入对话历史。');
       return;
     }
-    const raw = bridge()?.saveAgentConversationImport?.(selectedStudent.id, conversationText, conversationTool);
+    const raw = await bridge()?.saveAgentConversationImport?.(selectedStudent.id, conversationText, conversationTool);
     if (!raw) {
       setConversationMessage('当前环境不支持保存对话历史。');
       return;
@@ -9019,7 +9119,7 @@ ${sourceText}`;
       : [...current, key]);
   };
 
-  const manageConversationMaterials = (action: 'trash' | 'restore' | 'delete', explicitItems?: AgentConversationImport[]) => {
+  const manageConversationMaterials = async (action: 'trash' | 'restore' | 'delete', explicitItems?: AgentConversationImport[]) => {
     if (!selectedStudent) return;
     const selected = explicitItems ?? (conversationCenter?.index?.imports ?? []).filter((item) => (
       selectedConversationAssetKeySet.has(conversationAssetKey(item))
@@ -9039,7 +9139,7 @@ ${sourceText}`;
       }
       if (!window.confirm(`彻底删除 ${selected.length} 份对话原文、本地会话记忆及未晋升知识候选？此操作不可撤销。`)) return;
     }
-    const raw = bridge()?.manageConversationImports?.(selectedStudent.id, JSON.stringify({
+    const raw = await bridge()?.manageConversationImports?.(selectedStudent.id, JSON.stringify({
       action,
       confirmPermanentDelete: action === 'delete',
       sources: selected.map((item) => ({
@@ -9064,9 +9164,9 @@ ${sourceText}`;
     }
   };
 
-  const importConversationFiles = () => {
+  const importConversationFiles = async () => {
     if (!selectedStudent) return;
-    const raw = bridge()?.selectAgentConversationFiles?.(selectedStudent.id, conversationTool);
+    const raw = await bridge()?.selectAgentConversationFiles?.(selectedStudent.id, conversationTool);
     if (!raw) {
       setConversationMessage('当前环境不支持选择对话历史文件。');
       return;
@@ -9146,7 +9246,7 @@ ${sourceText}`;
     return preview;
   };
 
-  const saveConversationExtractResult = () => {
+  const saveConversationExtractResult = async () => {
     if (!selectedStudent) return;
     const preview = conversationExtractPreview && !conversationExtractPreview.error
       ? conversationExtractPreview
@@ -9164,7 +9264,7 @@ ${sourceText}`;
       setConversationMessage('请至少选择一种要登记的知识候选。');
       return;
     }
-    const raw = bridge()?.saveConversationExtract?.(selectedStudent.id, JSON.stringify(payload, null, 2), conversationTool);
+    const raw = await bridge()?.saveConversationExtract?.(selectedStudent.id, JSON.stringify(payload, null, 2), conversationTool);
     if (!raw) {
       setConversationMessage('当前环境不支持保存对话提取结果。');
       return;
@@ -9188,9 +9288,9 @@ ${sourceText}`;
       : [...current, candidateId]);
   };
 
-  const updateConversationCandidate = (candidate: ConversationKnowledgeCandidate, action: string, payload: Record<string, unknown> = {}) => {
+  const updateConversationCandidate = async (candidate: ConversationKnowledgeCandidate, action: string, payload: Record<string, unknown> = {}) => {
     if (!selectedStudent) return;
-    const raw = bridge()?.updateConversationKnowledgeCandidate?.(selectedStudent.id, candidate.id, action, JSON.stringify(payload));
+    const raw = await bridge()?.updateConversationKnowledgeCandidate?.(selectedStudent.id, candidate.id, action, JSON.stringify(payload));
     if (!raw) {
       setConversationMessage('当前环境不支持逐条知识候选治理。');
       return;
@@ -9237,7 +9337,7 @@ ${sourceText}`;
     updateConversationCandidate(selected[1], 'merge', { targetId: selected[0].id, content, note: '人工逐条合并' });
   };
 
-  const promoteSelectedConversationCandidates = () => {
+  const promoteSelectedConversationCandidates = async () => {
     if (!selectedStudent) return;
     const selected = (conversationCenter?.governance?.candidates ?? []).filter((item) => selectedConversationCandidateSet.has(item.id));
     if (!selected.length) {
@@ -9250,7 +9350,7 @@ ${sourceText}`;
       return;
     }
     if (!window.confirm(`确认通过一个可撤销事务晋升 ${selected.length} 条候选吗？未审核内容不会一并写入。`)) return;
-    const raw = bridge()?.promoteConversationKnowledgeCandidates?.(selectedStudent.id, JSON.stringify({ candidateIds: selected.map((item) => item.id) }));
+    const raw = await bridge()?.promoteConversationKnowledgeCandidates?.(selectedStudent.id, JSON.stringify({ candidateIds: selected.map((item) => item.id) }));
     if (!raw) {
       setConversationMessage('当前环境不支持知识候选事务晋升。');
       return;
@@ -9268,10 +9368,10 @@ ${sourceText}`;
     }
   };
 
-  const rollbackConversationTransaction = (transaction: ConversationPromotionTransaction) => {
+  const rollbackConversationTransaction = async (transaction: ConversationPromotionTransaction) => {
     if (!selectedStudent || transaction.status !== 'committed') return;
     if (!window.confirm(`确认撤销事务 ${transaction.id} 吗？只移除该事务写入的标记内容，原始对话不会改变。`)) return;
-    const raw = bridge()?.rollbackConversationPromotion?.(selectedStudent.id, transaction.id);
+    const raw = await bridge()?.rollbackConversationPromotion?.(selectedStudent.id, transaction.id);
     if (!raw) {
       setConversationMessage('当前环境不支持撤销知识晋升。');
       return;
@@ -9288,9 +9388,9 @@ ${sourceText}`;
     }
   };
 
-  const saveAgentRule = () => {
+  const saveAgentRule = async () => {
     if (!selectedStudent) return;
-    const raw = bridge()?.saveAgentRuleFile?.(selectedStudent.id, ruleFileName, ruleContent);
+    const raw = await bridge()?.saveAgentRuleFile?.(selectedStudent.id, ruleFileName, ruleContent);
     if (!raw) {
       setRuleMessage('当前环境不支持保存规则文件。');
       return;
@@ -9336,26 +9436,36 @@ ${sourceText}`;
   };
 
   useEffect(() => {
-    const storageRaw = bridge()?.getStorageConfig?.();
-    if (storageRaw) {
+    let cancelled = false;
+    void (async () => {
       try {
-        applyStorageConfig(JSON.parse(storageRaw) as StorageConfig);
+        const [bootstrapRaw, storageRaw] = await Promise.all([
+          bridge()?.getAppBootstrap?.(),
+          bridge()?.getStorageConfig?.(),
+        ]);
+        if (cancelled) return;
+        if (storageRaw) applyStorageConfig(JSON.parse(storageRaw) as StorageConfig);
+        if (bootstrapRaw) {
+          const result = JSON.parse(bootstrapRaw) as { ok?: boolean; students?: Student[]; license?: LicenseStatus };
+          if (result.ok && Array.isArray(result.students)) {
+            const nativeStudents = normalizeStudents(result.students);
+            setStudents(nativeStudents);
+            saveStudents(nativeStudents);
+          }
+          if (result.license) setLicenseStatus(result.license);
+        }
       } catch {
-        // Keep Android/web defaults.
+        // The local cache keeps the shell usable while a subsystem initializes.
       }
-    }
-    refreshTemplateCenter();
-    syncStudentsToHost(students);
-    refreshHostServiceStatus();
-    refreshCourseCatalog();
-    refreshLicenseStatus();
-    void refreshProjects();
+    })();
+    return () => { cancelled = true; };
   }, []);
 
   useEffect(() => {
     if (activeSection === 'assets') void refreshAssets(assetCursor);
     if (activeSection === 'assets') {
       void refreshDuplicateGroups(assetDuplicateCursor);
+      void refreshDuplicateHistory();
       void bridge()?.getAssetRebuildStatus?.('').then((raw) => {
         const result = JSON.parse(raw) as { ok?: boolean; job?: AssetRebuildJob | null };
         if (result.ok && result.job) setAssetRebuildJob(result.job);
@@ -9365,6 +9475,8 @@ ${sourceText}`;
 
   useEffect(() => {
     if (activeSection !== 'assets') return undefined;
+    assetListRequestRef.current += 1;
+    assetDuplicateRequestRef.current += 1;
     const timer = window.setTimeout(() => {
       setAssetCursor('');
       setAssetCursorHistory([]);
@@ -9381,14 +9493,15 @@ ${sourceText}`;
       setSelectedAssetDetail(null);
       return undefined;
     }
+    const requestId = ++assetDetailRequestRef.current;
     let cancelled = false;
     void bridge()!.getAssetDetail!(selectedAssetId).then((raw) => {
-      if (cancelled) return;
+      if (cancelled || requestId !== assetDetailRequestRef.current) return;
       const result = JSON.parse(raw) as { ok?: boolean; asset?: AssetRecord };
       setSelectedAssetDetail(result.ok ? result.asset ?? null : null);
-    }).catch(() => { if (!cancelled) setSelectedAssetDetail(null); });
+    }).catch(() => { if (!cancelled && requestId === assetDetailRequestRef.current) setSelectedAssetDetail(null); });
     return () => { cancelled = true; };
-  }, [selectedAssetId]);
+  }, [selectedAssetId, assetDetailRefreshVersion]);
 
   useEffect(() => bridge()?.onAssetIndexProgress?.((job) => {
     setAssetRebuildJob(job);
@@ -9422,14 +9535,27 @@ ${sourceText}`;
       });
       void refreshAssets('');
       void refreshDuplicateGroups('');
+      void refreshDuplicateHistory();
     }
   }), [assetDuplicateOperation?.operationId]);
 
   useEffect(() => {
-    if (!['init', 'settings'].includes(activeSection) || installStatus) return undefined;
+    const needsInstallStatus = activeSection === 'init'
+      || (activeSection === 'settings' && (settingsSubmenu === 'connection'
+        || (settingsSubmenu === 'agent-qa' && agentSettingsTab === 'tools' && agentControlSubtab === 'tool-control')));
+    if (!needsInstallStatus || installStatus) return undefined;
     const timer = window.setTimeout(refreshInstallStatus, 0);
     return () => window.clearTimeout(timer);
-  }, [activeSection, installStatus]);
+  }, [activeSection, agentControlSubtab, agentSettingsTab, installStatus, settingsSubmenu]);
+
+  useEffect(() => {
+    if (activeSection === 'courses') void refreshCourseCatalog();
+    if (activeSection === 'settings') {
+      void refreshHostServiceStatus();
+      void refreshLicenseStatus();
+      void refreshTemplateCenter();
+    }
+  }, [activeSection]);
 
   useEffect(() => {
     const target = window as unknown as { onNativeAgentToolInstallChanged?: (payload: string) => void };
@@ -9439,7 +9565,7 @@ ${sourceText}`;
 
   useEffect(() => {
     if (activeSection !== 'courses' && courseBrowser.open) {
-      bridge()?.closeCourseView?.();
+      void bridge()?.closeCourseView?.();
       setCourseBrowser({ open: false });
     }
   }, [activeSection, courseBrowser.open]);
@@ -9498,7 +9624,7 @@ ${sourceText}`;
         const status = JSON.parse(payload) as HostServiceStatus;
         setHostServiceStatus(status);
         if (status.license) setLicenseStatus(status.license);
-        if (['materials', 'settings'].includes(activeSectionRef.current)) refreshHostUploadRecords();
+        if (activeSectionRef.current === 'settings' && settingsSubmenuRef.current === 'connection') refreshHostUploadRecords();
       } catch {
         if (activeSectionRef.current === 'settings') refreshHostServiceStatus();
       }
@@ -9519,7 +9645,7 @@ ${sourceText}`;
         refreshCollaborationMaterialStats();
         refreshAgentConversationInbox();
       }
-      if (activeSectionRef.current === 'projects') refreshProjects();
+      if (activeSectionRef.current === 'projects-new' || activeSectionRef.current === 'projects-existing') refreshProjects();
       if (activeSectionRef.current === 'tasks') void refreshTaskCenter(false);
     };
     (window as unknown as { onNativeAgentMemoryChanged?: (payload: string) => void }).onNativeAgentMemoryChanged = (payload: string) => {
@@ -9535,54 +9661,62 @@ ${sourceText}`;
       }
     };
 
-    const rootStatus = bridge()?.getArchiveRootStatus?.();
-    if (rootStatus) {
-      try {
-        const result = JSON.parse(rootStatus) as { ok?: boolean; uri?: string; message?: string };
-        setArchiveRootMessage(result.ok ? '已授权档案目录' : result.message || '尚未授权档案目录');
-      } catch {
-        setArchiveRootMessage('尚未授权档案目录');
+    void (async () => {
+      const rootStatus = await bridge()?.getArchiveRootStatus?.();
+      if (rootStatus) {
+        try {
+          const result = JSON.parse(rootStatus) as { ok?: boolean; uri?: string; message?: string };
+          setArchiveRootMessage(result.ok ? '已授权档案目录' : result.message || '尚未授权档案目录');
+        } catch {
+          setArchiveRootMessage('尚未授权档案目录');
+        }
       }
-    }
 
-    const compatibilityStatus = bridge()?.getCompatibilityStatus?.();
-    if (compatibilityStatus) {
-      try {
-        setCompatibility(JSON.parse(compatibilityStatus) as Record<string, unknown>);
-      } catch {
-        setCompatibility({ ok: false, message: '兼容性检测解析失败' });
+      const compatibilityStatus = await bridge()?.getCompatibilityStatus?.();
+      if (compatibilityStatus) {
+        try {
+          setCompatibility(JSON.parse(compatibilityStatus) as Record<string, unknown>);
+        } catch {
+          setCompatibility({ ok: false, message: '兼容性检测解析失败' });
+        }
       }
-    }
+    })();
 
     let appStatusPending = false;
     let appStatusDisposed = false;
     const timer = window.setInterval(async () => {
       if (document.hidden) return;
+      const visibleSection = activeSectionRef.current;
+      const statusVisible = ['init', 'settings', 'memory', 'capture', 'qa', 'soul', 'rules', 'conversation', 'tasks'].includes(visibleSection);
+      if (!statusVisible && visibleSection !== 'inbox') return;
       if (appStatusPending || appStatusDisposed) return;
       appStatusPending = true;
       try {
-        const statusApi = bridge();
-        const raw = statusApi?.getAppStatusAsync ? await statusApi.getAppStatusAsync() : statusApi?.getAppStatus?.();
-        if (appStatusDisposed) return;
-        if (!raw) return;
-        try {
-          const status = JSON.parse(raw) as { qclawOpened?: boolean; marvisOpened?: boolean; hohuOpened?: boolean; openclawOpened?: boolean; imaCopilotOpened?: boolean; workbuddyOpened?: boolean; codexOpened?: boolean; claudeCodeOpened?: boolean; hermesOpened?: boolean; traeOpened?: boolean; qoderWorkOpened?: boolean; obsidianOpened?: boolean };
-          setQclawOpened(Boolean(status.qclawOpened));
-          setMarvisOpened(Boolean(status.marvisOpened));
-          setHohuOpened(Boolean(status.hohuOpened));
-          setOpenclawOpened(Boolean(status.openclawOpened));
-          setImaCopilotOpened(Boolean(status.imaCopilotOpened));
-          setWorkbuddyOpened(Boolean(status.workbuddyOpened));
-          setCodexOpened(Boolean(status.codexOpened));
-          setClaudeCodeOpened(Boolean(status.claudeCodeOpened));
-          setHermesOpened(Boolean(status.hermesOpened));
-          setTraeOpened(Boolean(status.traeOpened));
-          setQoderWorkOpened(Boolean(status.qoderWorkOpened));
-          setObsidianOpened(Boolean(status.obsidianOpened));
-        } catch {
-          // Ignore bridge JSON parse errors.
+        if (statusVisible) {
+          const statusApi = bridge();
+          const raw = statusApi?.getAppStatusAsync ? await statusApi.getAppStatusAsync() : await statusApi?.getAppStatus?.();
+          if (appStatusDisposed) return;
+          if (raw) {
+            try {
+              const status = JSON.parse(raw) as { qclawOpened?: boolean; marvisOpened?: boolean; hohuOpened?: boolean; openclawOpened?: boolean; imaCopilotOpened?: boolean; workbuddyOpened?: boolean; codexOpened?: boolean; claudeCodeOpened?: boolean; hermesOpened?: boolean; traeOpened?: boolean; qoderWorkOpened?: boolean; obsidianOpened?: boolean };
+              setQclawOpened(Boolean(status.qclawOpened));
+              setMarvisOpened(Boolean(status.marvisOpened));
+              setHohuOpened(Boolean(status.hohuOpened));
+              setOpenclawOpened(Boolean(status.openclawOpened));
+              setImaCopilotOpened(Boolean(status.imaCopilotOpened));
+              setWorkbuddyOpened(Boolean(status.workbuddyOpened));
+              setCodexOpened(Boolean(status.codexOpened));
+              setClaudeCodeOpened(Boolean(status.claudeCodeOpened));
+              setHermesOpened(Boolean(status.hermesOpened));
+              setTraeOpened(Boolean(status.traeOpened));
+              setQoderWorkOpened(Boolean(status.qoderWorkOpened));
+              setObsidianOpened(Boolean(status.obsidianOpened));
+            } catch {
+              // Ignore bridge JSON parse errors.
+            }
+          }
         }
-        const inboxRaw = bridge()?.getSharedInboxStatus?.();
+        const inboxRaw = visibleSection === 'inbox' ? await bridge()?.getSharedInboxStatus?.() : '';
         if (inboxRaw) {
           try {
             const inbox = JSON.parse(inboxRaw) as { count?: number };
@@ -9594,7 +9728,7 @@ ${sourceText}`;
       } catch {
         // A rejected background read must not clear the last known state.
       } finally { appStatusPending = false; }
-    }, 10000);
+    }, 60000);
     const hostTimer = window.setInterval(() => {
       if (!document.hidden && activeSectionRef.current === 'settings') refreshHostServiceStatus();
     }, 60000);
@@ -9612,9 +9746,12 @@ ${sourceText}`;
   }, [pendingImportStudentId]);
 
   useEffect(() => {
-    const refreshVisible = () => {
-      if (selectedId) applyDigestWorkflowPayload('student', selectedId, bridge()?.getDigestWorkflowStatus?.('student', selectedId));
-      if (selectedProjectId) applyDigestWorkflowPayload('project', selectedProjectId, bridge()?.getDigestWorkflowStatus?.('project', selectedProjectId));
+    const refreshVisible = async () => {
+      const section = activeSectionRef.current;
+      if (section === 'inbox' && selectedId) applyDigestWorkflowPayload('student', selectedId, await bridge()?.getDigestWorkflowStatus?.('student', selectedId));
+      if ((section === 'projects-new' || section === 'projects-existing') && selectedProjectId) {
+        applyDigestWorkflowPayload('project', selectedProjectId, await bridge()?.getDigestWorkflowStatus?.('project', selectedProjectId));
+      }
     };
     (window as unknown as { onNativeDigestWorkflowChanged?: (payload: string) => void }).onNativeDigestWorkflowChanged = (payload: string) => {
       try {
@@ -9636,11 +9773,11 @@ ${sourceText}`;
       window.clearInterval(timer);
       delete (window as unknown as { onNativeDigestWorkflowChanged?: (payload: string) => void }).onNativeDigestWorkflowChanged;
     };
-  }, [selectedId, selectedProjectId]);
+  }, [activeSection, selectedId, selectedProjectId]);
 
   useEffect(() => {
     if (!isWindows || !selectedId) return;
-    bridge()?.prepareAgentKnowledgeAccess?.(selectedId);
+    void bridge()?.prepareAgentKnowledgeAccess?.(selectedId);
   }, [isWindows, selectedId]);
 
   useEffect(() => {
@@ -9710,10 +9847,10 @@ ${sourceText}`;
 
   useEffect(() => {
     const settingsAgentView = activeSection === 'settings' && settingsSubmenu === 'agent-qa' ? agentSettingsTab : null;
-    if (activeSection === 'memory' || activeSection === 'capture' || activeSection === 'soul' || activeSection === 'qa' || activeSection === 'conversation' || settingsAgentView === 'data' || settingsAgentView === 'connection' || settingsAgentView === 'tools') {
+    if (activeSection === 'memory' || activeSection === 'capture' || activeSection === 'soul' || activeSection === 'qa' || activeSection === 'conversation' || settingsAgentView === 'data' || settingsAgentView === 'connection') {
       refreshAgentCenter();
       refreshSourceRegistry();
-      if (activeSection === 'memory' || activeSection === 'capture' || (settingsAgentView === 'data' && agentDataTab === 'memory') || settingsAgentView === 'tools') refreshAgentMemoryState();
+      if (activeSection === 'memory' || activeSection === 'capture' || (settingsAgentView === 'data' && agentDataTab === 'memory')) refreshAgentMemoryState();
     }
   }, [activeSection, agentDataTab, agentSettingsTab, selectedId, settingsSubmenu]);
 
@@ -9730,12 +9867,11 @@ ${sourceText}`;
 
   useEffect(() => {
     if (activeSection !== 'tasks') return undefined;
-    void refreshTaskCenter(false, true);
     const taskWindow = window as unknown as { onNativeTaskCenterChanged?: () => void };
     let changeTimer: number | undefined;
     const onChange = () => {
       if (document.hidden || changeTimer !== undefined) return;
-      changeTimer = window.setTimeout(() => { changeTimer = undefined; void refreshTaskCenter(false); }, 250);
+      changeTimer = window.setTimeout(() => { changeTimer = undefined; void refreshTaskCenter(false); }, 500);
     };
     taskWindow.onNativeTaskCenterChanged = onChange;
     const timer = window.setInterval(() => {
@@ -9814,8 +9950,10 @@ ${sourceText}`;
       return;
     }
     if (activeSection === 'archive' && activePageTab !== 'student-profile') {
-      if (windowsLicenseActive) bridge()?.ensureLearningReports?.(selectedStudent.id);
-      refreshMarkdownFiles(selectedStudent);
+      void (async () => {
+        if (windowsLicenseActive) await bridge()?.ensureLearningReports?.(selectedStudent.id);
+        refreshMarkdownFiles(selectedStudent);
+      })();
     }
   }, [activeSection, selectedId]);
 
@@ -9874,8 +10012,8 @@ ${sourceText}`;
     setAdoptMessage(result.message || (result.ok ? '已扫描已有知识库目录。' : '扫描已有知识库失败。'));
   };
 
-  const selectAdoptRoot = () => {
-    const raw = bridge()?.selectKnowledgeBaseRoot?.();
+  const selectAdoptRoot = async () => {
+    const raw = await bridge()?.selectKnowledgeBaseRoot?.();
     if (!raw) {
       setAdoptMessage('当前环境不支持选择已有知识库目录。');
       return;
@@ -9898,12 +10036,12 @@ ${sourceText}`;
     }
   };
 
-  const scanAdoptKnowledgeBase = () => {
+  const scanAdoptKnowledgeBase = async () => {
     if (!adoptRootPath.trim()) {
       setAdoptMessage('请先选择或填写已有知识库根目录。');
       return;
     }
-    const raw = bridge()?.scanKnowledgeBase?.(adoptRootPath.trim(), draft.name);
+    const raw = await bridge()?.scanKnowledgeBase?.(adoptRootPath.trim(), draft.name);
     if (!raw) {
       setAdoptMessage('当前环境不支持扫描已有知识库目录。');
       return;
@@ -9915,7 +10053,7 @@ ${sourceText}`;
     }
   };
 
-  const ensureAdoptedWorkspace = (overwriteAgent = false) => {
+  const ensureAdoptedWorkspace = async (overwriteAgent = false) => {
     if (overwriteAgent && !window.confirm('确认备份并覆盖已有 AGENT.md 吗？\n\n如果 AGENT.md 不存在，则会直接写入标准模板。')) {
       return null;
     }
@@ -9945,7 +10083,7 @@ ${sourceText}`;
       logMd: buildLogMd({ ...effectiveDraft, name: cleanName }),
       overwriteAgent,
     };
-    const raw = bridge()?.ensureAdoptedKnowledgeBase?.(JSON.stringify(payload));
+    const raw = await bridge()?.ensureAdoptedKnowledgeBase?.(JSON.stringify(payload));
     if (!raw) {
       setAdoptMessage('当前环境不支持补齐已有知识库。');
       return null;
@@ -9960,11 +10098,11 @@ ${sourceText}`;
     }
   };
 
-  const addStudent = () => {
+  const addStudent = async () => {
     setStudentSaveMessage('');
     if (createMode === 'adopted') {
       const cleanName = sanitizeName(draft.name);
-      const result = ensureAdoptedWorkspace(false);
+      const result = await ensureAdoptedWorkspace(false);
       const rootPath = result?.rootPath || adoptRootPath.trim();
       const rawPath = result?.rawPath || adoptPaths.rawPath || joinDisplayPath(rootPath, `${cleanName}原始资料库`);
       const summaryPath = result?.summaryPath || adoptPaths.summaryPath || joinDisplayPath(rootPath, `${cleanName}学情分析汇总`);
@@ -10064,7 +10202,7 @@ ${sourceText}`;
         customTemplatePath: templateCenter?.customPath ?? '',
       },
     };
-    const initResult = bridge()?.initStudentWorkspace?.(p.cleanName, buildAgentMd(draft), buildIndexMd(draft), buildLogMd(draft));
+    const initResult = await bridge()?.initStudentWorkspace?.(p.cleanName, buildAgentMd(draft), buildIndexMd(draft), buildLogMd(draft));
     if (isWindows && !initResult) {
       setStudentSaveMessage('初始化未执行：当前桌面环境无法创建知识库文件，请检查应用权限后重试。');
       return;
@@ -10196,7 +10334,7 @@ ${sourceText}`;
     setMarkdownMessage('已恢复默认档案分类关键词。');
   };
 
-  const updateSelectedStudentRemote = (patch: Pick<Student, 'remoteChannel'> | Partial<Pick<Student, 'remoteContact' | 'remoteNote' | 'remoteBindingStatus' | 'remoteBoundAt'>>) => {
+  const updateSelectedStudentRemote = (patch: Partial<Pick<Student, 'remoteChannel' | 'remoteContact' | 'remoteNote' | 'remoteBindingStatus' | 'remoteBoundAt'>>) => {
     if (!selectedStudent) return;
     const nextPatch = { ...patch };
     if (patch.remoteBindingStatus === 'bound' && !selectedStudent.remoteBoundAt && !patch.remoteBoundAt) {
@@ -10267,11 +10405,11 @@ ${sourceText}`;
     }
   };
 
-  const exportBundle = () => {
+  const exportBundle = async () => {
     const p = pathsFor(draft.name);
     const filename = `${p.cleanName}-AI教育管家初始化包.json`;
     const content = JSON.stringify(bundle, null, 2);
-    const result = bridge()?.exportTextFile?.(filename, content);
+    const result = await bridge()?.exportTextFile?.(filename, content);
     if (!result) fallbackDownload(filename, content);
     setExported(true);
     setExportedOnce(true);
@@ -10294,8 +10432,8 @@ ${sourceText}`;
     }
   };
 
-  const refreshDigestWorkflow = (scopeType: 'student' | 'project', scopeId: string) => {
-    const result = applyDigestWorkflowPayload(scopeType, scopeId, bridge()?.getDigestWorkflowStatus?.(scopeType, scopeId));
+  const refreshDigestWorkflow = async (scopeType: 'student' | 'project', scopeId: string) => {
+    const result = applyDigestWorkflowPayload(scopeType, scopeId, await bridge()?.getDigestWorkflowStatus?.(scopeType, scopeId));
     if (scopeType === 'student') {
       refreshHostServiceStatus();
       refreshHostUploadRecords();
@@ -10313,7 +10451,7 @@ ${sourceText}`;
     const message = result?.message || (result?.ok ? '资料已进入自动处理。' : '资料处理启动失败。');
     if (scopeType === 'student') setDigestMessage(message);
     else reportProjectStage('digest', message);
-    const refreshed = refreshDigestWorkflow(scopeType, scopeId);
+    const refreshed = await refreshDigestWorkflow(scopeType, scopeId);
     const manualRequired = Boolean(result?.workflow?.manualRequired || refreshed?.workflow?.manualRequired);
     const title = manualRequired
       ? '已打开 Agent；结果将自动同步'
@@ -10334,16 +10472,16 @@ ${sourceText}`;
     const message = result?.message || (result?.ok ? '未完成资料已重新进入处理。' : '资料重试失败。');
     if (scopeType === 'student') setDigestMessage(message);
     else reportProjectStage('digest', message);
-    const refreshed = refreshDigestWorkflow(scopeType, scopeId);
+    const refreshed = await refreshDigestWorkflow(scopeType, scopeId);
     const manualRequired = Boolean(result?.workflow?.manualRequired || refreshed?.workflow?.manualRequired);
     showActionNotice(Boolean(result?.ok), manualRequired ? '已打开 Agent；结果将自动同步' : result?.ok ? '资料已重新处理' : '资料重试失败', message);
     setDigestWorkflowBusyKey('');
   };
 
-  const retryStudentMaterialPathRecoveryFromPage = (student: Student) => {
+  const retryStudentMaterialPathRecoveryFromPage = async (student: Student) => {
     const key = digestWorkflowKey('student', student.id);
     setDigestWorkflowBusyKey(key);
-    const raw = bridge()?.retryStudentMaterialPathRecovery?.(student.id);
+    const raw = await bridge()?.retryStudentMaterialPathRecovery?.(student.id);
     let ok = false;
     let message = '资料路径检查未完成。';
     try {
@@ -10358,10 +10496,10 @@ ${sourceText}`;
     setDigestWorkflowBusyKey('');
   };
 
-  const selectStudentMaterialPathFromPage = (student: Student, materialId: string) => {
+  const selectStudentMaterialPathFromPage = async (student: Student, materialId: string) => {
     const key = digestWorkflowKey('student', student.id);
     setDigestWorkflowBusyKey(key);
-    const raw = bridge()?.selectStudentMaterialPath?.(student.id, materialId);
+    const raw = await bridge()?.selectStudentMaterialPath?.(student.id, materialId);
     let ok = false;
     let cancelled = false;
     let message = '手工选择资料未完成。';
@@ -10378,11 +10516,11 @@ ${sourceText}`;
     setDigestWorkflowBusyKey('');
   };
 
-  const removeStudentMaterialFromDigest = (student: Student, materialId: string, fileName = '') => {
+  const removeStudentMaterialFromDigest = async (student: Student, materialId: string, fileName = '') => {
     if (!materialId || !window.confirm(`从待处理列表移除“${fileName || '该资料'}”？\n\n只移除资料记录，保留原始文件和文件资产；后续可重新导入。`)) return;
     const key = digestWorkflowKey('student', student.id);
     setDigestWorkflowBusyKey(key);
-    const raw = bridge()?.removeMaterialImportRecords?.(student.id, JSON.stringify([materialId]));
+    const raw = await bridge()?.removeMaterialImportRecords?.(student.id, JSON.stringify([materialId]));
     let ok = false;
     let message = '资料记录移除失败。';
     try {
@@ -10399,7 +10537,7 @@ ${sourceText}`;
   };
 
   const copyDigestWorkflowCommandFromPage = async (scopeType: 'student' | 'project', scopeId: string) => {
-    const raw = bridge()?.getDigestWorkflowCommand?.(scopeType, scopeId);
+    const raw = await bridge()?.getDigestWorkflowCommand?.(scopeType, scopeId);
     if (!raw) {
       showActionNotice(false, '复制失败', '当前环境不支持生成资料处理指令。');
       return;
@@ -10419,12 +10557,12 @@ ${sourceText}`;
     }
   };
 
-  const importDigestWorkflowTextFromPage = (scopeType: 'student' | 'project', scopeId: string) => {
+  const importDigestWorkflowTextFromPage = async (scopeType: 'student' | 'project', scopeId: string) => {
     const key = digestWorkflowKey(scopeType, scopeId);
     const content = digestWorkflowManualText[key] || '';
     if (!content.trim()) return;
     setDigestWorkflowBusyKey(key);
-    const result = applyDigestWorkflowPayload(scopeType, scopeId, bridge()?.importDigestWorkflowResultText?.(scopeType, scopeId, content));
+    const result = applyDigestWorkflowPayload(scopeType, scopeId, await bridge()?.importDigestWorkflowResultText?.(scopeType, scopeId, content));
     const message = result?.message || (result?.ok ? 'Agent 结果已导入。' : 'Agent 结果未通过校验。');
     if (result?.ok) setDigestWorkflowManualText((current) => ({ ...current, [key]: '' }));
     if (scopeType === 'student') setDigestMessage(message);
@@ -10435,7 +10573,7 @@ ${sourceText}`;
 
   const copyDigestCommand = async (student: Student) => {
     let pendingCount = pendingDigestValue(student);
-    const rawRecords = bridge()?.getMaterialImportRecords?.(student.id);
+    const rawRecords = await bridge()?.getMaterialImportRecords?.(student.id);
     if (rawRecords) {
       try {
         const result = JSON.parse(rawRecords) as { ok?: boolean; records?: MaterialImportRecord[] };
@@ -10459,7 +10597,7 @@ ${sourceText}`;
     const command = adapter.buildDigestCommand(student);
     const success = await copyText(command, `已复制“${student.name}”资料消化指令。`, { contentLabel: `资料消化指令（交给 ${adapter.profile.name}）` });
     if (!success) return;
-    bridge()?.recordScheduledTaskAction?.(student.id, 'digest', command);
+    await bridge()?.recordScheduledTaskAction?.(student.id, 'digest', command);
     const next = students.map((item) => (item.id === student.id ? { ...item, lastDigestCommandAt: stamp } : item));
     persist(next);
   };
@@ -10493,12 +10631,12 @@ ${sourceText}`;
   const copyLintCommand = async (student: Student) => {
     const command = buildPathLintCommand(student);
     await copyText(command, `已复制「${student.name}」定时维护 / lint 指令。`);
-    bridge()?.recordScheduledTaskAction?.(student.id, 'maintenance_lint', command);
+    await bridge()?.recordScheduledTaskAction?.(student.id, 'maintenance_lint', command);
   };
 
-  const markDigestSubmitted = (student: Student) => {
+  const markDigestSubmitted = async (student: Student) => {
     const stamp = new Date().toLocaleString('zh-CN');
-    const raw = bridge()?.markStudentDigestSubmitted?.(student.id);
+    const raw = await bridge()?.markStudentDigestSubmitted?.(student.id);
     let hostStat: HostStudentStat | undefined;
     if (raw) {
       try {
@@ -10535,8 +10673,8 @@ ${sourceText}`;
     window.setTimeout(() => setDigestMessage(''), 3200);
   };
 
-  const syncDigestResult = (student: Student) => {
-    const raw = bridge()?.syncStudentDigestResult?.(student.id);
+  const syncDigestResult = async (student: Student) => {
+    const raw = await bridge()?.syncStudentDigestResult?.(student.id);
     if (!raw) {
       setDigestMessage('当前环境不支持消化结果同步。');
       window.setTimeout(() => setDigestMessage(''), 3200);
@@ -10622,24 +10760,24 @@ ${sourceText}`;
     }
   };
 
-  const refreshDigestAudit = (student: Student) => {
-    applyDigestAuditResult(bridge()?.getStudentDigestAudit?.(student.id));
+  const refreshDigestAudit = async (student: Student) => {
+    applyDigestAuditResult(await bridge()?.getStudentDigestAudit?.(student.id));
   };
 
-  const generateDigestAudit = (student: Student, selectedOnly = false) => {
+  const generateDigestAudit = async (student: Student, selectedOnly = false) => {
     const selectedIds = selectedOnly ? selectedDigestAuditIds : [];
-    return applyDigestAuditResult(bridge()?.generateStudentDigestAudit?.(student.id, JSON.stringify(selectedIds)));
+    return applyDigestAuditResult(await bridge()?.generateStudentDigestAudit?.(student.id, JSON.stringify(selectedIds)));
   };
 
   const copyDigestAuditCommand = async (student: Student) => {
-    const result = generateDigestAudit(student, selectedDigestAuditIds.length > 0);
+    const result = await generateDigestAudit(student, selectedDigestAuditIds.length > 0);
     const prompt = result?.prompt;
     if (!prompt) return;
     await copyText(prompt, `已复制「${student.name}」二次核对指令，可粘贴给当前 Agent 执行。`);
   };
 
-  const syncDigestAudit = (student: Student) => {
-    const raw = bridge()?.syncStudentDigestAudit?.(student.id);
+  const syncDigestAudit = async (student: Student) => {
+    const raw = await bridge()?.syncStudentDigestAudit?.(student.id);
     const result = applyDigestAuditResult(raw);
     if (result) {
         if (result.status) {
@@ -10674,8 +10812,8 @@ ${sourceText}`;
     await copyText(value, '已复制咨询提示。');
   };
 
-  const refreshAgentKnowledgeDiagnostics = () => {
-    const raw = bridge()?.getAgentKnowledgeDiagnostics?.();
+  const refreshAgentKnowledgeDiagnostics = async () => {
+    const raw = await bridge()?.getAgentKnowledgeDiagnostics?.();
     if (!raw) return;
     try {
       const result = JSON.parse(raw) as AgentKnowledgeDiagnostics & { ok?: boolean };
@@ -10697,7 +10835,7 @@ ${sourceText}`;
     }
     setAgentKnowledgeBusy(true);
     try {
-      api.prepareAgentKnowledgeAccess?.(selectedStudent.id);
+      await api.prepareAgentKnowledgeAccess?.(selectedStudent.id);
       const teamQueryEnabled = agentKnowledgeQueryScope !== 'current_student';
       const raw = await api.queryAgentKnowledge(JSON.stringify({
         scopeType: teamQueryEnabled ? 'team' : 'student',
@@ -10727,7 +10865,7 @@ ${sourceText}`;
     }
   };
 
-  const saveCurrentTemplates = () => {
+  const saveCurrentTemplates = async () => {
     const stepPrompt = (id: InitStepId) => customStepPrompts[id] ?? initSteps.find((step) => step.id === id)?.prompt ?? '';
     const templateDraft = templateKeys.reduce((acc, key) => {
       if (key === 'AGENT.md') acc[key] = templateFromGenerated(buildAgentMd(effectiveDraft), effectiveDraft);
@@ -10738,7 +10876,7 @@ ${sourceText}`;
       else acc[key] = templateFromGenerated(stepPrompt(key === 'init-step-1.md' ? 'folder' : 'agent'), effectiveDraft);
       return acc;
     }, {} as TemplateFiles);
-    const raw = bridge()?.saveCustomTemplates?.(JSON.stringify(templateDraft));
+    const raw = await bridge()?.saveCustomTemplates?.(JSON.stringify(templateDraft));
     if (!raw) {
       setTemplateMessage('当前环境不支持保存模板。');
       return;
@@ -10752,8 +10890,8 @@ ${sourceText}`;
     }
   };
 
-  const restoreDefaultTemplates = () => {
-    const raw = bridge()?.restoreSystemTemplates?.(JSON.stringify(systemTemplateFiles));
+  const restoreDefaultTemplates = async () => {
+    const raw = await bridge()?.restoreSystemTemplates?.(JSON.stringify(systemTemplateFiles));
     if (!raw) {
       setTemplateMessage('当前环境不支持恢复默认模板。');
       return;
@@ -10768,9 +10906,9 @@ ${sourceText}`;
     }
   };
 
-  const saveMemorySource = () => {
+  const saveMemorySource = async () => {
     if (!selectedStudent) return;
-    const raw = bridge()?.saveAgentMemorySource?.(selectedStudent.id, memorySourceTool, memorySourceText, 'paste');
+    const raw = await bridge()?.saveAgentMemorySource?.(selectedStudent.id, memorySourceTool, memorySourceText, 'paste');
     if (!raw) {
       setAgentCenterMessage('当前环境不支持保存来源 Memory。');
       return;
@@ -10784,10 +10922,10 @@ ${sourceText}`;
     }
   };
 
-  const mergeMemory = () => {
+  const mergeMemory = async () => {
     if (!selectedStudent) return;
     setAgentCenterMessage('正在合并来源 Memory...');
-    const raw = bridge()?.mergeAgentMemory?.(selectedStudent.id);
+    const raw = await bridge()?.mergeAgentMemory?.(selectedStudent.id);
     if (!raw) {
       setAgentCenterMessage('当前环境不支持合并记忆。');
       return;
@@ -10802,9 +10940,9 @@ ${sourceText}`;
     }
   };
 
-  const saveUnifiedMemoryText = () => {
+  const saveUnifiedMemoryText = async () => {
     if (!selectedStudent) return;
-    const raw = bridge()?.saveUnifiedMemory?.(selectedStudent.id, unifiedMemoryText);
+    const raw = await bridge()?.saveUnifiedMemory?.(selectedStudent.id, unifiedMemoryText);
     if (!raw) {
       setAgentCenterMessage('当前环境不支持保存统一记忆。');
       return;
@@ -10818,9 +10956,9 @@ ${sourceText}`;
     }
   };
 
-  const saveSoulSource = () => {
+  const saveSoulSource = async () => {
     if (!selectedStudent) return;
-    const raw = bridge()?.saveAgentSoulSource?.(selectedStudent.id, soulSourceTool, soulSourceText);
+    const raw = await bridge()?.saveAgentSoulSource?.(selectedStudent.id, soulSourceTool, soulSourceText);
     if (!raw) {
       setAgentCenterMessage('当前环境不支持保存来源 Soul。');
       return;
@@ -10834,9 +10972,9 @@ ${sourceText}`;
     }
   };
 
-  const saveUnifiedSoulText = () => {
+  const saveUnifiedSoulText = async () => {
     if (!selectedStudent) return;
-    const raw = bridge()?.saveUnifiedSoul?.(selectedStudent.id, unifiedSoulText);
+    const raw = await bridge()?.saveUnifiedSoul?.(selectedStudent.id, unifiedSoulText);
     if (!raw) {
       setAgentCenterMessage('当前环境不支持保存统一 Soul。');
       return;
@@ -10850,9 +10988,9 @@ ${sourceText}`;
     }
   };
 
-  const compareSoulSource = () => {
+  const compareSoulSource = async () => {
     if (!selectedStudent) return;
-    const raw = bridge()?.compareAgentSoulSource?.(selectedStudent.id, soulSourceTool);
+    const raw = await bridge()?.compareAgentSoulSource?.(selectedStudent.id, soulSourceTool);
     if (!raw) {
       setAgentCenterMessage('当前环境不支持 Soul 差异对比。');
       return;
@@ -10866,9 +11004,9 @@ ${sourceText}`;
     }
   };
 
-  const scanAgentKnowledgeFiles = (kind?: AgentKnowledgeKind) => {
+  const scanAgentKnowledgeFiles = async (kind?: AgentKnowledgeKind) => {
     if (!selectedStudent) return;
-    const raw = bridge()?.scanAgentKnowledgeFiles?.(selectedStudent.id);
+    const raw = await bridge()?.scanAgentKnowledgeFiles?.(selectedStudent.id);
     if (!raw) {
       setAgentScanMessage('当前环境不支持扫描 Agent 文件。');
       return;
@@ -10883,9 +11021,9 @@ ${sourceText}`;
     }
   };
 
-  const importAgentCandidate = (candidate: AgentKnowledgeCandidate) => {
+  const importAgentCandidate = async (candidate: AgentKnowledgeCandidate) => {
     if (!selectedStudent) return;
-    const raw = bridge()?.importAgentKnowledgeFile?.(selectedStudent.id, candidate.path, candidate.tool, candidate.kind);
+    const raw = await bridge()?.importAgentKnowledgeFile?.(selectedStudent.id, candidate.path, candidate.tool, candidate.kind);
     if (!raw) {
       setAgentCenterMessage('当前环境不支持导入 Agent 文件。');
       return;
@@ -11053,8 +11191,8 @@ ${sourceText}`;
     );
   };
 
-  const openExternal = (app: AgentToolId | 'obsidian' | 'tailscale') => {
-    const ok = bridge()?.openApp?.(app);
+  const openExternal = async (app: AgentToolId | 'obsidian' | 'tailscale') => {
+    const ok = await bridge()?.openApp?.(app);
     if (app === 'qclaw') setQclawOpened((value) => value || Boolean(ok));
     if (app === 'marvis') setMarvisOpened((value) => value || Boolean(ok));
     if (app === 'hohu') setHohuOpened((value) => value || Boolean(ok));
@@ -11088,18 +11226,18 @@ ${sourceText}`;
       tailscale: 'https://tailscale.com/download/windows',
     };
     if (!ok && urls[app]) {
-      bridge()?.openExternalUrl?.(urls[app]) || window.open(urls[app], '_blank');
+      await bridge()?.openExternalUrl?.(urls[app]) || window.open(urls[app], '_blank');
     }
   };
 
-  const openStudentRoot = (student = selectedStudent) => {
+  const openStudentRoot = async (student = selectedStudent) => {
     if (!student) return;
     if (isWindows && !windowsLicenseActive) {
       setDigestMessage('未激活状态仅支持控制台内只读浏览，激活后可打开本机知识库目录。');
       window.setTimeout(() => setDigestMessage(''), 2600);
       return;
     }
-    const raw = bridge()?.openStudentRootDir?.(student.id);
+    const raw = await bridge()?.openStudentRootDir?.(student.id);
     if (!raw) {
       window.open(student.rootPath || selectedStudentPaths.root, '_blank');
       return;
@@ -11125,12 +11263,12 @@ ${sourceText}`;
     } catch (error) { notify((error as Error).message); }
   };
 
-  const checkStudentPathHealth = (student: Student, options?: { silent?: boolean }) => {
+  const checkStudentPathHealth = async (student: Student, options?: { silent?: boolean }) => {
     if (isWindows && !windowsLicenseActive) {
       setPathHealthMessage('未激活状态仅支持只读浏览，激活后可执行知识库路径核对。');
       return null;
     }
-    const raw = bridge()?.checkStudentPathHealth?.(student.id);
+    const raw = await bridge()?.checkStudentPathHealth?.(student.id);
     if (!raw) {
       setPathHealthMessage('当前环境不支持知识库路径核对。');
       return null;
@@ -11202,7 +11340,7 @@ ${sourceText}`;
     ].join('\n');
   };
 
-  const repairSelectedStudentStalePaths = () => {
+  const repairSelectedStudentStalePaths = async () => {
     if (!selectedStudent) return;
     if (isWindows && !windowsLicenseActive) {
       setPathHealthMessage('未激活状态仅支持只读浏览，激活后可修复知识库旧路径。');
@@ -11218,7 +11356,7 @@ ${sourceText}`;
       setPathHealthMessage('已取消路径修复，文件未修改。');
       return;
     }
-    const raw = bridge()?.repairStudentStalePaths?.(selectedStudent.id);
+    const raw = await bridge()?.repairStudentStalePaths?.(selectedStudent.id);
     if (!raw) {
       setPathHealthMessage('当前环境不支持知识库路径修复。');
       return;
@@ -11251,9 +11389,9 @@ ${sourceText}`;
       : { type: 'student', id: student.id, name: student.name, studentId: student.id };
   };
 
-  const importFilesForStudent = (student: Student) => {
+  const importFilesForStudent = async (student: Student) => {
     setPendingImportStudentId(student.id);
-    const ok = bridge()?.importFiles?.(student.id, JSON.stringify(materialImportTargetForStudent(student)));
+    const ok = await bridge()?.importFiles?.(student.id, JSON.stringify(materialImportTargetForStudent(student)));
     if (typeof ok === 'string') {
       try {
         const result = JSON.parse(ok) as { ok?: boolean; message?: string };
@@ -11358,8 +11496,8 @@ ${sourceText}`;
     persist(next);
   };
 
-  const addMaterialSourceDir = (student: Student) => {
-    const raw = bridge()?.pickMaterialSourceDir?.();
+  const addMaterialSourceDir = async (student: Student) => {
+    const raw = await bridge()?.pickMaterialSourceDir?.();
     if (!raw) {
       setMaterialSourceMessage('当前环境不支持选择资料来源目录。');
       return;
@@ -11392,8 +11530,8 @@ ${sourceText}`;
     setSelectedMaterialSourcePaths((paths) => paths.filter((filePath) => !materialSourceFiles.some((file) => file.sourceId === sourceId && file.path === filePath)));
   };
 
-  const refreshMaterialImportRecords = (student: Student) => {
-    const raw = bridge()?.getMaterialImportRecords?.(student.id);
+  const refreshMaterialImportRecords = async (student: Student) => {
+    const raw = await bridge()?.getMaterialImportRecords?.(student.id);
     if (!raw) return;
     try {
       const result = JSON.parse(raw) as { ok?: boolean; records?: MaterialImportRecord[] };
@@ -11414,14 +11552,14 @@ ${sourceText}`;
       : [...current, recordId]);
   };
 
-  const removeSelectedMaterialImportRecords = (student: Student) => {
+  const removeSelectedMaterialImportRecords = async (student: Student) => {
     const selected = materialImportRecords.filter((record) => selectedMaterialImportRecordIds.includes(record.id));
     if (!selected.length) {
       setMaterialSourceMessage('请先选择要移除的资料记录。');
       return;
     }
     if (!window.confirm(`从活动资料列表移除所选 ${selected.length} 条记录？\n\n物理文件和文件资产都会保留；已进入消化批次的资料不会被移除。`)) return;
-    const raw = bridge()?.removeMaterialImportRecords?.(student.id, JSON.stringify(selected.map((record) => record.id)));
+    const raw = await bridge()?.removeMaterialImportRecords?.(student.id, JSON.stringify(selected.map((record) => record.id)));
     if (!raw) {
       setMaterialSourceMessage('当前环境不支持移除资料记录。');
       return;
@@ -11442,8 +11580,8 @@ ${sourceText}`;
     }
   };
 
-  const refreshCaptureCenter = () => {
-    const raw = bridge()?.getCaptureCenterState?.();
+  const refreshCaptureCenter = async () => {
+    const raw = await bridge()?.getCaptureCenterState?.();
     if (!raw) return;
     try {
       const result = JSON.parse(raw) as CaptureCenterState;
@@ -11733,6 +11871,7 @@ ${sourceText}`;
       setAssetMessage('当前环境不支持文件资产中心。');
       return;
     }
+    const requestId = ++assetListRequestRef.current;
     try {
       const filter = {
         studentId: assetStudentFilter,
@@ -11747,31 +11886,78 @@ ${sourceText}`;
       ]);
       const summary = JSON.parse(summaryRaw) as AssetIndexState;
       const page = JSON.parse(pageRaw) as { ok?: boolean; items?: AssetRecord[]; total?: number; nextCursor?: string; message?: string };
-      setAssetIndex({ ...summary, total: page.total ?? summary.total, assets: page.items ?? [], nextCursor: page.nextCursor ?? '' });
-      setSelectedAssetDetail(null);
-      setSelectedAssetId((current) => (page.items ?? []).some((item) => item.assetId === current) ? current : page.items?.[0]?.assetId ?? '');
-      setAssetMessage(page.message || `已读取 ${page.items?.length ?? 0} 个资产，共 ${page.total ?? summary.total ?? 0} 个。`);
+      if (requestId !== assetListRequestRef.current) return;
+      const items = page.items ?? [];
+      const nextSelectedId = items.some((item) => item.assetId === selectedAssetId) ? selectedAssetId : items[0]?.assetId ?? '';
+      React.startTransition(() => {
+        setAssetIndex({ ...summary, scopeTotal: summary.total, queryTotal: page.total ?? summary.total,
+          total: page.total ?? summary.total, assets: items, nextCursor: page.nextCursor ?? '' });
+        setSelectedAssetId(nextSelectedId);
+        if (nextSelectedId && nextSelectedId === selectedAssetId) setAssetDetailRefreshVersion((value) => value + 1);
+      });
+      setAssetMessage(page.message || `已读取 ${items.length} 个资产；当前查询共 ${page.total ?? summary.total ?? 0} 个。`);
     } catch {
-      setAssetMessage('资产索引解析失败。');
+      if (requestId === assetListRequestRef.current) setAssetMessage('资产索引解析失败。');
     }
   };
 
   const refreshDuplicateGroups = async (cursorOverride = assetDuplicateCursor) => {
     const action = bridge()?.listDuplicateGroups;
     if (!action) return;
+    const requestId = ++assetDuplicateRequestRef.current;
     try {
       const raw = await action({ studentId: assetStudentFilter, cursor: cursorOverride, pageSize: 50 });
       const result = JSON.parse(raw) as { ok?: boolean; items?: AssetDuplicateGroup[]; total?: number; nextCursor?: string };
-      if (!result.ok) return;
-      setAssetDuplicateGroups(result.items ?? []);
-      setAssetDuplicateTotal(result.total ?? 0);
-      setAssetDuplicateCursor(cursorOverride);
-      setAssetIndex((current) => ({ ...current, duplicateGroups: result.total ?? current.duplicateGroups }));
-      setSelectedDuplicateAssetIds((current) => current.filter((id) => (result.items ?? []).some((item) => item.assetId === id)));
-      setAssetDuplicateNextCursor(result.nextCursor ?? '');
+      if (!result.ok || requestId !== assetDuplicateRequestRef.current) return;
+      React.startTransition(() => {
+        setAssetDuplicateGroups(result.items ?? []);
+        setAssetDuplicateTotal(result.total ?? 0);
+        setAssetDuplicateCursor(cursorOverride);
+        setSelectedDuplicateAssetIds((current) => current.filter((id) => (result.items ?? []).some((item) => item.assetId === id)));
+        setAssetDuplicateNextCursor(result.nextCursor ?? '');
+      });
     } catch {
-      setAssetMessage('重复文件分组读取失败。');
+      if (requestId === assetDuplicateRequestRef.current) setAssetMessage('重复文件分组读取失败。');
     }
+  };
+
+  const refreshDuplicateHistory = async () => {
+    const action = bridge()?.listDuplicateCleanupOperations;
+    if (!action) return;
+    try {
+      const raw = await action({ pageSize: 20 });
+      const result = JSON.parse(raw) as { ok?: boolean; items?: AssetDuplicateOperationSummary[] };
+      if (result.ok) setAssetDuplicateHistory(result.items ?? []);
+    } catch {
+      // History is supplemental and must not block duplicate-group handling.
+    }
+  };
+
+  const openDuplicateOperation = async (operationId: string) => {
+    const action = bridge()?.getDuplicateCleanupStatus;
+    if (!action || assetDuplicateBusy) return;
+    try {
+      const raw = await action(operationId);
+      const result = JSON.parse(raw) as { ok?: boolean; operation?: AssetDuplicateOperation; message?: string };
+      if (!result.ok || !result.operation) throw new Error(result.message || '无法读取治理记录。');
+      setAssetDuplicateOperation(result.operation);
+    } catch (error) { setAssetMessage(error instanceof Error ? error.message : '无法读取治理记录。'); }
+  };
+
+  const retryDuplicateCleanup = async (operationId: string) => {
+    const action = bridge()?.retryDuplicateCleanup;
+    if (!action || assetDuplicateBusy) return;
+    setAssetDuplicateBusy(true);
+    setAssetMessage('正在重新校验上次失败项…');
+    try {
+      const raw = await action(operationId, []);
+      const result = JSON.parse(raw) as { ok?: boolean; operation?: AssetDuplicateOperation; message?: string };
+      if (!result.ok || !result.operation) throw new Error(result.message || '没有可重试的失败项。');
+      setAssetDuplicateOperation(result.operation);
+      setAssetMessage(result.message || '已生成新的安全处理预览。');
+      await refreshDuplicateHistory();
+    } catch (error) { setAssetMessage(error instanceof Error ? error.message : '重试失败。'); }
+    finally { setAssetDuplicateBusy(false); }
   };
 
   const prepareDuplicateCleanup = async () => {
@@ -11817,6 +12003,7 @@ ${sourceText}`;
       setAssetDuplicateOperation(result.operation ?? operation);
       setAssetMessage(result.message || '隔离文件已恢复。');
       await Promise.all([refreshAssets(''), refreshDuplicateGroups('')]);
+      await refreshDuplicateHistory();
     } catch (error) { setAssetMessage(error instanceof Error ? error.message : '恢复失败。'); }
     finally { setAssetDuplicateBusy(false); }
   };
@@ -11924,8 +12111,8 @@ ${sourceText}`;
     }
   };
 
-  const generateKnowledgeArchitectureReport = () => {
-    const raw = bridge()?.generateKnowledgeArchitectureReport?.();
+  const generateKnowledgeArchitectureReport = async () => {
+    const raw = await bridge()?.generateKnowledgeArchitectureReport?.();
     if (!raw) {
       setProjectMessage('当前环境不支持知识关系图生成。');
       return;
@@ -11942,30 +12129,100 @@ ${sourceText}`;
   };
 
   const refreshProjects = async (detailProjectId?: string) => {
-    const requestedDetailId = detailProjectId ?? (activeSectionRef.current === 'projects' ? selectedProjectId : '');
-    const raw = await bridge()?.getProjects?.({ detailProjectId: requestedDetailId });
-    if (!raw) {
+    const requestedDetailId = detailProjectId ?? ((['projects-new', 'projects-existing'] as Section[]).includes(activeSectionRef.current) ? selectedProjectId : '');
+    const api = bridge();
+    if (!api?.listProjects) {
       setProjectMessage('当前环境不支持学习项目管理。');
       return;
     }
+    const requestId = ++projectListRequestRef.current;
     try {
-      const result = JSON.parse(raw) as { ok?: boolean; projects?: LearningProject[]; message?: string };
+      const raw = await api.listProjects({ pageSize: 100 });
+      if (requestId !== projectListRequestRef.current) return;
+      const result = JSON.parse(raw) as { ok?: boolean; items?: LearningProject[]; total?: number; message?: string };
       if (!result.ok) {
         setProjectMessage(result.message || '读取学习项目失败。');
         return;
       }
-      const list = result.projects ?? [];
+      let list = result.items ?? [];
+      if (requestedDetailId && api.getProjectDetail) {
+        projectDetailAbortRef.current?.abort();
+        const controller = new AbortController();
+        projectDetailAbortRef.current = controller;
+        const detailRaw = await api.getProjectDetail(requestedDetailId);
+        if (controller.signal.aborted || requestId !== projectListRequestRef.current) return;
+        const detail = JSON.parse(detailRaw) as { ok?: boolean; project?: LearningProject };
+        if (detail.ok && detail.project) list = list.map((item) => item.id === detail.project?.id
+          ? { ...item, ...detail.project, stagingItems: undefined, workspaceScanSnapshot: undefined } : item);
+      }
       setProjects(list);
       if (!selectedProjectId && list[0]) setSelectedProjectId(list[0].id);
-      setProjectMessage(result.message || `已读取 ${list.length} 个学习项目。`);
+      setProjectMessage(result.message || `已读取 ${result.total ?? list.length} 个学习项目。`);
     } catch {
-      setProjectMessage('学习项目数据解析失败。');
+      if (requestId === projectListRequestRef.current) setProjectMessage('学习项目数据解析失败。');
+    }
+  };
+
+  const refreshProjectStagingPage = async (cursor = projectStagingCursor) => {
+    const projectId = selectedProjectIdRef.current;
+    const api = bridge();
+    if (!projectId || !api?.listProjectStagingItems) {
+      setProjectStagingPageItems([]);
+      setProjectStagingTotal(0);
+      setProjectStagingNextCursor('');
+      return;
+    }
+    projectStagingAbortRef.current?.abort();
+    const controller = new AbortController();
+    projectStagingAbortRef.current = controller;
+    const requestId = ++projectStagingRequestRef.current;
+    setProjectStagingLoading(true);
+    try {
+      const [pageRaw, summaryRaw] = await Promise.all([
+        api.listProjectStagingItems({ projectId, query: projectStagingSearch.trim(), status: projectStagingStatusFilter,
+          cursor, pageSize: 100 }),
+        api.getProjectStagingSummary?.(projectId) ?? Promise.resolve(''),
+      ]);
+      if (controller.signal.aborted || requestId !== projectStagingRequestRef.current || projectId !== selectedProjectIdRef.current) return;
+      const page = JSON.parse(pageRaw) as { ok?: boolean; items?: ProjectStagingItem[]; total?: number; nextCursor?: string; message?: string };
+      if (!page.ok) throw new Error(page.message || '暂存资料读取失败');
+      setProjectStagingPageItems((page.items ?? []).slice(0, 100));
+      setProjectStagingTotal(Number(page.total || 0));
+      setProjectStagingNextCursor(String(page.nextCursor || ''));
+      if (summaryRaw) {
+        const parsed = JSON.parse(summaryRaw) as { ok?: boolean; summary?: ProjectStagingSummary };
+        if (parsed.ok && parsed.summary) setProjectStagingSummary(parsed.summary);
+      }
+      setSelectedProjectStagingIds([]);
+    } catch (error) {
+      if (!controller.signal.aborted && requestId === projectStagingRequestRef.current) {
+        setProjectMessage(error instanceof Error ? error.message : '暂存资料读取失败。');
+      }
+    } finally {
+      if (!controller.signal.aborted && requestId === projectStagingRequestRef.current) setProjectStagingLoading(false);
     }
   };
 
   useEffect(() => {
-    if (activeSection === 'projects') void refreshProjects(selectedProjectId);
+    if (activeSection === 'projects-new' || activeSection === 'projects-existing') void refreshProjects(selectedProjectId);
   }, [activeSection, selectedProjectId]);
+
+  useEffect(() => {
+    if (!['projects-new', 'projects-existing'].includes(activeSection) || !selectedProjectId) return undefined;
+    setProjectStagingCursor('');
+    setProjectStagingCursorHistory([]);
+    const timer = window.setTimeout(() => void refreshProjectStagingPage(''), 300);
+    return () => window.clearTimeout(timer);
+  }, [activeSection, selectedProjectId, projectStagingSearch, projectStagingStatusFilter]);
+
+  useEffect(() => {
+    if (!['projects-new', 'projects-existing'].includes(activeSection) || !selectedProjectId || !projectStagingCursor) return;
+    void refreshProjectStagingPage(projectStagingCursor);
+  }, [projectStagingCursor]);
+
+  useEffect(() => bridge()?.onSubsystemProgress?.((payload) => {
+    if (payload.name === 'projects' && payload.status === 'ready') void refreshProjects(selectedProjectIdRef.current);
+  }), []);
 
   const publishProjectToTargets = async (targetNodeIds: string[]) => {
     if (!selectedProject || projectPublicationBusy || !bridge()?.publishCollaborationProject) return;
@@ -12012,7 +12269,7 @@ ${sourceText}`;
       return;
     }
     try {
-      const result = JSON.parse(api.getProjectPublicationOptions(selectedProject.id)) as { ok?: boolean; peers?: ProjectPublicationPeer[]; message?: string };
+      const result = JSON.parse(await api.getProjectPublicationOptions(selectedProject.id)) as { ok?: boolean; peers?: ProjectPublicationPeer[]; message?: string };
       const peers = result.peers || [];
       if (!result.ok || !peers.length) {
         setProjectPublicationMessage(result.message || '没有与项目学生明确映射的接收节点。');
@@ -12031,13 +12288,13 @@ ${sourceText}`;
     }
   };
 
-  const refreshProjectKnowledgeBrowser = (projectId = selectedProjectId) => {
+  const refreshProjectKnowledgeBrowser = async (projectId = selectedProjectId) => {
     if (!projectId) return;
     projectKnowledgeRequest.current++;
     setProjectKnowledgeRead(null);
     setProjectKnowledgeContent('');
     setProjectKnowledgeExportBusy(false);
-    const raw = bridge()?.listProjectKnowledgeFiles?.(projectId);
+    const raw = await bridge()?.listProjectKnowledgeFiles?.(projectId);
     if (!raw) {
       setProjectKnowledgeBrowserMessage('当前环境不支持项目知识空间浏览。');
       return;
@@ -12068,7 +12325,7 @@ ${sourceText}`;
     try {
       const api = bridge();
       const raw = api?.readProjectKnowledgeFileAsync
-        ? await api.readProjectKnowledgeFileAsync(projectId, file.id) : api?.readProjectKnowledgeFile?.(projectId, file.id);
+        ? await api.readProjectKnowledgeFileAsync(projectId, file.id) : await api?.readProjectKnowledgeFile?.(projectId, file.id);
       if (!current()) return;
       if (!raw) { setProjectKnowledgeBrowserMessage('当前环境不支持读取项目知识文档。'); return; }
       const result = JSON.parse(raw) as ProjectKnowledgeRead & { ok?: boolean; content?: string };
@@ -12130,7 +12387,7 @@ ${sourceText}`;
     setProjectMessage('已返回全部项目列表。');
   };
 
-  const createLearningProject = () => {
+  const createLearningProject = async () => {
     if (!projectDraft.name.trim()) {
       setProjectMessage('请先填写项目名称。');
       return;
@@ -12165,7 +12422,7 @@ ${sourceText}`;
       setProjectMessage('请先选择并通过检查的已有项目知识空间。');
       return;
     }
-    const raw = bridge()?.createProject?.(JSON.stringify(payload));
+    const raw = await bridge()?.createProject?.(JSON.stringify(payload));
     if (!raw) {
       setProjectMessage('当前环境不支持创建学习项目。');
       return;
@@ -12210,8 +12467,8 @@ ${sourceText}`;
     }
   };
 
-  const pickExistingProjectWorkspace = () => {
-    const raw = bridge()?.pickProjectWorkspaceDir?.();
+  const pickExistingProjectWorkspace = async () => {
+    const raw = await bridge()?.pickProjectWorkspaceDir?.();
     if (!raw) {
       setProjectMessage('当前环境不支持选择已有项目文件夹。');
       return;
@@ -12225,8 +12482,8 @@ ${sourceText}`;
     }
   };
 
-  const pickExistingProjectKnowledgeBase = () => {
-    const raw = bridge()?.pickProjectKnowledgeBaseDir?.();
+  const pickExistingProjectKnowledgeBase = async () => {
+    const raw = await bridge()?.pickProjectKnowledgeBaseDir?.();
     if (!raw) return setProjectMessage('当前环境不支持选择已有项目知识空间。');
     try {
       const result = JSON.parse(raw) as typeof projectKnowledgeAdoptionPreview & { message?: string };
@@ -12236,14 +12493,14 @@ ${sourceText}`;
     } catch { setProjectMessage('已有项目知识空间检查结果解析失败。'); }
   };
 
-  const saveSelectedProjectMetadata = () => {
+  const saveSelectedProjectMetadata = async () => {
     if (!selectedProjectId || !projectEditDraft.name.trim()) return setProjectMessage('请填写项目名称。');
-    const raw = bridge()?.updateProjectMetadata?.(selectedProjectId, JSON.stringify(projectEditDraft));
+    const raw = await bridge()?.updateProjectMetadata?.(selectedProjectId, JSON.stringify(projectEditDraft));
     if (!raw) return setProjectMessage('当前环境不支持编辑项目。');
     try {
       const result = JSON.parse(raw) as { ok?: boolean; project?: LearningProject; projects?: LearningProject[]; growthIndex?: GrowthIndexState; message?: string };
       if (Array.isArray(result.projects)) setProjects(result.projects);
-      if (result.ok && result.growthIndex && String(selectedStudent?.id || '') === String(studentId)) setGrowthIndex(result.growthIndex);
+      if (result.ok && result.growthIndex && selectedStudent) setGrowthIndex(result.growthIndex);
       if (result.ok) setProjectEditOpen(false);
       setProjectMessage(result.message || (result.ok ? '项目信息已更新。' : '编辑项目失败。'));
     } catch {
@@ -12251,13 +12508,13 @@ ${sourceText}`;
     }
   };
 
-  const deleteSelectedProject = () => {
+  const deleteSelectedProject = async () => {
     if (!selectedProject) return;
     const projectBridge = bridge();
     let preview: { ok?: boolean; canRemove?: boolean; message?: string; blockers?: string[];
       dependencies?: { taskCount?: number; registryCountsAvailable?: boolean; materialCount?: number; fixedEvidenceCount?: number; knowledgeCount?: number } } | null = null;
     if (projectBridge?.previewLearningProjectRemoval) {
-      try { preview = JSON.parse(projectBridge.previewLearningProjectRemoval(selectedProject.id)); }
+      try { preview = JSON.parse(await projectBridge.previewLearningProjectRemoval(selectedProject.id)); }
       catch { return setProjectMessage('项目移除依赖检查结果无法读取，未修改项目。'); }
       if (!preview?.ok || !preview.canRemove) return setProjectMessage(preview?.message || preview?.blockers?.join('；') || '项目仍有待处理依赖，未修改项目。');
     }
@@ -12267,7 +12524,7 @@ ${sourceText}`;
         : `\n\n旧项目资料与知识目录将全部保留；保留 ${preview.dependencies.taskCount || 0} 条历史任务记录。`
       : '';
     if (!window.confirm(`确定删除学习项目“${selectedProject.name}”吗？\n\n这是安全删除：项目将从列表中移除，但工作空间、知识空间、资产和审计文件都会保留，并可从“已删除项目”恢复。${retained}`)) return;
-    const raw = projectBridge?.deleteLearningProject?.(selectedProject.id) || projectBridge?.removeProjectRecord?.(selectedProject.id);
+    const raw = await projectBridge?.deleteLearningProject?.(selectedProject.id) || await projectBridge?.removeProjectRecord?.(selectedProject.id);
     if (!raw) return setProjectMessage('当前环境不支持删除项目。');
     try {
       const result = JSON.parse(raw) as { ok?: boolean; projects?: LearningProject[]; deletedProject?: RemovedProjectRecord; message?: string };
@@ -12286,16 +12543,16 @@ ${sourceText}`;
     }
   };
 
-  const relocateSelectedProjectWorkspace = () => {
+  const relocateSelectedProjectWorkspace = async () => {
     if (!selectedProject) return;
-    const raw = bridge()?.relocateProjectWorkspace?.(selectedProject.id);
+    const raw = await bridge()?.relocateProjectWorkspace?.(selectedProject.id);
     if (!raw) return setProjectMessage('当前环境不支持项目工作空间重新定位。');
     try {
       const result = JSON.parse(raw) as { ok?: boolean; preview?: boolean; oldPath?: string; newPath?: string; warnings?: string[]; message?: string };
       if (!result.ok || !result.preview || !result.newPath) return setProjectMessage(result.message || '项目工作空间重新定位预检失败。');
       const warningText = result.warnings?.length ? `\n\n提醒：\n${result.warnings.join('\n')}` : '';
       if (!window.confirm(`确认重新定位项目工作空间？\n\n旧路径：${result.oldPath}\n新路径：${result.newPath}\n\n重新定位就是修改工作空间来源目录；只更新逻辑绑定，不移动、复制或删除任何文件，项目知识空间保持不变。${warningText}`)) return setProjectMessage('已取消重新定位，项目索引未变化。');
-      const confirmedRaw = bridge()?.confirmProjectWorkspaceRelocation?.(selectedProject.id, result.newPath);
+      const confirmedRaw = await bridge()?.confirmProjectWorkspaceRelocation?.(selectedProject.id, result.newPath);
       if (!confirmedRaw) return setProjectMessage('当前环境不支持确认项目工作空间重新定位。');
       const confirmed = JSON.parse(confirmedRaw) as { ok?: boolean; projects?: LearningProject[]; message?: string };
       if (Array.isArray(confirmed.projects)) setProjects(confirmed.projects);
@@ -12304,9 +12561,9 @@ ${sourceText}`;
     } catch { setProjectMessage('项目工作空间重新定位结果解析失败。'); }
   };
 
-  const rebindSelectedProjectKnowledge = () => {
+  const rebindSelectedProjectKnowledge = async () => {
     if (!selectedProject) return;
-    const raw = bridge()?.rebindProjectKnowledgeSpace?.(selectedProject.id);
+    const raw = await bridge()?.rebindProjectKnowledgeSpace?.(selectedProject.id);
     if (!raw) return setProjectMessage('当前环境不支持重新绑定项目知识空间。');
     try {
       const result = JSON.parse(raw) as { ok?: boolean; cancelled?: boolean; projects?: LearningProject[]; message?: string };
@@ -12315,10 +12572,10 @@ ${sourceText}`;
     } catch { setProjectMessage('项目知识空间绑定结果解析失败。'); }
   };
 
-  const rebindSelectedProjectDirectory = (kind: 'root' | 'raw') => {
+  const rebindSelectedProjectDirectory = async (kind: 'root' | 'raw') => {
     if (!selectedProject) return;
     const label = kind === 'root' ? '项目根目录' : '项目原始资料库';
-    const raw = (kind === 'root' ? bridge()?.rebindProjectRoot : bridge()?.rebindProjectRaw)?.(selectedProject.id);
+    const raw = await (kind === 'root' ? bridge()?.rebindProjectRoot : bridge()?.rebindProjectRaw)?.(selectedProject.id);
     if (!raw) return setProjectMessage(`当前环境不支持更换${label}。`);
     try {
       const result = JSON.parse(raw) as { ok?: boolean; cancelled?: boolean; projects?: LearningProject[]; message?: string };
@@ -12327,9 +12584,9 @@ ${sourceText}`;
     } catch { setProjectMessage(`${label}更换结果解析失败。`); }
   };
 
-  const rollbackSelectedProjectWorkspace = () => {
+  const rollbackSelectedProjectWorkspace = async () => {
     if (!selectedProject) return;
-    const raw = bridge()?.rollbackProjectWorkspaceRelocation?.(selectedProject.id);
+    const raw = await bridge()?.rollbackProjectWorkspaceRelocation?.(selectedProject.id);
     if (!raw) return setProjectMessage('当前环境不支持回滚工作空间绑定。');
     try {
       const result = JSON.parse(raw) as { ok?: boolean; projects?: LearningProject[]; message?: string };
@@ -12338,8 +12595,8 @@ ${sourceText}`;
     } catch { setProjectMessage('工作空间回滚结果解析失败。'); }
   };
 
-  const loadRemovedProjectRecords = () => {
-    const raw = bridge()?.getRemovedProjects?.();
+  const loadRemovedProjectRecords = async () => {
+    const raw = await bridge()?.getRemovedProjects?.();
     if (!raw) return setProjectMessage('当前环境不支持已删除项目恢复。');
     try {
       const result = JSON.parse(raw) as { removed?: RemovedProjectRecord[]; message?: string };
@@ -12348,8 +12605,8 @@ ${sourceText}`;
     } catch { setProjectMessage('已删除项目结果解析失败。'); }
   };
 
-  const restoreProjectRecord = (snapshotPath: string) => {
-    const raw = bridge()?.restoreRemovedProject?.(snapshotPath);
+  const restoreProjectRecord = async (snapshotPath: string) => {
+    const raw = await bridge()?.restoreRemovedProject?.(snapshotPath);
     if (!raw) return;
     try {
       const result = JSON.parse(raw) as { ok?: boolean; project?: LearningProject; projects?: LearningProject[]; message?: string };
@@ -12360,15 +12617,15 @@ ${sourceText}`;
     } catch { setProjectMessage('项目恢复结果解析失败。'); }
   };
 
-  const exportSelectedProject = () => {
+  const exportSelectedProject = async () => {
     if (!selectedProject) return;
-    const raw = bridge()?.exportProjectPackage?.(selectedProject.id);
+    const raw = await bridge()?.exportProjectPackage?.(selectedProject.id);
     if (!raw) return setProjectMessage('当前环境不支持项目导出。');
     try { const result = JSON.parse(raw) as { message?: string }; setProjectMessage(result.message || '项目导出完成。'); } catch { setProjectMessage('项目导出结果解析失败。'); }
   };
 
-  const importLearningProject = () => {
-    const raw = bridge()?.importProjectPackage?.();
+  const importLearningProject = async () => {
+    const raw = await bridge()?.importProjectPackage?.();
     if (!raw) return setProjectMessage('当前环境不支持项目导入。');
     try {
       const result = JSON.parse(raw) as { project?: LearningProject; projects?: LearningProject[]; message?: string };
@@ -12379,9 +12636,9 @@ ${sourceText}`;
   };
 
 
-  const duplicateSelectedProject = () => {
+  const duplicateSelectedProject = async () => {
     if (!selectedProject) return;
-    const raw = bridge()?.duplicateProject?.(selectedProject.id, `${selectedProject.name} 副本`);
+    const raw = await bridge()?.duplicateProject?.(selectedProject.id, `${selectedProject.name} 副本`);
     if (!raw) return setProjectMessage('当前环境不支持复制项目。');
     try {
       const result = JSON.parse(raw) as { ok?: boolean; project?: LearningProject; projects?: LearningProject[]; message?: string };
@@ -12420,7 +12677,7 @@ ${sourceText}`;
       const payload = JSON.stringify(evidence);
       const raw = api?.updateProjectStudentEvidenceAsync
         ? await api.updateProjectStudentEvidenceAsync(projectId, studentId, payload)
-        : api?.updateProjectStudentEvidence?.(projectId, studentId, payload);
+        : await api?.updateProjectStudentEvidence?.(projectId, studentId, payload);
       if (!isCurrent()) return;
       if (!raw) throw new Error('当前环境不支持学生独立成长证据。');
       type EvidenceResult = { ok?: boolean; project?: LearningProject; projects?: LearningProject[]; message?: string;
@@ -12459,7 +12716,7 @@ ${sourceText}`;
 
   const copyProjectStudentEvidencePrompt = async () => {
     if (!selectedProjectId) return setProjectMessage('请先选择学习项目。');
-    const raw = bridge()?.getProjectStudentEvidencePrompt?.(selectedProjectId);
+    const raw = await bridge()?.getProjectStudentEvidencePrompt?.(selectedProjectId);
     if (!raw) return setProjectMessage('当前环境不支持个人证据建议任务。');
     try {
       const result = JSON.parse(raw) as { ok?: boolean; command?: string; message?: string };
@@ -12471,9 +12728,9 @@ ${sourceText}`;
     }
   };
 
-  const importProjectStudentEvidenceSuggestions = (pastedText = '') => {
+  const importProjectStudentEvidenceSuggestions = async (pastedText = '') => {
     if (!selectedProjectId) return setProjectMessage('请先选择学习项目。');
-    const raw = bridge()?.importProjectStudentEvidenceSuggestions?.(selectedProjectId, pastedText);
+    const raw = await bridge()?.importProjectStudentEvidenceSuggestions?.(selectedProjectId, pastedText);
     if (!raw) return setProjectMessage('当前环境不支持同步个人证据建议。');
     try {
       const result = JSON.parse(raw) as { ok?: boolean; project?: LearningProject; projects?: LearningProject[]; message?: string };
@@ -12562,9 +12819,9 @@ ${sourceText}`;
     }
   };
 
-  const loadSelectedProjectKnowledgeReview = () => {
+  const loadSelectedProjectKnowledgeReview = async () => {
     if (!selectedProjectId) return;
-    const raw = bridge()?.getProjectKnowledgeReview?.(selectedProjectId);
+    const raw = await bridge()?.getProjectKnowledgeReview?.(selectedProjectId);
     if (!raw) return;
     try {
       const result = JSON.parse(raw) as { ok?: boolean; records?: ProjectKnowledgeRecord[]; message?: string };
@@ -12575,10 +12832,10 @@ ${sourceText}`;
     }
   };
 
-  const updateSelectedProjectKnowledgeReview = (status: string) => {
+  const updateSelectedProjectKnowledgeReview = async (status: string) => {
     if (!selectedProjectId || !selectedProjectKnowledgeIds.length) return reportProjectStage('knowledge', '请先选择要审核的知识资产。');
     const note = status === 'verified' ? '用户一键确认知识。' : status === 'rejected' ? '用户选择需要修改。' : '用户标记该知识失效。';
-    const raw = bridge()?.updateProjectKnowledgeReview?.(selectedProjectId, JSON.stringify(selectedProjectKnowledgeIds), status, note);
+    const raw = await bridge()?.updateProjectKnowledgeReview?.(selectedProjectId, JSON.stringify(selectedProjectKnowledgeIds), status, note);
     if (!raw) return reportProjectStage('knowledge', '当前环境不支持知识资产审核。');
     try {
       const result = JSON.parse(raw) as { ok?: boolean; records?: ProjectKnowledgeRecord[]; message?: string };
@@ -12591,14 +12848,14 @@ ${sourceText}`;
     }
   };
 
-  const applySelectedProjectWorkspaceTemplate = () => {
+  const applySelectedProjectWorkspaceTemplate = async () => {
     if (!selectedProjectId) {
       setProjectMessage('请先选择学习项目。');
       return;
     }
     const folders = parseProjectWorkspaceFolders(projectWorkspaceTemplateEdit.foldersText);
     const selectedTemplate = projectWorkspaceTemplateForUi(projectWorkspaceTemplateEdit.templateId);
-    const raw = bridge()?.applyProjectWorkspaceTemplate?.(selectedProjectId, projectWorkspaceTemplateEdit.templateId, JSON.stringify(folders), selectedTemplate.name, JSON.stringify({ knowledgeStrategy: selectedTemplate.knowledgeStrategy, growthStrategy: selectedTemplate.growthStrategy, deliverables: selectedTemplate.deliverables }));
+    const raw = await bridge()?.applyProjectWorkspaceTemplate?.(selectedProjectId, projectWorkspaceTemplateEdit.templateId, JSON.stringify(folders), selectedTemplate.name, JSON.stringify({ knowledgeStrategy: selectedTemplate.knowledgeStrategy, growthStrategy: selectedTemplate.growthStrategy, deliverables: selectedTemplate.deliverables }));
     if (!raw) {
       setProjectMessage('当前环境不支持项目工作空间模板。');
       return;
@@ -12613,12 +12870,12 @@ ${sourceText}`;
     }
   };
 
-  const openSelectedProjectSpace = (space: 'root' | 'workspace' | 'raw' | 'knowledge') => {
+  const openSelectedProjectSpace = async (space: 'root' | 'workspace' | 'raw' | 'knowledge') => {
     if (!selectedProjectId) {
       setProjectMessage('请先选择学习项目。');
       return;
     }
-    const raw = bridge()?.openProjectSpace?.(selectedProjectId, space);
+    const raw = await bridge()?.openProjectSpace?.(selectedProjectId, space);
     if (!raw) {
       setProjectMessage('当前环境不支持打开项目空间。');
       return;
@@ -12700,7 +12957,7 @@ ${sourceText}`;
       setProjectMessage('请先选择学习项目。');
       return;
     }
-    const raw = bridge()?.getProjectDigestCommand?.(selectedProjectId);
+    const raw = await bridge()?.getProjectDigestCommand?.(selectedProjectId);
     if (!raw) {
       setProjectMessage('当前环境不支持项目消化指令生成。');
       return;
@@ -12718,12 +12975,12 @@ ${sourceText}`;
     }
   };
 
-  const markSelectedProjectDigestSubmitted = () => {
+  const markSelectedProjectDigestSubmitted = async () => {
     if (!selectedProjectId) {
       setProjectMessage('请先选择学习项目。');
       return;
     }
-    const raw = bridge()?.markProjectDigestSubmitted?.(selectedProjectId);
+    const raw = await bridge()?.markProjectDigestSubmitted?.(selectedProjectId);
     if (!raw) {
       setProjectMessage('当前环境不支持项目消化提交标记。');
       return;
@@ -12738,12 +12995,12 @@ ${sourceText}`;
     }
   };
 
-  const syncSelectedProjectDigestResult = () => {
+  const syncSelectedProjectDigestResult = async () => {
     if (!selectedProjectId) {
       reportProjectStage('digest', '请先选择学习项目。');
       return;
     }
-    const raw = bridge()?.syncProjectDigestResult?.(selectedProjectId);
+    const raw = await bridge()?.syncProjectDigestResult?.(selectedProjectId);
     if (!raw) {
       reportProjectStage('digest', '当前环境不支持项目消化结果同步。');
       return;
@@ -12758,10 +13015,10 @@ ${sourceText}`;
     }
   };
 
-  const applyPastedProjectDigestReceipt = () => {
+  const applyPastedProjectDigestReceipt = async () => {
     if (!selectedProjectId) return reportProjectStage('digest', '请先选择学习项目。');
     if (!projectDigestReceiptRaw.trim()) return reportProjectStage('digest', '请先粘贴 Agent 返回的 JSON 回执。');
-    const raw = bridge()?.applyProjectDigestReceiptText?.(selectedProjectId, projectDigestReceiptRaw);
+    const raw = await bridge()?.applyProjectDigestReceiptText?.(selectedProjectId, projectDigestReceiptRaw);
     if (!raw) return reportProjectStage('digest', '当前环境不支持粘贴项目消化回执。');
     try {
       const result = JSON.parse(raw) as { ok?: boolean; project?: LearningProject; projects?: LearningProject[]; message?: string };
@@ -12970,10 +13227,10 @@ ${JSON.stringify(items, null, 2)}
     reportProjectStage('assets', '请粘贴 Agent 返回的 JSON，或包含 JSON 代码块的 Markdown，然后先预览匹配。');
   };
 
-  const previewPastedProjectStagingAiScreening = () => {
+  const previewPastedProjectStagingAiScreening = async () => {
     if (!selectedProjectId) return reportProjectStage('assets', '请先选择学习项目。');
     if (!projectScreeningRaw.trim()) return reportProjectStage('assets', '请先粘贴 Agent 评估结果。');
-    const raw = bridge()?.previewProjectStagingAiScreening?.(selectedProjectId, projectScreeningRaw);
+    const raw = await bridge()?.previewProjectStagingAiScreening?.(selectedProjectId, projectScreeningRaw);
     if (!raw) return reportProjectStage('assets', '当前环境不支持预览 Agent 评估结果。');
     try {
       const result = JSON.parse(raw) as ProjectScreeningPreview;
@@ -12985,9 +13242,9 @@ ${JSON.stringify(items, null, 2)}
     }
   };
 
-  const applyPastedProjectStagingAiScreening = () => {
+  const applyPastedProjectStagingAiScreening = async () => {
     if (!selectedProjectId || !projectScreeningPreview?.matchedCount) return reportProjectStage('assets', '请先完成有效预览。');
-    const raw = bridge()?.applyProjectStagingAiScreening?.(selectedProjectId, projectScreeningRaw);
+    const raw = await bridge()?.applyProjectStagingAiScreening?.(selectedProjectId, projectScreeningRaw);
     if (!raw) return reportProjectStage('assets', '当前环境不支持应用 Agent 评估结果。');
     try {
       const result = JSON.parse(raw) as { ok?: boolean; project?: LearningProject; projects?: LearningProject[]; receiptPath?: string; message?: string };
@@ -13005,12 +13262,12 @@ ${JSON.stringify(items, null, 2)}
     }
   };
 
-  const importProjectStagingAiScreeningFromFile = () => {
+  const importProjectStagingAiScreeningFromFile = async () => {
     if (!selectedProjectId) {
       setProjectMessage('请先选择学习项目。');
       return;
     }
-    const raw = bridge()?.importProjectStagingAiScreening?.(selectedProjectId);
+    const raw = await bridge()?.importProjectStagingAiScreening?.(selectedProjectId);
     if (!raw) {
       setProjectMessage('当前环境不支持导入 AI 初筛结果。');
       return;
@@ -13026,12 +13283,12 @@ ${JSON.stringify(items, null, 2)}
     }
   };
 
-  const analyzeProjectStagingGovernance = () => {
+  const analyzeProjectStagingGovernance = async () => {
     if (!selectedProjectId) {
       setProjectMessage('请先选择学习项目。');
       return;
     }
-    const raw = bridge()?.analyzeProjectStagingGovernance?.(selectedProjectId);
+    const raw = await bridge()?.analyzeProjectStagingGovernance?.(selectedProjectId);
     if (!raw) {
       setProjectMessage('当前环境不支持生成研究暂存治理建议。');
       return;
@@ -13056,7 +13313,7 @@ ${JSON.stringify(items, null, 2)}
 
   const prepareProjectStagingEvaluation = async () => {
     if (!selectedProjectId || !projectStagingItems.length) return reportProjectStage('assets', '请先添加研究暂存资料。');
-    const raw = bridge()?.analyzeProjectStagingGovernance?.(selectedProjectId);
+    const raw = await bridge()?.analyzeProjectStagingGovernance?.(selectedProjectId);
     if (raw) {
       try {
         const result = JSON.parse(raw) as { project?: LearningProject; projects?: LearningProject[] };
@@ -13072,7 +13329,7 @@ ${JSON.stringify(items, null, 2)}
 
   const copyAndSubmitSelectedProjectDigest = async () => {
     if (!selectedProjectId) return reportProjectStage('digest', '请先选择学习项目。');
-    const submittedRaw = bridge()?.markProjectDigestSubmitted?.(selectedProjectId);
+    const submittedRaw = await bridge()?.markProjectDigestSubmitted?.(selectedProjectId);
     if (!submittedRaw) return reportProjectStage('digest', '当前环境不支持项目消化任务。');
     try {
       const submitted = JSON.parse(submittedRaw) as { ok?: boolean; command?: string; project?: LearningProject; projects?: LearningProject[]; message?: string };
@@ -13086,12 +13343,12 @@ ${JSON.stringify(items, null, 2)}
     }
   };
 
-  const generateSelectedProjectPromotion = () => {
+  const generateSelectedProjectPromotion = async () => {
     if (!selectedProjectId) {
       setProjectMessage('请先选择学习项目。');
       return;
     }
-    const raw = bridge()?.generateProjectPromotion?.(selectedProjectId);
+    const raw = await bridge()?.generateProjectPromotion?.(selectedProjectId);
     if (!raw) {
       setProjectMessage('当前环境不支持生成知识贡献申请。');
       return;
@@ -13105,12 +13362,12 @@ ${JSON.stringify(items, null, 2)}
     }
   };
 
-  const loadProjectPromotionPlan = (projectId: string) => {
+  const loadProjectPromotionPlan = async (projectId: string) => {
     if (!projectId) {
       setProjectMessage('请先选择学习项目。');
       return false;
     }
-    const raw = bridge()?.getProjectPromotionPlan?.(projectId);
+    const raw = await bridge()?.getProjectPromotionPlan?.(projectId);
     if (!raw) {
       setProjectMessage('当前环境不支持生成归档确认清单。');
       return false;
@@ -13138,12 +13395,12 @@ ${JSON.stringify(items, null, 2)}
     loadProjectPromotionPlan(selectedProjectId);
   };
 
-  const loadSelectedProjectPromotionAudit = () => {
+  const loadSelectedProjectPromotionAudit = async () => {
     if (!selectedProjectId) {
       setProjectMessage('请先选择学习项目。');
       return;
     }
-    const raw = bridge()?.getProjectPromotionAudit?.(selectedProjectId);
+    const raw = await bridge()?.getProjectPromotionAudit?.(selectedProjectId);
     if (!raw) {
       setProjectMessage('当前环境不支持知识贡献审计。');
       return;
@@ -13273,12 +13530,12 @@ ${JSON.stringify(items, null, 2)}
     });
   };
 
-  const updateSelectedProjectStatus = (status: string) => {
+  const updateSelectedProjectStatus = async (status: string) => {
     if (!selectedProjectId) {
       setProjectMessage('请先选择学习项目。');
       return;
     }
-    const raw = bridge()?.updateProjectStatus?.(selectedProjectId, status);
+    const raw = await bridge()?.updateProjectStatus?.(selectedProjectId, status);
     if (!raw) {
       setProjectMessage('当前环境不支持更新项目状态。');
       return;
@@ -13322,9 +13579,9 @@ ${JSON.stringify(items, null, 2)}
     }
   };
 
-  const prepareProjectCompletion = () => {
+  const prepareProjectCompletion = async () => {
     if (!selectedProjectId) return reportProjectStage('promotion', '请先选择学习项目。');
-    const raw = bridge()?.getProjectCompletionWizard?.(selectedProjectId);
+    const raw = await bridge()?.getProjectCompletionWizard?.(selectedProjectId);
     if (!raw) return reportProjectStage('promotion', '当前环境不支持统一项目完成检查。');
     try {
       const result = JSON.parse(raw) as { ok?: boolean; ready?: boolean; projects?: LearningProject[]; blockers?: ProjectCompletionBlocker[]; contribution?: { content?: string }; plan?: PromotionPlan; audit?: { content?: string; conflicts?: PromotionConflict[]; runs?: PromotionRunRecord[] }; message?: string };
@@ -13346,13 +13603,13 @@ ${JSON.stringify(items, null, 2)}
     }
   };
 
-  const executeSelectedProjectPromotionPlan = () => {
+  const executeSelectedProjectPromotionPlan = async () => {
     if (!selectedProjectId || !promotionPlan) {
       setProjectMessage('请先生成归档确认清单。');
       return;
     }
     if (promotionExecutionPreview && !window.confirm(`确认执行归档清单吗？\n\n${promotionExecutionPreview}`)) return;
-    const raw = bridge()?.executeProjectPromotionPlan?.(selectedProjectId, JSON.stringify({ items: promotionPlan.items }));
+    const raw = await bridge()?.executeProjectPromotionPlan?.(selectedProjectId, JSON.stringify({ items: promotionPlan.items }));
     if (!raw) {
       setProjectMessage('当前环境不支持执行归档确认清单。');
       return;
@@ -13387,12 +13644,12 @@ ${JSON.stringify(items, null, 2)}
     }
   };
 
-  const publishSelectedProjectPromotion = () => {
+  const publishSelectedProjectPromotion = async () => {
     if (!selectedProjectId) {
       setProjectMessage('请先选择学习项目。');
       return;
     }
-    const raw = bridge()?.publishProjectPromotion?.(selectedProjectId);
+    const raw = await bridge()?.publishProjectPromotion?.(selectedProjectId);
     if (!raw) {
       setProjectMessage('当前环境不支持发布知识贡献。');
       return;
@@ -13415,7 +13672,7 @@ ${JSON.stringify(items, null, 2)}
     }
   };
 
-  const rollbackPromotionRun = (run: PromotionRunRecord) => {
+  const rollbackPromotionRun = async (run: PromotionRunRecord) => {
     if (!selectedProjectId) {
       setProjectMessage('请先选择学习项目。');
       return;
@@ -13426,7 +13683,7 @@ ${JSON.stringify(items, null, 2)}
     }
     const confirmed = window.confirm('确认安全回滚这条知识贡献执行记录吗？\n\n本操作只会标记回滚并回退成长证据候选状态，不会删除物理文件或覆盖 Markdown。');
     if (!confirmed) return;
-    const raw = bridge()?.rollbackProjectPromotionRun?.(selectedProjectId, run.id);
+    const raw = await bridge()?.rollbackProjectPromotionRun?.(selectedProjectId, run.id);
     if (!raw) {
       setProjectMessage('当前环境不支持知识贡献回滚。');
       return;
@@ -13449,12 +13706,12 @@ ${JSON.stringify(items, null, 2)}
     }
   };
 
-  const refreshGrowthEvidenceReview = (student = selectedStudent) => {
+  const refreshGrowthEvidenceReview = async (student = selectedStudent) => {
     if (!student) {
       setGrowthMessage('请先选择学生。');
       return;
     }
-    const raw = bridge()?.getGrowthEvidenceReview?.(student.id);
+    const raw = await bridge()?.getGrowthEvidenceReview?.(student.id);
     if (!raw) {
       setGrowthMessage('当前环境不支持成长证据审核。');
       return;
@@ -13470,12 +13727,12 @@ ${JSON.stringify(items, null, 2)}
     }
   };
 
-  const updateGrowthEvidence = (candidate: GrowthEvidenceCandidate, status: 'confirmed' | 'watching' | 'rejected') => {
+  const updateGrowthEvidence = async (candidate: GrowthEvidenceCandidate, status: 'confirmed' | 'watching' | 'rejected') => {
     if (!selectedStudent) {
       setGrowthMessage('请先选择学生。');
       return;
     }
-    const raw = bridge()?.updateGrowthEvidenceStatus?.(selectedStudent.id, candidate.id, status, '');
+    const raw = await bridge()?.updateGrowthEvidenceStatus?.(selectedStudent.id, candidate.id, status, '');
     if (!raw) {
       setGrowthMessage('当前环境不支持更新成长证据状态。');
       return;
@@ -13492,12 +13749,12 @@ ${JSON.stringify(items, null, 2)}
     }
   };
 
-  const ensureSelectedGrowthModel = () => {
+  const ensureSelectedGrowthModel = async () => {
     if (!selectedStudent) {
       setGrowthMessage('请先选择学生。');
       return;
     }
-    const raw = bridge()?.ensureGrowthModel?.(selectedStudent.id);
+    const raw = await bridge()?.ensureGrowthModel?.(selectedStudent.id);
     if (!raw) {
       setGrowthMessage('当前环境不支持成长模型补建。');
       return;
@@ -13516,12 +13773,12 @@ ${JSON.stringify(items, null, 2)}
     }
   };
 
-  const rebuildSelectedGrowthIndex = () => {
+  const rebuildSelectedGrowthIndex = async () => {
     if (!selectedStudent) {
       setGrowthMessage('请先选择学生。');
       return;
     }
-    const raw = bridge()?.rebuildGrowthIndex?.(selectedStudent.id);
+    const raw = await bridge()?.rebuildGrowthIndex?.(selectedStudent.id);
     if (!raw) {
       setGrowthMessage('当前环境不支持成长模型结构化索引。');
       return;
@@ -13536,9 +13793,9 @@ ${JSON.stringify(items, null, 2)}
     }
   };
 
-  const refreshSelectedGrowthIndex = (student = selectedStudent) => {
+  const refreshSelectedGrowthIndex = async (student = selectedStudent) => {
     if (!student) return;
-    const raw = bridge()?.getGrowthIndex?.(student.id);
+    const raw = await bridge()?.getGrowthIndex?.(student.id);
     if (!raw) return;
     try {
       const result = JSON.parse(raw) as { ok?: boolean; index?: GrowthIndexState; content?: string; message?: string };
@@ -13579,7 +13836,7 @@ ${JSON.stringify(items, null, 2)}
       }
       const reviewRaw = api?.getGrowthEvidenceReviewAsync
         ? await api.getGrowthEvidenceReviewAsync(student.id)
-        : api?.getGrowthEvidenceReview?.(student.id);
+        : await api?.getGrowthEvidenceReview?.(student.id);
       if (requestId !== growthLoadSerial.current) return;
       if (reviewRaw) {
         const result = JSON.parse(reviewRaw) as { ok?: boolean; review?: GrowthEvidenceReviewState; protocolCompatibility?: { reviewQueue?: LegacyGrowthReviewQueueItem[] }; riskAssessment?: GrowthEvidenceRiskAssessment; message?: string };
@@ -13593,7 +13850,7 @@ ${JSON.stringify(items, null, 2)}
       // Evidence auto-processing may rebuild the index, so read the index only after it completes.
       const indexRaw = api?.getGrowthIndexAsync
         ? await api.getGrowthIndexAsync(student.id)
-        : api?.getGrowthIndex?.(student.id);
+        : await api?.getGrowthIndex?.(student.id);
       if (requestId !== growthLoadSerial.current) return;
       if (indexRaw) {
         const result = JSON.parse(indexRaw) as { ok?: boolean; index?: GrowthIndexState; content?: string; message?: string };
@@ -13642,9 +13899,9 @@ ${JSON.stringify(items, null, 2)}
     return () => { growthLoadSerial.current += 1; };
   }, [activeSection, selectedStudent?.id]);
 
-  const openSelectedGrowthModelDir = () => {
+  const openSelectedGrowthModelDir = async () => {
     if (!selectedStudent) return;
-    const raw = bridge()?.openGrowthModelDir?.(selectedStudent.id);
+    const raw = await bridge()?.openGrowthModelDir?.(selectedStudent.id);
     if (!raw) {
       setGrowthMessage('当前环境不支持打开成长模型目录。');
       return;
@@ -13667,8 +13924,8 @@ ${JSON.stringify(items, null, 2)}
     openProjectFromDashboard(project);
   };
 
-  const refreshScheduleLedgerForStudent = (student: Student) => {
-    const raw = bridge()?.getStudentScheduleLedger?.(student.id);
+  const refreshScheduleLedgerForStudent = async (student: Student) => {
+    const raw = await bridge()?.getStudentScheduleLedger?.(student.id);
     if (!raw) {
       setScheduleMessage('当前环境不支持定时任务账本。');
       return;
@@ -13688,50 +13945,61 @@ ${JSON.stringify(items, null, 2)}
       setScheduleMessage('当前环境不支持统一任务中心。');
       return;
     }
-    const requestId = taskCenterRequestRef.current + 1;
-    taskCenterRequestRef.current = requestId;
-    setTaskCenterRefreshing(true);
-    try {
-      const raw = api.getTaskPage
-        ? await api.getTaskPage(taskCenterQueryRef.current)
-        : api.getTaskCenterAsync
-        ? await api.getTaskCenterAsync(force, quick)
-        : api.getTaskCenter?.();
-      if (requestId !== taskCenterRequestRef.current || !raw) return;
-      const result = JSON.parse(raw) as TaskCenterState & { ok?: boolean; message?: string };
-      if (result.tasks) {
-        setTaskCenter({
-          ready: result.ready,
-          storageFault: result.storageFault,
-          page: result.page,
-          pageCount: result.pageCount,
-          filteredTotal: result.filteredTotal,
-          executors: result.executors,
-          protocolVersion: result.protocolVersion,
-          generatedAt: result.generatedAt,
-          automationEnabled: result.automationEnabled,
-          executionMode: result.executionMode,
-          tasks: result.tasks,
-          history: result.history || [],
-          summary: result.summary || { total: result.tasks.length, actionable: 0, running: 0, scheduled: 0, completed: 0, archived: 0 },
-          capabilities: result.capabilities,
-          taskStorePath: result.taskStorePath,
-          agentInboxPath: result.agentInboxPath,
-          agentResultPath: result.agentResultPath,
-          qclawInboxPath: result.qclawInboxPath,
-          qclawResultPath: result.qclawResultPath,
-        });
+    const query = { ...taskCenterQueryRef.current };
+    const key = JSON.stringify({ force, quick, query });
+    const pending = taskCenterInFlightRef.current.get(key);
+    if (pending) return pending;
+    const work = (async () => {
+      const requestId = taskCenterRequestRef.current + 1;
+      taskCenterRequestRef.current = requestId;
+      setTaskCenterRefreshing(true);
+      try {
+        const raw = api.getTaskPage
+          ? await api.getTaskPage(query)
+          : api.getTaskCenterAsync
+          ? await api.getTaskCenterAsync(force, quick)
+          : await api.getTaskCenter?.();
+        if (requestId !== taskCenterRequestRef.current || !raw) return;
+        const result = JSON.parse(raw) as TaskCenterState & { ok?: boolean; message?: string };
+        if (result.tasks) {
+          setTaskCenter({
+            ready: result.ready,
+            storageFault: result.storageFault,
+            page: result.page,
+            pageCount: result.pageCount,
+            filteredTotal: result.filteredTotal,
+            executors: result.executors,
+            protocolVersion: result.protocolVersion,
+            generatedAt: result.generatedAt,
+            automationEnabled: result.automationEnabled,
+            executionMode: result.executionMode,
+            tasks: result.tasks,
+            history: result.history || [],
+            summary: result.summary || { total: result.tasks.length, actionable: 0, running: 0, scheduled: 0, completed: 0, archived: 0 },
+            userSummary: result.userSummary,
+            capabilities: result.capabilities,
+            taskStorePath: result.taskStorePath,
+            agentInboxPath: result.agentInboxPath,
+            agentResultPath: result.agentResultPath,
+            qclawInboxPath: result.qclawInboxPath,
+            qclawResultPath: result.qclawResultPath,
+          });
+        }
+        setScheduleMessage(result.message || (result.ok ? '任务中心已刷新。' : '任务中心读取失败。'));
+      } catch {
+        setScheduleMessage('任务中心数据解析失败。');
+      } finally {
+        if (requestId === taskCenterRequestRef.current) setTaskCenterRefreshing(false);
       }
-      setScheduleMessage(result.message || (result.ok ? '任务中心已刷新。' : '任务中心读取失败。'));
-    } catch {
-      setScheduleMessage('任务中心数据解析失败。');
-    } finally {
-      if (requestId === taskCenterRequestRef.current) setTaskCenterRefreshing(false);
+    })();
+    taskCenterInFlightRef.current.set(key, work);
+    try { await work; } finally {
+      if (taskCenterInFlightRef.current.get(key) === work) taskCenterInFlightRef.current.delete(key);
     }
   };
 
-  const updateTaskAutomationMode = (enabled: boolean) => {
-    const raw = bridge()?.setTaskAutomationEnabled?.(enabled);
+  const updateTaskAutomationMode = async (enabled: boolean) => {
+    const raw = await bridge()?.setTaskAutomationEnabled?.(enabled);
     if (!raw) {
       setScheduleMessage('当前环境不支持切换任务执行模式。');
       return;
@@ -13858,13 +14126,13 @@ ${JSON.stringify(items, null, 2)}
     }
   };
 
-  const executeTaskFromCenter = async (task: TaskCenterItem) => {
+  const executeTaskFromCenter = async (task: TaskCenterItem, prioritizeAutomatic = false) => {
     if (taskExecutionBusyId) return;
-    const executor = taskExecutorDraft || task.requestedExecutor || task.executor || '';
+    const executor = prioritizeAutomatic ? 'auto' : taskExecutorDraft || task.requestedExecutor || task.executor || '';
     setTaskExecutionBusyId(task.id);
-    setTaskOperationFeedback({ taskId: task.id, tone: 'working', message: '正在检查资料、权限和 Agent 可用状态…' });
+    setTaskOperationFeedback({ taskId: task.id, tone: 'working', message: prioritizeAutomatic ? '正在提高自动队列优先级，仍会遵守资源限制…' : '正在检查资料、权限和 Agent 可用状态…' });
     try {
-      applyTaskOperationResult(await bridge()?.executeTask?.(task.id, executor), '任务已提交执行。', task);
+      applyTaskOperationResult(await bridge()?.executeTask?.(task.id, executor), prioritizeAutomatic ? '任务已提高优先级，将在资源允许时开始。' : '任务已提交执行。', task);
     } catch (error) {
       const message = `执行任务失败：${error instanceof Error ? error.message : String(error)}`;
       setScheduleMessage(message);
@@ -13874,12 +14142,12 @@ ${JSON.stringify(items, null, 2)}
     }
   };
 
-  const approveTaskFromCenter = (task: TaskCenterItem, decision: 'approved' | 'rejected', reason = '') => {
+  const approveTaskFromCenter = async (task: TaskCenterItem, decision: 'approved' | 'rejected', reason = '') => {
     const actionName = task.status === 'reviewing' ? (decision === 'approved' ? '采用任务结果' : '退回修改') : (decision === 'approved' ? '允许执行' : '忽略任务');
     const highRisk = task.riskLevel === 'high' && decision === 'approved' && task.status !== 'reviewing';
     if (highRisk && !window.confirm(`“${task.title}”会修改正式档案或成长模型，确认继续吗？`)) return;
     const defaultReason = decision === 'approved' ? '用户点击一键采用。' : '用户选择需要修改。';
-    const published = applyTaskOperationResult(bridge()?.approveTask?.(task.id, decision, reason || defaultReason), `${actionName}完成。`, task, task.status === 'reviewing' && decision === 'approved');
+    const published = applyTaskOperationResult(await bridge()?.approveTask?.(task.id, decision, reason || defaultReason), `${actionName}完成。`, task, task.status === 'reviewing' && decision === 'approved');
     const reportIdByKind: Record<string, LearningReportId> = {
       weekly_action: 'daily',
       learning_profile: 'profile',
@@ -13901,20 +14169,20 @@ ${JSON.stringify(items, null, 2)}
     }
   };
 
-  const retryTaskFromCenter = (task: TaskCenterItem) => {
-    applyTaskOperationResult(bridge()?.retryTask?.(task.id), '任务已进入待处理队列。', task);
+  const retryTaskFromCenter = async (task: TaskCenterItem) => {
+    applyTaskOperationResult(await bridge()?.retryTask?.(task.id), '任务已进入待处理队列。', task);
   };
 
-  const cancelTaskFromCenter = (task: TaskCenterItem) => {
-    applyTaskOperationResult(bridge()?.cancelTask?.(task.id, '用户点击忽略本次。'), '已忽略本次任务。', task);
+  const cancelTaskFromCenter = async (task: TaskCenterItem) => {
+    applyTaskOperationResult(await bridge()?.cancelTask?.(task.id, '用户点击忽略本次。'), '已忽略本次任务。', task);
   };
 
-  const deleteTaskHistoryFromCenter = (task: TaskCenterItem) => {
+  const deleteTaskHistoryFromCenter = async (task: TaskCenterItem) => {
     const unstartedCollaboration = task.status === 'pending' && task.kind === 'collaboration_assignment'
       && (task.adapterId || task.executor || 'manual') === 'manual' && Number(task.attempt || 0) === 0 && !task.executionId && !task.result;
     const noun = unstartedCollaboration ? '未开始任务' : '历史任务';
     if (!window.confirm(`确认删除${noun}“${task.title}”吗？\n\n任务卡及其可见状态历史会移除；学生资料、协作审计、已生成产物和远端记录不会删除，也不会因再次扫描而重建该任务卡。`)) return;
-    const deleted = applyTaskOperationResult(bridge()?.deleteTaskHistory?.(task.id), '历史任务已删除。', task);
+    const deleted = applyTaskOperationResult(await bridge()?.deleteTaskHistory?.(task.id), '历史任务已删除。', task);
     if (deleted) {
       setSelectedTaskId('');
       setTaskOperationFeedback(null);
@@ -13974,8 +14242,8 @@ ${JSON.stringify(items, null, 2)}
     try {
       const host = bridge();
       const raw = fromFile
-        ? await (host?.importTaskResultFileAsync?.(task.id) ?? host?.importTaskResult?.(task.id))
-        : await (host?.importTaskResultTextAsync?.(task.id, submittedText) ?? host?.importTaskResultText?.(task.id, submittedText));
+        ? await (host?.importTaskResultFileAsync?.(task.id) ?? await host?.importTaskResult?.(task.id))
+        : await (host?.importTaskResultTextAsync?.(task.id, submittedText) ?? await host?.importTaskResultText?.(task.id, submittedText));
       const parsed = raw ? JSON.parse(raw) : { ok: false, message: '主机未返回导入回执。输入已保留，请检查主机连接。' };
       setScheduleMessage(parsed.message || '导入结束，请查看任务详情。');
       setTaskOperationFeedback({ taskId: task.id, tone: parsed.ok ? 'success' : 'error', message: parsed.message || '导入未完成，内容已保留。' });
@@ -13991,25 +14259,25 @@ ${JSON.stringify(items, null, 2)}
     } finally { taskImportLock.current = false; setTaskImportBusyId(''); }
   };
 
-  const syncAgentResultsFromCenter = () => {
-    applyTaskOperationResult(bridge()?.syncAgentTaskResults?.(taskChannelAgent), `${taskChannelLabel} 结果同步完成。`);
+  const syncAgentResultsFromCenter = async () => {
+    applyTaskOperationResult(await bridge()?.syncAgentTaskResults?.(taskChannelAgent), `${taskChannelLabel} 结果同步完成。`);
   };
 
-  const openTaskCenterFolder = (kind: 'root' | 'agent-inbox' | 'agent-results' | 'manual-outbox' | 'events') => {
-    applyTaskOperationResult(bridge()?.openTaskCenterPath?.(kind, taskChannelAgent), '任务目录已打开。');
+  const openTaskCenterFolder = async (kind: 'root' | 'agent-inbox' | 'agent-results' | 'manual-outbox' | 'events') => {
+    applyTaskOperationResult(await bridge()?.openTaskCenterPath?.(kind, taskChannelAgent), '任务目录已打开。');
   };
 
-  const openTaskResultFromCenter = (task: TaskCenterItem) => {
-    applyTaskOperationResult(bridge()?.openTaskResultPath?.(task.id), '任务结果已打开。', task);
+  const openTaskResultFromCenter = async (task: TaskCenterItem) => {
+    applyTaskOperationResult(await bridge()?.openTaskResultPath?.(task.id), '任务结果已打开。', task);
   };
 
-  const submitDailyFeedbackFromCenter = (task: TaskCenterItem, status: 'completed' | 'partial' | 'skipped') => {
+  const submitDailyFeedbackFromCenter = async (task: TaskCenterItem, status: 'completed' | 'partial' | 'skipped') => {
     const preset = { completed: '本周计划已完成。', partial: '本周计划部分完成。', skipped: '本周计划已跳过。' }[status];
-    applyTaskOperationResult(bridge()?.submitDailyActionFeedback?.(task.id, status, preset), '行动反馈已保存。', task);
+    applyTaskOperationResult(await bridge()?.submitDailyActionFeedback?.(task.id, status, preset), '行动反馈已保存。', task);
   };
 
-  const generateMaintenanceReportForStudent = (student: Student) => {
-    const raw = bridge()?.generateStudentMaintenanceReport?.(student.id);
+  const generateMaintenanceReportForStudent = async (student: Student) => {
+    const raw = await bridge()?.generateStudentMaintenanceReport?.(student.id);
     if (!raw) {
       setScheduleMessage('当前环境不支持生成定时维护报告。');
       return;
@@ -14023,8 +14291,8 @@ ${JSON.stringify(items, null, 2)}
     }
   };
 
-  const checkAllStudentsPathHealth = () => {
-    const raw = bridge()?.checkAllStudentsPathHealth?.();
+  const checkAllStudentsPathHealth = async () => {
+    const raw = await bridge()?.checkAllStudentsPathHealth?.();
     if (!raw) {
       setScheduleMessage('当前环境不支持批量知识库路径核对。');
       return;
@@ -14067,19 +14335,19 @@ ${JSON.stringify(items, null, 2)}
     window.setTimeout(() => setInboxMessage(''), 3600);
   };
 
-  const authorizeArchiveRoot = () => {
+  const authorizeArchiveRoot = async () => {
     if (isWindows && !windowsLicenseActive) {
       setArchiveRootMessage('未激活状态仅支持只读浏览，激活后可更换学生资料根目录。');
       return;
     }
-    const ok = bridge()?.pickArchiveRoot?.();
+    const ok = await bridge()?.pickArchiveRoot?.();
     if (!ok) {
       setArchiveRootMessage('当前环境不支持选择学生资料根目录。');
     }
   };
 
-  const refreshMarkdownFiles = (student: Student) => {
-    const raw = bridge()?.listMarkdownFiles?.(student.id);
+  const refreshMarkdownFiles = async (student: Student) => {
+    const raw = await bridge()?.listMarkdownFiles?.(student.id);
     if (!raw) {
       setMarkdownMessage('当前环境不支持读取本机 Markdown 档案，请在 Android APK 中使用。');
       return;
@@ -14116,8 +14384,8 @@ ${JSON.stringify(items, null, 2)}
     }
   };
 
-  const openMarkdownFile = (file: MarkdownFile) => {
-    const raw = bridge()?.readMarkdownFile?.(selectedStudent.id, file.id);
+  const openMarkdownFile = async (file: MarkdownFile) => {
+    const raw = await bridge()?.readMarkdownFile?.(selectedStudent.id, file.id);
     if (!raw) {
       setMarkdownMessage('当前环境不支持读取 Markdown 文件。');
       return;
@@ -14173,9 +14441,9 @@ ${JSON.stringify(items, null, 2)}
     }
   };
 
-  const refreshLearningReports = (student: Student | undefined = selectedStudent) => {
+  const refreshLearningReports = async (student: Student | undefined = selectedStudent) => {
     if (!student) return;
-    const raw = bridge()?.listLearningReports?.(student.id);
+    const raw = await bridge()?.listLearningReports?.(student.id);
     if (!raw) {
       setLearningReportMessage('当前环境不支持读取学情报告。');
       return;
@@ -14282,9 +14550,9 @@ ${JSON.stringify(items, null, 2)}
     };
   }, [learningReportTaskIds.join('|'), selectedStudent?.id]);
 
-  const openLearningReport = (reportId: LearningReportId, student: Student | undefined = selectedStudent) => {
+  const openLearningReport = async (reportId: LearningReportId, student: Student | undefined = selectedStudent) => {
     if (!student) return;
-    const raw = bridge()?.readLearningReport?.(student.id, reportId);
+    const raw = await bridge()?.readLearningReport?.(student.id, reportId);
     if (!raw) {
       setLearningReportMessage('当前环境不支持读取学情报告正文。');
       return;
@@ -14310,13 +14578,13 @@ ${JSON.stringify(items, null, 2)}
     }
   };
 
-  const toggleLearningReportEvidence = () => {
+  const toggleLearningReportEvidence = async () => {
     if (learningReportEvidence) {
       setLearningReportEvidence(null);
       return;
     }
     if (!selectedStudent) return;
-    const raw = bridge()?.getLearningReportEvidence?.(selectedStudent.id, selectedLearningReportId);
+    const raw = await bridge()?.getLearningReportEvidence?.(selectedStudent.id, selectedLearningReportId);
     if (!raw) {
       setLearningReportMessage('当前环境不支持查看报告依据。');
       return;
@@ -14330,9 +14598,9 @@ ${JSON.stringify(items, null, 2)}
     }
   };
 
-  const openLearningReportEvidenceSource = (evidenceId: string, sourceIndex: number) => {
+  const openLearningReportEvidenceSource = async (evidenceId: string, sourceIndex: number) => {
     if (!selectedStudent) return;
-    const raw = bridge()?.openLearningReportEvidenceSource?.(
+    const raw = await bridge()?.openLearningReportEvidenceSource?.(
       selectedStudent.id,
       selectedLearningReportId,
       evidenceId,
@@ -14377,9 +14645,9 @@ ${JSON.stringify(items, null, 2)}
     }
   };
 
-  const exportSelectedEducationArchive = () => {
+  const exportSelectedEducationArchive = async () => {
     if (!selectedStudent) return;
-    const raw = bridge()?.exportEducationArchive?.(selectedStudent.id);
+    const raw = await bridge()?.exportEducationArchive?.(selectedStudent.id);
     if (!raw) {
       setLearningReportMessage('当前环境不支持导出完整教育档案。');
       return;
@@ -14412,9 +14680,9 @@ ${JSON.stringify(items, null, 2)}
     }
   };
 
-  const openEducationPublishing = (sourceType: PublishingSourceType, sourceId: string) => {
+  const openEducationPublishing = async (sourceType: PublishingSourceType, sourceId: string) => {
     if (!selectedStudent) return;
-    const raw = bridge()?.getEducationPublishingState?.(selectedStudent.id, sourceType, sourceId);
+    const raw = await bridge()?.getEducationPublishingState?.(selectedStudent.id, sourceType, sourceId);
     if (!raw) {
       const message = '当前环境不支持教育内容智能出版。';
       sourceType === 'learning_report' ? setLearningReportMessage(message) : setMarkdownMessage(message);
@@ -14442,9 +14710,9 @@ ${JSON.stringify(items, null, 2)}
     }
   };
 
-  const refreshEducationPublishing = () => {
+  const refreshEducationPublishing = async () => {
     if (!selectedStudent || !publishingState?.source) return;
-    const raw = bridge()?.getEducationPublishingState?.(selectedStudent.id, publishingState.source.type, publishingState.source.id);
+    const raw = await bridge()?.getEducationPublishingState?.(selectedStudent.id, publishingState.source.type, publishingState.source.id);
     if (!raw) return;
     try { setPublishingState(JSON.parse(raw) as EducationPublishingState); } catch { setPublishingMessage('生成记录刷新失败。'); }
   };
@@ -14511,7 +14779,7 @@ ${JSON.stringify(items, null, 2)}
       const started = JSON.parse(await starter(selectedStudent.id, JSON.stringify(options))) as { ok?: boolean; message?: string; status?: string };
       if (!started.ok) throw new Error(started.message || 'Agent 任务未能启动。');
       for (let attempt = 0; attempt < 120; attempt += 1) {
-        const state = JSON.parse(reader(selectedStudent.id, JSON.stringify(options))) as { ok?: boolean; status?: string; message?: string; draft?: EducationPublicationDraft; fallback?: boolean };
+        const state = JSON.parse(await reader(selectedStudent.id, JSON.stringify(options))) as { ok?: boolean; status?: string; message?: string; draft?: EducationPublicationDraft; fallback?: boolean };
         if (state.status === 'succeeded' && state.draft && !state.fallback) {
           setPublishingDrafts((current) => ({ ...current, [publishingTemplateId]: state.draft! }));
           setPublishingMessage(state.message || 'Agent 草稿已通过证据优先校验，可继续编辑或直接生成。');
@@ -14556,16 +14824,16 @@ ${JSON.stringify(items, null, 2)}
     }
   };
 
-  const openPublicationRecord = (recordId: string) => {
+  const openPublicationRecord = async (recordId: string) => {
     if (!selectedStudent) return;
-    const raw = bridge()?.openEducationPublication?.(selectedStudent.id, recordId);
+    const raw = await bridge()?.openEducationPublication?.(selectedStudent.id, recordId);
     if (!raw) return;
     try { setPublishingMessage((JSON.parse(raw) as { message?: string }).message || ''); } catch { setPublishingMessage('无法定位生成文件。'); }
   };
 
-  const deletePublicationRecord = (recordId: string) => {
+  const deletePublicationRecord = async (recordId: string) => {
     if (!selectedStudent || !window.confirm('删除这份生成文件和记录？原始档案不会被修改。')) return;
-    const raw = bridge()?.deleteEducationPublication?.(selectedStudent.id, recordId);
+    const raw = await bridge()?.deleteEducationPublication?.(selectedStudent.id, recordId);
     if (!raw) return;
     try {
       const result = JSON.parse(raw) as { ok?: boolean; message?: string };
@@ -14588,9 +14856,9 @@ ${JSON.stringify(items, null, 2)}
     finally { setPublishingBusy(false); }
   };
 
-  const ensureLearningReportTemplates = (student: Student | undefined = selectedStudent) => {
+  const ensureLearningReportTemplates = async (student: Student | undefined = selectedStudent) => {
     if (!student) return;
-    const raw = bridge()?.ensureLearningReports?.(student.id);
+    const raw = await bridge()?.ensureLearningReports?.(student.id);
     if (!raw) {
       setLearningReportMessage('当前环境不支持补建学情报告目录。');
       return;
@@ -14609,7 +14877,7 @@ ${JSON.stringify(items, null, 2)}
     }
   };
 
-  const openToolDownload = (tool: AgentToolId) => {
+  const openToolDownload = async (tool: AgentToolId) => {
     const urls: Record<AgentToolId, string> = {
       qclaw: 'https://qclaw.qq.com/',
       marvis: 'https://marvis.qq.com/',
@@ -14629,39 +14897,39 @@ ${JSON.stringify(items, null, 2)}
       fastgpt: 'https://fastgpt.in/',
     };
     const url = urls[tool];
-    const ok = bridge()?.openExternalUrl?.(url);
+    const ok = await bridge()?.openExternalUrl?.(url);
     if (!ok) window.open(url, '_blank');
   };
 
-  const openUserAgreement = () => {
-    const ok = bridge()?.openExternalUrl?.(userAgreementUrl);
+  const openUserAgreement = async () => {
+    const ok = await bridge()?.openExternalUrl?.(userAgreementUrl);
     if (!ok) window.open(userAgreementUrl, '_blank', 'noopener,noreferrer');
   };
 
-  const openPrivacyPolicy = () => {
-    const ok = bridge()?.openExternalUrl?.(privacyPolicyUrl);
+  const openPrivacyPolicy = async () => {
+    const ok = await bridge()?.openExternalUrl?.(privacyPolicyUrl);
     if (!ok) window.open(privacyPolicyUrl, '_blank', 'noopener,noreferrer');
   };
 
-  const startHostService = () => {
-    applyHostServiceResult(bridge()?.startHostService?.());
+  const startHostService = async () => {
+    applyHostServiceResult(await bridge()?.startHostService?.());
   };
 
-  const stopHostService = () => {
-    applyHostServiceResult(bridge()?.stopHostService?.());
+  const stopHostService = async () => {
+    applyHostServiceResult(await bridge()?.stopHostService?.());
   };
 
-  const saveHostServicePort = () => {
+  const saveHostServicePort = async () => {
     const port = Number(hostPortDraft);
     if (!Number.isInteger(port) || port < 1024 || port > 65535) {
       setHostServiceMessage('端口必须是 1024-65535 之间的数字。');
       return;
     }
-    applyHostServiceResult(bridge()?.setHostServicePort?.(port));
+    applyHostServiceResult(await bridge()?.setHostServicePort?.(port));
   };
 
   const copyHostConnectionInfo = async () => {
-    const raw = bridge()?.getHostConnectionInfo?.();
+    const raw = await bridge()?.getHostConnectionInfo?.();
     if (!raw) {
       setHostServiceMessage('当前环境不支持复制主机连接信息。');
       return;
@@ -14697,8 +14965,8 @@ ${JSON.stringify(items, null, 2)}
     setHostServiceMessage(success ? '已复制平板扫码配对内容。' : '扫码配对内容复制失败，请重试。');
   };
 
-  const runHostDiagnostics = () => {
-    const raw = bridge()?.getHostServiceDiagnostics?.();
+  const runHostDiagnostics = async () => {
+    const raw = await bridge()?.getHostServiceDiagnostics?.();
     if (!raw) {
       setHostServiceMessage('当前环境不支持主机服务诊断。');
       return;
@@ -14712,8 +14980,8 @@ ${JSON.stringify(items, null, 2)}
     }
   };
 
-  const repairHostService = () => {
-    const raw = bridge()?.repairHostService?.();
+  const repairHostService = async () => {
+    const raw = await bridge()?.repairHostService?.();
     if (!raw) {
       setHostServiceMessage('当前环境不支持主机服务一键修复。');
       return;
@@ -14728,8 +14996,8 @@ ${JSON.stringify(items, null, 2)}
     }
   };
 
-  const exportHostUploadRecords = () => {
-    const raw = bridge()?.exportHostUploadRecords?.();
+  const exportHostUploadRecords = async () => {
+    const raw = await bridge()?.exportHostUploadRecords?.();
     if (!raw) {
       setHostServiceMessage('当前环境不支持导出上传记录。');
       return;
@@ -14742,8 +15010,8 @@ ${JSON.stringify(items, null, 2)}
     }
   };
 
-  const openHostUploadRecord = (record: HostUploadRecord) => {
-    const raw = bridge()?.openHostUploadRecord?.(record.id);
+  const openHostUploadRecord = async (record: HostUploadRecord) => {
+    const raw = await bridge()?.openHostUploadRecord?.(record.id);
     if (!raw) {
       setHostServiceMessage('当前环境不支持打开文件位置。');
       return;
@@ -14756,16 +15024,16 @@ ${JSON.stringify(items, null, 2)}
     }
   };
 
-  const clearHostUploadRecords = () => {
+  const clearHostUploadRecords = async () => {
     if (!window.confirm('确认清空上传历史记录吗？\n\n只会清理记录，不会删除已经上传的资料文件。')) return;
-    const raw = bridge()?.clearHostUploadRecords?.();
+    const raw = await bridge()?.clearHostUploadRecords?.();
     applyHostServiceResult(raw);
     setHostUploadRecords([]);
     setHostServiceMessage('已清空上传历史记录，文件本身不会被删除。');
   };
 
-  const setUploadRecordStatus = (record: HostUploadRecord, status: string) => {
-    const raw = bridge()?.setHostUploadRecordStatus?.(record.id, status);
+  const setUploadRecordStatus = async (record: HostUploadRecord, status: string) => {
+    const raw = await bridge()?.setHostUploadRecordStatus?.(record.id, status);
     if (!raw) {
       setHostServiceMessage('当前环境不支持修改上传记录状态。');
       return;
@@ -14865,8 +15133,12 @@ ${JSON.stringify(items, null, 2)}
     }
   };
 
-  const exportSelectedStudentForAndroid = async () => {
-    if (!selectedStudent) return;
+  const exportSelectedStudentForAndroid = async (studentId = studentOfflineMigrationStudentId) => {
+    const exportStudent = students.find((student) => student.id === studentId);
+    if (!exportStudent) {
+      setStudentOfflineMigrationMessage('请先选择需要导出的学生。');
+      return;
+    }
     const inspectApi = bridge()?.getStudentOfflineMigrationPlan;
     const exportApi = bridge()?.createStudentOfflineMigration;
     if (!inspectApi || !exportApi) {
@@ -14876,14 +15148,14 @@ ${JSON.stringify(items, null, 2)}
     setStudentOfflineMigrationBusy(true);
     setStudentOfflineMigrationMessage('正在精确盘点该学生的档案、关联学习项目和有效课程…');
     try {
-      const plan = JSON.parse(await inspectApi(selectedStudent.id)) as StudentOfflineMigrationPlan;
+      const plan = JSON.parse(await inspectApi(exportStudent.id)) as StudentOfflineMigrationPlan;
       setStudentOfflineMigrationPlan(plan);
       if (!plan.ok) {
         setStudentOfflineMigrationMessage(plan.message || '迁移内容盘点失败。');
         return;
       }
       const confirmed = window.confirm(
-        `将为“${selectedStudent.name}”导出 Android 单机版 U 盘迁移目录。\n\n` +
+        `将为“${exportStudent.name}”导出 Android 单机版 U 盘迁移目录。\n\n` +
         `${plan.fileCount || 0} 个文件，共 ${formatFileSize(plan.totalBytes || 0)}\n` +
         `${plan.projectCount || 0} 个关联学习项目\n` +
         `${plan.courseCount || 0} 门有效课程（平台 ${plan.platformCourseCount || 0}、机构 ${plan.tenantCourseCount || 0}）\n\n` +
@@ -14895,7 +15167,7 @@ ${JSON.stringify(items, null, 2)}
       }
       setStudentOfflineMigrationProgress({ phase: 'exporting', completedFiles: 0, totalFiles: plan.fileCount || 0 });
       setStudentOfflineMigrationMessage('正在写入迁移目录；请不要拔出外接存储。');
-      const result = JSON.parse(await exportApi(selectedStudent.id)) as { ok?: boolean; cancelled?: boolean; message?: string; packagePath?: string };
+      const result = JSON.parse(await exportApi(exportStudent.id)) as { ok?: boolean; cancelled?: boolean; message?: string; packagePath?: string };
       setStudentOfflineMigrationMessage(result.message || (result.ok ? `迁移目录已创建：${result.packagePath}` : '迁移目录创建失败。'));
     } catch {
       setStudentOfflineMigrationMessage('Android 单机版迁移导出结果无法解析。');
@@ -14988,8 +15260,8 @@ ${JSON.stringify(items, null, 2)}
     }
   };
 
-  const openHostMigrationRecord = () => {
-    const raw = bridge()?.openHostMigrationRecord?.();
+  const openHostMigrationRecord = async () => {
+    const raw = await bridge()?.openHostMigrationRecord?.();
     if (!raw) {
       setHostMigrationMessage('当前环境不支持查看迁移记录。');
       return;
@@ -15002,9 +15274,9 @@ ${JSON.stringify(items, null, 2)}
     }
   };
 
-  const resetHostApiToken = () => {
+  const resetHostApiToken = async () => {
     if (!window.confirm('确认重置主机 API Token 吗？\n\n旧的手工连接信息会失效，已扫码绑定的设备 token 不会被删除。')) return;
-    const raw = bridge()?.resetHostApiToken?.();
+    const raw = await bridge()?.resetHostApiToken?.();
     if (!raw) {
       setHostServiceMessage('当前环境不支持重置 API Token。');
       return;
@@ -15019,8 +15291,8 @@ ${JSON.stringify(items, null, 2)}
     }
   };
 
-  const exportHostLogs = () => {
-    const raw = bridge()?.exportHostLogs?.();
+  const exportHostLogs = async () => {
+    const raw = await bridge()?.exportHostLogs?.();
     if (!raw) {
       setHostServiceMessage('当前环境不支持导出诊断日志。');
       return;
@@ -15033,12 +15305,12 @@ ${JSON.stringify(items, null, 2)}
     }
   };
 
-  const openStudentRawDir = (student: Student) => {
+  const openStudentRawDir = async (student: Student) => {
     if (isWindows && !windowsLicenseActive) {
       setHostServiceMessage('未激活状态仅支持控制台内只读浏览，激活后可打开本机原始资料库。');
       return;
     }
-    const raw = bridge()?.openStudentRawDir?.(student.id);
+    const raw = await bridge()?.openStudentRawDir?.(student.id);
     if (!raw) {
       setHostServiceMessage('当前环境不支持打开学生原始资料库。');
       return;
@@ -15051,7 +15323,7 @@ ${JSON.stringify(items, null, 2)}
     }
   };
 
-  const migrateSelectedStudentWorkspace = () => {
+  const migrateSelectedStudentWorkspace = async () => {
     if (!selectedStudent || !studentEditDraft) return;
     if (isWindows && !windowsLicenseActive) {
       setDigestMessage('未激活状态仅支持只读浏览，激活后可迁移或重命名知识库目录。');
@@ -15061,7 +15333,7 @@ ${JSON.stringify(items, null, 2)}
     const cleanName = sanitizeName(studentEditDraft.name);
     const confirmed = window.confirm(`确认将「${selectedStudent.name}」的本机知识库目录迁移/重命名为「${cleanName}知识库」吗？\n\n这会移动本机目录；建议先确认所选 Agent 没有正在处理该学生资料。`);
     if (!confirmed) return;
-    const raw = bridge()?.migrateStudentWorkspace?.(selectedStudent.id, cleanName);
+    const raw = await bridge()?.migrateStudentWorkspace?.(selectedStudent.id, cleanName);
     if (!raw) {
       setDigestMessage('当前环境不支持迁移本机知识库目录。');
       return;
@@ -15120,7 +15392,7 @@ ${JSON.stringify(items, null, 2)}
         setPathBindingMessage(result.message || (result.cancelled ? '已取消目录绑定，未修改任何配置。' : '目录绑定与路径修复失败。'));
         return;
       }
-      const refreshedRaw = bridge()?.getStudents?.();
+      const refreshedRaw = await bridge()?.getStudents?.();
       const refreshedResult = refreshedRaw ? JSON.parse(refreshedRaw) as { ok?: boolean; students?: Student[] } : null;
       const authoritativeStudents = refreshedResult?.ok && Array.isArray(refreshedResult.students)
         ? normalizeStudents(refreshedResult.students)
@@ -15149,13 +15421,13 @@ ${JSON.stringify(items, null, 2)}
     setDeviceNameDraft(device.name);
   };
 
-  const renameDevice = (device: HostDevice) => {
+  const renameDevice = async (device: HostDevice) => {
     const name = deviceNameDraft.trim();
     if (!name) {
       setHostServiceMessage('设备名称不能为空。');
       return;
     }
-    const raw = bridge()?.renameHostDevice?.(device.id, name);
+    const raw = await bridge()?.renameHostDevice?.(device.id, name);
     if (!raw) {
       setHostServiceMessage('当前环境不支持设备重命名。');
       return;
@@ -15174,27 +15446,27 @@ ${JSON.stringify(items, null, 2)}
     setDeviceNameDraft('');
   };
 
-  const revokeDevice = (device: HostDevice) => {
+  const revokeDevice = async (device: HostDevice) => {
     const confirmed = window.confirm(`确认撤销「${device.name}」的主机访问权限吗？`);
     if (!confirmed) return;
-    const raw = bridge()?.revokeHostDevice?.(device.id);
+    const raw = await bridge()?.revokeHostDevice?.(device.id);
     applyHostServiceResult(raw);
   };
 
-  const restoreDevice = (device: HostDevice) => {
-    const raw = bridge()?.restoreHostDevice?.(device.id);
+  const restoreDevice = async (device: HostDevice) => {
+    const raw = await bridge()?.restoreHostDevice?.(device.id);
     applyHostServiceResult(raw);
   };
 
-  const deleteDevice = (device: HostDevice) => {
+  const deleteDevice = async (device: HostDevice) => {
     const confirmed = window.confirm(`确认永久删除「${device.name}」的设备记录吗？\n\n上传历史仍会保留，但该设备如需再次使用必须重新连接。`);
     if (!confirmed) return;
-    const raw = bridge()?.deleteHostDevice?.(device.id);
+    const raw = await bridge()?.deleteHostDevice?.(device.id);
     applyHostServiceResult(raw);
   };
 
-  const changeHostUsageMode = (mode: 'host' | 'host_terminal') => {
-    const raw = bridge()?.setHostUsageMode?.(mode);
+  const changeHostUsageMode = async (mode: 'host' | 'host_terminal') => {
+    const raw = await bridge()?.setHostUsageMode?.(mode);
     if (!raw) {
       setHostServiceMessage('当前环境不支持切换使用模式。');
       return;
@@ -15203,8 +15475,8 @@ ${JSON.stringify(items, null, 2)}
     setHomeMode(mode === 'host_terminal' ? 'host' : 'local');
   };
 
-  const setDeviceTerminalMode = (device: HostDevice, terminalMode: 'personal' | 'shared', boundStudentId = '') => {
-    const raw = bridge()?.setHostDeviceTerminalMode?.(device.id, terminalMode, boundStudentId);
+  const setDeviceTerminalMode = async (device: HostDevice, terminalMode: 'personal' | 'shared', boundStudentId = '') => {
+    const raw = await bridge()?.setHostDeviceTerminalMode?.(device.id, terminalMode, boundStudentId);
     if (!raw) {
       setHostServiceMessage('当前版本不支持设置终端模式。');
       return;
@@ -15227,20 +15499,20 @@ ${JSON.stringify(items, null, 2)}
     }
   };
 
-  const saveHostIdentityName = () => {
+  const saveHostIdentityName = async () => {
     const name = hostNameDraft.trim();
     if (!name) {
       setHostServiceMessage('主机名称不能为空。');
       return;
     }
-    runPairingAction(bridge()?.renameHostIdentity?.(name), '主机名称已更新。');
+    runPairingAction(await bridge()?.renameHostIdentity?.(name), '主机名称已更新。');
     setHostNameDraft('');
   };
 
-  const findNearbyTerminals = () => runPairingAction(bridge()?.findLanTerminals?.() ?? bridge()?.findLanTablets?.(), '正在查找局域网学生终端。');
-  const inviteNearbyTerminal = (terminalId: string) => runPairingAction(bridge()?.inviteLanTerminal?.(terminalId) ?? bridge()?.inviteLanTablet?.(terminalId), '已发送连接邀请。');
-  const acceptIncomingPair = (requestId: string) => runPairingAction(bridge()?.acceptHostPairRequest?.(requestId), '已接受连接请求。');
-  const rejectIncomingPair = (requestId: string) => runPairingAction(bridge()?.rejectPairRequest?.(requestId), '已拒绝连接请求。');
+  const findNearbyTerminals = async () => runPairingAction(await bridge()?.findLanTerminals?.() ?? await bridge()?.findLanTablets?.(), '正在查找局域网学生终端。');
+  const inviteNearbyTerminal = async (terminalId: string) => runPairingAction(await bridge()?.inviteLanTerminal?.(terminalId) ?? await bridge()?.inviteLanTablet?.(terminalId), '已发送连接邀请。');
+  const acceptIncomingPair = async (requestId: string) => runPairingAction(await bridge()?.acceptHostPairRequest?.(requestId), '已接受连接请求。');
+  const rejectIncomingPair = async (requestId: string) => runPairingAction(await bridge()?.rejectPairRequest?.(requestId), '已拒绝连接请求。');
 
   const copyHostDiagnostics = async () => {
     const payload = {
@@ -15275,19 +15547,19 @@ ${JSON.stringify(items, null, 2)}
     return `最近访问：${seen}${ip}`;
   };
 
-  const checkUpdate = () => {
+  const checkUpdate = async () => {
     setCheckingUpdate(true);
     setUpdateInfo(null);
-    const ok = bridge()?.checkUpdate?.(updateManifestUrl, currentVersionCode);
+    const ok = await bridge()?.checkUpdate?.(updateManifestUrl, currentVersionCode);
     if (!ok) {
       setCheckingUpdate(false);
       setUpdateInfo({ hasUpdate: false, message: '当前环境不支持原生更新检查，请在 Android APK 中使用。' });
     }
   };
 
-  const installUpdate = () => {
+  const installUpdate = async () => {
     if (!updateInfo?.apkUrl) return;
-    const ok = bridge()?.downloadAndInstallUpdate?.(updateInfo.apkUrl);
+    const ok = await bridge()?.downloadAndInstallUpdate?.(updateInfo.apkUrl);
     if (!ok) {
       setUpdateInfo({ ...updateInfo, message: '无法启动下载，请检查网络或安装权限。' });
     }
@@ -15760,10 +16032,9 @@ ${JSON.stringify(items, null, 2)}
   const showingAgentMemoryManagement = activeSection === 'memory' || (agentSettingsPanel === 'data' && agentDataTab === 'memory');
   const showingAgentMemory = showingAgentMemoryManagement || activeSection === 'capture';
   const showingAgentPersona = activeSection === 'soul' || (agentSettingsPanel === 'data' && agentDataTab === 'persona');
-  const showingAgentControl = agentSettingsPanel === 'tools';
-  const openAgentControl = () => { setNavigationGroup('settings'); setSettingsSubmenu('agent-qa'); setAgentSettingsTab('tools'); setActivePageTab('settings-agent'); setActiveSection('settings'); };
+  const openAgentControl = () => { setNavigationGroup('settings'); setSettingsSubmenu('agent-qa'); setAgentSettingsTab('tools'); setAgentControlSubtab('tool-control'); setActivePageTab('settings-agent'); setActiveSection('settings'); };
   useEffect(() => {
-    if (activeSection === 'agent-capabilities') { setNavigationGroup('settings'); setSettingsSubmenu('agent-qa'); setAgentSettingsTab('connection'); setActivePageTab('settings-agent'); setActiveSection('settings'); }
+    if (activeSection === 'agent-capabilities') { setNavigationGroup('settings'); setSettingsSubmenu('agent-qa'); setAgentSettingsTab('tools'); setAgentControlSubtab('dispatch'); setActivePageTab('settings-agent'); setActiveSection('settings'); }
   }, [activeSection, agentSettingsPanel]);
 
   const workspaceTabs: Partial<Record<NavigationGroup, Array<{ id: string; label: string; section: Section; action?: () => void }>>> = {
@@ -16536,245 +16807,17 @@ ${JSON.stringify(items, null, 2)}
                     <span>3. 绑定学生终端并设置个人终端或共享终端</span>
                     <button className="secondary compact" onClick={copyHostConnectionInfo} disabled={!windowsLicenseActive}>复制连接信息</button>
                   </div>
-                  <div className={(hostUploadRecords.length || hostServiceStatus?.recentUploads?.length || 0) > 0 ? 'check-row done' : 'check-row'}>
+                  <div className={(hostServiceStatus?.recentUploads?.length || 0) > 0 ? 'check-row done' : 'check-row'}>
                     <CheckCircle2 size={17} />
                     <span>4. 学生终端上传资料后，在上传记录中确认状态</span>
-                    <button className="secondary compact" onClick={refreshHostUploadRecords}>刷新记录</button>
+                    <button className="secondary compact" onClick={() => { setSettingsSubmenu('connection'); setActiveSection('settings'); }}>查看上传记录</button>
                   </div>
                 </div>
-              </section>
-            )}
-            {isWindows && activeSection === 'settings' && homeMode === 'host' && (
-              <section className="panel tool-home-panel">
-                <div className="panel-heading">
-                  <div>
-                    <h2>主机服务</h2>
-                    <p>用于 Android、Windows 学生终端上传学习资料，并读取学生学情分析汇总中的 Markdown 档案。</p>
-                  </div>
-                  <RefreshCw size={22} />
-                </div>
-                <div className="status-grid">
-                  <div className="status-card">
-                    <span>服务状态</span>
-                    <strong>{hostServiceStatus?.running ? '运行中' : '未启动'}</strong>
-                  </div>
-                  <div className="status-card">
-                    <span>局域网地址</span>
-                    <strong>{hostServiceStatus?.serverUrl ?? `http://127.0.0.1:${hostServiceStatus?.port ?? 18777}`}</strong>
-                  </div>
-                  <div className="status-card">
-                    <span>Tailscale 地址</span>
-                    <strong>{hostServiceStatus?.tailscaleUrl || hostServiceStatus?.tailscaleUrls?.[0] || '未检测到'}</strong>
-                  </div>
-                  <div className="status-card">
-                    <span>当前连接模式</span>
-                    <strong>{connectionModeLabel(hostServiceStatus?.connectionMode)}</strong>
-                  </div>
-                  <div className="status-card">
-                    <span>服务端口</span>
-                    <strong>{hostServiceStatus?.port ?? 18777}</strong>
-                  </div>
-                  <div className="status-card">
-                    <span>今日上传</span>
-                    <strong>{hostServiceStatus?.todayUploadCount ?? 0} 个文件</strong>
-                  </div>
-                  <div className="status-card">
-                    <span>待消化资料</span>
-                    <strong>{hostPendingDigestTotal} 个</strong>
-                  </div>
-                  <div className="status-card">
-                    <span>学生数</span>
-                    <strong>{hostServiceStatus?.studentCount ?? students.length} 位</strong>
-                  </div>
-                </div>
-                {!windowsLicenseActive && (
-                  <div className="notice warning-notice">
-                    <strong>主机服务需要激活后使用</strong>
-                    <p>{licenseRestrictionText}</p>
-                  </div>
-                )}
-                {windowsLicenseActive && renderHostPairingPanel()}
-                <div className="actions">
-                  <button className="secondary" onClick={refreshHostServiceStatus}>
-                    <RefreshCw size={18} />
-                    刷新服务
-                  </button>
-                  <button className="secondary" onClick={runHostDiagnostics}>
-                    <ListChecks size={18} />
-                    运行诊断
-                  </button>
-                  <button className="secondary" onClick={copyHostDiagnostics}>
-                    <Clipboard size={18} />
-                    复制诊断信息
-                  </button>
-                  <button className="secondary" onClick={repairHostService} disabled={!windowsLicenseActive}>
-                    <RefreshCw size={18} />
-                    修复/重启服务
-                  </button>
-                  <button className="primary" onClick={hostServiceStatus?.running ? stopHostService : startHostService} disabled={!windowsLicenseActive && !hostServiceStatus?.running}>
-                    {hostServiceStatus?.running ? '停止服务' : '启动服务'}
-                  </button>
-                  <button className="secondary" onClick={copyHostConnectionInfo} disabled={!windowsLicenseActive}>
-                    <Clipboard size={18} />
-                    复制学生终端连接信息
-                  </button>
-                </div>
-                {hostDiagnostics?.checks && (
-                  <div className="diagnostic-list">
-                    {hostDiagnostics.checks.map((check) => (
-                      <div className={check.ok ? 'diagnostic-item ok' : 'diagnostic-item warn'} key={check.label}>
-                        <strong>{check.label}</strong>
-                        <span>{check.detail}</span>
-                        {check.suggestion && <small>{check.suggestion}</small>}
-                      </div>
-                    ))}
-                  </div>
-                )}
-                <div className="upload-record-list">
-                  <div className="mini-heading">
-                    <div>
-                      <strong>上传记录</strong>
-                      <span>学生终端上传成功后会出现在这里，便于确认资料进入了对应学生或项目原始资料库。</span>
-                    </div>
-                    <div className="mini-actions">
-                      <button className="secondary compact" onClick={refreshHostUploadRecords}>
-                        <RefreshCw size={16} />
-                        刷新
-                      </button>
-                      <button className="secondary compact" onClick={exportHostUploadRecords}>
-                        <FileDown size={16} />
-                        导出 CSV
-                      </button>
-                      <button className="secondary compact" onClick={clearHostUploadRecords} disabled={!windowsLicenseActive}>
-                        清理记录
-                      </button>
-                    </div>
-                  </div>
-                  <div className="upload-record-controls">
-                    <input
-                      value={hostUploadSearch}
-                      onChange={(event) => setHostUploadSearch(event.target.value)}
-                      placeholder="搜索文件名、学生、设备或路径"
-                    />
-                    <select value={hostUploadStudentFilter} onChange={(event) => setHostUploadStudentFilter(event.target.value)}>
-                      <option value="all">全部学生</option>
-                      {students.map((student) => (
-                        <option value={student.id} key={student.id}>{student.name}</option>
-                      ))}
-                    </select>
-                    <select value={hostUploadDeviceFilter} onChange={(event) => setHostUploadDeviceFilter(event.target.value)}>
-                      <option value="all">全部设备</option>
-                      {(hostServiceStatus?.devices ?? []).map((device) => (
-                        <option value={device.id} key={device.id}>{device.name}</option>
-                      ))}
-                    </select>
-                    <select value={hostUploadDateFilter} onChange={(event) => setHostUploadDateFilter(event.target.value)}>
-                      <option value="all">全部时间</option>
-                      <option value="today">今天</option>
-                      <option value="7d">近 7 天</option>
-                      <option value="30d">近 30 天</option>
-                    </select>
-                    <select value={hostUploadStatusFilter} onChange={(event) => setHostUploadStatusFilter(event.target.value)}>
-                      <option value="all">全部状态</option>
-                      <option value="pending_digest">待消化</option>
-                      <option value="submitted">已提交消化</option>
-                      <option value="digesting">消化中</option>
-                      <option value="processed">已处理完成</option>
-                      <option value="failed">消化失败</option>
-                      <option value="ignored">已忽略</option>
-                    </select>
-                    <span>共 {hostUploadRecords.length || hostServiceStatus?.recentUploads?.length || 0} 条</span>
-                  </div>
-                  {filteredHostUploadRecords.length === 0 && <p className="muted-text">暂无上传记录。</p>}
-                  {filteredHostUploadRecords.length > 0 && (
-                    <div className="upload-record-scroll">
-                      {filteredHostUploadRecords.slice(0, 80).map((record) => (
-                        <article className="upload-record-item" key={record.id}>
-                          <div>
-                            <strong>{record.filename}</strong>
-                            <span>{record.studentName || '未知学生'} · {record.deviceName || '未知设备'}</span>
-                            <small>{uploadStatusLabel(record.status)}</small>
-                            {record.path && <small>{record.path}</small>}
-                          </div>
-                          <div className="upload-record-meta">
-                            <small>{record.uploadedAt ? new Date(record.uploadedAt).toLocaleString() : ''}</small>
-                            <button className="secondary compact" onClick={() => setUploadRecordStatus(record, 'submitted')}>
-                              提交消化
-                            </button>
-                            <button className="secondary compact" onClick={() => setUploadRecordStatus(record, 'processed')}>
-                              处理完成
-                            </button>
-                            <button className="secondary compact" onClick={() => setUploadRecordStatus(record, 'failed')}>
-                              标记失败
-                            </button>
-                            <button className="secondary compact" onClick={() => openHostUploadRecord(record)}>
-                              打开位置
-                            </button>
-                          </div>
-                        </article>
-                      ))}
-                    </div>
-                  )}
-                  {filteredHostUploadRecords.length > 80 && <p className="muted-text">仅显示前 80 条，请用搜索缩小范围或导出 CSV 查看全部。</p>}
-                </div>
-                {hostServiceStatus?.lastError && <div className="notice danger">服务错误：{hostServiceStatus.lastError}</div>}
-                {hostServiceMessage && <div className="notice muted">{hostServiceMessage}</div>}
               </section>
             )}
             {!isWindows && <details className="home-advanced-tools">
               <summary>高级工具与版本</summary>
               <div className="home-advanced-tools-body">
-            <section className="panel tool-home-panel">
-              <div className="panel-heading">
-                <div>
-                  <h2>Agent 工具控制</h2>
-                    <p>选择默认 Agent 工具，检查本地工具状态，或打开网页/平台型工具入口。</p>
-                </div>
-                <Bot size={22} />
-              </div>
-              <AgentToolCompactSelector
-                value={draft.agentTool}
-                onChange={(toolId) => {
-                  setDraft({ ...draft, agentTool: toolId });
-                  setAgentBindingMode(agentBindingModeForTool(toolId));
-                }}
-                label="默认 Agent 工具"
-              />
-              <div className="agent-status-compact-list">
-                {agentToolOptions.map((baseTool) => {
-                  const tool = getAgentToolProfile(baseTool.id);
-                  const install = installForTool(tool.id);
-                  const opened = toolOpenState[tool.id];
-                  return (
-                    <article className="agent-status-line" key={tool.id}>
-                      <div className="agent-status-main">
-                        <strong>{tool.name}</strong>
-                        <span>{install?.installed ? `已安装${install.version ? ` ${install.version}` : ''}` : '未检测到安装'}</span>
-                        {(install?.appPath || install?.exePath) && <small>{install.appPath || install.exePath}</small>}
-                      </div>
-                      <span className={tool.openMode === 'url' ? 'status ok' : opened ? 'status ok' : 'status warn'}>
-                        {tool.openMode === 'url' ? (tool.category === 'platform' ? '平台入口' : '网页入口') : opened ? '已打开' : '未打开'}
-                      </span>
-                      <div className="agent-status-actions">
-                        <button className="primary compact" onClick={() => getAgentToolAdapter(tool.id).open(openExternal)}>
-                          <ExternalLink size={16} />
-                          打开
-                        </button>
-                        <button className="secondary compact" onClick={() => openToolDownload(tool.id)}>
-                          {tool.openMode === 'url' ? '入口' : '下载'}
-                        </button>
-                      </div>
-                    </article>
-                  );
-                })}
-              </div>
-              <div className="actions">
-                <button className="secondary" onClick={refreshInstallStatus}>
-                  <RefreshCw size={18} />
-                  重新检测安装状态
-                </button>
-              </div>
-            </section>
             <section className="panel update-panel">
               <div className="panel-heading">
                 <div>
@@ -16883,7 +16926,7 @@ ${JSON.stringify(items, null, 2)}
             </section>
             <div className="research-provider-list">
               {(researchCapability?.providers || []).map((provider) => <div className={provider.available && provider.authorized && provider.webResearch && provider.structuredResult ? 'research-provider ready' : 'research-provider'} key={provider.id}><strong>{provider.label}</strong><span>{provider.available ? '已检测' : '未检测到'} · {provider.authorized ? '已授权' : '未授权'} · {provider.webResearch && provider.structuredResult ? '可发起联网研究' : '尚未接通联网研究'}</span><small>{provider.healthMessage}</small></div>)}
-              <button className="secondary compact" type="button" onClick={() => { setNavigationGroup('settings'); setSettingsSubmenu('agent-qa'); setAgentSettingsTab('tools'); setActivePageTab('settings-agent'); setActiveSection('settings'); }}>前往 Agent 工具控制</button>
+              <button className="secondary compact" type="button" onClick={() => { setNavigationGroup('settings'); setSettingsSubmenu('agent-qa'); setAgentSettingsTab('tools'); setAgentControlSubtab('tool-control'); setActivePageTab('settings-agent'); setActiveSection('settings'); }}>前往 Agent 工具控制</button>
             </div>
             </details>
             {guidanceConfigurationWarning && <div className="notice warning-notice" role="status">{guidanceConfigurationWarning}</div>}
@@ -17786,9 +17829,9 @@ ${JSON.stringify(items, null, 2)}
                 </div>
 
                 <label className="capture-vision-consent">
-                  <input type="checkbox" checked={captureCenter.visionConsent?.enabled === true} onChange={(event) => {
+                  <input type="checkbox" checked={captureCenter.visionConsent?.enabled === true} onChange={async (event) => {
                     try {
-                      const result = JSON.parse(bridge()?.setCaptureVisionConsent?.(JSON.stringify({ enabled: event.target.checked, provider: 'codex' })) || '{}');
+                      const result = JSON.parse(await bridge()?.setCaptureVisionConsent?.(JSON.stringify({ enabled: event.target.checked, provider: 'codex' })) || '{}');
                       if (!result.ok) setCaptureMessage(result.message || '截图视觉授权更新失败。');
                       else { setCaptureMessage(result.message || '截图视觉授权已更新。'); refreshCaptureCenter(); }
                     } catch { setCaptureMessage('截图视觉授权更新失败。'); }
@@ -17871,7 +17914,7 @@ ${JSON.stringify(items, null, 2)}
                   <span><kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>1</kbd> 立即截取</span>
                   <span><kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>2</kbd> 暂停/继续</span>
                   <span><kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>3</kbd> 标记重点</span>
-                  <button className="secondary compact" onClick={() => bridge()?.openCaptureInbox?.(captureCenter.activeSession?.id || '')}>
+                  <button className="secondary compact" onClick={async () => await bridge()?.openCaptureInbox?.(captureCenter.activeSession?.id || '')}>
                     <FolderOpen size={16} />打开采集箱
                   </button>
                 </div>
@@ -17902,7 +17945,7 @@ ${JSON.stringify(items, null, 2)}
                           {session.visionStatus && <span>视觉整理：{session.visionStatus === 'running' ? '后台处理中' : session.visionStatus === 'completed' ? (session.visionObservationCount ? `已完成 · ${session.visionObservationCount} 段观察` : '已处理，暂无可靠观察') : session.visionStatus === 'degraded' ? `部分降级 · ${session.visionObservationCount || 0} 段观察` : session.visionStatus === 'waiting_visual_capability' ? '视觉服务暂不可用；已按需尝试本机 OCR，后台等待恢复' : session.visionStatus === 'waiting_resource' ? '采集期间暂停；结束后自动续接' : session.visionStatus === 'retry_scheduled' ? '等待自动重试' : session.visionStatus === 'waiting_idle' ? '等待设备空闲' : '等待采集结束'}{session.visionFailedBatchCount ? ` · ${session.visionFailedBatchCount} 批证据不足` : ''}</span>}
                         </div>
                         <span className={`status-badge ${session.status}`}>{session.status === 'promoted' ? `已整理${session.activitySegmentCount ? ` · ${session.activitySegmentCount} 段` : ''}` : session.status === 'completed' ? '后台自动整理中' : session.status === 'interrupted' ? '已中断' : session.status}</span>
-                        <button className="icon-button" onClick={() => bridge()?.openCaptureInbox?.(session.id)} aria-label="打开该会话采集箱"><FolderOpen size={17} /></button>
+                        <button className="icon-button" onClick={async () => await bridge()?.openCaptureInbox?.(session.id)} aria-label="打开该会话采集箱"><FolderOpen size={17} /></button>
                         {session.status === 'completed' && <small>系统将在空闲时自动处理；失败会自动恢复，不需要人工重试。</small>}
                         {!['capturing', 'paused'].includes(session.status) && (
                           <button className="icon-button danger" onClick={() => deleteCapture(session)} disabled={captureBusy} aria-label={`删除采集会话 ${session.sourceName}`} title="删除采集会话"><Trash2 size={17} /></button>
@@ -18226,259 +18269,71 @@ ${JSON.stringify(items, null, 2)}
         )}
 
         {!shouldBlockForAgentInstall && !isLicenseRestrictedSection && isWindows && activeSection === 'assets' && (
-          <section className="panel">
-            <div className="panel-heading">
-              <div>
-                <h2>文件资产中心</h2>
-                <p>底层资产索引只记录文件指纹、路径和引用关系，不改变学生原始资料库的现有文件夹体验。</p>
-              </div>
-              <Archive size={22} />
-            </div>
-            <div className="archive-grid">
-              <InfoPanel icon={<Archive />} title={assetFiltersActive ? '当前筛选资产' : '资产总数'} value={`${assetIndex.total ?? 0} 个`} />
-              <InfoPanel icon={<ListChecks />} title="重复文件组" value={`${assetScopedDuplicateGroups} 组`} />
-              <InfoPanel icon={<UserRound />} title="学生过滤" value={assetStudentFilter === 'all' ? '全部学生' : students.find((student) => student.id === assetStudentFilter)?.name ?? '当前筛选'} />
-              <InfoPanel icon={<AlertTriangle />} title="治理候选" value={`${assetGovernanceStats.issueCount} 个`} />
-              <InfoPanel icon={<ShieldCheck />} title="高风险" value={`${assetGovernanceStats.highRiskCount} 个`} />
-              <InfoPanel icon={<LinkIcon />} title="失效引用" value={`${assetGovernanceStats.staleReferenceCount} 条`} />
-              <InfoPanel icon={<ShieldCheck />} title="SHA-256 已就绪" value={`${assetIndex.sha256ReadyCount ?? 0} 个`} />
-              <InfoPanel icon={<AlertTriangle />} title="待补指纹" value={`${assetIndex.sha256PendingCount ?? 0} 个`} />
-              <InfoPanel icon={<AlertTriangle />} title="指纹冲突" value={`${assetIndex.fingerprintConflictCount ?? 0} 个`} />
-            </div>
-            <AssetTrendChart trend={assetScopedTrend} />
-            <div className="workflow-rail asset-workflow">
-              {assetWorkflowSteps.map((step, index) => (
-                <div className="workflow-step" key={step.title}>
-                  <span className="workflow-index">{index + 1}</span>
-                  <strong>{step.title}</strong>
-                  <em>{step.value}</em>
-                  <small>{step.detail}</small>
-                </div>
-              ))}
-            </div>
-            <div className="actions">
-              <button className="secondary" onClick={refreshAssets}>
-                <RefreshCw size={18} />
-                刷新资产
-              </button>
-              <button className="primary" onClick={() => void rebuildAssets()} disabled={Boolean(assetBusyAction)}>
-                <Archive size={18} />
-                {assetBusyAction === 'rebuild' ? '正在补建…' : '扫描并补建资产索引'}
-              </button>
-              {assetRebuildJob && ['running', 'queued', 'cancelling'].includes(assetRebuildJob.status) && (
-                <button className="secondary" onClick={() => void bridge()?.cancelAssetIndexRebuild?.(assetRebuildJob.jobId)} disabled={assetRebuildJob.status === 'cancelling'}>
-                  {assetRebuildJob.status === 'cancelling' ? '正在取消…' : '取消补建'}
-                </button>
-              )}
-              <button className="secondary" onClick={() => void analyzeAssets()} disabled={Boolean(assetBusyAction)}>
-                <ListChecks size={18} />
-                {assetBusyAction === 'analyze' ? '正在分析…' : '生成治理建议'}
-              </button>
-            </div>
-            <div className="form-grid compact-grid">
-              <label>
-                搜索文件
-                <input value={assetSearch} onChange={(event) => setAssetSearch(event.target.value)} placeholder="文件名、路径、SHA-1、来源" />
-              </label>
-              <label>
-                学生
-                <select value={assetStudentFilter} onChange={(event) => setAssetStudentFilter(event.target.value)}>
-                  <option value="all">全部学生</option>
-                  {students.map((student) => (
-                    <option value={student.id} key={student.id}>{student.name}</option>
-                  ))}
-                </select>
-              </label>
-              <label>
-                来源
-                <select value={assetSourceFilter} onChange={(event) => setAssetSourceFilter(event.target.value)}>
-                  <option value="all">全部来源</option>
-                  {assetSources.map((source) => (
-                    <option value={source} key={source}>{source}</option>
-                  ))}
-                </select>
-              </label>
-              <label>
-                类型
-                <select value={assetTypeFilter} onChange={(event) => setAssetTypeFilter(event.target.value)}>
-                  <option value="all">全部类型</option>
-                  {assetTypes.map((type) => (
-                    <option value={type} key={type}>{type}</option>
-                  ))}
-                </select>
-              </label>
-              <label className="checkbox-line">
-                <input type="checkbox" checked={assetDuplicateOnly} onChange={(event) => setAssetDuplicateOnly(event.target.checked)} />
-                只看重复 SHA-1 文件
-              </label>
-            </div>
-            <div className="download-list asset-list">
-              {filteredAssets.map((asset) => (
-                <button className={selectedAsset?.assetId === asset.assetId ? 'download-item active' : 'download-item'} key={asset.assetId} onClick={() => setSelectedAssetId(asset.assetId)}>
-                  <span>
-                    <strong>{asset.filename}</strong>
-                    <small>
-                      {asset.ownerStudentName || '未绑定学生'} · {asset.type || 'file'} · {formatFileSize(asset.size ?? 0)} · 引用 {asset.referenceCount ?? asset.references?.length ?? 0} 次
-                    </small>
-                    <small>{asset.path}</small>
-                    {asset.sha1 && <em>SHA-1：{asset.sha1}{Number(asset.duplicateCount ?? 1) > 1 ? ` · 重复 ${asset.duplicateCount} 份` : ''}</em>}
-                    {asset.governanceAction && asset.governanceAction !== '无需处理' && <em>治理：{asset.governanceAction}</em>}
-                  </span>
-                </button>
-              ))}
-              {filteredAssets.length === 0 && <div className="empty-state">暂无资产记录。导入资料、学生终端上传或点击“扫描并补建资产索引”后会在这里显示。</div>}
-            </div>
-            <div className="actions compact-actions">
-              <button className="secondary compact" disabled={assetCursorHistory.length === 0} onClick={() => {
-                const previous = assetCursorHistory.at(-1) ?? '';
-                setAssetCursorHistory((items) => items.slice(0, -1));
-                setAssetCursor(previous);
-                void refreshAssets(previous);
-              }}>上一页</button>
-              <span className="notice muted">本页 {filteredAssets.length} 条 · 共 {assetIndex.total ?? 0} 条</span>
-              <button className="secondary compact" disabled={!assetIndex.nextCursor} onClick={() => {
-                const next = assetIndex.nextCursor ?? '';
-                setAssetCursorHistory((items) => [...items, assetCursor]);
-                setAssetCursor(next);
-                void refreshAssets(next);
-              }}>下一页</button>
-            </div>
-            {assetRebuildJob && <div className="notice muted">
-              补建状态：{({ enumerating: '枚举', hashing: '读取指纹', writing: '写库', validating: '兼容验证', completed: '完成', interrupted: '已中断', failed: '失败', cancelled: '已取消' } as Record<string, string>)[assetRebuildJob.phase] || assetRebuildJob.phase}
-              {assetRebuildJob.phaseTotal ? ` · 阶段进度 ${assetRebuildJob.phaseProcessed ?? 0}/${assetRebuildJob.phaseTotal}` : ''}
-              {` · 已处理 ${assetRebuildJob.processed ?? 0} · 新增 ${assetRebuildJob.added ?? 0} · 更新 ${assetRebuildJob.changed ?? 0} · 跳过 ${assetRebuildJob.skipped ?? 0} · 失败 ${assetRebuildJob.failed ?? 0}`}
-              {assetRebuildJob.currentScopeName ? ` · 当前项目 ${assetRebuildJob.currentScopeName}` : ''}
-              {assetRebuildJob.currentPath ? ` · ${assetRebuildJob.currentPath}` : ''}
-            </div>}
-            {selectedAsset && (
-              <section className="material-source-panel">
-                <div className="mini-heading">
-                  <strong>资产引用详情</strong>
-                  <span>{selectedAsset.filename}</span>
-                </div>
-                <div className="archive-grid">
-                  <InfoPanel icon={<FileText />} title="资产编号" value={selectedAsset.assetId} />
-                  <InfoPanel icon={<Archive />} title="引用次数" value={`${selectedAsset.references?.length ?? selectedAsset.referenceCount ?? 0} 次`} />
-                  <InfoPanel icon={<ListChecks />} title="重复数量" value={`${selectedAsset.duplicateCount ?? 1} 份`} />
-                  <InfoPanel icon={<FileText />} title="版本组" value={`${selectedAsset.versionCount ?? 1} 个`} />
-                  <InfoPanel icon={<ShieldCheck />} title="治理风险" value={selectedAsset.governanceRisk || '未分析'} />
-                </div>
-                <div className="actions compact-actions">
-                  <button className="secondary compact" onClick={cleanupSelectedAssetReferences}>
-                    清理失效引用
-                  </button>
-                  <button className="secondary compact" onClick={snapshotSelectedAssetVersions}>
-                    生成版本快照
-                  </button>
-                  <button className="secondary compact" onClick={() => markSelectedAssetGovernance('keep')}>
-                    标记保留
-                  </button>
-                  <button className="secondary compact" onClick={() => markSelectedAssetGovernance('duplicate_watch')}>
-                    重复观察
-                  </button>
-                  <button className="secondary compact" onClick={() => markSelectedAssetGovernance('manual_review')}>
-                    人工处理
-                  </button>
-                </div>
-                {(selectedAsset.governanceAction || selectedAsset.governanceReason) && (
-                  <div className="notice muted">
-                    治理建议：{selectedAsset.governanceAction || '未分析'}；{selectedAsset.governanceReason || '暂无理由'}
-                    {selectedAsset.recommendedKeepAssetId ? `；建议保留资产：${selectedAsset.recommendedKeepAssetId}` : ''}
-                    {selectedAsset.governanceDecisionLabel || selectedAsset.governanceDecision ? `；人工决策：${selectedAsset.governanceDecisionLabel || selectedAsset.governanceDecision}` : ''}
-                  </div>
-                )}
-                <div className="download-list">
-                  {(selectedAsset.references ?? []).map((reference) => (
-                    <div className="download-item" key={reference.id}>
-                      <span>
-                        <strong>{reference.spaceName || reference.spaceId}</strong>
-                        <small>{reference.spaceType} · {reference.role} · {reference.source || '未知来源'}</small>
-                        {reference.logicalPath && <small>逻辑路径：{reference.logicalPath}</small>}
-                        {reference.workspaceId && <small>工作空间：{reference.workspaceId}</small>}
-                        <small>{reference.path}</small>
-                      </span>
-                    </div>
-                  ))}
-                  {(selectedAsset.references ?? []).length === 0 && <div className="empty-state">该资产暂无引用记录。</div>}
-                </div>
-              </section>
-            )}
-            {assetGovernancePreview && (
-              <section className="material-source-panel">
-                <div className="mini-heading">
-                  <strong>资产治理建议报告</strong>
-                  <button className="secondary compact" onClick={() => copyText(assetGovernancePreview, '已复制资产治理建议报告。')}>复制报告</button>
-                </div>
-                <MarkdownView content={assetGovernancePreview} />
-              </section>
-            )}
-            {(assetDuplicateGroups.length > 0 || assetDuplicateOperation) && (
-              <section className="material-source-panel">
-                <div className="mini-heading">
-                  <strong>重复文件分组</strong>
-                  <span>共 {assetDuplicateTotal} 组；仅在用户确认后移入可恢复隔离区，不会永久删除。</span>
-                </div>
-                <div className="actions compact-actions">
-                  <label className="checkbox-line">
-                    <input
-                      type="checkbox"
-                      checked={allDuplicatePageSelected}
-                      disabled={assetDuplicateGroups.length === 0 || assetDuplicateBusy}
-                      onChange={(event) => {
-                        const pageIds = new Set(duplicatePageAssetIds);
-                        setSelectedDuplicateAssetIds((items) => event.target.checked
-                          ? [...new Set([...items, ...duplicatePageAssetIds])]
-                          : items.filter((assetId) => !pageIds.has(assetId)));
-                      }}
-                    />
-                    全选本页（{assetDuplicateGroups.length} 组）
-                  </label>
-                  <button className="secondary compact" type="button" disabled={!selectedDuplicateAssetIds.length || assetDuplicateBusy} onClick={() => setSelectedDuplicateAssetIds([])}>
-                    清空选择（{selectedDuplicateAssetIds.length}）
-                  </button>
-                  <span className="notice muted">为保证预览和隔离安全，每次最多处理当前页 50 组。</span>
-                </div>
-                <div className="download-list">
-                  {assetDuplicateGroups.map((group) => (
-                    <label className="download-item" key={group.assetId}>
-                      <input type="checkbox" checked={selectedDuplicateAssetIds.includes(group.assetId)} onChange={(event) => setSelectedDuplicateAssetIds((items) => event.target.checked ? [...new Set([...items, group.assetId])] : items.filter((id) => id !== group.assetId))} />
-                      <span>
-                        <strong>{group.pathCount} 个重复物理位置 · {group.filename}</strong>
-                        <small>SHA-1：{group.sha1}</small>
-                        <small>{group.sha256 ? `SHA-256：${group.sha256}` : 'SHA-256 尚未补齐，本组不能隔离。'}</small>
-                        <small>{group.paths.slice(0, 3).join(' · ')}{group.paths.length > 3 ? ` 等 ${group.paths.length} 个路径` : ''}</small>
-                      </span>
-                    </label>
-                  ))}
-                  {assetDuplicateGroups.length === 0 && <div className="empty-state">当前筛选下没有仍处于活动状态的重复组；可在下方查看或恢复最近一次隔离操作。</div>}
-                </div>
-                <div className="actions compact-actions">
-                  <button className="primary compact" type="button" disabled={!selectedDuplicateAssetIds.length || assetDuplicateBusy} onClick={() => void prepareDuplicateCleanup()}>
-                    {assetDuplicateBusy ? '正在校验…' : '生成安全处理预览'}
-                  </button>
-                  <button className="secondary compact" disabled={assetDuplicateCursorHistory.length === 0} onClick={() => {
-                    const previous = assetDuplicateCursorHistory.at(-1) ?? '';
-                    setAssetDuplicateCursorHistory((items) => items.slice(0, -1));
-                    void refreshDuplicateGroups(previous);
-                  }}>上一页</button>
-                  <button className="secondary compact" disabled={!assetDuplicateNextCursor} onClick={() => {
-                    setAssetDuplicateCursorHistory((items) => [...items, assetDuplicateCursor]);
-                    void refreshDuplicateGroups(assetDuplicateNextCursor);
-                  }}>下一页</button>
-                </div>
-                {assetDuplicateOperation && <section className="notice muted">
-                  <strong>安全处理预览：可隔离 {assetDuplicateOperation.summary?.eligibleCount ?? 0} 个，受保护 {assetDuplicateOperation.summary?.blockedCount ?? 0} 个，预计释放 {formatFileSize(assetDuplicateOperation.summary?.reclaimableBytes ?? 0)}</strong>
-                  {(assetDuplicateOperation.entries ?? []).map((entry) => <div key={entry.entryId}><small>保留：{entry.keepPath}<br />隔离：{entry.sourcePath} · {entry.status}{entry.error ? ` · ${entry.error}` : ''}</small></div>)}
-                  {(assetDuplicateOperation.summary?.blocked ?? []).slice(0, 20).map((item, index) => <div key={`${item.assetId}-${item.path}-${index}`}><small>受保护：{item.path || item.assetId || '资产'} · {item.reason}</small></div>)}
-                  <div className="actions compact-actions">
-                    {assetDuplicateOperation.status === 'prepared' && <button className="primary compact" disabled={assetDuplicateBusy || !(assetDuplicateOperation.summary?.eligibleCount)} onClick={() => void applyDuplicateCleanup()}>确认并移入隔离区</button>}
-                    {['completed', 'partial', 'interrupted'].includes(assetDuplicateOperation.status) && (assetDuplicateOperation.entries ?? []).some((item) => item.status === 'quarantined') && <button className="secondary compact" disabled={assetDuplicateBusy} onClick={() => void restoreDuplicateCleanup()}>恢复已隔离文件</button>}
-                  </div>
-                </section>}
-              </section>
-            )}
-            {assetMessage && <div className="notice">{assetMessage}</div>}
-          </section>
+          <React.Suspense fallback={<section className="panel">正在加载文件资产中心…</section>}>
+            <AssetCenterPanel
+              model={{
+                students, assetIndex, assetQueryActive, assetScopeFiltersActive, assetScopedDuplicateGroups,
+                assetStudentFilter, assetSourceFilter, assetTypeFilter, assetDuplicateOnly, assetSearch,
+                assetSources, assetTypes, assetGovernanceStats, assetScopedTrend, assetWorkflowSteps,
+                assetBusyAction, assetRebuildJob, filteredAssets, selectedAsset, assetCursorHistory,
+                assetGovernancePreview, assetDuplicateGroups, assetDuplicateTotal, assetDuplicateBusy,
+                selectedDuplicateAssetIds, allDuplicatePageSelected, assetDuplicateCursorHistory,
+                assetDuplicateNextCursor, assetDuplicateOperation, assetDuplicateHistory, assetMessage,
+              }}
+              actions={{
+                refreshAssets,
+                rebuildAssets,
+                cancelRebuild: (jobId: string) => bridge()?.cancelAssetIndexRebuild?.(jobId),
+                analyzeAssets,
+                setAssetSearch,
+                setAssetStudentFilter,
+                setAssetSourceFilter,
+                setAssetTypeFilter,
+                setAssetDuplicateOnly,
+                setSelectedAssetId,
+                previousAssetPage: () => {
+                  const previous = assetCursorHistory.at(-1) ?? '';
+                  setAssetCursorHistory((items) => items.slice(0, -1));
+                  setAssetCursor(previous);
+                  void refreshAssets(previous);
+                },
+                nextAssetPage: () => {
+                  const next = assetIndex.nextCursor ?? '';
+                  setAssetCursorHistory((items) => [...items, assetCursor]);
+                  setAssetCursor(next);
+                  void refreshAssets(next);
+                },
+                cleanupSelectedAssetReferences,
+                snapshotSelectedAssetVersions,
+                markSelectedAssetGovernance,
+                copyReport: () => copyText(assetGovernancePreview, '已复制资产治理建议报告。'),
+                toggleDuplicatePage: (checked: boolean) => {
+                  const pageIds = new Set(duplicatePageAssetIds);
+                  setSelectedDuplicateAssetIds((items) => checked
+                    ? [...new Set([...items, ...duplicatePageAssetIds])]
+                    : items.filter((assetId) => !pageIds.has(assetId)));
+                },
+                clearDuplicateSelection: () => setSelectedDuplicateAssetIds([]),
+                toggleDuplicate: (assetId: string, checked: boolean) => setSelectedDuplicateAssetIds((items) => checked
+                  ? [...new Set([...items, assetId])]
+                  : items.filter((id) => id !== assetId)),
+                prepareDuplicateCleanup,
+                previousDuplicatePage: () => {
+                  const previous = assetDuplicateCursorHistory.at(-1) ?? '';
+                  setAssetDuplicateCursorHistory((items) => items.slice(0, -1));
+                  void refreshDuplicateGroups(previous);
+                },
+                nextDuplicatePage: () => {
+                  setAssetDuplicateCursorHistory((items) => [...items, assetDuplicateCursor]);
+                  void refreshDuplicateGroups(assetDuplicateNextCursor);
+                },
+                applyDuplicateCleanup,
+                restoreDuplicateCleanup,
+                openDuplicateOperation,
+                retryDuplicateCleanup,
+              }}
+            />
+          </React.Suspense>
         )}
 
         {!shouldBlockForAgentInstall && !isLicenseRestrictedSection && isWindows && (activeSection === 'projects-new' || activeSection === 'projects-existing') && (
@@ -18512,7 +18367,7 @@ ${JSON.stringify(items, null, 2)}
                 <button className="secondary compact" disabled={!selectedProject} onClick={() => openSelectedProjectSpace('knowledge')}><BookOpen size={16} />打开项目知识空间</button>
               </div>
             </section>
-            {projectPageMode === 'detail' && selectedProject && <ProjectMaterialsPanel project={selectedProject} />}
+            {projectPageMode === 'detail' && selectedProject && <React.Suspense fallback={<section className="material-source-panel">正在加载项目资料…</section>}><ProjectMaterialsPanel project={selectedProject} /></React.Suspense>}
             <section className="material-source-panel project-dashboard projects-existing-only">
               <div className="mini-heading">
                 <strong>项目仪表盘</strong>
@@ -18527,7 +18382,7 @@ ${JSON.stringify(items, null, 2)}
                 <InfoPanel icon={<Bot />} title="人工消化" value={`${projectDashboardStats.pendingDigest} 个待处理`} actionLabel="查看待消化项目" onClick={() => focusProjectDashboard('digest')} />
               </div>
               <div className="actions compact-actions">
-                <button className="secondary compact" onClick={refreshProjects}><RefreshCw size={16} />刷新仪表盘</button>
+                <button className="secondary compact" onClick={() => void refreshProjects()}><RefreshCw size={16} />刷新仪表盘</button>
                 <button className="primary compact" onClick={() => void generateCrossProjectKnowledgeLinks()} disabled={Boolean(projectBusyAction)}><LinkIcon size={16} />{projectBusyAction === 'cross-project-index' ? '正在关联…' : '生成跨项目知识关联'}</button>
               </div>
               <div className="audit-filter-row">
@@ -18858,7 +18713,7 @@ ${JSON.stringify(items, null, 2)}
                   <Plus size={18} />
                   创建学习项目
                 </button>
-                <button className="secondary" onClick={refreshProjects}>
+                <button className="secondary" onClick={() => void refreshProjects()}>
                   <RefreshCw size={18} />
                   刷新项目
                 </button>
@@ -18885,7 +18740,7 @@ ${JSON.stringify(items, null, 2)}
                     <strong>{studentFilteredProjects.length} 个项目</strong>
                     <span>{projectStudentFilterId === 'all' ? '显示全部项目' : `仅显示 ${students.find((student) => student.id === projectStudentFilterId)?.name || '所选学生'} 参与的项目`}</span>
                   </div>
-                  <button className="secondary compact" onClick={refreshProjects}><RefreshCw size={16} />刷新列表</button>
+                  <button className="secondary compact" onClick={() => void refreshProjects()}><RefreshCw size={16} />刷新列表</button>
                 </div>
                 <div className="project-index-grid">
                   {studentFilteredProjects.map((project) => (
@@ -19097,11 +18952,7 @@ ${JSON.stringify(items, null, 2)}
                         <button className="secondary compact" onClick={() => openSelectedProjectSpace('workspace')}><FolderOpen size={16} />打开项目工作空间</button>
                         <button className="secondary compact" onClick={() => openSelectedProjectSpace('knowledge')}><BookOpen size={16} />打开项目知识空间</button>
                         <button className={selectedProjectNextStep?.target === 'workspace' ? 'primary compact workflow-action next' : 'primary compact workflow-action optional'} onClick={() => setProjectMaterialEntryOpen((current) => !current)}><FileDown size={16} />添加资料</button>
-                        <button className="secondary compact" onClick={() => {
-                          setConversationDeliveryTargetType('project');
-                          setConversationDeliveryProjectId(selectedProject.id);
-                          setActiveSection('conversation');
-                        }}><MessageCircle size={16} />从对话资料箱添加</button>
+                        <button className="secondary compact" onClick={() => setActiveSection('conversation')}><MessageCircle size={16} />从对话资料箱添加</button>
                       </div>
                       {projectStageFeedback.workspace && <div className="project-stage-feedback" role="status"><span>{projectStageFeedback.workspace}</span><button className="secondary compact" onClick={() => focusSelectedProjectWorkflowStage('assets')}>查看暂存资料</button></div>}
                       {projectMaterialEntryOpen && (
@@ -19245,7 +19096,7 @@ ${JSON.stringify(items, null, 2)}
                       </div>
                       <div className="project-staging-scroll" tabIndex={0} aria-label="研究暂存层操作与资料列表">
                       <div className="archive-grid">
-                        <InfoPanel icon={<Inbox />} title="暂存资料" value={`${projectStagingItems.length} 份`} />
+                        <InfoPanel icon={<Inbox />} title="暂存资料" value={`${projectStagingSummary.total || projectStagingTotal} 份`} />
                         <InfoPanel icon={<ListChecks />} title="已选" value={`${selectedProjectStagingItems.length} 份`} />
                         <InfoPanel icon={<FolderOpen />} title={selectedProject.materialStorageMode === 'workspace-v1' ? '原件所在' : '暂存目录'} value={selectedProject.materialStorageMode === 'workspace-v1' ? selectedProject.workspacePath : selectedProject.stagingPath || `${selectedProject.workspacePath}\\研究暂存`} />
                         <InfoPanel icon={<Archive />} title="需处理" value={`${projectStagingGovernanceStats.actionCount} 项`} />
@@ -19254,7 +19105,7 @@ ${JSON.stringify(items, null, 2)}
                       </div>
                       <div className="project-organize-wizard">
                         <ol>
-                          <li className={projectStagingItems.length ? 'done' : 'current'}><span>1</span><strong>收集候选</strong><small>{projectStagingItems.length} 份</small></li>
+                          <li className={projectStagingSummary.total ? 'done' : 'current'}><span>1</span><strong>收集候选</strong><small>{projectStagingSummary.total || projectStagingTotal} 份</small></li>
                           <li className={projectStagingItems.some((item) => item.aiAction || item.governanceAction) ? 'done' : projectStagingItems.length ? 'current' : ''}><span>2</span><strong>AI 整理</strong><small>去重与价值判断</small></li>
                           <li className={selectedProjectReviewableStagingIds.length ? 'current' : ''}><span>3</span><strong>人工确认</strong><small>已选 {selectedProjectReviewableStagingIds.length} 份</small></li>
                           <li className={projectStagingLifecycleStats.promoted + projectStagingLifecycleStats.analyzed ? 'done' : ''}><span>4</span><strong>{selectedProject.materialStorageMode === 'workspace-v1' ? '已采用，待消化' : '加入知识库'}</strong><small>{projectStagingLifecycleStats.promoted + projectStagingLifecycleStats.analyzed} 份已采用/处理</small></li>
@@ -19335,11 +19186,11 @@ ${JSON.stringify(items, null, 2)}
                           {selectedProject.materialStorageMode === 'workspace-v1' && <button className="secondary compact" onClick={() => void updateSelectedProjectStagingStatus('collected')} disabled={!selectedProjectStagingItems.some((item) => item.status === 'discarded')}>重新纳入候选</button>}
                         </div>
                       </details>
-                      <small className="inline-hint">当前显示 {filteredProjectStagingItems.length} / {projectStagingItems.length} 份；重复候选 {projectStagingGovernanceStats.duplicateCount} 份。AI只提供评估，最终采用或排除仍需人工确认。</small>
+                      <small className="inline-hint">当前页 {projectStagingCursorHistory.length + 1} · 显示 {filteredProjectStagingItems.length} / {projectStagingTotal} 份；本页重复候选 {projectStagingGovernanceStats.duplicateCount} 份。AI只提供评估，最终采用或排除仍需人工确认。</small>
                       <div className="download-list project-staging-list">
                         {filteredProjectStagingItems.map((item) => (
                           <label className={item.status === 'discarded' ? 'download-item staging-item discarded' : 'download-item staging-item'} key={item.id}>
-                            <input type="checkbox" checked={selectedProjectReviewableStagingIds.includes(item.id)} onChange={() => toggleProjectStagingItem(item.id)} disabled={!projectStagingItemReviewable(item)} />
+                            <input type="checkbox" checked={selectedProjectStagingIdSet.has(item.id) && projectStagingItemReviewable(item)} onChange={() => toggleProjectStagingItem(item.id)} disabled={!projectStagingItemReviewable(item)} />
                             <span>
                               <strong>{item.filename}</strong>
                               <small>
@@ -19384,6 +19235,11 @@ ${JSON.stringify(items, null, 2)}
                           </div>
                         )}
                       </div>
+                      <div className="actions compact-actions project-staging-pagination" aria-label="暂存资料分页">
+                        <button className="secondary compact" onClick={goPreviousProjectStagingPage} disabled={projectStagingLoading || projectStagingCursorHistory.length === 0}>上一页</button>
+                        <span>{projectStagingLoading ? '正在读取…' : `第 ${projectStagingCursorHistory.length + 1} 页`}</span>
+                        <button className="secondary compact" onClick={goNextProjectStagingPage} disabled={projectStagingLoading || !projectStagingNextCursor}>下一页</button>
+                      </div>
                       </div>
                     </section>
                     <section className={`material-source-panel project-digest-panel ${projectAuditLocateTarget?.target === 'digest' ? 'audit-locate-highlight' : ''}`} data-project-action-target="digest" tabIndex={-1}>
@@ -19392,10 +19248,10 @@ ${JSON.stringify(items, null, 2)}
                         <span>开始后由系统自动提交、等待和校验；普通情况下无需复制指令或检查回执。</span>
                       </div>
                       <div className="form-grid compact-grid">
-                        <label>使用 Agent<select value={selectedProject.agentTool || 'workbuddy'} onChange={(event) => {
+                        <label>使用 Agent<select value={selectedProject.agentTool || 'workbuddy'} onChange={async (event) => {
                           const agentTool = event.target.value as AgentToolId;
                           setProjectEditDraft((current) => ({ ...current, agentTool } as typeof current & { agentTool: AgentToolId }));
-                          const raw = bridge()?.updateProjectMetadata?.(selectedProject.id, JSON.stringify({ ...projectEditDraft, agentTool }));
+                          const raw = await bridge()?.updateProjectMetadata?.(selectedProject.id, JSON.stringify({ ...projectEditDraft, agentTool }));
                           if (raw) try { const result = JSON.parse(raw) as { projects?: LearningProject[]; message?: string }; if (result.projects) setProjects(result.projects); setProjectMessage(result.message || '项目 Agent 已更新。'); } catch { setProjectMessage('项目 Agent 更新结果解析失败。'); }
                         }}>{agentToolOptions.map((tool) => <option value={tool.id} key={tool.id}>{tool.name}</option>)}</select></label>
                       </div>
@@ -19410,7 +19266,7 @@ ${JSON.stringify(items, null, 2)}
                         onPaste={() => importDigestWorkflowTextFromPage('project', selectedProject.id)}
                         onOpenKnowledge={() => openSelectedProjectSpace('knowledge')}
                         advancedActions={<>
-                          <button className="secondary compact" onClick={() => copyDigestWorkflowCommandFromPage('project', selectedProject.id)}><Clipboard size={16} />复制当前批次指令</button>
+                          {selectedProject.materialStorageMode !== 'workspace-v1' && <button className="secondary compact" onClick={() => copyDigestWorkflowCommandFromPage('project', selectedProject.id)}><Clipboard size={16} />复制当前批次指令</button>}
                           <button className="secondary compact" onClick={syncSelectedProjectDigestResult}>立即检查结果</button>
                           <button className="secondary compact" onClick={() => setProjectDigestReceiptPasteOpen((open) => !open)}><Clipboard size={16} />导入历史结果（可选）</button>
                         </>}
@@ -19674,7 +19530,7 @@ ${JSON.stringify(items, null, 2)}
               <summary>高级选项</summary>
             <div className="archive-grid">
               <InfoPanel icon={<UserRound />} title="当前学生" value={`${selectedStudent.name} · ${selectedStudent.grade}`} />
-              <InfoPanel icon={<FolderOpen />} title="知识库目录" value={selectedStudentPaths.root} actionLabel="打开目录" onClick={() => bridge()?.openStudentRootDir?.(selectedStudent.id)} />
+              <InfoPanel icon={<FolderOpen />} title="知识库目录" value={selectedStudentPaths.root} actionLabel="打开目录" onClick={async () => await bridge()?.openStudentRootDir?.(selectedStudent.id)} />
               <InfoPanel icon={<Gauge />} title="成长模型目录" value={selectedStudentPaths.growthDir} actionLabel="打开目录" onClick={openSelectedGrowthModelDir} />
             </div>
             <div className="actions">
@@ -19726,16 +19582,24 @@ ${JSON.stringify(items, null, 2)}
               </div>
 
               {growthView === 'learning' && <div className="learning-trajectory">
-                <div className="notice muted">仅汇总有学生归属和可核对来源的学习事件。模型估计不等于考试成绩；复测日期只是建议，不会自动创建任务或断言遗忘。</div>
+                <div className="notice muted">知识点发现后直接登记。趋势区分“资料涉及”和学生实际活动；只有真实表现数据才计算掌握度。</div>
                 {learningBusy && <div className="notice muted" role="status">正在读取学习轨迹…</div>}
                 {learningTrajectory?.message && !learningTrajectory.ok && <div className="notice">{learningTrajectory.message}</div>}
                 {learningTrajectory?.ok && <>
+                  {learningTrajectory.activitySummary && <section className="growth-card learning-activity-summary">
+                    <div className="growth-card-heading"><strong>近 7 天知识活动</strong><span>{learningTrajectory.activitySummary.activityCount} 次 · {learningTrajectory.activitySummary.activeDays} 天</span></div>
+                    <small>学生实际活动 {learningTrajectory.activitySummary.studentActivityCount} 次 · 资料涉及 {learningTrajectory.activitySummary.materialExposureCount} 次</small>
+                    <div className="learning-activity-trend" aria-label="近7天知识活动趋势">
+                      {learningTrajectory.activitySummary.trend.map((day) => <span key={day.date} title={`${day.date}：${day.total} 次`}><i style={{ height: `${Math.max(4, Math.min(48, day.total * 8))}px` }} /><small>{day.date.slice(5)}</small></span>)}
+                    </div>
+                  </section>}
                   <div className="learning-point-grid">
                     {[...learningTrajectory.states].filter((state) => !growthSearch.trim() || `${state.knowledgePoint.label} ${state.knowledgePoint.id}`.toLocaleLowerCase('zh-CN').includes(growthSearch.trim().toLocaleLowerCase('zh-CN'))).sort((a, b) => ({ high: 0, medium: 1, low: 2 }[a.reviewPriority as 'high' | 'medium' | 'low'] ?? 3) - ({ high: 0, medium: 1, low: 2 }[b.reviewPriority as 'high' | 'medium' | 'low'] ?? 3)).map((state) => (
                       <button className={`growth-card learning-point-card ${learningPointId === state.knowledgePoint.id ? 'selected' : ''}`} key={state.knowledgePoint.id} type="button" onClick={() => setLearningPointId(state.knowledgePoint.id)}>
                         <strong>{state.knowledgePoint.label}</strong>
                         <small>{state.knowledgePoint.id}</small>
                         <span>状态：{learningStateLabel(state.state)} · 证据 {state.evidenceCount} 条</span>
+                        <small>近 7 天 {state.activity?.activityCount || 0} 次 · 涉及 {state.activity?.activeDays || 0} 天</small>
                         <small>复测优先级 {reviewPriorityLabel(state.reviewPriority)} · 模型置信度 {Math.round(state.confidence * 100)}%</small>
                       </button>
                     ))}
@@ -19789,7 +19653,7 @@ ${JSON.stringify(items, null, 2)}
                   <div className="download-item" key={candidate.id}>
                     <span><strong>{candidate.title}</strong><small>{candidate.ability || '待标注'} · {candidate.projectName || '未关联项目'} · {candidate.status} · {candidate.confidence || '待确认'}</small>{(() => { const risk = growthEvidenceRiskAssessment?.assessments.find((item) => item.evidenceId === candidate.id); return risk ? <small>风险：{risk.label} · {risk.reasons.map((item) => item.label).join('、')}</small> : null; })()}<small>{candidate.sourcePath || candidate.content || '暂无来源'}</small>{candidate.migratedFrom && <small>兼容导入自：{candidate.migratedFrom}</small>}{legacyGrowthReviewQueue.some((item) => item.evidenceId === candidate.id) && <small>历史记录缺少审核人和时间，请重新确认、继续观察或不采用。</small>}{candidate.reviewedAt && <small>最近审核：{candidate.reviewerRole || candidate.review?.reviewerRole || '本机管理员'} · {new Date(candidate.reviewedAt).toLocaleString('zh-CN')}</small>}</span>
                     <div className="inline-actions">
-                      {candidate.sourcePath ? <button className="secondary compact" onClick={() => void openKnowledgeTimeline(candidate.sourcePath)}><Clock3 size={15} />时间线来源</button> : null}
+                      {candidate.sourcePath ? <button className="secondary compact" onClick={() => void openKnowledgeTimeline(candidate.sourcePath!)}><Clock3 size={15} />时间线来源</button> : null}
                       <button className="secondary compact workflow-action next" onClick={() => updateGrowthEvidence(candidate, 'confirmed')}>确认采用</button>
                       <button className="secondary compact workflow-action optional" onClick={() => updateGrowthEvidence(candidate, 'watching')}>继续观察</button>
                       <button className="secondary compact workflow-action optional" onClick={() => updateGrowthEvidence(candidate, 'rejected')}>不采用</button>
@@ -20161,27 +20025,7 @@ ${JSON.stringify(items, null, 2)}
               <button className="secondary danger" onClick={() => deleteStudent(selectedStudent)} disabled={!windowsLicenseActive}>
                 删除学生记录
               </button>
-              {isWindows && (
-                <button className="secondary" onClick={() => void exportSelectedStudentForAndroid()} disabled={!windowsLicenseActive || studentOfflineMigrationBusy}>
-                  <FileDown size={18} />
-                  {studentOfflineMigrationBusy ? '正在导出…' : '导出到 Android 单机版（U盘）'}
-                </button>
-              )}
             </div>
-            {isWindows && studentOfflineMigrationPlan?.ok && (
-              <div className="notice muted">
-                已盘点 {studentOfflineMigrationPlan.fileCount || 0} 个文件（{formatFileSize(studentOfflineMigrationPlan.totalBytes || 0)}）、
-                {studentOfflineMigrationPlan.projectCount || 0} 个关联项目和 {studentOfflineMigrationPlan.courseCount || 0} 门有效课程。
-                大量照片会以目录方式逐文件迁移，不生成容易卡住的大型 ZIP。
-              </div>
-            )}
-            {isWindows && studentOfflineMigrationProgress && studentOfflineMigrationProgress.phase !== 'completed' && (
-              <div className="migration-progress" role="status" aria-live="polite">
-                <progress value={studentOfflineMigrationProgress.completedFiles || 0} max={Math.max(1, studentOfflineMigrationProgress.totalFiles || 1)} />
-                <span>{studentOfflineMigrationProgress.completedFiles || 0}/{studentOfflineMigrationProgress.totalFiles || 0} 个文件{studentOfflineMigrationProgress.current ? ` · ${studentOfflineMigrationProgress.current}` : ''}</span>
-              </div>
-            )}
-            {isWindows && studentOfflineMigrationMessage && <div className="notice muted">{studentOfflineMigrationMessage}</div>}
             {studentEditDraft && (
               <section className="student-profile-editor">
                 <div className="mini-heading">
@@ -20437,11 +20281,70 @@ ${JSON.stringify(items, null, 2)}
         )}
 
         {!shouldBlockForAgentInstall && !isLicenseRestrictedSection && activeSection === 'settings' && settingsSubmenu === 'agent-qa' && agentSettingsTab === 'tools' && (
-          <React.Suspense fallback={<section className="panel">正在加载 AI 中心…</section>}><AgentControlCenter
-            api={bridge() as AgentControlApi}
-            onOpenTool={id => getAgentToolAdapter(id as AgentToolId).open(openExternal)}
-            onDownloadTool={id => openToolDownload(id as AgentToolId)}
-            onTasks={() => setActiveSection('tasks')} onCapture={() => setActiveSection('capture')} /></React.Suspense>
+          <>
+            <nav className="agent-settings-tabs agent-settings-subtabs" aria-label="AI 接入与调度中心">
+              {([['tool-control', 'Agent工具控制'], ['dispatch', 'AI接入与调度']] as Array<[AgentControlSubtab, string]>).map(([id, label]) => (
+                <button type="button" className={agentControlSubtab === id ? 'active' : ''} key={id} onClick={() => setAgentControlSubtab(id)}>{label}</button>
+              ))}
+            </nav>
+            {agentControlSubtab === 'tool-control' ? (
+              <section className="panel tool-home-panel" aria-label="Agent工具控制">
+                <div className="panel-heading">
+                  <div>
+                    <h2>Agent 工具控制</h2>
+                    <p>选择默认 Agent 工具，检查本地工具状态，或打开网页/平台型工具入口。</p>
+                  </div>
+                  <Bot size={22} />
+                </div>
+                <AgentToolCompactSelector
+                  value={draft.agentTool}
+                  onChange={(toolId) => {
+                    setDraft({ ...draft, agentTool: toolId });
+                    setAgentBindingMode(agentBindingModeForTool(toolId));
+                  }}
+                  label="默认 Agent 工具"
+                />
+                <div className="agent-status-compact-list">
+                  {agentToolOptions.map((baseTool) => {
+                    const tool = getAgentToolProfile(baseTool.id);
+                    const install = installForTool(tool.id);
+                    const opened = toolOpenState[tool.id];
+                    return (
+                      <article className="agent-status-line" key={tool.id}>
+                        <div className="agent-status-main">
+                          <strong>{tool.name}</strong>
+                          <span>{install?.installed ? `已安装${install.version ? ` ${install.version}` : ''}` : '未检测到安装'}</span>
+                          {(install?.appPath || install?.exePath) && <small>{install.appPath || install.exePath}</small>}
+                        </div>
+                        <span className={tool.openMode === 'url' ? 'status ok' : opened ? 'status ok' : 'status warn'}>
+                          {tool.openMode === 'url' ? (tool.category === 'platform' ? '平台入口' : '网页入口') : opened ? '已打开' : '未打开'}
+                        </span>
+                        <div className="agent-status-actions">
+                          <button className="primary compact" onClick={() => getAgentToolAdapter(tool.id).open(openExternal)}>
+                            <ExternalLink size={16} />打开
+                          </button>
+                          <button className="secondary compact" onClick={() => openToolDownload(tool.id)}>
+                            {tool.openMode === 'url' ? '入口' : '下载'}
+                          </button>
+                        </div>
+                      </article>
+                    );
+                  })}
+                </div>
+                <div className="actions">
+                  <button className="secondary" onClick={refreshInstallStatus}>
+                    <RefreshCw size={18} />重新检测安装状态
+                  </button>
+                </div>
+              </section>
+            ) : (
+              <React.Suspense fallback={<section className="panel">正在加载 AI 中心…</section>}><AgentControlCenter
+                api={bridge() as AgentControlApi}
+                onOpenTool={id => getAgentToolAdapter(id as AgentToolId).open(openExternal)}
+                onDownloadTool={id => openToolDownload(id as AgentToolId)}
+                onTasks={() => setActiveSection('tasks')} onCapture={() => setActiveSection('capture')} /></React.Suspense>
+            )}
+          </>
         )}
 
         {!shouldBlockForAgentInstall && !isLicenseRestrictedSection && isWindows && activeSection === 'settings' && settingsSubmenu === 'agent-qa' && agentSettingsTab === 'cloud' && (
@@ -20522,7 +20425,7 @@ ${JSON.stringify(items, null, 2)}
                   <strong>
                     {agentKnowledgeResult.source === 'local' && '已使用本机知识'}
                     {agentKnowledgeResult.source === 'remote' && (
-                      agentKnowledgeResult.count > 0
+                      (agentKnowledgeResult.count ?? 0) > 0
                         ? `已使用协作主机知识${agentKnowledgeResult.transport === 'tailscale' ? '（Tailscale）' : '（局域网）'}`
                         : `已查询协作主机${agentKnowledgeResult.transport === 'tailscale' ? '（Tailscale）' : '（局域网）'}，但未找到依据`
                     )}
@@ -20902,7 +20805,7 @@ ${JSON.stringify(items, null, 2)}
               />
               <div className="actions compact-actions">
                 <button className="secondary" onClick={() => parseAiAgentScanResult('memory')}>导入 AI 扫描结果</button>
-                <button className="secondary" onClick={importSelectedCandidates}>批量导入勾选候选</button>
+                <button className="secondary" onClick={() => void importSelectedCandidates()}>批量导入勾选候选</button>
                 <button className="secondary" onClick={() => setAiScanResultText('')}>清空结果</button>
               </div>
             </div>
@@ -20953,10 +20856,10 @@ ${JSON.stringify(items, null, 2)}
           </section>
         )}
 
-        {!shouldBlockForAgentInstall && !isLicenseRestrictedSection && (showingAgentMemory || activeSection === 'capture') && !selectedStudent && (
+        {!shouldBlockForAgentInstall && !isLicenseRestrictedSection && showingAgentMemory && !selectedStudent && (
           <section className="panel qa-panel">
             <div className="empty-state">
-              请先新建或选择学生档案，再使用{activeSection === 'capture' ? t('nav.capture') : activeSection === 'agent-capabilities' ? t('nav.agentCapabilities') : t('nav.memory')}。
+              请先新建或选择学生档案，再使用{activeSection === 'capture' ? t('nav.capture') : t('nav.memory')}。
               <div className="actions"><button className="secondary" onClick={() => setActiveSection('init')}>{t('nav.init')}</button></div>
             </div>
           </section>
@@ -21016,7 +20919,7 @@ ${JSON.stringify(items, null, 2)}
               />
               <div className="actions compact-actions">
                 <button className="secondary" onClick={() => parseAiAgentScanResult('soul')}>导入 AI 扫描结果</button>
-                <button className="secondary" onClick={importSelectedCandidates}>批量导入勾选候选</button>
+                <button className="secondary" onClick={() => void importSelectedCandidates()}>批量导入勾选候选</button>
                 <button className="secondary" onClick={() => setAiScanResultText('')}>清空结果</button>
               </div>
             </div>
@@ -21168,7 +21071,7 @@ ${JSON.stringify(items, null, 2)}
               <textarea value={aiScanResultText} onChange={(event) => setAiScanResultText(event.target.value)} placeholder='粘贴 AI 返回的 JSON，例如 {"results":[{"path":"D:\\学生资料\\张三知识库\\AGENTS.md","kind":"rule","tool":"codex","score":90}]}' />
               <div className="actions compact-actions">
                 <button className="secondary" onClick={() => parseAiAgentScanResult(aiScanKind)}>导入 AI 扫描结果</button>
-                <button className="secondary" onClick={importSelectedCandidates}>批量导入勾选候选</button>
+                <button className="secondary" onClick={() => void importSelectedCandidates()}>批量导入勾选候选</button>
                 <button className="secondary" onClick={() => setAiScanResultText('')}>清空结果</button>
               </div>
             </div>
@@ -21437,9 +21340,9 @@ ${JSON.stringify(items, null, 2)}
               <span>未审核候选不会进入正式长期知识；单次事务最多 50 条。</span>
             </div>
             <div className="archive-grid">
-              <InfoPanel icon={<ListChecks />} title="待审核" value={conversationCenter?.governance?.summary?.pending ?? 0} />
-              <InfoPanel icon={<ShieldCheck />} title="风险阻止" value={conversationCenter?.governance?.summary?.blocked ?? 0} />
-              <InfoPanel icon={<CheckCircle2 />} title="已晋升" value={conversationCenter?.governance?.summary?.promoted ?? 0} />
+              <InfoPanel icon={<ListChecks />} title="待审核" value={String(conversationCenter?.governance?.summary?.pending ?? 0)} />
+              <InfoPanel icon={<ShieldCheck />} title="风险阻止" value={String(conversationCenter?.governance?.summary?.blocked ?? 0)} />
+              <InfoPanel icon={<CheckCircle2 />} title="已晋升" value={String(conversationCenter?.governance?.summary?.promoted ?? 0)} />
             </div>
             <div className="actions compact-actions">
               <select value={conversationCandidateFilter} onChange={(event) => setConversationCandidateFilter(event.target.value as 'pending' | 'blocked' | 'promoted' | 'all')}>
@@ -21519,7 +21422,7 @@ ${JSON.stringify(items, null, 2)}
                     <button className="secondary compact" onClick={() => importAgentCandidate(candidate)}>导入对话历史</button>
                   </div>
                 ))}
-                <button className="secondary" onClick={importSelectedCandidates}>批量导入勾选候选</button>
+                <button className="secondary" onClick={() => void importSelectedCandidates()}>批量导入勾选候选</button>
               </div>
             )}
             {candidateImportReviewPanel}
@@ -21571,7 +21474,13 @@ ${JSON.stringify(items, null, 2)}
                 { id: 'needs_help' as const, label: '需要你帮助', value: taskCenter.userSummary?.needs_help ?? taskCenter.summary.actionable, icon: <Zap size={18} /> },
                 { id: 'history' as const, label: '历史记录', value: taskCenter.userSummary?.history ?? taskCenter.summary.completed + (taskCenter.summary.archived || 0), icon: <Archive size={18} /> },
               ].map((item) => (
-                <button className={taskCenterStatusFilter === item.id ? 'task-center-stat active' : 'task-center-stat'} key={item.id} onClick={() => setTaskCenterStatusFilter(item.id)}>
+                <button className={taskCenterStatusFilter === item.id ? 'task-center-stat active' : 'task-center-stat'} key={item.id} onClick={() => {
+                  setTaskCenterStatusFilter(item.id);
+                  setTaskCenterSourceFilter('all');
+                  setTaskCenterExecutorFilter('all');
+                  setTaskCenterPage(1);
+                  setSelectedTaskId('');
+                }}>
                   {item.icon}
                   <span>{item.label}</span>
                   <strong>{taskCenter.ready === false ? '…' : item.value}</strong>
@@ -21596,14 +21505,17 @@ ${JSON.stringify(items, null, 2)}
                 <button className="secondary compact" onClick={() => openTaskCenterFolder('manual-outbox')}><Clipboard size={15} />人工任务包</button>
                 <button className="secondary compact" onClick={() => openTaskCenterFolder('events')}><FileText size={15} />审计日志</button>
               </div>
-              <div className="task-adapter-grid">
-                {Object.values(taskCenter.capabilities || {}).filter((adapter) => !adapter.hidden).map((adapter) => (
-                  <button className={adapter.available && adapter.authorized !== false ? 'task-adapter-card available' : 'task-adapter-card'} key={adapter.id} onClick={() => setTaskCenterExecutorFilter(adapter.id)}>
-                    <Bot size={17} />
-                    <span><strong>{adapter.label}</strong><small>{adapter.available && adapter.authorized !== false ? (adapter.healthMessage || (adapter.automatic ? '可自动执行' : adapter.inbox ? '收件箱/人工' : '可用')) : adapter.healthMessage || '不可用或未授权'}</small></span>
-                  </button>
-                ))}
-              </div>
+              <details className="task-center-advanced" open={taskAdvancedOpen} onToggle={(event) => setTaskAdvancedOpen(event.currentTarget.open)}>
+                <summary><span>高级</span><small>Agent 状态与排障</small></summary>
+                {taskAdvancedOpen && <div className="task-adapter-grid">
+                  {Object.values(taskCenter.capabilities || {}).filter((adapter) => !adapter.hidden).map((adapter) => (
+                    <button className={adapter.available && adapter.authorized !== false ? 'task-adapter-card available' : 'task-adapter-card'} key={adapter.id} onClick={() => setTaskCenterExecutorFilter(adapter.id)}>
+                      <Bot size={17} />
+                      <span><strong>{adapter.label}</strong><small>{adapter.available && adapter.authorized !== false ? (adapter.healthMessage || (adapter.automatic ? '可自动执行' : adapter.inbox ? '收件箱/人工' : '可用')) : adapter.healthMessage || '不可用或未授权'}</small></span>
+                    </button>
+                  ))}
+                </div>}
+              </details>
               <div className="task-center-filters">
                 <label>状态
                   <select value={taskCenterStatusFilter} onChange={(event) => setTaskCenterStatusFilter(event.target.value as typeof taskCenterStatusFilter)}>
@@ -21690,13 +21602,15 @@ ${JSON.stringify(items, null, 2)}
                         <span className={`task-center-status ${task.status}`}>{statusLabel}</span>
                         <div>
                           <strong>{task.title}</strong>
-                          <small>{task.nextAction || task.detail}</small>
+                          <small>{task.automationReason || task.nextAction || task.detail}</small>
+                          {task.nextDispatchAt && <small>{task.nextDispatchAt === '即将自动开始' ? task.nextDispatchAt : `预计自动开始：${task.nextDispatchAt}`}</small>}
                         </div>
                       </div>
                       <div className="task-center-meta">
                         <span>{task.sourceType === 'project' ? '学习项目' : '学生档案'} · {task.sourceName}</span>
                         <span>{triggerLabel}{task.scheduledAt ? ` · ${task.scheduledAt}` : ''}</span>
                         <span>{executorLabel} · {modeLabel}</span>
+                        <span>当前 Agent：{agentToolProfiles[(task.currentAgent || task.adapterId || task.executor) as AgentToolId]?.name || task.currentAgent || task.adapterId || task.executor || '待路由'} · 已尝试 {task.attemptedToolCount || 0} 个工具</span>
                       </div>
                       <div className="task-center-row-actions">
                         <button className="secondary compact" onClick={() => viewTaskCenterItem(task)}>
@@ -21872,10 +21786,10 @@ ${JSON.stringify(items, null, 2)}
                       ) : null}
                       <div className="task-detail-actions">
                         {isCollaborationTaskSource && selectedCollaborationResultAttachmentIds.length > 0 && (
-                          <button className="secondary" onClick={() => applyCollaborationResult(bridge()?.openCollaborationPath?.('inbox'))}><FolderOpen size={16} />打开成果附件</button>
+                          <button className="secondary" onClick={async () => applyCollaborationResult(await bridge()?.openCollaborationPath?.('inbox'))}><FolderOpen size={16} />打开成果附件</button>
                         )}
                         {isCollaborationTaskTarget && (selectedCollaborationTask.attachmentObjectIds?.length || 0) > 0 && (
-                          <button className="secondary" onClick={() => applyCollaborationResult(bridge()?.openCollaborationPath?.('inbox'))}><FolderOpen size={16} />打开附件收件箱</button>
+                          <button className="secondary" onClick={async () => applyCollaborationResult(await bridge()?.openCollaborationPath?.('inbox'))}><FolderOpen size={16} />打开附件收件箱</button>
                         )}
                         {isCollaborationTaskTarget && (selectedCollaborationTask.attachmentObjectIds?.length || 0) > 0 && (
                           <button className="workflow-action optional" onClick={() => resolveCollaborationTaskAttachments(selectedTask, 'stage')}>继续暂存</button>
@@ -21953,13 +21867,14 @@ ${JSON.stringify(items, null, 2)}
                         : '无需填写审批意见。直接选择下面的操作，系统会自动记录时间、状态和预设原因；完整状态历史仍可展开查看。'}</div>
                       <div className="task-detail-actions">
                         {selectedTask.approval?.required && selectedTask.approval.status !== 'approved' && selectedTask.status !== 'reviewing' && <button className="workflow-action next" onClick={() => approveTaskFromCenter(selectedTask, 'approved')}><ShieldCheck size={16} />允许执行</button>}
-                        {!['running', 'waiting_result', 'reviewing', 'succeeded', 'cancelled', 'archived'].includes(selectedTask.status) && (!selectedTask.approval?.required || selectedTask.approval.status === 'approved') && <button className="workflow-action next" disabled={taskExecutionBusyId === selectedTask.id} onClick={() => executeTaskFromCenter(selectedTask)}><Zap size={16} />{taskExecutionBusyId === selectedTask.id ? '正在检查资料…' : '下一步：执行任务'}</button>}
+                        {!['running', 'waiting_result', 'reviewing', 'succeeded', 'cancelled', 'archived'].includes(selectedTask.status) && (!selectedTask.approval?.required || selectedTask.approval.status === 'approved') && !selectedTask.requiresUserAction && <button className="workflow-action next" disabled={taskExecutionBusyId === selectedTask.id} onClick={() => executeTaskFromCenter(selectedTask, true)}><Zap size={16} />{taskExecutionBusyId === selectedTask.id ? '正在提高优先级…' : '立即提高优先级'}</button>}
+                        {!['running', 'waiting_result', 'reviewing', 'succeeded', 'cancelled', 'archived'].includes(selectedTask.status) && (!selectedTask.approval?.required || selectedTask.approval.status === 'approved') && selectedTask.requiresUserAction && <button className="workflow-action next" disabled={taskExecutionBusyId === selectedTask.id} onClick={() => executeTaskFromCenter(selectedTask)}><Zap size={16} />{taskExecutionBusyId === selectedTask.id ? '正在检查资料…' : '下一步：执行任务'}</button>}
                         {selectedTask.status === 'reviewing' && selectedTaskAutoValidated && <span className="notice muted">系统正在校验并自动发布，无需人工操作。</span>}
                         {selectedTask.status === 'reviewing' && !selectedTaskAutoValidated && <button className="workflow-action next" onClick={() => approveTaskFromCenter(selectedTask, 'approved')}><CheckCircle2 size={16} />确认完成</button>}
                         {selectedTask.status === 'reviewing' && !selectedTaskAutoValidated && <button className="workflow-action optional" onClick={() => approveTaskFromCenter(selectedTask, 'rejected', '内容需要修改。')}><RefreshCw size={16} />需要修改</button>}
                         {['waiting_result', 'running'].includes(selectedTask.status) && <button className={taskResultPasteText.trim() ? 'workflow-action next' : 'workflow-action blocked'} onClick={() => importTaskResultTextFromCenter(selectedTask)} disabled={!taskResultPasteText.trim() || Boolean(taskImportBusyId)}><Clipboard size={16} />{taskImportBusyId === selectedTask.id ? '正在校验，请稍候…' : '下一步：导入粘贴结果'}</button>}
                         {['waiting_result', 'running'].includes(selectedTask.status) && <button className="secondary" disabled={Boolean(taskImportBusyId)} onClick={() => importTaskResultFromCenter(selectedTask)}><FileDown size={16} />从文件导入</button>}
-                        {['failed', 'blocked', 'timed_out'].includes(selectedTask.status) && <button className="workflow-action next" onClick={() => retryTaskFromCenter(selectedTask)}><RefreshCw size={16} />重新执行</button>}
+                        {['failed', 'blocked', 'timed_out'].includes(selectedTask.status) && selectedTask.requiresUserAction && <button className="workflow-action next" onClick={() => retryTaskFromCenter(selectedTask)}><RefreshCw size={16} />重新执行</button>}
                         {!['succeeded', 'cancelled'].includes(selectedTask.status) && <button className="workflow-action optional" onClick={() => cancelTaskFromCenter(selectedTask)}><X size={16} />忽略本次</button>}
                         {(['succeeded', 'failed', 'blocked', 'cancelled', 'timed_out'].includes(selectedTask.status)
                           || (selectedTask.status === 'pending' && selectedTask.kind === 'collaboration_assignment'
@@ -22188,7 +22103,7 @@ ${JSON.stringify(items, null, 2)}
                     <input
                       type="checkbox"
                       checked={Boolean(collaborationState?.teamKnowledgePolicy?.allowLocalTeamKnowledgeQuery)}
-                      onChange={(event) => applyCollaborationResult(bridge()?.setTeamKnowledgePolicy?.(JSON.stringify({
+                      onChange={async (event) => applyCollaborationResult(await bridge()?.setTeamKnowledgePolicy?.(JSON.stringify({
                         allowLocalTeamKnowledgeQuery: event.target.checked,
                         allowRemoteTeamKnowledgeQuery: Boolean(collaborationState?.teamKnowledgePolicy?.allowRemoteTeamKnowledgeQuery),
                       })))}
@@ -22203,7 +22118,7 @@ ${JSON.stringify(items, null, 2)}
                       type="checkbox"
                       disabled={!collaborationState?.state?.enabled}
                       checked={Boolean(collaborationState?.teamKnowledgePolicy?.allowRemoteTeamKnowledgeQuery)}
-                      onChange={(event) => applyCollaborationResult(bridge()?.setTeamKnowledgePolicy?.(JSON.stringify({
+                      onChange={async (event) => applyCollaborationResult(await bridge()?.setTeamKnowledgePolicy?.(JSON.stringify({
                         allowLocalTeamKnowledgeQuery: Boolean(collaborationState?.teamKnowledgePolicy?.allowLocalTeamKnowledgeQuery),
                         allowRemoteTeamKnowledgeQuery: event.target.checked,
                       })))}
@@ -22415,11 +22330,11 @@ ${JSON.stringify(items, null, 2)}
                       <div className="actions">
                         <button
                           className="secondary compact"
-                          onClick={() => {
+                          onClick={async () => {
                             const revokedCount = (collaborationState?.state?.deviceBindings ?? [])
                               .filter((binding) => binding.status === 'revoked' || Boolean(binding.revokedAt)).length;
                             if (window.confirm(`确定清理 ${revokedCount} 台已撤销协作设备吗？本机资料、知识和历史接收内容不会被删除。`)) {
-                              applyCollaborationResult(bridge()?.deleteRevokedCollaborationBindings?.());
+                              applyCollaborationResult(await bridge()?.deleteRevokedCollaborationBindings?.());
                             }
                           }}
                         >
@@ -22450,26 +22365,26 @@ ${JSON.stringify(items, null, 2)}
                             </div>
                             <div className="actions">
                               {binding.status === 'active' && (
-                                <button className="secondary compact" onClick={() => applyCollaborationResult(bridge()?.updateCollaborationBindingStatus?.(binding.deviceBindingId, 'paused'))}>
+                                <button className="secondary compact" onClick={async () => applyCollaborationResult(await bridge()?.updateCollaborationBindingStatus?.(binding.deviceBindingId, 'paused'))}>
                                   暂停
                                 </button>
                               )}
                               {binding.status === 'paused' && (
-                                <button className="secondary compact" onClick={() => applyCollaborationResult(bridge()?.updateCollaborationBindingStatus?.(binding.deviceBindingId, 'active'))}>
+                                <button className="secondary compact" onClick={async () => applyCollaborationResult(await bridge()?.updateCollaborationBindingStatus?.(binding.deviceBindingId, 'active'))}>
                                   恢复
                                 </button>
                               )}
                               {binding.status !== 'revoked' && (
-                                <button className="danger compact" onClick={() => applyCollaborationResult(bridge()?.updateCollaborationBindingStatus?.(binding.deviceBindingId, 'revoked'))}>
+                                <button className="danger compact" onClick={async () => applyCollaborationResult(await bridge()?.updateCollaborationBindingStatus?.(binding.deviceBindingId, 'revoked'))}>
                                   撤销
                                 </button>
                               )}
                               {(binding.status === 'revoked' || Boolean(binding.revokedAt)) && (
                                 <button
                                   className="danger compact"
-                                  onClick={() => {
+                                  onClick={async () => {
                                     if (window.confirm('确定删除这台已撤销协作设备吗？本机资料、知识和历史接收内容不会被删除。')) {
-                                      applyCollaborationResult(bridge()?.deleteRevokedCollaborationBindings?.(binding.deviceBindingId));
+                                      applyCollaborationResult(await bridge()?.deleteRevokedCollaborationBindings?.(binding.deviceBindingId));
                                     }
                                   }}
                                 >
@@ -22494,7 +22409,7 @@ ${JSON.stringify(items, null, 2)}
                       type="checkbox"
                       disabled={!collaborationState?.state?.enabled}
                       checked={Boolean(collaborationState?.state?.statisticsSharing?.[selectedStudent.id])}
-                      onChange={(event) => applyCollaborationResult(bridge()?.setCollaborationStatisticsSharing?.(selectedStudent.id, event.target.checked))}
+                      onChange={async (event) => applyCollaborationResult(await bridge()?.setCollaborationStatisticsSharing?.(selectedStudent.id, event.target.checked))}
                     />
                   </label>
                 )}
@@ -22532,13 +22447,13 @@ ${JSON.stringify(items, null, 2)}
                             type="checkbox"
                             disabled={!collaborationState?.state?.enabled || archiveSync?.mappingStatus !== 'exact'}
                             checked={archiveSync?.enabled !== false}
-                            onChange={(event) => applyCollaborationResult(bridge()?.setStudentArchiveSyncEnabled?.(selectedStudent.id, event.target.checked))}
+                            onChange={async (event) => applyCollaborationResult(await bridge()?.setStudentArchiveSyncEnabled?.(selectedStudent.id, event.target.checked))}
                           />
                         </label>
                         <button
                           className="secondary compact"
                           disabled={!archiveSync?.enabled || archiveSync?.mappingStatus !== 'exact'}
-                          onClick={() => applyCollaborationResult(bridge()?.syncStudentArchiveNow?.(selectedStudent.id))}
+                          onClick={async () => applyCollaborationResult(await bridge()?.syncStudentArchiveNow?.(selectedStudent.id))}
                         >
                           <RefreshCw size={15} />立即同步
                         </button>
@@ -22663,15 +22578,15 @@ ${JSON.stringify(items, null, 2)}
                 </section>
                 <div className="actions">
                   {!collaborationState?.state?.enabled ? (
-                    <button className="primary" onClick={() => applyCollaborationResult(bridge()?.initializeCollaborationWorkspace?.())}>
+                    <button className="primary" onClick={async () => applyCollaborationResult(await bridge()?.initializeCollaborationWorkspace?.())}>
                       开启知识协作
                     </button>
                   ) : (
-                    <button className="secondary" onClick={() => applyCollaborationResult(bridge()?.setCollaborationEnabled?.(false))}>
+                    <button className="secondary" onClick={async () => applyCollaborationResult(await bridge()?.setCollaborationEnabled?.(false))}>
                       关闭协作
                     </button>
                   )}
-                  <button className="secondary" disabled={!collaborationState?.layout?.nodeRoot} onClick={() => applyCollaborationResult(bridge()?.openCollaborationPath?.('nodeRoot'))}>
+                  <button className="secondary" disabled={!collaborationState?.layout?.nodeRoot} onClick={async () => applyCollaborationResult(await bridge()?.openCollaborationPath?.('nodeRoot'))}>
                     <FolderOpen size={18} />打开兼容交换目录
                   </button>
                   <button className="secondary" disabled={!collaborationState?.state?.enabled} onClick={() => { void scanCollaborationInbox(); }}>
@@ -22680,10 +22595,10 @@ ${JSON.stringify(items, null, 2)}
                   <button className="secondary" disabled={!collaborationState?.state?.enabled} onClick={() => { void rebuildCollaborationIndexAsync(); }}>
                     <ListChecks size={18} />重建协作索引
                   </button>
-                  <button className="secondary" disabled={!collaborationState?.state?.enabled} onClick={() => applyCollaborationResult(bridge()?.backupCollaborationState?.())}>
+                  <button className="secondary" disabled={!collaborationState?.state?.enabled} onClick={async () => applyCollaborationResult(await bridge()?.backupCollaborationState?.())}>
                     <Archive size={18} />备份协作状态
                   </button>
-                  <button className="secondary" onClick={() => applyCollaborationResult(bridge()?.restoreLatestCollaborationState?.())}>
+                  <button className="secondary" onClick={async () => applyCollaborationResult(await bridge()?.restoreLatestCollaborationState?.())}>
                     <RefreshCw size={18} />恢复最近备份
                   </button>
                   <button className="secondary" onClick={() => { refreshCollaborationState(); refreshCollaborationMaterialStats(); refreshAgentConversationInbox(); }}>
@@ -22752,23 +22667,6 @@ ${JSON.stringify(items, null, 2)}
                     [t('settings.storageMode'), 'Windows 本机目录'],
                     [t('settings.licenseStatus'), licenseLabel(effectiveLicenseStatus)],
                     [t('settings.studentRoot'), storageConfig.baseDir],
-                    ['QClaw', installStatus?.qclaw.installed ? `已安装 ${installStatus.qclaw.version ?? ''}` : '未安装'],
-                    ['Marvis', installStatus?.marvis.installed ? `已安装 ${installStatus.marvis.version ?? ''}` : '未安装'],
-                    ['Hohu', installStatus?.hohu.installed ? `已安装 ${installStatus.hohu.version ?? ''}` : '未安装'],
-                    ['OpenClaw', installStatus?.openclaw?.installed ? `已安装 ${installStatus.openclaw.version ?? ''}` : '未安装'],
-                    ['ima.copilot', installStatus?.imaCopilot?.installed ? `已安装 ${installStatus.imaCopilot.version ?? ''}` : '未安装'],
-                    ['WorkBuddy', installStatus?.workbuddy?.installed ? `已安装 ${installStatus.workbuddy.version ?? ''}` : '未安装'],
-                    ['ChatGPT / Codex', installStatus?.codex?.installed ? `已安装 ${installStatus.codex.version ?? ''}` : '未安装'],
-                    ['Claude Code', installStatus?.claudeCode?.installed ? `已安装 ${installStatus.claudeCode.version ?? ''}` : '未安装'],
-                    ['Tailscale 软件', installStatus?.tailscale?.installed ? `已安装 ${installStatus.tailscale.version ?? ''}` : '未安装'],
-                    ['QClaw 路径', installStatus?.qclaw.exePath || '未检测到'],
-                    ['Marvis 路径', installStatus?.marvis.exePath || '未检测到'],
-                    ['Hohu 路径', installStatus?.hohu.exePath || '未检测到'],
-                    ['OpenClaw 路径', installStatus?.openclaw?.exePath || '未检测到'],
-                    ['ima.copilot 路径', installStatus?.imaCopilot?.exePath || '未检测到'],
-                    ['WorkBuddy 路径', installStatus?.workbuddy?.exePath || '未检测到'],
-                    ['ChatGPT / Codex 路径', installStatus?.codex?.appPath || installStatus?.codex?.exePath || '未检测到'],
-                    ['Claude Code 路径', installStatus?.claudeCode?.exePath || '未检测到'],
                   ]
                 : [
                     ['存储模式', 'App 内置资料库'],
@@ -22786,26 +22684,9 @@ ${JSON.stringify(items, null, 2)}
               </div>
               ))}
             </div>}
-            {(!isWindows || settingsSubmenu === 'basic') && <div className="notice muted">
-              {isWindows
-                ? 'WorkBuddy、Codex、OpenClaw 等所选 Agent 可使用同一个本机学生知识库目录。系统会选择可用磁盘；无 D 盘时自动使用 Windows 文档\\学生资料。'
-                : String(compatibility?.message ?? '在 Android APK 中可查看完整兼容性检测结果。')}
+            {!isWindows && <div className="notice muted">
+              {String(compatibility?.message ?? '在 Android APK 中可查看完整兼容性检测结果。')}
             </div>}
-            {isWindows && settingsSubmenu === 'basic' && (
-              <div className="source-list">
-                <div className="mini-heading">
-                  <strong>{t('settings.agentAdapters')}</strong>
-                  <span>{t('settings.agentAdapters.desc')}</span>
-                </div>
-                {agentToolOptions.map((tool) => (
-                  <div className="source-row" key={tool.id}>
-                    <strong>{tool.name} · {tool.category}</strong>
-                    <span>{tool.openMode} · {tool.supportsScheduledTask ? '支持定时任务' : '手动/外部执行'} · {tool.supportsConversationExport ? '支持对话导出' : '不支持对话导出'}</span>
-                    <small>规则文件：{tool.ruleFiles.join('、')}；记忆：{tool.supportsMemoryFile ? '文件' : '粘贴'}；人设：{tool.supportsPersonaFile ? '文件' : '粘贴'}</small>
-                  </div>
-                ))}
-              </div>
-            )}
             {isWindows && settingsSubmenu === 'connection' && (
               <div className="actions">
                 <button className="secondary compact" onClick={refreshInstallStatus}>
@@ -22814,7 +22695,7 @@ ${JSON.stringify(items, null, 2)}
                 <button className="secondary compact" onClick={() => openExternal('tailscale')}>
                   {installStatus?.tailscale?.installed ? '打开 Tailscale' : '下载 Tailscale'}
                 </button>
-                <button className="secondary compact" onClick={() => bridge()?.openExternalUrl?.('https://tailscale.com/download/windows')}>
+                <button className="secondary compact" onClick={async () => await bridge()?.openExternalUrl?.('https://tailscale.com/download/windows')}>
                   Tailscale Windows 下载页
                 </button>
               </div>
@@ -22978,6 +22859,28 @@ ${JSON.stringify(items, null, 2)}
                     导出诊断日志
                   </button>
                 </div>
+                <div className="notice muted">
+                  <strong>导出到 Android 单机版（U盘）</strong>
+                  <p>按学生导出完整档案、关联学习项目和有效课程；采用可续传目录，不生成容易卡住的大型 ZIP。</p>
+                  <div className="inline-field">
+                    <select value={studentOfflineMigrationStudentId} disabled={studentOfflineMigrationBusy} onChange={(event) => {
+                      setStudentOfflineMigrationStudentId(event.target.value);
+                      setStudentOfflineMigrationPlan(null); setStudentOfflineMigrationProgress(null); setStudentOfflineMigrationMessage('');
+                    }}>
+                      <option value="">选择学生</option>
+                      {students.map((student) => <option value={student.id} key={student.id}>{student.name}</option>)}
+                    </select>
+                    <button className="secondary" onClick={() => void exportSelectedStudentForAndroid()} disabled={!windowsLicenseActive || !studentOfflineMigrationStudentId || studentOfflineMigrationBusy}>
+                      <FileDown size={18} />{studentOfflineMigrationBusy ? '正在导出…' : '选择 U 盘并导出'}
+                    </button>
+                  </div>
+                  {studentOfflineMigrationPlan?.ok && <p>已盘点 {studentOfflineMigrationPlan.fileCount || 0} 个文件（{formatFileSize(studentOfflineMigrationPlan.totalBytes || 0)}）、{studentOfflineMigrationPlan.projectCount || 0} 个关联项目和 {studentOfflineMigrationPlan.courseCount || 0} 门有效课程。</p>}
+                  {studentOfflineMigrationProgress && studentOfflineMigrationProgress.phase !== 'completed' && <div className="migration-progress" role="status" aria-live="polite">
+                    <progress value={studentOfflineMigrationProgress.completedFiles || 0} max={Math.max(1, studentOfflineMigrationProgress.totalFiles || 1)} />
+                    <span>{studentOfflineMigrationProgress.completedFiles || 0}/{studentOfflineMigrationProgress.totalFiles || 0} 个文件{studentOfflineMigrationProgress.current ? ` · ${studentOfflineMigrationProgress.current}` : ''}</span>
+                  </div>}
+                  {studentOfflineMigrationMessage && <p>{studentOfflineMigrationMessage}</p>}
+                </div>
                 <details className="advanced-panel">
                   <summary>迁移到新电脑 / 从迁移包恢复</summary>
                   <div className="notice muted">
@@ -23076,6 +22979,54 @@ ${JSON.stringify(items, null, 2)}
                     {hostMigrationMessage && <p>{hostMigrationMessage}</p>}
                   </div>
                 </details>
+              </div>
+            )}
+            {isWindows && settingsSubmenu === 'connection' && (
+              <div className="notice upload-record-list" id="host-upload-records">
+                <div className="mini-heading">
+                  <div>
+                    <strong>上传记录</strong>
+                    <span>学生终端上传成功后会出现在这里，便于确认资料进入了对应学生或项目原始资料库。</span>
+                  </div>
+                  <div className="mini-actions">
+                    <button className="secondary compact" onClick={refreshHostUploadRecords}><RefreshCw size={16} />刷新</button>
+                    <button className="secondary compact" onClick={exportHostUploadRecords}><FileDown size={16} />导出 CSV</button>
+                    <button className="secondary compact" onClick={clearHostUploadRecords} disabled={!windowsLicenseActive}>清理记录</button>
+                  </div>
+                </div>
+                <div className="upload-record-controls">
+                  <input value={hostUploadSearch} onChange={(event) => setHostUploadSearch(event.target.value)} placeholder="搜索文件名、学生、设备或路径" />
+                  <select value={hostUploadStudentFilter} onChange={(event) => setHostUploadStudentFilter(event.target.value)}>
+                    <option value="all">全部学生</option>
+                    {students.map((student) => <option value={student.id} key={student.id}>{student.name}</option>)}
+                  </select>
+                  <select value={hostUploadDeviceFilter} onChange={(event) => setHostUploadDeviceFilter(event.target.value)}>
+                    <option value="all">全部设备</option>
+                    {(hostServiceStatus?.devices ?? []).map((device) => <option value={device.id} key={device.id}>{device.name}</option>)}
+                  </select>
+                  <select value={hostUploadDateFilter} onChange={(event) => setHostUploadDateFilter(event.target.value)}>
+                    <option value="all">全部时间</option><option value="today">今天</option><option value="7d">近 7 天</option><option value="30d">近 30 天</option>
+                  </select>
+                  <select value={hostUploadStatusFilter} onChange={(event) => setHostUploadStatusFilter(event.target.value)}>
+                    <option value="all">全部状态</option><option value="pending_digest">待消化</option><option value="submitted">已提交消化</option>
+                    <option value="digesting">消化中</option><option value="processed">已处理完成</option><option value="failed">消化失败</option><option value="ignored">已忽略</option>
+                  </select>
+                  <span>共 {filteredHostUploadRecords.length} 条</span>
+                </div>
+                {filteredHostUploadRecords.length === 0 && <p className="muted-text">暂无上传记录。</p>}
+                {filteredHostUploadRecords.length > 0 && <div className="upload-record-scroll">
+                  {filteredHostUploadRecords.slice(0, 80).map((record) => <article className="upload-record-item" key={record.id}>
+                    <div><strong>{record.filename}</strong><span>{record.studentName || '未知学生'} · {record.deviceName || '未知设备'}</span>
+                      <small>{uploadStatusLabel(record.status)}</small>{record.path && <small>{record.path}</small>}</div>
+                    <div className="upload-record-meta"><small>{record.uploadedAt ? new Date(record.uploadedAt).toLocaleString() : ''}</small>
+                      <button className="secondary compact" onClick={() => setUploadRecordStatus(record, 'submitted')}>提交消化</button>
+                      <button className="secondary compact" onClick={() => setUploadRecordStatus(record, 'processed')}>处理完成</button>
+                      <button className="secondary compact" onClick={() => setUploadRecordStatus(record, 'failed')}>标记失败</button>
+                      <button className="secondary compact" onClick={() => openHostUploadRecord(record)}>打开位置</button>
+                    </div>
+                  </article>)}
+                </div>}
+                {filteredHostUploadRecords.length > 80 && <p className="muted-text">仅显示前 80 条，请用搜索缩小范围或导出 CSV 查看全部。</p>}
               </div>
             )}
             {isWindows && settingsSubmenu === 'connection' && (
@@ -23534,7 +23485,7 @@ function renderInlineMarkdown(text: string, keyPrefix: string): React.ReactNode[
   return nodes;
 }
 
-function MarkdownView({ content, onMermaidNodeClick }: { content: string; onMermaidNodeClick?: (nodeId: string) => boolean | void }) {
+function LegacyMarkdownView({ content, onMermaidNodeClick }: { content: string; onMermaidNodeClick?: (nodeId: string) => boolean | void }) {
   const lines = content.split(/\r?\n/);
   const blocks: React.ReactNode[] = [];
   let codeBuffer: string[] = [];

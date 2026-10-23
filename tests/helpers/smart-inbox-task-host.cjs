@@ -5,6 +5,8 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 const crypto = require('node:crypto');
+const { DatabaseSync } = require('node:sqlite');
+const { databasePathForLegacy } = require('../../electron/task-state-store.cjs');
 
 async function createTaskHost(root, options = {}) {
   const runtime = options.runtime || path.resolve(__dirname, '../../electron');
@@ -41,10 +43,14 @@ async function createTaskHost(root, options = {}) {
   const end = source.indexOf('      agent: {', start);
   if (start < 0 || end < 0) throw Error('Missing production batch callbacks');
   const callbacks = vm.runInContext(`({${source.slice(start, end)}})`, context);
+  const readRows = (sql) => {
+    const db = new DatabaseSync(databasePathForLegacy(file), { readOnly: true });
+    try { return db.prepare(sql).all().map(row => JSON.parse(row.payload_json)); } finally { db.close(); }
+  };
   return { ...callbacks, context, file, service, client,
-    disk: () => JSON.parse(fs.readFileSync(file, 'utf8')),
-    events: () => fs.readFileSync(path.join(path.dirname(file), 'events.jsonl'), 'utf8').trim().split('\n').filter(Boolean).map(JSON.parse),
-    async close() { try { await service.flush(); } finally { client.close(); } },
+    disk: () => structuredClone(service.read(file).value),
+    events: () => readRows('SELECT payload_json FROM task_events ORDER BY rowid'),
+    async close() { try { await service.flush(); } finally { await client.close(); } },
   };
 }
 module.exports = { createTaskHost };

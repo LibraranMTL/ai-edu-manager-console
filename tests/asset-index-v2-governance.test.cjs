@@ -33,7 +33,17 @@ test('v1 schema upgrades in place, keeps a snapshot, and backfills consistent SH
   ]);
   value.store.close();
   const raw = new DatabaseSync(value.dbPath);
-  raw.exec(`DROP TABLE asset_duplicate_entries; DROP TABLE asset_duplicate_operations;
+  raw.exec(`DROP TRIGGER IF EXISTS asset_refs_summary_au;
+    DROP TRIGGER IF EXISTS asset_refs_summary_ad; DROP TRIGGER IF EXISTS asset_refs_summary_ai;
+    DROP TRIGGER IF EXISTS assets_summary_au; DROP TRIGGER IF EXISTS assets_summary_ai;
+    DROP TRIGGER IF EXISTS asset_summary_rows_ad; DROP TRIGGER IF EXISTS asset_summary_rows_au;
+    DROP TRIGGER IF EXISTS asset_summary_rows_ai;
+    DROP TABLE IF EXISTS asset_student_memberships; DROP TABLE IF EXISTS asset_summary_rows;
+    DROP TABLE IF EXISTS asset_summary_facets; DROP TABLE IF EXISTS asset_summary_totals;
+    DROP INDEX IF EXISTS asset_refs_asset_state_path;
+    DROP INDEX IF EXISTS asset_refs_space_state_asset;
+    DROP INDEX IF EXISTS asset_refs_student_state_asset;
+    DROP TABLE asset_duplicate_entries; DROP TABLE asset_duplicate_operations;
     ALTER TABLE asset_references DROP COLUMN quarantine_operation_id;
     ALTER TABLE asset_references DROP COLUMN state;
     ALTER TABLE asset_scan_runs DROP COLUMN current_scope_name;
@@ -46,11 +56,14 @@ test('v1 schema upgrades in place, keeps a snapshot, and backfills consistent SH
   const upgraded = createAssetIndexStore({ dbPath: value.dbPath, legacyJsonPath: value.legacyJsonPath });
   try {
     const store = upgraded.initialize();
-    assert.equal(store.db.prepare('PRAGMA user_version').get().user_version, 2);
+    assert.equal(store.db.prepare('PRAGMA user_version').get().user_version, 4);
     assert.equal(store.getAssetDetail('asset-v1').sha256, fingerprint.sha256);
     assert.equal(store.getAssetDetail('asset-v1').references[0].state, 'active');
+    assert.equal(store.getAssetDetail('asset-v1').references[0].availabilityState, 'unchecked');
     assert.equal(store.summary().sha256ReadyCount, 1);
     assert.equal(fs.readdirSync(value.root).filter(name => name.includes('.pre-schema-v2-')).length, 1);
+    assert.equal(fs.readdirSync(value.root).filter(name => name.includes('.pre-schema-v3-')).length, 1);
+    assert.equal(fs.readdirSync(value.root).filter(name => name.includes('.pre-schema-v4-')).length, 1);
   } finally {
     upgraded.close();
     fs.rmSync(value.root, { recursive: true, force: true });
@@ -98,6 +111,9 @@ test('same-space duplicate can be quarantined and restored while cross-space ass
   try {
     const preview = await governance.prepare({ assetIds: ['asset-dup'] });
     assert.equal(preview.summary.eligibleCount, 1);
+    const secondPreview = await governance.prepare({ assetIds: ['asset-dup'] });
+    assert.equal(secondPreview.summary.eligibleCount, 1);
+    assert.notEqual(secondPreview.entries[0].entryId, preview.entries[0].entryId);
     const result = await governance.apply(preview.operationId, preview.entries.map(item => item.entryId));
     assert.equal(result.status, 'completed');
     const entry = result.entries[0];
@@ -125,6 +141,46 @@ test('same-space duplicate can be quarantined and restored while cross-space ass
     const protectedPreview = await protectedGovernance.prepare({ assetIds: ['asset-dup'] });
     assert.equal(protectedPreview.summary.eligibleCount, 0);
     assert.match(protectedPreview.summary.blocked[0].reason, /跨学生或项目空间/);
+  } finally {
+    value.store.close();
+    fs.rmSync(value.root, { recursive: true, force: true });
+  }
+});
+
+test('duplicate history is paged and failed isolation can be revalidated into a new preview', async () => {
+  const value = tempStore();
+  const studentRoot = path.join(value.root, 'student-retry');
+  const first = path.join(studentRoot, 'first.txt');
+  const second = path.join(studentRoot, 'second.txt');
+  fs.mkdirSync(studentRoot);
+  fs.writeFileSync(first, 'retry-content');
+  fs.writeFileSync(second, 'retry-content');
+  const fingerprint = hashes('retry-content');
+  value.store.upsertAsset({ assetId: 'asset-retry', ...fingerprint, filename: 'first.txt', size: 13, path: first }, [
+    { id: 'retry-r1', spaceType: 'student', spaceId: 's1', studentId: 's1', role: 'student_raw_scanned', path: first, contentSha256: fingerprint.sha256 },
+    { id: 'retry-r2', spaceType: 'student', spaceId: 's1', studentId: 's1', role: 'student_raw_scanned', path: second, contentSha256: fingerprint.sha256 },
+  ]);
+  const governance = createAssetDuplicateGovernance({
+    store: value.store,
+    quarantineRoot: path.join(value.root, 'quarantine-retry'),
+    authorizedRoots: () => [{ spaceType: 'student', spaceId: 's1', path: studentRoot }],
+  });
+  try {
+    const preview = await governance.prepare({ assetIds: ['asset-retry'] });
+    const entry = preview.entries[0];
+    fs.rmSync(entry.keepPath);
+    const failed = await governance.apply(preview.operationId, [entry.entryId]);
+    assert.equal(failed.status, 'failed');
+    assert.equal(failed.entries[0].status, 'failed');
+    fs.writeFileSync(entry.keepPath, 'retry-content');
+    const history = governance.history({ pageSize: 1 });
+    assert.equal(history.ok, true);
+    assert.equal(history.items.length, 1);
+    assert.equal(history.items[0].failedCount, 1);
+    const retried = await governance.retry(preview.operationId);
+    assert.notEqual(retried.operationId, preview.operationId);
+    assert.equal(retried.summary.eligibleCount, 1);
+    assert.equal(retried.filter.retryOfOperationId, preview.operationId);
   } finally {
     value.store.close();
     fs.rmSync(value.root, { recursive: true, force: true });

@@ -12,6 +12,7 @@ const terminalLifecycle = fs.readFileSync(path.join(root, 'electron', 'student-a
 const adapterRegistry = fs.readFileSync(path.join(root, 'electron', 'agent-adapter-registry.cjs'), 'utf8');
 const adapterRegistryModule = require('../electron/agent-adapter-registry.cjs');
 const ui = fs.readFileSync(path.join(root, 'src', 'main.tsx'), 'utf8');
+const vm = require('node:vm');
 
 test('P0 Agent credentials are private, student-scoped and cannot widen to team scope', () => {
   assert.match(main, /agent-access-tokens/);
@@ -92,9 +93,13 @@ test('P1 automatic capture uses lifecycle hooks and never asks the Agent model t
   assert.match(main, /upsertLifecycleCommandHooks\(claudeCodeHooksPath, 'claude-code'\)/);
   assert.match(main, /installHermesLifecyclePlugin\(\)/);
   assert.match(main, /startAgentLifecycleInstallMonitor\(\)/);
+  assert.match(main, /repairActiveLifecycleDescriptorAuthorization\(\)/);
   assert.match(main, /reconcileAuthorizedLifecycleAdapters\(\{ force: true \}\)/);
   assert.match(main, /finalizeStaleLifecycleSessions/);
-  assert.match(main, /30 \* 60_000/);
+  assert.match(main, /24 \* 60 \* 60_000/);
+  assert.match(main, /append_continuation/);
+  assert.match(main, /status: 'completed'/);
+  assert.doesNotMatch(main, /action: 'append_after_finalize'/);
   assert.match(main, /lifecycle-stale-empty:/);
   assert.match(main, /sourceAgent === "qclaw"/);
   const hostPluginSource = main.slice(main.indexOf('function openClawLifecyclePluginSource(sourceAgent) {'), main.indexOf('function installOpenClawLifecyclePlugin(configPath, sourceAgent) {'));
@@ -126,6 +131,11 @@ test('P1 automatic capture uses lifecycle hooks and never asks the Agent model t
   assert.match(ui, /一次授权后，系统会自动探测并接入/);
   assert.doesNotMatch(main, /会话开始调用 \\`start_education_session\\`/);
   assert.doesNotMatch(main, /每轮回复后调用 \\`record_authorized_education_turn\\`/);
+  const lifecycleEnvelope = main.slice(main.indexOf('function processAgentLifecycleEnvelope(rawEnvelope)'), main.indexOf('function applyNormalizedLifecycleEvent'));
+  assert.doesNotMatch(lifecycleEnvelope, /unifiedKnowledgeRegistrations/);
+  const codexInstall = main.slice(main.indexOf('const codexManaged = Boolean'), main.indexOf('const claudeCodeHooksPath'));
+  assert.match(codexInstall, /codexProjectRegistered = !codexManaged/);
+  assert.match(codexInstall, /codexLifecycleRegistered = activateGlobal\s+\? upsertLifecycleCommandHooks/);
 });
 
 test('S1 retired tools are hidden from new selections while legacy data stays readable', () => {
@@ -134,4 +144,40 @@ test('S1 retired tools are hidden from new selections while legacy data stays re
   assert.match(main, /KNOWN_AGENT_SOURCE_IDS\.map/);
   assert.equal(adapterRegistryModule.ACTIVE_AGENT_TOOL_IDS.includes('coze'), false);
   assert.equal(adapterRegistryModule.ACTIVE_AGENT_TOOL_IDS.includes('fastgpt'), false);
+});
+
+test('a later turn continues after an older build stale-finalized the native Agent session', () => {
+  const lifecycleSource = main.slice(
+    main.indexOf('function lifecycleSessionKey(event)'),
+    main.indexOf('function studentTerminalCaptureDevice(request)'),
+  );
+  const context = {
+    crypto: require('node:crypto'),
+    codexTurnAllowed: () => true,
+    agentMemoryStore: () => store,
+  };
+  const sessions = new Map([['session-base', {
+    sessionId: 'session-base', agentId: 'codex', status: 'failed', finalizedAt: '2026-10-21T00:00:00.000Z',
+    idempotencyKey: 'lifecycle:codex:native-1:epoch-1', messages: [{ role: 'user', content: 'old' }],
+  }]]);
+  const appended = [];
+  const store = {
+    readSession: (_studentId, sessionId) => sessions.get(sessionId) || null,
+    listSessions: () => [...sessions.values()],
+    startSession: (input) => {
+      const session = { ...input, status: 'active', finalizedAt: '', messages: [] };
+      sessions.set(session.sessionId, session);
+      return { session };
+    },
+    appendMessages: (input) => appended.push(input),
+  };
+  vm.runInNewContext(`${lifecycleSource}\nthis.applyNormalizedLifecycleEvent = applyNormalizedLifecycleEvent;`, context);
+  const result = context.applyNormalizedLifecycleEvent({ id: 'student-1' }, {
+    action: 'append', sourceAgent: 'codex', nativeSessionId: 'native-1', captureEpoch: 'epoch-1',
+    sessionId: 'session-base', title: 'Codex', eventId: 'event-2', message: { role: 'user', content: 'new' },
+  }, 'grant-1');
+  assert.equal(result.action, 'append_continuation');
+  assert.equal(appended.length, 1);
+  assert.notEqual(appended[0].sessionId, 'session-base');
+  assert.match(appended[0].sessionId, /^session-base-continuation-/);
 });

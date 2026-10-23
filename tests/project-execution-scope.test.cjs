@@ -12,7 +12,7 @@ const {
   pathWithinProjectScope,
   projectScopePermissions,
 } = require('../electron/project-execution-scope.cjs');
-const { validatePermissionDeclaration } = require('../electron/task-protocol.cjs');
+const { digestExpectedOutputForBatch, validatePermissionDeclaration } = require('../electron/task-protocol.cjs');
 
 function fixture(t) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'edu-project-scope-'));
@@ -83,4 +83,22 @@ test('host-managed project receipts do not expand the Agent project write scope'
   assert.match(main, /globalProjectScopeEnabled = Boolean\(isWorkspaceMaterialProject\(project\)/);
   assert.match(main, /\{ type: 'project_digest_host_receipt', hostManaged: true \}/);
   assert.doesNotMatch(main, /project_digest_host_receipt'[^\n]+hostReceiptPath/);
+});
+
+test('binding a digest batch preserves host-managed receipts and repairs stale polluted output', t => {
+  const value = fixture(t);
+  const scope = buildProjectExecutionScope({ ...value, taskProfile: 'digest_host_mediated.v1' });
+  const hostReceipt = path.join(value.root, '.edu-manager', 'project-digest-receipt.json');
+  const polluted = { type: 'digest_receipt_v1', hostManaged: true, path: hostReceipt };
+  const repaired = digestExpectedOutputForBatch(polluted, hostReceipt);
+  assert.deepEqual(repaired, { type: 'project_digest_host_receipt', hostManaged: true });
+  assert.deepEqual(polluted, { type: 'digest_receipt_v1', hostManaged: true, path: hostReceipt });
+  assert.equal(validatePermissionDeclaration({
+    kind: 'project_digest', permissions: projectScopePermissions(scope), expectedOutput: repaired,
+  }).ok, true);
+
+  const legacyReceipt = path.join(value.knowledge, 'project-digest-receipt.json');
+  assert.deepEqual(digestExpectedOutputForBatch({ type: 'project_digest_receipt' }, legacyReceipt), {
+    type: 'digest_receipt_v1', path: legacyReceipt,
+  });
 });

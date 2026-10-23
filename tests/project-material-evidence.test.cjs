@@ -277,6 +277,8 @@ test('actual preload and IPC registration carry the preview binding through the 
   main.context.ipcMain = { handle: (channel, callback) => handlers.set(channel, callback) };
   main.context.setImmediate = setImmediate;
   main.context.taskStoreGuard = { sequence: () => 0 };
+  main.context.resourceCoordinator = { noteForegroundActivity() {} };
+  main.context.businessStartupReady = true;
   main.context.licensedInvoke = Function('scope', `with (scope) { return (${extract('licensedInvoke')}); }`)(main.context);
   const registration = mainSource.split('\n').find((line) => line.startsWith("ipcMain.handle('bridge:updateProjectStudentEvidenceAsync'"));
   assert.ok(registration); Function('scope', `with (scope) { ${registration} }`)(main.context);

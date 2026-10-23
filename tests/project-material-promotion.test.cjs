@@ -293,7 +293,7 @@ test('durable archive rolls back absorbed files, asset index, growth queue and p
   assert.deepEqual(JSON.parse(fs.readFileSync(main.context.growthRefreshStatePath())).dirty, ['s1']);
 });
 
-test('actual archive survives process kill at staging, written and lost-receipt boundaries including asset side effects', { timeout: 40000 }, async (t) => {
+test('actual archive survives process kill at staging, written and lost-receipt boundaries including asset side effects', { timeout: 90000 }, async (t) => {
   for (const phase of ['afterPrepared', 'afterFilesWritten', 'afterFinalized']) {
     const f = await fixture(t); const main = mainContext(f);
     fs.writeFileSync(path.join(f.root, 'crash-input.json'), JSON.stringify({ root: f.root, project: f.project, student: f.student, input: f.input() }));

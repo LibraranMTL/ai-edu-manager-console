@@ -20,11 +20,11 @@ function load(name, context) {
 const task = () => ({ id: 't', sourceType: 'student', sourceId: 's', status: 'failed', executionId: 'e',
   idempotencyKey: 'batch-v1', attempt: 1, maxAttempts: 9, autoRetry: true });
 
-test('backoff is 1 then 5 minutes, jitter never runs early and cross-adapter cap is three', () => {
+test('backoff is 1 then 5 minutes, jitter never runs early and two routing rounds cap at six', () => {
   const now = Date.parse('2026-10-11T00:00:00Z');
-  for (const attempt of [1, 2, 3]) {
+  for (const attempt of [1, 2, 3, 6]) {
     const result = policy.taskRetryDecision({ ...task(), attempt }, { code: '503' }, { now, random: () => 1, stopConfirmed: true });
-    if (attempt === 3) { assert.equal(result.nextRetryAt, ''); assert.equal(result.autoRetry, false); }
+    if (attempt === 6) { assert.equal(result.nextRetryAt, ''); assert.equal(result.autoRetry, false); }
     else assert.equal(Date.parse(result.nextRetryAt) - now, attempt === 1 ? 66000 : 330000);
   }
 });

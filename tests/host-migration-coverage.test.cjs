@@ -34,7 +34,7 @@ function fixture(t) {
 function hostPlan(f, { projects = [f.project], removed = [] } = {}) {
   const source = fs.readFileSync(path.join(__dirname, '../electron/main.cjs'), 'utf8');
   const context = vm.createContext({ fs, path, projectMigrationRequirements, mergeExternalMigrationCandidates,
-    readProjects: () => projects, normalizeProjectMetadata: (value) => value,
+    readProjects: () => projects, readProjectMetadata: () => projects, normalizeProjectMetadata: (value) => value,
     findRemovedProjectSnapshots: () => removed,
     normalizeProject: () => { throw new Error('must not scan/hash projects while planning'); },
     readProjectMaterialIndexSync: () => ({ materials: [] }), isWorkspaceMaterialProject: (p) => p.materialStorageMode === 'workspace-v1',

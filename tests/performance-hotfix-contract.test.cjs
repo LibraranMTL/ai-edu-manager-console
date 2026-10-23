@@ -28,7 +28,8 @@ test('digest polling uses the mtime-aware project lookup cache', () => {
 
 test('non-real-time renderer polling is throttled and capture updates are event driven', () => {
   assert.match(renderer, /if \(document\.hidden\) return;/);
-  assert.match(renderer, /\}, 10000\);\s*const hostTimer = window\.setInterval/);
+  assert.match(renderer, /const statusVisible = \['init', 'settings', 'memory', 'capture', 'qa', 'soul', 'rules', 'conversation', 'tasks'\]\.includes\(visibleSection\)/);
+  assert.match(renderer, /\}, 60000\);\s*const hostTimer = window\.setInterval/);
   assert.match(renderer, /activeSectionRef\.current === 'settings'/);
   assert.match(renderer, /\}, 60000\);/);
   assert.match(renderer, /const timer = window\.setInterval\(\(\) => \{\s*if \(!document\.hidden\) refreshVisible\(\);\s*\}, 30000\);/);

@@ -22,7 +22,7 @@ test('recovery diagnostics report journal state without mutating files or exposi
   ];
   let pendingCalls = 0;
   const inspect = bind({
-    readProjects: () => projects,
+    readProjects: () => projects, readProjectMetadata: () => projects,
     normalizeProjectMetadata: (value) => value,
     isWorkspaceMaterialProject: (value) => value.materialStorageMode === 'workspace-v1',
     createProjectUploadIntake: (project) => ({ pending: async () => {

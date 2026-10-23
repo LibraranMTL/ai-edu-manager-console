@@ -15,6 +15,7 @@ const { inspectWorkspacePath, isPathInside: canonicalIsPathInside } = require('.
 const { createProjectMaterialHost, isWorkspaceMaterialProject,
   readProjectMaterialIndexSync, projectMaterialDigestProjection } = require('../electron/project-material-host.cjs');
 const { projectStagingProjection } = require('../electron/project-staging-projection.cjs');
+const { isSystemGeneratedMaterialPath } = require('../electron/project-material-automation.cjs');
 const { createProjectMaterialAssetCompatibility } = require('../electron/project-material-asset-compat.cjs');
 
 const main = fsSync.readFileSync(path.join(__dirname, '../electron/main.cjs'), 'utf8');
@@ -195,7 +196,8 @@ test('actual Windows workspace scan returns registry candidates and keeps the or
     ensureProjectWorkspace: (value) => value, isWorkspaceMaterialProject,
     createProjectMaterialHost, registerProjectWorkspaceScan, registerLegacyStagingFiles,
     legacyStagingLocation, auditProjectMaterialContent, scanRootIdentity, relativePrefix,
-    applyMaterialScanPage, markMaterialRootUnavailable, inspectWorkspacePath, canonicalIsPathInside, crypto,
+    applyMaterialScanPage, markMaterialRootUnavailable, inspectWorkspacePath, canonicalIsPathInside,
+    isSystemGeneratedMaterialPath, crypto,
     readProjects: () => projects,
     updateProjectRecord: (_id, change) => {
       projects = projects.map((item) => change(item));

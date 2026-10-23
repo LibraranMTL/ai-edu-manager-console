@@ -1,11 +1,13 @@
 const path = require('node:path');
 const { validateRegistry } = require('./project-materials.cjs');
+const { projectMaterialRecordKind } = require('./project-material-automation.cjs');
 
 function projectStagingProjection(project, index, legacyItems = []) {
   validateRegistry(index, project.id);
-  const records = index.materials.filter((item) => item.adoption.state !== 'accepted'
+  const records = index.materials.filter((item) => projectMaterialRecordKind(item) === 'user_material'
+    && (item.adoption.state !== 'accepted'
     || ['missing', 'unavailable'].includes(item.availability)
-    || (item.sources || []).some((source) => source.type === 'staging_import'));
+    || (item.sources || []).some((source) => source.type === 'staging_import')));
   const annotationsById = new Map(legacyItems.map((item) => [String(item.id), item]));
   const pathKey = (value) => process.platform === 'win32' ? value.toLowerCase() : value;
   const annotationsByPath = new Map(legacyItems.filter((item) => item.sourcePath || item.path)

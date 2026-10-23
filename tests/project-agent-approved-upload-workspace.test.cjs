@@ -49,7 +49,7 @@ async function fixture(t) {
         sha1: crypto.createHash('sha1').update(bytes).digest('hex'), size: bytes.length,
         references: [{ spaceType: 'project', spaceId: project.id, path: file, role: metadata.role }] };
     },
-    readProjects: () => [currentProject], normalizeProject: (value) => value,
+    readProjects: () => [currentProject], readProjectMetadata: () => [currentProject], normalizeProject: (value) => value,
     normalizeProjectMetadata: (value) => value,
     isWorkspaceMaterialProject: (value) => value?.materialStorageMode === 'workspace-v1',
     findStudent: (id) => String(id) === student.id ? student : null,

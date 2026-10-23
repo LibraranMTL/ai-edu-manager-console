@@ -18,6 +18,7 @@ test('task center refresh is asynchronous, cached and does not block the rendere
   assert.match(preload, /ipcRenderer\.invoke\('bridge:getTaskPage'/);
   assert.match(renderer, /const refreshTaskCenter = async \(force = false, quick = false\)/);
   assert.match(renderer, /taskCenterRequestRef/);
+  assert.match(renderer, /taskCenterInFlightRef/);
 });
 
 test('automatic refresh is low-frequency, visibility-aware and independent of source arrays', () => {
@@ -35,10 +36,22 @@ test('large task data is bounded in storage, transfer and rendering', () => {
   assert.match(renderer, /useState<[^>]+>\('needs_help'\)/);
 });
 
-test('audit events are rotated into retained archive files before the active log grows unbounded', () => {
+test('active audit events are appended incrementally while legacy archives stay outside ordinary reads', () => {
   const writer = fs.readFileSync(path.join(root, 'electron', 'task-store-writer.cjs'), 'utf8');
-  assert.match(writer, /stat\?\.size >= 5 \* 1024 \* 1024/);
-  assert.match(writer, /event-archives/);
-  assert.match(writer, /await io.rename\(eventFile/);
+  const store = fs.readFileSync(path.join(root, 'electron', 'task-state-store.cjs'), 'utf8');
+  assert.match(writer, /createTaskStateStore/);
+  assert.match(writer, /state\.store\.appendEvent\(event\)/);
+  assert.match(store, /CREATE TABLE IF NOT EXISTS task_events/);
+  assert.match(store, /Historical event-archives/);
   assert.match(main, /taskStoreGuard.appendEvent\(event\)/);
+});
+
+test('task ledger writes individual SQLite rows and Agent diagnostics render only after Advanced is opened', () => {
+  const writer = fs.readFileSync(path.join(root, 'electron', 'task-store-writer.cjs'), 'utf8');
+  const store = fs.readFileSync(path.join(root, 'electron', 'task-state-store.cjs'), 'utf8');
+  assert.match(writer, /state\.store\.writeSnapshot\(value\)/);
+  assert.match(store, /ON CONFLICT\(task_id\) DO UPDATE/);
+  assert.doesNotMatch(writer, /writeFile/);
+  assert.match(renderer, /className="task-center-advanced"/);
+  assert.match(renderer, /taskAdvancedOpen && <div className="task-adapter-grid">/);
 });

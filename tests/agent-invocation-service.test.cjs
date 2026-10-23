@@ -4,7 +4,8 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const { CLASSIFICATION_PROFILE, DIGEST_PROFILE, LEARNING_CARD_PROFILE, providerSupportsProfile, agentProfileStatus,
-  createAgentQualification, validAgentQualification, agentBlockReason } = require('../electron/agent-invocation-service.cjs');
+  createAgentQualification, validAgentQualification, agentBlockReason, classificationSavedStatus, classificationIdentity,
+  classificationRouteStatus } = require('../electron/agent-invocation-service.cjs');
 
 test('task profiles only enable explicitly qualified providers', () => {
   assert.equal(providerSupportsProfile('workbuddy', CLASSIFICATION_PROFILE), true);
@@ -56,6 +57,22 @@ test('qualification is bound to provider, profile, runtime hash and expiry', () 
   assert.equal(validAgentQualification(value, { providerId: 'workbuddy', profile: CLASSIFICATION_PROFILE, runtimeHash: 'abc', now: Date.parse(measuredAt) }), false);
   assert.equal(validAgentQualification(value, { providerId: 'workbuddy', profile: DIGEST_PROFILE, runtimeHash: 'changed', now: Date.parse(measuredAt) }), false);
   assert.equal(validAgentQualification(value, { providerId: 'workbuddy', profile: DIGEST_PROFILE, runtimeHash: 'abc', now: Date.parse(measuredAt) + 60001 }), false);
+});
+
+test('expired successful qualification keeps connection state while requiring execution-time contract review', () => {
+  const adapter = { id: 'codex', executable: 'codex.exe' };
+  const saved = { ready: true, runtimeScope: classificationIdentity(adapter, ''), expiresAt: '2026-10-13T10:00:00.000Z' };
+  const status = classificationSavedStatus({ providerId: 'codex', label: 'Codex', state: 'ready' }, adapter, saved, Date.parse('2026-10-13T10:01:00.000Z'));
+  assert.equal(status.state, 'channel_ready'); assert.equal(status.automaticReady, false); assert.match(status.message, /连接仍有效/);
+  const route = classificationRouteStatus({ providerId: 'workbuddy', label: 'WorkBuddy', state: 'login_required', fallback: { enabled: true } }, status);
+  assert.equal(route.state, 'channel_ready'); assert.equal(route.effectiveProviderId, 'codex');
+});
+
+test('expired WorkBuddy capability is not presented as a lost login', () => {
+  const status = agentProfileStatus({ providerId: 'workbuddy', profile: DIGEST_PROFILE,
+    capability: { available: true, authorized: true, label: 'WorkBuddy' }, circuit: { phase: 'closed' },
+    qualification: { ready: true, expiresAt: '2020-01-01T00:00:00.000Z' } });
+  assert.equal(status.state, 'channel_ready'); assert.equal(status.automaticReady, false); assert.match(status.message, /无需重新登录/);
 });
 
 test('block reasons distinguish automatic recovery from required human safety decisions', () => {

@@ -31,17 +31,19 @@ function classificationBlock(error, execution = {}) {
 }
 function classificationSavedStatus(status, adapter, saved, now = Date.now()) {
   if (!adapter || adapter.unavailable || saved?.runtimeScope !== classificationIdentity(adapter, '')) return status;
-  if (Date.parse(saved.expiresAt) <= now) return { ...status, state: 'qualification_required', automaticReady: false,
-    message: '已保存本机登录配置；下次分析自动校验，无需因切换学生重新登录。' };
+  if (Date.parse(saved.expiresAt) <= now && saved.ready === true) return { ...status, state: 'channel_ready', automaticReady: false,
+    message: '连接仍有效；执行前自动复核任务合同，无需重新登录。' };
+  if (Date.parse(saved.expiresAt) <= now) return { ...status, state: saved.code === 'AUTHENTICATION_REQUIRED' ? 'login_required' : 'qualification_required', automaticReady: false,
+    message: saved.message || '执行前将自动复核任务合同。' };
   return { ...status, state: saved.ready ? 'ready' : saved.code === 'AUTHENTICATION_REQUIRED' ? 'login_required' : 'qualification_required',
     automaticReady: saved.ready === true, message: saved.ready ? '本机分类通道可用，已授权学生共用登录，无需重复授权。' : saved.message };
 }
 function classificationRouteStatus(primary, fallback) {
-  if (!primary.fallback?.enabled || !fallback || !['ready', 'qualification_required'].includes(fallback.state)
+  if (!primary.fallback?.enabled || !fallback || !['ready', 'channel_ready', 'qualification_required'].includes(fallback.state)
     || primary.state === 'ready') return { ...primary, fallbackStatus: fallback || null, effectiveProviderId: primary.providerId };
   return { ...primary, primaryState: primary.state, fallbackStatus: fallback, effectiveProviderId: fallback.providerId,
     state: fallback.state, automaticReady: fallback.automaticReady,
-    message: `${fallback.label}备用${fallback.state === 'ready' ? '可用' : '将在分析时自动校验'}，无需切换学生后重新登录。主Agent恢复后可继续使用。` };
+    message: `${fallback.label}备用${fallback.state === 'ready' ? '可用' : fallback.state === 'channel_ready' ? '连接有效，执行前自动复核' : '将在分析时自动校验'}，无需切换学生后重新登录。主Agent恢复后可继续使用。` };
 }
 
 function providerSupportsProfile(providerId, profile, registry) {
@@ -94,7 +96,10 @@ function agentProfileStatus({ providerId, profile, capability = {}, circuit = nu
   if (!authorized) return { ...base, state: 'login_required', message: `${label} 后台尚未登录；请在官方 Agent 中登录，重新执行资料任务时系统会自动检查。` };
   if (circuitPhase === 'authorization') return { ...base, state: 'qualification_required', message: `${label} 已登录；下次分析前系统会自动使用合成资料完成安全校验，无需单独检测。` };
   if (['open', 'half_open'].includes(circuitPhase)) return { ...base, state: 'cooldown', message: circuitPhase === 'half_open' ? `${label} 正在核对健康状态。` : `${label} 暂时冷却，资料已保留，稍后可重新检测。` };
-  if (providerId === 'workbuddy' && (!qualification || qualification.ready !== true || Date.parse(qualification.expiresAt || '') <= Date.now())) {
+  if (providerId === 'workbuddy' && qualification?.ready === true && Date.parse(qualification.expiresAt || '') <= Date.now()) {
+    return { ...base, state: 'channel_ready', message: 'WorkBuddy 连接仍有效；执行前自动复核任务合同，无需重新登录。' };
+  }
+  if (providerId === 'workbuddy' && (!qualification || qualification.ready !== true)) {
     return { ...base, state: 'qualification_required', message: qualification?.message || 'WorkBuddy 已登录；下次资料任务会自动完成受控能力校验。' };
   }
   return { ...base, state: 'ready', automaticReady: true, message: `${label} 已登录且受控能力可用。` };

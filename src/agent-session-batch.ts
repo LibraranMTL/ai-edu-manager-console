@@ -9,6 +9,7 @@ export type CapturedSessionSource = {
 
 export type CapturedSessionTab = 'pending' | 'delivered' | 'all' | 'trash';
 export function matchesCapturedSessionTab(session: CapturedSessionSource, tab: CapturedSessionTab) {
+  if (session.status === 'deleted' || session.materialLifecycleStatus === 'deleted') return false;
   if (session.materialLifecycleStatus === 'trashed') return tab === 'trash';
   if (tab === 'trash') return false;
   const delivered = Number(session.materialDependencies?.deliveryCount || 0) > 0;

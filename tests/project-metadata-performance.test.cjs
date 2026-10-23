@@ -10,6 +10,7 @@ function fixture() {
   const context = vm.createContext({ path, crypto: require('node:crypto'),
     requiresFixedReportEvidence: require('../electron/project-evidence-reference.cjs').requiresFixedReportEvidence,
     normalizeMaterialConfiguration: require('../electron/project-material-host.cjs').normalizeMaterialConfiguration,
+    normalizeMaterialAutomation: require('../electron/project-material-automation.cjs').normalizeMaterialAutomation,
     isWorkspaceMaterialProject: require('../electron/project-material-host.cjs').isWorkspaceMaterialProject,
     readProjectMaterialIndexSync: () => ({ schema: 'edu-manager.project-materials.v1', projectId: 'p1', revision: 0,
       materials: [], categories: [], receipts: [], commits: [] }),

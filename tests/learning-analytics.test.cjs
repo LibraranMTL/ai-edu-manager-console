@@ -12,6 +12,9 @@ const {
   computeKnowledgeState,
   queryLearningTrajectory,
   historyCandidatePath,
+  knowledgeActivityProjection,
+  listStudentKnowledgePoints,
+  rebuildKnowledgeProjection,
   removeLearningEventsBySource,
 } = require('../electron/learning-analytics.cjs');
 const {
@@ -42,6 +45,35 @@ test('maps aliases to stable canonical knowledge point IDs', () => {
   assert.equal(canonicalKnowledgePoint('stationary points').id, 'MATH.CALC.DIFF.STATIONARY_POINT');
   assert.equal(canonicalKnowledgePoint('驻点').id, 'MATH.CALC.DIFF.STATIONARY_POINT');
   assert.equal(canonicalKnowledgePoint({ id: 'MATH.CUSTOM.VECTOR', label: 'Vectors' }).id, 'MATH.CUSTOM.VECTOR');
+});
+
+test('registers open-world knowledge immediately and builds a deduplicated seven-day activity trend', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'edu-open-knowledge-'));
+  try {
+    const base = { studentId: 'student-1', subject: '空间设计', knowledgePoint: '人机协同办公布局',
+      activityType: 'project_application', occurredAt: '2026-10-22T10:00:00.000Z',
+      evidenceRefs: [{ sourceType: 'project_material', sourceId: 'm1' }] };
+    const accepted = appendLearningEvents(root, { studentId: 'student-1', allowedEvidenceRefs: base.evidenceRefs,
+      asOf: '2026-10-23T00:00:00.000Z', events: [base, base] });
+    assert.equal(accepted.accepted, 1);
+    assert.match(accepted.states[0].knowledgePoint.id, /^KNOWLEDGE\./);
+    assert.equal(accepted.states[0].state, 'introduced');
+    assert.equal(accepted.states[0].scores.currentMastery, null);
+    const trend = knowledgeActivityProjection(root, { studentId: 'student-1', asOf: '2026-10-23T00:00:00.000Z', rangeDays: 7 });
+    assert.equal(trend.activityCount, 1);
+    assert.equal(trend.activeDays, 1);
+    assert.equal(trend.studentActivityCount, 1);
+    assert.equal(listStudentKnowledgePoints(root, { studentId: 'student-1' }).items[0].activity.activityCount, 1);
+    assert.equal(rebuildKnowledgeProjection(root, { studentId: 'student-1', cursor: 0 }).complete, true);
+    const timeless = { studentId: 'student-1', subject: '空间设计', knowledgePoint: '自然采光分析',
+      activityType: 'material_exposure', evidenceRefs: [{ sourceType: 'project_material', sourceId: 'm2' }] };
+    assert.equal(appendLearningEvents(root, { studentId: 'student-1', recordedAt: '2026-10-22T11:00:00.000Z',
+      allowedEvidenceRefs: timeless.evidenceRefs, events: [timeless] }).accepted, 1);
+    assert.equal(appendLearningEvents(root, { studentId: 'student-1', recordedAt: '2026-10-23T11:00:00.000Z',
+      allowedEvidenceRefs: timeless.evidenceRefs, events: [timeless] }).accepted, 0);
+    const afterTimeless = knowledgeActivityProjection(root, { studentId: 'student-1', asOf: '2026-10-23T12:00:00.000Z', rangeDays: 7 });
+    assert.equal(afterTimeless.activityCount, 1, 'unknown source time must not create an import-day activity spike');
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });
 
 test('dimension scores use observed recent evidence and keep unknown dimensions unknown', () => {

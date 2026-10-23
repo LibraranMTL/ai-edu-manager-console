@@ -80,11 +80,28 @@ function validatePermissionDeclaration(task, operationAllowlist = {}) {
   return { ok: true, permissions: { read: reads.map(canonicalPath), write: writes.map(canonicalPath), operations } };
 }
 
+function digestExpectedOutputForBatch(expectedOutput, receiptPath = '') {
+  const current = expectedOutput && typeof expectedOutput === 'object' ? expectedOutput : {};
+  if (current.hostManaged === true || current.type === 'project_digest_host_receipt') {
+    return { type: 'project_digest_host_receipt', hostManaged: true };
+  }
+  return { ...current, path: receiptPath, type: 'digest_receipt_v1' };
+}
+
 function selectFallbackAdapter(routeDecision, attemptedAdapters, attempt, maxAttempts) {
   const attempted = new Set((attemptedAdapters || []).map(String).filter(Boolean));
-  const selected = String(routeDecision?.selectedAdapter || '');
-  if (!selected || attempted.has(selected) || Number(attempt || 0) >= Number(maxAttempts || 0)) return 'manual';
-  return selected;
+  if (attempted.size >= 3) return 'manual';
+  const candidates = [routeDecision?.selectedAdapter, ...(routeDecision?.candidates || [])
+    .filter((candidate) => candidate?.available !== false)
+    .map((candidate) => candidate?.adapterId)]
+    .map((value) => String(value || ''))
+    .filter(Boolean);
+  // A routing round may try up to three distinct automatic providers.  The
+  // caller owns the two-round/24h budget; this helper must not prematurely
+  // fall back merely because the task's total attempt counter increased.
+  const automatic = candidates.find((adapterId) => adapterId !== 'manual' && !attempted.has(adapterId));
+  if (automatic) return automatic;
+  return 'manual';
 }
 
 function parseFrontmatter(content) {
@@ -195,6 +212,7 @@ module.exports = {
   TASK_PROTOCOL_VERSION,
   TASK_STATUS_TRANSITIONS,
   cronOccurrence,
+  digestExpectedOutputForBatch,
   markdownSectionBody,
   normalizeMarkdownHeading,
   selectPreviousDailyFeedback,

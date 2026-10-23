@@ -6,7 +6,8 @@ const os = require('node:os');
 const path = require('node:path');
 const vm = require('node:vm');
 const { compactRuntimeSource, compactWindowsRuntime } = require('../scripts/compact-windows-runtime.cjs');
-const pnpm = path.join(__dirname, '../node_modules/.pnpm');
+const { resolvePnpmVirtualStore } = require('../scripts/pnpm-virtual-store.cjs');
+const pnpm = resolvePnpmVirtualStore(path.resolve(__dirname, '..'));
 const esbuild = require(path.join(pnpm, fs.readdirSync(pnpm).find(n => n.startsWith('esbuild@')), 'node_modules/esbuild'));
 test('runtime compaction preserves exports, identifiers, strings, regex and legal comments', () => {
   const source = `/*! Example license */

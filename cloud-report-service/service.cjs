@@ -201,6 +201,9 @@ function createService({ dataDir, adminToken, now = () => Date.now(), maxStudent
     db.exec('ALTER TABLE devices ADD COLUMN public_key TEXT');
   }
   if (!db.prepare('PRAGMA table_info(devices)').all().some(column => column.name === 'revoked_at')) db.exec('ALTER TABLE devices ADD COLUMN revoked_at INTEGER');
+  const studentColumns = new Set(db.prepare('PRAGMA table_info(students)').all().map(column => column.name));
+  if (!studentColumns.has('archived_at')) db.exec('ALTER TABLE students ADD COLUMN archived_at INTEGER');
+  if (!studentColumns.has('archived_reason')) db.exec("ALTER TABLE students ADD COLUMN archived_reason TEXT NOT NULL DEFAULT ''");
   const documentColumns = new Set(db.prepare('PRAGMA table_info(documents)').all().map(column => column.name));
   if (!documentColumns.has('material_category')) db.exec("ALTER TABLE documents ADD COLUMN material_category TEXT NOT NULL DEFAULT 'learning_material'");
   if (!documentColumns.has('material_id')) db.exec("ALTER TABLE documents ADD COLUMN material_id TEXT NOT NULL DEFAULT ''");
@@ -225,6 +228,8 @@ function createService({ dataDir, adminToken, now = () => Date.now(), maxStudent
   db.exec("CREATE UNIQUE INDEX IF NOT EXISTS remote_agent_sessions_task ON remote_agent_sessions(owner_device_id,idempotency_key) WHERE idempotency_key!=''");
   db.prepare('INSERT OR IGNORE INTO schema_migrations(id,applied_at,detail_json) VALUES(?,?,?)')
     .run('cloud-contract-v2', now(), JSON.stringify({ contractVersion: 2, legacyContractSupported: true }));
+  db.prepare('INSERT OR IGNORE INTO schema_migrations(id,applied_at,detail_json) VALUES(?,?,?)')
+    .run('cloud-student-archive-v1', now(), JSON.stringify({ recoverable: true, physicalObjectsRetained: true }));
   if (!db.prepare('SELECT 1 FROM admin_identity WHERE id=?').get('admin_local')) {
     const salt = crypto.randomBytes(32).toString('hex');
     db.prepare('INSERT INTO admin_identity VALUES(?,?,?)').run('admin_local', salt, crypto.scryptSync(adminToken, salt, 32).toString('hex'));
@@ -240,8 +245,12 @@ function createService({ dataDir, adminToken, now = () => Date.now(), maxStudent
   function schemaStatus() {
     const migration = db.prepare('SELECT id,applied_at AS appliedAt,detail_json AS detailJson FROM schema_migrations WHERE id=?')
       .get('cloud-contract-v2');
+    const studentArchiveMigration = db.prepare('SELECT id,applied_at AS appliedAt FROM schema_migrations WHERE id=?')
+      .get('cloud-student-archive-v1');
     return { contractVersion: 2, legacyContractSupported: true, migrationId: 'cloud-contract-v2',
-      applied: Boolean(migration), appliedAt: migration?.appliedAt || 0 };
+      applied: Boolean(migration), appliedAt: migration?.appliedAt || 0,
+      studentArchive: { migrationId: 'cloud-student-archive-v1', applied: Boolean(studentArchiveMigration),
+        appliedAt: studentArchiveMigration?.appliedAt || 0 } };
   }
   function atomic(action) {
     db.exec('BEGIN IMMEDIATE');
@@ -380,14 +389,14 @@ function createService({ dataDir, adminToken, now = () => Date.now(), maxStudent
     return { revoked: true };
   }
   function hasGrant(deviceId, studentId, scope) {
-    return Boolean(db.prepare("SELECT 1 FROM grants WHERE device_id=? AND student_id=? AND scope=? AND revoked_at IS NULL AND (scope!='cloud_document.read' OR (expires_at IS NOT NULL AND expires_at>?))")
+    return Boolean(db.prepare("SELECT 1 FROM grants g JOIN students s ON s.id=g.student_id WHERE g.device_id=? AND g.student_id=? AND g.scope=? AND g.revoked_at IS NULL AND s.archived_at IS NULL AND (g.scope!='cloud_document.read' OR (g.expires_at IS NOT NULL AND g.expires_at>?))")
       .get(deviceId, studentId, scope, now()));
   }
   function requireGrant(deviceId, studentId, scope) {
     if (!hasGrant(deviceId, studentId, scope)) fail(403, '该设备没有此学生的许可');
   }
   function studentExists(studentId) {
-    return Boolean(db.prepare('SELECT 1 FROM students WHERE id=?').get(studentId));
+    return Boolean(db.prepare('SELECT 1 FROM students WHERE id=? AND archived_at IS NULL').get(studentId));
   }
   function studentUsedBytes(studentId) {
     const reports = db.prepare('SELECT COALESCE(SUM(byte_size),0) AS bytes FROM reports WHERE student_id=?').get(studentId).bytes;
@@ -437,8 +446,9 @@ function createService({ dataDir, adminToken, now = () => Date.now(), maxStudent
     return { deviceId, studentId, scope, category, fields: normalizedFields, objectScope: normalizedObjects, expiresAt };
   }
   function v2Grant(deviceId, studentId, scope, category = '') {
-    const row = db.prepare(`SELECT * FROM v2_grants WHERE device_id=? AND student_id=? AND scope=? AND category=?
-      AND revoked_at IS NULL AND (expires_at IS NULL OR expires_at>?)`).get(deviceId, studentId, scope, category, now());
+    const row = db.prepare(`SELECT g.* FROM v2_grants g JOIN students s ON s.id=g.student_id
+      WHERE g.device_id=? AND g.student_id=? AND g.scope=? AND g.category=? AND s.archived_at IS NULL
+      AND g.revoked_at IS NULL AND (g.expires_at IS NULL OR g.expires_at>?)`).get(deviceId, studentId, scope, category, now());
     if (!row) return null;
     return { ...row, fields: JSON.parse(row.fields_json || '[]'), objectScope: JSON.parse(row.object_scope_json || '[]') };
   }
@@ -679,16 +689,88 @@ function createService({ dataDir, adminToken, now = () => Date.now(), maxStudent
       return { cloudStudentId: studentId, profileFields, materialCategories };
     });
   }
-  function listStudents(token) {
-    if (isAdmin(token)) return db.prepare('SELECT id, display_name AS displayName FROM students ORDER BY display_name').all();
+  function studentRemovalPreview(token, studentId) {
+    if (!isAdmin(token)) fail(401, '管理员凭据无效');
+    const student = db.prepare('SELECT id,display_name AS displayName,archived_at AS archivedAt FROM students WHERE id=?').get(studentId);
+    if (!student) fail(404, '学生不存在');
+    const scalar = (sql, ...params) => Number(db.prepare(sql).get(...(params.length ? params : [studentId]))?.count || 0);
+    return {
+      ...student,
+      reports: scalar('SELECT COUNT(*) AS count FROM reports WHERE student_id=?'),
+      documents: scalar('SELECT COUNT(*) AS count FROM documents WHERE student_id=?'),
+      activeGrants: scalar('SELECT COUNT(*) AS count FROM grants WHERE student_id=? AND revoked_at IS NULL'),
+      activeV2Grants: scalar('SELECT COUNT(*) AS count FROM v2_grants WHERE student_id=? AND revoked_at IS NULL'),
+      activeBindings: scalar('SELECT COUNT(*) AS count FROM device_student_bindings WHERE student_id=? AND revoked_at IS NULL'),
+      activeRemoteSessions: scalar(`SELECT COUNT(*) AS count FROM remote_agent_sessions
+        WHERE (student_id=? OR EXISTS (SELECT 1 FROM json_each(student_ids_json) WHERE value=?))
+        AND revoked_at IS NULL AND status NOT IN ('committed','quarantined','revoked')`, studentId, studentId),
+      pendingInbox: scalar(`SELECT COUNT(*) AS count FROM cloud_inbox_submissions
+        WHERE (student_id=? OR EXISTS (SELECT 1 FROM json_each(student_ids_json) WHERE value=?))
+        AND status NOT IN ('committed','quarantined')`, studentId, studentId),
+      usedBytes: studentUsedBytes(studentId),
+    };
+  }
+  function archiveStudent(token, studentId, reason = '') {
+    if (!isAdmin(token)) fail(401, '管理员凭据无效');
+    const student = db.prepare('SELECT id,archived_at AS archivedAt FROM students WHERE id=?').get(studentId);
+    if (!student) fail(404, '学生不存在');
+    if (student.archivedAt) return { archived: true, duplicate: true, archivedAt: student.archivedAt };
+    const archivedAt = now();
+    atomic(() => {
+      db.prepare('UPDATE students SET archived_at=?,archived_reason=? WHERE id=?').run(archivedAt, String(reason || '').slice(0, 500), studentId);
+      db.prepare('UPDATE grants SET revoked_at=? WHERE student_id=? AND revoked_at IS NULL').run(archivedAt, studentId);
+      db.prepare('UPDATE v2_grants SET revoked_at=?,policy_version=policy_version+1 WHERE student_id=? AND revoked_at IS NULL').run(archivedAt, studentId);
+      db.prepare('UPDATE device_student_bindings SET revoked_at=?,updated_at=? WHERE student_id=? AND revoked_at IS NULL').run(archivedAt, archivedAt, studentId);
+      db.prepare('UPDATE source_enrollments SET consumed_at=? WHERE student_id=? AND consumed_at IS NULL').run(archivedAt, studentId);
+      db.prepare(`UPDATE remote_agent_sessions SET revoked_at=?,status='revoked',updated_at=?
+        WHERE (student_id=? OR EXISTS (SELECT 1 FROM json_each(student_ids_json) WHERE value=?)) AND revoked_at IS NULL`)
+        .run(archivedAt, archivedAt, studentId, studentId);
+      db.prepare(`UPDATE cloud_inbox_submissions SET status='quarantined',updated_at=?,consumed_at=?,
+        quarantined_reason='云端学生已停用',lease_id=NULL,lease_owner_device_id=NULL,lease_expires_at=NULL
+        WHERE (student_id=? OR EXISTS (SELECT 1 FROM json_each(student_ids_json) WHERE value=?))
+        AND status NOT IN ('committed','quarantined')`).run(archivedAt, archivedAt, studentId, studentId);
+      audit('admin_local', 'student.archive', studentId);
+    });
+    return { archived: true, duplicate: false, archivedAt };
+  }
+  function restoreStudent(token, studentId) {
+    if (!isAdmin(token)) fail(401, '管理员凭据无效');
+    const student = db.prepare('SELECT id,archived_at AS archivedAt FROM students WHERE id=?').get(studentId);
+    if (!student) fail(404, '学生不存在');
+    if (!student.archivedAt) return { restored: true, duplicate: true };
+    atomic(() => {
+      db.prepare("UPDATE students SET archived_at=NULL,archived_reason='' WHERE id=?").run(studentId);
+      audit('admin_local', 'student.restore', studentId);
+    });
+    return { restored: true, duplicate: false, grantsRestored: false };
+  }
+  function relinquishViewerStudent(token, studentId) {
+    const viewer = requireDevice(token, 'viewer');
+    const student = db.prepare('SELECT id FROM students WHERE id=?').get(studentId);
+    if (!student) fail(404, '学生不存在');
+    const changedAt = now();
+    return atomic(() => {
+      const legacy = db.prepare("UPDATE grants SET revoked_at=? WHERE device_id=? AND student_id=? AND scope='cloud_document.read' AND revoked_at IS NULL")
+        .run(changedAt, viewer.id, studentId).changes;
+      const modern = db.prepare("UPDATE v2_grants SET revoked_at=?,policy_version=policy_version+1 WHERE device_id=? AND student_id=? AND scope LIKE '%.read' AND revoked_at IS NULL")
+        .run(changedAt, viewer.id, studentId).changes;
+      db.prepare('UPDATE device_student_bindings SET revoked_at=?,updated_at=? WHERE device_id=? AND student_id=? AND revoked_at IS NULL')
+        .run(changedAt, changedAt, viewer.id, studentId);
+      audit(viewer.id, 'viewer.student.relinquish', studentId, viewer.id);
+      return { removed: true, duplicate: legacy + modern === 0 };
+    });
+  }
+  function listStudents(token, { includeArchived = false } = {}) {
+    if (isAdmin(token)) return db.prepare(`SELECT id, display_name AS displayName, archived_at AS archivedAt
+      FROM students WHERE (?=1 OR archived_at IS NULL) ORDER BY archived_at IS NOT NULL,display_name`).all(includeArchived ? 1 : 0);
     const device = requireDevice(token);
     const legacy = db.prepare(`SELECT s.id, s.display_name AS displayName, g.scope, g.expires_at AS expiresAt
       FROM students s JOIN grants g ON g.student_id=s.id
-      WHERE g.device_id=? AND g.revoked_at IS NULL AND (g.scope!='cloud_document.read' OR (g.expires_at IS NOT NULL AND g.expires_at>?)) ORDER BY s.display_name`)
+      WHERE g.device_id=? AND s.archived_at IS NULL AND g.revoked_at IS NULL AND (g.scope!='cloud_document.read' OR (g.expires_at IS NOT NULL AND g.expires_at>?)) ORDER BY s.display_name`)
       .all(device.id, now());
     const profiles = new Map(db.prepare(`SELECT g.student_id AS studentId,g.fields_json AS fieldsJson,g.expires_at AS expiresAt,
       c.revision_id AS profileRevisionId FROM v2_grants g LEFT JOIN student_profile_current c ON c.student_id=g.student_id
-      WHERE g.device_id=? AND g.scope='student_profile.read' AND g.revoked_at IS NULL AND (g.expires_at IS NULL OR g.expires_at>?)`)
+       JOIN students s ON s.id=g.student_id WHERE g.device_id=? AND s.archived_at IS NULL AND g.scope='student_profile.read' AND g.revoked_at IS NULL AND (g.expires_at IS NULL OR g.expires_at>?)`)
       .all(device.id, now()).map(row => [row.studentId, row]));
     return legacy.map(row => {
       const profile = profiles.get(row.id);
@@ -1392,7 +1474,8 @@ function createService({ dataDir, adminToken, now = () => Date.now(), maxStudent
     return { documentId, displayName: displayName === undefined ? row.display_name : String(displayName).trim(), deleted: deleted === undefined ? row.deleted_at !== null : deleted };
   }
   return { db, close: () => db.close(), schemaStatus, loginAdmin, logoutAdmin, rotateAdmin, rotateDevice, revokeDevice, recordDenied, verifyBody, verifyBodyHash, prepareDocument, deleteReport, listAudit, studentStorage, verifyViewerProof, createStudent, registerSource, allowWrite, createPairing,
-    createSourceEnrollment, redeemSourceEnrollment, approvePairing, revoke, listGrants, setOwnWrite, setOwnUploadScope, listStudents, uploadReport, checkSourceReports, listReports, getReport,
+    createSourceEnrollment, redeemSourceEnrollment, approvePairing, revoke, listGrants, setOwnWrite, setOwnUploadScope, listStudents,
+    studentRemovalPreview, archiveStudent, restoreStudent, relinquishViewerStudent, uploadReport, checkSourceReports, listReports, getReport,
     uploadDocument, listDocuments, getDocument, updateDocument,
     issueV2Grant, revokeV2Grant, listV2Grants, uploadStudentProfile, getStudentProfile, getStudentProfileStatus,
     recordBinding, recordTransferReceipt, listSyncEvents, prepareV2Material, listV2Materials, getV2Material,

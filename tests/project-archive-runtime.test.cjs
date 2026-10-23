@@ -76,7 +76,8 @@ test('registered native transaction interruption stays isolated, then same journ
 
 test('actual shared readers and atomic writer reject protected data rather than swallowing busy state as empty data', async (t) => {
   const f = await fixture(t); const runtime = createProjectArchiveRuntime(); await block(runtime, f.file);
-  const scope = { fs, projectArchiveRuntime: runtime, projectsPath: () => f.file, assetIndexPath: () => f.file,
+  const scope = { fs, projectArchiveRuntime: runtime, projectsPath: () => f.file, projectDatabasePath: () => f.file, assetIndexPath: () => f.file,
+    assertProjectStateReady() {}, projectStateStore: () => ({ readAll: () => JSON.parse(fs.readFileSync(f.file)) }),
     parseJsonText: JSON.parse, writeJsonAtomicUnchecked: (file, value) => fs.writeFileSync(file, JSON.stringify(value)) };
   for (const name of ['readProjects', 'readAssetIndex', 'safeReadJson', 'readJsonFile', 'readSmallTextFile', 'writeJsonAtomic']) bind(scope, name);
   for (const read of [() => scope.readProjects(), () => scope.readAssetIndex(), () => scope.safeReadJson(f.file, {}), () => scope.readJsonFile(f.file, {}), () => scope.readSmallTextFile(f.file)]) {

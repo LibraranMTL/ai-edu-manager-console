@@ -5,6 +5,7 @@ const crypto = require('node:crypto');
 const net = require('node:net');
 const { spawn, spawnSync } = require('node:child_process');
 const assert = require('node:assert/strict');
+const { resolvePnpmVirtualStore } = require('./pnpm-virtual-store.cjs');
 const root = path.resolve(__dirname, '..');
 const version = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8')).version;
 const candidateTag = String(process.env.EDU_WINDOWS_CANDIDATE_TAG || '').trim();
@@ -19,6 +20,15 @@ const qa = fs.mkdtempSync(path.join(qaRoot, 'quick-capture-package-'));
 const userData = path.join(qa, 'user-data'), studentBaseDir = path.join(qa, 'students');
 fs.mkdirSync(userData); fs.mkdirSync(studentBaseDir);
 fs.writeFileSync(path.join(userData, 'settings.json'), JSON.stringify({ studentBaseDir, archiveRoot: studentBaseDir, taskAutomationEnabled: false }));
+const fixtures = [{ id: '17894430145-demo-a', name: '示例学生甲', loginId: 'S-DEMO-A', rootPath: path.join(studentBaseDir, 'a') },
+  { id: '17894430146-demo-b', name: '示例学生乙', loginId: 'S-DEMO-B', rootPath: path.join(studentBaseDir, 'b') }];
+// Seed the legacy project fixture before launch so the packaged one-time
+// migration imports it.  Once project-state.sqlite3 exists, projects.json is
+// deliberately no longer a writable or readable production source.
+fs.writeFileSync(path.join(userData, 'projects.json'), JSON.stringify({ projects: [
+  { id: 'demo-project-a', name: '示例项目甲', studentIds: [fixtures[0].id] },
+  { id: 'demo-project-b', name: '示例项目乙', studentIds: [fixtures[1].id] },
+] }));
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 let child, sockets = [];
 async function connect(url) {
@@ -42,11 +52,11 @@ async function main() {
     : path.join(directory, `${artifactStem}-isolated-launch-verification.json`);
   const sha256 = crypto.createHash('sha256').update(fs.readFileSync(exe)).digest('hex').toUpperCase();
   assert.equal(sha256, audit.artifacts.exe.sha256);
-  const pnpm = path.join(root, 'node_modules/.pnpm');
+  const pnpm = resolvePnpmVirtualStore(root);
   const asar = require(path.join(pnpm, fs.readdirSync(pnpm).find(name => name.startsWith('@electron+asar@')), 'node_modules/@electron/asar'));
   const archive = path.join(audit.stagingRoot, 'out/win-unpacked/resources/app.asar');
   const archivedFilesMatchSource = ['main.cjs', 'preload.cjs', 'capture-inbox.cjs', 'quick-capture-direct.cjs', 'quick-capture.html', 'quick-capture-preload.cjs', 'quick-capture-renderer.js',
-    'companion-toolbar.cjs', 'companion-popover.html', 'companion-popover-preload.cjs', 'companion-popover-renderer.js', 'companion-logo.png',
+    'companion-toolbar.cjs', 'companion-popover.html', 'companion-popover-preload.cjs', 'companion-popover-renderer.js',
     'quick-photo.html', 'quick-photo-preload.cjs', 'quick-photo-renderer.js'];
   const comparisonRoot = process.env.EDU_QA_SOURCE_ROOT ? path.resolve(process.env.EDU_QA_SOURCE_ROOT) : root;
   const esbuild = audit.runtimeCompaction ? require(path.join(pnpm, fs.readdirSync(pnpm).find(name => name.startsWith('esbuild@')), 'node_modules/esbuild')) : null;
@@ -84,7 +94,8 @@ async function main() {
     const bridge = window.AndroidBridge;
     if (typeof bridge.getAppStatusAsync !== 'function') return { supported: false };
     const asyncValue = await bridge.getAppStatusAsync();
-    return { supported: true, equal: asyncValue === bridge.getAppStatus() };
+    const compatibilityValue = await bridge.getAppStatus();
+    return { supported: true, equal: asyncValue === compatibilityValue };
   })()`);
   if (candidateTag.startsWith('performance-')) assert.deepEqual(asyncStatusParity, { supported: true, equal: true });
   const storage = JSON.parse(await evaluate(send, 'window.AndroidBridge.getStorageConfig()'));
@@ -113,14 +124,8 @@ async function main() {
     await sleep(250);
   }
   assert.equal(await evaluate(bar, 'document.querySelectorAll(".needs-student:not(:disabled)").length'), 0);
-  const fixtures = [{ id: '17894430145-demo-a', name: '示例学生甲', loginId: 'S-DEMO-A', rootPath: path.join(studentBaseDir, 'a') },
-    { id: '17894430146-demo-b', name: '示例学生乙', loginId: 'S-DEMO-B', rootPath: path.join(studentBaseDir, 'b') }];
   for (const student of fixtures) fs.mkdirSync(student.rootPath);
   fs.writeFileSync(path.join(userData, 'students.json'), JSON.stringify(fixtures));
-  fs.writeFileSync(path.join(userData, 'projects.json'), JSON.stringify({ projects: [
-    { id: 'demo-project-a', name: '示例项目甲', studentIds: [fixtures[0].id] },
-    { id: 'demo-project-b', name: '示例项目乙', studentIds: [fixtures[1].id] }
-  ] }));
   for (const student of fixtures) {
     await evaluate(send, `window.AndroidBridge.setQuickCaptureContext(${JSON.stringify(student.id)})`);
     for (let attempt = 0; attempt < 40; attempt++) {
@@ -132,7 +137,7 @@ async function main() {
   await evaluate(send, `window.AndroidBridge.setQuickCaptureContext(${JSON.stringify(fixtures[0].id)})`);
   assert.equal(await evaluate(bar, 'document.querySelector(".brand img").complete && document.querySelector(".brand img").naturalWidth > 0'), true);
   const compactHeight = await evaluate(bar, 'innerHeight');
-  assert.ok(compactHeight <= 40, `toolbar is not compact: ${compactHeight}px`);
+  assert.ok(compactHeight <= 30, `toolbar is not the approved 30px scheme B height: ${compactHeight}px`);
   const toolbarContract = await evaluate(bar, `(() => {
     const actions = [...document.querySelectorAll('[data-action]')].map(node => node.dataset.action);
     const idleActions = [...document.querySelectorAll('#idle-actions [data-action]')].map(node => node.dataset.action);
@@ -142,11 +147,19 @@ async function main() {
       actions,
       idleActions,
       aiBeforeClose: Boolean(ai && close && (ai.compareDocumentPosition(close) & Node.DOCUMENT_POSITION_FOLLOWING)),
+      labels: [...document.querySelectorAll('#idle-actions .label, #ai-settings .label')].map(node => ({
+        text: node.textContent.trim(), visible: getComputedStyle(node).display !== 'none' && node.getBoundingClientRect().width > 0
+      })),
+      fitsWidth: document.querySelector('.bar').scrollWidth <= document.querySelector('.bar').clientWidth,
       hasEllipsis: document.body.innerText.includes('⋯') || document.body.innerText.includes('•••'),
       hasTargetAgent: document.body.innerText.includes('目标Agent') || document.body.innerText.includes('目标 Agent')
     };
   })()`);
   assert.deepEqual(toolbarContract.idleActions, ['collect-menu', 'organize-menu', 'learning']);
+  assert.deepEqual(toolbarContract.labels, [
+    { text: '采集', visible: true }, { text: '整理', visible: true }, { text: '学习', visible: true }, { text: 'AI设置', visible: true },
+  ]);
+  assert.equal(toolbarContract.fitsWidth, true);
   assert.equal(toolbarContract.aiBeforeClose, true);
   assert.equal(toolbarContract.hasEllipsis, false);
   assert.equal(toolbarContract.hasTargetAgent, false);

@@ -11,7 +11,7 @@ export function CaptureInboxPanel({ studentId, mode, api, projects }: { studentI
   const [inboxInfo, setInboxInfo] = useState<InboxInfo | null>(null);
   const [engineMode, setEngineMode] = useState<'cloud' | 'local'>('local'), [cloudConsent, setCloudConsent] = useState(false);
   const [busy, setBusy] = useState(false), [message, setMessage] = useState(''), [recordState, setRecordState] = useState('stopped'), [preview, setPreview] = useState('');
-  const video = useRef<HTMLVideoElement>(null), stream = useRef<MediaStream | null>(null), recorder = useRef<MediaRecorder | null>(null), chunks = useRef<Blob[]>([]), timer = useRef<ReturnType<typeof setTimeout>>();
+  const video = useRef<HTMLVideoElement>(null), stream = useRef<MediaStream | null>(null), recorder = useRef<MediaRecorder | null>(null), chunks = useRef<Blob[]>([]), timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const mounted = useRef(true), previewRef = useRef('');
   useEffect(() => { mounted.current = true; return () => { mounted.current = false; if (recorder.current?.state !== 'inactive') recorder.current?.stop(); stream.current?.getTracks().forEach(track => track.stop()); clearTimeout(timer.current); if (previewRef.current) URL.revokeObjectURL(previewRef.current); }; }, []);
   async function refresh() { const result = await unwrap<Item[]>(api?.captureInboxList?.(studentId)); if (mounted.current) setItems(result); if (api?.captureInboxInfo) { const info = await unwrap<InboxInfo>(api.captureInboxInfo(studentId)); if (mounted.current) setInboxInfo(info); } }

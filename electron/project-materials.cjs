@@ -1,9 +1,7 @@
-const fs = require('node:fs');
 const fsp = require('node:fs/promises');
 const path = require('node:path');
 const crypto = require('node:crypto');
-const { pipeline } = require('node:stream/promises');
-const { Transform } = require('node:stream');
+const { hashStableFile } = require('./file-fingerprint.cjs');
 const {
   MATERIAL_SCHEMA, MaterialError, invariant, identifier, relativeMaterialPath,
   positiveVersion, newMaterialId, validateMaterial, adoptionForImport,
@@ -16,8 +14,6 @@ const NO_CHANGE = Symbol('project-material-no-change');
 const clone = (value) => structuredClone(value);
 const now = () => new Date().toISOString();
 const unchanged = (result) => ({ [NO_CHANGE]: true, result });
-const sameFile = (a, b) => a.dev === b.dev && a.ino === b.ino && a.size === b.size
-  && a.mtimeMs === b.mtimeMs && a.ctimeMs === b.ctimeMs;
 const pathKey = (location) => JSON.stringify([location.rootId,
   process.platform === 'win32' ? location.relativePath.toLowerCase() : location.relativePath]);
 const SNAPSHOT_FREE_RESERVE_BYTES = 512n * 1024n * 1024n;
@@ -125,38 +121,6 @@ async function writeJsonAtomic(file, value) {
   }
 }
 
-async function hashStableFile(file, { copyTo, afterRead } = {}) {
-  const handle = await fsp.open(file, 'r');
-  let ownsCopy = false;
-  try {
-    const before = await handle.stat();
-    invariant(before.isFile(), 'not_file', '资料来源不是普通文件。');
-    const hashes = { sha256: crypto.createHash('sha256'), sha1: crypto.createHash('sha1') };
-    const reader = handle.createReadStream({ autoClose: false });
-    if (copyTo) {
-      const tap = new Transform({ transform(chunk, encoding, callback) {
-        hashes.sha256.update(chunk); hashes.sha1.update(chunk); callback(null, chunk);
-      } });
-      const writer = fs.createWriteStream(copyTo, { flags: 'wx' });
-      writer.once('open', () => { ownsCopy = true; });
-      await pipeline(reader, tap, writer);
-      const copyHandle = await fsp.open(copyTo, 'r+');
-      try { await copyHandle.sync(); } finally { await copyHandle.close(); }
-    } else {
-      for await (const chunk of reader) { hashes.sha256.update(chunk); hashes.sha1.update(chunk); }
-    }
-    await afterRead?.();
-    const after = await handle.stat();
-    const current = await fsp.stat(file);
-    invariant(sameFile(before, after) && sameFile(before, current), 'source_changed', '资料在读取期间发生变化，请稍后重试。');
-    return { sha256: hashes.sha256.digest('hex'), sha1: hashes.sha1.digest('hex'),
-      size: before.size, mtimeMs: before.mtimeMs, fileKey: `${before.dev}:${before.ino}` };
-  } catch (error) {
-    if (copyTo && ownsCopy) await fsp.rm(copyTo, { force: true });
-    throw error;
-  } finally { await handle.close(); }
-}
-
 function createProjectMaterialStore({ projectId, managerPath, roots, hooks = {} }) {
   identifier(projectId, '项目ID');
   invariant(typeof managerPath === 'string' && path.isAbsolute(managerPath), 'invalid_root', '项目管理目录无效。');
@@ -185,7 +149,7 @@ function createProjectMaterialStore({ projectId, managerPath, roots, hooks = {} 
       categories: [], materials: [], receipts: [], commits: [] };
   }
 
-  async function read({ fresh = false } = {}) {
+  async function load({ fresh = false } = {}) {
     let stat;
     try {
       // Index queries inspect only the small registry; never an original file.
@@ -196,20 +160,35 @@ function createProjectMaterialStore({ projectId, managerPath, roots, hooks = {} 
       throw error;
     }
     const stamp = `${stat.mtimeMs}:${stat.ctimeMs}:${stat.size}:${stat.ino}`;
-    if (!fresh && cached && stamp === cachedStamp) return clone(cached);
+    if (!fresh && cached && stamp === cachedStamp) return cached;
     let data;
     try { data = JSON.parse(await fsp.readFile(indexPath, 'utf8')); }
     catch (error) { throw new MaterialError('registry_corrupt', '项目资料登记无法读取，需恢复后再写入。', { cause: error.message }); }
     validateRegistry(data, projectId);
     cached = data;
     cachedStamp = stamp;
-    return clone(data);
+    return data;
+  }
+
+  async function read(options = {}) {
+    return clone(await load(options));
+  }
+
+  // Internal read-only inspection path for bounded host/worker pipelines.  The
+  // public `read()` contract deliberately returns an isolated clone, but
+  // cloning a 30k-record registry once per verified material caused very large
+  // transient heaps.  Callers of inspect() must never mutate the returned
+  // object; all writes still go through mutate().
+  async function inspect(options = {}) {
+    return load(options);
   }
 
   async function mutate(operation, expectedRevision) {
     return withCommitLock(lockKey, async () => {
       await ensureDirectory();
-      const data = await read({ fresh: true });
+      // Mutations work on an isolated draft so a failed atomic write cannot
+      // leak uncommitted records through the read cache.
+      const data = clone(await load({ fresh: true }));
       invariant(expectedRevision === undefined || data.revision === expectedRevision,
         'revision_conflict', '项目资料已变化，请刷新后重试。', { revision: data.revision });
       const operationResult = operation(data);
@@ -264,7 +243,8 @@ function createProjectMaterialStore({ projectId, managerPath, roots, hooks = {} 
       const byPath = new Map(data.materials.map((item) => [pathKey(item.location), item]));
       const baselineById = new Map(baseline.materials.map((item) => [item.materialId, item]));
       const baselineByPath = new Map(baseline.materials.map((item) => [pathKey(item.location), item]));
-      return observed.map(({ input, location, content }) => {
+      let changed = false;
+      const results = observed.map(({ input, location, content }) => {
         const targetKey = pathKey(location);
         const occupant = byPath.get(targetKey);
         const existing = input.materialId ? byId.get(input.materialId) : occupant;
@@ -278,13 +258,20 @@ function createProjectMaterialStore({ projectId, managerPath, roots, hooks = {} 
           && pathKey(previous.location) === pathKey(existing.location))
           || (!previous && existing.sha256 === content.sha256),
         'version_conflict', '读取期间另一任务已登记新版本，请重新扫描。');
-        const unchanged = existing?.sha256 === content.sha256;
+        const sameContent = existing?.sha256 === content.sha256;
+        const source = input.source;
+        const sourceAlreadyLinked = !source || existing?.sources?.some((item) => item.eventId === source.eventId);
+        const sameLocation = existing && pathKey(existing.location) === targetKey;
+        if (existing && sameContent && sameLocation && sourceAlreadyLinked
+          && existing.availability === 'available' && existing.fileKey === content.fileKey
+          && existing.size === content.size && existing.mtimeMs === content.mtimeMs) return existing;
+        changed = true;
         const record = existing || { projectId, materialId: newMaterialId(), version: 1,
           createdAt: now(), sources: [], versions: [], legacyAliases: [], links: {},
           adoption: { state: adoptionForImport(options), decidedAt: now() },
           classification: { categoryId: '', tags: [], source: '', manualLocked: false },
           organizationState: 'unclassified', processing: { state: 'pending' }, recordRevision: 0 };
-        if (existing && !unchanged) {
+        if (existing && !sameContent) {
           record.version++;
           record.processing = { ...record.processing, state: 'pending', previousProcessedVersion: record.processing.processedVersion };
         }
@@ -294,7 +281,6 @@ function createProjectMaterialStore({ projectId, managerPath, roots, hooks = {} 
         }
         Object.assign(record, content, { location, availability: 'available', contentVerifiedAt: now(),
           updatedAt: now(), recordRevision: record.recordRevision + 1 });
-        const source = input.source;
         if (source) {
           identifier(source.eventId, '来源事件ID');
           if (!record.sources.some((item) => item.eventId === source.eventId)) record.sources.push(clone(source));
@@ -310,13 +296,14 @@ function createProjectMaterialStore({ projectId, managerPath, roots, hooks = {} 
         byPath.set(targetKey, record);
         return record;
       });
+      return changed ? results : unchanged(results);
     }, options.expectedRevision);
   }
 
   async function list({ offset = 0, limit = 50, categoryId, adoption, search = '' } = {}) {
     invariant(Number.isSafeInteger(offset) && offset >= 0 && Number.isSafeInteger(limit) && limit > 0 && limit <= 200,
       'invalid_pagination', '资料分页参数无效。');
-    const data = await read();
+    const data = await load();
     const query = String(search).toLocaleLowerCase();
     const items = data.materials.filter((item) => (!categoryId || item.classification.categoryId === categoryId)
       && (!adoption || item.adoption.state === adoption)
@@ -327,7 +314,7 @@ function createProjectMaterialStore({ projectId, managerPath, roots, hooks = {} 
 
   async function resolve(materialId, version, { verify = true } = {}) {
     identifier(materialId, '资料ID');
-    const data = await read();
+    const data = await inspect();
     const alias = data.materialIdAliases?.find((item) => item.materialId === materialId);
     const record = data.materials.find((item) => item.materialId === (alias?.canonicalMaterialId || materialId));
     invariant(record, 'material_missing', '此项目中没有该资料。');
@@ -531,7 +518,7 @@ function createProjectMaterialStore({ projectId, managerPath, roots, hooks = {} 
     }, expectedRevision);
   }
 
-  return { projectId, directory, indexPath, read, list, registerFiles, resolve, snapshot,
+  return { projectId, directory, indexPath, read, inspect, list, registerFiles, resolve, snapshot,
     setCategories, updateClassification, decideAdoption, mutate, locationPath };
 }
 

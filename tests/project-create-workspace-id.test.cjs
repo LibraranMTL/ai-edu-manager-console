@@ -37,6 +37,7 @@ test('new workspace-v1 project uses its generated id for the first digest and re
     projectStagingProjection: () => [],
     readProjectMaterialIndexSync: (project) => { observed.registry = project.id; return { materials: [] }; },
     normalizeMaterialConfiguration: (project) => ({ materialStorageMode: project.materialStorageMode, materialRegistryVersion: 1 }),
+    normalizeMaterialAutomation: require('../electron/project-material-automation.cjs').normalizeMaterialAutomation,
     sourceBindingRef: (value) => value,
   });
   vm.runInContext(extract('normalizeProject'), context);

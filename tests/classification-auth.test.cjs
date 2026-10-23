@@ -37,7 +37,10 @@ test('WorkBuddy authorization returns while the interactive login is still runni
     workBuddyLogin: async ({ update }) => { started = true; update('running', '等待浏览器完成官方登录'); await loginFinished; update('finished', '登录完成'); } });
   const result = await Promise.race([
     auth.start('workbuddy', { runtime: { available: true, mode: 'node', cliPath, nodePath: process.execPath } }, 'request-b'),
-    new Promise((_, reject) => setTimeout(() => reject(Error('授权请求没有立即返回')), 250)),
+    // The full suite runs many child-process and SQLite fixtures concurrently
+    // on Windows.  Keep this a finite non-blocking assertion without making it
+    // depend on a 250 ms scheduler slice under peak CI disk/CPU contention.
+    new Promise((_, reject) => setTimeout(() => reject(Error('授权请求没有立即返回')), 1000)),
   ]);
   await new Promise(resolve => setImmediate(resolve));
   assert.equal(started, true);

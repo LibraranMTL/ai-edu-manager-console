@@ -4,12 +4,13 @@ const os = require('node:os');
 const crypto = require('node:crypto');
 const { spawnSync } = require('node:child_process');
 
-function installerConfig(version, output, icon) {
+function installerConfig(version, output, icon, candidateTag = '') {
+  const artifactSuffix = candidateTag ? `-${candidateTag}` : '';
   return {
     appId: 'com.qxmatrix.edumanager.desktop',
     productName: 'AI Education Manager Console',
     directories: { output },
-    win: { target: ['nsis'], icon, artifactName: `AI-edu-manager-console-Windows-${version}-Setup.` + '${ext}' },
+    win: { target: ['nsis'], icon, artifactName: `AI-edu-manager-console-Windows-${version}${artifactSuffix}-Setup.` + '${ext}' },
     nsis: {
       oneClick: false, perMachine: false, selectPerMachineByDefault: false,
       allowElevation: false, allowToChangeInstallationDirectory: false,
@@ -48,6 +49,8 @@ async function main() {
   const audit = JSON.parse(fs.readFileSync(auditPath, 'utf8'));
   const version = String(audit.version || '');
   require('./version-policy.cjs').validateWindowsVersion(version);
+  const candidateTag = String(process.env.EDU_WINDOWS_INSTALLER_TAG || audit.candidateTag || '')
+    .trim().replace(/[^a-zA-Z0-9._-]+/g, '-').replace(/^-+|-+$/g, '');
   const source = audit.artifacts.exe;
   if (fs.statSync(source.path).size !== source.bytes || sha256(source.path) !== source.sha256) {
     throw new Error('Accepted portable package does not match its audit.');
@@ -56,7 +59,9 @@ async function main() {
   if (stagePackage.name !== 'edu-manager-launcher' || stagePackage.version !== version || stagePackage.author !== 'Robogala') {
     throw new Error('Runtime identity/version/publisher mismatch.');
   }
-  const output = path.join(repo, 'release', 'windows', `installer-${version}`);
+  const output = candidateTag
+    ? path.join(repo, 'release', 'windows', 'candidates', candidateTag, 'installer')
+    : path.join(repo, 'release', 'windows', `installer-${version}`);
   if (fs.existsSync(output)) throw new Error(`Refusing to overwrite an existing installer delivery: ${output}`);
   // Extract the exact accepted EXE instead of rebuilding from the dirty tree.
   const cache = path.join(process.env.LOCALAPPDATA, 'electron-builder', 'Cache', '7zip@1.0.0');
@@ -70,7 +75,7 @@ async function main() {
   const runtimeAsar = path.join(unpacked, 'resources', 'app.asar');
   if (!fs.existsSync(runtimeExe) || !fs.existsSync(runtimeAsar)) throw new Error('Accepted runtime payload is incomplete.');
   const before = treeHashes(unpacked);
-  const config = installerConfig(version, output, path.join(repo, 'public', 'brand', 'robogala.ico'));
+  const config = installerConfig(version, output, path.join(repo, 'public', 'brand', 'robogala.ico'), candidateTag);
   const { build, Platform, Arch } = require('electron-builder');
   await build({ projectDir: audit.stagingRoot, prepackaged: unpacked,
     targets: Platform.WINDOWS.createTarget(['nsis'], Arch.x64), config, publish: 'never' });
@@ -78,9 +83,10 @@ async function main() {
   for (const [file, hash] of Object.entries(before)) {
     if (after[file] !== hash) throw new Error(`Accepted runtime was modified during packaging: ${file}`);
   }
-  const installer = path.join(output, `AI-edu-manager-console-Windows-${version}-Setup.exe`);
+  const installer = path.join(output, `AI-edu-manager-console-Windows-${version}${candidateTag ? `-${candidateTag}` : ''}-Setup.exe`);
   const report = {
-    version, createdAt: new Date().toISOString(), status: 'local-user-accepted-installer',
+    version, candidateTag, createdAt: new Date().toISOString(),
+    status: candidateTag ? 'local-candidate-installer' : 'local-user-accepted-installer',
     sourceAudit: auditPath, sourceControl: audit.sourceControl,
     sourcePortable: source, runtimeAsarSha256: sha256(runtimeAsar),
     unchangedRuntimeFiles: Object.keys(before).length,

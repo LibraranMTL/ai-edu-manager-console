@@ -114,6 +114,34 @@ test('missing shared original is marked by scan; removing a row is reversible an
   assert.equal(f.calls.extract + f.calls.classify + f.calls.deliver, 0);
 });
 
+test('manual delivery marks a deleted conversation source missing and returns an actionable error', async t => {
+  const fileState = { available: true };
+  let eventFile = '';
+  const f = await fixture(t, {
+    events: async source => source.type === 'history'
+      ? [{ locator: JSON.stringify({ sources: [{ assetId: 'asset-conversation' }] }), name: 'conversation.md' }]
+      : [],
+    resolveEvent: async () => {
+      if (!fileState.available) throw Object.assign(Error('source deleted'), { code: 'original_missing' });
+      return { path: eventFile, stat: await fs.lstat(eventFile) };
+    },
+  });
+  eventFile = path.join(f.source, 'conversation.md');
+  await fs.writeFile(eventFile, 'project-physics conversation');
+  await f.engine.bootstrap({ students: [{ id: 'student-a', name: '测试学生' }] });
+  const history = (await f.engine.sources()).sources.find(source => source.type === 'history');
+  await f.engine.updateSource({ ...history, enabled: true, automatic: false });
+  await f.engine.requestScan(history.id); await f.engine.tick();
+  const row = (await f.engine.list()).rows[0];
+  fileState.available = false;
+  const result = await f.engine.decide({ requestId: 'deleted-conversation', action: 'correct', items: [{ id: row.id, revision: row.revision, target }] });
+  assert.equal(result.results[0].ok, false);
+  assert.match(result.results[0].message, /回收站|彻底删除/);
+  const marked = await f.engine.detail(row.id);
+  assert.equal(marked.originalMissing, true);
+  assert.match(marked.message, /源会话/);
+});
+
 test('policy rejects extraction errors, truncation and missing original even with an explicit source target', () => {
   for (const item of [{ extractionBlocked: true }, { truncated: true }, { originalMissing: true }]) {
     assert.equal(P.automaticTarget({ source: { automatic: true, studentId: 'student-a', target }, item, context,
@@ -213,6 +241,21 @@ test('confirmed student produces recommendations for uncertain content and retai
   const row = (await f.engine.list()).rows[0]; assert.equal(row.status, 'review'); assert.equal(row.proposedTarget.id, target.id); assert.equal(f.calls.deliver, 0);
   const accepted = await f.engine.decide({ requestId: 'manual', action: 'correct', items: [{ id: row.id, revision: row.revision, target }] });
   assert.equal(accepted.results[0].ok, true); assert.equal(f.calls.deliver, 1);
+});
+
+test('manual delivery accepts metadata-only identity drift when stable content still matches the captured fingerprint', async t => {
+  const f = await fixture(t, { classify: async () => ({ ...suggestion(), candidates: [{ ...suggestion().candidates[0], score: .8 }] }) });
+  await f.write('metadata-only.txt'); const source = await f.add({ studentId: 'student-a' }); await f.scan(source.id);
+  const row = (await f.engine.list()).rows[0]; assert.equal(row.status, 'review');
+  await f.engine.close();
+  const recordFile = path.join(f.directory, 'items', `${row.id}.json`);
+  const record = JSON.parse(await fs.readFile(recordFile, 'utf8'));
+  record.identity = `${record.identity}:metadata-only-change`;
+  await fs.writeFile(recordFile, JSON.stringify(record));
+  const restored = createSmartInbox(f.host); t.after(() => restored.close()); await restored.init();
+  const current = await restored.detail(row.id);
+  const accepted = await restored.decide({ requestId: 'metadata-only-manual', action: 'correct', items: [{ id: current.id, revision: current.revision, target }] });
+  assert.equal(accepted.results[0].ok, true, JSON.stringify(accepted)); assert.equal(f.calls.deliver, 1);
 });
 
 test('confirmation cannot change known student, reuse stale versions, or accept deleted students', async t => {

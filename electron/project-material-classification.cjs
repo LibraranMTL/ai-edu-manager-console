@@ -145,10 +145,37 @@ function categoryForWorkspacePath(relativePath, categories, inboxRelativePath = 
 async function reconcileWorkspacePathClassifications(project, store, { materialIds } = {}) {
   const requestedIds = Array.isArray(materialIds) && materialIds.length ? new Set(materialIds) : null;
   for (let attempt = 0; attempt < 2; attempt++) {
-    const baseline = await store.read({ fresh: attempt > 0 });
+    const baseline = typeof store.inspect === 'function'
+      ? await store.inspect({ fresh: attempt > 0 }) : await store.read({ fresh: attempt > 0 });
     const definitions = categoryDefinitions(project, baseline);
     const currentCategories = (baseline.categories || []).map((item) => ({ ...item,
       aliases: Array.isArray(item.aliases) ? item.aliases : [] }));
+    const previewCounts = { classified: 0, reclassified: 0, cleared: 0, unchanged: 0,
+      skippedManual: 0, skippedOtherSource: 0 };
+    let previewChanged = !compare(currentCategories, definitions);
+    for (const material of baseline.materials || []) {
+      if (material.location?.kind !== 'workspace' || material.location?.rootId !== 'workspace'
+        || (requestedIds && !requestedIds.has(material.materialId))) continue;
+      const classification = material.classification || { categoryId: '', tags: [], source: '', manualLocked: false };
+      if (classification.manualLocked) { previewCounts.skippedManual++; continue; }
+      const matched = categoryForWorkspacePath(material.location.relativePath, definitions,
+        project.inboxRelativePath);
+      const pathManaged = classification.source === 'workspace_path';
+      if (matched && (!classification.categoryId || pathManaged)) {
+        const categoryChanged = classification.categoryId !== matched.categoryId;
+        const stateChanged = material.organizationState !== 'classified';
+        if (!categoryChanged && !stateChanged && pathManaged) { previewCounts.unchanged++; continue; }
+        if (categoryChanged && pathManaged) previewCounts.reclassified++;
+        else previewCounts.classified++;
+        previewChanged = true;
+        continue;
+      }
+      if (!matched && pathManaged) { previewCounts.cleared++; previewChanged = true; continue; }
+      if (matched && classification.categoryId && !pathManaged) previewCounts.skippedOtherSource++;
+      else previewCounts.unchanged++;
+    }
+    if (!previewChanged) return { projectId: project.id, ruleVersion: WORKSPACE_PATH_RULE_VERSION,
+      categoriesUpdated: false, ...previewCounts, registryRevision: baseline.revision, unchanged: true };
     try {
       const changedAt = now();
       const committed = await store.mutate((index) => {
@@ -248,7 +275,8 @@ function createProjectMaterialClassification(project, store) {
 
   async function ensureWorkspaceCategories() {
     for (let attempt = 0; attempt < 2; attempt++) {
-      const index = await store.read({ fresh: attempt > 0 });
+      const index = typeof store.inspect === 'function'
+        ? await store.inspect({ fresh: attempt > 0 }) : await store.read({ fresh: attempt > 0 });
       const definitions = categoryDefinitions(project, index);
       const current = (index.categories || []).map((item) => ({ ...item,
         aliases: Array.isArray(item.aliases) ? item.aliases : [] }));
@@ -265,7 +293,11 @@ function createProjectMaterialClassification(project, store) {
 
   function normalizeSuggestion(item) {
     strictKeys(item, new Set(['materialId', 'expectedVersion', 'expectedRecordRevision',
-      'categoryId', 'tags', 'reason', 'needsConfirmation']));
+      'categoryId', 'tags', 'reason', 'needsConfirmation', 'confidence', 'evidence']));
+    const confidence = String(item.confidence || 'medium');
+    invariant(['low', 'medium', 'high'].includes(confidence), 'invalid_confidence', '分类建议置信度无效。');
+    const evidence = Array.isArray(item.evidence)
+      ? item.evidence.map((value) => cleanText(value, 200)).filter(Boolean).slice(0, 8) : [];
     return {
       materialId: identifier(item.materialId, '资料ID'),
       expectedVersion: positiveVersion(item.expectedVersion),
@@ -274,6 +306,8 @@ function createProjectMaterialClassification(project, store) {
       tags: normalizeTags(item.tags, allowedTagIds),
       reason: cleanText(item.reason, 500),
       needsConfirmation: item.needsConfirmation !== false,
+      confidence,
+      evidence,
     };
   }
 
@@ -315,6 +349,7 @@ function createProjectMaterialClassification(project, store) {
             version: item.expectedVersion, recordRevision: item.expectedRecordRevision,
             categoryId: item.categoryId, tags: item.tags, reason: item.reason,
             needsConfirmation: item.needsConfirmation, ruleVersion, source, actorId,
+            confidence: item.confidence, evidence: item.evidence,
             status: 'pending', createdAt: now() };
           index.classificationSuggestions.push(suggestion);
         }
@@ -481,6 +516,7 @@ function createProjectMaterialClassification(project, store) {
         suggestionId: item.suggestionId, materialId: item.materialId, version: item.version,
         recordRevision: item.recordRevision, categoryId: item.categoryId, tags: item.tags,
         reason: item.reason, needsConfirmation: item.needsConfirmation, ruleVersion: item.ruleVersion,
+        confidence: item.confidence || 'medium', evidence: item.evidence || [],
         source: item.source, status: item.status, createdAt: item.createdAt,
       })) };
   }

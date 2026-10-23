@@ -47,3 +47,7 @@ test('formal signer rejects certificates that differ from the previous Android s
   assert.match(signer, /trustedCertificateSha256 -ne \$certificateSha256/);
   assert.match(signer, /would conflict with installed copies/);
 });
+
+test('device-test candidates use a short artifact name on Unicode Windows paths', () => {
+  assert.match(signer, /\$fileArtifactLabel = if \(\$DeviceTestingOnly\) \{ 'device-test' \} else \{ \$artifactLabel \}/);
+});

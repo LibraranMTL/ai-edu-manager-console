@@ -34,17 +34,24 @@ test('Android student and teacher terminals schedule only consented capture sess
     assert.match(manifest, /CaptureAutoDeliveryJobService/u, client.name);
     assert.match(manifest, /android\.permission\.BIND_JOB_SERVICE/u, client.name);
     assert.match(activity, /PREF_CAPTURE_AUTO_DELIVERY_DEFAULT/u, client.name);
-    assert.match(activity, /采集结束后自动投递/u, client.name);
+    assert.match(activity, client.name === 'student' ? /采集结束后自动收集/u : /采集结束后自动投递/u, client.name);
     assert.match(activity, /putExtra\("auto_delivery", pendingCaptureAutoDelivery\)/u, client.name);
     assert.match(service, /autoDelivery = intent\.getBooleanExtra\("auto_delivery", false\)/u, client.name);
     assert.match(service, /CaptureAutoDeliveryJobService\.schedule\(this, sessionDir\)/u, client.name);
     assert.match(service, /metadata\.put\("autoDelivery", autoDelivery\)/u, client.name);
     assert.match(service, /metadata\.put\("sequence", savedCount\)/u, client.name);
-    assert.match(delivery, /setRequiredNetworkType\(JobInfo\.NETWORK_TYPE_ANY\)/u, client.name);
+    assert.match(delivery, client.name === 'student'
+      ? /setRequiredNetworkType\(JobInfo\.NETWORK_TYPE_NONE\)/u
+      : /setRequiredNetworkType\(JobInfo\.NETWORK_TYPE_ANY\)/u, client.name);
     assert.match(delivery, /CaptureStorage\.isInside\(sessionDir, CaptureStorage\.studentDir\(context, studentId\)\)/u, client.name);
-    assert.match(delivery, /android_screen_capture_auto/u, client.name);
-    assert.match(delivery, new RegExp(`capturePlatform=${client.capturePlatform}`, 'u'), client.name);
-    assert.match(delivery, /capture-sessions.*\/complete/u, client.name);
+    if (client.name === 'student') {
+      assert.match(delivery, /new StudentCollectionInbox/u, client.name);
+      assert.match(delivery, /android_screen_capture/u, client.name);
+    } else {
+      assert.match(delivery, /android_screen_capture_auto/u, client.name);
+      assert.match(delivery, new RegExp(`capturePlatform=${client.capturePlatform}`, 'u'), client.name);
+      assert.match(delivery, /capture-sessions.*\/complete/u, client.name);
+    }
     assert.match(delivery, /expectedItemCount/u, client.name);
     assert.match(delivery, /captureSequence/u, client.name);
     assert.match(delivery, /captureHighlighted/u, client.name);
@@ -68,7 +75,12 @@ test('edge capture delivery retains scope and does not broaden Android conversat
     assert.match(delivery, /"project"\.equals\(targetType\)/u, client.name);
     assert.match(delivery, /studentId/u, client.name);
     assert.match(activity, /intent\.getCharSequenceExtra\(Intent\.EXTRA_TEXT\)/u, client.name);
-    assert.match(activity, /当前分享只有链接，请复制对话正文后再粘贴/u, client.name);
+    if (client.name === 'student') {
+      assert.match(activity, /previewConversationLink\(text\)/u, client.name);
+      assert.match(activity, /\/api\/student-session\/conversation-link\/preview/u, client.name);
+    } else {
+      assert.match(activity, /当前分享只有链接，请复制对话正文后再粘贴/u, client.name);
+    }
     assert.doesNotMatch(activity, /scanPrivateConversationDatabase|AccessibilityService|NotificationListenerService/u, client.name);
   }
 });

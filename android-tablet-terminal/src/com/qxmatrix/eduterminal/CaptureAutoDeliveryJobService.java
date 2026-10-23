@@ -15,6 +15,7 @@ import org.json.JSONObject;
 import java.io.BufferedReader;
 import java.io.File;
 import java.io.FileInputStream;
+import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.InputStream;
 import java.io.InputStreamReader;
@@ -53,7 +54,7 @@ public class CaptureAutoDeliveryJobService extends JobService {
         extras.putString(EXTRA_SESSION_DIR, sessionDir.getAbsolutePath());
         int jobId = JOB_ID_BASE + Math.abs(sessionDir.getName().hashCode() % 9000);
         JobInfo job = new JobInfo.Builder(jobId, new ComponentName(context, CaptureAutoDeliveryJobService.class))
-            .setRequiredNetworkType(JobInfo.NETWORK_TYPE_ANY)
+            .setRequiredNetworkType(JobInfo.NETWORK_TYPE_NONE)
             .setMinimumLatency(1000L)
             .setOverrideDeadline(10000L)
             .setBackoffCriteria(30000L, JobInfo.BACKOFF_POLICY_EXPONENTIAL)
@@ -95,13 +96,6 @@ public class CaptureAutoDeliveryJobService extends JobService {
                 status(context, "自动投递已保留：学生端仅在个人终端中发送截图。");
                 return false;
             }
-            String base = normalizeBase(connectionBase(terminal));
-            String token = terminal.getString("student_session_token", "").trim();
-            if (base.length() == 0 || token.length() == 0) {
-                status(context, "自动投递待重试：学生会话或主机连接已失效。");
-                return true;
-            }
-
             String projectId = session.optString("projectId", "").trim();
             String targetType = projectId.length() > 0 ? "project" : "student";
             String targetId = projectId.length() > 0 ? projectId : studentId;
@@ -121,8 +115,12 @@ public class CaptureAutoDeliveryJobService extends JobService {
                 String signature = image.getName() + "|" + image.length() + "|" + image.lastModified();
                 if (uploaded.contains(signature)) continue;
                 try {
-                    JSONObject item = readObject(new File(sessionDir, image.getName() + ".json"));
-                    upload(base, token, studentId, targetType, targetId, session, item, image, signature);
+                    StudentCollectionInbox inbox = new StudentCollectionInbox(new File(context.getFilesDir(), "student-collection-inbox"));
+                    FileInputStream input = new FileInputStream(image);
+                    try {
+                        inbox.collect(input, new StudentCollectionInbox.Metadata(studentId, "android_screen_capture",
+                            image.getName(), "image/png", image.getAbsolutePath()));
+                    } finally { input.close(); }
                     uploaded.add(signature);
                     writeDelivered(new File(sessionDir, DELIVERY_STATE_FILE), uploaded);
                     uploadedCount += 1;
@@ -131,16 +129,8 @@ public class CaptureAutoDeliveryJobService extends JobService {
                 }
             }
             status(context, failedCount > 0
-                ? "本次自动投递 " + uploadedCount + " 张，失败 " + failedCount + " 张；联网后会继续重试。"
-                : "本次自动投递完成：" + uploadedCount + " 张截图已送达指定资料库。");
-            if (failedCount == 0 && uploaded.size() >= images.size()) {
-                try {
-                    completeCaptureSession(base, token, studentId, projectId, session, images.size());
-                } catch (Exception error) {
-                    status(context, "截图已送达，采集会话完成回执待重试：" + safeMessage(error));
-                    return true;
-                }
-            }
+                ? "本次自动收集 " + uploadedCount + " 张到本机待上传区，失败 " + failedCount + " 张；稍后会继续重试。"
+                : "本次自动收集完成：" + uploadedCount + " 张截图已进入本机待上传区，等待确认上传。");
             return failedCount > 0;
         } catch (Exception error) {
             status(context, "自动投递待重试：" + safeMessage(error));

@@ -93,6 +93,10 @@ public final class QueueHarness {
     check(entry.payloadFile().isFile(), "private payload exists");
     check(entry.hostId.equals("host-1") && entry.deviceId.equals("device-1"), "host and device fixed");
     check(entry.studentId.equals("student-1") && entry.targetId.equals("project-1"), "student/project fixed");
+    ProjectMaterialUploadQueue.Entry duplicate = queue.enqueue(
+      new ByteArrayInputStream("stable evidence".getBytes(StandardCharsets.UTF_8)), metadata);
+    check(duplicate.requestId.equals(entry.requestId), "same scoped content reuses durable queue entry");
+    check(queue.list().size() == 1, "same scoped content is not queued twice");
 
     File itemFile = new File(new File(root, "items"), entry.requestId + ".properties");
     File backupFile = new File(new File(root, "items"), entry.requestId + ".properties.bak");

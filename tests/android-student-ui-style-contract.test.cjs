@@ -32,17 +32,34 @@ test('Android student card and hero surfaces keep rounded readable containers', 
   assert.match(source, /我的学习空间 · 资料、课程和成长记录都在这里/);
 });
 
-test('Android student home uses an adaptive square-card grid and landscape navigation', () => {
+test('Android student home uses exactly four core actions with landscape and narrow navigation', () => {
   assert.match(source, /new GridLayout\(this\)/);
-  assert.match(source, /actionGridColumns\(\)/);
+  assert.match(source, /columns = isPhoneLayout\(\).*\? 1 : 2/);
   assert.match(source, /isWideLandscape\(\)/);
   assert.match(source, /buildNavigationRail\(\)/);
-  assert.match(source, /精选课程/);
-  assert.match(source, /上传学习资料/);
-  assert.match(source, /屏幕资料采集/);
-  assert.match(source, /AI 学习助手/);
-  assert.match(source, /学情报告/);
-  assert.match(source, /学情档案/);
+  assert.match(source, /buildBottomNavigation\(\)/);
+  assert.match(source, /"搜集上传"/);
+  assert.match(source, /"主机连接"/);
+  assert.match(source, /"教育档案"/);
+  assert.match(source, /"学习行动"/);
+  const dashboard = source.slice(source.indexOf('private LinearLayout buildStudentDashboard'), source.indexOf('private Button addDashboardAction'));
+  assert.equal((dashboard.match(/addDashboardAction\(/g) || []).length, 4);
+  assert.doesNotMatch(dashboard, /AI 学习助手|项目知识库/);
+});
+
+test('AI assistant, contact and prompt modules have no visible workspace entry', () => {
+  const assembly = source.slice(source.indexOf('collectionPage = workspacePage'), source.indexOf('FrameLayout.LayoutParams topParams'));
+  assert.doesNotMatch(assembly, /contactCard|agentDialogCard|promptDialogCard|教育管家对话|AI 学习助手/);
+  assert.match(source, /morePage = workspacePage\("更多"/);
+});
+
+test('terminal and student space lives under host connection instead of More', () => {
+  const assembly = source.slice(source.indexOf('collectionPage = workspacePage'), source.indexOf('FrameLayout.LayoutParams topParams'));
+  const connection = assembly.slice(assembly.indexOf('connectionPage = workspacePage'), assembly.indexOf('LinearLayout growthRecommendations'));
+  const more = assembly.slice(assembly.indexOf('morePage = workspacePage'));
+  assert.match(connection, /connectionPage\.addView\(collapsiblePanel\("终端与学生空间"[\s\S]*terminalAndStudent\)\)/);
+  assert.doesNotMatch(more, /collapsiblePanel\("终端与学生空间"/);
+  assert.match(source, /title\.contains\("学生空间"\).*destination = "connection"/);
 });
 
 test('Android student layout rebuilds after real device rotation', () => {

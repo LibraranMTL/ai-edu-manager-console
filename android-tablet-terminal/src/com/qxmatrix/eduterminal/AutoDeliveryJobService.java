@@ -71,7 +71,7 @@ public class AutoDeliveryJobService extends JobService {
             return;
         }
         JobInfo job = new JobInfo.Builder(JOB_ID, new ComponentName(context, AutoDeliveryJobService.class))
-            .setRequiredNetworkType(JobInfo.NETWORK_TYPE_ANY)
+            .setRequiredNetworkType(JobInfo.NETWORK_TYPE_NONE)
             .setPeriodic(PERIOD_MS)
             .build();
         scheduler.schedule(job);
@@ -99,13 +99,7 @@ public class AutoDeliveryJobService extends JobService {
         String studentId = config.getString(KEY_STUDENT_ID, "");
         String targetType = config.getString(KEY_TARGET_TYPE, "student");
         String targetId = config.getString(KEY_TARGET_ID, studentId);
-        String configuredBase = terminal.getInt("connection_mode", 1) == 2
-            ? terminal.getString("remote_url", "")
-            : terminal.getString("server_url", "");
-        if (configuredBase.length() == 0) configuredBase = terminal.getString("server_url", "");
-        String base = normalizeBase(configuredBase);
-        String token = terminal.getString("student_session_token", "");
-        if (treeText.length() == 0 || studentId.length() == 0 || targetId.length() == 0 || base.length() == 0 || token.length() == 0) {
+        if (treeText.length() == 0 || studentId.length() == 0 || targetId.length() == 0) {
             result(config, "自动投递配置不完整，请打开应用重新设置。", 0, 0);
             return;
         }
@@ -131,7 +125,34 @@ public class AutoDeliveryJobService extends JobService {
                     continue;
                 }
                 try {
-                    upload(context.getContentResolver(), base, token, studentId, targetType, targetId, file, signature);
+                    StudentCollectionInbox inbox = new StudentCollectionInbox(new java.io.File(context.getFilesDir(), "student-collection-inbox"));
+                    InputStream input = context.getContentResolver().openInputStream(file.uri);
+                    if (input == null) throw new IllegalStateException("无法读取文件");
+                    StudentCollectionInbox.Entry collected;
+                    try {
+                        collected = inbox.collect(input, new StudentCollectionInbox.Metadata(studentId, "android_auto_delivery",
+                            file.name, "application/octet-stream", file.uri.toString()));
+                    } finally { input.close(); }
+                    SharedPreferences queuePrefs = context.getSharedPreferences(ProjectMaterialUploadJobService.PREFS, Context.MODE_PRIVATE);
+                    String hostId = queuePrefs.getString(ProjectMaterialUploadJobService.KEY_HOST_ID, "");
+                    String dataGeneration = queuePrefs.getString(ProjectMaterialUploadJobService.KEY_DATA_GENERATION, "");
+                    String deviceId = queuePrefs.getString(ProjectMaterialUploadJobService.KEY_DEVICE_ID, "");
+                    String sessionStudentId = queuePrefs.getString(ProjectMaterialUploadJobService.KEY_SESSION_STUDENT_ID, "");
+                    if (hostId.length() == 0 || dataGeneration.length() == 0 || deviceId.length() == 0 || !studentId.equals(sessionStudentId)) {
+                        throw new IllegalStateException("主机或学生会话已变化，资料保留在本机等待重新确认");
+                    }
+                    ProjectMaterialUploadQueue queue = new ProjectMaterialUploadQueue(
+                        new java.io.File(context.getFilesDir(), ProjectMaterialUploadJobService.QUEUE_DIRECTORY));
+                    InputStream stable = new java.io.FileInputStream(collected.payloadFile());
+                    ProjectMaterialUploadQueue.Entry queued;
+                    try {
+                        queued = queue.enqueue(stable, new ProjectMaterialUploadQueue.Metadata(
+                            hostId, dataGeneration, deviceId, studentId, targetType, targetId,
+                            collected.metadata.fileName, "android_auto_delivery", "", collected.metadata.sourceReference));
+                    } finally { stable.close(); }
+                    if (!inbox.markQueuedByPayloadPath(collected.payloadPath, queued.requestId)) {
+                        throw new IllegalStateException("自动投递交接复核失败，原件仍保留在本机");
+                    }
                     processed.add(signature);
                     pending.remove(signature);
                     uploaded += 1;
@@ -144,10 +165,14 @@ public class AutoDeliveryJobService extends JobService {
                 .putStringSet(KEY_PROCESSED, processed)
                 .putString(KEY_PENDING, pending.toString())
                 .putLong(KEY_LAST_CHECKED_AT, now)
-                .putString(KEY_LAST_RESULT, "本次新增上传 " + uploaded + " 个，等待文件稳定 " + waiting + " 个，失败 " + failed + " 个。本地文件未删除。")
+                .putString(KEY_LAST_RESULT, "本次已有 " + uploaded + " 个进入持久上传队列，等待文件稳定 " + waiting + " 个，保留待重试 " + failed + " 个。本地原文件未删除。")
                 .apply();
+            if (uploaded > 0) {
+                ProjectMaterialUploadJobService.schedule(context);
+                ProjectMaterialUploadJobService.runNow(context);
+            }
         } catch (Exception error) {
-            result(config, "检查失败：" + safeMessage(error) + "。稍后将自动重试。", uploaded, failed + 1);
+            result(config, "自动投递检查失败：" + safeMessage(error) + "。稍后将自动重试。", uploaded, failed + 1);
         }
     }
 

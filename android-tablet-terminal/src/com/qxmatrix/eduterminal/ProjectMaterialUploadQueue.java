@@ -220,6 +220,8 @@ public final class ProjectMaterialUploadQueue {
                 output.close();
             }
             contentHash = hex(digest.digest());
+            Entry duplicate = findDuplicate(metadata, contentHash, bytes);
+            if (duplicate != null) return duplicate;
             String requestSeed = metadata.hostId + "\n" + metadata.deviceId + "\n"
                 + metadata.studentId + "\n" + metadata.targetType + "\n" + metadata.targetId
                 + "\n" + contentHash + "\n" + nonce;
@@ -240,6 +242,22 @@ public final class ProjectMaterialUploadQueue {
             if (temporary.exists()) temporary.delete();
         }
         }
+    }
+
+    private Entry findDuplicate(Metadata metadata, String contentHash, long bytes) throws Exception {
+        for (Entry entry : list()) {
+            if (!entry.hostId.equals(metadata.hostId)
+                || !entry.dataGeneration.equals(metadata.dataGeneration)
+                || !entry.deviceId.equals(metadata.deviceId)
+                || !entry.studentId.equals(metadata.studentId)
+                || !entry.targetType.equals(metadata.targetType)
+                || !entry.targetId.equals(metadata.targetId)
+                || !entry.contentSha256.equals(contentHash)
+                || entry.byteSize != bytes
+                || entry.state == State.FAILED_PERMANENT) continue;
+            if (entry.state == State.RECEIVED || verifyPayload(entry)) return entry;
+        }
+        return null;
     }
 
     /** Converts crash-interrupted network work to receipt-first recovery. */

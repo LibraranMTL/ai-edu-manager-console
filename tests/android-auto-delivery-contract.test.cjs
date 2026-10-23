@@ -6,7 +6,7 @@ const path = require('node:path')
 const root = path.resolve(__dirname, '..')
 const read = (relative) => fs.readFileSync(path.join(root, relative), 'utf8')
 
-test('Android automatic delivery uses persisted SAF folder access with no extra runtime dependency', () => {
+test('Android automatic delivery uses persisted SAF folder access and the durable queue', () => {
   const activity = read('android-tablet-terminal/src/com/qxmatrix/eduterminal/MainActivity.java')
   const worker = read('android-tablet-terminal/src/com/qxmatrix/eduterminal/AutoDeliveryJobService.java')
   assert.match(activity, /Intent\.ACTION_OPEN_DOCUMENT_TREE/)
@@ -14,26 +14,31 @@ test('Android automatic delivery uses persisted SAF folder access with no extra 
   assert.match(worker, /DocumentsContract\.buildChildDocumentsUriUsingTree/)
   assert.match(worker, /JobScheduler/)
   assert.match(worker, /setPeriodic\(PERIOD_MS\)/)
+  assert.match(worker, /JobInfo\.NETWORK_TYPE_NONE/)
+  assert.match(worker, /new StudentCollectionInbox/)
+  assert.match(worker, /new ProjectMaterialUploadQueue/)
+  assert.match(worker, /markQueuedByPayloadPath/)
+  assert.match(worker, /ProjectMaterialUploadJobService\.schedule/)
 })
 
 test('Android automatic delivery is personal-terminal only and binds one student target', () => {
   const activity = read('android-tablet-terminal/src/com/qxmatrix/eduterminal/MainActivity.java')
   const worker = read('android-tablet-terminal/src/com/qxmatrix/eduterminal/AutoDeliveryJobService.java')
   assert.match(activity, /自动投递文件夹（个人终端）/)
-  assert.match(activity, /共享终端不启用自动投递/)
+  assert.match(activity, /共享终端不启用文件夹自动投递/)
   assert.match(activity, /KEY_STUDENT_ID, selectedStudent\.id/)
   assert.match(activity, /KEY_TARGET_TYPE, target\.type/)
   assert.match(worker, /!"personal"\.equals\(terminal\.getString\("terminal_mode", "shared"\)\)/)
 })
 
-test('Android automatic delivery is idempotent, waits for stable files and never deletes local files', () => {
+test('Android automatic delivery is idempotent, waits for stable files and never deletes source files', () => {
   const worker = read('android-tablet-terminal/src/com/qxmatrix/eduterminal/AutoDeliveryJobService.java')
   assert.match(worker, /KEY_PROCESSED/)
   assert.match(worker, /KEY_PENDING/)
   assert.match(worker, /STABLE_MS/)
-  assert.match(worker, /android-auto-/)
-  assert.match(worker, /sourceType=android_auto_delivery/)
-  assert.match(worker, /本地文件未删除/)
+  assert.match(worker, /android_auto_delivery/)
+  assert.match(worker, /student-collection-inbox/)
+  assert.match(worker, /本地原文件未删除/)
   assert.doesNotMatch(worker, /\.delete\s*\(/)
 })
 

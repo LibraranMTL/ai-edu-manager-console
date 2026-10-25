@@ -30,6 +30,8 @@ test('Android student card and hero surfaces keep rounded readable containers', 
   assert.match(source, /drawable\.setCornerRadius\(dp\(22\)\)/);
   assert.match(source, /brandRow\.setBackground\(heroBackground\(\)\)/);
   assert.match(source, /我的学习空间 · 资料、课程和成长记录都在这里/);
+  assert.match(source, /title\.setSingleLine\(true\)/);
+  assert.match(source, /title\.setTextSize\(TypedValue\.COMPLEX_UNIT_DIP, 22\)/);
 });
 
 test('Android student home uses exactly four core actions with landscape and narrow navigation', () => {
@@ -42,7 +44,7 @@ test('Android student home uses exactly four core actions with landscape and nar
   assert.match(source, /"主机连接"/);
   assert.match(source, /"教育档案"/);
   assert.match(source, /"学习行动"/);
-  const dashboard = source.slice(source.indexOf('private LinearLayout buildStudentDashboard'), source.indexOf('private Button addDashboardAction'));
+  const dashboard = source.slice(source.indexOf('private LinearLayout buildStudentDashboard'), source.indexOf('private View addDashboardAction'));
   assert.equal((dashboard.match(/addDashboardAction\(/g) || []).length, 4);
   assert.doesNotMatch(dashboard, /AI 学习助手|项目知识库/);
 });
@@ -70,8 +72,16 @@ test('Android student layout rebuilds after real device rotation', () => {
 });
 
 test('Student feature cards expose readable labels and keyboard focus states', () => {
-  assert.match(source, /button\.setContentDescription\(title \+ "。" \+ description\)/);
-  assert.match(source, /dashboardButtonBackground\(color\)/);
+  assert.match(source, /card\.setContentDescription\(title \+ "。" \+ description\)/);
+  assert.match(source, /card\.setBackground\(dashboardButtonBackground\(color\)\)/);
   assert.match(source, /android\.R\.attr\.state_focused/);
-  assert.match(source, /dp\(isPhoneLayout\(\) \? 112 : 132\)/);
+  assert.match(source, /titleView\.setSingleLine\(true\)/);
+  assert.match(source, /descriptionView\.setMaxLines\(2\)/);
+  assert.match(source, /dp\(isPhoneLayout\(\) \? 118 : 126\)/);
+  assert.match(source, /item\.setTextSize\(isPhoneLayout\(\) \? 12 : 14\)/);
+  assert.match(source, /item\.setSingleLine\(true\)/);
+  assert.match(source, /文件 · 图片 · 拍照 · 屏幕采集/);
+  assert.match(source, /发现主机 · 扫码连接 · 学生空间/);
+  assert.match(source, /学情 · 成长 · 项目 · 规划/);
+  assert.match(source, /课程 · 卡片 · 知识点复习/);
 });

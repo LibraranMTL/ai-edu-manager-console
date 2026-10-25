@@ -171,11 +171,11 @@ public final class ProjectMaterialUploadJobService extends JobService {
                     else pending += 1;
                 }
                 writeStatus(prefs, pending == 0 && paused == 0
-                    ? "上传队列已核对完成：主机确认接收 " + received + " 个资料。"
-                    : "上传队列：待处理 " + pending + " 个，暂停待核对 " + paused + " 个，已确认 " + received + " 个。",
+                    ? "上传结果已核对：主机确认接收 " + received + " 个资料。"
+                    : "上传状态：待处理 " + pending + " 个，暂停待核对 " + paused + " 个，已确认接收 " + received + " 个。",
                     pending, paused);
             } catch (Exception error) {
-                writeStatus(prefs, "上传队列检查失败：" + safeMessage(error) + "。联网后将先查回执再继续。",
+                writeStatus(prefs, "上传状态检查失败：" + safeMessage(error) + "。联网后将先查回执再继续。",
                     Math.max(1, pending), paused);
                 retry = true;
             }

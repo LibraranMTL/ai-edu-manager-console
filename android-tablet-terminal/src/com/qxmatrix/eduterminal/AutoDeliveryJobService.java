@@ -165,7 +165,7 @@ public class AutoDeliveryJobService extends JobService {
                 .putStringSet(KEY_PROCESSED, processed)
                 .putString(KEY_PENDING, pending.toString())
                 .putLong(KEY_LAST_CHECKED_AT, now)
-                .putString(KEY_LAST_RESULT, "本次已有 " + uploaded + " 个进入持久上传队列，等待文件稳定 " + waiting + " 个，保留待重试 " + failed + " 个。本地原文件未删除。")
+                .putString(KEY_LAST_RESULT, "本次已有 " + uploaded + " 个开始上传，等待文件稳定 " + waiting + " 个，保留待重试 " + failed + " 个。本地原文件未删除。")
                 .apply();
             if (uploaded > 0) {
                 ProjectMaterialUploadJobService.schedule(context);

@@ -35,6 +35,7 @@ import android.provider.OpenableColumns;
 import android.provider.Settings;
 import android.text.InputType;
 import android.text.TextUtils;
+import android.util.TypedValue;
 import android.view.Gravity;
 import android.view.MotionEvent;
 import android.view.View;
@@ -95,6 +96,7 @@ import java.net.URL;
 import java.net.URLEncoder;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.Comparator;
 import java.util.HashSet;
 import java.util.Hashtable;
@@ -123,8 +125,8 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
     static final int REQUEST_DIRECT_UPLOAD = 8112;
     static final int REQUEST_DIRECT_IMAGE_UPLOAD = 8113;
     static final int REQUEST_IMPORT_CONVERSATION_FILE = 8114;
-    static final String VERSION_NAME = "0.6.24";
-    static final int VERSION_CODE = 94;
+    static final String VERSION_NAME = "0.6.26";
+    static final int VERSION_CODE = 96;
     static final String CONNECTION_BACKUP_KIND = "ai-edu-manager-tablet-connection-backup";
     static final int CONNECTION_BACKUP_VERSION = 1;
     static final String UPDATE_MANIFEST_URL = "https://www.greatbg.com/download/edu-manager-version.json";
@@ -234,8 +236,8 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
     Button tailscaleButton;
     Button upgradeStandaloneButton;
     Button settingsToggleButton;
-    Button quickUploadButton;
-    Button quickReportButton;
+    View quickUploadButton;
+    View quickReportButton;
     Button quickArchiveButton;
     Button quickProjectKnowledgeButton;
     Button quickContactButton;
@@ -501,7 +503,8 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
         ImageView brandLogo = new ImageView(this);
         brandLogo.setImageResource(R.drawable.brand_logo_hands);
         brandLogo.setScaleType(ImageView.ScaleType.CENTER_CROP);
-        LinearLayout.LayoutParams logoParams = new LinearLayout.LayoutParams(dp(70), dp(70));
+        int brandLogoSize = isPhoneLayout() ? dp(56) : dp(70);
+        LinearLayout.LayoutParams logoParams = new LinearLayout.LayoutParams(brandLogoSize, brandLogoSize);
         logoParams.setMargins(0, 0, dp(12), 0);
         brandRow.addView(brandLogo, logoParams);
 
@@ -511,7 +514,10 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
 
         TextView title = new TextView(this);
         title.setText("AI教育管家");
-        title.setTextSize(isPhoneLayout() ? 25 : 30);
+        title.setTextSize(isPhoneLayout() ? 22 : 30);
+        if (isPhoneLayout()) title.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 22);
+        title.setSingleLine(true);
+        title.setMaxLines(1);
         title.setTextColor(Color.rgb(15, 32, 31));
         title.setGravity(Gravity.START);
         title.setTypeface(null, 1);
@@ -557,7 +563,7 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
         moreButton.setOnClickListener(new View.OnClickListener() {
             @Override public void onClick(View view) { showWorkspace("more"); }
         });
-        brandRow.addView(moreButton, new LinearLayout.LayoutParams(dp(88), dp(48)));
+        brandRow.addView(moreButton, new LinearLayout.LayoutParams(isPhoneLayout() ? dp(72) : dp(88), dp(48)));
 
         root.addView(buildCockpitStatusRibbon());
         homePage = buildStudentDashboard();
@@ -748,7 +754,7 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
 
         uploadCard = card();
         uploadCard.addView(label("上传状态"));
-        uploadCard.addView(label("主动选择的资料会在确认学生档案或关联项目后直接进入持久上传队列；离线暂存只在需要时显示。"));
+        uploadCard.addView(label("确认学生或项目后立即上传到主机；若网络中断，本机会安全保留并自动重试。"));
         LinearLayout actionRow = row();
         sharedUploadButton = button("管理待上传暂存", false);
         retryFailedUploadButton = button("重试失败资料", false);
@@ -770,7 +776,7 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
         uploadCard.addView(uploadResultText);
 
         uploadQueueText = new TextView(this);
-        uploadQueueText.setText("上传队列：暂无。");
+        uploadQueueText.setText("上传状态：暂无。");
         uploadQueueText.setTextSize(12);
         uploadQueueText.setTextColor(Color.rgb(104, 121, 117));
         uploadQueueText.setPadding(0, dp(4), 0, 0);
@@ -821,7 +827,7 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
         autoDeliveryPanel.setOrientation(LinearLayout.VERTICAL);
         autoDeliveryPanel.setPadding(0, dp(8), 0, dp(4));
         autoDeliveryPanel.addView(label("自动投递文件夹（个人终端）"));
-        autoDeliveryPanel.addView(label("授权文件夹并确认资料归属后，新文件会先形成私有稳定副本，再进入持久上传队列；不会删除原文件。"));
+        autoDeliveryPanel.addView(label("授权文件夹并确认资料归属后，新文件会立即尝试上传；网络中断时安全保留并重试，不会删除原文件。"));
         LinearLayout autoDeliveryRow = row();
         autoDeliveryFolderButton = button("选择文件夹", false);
         autoDeliveryTargetButton = button("选择资料归属", false);
@@ -844,7 +850,7 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
 
         captureCard = card();
         captureCard.addView(label("屏幕资料采集"));
-        captureCard.addView(label("授权后可按智能混合、内容变化或固定间隔模式连续采集；结束后确认目标并进入持久上传队列。"));
+        captureCard.addView(label("授权后可按智能混合、内容变化或固定间隔模式连续采集；结束后确认目标并立即上传。"));
         LinearLayout captureRow = row();
         captureStartButton = button("开始屏幕采集", true);
         capturePauseButton = button("暂停/继续", false);
@@ -1075,7 +1081,7 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
         projectKnowledgeEntryCard.addView(projectKnowledgeEntryRow);
         quickProjectKnowledgeButton.setOnClickListener(this);
 
-        collectionPage = workspacePage("搜集上传", "选择资料、确认当前学生与目标后直接进入持久上传队列；离线和失败资料由本机安全保留。");
+        collectionPage = workspacePage("搜集上传", "选择资料并确认当前学生与目标后立即上传；网络中断或发送失败时由本机安全保留并重试。");
         collectionInboxStatusText = new TextView(this);
         collectionInboxStatusText.setTextSize(14);
         collectionInboxStatusText.setTextColor(Color.rgb(35, 74, 70));
@@ -1888,7 +1894,7 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
         final ArrayList<UploadTarget> targets = new ArrayList<UploadTarget>();
         targets.add(new UploadTarget("student", selectedStudent.id, selectedStudent.name + "原始资料库", selectedStudent.id));
         for (LearningProject project : projectsForSelectedStudent()) {
-            targets.add(new UploadTarget("project", project.id, project.name + "项目原始资料库", selectedStudent.id));
+            targets.add(new UploadTarget("project", project.id, project.name, selectedStudent.id));
         }
         SharedPreferences prefs = getSharedPreferences(AutoDeliveryJobService.PREFS, MODE_PRIVATE);
         String selectedType = prefs.getString(AutoDeliveryJobService.KEY_TARGET_TYPE, "student");
@@ -1896,7 +1902,9 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
         int checked = 0;
         final String[] labels = new String[targets.size()];
         for (int i = 0; i < targets.size(); i++) {
-            labels[i] = targets.get(i).name;
+            labels[i] = "project".equals(targets.get(i).type)
+                ? "项目资料 · " + targets.get(i).name
+                : "学生原始资料库 · " + targets.get(i).name.replace("原始资料库", "");
             if (targets.get(i).type.equals(selectedType) && targets.get(i).id.equals(selectedId)) checked = i;
         }
         final int initial = checked;
@@ -1977,6 +1985,11 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
         boolean enabled = prefs.getBoolean(AutoDeliveryJobService.KEY_ENABLED, false);
         String folder = prefs.getString(AutoDeliveryJobService.KEY_TREE_NAME, "尚未选择文件夹");
         String target = prefs.getString(AutoDeliveryJobService.KEY_TARGET_NAME, selectedStudent == null ? "尚未选择投递位置" : selectedStudent.name + "原始资料库");
+        if ("project".equals(prefs.getString(AutoDeliveryJobService.KEY_TARGET_TYPE, "student"))) {
+            target = "项目资料 · " + target.replace("项目原始资料库", "");
+        } else if (!"尚未选择投递位置".equals(target)) {
+            target = "学生原始资料库 · " + target.replace("原始资料库", "");
+        }
         String result = prefs.getString(AutoDeliveryJobService.KEY_LAST_RESULT, "尚未执行检查。");
         long checkedAt = prefs.getLong(AutoDeliveryJobService.KEY_LAST_CHECKED_AT, 0L);
         String checked = checkedAt > 0L ? android.text.format.DateFormat.format("yyyy-MM-dd HH:mm", new java.util.Date(checkedAt)).toString() : "尚未检查";
@@ -4295,7 +4308,7 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
             ProjectMaterialUploadJobService.schedule(this);
         } catch (Exception error) {
             projectMaterialUploadQueue = null;
-            setUploadQueueText("上传队列不可用：" + safeErrorMessage(error));
+            setUploadQueueText("可靠上传服务不可用：" + safeErrorMessage(error));
         }
     }
 
@@ -4324,7 +4337,7 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
         int count = collectionReadyCount();
         if (collectionInboxStatusText != null) {
             if (currentStudentScopeId().length() == 0) collectionInboxStatusText.setText("请先在主机连接页进入学生空间。资料按学生严格隔离。 ");
-            else if (count == 0) collectionInboxStatusText.setText("没有待处理的离线暂存资料。新选择的资料会直接进入持久上传队列。 ");
+            else if (count == 0) collectionInboxStatusText.setText("没有待处理的离线暂存资料。连接主机时，新选择的资料会立即上传。 ");
             else collectionInboxStatusText.setText("离线待上传暂存 " + count + " 项。可多选上传或删除；相同内容不会重复暂存。 ");
         }
         if (uploadButton != null) uploadButton.setEnabled(selectedStudent != null);
@@ -4463,29 +4476,124 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
 
     void refreshProjectMaterialQueueStatus() {
         if (uploadQueueText == null) return;
-        SharedPreferences prefs = getSharedPreferences(PREFS, MODE_PRIVATE);
-        String message = prefs.getString(ProjectMaterialUploadJobService.KEY_STATUS, "");
-        if (message.length() == 0) {
-            try {
-                int waiting = 0;
-                int paused = 0;
-                if (projectMaterialUploadQueue != null) {
-                    for (ProjectMaterialUploadQueue.Entry entry : projectMaterialUploadQueue.list()) {
-                        if (entry.state == ProjectMaterialUploadQueue.State.RECEIVED) continue;
-                        if (entry.state == ProjectMaterialUploadQueue.State.PAUSED_PERMISSION
-                            || entry.state == ProjectMaterialUploadQueue.State.PAUSED_RECEIPT
-                            || entry.state == ProjectMaterialUploadQueue.State.FAILED_PERMANENT) paused += 1;
-                        else waiting += 1;
-                    }
-                }
-                message = waiting == 0 && paused == 0 ? "上传队列：暂无待处理资料。"
-                    : "上传队列：待处理 " + waiting + " 个，暂停待核对 " + paused + " 个。";
-            } catch (Exception error) {
-                message = "上传队列状态读取失败：" + safeErrorMessage(error);
-            }
+        if (selectedStudent == null) {
+            setUploadQueueText("上传状态：请先进入学生空间。上传记录按学生隔离，不会展示其他学生的资料。");
+            updateSharedUploadButton();
+            return;
         }
-        setUploadQueueText(message);
+        try {
+            ArrayList<ProjectMaterialUploadQueue.Entry> entries = new ArrayList<ProjectMaterialUploadQueue.Entry>();
+            if (projectMaterialUploadQueue != null) {
+                for (ProjectMaterialUploadQueue.Entry entry : projectMaterialUploadQueue.list()) {
+                    if (selectedStudent.id.equals(entry.studentId)) entries.add(entry);
+                }
+            }
+            Collections.sort(entries, new Comparator<ProjectMaterialUploadQueue.Entry>() {
+                @Override public int compare(ProjectMaterialUploadQueue.Entry left, ProjectMaterialUploadQueue.Entry right) {
+                    return Long.compare(right.updatedAt, left.updatedAt);
+                }
+            });
+            int waiting = 0;
+            int verifying = 0;
+            int confirmed = 0;
+            int needsAttention = 0;
+            int changedScope = 0;
+            for (ProjectMaterialUploadQueue.Entry entry : entries) {
+                if (!uploadEntryMatchesCurrentScope(entry)) {
+                    if (entry.state != ProjectMaterialUploadQueue.State.RECEIVED) changedScope += 1;
+                    continue;
+                }
+                if (entry.state == ProjectMaterialUploadQueue.State.RECEIVED) confirmed += 1;
+                else if (entry.state == ProjectMaterialUploadQueue.State.RECEIPT_QUERYING
+                    || entry.state == ProjectMaterialUploadQueue.State.RECEIPT_UNKNOWN) verifying += 1;
+                else if (entry.state == ProjectMaterialUploadQueue.State.PAUSED_PERMISSION
+                    || entry.state == ProjectMaterialUploadQueue.State.PAUSED_RECEIPT
+                    || entry.state == ProjectMaterialUploadQueue.State.FAILED_PERMANENT) needsAttention += 1;
+                else waiting += 1;
+            }
+            StringBuilder message = new StringBuilder();
+            message.append("当前学生上传：等待发送 ").append(waiting)
+                .append(" · 结果核对 ").append(verifying)
+                .append(" · 已确认接收 ").append(confirmed)
+                .append(" · 需处理 ").append(needsAttention);
+            if (changedScope > 0) {
+                message.append("\n另有 ").append(changedScope).append(" 项属于旧主机或旧数据代次，已停止自动发送。");
+            }
+            if (entries.size() == 0) {
+                message.append("\n暂无上传记录。选择资料后，必须明确选择学生原始资料库或一个项目。");
+            } else {
+                message.append("\n\n最近记录（只有“主机已确认接收并登记”代表主机已完成接收）：");
+                int limit = Math.min(4, entries.size());
+                for (int i = 0; i < limit; i++) {
+                    ProjectMaterialUploadQueue.Entry entry = entries.get(i);
+                    message.append("\n").append(i + 1).append(". ").append(entry.fileName)
+                        .append("\n   状态：").append(uploadEntryStateLabel(entry))
+                        .append("\n   位置：").append(uploadEntryTargetLabel(entry));
+                }
+            }
+            setUploadQueueText(message.toString());
+        } catch (Exception error) {
+            setUploadQueueText("上传状态读取失败：" + safeErrorMessage(error));
+        }
         updateSharedUploadButton();
+    }
+
+    boolean uploadEntryMatchesCurrentScope(ProjectMaterialUploadQueue.Entry entry) {
+        return entry != null
+            && selectedStudent != null
+            && selectedStudent.id.equals(entry.studentId)
+            && connectedHostId().equals(entry.hostId)
+            && connectedHostDataGeneration().equals(entry.dataGeneration)
+            && deviceId().equals(entry.deviceId);
+    }
+
+    String uploadEntryStateLabel(ProjectMaterialUploadQueue.Entry entry) {
+        if (!uploadEntryMatchesCurrentScope(entry) && entry.state != ProjectMaterialUploadQueue.State.RECEIVED) {
+            return "已暂停，主机或数据代次已变化，需重新确认";
+        }
+        if (entry.state == ProjectMaterialUploadQueue.State.RECEIVED) return "主机已确认接收并登记";
+        if (entry.state == ProjectMaterialUploadQueue.State.UPLOADING) return "正在发送到主机";
+        if (entry.state == ProjectMaterialUploadQueue.State.RECEIPT_QUERYING) return "正在核对主机回执";
+        if (entry.state == ProjectMaterialUploadQueue.State.RECEIPT_UNKNOWN) return "发送结果待核对，暂不重复发送";
+        if (entry.state == ProjectMaterialUploadQueue.State.PAUSED_PERMISSION) return "文件读取权限失效，请重新选择";
+        if (entry.state == ProjectMaterialUploadQueue.State.PAUSED_RECEIPT) return "目标或回执不一致，等待核对";
+        if (entry.state == ProjectMaterialUploadQueue.State.FAILED_PERMANENT) return "上传失败，原件仍保留";
+        return "已固定目标，等待发送";
+    }
+
+    String uploadEntryTargetLabel(ProjectMaterialUploadQueue.Entry entry) {
+        if (entry == null) return "未知目标";
+        if ("student".equals(entry.targetType)) {
+            String name = selectedStudent != null && selectedStudent.id.equals(entry.studentId)
+                ? selectedStudent.name : entry.studentId;
+            return "学生原始资料库 · " + name;
+        }
+        for (LearningProject project : projectsForSelectedStudent()) {
+            if (project.id.equals(entry.targetId)) return "项目资料 · " + project.name;
+        }
+        return "项目资料 · ID " + entry.targetId;
+    }
+
+    int currentStudentPendingQueueCount() {
+        if (selectedStudent == null || projectMaterialUploadQueue == null) return 0;
+        int count = 0;
+        try {
+            for (ProjectMaterialUploadQueue.Entry entry : projectMaterialUploadQueue.list()) {
+                if (!selectedStudent.id.equals(entry.studentId)) continue;
+                if (entry.state != ProjectMaterialUploadQueue.State.RECEIVED) count += 1;
+            }
+        } catch (Exception ignored) {}
+        return count;
+    }
+
+    void scheduleUploadStatusRefreshes() {
+        if (uploadQueueText == null) return;
+        long[] delays = new long[] {1200L, 3500L, 7000L};
+        for (final long delay : delays) {
+            uploadQueueText.postDelayed(new Runnable() {
+                @Override public void run() { refreshProjectMaterialQueueStatus(); }
+            }, delay);
+        }
     }
 
     void uploadPendingSharedMaterials() {
@@ -4500,7 +4608,7 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
         if (failedUploadUris.size() > 0) {
             uploadMaterials(new ArrayList<Uri>(failedUploadUris), true);
         } else {
-            toast("正在核对持久上传队列；不确定的资料会先查询主机回执。");
+            toast("正在核对上传结果；状态不确定的资料会先查询主机回执，避免重复发送。");
             resumeProjectMaterialUploadQueue();
         }
     }
@@ -4528,28 +4636,43 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
         targets.add(new UploadTarget("student", selectedStudent.id, selectedStudent.name + "原始资料库", selectedStudent.id));
         List<LearningProject> bound = projectsForSelectedStudent();
         for (LearningProject project : bound) {
-            targets.add(new UploadTarget("project", project.id, project.name + "项目原始资料库", selectedStudent.id));
+            targets.add(new UploadTarget("project", project.id, project.name, selectedStudent.id));
         }
         String captureProjectId = getSharedPreferences(CaptureProjectionService.PREFS, MODE_PRIVATE).getString("capture_project_id", "");
-        int checked = 0;
+        int checked = -1;
         if (preferCaptureProject && captureProjectId.length() > 0) {
             for (int i = 0; i < targets.size(); i++) if ("project".equals(targets.get(i).type) && captureProjectId.equals(targets.get(i).id)) checked = i;
         }
         final String[] labels = new String[targets.size()];
-        for (int i = 0; i < targets.size(); i++) labels[i] = targets.get(i).name;
+        for (int i = 0; i < targets.size(); i++) {
+            UploadTarget target = targets.get(i);
+            labels[i] = ("project".equals(target.type) ? "项目资料 · " : "学生原始资料库 · ")
+                + target.name.replace("原始资料库", "");
+        }
         final int initialChecked = checked;
-        new AlertDialog.Builder(this)
-            .setTitle("选择资料上传位置")
+        final AlertDialog targetDialog = new AlertDialog.Builder(this)
+            .setTitle("确认上传位置（" + uris.size() + " 项）")
             .setSingleChoiceItems(labels, initialChecked, null)
-            .setPositiveButton("确认上传", new DialogInterface.OnClickListener() {
-                @Override public void onClick(DialogInterface dialog, int which) {
-                    int position = ((AlertDialog) dialog).getListView().getCheckedItemPosition();
-                    if (position < 0 || position >= targets.size()) position = initialChecked;
-                    uploadMaterialsToTarget(new ArrayList<Uri>(uris), reloadAfterFinish, targets.get(position));
-                }
-            })
+            .setPositiveButton("确认上传", null)
             .setNegativeButton("取消", null)
-            .show();
+            .create();
+        targetDialog.setOnShowListener(new DialogInterface.OnShowListener() {
+            @Override public void onShow(DialogInterface dialog) {
+                targetDialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(new View.OnClickListener() {
+                    @Override public void onClick(View view) {
+                        int position = targetDialog.getListView().getCheckedItemPosition();
+                        if (position < 0 || position >= targets.size()) {
+                            toast("请选择学生原始资料库或一个项目。");
+                            return;
+                        }
+                        UploadTarget target = targets.get(position);
+                        uploadMaterialsToTarget(new ArrayList<Uri>(uris), reloadAfterFinish, target);
+                        targetDialog.dismiss();
+                    }
+                });
+            }
+        });
+        targetDialog.show();
     }
 
     void uploadMaterialsToTarget(List<Uri> uris, boolean reloadAfterFinish, UploadTarget target) {
@@ -4562,20 +4685,20 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
             return;
         }
         if (connectedHostId().length() == 0 || connectedHostDataGeneration().length() == 0) {
-            toast("请先重新连接主机，取得资料队列身份和数据代次。");
+            toast("请先重新连接主机，取得可靠上传身份和数据代次。");
             connectAndLoadStudents();
             return;
         }
         if (projectMaterialUploadQueue == null) initializeProjectMaterialUploadQueue();
         if (projectMaterialUploadQueue == null) {
-            toast("本机持久上传队列不可用，未读取所选资料。");
+            toast("本机可靠上传服务不可用，未读取所选资料。");
             return;
         }
         uploadInProgress = true;
         captureUploadVisualState = "uploading";
         refreshCaptureUi();
-        status("正在将 " + uris.size() + " 个资料安全复制到本机持久队列...");
-        setUploadQueueText("上传队列：0/" + uris.size() + "，正在建立本机私有稳定副本。");
+        status("正在准备 " + uris.size() + " 个资料并立即上传；中断时将自动重试...");
+        setUploadQueueText("上传准备：0/" + uris.size() + "，正在建立本机私有稳定副本。");
         new Thread(new EnqueueProjectMaterialsTask(this, target, new ArrayList<Uri>(uris),
             reloadAfterFinish)).start();
     }
@@ -5138,7 +5261,7 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
                 .remove(PREF_HOST_DEVICE_ID)
                 .remove(PREF_HOST_DATA_GENERATION)
                 .apply();
-            throw new Exception("主机未提供资料队列身份或数据代次，请先升级 Windows 主机。");
+            throw new Exception("主机未提供可靠上传身份或数据代次，请先升级 Windows 主机。");
         }
         getSharedPreferences(PREFS, MODE_PRIVATE).edit()
             .putString(PREF_HOST_DEVICE_ID, hostId)
@@ -6606,6 +6729,9 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
                 @Override public void onClick(View view) { showWorkspace(ids[index]); }
             });
             item.setGravity(Gravity.CENTER);
+            item.setTextSize(isPhoneLayout() ? 12 : 14);
+            item.setPadding(dp(2), 0, dp(2), 0);
+            item.setSingleLine(true);
             bar.addView(item, new LinearLayout.LayoutParams(0, dp(56), 1f));
         }
         return bar;
@@ -6629,8 +6755,8 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
         if (cockpitStatusText == null) return;
         String student = selectedStudent == null ? "未进入学生空间" : selectedStudent.name;
         String connection = connectedHostId().length() == 0 ? "主机未连接" : "主机已连接";
-        int pending = collectionReadyCount();
-        cockpitStatusText.setText("学生  " + student + "    ·    " + connection + "    ·    待上传  " + pending);
+        int pending = collectionReadyCount() + currentStudentPendingQueueCount();
+        cockpitStatusText.setText("学生  " + student + "    ·    " + connection + "    ·    待发送/核对  " + pending);
         if (navigationStudentText != null) navigationStudentText.setText(student);
     }
 
@@ -6748,48 +6874,76 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
         grid.setAlignmentMode(GridLayout.ALIGN_BOUNDS);
         grid.setUseDefaultMargins(false);
 
-        quickUploadButton = addDashboardAction(grid, 0, columns, "↑", "搜集上传", "文件、图片、拍照、屏幕、粘贴与自动投递", Color.rgb(10, 110, 122), new View.OnClickListener() {
+        quickUploadButton = addDashboardAction(grid, 0, columns, "↑", "搜集上传", "文件 · 图片 · 拍照 · 屏幕采集", Color.rgb(10, 110, 122), new View.OnClickListener() {
             @Override public void onClick(View view) { showWorkspace("collection"); }
         });
-        addDashboardAction(grid, 1, columns, "⌁", "主机连接", "局域网发现、扫码绑定与连接状态", Color.rgb(14, 83, 118), new View.OnClickListener() {
+        addDashboardAction(grid, 1, columns, "⌁", "主机连接", "发现主机 · 扫码连接 · 学生空间", Color.rgb(14, 83, 118), new View.OnClickListener() {
             @Override public void onClick(View view) { showWorkspace("connection"); }
         });
-        quickReportButton = addDashboardAction(grid, 2, columns, "▤", "教育档案", "报告、成长、档案、项目资料与规划指导", Color.rgb(25, 72, 108), new View.OnClickListener() {
+        quickReportButton = addDashboardAction(grid, 2, columns, "▤", "教育档案", "学情 · 成长 · 项目 · 规划", Color.rgb(25, 72, 108), new View.OnClickListener() {
             @Override public void onClick(View view) { showWorkspace("archive"); }
         });
-        addDashboardAction(grid, 3, columns, "✓", "学习行动", "精选课程、学习卡片与知识点跟踪", Color.rgb(15, 119, 104), new View.OnClickListener() {
+        addDashboardAction(grid, 3, columns, "✓", "学习行动", "课程 · 卡片 · 知识点复习", Color.rgb(15, 119, 104), new View.OnClickListener() {
             @Override public void onClick(View view) { showWorkspace("learning"); }
         });
         section.addView(grid, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT));
         return section;
     }
 
-    private Button addDashboardAction(GridLayout grid, int index, int columns, String icon, String title, String description, int color, View.OnClickListener listener) {
-        Button button = new Button(this);
-        button.setText(icon + "   " + title + "\n" + description);
-        button.setAllCaps(false);
-        button.setTextColor(Color.WHITE);
-        button.setTextSize(isPhoneLayout() ? 15 : 16);
-        button.setTypeface(null, 1);
-        button.setGravity(Gravity.START | Gravity.CENTER_VERTICAL);
-        button.setPadding(dp(18), dp(12), dp(16), dp(12));
-        button.setMaxLines(3);
-        button.setLineSpacing(dp(3), 1.05f);
-        button.setContentDescription(title + "。" + description);
-        button.setBackgroundTintList(null);
-        button.setBackground(dashboardButtonBackground(color));
-        button.setElevation(dp(4));
-        button.setOnClickListener(listener);
+    private View addDashboardAction(GridLayout grid, int index, int columns, String icon, String title, String description, int color, View.OnClickListener listener) {
+        LinearLayout card = new LinearLayout(this);
+        card.setOrientation(LinearLayout.VERTICAL);
+        card.setGravity(Gravity.CENTER_VERTICAL);
+        card.setPadding(dp(12), dp(13), dp(12), dp(12));
+        card.setContentDescription(title + "。" + description);
+        card.setBackground(dashboardButtonBackground(color));
+        card.setElevation(dp(4));
+        card.setClickable(true);
+        card.setFocusable(true);
+        card.setOnClickListener(listener);
+
+        LinearLayout titleRow = new LinearLayout(this);
+        titleRow.setOrientation(LinearLayout.HORIZONTAL);
+        titleRow.setGravity(Gravity.CENTER_VERTICAL);
+
+        TextView iconView = new TextView(this);
+        iconView.setText(icon);
+        iconView.setTextColor(Color.WHITE);
+        iconView.setTextSize(20);
+        iconView.setGravity(Gravity.CENTER);
+        iconView.setTypeface(null, 1);
+        iconView.setBackground(roundedSolid(Color.argb(48, 255, 255, 255), dp(11), Color.TRANSPARENT));
+        titleRow.addView(iconView, new LinearLayout.LayoutParams(dp(32), dp(32)));
+
+        TextView titleView = new TextView(this);
+        titleView.setText(title);
+        titleView.setTextColor(Color.WHITE);
+        titleView.setTextSize(isPhoneLayout() ? 15 : 18);
+        titleView.setTypeface(null, 1);
+        titleView.setSingleLine(true);
+        LinearLayout.LayoutParams titleParams = new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f);
+        titleParams.setMargins(dp(8), 0, 0, 0);
+        titleRow.addView(titleView, titleParams);
+        card.addView(titleRow, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT));
+
+        TextView descriptionView = new TextView(this);
+        descriptionView.setText(description);
+        descriptionView.setTextColor(Color.rgb(226, 244, 248));
+        descriptionView.setTextSize(isPhoneLayout() ? 12 : 13);
+        descriptionView.setMaxLines(2);
+        descriptionView.setLineSpacing(dp(2), 1.05f);
+        descriptionView.setPadding(0, dp(9), 0, 0);
+        card.addView(descriptionView, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT));
 
         GridLayout.LayoutParams params = new GridLayout.LayoutParams(
             GridLayout.spec(index / columns),
             GridLayout.spec(index % columns, 1, 1f)
         );
         params.width = 0;
-        params.height = dp(isPhoneLayout() ? 112 : 132);
+        params.height = dp(isPhoneLayout() ? 118 : 126);
         params.setMargins(dp(5), dp(5), dp(5), dp(5));
-        grid.addView(button, params);
-        return button;
+        grid.addView(card, params);
+        return card;
     }
 
     private StateListDrawable dashboardButtonBackground(int color) {
@@ -8318,7 +8472,7 @@ class EnqueueProjectMaterialsTask implements Runnable {
             InputStream input = null;
             try {
                 activity.runOnUiThread(new StatusTask(activity, "正在安全保存 " + (i + 1) + "/" + uris.size() + "：" + fileName));
-                activity.runOnUiThread(new UploadQueueStatusTask(activity, "上传队列：" + (i + 1) + "/" + uris.size() + "，正在建立私有稳定副本：" + fileName));
+                activity.runOnUiThread(new UploadQueueStatusTask(activity, "上传准备：" + (i + 1) + "/" + uris.size() + "，正在建立私有稳定副本：" + fileName));
                 QueuedMaterialDescriptor descriptor = activity.queuedMaterialDescriptor(uri);
                 input = activity.openUriInput(uri);
                 if (input == null) throw new SecurityException("文件读取授权已失效");
@@ -8331,7 +8485,7 @@ class EnqueueProjectMaterialsTask implements Runnable {
                 }
                 queued += 1;
                 copiedUris.add(uri);
-                activity.runOnUiThread(new UploadQueueStatusTask(activity, "上传队列：已安全保存 " + queued + "/" + uris.size() + "，等待主机回执核对。"));
+                activity.runOnUiThread(new UploadQueueStatusTask(activity, "上传状态：已安全保存 " + queued + "/" + uris.size() + "，正在发送并等待主机确认。"));
             } catch (Exception error) {
                 String detail = error instanceof SecurityException
                     ? "读取权限失效，已暂停；请重新选择该文件"
@@ -8359,17 +8513,21 @@ class EnqueueProjectMaterialsTask implements Runnable {
                 activity.refreshCaptureUi();
                 activity.refreshCollectionInboxUi();
                 if (queuedCount > 0) {
-                    activity.status("已将 " + queuedCount + " 个资料安全保存到本机持久队列；主机接收结果将按回执核对。");
-                    activity.toast("资料已进入持久上传队列。");
+                    activity.status("已准备 " + queuedCount + " 个资料并开始上传；网络中断时会安全保留并自动重试。");
+                    activity.toast("已开始上传，正在等待主机确认接收。");
                     ProjectMaterialUploadJobService.schedule(activity);
                     ProjectMaterialUploadJobService.runNow(activity);
+                    activity.scheduleUploadStatusRefreshes();
                 }
                 if (finalFailureLabels.size() > 0) {
-                    activity.uploadResultText.setText("本机入队失败 " + finalFailureLabels.size()
+                    activity.uploadResultText.setText("本机准备上传失败 " + finalFailureLabels.size()
                         + " 个，未发送到主机。首个失败：" + firstFailure);
                 } else {
                     activity.uploadResultText.setText("最近操作：" + queuedCount
-                        + " 个资料已建立本机私有稳定副本，正在等待主机确认回执。\n固定目标：" + target.name + "。");
+                        + " 个资料已安全保存并开始发送；若网络中断，本机会自动重试。"
+                        + "\n上传目标：" + ("project".equals(target.type) ? "项目资料 · " : "学生原始资料库 · ")
+                        + target.name.replace("原始资料库", "")
+                        + "。收到主机回执后，下面状态会显示“主机已确认接收并登记”。");
                 }
                 activity.refreshProjectMaterialQueueStatus();
                 if (reloadAfterFinish && queuedCount > 0) {

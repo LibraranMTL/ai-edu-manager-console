@@ -67,14 +67,16 @@ test('structured planning is capability gated and rendered from host sections on
   for (const section of ['pathways', 'majors', 'careers']) assert.match(planning, new RegExp(section));
 });
 
-test('0.6.24 is published through the formal Android student update manifest', () => {
+test('0.6.26 is the formal Android student release while other public platforms stay unchanged', () => {
   const manifest = read('android-tablet-terminal/AndroidManifest.xml');
   const build = read('android-tablet-terminal/build.ps1');
   const formal = read('release/edu-manager-version.json');
-  assert.match(manifest, /android:versionCode="94"/u);
-  assert.match(manifest, /android:versionName="0\.6\.24"/u);
-  assert.match(build, /AI-edu-manager-tablet-terminal-0\.6\.24\.apk/u);
-  assert.match(formal, /"tabletTerminalVersionCode": 94/u);
-  assert.match(formal, /"tabletTerminalVersionName": "0\.6\.24"/u);
-  assert.match(formal, /AI-edu-manager-tablet-terminal-0\.6\.24\.apk/u);
+  assert.match(manifest, /android:versionCode="96"/u);
+  assert.match(manifest, /android:versionName="0\.6\.26"/u);
+  assert.match(build, /AI-edu-manager-tablet-terminal-0\.6\.26\.apk/u);
+  assert.match(formal, /"tabletTerminalVersionCode": 96/u);
+  assert.match(formal, /"tabletTerminalVersionName": "0\.6\.26"/u);
+  assert.match(formal, /AI-edu-manager-tablet-terminal-0\.6\.26\.apk/u);
+  assert.match(formal, /"windowsVersionName": "0\.21\.6"/u);
+  assert.match(formal, /"standaloneVersionName": "1\.3\.4"/u);
 });

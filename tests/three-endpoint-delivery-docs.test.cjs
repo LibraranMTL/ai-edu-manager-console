@@ -23,7 +23,7 @@ test('download page presents four product families and five client builds', () =
     'Android 教师端',
     'Android 单机版',
     `v${publicManifest.windowsReleaseStatus === 'candidate' ? publishedHostVersion : publicManifest.windowsVersionName}`,
-    'v0.6.24',
+    `v${publicManifest.tabletTerminalVersionName}`,
     'v0.1.4',
     `v${publicManifest.standaloneVersionName}`,
     'windows-host-manual.html',
@@ -73,7 +73,7 @@ test('download page links the current artifacts and canonical web manuals exist'
   for (const artifact of [
     [`../download/${hostArtifact}`, path.join('release', 'windows', hostArtifact)],
     ['../download/AI-edu-manager-student-terminal-Windows-0.18.6.exe', path.join('release', 'windows-terminal', 'AI-edu-manager-student-terminal-Windows-0.18.6.exe')],
-    ['../download/AI-edu-manager-tablet-terminal-0.6.24.apk', path.join('release', 'tablet-terminal', 'AI-edu-manager-tablet-terminal-0.6.24.apk')],
+    [`../download/${new URL(publicManifest.tabletTerminalApkUrl).pathname.split('/').pop()}`, path.join('release', 'tablet-terminal', new URL(publicManifest.tabletTerminalApkUrl).pathname.split('/').pop())],
     ['../download/AI-edu-manager-teacher-terminal-0.1.4.apk', path.join('release', 'teacher-terminal', 'AI-edu-manager-teacher-terminal-0.1.4.apk')],
     [`../download/${standaloneArtifact}`, path.join('android-standalone-manager', 'delivery', standaloneArtifact)],
   ]) {
@@ -171,7 +171,7 @@ test('web manuals are synchronized to the current product workflows', () => {
 
   assert.match(windowsStudent, /配套主机：Windows 主机 0\.17\.7/u);
   assert.match(androidStudent, /配套主机：Windows 主机端需开启学生终端协作服务/u);
-  assert.match(androidStudent, /适用版本：Android 学生端 0\.6\.24/u);
+  assert.match(androidStudent, new RegExp(`适用版本：Android 学生端 ${publicManifest.tabletTerminalVersionName.replaceAll('.', '\\.')}（versionCode ${publicManifest.tabletTerminalVersionCode}）`, 'u'));
   assert.match(androidStudent, /拍照 \/ 上传图片或文件/u);
   assert.match(androidTeacher, /适用版本：Android 教师端 0\.1\.4/u);
   assert.match(androidStudent, /导入智能体对话/u);

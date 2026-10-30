@@ -58,3 +58,9 @@ Task 4 review: the automatic wake queue already owns bounded timers, earlier-dea
 
 Task 4 verification: capability-wakeup/auto-dispatch/task-performance/read-model/retry-queue suites → 29 passed, 0 failed.
 Task 4: complete (commits 0ef89b4..98b330e, tests: node --test tests/task-capability-wakeup.test.cjs tests/task-auto-dispatch.test.cjs tests/task-performance.test.cjs tests/task-read-model.test.cjs → ℹ duration_ms 1861.385)
+
+Task 4a implementation: Codex research timeout now waits for the matching child close, stream drain and post-close output observation before classification. Only a confirmed read-only zero-effect timeout closes the old attempt as `safe_retry_no_output`; all incomplete/positive evidence retains the original execution for reconciliation. Retry budget is durable and the next-provider policy excludes the timed-out Provider when another configured Provider exists.
+
+Task 4a real-host evidence: Codex CLI 0.130.0-alpha.5 PID 32564 produced a confirmed-close zero-event timeout classified `safe_retry`; isolated PID 28740 with deliberately unconfirmed termination produced `execution_unknown` and was then explicitly closed. Evidence is stored under `artifacts/p0-agent-0228/research-timeout-real-host*.json`. Web-research stability and full process-tree C4 acceptance remain Task 4b/Task 8 gates.
+
+Task 4a verification: 52 focused tests passed across planning research, timeout recovery, research runtime, capability wakeup, durable claims and dispatch barriers; TypeScript typecheck and diff check passed.

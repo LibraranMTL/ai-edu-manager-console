@@ -4,6 +4,10 @@ const fs = require('node:fs');
 const { EventEmitter } = require('node:events');
 const { PassThrough } = require('node:stream');
 const { verifiedOutput, createCodexResearchSearch } = require('../electron/planning-research.cjs');
+test('research refuses a rejected send barrier before spawning any process',async()=>{
+ let spawned=0;const search=createCodexResearchSearch({executable:'synthetic',spawnProcess:()=>spawned++,terminateProcess:()=>{}});
+ await assert.rejects(search({queryInput:{},beforeExecute:async()=>{throw Error('revoked');}}),/revoked/);assert.equal(spawned,0);
+});
 
 const url = 'https://example.edu/admissions';
 const output = { query: 'public query', findings: ['fact with source'], limitations: [], sources: [{ url, title: 'Admissions', summary: 'Official page' }] };
@@ -65,4 +69,32 @@ test('executor abort terminates the child and returns an actionable failure', as
   } });
   await assert.rejects(search({ queryInput: {}, signal: controller.signal }), /已取消/);
   assert.equal(terminated, true);
+});
+
+test('executor timeout waits for close and returns bounded no-effect evidence before cleanup', async () => {
+  let root = '', terminated = 0;
+  const search = createCodexResearchSearch({
+    executable: 'codex', timeoutFloorMs: 5, timeoutFinalizationGraceMs: 5,
+    terminateProcess(child) {
+      terminated += 1;
+      child.stdout.end(); child.stderr.end();
+      setImmediate(() => child.emit('close', null, 'SIGTERM'));
+    },
+    spawnProcess(_exe, _args, options) {
+      root = options.cwd;
+      const child = new EventEmitter(); child.pid = 101;
+      child.stdin = new PassThrough(); child.stdout = new PassThrough(); child.stderr = new PassThrough();
+      return child;
+    },
+  });
+  const error = await search({
+    queryInput: {}, timeoutMs: 5,
+    executionContext: { executionId: 'e1', workKey: 'w1', sourceVersion: 'v1', providerId: 'codex' },
+  }).then(() => null, value => value);
+  assert.equal(error.code, 'RESEARCH_TIMEOUT');
+  assert.equal(error.timeoutEvidence.terminationState, 'closed');
+  assert.equal(error.timeoutEvidence.completedWebEvents, 0);
+  assert.equal(error.timeoutEvidence.outputPresent, false);
+  assert.equal(terminated, 1);
+  assert.equal(fs.existsSync(root), false);
 });

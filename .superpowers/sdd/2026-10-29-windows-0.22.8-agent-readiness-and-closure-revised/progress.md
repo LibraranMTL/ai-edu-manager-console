@@ -48,3 +48,7 @@ Task 2: TDD reproduced the provider-order defect: a refreshing Provider A hid a 
 
 Task 2 verification: readiness/control-plane/task-channel/capability-wakeup suites → 41 passed, 0 failed; `pnpm typecheck` → passed.
 Task 2: complete (commits 517da8d..6d39170, tests: node --test tests/agent-capability-readiness.test.cjs tests/agent-control-plane.test.cjs tests/agent-task-channel.test.cjs tests/task-capability-wakeup.test.cjs → ℹ duration_ms 795.8621)
+
+Task 3 review: existing v5 execution ledger, Worker claim/advance operations, single-writer cache synchronization, partial unique indexes, restart/lost-reply protection, and pre-spawn `send_intent` barrier all passed. Resource/capability waits remain before persistent claim. No production change or migration rerun was warranted.
+
+Task 3 verification: execution-claim/dispatch-barrier/Worker-durability/session-summary/incremental-store suites → 32 passed, 0 failed.

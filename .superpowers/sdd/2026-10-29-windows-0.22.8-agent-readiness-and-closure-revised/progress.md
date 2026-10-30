@@ -29,4 +29,9 @@ Task 00: `D:/学生资料/.edu-manager/task-center/task-state.sqlite3` inspected
 Task 00: running r13 EXE SHA-256 `0EA194E6FF0FB31B5989103EC5A3DC9F8A22921E144D2FCAF1C5FE0D2C5CB483`; ZIP SHA-256 `BE7AD1BA9AC5B233E2C400CC5FABB370CD8AC80AF04D799988C776F892DEABC0`; source equivalence remains `not_run`.
 
 Ruling: Task 1/3/4/5/7 are verified review-only baselines; Task 2 is partial; Task 4a/4b/5a are missing; Task 0/6/8 are partial. This freezes production scope before any code change.
+
+Task 0: refreshed the read-only baseline and evidence index against the running r13 EXE hash and the frozen source snapshot. Four sampled timelines identify manual fallback, inbox review, unresolved digest, and one successful Codex control without reading student content.
+
+Ruling: r13 runtime evidence is historical until a build audit proves source equivalence; internal workload, injected failures, completion counts, and timer latency cannot substitute real-agent throughput or visible interaction.
 Task 00: complete (commits 1bc23c6..7957e09, tests: node -e 'const fs=require('fs');const d=JSON.parse(fs.readFileSync('artifacts/p0-agent-0228/current-delta.json','utf8'));if(d.items.length!==12||d.items.some(x=>['partial','missing'].includes(x.status)&&(!x.ownerTask||!x.remainingPatch)))process.exit(1);console.log('delta-consistency-ok')' → delta-consistency-ok)
+Task 0: complete (commits 23ba435..ea56dc4, tests: node -e 'const fs=require('fs'),c=require('crypto');const i=JSON.parse(fs.readFileSync('artifacts/p0-agent-0228/evidence-index.json'));for(const x of i.evidenceFiles){const b=fs.readFileSync(x.path);if(c.createHash('sha256').update(b).digest('hex').toUpperCase()!==x.sha256)process.exit(1)}console.log('evidence-index-ok')' → evidence-index-ok)

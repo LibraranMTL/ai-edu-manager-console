@@ -47,3 +47,4 @@ Task 5a: complete (commits 3afbe34..0e8fc85, tests: node --test tests/smart-inbo
 Task 2: TDD reproduced the provider-order defect: a refreshing Provider A hid a fresh available Provider B. `ensureReady` now scans all candidates for fresh positive evidence before waiting on a shared refresh, while an explicit lock still waits for the locked provider. Probe errors retain tri-state semantics and now expose bounded `lastError` evidence to the task wait projection.
 
 Task 2 verification: readiness/control-plane/task-channel/capability-wakeup suites → 41 passed, 0 failed; `pnpm typecheck` → passed.
+Task 2: complete (commits 517da8d..6d39170, tests: node --test tests/agent-capability-readiness.test.cjs tests/agent-control-plane.test.cjs tests/agent-task-channel.test.cjs tests/task-capability-wakeup.test.cjs → ℹ duration_ms 795.8621)

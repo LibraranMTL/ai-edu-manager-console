@@ -1,0 +1,31 @@
+{
+  "schema": "edu.task-backlog-recovery-benchmark.v1",
+  "synthetic": true,
+  "count": 100000,
+  "rowsSeen": 100000,
+  "pages": 5000,
+  "actionable": 21,
+  "scanMs": 2536.305,
+  "maxWorkerElapsedMs": 2,
+  "eventLoopMaxMs": 11.952127,
+  "stages": [
+    {
+      "name": "one",
+      "count": 1,
+      "applied": 1,
+      "elapsedMs": 16.785
+    },
+    {
+      "name": "twenty",
+      "count": 20,
+      "applied": 20,
+      "elapsedMs": 22.886
+    }
+  ],
+  "total": 100000,
+  "settled": 21,
+  "integrity": "ok",
+  "agentsInvoked": 0,
+  "physicalFilesTouched": 0,
+  "passed": true
+}

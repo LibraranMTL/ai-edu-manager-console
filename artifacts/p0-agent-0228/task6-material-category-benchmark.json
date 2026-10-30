@@ -1,0 +1,45 @@
+{
+  "generatedAt": "2026-10-30T15:50:16.739Z",
+  "node": "v24.13.0",
+  "platform": "win32-x64",
+  "targets": {
+    "maxCategories": 500,
+    "maxMessageBytes": 2097152,
+    "maxMainThreadDelayMs": 100
+  },
+  "results": [
+    {
+      "rows": 30000,
+      "categoryCount": 20,
+      "registryBytes": 9786341,
+      "workerDurationMs": 131.18,
+      "mainThreadEventLoopDelayMaxMs": 3.203,
+      "returnedRecordCount": 20,
+      "messageBytes": 2811,
+      "mainThreadRegistryReadCount": 0,
+      "mainThreadParsedRegistry": false
+    },
+    {
+      "rows": 40000,
+      "categoryCount": 20,
+      "registryBytes": 13055231,
+      "workerDurationMs": 159.271,
+      "mainThreadEventLoopDelayMaxMs": 3.998,
+      "returnedRecordCount": 20,
+      "messageBytes": 2811,
+      "mainThreadRegistryReadCount": 0,
+      "mainThreadParsedRegistry": false
+    },
+    {
+      "rows": 100000,
+      "categoryCount": 20,
+      "registryBytes": 32766352,
+      "workerDurationMs": 365.139,
+      "mainThreadEventLoopDelayMaxMs": 3.975,
+      "returnedRecordCount": 20,
+      "messageBytes": 2811,
+      "mainThreadRegistryReadCount": 0,
+      "mainThreadParsedRegistry": false
+    }
+  ]
+}

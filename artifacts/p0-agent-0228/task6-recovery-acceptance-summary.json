@@ -1,0 +1,62 @@
+{
+  "schema": "edu.task6-recovery-acceptance.v1",
+  "checkedAt": "2026-10-30T15:51:00.000Z",
+  "formalDatabase": {
+    "readOnly": true,
+    "taskCount": 36,
+    "preview": {
+      "reconcile_original": 7,
+      "settle_existing": 1,
+      "no_change": 28
+    },
+    "copyRehearsal": {
+      "before": 36,
+      "after": 36,
+      "applied": 8,
+      "stages": [1, 7],
+      "conserved": true,
+      "auditConserved": true,
+      "integrity": "ok",
+      "foreignKeyErrors": 0,
+      "agentsInvoked": 0,
+      "physicalFilesTouched": 0
+    },
+    "privacy": "The committed summary contains aggregate counts only; the local preview and copied database remain untracked because they contain task identities."
+  },
+  "syntheticTaskRecovery100k": {
+    "rows": 100000,
+    "pages": 5000,
+    "actionable": 21,
+    "scanMs": 2536.305,
+    "maxWorkerElapsedMs": 2,
+    "eventLoopMaxMs": 11.952127,
+    "stages": [
+      { "count": 1, "applied": 1, "elapsedMs": 16.785 },
+      { "count": 20, "applied": 20, "elapsedMs": 22.886 }
+    ],
+    "rowsConserved": true,
+    "integrity": "ok",
+    "agentsInvoked": 0,
+    "physicalFilesTouched": 0,
+    "passed": true
+  },
+  "syntheticMaterials": {
+    "categoryRows": [30000, 40000, 100000],
+    "categoryMainThreadDelayMaxMs": [3.203, 3.998, 3.975],
+    "mainThreadRegistryReads": [0, 0, 0],
+    "projectionRows": [40000, 100000],
+    "projectionResponseBytes": [617, 620],
+    "projectionMainThreadDelayMaxMs": [12.042239, 12.918783],
+    "digest100kWorkerTest": "passed"
+  },
+  "syntheticTaskStore100k": {
+    "pageP95Ms": 29.58,
+    "singlePatchP95Ms": 11.091,
+    "batch100P95Ms": 37.415,
+    "eventLoopMaxMs": 21.889,
+    "rssDeltaMiB": 33.055,
+    "passed": true
+  },
+  "formalRecoveryAuthorized": false,
+  "passed": true
+}

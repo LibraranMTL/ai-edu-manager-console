@@ -1,0 +1,168 @@
+{
+  "schema": "edu-manager.windows-agent-closure.current-delta.v1",
+  "capturedAt": "2026-10-30T00:00:00+08:00",
+  "repository": {
+    "head": "1bc23c68d09c495bd0f9d2800ccbe1d46b5c937e",
+    "branch": "codex/windows-0228-agent-closure",
+    "packageVersion": "0.22.8",
+    "worktree": "isolated-current-state-snapshot",
+    "status": { "total": 303, "trackedModified": 164, "untracked": 139 },
+    "note": "The isolated worktree includes the current uncommitted 0.22.8 source snapshot. It is not a merge-ready representation of the original dirty checkout."
+  },
+  "taskStore": {
+    "path": "D:/学生资料/.edu-manager/task-center/task-state.sqlite3",
+    "userVersion": 5,
+    "taskExecutionAttemptsPresent": true,
+    "inspection": "read_only"
+  },
+  "runtime": {
+    "processPath": "D:/群星矩阵文件/智能体开发项目/AI教育管家/平板部署/edu-launcher-app/release/windows/candidates/agent-readiness-r13-20261030/AI-edu-manager-console-Windows-0.22.8-agent-readiness-r13-20261030.exe",
+    "exeSha256": "0EA194E6FF0FB31B5989103EC5A3DC9F8A22921E144D2FCAF1C5FE0D2C5CB483",
+    "exeBytes": 98986442,
+    "zipSha256": "BE7AD1BA9AC5B233E2C400CC5FABB370CD8AC80AF04D799988C776F892DEABC0",
+    "zipBytes": 98995805,
+    "asar": "not_run_self_contained_wrapper",
+    "sourceEquivalence": "not_run",
+    "reason": "The running r13 wrapper predates this isolated worktree freeze; no build audit currently proves byte-for-byte equivalence."
+  },
+  "sourceHashes": {
+    "electron/main.cjs": "414E3426B6E16270951AC193A9986F840A95722BF8F9E2921784B9DBFCFF7B98",
+    "electron/agent-capability-readiness.cjs": "65C38CB29AA0309EB3E96EE8D5944E6D88B438AC32067C27C25B321DE622846B",
+    "electron/task-execution-ledger.cjs": "67FCD396322DAD9AB1FD8CF98B5BA6C4C96FD9D135E962FEF761F8581A8E72AA",
+    "electron/task-dispatch-barrier.cjs": "BCE0C8259D58CA3617BBA1C6D0C466A5342D496C6D8FD7578943883E0AFC187D",
+    "electron/task-sql-store.cjs": "274D4F5F8F8EC84F8A4EE0860878E4540AA93F039A4DD3828976866922BBD269",
+    "electron/task-closure-decision.cjs": "F635A6D61ECA5C2E489D028C61E4A78A9E96FEA36AFB8A17EA78F525FA7104EC",
+    "electron/task-backlog-recovery.cjs": "A66D17309465AADDB229A7D838142565DCE64C4D4D5EB8700EE72147D422C23C",
+    "electron/planning-research.cjs": "CC351755A030145DD7BA8A233FBD3AF23090419A0E1AC2C390E4C0C2E5BBC05A",
+    "electron/research-task-policy.cjs": "63A431762A3A546C19499EA6183DAD3C871C3BFC2B0E13935632C8F966A63B2D"
+  },
+  "baselineTests": {
+    "fullSuite": { "tests": 2731, "passed": 2730, "failed": 0, "skipped": 1 },
+    "failureClassification": "green_after_isolated_worktree_fixture_completion",
+    "fixtureRepairs": ["junction .android-tools", "copy current release artifacts"],
+    "focusedWindowsDelta": { "tests": 52, "passed": 52, "failed": 0 },
+    "missingPlannedTests": ["tests/research-timeout-recovery.test.cjs", "tests/planning-research-host-contract.test.cjs"]
+  },
+  "items": [
+    {
+      "task": "Task 0",
+      "requirement": "Freeze first bad transitions and same-source evidence boundary.",
+      "implementationFiles": ["artifacts/p0-agent-0228/baseline.md", "artifacts/p0-agent-0228/evidence-index.json"],
+      "testFiles": [],
+      "status": "partial",
+      "evidence": ["Running r13 EXE/ZIP hashes captured; source equivalence is not_run."],
+      "remainingPatch": "Refresh the evidence index against this frozen source snapshot and append corrections without rewriting historical evidence.",
+      "ownerTask": "Task 0"
+    },
+    {
+      "task": "Task 1",
+      "requirement": "Fail-closed P0 evidence gate with explicit evidence classes and recomputed throughput.",
+      "implementationFiles": ["scripts/check-p0-evidence-readiness.cjs", "scripts/build-p0-host-acceptance-manifest.cjs"],
+      "testFiles": ["tests/p0-agent-0228-evidence.test.cjs"],
+      "status": "implemented_verified",
+      "evidence": ["tests/p0-agent-0228-evidence.test.cjs passed in the frozen worktree; source hash covered by current snapshot."],
+      "remainingPatch": "Recheck only if Task 8 changes the evidence schema.",
+      "ownerTask": "Task 1"
+    },
+    {
+      "task": "Task 2",
+      "requirement": "Per-provider readiness must not let an earlier refreshing provider hide a later fresh available provider.",
+      "implementationFiles": ["electron/agent-capability-readiness.cjs", "electron/main.cjs"],
+      "testFiles": ["tests/agent-capability-readiness.test.cjs"],
+      "status": "partial",
+      "evidence": ["Existing readiness tests pass, but ensureReady returns wait while iterating before it scans all fresh available candidates."],
+      "remainingPatch": "Add the A-refreshing/B-available red test and minimally reorder candidate evaluation.",
+      "ownerTask": "Task 2"
+    },
+    {
+      "task": "Task 3",
+      "requirement": "Durable worker claim and send barrier for one active execution identity.",
+      "implementationFiles": ["electron/task-sql-store.cjs", "electron/task-store-writer.cjs", "electron/task-store-service.cjs", "electron/main.cjs"],
+      "testFiles": ["tests/task-execution-claim.test.cjs"],
+      "status": "implemented_verified",
+      "evidence": ["Task database user_version=5 and task_execution_attempts exists; 10 execution-claim tests passed."],
+      "remainingPatch": "Review only newly touched external start sites; do not repeat the schema migration.",
+      "ownerTask": "Task 3"
+    },
+    {
+      "task": "Task 4",
+      "requirement": "Persisted capability wait is restored and wakes without consuming execution budget.",
+      "implementationFiles": ["electron/task-auto-dispatch.cjs", "electron/task-runtime-policy.cjs", "electron/main.cjs"],
+      "testFiles": ["tests/task-capability-wakeup.test.cjs"],
+      "status": "implemented_verified",
+      "evidence": ["Capability wakeup tests passed, including SQL-page restore and preserved execution identity."],
+      "remainingPatch": "Recheck the timer path after Task 4a adds research safe-retry metadata.",
+      "ownerTask": "Task 4"
+    },
+    {
+      "task": "Task 4a",
+      "requirement": "Classify Codex research timeout only after bounded termination, stream drain and post-close evidence checks.",
+      "implementationFiles": ["electron/planning-research.cjs", "electron/research-task-policy.cjs", "electron/main.cjs"],
+      "testFiles": ["tests/research-timeout-recovery.test.cjs"],
+      "status": "missing",
+      "evidence": ["The planned recovery test does not exist; current timeout path terminates and rejects without the required evidence object."],
+      "remainingPatch": "Implement the exact Task 4a evidence collector, classifier, route budget and settlement wiring with TDD.",
+      "ownerTask": "Task 4a"
+    },
+    {
+      "task": "Task 4b",
+      "requirement": "Independently diagnose real Codex research host availability and distinguish environment from product defects.",
+      "implementationFiles": ["scripts/probe-codex-research-host.cjs"],
+      "testFiles": ["tests/planning-research-host-contract.test.cjs"],
+      "status": "missing",
+      "evidence": ["Neither the probe nor its contract test exists in the frozen worktree."],
+      "remainingPatch": "Build the acceptance-only probe first, then run three isolated real-host attempts.",
+      "ownerTask": "Task 4b"
+    },
+    {
+      "task": "Task 5",
+      "requirement": "Receipt reconciliation and batch closure preserve safe items, budgets and late evidence.",
+      "implementationFiles": ["electron/task-closure-decision.cjs", "electron/smart-inbox.cjs", "electron/main.cjs"],
+      "testFiles": ["tests/task-closure-decision.test.cjs", "tests/digest-reconciliation-budget.test.cjs", "tests/smart-inbox-task-center.test.cjs"],
+      "status": "implemented_verified",
+      "evidence": ["Closure, reconciliation-budget and Smart Inbox task-center tests passed in the frozen worktree."],
+      "remainingPatch": "Limit changes to regressions exposed by Task 5a and real closure acceptance.",
+      "ownerTask": "Task 5"
+    },
+    {
+      "task": "Task 5a",
+      "requirement": "Unassigned global inbox material stays in the inbox and cannot create needs-help task rows.",
+      "implementationFiles": ["electron/smart-inbox.cjs", "electron/smart-inbox-host.cjs", "electron/main.cjs", "electron/task-read-model.cjs", "src/SmartInboxPanel.tsx"],
+      "testFiles": ["tests/smart-inbox-task-center.test.cjs", "tests/smart-inbox.test.cjs"],
+      "status": "missing",
+      "evidence": ["No test covers studentId='' and target=null; observed legacy-download behavior still creates a needs-user-action task."],
+      "remainingPatch": "Add unassigned routing, persisted source-off behavior and bind-once idempotency tests before implementation.",
+      "ownerTask": "Task 5a"
+    },
+    {
+      "task": "Task 6",
+      "requirement": "Low-load, evidence-bounded backlog recovery and explicit manual fallback.",
+      "implementationFiles": ["electron/task-backlog-recovery.cjs", "electron/task-sql-store.cjs", "electron/main.cjs"],
+      "testFiles": ["tests/task-backlog-recovery.test.cjs"],
+      "status": "partial",
+      "evidence": ["Core readonly preview and conflict tests pass; 30k/40k/100k and 100k-task bounded recovery have not been rerun against the final patch set."],
+      "remainingPatch": "Do not change recovery policy until prerequisite fixes pass; then run 1-source, 20-source and paged-copy acceptance.",
+      "ownerTask": "Task 6"
+    },
+    {
+      "task": "Task 7",
+      "requirement": "Session statistics derive from execution attempts and distinguish historical settlement, no-work and unknown.",
+      "implementationFiles": ["electron/task-sql-store.cjs", "electron/task-read-model.cjs", "electron/main.cjs", "src/main.tsx"],
+      "testFiles": ["tests/task-session-summary.test.cjs"],
+      "status": "implemented_verified",
+      "evidence": ["Session-summary tests passed for two-provider attempts, historical receipts, no-work and unknown."],
+      "remainingPatch": "Recheck UI reason text after Task 4a and Task 5a states are added.",
+      "ownerTask": "Task 7"
+    },
+    {
+      "task": "Task 8",
+      "requirement": "Same-source real-agent closure, performance acceptance and local candidate trio.",
+      "implementationFiles": ["scripts/acceptance-agent-0228.cjs", "package.json"],
+      "testFiles": ["tests/agent-0228-acceptance-contract.test.cjs"],
+      "status": "partial",
+      "evidence": ["The release gate correctly rejects an empty evidence directory; no same-source final runtime matrix exists yet."],
+      "remainingPatch": "Run all prerequisite tasks, build a new local pre-candidate, execute the visible real-host matrix, then package the same bytes.",
+      "ownerTask": "Task 8"
+    }
+  ]
+}

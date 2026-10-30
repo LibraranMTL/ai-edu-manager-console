@@ -57,3 +57,4 @@ Task 3: complete (commits fa25009..74d7595, tests: node --test tests/task-execut
 Task 4 review: the automatic wake queue already owns bounded timers, earlier-deadline replacement, 20-item drains, SQL-paged restart restoration, targeted capability wakeups, and shutdown cleanup. Capability waits remain automatic and do not consume execution attempts or manufacture manual handoffs. No production change was needed.
 
 Task 4 verification: capability-wakeup/auto-dispatch/task-performance/read-model/retry-queue suites → 29 passed, 0 failed.
+Task 4: complete (commits 0ef89b4..98b330e, tests: node --test tests/task-capability-wakeup.test.cjs tests/task-auto-dispatch.test.cjs tests/task-performance.test.cjs tests/task-read-model.test.cjs → ℹ duration_ms 1861.385)

@@ -38,3 +38,7 @@ Task 0: complete (commits 23ba435..ea56dc4, tests: node -e 'const fs=require('fs
 
 Task 1 review: 17/17 evidence-gate tests passed, including injected/internal substitution rejection, hash mismatch, contradictory raw summary, missing baseline, no measured improvement, and reordered/duplicate execution. No production or threshold change is needed.
 Task 1: complete (commits 2f35972..2f35972, tests: node --test tests/p0-agent-0228-evidence.test.cjs tests/p0-evidence-gate.test.cjs → ℹ duration_ms 1868.606)
+
+Task 5a: TDD reproduced unbound-source task pollution and source-disable persistence failure. New unassigned discoveries now stay in Smart Inbox as `review/unassigned`, bypass `beginBatch`, preserve the original, and create no task-center or Agent execution. Confirming a student creates exactly one normal task. Disabling or detaching a source now also persists `automatic=false`, clears pending/manual/resume/resource-wait state, and survives restart.
+
+Task 5a verification: `node --test tests/smart-inbox-task-center.test.cjs tests/smart-inbox.test.cjs` → 64 passed, 0 failed; `pnpm typecheck` → passed.

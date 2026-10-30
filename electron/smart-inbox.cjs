@@ -32,13 +32,20 @@ function legacyAgentBlock(message) {
 // watcher, model credentials or arbitrary destination-file capability.
 function createSmartInbox(host) {
   const root = host.directory, sources = new Map(), items = new Map(), rules = new Map();
-  const cacheFiles = new Map();
+  const cacheFiles = new Map(), itemOperations = new Map();
   let cacheBytes = 0;
   let loaded, active = null, closed = false, blocked = '', turn = 0, commands = Promise.resolve();
   let defaults = { schedule: { ...P.DEFAULT_SCHEDULE } };
   const now = () => host.now?.() ?? Date.now();
   const iso = () => new Date(now()).toISOString();
   const serial = work => { const result = commands.catch(() => {}).then(work); commands = result; return result; };
+  const withItemLock = (itemId, work) => {
+    const key = String(itemId || '');
+    const previous = itemOperations.get(key) || Promise.resolve();
+    const running = previous.catch(() => {}).then(work);
+    itemOperations.set(key, running);
+    return running.finally(() => { if (itemOperations.get(key) === running) itemOperations.delete(key); });
+  };
   const stats = { discovered: 0, snapshots: 0, extracted: 0, classified: 0, delivered: 0, cacheHits: 0 };
   const fileFor = (kind, id) => path.join(root, kind, `${safeId(id)}.json`);
   async function read(file, fallback) {
@@ -173,16 +180,19 @@ function createSmartInbox(host) {
       if (mode === 'archive' && !['folder', 'download'].includes(type)) throw Error('受管采集原件须保留');
       const schedule = input.schedule === null ? null : input.schedule ? P.schedule(input.schedule) : old?.schedule || null;
       const enabled = input.enabled ?? old?.enabled ?? false;
+      const automatic = Boolean(enabled && (input.automatic ?? old?.automatic ?? false));
       const record = { ...old, id: old?.id || (trusted && input.id) || crypto.randomUUID(), type, folder,
         name: String(input.name || old?.name || path.basename(folder) || type).slice(0, 120), studentId, target: selectedTarget,
-        enabled: Boolean(enabled), automatic: Boolean(input.automatic ?? old?.automatic ?? false), detached: false,
+        enabled: Boolean(enabled), automatic, detached: false,
         managedRouting: Boolean(input.managedRouting ?? old?.managedRouting),
         activationAt: String(input.activationAt ?? old?.activationAt ?? ''),
         staging: Boolean(input.staging ?? old?.staging), originalMode: mode, schedule,
-        confidenceThreshold: P.confidenceThreshold(input.confidenceThreshold ?? old?.confidenceThreshold ?? .95),
+        confidenceThreshold: P.confidenceThreshold(input.confidenceThreshold ?? old?.confidenceThreshold ?? .85),
         recursive: Boolean(input.recursive ?? old?.recursive), allHistory: Boolean(input.allHistory ?? old?.allHistory),
         createdAt: old?.createdAt || iso(), updatedAt: iso(), revision: (old?.revision || 0) + 1,
         nextRunAt: enabled ? P.nextRun(schedule || defaults.schedule, now()) : '', error: '', pendingManual: false, manualWork: false,
+        resumeItemIds: enabled ? old?.resumeItemIds || [] : [], waitingReason: enabled ? old?.waitingReason || '' : '',
+        waitingSince: enabled ? old?.waitingSince || '' : '',
       };
       if (old?.studentId !== record.studentId || !P.sameTarget(old?.target, record.target)) {
         for (const rule of rules.values()) if (rule.sourceId === record.id && rule.active) await save('rules', { ...rule, active: false });
@@ -232,10 +242,10 @@ function createSmartInbox(host) {
         automatic: type === 'session',
         managedRouting: true,
         activationAt: String(authorizedAt || ''),
-        confidenceThreshold: .95,
+        confidenceThreshold: .85,
       };
       if (old.enabled === desired.enabled && old.automatic === desired.automatic && old.managedRouting === true
-        && String(old.activationAt || '') === desired.activationAt && Number(old.confidenceThreshold || .95) === .95) continue;
+        && String(old.activationAt || '') === desired.activationAt && Number(old.confidenceThreshold || .85) === .85) continue;
       const activationMs = Date.parse(desired.activationAt);
       if (Number.isFinite(activationMs) && String(old.activationAt || '') !== desired.activationAt) {
         for (const item of items.values()) {
@@ -298,10 +308,13 @@ function createSmartInbox(host) {
       const ext = path.extname(entry.name).toLowerCase();
       if (!ALLOWED.has(ext) && !P.EXTRACTABLE.has(ext)) return;
       const supported = stat.size > 0 && stat.size <= MAX_BYTES;
+      const unassigned = !source.studentId && !source.target;
       await save('items', { id: key, sourceId: source.id, sourceRevision: generation, sourceType: source.type,
         locator: entry.locator, name: entry.name, size: stat.size, identity: identity(stat), modifiedAt: new Date(stat.mtimeMs).toISOString(),
-        studentId: source.studentId, revision: 1, createdAt: iso(), status: supported ? 'pending' : 'review',
-        message: supported ? '' : '文件超过容量限制，需手动处理', manualLocked: false, supported, attempts: 0 });
+        studentId: source.studentId, revision: 1, createdAt: iso(), status: supported && !unassigned ? 'pending' : 'review',
+        automationDisposition: unassigned ? 'unassigned' : '',
+        message: unassigned ? '待指定学生或投递目标；未创建自动任务，未发送正文给Agent。'
+          : supported ? '' : '文件超过容量限制，需手动处理', manualLocked: false, supported, attempts: 0 });
       count++; stats.discovered++;
     }
     if (['folder', 'download'].includes(source.type)) {
@@ -548,50 +561,166 @@ function createSmartInbox(host) {
   }
   async function processSource(id, manual = false) {
     const source = sources.get(id); if (!source || source.detached || (!manual && !source.enabled)) return;
+    const resumeIds=Array.isArray(source.resumeItemIds)&&source.resumeItemIds.length?new Set(source.resumeItemIds):null;
+    const inScope=item=>item.sourceId===id&&(!resumeIds||resumeIds.has(item.id));
     let release, batchId, changed = false;
     try {
-      if (source.pendingManual || (!source.manualWork && (!source.nextRunAt || Date.parse(source.nextRunAt) <= now()))) {
+      if (!resumeIds&&(source.pendingManual || (!source.manualWork && (!source.nextRunAt || Date.parse(source.nextRunAt) <= now())))) {
         changed = (await discover(source)) > 0;
         await save('sources', { ...sources.get(id), lastScanAt: iso(), nextRunAt: P.nextRun(source.schedule || defaults.schedule, now()), error: '', pendingManual: false, manualWork: manual });
       }
-      if (![...items.values()].some(i => i.sourceId === id && ['pending', 'retry'].includes(i.status) && (!i.nextRetryAt || Date.parse(i.nextRetryAt) <= now()))) return;
+      const due = (value) => !value.nextRetryAt || Date.parse(value.nextRetryAt) <= now();
+      const reconcileDue = value => ['execution_unknown', 'delivery_reconcile', 'archive_pending'].includes(value.status)
+        && Number(value.reconcileAttempts || 0) < 3
+        && (!value.nextReconcileAt || Date.parse(value.nextReconcileAt) <= now());
+      let pendingAvailable = [...items.values()].some(i => inScope(i) && ['pending', 'retry'].includes(i.status) && due(i));
+      const reconcileAvailable = [...items.values()].some(i => inScope(i) && reconcileDue(i));
+      if (!pendingAvailable && !reconcileAvailable) {
+        if(resumeIds&&![...items.values()].some(item=>inScope(item)&&['pending','retry'].includes(item.status)))await save('sources',{...sources.get(id),resumeItemIds:[],pendingManual:false,manualWork:false});
+        return;
+      }
+      let reconciled = 0;
+      for (const value of items.values()) {
+        if (reconciled >= 5 || !inScope(value)
+          || !['execution_unknown', 'delivery_reconcile'].includes(value.status)
+          || !reconcileDue(value)) continue;
+        await withItemLock(value.id, async () => {
+          let current = items.get(value.id);
+          if (!current) return;
+          try {
+            if (current.status === 'execution_unknown') {
+              const saved = await read(fileFor('decisions', current.executionId), null);
+              if (saved && saved.itemId === current.id
+                && (!saved.studentId || saved.studentId === current.studentId)
+                && (!saved.sha256 || saved.sha256 === current.fingerprint?.sha256)) {
+                await checkCurrent(current, source);
+                await save('items', { ...current, status: 'review', suggestion: saved.result,
+                  proposedTarget: saved.result?.candidates?.[0] || null, revision: current.revision + 1,
+                  nextReconcileAt: '', message: '已自动找回分类结果，请批量确认。' });
+                reconciled++; changed = true;
+                return;
+              }
+              // Reconciliation is control-plane work. Give the host a chance to
+              // inspect executor receipts/process state even while heavy work is
+              // blocked, but never treat an arbitrary delivery receipt as a
+              // classification decision here.
+              await host.reconcile?.(current);
+              const attempts = Math.max(0, Number(current.reconcileAttempts || 0)) + 1;
+              await save('items', { ...current, reconcileAttempts: attempts,
+                nextReconcileAt: attempts >= 3 ? '' : new Date(now() + Math.min(15 * 60_000, 30_000 * 2 ** (attempts - 1))).toISOString(),
+                message: attempts >= 3 ? '未找到可验证的执行结果；自动核对已暂停，请人工核对。' : '尚未找到执行结果，将自动再次核对。' });
+              return;
+            }
+            const receipt = current.receipt || await host.reconcile?.(current);
+            if (!receipt) {
+              const attempts = Math.max(0, Number(current.reconcileAttempts || 0)) + 1;
+              await save('items', { ...current, reconcileAttempts: attempts,
+                nextReconcileAt: attempts >= 3 ? '' : new Date(now() + Math.min(15 * 60_000, 30_000 * 2 ** (attempts - 1))).toISOString(),
+                message: attempts >= 3 ? '未找到可验证的投递回执；自动核对已暂停，请人工核对。' : '尚未找到投递回执，将自动再次核对。' });
+              return;
+            }
+            await verifyReceipt(current, receipt);
+            await save('items', { ...current, receipt, status: 'archive_pending', nextReconcileAt: '',
+              message: '已找回投递回执，等待后台资源完成归档。' });
+            reconciled++; changed = true;
+          } catch (error) {
+            const attempts = Math.max(0, Number(current.reconcileAttempts || 0)) + 1;
+            await save('items', { ...current, reconcileAttempts: attempts,
+              nextReconcileAt: attempts >= 3 ? '' : new Date(now() + Math.min(15 * 60_000, 30_000 * 2 ** (attempts - 1))).toISOString(),
+              message: attempts >= 3 ? `${error.message}；自动核对已暂停，请人工核对。` : error.message });
+          }
+        });
+        await yieldTurn();
+      }
+      pendingAvailable = [...items.values()].some(i => inScope(i) && ['pending', 'retry'].includes(i.status) && due(i));
+      let archiveAvailable = [...items.values()].some(i => inScope(i) && i.status === 'archive_pending' && reconcileDue(i));
+      if (!pendingAvailable && !archiveAvailable) {
+        if (reconciled && (sources.get(id)?.waitingReason || sources.get(id)?.waitingSince)) {
+          await save('sources', { ...sources.get(id), waitingReason: '', waitingSince: '' });
+        }
+        if (reconciled) await host.settleItems?.([...items.values()].filter(item => item.sourceId === id));
+        return reconciled;
+      }
       release = await host.acquire(source, manual);
       if (!release) {
         const waitingReason = host.waitingReason?.(source, manual) || '等待后台资源空闲，稍后自动继续；未调用Agent';
-        if (sources.get(id)?.waitingReason !== waitingReason) {
-          await save('sources', { ...sources.get(id), waitingReason }); changed = true;
+        if (sources.get(id)?.waitingReason !== waitingReason || !sources.get(id)?.waitingSince) {
+          await save('sources', { ...sources.get(id), waitingReason,
+            waitingSince: sources.get(id)?.waitingSince || iso() }); changed = true;
         }
-        return;
+        return reconciled;
+      }
+      if (archiveAvailable) {
+        let archived = 0;
+        for (const value of items.values()) {
+          if (archived >= 5 || !inScope(value) || value.status !== 'archive_pending' || !reconcileDue(value)) continue;
+          await withItemLock(value.id, async () => {
+            const current = items.get(value.id);
+            if (!current || current.status !== 'archive_pending') return;
+            try {
+              await deliverItem(current, source, current.target, false);
+              archived++; reconciled++; changed = true;
+            } catch (error) {
+              const attempts = Math.max(0, Number(current.reconcileAttempts || 0)) + 1;
+              await save('items', { ...current, reconcileAttempts: attempts,
+                nextReconcileAt: attempts >= 3 ? '' : new Date(now() + Math.min(15 * 60_000, 30_000 * 2 ** (attempts - 1))).toISOString(),
+                message: attempts >= 3 ? `${error.message}；自动核对已暂停，请人工核对。` : error.message });
+            }
+          });
+          await yieldTurn();
+        }
+        archiveAvailable = [...items.values()].some(i => inScope(i) && i.status === 'archive_pending' && reconcileDue(i));
+      }
+      if (!pendingAvailable) {
+        if (reconciled) await host.settleItems?.([...items.values()].filter(item => item.sourceId === id));
+        return reconciled;
       }
       const batchItems = [...items.values()]
-        .filter(i => i.sourceId === id && ['pending', 'retry'].includes(i.status) && (!i.nextRetryAt || Date.parse(i.nextRetryAt) <= now()))
+        .filter(i => inScope(i) && ['pending', 'retry'].includes(i.status) && (!i.nextRetryAt || Date.parse(i.nextRetryAt) <= now()))
         .slice(0, 20)
         .map(i => ({ id: i.id, revision: i.revision || '', studentId: i.studentId || '',
           target: i.target || i.proposedTarget || null, sha256: i.fingerprint?.sha256 || '', attempts: Number(i.attempts || 0) }));
       batchId = await host.beginBatch?.(source, manual, { sourceRevision: source.revision, items: batchItems });
-      if (sources.get(id)?.error || sources.get(id)?.waitingReason) await save('sources', { ...sources.get(id), error: '', waitingReason: '' });
+      if (sources.get(id)?.error || sources.get(id)?.waitingReason || sources.get(id)?.waitingSince) {
+        await save('sources', { ...sources.get(id), error: '', waitingReason: '', waitingSince: '' });
+      }
       let count = 0, budget = 0;
       for (const value of items.values()) {
         if (count >= 20 || budget >= 200 * 1024 || closed || (!manual && !host.automaticAllowed())) break;
-        if (value.sourceId !== id || !['pending', 'retry'].includes(value.status) || (value.nextRetryAt && Date.parse(value.nextRetryAt) > now())) continue;
+        if (!inScope(value) || !['pending', 'retry'].includes(value.status) || (value.nextRetryAt && Date.parse(value.nextRetryAt) > now())) continue;
         if (sources.get(id)?.revision !== source.revision || (!manual && !sources.get(id)?.enabled)) break;
         count++; changed = true;
-        try { const result = await analyze(value, source, 200 * 1024 - budget); if (result?.deferred) break; budget += result?.textBytes || 0; }
+        try {
+          const result = await withItemLock(value.id, () => analyze(items.get(value.id) || value, source, 200 * 1024 - budget));
+          if (result?.deferred) break;
+          budget += result?.textBytes || 0;
+        }
         catch (e) {
           if (blocked) throw e;
-          const current = items.get(value.id);
-          if (e.code === 'original_missing') continue;
-          if (['delivery_reconcile', 'archive_pending'].includes(current.status)) continue;
-          const unknown = e.code === 'execution_unknown';
-          const retry = taskRetryDecision({ ...current, attempt: current.attempts, maxAttempts: 3 }, { code: e.code, message: e.message }, { now: now(), stopConfirmed: e.stopConfirmed === true });
-          const resourceRetry = e.blockReason?.category === 'resource' && e.blockReason.recoverable;
-          const mayRetry = !e.blockReason && retry.autoRetry || resourceRetry && (retry.autoRetry || e.code === 'EXECUTOR_CIRCUIT_OPEN');
-          await save('items', { ...current, status: unknown ? 'execution_unknown' : mayRetry ? 'retry' : 'review',
-            blockReason: e.blockReason || null, nextRetryAt: mayRetry ? retry.nextRetryAt || new Date(now() + 60000).toISOString() : '', message: e.message });
+          await withItemLock(value.id, async () => {
+            const current = items.get(value.id);
+            if (!current || e.code === 'original_missing' || ['delivery_reconcile', 'archive_pending', 'delivered', 'ignored'].includes(current.status)) return;
+            const unknown = e.code === 'execution_unknown';
+            const retry = taskRetryDecision({ ...current, attempt: current.attempts, maxAttempts: 3 }, { code: e.code, message: e.message }, { now: now(), stopConfirmed: e.stopConfirmed === true });
+            const resourceRetry = e.blockReason?.category === 'resource' && e.blockReason.recoverable;
+            const mayRetry = !e.blockReason && retry.autoRetry || resourceRetry && (retry.autoRetry || e.code === 'EXECUTOR_CIRCUIT_OPEN');
+            await save('items', { ...current, status: unknown ? 'execution_unknown' : mayRetry ? 'retry' : 'review',
+              blockReason: e.blockReason || null, nextRetryAt: mayRetry ? retry.nextRetryAt || new Date(now() + 60000).toISOString() : '', message: e.message });
+          });
         }
         await yieldTurn();
       }
-      await host.endBatch?.(batchId, null, { count, sourceId: id });
+      const finalItems = batchItems.map(({ id: itemId }) => items.get(itemId)).filter(Boolean);
+      await host.endBatch?.(batchId, null, { count, sourceId: id,
+        itemStates:finalItems.map(item=>({id:item.id,status:item.status,receipt:Boolean(item.receipt)})),
+        delivered: finalItems.filter(item => item.status === 'delivered').length,
+        ignored: finalItems.filter(item => item.status === 'ignored').length,
+        review: finalItems.filter(item => item.status === 'review').length,
+        unknown: finalItems.filter(item => item.status === 'execution_unknown').length,
+        reconcile: finalItems.filter(item => ['delivery_reconcile', 'archive_pending'].includes(item.status)).length,
+        pending: finalItems.filter(item => ['pending', 'retry', 'analyzing', 'delivering'].includes(item.status)).length });
+      await host.settleItems?.(finalItems);
+      if(resumeIds&&!finalItems.some(item=>['pending','retry'].includes(item.status)))await save('sources',{...sources.get(id),resumeItemIds:[],pendingManual:false,manualWork:false});
       return count;
     } catch (e) {
       if (!blocked) await save('sources', { ...sources.get(id), error: e.message, pendingManual: false, nextRunAt: P.nextRun(source.schedule || defaults.schedule, now()) });
@@ -610,8 +739,12 @@ function createSmartInbox(host) {
       for (let n = 0; n < ordered.length; n++) {
         const s = sources.get(round[n].id);
         const pending = [...items.values()].some(i => i.sourceId === s.id && ['pending', 'retry'].includes(i.status) && (!i.nextRetryAt || Date.parse(i.nextRetryAt) <= now()));
-        if (!s.detached && (s.pendingManual || s.manualWork && pending || (host.automaticAllowed() && s.enabled && (pending || s.nextRunAt && Date.parse(s.nextRunAt) <= now())))) {
-          progress = Boolean(await serial(() => processSource(s.id, Boolean(s.pendingManual || s.manualWork)))) || progress;
+        const reconciling = [...items.values()].some(i => i.sourceId === s.id
+          && ['execution_unknown', 'delivery_reconcile', 'archive_pending'].includes(i.status)
+          && (!i.nextReconcileAt || Date.parse(i.nextReconcileAt) <= now()) && Number(i.reconcileAttempts || 0) < 3);
+        if (!s.detached && (s.pendingManual || s.manualWork && (pending || reconciling)
+          || (host.automaticAllowed() && s.enabled && (pending || reconciling || s.nextRunAt && Date.parse(s.nextRunAt) <= now())))) {
+          progress = Boolean(await processSource(s.id, Boolean(s.pendingManual || s.manualWork))) || progress;
         }
       }
       turn++;
@@ -619,7 +752,10 @@ function createSmartInbox(host) {
     active = work;
     try { await work; } finally {
       active = null;
-      if (!closed && !blocked && progress && [...items.values()].some(i => { const s = sources.get(i.sourceId); return s && !s.detached && (s.manualWork || s.enabled && host.automaticAllowed()) && ['pending', 'retry'].includes(i.status) && (!i.nextRetryAt || Date.parse(i.nextRetryAt) <= now()); })) setImmediate(() => tick().catch(e => host.onError?.(e)));
+      if (!closed && !blocked && progress && [...items.values()].some(i => { const s = sources.get(i.sourceId); return s && !s.detached && (s.manualWork || s.enabled && host.automaticAllowed(s.studentId)) && (
+        ['pending', 'retry'].includes(i.status) && (!i.nextRetryAt || Date.parse(i.nextRetryAt) <= now())
+        || ['execution_unknown', 'delivery_reconcile', 'archive_pending'].includes(i.status)
+          && (!i.nextReconcileAt || Date.parse(i.nextReconcileAt) <= now()) && Number(i.reconcileAttempts || 0) < 3); })) setImmediate(() => tick().catch(e => host.onError?.(e)));
     }
   }
   async function feedback(item, before, selected, action) {
@@ -658,19 +794,30 @@ function createSmartInbox(host) {
   }
   async function decide(request) {
     await init();
-    return serial(async () => {
-      const id = safeId(request.requestId), payloadHash = P.digest(request), receiptFile = fileFor('decisions', id);
-      const previous = await read(receiptFile, null);
-      if (previous) { if (previous.payloadHash !== payloadHash) throw Error('请求编号被用于不同操作'); if (previous.result) return previous.result; }
-      if (!Array.isArray(request.items) || !request.items.length || request.items.length > 100 || !['accept', 'correct', 'confirm_student', 'reassign_student', 'ignore', 'restore', 'retry', 'reconcile'].includes(request.action)) throw Error('批量处理请求无效');
-      const results = previous?.results || [];
-      await writeJsonAtomic(receiptFile, { payloadHash, results, at: iso() });
+    const id = safeId(request.requestId), payloadHash = P.digest(request), receiptFile = fileFor('decisions', id);
+    if (!Array.isArray(request.items) || !request.items.length || request.items.length > 100 || !['accept', 'correct', 'confirm_student', 'reassign_student', 'ignore', 'restore', 'retry', 'reconcile', 'archive_unknown', 'restart_unknown'].includes(request.action)) throw Error('批量处理请求无效');
+    const previous = await serial(async () => {
+      const saved = await read(receiptFile, null);
+      if (saved?.payloadHash !== undefined && saved.payloadHash !== payloadHash) throw Error('请求编号被用于不同操作');
+      if (!saved) await writeJsonAtomic(receiptFile, { payloadHash, results: [], at: iso() });
+      return saved;
+    });
+    if (previous?.result) return previous.result;
+    const results = previous?.results || [];
       for (const selected of request.items) {
         if (results.some(r => r.id === selected.id)) continue;
+        await withItemLock(selected.id, async () => {
         try {
+          const checkpoint = await read(receiptFile, null);
+          const checkpointResult = checkpoint?.results?.find(result => result.id === selected.id);
+          if (checkpointResult) { results.push(checkpointResult); return; }
           let item = items.get(selected.id);
+          if (request.action === 'reconcile' && item?.status === 'delivered'
+            && Number(item.revision || 0) >= Number(selected.revision || 0)) {
+            results.push({ id: selected.id, ok: true, status: item.status, recovered: true }); return;
+          }
           if (['confirm_student', 'reassign_student'].includes(request.action) && item?.studentConfirmation?.requestId === id && item.studentConfirmation.requestedRevision === selected.revision) {
-            results.push({ id: selected.id, ok: true, status: item.status, recovered: true }); continue;
+            results.push({ id: selected.id, ok: true, status: item.status, recovered: true }); return;
           }
           const continuingCorrection = request.action === 'correct' && item?.studentConfirmation?.requestId === id
             && item.studentConfirmation.requestedRevision === selected.revision;
@@ -695,8 +842,27 @@ function createSmartInbox(host) {
             item = await save('items', { ...item, studentId, status: 'pending', revision: item.revision + 1,
               studentConfirmation: { studentId, sourceId: source.id, sourceRevision: source.revision,
                 identity: item.identity, requestId: id, requestedRevision: selected.revision, at: iso() },
-              suggestion: null, proposedTarget: null, blockReason: null, execution: null, ruleId: '', ruleVersion: 0, identifier: '', basis: '',
+              automationDisposition: '', suggestion: null, proposedTarget: null, blockReason: null, execution: null, ruleId: '', ruleVersion: 0, identifier: '', basis: '',
               nextRetryAt: '', executionId: '', attempts: 0, message: '学生已确认，已排队智能分析；可信项按来源设置自动投递，其余请确认。' });
+          } else if (request.action === 'archive_unknown') {
+            if (!['execution_unknown', 'delivery_reconcile'].includes(item.status) || Number(item.reconcileAttempts || 0) < 3) throw Error('仅自动核对已耗尽的未知执行可以归档');
+            item = await save('items', { ...item, previousStatus: item.status, status: 'ignored', manualLocked: true,
+              revision: item.revision + 1, nextReconcileAt: '', unknownResolution: { disposition: 'abandoned',
+                executionId: item.executionId || '', reconcileAttempts: Number(item.reconcileAttempts || 0), requestId: id, at: iso() },
+              lastDecision: { action: 'archive_unknown', requestId: id, at: iso() },
+              message: '已确认放弃本次未知执行并归档；原执行、快照与审计记录保留，未重新调用Agent。' });
+          } else if (request.action === 'restart_unknown') {
+            if (item.status !== 'execution_unknown' || Number(item.reconcileAttempts || 0) < 3) throw Error('仅自动核对已耗尽的未知分类执行可以明确重新执行');
+            if (!source || source.detached || !source.enabled) throw Error('请先开启资料来源');
+            await checkCurrent(item, source);
+            const history = [...(item.executionHistory || []), { executionId: item.executionId || '', execution: item.execution || null,
+              status: item.status, reconcileAttempts: Number(item.reconcileAttempts || 0), resolution: 'user_requested_new_execution', requestId: id, at: iso() }];
+            if (history.length > 100) throw Error('未知执行历史已达上限，请先归档本次执行');
+            await save('sources', { ...sources.get(source.id), manualWork: true });
+            item = await save('items', { ...item, status: 'pending', revision: item.revision + 1, executionId: '', execution: null,
+              executionHistory: history, reconcileAttempts: 0, nextReconcileAt: '', nextRetryAt: '', blockReason: null,
+              attempts: 0, suggestion: null, proposedTarget: null, manualLocked: false,
+              message: '已保留旧未知执行审计，并按用户明确要求创建新的独立执行。' });
           } else if (request.action === 'ignore') {
             if (!['review', 'pending', 'retry'].includes(item.status)) throw Error('此状态不能忽略');
             item = await save('items', { ...item, previousStatus: item.status, status: 'ignored', manualLocked: true, revision: item.revision + 1,
@@ -748,12 +914,14 @@ function createSmartInbox(host) {
             ruleId: item.ruleId || '', ruleVersion: item.ruleVersion || 0, at: iso(),
           } });
         } catch (e) { results.push({ id: selected.id, ok: false, message: e.message }); }
-        await writeJsonAtomic(receiptFile, { payloadHash, results, at: iso() });
+        });
+        await serial(() => writeJsonAtomic(receiptFile, { payloadHash, results, at: iso() }));
       }
-      const result = { results }; await writeJsonAtomic(receiptFile, { payloadHash, result, at: iso() });
-      if (['confirm_student', 'reassign_student', 'retry'].includes(request.action) && results.some(r => r.ok)) setImmediate(() => tick().catch(e => host.onError?.(e)));
-      host.changed?.(); return result;
-    });
+    const result = { results };
+    await serial(() => writeJsonAtomic(receiptFile, { payloadHash, result, at: iso() }));
+    await host.settleItems?.(results.filter(entry => entry.ok).map(entry => items.get(entry.id)).filter(Boolean));
+    if (['confirm_student', 'reassign_student', 'retry', 'restart_unknown'].includes(request.action) && results.some(r => r.ok)) setImmediate(() => tick().catch(e => host.onError?.(e)));
+    host.changed?.(); return result;
   }
   return {
     init, bootstrap, syncConversationRouting, updateSource, tick, decide,
@@ -818,8 +986,11 @@ function createSmartInbox(host) {
       }
       return { count: results.filter(r => r.ok).length, failed: results.filter(r => !r.ok).length, skipped, skipReasons, results };
     },
-    hasPendingWork() { return !closed && !blocked && [...items.values()].some(i => { const s = sources.get(i.sourceId); return s && !s.detached && (s.manualWork || s.pendingManual || s.enabled && host.automaticAllowed(s.studentId)) && ['pending', 'retry'].includes(i.status) && (!i.nextRetryAt || Date.parse(i.nextRetryAt) <= now()); }); },
-    async pause(id) { await init(); const s = sources.get(id); if (!s) throw Error('来源不存在'); return save('sources', { ...s, enabled: false, pendingManual: false, manualWork: false, revision: s.revision + 1, nextRunAt: '' }); },
+    hasPendingWork() { return !closed && !blocked && [...items.values()].some(i => { const s = sources.get(i.sourceId); return s && !s.detached && (s.manualWork || s.pendingManual || s.enabled && host.automaticAllowed(s.studentId)) && (
+      ['pending', 'retry'].includes(i.status) && (!i.nextRetryAt || Date.parse(i.nextRetryAt) <= now())
+      || ['execution_unknown', 'delivery_reconcile', 'archive_pending'].includes(i.status)
+        && (!i.nextReconcileAt || Date.parse(i.nextReconcileAt) <= now()) && Number(i.reconcileAttempts || 0) < 3); }); },
+    async pause(id) { await init(); const s = sources.get(id); if (!s) throw Error('来源不存在'); return save('sources', { ...s, enabled: false, automatic: false, pendingManual: false, manualWork: false, resumeItemIds: [], waitingReason: '', waitingSince: '', revision: s.revision + 1, nextRunAt: '' }); },
     async notifySource(type, studentId) { await init(); for (const s of sources.values()) if (s.type === type && s.studentId === String(studentId) && s.enabled && !s.detached) await save('sources', { ...s, nextRunAt: iso() });
       if (host.automaticAllowed()) setImmediate(() => tick().catch(e => host.onError?.(e))); },
     async recover() { await init(); for (const item of items.values()) {
@@ -833,8 +1004,19 @@ function createSmartInbox(host) {
     async sources() { await init(); return { sources: [...sources.values()].map(clone), defaults: clone(defaults), running: Boolean(active), error: blocked, statistics: { ...stats } }; },
     async setDefaults(input) { await init(); const s = P.schedule(input.schedule); return serial(async () => { const value = { schedule: s }; await writeJsonAtomic(path.join(root, 'defaults.json'), value); defaults = value;
       for (const source of sources.values()) if (!source.schedule) await save('sources', { ...source, nextRunAt: source.enabled ? P.nextRun(s, now()) : '' }); return value; }); },
-    async detach(id) { await init(); return serial(async () => { const s = sources.get(id); if (!s) throw Error('来源不存在'); return save('sources', { ...s, enabled: false, detached: true, revision: s.revision + 1, pendingManual: false, nextRunAt: '' }); }); },
+    async detach(id) { await init(); return serial(async () => { const s = sources.get(id); if (!s) throw Error('来源不存在'); return save('sources', { ...s, enabled: false, automatic: false, detached: true, revision: s.revision + 1, pendingManual: false, manualWork: false, resumeItemIds: [], waitingReason: '', waitingSince: '', nextRunAt: '' }); }); },
     async requestScan(id) { await init(); const s = sources.get(id); if (!s || s.detached) throw Error('来源不存在'); await save('sources', { ...s, pendingManual: true }); setImmediate(() => tick().catch(e => host.onError?.(e))); return { queued: true }; },
+    async requestResume(id,itemIds,scope={}){
+      await init();const source=sources.get(id);if(!source||source.detached)throw Error('来源不存在');
+      if(scope.automatic&&(!source.enabled||!source.automatic))return {ok:true,queued:false,reason:'automation_disabled',message:'该来源自动处理已关闭，保留原批次。'};
+      if(scope.studentId!=null&&String(source.studentId||'')!==String(scope.studentId))throw Error('来源学生已变化，请核对原批次');
+      const ids=[...new Set((itemIds||[]).map(String))];if(!ids.length||ids.length>100)throw Error('原批次资料范围无效');
+      const safe=[],protectedItemIds=[];
+      for(const key of ids){const item=items.get(key);if(!item||item.sourceId!==id)throw Error('原批次包含失效或不同来源资料');
+        if(['pending','retry'].includes(item.status)&&!item.receipt)safe.push(key);else protectedItemIds.push(key);}
+      if(safe.length){await save('sources',{...source,resumeItemIds:[...new Set([...(source.resumeItemIds||[]),...safe])].slice(0,100),pendingManual:true});setImmediate(()=>tick().catch(error=>host.onError?.(error)));}
+      return {ok:true,queued:safe.length>0,itemIds:safe,protectedItemIds,message:safe.length?'原批次安全项已排队，未决执行保持核对':'没有可安全重派的原批次资料，请核对原回执'};
+    },
     async list(query = {}) {
       await init(); const rows = [], sourceId = String(query.sourceId || ''), scope = String(query.studentId || '');
       const page = Math.max(1, Math.floor(Number(query.page) || 1)), size = 25;
@@ -845,18 +1027,19 @@ function createSmartInbox(host) {
       }
       rows.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
       return { total: rows.length, page, pageSize: size, rows: rows.slice((page - 1) * size, page * size).map(i => ({
-        id: i.id, sourceId: i.sourceId, sourceName: sources.get(i.sourceId)?.name, sourceType: i.sourceType, studentId: i.studentId, name: i.name, size: i.size, status: i.status, revision: i.revision, originalMissing: Boolean(i.originalMissing),
+        id: i.id, sourceId: i.sourceId, sourceName: sources.get(i.sourceId)?.name, sourceType: i.sourceType, studentId: i.studentId, name: i.name, size: i.size, status: i.status, revision: i.revision, automationDisposition: i.automationDisposition || '', originalMissing: Boolean(i.originalMissing),
         blockReason: i.blockReason || null, execution: i.execution ? { stage: i.execution.stage, providerId: i.execution.providerId,
           switched: Boolean(i.execution.switched || i.execution.attempts?.some(a => a.providerId && a.providerId !== i.execution.providerId)) } : null,
-        message: i.status === 'pending' && sources.get(i.sourceId)?.waitingReason || i.message, proposedTarget: i.proposedTarget, target: i.target, reason: i.status === 'pending' ? sources.get(i.sourceId)?.waitingReason || i.message : i.originalMissing || i.extractionPartial || i.associationChange?.retained ? i.message : i.suggestion?.candidates[0]?.reason || i.message, manualLocked: i.manualLocked, createdAt: i.createdAt,
+        message: i.status === 'pending' && sources.get(i.sourceId)?.waitingReason || i.message, proposedTarget: i.proposedTarget, target: i.target, reason: i.status === 'pending' ? sources.get(i.sourceId)?.waitingReason || i.message : i.originalMissing || i.extractionPartial || i.associationChange?.retained ? i.message : i.suggestion?.candidates[0]?.reason || i.message, manualLocked: i.manualLocked,
+        reconcileAttempts: Number(i.reconcileAttempts || 0), reconcileExhausted: ['execution_unknown', 'delivery_reconcile'].includes(i.status) && Number(i.reconcileAttempts || 0) >= 3, createdAt: i.createdAt,
       })) };
     },
     async detail(id) { await init(); const i = items.get(id); if (!i) throw Error('资料不存在'); return clone(i); },
-    async openOriginal(id) { await init(); return serial(async () => { const i = items.get(id); if (!i) throw Error('资料不存在');
+    async openOriginal(id) { await init(); const i = items.get(id); if (!i) throw Error('资料不存在');
       const source = sources.get(i.sourceId);
       if (i.receipt) { await verifyReceipt(i, i.receipt); return i.receipt.path; }
       const file = i.archivePath || (await resolveItemFile(i, source)).path;
-      if (i.archivePath && (await hashStableFile(file)).sha256 !== i.fingerprint.sha256) throw Error('归档原件已变化'); return file; }); },
+      if (i.archivePath && (await hashStableFile(file)).sha256 !== i.fingerprint.sha256) throw Error('归档原件已变化'); return file; },
     async close() { closed = true; await active?.catch(() => {}); await commands.catch(() => {}); },
   };
 }

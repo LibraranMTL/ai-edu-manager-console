@@ -382,9 +382,22 @@ test('explicit bound target delivers once, keeps original and unchanged scans do
 });
 test('unbound student queues review without extraction or cloud; manual target is validated', async t => {
   const f = await fixture(t); await f.write('lesson.txt'); const source = await f.add({ studentId: '' }); await f.scan(source.id);
-  const row = (await f.engine.list()).rows[0]; assert.equal(row.status, 'review'); assert.equal(f.calls.classify, 0); assert.equal(f.calls.extract, 0);
+  const row = (await f.engine.list()).rows[0]; assert.equal(row.status, 'review'); assert.equal(row.automationDisposition, 'unassigned'); assert.equal(f.calls.classify, 0); assert.equal(f.calls.extract, 0);
   const result = await f.engine.decide({ requestId: 'choose-student', action: 'correct', items: [{ id: row.id, revision: row.revision, target }] });
   assert.equal(result.results[0].ok, true);
+});
+test('disabling a source clears automatic scheduling and survives restart', async t => {
+  const f = await fixture(t); const source = await f.add();
+  await f.engine.updateSource({ ...source, enabled: false });
+  let state = (await f.engine.sources()).sources.find(row => row.id === source.id);
+  assert.equal(state.enabled, false); assert.equal(state.automatic, false); assert.equal(state.nextRunAt, '');
+  assert.equal(state.pendingManual, false); assert.equal(state.manualWork, false);
+  await f.engine.close();
+  const restarted = createSmartInbox({ ...f.host, directory: f.directory, stableAgeMs: 0, forbiddenRoots: () => [f.destination] });
+  t.after(() => restarted.close());
+  state = (await restarted.sources()).sources.find(row => row.id === source.id);
+  assert.equal(state.enabled, false); assert.equal(state.automatic, false); assert.equal(state.nextRunAt, '');
+  assert.equal(restarted.hasPendingWork(), false);
 });
 test('source metadata conflict and sensitive files do not auto-deliver', async t => {
   const f = await fixture(t); await f.write('private.txt', '身份证 project-physics'); await f.write('conflict.txt', 'project-biology project-physics');
@@ -474,6 +487,70 @@ test('interrupted model executions are quarantined and cannot be retried or forc
   for (const action of ['retry', 'correct', 'reconcile']) assert.equal((await f.engine.decide({ requestId: action, action, items: [{ id: row.id, revision: row.revision, target }] })).results[0].ok, false);
   await f.scan(s.id); assert.equal(f.calls.deliver, 0);
 });
+
+test('exhausted unknown execution is not reconciled or rewritten by a normal source scan', async t => {
+  let reconcileCalls = 0;
+  const f = await fixture(t, {
+    classify: async () => { throw Object.assign(Error('execution may have been sent'), { code: 'execution_unknown' }); },
+    reconcile: async () => { reconcileCalls++; return null; },
+  });
+  await f.write('unknown-exhausted.txt'); const source = await f.add(); await f.scan(source.id);
+  const row = (await f.engine.list()).rows[0];
+  await f.engine.close();
+  const itemFile = path.join(f.directory, 'items', `${row.id}.json`);
+  const exhausted = JSON.parse(await fs.readFile(itemFile, 'utf8'));
+  Object.assign(exhausted, { reconcileAttempts: 3, nextReconcileAt: '', message: '自动核对已暂停，请人工核对。' });
+  await fs.writeFile(itemFile, JSON.stringify(exhausted));
+  const before = await fs.readFile(itemFile, 'utf8');
+  const restored = createSmartInbox(f.host); t.after(() => restored.close()); await restored.init();
+  await restored.requestScan(source.id); await restored.tick();
+  assert.equal(reconcileCalls, 0);
+  assert.equal(await fs.readFile(itemFile, 'utf8'), before);
+});
+
+test('exhausted unknown execution can be audit-archived without deleting evidence', async t => {
+  const f = await fixture(t, { classify: async () => { throw Object.assign(Error('unknown'), { code: 'execution_unknown' }); } });
+  await f.write('unknown-archive.txt'); const source = await f.add(); await f.scan(source.id);
+  const row = (await f.engine.list()).rows[0]; const original = await f.engine.detail(row.id);
+  await f.engine.close();
+  const itemFile = path.join(f.directory, 'items', `${row.id}.json`), record = JSON.parse(await fs.readFile(itemFile, 'utf8'));
+  Object.assign(record, { reconcileAttempts: 3, nextReconcileAt: '' }); await fs.writeFile(itemFile, JSON.stringify(record));
+  const restored = createSmartInbox(f.host); t.after(() => restored.close()); await restored.init();
+  const current = await restored.detail(row.id);
+  const result = await restored.decide({ requestId: 'archive-exhausted', action: 'archive_unknown', items: [{ id: row.id, revision: current.revision }] });
+  assert.equal(result.results[0].ok, true);
+  assert.equal((await restored.list()).total, 0);
+  const archived = await restored.detail(row.id);
+  assert.equal(archived.status, 'ignored');
+  assert.equal(archived.unknownResolution.disposition, 'abandoned');
+  assert.equal(archived.unknownResolution.executionId, original.executionId);
+  assert.equal(archived.executionId, original.executionId);
+  await fs.access(archived.snapshotPath);
+});
+
+test('explicit unknown restart preserves the old execution audit and creates a new execution id', async t => {
+  let calls = 0;
+  const f = await fixture(t, { classify: async input => {
+    calls++;
+    if (calls === 1) throw Object.assign(Error('unknown'), { code: 'execution_unknown' });
+    await input.onResult(suggestion()); return suggestion();
+  } });
+  await f.write('unknown-restart.txt'); const source = await f.add(); await f.scan(source.id);
+  const row = (await f.engine.list()).rows[0], oldExecutionId = (await f.engine.detail(row.id)).executionId;
+  await f.engine.close();
+  const itemFile = path.join(f.directory, 'items', `${row.id}.json`), record = JSON.parse(await fs.readFile(itemFile, 'utf8'));
+  Object.assign(record, { reconcileAttempts: 3, nextReconcileAt: '' }); await fs.writeFile(itemFile, JSON.stringify(record));
+  const restored = createSmartInbox(f.host); t.after(() => restored.close()); await restored.init();
+  const current = await restored.detail(row.id);
+  const result = await restored.decide({ requestId: 'restart-exhausted', action: 'restart_unknown', items: [{ id: row.id, revision: current.revision }] });
+  assert.equal(result.results[0].ok, true);
+  await restored.tick();
+  const completed = await restored.detail(row.id);
+  assert.notEqual(completed.executionId, oldExecutionId);
+  assert.equal(completed.executionHistory.at(-1).executionId, oldExecutionId);
+  assert.equal(completed.executionHistory.at(-1).resolution, 'user_requested_new_execution');
+  assert.equal(completed.status, 'delivered');
+});
 test('failed delivery without a receipt never reimports blindly; receipt reconciliation completes once', async t => {
   let receipt;
   const f = await fixture(t, { deliver: async (snapshot, _, item) => { const file = path.join(path.dirname(snapshot), 'registered.txt'); await fs.copyFile(snapshot, file); receipt = { ok: true, path: file, recordId: 'registered' }; throw Error('回执返回前中断'); }, reconcile: async () => receipt });
@@ -545,7 +622,7 @@ test('restart reconciles in-flight records without dispatching a new execution',
   const stored = JSON.parse(await fs.readFile(file, 'utf8')); stored.status = 'analyzing';
   await fs.writeFile(file, JSON.stringify(stored));
   const recovered = createSmartInbox(f.host); t.after(() => recovered.close()); await recovered.recover();
-  await recovered.tick(); assert.equal((await recovered.list()).rows[0].status, 'execution_unknown');
+  await recovered.tick(); assert.equal((await recovered.list()).rows[0].status, 'review');
   assert.equal(f.calls.classify, 1);
 });
 

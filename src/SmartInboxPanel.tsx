@@ -4,7 +4,7 @@ import './smart-inbox.css';
 type Schedule = { mode: 'manual' | 'interval' | 'daily' | 'weekly'; minutes: number; time: string; weekday: number };
 type Target = { studentId: string; type: 'student' | 'project'; id: string; categoryId?: string };
 type Source = { id?: string; name: string; type?: string; folder: string; studentId: string; target: Target | null; enabled: boolean; automatic: boolean; confidenceThreshold?: number; staging: boolean; originalMode: string; recursive: boolean; allHistory: boolean; schedule: Schedule | null; detached?: boolean; managedRouting?: boolean; activationAt?: string; error?: string; waitingReason?: string; lastScanAt?: string; nextRunAt?: string };
-type Row = { id: string; revision: number; name: string; sourceId: string; sourceName: string; sourceType?: string; studentId: string; status: string; message: string; proposedTarget?: Target; target?: Target; reason?: string; size: number; manualLocked?: boolean; originalMissing?: boolean; blockReason?: { code: string; category: string; recoverable: boolean; message: string }; execution?: { stage: string; providerId: string; switched: boolean } };
+type Row = { id: string; revision: number; name: string; sourceId: string; sourceName: string; sourceType?: string; studentId: string; status: string; automationDisposition?: string; message: string; proposedTarget?: Target; target?: Target; reason?: string; size: number; manualLocked?: boolean; originalMissing?: boolean; reconcileAttempts?: number; reconcileExhausted?: boolean; blockReason?: { code: string; category: string; recoverable: boolean; message: string }; execution?: { stage: string; providerId: string; switched: boolean } };
 type AgentStatus = { providerId: string; label: string; effectiveProviderId?: string; state: 'ready' | 'channel_ready' | 'login_required' | 'qualification_required' | 'cooldown' | 'unsupported' | 'unavailable'; automaticReady: boolean; message: string; fallbackStatus?: { state: string }; fallback?: { enabled: boolean; version: number; providerId?: string }; login?: { state: string; message: string } };
 export type SmartInboxApi = { smartInboxAction?: (action: string, input?: unknown) => Promise<string>; onSmartInboxChanged?: (callback: () => void) => () => void };
 const daily: Schedule = { mode: 'daily', minutes: 1440, time: '20:00', weekday: 1 };
@@ -24,7 +24,7 @@ export function SmartInboxPanel({ studentId, students, projects, api, legacy, on
   const [tab, setTab] = useState('pending'), [sourceFilter, setSourceFilter] = useState(''), [page, setPage] = useState(1);
   const [sources, setSources] = useState<Source[]>([]), [rows, setRows] = useState<Row[]>([]), [total, setTotal] = useState(0);
   const [defaults, setDefaults] = useState<Schedule>(daily), [form, setForm] = useState<Source | null>(null);
-  const [selected, setSelected] = useState<string[]>([]), [busy, setBusy] = useState(false), [message, setMessage] = useState('');
+  const [selected, setSelected] = useState<string[]>([]), [busy, setBusy] = useState(false), [refreshing, setRefreshing] = useState(false), [rowBusy, setRowBusy] = useState<Set<string>>(new Set()), [message, setMessage] = useState('');
   const [targetStudent, setTargetStudent] = useState(studentId), [targetId, setTargetId] = useState(''), [categoryId, setCategoryId] = useState('');
   const [analysisStudent, setAnalysisStudent] = useState('');
   const [viewStudent, setViewStudent] = useState(studentId);
@@ -37,7 +37,7 @@ export function SmartInboxPanel({ studentId, students, projects, api, legacy, on
     });
   }
   const viewStudentRef = useRef(studentId);
-  function changeViewStudent(id: string) { viewStudentRef.current = id; setViewStudent(id); setTargetStudent(id); setTargetId(''); setSourceFilter(''); setPage(1); setSelected([]); setDetail(null); setAgentStatus(null); }
+  function changeViewStudent(id: string) { viewStudentRef.current = id; generation.current++; setViewStudent(id); setTargetStudent(id); setTargetId(''); setSourceFilter(''); setPage(1); setSelected([]); setRowBusy(new Set()); setDetail(null); setAgentStatus(null); }
   const [categories, setCategories] = useState<{ categoryId: string; name: string }[]>([]), [detail, setDetail] = useState<Record<string, unknown> | null>(null);
   const mounted = useRef(true), generation = useRef(0), running = useRef(false), lastUndo = useRef<{ id: string; revision: number }[]>([]);
   const refreshInFlight = useRef(new Map<string, Promise<void>>());
@@ -53,13 +53,19 @@ export function SmartInboxPanel({ studentId, students, projects, api, legacy, on
     if (pending) return pending;
     const work = (async () => {
       const request = ++generation.current;
-      const [state, list, currentAgentStatus] = await Promise.all([
+      const support = Promise.all([
         call<{ sources: Source[]; defaults: { schedule: Schedule }; error: string }>('sources'),
-        call<{ rows: Row[]; total: number }>('list', { status: tab === 'delivered' ? 'delivered' : tab === 'ignored' ? 'ignored' : 'pending', sourceId: student === viewStudent ? sourceFilter : '', studentId: student, page: student === viewStudent ? page : 1 }),
         student ? call<AgentStatus>('agentStatus', { studentId: student }) : Promise.resolve(null),
       ]);
+      // Keep the concurrently requested support data observed even if the
+      // page-list request fails first; its rejection is rethrown at await.
+      void support.catch(() => {});
+      const list = await call<{ rows: Row[]; total: number }>('list', { status: tab === 'delivered' ? 'delivered' : tab === 'ignored' ? 'ignored' : 'pending', sourceId: student === viewStudent ? sourceFilter : '', studentId: student, page: student === viewStudent ? page : 1 });
       if (!mounted.current || request !== generation.current) return;
-      setSources(state.sources); setDefaults(state.defaults.schedule); setRows(list.rows); setTotal(list.total); setSelected([]); setAgentStatus(currentAgentStatus);
+      setRows(list.rows); setTotal(list.total); setSelected([]);
+      const [state, currentAgentStatus] = await support;
+      if (!mounted.current || request !== generation.current) return;
+      setSources(state.sources); setDefaults(state.defaults.schedule); setAgentStatus(currentAgentStatus);
       if (state.error) setMessage(state.error);
     })();
     refreshInFlight.current.set(key, work);
@@ -79,6 +85,20 @@ export function SmartInboxPanel({ studentId, students, projects, api, legacy, on
     try { await work(); if (mounted.current) await refresh(); } catch (e) { if (mounted.current) setMessage((e as Error).message); }
     finally { running.current = false; if (mounted.current) setBusy(false); }
   }
+  async function refreshNow() {
+    if (refreshing) return;
+    setRefreshing(true); setMessage('');
+    try { await refresh(); }
+    catch (e) { if (mounted.current) setMessage((e as Error).message); }
+    finally { if (mounted.current) setRefreshing(false); }
+  }
+  async function runRow(id: string, work: () => Promise<void>) {
+    if (rowBusy.has(id)) return;
+    setRowBusy(current => new Set(current).add(id)); setMessage('');
+    try { await work(); if (mounted.current) await refresh(); }
+    catch (e) { if (mounted.current) setMessage((e as Error).message); }
+    finally { if (mounted.current) setRowBusy(current => { const next = new Set(current); next.delete(id); return next; }); }
+  }
   function targetName(t?: Target) { if (!t) return '等待推荐'; return `${students.find(s => String(s.id) === t.studentId)?.name || '学生'} · ${t.type === 'student' ? '原始资料库' : projects.find(p => String(p.id) === t.id)?.name || '项目'}${t.categoryId ? ' · ' + t.categoryId : ''}`; }
   async function decide(action: string, chosen = rows.filter(r => selected.includes(r.id))) {
     const result = await call<{ results: { id: string; ok: boolean; message?: string }[] }>('decide', { requestId: crypto.randomUUID(), action,
@@ -95,6 +115,8 @@ export function SmartInboxPanel({ studentId, students, projects, api, legacy, on
   function newSource() { setForm({ name: '', folder: '', studentId: students.length === 1 ? String(students[0].id) : '', target: null, enabled: true, automatic: true, staging: false, originalMode: 'keep', recursive: false, allHistory: false, schedule: null }); }
   const validProjects = projects.filter(p => p.studentIds.map(String).includes(targetStudent) && !['sealed', 'archived'].includes(p.status || ''));
   const selectedRows = rows.filter(r => selected.includes(r.id));
+  const selectedArchivableUnknown = selectedRows.length > 0 && selectedRows.every(r => r.reconcileExhausted && ['execution_unknown', 'delivery_reconcile'].includes(r.status));
+  const selectedRestartableUnknown = selectedRows.length > 0 && selectedRows.every(r => r.reconcileExhausted && r.status === 'execution_unknown' && !r.originalMissing);
   const analysisConflict = selectedRows.some(r => Boolean(r.studentId && r.studentId !== analysisStudent));
   const analysisUnavailable = selectedRows.some(r => r.originalMissing || !['pending', 'review', 'retry', 'delivered'].includes(r.status) || !sources.find(s => s.id === r.sourceId)?.enabled);
   const needsReassignment = analysisConflict || selectedRows.some(r => r.manualLocked || r.status === 'delivered');
@@ -104,7 +126,7 @@ export function SmartInboxPanel({ studentId, students, projects, api, legacy, on
   const authorizationBlocked = authorizationRows && agentStatus?.state !== 'ready';
   const authorizationRecovered = authorizationRows && agentStatus?.state === 'ready';
   return <section className="panel smart-inbox" aria-label="智能资料收件箱">
-    <div className="panel-heading"><div><h2>资料收件箱</h2><p>一次配置来源，可信资料自动投递；需要判断的资料集中确认。</p></div><button disabled={busy} className="secondary" onClick={() => void run(refresh)}>刷新状态</button></div>
+    <div className="panel-heading"><div><h2>资料收件箱</h2><p>一次配置来源，可信资料自动投递；需要判断的资料集中确认。</p></div><button disabled={refreshing} className="secondary" onClick={() => void refreshNow()}>{refreshing ? '刷新中…' : '刷新状态'}</button></div>
     {message ? <p className="notice" role="status" aria-live="polite">{message}</p> : null}
     <div className="actions" role="tablist" aria-label="资料处理视图">{[['pending', '待处理'], ['delivered', '已投递'], ['sources', '来源管理'], ['ignored', '已忽略'], ['legacy', '原下载／分享入口']].map(([value, label]) => <button key={value} role="tab" aria-selected={tab === value} className={tab === value ? 'primary' : 'secondary'} onClick={() => { setTab(value); setPage(1); setSelected([]); setDetail(null); }}>{label}</button>)}</div>
     {tab === 'legacy' ? legacy : tab === 'sources' ? <>
@@ -127,8 +149,8 @@ export function SmartInboxPanel({ studentId, students, projects, api, legacy, on
         {!form.type || ['folder', 'download'].includes(form.type) ? <><p style={{ overflowWrap: 'anywhere' }}>{form.folder || '请选择本机文件夹'}</p>{!form.id ? <div className="actions">{[['documents', '选择文档目录'], ['pictures', '选择图片目录'], ['', '选择其他目录']].map(([recommended, label]) => <button type="button" disabled={busy} key={label} onClick={() => void run(async () => { const picked = await call<{ folder: string; canceled: boolean }>('choose', { recommended }); if (!picked.canceled) setForm(f => f ? { ...f, folder: picked.folder } : f); })}>{label}</button>)}</div> : null}</> : null}
         <label><input type="checkbox" checked={form.enabled} onChange={e => setForm({ ...form, enabled: e.target.checked })} />开启此来源</label>
         <label><input type="checkbox" checked={form.automatic} onChange={e => setForm({ ...form, automatic: e.target.checked })} />可信资料自动投递，其余集中确认</label>
-        <label>自动投递可信阈值<input type="number" min={0.95} max={1} step={0.01} value={form.confidenceThreshold ?? 0.95} onChange={e => setForm({ ...form, confidenceThreshold: Number(e.target.value) })} /></label>
-        <p>默认0.95；还需正文证据充分、候选差距至少0.20且无归属冲突。图片、公式未完整识别只提示，不单独阻断。分数不代表实际准确率；已投递可纠正。</p>
+        <label>自动投递可信阈值<input type="number" min={0.75} max={1} step={0.01} value={form.confidenceThreshold ?? 0.85} onChange={e => setForm({ ...form, confidenceThreshold: Number(e.target.value) })} /></label>
+        <p>默认0.85；还需正文证据、候选差距至少0.10且无归属冲突。图片、公式未完整识别只提示，不单独阻断。自动结果可在已投递中批量纠正。</p>
         <p>开启来源或点击立即扫描，将按需要使用已配置Agent分析资料正文及当前学生上下文，可能消耗额度。</p>
         <details><summary>高级设置</summary><label><input type="checkbox" checked={!form.schedule} onChange={e => setForm({ ...form, schedule: e.target.checked ? null : { ...defaults } })} />继承默认周期</label>{form.schedule ? <ScheduleFields value={form.schedule} onChange={schedule => setForm({ ...form, schedule })} /> : null}
           <label><input type="checkbox" checked={form.allHistory} onChange={e => setForm({ ...form, allHistory: e.target.checked })} />包含全部历史资料（否则首次仅处理最近30天）</label>
@@ -158,7 +180,9 @@ export function SmartInboxPanel({ studentId, students, projects, api, legacy, on
         </>}
       </section> : null}
       <div className="actions"><button disabled={!rows.length || busy} onClick={() => setSelected(rows.map(r => r.id))}>全选当前页</button><button disabled={busy} onClick={() => setSelected([])}>清空选择</button>
-        {tab === 'pending' ? <><button className="primary" disabled={busy || !canAccept} onClick={() => void run(() => decide('accept'))}>确认建议并投递</button><button disabled={busy || !selected.length} onClick={() => void run(() => decide('ignore'))}>忽略</button><button disabled={busy || !selected.length} onClick={() => void run(() => decide('retry'))}>重新分析</button><button disabled={busy || !selected.length} onClick={() => void run(() => decide('reconcile'))}>核对上次结果</button></> : null}
+        {tab === 'pending' ? <><button className="primary" disabled={busy || !canAccept} onClick={() => void run(() => decide('accept'))}>确认建议并投递</button><button disabled={busy || !selectedRows.length || selectedRows.some(r => !['pending', 'review', 'retry'].includes(r.status))} onClick={() => void run(() => decide('ignore'))}>忽略</button><button disabled={busy || !selectedRows.length || selectedRows.some(r => !['review', 'retry'].includes(r.status))} onClick={() => void run(() => decide('retry'))}>重新分析</button><button disabled={busy || !selected.length} onClick={() => void run(() => decide('reconcile'))}>核对上次结果</button>
+          <button disabled={busy || !selectedArchivableUnknown} title="保留原执行、快照与审计记录，不删除原件，也不重新调用Agent" onClick={() => void run(() => decide('archive_unknown'))}>归档未知执行</button>
+          <button disabled={busy || !selectedRestartableUnknown} title="保留旧执行审计并创建新的执行；将再次调用Agent" onClick={() => { if (window.confirm('将保留原执行、快照与审计记录，并创建新的独立执行；将再次调用Agent。是否继续？')) void run(() => decide('restart_unknown')); }}>明确重新执行</button></> : null}
         {tab === 'ignored' ? <button disabled={busy || !selected.length} onClick={() => void run(() => decide('restore'))}>恢复待处理</button> : null}
         {lastUndo.current.length ? <button disabled={busy} onClick={() => void run(async () => { await call('decide', { requestId: crypto.randomUUID(), action: 'restore', items: lastUndo.current }); lastUndo.current = []; })}>撤销刚才的忽略</button> : null}
       </div>
@@ -175,16 +199,16 @@ export function SmartInboxPanel({ studentId, students, projects, api, legacy, on
         {categories.length ? <label>分类<select value={categoryId} onChange={e => setCategoryId(e.target.value)}><option value="">保留现有分类／新资料不指定</option>{categories.map(c => <option key={c.categoryId} value={c.categoryId}>{c.name || c.categoryId}</option>)}</select></label> : null}</div>
         {manualCrossStudent ? <p>将所选资料更正为{students.find(s => s.id === targetStudent)?.name}。旧建议作废；已有引用保留更正记录。</p> : null}
         <button disabled={busy || !targetStudent || !selected.length || selectedRows.some(r => r.originalMissing || !['pending', 'review', 'retry', 'delivered'].includes(r.status))} onClick={() => void run(async () => { setMessage('正在校验原件并投递所选资料…'); await decide('correct'); })}>{manualCrossStudent ? '更正学生并按此位置投递' : '按此位置投递／纠正'}</button></details> : null}
-      <div style={{ overflowX: 'auto' }}><table style={{ width: '100%' }}><thead><tr><th>选择</th><th>资料／来源</th><th>状态</th><th>投递位置与理由</th><th>操作</th></tr></thead><tbody>{rows.map(r => <tr key={r.id}><td><input type="checkbox" aria-label={`选择${r.name}`} checked={selected.includes(r.id)} onChange={e => setSelected(old => e.target.checked ? [...old, r.id] : old.filter(id => id !== r.id))} /></td>
-        <td style={{ overflowWrap: 'anywhere', maxWidth: 300 }}>{r.name}<small style={{ display: 'block' }}>来源：{sourceTypes[r.sourceType || ''] || '自定义来源'} · {r.sourceName} · {(r.size / 1024).toFixed(1)} KiB</small><small style={{ display: 'block' }}>所属学生：{r.studentId ? students.find(s => String(s.id) === r.studentId)?.name || '已绑定学生' : '待确认（上方可批量确认）'}</small></td>
-        <td>{r.originalMissing && r.status !== 'ignored' ? '原件已失效' : !r.studentId && ['pending', 'review'].includes(r.status) ? '待确认学生'
+      <div className="smart-inbox-table-wrap"><table className="smart-inbox-table"><colgroup><col className="select-column" /><col className="material-column" /><col className="status-column" /><col className="reason-column" /><col className="action-column" /></colgroup><thead><tr><th>选择</th><th>资料／来源</th><th>状态</th><th>投递位置与理由</th><th>操作</th></tr></thead><tbody>{rows.map(r => <tr key={r.id}><td className="selection-cell" data-label="选择"><input type="checkbox" aria-label={`选择${r.name}`} checked={selected.includes(r.id)} onChange={e => setSelected(old => e.target.checked ? [...old, r.id] : old.filter(id => id !== r.id))} /></td>
+        <td className="material-cell" data-label="资料／来源"><span className="material-name" title={r.name}>{r.name}</span><small style={{ display: 'block' }}>来源：{sourceTypes[r.sourceType || ''] || '自定义来源'} · {r.sourceName} · {(r.size / 1024).toFixed(1)} KiB</small><small style={{ display: 'block' }}>所属学生：{r.studentId ? students.find(s => String(s.id) === r.studentId)?.name || '已绑定学生' : '待确认（上方可批量确认）'}</small></td>
+        <td className="status-cell" data-label="状态">{r.originalMissing && r.status !== 'ignored' ? '原件已失效' : !r.studentId && ['pending', 'review'].includes(r.status) ? '待指定归属'
           : r.status === 'execution_unknown' ? '执行待核对' : r.blockReason?.category === 'agent' ? '等待 Agent'
           : r.blockReason?.category === 'security' ? '需要人工处理' : r.blockReason?.category === 'resource' ? '等待资源，稍后继续' : r.status === 'analyzing' && r.execution?.stage === 'qualifying' ? '正在准备 Agent' : statuses[r.status] || r.status}</td>
-        <td>{r.originalMissing ? '未投递，可移除待办记录' : r.blockReason ? (r.blockReason.category === 'unknown' ? '上次执行需核对' : '自动分类未完成，资料已保留')
-          : r.status === 'delivered' && r.target ? targetName(r.target) : r.proposedTarget ? targetName(r.proposedTarget) : !r.studentId ? '确认学生后推荐项目' : r.status === 'review' ? '需指定项目' : '分析完成后推荐项目'}
+        <td className="reason-cell" data-label="投递位置与理由">{r.originalMissing ? '未投递，可移除待办记录' : r.blockReason ? (r.blockReason.category === 'unknown' ? '上次执行需核对' : '自动分类未完成，资料已保留')
+          : r.reconcileExhausted ? '自动核对已耗尽；可归档未知执行，或明确创建新执行' : r.status === 'delivered' && r.target ? targetName(r.target) : r.proposedTarget ? targetName(r.proposedTarget) : !r.studentId ? '确认学生后推荐项目' : r.status === 'review' ? '需指定项目' : '分析完成后推荐项目'}
           <small style={{ display: 'block' }}>{r.blockReason?.message || r.reason || r.message}</small>
           {r.execution?.switched ? <small>已切换 {r.execution.providerId} 分析</small> : null}</td>
-        <td><button disabled={busy || r.originalMissing} onClick={() => void run(async () => { await call('open', { id: r.id }); })}>原件</button><button disabled={busy} onClick={() => void run(async () => setDetail(await call('detail', { id: r.id }))) }>详情</button>{tab === 'pending' && ['pending', 'review', 'retry'].includes(r.status) ? <button disabled={busy} title="移至已忽略，保留操作历史，不删除任何原件" onClick={() => void run(() => decide('ignore', [r]))}>移除记录</button> : null}</td></tr>)}</tbody></table></div>
+        <td className="row-actions" data-label="操作"><button disabled={rowBusy.has(r.id) || r.originalMissing} onClick={() => void runRow(r.id, async () => { await call('open', { id: r.id }); })}>原件</button><button disabled={rowBusy.has(r.id)} onClick={() => void runRow(r.id, async () => setDetail(await call('detail', { id: r.id }))) }>详情</button>{tab === 'pending' && ['pending', 'review', 'retry'].includes(r.status) ? <button disabled={rowBusy.has(r.id)} title="移至已忽略，保留操作历史，不删除任何原件" onClick={() => void runRow(r.id, () => decide('ignore', [r]))}>移除记录</button> : null}</td></tr>)}</tbody></table></div>
       {!rows.length ? <p>当前没有待办资料。可在来源管理中添加目录或立即扫描。</p> : null}
       <div className="actions"><button disabled={page <= 1 || busy} onClick={() => setPage(p => p - 1)}>上一页</button><span>第{page}页 · 共{total}项</span><button disabled={page * 25 >= total || busy} onClick={() => setPage(p => p + 1)}>下一页</button></div>
       {detail ? <details open><summary>资料诊断详情</summary><pre style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>{JSON.stringify(detail, null, 2)}</pre><button onClick={() => setDetail(null)}>关闭详情</button></details> : null}

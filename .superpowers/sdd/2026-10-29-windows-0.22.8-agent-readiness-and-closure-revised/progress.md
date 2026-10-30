@@ -52,3 +52,4 @@ Task 2: complete (commits 517da8d..6d39170, tests: node --test tests/agent-capab
 Task 3 review: existing v5 execution ledger, Worker claim/advance operations, single-writer cache synchronization, partial unique indexes, restart/lost-reply protection, and pre-spawn `send_intent` barrier all passed. Resource/capability waits remain before persistent claim. No production change or migration rerun was warranted.
 
 Task 3 verification: execution-claim/dispatch-barrier/Worker-durability/session-summary/incremental-store suites → 32 passed, 0 failed.
+Task 3: complete (commits fa25009..74d7595, tests: node --test tests/task-execution-claim.test.cjs tests/task-dispatch-barrier.test.cjs tests/task-worker-durability.test.cjs tests/task-session-summary.test.cjs tests/task-incremental-v2.test.cjs → ℹ duration_ms 1333.2923)

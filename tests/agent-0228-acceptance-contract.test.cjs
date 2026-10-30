@@ -36,3 +36,13 @@ test('performance without a paired baseline is rejected',t=>{const {root,report}
 test('candidate/source/runtime hash mismatch is rejected',t=>{const {root,report}=fixture(t);report.sourceProvenance.runtimeAsarHash='b'.repeat(64);assert.ok(validateEvidence(report,root).failures.includes('candidate_source_mismatch'));});
 test('any duplicate external execution is rejected',t=>{const {root,report}=fixture(t);report.scenarios[0].duplicateExecutions=1;assert.ok(validateEvidence(report,root).failures.some(x=>x.includes('workbuddy-real')));});
 test('lost late-receipt evidence is rejected',t=>{const {root,report}=fixture(t);report.recovery.lateReceiptsSettled=1;assert.ok(validateEvidence(report,root).failures.includes('late_receipt_conservation'));});
+
+test('release CLI requires the C1-C5 provider and intake matrix as well as A and B',t=>{
+ const {root,report}=fixture(t);const matrixEvidence=write(root,'matrix.json',{passed:true});report.artifacts.push(matrixEvidence);
+ report.matrix=[...Array.from({length:15},(_,i)=>({id:`A${i+1}`,status:'pass',candidateHash:HASH,evidence:matrixEvidence.path})),
+  ...Array.from({length:7},(_,i)=>({id:`B${i+1}`,status:'pass',candidateHash:HASH,evidence:matrixEvidence.path}))];
+ fs.writeFileSync(path.join(root,'acceptance-index.json'),JSON.stringify(report));
+ const result=spawnSync(process.execPath,[path.join(__dirname,'../scripts/acceptance-agent-0228.cjs'),`--evidence=${root}`,'--stage=pre-candidate'],{encoding:'utf8'});
+ assert.equal(result.status,1);const checked=JSON.parse(fs.readFileSync(path.join(root,'acceptance-result.json'),'utf8'));
+ for(const id of ['C1','C2','C3','C4','C5'])assert.ok(checked.failures.includes(`matrix:${id}`));
+});

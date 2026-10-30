@@ -7,7 +7,7 @@ const root=path.resolve(args.evidence);fs.mkdirSync(root,{recursive:true});
 let result;
 try{
  const report=JSON.parse(fs.readFileSync(path.join(root,'acceptance-index.json'),'utf8').replace(/^\uFEFF/,''));result=validateEvidence(report,root);
- const required=[...Array.from({length:15},(_,i)=>`A${i+1}`),...Array.from({length:7},(_,i)=>`B${i+1}`)];
+ const required=[...Array.from({length:15},(_,i)=>`A${i+1}`),...Array.from({length:7},(_,i)=>`B${i+1}`),...Array.from({length:5},(_,i)=>`C${i+1}`)];
  for(const id of required){const row=report.matrix?.find(x=>x.id===id);if(!row||row.status!=='pass'||row.candidateHash!==report.candidateHash||!report.artifacts?.some(a=>a.path===row.evidence))result.failures.push(`matrix:${id}`);}
  if(args.stage==='release')for(const kind of ['installer','portable','zip'])if(!report.packaging?.some(p=>p.kind===kind&&p.asarHash===report.candidateHash&&p.sha256&&p.bytes>0&&p.authenticodeStatus&&p.localVerified===true))result.failures.push(`packaging:${kind}`);
  if(args.stage==='release'&&report.installUpgradeVerified!==true)result.failures.push('install_upgrade_missing');

@@ -43,3 +43,7 @@ Task 5a: TDD reproduced unbound-source task pollution and source-disable persist
 
 Task 5a verification: `node --test tests/smart-inbox-task-center.test.cjs tests/smart-inbox.test.cjs` → 64 passed, 0 failed; `pnpm typecheck` → passed.
 Task 5a: complete (commits 3afbe34..0e8fc85, tests: node --test tests/smart-inbox-task-center.test.cjs tests/smart-inbox.test.cjs → ℹ duration_ms 6151.0701)
+
+Task 2: TDD reproduced the provider-order defect: a refreshing Provider A hid a fresh available Provider B. `ensureReady` now scans all candidates for fresh positive evidence before waiting on a shared refresh, while an explicit lock still waits for the locked provider. Probe errors retain tri-state semantics and now expose bounded `lastError` evidence to the task wait projection.
+
+Task 2 verification: readiness/control-plane/task-channel/capability-wakeup suites → 41 passed, 0 failed; `pnpm typecheck` → passed.

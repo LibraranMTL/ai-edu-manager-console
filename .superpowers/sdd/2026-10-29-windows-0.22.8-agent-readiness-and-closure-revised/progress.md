@@ -53,3 +53,7 @@ Task 3 review: existing v5 execution ledger, Worker claim/advance operations, si
 
 Task 3 verification: execution-claim/dispatch-barrier/Worker-durability/session-summary/incremental-store suites → 32 passed, 0 failed.
 Task 3: complete (commits fa25009..74d7595, tests: node --test tests/task-execution-claim.test.cjs tests/task-dispatch-barrier.test.cjs tests/task-worker-durability.test.cjs tests/task-session-summary.test.cjs tests/task-incremental-v2.test.cjs → ℹ duration_ms 1333.2923)
+
+Task 4 review: the automatic wake queue already owns bounded timers, earlier-deadline replacement, 20-item drains, SQL-paged restart restoration, targeted capability wakeups, and shutdown cleanup. Capability waits remain automatic and do not consume execution attempts or manufacture manual handoffs. No production change was needed.
+
+Task 4 verification: capability-wakeup/auto-dispatch/task-performance/read-model/retry-queue suites → 29 passed, 0 failed.

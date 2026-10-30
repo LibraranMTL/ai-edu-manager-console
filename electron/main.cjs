@@ -27590,6 +27590,16 @@ async function submitResearchTask(task, type, executionOptions={}) {
     return output;
   }).catch(async error => {
     let timeoutDisposition=null;
+    const providerNotSent=error.stage==='not_sent'&&['AGENT_MODEL_UNAVAILABLE','AUTHENTICATION_REQUIRED','AGENT_UNAVAILABLE'].includes(String(error.code||''));
+    if(providerNotSent){
+      const nextProviderAvailable=configuredProviders.some(id=>String(id)!==String(providerId));
+      timeoutDisposition=nextProviderAvailable?{
+        disposition:'safe_retry',reasonCode:'research_provider_unavailable_not_sent',
+        nextRetryAt:new Date(Date.now()+15*1000).toISOString(),nextProviderPolicy:'next_ready_provider',evidenceRef:executionId,
+      }:{
+        disposition:'terminal_failure',reasonCode:'research_no_alternate_provider',nextRetryAt:'',nextProviderPolicy:'none',evidenceRef:executionId,
+      };
+    }
     if(error.code==='RESEARCH_TIMEOUT'){
       const before=readTaskStore().tasks.find(item=>item.id===task.id)||task;
       const inputHash=String(before.sourceVersion||before.input?.sourceVersion||before.workKey||'');
@@ -27634,7 +27644,7 @@ async function submitResearchTask(task, type, executionOptions={}) {
       if (!failed.ok) appendTaskEvent(id, 'research_settlement_rejected', { message: failed.message }, executionId);
     }
     (await writeTaskStoreDurably(currentStore));
-    if(!requestSent)await releaseUnstartedTaskClaim(claim,'research_preflight_failed');
+    if(!requestSent||error.stage==='not_sent')await releaseUnstartedTaskClaim(claim,'research_preflight_failed');
     if(timeoutDisposition?.disposition==='safe_retry'){
       await settlePersistentTaskAttempt(task.id,{knownResult:true,resultKind:'safe_retry_no_output'});
       const delay=Math.max(1000,Date.parse(timeoutDisposition.nextRetryAt)-Date.now());

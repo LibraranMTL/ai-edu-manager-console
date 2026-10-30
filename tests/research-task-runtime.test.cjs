@@ -21,7 +21,7 @@ test('WorkBuddy queues a second desktop handoff before creating any packet', asy
   assert.equal(result.adapter, 'workbuddy');
 });
 
-function fixture(output) {
+function fixture(output, options = {}) {
   const store = { tasks: [], history: [] }, events = [], timers = new Set();
   let calls = 0,claims=0,releases=0,sends=0,starts=0;
   const settlements = [], wakes = [], budgets = new Map();
@@ -38,8 +38,8 @@ function fixture(output) {
     normalizeTaskResult: (t, r, v, defaults) => ({ ...defaults, ...r, validation: v }),
     persistReportIssue: () => '', isAutoPublishReportTask: () => false, shouldAutoAccept: () => false,
     findStudentByKey:()=>({id:'s1'}),agentControlPolicy:()=>({}),
-    require:name=>name==='./agent-control-plane.cjs'?{providersFor:()=>['codex']}:require(name),
-    ensureTaskDispatchReadiness:async()=>({decision:'dispatch',providerId:'codex'}),
+    require:name=>name==='./agent-control-plane.cjs'?{providersFor:()=>options.providers||['codex']}:require(name),
+    ensureTaskDispatchReadiness:async()=>({decision:'dispatch',providerId:options.providerId||'codex'}),
     captureHeavyWorkGate:{tryAcquire:()=>()=>releases++,blockState:()=>({})},captureTimelineResourceSnapshot:()=>({}),
     deferTaskForAdapter:()=>({ok:true,deferred:true}),
     externalTaskDispatchBarrier:()=>({claim:async()=>{claims++;return {ok:true,claimed:true,executionId:'durable-execution'};},sendIntent:async()=>{sends++;return {ok:true};},started:async()=>{starts++;return {ok:true};}}),
@@ -129,6 +129,19 @@ test('confirmed zero-effect research timeout settles the old attempt and schedul
   assert.equal(f.store.tasks[0].researchRecovery.nextProviderPolicy,'same_provider_once');
   assert.equal(f.settlements.at(-1).id,task.id);
   assert.equal(f.settlements.at(-1).options.knownResult,true);
+  assert.equal(f.settlements.at(-1).options.resultKind,'safe_retry_no_output');
+  assert.equal(f.wakes.length,1);
+});
+
+test('Codex model incompatibility is not-sent and schedules the next qualified research provider', async () => {
+  const f=fixture(async()=>{throw Object.assign(Error('model incompatible'),{code:'AGENT_MODEL_UNAVAILABLE',stage:'not_sent'});},
+    {providers:['codex','llm-api']});
+  const task=f.add('competition_research_check');await f.ctx.submitResearchTask(task,'competition');
+  await f.ctx.taskChildProcesses.get(task.id).completion;
+  assert.equal(f.store.tasks[0].status,'failed');
+  assert.equal(f.store.tasks[0].businessOutcome,'failed_retryable');
+  assert.deepEqual(f.store.tasks[0].researchRecovery.excludedProviders,['codex']);
+  assert.equal(f.store.tasks[0].researchRecovery.nextProviderPolicy,'next_ready_provider');
   assert.equal(f.settlements.at(-1).options.resultKind,'safe_retry_no_output');
   assert.equal(f.wakes.length,1);
 });

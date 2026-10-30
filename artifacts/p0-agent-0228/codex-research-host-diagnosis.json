@@ -1,0 +1,42 @@
+{
+  "schema": "codex-research-host-diagnosis.v1",
+  "checkedAt": "2026-10-30T15:41:31.846Z",
+  "candidateExecutable": "C:/Users/bxw00/AppData/Local/OpenAI/Codex/bin/codex.exe",
+  "runtimeVersion": "codex-cli 0.130.0-alpha.5",
+  "candidateModelSelection": "account default",
+  "runs": 3,
+  "requiredSuccesses": 2,
+  "successes": 0,
+  "failureClass": "model_configuration",
+  "stableFailure": {
+    "status": 400,
+    "code": "model_not_found",
+    "message": "The account default gpt-5.5 model is not supported by this Codex CLI/account combination.",
+    "processStartedEveryRun": true,
+    "webEventCountEveryRun": 0,
+    "structuredOutputEveryRun": false,
+    "exitCodeEveryRun": 1
+  },
+  "causalProbe": {
+    "model": "gpt-5.6-luna",
+    "result": "requires_newer_codex",
+    "message": "The account-current model requires a newer version of Codex."
+  },
+  "candidateDecision": {
+    "codexResearchQualified": false,
+    "truthThresholdChanged": false,
+    "productionModelPinned": false,
+    "automaticFallback": "A pre-tool model-configuration rejection is classified not_sent, closes the old attempt as safe_retry_no_output, excludes Codex, and wakes the next qualified research provider after 15 seconds.",
+    "unknownExecutionProtection": "unchanged"
+  },
+  "evidence": [
+    "artifacts/p0-agent-0228/codex-research-host-final/diagnosis.json",
+    "artifacts/p0-agent-0228/codex-research-host-final/run-1/events.json",
+    "artifacts/p0-agent-0228/codex-research-host-final/run-1/process-tree.json",
+    "artifacts/p0-agent-0228/codex-research-host-final/run-2/events.json",
+    "artifacts/p0-agent-0228/codex-research-host-final/run-2/process-tree.json",
+    "artifacts/p0-agent-0228/codex-research-host-final/run-3/events.json",
+    "artifacts/p0-agent-0228/codex-research-host-final/run-3/process-tree.json",
+    "artifacts/p0-agent-0228/model-probe-luna2/run-1/summary.json"
+  ]
+}

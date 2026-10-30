@@ -1,0 +1,32 @@
+[
+  {
+    "at": "2026-10-30T15:40:57.045Z",
+    "type": "thread.started",
+    "itemType": "",
+    "status": "",
+    "actionType": ""
+  },
+  {
+    "at": "2026-10-30T15:40:57.047Z",
+    "type": "turn.started",
+    "itemType": "",
+    "status": "",
+    "actionType": ""
+  },
+  {
+    "at": "2026-10-30T15:41:02.990Z",
+    "type": "error",
+    "itemType": "",
+    "status": "",
+    "actionType": "",
+    "errorClass": "model_configuration"
+  },
+  {
+    "at": "2026-10-30T15:41:02.990Z",
+    "type": "turn.failed",
+    "itemType": "",
+    "status": "",
+    "actionType": "",
+    "errorClass": "model_configuration"
+  }
+]

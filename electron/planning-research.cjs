@@ -62,6 +62,16 @@ function researchOutputState(outputPath) {
   } catch { return { outputPresent: false, outputSize: 0 }; }
 }
 
+function codexEventErrorMessage(event) {
+  let message = event?.message || event?.error?.message || event?.error?.error?.message || '';
+  if (typeof message !== 'string') return '';
+  try {
+    const parsed = JSON.parse(message);
+    message = parsed?.error?.message || parsed?.message || message;
+  } catch { /* The event may already contain plain text. */ }
+  return String(message).slice(0, 1000);
+}
+
 async function terminateAndCollectResearchEvidence({ child, outputPath, events = [], stderrTail = '', startedAt = '', timeoutAt = '',
   executionContext = {}, terminateProcess = candidate => candidate?.kill?.(), graceMs = 250, finalizationTimeoutMs = 5000,
   terminationCause = 'timeout_kill', localReceiptPresent = false, businessWriteStarted = false }) {
@@ -125,7 +135,7 @@ function createCodexResearchSearch({ executable, spawnProcess, terminateProcess,
       await beforeExecute?.();
       if(signal?.aborted)throw Object.assign(Error('研究已取消'),{stage:'not_sent',code:'RESEARCH_CANCELLED'});
       return await new Promise((resolve, reject) => {
-        let child, timer, settled = false, finalizing = false, pending = '', stderr = '', startedAt = '';
+        let child, timer, settled = false, finalizing = false, pending = '', stderr = '', startedAt = '', eventError = '';
         const events = [];
         const finish = (error, value) => {
           if (settled) return;
@@ -174,7 +184,11 @@ function createCodexResearchSearch({ executable, spawnProcess, terminateProcess,
             const lines = pending.split('\n'); pending = lines.pop();
             if (pending.length > 2 * 1024 * 1024) return abort();
             for (const line of lines) {
-              try { const event = JSON.parse(line); if (event.type === 'item.completed' && events.length < 500) events.push(event); } catch { /* Ignore non-event output. */ }
+              try {
+                const event = JSON.parse(line);
+                if (event.type === 'error') eventError = codexEventErrorMessage(event);
+                if (event.type === 'item.completed' && events.length < 500) events.push(event);
+              } catch { /* Ignore non-event output. */ }
             }
           });
           child.stderr.on('data', (chunk) => { stderr = (stderr + chunk.toString()).slice(-2000); });
@@ -182,7 +196,16 @@ function createCodexResearchSearch({ executable, spawnProcess, terminateProcess,
           child.once('error', () => { if (!finalizing) finish(new Error('无法启动 Codex CLI，请重新检测安装状态。')); });
           child.once('close', (code) => {
             if (settled || finalizing) return;
-            if (code !== 0) return finish(new Error(/401|unauthorized|not logged in/i.test(stderr) ? 'Codex 登录已失效，请重新登录后重试。' : 'Codex 联网研究执行失败，请检查登录、网络和 CLI 版本后重试。'));
+            if (code !== 0) {
+              if (/model.+not supported|model_not_found|requires a newer version of Codex/i.test(eventError)) {
+                return finish(Object.assign(new Error('当前 Codex CLI 与账号可用模型不兼容，系统将改用下一个联网研究执行器。'), {
+                  code: 'AGENT_MODEL_UNAVAILABLE', stage: 'not_sent', providerFailure: 'model_configuration',
+                }));
+              }
+              return finish(Object.assign(new Error(/401|unauthorized|not logged in/i.test(stderr) ? 'Codex 登录已失效，请重新登录后重试。' : 'Codex 联网研究执行失败，请检查登录、网络和 CLI 版本后重试。'), {
+                code: /401|unauthorized|not logged in/i.test(stderr) ? 'AUTHENTICATION_REQUIRED' : 'RESEARCH_EXECUTION_FAILED',
+              }));
+            }
             try {
               if (fs.statSync(outputPath).size > 1024 * 1024) throw new Error('研究结果过大。');
               finish(null, verifiedOutput(JSON.parse(fs.readFileSync(outputPath, 'utf8')), events));
@@ -203,4 +226,4 @@ function createCodexResearchSearch({ executable, spawnProcess, terminateProcess,
   };
 }
 
-module.exports = { createCodexResearchSearch, terminateAndCollectResearchEvidence, verifiedOutput, publicUrl, OUTPUT_SCHEMA, outputSchema };
+module.exports = { createCodexResearchSearch, terminateAndCollectResearchEvidence, verifiedOutput, publicUrl, codexEventErrorMessage, OUTPUT_SCHEMA, outputSchema };

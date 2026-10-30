@@ -4,6 +4,7 @@ const fs = require('node:fs');
 const { EventEmitter } = require('node:events');
 const { PassThrough } = require('node:stream');
 const { verifiedOutput, createCodexResearchSearch } = require('../electron/planning-research.cjs');
+function fakeChild(){const child=new EventEmitter();child.pid=321;child.stdout=new PassThrough();child.stderr=new PassThrough();child.stdin=new PassThrough();return child;}
 test('research refuses a rejected send barrier before spawning any process',async()=>{
  let spawned=0;const search=createCodexResearchSearch({executable:'synthetic',spawnProcess:()=>spawned++,terminateProcess:()=>{}});
  await assert.rejects(search({queryInput:{},beforeExecute:async()=>{throw Error('revoked');}}),/revoked/);assert.equal(spawned,0);
@@ -52,6 +53,7 @@ test('executor forwards only queryInput, uses isolated read-only CLI and cleans 
   assert.equal(result.sources.length, 1);
   assert.doesNotMatch(prompt, /private-student-id/);
   assert.ok(args.includes('--search')); assert.ok(args.includes('--ignore-user-config'));
+  assert.equal(args.includes('--model'), false, 'the candidate must not pin an account-incompatible desktop model into the older CLI');
   assert.ok(args.some((arg, index) => arg === '--enable' && args[index + 1] === 'tool_search'));
   assert.ok(!args.some((arg, index) => arg === '--disable' && args[index + 1] === 'tool_search'));
   for (const capability of ['plugins', 'apps', 'browser_use', 'computer_use', 'shell_tool', 'memories', 'multi_agent']) {
@@ -69,6 +71,27 @@ test('executor abort terminates the child and returns an actionable failure', as
   } });
   await assert.rejects(search({ queryInput: {}, signal: controller.signal }), /已取消/);
   assert.equal(terminated, true);
+});
+
+test('account-incompatible Codex model is a not-sent provider failure that may route to the next provider', async () => {
+  const child = fakeChild();
+  const search = createCodexResearchSearch({
+    executable: 'codex', terminateProcess: () => child.emit('close', 1),
+    spawnProcess: () => {
+      process.nextTick(() => {
+        child.stdout.write(JSON.stringify({ type: 'error', message: JSON.stringify({
+          type: 'error', status: 400, error: { message: "The 'gpt-5.5' model is not supported when using Codex with a ChatGPT account.", code: 'model_not_found' },
+        }) }) + '\n');
+        child.emit('close', 1);
+      });
+      return child;
+    },
+  });
+  await assert.rejects(search({ queryInput: { purpose: 'competition_recommendation' } }), error => {
+    assert.equal(error.code, 'AGENT_MODEL_UNAVAILABLE');
+    assert.equal(error.stage, 'not_sent');
+    return true;
+  });
 });
 
 test('executor timeout waits for close and returns bounded no-effect evidence before cleanup', async () => {

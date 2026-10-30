@@ -84,3 +84,9 @@ Task 6 scale evidence: 100k-task recovery scanned all 5000 pages in 2536ms; Work
 Task 4b: complete (commits 814fcb3..a2d873b, tests: node --test tests/planning-research-host-contract.test.cjs tests/planning-research.test.cjs tests/research-task-runtime.test.cjs tests/task-execution-claim.test.cjs → ℹ duration_ms 1316.636)
 Task 5: complete (commits c5852b7..c5852b7, tests: node --test tests/task-closure-decision.test.cjs tests/digest-reconciliation-budget.test.cjs tests/smart-inbox-task-center.test.cjs tests/smart-inbox.test.cjs tests/task-read-model.test.cjs → ℹ duration_ms 6404.4615)
 Task 6: complete (commits 730ca2d..1147784, tests: node --test tests/task-backlog-recovery.test.cjs tests/digest-worker-control-plane.test.cjs → ℹ duration_ms 484.2821)
+
+Task 7 review: the frozen 0.22.8 delta already stores a per-process `sessionRunId` on execution claims, aggregates starts/outcomes/manual packets from indexed SQLite execution-ledger tables, and keeps business work counts distinct from provider-attempt counts. Claimed-only and `no_work` rows do not inflate automatic starts or output success; duplicate receipts and manual packets are idempotent; historical settlements are attributed separately.
+
+Task 7 display review: `needs_help` is a mutually exclusive task-row group, while the current-session sentence separately labels Agent attempts, business work items, manual packets, historical settlements and no-work outcomes. Unknown executions display automatic reconciliation only while the persisted recovery plan still has a system-owned query/confirmation action and wake time; exhausted reconciliation becomes one explicit user question. Safe retry, resource wait, capability wait and disabled automation retain distinct truthful labels.
+
+Task 7 verification: session-summary/read-model/task-center suites passed 18/18 and TypeScript typecheck passed. No production patch was warranted.

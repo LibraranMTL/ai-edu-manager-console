@@ -1,0 +1,64 @@
+{
+  "schema": "edu.packaged-research-fallback.v1",
+  "syntheticOnly": true,
+  "studentDataRead": false,
+  "startedAt": "2026-11-01T08:52:01.689Z",
+  "providers": [
+    "codex",
+    "workbuddy"
+  ],
+  "attempts": [
+    {
+      "providerId": "codex",
+      "outcome": "not_sent",
+      "code": "AGENT_MODEL_UNAVAILABLE",
+      "stage": "not_sent",
+      "providerFailure": "model_configuration",
+      "message": "当前 Codex CLI 与账号可用模型不兼容，系统将改用下一个联网研究执行器。"
+    },
+    {
+      "providerId": "workbuddy",
+      "outcome": "succeeded",
+      "sourceCount": 1
+    }
+  ],
+  "phases": [
+    {
+      "name": "workbuddy_qualification_cache",
+      "passed": true,
+      "durationMs": 0
+    },
+    {
+      "name": "workbuddy_search",
+      "passed": true,
+      "durationMs": 26627
+    }
+  ],
+  "processes": [
+    {
+      "phase": "codex",
+      "processId": 24180,
+      "stdoutBytes": 587,
+      "stderrBytes": 185331,
+      "exitCode": 1,
+      "signal": ""
+    },
+    {
+      "phase": "workbuddy_search",
+      "processId": 32276,
+      "stdoutBytes": 32382,
+      "stderrBytes": 0,
+      "exitCode": 0,
+      "signal": ""
+    }
+  ],
+  "passed": true,
+  "fallback": {
+    "safe": true,
+    "from": "codex",
+    "to": "workbuddy",
+    "reason": "model_configuration"
+  },
+  "resolution": "fallback_succeeded",
+  "finishedAt": "2026-11-01T08:52:38.949Z"
+}

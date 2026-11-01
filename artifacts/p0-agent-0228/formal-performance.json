@@ -1,0 +1,28 @@
+{
+  "schema": "edu.agent0228.formal-performance.v1",
+  "generatedAt": "2026-11-01T08:20:19.685Z",
+  "passed": true,
+  "failures": [],
+  "workload": "real_agent",
+  "repeats": 3,
+  "interactionSamples": 90,
+  "idleCpuCorePercent": 0.03,
+  "interactionP95Ms": 38.208900000000085,
+  "mainLongTaskMaxMs": 0,
+  "extraMainMemoryBytes": 532480,
+  "timeouts": 0,
+  "baselineCompleted": 3,
+  "treatmentCompleted": 39,
+  "baselineSeconds": 1800,
+  "treatmentSeconds": 5400,
+  "throughputLossPercent": -333.3333333333333,
+  "interactionTrace": "r1-backlog-agent-workbuddy-remaining2-fixed/r12-agent-backlog-workbuddy-2/visible-interactions.json",
+  "processTreeTrace": "r1-backlog-agent-workbuddy-remaining2-fixed/r12-agent-backlog-workbuddy-2/runtime.json",
+  "baselineTrace": "r1-normal-agent-workbuddy-10min-x3/performance-summary-audited.json",
+  "taskTimeline": "r1-backlog-agent-workbuddy-remaining2-fixed/r12-agent-backlog-workbuddy-2/task-semantics-after.json",
+  "scenarioDurations": {
+    "idleSeconds": 600,
+    "normalSeconds": 600,
+    "backlogSeconds": 1800
+  }
+}

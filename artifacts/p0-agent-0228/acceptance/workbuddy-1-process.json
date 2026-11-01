@@ -1,0 +1,11 @@
+{
+  "schema": "edu.agent0228.process-evidence.v1",
+  "processes": [
+    {
+      "pid": 32776,
+      "ppid": 33144,
+      "providerId": "workbuddy",
+      "executablePath": "D:\\群星矩阵文件\\智能体开发项目\\AI教育管家\\.worktrees\\windows-0228-agent-closure\\node_modules\\electron\\dist\\electron.exe"
+    }
+  ]
+}

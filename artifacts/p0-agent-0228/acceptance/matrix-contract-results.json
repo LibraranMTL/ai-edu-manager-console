@@ -1,0 +1,131 @@
+{
+  "schema": "edu.agent0228.matrix-contract-results.v1",
+  "generatedAt": "2026-10-30T16:52:58.530Z",
+  "candidateHash": "f4c453cf69b37325d06fe72d8539ac2fa196c43aa644cffa5e91c069beb08c58",
+  "command": [
+    "C:\\Program Files\\nodejs\\node.exe",
+    "--test",
+    "tests/agent-capability-readiness.test.cjs",
+    "tests/task-capability-wakeup.test.cjs",
+    "tests/task-dispatch-barrier.test.cjs",
+    "tests/task-execution-claim.test.cjs",
+    "tests/task-unresolved-dispatch-conflict.test.cjs",
+    "tests/task-session-summary.test.cjs",
+    "tests/task-auto-dispatch.test.cjs",
+    "tests/task-backlog-recovery.test.cjs",
+    "tests/digest-reconciliation-budget.test.cjs",
+    "tests/smart-inbox-task-center.test.cjs",
+    "tests/smart-inbox-unknown-resolution-contract.test.cjs",
+    "tests/research-task-runtime.test.cjs",
+    "tests/research-timeout-recovery.test.cjs",
+    "tests/planning-research.test.cjs",
+    "tests/packaged-research-fallback.test.cjs"
+  ],
+  "testFiles": [
+    "tests/agent-capability-readiness.test.cjs",
+    "tests/task-capability-wakeup.test.cjs",
+    "tests/task-dispatch-barrier.test.cjs",
+    "tests/task-execution-claim.test.cjs",
+    "tests/task-unresolved-dispatch-conflict.test.cjs",
+    "tests/task-session-summary.test.cjs",
+    "tests/task-auto-dispatch.test.cjs",
+    "tests/task-backlog-recovery.test.cjs",
+    "tests/digest-reconciliation-budget.test.cjs",
+    "tests/smart-inbox-task-center.test.cjs",
+    "tests/smart-inbox-unknown-resolution-contract.test.cjs",
+    "tests/research-task-runtime.test.cjs",
+    "tests/research-timeout-recovery.test.cjs",
+    "tests/planning-research.test.cjs",
+    "tests/packaged-research-fallback.test.cjs"
+  ],
+  "exitCode": 0,
+  "passed": true,
+  "log": "matrix-contract-results.log",
+  "logSha256": "6eb583b31bd82f9ea90abd7c37fddf852ad547f5350f0f5788b23f8b549d63b9",
+  "rows": {
+    "A1": {
+      "status": "pass",
+      "evidenceType": "targeted_contract_tests"
+    },
+    "A2": {
+      "status": "pass",
+      "evidenceType": "targeted_contract_tests"
+    },
+    "A3": {
+      "status": "pass",
+      "evidenceType": "targeted_contract_tests"
+    },
+    "A4": {
+      "status": "pass",
+      "evidenceType": "targeted_contract_tests"
+    },
+    "A5": {
+      "status": "pass",
+      "evidenceType": "targeted_contract_tests"
+    },
+    "A6": {
+      "status": "pass",
+      "evidenceType": "targeted_contract_tests"
+    },
+    "A7": {
+      "status": "pass",
+      "evidenceType": "targeted_contract_tests"
+    },
+    "A8": {
+      "status": "pass",
+      "evidenceType": "targeted_contract_tests"
+    },
+    "A9": {
+      "status": "pass",
+      "evidenceType": "targeted_contract_tests"
+    },
+    "A10": {
+      "status": "pass",
+      "evidenceType": "targeted_contract_tests"
+    },
+    "A11": {
+      "status": "pass",
+      "evidenceType": "targeted_contract_tests"
+    },
+    "A12": {
+      "status": "pass",
+      "evidenceType": "targeted_contract_tests"
+    },
+    "B1": {
+      "status": "pass",
+      "evidenceType": "targeted_contract_tests"
+    },
+    "B2": {
+      "status": "pass",
+      "evidenceType": "targeted_contract_tests"
+    },
+    "B3": {
+      "status": "pass",
+      "evidenceType": "targeted_contract_tests"
+    },
+    "B4": {
+      "status": "pass",
+      "evidenceType": "targeted_contract_tests"
+    },
+    "B5": {
+      "status": "pass",
+      "evidenceType": "targeted_contract_tests"
+    },
+    "B6": {
+      "status": "pass",
+      "evidenceType": "targeted_contract_tests"
+    },
+    "B7": {
+      "status": "pass",
+      "evidenceType": "targeted_contract_tests"
+    },
+    "C1": {
+      "status": "pass",
+      "evidenceType": "targeted_contract_tests"
+    },
+    "C5": {
+      "status": "pass",
+      "evidenceType": "targeted_contract_tests"
+    }
+  }
+}

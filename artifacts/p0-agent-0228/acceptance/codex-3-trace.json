@@ -1,0 +1,40 @@
+{
+  "schema": "edu.agent0228.execution-trace.v1",
+  "candidateHash": "f4c453cf69b37325d06fe72d8539ac2fa196c43aa644cffa5e91c069beb08c58",
+  "providerId": "codex",
+  "executionId": "016bdf50-cef5-4f89-806e-9e77506c801b",
+  "workKey": "p0-synthetic-codex-digest",
+  "sourceVersion": "material-6d0d9e5d-55bd-45c3-a374-cde4362e9c13:v1",
+  "processTree": "acceptance/codex-3-process.json",
+  "receipt": "acceptance/codex-3-receipt.json",
+  "events": [
+    {
+      "type": "claim",
+      "executionId": "016bdf50-cef5-4f89-806e-9e77506c801b",
+      "at": "2026-10-30T16:25:33.277Z"
+    },
+    {
+      "type": "send_intent",
+      "executionId": "016bdf50-cef5-4f89-806e-9e77506c801b",
+      "at": "2026-10-30T16:25:33.279Z"
+    },
+    {
+      "type": "started",
+      "executionId": "016bdf50-cef5-4f89-806e-9e77506c801b",
+      "at": "2026-10-30T16:25:38.649Z",
+      "processId": 17580
+    },
+    {
+      "type": "receipt",
+      "executionId": "016bdf50-cef5-4f89-806e-9e77506c801b",
+      "at": "2026-10-30T16:25:54.171Z"
+    },
+    {
+      "type": "settled",
+      "executionId": "016bdf50-cef5-4f89-806e-9e77506c801b",
+      "at": "2026-10-30T16:25:55.707Z",
+      "businessOutcome": "completed",
+      "settlementState": "settled"
+    }
+  ]
+}

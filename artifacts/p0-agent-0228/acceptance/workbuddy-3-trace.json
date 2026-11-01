@@ -1,0 +1,40 @@
+{
+  "schema": "edu.agent0228.execution-trace.v1",
+  "candidateHash": "f4c453cf69b37325d06fe72d8539ac2fa196c43aa644cffa5e91c069beb08c58",
+  "providerId": "workbuddy",
+  "executionId": "174b3151-dcb6-4939-90cc-2125ad0a7555",
+  "workKey": "p0-synthetic-workbuddy-digest",
+  "sourceVersion": "material-3abf5743-fe1c-4f69-95d9-65ad56c48a0d:v1",
+  "processTree": "acceptance/workbuddy-3-process.json",
+  "receipt": "acceptance/workbuddy-3-receipt.json",
+  "events": [
+    {
+      "type": "claim",
+      "executionId": "174b3151-dcb6-4939-90cc-2125ad0a7555",
+      "at": "2026-10-30T16:23:19.115Z"
+    },
+    {
+      "type": "send_intent",
+      "executionId": "174b3151-dcb6-4939-90cc-2125ad0a7555",
+      "at": "2026-10-30T16:23:19.116Z"
+    },
+    {
+      "type": "started",
+      "executionId": "174b3151-dcb6-4939-90cc-2125ad0a7555",
+      "at": "2026-10-30T16:23:50.787Z",
+      "processId": 9144
+    },
+    {
+      "type": "receipt",
+      "executionId": "174b3151-dcb6-4939-90cc-2125ad0a7555",
+      "at": "2026-10-30T16:24:23.110Z"
+    },
+    {
+      "type": "settled",
+      "executionId": "174b3151-dcb6-4939-90cc-2125ad0a7555",
+      "at": "2026-10-30T16:24:24.566Z",
+      "businessOutcome": "completed",
+      "settlementState": "settled"
+    }
+  ]
+}

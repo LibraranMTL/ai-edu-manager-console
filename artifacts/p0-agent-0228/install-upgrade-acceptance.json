@@ -1,0 +1,49 @@
+{
+  "schema": "edu.agent0228.install-upgrade-acceptance.v1",
+  "verifiedAt": "2026-11-01T09:00:09.2070811Z",
+  "installerExitCode": 0,
+  "installTarget": "C:\\Users\\bxw00\\AppData\\Local\\Temp\\edu0228-install-acceptance-r1",
+  "upgradeAsarSha256": "F4C453CF69B37325D06FE72D8539AC2FA196C43AA644CFFA5E91C069BEB08C58",
+  "expectedAsarSha256": "F4C453CF69B37325D06FE72D8539AC2FA196C43AA644CFFA5E91C069BEB08C58",
+  "exactRuntimePayloadMatch": true,
+  "externalUserDataMarkerPreserved": true,
+  "externalUserDataMarkerHash": "4A71ED90ED064ABD58287A88FD93B4F980B61B27FC399AF32FE9A64F3E30EC34",
+  "displayVersion": "0.22.8",
+  "method": "silent-install-and-repeat-upgrade-with-isolated-appdata-plus-extract-compare",
+  "installerWizardExecuted": false,
+  "formalDataModified": false,
+  "published": false,
+  "installedRuntimeStarted": true,
+  "startedProcessCount": 4,
+  "startedProcesses": [
+    {
+      "ProcessId": 22376,
+      "ParentProcessId": 14120,
+      "Name": "AI Education Manager Console.exe",
+      "ExecutablePath": "C:\\Users\\bxw00\\AppData\\Local\\Temp\\edu0228-install-acceptance-r1\\AI Education Manager Console.exe",
+      "CreationDate": "2026-11-01T17:00:18.619948+08:00"
+    },
+    {
+      "ProcessId": 14180,
+      "ParentProcessId": 22376,
+      "Name": "AI Education Manager Console.exe",
+      "ExecutablePath": "C:\\Users\\bxw00\\AppData\\Local\\Temp\\edu0228-install-acceptance-r1\\AI Education Manager Console.exe",
+      "CreationDate": "2026-11-01T17:00:18.899169+08:00"
+    },
+    {
+      "ProcessId": 26448,
+      "ParentProcessId": 22376,
+      "Name": "AI Education Manager Console.exe",
+      "ExecutablePath": "C:\\Users\\bxw00\\AppData\\Local\\Temp\\edu0228-install-acceptance-r1\\AI Education Manager Console.exe",
+      "CreationDate": "2026-11-01T17:00:18.905218+08:00"
+    },
+    {
+      "ProcessId": 33696,
+      "ParentProcessId": 22376,
+      "Name": "AI Education Manager Console.exe",
+      "ExecutablePath": "C:\\Users\\bxw00\\AppData\\Local\\Temp\\edu0228-install-acceptance-r1\\AI Education Manager Console.exe",
+      "CreationDate": "2026-11-01T17:00:19.020129+08:00"
+    }
+  ],
+  "silentInstallerExecuted": true
+}

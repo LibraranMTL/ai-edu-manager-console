@@ -9,6 +9,8 @@ param(
   [int]$Repeats = 3,
   [string[]]$Scenarios = @('idle-unknown','normal-task','backlog-recovery'),
   [string]$EvidenceKind = 'internal_runtime_probe',
+  [switch]$ProjectQueryStress,
+  [switch]$VisibleInteractions,
   [int]$BaseDebugPort = 19470
 )
 
@@ -18,7 +20,7 @@ $output = [IO.Path]::GetFullPath($OutputRoot)
 New-Item -ItemType Directory -Force -Path $output | Out-Null
 $results = [Collections.Generic.List[object]]::new()
 $runNumber = 0
-$allowedScenarios = @('idle-unknown','normal-task','backlog-recovery','agent-workbuddy','agent-codex')
+$allowedScenarios = @('idle-unknown','normal-task','backlog-recovery','agent-workbuddy','agent-codex','agent-backlog-workbuddy')
 foreach ($requestedScenario in @($Scenarios)) {
   if ($requestedScenario -notin $allowedScenarios) {
     throw "invalid_performance_scenario:$requestedScenario"
@@ -55,8 +57,8 @@ function Add-IdleUnknownFixture([string]$Fixture) {
 foreach ($scenario in @($Scenarios)) {
   for ($repeat = 1; $repeat -le $Repeats; $repeat += 1) {
     $runNumber += 1
-    $fixtureScenario = if ($scenario -match '^agent-') { 'agent-project-task' } elseif ($scenario -eq 'idle-unknown') { 'idle' } else { $scenario }
-    $agentProvider = if ($scenario -eq 'agent-workbuddy') { 'workbuddy' } elseif ($scenario -eq 'agent-codex') { 'codex' } else { '' }
+    $fixtureScenario = if ($scenario -eq 'agent-backlog-workbuddy') { 'agent-backlog-workbuddy' } elseif ($scenario -match '^agent-') { 'agent-project-task' } elseif ($scenario -eq 'idle-unknown') { 'idle' } else { $scenario }
+    $agentProvider = if ($scenario -in @('agent-workbuddy','agent-backlog-workbuddy')) { 'workbuddy' } elseif ($scenario -eq 'agent-codex') { 'codex' } else { '' }
     $runEvidenceKind = if ($agentProvider) { 'real_agent_runtime' } else { $EvidenceKind }
     $fixture = Join-Path ([IO.Path]::GetTempPath()) ("edu-p0-r12-{0}-{1}-{2}" -f $scenario,$repeat,[guid]::NewGuid().ToString('n').Substring(0,8))
     $runId = "r12-$scenario-$repeat"
@@ -80,6 +82,8 @@ foreach ($scenario in @($Scenarios)) {
     $process = $null
     $renderer = $null
     $cadenceSampler = $null
+    $queryStress = $null
+    $visibleInteractionProcess = $null
     try {
       $process = Start-Process -FilePath $CandidateExe -ArgumentList @("--user-data-dir=$fixture",'--qa-isolated',"--remote-debugging-port=$port") -PassThru
       $deadline = [DateTimeOffset]::Now.AddSeconds(45)
@@ -103,31 +107,55 @@ foreach ($scenario in @($Scenarios)) {
         '-Root', "`"$fixture`"", '-OutputPath', "`"$(Join-Path $runDir 'file-cadence.json')`"",
         '-DurationSeconds', [string]$DurationSeconds, '-IntervalSeconds', '5'
       ) -PassThru -WindowStyle Hidden -RedirectStandardOutput (Join-Path $runDir 'cadence.stdout.log') -RedirectStandardError (Join-Path $runDir 'cadence.stderr.log')
+      if ($ProjectQueryStress) {
+        $queryStress = Start-Process -FilePath (Get-Command node).Source -ArgumentList @(
+          "`"$(Join-Path $PSScriptRoot 'benchmark-project-state.cjs')`"", '30000', '100000',
+          "--output=`"$(Join-Path $runDir 'project-query-stress.json')`"", '--assert-targets'
+        ) -PassThru -WindowStyle Hidden -RedirectStandardOutput (Join-Path $runDir 'project-query-stress.stdout.log') -RedirectStandardError (Join-Path $runDir 'project-query-stress.stderr.log')
+      }
+      if ($VisibleInteractions) {
+        $visibleInteractionProcess = Start-Process -FilePath (Get-Command node).Source -ArgumentList @(
+          "`"$(Join-Path $PSScriptRoot 'run-p0-visible-interactions.cjs')`"", [string]$port,
+          "`"$(Join-Path $runDir 'visible-interactions.json')`"", '--task-center'
+        ) -PassThru -WindowStyle Hidden -RedirectStandardOutput (Join-Path $runDir 'visible-interactions.stdout.log') -RedirectStandardError (Join-Path $runDir 'visible-interactions.stderr.log')
+      }
       & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'sample-p0-live-runtime.ps1') `
         -DurationSeconds $DurationSeconds -IntervalMilliseconds 500 -Scenario $scenario -RunId $runId `
         -OutputPath (Join-Path $runDir 'runtime.json') -ProvenancePath $ProvenancePath `
         -MainProcessId $process.Id -UserDataDir $fixture -StudentBaseDir $studentBase | Set-Content -LiteralPath (Join-Path $runDir 'sampler.log') -Encoding utf8
       if (-not $renderer.HasExited) { $renderer.WaitForExit(15000) | Out-Null }
       if (-not $cadenceSampler.HasExited) { $cadenceSampler.WaitForExit(15000) | Out-Null }
+      if ($queryStress -and -not $queryStress.HasExited) { $queryStress.WaitForExit(120000) | Out-Null }
+      if ($visibleInteractionProcess -and -not $visibleInteractionProcess.HasExited) { $visibleInteractionProcess.WaitForExit(30000) | Out-Null }
+      $queryStressReport = if (Test-Path -LiteralPath (Join-Path $runDir 'project-query-stress.json')) { Get-Content -LiteralPath (Join-Path $runDir 'project-query-stress.json') -Raw -Encoding utf8 | ConvertFrom-Json } else { $null }
+      $visibleInteractionReport = if (Test-Path -LiteralPath (Join-Path $runDir 'visible-interactions.json')) { Get-Content -LiteralPath (Join-Path $runDir 'visible-interactions.json') -Raw -Encoding utf8 | ConvertFrom-Json } else { $null }
+      $queryStressPassed = (-not $ProjectQueryStress) -or ($queryStressReport -and $queryStressReport.passed -eq $true)
+      $visibleInteractionsPassed = (-not $VisibleInteractions) -or ($visibleInteractionReport -and $visibleInteractionReport.passed -eq $true)
       & node (Join-Path $PSScriptRoot 'hash-p0-task-semantics.cjs') $database (Join-Path $runDir 'task-semantics-after.json') | Out-Null
       $runtime = Get-Content -LiteralPath (Join-Path $runDir 'runtime.json') -Raw -Encoding utf8 | ConvertFrom-Json
       $latency = Get-Content -LiteralPath (Join-Path $runDir 'renderer-latency.json') -Raw -Encoding utf8 | ConvertFrom-Json
       $cadence = Get-Content -LiteralPath (Join-Path $runDir 'file-cadence.json') -Raw -Encoding utf8 | ConvertFrom-Json
       $before = Get-Content -LiteralPath (Join-Path $runDir 'task-semantics-before.json') -Raw -Encoding utf8 | ConvertFrom-Json
       $after = Get-Content -LiteralPath (Join-Path $runDir 'task-semantics-after.json') -Raw -Encoding utf8 | ConvertFrom-Json
-      $agentBusinessCompleted = (-not $agentProvider) -or @($after.tasks | Where-Object status -in @('succeeded','completed')).Count -eq 1
-      $tailQuietIntervals = 0
-      foreach ($interval in @($cadence.intervals | Select-Object -Last 6 | Sort-Object at -Descending)) {
-        if ([int]$interval.changedCount -ne 0) { break }
-        $tailQuietIntervals += 1
+      $businessEvidence = $null
+      if ($agentProvider) {
+        $businessEvidence = (& node (Join-Path $PSScriptRoot 'lib\agent-0228-business-result.cjs') $fixture | ConvertFrom-Json)
+        $businessEvidence | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath (Join-Path $runDir 'business-result.json') -Encoding utf8
       }
-      $writeCadenceAccepted = (-not $cadence.continuousWriteDetected) -or ($agentProvider -and $tailQuietIntervals -ge 3)
+      $agentBusinessCompleted = (-not $agentProvider) -or [bool]$businessEvidence.businessCompleted
+      $tailIntervals = @($cadence.intervals | Select-Object -Last 12)
+      $tailQuietIntervals = @($tailIntervals | Where-Object { [int]$_.changedCount -eq 0 }).Count
+      $tailChangedIntervals = @($tailIntervals | Where-Object { [int]$_.changedCount -ne 0 }).Count
+      $writeCadenceAccepted = (-not $cadence.continuousWriteDetected) -or ($agentProvider -and $tailQuietIntervals -ge 6 -and $tailChangedIntervals -le 1)
       $result = [ordered]@{
-        runId=$runId; scenario=$scenario; repeat=$repeat; evidenceKind=$runEvidenceKind; measurementWindow='post_warmup'; warmupSeconds=$WarmupSeconds; passed=($runtime.summary.nonRespondingSamples -eq 0 -and $latency.failures.Count -eq 0 -and $latency.p95Ms -le 150 -and $latency.maximumMs -le 100 -and $writeCadenceAccepted -and ($scenario -ne "idle-unknown" -or $runtime.summary.mainCpuCoreEquivalentAveragePercent -lt 1) -and $agentBusinessCompleted);
+        runId=$runId; scenario=$scenario; repeat=$repeat; evidenceKind=$runEvidenceKind; measurementWindow='post_warmup'; warmupSeconds=$WarmupSeconds; passed=($runtime.summary.nonRespondingSamples -eq 0 -and $latency.failures.Count -eq 0 -and $latency.p95Ms -le 150 -and $latency.maximumMs -le 100 -and $writeCadenceAccepted -and $queryStressPassed -and $visibleInteractionsPassed -and ($scenario -ne "idle-unknown" -or $runtime.summary.mainCpuCoreEquivalentAveragePercent -lt 1) -and $agentBusinessCompleted);
         agentProvider=$agentProvider; agentBusinessCompleted=$agentBusinessCompleted;
+        businessEvidence=$businessEvidence;
+        projectQueryStress=[ordered]@{ requested=[bool]$ProjectQueryStress; passed=$queryStressPassed; evidence=$(if($ProjectQueryStress){'project-query-stress.json'}else{''}) };
+        visibleInteractions=[ordered]@{ requested=[bool]$VisibleInteractions; passed=$visibleInteractionsPassed; evidence=$(if($VisibleInteractions){'visible-interactions.json'}else{''}) };
         fixture=$fixture; mainProcessId=$process.Id; runtimeSummary=$runtime.summary;
         rendererSummary=[ordered]@{ sampleCount=$latency.sampleCount; p95Ms=$latency.p95Ms; maximumMs=$latency.maximumMs; failures=$latency.failures.Count };
-        fileCadenceSummary=[ordered]@{ intervalCount=$cadence.intervalCount; intervalsWithChanges=$cadence.intervalsWithChanges; continuousWriteDetected=$cadence.continuousWriteDetected; tailQuietIntervals=$tailQuietIntervals; accepted=$writeCadenceAccepted; continuousFiles=@($cadence.continuousFiles) };
+        fileCadenceSummary=[ordered]@{ intervalCount=$cadence.intervalCount; intervalsWithChanges=$cadence.intervalsWithChanges; continuousWriteDetected=$cadence.continuousWriteDetected; tailQuietIntervals=$tailQuietIntervals; tailChangedIntervals=$tailChangedIntervals; accepted=$writeCadenceAccepted; continuousFiles=@($cadence.continuousFiles) };
         taskSemantic=[ordered]@{ before=$before.sha256; after=$after.sha256; changed=($before.sha256 -ne $after.sha256); beforeStatuses=$before.tasks; afterStatuses=$after.tasks }
       }
       $results.Add($result)
@@ -136,6 +164,8 @@ foreach ($scenario in @($Scenarios)) {
     } finally {
       if ($renderer -and -not $renderer.HasExited) { Stop-Process -Id $renderer.Id -Force -ErrorAction SilentlyContinue }
       if ($cadenceSampler -and -not $cadenceSampler.HasExited) { Stop-Process -Id $cadenceSampler.Id -Force -ErrorAction SilentlyContinue }
+      if ($queryStress -and -not $queryStress.HasExited) { Stop-Process -Id $queryStress.Id -Force -ErrorAction SilentlyContinue }
+      if ($visibleInteractionProcess -and -not $visibleInteractionProcess.HasExited) { Stop-Process -Id $visibleInteractionProcess.Id -Force -ErrorAction SilentlyContinue }
       if ($process -and -not $process.HasExited) { & taskkill.exe /PID $process.Id /T /F | Out-Null }
     }
   }

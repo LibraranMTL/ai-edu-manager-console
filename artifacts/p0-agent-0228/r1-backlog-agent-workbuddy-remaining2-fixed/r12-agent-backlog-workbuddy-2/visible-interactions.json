@@ -1,0 +1,1029 @@
+{
+  "schema": "edu.p0.visible-interactions.v1",
+  "generatedAt": "2026-11-01T07:46:56.125Z",
+  "target": {
+    "title": "AI教育管家控制台",
+    "url": "file:///C:/Users/bxw00/AppData/Local/Temp/3LQCagmQZe7T14519Xg2iR1ZvHV/resources/app.asar/dist/index.html"
+  },
+  "visible": true,
+  "samples": [
+    {
+      "action": "refresh",
+      "iteration": 1,
+      "startedAt": "2026-11-01T07:46:53.150Z",
+      "durationMs": 7.54989999999998,
+      "observedStatus": "pass",
+      "observed": {
+        "visibility": "visible",
+        "readyState": "complete"
+      }
+    },
+    {
+      "action": "switch",
+      "iteration": 1,
+      "startedAt": "2026-11-01T07:46:53.160Z",
+      "durationMs": 31.125,
+      "observedStatus": "pass",
+      "observed": {
+        "visibility": "visible",
+        "readyState": "complete"
+      }
+    },
+    {
+      "action": "detail",
+      "iteration": 1,
+      "startedAt": "2026-11-01T07:46:53.191Z",
+      "durationMs": 34.12220000000002,
+      "observedStatus": "pass",
+      "observed": {
+        "visibility": "visible",
+        "readyState": "complete"
+      }
+    },
+    {
+      "action": "refresh",
+      "iteration": 2,
+      "startedAt": "2026-11-01T07:46:53.225Z",
+      "durationMs": 32.70850000000007,
+      "observedStatus": "pass",
+      "observed": {
+        "visibility": "visible",
+        "readyState": "complete"
+      }
+    },
+    {
+      "action": "switch",
+      "iteration": 2,
+      "startedAt": "2026-11-01T07:46:53.258Z",
+      "durationMs": 39.3519,
+      "observedStatus": "pass",
+      "observed": {
+        "visibility": "visible",
+        "readyState": "complete"
+      }
+    },
+    {
+      "action": "detail",
+      "iteration": 2,
+      "startedAt": "2026-11-01T07:46:53.297Z",
+      "durationMs": 27.208099999999945,
+      "observedStatus": "pass",
+      "observed": {
+        "visibility": "visible",
+        "readyState": "complete"
+      }
+    },
+    {
+      "action": "refresh",
+      "iteration": 3,
+      "startedAt": "2026-11-01T07:46:53.324Z",
+      "durationMs": 33.334100000000035,
+      "observedStatus": "pass",
+      "observed": {
+        "visibility": "visible",
+        "readyState": "complete"
+      }
+    },
+    {
+      "action": "switch",
+      "iteration": 3,
+      "startedAt": "2026-11-01T07:46:53.358Z",
+      "durationMs": 33.16770000000008,
+      "observedStatus": "pass",
+      "observed": {
+        "visibility": "visible",
+        "readyState": "complete"
+      }
+    },
+    {
+      "action": "detail",
+      "iteration": 3,
+      "startedAt": "2026-11-01T07:46:53.391Z",
+      "durationMs": 33.3107,
+      "observedStatus": "pass",
+      "observed": {
+        "visibility": "visible",
+        "readyState": "complete"
+      }
+    },
+    {
+      "action": "refresh",
+      "iteration": 4,
+      "startedAt": "2026-11-01T07:46:53.424Z",
+      "durationMs": 33.14729999999997,
+      "observedStatus": "pass",
+      "observed": {
+        "visibility": "visible",
+        "readyState": "complete"
+      }
+    },
+    {
+      "action": "switch",
+      "iteration": 4,
+      "startedAt": "2026-11-01T07:46:53.457Z",
+      "durationMs": 33.425700000000006,
+      "observedStatus": "pass",
+      "observed": {
+        "visibility": "visible",
+        "readyState": "complete"
+      }
+    },
+    {
+      "action": "detail",
+      "iteration": 4,
+      "startedAt": "2026-11-01T07:46:53.491Z",
+      "durationMs": 33.36869999999999,
+      "observedStatus": "pass",
+      "observed": {
+        "visibility": "visible",
+        "readyState": "complete"
+      }
+    },
+    {
+      "action": "refresh",
+      "iteration": 5,
+      "startedAt": "2026-11-01T07:46:53.524Z",
+      "durationMs": 33.22230000000002,
+      "observedStatus": "pass",
+      "observed": {
+        "visibility": "visible",
+        "readyState": "complete"
+      }
+    },
+    {
+      "action": "switch",
+      "iteration": 5,
+      "startedAt": "2026-11-01T07:46:53.557Z",
+      "durationMs": 33.32830000000001,
+      "observedStatus": "pass",
+      "observed": {
+        "visibility": "visible",
+        "readyState": "complete"
+      }
+    },
+    {
+      "action": "detail",
+      "iteration": 5,
+      "startedAt": "2026-11-01T07:46:53.591Z",
+      "durationMs": 33.2355,
+      "observedStatus": "pass",
+      "observed": {
+        "visibility": "visible",
+        "readyState": "complete"
+      }
+    },
+    {
+      "action": "refresh",
+      "iteration": 6,
+      "startedAt": "2026-11-01T07:46:53.624Z",
+      "durationMs": 33.33929999999987,
+      "observedStatus": "pass",
+      "observed": {
+        "visibility": "visible",
+        "readyState": "complete"
+      }
+    },
+    {
+      "action": "switch",
+      "iteration": 6,
+      "startedAt": "2026-11-01T07:46:53.657Z",
+      "durationMs": 33.30569999999989,
+      "observedStatus": "pass",
+      "observed": {
+        "visibility": "visible",
+        "readyState": "complete"
+      }
+    },
+    {
+      "action": "detail",
+      "iteration": 6,
+      "startedAt": "2026-11-01T07:46:53.691Z",
+      "durationMs": 33.240600000000086,
+      "observedStatus": "pass",
+      "observed": {
+        "visibility": "visible",
+        "readyState": "complete"
+      }
+    },
+    {
+      "action": "refresh",
+      "iteration": 7,
+      "startedAt": "2026-11-01T07:46:53.724Z",
+      "durationMs": 33.60290000000009,
+      "observedStatus": "pass",
+      "observed": {
+        "visibility": "visible",
+        "readyState": "complete"
+      }
+    },
+    {
+      "action": "switch",
+      "iteration": 7,
+      "startedAt": "2026-11-01T07:46:53.758Z",
+      "durationMs": 33.044099999999844,
+      "observedStatus": "pass",
+      "observed": {
+        "visibility": "visible",
+        "readyState": "complete"
+      }
+    },
+    {
+      "action": "detail",
+      "iteration": 7,
+      "startedAt": "2026-11-01T07:46:53.791Z",
+      "durationMs": 33.343000000000075,
+      "observedStatus": "pass",
+      "observed": {
+        "visibility": "visible",
+        "readyState": "complete"
+      }
+    },
+    {
+      "action": "refresh",
+      "iteration": 8,
+      "startedAt": "2026-11-01T07:46:53.824Z",
+      "durationMs": 33.35270000000014,
+      "observedStatus": "pass",
+      "observed": {
+        "visibility": "visible",
+        "readyState": "complete"
+      }
+    },
+    {
+      "action": "switch",
+      "iteration": 8,
+      "startedAt": "2026-11-01T07:46:53.857Z",
+      "durationMs": 33.24160000000006,
+      "observedStatus": "pass",
+      "observed": {
+        "visibility": "visible",
+        "readyState": "complete"
+      }
+    },
+    {
+      "action": "detail",
+      "iteration": 8,
+      "startedAt": "2026-11-01T07:46:53.891Z",
+      "durationMs": 33.2808,
+      "observedStatus": "pass",
+      "observed": {
+        "visibility": "visible",
+        "readyState": "complete"
+      }
+    },
+    {
+      "action": "refresh",
+      "iteration": 9,
+      "startedAt": "2026-11-01T07:46:53.924Z",
+      "durationMs": 33.25890000000004,
+      "observedStatus": "pass",
+      "observed": {
+        "visibility": "visible",
+        "readyState": "complete"
+      }
+    },
+    {
+      "action": "switch",
+      "iteration": 9,
+      "startedAt": "2026-11-01T07:46:53.957Z",
+      "durationMs": 33.19170000000008,
+      "observedStatus": "pass",
+      "observed": {
+        "visibility": "visible",
+        "readyState": "complete"
+      }
+    },
+    {
+      "action": "detail",
+      "iteration": 9,
+      "startedAt": "2026-11-01T07:46:53.991Z",
+      "durationMs": 33.43709999999987,
+      "observedStatus": "pass",
+      "observed": {
+        "visibility": "visible",
+        "readyState": "complete"
+      }
+    },
+    {
+      "action": "refresh",
+      "iteration": 10,
+      "startedAt": "2026-11-01T07:46:54.024Z",
+      "durationMs": 33.26390000000015,
+      "observedStatus": "pass",
+      "observed": {
+        "visibility": "visible",
+        "readyState": "complete"
+      }
+    },
+    {
+      "action": "switch",
+      "iteration": 10,
+      "startedAt": "2026-11-01T07:46:54.057Z",
+      "durationMs": 33.36699999999996,
+      "observedStatus": "pass",
+      "observed": {
+        "visibility": "visible",
+        "readyState": "complete"
+      }
+    },
+    {
+      "action": "detail",
+      "iteration": 10,
+      "startedAt": "2026-11-01T07:46:54.091Z",
+      "durationMs": 33.23850000000016,
+      "observedStatus": "pass",
+      "observed": {
+        "visibility": "visible",
+        "readyState": "complete"
+      }
+    },
+    {
+      "action": "refresh",
+      "iteration": 11,
+      "startedAt": "2026-11-01T07:46:54.124Z",
+      "durationMs": 33.30420000000004,
+      "observedStatus": "pass",
+      "observed": {
+        "visibility": "visible",
+        "readyState": "complete"
+      }
+    },
+    {
+      "action": "switch",
+      "iteration": 11,
+      "startedAt": "2026-11-01T07:46:54.157Z",
+      "durationMs": 33.488799999999856,
+      "observedStatus": "pass",
+      "observed": {
+        "visibility": "visible",
+        "readyState": "complete"
+      }
+    },
+    {
+      "action": "detail",
+      "iteration": 11,
+      "startedAt": "2026-11-01T07:46:54.191Z",
+      "durationMs": 33.134900000000016,
+      "observedStatus": "pass",
+      "observed": {
+        "visibility": "visible",
+        "readyState": "complete"
+      }
+    },
+    {
+      "action": "refresh",
+      "iteration": 12,
+      "startedAt": "2026-11-01T07:46:54.224Z",
+      "durationMs": 33.36759999999981,
+      "observedStatus": "pass",
+      "observed": {
+        "visibility": "visible",
+        "readyState": "complete"
+      }
+    },
+    {
+      "action": "switch",
+      "iteration": 12,
+      "startedAt": "2026-11-01T07:46:54.257Z",
+      "durationMs": 33.29859999999985,
+      "observedStatus": "pass",
+      "observed": {
+        "visibility": "visible",
+        "readyState": "complete"
+      }
+    },
+    {
+      "action": "detail",
+      "iteration": 12,
+      "startedAt": "2026-11-01T07:46:54.291Z",
+      "durationMs": 33.22059999999988,
+      "observedStatus": "pass",
+      "observed": {
+        "visibility": "visible",
+        "readyState": "complete"
+      }
+    },
+    {
+      "action": "refresh",
+      "iteration": 13,
+      "startedAt": "2026-11-01T07:46:54.324Z",
+      "durationMs": 33.424999999999955,
+      "observedStatus": "pass",
+      "observed": {
+        "visibility": "visible",
+        "readyState": "complete"
+      }
+    },
+    {
+      "action": "switch",
+      "iteration": 13,
+      "startedAt": "2026-11-01T07:46:54.357Z",
+      "durationMs": 33.215400000000045,
+      "observedStatus": "pass",
+      "observed": {
+        "visibility": "visible",
+        "readyState": "complete"
+      }
+    },
+    {
+      "action": "detail",
+      "iteration": 13,
+      "startedAt": "2026-11-01T07:46:54.391Z",
+      "durationMs": 33.505499999999984,
+      "observedStatus": "pass",
+      "observed": {
+        "visibility": "visible",
+        "readyState": "complete"
+      }
+    },
+    {
+      "action": "refresh",
+      "iteration": 14,
+      "startedAt": "2026-11-01T07:46:54.424Z",
+      "durationMs": 33.05899999999997,
+      "observedStatus": "pass",
+      "observed": {
+        "visibility": "visible",
+        "readyState": "complete"
+      }
+    },
+    {
+      "action": "switch",
+      "iteration": 14,
+      "startedAt": "2026-11-01T07:46:54.457Z",
+      "durationMs": 33.256599999999935,
+      "observedStatus": "pass",
+      "observed": {
+        "visibility": "visible",
+        "readyState": "complete"
+      }
+    },
+    {
+      "action": "detail",
+      "iteration": 14,
+      "startedAt": "2026-11-01T07:46:54.491Z",
+      "durationMs": 33.37850000000003,
+      "observedStatus": "pass",
+      "observed": {
+        "visibility": "visible",
+        "readyState": "complete"
+      }
+    },
+    {
+      "action": "refresh",
+      "iteration": 15,
+      "startedAt": "2026-11-01T07:46:54.524Z",
+      "durationMs": 33.32590000000005,
+      "observedStatus": "pass",
+      "observed": {
+        "visibility": "visible",
+        "readyState": "complete"
+      }
+    },
+    {
+      "action": "switch",
+      "iteration": 15,
+      "startedAt": "2026-11-01T07:46:54.557Z",
+      "durationMs": 33.24150000000009,
+      "observedStatus": "pass",
+      "observed": {
+        "visibility": "visible",
+        "readyState": "complete"
+      }
+    },
+    {
+      "action": "detail",
+      "iteration": 15,
+      "startedAt": "2026-11-01T07:46:54.591Z",
+      "durationMs": 33.41779999999994,
+      "observedStatus": "pass",
+      "observed": {
+        "visibility": "visible",
+        "readyState": "complete"
+      }
+    },
+    {
+      "action": "refresh",
+      "iteration": 16,
+      "startedAt": "2026-11-01T07:46:54.624Z",
+      "durationMs": 33.25759999999991,
+      "observedStatus": "pass",
+      "observed": {
+        "visibility": "visible",
+        "readyState": "complete"
+      }
+    },
+    {
+      "action": "switch",
+      "iteration": 16,
+      "startedAt": "2026-11-01T07:46:54.657Z",
+      "durationMs": 33.422000000000025,
+      "observedStatus": "pass",
+      "observed": {
+        "visibility": "visible",
+        "readyState": "complete"
+      }
+    },
+    {
+      "action": "detail",
+      "iteration": 16,
+      "startedAt": "2026-11-01T07:46:54.691Z",
+      "durationMs": 33.11110000000008,
+      "observedStatus": "pass",
+      "observed": {
+        "visibility": "visible",
+        "readyState": "complete"
+      }
+    },
+    {
+      "action": "refresh",
+      "iteration": 17,
+      "startedAt": "2026-11-01T07:46:54.724Z",
+      "durationMs": 33.26429999999982,
+      "observedStatus": "pass",
+      "observed": {
+        "visibility": "visible",
+        "readyState": "complete"
+      }
+    },
+    {
+      "action": "switch",
+      "iteration": 17,
+      "startedAt": "2026-11-01T07:46:54.757Z",
+      "durationMs": 33.35710000000017,
+      "observedStatus": "pass",
+      "observed": {
+        "visibility": "visible",
+        "readyState": "complete"
+      }
+    },
+    {
+      "action": "detail",
+      "iteration": 17,
+      "startedAt": "2026-11-01T07:46:54.791Z",
+      "durationMs": 33.42139999999972,
+      "observedStatus": "pass",
+      "observed": {
+        "visibility": "visible",
+        "readyState": "complete"
+      }
+    },
+    {
+      "action": "refresh",
+      "iteration": 18,
+      "startedAt": "2026-11-01T07:46:54.824Z",
+      "durationMs": 33.19219999999996,
+      "observedStatus": "pass",
+      "observed": {
+        "visibility": "visible",
+        "readyState": "complete"
+      }
+    },
+    {
+      "action": "switch",
+      "iteration": 18,
+      "startedAt": "2026-11-01T07:46:54.857Z",
+      "durationMs": 33.2195999999999,
+      "observedStatus": "pass",
+      "observed": {
+        "visibility": "visible",
+        "readyState": "complete"
+      }
+    },
+    {
+      "action": "detail",
+      "iteration": 18,
+      "startedAt": "2026-11-01T07:46:54.891Z",
+      "durationMs": 33.483999999999924,
+      "observedStatus": "pass",
+      "observed": {
+        "visibility": "visible",
+        "readyState": "complete"
+      }
+    },
+    {
+      "action": "refresh",
+      "iteration": 19,
+      "startedAt": "2026-11-01T07:46:54.924Z",
+      "durationMs": 33.19810000000007,
+      "observedStatus": "pass",
+      "observed": {
+        "visibility": "visible",
+        "readyState": "complete"
+      }
+    },
+    {
+      "action": "switch",
+      "iteration": 19,
+      "startedAt": "2026-11-01T07:46:54.957Z",
+      "durationMs": 33.35109999999986,
+      "observedStatus": "pass",
+      "observed": {
+        "visibility": "visible",
+        "readyState": "complete"
+      }
+    },
+    {
+      "action": "detail",
+      "iteration": 19,
+      "startedAt": "2026-11-01T07:46:54.991Z",
+      "durationMs": 33.24039999999968,
+      "observedStatus": "pass",
+      "observed": {
+        "visibility": "visible",
+        "readyState": "complete"
+      }
+    },
+    {
+      "action": "refresh",
+      "iteration": 20,
+      "startedAt": "2026-11-01T07:46:55.024Z",
+      "durationMs": 33.283500000000004,
+      "observedStatus": "pass",
+      "observed": {
+        "visibility": "visible",
+        "readyState": "complete"
+      }
+    },
+    {
+      "action": "switch",
+      "iteration": 20,
+      "startedAt": "2026-11-01T07:46:55.057Z",
+      "durationMs": 33.389900000000125,
+      "observedStatus": "pass",
+      "observed": {
+        "visibility": "visible",
+        "readyState": "complete"
+      }
+    },
+    {
+      "action": "detail",
+      "iteration": 20,
+      "startedAt": "2026-11-01T07:46:55.091Z",
+      "durationMs": 33.301000000000386,
+      "observedStatus": "pass",
+      "observed": {
+        "visibility": "visible",
+        "readyState": "complete"
+      }
+    },
+    {
+      "action": "refresh",
+      "iteration": 21,
+      "startedAt": "2026-11-01T07:46:55.124Z",
+      "durationMs": 33.230099999999766,
+      "observedStatus": "pass",
+      "observed": {
+        "visibility": "visible",
+        "readyState": "complete"
+      }
+    },
+    {
+      "action": "switch",
+      "iteration": 21,
+      "startedAt": "2026-11-01T07:46:55.157Z",
+      "durationMs": 33.33019999999988,
+      "observedStatus": "pass",
+      "observed": {
+        "visibility": "visible",
+        "readyState": "complete"
+      }
+    },
+    {
+      "action": "detail",
+      "iteration": 21,
+      "startedAt": "2026-11-01T07:46:55.191Z",
+      "durationMs": 33.38040000000001,
+      "observedStatus": "pass",
+      "observed": {
+        "visibility": "visible",
+        "readyState": "complete"
+      }
+    },
+    {
+      "action": "refresh",
+      "iteration": 22,
+      "startedAt": "2026-11-01T07:46:55.224Z",
+      "durationMs": 33.24200000000019,
+      "observedStatus": "pass",
+      "observed": {
+        "visibility": "visible",
+        "readyState": "complete"
+      }
+    },
+    {
+      "action": "switch",
+      "iteration": 22,
+      "startedAt": "2026-11-01T07:46:55.257Z",
+      "durationMs": 33.36290000000008,
+      "observedStatus": "pass",
+      "observed": {
+        "visibility": "visible",
+        "readyState": "complete"
+      }
+    },
+    {
+      "action": "detail",
+      "iteration": 22,
+      "startedAt": "2026-11-01T07:46:55.291Z",
+      "durationMs": 33.28979999999956,
+      "observedStatus": "pass",
+      "observed": {
+        "visibility": "visible",
+        "readyState": "complete"
+      }
+    },
+    {
+      "action": "refresh",
+      "iteration": 23,
+      "startedAt": "2026-11-01T07:46:55.324Z",
+      "durationMs": 33.32999999999993,
+      "observedStatus": "pass",
+      "observed": {
+        "visibility": "visible",
+        "readyState": "complete"
+      }
+    },
+    {
+      "action": "switch",
+      "iteration": 23,
+      "startedAt": "2026-11-01T07:46:55.357Z",
+      "durationMs": 33.489100000000235,
+      "observedStatus": "pass",
+      "observed": {
+        "visibility": "visible",
+        "readyState": "complete"
+      }
+    },
+    {
+      "action": "detail",
+      "iteration": 23,
+      "startedAt": "2026-11-01T07:46:55.391Z",
+      "durationMs": 33.566699999999855,
+      "observedStatus": "pass",
+      "observed": {
+        "visibility": "visible",
+        "readyState": "complete"
+      }
+    },
+    {
+      "action": "refresh",
+      "iteration": 24,
+      "startedAt": "2026-11-01T07:46:55.425Z",
+      "durationMs": 32.95560000000023,
+      "observedStatus": "pass",
+      "observed": {
+        "visibility": "visible",
+        "readyState": "complete"
+      }
+    },
+    {
+      "action": "switch",
+      "iteration": 24,
+      "startedAt": "2026-11-01T07:46:55.458Z",
+      "durationMs": 33.19119999999975,
+      "observedStatus": "pass",
+      "observed": {
+        "visibility": "visible",
+        "readyState": "complete"
+      }
+    },
+    {
+      "action": "detail",
+      "iteration": 24,
+      "startedAt": "2026-11-01T07:46:55.491Z",
+      "durationMs": 33.25149999999985,
+      "observedStatus": "pass",
+      "observed": {
+        "visibility": "visible",
+        "readyState": "complete"
+      }
+    },
+    {
+      "action": "refresh",
+      "iteration": 25,
+      "startedAt": "2026-11-01T07:46:55.524Z",
+      "durationMs": 33.348599999999806,
+      "observedStatus": "pass",
+      "observed": {
+        "visibility": "visible",
+        "readyState": "complete"
+      }
+    },
+    {
+      "action": "switch",
+      "iteration": 25,
+      "startedAt": "2026-11-01T07:46:55.557Z",
+      "durationMs": 33.30179999999973,
+      "observedStatus": "pass",
+      "observed": {
+        "visibility": "visible",
+        "readyState": "complete"
+      }
+    },
+    {
+      "action": "detail",
+      "iteration": 25,
+      "startedAt": "2026-11-01T07:46:55.591Z",
+      "durationMs": 33.30319999999983,
+      "observedStatus": "pass",
+      "observed": {
+        "visibility": "visible",
+        "readyState": "complete"
+      }
+    },
+    {
+      "action": "refresh",
+      "iteration": 26,
+      "startedAt": "2026-11-01T07:46:55.624Z",
+      "durationMs": 33.33120000000008,
+      "observedStatus": "pass",
+      "observed": {
+        "visibility": "visible",
+        "readyState": "complete"
+      }
+    },
+    {
+      "action": "switch",
+      "iteration": 26,
+      "startedAt": "2026-11-01T07:46:55.657Z",
+      "durationMs": 33.26170000000002,
+      "observedStatus": "pass",
+      "observed": {
+        "visibility": "visible",
+        "readyState": "complete"
+      }
+    },
+    {
+      "action": "detail",
+      "iteration": 26,
+      "startedAt": "2026-11-01T07:46:55.691Z",
+      "durationMs": 33.37699999999995,
+      "observedStatus": "pass",
+      "observed": {
+        "visibility": "visible",
+        "readyState": "complete"
+      }
+    },
+    {
+      "action": "refresh",
+      "iteration": 27,
+      "startedAt": "2026-11-01T07:46:55.724Z",
+      "durationMs": 33.20820000000003,
+      "observedStatus": "pass",
+      "observed": {
+        "visibility": "visible",
+        "readyState": "complete"
+      }
+    },
+    {
+      "action": "switch",
+      "iteration": 27,
+      "startedAt": "2026-11-01T07:46:55.757Z",
+      "durationMs": 33.385099999999966,
+      "observedStatus": "pass",
+      "observed": {
+        "visibility": "visible",
+        "readyState": "complete"
+      }
+    },
+    {
+      "action": "detail",
+      "iteration": 27,
+      "startedAt": "2026-11-01T07:46:55.791Z",
+      "durationMs": 33.408300000000054,
+      "observedStatus": "pass",
+      "observed": {
+        "visibility": "visible",
+        "readyState": "complete"
+      }
+    },
+    {
+      "action": "refresh",
+      "iteration": 28,
+      "startedAt": "2026-11-01T07:46:55.824Z",
+      "durationMs": 33.11500000000024,
+      "observedStatus": "pass",
+      "observed": {
+        "visibility": "visible",
+        "readyState": "complete"
+      }
+    },
+    {
+      "action": "switch",
+      "iteration": 28,
+      "startedAt": "2026-11-01T07:46:55.857Z",
+      "durationMs": 33.61630000000014,
+      "observedStatus": "pass",
+      "observed": {
+        "visibility": "visible",
+        "readyState": "complete"
+      }
+    },
+    {
+      "action": "detail",
+      "iteration": 28,
+      "startedAt": "2026-11-01T07:46:55.891Z",
+      "durationMs": 33.0586000000003,
+      "observedStatus": "pass",
+      "observed": {
+        "visibility": "visible",
+        "readyState": "complete"
+      }
+    },
+    {
+      "action": "refresh",
+      "iteration": 29,
+      "startedAt": "2026-11-01T07:46:55.924Z",
+      "durationMs": 33.24330000000009,
+      "observedStatus": "pass",
+      "observed": {
+        "visibility": "visible",
+        "readyState": "complete"
+      }
+    },
+    {
+      "action": "switch",
+      "iteration": 29,
+      "startedAt": "2026-11-01T07:46:55.957Z",
+      "durationMs": 33.360999999999876,
+      "observedStatus": "pass",
+      "observed": {
+        "visibility": "visible",
+        "readyState": "complete"
+      }
+    },
+    {
+      "action": "detail",
+      "iteration": 29,
+      "startedAt": "2026-11-01T07:46:55.991Z",
+      "durationMs": 33.30020000000013,
+      "observedStatus": "pass",
+      "observed": {
+        "visibility": "visible",
+        "readyState": "complete"
+      }
+    },
+    {
+      "action": "refresh",
+      "iteration": 30,
+      "startedAt": "2026-11-01T07:46:56.024Z",
+      "durationMs": 33.30809999999974,
+      "observedStatus": "pass",
+      "observed": {
+        "visibility": "visible",
+        "readyState": "complete"
+      }
+    },
+    {
+      "action": "switch",
+      "iteration": 30,
+      "startedAt": "2026-11-01T07:46:56.057Z",
+      "durationMs": 33.294200000000274,
+      "observedStatus": "pass",
+      "observed": {
+        "visibility": "visible",
+        "readyState": "complete"
+      }
+    },
+    {
+      "action": "detail",
+      "iteration": 30,
+      "startedAt": "2026-11-01T07:46:56.091Z",
+      "durationMs": 33.496900000000096,
+      "observedStatus": "pass",
+      "observed": {
+        "visibility": "visible",
+        "readyState": "complete"
+      }
+    }
+  ],
+  "longTasks": [],
+  "interactionSamples": 90,
+  "failures": 0,
+  "actions": {
+    "refresh": {
+      "count": 30,
+      "p95Ms": 33.424999999999955,
+      "maximumMs": 33.60290000000009,
+      "failures": 0
+    },
+    "switch": {
+      "count": 30,
+      "p95Ms": 33.61630000000014,
+      "maximumMs": 39.3519,
+      "failures": 0
+    },
+    "detail": {
+      "count": 30,
+      "p95Ms": 33.566699999999855,
+      "maximumMs": 34.12220000000002,
+      "failures": 0
+    }
+  },
+  "p95Ms": 33.566699999999855,
+  "maximumMs": 39.3519,
+  "maximumLongTaskMs": 0,
+  "longTaskCount": 0,
+  "passed": true
+}

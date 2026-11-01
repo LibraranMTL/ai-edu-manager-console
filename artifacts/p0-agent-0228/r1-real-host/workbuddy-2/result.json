@@ -1,0 +1,132 @@
+{
+  "schema": "edu.p0.real-host-agent-success.v1",
+  "provider": "workbuddy",
+  "fixture": "synthetic-only",
+  "formalStudentDataTouched": false,
+  "passed": true,
+  "attempts": [
+    {
+      "providerId": "workbuddy",
+      "attempts": [],
+      "stage": "qualifying"
+    },
+    {
+      "providerId": "workbuddy",
+      "attempts": [
+        {
+          "providerId": "workbuddy",
+          "code": "",
+          "stage": "accepted"
+        }
+      ],
+      "stage": "accepted"
+    }
+  ],
+  "startedAt": "2026-10-30T16:21:42.964Z",
+  "dispatchReadiness": {
+    "state": "available",
+    "reasonCode": "cli_ready_task_boundary_verification",
+    "desktopSessionAvailable": true
+  },
+  "authorization": {
+    "authorized": true,
+    "executionUnknown": false,
+    "message": "WorkBuddy 受控后台认证已通过。",
+    "diagnostic": {
+      "code": 0,
+      "authRequired": false,
+      "timedOut": false,
+      "stopConfirmed": true,
+      "outputBytes": 4007,
+      "errorBytes": 0,
+      "outputSha256": "57d8eae54d9ef86ff1cc751c09f22af9ef95311fc71e747597f5b13b9671769b",
+      "errorSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "envelope": {
+        "format": "event_array",
+        "eventCount": 4,
+        "eventTypes": [
+          "message",
+          "reasoning",
+          "message",
+          "result"
+        ],
+        "lastType": "result",
+        "lastSubtype": "success",
+        "lastResult": "READY"
+      }
+    }
+  },
+  "qualification": {
+    "ready": true,
+    "code": ""
+  },
+  "originalUnchanged": true,
+  "hostCommitted": true,
+  "outputBytes": 491,
+  "resultAttempts": [
+    {
+      "providerId": "workbuddy",
+      "code": "",
+      "stage": "accepted"
+    }
+  ],
+  "processedVersion": 1,
+  "executionId": "1fdcf93c-e666-410f-9b0e-e2aa9c96580e",
+  "workKey": "p0-synthetic-workbuddy-digest",
+  "sourceVersion": "material-9b7275dd-8ce7-471f-a83f-e3612778dda7:v1",
+  "batchId": "batch-9ff5a917-1d74-4201-9318-4de3ab16f565",
+  "acceptanceProcessId": 34004,
+  "outputArtifact": "workbuddy-e2e-artifact.md",
+  "receiptArtifact": "workbuddy-e2e-receipt.json",
+  "lifecycle": [
+    {
+      "type": "claim",
+      "executionId": "1fdcf93c-e666-410f-9b0e-e2aa9c96580e",
+      "at": "2026-10-30T16:21:43.176Z"
+    },
+    {
+      "type": "send_intent",
+      "executionId": "1fdcf93c-e666-410f-9b0e-e2aa9c96580e",
+      "at": "2026-10-30T16:21:43.178Z"
+    },
+    {
+      "type": "started",
+      "executionId": "1fdcf93c-e666-410f-9b0e-e2aa9c96580e",
+      "at": "2026-10-30T16:22:42.883Z",
+      "processId": 34168
+    },
+    {
+      "type": "receipt",
+      "executionId": "1fdcf93c-e666-410f-9b0e-e2aa9c96580e",
+      "at": "2026-10-30T16:23:13.256Z"
+    },
+    {
+      "type": "settled",
+      "executionId": "1fdcf93c-e666-410f-9b0e-e2aa9c96580e",
+      "at": "2026-10-30T16:23:14.745Z",
+      "businessOutcome": "completed",
+      "settlementState": "settled"
+    }
+  ],
+  "sessionSummary": {
+    "ok": true,
+    "sessionRunId": "p0-synthetic-workbuddy-14b3eec3-aae5-45a8-920e-a80fd97741ad",
+    "automaticStarted": 1,
+    "automaticStartedWorkItems": 1,
+    "automaticSucceeded": 1,
+    "automaticFailed": 0,
+    "executionUnknown": 0,
+    "claimedNotStarted": 0,
+    "historicalSettledThisRun": 0,
+    "noWork": 0,
+    "manualFallbacks": 0,
+    "byExecutor": [
+      {
+        "providerId": "workbuddy",
+        "started": 1,
+        "succeeded": 1
+      }
+    ]
+  },
+  "finishedAt": "2026-10-30T16:23:14.749Z"
+}

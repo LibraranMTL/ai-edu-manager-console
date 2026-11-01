@@ -1,0 +1,12 @@
+{
+  "idle": "r1-idle-10min-x3/performance-summary.json",
+  "normal": "r1-normal-agent-workbuddy-10min-x3/performance-summary-audited.json",
+  "backlog": "r1-backlog-agent-workbuddy-formal/performance-summary-audited.json",
+  "visible": "r1-visible-interactions.json",
+  "traces": {
+    "interactionTrace": "r1-backlog-agent-workbuddy-remaining2-fixed/r12-agent-backlog-workbuddy-2/visible-interactions.json",
+    "processTreeTrace": "r1-backlog-agent-workbuddy-remaining2-fixed/r12-agent-backlog-workbuddy-2/runtime.json",
+    "baselineTrace": "r1-normal-agent-workbuddy-10min-x3/performance-summary-audited.json",
+    "taskTimeline": "r1-backlog-agent-workbuddy-remaining2-fixed/r12-agent-backlog-workbuddy-2/task-semantics-after.json"
+  }
+}

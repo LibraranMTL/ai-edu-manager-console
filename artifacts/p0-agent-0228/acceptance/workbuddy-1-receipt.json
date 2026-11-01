@@ -1,0 +1,12 @@
+{
+  "schema": "edu.agent0228.receipt-evidence.v1",
+  "executionId": "175c6334-abd0-4409-94f6-bea1d5de079e",
+  "workKey": "p0-synthetic-workbuddy-digest",
+  "sourceVersion": "material-43372f85-e2e7-4efb-8c96-7fd402625bbd:v1",
+  "artifact": "r1-real-host/workbuddy-1/workbuddy-e2e-artifact.md",
+  "validation": {
+    "valid": true,
+    "hostCommitted": true,
+    "syntheticOnly": true
+  }
+}

@@ -33,12 +33,12 @@ test('formal performance runner captures repeated writes during the measured win
 
 test('formal performance runner supports isolated real WorkBuddy and Codex workloads', () => {
   assert.match(script, /\[string\]\$SourceWorkBuddyAuth/);
-  assert.match(script, /'agent-workbuddy','agent-codex'/);
-  assert.match(script, /\$fixtureScenario\s*=\s*if \(\$scenario -match '\^agent-'\) \{ 'agent-project-task' \}/);
+  assert.match(script, /'agent-workbuddy','agent-codex','agent-backlog-workbuddy'/);
+  assert.match(script, /\$fixtureScenario\s*=\s*if \(\$scenario -eq 'agent-backlog-workbuddy'\) \{ 'agent-backlog-workbuddy' \} elseif \(\$scenario -match '\^agent-'\) \{ 'agent-project-task' \}/);
   assert.match(script, /"--agent-provider=\$agentProvider"/);
   assert.match(script, /"--source-workbuddy-auth=\$SourceWorkBuddyAuth"/);
   assert.match(script, /evidenceKind=\$runEvidenceKind/);
   assert.match(script, /agentBusinessCompleted/);
   assert.match(script, /tailQuietIntervals/);
-  assert.match(script, /\$agentProvider -and \$tailQuietIntervals -ge 3/);
+  assert.match(script, /\$agentProvider -and \$tailQuietIntervals -ge 6 -and \$tailChangedIntervals -le 1/);
 });

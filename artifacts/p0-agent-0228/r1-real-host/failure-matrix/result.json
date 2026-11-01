@@ -1,0 +1,118 @@
+{
+  "schema": "edu.p0.packaged-failure-matrix.v1",
+  "candidateResources": "C:\\Users\\bxw00\\AppData\\Local\\AI-Education-Manager\\release-stage\\0.22.8-agent-closure-r1\\out\\win-unpacked\\resources",
+  "syntheticOnly": true,
+  "formalDataReadOrWritten": false,
+  "startedAt": "2026-10-30T16:26:10.683Z",
+  "scenarios": {
+    "workbuddyExplicitFailure": {
+      "providerId": "workbuddy",
+      "calls": 1,
+      "result": {
+        "ok": false,
+        "code": "AGENT_RESULT_INVALID",
+        "stage": "completed",
+        "stopConfirmed": true,
+        "message": "workbuddy returned an explicit invalid result",
+        "attempts": [
+          {
+            "providerId": "workbuddy",
+            "code": "AGENT_RESULT_INVALID",
+            "stage": "unknown"
+          }
+        ]
+      },
+      "events": [
+        {
+          "providerId": "workbuddy",
+          "attempts": [],
+          "stage": "qualifying"
+        },
+        {
+          "providerId": "workbuddy",
+          "attempts": [
+            {
+              "providerId": "workbuddy",
+              "code": "AGENT_RESULT_INVALID",
+              "stage": "unknown"
+            }
+          ],
+          "stage": "unknown"
+        }
+      ],
+      "passed": true
+    },
+    "codexExplicitFailure": {
+      "providerId": "codex",
+      "calls": 1,
+      "result": {
+        "ok": false,
+        "code": "AGENT_RESULT_INVALID",
+        "stage": "completed",
+        "stopConfirmed": true,
+        "message": "codex returned an explicit invalid result",
+        "attempts": [
+          {
+            "providerId": "codex",
+            "code": "AGENT_RESULT_INVALID",
+            "stage": "unknown"
+          }
+        ]
+      },
+      "events": [
+        {
+          "providerId": "codex",
+          "attempts": [],
+          "stage": "qualifying"
+        },
+        {
+          "providerId": "codex",
+          "attempts": [
+            {
+              "providerId": "codex",
+              "code": "AGENT_RESULT_INVALID",
+              "stage": "unknown"
+            }
+          ],
+          "stage": "unknown"
+        }
+      ],
+      "passed": true
+    },
+    "abnormalExit": {
+      "passed": true,
+      "code": "agent_failed",
+      "exitCode": 23,
+      "message": "受控Agent执行失败。"
+    },
+    "resultUnknown": {
+      "passed": true,
+      "processBoundaryCode": "execution_unknown",
+      "dispatchCalls": 1,
+      "routed": {
+        "ok": false,
+        "code": "EXECUTION_UNRESOLVED",
+        "stage": "unknown",
+        "executionId": "unknown-workbuddy",
+        "attempts": [
+          {
+            "providerId": "workbuddy",
+            "code": "EXECUTION_UNRESOLVED",
+            "stage": "unknown"
+          }
+        ]
+      }
+    },
+    "lateReceipt": {
+      "passed": true,
+      "intermediate": "delivery_reconcile",
+      "finalStatus": "delivered",
+      "deliveryCalls": 1,
+      "reconcileCalls": 1,
+      "settlementCalls": 1,
+      "duplicateDeliveryCalls": 0
+    }
+  },
+  "finishedAt": "2026-10-30T16:26:15.974Z",
+  "passed": true
+}

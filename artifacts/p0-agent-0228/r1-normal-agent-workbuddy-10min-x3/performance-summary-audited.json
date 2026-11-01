@@ -1,0 +1,795 @@
+{
+  "schema": "edu.p0.host-performance-audited.v1",
+  "generatedAt": "2026-10-31T02:05:38.4032234+08:00",
+  "candidateExe": "D:\\群星矩阵文件\\智能体开发项目\\AI教育管家\\.worktrees\\windows-0228-agent-closure\\release\\windows\\candidates\\agent-closure-r1\\AI-edu-manager-console-Windows-0.22.8-agent-closure-r1.exe",
+  "durationSeconds": 600,
+  "warmupSeconds": 120,
+  "measurementWindow": "post_warmup",
+  "scenarios": [
+    "agent-workbuddy"
+  ],
+  "repeats": 3,
+  "evidenceKind": "paired_normal_real_agent",
+  "formalStudentDataTouched": false,
+  "results": [
+    {
+      "runId": "r12-agent-workbuddy-1",
+      "scenario": "agent-workbuddy",
+      "repeat": 1,
+      "evidenceKind": "real_agent_runtime",
+      "measurementWindow": "post_warmup",
+      "warmupSeconds": 120,
+      "passed": true,
+      "agentProvider": "workbuddy",
+      "agentBusinessCompleted": true,
+      "businessEvidence": {
+        "schema": "edu.p0.agent-business-result.v1",
+        "fixtureRoot": "C:\\Users\\bxw00\\AppData\\Local\\Temp\\edu-p0-r12-agent-workbuddy-1-e4ba229a",
+        "registryCount": 1,
+        "completed": 1,
+        "failed": 0,
+        "unknown": 0,
+        "businessCompleted": true,
+        "registries": [
+          {
+            "path": "C:\\Users\\bxw00\\AppData\\Local\\Temp\\edu-p0-r12-agent-workbuddy-1-e4ba229a\\project-data\\p0-synthetic-project-01\\.edu-manager\\project-materials\\registry.json",
+            "total": 1,
+            "completed": 1,
+            "failed": 0,
+            "unknown": 0,
+            "businessCompleted": true,
+            "items": [
+              {
+                "materialId": "material-p0-agent-fixture-01",
+                "state": "completed",
+                "completed": true,
+                "errorCode": ""
+              }
+            ]
+          }
+        ]
+      },
+      "projectQueryStress": {
+        "requested": false,
+        "passed": true,
+        "evidence": ""
+      },
+      "visibleInteractions": {
+        "requested": false,
+        "passed": true,
+        "evidence": ""
+      },
+      "fixture": "C:\\Users\\bxw00\\AppData\\Local\\Temp\\edu-p0-r12-agent-workbuddy-1-e4ba229a",
+      "mainProcessId": 8084,
+      "runtimeSummary": {
+        "sampleCount": 1200,
+        "actualIntervalAverageMilliseconds": 528.65,
+        "actualIntervalP95Milliseconds": 663.93,
+        "mainCpuCoreEquivalentAveragePercent": 0.04,
+        "mainCpuCoreEquivalentP95Percent": 0,
+        "treeCpuWholeMachineAveragePercent": 0.1,
+        "treeCpuWholeMachineP95Percent": 0.5,
+        "mainPrivateMemoryAverageBytes": 6992312,
+        "mainPrivateMemoryP95Bytes": 7106560,
+        "mainPrivateMemoryMaximumBytes": 7106560,
+        "nonRespondingSamples": 0,
+        "minimumTreeProcessCount": 5,
+        "maximumTreeProcessCount": 11
+      },
+      "rendererSummary": {
+        "sampleCount": 2382,
+        "p95Ms": 0.20000000298023224,
+        "maximumMs": 0.7000000029802322,
+        "failures": 0
+      },
+      "fileCadenceSummary": {
+        "intervalCount": 119,
+        "intervalsWithChanges": 5,
+        "continuousWriteDetected": false,
+        "tailQuietIntervals": 6,
+        "accepted": true,
+        "continuousFiles": []
+      },
+      "taskSemantic": {
+        "before": "EC1F241446B2281F53545B772EF51736306FE4093D5AF00B6ABB16E589A74AD0",
+        "after": "954881F191D8AB76FE9634046128E7584D56F56CAD4CF623E7CD7B4EF58D8BA3",
+        "changed": true,
+        "beforeStatuses": [
+          {
+            "taskId": "task-learning_changes-56c38eac5bf9",
+            "status": "pending",
+            "kind": "learning_changes",
+            "executor": "workbuddy",
+            "workKey": "learning_changes:p0-synthetic-agent-student-01:2026-10-26_2026-11-01:bbaa549196d2659c2f53e620",
+            "sourceVersion": "",
+            "executionId": "",
+            "businessOutcome": "",
+            "settlementState": "",
+            "updatedAt": "2026-10-30T17:27:31.523Z"
+          },
+          {
+            "taskId": "task-learning_profile-459f39da57ce",
+            "status": "pending",
+            "kind": "learning_profile",
+            "executor": "workbuddy",
+            "workKey": "learning_profile:p0-synthetic-agent-student-01:2026-10:bbaa549196d2659c2f53e620",
+            "sourceVersion": "",
+            "executionId": "",
+            "businessOutcome": "",
+            "settlementState": "",
+            "updatedAt": "2026-10-30T17:27:31.522Z"
+          },
+          {
+            "taskId": "task-learning_stage-5856e0615a20",
+            "status": "pending",
+            "kind": "learning_stage",
+            "executor": "workbuddy",
+            "workKey": "learning_stage:p0-synthetic-agent-student-01:2026-10:bbaa549196d2659c2f53e620",
+            "sourceVersion": "",
+            "executionId": "",
+            "businessOutcome": "",
+            "settlementState": "",
+            "updatedAt": "2026-10-30T17:27:31.523Z"
+          },
+          {
+            "taskId": "task-maintenance_lint-f0448804d814",
+            "status": "queued",
+            "kind": "maintenance_lint",
+            "executor": "workbuddy",
+            "workKey": "maintenance_lint:p0-synthetic-agent-student-01:2026-10-26",
+            "sourceVersion": "",
+            "executionId": "",
+            "businessOutcome": "",
+            "settlementState": "",
+            "updatedAt": "2026-10-30T17:27:31.524Z"
+          },
+          {
+            "taskId": "task-project_digest-336965553ba3",
+            "status": "running",
+            "kind": "project_digest",
+            "executor": "workbuddy",
+            "workKey": "project_digest:p0-synthetic-project-01:906d4b1ade8c2024af4da8930bd32758d382b00e",
+            "sourceVersion": "work:project_digest:p0-synthetic-project-01:906d4b1ade8c2024af4da8930bd32758d382b00e",
+            "executionId": "9556b3dd-c9cf-4c72-94b6-28ecec9af9f3",
+            "businessOutcome": "",
+            "settlementState": "",
+            "updatedAt": "2026-10-30T17:29:21.908Z"
+          },
+          {
+            "taskId": "task-topic_suggestion_refresh-b940a7bc040d",
+            "status": "pending",
+            "kind": "topic_suggestion_refresh",
+            "executor": "internal",
+            "workKey": "topic_suggestion_refresh:student:p0-synthetic-agent-student-01:5c13c7e6e2ee8e633aa81cc8ec42cc84",
+            "sourceVersion": "",
+            "executionId": "",
+            "businessOutcome": "",
+            "settlementState": "",
+            "updatedAt": "2026-10-30T17:27:31.527Z"
+          },
+          {
+            "taskId": "task-weekly_action-1360ff625d88",
+            "status": "pending",
+            "kind": "weekly_action",
+            "executor": "workbuddy",
+            "workKey": "weekly_action:p0-synthetic-agent-student-01:2026-10-26_2026-11-01:bbaa549196d2659c2f53e620",
+            "sourceVersion": "",
+            "executionId": "",
+            "businessOutcome": "",
+            "settlementState": "",
+            "updatedAt": "2026-10-30T17:27:31.521Z"
+          }
+        ],
+        "afterStatuses": [
+          {
+            "taskId": "task-learning_changes-56c38eac5bf9",
+            "status": "pending",
+            "kind": "learning_changes",
+            "executor": "workbuddy",
+            "workKey": "learning_changes:p0-synthetic-agent-student-01:2026-10-26_2026-11-01:bbaa549196d2659c2f53e620",
+            "sourceVersion": "",
+            "executionId": "",
+            "businessOutcome": "",
+            "settlementState": "",
+            "updatedAt": "2026-10-30T17:27:31.523Z"
+          },
+          {
+            "taskId": "task-learning_profile-459f39da57ce",
+            "status": "pending",
+            "kind": "learning_profile",
+            "executor": "workbuddy",
+            "workKey": "learning_profile:p0-synthetic-agent-student-01:2026-10:bbaa549196d2659c2f53e620",
+            "sourceVersion": "",
+            "executionId": "",
+            "businessOutcome": "",
+            "settlementState": "",
+            "updatedAt": "2026-10-30T17:27:31.522Z"
+          },
+          {
+            "taskId": "task-learning_stage-5856e0615a20",
+            "status": "pending",
+            "kind": "learning_stage",
+            "executor": "workbuddy",
+            "workKey": "learning_stage:p0-synthetic-agent-student-01:2026-10:bbaa549196d2659c2f53e620",
+            "sourceVersion": "",
+            "executionId": "",
+            "businessOutcome": "",
+            "settlementState": "",
+            "updatedAt": "2026-10-30T17:27:31.523Z"
+          },
+          {
+            "taskId": "task-maintenance_lint-f0448804d814",
+            "status": "queued",
+            "kind": "maintenance_lint",
+            "executor": "workbuddy",
+            "workKey": "maintenance_lint:p0-synthetic-agent-student-01:2026-10-26",
+            "sourceVersion": "",
+            "executionId": "",
+            "businessOutcome": "",
+            "settlementState": "",
+            "updatedAt": "2026-10-30T17:27:31.524Z"
+          },
+          {
+            "taskId": "task-project_digest-336965553ba3",
+            "status": "succeeded",
+            "kind": "project_digest",
+            "executor": "workbuddy",
+            "workKey": "project_digest:p0-synthetic-project-01:906d4b1ade8c2024af4da8930bd32758d382b00e",
+            "sourceVersion": "work:project_digest:p0-synthetic-project-01:906d4b1ade8c2024af4da8930bd32758d382b00e",
+            "executionId": "9556b3dd-c9cf-4c72-94b6-28ecec9af9f3",
+            "businessOutcome": "completed",
+            "settlementState": "settled",
+            "updatedAt": "2026-10-30T17:30:29.819Z"
+          },
+          {
+            "taskId": "task-topic_suggestion_refresh-b940a7bc040d",
+            "status": "pending",
+            "kind": "topic_suggestion_refresh",
+            "executor": "internal",
+            "workKey": "topic_suggestion_refresh:student:p0-synthetic-agent-student-01:5c13c7e6e2ee8e633aa81cc8ec42cc84",
+            "sourceVersion": "",
+            "executionId": "",
+            "businessOutcome": "",
+            "settlementState": "",
+            "updatedAt": "2026-10-30T17:27:31.527Z"
+          },
+          {
+            "taskId": "task-weekly_action-1360ff625d88",
+            "status": "pending",
+            "kind": "weekly_action",
+            "executor": "workbuddy",
+            "workKey": "weekly_action:p0-synthetic-agent-student-01:2026-10-26_2026-11-01:bbaa549196d2659c2f53e620",
+            "sourceVersion": "",
+            "executionId": "",
+            "businessOutcome": "",
+            "settlementState": "",
+            "updatedAt": "2026-10-30T17:27:31.521Z"
+          }
+        ]
+      },
+      "performanceCriteriaPassed": true
+    },
+    {
+      "runId": "r12-agent-workbuddy-2",
+      "scenario": "agent-workbuddy",
+      "repeat": 2,
+      "evidenceKind": "real_agent_runtime",
+      "measurementWindow": "post_warmup",
+      "warmupSeconds": 120,
+      "passed": true,
+      "agentProvider": "workbuddy",
+      "agentBusinessCompleted": true,
+      "businessEvidence": {
+        "schema": "edu.p0.agent-business-result.v1",
+        "fixtureRoot": "C:\\Users\\bxw00\\AppData\\Local\\Temp\\edu-p0-r12-agent-workbuddy-2-83e43d76",
+        "registryCount": 1,
+        "completed": 1,
+        "failed": 0,
+        "unknown": 0,
+        "businessCompleted": true,
+        "registries": [
+          {
+            "path": "C:\\Users\\bxw00\\AppData\\Local\\Temp\\edu-p0-r12-agent-workbuddy-2-83e43d76\\project-data\\p0-synthetic-project-01\\.edu-manager\\project-materials\\registry.json",
+            "total": 1,
+            "completed": 1,
+            "failed": 0,
+            "unknown": 0,
+            "businessCompleted": true,
+            "items": [
+              {
+                "materialId": "material-p0-agent-fixture-01",
+                "state": "completed",
+                "completed": true,
+                "errorCode": ""
+              }
+            ]
+          }
+        ]
+      },
+      "projectQueryStress": {
+        "requested": false,
+        "passed": true,
+        "evidence": ""
+      },
+      "visibleInteractions": {
+        "requested": false,
+        "passed": true,
+        "evidence": ""
+      },
+      "fixture": "C:\\Users\\bxw00\\AppData\\Local\\Temp\\edu-p0-r12-agent-workbuddy-2-83e43d76",
+      "mainProcessId": 16976,
+      "runtimeSummary": {
+        "sampleCount": 1200,
+        "actualIntervalAverageMilliseconds": 528.35,
+        "actualIntervalP95Milliseconds": 669.89,
+        "mainCpuCoreEquivalentAveragePercent": 0.05,
+        "mainCpuCoreEquivalentP95Percent": 0,
+        "treeCpuWholeMachineAveragePercent": 0.1,
+        "treeCpuWholeMachineP95Percent": 0.5,
+        "mainPrivateMemoryAverageBytes": 7025715,
+        "mainPrivateMemoryP95Bytes": 7143424,
+        "mainPrivateMemoryMaximumBytes": 7143424,
+        "nonRespondingSamples": 0,
+        "minimumTreeProcessCount": 5,
+        "maximumTreeProcessCount": 11
+      },
+      "rendererSummary": {
+        "sampleCount": 2381,
+        "p95Ms": 0.20000000298023224,
+        "maximumMs": 0.6000000089406967,
+        "failures": 0
+      },
+      "fileCadenceSummary": {
+        "intervalCount": 119,
+        "intervalsWithChanges": 4,
+        "continuousWriteDetected": false,
+        "tailQuietIntervals": 6,
+        "accepted": true,
+        "continuousFiles": []
+      },
+      "taskSemantic": {
+        "before": "C805D2B78D00C6BC3F998EEAD06090F44AE1673DBFA9DFAF5758B1FE95FE5A90",
+        "after": "1E8E4E4FF143C78AB86A898B21A1E81231061E395640A4BBB665E8A0C7280EEA",
+        "changed": true,
+        "beforeStatuses": [
+          {
+            "taskId": "task-learning_changes-56c38eac5bf9",
+            "status": "pending",
+            "kind": "learning_changes",
+            "executor": "workbuddy",
+            "workKey": "learning_changes:p0-synthetic-agent-student-01:2026-10-26_2026-11-01:bbaa549196d2659c2f53e620",
+            "sourceVersion": "",
+            "executionId": "",
+            "businessOutcome": "",
+            "settlementState": "",
+            "updatedAt": "2026-10-30T17:40:18.750Z"
+          },
+          {
+            "taskId": "task-learning_profile-459f39da57ce",
+            "status": "pending",
+            "kind": "learning_profile",
+            "executor": "workbuddy",
+            "workKey": "learning_profile:p0-synthetic-agent-student-01:2026-10:bbaa549196d2659c2f53e620",
+            "sourceVersion": "",
+            "executionId": "",
+            "businessOutcome": "",
+            "settlementState": "",
+            "updatedAt": "2026-10-30T17:40:18.749Z"
+          },
+          {
+            "taskId": "task-learning_stage-5856e0615a20",
+            "status": "pending",
+            "kind": "learning_stage",
+            "executor": "workbuddy",
+            "workKey": "learning_stage:p0-synthetic-agent-student-01:2026-10:bbaa549196d2659c2f53e620",
+            "sourceVersion": "",
+            "executionId": "",
+            "businessOutcome": "",
+            "settlementState": "",
+            "updatedAt": "2026-10-30T17:40:18.750Z"
+          },
+          {
+            "taskId": "task-maintenance_lint-f0448804d814",
+            "status": "queued",
+            "kind": "maintenance_lint",
+            "executor": "workbuddy",
+            "workKey": "maintenance_lint:p0-synthetic-agent-student-01:2026-10-26",
+            "sourceVersion": "",
+            "executionId": "",
+            "businessOutcome": "",
+            "settlementState": "",
+            "updatedAt": "2026-10-30T17:40:18.751Z"
+          },
+          {
+            "taskId": "task-project_digest-336965553ba3",
+            "status": "running",
+            "kind": "project_digest",
+            "executor": "workbuddy",
+            "workKey": "project_digest:p0-synthetic-project-01:registry-6:pending-1",
+            "sourceVersion": "project_digest:p0-synthetic-project-01:registry-6:pending-1",
+            "executionId": "08644469-af28-4e3a-8303-39f29a91e696",
+            "businessOutcome": "",
+            "settlementState": "",
+            "updatedAt": "2026-10-30T17:42:07.472Z"
+          },
+          {
+            "taskId": "task-topic_suggestion_refresh-b940a7bc040d",
+            "status": "pending",
+            "kind": "topic_suggestion_refresh",
+            "executor": "internal",
+            "workKey": "topic_suggestion_refresh:student:p0-synthetic-agent-student-01:874ee5c85187116dae51e5ab9ed1dacf",
+            "sourceVersion": "",
+            "executionId": "",
+            "businessOutcome": "",
+            "settlementState": "",
+            "updatedAt": "2026-10-30T17:40:18.753Z"
+          },
+          {
+            "taskId": "task-weekly_action-1360ff625d88",
+            "status": "pending",
+            "kind": "weekly_action",
+            "executor": "workbuddy",
+            "workKey": "weekly_action:p0-synthetic-agent-student-01:2026-10-26_2026-11-01:bbaa549196d2659c2f53e620",
+            "sourceVersion": "",
+            "executionId": "",
+            "businessOutcome": "",
+            "settlementState": "",
+            "updatedAt": "2026-10-30T17:40:18.748Z"
+          }
+        ],
+        "afterStatuses": [
+          {
+            "taskId": "task-learning_changes-56c38eac5bf9",
+            "status": "pending",
+            "kind": "learning_changes",
+            "executor": "workbuddy",
+            "workKey": "learning_changes:p0-synthetic-agent-student-01:2026-10-26_2026-11-01:bbaa549196d2659c2f53e620",
+            "sourceVersion": "",
+            "executionId": "",
+            "businessOutcome": "",
+            "settlementState": "",
+            "updatedAt": "2026-10-30T17:40:18.750Z"
+          },
+          {
+            "taskId": "task-learning_profile-459f39da57ce",
+            "status": "pending",
+            "kind": "learning_profile",
+            "executor": "workbuddy",
+            "workKey": "learning_profile:p0-synthetic-agent-student-01:2026-10:bbaa549196d2659c2f53e620",
+            "sourceVersion": "",
+            "executionId": "",
+            "businessOutcome": "",
+            "settlementState": "",
+            "updatedAt": "2026-10-30T17:40:18.749Z"
+          },
+          {
+            "taskId": "task-learning_stage-5856e0615a20",
+            "status": "pending",
+            "kind": "learning_stage",
+            "executor": "workbuddy",
+            "workKey": "learning_stage:p0-synthetic-agent-student-01:2026-10:bbaa549196d2659c2f53e620",
+            "sourceVersion": "",
+            "executionId": "",
+            "businessOutcome": "",
+            "settlementState": "",
+            "updatedAt": "2026-10-30T17:40:18.750Z"
+          },
+          {
+            "taskId": "task-maintenance_lint-f0448804d814",
+            "status": "queued",
+            "kind": "maintenance_lint",
+            "executor": "workbuddy",
+            "workKey": "maintenance_lint:p0-synthetic-agent-student-01:2026-10-26",
+            "sourceVersion": "",
+            "executionId": "",
+            "businessOutcome": "",
+            "settlementState": "",
+            "updatedAt": "2026-10-30T17:40:18.751Z"
+          },
+          {
+            "taskId": "task-project_digest-336965553ba3",
+            "status": "succeeded",
+            "kind": "project_digest",
+            "executor": "workbuddy",
+            "workKey": "project_digest:p0-synthetic-project-01:registry-6:pending-1",
+            "sourceVersion": "project_digest:p0-synthetic-project-01:registry-6:pending-1",
+            "executionId": "08644469-af28-4e3a-8303-39f29a91e696",
+            "businessOutcome": "completed",
+            "settlementState": "settled",
+            "updatedAt": "2026-10-30T17:43:01.153Z"
+          },
+          {
+            "taskId": "task-topic_suggestion_refresh-b940a7bc040d",
+            "status": "pending",
+            "kind": "topic_suggestion_refresh",
+            "executor": "internal",
+            "workKey": "topic_suggestion_refresh:student:p0-synthetic-agent-student-01:874ee5c85187116dae51e5ab9ed1dacf",
+            "sourceVersion": "",
+            "executionId": "",
+            "businessOutcome": "",
+            "settlementState": "",
+            "updatedAt": "2026-10-30T17:40:18.753Z"
+          },
+          {
+            "taskId": "task-weekly_action-1360ff625d88",
+            "status": "pending",
+            "kind": "weekly_action",
+            "executor": "workbuddy",
+            "workKey": "weekly_action:p0-synthetic-agent-student-01:2026-10-26_2026-11-01:bbaa549196d2659c2f53e620",
+            "sourceVersion": "",
+            "executionId": "",
+            "businessOutcome": "",
+            "settlementState": "",
+            "updatedAt": "2026-10-30T17:40:18.748Z"
+          }
+        ]
+      },
+      "performanceCriteriaPassed": true
+    },
+    {
+      "runId": "r12-agent-workbuddy-3",
+      "scenario": "agent-workbuddy",
+      "repeat": 3,
+      "evidenceKind": "real_agent_runtime",
+      "measurementWindow": "post_warmup",
+      "warmupSeconds": 120,
+      "passed": true,
+      "agentProvider": "workbuddy",
+      "agentBusinessCompleted": true,
+      "businessEvidence": {
+        "schema": "edu.p0.agent-business-result.v1",
+        "fixtureRoot": "C:\\Users\\bxw00\\AppData\\Local\\Temp\\edu-p0-r12-agent-workbuddy-3-a273d6b7",
+        "registryCount": 1,
+        "completed": 1,
+        "failed": 0,
+        "unknown": 0,
+        "businessCompleted": true,
+        "registries": [
+          {
+            "path": "C:\\Users\\bxw00\\AppData\\Local\\Temp\\edu-p0-r12-agent-workbuddy-3-a273d6b7\\project-data\\p0-synthetic-project-01\\.edu-manager\\project-materials\\registry.json",
+            "total": 1,
+            "completed": 1,
+            "failed": 0,
+            "unknown": 0,
+            "businessCompleted": true,
+            "items": [
+              {
+                "materialId": "material-p0-agent-fixture-01",
+                "state": "completed",
+                "completed": true,
+                "errorCode": ""
+              }
+            ]
+          }
+        ]
+      },
+      "projectQueryStress": {
+        "requested": false,
+        "passed": true,
+        "evidence": ""
+      },
+      "visibleInteractions": {
+        "requested": false,
+        "passed": true,
+        "evidence": ""
+      },
+      "fixture": "C:\\Users\\bxw00\\AppData\\Local\\Temp\\edu-p0-r12-agent-workbuddy-3-a273d6b7",
+      "mainProcessId": 25108,
+      "runtimeSummary": {
+        "sampleCount": 1200,
+        "actualIntervalAverageMilliseconds": 529.15,
+        "actualIntervalP95Milliseconds": 668.12,
+        "mainCpuCoreEquivalentAveragePercent": 0.03,
+        "mainCpuCoreEquivalentP95Percent": 0,
+        "treeCpuWholeMachineAveragePercent": 0.14,
+        "treeCpuWholeMachineP95Percent": 0.5,
+        "mainPrivateMemoryAverageBytes": 7050404,
+        "mainPrivateMemoryP95Bytes": 7155712,
+        "mainPrivateMemoryMaximumBytes": 7155712,
+        "nonRespondingSamples": 0,
+        "minimumTreeProcessCount": 5,
+        "maximumTreeProcessCount": 10
+      },
+      "rendererSummary": {
+        "sampleCount": 2381,
+        "p95Ms": 0.20000000298023224,
+        "maximumMs": 0.6000000089406967,
+        "failures": 0
+      },
+      "fileCadenceSummary": {
+        "intervalCount": 119,
+        "intervalsWithChanges": 10,
+        "continuousWriteDetected": false,
+        "tailQuietIntervals": 6,
+        "accepted": true,
+        "continuousFiles": []
+      },
+      "taskSemantic": {
+        "before": "6B29DA15D9248433DABD3B948DC2DFAC26FDB6A2F9246316EEC63B9E984DF689",
+        "after": "F6C02A1A24DE7D9E877C386AC366D7A7C7513A37F65F738607D8C4E96828D6EE",
+        "changed": true,
+        "beforeStatuses": [
+          {
+            "taskId": "task-learning_changes-56c38eac5bf9",
+            "status": "pending",
+            "kind": "learning_changes",
+            "executor": "workbuddy",
+            "workKey": "learning_changes:p0-synthetic-agent-student-01:2026-10-26_2026-11-01:bbaa549196d2659c2f53e620",
+            "sourceVersion": "",
+            "executionId": "",
+            "businessOutcome": "",
+            "settlementState": "",
+            "updatedAt": "2026-10-30T17:53:05.296Z"
+          },
+          {
+            "taskId": "task-learning_profile-459f39da57ce",
+            "status": "pending",
+            "kind": "learning_profile",
+            "executor": "workbuddy",
+            "workKey": "learning_profile:p0-synthetic-agent-student-01:2026-10:bbaa549196d2659c2f53e620",
+            "sourceVersion": "",
+            "executionId": "",
+            "businessOutcome": "",
+            "settlementState": "",
+            "updatedAt": "2026-10-30T17:53:05.295Z"
+          },
+          {
+            "taskId": "task-learning_stage-5856e0615a20",
+            "status": "pending",
+            "kind": "learning_stage",
+            "executor": "workbuddy",
+            "workKey": "learning_stage:p0-synthetic-agent-student-01:2026-10:bbaa549196d2659c2f53e620",
+            "sourceVersion": "",
+            "executionId": "",
+            "businessOutcome": "",
+            "settlementState": "",
+            "updatedAt": "2026-10-30T17:53:05.297Z"
+          },
+          {
+            "taskId": "task-maintenance_lint-f0448804d814",
+            "status": "queued",
+            "kind": "maintenance_lint",
+            "executor": "workbuddy",
+            "workKey": "maintenance_lint:p0-synthetic-agent-student-01:2026-10-26",
+            "sourceVersion": "",
+            "executionId": "",
+            "businessOutcome": "",
+            "settlementState": "",
+            "updatedAt": "2026-10-30T17:53:05.297Z"
+          },
+          {
+            "taskId": "task-project_digest-336965553ba3",
+            "status": "approved",
+            "kind": "project_digest",
+            "executor": "workbuddy",
+            "workKey": "project_digest:p0-synthetic-project-01:registry-6:pending-1",
+            "sourceVersion": "project_digest:p0-synthetic-project-01:registry-6:pending-1",
+            "executionId": "",
+            "businessOutcome": "",
+            "settlementState": "",
+            "updatedAt": "2026-10-30T17:54:44.949Z"
+          },
+          {
+            "taskId": "task-topic_suggestion_refresh-b940a7bc040d",
+            "status": "pending",
+            "kind": "topic_suggestion_refresh",
+            "executor": "internal",
+            "workKey": "topic_suggestion_refresh:student:p0-synthetic-agent-student-01:79e257761b8c0cf46c74be0d8e1c999c",
+            "sourceVersion": "",
+            "executionId": "",
+            "businessOutcome": "",
+            "settlementState": "",
+            "updatedAt": "2026-10-30T17:53:05.301Z"
+          },
+          {
+            "taskId": "task-weekly_action-1360ff625d88",
+            "status": "pending",
+            "kind": "weekly_action",
+            "executor": "workbuddy",
+            "workKey": "weekly_action:p0-synthetic-agent-student-01:2026-10-26_2026-11-01:bbaa549196d2659c2f53e620",
+            "sourceVersion": "",
+            "executionId": "",
+            "businessOutcome": "",
+            "settlementState": "",
+            "updatedAt": "2026-10-30T17:53:05.295Z"
+          }
+        ],
+        "afterStatuses": [
+          {
+            "taskId": "task-learning_changes-56c38eac5bf9",
+            "status": "pending",
+            "kind": "learning_changes",
+            "executor": "workbuddy",
+            "workKey": "learning_changes:p0-synthetic-agent-student-01:2026-10-26_2026-11-01:bbaa549196d2659c2f53e620",
+            "sourceVersion": "",
+            "executionId": "",
+            "businessOutcome": "",
+            "settlementState": "",
+            "updatedAt": "2026-10-30T17:53:05.296Z"
+          },
+          {
+            "taskId": "task-learning_profile-459f39da57ce",
+            "status": "pending",
+            "kind": "learning_profile",
+            "executor": "workbuddy",
+            "workKey": "learning_profile:p0-synthetic-agent-student-01:2026-10:bbaa549196d2659c2f53e620",
+            "sourceVersion": "",
+            "executionId": "",
+            "businessOutcome": "",
+            "settlementState": "",
+            "updatedAt": "2026-10-30T17:53:05.295Z"
+          },
+          {
+            "taskId": "task-learning_stage-5856e0615a20",
+            "status": "pending",
+            "kind": "learning_stage",
+            "executor": "workbuddy",
+            "workKey": "learning_stage:p0-synthetic-agent-student-01:2026-10:bbaa549196d2659c2f53e620",
+            "sourceVersion": "",
+            "executionId": "",
+            "businessOutcome": "",
+            "settlementState": "",
+            "updatedAt": "2026-10-30T17:53:05.297Z"
+          },
+          {
+            "taskId": "task-maintenance_lint-f0448804d814",
+            "status": "queued",
+            "kind": "maintenance_lint",
+            "executor": "workbuddy",
+            "workKey": "maintenance_lint:p0-synthetic-agent-student-01:2026-10-26",
+            "sourceVersion": "",
+            "executionId": "",
+            "businessOutcome": "",
+            "settlementState": "",
+            "updatedAt": "2026-10-30T17:53:05.297Z"
+          },
+          {
+            "taskId": "task-project_digest-336965553ba3",
+            "status": "succeeded",
+            "kind": "project_digest",
+            "executor": "workbuddy",
+            "workKey": "project_digest:p0-synthetic-project-01:registry-6:pending-1",
+            "sourceVersion": "project_digest:p0-synthetic-project-01:registry-6:pending-1",
+            "executionId": "cff09088-7542-4897-889d-3c841ae0d9de",
+            "businessOutcome": "completed",
+            "settlementState": "settled",
+            "updatedAt": "2026-10-30T17:57:02.540Z"
+          },
+          {
+            "taskId": "task-topic_suggestion_refresh-b940a7bc040d",
+            "status": "pending",
+            "kind": "topic_suggestion_refresh",
+            "executor": "internal",
+            "workKey": "topic_suggestion_refresh:student:p0-synthetic-agent-student-01:79e257761b8c0cf46c74be0d8e1c999c",
+            "sourceVersion": "",
+            "executionId": "",
+            "businessOutcome": "",
+            "settlementState": "",
+            "updatedAt": "2026-10-30T17:53:05.301Z"
+          },
+          {
+            "taskId": "task-weekly_action-1360ff625d88",
+            "status": "pending",
+            "kind": "weekly_action",
+            "executor": "workbuddy",
+            "workKey": "weekly_action:p0-synthetic-agent-student-01:2026-10-26_2026-11-01:bbaa549196d2659c2f53e620",
+            "sourceVersion": "",
+            "executionId": "",
+            "businessOutcome": "",
+            "settlementState": "",
+            "updatedAt": "2026-10-30T17:53:05.295Z"
+          }
+        ]
+      },
+      "performanceCriteriaPassed": true
+    }
+  ],
+  "passed": true,
+  "auditedAt": "2026-11-01T05:29:11.755Z",
+  "validBusinessCompletedCount": 3,
+  "failedBusinessCount": 0,
+  "source": {
+    "path": "D:\\群星矩阵文件\\智能体开发项目\\AI教育管家\\.worktrees\\windows-0228-agent-closure\\artifacts\\p0-agent-0228\\r1-normal-agent-workbuddy-10min-x3\\performance-summary.json",
+    "sha256": "1d4830a97864d53a14818657d810226a3fa715aba9ea5610c766b305ce916e67"
+  }
+}

@@ -50,7 +50,9 @@ function projectReportProjection(reader, snapshot, report, version = {}) {
     dataGeneration: Number(version.generation || 0), authorizationVersion: snapshot.authorizationVersion,
     project: structuredClone(snapshot.project), summary, claims: structuredClone(claims), sections: structuredClone(sections), changes,
     gaps: structuredClone(report.gaps || []), personalContributions: structuredClone(personalContributions),
-    coverage: structuredClone(snapshot.coverage), disclaimer: report.disclaimer };
+    coverage: structuredClone(snapshot.coverage),
+    ...(report.completion ? { completion: structuredClone(report.completion) } : {}),
+    disclaimer: report.disclaimer };
 }
 
 module.exports = { projectReportProjection, citationProjection };

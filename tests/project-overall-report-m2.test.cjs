@@ -36,9 +36,9 @@ function fixture(t) {
     setProject(value) { currentProject = value; }, setRegistry(value) { currentRegistry = value; } };
 }
 
-test('schema v2 stores governed generation runs and arbitrary immutable report versions', async (t) => {
+test('schema v3 stores governed generation runs and arbitrary immutable report versions', async (t) => {
   const { store, service } = fixture(t);
-  assert.equal(SCHEMA_VERSION, 2);
+  assert.equal(SCHEMA_VERSION, 3);
   const request = await service.requestUpdate(scope(), reader(), 'project-demo', { trigger: 'manual' });
   const settled = await service.settleUpdate(scope(), reader(), {
     taskId: request.task.id, executionId: 'execution-1', candidate: { claims: [] },
@@ -109,7 +109,7 @@ test('new evidence creates a second version with stable-claim differences and le
   assert.equal(store.state().generation, generation, 'version browsing and diffing must be zero-write');
 });
 
-test('opening a v1 database creates a recoverable backup and migrates forward to v2', (t) => {
+test('opening a v1 database creates a recoverable backup and migrates forward to v3', (t) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'edu-project-report-migrate-'));
   const dbPath = path.join(root, 'project-report-state.sqlite3');
   const initial = createProjectReportStore({ dbPath, now: () => Date.parse(NOW) });
@@ -119,8 +119,8 @@ test('opening a v1 database creates a recoverable backup and migrates forward to
   legacy.close();
   const migrated = createProjectReportStore({ dbPath, now: () => Date.parse(NOW) });
   t.after(() => { migrated.close(); fs.rmSync(root, { recursive: true, force: true }); });
-  assert.equal(migrated.state().schemaVersion, 2);
-  assert.ok(fs.readdirSync(root).some((name) => name.includes('.pre-schema-v2-') && name.endsWith('.sqlite3')));
+  assert.equal(migrated.state().schemaVersion, 3);
+  assert.ok(fs.readdirSync(root).some((name) => name.includes('.pre-schema-v3-') && name.endsWith('.sqlite3')));
 });
 
 test('scope or evidence changes after execution starts reject the result and preserve the old current version', async (t) => {

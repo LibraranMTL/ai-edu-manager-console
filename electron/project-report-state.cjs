@@ -6,7 +6,7 @@ const crypto = require('node:crypto');
 const { DatabaseSync } = require('node:sqlite');
 const { stableJson, sha256 } = require('./project-report-snapshot.cjs');
 
-const SCHEMA_VERSION = 2;
+const SCHEMA_VERSION = 3;
 function text(value) { return String(value ?? '').trim(); }
 function json(value, fallback) { try { return JSON.parse(String(value || '')); } catch { return fallback; } }
 function nowIso(now) { return new Date(typeof now === 'function' ? now() : now).toISOString(); }
@@ -27,6 +27,8 @@ function schemaSql() { return `
     generation INTEGER NOT NULL,created_at TEXT NOT NULL,UNIQUE(project_id,commit_key)
   ) STRICT;
   CREATE INDEX IF NOT EXISTS project_report_versions_project ON project_report_versions(project_id,created_at DESC);
+  CREATE UNIQUE INDEX IF NOT EXISTS project_report_versions_one_completion
+    ON project_report_versions(project_id) WHERE report_type='completion';
   CREATE TABLE IF NOT EXISTS project_report_current(project_id TEXT PRIMARY KEY,version_id TEXT NOT NULL REFERENCES project_report_versions(version_id)) STRICT;
   CREATE TABLE IF NOT EXISTS project_report_generation_runs(
     task_id TEXT PRIMARY KEY,project_id TEXT NOT NULL,task_key TEXT NOT NULL,snapshot_id TEXT NOT NULL REFERENCES project_report_snapshots(snapshot_id),
@@ -36,6 +38,12 @@ function schemaSql() { return `
     UNIQUE(project_id,task_key)
   ) STRICT;
   CREATE INDEX IF NOT EXISTS project_report_generation_runs_project ON project_report_generation_runs(project_id,updated_at DESC);
+  CREATE TABLE IF NOT EXISTS project_report_completion_receipts(
+    project_id TEXT PRIMARY KEY,archive_transaction_id TEXT NOT NULL UNIQUE,
+    snapshot_id TEXT NOT NULL REFERENCES project_report_snapshots(snapshot_id),
+    version_id TEXT NOT NULL REFERENCES project_report_versions(version_id),
+    receipt_hash TEXT NOT NULL,receipt_json TEXT NOT NULL,completed_at TEXT NOT NULL,created_at TEXT NOT NULL
+  ) STRICT;
   PRAGMA user_version=${SCHEMA_VERSION};`;
 }
 function assertScope(scope, projectId) {
@@ -65,6 +73,9 @@ function mapRun(row) { if (!row) return null; return { taskId: row.task_id, proj
   snapshotId: row.snapshot_id, reportType: row.report_type, policyVersion: row.policy_version, baseVersionId: row.base_version_id,
   status: row.status, executionId: row.execution_id, versionId: row.version_id, resultHash: row.result_hash,
   errorCode: row.error_code, createdAt: row.created_at, updatedAt: row.updated_at }; }
+function mapCompletionReceipt(row) { if (!row) return null; return { projectId: row.project_id,
+  archiveTransactionId: row.archive_transaction_id, snapshotId: row.snapshot_id, versionId: row.version_id,
+  receiptHash: row.receipt_hash, receipt: json(row.receipt_json, {}), completedAt: row.completed_at, createdAt: row.created_at }; }
 
 function createProjectReportStore({ dbPath, now = Date.now } = {}) {
   if (!path.isAbsolute(dbPath || '')) throw new Error('Project report database path must be absolute');
@@ -135,6 +146,48 @@ function createProjectReportStore({ dbPath, now = Date.now } = {}) {
   function listProjectReportVersions(projectId) { return db.prepare('SELECT * FROM project_report_versions WHERE project_id=? ORDER BY created_at DESC,version_id DESC')
     .all(text(projectId)).map((row) => { const item = mapVersion(row); return { versionId: item.versionId, projectId: item.projectId,
       snapshotId: item.snapshotId, reportType: item.reportType, policyVersion: item.policyVersion, generation: item.generation, createdAt: item.createdAt }; }); }
+  function getCompletionReceipt(projectId) {
+    return mapCompletionReceipt(db.prepare('SELECT * FROM project_report_completion_receipts WHERE project_id=?').get(text(projectId)));
+  }
+  function commitCompletionReport(scope, input = {}) {
+    const snapshot = getSnapshot(input.snapshotId);
+    if (!snapshot) throw Object.assign(new Error('项目结项快照不存在。'), { code: 'project_report_snapshot_missing' });
+    assertScope(scope, snapshot.projectId);
+    const archiveTransactionId = text(input.archiveTransactionId), commitKey = text(input.commitKey), report = input.report;
+    if (!/^archive-tx-[a-f0-9-]{36}$/.test(archiveTransactionId) || !commitKey || report?.reportType !== 'completion') {
+      throw Object.assign(new Error('项目结项报告提交内容无效。'), { code: 'project_report_completion_invalid' });
+    }
+    const receipt = input.receipt || {};
+    const receiptHash = sha256(stableJson(receipt));
+    const existing = db.prepare('SELECT * FROM project_report_completion_receipts WHERE project_id=? OR archive_transaction_id=?')
+      .get(snapshot.projectId, archiveTransactionId);
+    if (existing) {
+      if (existing.project_id !== snapshot.projectId || existing.archive_transaction_id !== archiveTransactionId
+        || existing.receipt_hash !== receiptHash) {
+        throw Object.assign(new Error('归档回执与已发布结项版本冲突。'), { code: 'project_report_commit_conflict' });
+      }
+      return mapVersion(db.prepare('SELECT * FROM project_report_versions WHERE version_id=?').get(existing.version_id));
+    }
+    const current = db.prepare('SELECT version_id FROM project_report_current WHERE project_id=?').get(snapshot.projectId);
+    if (Object.prototype.hasOwnProperty.call(input, 'expectedCurrentVersionId')
+      && text(current?.version_id) !== text(input.expectedCurrentVersionId)) {
+      throw Object.assign(new Error('项目报告当前版本已变化，旧归档回执不得覆盖。'), { code: 'project_report_current_changed' });
+    }
+    const contentHash = sha256(stableJson({ snapshotId: snapshot.snapshotId, report }));
+    return transaction(() => {
+      const next = nextGeneration(), versionId = `project-report-version-${contentHash.slice(0, 24)}`, createdAt = nowIso(now);
+      db.prepare(`INSERT INTO project_report_versions(version_id,project_id,snapshot_id,commit_key,report_type,policy_version,content_hash,report_json,generation,created_at)
+        VALUES(?,?,?,?,?,?,?,?,?,?)`).run(versionId, snapshot.projectId, snapshot.snapshotId, commitKey, 'completion',
+          text(report.policyVersion || snapshot.policyVersion), contentHash, stableJson(report), next, createdAt);
+      db.prepare(`INSERT INTO project_report_current(project_id,version_id) VALUES(?,?)
+        ON CONFLICT(project_id) DO UPDATE SET version_id=excluded.version_id`).run(snapshot.projectId, versionId);
+      db.prepare(`INSERT INTO project_report_completion_receipts(project_id,archive_transaction_id,snapshot_id,version_id,
+        receipt_hash,receipt_json,completed_at,created_at) VALUES(?,?,?,?,?,?,?,?)`)
+        .run(snapshot.projectId, archiveTransactionId, snapshot.snapshotId, versionId, receiptHash, stableJson(receipt),
+          text(receipt.committedAt) || createdAt, createdAt);
+      return mapVersion(db.prepare('SELECT * FROM project_report_versions WHERE version_id=?').get(versionId));
+    });
+  }
   function ensureGenerationRun(scope, input = {}) {
     assertScope(scope, input.projectId);
     const taskId = text(input.taskId), taskKey = text(input.taskKey), snapshotId = text(input.snapshotId);
@@ -188,7 +241,8 @@ function createProjectReportStore({ dbPath, now = Date.now } = {}) {
       nextGeneration(); return getGenerationRun(run.taskId);
     });
   }
-  return { saveSnapshot, getSnapshot, commitReportVersion, getCurrentProjectReport, getProjectReportVersion, listProjectReportVersions,
+  return { saveSnapshot, getSnapshot, commitReportVersion, commitCompletionReport, getCompletionReceipt,
+    getCurrentProjectReport, getProjectReportVersion, listProjectReportVersions,
     ensureGenerationRun, getGenerationRun, beginGenerationRun, settleGenerationRun,
     state: () => ({ schemaVersion: SCHEMA_VERSION, generation: generation() }), close: () => db.close() };
 }

@@ -51,6 +51,7 @@ function buildM1ProjectReport(snapshot) {
 }
 
 const M2_POLICY_VERSION = 'project-report-m2-v1';
+const M3_POLICY_VERSION = 'project-report-m3-v1';
 const REPORT_SECTIONS = Object.freeze([
   ['project_overview', '项目概况'], ['stage_change', '阶段与本期变化'], ['exploration_iteration', '探究与迭代'],
   ['outcomes', '成果与目标达成'], ['team_contribution', '团队成果与个人贡献'], ['gaps_next', '缺口与下一步'],
@@ -172,5 +173,31 @@ function buildM2ProjectReport(snapshot, previousReport = null, candidate = {}) {
   return report;
 }
 
-module.exports = { M2_POLICY_VERSION, REPORT_SECTIONS, buildM1ProjectReport, buildM2ProjectReport, compareReportClaims, validateM2Candidate };
+function buildM3CompletionReport(snapshot, previousReport = null, receipt = {}) {
+  if (snapshot?.project?.status !== 'archived') throw Object.assign(
+    new Error('项目尚未完成归档，不能发布结项版本。'), { code: 'project_report_archive_receipt_invalid' });
+  const base = buildM2ProjectReport(snapshot, previousReport, {});
+  const report = {
+    ...base,
+    reportType: 'completion',
+    policyVersion: M3_POLICY_VERSION,
+    summary: {
+      ...base.summary,
+      currentStage: '已结项归档',
+      changes: previousReport ? '已冻结结项时的证据、判断与缺口，形成唯一结项版本。' : '根据结项时固定证据生成唯一结项版本。',
+      nextAction: base.gaps.length ? '保留当前缺口，后续订正以补充说明关联本结项版。' : '保留结项依据和固定版本，供后续复核与展示。',
+    },
+    completion: {
+      completedAt: text(receipt.committedAt) || snapshot.asOf,
+      archiveTransactionId: text(receipt.transactionId),
+      frozenInputFingerprint: snapshot.inputFingerprint,
+    },
+    disclaimer: '这是归档成功后基于固定证据快照形成的唯一结项版本；后续订正另作补充说明，不改写本版本。',
+  };
+  report.contentFingerprint = sha256(report);
+  return report;
+}
+
+module.exports = { M2_POLICY_VERSION, M3_POLICY_VERSION, REPORT_SECTIONS, buildM1ProjectReport, buildM2ProjectReport,
+  buildM3CompletionReport, compareReportClaims, validateM2Candidate };
 

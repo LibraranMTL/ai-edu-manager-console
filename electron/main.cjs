@@ -132,6 +132,7 @@ const {
   safeExportStem,
   writeFileWithFallback,
 } = require('./report-export.cjs');
+const { projectReportMarkdown, projectReportHtml } = require('./project-report-export.cjs');
 const {
   PUBLICATION_SCHEMA,
   TEMPLATES: EDUCATION_PUBLICATION_TEMPLATES,
@@ -236,7 +237,7 @@ const { createAssetDuplicateGovernance } = require('./asset-duplicate-governance
 const { createProjectStateStore } = require('./project-state-store.cjs');
 const { projectListProjection } = require('./project-list-projection.cjs');
 const { boundedProjectIpcJson } = require('./project-ipc-response.cjs');
-const { createProjectReportStore } = require('./project-report-state.cjs');
+const { createProjectReportStore, SCHEMA_VERSION: PROJECT_REPORT_SCHEMA_VERSION } = require('./project-report-state.cjs');
 const { createProjectReportService, emptyProjection: emptyProjectReportProjection } = require('./project-report-service.cjs');
 const { PROJECT_WORKSPACE_TEMPLATES, PROJECT_TEMPLATE_V2_STRATEGIES,
   projectWorkspaceTemplateFor, listProjectWorkspaceTemplates } = require('./project-workspace-templates.cjs');
@@ -10173,7 +10174,7 @@ function sanitizeMigrationSettings(input) {
   return sanitized;
 }
 
-function migrationStateVirtualFiles(assetSnapshotPath = '', projectSnapshotPath = '', taskSnapshotPath = '') {
+function migrationStateVirtualFiles(assetSnapshotPath = '', projectSnapshotPath = '', taskSnapshotPath = '', projectReportSnapshotPath = '') {
   const stateFiles = [
     ['settings.json', sanitizeMigrationSettings(readSettings())],
     ['students.json', readStudentsIndex()],
@@ -10206,6 +10207,9 @@ function migrationStateVirtualFiles(assetSnapshotPath = '', projectSnapshotPath 
   });
   if (taskSnapshotPath) files.push({
     kind: 'state', id: 'host-state', relativePath: 'migration-tasks/task-state.sqlite3', sourcePath: taskSnapshotPath,
+  });
+  if (projectReportSnapshotPath) files.push({
+    kind: 'state', id: 'host-state', relativePath: 'migration-project-reports/project-report-state.sqlite3', sourcePath: projectReportSnapshotPath,
   });
   return files;
 }
@@ -10408,12 +10412,17 @@ async function createHostMigrationPackage(event, optionsJson) {
       const snapshotPath = path.join(snapshotRoot, 'asset-index.sqlite3');
       const projectSnapshotPath = path.join(snapshotRoot, 'project-state.sqlite3');
       const taskSnapshotPath = path.join(snapshotRoot, 'task-state.sqlite3');
+      const projectReportSnapshotPath = path.join(snapshotRoot, 'project-report-state.sqlite3');
       try {
         await assetStore().backupTo(snapshotPath);
         await projectStateStore().backupTo(projectSnapshotPath);
         if (fs.existsSync(taskDatabasePath())) {
           const taskSource = new DatabaseSync(taskDatabasePath(), { readOnly: true });
           try { await backupSqlite(taskSource, taskSnapshotPath); } finally { taskSource.close(); }
+        }
+        if (typeof projectReportDatabasePath === 'function' && fs.existsSync(projectReportDatabasePath())) {
+          const reportSource = new DatabaseSync(projectReportDatabasePath(), { readOnly: true });
+          try { await backupSqlite(reportSource, projectReportSnapshotPath); } finally { reportSource.close(); }
         }
         return await runHostMigrationWorker('create', {
           destinationParent: selected.filePaths[0],
@@ -10424,7 +10433,8 @@ async function createHostMigrationPackage(event, optionsJson) {
           sources: sourceState.sources,
           requiredDirectories: sourceState.requiredDirectories,
           virtualFiles: migrationStateVirtualFiles(snapshotPath, projectSnapshotPath,
-            fs.existsSync(taskSnapshotPath) ? taskSnapshotPath : ''),
+            fs.existsSync(taskSnapshotPath) ? taskSnapshotPath : '',
+            fs.existsSync(projectReportSnapshotPath) ? projectReportSnapshotPath : ''),
           unresolvedExternalSources: sourceState.external.filter((item) => !item.required && !selectedIds.has(item.id)),
         }, (payload) => emitHostMigrationProgress(event, payload));
       } finally {
@@ -10562,6 +10572,119 @@ async function selectAndInspectHostMigrationPackage() {
   }
 }
 
+function closeProjectReportStateForMigration() {
+  const current = projectReportStoreInstance;
+  projectReportStoreInstance = null;
+  projectReportServiceInstance = null;
+  if (current) current.close();
+}
+
+function removeSqliteFileSet(file) {
+  for (const candidate of [file, `${file}-wal`, `${file}-shm`]) fs.rmSync(candidate, { force: true });
+}
+
+function validateProjectReportMigrationSnapshot(snapshotPath, projectRecords) {
+  const projectIds = new Set((projectRecords || []).map((project) => String(project?.id || '')).filter(Boolean));
+  const db = new DatabaseSync(snapshotPath, { readOnly: true });
+  try {
+    const version = Number(db.prepare('PRAGMA user_version').get().user_version || 0);
+    if (version < 1 || version > PROJECT_REPORT_SCHEMA_VERSION) throw new Error(`迁移包中的项目报告数据库版本不受支持：${version}`);
+    const check = db.prepare('PRAGMA quick_check').get();
+    if (String(check.quick_check || check.integrity_check) !== 'ok') throw new Error('迁移包中的项目报告数据库完整性检查失败。');
+    if (db.prepare('PRAGMA foreign_key_check').all().length) throw new Error('迁移包中的项目报告数据库存在失效引用。');
+    const tables = new Set(db.prepare("SELECT name FROM sqlite_master WHERE type='table'").all().map((row) => row.name));
+    const requiredTables = ['project_report_snapshots', 'project_report_versions', 'project_report_current',
+      ...(version >= 2 ? ['project_report_generation_runs'] : [])];
+    for (const required of requiredTables) {
+      if (!tables.has(required)) throw new Error(`迁移包中的项目报告数据库缺少 ${required}。`);
+    }
+    const snapshots = db.prepare('SELECT * FROM project_report_snapshots').all();
+    const snapshotById = new Map();
+    for (const row of snapshots) {
+      if (!projectIds.has(String(row.project_id || ''))) throw new Error(`项目报告快照引用了迁移包中不存在的项目：${row.project_id}`);
+      if (!/^[a-f0-9]{64}$/i.test(String(row.input_fingerprint || '')) || !String(row.authorization_version || '').trim()) {
+        throw new Error(`项目报告快照指纹或授权版本无效：${row.snapshot_id}`);
+      }
+      let payload;
+      try { payload = JSON.parse(row.snapshot_json); } catch { throw new Error(`项目报告快照内容无法读取：${row.snapshot_id}`); }
+      if (String(payload?.snapshotId || '') !== String(row.snapshot_id) || String(payload?.projectId || '') !== String(row.project_id)
+        || String(payload?.inputFingerprint || '') !== String(row.input_fingerprint)
+        || String(payload?.authorizationVersion || '') !== String(row.authorization_version)) {
+        throw new Error(`项目报告快照标识、指纹或授权版本不一致：${row.snapshot_id}`);
+      }
+      snapshotById.set(String(row.snapshot_id), row);
+    }
+    const versions = db.prepare('SELECT * FROM project_report_versions').all();
+    const versionById = new Map();
+    for (const row of versions) {
+      const snapshot = snapshotById.get(String(row.snapshot_id));
+      if (!snapshot || String(snapshot.project_id) !== String(row.project_id)) throw new Error(`项目报告版本与快照不匹配：${row.version_id}`);
+      let report;
+      try { report = JSON.parse(row.report_json); } catch { throw new Error(`项目报告版本内容无法读取：${row.version_id}`); }
+      if (String(report?.reportType || '') !== String(row.report_type || '')) throw new Error(`项目报告版本类型不一致：${row.version_id}`);
+      versionById.set(String(row.version_id), row);
+    }
+    for (const row of db.prepare('SELECT * FROM project_report_current').all()) {
+      const versionRow = versionById.get(String(row.version_id));
+      if (!versionRow || String(versionRow.project_id) !== String(row.project_id)) throw new Error(`项目当前报告指针无效：${row.project_id}`);
+    }
+    if (tables.has('project_report_generation_runs')) {
+      for (const row of db.prepare('SELECT * FROM project_report_generation_runs').all()) {
+        const snapshot = snapshotById.get(String(row.snapshot_id));
+        if (!projectIds.has(String(row.project_id)) || !snapshot || String(snapshot.project_id) !== String(row.project_id)) {
+          throw new Error(`项目报告任务回执与项目或快照不匹配：${row.task_id}`);
+        }
+        if (row.version_id && !versionById.has(String(row.version_id))) throw new Error(`项目报告任务回执引用了不存在的版本：${row.task_id}`);
+      }
+    }
+    let completionCount = 0;
+    if (tables.has('project_report_completion_receipts')) {
+      for (const row of db.prepare('SELECT * FROM project_report_completion_receipts').all()) {
+        const versionRow = versionById.get(String(row.version_id));
+        if (!projectIds.has(String(row.project_id)) || !snapshotById.has(String(row.snapshot_id))
+          || !versionRow || String(versionRow.project_id) !== String(row.project_id)
+          || String(versionRow.snapshot_id) !== String(row.snapshot_id) || String(versionRow.report_type) !== 'completion'
+          || !/^archive-tx-[a-f0-9-]{36}$/.test(String(row.archive_transaction_id || ''))) {
+          throw new Error(`项目结项回执与项目、快照或版本不匹配：${row.project_id}`);
+        }
+        completionCount += 1;
+      }
+    }
+    return { schemaVersion: version, snapshotCount: snapshots.length, versionCount: versions.length, completionCount };
+  } finally { db.close(); }
+}
+
+function restoreProjectReportMigrationSnapshot(snapshotPath, projectRecords) {
+  const target = projectReportDatabasePath();
+  closeProjectReportStateForMigration();
+  fs.mkdirSync(path.dirname(target), { recursive: true });
+  const suffix = new Date().toISOString().replace(/[:.]/g, '-');
+  const backupPath = fs.existsSync(target) ? `${target}.pre-host-migration-${suffix}.sqlite3` : '';
+  const stagingPath = `${target}.restore-${process.pid}-${Date.now()}.sqlite3`;
+  let validation = { schemaVersion: 0, snapshotCount: 0, versionCount: 0, completionCount: 0 };
+  try {
+    if (snapshotPath) {
+      validation = validateProjectReportMigrationSnapshot(snapshotPath, projectRecords);
+      fs.copyFileSync(snapshotPath, stagingPath);
+      validateProjectReportMigrationSnapshot(stagingPath, projectRecords);
+    }
+    if (backupPath) fs.copyFileSync(target, backupPath);
+    removeSqliteFileSet(target);
+    if (snapshotPath) fs.renameSync(stagingPath, target);
+    projectReportStoreInstance = null;
+    projectReportServiceInstance = null;
+    if (snapshotPath) projectReportStore().state();
+    return { ...validation, restored: Boolean(snapshotPath), backupPath,
+      historyUnavailable: !snapshotPath };
+  } catch (error) {
+    removeSqliteFileSet(stagingPath);
+    closeProjectReportStateForMigration();
+    removeSqliteFileSet(target);
+    if (backupPath && fs.existsSync(backupPath)) fs.copyFileSync(backupPath, target);
+    throw error;
+  }
+}
+
 async function restoreHostMigrationPackage(event, optionsJson) {
   try {
     const options = optionsJson ? JSON.parse(optionsJson) : {};
@@ -10601,6 +10724,7 @@ async function restoreHostMigrationPackage(event, optionsJson) {
         }
       }
       const projectSnapshot = path.join(app.getPath('userData'), 'migration-projects', 'project-state.sqlite3');
+      let restoredProjectRecords = [];
       if (fs.existsSync(projectSnapshot)) {
         const snapshotStore = createProjectStateStore({
           dbPath: projectSnapshot,
@@ -10609,14 +10733,22 @@ async function restoreHostMigrationPackage(event, optionsJson) {
         });
         let importedProjects;
         try { importedProjects = snapshotStore.readAll(); } finally { snapshotStore.close(); }
-        projectStateStore().replaceAll(importedProjects.map(project => remapMigrationRecord(project, inspected, result, targetRoot)));
+        restoredProjectRecords = importedProjects.map(project => remapMigrationRecord(project, inspected, result, targetRoot));
+        projectStateStore().replaceAll(restoredProjectRecords);
       } else {
         const restoredLegacyProjects = safeReadJson(projectsPath(), null);
         const projects = Array.isArray(restoredLegacyProjects) ? restoredLegacyProjects
           : Array.isArray(restoredLegacyProjects?.projects) ? restoredLegacyProjects.projects : null;
         if (!projects) throw Error('迁移包缺少可导入的项目状态。');
-        projectStateStore().replaceAll(projects.map(project => remapMigrationRecord(project, inspected, result, targetRoot)));
+        restoredProjectRecords = projects.map(project => remapMigrationRecord(project, inspected, result, targetRoot));
+        projectStateStore().replaceAll(restoredProjectRecords);
       }
+      const projectReportRelativePath = 'migration-project-reports/project-report-state.sqlite3';
+      const packageIncludesProjectReports = Array.isArray(result.restoredStateFiles)
+        && result.restoredStateFiles.includes(projectReportRelativePath);
+      const projectReportSnapshot = path.join(app.getPath('userData'), ...projectReportRelativePath.split('/'));
+      const projectReportRestore = restoreProjectReportMigrationSnapshot(
+        packageIncludesProjectReports && fs.existsSync(projectReportSnapshot) ? projectReportSnapshot : '', restoredProjectRecords);
       const taskSnapshot = path.join(app.getPath('userData'), 'migration-tasks', 'task-state.sqlite3');
       const importedTaskState = fs.existsSync(taskSnapshot) ? readTaskStateSnapshot(taskSnapshot) : safeReadJson(taskStorePath(), null);
       if (importedTaskState && Array.isArray(importedTaskState.tasks)) {
@@ -10640,8 +10772,9 @@ async function restoreHostMigrationPackage(event, optionsJson) {
         ...result,
         studentRecords: readStudentsIndex().map(toHostStudent),
         projectRecords: readProjects().map(normalizeProject),
+        projectReportRestore,
         reportRecovery,
-        message: `迁移恢复完成：${targetRoot}。${recoveredReportCount ? `已从历史教育档案恢复 ${recoveredReportCount} 份学情报告。` : ''}${unresolvedReportCount ? `另有 ${unresolvedReportCount} 份报告在迁移资料中只有占位模板，需通过周期更新任务生成正式正文。` : ''}License、终端和跨主机协作凭据需要在本机重新授权。`,
+        message: `迁移恢复完成：${targetRoot}。${projectReportRestore.restored ? `已恢复 ${projectReportRestore.versionCount} 个项目报告版本（含 ${projectReportRestore.completionCount} 个结项版）。` : '源迁移包没有项目报告历史，本机未保留其他主机的项目报告。'}${recoveredReportCount ? `已从历史教育档案恢复 ${recoveredReportCount} 份学情报告。` : ''}${unresolvedReportCount ? `另有 ${unresolvedReportCount} 份报告在迁移资料中只有占位模板，需通过周期更新任务生成正式正文。` : ''}License、终端和跨主机协作凭据需要在本机重新授权。`,
       });
     });
   } catch (error) {
@@ -16067,6 +16200,63 @@ async function getProjectReportCitation(projectId, versionId, citationId) {
   } catch (error) { return JSON.stringify({ ok: false, code: error.code || 'project_report_citation_failed', message: error.message }); }
 }
 
+async function finalizeArchivedProjectReport(projectId, receipt) {
+  const project = projectStateStore().getMetadata(String(projectId || ''));
+  if (!project) throw Object.assign(new Error('未找到学习项目。'), { code: 'project_not_found' });
+  return projectReportService().finalizeCompletion(
+    { projectId: String(project.id), actorRole: 'system', actorId: 'archive-receipt-consumer' },
+    projectReportReader(project), String(project.id), receipt);
+}
+
+function syncCommittedArchivedProject(projectId, result) {
+  const archived = result?.project;
+  if (result?.ok !== true || String(archived?.id || '') !== String(projectId || '') || String(archived?.status || '') !== 'archived') {
+    throw Object.assign(new Error('归档提交回执缺少已归档项目状态。'), { code: 'project_report_archive_receipt_invalid' });
+  }
+  const current = projectStateStore().getMetadata(String(projectId));
+  if (!current) throw Object.assign(new Error('未找到归档项目。'), { code: 'project_not_found' });
+  const currentUpdatedAt = Date.parse(String(current.updatedAt || ''));
+  const archivedUpdatedAt = Date.parse(String(archived.updatedAt || ''));
+  if (Number.isFinite(currentUpdatedAt) && Number.isFinite(archivedUpdatedAt) && currentUpdatedAt > archivedUpdatedAt) {
+    throw Object.assign(new Error('项目在归档提交后已有更新，不能用旧回执覆盖。'), { code: 'project_report_archive_state_changed' });
+  }
+  if (String(current.status || '') === 'archived') return current;
+  const synchronized = projectStateStore().upsert(archived);
+  projectStateStoreInstance?.invalidateCaches();
+  return synchronized;
+}
+
+async function consumeCommittedProjectReportReceipt(entry, journal) {
+  if (journal?.state !== 'committed' || journal?.metadata?.operation !== 'execute_archive_plan') return null;
+  syncCommittedArchivedProject(entry.projectId, journal.result);
+  return finalizeArchivedProjectReport(entry.projectId, {
+    transactionId: entry.id, operation: 'execute_archive_plan', state: 'committed',
+    ok: journal.result?.ok === true, committedAt: journal.updatedAt,
+  });
+}
+
+async function exportProjectOverallReport(projectId, versionId, format) {
+  try {
+    const project = projectStateStore().getMetadata(String(projectId || ''));
+    if (!project) return JSON.stringify({ ok: false, code: 'project_not_found', message: '未找到学习项目。' });
+    const normalizedFormat = String(format || '').toLowerCase();
+    if (!['markdown', 'html'].includes(normalizedFormat)) {
+      return JSON.stringify({ ok: false, code: 'project_report_export_format_invalid', message: '项目报告仅支持 Markdown 或 HTML 安全导出。' });
+    }
+    const report = await projectReportService().getVersion(projectReportReader(project), project.id, String(versionId || ''));
+    const content = normalizedFormat === 'markdown' ? projectReportMarkdown(report) : projectReportHtml(report);
+    const extension = normalizedFormat === 'markdown' ? 'md' : 'html';
+    const kind = report.reportType === 'completion' ? '结项报告' : '项目综合报告';
+    const exported = writeFileWithFallback(educationExportBaseCandidates(),
+      safeExportStem(`${project.name || '项目'}-${kind}-${String(report.asOf || '').slice(0, 10)}`), extension,
+      Buffer.from(content, 'utf8'));
+    return JSON.stringify({ ok: true, path: exported.path, format: normalizedFormat, versionId: report.versionId,
+      message: `已按当前授权导出${kind}：${exported.path}` });
+  } catch (error) {
+    return JSON.stringify({ ok: false, code: error.code || 'project_report_export_failed', message: error.message });
+  }
+}
+
 function listProjectStagingItems(request = {}) {
   try { return boundedProjectIpcJson({ ok: true, ...projectStateStore().listStaging(request) }); }
   catch (error) { return JSON.stringify({ ok: false, code: error.code || 'project_staging_list_failed', message: error.message }); }
@@ -20562,12 +20752,23 @@ async function finishProjectPublicationTransaction(promise, project, studentIds,
     const committed = await promise;
     projectDigestLookupCache = { mtimeMs: -1, size: -1, projects: [] };
     let notificationWarning = '';
+    let completionVersionId = '';
+    if (archive && committed.operation === 'execute_archive_plan' && committed.state === 'committed') {
+      try {
+        syncCommittedArchivedProject(project.id, committed.result);
+        const completion = await finalizeArchivedProjectReport(project.id, committed);
+        completionVersionId = completion.versionId;
+      } catch (error) {
+        notificationWarning = `归档已提交，结项报告将在启动恢复时重试：${error.message}`;
+      }
+    }
     try {
       if (projectArchiveStartupReady && projectArchiveRuntime.status().ready) scheduleGrowthRefresh();
       appendHostTimeline({ type: archive ? 'project_promotion_plan_executed' : 'project_promotion_published',
         title: archive ? 'Project promotion plan executed' : 'Project promotion published', detail: project.name, count: studentIds.length });
-    } catch (error) { notificationWarning = `发布已提交，后续通知暂不可用：${error.message}`; }
-    return JSON.stringify({ ...committed.result, transactionId: committed.transactionId, recovered: Boolean(committed.replay || committed.recovered), notificationWarning });
+    } catch (error) { notificationWarning = [notificationWarning, `发布已提交，后续通知暂不可用：${error.message}`].filter(Boolean).join('；'); }
+    return JSON.stringify({ ...committed.result, transactionId: committed.transactionId,
+      completionVersionId, recovered: Boolean(committed.replay || committed.recovered), notificationWarning });
   } catch (error) {
     return JSON.stringify({ ok: false, code: error.code || 'archive_interrupted', message: `${archive ? '归档' : '发布'}事务尚未完成：${error.message}；请重试原任务，系统会先核对未完成事务。` });
   }
@@ -20791,6 +20992,7 @@ async function abandonProjectArchiveAtStartup(entry) {
 }
 
 async function reconcileProjectArchiveAtStartup(entry, journal) {
+  if (typeof consumeCommittedProjectReportReceipt === 'function') await consumeCommittedProjectReportReceipt(entry, journal);
   const context = journal.metadata?.taskContext;
   if (!context?.taskId) return;
   const store = readTaskStore(); const task = store.tasks.find((item) => item.id === context.taskId);
@@ -42659,6 +42861,8 @@ ipcMain.handle('bridge:compareProjectOverallReportVersions', (_event, projectId,
   deferredInvoke(() => compareProjectOverallReportVersions(projectId, fromVersionId, toVersionId)));
 ipcMain.handle('bridge:getProjectReportCitation', (_event, projectId, versionId, citationId) =>
   deferredInvoke(() => getProjectReportCitation(projectId, versionId, citationId)));
+ipcMain.handle('bridge:exportProjectOverallReport', (_event, projectId, versionId, format) =>
+  licensedInvoke('导出项目总体报告', () => exportProjectOverallReport(projectId, versionId, format)));
 ipcMain.handle('bridge:listProjectStagingItems', (_event, request) => deferredInvoke(() => listProjectStagingItems(request || {})));
 ipcMain.handle('bridge:listProjectWorkspaceScanEntries', (_event, request) => deferredInvoke(() => listProjectWorkspaceScanEntries(request || {})));
 ipcMain.handle('bridge:getProjectTaskProjection', (_event, projectId) => deferredInvoke(() => getProjectTaskProjectionForRenderer(projectId)));

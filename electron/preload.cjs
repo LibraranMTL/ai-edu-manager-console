@@ -293,6 +293,9 @@ contextBridge.exposeInMainWorld('AndroidBridge', {
   getProjectReportCitation(projectId, versionId, citationId) {
     return ipcRenderer.invoke('bridge:getProjectReportCitation', projectId, versionId, citationId);
   },
+  exportProjectOverallReport(projectId, versionId, format) {
+    return ipcRenderer.invoke('bridge:exportProjectOverallReport', projectId, versionId, format);
+  },
   listProjectStagingItems(request) {
     return ipcRenderer.invoke('bridge:listProjectStagingItems', request || {});
   },

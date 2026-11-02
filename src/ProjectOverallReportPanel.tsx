@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { AlertTriangle, ChevronRight, FileSearch, FolderInput, History, RefreshCw, ShieldCheck, X } from 'lucide-react';
+import { AlertTriangle, ChevronRight, Download, FileSearch, FolderInput, History, RefreshCw, ShieldCheck, X } from 'lucide-react';
 import './project-overall-report.css';
 
 type RepresentativeResult = { title: string; statement: string; evidenceId: string; citationId: string };
@@ -10,7 +10,7 @@ type VersionSummary = { versionId: string; reportType: string; policyVersion: st
 type ProjectReport = {
   projectId: string; snapshotId: string; versionId: string; previousVersionId?: string;
   status: 'empty' | 'ready' | 'authorization_changed'; authorizationNotice?: string;
-  reportType: 'stage_summary' | 'overall'; asOf: string; policyVersion: string; dataGeneration: number; authorizationVersion: string;
+  reportType: 'stage_summary' | 'overall' | 'completion'; asOf: string; policyVersion: string; dataGeneration: number; authorizationVersion: string;
   project: { name: string; type: string; status: string; objective: string; description: string };
   summary: { currentStage: string; changes: string; representativeResults: RepresentativeResult[]; nextAction: string };
   sections?: Array<{ key: string; title: string; items: ReportClaim[] }>;
@@ -19,6 +19,7 @@ type ProjectReport = {
   personalContributions: Array<{ studentId: string; ability: string; observation: string; status: string; evidenceIds: string[] }>;
   coverage: { materials: { total: number; analyzed: number; unavailable: number; pending: number };
     knowledge: { total: number; analyzed: number; pending: number }; contributions: { confirmed: number; unconfirmed: number } };
+  completion?: { completedAt: string; frozenInputFingerprint: string };
 };
 type Citation = { citationId: string; sourceType: string; sourceId: string; revision: string; contentHash: string;
   availability: string; title: string; locator: { kind: string; logicalPath?: string; page?: number; row?: number; sheet?: string; timecode?: string } };
@@ -28,6 +29,7 @@ type ProjectReportApi = {
   getProjectOverallReportVersion?: (projectId: string, versionId: string) => Promise<string>;
   compareProjectOverallReportVersions?: (projectId: string, fromVersionId: string, toVersionId: string) => Promise<string>;
   getProjectReportCitation?: (projectId: string, versionId: string, citationId: string) => Promise<string>;
+  exportProjectOverallReport?: (projectId: string, versionId: string, format: 'markdown' | 'html') => Promise<string>;
 };
 
 function api() { return (window as unknown as { AndroidBridge?: ProjectReportApi }).AndroidBridge; }
@@ -53,6 +55,7 @@ export function ProjectOverallReportPanel({ project, onAddMaterials }: { project
   const [difference, setDifference] = useState<ReportDifference | null>(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const [exporting, setExporting] = useState<'' | 'markdown' | 'html'>('');
   const [switching, setSwitching] = useState(false);
   const [message, setMessage] = useState('');
 
@@ -102,33 +105,57 @@ export function ProjectOverallReportPanel({ project, onAddMaterials }: { project
     catch (error) { setMessage(error instanceof Error ? error.message : '依据已变化或当前不可查看。'); }
   };
 
+  const exportReport = async (format: 'markdown' | 'html') => {
+    const bridge = api(); if (!bridge?.exportProjectOverallReport || !report?.versionId) return;
+    setExporting(format); setMessage('');
+    try {
+      const result = JSON.parse(await bridge.exportProjectOverallReport(project.id, report.versionId, format)) as { ok?: boolean; message?: string };
+      if (!result.ok) throw new Error(result.message || '项目总体报告导出失败。');
+      setMessage(result.message || `已导出${format === 'markdown' ? ' Markdown' : '安全 HTML'} 报告。`);
+    } catch (error) { setMessage(error instanceof Error ? error.message : '项目总体报告导出失败。'); }
+    finally { setExporting(''); }
+  };
+
   const results = report?.summary.representativeResults || [];
   const versions = report?.versions || [];
   const shownDifference = difference || report?.changes || null;
   return <section className="project-report-shell" aria-labelledby="project-overall-report-heading">
     <header className="project-report-heading">
       <div>
-        <span className="project-report-eyebrow"><ShieldCheck size={15} />M2 · 七栏总体报告</span>
+        <span className="project-report-eyebrow"><ShieldCheck size={15} />M3 · 结项与交付</span>
         <h3 id="project-overall-report-heading">项目综合报告</h3>
-        <p>从阶段摘要扩展为七栏总体报告；版本绑定固定证据快照，团队成果不会自动写成个人贡献。</p>
+        <p>从阶段摘要到结项报告均绑定固定证据快照；归档成功后冻结唯一结项版本，历史、依据与导出统一按当前授权读取。</p>
       </div>
       <div className="project-report-actions">
         {versions.length > 0 && <label className="project-report-version"><History size={15} /><span>报告版本</span>
           <select value={report?.versionId || ''} disabled={switching} onChange={(event) => void switchVersion(event.target.value)}>
             {versions.map((version, index) => <option key={version.versionId} value={version.versionId}>
-              {index === 0 ? '最新版 · ' : ''}{formatAsOf(version.createdAt)}
+              {version.reportType === 'completion' ? '结项版 · ' : index === 0 ? '最新版 · ' : ''}{formatAsOf(version.createdAt)}
             </option>)}
           </select>
         </label>}
-        <button className="secondary compact" type="button" onClick={onAddMaterials}><FolderInput size={16} />添加资料</button>
-        <button className="primary compact" type="button" onClick={() => void refresh()} disabled={refreshing || loading || switching}>
-          <RefreshCw size={16} />{refreshing ? '任务中心生成中…' : report?.status === 'empty' ? '生成总体报告' : '更新总体报告'}
-        </button>
+        {report?.versionId && <>
+          <button className="secondary compact" type="button" onClick={() => void exportReport('markdown')} disabled={Boolean(exporting)}>
+            <Download size={16} />{exporting === 'markdown' ? '导出中…' : '导出 Markdown'}
+          </button>
+          <button className="secondary compact" type="button" onClick={() => void exportReport('html')} disabled={Boolean(exporting)}>
+            <Download size={16} />{exporting === 'html' ? '导出中…' : '导出 HTML（安全）'}
+          </button>
+        </>}
+        {report?.reportType !== 'completion' && <>
+          <button className="secondary compact" type="button" onClick={onAddMaterials}><FolderInput size={16} />添加资料</button>
+          <button className="primary compact" type="button" onClick={() => void refresh()} disabled={refreshing || loading || switching}>
+            <RefreshCw size={16} />{refreshing ? '任务中心生成中…' : report?.status === 'empty' ? '生成总体报告' : '更新总体报告'}
+          </button>
+        </>}
       </div>
     </header>
 
     {loading ? <div className="project-report-empty">正在读取已保存的报告版本…</div> : report && <>
       {report.authorizationNotice && <div className="project-report-access-note"><ShieldCheck size={16} />{report.authorizationNotice}</div>}
+      {report.reportType === 'completion' && <div className="project-report-completion-note">
+        <ShieldCheck size={18} /><span><strong>唯一结项版本</strong>已在项目归档成功后冻结，截止 {formatAsOf(report.completion?.completedAt || report.asOf)}。后续订正将另作补充说明，不改写本版本。</span>
+      </div>}
       <div className="project-report-four">
         <article><span>当前阶段</span><strong>{report.summary.currentStage}</strong><small>{report.project.objective || '尚未登记明确目标'}</small></article>
         <article><span>本次变化</span><strong>{report.versionId ? `第 ${report.dataGeneration} 代` : '尚未生成'}</strong><small>{report.summary.changes}</small></article>

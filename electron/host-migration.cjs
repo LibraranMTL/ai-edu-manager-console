@@ -726,6 +726,8 @@ async function restoreMigrationPackage(options = {}) {
       remappedMetadataFiles,
       preservedDataFiles,
       materialValidation,
+      restoredStateFiles: checked.manifest.files.filter((entry) => entry.category === 'state')
+        .map((entry) => String(entry.destinationRelativePath || entry.relativePath || '').replace(/\\/g, '/')),
       requiredDirectoryCount: (checked.manifest.requiredDirectories || []).length,
       externalMappings,
       unresolvedExternal,

@@ -1,7 +1,8 @@
 'use strict';
 
 const { buildProjectReportSnapshot, POLICY_VERSION, sha256 } = require('./project-report-snapshot.cjs');
-const { buildM1ProjectReport, buildM2ProjectReport, compareReportClaims, M2_POLICY_VERSION } = require('./project-report-claims.cjs');
+const { buildM1ProjectReport, buildM2ProjectReport, buildM3CompletionReport, compareReportClaims,
+  M2_POLICY_VERSION, M3_POLICY_VERSION } = require('./project-report-claims.cjs');
 const { projectReportProjection, citationProjection } = require('./project-report-access.cjs');
 
 function text(value) { return String(value ?? '').trim(); }
@@ -65,6 +66,9 @@ function createProjectReportService({ store, loadProject, loadRegistry, authoriz
   async function requestUpdate(scope, reader, projectId, options = {}) {
     const project = await loadProject(projectId);
     if (!project) throw Object.assign(new Error('未找到学习项目。'), { code: 'project_not_found' });
+    if (store.getCompletionReceipt(projectId) || text(project.status) === 'archived') {
+      throw Object.assign(new Error('项目已结项归档，正式结项版本不可重新生成。'), { code: 'project_report_already_completed' });
+    }
     const currentAuthorization = authorizationVersion(project);
     const asOf = text(options.asOf) || new Date(now()).toISOString();
     const snapshot = await buildProjectReportSnapshot({ projectId, asOf, authorizationVersion: currentAuthorization,
@@ -153,7 +157,44 @@ function createProjectReportService({ store, loadProject, loadRegistry, authoriz
     await getVersion(reader, projectId, fromVersionId); await getVersion(reader, projectId, toVersionId);
     return { projectId, fromVersionId, toVersionId, ...compareReportClaims(from.version.report, to.version.report.claims || []) };
   }
-  return { get, refresh, citation, requestUpdate, settleUpdate, getVersion, listVersions, compareVersions };
+  async function finalizeCompletion(scope, reader, projectId, receipt = {}) {
+    const normalizedReceipt = {
+      transactionId: text(receipt.transactionId), operation: text(receipt.operation), state: text(receipt.state),
+      ok: receipt.ok === true, committedAt: text(receipt.committedAt),
+    };
+    if (!/^archive-tx-[a-f0-9-]{36}$/.test(normalizedReceipt.transactionId)
+      || normalizedReceipt.operation !== 'execute_archive_plan' || normalizedReceipt.state !== 'committed'
+      || !normalizedReceipt.ok || !Number.isFinite(Date.parse(normalizedReceipt.committedAt))) {
+      throw Object.assign(new Error('归档回执尚未证明事务已成功提交。'), { code: 'project_report_archive_receipt_invalid' });
+    }
+    const project = await loadProject(projectId);
+    if (!project) throw Object.assign(new Error('未找到学习项目。'), { code: 'project_not_found' });
+    if (text(project.status) !== 'archived') throw Object.assign(
+      new Error('项目归档状态与事务回执不一致。'), { code: 'project_report_archive_receipt_invalid' });
+    const existingReceipt = store.getCompletionReceipt(projectId);
+    if (existingReceipt) {
+      if (existingReceipt.archiveTransactionId !== normalizedReceipt.transactionId) {
+        throw Object.assign(new Error('项目已有其他归档事务形成的结项版本。'), { code: 'project_report_commit_conflict' });
+      }
+      return getVersion(reader, projectId, existingReceipt.versionId);
+    }
+    const currentAuthorization = authorizationVersion(project);
+    const snapshot = await buildProjectReportSnapshot({ projectId, asOf: normalizedReceipt.committedAt,
+      authorizationVersion: currentAuthorization, policyVersion: M3_POLICY_VERSION,
+      loadProject: () => loadProject(projectId), loadRegistry: () => loadRegistry(projectId) });
+    const snapshotCommitKey = sha256(`project-report-completion-snapshot\n${projectId}\n${normalizedReceipt.transactionId}\n${snapshot.inputFingerprint}`);
+    const savedSnapshot = store.saveSnapshot(scope, snapshot, snapshotCommitKey);
+    const previous = store.getCurrentProjectReport(projectId);
+    const report = buildM3CompletionReport(savedSnapshot, previous?.version?.report || null, normalizedReceipt);
+    const commitKey = sha256(`project-report-completion\n${projectId}\n${normalizedReceipt.transactionId}\n${savedSnapshot.inputFingerprint}\n${M3_POLICY_VERSION}`);
+    const version = store.commitCompletionReport(scope, { snapshotId: savedSnapshot.snapshotId,
+      archiveTransactionId: normalizedReceipt.transactionId, commitKey,
+      expectedCurrentVersionId: previous?.version?.versionId || '', report, receipt: normalizedReceipt });
+    const versions = store.listProjectReportVersions(projectId);
+    return { ...projectReportProjection({ ...reader, authorizationVersion: currentAuthorization }, savedSnapshot, version.report, version),
+      status: 'ready', authorizationNotice: '', previousVersionId: previous?.version?.versionId || '', versions };
+  }
+  return { get, refresh, citation, requestUpdate, settleUpdate, finalizeCompletion, getVersion, listVersions, compareVersions };
 }
 
 module.exports = { createProjectReportService, emptyProjection };

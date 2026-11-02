@@ -117,7 +117,8 @@ function createProjectArchiveTransactions({ directory, projectId, roots, files =
       await guard.finalize(); finalized = true;
       await hooks.afterFinalized?.({ journal, guard });
       await save(paths, journal, 'committed');
-      return { ok: true, transactionId: journal.id, metadata: journal.metadata, result: journal.result };
+      return { ok: true, transactionId: journal.id, operation: journal.metadata?.operation || '', state: 'committed',
+        committedAt: journal.updatedAt, metadata: journal.metadata, result: journal.result };
     } catch (error) {
       if (!finalized) {
         const result = await guard.abort().catch(() => ({ interrupted: true }));
@@ -152,7 +153,8 @@ function createProjectArchiveTransactions({ directory, projectId, roots, files =
       if (journal.state === 'committed') {
         invariant(journal.schema === SCHEMA && journal.projectId === projectId, 'invalid_transaction', '归档日志范围无效。');
         await assertAuthorized(journal);
-        return { ok: true, transactionId: id, metadata: journal.metadata, result: journal.result, replay: true };
+        return { ok: true, transactionId: id, operation: journal.metadata?.operation || '', state: 'committed',
+          committedAt: journal.updatedAt, metadata: journal.metadata, result: journal.result, replay: true };
       }
       return { ...await apply(paths, journal), recovered: true };
     }));

@@ -29,7 +29,7 @@ test('M2 exposes read-only version and diff bridges without wiring either read t
   assert.match(preload, /getProjectOverallReportVersion/);
   assert.match(preload, /compareProjectOverallReportVersions/);
   assert.match(panel, /查看与上版差异/);
-  assert.match(panel, /M2 · 七栏总体报告/);
+  assert.match(panel, /M3 · 结项与交付/);
   assert.doesNotMatch(panel, /useEffect\([^)]*refreshProjectOverallReport/s);
 });
 

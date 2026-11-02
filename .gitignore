@@ -41,6 +41,7 @@ logs/
 tmp/
 temp/
 .cache/
+.codex_tmp/
 __pycache__/
 *.py[cod]
 .gbrain-evaluation/

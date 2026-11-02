@@ -53,5 +53,8 @@ test('learning-state action can request a one-off focused card without rewriting
       businessActionKey: 'learning-action-stable-key',
       plan: { ...plan, focus: '函数迁移专项复测', range: 'auto' },
     })).card.id, generated.card.id);
+    await api.start('a', generated.card.id);
+    const submitted = await api.submit('a', generated.card.id, { attemptId: 'action-attempt-1', answer: '示例答案' });
+    assert.equal(submitted.attempt.businessActionKey, 'learning-action-stable-key');
   } finally { await fs.rm(root, { recursive: true, force: true }); }
 });

@@ -310,6 +310,7 @@ const {
   learningStatePath,
 } = require('./learning-state-store.cjs');
 const { createLearningActionLoop } = require('./learning-action-loop.cjs');
+const { createLearningStateAnalysisService, recordPracticeActionFeedback } = require('./learning-state-analysis.cjs');
 const {
   reconcileCompletedDigestLearningReceipts,
   supplementCompletedDigestLearningEvents,
@@ -557,7 +558,12 @@ function getPracticeCards() {
     enqueueReview: (id, attemptId, retry) => getPracticeTaskHost().enqueue(id, attemptId, retry),
     applyLearning: async (id, input) => {
       const student = findStudent(String(id)); if (!student) throw Error('当前学生不存在');
-      return require('./learning-analytics.cjs').applyPracticeLearningReview(student.rootPath || getStudentRootDir(student.name), id, input);
+      const studentRootPath = student.rootPath || getStudentRootDir(student.name);
+      const receipt = require('./learning-analytics.cjs').applyPracticeLearningReview(studentRootPath, id, input);
+      if (!receipt?.ok) return receipt;
+      try { receipt.learningState = await reconcileLearningStateFromPracticeReview(studentRootPath, id, input); }
+      catch (error) { receipt.learningState = { ok: false, code: error.code || 'learning_state_reconcile_failed', message: error.message }; }
+      return receipt;
     },
   });
 }
@@ -13505,6 +13511,33 @@ async function reconcileLearningActionBinding(input) {
   return card ? { entityId: card.id, status: card.status === 'completed' ? 'completed' : 'dispatched', receiptId: `practice-card:${card.id}:${card.status}` } : null;
 }
 
+function hostLearningActionLoop(store, studentId) {
+  return createLearningActionLoop({
+    store,
+    gateState: (candidate) => learningActionGateState(studentId, candidate.actionType),
+    dispatchTask: dispatchLearningTaskEntity,
+    dispatchPractice: dispatchLearningPracticeEntity,
+    reconcileBinding: (binding) => reconcileLearningActionBinding({ ...binding, studentId }),
+  });
+}
+
+async function reconcileLearningStateFromPracticeReview(studentRootPath, studentId, input) {
+  const store = createLearningStateStore({ dbPath: learningStatePath(studentRootPath) });
+  const scope = { studentId: String(studentId), actorRole: 'system', actorId: 'practice-review' };
+  try {
+    const feedback = input?.attempt?.businessActionKey
+      ? recordPracticeActionFeedback({ store, scope, attempt: input.attempt, result: input.result }) : null;
+    const trajectory = queryLearningTrajectory(studentRootPath, { studentId: String(studentId) });
+    if (!trajectory.ok) return { ok: false, code: trajectory.code || 'learning_trajectory_unavailable', message: trajectory.message || '学习事件轨迹不可用。', feedback };
+    const service = createLearningStateAnalysisService({
+      store,
+      dispatchAction: (actor, action) => hostLearningActionLoop(store, String(studentId)).dispatch(actor, action),
+    });
+    const analysis = await service.reconcile(scope, trajectory.events, new Date().toISOString());
+    return { ok: true, feedback, analysis };
+  } finally { store.close(); }
+}
+
 async function learningStateActionJson(action, studentId, inputJson = '{}') {
   let store;
   try {
@@ -13538,13 +13571,7 @@ async function learningStateActionJson(action, studentId, inputJson = '{}') {
     else if (action === 'correctOrWithdraw') result = store.correctOrWithdraw(scope, input);
     else if (action === 'dispatchLearningAction') {
       const actionInput = { ...(input.action || {}), studentId: context.input.studentId };
-      const loop = createLearningActionLoop({
-        store,
-        gateState: (candidate) => learningActionGateState(context.input.studentId, candidate.actionType),
-        dispatchTask: dispatchLearningTaskEntity,
-        dispatchPractice: dispatchLearningPracticeEntity,
-        reconcileBinding: (binding) => reconcileLearningActionBinding({ ...binding, studentId: context.input.studentId }),
-      });
+      const loop = hostLearningActionLoop(store, context.input.studentId);
       result = await loop.dispatch(scope, actionInput);
     }
     else if (action === 'recordActionFeedback') result = store.recordActionFeedback(scope, input.actionKey, input.feedback || {});
@@ -28654,14 +28681,42 @@ function submitDailyActionFeedback(taskId, status, note = '') {
   try {
     const store = readTaskStore();
     const task = store.tasks.find((item) => item.id === String(taskId));
-    if (!task || task.kind !== 'weekly_action') return JSON.stringify({ ok: false, message: '未找到每周行动建议任务。' });
-    if (task.status !== 'succeeded') return JSON.stringify({ ok: false, message: '每周行动建议尚未审核发布，不能提交完成反馈。' });
+    if (!task || !['weekly_action', 'student_learning_action'].includes(task.kind)) return JSON.stringify({ ok: false, message: '未找到可反馈的学习行动。' });
+    if (task.kind === 'weekly_action' && task.status !== 'succeeded') return JSON.stringify({ ok: false, message: '每周行动建议尚未审核发布，不能提交完成反馈。' });
     const normalizedStatus = String(status || 'completed');
     if (!['completed', 'partial', 'skipped'].includes(normalizedStatus)) return JSON.stringify({ ok: false, message: '反馈状态只能是 completed、partial 或 skipped。' });
     const student = readStudentsIndex().find((item) => String(item.id) === task.sourceId);
     if (!student) return JSON.stringify({ ok: false, message: '未找到学生。' });
     const normalized = toHostStudent(student);
     const feedbackDate = String(task.input?.date || taskToday());
+    if (task.kind === 'student_learning_action') {
+      const actionKey = String(task.input?.learningActionKey || '');
+      if (!actionKey) return JSON.stringify({ ok: false, message: '学习行动缺少稳定绑定键，未写入反馈。' });
+      const learningStore = createLearningStateStore({ dbPath: learningStatePath(student.rootPath || getStudentRootDir(student.name)) });
+      let actionFeedback;
+      try {
+        const intent = learningStore.getActionIntent({ studentId: String(task.sourceId), actorRole: 'system', actorId: 'task-feedback' }, actionKey);
+        actionFeedback = learningStore.recordActionFeedback({ studentId: String(task.sourceId), actorRole: 'system', actorId: 'task-feedback' }, actionKey, {
+          round: intent.currentRound, feedbackId: `task:${task.id}:${normalizedStatus}`, outcome: normalizedStatus,
+          occurredAt: taskNow(), payload: { sourceType: 'task_center', sourceId: task.id, note: String(note || ''), masteryConclusion: null },
+        });
+      } finally { learningStore.close(); }
+      const feedback = { taskId: task.id, actionKey, date: feedbackDate, status: normalizedStatus, note: String(note || ''), submittedAt: taskNow() };
+      let transition = transitionTaskInStore(store, task.id, task.status, { result: { ...(task.result || {}), summary: '学习行动反馈已保存。', feedback }, message: '学习行动反馈已保存。' }, 'student_learning_action_feedback');
+      if (!transition.ok) return JSON.stringify({ ok: false, message: transition.message });
+      if (normalizedStatus === 'completed') {
+        const steps = { pending: ['approved', 'running', 'reviewing', 'succeeded'], approved: ['running', 'reviewing', 'succeeded'], queued: ['running', 'reviewing', 'succeeded'], running: ['reviewing', 'succeeded'], waiting_result: ['reviewing', 'succeeded'], reviewing: ['succeeded'] }[transition.task.status] || [];
+        for (const next of steps) {
+          transition = transitionTaskInStore(store, task.id, next, { result: { ...(transition.task.result || {}), feedback }, message: '学生确认学习行动已完成。' }, 'student_learning_action_completed');
+          if (!transition.ok) return JSON.stringify({ ok: false, message: transition.message });
+        }
+      } else if (normalizedStatus === 'skipped' && !TASK_TERMINAL_STATUSES.has(transition.task.status)) {
+        transition = transitionTaskInStore(store, task.id, 'cancelled', { result: { ...(transition.task.result || {}), feedback }, message: '学生跳过本次学习行动。' }, 'student_learning_action_skipped');
+        if (!transition.ok) return JSON.stringify({ ok: false, message: transition.message });
+      }
+      writeTaskStore(store);
+      return JSON.stringify({ ok: true, task: transition.task, feedback, actionFeedback, message: '学习行动反馈已保存；它只表示行动发生，不代表知识已经掌握。' });
+    }
     const entries = readDailyActionFeedback(normalized).filter((entry) => !(String(entry.taskId || '') === task.id && String(entry.date || '') === feedbackDate));
     const feedback = { taskId: task.id, date: feedbackDate, status: normalizedStatus, note: String(note || ''), submittedAt: taskNow() };
     entries.unshift(feedback);

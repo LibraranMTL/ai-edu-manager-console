@@ -34,7 +34,7 @@ function ruleReview(snapshot, extracted) {
     limitations: [], answerQuotes: [extracted.text], readable: true, consistent: true, source: 'rule' };
 }
 function attemptSummary(attempt) {
-  return Object.fromEntries(['attemptId','cardId','studentId','title','subject','knowledgePoint','submittedAt','difficulty','confidence','attachment','parentAttemptId','rootAttemptId','revision','reviewPolicy','processingStatus','reviewVersion','feedbackSummary','learningStatus','error','assistance'].filter(key => attempt[key] !== undefined).map(key => [key, attempt[key]]));
+  return Object.fromEntries(['attemptId','cardId','studentId','title','subject','knowledgePoint','submittedAt','difficulty','confidence','attachment','parentAttemptId','rootAttemptId','businessActionKey','revision','reviewPolicy','processingStatus','reviewVersion','feedbackSummary','learningStatus','error','assistance'].filter(key => attempt[key] !== undefined).map(key => [key, attempt[key]]));
 }
 function registeredPracticePoint(content, taxonomy = loadTaxonomy()) {
   // General analytics also accepts external taxonomies. Automatic card review
@@ -62,7 +62,8 @@ function createPracticeFeedback({ load, change, generate, now, publicCard, enque
     return { attemptId: input.attemptId, cardId: card.id, studentId: value.studentId, title: card.content.title, subject: card.content.subject,
       knowledgePoint: card.content.knowledgePoint, ...(attachment ? { attachment } : {}), bodyRef, snapshotRef,
       difficulty: input.difficulty, confidence: input.confidence, submittedAt: time(), parentAttemptId: parent?.attemptId || null,
-      rootAttemptId: parent?.rootAttemptId || parent?.attemptId || input.attemptId, revision: parent ? (parent.revision || 1) + 1 : 1,
+      rootAttemptId: parent?.rootAttemptId || parent?.attemptId || input.attemptId,
+      businessActionKey: parent?.businessActionKey || card.businessActionKey || '', revision: parent ? (parent.revision || 1) + 1 : 1,
       assistance: { status: parent ? 'revised' : 'unknown', hintViewedAt: card.hintViewedAt || null, answerViewedAt: card.answerViewedAt || null },
       reviewPolicy: value.plan?.reviewPolicy || 'agent_auto',
       allowImageReview: value.plan?.allowImageReview === true || (input.allowImageReview === true && ['.png','.jpg','.jpeg'].includes(attachment?.extension)),

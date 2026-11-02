@@ -372,11 +372,14 @@ function createLearningStateStore({ dbPath, now = Date.now, quickCheck = true })
     if (!text(problem.title)) throw Object.assign(new Error('问题标题缺失。'), { code: 'problem_title_missing' });
     const createdAt = nowIso(now);
     const revision = actualRevision + 1;
+    const payload = Object.fromEntries(['analysisPolicyVersion', 'automaticallyDerived', 'knowledgePointId', 'errorKey', 'subject',
+      'independentRootCount', 'evidenceIds', 'explicitRetest', 'retestWindow', 'lastObservedAt']
+      .filter((key) => problem[key] !== undefined).map((key) => [key, problem[key]]));
     return transaction(() => {
       db.prepare(`INSERT INTO learning_problem_versions(student_id,problem_id,revision,category,title,description,status,
         payload_json,created_at,actor_role,actor_id) VALUES(?,?,?,?,?,?,?,?,?,?,?)`)
         .run(actor.studentId, problemId, revision, text(problem.category) || 'knowledge', text(problem.title), text(problem.description),
-          text(problem.status) || 'watching', '{}', createdAt, actor.actorRole, actor.actorId);
+          text(problem.status) || 'watching', JSON.stringify(payload), createdAt, actor.actorRole, actor.actorId);
       advanceGeneration(createdAt);
       return mapProblem(db.prepare('SELECT * FROM learning_problem_versions WHERE student_id=? AND problem_id=? AND revision=?')
         .get(actor.studentId, problemId, revision));
@@ -816,11 +819,12 @@ function createLearningStateStore({ dbPath, now = Date.now, quickCheck = true })
       db.prepare(`INSERT INTO learning_action_feedback(student_id,action_key,round,feedback_id,outcome,payload_json,occurred_at,created_at)
         VALUES(?,?,?,?,?,?,?,?)`).run(actor.studentId, row.action_key, round, feedbackId, outcome,
         JSON.stringify(input.payload && typeof input.payload === 'object' ? input.payload : {}), occurredAt, createdAt);
-      if (round === Number(row.current_round) && outcome === 'completed') {
-        db.prepare(`UPDATE learning_action_bindings SET status='completed',updated_at=? WHERE student_id=? AND action_key=? AND round=?`)
-          .run(createdAt, actor.studentId, row.action_key, round);
-        db.prepare(`UPDATE learning_action_intents SET status='completed',updated_at=? WHERE student_id=? AND action_key=?`)
-          .run(createdAt, actor.studentId, row.action_key);
+      if (round === Number(row.current_round) && ['completed', 'skipped'].includes(outcome)) {
+        const status = outcome === 'completed' ? 'completed' : 'cancelled';
+        db.prepare(`UPDATE learning_action_bindings SET status=?,updated_at=? WHERE student_id=? AND action_key=? AND round=?`)
+          .run(status, createdAt, actor.studentId, row.action_key, round);
+        db.prepare(`UPDATE learning_action_intents SET status=?,updated_at=? WHERE student_id=? AND action_key=?`)
+          .run(status, createdAt, actor.studentId, row.action_key);
       }
       advanceGeneration(createdAt);
       return { actionKey: row.action_key, round, feedbackId, outcome, occurredAt };

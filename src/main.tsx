@@ -14634,7 +14634,9 @@ ${JSON.stringify(items, null, 2)}
   };
 
   const submitDailyFeedbackFromCenter = async (task: TaskCenterItem, status: 'completed' | 'partial' | 'skipped') => {
-    const preset = { completed: '本周计划已完成。', partial: '本周计划部分完成。', skipped: '本周计划已跳过。' }[status];
+    const preset = task.kind === 'student_learning_action'
+      ? { completed: '本次学习行动已完成。', partial: '本次学习行动部分完成。', skipped: '本次学习行动已跳过。' }[status]
+      : { completed: '本周计划已完成。', partial: '本周计划部分完成。', skipped: '本周计划已跳过。' }[status];
     applyTaskOperationResult(await bridge()?.submitDailyActionFeedback?.(task.id, status, preset), '行动反馈已保存。', task);
   };
 
@@ -22447,6 +22449,9 @@ ${JSON.stringify(items, null, 2)}
                         {selectedTask.kind === 'weekly_action' && selectedTask.status === 'succeeded' && <button className="workflow-action next" onClick={() => submitDailyFeedbackFromCenter(selectedTask, 'completed')}><CheckCircle2 size={16} />本周已完成</button>}
                         {selectedTask.kind === 'weekly_action' && selectedTask.status === 'succeeded' && <button className="workflow-action optional" onClick={() => submitDailyFeedbackFromCenter(selectedTask, 'partial')}>部分完成</button>}
                         {selectedTask.kind === 'weekly_action' && selectedTask.status === 'succeeded' && <button className="workflow-action optional" onClick={() => submitDailyFeedbackFromCenter(selectedTask, 'skipped')}>本周跳过</button>}
+                        {selectedTask.kind === 'student_learning_action' && !['succeeded', 'cancelled', 'archived'].includes(selectedTask.status) && <button className="workflow-action next" onClick={() => submitDailyFeedbackFromCenter(selectedTask, 'completed')}><CheckCircle2 size={16} />行动已完成</button>}
+                        {selectedTask.kind === 'student_learning_action' && !['succeeded', 'cancelled', 'archived'].includes(selectedTask.status) && <button className="workflow-action optional" onClick={() => submitDailyFeedbackFromCenter(selectedTask, 'partial')}>部分完成</button>}
+                        {selectedTask.kind === 'student_learning_action' && !['succeeded', 'cancelled', 'archived'].includes(selectedTask.status) && <button className="workflow-action optional" onClick={() => submitDailyFeedbackFromCenter(selectedTask, 'skipped')}>跳过本次</button>}
                       </div>
                     </>
                   )}

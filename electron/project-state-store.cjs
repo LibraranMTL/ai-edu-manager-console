@@ -385,7 +385,11 @@ function hydrateProject(db, row, includeStaging = false, includeScan = false) {
 }
 
 function createProjectStateStore({ dbPath, legacyJsonPath, now = Date.now, quickCheck = true }) {
-  let db = null, migration = null, error = null, metadataCache = null, allCache = null;
+  // Never retain a hydrated copy of every staging and workspace-scan row. A
+  // single large project can contain tens of thousands of records, and the old
+  // allCache made one accidental readAll() call permanently inflate the main
+  // process. Only the small metadata projection is cached.
+  let db = null, migration = null, error = null, metadataCache = null;
   function initialize() {
     if (db) return api;
     if (error) throw error;
@@ -402,9 +406,8 @@ function createProjectStateStore({ dbPath, legacyJsonPath, now = Date.now, quick
   }
   function readAll() {
     initialize();
-    if (!allCache) allCache = db.prepare('SELECT * FROM projects ORDER BY updated_at DESC,project_id').all()
+    return db.prepare('SELECT * FROM projects ORDER BY updated_at DESC,project_id').all()
       .map(row => hydrateProject(db, row, true, true));
-    return allCache;
   }
   function get(projectId, options = {}) {
     initialize(); const row = db.prepare('SELECT * FROM projects WHERE project_id=?').get(text(projectId));
@@ -435,8 +438,30 @@ function createProjectStateStore({ dbPath, legacyJsonPath, now = Date.now, quick
     db.prepare(`UPDATE projects SET name=?,type=?,status=?,updated_at=?,revision=?,payload_json=?
       WHERE project_id=?`).run(text(next.name), text(next.type), text(next.status || 'active'),
         next.updatedAt, revision, stableJson(next), id);
-    metadataCache = null; allCache = null;
+    metadataCache = null;
     return getMetadata(id);
+  }
+  function upsertProjectMetadata(raw, expectedRevision = null) {
+    initialize();
+    const part = projectParts(raw);
+    const current = db.prepare('SELECT revision FROM projects WHERE project_id=?').get(part.projectId);
+    if (current && expectedRevision != null && Number(expectedRevision) !== Number(current.revision)) {
+      throw Object.assign(new Error('项目数据已更新，请刷新后重试。'), { code: 'project_revision_conflict' });
+    }
+    const statements = makeStatements(db);
+    const project = part.payload;
+    db.exec('BEGIN IMMEDIATE');
+    try {
+      statements.upsertProject.run(part.projectId, text(project.name), text(project.type), text(project.status || 'active'),
+        text(project.updatedAt || project.createdAt), Math.max(1, Number(project.revision) || 1), stableJson(project), '{}');
+      db.prepare('DELETE FROM project_students WHERE project_id=?').run(part.projectId);
+      part.studentIds.forEach((studentId, index) => statements.insertStudent.run(part.projectId, studentId, text(part.studentNames[index])));
+      db.prepare('DELETE FROM project_assets WHERE project_id=?').run(part.projectId);
+      part.assetIds.forEach(assetId => statements.insertAsset.run(part.projectId, assetId));
+      db.exec('COMMIT');
+    } catch (caught) { try { db.exec('ROLLBACK'); } catch { /* ignore */ } throw caught; }
+    metadataCache = null;
+    return getMetadata(part.projectId);
   }
   function listProjects(request = {}) {
     initialize();
@@ -473,7 +498,7 @@ function createProjectStateStore({ dbPath, legacyJsonPath, now = Date.now, quick
       const remove = db.prepare('DELETE FROM projects WHERE project_id=?'); previous.forEach(id => remove.run(id));
       db.exec('COMMIT');
     } catch (caught) { try { db.exec('ROLLBACK'); } catch { /* ignore */ } throw caught; }
-    metadataCache = null; allCache = null;
+    metadataCache = null;
     return list;
   }
   function upsert(raw) {
@@ -481,7 +506,7 @@ function createProjectStateStore({ dbPath, legacyJsonPath, now = Date.now, quick
     db.exec('BEGIN IMMEDIATE');
     try { replaceProject(db, statements, raw); db.exec('COMMIT'); }
     catch (caught) { try { db.exec('ROLLBACK'); } catch {} throw caught; }
-    metadataCache = null; allCache = null;
+    metadataCache = null;
     return get(text(raw?.id || raw?.projectId), { includeStaging: true, includeScan: true });
   }
   function remove(projectId) {
@@ -494,7 +519,7 @@ function createProjectStateStore({ dbPath, legacyJsonPath, now = Date.now, quick
       result = db.prepare('DELETE FROM projects WHERE project_id=?').run(id);
       db.exec('COMMIT');
     } catch (caught) { try { db.exec('ROLLBACK'); } catch { /* ignore */ } throw caught; }
-    metadataCache = null; allCache = null;
+    metadataCache = null;
     return Number(result.changes || 0);
   }
   function listStaging(request = {}) {
@@ -645,7 +670,7 @@ function createProjectStateStore({ dbPath, legacyJsonPath, now = Date.now, quick
         db.prepare('UPDATE projects SET revision=revision+1,updated_at=? WHERE project_id=?').run(nowText, projectId);
         db.exec('COMMIT');
       } catch (caught) { try { db.exec('ROLLBACK'); } catch { /* ignore */ } throw caught; }
-      metadataCache = null; allCache = null;
+      metadataCache = null;
       const changed = db.prepare(`SELECT payload_json FROM project_staging_items
         WHERE item_id IN (${rowIds.map(() => '?').join(',')}) LIMIT ?`)
         .all(...rowIds, MAX_PAGE_SIZE).map(row => json(row.payload_json, {}));
@@ -695,7 +720,7 @@ function createProjectStateStore({ dbPath, legacyJsonPath, now = Date.now, quick
       db.prepare('UPDATE projects SET revision=revision+1,updated_at=? WHERE project_id=?').run(nowText, projectId);
       db.exec('COMMIT');
     } catch (caught) { try { db.exec('ROLLBACK'); } catch { /* ignore */ } throw caught; }
-    metadataCache = null; allCache = null;
+    metadataCache = null;
     return { affected: rows.length, items: changed,
       revision: Number(db.prepare('SELECT revision FROM projects WHERE project_id=?').get(projectId).revision),
       summary: stagingSummary(projectId) };
@@ -734,9 +759,60 @@ function createProjectStateStore({ dbPath, legacyJsonPath, now = Date.now, quick
       if (entries.length) db.prepare('UPDATE projects SET revision=revision+1,updated_at=? WHERE project_id=?').run(nowText, projectId);
       db.exec('COMMIT');
     } catch (caught) { try { db.exec('ROLLBACK'); } catch { /* ignore */ } throw caught; }
-    metadataCache = null; allCache = null;
+    metadataCache = null;
     return { affected: entries.length,
       revision: Number(db.prepare('SELECT revision FROM projects WHERE project_id=?').get(projectId).revision) };
+  }
+  function listWorkspaceScanEntries(request = {}) {
+    initialize();
+    const projectId = text(request.projectId);
+    if (!projectId) throw Object.assign(new Error('缺少项目编号。'), { code: 'project_not_found' });
+    const limit = safePageSize(request.pageSize);
+    const offset = cursorOffset(request.cursor);
+    const keyword = text(request.query).trim();
+    const where = ['project_id=?'];
+    const values = [projectId];
+    if (keyword) {
+      where.push("entry_path LIKE ? ESCAPE '\\'");
+      values.push(`%${keyword.replace(/[\\%_]/g, '\\$&')}%`);
+    }
+    const clause = where.join(' AND ');
+    const total = Number(db.prepare(`SELECT COUNT(*) count FROM project_workspace_scan_entries WHERE ${clause}`).get(...values).count);
+    const rows = db.prepare(`SELECT entry_path,payload_json FROM project_workspace_scan_entries
+      WHERE ${clause} ORDER BY entry_path LIMIT ? OFFSET ?`).all(...values, limit, offset);
+    const items = rows.map(row => ({ path: row.entry_path, value: json(row.payload_json, null) }));
+    return { items, total, nextCursor: offset + items.length < total ? nextCursor(offset + items.length) : '' };
+  }
+  function getTaskProjection(projectId) {
+    const project = getMetadata(projectId);
+    if (!project) return null;
+    return {
+      id: project.id,
+      revision: project.revision,
+      name: project.name,
+      type: project.type,
+      status: project.status,
+      studentIds: Array.isArray(project.studentIds) ? project.studentIds : [],
+      studentNames: Array.isArray(project.studentNames) ? project.studentNames : [],
+      workspacePath: text(project.workspacePath),
+      projectRootPath: text(project.projectRootPath),
+      rawPath: text(project.rawPath),
+      knowledgeRootPath: text(project.knowledgeRootPath),
+      agentTool: text(project.agentTool),
+      automation: project.automation && typeof project.automation === 'object' ? project.automation : {},
+      materialAutomation: project.materialAutomation && typeof project.materialAutomation === 'object' ? project.materialAutomation : {},
+      digestState: project.digestState && typeof project.digestState === 'object' ? project.digestState : {},
+      updatedAt: text(project.updatedAt),
+    };
+  }
+  function readFullProjectSnapshot(projectId, options = {}) {
+    const allowed = new Set(['migration','restore','backup','explicit_rebuild','diagnostic']);
+    const purpose = text(options.purpose);
+    if (!allowed.has(purpose)) {
+      throw Object.assign(new Error('完整项目读取仅允许用于迁移、恢复、备份、显式重建或诊断。'), { code: 'project_full_read_forbidden' });
+    }
+    if (projectId) return get(projectId, { includeStaging: true, includeScan: true });
+    return readAll();
   }
   function replaceProjectSnapshot(raw, options = {}) {
     const allowed = new Set(['migration','restore','full_rebuild']);
@@ -758,12 +834,12 @@ function createProjectStateStore({ dbPath, legacyJsonPath, now = Date.now, quick
     return { ok: integrity === 'ok' && foreignKeys.length === 0, integrity, foreignKeyErrors: foreignKeys };
   }
   async function backupTo(destination) { initialize(); return backup(db, destination); }
-  const api = { initialize, listMetadata, listProjects, readAll, get, getMetadata, patchProjectMetadata,
+  const api = { initialize, listMetadata, listProjects, readAll, readFullProjectSnapshot, get, getMetadata, getTaskProjection, patchProjectMetadata, upsertProjectMetadata,
     replaceAll, upsert, replaceProjectSnapshot, remove, listStaging, stagingSummary, mutateStaging, mutateStagingBatch,
-    upsertWorkspaceScanBatch, checkpoint, integrityCheck, backupTo,
+    upsertWorkspaceScanBatch, listWorkspaceScanEntries, checkpoint, integrityCheck, backupTo,
     migrationResult: () => migration, initializationError: () => error,
-    invalidateCaches() { metadataCache = null; allCache = null; },
-    close() { if (db) db.close(); db = null; metadataCache = null; allCache = null; }, dbPath };
+    invalidateCaches() { metadataCache = null; },
+    close() { if (db) db.close(); db = null; metadataCache = null; }, dbPath };
   return api;
 }
 

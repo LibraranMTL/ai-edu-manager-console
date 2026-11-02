@@ -1,81 +1,47 @@
 'use strict';
-
-const fs = require('node:fs');
 const { createTaskStateStore } = require('./task-state-store.cjs');
-
-// Owned exclusively by task-io-worker. Main keeps an in-memory compatibility
-// snapshot, while durable writes are applied to individual SQLite rows.
-function createTaskStoreWriter({ createStore = (file) => createTaskStateStore({ legacyPath: file }) } = {}) {
+function createTaskStoreWriter({ createStore = file => createTaskStateStore({ legacyPath:file }) } = {}) {
   const files = new Map();
-  let queue = Promise.resolve();
-
-  function signature(file) {
-    const stat = fs.statSync(file);
-    return `${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeMs}:${stat.ctimeMs}`;
+  function get(file) {
+    if (!files.has(file)) { const store=createStore(file);store.open();files.set(file,store); }
+    return files.get(file);
   }
-
-  async function open(file) {
-    const store = createStore(file);
-    store.open();
-    const value = store.value();
-    files.set(file, { store, revision: 0, fault: null, value });
-    const result = { ok: true, value, revision: 0, signature: signature(store.dbPath), databasePath: store.dbPath };
-    store.release();
-    return result;
+  async function request(file, op, query = {}) {
+    if (op === 'store_close') { for(const store of files.values())store.close();files.clear();return {ok:true}; }
+    const store=get(file);
+    switch(op) {
+      case 'store_open': return store.info();
+      case 'store_tick': store.refreshPresentation();return {ok:true};
+      case 'store_delta': return store.applyDelta(query);
+      case 'store_patch': return store.patchTask(query.id,query.patch,query.expectedTaskRevision);
+      case 'store_claim_execution': return store.claimTaskExecution(query);
+      case 'store_advance_execution': return store.advanceTaskExecution(query);
+      case 'store_archive': return store.archiveTaskBatch(query.ids || []);
+      case 'store_history': return store.appendTaskHistoryBatch(query.entries || []);
+      case 'store_meta': return store.patchTaskMeta(query.patch || {});
+      case 'store_event': store.appendEvent(query.event);return {ok:true};
+      case 'budget_get': return store.budget('get',query);
+      case 'store_budget_record': return store.budget('record',query);
+      case 'store_budget_reset': return store.budget('reset',query);
+      case 'store_source_dirty': return store.source('dirty',query);
+      case 'store_source_projection': return store.source('projection',query);
+      case 'sources': return store.source('list',query);
+      case 'source_versions': return store.source('versions',query);
+      case 'source': return store.source('get',query);
+      case 'records': return store.readTasks(query);
+      case 'runnable': return store.listRunnableTasks(query);
+      case 'capability_waits': return store.listCapabilityWaitTasks(query);
+      case 'digest_closure_repairs':return store.listDigestClosureRepairs(query);
+      case 'recovery_preview':return store.previewTaskRecovery(query);
+      case 'store_recovery_apply':return store.applyTaskRecovery(query);
+      case 'run_summary':return store.getTaskSessionSummary(query.sessionRunId);
+      case 'store_run_outcome':return store.recordTaskRunOutcome(query);
+      case 'detail': return store.detail(query.id);
+      case 'statuses': return {ok:true,tasks:(query.ids||[]).slice(0,32).map(id=>store.detail(id)).filter(row=>row.ok).map(({task})=>({id:task.id,status:task.status,updatedAt:task.updatedAt,completedAt:task.completedAt,error:task.error,result:task.result?{summary:task.result.summary,message:task.result.message}:null}))};
+      case 'store_write': return store.writeSnapshot(query.value);
+      default: return store.list(query);
+    }
   }
-
-  async function write(file, { value, revision }) {
-    const state = files.get(file);
-    if (!state || state.fault) throw new Error(state?.fault || '任务数据库尚未初始化');
-    if (revision !== state.revision + 1) throw new Error('任务写入序号冲突，拒绝覆盖');
-    try {
-      state.store.writeSnapshot(value);
-      state.revision = revision;
-      state.value = structuredClone(value);
-      const result = { ok: true, revision, signature: signature(state.store.dbPath), databasePath: state.store.dbPath };
-      state.store.release();
-      return result;
-    } catch (error) { state.store.release(); state.fault = error.message; throw error; }
-  }
-
-  async function progress(file, { entries, revision }) {
-    const state = files.get(file);
-    if (!state || state.fault) throw new Error(state?.fault || '任务数据库尚未初始化');
-    if (revision !== state.revision + 1) throw new Error('任务进度写入序号冲突，拒绝覆盖');
-    try {
-      const accepted = state.store.applyProgress(entries || []);
-      for (const patch of entries || []) {
-        const task = state.value.tasks.find(item => String(item.id) === String(patch.taskId));
-        if (!task || String(task.executionId || '') !== String(patch.executionId || '')
-          || !['running', 'waiting_result'].includes(String(task.status || ''))) continue;
-        if (patch.lastHeartbeatAt) task.lastHeartbeatAt = String(patch.lastHeartbeatAt);
-        if (patch.lastProgressAt) { task.lastProgressAt = String(patch.lastProgressAt); task.progressSource = String(patch.progressSource || ''); }
-      }
-      state.revision = revision;
-      state.store.release();
-      return { ok: true, revision, accepted };
-    } catch (error) { state.store.release(); state.fault = error.message; throw error; }
-  }
-
-  async function appendEvent(file, { event }) {
-    const state = files.get(file);
-    if (!state || state.fault) throw new Error(state?.fault || '任务数据库尚未初始化');
-    try { state.store.appendEvent(event); state.store.release(); return { ok: true }; }
-    catch (error) { state.store.release(); state.fault = error.message; throw error; }
-  }
-
-  return {
-    request(file, op, query = {}) {
-      const work = queue.then(() => op === 'store_close'
-        ? (files.forEach((state) => state.store.close()), files.clear(), { ok: true })
-        : op === 'store_open' ? open(file)
-        : op === 'store_event' ? appendEvent(file, query)
-          : op === 'store_progress' ? progress(file, query) : write(file, query));
-      queue = work.catch(() => {});
-      return work;
-    },
-    close() { for (const state of files.values()) state.store.close(); files.clear(); },
-  };
+  return { request,has:file=>files.has(file),close(){for(const store of files.values())store.close();files.clear();} };
 }
-
-module.exports = { createTaskStoreWriter };
+module.exports={createTaskStoreWriter};

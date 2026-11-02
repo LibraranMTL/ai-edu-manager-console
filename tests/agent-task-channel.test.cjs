@@ -160,7 +160,7 @@ test('smart routing excludes QClaw and unautomated generic handoffs; explicit ch
     codex: { id: 'codex', label: 'Codex', available: true, authorized: true, automatic: true },
     qclaw: { id: 'qclaw', label: 'QClaw', available: true, authorized: true, automatic: true },
     manual: { id: 'manual', label: 'Manual', available: true, authorized: true, automatic: false } };
-  const ctx = loadFunctions({ agentControlStore: () => ({ read: () => ({}) }), adapterCapabilities: () => caps, readTaskStore: () => ({ history: [] }), taskNow: () => '' }, ['routeTask']);
+  const ctx = loadFunctions({ agentControlStore: () => ({ read: () => ({}) }), registeredAdapterCapabilities: () => caps, adapterCapabilities: () => { throw Error('routing must not probe'); }, readTaskStore: () => ({ history: [] }), taskNow: () => '' }, ['routeTask']);
   const smart = ctx.routeTask({ kind: 'student_digest' }, 'auto');
   assert.equal(smart.selectedAdapter, 'codex');
   assert(!smart.candidates.some(candidate => candidate.adapterId === 'qclaw' || candidate.adapterId === 'doubao'));

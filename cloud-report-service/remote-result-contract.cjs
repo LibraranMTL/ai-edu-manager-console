@@ -3,6 +3,9 @@
 const REMOTE_PROJECT_RESULT_SCHEMA = 'edu-manager.remote-project-result.v2';
 const MAX_RESULT_BYTES = 512 * 1024;
 const MAX_SOURCES = 200;
+const MAX_ATTACHMENTS = 8;
+const MAX_ATTACHMENT_BYTES = 512 * 1024;
+const MAX_ATTACHMENTS_BYTES = 2 * 1024 * 1024;
 
 function contractError(message) {
   const error = new Error(message);
@@ -32,6 +35,7 @@ function normalizeRemoteProjectResult(payload, expected = {}) {
     title: cleanText(payload.title, '成果标题', 120),
     content: cleanText(payload.content, '成果正文', MAX_RESULT_BYTES),
     sources: [],
+    attachments: [],
   };
   if (normalized.status !== 'completed') throw contractError('远程成果尚未完成');
   if (!/^[a-f0-9]{64}$/.test(normalized.scopeFingerprint)) throw contractError('远程成果权限摘要无效');
@@ -56,7 +60,46 @@ function normalizeRemoteProjectResult(payload, expected = {}) {
     if (!seen.has(key)) { seen.add(key); normalized.sources.push(source); }
   }
   if (Buffer.byteLength(normalized.content, 'utf8') > MAX_RESULT_BYTES) throw contractError('远程成果正文超过限额');
+  if (payload.attachments !== undefined) {
+    if (!Array.isArray(payload.attachments) || payload.attachments.length > MAX_ATTACHMENTS) throw contractError('远程成果附件数量无效');
+    let totalBytes = 0;
+    const names = new Set();
+    for (const raw of payload.attachments) {
+      if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw contractError('远程成果附件无效');
+      const displayName = cleanText(raw.displayName, '附件名称', 120);
+      if (/[\\/\u0000-\u001f]/.test(displayName) || names.has(displayName)) throw contractError('附件名称无效或重复');
+      const contentType = cleanText(raw.contentType, '附件类型', 160).toLowerCase();
+      if (!['text/markdown', 'application/pdf', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'].includes(contentType)) {
+        throw contractError('附件类型不受支持');
+      }
+      if (raw.contentBase64 === undefined && expected.allowStoredAttachmentMetadata === true) {
+        const attachmentId = cleanText(raw.attachmentId, '附件编号', 80);
+        const contentSha256 = cleanText(raw.contentSha256, '附件校验值', 64).toLowerCase();
+        const byteSize = Number(raw.byteSize);
+        if (!/^attachment_[a-f0-9]{32}$/.test(attachmentId) || !/^[a-f0-9]{64}$/.test(contentSha256) ||
+            !Number.isSafeInteger(byteSize) || byteSize < 1 || byteSize > MAX_ATTACHMENT_BYTES) throw contractError('附件元数据无效');
+        totalBytes += byteSize;
+        if (totalBytes > MAX_ATTACHMENTS_BYTES) throw contractError('远程成果附件总大小超过限额');
+        names.add(displayName);
+        normalized.attachments.push({ attachmentId, displayName, contentType, contentSha256, byteSize });
+        continue;
+      }
+      const contentBase64 = cleanText(raw.contentBase64, '附件内容', MAX_ATTACHMENT_BYTES * 2);
+      if (!/^[A-Za-z0-9+/]*={0,2}$/.test(contentBase64) || contentBase64.length % 4 !== 0) throw contractError('附件内容编码无效');
+      const bytes = Buffer.from(contentBase64, 'base64');
+      if (!bytes.length || bytes.length > MAX_ATTACHMENT_BYTES) throw contractError('附件大小无效');
+      const contentSha256 = cleanText(raw.contentSha256, '附件校验值', 64).toLowerCase();
+      if (!/^[a-f0-9]{64}$/.test(contentSha256) || require('node:crypto').createHash('sha256').update(bytes).digest('hex') !== contentSha256) {
+        throw contractError('附件校验失败');
+      }
+      totalBytes += bytes.length;
+      if (totalBytes > MAX_ATTACHMENTS_BYTES) throw contractError('远程成果附件总大小超过限额');
+      names.add(displayName);
+      normalized.attachments.push({ displayName, contentType, contentSha256, byteSize: bytes.length, contentBase64 });
+    }
+  }
   return normalized;
 }
 
-module.exports = { MAX_RESULT_BYTES, REMOTE_PROJECT_RESULT_SCHEMA, normalizeRemoteProjectResult };
+module.exports = { MAX_RESULT_BYTES, MAX_ATTACHMENTS, MAX_ATTACHMENT_BYTES, MAX_ATTACHMENTS_BYTES,
+  REMOTE_PROJECT_RESULT_SCHEMA, normalizeRemoteProjectResult };

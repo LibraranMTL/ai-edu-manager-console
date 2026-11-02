@@ -113,14 +113,16 @@ test('WorkBuddy research runner uses the restricted invocation and returns host-
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   const runtime = { available: true, mode: 'node', cliPath: path.join(root, 'cli.js'), nodePath: process.execPath, configDir: path.join(root, 'profile') };
   await fs.writeFile(runtime.cliPath, 'synthetic');
-  let captured;
-  const result = await runWorkBuddyResearch(runtime, { prompt: 'synthetic', schema: PROBE_SCHEMA, fetchSource: fetched, spawnProcess: (_exe, args, options) => {
+  let captured;const order=[];
+  const result = await runWorkBuddyResearch(runtime, { prompt: 'synthetic', schema: PROBE_SCHEMA, fetchSource: fetched,beforeExecute:async()=>order.push('intent'),onStarted:async({processId})=>{assert.equal(processId,7);order.push('ack');}, spawnProcess: (_exe, args, options) => {
+    order.push('spawn');
     captured = { args, options }; const child = new EventEmitter(); child.pid = 7;
     child.stdout = new EventEmitter(); child.stderr = new EventEmitter(); child.stdin = new EventEmitter();
-    child.stdin.end = () => setImmediate(() => { child.stdout.emit('data', Buffer.from(JSON.stringify(events()))); child.emit('close', 0); });
+    child.stdin.end = () => {order.push('send');setImmediate(() => { child.stdout.emit('data', Buffer.from(JSON.stringify(events()))); child.emit('close', 0); });};
     child.kill = () => { child.emit('close', 1); return true; }; return child;
   } });
   assert.equal(result.sources.length, 1);
+  assert.deepEqual(order,['intent','spawn','ack','send']);
   assert.equal(captured.args[captured.args.indexOf('--tools') + 1], 'WebSearch');
   assert.equal(captured.args.includes('--allowedTools'), false);
   assert.equal(captured.args.includes('-y'), false);

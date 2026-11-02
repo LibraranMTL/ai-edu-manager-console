@@ -7,6 +7,7 @@ const path = require('node:path');
 const vm = require('node:vm');
 const { createTaskStoreGuard } = require('../electron/task-store-guard.cjs');
 const { taskResolution, resultIdentityFeedback } = require('../electron/task-resolution.cjs');
+const { confirmedStoppedPatch } = require('../electron/task-recovery-experience.cjs');
 const { candidateRuntimeDecision, repairTaskRuntimeStore } = require('../electron/task-runtime-policy.cjs');
 const { taskRecordDeletable } = require('../electron/task-history-policy.cjs');
 const { workBuddyReadyResult, createWorkBuddyProbeCache, probeWorkBuddyAuthorization } = require('../electron/workbuddy-runtime.cjs');
@@ -92,7 +93,7 @@ test('manual stop confirmation is execution-bound and cannot override a tracked 
   const task = { id: 't', executionId: 'e', status: 'cancelled', recoveryState: 'unknown' };
   const children = new Map([['t', {}]]), events = [];
   const fn = load('confirmTaskExternalStopped', { readTaskStore: () => ({ tasks: [task] }), taskChildProcesses: children,
-    appendTaskEvent: (...args) => events.push(args), writeTaskStore: () => {} });
+    confirmedStoppedPatch, taskNow: () => 'now', appendTaskEvent: (...args) => events.push(args), writeTaskStore: () => {} });
   assert.equal(JSON.parse(fn('t', 'other')).ok, false);
   assert.equal(JSON.parse(fn('t', 'e')).ok, false);
   children.clear(); assert.equal(JSON.parse(fn('t', 'e')).ok, true);
@@ -128,6 +129,10 @@ test('topic refresh refuses a mismatched student instead of dispatching a scoped
 
 test('READY requires final structured answer; zero exit, logs and errors are not authorization', () => {
   assert.equal(workBuddyReadyResult('{"result":"READY"}'), true);
+  assert.equal(workBuddyReadyResult('{"result":"READY."}'), true);
+  assert.equal(workBuddyReadyResult('{"result":"READY。"}'), true);
+  assert.equal(workBuddyReadyResult('{"result":"READY!"}'), false);
+  assert.equal(workBuddyReadyResult('{"result":"READY now"}'), false);
   for (const value of ['READY', 'starting READY', '{"message":"READY"}', '{"result":"READY","is_error":true}', '{"type":"tool_use","result":"READY"}', '{"result":"authentication required"}']) assert.equal(workBuddyReadyResult(value), false, value);
   assert.equal(workBuddyReadyResult('{"result":"READY"}', 'authentication required'), false);
   assert.equal(workBuddyReadyResult('{"result":"READY"}', '', null), false);

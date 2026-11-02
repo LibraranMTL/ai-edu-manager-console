@@ -32,6 +32,15 @@ function researchTaskDue(task, now = Date.now()) {
     && Boolean(task.nextRetryAt) && Date.parse(task.nextRetryAt) <= now;
 }
 
+function researchCandidateDisposition(capability = {}) {
+  if (capability.available) return { status: 'pending', reason: 'ready', error: null };
+  return {
+    status: 'queued',
+    reason: capability.checking ? 'checking' : 'dispatch_check',
+    error: null,
+  };
+}
+
 function classifyResearchTimeout(evidence, retryBudget = {}) {
   const now = Number.isFinite(Number(retryBudget.now)) ? Number(retryBudget.now) : Date.now();
   if (evidence?.terminationCause === 'user_cancel') return {
@@ -64,4 +73,4 @@ function classifyResearchTimeout(evidence, retryBudget = {}) {
   };
 }
 
-module.exports = { RESEARCH_KINDS, SUCCESS_RECEIPTS, recoverableResearchBlock, researchResultValidation, researchRetryPatch, researchTaskDue, classifyResearchTimeout };
+module.exports = { RESEARCH_KINDS, SUCCESS_RECEIPTS, recoverableResearchBlock, researchResultValidation, researchRetryPatch, researchTaskDue, researchCandidateDisposition, classifyResearchTimeout };

@@ -11,7 +11,9 @@ function clone(value) {
 async function detectCodexAuthorization({
   confirmed = false,
   busy = false,
+  busyReason = '',
   acquire,
+  acquireBusyReason,
   refreshCapabilities,
   probe,
   readStore,
@@ -19,9 +21,10 @@ async function detectCodexAuthorization({
   now = () => new Date().toISOString(),
 } = {}) {
   if (confirmed !== true) return { ok: false, adapterId: 'codex', message: '检测可能消耗模型额度，需要用户主动确认。' };
-  if (busy) return { ok: false, adapterId: 'codex', message: '后台正在处理资料，请完成后再检测，避免探测与资料分析争抢资源。' };
+  if (busy) return { ok: false, adapterId: 'codex', message: busyReason || '本地 Agent 正在执行另一个任务，请在完成后重试。' };
   const release = acquire?.();
-  if (!release) return { ok: false, adapterId: 'codex', message: '当前资源不足，请稍后检测。' };
+  if (!release) return { ok: false, adapterId: 'codex', code: 'RESOURCE_BUSY',
+    message: typeof acquireBusyReason === 'function' ? acquireBusyReason() : '当前资源不足，请稍后检测。' };
   try {
     const capabilities = await refreshCapabilities();
     const capability = capabilities?.codex || {};

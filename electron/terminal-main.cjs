@@ -74,6 +74,8 @@ const terminalUploadStagingRoot = () => path.join(terminalUserData(), 'terminal-
 const practiceAttemptQueuePath = () => path.join(terminalUserData(), 'practice-attempt-queue.json');
 const captureRoot = () => path.join(terminalUserData(), 'screen-captures');
 const captureDeliveryQueuePath = () => path.join(terminalUserData(), 'capture-delivery-queue.json');
+const captureSampleLogPath = (session) => path.join(String(session?.folder || ''), 'capture-samples.jsonl');
+const captureSampleIndexPath = (session) => path.join(String(session?.folder || ''), 'capture-samples.index.json');
 let mainWindow = null;
 let autoDeliveryTimer = null;
 let autoDeliveryBusy = false;
@@ -113,6 +115,81 @@ function deidentifyCaptureSourceName(value = '', sourceType = 'screen') {
 function readJson(filePath, fallback) {
   try { return JSON.parse(fs.readFileSync(filePath, 'utf8')); }
   catch { return fallback; }
+}
+
+function appendCaptureSample(session, input = {}) {
+  if (!session?.folder || !session?.id) return null;
+  const sampledAt = String(input.sampledAt || new Date().toISOString());
+  const sample = {
+    schema: 'edu-manager.capture-sample.v1',
+    platform: 'windows-student-terminal',
+    deviceId: String(deviceId() || ''),
+    studentId: String(session.studentId || ''),
+    sessionId: String(session.id),
+    sourceType: String(session.sourceType || 'screen'),
+    sampledAt,
+    decision: String(input.decision || 'unknown'),
+    difference: Number.isFinite(Number(input.difference)) ? Number(input.difference) : null,
+    captureItemId: String(input.captureItemId || ''),
+    paused: Boolean(input.paused),
+  };
+  if (sample.captureItemId) {
+    sample.hashAlgorithm = String(input.hashAlgorithm || '');
+    sample.contentHash = String(input.contentHash || '');
+    sample.path = String(input.path || '');
+  }
+  fs.mkdirSync(session.folder, { recursive: true });
+  fs.appendFileSync(captureSampleLogPath(session), `${JSON.stringify(sample)}\n`, 'utf8');
+  session.sampleCount = Number(session.sampleCount || 0) + 1;
+  session.lastSampledAt = sampledAt;
+  if (!sample.paused && !['paused', 'source_unavailable', 'capture_error'].includes(sample.decision)) session.lastTrustedSampleAt = sampledAt;
+  return sample;
+}
+
+function readCaptureSamples(session) {
+  const logPath = captureSampleLogPath(session);
+  try {
+    return fs.readFileSync(logPath, 'utf8').split(/\r?\n/).filter(Boolean).map((line) => {
+      try { return JSON.parse(line); } catch { return null; }
+    }).filter((sample) => sample && String(sample.sessionId || '') === String(session?.id || ''));
+  } catch { return []; }
+}
+
+function writeCaptureSampleIndex(session) {
+  const samples = readCaptureSamples(session);
+  const target = captureSampleIndexPath(session);
+  writeJson(target, {
+    schema: 'edu-manager.capture-sample-index.v1',
+    platform: 'windows-student-terminal',
+    deviceId: String(deviceId() || ''),
+    studentId: String(session?.studentId || ''),
+    sessionId: String(session?.id || ''),
+    sourceType: String(session?.sourceType || 'screen'),
+    startedAt: String(session?.startedAt || ''),
+    endedAt: String(session?.endedAt || ''),
+    endReason: String(session?.endReason || ''),
+    capturePolicy: {
+      mode: String(session?.options?.mode || ''),
+      sampleIntervalMs: Number(session?.options?.sampleIntervalMs || 0),
+      maximumSaveIntervalMs: Number(session?.options?.maximumSaveIntervalMs || 0),
+    },
+    counts: {
+      screenshotCount: Number(session?.count || session?.files?.length || 0),
+      candidateFrameCount: Number(session?.candidateFrameCount || 0),
+      deduplicatedCount: Number(session?.deduplicatedCount || 0),
+      sampleCount: samples.length,
+    },
+    items: (Array.isArray(session?.items) ? session.items : []).map((item) => ({
+      captureItemId: String(item.id || ''),
+      capturedAt: String(item.capturedAt || ''),
+      hashAlgorithm: String(item.hashAlgorithm || ''),
+      contentHash: String(item.contentHash || ''),
+      path: String(item.path || ''),
+    })),
+    samples,
+    generatedAt: new Date().toISOString(),
+  });
+  return target;
 }
 
 function writeJson(filePath, value) {
@@ -1788,6 +1865,8 @@ async function uploadPaths(paths, target, metadata = {}) {
       const itemMetadata = {
         ...metadata,
         captureItems: undefined,
+        captureSamples: undefined,
+        capturePolicy: undefined,
         captureItemId: captureItem?.id || (metadata.captureSessionId ? `${metadata.captureSessionId}-${index + 1}` : metadata.captureItemId),
         capturedAt: captureItem?.capturedAt || metadata.capturedAt || '',
         captureSequence: captureItem?.sequence || index + 1,
@@ -1900,6 +1979,11 @@ function notifyCaptureSessionComplete(target, metadata = {}) {
     courseUrl: String(metadata.courseUrl || ''),
     courseStartedAt: String(metadata.courseStartedAt || ''),
     courseCompletedAt: String(metadata.courseCompletedAt || ''),
+    platform: 'windows-student-terminal',
+    deviceId: String(deviceId() || ''),
+    captureMode: String(metadata.capturePolicy?.mode || ''),
+    capturePolicy: metadata.capturePolicy || null,
+    captureSamples: Array.isArray(metadata.captureSamples) ? metadata.captureSamples : [],
   });
 }
 
@@ -1927,6 +2011,12 @@ function queueCaptureDelivery(session, options = {}) {
       sequence: Number(entry.sequence || 0),
       highlighted: Boolean(entry.highlighted),
     })),
+    captureSamples: Array.isArray(session.captureSamples) ? session.captureSamples : readCaptureSamples(session),
+    capturePolicy: {
+      mode: String(session.options?.mode || ''),
+      sampleIntervalMs: Number(session.options?.sampleIntervalMs || 0),
+      maximumSaveIntervalMs: Number(session.options?.maximumSaveIntervalMs || 0),
+    },
     sourceType: 'windows_terminal_course_capture',
     sourceName: deidentifyCaptureSourceName(session.sourceName, session.sourceType),
     captureSourceType: String(session.sourceType || 'screen'),
@@ -2054,44 +2144,71 @@ function publicCaptureSession(session) {
 }
 
 async function captureFrame(session, input = {}) {
-  if (!session || session !== activeCapture || session.status !== 'capturing') return false;
-  const sources = await desktopCapturer.getSources({ types: [session.sourceType], thumbnailSize: { width: 1600, height: 900 } });
-  const source = sources.find((item) => item.id === session.sourceId);
-  if (!source || source.thumbnail.isEmpty()) return false;
-  const now = Date.now();
-  const signature = captureSignature(source.thumbnail);
-  const decision = captureSaveDecision(session, {
-    now,
-    signature,
-    force: Boolean(input.force),
-    highlight: Boolean(input.highlight),
-    options: session.options,
-  });
-  session.candidateFrameCount += 1;
-  if (!decision.save) {
-    session.deduplicatedCount += 1;
+  if (!session || session !== activeCapture) return false;
+  try {
+    if (session.status === 'paused') {
+      appendCaptureSample(session, { decision: 'paused', paused: true });
+      session.updatedAt = new Date().toISOString();
+      return false;
+    }
+    if (session.status !== 'capturing') return false;
+    const sources = await desktopCapturer.getSources({ types: [session.sourceType], thumbnailSize: { width: 1600, height: 900 } });
+    const source = sources.find((item) => item.id === session.sourceId);
+    if (!source || source.thumbnail.isEmpty()) {
+      appendCaptureSample(session, { decision: 'source_unavailable' });
+      return false;
+    }
+    const now = Date.now();
+    const signature = captureSignature(source.thumbnail);
+    const decision = captureSaveDecision(session, {
+      now,
+      signature,
+      force: Boolean(input.force),
+      highlight: Boolean(input.highlight),
+      options: session.options,
+    });
+    session.candidateFrameCount += 1;
+    if (!decision.save) {
+      appendCaptureSample(session, { sampledAt: new Date(now).toISOString(), decision: decision.reason, difference: decision.difference });
+      session.deduplicatedCount += 1;
+      session.lastDecision = decision.reason;
+      session.updatedAt = new Date(now).toISOString();
+      return false;
+    }
+    const capturedAt = new Date(now).toISOString();
+    const content = source.thumbnail.toJPEG(84);
+    const contentHash = crypto.createHash('sha1').update(content).digest('hex');
+    const itemId = `${session.id}-${session.items.length + 1}`;
+    const filename = `capture-${capturedAt.replace(/\D/g, '').slice(0, 14)}-${session.items.length + 1}.jpg`;
+    const target = path.join(session.folder, filename);
+    fs.writeFileSync(target, content);
+    session.files.push(target);
+    session.items.push({ id: itemId, path: target, filename, capturedAt, sequence: session.items.length + 1, highlighted: Boolean(input.highlight), reason: decision.reason, hashAlgorithm: 'sha1', contentHash });
+    appendCaptureSample(session, {
+      sampledAt: capturedAt,
+      decision: decision.reason === 'initial' ? 'initial' : 'saved',
+      difference: decision.difference,
+      captureItemId: itemId,
+      hashAlgorithm: 'sha1',
+      contentHash,
+      path: target,
+    });
+    session.lastContentHash = contentHash;
+    session.lastSavedSignature = signature;
+    session.lastSavedAt = now;
     session.lastDecision = decision.reason;
-    session.updatedAt = new Date(now).toISOString();
+    session.count = session.files.length;
+    session.updatedAt = new Date().toISOString();
+    notify('terminal:capture-changed', publicCaptureSession(session));
+    updateCaptureControlWindow();
+    return true;
+  } catch (error) {
+    try { appendCaptureSample(session, { decision: 'capture_error' }); } catch { /* The sample log itself may be unavailable. */ }
+    session.lastDecision = 'capture_error';
+    session.lastError = String(error?.message || error || 'capture_error');
+    session.updatedAt = new Date().toISOString();
     return false;
   }
-  const capturedAt = new Date(now).toISOString();
-  const content = source.thumbnail.toJPEG(84);
-  const contentHash = crypto.createHash('sha1').update(content).digest('hex');
-  const itemId = `${session.id}-${session.items.length + 1}`;
-  const filename = `capture-${capturedAt.replace(/\D/g, '').slice(0, 14)}-${session.items.length + 1}.jpg`;
-  const target = path.join(session.folder, filename);
-  fs.writeFileSync(target, content);
-  session.files.push(target);
-  session.items.push({ id: itemId, path: target, filename, capturedAt, sequence: session.items.length + 1, highlighted: Boolean(input.highlight), reason: decision.reason, hashAlgorithm: 'sha1', contentHash });
-  session.lastContentHash = contentHash;
-  session.lastSavedSignature = signature;
-  session.lastSavedAt = now;
-  session.lastDecision = decision.reason;
-  session.count = session.files.length;
-  session.updatedAt = new Date().toISOString();
-  notify('terminal:capture-changed', publicCaptureSession(session));
-  updateCaptureControlWindow();
-  return true;
 }
 
 async function startCapture(input = {}) {
@@ -2132,6 +2249,10 @@ async function startCapture(input = {}) {
     candidateFrameCount: 0,
     deduplicatedCount: 0,
     highlightedCount: 0,
+    sampleCount: 0,
+    lastSampledAt: '',
+    lastTrustedSampleAt: '',
+    sampleLogPath: captureSampleLogPath({ folder }),
     courseId: activeCourse?.courseId || '',
     courseProvider: activeCourse?.provider || '',
     courseUrl: activeCourse?.currentUrl || activeCourse?.url || '',
@@ -2153,6 +2274,13 @@ function stopCapture(reason = 'manual') {
   activeCapture.endedAt = new Date().toISOString();
   activeCapture.courseCompletedAt = activeCapture.endedAt;
   activeCapture.endReason = reason;
+  try {
+    activeCapture.sampleIndexPath = writeCaptureSampleIndex(activeCapture);
+    activeCapture.sampleIndexStatus = 'written';
+  } catch (error) {
+    activeCapture.sampleIndexStatus = 'write_failed';
+    activeCapture.sampleIndexError = String(error?.message || error || 'sample_index_write_failed');
+  }
   const result = publicCaptureSession(activeCapture);
   activeCapture = null;
   updateCaptureControlWindow();
@@ -2396,6 +2524,7 @@ function registerIpc() {
     }
     if (action === 'pause') {
       activeCapture.status = 'paused';
+      appendCaptureSample(activeCapture, { decision: 'paused', paused: true });
       activeCapture.updatedAt = new Date().toISOString();
       notify('terminal:capture-changed', publicCaptureSession(activeCapture));
       updateCaptureControlWindow();
@@ -2403,6 +2532,7 @@ function registerIpc() {
     }
     if (action === 'resume') {
       activeCapture.status = 'capturing';
+      appendCaptureSample(activeCapture, { decision: 'resumed', paused: false });
       activeCapture.updatedAt = new Date().toISOString();
       notify('terminal:capture-changed', publicCaptureSession(activeCapture));
       updateCaptureControlWindow();
@@ -2424,6 +2554,8 @@ function registerIpc() {
     courseStartedAt: input?.courseStartedAt || '',
     courseCompletedAt: input?.courseCompletedAt || '',
     expectedItemCount: Array.isArray(input?.captureItems) ? input.captureItems.length : 0,
+    captureSamples: Array.isArray(input?.captureSamples) ? input.captureSamples : [],
+    capturePolicy: input?.capturePolicy || null,
     startedAt: input?.startedAt || input?.courseStartedAt || '',
     endedAt: input?.endedAt || input?.courseCompletedAt || '',
     sourceName: input?.sourceName || '',

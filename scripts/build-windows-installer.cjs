@@ -5,7 +5,7 @@ const crypto = require('node:crypto');
 const { spawnSync } = require('node:child_process');
 
 function installerConfig(version, output, icon, candidateTag = '') {
-  const artifactSuffix = candidateTag ? `-${candidateTag}` : '';
+  const artifactSuffix = candidateTag && candidateTag !== version ? `-${candidateTag}` : '';
   return {
     appId: 'com.qxmatrix.edumanager.desktop',
     productName: 'AI Education Manager Console',
@@ -83,7 +83,7 @@ async function main() {
   for (const [file, hash] of Object.entries(before)) {
     if (after[file] !== hash) throw new Error(`Accepted runtime was modified during packaging: ${file}`);
   }
-  const installer = path.join(output, `AI-edu-manager-console-Windows-${version}${candidateTag ? `-${candidateTag}` : ''}-Setup.exe`);
+  const installer = path.join(output, `AI-edu-manager-console-Windows-${version}${candidateTag && candidateTag !== version ? `-${candidateTag}` : ''}-Setup.exe`);
   const report = {
     version, candidateTag, createdAt: new Date().toISOString(),
     status: candidateTag ? 'local-candidate-installer' : 'local-user-accepted-installer',

@@ -19,7 +19,7 @@ function fixture(t){
  const perf={};for(const name of ['interaction','tree','baseline','timeline']){const a=write(root,`performance-${name}.json`,{name});artifacts.push(a);perf[name]=a.path;}
  const report={schema:'edu.agent0228.acceptance.v1',candidateHash:HASH,sourceProvenance:{candidateHash:HASH,runtimeAsarHash:HASH,sourceTreeHash:HASH},artifacts,scenarios,
   recovery:{lateReceiptsObserved:2,lateReceiptsSettled:2,lateReceiptEvidencePreserved:2,duplicateExecutions:0},
-  performance:{workload:'real_agent',repeats:3,interactionSamples:90,idleCpuCorePercent:.2,interactionP95Ms:30,mainLongTaskMaxMs:50,extraMainMemoryBytes:1024,timeouts:0,interactionTrace:perf.interaction,processTreeTrace:perf.tree,baselineTrace:perf.baseline,taskTimeline:perf.timeline,baselineCompleted:30,treatmentCompleted:30,baselineSeconds:600,treatmentSeconds:600}};
+  performance:{workload:'real_agent',repeats:3,interactionSamples:90,idleCpuCorePercent:.2,interactionP95Ms:30,rendererLongTaskMaxMs:50,mainEventLoopMaxMs:40,extraMainMemoryBytes:1024,timeouts:0,interactionTrace:perf.interaction,processTreeTrace:perf.tree,baselineTrace:perf.baseline,taskTimeline:perf.timeline,baselineCompleted:30,treatmentCompleted:30,baselineSeconds:600,treatmentSeconds:600}};
  return {root,report};
 }
 test('release CLI refuses an empty evidence directory and saves explicit missing-evidence findings',t=>{
@@ -45,4 +45,17 @@ test('release CLI requires the C1-C5 provider and intake matrix as well as A and
  const result=spawnSync(process.execPath,[path.join(__dirname,'../scripts/acceptance-agent-0228.cjs'),`--evidence=${root}`,'--stage=pre-candidate'],{encoding:'utf8'});
  assert.equal(result.status,1);const checked=JSON.parse(fs.readFileSync(path.join(root,'acceptance-result.json'),'utf8'));
  for(const id of ['C1','C2','C3','C4','C5'])assert.ok(checked.failures.includes(`matrix:${id}`));
+});
+
+test('release CLI rejects a pass row whose evidence level is weaker than the matrix requires',t=>{
+ const {root,report}=fixture(t);const matrixEvidence=write(root,'matrix.json',{passed:true});report.artifacts.push(matrixEvidence);
+ report.matrix=[...Array.from({length:15},(_,i)=>({id:`A${i+1}`,status:'pass',candidateHash:HASH,evidence:matrixEvidence.path,evidenceType:'contract_integration'})),
+  ...Array.from({length:7},(_,i)=>({id:`B${i+1}`,status:'pass',candidateHash:HASH,evidence:matrixEvidence.path,evidenceType:'contract_integration'})),
+  ...Array.from({length:5},(_,i)=>({id:`C${i+1}`,status:'pass',candidateHash:HASH,evidence:matrixEvidence.path,evidenceType:'contract_integration'}))];
+ fs.writeFileSync(path.join(root,'acceptance-index.json'),JSON.stringify(report));
+ const result=spawnSync(process.execPath,[path.join(__dirname,'../scripts/acceptance-agent-0228.cjs'),`--evidence=${root}`,'--stage=pre-candidate'],{encoding:'utf8'});
+ assert.equal(result.status,1);const checked=JSON.parse(fs.readFileSync(path.join(root,'acceptance-result.json'),'utf8'));
+ assert.ok(checked.failures.includes('matrix:A1'));
+ assert.ok(checked.failures.includes('matrix:C4'));
+ assert.ok(!checked.failures.includes('matrix:A5'));
 });

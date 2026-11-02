@@ -20,6 +20,7 @@ test('ordinary connection verification preserves authorization version and clear
     require: name => require(path.join(__dirname, '../electron', name)), aiExecutorRegistry: () => [],
     classificationAuth: () => auth, classificationAdapter: async id => ({ id }), taskChildProcesses: new Set(),
     agentControlStore: () => ({ migrate: async () => {} }),
+    acquireUserAgentProbe: () => ({ release: () => { released++; }, message: '' }),
     captureHeavyWorkGate: { state: () => [], tryAcquire: () => () => { released++; } }, captureTimelineResourceSnapshot: () => ({}),
     smartInboxHostRuntime: { routing: { invalidate() {}, qualify: async () => { if (fail) throw Error('synthetic network failure'); } } },
     getSmartInbox: async () => ({ resumeAgent: async () => { throw Error('must not run'); } }), readStudentsIndex: () => [],

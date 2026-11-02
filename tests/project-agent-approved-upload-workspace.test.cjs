@@ -50,14 +50,24 @@ async function fixture(t) {
         references: [{ spaceType: 'project', spaceId: project.id, path: file, role: metadata.role }] };
     },
     readProjects: () => [currentProject], readProjectMetadata: () => [currentProject], normalizeProject: (value) => value,
+    getProjectMetadata: (id) => String(id) === String(currentProject?.id) ? currentProject : null,
     normalizeProjectMetadata: (value) => value,
     isWorkspaceMaterialProject: (value) => value?.materialStorageMode === 'workspace-v1',
     findStudent: (id) => String(id) === student.id ? student : null,
     updateProjectRecord: (_id, change) => { currentProject = change(currentProject); return { project: currentProject }; },
+    updateProjectMetadataRecord: (_id, change) => {
+      currentProject = change(currentProject);
+      return { project: currentProject, projects: [currentProject] };
+    },
     projectWithNewInputs: (value) => value,
     readProjectDigestState: () => ({ status: 'pending' }),
     mergeUnique: (items) => [...new Set(items)],
     writeProjects: (projects) => { currentProject = projects.find((item) => item.id === project.id); },
+    projectStateIoClient: () => ({ request: async (_operation, payload) => {
+      currentProject = { ...payload.project, revision: Number(payload.project.revision || 0) + 1 };
+      return { project: currentProject };
+    } }),
+    projectStateStore: () => ({ invalidateCaches: () => {} }),
     writeProjectDigestState: () => ({ status: 'pending' }),
     assertUploadFileAllowed: () => {},
   };

@@ -13,6 +13,7 @@ const icon = fs.readFileSync(path.join(teacherRoot, 'res', 'drawable', 'brand_lo
 const build = fs.readFileSync(path.join(teacherRoot, 'build.ps1'), 'utf8');
 const windowsBuild = fs.readFileSync(path.join(root, 'scripts', 'build-windows-release.cjs'), 'utf8');
 const releaseManifest = fs.readFileSync(path.join(root, 'release', 'edu-manager-version.json'), 'utf8');
+const windowsManifest = fs.readFileSync(path.join(root, 'release', 'windows', 'edu-manager-version.json'), 'utf8');
 
 test('teacher terminal is an independently installable purple-red Android app', () => {
   assert.match(manifest, /package="com\.qxmatrix\.eduteacher"/);
@@ -102,7 +103,8 @@ test('Windows host release packages and advertises teacher-terminal support', ()
   assert.match(windowsBuild, /teacher-terminal-v1/);
   assert.match(windowsBuild, /teacherTerminalStudentRecord/);
   assert.match(windowsBuild, /teacherTerminalSupport: true/);
-  assert.equal(JSON.parse(releaseManifest).windowsVersionName, '0.21.2', 'formal host version must match the Windows manifest');
+  assert.equal(JSON.parse(releaseManifest).windowsVersionName, JSON.parse(windowsManifest).windowsVersionName,
+    'formal host version must match the Windows manifest');
   assert.match(releaseManifest, /"teacherTerminalVersionName": "0\.1\.4"/);
   assert.match(releaseManifest, /AI-edu-manager-teacher-terminal-0\.1\.4\.apk/);
 });

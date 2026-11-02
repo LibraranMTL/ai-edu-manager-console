@@ -5,6 +5,7 @@ const path = require('path');
 
 const root = path.resolve(__dirname, '..');
 const renderer = fs.readFileSync(path.join(root, 'src', 'main.tsx'), 'utf8');
+const styles = fs.readFileSync(path.join(root, 'src', 'styles.css'), 'utf8');
 const controlCenter = fs.readFileSync(path.join(root, 'src', 'GlobalAgentControlCenter.tsx'), 'utf8');
 const preload = fs.readFileSync(path.join(root, 'electron', 'preload.cjs'), 'utf8');
 const main = fs.readFileSync(path.join(root, 'electron', 'main.cjs'), 'utf8');
@@ -19,12 +20,14 @@ test('Windows v1.2 exposes exactly eight fixed first-level menu labels', () => {
 });
 
 test('page tabs preserve requested information architecture and construction states', () => {
-  ['收集总览', '资料导入', '拍照上传', '屏幕采集', '录音采集', 'AI对话采集', '对话分享资料箱', 'Agent会话自动采集', '分享采集', '资料整理'].forEach((label) => assert.match(renderer, new RegExp(label)));
+  ['收集总览', '资料导入', '拍照上传', '屏幕采集', '录音采集', '对话采集', '对话分享资料箱', 'Agent会话自动采集', '分享采集', '资料整理'].forEach((label) => assert.match(renderer, new RegExp(label)));
   const collectionTabs = renderer.slice(renderer.indexOf('collection: ['), renderer.indexOf('learning: ['));
-  assert.match(collectionTabs, /id: 'ai-conversation', label: 'AI对话采集'/);
+  assert.match(collectionTabs, /id: 'ai-conversation', label: '对话采集'/);
+  assert.match(renderer, /collection-page-tabs/);
+  assert.match(styles, /\.collection-page-tabs\s*\{[\s\S]*grid-template-columns:\s*repeat\(7,\s*minmax\(0,\s*1fr\)\)/);
   assert.doesNotMatch(collectionTabs, /id: 'conversation-collection'/);
   assert.doesNotMatch(collectionTabs, /id: 'session-auto-capture'/);
-  ['学情报告', '云端文档', '知识点掌握', '学习资料', '学习卡片'].forEach((label) => assert.match(renderer, new RegExp(label)));
+  ['学情报告', '云端学情报告', '云端学习资料', '知识点掌握', '学习资料', '学习卡片'].forEach((label) => assert.match(renderer, new RegExp(label)));
   ['选题建议', '新建项目', '项目知识管理', '成长模型'].forEach((label) => assert.match(renderer, new RegExp(label)));
   ['规划总览', '升学路径', '择校建议', '专业探索', '职业发展', '更新记录与设置'].forEach((label) => assert.match(renderer, new RegExp(label)));
   assert.match(renderer, /请先选择或新建学生档案/);

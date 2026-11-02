@@ -15,15 +15,38 @@ const RULES = 'edu-manager.project-material-rules.v1';
 const EXTRACTION_ERRORS = new Set(['unsupported', 'unsupported_encoding', 'unsupported_encryption', 'input_limit',
   'extraction_limit', 'invalid_document', 'unsafe_document', 'empty_source', 'extraction_failed', 'extraction_timeout',
   'ocr_failed', 'pdf_ocr_empty', 'source_changed', 'source_missing', 'ENOENT']);
+const RETRYABLE_EXTRACTION_ERRORS = new Set(['extraction_timeout', 'ocr_failed', 'source_changed']);
+function automaticProcessingPending(item) {
+  if (item?.adoption?.state !== 'accepted') return false;
+  if (item.processing?.state === 'completed' && item.processing?.processedVersion === item.version) return false;
+  return ['pending', 'running', 'failed_retryable', 'failed'].includes(String(item.processing?.state || 'pending'));
+}
+function extractionOutcome(error) {
+  const code = String(error?.code || 'extraction_failed');
+  if (code.startsWith('unsupported') || code === 'invalid_document' || code === 'unsafe_document'
+    || code === 'input_limit' || code === 'extraction_limit' || code === 'empty_source') return 'skipped_unsupported';
+  if (RETRYABLE_EXTRACTION_ERRORS.has(code)) return 'failed_retryable';
+  return 'failed_terminal';
+}
 
 // One task-center execution, not a second scheduler. Checkpoints are persisted
 // by the caller in the existing task record; sources remain in the registry.
 function createProjectMaterialTask({ project, executionId, executionScope = null, checkpoint = {}, onCheckpoint, authorize,
   executable, signal, execute = executeMaterialCodex, verifySandbox = verifyMaterialSandbox,
-  extractSource, timeoutMs, hooks = {} }) {
+  extractSource, transcribeSource, timeoutMs, hooks = {} }) {
   const { store } = createProjectMaterialHost(project);
   const extractor = createProjectMaterialExtractor({ store });
-  const extract = extractSource || ((input) => extractor.extractText(input, { signal }));
+  const extract = extractSource || (async (input) => {
+    try { return await extractor.extractText(input, { signal }); }
+    catch (error) {
+      const extension = path.extname(input.location?.relativePath || input.path || '').toLowerCase();
+      if (error.code !== 'unsupported' || !['.webm', '.wav', '.mp3', '.m4a', '.ogg', '.mp4'].includes(extension)
+        || typeof transcribeSource !== 'function') throw error;
+      const transcript = await transcribeSource(input, { signal });
+      invariant(typeof transcript === 'string' && transcript.trim(), 'empty_source', '转写服务没有返回可消化正文。');
+      return `[音频转写；请结合原始录音核对]\n${transcript.trim()}`;
+    }
+  });
   const workspace = createProjectDigestWorkspace({ store, knowledgeRoot: project.knowledgeRootPath, allowedDirectories: KNOWLEDGE_DIRS });
   let phase = 'preparing';
   let state = { ...checkpoint };
@@ -86,14 +109,19 @@ function createProjectMaterialTask({ project, executionId, executionScope = null
           await persist({ phase: 'output_ready', batchId: batch.batchId });
         } else {
           const index = await store.read();
-          const incomplete = index.materials.filter((item) => item.adoption.state === 'accepted'
-            && !(item.processing.state === 'completed' && item.processing.processedVersion === item.version));
+          const incomplete = index.materials.filter(automaticProcessingPending);
           const pending = incomplete.filter((item) => !failedVersions.has(`${item.materialId}:${item.version}`));
           if (!pending.length && failures.length) {
             await persist({ phase: 'partial', batchId: null, remainingCount: incomplete.length, extractionFailures: failures });
-            return { projectId: project.id, fullyCommitted: false, remainingCount: incomplete.length, batches, failures, results: [] };
+            return { projectId: project.id, fullyCommitted: incomplete.length === 0,
+              businessOutcome: incomplete.length ? 'failed_retryable' : 'completed',
+              remainingCount: incomplete.length, batches, failures, results: [] };
           }
-          invariant(pending.length > 0, 'nothing_pending', '当前没有已采用的待处理资料。');
+          if (!pending.length) {
+            await persist({ phase: 'committed', batchId: null, remainingCount: 0 });
+            return { projectId: project.id, fullyCommitted: true, businessOutcome: 'no_work',
+              remainingCount: 0, batches, failures: [], results: [] };
+          }
           const rules = await readRules();
           const evidence = await verifySandbox(executable, { signal });
           await check();
@@ -147,7 +175,7 @@ function createProjectMaterialTask({ project, executionId, executionScope = null
             for (const failure of rejected) {
               const item = latest.materials.find((record) => record.materialId === failure.materialId);
               if (item?.version !== failure.version || item.adoption.state !== 'accepted') continue;
-              item.processing = { ...item.processing, state: failure.code.startsWith('unsupported') ? 'unsupported' : 'failed',
+              item.processing = { ...item.processing, state: extractionOutcome(failure),
                 executionId, error: { code: failure.code, message: failure.message } };
               item.recordRevision++;
             }
@@ -164,11 +192,12 @@ function createProjectMaterialTask({ project, executionId, executionScope = null
           await markSources('running');
           await check();
           await persist({ phase: 'running' });
+          await hooks.beforeExecute?.({batchId:batch.batchId});
           receipt = await execute({ executable, batch, sandboxEvidence: evidence, projectRules: rules.text,
             extractSource: async (input) => {
               const text = texts.get(`${input.materialId}:${input.version}:${input.sha256}`);
               invariant(text !== undefined, 'source_changed', '批次来源不再匹配已提取版本。'); return text;
-            }, signal, timeoutMs });
+            }, signal, timeoutMs, onStarted:hooks.onStarted });
           await check();
           await writeJsonAtomic(path.join(path.dirname(batch.manifestPath), 'task-receipt.json'), receipt);
           await persist({ phase: 'output_ready' });
@@ -180,17 +209,20 @@ function createProjectMaterialTask({ project, executionId, executionScope = null
         await hooks.afterCommit?.(result);
         await markSources('pending'); // Only unfinished items; successes stay complete.
         const current = await store.read();
-        const remainingCount = current.materials.filter((item) => item.adoption.state === 'accepted'
-          && !(item.processing.state === 'completed' && item.processing.processedVersion === item.version)).length;
+        const remainingCount = current.materials.filter(automaticProcessingPending).length;
         await persist({ phase: result.fullyCommitted ? 'committed' : 'conflict', batchId: batch.batchId, remainingCount });
         batches.push(result);
         if (result.fullyCommitted && remainingCount > 0) {
           state = {}; batch = null; phase = 'preparing';
           continue;
         }
-        return { ...result, fullyCommitted: result.fullyCommitted && remainingCount === 0, remainingCount, batches, failures };
+        return { ...result, fullyCommitted: result.fullyCommitted && remainingCount === 0,
+          businessOutcome: remainingCount ? 'failed_retryable' : failures.length ? 'completed' : 'completed',
+          remainingCount, batches, failures };
       } catch (error) {
-        await markSources(error.code === 'cancelled' ? 'pending' : error.code === 'unsupported' ? 'unsupported' : 'failed', error);
+        await markSources(error.code === 'cancelled' ? 'pending'
+          : error.code === 'execution_unknown' ? 'execution_unknown'
+            : extractionOutcome(error), error);
         // Keep output_ready/committing intact for recovery without another AI
         // invocation. Do not swallow a checkpoint failure or declare success.
         throw error;
@@ -208,4 +240,5 @@ function materialTaskCheckpointForCandidate(current, candidate) {
       digestBatchId: current.input.materialExecution.batchId || '' } : null;
 }
 
-module.exports = { createProjectMaterialTask, materialTaskCheckpointForCandidate, KNOWLEDGE_DIRS };
+module.exports = { createProjectMaterialTask, materialTaskCheckpointForCandidate, automaticProcessingPending,
+  extractionOutcome, KNOWLEDGE_DIRS };

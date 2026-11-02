@@ -10,7 +10,7 @@ const learning = read('android-shared/src/com/qxmatrix/terminallearning/Terminal
 const host = read('electron/main.cjs');
 
 test('student terminal exposes the four revised primary actions and keeps courses out of More', () => {
-  const dashboard = activity.slice(activity.indexOf('private LinearLayout buildStudentDashboard'), activity.indexOf('private Button addDashboardAction'));
+  const dashboard = activity.slice(activity.indexOf('private LinearLayout buildStudentDashboard'), activity.indexOf('private View addDashboardAction'));
   assert.equal((dashboard.match(/addDashboardAction\(/g) || []).length, 4);
   for (const label of ['搜集上传', '主机连接', '教育档案', '学习行动']) assert.match(dashboard, new RegExp(label));
   assert.doesNotMatch(dashboard, /资料收集|资料上传|课程学习/);

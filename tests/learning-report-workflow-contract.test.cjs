@@ -18,7 +18,8 @@ test('all four learning reports have idempotent weekly or monthly tasks', () => 
   assert.match(main, /idempotencyKey: `\$\{kind\}:\$\{normalized\.id\}:\$\{period\.key\}:\$\{growthFingerprint \|\| 'growth-pending'\}`/);
   assert.match(main, /periodicKinds\.has\(task\.kind\)/);
   assert.match(main, /automaticTaskWakeDecision\(task\)\.eligible/);
-  assert.match(main, /scheduleAutomaticTaskWakeups\(due\.map/);
+  assert.match(main, /taskStoreGuard\.listRunnableTasks/);
+  assert.match(main, /scheduleAutomaticTaskWakeups\(\[task\.id\],'fallback_scan'/);
   assert.match(main, /new Set\(\['published', 'current', 'updated', 'active'\]\)\.has\(reportStatus\)/);
 });
 

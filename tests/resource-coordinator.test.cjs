@@ -44,6 +44,20 @@ test('background maintenance waits briefly after foreground activity and keyed w
   assert.equal(await first, 7); assert.equal(runs, 1); queue.close();
 });
 
+test('a user request may ignore its own foreground delay but never system pressure or real contention', async () => {
+  let now = 1_000;
+  const queue = new ResourceCoordinator({ now: () => now });
+  queue.noteForegroundActivity(60_000);
+  assert.equal(queue.acquireExternal('localAgent', { background: true }), null);
+  const release = queue.acquireExternal('localAgent', { background: true, ignoreForegroundDelay: true });
+  assert.equal(typeof release, 'function');
+  assert.equal(queue.acquireExternal('localAgent', { background: true, ignoreForegroundDelay: true }), null);
+  release();
+  queue.updatePressure({ availableMemoryRatio: .1, availableMemoryBytes: 2 * 1024 ** 3 });
+  assert.equal(queue.acquireExternal('localAgent', { background: true, ignoreForegroundDelay: true }), null);
+  queue.close();
+});
+
 test('pressure hysteresis and scope locks pause new background heavy work', async () => {
   let now = 1_000;
   const queue = new ResourceCoordinator({ now: () => now });

@@ -139,7 +139,7 @@ async function stageMaterialResponse(batch, response) {
   });
 }
 
-function runProcess(executable, args, { cwd, input, signal, timeoutMs, spawnProcess = spawn }) {
+function runProcess(executable, args, { cwd, input, signal, timeoutMs, spawnProcess = spawn, onStarted }) {
   return new Promise((resolve, reject) => {
     invariant(!signal?.aborted, 'cancelled', '任务已取消。');
     const child = spawnProcess(executable, args, { cwd, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
@@ -168,7 +168,11 @@ function runProcess(executable, args, { cwd, input, signal, timeoutMs, spawnProc
     child.stdin.on('error', (error) => stop('agent_input_failed', error.message));
     child.on('error', (error) => { if (!child.pid) finish(new MaterialError('agent_unavailable', error.message)); else stop('agent_unavailable', error.message); });
     child.on('close', (code) => finish(stopping || (code === 0 ? null : new MaterialError('agent_failed', '受控Agent执行失败。', { code, diagnostic: stderr })), Buffer.concat(chunks).toString('utf8')));
-    child.stdin.end(input, 'utf8');
+    if(onStarted)child.once('spawn',()=>{
+      Promise.resolve().then(()=>onStarted({processId:child.pid})).then(()=>{if(!done&&!stopping)child.stdin.end(input,'utf8');},
+        error=>stop('start_receipt_failed',error.message));
+    });
+    else child.stdin.end(input, 'utf8');
   });
 }
 
@@ -211,15 +215,19 @@ async function materialPrompt({ batch, projectRules = '', extractSource = extrac
   ].join('\n\n');
 }
 
-async function executeMaterialLlmApi({ provider, batch, sandboxEvidence, projectRules = '', signal, timeoutMs = 900000, extractSource = extractFixedText }) {
+async function executeMaterialLlmApi({ provider, batch, sandboxEvidence, projectRules = '', signal, timeoutMs = 900000, extractSource = extractFixedText, onStarted }) {
   invariant(provider && typeof provider.generate === 'function', 'agent_unavailable', 'LLM API 尚未配置。');
   invariant(sandboxEvidence?.mode === 'host-mediated-no-tools', 'sandbox_unverified', 'LLM API 必须使用宿主供给正文且禁止工具。');
   const prompt = await materialPrompt({ batch, projectRules, extractSource });
-  const response = await provider.generate({ prompt, schema: outputSchema(batch), signal, timeoutMs, maxOutputTokens: 16384 });
+  let acknowledged=false;
+  const response = await provider.generate({ prompt, schema: outputSchema(batch), signal, timeoutMs, maxOutputTokens: 16384,onStage:async(stage,data)=>{
+    if(!acknowledged&&stage==='transport_acknowledged'){acknowledged=true;await onStarted?.({transportAcknowledged:true,httpStatus:data.httpStatus,remoteRequestId:data.requestId});}
+    else if(!acknowledged&&stage==='result_received'&&data?.requestId){acknowledged=true;await onStarted?.({remoteRequestId:data.requestId});}
+  }});
   return stageMaterialResponse(batch, response);
 }
 
-async function executeMaterialCodex({ executable, batch, sandboxEvidence, projectRules = '', model, signal, timeoutMs = 900000, spawnProcess, extractSource = extractFixedText }) {
+async function executeMaterialCodex({ executable, batch, sandboxEvidence, projectRules = '', model, signal, timeoutMs = 900000, spawnProcess, onStarted, extractSource = extractFixedText }) {
   invariant(typeof executable === 'string' && path.isAbsolute(executable) && path.extname(executable).toLowerCase() === '.exe',
     'agent_unavailable', '新项目模式需要已验证的Codex原生可执行文件。');
   const isolationMode = sandboxEvidence?.passed === true ? 'os-read-only' : sandboxEvidence?.mode;
@@ -234,7 +242,7 @@ async function executeMaterialCodex({ executable, batch, sandboxEvidence, projec
     await fs.writeFile(schemaPath, JSON.stringify(outputSchema(batch)));
     const args = codexMaterialInvocation({ cwd: root, schemaPath, model, isolationMode });
     const prompt = await materialPrompt({ batch, projectRules, extractSource });
-    const stdout = await runProcess(executable, args, { cwd: root, input: prompt, signal, timeoutMs, spawnProcess });
+    const stdout = await runProcess(executable, args, { cwd: root, input: prompt, signal, timeoutMs, spawnProcess, onStarted });
     return stageMaterialResponse(batch, parseCodexMaterialEvents(stdout));
   } catch (error) {
     if (error.code === 'execution_unknown') cleanupSafe = false;

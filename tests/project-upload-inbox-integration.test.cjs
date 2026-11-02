@@ -53,8 +53,17 @@ test('actual project upload writes a new-mode original to the inbox and returns 
     },
     requireAuth: (request) => { request.authContext = { type: 'device', deviceId: 'device-1' }; return true; },
     requireMatchingUploadGeneration: () => true,
-    readProjects: () => projects, readProjectMetadata: () => projects, writeProjects: (next) => { projects = next; },
+    readProjects: () => projects, readProjectMetadata: () => projects,
+    getProjectMetadata: (id) => projects.find((item) => String(item.id) === String(id)) || null,
+    writeProjects: (next) => { projects = next; },
+    updateProjectMetadataRecord: (id, mutate) => {
+      const index = projects.findIndex((item) => String(item.id) === String(id));
+      if (index < 0) return { project: null, projects };
+      projects[index] = mutate(projects[index]);
+      return { project: projects[index], projects };
+    },
     normalizeProject: (value) => value, normalizeProjectMetadata: (value) => value, projectAllowed: () => true,
+    normalizeMaterialAutomation: require('../electron/project-material-automation.cjs').normalizeMaterialAutomation,
     findStudent: () => ({ id: 'student-1', name: 'Student' }), isStudentAllowed: () => true,
     courseUploadAttribution: () => ({}), remoteCaptureAttribution: () => null,
     ensureProjectWorkspace: (value) => value, assertUploadFileAllowed: () => {},

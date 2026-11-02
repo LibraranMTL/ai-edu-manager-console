@@ -449,10 +449,11 @@ function createPlanningGuidanceService(options) {
 
   function getResearchCapabilityStatus() {
     const providers = researchProviders().map((provider) => ({
-      id: cleanText(provider.id, 80), label: cleanText(provider.label || provider.id, 120), available: Boolean(provider.available), authorized: Boolean(provider.authorized), webResearch: Boolean(provider.webResearch && typeof provider.search === 'function'), structuredResult: Boolean(provider.structuredResult && typeof provider.search === 'function'), healthMessage: cleanText(provider.healthMessage, 300),
+      id: cleanText(provider.id, 80), label: cleanText(provider.label || provider.id, 120), available: Boolean(provider.available), authorized: Boolean(provider.authorized), webResearch: Boolean(provider.webResearch && typeof provider.search === 'function'), structuredResult: Boolean(provider.structuredResult && typeof provider.search === 'function'), healthPending: Boolean(provider.healthPending), healthMessage: cleanText(provider.healthMessage, 300),
     }));
     const usable = providers.filter((item) => item.available && item.authorized && item.webResearch && item.structuredResult);
-    return { ok: true, available: usable.length > 0, providers, usableProviderIds: usable.map((item) => item.id), checkedAt: iso(now()), message: usable.length ? `可用联网研究执行器：${usable.map((item) => item.label).join('、')}` : '未发现已登录并接通研究接口的执行器。请登录 Codex CLI 后重试。' };
+    const checking = providers.filter((item) => item.healthPending);
+    return { ok: true, available: usable.length > 0, checking: checking.length > 0, providers, usableProviderIds: usable.map((item) => item.id), checkingProviderIds: checking.map((item) => item.id), checkedAt: iso(now()), message: usable.length ? `可用联网研究执行器：${usable.map((item) => item.label).join('、')}` : checking.length ? '正在核对联网研究执行器状态，任务将保留在自动队列。' : '未发现已登录并接通研究接口的执行器。请登录 Codex CLI 后重试。' };
   }
 
   function getGuidancePlan(studentId) {

@@ -76,6 +76,6 @@ test('Obsidian rejects first registration while running, missing handler, corrup
 });
 test('report-local cloud entry retains route and independent component; vault and audio APIs are async/licensed',async()=>{
   const read=file=>fs.readFile(path.join(__dirname,'..',file),'utf8');const main=await read('src/main.tsx'),host=await read('electron/main.cjs'),preload=await read('electron/preload.cjs');
-  const learning=main.slice(main.indexOf('    learning: ['),main.indexOf('    projects: ['));assert.doesNotMatch(learning,/cloud-documents/);assert.match(main,/查看全部档案[\s\S]{0,230}setActiveSection\('cloud-documents'\)/);assert.match(main,/返回学情报告/);assert.match(main,/openKnowledgeObsidian\('student'\)/);assert.match(main,/openKnowledgeObsidian\('project'\)/);
+  const learning=main.slice(main.indexOf('    learning: ['),main.indexOf('    projects: ['));assert.doesNotMatch(learning,/cloud-documents/);assert.match(main,/查看全部档案[\s\S]{0,230}setActiveSection\('cloud-reports'\)/);assert.match(main,/返回学情报告/);assert.match(main,/openKnowledgeObsidian\('student'\)/);assert.match(main,/openKnowledgeObsidian\('project'\)/);
   for(const method of ['getAudioTranscriptionSettings','saveAudioTranscriptionSettings','testAudioTranscription','transcribeCaptureAudio','openKnowledgeObsidian']){assert.match(host,new RegExp(`ipcMain\\.handle\\('bridge:${method}'[\\s\\S]{0,100}licensedInvoke`));assert.match(preload,new RegExp(`${method}\\([^)]*\\)[\\s\\S]{0,100}ipcRenderer\\.invoke`));}
 });

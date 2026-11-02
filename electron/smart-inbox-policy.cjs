@@ -34,8 +34,8 @@ function studentScopeMatches(item, source) {
   return item.studentId === source.studentId || Boolean(!source.studentId && item.studentId && c)
     || Boolean(c?.reassigned && c.sourceStudentId === source.studentId && c.sourceRevision === source.revision);
 }
-function confidenceThreshold(value = .95) {
-  if (typeof value !== 'number' || !Number.isFinite(value) || value < .95 || value > 1) throw Error('可信阈值须在0.95至1之间');
+function confidenceThreshold(value = .85) {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value < .75 || value > 1) throw Error('可信阈值须在0.75至1之间');
   return value;
 }
 // Host evidence, not a model's self-reported confidence, controls auto delivery.
@@ -90,7 +90,7 @@ function automaticTarget({ source, item, context, text, suggestion, rules = [] }
   if (matching.length === 1) return { target: target(matching[0].target), basis: 'confirmed_rule', ruleId: matching[0].id };
   const [first, second] = suggestion?.candidates || [];
   if (!first || first.studentId !== source.studentId || first.type !== 'project'
-    || first.score < confidenceThreshold(source.confidenceThreshold ?? .95) || first.score - (second?.score || 0) < .20
+    || first.score < confidenceThreshold(source.confidenceThreshold ?? .85) || first.score - (second?.score || 0) < .10
     || !first.evidence || !text.includes(first.evidence) || !context.projects.some(p => p.id === first.id)) return null;
   if (explicit.length && explicit[0].id !== first.id) return null;
   const exact = explicit.length === 1 && identifiers(first.evidence, context.projects).some(p => p.id === first.id);

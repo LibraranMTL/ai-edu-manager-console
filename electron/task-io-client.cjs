@@ -1,7 +1,7 @@
 'use strict';
 const { Worker } = require('node:worker_threads');
 const path = require('node:path');
-function createTaskIoClient({ onInboxChanged = () => {}, workerFactory,
+function createTaskIoClient({ onInboxChanged = () => {}, onSourceChanged = () => {}, workerFactory,
   readTimeoutMs = 15_000, durableTimeoutMs = 90_000 } = {}) {
   const deadlines = require('./task-active-deadlines.cjs').createActiveDeadlines();
   let worker, serial = 0, closed = false, closing = null;
@@ -17,8 +17,9 @@ function createTaskIoClient({ onInboxChanged = () => {}, workerFactory,
     const current = workerFactory ? workerFactory() : new Worker(path.join(__dirname, 'task-io-worker.cjs'));
     worker = current;
     current.unref();
-    current.on('message', ({ id, value, event }) => {
+    current.on('message', ({ id, value, event, source }) => {
       if (event === 'inbox_changed') { onInboxChanged(); return; }
+      if (event === 'source_changed') { onSourceChanged(source); return; }
       const p = pending.get(id); if (!p) return;
       p.timer.cancel(); pending.delete(id); p.resolve(value);
     });

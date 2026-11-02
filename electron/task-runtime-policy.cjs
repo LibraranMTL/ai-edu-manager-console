@@ -1,6 +1,9 @@
 const { recoverableResearchBlock } = require('./research-task-policy.cjs');
 const { taskExecutionUnresolved, unknownExecutionPatch } = require('./task-recovery-policy.cjs');
+const { createHash } = require('node:crypto');
 const ACTIVE_TASK_STATUSES = new Set(['running', 'waiting_result']);
+const PROTECTED_TASK_STATUSES = new Set(['running', 'waiting_result', 'reviewing']);
+const PROTECTED_SETTLEMENT_STATES = new Set(['reviewing', 'committing', 'publishing']);
 const TERMINAL_TASK_STATUSES = new Set(['succeeded', 'failed', 'blocked', 'cancelled', 'timed_out', 'archived']);
 const NOISY_EVENT_TYPES = new Set([
   'adapter_heartbeat',
@@ -11,6 +14,49 @@ const NOISY_EVENT_TYPES = new Set([
   'manual_packet_exported',
 ]);
 const CONFIRMED_STOP_STATES = new Set(['host_confirmed_stopped', 'manual_packet_closed', 'user_confirmed_stopped']);
+const AUTO_SETTLE_RETAINED_RESULT_KINDS = new Set(['maintenance_lint']);
+
+function dispatchBlockSignature(conflict = {}) {
+  return createHash('sha256').update(JSON.stringify([
+    String(conflict.reasonCode || ''),
+    String(conflict.blockerTaskId || ''),
+    String(conflict.blockerWorkKey || ''),
+    String(conflict.evidence?.executionId || ''),
+    String(conflict.evidence?.batchId || ''),
+  ])).digest('hex').slice(0, 40);
+}
+
+function dispatchBlockPatch(conflict = {}, now = new Date().toISOString()) {
+  const signature = dispatchBlockSignature(conflict);
+  return {
+    dispatchBlock: {
+      code: String(conflict.reasonCode || 'execution_unknown_dependency'),
+      blockerTaskId: String(conflict.blockerTaskId || ''),
+      blockerWorkKey: String(conflict.blockerWorkKey || ''),
+      signature,
+      createdAt: String(now),
+      nextCheckAt: String(conflict.nextCheckAt || ''),
+      evidence: conflict.evidence && typeof conflict.evidence === 'object' ? { ...conflict.evidence } : {},
+    },
+  };
+}
+
+function clearDispatchBlockPatch(signature = '') {
+  return { dispatchBlock: null, clearedDispatchBlockSignature: String(signature || '') };
+}
+
+function retainedValidatedResult(task) {
+  return Boolean(task?.result?.validation?.valid)
+    && ['reviewing', 'succeeded'].includes(String(task?.result?.status || ''));
+}
+
+function retainedValidatedResultStatus(task) {
+  if (!retainedValidatedResult(task)) return '';
+  if (String(task?.result?.status || '') === 'succeeded') return 'succeeded';
+  if (AUTO_SETTLE_RETAINED_RESULT_KINDS.has(String(task?.kind || ''))
+    && task?.approval?.required !== true) return 'succeeded';
+  return 'reviewing';
+}
 
 function scheduledCycleScope(value) {
   const parts = String(value || '').split(':').reverse();
@@ -84,8 +130,15 @@ function candidateRuntimeDecision(current, candidate) {
   const sourceStatus = String(candidate?.status || '');
   const currentCycle = String(current?.idempotencyKey || '');
   const candidateCycle = String(candidate?.idempotencyKey || '');
-  const active = ACTIVE_TASK_STATUSES.has(currentStatus);
-  const orphan = active && (!current?.executionId || !current?.startedAt);
+  const currentWorkKey = String(current?.workKey || '');
+  const candidateWorkKey = String(candidate?.workKey || '');
+  const sameWork = Boolean(currentWorkKey && candidateWorkKey && currentWorkKey === candidateWorkKey);
+  const sameLegacyCycle = Boolean(!currentWorkKey && !candidateWorkKey
+    && currentCycle && candidateCycle && currentCycle === candidateCycle);
+  const active = PROTECTED_TASK_STATUSES.has(currentStatus)
+    || PROTECTED_SETTLEMENT_STATES.has(String(current?.settlementState || ''));
+  const orphan = ['running', 'waiting_result'].includes(currentStatus)
+    && (!current?.executionId || !current?.startedAt);
   const preserveExecution = active && !orphan;
   // A failed run can already be prepared for its next adapter while the
   // candidate builder still describes the generic pending card. Keep that
@@ -96,7 +149,16 @@ function candidateRuntimeDecision(current, candidate) {
   // blocked while qualification is in flight (blocked -> running is illegal).
   const preservePreparedExecution = currentStatus === 'approved'
     || currentStatus === 'queued' && Boolean(current?.executionId);
-  const preserveRuntime = taskExecutionUnresolved(current) || preserveExecution || preservePreparedExecution;
+  // A validated result is durable for the work that produced it, not for all
+  // future material handled by the same stable task row.  Project/student
+  // digest rows are intentionally reused; a changed work key must therefore
+  // be allowed to open a new cycle instead of inheriting the old success.
+  const retainedResultStatus = sameWork || sameLegacyCycle
+    ? retainedValidatedResultStatus(current)
+    : '';
+  const preserveRuntime = ['claimed','send_intent','started','unknown'].includes(current?.executionPhase)
+    || (sameWork&&Boolean(current?.capabilityWait)) || taskExecutionUnresolved(current) || preserveExecution || preservePreparedExecution
+    || Boolean(retainedResultStatus);
   // A confirmed stop is durable for the whole scheduled window. Source
   // fingerprints can legitimately change while the app is running (or when a
   // newer host calculates them more precisely); that alone must never turn a
@@ -108,7 +170,11 @@ function candidateRuntimeDecision(current, candidate) {
   const confirmedStopProtected = TERMINAL_TASK_STATUSES.has(currentStatus)
     && CONFIRMED_STOP_STATES.has(String(current?.recoveryState || ''))
     && (!currentScope || !candidateScope || currentScope === candidateScope);
-  const newCycle = Boolean(candidateCycle && candidateCycle !== currentCycle && !preserveRuntime && !confirmedStopProtected);
+  // Builders may rotate a batch/candidate id while the underlying material
+  // versions stay unchanged. The stable work key is authoritative: do not
+  // reset attempts, terminal budget or adapter history for the same work.
+  const newCycle = Boolean(!sameWork && candidateCycle && candidateCycle !== currentCycle
+    && !preserveRuntime && !confirmedStopProtected);
   const refreshBlock = recoverableResearchBlock(current) && ['blocked', 'pending', 'queued'].includes(sourceStatus);
   const preserveTerminal = TERMINAL_TASK_STATUSES.has(currentStatus) && !newCycle && !refreshBlock;
   const safeSourceStatus = orphan && ACTIVE_TASK_STATUSES.has(sourceStatus) ? 'pending' : sourceStatus;
@@ -119,10 +185,11 @@ function candidateRuntimeDecision(current, candidate) {
     preservePreparedExecution,
     preserveRuntime,
     preserveTerminal,
+    sameWork,
     confirmedStopProtected,
     refreshBlock,
     resetExecution: newCycle || orphan,
-    nextStatus: preserveRuntime || preserveTerminal ? currentStatus : safeSourceStatus,
+    nextStatus: retainedResultStatus || (preserveRuntime || preserveTerminal ? currentStatus : safeSourceStatus),
   };
 }
 
@@ -130,6 +197,29 @@ function repairTaskRuntimeStore(store, now = new Date().toISOString()) {
   if (!store || !Array.isArray(store.tasks)) return { changed: false, repairs: [] };
   const repairs = [];
   for (const task of store.tasks) {
+    const retainedResultStatus = retainedValidatedResultStatus(task);
+    if (['draft', 'pending', 'approved', 'queued', 'blocked', 'failed', 'timed_out'].includes(String(task.status || ''))
+      && retainedResultStatus) {
+      const accepted = retainedResultStatus === 'succeeded';
+      task.status = retainedResultStatus;
+      task.statusGroup = accepted ? 'completed' : 'actionable';
+      task.settlementState = accepted ? 'settled' : 'reviewing';
+      task.result = { ...task.result, status: retainedResultStatus,
+        ...(accepted && !task.result?.autoAcceptedAt ? { autoAcceptedAt: now } : {}) };
+      task.error = null;
+      task.nextRetryAt = '';
+      task.resourceDeferredAt = '';
+      task.resourceRetryAt = '';
+      if (accepted) {
+        task.completedAt = task.completedAt || now;
+        task.approval = { ...(task.approval || {}), required: false, status: 'not_required',
+          reviewedAt: task.approval?.reviewedAt || now,
+          reviewedBy: task.approval?.reviewedBy || 'system_validation' };
+      }
+      task.updatedAt = now;
+      repairs.push({ taskId: task.id, type: accepted ? 'retained_validated_result_settled' : 'retained_validated_result_restored' });
+      continue;
+    }
     if (taskExecutionUnresolved(task) && task.recoveryState !== 'unknown') {
       const priorError = task.error;
       Object.assign(task, unknownExecutionPatch(task, 'legacy_unconfirmed_stop', now), { error: priorError, updatedAt: now });
@@ -224,7 +314,10 @@ module.exports = {
   ACTIVE_TASK_STATUSES,
   TERMINAL_TASK_STATUSES,
   candidateRuntimeDecision,
+  clearDispatchBlockPatch,
   compactTaskEvents,
+  dispatchBlockPatch,
+  dispatchBlockSignature,
   repairTaskRuntimeStore,
   taskExecutionClass,
   taskTimeoutDecision,

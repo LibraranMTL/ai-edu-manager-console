@@ -10,6 +10,20 @@ const writer = require('./task-store-writer.cjs').createTaskStoreWriter();
 let cache = null;
 const watchers = new Map();
 let changeTimer = null;
+const sourceWatchers=new Map();
+function watchSources(sources){
+  for(const source of sources||[])for(const file of source.files||[]){
+    if(sourceWatchers.has(file))continue;
+    try{
+      const watcher=watch(path.dirname(file),{persistent:false},(_kind,name)=>{
+        if(String(name||'')===path.basename(file))parentPort.postMessage({event:'source_changed',source:{sourceType:source.sourceType,sourceId:source.sourceId}});
+      });
+      watcher.on('error',()=>{watcher.close();sourceWatchers.delete(file);});
+      sourceWatchers.set(file,watcher);
+    }catch{} // The persisted dirty queue and 15-minute signature check recover missed events.
+  }
+  return {ok:true};
+}
 async function watchInbox(root) {
   for (const directory of [path.join(root, 'agent-results'), path.join(root, 'qclaw-results')]) {
     if (watchers.has(directory)) continue;
@@ -41,23 +55,14 @@ async function readStore(file) {
   return value;
 }
 async function handle(message) {
-  if (['store_open', 'store_write', 'store_event', 'store_progress', 'store_close'].includes(message.op)) {
-    const result = await writer.request(message.file, message.op, message.query);
-    if (message.op === 'store_close') { cache = null; return result; }
-    if (message.op === 'store_write') cache = { key: `${message.file}:${result.signature}`, value: message.query.value, authoritative: true };
-    else if (message.op === 'store_progress' && cache?.value) {
-      for (const patch of message.query.entries || []) {
-        const task = cache.value.tasks.find(item => String(item.id) === String(patch.taskId));
-        if (!task || String(task.executionId || '') !== String(patch.executionId || '')) continue;
-        if (patch.lastHeartbeatAt) task.lastHeartbeatAt = String(patch.lastHeartbeatAt);
-        if (patch.lastProgressAt) { task.lastProgressAt = String(patch.lastProgressAt); task.progressSource = String(patch.progressSource || ''); }
-      }
-    }
-    else if (message.op === 'store_open') cache = { key: `${message.file}:${result.signature}`, value: result.value, authoritative: true };
-    return result;
+  if(message.op==='watch_sources')return watchSources(message.query.sources);
+  if(message.op==='store_close'){for(const watcher of sourceWatchers.values())watcher.close();sourceWatchers.clear();}
+  if (message.op.startsWith('store_') || (writer.has(message.file) && !['inbox','watch'].includes(message.op))) {
+    return writer.request(message.file, message.op, message.query);
   }
   if (message.op === 'inbox') return inbox.scan(path.dirname(message.file), message.query.agentId || '');
   if (message.op === 'watch') return watchInbox(path.dirname(message.file));
+  if (message.op !== 'legacy') return { ok: true, ready: false, tasks: [], history: [], message: '任务数据库正在初始化。' };
   const store = await readStore(message.file);
   if (!store) return { ok: true, ready: false, tasks: [], history: [], message: '任务快照尚未初始化。' };
   if (message.op === 'detail') {
@@ -78,15 +83,15 @@ async function handle(message) {
 // slow fsync so a page refresh never head-of-line blocks task controls.
 let queue = Promise.resolve();
 parentPort.on('message', message => {
-  if (!['store_open', 'store_write', 'store_event', 'store_progress', 'store_close'].includes(message.op)) {
+  if (!message.op.startsWith('store_')) {
     void handle(message).then(value => parentPort.postMessage({ id: message.id, value }), error =>
       parentPort.postMessage({ id: message.id, value: { ok: false, message: message.op === 'inbox'
         ? `回执扫描失败：${error.message}`
-        : `任务快照读取失败：${error.message}` } }));
+        : `任务快照读取失败：${error.message}`, code:error.code } }));
     return;
   }
   queue = queue.then(async () => {
     try { parentPort.postMessage({ id: message.id, value: await handle(message) }); }
-    catch (error) { parentPort.postMessage({ id: message.id, value: { ok: false, message: `任务快照读取失败：${error.message}` } }); }
+    catch (error) { parentPort.postMessage({ id: message.id, value: { ok: false, code:error.code, message: `任务快照读取失败：${error.message}` } }); }
   });
 });

@@ -18,8 +18,12 @@ function createTaskRetryQueue({ run, now = Date.now, setTimer = setTimeout, clea
     timer.unref?.();
   }
   function schedule(id, adapterId, delay = 15000) {
-    if (closed || !id || !Number.isFinite(delay) || entries.has(String(id))) return;
-    entries.set(String(id), { adapterId, dueAt: now() + Math.max(0, delay) });
+    if (closed || !id || !Number.isFinite(delay)) return;
+    const key = String(id), dueAt = now() + Math.max(0, delay), current = entries.get(key);
+    // Coalesce duplicate wakes, but allow a newly discovered earlier wake to
+    // replace the old timer. A stale later entry must never hide urgent work.
+    if (current && current.dueAt <= dueAt && current.adapterId === adapterId) return;
+    entries.set(key, { adapterId, dueAt: current ? Math.min(current.dueAt, dueAt) : dueAt });
     // A new entry may be earlier than the previously scheduled wake-up.
     if (timer) { clearTimer(timer); timer = null; }
     arm();

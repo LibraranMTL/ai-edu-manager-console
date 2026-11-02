@@ -4,8 +4,10 @@ const path = require('node:path');
 const test = require('node:test');
 const {
   deliveryBackoffMs,
+  peerProbeDelayMs,
   dueDeliveries,
   latestDeliveryForLineages,
+  nextDeliveryWakeDelay,
   normalizeDeliveryStore,
   reconcileDeliveries,
   recoverInterruptedDeliveries,
@@ -21,10 +23,13 @@ const main = fs.readFileSync(path.join(root, 'electron', 'main.cjs'), 'utf8');
 const preload = fs.readFileSync(path.join(root, 'electron', 'preload.cjs'), 'utf8');
 const renderer = fs.readFileSync(path.join(root, 'src', 'main.tsx'), 'utf8');
 
-test('reliable queue restores interrupted transfers and applies bounded exponential backoff', () => {
-  assert.equal(deliveryBackoffMs(1), 15_000);
-  assert.equal(deliveryBackoffMs(2), 30_000);
-  assert.equal(deliveryBackoffMs(99), 300_000);
+test('reliable queue restores interrupted transfers and applies durable network backoff', () => {
+  assert.equal(deliveryBackoffMs(1), 30_000);
+  assert.equal(deliveryBackoffMs(2), 60_000);
+  assert.equal(deliveryBackoffMs(3), 180_000);
+  assert.equal(deliveryBackoffMs(4), 300_000);
+  assert.equal(deliveryBackoffMs(5), 900_000);
+  assert.equal(deliveryBackoffMs(99), 3_600_000);
   const recovered = recoverInterruptedDeliveries({
     deliveries: {
       a: { manifestId: 'a', status: 'transferring', packageRoot: 'A' },
@@ -35,6 +40,19 @@ test('reliable queue restores interrupted transfers and applies bounded exponent
   assert.equal(recovered.deliveries.a.status, 'retry_waiting');
   assert.equal(recovered.deliveries.b.status, 'paused');
   assert.equal(recovered.deliveries.c.status, 'delivered');
+});
+
+test('delivery monitor sleeps until the next record or peer circuit is due', () => {
+  const now = Date.parse('2026-10-24T04:00:00.000Z');
+  const store = normalizeDeliveryStore({ deliveries: {
+    a: { manifestId: 'a', targetNodeId: 'peer-a', status: 'retry_waiting', nextAttemptAt: '2026-10-24T04:05:00.000Z' },
+    b: { manifestId: 'b', targetNodeId: 'peer-b', status: 'retry_waiting', nextAttemptAt: '2026-10-24T04:01:00.000Z' },
+  } });
+  assert.equal(nextDeliveryWakeDelay(store, now), 60_000);
+  assert.equal(nextDeliveryWakeDelay(store, now, {
+    circuitUntil: record => record.targetNodeId === 'peer-b' ? now + 10 * 60_000 : 0,
+  }), 300_000);
+  assert.equal(nextDeliveryWakeDelay({ deliveries: {} }, now), 60_000);
 });
 
 test('reliable queue only schedules due non-paused deliveries and summarizes state', () => {
@@ -51,6 +69,7 @@ test('reliable queue only schedules due non-paused deliveries and summarizes sta
   assert.deepEqual(summarizeDeliveries(store), {
     total: 4,
     queued: 2,
+    waitingPeer: 0,
     transferring: 0,
     paused: 1,
     failed: 0,
@@ -59,6 +78,21 @@ test('reliable queue only schedules due non-paused deliveries and summarizes sta
     invalid: 0,
     superseded: 0,
   });
+});
+
+test('peer failures persist a bounded hourly probe with stable jitter', () => {
+  const first = peerProbeDelayMs('peer-a');
+  assert.equal(first, peerProbeDelayMs('peer-a'));
+  assert.ok(first >= 60 * 60_000);
+  assert.ok(first < 70 * 60_000);
+  const now = Date.parse('2026-10-24T04:00:00.000Z');
+  const store = normalizeDeliveryStore({ deliveries: {
+    waiting: { manifestId: 'waiting', targetNodeId: 'peer-a', status: 'waiting_peer',
+      peerFailureCount: 5, nextAttemptAt: '2026-10-24T05:00:00.000Z', peerProbeAt: '2026-10-24T05:00:00.000Z' },
+  } });
+  assert.equal(dueDeliveries(store, now).length, 0);
+  assert.equal(dueDeliveries(store, now + 61 * 60_000).length, 1);
+  assert.equal(summarizeDeliveries(store).waitingPeer, 1);
 });
 
 test('student archive status selects the newest package for the exact lineage', () => {

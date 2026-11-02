@@ -43,6 +43,9 @@ test('four-view UI keeps suggestions human-controlled and classifications logica
   for (const label of ['项目资料', '需确认', '项目知识', '贡献证据']) assert.match(ui, new RegExp(label));
   assert.match(ui, /只审异常/);
   assert.match(ui, /立即处理/);
+  assert.match(ui, /暂停资料处理/);
+  assert.match(ui, /恢复资料处理/);
+  assert.match(ui, /processingPaused/);
   assert.match(ui, /系统文件已从业务资料和迁移异常中排除/);
   assert.match(ui, /为什么这样建议/);
   assert.match(ui, /确认分类并采用/);
@@ -62,6 +65,7 @@ test('four-view UI keeps suggestions human-controlled and classifications logica
   assert.match(ui, /expectedRecordRevision: material\.recordRevision/);
   assert.doesNotMatch(ui, /moveFile|renameFile|deleteFile/);
   assert.match(ui, /一次授权启用/);
+  assert.match(ui, /关闭自动整理/);
   assert.match(ui, /人工分类始终优先/);
   assert.match(ui, /重试异常项/);
   assert.match(ui, /安全撤销/);

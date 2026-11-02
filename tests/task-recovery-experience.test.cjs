@@ -4,9 +4,32 @@ const path = require('node:path');
 const test = require('node:test');
 
 const { reconcileInterruptedExecutions } = require('../electron/task-recovery-policy.cjs');
-const { recoveryPlan } = require('../electron/task-recovery-experience.cjs');
+const { confirmedStoppedPatch, lateReceiptPatch, recoveryPlan, unknownRecoveryPlan } = require('../electron/task-recovery-experience.cjs');
 const { taskPresentation, taskReadIndex } = require('../electron/task-read-model.cjs');
 const { repairReportDraftForAutoPublish, validateReportDraftForAutoPublish } = require('../electron/report-auto-publication.cjs');
+
+test('cancelled unknown stays quarantined until stop confirmation or a validated late receipt', () => {
+  const task = {
+    id: 'unknown-1', status: 'cancelled', recoveryState: 'unknown', adapterId: 'workbuddy',
+    executionMode: 'automatic', executionId: 'run-1', recoveryBudget: { receiptQueries: 2, limits: { receiptQueries: 6 } },
+  };
+  const plan = unknownRecoveryPlan(task, '2026-10-27T12:00:00.000Z');
+  assert.equal(plan.owner, 'user');
+  assert.equal(plan.attempt, 2);
+  assert.equal(plan.maxAttempts, 6);
+  assert.equal(plan.nextAction, 'confirm_external_stopped');
+
+  const stopped = confirmedStoppedPatch(task, '2026-10-27T12:01:00.000Z');
+  assert.equal(stopped.status, 'cancelled');
+  assert.equal(stopped.recoveryState, 'user_confirmed_stopped');
+  assert.equal(stopped.autoRetry, false);
+
+  const settled = lateReceiptPatch(task, { executionId: 'run-1', validation: { valid: true }, summary: '完成' }, '2026-10-27T12:02:00.000Z');
+  assert.equal(settled.status, 'succeeded');
+  assert.equal(settled.settlementState, 'settled');
+  assert.equal(settled.businessOutcome, 'completed');
+  assert.equal(settled.result.executionId, 'run-1');
+});
 
 test('cancelled internal research is confirmed stopped without rerunning or asking for an original tool', () => {
   const task = {

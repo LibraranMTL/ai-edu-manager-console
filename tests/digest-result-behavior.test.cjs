@@ -6,7 +6,9 @@ const { buildDigestBatch } = require('../electron/digest-batch.cjs');
 const { validateDigestResult } = require('../electron/digest-result.cjs');
 const {
   canReuseStudentDigestBatch,
+  digestWorkDisposition,
   digestUserStatus,
+  projectDigestCandidatePolicy,
   shouldAutoAccept,
   shouldRecoverDigestExecution,
 } = require('../electron/digest-orchestrator.cjs');
@@ -141,10 +143,23 @@ test('only validated digest tasks auto-accept and user states stay simple', () =
   assert.equal(digestUserStatus('waiting_result', 'pending', 2, 0), 'pending');
   assert.equal(digestUserStatus('succeeded', 'partial', 1), 'partial');
   assert.equal(digestUserStatus('failed', 'failed', 1), 'needs_help');
-  assert.equal(digestUserStatus('failed', 'digesting', 0), 'needs_help');
+  assert.equal(digestUserStatus('failed', 'digesting', 0), 'waiting_result');
   assert.equal(digestUserStatus('reviewing', 'completed', 0), 'completed');
   assert.equal(digestUserStatus('waiting_result', 'partial', 1), 'partial');
   assert.equal(digestUserStatus('succeeded', 'idle', 1), 'pending');
+});
+
+test('digest work and project automation policies separate receipts, no-work, disabled, paused and manual once', () => {
+  assert.equal(digestWorkDisposition(0, 0), 'no_work');
+  assert.equal(digestWorkDisposition(3, 0), 'ready');
+  assert.equal(digestWorkDisposition(0, 14), 'awaiting_receipt');
+  assert.deepEqual(projectDigestCandidatePolicy({ enabled: false, autoDigest: false }), {
+    include: false, automatic: false, paused: false, requestOrigin: 'automatic_candidate',
+  });
+  assert.deepEqual(projectDigestCandidatePolicy({ enabled: true, autoDigest: true, processingPaused: true }), {
+    include: true, automatic: true, paused: true, requestOrigin: 'automatic_candidate',
+  });
+  assert.equal(projectDigestCandidatePolicy({ enabled: false, autoDigest: false }, 'user_manual_once').include, true);
 });
 
 test('stale active tasks cannot hide new pending materials or reuse an unrelated batch', () => {

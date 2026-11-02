@@ -122,9 +122,9 @@ test('batch cleanup deletes safe unstarted tasks in one step and can select the 
 });
 
 test('inactive students do not generate task cards and old inactive cards leave the current queue', () => {
-  assert.match(main, /const taskCardStudents = students\.filter\(\(student\) => !studentTaskCardsSuppressed\(student\)\)/);
+  assert.match(main, /const taskCardStudents = students\.filter\(\(student\) => !studentTaskCardsSuppressed\(student\)/);
   assert.match(main, /if \(studentTaskCardsSuppressed\(toHostStudent\(student\)\)\) return \[\]/);
-  assert.match(main, /reconcileInactiveStudents: true/);
+  assert.match(main, /reconcileInactiveStudents:entry\.sourceType==='student'/);
   assert.match(main, /inactive_student_task_archived/);
   assert.match(main, /!\['running', 'waiting_result', 'reviewing'\]\.includes\(normalizeTaskStatus\(task\.status\)\)/);
   assert.match(ui, /“不活跃”始终不生成新的任务卡/);
@@ -145,7 +145,7 @@ test('managed OpenClaw cron is disabled externally and scheduled by the task cen
   assert.match(main, /isManagedOpenClawCronJob/);
   assert.match(main, /\['cron', 'disable', definition\.id/);
   assert.match(main, /automaticTaskWakeDecision\(task\)\.eligible/);
-  assert.match(main, /scheduleAutomaticTaskWakeups\(due\.map/);
+  assert.match(main, /scheduleAutomaticTaskWakeups\(\[task\.id\],'fallback_scan'/);
   assert.match(main, /openclaw-managed-cron\.json/);
 });
 
@@ -163,11 +163,11 @@ test('agent health probes and OpenClaw cron checks never block the renderer IPC 
   assert.match(ui, /if \(!document\.hidden\)/);
 });
 
-test('global manual mode stops automatic scheduling while keeping the task center operable', () => {
+test('global manual mode keeps the control plane active but does not start new tasks', () => {
   assert.match(main, /function taskAutomationEnabled\(\)/);
   assert.match(main, /function setTaskAutomationEnabled\(enabled\)/);
   assert.match(main, /function stopUnifiedTaskScheduler\(\)/);
-  assert.match(main, /当前为仅手动模式，未运行自动调度/);
+  assert.match(main, /当前为仅手动模式；回执与任务来源已同步，未启动新任务/);
   assert.match(main, /bridge:setTaskAutomationEnabled/);
   assert.match(preload, /setTaskAutomationEnabled\(enabled\)/);
   assert.match(ui, /task-automation-toggle/);
@@ -176,7 +176,7 @@ test('global manual mode stops automatic scheduling while keeping the task cente
   assert.match(main, /refreshCapabilitiesForExplicitExecution/);
   assert.match(main, /requested !== 'qclaw'/);
   assert.match(main, /await probeLocalPort\(base\.qclaw\.gatewayPort\)/);
-  assert.match(main, /explicit_execution_capability_refreshed/);
+  assert.match(main, /explicit_execution_capability_requested/);
   assert.match(preload, /ipcRenderer\.invoke\('bridge:executeTask'/);
 });
 

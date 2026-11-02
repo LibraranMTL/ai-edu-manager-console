@@ -57,7 +57,8 @@ function validateEvidence(report, root) {
   const bounded = (value, limit) => Number.isFinite(value) && value >= 0 && value <= limit;
   check(bounded(p.idleCpuCorePercent, 1) && p.idleCpuCorePercent < 1, 'idle_cpu');
   check(bounded(p.interactionP95Ms, 150) && p.timeouts === 0, 'interaction');
-  check(bounded(p.mainLongTaskMaxMs, 100), 'long_task');
+  check(bounded(p.rendererLongTaskMaxMs, 100), 'renderer_long_task');
+  check(bounded(p.mainEventLoopMaxMs, 100), 'main_event_loop');
   check(bounded(p.extraMainMemoryBytes, 50 * 1024 * 1024), 'main_memory');
   let throughputLossPercent = null;
   if ([p.baselineCompleted, p.treatmentCompleted, p.baselineSeconds, p.treatmentSeconds].every(n => Number.isFinite(n) && n > 0)) {

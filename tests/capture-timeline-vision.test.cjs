@@ -94,6 +94,23 @@ test('Codex image delivery is system-recorded and visual claims retain exact eve
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });
 
+test('automatic vision persists the actual provider, processing location and bounded attempts', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'edu-vision-route-audit-'));
+  try {
+    const { rawDir, bundle, manifest } = fixture(root);
+    const result = await runBundleVision({ rootPath: root, rawDir, bundle, manifest,
+      providerId: 'automatic', processingLocation: 'automatic_route', consentEpoch: 'route-1', isAuthorized: () => true,
+      execute: async () => ({ ok: true, output: '{"timelineObservations":[],"behaviorLabels":[]}',
+        providerId: 'llm-api', processingLocation: 'configured_llm_api',
+        routeAttempts: [{ providerId: 'workbuddy', stage: 'not_sent' }, { providerId: 'llm-api', stage: 'result_received' }] }),
+    });
+    assert.deepEqual(result.state.actualProviderIds, ['llm-api']);
+    assert.deepEqual(result.state.routeAttempts.map((item) => item.providerId), ['workbuddy', 'llm-api']);
+    assert.ok(result.state.deliveryRecords.every((record) => record.provider === 'llm-api'
+      && record.processingLocation === 'configured_llm_api' && record.requestStage === 'result_received'));
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
 test('revoked consent and changed source bytes never invoke Codex', async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'edu-vision-guard-'));
   try {

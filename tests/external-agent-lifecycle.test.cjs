@@ -116,7 +116,8 @@ async function mainFixture(t) {
   const { root } = fixture(t), electron = path.resolve(__dirname, '../electron'); let server;
   const load = n => require(path.join(electron, n));
   const ctx = vm.createContext({ fs, path, os: { homedir: () => root }, app: { getPath: () => root }, process: { execPath: process.execPath, env: {} }, __dirname: electron,
-    readStudentsIndex: () => [], readProjects: () => [], normalizeProject: p => p,
+    readStudentsIndex: () => [], readProjects: () => [], readProjectMetadata: () => [],
+    getProjectMetadata: () => null, normalizeProject: p => p, normalizeProjectMetadata: p => p,
     agentAccessGrantStorePath: () => path.join(root, 'grants.json'), agentWriteIntentPath: () => path.join(root, 'writes.json'), readAgentWriteIntents: () => ({ intents: [] }),
     activeAgentKnowledgeDescriptorPath: () => path.join(root, 'active/descriptor.json'), activeAgentKnowledgeMcpBridgePath: () => path.join(root, 'active/agent-knowledge-mcp.ps1'),
     writeJsonAtomic: load('digest-batch.cjs').writeJsonAtomic, require: load, getHostServicePort: () => server.address().port });

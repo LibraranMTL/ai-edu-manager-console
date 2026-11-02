@@ -9,6 +9,8 @@ const { readProjectExternalRoots } = require('./project-external-roots.cjs');
 const { projectMaterialRecordKind, materialContentGroupId } = require('./project-material-automation.cjs');
 
 const registryCache = new Map();
+const CATEGORY_PROJECTION_LIMIT = 500;
+const CATEGORY_PROJECTION_BYTES = 2 * 1024 * 1024;
 const keyPath = (value) => process.platform === 'win32' ? value.toLowerCase() : value;
 const isWorkspaceMaterialProject = (project) => project?.materialStorageMode === 'workspace-v1';
 
@@ -32,7 +34,7 @@ function normalizeMaterialConfiguration(project) {
 // Synchronous callers in the existing host may read ONLY this metadata index.
 // No source-directory enumeration, existence check or content hashing occurs.
 // Both readers validate the same registry contract; all writes stay in store.
-function readProjectMaterialIndexSync(project) {
+function cachedProjectMaterialIndexSync(project) {
   identifier(project.id, '项目ID');
   invariant(path.isAbsolute(project.managerPath || ''), 'invalid_root', '项目管理目录无效。');
   let file;
@@ -61,7 +63,26 @@ function readProjectMaterialIndexSync(project) {
     registryCache.set(cacheKey, { stamp, data });
     while (registryCache.size > 32) registryCache.delete(registryCache.keys().next().value);
   }
-  return structuredClone(data);
+  return data;
+}
+
+function readProjectMaterialIndexSync(project) {
+  return structuredClone(cachedProjectMaterialIndexSync(project));
+}
+
+function readProjectMaterialCategoriesSync(project) {
+  const data = cachedProjectMaterialIndexSync(project);
+  // Historical definitions remain in the registry as inactive audit state;
+  // SmartInbox must only route to live definitions. Refuse an invalid active
+  // projection instead of silently truncating and changing category meaning.
+  const active = (Array.isArray(data.categories) ? data.categories : [])
+    .filter((category) => category?.active !== false);
+  invariant(active.length <= CATEGORY_PROJECTION_LIMIT,
+    'project_material_categories_projection_too_many', '项目有效分类过多，无法安全加载。');
+  const projected = structuredClone(active);
+  invariant(Buffer.byteLength(JSON.stringify(projected), 'utf8') <= CATEGORY_PROJECTION_BYTES,
+    'project_material_categories_projection_too_large', '项目分类数据过大，无法安全加载。');
+  return projected;
 }
 
 function projectMaterialDigestProjection(project, index) {
@@ -323,4 +344,4 @@ function createProjectMaterialHost(project, { externalRoots = {} } = {}) {
 }
 
 module.exports = { isWorkspaceMaterialProject, normalizeMaterialConfiguration, readProjectMaterialIndexSync,
-  projectMaterialDigestProjection, createProjectMaterialHost };
+  readProjectMaterialCategoriesSync, projectMaterialDigestProjection, createProjectMaterialHost };

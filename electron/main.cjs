@@ -19,10 +19,23 @@ const dns = require('dns');
 const dgram = require('dgram');
 const crypto = require('crypto');
 const { DatabaseSync, backup: backupSqlite } = require('node:sqlite');
-const { RESEARCH_KINDS, researchResultValidation, researchRetryPatch, researchTaskDue, classifyResearchTimeout } = require('./research-task-policy.cjs');
+const { RESEARCH_KINDS, researchResultValidation, researchRetryPatch, researchTaskDue, researchCandidateDisposition, classifyResearchTimeout } = require('./research-task-policy.cjs');
+const { hasUntrackedExternalHeavyWork } = require('./task-heavy-work-state.cjs');
 // Portable acceptance runs must never share live students or encrypted credentials.
 const isolatedUserData = app.commandLine.getSwitchValue('user-data-dir');
 const qaIsolated = process.argv.includes('--qa-isolated');
+const qaMainEventLoop = qaIsolated ? require('node:perf_hooks').monitorEventLoopDelay({ resolution: 10 }) : null;
+qaMainEventLoop?.enable();
+nativeIpcMain.handle('bridge:qaMainPerformance', (_event, action) => {
+  if (!qaMainEventLoop) throw Object.assign(new Error('qa_performance_unavailable'), { code: 'QA_ONLY' });
+  if (action === 'reset') { qaMainEventLoop.reset(); return { reset: true }; }
+  return {
+    schema: 'edu.qa.main-event-loop.v1',
+    maximumMs: Number(qaMainEventLoop.max || 0) / 1e6,
+    p95Ms: Number(qaMainEventLoop.percentile(95) || 0) / 1e6,
+    meanMs: Number(qaMainEventLoop.mean || 0) / 1e6,
+  };
+});
 if (isolatedUserData) {
   if (!path.isAbsolute(isolatedUserData) || path.resolve(isolatedUserData) === path.parse(path.resolve(isolatedUserData)).root) throw new Error('隔离用户目录必须为非根目录的绝对路径');
   fs.mkdirSync(isolatedUserData, { recursive: true });
@@ -12286,11 +12299,16 @@ function captureTimelineResourceSnapshot() {
     systemCpuSample = totals;
   } catch { cpuPercent = 0; }
   const rendererSignalFresh = Date.now() - Number(captureTimelinePerformanceSignals.rendererReportedAt || 0) < 30_000;
+  let untrackedExternalHeavyWork = false;
+  if (taskChildProcesses.size) {
+    try { untrackedExternalHeavyWork = hasUntrackedExternalHeavyWork(taskChildProcesses, readTaskStore().tasks); }
+    catch { untrackedExternalHeavyWork = true; }
+  }
   return {
     captureActive: Boolean(activeCaptureRuntime),
     // Managed Agent processes already occupy the shared gate. Only legacy or
     // untracked processes must force a full stop in the adaptive scheduler.
-    externalHeavyWorkActive: !projectArchiveRuntime.status().ready || [...taskChildProcesses.values()].some((entry) => !entry.releaseHeavyPermit),
+    externalHeavyWorkActive: !projectArchiveRuntime.status().ready || untrackedExternalHeavyWork,
     frontendLatencyHigh: rendererSignalFresh && Number(captureTimelinePerformanceSignals.rendererLatencyMs || 0) > 120,
     rendererLatencyMs: rendererSignalFresh ? Number(captureTimelinePerformanceSignals.rendererLatencyMs || 0) : 0,
     diskPressure,
@@ -27549,6 +27567,7 @@ async function submitResearchTask(task, type, executionOptions={}) {
   const heartbeatTimer = setInterval(() => startedIds.forEach(id => heartbeatTask(id, executionId, '官方来源研究', false)), 5000);
   heartbeatTimer.unref?.();
   const running = { executionId, adapterId: providerId, heartbeatTimer, researchType: type, studentId: task.sourceId, taskId: task.id,
+    releaseHeavyPermit: release,
     child: { killed: false, kill() { this.killed = true; controller.abort(); return true; } }, completion: null };
   startedIds.forEach(id => taskChildProcesses.set(id, running));
   let requestSent=false;
@@ -27626,12 +27645,12 @@ async function submitResearchTask(task, type, executionOptions={}) {
         businessOutcome:'execution_unknown',autoRetry:false,nextRetryAt:'',
         reconcileAttempt:{nextCheckAt:timeoutDisposition.nextRetryAt,exhausted:false,reasonCode:timeoutDisposition.reasonCode},
       }:safeRetry?{
-        error:{code:error.code,message:error.message},executionPhase:'settled',settlementState:'failed',
+        error:{code:error.code,message:error.message},settlementState:'failed',
         businessOutcome:'failed_retryable',autoRetry:true,nextRetryAt:timeoutDisposition.nextRetryAt,
         researchRecovery:{nextProviderPolicy:timeoutDisposition.nextProviderPolicy,
           excludedProviders:timeoutDisposition.nextProviderPolicy==='next_ready_provider'?[providerId]:[],evidenceRef:timeoutDisposition.evidenceRef},
       }:timeoutDisposition?.disposition==='terminal_failure'?{
-        error:{code:error.code,message:error.message},executionPhase:'settled',settlementState:'terminal',
+        error:{code:error.code,message:error.message},settlementState:'terminal',
         businessOutcome:'failed_terminal',autoRetry:false,nextRetryAt:'',
         researchRecovery:{nextProviderPolicy:'none',excludedProviders:[],evidenceRef:timeoutDisposition.evidenceRef},
       }:{
@@ -29300,7 +29319,8 @@ function* taskCenterCandidateBatches(scope = {}) {
     const isTopic = candidate.taskType === 'topic_suggestion_refresh';
     const isResearch = candidate.taskType === 'guidance_research_check';
     const isCompetition = candidate.taskType === 'competition_research_check';
-    const status = isTopic ? (candidate.due ? 'pending' : 'queued') : researchCapability.available ? 'pending' : 'blocked';
+    const disposition = isTopic ? null : researchCandidateDisposition(researchCapability);
+    const status = isTopic ? (candidate.due ? 'pending' : 'queued') : disposition.status;
     tasks.push(normalizeTaskEnvelope({
       id: taskStableId(candidate.taskType, 'student', candidate.studentId),
       title: isCompetition ? `${candidate.sourceName}比赛推荐来源检查` : isTopic ? `${candidate.sourceName}选题建议更新` : isResearch ? `${candidate.sourceName}规划来源检查` : `${candidate.sourceName}规划建议版本更新`,
@@ -29321,10 +29341,12 @@ function* taskCenterCandidateBatches(scope = {}) {
         operations: ['read_planning_evidence', 'write_planning_suggestions'] },
       detail: isTopic
         ? '依据学生档案和已确认成长证据生成科创与社会实践候选；采用只准备项目草稿。'
-        : researchCapability.available ? '检查官方来源，并仅在输入或来源实质变化时生成新规划版本。' : '未发现通过真实 URL 与结构化结果探测的联网研究执行器，上一有效版本将继续保留。',
+        : disposition.reason === 'ready' ? '检查官方来源，并仅在输入或来源实质变化时生成新规划版本。'
+          : disposition.reason === 'checking' ? '正在核对联网研究执行器；任务保留在自动队列，核对完成后继续。'
+            : '执行时将定向核对联网研究执行器；任务保留在自动队列，不要求人工启动。',
       action: candidate.taskType,
       riskLevel: 'low',
-      error: status === 'blocked' ? { code: 'RESEARCH_CAPABILITY_UNAVAILABLE', message: researchCapability.message } : null,
+      error: disposition?.error || null,
     }));
   }
   return tasks;
@@ -33849,6 +33871,7 @@ function planningResearchProviders() {
       authorized: id === 'workbuddy' ? Boolean(ready) : Boolean(capabilities[id]?.authorized),
       structuredResult: ready,
       webResearch: ready,
+      healthPending: Boolean(capabilities[id]?.healthPending),
       healthMessage: id === 'codex'
         ? (capabilities[id]?.authorized ? '已接通联网研究；每次结果检查网页来源。' : capabilities[id]?.healthMessage || '请先登录 Codex CLI。')
         : id === 'llm-api' ? capabilities[id]?.healthMessage || '请在 AI 接入与调度中心配置并验证联网研究合同。'
@@ -34784,6 +34807,8 @@ function findAgentToolInstall(toolId) {
 
 function codexCliCandidatePaths() {
   const candidates = findExecutablesInPath(['codex.exe', 'codex.cmd', 'codex']);
+  candidates.push(...require('./openai-tool-install.cjs').codexDesktopCliCandidatePaths(findOpenAiDesktopInstall())
+    .filter(candidate => fs.existsSync(candidate)));
   const codexBinRoot = process.env.LOCALAPPDATA ? path.join(process.env.LOCALAPPDATA, 'OpenAI', 'Codex', 'bin') : '';
   if (codexBinRoot && fs.existsSync(codexBinRoot)) {
     const direct = path.join(codexBinRoot, 'codex.exe');

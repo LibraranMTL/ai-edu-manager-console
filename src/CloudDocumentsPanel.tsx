@@ -7,23 +7,25 @@ type Student = { id: string; name: string; grade?: string; school?: string; goal
 type CloudStudent = { id: string; displayName: string; expiresAt?: number | null; profileRevisionId?: string; localBinding?: { localStudentId: string; status: string } | null; bindingIssue?: string };
 type CloudReport = { revisionId: string; reportType: string; originDeviceId: string; originPlatform: string; publishedAt: string; receivedAt: number; filename: string };
 type CloudDocument = { documentId: string; displayName: string; contentType: string; byteSize: number; createdAt: number };
-type CloudMaterial = { materialId: string; revisionId: string; category: string; displayName: string; contentType: string; byteSize: number; createdAt: number };
+type CloudMaterial = { materialId: string; revisionId: string; category: string; displayName: string; contentType: string; byteSize: number; createdAt: number; indexStatus?: string; extractionStatus?: string };
 type CachedStudent = { cloudStudentId: string; displayName: string };
 type UploadScope = { profileFields: string[]; materialCategories: string[] };
-type UploadStatus = { configured: boolean; enabled: boolean; cloudStudentId?: string; lastSyncAt?: number; serverVerifiedAt?: number; syncing?: boolean; lastError?: string; pendingServerWriteState?: boolean | null; pendingUploadScope?: UploadScope | null; savedUploadScope?: UploadScope | null; uploadScopePersistence?: 'default' | 'local_requires_enrollment' | 'local_requires_upgrade' | 'pending_cloud' | 'cloud_confirmed'; profileFields?: string[]; materialCategories?: string[]; lastUploaded?: number; lastUnchanged?: number; lastReady?: number; skipped?: { filename: string; reason: string }[] };
+type UploadStatus = { configured: boolean; enabled: boolean; cloudStudentId?: string; lastSyncAt?: number; serverVerifiedAt?: number; syncing?: boolean; lastError?: string; pendingServerWriteState?: boolean | null; pendingUploadScope?: UploadScope | null; savedUploadScope?: UploadScope | null; uploadScopePersistence?: 'default' | 'local_requires_enrollment' | 'local_requires_upgrade' | 'pending_cloud' | 'cloud_confirmed'; profileFields?: string[]; materialCategories?: string[]; healthObjectScope?: string[]; lastUploaded?: number; lastUnchanged?: number; lastReady?: number; skipped?: { filename: string; reason: string }[] };
 type CloudInboxItem = { submissionId: string; provider: string; projectId: string; status: string; updatedAt: number; quarantinedReason?: string };
+type RemoteAgentStatus = { sessionId: string; provider?: string; status?: string; expiresAt?: number; revokedAt?: number; projectId?: string; taskId?: string };
 
 export type CloudReportApi = {
   cloudReportSettings?: () => Promise<string>;
   cloudReportSaveSettings?: (serverUrl: string) => Promise<string>;
   cloudReportCheckConnection?: (serverUrl: string) => Promise<string>;
-  cloudReportEnrollSource?: (input: { serverUrl: string; enrollmentCode: string; localStudentId: string; profileFields?: string[]; materialCategories?: string[] }) => Promise<string>;
+  cloudReportEnrollSource?: (input: { serverUrl: string; localStudentId: string; profileFields?: string[]; materialCategories?: string[] }) => Promise<string>;
   cloudReportSetUpload?: (studentId: string, enabled: boolean) => Promise<string>;
   cloudReportSetUploadScope?: (studentId: string, input: { profileFields: string[]; materialCategories: string[] }) => Promise<string>;
+  cloudReportSelectUploadHealth?: (studentId: string) => Promise<string>;
   cloudReportStatus?: (studentId: string) => Promise<string>;
   cloudReportSyncNow?: (studentId: string) => Promise<string>;
   cloudReportCreatePairing?: (serverUrl: string) => Promise<string>;
-  cloudReportApprovePairing?: (pairingCode: string, studentIds: string[], options?: { profileFields: string[]; materialCategories: string[] }) => Promise<string>;
+  cloudReportApprovePairing?: (pairingCode: string, studentIds: string[], options?: { profileFields: string[]; materialCategories: string[]; healthObjectScope?: string[] }) => Promise<string>;
   cloudReportListStudents?: () => Promise<string>;
   cloudReportRemoveStudent?: (cloudStudentId: string) => Promise<string>;
   cloudReportListReports?: (cloudStudentId: string, cursor?: string) => Promise<string>;
@@ -32,6 +34,10 @@ export type CloudReportApi = {
   cloudReportDownloadDocument?: (cloudStudentId: string, documentId: string, reveal?: boolean) => Promise<string>;
   cloudReportListMaterials?: (cloudStudentId: string, options?: { category?: string; history?: boolean; cursor?: string }) => Promise<string>;
   cloudReportDownloadMaterial?: (cloudStudentId: string, revisionId: string, reveal?: boolean) => Promise<string>;
+  cloudReportImportMaterial?: (localStudentId: string, cloudStudentId: string, revisionId: string) => Promise<string>;
+  cloudReportIssueRemoteAgent?: (input: unknown) => Promise<string>;
+  cloudReportRemoteAgentStatus?: (sessionId: string) => Promise<string>;
+  cloudReportRevokeRemoteAgent?: (sessionId: string) => Promise<string>;
   cloudReportListInbox?: (cursor?: string, recover?: boolean) => Promise<string>;
   cloudReportListCachedStudents?: () => Promise<string>;
   cloudReportClearCache?: (cloudStudentId: string) => Promise<string>;
@@ -42,6 +48,10 @@ const reportNames: Record<string, string> = {
 };
 const categoryNames: Record<string, string> = { learning_report: '学情报告', learning_material: '学习资料', topic_suggestion: '选题建议', competition_recommendation: '推荐比赛', learning_card: '学习卡片' };
 const inboxStatusNames: Record<string, string> = { available: '等待系统核对', leased: '系统正在核对', committed: '已安全接收', quarantined: '结果待核对—未采纳' };
+const materialIndexStatusNames: Record<string, string> = {
+  ready: '可检索', pending: '等待索引', processing: '正在提取', retry: '等待重试', failed: '索引失败',
+  superseded: '已被新版替代', not_scheduled: '尚未索引',
+};
 const profileFieldOptions = [
   ['displayName', '姓名（建档必需）'], ['grade', '年级'], ['school', '学校'], ['learningGoal', '学习目标'], ['currentRegion', '地区'],
   ['phone', '手机号'], ['email', '邮箱'], ['birthday', '生日'], ['address', '地址'], ['guardian', '监护人信息'],
@@ -57,8 +67,8 @@ async function unwrap<T>(work: Promise<string> | undefined): Promise<T> {
   return result.data as T;
 }
 
-export function CloudDocumentsPanel({ api, localStudents }: { api?: CloudReportApi; localStudents: Student[] }) {
-  const [page, setPage] = useState<'connection' | 'results' | 'inbox'>('connection');
+export function CloudDocumentsPanel({ api, localStudents, mode = 'settings' }: { api?: CloudReportApi; localStudents: Student[]; mode?: 'settings' | 'reports' | 'materials' }) {
+  const [page, setPage] = useState<'connection' | 'results' | 'agents' | 'inbox'>(mode === 'settings' ? 'connection' : 'results');
   const [serverUrl, setServerUrl] = useState('https://www.greatbg.com/edu-cloud');
   const [serverBound, setServerBound] = useState(false);
   const [cloudStudents, setCloudStudents] = useState<CloudStudent[]>([]);
@@ -72,21 +82,28 @@ export function CloudDocumentsPanel({ api, localStudents }: { api?: CloudReportA
   const [documentCursor, setDocumentCursor] = useState('');
   const [cachedStudents, setCachedStudents] = useState<CachedStudent[]>([]);
   const [inboxItems, setInboxItems] = useState<CloudInboxItem[]>([]);
-  const [tab, setTab] = useState<'reports' | 'materials' | 'documents'>('reports');
+  const [agentSessionId, setAgentSessionId] = useState('');
+  const [agentSession, setAgentSession] = useState<RemoteAgentStatus | null>(null);
+  const [tab, setTab] = useState<'reports' | 'materials' | 'documents'>(mode === 'materials' ? 'materials' : 'reports');
   const [nextCursor, setNextCursor] = useState('');
   const [pairingCode, setPairingCode] = useState('');
   const [pairingExpiresAt, setPairingExpiresAt] = useState(0);
   const [selectedLocalId, setSelectedLocalId] = useState(localStudents[0]?.id || '');
   const selectedLocalIdRef = useRef(selectedLocalId);
   selectedLocalIdRef.current = selectedLocalId;
-  const [enrollmentCode, setEnrollmentCode] = useState('');
   const [approvalCode, setApprovalCode] = useState('');
   const [uploadStatus, setUploadStatus] = useState<UploadStatus>({ configured: false, enabled: false });
   const [profileFields, setProfileFields] = useState<string[]>(defaultProfileFields);
   const [materialCategories, setMaterialCategories] = useState<string[]>(defaultMaterialCategories);
+  const [healthObjectScope, setHealthObjectScope] = useState<string[]>([]);
   const [preview, setPreview] = useState('');
   const [notice, setNotice] = useState('');
   const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    if (mode === 'settings') return;
+    setPage('results'); setTab(mode);
+  }, [mode]);
 
   async function run(task: () => Promise<void>) {
     setBusy(true); setNotice('');
@@ -131,6 +148,7 @@ export function CloudDocumentsPanel({ api, localStudents }: { api?: CloudReportA
       setUploadStatus(status);
       setProfileFields(status.savedUploadScope?.profileFields || status.pendingUploadScope?.profileFields || status.profileFields || defaultProfileFields);
       setMaterialCategories(status.savedUploadScope?.materialCategories || status.pendingUploadScope?.materialCategories || status.materialCategories || defaultMaterialCategories);
+      setHealthObjectScope(status.healthObjectScope || []);
     }
   }
   useEffect(() => {
@@ -168,19 +186,20 @@ export function CloudDocumentsPanel({ api, localStudents }: { api?: CloudReportA
     update(checked ? [...new Set([...current, value])] : current.filter(item => item !== value));
   }
 
-  return <section className="cloud-documents-screen" aria-label="云端同步设置">
+  return <section className="cloud-documents-screen" aria-label={mode === 'reports' ? '云端学情报告' : mode === 'materials' ? '云端学习资料' : '云端同步设置'}>
     <header className="cloud-documents-header">
-      <div><h2>云端同步设置</h2><p>连接与授权、同步结果和成果收件箱分开管理，进入哪一页才读取哪一类数据。</p></div>
+      <div><h2>{mode === 'reports' ? '云端学情报告' : mode === 'materials' ? '云端学习资料' : '云端同步设置'}</h2><p>{mode === 'settings' ? '连接与授权、同步结果、外部 Agent 云端访问和成果收件箱分开管理，进入哪一页才读取哪一类数据。' : mode === 'reports' ? '浏览获准学生的当前正式报告与历史修订；下载副本与本机正式档案保持隔离。' : '浏览五类教育资料的当前修订，并按需下载或正式导入本机学生资料库。'}</p></div>
     </header>
-    <nav className="cloud-secondary-nav" aria-label="云端同步二级页面">
-      <button className={page === 'connection' ? 'active' : ''} onClick={() => setPage('connection')}><strong>连接设置与授权</strong><span>服务、下载许可、学生上传范围</span></button>
+    {mode === 'settings' && <nav className="cloud-secondary-nav" aria-label="云端同步二级页面">
+      <button className={page === 'connection' ? 'active' : ''} onClick={() => setPage('connection')}><strong>上传与下载设置</strong><span>服务、设备许可、学生上传类别</span></button>
       <button className={page === 'results' ? 'active' : ''} onClick={() => setPage('results')}><strong>同步结果</strong><span>许可学生、同步内容、本机副本</span></button>
+      <button className={page === 'agents' ? 'active' : ''} onClick={() => setPage('agents')}><strong>外部 Agent 云端访问</strong><span>只读任务会话、状态与撤销</span></button>
       <button className={page === 'inbox' ? 'active' : ''} onClick={() => setPage('inbox')}><strong>云端成果收件箱</strong><span>查看 Agent 返回与隔离结果</span></button>
-    </nav>
+    </nav>}
     {notice && <div className="notice cloud-notice" role="status">{notice}</div>}
 
     {page === 'connection' && <div className="cloud-page" data-cloud-page="connection">
-      <div className="cloud-page-intro"><div><strong>连接设置与授权</strong><p>连接只需配置一次；每名学生可独立选择允许上传的内容。</p></div></div>
+      <div className="cloud-page-intro"><div><strong>上传与下载设置</strong><p>连接只需配置一次；按学生和资料类别管理上传，并向获准设备开放下载。</p></div></div>
       <details className="cloud-setup" open><summary>云端服务设置与连接测试</summary>
         <label>HTTPS 服务地址<input value={serverUrl} disabled={busy || serverBound} onChange={event => setServerUrl(event.target.value)} /></label>
         <p>{serverBound ? '本机已有设备许可，地址已锁定，避免凭据被发送到其他服务。' : '仅保存地址不会上传学生资料；开通指定学生后才开始同步。'}</p>
@@ -201,7 +220,9 @@ export function CloudDocumentsPanel({ api, localStudents }: { api?: CloudReportA
         })}>出示配对码</button>
         {pairingCode && <div className="cloud-pair-code"><strong>{pairingCode}</strong><span>有效至 {new Date(pairingExpiresAt).toLocaleTimeString('zh-CN')}；对方确认后到“同步结果”刷新许可</span></div>}
       </details>
-      <details className="cloud-setup" open><summary>本机学生上传与授权</summary>
+      <details className="cloud-setup" open><summary>授权上传学情资料</summary>
+        <p><strong>授权上传学情资料，平台将派遣专属真人专家进行分析提供建议</strong></p>
+        <p>资料按类别授权，不按单文件授权；勾选的类别包含当前有效内容及后续更新，可随时关闭后续上传。</p>
         {localStudents.length ? <>
           <label>本机学生<select value={selectedLocalId} disabled={busy} onChange={event => { setUploadStatus({ configured: false, enabled: false }); setProfileFields(defaultProfileFields); setMaterialCategories(defaultMaterialCategories); setSelectedLocalId(event.target.value); }}>
             {localStudents.map(student => <option key={student.id} value={student.id}>{student.name}</option>)}</select></label>
@@ -212,13 +233,18 @@ export function CloudDocumentsPanel({ api, localStudents }: { api?: CloudReportA
               <span>{label}</span>
             </label>)}</div>
           </fieldset>
-          <fieldset className="cloud-scope-fieldset"><legend>学习资料（可手工调整）</legend>
+          <fieldset className="cloud-scope-fieldset"><legend>授权上传类别（可手工调整）</legend>
             <div className="cloud-choice-grid">{materialCategoryOptions.map(([value, label]) => <label className="cloud-choice" key={value}>
               <input type="checkbox" checked={materialCategories.includes(value)} disabled={busy} onChange={event => toggleSelection(materialCategories, value, event.target.checked, setMaterialCategories)} />
               <span>{label}</span>
             </label>)}</div>
           </fieldset>
-          <div className="cloud-health-boundary"><strong>健康资料：未授权</strong><span>健康资料不在上述范围内，必须在独立健康授权中另行选择具体资料。</span></div>
+          <div className="cloud-health-boundary"><strong>{healthObjectScope.length ? `健康资料：已单独授权 ${healthObjectScope.length} 份` : '健康资料：未授权'}</strong><span>默认关闭，只有在此单独选择的具体文件可以上传；普通资料许可和 Agent 权限不能扩大此范围。</span>
+            <button className="secondary compact" disabled={busy || !uploadStatus.configured || !uploadStatus.enabled} onClick={() => void run(async () => {
+              const result = await unwrap<{ cancelled: boolean; uploaded: Array<{ revisionId: string }>; objectScope?: string[] }>(api?.cloudReportSelectUploadHealth?.(selectedLocalId));
+              if (result.objectScope) setHealthObjectScope(result.objectScope);
+              setNotice(result.cancelled ? '未改变健康资料授权。' : `已单独授权并上传 ${result.uploaded.length} 份健康资料。`);
+            })}>选择并上传健康资料</button></div>
           <div className="cloud-profile-preview"><strong>当前将同步的已填写信息</strong>
             <p>{profilePreview.length ? profilePreview.map(([, label, value]) => `${label}：${value}`).join('；') : '仅姓名'}。登录 ID、设备密钥、本机路径、Agent 配置、原始对话和原始证据不会上传。</p>
           </div>
@@ -231,7 +257,7 @@ export function CloudDocumentsPanel({ api, localStudents }: { api?: CloudReportA
                 ? '上传范围已保存并经云端确认；后续同步与新开通的下载许可将使用此范围。'
                 : status.uploadScopePersistence === 'pending_cloud'
                   ? '上传范围已保存到本机，系统会继续自动向云端确认。'
-                  : '上传范围已保存到本机；输入新版开通码后将按此范围授权，不会自动扩大旧许可。');
+                  : '上传范围已保存到本机；开通云同步后将按此范围授权，不会自动扩大旧许可。');
             })}>保存选择</button>
             {uploadStatus.configured && <button className="secondary" disabled={busy || !uploadStatus.enabled} onClick={() => void run(async () => {
               const studentId = selectedLocalId;
@@ -240,24 +266,26 @@ export function CloudDocumentsPanel({ api, localStudents }: { api?: CloudReportA
               setUploadStatus(status); setNotice(status.lastError || `检查完成：上传 ${status.lastUploaded || 0} 份，内容未变 ${status.lastUnchanged || 0} 份，未上传 ${status.skipped?.length || 0} 份。`);
             })}>立即检查并上传</button>}
             {uploadStatus.configured && <button className="secondary" disabled={busy} onClick={() => void run(() => refreshUploadStatus(selectedLocalId))}>刷新上传状态</button>}</div>
-          {uploadStatus.uploadScopePersistence?.startsWith('local_') && <p className="cloud-scope-save-state">选择已保存在本机；旧许可未被扩大，使用新版开通码后自动按此范围生效。</p>}
+          {uploadStatus.uploadScopePersistence?.startsWith('local_') && <p className="cloud-scope-save-state">选择已保存在本机；旧许可未被扩大。点击开通后将使用本机有效许可证自动创建或复用该学生的云端身份。</p>}
           {uploadStatus.configured && <>
             <p>最近检查：{uploadStatus.lastSyncAt ? new Date(uploadStatus.lastSyncAt).toLocaleString('zh-CN') : '尚未执行'}{uploadStatus.pendingServerWriteState !== null && uploadStatus.pendingServerWriteState !== undefined ? ' · 云端开关仍待确认' : ''}{uploadStatus.pendingUploadScope ? ' · 上传范围仍待云端确认' : ''}</p>
             {uploadStatus.lastSyncAt && <p>本次上传 {uploadStatus.lastUploaded || 0} 份 · 内容未变 {uploadStatus.lastUnchanged || 0} 份 · 未上传 {uploadStatus.skipped?.length || 0} 份</p>}
             {!!uploadStatus.skipped?.length && <ul aria-label="报告未上传原因">{uploadStatus.skipped.map(item => <li key={item.filename}>{item.filename}：{item.reason}</li>)}</ul>}
           </>}
-          <div className="cloud-inline-form"><input aria-label="学生开通码" placeholder="输入云端管理页生成的学生开通码" value={enrollmentCode} onChange={event => setEnrollmentCode(event.target.value)} />
-            <button className="primary" disabled={busy || !enrollmentCode} onClick={() => void run(async () => {
-              await unwrap(api?.cloudReportEnrollSource?.({ serverUrl, enrollmentCode, localStudentId: selectedLocalId, profileFields, materialCategories }));
-              setServerBound(true); setEnrollmentCode(''); await refreshUploadStatus(selectedLocalId); setNotice('已按勾选范围开通上传；健康资料仍未授权。');
-            })}>{uploadStatus.configured ? '重新开通' : '开通并上传'}</button></div>
+          <div className="cloud-inline-form">
+            <button className="primary" disabled={busy || !selectedLocalId} onClick={() => void run(async () => {
+              await unwrap(api?.cloudReportEnrollSource?.({ serverUrl, localStudentId: selectedLocalId, profileFields, materialCategories }));
+              setServerBound(true); await refreshUploadStatus(selectedLocalId); setNotice('已使用本机许可证自动创建或匹配云端学生，并按勾选范围开通上传；健康资料仍未授权。');
+            })}>{uploadStatus.configured ? '修复云端绑定' : '开通云同步'}</button>
+            <span>无需管理员创建学生或生成开通码；同一本机学生会稳定复用原云端身份。</span>
+          </div>
           {uploadStatus.configured && <button className="secondary" disabled={busy} onClick={() => void run(async () => {
             await unwrap(api?.cloudReportSetUpload?.(selectedLocalId, !uploadStatus.enabled)); await refreshUploadStatus(selectedLocalId);
           })}>{uploadStatus.enabled ? '关闭自动上传' : '重新开启上传'}</button>}
           <div className="cloud-inline-form"><input aria-label="接收 Windows 主机配对码" placeholder="接收 Windows 主机出示的 8 位配对码" value={approvalCode} onChange={event => setApprovalCode(event.target.value)} />
             <button className="secondary" disabled={busy || !approvalCode || !uploadStatus.enabled} onClick={() => void run(async () => {
-              await unwrap(api?.cloudReportApprovePairing?.(approvalCode, [selectedLocalId], { profileFields, materialCategories }));
-              setApprovalCode(''); setNotice('已按当前勾选范围为接收主机开通下载许可；健康资料未授权。');
+              await unwrap(api?.cloudReportApprovePairing?.(approvalCode, [selectedLocalId], { profileFields, materialCategories, healthObjectScope }));
+              setApprovalCode(''); setNotice(`已按当前勾选范围为接收主机开通下载许可${healthObjectScope.length ? `，并单独开放 ${healthObjectScope.length} 份健康资料` : '；健康资料未授权'}。`);
             })}>确认下载许可</button></div>
         </> : <p>本机没有学生档案；仍可使用上方 Windows 主机下载许可。</p>}
       </details>
@@ -275,9 +303,12 @@ export function CloudDocumentsPanel({ api, localStudents }: { api?: CloudReportA
       </aside>
       <div className="cloud-documents-main">
         <div className="cloud-documents-tabs"><div className="cloud-tab-buttons">
+          {mode === 'settings' && <>
           <button className={tab === 'reports' ? 'active' : ''} onClick={() => setTab('reports')}>学情报告</button>
           <button className={tab === 'materials' ? 'active' : ''} onClick={() => setTab('materials')}>云端学习资料</button>
           <button className={tab === 'documents' ? 'active' : ''} onClick={() => setTab('documents')}>历史其他文档</button>
+          </>}
+          {mode === 'reports' && <strong>学情报告</strong>}{mode === 'materials' && <strong>云端学习资料</strong>}
         </div><span>同一学生下载许可，无需逐份申请</span></div>
         {selectedCloudId ? <>
           <div className="cloud-list-tools"><span>本机对该学生的云端下载许可</span>
@@ -308,13 +339,18 @@ export function CloudDocumentsPanel({ api, localStudents }: { api?: CloudReportA
           </> : tab === 'materials' ? <><div className="cloud-list-tools"><span>五类资料按授权和修订版本隔离；默认显示当前版本</span>
             <button className="secondary compact" disabled={busy} onClick={() => void run(() => refreshMaterials(selectedCloudId))}>刷新资料</button></div>
           <div className="cloud-report-table-wrap"><table className="cloud-report-table"><thead><tr>
-            <th>名称</th><th>类别</th><th>大小</th><th>版本时间</th><th>操作</th>
+            <th>名称</th><th>类别</th><th>检索状态</th><th>大小</th><th>版本时间</th><th>操作</th>
           </tr></thead><tbody>{materials.map(item => <tr key={item.revisionId}>
-            <td>{item.displayName}</td><td>{categoryNames[item.category] || item.category}</td><td>{Math.ceil(item.byteSize / 1024)} KB</td>
+            <td>{item.displayName}</td><td>{categoryNames[item.category] || item.category}</td>
+            <td>{item.indexStatus ? (materialIndexStatusNames[item.indexStatus] || item.indexStatus) : '服务端待升级'}</td><td>{Math.ceil(item.byteSize / 1024)} KB</td>
             <td>{new Date(item.createdAt).toLocaleString('zh-CN')}</td><td><button className="cloud-text-button" disabled={busy} onClick={() => void run(async () => {
               const result = await unwrap<{ content: string; path: string }>(api?.cloudReportDownloadMaterial?.(selectedCloudId, item.revisionId, item.contentType !== 'text/markdown'));
               await refreshCache(); setPreview(result.content || ''); setNotice(result.content ? '资料已校验并保存到本机只读缓存。' : `资料已校验并保存：${result.path}`);
-            })}>{item.contentType === 'text/markdown' ? '下载并查看' : '下载并定位'}</button></td>
+            })}>{item.contentType === 'text/markdown' ? '下载并查看' : '下载并定位'}</button>
+              <button className="cloud-text-button" disabled={busy || !selectedLocalId} onClick={() => void run(async () => {
+                const result = await unwrap<{ imported: number; skipped: number; message: string }>(api?.cloudReportImportMaterial?.(selectedLocalId, selectedCloudId, item.revisionId));
+                await refreshCache(); setNotice(result.message || (result.imported ? '已导入本机学生资料库。' : '本机已有相同资料。'));
+              })}>导入到本机</button></td>
           </tr>)}</tbody></table>{!materials.length && <p className="cloud-empty">这个学生还没有当前可下载的授权资料。</p>}</div>
           {materialCursor && <button className="secondary compact" disabled={busy} onClick={() => void run(() => refreshMaterials(selectedCloudId, materialCursor))}>加载更多资料</button>}
           </> : <><div className="cloud-list-tools"><span>旧版“其他文档”兼容入口，不会自动扩大为五类资料授权</span>
@@ -350,6 +386,25 @@ export function CloudDocumentsPanel({ api, localStudents }: { api?: CloudReportA
           }}>清除此学生副本</button>
         </div>)}
         {!cachedStudents.length && <p>本机尚无已下载的云端副本。</p>}
+      </section>
+    </div>}
+
+    {page === 'agents' && <div className="cloud-page" data-cloud-page="agents">
+      <div className="cloud-page-intro"><div><strong>外部 Agent 云端访问</strong><p>远程 Codex 或 WorkBuddy 仅在任务执行时获得短期、按学生和项目冻结的只读范围；上传许可不会自动转成 Agent 读取许可。</p></div></div>
+      <section className="cloud-setup cloud-static-section">
+        <h3>查询或撤销任务会话</h3>
+        <p>输入任务记录中的会话编号。连接凭据不会在此页面显示；撤销只停止新的云端读取，不删除已同步资料。</p>
+        <div className="cloud-inline-form"><input aria-label="远程 Agent 会话编号" placeholder="输入 sessionId" value={agentSessionId} onChange={event => setAgentSessionId(event.target.value.trim())} />
+          <button className="secondary" disabled={busy || !agentSessionId} onClick={() => void run(async () => {
+            const status = await unwrap<RemoteAgentStatus>(api?.cloudReportRemoteAgentStatus?.(agentSessionId));
+            setAgentSession(status); setNotice('已读取会话状态。');
+          })}>查询状态</button>
+          <button className="danger" disabled={busy || !agentSessionId} onClick={() => {
+            if (!window.confirm('停止该远程 Agent 会话的后续云端访问？已同步资料和本机任务不会删除。')) return;
+            void run(async () => { const status = await unwrap<RemoteAgentStatus>(api?.cloudReportRevokeRemoteAgent?.(agentSessionId)); setAgentSession(status); setNotice('远程 Agent 会话已撤销。'); });
+          }}>撤销访问</button></div>
+        {agentSession && <div className="cloud-cache-row"><span>{agentSession.provider || 'Agent'} · {agentSession.status || (agentSession.revokedAt ? '已撤销' : '状态未知')}</span>
+          <small>项目 {agentSession.projectId || '-'} · 任务 {agentSession.taskId || '-'}{agentSession.expiresAt ? ` · 有效至 ${new Date(agentSession.expiresAt).toLocaleString('zh-CN')}` : ''}</small></div>}
       </section>
     </div>}
 

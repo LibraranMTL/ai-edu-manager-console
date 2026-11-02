@@ -15,6 +15,24 @@ function activeBusinessDigest(businessStatus, submittedCount = 0) {
     || ['submitted', 'digesting', 'validating'].includes(String(businessStatus || ''));
 }
 
+function digestWorkDisposition(pendingCount = 0, submittedCount = 0) {
+  if (Number(submittedCount || 0) > 0) return 'awaiting_receipt';
+  if (Number(pendingCount || 0) > 0) return 'ready';
+  return 'no_work';
+}
+
+function projectDigestCandidatePolicy(materialAutomation = {}, requestOrigin = '') {
+  const manualOnce = String(requestOrigin || '') === 'user_manual_once';
+  const configured = materialAutomation.enabled === true && materialAutomation.autoDigest === true;
+  const paused = configured && materialAutomation.processingPaused === true;
+  return {
+    include: manualOnce || configured,
+    automatic: configured,
+    paused,
+    requestOrigin: manualOnce ? 'user_manual_once' : String(requestOrigin || '') === 'recovery' ? 'recovery' : 'automatic_candidate',
+  };
+}
+
 function canReuseStudentDigestBatch(batch, state, materials = []) {
   const batchId = String(batch?.batchId || '');
   const batchStatus = String(batch?.status || '').toLowerCase();
@@ -50,6 +68,9 @@ function digestUserStatus(taskStatus, businessStatus, pendingCount = 0, submitte
   // reviewing must never hide a completed/partial business result or lock the UI.
   if (business === 'partial') return 'partial';
   if (business === 'completed' && pending <= 0) return 'completed';
+  // The material ledger is stronger evidence than a stale task failure. A
+  // submitted batch must be reconciled before any retry or user action.
+  if (Number(submittedCount || 0) > 0 || ['submitted', 'digesting'].includes(business)) return 'waiting_result';
   if (['failed', 'timeout'].includes(business)) return 'needs_help';
   if (['failed', 'blocked', 'timed_out', 'cancelled'].includes(task)) return 'needs_help';
   if (pending > 0 && !activeBusinessDigest(business, submittedCount)) return 'pending';
@@ -73,20 +94,20 @@ function createDigestOrchestrator(dependencies = {}) {
     start(scopeType, scopeId, requestedExecutor = 'auto', options) {
       const prepare = requireFn('prepare');
       const execute = requireFn('execute');
-      const prepared = prepare(scopeType, scopeId);
-      if (!prepared?.ok) return prepared;
-      if (prepared.alreadyRunning) return prepared;
-      return options ? execute(prepared.taskId, requestedExecutor, options) : execute(prepared.taskId, requestedExecutor);
+      const prepared = prepare(scopeType, scopeId, options);
+      const proceed=value=>!value?.ok||value.alreadyRunning||value.completed||value.skipped?value
+        :options?execute(value.taskId,requestedExecutor,options):execute(value.taskId,requestedExecutor);
+      return prepared?.then?prepared.then(proceed):proceed(prepared);
     },
     status(scopeType, scopeId) {
       return requireFn('status')(scopeType, scopeId);
     },
-    retry(scopeType, scopeId, requestedExecutor = 'auto') {
+    retry(scopeType, scopeId, requestedExecutor = 'auto', options) {
       const reset = requireFn('reset');
       const execute = requireFn('execute');
-      const prepared = reset(scopeType, scopeId);
-      if (!prepared?.ok) return prepared;
-      return execute(prepared.taskId, requestedExecutor);
+      const prepared = reset(scopeType, scopeId, options);
+      const proceed=value=>!value?.ok||value.completed||value.alreadyRunning?value:execute(value.taskId,requestedExecutor,options);
+      return prepared?.then?prepared.then(proceed):proceed(prepared);
     },
     reconcile() {
       return requireFn('reconcile')();
@@ -99,8 +120,10 @@ module.exports = {
   activeBusinessDigest,
   canReuseStudentDigestBatch,
   createDigestOrchestrator,
+  digestWorkDisposition,
   digestUserStatus,
   isDigestTask,
+  projectDigestCandidatePolicy,
   shouldRecoverDigestExecution,
   shouldAutoAccept,
   userStatusLabel,

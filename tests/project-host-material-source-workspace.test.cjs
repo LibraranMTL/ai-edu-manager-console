@@ -37,7 +37,9 @@ async function fixture(t) {
   const scope = {
     fs: fsSync, path, crypto, projectUploadRecoveryIssues: [],
     createProjectMaterialHost, createProjectUploadIntake, stageProjectDirectImport,
-    readProjects: () => [currentProject], readProjectMetadata: () => [currentProject], normalizeProject: (value) => value,
+    readProjects: () => [currentProject], readProjectMetadata: () => [currentProject],
+    getProjectMetadata: (id) => String(id) === currentProject.id ? currentProject : null,
+    normalizeProject: (value) => value,
     normalizeProjectMetadata: (value) => value,
     isWorkspaceMaterialProject: (value) => value?.materialStorageMode === 'workspace-v1',
     findStudentByKey: (id) => String(id) === student.id ? student : null,
@@ -61,6 +63,7 @@ async function fixture(t) {
         references: [{ spaceType: 'project', spaceId: project.id, path: file, role: metadata.role }] };
     },
     updateProjectRecord: (_id, change) => { currentProject = change(currentProject); return { project: currentProject }; },
+    updateProjectMetadataRecord: (_id, change) => { currentProject = change(currentProject); return { project: currentProject }; },
     writeProjects: (projects) => { currentProject = projects.find((item) => item.id === project.id); },
     projectWithNewInputs: (value) => value,
     readProjectDigestState: () => ({ status: 'pending' }),

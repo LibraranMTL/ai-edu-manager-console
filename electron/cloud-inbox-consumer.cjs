@@ -45,6 +45,8 @@ function resultMarkdown(item, payload) {
     ...payload.sources.map(source => `- \`${source.materialId}\` · \`${source.revisionId}\` · \`${source.contentSha256}\``),
     '',
   ];
+  if (payload.attachments?.length) lines.push('## 附件', '', ...payload.attachments.map(attachment =>
+    `- [${attachment.displayName}](附件/${item.submissionId}/${attachment.attachmentId}-${attachment.displayName.replace(/[\\/:*?"<>|]/g, '_')}) · \`${attachment.contentSha256}\``), '');
   return lines.join('\n');
 }
 
@@ -100,6 +102,35 @@ async function writeResultFile({ item, payload, scope, revalidate }) {
   }
 }
 
+async function writeResultAttachments({ runtime, item, payload, scope, revalidate }) {
+  if (!payload.attachments?.length) return [];
+  const base = await ensureSafeOutputDirectory(scope);
+  const root = path.join(base, '附件', item.submissionId);
+  await fs.promises.mkdir(root, { recursive: true });
+  if (!pathWithinProjectScope(root, scope)) throw new Error('成果附件目录超出知识空间');
+  const written = [];
+  for (const attachment of payload.attachments) {
+    const safeName = attachment.displayName.replace(/[\\/:*?"<>|\x00-\x1f]/g, '_');
+    const target = path.join(root, `${attachment.attachmentId}-${safeName}`);
+    if (!pathWithinProjectScope(target, scope)) throw new Error('成果附件路径超出知识空间');
+    const downloaded = await runtime.downloadCloudInboxAttachment(item.submissionId, attachment.attachmentId, item.leaseId);
+    if (downloaded.contentSha256 !== attachment.contentSha256 || downloaded.content.length !== attachment.byteSize) throw new Error('成果附件校验不一致');
+    try {
+      const prior = await fs.promises.readFile(target);
+      if (sha256(prior) !== attachment.contentSha256) throw Object.assign(new Error('相同附件编号已存在不同内容'), { code: 'RESULT_CONFLICT' });
+      written.push({ path: target, created: false }); continue;
+    } catch (error) { if (error.code !== 'ENOENT') throw error; }
+    const temp = `${target}.${crypto.randomUUID()}.pending`;
+    try {
+      await fs.promises.writeFile(temp, downloaded.content, { flag: 'wx' });
+      if (!await revalidate()) throw Object.assign(new Error('项目范围在附件落盘前发生变化'), { code: 'SCOPE_CHANGED' });
+      await fs.promises.rename(temp, target);
+      written.push({ path: target, created: true });
+    } finally { await fs.promises.rm(temp, { force: true }).catch(() => {}); }
+  }
+  return written;
+}
+
 async function processCloudInbox({ runtime, resolveScope, maxItems = 20 }) {
   const page = await runtime.listCloudInbox('');
   const now = Date.now();
@@ -127,7 +158,7 @@ async function processCloudInbox({ runtime, resolveScope, maxItems = 20 }) {
         throw new Error('成果内容校验值不一致');
       }
       payload = normalizeRemoteProjectResult(lease.payload, { taskId: lease.taskId, executionId: lease.executionId, taskType: lease.taskType,
-        projectId: lease.projectId, scopeFingerprint: lease.scopeFingerprint });
+        projectId: lease.projectId, scopeFingerprint: lease.scopeFingerprint, allowStoredAttachmentMetadata: true });
     } catch (error) { await quarantine(`成果合同无法验证：${error.message}`); continue; }
     let resolved;
     try { resolved = await resolveScope(lease); }
@@ -138,6 +169,7 @@ async function processCloudInbox({ runtime, resolveScope, maxItems = 20 }) {
       try { return checkedScope(lease, await resolveScope(lease)); } catch { return false; }
     };
     try {
+      await writeResultAttachments({ runtime, item: lease, payload, scope: resolved.scope, revalidate });
       const written = await writeResultFile({ item: lease, payload, scope: resolved.scope, revalidate });
       const settled = await runtime.settleCloudInboxSubmission(lease.submissionId,
         { leaseId: lease.leaseId, status: 'committed' });
@@ -150,4 +182,4 @@ async function processCloudInbox({ runtime, resolveScope, maxItems = 20 }) {
   return { checked: candidates.length, results, nextCursor: page.nextCursor || '' };
 }
 
-module.exports = { OUTPUT_FOLDER, checkedScope, processCloudInbox, resultMarkdown, sameStringSet, writeResultFile };
+module.exports = { OUTPUT_FOLDER, checkedScope, processCloudInbox, resultMarkdown, sameStringSet, writeResultAttachments, writeResultFile };

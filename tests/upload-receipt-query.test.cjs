@@ -102,7 +102,9 @@ test('host receipt endpoint enforces project and student authorization before re
     isStudentAllowed: (_request, studentId) => studentId === 's1',
     findStudent: (studentId) => ['s1', 's2'].includes(studentId) ? { id: studentId } : null,
     readProjects: () => [{ id: 'p1', status: 'active', studentIds: ['s1'] }],
-    normalizeProject: (value) => value, isWorkspaceMaterialProject: () => false, projectAllowed: () => true,
+    getProjectMetadata: (id) => id === 'p1' ? { id: 'p1', status: 'active', studentIds: ['s1'] } : null,
+    normalizeProject: (value) => value, normalizeProjectMetadata: (value) => value,
+    isWorkspaceMaterialProject: () => false, projectAllowed: () => true,
     readUploadRecords: () => [f.studentRecord], assetStore: () => ({ queryDetails: () => [f.asset] }),
     sendJson: (_response, status, body) => replies.push({ status, body }) };
   bind(scope, 'handleUploadReceiptQuery');
@@ -116,6 +118,7 @@ test('host receipt endpoint enforces project and student authorization before re
   scope.handleUploadReceiptQuery({}, {}, url('student', 's3'));
   assert.equal(replies.pop().body.code, 'student_unavailable');
   scope.readProjects = () => [];
+  scope.getProjectMetadata = () => null;
   scope.handleUploadReceiptQuery({}, {}, url('project', 'p1'));
   assert.equal(replies.pop().body.code, 'project_unavailable');
 });
@@ -246,7 +249,9 @@ test('actual project upload retry refuses changed bytes before creating another 
     requireAuth: (request) => { request.authContext = { type: 'device', deviceId: 'd1' }; return true; },
     requireMatchingUploadGeneration: () => true,
     readProjects: () => [{ id: 'p1', name: 'Synthetic', rawPath: path.dirname(f.file), studentIds: ['s1'] }],
-    normalizeProject: (value) => value, projectAllowed: () => true,
+    getProjectMetadata: (id) => id === 'p1'
+      ? { id: 'p1', name: 'Synthetic', rawPath: path.dirname(f.file), studentIds: ['s1'] } : null,
+    normalizeProject: (value) => value, normalizeProjectMetadata: (value) => value, projectAllowed: () => true,
     findStudent: () => ({ id: 's1' }), isStudentAllowed: () => true,
     courseUploadAttribution: () => ({}), remoteCaptureAttribution: () => null,
     ensureProjectWorkspace: (value) => value, isWorkspaceMaterialProject: () => false,

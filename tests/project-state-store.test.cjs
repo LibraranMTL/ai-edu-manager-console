@@ -162,6 +162,23 @@ test('patchProjectMetadata updates one project row without touching staging, sca
   } finally { fs.rmSync(paths.root, { recursive: true, force: true }); }
 });
 
+test('metadata graph updates preserve staging and scan rows and full reads require a declared purpose', () => {
+  const paths = setup();
+  try {
+    const store = createProjectStateStore(paths); store.initialize();
+    const before = store.getMetadata('project-alpha');
+    const updated = store.upsertProjectMetadata({ ...before, name: 'Alpha 新名称', assetIds: ['asset-1', 'asset-2'] }, before.revision);
+    assert.equal(updated.name, 'Alpha 新名称');
+    assert.deepEqual(updated.assetIds, ['asset-1', 'asset-2']);
+    assert.equal(store.listStaging({ projectId: 'project-alpha' }).total, 3);
+    assert.equal(store.listWorkspaceScanEntries({ projectId: 'project-alpha', pageSize: 100 }).total, 1);
+    assert.equal(store.getTaskProjection('project-alpha').id, 'project-alpha');
+    assert.throws(() => store.readFullProjectSnapshot('project-alpha'), error => error.code === 'project_full_read_forbidden');
+    assert.equal(store.readFullProjectSnapshot('project-alpha', { purpose: 'diagnostic' }).stagingItems.length, 3);
+    store.close();
+  } finally { fs.rmSync(paths.root, { recursive: true, force: true }); }
+});
+
 test('bounded staging and workspace scan mutations never write more than 100 rows', () => {
   const paths = setup();
   try {
@@ -196,6 +213,10 @@ test('project state IO worker owns bounded writes and returns limited projection
       itemIds: ['stage-0', 'stage-1'], patch: { reviewStatus: 'accepted' } });
     assert.equal(mutated.affected, 2);
     assert.ok(mutated.items.length <= MAX_PAGE_SIZE);
+    const metadata = await client.request('upsert_metadata', { project: {
+      ...patched, assetIds: ['asset-1', 'asset-worker'], studentIds: ['student-1'], studentNames: ['学生一'],
+    }, expectedRevision: mutated.revision });
+    assert.deepEqual(metadata.assetIds, ['asset-1', 'asset-worker']);
     assert.equal((await client.request('integrity')).ok, true);
   } finally {
     await client.close();

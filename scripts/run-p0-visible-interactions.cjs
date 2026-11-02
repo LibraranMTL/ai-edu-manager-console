@@ -81,17 +81,25 @@ class CdpClient {
 }
 
 const clickText = pattern => `(function(){const re=${pattern};const nodes=[...document.querySelectorAll('button,a,[role="button"],summary')];const el=nodes.find(n=>re.test((n.textContent||'').trim())&&!n.disabled);if(!el)throw Error('control_not_found:'+re);el.click();return (el.textContent||'').trim();})()`;
+const clickTextWhenReady = pattern => `(async()=>{const re=${pattern};const deadline=Date.now()+3000;while(Date.now()<deadline){const nodes=[...document.querySelectorAll('button,a,[role="button"],summary')];const el=nodes.find(n=>re.test((n.textContent||'').trim())&&!n.disabled);if(el){el.click();return (el.textContent||'').trim();}await new Promise(resolve=>setTimeout(resolve,50));}throw Error('control_wait_timeout:'+re);})()`;
+const refreshReadyExpression = `(()=>{const buttons=[...document.querySelectorAll('button')];const button=buttons.find(n=>/刷新/.test((n.textContent||'').trim()));return !!button&&!button.disabled&&!/刷新中/.test(button.textContent||'');})()`;
+const groupReadyExpression = label => `(()=>{const re=${label};const nodes=[...document.querySelectorAll('button,[role="button"]')];const node=nodes.find(n=>re.test((n.textContent||'').trim()));return !!node&&(node.getAttribute('aria-pressed')==='true'||node.classList.contains('active')||node.dataset.active==='true');})()`;
+const detailsStateExpression = expectedOpen => `(()=>{const n=[...document.querySelectorAll('details summary')].find(n=>/高级\\s*Agent\\s*状态与排障/.test((n.textContent||'').trim()));return !!n&&n.parentElement.open===${Boolean(expectedOpen)};})()`;
+const detailsReadyExpression = detailsStateExpression(true);
 
 async function main() {
   const port = Number(process.argv[2]);
   const outputPath = path.resolve(process.argv[3] || 'artifacts/p0-agent-0228/visible-interactions.json');
   const inspect = process.argv.includes('--inspect');
+  const nativeWindowVisible = process.argv.includes('--native-window-visible');
   const targets = await fetch(`http://127.0.0.1:${port}/json/list`).then(response => response.json());
   const target = targets.find(item => item.type === 'page');
   if (!target) throw Error('page_target_not_found');
   const client = new CdpClient(target.webSocketDebuggerUrl);
   await client.connect();
   try {
+    await client.call('Page.bringToFront');
+    await new Promise(resolve => setTimeout(resolve, 250));
     await client.call('Runtime.enable');
     if (process.argv.includes('--task-center') || !inspect) {
       await client.evaluate(`${clickText('/^\\s*任务中心\\s*$/')}`);
@@ -103,33 +111,44 @@ async function main() {
       return;
     }
     await client.evaluate(`window.__p0LongTasks=[];if(window.PerformanceObserver){try{window.__p0Observer?.disconnect?.();window.__p0Observer=new PerformanceObserver(list=>{for(const e of list.getEntries())window.__p0LongTasks.push({startTime:e.startTime,duration:e.duration});});window.__p0Observer.observe({entryTypes:['longtask']});}catch{}}`);
+    await client.evaluate(`window.AndroidBridge?.qaMainPerformance?.('reset')`);
     const evaluate = expression => client.evaluate(expression);
     const samples = [];
+    interactionLoop:
     for (let index = 0; index < 30; index += 1) {
       const refresh = await measureInteraction({ evaluate,
-        actionExpression: `${clickText('/刷新列表/')} `,
-        readyExpression: `document.readyState==='complete'&&!document.querySelector('[aria-busy="true"]')` });
+        actionExpression: `${clickTextWhenReady('/刷新列表/')} `,
+        readyExpression: refreshReadyExpression,
+        requireDocumentVisibility: !nativeWindowVisible });
       samples.push({ action: 'refresh', iteration: index + 1, ...refresh });
+      if (refresh.observedStatus !== 'pass') break interactionLoop;
 
       const label = index % 2 === 0 ? '/需要你帮助/' : '/自动处理中/';
       const switched = await measureInteraction({ evaluate,
-        actionExpression: `${clickText(label)}`,
-        readyExpression: `document.readyState==='complete'&&!document.querySelector('[aria-busy="true"]')` });
+        actionExpression: `${clickTextWhenReady(label)}`,
+        readyExpression: groupReadyExpression(label),
+        requireDocumentVisibility: !nativeWindowVisible });
       samples.push({ action: 'switch', iteration: index + 1, ...switched });
+      if (switched.observedStatus !== 'pass') break interactionLoop;
 
       const detail = await measureInteraction({ evaluate,
-        actionExpression: `${clickText('/高级Agent 状态与排障/')}`,
-        readyExpression: `document.readyState==='complete'&&!document.querySelector('[aria-busy="true"]')` });
+        actionExpression: `${clickTextWhenReady('/高级\\s*Agent\\s*状态与排障/')}`,
+        readyExpression: detailsStateExpression(index % 2 === 0),
+        requireDocumentVisibility: !nativeWindowVisible });
       samples.push({ action: 'detail', iteration: index + 1, ...detail });
+      if (detail.observedStatus !== 'pass') break interactionLoop;
     }
     const longTasks = await client.evaluate('window.__p0LongTasks||[]');
+    const mainEventLoop = await client.evaluate(`window.AndroidBridge?.qaMainPerformance?.('read')`);
     const report = {
       schema: 'edu.p0.visible-interactions.v1',
       generatedAt: new Date().toISOString(),
       target: { title: target.title, url: target.url },
       visible: await client.evaluate(`document.visibilityState==='visible'`),
+      visibilityAuthority: nativeWindowVisible ? 'native_window' : 'document',
       samples,
       longTasks,
+      mainEventLoop,
       ...summarizeInteractions(samples, longTasks),
     };
     fs.mkdirSync(path.dirname(outputPath), { recursive: true });
@@ -140,4 +159,5 @@ async function main() {
 }
 
 if (require.main === module) void main().catch(error => { console.error(error.stack || error.message); process.exitCode = 1; });
-module.exports = { percentile, summarizeInteractions, CdpClient };
+module.exports = { percentile, summarizeInteractions, CdpClient, refreshReadyExpression, groupReadyExpression,
+  detailsReadyExpression, detailsStateExpression };

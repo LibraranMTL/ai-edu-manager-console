@@ -8,14 +8,11 @@ function average(values) {
 }
 
 function businessCompletionCount(report = {}) {
-  return (report.results || []).reduce((total, run) => {
-    const agentCompleted = Number(run.businessEvidence?.completed || 0);
-    const internalCompleted = (run.taskSemantic?.afterStatuses || []).filter(task =>
-      task.executor === 'internal'
-      && task.businessOutcome === 'completed'
-      && task.settlementState === 'settled').length;
-    return total + agentCompleted + internalCompleted;
-  }, 0);
+  return (report.results || []).reduce((total, run) => total + Number(run.businessEvidence?.completed || 0), 0);
+}
+
+function businessElapsedSeconds(report = {}) {
+  return (report.results || []).reduce((total, run) => total + Number(run.businessEvidence?.completedElapsedMs || 0) / 1000, 0);
 }
 
 function buildFormalPerformance({ idle = {}, normal = {}, backlog = {}, visible = {}, traces = {} }) {
@@ -37,10 +34,12 @@ function buildFormalPerformance({ idle = {}, normal = {}, backlog = {}, visible 
   if (visible.passed !== true || Number(visible.interactionSamples || 0) < 90
     || Number(visible.p95Ms ?? Infinity) > 150 || Number(visible.maximumLongTaskMs ?? Infinity) > 100
     || Number(visible.failures || 0) > 0) failures.push('visible_interaction');
+  const mainEventLoopMaxMs = Number(visible.mainEventLoop?.maximumMs ?? Infinity);
+  if (!Number.isFinite(mainEventLoopMaxMs) || mainEventLoopMaxMs > 100) failures.push('main_event_loop');
   const baselineCompleted = businessCompletionCount(normal);
   const treatmentCompleted = businessCompletionCount(backlog);
-  const baselineSeconds = Number(normal.durationSeconds || 0) * Number(normal.repeats || 0);
-  const treatmentSeconds = Number(backlog.durationSeconds || 0) * Number(backlog.repeats || 0);
+  const baselineSeconds = businessElapsedSeconds(normal);
+  const treatmentSeconds = businessElapsedSeconds(backlog);
   if (baselineCompleted <= 0) failures.push('valid_business_baseline_missing');
   if (treatmentCompleted <= 0) failures.push('valid_business_treatment_missing');
   const throughputLossPercent = baselineCompleted > 0 && treatmentCompleted > 0 && baselineSeconds > 0 && treatmentSeconds > 0
@@ -58,7 +57,8 @@ function buildFormalPerformance({ idle = {}, normal = {}, backlog = {}, visible 
     schema: 'edu.agent0228.formal-performance.v1', generatedAt: new Date().toISOString(),
     passed: failures.length === 0, failures, workload: 'real_agent', repeats: Math.min(Number(normal.repeats || 0), Number(backlog.repeats || 0)),
     interactionSamples: Number(visible.interactionSamples || 0), idleCpuCorePercent,
-    interactionP95Ms: Number(visible.p95Ms || 0), mainLongTaskMaxMs: Number(visible.maximumLongTaskMs || 0),
+    interactionP95Ms: Number(visible.p95Ms || 0), rendererLongTaskMaxMs: Number(visible.maximumLongTaskMs || 0),
+    mainEventLoopMaxMs,
     extraMainMemoryBytes, timeouts,
     baselineCompleted, treatmentCompleted, baselineSeconds, treatmentSeconds, throughputLossPercent,
     interactionTrace: traces.interactionTrace, processTreeTrace: traces.processTreeTrace,
@@ -83,4 +83,4 @@ function main() {
 }
 
 if (require.main === module) main();
-module.exports = { buildFormalPerformance, businessCompletionCount };
+module.exports = { buildFormalPerformance, businessCompletionCount, businessElapsedSeconds };

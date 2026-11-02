@@ -97,3 +97,29 @@ test('collector never claims a safe close when the child does not emit close', a
   assert.equal(evidence.terminationState, 'unknown');
   assert.equal(classifyResearchTimeout(evidence, { remainingRouteAttempts: 1 }).disposition, 'execution_unknown');
 });
+
+test('collector includes events arriving after termination request and before close', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'research-timeout-late-event-'));
+  const child = new EventEmitter();
+  child.stdout = { readableEnded: false };
+  child.stderr = { readableEnded: false };
+  const events = [];
+  const evidence = await terminateAndCollectResearchEvidence({
+    child, outputPath: path.join(dir, 'result.json'), events, stderrTail: '',
+    startedAt: new Date(0).toISOString(), timeoutAt: new Date(1000).toISOString(),
+    executionContext: { executionId: 'exec-late', workKey: 'research:late', sourceVersion: 'v1', providerId: 'codex' },
+    terminateProcess() {
+      setImmediate(() => {
+        events.push({ type: 'item.completed', item: { type: 'web_search', status: 'completed' } });
+        child.stdout.readableEnded = true;
+        child.stderr.readableEnded = true;
+        child.emit('close', null, 'SIGTERM');
+      });
+    },
+    graceMs: 5, finalizationTimeoutMs: 200,
+  });
+  assert.equal(evidence.completedWebEvents, 1);
+  assert.equal(evidence.eventTypeCounts['item.completed'], 1);
+  assert.equal(classifyResearchTimeout(evidence, { remainingRouteAttempts: 1 }).disposition, 'execution_unknown');
+  fs.rmSync(dir, { recursive: true, force: true });
+});

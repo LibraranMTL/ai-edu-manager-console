@@ -75,9 +75,14 @@ async function fixture(t) {
     readProjectDigestState: () => ({ status: 'pending' }),
     mergeUnique: (items) => [...new Set(items)],
     readProjects: () => [currentProject], readProjectMetadata: () => [currentProject], normalizeProject: (value) => value,
+    getProjectMetadata: (id) => String(id) === String(currentProject?.id) ? currentProject : null,
     normalizeProjectMetadata: (value) => value,
     findStudent: (id) => String(id) === student.id ? student : null,
     writeProjects: (projects) => { currentProject = projects.find((item) => item.id === project.id); },
+    updateProjectMetadataRecord: (_id, change) => {
+      currentProject = change(currentProject);
+      return { project: currentProject, projects: [currentProject] };
+    },
     readAgentConversationSubmissionStore: () => structuredClone(submissionStore),
     writeAgentConversationSubmissionStore: (value) => { submissionStore = structuredClone(value); },
     collaborationImportLedgerPath: () => path.join(root, 'collaboration-ledger.json'),

@@ -187,10 +187,10 @@ function visionPrompt(bundle, batch) {
 async function runBundleVision(options) {
   const { rootPath, bundle, manifest, executable, execute, prepareImage, isAuthorized, onProgress } = options;
   const providerId = String(options.providerId || 'codex');
-  if (!['codex', 'workbuddy', 'qclaw'].includes(providerId)) throw new Error('vision_provider_unsupported');
+  if (!['automatic', 'codex', 'llm-api', 'workbuddy', 'qclaw'].includes(providerId)) throw new Error('vision_provider_unsupported');
   const processingLocation = String(options.processingLocation || (providerId === 'codex' ? 'codex_service' : 'unknown'));
   const providerVerifiedAt = Date.parse(options.providerCapability?.verifiedAt || '');
-  if (providerId !== 'codex' && (options.providerCapability?.providerId !== providerId
+  if (!['automatic', 'codex', 'llm-api'].includes(providerId) && (options.providerCapability?.providerId !== providerId
     || options.providerCapability?.status !== 'passed'
     || options.providerCapability?.readOnlyIsolation !== 'verified'
     || options.providerCapability?.processingLocation !== processingLocation
@@ -214,7 +214,7 @@ async function runBundleVision(options) {
   const state = sameBundle ? previous : {
     schema: VISION_SCHEMA, studentId: String(bundle.studentId), projectId: String(bundle.projectId || ''),
     sessionId: String(bundle.sourceSessionId), bundleId: String(bundle.bundleId), bundleFingerprint: fingerprint,
-    providerId, processingLocation,
+    providerId, processingLocation, actualProviderIds: [], routeAttempts: [],
     consentEpoch: String(options.consentEpoch || ''),
     completedBatchIds: [], deliveryRecords: [], timelineObservations: [], behaviorLabels: [], failures: [],
     failedBatchIds: [], ocrCompletedBatchIds: [], visualCompletedEventIds: [],
@@ -222,6 +222,8 @@ async function runBundleVision(options) {
   state.failedBatchIds ||= [];
   state.ocrCompletedBatchIds ||= [];
   state.visualCompletedEventIds ||= [];
+  state.actualProviderIds ||= [];
+  state.routeAttempts ||= [];
   const manifestFrames = new Map((manifest.keyFrames || []).map((frame) => [String(frame.eventId), frame]));
   const rawDir = String(options.rawDir || '');
   for (const batch of selectImageBatches(bundle)) {
@@ -287,6 +289,7 @@ async function runBundleVision(options) {
     const submitted = prepareImage ? await Promise.all(prepared.map((frame, index) => prepareImage(frame, index, requestId)))
       : prepared.map((frame) => ({ path: frame.source, submittedHash: frame.expected, bytes: frame.bytes }));
     let submissionAttempted = false;
+    let executionStage = 'not_sent';
     try {
       if (!isAuthorized()) return { ok: false, reason: 'authorization_revoked', state };
       for (let index = 0; index < prepared.length; index += 1) {
@@ -295,8 +298,16 @@ async function runBundleVision(options) {
         if ((await hashFile(submitted[index].path)).toLowerCase() !== String(submitted[index].submittedHash || '').toLowerCase()) throw new Error('prepared_image_hash_mismatch');
       }
       submissionAttempted = true;
+      executionStage = 'possibly_sent';
       const execution = await execute({ executable, imagePaths: submitted.map((item) => item.path), prompt: visionPrompt(bundle, actualBatch), requestId, isAuthorized });
-      if (!execution.ok) throw new Error(String(execution.code || 'codex_execution_failed'));
+      if (!execution.ok) throw Object.assign(new Error(String(execution.code || 'codex_execution_failed')), {
+        code: String(execution.code || 'codex_execution_failed'), stage: String(execution.stage || 'result_received'),
+      });
+      executionStage = 'result_received';
+      const actualProviderId = String(execution.providerId || providerId);
+      const actualProcessingLocation = String(execution.processingLocation || processingLocation);
+      state.actualProviderIds = [...new Set([...state.actualProviderIds, actualProviderId])].slice(-8);
+      state.routeAttempts = [...state.routeAttempts, ...(execution.routeAttempts || [])].slice(-24);
       if (!isAuthorized()) return { ok: false, reason: 'authorization_revoked', state };
       for (let index = 0; index < prepared.length; index += 1) {
         if ((await hashFile(prepared[index].source)).toLowerCase() !== prepared[index].expected) throw new Error('image_changed_during_submission');
@@ -304,7 +315,8 @@ async function runBundleVision(options) {
       const deliveryRecords = prepared.map((frame, index) => ({
         eventId: String(frame.eventId), contentHash: frame.expected, submittedHash: submitted[index].submittedHash,
         submittedBytes: Number(submitted[index].bytes || 0), requestId,
-        provider: providerId, processingLocation, readOnly: true,
+        provider: actualProviderId, processingLocation: actualProcessingLocation, readOnly: true,
+        requestStage: 'result_received', routeAttempts: (execution.routeAttempts || []).slice(-8),
         status: 'cli_completed_with_attachment', completedAt: new Date().toISOString(),
       }));
       const byDelivery = new Map([...state.deliveryRecords, ...deliveryRecords]
@@ -330,7 +342,9 @@ async function runBundleVision(options) {
       onProgress?.(state);
     } catch (error) {
       const code = String(error.message || error).slice(0, 100);
-      if (submissionAttempted) {
+      const requestStage = String(error.stage || executionStage || (submissionAttempted ? 'possibly_sent' : 'not_sent'));
+      state.routeAttempts = [...state.routeAttempts, ...(error.routeAttempts || [])].slice(-24);
+      if (submissionAttempted && requestStage !== 'not_sent') {
         const byDelivery = new Map((state.deliveryRecords || []).map((record) => [`${record.requestId}:${record.eventId}`, record]));
         for (const [index, frame] of prepared.entries()) {
           const key = `${requestId}:${frame.eventId}`;
@@ -338,7 +352,8 @@ async function runBundleVision(options) {
           byDelivery.set(key, {
           eventId: String(frame.eventId), contentHash: frame.expected, submittedHash: String(submitted[index]?.submittedHash || ''),
           submittedBytes: Number(submitted[index]?.bytes || 0), requestId,
-          provider: providerId, processingLocation, readOnly: true,
+          provider: String(error.providerId || providerId), processingLocation: String(error.processingLocation || processingLocation), readOnly: true,
+          requestStage, routeAttempts: (error.routeAttempts || []).slice(-8),
           status: 'unknown', attemptedAt: new Date().toISOString(),
           });
         }
@@ -346,6 +361,13 @@ async function runBundleVision(options) {
       }
       const attempts = (state.failures || []).filter((item) => item.batchId === batch.batchId).length + 1;
       state.failures = [...(state.failures || []), { batchId: batch.batchId, code, attempt: attempts }].slice(-30);
+      if (requestStage === 'possibly_sent') {
+        state.status = 'execution_unknown';
+        state.nextRetryAt = '';
+        state.updatedAt = new Date().toISOString();
+        atomicWriteJson(target, state);
+        return { ok: false, reason: code, state };
+      }
       if (attempts >= 3) {
         state.completedBatchIds.push(batch.batchId);
         state.failedBatchIds = [...new Set([...(state.failedBatchIds || []), batch.batchId])];

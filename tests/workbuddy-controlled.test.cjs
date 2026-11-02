@@ -17,9 +17,85 @@ function resultFor(prompt) {
 }
 test('final JSON is required; authentication, tool activity and successful error exits fail closed',()=>{
   assert.deepEqual(parseFixedResult('{"result":"{\\"ready\\":true}"}','',0),{ready:true});
+  assert.throws(() => parseFixedResult('输出在上一条消息被截断','',0), { code: 'AGENT_RESULT_INVALID', stage: 'completed' });
+  assert.throws(() => parseFixedResult('{"result":"输出在上一条消息被截断"}','',0), { code: 'AGENT_RESULT_INVALID', stage: 'completed' });
   for(const stdout of ['READY','{"result":"{}","is_error":true}','{"result":"{}","permission_denials":[{}]}','{"type":"tool_use","result":"{}"}']) assert.throws(()=>parseFixedResult(stdout,'',0));
   assert.throws(()=>parseFixedResult('{"result":"{}"}','authentication required',0),{code:'AUTHENTICATION_REQUIRED'});
   assert.throws(()=>parseFixedResult('','429 too many requests',1),{code:'429'});
+});
+
+test('material execution asks WorkBuddy to repair one malformed completed result before failing the task', async t => {
+  const f = await fixture(t);
+  const sourcePath = path.join(f.root, 'source.md');
+  const outputRoot = path.join(f.root, 'output');
+  await fs.writeFile(sourcePath, 'fixed source');
+  await fs.mkdir(outputRoot);
+  const source = { materialId: 'material-1', version: 1,
+    sha256: (await require('../electron/project-materials.cjs').hashStableFile(sourcePath)).sha256 };
+  const batch = { projectId: 'project-1', batchId: 'batch-1', outputRoot,
+    inputFiles: [{ ...source, path: sourcePath }], sources: [source],
+    baselines: [{ relativePath: 'knowledge.md', materialIds: [source.materialId] }] };
+  const qualification = { ready: true,
+    cliHash: (await require('../electron/project-materials.cjs').hashStableFile(f.runtime.cliPath)).sha256 };
+  let calls = 0;
+  const result = await executeMaterialWorkBuddy({ runtime: f.runtime, qualification, batch,
+    extractSource: async () => 'fixed source', run: async (_runtime, prompt) => {
+      calls++;
+      if (calls === 1) throw Object.assign(new Error('malformed'), { code: 'AGENT_RESULT_INVALID', stage: 'completed' });
+      assert.match(prompt, /上一次返回未满足结构化合同/);
+      return { schema: RESULT_SCHEMA, projectId: batch.projectId, batchId: batch.batchId,
+        status: 'completed', message: 'repaired', artifacts: [{ relativePath: 'knowledge.md',
+          content: '# Knowledge', sources: [source] }] };
+    } });
+  assert.equal(calls, 2);
+  assert.equal(result.artifacts[0].relativePath, 'knowledge.md');
+  assert.equal(await fs.readFile(path.join(outputRoot, 'knowledge.md'), 'utf8'), '# Knowledge');
+});
+test('material execution repairs one completed response whose batch identity is wrong', async t => {
+  const f = await fixture(t);
+  const sourcePath = path.join(f.root, 'source.md'), outputRoot = path.join(f.root, 'output');
+  await fs.writeFile(sourcePath, 'fixed source'); await fs.mkdir(outputRoot);
+  const source = { materialId: 'material-1', version: 1,
+    sha256: (await require('../electron/project-materials.cjs').hashStableFile(sourcePath)).sha256 };
+  const batch = { projectId: 'project-1', batchId: 'batch-1', outputRoot,
+    inputFiles: [{ ...source, path: sourcePath }], sources: [source],
+    baselines: [{ relativePath: 'knowledge.md', materialIds: [source.materialId] }] };
+  const qualification = { ready: true,
+    cliHash: (await require('../electron/project-materials.cjs').hashStableFile(f.runtime.cliPath)).sha256 };
+  let calls = 0;
+  const receipt = await executeMaterialWorkBuddy({ runtime: f.runtime, qualification, batch,
+    extractSource: async () => 'fixed source', run: async (_runtime, prompt) => {
+      calls++;
+      if (calls === 2) assert.match(prompt, /上一次返回的项目或批次身份不匹配/);
+      return { schema: RESULT_SCHEMA, projectId: batch.projectId, batchId: calls === 1 ? 'wrong-batch' : batch.batchId,
+        status: 'completed', message: calls === 1 ? 'wrong identity' : 'repaired',
+        artifacts: [{ relativePath: 'knowledge.md', content: '# Knowledge', sources: [source] }] };
+    } });
+  assert.equal(calls, 2);
+  assert.equal(receipt.batchId, batch.batchId);
+  assert.equal(await fs.readFile(path.join(outputRoot, 'knowledge.md'), 'utf8'), '# Knowledge');
+});
+test('material execution stops after one batch-identity repair attempt', async t => {
+  const f = await fixture(t);
+  const sourcePath = path.join(f.root, 'source.md'), outputRoot = path.join(f.root, 'output');
+  await fs.writeFile(sourcePath, 'fixed source'); await fs.mkdir(outputRoot);
+  const source = { materialId: 'material-1', version: 1,
+    sha256: (await require('../electron/project-materials.cjs').hashStableFile(sourcePath)).sha256 };
+  const batch = { projectId: 'project-1', batchId: 'batch-1', outputRoot,
+    inputFiles: [{ ...source, path: sourcePath }], sources: [source],
+    baselines: [{ relativePath: 'knowledge.md', materialIds: [source.materialId] }] };
+  const qualification = { ready: true,
+    cliHash: (await require('../electron/project-materials.cjs').hashStableFile(f.runtime.cliPath)).sha256 };
+  let calls = 0;
+  await assert.rejects(executeMaterialWorkBuddy({ runtime: f.runtime, qualification, batch,
+    extractSource: async () => 'fixed source', run: async () => {
+      calls++;
+      return { schema: RESULT_SCHEMA, projectId: batch.projectId, batchId: 'still-wrong',
+        status: 'completed', message: 'wrong identity',
+        artifacts: [{ relativePath: 'knowledge.md', content: '# Knowledge', sources: [source] }] };
+    } }), error => error?.code === 'receipt_scope_mismatch');
+  assert.equal(calls, 2);
+  await assert.rejects(fs.stat(path.join(outputRoot, 'knowledge.md')), error => error?.code === 'ENOENT');
 });
 test('vendor sensitive approval denial/expiry/protection failures remain blocked and cannot be retried as network errors', () => {
   const { taskRetryDecision } = require('../electron/task-recovery-policy.cjs');
@@ -158,4 +234,36 @@ test('cancel waits for real process close, does not mistake kill request for exi
   while(!child) await new Promise(r=>setImmediate(r));
   controller.abort();await new Promise(r=>setImmediate(r));assert.equal(killed,true);assert.equal(settled,false);
   child.emit('close',1);await rejected;
+});
+
+test('streaming past output budget reports contract_output_excessive without changing connection health', async t => {
+  const f = await fixture(t);
+  await assert.rejects(runFixedWorkBuddy(f.runtime, 'synthetic', { maxOutputBytes: 32, spawnProcess: () => {
+    const child = new EventEmitter(); child.pid = 7;
+    child.stdout = new EventEmitter(); child.stderr = new EventEmitter(); child.stdin = new EventEmitter();
+    child.stdin.end = () => setImmediate(() => child.stdout.emit('data', Buffer.from('x'.repeat(64))));
+    child.kill = () => { setImmediate(() => child.emit('close', 1)); return true; };
+    return child;
+  } }), error => {
+    assert.equal(error.code, 'contract_output_excessive');
+    assert.equal(error.stage, 'possibly_sent');
+    assert.equal(error.stopConfirmed, true);
+    return true;
+  });
+});
+
+test('qualification timeout after first token reports contract_timeout', async t => {
+  const f = await fixture(t);
+  await assert.rejects(runFixedWorkBuddy(f.runtime, 'synthetic', { timeoutMs: 20, spawnProcess: () => {
+    const child = new EventEmitter(); child.pid = 8;
+    child.stdout = new EventEmitter(); child.stderr = new EventEmitter(); child.stdin = new EventEmitter();
+    child.stdin.end = () => child.stdout.emit('data', Buffer.from('{'));
+    child.kill = () => { setImmediate(() => child.emit('close', 1)); return true; };
+    return child;
+  } }), error => {
+    assert.equal(error.code, 'contract_timeout');
+    assert.equal(error.stage, 'possibly_sent');
+    assert.equal(error.stopConfirmed, true);
+    return true;
+  });
 });

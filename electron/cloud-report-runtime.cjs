@@ -42,20 +42,25 @@ async function request(base, route, token = '', options = {}) {
 }
 
 function createCloudReportRuntime({ dataDir, protect, unprotect, resolveReportDir, resolveStudentProfile,
-  ensureLocalStudentFromCloudProfile }) {
+  ensureLocalStudentFromCloudProfile, resolveProductEntitlement }) {
   if (!dataDir || !protect || !unprotect || !resolveReportDir) throw new Error('缺少云同步运行时依赖');
   const v2ProfileEnabled = typeof resolveStudentProfile === 'function';
   const autoBindingEnabled = typeof ensureLocalStudentFromCloudProfile === 'function';
+  const autoEnrollmentEnabled = typeof resolveProductEntitlement === 'function' && v2ProfileEnabled;
   const stateFile = path.join(dataDir, 'cloud-report-state.json');
   const cacheRoot = path.join(dataDir, 'cloud-report-cache');
+  const materialOutboxRoot = path.join(dataDir, 'cloud-material-outbox');
   const timers = new Map();
   const inFlight = new Map();
   const syncJobs = new Map();
   const watchers = new Map();
   const rerun = new Set();
   const documentUploads = new Map();
+  let materialFlushTimer = null;
+  let materialFlushRunning = false;
   let state = { version: 1, serverUrl: '', sourceToken: '', sourceDeviceId: '', viewerToken: '', bindings: {},
-    cloudBindings: {}, pendingReceipts: [], syncCursors: {}, bindingIssues: {}, uploadScopePreferences: {} };
+    cloudBindings: {}, pendingReceipts: [], syncCursors: {}, bindingIssues: {}, uploadScopePreferences: {}, sourceBindingKeys: {},
+    healthObjectScopes: {}, materialOutbox: [] };
   let saveChain = Promise.resolve();
   let closed = false;
 
@@ -104,6 +109,9 @@ function createCloudReportRuntime({ dataDir, protect, unprotect, resolveReportDi
     state.syncCursors ||= {};
     state.bindingIssues ||= {};
     state.uploadScopePreferences ||= {};
+    state.sourceBindingKeys ||= {};
+    state.healthObjectScopes ||= {};
+    state.materialOutbox ||= [];
     for (const [studentId, binding] of Object.entries(state.bindings)) {
       if (usesV2UploadScope(binding)) {
         binding.profileFields = DEFAULT_PROFILE_FIELDS.filter(field => (binding.profileFields || DEFAULT_PROFILE_FIELDS).includes(field));
@@ -117,6 +125,7 @@ function createCloudReportRuntime({ dataDir, protect, unprotect, resolveReportDi
       else if (binding.pendingServerWriteState === false) schedule(studentId, 3000);
     }
     if (state.viewerToken) setTimeout(() => { void reconcileAuthorizedStudents().catch(() => {}); void flushPendingReceipts().catch(() => {}); }, 3000);
+    if (state.materialOutbox.length) scheduleMaterialOutbox(3000);
   }
   async function ensureWatcher(studentId) {
     if (watchers.has(studentId) || !state.bindings[studentId]?.enabled) return;
@@ -145,10 +154,28 @@ function createCloudReportRuntime({ dataDir, protect, unprotect, resolveReportDi
     const selectedScope = normalizedUploadScope({ profileFields, materialCategories });
     const selectedProfileFields = selectedScope.profileFields;
     const selectedMaterialCategories = selectedScope.materialCategories;
-    const body = { enrollmentCode: String(enrollmentCode || '').trim().toUpperCase(),
-      ...(v2ProfileEnabled ? { contractVersion: 2, profileFields: selectedProfileFields, materialCategories: selectedMaterialCategories } : {}),
-      publicKey: crypto.createPublicKey(unprotect(state.sourcePrivateKey)).export({ type: 'spki', format: 'pem' }) };
-    const route = '/v1/source-enrollments/redeem';
+    const publicKey = crypto.createPublicKey(unprotect(state.sourcePrivateKey)).export({ type: 'spki', format: 'pem' });
+    const legacyCode = String(enrollmentCode || '').trim().toUpperCase();
+    let route;
+    let body;
+    if (legacyCode) {
+      route = '/v1/source-enrollments/redeem';
+      body = { enrollmentCode: legacyCode,
+        ...(v2ProfileEnabled ? { contractVersion: 2, profileFields: selectedProfileFields, materialCategories: selectedMaterialCategories } : {}),
+        publicKey };
+    } else {
+      if (!autoEnrollmentEnabled) throw new Error('当前版本不能自动开通云同步');
+      const entitlement = await resolveProductEntitlement();
+      if (!entitlement?.active || !String(entitlement.licenseToken || '').startsWith('AIE3.')) throw new Error('需要有效的 Windows License v3 才能开通云同步');
+      const profile = await resolveStudentProfile(localStudentId);
+      if (!profile) throw new Error('本机学生不存在');
+      if (!state.sourceBindingKeys[localStudentId]) state.sourceBindingKeys[localStudentId] = protect(crypto.randomBytes(32).toString('base64url'));
+      route = '/v2/source-auto-enroll';
+      body = { licenseToken: entitlement.licenseToken, deviceId: entitlement.deviceId,
+        bindingKey: unprotect(state.sourceBindingKeys[localStudentId]), displayName: profile.displayName || profile.name,
+        contractVersion: 2, profileFields: selectedProfileFields, materialCategories: selectedMaterialCategories, publicKey };
+      await save();
+    }
     let result;
     try { result = await request(base, route, existing ? token('source') : '',
       { method: 'POST', body, headers: existing ? sourceHeaders('POST', route, JSON.stringify(body)) : {} }); }
@@ -291,10 +318,14 @@ function createCloudReportRuntime({ dataDir, protect, unprotect, resolveReportDi
       const reportDir = await resolveReportDir(studentId);
       if (!reportDir) throw new Error('本机学生目录不存在');
       await syncStudentProfile(studentId);
-      const result = await uploadPublishedReports({ serverUrl: state.serverUrl, deviceToken: token('source'),
-        reportDir, localStudentId: studentId, cloudStudentId: binding.cloudStudentId,
-        signal: AbortSignal.any([controller.signal, AbortSignal.timeout(60000)]),
-        proof: sourceHeaders, knownHashes: binding.hashes || {} });
+      const reportsAuthorized = !usesV2UploadScope(binding) || binding.materialCategories?.includes('learning_report');
+      const result = reportsAuthorized
+        ? await uploadPublishedReports({ serverUrl: state.serverUrl, deviceToken: token('source'),
+          reportDir, localStudentId: studentId, cloudStudentId: binding.cloudStudentId,
+          signal: AbortSignal.any([controller.signal, AbortSignal.timeout(60000)]),
+          proof: sourceHeaders, knownHashes: binding.hashes || {} })
+        : { hashes: binding.hashes || {}, serverVerifiedAt: binding.serverVerifiedAt || 0,
+          uploaded: [], unchanged: [], readyCount: 0, skipped: [] };
       binding.hashes = result.hashes;
       binding.retryCount = 0;
       binding.lastSyncAt = Date.now();
@@ -350,6 +381,7 @@ function createCloudReportRuntime({ dataDir, protect, unprotect, resolveReportDi
         contractVersion: 2,
         profileFields: DEFAULT_PROFILE_FIELDS.filter(field => (options.profileFields || singleBinding?.profileFields || DEFAULT_PROFILE_FIELDS).includes(field)),
         materialCategories: MATERIAL_CATEGORIES.filter(category => (options.materialCategories || singleBinding?.materialCategories || DEFAULT_MATERIAL_CATEGORIES).includes(category)),
+        healthObjectScope: Array.isArray(options.healthObjectScope) ? options.healthObjectScope : [],
       } : {}),
     });
   }
@@ -561,6 +593,96 @@ function createCloudReportRuntime({ dataDir, protect, unprotect, resolveReportDi
     if (!response.ok) throw new Error(result.error || `资料同步失败（HTTP ${response.status}）`);
     return result;
   }
+  async function setHealthUploadScope(localStudentId, objectScope) {
+    const binding = state.bindings[localStudentId];
+    if (!binding?.enabled || binding.sourceDeviceId !== state.sourceDeviceId) throw new Error('当前学生尚未开通云端来源许可');
+    const route = '/v2/source-health-scope';
+    const result = await request(state.serverUrl, route, token('source'), { method: 'POST', headers: sourceHeaders('POST', route),
+      body: { cloudStudentId: binding.cloudStudentId, objectScope } });
+    state.healthObjectScopes[localStudentId] = result.objectScope || [];
+    await save();
+    return result;
+  }
+  async function uploadHealthRecord(localStudentId, record) {
+    const binding = state.bindings[localStudentId];
+    if (!binding?.enabled || binding.sourceDeviceId !== state.sourceDeviceId) throw new Error('当前学生尚未开通云端来源许可');
+    const bytes = Buffer.isBuffer(record?.bytes) ? record.bytes : await fs.readFile(String(record?.path || ''));
+    if (!bytes.length || bytes.length > 20 * 1024 * 1024) throw new Error('健康资料大小无效');
+    const healthRecordId = String(record?.healthRecordId || '');
+    const idempotencyKey = String(record?.idempotencyKey || '');
+    const route = `/v2/students/${binding.cloudStudentId}/health-records`;
+    const response = await fetch(cloudRequestUrl(state.serverUrl, route), { redirect: 'error', method: 'POST', headers: {
+      authorization: `Bearer ${token('source')}`, ...sourceHeaders('POST', route, bytes),
+      'content-type': String(record?.contentType || 'text/markdown'), 'x-document-name': encodeURIComponent(String(record?.displayName || '健康资料.md')),
+      'x-health-record-id': healthRecordId, 'x-idempotency-key': idempotencyKey,
+    }, body: bytes, signal: AbortSignal.timeout(60000) });
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(result.error || `健康资料同步失败（HTTP ${response.status}）`);
+    return result;
+  }
+  async function listCloudHealthRecords(cloudStudentId, cursor = '') {
+    if (!state.viewerToken) throw new Error('尚未开通云端学生下载许可');
+    const route = `/v2/students/${cloudStudentId}/health-records${cursor ? `?cursor=${encodeURIComponent(cursor)}` : ''}`;
+    return request(state.serverUrl, route, token('viewer'), { headers: viewerProof('GET', route) });
+  }
+  function scheduleMaterialOutbox(delay = 1000) {
+    if (closed || materialFlushTimer) return;
+    materialFlushTimer = setTimeout(() => {
+      materialFlushTimer = null;
+      void flushMaterialOutbox().catch(() => {});
+    }, Math.max(0, delay));
+    materialFlushTimer.unref?.();
+  }
+  async function queueCloudMaterial(localStudentId, material) {
+    const binding = state.bindings[localStudentId];
+    if (!binding?.enabled || !usesV2UploadScope(binding)) return { queued: false, reason: 'cloud_sync_disabled' };
+    const category = String(material?.category || '');
+    if (!binding.materialCategories?.includes(category)) return { queued: false, reason: 'category_not_authorized' };
+    const bytes = Buffer.isBuffer(material.bytes) ? material.bytes : Buffer.from(String(material.content || ''), 'utf8');
+    if (!bytes.length || bytes.length > 20 * 1024 * 1024) throw new Error('资料大小无效');
+    const idempotencyKey = String(material.idempotencyKey || '');
+    if (!/^[A-Za-z0-9:_-]{8,200}$/.test(idempotencyKey)) throw new Error('资料提交编号无效');
+    const existing = state.materialOutbox.find(item => item.localStudentId === localStudentId && item.idempotencyKey === idempotencyKey);
+    if (existing) return { queued: true, duplicate: true, queueId: existing.queueId };
+    await fs.mkdir(materialOutboxRoot, { recursive: true });
+    const queueId = crypto.createHash('sha256').update(`${localStudentId}\n${idempotencyKey}`).digest('hex');
+    const objectPath = path.join(materialOutboxRoot, `${queueId}.bin`);
+    const temp = `${objectPath}.${crypto.randomUUID()}.tmp`;
+    try { await fs.writeFile(temp, bytes, { flag: 'wx', mode: 0o600 }); await fs.rename(temp, objectPath); }
+    finally { await fs.rm(temp, { force: true }); }
+    state.materialOutbox.push({ queueId, localStudentId, idempotencyKey, objectPath, attempts: 0, createdAt: Date.now(),
+      material: { ...material, bytes: undefined, content: undefined } });
+    await save(); scheduleMaterialOutbox(0);
+    return { queued: true, duplicate: false, queueId };
+  }
+  async function flushMaterialOutbox() {
+    if (closed || materialFlushRunning || !state.materialOutbox.length) return { processed: 0, pending: state.materialOutbox.length };
+    materialFlushRunning = true;
+    let processed = 0;
+    try {
+      for (const item of [...state.materialOutbox].slice(0, 20)) {
+        try {
+          const bytes = await fs.readFile(item.objectPath);
+          await uploadCloudMaterial(item.localStudentId, { ...item.material, idempotencyKey: item.idempotencyKey, bytes });
+          state.materialOutbox = state.materialOutbox.filter(candidate => candidate.queueId !== item.queueId);
+          await fs.rm(item.objectPath, { force: true }); processed += 1;
+        } catch (error) {
+          item.attempts = Number(item.attempts || 0) + 1;
+          item.lastError = String(error.message || error).slice(0, 500);
+          item.retryAt = Date.now() + Math.min(15 * 60 * 1000, 15000 * (2 ** Math.min(item.attempts, 6)));
+          break;
+        }
+      }
+      await save();
+    } finally {
+      materialFlushRunning = false;
+      if (state.materialOutbox.length) {
+        const delay = Math.max(1000, Number(state.materialOutbox[0].retryAt || 0) - Date.now());
+        scheduleMaterialOutbox(delay);
+      }
+    }
+    return { processed, pending: state.materialOutbox.length };
+  }
   async function listCloudMaterials(cloudStudentId, { category = '', history = false, cursor = '' } = {}) {
     if (!state.viewerToken) throw new Error('尚未开通云端学生下载许可');
     const query = new URLSearchParams();
@@ -637,6 +759,18 @@ function createCloudReportRuntime({ dataDir, protect, unprotect, resolveReportDi
     const route = `/v2/inbox/${submissionId}/lease`;
     return request(state.serverUrl, route, token('viewer'), { method: 'POST', headers: viewerProof('POST', route), body: {} });
   }
+  async function downloadCloudInboxAttachment(submissionId, attachmentId, leaseId) {
+    if (!state.viewerToken) throw new Error('尚未开通本机云端下载许可');
+    const route = `/v2/inbox/${submissionId}/attachments/${attachmentId}`;
+    const response = await fetch(cloudRequestUrl(state.serverUrl, route), { redirect: 'error', headers: {
+      authorization: `Bearer ${token('viewer')}`, ...viewerProof('GET', route), 'x-inbox-lease-id': leaseId,
+    }, signal: AbortSignal.timeout(30000) });
+    if (!response.ok) { const body = await response.json().catch(() => ({})); throw new Error(body.error || `成果附件下载失败（HTTP ${response.status}）`); }
+    const content = Buffer.from(await response.arrayBuffer());
+    const contentSha256 = crypto.createHash('sha256').update(content).digest('hex');
+    if (contentSha256 !== response.headers.get('x-content-sha256')) throw new Error('成果附件下载校验失败');
+    return { content, contentSha256, contentType: response.headers.get('content-type') || 'application/octet-stream' };
+  }
   async function settleCloudInboxSubmission(submissionId, { leaseId, status, reason = '' }) {
     if (!state.viewerToken) throw new Error('尚未开通本机云端下载许可');
     const route = `/v2/inbox/${submissionId}/settle`;
@@ -702,10 +836,11 @@ function createCloudReportRuntime({ dataDir, protect, unprotect, resolveReportDi
       pendingServerWriteState: binding.pendingServerWriteState,
       profileFields: binding.profileFields || DEFAULT_PROFILE_FIELDS,
       materialCategories: binding.materialCategories || DEFAULT_MATERIAL_CATEGORIES,
+      healthObjectScope: state.healthObjectScopes?.[studentId] || [],
       pendingUploadScope: binding.pendingUploadScope || null, savedUploadScope,
       uploadScopePersistence: usesV2UploadScope(binding)
         ? (binding.pendingUploadScope ? 'pending_cloud' : 'cloud_confirmed') : 'local_requires_upgrade' } : { configured: false, enabled: false,
-        profileFields: DEFAULT_PROFILE_FIELDS, materialCategories: DEFAULT_MATERIAL_CATEGORIES, savedUploadScope,
+        profileFields: DEFAULT_PROFILE_FIELDS, materialCategories: DEFAULT_MATERIAL_CATEGORIES, healthObjectScope: state.healthObjectScopes?.[studentId] || [], savedUploadScope,
         uploadScopePersistence: savedUploadScope ? 'local_requires_enrollment' : 'default' };
   }
   function close() {
@@ -713,14 +848,16 @@ function createCloudReportRuntime({ dataDir, protect, unprotect, resolveReportDi
     for (const timer of timers.values()) clearTimeout(timer);
     for (const controller of inFlight.values()) controller.abort();
     for (const watcher of watchers.values()) watcher.close();
+    if (materialFlushTimer) clearTimeout(materialFlushTimer);
   }
   return { load, close, enrollSource, setUpload, setUploadScope, schedule, syncStudent, syncNow, status, settings, saveSettings, checkConnection,
     createPairing, approvePairing, listCloudStudents, removeCloudStudent, listCloudReports, downloadCloudReport,
     listCloudDocuments, listCloudDocumentPage, downloadCloudDocument, listCachedStudents, clearCloudCache, uploadSharedDocument,
     syncStudentProfile, reconcileAuthorizedStudents, refreshChanges, flushPendingReceipts,
-    uploadCloudMaterial, listCloudMaterials, downloadCloudMaterial,
+    uploadCloudMaterial, queueCloudMaterial, flushMaterialOutbox, listCloudMaterials, downloadCloudMaterial,
+    setHealthUploadScope, uploadHealthRecord, listCloudHealthRecords,
     cloudStudentIdsForLocalStudents, issueRemoteAgentSession, remoteAgentSessionStatus, revokeRemoteAgentSession, listCloudInbox,
-    leaseCloudInboxSubmission, settleCloudInboxSubmission };
+    leaseCloudInboxSubmission, downloadCloudInboxAttachment, settleCloudInboxSubmission };
 }
 
 module.exports = { createCloudReportRuntime, checkedServerUrl, DEFAULT_PROFILE_FIELDS, MATERIAL_CATEGORIES, DEFAULT_MATERIAL_CATEGORIES,

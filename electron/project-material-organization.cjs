@@ -43,9 +43,16 @@ function ensureState(index) {
 }
 
 function configuration(project) {
-  const value = project.materialOrganization || {};
+  // materialAutomation is the production source of truth.  The legacy
+  // materialOrganization block is read only when a project has not yet been
+  // migrated; an explicit `enabled: false` in the new block must win over an
+  // older authorization.
+  const current = project.materialAutomation && typeof project.materialAutomation === 'object'
+    ? project.materialAutomation : null;
+  const value = current || project.materialOrganization || {};
   return {
     enabled: value.enabled === true,
+    processingPaused: value.processingPaused === true,
     authorizationId: String(value.authorizationId || ''),
     authorizedAt: String(value.authorizedAt || ''),
     authorizedBy: String(value.authorizedBy || ''),

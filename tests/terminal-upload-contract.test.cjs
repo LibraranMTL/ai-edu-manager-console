@@ -43,7 +43,7 @@ test('host quick and source-directory imports can target student raw or an activ
   assert.match(main, /function importFiles\(studentKey, targetJson = ''\)/);
   assert.match(preload, /importFiles\(studentName, targetJson\)/);
   assert.match(ui, /importFiles\?\.\(student\.id, JSON\.stringify\(materialImportTargetForStudent\(student\)\)\)/);
-  assert.match(main, /importMaterialSourceFiles\(studentId, pathsJson, targetJson = ''\)/);
+  assert.match(main, /importMaterialSourceFiles\(studentId, pathsJson, targetJson = '', options = \{\}\)/);
   assert.match(main, /target\.type === 'project'/);
   assert.match(main, /targetProject\?\.status === 'sealed'/);
   assert.match(main, /triggerReason: 'host_manual_import'/);

@@ -275,22 +275,29 @@ function createLlmApiProvider({ directory, protect, unprotect, request = fetch, 
           stage: rejected ? 'rejected' : 'possibly_sent',
         });
       }
+      await onStage?.('transport_acknowledged',{httpStatus:response.status,requestId:String(response.headers?.get?.('x-request-id')||'').slice(0,160)});
       return readJsonResponse(response);
     } finally { clearTimeout(timer); signal?.removeEventListener('abort', abort); }
   }
-  async function generate({ prompt, schema, images = [], timeoutMs = 180000, signal, maxOutputTokens = 8192, onStage } = {}) {
+  async function generate({ prompt, schema, images = [], timeoutMs = 180000, signal, maxOutputTokens = 8192, onStage,beforeExecute } = {}) {
     const profile = await runtime();
     if (typeof prompt !== 'string' || !prompt.trim() || Buffer.byteLength(prompt, 'utf8') > 6 * 1024 * 1024) throw Error('LLM API 输入为空或超过安全限制');
     if (!schema || schema.type !== 'object') throw Error('LLM API 结构化输出合同无效');
-    if (!Array.isArray(images) || images.length > 1) throw Error('LLM API 一次只接受一份受控图片输入');
-    for (const image of images) if (!Buffer.isBuffer(image.bytes) || image.bytes.length > 10 * 1024 * 1024 || !['.png', '.jpg', '.jpeg'].includes(image.extension)) throw Error('LLM API 图片输入无效');
+    if (!Array.isArray(images) || images.length > 8) throw Error('LLM API 一次最多接受八份受控代表图');
+    let imageBytes = 0;
+    for (const image of images) {
+      if (!Buffer.isBuffer(image.bytes) || image.bytes.length > 10 * 1024 * 1024 || !['.png', '.jpg', '.jpeg'].includes(image.extension)) throw Error('LLM API 图片输入无效');
+      imageBytes += image.bytes.length;
+    }
+    if (imageBytes > 24 * 1024 * 1024) throw Error('LLM API 图片批次超过安全限制');
     const body = generationRequest(profile, prompt, schema, images, Math.min(16384, Math.max(256, Number(maxOutputTokens || 8192))));
+    await beforeExecute?.();
     const result = await postJson(profile, body, { timeoutMs, signal, onStage });
     const value = structuredContent(result, profile.protocol);
     await onStage?.('result_received', { requestId: String(result.id || '').slice(0, 160), usage: result.usage || null });
     return value;
   }
-  async function search({ queryInput, timeoutMs = 180000, signal, onStage } = {}) {
+  async function search({ queryInput, timeoutMs = 180000, signal, onStage,beforeExecute } = {}) {
     const profile = await runtime();
     if (!PROTOCOLS[profile.protocol].research) throw Object.assign(Error('当前兼容协议没有可核验的联网搜索工具；请选择 OpenAI Responses 或 Anthropic Messages'), { code: 'LLM_API_RESEARCH_UNSUPPORTED', stage: 'not_sent' });
     if (!queryInput || typeof queryInput !== 'object' || Buffer.byteLength(JSON.stringify(queryInput), 'utf8') > 1024 * 1024) throw Error('联网研究输入无效或超过安全限制');
@@ -299,6 +306,7 @@ function createLlmApiProvider({ directory, protect, unprotect, request = fetch, 
       ? { model: profile.model, input: prompt, tools: [{ type: 'web_search' }], tool_choice: 'auto', max_output_tokens: 12000,
         text: { format: { type: 'json_schema', name: 'edu_manager_research', strict: true, schema } } }
       : { model: profile.model, max_tokens: 12000, messages: [{ role: 'user', content: prompt }], tools: [{ type: 'web_search_20250305', name: 'web_search', max_uses: 4 }] };
+    await beforeExecute?.();
     const result = await postJson(profile, body, { timeoutMs, signal, onStage });
     const value = structuredContent(result, profile.protocol), citations = researchEvidence(result, profile.protocol);
     const events = citations.map(url => ({ type: 'item.completed', item: { type: 'web_search', status: 'completed', action: { type: 'open_page', url } } }));

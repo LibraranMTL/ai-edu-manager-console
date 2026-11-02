@@ -16,3 +16,34 @@
 .smart-inbox td small { margin-top: 5px; color: var(--text-muted, #586c67); line-height: 1.5; }
 .smart-inbox td button { margin: 0 5px 5px 0; }
 .smart-inbox [role="status"] { padding: 10px 12px; background: var(--accent-soft, #f3faf8); border-radius: 10px; overflow-wrap: anywhere; }
+.smart-inbox-table-wrap { width: 100%; min-width: 0; overflow-x: hidden; }
+.smart-inbox-table { width: 100%; min-width: 0; table-layout: fixed; border-collapse: collapse; }
+.smart-inbox-table .select-column { width: 7%; }
+.smart-inbox-table .material-column { width: 32%; }
+.smart-inbox-table .status-column { width: 14%; }
+.smart-inbox-table .reason-column { width: 32%; }
+.smart-inbox-table .action-column { width: 15%; }
+.smart-inbox-table th, .smart-inbox-table td { min-width: 0; overflow-wrap: anywhere; word-break: normal; }
+.smart-inbox-table .material-name { display: block; font-weight: 700; overflow-wrap: anywhere; }
+.smart-inbox-table .row-actions { display: flex; flex-wrap: wrap; align-content: flex-start; gap: 5px; }
+.smart-inbox-table .row-actions button { min-width: 0; margin: 0; white-space: normal; }
+.smart-inbox-table tbody tr { content-visibility: auto; contain-intrinsic-size: 86px; }
+
+@media (max-width: 900px) {
+  .smart-inbox-table colgroup, .smart-inbox-table thead { display: none; }
+  .smart-inbox-table, .smart-inbox-table tbody { display: block; width: 100%; }
+  .smart-inbox-table tbody tr {
+    display: grid; grid-template-columns: 40px minmax(0, 1fr); gap: 8px 12px;
+    margin-bottom: 12px; padding: 12px; border: 1px solid var(--panel-border, #dbe5e1);
+    border-radius: 12px; content-visibility: auto; contain-intrinsic-size: 220px;
+  }
+  .smart-inbox-table tbody td { display: block; padding: 0; border: 0; min-width: 0; }
+  .smart-inbox-table .selection-cell { grid-row: 1 / span 4; }
+  .smart-inbox-table .material-cell, .smart-inbox-table .status-cell,
+  .smart-inbox-table .reason-cell, .smart-inbox-table .row-actions { grid-column: 2; }
+  .smart-inbox-table .status-cell::before, .smart-inbox-table .reason-cell::before,
+  .smart-inbox-table .row-actions::before {
+    content: attr(data-label); display: block; margin-bottom: 3px; color: var(--text-muted, #586c67);
+    font-size: .78rem; font-weight: 700;
+  }
+}

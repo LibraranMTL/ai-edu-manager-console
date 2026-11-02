@@ -66,10 +66,14 @@ test('short-lived Codex/WorkBuddy sessions read only granted material and submit
     assert.equal(contentResponse.status, 200);
     assert.equal(await contentResponse.text(), '# 项目资料\n\n只读范围测试。\n');
 
+    const attachmentBytes = Buffer.from('# 远程成果附件\n');
+    const attachmentSha = require('node:crypto').createHash('sha256').update(attachmentBytes).digest('hex');
     const resultPayload = { schema: 'edu-manager.remote-project-result.v2', taskId: 'task:remote:001', executionId: 'execution:remote:001',
       taskType: 'project_digest.v2', projectId: 'project:remote:001', scopeFingerprint, status: 'completed',
       title: '合成远程结果', content: '这是经过资料来源约束的合成远程结果。',
-      sources: [{ materialId: 'learning:remote:001', revisionId: material.revisionId, contentSha256: material.contentSha256 }] };
+      sources: [{ materialId: 'learning:remote:001', revisionId: material.revisionId, contentSha256: material.contentSha256 }],
+      attachments: [{ displayName: '成果附件.md', contentType: 'text/markdown', contentSha256: attachmentSha,
+        contentBase64: attachmentBytes.toString('base64') }] };
     const submission = { idempotencyKey: 'result:remote:001:v1', projectId: 'project:remote:001', scopeFingerprint,
       payload: resultPayload };
     const submitted = await agentRequest('/v2/inbox/submissions', session.sessionToken, { method: 'POST', body: submission });
@@ -98,6 +102,11 @@ test('short-lived Codex/WorkBuddy sessions read only granted material and submit
     assert.equal(inbox.submissions.length, 1);
     const leased = await receiver.leaseCloudInboxSubmission(submitted.json.submissionId);
     assert.equal(leased.payload.content, '这是经过资料来源约束的合成远程结果。');
+    assert.equal(leased.attachments.length, 1);
+    assert.equal(leased.payload.attachments[0].contentBase64, undefined, '云端账本不得重复保存附件正文');
+    const downloadedAttachment = await receiver.downloadCloudInboxAttachment(submitted.json.submissionId,
+      leased.attachments[0].attachmentId, leased.leaseId);
+    assert.equal(downloadedAttachment.content.toString('utf8'), attachmentBytes.toString('utf8'));
     assert.equal(leased.taskId, 'task:remote:001');
     assert.equal(leased.executionId, 'execution:remote:001');
     await assert.rejects(receiver.leaseCloudInboxSubmission(submitted.json.submissionId), /正在由本机另一流程处理/);

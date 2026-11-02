@@ -3,10 +3,20 @@ const fs = require('node:fs');
 const path = require('node:path');
 const test = require('node:test');
 const {
+  codexDesktopCliCandidatePaths,
   mergeOpenAiToolInstall,
   parseCodexCliVersion,
   selectNewestCodexCliCandidate,
 } = require('../electron/openai-tool-install.cjs');
+
+test('desktop package contributes its bundled current Codex CLI candidate', () => {
+  assert.deepEqual(codexDesktopCliCandidatePaths({
+    InstallLocation: 'C:\\Program Files\\WindowsApps\\OpenAI.Codex_26.1027.6604.0_x64',
+    AppPath: 'C:\\Program Files\\WindowsApps\\OpenAI.Codex_26.1027.6604.0_x64\\app\\ChatGPT.exe',
+  }), [
+    'C:\\Program Files\\WindowsApps\\OpenAI.Codex_26.1027.6604.0_x64\\app\\resources\\codex.exe',
+  ]);
+});
 
 test('Codex CLI versions are parsed and the newest installed runtime wins', () => {
   assert.deepEqual(parseCodexCliVersion('codex-cli 0.153.4'), {

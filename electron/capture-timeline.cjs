@@ -1,6 +1,7 @@
 const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
+const { attachEventCoverage } = require('./capture-timeline-duration.cjs');
 
 const TIMELINE_SCHEMA = 'edu-manager.learner-event.v1';
 const TEMPORAL_SCHEMA = 'edu-manager.temporal-event.v1';
@@ -204,14 +205,17 @@ function appendEvent(rootPath, event) {
 }
 
 function appendCaptureItem(rootPath, session, item) {
-  return appendEvent(rootPath, captureEventFromSessionItem(session, item));
+  const event = captureEventFromSessionItem(session, item);
+  const covered = attachEventCoverage([event], session, { contextEvents: [event] })[0];
+  return appendEvent(rootPath, covered);
 }
 
 function rebuildSessionTimeline(rootPath, session = {}) {
   const items = Array.isArray(session.items) ? session.items : [];
+  const timelineEvents = items.map((item) => captureEventFromSessionItem(session, item));
+  const coveredEvents = attachEventCoverage(timelineEvents, session, { contextEvents: timelineEvents });
   const grouped = new Map();
-  for (const item of items) {
-    const event = captureEventFromSessionItem(session, item);
+  for (const event of coveredEvents) {
     if (!event.studentId || !event.id) continue;
     const group = grouped.get(event.date) || [];
     group.push(event);
@@ -222,19 +226,42 @@ function rebuildSessionTimeline(rootPath, session = {}) {
     const filePath = eventsPath(rootPath, session.studentId, date);
     const existing = readEvents(filePath);
     const ids = new Set(existing.map((event) => String(event.id || '')));
+    const candidateById = new Map(candidates.map((event) => [String(event.id || ''), event]));
+    let updated = false;
+    const retained = existing.map((event) => {
+      const candidate = candidateById.get(String(event.id || ''));
+      if (!candidate) return event;
+      const coverage = {
+        coverageStartAt: candidate.coverageStartAt || '',
+        coverageEndAt: candidate.coverageEndAt || '',
+        durationMs: Math.max(0, Number(candidate.durationMs || 0)),
+        observedDurationMs: Math.max(0, Number(candidate.observedDurationMs || 0)),
+        inferredDurationMs: Math.max(0, Number(candidate.inferredDurationMs || 0)),
+        unobservedDurationMs: Math.max(0, Number(candidate.unobservedDurationMs || 0)),
+        duplicateSampleCount: Math.max(0, Number(candidate.duplicateSampleCount || 0)),
+        trustedSampleCount: Math.max(0, Number(candidate.trustedSampleCount || 0)),
+        durationBasis: String(candidate.durationBasis || ''),
+        durationConfidence: String(candidate.durationConfidence || ''),
+        historicalReconstruction: Boolean(candidate.historicalReconstruction),
+      };
+      if (Object.entries(coverage).some(([key, value]) => event[key] !== value)) updated = true;
+      return { ...event, ...coverage };
+    });
     const additions = candidates.filter((event) => {
       if (ids.has(event.id)) return false;
       ids.add(event.id);
       return true;
     });
-    if (!additions.length) {
+    if (!additions.length && !updated) {
       eventIdCache.set(filePath, ids);
       continue;
     }
+    const nextEvents = [...retained, ...additions]
+      .sort((left, right) => String(left.occurredAt || '').localeCompare(String(right.occurredAt || '')) || String(left.id || '').localeCompare(String(right.id || '')));
     fs.mkdirSync(path.dirname(filePath), { recursive: true });
-    fs.appendFileSync(filePath, `${additions.map((event) => JSON.stringify(event)).join('\n')}\n`, 'utf8');
+    fs.writeFileSync(filePath, `${nextEvents.map((event) => JSON.stringify(event)).join('\n')}\n`, 'utf8');
     eventIdCache.set(filePath, ids);
-    rebuildDateSummary(rootPath, session.studentId, date, [...existing, ...additions]);
+    rebuildDateSummary(rootPath, session.studentId, date, nextEvents);
     appended += additions.length;
   }
   return { ok: true, appended, total: items.length };

@@ -3,6 +3,8 @@ const { contextBridge, ipcRenderer } = require('electron');
 const invokeLegacy = (channel, ...args) => ipcRenderer.invoke('bridge:invokeLegacyAsync', channel, args);
 
 contextBridge.exposeInMainWorld('AndroidBridge', {
+  qaMainPerformance(action) { return ipcRenderer.invoke('bridge:qaMainPerformance', action); },
+  noteUserActivity() { return ipcRenderer.invoke('bridge:noteUserActivity'); },
   getAppBootstrap() { return ipcRenderer.invoke('bridge:getAppBootstrap'); },
   getSubsystemStatus() { return ipcRenderer.invoke('bridge:getSubsystemStatus'); },
   retrySubsystemInitialization(name) { return ipcRenderer.invoke('bridge:retrySubsystemInitialization', name); },
@@ -258,6 +260,12 @@ contextBridge.exposeInMainWorld('AndroidBridge', {
   },
   listProjectStagingItems(request) {
     return ipcRenderer.invoke('bridge:listProjectStagingItems', request || {});
+  },
+  listProjectWorkspaceScanEntries(request) {
+    return ipcRenderer.invoke('bridge:listProjectWorkspaceScanEntries', request || {});
+  },
+  getProjectTaskProjection(projectId) {
+    return ipcRenderer.invoke('bridge:getProjectTaskProjection', projectId);
   },
   getProjectStagingSummary(projectId) {
     return ipcRenderer.invoke('bridge:getProjectStagingSummary', projectId);
@@ -740,6 +748,9 @@ contextBridge.exposeInMainWorld('AndroidBridge', {
   cloudReportSetUploadScope(studentId, input) {
     return ipcRenderer.invoke('bridge:cloudReportSetUploadScope', studentId, input);
   },
+  cloudReportSelectUploadHealth(studentId) {
+    return ipcRenderer.invoke('bridge:cloudReportSelectUploadHealth', studentId);
+  },
   cloudReportStatus(studentId) {
     return ipcRenderer.invoke('bridge:cloudReportStatus', studentId);
   },
@@ -776,6 +787,9 @@ contextBridge.exposeInMainWorld('AndroidBridge', {
   },
   cloudReportDownloadMaterial(cloudStudentId, revisionId, reveal) {
     return ipcRenderer.invoke('bridge:cloudReportDownloadMaterial', cloudStudentId, revisionId, reveal);
+  },
+  cloudReportImportMaterial(localStudentId, cloudStudentId, revisionId) {
+    return ipcRenderer.invoke('bridge:cloudReportImportMaterial', localStudentId, cloudStudentId, revisionId);
   },
   cloudReportIssueRemoteAgent(input) { return ipcRenderer.invoke('bridge:cloudReportIssueRemoteAgent', input); },
   cloudReportRemoteAgentStatus(sessionId) { return ipcRenderer.invoke('bridge:cloudReportRemoteAgentStatus', sessionId); },
@@ -875,6 +889,12 @@ contextBridge.exposeInMainWorld('AndroidBridge', {
   },
   getHostServiceStatus() {
     return ipcRenderer.invoke('bridge:getHostServiceStatus');
+  },
+  getHostFirewallDiagnostics() {
+    return ipcRenderer.invoke('bridge:getHostFirewallDiagnostics');
+  },
+  repairHostFirewallAccess() {
+    return ipcRenderer.invoke('bridge:repairHostFirewallAccess');
   },
   setHostUsageMode(mode) {
     return invokeLegacy('bridge:setHostUsageMode', mode);
@@ -1091,6 +1111,12 @@ contextBridge.exposeInMainWorld('AndroidBridge', {
   },
   getTaskPage(query = {}) {
     return ipcRenderer.invoke('bridge:getTaskPage', query);
+  },
+  previewTaskRecovery(query={}){return ipcRenderer.invoke('bridge:previewTaskRecovery',query);},
+  getTaskSessionSummary(){return ipcRenderer.invoke('bridge:getTaskSessionSummary');},
+  applyTaskRecovery(query){return ipcRenderer.invoke('bridge:applyTaskRecovery',query);},
+  syncTaskSources() {
+    return ipcRenderer.invoke('bridge:syncTaskSources');
   },
   getTaskDetail(taskId) {
     return ipcRenderer.invoke('bridge:getTaskDetail', String(taskId));

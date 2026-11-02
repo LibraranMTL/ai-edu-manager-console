@@ -62,10 +62,15 @@ function createSmartInboxHost(h) {
       destination: createProjectMaterialExtractor({ store }), destinationInput: await store.resolve(m.materialId, m.version),
       sourceStudentId: item.studentId, studentId: item.target.studentId, authorize });
   }
+  async function readProjectCategories(project) {
+    if (typeof h.materialCategories === 'function') return await h.materialCategories(project) || [];
+    return await h.materialHost(project).store.readCategories?.() || [];
+  }
   async function context(id) {
     const s = student(id), projects = [];
     for (const p of h.projects().filter(p => p.studentIds?.map(String).includes(String(id)) && !['sealed', 'archived'].includes(p.status))) {
-      const index = h.isWorkspace(p) ? await h.materialHost(p).store.read() : { categories: [] };
+      const categories = h.isWorkspace(p) ? await readProjectCategories(p) : [];
+      const index = { categories };
       projects.push({ id: String(p.id), name: p.name, summary: String(p.description || p.goal || '').slice(0, 600), identifiers: [],
         categories: h.isWorkspace(p) ? categoryDefinitions(p, index).map(c => ({ categoryId: c.categoryId, name: c.name })) : [] });
     }
@@ -88,14 +93,15 @@ function createSmartInboxHost(h) {
   }
   const engine = createSmartInbox({
     directory: h.directory, forbiddenRoots: h.forbiddenRoots, context, automaticAllowed: h.automaticAllowed,
-    acquire: h.acquire, waitingReason: h.waitingReason, beginBatch: h.beginBatch, endBatch: h.endBatch, changed: h.changed, onError: h.onError,
+    acquire: h.acquire, waitingReason: h.waitingReason, beginBatch: h.beginBatch, endBatch: h.endBatch,
+    settleItems: h.settleItems, changed: h.changed, onError: h.onError,
     extractorVersion: EXTRACTOR_VERSION,
     validateTarget: async t => {
       const value = await h.validateTarget(t);
       if (t.categoryId) {
         const p = value.project;
         if (!p || !h.isWorkspace(p)) throw Error('此目标不支持项目逻辑分类');
-        const index = await h.materialHost(p).store.read();
+        const index = { categories: await readProjectCategories(p) };
         if (!categoryDefinitions(p, index).some(c => c.categoryId === t.categoryId)) throw Error('项目分类已变化');
       }
       return value;

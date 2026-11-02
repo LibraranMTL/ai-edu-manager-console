@@ -11,6 +11,7 @@ const { auditWindowsResources } = require('./audit-windows-resources.cjs');
 const { compactWindowsRuntime } = require('./compact-windows-runtime.cjs');
 const { compactPngResources } = require('./compact-png-resources.cjs');
 const { resolvePnpmVirtualStore } = require('./pnpm-virtual-store.cjs');
+const { createSourceControlAudit } = require('./source-control-audit.cjs');
 
 const repoRoot = path.resolve(__dirname, '..');
 const packageJson = JSON.parse(fs.readFileSync(path.join(repoRoot, 'package.json'), 'utf8'));
@@ -132,33 +133,6 @@ function sha256(file) {
   return hash.digest('hex').toUpperCase();
 }
 
-function captureGit(args) {
-  const result = spawnSync('git', args, {
-    cwd: repoRoot,
-    encoding: 'utf8',
-    stdio: 'pipe',
-    windowsHide: true,
-    maxBuffer: 32 * 1024 * 1024,
-  });
-  if (result.error) throw result.error;
-  if (result.status !== 0) {
-    throw new Error(`Unable to capture source-control state: ${String(result.stderr || result.stdout || '').trim()}`);
-  }
-  return String(result.stdout || '').trim();
-}
-
-function sourceControlAudit() {
-  const status = captureGit(['status', '--porcelain=v1', '--untracked-files=all']);
-  const changedPaths = status ? status.split(/\r?\n/).filter(Boolean) : [];
-  return {
-    commit: captureGit(['rev-parse', 'HEAD']),
-    branch: captureGit(['branch', '--show-current']),
-    dirty: changedPaths.length > 0,
-    changedPathCount: changedPaths.length,
-    statusSha256: crypto.createHash('sha256').update(status, 'utf8').digest('hex').toUpperCase(),
-  };
-}
-
 const privateKeyHeaderPattern = new RegExp(`-{5}BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-{5}`);
 const secretPatterns = [
   { name: 'private_pem', pattern: privateKeyHeaderPattern },
@@ -271,7 +245,7 @@ function writeRuntimePackage() {
       directories: { output: 'out' },
       files: ['dist/**/*', 'electron/**/*', 'cloud-report-service/**/*', 'package.json'],
       extraResources: [{ from: 'material-pdf-runtime', to: 'material-pdf-runtime' }],
-      asarUnpack: ['electron/invoke-agent.ps1', 'electron/capture-timeline-ocr.ps1', 'electron/project-knowledge-guard.ps1'],
+      asarUnpack: ['electron/invoke-agent.ps1', 'electron/capture-timeline-ocr.ps1', 'electron/project-knowledge-guard.ps1', 'electron/practice-print-gdi.ps1', 'electron/windows-firewall.ps1'],
       win: {
         artifactName: `${artifactBase}.\${ext}`,
         icon: 'public/brand/robogala.ico',
@@ -337,7 +311,7 @@ function build() {
   assertInside(stageRoot, stageBase, 'Stage root');
   const lockHandle = acquireBuildLock();
   try {
-    const sourceControl = sourceControlAudit();
+    const sourceControl = createSourceControlAudit(repoRoot);
     fs.writeFileSync(phaseLogPath, '', 'utf8');
     recordPhase('audit-required-resources-source');
     const sourceResourceAudit = auditWindowsResources({ repoRoot, strict: true });
@@ -577,6 +551,14 @@ function build() {
     }
     if (sha256(unpackedKnowledgeGuard) !== sha256(path.join(repoRoot, 'electron', 'project-knowledge-guard.ps1'))) {
       throw new Error('Packaged knowledge commit guard differs from the verified source');
+    }
+    const unpackedPrintBridge = path.join(unpackedRoot, 'resources', 'app.asar.unpacked', 'electron', 'practice-print-gdi.ps1');
+    if (!fs.existsSync(unpackedPrintBridge) || sha256(unpackedPrintBridge) !== sha256(path.join(repoRoot, 'electron', 'practice-print-gdi.ps1'))) {
+      throw new Error('Packaged Windows print compatibility bridge is missing or differs from source');
+    }
+    const unpackedFirewallBridge = path.join(unpackedRoot, 'resources', 'app.asar.unpacked', 'electron', 'windows-firewall.ps1');
+    if (!fs.existsSync(unpackedFirewallBridge) || sha256(unpackedFirewallBridge) !== sha256(path.join(repoRoot, 'electron', 'windows-firewall.ps1'))) {
+      throw new Error('Packaged Windows firewall compatibility bridge is missing or differs from source');
     }
     const asarBytes = fs.statSync(appAsar).size;
     if (asarBytes > 21 * 1024 * 1024) throw new Error(`app.asar exceeds 21 MiB: ${(asarBytes / 1024 / 1024).toFixed(2)} MiB`);

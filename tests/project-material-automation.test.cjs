@@ -10,6 +10,7 @@ const { projectMaterialWorkspaceView } = require('../electron/project-material-v
 const { normalizeMaterialAutomation, projectMaterialAutomationOverview,
   listProjectMaterialExceptions, runProjectMaterialAutomation } = require('../electron/project-material-automation.cjs');
 const { runProjectMaterialAutomationWorker } = require('../electron/project-material-automation-client.cjs');
+const { createProjectMaterialReadClient } = require('../electron/project-material-read-client.cjs');
 
 async function fixture(t) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'edu-material-auto-'));
@@ -71,6 +72,94 @@ test('legacy organization authorization enables metadata-only auto adoption with
   assert.equal(view.counts.systemGenerated, 1);
   assert.equal(view.items.some((item) => item.title === 'staging-index.json'), false);
   assert.equal(projectStagingProjection(f.project, index).some((item) => item.filename === 'staging-index.json'), false);
+});
+
+test('ordinary project material views are bounded and computed in the read Worker', async (t) => {
+  const f = await fixture(t);
+  await f.add('参考资料/a.md', 'worker view');
+  const client = createProjectMaterialReadClient();
+  t.after(() => client.close());
+  const overview = await client.request('overview', { project: f.project });
+  assert.equal(overview.businessMaterialCount, 1);
+  const view = await client.request('workspace_view', { project: f.project,
+    query: { view: 'materials', offset: 0, limit: 50 } });
+  assert.equal(view.items.length, 1);
+  assert.equal(view.items[0].title, 'a.md');
+  const exceptions = await client.request('exceptions', { project: f.project,
+    request: { offset: 0, limit: 100 } });
+  assert.ok(exceptions.items.length <= 100);
+  const authContext = { type: 'admin' };
+  const list = await client.request('material_list', { project: f.project, authContext,
+    query: { offset: 0, limit: 50 } });
+  assert.equal(list.items.length, 1);
+  const remote = await client.request('remote_view', { project: f.project, authContext,
+    query: { view: 'materials', offset: 0, limit: 50 } });
+  assert.equal(remote.items.length, 1);
+  const detail = await client.request('material_detail', { project: f.project, authContext,
+    materialId: list.items[0].materialId });
+  assert.equal(detail.material.title, 'a.md');
+});
+
+test('project material read Worker returns only categories and observes registry category changes', async (t) => {
+  const f = await fixture(t);
+  await f.add('参考资料/a.md', 'worker category projection');
+  await f.store.setCategories([{ categoryId: 'reference', name: '参考资料',
+    relativePath: '参考资料', active: true }]);
+  const client = createProjectMaterialReadClient();
+  t.after(() => client.close());
+
+  const first = await client.request('categories', { project: f.project });
+  assert.deepEqual(first, [{ categoryId: 'reference', name: '参考资料',
+    relativePath: '参考资料', active: true, templateSource: '', templateSlot: null, aliases: [] }]);
+  assert.equal('materials' in first, false);
+
+  await f.store.setCategories([{ categoryId: 'reference', name: '项目参考',
+    relativePath: '参考资料', active: true }]);
+  const refreshed = await client.request('categories', { project: f.project });
+  assert.equal(refreshed.length, 1);
+  assert.equal(refreshed[0].name, '项目参考');
+});
+
+test('project material category projection excludes retained inactive history and enforces its byte budget', async (t) => {
+  const f = await fixture(t);
+  const firstGeneration = Array.from({ length: 500 }, (_, index) => ({
+    categoryId: `old-${index}`, name: `旧分类${index}`, relativePath: `旧分类${index}`, active: true,
+  }));
+  const currentGeneration = Array.from({ length: 500 }, (_, index) => ({
+    categoryId: `current-${index}`, name: `当前分类${index}`, relativePath: `当前分类${index}`, active: true,
+  }));
+  await f.store.setCategories(firstGeneration);
+  await f.store.setCategories(currentGeneration);
+  assert.equal((await f.store.read()).categories.length, 1_000);
+
+  const client = createProjectMaterialReadClient();
+  t.after(() => client.close());
+  const projected = await client.request('categories', { project: f.project });
+  assert.equal(projected.length, 500);
+  assert.ok(projected.every((category) => category.active !== false && category.categoryId.startsWith('current-')));
+
+  const largeValue = '分'.repeat(256);
+  const largePath = `大分类/${'路'.repeat(1_900)}`;
+  const oversized = Array.from({ length: 500 }, (_, index) => ({
+    categoryId: `large-${index}`, name: largeValue, relativePath: largePath, active: true,
+    aliases: Array.from({ length: 20 }, (__, aliasIndex) => `${String(aliasIndex).padStart(2, '0')}${'别'.repeat(254)}`),
+  }));
+  await f.store.setCategories(oversized);
+  await assert.rejects(client.request('categories', { project: f.project }), (error) => {
+    assert.equal(error.code, 'project_material_categories_projection_too_large');
+    return true;
+  });
+});
+
+test('explicit unified automation settings override legacy authorization and preserve pause state', async (t) => {
+  const f = await fixture(t);
+  const normalized = normalizeMaterialAutomation({ ...f.project,
+    materialAutomation: { enabled: false, processingPaused: true,
+      autoAdoptPathClassified: true, autoDigest: true, maxBatch: 12 } });
+  assert.equal(normalized.enabled, false);
+  assert.equal(normalized.processingPaused, true);
+  assert.equal(normalized.migratedFromMaterialOrganization, false);
+  assert.equal(normalized.maxBatch, 12);
 });
 
 test('manual locks and unclassified files remain exceptions while digest work is not attention', async (t) => {
@@ -182,4 +271,34 @@ test('project material automation worker sends at most five extracted candidates
   assert.equal(received, 1);
   assert.equal(result.adopted, 1);
   assert.equal((await f.store.read({ fresh: true })).materials[0].classification.source, 'ai');
+});
+
+test('a new registry revision gives the automatic digest candidate an explicit new work identity', () => {
+  const source = require('node:fs').readFileSync(path.join(__dirname, '../electron/main.cjs'), 'utf8');
+  const start = source.indexOf('function projectDigestCandidateForAutomation(');
+  const end = source.indexOf('\nfunction emitProjectMaterialAutomationProgress(', start);
+  assert.ok(start >= 0 && end > start);
+  const vm = require('node:vm');
+  const context = vm.createContext({
+    projectMaterialDigestProjection: () => { throw new Error('digest hint must avoid a full registry read'); },
+    readProjectMaterialIndexSync: () => { throw new Error('digest hint must avoid a full registry read'); },
+    normalizeMaterialAutomation: () => ({ enabled: true, processingPaused: false, autoDigest: true }),
+    providerSupportsProfile: () => true,
+    DIGEST_PROFILE: 'digest',
+    PROJECT_SCOPE_CONTRACT_VERSION: 'synthetic-scope-v1',
+    agentControlStore: () => ({ read: () => ({ global: { enabled: true, version: 1 } }) }),
+    digestIdempotencyKey: () => 'unused',
+    normalizeTaskEnvelope: (value) => value,
+    taskStableId: () => 'task-project',
+    projectDigestRequestPath: () => 'request.json',
+    projectDigestReceiptPath: () => 'receipt.json',
+    isWorkspaceMaterialProject: () => true,
+  });
+  vm.runInContext(`${source.slice(start, end)}\nthis.makeCandidate = projectDigestCandidateForAutomation;`, context);
+  const project = { id: 'project-1', name: 'Synthetic', agentTool: 'codex', knowledgeRootPath: 'knowledge' };
+  const first = context.makeCandidate(project, { pendingCount: 1, pendingReferenceCount: 1, registryRevision: 10 });
+  const second = context.makeCandidate(project, { pendingCount: 1, pendingReferenceCount: 1, registryRevision: 11 });
+  assert.equal(first.workKey, first.idempotencyKey);
+  assert.equal(first.sourceVersion, first.idempotencyKey);
+  assert.notEqual(second.workKey, first.workKey);
 });

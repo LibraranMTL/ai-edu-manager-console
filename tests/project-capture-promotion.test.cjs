@@ -72,9 +72,14 @@ async function fixture(t) {
     readCaptureSessionDetail: () => session,
     readStudentsIndex: () => [student],
     readProjects: () => [currentProject], readProjectMetadata: () => [currentProject],
+    getProjectMetadata: (id) => String(id) === String(currentProject?.id) ? currentProject : null,
     normalizeProjectMetadata: (value) => value,
     findStudent: (id) => String(id) === student.id ? student : null,
     writeProjects: (projects) => { currentProject = projects.find((item) => item.id === project.id); },
+    updateProjectMetadataRecord: (_id, change) => {
+      currentProject = change(currentProject);
+      return { project: currentProject, projects: [currentProject] };
+    },
     mutableProject: () => ({ project: currentProject }),
     ensureProjectWorkspace: (value) => value,
     isWorkspaceMaterialProject: (value) => value?.materialStorageMode === 'workspace-v1',

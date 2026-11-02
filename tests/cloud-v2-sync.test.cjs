@@ -140,6 +140,33 @@ test('health grants require explicit object scope and are not inferred from prof
   } finally { service.close(); fs.rmSync(root, { recursive: true, force: true }); }
 });
 
+test('health records require independent upload and read object scopes end to end', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'cloud-v2-health-record-'));
+  const service = require('../cloud-report-service/service.cjs').createService({ dataDir: root, adminToken: ADMIN, allowLegacyTestCredentials: true });
+  try {
+    const key = require('node:crypto').generateKeyPairSync('ec', { namedCurve: 'prime256v1',
+      publicKeyEncoding: { type: 'spki', format: 'pem' }, privateKeyEncoding: { type: 'pkcs8', format: 'pem' } }).publicKey;
+    const student = service.createStudent(ADMIN, '合成健康资料学生');
+    const source = service.registerSource(ADMIN, key); service.allowWrite(ADMIN, source.deviceId, student.id);
+    const viewer = service.createPairing('', key);
+    service.setOwnHealthScope(source.deviceToken, { cloudStudentId: student.id, objectScope: ['health:record:001'] });
+    service.issueV2Grant(ADMIN, { deviceId: viewer.deviceId, cloudStudentId: student.id,
+      scope: 'health_record.read', objectScope: ['health:record:001'] });
+    assert.throws(() => service.prepareHealthRecord(source.deviceToken, student.id, { healthRecordId: 'health:record:002',
+      idempotencyKey: 'health:record:002:v1', displayName: '未授权.md', contentType: 'text/markdown' }), /单独授权范围/);
+    const prepared = service.prepareHealthRecord(source.deviceToken, student.id, { healthRecordId: 'health:record:001',
+      idempotencyKey: 'health:record:001:v1', displayName: '健康资料.md', contentType: 'text/markdown' });
+    const bytes = Buffer.from('# 合成健康资料\n'); fs.writeFileSync(prepared.tempPath, bytes);
+    const sha = require('node:crypto').createHash('sha256').update(bytes).digest('hex');
+    const uploaded = prepared.commit({ sha, size: bytes.length, head: bytes.subarray(0, 16) });
+    assert.match(uploaded.revisionId, /^health_rev_[a-f0-9]{48}$/);
+    assert.equal(service.listHealthRecords(viewer.deviceToken, student.id).records.length, 1);
+    assert.equal(service.getHealthRecord(viewer.deviceToken, uploaded.revisionId).content.toString('utf8'), bytes.toString('utf8'));
+    service.revokeV2Grant(ADMIN, { deviceId: viewer.deviceId, cloudStudentId: student.id, scope: 'health_record.read' });
+    assert.throws(() => service.getHealthRecord(viewer.deviceToken, uploaded.revisionId), /单独的健康资料许可/);
+  } finally { service.close(); fs.rmSync(root, { recursive: true, force: true }); }
+});
+
 test('legacy report write permission cannot self-upgrade into v2 profile or material scope', () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'cloud-v2-legacy-scope-'));
   const service = require('../cloud-report-service/service.cjs').createService({ dataDir: root, adminToken: ADMIN, allowLegacyTestCredentials: true });

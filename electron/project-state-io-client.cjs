@@ -3,7 +3,7 @@
 const path = require('node:path');
 const { Worker } = require('node:worker_threads');
 
-function createProjectStateIoClient({ dbPath, legacyJsonPath, workerFactory, timeoutMs = 90_000 } = {}) {
+function createProjectStateIoClient({ dbPath, legacyJsonPath, workerFactory, timeoutMs = 90_000, onCommitted=()=>{} } = {}) {
   let worker = null, serial = 0, closed = false, closing = null;
   const pending = new Map();
   function fail(error) {
@@ -21,7 +21,7 @@ function createProjectStateIoClient({ dbPath, legacyJsonPath, workerFactory, tim
     current.on('message', (message) => {
       const request = pending.get(message.id); if (!request) return;
       clearTimeout(request.timer); pending.delete(message.id);
-      if (message.ok) request.resolve(message.value);
+      if (message.ok) { if(['patch_metadata','upsert_metadata','mutate_staging_batch','upsert_scan_batch'].includes(request.op)){try{onCommitted(request.input.projectId || request.input.project?.id);}catch{/* A notification failure cannot undo a committed transaction; signature reconciliation retries it. */}} request.resolve(message.value); }
       else request.reject(Object.assign(new Error(message.error?.message || '项目数据库工作进程操作失败。'), {
         code: message.error?.code || 'project_worker_failed',
       }));
@@ -43,7 +43,7 @@ function createProjectStateIoClient({ dbPath, legacyJsonPath, workerFactory, tim
         pending.delete(id);
         reject(Object.assign(new Error('项目数据库操作超时，请重试。'), { code: 'project_worker_timeout' }));
       }, timeoutMs);
-      timer.unref?.(); pending.set(id, { resolve, reject, timer });
+      timer.unref?.(); pending.set(id, { resolve, reject, timer, op, input });
       start().postMessage({ id, op, input });
     });
   }

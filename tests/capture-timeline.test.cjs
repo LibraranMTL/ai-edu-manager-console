@@ -53,6 +53,42 @@ test('timeline thumbnail location is deterministic and student scoped', () => {
   assert.match(thumbnailPath('D:/root', event), /thumbnails/);
 });
 
+test('completed session rebuild persists coverage on every retained frame', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'edu-capture-coverage-'));
+  const startedAt = '2026-09-10T10:00:00.000Z';
+  const secondAt = '2026-09-10T10:02:00.000Z';
+  const endedAt = '2026-09-10T10:03:00.000Z';
+  const session = {
+    id: 'coverage-session', studentId: 'coverage-student', startedAt, endedAt,
+    capturePolicy: { maximumSaveIntervalMs: 2 * 60_000 },
+    captureSamples: [
+      { sampledAt: startedAt, decision: 'initial', captureItemId: 'coverage-1' },
+      { sampledAt: '2026-09-10T10:01:00.000Z', decision: 'duplicate' },
+      { sampledAt: secondAt, decision: 'saved', captureItemId: 'coverage-2' },
+      { sampledAt: endedAt, decision: 'duplicate' },
+    ],
+    items: [
+      { id: 'coverage-1', capturedAt: startedAt, path: path.join(root, 'one.jpg') },
+      { id: 'coverage-2', capturedAt: secondAt, path: path.join(root, 'two.jpg') },
+    ],
+  };
+  try {
+    assert.deepEqual(rebuildSessionTimeline(root, session), { ok: true, appended: 2, total: 2 });
+    const date = listDates(root, session.studentId)[0].date;
+    const page = queryTimeline(root, { studentId: session.studentId, date, limit: 10 });
+    assert.equal(page.events.length, 2);
+    assert.equal(page.events[0].coverageStartAt, startedAt);
+    assert.equal(page.events[0].coverageEndAt, secondAt);
+    assert.equal(page.events[0].durationMs, 2 * 60_000);
+    assert.equal(page.events[1].coverageStartAt, secondAt);
+    assert.equal(page.events[1].coverageEndAt, endedAt);
+    assert.equal(page.events[1].durationMs, 60_000);
+    assert.equal(page.events[0].duplicateSampleCount, 1);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test('T0 keeps time provenance, explicit task identity and unknown actor separate from student scope', () => {
   const session = { id: 'session-time', studentId: 'student-time', startedAt: '2026-09-10T03:00:00.000Z', taskId: 'exercise-7' };
   const item = { id: 'frame-time', capturedAt: 'not-a-time', uploadedAt: '2026-09-10T03:05:00.000Z',

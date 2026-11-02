@@ -11,7 +11,7 @@ const pdfRuntimeScript = fs.readFileSync(path.join(root, 'scripts', 'build-proje
 const pdfWorker = fs.readFileSync(path.join(root, 'electron', 'project-material-pdf-worker.cjs'), 'utf8');
 
 test('Windows release builds through an isolated local staging directory', () => {
-  assert.equal(packageJson.scripts['build:win'], 'pnpm typecheck && pnpm test:windows && pnpm audit:resources && pnpm benchmark:assets:smoke && pnpm benchmark:projects:release && node scripts/build-windows-release.cjs');
+  assert.equal(packageJson.scripts['build:win'], 'pnpm typecheck && pnpm test:windows && pnpm audit:resources && pnpm benchmark:assets:smoke && pnpm benchmark:projects:release && pnpm benchmark:tasks:release && node scripts/build-windows-release.cjs');
   assert.match(releaseScript, /process\.env\.LOCALAPPDATA/);
   assert.match(releaseScript, /release-stage/);
   assert.match(releaseScript, /EDU_WINDOWS_CANDIDATE_TAG/);
@@ -33,11 +33,13 @@ test('staged runtime is dependency-free after Vite has bundled renderer dependen
   assert.doesNotMatch(releaseScript, /runtimePackage\.(?:dependencies|devDependencies)/);
   assert.match(releaseScript, /Minimal runtime package unexpectedly contains node_modules/);
   assert.match(releaseScript, /app\.asar exceeds 21 MiB/);
-  assert.deepEqual(packageJson.build.asarUnpack, ['electron/invoke-agent.ps1', 'electron/capture-timeline-ocr.ps1', 'electron/project-knowledge-guard.ps1']);
-  assert.match(releaseScript, /asarUnpack: \['electron\/invoke-agent\.ps1', 'electron\/capture-timeline-ocr\.ps1', 'electron\/project-knowledge-guard\.ps1'\]/);
+  assert.deepEqual(packageJson.build.asarUnpack, ['electron/invoke-agent.ps1', 'electron/capture-timeline-ocr.ps1', 'electron/project-knowledge-guard.ps1', 'electron/practice-print-gdi.ps1', 'electron/windows-firewall.ps1']);
+  assert.match(releaseScript, /asarUnpack: \['electron\/invoke-agent\.ps1', 'electron\/capture-timeline-ocr\.ps1', 'electron\/project-knowledge-guard\.ps1', 'electron\/practice-print-gdi\.ps1', 'electron\/windows-firewall\.ps1'\]/);
   assert.match(releaseScript, /Packaged Agent parameter bridge is missing/);
   assert.match(releaseScript, /Packaged timeline OCR bridge is missing/);
   assert.match(releaseScript, /Packaged knowledge commit guard is missing/);
+  assert.match(releaseScript, /Packaged Windows print compatibility bridge is missing or differs from source/);
+  assert.match(releaseScript, /Packaged Windows firewall compatibility bridge is missing or differs from source/);
   assert.match(releaseScript, /bundleMaterialExtractor\(stageRoot, locateEsbuildModule\(\)\)/);
   assert.match(releaseScript, /stagePdfRuntime\(stageRoot\)/);
   assert.match(releaseScript, /extraResources: \[\{ from: 'material-pdf-runtime', to: 'material-pdf-runtime' \}\]/);

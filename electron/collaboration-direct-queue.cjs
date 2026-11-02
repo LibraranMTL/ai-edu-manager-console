@@ -1,10 +1,46 @@
 const DIRECT_QUEUE_SCHEMA = 'edu-manager.collaboration-direct-deliveries.v2';
-const ACTIVE_DELIVERY_STATUSES = new Set(['queued', 'transferring', 'retry_waiting']);
+const ACTIVE_DELIVERY_STATUSES = new Set(['queued', 'transferring', 'retry_waiting', 'waiting_peer']);
 const TERMINAL_DELIVERY_STATUSES = new Set(['delivered', 'cancelled', 'invalid', 'superseded']);
 
 function deliveryBackoffMs(attempt = 0) {
-  const step = Math.max(0, Number(attempt || 0) - 1);
-  return Math.min(5 * 60 * 1000, 15 * 1000 * (2 ** Math.min(step, 5)));
+  const value = Math.max(1, Number(attempt || 1));
+  if (value === 1) return 30 * 1000;
+  if (value === 2) return 60 * 1000;
+  if (value === 3) return 3 * 60 * 1000;
+  if (value === 4) return 5 * 60 * 1000;
+  if (value === 5) return 15 * 60 * 1000;
+  return 60 * 60 * 1000;
+}
+
+function peerProbeDelayMs(peerKey = '') {
+  let hash = 0;
+  for (const character of String(peerKey)) hash = ((hash * 33) ^ character.charCodeAt(0)) >>> 0;
+  return 60 * 60 * 1000 + (hash % (10 * 60 * 1000));
+}
+
+function nextDeliveryWakeDelay(input = {}, now = Date.now(), options = {}) {
+  const minimumMs = Math.max(1_000, Number(options.minimumMs || 5_000));
+  const idleMs = Math.max(minimumMs, Number(options.idleMs || 60_000));
+  const maximumMs = Math.max(idleMs, Number(options.maximumMs || 60 * 60 * 1000));
+  const circuitUntil = typeof options.circuitUntil === 'function'
+    ? options.circuitUntil
+    : () => 0;
+  let earliest = Number.POSITIVE_INFINITY;
+  let hasActive = false;
+  for (const record of Object.values(normalizeDeliveryStore(input).deliveries)) {
+    if (record.status === 'transferring') {
+      hasActive = true;
+      earliest = Math.min(earliest, now + 30_000);
+      continue;
+    }
+    if (!['queued', 'retry_waiting', 'waiting_peer'].includes(record.status)) continue;
+    hasActive = true;
+    const retryAt = Date.parse(record.nextAttemptAt || '') || now;
+    const peerAt = Math.max(0, Number(circuitUntil(record) || 0));
+    earliest = Math.min(earliest, Math.max(retryAt, peerAt));
+  }
+  if (!hasActive || !Number.isFinite(earliest)) return idleMs;
+  return Math.max(minimumMs, Math.min(maximumMs, earliest - now));
 }
 
 function normalizeDelivery(record = {}, manifestId = '') {
@@ -38,6 +74,8 @@ function normalizeDelivery(record = {}, manifestId = '') {
     lineageId: String(record.lineageId || ''),
     publicationVersion: Math.max(0, Number(record.publicationVersion || 0)),
     supersededBy: String(record.supersededBy || ''),
+    peerFailureCount: Math.max(0, Number(record.peerFailureCount || 0)),
+    peerProbeAt: String(record.peerProbeAt || ''),
     updatedAt: String(record.updatedAt || ''),
   };
 }
@@ -70,8 +108,9 @@ function recoverInterruptedDeliveries(store) {
 
 function dueDeliveries(store, now = Date.now()) {
   return Object.values(normalizeDeliveryStore(store).deliveries)
-    .filter((record) => ['queued', 'retry_waiting'].includes(record.status))
+    .filter((record) => ['queued', 'retry_waiting', 'waiting_peer'].includes(record.status))
     .filter((record) => !record.nextAttemptAt || Date.parse(record.nextAttemptAt) <= now)
+    .filter((record) => !record.peerProbeAt || Date.parse(record.peerProbeAt) <= now)
     .sort((left, right) => {
       const leftAt = Date.parse(left.nextAttemptAt || left.queuedAt || left.updatedAt || '') || 0;
       const rightAt = Date.parse(right.nextAttemptAt || right.queuedAt || right.updatedAt || '') || 0;
@@ -83,7 +122,8 @@ function summarizeDeliveries(store) {
   const deliveries = Object.values(normalizeDeliveryStore(store).deliveries);
   return {
     total: deliveries.length,
-    queued: deliveries.filter((item) => ['queued', 'retry_waiting'].includes(item.status)).length,
+    queued: deliveries.filter((item) => ['queued', 'retry_waiting', 'waiting_peer'].includes(item.status)).length,
+    waitingPeer: deliveries.filter((item) => item.status === 'waiting_peer').length,
     transferring: deliveries.filter((item) => item.status === 'transferring').length,
     paused: deliveries.filter((item) => item.status === 'paused').length,
     failed: deliveries.filter((item) => item.status === 'retry_waiting' && item.error).length,
@@ -179,8 +219,10 @@ module.exports = {
   DIRECT_QUEUE_SCHEMA,
   TERMINAL_DELIVERY_STATUSES,
   deliveryBackoffMs,
+  peerProbeDelayMs,
   dueDeliveries,
   latestDeliveryForLineages,
+  nextDeliveryWakeDelay,
   normalizeDelivery,
   normalizeDeliveryStore,
   reconcileDeliveries,

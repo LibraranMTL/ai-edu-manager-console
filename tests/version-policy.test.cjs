@@ -23,15 +23,20 @@ test('Windows release policy rejects zero and patch numbers above 10', () => {
   assert.throws(() => validateWindowsVersion('0.8'), /无效版本号/);
 });
 
-test('0.21.6 formal release keeps package, manifests and download page aligned', () => {
+test('candidate builds preserve the stable manifest, while a formal build aligns it with package.json', () => {
   const packageJson = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
   const releaseManifest = JSON.parse(fs.readFileSync(path.join(root, 'release', 'edu-manager-version.json'), 'utf8'));
   const windowsManifest = JSON.parse(fs.readFileSync(path.join(root, 'release', 'windows', 'edu-manager-version.json'), 'utf8'));
   const terminalVersion = JSON.parse(fs.readFileSync(path.join(root, 'windows-terminal-version.json'), 'utf8'));
   const downloadPage = fs.readFileSync(path.join(root, 'release', '网站文件', 'download.html'), 'utf8');
-  assert.equal(packageJson.version, '0.21.6');
-  assert.equal(releaseManifest.windowsVersionName, '0.21.6');
-  assert.equal(releaseManifest.windowsVersionCode, 266);
+  assert.equal(packageJson.version, '0.22.8');
+  const candidateTag = String(process.env.EDU_WINDOWS_CANDIDATE_TAG || '').trim();
+  if (candidateTag) {
+    assert.notEqual(releaseManifest.windowsVersionName, packageJson.version);
+  } else {
+    assert.equal(releaseManifest.windowsVersionName, packageJson.version);
+    assert.equal(releaseManifest.windowsVersionCode, 268);
+  }
   assert.equal(releaseManifest.windowsReleaseStatus, 'stable');
   assert.equal(windowsManifest.windowsVersionName, releaseManifest.windowsVersionName);
   assert.equal(releaseManifest.windowsTerminalVersionName, windowsManifest.windowsTerminalVersionName);

@@ -26,6 +26,14 @@ function windowsUserProfileMismatch(candidate, homeDir) {
 
 function resolveStudentBaseDir(options = {}) {
   const platform = String(options.platform || process.platform);
+  const pathApi = platform === 'win32' ? path.win32 : path;
+  if (options.qaIsolated === true) {
+    const userDataDir = String(options.userDataDir || '').trim();
+    if (!userDataDir || !pathApi.isAbsolute(userDataDir)) throw new Error('qa_isolated_user_data_required');
+    const resolvedUserData = pathApi.resolve(userDataDir);
+    if (resolvedUserData === pathApi.parse(resolvedUserData).root) throw new Error('qa_isolated_user_data_root_forbidden');
+    return pathApi.join(resolvedUserData, 'student-data');
+  }
   const configured = String(options.configured || '').trim();
   const documentsDir = String(options.documentsDir || '').trim();
   const homeDir = String(options.homeDir || '').trim();

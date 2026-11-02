@@ -19,7 +19,9 @@ test('one-click digest workflow crosses renderer, preload and main process', () 
   assert.match(main, /createDigestOrchestrator/);
   assert.match(main, /startDigestWorkflowMonitor/);
   assert.match(main, /scheduleDigestWorkflowMonitor/);
-  assert.match(main, /digestWorkflowMonitorHasActiveWork\(\) \? 10_000 : 60_000/);
+  assert.match(main, /digestReceiptMonitorTasks/);
+  assert.match(main, /receiptReconcileDelay\(recoveryBudget\(task\)\.receiptQueries\)/);
+  assert.match(main, /scheduleDigestWorkflowMonitor\(undefined, 'bounded_backoff'\)/);
 });
 
 test('digest command copy uses the current frozen batch and reports clipboard feedback', () => {

@@ -241,6 +241,20 @@ test('a declared provider without an executable search cannot report ready', () 
   try { assert.equal(service.getResearchCapabilityStatus().available, false); } finally { cleanup(); }
 });
 
+test('a provider still being checked is reported as checking rather than definitively unavailable', () => {
+  const { service, cleanup } = fixture({ provider: {
+    id: 'codex', label: 'Codex', available: true, authorized: false,
+    healthPending: true, healthMessage: '正在检查 CLI 授权',
+  } });
+  try {
+    const capability = service.getResearchCapabilityStatus();
+    assert.equal(capability.available, false);
+    assert.equal(capability.checking, true);
+    assert.deepEqual(capability.checkingProviderIds, ['codex']);
+    assert.match(capability.message, /正在核对/);
+  } finally { cleanup(); }
+});
+
 test('initial research routes follow the student profile', () => {
   const { service, cleanup } = fixture();
   try {

@@ -17,7 +17,7 @@ function fixture(t,empty=false) {
     artifacts: [{ path: 'trace.json', sha256 }],
     scenarios: ['workbuddy', 'codex'].map(providerId => ({ id: providerId, providerId,expectedOutcome:'completed', evidenceKind: 'real_agent_e2e', observedStatus: 'pass', candidateHash: 'a'.repeat(64), trace: 'trace.json', registered: 1, started: 1, receipts: 1, settled: 1, duplicateExecutions: 0 })),
     recovery: { lateReceiptsObserved: 1, lateReceiptsSettled: 1, lateReceiptEvidencePreserved: 1, duplicateExecutions: 0 },
-    performance: { interactionTrace:'trace.json',processTreeTrace:'trace.json',baselineTrace:'trace.json',taskTimeline:'trace.json',baselineCompleted: 10, treatmentCompleted: 10, baselineSeconds: 100, treatmentSeconds: 100, workload: 'real_agent', idleCpuCorePercent: .5, interactionP95Ms: 100, mainLongTaskMaxMs: 50, extraMainMemoryBytes: 1024, repeats: 3, interactionSamples: 30, timeouts: 0 },
+    performance: { interactionTrace:'trace.json',processTreeTrace:'trace.json',baselineTrace:'trace.json',taskTimeline:'trace.json',baselineCompleted: 10, treatmentCompleted: 10, baselineSeconds: 100, treatmentSeconds: 100, workload: 'real_agent', idleCpuCorePercent: .5, interactionP95Ms: 100, rendererLongTaskMaxMs: 50, mainEventLoopMaxMs: 40, extraMainMemoryBytes: 1024, repeats: 3, interactionSamples: 30, timeouts: 0 },
   } };
   if(!empty){const add=(file,data)=>{const bytes=JSON.stringify(data);fs.writeFileSync(path.join(root,file),bytes);value.report.artifacts.push({path:file,sha256:crypto.createHash('sha256').update(bytes).digest('hex')});};
    for(const s of value.report.scenarios){const id=s.providerId;s.trace=id+'.json';
@@ -49,7 +49,8 @@ test('missing provenance, tampered trace and no baseline fail closed', t => {
 test('latency, CPU, duplicate execution and not-run each fail independently', t => {
   const { root, report } = fixture(t);
   for (const mutate of [r => r.performance.interactionP95Ms = 151, r => r.performance.idleCpuCorePercent = 1.1,
-    r => r.performance.mainLongTaskMaxMs = 101, r => r.scenarios[0].duplicateExecutions = 1, r => r.scenarios[0].observedStatus = 'not_run']) {
+    r => r.performance.rendererLongTaskMaxMs = 101, r => r.performance.mainEventLoopMaxMs = 101,
+    r => r.scenarios[0].duplicateExecutions = 1, r => r.scenarios[0].observedStatus = 'not_run']) {
     const r = structuredClone(report); mutate(r); assert.equal(validate(r, root).passed, false);
   }
 });

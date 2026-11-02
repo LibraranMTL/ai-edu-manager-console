@@ -23,17 +23,22 @@ async function createTaskHost(root, options = {}) {
   const context = vm.createContext({ fs, path, crypto, structuredClone,
     ...require(path.join(runtime, 'task-protocol.cjs')),
     ...require(path.join(runtime, 'task-history-policy.cjs')),
+    ...require(path.join(runtime, 'task-runtime-policy.cjs')),
     ...require(path.join(runtime, 'task-store-compaction.cjs')),
+    ...require(path.join(runtime, 'task-work-identity.cjs')),
+    ...require(path.join(runtime, 'task-closure-decision.cjs')),
     taskStoreGuard: service,
     taskProgressBuffer: require(path.join(runtime, 'task-progress-buffer.cjs')).createTaskProgressBuffer(),
     taskStorePath: () => file, taskCenterDirPath: () => path.dirname(file),
     sha1Text: value => crypto.createHash('sha1').update(String(value)).digest('hex'),
     taskNow: () => new Date().toISOString(), taskChildProcesses: new Map(),
+    taskRequiresApproval: () => false, materialTaskCheckpointForCandidate: () => null,
+    scheduleAutomaticTaskWakeups: () => {},
     TASK_TERMINAL_STATUSES: new Set(['succeeded', 'failed', 'blocked', 'cancelled', 'timed_out', 'archived']),
     taskCenterSnapshotCache: {}, taskLegacySnapshot: '',
   });
   for (const name of ['normalizeTaskStatus', 'taskStatusGroup', 'taskRiskForKind', 'normalizeTaskEnvelope',
-    'readTaskStore', 'writeTaskStore', 'writeTaskStoreDurably', 'appendTaskEvent', 'transitionTaskInStore', 'upsertTaskCandidates']) {
+    'readTaskStore', 'writeTaskStore', 'writeTaskStoreDurably', 'appendTaskEvent', 'transitionTaskInStore', 'upsertTaskCandidates','recordDigestReceiptMonitorCheck']) {
     let start = source.indexOf(`function ${name}(`);
     if (start < 0) throw Error(`Missing production function ${name}`);
     if (source.slice(start - 6, start) === 'async ') start -= 6;
@@ -48,7 +53,7 @@ async function createTaskHost(root, options = {}) {
     try { return db.prepare(sql).all().map(row => JSON.parse(row.payload_json)); } finally { db.close(); }
   };
   return { ...callbacks, context, file, service, client,
-    disk: () => structuredClone(service.read(file).value),
+    disk: () => JSON.parse(JSON.stringify(service.read(file).value)),
     events: () => readRows('SELECT payload_json FROM task_events ORDER BY rowid'),
     async close() { try { await service.flush(); } finally { await client.close(); } },
   };

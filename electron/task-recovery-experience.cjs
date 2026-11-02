@@ -211,15 +211,77 @@ function closedManualPacketPatch(task = {}, now = new Date().toISOString()) {
   return { ...next, executionProvenance: executionProvenance(next), recoveryBudget: recoveryBudget(next, now), recoveryPlan: recoveryPlan(next, now) };
 }
 
+function unknownRecoveryPlan(task = {}, now = new Date().toISOString()) {
+  const plan = recoveryPlan(task, now);
+  const budget = recoveryBudget(task, now);
+  return {
+    owner: plan.owner,
+    attempt: budget.receiptQueries,
+    maxAttempts: budget.limits.receiptQueries,
+    nextCheckAt: plan.nextWakeAt || '',
+    nextAction: plan.action,
+  };
+}
+
+function confirmedStoppedPatch(task = {}, now = new Date().toISOString()) {
+  const next = {
+    ...task,
+    status: 'cancelled',
+    recoveryState: 'user_confirmed_stopped',
+    recoveryReason: 'explicit_external_stop_confirmation',
+    recoveryCheckedAt: now,
+    completedAt: task.completedAt || now,
+    nextRetryAt: '',
+    autoRetry: false,
+    retryRecovery: null,
+    dispatchBlock: null,
+    error: { code: 'CANCELLED', message: '已确认外部执行未发送或已经停止；不会采用迟到的不完整结果。' },
+    updatedAt: now,
+  };
+  return { ...next, executionProvenance: executionProvenance(next), recoveryBudget: recoveryBudget(next, now), recoveryPlan: recoveryPlan(next, now) };
+}
+
+function lateReceiptPatch(task = {}, receipt = {}, now = new Date().toISOString()) {
+  const executionId = String(receipt.executionId || '');
+  if (!executionId || executionId !== String(task.executionId || '')) {
+    throw Object.assign(new Error('迟到回执的执行批次与任务不一致。'), { code: 'EXECUTION_ID_MISMATCH' });
+  }
+  if (receipt.validation?.valid !== true && receipt.validation?.passed !== true) {
+    throw Object.assign(new Error('迟到回执尚未通过业务校验。'), { code: 'LATE_RECEIPT_NOT_VALIDATED' });
+  }
+  const result = { ...(task.result || {}), ...receipt, executionId, status: 'succeeded', settledAt: now };
+  const next = {
+    ...task,
+    status: 'succeeded',
+    settlementState: 'settled',
+    businessOutcome: 'completed',
+    recoveryState: 'receipt_confirmed',
+    recoveryReason: 'validated_late_receipt',
+    recoveryCheckedAt: now,
+    completedAt: task.completedAt || now,
+    nextRetryAt: '',
+    autoRetry: false,
+    retryRecovery: null,
+    dispatchBlock: null,
+    error: null,
+    result,
+    updatedAt: now,
+  };
+  return { ...next, executionProvenance: executionProvenance(next), recoveryBudget: recoveryBudget(next, now), recoveryPlan: recoveryPlan(next, now) };
+}
+
 module.exports = {
   VERSION,
   DEFAULT_BUDGET,
   classifyRecoveryCause,
   closedManualPacketPatch,
+  confirmedStoppedPatch,
   executionProvenance,
   internalStoppedPatch,
+  lateReceiptPatch,
   providerLabel,
   recoveryBudget,
   recoveryPlan,
   taskExecutionClass,
+  unknownRecoveryPlan,
 };

@@ -22,6 +22,7 @@ function fixture() {
     readProjectDigestState: () => { counts.scans++; return { pendingCount: 9 }; },
     normalizeProjectStagingItem: value => value,
     readProjects: () => { counts.projects++; return [{ id: 'p1', name: 'P1', studentIds: ['s1'] }, { id: 'p2', name: 'P2', studentIds: ['s2'] }]; },
+    readProjectMetadata: () => { counts.projects++; return [{ id: 'p1', name: 'P1', studentIds: ['s1'] }, { id: 'p2', name: 'P2', studentIds: ['s2'] }]; },
     readStudentsIndex: () => { counts.students++; return [{ id: 's1' }, { id: 's2' }]; },
     toHostStudent: value => value,
     growthIndexPath: student => student.id,

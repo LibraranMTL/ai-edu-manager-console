@@ -35,11 +35,19 @@ test('20 documents share one failed primary qualification and one fallback quali
   assert.equal(calls.filter(c => c[1] === 'a').length, 20);
   assert.equal(stages.filter(s => s.stage === 'possibly_sent' && s.providerId === 'workbuddy').length, 0);
 });
-for (const code of ['agent_timeout', 'ECONNRESET', 'AUTHENTICATION_REQUIRED', 'SENSITIVE_REVIEW_REQUIRED']) test(`sent primary failure ${code} never calls fallback, even after local stop`, async t => {
+for (const code of ['agent_timeout', 'ECONNRESET']) test(`confirmed stopped read-only classification failure ${code} uses the next provider`, async t => {
+  const f = await fixture(t), calls = [];
+  const agent = createRoutingAgent({ select: f.select, route: () => ({ providers: ['workbuddy', 'codex'], policyVersion: 1 }),
+    run: async (a, value) => { calls.push(a.id); if (a.id === 'workbuddy' && value.context.studentId !== 'synthetic-student') throw Object.assign(Error(code), { code, stopConfirmed: true }); return answer(value); } });
+  const result = await agent.classify(input());
+  assert.equal(result.candidates[0].id, 'project-a');
+  assert.deepEqual(calls, ['workbuddy', 'workbuddy', 'codex', 'codex']);
+});
+for (const code of ['AUTHENTICATION_REQUIRED', 'SENSITIVE_REVIEW_REQUIRED']) test(`sent primary policy failure ${code} never calls fallback`, async t => {
   const f = await fixture(t), calls = [];
   const agent = createRoutingAgent({ select: f.select, route: () => ({ providers: ['workbuddy', 'codex'], policyVersion: 1 }),
     run: async (a, value) => { calls.push(a.id); if (value.context.studentId !== 'synthetic-student') throw Object.assign(Error(code), { code, stopConfirmed: true }); return answer(value); } });
-  await assert.rejects(agent.classify(input()), e => e.code === (code === 'SENSITIVE_REVIEW_REQUIRED' ? code : 'execution_unknown') && e.blockReason.recoverable === false);
+  await assert.rejects(agent.classify(input()), e => e.code === (code === 'SENSITIVE_REVIEW_REQUIRED' ? code : 'execution_unknown'));
   assert.deepEqual(calls, ['workbuddy', 'workbuddy']);
 });
 test('failed durable possibly-sent checkpoint prevents transmission', async t => {

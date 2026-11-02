@@ -3,6 +3,7 @@ const os = require('os');
 const path = require('path');
 const { spawn } = require('child_process');
 const WORKBUDDY_AUTH_PROBE_TIMEOUT_MS = 30000;
+const WORKBUDDY_CONNECTION_TIMEOUT_MS = 10000;
 
 function firstExisting(candidates, exists = fs.existsSync) {
   return [...new Set((candidates || []).map((item) => String(item || '')).filter(Boolean))]
@@ -167,7 +168,7 @@ function workBuddyReadyResult(output, errorOutput = '', code = 0) {
     // A startup log, tool-use event or successful exit is not a final answer.
     return value && !Array.isArray(value) && value.is_error !== true && !value.error
       && (!value.type || value.type === 'result') && (!value.subtype || value.subtype === 'success')
-      && typeof value.result === 'string' && value.result.trim() === 'READY';
+      && typeof value.result === 'string' && /^READY[.。]?$/.test(value.result.trim());
   } catch { return false; }
 }
 
@@ -329,8 +330,32 @@ function probeWorkBuddyAuthorization(runtime, options = {}) {
   });
 }
 
+async function probeWorkBuddyConnection(runtime, options = {}) {
+  const startedAt = Date.now();
+  const installed = Boolean(runtime?.exePath || runtime?.cliPath || runtime?.available);
+  if (!installed) return { installed: false, authenticated: false, connected: false, latencyMs: 0,
+    code: 'not_installed', message: '未检测到 WorkBuddy。' };
+  // The desktop endpoint is a local, read-only connection fact. Do not send a
+  // prompt, consume model quota, or run a task qualification from this path.
+  let authenticated = Boolean(runtime?.desktopSessionAvailable);
+  let connected = authenticated;
+  if (typeof options.ping === 'function') {
+    const timeoutMs = Math.max(250, Math.min(WORKBUDDY_CONNECTION_TIMEOUT_MS, Number(options.timeoutMs || WORKBUDDY_CONNECTION_TIMEOUT_MS)));
+    const timeout = new Promise(resolve => setTimeout(() => resolve({ connected: false, timedOut: true }), timeoutMs));
+    const checked = await Promise.race([Promise.resolve(options.ping(runtime)), timeout]);
+    connected = checked?.connected === true;
+    authenticated = checked?.authenticated === true || authenticated;
+  }
+  const latencyMs = Math.max(0, Date.now() - startedAt);
+  const code = connected ? 'connected' : authenticated ? 'unreachable' : 'authentication_required';
+  return { installed, authenticated, connected, latencyMs, code,
+    message: connected ? 'WorkBuddy 本地连接可用。任务合同需单独验证。'
+      : authenticated ? 'WorkBuddy 已认证，但本地连接当前不可达。' : 'WorkBuddy 已安装，但尚未检测到已认证的桌面会话。' };
+}
+
 module.exports = {
   WORKBUDDY_AUTH_PROBE_TIMEOUT_MS,
+  WORKBUDDY_CONNECTION_TIMEOUT_MS,
   workBuddyReadyResult,
   workBuddyResultEnvelope,
   parseWorkBuddyJsonPayload,
@@ -341,6 +366,7 @@ module.exports = {
   buildControlledWorkBuddyResearchInvocation,
   discoverWorkBuddyRuntime,
   probeWorkBuddyAuthorization,
+  probeWorkBuddyConnection,
   workBuddyAuthenticationRequired,
   workBuddyRuntimeEnv,
 };

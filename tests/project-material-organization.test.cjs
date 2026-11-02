@@ -58,6 +58,15 @@ test('authorized automatic organization moves an independent inbox file and reco
   assert.equal(record.version, 1);
 });
 
+test('unified disabled setting overrides a stale legacy authorization', async (t) => {
+  const f = await fixture(t, { materialAutomation: { enabled: false,
+    processingPaused: false, autoAdoptPathClassified: true, autoDigest: true, maxBatch: 20 } });
+  const status = await f.service.status();
+  assert.equal(status.configuration.enabled, false);
+  await f.add('参考资料.pdf', 'reference bytes');
+  await assert.rejects(f.service.run(runRequest('disabled-run'), host), { code: 'organization_not_authorized' });
+});
+
 test('manual classification is respected and automatic move never rewrites it', async (t) => {
   const f = await fixture(t);
   const material = await f.add('参考资料.pdf', 'manual destination');

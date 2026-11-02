@@ -72,16 +72,32 @@ function sha256(filePath) {
   return crypto.createHash('sha256').update(fs.readFileSync(filePath)).digest('hex').toUpperCase();
 }
 
+const publishCleanupWait = new Int32Array(new SharedArrayBuffer(4));
+
+function removeTemporaryPublishFile(temporary) {
+  let lastError = null;
+  for (let attempt = 0; attempt < 30; attempt += 1) {
+    try {
+      if (fs.existsSync(temporary)) fs.unlinkSync(temporary);
+      if (!fs.existsSync(temporary)) return;
+    } catch (error) {
+      lastError = error;
+    }
+    Atomics.wait(publishCleanupWait, 0, 0, 200);
+  }
+  throw new Error(`Unable to remove temporary terminal release artifact: ${temporary}${lastError ? ` (${lastError.message})` : ''}`);
+}
+
 function publishFile(source, destination) {
   const temporary = `${destination}.new`;
   fs.mkdirSync(path.dirname(destination), { recursive: true });
-  if (fs.existsSync(temporary)) fs.rmSync(temporary, { force: true });
+  removeTemporaryPublishFile(temporary);
   try {
     fs.copyFileSync(source, temporary);
     if (sha256(source) !== sha256(temporary)) throw new Error('Terminal artifact copy verification failed.');
     fs.copyFileSync(temporary, destination);
   } finally {
-    fs.rmSync(temporary, { force: true });
+    removeTemporaryPublishFile(temporary);
   }
 }
 
@@ -224,6 +240,9 @@ function build() {
     zip: { path: zipArtifact, bytes: fs.statSync(zipArtifact).size, sha256: sha256(zipArtifact) },
   };
   fs.writeFileSync(path.join(releaseDir, `${artifactName.replace(/\.exe$/, '')}-build-audit.json`), `${JSON.stringify(audit, null, 2)}\n`, 'utf8');
+  for (const artifact of [releaseArtifact, zipArtifact]) {
+    removeTemporaryPublishFile(`${artifact}.new`);
+  }
   process.stdout.write(`[windows-terminal-release] complete\n${JSON.stringify(audit, null, 2)}\n`);
 }
 

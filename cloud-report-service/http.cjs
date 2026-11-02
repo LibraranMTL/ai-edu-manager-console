@@ -8,8 +8,12 @@ const { startBackupScheduler } = require('./backup-scheduler.cjs');
 const { receiveDocument } = require('./document-stream.cjs');
 const { diskStatus } = require('./maintenance.cjs');
 const { createRemoteMcpHandler } = require('./remote-mcp.cjs');
+const { startMaterialIndexer } = require('./material-indexer.cjs');
 
-const MAX_JSON_BYTES = 3 * 1024 * 1024;
+// A C5 result can contain up to 2 MiB of bounded, base64-encoded attachments
+// plus the Markdown body and envelope. Four MiB keeps the public request
+// bounded while allowing the documented attachment contract to fit.
+const MAX_JSON_BYTES = 4 * 1024 * 1024;
 const WEB_ROOT = path.join(__dirname, 'web-dist');
 
 function readJson(req) {
@@ -52,6 +56,16 @@ function readBytes(req, maxBytes) {
   });
 }
 
+async function readFormOrJson(req) {
+  const type = String(req.headers['content-type'] || '').split(';')[0].trim().toLowerCase();
+  if (type === 'application/json') return readJson(req);
+  if (type !== 'application/x-www-form-urlencoded') {
+    const error = new Error('OAuth请求类型无效'); error.status = 415; throw error;
+  }
+  const bytes = await readBytes(req, 64 * 1024);
+  return Object.fromEntries(new URLSearchParams(bytes.toString('utf8')));
+}
+
 function json(res, status, body) {
   res.writeHead(status, {
     'content-type': 'application/json; charset=utf-8',
@@ -73,7 +87,7 @@ function createHttpServer(options) {
   }
   const service = createService(options);
   const handleRemoteMcp = createRemoteMcpHandler(service);
-  let backupScheduler;
+  let backupScheduler, materialIndexer;
   try {
     if (options.backupRoot) backupScheduler = startBackupScheduler({
       dataDir: options.dataDir, backupRoot: options.backupRoot,
@@ -81,6 +95,9 @@ function createHttpServer(options) {
       auditRoot: options.auditRoot, auditKey: options.auditKey,
       prune: options.pruneBackups === true, keep: options.backupKeep, days: options.backupDays,
     });
+    materialIndexer = options.materialIndexer === false ? null : startMaterialIndexer({ service,
+      pollMs: options.materialIndexPollMs, timeoutMs: options.materialIndexTimeoutMs,
+      ocrCommand: options.materialOcrCommand, ocrArgs: options.materialOcrArgs });
   } catch (error) { service.close(); throw error; }
   const pairingRates = new Map();
   const adminLoginRates = new Map();
@@ -90,6 +107,18 @@ function createHttpServer(options) {
       const url = new URL(req.url, 'http://localhost');
       const route = url.pathname;
       const token = bearer(req);
+      if (req.method === 'GET' && ['/.well-known/oauth-authorization-server', '/.well-known/openid-configuration'].includes(route)) {
+        return json(res, 200, service.oauthAuthorizationServerMetadata());
+      }
+      if (req.method === 'GET' && (route === '/.well-known/oauth-protected-resource' || route === '/.well-known/oauth-protected-resource/edu-cloud/mcp')) {
+        return json(res, 200, service.oauthProtectedResourceMetadata());
+      }
+      if (req.method === 'POST' && route === '/oauth/token') {
+        return json(res, 200, service.exchangeOAuthCode(await readFormOrJson(req)));
+      }
+      if (req.method === 'POST' && route === '/oauth/revoke') {
+        return json(res, 200, service.revokeOAuthToken(await readFormOrJson(req)));
+      }
       if (req.method === 'POST' && route.startsWith('/model-gateway/')) {
         if (!gateway) return json(res, 404, { error: '模型网关尚未配置' });
         if (route === '/model-gateway/session') {
@@ -111,7 +140,15 @@ function createHttpServer(options) {
       service.verifyViewerProof(token, req.method, req.url, req.headers);
       req.verifyBody = bytes => service.verifyBody(token, bytes, req.headers);
       if (['GET', 'DELETE'].includes(req.method)) req.verifyBody(Buffer.alloc(0));
-      if (req.method === 'GET' && route === '/health') return json(res, 200, { ok: true, service: 'edu-cloud-documents', version: '2.1.1', contracts: [1, 2], schema: service.schemaStatus(), capabilities: ['profile-sync', 'material-sync', 'remote-agent-mcp', 'cloud-inbox', 'student-archive', 'viewer-student-relinquish'] });
+      if (req.method === 'GET' && route === '/health') return json(res, 200, { ok: true, service: 'edu-cloud-documents', version: '2.2.0-candidate.2', contracts: [1, 2], schema: service.schemaStatus(),
+        materialIndex: materialIndexer?.status() || { enabled: false }, capabilities: ['profile-sync', 'material-sync', 'remote-agent-mcp', 'cloud-inbox', 'student-archive',
+          'viewer-student-relinquish', 'current-revision-index', 'async-pdf-docx-extraction', 'oauth-pkce'] });
+      if (req.method === 'POST' && route === '/oauth/clients') {
+        return json(res, 201, service.registerOAuthClient(token, await readJson(req)));
+      }
+      if (req.method === 'POST' && route === '/oauth/authorize') {
+        return json(res, 201, service.authorizeOAuth(token, await readJson(req)));
+      }
       if (req.method === 'POST' && route === '/v1/admin/sessions') {
         const ip = req.socket.remoteAddress || 'unknown';
         const previous = adminLoginRates.get(ip);
@@ -176,6 +213,15 @@ function createHttpServer(options) {
         const body = await readJson(req);
         return json(res, 200, service.redeemSourceEnrollment(body.enrollmentCode, token, body.publicKey, body));
       }
+      if (req.method === 'POST' && route === '/v2/source-auto-enroll') {
+        const ip = req.socket.remoteAddress || 'unknown';
+        const key = `auto-enroll:${ip}`;
+        const entry = pairingRates.get(key);
+        const recent = entry && entry.until > Date.now() ? entry : { until: Date.now() + 60000, count: 0 };
+        if (++recent.count > 8) { pairingRates.set(key, recent); return json(res, 429, { error: '请稍后重试' }); }
+        pairingRates.set(key, recent);
+        return json(res, 200, service.autoEnrollSource(await readJson(req), token));
+      }
       if (req.method === 'POST' && route === '/v1/pairings') {
         const ip = req.socket.remoteAddress || 'unknown';
         const entry = pairingRates.get(ip);
@@ -209,6 +255,9 @@ function createHttpServer(options) {
       }
       if (req.method === 'POST' && route === '/v2/source-upload-scope') {
         return json(res, 200, service.setOwnUploadScope(token, await readJson(req)));
+      }
+      if (req.method === 'POST' && route === '/v2/source-health-scope') {
+        return json(res, 200, service.setOwnHealthScope(token, await readJson(req)));
       }
       if (req.method === 'GET' && route === '/v1/students') {
         return json(res, 200, { students: service.listStudents(token, { includeArchived: url.searchParams.get('includeArchived') === '1' }) });
@@ -280,6 +329,10 @@ function createHttpServer(options) {
           hash => service.verifyBodyHash(token, hash, req.headers)));
       }
       const materialContentMatch = route.match(/^\/v2\/material-revisions\/(material_rev_[a-f0-9]{48})\/content$/);
+      const materialIndexMatch = route.match(/^\/v2\/material-revisions\/(material_rev_[a-f0-9]{48})\/index-status$/);
+      if (materialIndexMatch && req.method === 'GET') {
+        return json(res, 200, service.getV2MaterialIndexStatus(token, materialIndexMatch[1]));
+      }
       if (materialContentMatch && req.method === 'GET') {
         const item = service.getV2Material(token, materialContentMatch[1]);
         res.writeHead(200, {
@@ -288,6 +341,31 @@ function createHttpServer(options) {
           'x-cloud-student-id': item.cloudStudentId, 'x-material-category': item.category,
           'x-material-id': item.materialId, 'x-revision-id': item.revisionId,
           'cache-control': 'no-store', 'x-content-type-options': 'nosniff',
+        });
+        return res.end(item.content);
+      }
+      const healthListMatch = route.match(/^\/v2\/students\/([a-zA-Z0-9_-]{8,96})\/health-records$/);
+      if (healthListMatch && req.method === 'GET') {
+        return json(res, 200, service.listHealthRecords(token, healthListMatch[1], url.searchParams.get('cursor') || ''));
+      }
+      if (healthListMatch && req.method === 'POST') {
+        const prepared = service.prepareHealthRecord(token, healthListMatch[1], {
+          healthRecordId: String(req.headers['x-health-record-id'] || ''),
+          idempotencyKey: String(req.headers['x-idempotency-key'] || ''),
+          displayName: decodeURIComponent(String(req.headers['x-document-name'] || '')),
+          contentType: String(req.headers['content-type'] || '').split(';')[0],
+        });
+        return json(res, 201, await receiveDocument(req, prepared, MAX_DOCUMENT_BYTES,
+          hash => service.verifyBodyHash(token, hash, req.headers)));
+      }
+      const healthContentMatch = route.match(/^\/v2\/health-record-revisions\/(health_rev_[a-f0-9]{48})\/content$/);
+      if (healthContentMatch && req.method === 'GET') {
+        const item = service.getHealthRecord(token, healthContentMatch[1]);
+        res.writeHead(200, {
+          'content-type': item.contentType === 'text/markdown' ? 'text/markdown; charset=utf-8' : item.contentType,
+          'content-length': item.content.length, 'x-content-sha256': item.contentSha256,
+          'x-cloud-student-id': item.cloudStudentId, 'x-health-record-id': item.healthRecordId,
+          'x-revision-id': item.revisionId, 'cache-control': 'no-store', 'x-content-type-options': 'nosniff',
         });
         return res.end(item.content);
       }
@@ -305,7 +383,7 @@ function createHttpServer(options) {
       if (req.method === 'POST' && route === '/v2/agent/task/acknowledge') {
         return json(res, 200, service.remoteAgentAcknowledge(token));
       }
-      if (req.method === 'POST' && route === '/v2/mcp') {
+      if (req.method === 'POST' && (route === '/v2/mcp' || route === '/mcp')) {
         const response = handleRemoteMcp(token, await readJson(req));
         if (response === null) { res.writeHead(204, { 'cache-control': 'no-store' }); return res.end(); }
         return json(res, 200, response);
@@ -337,6 +415,15 @@ function createHttpServer(options) {
       const inboxLeaseMatch = route.match(/^\/v2\/inbox\/(submission_[a-f0-9]{32})\/lease$/);
       if (inboxLeaseMatch && req.method === 'POST') {
         return json(res, 200, service.leaseInboxSubmission(token, inboxLeaseMatch[1]));
+      }
+      const inboxAttachmentMatch = route.match(/^\/v2\/inbox\/(submission_[a-f0-9]{32})\/attachments\/(attachment_[a-f0-9]{32})$/);
+      if (inboxAttachmentMatch && req.method === 'GET') {
+        const item = service.getInboxAttachment(token, inboxAttachmentMatch[1], inboxAttachmentMatch[2],
+          String(req.headers['x-inbox-lease-id'] || ''));
+        res.writeHead(200, { 'content-type': item.contentType, 'content-length': item.content.length,
+          'content-disposition': `attachment; filename*=UTF-8''${encodeURIComponent(item.displayName)}`,
+          'x-content-sha256': item.contentSha256, 'cache-control': 'no-store', 'x-content-type-options': 'nosniff' });
+        return res.end(item.content);
       }
       const inboxSettleMatch = route.match(/^\/v2\/inbox\/(submission_[a-f0-9]{32})\/settle$/);
       if (inboxSettleMatch && req.method === 'POST') {
@@ -433,9 +520,10 @@ function createHttpServer(options) {
       if (!res.headersSent && !res.destroyed) json(res, error.status || 500, { error: error.status ? error.message : '服务内部错误' });
     }
   });
-  return { server, service, close: async () => {
+  return { server, service, materialIndexer, close: async () => {
     await new Promise(resolve => server.close(resolve));
     await backupScheduler?.stop();
+    await materialIndexer?.stop();
     await gateway?.close();
     service.close();
   } };
@@ -451,12 +539,17 @@ if (require.main === module) {
     ? undefined : Number(process.env.CLOUD_REPORT_BACKUP_INTERVAL_HOURS) * 60 * 60 * 1000;
   const host = process.env.CLOUD_REPORT_HOST || '127.0.0.1';
   const port = Number(process.env.CLOUD_REPORT_PORT || 8755);
+  const publicOrigin = process.env.CLOUD_REPORT_PUBLIC_ORIGIN || 'https://www.greatbg.com/edu-cloud';
+  const licenseTrustPath = process.env.CLOUD_REPORT_LICENSE_TRUST_PATH || path.join(__dirname, 'trusted-license-issuers.json');
   if (!dataDir || !adminToken) throw new Error('Set CLOUD_REPORT_DATA_DIR and CLOUD_REPORT_ADMIN_TOKEN');
   if (host !== '127.0.0.1' && host !== '::1' && process.env.CLOUD_REPORT_BEHIND_HTTPS_PROXY !== '1') {
     throw new Error('Non-local binding requires CLOUD_REPORT_BEHIND_HTTPS_PROXY=1 and a real TLS reverse proxy');
   }
   const gateway = require('./model-gateway-runtime.cjs').fromEnvironment(process.env, dataDir);
-  const app = createHttpServer({ dataDir, adminToken, maxStudentBytes, backupRoot, backupIntervalMs, modelGateway: gateway,
+  const trustedLicenseIssuers = JSON.parse(fs.readFileSync(licenseTrustPath, 'utf8'));
+  const materialOcrArgs = process.env.CLOUD_MATERIAL_OCR_ARGS_JSON ? JSON.parse(process.env.CLOUD_MATERIAL_OCR_ARGS_JSON) : [];
+  const app = createHttpServer({ dataDir, adminToken, maxStudentBytes, backupRoot, backupIntervalMs, modelGateway: gateway, publicOrigin, trustedLicenseIssuers,
+    materialOcrCommand: process.env.CLOUD_MATERIAL_OCR_COMMAND || '', materialOcrArgs,
     auditRoot: process.env.CLOUD_REPORT_AUDIT_ROOT, auditKey: process.env.CLOUD_REPORT_AUDIT_KEY,
     pruneBackups: process.env.CLOUD_REPORT_PRUNE_BACKUPS === '1',
     backupKeep: Number(process.env.CLOUD_REPORT_BACKUP_KEEP || 7), backupDays: Number(process.env.CLOUD_REPORT_BACKUP_DAYS || 30) });

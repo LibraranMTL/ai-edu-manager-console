@@ -93,7 +93,12 @@ function importEvents(db, eventPath) {
 function migrate({ legacyPath, dbPath }) {
   const source = parseLegacy(legacyPath);
   fs.mkdirSync(path.dirname(dbPath), { recursive: true });
-  const temporary = `${dbPath}.${crypto.randomUUID()}.migrating`;
+  // Keep the sibling name compact. On Windows SQLite can reject a temporary
+  // database near MAX_PATH even when the authoritative task-state.sqlite3 is
+  // valid. A full UUID suffix made first-run migration fail before the task
+  // scheduler could start.
+  const nonce = `${Date.now().toString(36)}-${crypto.randomBytes(3).toString('hex')}`;
+  const temporary = path.join(path.dirname(dbPath), `.new-${nonce}.db`);
   const db = new DatabaseSync(temporary);
   let eventCount = 0;
   let imported = false;
@@ -129,10 +134,15 @@ function migrate({ legacyPath, dbPath }) {
     const backupDir = path.join(path.dirname(legacyPath), 'migration-backups');
     fs.mkdirSync(backupDir, { recursive: true });
     const stamp = new Date().toISOString().replace(/[:.]/g, '-');
-    const backup = path.join(backupDir, `tasks-before-sqlite-${stamp}.json`);
+    const descriptiveBackup = path.join(backupDir, `tasks-before-sqlite-${stamp}.json`);
+    const backup = descriptiveBackup.length <= 240
+      ? descriptiveBackup : path.join(backupDir, `j-${nonce}.json`);
     fs.copyFileSync(legacyPath, backup, fs.constants.COPYFILE_EXCL);
     fs.chmodSync(backup, 0o444);
-    fs.writeFileSync(`${backup}.manifest.json`, JSON.stringify({ source: legacyPath, backup,
+    const descriptiveManifest = `${backup}.manifest.json`;
+    const manifestPath = descriptiveManifest.length <= 240
+      ? descriptiveManifest : path.join(backupDir, `m-${nonce}.json`);
+    fs.writeFileSync(manifestPath, JSON.stringify({ source: legacyPath, backup,
       sha256: sha256File(legacyPath), bytes: fs.statSync(legacyPath).size, taskCount: (source.tasks || []).length,
       historyCount: (source.history || []).length, eventCount, createdAt: new Date().toISOString() }, null, 2));
   }
@@ -140,129 +150,7 @@ function migrate({ legacyPath, dbPath }) {
   return { taskCount: (source.tasks || []).length, historyCount: (source.history || []).length, eventCount };
 }
 
-function createTaskStateStore({ legacyPath }) {
-  const dbPath = databasePathForLegacy(legacyPath);
-  let db = null;
-  let state = null;
-  let taskJson = new Map();
-  let historyJson = '';
-  let metaJson = new Map();
-
-  function open() {
-    if (db) return;
-    if (!fs.existsSync(dbPath)) migrate({ legacyPath, dbPath });
-    db = new DatabaseSync(dbPath);
-    configure(db, 'WAL');
-    createSchema(db);
-    check(db);
-    if (!state) load();
-  }
-
-  function readMeta(key, fallback) {
-    const row = db.prepare('SELECT value_json FROM task_state_meta WHERE key=?').get(key);
-    if (!row) return fallback;
-    try { return JSON.parse(row.value_json); } catch { return fallback; }
-  }
-
-  function load() {
-    const tasks = db.prepare('SELECT task_id,payload_json FROM tasks ORDER BY updated_at DESC,task_id').all();
-    taskJson = new Map(tasks.map(row => [String(row.task_id), String(row.payload_json)]));
-    const historyRows = db.prepare('SELECT payload_json FROM task_history ORDER BY sequence').all();
-    const history = historyRows.map(row => JSON.parse(row.payload_json));
-    historyJson = JSON.stringify(history);
-    state = {
-      protocolVersion: readMeta('protocolVersion', ''),
-      updatedAt: readMeta('updatedAt', ''),
-      runtime: readMeta('runtime', {}),
-      tasks: tasks.map(row => JSON.parse(row.payload_json)),
-      history,
-      deletedTasks: readMeta('deletedTasks', []),
-    };
-    for (const key of ['protocolVersion', 'updatedAt', 'runtime', 'deletedTasks']) metaJson.set(key, JSON.stringify(state[key] ?? (key === 'runtime' ? {} : key === 'deletedTasks' ? [] : '')));
-    return state;
-  }
-
-  function writeMeta(key, value) {
-    const serialized = JSON.stringify(value);
-    if (metaJson.get(key) === serialized) return;
-    db.prepare(`INSERT INTO task_state_meta(key,value_json) VALUES(?,?)
-      ON CONFLICT(key) DO UPDATE SET value_json=excluded.value_json`).run(key, serialized);
-    metaJson.set(key, serialized);
-  }
-
-  function writeSnapshot(value) {
-    open();
-    const nextTasks = Array.isArray(value.tasks) ? value.tasks : [];
-    const seen = new Set();
-    const upsert = db.prepare(`INSERT INTO tasks(task_id,status,updated_at,payload_json) VALUES(?,?,?,?)
-      ON CONFLICT(task_id) DO UPDATE SET status=excluded.status,updated_at=excluded.updated_at,payload_json=excluded.payload_json`);
-    const remove = db.prepare('DELETE FROM tasks WHERE task_id=?');
-    db.exec('BEGIN IMMEDIATE');
-    try {
-      for (const item of nextTasks) {
-        const id = String(item.id || '');
-        if (!id) continue;
-        seen.add(id);
-        const serialized = JSON.stringify(item);
-        if (taskJson.get(id) !== serialized) {
-          upsert.run(id, String(item.status || ''), String(item.updatedAt || ''), serialized);
-          taskJson.set(id, serialized);
-        }
-      }
-      for (const id of [...taskJson.keys()]) if (!seen.has(id)) { remove.run(id); taskJson.delete(id); }
-      const nextHistory = Array.isArray(value.history) ? value.history : [];
-      const nextHistoryJson = JSON.stringify(nextHistory);
-      if (nextHistoryJson !== historyJson) {
-        db.exec('DELETE FROM task_history');
-        const insertHistory = db.prepare('INSERT INTO task_history(sequence,task_id,occurred_at,payload_json) VALUES(?,?,?,?)');
-        nextHistory.forEach((item, index) => insertHistory.run(index, String(item.taskId || ''), String(item.at || item.updatedAt || ''), JSON.stringify(item)));
-        historyJson = nextHistoryJson;
-      }
-      writeMeta('protocolVersion', value.protocolVersion || '');
-      writeMeta('updatedAt', value.updatedAt || '');
-      writeMeta('runtime', value.runtime || {});
-      writeMeta('deletedTasks', value.deletedTasks || []);
-      db.exec('COMMIT');
-    } catch (error) { try { db.exec('ROLLBACK'); } catch {} throw error; }
-    state = structuredClone(value);
-    return state;
-  }
-
-  function applyProgress(entries) {
-    open();
-    const update = db.prepare('UPDATE tasks SET updated_at=?,payload_json=? WHERE task_id=?');
-    let accepted = 0;
-    db.exec('BEGIN IMMEDIATE');
-    try {
-      for (const patch of entries || []) {
-        const id = String(patch.taskId || '');
-        const currentJson = taskJson.get(id);
-        if (!currentJson) continue;
-        const task = JSON.parse(currentJson);
-        if (String(task.executionId || '') !== String(patch.executionId || '') || !['running', 'waiting_result'].includes(String(task.status || ''))) continue;
-        if (patch.lastHeartbeatAt) task.lastHeartbeatAt = String(patch.lastHeartbeatAt);
-        if (patch.lastProgressAt) { task.lastProgressAt = String(patch.lastProgressAt); task.progressSource = String(patch.progressSource || ''); }
-        const serialized = JSON.stringify(task);
-        update.run(String(task.updatedAt || task.lastProgressAt || task.lastHeartbeatAt || ''), serialized, id);
-        taskJson.set(id, serialized);
-        accepted++;
-      }
-      db.exec('COMMIT');
-    } catch (error) { try { db.exec('ROLLBACK'); } catch {} throw error; }
-    return accepted;
-  }
-
-  function appendEvent(event) {
-    open();
-    const payload = event && typeof event === 'object' ? event : {};
-    db.prepare(`INSERT OR IGNORE INTO task_events(event_id,task_id,event_type,occurred_at,payload_json)
-      VALUES(?,?,?,?,?)`).run(String(payload.id || crypto.randomUUID()), String(payload.taskId || ''),
-      String(payload.type || ''), String(payload.at || ''), JSON.stringify(payload));
-  }
-
-  return { dbPath, open, value: () => state || load(), writeSnapshot, applyProgress, appendEvent,
-    release() { if (db) { try { db.exec('PRAGMA wal_checkpoint(PASSIVE)'); } catch {} db.close(); db = null; } },
-    close() { if (db) db.close(); db = null; state = null; taskJson.clear(); historyJson = ''; metaJson.clear(); } };
+function createTaskStateStore(options) {
+  return require('./task-sql-store.cjs').createTaskSqlStore({ ...options, migrate });
 }
-
-module.exports = { SCHEMA_VERSION, databasePathForLegacy, createTaskStateStore, migrate };
+module.exports = { SCHEMA_VERSION: 3, databasePathForLegacy, createTaskStateStore, migrate };

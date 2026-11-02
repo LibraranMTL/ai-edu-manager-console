@@ -43,7 +43,9 @@ function fixture(output, options = {}) {
     captureHeavyWorkGate:{tryAcquire:()=>()=>releases++,blockState:()=>({})},captureTimelineResourceSnapshot:()=>({}),
     deferTaskForAdapter:()=>({ok:true,deferred:true}),
     externalTaskDispatchBarrier:()=>({claim:async()=>{claims++;return {ok:true,claimed:true,executionId:'durable-execution'};},sendIntent:async()=>{sends++;return {ok:true};},started:async()=>{starts++;return {ok:true};}}),
-    releaseUnstartedTaskClaim:async()=>{},settlePersistentTaskAttempt:async(id,options)=>settlements.push({id,options}),
+    releaseUnstartedTaskClaim:async()=>{},settlePersistentTaskAttempt:async(id,options)=>settlements.push({
+      id,options,executionPhaseAtSettlement:store.tasks.find(task=>task.id===id)?.executionPhase||'',
+    }),
     taskStoreGuard:{
       getExecutionBudget:async key=>({budget:budgets.get(key)||null}),
       recordExecutionBudget:async input=>{const attempts=Number(budgets.get(input.budgetKey)?.attempts||0)+1;const budget={attempts,terminal_state:attempts>=2?'failed_terminal':'',next_retry_at:input.nextRetryAt||''};budgets.set(input.budgetKey,budget);return {budget};},
@@ -130,6 +132,7 @@ test('confirmed zero-effect research timeout settles the old attempt and schedul
   assert.equal(f.settlements.at(-1).id,task.id);
   assert.equal(f.settlements.at(-1).options.knownResult,true);
   assert.equal(f.settlements.at(-1).options.resultKind,'safe_retry_no_output');
+  assert.notEqual(f.settlements.at(-1).executionPhaseAtSettlement,'settled');
   assert.equal(f.wakes.length,1);
 });
 
@@ -143,6 +146,7 @@ test('Codex model incompatibility is not-sent and schedules the next qualified r
   assert.deepEqual(f.store.tasks[0].researchRecovery.excludedProviders,['codex']);
   assert.equal(f.store.tasks[0].researchRecovery.nextProviderPolicy,'next_ready_provider');
   assert.equal(f.settlements.at(-1).options.resultKind,'safe_retry_no_output');
+  assert.notEqual(f.settlements.at(-1).executionPhaseAtSettlement,'settled');
   assert.equal(f.wakes.length,1);
 });
 
@@ -229,4 +233,16 @@ test('blocked capability stores the reason and does not launch research', async 
   assert.equal((await f.ctx.submitResearchTask(task, 'guidance')).blocked, true);
   assert.equal(f.store.tasks[0].status, 'blocked'); assert.equal(f.store.tasks[0].error.code, 'RESEARCH_CAPABILITY_UNAVAILABLE');
   assert.equal(f.calls(), 0);
+});
+
+test('research candidates stay automatic while capability discovery is pending or stale', () => {
+  assert.deepEqual(policy.researchCandidateDisposition({ available: false, checking: true }), {
+    status: 'queued', reason: 'checking', error: null,
+  });
+  assert.deepEqual(policy.researchCandidateDisposition({ available: false, checking: false }), {
+    status: 'queued', reason: 'dispatch_check', error: null,
+  });
+  assert.deepEqual(policy.researchCandidateDisposition({ available: true }), {
+    status: 'pending', reason: 'ready', error: null,
+  });
 });

@@ -75,15 +75,7 @@ function codexEventErrorMessage(event) {
 async function terminateAndCollectResearchEvidence({ child, outputPath, events = [], stderrTail = '', startedAt = '', timeoutAt = '',
   executionContext = {}, terminateProcess = candidate => candidate?.kill?.(), graceMs = 250, finalizationTimeoutMs = 5000,
   terminationCause = 'timeout_kill', localReceiptPresent = false, businessWriteStarted = false }) {
-  const eventTypeCounts = {};
-  let completedWebEvents = 0, completedToolEvents = 0, closed = false, exitCode = null, signal = null, closedAt = '';
-  for (const event of events) {
-    const key = String(event?.type || 'unknown'); eventTypeCounts[key] = Number(eventTypeCounts[key] || 0) + 1;
-    if (event?.type !== 'item.completed') continue;
-    const itemType = String(event?.item?.type || '');
-    if (itemType === 'web_search') completedWebEvents += 1;
-    else if (/(?:tool|call|execution|command|mcp)/i.test(itemType)) completedToolEvents += 1;
-  }
+  let closed = false, exitCode = null, signal = null, closedAt = '';
   const closedPromise = new Promise(resolve => {
     child?.once?.('close', (code, closeSignal) => {
       closed = true; exitCode = Number.isInteger(code) ? code : null; signal = closeSignal || null;
@@ -104,6 +96,18 @@ async function terminateAndCollectResearchEvidence({ child, outputPath, events =
     graceCompletedAt = new Date().toISOString();
   }
   const afterGrace = researchOutputState(outputPath);
+  // Streams can deliver their final parsed event after termination was requested but
+  // before close/drain completes. Count only after the close grace window so a real
+  // side effect can never be misclassified as a zero-effect safe retry.
+  const eventTypeCounts = {};
+  let completedWebEvents = 0, completedToolEvents = 0;
+  for (const event of events) {
+    const key = String(event?.type || 'unknown'); eventTypeCounts[key] = Number(eventTypeCounts[key] || 0) + 1;
+    if (event?.type !== 'item.completed') continue;
+    const itemType = String(event?.item?.type || '');
+    if (itemType === 'web_search') completedWebEvents += 1;
+    else if (/(?:tool|call|execution|command|mcp)/i.test(itemType)) completedToolEvents += 1;
+  }
   const identityMatches = Boolean(executionContext.executionId && executionContext.workKey && executionContext.sourceVersion
     && executionContext.providerId);
   return {

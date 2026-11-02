@@ -6,7 +6,7 @@ const crypto = require('node:crypto');
 const { DatabaseSync } = require('node:sqlite');
 
 const SCHEMA_VERSION = 5;
-const POLICY_VERSION = 'learning-state-3-v1';
+const POLICY_VERSION = 'learning-state-3-v2';
 const DIMENSIONS = ['goalClarity', 'confidence', 'difficulty', 'recovery', 'workload'];
 const SOURCE_CATEGORIES = new Set(['student_self_report', 'external_observation', 'system_observation', 'system_inference']);
 const ACTION_TYPES = new Set(['learning_task', 'targeted_practice']);
@@ -1015,14 +1015,14 @@ function createLearningStateStore({ dbPath, now = Date.now, quickCheck = true })
       .filter((signal) => signal.withdrawn !== true);
   }
 
-  function ensureRoleReportSnapshot(scope, snapshot = {}, commitKey) {
+  function ensureLearningReportSnapshot(scope, snapshot = {}, commitKey) {
     const actor = assertScope(scope, snapshot.studentId);
     commitKey = text(commitKey);
     const cycleKey = text(snapshot.cycleKey);
     const inputFingerprint = text(snapshot.inputFingerprint);
     const asOf = reliableIso(snapshot.asOf);
     if (!commitKey || !cycleKey || !inputFingerprint || !asOf) {
-      throw Object.assign(new Error('报告快照缺少稳定提交键、周期、输入指纹或截止时间。'), { code: 'role_report_snapshot_invalid' });
+      throw Object.assign(new Error('报告快照缺少稳定提交键、周期、输入指纹或截止时间。'), { code: 'learning_report_snapshot_invalid' });
     }
     const existing = db.prepare('SELECT * FROM learning_role_report_snapshots WHERE student_id=? AND commit_key=?')
       .get(actor.studentId, commitKey);
@@ -1030,7 +1030,7 @@ function createLearningStateStore({ dbPath, now = Date.now, quickCheck = true })
     const sameInput = db.prepare('SELECT * FROM learning_role_report_snapshots WHERE student_id=? AND cycle_key=? AND input_fingerprint=?')
       .get(actor.studentId, cycleKey, inputFingerprint);
     if (sameInput) return { ...parseJson(sameInput.snapshot_json, {}), snapshotId: sameInput.snapshot_id, replayed: true };
-    const snapshotId = id('role-report-snapshot');
+    const snapshotId = id('learning-report-snapshot');
     const createdAt = nowIso(now);
     const stored = { ...snapshot, snapshotId };
     return transaction(() => {
@@ -1043,7 +1043,7 @@ function createLearningStateStore({ dbPath, now = Date.now, quickCheck = true })
     });
   }
 
-  function listRoleReportSnapshots(studentId, cycleKey = '') {
+  function listLearningReportSnapshots(studentId, cycleKey = '') {
     studentId = text(studentId);
     const rows = cycleKey
       ? db.prepare('SELECT * FROM learning_role_report_snapshots WHERE student_id=? AND cycle_key=? ORDER BY created_at DESC').all(studentId, text(cycleKey))
@@ -1093,14 +1093,14 @@ function createLearningStateStore({ dbPath, now = Date.now, quickCheck = true })
         .all(studentId).map(mapMethodExperiment),
       processSignals: db.prepare('SELECT * FROM learning_process_signal_versions WHERE student_id=? ORDER BY signal_id,revision')
         .all(studentId).map(mapProcessSignal),
-      roleReportSnapshots: listRoleReportSnapshots(studentId),
+      reportSnapshots: listLearningReportSnapshots(studentId),
     };
   }
 
   return {
     dbPath, db, state, reconcileEvents, listPoints, weeklyGrowth,
     submitCheckIn, upsertGoal, upsertProblem, ingestEvidence, publishFindings, correctOrWithdraw, getLearningState, history,
-    upsertMethodExperiment, recordProcessSignal, listProcessSignals, ensureRoleReportSnapshot, listRoleReportSnapshots,
+    upsertMethodExperiment, recordProcessSignal, listProcessSignals, ensureLearningReportSnapshot, listLearningReportSnapshots,
     ensureActionIntent, getActionIntent, suppressAction, beginActionDispatch, settleActionDispatch, recordActionFeedback,
     close() { db.close(); },
   };

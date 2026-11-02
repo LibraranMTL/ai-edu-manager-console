@@ -2,13 +2,6 @@
 
 const crypto = require('node:crypto');
 
-const ROLE_FIELD_ALLOWLISTS = Object.freeze({
-  student: Object.freeze(['summary', 'dimensions', 'nextActions', 'history']),
-  teacher: Object.freeze(['summary', 'dimensions', 'nextActions', 'history', 'evidenceSummary']),
-  parent: Object.freeze(['summary', 'dimensions', 'nextActions', 'history']),
-  admin: Object.freeze(['summary', 'dimensions', 'nextActions', 'history', 'evidenceSummary', 'governance']),
-});
-
 function text(value) { return String(value ?? '').trim(); }
 function canonical(value) {
   if (Array.isArray(value)) return value.map(canonical);
@@ -104,9 +97,9 @@ function buildFiveDimensionSnapshot(state, options = {}) {
     actionKey: item.actionKey, title: item.title, actionType: item.actionType, status: item.status, retestWindow: item.retestWindow,
   }));
   const base = {
-    schema: 'edu-manager.learning-role-report-snapshot.v1',
+    schema: 'edu-manager.learning-report-snapshot.v2',
     studentId, cycleKey, asOf,
-    policyVersion: 'learning-state-3-v1',
+    policyVersion: 'learning-state-3-v2',
     authorizationVersion: text(state.authorizationVersion),
     generation: Number(state.generation || 0),
     summary: {
@@ -138,65 +131,7 @@ function buildFiveDimensionSnapshot(state, options = {}) {
   return { ...base, inputFingerprint: fingerprint(stableInput) };
 }
 
-function redactDimensions(dimensions, role) {
-  const copy = structuredClone(dimensions || {});
-  if (role !== 'student' && copy.mindset) delete copy.mindset.privateNote;
-  if (role === 'parent') {
-    for (const item of copy.goals?.items || []) delete item.goalId;
-    for (const item of copy.problems?.items || []) { delete item.problemId; delete item.description; }
-    for (const item of copy.methods?.items || []) delete item.experimentId;
-  }
-  return copy;
-}
-
-function projectLearningRoleReport(snapshot, reader = {}) {
-  const directRole = text(reader.role);
-  const requestedRole = text(reader.projectionRole || directRole);
-  if (!ROLE_FIELD_ALLOWLISTS[requestedRole]) throw Object.assign(new Error('学情报告读取角色无效。'), { code: 'reader_scope_invalid' });
-  if (text(reader.studentId) && text(reader.studentId) !== text(snapshot.studentId)) {
-    throw Object.assign(new Error('读取范围与授权学生不一致。'), { code: 'student_scope_mismatch' });
-  }
-  if (requestedRole === 'parent') {
-    const verifiedDirect = directRole === 'parent' && reader.parentBindingVerified === true;
-    const authorizedExport = directRole === 'admin' && reader.authorizedExport === true;
-    if (!verifiedDirect && !authorizedExport) {
-      throw Object.assign(new Error('家长身份尚未可靠绑定，仅允许管理员授权导出。'), { code: 'parent_binding_required' });
-    }
-  }
-  if (directRole !== requestedRole && !(directRole === 'admin' && reader.authorizedExport === true)) {
-    throw Object.assign(new Error('跨角色投影缺少管理员授权。'), { code: 'role_projection_forbidden' });
-  }
-  const allowlist = ROLE_FIELD_ALLOWLISTS[requestedRole];
-  const result = {
-    schema: 'edu-manager.learning-role-report-projection.v1',
-    studentId: snapshot.studentId,
-    asOf: snapshot.asOf,
-    cycleKey: snapshot.cycleKey,
-    policyVersion: snapshot.policyVersion,
-    authorizationVersion: snapshot.authorizationVersion,
-    projectionRole: requestedRole,
-    deliveryMode: requestedRole === 'parent' && directRole === 'admin' ? 'admin_authorized_export' : 'authenticated_view',
-    fieldAllowlist: [...allowlist],
-    boundaries: snapshot.boundaries,
-  };
-  for (const field of allowlist) {
-    if (field === 'dimensions') result.dimensions = redactDimensions(snapshot.dimensions, requestedRole);
-    else if (field === 'nextActions') result.nextActions = (snapshot.nextActions || []).map((item) => requestedRole === 'parent'
-      ? { title: item.title, actionType: item.actionType, status: item.status, retestWindow: item.retestWindow }
-      : structuredClone(item));
-    else if (field === 'evidenceSummary' && requestedRole === 'teacher') {
-      result.evidenceSummary = {
-        labels: structuredClone(snapshot.evidenceSummary?.labels || {}),
-        findings: (snapshot.evidenceSummary?.findings || []).map(({ findingId: _findingId, ...finding }) => structuredClone(finding)),
-      };
-    } else result[field] = structuredClone(snapshot[field]);
-  }
-  return result;
-}
-
 module.exports = {
-  ROLE_FIELD_ALLOWLISTS,
   buildFiveDimensionSnapshot,
-  projectLearningRoleReport,
   reportCycleKey,
 };

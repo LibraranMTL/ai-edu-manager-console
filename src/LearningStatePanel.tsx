@@ -24,15 +24,6 @@ type LearningStateProjection = {
 
 type RatioMetric = { numerator: number; denominator: number; sampleSize: number; note: string };
 
-type RoleReportProjection = {
-  projectionRole: 'student' | 'teacher' | 'parent';
-  deliveryMode: 'authenticated_view' | 'admin_authorized_export';
-  asOf: string;
-  fieldAllowlist: string[];
-  summary: { activeGoalCount: number; activeProblemCount: number; pendingActionCount: number };
-  dimensions: Record<'goals' | 'mindset' | 'problems' | 'methods' | 'efficiency', { status: string }>;
-};
-
 type ActionApi = (action: string, studentId: string, input: Record<string, unknown>) => Promise<string>;
 
 const dimensions: Array<{ key: DimensionKey; label: string; low: string; high: string }> = [
@@ -68,14 +59,6 @@ const methodStatusLabels: Record<string, string> = {
   observed_difference: '观察到变化，待延迟复测', observed_no_difference: '暂未观察到变化',
 };
 
-const roleFieldLabels: Record<string, string> = {
-  summary: '摘要', dimensions: '五维画像', nextActions: '下一步行动', history: '历史变化',
-  evidenceSummary: '证据摘要', governance: '治理信息',
-};
-const dimensionStatusLabels: Record<string, string> = {
-  observed: '有观察证据', self_reported: '学生自述', insufficient_evidence: '证据不足', descriptive_only: '仅描述统计',
-};
-
 function ratioText(metric?: RatioMetric) {
   return metric ? `${metric.numerator}/${metric.denominator} · 样本 ${metric.sampleSize}` : '0/0 · 样本 0';
 }
@@ -90,7 +73,6 @@ export function LearningStatePanel({ studentId, studentName, actionApi }: { stud
   const [goal, setGoal] = useState({ title: '', successCriteria: '', category: 'subject' });
   const [problem, setProblem] = useState({ title: '', description: '', category: 'knowledge' });
   const [method, setMethod] = useState({ title: '', hypothesis: '', practice: '', subject: '', taskType: '', targetKey: '', helpful: false, note: '' });
-  const [roleProjection, setRoleProjection] = useState<RoleReportProjection | null>(null);
 
   const invoke = async (action: string, input: Record<string, unknown> = {}) => {
     if (!actionApi) throw new Error('当前主机版本不支持学习状态管理。');
@@ -216,42 +198,13 @@ export function LearningStatePanel({ studentId, studentName, actionApi }: { stud
     finally { setBusy(false); }
   };
 
-  const previewRoleReport = async (projectionRole: RoleReportProjection['projectionRole']) => {
-    setBusy(true); setMessage('');
-    try {
-      const data = await invoke('role-report', {
-        reportType: 'learning_profile', projectionRole, authorizedExport: projectionRole === 'parent',
-      }) as RoleReportProjection;
-      setRoleProjection(data);
-      setMessage(projectionRole === 'parent'
-        ? '已生成家长字段白名单的管理员授权预览；未建立可靠家长身份绑定前不会开放直接读取。'
-        : `已读取${projectionRole === 'student' ? '学生' : '教师'}字段白名单预览。`);
-    } catch (error) { setMessage(error instanceof Error ? error.message : '分角色报告读取失败。'); }
-    finally { setBusy(false); }
-  };
-
   return <div className="learning-state-panel">
-    <div className="notice muted"><strong>{studentName} · 学情三期</strong><br />五维画像已接入整体画像、历史变化、阶段总结与每周行动建议。学生、教师和家长只读取各自字段白名单；效率仅显示分子、分母与样本量，不合成总分，不用于诊断、排名或纪律判断。行动派发门禁{projection?.automationEnabled ? '已开启' : '已暂停'}。</div>
+    <div className="notice muted"><strong>{studentName} · 学情三期</strong><br />五维画像已接入整体画像、历史变化、阶段总结与每周行动建议。学生端和教师端均可查看完整学情资料；效率仅显示分子、分母与样本量，不合成总分，不用于诊断、排名或纪律判断。行动派发门禁{projection?.automationEnabled ? '已开启' : '已暂停'}。</div>
     <div className="learning-state-toolbar">
       <span>{projection?.coverage.hasBaseline ? <><CheckCircle2 size={16} />已建立首次基线</> : <><AlertTriangle size={16} />尚未建立首次基线</>}</span>
       <span>周反馈 {projection?.coverage.weeklyFeedbackCount || 0} 次</span>
       <button className="secondary compact" type="button" onClick={() => void refresh()} disabled={busy}><RefreshCw size={15} />刷新</button>
     </div>
-
-    <section className="growth-card learning-state-form">
-      <div className="growth-card-heading"><strong>分角色报告预览</strong><small>家长身份未可靠绑定时，仅允许管理员生成授权导出预览。</small></div>
-      <div className="inline-actions">
-        <button className="secondary compact" type="button" disabled={busy} onClick={() => void previewRoleReport('student')}>学生视图</button>
-        <button className="secondary compact" type="button" disabled={busy} onClick={() => void previewRoleReport('teacher')}>教师视图</button>
-        <button className="secondary compact" type="button" disabled={busy} onClick={() => void previewRoleReport('parent')}>家长授权导出预览</button>
-      </div>
-      {roleProjection ? <div className="notice muted">
-        <strong>{roleProjection.projectionRole === 'student' ? '学生' : roleProjection.projectionRole === 'teacher' ? '教师' : '家长'}投影</strong>
-        <br />有效目标 {roleProjection.summary.activeGoalCount} 项 · 待观察问题 {roleProjection.summary.activeProblemCount} 项 · 下一步行动 {roleProjection.summary.pendingActionCount} 项
-        <br />五维状态：目标 {dimensionStatusLabels[roleProjection.dimensions.goals.status] || roleProjection.dimensions.goals.status}；心态 {dimensionStatusLabels[roleProjection.dimensions.mindset.status] || roleProjection.dimensions.mindset.status}；问题 {dimensionStatusLabels[roleProjection.dimensions.problems.status] || roleProjection.dimensions.problems.status}；方法 {dimensionStatusLabels[roleProjection.dimensions.methods.status] || roleProjection.dimensions.methods.status}；效率 {dimensionStatusLabels[roleProjection.dimensions.efficiency.status] || roleProjection.dimensions.efficiency.status}
-        <br />字段白名单：{roleProjection.fieldAllowlist.map((field) => roleFieldLabels[field] || field).join('、')} · {roleProjection.deliveryMode === 'admin_authorized_export' ? '管理员授权导出' : '认证查看'}
-      </div> : <div className="empty-state">选择角色后查看当前字段白名单投影；预览不会触发报告生成、任务或学习卡。</div>}
-    </section>
 
     <section className="growth-card learning-state-form">
       <div className="growth-card-heading"><strong>五项反馈</strong><select value={kind} onChange={(event) => setKind(event.target.value as 'baseline' | 'weekly')}><option value="baseline">首次基线</option><option value="weekly">本周反馈</option></select></div>

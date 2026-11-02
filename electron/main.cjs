@@ -314,7 +314,6 @@ const {
 } = require('./learning-state-store.cjs');
 const {
   buildFiveDimensionSnapshot,
-  projectLearningRoleReport,
   reportCycleKey,
 } = require('./learning-role-reports.cjs');
 const { createLearningActionLoop } = require('./learning-action-loop.cjs');
@@ -13773,18 +13772,6 @@ async function learningStateActionJson(action, studentId, inputJson = '{}') {
       result = store.getLearningState({ role: 'admin', studentId: context.input.studentId, authorizationVersion }, context.input.studentId, asOf);
       result.automationEnabled = taskAutomationEnabled();
     }
-    else if (action === 'role-report') {
-      const reportType = String(input.reportType || 'learning_profile');
-      const cycleKey = String(input.cycleKey || reportCycleKey(reportType, asOf, weeklyGrowthTimezone()));
-      const stateProjection = store.getLearningState({ role: 'admin', studentId: context.input.studentId, authorizationVersion }, context.input.studentId, asOf);
-      stateProjection.automationEnabled = taskAutomationEnabled();
-      const snapshot = buildFiveDimensionSnapshot(stateProjection, { cycleKey, asOf });
-      const projectionRole = String(input.projectionRole || 'student');
-      result = projectLearningRoleReport(snapshot, {
-        role: 'admin', studentId: context.input.studentId, projectionRole,
-        authorizedExport: projectionRole !== 'parent' || input.authorizedExport === true,
-      });
-    }
     else if (action === 'submitCheckIn') {
       result = store.submitCheckIn(scope, input.payload || {}, input.clientSubmissionId);
       store.publishFindings(context.input.studentId, new Date().toISOString());
@@ -21963,7 +21950,6 @@ function learningReportStateContext(student, reportType, cycleKey, asOf = new Da
   const dbPath = learningStatePath(normalized.rootPath || getStudentRootDir(normalized.name));
   if (!fs.existsSync(dbPath)) return {
     fiveDimensionSnapshot: null,
-    roleProjections: null,
     learningStateFingerprint: 'learning-state-empty',
   };
   const store = createLearningStateStore({ dbPath });
@@ -21976,13 +21962,6 @@ function learningReportStateContext(student, reportType, cycleKey, asOf = new Da
     return {
       fiveDimensionSnapshot,
       learningStateFingerprint: fiveDimensionSnapshot.inputFingerprint,
-      roleProjections: {
-        student: projectLearningRoleReport(fiveDimensionSnapshot, { role: 'student', studentId: String(normalized.id) }),
-        teacher: projectLearningRoleReport(fiveDimensionSnapshot, { role: 'teacher', studentId: String(normalized.id) }),
-        parent: projectLearningRoleReport(fiveDimensionSnapshot, {
-          role: 'admin', projectionRole: 'parent', studentId: String(normalized.id), authorizedExport: true,
-        }),
-      },
     };
   } finally { store.close(); }
 }
@@ -22057,9 +22036,7 @@ function buildPeriodicLearningReportTask(student, kind, sharedEvidence = null) {
       growthPath: growthModelDirForStudent(normalized),
       growthFingerprint,
       fiveDimensionSnapshot: learningState.fiveDimensionSnapshot,
-      roleProjections: learningState.roleProjections,
       learningStateFingerprint: learningState.learningStateFingerprint,
-      roleProjectionPolicy: '学生、教师、家长仅使用对应字段白名单；家长内容只允许管理员授权导出。五维画像不合成总分。',
       eligibleEvidenceIds: eligibleEvidence.ids,
       eligibleEvidence: eligibleEvidence.items,
       blockedEvidenceCount: eligibleEvidence.blockedCount,
@@ -22155,10 +22132,8 @@ function buildWeeklyActionTask(student, sharedEvidence = null) {
       growthPath: growthModelDirForStudent(normalized),
       growthFingerprint,
       fiveDimensionSnapshot: learningState.fiveDimensionSnapshot,
-      roleProjections: learningState.roleProjections,
       learningStateFingerprint: learningState.learningStateFingerprint,
       actionCycleKey: `weekly_action:${normalized.id}:${week.key}`,
-      roleProjectionPolicy: '同一 actionCycleKey 重新生成只更新报告，不得重复派发任务或学习卡；五维画像不合成总分。',
       eligibleEvidenceIds: eligibleEvidence.ids,
       eligibleEvidence: eligibleEvidence.items,
       blockedEvidenceCount: eligibleEvidence.blockedCount,
@@ -22345,7 +22320,7 @@ function directReportExecutionCommand(task, command) {
     .replaceAll('不要直接覆盖正式报告', '校验通过后由系统自动原子发布正式报告')
     .replaceAll('status: pending_review', 'status: generated');
   const stageNineContext = task.input?.fiveDimensionSnapshot
-    ? `阶段 9 五维学情输入（目标、心态、问题、方法、效率）：\n${JSON.stringify(task.input.fiveDimensionSnapshot, null, 2)}\n\n角色字段白名单投影：\n${JSON.stringify(task.input.roleProjections || {}, null, 2)}\n\n使用边界：学生自述、外部观察、系统观察、系统推断必须分开标注；未知保持未知，不合成总分。各角色内容只能使用对应字段白名单。快照内未出现在可引用证据白名单中的 ID 不得写成 [依据:...]。${task.kind === 'weekly_action' ? `同一 actionCycleKey（${task.input.actionCycleKey || ''}）重新生成只更新报告，不得重复创建任务或学习卡。` : ''}`
+    ? `阶段 9 五维学情输入（目标、心态、问题、方法、效率）：\n${JSON.stringify(task.input.fiveDimensionSnapshot, null, 2)}\n\n读取规则：学生端和教师端使用同一份完整学情资料。使用边界：学生自述、外部观察、系统观察、系统推断必须分开标注；未知保持未知，不合成总分。快照内未出现在可引用证据白名单中的 ID 不得写成 [依据:...]。${task.kind === 'weekly_action' ? `同一 actionCycleKey（${task.input.actionCycleKey || ''}）重新生成只更新报告，不得重复创建任务或学习卡。` : ''}`
     : '阶段 9 五维学情输入尚不可用；不得据此补写结论。';
   return `${normalizedCommand}\n\n${stageNineContext}\n\n自动发布补充要求：本次执行必须实际写入或更新系统校验区文件；即使已存在内容相同的文件，也要按当前学生、成长指纹和报告周期重新写入，不能只返回“无需更新”。在结论性章节引用 watching 证据时，每一处都必须明确写“待观察”“继续观察”“观察中”“待确认”或“不能据此形成正式结论”；行动建议、观察点和依据来源可以引用 watching 证据，但只能用于安排核验、收集或观察，不得升级为已确认事实。`;
 }
@@ -26359,7 +26334,7 @@ function persistReportIssue(task, validation) {
   return file;
 }
 
-function persistLearningRoleReportSnapshot(task) {
+function persistLearningReportSnapshot(task) {
   const snapshot = task.input?.fiveDimensionSnapshot;
   if (!snapshot || !snapshot.studentId || !snapshot.inputFingerprint || !snapshot.cycleKey) return { ok: true, skipped: true };
   const student = findStudentByKey(task.sourceId);
@@ -26367,7 +26342,7 @@ function persistLearningRoleReportSnapshot(task) {
   const normalized = toHostStudent(student);
   const store = createLearningStateStore({ dbPath: learningStatePath(normalized.rootPath || getStudentRootDir(normalized.name)) });
   try {
-    const stored = store.ensureRoleReportSnapshot({
+    const stored = store.ensureLearningReportSnapshot({
       studentId: String(normalized.id), actorRole: 'system', actorId: 'learning-report-publisher',
     }, snapshot, `report:${task.id}:${snapshot.cycleKey}:${snapshot.inputFingerprint}`);
     return { ok: true, snapshotId: stored.snapshotId, replayed: stored.replayed === true };
@@ -26382,7 +26357,7 @@ function autoPublishValidatedReport(task, validation) {
   const publishPath = task.expectedOutput?.publishPath;
   if (!draftPath || !publishPath || !fs.existsSync(draftPath)) return { ok: false, message: '报告生成结果不存在。' };
   const draftContent = fs.readFileSync(draftPath, 'utf8');
-  const snapshotPersistence = persistLearningRoleReportSnapshot(task);
+  const snapshotPersistence = persistLearningReportSnapshot(task);
   if (!snapshotPersistence.ok) return snapshotPersistence;
   const publishedContent = fs.existsSync(publishPath) ? fs.readFileSync(publishPath, 'utf8') : '';
   const periodStart = String(task.input?.periodStart || task.input?.weekStart || task.input?.date || '');
@@ -39676,17 +39651,10 @@ function terminalLearningStateProjection(student, role) {
     try { projection = store.getLearningState({ role, studentId, authorizationVersion }, studentId, asOf); }
     finally { store.close(); }
   }
-  const snapshot = buildFiveDimensionSnapshot(projection, {
+  const fiveDimensionSnapshot = buildFiveDimensionSnapshot(projection, {
     cycleKey: reportCycleKey('learning_profile', asOf, weeklyGrowthTimezone()), asOf,
   });
-  const roleReport = projectLearningRoleReport(snapshot, { role, studentId });
-  if (role !== 'teacher') return { ...projection, roleReport };
-  return {
-    ...projection,
-    checkIns: projection.checkIns.map(({ note: _note, ...item }) => item),
-    evidence: projection.evidence.map(({ statement: _statement, ...item }) => item),
-    roleReport,
-  };
+  return { ...projection, fiveDimensionSnapshot };
 }
 
 async function handleTerminalLearningState(request, response, teacherStudentId = '') {
@@ -39697,7 +39665,7 @@ async function handleTerminalLearningState(request, response, teacherStudentId =
     if (request.method === 'GET') {
       return sendJson(response, 200, { ok: true, data: terminalLearningStateProjection(student, isTeacher ? 'teacher' : 'student') });
     }
-    if (isTeacher) return sendJson(response, 403, { ok: false, code: 'LEARNING_STATE_READ_ONLY', message: '教师端一期仅提供只读状态。' });
+    if (isTeacher) return sendJson(response, 403, { ok: false, code: 'LEARNING_STATE_READ_ONLY', message: '教师端可查看完整学情资料，但不能代替学生提交反馈。' });
     const body = await parseJsonBody(request, 64 * 1024);
     const normalized = toHostStudent(student);
     const store = createLearningStateStore({ dbPath: learningStatePath(normalized.rootPath) });
@@ -43661,7 +43629,7 @@ ipcMain.handle('bridge:getWeeklyKnowledgeGrowth', (_event, studentId) => deferre
 ipcMain.handle('bridge:saveWeeklyKnowledgeGrowthPng', (_event, snapshotId, studentId) => licensedInvoke(
   '保存每周知识增长图片', () => saveWeeklyKnowledgeGrowthPng(snapshotId, studentId)));
 ipcMain.handle('bridge:learningStateAction', (_event, action, studentId, inputJson) => (
-  action === 'get' || action === 'role-report'
+  action === 'get'
     ? deferredInvoke(() => learningStateActionJson(action, studentId, inputJson))
     : licensedInvoke('更新学习状态', () => learningStateActionJson(action, studentId, inputJson))
 ));

@@ -157,7 +157,7 @@ test('read projection is isolated, historical, and has zero business mutations',
   assert.equal(projection.checkIns[0].dimensions.confidence, 3);
   assert.deepEqual(store.state(), before);
   assert.equal(projection.asOf, NOW);
-  assert.equal(projection.policyVersion, 'learning-state-3-v1');
+  assert.equal(projection.policyVersion, 'learning-state-3-v2');
   assert.equal(projection.authorizationVersion, 'students-v7');
   assert.throws(() => store.getLearningState(reader('student-b'), 'student-a', NOW), { code: 'student_scope_mismatch' });
 });

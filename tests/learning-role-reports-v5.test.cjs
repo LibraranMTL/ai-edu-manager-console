@@ -10,7 +10,6 @@ const { DatabaseSync, backup: backupSqlite } = require('node:sqlite');
 const { createLearningStateStore, SCHEMA_VERSION } = require('../electron/learning-state-store.cjs');
 const {
   buildFiveDimensionSnapshot,
-  projectLearningRoleReport,
   reportCycleKey,
 } = require('../electron/learning-role-reports.cjs');
 
@@ -60,8 +59,9 @@ test('schema v5 persists immutable five-dimension snapshots idempotently', (t) =
   assert.equal(SCHEMA_VERSION, 5);
   const state = store.getLearningState(reader(), 'student-a', NOW);
   const snapshot = buildFiveDimensionSnapshot(state, { cycleKey: '2026-W45', asOf: NOW });
-  const first = store.ensureRoleReportSnapshot(scope(), snapshot, 'snapshot:student-a:2026-W45:v1');
-  const replay = store.ensureRoleReportSnapshot(scope(), snapshot, 'snapshot:student-a:2026-W45:v1');
+  assert.equal(snapshot.schema, 'edu-manager.learning-report-snapshot.v2');
+  const first = store.ensureLearningReportSnapshot(scope(), snapshot, 'snapshot:student-a:2026-W45:v1');
+  const replay = store.ensureLearningReportSnapshot(scope(), snapshot, 'snapshot:student-a:2026-W45:v1');
   assert.equal(first.snapshotId, replay.snapshotId);
   assert.equal(replay.replayed, true);
   assert.deepEqual(Object.keys(snapshot.dimensions), ['goals', 'mindset', 'problems', 'methods', 'efficiency']);
@@ -74,41 +74,20 @@ test('schema v5 persists immutable five-dimension snapshots idempotently', (t) =
   assert.equal(laterRead.inputFingerprint, snapshot.inputFingerprint, 'read time alone must not reopen the same report cycle');
 });
 
-test('role projections use explicit allowlists and never leak another student', (t) => {
+test('the unified five-dimension snapshot preserves complete learning details without role allowlists', (t) => {
   const { store } = fixture(t);
   seed(store, 'student-a');
   seed(store, 'student-b');
   const snapshot = buildFiveDimensionSnapshot(store.getLearningState(reader('student-a'), 'student-a', NOW), {
     cycleKey: '2026-W45', asOf: NOW,
   });
-  const student = projectLearningRoleReport(snapshot, { role: 'student', studentId: 'student-a' });
-  const teacher = projectLearningRoleReport(snapshot, { role: 'teacher', studentId: 'student-a' });
-  assert.equal(student.studentId, 'student-a');
-  assert.equal(teacher.studentId, 'student-a');
-  assert.ok(student.dimensions.mindset.selfReport);
-  assert.equal('privateNote' in teacher.dimensions.mindset, false);
-  assert.equal(JSON.stringify(teacher).includes('希望先把函数基础补齐'), false);
-  assert.equal(JSON.stringify(teacher).includes('evidence-transfer'), false);
-  assert.equal(JSON.stringify(student).includes('student-b'), false);
-  assert.deepEqual(student.fieldAllowlist, ['summary', 'dimensions', 'nextActions', 'history']);
-  assert.deepEqual(teacher.fieldAllowlist, ['summary', 'dimensions', 'nextActions', 'history', 'evidenceSummary']);
-});
-
-test('unverified parent access is rejected while an administrator may create an authorized parent export', (t) => {
-  const { store } = fixture(t);
-  seed(store);
-  const snapshot = buildFiveDimensionSnapshot(store.getLearningState(reader(), 'student-a', NOW), {
-    cycleKey: '2026-W45', asOf: NOW,
-  });
-  assert.throws(() => projectLearningRoleReport(snapshot, { role: 'parent', studentId: 'student-a' }),
-    (error) => error.code === 'parent_binding_required');
-  const exported = projectLearningRoleReport(snapshot, {
-    role: 'admin', studentId: 'student-a', projectionRole: 'parent', authorizedExport: true,
-  });
-  assert.equal(exported.projectionRole, 'parent');
-  assert.equal(exported.deliveryMode, 'admin_authorized_export');
-  assert.equal(JSON.stringify(exported).includes('evidence-transfer'), false);
-  assert.equal(JSON.stringify(exported).includes('attempt-1'), false);
+  assert.equal(snapshot.studentId, 'student-a');
+  assert.ok(snapshot.dimensions.mindset.selfReport);
+  assert.equal(snapshot.dimensions.mindset.privateNote, '希望先把函数基础补齐。');
+  assert.equal(snapshot.governance.inputEvidenceIds.includes('evidence-transfer'), true);
+  assert.equal(JSON.stringify(snapshot).includes('student-b'), false);
+  assert.equal('fieldAllowlist' in snapshot, false);
+  assert.equal('projectionRole' in snapshot, false);
 });
 
 test('report cycle keys are stable and weekly action uses the same cycle across regeneration', () => {
@@ -117,19 +96,32 @@ test('report cycle keys are stable and weekly action uses the same cycle across 
   assert.equal(reportCycleKey('learning_profile', '2026-11-02T08:00:00.000Z', 'Asia/Shanghai'), 'learning_profile:2026-11');
 });
 
-test('stage-nine report and backup integration contracts are wired', () => {
+test('stage-nine unified report and backup integration contracts are wired', () => {
   const projectRoot = path.resolve(__dirname, '..');
   const main = fs.readFileSync(path.join(projectRoot, 'electron', 'main.cjs'), 'utf8');
   assert.match(main, /fiveDimensionSnapshot/);
   assert.match(main, /learningStateFingerprint/);
   assert.match(main, /backupLearningStateDatabases/);
   assert.match(main, /restoreLearningStateDatabases/);
-  assert.match(main, /role-report/);
-  const roleBlock = main.slice(main.indexOf("action === 'role-report'"), main.indexOf("action === 'submitCheckIn'"));
-  assert.doesNotMatch(roleBlock, /ensureRoleReportSnapshot/, 'role preview must be a zero-business-write read');
-  assert.match(main, /persistLearningRoleReportSnapshot/);
+  assert.doesNotMatch(main, /action === 'role-report'/);
+  assert.doesNotMatch(main, /projectLearningRoleReport|roleProjections|roleProjectionPolicy/);
+  assert.match(main, /persistLearningReportSnapshot/);
   assert.match(main, /阶段 9 五维学情输入/);
+  assert.match(main, /学生端和教师端使用同一份完整学情资料/);
   assert.match(main, /同一 actionCycleKey/);
+});
+
+test('student and teacher terminal readers receive the same complete projection and five-dimension snapshot', () => {
+  const functionStart = mainSource.indexOf('function terminalLearningStateProjection');
+  const functionEnd = mainSource.indexOf('\nasync function handleTerminalLearningState', functionStart);
+  const source = mainSource.slice(functionStart, functionEnd);
+  assert.match(source, /fiveDimensionSnapshot/);
+  assert.match(source, /return \{ \.\.\.projection, fiveDimensionSnapshot \}/);
+  assert.doesNotMatch(source, /roleReport|role !== 'teacher'|_note|_statement/);
+
+  const panel = fs.readFileSync(path.join(__dirname, '../src/LearningStatePanel.tsx'), 'utf8');
+  assert.match(panel, /学生端和教师端均可查看完整学情资料/);
+  assert.doesNotMatch(panel, /分角色报告预览|家长授权导出预览|previewRoleReport|fieldAllowlist/);
 });
 
 test('host backup and restore preserve corrections and action bindings in the complete learning-state database', async (t) => {

@@ -35,9 +35,14 @@ test('practice review drives the versioned two-root rule and feeds the original 
 test('student session can read and submit feedback while teacher endpoint stays read-only', () => {
   assert.match(main, /\['GET', 'POST'\]\.includes\(request\.method\).*\/api\/student-session\/learning-state/);
   assert.match(main, /request\.method === 'GET'.*teacherLearningStateMatch/);
-  assert.match(main, /教师端一期仅提供只读状态/);
+  assert.match(main, /教师端可查看完整学情资料，但不能代替学生提交反馈/);
   assert.match(main, /learningStateRead: true, learningStateFeedback: true/);
-  assert.match(main, /roleReport = projectLearningRoleReport\(snapshot, \{ role, studentId \}\)/);
+  assert.match(main, /return \{ \.\.\.projection, fiveDimensionSnapshot \}/);
+  const projectionFunction = main.slice(
+    main.indexOf('function terminalLearningStateProjection'),
+    main.indexOf('async function handleTerminalLearningState'),
+  );
+  assert.doesNotMatch(projectionFunction, /_note|_statement|projectLearningRoleReport/);
   assert.doesNotMatch(main, /api\/parent\/.+learning-state/);
 });
 

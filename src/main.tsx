@@ -430,6 +430,29 @@ type AssetIndexState = {
   message?: string;
 };
 
+type WeeklyKnowledgeGrowth = {
+  ok: boolean;
+  code?: string;
+  message?: string;
+  studentId: string;
+  snapshotId: string;
+  pngBase64: string;
+  width: number;
+  height: number;
+  asOf: string;
+  timezone: string;
+  currentDate: string;
+  weekStart: string;
+  weekEnd: string;
+  assetTotal: number;
+  weeklyNewKnowledgePoints: number;
+  unknownFirstSeenCount: number;
+  assetGeneration: number;
+  knowledgeGeneration: number;
+  authorizationVersion: string;
+  days: Array<{ date: string; label: string; count: number | null }>;
+};
+
 type AssetRebuildJob = {
   jobId: string;
   status: string;
@@ -1208,6 +1231,9 @@ type AndroidBridge = {
   getCaptureTimelineSegments?: (inputJson: string) => Promise<string>;
   getLearningAnalytics?: (inputJson: string) => Promise<string>;
   listStudentKnowledgePoints?: (inputJson: string) => Promise<string>;
+  getWeeklyKnowledgeGrowth?: (studentId: string) => Promise<string>;
+  saveWeeklyKnowledgeGrowthPng?: (snapshotId: string, studentId: string) => Promise<string>;
+  invalidateWeeklyKnowledgeGrowth?: (snapshotId: string) => Promise<string>;
   getKnowledgePointTrend?: (inputJson: string) => Promise<string>;
   getStudentKnowledgeActivitySummary?: (studentId: string, range: number) => Promise<string>;
   rebuildKnowledgeProjection?: (inputJson: string) => Promise<string>;
@@ -6303,6 +6329,10 @@ function App() {
   const [platformPublishing, setPlatformPublishing] = useState(false);
   const [courseBrowser, setCourseBrowser] = useState<{ open: boolean; courseId?: string; name?: string }>({ open: false });
   const [assetIndex, setAssetIndex] = useState<AssetIndexState>({ assets: [] });
+  const [weeklyKnowledgeGrowth, setWeeklyKnowledgeGrowth] = useState<WeeklyKnowledgeGrowth | null>(null);
+  const [weeklyKnowledgeGrowthLoading, setWeeklyKnowledgeGrowthLoading] = useState(false);
+  const [weeklyKnowledgeGrowthSaving, setWeeklyKnowledgeGrowthSaving] = useState(false);
+  const [weeklyKnowledgeGrowthMessage, setWeeklyKnowledgeGrowthMessage] = useState('');
   const [homeAssetStatistics, setHomeAssetStatistics] = useState<AssetIndexState | null>(null);
   const [projectAssetStatistics, setProjectAssetStatistics] = useState<AssetIndexState | null>(null);
   const [assetMessage, setAssetMessage] = useState('');
@@ -6318,6 +6348,8 @@ function App() {
   const [assetDetailRefreshVersion, setAssetDetailRefreshVersion] = useState(0);
   const assetListRequestRef = useRef(0);
   const assetStatisticsGenerationRef = useRef(0);
+  const weeklyKnowledgeGrowthRequestRef = useRef(0);
+  const weeklyKnowledgeGrowthSnapshotRef = useRef('');
   const assetDuplicateRequestRef = useRef(0);
   const assetDetailRequestRef = useRef(0);
   const [assetCursor, setAssetCursor] = useState('');
@@ -9646,14 +9678,31 @@ ${sourceText}`;
   useEffect(() => bridge()?.onAssetIndexChanged?.((event) => {
     if (!Number.isFinite(event.generation) || event.generation <= assetStatisticsGenerationRef.current) return;
     assetStatisticsGenerationRef.current = event.generation;
-    if (activeSectionRef.current === 'assets') void refreshAssets('');
+    if (activeSectionRef.current === 'assets') {
+      void refreshAssets('');
+      if (assetStudentFilter !== 'all') void refreshWeeklyKnowledgeGrowth(assetStudentFilter);
+    }
     if (activeSectionRef.current === 'home' && selectedStudent?.id) {
       void refreshScopedAssetStatistics({ studentId: selectedStudent.id }, setHomeAssetStatistics);
     }
     if (activeSectionRef.current === 'projects-existing' && selectedProject?.id) {
       void refreshScopedAssetStatistics({ projectId: selectedProject.id }, setProjectAssetStatistics);
     }
-  }), [selectedStudent?.id, selectedProject?.id]);
+  }), [assetStudentFilter, selectedStudent?.id, selectedProject?.id]);
+
+  useEffect(() => {
+    weeklyKnowledgeGrowthRequestRef.current += 1;
+    const previousSnapshotId = weeklyKnowledgeGrowthSnapshotRef.current;
+    weeklyKnowledgeGrowthSnapshotRef.current = '';
+    if (previousSnapshotId) void bridge()?.invalidateWeeklyKnowledgeGrowth?.(previousSnapshotId);
+    setWeeklyKnowledgeGrowth(null);
+    setWeeklyKnowledgeGrowthMessage('');
+    setWeeklyKnowledgeGrowthLoading(false);
+    setWeeklyKnowledgeGrowthSaving(false);
+    if (activeSection !== 'assets' || assetStudentFilter === 'all') return undefined;
+    const timer = window.setTimeout(() => { void refreshWeeklyKnowledgeGrowth(assetStudentFilter); }, 0);
+    return () => window.clearTimeout(timer);
+  }, [activeSection, assetStudentFilter]);
 
   useEffect(() => {
     if (activeSection === 'assets') void refreshAssets(assetCursor);
@@ -12063,6 +12112,66 @@ ${sourceText}`;
       setMaterialSourceMessage('资料来源导入结果解析失败。');
     } finally {
       setMaterialSourceBusyAction('');
+    }
+  };
+
+  const refreshWeeklyKnowledgeGrowth = async (studentId = assetStudentFilter) => {
+    const action = bridge()?.getWeeklyKnowledgeGrowth;
+    const requestId = ++weeklyKnowledgeGrowthRequestRef.current;
+    if (!studentId || studentId === 'all') {
+      setWeeklyKnowledgeGrowth(null);
+      setWeeklyKnowledgeGrowthMessage('请选择一名学生查看周图。');
+      return;
+    }
+    if (!action) {
+      setWeeklyKnowledgeGrowthMessage('当前环境不支持每周知识增长统计。');
+      return;
+    }
+    setWeeklyKnowledgeGrowthLoading(true);
+    setWeeklyKnowledgeGrowthMessage('');
+    try {
+      const result = JSON.parse(await action(studentId)) as WeeklyKnowledgeGrowth;
+      if (requestId !== weeklyKnowledgeGrowthRequestRef.current) return;
+      if (!result.ok || result.studentId !== studentId || !result.snapshotId || !result.pngBase64) {
+        setWeeklyKnowledgeGrowth(null);
+        setWeeklyKnowledgeGrowthMessage(result.message || '每周知识增长统计失败，请重试。');
+        return;
+      }
+      const previousSnapshotId = weeklyKnowledgeGrowthSnapshotRef.current;
+      weeklyKnowledgeGrowthSnapshotRef.current = result.snapshotId;
+      if (previousSnapshotId && previousSnapshotId !== result.snapshotId) {
+        void bridge()?.invalidateWeeklyKnowledgeGrowth?.(previousSnapshotId);
+      }
+      setWeeklyKnowledgeGrowth(result);
+    } catch {
+      if (requestId === weeklyKnowledgeGrowthRequestRef.current) {
+        setWeeklyKnowledgeGrowth(null);
+        setWeeklyKnowledgeGrowthMessage('每周知识增长结果解析失败，请重试。');
+      }
+    } finally {
+      if (requestId === weeklyKnowledgeGrowthRequestRef.current) setWeeklyKnowledgeGrowthLoading(false);
+    }
+  };
+
+  const saveWeeklyKnowledgeGrowth = async () => {
+    const snapshot = weeklyKnowledgeGrowth;
+    const action = bridge()?.saveWeeklyKnowledgeGrowthPng;
+    if (!snapshot || !action || snapshot.studentId !== assetStudentFilter) {
+      setWeeklyKnowledgeGrowthMessage('周图已过期，请重新读取。');
+      return;
+    }
+    const requestId = weeklyKnowledgeGrowthRequestRef.current;
+    setWeeklyKnowledgeGrowthSaving(true);
+    setWeeklyKnowledgeGrowthMessage('');
+    try {
+      const result = JSON.parse(await action(snapshot.snapshotId, snapshot.studentId)) as { ok?: boolean; cancelled?: boolean; saved?: boolean; message?: string };
+      if (requestId !== weeklyKnowledgeGrowthRequestRef.current) return;
+      setWeeklyKnowledgeGrowthMessage(result.cancelled ? '' : result.ok && result.saved
+        ? '图片已保存，可在微信中发送。' : result.message || '图片保存失败，请重试。');
+    } catch {
+      if (requestId === weeklyKnowledgeGrowthRequestRef.current) setWeeklyKnowledgeGrowthMessage('图片保存结果解析失败，请重试。');
+    } finally {
+      if (requestId === weeklyKnowledgeGrowthRequestRef.current) setWeeklyKnowledgeGrowthSaving(false);
     }
   };
 
@@ -18694,9 +18803,13 @@ ${JSON.stringify(items, null, 2)}
                 assetGovernancePreview, assetDuplicateGroups, assetDuplicateTotal, assetDuplicateBusy,
                 selectedDuplicateAssetIds, allDuplicatePageSelected, assetDuplicateCursorHistory,
                 assetDuplicateNextCursor, assetDuplicateOperation, assetDuplicateHistory, assetMessage,
+                weeklyKnowledgeGrowth, weeklyKnowledgeGrowthLoading, weeklyKnowledgeGrowthSaving, weeklyKnowledgeGrowthMessage,
+                weeklyKnowledgeGrowthStudentName: students.find((student) => student.id === assetStudentFilter)?.name || '',
               }}
               actions={{
                 refreshAssets,
+                refreshWeeklyKnowledgeGrowth,
+                saveWeeklyKnowledgeGrowth,
                 rebuildAssets,
                 cancelRebuild: (jobId: string) => bridge()?.cancelAssetIndexRebuild?.(jobId),
                 analyzeAssets,

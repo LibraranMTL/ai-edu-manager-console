@@ -125,6 +125,15 @@ contextBridge.exposeInMainWorld('AndroidBridge', {
   listStudentKnowledgePoints(inputJson) {
     return ipcRenderer.invoke('bridge:listStudentKnowledgePoints', inputJson);
   },
+  getWeeklyKnowledgeGrowth(studentId) {
+    return ipcRenderer.invoke('bridge:getWeeklyKnowledgeGrowth', studentId);
+  },
+  saveWeeklyKnowledgeGrowthPng(snapshotId, studentId) {
+    return ipcRenderer.invoke('bridge:saveWeeklyKnowledgeGrowthPng', snapshotId, studentId);
+  },
+  invalidateWeeklyKnowledgeGrowth(snapshotId) {
+    return ipcRenderer.invoke('bridge:invalidateWeeklyKnowledgeGrowth', snapshotId);
+  },
   getKnowledgePointTrend(inputJson) {
     return ipcRenderer.invoke('bridge:getKnowledgePointTrend', inputJson);
   },

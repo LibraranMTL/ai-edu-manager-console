@@ -1,6 +1,7 @@
 const crypto = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
+const { createLearningStateStore, learningStatePath } = require('./learning-state-store.cjs');
 
 const LEARNING_EVENT_SCHEMA = 'edu-manager.learning-event.v1';
 const KNOWLEDGE_STATE_SCHEMA = 'edu-manager.student-knowledge-state.v1';
@@ -54,6 +55,18 @@ function readEventLedger(studentRootPath, studentId) {
     }
     return { ok: true, events: document.events };
   } catch { return { ok: false, code: 'event_ledger_unreadable', events: [] }; }
+}
+
+function syncFirstSeenProjection(studentRootPath, studentId, events) {
+  let store;
+  try {
+    store = createLearningStateStore({ dbPath: learningStatePath(studentRootPath) });
+    return store.reconcileEvents(studentId, events);
+  } catch (error) {
+    return { ok: false, code: error.code || 'learning_state_projection_failed', message: error.message };
+  } finally {
+    try { store?.close(); } catch { /* projection is rebuildable; close failures are reported on the next read */ }
+  }
 }
 
 function statesPath(studentRootPath) {
@@ -498,6 +511,7 @@ function appendLearningEvents(studentRootPath, input = {}) {
   }
   const events = [...byId.values()].sort((left, right) => Date.parse(left.occurredAt) - Date.parse(right.occurredAt));
   atomicWriteJson(eventsPath(studentRootPath), { schema: LEARNING_EVENT_SCHEMA, studentId, events, updatedAt: new Date().toISOString() });
+  const firstSeenProjection = syncFirstSeenProjection(studentRootPath, studentId, events);
   if (rejected.length) {
     const currentRejections = readJson(rejectionsPath(studentRootPath), { records: [] });
     const records = [...(Array.isArray(currentRejections.records) ? currentRejections.records : []),
@@ -506,7 +520,7 @@ function appendLearningEvents(studentRootPath, input = {}) {
     atomicWriteJson(rejectionsPath(studentRootPath), { schema: 'edu-manager.learning-event-rejections.v1', studentId, records });
   }
   const derived = rebuildDerived(studentRootPath, studentId, events, input);
-  return { ok: true, accepted: newlyAccepted, rejected, deduplicatedTotal: events.length, ...derived };
+  return { ok: true, accepted: newlyAccepted, rejected, deduplicatedTotal: events.length, firstSeenProjection, ...derived };
 }
 
 function applyPracticeLearningReview(studentRootPath, studentId, { attempt, result, point }) {
@@ -552,8 +566,9 @@ function removeLearningEventsBySource(studentRootPath, input = {}) {
     return true;
   });
   atomicWriteJson(eventsPath(studentRootPath), { schema: LEARNING_EVENT_SCHEMA, studentId, events: retained, updatedAt: new Date().toISOString() });
+  const firstSeenProjection = syncFirstSeenProjection(studentRootPath, studentId, retained);
   const derived = rebuildDerived(studentRootPath, studentId, retained, input);
-  return { ok: true, removed: before.length - retained.length, ...derived };
+  return { ok: true, removed: before.length - retained.length, firstSeenProjection, ...derived };
 }
 
 function queryLearningTrajectory(studentRootPath, input = {}) {
@@ -673,9 +688,10 @@ function rebuildKnowledgeProjection(studentRootPath, input = {}) {
   const cursor = Math.max(0, Math.min(total, Number(input.cursor || 0)));
   const processed = Math.min(total, cursor + Math.max(1, Math.min(250, Number(input.limit || 250))));
   if (processed < total) return { ok: true, studentId, processed, total, nextCursor: processed, complete: false };
+  const firstSeenProjection = syncFirstSeenProjection(studentRootPath, studentId, current.events);
   const derived = rebuildDerived(studentRootPath, studentId, current.events, input);
   return { ok: true, studentId, processed: total, total, nextCursor: null, complete: true,
-    knowledgePointCount: derived.states.length, misconceptionCount: derived.misconceptions.length };
+    firstSeenProjection, knowledgePointCount: derived.states.length, misconceptionCount: derived.misconceptions.length };
 }
 
 function buildLearningConsultContext(studentRootPath, input = {}) {

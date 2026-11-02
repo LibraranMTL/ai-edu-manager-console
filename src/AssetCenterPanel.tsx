@@ -1,6 +1,7 @@
 import React, { memo } from 'react';
 import { AlertTriangle, Archive, FileText, LinkIcon, ListChecks, RefreshCw, ShieldCheck, UserRound } from 'lucide-react';
 import { MarkdownView } from './MarkdownView';
+import { WeeklyKnowledgeGrowthCard } from './WeeklyKnowledgeGrowthCard';
 
 type AssetCenterPanelProps = { model: any; actions: any };
 
@@ -49,6 +50,7 @@ export const AssetCenterPanel = memo(function AssetCenterPanel({ model: m, actio
     </div>
     <div className="notice muted asset-scope-notice">统计口径：资产、引用、治理和指纹卡片按{m.assetStudentFilter === 'all' ? '全部学生' : '所选学生'}及来源/类型筛选统计；{m.assetQueryActive ? `搜索词只进一步限定“当前查询资产”为 ${m.assetIndex.queryTotal ?? 0} 个，筛选范围原有 ${m.assetIndex.scopeTotal ?? 0} 个。` : '当前未叠加搜索词。'}</div>
     <AssetTrendChart trend={m.assetScopedTrend} />
+    <WeeklyKnowledgeGrowthCard model={m} actions={a} />
     <div className="workflow-rail asset-workflow">{m.assetWorkflowSteps.map((step: any, index: number) => <div className="workflow-step" key={step.title}><span className="workflow-index">{index + 1}</span><strong>{step.title}</strong><em>{step.value}</em><small>{step.detail}</small></div>)}</div>
     <div className="actions"><button className="secondary" onClick={() => void a.refreshAssets()}><RefreshCw size={18} />刷新资产</button><button className="primary" onClick={() => void a.rebuildAssets()} disabled={Boolean(m.assetBusyAction)}><Archive size={18} />{m.assetBusyAction === 'rebuild' ? '正在补建…' : '扫描并补建资产索引'}</button>{m.assetRebuildJob && ['running', 'queued', 'cancelling'].includes(m.assetRebuildJob.status) && <button className="secondary" onClick={() => void a.cancelRebuild(m.assetRebuildJob.jobId)} disabled={m.assetRebuildJob.status === 'cancelling'}>{m.assetRebuildJob.status === 'cancelling' ? '正在取消…' : '取消补建'}</button>}<button className="secondary" onClick={() => void a.analyzeAssets()} disabled={Boolean(m.assetBusyAction)}><ListChecks size={18} />{m.assetBusyAction === 'analyze' ? '正在分析…' : '生成治理建议'}</button></div>
     <div className="form-grid compact-grid">

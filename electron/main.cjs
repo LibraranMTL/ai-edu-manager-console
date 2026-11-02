@@ -300,6 +300,11 @@ const {
   queryLearningTrajectory,
 } = require('./learning-analytics.cjs');
 const {
+  MAX_PNG_BYTES: WEEKLY_GROWTH_MAX_PNG_BYTES,
+  createWeeklyKnowledgeGrowthImageCache,
+  currentTimezone: weeklyGrowthTimezone,
+} = require('./weekly-knowledge-growth.cjs');
+const {
   reconcileCompletedDigestLearningReceipts,
   supplementCompletedDigestLearningEvents,
 } = require('./completed-digest-learning-events.cjs');
@@ -1650,6 +1655,8 @@ const hostTimelinePath = () => path.join(app.getPath('userData'), 'host-timeline
 const assetIndexPath = () => path.join(app.getPath('userData'), 'asset-index.json');
 const assetDatabasePath = () => path.join(app.getPath('userData'), 'asset-index.sqlite3');
 let assetStoreInstance;
+const weeklyKnowledgeGrowthImages = createWeeklyKnowledgeGrowthImageCache({ maxEntries: 8 });
+let weeklyKnowledgeGrowthSaveInFlight = false;
 function publishAssetIndexChanged(change) {
   if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('asset-index:changed', change);
 }
@@ -13384,6 +13391,104 @@ function studentKnowledgeContext(inputJson = '{}') {
   if (!student) return { input, error: { ok: false, message: '学生不存在或已移除。' } };
   const normalized = toHostStudent(student);
   return { input: { ...input, studentId: String(normalized.id) }, studentRootPath: normalized.rootPath };
+}
+
+function runWeeklyKnowledgeGrowthWorker(workerData) {
+  return new Promise((resolve) => {
+    const worker = new Worker(path.join(__dirname, 'weekly-knowledge-growth-worker.cjs'), { workerData });
+    let settled = false;
+    const finish = (value, terminate = false) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      worker.removeAllListeners();
+      if (terminate) void worker.terminate();
+      resolve(value);
+    };
+    const timer = setTimeout(() => finish({ ok: false, result: { ok: false, code: 'weekly_growth_timeout', message: '周图统计超时，请重试。' } }, true), 30_000);
+    timer.unref?.();
+    worker.once('message', finish);
+    worker.once('error', (error) => finish({ ok: false, result: { ok: false, code: 'weekly_growth_worker_failed', message: error.message } }, true));
+    worker.once('exit', (code) => { if (code !== 0) finish({ ok: false, result: { ok: false, code: 'weekly_growth_worker_exited', message: `周图统计进程异常退出（${code}）。` } }); });
+  });
+}
+
+function weeklyGrowthAuthorizationVersion() {
+  try {
+    const value = fs.statSync(studentsPath());
+    return `students-index:${Math.trunc(value.mtimeMs)}:${value.size}`;
+  } catch { return 'students-index:unavailable'; }
+}
+
+async function weeklyKnowledgeGrowthJson(studentId) {
+  try {
+    const context = studentKnowledgeContext(JSON.stringify({ studentId }));
+    if (context.error) return JSON.stringify(context.error);
+    const authorizationVersion = weeklyGrowthAuthorizationVersion();
+    const asOf = new Date().toISOString();
+    const timezone = weeklyGrowthTimezone();
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const assetBefore = assetStore().statisticsState();
+      const assetSnapshot = assetStore().statisticsSnapshot({ studentId: context.input.studentId });
+      if (Number(assetBefore.generation) !== Number(assetSnapshot.generation)) continue;
+      const workerResult = await runWeeklyKnowledgeGrowthWorker({
+        studentId: context.input.studentId,
+        studentRootPath: context.studentRootPath,
+        assetSnapshot,
+        asOf,
+        timezone,
+        authorizationVersion,
+      });
+      if (!workerResult.ok) return JSON.stringify(workerResult.result);
+      if (weeklyGrowthAuthorizationVersion() !== authorizationVersion || !findStudentByKey(context.input.studentId)) {
+        return JSON.stringify({ ok: false, code: 'weekly_growth_scope_changed', message: '学生授权已变化，请重新读取。' });
+      }
+      const assetAfter = assetStore().statisticsState();
+      if (Number(assetBefore.generation) !== Number(assetAfter.generation)) continue;
+      const bytes = Buffer.from(String(workerResult.pngBase64 || ''), 'base64');
+      const image = weeklyKnowledgeGrowthImages.put(workerResult.snapshot, bytes);
+      return JSON.stringify({ ...workerResult.snapshot, snapshotId: image.snapshotId, pngBase64: image.previewBase64,
+        width: image.width, height: image.height, fileName: image.fileName });
+    }
+    return JSON.stringify({ ok: false, code: 'statistics_generation_changed', message: '统计期间资产发生变化，请重试。' });
+  } catch (error) {
+    return JSON.stringify({ ok: false, code: error.code || 'weekly_growth_failed', message: error.message });
+  }
+}
+
+async function saveWeeklyKnowledgeGrowthPng(snapshotId, studentId) {
+  if (weeklyKnowledgeGrowthSaveInFlight) return JSON.stringify({ ok: false, code: 'save_dialog_in_progress', message: '保存窗口已经打开。' });
+  const image = weeklyKnowledgeGrowthImages.get(snapshotId);
+  const student = findStudentByKey(studentId);
+  if (!image || !student || String(toHostStudent(student).id) !== String(image.studentId)) {
+    return JSON.stringify({ ok: false, code: 'weekly_growth_snapshot_expired', message: '周图已过期，请重新生成。' });
+  }
+  if (!Buffer.isBuffer(image.bytes) || image.bytes.length <= 8 || image.bytes.length > WEEKLY_GROWTH_MAX_PNG_BYTES
+    || image.bytes.subarray(0, 8).toString('hex') !== '89504e470d0a1a0a') {
+    return JSON.stringify({ ok: false, code: 'weekly_growth_png_invalid', message: '周图文件校验失败，请重新生成。' });
+  }
+  weeklyKnowledgeGrowthSaveInFlight = true;
+  try {
+    const choice = await dialog.showSaveDialog(mainWindow, {
+      title: '保存每周知识增长图片',
+      defaultPath: image.fileName,
+      filters: [{ name: 'PNG 图片', extensions: ['png'] }],
+      properties: ['createDirectory', 'showOverwriteConfirmation'],
+    });
+    if (choice.canceled || !choice.filePath) return JSON.stringify({ ok: true, cancelled: true });
+    if (weeklyKnowledgeGrowthImages.get(snapshotId) !== image) {
+      return JSON.stringify({ ok: false, code: 'weekly_growth_scope_changed', message: '当前学生已切换，请重新生成周图。' });
+    }
+    const stillAuthorized = findStudentByKey(studentId);
+    if (!stillAuthorized || String(toHostStudent(stillAuthorized).id) !== String(image.studentId)) {
+      return JSON.stringify({ ok: false, code: 'weekly_growth_scope_changed', message: '学生授权已变化，请重新生成周图。' });
+    }
+    const destination = choice.filePath.toLocaleLowerCase('en-US').endsWith('.png') ? choice.filePath : `${choice.filePath}.png`;
+    await fs.promises.writeFile(destination, image.bytes, { flag: 'w' });
+    return JSON.stringify({ ok: true, saved: true, filePath: destination, bytes: image.bytes.length });
+  } finally {
+    weeklyKnowledgeGrowthSaveInFlight = false;
+  }
 }
 
 function listStudentKnowledgePointsJson(inputJson = '{}') {
@@ -42901,6 +43006,13 @@ ipcMain.handle('bridge:getCaptureTimeline', async (_event, inputJson) => getCapt
 ipcMain.handle('bridge:getCaptureTimelineSegments', async (_event, inputJson) => getCaptureTimelineSegments(inputJson));
 ipcMain.handle('bridge:getLearningAnalytics', async (_event, inputJson) => getLearningAnalytics(inputJson));
 ipcMain.handle('bridge:listStudentKnowledgePoints', async (_event, inputJson) => listStudentKnowledgePointsJson(inputJson));
+ipcMain.handle('bridge:getWeeklyKnowledgeGrowth', (_event, studentId) => deferredInvoke(() => weeklyKnowledgeGrowthJson(studentId)));
+ipcMain.handle('bridge:saveWeeklyKnowledgeGrowthPng', (_event, snapshotId, studentId) => licensedInvoke(
+  '保存每周知识增长图片', () => saveWeeklyKnowledgeGrowthPng(snapshotId, studentId)));
+ipcMain.handle('bridge:invalidateWeeklyKnowledgeGrowth', (_event, snapshotId) => {
+  weeklyKnowledgeGrowthImages.delete(snapshotId);
+  return JSON.stringify({ ok: true });
+});
 ipcMain.handle('bridge:getKnowledgePointTrend', async (_event, inputJson) => getKnowledgePointTrendJson(inputJson));
 ipcMain.handle('bridge:getStudentKnowledgeActivitySummary', async (_event, studentId, range) => getStudentKnowledgeActivitySummaryJson(studentId, range));
 ipcMain.handle('bridge:rebuildKnowledgeProjection', async (_event, inputJson) => rebuildKnowledgeProjectionAsync(inputJson));

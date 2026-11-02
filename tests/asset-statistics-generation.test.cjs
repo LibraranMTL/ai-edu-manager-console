@@ -88,6 +88,37 @@ test('statistics snapshots include the scoped seven-day asset and reference tren
   assert.equal(snapshot.recentTrend.asOf, snapshot.asOf);
 });
 
+test('overall trend keeps the student scope but ignores duplicate-only filtering and refreshes after commits', (t) => {
+  const { store } = fixture(t);
+  const asset = (id, sha, path, studentId = 'student-a') => ({
+    assetId: id, sha1: sha.repeat(40), filename: `${id}.pdf`, ownerStudentId: studentId,
+    path, uploadedAt: '2026-11-01T01:00:00.000Z',
+  });
+  const refs = (id, studentId = 'student-a') => [{
+    referenceId: `${id}-ref`, spaceType: 'student', spaceId: studentId, studentId, role: 'raw',
+    path: `D:/${id}.pdf`, linkedAt: '2026-11-01T02:00:00.000Z',
+  }];
+  store.upsertAsset(asset('duplicate', 'a', 'D:/duplicate.pdf'), [
+    ...refs('duplicate'), { ...refs('duplicate')[0], referenceId: 'duplicate-ref-2', path: 'D:/duplicate-copy.pdf' },
+  ]);
+  store.upsertAsset(asset('other-student', 'b', 'D:/other-student.pdf', 'student-b'), refs('other-student', 'student-b'));
+  const filter = { studentId: 'student-a', duplicateOnly: true };
+  const before = store.statisticsSnapshot(filter);
+  assert.equal(before.total, 1);
+  assert.equal(before.recentTrend.addedTotal, 1);
+  assert.equal(before.overallRecentTrend.addedTotal, 1);
+  assert.equal(before.overallRecentTrend.referenceTotal, 2);
+
+  store.upsertAsset(asset('unique', 'c', 'D:/unique.pdf'), refs('unique'));
+  const after = store.statisticsSnapshot(filter);
+  assert.equal(after.total, 1);
+  assert.equal(after.recentTrend.addedTotal, 1);
+  assert.equal(after.overallRecentTrend.addedTotal, 2);
+  assert.equal(after.overallRecentTrend.referenceTotal, 3);
+  assert.ok(after.generation > before.generation);
+  assert.equal(after.overallRecentTrend.asOf, after.asOf);
+});
+
 test('renderer subscribes to committed changes and rejects stale list generations', () => {
   const main = fs.readFileSync(path.join(__dirname, '..', 'electron', 'main.cjs'), 'utf8');
   const preload = fs.readFileSync(path.join(__dirname, '..', 'electron', 'preload.cjs'), 'utf8');

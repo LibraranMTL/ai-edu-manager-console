@@ -430,6 +430,7 @@ type AssetIndexState = {
   lastRebuildAt?: string;
   nextCursor?: string;
   recentTrend?: AssetRecentTrend;
+  overallRecentTrend?: AssetRecentTrend;
   message?: string;
 };
 
@@ -7210,7 +7211,7 @@ function App() {
   const assetQueryActive = Boolean(assetSearch.trim());
   const assetFiltersActive = assetScopeFiltersActive || assetQueryActive;
   const assetScopedDuplicateGroups = Number(assetIndex.duplicateGroups || 0);
-  const assetScopedTrend = assetIndex.recentTrend ?? calculateAssetRecentTrend([]);
+  const assetScopedTrend = assetIndex.overallRecentTrend ?? assetIndex.recentTrend ?? calculateAssetRecentTrend([]);
   const duplicatePageAssetIds = assetDuplicateGroups.filter((group) => !group.status || group.status === 'reviewable').map((group) => group.assetId);
   const allDuplicatePageSelected = duplicatePageAssetIds.length > 0
     && duplicatePageAssetIds.every((assetId) => selectedDuplicateAssetIds.includes(assetId));

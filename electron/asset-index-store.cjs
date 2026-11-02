@@ -1231,7 +1231,9 @@ function makeStoreApi(db, options) {
     };
     const state = statisticsState();
     const asOf = nowIso(now);
-    return { schema: 'edu.asset-statistics-snapshot.v1', asOf, ...state, scope: filter, ...summary(filter), recentTrend: recentTrend(filter, asOf) };
+    const overallScope = { studentId: filter.studentId, projectId: filter.projectId };
+    return { schema: 'edu.asset-statistics-snapshot.v1', asOf, ...state, scope: filter,
+      ...summary(filter), recentTrend: recentTrend(filter, asOf), overallRecentTrend: recentTrend(overallScope, asOf) };
   }
 
   function listDuplicateGroups(request = {}) {

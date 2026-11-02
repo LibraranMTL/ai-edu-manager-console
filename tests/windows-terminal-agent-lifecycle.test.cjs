@@ -1,4 +1,5 @@
 const assert = require('node:assert/strict');
+const crypto = require('node:crypto');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
@@ -28,6 +29,16 @@ function withTempRoot(run) {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'edu-student-agent-lifecycle-'));
   return Promise.resolve(run(tempRoot)).finally(() => fs.rmSync(tempRoot, { recursive: true, force: true }));
 }
+
+test('native lifecycle hook compilation is byte-for-byte reproducible', { skip: process.platform !== 'win32' }, async () => withTempRoot(async (tempRoot) => {
+  const sourcePath = path.join(root, 'electron', 'agent-lifecycle-hook.cs');
+  const firstPath = path.join(tempRoot, 'first', 'agent-lifecycle-hook.exe');
+  const secondPath = path.join(tempRoot, 'second', 'agent-lifecycle-hook.exe');
+  compileLifecycleHook(sourcePath, firstPath);
+  compileLifecycleHook(sourcePath, secondPath);
+  const sha256 = (filePath) => crypto.createHash('sha256').update(fs.readFileSync(filePath)).digest('hex');
+  assert.equal(sha256(secondPath), sha256(firstPath));
+}));
 
 test('native Codex hook identity follows source instead of nondeterministic compiler bytes', async () => withTempRoot(async (tempRoot) => {
   const hookPath = path.join(tempRoot, 'agent-lifecycle-hook.ps1');

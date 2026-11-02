@@ -58,6 +58,9 @@ for (const providerId of ['workbuddy', 'codex']) {
       || report.hostCommitted !== true || Number(report.processedVersion || 0) < 1) {
       throw new Error(`invalid_real_agent_result:${providerId}:${index + 1}`);
     }
+    if (String(report.runtimeAsarSha256 || '').toLowerCase() !== candidateHash) {
+      throw new Error(`real_agent_runtime_mismatch:${providerId}:${index + 1}`);
+    }
     const lifecycle = report.lifecycle || [];
     const started = lifecycle.find(event => event.type === 'started');
     const process = (tree.observedProcesses || tree.processes || []).find(row =>
@@ -78,7 +81,7 @@ for (const providerId of ['workbuddy', 'codex']) {
       validation: { valid: true, hostCommitted: true, syntheticOnly: true },
     });
     write(traceFile, {
-      schema: 'edu.agent0228.execution-trace.v1', candidateHash, providerId,
+      schema: 'edu.agent0228.execution-trace.v1', candidateHash, runtimeAsarHash: candidateHash, providerId,
       executionId: report.executionId, workKey: report.workKey, sourceVersion: report.sourceVersion,
       processTree: relative(processFile), receipt: relative(receiptFile), events: lifecycle,
     });

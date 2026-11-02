@@ -2,6 +2,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
+const { validMatrixEvidence } = require('./agent-0228-matrix.cjs');
 function validateEvidence(report, root) {
   const failures = [];
   const check = (condition, code) => { if (!condition) failures.push(code); };
@@ -34,7 +35,9 @@ function validateEvidence(report, root) {
       check(s.observedStatus === 'pass' && s.candidateHash === report.candidateHash && verified.has(s.trace), `scenario_provenance:${s.id}`);
       check(s.started > 0 && s.registered >= s.started && s.receipts === s.started && s.settled === s.started && s.duplicateExecutions === 0, `closure:${s.id}`);
       const trace=documents.get(s.trace),events=trace?.events||[],types=['claim','send_intent','started','receipt','settled'];
-      check(trace?.schema==='edu.agent0228.execution-trace.v1'&&trace.candidateHash===report.candidateHash&&trace.providerId===provider&&Boolean(trace.executionId&&trace.workKey&&trace.sourceVersion),`trace_identity:${s.id}`);
+      check(trace?.schema==='edu.agent0228.execution-trace.v1'&&trace.candidateHash===report.candidateHash
+        &&trace.runtimeAsarHash===report.candidateHash&&trace.providerId===provider
+        &&Boolean(trace.executionId&&trace.workKey&&trace.sourceVersion),`trace_identity:${s.id}`);
       check(types.every(type=>events.filter(e=>e.type===type).length===1)&&events.every(e=>e.executionId===trace?.executionId),`trace_lifecycle:${s.id}`);
       const ordered=types.map(type=>events.find(e=>e.type===type)),times=ordered.map(e=>Date.parse(e?.at));
       check(times.every((n,i)=>Number.isFinite(n)&&(i===0||n>=times[i-1])),`trace_order:${s.id}`);
@@ -67,4 +70,32 @@ function validateEvidence(report, root) {
   } else failures.push('throughput_baseline_missing');
   return { passed: failures.length === 0, failures, throughputLossPercent };
 }
-module.exports = { validateEvidence };
+
+function validateReleaseEvidence(report, root, { stage = 'release' } = {}) {
+  const result = validateEvidence(report, root);
+  const required = [
+    ...Array.from({ length: 15 }, (_, index) => `A${index + 1}`),
+    ...Array.from({ length: 7 }, (_, index) => `B${index + 1}`),
+    ...Array.from({ length: 5 }, (_, index) => `C${index + 1}`),
+  ];
+  for (const id of required) {
+    const row = report?.matrix?.find(item => item.id === id);
+    if (!row || row.status !== 'pass' || row.candidateHash !== report.candidateHash
+      || !report.artifacts?.some(artifact => artifact.path === row.evidence) || !validMatrixEvidence(row)) {
+      result.failures.push(`matrix:${id}`);
+    }
+  }
+  if (stage === 'release') {
+    for (const kind of ['installer', 'portable', 'zip']) {
+      if (!report?.packaging?.some(item => item.kind === kind && item.asarHash === report.candidateHash
+        && item.sha256 && item.bytes > 0 && item.authenticodeStatus && item.localVerified === true)) {
+        result.failures.push(`packaging:${kind}`);
+      }
+    }
+    if (report?.installUpgradeVerified !== true) result.failures.push('install_upgrade_missing');
+  }
+  result.passed = result.failures.length === 0;
+  return result;
+}
+
+module.exports = { validateEvidence, validateReleaseEvidence };

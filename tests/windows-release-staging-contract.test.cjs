@@ -6,6 +6,7 @@ const test = require('node:test');
 const root = path.resolve(__dirname, '..');
 const packageJson = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
 const releaseScript = fs.readFileSync(path.join(root, 'scripts', 'build-windows-release.cjs'), 'utf8');
+const installerScript = fs.readFileSync(path.join(root, 'scripts', 'build-windows-installer.cjs'), 'utf8');
 const terminalReleaseScript = fs.readFileSync(path.join(root, 'scripts', 'build-windows-terminal-release.cjs'), 'utf8');
 const pdfRuntimeScript = fs.readFileSync(path.join(root, 'scripts', 'build-project-material-pdf.cjs'), 'utf8');
 const pdfWorker = fs.readFileSync(path.join(root, 'electron', 'project-material-pdf-worker.cjs'), 'utf8');
@@ -109,4 +110,13 @@ test('release artifacts are published only after package audits pass', () => {
   assert.doesNotMatch(releaseScript, /artifactSizeLimitBytes/);
   assert.match(releaseScript, /auditWindowsResources\(\{ repoRoot, packagedRoot: unpackedRoot, strict: true \}\)/);
   assert.match(releaseScript, /resourceAudit:/);
+});
+
+test('a formal installer is blocked unless its extracted runtime passed the release acceptance gate', () => {
+  assert.match(installerScript, /assertFormalRuntimeAccepted/);
+  const runtimeHash = installerScript.indexOf('const runtimeAsarSha256 = sha256(runtimeAsar)');
+  const acceptanceGate = installerScript.indexOf('assertFormalRuntimeAccepted({');
+  const build = installerScript.indexOf('await build({');
+  assert.ok(runtimeHash > 0 && acceptanceGate > runtimeHash && build > acceptanceGate);
+  assert.match(installerScript, /EDU_WINDOWS_ACCEPTANCE_INDEX/);
 });

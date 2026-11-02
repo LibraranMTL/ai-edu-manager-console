@@ -6,7 +6,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { createLearningStateStore } = require('../electron/learning-state-store.cjs');
-const { getWeeklyKnowledgeGrowth } = require('../electron/weekly-knowledge-growth.cjs');
+const { getWeeklyKnowledgeGrowth, resolveCanvasRuntime } = require('../electron/weekly-knowledge-growth.cjs');
 const { appendLearningEvents, removeLearningEventsBySource } = require('../electron/learning-analytics.cjs');
 
 function fixture(t) {
@@ -28,6 +28,16 @@ function event(eventId, knowledgePointId, recordedAt, sourceId = eventId) {
     evidenceRefs: [{ sourceType: 'material', sourceId }],
   };
 }
+
+test('packaged weekly growth loads the audited canvas extra resource', (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'edu-weekly-canvas-'));
+  const canvasRoot = path.join(root, 'material-pdf-runtime', 'canvas');
+  fs.mkdirSync(canvasRoot, { recursive: true });
+  fs.writeFileSync(path.join(canvasRoot, 'package.json'), '{"name":"@napi-rs/canvas"}');
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  assert.equal(resolveCanvasRuntime(root), canvasRoot);
+  assert.match(resolveCanvasRuntime(''), /@napi-rs[\\/]canvas[\\/]index\.js$/u);
+});
 
 test('first reliable registration is idempotent and survives withdrawal and re-import', (t) => {
   const { store } = fixture(t);

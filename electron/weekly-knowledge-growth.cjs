@@ -3,7 +3,15 @@
 const crypto = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
-const { createCanvas } = require('@napi-rs/canvas');
+
+function resolveCanvasRuntime(resourcesPath = process.resourcesPath) {
+  const root = typeof resourcesPath === 'string' && resourcesPath.trim() ? path.resolve(resourcesPath) : '';
+  const packaged = root ? path.join(root, 'material-pdf-runtime', 'canvas') : '';
+  if (packaged && fs.existsSync(path.join(packaged, 'package.json'))) return packaged;
+  return require.resolve('@napi-rs/canvas');
+}
+
+const { createCanvas } = require(resolveCanvasRuntime());
 const { createLearningStateStore, learningStatePath } = require('./learning-state-store.cjs');
 
 const WIDTH = 1080;
@@ -211,5 +219,5 @@ function createWeeklyKnowledgeGrowthImageCache({ maxEntries = 8 } = {}) {
 
 module.exports = {
   HEIGHT, MAX_PNG_BYTES, WIDTH, createWeeklyKnowledgeGrowthImageCache, currentTimezone,
-  getWeeklyKnowledgeGrowth, renderWeeklyKnowledgeGrowthPng,
+  getWeeklyKnowledgeGrowth, renderWeeklyKnowledgeGrowthPng, resolveCanvasRuntime,
 };

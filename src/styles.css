@@ -7879,3 +7879,15 @@ textarea:focus {
   .weekly-knowledge-growth-layout { grid-template-columns: 1fr; }
   .weekly-knowledge-growth-preview { max-width: 360px; margin: 0 auto; }
 }
+.learning-state-panel { display: grid; gap: 18px; }
+.learning-state-toolbar { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
+.learning-state-toolbar span { display: inline-flex; align-items: center; gap: 6px; }
+.learning-state-form { display: grid; gap: 12px; text-align: left; }
+.learning-state-form textarea { width: 100%; resize: vertical; }
+.learning-state-dimensions { display: grid; grid-template-columns: repeat(5, minmax(130px, 1fr)); gap: 10px; }
+.learning-state-dimensions label { display: grid; gap: 6px; font-size: 13px; }
+.learning-state-columns { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+@media (max-width: 1000px) {
+  .learning-state-dimensions { grid-template-columns: repeat(2, minmax(130px, 1fr)); }
+  .learning-state-columns { grid-template-columns: 1fr; }
+}

@@ -305,6 +305,11 @@ const {
   currentTimezone: weeklyGrowthTimezone,
 } = require('./weekly-knowledge-growth.cjs');
 const {
+  POLICY_VERSION: LEARNING_STATE_POLICY_VERSION,
+  createLearningStateStore,
+  learningStatePath,
+} = require('./learning-state-store.cjs');
+const {
   reconcileCompletedDigestLearningReceipts,
   supplementCompletedDigestLearningEvents,
 } = require('./completed-digest-learning-events.cjs');
@@ -13418,6 +13423,50 @@ function weeklyGrowthAuthorizationVersion() {
     const value = fs.statSync(studentsPath());
     return `students-index:${Math.trunc(value.mtimeMs)}:${value.size}`;
   } catch { return 'students-index:unavailable'; }
+}
+
+function emptyLearningStateProjection(studentId, asOf, authorizationVersion) {
+  return {
+    ok: true, studentId, asOf, policyVersion: LEARNING_STATE_POLICY_VERSION, authorizationVersion,
+    generation: 0, changedAt: '', checkIns: [], goals: [], problems: [], evidence: [], findings: [],
+    automationEnabled: false, coverage: { hasBaseline: false, weeklyFeedbackCount: 0 },
+  };
+}
+
+function learningStateActionJson(action, studentId, inputJson = '{}') {
+  let store;
+  try {
+    const context = studentKnowledgeContext(JSON.stringify({ studentId }));
+    if (context.error) return JSON.stringify(context.error);
+    const input = typeof inputJson === 'string' ? JSON.parse(inputJson || '{}') : (inputJson || {});
+    const asOf = String(input.asOf || new Date().toISOString());
+    const authorizationVersion = weeklyGrowthAuthorizationVersion();
+    const dbPath = learningStatePath(context.studentRootPath);
+    if (action === 'get' && !fs.existsSync(dbPath)) {
+      return JSON.stringify({ ok: true, data: emptyLearningStateProjection(context.input.studentId, asOf, authorizationVersion) });
+    }
+    store = createLearningStateStore({ dbPath });
+    const scope = { studentId: context.input.studentId, actorRole: 'admin', actorId: 'windows-host' };
+    let result;
+    if (action === 'get') result = store.getLearningState({ role: 'admin', studentId: context.input.studentId, authorizationVersion }, context.input.studentId, asOf);
+    else if (action === 'submitCheckIn') {
+      result = store.submitCheckIn(scope, input.payload || {}, input.clientSubmissionId);
+      store.publishFindings(context.input.studentId, new Date().toISOString());
+    }
+    else if (action === 'upsertGoal') result = store.upsertGoal(scope, input.goal || {}, input.expectedRevision);
+    else if (action === 'upsertProblem') result = store.upsertProblem(scope, input.problem || {}, input.expectedRevision);
+    else if (action === 'ingestEvidence') {
+      result = store.ingestEvidence(scope, input.sourceRef || {}, input.revision);
+      store.publishFindings(context.input.studentId, new Date().toISOString());
+    }
+    else if (action === 'publishFindings') result = store.publishFindings(context.input.studentId, asOf);
+    else if (action === 'correctOrWithdraw') result = store.correctOrWithdraw(scope, input);
+    else throw Object.assign(new Error('未知学情状态操作。'), { code: 'learning_state_action_invalid' });
+    return JSON.stringify({ ok: true, data: result });
+  } catch (error) {
+    return JSON.stringify({ ok: false, code: error.code || 'learning_state_failed', message: error.message,
+      actualRevision: error.actualRevision });
+  } finally { try { store?.close(); } catch { /* best effort */ } }
 }
 
 async function weeklyKnowledgeGrowthJson(studentId) {
@@ -39078,6 +39127,49 @@ function handleTerminalLearningTrajectory(request, response) {
   }
 }
 
+function terminalLearningStateProjection(student, role) {
+  const normalized = toHostStudent(student);
+  const studentId = String(normalized.id);
+  const dbPath = learningStatePath(normalized.rootPath);
+  const asOf = new Date().toISOString();
+  const authorizationVersion = `host-data:${hostDataGenerationId()}`;
+  if (!fs.existsSync(dbPath)) return emptyLearningStateProjection(studentId, asOf, authorizationVersion);
+  const store = createLearningStateStore({ dbPath });
+  try {
+    const projection = store.getLearningState({ role, studentId, authorizationVersion }, studentId, asOf);
+    if (role !== 'teacher') return projection;
+    return {
+      ...projection,
+      checkIns: projection.checkIns.map(({ note: _note, ...item }) => item),
+      evidence: projection.evidence.map(({ statement: _statement, ...item }) => item),
+    };
+  } finally { store.close(); }
+}
+
+async function handleTerminalLearningState(request, response, teacherStudentId = '') {
+  const student = terminalLearningStudent(request, response, teacherStudentId);
+  if (!student) return;
+  const isTeacher = request.authContext?.type === 'device' && request.authContext.deviceRole === 'teacher';
+  try {
+    if (request.method === 'GET') {
+      return sendJson(response, 200, { ok: true, data: terminalLearningStateProjection(student, isTeacher ? 'teacher' : 'student') });
+    }
+    if (isTeacher) return sendJson(response, 403, { ok: false, code: 'LEARNING_STATE_READ_ONLY', message: '教师端一期仅提供只读状态。' });
+    const body = await parseJsonBody(request, 64 * 1024);
+    const normalized = toHostStudent(student);
+    const store = createLearningStateStore({ dbPath: learningStatePath(normalized.rootPath) });
+    try {
+      const checkIn = store.submitCheckIn({ studentId: String(normalized.id), actorRole: 'student', actorId: String(request.authContext.deviceId || '') },
+        body.payload || body, body.clientSubmissionId);
+      store.publishFindings(String(normalized.id), new Date().toISOString());
+      return sendJson(response, 200, { ok: true, studentId: String(normalized.id), checkIn });
+    } finally { store.close(); }
+  } catch (error) {
+    const status = ['student_scope_missing', 'student_scope_mismatch'].includes(error.code) ? 403 : 400;
+    return sendJson(response, status, { ok: false, code: error.code || 'LEARNING_STATE_INVALID', message: String(error.message || error).slice(0, 240) });
+  }
+}
+
 function handleTerminalPlanning(request, response, kind, studentId = '') {
   const student = terminalLearningStudent(request, response, studentId);
   if (!student) return;
@@ -41402,7 +41494,7 @@ function handleHostRequest(request, response) {
     if (!student) return;
     sendJson(response, 200, { ok: true, studentId: String(student.id), hostId: getHostIdentity().hostId, dataGeneration: hostDataGenerationId(), capabilities: {
       practice: true, practiceAttachments: true, practiceVisualReview: true, publications: true, planningRead: true, planningSections: true, planningFavorites: true,
-      remoteInbox: true, learningTrajectory: true, conversationLinkPreview: true,
+      remoteInbox: true, learningTrajectory: true, learningStateRead: true, learningStateFeedback: true, conversationLinkPreview: true,
     } });
     return;
   }
@@ -41414,7 +41506,7 @@ function handleHostRequest(request, response) {
     }
     const student = terminalLearningStudent(request, response, teacherCapabilitiesMatch[1]);
     if (!student) return;
-    return sendJson(response, 200, { ok: true, studentId: String(student.id), hostId: getHostIdentity().hostId, dataGeneration: hostDataGenerationId(), capabilities: { planningRead: true, planningSections: true } });
+    return sendJson(response, 200, { ok: true, studentId: String(student.id), hostId: getHostIdentity().hostId, dataGeneration: hostDataGenerationId(), capabilities: { planningRead: true, planningSections: true, learningStateRead: true } });
   }
   if (request.method === 'GET' && pathname === '/api/teacher/learning-overview') {
     return handleTeacherLearningOverview(request, response, url);
@@ -41445,6 +41537,13 @@ function handleHostRequest(request, response) {
   }
   if (request.method === 'GET' && pathname === '/api/student-session/learning-trajectory') {
     return handleTerminalLearningTrajectory(request, response);
+  }
+  if (['GET', 'POST'].includes(request.method) && pathname === '/api/student-session/learning-state') {
+    return handleTerminalLearningState(request, response);
+  }
+  const teacherLearningStateMatch = pathname.match(/^\/api\/teacher\/students\/([^/]+)\/learning-state$/);
+  if (request.method === 'GET' && teacherLearningStateMatch) {
+    return handleTerminalLearningState(request, response, teacherLearningStateMatch[1]);
   }
   const terminalPracticeAction = pathname.match(/^\/api\/student-session\/practice\/([^/]+)\/(start|attempt)$/);
   if (request.method === 'POST' && terminalPracticeAction) {
@@ -43009,6 +43108,11 @@ ipcMain.handle('bridge:listStudentKnowledgePoints', async (_event, inputJson) =>
 ipcMain.handle('bridge:getWeeklyKnowledgeGrowth', (_event, studentId) => deferredInvoke(() => weeklyKnowledgeGrowthJson(studentId)));
 ipcMain.handle('bridge:saveWeeklyKnowledgeGrowthPng', (_event, snapshotId, studentId) => licensedInvoke(
   '保存每周知识增长图片', () => saveWeeklyKnowledgeGrowthPng(snapshotId, studentId)));
+ipcMain.handle('bridge:learningStateAction', (_event, action, studentId, inputJson) => (
+  action === 'get'
+    ? deferredInvoke(() => learningStateActionJson(action, studentId, inputJson))
+    : licensedInvoke('更新学习状态', () => learningStateActionJson(action, studentId, inputJson))
+));
 ipcMain.handle('bridge:invalidateWeeklyKnowledgeGrowth', (_event, snapshotId) => {
   weeklyKnowledgeGrowthImages.delete(snapshotId);
   return JSON.stringify({ ok: true });

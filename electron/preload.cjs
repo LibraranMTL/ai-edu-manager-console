@@ -131,6 +131,9 @@ contextBridge.exposeInMainWorld('AndroidBridge', {
   saveWeeklyKnowledgeGrowthPng(snapshotId, studentId) {
     return ipcRenderer.invoke('bridge:saveWeeklyKnowledgeGrowthPng', snapshotId, studentId);
   },
+  learningStateAction(action, studentId, input) {
+    return ipcRenderer.invoke('bridge:learningStateAction', action, studentId, JSON.stringify(input || {}));
+  },
   invalidateWeeklyKnowledgeGrowth(snapshotId) {
     return ipcRenderer.invoke('bridge:invalidateWeeklyKnowledgeGrowth', snapshotId);
   },

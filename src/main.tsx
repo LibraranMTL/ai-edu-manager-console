@@ -2,6 +2,7 @@
 import { createRoot } from 'react-dom/client';
 const CloudDocumentsPanel = React.lazy(() => import('./CloudDocumentsPanel').then(module => ({ default: module.CloudDocumentsPanel })));
 const AssetCenterPanel = React.lazy(() => import('./AssetCenterPanel').then(module => ({ default: module.AssetCenterPanel })));
+const LearningStatePanel = React.lazy(() => import('./LearningStatePanel').then(module => ({ default: module.LearningStatePanel })));
 const MarkdownViewChunk = React.lazy(() => import('./MarkdownView').then(module => ({ default: module.MarkdownView })));
 const PublicationManager = React.lazy(() => import('./PublicationManager').then(module => ({default:module.PublicationManager})));
 import { CustomSubjectsEditor, customResult, type CustomOptionsApi, type CustomSubject } from './CustomOptionsPanels';
@@ -136,7 +137,7 @@ type PublishingSourceType = 'learning_report' | 'archive_file';
 type PublishingFormat = 'pdf' | 'png' | 'markdown';
 type RuntimePlatform = 'android' | 'windows' | 'web' | string;
 type ProjectDashboardFocus = 'all' | 'active' | 'materials' | 'knowledge' | 'contributions' | 'risks' | 'digest';
-type GrowthView = 'abilities' | 'projects' | 'evidence' | 'learning';
+type GrowthView = 'abilities' | 'projects' | 'evidence' | 'learning' | 'state';
 type LearningTrajectory = {
   ok: boolean;
   message?: string;
@@ -1234,6 +1235,7 @@ type AndroidBridge = {
   getWeeklyKnowledgeGrowth?: (studentId: string) => Promise<string>;
   saveWeeklyKnowledgeGrowthPng?: (snapshotId: string, studentId: string) => Promise<string>;
   invalidateWeeklyKnowledgeGrowth?: (snapshotId: string) => Promise<string>;
+  learningStateAction?: (action: string, studentId: string, input: Record<string, unknown>) => Promise<string>;
   getKnowledgePointTrend?: (inputJson: string) => Promise<string>;
   getStudentKnowledgeActivitySummary?: (studentId: string, range: number) => Promise<string>;
   rebuildKnowledgeProjection?: (inputJson: string) => Promise<string>;
@@ -20100,9 +20102,10 @@ ${JSON.stringify(items, null, 2)}
                 <button className={growthView === 'abilities' ? 'active' : ''} onClick={() => setGrowthView('abilities')}><Gauge size={18} />能力画像</button>
                 <button className={growthView === 'projects' ? 'active' : ''} onClick={() => setGrowthView('projects')}><FolderOpen size={18} />项目贡献</button>
                 <button className={growthView === 'evidence' ? 'active' : ''} onClick={() => setGrowthView('evidence')}><ListChecks size={18} />成长证据</button>
+                <button className={growthView === 'state' ? 'active' : ''} onClick={() => setGrowthView('state')}><UserRound size={18} />学习状态</button>
               </div>}
               <div className="growth-filters">
-                <input value={growthSearch} onChange={(event) => setGrowthSearch(event.target.value)} placeholder={growthView === 'learning' ? '搜索知识点名称或 ID' : '搜索能力、项目或证据'} />
+                {growthView !== 'state' && <input value={growthSearch} onChange={(event) => setGrowthSearch(event.target.value)} placeholder={growthView === 'learning' ? '搜索知识点名称或 ID' : '搜索能力、项目或证据'} />}
                 {growthView === 'projects' && <select value={growthProjectStatusFilter} onChange={(event) => setGrowthProjectStatusFilter(event.target.value)}><option value="all">全部贡献状态</option><option value="published">已发布</option><option value="pending">待审核</option><option value="not_started">尚未形成</option></select>}
                 {growthView === 'evidence' && <select value={growthEvidenceStatusFilter} onChange={(event) => setGrowthEvidenceStatusFilter(event.target.value)}><option value="all">全部证据状态</option><option value="pending">待审核</option><option value="confirmed">已确认</option><option value="watching">观察中</option><option value="rejected">已驳回</option></select>}
                 {growthView === 'evidence' && <select value={growthEvidenceRiskFilter} onChange={(event) => setGrowthEvidenceRiskFilter(event.target.value as 'attention' | 'all' | 'low')}><option value="attention">默认：只看需关注</option><option value="low">低风险批量候选</option><option value="all">全部证据</option></select>}
@@ -20153,6 +20156,10 @@ ${JSON.stringify(items, null, 2)}
                   {learningTrajectory.historyMarkdown && <details className="growth-index-details"><summary>历史变化报告候选（未发布）</summary><div className="actions compact-actions"><button className="secondary compact" onClick={() => copyText(learningTrajectory.historyMarkdown || '', '已复制历史变化候选。')}>复制候选</button></div><section className="markdown-reader"><MarkdownView content={learningTrajectory.historyMarkdown} /></section></details>}
                 </>}
               </div>}
+
+              {growthView === 'state' && <React.Suspense fallback={<div className="notice muted">正在加载学习状态…</div>}>
+                <LearningStatePanel studentId={selectedStudent.id} studentName={selectedStudent.name} actionApi={bridge()?.learningStateAction} />
+              </React.Suspense>}
 
               {growthView === 'abilities' && <div className="growth-card-grid">
                 {filteredGrowthAbilities.map((ability) => (

@@ -18,6 +18,13 @@ const packageJson = JSON.parse(fs.readFileSync(path.join(repoRoot, 'package.json
 const version = String(packageJson.version);
 validateWindowsVersion(version);
 const candidateTag = String(process.env.EDU_WINDOWS_CANDIDATE_TAG || '').trim().replace(/[^a-zA-Z0-9._-]+/g, '-').replace(/^-+|-+$/g, '');
+const correctiveRebuild = process.env.EDU_WINDOWS_CORRECTIVE_REBUILD === '1';
+if (correctiveRebuild && !candidateTag) {
+  throw new Error('EDU_WINDOWS_CORRECTIVE_REBUILD requires an isolated candidate tag.');
+}
+if (correctiveRebuild && !candidateTag.startsWith(`${version}-corrective-`)) {
+  throw new Error(`Corrective candidate tag must start with ${version}-corrective-.`);
+}
 const changelog = fs.readFileSync(path.join(repoRoot, 'CHANGELOG.md'), 'utf8');
 if (!changelog.includes(`## [${version}]`)) {
   throw new Error(`CHANGELOG.md 缺少 Windows ${version} 更新记录。`);
@@ -33,8 +40,11 @@ for (const manifestPath of [
   if (candidateTag && !['stable', 'release'].includes(String(manifest.windowsReleaseStatus || '').toLowerCase())) {
     throw new Error(`${manifestPath} 必须继续指向正式版；候选构建不得改写线上更新清单。`);
   }
-  if (candidateTag && String(manifest.windowsVersionName || '') === version) {
+  if (candidateTag && String(manifest.windowsVersionName || '') === version && !correctiveRebuild) {
     throw new Error(`${manifestPath} 已指向本次候选版本；请恢复上一正式版后再构建候选。`);
+  }
+  if (correctiveRebuild && String(manifest.windowsVersionName || '') !== version) {
+    throw new Error(`${manifestPath} 与同版本纠偏构建 ${version} 不一致。`);
   }
   if (candidateTag && String(manifest.windowsUrl || '').includes(candidateTag)) {
     throw new Error(`${manifestPath} 不得指向候选标识 ${candidateTag}。`);

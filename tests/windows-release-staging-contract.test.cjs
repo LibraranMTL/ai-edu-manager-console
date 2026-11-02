@@ -120,3 +120,10 @@ test('a formal installer is blocked unless its extracted runtime passed the rele
   assert.ok(runtimeHash > 0 && acceptanceGate > runtimeHash && build > acceptanceGate);
   assert.match(installerScript, /EDU_WINDOWS_ACCEPTANCE_INDEX/);
 });
+
+test('same-version corrective candidates require an explicit narrowly named rebuild mode', () => {
+  const source = fs.readFileSync(path.join(root, 'scripts', 'build-windows-release.cjs'), 'utf8');
+  assert.match(source, /EDU_WINDOWS_CORRECTIVE_REBUILD/);
+  assert.match(source, /candidateTag\.startsWith\(`\$\{version\}-corrective-`\)/);
+  assert.match(source, /correctiveRebuild\s*&&\s*!candidateTag/);
+});

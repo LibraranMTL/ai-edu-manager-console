@@ -426,7 +426,8 @@ function build() {
     const workspaceTemplateCatalog = '\\shared\\project-workspace-templates.json';
     if (!asarFiles.includes(workspaceTemplateCatalog)) throw new Error('Packaged workspace template catalog is missing.');
     const packagedWorkspaceTemplates = asar.extractFile(appAsar, 'shared/project-workspace-templates.json');
-    if (sha256(packagedWorkspaceTemplates) !== sha256(path.join(repoRoot, 'shared', 'project-workspace-templates.json'))) {
+    const stagedWorkspaceTemplates = fs.readFileSync(path.join(stageRoot, 'shared', 'project-workspace-templates.json'));
+    if (!stagedWorkspaceTemplates.equals(packagedWorkspaceTemplates)) {
       throw new Error('Packaged workspace template catalog differs from source.');
     }
     for (const terminalEntry of ['\\electron\\terminal-main.cjs', '\\electron\\terminal-preload.cjs']) {

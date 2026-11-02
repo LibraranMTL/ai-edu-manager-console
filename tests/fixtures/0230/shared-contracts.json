@@ -1,0 +1,45 @@
+{
+  "students": [
+    { "id": "student-fixture-a", "name": "虚构学生甲" },
+    { "id": "student-fixture-b", "name": "虚构学生乙" }
+  ],
+  "project": {
+    "id": "project-fixture-team",
+    "studentIds": ["student-fixture-a", "student-fixture-b"]
+  },
+  "readers": [
+    {
+      "id": "reader-a",
+      "role": "student",
+      "allowedStudentIds": ["student-fixture-a"],
+      "allowedFields": ["summary", "evidence"]
+    },
+    {
+      "id": "reader-teacher",
+      "role": "teacher",
+      "allowedStudentIds": ["student-fixture-a", "student-fixture-b"],
+      "allowedFields": ["summary", "evidence", "actions"]
+    }
+  ],
+  "evidence": [
+    {
+      "sourceType": "learning_event",
+      "sourceId": "event-fixture-1",
+      "revision": 1,
+      "contentHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "availability": "active"
+    },
+    {
+      "sourceType": "project_material",
+      "sourceId": "material-fixture-withdrawn",
+      "revision": 2,
+      "contentHash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "availability": "withdrawn"
+    }
+  ],
+  "responses": [
+    { "id": "new", "generation": 12, "arrivedAt": "2026-11-02T10:00:01.000+08:00" },
+    { "id": "late-old", "generation": 11, "arrivedAt": "2026-11-02T10:00:02.000+08:00" },
+    { "id": "unknown-result", "generation": 12, "outcome": "unknown" }
+  ]
+}

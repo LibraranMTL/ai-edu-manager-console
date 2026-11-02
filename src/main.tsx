@@ -86,6 +86,7 @@ import projectWorkspaceTemplateCatalog from '../shared/project-workspace-templat
 import homeEntryCatalog from '../shared/home-entries.json';
 import { DigestStatusCard, type DigestWorkflowStatus } from './DigestStatusCard';
 const ProjectMaterialsPanel = React.lazy(() => import('./ProjectMaterialsPanel').then(module => ({ default: module.ProjectMaterialsPanel })));
+const ProjectOverallReportPanel = React.lazy(() => import('./ProjectOverallReportPanel').then(module => ({ default: module.ProjectOverallReportPanel })));
 
 function MarkdownView(props: { content: string; onMermaidNodeClick?: (nodeId: string) => boolean | void }) {
   return <React.Suspense fallback={<article className="markdown-content"><div className="md-space" />正在加载内容…</article>}>
@@ -18904,6 +18905,13 @@ ${JSON.stringify(items, null, 2)}
                 <button className="secondary compact" disabled={!selectedProject} onClick={() => openSelectedProjectSpace('knowledge')}><BookOpen size={16} />打开项目知识空间</button>
               </div>
             </section>
+            {projectPageMode === 'detail' && selectedProject && <React.Suspense fallback={<section className="material-source-panel">正在加载项目阶段摘要…</section>}>
+              <ProjectOverallReportPanel project={selectedProject} onAddMaterials={() => {
+                const target = document.querySelector('[data-project-report-materials]');
+                target?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                (target as HTMLElement | null)?.focus({ preventScroll: true });
+              }} />
+            </React.Suspense>}
             {projectPageMode === 'detail' && selectedProject && <React.Suspense fallback={<section className="material-source-panel">正在加载项目资料…</section>}><ProjectMaterialsPanel project={selectedProject} /></React.Suspense>}
             <section className="material-source-panel project-dashboard projects-existing-only">
               <div className="mini-heading">

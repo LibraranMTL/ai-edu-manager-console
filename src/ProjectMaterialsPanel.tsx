@@ -737,7 +737,7 @@ export function ProjectMaterialsPanel({ project }: { project: ProjectRef }) {
   ];
 
   if (storageMode !== 'workspace-v1') return (
-    <section className="pm-shell pm-legacy" aria-label="统一项目资料">
+    <section className="pm-shell pm-legacy" aria-label="统一项目资料" data-project-report-materials tabIndex={-1}>
       <ShieldCheck size={22} />
       <div className="pm-migration-intro"><strong>统一资料视图将在受控迁移后启用</strong>
         <p>当前项目仍沿用旧资料模式。先做只读预览，再逐项复制、核验和切换；不能安全处理的文件保留原位。</p>
@@ -760,7 +760,7 @@ export function ProjectMaterialsPanel({ project }: { project: ProjectRef }) {
   );
 
   return (
-    <section className="pm-shell" aria-labelledby="project-materials-heading">
+    <section className="pm-shell" aria-labelledby="project-materials-heading" data-project-report-materials tabIndex={-1}>
       <header className="pm-heading">
         <div>
           <span className="pm-eyebrow"><ShieldCheck size={15} />统一原件 · 多视角浏览</span>

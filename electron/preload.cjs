@@ -278,6 +278,15 @@ contextBridge.exposeInMainWorld('AndroidBridge', {
   getProjectDetail(projectId) {
     return ipcRenderer.invoke('bridge:getProjectDetail', projectId);
   },
+  getProjectOverallReport(projectId) {
+    return ipcRenderer.invoke('bridge:getProjectOverallReport', projectId);
+  },
+  refreshProjectOverallReport(projectId) {
+    return ipcRenderer.invoke('bridge:refreshProjectOverallReport', projectId);
+  },
+  getProjectReportCitation(projectId, versionId, citationId) {
+    return ipcRenderer.invoke('bridge:getProjectReportCitation', projectId, versionId, citationId);
+  },
   listProjectStagingItems(request) {
     return ipcRenderer.invoke('bridge:listProjectStagingItems', request || {});
   },

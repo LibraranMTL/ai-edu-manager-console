@@ -236,6 +236,8 @@ const { createAssetDuplicateGovernance } = require('./asset-duplicate-governance
 const { createProjectStateStore } = require('./project-state-store.cjs');
 const { projectListProjection } = require('./project-list-projection.cjs');
 const { boundedProjectIpcJson } = require('./project-ipc-response.cjs');
+const { createProjectReportStore } = require('./project-report-state.cjs');
+const { createProjectReportService, emptyProjection: emptyProjectReportProjection } = require('./project-report-service.cjs');
 const { PROJECT_WORKSPACE_TEMPLATES, PROJECT_TEMPLATE_V2_STRATEGIES,
   projectWorkspaceTemplateFor, listProjectWorkspaceTemplates } = require('./project-workspace-templates.cjs');
 const { createWindowsUpdateChecker, isAllowedWindowsDownloadUrl } = require('./windows-update-check.cjs');
@@ -1738,8 +1740,11 @@ function assetDuplicateGovernance() {
 const assetGovernanceReportPath = () => path.join(app.getPath('userData'), 'asset-governance-report.md');
 const projectsPath = () => path.join(app.getPath('userData'), 'projects.json');
 const projectDatabasePath = () => path.join(app.getPath('userData'), 'project-state.sqlite3');
+const projectReportDatabasePath = () => path.join(app.getPath('userData'), 'project-report-state.sqlite3');
 let projectStateStoreInstance;
 let projectStateIoClientInstance;
+let projectReportStoreInstance;
+let projectReportServiceInstance;
 let businessStartupReady = false;
 const subsystemStates = {
   projects: { status: 'pending', phase: 'waiting', message: '项目数据库等待初始化。', updatedAt: '' },
@@ -1781,6 +1786,30 @@ function projectStateIoClient() {
     onCommitted: projectId => { projectStateStoreInstance?.invalidateCaches(); markTaskSourceDirty('project',projectId,'project_transaction'); },
   });
   return projectStateIoClientInstance;
+}
+function projectReportAuthorizationVersion(project) {
+  const members = (project?.studentIds || []).map(String).sort();
+  const contributions = (project?.studentEvidence || []).map((item) => ({ studentId: String(item?.studentId || ''),
+    status: String(item?.status || ''), bindingId: String(item?.sourceBinding?.bindingId || '') }))
+    .sort((left, right) => left.studentId.localeCompare(right.studentId));
+  return `project-auth:${crypto.createHash('sha256').update(JSON.stringify({ members, contributions })).digest('hex').slice(0, 24)}`;
+}
+function projectReportStore() {
+  if (!projectReportStoreInstance) projectReportStoreInstance = createProjectReportStore({ dbPath: projectReportDatabasePath() });
+  return projectReportStoreInstance;
+}
+function projectReportService() {
+  if (!projectReportServiceInstance) projectReportServiceInstance = createProjectReportService({
+    store: projectReportStore(),
+    loadProject: async projectId => projectStateStore().getMetadata(String(projectId || '')),
+    loadRegistry: async projectId => {
+      const project = projectStateStore().getMetadata(String(projectId || ''));
+      if (!project) throw Object.assign(new Error('未找到学习项目。'), { code: 'project_not_found' });
+      return readProjectMaterialIndexSync(project);
+    },
+    authorizationVersion: projectReportAuthorizationVersion,
+  });
+  return projectReportServiceInstance;
 }
 function projectMaterialReadClient() {
   if (!projectMaterialReadClientInstance) projectMaterialReadClientInstance = createProjectMaterialReadClient();
@@ -15767,6 +15796,43 @@ async function getProjectDetail(projectId) {
   } catch (error) {
     return JSON.stringify({ ok: false, code: error.code || 'project_detail_failed', message: error.message });
   }
+}
+
+function projectReportReader(project) {
+  return { role: 'admin', readerId: 'windows-host', allowedStudentIds: (project?.studentIds || []).map(String) };
+}
+
+async function getProjectOverallReport(projectId) {
+  try {
+    const project = projectStateStore().getMetadata(String(projectId || ''));
+    if (!project) return JSON.stringify({ ok: false, code: 'project_not_found', message: '未找到学习项目。' });
+    if (!fs.existsSync(projectReportDatabasePath())) {
+      return boundedProjectIpcJson({ ok: true, report: emptyProjectReportProjection(project,
+        projectReportAuthorizationVersion(project), new Date().toISOString()) });
+    }
+    const report = await projectReportService().get(projectReportReader(project), project.id);
+    return boundedProjectIpcJson({ ok: true, report });
+  } catch (error) { return JSON.stringify({ ok: false, code: error.code || 'project_report_read_failed', message: error.message }); }
+}
+
+async function refreshProjectOverallReport(projectId) {
+  try {
+    const project = projectStateStore().getMetadata(String(projectId || ''));
+    if (!project) return JSON.stringify({ ok: false, code: 'project_not_found', message: '未找到学习项目。' });
+    const report = await projectReportService().refresh({ projectId: project.id, actorRole: 'admin', actorId: 'windows-host' },
+      projectReportReader(project), project.id);
+    return boundedProjectIpcJson({ ok: true, report });
+  } catch (error) { return JSON.stringify({ ok: false, code: error.code || 'project_report_refresh_failed', message: error.message }); }
+}
+
+async function getProjectReportCitation(projectId, versionId, citationId) {
+  try {
+    if (!fs.existsSync(projectReportDatabasePath())) return JSON.stringify({ ok: false, code: 'project_report_version_missing', message: '尚无项目阶段摘要。' });
+    const project = projectStateStore().getMetadata(String(projectId || ''));
+    if (!project) return JSON.stringify({ ok: false, code: 'project_not_found', message: '未找到学习项目。' });
+    const citation = await projectReportService().citation(projectReportReader(project), project.id, versionId, citationId);
+    return boundedProjectIpcJson({ ok: true, citation });
+  } catch (error) { return JSON.stringify({ ok: false, code: error.code || 'project_report_citation_failed', message: error.message }); }
 }
 
 function listProjectStagingItems(request = {}) {
@@ -42281,6 +42347,11 @@ ipcMain.on('bridge:generateKnowledgeArchitectureReport', (event) => { licensedIp
 ipcMain.handle('bridge:getProjects', (_event, options) => deferredInvoke(() => getProjects(options)));
 ipcMain.handle('bridge:listProjects', (_event, request) => deferredInvoke(() => listProjectsPage(request || {})));
 ipcMain.handle('bridge:getProjectDetail', (_event, projectId) => deferredInvoke(() => getProjectDetail(projectId)));
+ipcMain.handle('bridge:getProjectOverallReport', (_event, projectId) => deferredInvoke(() => getProjectOverallReport(projectId)));
+ipcMain.handle('bridge:refreshProjectOverallReport', (_event, projectId) =>
+  licensedInvoke('更新项目阶段摘要', () => refreshProjectOverallReport(projectId)));
+ipcMain.handle('bridge:getProjectReportCitation', (_event, projectId, versionId, citationId) =>
+  deferredInvoke(() => getProjectReportCitation(projectId, versionId, citationId)));
 ipcMain.handle('bridge:listProjectStagingItems', (_event, request) => deferredInvoke(() => listProjectStagingItems(request || {})));
 ipcMain.handle('bridge:listProjectWorkspaceScanEntries', (_event, request) => deferredInvoke(() => listProjectWorkspaceScanEntries(request || {})));
 ipcMain.handle('bridge:getProjectTaskProjection', (_event, projectId) => deferredInvoke(() => getProjectTaskProjectionForRenderer(projectId)));
@@ -43613,6 +43684,11 @@ app.on('before-quit', (event) => {
   if (projectStateStoreInstance) {
     try { projectStateStoreInstance.close(); } catch (error) { console.error('关闭项目数据库失败：', error.message); }
     projectStateStoreInstance = null;
+  }
+  if (projectReportStoreInstance) {
+    try { projectReportStoreInstance.close(); } catch (error) { console.error('关闭项目报告数据库失败：', error.message); }
+    projectReportStoreInstance = null;
+    projectReportServiceInstance = null;
   }
 });
 

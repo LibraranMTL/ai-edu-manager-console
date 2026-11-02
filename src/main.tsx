@@ -1457,6 +1457,8 @@ type AndroidBridge = {
   getGrowthIndex?: (studentId: string) => Promise<string>;
   getGrowthIndexAsync?: (studentId: string) => Promise<string>;
   checkUpdate?: (manifestUrl: string, currentVersionCode: number) => Promise<boolean>;
+  checkForUpdate?: (request: { source: 'startup' | 'manual'; channel: 'stable'; currentVersionCode: number }) => Promise<UpdateInfo>;
+  openWindowsUpdateDownload?: (downloadUrl: string) => Promise<boolean>;
   listProjectWorkspaceTemplates?: () => Promise<string>;
   downloadAndInstallUpdate?: (apkUrl: string) => Promise<boolean>;
   scanDownloads?: () => string;
@@ -1637,7 +1639,12 @@ type AndroidBridge = {
 };
 
 type UpdateInfo = {
+  ok?: boolean;
   hasUpdate: boolean;
+  code?: string;
+  source?: 'startup' | 'manual';
+  checkedAt?: string;
+  skipped?: boolean;
   versionName?: string;
   versionCode?: number;
   apkUrl?: string;
@@ -2728,11 +2735,7 @@ declare const __APP_VERSION_CODE__: number;
 
 const currentVersionCode = __APP_VERSION_CODE__;
 const currentVersionName = __APP_VERSION__;
-const updateManifestUrl = [
-  'https://www.greatbg.com/download/edu-manager-version.json',
-  'http://www.greatbg.com/download/edu-manager-version.json',
-  'http://123.56.83.50/download/edu-manager-version.json',
-].join('|');
+const updateManifestUrl = 'https://www.greatbg.com/download/edu-manager-version.json';
 const userAgreementUrl = 'https://www.greatbg.com/download/agreement.html';
 const privacyPolicyUrl = 'https://www.greatbg.com/download/privacy.html';
 const initSchemaVersion = 1;
@@ -15769,23 +15772,55 @@ ${JSON.stringify(items, null, 2)}
     return `最近访问：${seen}${ip}`;
   };
 
-  const checkUpdate = async () => {
-    setCheckingUpdate(true);
-    setUpdateInfo(null);
-    const ok = await bridge()?.checkUpdate?.(updateManifestUrl, currentVersionCode);
+  const performUpdateCheck = async (source: 'startup' | 'manual') => {
+    const api = bridge();
+    if (source === 'manual') {
+      setCheckingUpdate(true);
+      setUpdateInfo(null);
+    }
+    if (isWindows) {
+      if (!api?.checkForUpdate) {
+        if (source === 'manual') setUpdateInfo({ hasUpdate: false, code: 'update_check_unavailable', message: '当前环境不支持 Windows 更新检查。' });
+        setCheckingUpdate(false);
+        return;
+      }
+      try {
+        const result = await api.checkForUpdate({ source, channel: 'stable', currentVersionCode });
+        if (result.hasUpdate) setUpdateInfo(result);
+        else if (source === 'manual' && !result.skipped) setUpdateInfo(result);
+      } catch {
+        if (source === 'manual') setUpdateInfo({ hasUpdate: false, code: 'update_check_failed', message: '更新检查失败，请稍后重试。' });
+      } finally {
+        if (source === 'manual') setCheckingUpdate(false);
+      }
+      return;
+    }
+    const ok = await api?.checkUpdate?.(updateManifestUrl, currentVersionCode);
     if (!ok) {
       setCheckingUpdate(false);
       setUpdateInfo({ hasUpdate: false, message: '当前环境不支持原生更新检查，请在 Android APK 中使用。' });
     }
   };
 
+  const checkUpdate = async () => performUpdateCheck('manual');
+
   const installUpdate = async () => {
-    if (!updateInfo?.apkUrl) return;
-    const ok = await bridge()?.downloadAndInstallUpdate?.(updateInfo.apkUrl);
+    const downloadUrl = updateInfo?.windowsUrl || updateInfo?.apkUrl;
+    if (!downloadUrl) return;
+    const api = bridge();
+    const ok = isWindows
+      ? await api?.openWindowsUpdateDownload?.(downloadUrl)
+      : await api?.downloadAndInstallUpdate?.(downloadUrl);
     if (!ok) {
       setUpdateInfo({ ...updateInfo, message: '无法启动下载，请检查网络或安装权限。' });
     }
   };
+
+  useEffect(() => {
+    if (!isWindows) return undefined;
+    const timer = window.setTimeout(() => { void performUpdateCheck('startup'); }, 5_000);
+    return () => window.clearTimeout(timer);
+  }, [isWindows]);
 
   const discoveredStudentTerminals = hostServiceStatus?.discoveredTerminals ?? hostServiceStatus?.discoveredTablets ?? [];
   const visibleStudentTerminals = discoveredStudentTerminals.filter((terminal) => {
@@ -16759,6 +16794,22 @@ ${JSON.stringify(items, null, 2)}
           </span>
         </div>
       </aside>
+
+      {isWindows && updateInfo?.hasUpdate && (
+        <div className="student-dialog-backdrop" role="presentation">
+          <section className="student-dialog" role="dialog" aria-modal="true" aria-labelledby="windows-update-dialog-title">
+            <div className="student-dialog-heading">
+              <div><span className="eyebrow">Windows 正式版</span><h2 id="windows-update-dialog-title">发现新版本 v{updateInfo.versionName || updateInfo.versionCode}</h2></div>
+            </div>
+            <p>{updateInfo.notes || '已有新的稳定版本可供下载。应用不会自动下载或静默安装。'}</p>
+            {updateInfo.windowsUrl && <p className="muted">下载连接：{updateInfo.windowsUrl}</p>}
+            <div className="student-dialog-actions">
+              <button className="secondary" type="button" onClick={() => setUpdateInfo(null)}>稍后提醒</button>
+              <button className="primary" type="button" onClick={() => void installUpdate()}><FileDown size={18} />下载新版</button>
+            </div>
+          </section>
+        </div>
+      )}
 
       {studentPanelOpen && (
         <div className="student-dialog-backdrop" role="presentation" onMouseDown={() => setStudentPanelOpen(false)}>
@@ -23350,7 +23401,7 @@ ${JSON.stringify(items, null, 2)}
             </div>}
             {isWindows && settingsSubmenu === 'basic' && <section className="settings-update-section">
               <div className="panel-heading"><div><h2>版本检查与更新</h2><p>检查 Windows 正式版下载信息；候选包不会被自动标记为正式发布。</p></div><button className="secondary" type="button" onClick={checkUpdate} disabled={checkingUpdate}><RefreshCw size={18} />{checkingUpdate ? '检查中' : '检查更新'}</button></div>
-              {updateInfo && <div className={updateInfo.hasUpdate ? 'notice' : 'notice muted'}>{updateInfo.hasUpdate ? `发现新版本 v${updateInfo.versionName || updateInfo.versionCode}` : updateInfo.message || '当前已是最新版本'}{updateInfo.notes && <p>{updateInfo.notes}</p>}{updateInfo.hasUpdate && <button className="primary inline-action" type="button" onClick={installUpdate}>下载并安装更新</button>}</div>}
+              {updateInfo && <div className={updateInfo.hasUpdate ? 'notice' : 'notice muted'}>{updateInfo.hasUpdate ? `发现新版本 v${updateInfo.versionName || updateInfo.versionCode}` : updateInfo.message || '当前已是最新版本'}{updateInfo.notes && <p>{updateInfo.notes}</p>}{updateInfo.hasUpdate && <button className="primary inline-action" type="button" onClick={installUpdate}>下载新版</button>}</div>}
             </section>}
             </div>
             </div>

@@ -238,6 +238,8 @@ const { projectListProjection } = require('./project-list-projection.cjs');
 const { boundedProjectIpcJson } = require('./project-ipc-response.cjs');
 const { PROJECT_WORKSPACE_TEMPLATES, PROJECT_TEMPLATE_V2_STRATEGIES,
   projectWorkspaceTemplateFor, listProjectWorkspaceTemplates } = require('./project-workspace-templates.cjs');
+const { createWindowsUpdateChecker, isAllowedWindowsDownloadUrl } = require('./windows-update-check.cjs');
+const windowsUpdateChecker = createWindowsUpdateChecker();
 const { queryUploadReceipt, verifiedSource } = require('./upload-receipt-query.cjs');
 const { lanDiscoveryBroadcastTargets } = require('./lan-discovery.cjs');
 const { createStudentPortableMigrationManager } = require('./student-portable-migration.cjs');
@@ -41754,48 +41756,20 @@ async function repairHostFirewallAccess() {
     diagnostics });
 }
 
-function checkUpdate(manifestUrl, currentVersionCode) {
-  const urls = String(manifestUrl || '').split('|').filter(Boolean);
-  const tryUrl = (index) => {
-    const url = urls[index];
-    if (!url) {
-      notify('onNativeUpdateResult', JSON.stringify({ hasUpdate: false, message: '更新检查失败：所有更新地址均不可用' }));
-      return;
-    }
-    https.get(url, (response) => {
-      let body = '';
-      response.setEncoding('utf8');
-      response.on('data', (chunk) => { body += chunk; });
-      response.on('end', () => {
-        try {
-          const json = JSON.parse(body);
-          const downloadUrl = json.windowsUrl || json.windows?.url || json.exeUrl || json.apkUrl;
-          const nextVersionCode = Number(json.windowsVersionCode || json.versionCode || 0);
-          const minimumVersionCode = Number(json.minimumWindowsVersionCode || json.minimumVersionCode || 0);
-          const hasUpdate = nextVersionCode > Number(currentVersionCode) && Boolean(downloadUrl);
-          notify('onNativeUpdateResult', JSON.stringify({
-            ...json,
-            versionCode: nextVersionCode,
-            minimumVersionCode,
-            forceUpdate: Boolean(json.forceWindowsUpdate || (minimumVersionCode && Number(currentVersionCode) < minimumVersionCode)),
-            apkUrl: downloadUrl,
-            windowsUrl: downloadUrl,
-            notes: json.windowsNotes || json.notes,
-            hasUpdate,
-            message: hasUpdate ? undefined : '当前已是最新版本',
-          }));
-        } catch {
-          tryUrl(index + 1);
-        }
-      });
-    }).on('error', () => tryUrl(index + 1));
-  };
-  tryUrl(0);
+function checkUpdate(_manifestUrl, currentVersionCode) {
+  void windowsUpdateChecker.check({ source: 'manual', channel: 'stable', currentVersionCode: Number(currentVersionCode) })
+    .then((result) => notify('onNativeUpdateResult', JSON.stringify(result)));
   return true;
 }
 
 function downloadAndInstallUpdate(downloadUrl) {
-  return openExternalUrl(downloadUrl);
+  return openWindowsUpdateDownload(downloadUrl);
+}
+
+function openWindowsUpdateDownload(downloadUrl) {
+  if (!isAllowedWindowsDownloadUrl(downloadUrl)) return false;
+  shell.openExternal(downloadUrl).catch(() => {});
+  return true;
 }
 
 function licensedIpc(event, action, handler) {
@@ -42133,6 +42107,12 @@ ipcMain.on('bridge:getAgentToolInstallStatus', (event) => { event.returnValue = 
 ipcMain.on('bridge:checkUpdate', (event, manifestUrl, currentVersionCode) => {
   event.returnValue = checkUpdate(manifestUrl, currentVersionCode);
 });
+ipcMain.handle('bridge:checkForUpdate', (_event, request = {}) => windowsUpdateChecker.check({
+  source: request.source,
+  channel: request.channel,
+  currentVersionCode: Number(request.currentVersionCode),
+}));
+ipcMain.handle('bridge:openWindowsUpdateDownload', (_event, downloadUrl) => openWindowsUpdateDownload(downloadUrl));
 ipcMain.on('bridge:listProjectWorkspaceTemplates', (event) => {
   event.returnValue = JSON.stringify({ ok: true, templates: listProjectWorkspaceTemplates() });
 });

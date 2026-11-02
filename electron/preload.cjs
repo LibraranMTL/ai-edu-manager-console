@@ -632,6 +632,12 @@ contextBridge.exposeInMainWorld('AndroidBridge', {
   checkUpdate(manifestUrl, currentVersionCode) {
     return invokeLegacy('bridge:checkUpdate', manifestUrl, currentVersionCode);
   },
+  checkForUpdate(request) {
+    return ipcRenderer.invoke('bridge:checkForUpdate', request);
+  },
+  openWindowsUpdateDownload(downloadUrl) {
+    return ipcRenderer.invoke('bridge:openWindowsUpdateDownload', downloadUrl);
+  },
   listProjectWorkspaceTemplates() {
     return invokeLegacy('bridge:listProjectWorkspaceTemplates');
   },

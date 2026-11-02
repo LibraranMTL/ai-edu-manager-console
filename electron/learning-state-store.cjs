@@ -643,6 +643,7 @@ function createLearningStateStore({ dbPath, now = Date.now, quickCheck = true })
     return {
       ...calendar,
       days,
+      registeredKnowledgePointTotal: points.filter((point) => point.activeSourceCount > 0).length,
       weeklyNewKnowledgePoints: days.reduce((sum, day) => sum + (day.count || 0), 0),
       unknownFirstSeenCount,
       ...state(),

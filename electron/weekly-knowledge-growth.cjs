@@ -72,6 +72,7 @@ function getWeeklyKnowledgeGrowth(options = {}) {
         knowledgeGeneration: Number(knowledgeAfter.generation),
         authorizationVersion: String(options.authorizationVersion || 'local-student-index.v1'),
         assetTotal: Number(assetSnapshot.total || 0),
+        registeredKnowledgePointTotal: Number(growth.registeredKnowledgePointTotal || 0),
         weeklyNewKnowledgePoints: Number(growth.weeklyNewKnowledgePoints || 0),
         unknownFirstSeenCount: Number(growth.unknownFirstSeenCount || 0),
         days: growth.days,
@@ -121,7 +122,7 @@ function renderWeeklyKnowledgeGrowthPng(snapshot) {
   roundedRect(ctx, 540, 246, 476, 250, 30, '#ffffff');
   ctx.font = '500 29px "Microsoft YaHei", "Noto Sans CJK SC", sans-serif';
   ctx.fillStyle = muted;
-  ctx.fillText('知识资产总量', 104, 312);
+  ctx.fillText('文件资产总量', 104, 312);
   ctx.fillText('本周新增知识点', 580, 312);
   ctx.fillStyle = ink;
   ctx.font = '700 86px "Segoe UI", "Microsoft YaHei", sans-serif';
@@ -169,8 +170,8 @@ function renderWeeklyKnowledgeGrowthPng(snapshot) {
   ctx.font = '600 31px "Microsoft YaHei", sans-serif';
   ctx.fillText(`截至 ${snapshot.currentDate || snapshot.asOf.slice(0, 10)} · ${snapshot.timezone}`, 104, 1600);
   ctx.font = '400 29px "Microsoft YaHei", sans-serif';
-  ctx.fillText('新增按知识点首次可靠登记统计，', 104, 1670);
-  ctx.fillText('不代表掌握度、能力或学习效果变化。', 104, 1718);
+  ctx.fillText(`已登记且有效知识点 ${Number(snapshot.registeredKnowledgePointTotal || 0)} 个。`, 104, 1670);
+  ctx.fillText('新增按知识点首次可靠登记统计，不代表掌握度、能力或学习效果变化。', 104, 1718);
   if (Number(snapshot.unknownFirstSeenCount) > 0) {
     ctx.font = '400 25px "Microsoft YaHei", sans-serif';
     ctx.fillStyle = muted;

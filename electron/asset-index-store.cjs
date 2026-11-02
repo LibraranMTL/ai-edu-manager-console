@@ -706,6 +706,7 @@ function makeStoreApi(db, options) {
   const dbPath = options.dbPath;
   const now = options.now || Date.now;
   const summaryCache = new Map();
+  const trendCache = new Map();
   const listCountCache = new Map();
   const SUMMARY_CACHE_LIMIT = 64;
   const LIST_COUNT_CACHE_LIMIT = 256;
@@ -722,7 +723,7 @@ function makeStoreApi(db, options) {
     cache.set(key, value);
     while (cache.size > limit) cache.delete(cache.keys().next().value);
   };
-  const invalidateSummary = () => { summaryCache.clear(); listCountCache.clear(); };
+  const invalidateSummary = () => { summaryCache.clear(); trendCache.clear(); listCountCache.clear(); };
   const insertAsset = db.prepare(`INSERT INTO assets(${ASSET_COLUMNS.join(',')}) VALUES(${ASSET_COLUMNS.map(() => '?').join(',')})
     ON CONFLICT(asset_id) DO UPDATE SET ${ASSET_COLUMNS.filter(column => column !== 'asset_id').map(column => column === 'sha256'
       ? `sha256=CASE WHEN excluded.sha256<>'' THEN excluded.sha256 ELSE assets.sha256 END`
@@ -931,6 +932,64 @@ function makeStoreApi(db, options) {
     if (filter.risk && filter.risk !== 'all') { clauses.push('a.governance_risk=?'); params.push(text(filter.risk)); }
     if (filter.duplicateOnly) clauses.push(`(SELECT COUNT(DISTINCT dr.path) FROM asset_references dr WHERE dr.asset_id=a.asset_id AND dr.state='active' AND dr.path<>'') > 1`);
     return clauses;
+  }
+
+  function localDayKey(value) {
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return '';
+    return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+  }
+
+  function recentTrend(filter = {}, asOf = nowIso(now)) {
+    const asOfDate = localDayKey(asOf) || localDayKey(now());
+    const cacheKey = `${asOfDate}:${JSON.stringify(filter || {})}`;
+    const cached = cacheGet(trendCache, cacheKey);
+    if (cached) return { ...cached, asOf };
+
+    const days = [];
+    const buckets = new Map();
+    const base = new Date(`${asOfDate}T12:00:00`);
+    for (let offset = 6; offset >= 0; offset -= 1) {
+      const day = new Date(base.getFullYear(), base.getMonth(), base.getDate() - offset);
+      const date = localDayKey(day);
+      const item = { date, label: `${day.getMonth() + 1}/${day.getDate()}`, added: 0, references: 0 };
+      days.push(item);
+      buckets.set(date, item);
+    }
+
+    const params = [];
+    const clauses = filterSql(filter, params);
+    if (filter.projectId && filter.projectId !== 'all') {
+      clauses.push("a.asset_id IN (SELECT asset_id FROM asset_references WHERE state='active' AND space_type='project' AND space_id=?)");
+      params.push(text(filter.projectId));
+    }
+    const where = clauses.length ? `WHERE ${clauses.join(' AND ')}` : '';
+    const assetDate = "strftime('%Y-%m-%d', COALESCE(NULLIF(a.uploaded_at,''), NULLIF(a.created_at,'')), 'localtime')";
+    const referenceDate = "strftime('%Y-%m-%d', NULLIF(r.linked_at,''), 'localtime')";
+    let undatedAssets = 0;
+    let undatedReferences = 0;
+    for (const row of db.prepare(`SELECT ${assetDate} AS date,COUNT(*) AS count FROM assets a ${where} GROUP BY date`).all(...params)) {
+      const count = Number(row.count || 0);
+      const bucket = buckets.get(text(row.date));
+      if (bucket) bucket.added += count;
+      else if (!row.date) undatedAssets += count;
+    }
+    for (const row of db.prepare(`SELECT ${referenceDate} AS date,COUNT(*) AS count FROM asset_references r
+      JOIN assets a ON a.asset_id=r.asset_id ${where} GROUP BY date`).all(...params)) {
+      const count = Number(row.count || 0);
+      const bucket = buckets.get(text(row.date));
+      if (bucket) bucket.references += count;
+      else if (!row.date) undatedReferences += count;
+    }
+    const result = {
+      days,
+      addedTotal: days.reduce((total, item) => total + item.added, 0),
+      referenceTotal: days.reduce((total, item) => total + item.references, 0),
+      undatedAssets,
+      undatedReferences,
+    };
+    cacheSet(trendCache, cacheKey, result, SUMMARY_CACHE_LIMIT);
+    return { ...result, asOf };
   }
 
   function listAssets(request = {}, searchText = '') {
@@ -1171,7 +1230,8 @@ function makeStoreApi(db, options) {
       duplicateOnly: Boolean(scope.duplicateOnly),
     };
     const state = statisticsState();
-    return { schema: 'edu.asset-statistics-snapshot.v1', asOf: nowIso(now), ...state, scope: filter, ...summary(filter) };
+    const asOf = nowIso(now);
+    return { schema: 'edu.asset-statistics-snapshot.v1', asOf, ...state, scope: filter, ...summary(filter), recentTrend: recentTrend(filter, asOf) };
   }
 
   function listDuplicateGroups(request = {}) {
@@ -1396,7 +1456,7 @@ function makeStoreApi(db, options) {
     setReferenceAvailability,
     refreshSearch, rebuildSearchIndex, beginScan, updateScan, scanStatus, setMeta,
     statisticsState, markStatisticsChangedAt, statisticsSnapshot,
-    cacheStats: () => ({ summary: summaryCache.size, listCount: listCountCache.size,
+    cacheStats: () => ({ summary: summaryCache.size, trend: trendCache.size, listCount: listCountCache.size,
       summaryLimit: SUMMARY_CACHE_LIMIT, listCountLimit: LIST_COUNT_CACHE_LIMIT }),
     transaction,
     backupTo, close() { db.close(); },

@@ -60,6 +60,34 @@ test('student, project and global snapshots share the same as-of generation', (t
   assert.equal(student.asOf, global.asOf);
 });
 
+test('statistics snapshots include the scoped seven-day asset and reference trend', (t) => {
+  const { store } = fixture(t);
+  store.upsertAsset({
+    assetId: 'asset-trend-a', sha1: '1'.repeat(40), sha256: '2'.repeat(64), filename: 'recent.pdf',
+    ownerStudentId: 'student-a', path: 'D:/recent.pdf', uploadedAt: '2026-10-29T01:00:00.000Z',
+  }, [{
+    referenceId: 'ref-trend-a', spaceType: 'student', spaceId: 'student-a', studentId: 'student-a', role: 'raw',
+    path: 'D:/recent.pdf', linkedAt: '2026-11-01T01:00:00.000Z',
+  }]);
+  store.upsertAsset({
+    assetId: 'asset-trend-b', sha1: '3'.repeat(40), sha256: '4'.repeat(64), filename: 'other.pdf',
+    ownerStudentId: 'student-b', path: 'D:/other.pdf', uploadedAt: '2026-11-01T01:00:00.000Z',
+  }, [{
+    referenceId: 'ref-trend-b', spaceType: 'student', spaceId: 'student-b', studentId: 'student-b', role: 'raw',
+    path: 'D:/other.pdf', linkedAt: '2026-11-01T01:00:00.000Z',
+  }]);
+
+  const snapshot = store.statisticsSnapshot({ studentId: 'student-a' });
+  assert.equal(snapshot.recentTrend.addedTotal, 1);
+  assert.equal(snapshot.recentTrend.referenceTotal, 1);
+  assert.equal(snapshot.recentTrend.days.length, 7);
+  assert.deepEqual(snapshot.recentTrend.days.map((day) => [day.date, day.added, day.references]), [
+    ['2026-10-27', 0, 0], ['2026-10-28', 0, 0], ['2026-10-29', 1, 0], ['2026-10-30', 0, 0],
+    ['2026-10-31', 0, 0], ['2026-11-01', 0, 1], ['2026-11-02', 0, 0],
+  ]);
+  assert.equal(snapshot.recentTrend.asOf, snapshot.asOf);
+});
+
 test('renderer subscribes to committed changes and rejects stale list generations', () => {
   const main = fs.readFileSync(path.join(__dirname, '..', 'electron', 'main.cjs'), 'utf8');
   const preload = fs.readFileSync(path.join(__dirname, '..', 'electron', 'preload.cjs'), 'utf8');

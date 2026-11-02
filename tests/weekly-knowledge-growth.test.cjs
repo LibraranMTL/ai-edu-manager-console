@@ -83,6 +83,7 @@ test('weekly growth counts active points by first registration and marks future 
   assert.equal(growth.weekStart, '2026-11-02');
   assert.equal(growth.weekEnd, '2026-11-08');
   assert.equal(growth.weeklyNewKnowledgePoints, 2);
+  assert.equal(growth.registeredKnowledgePointTotal, 4);
   assert.equal(growth.unknownFirstSeenCount, 1);
   assert.deepEqual(growth.days.map((day) => day.count), [1, 0, 1, null, null, null, null]);
   assert.equal(growth.days.filter((day) => day.count !== null).reduce((sum, day) => sum + day.count, 0), 2);
@@ -109,6 +110,7 @@ test('weekly service retries generation changes and returns one scoped as-of sna
   assert.equal(result.ok, true);
   assert.equal(result.assetTotal, 128);
   assert.equal(result.weeklyNewKnowledgePoints, 1);
+  assert.equal(result.registeredKnowledgePointTotal, 1);
   assert.equal(result.assetGeneration, 5);
   assert.equal(result.authorizationVersion, 'students-v7');
   assert.equal(result.asOf, '2026-11-04T04:00:00.000Z');

@@ -448,6 +448,7 @@ type WeeklyKnowledgeGrowth = {
   weekStart: string;
   weekEnd: string;
   assetTotal: number;
+  registeredKnowledgePointTotal: number;
   weeklyNewKnowledgePoints: number;
   unknownFirstSeenCount: number;
   assetGeneration: number;

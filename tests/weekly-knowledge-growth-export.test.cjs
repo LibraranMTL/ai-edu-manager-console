@@ -18,6 +18,7 @@ const snapshot = {
   weekStart: '2026-11-02',
   weekEnd: '2026-11-08',
   assetTotal: 128,
+  registeredKnowledgePointTotal: 15,
   weeklyNewKnowledgePoints: 3,
   unknownFirstSeenCount: 1,
   days: [
@@ -63,6 +64,9 @@ test('Windows bridge and asset card expose scoped load, stale invalidation, and 
   assert.match(ui, /请选择一名学生查看周图/);
   assert.match(ui, /不代表掌握度、能力或学习效果变化/);
   assert.match(ui, /保存 1080×1920 PNG/);
+  assert.match(ui, /文件资产/);
+  assert.match(ui, /weekly-knowledge-growth-report-actions/);
+  assert.doesNotMatch(ui, /weekly-knowledge-growth-summary/);
   assert.doesNotMatch(ui, /自动发送|朋友圈接口|调用 Agent/);
 });
 

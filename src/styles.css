@@ -7890,7 +7890,20 @@ textarea:focus {
 .learning-state-panel .download-item { grid-template-columns: minmax(0, 1fr); gap: 10px; }
 .learning-state-panel .inline-actions { display: flex; justify-content: flex-start; gap: 6px; flex-wrap: wrap; }
 .learning-state-panel .inline-actions button { white-space: nowrap; }
+.learning-method-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+.learning-method-report { display: grid; grid-template-columns: auto auto minmax(180px, 1fr); align-items: center; gap: 10px; }
+.learning-method-report input[type="checkbox"] { width: 18px; height: 18px; min-height: 18px; padding: 0; margin: 0; }
+.learning-efficiency-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin-bottom: 12px; }
+.learning-efficiency-grid .growth-card { display: grid; gap: 8px; text-align: left; }
+.learning-efficiency-grid b { font-size: 18px; color: var(--accent-strong); }
+.learning-efficiency-grid small { color: var(--text-muted); line-height: 1.5; }
 @media (max-width: 1000px) {
   .learning-state-dimensions { grid-template-columns: repeat(2, minmax(130px, 1fr)); }
   .learning-state-columns { grid-template-columns: 1fr; }
+  .learning-method-grid, .learning-efficiency-grid { grid-template-columns: 1fr 1fr; }
+}
+@media (max-width: 700px) {
+  .learning-method-grid, .learning-efficiency-grid { grid-template-columns: 1fr; }
+  .learning-method-report { grid-template-columns: auto 1fr; }
+  .learning-method-report > input:not([type="checkbox"]) { grid-column: 1 / -1; width: 100%; }
 }

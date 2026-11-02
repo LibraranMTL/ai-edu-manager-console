@@ -5,13 +5,14 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 const { DatabaseSync } = require('node:sqlite');
 
-const SCHEMA_VERSION = 3;
-const POLICY_VERSION = 'learning-state-1b-v1';
+const SCHEMA_VERSION = 4;
+const POLICY_VERSION = 'learning-state-2-v1';
 const DIMENSIONS = ['goalClarity', 'confidence', 'difficulty', 'recovery', 'workload'];
 const SOURCE_CATEGORIES = new Set(['student_self_report', 'external_observation', 'system_observation', 'system_inference']);
 const ACTION_TYPES = new Set(['learning_task', 'targeted_practice']);
 const ACTION_SUBJECT_TYPES = new Set(['goal', 'problem']);
 const ACTION_BINDING_STATUSES = new Set(['dispatching', 'unknown', 'dispatched', 'completed', 'failed', 'cancelled']);
+const PROCESS_SIGNAL_TYPES = new Set(['practice_attempt', 'practice_review', 'method_observation', 'delayed_retest', 'background_activity', 'effort_segment']);
 
 function text(value) { return String(value ?? '').trim(); }
 function nowIso(now) { return new Date(now()).toISOString(); }
@@ -169,6 +170,26 @@ function schemaSql() {
       FOREIGN KEY(student_id,action_key) REFERENCES learning_action_intents(student_id,action_key)
     ) WITHOUT ROWID, STRICT;
     CREATE INDEX IF NOT EXISTS learning_action_suppressions_action ON learning_action_suppressions(student_id,action_key,created_at);
+    CREATE TABLE IF NOT EXISTS learning_method_experiment_versions (
+      student_id TEXT NOT NULL, experiment_id TEXT NOT NULL, revision INTEGER NOT NULL,
+      method_key TEXT NOT NULL, title TEXT NOT NULL, hypothesis TEXT NOT NULL DEFAULT '',
+      practice TEXT NOT NULL DEFAULT '', conditions_json TEXT NOT NULL DEFAULT '{}',
+      student_report_json TEXT NOT NULL DEFAULT '{}', status TEXT NOT NULL DEFAULT 'active',
+      created_at TEXT NOT NULL, actor_role TEXT NOT NULL, actor_id TEXT NOT NULL DEFAULT '',
+      PRIMARY KEY(student_id,experiment_id,revision)
+    ) WITHOUT ROWID, STRICT;
+    CREATE INDEX IF NOT EXISTS learning_method_experiment_time
+      ON learning_method_experiment_versions(student_id,created_at,experiment_id,revision);
+    CREATE TABLE IF NOT EXISTS learning_process_signal_versions (
+      student_id TEXT NOT NULL, signal_id TEXT NOT NULL, revision INTEGER NOT NULL,
+      commit_key TEXT NOT NULL, signal_type TEXT NOT NULL, occurred_at TEXT NOT NULL,
+      root_attempt_id TEXT NOT NULL DEFAULT '', task_id TEXT NOT NULL DEFAULT '',
+      payload_json TEXT NOT NULL DEFAULT '{}', created_at TEXT NOT NULL,
+      actor_role TEXT NOT NULL, actor_id TEXT NOT NULL DEFAULT '',
+      PRIMARY KEY(student_id,signal_id,revision), UNIQUE(student_id,commit_key)
+    ) WITHOUT ROWID, STRICT;
+    CREATE INDEX IF NOT EXISTS learning_process_signal_time
+      ON learning_process_signal_versions(student_id,created_at,occurred_at,signal_id,revision);
   `;
 }
 
@@ -418,6 +439,88 @@ function createLearningStateStore({ dbPath, now = Date.now, quickCheck = true })
       advanceGeneration(createdAt);
       return mapEvidence(db.prepare('SELECT * FROM learning_evidence_versions WHERE student_id=? AND evidence_id=? AND revision=?')
         .get(actor.studentId, evidenceId, revision));
+    });
+  }
+
+  function mapMethodExperiment(row) {
+    return {
+      studentId: row.student_id, experimentId: row.experiment_id, revision: Number(row.revision),
+      methodKey: row.method_key, title: row.title, hypothesis: row.hypothesis, practice: row.practice,
+      conditions: parseJson(row.conditions_json, {}), studentReport: parseJson(row.student_report_json, {}),
+      status: row.status, createdAt: row.created_at,
+    };
+  }
+
+  function upsertMethodExperiment(scope, experiment = {}, expectedRevision) {
+    const actor = assertScope(scope, experiment.studentId);
+    const experimentId = text(experiment.experimentId) || id('method-experiment');
+    const current = db.prepare(`SELECT MAX(revision) revision FROM learning_method_experiment_versions
+      WHERE student_id=? AND experiment_id=?`).get(actor.studentId, experimentId);
+    const actualRevision = Number(current?.revision || 0);
+    if (Number(expectedRevision) !== actualRevision) {
+      throw Object.assign(new Error('方法实验已被其他修改更新。'), { code: 'revision_conflict', actualRevision });
+    }
+    const methodKey = text(experiment.methodKey);
+    const title = text(experiment.title);
+    if (!methodKey || !title) throw Object.assign(new Error('方法实验名称缺失。'), { code: 'method_experiment_title_missing' });
+    const revision = actualRevision + 1;
+    const createdAt = nowIso(now);
+    return transaction(() => {
+      db.prepare(`INSERT INTO learning_method_experiment_versions(student_id,experiment_id,revision,method_key,title,
+        hypothesis,practice,conditions_json,student_report_json,status,created_at,actor_role,actor_id)
+        VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(actor.studentId, experimentId, revision, methodKey, title,
+        text(experiment.hypothesis), text(experiment.practice), JSON.stringify(experiment.conditions || {}),
+        JSON.stringify(experiment.studentReport || {}), text(experiment.status) || 'active', createdAt, actor.actorRole, actor.actorId);
+      advanceGeneration(createdAt);
+      return mapMethodExperiment(db.prepare(`SELECT * FROM learning_method_experiment_versions
+        WHERE student_id=? AND experiment_id=? AND revision=?`).get(actor.studentId, experimentId, revision));
+    });
+  }
+
+  function mapProcessSignal(row) {
+    return {
+      studentId: row.student_id, signalId: row.signal_id, revision: Number(row.revision),
+      signalType: row.signal_type, occurredAt: row.occurred_at, rootAttemptId: row.root_attempt_id,
+      taskId: row.task_id, ...parseJson(row.payload_json, {}), createdAt: row.created_at,
+    };
+  }
+
+  function recordProcessSignal(scope, signal = {}, commitKey) {
+    const actor = assertScope(scope, signal.studentId);
+    commitKey = text(commitKey);
+    if (!commitKey) throw Object.assign(new Error('稳定提交键缺失。'), { code: 'commit_key_missing' });
+    const byCommit = db.prepare('SELECT * FROM learning_process_signal_versions WHERE student_id=? AND commit_key=?')
+      .get(actor.studentId, commitKey);
+    if (byCommit) return { ...mapProcessSignal(byCommit), replayed: true };
+    const signalId = text(signal.signalId);
+    const revision = Number(signal.revision || 1);
+    if (!signalId || !Number.isInteger(revision) || revision < 1) {
+      throw Object.assign(new Error('过程信号标识或修订号无效。'), { code: 'process_signal_invalid' });
+    }
+    const existing = db.prepare(`SELECT * FROM learning_process_signal_versions
+      WHERE student_id=? AND signal_id=? AND revision=?`).get(actor.studentId, signalId, revision);
+    if (existing) return { ...mapProcessSignal(existing), replayed: true };
+    const current = db.prepare(`SELECT MAX(revision) revision FROM learning_process_signal_versions
+      WHERE student_id=? AND signal_id=?`).get(actor.studentId, signalId);
+    if (revision !== Number(current?.revision || 0) + 1) {
+      throw Object.assign(new Error('过程信号修订不连续。'), { code: 'revision_conflict', actualRevision: Number(current?.revision || 0) });
+    }
+    const signalType = text(signal.signalType);
+    if (!PROCESS_SIGNAL_TYPES.has(signalType)) throw Object.assign(new Error('过程信号类型无效。'), { code: 'process_signal_type_invalid' });
+    const occurredAt = reliableIso(signal.occurredAt) || nowIso(now);
+    const createdAt = nowIso(now);
+    const payloadKeys = ['subject', 'taskType', 'targetKey', 'difficultyBand', 'assistance', 'independent', 'evaluable',
+      'completed', 'correct', 'evidenceBackedOutput', 'effortMinutes', 'reworkRound', 'reworkReason', 'delayedRetest',
+      'goalId', 'methodKey', 'experimentId', 'reviewVersion', 'withdrawn', 'background'];
+    const payload = Object.fromEntries(payloadKeys.filter((key) => signal[key] !== undefined).map((key) => [key, signal[key]]));
+    return transaction(() => {
+      db.prepare(`INSERT INTO learning_process_signal_versions(student_id,signal_id,revision,commit_key,signal_type,
+        occurred_at,root_attempt_id,task_id,payload_json,created_at,actor_role,actor_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`)
+        .run(actor.studentId, signalId, revision, commitKey, signalType, occurredAt, text(signal.rootAttemptId),
+          text(signal.taskId), JSON.stringify(payload), createdAt, actor.actorRole, actor.actorId);
+      advanceGeneration(createdAt);
+      return { ...mapProcessSignal(db.prepare(`SELECT * FROM learning_process_signal_versions
+        WHERE student_id=? AND signal_id=? AND revision=?`).get(actor.studentId, signalId, revision)), replayed: false };
     });
   }
 
@@ -848,6 +951,60 @@ function createLearningStateStore({ dbPath, now = Date.now, quickCheck = true })
     return rows.filter((row) => !correctionExists(studentId, targetType, row[idColumn], Number(row.revision), asOf)).map(mapper);
   }
 
+  function processProjection(studentId, asOf, goals) {
+    const processSignals = listProcessSignals(studentId, asOf);
+    const methodRows = latestEffectiveRows('learning_method_experiment_versions', 'experiment_id', 'method_experiment', studentId, asOf, mapMethodExperiment)
+      .filter((experiment) => experiment.status === 'active');
+    const { analyzeMethodExperiment } = require('./learning-method-analysis.cjs');
+    const methods = methodRows.map((experiment) => ({ ...experiment, analysis: analyzeMethodExperiment(experiment, processSignals) }));
+    const taskSignals = processSignals.filter((signal) => signal.signalType !== 'background_activity' && signal.evaluable === true);
+    const independentNumerator = taskSignals.filter((signal) => signal.completed === true && signal.independent === true).length;
+    const outputNumerator = taskSignals.filter((signal) => signal.evidenceBackedOutput === true).length;
+    const knownAssistance = taskSignals.filter((signal) => ['none', 'hinted', 'assisted'].includes(text(signal.assistance)));
+    const dueGoals = goals.filter((goal) => goal.dueAt && Date.parse(goal.dueAt) <= Date.parse(asOf) && text(goal.successCriteria));
+    const reworkSignals = taskSignals.filter((signal) => Number(signal.reworkRound || 0) > 0);
+    const reasonCounts = new Map();
+    for (const signal of reworkSignals) {
+      const reason = text(signal.reworkReason) || '原因未记录';
+      reasonCounts.set(reason, (reasonCounts.get(reason) || 0) + 1);
+    }
+    const delayed = taskSignals.filter((signal) => signal.delayedRetest === true || signal.signalType === 'delayed_retest');
+    const effortKnown = processSignals.filter((signal) => Number.isFinite(Number(signal.effortMinutes)) && Number(signal.effortMinutes) >= 0);
+    const background = processSignals.filter((signal) => signal.signalType === 'background_activity')
+      .reduce((sum, signal) => ({
+        screenMinutes: sum.screenMinutes + Math.max(0, Number(signal.background?.screenMinutes || 0)),
+        fileCount: sum.fileCount + Math.max(0, Number(signal.background?.fileCount || 0)),
+        loginCount: sum.loginCount + Math.max(0, Number(signal.background?.loginCount || 0)),
+      }), { screenMinutes: 0, fileCount: 0, loginCount: 0 });
+    const metric = (numerator, denominator, note) => ({ numerator, denominator, sampleSize: denominator, note });
+    return {
+      methods,
+      efficiency: {
+        policyVersion: 'learning-efficiency-v1',
+        dueGoalAttainment: metric(dueGoals.filter((goal) => ['completed', 'achieved'].includes(goal.status)).length,
+          dueGoals.length, dueGoals.length ? '' : '没有到期且可评价的目标。'),
+        evidenceBackedOutputs: metric(outputNumerator, taskSignals.length, taskSignals.length ? '' : '没有可评价任务。'),
+        independentCompletion: metric(independentNumerator, taskSignals.length, taskSignals.length ? '' : '没有可评价任务。'),
+        comparableKnownAssistance: metric(knownAssistance.length, taskSignals.length,
+          knownAssistance.length === taskSignals.length ? '' : '部分任务的帮助情况未知，不纳入方法效果判断。'),
+        rework: { rounds: reworkSignals.reduce((sum, signal) => sum + Math.max(0, Number(signal.reworkRound || 0)), 0),
+          sampleSize: reworkSignals.length, reasons: [...reasonCounts].map(([reason, count]) => ({ reason, count })) },
+        delayedRetention: metric(delayed.filter((signal) => signal.correct === true).length, delayed.length,
+          delayed.length ? '' : '尚无到期延迟复测。'),
+        effort: { totalMinutes: effortKnown.reduce((sum, signal) => sum + Number(signal.effortMinutes), 0),
+          sampleSize: effortKnown.length, unknownCount: processSignals.length - effortKnown.length,
+          note: '仅汇总学生主动记录或系统可验证的学习时段。' },
+        background,
+        backgroundNote: '屏幕时长、文件量和登录次数仅作背景，不单独推导进步或退步。',
+      },
+    };
+  }
+
+  function listProcessSignals(studentId, asOf) {
+    return latestEffectiveRows('learning_process_signal_versions', 'signal_id', 'process_signal', text(studentId), reliableIso(asOf) || nowIso(now), mapProcessSignal)
+      .filter((signal) => signal.withdrawn !== true);
+  }
+
   function getLearningState(reader, studentId, asOf) {
     studentId = assertReader(reader, studentId);
     asOf = reliableIso(asOf) || nowIso(now);
@@ -859,9 +1016,10 @@ function createLearningStateStore({ dbPath, now = Date.now, quickCheck = true })
     const findings = db.prepare('SELECT * FROM learning_findings WHERE student_id=? AND created_at<=? ORDER BY created_at DESC')
       .all(studentId, asOf).filter((row) => !correctionExists(studentId, 'finding', row.finding_id, 1, asOf)).map(mapFinding);
     const actions = listActions(studentId, asOf);
+    const process = processProjection(studentId, asOf, goals);
     return {
       studentId, asOf, policyVersion: POLICY_VERSION, authorizationVersion: text(reader.authorizationVersion) || 'local-host-v1',
-      ...state(), checkIns, goals, problems, evidence, findings, actions,
+      ...state(), checkIns, goals, problems, evidence, findings, actions, ...process,
       automationEnabled: null,
       coverage: { hasBaseline: checkIns.some((item) => item.kind === 'baseline'), weeklyFeedbackCount: checkIns.filter((item) => item.kind === 'weekly').length },
     };
@@ -885,12 +1043,17 @@ function createLearningStateStore({ dbPath, now = Date.now, quickCheck = true })
         suppressionId: row.suppression_id, actionKey: row.action_key, round: Number(row.round), reason: row.reason,
         detail: row.detail, createdAt: row.created_at,
       })),
+      methods: db.prepare('SELECT * FROM learning_method_experiment_versions WHERE student_id=? ORDER BY experiment_id,revision')
+        .all(studentId).map(mapMethodExperiment),
+      processSignals: db.prepare('SELECT * FROM learning_process_signal_versions WHERE student_id=? ORDER BY signal_id,revision')
+        .all(studentId).map(mapProcessSignal),
     };
   }
 
   return {
     dbPath, db, state, reconcileEvents, listPoints, weeklyGrowth,
     submitCheckIn, upsertGoal, upsertProblem, ingestEvidence, publishFindings, correctOrWithdraw, getLearningState, history,
+    upsertMethodExperiment, recordProcessSignal, listProcessSignals,
     ensureActionIntent, getActionIntent, suppressAction, beginActionDispatch, settleActionDispatch, recordActionFeedback,
     close() { db.close(); },
   };

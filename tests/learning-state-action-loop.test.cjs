@@ -53,12 +53,12 @@ function fixture(t, options = {}) {
   return { root, dbPath, store, tick(iso) { clock.value = Date.parse(iso); } };
 }
 
-test('v2 upgrades to v3 with a recoverable backup and preserves learning records', (t) => {
+test('v2 upgrades to v4 with a recoverable backup and preserves learning records', (t) => {
   const { root, store } = fixture(t, { v2: true });
-  assert.equal(SCHEMA_VERSION, 3);
-  assert.equal(store.db.prepare('PRAGMA user_version').get().user_version, 3);
+  assert.equal(SCHEMA_VERSION, 4);
+  assert.equal(store.db.prepare('PRAGMA user_version').get().user_version, 4);
   assert.equal(store.history('student-a').checkIns[0].checkInId, 'checkin-old');
-  assert.equal(fs.readdirSync(root).filter((name) => name.includes('.pre-schema-v3-')).length, 1);
+  assert.equal(fs.readdirSync(root).filter((name) => name.includes('.pre-schema-v4-')).length, 1);
 });
 
 test('stable business key scopes one intent to student, subject instance, action type and retest window', (t) => {

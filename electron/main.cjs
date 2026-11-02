@@ -313,6 +313,7 @@ const {
 } = require('./learning-state-store.cjs');
 const { createLearningActionLoop } = require('./learning-action-loop.cjs');
 const { createLearningStateAnalysisService, recordPracticeActionFeedback } = require('./learning-state-analysis.cjs');
+const { createLearningMethodService } = require('./learning-method-analysis.cjs');
 const {
   reconcileCompletedDigestLearningReceipts,
   supplementCompletedDigestLearningEvents,
@@ -13465,6 +13466,17 @@ function emptyLearningStateProjection(studentId, asOf, authorizationVersion) {
   return {
     ok: true, studentId, asOf, policyVersion: LEARNING_STATE_POLICY_VERSION, authorizationVersion,
     generation: 0, changedAt: '', checkIns: [], goals: [], problems: [], evidence: [], findings: [], actions: [],
+    methods: [], efficiency: {
+      policyVersion: 'learning-efficiency-v1',
+      dueGoalAttainment: { numerator: 0, denominator: 0, sampleSize: 0, note: '没有到期且可评价的目标。' },
+      evidenceBackedOutputs: { numerator: 0, denominator: 0, sampleSize: 0, note: '没有可评价任务。' },
+      independentCompletion: { numerator: 0, denominator: 0, sampleSize: 0, note: '没有可评价任务。' },
+      comparableKnownAssistance: { numerator: 0, denominator: 0, sampleSize: 0, note: '没有可评价任务。' },
+      rework: { rounds: 0, sampleSize: 0, reasons: [] }, delayedRetention: { numerator: 0, denominator: 0, sampleSize: 0, note: '尚无到期延迟复测。' },
+      effort: { totalMinutes: 0, sampleSize: 0, unknownCount: 0, note: '仅汇总学生主动记录或系统可验证的学习时段。' },
+      background: { screenMinutes: 0, fileCount: 0, loginCount: 0 },
+      backgroundNote: '屏幕时长、文件量和登录次数仅作背景，不单独推导进步或退步。',
+    },
     automationEnabled: taskAutomationEnabled(), coverage: { hasBaseline: false, weeklyFeedbackCount: 0 },
   };
 }
@@ -13556,6 +13568,28 @@ async function reconcileLearningStateFromPracticeReview(studentRootPath, student
   try {
     const feedback = input?.attempt?.businessActionKey
       ? recordPracticeActionFeedback({ store, scope, attempt: input.attempt, result: input.result }) : null;
+    const attempt = input?.attempt || {};
+    const review = input?.result || {};
+    const assistance = attempt.assistance || {};
+    let intent = null;
+    if (attempt.businessActionKey) {
+      try { intent = store.getActionIntent(scope, String(attempt.businessActionKey)); }
+      catch (error) { if (error?.code !== 'learning_action_missing') throw error; }
+    }
+    const reviewVersion = Math.max(1, Number(attempt.reviewVersion || review.reviewVersion || 1));
+    const processSignal = attempt.attemptId ? store.recordProcessSignal(scope, {
+      signalId: `practice:${String(attempt.attemptId)}:review:${reviewVersion}`, revision: 1,
+      signalType: intent?.payload?.sourceType === 'method_experiment' ? 'delayed_retest' : 'practice_review',
+      occurredAt: attempt.submittedAt, rootAttemptId: attempt.rootAttemptId || attempt.attemptId, taskId: attempt.cardId,
+      subject: attempt.subject, taskType: attempt.title || '学习卡', targetKey: attempt.knowledgePoint || '',
+      difficultyBand: attempt.difficulty || 'unknown', assistance: assistance.status || 'unknown',
+      independent: assistance.status === 'none', evaluable: review.qualityPassed === true,
+      completed: review.qualityPassed === true, correct: review.judgement === 'correct',
+      evidenceBackedOutput: review.qualityPassed === true, reworkRound: Math.max(0, Number(attempt.revision || 1) - 1),
+      reworkReason: Array.isArray(review.issues) ? String(review.issues[0] || '') : '',
+      delayedRetest: intent?.payload?.sourceType === 'method_experiment', reviewVersion,
+      experimentId: intent?.payload?.experimentId, methodKey: intent?.payload?.methodKey,
+    }, `practice:${String(attempt.attemptId)}:review:${reviewVersion}`) : null;
     const trajectory = queryLearningTrajectory(studentRootPath, { studentId: String(studentId) });
     if (!trajectory.ok) return { ok: false, code: trajectory.code || 'learning_trajectory_unavailable', message: trajectory.message || '学习事件轨迹不可用。', feedback };
     const service = createLearningStateAnalysisService({
@@ -13563,7 +13597,12 @@ async function reconcileLearningStateFromPracticeReview(studentRootPath, student
       dispatchAction: (actor, action) => hostLearningActionLoop(store, String(studentId)).dispatch(actor, action),
     });
     const analysis = await service.reconcile(scope, trajectory.events, new Date().toISOString());
-    return { ok: true, feedback, analysis };
+    const methodService = createLearningMethodService({
+      store,
+      dispatchAction: (actor, action) => hostLearningActionLoop(store, String(studentId)).dispatch(actor, action),
+    });
+    const methods = await methodService.reconcile(scope, new Date().toISOString());
+    return { ok: true, feedback, processSignal, analysis, methods };
   } finally { store.close(); }
 }
 
@@ -13595,6 +13634,15 @@ async function learningStateActionJson(action, studentId, inputJson = '{}') {
     else if (action === 'ingestEvidence') {
       result = store.ingestEvidence(scope, input.sourceRef || {}, input.revision);
       store.publishFindings(context.input.studentId, new Date().toISOString());
+    }
+    else if (action === 'upsertMethodExperiment') result = store.upsertMethodExperiment(scope, input.experiment || {}, input.expectedRevision);
+    else if (action === 'recordProcessSignal') result = store.recordProcessSignal(scope, input.signal || {}, input.commitKey);
+    else if (action === 'reconcileLearningMethods') {
+      const service = createLearningMethodService({
+        store,
+        dispatchAction: (actor, candidate) => hostLearningActionLoop(store, context.input.studentId).dispatch(actor, candidate),
+      });
+      result = await service.reconcile(scope, asOf);
     }
     else if (action === 'publishFindings') result = store.publishFindings(context.input.studentId, asOf);
     else if (action === 'correctOrWithdraw') result = store.correctOrWithdraw(scope, input);

@@ -12,7 +12,17 @@ type LearningStateProjection = {
   problems: Array<{ problemId: string; revision: number; category: string; title: string; description: string; status: string }>;
   findings: Array<{ findingId: string; sourceCategory: string; statement: string; status: 'published' | 'pending' | 'disputed'; confidence: string }>;
   actions: Array<{ actionId: string; actionKey: string; subjectType: 'goal' | 'problem'; subjectId: string; subjectRevision: number; actionType: 'learning_task' | 'targeted_practice'; retestWindow: string; title: string; status: string; currentRound: number; binding: null | { entityType: 'task' | 'practice_card'; entityId: string; status: string } }>;
+  methods: Array<{ experimentId: string; revision: number; methodKey: string; title: string; hypothesis: string; practice: string; conditions: { subject?: string; taskType?: string; targetKey?: string }; studentReport: { helpful?: boolean; note?: string }; status: string; analysis: { status: string; statement: string; sampleSize: number; definitive: boolean } }>;
+  efficiency: {
+    dueGoalAttainment: RatioMetric; evidenceBackedOutputs: RatioMetric; independentCompletion: RatioMetric;
+    comparableKnownAssistance: RatioMetric; delayedRetention: RatioMetric;
+    rework: { rounds: number; sampleSize: number; reasons: Array<{ reason: string; count: number }> };
+    effort: { totalMinutes: number; sampleSize: number; unknownCount: number; note: string };
+    background: { screenMinutes: number; fileCount: number; loginCount: number }; backgroundNote: string;
+  };
 };
+
+type RatioMetric = { numerator: number; denominator: number; sampleSize: number; note: string };
 
 type ActionApi = (action: string, studentId: string, input: Record<string, unknown>) => Promise<string>;
 
@@ -44,6 +54,15 @@ const actionStatusLabels: Record<string, string> = {
   dispatched: '已创建', completed: '已完成', failed: '创建失败', cancelled: '已取消',
 };
 
+const methodStatusLabels: Record<string, string> = {
+  student_reported: '学生认为有帮助', pending: '证据不足', incomparable: '任务不可比',
+  observed_difference: '观察到变化，待延迟复测', observed_no_difference: '暂未观察到变化',
+};
+
+function ratioText(metric?: RatioMetric) {
+  return metric ? `${metric.numerator}/${metric.denominator} · 样本 ${metric.sampleSize}` : '0/0 · 样本 0';
+}
+
 export function LearningStatePanel({ studentId, studentName, actionApi }: { studentId: string; studentName: string; actionApi?: ActionApi }) {
   const [projection, setProjection] = useState<LearningStateProjection | null>(null);
   const [busy, setBusy] = useState(false);
@@ -53,6 +72,7 @@ export function LearningStatePanel({ studentId, studentName, actionApi }: { stud
   const [note, setNote] = useState('');
   const [goal, setGoal] = useState({ title: '', successCriteria: '', category: 'subject' });
   const [problem, setProblem] = useState({ title: '', description: '', category: 'knowledge' });
+  const [method, setMethod] = useState({ title: '', hypothesis: '', practice: '', subject: '', taskType: '', targetKey: '', helpful: false, note: '' });
 
   const invoke = async (action: string, input: Record<string, unknown> = {}) => {
     if (!actionApi) throw new Error('当前主机版本不支持学习状态管理。');
@@ -105,6 +125,21 @@ export function LearningStatePanel({ studentId, studentName, actionApi }: { stud
     finally { setBusy(false); }
   };
 
+  const createMethodExperiment = async () => {
+    if (!method.title.trim()) { setMessage('请填写学习方法名称。'); return; }
+    setBusy(true); setMessage('');
+    try {
+      await invoke('upsertMethodExperiment', { expectedRevision: 0, experiment: {
+        methodKey: submissionId('method'), title: method.title.trim(), hypothesis: method.hypothesis.trim(),
+        practice: method.practice.trim(), conditions: { subject: method.subject.trim(), taskType: method.taskType.trim(), targetKey: method.targetKey.trim() },
+        studentReport: { helpful: method.helpful, note: method.note.trim() }, status: 'active',
+      } });
+      setMethod({ title: '', hypothesis: '', practice: '', subject: '', taskType: '', targetKey: '', helpful: false, note: '' });
+      await refresh(true); setMessage('方法实验已保存。学生自述与系统证据会分开呈现。');
+    } catch (error) { setMessage(error instanceof Error ? error.message : '方法实验保存失败。'); }
+    finally { setBusy(false); }
+  };
+
   const withdraw = async (targetType: string, objectId: string, revision: number) => {
     const reason = window.prompt('请输入撤回原因（历史记录会保留）：', '录入内容需要更正');
     if (!reason?.trim()) return;
@@ -145,8 +180,26 @@ export function LearningStatePanel({ studentId, studentName, actionApi }: { stud
     finally { setBusy(false); }
   };
 
+  const reviseMethod = async (item: LearningStateProjection['methods'][number]) => {
+    const subject = window.prompt('更正适用学科（旧修订会保留）：', item.conditions.subject || '');
+    if (subject === null) return;
+    const taskType = window.prompt('更正适用任务类型：', item.conditions.taskType || '');
+    if (taskType === null) return;
+    const note = window.prompt('更正学生说明：', item.studentReport.note || '');
+    if (note === null) return;
+    setBusy(true);
+    try {
+      await invoke('upsertMethodExperiment', { expectedRevision: item.revision, experiment: {
+        ...item, conditions: { ...item.conditions, subject: subject.trim(), taskType: taskType.trim() },
+        studentReport: { ...item.studentReport, note: note.trim() },
+      } });
+      await refresh(true); setMessage('方法适用范围与学生说明已新增更正修订。');
+    } catch (error) { setMessage(error instanceof Error ? error.message : '方法更正失败。'); }
+    finally { setBusy(false); }
+  };
+
   return <div className="learning-state-panel">
-    <div className="notice muted"><strong>{studentName} · 学习状态一期 1B</strong><br />五维反馈分别呈现，不合成总分，不用于诊断、排名或纪律判断。行动派发门禁{projection?.automationEnabled ? '已开启' : '已暂停'}；暂停时保留原行动意图，1A 记录、查看、更正与撤回仍可使用。</div>
+    <div className="notice muted"><strong>{studentName} · 学情二期</strong><br />学习方法只在可比任务中描述观察差异；学生自述单独标注。效率仅显示分子、分母与样本量，不合成总分，不用于诊断、排名或纪律判断。行动派发门禁{projection?.automationEnabled ? '已开启' : '已暂停'}。</div>
     <div className="learning-state-toolbar">
       <span>{projection?.coverage.hasBaseline ? <><CheckCircle2 size={16} />已建立首次基线</> : <><AlertTriangle size={16} />尚未建立首次基线</>}</span>
       <span>周反馈 {projection?.coverage.weeklyFeedbackCount || 0} 次</span>
@@ -169,6 +222,32 @@ export function LearningStatePanel({ studentId, studentName, actionApi }: { stud
       <section><h3>当前目标</h3><div className="download-list growth-list">{projection?.goals.map((item) => <div className="download-item" key={item.goalId}><span><strong>{item.title}</strong><small>{item.category} · {item.status} · 修订 {item.revision}</small><small>{item.successCriteria || '尚未填写完成标准'}</small></span><div className="inline-actions"><button className="secondary compact" type="button" disabled={busy} onClick={() => void dispatchAction('goal', item, 'learning_task')}>加入任务中心</button><button className="secondary compact" type="button" onClick={() => void revise('goal', item)}>更正</button><button className="secondary compact" type="button" onClick={() => void withdraw('goal', item.goalId, item.revision)}><Trash2 size={14} />撤回</button></div></div>)}{!projection?.goals.length && <div className="empty-state">暂无有效目标。</div>}</div></section>
       <section><h3>待观察问题</h3><div className="download-list growth-list">{projection?.problems.map((item) => <div className="download-item" key={item.problemId}><span><strong>{item.title}</strong><small>{item.category} · {item.status} · 修订 {item.revision}</small><small>{item.description || '尚未填写观察说明'}</small></span><div className="inline-actions"><button className="secondary compact" type="button" disabled={busy} onClick={() => void dispatchAction('problem', item, 'targeted_practice')}>安排专项卡</button><button className="secondary compact" type="button" onClick={() => void revise('problem', item)}>更正</button><button className="secondary compact" type="button" onClick={() => void withdraw('problem', item.problemId, item.revision)}><Trash2 size={14} />撤回</button></div></div>)}{!projection?.problems.length && <div className="empty-state">暂无待观察问题。</div>}</div></section>
     </div>
+
+    <section className="growth-card learning-state-form">
+      <div className="growth-card-heading"><strong>学习方法实验</strong><small>例如“先独立尝试”或“先拆分步骤”；系统不会仅凭自我感觉认定有效。</small></div>
+      <div className="learning-method-grid">
+        <input value={method.title} onChange={(event) => setMethod((current) => ({ ...current, title: event.target.value }))} placeholder="方法名称" />
+        <input value={method.hypothesis} onChange={(event) => setMethod((current) => ({ ...current, hypothesis: event.target.value }))} placeholder="希望改善什么" />
+        <input value={method.practice} onChange={(event) => setMethod((current) => ({ ...current, practice: event.target.value }))} placeholder="具体做法" />
+        <input value={method.subject} onChange={(event) => setMethod((current) => ({ ...current, subject: event.target.value }))} placeholder="适用学科" />
+        <input value={method.taskType} onChange={(event) => setMethod((current) => ({ ...current, taskType: event.target.value }))} placeholder="任务类型" />
+        <input value={method.targetKey} onChange={(event) => setMethod((current) => ({ ...current, targetKey: event.target.value }))} placeholder="目标/知识点" />
+      </div>
+      <label className="learning-method-report"><input type="checkbox" checked={method.helpful} onChange={(event) => setMethod((current) => ({ ...current, helpful: event.target.checked }))} />学生本人认为有帮助<input value={method.note} onChange={(event) => setMethod((current) => ({ ...current, note: event.target.value }))} placeholder="学生说明（可选）" /></label>
+      <button type="button" className="secondary" onClick={() => void createMethodExperiment()} disabled={busy}><Plus size={15} />新增方法实验</button>
+    </section>
+
+    <section><h3>个人方法库</h3><div className="download-list growth-list">{projection?.methods.map((item) => <div className="download-item" key={item.experimentId}><span><strong>{item.title}</strong><small>{item.practice || item.hypothesis || '尚未填写具体做法'} · 修订 {item.revision}</small><small>{methodStatusLabels[item.analysis.status] || item.analysis.status}：{item.analysis.statement}</small><small>系统证据样本 {item.analysis.sampleSize}；{item.studentReport?.note ? `学生说明：${item.studentReport.note}` : '暂无学生补充说明'}</small></span><div className="inline-actions"><button type="button" className="secondary compact" disabled={busy} onClick={() => void reviseMethod(item)}>更正适用范围</button><button type="button" className="secondary compact" disabled={busy} onClick={() => void withdraw('method_experiment', item.experimentId, item.revision)}><Trash2 size={14} />撤回</button></div></div>)}{!projection?.methods.length && <div className="empty-state">暂无方法实验。记录方法后，系统会等待可比任务和延迟复测，不会用单次感受替代证据。</div>}</div></section>
+
+    <section><h3>效率明细</h3><div className="learning-efficiency-grid">
+      <div className="growth-card"><strong>到期目标达成</strong><b>{ratioText(projection?.efficiency.dueGoalAttainment)}</b><small>{projection?.efficiency.dueGoalAttainment.note || '按有完成标准的到期目标计算'}</small></div>
+      <div className="growth-card"><strong>有证据产出</strong><b>{ratioText(projection?.efficiency.evidenceBackedOutputs)}</b><small>{projection?.efficiency.evidenceBackedOutputs.note || '仅计入可评价任务'}</small></div>
+      <div className="growth-card"><strong>独立完成</strong><b>{ratioText(projection?.efficiency.independentCompletion)}</b><small>{projection?.efficiency.independentCompletion.note || '帮助情况未知时不算独立'}</small></div>
+      <div className="growth-card"><strong>帮助情况已知</strong><b>{ratioText(projection?.efficiency.comparableKnownAssistance)}</b><small>{projection?.efficiency.comparableKnownAssistance.note || '仅用于判断任务是否具备可比条件'}</small></div>
+      <div className="growth-card"><strong>延迟复测保持</strong><b>{ratioText(projection?.efficiency.delayedRetention)}</b><small>{projection?.efficiency.delayedRetention.note || '仅计入到期复测'}</small></div>
+      <div className="growth-card"><strong>返工记录</strong><b>{projection?.efficiency.rework.rounds || 0} 轮 · 样本 {projection?.efficiency.rework.sampleSize || 0}</b><small>{projection?.efficiency.rework.reasons.map((item) => `${item.reason} ${item.count} 次`).join('；') || '尚无返工原因记录'}</small></div>
+      <div className="growth-card"><strong>可核验投入</strong><b>{projection?.efficiency.effort.totalMinutes || 0} 分钟 · 样本 {projection?.efficiency.effort.sampleSize || 0}</b><small>{projection?.efficiency.effort.note || '未知时长保持未知'}</small></div>
+    </div><div className="notice muted">背景数据：屏幕 {projection?.efficiency.background.screenMinutes || 0} 分钟、文件 {projection?.efficiency.background.fileCount || 0} 个、登录 {projection?.efficiency.background.loginCount || 0} 次。{projection?.efficiency.backgroundNote}</div></section>
 
     <section><h3>下一步行动</h3><div className="download-list growth-list">{projection?.actions.map((item) => <div className="download-item" key={item.actionId}><span><strong>{item.title}</strong><small>{item.actionType === 'targeted_practice' ? '专项学习卡' : '学习任务'} · {actionStatusLabels[item.binding?.status || item.status] || item.status}</small><small>复测窗口 {item.retestWindow}{item.binding?.entityId ? ` · 已绑定 ${item.binding.entityType === 'task' ? '任务' : '卡片'}` : ''}</small></span></div>)}{!projection?.actions.length && <div className="empty-state">尚无行动意图。14 天内出现两个独立作答根的同类有效问题时，系统会自动安排下一步；也可从目标或问题手动安排。</div>}</div></section>
 

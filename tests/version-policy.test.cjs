@@ -13,12 +13,14 @@ test('Windows versions advance from patch 1 through 10, with the requested 0.17.
   assert.equal(nextWindowsVersion('0.9.10'), '0.10.1');
   assert.equal(nextWindowsVersion('0.17.10'), '0.17.11');
   assert.equal(nextWindowsVersion('0.17.11'), '0.18.1');
+  assert.equal(nextWindowsVersion('0.23.0'), '0.23.1');
 });
 
 test('Windows release policy rejects zero and patch numbers above 10', () => {
   assert.throws(() => validateWindowsVersion('0.8.0'), /1-10/);
   assert.throws(() => validateWindowsVersion('0.8.11'), /1-10/);
   assert.deepEqual(validateWindowsVersion('0.17.11'), { major: 0, minor: 17, patch: 11 });
+  assert.deepEqual(validateWindowsVersion('0.23.0'), { major: 0, minor: 23, patch: 0 });
   assert.throws(() => validateWindowsVersion('0.17.12'), /1-10/);
   assert.throws(() => validateWindowsVersion('0.8'), /无效版本号/);
 });
@@ -29,10 +31,12 @@ test('candidate builds preserve the stable manifest, while a formal build aligns
   const windowsManifest = JSON.parse(fs.readFileSync(path.join(root, 'release', 'windows', 'edu-manager-version.json'), 'utf8'));
   const terminalVersion = JSON.parse(fs.readFileSync(path.join(root, 'windows-terminal-version.json'), 'utf8'));
   const downloadPage = fs.readFileSync(path.join(root, 'release', '网站文件', 'download.html'), 'utf8');
-  assert.equal(packageJson.version, '0.22.8');
+  assert.equal(packageJson.version, '0.23.0');
   const candidateTag = String(process.env.EDU_WINDOWS_CANDIDATE_TAG || '').trim();
-  if (candidateTag) {
+  const sourceAheadOfStable = releaseManifest.windowsVersionName !== packageJson.version;
+  if (candidateTag || sourceAheadOfStable) {
     assert.notEqual(releaseManifest.windowsVersionName, packageJson.version);
+    assert.equal(releaseManifest.windowsVersionName, '0.22.8');
   } else {
     assert.equal(releaseManifest.windowsVersionName, packageJson.version);
     assert.equal(releaseManifest.windowsVersionCode, 268);

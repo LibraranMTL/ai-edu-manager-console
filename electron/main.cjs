@@ -234,6 +234,8 @@ const { mergeAssetReferences, recentAssetTrend } = require('./asset-statistics.c
 const { createAssetIndexStore } = require('./asset-index-store.cjs');
 const { createAssetDuplicateGovernance } = require('./asset-duplicate-governance.cjs');
 const { createProjectStateStore } = require('./project-state-store.cjs');
+const { projectListProjection } = require('./project-list-projection.cjs');
+const { boundedProjectIpcJson } = require('./project-ipc-response.cjs');
 const { queryUploadReceipt, verifiedSource } = require('./upload-receipt-query.cjs');
 const { lanDiscoveryBroadcastTargets } = require('./lan-discovery.cjs');
 const { createStudentPortableMigrationManager } = require('./student-portable-migration.cjs');
@@ -15512,18 +15514,8 @@ async function listProjectsPage(request = {}) {
   try {
     const page = projectStateStore().listProjects(request);
     const items = page.items.map((stored) => {
-      const project = normalizeProject(stored, { includeStaging: false, metadataOnly: true });
       const staging = stored.stagingSummary || { total: 0, accepted: 0, pending: 0 };
-      project.stagingItems = [];
-      project.workspaceScanSnapshot = {};
-      project.stagingItemsDeferred = staging.total > 0;
-      project.dashboard = {
-        ...(project.dashboard && typeof project.dashboard === 'object' ? project.dashboard : {}),
-        rawMaterialCount: Number(project.digestState?.rawFileCount || project.dashboard?.rawMaterialCount || 0),
-        pendingStagingCount: Number(staging.pending || 0),
-        acceptedStagingCount: Number(staging.accepted || 0),
-      };
-      return project;
+      return projectListProjection(stored, staging);
     });
     return boundedProjectIpcJson({ ok: true, items, total: page.total, nextCursor: page.nextCursor });
   } catch (error) {
@@ -15573,18 +15565,6 @@ function getProjectTaskProjectionForRenderer(projectId) {
   } catch (error) {
     return JSON.stringify({ ok: false, code: error.code || 'project_projection_failed', message: error.message });
   }
-}
-
-function boundedProjectIpcJson(payload) {
-  const body = JSON.stringify(payload);
-  if (Buffer.byteLength(body, 'utf8') <= 2 * 1024 * 1024) return body;
-  const diagnostic = payload && typeof payload === 'object' ? {
-    itemCount: Array.isArray(payload.items) ? payload.items.length : undefined,
-    hasProject: Boolean(payload.project), hasProjection: Boolean(payload.projection),
-  } : {};
-  console.warn('[project-ipc] bounded response rejected', diagnostic);
-  return JSON.stringify({ ok: false, code: 'project_ipc_payload_too_large',
-    message: '项目数据超过单次传输上限，请缩小筛选范围或继续分页。' });
 }
 
 function getProjectStagingSummary(projectId) {

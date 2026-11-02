@@ -566,6 +566,13 @@ type LearningProject = {
   publishedAt?: string;
 };
 
+type ProjectListLoadError = {
+  code: string;
+  message: string;
+  responseBytes?: number;
+  limitBytes?: number;
+};
+
 type ProjectStudentBindingEditorProps = {
   students: Student[];
   savedStudentIds: string[];
@@ -6370,6 +6377,7 @@ function App() {
   const projectListRequestRef = useRef(0);
   const projectDetailAbortRef = useRef<AbortController | null>(null);
   const [projectMessage, setProjectMessage] = useState('');
+  const [projectListError, setProjectListError] = useState<ProjectListLoadError | null>(null);
   const [projectStageFeedback, setProjectStageFeedback] = useState<Partial<Record<ProjectWorkflowTarget, string>>>({});
   const [projectBusyAction, setProjectBusyAction] = useState('');
   const [projectUnifiedReview, setProjectUnifiedReview] = useState<ProjectUnifiedReviewPackage | null>(null);
@@ -12351,11 +12359,16 @@ ${sourceText}`;
     try {
       const raw = await api.listProjects({ pageSize: 100 });
       if (requestId !== projectListRequestRef.current) return;
-      const result = JSON.parse(raw) as { ok?: boolean; items?: LearningProject[]; total?: number; message?: string };
+      const result = JSON.parse(raw) as { ok?: boolean; items?: LearningProject[]; total?: number; message?: string; code?: string; responseBytes?: number; limitBytes?: number };
       if (!result.ok) {
-        setProjectMessage(result.message || '读取学习项目失败。');
+        const message = result.code === 'project_ipc_payload_too_large'
+          ? '项目列表载荷过大，列表未加载。请更新到包含轻量列表修复的版本，或缩小筛选范围后重试。'
+          : result.message || '读取学习项目失败。';
+        setProjectListError({ code: result.code || 'project_list_failed', message, responseBytes: result.responseBytes, limitBytes: result.limitBytes });
+        setProjectMessage(message);
         return;
       }
+      setProjectListError(null);
       let list = result.items ?? [];
       if (requestedDetailId && api.getProjectDetail) {
         projectDetailAbortRef.current?.abort();
@@ -12371,7 +12384,11 @@ ${sourceText}`;
       if (!selectedProjectId && list[0]) setSelectedProjectId(list[0].id);
       setProjectMessage(result.message || `已读取 ${result.total ?? list.length} 个学习项目。`);
     } catch {
-      if (requestId === projectListRequestRef.current) setProjectMessage('学习项目数据解析失败。');
+      if (requestId === projectListRequestRef.current) {
+        const message = '学习项目数据解析失败，项目数量未加载。';
+        setProjectListError({ code: 'project_list_parse_failed', message });
+        setProjectMessage(message);
+      }
     }
   };
 
@@ -18632,8 +18649,9 @@ ${JSON.stringify(items, null, 2)}
                 <button className="secondary compact" onClick={backToProjectList}><ChevronRight className="project-back-icon" size={17} />返回项目列表</button>
               ) : <FolderOpen size={22} />}
             </div>
+            {projectListError && <div className="notice" role="alert"><AlertTriangle size={17} />{projectListError.message}</div>}
             <div className="archive-grid projects-existing-only">
-              <InfoPanel icon={<FolderOpen />} title="项目数量" value={`${projects.length} 个`} />
+              <InfoPanel icon={<FolderOpen />} title="项目数量" value={projectListError ? '未加载' : `${projects.length} 个`} />
               <InfoPanel icon={<Archive />} title="当前项目资产" value={`${selectedProject?.assetIds?.length ?? 0} 个`} />
               <InfoPanel icon={<UserRound />} title="绑定学生" value={selectedProject?.studentNames?.join('、') || '未选择项目'} />
             </div>
@@ -18681,7 +18699,7 @@ ${JSON.stringify(items, null, 2)}
                   <button className="project-dashboard-row" key={project.id} onClick={() => openProjectFromDashboard(project)}>
                     <strong>{project.name}</strong><span>{projectStatusLabel(project.status)}</span>
                     <span>资料 {project.dashboard?.pendingStagingCount || 0}</span><span>待整理 {project.dashboard?.pendingKnowledgeCount || 0}</span>
-                    <span>覆盖 {project.dashboard?.knowledgeCoverage || 0}%</span><span title={project.dashboard?.riskReasons?.join('；') || '无需补充'}>需补充 {project.dashboard?.riskCount || 0}</span><em>自动处理</em><span className="dashboard-view-label">查看 <ChevronRight size={14} /></span>
+                    <span>覆盖 {project.dashboard?.knowledgeCoverage || 0}%</span><span title={project.dashboard?.riskReasons?.join('；') || (project.dashboard?.riskCount ? '存在待补充项，进入详情查看' : '无需补充')}>需补充 {project.dashboard?.riskCount || 0}</span><em>自动处理</em><span className="dashboard-view-label">查看 <ChevronRight size={14} /></span>
                   </button>
                 ))}
                 {!projectDashboardRows.length && <div className="empty-state compact">当前筛选下没有项目。</div>}

@@ -158,7 +158,7 @@ foreach ($scenario in @($Scenarios)) {
       Start-Sleep -Seconds $WarmupSeconds
       & node (Join-Path $PSScriptRoot 'hash-p0-task-semantics.cjs') $database (Join-Path $runDir 'task-semantics-before.json') | Out-Null
       $renderer = Start-Process -FilePath (Get-Command node).Source -ArgumentList @(
-        "`"$repo\artifacts\p0-minimal-patch-20261026\monitor-renderer-latency.cjs`"",
+        "`"$repo\scripts\monitor-renderer-latency.cjs`"",
         [string]$port, "`"$(Join-Path $runDir 'renderer-latency.json')`"", [string]$DurationSeconds, '250'
       ) -PassThru -WindowStyle Hidden -RedirectStandardOutput (Join-Path $runDir 'renderer.stdout.log') -RedirectStandardError (Join-Path $runDir 'renderer.stderr.log')
       $cadenceSampler = Start-Process -FilePath 'powershell.exe' -ArgumentList @(

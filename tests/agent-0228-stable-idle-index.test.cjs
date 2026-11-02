@@ -22,3 +22,11 @@ test('contract matrix runner only grades rows its targeted integration tests can
   assert.doesNotMatch(source, /'C5'/);
   assert.match(source, /evidenceType:\s*'contract_integration'/);
 });
+
+test('formal host performance uses a tracked renderer latency monitor', () => {
+  const runner = fs.readFileSync(path.join(__dirname, '../scripts/run-p0-host-performance.ps1'), 'utf8');
+  const monitor = path.join(__dirname, '../scripts/monitor-renderer-latency.cjs');
+  assert.equal(fs.existsSync(monitor), true);
+  assert.match(runner, /scripts\\monitor-renderer-latency\.cjs/);
+  assert.doesNotMatch(runner, /artifacts\\p0-minimal-patch/);
+});

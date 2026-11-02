@@ -37,6 +37,8 @@ test('student session can read and submit feedback while teacher endpoint stays 
   assert.match(main, /request\.method === 'GET'.*teacherLearningStateMatch/);
   assert.match(main, /教师端一期仅提供只读状态/);
   assert.match(main, /learningStateRead: true, learningStateFeedback: true/);
+  assert.match(main, /roleReport = projectLearningRoleReport\(snapshot, \{ role, studentId \}\)/);
+  assert.doesNotMatch(main, /api\/parent\/.+learning-state/);
 });
 
 test('management UI labels evidence provenance and rejects a synthetic total score', () => {

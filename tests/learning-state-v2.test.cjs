@@ -52,10 +52,10 @@ function reader(studentId = 'student-a') {
 
 test('v1 upgrades to the current schema with a recoverable backup and keeps first-seen history', (t) => {
   const { root, store } = fixture(t, { v1: true });
-  assert.equal(SCHEMA_VERSION, 4);
-  assert.equal(store.db.prepare('PRAGMA user_version').get().user_version, 4);
+  assert.equal(SCHEMA_VERSION, 5);
+  assert.equal(store.db.prepare('PRAGMA user_version').get().user_version, 5);
   assert.equal(store.listPoints('student-a')[0].knowledgePointId, 'MATH.A');
-  assert.equal(fs.readdirSync(root).filter((name) => name.includes('.pre-schema-v4-')).length, 1);
+  assert.equal(fs.readdirSync(root).filter((name) => name.includes('.pre-schema-v5-')).length, 1);
 });
 
 test('baseline and weekly check-ins are student-scoped and idempotent', (t) => {
@@ -157,7 +157,7 @@ test('read projection is isolated, historical, and has zero business mutations',
   assert.equal(projection.checkIns[0].dimensions.confidence, 3);
   assert.deepEqual(store.state(), before);
   assert.equal(projection.asOf, NOW);
-  assert.equal(projection.policyVersion, 'learning-state-2-v1');
+  assert.equal(projection.policyVersion, 'learning-state-3-v1');
   assert.equal(projection.authorizationVersion, 'students-v7');
   assert.throws(() => store.getLearningState(reader('student-b'), 'student-a', NOW), { code: 'student_scope_mismatch' });
 });

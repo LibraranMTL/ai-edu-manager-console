@@ -59,12 +59,12 @@ function signal(overrides = {}) {
   };
 }
 
-test('v3 upgrades to v4 with a recoverable backup and preserves existing learning records', (t) => {
+test('v3 upgrades to v5 with a recoverable backup and preserves existing learning records', (t) => {
   const { root, store } = fixture(t, { v3: true });
-  assert.equal(SCHEMA_VERSION, 4);
-  assert.equal(store.db.prepare('PRAGMA user_version').get().user_version, 4);
+  assert.equal(SCHEMA_VERSION, 5);
+  assert.equal(store.db.prepare('PRAGMA user_version').get().user_version, 5);
   assert.equal(store.history('student-a').checkIns[0].checkInId, 'checkin-old');
-  assert.equal(fs.readdirSync(root).filter((name) => name.includes('.pre-schema-v4-')).length, 1);
+  assert.equal(fs.readdirSync(root).filter((name) => name.includes('.pre-schema-v5-')).length, 1);
 });
 
 test('method effect separates student report from system evidence and refuses incomparable tasks', () => {

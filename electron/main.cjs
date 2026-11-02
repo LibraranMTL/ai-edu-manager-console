@@ -307,10 +307,16 @@ const {
   currentTimezone: weeklyGrowthTimezone,
 } = require('./weekly-knowledge-growth.cjs');
 const {
+  SCHEMA_VERSION: LEARNING_STATE_SCHEMA_VERSION,
   POLICY_VERSION: LEARNING_STATE_POLICY_VERSION,
   createLearningStateStore,
   learningStatePath,
 } = require('./learning-state-store.cjs');
+const {
+  buildFiveDimensionSnapshot,
+  projectLearningRoleReport,
+  reportCycleKey,
+} = require('./learning-role-reports.cjs');
 const { createLearningActionLoop } = require('./learning-action-loop.cjs');
 const { createLearningStateAnalysisService, recordPracticeActionFeedback } = require('./learning-state-analysis.cjs');
 const { createLearningMethodService } = require('./learning-method-analysis.cjs');
@@ -9799,6 +9805,106 @@ function collectEducationArchiveBackups(students) {
   return backups;
 }
 
+async function backupLearningStateDatabases(container, students) {
+  container.exec(`CREATE TABLE IF NOT EXISTS host_backup_learning_state(
+    student_id TEXT PRIMARY KEY, schema_version INTEGER NOT NULL, sha256 TEXT NOT NULL,
+    byte_length INTEGER NOT NULL, database_bytes BLOB NOT NULL
+  ) WITHOUT ROWID, STRICT;`);
+  const put = container.prepare(`INSERT OR REPLACE INTO host_backup_learning_state
+    (student_id,schema_version,sha256,byte_length,database_bytes) VALUES(?,?,?,?,?)`);
+  const snapshots = [];
+  for (const student of (Array.isArray(students) ? students : []).map(toHostStudent)) {
+    const sourcePath = learningStatePath(student.rootPath || getStudentRootDir(student.name));
+    if (!fs.existsSync(sourcePath)) continue;
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'edu-learning-state-backup-'));
+    const snapshotPath = path.join(tempDir, 'learning-state.sqlite3');
+    const source = new DatabaseSync(sourcePath, { readOnly: true });
+    try {
+      await backupSqlite(source, snapshotPath);
+      const snapshot = new DatabaseSync(snapshotPath, { readOnly: true });
+      let schemaVersion;
+      try {
+        const check = snapshot.prepare('PRAGMA quick_check').get();
+        if (Object.values(check || {})[0] !== 'ok') throw new Error('学情状态数据库快照完整性检查失败。');
+        schemaVersion = Number(snapshot.prepare('PRAGMA user_version').get().user_version || 0);
+      } finally { snapshot.close(); }
+      const bytes = fs.readFileSync(snapshotPath);
+      const sha256 = crypto.createHash('sha256').update(bytes).digest('hex');
+      put.run(String(student.id), schemaVersion, sha256, bytes.length, bytes);
+      snapshots.push({ studentId: String(student.id), schemaVersion, sha256, byteLength: bytes.length });
+    } finally {
+      source.close();
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+  }
+  return snapshots;
+}
+
+function validateLearningStateDatabaseBytes(record) {
+  const bytes = Buffer.from(record.databaseBytes || record.database_bytes || []);
+  const observedHash = crypto.createHash('sha256').update(bytes).digest('hex');
+  if (!bytes.length || observedHash !== String(record.sha256 || '')) {
+    throw Object.assign(new Error('学情状态备份哈希校验失败。'), { code: 'learning_state_backup_hash_invalid' });
+  }
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'edu-learning-state-validate-'));
+  const file = path.join(tempDir, 'learning-state.sqlite3');
+  try {
+    fs.writeFileSync(file, bytes);
+    const db = new DatabaseSync(file, { readOnly: true });
+    try {
+      const check = db.prepare('PRAGMA quick_check').get();
+      if (Object.values(check || {})[0] !== 'ok') throw new Error('学情状态备份完整性检查失败。');
+      const schemaVersion = Number(db.prepare('PRAGMA user_version').get().user_version || 0);
+      if (schemaVersion > LEARNING_STATE_SCHEMA_VERSION) {
+        throw Object.assign(new Error(`学情状态备份版本 ${schemaVersion} 高于当前支持版本。`), { code: 'learning_state_backup_newer_schema' });
+      }
+    } finally { db.close(); }
+  } finally { fs.rmSync(tempDir, { recursive: true, force: true }); }
+  return bytes;
+}
+
+function restoreLearningStateDatabases(records, students) {
+  const byId = new Map((Array.isArray(students) ? students : []).map((student) => {
+    const normalized = toHostStudent(student);
+    return [String(normalized.id), normalized];
+  }));
+  const prepared = [];
+  for (const record of Array.isArray(records) ? records : []) {
+    const student = byId.get(String(record.studentId || record.student_id || ''));
+    if (!student) continue;
+    const bytes = validateLearningStateDatabaseBytes(record);
+    const target = learningStatePath(student.rootPath || getStudentRootDir(student.name));
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    const staged = `${target}.restore-${crypto.randomUUID()}.tmp`;
+    fs.writeFileSync(staged, bytes, { flag: 'wx' });
+    prepared.push({ target, staged, backup: '', studentId: String(student.id) });
+  }
+  const restored = [];
+  try {
+    for (const item of prepared) {
+      if (fs.existsSync(item.target)) {
+        const current = new DatabaseSync(item.target);
+        try { current.exec('PRAGMA wal_checkpoint(TRUNCATE)'); } finally { current.close(); }
+        const backupBase = `${item.target}.pre-restore-${timestampForFilename()}.sqlite3`;
+        item.backup = fs.existsSync(backupBase) ? `${backupBase}-${crypto.randomBytes(3).toString('hex')}` : backupBase;
+        fs.renameSync(item.target, item.backup);
+        for (const suffix of ['-wal', '-shm']) fs.rmSync(`${item.target}${suffix}`, { force: true });
+      }
+      restored.push(item);
+      fs.renameSync(item.staged, item.target);
+    }
+    return { count: restored.length, backups: restored.filter((item) => item.backup).map((item) => item.backup) };
+  } catch (error) {
+    for (const item of [...restored].reverse()) {
+      fs.rmSync(item.target, { force: true });
+      if (item.backup && fs.existsSync(item.backup)) fs.renameSync(item.backup, item.target);
+    }
+    throw error;
+  } finally {
+    for (const item of prepared) fs.rmSync(item.staged, { force: true });
+  }
+}
+
 async function backupHostData(studentsJson) {
   let target = '';
   try {
@@ -9848,12 +9954,16 @@ async function backupHostData(studentsJson) {
         if (['kind', 'version', 'appVersion', 'exportedAt'].includes(key)) continue;
         putState.run(key, JSON.stringify(value));
       }
+      const learningStateDatabases = await backupLearningStateDatabases(container, backupStudents);
+      putState.run('learningStateSummary', JSON.stringify({
+        schema: 'edu-manager.learning-state-backup.v1', databases: learningStateDatabases,
+      }));
       const integrity = container.prepare('PRAGMA integrity_check').get();
       if (Object.values(integrity || {})[0] !== 'ok') throw Error('备份容器完整性检查失败。');
     } finally { container.close(); }
     appendHostTimeline({ type: 'backup_created', title: 'Backup created', detail: target });
     return JSON.stringify({ ok: true, path: target, backupScope: 'state_only',
-      message: '已生成主机状态备份（SQLite v2）；包含一致的资产数据库快照，不包含工作空间原文、固定版本文件或知识文档。完整资料备份请使用换机迁移包。' });
+      message: '已生成主机状态备份（SQLite v2）；包含一致的资产数据库快照，以及各学生完整学情状态（含撤回记录和行动绑定）；不包含工作空间原文、固定版本文件或知识文档。完整资料备份请使用换机迁移包。' });
   } catch (error) {
     if (target && fs.existsSync(target)) fs.rmSync(target, { force: true });
     return JSON.stringify({ ok: false, message: error.message });
@@ -9871,6 +9981,13 @@ function readHostBackupContainer(file) {
     const parsed = { kind: manifest.kind, version: 2, appVersion: manifest.app_version,
       exportedAt: manifest.exported_at, __sqliteAssetBackup: file };
     for (const row of container.prepare('SELECT key,json FROM host_backup_state').all()) parsed[row.key] = JSON.parse(row.json);
+    const hasLearningState = container.prepare(`SELECT 1 present FROM sqlite_master
+      WHERE type='table' AND name='host_backup_learning_state'`).get();
+    parsed.learningStateDatabases = hasLearningState
+      ? container.prepare(`SELECT student_id studentId,schema_version schemaVersion,sha256,byte_length byteLength,
+          database_bytes databaseBytes FROM host_backup_learning_state ORDER BY student_id`).all()
+      : [];
+    for (const record of parsed.learningStateDatabases) validateLearningStateDatabaseBytes(record);
     return parsed;
   } finally { container.close(); }
 }
@@ -9947,6 +10064,7 @@ function restoreHostData() {
     else if (Array.isArray(parsed.assets)) { writeAssetIndex(restoredAssets); restoredAssetCount = restoredAssets.length; }
     if (Array.isArray(parsed.projects)) writeProjects(restoredProjects);
     if (Array.isArray(parsed.timeline)) writeHostTimeline(parsed.timeline);
+    const restoredLearningState = restoreLearningStateDatabases(parsed.learningStateDatabases, restoredStudentRecords);
     let restoredEducationArchives = 0;
     if (Array.isArray(parsed.educationArchives)) {
       const restoredStudents = readStudentsIndex().map(toHostStudent);
@@ -9970,6 +10088,8 @@ function restoreHostData() {
       assets: restoredAssetCount,
       projects: Array.isArray(parsed.projects) ? parsed.projects.length : 0,
       educationArchives: restoredEducationArchives,
+      learningStateDatabases: restoredLearningState.count,
+      learningStateBackups: restoredLearningState.backups,
       studentRecords: restoredStudentRecords,
       pathRemap: {
         sourceBaseDir: backupStudentBaseDir,
@@ -13652,6 +13772,18 @@ async function learningStateActionJson(action, studentId, inputJson = '{}') {
     if (action === 'get') {
       result = store.getLearningState({ role: 'admin', studentId: context.input.studentId, authorizationVersion }, context.input.studentId, asOf);
       result.automationEnabled = taskAutomationEnabled();
+    }
+    else if (action === 'role-report') {
+      const reportType = String(input.reportType || 'learning_profile');
+      const cycleKey = String(input.cycleKey || reportCycleKey(reportType, asOf, weeklyGrowthTimezone()));
+      const stateProjection = store.getLearningState({ role: 'admin', studentId: context.input.studentId, authorizationVersion }, context.input.studentId, asOf);
+      stateProjection.automationEnabled = taskAutomationEnabled();
+      const snapshot = buildFiveDimensionSnapshot(stateProjection, { cycleKey, asOf });
+      const projectionRole = String(input.projectionRole || 'student');
+      result = projectLearningRoleReport(snapshot, {
+        role: 'admin', studentId: context.input.studentId, projectionRole,
+        authorizedExport: projectionRole !== 'parent' || input.authorizedExport === true,
+      });
     }
     else if (action === 'submitCheckIn') {
       result = store.submitCheckIn(scope, input.payload || {}, input.clientSubmissionId);
@@ -21826,6 +21958,35 @@ const PERIODIC_REPORT_TASKS = {
   learning_stage: { reportId: 'stage', period: 'monthly', label: '阶段总结', reason: '汇总本阶段核心进展、主要问题、关键证据和下一阶段目标。' },
 };
 
+function learningReportStateContext(student, reportType, cycleKey, asOf = new Date().toISOString()) {
+  const normalized = toHostStudent(student);
+  const dbPath = learningStatePath(normalized.rootPath || getStudentRootDir(normalized.name));
+  if (!fs.existsSync(dbPath)) return {
+    fiveDimensionSnapshot: null,
+    roleProjections: null,
+    learningStateFingerprint: 'learning-state-empty',
+  };
+  const store = createLearningStateStore({ dbPath });
+  try {
+    const authorizationVersion = weeklyGrowthAuthorizationVersion();
+    const stateProjection = store.getLearningState({
+      role: 'admin', studentId: String(normalized.id), authorizationVersion,
+    }, String(normalized.id), asOf);
+    const fiveDimensionSnapshot = buildFiveDimensionSnapshot(stateProjection, { cycleKey, asOf });
+    return {
+      fiveDimensionSnapshot,
+      learningStateFingerprint: fiveDimensionSnapshot.inputFingerprint,
+      roleProjections: {
+        student: projectLearningRoleReport(fiveDimensionSnapshot, { role: 'student', studentId: String(normalized.id) }),
+        teacher: projectLearningRoleReport(fiveDimensionSnapshot, { role: 'teacher', studentId: String(normalized.id) }),
+        parent: projectLearningRoleReport(fiveDimensionSnapshot, {
+          role: 'admin', projectionRole: 'parent', studentId: String(normalized.id), authorizedExport: true,
+        }),
+      },
+    };
+  } finally { store.close(); }
+}
+
 function learningReportDraftPath(student, taskId) {
   return path.join(studentAiManagerDir(student), 'task-center', 'report-staging', `${taskId}.md`);
 }
@@ -21852,6 +22013,7 @@ function buildPeriodicLearningReportTask(student, kind, sharedEvidence = null) {
   const sourceMtimeMs = latestGrowthModelMtime(normalized);
   const sourceChanged = sourceMtimeMs > Number(officialStat?.mtimeMs || 0);
   const growthFingerprint = String(safeReadJson(growthIndexPath(normalized), {}).sourceFingerprint || '');
+  const learningState = learningReportStateContext(normalized, kind, `${kind}:${period.key}`);
   const eligibleEvidence = sharedEvidence || reportEligibleEvidence(normalized);
   const current = reportIsCurrent({
     exists: Boolean(officialStat),
@@ -21883,7 +22045,7 @@ function buildPeriodicLearningReportTask(student, kind, sharedEvidence = null) {
     executionMode: 'adapter',
     scheduledAt: staggeredScheduleTime(normalized.id, kind, period.key, normalized.digestTime || '21:30'),
     scheduleKey: period.key,
-    idempotencyKey: `${kind}:${normalized.id}:${period.key}:${growthFingerprint || 'growth-pending'}`,
+    idempotencyKey: `${kind}:${normalized.id}:${period.key}:${growthFingerprint || 'growth-pending'}:${learningState.learningStateFingerprint}`,
     completionPolicy: 'auto_after_validation',
     input: {
       date: period.start,
@@ -21894,6 +22056,10 @@ function buildPeriodicLearningReportTask(student, kind, sharedEvidence = null) {
       knowledgeRoot: normalized.rootPath || getStudentRootDir(normalized.name),
       growthPath: growthModelDirForStudent(normalized),
       growthFingerprint,
+      fiveDimensionSnapshot: learningState.fiveDimensionSnapshot,
+      roleProjections: learningState.roleProjections,
+      learningStateFingerprint: learningState.learningStateFingerprint,
+      roleProjectionPolicy: '学生、教师、家长仅使用对应字段白名单；家长内容只允许管理员授权导出。五维画像不合成总分。',
       eligibleEvidenceIds: eligibleEvidence.ids,
       eligibleEvidence: eligibleEvidence.items,
       blockedEvidenceCount: eligibleEvidence.blockedCount,
@@ -21946,6 +22112,7 @@ function buildWeeklyActionTask(student, sharedEvidence = null) {
     && reportPublished);
   const id = taskStableId('weekly_action', 'student', normalized.id, week.key);
   const growthFingerprint = String(safeReadJson(growthIndexPath(normalized), {}).sourceFingerprint || '');
+  const learningState = learningReportStateContext(normalized, 'weekly_action', `weekly_action:${week.key}`);
   const eligibleEvidence = sharedEvidence || reportEligibleEvidence(normalized);
   const boundProjects = listProjectMetadata({ studentId: normalized.id }).map(normalizeProjectMetadata)
     .map((project) => ({ id: project.id, name: project.name, status: project.status, pendingDigest: Number(project.digestState?.pendingCount || 0), contributionStatus: project.dashboard?.contributionStatus || '' }));
@@ -21972,7 +22139,7 @@ function buildWeeklyActionTask(student, sharedEvidence = null) {
     executionMode: 'adapter',
     scheduledAt: staggeredScheduleTime(normalized.id, 'weekly_action', week.key, normalized.digestTime || '21:30'),
     scheduleKey: week.key,
-    idempotencyKey: `weekly_action:${normalized.id}:${week.key}:${growthFingerprint || 'growth-pending'}`,
+    idempotencyKey: `weekly_action:${normalized.id}:${week.key}:${growthFingerprint || 'growth-pending'}:${learningState.learningStateFingerprint}`,
     completionPolicy: 'auto_after_validation',
     autoRetry: true,
     maxAttempts: 6,
@@ -21987,6 +22154,11 @@ function buildWeeklyActionTask(student, sharedEvidence = null) {
       summaryPath: normalized.summaryPath || getSummaryDir(normalized.name),
       growthPath: growthModelDirForStudent(normalized),
       growthFingerprint,
+      fiveDimensionSnapshot: learningState.fiveDimensionSnapshot,
+      roleProjections: learningState.roleProjections,
+      learningStateFingerprint: learningState.learningStateFingerprint,
+      actionCycleKey: `weekly_action:${normalized.id}:${week.key}`,
+      roleProjectionPolicy: '同一 actionCycleKey 重新生成只更新报告，不得重复派发任务或学习卡；五维画像不合成总分。',
       eligibleEvidenceIds: eligibleEvidence.ids,
       eligibleEvidence: eligibleEvidence.items,
       blockedEvidenceCount: eligibleEvidence.blockedCount,
@@ -22172,7 +22344,10 @@ function directReportExecutionCommand(task, command) {
     .replaceAll('只写草稿', '先写入系统校验区')
     .replaceAll('不要直接覆盖正式报告', '校验通过后由系统自动原子发布正式报告')
     .replaceAll('status: pending_review', 'status: generated');
-  return `${normalizedCommand}\n\n自动发布补充要求：本次执行必须实际写入或更新系统校验区文件；即使已存在内容相同的文件，也要按当前学生、成长指纹和报告周期重新写入，不能只返回“无需更新”。在结论性章节引用 watching 证据时，每一处都必须明确写“待观察”“继续观察”“观察中”“待确认”或“不能据此形成正式结论”；行动建议、观察点和依据来源可以引用 watching 证据，但只能用于安排核验、收集或观察，不得升级为已确认事实。`;
+  const stageNineContext = task.input?.fiveDimensionSnapshot
+    ? `阶段 9 五维学情输入（目标、心态、问题、方法、效率）：\n${JSON.stringify(task.input.fiveDimensionSnapshot, null, 2)}\n\n角色字段白名单投影：\n${JSON.stringify(task.input.roleProjections || {}, null, 2)}\n\n使用边界：学生自述、外部观察、系统观察、系统推断必须分开标注；未知保持未知，不合成总分。各角色内容只能使用对应字段白名单。快照内未出现在可引用证据白名单中的 ID 不得写成 [依据:...]。${task.kind === 'weekly_action' ? `同一 actionCycleKey（${task.input.actionCycleKey || ''}）重新生成只更新报告，不得重复创建任务或学习卡。` : ''}`
+    : '阶段 9 五维学情输入尚不可用；不得据此补写结论。';
+  return `${normalizedCommand}\n\n${stageNineContext}\n\n自动发布补充要求：本次执行必须实际写入或更新系统校验区文件；即使已存在内容相同的文件，也要按当前学生、成长指纹和报告周期重新写入，不能只返回“无需更新”。在结论性章节引用 watching 证据时，每一处都必须明确写“待观察”“继续观察”“观察中”“待确认”或“不能据此形成正式结论”；行动建议、观察点和依据来源可以引用 watching 证据，但只能用于安排核验、收集或观察，不得升级为已确认事实。`;
 }
 
 function persistHostValidatedCodexDraft(task, output) {
@@ -26184,12 +26359,31 @@ function persistReportIssue(task, validation) {
   return file;
 }
 
+function persistLearningRoleReportSnapshot(task) {
+  const snapshot = task.input?.fiveDimensionSnapshot;
+  if (!snapshot || !snapshot.studentId || !snapshot.inputFingerprint || !snapshot.cycleKey) return { ok: true, skipped: true };
+  const student = findStudentByKey(task.sourceId);
+  if (!student) return { ok: false, message: '报告对应学生已不存在，未保存学情快照。' };
+  const normalized = toHostStudent(student);
+  const store = createLearningStateStore({ dbPath: learningStatePath(normalized.rootPath || getStudentRootDir(normalized.name)) });
+  try {
+    const stored = store.ensureRoleReportSnapshot({
+      studentId: String(normalized.id), actorRole: 'system', actorId: 'learning-report-publisher',
+    }, snapshot, `report:${task.id}:${snapshot.cycleKey}:${snapshot.inputFingerprint}`);
+    return { ok: true, snapshotId: stored.snapshotId, replayed: stored.replayed === true };
+  } catch (error) {
+    return { ok: false, message: `学情报告快照保存失败：${error.message}` };
+  } finally { store.close(); }
+}
+
 function autoPublishValidatedReport(task, validation) {
   if (!isAutoPublishReportTask(task) || !validation?.valid) return { ok: false, message: '报告尚未通过自动发布校验。' };
   const draftPath = task.expectedOutput?.draftPath;
   const publishPath = task.expectedOutput?.publishPath;
   if (!draftPath || !publishPath || !fs.existsSync(draftPath)) return { ok: false, message: '报告生成结果不存在。' };
   const draftContent = fs.readFileSync(draftPath, 'utf8');
+  const snapshotPersistence = persistLearningRoleReportSnapshot(task);
+  if (!snapshotPersistence.ok) return snapshotPersistence;
   const publishedContent = fs.existsSync(publishPath) ? fs.readFileSync(publishPath, 'utf8') : '';
   const periodStart = String(task.input?.periodStart || task.input?.weekStart || task.input?.date || '');
   const publishedStatus = frontmatterValue(publishedContent, 'status').toLowerCase();
@@ -39475,17 +39669,24 @@ function terminalLearningStateProjection(student, role) {
   const dbPath = learningStatePath(normalized.rootPath);
   const asOf = new Date().toISOString();
   const authorizationVersion = `host-data:${hostDataGenerationId()}`;
-  if (!fs.existsSync(dbPath)) return emptyLearningStateProjection(studentId, asOf, authorizationVersion);
-  const store = createLearningStateStore({ dbPath });
-  try {
-    const projection = store.getLearningState({ role, studentId, authorizationVersion }, studentId, asOf);
-    if (role !== 'teacher') return projection;
-    return {
-      ...projection,
-      checkIns: projection.checkIns.map(({ note: _note, ...item }) => item),
-      evidence: projection.evidence.map(({ statement: _statement, ...item }) => item),
-    };
-  } finally { store.close(); }
+  let projection;
+  if (!fs.existsSync(dbPath)) projection = emptyLearningStateProjection(studentId, asOf, authorizationVersion);
+  else {
+    const store = createLearningStateStore({ dbPath });
+    try { projection = store.getLearningState({ role, studentId, authorizationVersion }, studentId, asOf); }
+    finally { store.close(); }
+  }
+  const snapshot = buildFiveDimensionSnapshot(projection, {
+    cycleKey: reportCycleKey('learning_profile', asOf, weeklyGrowthTimezone()), asOf,
+  });
+  const roleReport = projectLearningRoleReport(snapshot, { role, studentId });
+  if (role !== 'teacher') return { ...projection, roleReport };
+  return {
+    ...projection,
+    checkIns: projection.checkIns.map(({ note: _note, ...item }) => item),
+    evidence: projection.evidence.map(({ statement: _statement, ...item }) => item),
+    roleReport,
+  };
 }
 
 async function handleTerminalLearningState(request, response, teacherStudentId = '') {
@@ -43460,7 +43661,7 @@ ipcMain.handle('bridge:getWeeklyKnowledgeGrowth', (_event, studentId) => deferre
 ipcMain.handle('bridge:saveWeeklyKnowledgeGrowthPng', (_event, snapshotId, studentId) => licensedInvoke(
   '保存每周知识增长图片', () => saveWeeklyKnowledgeGrowthPng(snapshotId, studentId)));
 ipcMain.handle('bridge:learningStateAction', (_event, action, studentId, inputJson) => (
-  action === 'get'
+  action === 'get' || action === 'role-report'
     ? deferredInvoke(() => learningStateActionJson(action, studentId, inputJson))
     : licensedInvoke('更新学习状态', () => learningStateActionJson(action, studentId, inputJson))
 ));

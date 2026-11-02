@@ -15,7 +15,9 @@ test('all four learning reports have idempotent weekly or monthly tasks', () => 
     assert.match(main, new RegExp(`${kind}: new Set\\(\\['read', 'create_draft'\\]\\)`));
   }
   assert.match(main, /function taskMonthRange/);
-  assert.match(main, /idempotencyKey: `\$\{kind\}:\$\{normalized\.id\}:\$\{period\.key\}:\$\{growthFingerprint \|\| 'growth-pending'\}`/);
+  assert.match(main, /idempotencyKey: `\$\{kind\}:\$\{normalized\.id\}:\$\{period\.key\}:\$\{growthFingerprint \|\| 'growth-pending'\}:\$\{learningState\.learningStateFingerprint\}`/);
+  assert.match(main, /taskStableId\(kind, 'student', normalized\.id, period\.key\)/);
+  assert.match(main, /actionCycleKey: `weekly_action:\$\{normalized\.id\}:\$\{week\.key\}`/);
   assert.match(main, /periodicKinds\.has\(task\.kind\)/);
   assert.match(main, /automaticTaskWakeDecision\(task\)\.eligible/);
   assert.match(main, /taskStoreGuard\.listRunnableTasks/);

@@ -30,7 +30,11 @@ test('Windows release builds through an isolated local staging directory', () =>
 
 test('staged runtime is dependency-free after Vite has bundled renderer dependencies', () => {
   assert.match(releaseScript, /main: 'electron\/main\.cjs'/);
-  assert.match(releaseScript, /files: \['dist\/\*\*\/\*', 'electron\/\*\*\/\*', 'cloud-report-service\/\*\*\/\*', 'package\.json'\]/);
+  assert.match(releaseScript, /files: \['dist\/\*\*\/\*', 'electron\/\*\*\/\*', 'shared\/\*\*\/\*', 'cloud-report-service\/\*\*\/\*', 'package\.json'\]/);
+  assert.deepEqual(packageJson.build.files, ['dist/**/*', 'electron/**/*', 'shared/**/*', 'package.json']);
+  assert.match(releaseScript, /copyDirectoryFiles\(path\.join\(repoRoot, 'shared'\), path\.join\(stageRoot, 'shared'\)\)/);
+  assert.match(releaseScript, /Packaged workspace template catalog is missing/);
+  assert.match(releaseScript, /Packaged workspace template catalog differs from source/);
   assert.doesNotMatch(releaseScript, /runtimePackage\.(?:dependencies|devDependencies)/);
   assert.match(releaseScript, /Minimal runtime package unexpectedly contains node_modules/);
   assert.match(releaseScript, /app\.asar exceeds 21 MiB/);

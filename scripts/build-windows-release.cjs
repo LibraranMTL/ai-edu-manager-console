@@ -253,7 +253,7 @@ function writeRuntimePackage() {
       compression: 'maximum',
       electronLanguages,
       directories: { output: 'out' },
-      files: ['dist/**/*', 'electron/**/*', 'cloud-report-service/**/*', 'package.json'],
+      files: ['dist/**/*', 'electron/**/*', 'shared/**/*', 'cloud-report-service/**/*', 'package.json'],
       extraResources: [{ from: 'material-pdf-runtime', to: 'material-pdf-runtime' }],
       asarUnpack: ['electron/invoke-agent.ps1', 'electron/capture-timeline-ocr.ps1', 'electron/project-knowledge-guard.ps1', 'electron/practice-print-gdi.ps1', 'electron/windows-firewall.ps1'],
       win: {
@@ -329,6 +329,7 @@ function build() {
     assertWindowsLicenseClosure(repoRoot, 'source');
     const sourceSecretAudit = scanSecretSignatures([
       ...walkFiles(path.join(repoRoot, 'electron')),
+      ...walkFiles(path.join(repoRoot, 'shared')),
       ...walkFiles(path.join(repoRoot, 'src')),
       ...walkFiles(path.join(repoRoot, 'public')),
       ...cloudReportRuntime.map((relative) => path.join(repoRoot, relative)),
@@ -357,6 +358,7 @@ function build() {
     recordPhase('copy-runtime-files');
     const stagedElectron = path.join(stageRoot, 'electron');
     copyDirectoryFiles(path.join(repoRoot, 'electron'), stagedElectron);
+    copyDirectoryFiles(path.join(repoRoot, 'shared'), path.join(stageRoot, 'shared'));
     for (const relative of cloudReportRuntime) {
       const destination = path.join(stageRoot, relative);
       fs.mkdirSync(path.dirname(destination), { recursive: true });
@@ -420,6 +422,12 @@ function build() {
     if (packagedNodeModules.length) throw new Error(`Minimal runtime package unexpectedly contains node_modules (${packagedNodeModules.length} entries).`);
     if (!asarFiles.includes('\\electron\\main.cjs') || !asarFiles.includes('\\dist\\index.html')) {
       throw new Error('Packaged app is missing its main process or renderer entry.');
+    }
+    const workspaceTemplateCatalog = '\\shared\\project-workspace-templates.json';
+    if (!asarFiles.includes(workspaceTemplateCatalog)) throw new Error('Packaged workspace template catalog is missing.');
+    const packagedWorkspaceTemplates = asar.extractFile(appAsar, 'shared/project-workspace-templates.json');
+    if (sha256(packagedWorkspaceTemplates) !== sha256(path.join(repoRoot, 'shared', 'project-workspace-templates.json'))) {
+      throw new Error('Packaged workspace template catalog differs from source.');
     }
     for (const terminalEntry of ['\\electron\\terminal-main.cjs', '\\electron\\terminal-preload.cjs']) {
       if (asarFiles.includes(terminalEntry)) throw new Error(`Host package unexpectedly contains separate terminal entry: ${terminalEntry}`);

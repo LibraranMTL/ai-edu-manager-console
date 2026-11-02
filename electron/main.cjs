@@ -1650,11 +1650,15 @@ const hostTimelinePath = () => path.join(app.getPath('userData'), 'host-timeline
 const assetIndexPath = () => path.join(app.getPath('userData'), 'asset-index.json');
 const assetDatabasePath = () => path.join(app.getPath('userData'), 'asset-index.sqlite3');
 let assetStoreInstance;
+function publishAssetIndexChanged(change) {
+  if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('asset-index:changed', change);
+}
 function assetStore() {
   if (!assetStoreInstance) assetStoreInstance = createAssetIndexStore({
     dbPath: assetDatabasePath(),
     legacyJsonPath: assetIndexPath(),
     quickCheck: false,
+    onChanged: publishAssetIndexChanged,
   });
   return assetStoreInstance;
 }
@@ -41901,9 +41905,14 @@ ipcMain.handle('bridge:getAssetIndex', () => deferredInvoke(() => {
   const page = assetStore().listAssets({ pageSize: 100 });
   return JSON.stringify({ ...assetIndexSummary(), ...page, assets: page.items, deprecated: true });
 }));
-ipcMain.handle('bridge:getAssetSummary', (_event, filter) => deferredInvoke(() => JSON.stringify(assetIndexSummary(filter || {}))));
-ipcMain.handle('bridge:listAssets', (_event, request) => deferredInvoke(() => JSON.stringify(assetStore().listAssets(request || {}))));
-ipcMain.handle('bridge:searchAssets', (_event, request) => deferredInvoke(() => JSON.stringify(assetStore().searchAssets(request || {}))));
+ipcMain.handle('bridge:getAssetSummary', (_event, filter) => deferredInvoke(() => JSON.stringify(assetStore().statisticsSnapshot(filter || {}))));
+ipcMain.handle('bridge:getAssetStatisticsSnapshot', (_event, scope) => deferredInvoke(() => JSON.stringify(assetStore().statisticsSnapshot(scope || {}))));
+ipcMain.handle('bridge:listAssets', (_event, request) => deferredInvoke(() => JSON.stringify({
+  ...assetStore().listAssets(request || {}), ...assetStore().statisticsState(),
+})));
+ipcMain.handle('bridge:searchAssets', (_event, request) => deferredInvoke(() => JSON.stringify({
+  ...assetStore().searchAssets(request || {}), ...assetStore().statisticsState(),
+})));
 ipcMain.handle('bridge:getAssetDetail', (_event, assetId) => deferredInvoke(() => {
   const asset = assetStore().getAssetDetail(assetId);
   return JSON.stringify(asset ? { ok: true, asset } : { ok: false, code: 'asset_not_found', message: '未找到资产。' });

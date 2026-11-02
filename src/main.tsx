@@ -407,6 +407,9 @@ type AssetRecord = {
 type AssetIndexState = {
   ok?: boolean;
   assets: AssetRecord[];
+  asOf?: string;
+  generation?: number;
+  changedAt?: string;
   total?: number;
   scopeTotal?: number;
   queryTotal?: number;
@@ -1225,6 +1228,8 @@ type AndroidBridge = {
   openCaptureInbox?: (sessionId?: string) => Promise<string>;
   getAssetIndex?: () => Promise<string>;
   getAssetSummary?: (filter?: Record<string, unknown>) => Promise<string>;
+  getAssetStatisticsSnapshot?: (scope?: Record<string, unknown>) => Promise<string>;
+  onAssetIndexChanged?: (callback: (payload: { generation: number; changedAt?: string; reason?: string; studentIds?: string[]; global?: boolean }) => void) => () => void;
   listAssets?: (request?: Record<string, unknown>) => Promise<string>;
   searchAssets?: (request?: Record<string, unknown>) => Promise<string>;
   getAssetDetail?: (assetId: string) => Promise<string>;
@@ -6298,6 +6303,8 @@ function App() {
   const [platformPublishing, setPlatformPublishing] = useState(false);
   const [courseBrowser, setCourseBrowser] = useState<{ open: boolean; courseId?: string; name?: string }>({ open: false });
   const [assetIndex, setAssetIndex] = useState<AssetIndexState>({ assets: [] });
+  const [homeAssetStatistics, setHomeAssetStatistics] = useState<AssetIndexState | null>(null);
+  const [projectAssetStatistics, setProjectAssetStatistics] = useState<AssetIndexState | null>(null);
   const [assetMessage, setAssetMessage] = useState('');
   const [assetBusyAction, setAssetBusyAction] = useState('');
   const [assetGovernancePreview, setAssetGovernancePreview] = useState('');
@@ -6310,6 +6317,7 @@ function App() {
   const [selectedAssetDetail, setSelectedAssetDetail] = useState<AssetRecord | null>(null);
   const [assetDetailRefreshVersion, setAssetDetailRefreshVersion] = useState(0);
   const assetListRequestRef = useRef(0);
+  const assetStatisticsGenerationRef = useRef(0);
   const assetDuplicateRequestRef = useRef(0);
   const assetDetailRequestRef = useRef(0);
   const [assetCursor, setAssetCursor] = useState('');
@@ -9627,6 +9635,27 @@ ${sourceText}`;
   }, []);
 
   useEffect(() => {
+    if (activeSection === 'home' && selectedStudent?.id) {
+      void refreshScopedAssetStatistics({ studentId: selectedStudent.id }, setHomeAssetStatistics);
+    }
+    if (activeSection === 'projects-existing' && selectedProject?.id) {
+      void refreshScopedAssetStatistics({ projectId: selectedProject.id }, setProjectAssetStatistics);
+    }
+  }, [activeSection, selectedStudent?.id, selectedProject?.id]);
+
+  useEffect(() => bridge()?.onAssetIndexChanged?.((event) => {
+    if (!Number.isFinite(event.generation) || event.generation <= assetStatisticsGenerationRef.current) return;
+    assetStatisticsGenerationRef.current = event.generation;
+    if (activeSectionRef.current === 'assets') void refreshAssets('');
+    if (activeSectionRef.current === 'home' && selectedStudent?.id) {
+      void refreshScopedAssetStatistics({ studentId: selectedStudent.id }, setHomeAssetStatistics);
+    }
+    if (activeSectionRef.current === 'projects-existing' && selectedProject?.id) {
+      void refreshScopedAssetStatistics({ projectId: selectedProject.id }, setProjectAssetStatistics);
+    }
+  }), [selectedStudent?.id, selectedProject?.id]);
+
+  useEffect(() => {
     if (activeSection === 'assets') void refreshAssets(assetCursor);
     if (activeSection === 'assets') {
       void refreshDuplicateGroups(assetDuplicateCursor);
@@ -12037,9 +12066,27 @@ ${sourceText}`;
     }
   };
 
-  const refreshAssets = async (cursorOverride = assetCursor) => {
+  const refreshScopedAssetStatistics = async (
+    scope: Record<string, unknown>,
+    apply: (snapshot: AssetIndexState) => void,
+  ) => {
     const api = bridge();
-    if (!api?.getAssetSummary || !api.listAssets || !api.searchAssets) {
+    const action = api?.getAssetStatisticsSnapshot ?? api?.getAssetSummary;
+    if (!action) return;
+    try {
+      const snapshot = JSON.parse(await action(scope)) as AssetIndexState;
+      if (snapshot.generation !== undefined && snapshot.generation < assetStatisticsGenerationRef.current) return;
+      if (snapshot.generation !== undefined) assetStatisticsGenerationRef.current = snapshot.generation;
+      apply({ ...snapshot, assets: [] });
+    } catch {
+      // Scoped counters are supplementary; the current page remains usable if they cannot be refreshed.
+    }
+  };
+
+  const refreshAssets = async (cursorOverride = assetCursor, generationRetry = 0): Promise<void> => {
+    const api = bridge();
+    const snapshotAction = api?.getAssetStatisticsSnapshot ?? api?.getAssetSummary;
+    if (!snapshotAction || !api?.listAssets || !api.searchAssets) {
       setAssetMessage('当前环境不支持文件资产中心。');
       return;
     }
@@ -12053,21 +12100,28 @@ ${sourceText}`;
       };
       const request = { ...filter, query: assetSearch.trim(), cursor: cursorOverride, pageSize: 50, sort: 'updated_desc' };
       const [summaryRaw, pageRaw] = await Promise.all([
-        api.getAssetSummary(filter),
+        snapshotAction(filter),
         assetSearch.trim() ? api.searchAssets(request) : api.listAssets(request),
       ]);
-      const summary = JSON.parse(summaryRaw) as AssetIndexState;
-      const page = JSON.parse(pageRaw) as { ok?: boolean; items?: AssetRecord[]; total?: number; nextCursor?: string; message?: string };
+      const snapshot = JSON.parse(summaryRaw) as AssetIndexState;
+      const page = JSON.parse(pageRaw) as { ok?: boolean; items?: AssetRecord[]; total?: number; nextCursor?: string; message?: string; generation?: number };
       if (requestId !== assetListRequestRef.current) return;
+      if (snapshot.generation !== undefined && page.generation !== undefined && snapshot.generation !== page.generation) {
+        if (generationRetry < 2) return refreshAssets(cursorOverride, generationRetry + 1);
+        setAssetMessage('资产统计正在更新，请稍后重试。');
+        return;
+      }
+      if (snapshot.generation !== undefined && snapshot.generation < assetStatisticsGenerationRef.current) return;
+      if (snapshot.generation !== undefined) assetStatisticsGenerationRef.current = snapshot.generation;
       const items = page.items ?? [];
       const nextSelectedId = items.some((item) => item.assetId === selectedAssetId) ? selectedAssetId : items[0]?.assetId ?? '';
       React.startTransition(() => {
-        setAssetIndex({ ...summary, scopeTotal: summary.total, queryTotal: page.total ?? summary.total,
-          total: page.total ?? summary.total, assets: items, nextCursor: page.nextCursor ?? '' });
+        setAssetIndex({ ...snapshot, scopeTotal: snapshot.total, queryTotal: page.total ?? snapshot.total,
+          total: page.total ?? snapshot.total, assets: items, nextCursor: page.nextCursor ?? '' });
         setSelectedAssetId(nextSelectedId);
         if (nextSelectedId && nextSelectedId === selectedAssetId) setAssetDetailRefreshVersion((value) => value + 1);
       });
-      setAssetMessage(page.message || `已读取 ${items.length} 个资产；当前查询共 ${page.total ?? summary.total ?? 0} 个。`);
+      setAssetMessage(page.message || `已读取 ${items.length} 个资产；当前查询共 ${page.total ?? snapshot.total ?? 0} 个。`);
     } catch {
       if (requestId === assetListRequestRef.current) setAssetMessage('资产索引解析失败。');
     }
@@ -17092,7 +17146,7 @@ ${JSON.stringify(items, null, 2)}
                   <span>3</span><strong>需要补充</strong><em>{homeNeedsSupplementTotal} 项</em>
                 </button>
                 <button className="home-flow-step" onClick={() => setActiveSection('assets')}>
-                  <span>4</span><strong>知识更新</strong><em>{homeKnowledgeUpdateTotal} 份项目知识</em>
+                  <span>4</span><strong>知识资产</strong><em>{homeAssetStatistics?.total ?? homeKnowledgeUpdateTotal} 份已登记</em>
                 </button>
                 <button className="home-flow-step" onClick={() => setActiveSection(isWindows ? 'growth' : 'archive')}>
                   <span>5</span><strong>成长变化</strong><em>{growthIndex && growthLoadedStudentId.current === selectedStudent?.id ? `${homeGrowthChangeTotal} 条已确认` : '查看已确认成长证据'}</em>
@@ -17107,7 +17161,7 @@ ${JSON.stringify(items, null, 2)}
               <InfoPanel icon={<Archive />} title="待处理资料" value={`${homePendingTotal + homeProjectPendingTotal} 份`} />
               <InfoPanel icon={<RefreshCw />} title="处理中" value={`${homeWaitingTotal} 份`} />
               <InfoPanel icon={<CircleAlert />} title="需要补充" value={`${homeNeedsSupplementTotal} 项`} />
-              <InfoPanel icon={<Sparkles />} title="知识更新" value={`${homeKnowledgeUpdateTotal} 份`} />
+              <InfoPanel icon={<Sparkles />} title="知识资产" value={`${homeAssetStatistics?.total ?? homeKnowledgeUpdateTotal} 份`} />
               <InfoPanel icon={<TrendingUp />} title="成长变化" value={growthIndex && growthLoadedStudentId.current === selectedStudent?.id ? `${homeGrowthChangeTotal} 条已确认` : '前往查看'} />
               <InfoPanel icon={<FileText />} title="报告与档案" value={homeReportUpdateTotal ? `${homeReportUpdateTotal} 份已更新` : '按周期更新'} />
               {isWindows && <InfoPanel icon={<KeyRound />} title="主机状态" value={hostServiceStatus?.running ? '终端服务运行中' : homeMode === 'host' ? '终端服务未启动' : '本机使用'} />}
@@ -18712,7 +18766,7 @@ ${JSON.stringify(items, null, 2)}
             {projectListError && <div className="notice" role="alert"><AlertTriangle size={17} />{projectListError.message}</div>}
             <div className="archive-grid projects-existing-only">
               <InfoPanel icon={<FolderOpen />} title="项目数量" value={projectListError ? '未加载' : `${projects.length} 个`} />
-              <InfoPanel icon={<Archive />} title="当前项目资产" value={`${selectedProject?.assetIds?.length ?? 0} 个`} />
+              <InfoPanel icon={<Archive />} title="当前项目资产" value={`${projectAssetStatistics?.total ?? selectedProject?.assetIds?.length ?? 0} 个`} />
               <InfoPanel icon={<UserRound />} title="绑定学生" value={selectedProject?.studentNames?.join('、') || '未选择项目'} />
             </div>
             <section className="material-source-panel projects-existing-only staging-entry-guide">

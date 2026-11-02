@@ -185,6 +185,14 @@ contextBridge.exposeInMainWorld('AndroidBridge', {
   getAssetSummary(filter) {
     return ipcRenderer.invoke('bridge:getAssetSummary', filter || {});
   },
+  getAssetStatisticsSnapshot(scope) {
+    return ipcRenderer.invoke('bridge:getAssetStatisticsSnapshot', scope || {});
+  },
+  onAssetIndexChanged(callback) {
+    const listener = (_event, payload) => callback(payload);
+    ipcRenderer.on('asset-index:changed', listener);
+    return () => ipcRenderer.removeListener('asset-index:changed', listener);
+  },
   listAssets(request) {
     return ipcRenderer.invoke('bridge:listAssets', request || {});
   },

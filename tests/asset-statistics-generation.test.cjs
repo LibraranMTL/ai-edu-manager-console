@@ -1,0 +1,75 @@
+'use strict';
+
+const test = require('node:test');
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
+const { createAssetIndexStore, SCHEMA_VERSION } = require('../electron/asset-index-store.cjs');
+
+function fixture(t) {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'edu-asset-generation-'));
+  const events = [];
+  const store = createAssetIndexStore({
+    dbPath: path.join(root, 'asset-index.sqlite3'),
+    legacyJsonPath: path.join(root, 'asset-index.json'),
+    now: () => Date.parse('2026-11-02T10:00:00.000+08:00'),
+    onChanged: (event) => events.push(event),
+  });
+  t.after(() => { store.close(); fs.rmSync(root, { recursive: true, force: true }); });
+  return { store, events };
+}
+
+test('asset statistics generation persists and advances only after committed summary changes', (t) => {
+  const { store, events } = fixture(t);
+  assert.equal(SCHEMA_VERSION, 5);
+  const initial = store.statisticsSnapshot({});
+  assert.equal(initial.generation, 0);
+
+  const asset = {
+    assetId: 'asset-generation-1', sha1: 'a'.repeat(40), sha256: 'b'.repeat(64),
+    filename: 'fixture.pdf', ownerStudentId: 'student-a', ownerStudentName: '学生甲',
+    path: 'D:/fixture.pdf', status: 'active', updatedAt: '2026-11-02T02:00:00.000Z',
+  };
+  store.upsertAsset(asset, [{ referenceId: 'ref-1', spaceType: 'project', spaceId: 'project-team', studentId: 'student-a', role: 'raw', path: asset.path }]);
+  const changed = store.statisticsSnapshot({});
+  assert.ok(changed.generation > initial.generation);
+  assert.equal(changed.changedAt, '2026-11-02T02:00:00.000Z');
+  assert.equal(events.length, 1);
+  assert.equal(events[0].generation, changed.generation);
+
+  store.upsertAsset(asset, [{ referenceId: 'ref-1', spaceType: 'project', spaceId: 'project-team', studentId: 'student-a', role: 'raw', path: asset.path }]);
+  assert.equal(store.statisticsSnapshot({}).generation, changed.generation);
+  assert.equal(events.length, 1, 'idempotent retry does not publish a change event');
+});
+
+test('student, project and global snapshots share the same as-of generation', (t) => {
+  const { store } = fixture(t);
+  store.upsertAsset({ assetId: 'asset-a', sha1: 'c'.repeat(40), sha256: 'd'.repeat(64), filename: 'a.pdf', ownerStudentId: 'student-a', path: 'D:/a.pdf' },
+    [{ referenceId: 'ref-a', spaceType: 'project', spaceId: 'project-team', studentId: 'student-a', role: 'raw', path: 'D:/a.pdf' }]);
+  store.upsertAsset({ assetId: 'asset-b', sha1: 'e'.repeat(40), sha256: 'f'.repeat(64), filename: 'b.pdf', ownerStudentId: 'student-b', path: 'D:/b.pdf' },
+    [{ referenceId: 'ref-b', spaceType: 'student', spaceId: 'student-b', studentId: 'student-b', role: 'raw', path: 'D:/b.pdf' }]);
+  const global = store.statisticsSnapshot({});
+  const student = store.statisticsSnapshot({ studentId: 'student-a' });
+  const project = store.statisticsSnapshot({ projectId: 'project-team' });
+  assert.equal(global.total, 2);
+  assert.equal(student.total, 1);
+  assert.equal(project.total, 1);
+  assert.equal(student.generation, global.generation);
+  assert.equal(project.generation, global.generation);
+  assert.equal(student.asOf, global.asOf);
+});
+
+test('renderer subscribes to committed changes and rejects stale list generations', () => {
+  const main = fs.readFileSync(path.join(__dirname, '..', 'electron', 'main.cjs'), 'utf8');
+  const preload = fs.readFileSync(path.join(__dirname, '..', 'electron', 'preload.cjs'), 'utf8');
+  const ui = fs.readFileSync(path.join(__dirname, '..', 'src', 'main.tsx'), 'utf8');
+  assert.match(main, /bridge:getAssetStatisticsSnapshot/);
+  assert.match(main, /asset-index:changed/);
+  assert.match(main, /assetStore\(\)\.statisticsState\(\)/);
+  assert.match(preload, /onAssetIndexChanged\(callback\)/);
+  assert.match(preload, /asset-index:changed/);
+  assert.match(ui, /assetStatisticsGenerationRef/);
+  assert.match(ui, /snapshot\.generation !== page\.generation/);
+  assert.match(ui, /snapshot\.generation < assetStatisticsGenerationRef\.current/);
+});

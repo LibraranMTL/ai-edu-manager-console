@@ -9,9 +9,10 @@ const source = [
 ].join('\n');
 
 test('asset dashboard statistics follow the selected student scope', () => {
-  assert.match(source, /getAssetSummary\?:/);
+  assert.match(source, /getAssetStatisticsSnapshot\?:/);
   assert.match(source, /studentId: assetStudentFilter/);
-  assert.match(source, /api\.getAssetSummary\(filter\)/);
+  assert.match(source, /snapshotAction\(filter\)/);
+  assert.match(source, /snapshot\.generation !== page\.generation/);
   assert.match(source, /title=\{m\.assetQueryActive \? '当前查询资产' : m\.assetScopeFiltersActive \? '当前筛选资产' : '资产总数'\}/);
   assert.match(source, /title="重复文件组" value=\{`\$\{m\.assetScopedDuplicateGroups\} 组`\}/);
   assert.match(source, /<AssetTrendChart trend=\{m\.assetScopedTrend\}/);

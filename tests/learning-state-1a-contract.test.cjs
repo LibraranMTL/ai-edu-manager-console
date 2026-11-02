@@ -11,10 +11,14 @@ const preload = fs.readFileSync(path.join(root, 'electron', 'preload.cjs'), 'utf
 const renderer = fs.readFileSync(path.join(root, 'src', 'main.tsx'), 'utf8');
 const panel = fs.readFileSync(path.join(root, 'src', 'LearningStatePanel.tsx'), 'utf8');
 
-test('Windows renderer exposes the v2 state bridge without task or practice dispatch', () => {
+test('Windows renderer exposes the v3 state bridge and delegates actions through the governed loop', () => {
   assert.match(preload, /learningStateAction\(action, studentId, input\)/);
   assert.match(main, /bridge:learningStateAction/);
-  assert.doesNotMatch(panel, /dispatchLearningAction|generatePracticeCard|createTask|executeTask/);
+  assert.match(panel, /dispatchLearningAction/);
+  assert.match(main, /createLearningActionLoop/);
+  assert.match(main, /generateForAction/);
+  assert.match(main, /kind: 'student_learning_action'/);
+  assert.doesNotMatch(panel, /generatePracticeCard|createTask|executeTask/);
 });
 
 test('student session can read and submit feedback while teacher endpoint stays read-only', () => {

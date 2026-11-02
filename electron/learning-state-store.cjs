@@ -5,10 +5,13 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 const { DatabaseSync } = require('node:sqlite');
 
-const SCHEMA_VERSION = 2;
-const POLICY_VERSION = 'learning-state-1a-v1';
+const SCHEMA_VERSION = 3;
+const POLICY_VERSION = 'learning-state-1b-v1';
 const DIMENSIONS = ['goalClarity', 'confidence', 'difficulty', 'recovery', 'workload'];
 const SOURCE_CATEGORIES = new Set(['student_self_report', 'external_observation', 'system_observation', 'system_inference']);
+const ACTION_TYPES = new Set(['learning_task', 'targeted_practice']);
+const ACTION_SUBJECT_TYPES = new Set(['goal', 'problem']);
+const ACTION_BINDING_STATUSES = new Set(['dispatching', 'unknown', 'dispatched', 'completed', 'failed', 'cancelled']);
 
 function text(value) { return String(value ?? '').trim(); }
 function nowIso(now) { return new Date(now()).toISOString(); }
@@ -20,6 +23,23 @@ function reliableIso(value) {
 function parseJson(value, fallback = {}) { try { return JSON.parse(value); } catch { return fallback; } }
 function id(prefix) { return `${prefix}-${crypto.randomUUID()}`; }
 function sqliteString(value) { return `'${String(value).replaceAll("'", "''")}'`; }
+
+function stableActionKey(input = {}) {
+  const normalized = {
+    studentId: text(input.studentId), subjectType: text(input.subjectType), subjectId: text(input.subjectId),
+    subjectRevision: Number(input.subjectRevision), actionType: text(input.actionType), retestWindow: text(input.retestWindow),
+  };
+  if (!normalized.studentId || normalized.studentId === 'all') throw Object.assign(new Error('单学生范围缺失。'), { code: 'student_scope_missing' });
+  if (!ACTION_SUBJECT_TYPES.has(normalized.subjectType) || !normalized.subjectId
+    || !Number.isInteger(normalized.subjectRevision) || normalized.subjectRevision < 1) {
+    throw Object.assign(new Error('行动关联的目标或问题实例无效。'), { code: 'action_subject_invalid' });
+  }
+  if (!ACTION_TYPES.has(normalized.actionType)) throw Object.assign(new Error('行动类型无效。'), { code: 'action_type_invalid' });
+  if (!normalized.retestWindow || normalized.retestWindow.length > 120) {
+    throw Object.assign(new Error('复测窗口缺失或无效。'), { code: 'retest_window_invalid' });
+  }
+  return `learning-action-${crypto.createHash('sha256').update(JSON.stringify(normalized)).digest('hex')}`;
+}
 
 function learningStatePath(studentRootPath) {
   return path.join(studentRootPath, '.edu-manager', 'learning-state.sqlite3');
@@ -112,6 +132,43 @@ function schemaSql() {
       PRIMARY KEY(student_id,correction_id), UNIQUE(student_id,commit_key)
     ) WITHOUT ROWID, STRICT;
     CREATE INDEX IF NOT EXISTS learning_corrections_target ON learning_corrections(student_id,target_type,object_id,target_revision,created_at);
+    CREATE TABLE IF NOT EXISTS learning_action_intents (
+      student_id TEXT NOT NULL, action_key TEXT NOT NULL, action_id TEXT NOT NULL,
+      subject_type TEXT NOT NULL CHECK(subject_type IN ('goal','problem')), subject_id TEXT NOT NULL,
+      subject_revision INTEGER NOT NULL, action_type TEXT NOT NULL CHECK(action_type IN ('learning_task','targeted_practice')),
+      retest_window TEXT NOT NULL, title TEXT NOT NULL, payload_json TEXT NOT NULL DEFAULT '{}',
+      status TEXT NOT NULL DEFAULT 'pending', current_round INTEGER NOT NULL DEFAULT 0,
+      origin_commit_key TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+      actor_role TEXT NOT NULL, actor_id TEXT NOT NULL DEFAULT '',
+      PRIMARY KEY(student_id,action_key), UNIQUE(student_id,action_id)
+    ) WITHOUT ROWID, STRICT;
+    CREATE INDEX IF NOT EXISTS learning_action_intents_status ON learning_action_intents(student_id,status,updated_at);
+    CREATE TABLE IF NOT EXISTS learning_action_bindings (
+      student_id TEXT NOT NULL, action_key TEXT NOT NULL, round INTEGER NOT NULL,
+      entity_type TEXT NOT NULL CHECK(entity_type IN ('task','practice_card')),
+      entity_id TEXT NOT NULL DEFAULT '', status TEXT NOT NULL,
+      idempotency_key TEXT NOT NULL, receipt_id TEXT NOT NULL DEFAULT '',
+      begin_commit_key TEXT NOT NULL, settle_commit_key TEXT NOT NULL DEFAULT '',
+      created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+      PRIMARY KEY(student_id,action_key,round), UNIQUE(student_id,idempotency_key),
+      FOREIGN KEY(student_id,action_key) REFERENCES learning_action_intents(student_id,action_key)
+    ) WITHOUT ROWID, STRICT;
+    CREATE INDEX IF NOT EXISTS learning_action_bindings_entity ON learning_action_bindings(student_id,entity_type,entity_id);
+    CREATE TABLE IF NOT EXISTS learning_action_feedback (
+      student_id TEXT NOT NULL, action_key TEXT NOT NULL, round INTEGER NOT NULL,
+      feedback_id TEXT NOT NULL, outcome TEXT NOT NULL, payload_json TEXT NOT NULL DEFAULT '{}',
+      occurred_at TEXT NOT NULL, created_at TEXT NOT NULL,
+      PRIMARY KEY(student_id,action_key,round,feedback_id),
+      FOREIGN KEY(student_id,action_key,round) REFERENCES learning_action_bindings(student_id,action_key,round)
+    ) WITHOUT ROWID, STRICT;
+    CREATE TABLE IF NOT EXISTS learning_action_suppressions (
+      student_id TEXT NOT NULL, suppression_id TEXT NOT NULL, action_key TEXT NOT NULL,
+      round INTEGER NOT NULL, reason TEXT NOT NULL, detail TEXT NOT NULL DEFAULT '',
+      gate_key TEXT NOT NULL, created_at TEXT NOT NULL,
+      PRIMARY KEY(student_id,suppression_id), UNIQUE(student_id,gate_key),
+      FOREIGN KEY(student_id,action_key) REFERENCES learning_action_intents(student_id,action_key)
+    ) WITHOUT ROWID, STRICT;
+    CREATE INDEX IF NOT EXISTS learning_action_suppressions_action ON learning_action_suppressions(student_id,action_key,created_at);
   `;
 }
 
@@ -587,6 +644,198 @@ function createLearningStateStore({ dbPath, now = Date.now, quickCheck = true })
     });
   }
 
+  function mapActionBinding(row) {
+    if (!row) return null;
+    return {
+      studentId: row.student_id, actionKey: row.action_key, round: Number(row.round),
+      entityType: row.entity_type, entityId: row.entity_id, status: row.status,
+      idempotencyKey: row.idempotency_key, receiptId: row.receipt_id,
+      createdAt: row.created_at, updatedAt: row.updated_at,
+    };
+  }
+
+  function mapAction(row, binding = undefined) {
+    if (!row) return null;
+    return {
+      studentId: row.student_id, actionKey: row.action_key, actionId: row.action_id,
+      subjectType: row.subject_type, subjectId: row.subject_id, subjectRevision: Number(row.subject_revision),
+      actionType: row.action_type, retestWindow: row.retest_window, title: row.title,
+      payload: parseJson(row.payload_json, {}), status: row.status, currentRound: Number(row.current_round),
+      createdAt: row.created_at, updatedAt: row.updated_at,
+      ...(binding !== undefined ? { binding } : {}),
+    };
+  }
+
+  function actionRow(studentId, actionKey) {
+    return db.prepare('SELECT * FROM learning_action_intents WHERE student_id=? AND action_key=?').get(studentId, actionKey);
+  }
+
+  function currentBindingRow(studentId, actionKey, round) {
+    return db.prepare('SELECT * FROM learning_action_bindings WHERE student_id=? AND action_key=? AND round=?')
+      .get(studentId, actionKey, round);
+  }
+
+  function ensureActionIntent(scope, input = {}, commitKey) {
+    const actor = assertScope(scope, input.studentId);
+    commitKey = text(commitKey);
+    if (!commitKey) throw Object.assign(new Error('稳定提交键缺失。'), { code: 'commit_key_missing' });
+    const actionKey = stableActionKey({ ...input, studentId: actor.studentId });
+    const existing = actionRow(actor.studentId, actionKey);
+    if (existing) return mapAction(existing, mapActionBinding(currentBindingRow(actor.studentId, actionKey, Number(existing.current_round))));
+    const createdAt = nowIso(now);
+    const actionId = id('action');
+    return transaction(() => {
+      db.prepare(`INSERT INTO learning_action_intents(student_id,action_key,action_id,subject_type,subject_id,subject_revision,
+        action_type,retest_window,title,payload_json,status,current_round,origin_commit_key,created_at,updated_at,actor_role,actor_id)
+        VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(actor.studentId, actionKey, actionId, text(input.subjectType), text(input.subjectId),
+        Number(input.subjectRevision), text(input.actionType), text(input.retestWindow), text(input.title) || '下一步学习行动',
+        JSON.stringify(input.payload && typeof input.payload === 'object' ? input.payload : {}), 'pending', 0, commitKey,
+        createdAt, createdAt, actor.actorRole, actor.actorId);
+      advanceGeneration(createdAt);
+      return mapAction(actionRow(actor.studentId, actionKey), null);
+    });
+  }
+
+  function getActionIntent(scope, actionKey) {
+    const actor = assertScope(scope);
+    actionKey = text(actionKey);
+    const row = actionRow(actor.studentId, actionKey);
+    if (!row) throw Object.assign(new Error('学习行动不存在。'), { code: 'learning_action_missing' });
+    const binding = Number(row.current_round) > 0 ? currentBindingRow(actor.studentId, actionKey, Number(row.current_round)) : null;
+    return mapAction(row, mapActionBinding(binding));
+  }
+
+  function suppressAction(scope, actionKey, input = {}) {
+    const actor = assertScope(scope);
+    const row = actionRow(actor.studentId, text(actionKey));
+    if (!row) throw Object.assign(new Error('学习行动不存在。'), { code: 'learning_action_missing' });
+    const reason = text(input.reason);
+    if (!reason) throw Object.assign(new Error('行动暂停原因缺失。'), { code: 'action_suppression_reason_missing' });
+    const requestedRound = Number(input.round);
+    const round = Number.isInteger(requestedRound) && requestedRound > 0
+      ? requestedRound : Math.max(1, Number(row.current_round || 0) + (Number(row.current_round || 0) === 0 ? 1 : 0));
+    const gateKey = text(input.gateKey) || `${row.action_key}:${round}:${reason}`;
+    const existing = db.prepare('SELECT * FROM learning_action_suppressions WHERE student_id=? AND gate_key=?').get(actor.studentId, gateKey);
+    if (existing) return { actionId: row.action_id, actionKey: row.action_key, status: 'suppressed', reason: existing.reason, suppressionId: existing.suppression_id };
+    const createdAt = nowIso(now);
+    return transaction(() => {
+      const suppressionId = id('suppression');
+      db.prepare(`INSERT INTO learning_action_suppressions(student_id,suppression_id,action_key,round,reason,detail,gate_key,created_at)
+        VALUES(?,?,?,?,?,?,?,?)`).run(actor.studentId, suppressionId, row.action_key, round, reason, text(input.detail), gateKey, createdAt);
+      db.prepare('UPDATE learning_action_intents SET status=?,updated_at=? WHERE student_id=? AND action_key=?')
+        .run('suppressed', createdAt, actor.studentId, row.action_key);
+      advanceGeneration(createdAt);
+      return { actionId: row.action_id, actionKey: row.action_key, status: 'suppressed', reason, suppressionId };
+    });
+  }
+
+  function beginActionDispatch(scope, actionKey, input = {}) {
+    const actor = assertScope(scope);
+    const row = actionRow(actor.studentId, text(actionKey));
+    if (!row) throw Object.assign(new Error('学习行动不存在。'), { code: 'learning_action_missing' });
+    const entityType = text(input.entityType);
+    if (!['task', 'practice_card'].includes(entityType)) throw Object.assign(new Error('行动绑定类型无效。'), { code: 'action_entity_type_invalid' });
+    const round = Number(input.round || Math.max(1, Number(row.current_round || 0)));
+    if (!Number.isInteger(round) || round < 1) throw Object.assign(new Error('行动轮次无效。'), { code: 'action_round_invalid' });
+    const commitKey = text(input.commitKey);
+    if (!commitKey) throw Object.assign(new Error('稳定提交键缺失。'), { code: 'commit_key_missing' });
+    const existing = currentBindingRow(actor.studentId, row.action_key, round);
+    if (existing) return mapActionBinding(existing);
+    const currentRound = Number(row.current_round || 0);
+    if (round !== currentRound + 1) throw Object.assign(new Error('行动轮次必须连续。'), { code: 'action_round_conflict', currentRound });
+    if (currentRound > 0) {
+      const previous = currentBindingRow(actor.studentId, row.action_key, currentRound);
+      if (!['failed', 'cancelled'].includes(previous?.status)) {
+        throw Object.assign(new Error('当前行动仍有未终结绑定，不得创建替代行动。'), { code: 'action_binding_active' });
+      }
+    }
+    const createdAt = nowIso(now);
+    const idempotencyKey = `${row.action_key}:round:${round}`;
+    return transaction(() => {
+      db.prepare(`INSERT INTO learning_action_bindings(student_id,action_key,round,entity_type,entity_id,status,idempotency_key,
+        receipt_id,begin_commit_key,settle_commit_key,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`)
+        .run(actor.studentId, row.action_key, round, entityType, '', 'dispatching', idempotencyKey, '', commitKey, '', createdAt, createdAt);
+      db.prepare('UPDATE learning_action_intents SET status=?,current_round=?,updated_at=? WHERE student_id=? AND action_key=?')
+        .run('dispatching', round, createdAt, actor.studentId, row.action_key);
+      advanceGeneration(createdAt);
+      return mapActionBinding(currentBindingRow(actor.studentId, row.action_key, round));
+    });
+  }
+
+  function settleActionDispatch(scope, actionKey, input = {}) {
+    const actor = assertScope(scope);
+    const row = actionRow(actor.studentId, text(actionKey));
+    if (!row) throw Object.assign(new Error('学习行动不存在。'), { code: 'learning_action_missing' });
+    const round = Number(input.round);
+    if (!Number.isInteger(round) || round < 1) throw Object.assign(new Error('行动轮次无效。'), { code: 'action_round_invalid' });
+    if (round < Number(row.current_round)) return { ignored: true, reason: 'late_receipt', actionKey: row.action_key, round };
+    if (round > Number(row.current_round)) throw Object.assign(new Error('回执轮次超前。'), { code: 'action_round_conflict' });
+    const binding = currentBindingRow(actor.studentId, row.action_key, round);
+    if (!binding) throw Object.assign(new Error('行动绑定不存在。'), { code: 'action_binding_missing' });
+    const status = text(input.status);
+    if (!ACTION_BINDING_STATUSES.has(status) || status === 'dispatching') throw Object.assign(new Error('行动回执状态无效。'), { code: 'action_status_invalid' });
+    const commitKey = text(input.commitKey);
+    if (!commitKey) throw Object.assign(new Error('稳定提交键缺失。'), { code: 'commit_key_missing' });
+    const entityId = text(input.entityId) || binding.entity_id;
+    const receiptId = text(input.receiptId) || binding.receipt_id;
+    if (binding.settle_commit_key === commitKey || (binding.status === status && binding.entity_id === entityId && binding.receipt_id === receiptId)) {
+      return mapActionBinding(binding);
+    }
+    if (binding.status === 'completed' && status !== 'completed') {
+      return { ...mapActionBinding(binding), ignored: true, reason: 'terminal_binding' };
+    }
+    const updatedAt = nowIso(now);
+    return transaction(() => {
+      db.prepare(`UPDATE learning_action_bindings SET entity_id=?,status=?,receipt_id=?,settle_commit_key=?,updated_at=?
+        WHERE student_id=? AND action_key=? AND round=?`).run(entityId, status, receiptId, commitKey, updatedAt,
+        actor.studentId, row.action_key, round);
+      db.prepare('UPDATE learning_action_intents SET status=?,updated_at=? WHERE student_id=? AND action_key=?')
+        .run(status, updatedAt, actor.studentId, row.action_key);
+      advanceGeneration(updatedAt);
+      return mapActionBinding(currentBindingRow(actor.studentId, row.action_key, round));
+    });
+  }
+
+  function recordActionFeedback(scope, actionKey, input = {}) {
+    const actor = assertScope(scope);
+    const row = actionRow(actor.studentId, text(actionKey));
+    if (!row) throw Object.assign(new Error('学习行动不存在。'), { code: 'learning_action_missing' });
+    const round = Number(input.round);
+    const feedbackId = text(input.feedbackId);
+    if (!Number.isInteger(round) || round < 1 || !feedbackId) throw Object.assign(new Error('行动反馈标识无效。'), { code: 'action_feedback_invalid' });
+    const binding = currentBindingRow(actor.studentId, row.action_key, round);
+    if (!binding) throw Object.assign(new Error('行动绑定不存在。'), { code: 'action_binding_missing' });
+    const existing = db.prepare(`SELECT * FROM learning_action_feedback WHERE student_id=? AND action_key=? AND round=? AND feedback_id=?`)
+      .get(actor.studentId, row.action_key, round, feedbackId);
+    if (existing) return { actionKey: row.action_key, round, feedbackId: existing.feedback_id, outcome: existing.outcome, occurredAt: existing.occurred_at };
+    const outcome = text(input.outcome);
+    if (!outcome) throw Object.assign(new Error('行动反馈结果缺失。'), { code: 'action_feedback_invalid' });
+    const occurredAt = reliableIso(input.occurredAt) || nowIso(now);
+    const createdAt = nowIso(now);
+    return transaction(() => {
+      db.prepare(`INSERT INTO learning_action_feedback(student_id,action_key,round,feedback_id,outcome,payload_json,occurred_at,created_at)
+        VALUES(?,?,?,?,?,?,?,?)`).run(actor.studentId, row.action_key, round, feedbackId, outcome,
+        JSON.stringify(input.payload && typeof input.payload === 'object' ? input.payload : {}), occurredAt, createdAt);
+      if (round === Number(row.current_round) && outcome === 'completed') {
+        db.prepare(`UPDATE learning_action_bindings SET status='completed',updated_at=? WHERE student_id=? AND action_key=? AND round=?`)
+          .run(createdAt, actor.studentId, row.action_key, round);
+        db.prepare(`UPDATE learning_action_intents SET status='completed',updated_at=? WHERE student_id=? AND action_key=?`)
+          .run(createdAt, actor.studentId, row.action_key);
+      }
+      advanceGeneration(createdAt);
+      return { actionKey: row.action_key, round, feedbackId, outcome, occurredAt };
+    });
+  }
+
+  function listActions(studentId, asOf) {
+    const rows = db.prepare('SELECT * FROM learning_action_intents WHERE student_id=? AND created_at<=? ORDER BY created_at,action_id')
+      .all(studentId, asOf);
+    return rows.map((row) => {
+      const binding = Number(row.current_round) > 0 ? currentBindingRow(studentId, row.action_key, Number(row.current_round)) : null;
+      return mapAction(row, mapActionBinding(binding));
+    });
+  }
+
   function latestEffectiveRows(table, idColumn, targetType, studentId, asOf, mapper) {
     const rows = db.prepare(`SELECT item.* FROM ${table} item JOIN (
       SELECT ${idColumn} object_id,MAX(revision) revision FROM ${table} WHERE student_id=? AND created_at<=? GROUP BY ${idColumn}
@@ -605,10 +854,11 @@ function createLearningStateStore({ dbPath, now = Date.now, quickCheck = true })
     const evidence = latestEffectiveRows('learning_evidence_versions', 'evidence_id', 'evidence', studentId, asOf, mapEvidence);
     const findings = db.prepare('SELECT * FROM learning_findings WHERE student_id=? AND created_at<=? ORDER BY created_at DESC')
       .all(studentId, asOf).filter((row) => !correctionExists(studentId, 'finding', row.finding_id, 1, asOf)).map(mapFinding);
+    const actions = listActions(studentId, asOf);
     return {
       studentId, asOf, policyVersion: POLICY_VERSION, authorizationVersion: text(reader.authorizationVersion) || 'local-host-v1',
-      ...state(), checkIns, goals, problems, evidence, findings,
-      automationEnabled: false,
+      ...state(), checkIns, goals, problems, evidence, findings, actions,
+      automationEnabled: null,
       coverage: { hasBaseline: checkIns.some((item) => item.kind === 'baseline'), weeklyFeedbackCount: checkIns.filter((item) => item.kind === 'weekly').length },
     };
   }
@@ -621,14 +871,25 @@ function createLearningStateStore({ dbPath, now = Date.now, quickCheck = true })
       problems: db.prepare('SELECT * FROM learning_problem_versions WHERE student_id=? ORDER BY problem_id,revision').all(studentId).map(mapProblem),
       evidence: db.prepare('SELECT * FROM learning_evidence_versions WHERE student_id=? ORDER BY evidence_id,revision').all(studentId).map(mapEvidence),
       corrections: db.prepare('SELECT * FROM learning_corrections WHERE student_id=? ORDER BY created_at').all(studentId).map(mapCorrection),
+      actions: db.prepare('SELECT * FROM learning_action_intents WHERE student_id=? ORDER BY created_at').all(studentId).map((row) => mapAction(row)),
+      bindings: db.prepare('SELECT * FROM learning_action_bindings WHERE student_id=? ORDER BY action_key,round').all(studentId).map(mapActionBinding),
+      feedback: db.prepare('SELECT * FROM learning_action_feedback WHERE student_id=? ORDER BY created_at').all(studentId).map((row) => ({
+        actionKey: row.action_key, round: Number(row.round), feedbackId: row.feedback_id, outcome: row.outcome,
+        payload: parseJson(row.payload_json, {}), occurredAt: row.occurred_at, createdAt: row.created_at,
+      })),
+      suppressions: db.prepare('SELECT * FROM learning_action_suppressions WHERE student_id=? ORDER BY created_at').all(studentId).map((row) => ({
+        suppressionId: row.suppression_id, actionKey: row.action_key, round: Number(row.round), reason: row.reason,
+        detail: row.detail, createdAt: row.created_at,
+      })),
     };
   }
 
   return {
     dbPath, db, state, reconcileEvents, listPoints, weeklyGrowth,
     submitCheckIn, upsertGoal, upsertProblem, ingestEvidence, publishFindings, correctOrWithdraw, getLearningState, history,
+    ensureActionIntent, getActionIntent, suppressAction, beginActionDispatch, settleActionDispatch, recordActionFeedback,
     close() { db.close(); },
   };
 }
 
-module.exports = { SCHEMA_VERSION, POLICY_VERSION, DIMENSIONS, createLearningStateStore, learningStatePath, localDateKey, weekCalendar };
+module.exports = { SCHEMA_VERSION, POLICY_VERSION, DIMENSIONS, createLearningStateStore, learningStatePath, localDateKey, weekCalendar, stableActionKey };

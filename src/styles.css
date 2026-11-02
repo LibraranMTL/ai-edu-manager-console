@@ -7887,6 +7887,9 @@ textarea:focus {
 .learning-state-dimensions { display: grid; grid-template-columns: repeat(5, minmax(130px, 1fr)); gap: 10px; }
 .learning-state-dimensions label { display: grid; gap: 6px; font-size: 13px; }
 .learning-state-columns { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+.learning-state-panel .download-item { grid-template-columns: minmax(0, 1fr); gap: 10px; }
+.learning-state-panel .inline-actions { display: flex; justify-content: flex-start; gap: 6px; flex-wrap: wrap; }
+.learning-state-panel .inline-actions button { white-space: nowrap; }
 @media (max-width: 1000px) {
   .learning-state-dimensions { grid-template-columns: repeat(2, minmax(130px, 1fr)); }
   .learning-state-columns { grid-template-columns: 1fr; }

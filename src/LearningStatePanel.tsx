@@ -5,12 +5,13 @@ type DimensionKey = 'goalClarity' | 'confidence' | 'difficulty' | 'recovery' | '
 type LearningStateProjection = {
   asOf: string;
   generation: number;
-  automationEnabled: boolean;
+  automationEnabled: boolean | null;
   coverage: { hasBaseline: boolean; weeklyFeedbackCount: number };
   checkIns: Array<{ checkInId: string; kind: 'baseline' | 'weekly'; occurredAt: string; dimensions: Record<DimensionKey, number | null>; note: string }>;
   goals: Array<{ goalId: string; revision: number; category: string; title: string; successCriteria: string; status: string }>;
   problems: Array<{ problemId: string; revision: number; category: string; title: string; description: string; status: string }>;
   findings: Array<{ findingId: string; sourceCategory: string; statement: string; status: 'published' | 'pending' | 'disputed'; confidence: string }>;
+  actions: Array<{ actionId: string; actionKey: string; subjectType: 'goal' | 'problem'; subjectId: string; subjectRevision: number; actionType: 'learning_task' | 'targeted_practice'; retestWindow: string; title: string; status: string; currentRound: number; binding: null | { entityType: 'task' | 'practice_card'; entityId: string; status: string } }>;
 };
 
 type ActionApi = (action: string, studentId: string, input: Record<string, unknown>) => Promise<string>;
@@ -31,6 +32,17 @@ const sourceLabels: Record<string, string> = {
 function submissionId(prefix: string) {
   return `${prefix}-${Date.now()}-${globalThis.crypto?.randomUUID?.() || Math.random().toString(36).slice(2)}`;
 }
+
+function nextRetestWindow() {
+  const start = new Date(); start.setHours(0, 0, 0, 0);
+  const end = new Date(start); end.setDate(end.getDate() + 6);
+  return `${start.toISOString().slice(0, 10)}/${end.toISOString().slice(0, 10)}`;
+}
+
+const actionStatusLabels: Record<string, string> = {
+  pending: '等待派发', suppressed: '已保留，等待条件恢复', dispatching: '正在创建', unknown: '结果待对账',
+  dispatched: '已创建', completed: '已完成', failed: '创建失败', cancelled: '已取消',
+};
 
 export function LearningStatePanel({ studentId, studentName, actionApi }: { studentId: string; studentName: string; actionApi?: ActionApi }) {
   const [projection, setProjection] = useState<LearningStateProjection | null>(null);
@@ -104,6 +116,23 @@ export function LearningStatePanel({ studentId, studentName, actionApi }: { stud
     finally { setBusy(false); }
   };
 
+  const dispatchAction = async (subjectType: 'goal' | 'problem', item: LearningStateProjection['goals'][number] | LearningStateProjection['problems'][number], actionType: 'learning_task' | 'targeted_practice') => {
+    setBusy(true); setMessage('');
+    try {
+      const result = await invoke('dispatchLearningAction', { action: {
+        subjectType, subjectId: subjectType === 'goal' ? (item as LearningStateProjection['goals'][number]).goalId : (item as LearningStateProjection['problems'][number]).problemId,
+        subjectRevision: item.revision, actionType, retestWindow: nextRetestWindow(),
+        title: actionType === 'targeted_practice' ? `${item.title} · 专项复测` : `${item.title} · 下一步任务`,
+        payload: { subject: '自动', focus: item.title },
+      } }) as { status?: string; reason?: string; reused?: boolean };
+      await refresh(true);
+      setMessage(result.status === 'suppressed'
+        ? `行动意图已保留：${actionStatusLabels[result.status] || result.status}（${result.reason || '门禁未满足'}）。`
+        : result.reused ? '已复用同一复测窗口中的现有行动，没有重复创建。' : '下一步行动已进入现有任务或学习卡链路。');
+    } catch (error) { setMessage(error instanceof Error ? error.message : '行动派发失败。'); }
+    finally { setBusy(false); }
+  };
+
   const revise = async (targetType: 'goal' | 'problem', item: LearningStateProjection['goals'][number] | LearningStateProjection['problems'][number]) => {
     const title = window.prompt('请输入更正后的标题（旧修订会保留）：', item.title);
     if (!title?.trim() || title.trim() === item.title) return;
@@ -117,7 +146,7 @@ export function LearningStatePanel({ studentId, studentName, actionApi }: { stud
   };
 
   return <div className="learning-state-panel">
-    <div className="notice muted"><strong>{studentName} · 学习状态一期 1A</strong><br />五维反馈分别呈现，不合成总分，不用于诊断、排名或纪律判断。自动行动尚未启用，记录、查看、更正与撤回不受影响。</div>
+    <div className="notice muted"><strong>{studentName} · 学习状态一期 1B</strong><br />五维反馈分别呈现，不合成总分，不用于诊断、排名或纪律判断。行动派发门禁{projection?.automationEnabled ? '已开启' : '已暂停'}；暂停时保留原行动意图，1A 记录、查看、更正与撤回仍可使用。</div>
     <div className="learning-state-toolbar">
       <span>{projection?.coverage.hasBaseline ? <><CheckCircle2 size={16} />已建立首次基线</> : <><AlertTriangle size={16} />尚未建立首次基线</>}</span>
       <span>周反馈 {projection?.coverage.weeklyFeedbackCount || 0} 次</span>
@@ -137,9 +166,11 @@ export function LearningStatePanel({ studentId, studentName, actionApi }: { stud
     </div>
 
     <div className="learning-state-columns">
-      <section><h3>当前目标</h3><div className="download-list growth-list">{projection?.goals.map((item) => <div className="download-item" key={item.goalId}><span><strong>{item.title}</strong><small>{item.category} · {item.status} · 修订 {item.revision}</small><small>{item.successCriteria || '尚未填写完成标准'}</small></span><div className="inline-actions"><button className="secondary compact" type="button" onClick={() => void revise('goal', item)}>更正</button><button className="secondary compact" type="button" onClick={() => void withdraw('goal', item.goalId, item.revision)}><Trash2 size={14} />撤回</button></div></div>)}{!projection?.goals.length && <div className="empty-state">暂无有效目标。</div>}</div></section>
-      <section><h3>待观察问题</h3><div className="download-list growth-list">{projection?.problems.map((item) => <div className="download-item" key={item.problemId}><span><strong>{item.title}</strong><small>{item.category} · {item.status} · 修订 {item.revision}</small><small>{item.description || '尚未填写观察说明'}</small></span><div className="inline-actions"><button className="secondary compact" type="button" onClick={() => void revise('problem', item)}>更正</button><button className="secondary compact" type="button" onClick={() => void withdraw('problem', item.problemId, item.revision)}><Trash2 size={14} />撤回</button></div></div>)}{!projection?.problems.length && <div className="empty-state">暂无待观察问题。</div>}</div></section>
+      <section><h3>当前目标</h3><div className="download-list growth-list">{projection?.goals.map((item) => <div className="download-item" key={item.goalId}><span><strong>{item.title}</strong><small>{item.category} · {item.status} · 修订 {item.revision}</small><small>{item.successCriteria || '尚未填写完成标准'}</small></span><div className="inline-actions"><button className="secondary compact" type="button" disabled={busy} onClick={() => void dispatchAction('goal', item, 'learning_task')}>加入任务中心</button><button className="secondary compact" type="button" onClick={() => void revise('goal', item)}>更正</button><button className="secondary compact" type="button" onClick={() => void withdraw('goal', item.goalId, item.revision)}><Trash2 size={14} />撤回</button></div></div>)}{!projection?.goals.length && <div className="empty-state">暂无有效目标。</div>}</div></section>
+      <section><h3>待观察问题</h3><div className="download-list growth-list">{projection?.problems.map((item) => <div className="download-item" key={item.problemId}><span><strong>{item.title}</strong><small>{item.category} · {item.status} · 修订 {item.revision}</small><small>{item.description || '尚未填写观察说明'}</small></span><div className="inline-actions"><button className="secondary compact" type="button" disabled={busy} onClick={() => void dispatchAction('problem', item, 'targeted_practice')}>安排专项卡</button><button className="secondary compact" type="button" onClick={() => void revise('problem', item)}>更正</button><button className="secondary compact" type="button" onClick={() => void withdraw('problem', item.problemId, item.revision)}><Trash2 size={14} />撤回</button></div></div>)}{!projection?.problems.length && <div className="empty-state">暂无待观察问题。</div>}</div></section>
     </div>
+
+    <section><h3>下一步行动</h3><div className="download-list growth-list">{projection?.actions.map((item) => <div className="download-item" key={item.actionId}><span><strong>{item.title}</strong><small>{item.actionType === 'targeted_practice' ? '专项学习卡' : '学习任务'} · {actionStatusLabels[item.binding?.status || item.status] || item.status}</small><small>复测窗口 {item.retestWindow}{item.binding?.entityId ? ` · 已绑定 ${item.binding.entityType === 'task' ? '任务' : '卡片'}` : ''}</small></span></div>)}{!projection?.actions.length && <div className="empty-state">尚无行动意图。当前可从目标或问题安排下一步；自动证据规则将在后续切片接入。</div>}</div></section>
 
     <section><h3>已发布事实与待观察项</h3><div className="download-list growth-list">{projection?.findings.map((item) => <div className="download-item" key={item.findingId}><span><strong>{sourceLabels[item.sourceCategory] || item.sourceCategory} · {item.status === 'published' ? '已发布' : item.status === 'disputed' ? '存在冲突' : '待观察'}</strong><small>{item.statement}</small><small>证据置信标签：{item.confidence}</small></span></div>)}{!projection?.findings.length && <div className="empty-state">尚无可发布结论。可以先完成首次基线；证据不足时系统只展示事实和待观察项。</div>}</div></section>
     {message && <div className="notice" role="status">{message}</div>}

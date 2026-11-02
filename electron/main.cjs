@@ -309,6 +309,7 @@ const {
   createLearningStateStore,
   learningStatePath,
 } = require('./learning-state-store.cjs');
+const { createLearningActionLoop } = require('./learning-action-loop.cjs');
 const {
   reconcileCompletedDigestLearningReceipts,
   supplementCompletedDigestLearningEvents,
@@ -13428,12 +13429,83 @@ function weeklyGrowthAuthorizationVersion() {
 function emptyLearningStateProjection(studentId, asOf, authorizationVersion) {
   return {
     ok: true, studentId, asOf, policyVersion: LEARNING_STATE_POLICY_VERSION, authorizationVersion,
-    generation: 0, changedAt: '', checkIns: [], goals: [], problems: [], evidence: [], findings: [],
-    automationEnabled: false, coverage: { hasBaseline: false, weeklyFeedbackCount: 0 },
+    generation: 0, changedAt: '', checkIns: [], goals: [], problems: [], evidence: [], findings: [], actions: [],
+    automationEnabled: taskAutomationEnabled(), coverage: { hasBaseline: false, weeklyFeedbackCount: 0 },
   };
 }
 
-function learningStateActionJson(action, studentId, inputJson = '{}') {
+function learningActionTaskId(actionKey) {
+  return `student-learning-${sha1Text(String(actionKey)).slice(0, 32)}`;
+}
+
+function learningTaskStatus(task) {
+  if (!task) return null;
+  if (['succeeded', 'archived'].includes(String(task.status))) return 'completed';
+  if (['failed', 'blocked', 'timed_out'].includes(String(task.status))) return 'failed';
+  if (task.status === 'cancelled') return 'cancelled';
+  return 'dispatched';
+}
+
+async function learningActionGateState(studentId, actionType) {
+  const student = findStudentByKey(studentId);
+  let capacityAvailable = true;
+  if (actionType === 'targeted_practice') {
+    const dashboard = await getPracticeCards().dashboard(String(studentId));
+    capacityAvailable = dashboard.history.filter((card) => ['ready', 'started'].includes(String(card.status))).length < 2;
+  } else {
+    const active = readTaskStore().tasks.filter((task) => String(task.sourceId) === String(studentId)
+      && task.kind === 'student_learning_action' && !TASK_TERMINAL_STATUSES.has(String(task.status))).length;
+    capacityAvailable = active < 5;
+  }
+  return {
+    automationEnabled: taskAutomationEnabled(),
+    studentPaused: !student || studentAutomaticTasksPaused(student),
+    capacityAvailable,
+    executorAvailable: actionType !== 'targeted_practice'
+      || (publicLicenseStatus().active && projectArchiveRuntime.status().ready && taskPowerRecovery.canDispatch() && !taskStoreGuard.status()),
+  };
+}
+
+async function dispatchLearningTaskEntity(input) {
+  const taskId = learningActionTaskId(input.actionKey);
+  upsertTaskCandidates([{
+    id: taskId, title: String(input.title || '下一步学习行动'), kind: 'student_learning_action',
+    sourceType: 'student', sourceId: String(input.studentId), sourceName: String(findStudentByKey(input.studentId)?.name || ''),
+    status: 'pending', trigger: 'scheduled', automaticExecution: false, executor: 'student', executionMode: 'student_action',
+    idempotencyKey: input.idempotencyKey, completionPolicy: 'student_feedback', riskLevel: 'low', autoRetry: false,
+    input: { learningActionKey: input.actionKey, subjectType: input.subjectType, subjectId: input.subjectId,
+      subjectRevision: input.subjectRevision, retestWindow: input.retestWindow, ...input.payload },
+    expectedOutput: { type: 'student_learning_action_feedback', actionKey: input.actionKey },
+    permissions: { read: [], write: [], operations: [] },
+  }]);
+  await taskStoreGuard.flush();
+  return { entityId: taskId, status: 'dispatched', receiptId: `task-store:${taskId}` };
+}
+
+async function dispatchLearningPracticeEntity(input) {
+  const subject = ['数学', '语文', '英语', '物理', '化学', '生物', '历史', '地理'].includes(String(input.payload?.subject || ''))
+    ? String(input.payload.subject) : '自动';
+  const generated = await getPracticeCards().generateForAction(String(input.studentId), {
+    businessActionKey: input.actionKey,
+    plan: { subject, range: 'auto', minutes: 10, template: 'clear', focus: String(input.payload?.focus || input.title || '').slice(0, 200), autoEnabled: false },
+  });
+  if (!generated?.card?.id) throw Object.assign(new Error(generated?.message || '学习卡容量已满，行动意图已保留。'), { code: 'learning_card_not_created' });
+  return { entityId: generated.card.id, status: generated.card.status === 'completed' ? 'completed' : 'dispatched', receiptId: `practice-card:${generated.card.id}` };
+}
+
+async function reconcileLearningActionBinding(input) {
+  if (input.entityType === 'task') {
+    const taskId = input.entityId || learningActionTaskId(input.actionKey);
+    const task = readTaskStore().tasks.find((item) => String(item.id) === taskId || String(item.idempotencyKey) === String(input.idempotencyKey));
+    const status = learningTaskStatus(task);
+    return status ? { entityId: task.id, status, receiptId: `task-store:${task.id}:${task.updatedAt || ''}` } : null;
+  }
+  const dashboard = await getPracticeCards().dashboard(String(input.studentId));
+  const card = dashboard.history.find((item) => String(item.businessActionKey || '') === String(input.actionKey));
+  return card ? { entityId: card.id, status: card.status === 'completed' ? 'completed' : 'dispatched', receiptId: `practice-card:${card.id}:${card.status}` } : null;
+}
+
+async function learningStateActionJson(action, studentId, inputJson = '{}') {
   let store;
   try {
     const context = studentKnowledgeContext(JSON.stringify({ studentId }));
@@ -13448,7 +13520,10 @@ function learningStateActionJson(action, studentId, inputJson = '{}') {
     store = createLearningStateStore({ dbPath });
     const scope = { studentId: context.input.studentId, actorRole: 'admin', actorId: 'windows-host' };
     let result;
-    if (action === 'get') result = store.getLearningState({ role: 'admin', studentId: context.input.studentId, authorizationVersion }, context.input.studentId, asOf);
+    if (action === 'get') {
+      result = store.getLearningState({ role: 'admin', studentId: context.input.studentId, authorizationVersion }, context.input.studentId, asOf);
+      result.automationEnabled = taskAutomationEnabled();
+    }
     else if (action === 'submitCheckIn') {
       result = store.submitCheckIn(scope, input.payload || {}, input.clientSubmissionId);
       store.publishFindings(context.input.studentId, new Date().toISOString());
@@ -13461,6 +13536,18 @@ function learningStateActionJson(action, studentId, inputJson = '{}') {
     }
     else if (action === 'publishFindings') result = store.publishFindings(context.input.studentId, asOf);
     else if (action === 'correctOrWithdraw') result = store.correctOrWithdraw(scope, input);
+    else if (action === 'dispatchLearningAction') {
+      const actionInput = { ...(input.action || {}), studentId: context.input.studentId };
+      const loop = createLearningActionLoop({
+        store,
+        gateState: (candidate) => learningActionGateState(context.input.studentId, candidate.actionType),
+        dispatchTask: dispatchLearningTaskEntity,
+        dispatchPractice: dispatchLearningPracticeEntity,
+        reconcileBinding: (binding) => reconcileLearningActionBinding({ ...binding, studentId: context.input.studentId }),
+      });
+      result = await loop.dispatch(scope, actionInput);
+    }
+    else if (action === 'recordActionFeedback') result = store.recordActionFeedback(scope, input.actionKey, input.feedback || {});
     else throw Object.assign(new Error('未知学情状态操作。'), { code: 'learning_state_action_invalid' });
     return JSON.stringify({ ok: true, data: result });
   } catch (error) {

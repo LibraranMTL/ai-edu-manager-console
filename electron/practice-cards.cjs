@@ -27,7 +27,7 @@ function publicCard(card) {
   if (!card) return null;
   const content = Object.fromEntries(['title','subject','knowledgePoint','minutes','rationale','sourceRefs','prompt','hint','format'].filter(key => card.content[key] !== undefined).map(key => [key, card.content[key]]));
   if (card.status === 'completed') { content.answer = card.content.answer; content.explanation = card.content.explanation; }
-  return { ...Object.fromEntries(['id','studentId','status','template','languagePolicy','createdAt','startedAt','completedAt','supersededAt','purpose','resourceRef','resourceType','layout','generationKey','inputFingerprint','planRevision','review'].filter(key => card[key] !== undefined).map(key => [key, card[key]])), content };
+  return { ...Object.fromEntries(['id','studentId','status','template','languagePolicy','createdAt','startedAt','completedAt','supersededAt','purpose','resourceRef','resourceType','layout','generationKey','inputFingerprint','planRevision','businessActionKey','review'].filter(key => card[key] !== undefined).map(key => [key, card[key]])), content };
 }
 function createPracticeCards({ resolveStudentDir, snapshot, generate, readLanguageProfile = async () => undefined, now = () => new Date(), enqueueReview, applyLearning, extractAnswer, resolveResource }) {
   const queues = new Map(), pending = new Map();
@@ -59,14 +59,18 @@ function createPracticeCards({ resolveStudentDir, snapshot, generate, readLangua
     const languagePolicy = resolveLanguagePolicy(await readLanguageProfile(id), value.plan?.subject, previous);
     return { plan: value.plan, languagePolicy, current: publicCard(value.cards.find(card => card.status === 'started') || value.cards.filter(card => card.status === 'ready').at(-1) || value.cards[0]), history: value.cards.map(publicCard), records: value.records };
   }
-  async function create(id, trigger = 'manual', signal) {
-    const first = await load(id), initial = await snapshot(id), plan = first.value.plan;
+  async function create(id, trigger = 'manual', signal, request = {}) {
+    const first = await load(id), initial = await snapshot(id);
+    const plan = request.plan ? checkedPlan(request.plan, first.value.plan || {}) : first.value.plan;
     if (!plan) throw Error('请先保存练习计划');
     const previous = first.value.cards.find(card => card.languagePolicy)?.languagePolicy;
     const languagePolicy = resolveLanguagePolicy(initial.languageProfile, plan.subject, previous);
-    const key = digest([id, date(), initial.inputFingerprint, plan.revision, languagePolicy.fingerprint]);
-    const replaceable = card => card.status === 'ready' && (card.inputFingerprint !== initial.inputFingerprint || card.planRevision !== plan.revision ||
-      (card.generationLanguageFingerprint || resolveLanguagePolicy(card.languagePolicy ? { primaryLanguage: card.languagePolicy.instructionLanguage, supportLanguage: card.languagePolicy.supportLanguage || '' } : undefined, plan.subject).fingerprint) !== languagePolicy.fingerprint);
+    const businessActionKey = String(request.businessActionKey || '').trim();
+    const key = digest([id, date(), initial.inputFingerprint, plan.revision, languagePolicy.fingerprint, businessActionKey]);
+    const replaceable = card => card.status === 'ready'
+      && (!businessActionKey || card.businessActionKey === businessActionKey)
+      && (card.inputFingerprint !== initial.inputFingerprint || card.planRevision !== plan.revision
+        || (card.generationLanguageFingerprint || resolveLanguagePolicy(card.languagePolicy ? { primaryLanguage: card.languagePolicy.instructionLanguage, supportLanguage: card.languagePolicy.supportLanguage || '' } : undefined, plan.subject).fingerprint) !== languagePolicy.fingerprint);
     const reused = card => ({ unchanged: true, card: publicCard(card), message: '学情、计划和学习语言未变化，已复用现有卡片。' });
     if (pending.has(key)) return pending.get(key);
     const promise = (async () => {
@@ -81,7 +85,7 @@ function createPracticeCards({ resolveStudentDir, snapshot, generate, readLangua
           const latest = await snapshot(id);
           if (latest.inputFingerprint !== initial.inputFingerprint) throw Error('学情证据已变化，请重试');
           if (resolveLanguagePolicy(latest.languageProfile, plan.subject, previous).fingerprint !== languagePolicy.fingerprint) throw Error('学习语言已变化，请重新生成');
-          if ((value || (await load(id)).value).plan?.revision !== plan.revision) throw Error('练习计划已变化，请重试');
+          if (!request.plan && (value || (await load(id)).value).plan?.revision !== plan.revision) throw Error('练习计划已变化，请重试');
         };
         const generationInstruction = '只围绕一个知识点生成一张 5—15 分钟提分练习卡。依据薄弱处或近期目标适配年级，信息不足时不猜测掌握程度。rationale 说明学生依据。prompt 只放题目，不包含答案；hint 为可选引导，必须与本题实际解法和公式结构一致，不机械套用同知识点的其他方法，也不提前给出答案。必须可解、有唯一可解释答案或明确评价标准；sourceRefs 仅引用输入 E 编号。' + GENERATION_LANGUAGE_RULES;
         let content, cardLanguagePolicy, review;
@@ -110,7 +114,7 @@ function createPracticeCards({ resolveStudentDir, snapshot, generate, readLangua
           if (value.cards.filter(card => ['ready', 'started'].includes(card.status) && !replaceable(card)).length >= 2) return { unchanged: true, message: '已有当前与下一张待练卡，不再堆积新题。' };
           const replaced = value.cards.filter(replaceable);
           for (const old of replaced) { old.status = 'superseded'; old.supersededAt = now().toISOString(); }
-          const card = { id: crypto.randomUUID(), studentId: id, generationKey: key, inputFingerprint: initial.inputFingerprint, planRevision: plan.revision, status: 'ready', content, template: plan.template,
+          const card = { id: crypto.randomUUID(), studentId: id, generationKey: key, inputFingerprint: initial.inputFingerprint, planRevision: plan.revision, businessActionKey, status: 'ready', content, template: plan.template,
             languagePolicy: { ...cardLanguagePolicy, resolvedFrom: languagePolicy.resolvedFrom }, generationLanguageFingerprint: languagePolicy.fingerprint,
             createdAt: now().toISOString(), sourceIds: initial.sourceIds, review: { passed: true, languagePassed: true, reason: review.reason.slice(0, 500), mode: 'independent-agent-check', repairCount: checks.length - 1 }, generationChecks: checks };
           value.cards.unshift(card); value.records.unshift({ id: crypto.randomUUID(), trigger, status: 'generated', at: now().toISOString(), cardId: card.id }); value.records = value.records.slice(0, 200);
@@ -120,7 +124,9 @@ function createPracticeCards({ resolveStudentDir, snapshot, generate, readLangua
     })().finally(() => pending.delete(key)); pending.set(key, promise); return promise;
   }
   const feedback = require('./practice-feedback.cjs').createPracticeFeedback({ load, change, generate, now, publicCard, enqueueReview, applyLearning, extractAnswer, resolveResource });
-  return { ...feedback, dashboard, exportCard: async (id, cardId) => { const { value } = await load(id); const card = value.cards.find(item => item.id === cardId); if (!card) throw Error('卡片不属于当前学生'); return publicCard(card); }, generate: create, savePlan: (id, input) => change(id, value => { value.plan = checkedPlan(input, value.plan || {}); return value.plan; }),
+  return { ...feedback, dashboard, exportCard: async (id, cardId) => { const { value } = await load(id); const card = value.cards.find(item => item.id === cardId); if (!card) throw Error('卡片不属于当前学生'); return publicCard(card); }, generate: create,
+    generateForAction: (id, request, signal) => create(id, 'learning_state', signal, request),
+    savePlan: (id, input) => change(id, value => { value.plan = checkedPlan(input, value.plan || {}); return value.plan; }),
     start: (id, cardId) => change(id, value => { const card = value.cards.find(card => card.id === cardId); if (!card || (card.purpose && card.purpose !== 'practice') || !['ready', 'started'].includes(card.status)) throw Error('卡片不存在或不可开始'); if (card.status === 'ready' && value.cards.some(item => item.status === 'started' && item.id !== cardId)) throw Error('请先完成正在进行的卡片；新卡可以先预览或打印。'); card.status = 'started'; card.startedAt ||= now().toISOString(); return publicCard(card); }),
     submit: async (id, cardId, input) => {
       input = { ...input, difficulty: input?.difficulty ?? null, confidence: input?.confidence ?? null };

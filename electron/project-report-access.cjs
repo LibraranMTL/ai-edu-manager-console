@@ -34,12 +34,21 @@ function projectReportProjection(reader, snapshot, report, version = {}) {
   const visibleEvidence = new Set((snapshot.evidence || []).filter((item) => evidenceVisible(reader, item)).map((item) => item.evidenceId));
   const claims = (report.claims || []).filter((item) => (item.audience || []).includes(text(reader.role))
     && (item.kind === 'suggestion' || (item.evidenceIds || []).every((id) => visibleEvidence.has(id))));
+  const visibleClaimKeys = new Set(claims.map((item) => item.claimKey));
   const personalContributions = (report.personalContributions || []).filter((item) => personalVisible(reader, item)
     && (item.evidenceIds || []).every((id) => visibleEvidence.has(id)));
+  const sections = (report.sections || []).map((section) => ({ ...section,
+    items: (section.items || []).filter((item) => visibleClaimKeys.has(item.claimKey)) }));
+  const visibleChange = (item) => (item.audience || []).includes(text(reader.role))
+    && (item.evidenceIds || []).every((id) => visibleEvidence.has(id));
+  const changes = Object.fromEntries(['added', 'revised', 'withdrawn', 'unchanged'].map((key) => [key,
+    (report.changes?.[key] || []).filter(visibleChange).map(({ audience: _audience, ...item }) => item)]));
+  const summary = structuredClone(report.summary);
+  summary.representativeResults = (summary.representativeResults || []).filter((item) => visibleEvidence.has(item.evidenceId));
   return { projectId: snapshot.projectId, snapshotId: snapshot.snapshotId, versionId: version.versionId || '',
     reportType: report.reportType, asOf: snapshot.asOf, policyVersion: report.policyVersion,
     dataGeneration: Number(version.generation || 0), authorizationVersion: snapshot.authorizationVersion,
-    project: structuredClone(snapshot.project), summary: structuredClone(report.summary), claims: structuredClone(claims),
+    project: structuredClone(snapshot.project), summary, claims: structuredClone(claims), sections: structuredClone(sections), changes,
     gaps: structuredClone(report.gaps || []), personalContributions: structuredClone(personalContributions),
     coverage: structuredClone(snapshot.coverage), disclaimer: report.disclaimer };
 }

@@ -1746,6 +1746,7 @@ let projectStateStoreInstance;
 let projectStateIoClientInstance;
 let projectReportStoreInstance;
 let projectReportServiceInstance;
+const projectReportUpdateTimers = new Map();
 let businessStartupReady = false;
 const subsystemStates = {
   projects: { status: 'pending', phase: 'waiting', message: '项目数据库等待初始化。', updatedAt: '' },
@@ -1784,7 +1785,10 @@ function projectStateStore() {
 function projectStateIoClient() {
   if (!projectStateIoClientInstance) projectStateIoClientInstance = createProjectStateIoClient({
     dbPath: projectDatabasePath(), legacyJsonPath: projectsPath(),
-    onCommitted: projectId => { projectStateStoreInstance?.invalidateCaches(); markTaskSourceDirty('project',projectId,'project_transaction'); },
+    onCommitted: projectId => {
+      projectStateStoreInstance?.invalidateCaches();
+      markTaskSourceDirty('project',projectId,'project_transaction');
+    },
   });
   return projectStateIoClientInstance;
 }
@@ -1809,8 +1813,32 @@ function projectReportService() {
       return readProjectMaterialIndexSync(project);
     },
     authorizationVersion: projectReportAuthorizationVersion,
+    enqueueTask: async task => upsertTaskCandidates([task]),
   });
   return projectReportServiceInstance;
+}
+function scheduleProjectOverallReportUpdate(projectId, reason = 'project_changed') {
+  const id = String(projectId || '');
+  if (!id) return;
+  const existing = projectReportUpdateTimers.get(id);
+  if (existing) clearTimeout(existing);
+  const timer = setTimeout(async () => {
+    projectReportUpdateTimers.delete(id);
+    try {
+      const project = projectStateStore().getMetadata(id);
+      if (!project) return;
+      await projectReportService().requestUpdate(
+        { projectId: id, actorRole: 'system', actorId: 'project-report-scheduler' },
+        projectReportReader(project), id, { trigger: 'automatic', reason });
+      notify('onNativeTaskCenterChanged', JSON.stringify({ sourceType: 'project', sourceId: id, kind: 'project_overall_report' }));
+    } catch (error) { console.warn('项目总体报告自动候选未建立：', error.message); }
+  }, 10_000);
+  timer.unref?.();
+  projectReportUpdateTimers.set(id, timer);
+}
+function stopProjectOverallReportUpdateTimers() {
+  for (const timer of projectReportUpdateTimers.values()) clearTimeout(timer);
+  projectReportUpdateTimers.clear();
 }
 function projectMaterialReadClient() {
   if (!projectMaterialReadClientInstance) projectMaterialReadClientInstance = createProjectMaterialReadClient();
@@ -15867,10 +15895,47 @@ async function refreshProjectOverallReport(projectId) {
   try {
     const project = projectStateStore().getMetadata(String(projectId || ''));
     if (!project) return JSON.stringify({ ok: false, code: 'project_not_found', message: '未找到学习项目。' });
-    const report = await projectReportService().refresh({ projectId: project.id, actorRole: 'admin', actorId: 'windows-host' },
-      projectReportReader(project), project.id);
+    const prepared = await projectReportService().requestUpdate(
+      { projectId: project.id, actorRole: 'admin', actorId: 'windows-host' }, projectReportReader(project), project.id,
+      { trigger: 'manual' });
+    let existing = readTaskStore().tasks.find(item => item.id === prepared.task.id);
+    if (!existing) {
+      upsertTaskCandidates([prepared.task]);
+      existing = readTaskStore().tasks.find(item => item.id === prepared.task.id);
+    }
+    if (existing && existing.status !== 'succeeded') {
+      const requested = JSON.parse(executeTaskByAdapter(prepared.task.id, 'internal', { dispatchOrigin: 'user' }));
+      if (!requested.ok) throw Object.assign(new Error(requested.message || '项目总体报告任务未能启动。'), { code: requested.code || 'project_report_task_failed' });
+      await taskDispatchPending.get(prepared.task.id);
+      const running = taskChildProcesses.get(prepared.task.id);
+      if (running?.completion) await running.completion;
+      const settledTask = readTaskStore().tasks.find(item => item.id === prepared.task.id);
+      if (settledTask?.status === 'failed') throw Object.assign(
+        new Error(settledTask.error?.message || settledTask.result?.summary || '项目总体报告任务失败。'),
+        { code: settledTask.error?.code || 'project_report_task_failed' });
+    }
+    const report = await projectReportService().get(projectReportReader(project), project.id);
     return boundedProjectIpcJson({ ok: true, report });
   } catch (error) { return JSON.stringify({ ok: false, code: error.code || 'project_report_refresh_failed', message: error.message }); }
+}
+
+async function getProjectOverallReportVersion(projectId, versionId) {
+  try {
+    const project = projectStateStore().getMetadata(String(projectId || ''));
+    if (!project) return JSON.stringify({ ok: false, code: 'project_not_found', message: '未找到学习项目。' });
+    const report = await projectReportService().getVersion(projectReportReader(project), project.id, String(versionId || ''));
+    return boundedProjectIpcJson({ ok: true, report });
+  } catch (error) { return JSON.stringify({ ok: false, code: error.code || 'project_report_version_read_failed', message: error.message }); }
+}
+
+async function compareProjectOverallReportVersions(projectId, fromVersionId, toVersionId) {
+  try {
+    const project = projectStateStore().getMetadata(String(projectId || ''));
+    if (!project) return JSON.stringify({ ok: false, code: 'project_not_found', message: '未找到学习项目。' });
+    const difference = await projectReportService().compareVersions(projectReportReader(project), project.id,
+      String(fromVersionId || ''), String(toVersionId || ''));
+    return boundedProjectIpcJson({ ok: true, difference });
+  } catch (error) { return JSON.stringify({ ok: false, code: error.code || 'project_report_compare_failed', message: error.message }); }
 }
 
 async function getProjectReportCitation(projectId, versionId, citationId) {
@@ -21185,6 +21250,7 @@ const TASK_OPERATION_ALLOWLIST = {
   guidance_research_check: new Set(['read_planning_evidence', 'write_planning_suggestions']),
   guidance_plan_refresh: new Set(['read_planning_evidence', 'write_planning_suggestions']),
   topic_suggestion_refresh: new Set(['read_planning_evidence', 'write_planning_suggestions']),
+  project_overall_report: new Set(['read_project_report_snapshot']),
 };
 
 function canonicalTaskPath(value) {
@@ -22051,6 +22117,9 @@ function captureDigestContract(files) {
 }
 
 function taskCommandFor(task) {
+  if (task.kind === 'project_overall_report') {
+    return '由宿主读取已冻结的项目证据快照并生成总体报告；不得扫描项目目录，不得修改项目资料。';
+  }
   if (task.kind === 'project_digest') {
     const parsed = JSON.parse(getProjectDigestCommand(task.sourceId));
     return parsed.ok ? parsed.command : '';
@@ -27685,6 +27754,17 @@ async function submitInternalTask(task) {
     // model call that bypasses the shared Agent queue or user's executor choice.
     operation = JSON.stringify(planningGuidanceService().refreshTopicSuggestions(task.sourceId));
   }
+  else if (task.input?.operation === 'generate_project_overall_report' && task.kind === 'project_overall_report'
+    && task.sourceType === 'project') {
+    const reportProject = projectStateStore().getMetadata(task.sourceId);
+    operation = !reportProject
+      ? JSON.stringify({ ok: false, code: 'project_not_found', message: '未找到项目总体报告对应的项目。' })
+      : projectReportService().settleUpdate(
+        { projectId: task.sourceId, actorRole: 'system', actorId: 'task-center' },
+        projectReportReader(reportProject),
+        { taskId: task.id, executionId, candidate: { claims: [] } })
+        .then(report => JSON.stringify({ ok: true, report, message: '项目总体报告已校验并保存为不可变版本。' }));
+  }
   else operation = JSON.stringify({ ok: false, message: `未知内部操作：${task.input?.operation || '-'}` });
   const finish = async (serialized) => {
   const operationResult = JSON.parse(serialized);
@@ -27703,17 +27783,21 @@ async function submitInternalTask(task) {
   ].filter(Boolean))];
   const artifacts = changedPaths.map((file) => ({ path: file, exists: fs.existsSync(file), size: fs.existsSync(file) && fs.statSync(file).isFile() ? fs.statSync(file).size : 0, modifiedAt: fs.existsSync(file) ? fs.statSync(file).mtime.toISOString() : '' }));
   const validation = { valid: Boolean(operationResult.ok), artifacts, checkedAt: taskNow(), message: operationResult.message || (operationResult.ok ? '内部操作校验通过。' : '内部操作失败。') };
-  const nextStatus = operationResult.ok ? task.kind === 'topic_suggestion_refresh' ? 'succeeded' : 'reviewing' : 'failed';
+  const autoValidated = ['topic_suggestion_refresh', 'project_overall_report'].includes(task.kind);
+  const nextStatus = operationResult.ok ? autoValidated ? 'succeeded' : 'reviewing' : 'failed';
   const result = normalizeTaskResult(current || transition.task, { status: nextStatus, structuredOutput: operationResult, artifacts, fileChanges: changedPaths.map((file) => ({ path: file, operation: 'created_or_updated' })) }, validation, { adapterId: 'internal', executionId, summary: operationResult.message });
   if (nextStatus === 'succeeded') {
-    const checked = transitionTaskInStore(nextStore, task.id, 'reviewing', { result }, 'local_topic_validated');
+    const checked = transitionTaskInStore(nextStore, task.id, 'reviewing', { result },
+      task.kind === 'project_overall_report' ? 'project_report_validated' : 'local_topic_validated');
     if (!checked.ok) return checked;
   }
   const completed = transitionTaskInStore(nextStore, task.id, nextStatus, { result, lastHeartbeatAt: taskNow(), error: operationResult.ok ? null : { code: 'INTERNAL_OPERATION_FAILED', message: operationResult.message || '内部操作失败。' } }, 'internal_operation_completed');
   (await writeTaskStoreDurably(nextStore));
   if (operationResult.ok && operationResult.transactionId) void projectArchiveStartupManager().complete(operationResult.transactionId).catch(() => {});
   notify('onNativeTaskCenterChanged', JSON.stringify({ taskId: task.id, status: nextStatus }));
-  return { ...completed, message: nextStatus === 'succeeded' ? `${operationResult.message} 仅更新待选建议，未形成正式成长结论。` : operationResult.ok ? '内部操作已执行，等待结果审核。' : operationResult.message };
+  return { ...completed, message: nextStatus === 'succeeded'
+    ? task.kind === 'project_overall_report' ? operationResult.message : `${operationResult.message} 仅更新待选建议，未形成正式成长结论。`
+    : operationResult.ok ? '内部操作已执行，等待结果审核。' : operationResult.message };
   };
   if (operation && typeof operation.then === 'function') {
     const heartbeatTimer = setInterval(() => heartbeatTask(task.id, executionId, '固定归档来源版本', false), 5000);
@@ -27724,7 +27808,7 @@ async function submitInternalTask(task) {
       child: { killed: false, kill: () => false }, materialRuntime: { canCancel: false } };
     taskChildProcesses.set(task.id, running);
     running.completion = operation.then(finish).catch((error) => finish(JSON.stringify({ ok: false,
-      message: `内部归档失败：${error.message}` }))).finally(() => {
+      code: error.code || 'internal_operation_failed', message: `内部操作失败：${error.message}` }))).finally(() => {
       clearInterval(heartbeatTimer);
       if (taskChildProcesses.get(task.id) === running) taskChildProcesses.delete(task.id);
       notify('onNativeTaskCenterChanged', JSON.stringify({ taskId: task.id }));
@@ -28049,7 +28133,7 @@ async function executeTaskByAdapterCore(taskId, requestedExecutor = '', executio
     const task = store.tasks.find((item) => String(item.id) === String(taskId));
     if (!task) return JSON.stringify({ ok: false, message: '未找到任务。' });
     const globalPolicy = agentControlStore().read().global;
-    if (globalPolicy && !globalPolicy.enabled && task.kind !== 'project_archive') return JSON.stringify({ ok: false, code: 'AGENT_SCOPE_DENIED', message: 'AI 接入与调度中心已全局停用。' });
+    if (globalPolicy && !globalPolicy.enabled && !['project_archive', 'project_overall_report'].includes(task.kind)) return JSON.stringify({ ok: false, code: 'AGENT_SCOPE_DENIED', message: 'AI 接入与调度中心已全局停用。' });
     if (executionOptions.automatic && automaticStudentTaskBlocked(task,findStudentByKey(task.sourceId))) return JSON.stringify({ok:true,skipped:true,reason:'student_automation_paused',message:'该学生已暂停周期自动任务；仍可手动执行。'});
       if(task.kind==='smart_material_intake'){
         if(taskChildProcesses.has(task.id))return JSON.stringify({ok:true,alreadyRunning:true,message:'该资料批次正在处理'});
@@ -29333,6 +29417,7 @@ function stopUnifiedTaskScheduler() {
   if (taskSchedulerTimer) clearInterval(taskSchedulerTimer);
   taskSchedulerStartupTimer = null;
   taskSchedulerTimer = null;
+  stopProjectOverallReportUpdateTimers();
 }
 
 function readStudentScheduleLedger(student) {
@@ -29434,6 +29519,7 @@ function buildDigestTaskCandidates(sourceType, sourceId, options = {}) {
 }
 
 function markTaskSourceDirty(sourceType, sourceId, reason = 'changed', sourceRevision = '') {
+  if (String(sourceType) === 'project') scheduleProjectOverallReportUpdate(sourceId, reason);
   return taskSourceQueue.mark(sourceType, sourceId, reason, sourceRevision);
 }
 
@@ -42397,7 +42483,11 @@ ipcMain.handle('bridge:listProjects', (_event, request) => deferredInvoke(() => 
 ipcMain.handle('bridge:getProjectDetail', (_event, projectId) => deferredInvoke(() => getProjectDetail(projectId)));
 ipcMain.handle('bridge:getProjectOverallReport', (_event, projectId) => deferredInvoke(() => getProjectOverallReport(projectId)));
 ipcMain.handle('bridge:refreshProjectOverallReport', (_event, projectId) =>
-  licensedInvoke('更新项目阶段摘要', () => refreshProjectOverallReport(projectId)));
+  licensedInvoke('更新项目总体报告', () => refreshProjectOverallReport(projectId)));
+ipcMain.handle('bridge:getProjectOverallReportVersion', (_event, projectId, versionId) =>
+  deferredInvoke(() => getProjectOverallReportVersion(projectId, versionId)));
+ipcMain.handle('bridge:compareProjectOverallReportVersions', (_event, projectId, fromVersionId, toVersionId) =>
+  deferredInvoke(() => compareProjectOverallReportVersions(projectId, fromVersionId, toVersionId)));
 ipcMain.handle('bridge:getProjectReportCitation', (_event, projectId, versionId, citationId) =>
   deferredInvoke(() => getProjectReportCitation(projectId, versionId, citationId)));
 ipcMain.handle('bridge:listProjectStagingItems', (_event, request) => deferredInvoke(() => listProjectStagingItems(request || {})));

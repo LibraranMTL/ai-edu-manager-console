@@ -284,6 +284,12 @@ contextBridge.exposeInMainWorld('AndroidBridge', {
   refreshProjectOverallReport(projectId) {
     return ipcRenderer.invoke('bridge:refreshProjectOverallReport', projectId);
   },
+  getProjectOverallReportVersion(projectId, versionId) {
+    return ipcRenderer.invoke('bridge:getProjectOverallReportVersion', projectId, versionId);
+  },
+  compareProjectOverallReportVersions(projectId, fromVersionId, toVersionId) {
+    return ipcRenderer.invoke('bridge:compareProjectOverallReportVersions', projectId, fromVersionId, toVersionId);
+  },
   getProjectReportCitation(projectId, versionId, citationId) {
     return ipcRenderer.invoke('bridge:getProjectReportCitation', projectId, versionId, citationId);
   },

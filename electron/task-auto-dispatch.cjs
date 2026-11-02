@@ -4,7 +4,7 @@ const AUTOMATIC_TASK_KINDS = new Set([
   'weekly_action', 'learning_profile', 'learning_changes', 'learning_stage',
   'openclaw_cron', 'maintenance_lint', 'topic_suggestion_refresh', 'student_digest', 'project_digest',
   'competition_research_check', 'guidance_research_check', 'guidance_plan_refresh',
-  'growth_publish',
+  'growth_publish', 'project_overall_report',
 ]);
 
 const RECEIPT_RECONCILE_DELAYS_MS = Object.freeze([30_000, 60_000, 180_000, 300_000]);
@@ -77,7 +77,7 @@ function automaticTaskDispatchDecision(task, options = {}) {
   if (task.executionMode === 'desktop_handoff' || task.executionMode === 'agent_handoff') return blocked('manual_handoff');
   if (options.approvalRequired && task.approval?.status !== 'approved') return blocked('approval_required');
   if (options.autoPublish && !task.input?.growthFingerprint) return blocked('fingerprint_pending');
-  const instant = ['student_digest', 'topic_suggestion_refresh'].includes(String(task.kind || ''))
+  const instant = ['student_digest', 'topic_suggestion_refresh', 'project_overall_report'].includes(String(task.kind || ''))
     || task.trigger === 'event';
   const due = instant || scheduledTimeReached(task.scheduledAt, now);
   return due ? { eligible: true, reason: 'waiting_dispatch', nextDispatchAt: new Date(now).toISOString() }

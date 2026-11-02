@@ -8,6 +8,7 @@ const path = require('node:path');
 const root = path.resolve(__dirname, '..');
 const main = fs.readFileSync(path.join(root, 'electron', 'main.cjs'), 'utf8');
 const preload = fs.readFileSync(path.join(root, 'electron', 'preload.cjs'), 'utf8');
+const renderer = fs.readFileSync(path.join(root, 'src', 'main.tsx'), 'utf8');
 const panel = fs.readFileSync(path.join(root, 'src', 'LearningStatePanel.tsx'), 'utf8');
 
 test('Windows renderer exposes the v2 state bridge without task or practice dispatch', () => {
@@ -28,4 +29,11 @@ test('management UI labels evidence provenance and rejects a synthetic total sco
   assert.match(panel, /不合成总分，不用于诊断、排名或纪律判断/);
   assert.doesNotMatch(panel, /totalScore|综合效率分|综合得分/);
   for (const key of ['goalClarity', 'confidence', 'difficulty', 'recovery', 'workload']) assert.match(panel, new RegExp(key));
+});
+
+test('learning state lives in the learning report navigation rather than the growth model tabs', () => {
+  assert.match(renderer, /\{ id: 'learning-reports', label: '学情报告', section: 'reports' \},\s*\{ id: 'learning-state', label: '学习状态', section: 'reports' \}/);
+  assert.match(renderer, /activePageTab === 'learning-state'.*<LearningStatePanel/s);
+  const growthTabs = renderer.match(/aria-label="成长模型视图">([\s\S]*?)<\/div>/)?.[1] || '';
+  assert.doesNotMatch(growthTabs, /学习状态/);
 });

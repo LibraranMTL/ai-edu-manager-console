@@ -137,7 +137,7 @@ type PublishingSourceType = 'learning_report' | 'archive_file';
 type PublishingFormat = 'pdf' | 'png' | 'markdown';
 type RuntimePlatform = 'android' | 'windows' | 'web' | string;
 type ProjectDashboardFocus = 'all' | 'active' | 'materials' | 'knowledge' | 'contributions' | 'risks' | 'digest';
-type GrowthView = 'abilities' | 'projects' | 'evidence' | 'learning' | 'state';
+type GrowthView = 'abilities' | 'projects' | 'evidence' | 'learning';
 type LearningTrajectory = {
   ok: boolean;
   message?: string;
@@ -16496,6 +16496,7 @@ ${JSON.stringify(items, null, 2)}
     ],
     learning: [
       { id: 'learning-reports', label: '学情报告', section: 'reports' },
+      { id: 'learning-state', label: '学习状态', section: 'reports' },
       { id: 'learning-materials', label: '学习资料', section: 'archive' },
       { id: 'knowledge-mastery', label: '知识点掌握', section: 'knowledge-mastery', action: () => setGrowthView('learning') },
       { id: 'learning-cards', label: '学习卡片', section: 'learning-cards' },
@@ -16569,6 +16570,7 @@ ${JSON.stringify(items, null, 2)}
     if (section === 'audio-capture') return '录音采集';
     if (section === 'share-capture') return '资料收件箱';
     if (section === 'learning-cards') return '学习卡片';
+    if (section === 'reports' && activePageTab === 'learning-state') return '学习状态';
     if (section === 'knowledge-mastery') return '知识点掌握';
     if (section === 'topic-suggestions') return '选题建议';
     if (section === 'competition-recommendations') return '推荐比赛';
@@ -16634,7 +16636,9 @@ ${JSON.stringify(items, null, 2)}
     if (activeSection === 'growth') return '查看当前学生的能力画像、项目贡献和成长证据。';
     if (activeSection === 'archive' && activePageTab === 'student-profile') return '查看和编辑当前学生的基本资料与规划信息。';
     if (activeSection === 'archive') return '浏览当前学生的档案资料；路径与 Agent 工具信息已收纳至高级选项。';
-    if (activeSection === 'reports') return '查看和管理基于已确认成长数据生成的学情报告。';
+    if (activeSection === 'reports') return activePageTab === 'learning-state'
+      ? '记录首次基线、五项周反馈、目标、问题和证据分级；不合成总分。'
+      : '查看和管理基于已确认成长数据生成的学情报告。';
     if (activeSection === 'cloud-documents') return '管理学生基础信息、五类学习资料和接收主机授权；健康资料保持独立许可。';
     if (activeSection === 'cloud-reports') return '浏览获准学生的云端正式报告和历史修订，不混入同步设置。';
     if (activeSection === 'cloud-learning-materials') return '浏览、下载并按需导入五类云端教育资料。';
@@ -20102,10 +20106,9 @@ ${JSON.stringify(items, null, 2)}
                 <button className={growthView === 'abilities' ? 'active' : ''} onClick={() => setGrowthView('abilities')}><Gauge size={18} />能力画像</button>
                 <button className={growthView === 'projects' ? 'active' : ''} onClick={() => setGrowthView('projects')}><FolderOpen size={18} />项目贡献</button>
                 <button className={growthView === 'evidence' ? 'active' : ''} onClick={() => setGrowthView('evidence')}><ListChecks size={18} />成长证据</button>
-                <button className={growthView === 'state' ? 'active' : ''} onClick={() => setGrowthView('state')}><UserRound size={18} />学习状态</button>
               </div>}
               <div className="growth-filters">
-                {growthView !== 'state' && <input value={growthSearch} onChange={(event) => setGrowthSearch(event.target.value)} placeholder={growthView === 'learning' ? '搜索知识点名称或 ID' : '搜索能力、项目或证据'} />}
+                <input value={growthSearch} onChange={(event) => setGrowthSearch(event.target.value)} placeholder={growthView === 'learning' ? '搜索知识点名称或 ID' : '搜索能力、项目或证据'} />
                 {growthView === 'projects' && <select value={growthProjectStatusFilter} onChange={(event) => setGrowthProjectStatusFilter(event.target.value)}><option value="all">全部贡献状态</option><option value="published">已发布</option><option value="pending">待审核</option><option value="not_started">尚未形成</option></select>}
                 {growthView === 'evidence' && <select value={growthEvidenceStatusFilter} onChange={(event) => setGrowthEvidenceStatusFilter(event.target.value)}><option value="all">全部证据状态</option><option value="pending">待审核</option><option value="confirmed">已确认</option><option value="watching">观察中</option><option value="rejected">已驳回</option></select>}
                 {growthView === 'evidence' && <select value={growthEvidenceRiskFilter} onChange={(event) => setGrowthEvidenceRiskFilter(event.target.value as 'attention' | 'all' | 'low')}><option value="attention">默认：只看需关注</option><option value="low">低风险批量候选</option><option value="all">全部证据</option></select>}
@@ -20156,10 +20159,6 @@ ${JSON.stringify(items, null, 2)}
                   {learningTrajectory.historyMarkdown && <details className="growth-index-details"><summary>历史变化报告候选（未发布）</summary><div className="actions compact-actions"><button className="secondary compact" onClick={() => copyText(learningTrajectory.historyMarkdown || '', '已复制历史变化候选。')}>复制候选</button></div><section className="markdown-reader"><MarkdownView content={learningTrajectory.historyMarkdown} /></section></details>}
                 </>}
               </div>}
-
-              {growthView === 'state' && <React.Suspense fallback={<div className="notice muted">正在加载学习状态…</div>}>
-                <LearningStatePanel studentId={selectedStudent.id} studentName={selectedStudent.name} actionApi={bridge()?.learningStateAction} />
-              </React.Suspense>}
 
               {growthView === 'abilities' && <div className="growth-card-grid">
                 {filteredGrowthAbilities.map((ability) => (
@@ -20224,9 +20223,17 @@ ${JSON.stringify(items, null, 2)}
             }))} /></React.Suspense>
         )}
 
-        {!shouldBlockForAgentInstall && isWindows && activeSection === 'reports' && !selectedStudent && <section className="panel"><h2>学情报告</h2><p>本地报告需要选择学生；云端同步设置仍可使用独立下载许可。</p><button className="secondary" onClick={() => setActiveSection('cloud-documents')}>云端同步设置</button></section>}
+        {!shouldBlockForAgentInstall && isWindows && activeSection === 'reports' && !selectedStudent && <section className="panel"><h2>{activePageTab === 'learning-state' ? '学习状态' : '学情报告'}</h2><p>本地内容需要先选择学生；所有读取和写入均绑定当前学生范围。</p>{activePageTab !== 'learning-state' && <button className="secondary" onClick={() => setActiveSection('cloud-documents')}>云端同步设置</button>}</section>}
 
-        {!shouldBlockForAgentInstall && activeSection === 'reports' && selectedStudent && (
+        {!shouldBlockForAgentInstall && activeSection === 'reports' && activePageTab === 'learning-state' && selectedStudent && (
+          <section className="panel reports-panel learning-state-report-panel">
+            <React.Suspense fallback={<div className="notice muted">正在加载学习状态…</div>}>
+              <LearningStatePanel studentId={selectedStudent.id} studentName={selectedStudent.name} actionApi={bridge()?.learningStateAction} />
+            </React.Suspense>
+          </section>
+        )}
+
+        {!shouldBlockForAgentInstall && activeSection === 'reports' && activePageTab !== 'learning-state' && selectedStudent && (
           <section className="panel reports-panel">
             <div className="panel-heading">
               <div>

@@ -1,0 +1,362 @@
+{
+  "schema": "edu-manager.project-state-benchmark.v1",
+  "generatedAt": "2026-11-02T13:24:45.419Z",
+  "machine": {
+    "cpu": "12th Gen Intel(R) Core(TM) i5-12400F",
+    "logicalCpus": 12,
+    "memoryGiB": 63.81
+  },
+  "targets": {
+    "summaryP95Ms": 200,
+    "pageP95Ms": 500,
+    "searchP95Ms": 250,
+    "metadataPatchP95Ms": 20,
+    "stagingMutationP95Ms": 250,
+    "ftsMutation20P95Ms": 250,
+    "metadataWalGrowthBytes": 1000000,
+    "idleWalBytes": 67108864
+  },
+  "results": [
+    {
+      "count": 30000,
+      "populatedMs": 3150,
+      "databaseBytes": 51671040,
+      "coldSummaryMs": 4.547,
+      "summary": {
+        "warmups": 5,
+        "p95Ms": 0.014,
+        "samples": [
+          0.013,
+          0.012,
+          0.013,
+          0.013,
+          0.014,
+          0.012,
+          0.011
+        ]
+      },
+      "firstPage": {
+        "warmups": 5,
+        "p95Ms": 0.454,
+        "samples": [
+          0.138,
+          0.218,
+          0.454,
+          0.194,
+          0.175,
+          0.217,
+          0.196
+        ]
+      },
+      "filteredPage": {
+        "warmups": 5,
+        "p95Ms": 0.178,
+        "samples": [
+          0.128,
+          0.126,
+          0.124,
+          0.124,
+          0.126,
+          0.123,
+          0.178
+        ]
+      },
+      "search": {
+        "warmups": 5,
+        "p95Ms": 1.015,
+        "samples": [
+          0.675,
+          1.015,
+          0.793,
+          0.784,
+          0.706,
+          0.685,
+          0.696
+        ]
+      },
+      "secondPage": {
+        "warmups": 5,
+        "p95Ms": 0.233,
+        "samples": [
+          0.163,
+          0.147,
+          0.163,
+          0.151,
+          0.209,
+          0.233,
+          0.154
+        ]
+      },
+      "metadataPatch": {
+        "warmups": 5,
+        "p95Ms": 0.877,
+        "samples": [
+          0.728,
+          0.74,
+          0.821,
+          0.857,
+          0.798,
+          0.877,
+          0.726,
+          0.695,
+          0.665,
+          0.7,
+          0.902,
+          0.79,
+          0.703,
+          0.725,
+          0.711,
+          0.746,
+          0.659,
+          0.68,
+          0.687,
+          0.645
+        ]
+      },
+      "stagingMutation": {
+        "warmups": 5,
+        "p95Ms": 4.983,
+        "samples": [
+          4.168,
+          4.983,
+          3.776,
+          4.184,
+          3.758,
+          3.699,
+          3.792,
+          4.295,
+          4.634,
+          3.676,
+          3.64,
+          4.098,
+          4.076,
+          3.653,
+          7.903,
+          4.621,
+          3.156,
+          3.271,
+          3.386,
+          3.642
+        ]
+      },
+      "ftsMutation": {
+        "warmups": 5,
+        "p95Ms": 1.923,
+        "samples": [
+          1.796,
+          1.425,
+          1.388,
+          1.451,
+          2.062,
+          1.549,
+          1.482,
+          1.628,
+          1.454,
+          1.507,
+          1.551,
+          1.444,
+          1.432,
+          1.514,
+          1.455,
+          1.923,
+          1.486,
+          1.444,
+          1.511,
+          1.541
+        ]
+      },
+      "metadataUntouched": true,
+      "untouchedBefore": {
+        "staging": 30000,
+        "scan": 0,
+        "fts": 30000
+      },
+      "untouchedAfter": {
+        "staging": 30000,
+        "scan": 0,
+        "fts": 30000
+      },
+      "metadataWalGrowthBytes": 309000,
+      "checkpoint": {
+        "mode": "TRUNCATE",
+        "busy": 0,
+        "log": 0,
+        "checkpointed": 0
+      },
+      "walBytesAfterCheckpoint": 0,
+      "integrityCheck": "ok",
+      "foreignKeyErrors": 0
+    },
+    {
+      "count": 100000,
+      "populatedMs": 10624.2,
+      "databaseBytes": 169758720,
+      "coldSummaryMs": 3.936,
+      "summary": {
+        "warmups": 5,
+        "p95Ms": 0.031,
+        "samples": [
+          0.012,
+          0.013,
+          0.011,
+          0.011,
+          0.012,
+          0.031,
+          0.017
+        ]
+      },
+      "firstPage": {
+        "warmups": 5,
+        "p95Ms": 0.168,
+        "samples": [
+          0.168,
+          0.148,
+          0.13,
+          0.125,
+          0.138,
+          0.138,
+          0.132
+        ]
+      },
+      "filteredPage": {
+        "warmups": 5,
+        "p95Ms": 0.145,
+        "samples": [
+          0.145,
+          0.129,
+          0.134,
+          0.136,
+          0.135,
+          0.128,
+          0.141
+        ]
+      },
+      "search": {
+        "warmups": 5,
+        "p95Ms": 0.744,
+        "samples": [
+          0.682,
+          0.683,
+          0.707,
+          0.744,
+          0.699,
+          0.702,
+          0.705
+        ]
+      },
+      "secondPage": {
+        "warmups": 5,
+        "p95Ms": 0.726,
+        "samples": [
+          0.142,
+          0.726,
+          0.18,
+          0.138,
+          0.135,
+          0.132,
+          0.132
+        ]
+      },
+      "metadataPatch": {
+        "warmups": 5,
+        "p95Ms": 1.084,
+        "samples": [
+          0.953,
+          0.825,
+          0.947,
+          0.978,
+          0.888,
+          0.833,
+          0.714,
+          0.697,
+          0.683,
+          0.74,
+          0.962,
+          0.723,
+          0.722,
+          0.669,
+          0.652,
+          0.799,
+          1.084,
+          1.833,
+          0.87,
+          0.769
+        ]
+      },
+      "stagingMutation": {
+        "warmups": 5,
+        "p95Ms": 4.311,
+        "samples": [
+          3.745,
+          3.522,
+          4.127,
+          3.655,
+          3.356,
+          3.688,
+          4.017,
+          3.851,
+          3.786,
+          3.459,
+          3.435,
+          4.311,
+          3.491,
+          3.488,
+          7.433,
+          4.149,
+          3.31,
+          3.108,
+          3.29,
+          3.79
+        ]
+      },
+      "ftsMutation": {
+        "warmups": 5,
+        "p95Ms": 1.695,
+        "samples": [
+          1.425,
+          1.525,
+          1.694,
+          1.631,
+          1.623,
+          1.52,
+          1.552,
+          1.571,
+          1.695,
+          1.422,
+          1.484,
+          1.474,
+          1.591,
+          1.586,
+          2.113,
+          1.545,
+          1.619,
+          1.488,
+          1.556,
+          1.443
+        ]
+      },
+      "metadataUntouched": true,
+      "untouchedBefore": {
+        "staging": 100000,
+        "scan": 0,
+        "fts": 100000
+      },
+      "untouchedAfter": {
+        "staging": 100000,
+        "scan": 0,
+        "fts": 100000
+      },
+      "metadataWalGrowthBytes": 309000,
+      "checkpoint": {
+        "mode": "TRUNCATE",
+        "busy": 0,
+        "log": 0,
+        "checkpointed": 0
+      },
+      "walBytesAfterCheckpoint": 0,
+      "integrityCheck": "ok",
+      "foreignKeyErrors": 0
+    }
+  ],
+  "passed": true
+}

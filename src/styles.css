@@ -7783,7 +7783,7 @@ textarea:focus {
 .home-student-context { display: flex; align-items: center; gap: 13px; margin-top: 20px; padding: 14px; border-radius: 17px; background: rgba(255,255,255,.72); }
 .home-student-context > div { min-width: 0; display: grid; gap: 3px; margin-right: auto; }
 .home-student-context small { color: #6c7f77; }
-.home-quick-entry-grid { display: grid; grid-template-columns: repeat(4,minmax(0,1fr)); gap: 12px; margin-top: 18px; }
+.home-quick-entry-grid { display: grid; grid-template-columns: repeat(5,minmax(0,1fr)); gap: 12px; margin-top: 18px; }
 .home-quick-entry-grid button { display: flex; align-items: center; gap: 11px; padding: 16px; border: 1px solid #cbded5; border-radius: 17px; background: rgba(255,255,255,.8); color: #174b3d; text-align: left; }
 .home-quick-entry-grid button span { display: grid; gap: 3px; }
 .home-quick-entry-grid small { color: #71817b; }

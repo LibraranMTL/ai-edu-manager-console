@@ -82,6 +82,7 @@ import {
 } from 'lucide-react';
 import './styles.css';
 import projectWorkspaceTemplateCatalog from '../shared/project-workspace-templates.json';
+import homeEntryCatalog from '../shared/home-entries.json';
 import { DigestStatusCard, type DigestWorkflowStatus } from './DigestStatusCard';
 const ProjectMaterialsPanel = React.lazy(() => import('./ProjectMaterialsPanel').then(module => ({ default: module.ProjectMaterialsPanel })));
 
@@ -6210,6 +6211,7 @@ function App() {
   const [learningReports, setLearningReports] = useState<LearningReport[]>([]);
   const [selectedLearningReportId, setSelectedLearningReportId] = useState<LearningReportId>('profile');
   const [learningReportContent, setLearningReportContent] = useState('');
+  const [learningReportAnchor, setLearningReportAnchor] = useState('');
   const [learningReportEvidence, setLearningReportEvidence] = useState<LearningReportEvidenceState | null>(null);
   const [learningReportViewMode, setLearningReportViewMode] = useState<'rendered' | 'source'>('rendered');
   const [learningReportMessage, setLearningReportMessage] = useState('');
@@ -14773,6 +14775,29 @@ ${JSON.stringify(items, null, 2)}
     }
   };
 
+  useEffect(() => {
+    if (activeSection !== 'reports' || !learningReportAnchor || !learningReportContent || learningReportViewMode !== 'rendered') return undefined;
+    let disposed = false;
+    let attempts = 0;
+    let timer = 0;
+    const locateSection = () => {
+      if (disposed) return;
+      const body = document.querySelector('[data-learning-report-body]');
+      const heading = [...(body?.querySelectorAll('h1,h2,h3,h4') || [])]
+        .find((node) => node.textContent?.trim().includes(learningReportAnchor));
+      if (heading) {
+        heading.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        setLearningReportAnchor('');
+        return;
+      }
+      attempts += 1;
+      if (attempts < 12) timer = window.setTimeout(locateSection, 100);
+      else setLearningReportAnchor('');
+    };
+    timer = window.setTimeout(locateSection, 0);
+    return () => { disposed = true; window.clearTimeout(timer); };
+  }, [activeSection, learningReportAnchor, learningReportContent, learningReportViewMode]);
+
   const toggleLearningReportEvidence = async () => {
     if (learningReportEvidence) {
       setLearningReportEvidence(null);
@@ -16510,7 +16535,7 @@ ${JSON.stringify(items, null, 2)}
     if (homePendingStudents.length > 0) {
       const student = homePendingStudents[0];
       setSelectedId(student.id);
-      startDigestWorkflowFromPage('student', student.id);
+      setActiveSection('inbox');
       return;
     }
     if (homeWaitingStudents.length > 0 && homePrimaryStudent) {
@@ -16532,6 +16557,38 @@ ${JSON.stringify(items, null, 2)}
     }
     if (homePrimaryStudent) setSelectedId(homePrimaryStudent.id);
     setActiveSection('inbox');
+  };
+
+  const navigateHomeEntry = (entryId: string) => {
+    if (entryId === 'weekly-actions' || entryId === 'daily-routine') {
+      setNavigationGroup('learning');
+      setActivePageTab('learning-reports');
+      setLearningReportViewMode('rendered');
+      setSelectedLearningReportId('daily');
+      if (entryId === 'daily-routine') setLearningReportAnchor('每日固定动作');
+      else setLearningReportAnchor('');
+      setActiveSection('reports');
+      return;
+    }
+    if (entryId === 'project-progress') {
+      setNavigationGroup('projects');
+      setActivePageTab('project-knowledge');
+      setProjectDashboardFocus('all');
+      setProjectPageMode('list');
+      setActiveSection('projects-existing');
+      return;
+    }
+    if (entryId === 'topic-recommendations') {
+      setNavigationGroup('projects');
+      setActivePageTab('topic-suggestions');
+      setActiveSection('topic-suggestions');
+      return;
+    }
+    if (entryId === 'competition-recommendations') {
+      setNavigationGroup('projects');
+      setActivePageTab('competition-recommendations');
+      setActiveSection('competition-recommendations');
+    }
   };
   const activeBackgroundWork = materialSourceBusyAction
     ? (materialSourceBusyAction === 'scan' ? '正在扫描资料来源' : '正在导入资料')
@@ -17001,10 +17058,15 @@ ${JSON.stringify(items, null, 2)}
                 <button className="secondary compact" type="button" onClick={() => setStudentPanelOpen(true)}>切换/编辑档案</button>
               </div>
               <div className="home-quick-entry-grid" aria-label="首页快捷入口">
-                <button type="button" onClick={() => openNavigationGroup('collection')}><Inbox size={22} /><span><strong>收集资料</strong><small>选择采集方式</small></span></button>
-                <button type="button" onClick={() => openNavigationGroup('learning')}><BookOpen size={22} /><span><strong>学情与学习</strong><small>报告、知识点与资料</small></span></button>
-                <button type="button" onClick={() => openNavigationGroup('projects')}><FolderOpen size={22} /><span><strong>项目与成果</strong><small>项目、成长与选题</small></span></button>
-                <button type="button" onClick={() => openNavigationGroup('guidance')}><Compass size={22} /><span><strong>规划与指导</strong><small>升学、专业与职业</small></span></button>
+                {homeEntryCatalog.map((entry) => (
+                  <button type="button" key={entry.id} onClick={() => navigateHomeEntry(entry.id)}>
+                    {entry.id === 'weekly-actions' ? <ListChecks size={22} />
+                      : entry.id === 'daily-routine' ? <Clock3 size={22} />
+                        : entry.id === 'project-progress' ? <FolderOpen size={22} />
+                          : entry.id === 'topic-recommendations' ? <Sparkles size={22} /> : <Star size={22} />}
+                    <span><strong>{entry.title}</strong><small>{entry.description}</small></span>
+                  </button>
+                ))}
               </div>
             </section>
             <section className="panel home-workflow-panel">
@@ -20146,7 +20208,9 @@ ${JSON.stringify(items, null, 2)}
                   </section>
                 )}
                 {learningReportContent ? (
-                  learningReportViewMode === 'rendered' ? <MarkdownView content={learningReportContent} /> : <pre className="markdown-raw">{learningReportContent}</pre>
+                  <div data-learning-report-body>
+                    {learningReportViewMode === 'rendered' ? <MarkdownView content={learningReportContent} /> : <pre className="markdown-raw">{learningReportContent}</pre>}
+                  </div>
                 ) : (
                   <div className="empty-state">点击左侧报告卡片，可查看整体画像、历史变化、每周行动建议和阶段总结。</div>
                 )}

@@ -236,6 +236,8 @@ const { createAssetDuplicateGovernance } = require('./asset-duplicate-governance
 const { createProjectStateStore } = require('./project-state-store.cjs');
 const { projectListProjection } = require('./project-list-projection.cjs');
 const { boundedProjectIpcJson } = require('./project-ipc-response.cjs');
+const { PROJECT_WORKSPACE_TEMPLATES, PROJECT_TEMPLATE_V2_STRATEGIES,
+  projectWorkspaceTemplateFor, listProjectWorkspaceTemplates } = require('./project-workspace-templates.cjs');
 const { queryUploadReceipt, verifiedSource } = require('./upload-receipt-query.cjs');
 const { lanDiscoveryBroadcastTargets } = require('./lan-discovery.cjs');
 const { createStudentPortableMigrationManager } = require('./student-portable-migration.cjs');
@@ -14828,54 +14830,6 @@ function projectPathsFor(projectName, rootPath, project = {}) {
   };
 }
 
-const PROJECT_WORKSPACE_TEMPLATES = [
-  {
-    id: 'general',
-    name: '通用学习项目',
-    description: '适合普通作业、短期专题和轻量研究。',
-    folders: ['资料', '进展', '团队成员', '成果'],
-  },
-  {
-    id: 'subject',
-    name: '学科专题',
-    description: '适合课程学习、错题复盘和阶段总结。',
-    folders: ['课程资料', '作业与反馈', '错题与问题', '阶段总结', '成果'],
-  },
-  {
-    id: 'competition',
-    name: '竞赛 / 活动',
-    description: '适合比赛、活动、作品集和团队协作。',
-    folders: ['赛事规则', '参考资料', '方案设计', '团队协作', '过程记录', '提交成果'],
-  },
-  {
-    id: 'research',
-    name: '研究项目',
-    description: '适合论文、实验、调研和文献综述。',
-    folders: ['文献资料', '研究问题', '数据与实验', '分析过程', '成果论文'],
-  },
-  {
-    id: 'writing',
-    name: '写作项目',
-    description: '适合作文、论文、文书、演讲稿和长文创作。',
-    folders: ['参考资料', '选题策划', '写作大纲', '写作规则', '草稿', '修改反馈', '定稿'],
-  },
-  {
-    id: 'application',
-    name: '升学申请',
-    description: '适合学校申请、文书素材和申请复盘。',
-    folders: ['学校与项目', '申请材料', '文书素材', '推荐与反馈', '结果与复盘'],
-  },
-];
-
-const PROJECT_TEMPLATE_V2_STRATEGIES = {
-  general: { knowledgeStrategy: '提取核心概念、关键实体、阶段摘要和可复用问答。', growthStrategy: '关注主动学习、问题解决和成果表达。', deliverables: ['项目总结', '最终成果'] },
-  subject: { knowledgeStrategy: '聚焦学科概念、错误模式、解题方法和改进点。', growthStrategy: '关注学科理解、迁移应用和学习策略。', deliverables: ['阶段总结', '学科成果'] },
-  competition: { knowledgeStrategy: '提取赛事要求、方案选择、技术路线、反馈和最终决策。', growthStrategy: '关注创新、协作、项目推进和公开表达。', deliverables: ['参赛作品', '演示材料', '项目复盘'] },
-  research: { knowledgeStrategy: '提取研究问题、文献缺口、方法、数据证据、局限与结论。', growthStrategy: '关注研究设计、证据推理、数据分析和学术写作。', deliverables: ['文献综述', '研究报告', '反思'] },
-  writing: { knowledgeStrategy: '提取主题、论点、证据、结构、表达规则和修订理由。', growthStrategy: '关注逻辑表达、受众意识、修订能力和写作风格。', deliverables: ['定稿', '修订说明'] },
-  application: { knowledgeStrategy: '提取申请要求、经历证据、个人叙事、院校匹配和反馈。', growthStrategy: '关注自我认知、领导力、沟通和长期目标。', deliverables: ['申请材料包', '文书', '申请复盘'] },
-};
-
 function sanitizeWorkspaceFolderName(value) {
   return String(value || '')
     .replace(/[\\/:*?"<>|\x00-\x1F]/g, '')
@@ -14916,11 +14870,6 @@ function normalizeWorkspaceFolders(folders) {
   return mergeUnique(source.map(sanitizeWorkspaceFolderName))
     .filter((folder) => folder && folder !== '研究暂存')
     .slice(0, 24);
-}
-
-function projectWorkspaceTemplateFor(templateId) {
-  const template = PROJECT_WORKSPACE_TEMPLATES.find((item) => item.id === String(templateId || '')) || PROJECT_WORKSPACE_TEMPLATES[0];
-  return { ...template, ...(PROJECT_TEMPLATE_V2_STRATEGIES[template.id] || PROJECT_TEMPLATE_V2_STRATEGIES.general) };
 }
 
 function projectWorkspaceFoldersFor(project) {
@@ -42183,6 +42132,9 @@ ipcMain.on('bridge:deactivateLicense', (event) => { event.returnValue = deactiva
 ipcMain.on('bridge:getAgentToolInstallStatus', (event) => { event.returnValue = getAgentToolInstallStatus(); });
 ipcMain.on('bridge:checkUpdate', (event, manifestUrl, currentVersionCode) => {
   event.returnValue = checkUpdate(manifestUrl, currentVersionCode);
+});
+ipcMain.on('bridge:listProjectWorkspaceTemplates', (event) => {
+  event.returnValue = JSON.stringify({ ok: true, templates: listProjectWorkspaceTemplates() });
 });
 ipcMain.on('bridge:downloadAndInstallUpdate', (event, downloadUrl) => {
   event.returnValue = downloadAndInstallUpdate(downloadUrl);

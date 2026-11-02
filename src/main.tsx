@@ -150,6 +150,7 @@ type LearningTrajectory = {
   rejections?: Array<{ at: string; code: string; index: number; batchId: string }>;
 };
 type ProjectPageMode = 'list' | 'detail';
+type ProjectDetailTab = 'report' | 'materials';
 type ProjectKnowledgeCategoryId = 'all' | 'concept' | 'entity' | 'summary' | 'qa' | 'synthesis';
 
 type AgentToolProfile = {
@@ -6389,6 +6390,7 @@ function App() {
   const selectedProjectIdRef = useRef(selectedProjectId);
   selectedProjectIdRef.current = selectedProjectId;
   const [projectPageMode, setProjectPageMode] = useState<ProjectPageMode>('list');
+  const [projectDetailTab, setProjectDetailTab] = useState<ProjectDetailTab>('report');
   const [projectStudentFilterId, setProjectStudentFilterId] = useState('all');
   const [projectKnowledgeFiles, setProjectKnowledgeFiles] = useState<MarkdownFile[]>([]);
   const [selectedProjectKnowledgeFileId, setSelectedProjectKnowledgeFileId] = useState('');
@@ -7487,6 +7489,7 @@ function App() {
 
   useEffect(() => {
     if (!projectAuditLocateTarget || selectedProject?.id !== projectAuditLocateTarget.projectId) return;
+    setProjectDetailTab('materials');
     let attempts = 0;
     let timer = 0;
     const locate = () => {
@@ -12710,6 +12713,7 @@ ${sourceText}`;
   const openProjectDetail = (projectId: string) => {
     setSelectedProjectId(projectId);
     setProjectPageMode('detail');
+    setProjectDetailTab('report');
     setSelectedProjectAssetIds([]);
     setSelectedProjectStagingIds([]);
     setPromotionPreview('');
@@ -12729,9 +12733,19 @@ ${sourceText}`;
     projectKnowledgeRequest.current++;
     setProjectKnowledgeExportBusy(false);
     setProjectPageMode('list');
+    setProjectDetailTab('report');
     setProjectAuditLocateTarget(null);
     setProjectEditOpen(false);
     setProjectMessage('已返回全部项目列表。');
+  };
+
+  const openProjectMaterialsView = () => {
+    setProjectDetailTab('materials');
+    window.setTimeout(() => {
+      const target = document.querySelector('[data-project-report-materials]');
+      target?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      (target as HTMLElement | null)?.focus({ preventScroll: true });
+    }, 80);
   };
 
   const createLearningProject = async () => {
@@ -18905,14 +18919,34 @@ ${JSON.stringify(items, null, 2)}
                 <button className="secondary compact" disabled={!selectedProject} onClick={() => openSelectedProjectSpace('knowledge')}><BookOpen size={16} />打开项目知识空间</button>
               </div>
             </section>
-            {projectPageMode === 'detail' && selectedProject && <React.Suspense fallback={<section className="material-source-panel">正在加载项目阶段摘要…</section>}>
-              <ProjectOverallReportPanel project={selectedProject} onAddMaterials={() => {
-                const target = document.querySelector('[data-project-report-materials]');
-                target?.scrollIntoView({ behavior: 'smooth', block: 'start' });
-                (target as HTMLElement | null)?.focus({ preventScroll: true });
-              }} />
-            </React.Suspense>}
-            {projectPageMode === 'detail' && selectedProject && <React.Suspense fallback={<section className="material-source-panel">正在加载项目资料…</section>}><ProjectMaterialsPanel project={selectedProject} /></React.Suspense>}
+            {projectPageMode === 'detail' && selectedProject && <div className="project-detail-tabs" role="tablist" aria-label="项目详情视图">
+              <button
+                id="project-report-tab"
+                className="project-detail-tab"
+                type="button"
+                role="tab"
+                aria-selected={projectDetailTab === 'report'}
+                aria-controls="project-report-panel"
+                onClick={() => setProjectDetailTab('report')}
+              ><FileText size={18} />项目综合报告</button>
+              <button
+                id="project-materials-tab"
+                className="project-detail-tab"
+                type="button"
+                role="tab"
+                aria-selected={projectDetailTab === 'materials'}
+                aria-controls="project-materials-panel"
+                onClick={() => setProjectDetailTab('materials')}
+              ><FolderOpen size={18} />项目资料中心</button>
+            </div>}
+            {projectPageMode === 'detail' && selectedProject && projectDetailTab === 'report' && <section id="project-report-panel" className="project-detail-tab-panel" role="tabpanel" aria-labelledby="project-report-tab">
+              <React.Suspense fallback={<section className="material-source-panel">正在加载项目阶段摘要…</section>}>
+                <ProjectOverallReportPanel project={selectedProject} onAddMaterials={openProjectMaterialsView} />
+              </React.Suspense>
+            </section>}
+            {projectPageMode === 'detail' && selectedProject && projectDetailTab === 'materials' && <section id="project-materials-panel" className="project-detail-tab-panel" role="tabpanel" aria-labelledby="project-materials-tab">
+              <React.Suspense fallback={<section className="material-source-panel">正在加载项目资料…</section>}><ProjectMaterialsPanel project={selectedProject} /></React.Suspense>
+            </section>}
             <section className="material-source-panel project-dashboard projects-existing-only">
               <div className="mini-heading">
                 <strong>项目仪表盘</strong>
@@ -19303,7 +19337,7 @@ ${JSON.stringify(items, null, 2)}
                   {studentFilteredProjects.length === 0 && <div className="empty-state project-index-empty">当前学生筛选下没有学习项目。</div>}
                 </div>
               </section>
-            ) : (
+            ) : projectDetailTab === 'materials' ? (
             <div className="projects-existing-only project-detail-page">
               <section className={`markdown-reader project-detail-reader ${projectAuditLocateTarget?.target === 'detail' ? 'audit-locate-highlight' : ''}`} data-project-action-target="detail" tabIndex={-1}>
                 {selectedProject ? (
@@ -20053,7 +20087,7 @@ ${JSON.stringify(items, null, 2)}
                 )}
               </section>
             </div>
-            )}
+            ) : null}
             {projectMessage && <div className="notice">{projectMessage}</div>}
           </section>
         )}

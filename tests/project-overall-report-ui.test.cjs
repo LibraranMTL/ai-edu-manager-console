@@ -36,3 +36,23 @@ test('project detail mounts a stage-summary panel with four questions and explic
   assert.match(materials, /data-project-report-materials/);
 });
 
+test('existing project detail separates report and materials into accessible top-level tabs', () => {
+  const app = read('src/main.tsx');
+  const css = read('src/styles.css');
+  assert.match(app, /type ProjectDetailTab = 'report' \| 'materials'/);
+  assert.match(app, /useState<ProjectDetailTab>\('report'\)/);
+  assert.match(app, /role="tablist" aria-label="项目详情视图"/);
+  assert.match(app, /role="tab"[\s\S]{0,260}项目综合报告/);
+  assert.match(app, /role="tab"[\s\S]{0,260}项目资料中心/);
+  assert.match(app, /aria-selected=\{projectDetailTab === 'report'\}/);
+  assert.match(app, /aria-selected=\{projectDetailTab === 'materials'\}/);
+  assert.match(app, /projectDetailTab === 'report'[\s\S]{0,700}<ProjectOverallReportPanel/);
+  assert.match(app, /projectDetailTab === 'materials'[\s\S]{0,700}<ProjectMaterialsPanel/);
+  assert.match(app, /openProjectMaterialsView/);
+  assert.match(app, /setProjectDetailTab\('report'\)/,
+    'opening an existing project starts from the report tab');
+  assert.match(css, /\.project-detail-tabs/);
+  assert.match(css, /\.project-detail-tab\[aria-selected="true"\]/);
+  assert.match(css, /\.project-detail-tab-panel/);
+});
+

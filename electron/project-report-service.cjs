@@ -12,11 +12,14 @@ function emptyProjection(project, authorizationVersion, asOf) {
     policyVersion: POLICY_VERSION, dataGeneration: 0, authorizationVersion,
     project: { name: text(project.name), type: text(project.type), status: text(project.status || 'active'),
       objective: text(project.objective), description: text(project.description), deliverables: Array.isArray(project.deliverables) ? project.deliverables : [] },
-    summary: { currentStage: statusLabel(project.status), changes: '尚未构建阶段摘要。', representativeResults: [],
-      nextAction: project.objective ? '添加能证明当前阶段的资料，然后构建阶段摘要。' : '先补充项目目标和完成标准。' },
-    claims: [], gaps: [project.objective ? '尚无固定证据快照。' : '尚未登记明确项目目标。'], personalContributions: [],
+    reportTypeLabel: '阶段进展', updatedAt: asOf,
+    summary: { currentStage: statusLabel(project.status), changes: '尚未生成项目报告。', displayChanges: '尚未生成项目报告。', representativeResults: [],
+      nextAction: project.objective ? '添加能够说明当前进展的项目资料，然后更新报告。' : '请先补充项目目标和完成标准。',
+      displayNextAction: project.objective ? '添加能够说明当前进展的项目资料，然后更新报告。' : '请先补充项目目标和完成标准。' },
+    claims: [], gaps: [project.objective ? '还没有可用于生成报告的项目资料。' : '项目目标还没有填写。'],
+    displayGaps: [project.objective ? '还没有可用于生成报告的项目资料。' : '项目目标还没有填写。'], personalContributions: [],
     coverage: { materials: { total: 0, analyzed: 0, unavailable: 0, pending: 0 }, knowledge: { total: 0, analyzed: 0, pending: 0 }, contributions: { confirmed: 0, unconfirmed: 0 } },
-    disclaimer: '尚无项目报告版本；当前只显示项目登记信息，读取不会扫描目录、派发任务或写入项目。' };
+    disclaimer: '尚未生成项目报告；当前只显示已有项目信息。', displayDisclaimer: '尚未生成项目报告；当前只显示已有项目信息。' };
 }
 
 function createProjectReportService({ store, loadProject, loadRegistry, authorizationVersion, enqueueTask = async () => {}, now = Date.now } = {}) {
@@ -32,9 +35,9 @@ function createProjectReportService({ store, loadProject, loadRegistry, authoriz
     const versions = store.listProjectReportVersions(projectId);
     if (text(current.snapshot.authorizationVersion) !== text(currentAuthorization)) {
       const empty = emptyProjection(project, currentAuthorization, asOf);
-      return { ...empty, status: 'authorization_changed', authorizationNotice: '项目成员或授权已变化，旧版本内容已立即停止展示。',
-        gaps: ['项目成员或授权已变化，旧总体报告已停止展示。'],
-        summary: { ...empty.summary, changes: '授权已变化，需要明确更新总体报告。' },
+      return { ...empty, status: 'authorization_changed', authorizationNotice: '项目成员或可见范围有变化，原报告已停止显示。',
+        gaps: ['项目成员或可见范围有变化，原报告已停止显示。'], displayGaps: ['项目成员或可见范围有变化，原报告已停止显示。'],
+        summary: { ...empty.summary, changes: '项目成员或可见范围有变化，需要更新报告。', displayChanges: '项目成员或可见范围有变化，需要更新报告。' },
         previousVersionId: versions[1]?.versionId || '', versions };
     }
     return { ...projectReportProjection({ ...reader, authorizationVersion: currentAuthorization }, current.snapshot, current.version.report, current.version),

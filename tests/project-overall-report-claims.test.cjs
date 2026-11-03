@@ -36,7 +36,7 @@ test('M1 emits evidence-bound facts, gaps and next action without inventing achi
   assert.match(report.summary.currentStage, /进行中/);
   assert.equal(report.summary.representativeResults.length, 2);
   assert.ok(report.summary.nextAction);
-  assert.match(report.disclaimer, /阶段摘要/);
+  assert.match(report.disclaimer, /阶段进展/);
 });
 
 test('access projection keeps team facts separate and reveals only confirmed personal contribution to an allowed reader', () => {
@@ -49,6 +49,8 @@ test('access projection keeps team facts separate and reveals only confirmed per
   assert.ok(studentA.claims.every((claim) => claim.subjectType !== 'student'));
   const citation = citationProjection({ role: 'student', readerId: 'student-a', allowedStudentIds: ['student-a'], authorizationVersion: 'auth-1' }, source, 'c-t1');
   assert.equal(citation.locator.logicalPath, '最终成果/T1.csv');
+  assert.equal(citation.displayTitle, 'T1');
+  assert.equal(citation.displaySourceType, '项目资料');
   assert.ok(!('absolutePath' in citation.locator));
   assert.throws(() => citationProjection({ role: 'student', readerId: 'student-b', allowedStudentIds: ['student-b'], authorizationVersion: 'auth-1' }, source, 'c-confirm-a'),
     (error) => error.code === 'subject_scope_forbidden');

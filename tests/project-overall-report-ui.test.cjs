@@ -19,15 +19,23 @@ test('Windows bridge exposes read, explicit refresh and citation drilldown for M
   assert.match(main, /readProjectMaterialIndexSync/);
 });
 
-test('project detail mounts a stage-summary panel with four questions and explicit evidence actions', () => {
+test('project detail mounts a customer-facing report panel with four summaries and source actions', () => {
   const app = read('src/main.tsx');
   const panel = read('src/ProjectOverallReportPanel.tsx');
+  const reportCss = read('src/project-overall-report.css');
   const materials = read('src/ProjectMaterialsPanel.tsx');
   assert.match(app, /ProjectOverallReportPanel/);
   assert.match(app, /projectPageMode === 'detail'/);
-  for (const label of ['当前阶段', '本次变化', '代表成果', '下一步行动', '查看依据', '添加资料', '阶段摘要']) {
+  for (const label of ['项目状态', '最近更新', '主要成果', '建议下一步', '查看来源', '添加项目资料', '阶段进展']) {
     assert.match(panel, new RegExp(label));
   }
+  for (const technicalLabel of ['导出 Markdown', '导出 HTML', '查看依据', '已绑定', '第 \$\{report\.dataGeneration\} 代']) {
+    assert.doesNotMatch(panel, new RegExp(technicalLabel));
+  }
+  assert.match(panel, /originalFileName\(item\.title\)/);
+  assert.match(panel, /citationLocation\(citation\)/);
+  assert.doesNotMatch(panel, /title=\{item\.title\}/);
+  assert.match(reportCss, /-webkit-line-clamp:2/);
   assert.match(panel, /useEffect\(\(\) => \{ void load\(\); \}, \[load\]\)/,
     'mounting the panel must call only the read loader');
   assert.doesNotMatch(panel, /useEffect\(\(\) => \{[^}]*refresh/,

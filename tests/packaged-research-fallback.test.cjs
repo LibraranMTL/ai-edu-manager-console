@@ -91,3 +91,10 @@ test('C4 summary requires three runs and at least two verified fallback successe
   assert.equal(summarizeFallbackRuns([success, failed, failed]).passed, false);
   assert.equal(summarizeFallbackRuns([success, success]).passed, false);
 });
+
+test('C4 also accepts a verified primary Codex research result', () => {
+  const primary = { passed: true, syntheticOnly: true, studentDataRead: false,
+    resolution: 'primary_succeeded', attempts: [{ providerId: 'codex', outcome: 'succeeded', sourceCount: 1 }] };
+  const failed = { passed: false, syntheticOnly: true, studentDataRead: false };
+  assert.equal(summarizeFallbackRuns([primary, primary, failed]).passed, true);
+});

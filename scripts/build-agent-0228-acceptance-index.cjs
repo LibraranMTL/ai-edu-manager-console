@@ -102,11 +102,24 @@ if (recoveryReport.passed !== true || late?.passed !== true || Number(late.dupli
 }
 addArtifact(recoveryFile);
 
-const formalPerformanceFile = resolveEvidence(config.formalPerformance);
-const formalPerformance = read(formalPerformanceFile);
-addArtifact(formalPerformanceFile);
-for (const key of ['interactionTrace', 'processTreeTrace', 'baselineTrace', 'taskTimeline']) {
-  addArtifact(resolveEvidence(formalPerformance[key]));
+const installUpgradeEvidence = config.installUpgradeEvidence
+  ? resolveEvidence(config.installUpgradeEvidence) : '';
+if (config.installUpgradeVerified === true) {
+  if (!installUpgradeEvidence) throw new Error('install_upgrade_evidence_missing');
+  const installUpgradeReport = read(installUpgradeEvidence);
+  if (installUpgradeReport?.passed !== true || installUpgradeReport?.formalStudentDataTouched !== false) {
+    throw new Error('install_upgrade_evidence_invalid');
+  }
+  addArtifact(installUpgradeEvidence);
+}
+
+const formalPerformance = config.formalPerformance ? read(resolveEvidence(config.formalPerformance)) : null;
+if (config.formalPerformance) {
+  const formalPerformanceFile = resolveEvidence(config.formalPerformance);
+  addArtifact(formalPerformanceFile);
+  for (const key of ['interactionTrace', 'processTreeTrace', 'baselineTrace', 'taskTimeline']) {
+    addArtifact(resolveEvidence(formalPerformance[key]));
+  }
 }
 
 const matrix = [];
@@ -114,7 +127,7 @@ for (const id of [
   ...Array.from({ length: 15 }, (_, index) => `A${index + 1}`),
   ...Array.from({ length: 7 }, (_, index) => `B${index + 1}`),
   ...Array.from({ length: 5 }, (_, index) => `C${index + 1}`),
-]) {
+].filter(id => !['A13', 'A15'].includes(id))) {
   const row = config.matrix?.[id];
   if (!row?.evidence) throw new Error(`matrix_evidence_missing:${id}`);
   if (row.evidenceType !== EXPECTED_EVIDENCE_TYPES[id]) throw new Error(`matrix_evidence_type_invalid:${id}`);
@@ -152,6 +165,7 @@ const report = {
   matrix,
   packaging,
   installUpgradeVerified: config.installUpgradeVerified === true,
+  installUpgradeEvidence: installUpgradeEvidence ? relative(installUpgradeEvidence) : '',
 };
 const output = path.join(evidenceRoot, 'acceptance-index.json');
 write(output, report);

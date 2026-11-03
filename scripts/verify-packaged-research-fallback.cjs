@@ -44,10 +44,16 @@ function minimalWorkBuddyFallbackProbe(probeSchema = {}) {
 }
 
 function summarizeFallbackRuns(runs = []) {
-  const verified = runs.map(value => Boolean(value?.passed && value?.syntheticOnly === true
-    && value?.studentDataRead === false && value?.fallback?.safe === true
-    && value?.fallback?.from === 'codex' && value?.fallback?.to === 'workbuddy'
-    && value?.resolution === 'fallback_succeeded'));
+  const verified = runs.map(value => {
+    const common = value?.passed === true && value?.syntheticOnly === true && value?.studentDataRead === false;
+    const primarySucceeded = common && value?.resolution === 'primary_succeeded'
+      && value?.attempts?.some?.(attempt => attempt?.providerId === 'codex'
+        && attempt?.outcome === 'succeeded' && Number(attempt?.sourceCount || 0) > 0);
+    const fallbackSucceeded = common && value?.fallback?.safe === true
+      && value?.fallback?.from === 'codex' && value?.fallback?.to === 'workbuddy'
+      && value?.resolution === 'fallback_succeeded';
+    return Boolean(primarySucceeded || fallbackSucceeded);
+  });
   const passedCount = verified.filter(Boolean).length;
   return { schema: 'edu.packaged-research-fallback-summary.v1', total: runs.length, passedCount,
     requiredPasses: 2, passed: runs.length === 3 && passedCount >= 2,

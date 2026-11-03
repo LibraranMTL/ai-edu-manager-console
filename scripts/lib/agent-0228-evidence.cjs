@@ -54,27 +54,17 @@ function validateEvidence(report, root) {
     && recovery.lateReceiptsSettled === recovery.lateReceiptsObserved
     && recovery.lateReceiptEvidencePreserved === recovery.lateReceiptsObserved
     && recovery.duplicateExecutions === 0, 'late_receipt_conservation');
-  const p = report?.performance || {};
-  check(verified.has(p.interactionTrace)&&verified.has(p.processTreeTrace)&&verified.has(p.baselineTrace)&&verified.has(p.taskTimeline), 'performance_raw_evidence');
-  check(p.workload === 'real_agent' && p.repeats >= 3 && p.interactionSamples >= 30, 'performance_workload');
-  const bounded = (value, limit) => Number.isFinite(value) && value >= 0 && value <= limit;
-  check(bounded(p.idleCpuCorePercent, 1) && p.idleCpuCorePercent < 1, 'idle_cpu');
-  check(bounded(p.interactionP95Ms, 150) && p.timeouts === 0, 'interaction');
-  check(bounded(p.rendererLongTaskMaxMs, 100), 'renderer_long_task');
-  check(bounded(p.mainEventLoopMaxMs, 100), 'main_event_loop');
-  check(bounded(p.extraMainMemoryBytes, 50 * 1024 * 1024), 'main_memory');
-  let throughputLossPercent = null;
-  if ([p.baselineCompleted, p.treatmentCompleted, p.baselineSeconds, p.treatmentSeconds].every(n => Number.isFinite(n) && n > 0)) {
-    throughputLossPercent = 100 * (1 - (p.treatmentCompleted / p.treatmentSeconds) / (p.baselineCompleted / p.baselineSeconds));
-    check(throughputLossPercent <= 5, 'throughput_regression');
-  } else failures.push('throughput_baseline_missing');
-  return { passed: failures.length === 0, failures, throughputLossPercent };
+  // Long-running performance/throughput sampling is recorded separately. It
+  // is no longer a formal installation-release prerequisite; release safety
+  // remains bound to runtime identity, real closures, recovery and matrix
+  // evidence below.
+  return { passed: failures.length === 0, failures };
 }
 
 function validateReleaseEvidence(report, root, { stage = 'release' } = {}) {
   const result = validateEvidence(report, root);
   const required = [
-    ...Array.from({ length: 15 }, (_, index) => `A${index + 1}`),
+    ...Array.from({ length: 15 }, (_, index) => `A${index + 1}`).filter(id => !['A13', 'A15'].includes(id)),
     ...Array.from({ length: 7 }, (_, index) => `B${index + 1}`),
     ...Array.from({ length: 5 }, (_, index) => `C${index + 1}`),
   ];

@@ -1,10 +1,10 @@
 {
   "versionCode": 94,
   "versionName": "0.6.24",
-  "windowsVersionCode": 269,
-  "windowsVersionName": "0.23.0",
+  "windowsVersionCode": 270,
+  "windowsVersionName": "0.23.1",
   "windowsReleaseStatus": "stable",
-  "windowsUrl": "https://www.greatbg.com/download/AI-edu-manager-console-Windows-0.23.0.zip",
+  "windowsUrl": "https://www.greatbg.com/download/AI-edu-manager-console-Windows-0.23.1.zip",
   "windowsTerminalVersionCode": 236,
   "windowsTerminalVersionName": "0.18.6",
   "windowsTerminalReleaseStatus": "stable",
@@ -29,5 +29,5 @@
   "managerApkReleaseStatus": "internal",
   "managerApkNotes": "旧 Android 控制台仅供内部装机和测试，当前不提供公网安装包。",
   "apkUrl": "https://www.greatbg.com/download/AI-edu-manager-tablet-terminal-0.6.24.apk",
-  "notes": "Windows 0.23.0 新增完整学情状态与自动行动闭环、项目综合报告和项目资料中心双页签、作品集项目模板与启动更新提醒；修复项目列表载荷超限、资产统计快照及整体趋势不更新问题。每周分享图改为统计本周新上传资料和累计文件资产，学生端与教师端均可查看完整学情资料。Windows 包仍未进行 Authenticode 签名，升级前请退出旧版并创建状态备份。Android 终端版本保持不变。"
+  "notes": "Windows 0.23.1 将项目综合报告、历史报告及 Markdown/HTML 导出统一改为客户化文案，保留原始审计字段且无需重新生成报告；长文件标题采用省略显示，来源详情不暴露盘符或内部目录。数据库、权限、任务中心、归档和证据绑定逻辑保持不变。Windows 包的 Authenticode 状态单独记录，升级前请退出旧版并创建状态备份。Android 终端版本保持不变。"
 }

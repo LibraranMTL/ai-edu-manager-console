@@ -31,7 +31,7 @@ test('candidate builds preserve the stable manifest, while a formal build aligns
   const windowsManifest = JSON.parse(fs.readFileSync(path.join(root, 'release', 'windows', 'edu-manager-version.json'), 'utf8'));
   const terminalVersion = JSON.parse(fs.readFileSync(path.join(root, 'windows-terminal-version.json'), 'utf8'));
   const downloadPage = fs.readFileSync(path.join(root, 'release', '网站文件', 'download.html'), 'utf8');
-  assert.equal(packageJson.version, '0.23.0');
+  assert.equal(packageJson.version, '0.23.1');
   const candidateTag = String(process.env.EDU_WINDOWS_CANDIDATE_TAG || '').trim();
   const sourceAheadOfStable = releaseManifest.windowsVersionName !== packageJson.version;
   if (candidateTag || sourceAheadOfStable) {
@@ -39,7 +39,7 @@ test('candidate builds preserve the stable manifest, while a formal build aligns
     assert.equal(releaseManifest.windowsVersionName, '0.23.0');
   } else {
     assert.equal(releaseManifest.windowsVersionName, packageJson.version);
-    assert.equal(releaseManifest.windowsVersionCode, 269);
+    assert.equal(releaseManifest.windowsVersionCode, 270);
   }
   assert.equal(releaseManifest.windowsReleaseStatus, 'stable');
   assert.equal(windowsManifest.windowsVersionName, releaseManifest.windowsVersionName);

@@ -992,6 +992,48 @@ function makeStoreApi(db, options) {
     return { ...result, asOf };
   }
 
+  function weeklyUploadTrend(filter = {}, asOf = nowIso(now)) {
+    const currentDate = localDayKey(asOf) || localDayKey(now());
+    const cacheKey = `weekly-upload:${currentDate}:${JSON.stringify(filter || {})}`;
+    const cached = cacheGet(trendCache, cacheKey);
+    if (cached) return { ...cached, asOf };
+
+    const [year, month, day] = currentDate.split('-').map(Number);
+    const currentWeekday = new Date(Date.UTC(year, month - 1, day)).getUTCDay();
+    const mondayOffset = currentWeekday === 0 ? -6 : 1 - currentWeekday;
+    const base = new Date(year, month - 1, day + mondayOffset, 12);
+    const labels = ['周一', '周二', '周三', '周四', '周五', '周六', '周日'];
+    const days = labels.map((label, index) => {
+      const date = localDayKey(new Date(base.getFullYear(), base.getMonth(), base.getDate() + index));
+      return { date, label, uploads: date > currentDate ? null : 0 };
+    });
+    const buckets = new Map(days.map((item) => [item.date, item]));
+    const params = [];
+    const clauses = filterSql(filter, params);
+    if (filter.projectId && filter.projectId !== 'all') {
+      clauses.push("a.asset_id IN (SELECT asset_id FROM asset_references WHERE state='active' AND space_type='project' AND space_id=?)");
+      params.push(text(filter.projectId));
+    }
+    const where = clauses.length ? `WHERE ${clauses.join(' AND ')}` : '';
+    const assetDate = "strftime('%Y-%m-%d', COALESCE(NULLIF(a.uploaded_at,''), NULLIF(a.created_at,'')), 'localtime')";
+    let undatedAssets = 0;
+    for (const row of db.prepare(`SELECT ${assetDate} AS date,COUNT(*) AS count FROM assets a ${where} GROUP BY date`).all(...params)) {
+      const bucket = buckets.get(text(row.date));
+      if (bucket && bucket.uploads !== null) bucket.uploads += Number(row.count || 0);
+      else if (!row.date) undatedAssets += Number(row.count || 0);
+    }
+    const result = {
+      currentDate,
+      weekStart: days[0].date,
+      weekEnd: days.at(-1).date,
+      days,
+      uploadedTotal: days.reduce((total, item) => total + Number(item.uploads || 0), 0),
+      undatedAssets,
+    };
+    cacheSet(trendCache, cacheKey, result, SUMMARY_CACHE_LIMIT);
+    return { ...result, asOf };
+  }
+
   function listAssets(request = {}, searchText = '') {
     const params = [];
     const clauses = filterSql(request, params);
@@ -1233,7 +1275,8 @@ function makeStoreApi(db, options) {
     const asOf = nowIso(now);
     const overallScope = { studentId: filter.studentId, projectId: filter.projectId };
     return { schema: 'edu.asset-statistics-snapshot.v1', asOf, ...state, scope: filter,
-      ...summary(filter), recentTrend: recentTrend(filter, asOf), overallRecentTrend: recentTrend(overallScope, asOf) };
+      ...summary(filter), recentTrend: recentTrend(filter, asOf), overallRecentTrend: recentTrend(overallScope, asOf),
+      weeklyUploadTrend: weeklyUploadTrend(filter, asOf), overallWeeklyUploadTrend: weeklyUploadTrend(overallScope, asOf) };
   }
 
   function listDuplicateGroups(request = {}) {

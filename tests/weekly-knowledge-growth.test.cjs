@@ -89,9 +89,8 @@ test('weekly growth counts active points by first registration and marks future 
   assert.equal(growth.days.filter((day) => day.count !== null).reduce((sum, day) => sum + day.count, 0), 2);
 });
 
-test('weekly service retries generation changes and returns one scoped as-of snapshot', (t) => {
-  const { root, store } = fixture(t);
-  store.reconcileEvents('student-a', [event('mon', 'MATH.MON', '2026-11-02T01:00:00.000Z')]);
+test('weekly upload service retries generation changes and returns one scoped as-of snapshot', (t) => {
+  const { root } = fixture(t);
   let stateCalls = 0;
   const assetStore = {
     statisticsState() {
@@ -100,17 +99,29 @@ test('weekly service retries generation changes and returns one scoped as-of sna
     },
     statisticsSnapshot(scope) {
       assert.deepEqual(scope, { studentId: 'student-a' });
-      return { generation: 5, total: 128 };
+      return {
+        generation: 5, total: 128,
+        overallWeeklyUploadTrend: {
+          currentDate: '2026-11-04', weekStart: '2026-11-02', weekEnd: '2026-11-08', uploadedTotal: 3, undatedAssets: 1,
+          days: [
+            { date: '2026-11-02', label: '周一', uploads: 2 }, { date: '2026-11-03', label: '周二', uploads: 0 },
+            { date: '2026-11-04', label: '周三', uploads: 1 }, { date: '2026-11-05', label: '周四', uploads: null },
+            { date: '2026-11-06', label: '周五', uploads: null }, { date: '2026-11-07', label: '周六', uploads: null },
+            { date: '2026-11-08', label: '周日', uploads: null },
+          ],
+        },
+      };
     },
   };
   const result = getWeeklyKnowledgeGrowth({
-    studentId: 'student-a', studentRootPath: root, learningStore: store, assetStore,
+    studentId: 'student-a', studentRootPath: root, assetStore,
     asOf: '2026-11-04T04:00:00.000Z', timezone: 'Asia/Shanghai', authorizationVersion: 'students-v7',
   });
   assert.equal(result.ok, true);
   assert.equal(result.assetTotal, 128);
-  assert.equal(result.weeklyNewKnowledgePoints, 1);
-  assert.equal(result.registeredKnowledgePointTotal, 1);
+  assert.equal(result.weeklyUploadedMaterials, 3);
+  assert.equal(result.undatedAssetCount, 1);
+  assert.deepEqual(result.days.map((day) => day.uploads), [2, 0, 1, null, null, null, null]);
   assert.equal(result.assetGeneration, 5);
   assert.equal(result.authorizationVersion, 'students-v7');
   assert.equal(result.asOf, '2026-11-04T04:00:00.000Z');

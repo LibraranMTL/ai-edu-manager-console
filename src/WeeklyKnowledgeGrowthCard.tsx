@@ -8,18 +8,18 @@ export const WeeklyKnowledgeGrowthCard = memo(function WeeklyKnowledgeGrowthCard
   const hasStudent = m.assetStudentFilter && m.assetStudentFilter !== 'all';
   return <section className="weekly-knowledge-growth-card" aria-labelledby="weekly-knowledge-growth-title">
     <div className="weekly-knowledge-growth-heading">
-      <div><span className="eyebrow">单学生知识库统计</span><h3 id="weekly-knowledge-growth-title">每周知识增长</h3><p>统计知识库首次可靠登记，不代表掌握度、能力或学习效果变化。</p></div>
+      <div><span className="eyebrow">单学生资料统计</span><h3 id="weekly-knowledge-growth-title">本周资料上传</h3><p>统计本周成功写入资产索引的去重文件资料，可用于社群分享和上传奖励。</p></div>
       <TrendingUp size={24} />
     </div>
     {!hasStudent && <div className="empty-state">请选择一名学生查看周图；“全部学生”不会生成或保存图片。</div>}
-    {hasStudent && m.weeklyKnowledgeGrowthLoading && !snapshot && <div className="empty-state">正在读取同一截止时刻的资产与知识统计…</div>}
+    {hasStudent && m.weeklyKnowledgeGrowthLoading && !snapshot && <div className="empty-state">正在读取本周资料上传与累计文件资产统计…</div>}
     {hasStudent && snapshot?.ok && <div className="weekly-knowledge-growth-layout">
       <div className="weekly-knowledge-growth-preview">
-        <img src={`data:image/png;base64,${snapshot.pngBase64}`} alt={`${snapshot.weekStart} 至 ${snapshot.weekEnd} 每周知识库新增图：文件资产 ${snapshot.assetTotal} 项，已登记且有效知识点 ${snapshot.registeredKnowledgePointTotal} 个，本周新增知识点 ${snapshot.weeklyNewKnowledgePoints} 个。`} />
+        <img src={`data:image/png;base64,${snapshot.pngBase64}`} alt={`${snapshot.weekStart} 至 ${snapshot.weekEnd} 资料上传图：累计文件资产 ${snapshot.assetTotal} 项，本周新上传资料 ${snapshot.weeklyUploadedMaterials} 份。`} />
       </div>
       <div className="weekly-knowledge-growth-report-actions">
         <strong>{m.weeklyKnowledgeGrowthStudentName || '当前学生'} · {snapshot.weekStart} 至 {snapshot.weekEnd}</strong>
-        {snapshot.unknownFirstSeenCount > 0 && <div className="notice muted"><AlertTriangle size={16} />另有 {snapshot.unknownFirstSeenCount} 个知识点首次日期不明，未计入趋势。</div>}
+        {snapshot.undatedAssetCount > 0 && <div className="notice muted"><AlertTriangle size={16} />另有 {snapshot.undatedAssetCount} 份资料上传日期不明，未计入本周趋势。</div>}
         <small>图片已包含完整统计；截至 {snapshot.currentDate || snapshot.asOf.slice(0, 10)} · {snapshot.timezone}。</small>
         <div className="actions compact-actions">
           <button className="secondary compact" type="button" disabled={m.weeklyKnowledgeGrowthLoading || m.weeklyKnowledgeGrowthSaving} onClick={() => void a.refreshWeeklyKnowledgeGrowth()}><RefreshCw size={16} />重新读取</button>

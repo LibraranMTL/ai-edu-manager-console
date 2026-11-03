@@ -88,6 +88,28 @@ test('statistics snapshots include the scoped seven-day asset and reference tren
   assert.equal(snapshot.recentTrend.asOf, snapshot.asOf);
 });
 
+test('weekly upload trend counts scoped new file assets and keeps future dates out of the total', (t) => {
+  const { store } = fixture(t);
+  const add = (id, studentId, uploadedAt) => store.upsertAsset({
+    assetId: id, sha1: id.padEnd(40, id[0]).slice(0, 40), filename: `${id}.pdf`, ownerStudentId: studentId,
+    path: `D:/${id}.pdf`, uploadedAt,
+  }, [{ referenceId: `${id}-ref`, spaceType: 'student', spaceId: studentId, studentId, role: 'raw', path: `D:/${id}.pdf` }]);
+  add('monday-upload', 'student-a', '2026-11-02T01:00:00.000Z');
+  add('future-upload', 'student-a', '2026-11-03T01:00:00.000Z');
+  add('other-student', 'student-b', '2026-11-02T01:00:00.000Z');
+
+  const snapshot = store.statisticsSnapshot({ studentId: 'student-a' });
+  assert.equal(snapshot.total, 2, 'the cumulative count stays scoped to the selected student');
+  assert.equal(snapshot.overallWeeklyUploadTrend.weekStart, '2026-11-02');
+  assert.equal(snapshot.overallWeeklyUploadTrend.weekEnd, '2026-11-08');
+  assert.equal(snapshot.overallWeeklyUploadTrend.uploadedTotal, 1, 'future-dated assets cannot inflate the current week total');
+  assert.deepEqual(snapshot.overallWeeklyUploadTrend.days.map((day) => [day.date, day.uploads]), [
+    ['2026-11-02', 1], ['2026-11-03', null], ['2026-11-04', null], ['2026-11-05', null],
+    ['2026-11-06', null], ['2026-11-07', null], ['2026-11-08', null],
+  ]);
+  assert.equal(snapshot.overallWeeklyUploadTrend.asOf, snapshot.asOf);
+});
+
 test('overall trend keeps the student scope but ignores duplicate-only filtering and refreshes after commits', (t) => {
   const { store } = fixture(t);
   const asset = (id, sha, path, studentId = 'student-a') => ({

@@ -449,13 +449,11 @@ type WeeklyKnowledgeGrowth = {
   weekStart: string;
   weekEnd: string;
   assetTotal: number;
-  registeredKnowledgePointTotal: number;
-  weeklyNewKnowledgePoints: number;
-  unknownFirstSeenCount: number;
+  weeklyUploadedMaterials: number;
+  undatedAssetCount: number;
   assetGeneration: number;
-  knowledgeGeneration: number;
   authorizationVersion: string;
-  days: Array<{ date: string; label: string; count: number | null }>;
+  days: Array<{ date: string; label: string; uploads: number | null }>;
 };
 
 type AssetRebuildJob = {

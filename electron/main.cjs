@@ -13990,7 +13990,7 @@ async function saveWeeklyKnowledgeGrowthPng(snapshotId, studentId) {
   weeklyKnowledgeGrowthSaveInFlight = true;
   try {
     const choice = await dialog.showSaveDialog(mainWindow, {
-      title: '保存每周知识增长图片',
+      title: '保存本周资料上传图片',
       defaultPath: image.fileName,
       filters: [{ name: 'PNG 图片', extensions: ['png'] }],
       properties: ['createDirectory', 'showOverwriteConfirmation'],
@@ -39883,6 +39883,102 @@ async function handleTerminalLearningState(request, response, teacherStudentId =
   }
 }
 
+const TERMINAL_LEARNING_STATUS_FIELDS = [
+  ['currentContent', '当前在学内容'], ['completed', '已完成事项'], ['difficulties', '遇到的困难'],
+  ['nextPlan', '下一步计划'], ['helpNeeded', '需要的帮助'], ['notes', '补充说明'],
+];
+
+function terminalLearningStatusNote(input = {}) {
+  const state = { smooth: '顺利', normal: '一般', difficult: '遇到困难' }[String(input.overallState || '')] || '一般';
+  return [`今日总体状态：${state}`, ...TERMINAL_LEARNING_STATUS_FIELDS.map(([key, label]) => `${label}：${String(input[key] || '').trim()}`)].join('\n');
+}
+
+function terminalLearningStatusEntry(checkIn = {}) {
+  const note = String(checkIn.note || '');
+  const lines = note.split(/\r?\n/);
+  const values = {};
+  for (const [key, label] of TERMINAL_LEARNING_STATUS_FIELDS) {
+    const line = lines.find((item) => item.startsWith(`${label}：`));
+    values[key] = line ? line.slice(label.length + 1).trim() : '';
+  }
+  const stateLine = lines.find((item) => item.startsWith('今日总体状态：')) || '';
+  const stateText = stateLine.slice('今日总体状态：'.length).trim();
+  return {
+    id: String(checkIn.checkInId || ''), submissionId: String(checkIn.clientSubmissionId || ''),
+    overallState: stateText === '顺利' ? 'smooth' : stateText === '遇到困难' ? 'difficult' : 'normal',
+    ...values,
+    recordedByRole: checkIn.sourceCategory === 'teacher_assisted' ? 'teacher' : 'student',
+    recordingMode: checkIn.sourceCategory === 'teacher_assisted' ? 'teacher_assisted' : 'self_report',
+    createdAt: String(checkIn.createdAt || checkIn.occurredAt || ''),
+  };
+}
+
+async function handleTerminalLearningStatus(request, response, teacherStudentId = '') {
+  const student = terminalLearningStudent(request, response, teacherStudentId);
+  if (!student) return;
+  const normalized = toHostStudent(student);
+  const studentId = String(normalized.id);
+  const isTeacher = request.authContext?.type === 'device' && request.authContext.deviceRole === 'teacher';
+  const dbPath = learningStatePath(normalized.rootPath);
+  try {
+    if (request.method === 'GET') {
+      const projection = terminalLearningStateProjection(student, isTeacher ? 'teacher' : 'student');
+      return sendJson(response, 200, { ok: true, studentId, entries: (projection.checkIns || []).map(terminalLearningStatusEntry) });
+    }
+    const body = await parseJsonBody(request, 64 * 1024);
+    const store = createLearningStateStore({ dbPath });
+    try {
+      const checkIn = store.submitCheckIn({ studentId, actorRole: isTeacher ? 'teacher' : 'student', actorId: String(request.authContext.deviceId || '') }, {
+        kind: 'weekly', note: terminalLearningStatusNote(body), occurredAt: body.occurredAt,
+      }, String(body.submissionId || '').trim());
+      store.publishFindings(studentId, new Date().toISOString());
+      return sendJson(response, 200, { ok: true, studentId, entry: terminalLearningStatusEntry(checkIn) });
+    } finally { store.close(); }
+  } catch (error) {
+    const status = error.code === 'commit_key_conflict' ? 409 : ['student_scope_missing', 'student_scope_mismatch'].includes(error.code) ? 403 : 400;
+    return sendJson(response, status, { ok: false, code: error.code || 'LEARNING_STATUS_INVALID', message: String(error.message || error).slice(0, 240) });
+  }
+}
+
+async function handleTerminalProjectComprehensiveReport(request, response, projectId, teacherStudentId = '') {
+  const student = terminalLearningStudent(request, response, teacherStudentId);
+  if (!student) return;
+  try {
+    const project = projectStateStore().getMetadata(String(projectId || ''));
+    if (!project) return sendJson(response, 404, { ok: false, code: 'PROJECT_NOT_FOUND', message: '未找到关联项目。' });
+    if (!(project.studentIds || []).map(String).includes(String(student.id))) {
+      return sendJson(response, 403, { ok: false, code: 'PROJECT_STUDENT_SCOPE_MISMATCH', message: '当前学生未关联该项目。' });
+    }
+    const result = JSON.parse(await getProjectOverallReport(project.id));
+    if (!result.ok) return sendJson(response, 400, result);
+    const report = result.report || {};
+    return sendJson(response, 200, { ok: true, studentId: String(student.id), projectId: String(project.id),
+      status: String(report.status || 'empty'), updatedAt: String(report.updatedAt || report.createdAt || ''),
+      content: projectReportMarkdown(report) });
+  } catch (error) {
+    return sendJson(response, 500, { ok: false, code: 'PROJECT_REPORT_READ_FAILED', message: String(error.message || error).slice(0, 240) });
+  }
+}
+
+async function handleTerminalKnowledgeGrowth(request, response, week = '', teacherStudentId = '') {
+  const student = terminalLearningStudent(request, response, teacherStudentId);
+  if (!student) return;
+  try {
+    const result = JSON.parse(await weeklyKnowledgeGrowthJson(String(student.id)));
+    if (!result.ok) return sendJson(response, 400, result);
+    const currentWeek = String(result.currentDate || result.asOf || new Date().toISOString()).slice(0, 10);
+    if (!week) return sendJson(response, 200, { ok: true, studentId: String(student.id), weeks: [currentWeek] });
+    if (String(week) !== currentWeek) {
+      return sendJson(response, 409, { ok: false, code: 'KNOWLEDGE_GROWTH_CHANGED', message: '资料上传图已更新，请刷新周次。' });
+    }
+    return sendJson(response, 200, { ok: true, studentId: String(student.id), week: currentWeek,
+      imageBase64: String(result.pngBase64 || ''), mimeType: 'image/png', sha256: String(result.sha256 || ''),
+      generatedAt: String(result.generatedAt || result.asOf || ''), summary: result.summary || null });
+  } catch (error) {
+    return sendJson(response, 500, { ok: false, code: 'KNOWLEDGE_GROWTH_READ_FAILED', message: String(error.message || error).slice(0, 240) });
+  }
+}
+
 function handleTerminalPlanning(request, response, kind, studentId = '') {
   const student = terminalLearningStudent(request, response, studentId);
   if (!student) return;
@@ -42208,6 +42304,7 @@ function handleHostRequest(request, response) {
     sendJson(response, 200, { ok: true, studentId: String(student.id), hostId: getHostIdentity().hostId, dataGeneration: hostDataGenerationId(), capabilities: {
       practice: true, practiceAttachments: true, practiceVisualReview: true, publications: true, planningRead: true, planningSections: true, planningFavorites: true,
       remoteInbox: true, learningTrajectory: true, learningStateRead: true, learningStateFeedback: true, conversationLinkPreview: true,
+      learningStatus: true, projectComprehensiveReport: true, weeklyKnowledgeGrowthImage: true,
     } });
     return;
   }
@@ -42219,7 +42316,10 @@ function handleHostRequest(request, response) {
     }
     const student = terminalLearningStudent(request, response, teacherCapabilitiesMatch[1]);
     if (!student) return;
-    return sendJson(response, 200, { ok: true, studentId: String(student.id), hostId: getHostIdentity().hostId, dataGeneration: hostDataGenerationId(), capabilities: { planningRead: true, planningSections: true, learningStateRead: true } });
+    return sendJson(response, 200, { ok: true, studentId: String(student.id), hostId: getHostIdentity().hostId, dataGeneration: hostDataGenerationId(), capabilities: {
+      planningRead: true, planningSections: true, learningStateRead: true, learningStatus: true,
+      projectComprehensiveReport: true, weeklyKnowledgeGrowthImage: true,
+    } });
   }
   if (request.method === 'GET' && pathname === '/api/teacher/learning-overview') {
     return handleTeacherLearningOverview(request, response, url);
@@ -42257,6 +42357,36 @@ function handleHostRequest(request, response) {
   const teacherLearningStateMatch = pathname.match(/^\/api\/teacher\/students\/([^/]+)\/learning-state$/);
   if (request.method === 'GET' && teacherLearningStateMatch) {
     return handleTerminalLearningState(request, response, teacherLearningStateMatch[1]);
+  }
+  if (['GET', 'POST'].includes(request.method) && pathname === '/api/student-session/learning-status') {
+    return handleTerminalLearningStatus(request, response);
+  }
+  const teacherLearningStatusMatch = pathname.match(/^\/api\/teacher-session\/students\/([^/]+)\/learning-status$/);
+  if (teacherLearningStatusMatch && ['GET', 'POST'].includes(request.method)) {
+    return handleTerminalLearningStatus(request, response, teacherLearningStatusMatch[1]);
+  }
+  const studentProjectReportMatch = pathname.match(/^\/api\/student-session\/projects\/([^/]+)\/comprehensive-report$/);
+  if (request.method === 'GET' && studentProjectReportMatch) {
+    return handleTerminalProjectComprehensiveReport(request, response, studentProjectReportMatch[1]);
+  }
+  const teacherProjectReportMatch = pathname.match(/^\/api\/teacher-session\/students\/([^/]+)\/projects\/([^/]+)\/comprehensive-report$/);
+  if (request.method === 'GET' && teacherProjectReportMatch) {
+    return handleTerminalProjectComprehensiveReport(request, response, teacherProjectReportMatch[2], teacherProjectReportMatch[1]);
+  }
+  if (request.method === 'GET' && pathname === '/api/student-session/knowledge-growth/weeks') {
+    return handleTerminalKnowledgeGrowth(request, response);
+  }
+  const studentGrowthImageMatch = pathname.match(/^\/api\/student-session\/knowledge-growth\/([^/]+)\/image$/);
+  if (request.method === 'GET' && studentGrowthImageMatch) {
+    return handleTerminalKnowledgeGrowth(request, response, studentGrowthImageMatch[1]);
+  }
+  const teacherGrowthWeeksMatch = pathname.match(/^\/api\/teacher-session\/students\/([^/]+)\/knowledge-growth\/weeks$/);
+  if (request.method === 'GET' && teacherGrowthWeeksMatch) {
+    return handleTerminalKnowledgeGrowth(request, response, '', teacherGrowthWeeksMatch[1]);
+  }
+  const teacherGrowthImageMatch = pathname.match(/^\/api\/teacher-session\/students\/([^/]+)\/knowledge-growth\/([^/]+)\/image$/);
+  if (request.method === 'GET' && teacherGrowthImageMatch) {
+    return handleTerminalKnowledgeGrowth(request, response, teacherGrowthImageMatch[2], teacherGrowthImageMatch[1]);
   }
   const terminalPracticeAction = pathname.match(/^\/api\/student-session\/practice\/([^/]+)\/(start|attempt)$/);
   if (request.method === 'POST' && terminalPracticeAction) {
@@ -43831,7 +43961,7 @@ ipcMain.handle('bridge:getLearningAnalytics', async (_event, inputJson) => getLe
 ipcMain.handle('bridge:listStudentKnowledgePoints', async (_event, inputJson) => listStudentKnowledgePointsJson(inputJson));
 ipcMain.handle('bridge:getWeeklyKnowledgeGrowth', (_event, studentId) => deferredInvoke(() => weeklyKnowledgeGrowthJson(studentId)));
 ipcMain.handle('bridge:saveWeeklyKnowledgeGrowthPng', (_event, snapshotId, studentId) => licensedInvoke(
-  '保存每周知识增长图片', () => saveWeeklyKnowledgeGrowthPng(snapshotId, studentId)));
+  '保存本周资料上传图片', () => saveWeeklyKnowledgeGrowthPng(snapshotId, studentId)));
 ipcMain.handle('bridge:learningStateAction', (_event, action, studentId, inputJson) => (
   action === 'get'
     ? deferredInvoke(() => learningStateActionJson(action, studentId, inputJson))

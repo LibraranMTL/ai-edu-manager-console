@@ -339,19 +339,27 @@ function createLearningStateStore({ dbPath, now = Date.now, quickCheck = true })
     const actor = assertScope(scope, payload.studentId);
     clientSubmissionId = text(clientSubmissionId);
     if (!clientSubmissionId) throw Object.assign(new Error('稳定提交键缺失。'), { code: 'commit_key_missing' });
-    const existing = db.prepare('SELECT * FROM learning_checkins WHERE student_id=? AND client_submission_id=?')
-      .get(actor.studentId, clientSubmissionId);
-    if (existing) return mapCheckIn(existing);
     const kind = text(payload.kind) || 'weekly';
     if (!['baseline', 'weekly'].includes(kind)) throw Object.assign(new Error('反馈类型无效。'), { code: 'checkin_kind_invalid' });
     const occurredAt = reliableIso(payload.occurredAt) || nowIso(now);
+    const dimensions = normalizeDimensions(payload.dimensions);
+    const note = text(payload.note);
+    const existing = db.prepare('SELECT * FROM learning_checkins WHERE student_id=? AND client_submission_id=?')
+      .get(actor.studentId, clientSubmissionId);
+    if (existing) {
+      if (existing.kind !== kind || existing.note !== note
+        || JSON.stringify(parseJson(existing.dimensions_json, {})) !== JSON.stringify(dimensions)) {
+        throw Object.assign(new Error('同一提交号不能更换学习状态内容。'), { code: 'commit_key_conflict' });
+      }
+      return mapCheckIn(existing);
+    }
     const createdAt = nowIso(now);
     const checkInId = id('checkin');
-    const dimensions = normalizeDimensions(payload.dimensions);
+    const sourceCategory = actor.actorRole === 'teacher' ? 'teacher_assisted' : 'student_self_report';
     return transaction(() => {
       db.prepare(`INSERT INTO learning_checkins(student_id,checkin_id,client_submission_id,kind,occurred_at,
         dimensions_json,note,source_category,created_at) VALUES(?,?,?,?,?,?,?,?,?)`)
-        .run(actor.studentId, checkInId, clientSubmissionId, kind, occurredAt, JSON.stringify(dimensions), text(payload.note), 'student_self_report', createdAt);
+        .run(actor.studentId, checkInId, clientSubmissionId, kind, occurredAt, JSON.stringify(dimensions), note, sourceCategory, createdAt);
       advanceGeneration(createdAt);
       return mapCheckIn(db.prepare('SELECT * FROM learning_checkins WHERE student_id=? AND checkin_id=?').get(actor.studentId, checkInId));
     });

@@ -32,7 +32,28 @@
 - 每周分享图改为“本周新上传资料 + 累计文件资产”，用于社群分享和上传奖励，不推断知识掌握度。
 - 新增首页五入口、启动稳定版更新提醒和作品集项目模板。
 
-## 发布边界
+## Git 发布
 
-- 正式源码提交、Git 推送、服务器备份、暂存校验、原子切换和公网 HTTPS 验证须在本记录后继续完成。
-- 公网验证完成前，本记录只表示正式发布产物已准备，不表示服务器切换完成。
+- 正式发布提交：`ff73c6dc67c7cdf4f12390cd7ecfbb337c123482`。
+- 远程分支：`origin/codex/windows-0230-foundation`。
+- 正式标签：`v0.23.0`，已推送到 `https://github.com/LibraranMTL/ai-edu-manager-console.git`。
+
+## 阿里云正式发布
+
+- 实例：青岛 `i-m5e6r68cl11nbh2y0o6z`，公网地址 `47.104.192.137`；未访问或同步退役北京实例。
+- 站点根目录：`/www/wwwroot/123.56.83.50`。
+- 回滚备份：`/www/backups/windows-0.23.0-20261103-ff73c6d`，包含发布前页面、两份清单、0.22.8 三个 Windows 包及发布前哈希清单。
+- 上传使用独立 `/tmp/edu-manager-windows-0.23.0-20261103-1049` 暂存目录，上传后逐文件核对字节数和 SHA-256，并校验 JSON 与页面引用。
+- 切换顺序为三个二进制、两份版本清单、下载页；每个目标先写入同目录临时文件，再原子重命名。发布后已删除精确暂存目录，回滚备份保留。
+
+## 公网验收
+
+- `https://www.greatbg.com/education/download.html` 返回 HTTP 200，并引用 0.23.0 的 Setup、EXE 和 ZIP。
+- `/download/edu-manager-version.json` 与 `/education/edu-manager-version.json` 均返回 HTTP 200、内容一致，Windows 字段为 `0.23.0 / 269 / stable`。
+- 三个下载地址均返回 HTTP 200，公网 `Content-Length` 分别为 99,752,377、99,100,407 和 99,110,412 字节，与正式清单一致。
+- 安装包从公网完整反向下载后 SHA-256 为 `A2B1A0422FE875E8D87559390B5093485C190E8FBF4D297B7FC636D30C867077`，与本地和服务器暂存文件完全一致。
+
+## 剩余边界
+
+- Windows 产物仍未进行 Authenticode 签名。
+- 安装器载荷已逐文件验证，但本次未在开发机覆盖执行安装向导，也未以此替代单独的用户设备升级与回滚验收。

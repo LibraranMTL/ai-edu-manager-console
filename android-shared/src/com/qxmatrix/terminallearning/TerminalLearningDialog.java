@@ -21,6 +21,7 @@ import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.Spinner;
 import android.widget.TextView;
+import com.qxmatrix.markdown.MarkdownReadOnlyDialog;
 import org.json.JSONArray;
 import org.json.JSONObject;
 import java.io.File;
@@ -582,14 +583,12 @@ public final class TerminalLearningDialog {
             final String content = text; final JSONObject version = currentVersion;
             activity.runOnUiThread(new Runnable() { @Override public void run() {
                 if (teacher || "guidance".equals(routeKind) || version == null || version.optJSONArray("candidates") == null) {
-                    showText(activity, title, content); return;
+                    MarkdownReadOnlyDialog.show(activity, title, "只读内容 · 来自 Windows 主机", content, teacher); return;
                 }
-                ScrollView scroll = new ScrollView(activity);
-                TextView view = new TextView(activity); view.setText(content); view.setPadding(32, 24, 32, 24); view.setTextSize(16); scroll.addView(view);
-                new AlertDialog.Builder(activity).setTitle(title).setView(scroll).setNegativeButton("关闭", null)
-                        .setPositiveButton("管理收藏", new DialogInterface.OnClickListener() {
+                MarkdownReadOnlyDialog.show(activity, title, "候选建议 · 来自 Windows 主机", content, false,
+                        "管理收藏", new DialogInterface.OnClickListener() {
                             @Override public void onClick(DialogInterface dialog, int which) { choosePlanningFavorite(activity, transport, routeKind, version); }
-                        }).show();
+                        });
             }});
         }}).start();
     }
@@ -756,7 +755,7 @@ public final class TerminalLearningDialog {
         for (int index = 0; index < fields.length; index++) {
             JSONArray values = section.optJSONArray(fields[index]);
             if (values == null || values.length() == 0) continue;
-            out.append("【").append(labels[index]).append("】\n");
+            out.append("## ").append(labels[index]).append("\n");
             appendArray(out, values);
         }
     }
@@ -784,7 +783,7 @@ public final class TerminalLearningDialog {
 
     private static void appendArray(StringBuilder out, JSONArray values) {
         if (values == null) return;
-        for (int i = 0; i < values.length(); i++) if (!values.optString(i).isEmpty()) out.append("• ").append(values.optString(i)).append("\n");
+        for (int i = 0; i < values.length(); i++) if (!values.optString(i).isEmpty()) out.append("- ").append(values.optString(i)).append("\n");
     }
 
     private static void showText(Activity activity, String title, String content) {

@@ -75,7 +75,7 @@ import com.google.zxing.RGBLuminanceSource;
 import com.google.zxing.Result;
 import com.google.zxing.common.GlobalHistogramBinarizer;
 import com.google.zxing.common.HybridBinarizer;
-import com.qxmatrix.projectmaterials.ProjectMaterialsDialog;
+import com.qxmatrix.markdown.MarkdownReadOnlyDialog;
 
 import java.io.BufferedReader;
 import java.io.ByteArrayInputStream;
@@ -125,8 +125,8 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
     static final int REQUEST_DIRECT_UPLOAD = 8112;
     static final int REQUEST_DIRECT_IMAGE_UPLOAD = 8113;
     static final int REQUEST_IMPORT_CONVERSATION_FILE = 8114;
-    static final String VERSION_NAME = "0.6.26";
-    static final int VERSION_CODE = 96;
+    static final String VERSION_NAME = "0.6.27";
+    static final int VERSION_CODE = 97;
     static final String CONNECTION_BACKUP_KIND = "ai-edu-manager-tablet-connection-backup";
     static final int CONNECTION_BACKUP_VERSION = 1;
     static final String UPDATE_MANIFEST_URL = "https://www.greatbg.com/download/edu-manager-version.json";
@@ -171,6 +171,7 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
     private static final String PREF_PENDING_CONVERSATION_TEXT = "pending_conversation_text";
     private static final String PREF_PENDING_CONVERSATION_SOURCE = "pending_conversation_source";
     private static final String PREF_PENDING_CONVERSATION_REFERENCE = "pending_conversation_reference";
+    private static final String PREF_PENDING_CONVERSATION_DRAFT_ID = "pending_conversation_draft_id";
     private static final String PREF_CAPTURE_AUTO_DELIVERY_DEFAULT = "capture_auto_delivery_default";
     private static final int MAX_CONVERSATION_CHARS = 60000;
     private static final String CACHE_ARCHIVE_FILES_PREFIX = "archive_files_";
@@ -366,6 +367,7 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
     String pendingConversationText = "";
     String pendingConversationSource = "手动粘贴";
     String pendingConversationReference = "manual-paste";
+    String pendingConversationDraftId = "";
     String conversationLastResult = "";
     TextView conversationImportStatusText;
     String captureUploadVisualState = "idle";
@@ -388,6 +390,8 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
         initializeCollectionInbox();
         refreshCollectionInboxUi();
         handleIncomingShare(getIntent());
+        restoreNextConversationDraft();
+        checkForUpdate(true);
         maybeStartCaptureFromIntent(getIntent());
         if (normalizedBaseUrl().length() > 0 && apiToken().length() > 0) {
             connectAndLoadStudents();
@@ -1080,6 +1084,11 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
         projectKnowledgeEntryRow.addView(quickProjectKnowledgeButton);
         projectKnowledgeEntryCard.addView(projectKnowledgeEntryRow);
         quickProjectKnowledgeButton.setOnClickListener(this);
+        Button projectReportButton = button("项目综合报告", false);
+        projectReportButton.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View view) { chooseProjectComprehensiveReport(false); }
+        });
+        projectKnowledgeEntryCard.addView(projectReportButton);
 
         collectionPage = workspacePage("搜集上传", "选择资料并确认当前学生与目标后立即上传；网络中断或发送失败时由本机安全保留并重试。");
         collectionInboxStatusText = new TextView(this);
@@ -1168,7 +1177,7 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
         archivePage.addView(collapsiblePanel("学情报告", "整体画像、行动建议、历史变化和阶段总结。", reportCard));
         archivePage.addView(collapsiblePanel("成长模型", "成长概览、推荐选题和推荐比赛。", growthCard));
         archivePage.addView(collapsiblePanel("学情档案", "打开当前学生自己的学情档案。", archiveEntryCard));
-        archivePage.addView(collapsiblePanel("项目资料", "查看当前学生已经关联的项目资料与公开知识。", projectKnowledgeEntryCard));
+        archivePage.addView(collapsiblePanel("项目资料", "查看当前学生关联项目的知识文件与综合报告。", projectKnowledgeEntryCard));
         archivePage.addView(collapsiblePanel("规划指导", "升学路径、专业探索和职业发展。", planningCard));
         archiveCard.setVisibility(View.GONE);
         archivePage.addView(archiveCard);
@@ -1193,6 +1202,16 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
             @Override public void onClick(View view) { openTerminalLearningAction("trajectory"); }
         });
         learningActionPage.addView(collapsiblePanel("知识点跟踪", "只读查看当前学生的学习证据投影。", trajectoryEntry));
+        LinearLayout collaborationEntry = card();
+        collaborationEntry.addView(label("学习状态与成长回顾"));
+        collaborationEntry.addView(label("填写当前学习状态，查看每周知识增长图。项目综合报告在“项目资料”中查看。"));
+        Button learningStatusButton = button("填写学习状态", true);
+        Button weeklyGrowthButton = button("每周知识增长图", false);
+        LinearLayout collaborationRow = row(); collaborationRow.addView(learningStatusButton); collaborationRow.addView(weeklyGrowthButton);
+        collaborationEntry.addView(collaborationRow);
+        learningStatusButton.setOnClickListener(new View.OnClickListener() { @Override public void onClick(View view) { showLearningStatusDialog(false); } });
+        weeklyGrowthButton.setOnClickListener(new View.OnClickListener() { @Override public void onClick(View view) { openWeeklyKnowledgeGrowth(false); } });
+        learningActionPage.addView(collapsiblePanel("学习状态与成长", "学习状态、项目报告和每周知识增长图。", collaborationEntry));
 
         morePage = workspacePage("更多", "外观、更新、诊断和其他辅助设置。 ");
         morePage.addView(collapsiblePanel("外观、更新与诊断", "页面布局、皮肤、更新检查与诊断工具。", settingsCard));
@@ -1430,11 +1449,7 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
             scrollToView(reportCard);
             status("正在读取学情报告。");
         } else if (view == quickArchiveButton) {
-            selectStudentArchiveSource();
-            archiveCard.setVisibility(View.VISIBLE);
-            loadArchiveFiles();
-            scrollToView(archiveCard);
-            status("已打开当前学生的学情档案。");
+            openStudentArchiveDialog();
         } else if (view == quickProjectKnowledgeButton) {
             openProjectMaterialsCenter();
         } else if (view == quickContactButton) {
@@ -2086,33 +2101,104 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
 
     void openProjectMaterialsProject(final LearningProject project) {
         if (project == null) return;
-        if (!project.supportsMaterialViews()) {
-            archiveCard.setVisibility(View.VISIBLE);
-            int index = archiveSourceProjects.indexOf(project);
-            if (index >= 0) archiveSourceSpinner.setSelection(index + 1);
-            scrollToView(archiveCard);
-            status("running".equals(project.materialMigrationState)
-                ? "Windows主机正在迁移历史资料；本端只读等待。"
-                : "该项目仍使用旧版知识库视图；请在Windows主机预览并执行受控迁移。");
-            return;
+        openProjectKnowledgeDialog(project);
+    }
+
+    void openStudentArchiveDialog() {
+        if (selectedStudent == null) { toast("请先进入学生空间。"); return; }
+        final String studentId = selectedStudent.id;
+        final String studentName = selectedStudent.name;
+        final String base = normalizedBaseUrl();
+        final String token = dataToken();
+        if (base.length() == 0 || token.length() == 0) { toast("请先连接主机并进入学生空间。"); return; }
+        status("正在读取学情档案目录...");
+        new Thread(new Runnable() { @Override public void run() {
+            List<ArchiveFile> files = new ArrayList<ArchiveFile>(); String error = null;
+            try {
+                JSONObject json = getJson(base + "/api/students/" + safeEncode(studentId) + "/archive/files", token);
+                files = readableMarkdownFiles(json.optJSONArray("files"));
+            } catch (Exception failure) { error = collaborationFeatureError(failure.getMessage()); }
+            final List<ArchiveFile> result = files; final String failure = error;
+            runOnUiThread(new Runnable() { @Override public void run() {
+                if (selectedStudent == null || !studentId.equals(selectedStudent.id)) return;
+                if (failure != null) { toast("学情档案读取失败：" + failure); return; }
+                showReadOnlyFilePicker(studentName + " · 学情档案", result, new ReadOnlyFileSelection() {
+                    @Override public void open(ArchiveFile file) {
+                        loadReadOnlyFileDialog(studentName + " · " + file.name,
+                            base + "/api/students/" + safeEncode(studentId) + "/archive/file?path=" + safeEncode(file.path), token);
+                    }
+                });
+            }});
+        }}).start();
+    }
+
+    void openProjectKnowledgeDialog(final LearningProject project) {
+        if (selectedStudent == null || project == null || !project.studentIds.contains(selectedStudent.id)) {
+            toast("当前学生没有关联该项目。"); return;
         }
-        ProjectMaterialsDialog.open(new ProjectMaterialsDialog.Bridge() {
-            @Override public Activity activity() { return MainActivity.this; }
-            @Override public String baseUrl() { return normalizedBaseUrl(); }
-            @Override public String token() { return dataToken(); }
-            @Override public String hostId() { return connectedHostId(); }
-            @Override public String dataGeneration() { return connectedHostDataGeneration(); }
-            @Override public String principalScope() {
-                return selectedStudent == null ? "student:unknown" : "student:" + selectedStudent.id;
+        final String expectedStudentId = selectedStudent.id;
+        final String base = normalizedBaseUrl();
+        final String token = dataToken();
+        if (base.length() == 0 || token.length() == 0) { toast("请先连接主机并进入学生空间。"); return; }
+        status("正在读取“" + project.name + "”项目资料...");
+        new Thread(new Runnable() { @Override public void run() {
+            List<ArchiveFile> files = new ArrayList<ArchiveFile>(); String error = null;
+            try {
+                JSONObject json = getJson(base + "/api/projects/" + safeEncode(project.id) + "/archive/files", token);
+                files = readableMarkdownFiles(json.optJSONArray("files"));
+            } catch (Exception failure) { error = collaborationFeatureError(failure.getMessage()); }
+            final List<ArchiveFile> result = files; final String failure = error;
+            runOnUiThread(new Runnable() { @Override public void run() {
+                if (selectedStudent == null || !expectedStudentId.equals(selectedStudent.id)) return;
+                if (failure != null) { toast("项目资料读取失败：" + failure); return; }
+                showReadOnlyFilePicker(project.name + " · 项目资料", result, new ReadOnlyFileSelection() {
+                    @Override public void open(ArchiveFile file) {
+                        loadReadOnlyFileDialog(project.name + " · " + file.name,
+                            base + "/api/projects/" + safeEncode(project.id) + "/archive/file?path=" + safeEncode(file.path), token);
+                    }
+                });
+            }});
+        }}).start();
+    }
+
+    interface ReadOnlyFileSelection { void open(ArchiveFile file); }
+
+    List<ArchiveFile> readableMarkdownFiles(JSONArray array) {
+        List<ArchiveFile> result = new ArrayList<ArchiveFile>();
+        if (array == null) return result;
+        for (int i = 0; i < array.length(); i++) {
+            JSONObject item = array.optJSONObject(i); if (item == null) continue;
+            ArchiveFile file = new ArchiveFile(item);
+            String lower = file.path == null ? "" : file.path.toLowerCase(Locale.ROOT);
+            if (lower.endsWith(".md") && !lower.endsWith("/agent.md") && !lower.endsWith("/log.md")
+                && !lower.equals("agent.md") && !lower.equals("log.md")) result.add(file);
+        }
+        return result;
+    }
+
+    void showReadOnlyFilePicker(String title, final List<ArchiveFile> files, final ReadOnlyFileSelection selection) {
+        if (files == null || files.size() == 0) { toast("当前没有可查看的资料文件。"); return; }
+        String[] labels = new String[files.size()];
+        for (int i = 0; i < files.size(); i++) labels[i] = fileListLabel(files.get(i));
+        new AlertDialog.Builder(this).setTitle(title).setItems(labels, new DialogInterface.OnClickListener() {
+            @Override public void onClick(DialogInterface dialog, int which) {
+                if (which >= 0 && which < files.size()) selection.open(files.get(which));
             }
-            @Override public JSONObject getJson(String url) throws Exception {
-                return MainActivity.this.getJson(url, dataToken());
-            }
-            @Override public JSONObject postJson(String url, JSONObject body) throws Exception {
-                return MainActivity.this.postJson(url, body, dataToken());
-            }
-            @Override public void status(String message) { MainActivity.this.status(message); }
-        }, project.asMaterialProject());
+        }).setNegativeButton("关闭", null).show();
+    }
+
+    void loadReadOnlyFileDialog(final String title, final String url, final String token) {
+        status("正在读取“" + title + "”...");
+        new Thread(new Runnable() { @Override public void run() {
+            String content = ""; String error = null;
+            try { content = getJson(url, token).optString("content", ""); }
+            catch (Exception failure) { error = collaborationFeatureError(failure.getMessage()); }
+            final String body = content; final String failure = error;
+            runOnUiThread(new Runnable() { @Override public void run() {
+                if (failure != null) { toast("文件读取失败：" + failure); return; }
+                showCollaborationTextDialog(title, "只读内容 · 来自 Windows 主机", body.length() == 0 ? "该文件暂无正文。" : body);
+            }});
+        }}).start();
     }
 
     void selectStudentArchiveSource() {
@@ -2222,40 +2308,40 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
             .append(" 条 · 观察中 ").append(summary == null ? 0 : summary.optInt("watchingCount", 0)).append(" 条\n");
         text.append("能力维度 ").append(summary == null ? 0 : summary.optInt("abilityCount", 0))
             .append(" 个 · 关联项目 ").append(summary == null ? 0 : summary.optInt("projectCount", 0)).append(" 个\n\n");
-        text.append("能力画像\n");
+        text.append("## 能力画像\n");
         if (abilities == null || abilities.length() == 0) {
-            text.append("• 暂无已形成的能力画像。\n");
+            text.append("- 暂无已形成的能力画像。\n");
         } else {
             for (int i = 0; i < abilities.length() && i < 8; i++) {
                 JSONObject item = abilities.optJSONObject(i);
                 if (item == null) continue;
-                text.append("• ").append(item.optString("name", "待标注"))
+                text.append("- ").append(item.optString("name", "待标注"))
                     .append("：").append(item.optString("maturityLabel", "证据不足"))
                     .append("，").append(item.optString("trendLabel", "尚不足以判断"))
                     .append("；证据 ").append(item.optInt("evidenceCount", 0)).append(" 条\n");
             }
         }
-        text.append("\n项目贡献\n");
+        text.append("\n## 项目贡献\n");
         if (projectItems == null || projectItems.length() == 0) {
-            text.append("• 暂无项目贡献记录。\n");
+            text.append("- 暂无项目贡献记录。\n");
         } else {
             for (int i = 0; i < projectItems.length() && i < 6; i++) {
                 JSONObject item = projectItems.optJSONObject(i);
                 if (item == null) continue;
-                text.append("• ").append(item.optString("projectName", "未命名项目"))
+                text.append("- ").append(item.optString("projectName", "未命名项目"))
                     .append("：").append(item.optString("reviewStatusLabel", "积累中"))
                     .append("；已确认 ").append(item.optInt("confirmedEvidenceCount", 0))
                     .append("/").append(item.optInt("evidenceCount", 0)).append(" 条\n");
             }
         }
-        text.append("\n近期成长证据\n");
+        text.append("\n## 近期成长证据\n");
         if (evidence == null || evidence.length() == 0) {
-            text.append("• 暂无已确认或观察中的成长证据。");
+            text.append("- 暂无已确认或观察中的成长证据。");
         } else {
             for (int i = 0; i < evidence.length() && i < 6; i++) {
                 JSONObject item = evidence.optJSONObject(i);
                 if (item == null) continue;
-                text.append("• ").append(item.optString("title", "成长证据"))
+                text.append("- ").append(item.optString("title", "成长证据"))
                     .append("（").append(item.optString("statusLabel", "观察中"));
                 String ability = item.optString("ability", "");
                 if (ability.length() > 0) text.append(" · ").append(ability);
@@ -2306,7 +2392,7 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
                 else if ("关联项目".equals(cells[0])) projectCount = cells[1];
             } else if ("abilities".equals(section) && cells.length >= 5 && !"能力".equals(cells[0]) && abilityRows < 8) {
                 if (abilities.length() > 0) abilities.append("\n");
-                abilities.append("• ").append(cells[0].length() == 0 ? "待标注" : cells[0])
+                abilities.append("- ").append(cells[0].length() == 0 ? "待标注" : cells[0])
                     .append("：").append(growthMaturityLabel(cells[1]))
                     .append("，").append(growthTrendLabel(cells[2]))
                     .append("；证据 ").append(cells[3]).append(" 条")
@@ -2318,7 +2404,7 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
                 abilityRows++;
             } else if ("projects".equals(section) && cells.length >= 4 && !"项目".equals(cells[0]) && projectRows < 6) {
                 if (projects.length() > 0) projects.append("\n");
-                projects.append("• ").append(cells[0].length() == 0 ? "未命名项目" : cells[0])
+                projects.append("- ").append(cells[0].length() == 0 ? "未命名项目" : cells[0])
                     .append("：").append(growthProjectStatusLabel(cells[1]))
                     .append("；已确认 ").append(cells[3]).append("/").append(cells[2]).append(" 条");
                 projectRows++;
@@ -2329,8 +2415,8 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
         text.append("成长证据 ").append(evidenceCount).append(" 条 · 已确认 ").append(confirmedCount)
             .append(" 条 · 观察中 ").append(watchingCount).append(" 条\n")
             .append("能力维度 ").append(abilityCount).append(" 个 · 关联项目 ").append(projectCount).append(" 个\n\n")
-            .append("能力画像\n").append(abilities.length() == 0 ? "• 暂无已形成的能力画像。" : abilities.toString())
-            .append("\n\n项目贡献\n").append(projects.length() == 0 ? "• 暂无项目贡献记录。" : projects.toString());
+            .append("## 能力画像\n").append(abilities.length() == 0 ? "- 暂无已形成的能力画像。" : abilities.toString())
+            .append("\n\n## 项目贡献\n").append(projects.length() == 0 ? "- 暂无项目贡献记录。" : projects.toString());
         return text.toString();
     }
 
@@ -3316,6 +3402,10 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
         if (data != null && !result.contains(data)) result.add(data);
         Object stream = intent.getParcelableExtra(Intent.EXTRA_STREAM);
         if (stream instanceof Uri && !result.contains((Uri) stream)) result.add((Uri) stream);
+        try {
+            ArrayList<Uri> streams = intent.getParcelableArrayListExtra(Intent.EXTRA_STREAM);
+            if (streams != null) for (Uri uri : streams) if (uri != null && !result.contains(uri)) result.add(uri);
+        } catch (Exception ignored) {}
         return result;
     }
 
@@ -3323,6 +3413,12 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
         if (intent == null) return;
         String action = intent.getAction();
         if (!Intent.ACTION_SEND.equals(action) && !Intent.ACTION_SEND_MULTIPLE.equals(action)) return;
+        ConversationDraftStore.Draft draft = ConversationDraftStore.capture(this, intent);
+        if (draft != null) {
+            if (pendingConversationText.length() == 0) acceptConversationDraft(draft.text, draft.source, draft.reference, draft.id);
+            else status("已保存新的对话草稿；完成当前草稿后可继续导入。");
+            return;
+        }
         List<Uri> uris = extractUris(intent);
         CharSequence sharedText = intent.getCharSequenceExtra(Intent.EXTRA_TEXT);
         if (uris.size() == 0 && sharedText != null && sharedText.toString().trim().length() > 0) {
@@ -3496,6 +3592,10 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
     }
 
     void acceptConversationDraft(String rawText, String source, String reference) {
+        acceptConversationDraft(rawText, source, reference, "");
+    }
+
+    void acceptConversationDraft(String rawText, String source, String reference, String draftId) {
         String text = rawText == null ? "" : rawText.trim();
         if (text.length() == 0) {
             toast("对话正文不能为空。");
@@ -3512,11 +3612,14 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
         pendingConversationText = text;
         pendingConversationSource = source == null || source.length() == 0 ? "导入对话" : source;
         pendingConversationReference = reference == null ? "" : reference;
+        pendingConversationDraftId = draftId == null || draftId.length() == 0
+            ? "conversation-draft-manual-" + java.util.UUID.randomUUID().toString() : draftId;
         conversationLastResult = "";
         getSharedPreferences(PREFS, MODE_PRIVATE).edit()
             .putString(PREF_PENDING_CONVERSATION_TEXT, pendingConversationText)
             .putString(PREF_PENDING_CONVERSATION_SOURCE, pendingConversationSource)
             .putString(PREF_PENDING_CONVERSATION_REFERENCE, pendingConversationReference)
+            .putString(PREF_PENDING_CONVERSATION_DRAFT_ID, pendingConversationDraftId)
             .apply();
         updateConversationImportUi();
         if (selectedStudent == null) {
@@ -3653,7 +3756,8 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
             payload.put("submittedAt", isoNow());
             payload.put("sourceReference", pendingConversationReference);
             payload.put("sourceLabel", pendingConversationSource);
-            payload.put("idempotencyKey", "android-conversation-" + sha256Text(deviceId() + "|" + digest + "|" + target.type + "|" + target.id).substring(0, 32));
+            payload.put("submissionId", pendingConversationDraftId);
+            payload.put("idempotencyKey", "android-conversation-" + sha256Text(deviceId() + "|" + pendingConversationDraftId + "|" + digest + "|" + target.type + "|" + target.id).substring(0, 32));
             conversationSubmitInProgress = true;
             updateConversationImportUi();
             status("正在将智能体对话发送到主机...");
@@ -3683,6 +3787,14 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
         }
     }
 
+    void restoreNextConversationDraft() {
+        if (pendingConversationText.length() > 0) return;
+        List<ConversationDraftStore.Draft> drafts = ConversationDraftStore.pending(this);
+        if (drafts.size() == 0) return;
+        ConversationDraftStore.Draft draft = drafts.get(0);
+        acceptConversationDraft(draft.text, draft.source, draft.reference, draft.id);
+    }
+
     void applyConversationSubmissionResult(JSONObject result, String error, UploadTarget target, String submittedDigest) {
         conversationSubmitInProgress = false;
         if (error != null) {
@@ -3703,20 +3815,242 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
             friendly = "已存入“" + target.name + "”。 ";
         }
         if (sha256Text(pendingConversationText).equals(submittedDigest)) {
+            if (pendingConversationDraftId.length() > 0) ConversationDraftStore.complete(this, pendingConversationDraftId);
             pendingConversationText = "";
             getSharedPreferences(PREFS, MODE_PRIVATE).edit()
                 .remove(PREF_PENDING_CONVERSATION_TEXT)
                 .remove(PREF_PENDING_CONVERSATION_SOURCE)
                 .remove(PREF_PENDING_CONVERSATION_REFERENCE)
+                .remove(PREF_PENDING_CONVERSATION_DRAFT_ID)
                 .apply();
             pendingConversationSource = "手动粘贴";
             pendingConversationReference = "manual-paste";
+            pendingConversationDraftId = "";
         }
         conversationLastResult = friendly;
         updateConversationImportUi();
         status(friendly);
         toast(friendly);
+        restoreNextConversationDraft();
     }
+
+
+    EditText collaborationField(String hint) {
+        EditText field = new EditText(this);
+        field.setHint(hint);
+        field.setMinLines(2);
+        field.setMaxLines(5);
+        field.setGravity(Gravity.TOP);
+        field.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_MULTI_LINE);
+        return field;
+    }
+
+    void showLearningStatusDialog(final boolean teacher) {
+        if (selectedStudent == null) { toast(teacher ? "请先选择学生。" : "请先进入学生空间。"); return; }
+        final String expectedStudentId = selectedStudent.id;
+        LinearLayout panel = new LinearLayout(this); panel.setOrientation(LinearLayout.VERTICAL); panel.setPadding(dp(18), dp(8), dp(18), 0);
+        TextView note = label(teacher ? "教师根据与学生的谈话代为记录。表单内容与学生端完全一致。" : "记录当前学习状态，提交后可在历史记录中查看。");
+        panel.addView(note);
+        final Spinner state = new Spinner(this);
+        ArrayAdapter<String> states = new ArrayAdapter<String>(this, android.R.layout.simple_spinner_item, new String[] { "顺利", "一般", "遇到困难" });
+        states.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item); state.setAdapter(states); panel.addView(state);
+        final EditText current = collaborationField("当前在学内容");
+        final EditText completed = collaborationField("已完成事项");
+        final EditText difficulties = collaborationField("遇到的困难");
+        final EditText next = collaborationField("下一步计划");
+        final EditText help = collaborationField("需要的帮助");
+        final EditText notes = collaborationField("补充说明");
+        JSONObject restoredStatus = null;
+        SharedPreferences statusPrefs = getSharedPreferences(PREFS, MODE_PRIVATE);
+        if (expectedStudentId.equals(statusPrefs.getString("pending_learning_status_student", ""))
+            && teacher == statusPrefs.getBoolean("pending_learning_status_teacher", false)) {
+            try { restoredStatus = new JSONObject(statusPrefs.getString("pending_learning_status_json", "")); } catch (Exception ignored) {}
+        }
+        String restoredSubmissionId = restoredStatus == null ? "" : restoredStatus.optString("submissionId", "");
+        final String statusSubmissionId = restoredSubmissionId.length() > 0 ? restoredSubmissionId : "learning-status-" + java.util.UUID.randomUUID().toString();
+        if (restoredStatus != null) {
+            String restoredState = restoredStatus.optString("overallState", "normal");
+            state.setSelection("smooth".equals(restoredState) ? 0 : "difficult".equals(restoredState) ? 2 : 1);
+            current.setText(restoredStatus.optString("currentContent", "")); completed.setText(restoredStatus.optString("completed", ""));
+            difficulties.setText(restoredStatus.optString("difficulties", "")); next.setText(restoredStatus.optString("nextPlan", ""));
+            help.setText(restoredStatus.optString("helpNeeded", "")); notes.setText(restoredStatus.optString("notes", ""));
+        }
+        panel.addView(current); panel.addView(completed); panel.addView(difficulties); panel.addView(next); panel.addView(help); panel.addView(notes);
+        final TextView history = label("正在读取最近记录…"); panel.addView(history);
+        ScrollView scroll = new ScrollView(this); scroll.addView(panel);
+        final AlertDialog dialog = new AlertDialog.Builder(this).setTitle("学习状态 · " + selectedStudent.name).setView(scroll)
+            .setPositiveButton("提交", null).setNegativeButton("取消", null).create();
+        dialog.setOnShowListener(new DialogInterface.OnShowListener() {
+            @Override public void onShow(DialogInterface ignored) {
+                dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(new View.OnClickListener() {
+                    @Override public void onClick(View view) {
+                        if (selectedStudent == null || !expectedStudentId.equals(selectedStudent.id)) { toast("学生已切换，请重新填写。"); dialog.dismiss(); return; }
+                        try {
+                            JSONObject body = new JSONObject();
+                            body.put("submissionId", statusSubmissionId);
+                            body.put("overallState", state.getSelectedItemPosition() == 0 ? "smooth" : state.getSelectedItemPosition() == 1 ? "normal" : "difficult");
+                            body.put("currentContent", current.getText().toString()); body.put("completed", completed.getText().toString());
+                            body.put("difficulties", difficulties.getText().toString()); body.put("nextPlan", next.getText().toString());
+                            body.put("helpNeeded", help.getText().toString()); body.put("notes", notes.getText().toString());
+                            submitLearningStatus(teacher, expectedStudentId, body, dialog);
+                        } catch (Exception error) { toast("无法准备学习状态：" + error.getMessage()); }
+                    }
+                });
+                loadLearningStatusHistory(teacher, expectedStudentId, history);
+            }
+        });
+        dialog.show();
+    }
+
+    String learningStatusPath(boolean teacher, String studentId) {
+        return teacher ? "/api/teacher-session/students/" + safeEncode(studentId) + "/learning-status" : "/api/student-session/learning-status";
+    }
+
+    String collaborationFeatureError(String message) {
+        String value = message == null ? "请求失败" : message;
+        if (value.contains("HTTP 404") || value.contains("Not Found")) {
+            return "当前 Windows 主机未包含此功能，请启动与本客户端匹配的新版主机候选。";
+        }
+        return value;
+    }
+
+    void loadLearningStatusHistory(final boolean teacher, final String studentId, final TextView view) {
+        final String base = normalizedBaseUrl(), token = dataToken();
+        if (base.length() == 0 || token.length() == 0) { view.setText("连接主机后可查看历史记录。"); return; }
+        new Thread(new Runnable() { @Override public void run() {
+            String text;
+            try {
+                JSONObject result = getJson(base + learningStatusPath(teacher, studentId), token);
+                JSONArray entries = result.optJSONArray("entries"); StringBuilder lines = new StringBuilder("最近记录");
+                int count = entries == null ? 0 : Math.min(3, entries.length());
+                for (int i = 0; i < count; i++) {
+                    JSONObject item = entries.optJSONObject(i); if (item == null) continue;
+                    lines.append("\n").append(i + 1).append(". ").append("teacher".equals(item.optString("recordedByRole")) ? "教师谈话代填" : "学生自填")
+                        .append(" · ").append(item.optString("createdAt")).append("\n   ").append(item.optString("currentContent", item.optString("notes", "")));
+                }
+                if (count == 0) lines.append("\n暂无记录");
+                text = lines.toString();
+            } catch (Exception error) { text = "历史记录读取失败：" + collaborationFeatureError(error.getMessage()); }
+            final String value = text; runOnUiThread(new Runnable() { @Override public void run() { view.setText(value); }});
+        }}).start();
+    }
+
+    void submitLearningStatus(final boolean teacher, final String studentId, final JSONObject body, final AlertDialog dialog) {
+        final String base = normalizedBaseUrl(), token = dataToken();
+        getSharedPreferences(PREFS, MODE_PRIVATE).edit()
+            .putString("pending_learning_status_student", studentId)
+            .putBoolean("pending_learning_status_teacher", teacher)
+            .putString("pending_learning_status_json", body.toString()).apply();
+        if (base.length() == 0 || token.length() == 0) { toast("学习状态已在本机暂存；连接主机后重新打开即可按原提交号发送。"); dialog.dismiss(); return; }
+        dialog.getButton(AlertDialog.BUTTON_POSITIVE).setEnabled(false);
+        new Thread(new Runnable() { @Override public void run() {
+            String error = null;
+            try { postJson(base + learningStatusPath(teacher, studentId), body, token); }
+            catch (Exception failure) { error = collaborationFeatureError(failure.getMessage()); }
+            final String failure = error; runOnUiThread(new Runnable() { @Override public void run() {
+                if (failure == null) {
+                    getSharedPreferences(PREFS, MODE_PRIVATE).edit().remove("pending_learning_status_student")
+                        .remove("pending_learning_status_teacher").remove("pending_learning_status_json").apply();
+                    dialog.dismiss(); toast(teacher ? "已按谈话内容代填学习状态。" : "学习状态已提交。");
+                }
+                else { dialog.getButton(AlertDialog.BUTTON_POSITIVE).setEnabled(true); toast("提交失败：" + failure); }
+            }});
+        }}).start();
+    }
+
+    void chooseProjectComprehensiveReport(final boolean teacher) {
+        if (selectedStudent == null) { toast(teacher ? "请先选择学生。" : "请先进入学生空间。"); return; }
+        final ArrayList<LearningProject> available = new ArrayList<LearningProject>(projectsForSelectedStudent());
+        if (available.size() == 0) { toast("当前学生没有关联项目。"); return; }
+        String[] labels = new String[available.size()]; for (int i = 0; i < available.size(); i++) labels[i] = available.get(i).name;
+        new AlertDialog.Builder(this).setTitle("选择项目综合报告").setItems(labels, new DialogInterface.OnClickListener() {
+            @Override public void onClick(DialogInterface dialog, int which) { loadProjectComprehensiveReport(teacher, selectedStudent.id, available.get(which)); }
+        }).show();
+    }
+
+    void loadProjectComprehensiveReport(final boolean teacher, final String studentId, final LearningProject project) {
+        final String base = normalizedBaseUrl(), token = dataToken();
+        final String path = teacher
+            ? "/api/teacher-session/students/" + safeEncode(studentId) + "/projects/" + safeEncode(project.id) + "/comprehensive-report"
+            : "/api/student-session/projects/" + safeEncode(project.id) + "/comprehensive-report";
+        new Thread(new Runnable() { @Override public void run() {
+            JSONObject result = null; String error = null;
+            try { result = getJson(base + path, token); } catch (Exception failure) { error = collaborationFeatureError(failure.getMessage()); }
+            final JSONObject payload = result; final String failure = error;
+            runOnUiThread(new Runnable() { @Override public void run() {
+                if (failure != null) { toast("报告读取失败：" + failure); return; }
+                String statusValue = payload.optString("status", "empty");
+                String content = payload.optString("content", "");
+                showCollaborationTextDialog(project.name + "综合报告", "状态：" + statusValue + "\n更新时间：" + payload.optString("updatedAt", ""), content.length() == 0 ? "主机尚未生成该项目综合报告。" : content);
+            }});
+        }}).start();
+    }
+
+    void showCollaborationTextDialog(String title, String metadata, String content) {
+        MarkdownReadOnlyDialog.show(this, title, metadata, content, false);
+    }
+
+    void openWeeklyKnowledgeGrowth(final boolean teacher) {
+        if (selectedStudent == null) { toast(teacher ? "请先选择学生。" : "请先进入学生空间。"); return; }
+        final String studentId = selectedStudent.id, base = normalizedBaseUrl(), token = dataToken();
+        final String weeksPath = teacher ? "/api/teacher-session/students/" + safeEncode(studentId) + "/knowledge-growth/weeks" : "/api/student-session/knowledge-growth/weeks";
+        new Thread(new Runnable() { @Override public void run() {
+            JSONObject result = null; String error = null;
+            try { result = getJson(base + weeksPath, token); } catch (Exception failure) { error = collaborationFeatureError(failure.getMessage()); }
+            final JSONObject payload = result; final String failure = error;
+            runOnUiThread(new Runnable() { @Override public void run() {
+                if (failure != null) { toast("知识增长图读取失败：" + failure); return; }
+                JSONArray weeks = payload.optJSONArray("weeks"); if (weeks == null || weeks.length() == 0) { toast("主机尚未生成知识增长图。"); return; }
+                final String[] labels = new String[weeks.length()]; for (int i = 0; i < weeks.length(); i++) labels[i] = weeks.optString(i);
+                new AlertDialog.Builder(MainActivity.this).setTitle("选择周次").setItems(labels, new DialogInterface.OnClickListener() {
+                    @Override public void onClick(DialogInterface dialog, int which) { loadWeeklyKnowledgeGrowthImage(teacher, studentId, labels[which]); }
+                }).show();
+            }});
+        }}).start();
+    }
+
+    void loadWeeklyKnowledgeGrowthImage(final boolean teacher, final String studentId, final String week) {
+        final String base = normalizedBaseUrl(), token = dataToken();
+        final String path = teacher ? "/api/teacher-session/students/" + safeEncode(studentId) + "/knowledge-growth/" + safeEncode(week) + "/image"
+            : "/api/student-session/knowledge-growth/" + safeEncode(week) + "/image";
+        new Thread(new Runnable() { @Override public void run() {
+            JSONObject result = null; String error = null;
+            try { result = getJson(base + path, token); } catch (Exception failure) { error = collaborationFeatureError(failure.getMessage()); }
+            final JSONObject payload = result; final String failure = error;
+            runOnUiThread(new Runnable() { @Override public void run() {
+                if (failure != null) { toast("知识增长图读取失败：" + failure); return; }
+                showWeeklyKnowledgeGrowthImage(week, payload.optString("imageBase64", ""), payload.optString("mimeType", "image/svg+xml"));
+            }});
+        }}).start();
+    }
+
+    void showWeeklyKnowledgeGrowthImage(final String week, final String imageBase64, final String mimeType) {
+        WebView preview = new WebView(this); preview.getSettings().setJavaScriptEnabled(false); preview.setBackgroundColor(Color.WHITE);
+        preview.loadDataWithBaseURL(null, "<html><body style='margin:0'><img style='width:100%;height:auto' src='data:" + mimeType + ";base64," + imageBase64 + "'/></body></html>", "text/html", "UTF-8", null);
+        final AlertDialog dialog = new AlertDialog.Builder(this).setTitle("每周知识增长 · " + week).setView(preview)
+            .setPositiveButton("关闭", null).setNeutralButton("分享", null).create();
+        dialog.setOnShowListener(new DialogInterface.OnShowListener() { @Override public void onShow(DialogInterface ignored) {
+            dialog.getButton(AlertDialog.BUTTON_NEUTRAL).setOnClickListener(new View.OnClickListener() { @Override public void onClick(View view) { shareKnowledgeGrowthImage(week, imageBase64, mimeType); }});
+        }});
+        dialog.show();
+    }
+
+    void shareKnowledgeGrowthImage(String week, String imageBase64, String mimeType) {
+        try {
+            File dir = getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS); if (dir == null) dir = getCacheDir(); if (!dir.exists()) dir.mkdirs();
+            boolean png = "image/png".equalsIgnoreCase(mimeType);
+            File file = new File(dir, "knowledge-growth-" + week + (png ? ".png" : ".svg"));
+            FileOutputStream output = new FileOutputStream(file); output.write(android.util.Base64.decode(imageBase64, android.util.Base64.DEFAULT)); output.close();
+            Uri uri = Uri.parse("content://" + APK_PROVIDER_AUTHORITY + "/" + file.getName());
+            Intent share = new Intent(Intent.ACTION_SEND).setType(png ? "image/png" : "image/svg+xml").putExtra(Intent.EXTRA_STREAM, uri).addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+            startActivity(Intent.createChooser(share, "分享每周知识增长图"));
+        } catch (Exception error) { toast("分享失败：" + error.getMessage()); }
+    }
+
+    String safeEncode(String value) {
+        try { return encode(value); } catch (Exception error) { return Uri.encode(String.valueOf(value)); }
+    }
+
 
     String sha256Text(String value) {
         try {
@@ -5211,6 +5545,7 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
         pendingConversationText = prefs.getString(PREF_PENDING_CONVERSATION_TEXT, "");
         pendingConversationSource = prefs.getString(PREF_PENDING_CONVERSATION_SOURCE, "手动粘贴");
         pendingConversationReference = prefs.getString(PREF_PENDING_CONVERSATION_REFERENCE, "manual-paste");
+        pendingConversationDraftId = prefs.getString(PREF_PENDING_CONVERSATION_DRAFT_ID, "");
         if (remoteInput != null) remoteInput.setText(prefs.getString(PREF_REMOTE_URL, ""));
         suppressPreferenceCallbacks = true;
         layoutMode = clamp(prefs.getInt(PREF_LAYOUT_MODE, layoutMode), 0, 2);
@@ -6065,11 +6400,29 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
         }
     }
 
-    void checkForUpdate() {
-        status("正在检查平板终端更新...");
-        if (settingsStatusText != null) settingsStatusText.setText("正在检查平板终端更新...");
-        toast("正在检查更新...");
-        new Thread(new TabletUpdateCheckTask(this)).start();
+    void checkForUpdate() { checkForUpdate(false); }
+
+    void checkForUpdate(boolean automatic) {
+        if (!automatic) {
+            status("正在检查平板终端更新...");
+            if (settingsStatusText != null) settingsStatusText.setText("正在检查平板终端更新...");
+            toast("正在检查更新...");
+        }
+        new Thread(new TabletUpdateCheckTask(this, automatic)).start();
+    }
+
+    void showUpdatePrompt(final String versionName, String notes, final String url, final String sha256) {
+        new AlertDialog.Builder(this)
+            .setTitle("发现新版本 " + versionName)
+            .setMessage((notes == null || notes.length() == 0 ? "有可用更新。" : notes) + "\n\n是否现在下载更新？")
+            .setPositiveButton("现在下载更新", new DialogInterface.OnClickListener() {
+                @Override public void onClick(DialogInterface dialog, int which) {
+                    status("正在下载新版 APK…");
+                    new Thread(new DownloadApkTask(MainActivity.this, url, sha256)).start();
+                }
+            })
+            .setNegativeButton("稍后提醒", null)
+            .show();
     }
 
     void openUrl(String url) {
@@ -6087,6 +6440,28 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
         if (dir == null) dir = getCacheDir();
         if (!dir.exists()) dir.mkdirs();
         return new File(dir, "AI-edu-manager-tablet-terminal-update.apk");
+    }
+
+    boolean verifyDownloadedApkSignature(File apkFile) {
+        try {
+            int flags = Build.VERSION.SDK_INT >= 28 ? PackageManager.GET_SIGNING_CERTIFICATES : PackageManager.GET_SIGNATURES;
+            android.content.pm.PackageInfo current = getPackageManager().getPackageInfo(getPackageName(), flags);
+            android.content.pm.PackageInfo candidate = getPackageManager().getPackageArchiveInfo(apkFile.getAbsolutePath(), flags);
+            if (candidate == null || !getPackageName().equals(candidate.packageName)) return false;
+            android.content.pm.Signature[] currentSignatures = Build.VERSION.SDK_INT >= 28
+                ? current.signingInfo.getApkContentsSigners() : current.signatures;
+            android.content.pm.Signature[] candidateSignatures = Build.VERSION.SDK_INT >= 28
+                ? candidate.signingInfo.getApkContentsSigners() : candidate.signatures;
+            if (currentSignatures == null || candidateSignatures == null || currentSignatures.length != candidateSignatures.length) return false;
+            java.util.HashSet<String> currentDigests = new java.util.HashSet<String>();
+            java.util.HashSet<String> candidateDigests = new java.util.HashSet<String>();
+            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+            for (android.content.pm.Signature signature : currentSignatures) currentDigests.add(android.util.Base64.encodeToString(digest.digest(signature.toByteArray()), android.util.Base64.NO_WRAP));
+            for (android.content.pm.Signature signature : candidateSignatures) candidateDigests.add(android.util.Base64.encodeToString(digest.digest(signature.toByteArray()), android.util.Base64.NO_WRAP));
+            return currentDigests.equals(candidateDigests);
+        } catch (Exception error) {
+            return false;
+        }
     }
 
     void installDownloadedApk(File apkFile, String fallbackUrl) {
@@ -6503,26 +6878,7 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
     }
 
     void showReadOnlyDetailDialog(String title, String metadata, String content) {
-        LinearLayout panel = new LinearLayout(this);
-        panel.setOrientation(LinearLayout.VERTICAL);
-        panel.setPadding(dp(20), dp(8), dp(20), dp(16));
-        if (metadata != null && metadata.length() > 0) {
-            TextView meta = new TextView(this);
-            meta.setText(metadata);
-            meta.setTextSize(12);
-            meta.setTextColor(Color.rgb(87, 107, 103));
-            meta.setPadding(0, 0, 0, dp(10));
-            panel.addView(meta);
-        }
-        TextView body = new TextView(this);
-        body.setText(content == null || content.length() == 0 ? "暂无内容。" : content);
-        body.setTextSize(16);
-        body.setTextColor(Color.rgb(35, 61, 58));
-        body.setTextIsSelectable(true);
-        panel.addView(body);
-        ScrollView scroll = new ScrollView(this);
-        scroll.addView(panel);
-        new AlertDialog.Builder(this).setTitle(title).setView(scroll).setPositiveButton("关闭", null).show();
+        MarkdownReadOnlyDialog.show(this, title, metadata, content, false);
     }
 
     void applyLearningReport(String title, String content, String error, String studentId, String path, String statusValue, String updatedAt) {
@@ -7453,10 +7809,6 @@ class LearningProject {
         return "";
     }
 
-    ProjectMaterialsDialog.ProjectRef asMaterialProject() {
-        return new ProjectMaterialsDialog.ProjectRef(id, name, status, materialStorageMode,
-            materialMigrationState, materialOperations);
-    }
 }
 
 class UploadTarget {
@@ -8835,9 +9187,15 @@ class MarkdownResultTask implements Runnable {
 
 class TabletUpdateCheckTask implements Runnable {
     private final MainActivity activity;
+    private final boolean automatic;
 
     TabletUpdateCheckTask(MainActivity activity) {
+        this(activity, false);
+    }
+
+    TabletUpdateCheckTask(MainActivity activity, boolean automatic) {
         this.activity = activity;
+        this.automatic = automatic;
     }
 
     @Override
@@ -8851,14 +9209,18 @@ class TabletUpdateCheckTask implements Runnable {
             String url = json.optString("tabletTerminalUrl",
                 json.optString("tabletUrl", json.optString("androidUrl", json.optString("apkUrl", ""))));
             String notes = json.optString("tabletTerminalNotes", json.optString("notes", ""));
+            String sha256 = json.optString("tabletTerminalSha256", "");
             if (versionCode > MainActivity.VERSION_CODE && url.length() > 0) {
-                activity.runOnUiThread(new StatusTask(activity, "发现平板终端新版 " + (versionName.length() > 0 ? versionName : versionCode) + "，正在应用内下载 APK。" + (notes.length() > 0 ? "\n" + notes : "")));
-                new DownloadApkTask(activity, url).run();
-            } else {
+                final String displayVersion = versionName.length() > 0 ? versionName : String.valueOf(versionCode);
+                final String releaseNotes = notes, downloadUrl = url, expectedSha256 = sha256;
+                activity.runOnUiThread(new Runnable() { @Override public void run() {
+                    activity.showUpdatePrompt(displayVersion, releaseNotes, downloadUrl, expectedSha256);
+                }});
+            } else if (!automatic) {
                 activity.runOnUiThread(new StatusTask(activity, "当前平板终端已是最新版本 v" + MainActivity.VERSION_NAME + "。"));
             }
         } catch (Exception error) {
-            activity.runOnUiThread(new StatusTask(activity, "检查更新失败：" + error.getMessage()));
+            if (!automatic) activity.runOnUiThread(new StatusTask(activity, "检查更新失败：" + error.getMessage()));
         }
     }
 }
@@ -8866,10 +9228,16 @@ class TabletUpdateCheckTask implements Runnable {
 class DownloadApkTask implements Runnable {
     private final MainActivity activity;
     private final String url;
+    private final String expectedSha256;
 
     DownloadApkTask(MainActivity activity, String url) {
+        this(activity, url, "");
+    }
+
+    DownloadApkTask(MainActivity activity, String url, String expectedSha256) {
         this.activity = activity;
         this.url = url;
+        this.expectedSha256 = expectedSha256 == null ? "" : expectedSha256.trim();
     }
 
     @Override
@@ -8911,6 +9279,14 @@ class DownloadApkTask implements Runnable {
                 try { output.close(); } catch (Exception ignored) {}
                 try { input.close(); } catch (Exception ignored) {}
             }
+            if (expectedSha256.length() > 0 && !expectedSha256.equalsIgnoreCase(sha256File(target))) {
+                target.delete();
+                throw new SecurityException("APK SHA-256 校验失败");
+            }
+            if (!activity.verifyDownloadedApkSignature(target)) {
+                target.delete();
+                throw new SecurityException("APK 签名或包名与当前应用不一致");
+            }
             activity.runOnUiThread(new StatusTask(activity, "新版 APK 下载完成，正在打开系统安装界面。"));
             activity.runOnUiThread(new InstallApkTask(activity, target, url));
         } catch (Exception error) {
@@ -8919,6 +9295,14 @@ class DownloadApkTask implements Runnable {
         } finally {
             if (connection != null) connection.disconnect();
         }
+    }
+
+    private String sha256File(File file) throws Exception {
+        MessageDigest digest = MessageDigest.getInstance("SHA-256");
+        FileInputStream input = new FileInputStream(file); byte[] buffer = new byte[32768]; int read;
+        try { while ((read = input.read(buffer)) != -1) digest.update(buffer, 0, read); } finally { input.close(); }
+        StringBuilder hex = new StringBuilder(); for (byte value : digest.digest()) hex.append(String.format(Locale.ROOT, "%02X", value & 0xff));
+        return hex.toString();
     }
 }
 

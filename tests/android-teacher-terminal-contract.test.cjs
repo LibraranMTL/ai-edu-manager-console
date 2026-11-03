@@ -13,16 +13,17 @@ const icon = fs.readFileSync(path.join(teacherRoot, 'res', 'drawable', 'brand_lo
 const build = fs.readFileSync(path.join(teacherRoot, 'build.ps1'), 'utf8');
 const windowsBuild = fs.readFileSync(path.join(root, 'scripts', 'build-windows-release.cjs'), 'utf8');
 const releaseManifest = fs.readFileSync(path.join(root, 'release', 'edu-manager-version.json'), 'utf8');
+const windowsManifest = fs.readFileSync(path.join(root, 'release', 'windows', 'edu-manager-version.json'), 'utf8');
 
 test('teacher terminal is an independently installable purple-red Android app', () => {
   assert.match(manifest, /package="com\.qxmatrix\.eduteacher"/);
-  assert.match(manifest, /android:versionCode="5"/);
-  assert.match(manifest, /android:versionName="0\.1\.4"/);
+  assert.match(manifest, /android:versionCode="6"/);
+  assert.match(manifest, /android:versionName="0\.1\.5"/);
   assert.match(manifest, /android:icon="@drawable\/brand_logo_teacher"/);
   assert.match(strings, /AI教育管家教师端/);
   assert.match(icon, /#9D174D/);
   assert.match(build, /release\\teacher-terminal/);
-  assert.match(build, /AI-edu-manager-teacher-terminal-0\.1\.4\.apk/);
+  assert.match(build, /AI-edu-manager-teacher-terminal-0\.1\.5\.apk/);
   assert.doesNotMatch(build, /src\\com\\qxmatrix\\eduterminal/);
 });
 
@@ -85,7 +86,8 @@ test('student changes and archive navigation reject stale asynchronous results',
   assert.match(teacher, /viewGeneration != activity\.archiveViewGeneration/);
   assert.match(teacher, /allArchiveFiles\.clear\(\);\s*archiveFiles\.clear\(\);\s*renderArchiveFileList\(\)/);
   assert.match(teacher, /if \(archiveFiles\.size\(\) > 0\) loadArchiveFile\(archiveFiles\.get\(0\)\)/);
-  assert.match(teacher, /archiveCard\.setVisibility\(View\.VISIBLE\)/);
+  assert.match(teacher, /void openStudentArchiveDialog\(\)/);
+  assert.match(teacher, /showReadOnlyFilePicker\(studentName \+ " · 学情档案"/);
   assert.match(teacher, /getLocationInWindow\(targetLocation\)/);
 });
 
@@ -102,7 +104,8 @@ test('Windows host release packages and advertises teacher-terminal support', ()
   assert.match(windowsBuild, /teacher-terminal-v1/);
   assert.match(windowsBuild, /teacherTerminalStudentRecord/);
   assert.match(windowsBuild, /teacherTerminalSupport: true/);
-  assert.equal(JSON.parse(releaseManifest).windowsVersionName, '0.21.2', 'formal host version must match the Windows manifest');
-  assert.match(releaseManifest, /"teacherTerminalVersionName": "0\.1\.4"/);
-  assert.match(releaseManifest, /AI-edu-manager-teacher-terminal-0\.1\.4\.apk/);
+  assert.equal(JSON.parse(releaseManifest).windowsVersionName, JSON.parse(windowsManifest).windowsVersionName,
+    'formal host version must match the Windows manifest');
+  assert.match(releaseManifest, /"teacherTerminalVersionName": "0\.1\.5"/);
+  assert.match(releaseManifest, /AI-edu-manager-teacher-terminal-0\.1\.5\.apk/);
 });

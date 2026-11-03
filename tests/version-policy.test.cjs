@@ -36,10 +36,10 @@ test('candidate builds preserve the stable manifest, while a formal build aligns
   const sourceAheadOfStable = releaseManifest.windowsVersionName !== packageJson.version;
   if (candidateTag || sourceAheadOfStable) {
     assert.notEqual(releaseManifest.windowsVersionName, packageJson.version);
-    assert.equal(releaseManifest.windowsVersionName, '0.22.8');
+    assert.equal(releaseManifest.windowsVersionName, '0.23.0');
   } else {
     assert.equal(releaseManifest.windowsVersionName, packageJson.version);
-    assert.equal(releaseManifest.windowsVersionCode, 268);
+    assert.equal(releaseManifest.windowsVersionCode, 269);
   }
   assert.equal(releaseManifest.windowsReleaseStatus, 'stable');
   assert.equal(windowsManifest.windowsVersionName, releaseManifest.windowsVersionName);

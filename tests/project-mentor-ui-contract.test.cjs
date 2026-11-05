@@ -24,11 +24,16 @@ test('project detail primary entry locks the trusted student and project without
 
 test('shared popover manually renders six stages and only the selected stage actions', () => {
   const renderer = read('electron', 'companion-popover-renderer.js');
+  const html = read('electron', 'companion-popover.html');
   const host = read('electron', 'main.cjs');
   assert.match(renderer, /activeMentorStage = 'define'/);
   assert.match(renderer, /const stage=stages\.find\(item=>item\.id===activeMentorStage\)/);
   assert.match(renderer, /\(stage\?\.actions\|\|\[\]\)\.forEach/);
   assert.match(renderer, /command==='mentor-stage'/);
+  for (const stageId of ['define', 'compare', 'plan', 'research', 'review', 'showcase']) {
+    assert.match(html, new RegExp(`\\.mentor-stage-${stageId}\\{`));
+  }
+  assert.match(renderer, /stageButton\.setAttribute\('aria-pressed'/);
   assert.match(host, /projectMentorStages: PROJECT_MENTOR_STAGES/);
   assert.match(host, /mode === 'project-mentor'/);
   assert.doesNotMatch(renderer, /localStorage|sessionStorage/);

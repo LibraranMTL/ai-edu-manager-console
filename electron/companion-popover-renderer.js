@@ -100,7 +100,7 @@ function renderProjectMentor(){
   if(!stages.some(item=>item.id===activeMentorStage))activeMentorStage=stages[0]?.id||'define';
   const stage=stages.find(item=>item.id===activeMentorStage)||stages[0];
   if(stage&&!stage.actions.includes(activeMentorAction))activeMentorAction=stage.actions[0];
-  const stageTabs=el('div','mentor-stages');stages.forEach(item=>stageTabs.append(button(`mentor-stage ${item.id===activeMentorStage?'active':''}`,item.label,'mentor-stage',{id:item.id})));
+  const stageTabs=el('div','mentor-stages');stages.forEach(item=>{const stageButton=button(`mentor-stage mentor-stage-${item.id} ${item.id===activeMentorStage?'active':''}`,item.label,'mentor-stage',{id:item.id});stageButton.setAttribute('aria-pressed',String(item.id===activeMentorStage));stageTabs.append(stageButton)});
   wrap.append(stageTabs);
   const actions=el('div','action-grid mentor-actions');(stage?.actions||[]).forEach(id=>{const action=state.actions[id];if(!action)return;const item=button(`mode-action ${id===activeMentorAction?'active':''}`,'','mentor-action',{id});item.append(el('strong','',action.label),el('span','',action.summary));actions.append(item)});wrap.append(actions);
   const form=el('div','form');const goalLabel=el('label','','本次目标（可选）');const goal=el('textarea');goal.id='mentor-goal';goal.maxLength=180;goal.placeholder='例如：把当前方案收敛为本周可验证的一步';goalLabel.append(goal);

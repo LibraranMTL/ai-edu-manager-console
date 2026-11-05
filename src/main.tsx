@@ -6983,7 +6983,7 @@ function App() {
   useEffect(() => {
     if (!isWindows) return;
     void bridge()?.getProjectMentorAvailability?.().then(setProjectMentorAvailable).catch(() => setProjectMentorAvailable(false));
-  }, []);
+  }, [isWindows]);
   useEffect(() => {
     if (!isWindows) return;
     const sectionByTab: Record<string, Section> = {

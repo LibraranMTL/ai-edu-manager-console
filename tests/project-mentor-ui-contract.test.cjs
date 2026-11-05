@@ -14,6 +14,7 @@ test('project detail primary entry locks the trusted student and project without
   const host = read('electron', 'main.cjs');
   assert.match(ui, /className="material-source-panel project-mentor-entry"/);
   assert.match(ui, /showProjectMentor\?: \(studentId: string, projectId: string\)/);
+  assert.match(ui, /getProjectMentorAvailability\?\.\(\)\.then\(setProjectMentorAvailable\)[\s\S]{0,120}\}, \[isWindows\]\);/);
   assert.match(preload, /showProjectMentor\(studentId, projectId\).*bridge:showProjectMentor/);
   assert.match(host, /ipcMain\.handle\('bridge:showProjectMentor'/);
   assert.match(host, /event\.sender !== mainWindow\.webContents/);

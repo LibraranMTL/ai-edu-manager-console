@@ -61,11 +61,22 @@ function projectReportProjection(reader, snapshot, report, version = {}) {
     .map((item) => ({ ...item, displayTitle: friendlyMaterialTitle(item.title), displayStatement: displayStatement(item.statement) }));
   summary.displayChanges = displayChanges(summary.changes);
   summary.displayNextAction = displayNextAction(summary.nextAction);
+  const goalEvaluations = (report.goalEvaluations || []).filter((item) => [
+    ...(item.evidenceIds || []), ...(item.supportingEvidenceIds || []), ...(item.counterEvidenceIds || []),
+  ].every((id) => visibleEvidence.has(id)));
+  const iterationEvents = (report.iterationEvents || []).filter((item) => [
+    ...(item.evidenceIds || []), ...(item.reasonEvidenceIds || []),
+  ].every((id) => visibleEvidence.has(id)));
+  const participation = structuredClone(report.participation || {});
+  if (reader.role !== 'admin') participation.confirmedPersonalContributions = (participation.confirmedPersonalContributions || [])
+    .filter((item) => personalVisible(reader, item));
   return { projectId: snapshot.projectId, snapshotId: snapshot.snapshotId, versionId: version.versionId || '',
     reportType: report.reportType, asOf: snapshot.asOf, policyVersion: report.policyVersion,
     dataGeneration: Number(version.generation || 0), authorizationVersion: snapshot.authorizationVersion,
     project: structuredClone(snapshot.project), summary, claims: structuredClone(claims), sections: structuredClone(sections), changes,
     gaps: structuredClone(report.gaps || []), personalContributions: structuredClone(personalContributions),
+    goalEvaluations: structuredClone(goalEvaluations), iterationEvents: structuredClone(iterationEvents),
+    participation, nextActionDraft: structuredClone(report.nextActionDraft || null), inferenceRun: structuredClone(report.inferenceRun || null),
     coverage: structuredClone(snapshot.coverage),
     ...(report.completion ? { completion: structuredClone(report.completion) } : {}),
     disclaimer: report.disclaimer, reportTypeLabel: reportTypeLabel(report.reportType),

@@ -240,6 +240,7 @@ const { projectListProjection } = require('./project-list-projection.cjs');
 const { boundedProjectIpcJson } = require('./project-ipc-response.cjs');
 const { createProjectReportStore, SCHEMA_VERSION: PROJECT_REPORT_SCHEMA_VERSION } = require('./project-report-state.cjs');
 const { createProjectReportService, emptyProjection: emptyProjectReportProjection } = require('./project-report-service.cjs');
+const { normalizeProjectSuccessCriteria } = require('./project-report-value.cjs');
 const { PROJECT_WORKSPACE_TEMPLATES, PROJECT_TEMPLATE_V2_STRATEGIES,
   projectWorkspaceTemplateFor, listProjectWorkspaceTemplates } = require('./project-workspace-templates.cjs');
 const { createWindowsUpdateChecker, isAllowedWindowsDownloadUrl } = require('./windows-update-check.cjs');
@@ -318,6 +319,7 @@ const {
   buildFiveDimensionSnapshot,
   reportCycleKey,
 } = require('./learning-role-reports.cjs');
+const { buildLearningWorkbenchProjection } = require('./learning-workbench.cjs');
 const { createLearningActionLoop } = require('./learning-action-loop.cjs');
 const { createLearningStateAnalysisService, recordPracticeActionFeedback } = require('./learning-state-analysis.cjs');
 const { createLearningMethodService } = require('./learning-method-analysis.cjs');
@@ -13943,6 +13945,34 @@ async function learningStateActionJson(action, studentId, inputJson = '{}') {
   } finally { try { store?.close(); } catch { /* best effort */ } }
 }
 
+async function getLearningWorkbenchProjection(studentId) {
+  try {
+    if (process.env.EDU_LEARNING_WORKBENCH_V1 === '0') return JSON.stringify({ ok: false, code: 'learning_workbench_disabled', message: '学情工作台功能已关闭。' });
+    const student = findStudent(String(studentId || ''));
+    if (!student) return JSON.stringify({ ok: false, code: 'student_not_found', message: '未找到当前学生。' });
+    const learningResult = JSON.parse(await learningStateActionJson('get', student.id, '{}'));
+    if (!learningResult.ok) return JSON.stringify(learningResult);
+    const learningState = learningResult.data || {};
+    const asOf = new Date().toISOString();
+    const fiveDimensions = buildFiveDimensionSnapshot(learningState, { cycleKey: reportCycleKey('weekly_action', asOf), asOf });
+    const projects = projectStateStore().listMetadata().filter((item) => (item.studentIds || []).map(String).includes(String(student.id)));
+    const projectIds = new Set(projects.map((item) => String(item.id)));
+    const tasks = readTaskStore().tasks.filter((item) => String(item.studentId || item.input?.studentId || '') === String(student.id)
+      || (String(item.sourceType || '') === 'project' && projectIds.has(String(item.sourceId || ''))));
+    const focusProject = projects.find((item) => !['archived', 'completed'].includes(String(item.status))) || projects[0];
+    let reportStatus = null;
+    if (focusProject && fs.existsSync(projectReportDatabasePath())) {
+      try { reportStatus = await projectReportService().get(projectReportReader(focusProject), focusProject.id); } catch { reportStatus = null; }
+    }
+    let expertConsultation = null;
+    if (process.env.EDU_EXPERT_CONSULTATION_ENTRY_V1 !== '0') {
+      try { expertConsultation = (await getCloudReportRuntime()).getExpertConsultationDraft(String(student.id)); } catch { expertConsultation = null; }
+    }
+    return boundedProjectIpcJson({ ok: true, projection: buildLearningWorkbenchProjection({ student, learningState, fiveDimensions,
+      tasks, projects, reportStatus, expertConsultation, expertEntryEnabled: process.env.EDU_EXPERT_CONSULTATION_ENTRY_V1 !== '0', updatedAt: asOf }) });
+  } catch (error) { return JSON.stringify({ ok: false, code: error.code || 'learning_workbench_failed', message: error.message }); }
+}
+
 async function weeklyKnowledgeGrowthJson(studentId) {
   try {
     const context = studentKnowledgeContext(JSON.stringify({ studentId }));
@@ -16210,6 +16240,28 @@ async function getProjectOverallReport(projectId) {
   } catch (error) { return JSON.stringify({ ok: false, code: error.code || 'project_report_read_failed', message: error.message }); }
 }
 
+async function getProjectOverallReportForReader(project, reader) {
+  if (!fs.existsSync(projectReportDatabasePath())) return emptyProjectReportProjection(project,
+    projectReportAuthorizationVersion(project), new Date().toISOString());
+  return projectReportService().get(reader, project.id);
+}
+
+function saveProjectSuccessCriteria(projectId, expectedRevision, criteriaInput) {
+  try {
+    if (process.env.EDU_PROJECT_REPORT_VALUE_V1 === '0') throw Object.assign(new Error('项目报告价值升级功能已关闭。'), { code: 'project_report_value_disabled' });
+    const project = projectStateStore().getMetadata(String(projectId || ''));
+    if (!project) return JSON.stringify({ ok: false, code: 'project_not_found', message: '未找到学习项目。' });
+    if (String(project.status || '') === 'archived') return JSON.stringify({ ok: false, code: 'project_archived', message: '项目已归档，不能修改成功标准。' });
+    const parsed = typeof criteriaInput === 'string' ? JSON.parse(criteriaInput || '[]') : criteriaInput;
+    const successCriteria = normalizeProjectSuccessCriteria(parsed);
+    const updated = projectStateStore().patchProjectMetadata(project.id, { successCriteria }, Number(expectedRevision));
+    markTaskSourceDirty('project', project.id, 'project_success_criteria');
+    return boundedProjectIpcJson({ ok: true, project: updated, revision: updated.revision, successCriteria });
+  } catch (error) {
+    return JSON.stringify({ ok: false, code: error.code || 'project_success_criteria_save_failed', message: error.message });
+  }
+}
+
 async function refreshProjectOverallReport(projectId) {
   try {
     const project = projectStateStore().getMetadata(String(projectId || ''));
@@ -16322,6 +16374,49 @@ async function exportProjectOverallReport(projectId, versionId, format) {
   } catch (error) {
     return JSON.stringify({ ok: false, code: error.code || 'project_report_export_failed', message: error.message });
   }
+}
+
+async function previewProjectReportActionTask(projectId, versionId, actionKey) {
+  try {
+    const project = projectStateStore().getMetadata(String(projectId || ''));
+    if (!project) throw Object.assign(new Error('未找到学习项目。'), { code: 'project_not_found' });
+    const current = await projectReportService().getVersion(projectReportReader(project), project.id, String(versionId || ''));
+    const action = current.nextActionDraft;
+    if (!action || String(action.actionKey) !== String(actionKey || '')) throw Object.assign(new Error('报告中的下一行动不存在。'), { code: 'project_report_action_missing' });
+    const businessKey = `project-report-action:${project.id}:${current.versionId}:${action.actionKey}`;
+    const taskId = `task-${crypto.createHash('sha256').update(businessKey).digest('hex').slice(0, 24)}`;
+    const existing = readTaskStore({ taskIds: [taskId] }).tasks.find((item) => item.id === taskId) || null;
+    return boundedProjectIpcJson({ ok: true, preview: { projectId: project.id, projectName: project.name, versionId: current.versionId,
+      actionKey: action.actionKey, title: action.title, reason: action.reason, completionEvidence: action.completionEvidence,
+      suggestedOwner: action.suggestedOwner, suggestedTiming: action.suggestedTiming, source: action.source,
+      businessKey, taskId, duplicate: Boolean(existing), existingTaskId: existing?.id || '' } });
+  } catch (error) { return JSON.stringify({ ok: false, code: error.code || 'project_report_action_preview_failed', message: error.message }); }
+}
+
+async function commitProjectReportActionTask(projectId, versionId, actionKey, idempotencyKey) {
+  try {
+    const previewResult = JSON.parse(await previewProjectReportActionTask(projectId, versionId, actionKey));
+    if (!previewResult.ok) return JSON.stringify(previewResult);
+    const project = projectStateStore().getMetadata(String(projectId || ''));
+    if (!project || String(project.status || '') === 'archived') throw Object.assign(new Error('项目已归档或不存在，不能创建行动任务。'), { code: 'project_report_action_project_locked' });
+    const latest = await projectReportService().get(projectReportReader(project), project.id);
+    if (String(latest.versionId) !== String(versionId)) throw Object.assign(new Error('项目报告已变化，请重新预览下一行动。'), { code: 'project_report_action_stale' });
+    const preview = previewResult.preview;
+    if (preview.duplicate) return boundedProjectIpcJson({ ok: true, duplicate: true, task: readTaskStore({ taskIds: [preview.taskId] }).tasks.find((item) => item.id === preview.taskId) });
+    const key = String(idempotencyKey || '').trim();
+    if (!key || key.length > 160) throw Object.assign(new Error('任务确认标识无效。'), { code: 'invalid_idempotency_key' });
+    const sourceNote = preview.source === 'ai_inference' ? '来源为AI推定；需要用实际完成证据复核。' : '来源为项目综合报告规则建议。';
+    const task = { id: preview.taskId, kind: 'project_action', title: preview.title, sourceType: 'project', sourceId: project.id,
+      sourceName: project.name, status: 'pending', trigger: 'manual', executor: 'manual', requestedExecutor: 'manual',
+      executionMode: 'manual', automaticExecution: false, idempotencyKey: preview.businessKey, workKey: preview.businessKey,
+      sourceVersion: versionId, pipelineVersion: 'project-report-action-v1', riskLevel: 'low',
+      input: { operation: 'complete_project_report_action', projectId: project.id, versionId, actionKey, reason: preview.reason,
+        completionEvidence: preview.completionEvidence, sourceDisclosure: sourceNote, confirmationKey: key },
+      expectedOutput: { type: 'manual_project_action_receipt_v1', completionEvidence: preview.completionEvidence },
+      permissions: { read: [], write: [], operations: [] }, completionPolicy: 'manual_confirmation', autoRetry: false };
+    upsertTaskCandidates([task]);
+    return boundedProjectIpcJson({ ok: true, duplicate: false, task: readTaskStore({ taskIds: [task.id] }).tasks.find((item) => item.id === task.id) || task });
+  } catch (error) { return JSON.stringify({ ok: false, code: error.code || 'project_report_action_commit_failed', message: error.message }); }
 }
 
 function listProjectStagingItems(request = {}) {
@@ -40016,9 +40111,9 @@ async function handleTerminalProjectComprehensiveReport(request, response, proje
     if (!(project.studentIds || []).map(String).includes(String(student.id))) {
       return sendJson(response, 403, { ok: false, code: 'PROJECT_STUDENT_SCOPE_MISMATCH', message: '当前学生未关联该项目。' });
     }
-    const result = JSON.parse(await getProjectOverallReport(project.id));
-    if (!result.ok) return sendJson(response, 400, result);
-    const report = result.report || {};
+    const role = request.authContext?.type === 'device' && request.authContext.deviceRole === 'teacher' ? 'teacher' : 'student';
+    const report = await getProjectOverallReportForReader(project, { role, readerId: String(student.id),
+      allowedStudentIds: [String(student.id)], authorizationVersion: projectReportAuthorizationVersion(project) });
     return sendJson(response, 200, { ok: true, studentId: String(student.id), projectId: String(project.id),
       status: String(report.status || 'empty'), updatedAt: String(report.updatedAt || report.createdAt || ''),
       content: projectReportMarkdown(report) });
@@ -43050,6 +43145,12 @@ ipcMain.handle('bridge:getProjects', (_event, options) => deferredInvoke(() => g
 ipcMain.handle('bridge:listProjects', (_event, request) => deferredInvoke(() => listProjectsPage(request || {})));
 ipcMain.handle('bridge:getProjectDetail', (_event, projectId) => deferredInvoke(() => getProjectDetail(projectId)));
 ipcMain.handle('bridge:getProjectOverallReport', (_event, projectId) => deferredInvoke(() => getProjectOverallReport(projectId)));
+ipcMain.handle('bridge:saveProjectSuccessCriteria', (_event, projectId, expectedRevision, criteria) =>
+  licensedInvoke('保存项目成功标准', () => saveProjectSuccessCriteria(projectId, expectedRevision, criteria)));
+ipcMain.handle('bridge:previewProjectReportActionTask', (_event, projectId, versionId, actionKey) =>
+  deferredInvoke(() => previewProjectReportActionTask(projectId, versionId, actionKey)));
+ipcMain.handle('bridge:commitProjectReportActionTask', (_event, projectId, versionId, actionKey, idempotencyKey) =>
+  licensedInvoke('创建项目行动任务', () => commitProjectReportActionTask(projectId, versionId, actionKey, idempotencyKey)));
 ipcMain.handle('bridge:refreshProjectOverallReport', (_event, projectId) =>
   licensedInvoke('更新项目总体报告', () => refreshProjectOverallReport(projectId)));
 ipcMain.handle('bridge:getProjectOverallReportVersion', (_event, projectId, versionId) =>
@@ -43266,6 +43367,10 @@ ipcMain.handle('bridge:updateLearningReports', (_event, studentId) => licensedIn
 async function cloudReportInvoke(action, operation) {
   const locked = licenseRequiredJson(action);
   if (locked) return locked;
+  try { return JSON.stringify({ ok: true, data: await operation(await getCloudReportRuntime()) }); }
+  catch (error) { return JSON.stringify({ ok: false, message: `${action}失败：${error.message}` }); }
+}
+async function cloudLocalDraftInvoke(action, operation) {
   try { return JSON.stringify({ ok: true, data: await operation(await getCloudReportRuntime()) }); }
   catch (error) { return JSON.stringify({ ok: false, message: `${action}失败：${error.message}` }); }
 }
@@ -43528,6 +43633,12 @@ ipcMain.handle('bridge:cloudReportSetUpload', (_event, studentId, enabled) => cl
   (runtime) => runtime.setUpload(String(studentId || ''), enabled)));
 ipcMain.handle('bridge:cloudReportSetUploadScope', (_event, studentId, input) => cloudReportInvoke('保存学生云端上传范围',
   (runtime) => runtime.setUploadScope(String(studentId || ''), input || {})));
+ipcMain.handle('bridge:cloudReportGetExpertConsultationDraft', (_event, studentId) => cloudLocalDraftInvoke('读取真人专家咨询草稿',
+  (runtime) => runtime.getExpertConsultationDraft(String(studentId || ''))));
+ipcMain.handle('bridge:cloudReportSaveExpertConsultationDraft', (_event, studentId, input) => cloudLocalDraftInvoke('保存真人专家咨询草稿',
+  (runtime) => runtime.saveExpertConsultationDraft(String(studentId || ''), input || {})));
+ipcMain.handle('bridge:cloudReportClearExpertConsultationDraft', (_event, studentId) => cloudLocalDraftInvoke('清空真人专家咨询草稿',
+  (runtime) => runtime.clearExpertConsultationDraft(String(studentId || ''))));
 ipcMain.handle('bridge:cloudReportSelectUploadHealth', (event, studentId) => cloudReportInvoke('选择并上传健康资料', async (runtime) => {
   const localStudentId = String(studentId || '');
   if (!findStudent(localStudentId)) throw new Error('当前学生不存在');
@@ -44058,6 +44169,7 @@ ipcMain.handle('bridge:learningStateAction', (_event, action, studentId, inputJs
     ? deferredInvoke(() => learningStateActionJson(action, studentId, inputJson))
     : licensedInvoke('更新学习状态', () => learningStateActionJson(action, studentId, inputJson))
 ));
+ipcMain.handle('bridge:getLearningWorkbenchProjection', (_event, studentId) => deferredInvoke(() => getLearningWorkbenchProjection(studentId)));
 ipcMain.handle('bridge:invalidateWeeklyKnowledgeGrowth', (_event, snapshotId) => {
   weeklyKnowledgeGrowthImages.delete(snapshotId);
   return JSON.stringify({ ok: true });

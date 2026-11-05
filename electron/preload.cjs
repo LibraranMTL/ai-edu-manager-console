@@ -136,6 +136,9 @@ contextBridge.exposeInMainWorld('AndroidBridge', {
   learningStateAction(action, studentId, input) {
     return ipcRenderer.invoke('bridge:learningStateAction', action, studentId, JSON.stringify(input || {}));
   },
+  getLearningWorkbenchProjection(studentId) {
+    return ipcRenderer.invoke('bridge:getLearningWorkbenchProjection', studentId);
+  },
   invalidateWeeklyKnowledgeGrowth(snapshotId) {
     return ipcRenderer.invoke('bridge:invalidateWeeklyKnowledgeGrowth', snapshotId);
   },
@@ -282,6 +285,15 @@ contextBridge.exposeInMainWorld('AndroidBridge', {
   },
   getProjectOverallReport(projectId) {
     return ipcRenderer.invoke('bridge:getProjectOverallReport', projectId);
+  },
+  saveProjectSuccessCriteria(projectId, expectedRevision, criteria) {
+    return ipcRenderer.invoke('bridge:saveProjectSuccessCriteria', projectId, expectedRevision, criteria);
+  },
+  previewProjectReportActionTask(projectId, versionId, actionKey) {
+    return ipcRenderer.invoke('bridge:previewProjectReportActionTask', projectId, versionId, actionKey);
+  },
+  commitProjectReportActionTask(projectId, versionId, actionKey, idempotencyKey) {
+    return ipcRenderer.invoke('bridge:commitProjectReportActionTask', projectId, versionId, actionKey, idempotencyKey);
   },
   refreshProjectOverallReport(projectId) {
     return ipcRenderer.invoke('bridge:refreshProjectOverallReport', projectId);
@@ -796,6 +808,15 @@ contextBridge.exposeInMainWorld('AndroidBridge', {
   },
   cloudReportSetUploadScope(studentId, input) {
     return ipcRenderer.invoke('bridge:cloudReportSetUploadScope', studentId, input);
+  },
+  cloudReportGetExpertConsultationDraft(studentId) {
+    return ipcRenderer.invoke('bridge:cloudReportGetExpertConsultationDraft', studentId);
+  },
+  cloudReportSaveExpertConsultationDraft(studentId, draft) {
+    return ipcRenderer.invoke('bridge:cloudReportSaveExpertConsultationDraft', studentId, draft);
+  },
+  cloudReportClearExpertConsultationDraft(studentId) {
+    return ipcRenderer.invoke('bridge:cloudReportClearExpertConsultationDraft', studentId);
   },
   cloudReportSelectUploadHealth(studentId) {
     return ipcRenderer.invoke('bridge:cloudReportSelectUploadHealth', studentId);

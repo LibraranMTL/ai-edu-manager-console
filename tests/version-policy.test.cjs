@@ -15,6 +15,7 @@ test('Windows versions advance from patch 1 through 10, with the requested 0.17.
   assert.equal(nextWindowsVersion('0.17.11'), '0.18.1');
   assert.equal(nextWindowsVersion('0.23.0'), '0.23.1');
   assert.equal(nextWindowsVersion('0.23.1'), '0.23.2');
+  assert.equal(nextWindowsVersion('0.23.2'), '0.23.3');
 });
 
 test('Windows release policy rejects zero and patch numbers above 10', () => {
@@ -32,7 +33,7 @@ test('candidate builds preserve the stable manifest, while a formal build aligns
   const windowsManifest = JSON.parse(fs.readFileSync(path.join(root, 'release', 'windows', 'edu-manager-version.json'), 'utf8'));
   const terminalVersion = JSON.parse(fs.readFileSync(path.join(root, 'windows-terminal-version.json'), 'utf8'));
   const downloadPage = fs.readFileSync(path.join(root, 'release', '网站文件', 'download.html'), 'utf8');
-  assert.equal(packageJson.version, '0.23.2');
+  assert.equal(packageJson.version, '0.23.3');
   const candidateTag = String(process.env.EDU_WINDOWS_CANDIDATE_TAG || '').trim();
   const sourceAheadOfStable = releaseManifest.windowsVersionName !== packageJson.version;
   if (candidateTag || sourceAheadOfStable) {

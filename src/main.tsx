@@ -87,6 +87,7 @@ import homeEntryCatalog from '../shared/home-entries.json';
 import { DigestStatusCard, type DigestWorkflowStatus } from './DigestStatusCard';
 const ProjectMaterialsPanel = React.lazy(() => import('./ProjectMaterialsPanel').then(module => ({ default: module.ProjectMaterialsPanel })));
 const ProjectOverallReportPanel = React.lazy(() => import('./ProjectOverallReportPanel').then(module => ({ default: module.ProjectOverallReportPanel })));
+const LearningWorkbenchPanel = React.lazy(() => import('./LearningWorkbenchPanel').then(module => ({ default: module.LearningWorkbenchPanel })));
 
 function MarkdownView(props: { content: string; onMermaidNodeClick?: (nodeId: string) => boolean | void }) {
   return <React.Suspense fallback={<article className="markdown-content"><div className="md-space" />正在加载内容…</article>}>
@@ -533,6 +534,7 @@ type LearningProject = {
   type: string;
   description?: string;
   objective?: string;
+  revision?: number;
   status: string;
   studentIds: string[];
   studentNames?: string[];
@@ -566,6 +568,7 @@ type LearningProject = {
   knowledgeStrategy?: string;
   growthStrategy?: string;
   deliverables?: string[];
+  successCriteria?: Array<{ criterionId: string; title: string; kind: 'numeric' | 'descriptive'; operator?: 'lte' | 'gte' | 'between' | 'eq'; targetValue?: number; targetMin?: number; targetMax?: number; unit?: string; conditions: string[]; validationMethod: string; active: boolean }>;
   duplicatedFrom?: string;
   projectLineageId?: string;
   collaborationPublicationVersion?: number;
@@ -1240,6 +1243,7 @@ type AndroidBridge = {
   saveWeeklyKnowledgeGrowthPng?: (snapshotId: string, studentId: string) => Promise<string>;
   invalidateWeeklyKnowledgeGrowth?: (snapshotId: string) => Promise<string>;
   learningStateAction?: (action: string, studentId: string, input: Record<string, unknown>) => Promise<string>;
+  getLearningWorkbenchProjection?: (studentId: string) => Promise<string>;
   getKnowledgePointTrend?: (inputJson: string) => Promise<string>;
   getStudentKnowledgeActivitySummary?: (studentId: string, range: number) => Promise<string>;
   rebuildKnowledgeProjection?: (inputJson: string) => Promise<string>;
@@ -1449,6 +1453,9 @@ type AndroidBridge = {
   cloudReportEnrollSource?: (input: { serverUrl: string; localStudentId: string; profileFields?: string[]; materialCategories?: string[] }) => Promise<string>;
   cloudReportSetUpload?: (studentId: string, enabled: boolean) => Promise<string>;
   cloudReportSetUploadScope?: (studentId: string, input: { profileFields: string[]; materialCategories: string[] }) => Promise<string>;
+  cloudReportGetExpertConsultationDraft?: (studentId: string) => Promise<string>;
+  cloudReportSaveExpertConsultationDraft?: (studentId: string, draft: Record<string, unknown>) => Promise<string>;
+  cloudReportClearExpertConsultationDraft?: (studentId: string) => Promise<string>;
   cloudReportSelectUploadHealth?: (studentId: string) => Promise<string>;
   cloudReportStatus?: (studentId: string) => Promise<string>;
   cloudReportSyncNow?: (studentId: string) => Promise<string>;
@@ -3713,7 +3720,7 @@ const zhCnText = {
   'app.name': 'AI教育管家控制台',
   'app.subtitle': '填写学生信息后，一次创建知识库目录、AGENT.md 与基础档案，再按需连接 Agent 工具。',
   'projects.subtitle': '创建各种项目制学习的资料管理空间，智能进行资料分析与 知识沉淀',
-  'nav.home': '首页',
+  'nav.home': '学情工作台',
   'nav.init': '新建学生档案',
   'nav.inbox': '资料收集与处理',
   'nav.assets': '文件资产中心',
@@ -3790,7 +3797,7 @@ const uiTranslations: Record<LanguageCode, Partial<Record<TranslationKey, string
     'app.name': 'AI教育管家控制台',
     'app.subtitle': '填寫學生資訊後，一次建立知識庫目錄、AGENT.md 與基礎檔案，再按需連接 Agent 工具。',
     'projects.subtitle': '建立各類專案式學習的資料管理空間，智慧進行資料分析與知識沉澱',
-    'nav.home': '首頁',
+    'nav.home': '學情工作台',
     'nav.init': '新建學生檔案',
     'nav.inbox': '資料收集與處理',
     'nav.assets': '檔案資產中心',
@@ -6183,6 +6190,8 @@ function App() {
   const [activePageTab, setActivePageTab] = useState('home');
   const [studentPanelOpen, setStudentPanelOpen] = useState(false);
   const [agentSettingsTab, setAgentSettingsTab] = useState<AgentSettingsTab>('tools');
+  const [expertConsultationIntent, setExpertConsultationIntent] = useState(false);
+  const [learningWorkbenchAvailable, setLearningWorkbenchAvailable] = useState(true);
   const [agentControlSubtab, setAgentControlSubtab] = useState<AgentControlSubtab>('tool-control');
   const [agentDataTab, setAgentDataTab] = useState<AgentDataTab>('memory');
   const [guidanceTab, setGuidanceTab] = useState<GuidanceTab>('overview');
@@ -14840,7 +14849,7 @@ ${JSON.stringify(items, null, 2)}
     { label: '四份学情报告', status: adoptScanResult?.checks?.learningReports ? '已找到' : '可补建' },
   ];
 
-  const deleteStudent = (student: Student) => {
+  const deleteStudent = async (student: Student) => {
     if (isWindows && !windowsLicenseActive) {
       setDigestMessage('未激活状态仅支持只读浏览，激活后可删除控制台学生记录。');
       window.setTimeout(() => setDigestMessage(''), 2600);
@@ -14848,6 +14857,15 @@ ${JSON.stringify(items, null, 2)}
     }
     const confirmed = window.confirm(`确认从控制台删除「${student.name}」的学生记录吗？\n\n这只删除控制台里的学生列表，不会删除外部 Agent，也不会删除已经导出的资料文件。`);
     if (!confirmed) return;
+    if (isWindows && bridge()?.cloudReportClearExpertConsultationDraft) {
+      try {
+        const cleared = JSON.parse(await bridge()!.cloudReportClearExpertConsultationDraft!(student.id));
+        if (!cleared.ok) throw new Error(cleared.message || '咨询草稿清理失败。');
+      } catch (error) {
+        setDigestMessage(error instanceof Error ? error.message : '咨询草稿清理失败，学生记录未删除。');
+        return;
+      }
+    }
     const next = students.filter((item) => item.id !== student.id);
     persist(next);
     setSelectedId(next[0]?.id ?? '');
@@ -16850,7 +16868,7 @@ ${JSON.stringify(items, null, 2)}
           {isWindows && (
             <div className="v12-fixed-navigation">
               {([
-                { id: 'home' as NavigationGroup, label: '首页', icon: Home },
+                { id: 'home' as NavigationGroup, label: '学情工作台', icon: Home },
                 { id: 'collection' as NavigationGroup, label: '收集与整理', icon: Inbox },
                 { id: 'learning' as NavigationGroup, label: '学情与学习', icon: BookOpen },
                 { id: 'projects' as NavigationGroup, label: '项目与成果', icon: FolderOpen },
@@ -17260,13 +17278,23 @@ ${JSON.stringify(items, null, 2)}
               </button>
               <button className="secondary" onClick={() => setActiveSection('home')}>
                 <Home size={18} />
-                返回首页
+                返回学情工作台
               </button>
             </div>
           </section>
         )}
 
-        {!shouldBlockForAgentInstall && activeSection === 'home' && (
+        {!shouldBlockForAgentInstall && activeSection === 'home' && isWindows && learningWorkbenchAvailable && (
+          <React.Suspense fallback={<section className="panel">正在加载学情工作台…</section>}>
+            <LearningWorkbenchPanel api={bridge() || {}} studentId={String(selectedStudent?.id || '')} studentName={selectedStudent?.name || ''}
+              onPrimaryAction={runHomePrimaryAction}
+              onProject={(projectId) => openProjectDetail(projectId)}
+              onExpert={() => { setExpertConsultationIntent(true); setNavigationGroup('settings'); setSettingsSubmenu('agent-qa'); setAgentSettingsTab('cloud'); setActiveSection('settings'); }}
+              onMore={() => setActiveSection('collection-overview')} onUnavailable={() => setLearningWorkbenchAvailable(false)} />
+          </React.Suspense>
+        )}
+
+        {!shouldBlockForAgentInstall && activeSection === 'home' && (!isWindows || !learningWorkbenchAvailable) && (
           <>
             <section className="panel home-student-hero">
               <div className="home-student-hero-copy">
@@ -17279,7 +17307,7 @@ ${JSON.stringify(items, null, 2)}
                 <div><strong>{selectedStudent?.name || '尚未选择学生'}</strong><small>{selectedStudent ? `${selectedStudent.grade} · ${selectedStudent.currentRegion || selectedStudent.school || '地区待补充'}` : '可从左下角学生面板选择'}</small></div>
                 <button className="secondary compact" type="button" onClick={() => setStudentPanelOpen(true)}>切换/编辑档案</button>
               </div>
-              <div className="home-quick-entry-grid" aria-label="首页快捷入口">
+              <div className="home-quick-entry-grid" aria-label="学情工作台快捷入口">
                 {homeEntryCatalog.map((entry) => (
                   <button type="button" key={entry.id} onClick={() => navigateHomeEntry(entry.id)}>
                     {entry.id === 'weekly-actions' ? <ListChecks size={22} />
@@ -21000,7 +21028,7 @@ ${JSON.stringify(items, null, 2)}
         )}
 
         {!shouldBlockForAgentInstall && !isLicenseRestrictedSection && isWindows && activeSection === 'settings' && settingsSubmenu === 'agent-qa' && agentSettingsTab === 'cloud' && (
-          <React.Suspense fallback={<section className="panel">正在加载云端同步设置…</section>}><CloudDocumentsPanel api={bridge()} localStudents={students.map((student) => ({
+          <React.Suspense fallback={<section className="panel">正在加载云端同步设置…</section>}><CloudDocumentsPanel api={bridge()} focusedStudentId={String(selectedStudent?.id || '')} expertIntent={expertConsultationIntent} localStudents={students.map((student) => ({
             id: student.id, name: student.name, grade: student.grade, school: student.school, goal: student.goal,
             currentRegion: student.currentRegion, phone: student.phone, email: student.email, birthDate: student.birthDate,
             address: student.address, guardian: student.guardian,

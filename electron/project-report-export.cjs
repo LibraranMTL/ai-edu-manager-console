@@ -37,6 +37,23 @@ function projectReportMarkdown(report = {}) {
     if (!items.length) output.push('- 当前可见范围内暂无内容。');
     for (const item of items) output.push(`- [${line(item.displayStatus || displayStatus(item.status)) || '待确认'}] ${line(item.displayStatement || displayStatement(item.statement))}`);
   }
+  const goalEvaluations = Array.isArray(report.goalEvaluations) ? report.goalEvaluations : [];
+  output.push('', '## 目标与成功标准矩阵', '');
+  if (!goalEvaluations.length) output.push('- 尚未设置结构化成功标准。');
+  const statusNames = { achieved: '数值验证 · 已达到', partially_achieved: '数值验证 · 部分达到', not_achieved: '数值验证 · 未达到',
+    pending_validation: '证据不足', inferred_achieved: 'AI推定 · 达到', inferred_partially_achieved: 'AI推定 · 部分达到',
+    inferred_not_achieved: 'AI推定 · 未达到', insufficient_evidence: '证据不足', conflicted: '资料矛盾' };
+  for (const item of goalEvaluations) {
+    const confidence = item.basis === 'ai_inference' ? ` · ${item.confidence === 'high' ? '高' : item.confidence === 'medium' ? '中' : '低'}置信` : '';
+    output.push(`- **${line(item.criterion?.title) || '成功标准'}**：[${statusNames[item.status] || item.status}${confidence}] ${line(item.reasoning || '')}`);
+  }
+  const timeline = Array.isArray(report.iterationEvents) ? report.iterationEvents : [];
+  output.push('', '## 探究与迭代时间线', '');
+  if (!timeline.length) output.push('- 暂无带证据的迭代节点。');
+  for (const item of timeline) output.push(`- ${line(item.occurredAt) || '时间待补充'} · ${line(item.title) || line(item.type)}：${line(item.description)}${item.reasonStatus === 'recorded' ? `（修改原因：${line(item.reason)}）` : '（修改原因待补充）'}`);
+  if (report.nextActionDraft) output.push('', '## 下一行动', '', `- ${line(report.nextActionDraft.title)}`, `- 原因：${line(report.nextActionDraft.reason)}`,
+    `- 建议负责人：${line(report.nextActionDraft.suggestedOwner)}`, `- 建议时间：${line(report.nextActionDraft.suggestedTiming)}`,
+    `- 完成证据：${line(report.nextActionDraft.completionEvidence)}`, report.nextActionDraft.source === 'ai_inference' ? '- 来源：AI推定' : '- 来源：主机规则');
   const contributions = Array.isArray(report.personalContributions) ? report.personalContributions : [];
   if (contributions.length) {
     output.push('', '## 已确认个人贡献', '');

@@ -21,7 +21,8 @@ function projectRevision(project) { return Number(project?.revision || 0); }
 function registryRevision(registry) { return Number(registry?.revision || 0); }
 function projectReadIdentity(project) { return sha256({ id: project?.id || project?.projectId, revision: projectRevision(project),
   name: project?.name, type: project?.type, status: project?.status, objective: project?.objective, description: project?.description,
-  deliverables: project?.deliverables || [], studentIds: project?.studentIds || [], studentEvidence: project?.studentEvidence || [] }); }
+  deliverables: project?.deliverables || [], successCriteria: project?.successCriteria || [],
+  studentIds: project?.studentIds || [], studentEvidence: project?.studentEvidence || [] }); }
 function registryReadIdentity(registry) { return sha256({ projectId: registry?.projectId, revision: registryRevision(registry),
   updatedAt: registry?.updatedAt, materials: registry?.materials || [], knowledge: registry?.knowledge || [],
   evidenceBindings: registry?.evidenceBindings || [] }); }
@@ -142,7 +143,8 @@ async function buildProjectReportSnapshot({ projectId, asOf = new Date().toISOSt
   }
   const projectProjection = { name: text(beforeProject.name), type: text(beforeProject.type), status: text(beforeProject.status || 'active'),
     objective: text(beforeProject.objective), description: text(beforeProject.description),
-    deliverables: Array.isArray(beforeProject.deliverables) ? beforeProject.deliverables.map(text).filter(Boolean) : [] };
+    deliverables: Array.isArray(beforeProject.deliverables) ? beforeProject.deliverables.map(text).filter(Boolean) : [],
+    successCriteria: Array.isArray(beforeProject.successCriteria) ? beforeProject.successCriteria : [] };
   const members = (Array.isArray(beforeProject.studentIds) ? beforeProject.studentIds : []).map((studentId) => ({ studentId: text(studentId) })).filter((item) => item.studentId);
   const coverage = {
     materials: { total: materials.length, analyzed: materials.length,

@@ -13,6 +13,8 @@ type UploadScope = { profileFields: string[]; materialCategories: string[] };
 type UploadStatus = { configured: boolean; enabled: boolean; cloudStudentId?: string; lastSyncAt?: number; serverVerifiedAt?: number; syncing?: boolean; lastError?: string; pendingServerWriteState?: boolean | null; pendingUploadScope?: UploadScope | null; savedUploadScope?: UploadScope | null; uploadScopePersistence?: 'default' | 'local_requires_enrollment' | 'local_requires_upgrade' | 'pending_cloud' | 'cloud_confirmed'; profileFields?: string[]; materialCategories?: string[]; healthObjectScope?: string[]; lastUploaded?: number; lastUnchanged?: number; lastReady?: number; skipped?: { filename: string; reason: string }[] };
 type CloudInboxItem = { submissionId: string; provider: string; projectId: string; status: string; updatedAt: number; quarantinedReason?: string };
 type RemoteAgentStatus = { sessionId: string; provider?: string; status?: string; expiresAt?: number; revokedAt?: number; projectId?: string; taskId?: string };
+type ExpertDraft = { schema: 'edu-manager.expert-consultation-draft.v1'; studentId: string; purpose: 'expert_learning_interpretation'; profileFields: string[]; materialCategories: string[]; updatedAt: string; reviewedAuthorizationVersion?: string };
+type ExpertDraftStatus = { draft: ExpertDraft | null; authorizationVersion: string; authorizationValid: boolean; reviewed: boolean };
 
 export type CloudReportApi = {
   cloudReportSettings?: () => Promise<string>;
@@ -21,6 +23,9 @@ export type CloudReportApi = {
   cloudReportEnrollSource?: (input: { serverUrl: string; localStudentId: string; profileFields?: string[]; materialCategories?: string[] }) => Promise<string>;
   cloudReportSetUpload?: (studentId: string, enabled: boolean) => Promise<string>;
   cloudReportSetUploadScope?: (studentId: string, input: { profileFields: string[]; materialCategories: string[] }) => Promise<string>;
+  cloudReportGetExpertConsultationDraft?: (studentId: string) => Promise<string>;
+  cloudReportSaveExpertConsultationDraft?: (studentId: string, draft: Partial<ExpertDraft>) => Promise<string>;
+  cloudReportClearExpertConsultationDraft?: (studentId: string) => Promise<string>;
   cloudReportSelectUploadHealth?: (studentId: string) => Promise<string>;
   cloudReportStatus?: (studentId: string) => Promise<string>;
   cloudReportSyncNow?: (studentId: string) => Promise<string>;
@@ -67,7 +72,7 @@ async function unwrap<T>(work: Promise<string> | undefined): Promise<T> {
   return result.data as T;
 }
 
-export function CloudDocumentsPanel({ api, localStudents, mode = 'settings' }: { api?: CloudReportApi; localStudents: Student[]; mode?: 'settings' | 'reports' | 'materials' }) {
+export function CloudDocumentsPanel({ api, localStudents, mode = 'settings', focusedStudentId = '', expertIntent = false }: { api?: CloudReportApi; localStudents: Student[]; mode?: 'settings' | 'reports' | 'materials'; focusedStudentId?: string; expertIntent?: boolean }) {
   const [page, setPage] = useState<'connection' | 'results' | 'agents' | 'inbox'>(mode === 'settings' ? 'connection' : 'results');
   const [serverUrl, setServerUrl] = useState('https://www.greatbg.com/edu-cloud');
   const [serverBound, setServerBound] = useState(false);
@@ -88,7 +93,7 @@ export function CloudDocumentsPanel({ api, localStudents, mode = 'settings' }: {
   const [nextCursor, setNextCursor] = useState('');
   const [pairingCode, setPairingCode] = useState('');
   const [pairingExpiresAt, setPairingExpiresAt] = useState(0);
-  const [selectedLocalId, setSelectedLocalId] = useState(localStudents[0]?.id || '');
+  const [selectedLocalId, setSelectedLocalId] = useState(focusedStudentId || localStudents[0]?.id || '');
   const selectedLocalIdRef = useRef(selectedLocalId);
   selectedLocalIdRef.current = selectedLocalId;
   const [approvalCode, setApprovalCode] = useState('');
@@ -99,6 +104,7 @@ export function CloudDocumentsPanel({ api, localStudents, mode = 'settings' }: {
   const [preview, setPreview] = useState('');
   const [notice, setNotice] = useState('');
   const [busy, setBusy] = useState(false);
+  const [expertDraftStatus, setExpertDraftStatus] = useState<ExpertDraftStatus | null>(null);
 
   useEffect(() => {
     if (mode === 'settings') return;
@@ -151,6 +157,23 @@ export function CloudDocumentsPanel({ api, localStudents, mode = 'settings' }: {
       setHealthObjectScope(status.healthObjectScope || []);
     }
   }
+  async function refreshExpertDraft(studentId: string) {
+    if (!api?.cloudReportGetExpertConsultationDraft) return;
+    const status = await unwrap<ExpertDraftStatus>(api.cloudReportGetExpertConsultationDraft(studentId));
+    if (selectedLocalIdRef.current !== studentId) return;
+    setExpertDraftStatus(status);
+    if (status.draft) {
+      setProfileFields(status.draft.profileFields);
+      setMaterialCategories(status.draft.materialCategories);
+    }
+  }
+  async function persistExpertDraft(studentId: string, nextProfileFields: string[], nextMaterialCategories: string[], reviewedAuthorizationVersion?: string) {
+    if (!api?.cloudReportSaveExpertConsultationDraft || !studentId) return;
+    const status = await unwrap<ExpertDraftStatus>(api.cloudReportSaveExpertConsultationDraft(studentId, {
+      profileFields: nextProfileFields, materialCategories: nextMaterialCategories, reviewedAuthorizationVersion,
+    }));
+    if (selectedLocalIdRef.current === studentId) setExpertDraftStatus(status);
+  }
   useEffect(() => {
     let active = true;
     if (page === 'connection' && api?.cloudReportSettings) void unwrap<{ serverUrl: string; bound: boolean }>(api.cloudReportSettings()).then(settings => {
@@ -172,7 +195,10 @@ export function CloudDocumentsPanel({ api, localStudents, mode = 'settings' }: {
     const work = tab === 'reports' ? refreshReports(selectedCloudId) : tab === 'materials' ? refreshMaterials(selectedCloudId) : refreshDocuments(selectedCloudId);
     void work.catch(error => setNotice((error as Error).message));
   }, [page, selectedCloudId, tab]);
-  useEffect(() => { if (page === 'connection' && selectedLocalId) void refreshUploadStatus(selectedLocalId).catch(() => {}); }, [page, selectedLocalId]);
+  useEffect(() => {
+    if (page !== 'connection' || !selectedLocalId) return;
+    void Promise.allSettled([refreshUploadStatus(selectedLocalId), refreshExpertDraft(selectedLocalId)]);
+  }, [page, selectedLocalId]);
 
   const selectedLocal = localStudents.find(student => student.id === selectedLocalId);
   const profilePreviewRows: Array<[string, string, unknown]> = selectedLocal ? [
@@ -183,8 +209,13 @@ export function CloudDocumentsPanel({ api, localStudents, mode = 'settings' }: {
   const profilePreview = profilePreviewRows.filter(([field, , value]) => profileFields.includes(field) && Boolean(value));
 
   function toggleSelection(current: string[], value: string, checked: boolean, update: (next: string[]) => void) {
-    update(checked ? [...new Set([...current, value])] : current.filter(item => item !== value));
+    const next = checked ? [...new Set([...current, value])] : current.filter(item => item !== value);
+    update(next);
+    const nextProfile = update === setProfileFields ? next : profileFields;
+    const nextCategories = update === setMaterialCategories ? next : materialCategories;
+    void persistExpertDraft(selectedLocalId, nextProfile, nextCategories).catch(error => setNotice((error as Error).message));
   }
+  const consultationLocked = Boolean(expertDraftStatus?.draft && (!expertDraftStatus.authorizationValid || !expertDraftStatus.reviewed));
 
   return <section className="cloud-documents-screen" aria-label={mode === 'reports' ? '云端学情报告' : mode === 'materials' ? '云端学习资料' : '云端同步设置'}>
     <header className="cloud-documents-header">
@@ -222,9 +253,10 @@ export function CloudDocumentsPanel({ api, localStudents, mode = 'settings' }: {
       </details>
       <details className="cloud-setup" open><summary>授权上传学情资料</summary>
         <p><strong>授权上传学情资料，平台将派遣专属真人专家进行分析提供建议</strong></p>
+        {expertIntent && <div className="cloud-expert-intent" role="note"><strong>真人专家解读咨询草稿</strong><span>这里只准备授权范围；进入页面不会上传资料、创建咨询单或改变授权。</span></div>}
         <p>资料按类别授权，不按单文件授权；勾选的类别包含当前有效内容及后续更新，可随时关闭后续上传。</p>
         {localStudents.length ? <>
-          <label>本机学生<select value={selectedLocalId} disabled={busy} onChange={event => { setUploadStatus({ configured: false, enabled: false }); setProfileFields(defaultProfileFields); setMaterialCategories(defaultMaterialCategories); setSelectedLocalId(event.target.value); }}>
+          <label>本机学生<select value={selectedLocalId} disabled={busy} onChange={event => { setUploadStatus({ configured: false, enabled: false }); setExpertDraftStatus(null); setSelectedLocalId(event.target.value); }}>
             {localStudents.map(student => <option key={student.id} value={student.id}>{student.name}</option>)}</select></label>
           <p>{uploadStatus.configured ? `自动上传：${uploadStatus.enabled ? '开启' : '关闭'}${uploadStatus.lastError ? ` · ${uploadStatus.lastError}` : ''}` : '尚未为此学生开通上传。'}</p>
           <fieldset className="cloud-scope-fieldset"><legend>基础信息（默认全部选择，可手工调整）</legend>
@@ -233,6 +265,18 @@ export function CloudDocumentsPanel({ api, localStudents, mode = 'settings' }: {
               <span>{label}</span>
             </label>)}</div>
           </fieldset>
+          {expertDraftStatus?.draft && <div className={`cloud-expert-draft-state ${expertDraftStatus.reviewed ? 'reviewed' : 'locked'}`}>
+            <strong>{expertDraftStatus.reviewed ? '咨询范围已按当前授权复核' : expertDraftStatus.authorizationValid ? '需要重新核对咨询范围' : '咨询草稿已保留，当前授权已失效'}</strong>
+            <span>切换学生、离开页面、关闭应用或撤权不会删除此草稿；健康资料不在此范围内。</span>
+            {expertDraftStatus.authorizationValid && !expertDraftStatus.reviewed && <button className="secondary compact" disabled={busy} onClick={() => void run(async () => {
+              await persistExpertDraft(selectedLocalId, profileFields, materialCategories, expertDraftStatus.authorizationVersion);
+              setNotice('已按当前授权版本重新核对真人专家咨询范围。');
+            })}>确认已重新核对范围</button>}
+            <button className="secondary compact" disabled={busy} onClick={() => void run(async () => {
+              await unwrap(api?.cloudReportClearExpertConsultationDraft?.(selectedLocalId)); setExpertDraftStatus(null);
+              setNotice('已显式清空当前学生的真人专家咨询草稿。');
+            })}>清空咨询草稿</button>
+          </div>}
           <fieldset className="cloud-scope-fieldset"><legend>授权上传类别（可手工调整）</legend>
             <div className="cloud-choice-grid">{materialCategoryOptions.map(([value, label]) => <label className="cloud-choice" key={value}>
               <input type="checkbox" checked={materialCategories.includes(value)} disabled={busy} onChange={event => toggleSelection(materialCategories, value, event.target.checked, setMaterialCategories)} />
@@ -259,11 +303,15 @@ export function CloudDocumentsPanel({ api, localStudents, mode = 'settings' }: {
                   ? '上传范围已保存到本机，系统会继续自动向云端确认。'
                   : '上传范围已保存到本机；开通云同步后将按此范围授权，不会自动扩大旧许可。');
             })}>保存选择</button>
-            {uploadStatus.configured && <button className="secondary" disabled={busy || !uploadStatus.enabled} onClick={() => void run(async () => {
+            {uploadStatus.configured && <button className="secondary" disabled={busy || !uploadStatus.enabled || consultationLocked} onClick={() => void run(async () => {
               const studentId = selectedLocalId;
               const status = await unwrap<UploadStatus>(api?.cloudReportSyncNow?.(studentId));
               if (selectedLocalIdRef.current !== studentId) return;
-              setUploadStatus(status); setNotice(status.lastError || `检查完成：上传 ${status.lastUploaded || 0} 份，内容未变 ${status.lastUnchanged || 0} 份，未上传 ${status.skipped?.length || 0} 份。`);
+              setUploadStatus(status);
+              if (!status.lastError && !status.pendingUploadScope && Number(status.lastUploaded || 0) > 0 && expertDraftStatus?.draft) {
+                await unwrap(api?.cloudReportClearExpertConsultationDraft?.(studentId)); setExpertDraftStatus(null);
+              }
+              setNotice(status.lastError || `检查完成：上传 ${status.lastUploaded || 0} 份，内容未变 ${status.lastUnchanged || 0} 份，未上传 ${status.skipped?.length || 0} 份。`);
             })}>立即检查并上传</button>}
             {uploadStatus.configured && <button className="secondary" disabled={busy} onClick={() => void run(() => refreshUploadStatus(selectedLocalId))}>刷新上传状态</button>}</div>
           {uploadStatus.uploadScopePersistence?.startsWith('local_') && <p className="cloud-scope-save-state">选择已保存在本机；旧许可未被扩大。点击开通后将使用本机有效许可证自动创建或复用该学生的云端身份。</p>}

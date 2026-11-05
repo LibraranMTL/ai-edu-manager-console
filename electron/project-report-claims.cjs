@@ -1,6 +1,7 @@
 'use strict';
 
 const { sha256, stableJson } = require('./project-report-snapshot.cjs');
+const { computeNumericCriterion, validateDescriptiveInference, validateIterationEvents } = require('./project-report-value.cjs');
 
 function text(value) { return String(value ?? '').trim(); }
 function statusLabel(status) { return ({ active: '进行中', paused: '已暂停', completed: '已完成待归档', archived: '已归档', published: '已发布' })[text(status)] || '状态待核对'; }
@@ -50,7 +51,8 @@ function buildM1ProjectReport(snapshot) {
   return report;
 }
 
-const M2_POLICY_VERSION = 'project-report-m2-v1';
+const PROJECT_REPORT_VALUE_ENABLED = process.env.EDU_PROJECT_REPORT_VALUE_V1 !== '0';
+const M2_POLICY_VERSION = PROJECT_REPORT_VALUE_ENABLED ? 'project-report-m2-v2' : 'project-report-m2-v1';
 const M3_POLICY_VERSION = 'project-report-m3-v1';
 const REPORT_SECTIONS = Object.freeze([
   ['project_overview', '项目概况'], ['stage_change', '阶段与本期变化'], ['exploration_iteration', '探究与迭代'],
@@ -91,6 +93,24 @@ function validateM2Candidate(snapshot, candidate = {}) {
       kind: ['fact', 'judgement', 'suggestion'].includes(text(item.kind)) ? text(item.kind) : 'judgement',
       status: validatedStatus, audience: ['admin', 'student', 'teacher'],
     });
+  });
+}
+
+function validateParticipationItems(input, allowedEvidenceIds, kind) {
+  const allowed = new Set(allowedEvidenceIds);
+  const items = Array.isArray(input) ? input : [];
+  if (items.length > 50) throw Object.assign(new Error('参与分层候选数量超限。'), { code: 'project_report_candidate_invalid' });
+  return items.map((item) => {
+    const evidenceIds = [...new Set((Array.isArray(item?.evidenceIds) ? item.evidenceIds : []).map(text).filter(Boolean))];
+    if (!evidenceIds.length || evidenceIds.some((id) => !allowed.has(id))) throw Object.assign(
+      new Error('参与分层引用了当前快照之外的证据。'), { code: 'project_report_candidate_invalid' });
+    if (kind === 'ai' && !text(item.generatedBy || item.receiptId)) throw Object.assign(
+      new Error('AI 辅助项缺少明确生成记录。'), { code: 'project_report_candidate_invalid' });
+    if (kind === 'student_choice' && item.confirmed !== true) throw Object.assign(
+      new Error('学生选择与修改尚未确认。'), { code: 'project_report_candidate_invalid' });
+    return { title: text(item.title).slice(0, 160), description: text(item.description).slice(0, 800), evidenceIds,
+      ...(kind === 'ai' ? { generatedBy: text(item.generatedBy).slice(0, 80), receiptId: text(item.receiptId).slice(0, 120) } : {}),
+      ...(kind === 'student_choice' ? { confirmed: true } : {}) };
   });
 }
 
@@ -161,11 +181,59 @@ function buildM2ProjectReport(snapshot, previousReport = null, candidate = {}) {
   const representativeResults = representative.slice(0, 3).map((evidence) => ({ title: evidence.title || evidence.sourceId,
     evidenceId: evidence.evidenceId, citationId: evidence.citationId,
     statement: `已纳入项目：《${evidence.title || evidence.sourceId}》第 ${evidence.revision} 版。` }));
+  const criteria = Array.isArray(snapshot.project.successCriteria) ? snapshot.project.successCriteria.filter((item) => item?.active !== false) : [];
+  const allowedEvidenceIds = (snapshot.evidence || []).map((item) => item.evidenceId);
+  const numericCriterionIds = new Set(criteria.filter((item) => item.kind === 'numeric').map((item) => item.criterionId));
+  const numericObservations = Array.isArray(candidate.numericObservations) ? candidate.numericObservations : [];
+  if (numericObservations.some((item) => !numericCriterionIds.has(text(item?.criterionId)) || !allowedEvidenceIds.includes(text(item?.evidenceId)))) {
+    throw Object.assign(new Error('数值验证引用了当前快照之外的标准或证据。'), { code: 'project_report_candidate_invalid' });
+  }
+  const observationByCriterion = new Map(numericObservations
+    .reduce((entries, item) => {
+      const key = text(item?.criterionId), current = entries.get(key) || []; current.push(item); entries.set(key, current); return entries;
+    }, new Map()));
+  const inferenceByCriterion = new Map((Array.isArray(candidate.descriptiveInferences) ? candidate.descriptiveInferences : [])
+    .map((item) => validateDescriptiveInference(item, { criteria, evidenceIds: allowedEvidenceIds }))
+    .map((item) => [item.criterionId, item]));
+  const previousInferenceByCriterion = new Map((previousReport?.goalEvaluations || []).filter((item) => item.basis === 'ai_inference'
+    && [...(item.supportingEvidenceIds || []), ...(item.counterEvidenceIds || [])].every((id) => allowedEvidenceIds.includes(id)))
+    .map((item) => [item.criterionId, item]));
+  const goalEvaluations = criteria.map((criterion) => criterion.kind === 'numeric'
+    ? { criterion, ...computeNumericCriterion(criterion, observationByCriterion.get(criterion.criterionId) || []) }
+    : { criterion, basis: 'ai_inference', ...(inferenceByCriterion.get(criterion.criterionId) || previousInferenceByCriterion.get(criterion.criterionId) || {
+      criterionId: criterion.criterionId, status: 'insufficient_evidence', confidence: 'low',
+      reasoning: '当前报告快照中没有足以形成推定结论的证据。', supportingEvidenceIds: [], counterEvidenceIds: [],
+      missingValidation: [criterion.validationMethod || '补充与成功标准直接对应的验证记录。'].filter(Boolean),
+      applicableConditions: criterion.conditions || [], modelPolicyVersion: 'project-report-descriptive-inference-v1',
+    }) });
+  const iterationEvents = validateIterationEvents(candidate.iterationEvents || [], allowedEvidenceIds);
+  const inferenceRun = { status: Array.isArray(candidate.descriptiveInferences) ? 'complete' : 'incomplete',
+    preservedPrevious: [...previousInferenceByCriterion.keys()].filter((id) => !inferenceByCriterion.has(id)),
+    message: Array.isArray(candidate.descriptiveInferences) ? '本次 AI 推定已完成主机范围校验。' : '本次 AI 推定未完成；保留仍在授权范围内的上一安全版本。' };
+  const participation = {
+    teamOutcomes: representative.map((item) => ({ evidenceId: item.evidenceId, title: item.title || item.sourceId })),
+    confirmedPersonalContributions: (snapshot.confirmedContributions || []).map((item) => ({ ...item })),
+    aiAssistance: validateParticipationItems(candidate.aiAssistance, allowedEvidenceIds, 'ai'),
+    studentConfirmedChoices: validateParticipationItems(candidate.studentConfirmedChoices, allowedEvidenceIds, 'student_choice'),
+    humanOrTestValidation: validateParticipationItems(candidate.humanOrTestValidation, allowedEvidenceIds, 'human'),
+    unattributed: validateParticipationItems(candidate.unattributed, allowedEvidenceIds, 'unattributed'),
+  };
+  const nextActionDraft = candidate.nextActionDraft && typeof candidate.nextActionDraft === 'object' ? {
+    actionKey: text(candidate.nextActionDraft.actionKey) || 'current-next-action',
+    title: text(candidate.nextActionDraft.title).slice(0, 160) || nextAction,
+    reason: text(candidate.nextActionDraft.reason).slice(0, 600) || gaps[0] || '补足当前项目证据缺口。',
+    suggestedOwner: text(candidate.nextActionDraft.suggestedOwner).slice(0, 80) || '项目成员',
+    suggestedTiming: text(candidate.nextActionDraft.suggestedTiming).slice(0, 80) || '本周',
+    completionEvidence: text(candidate.nextActionDraft.completionEvidence).slice(0, 600) || '提交可核验的测试、观察或成果记录。',
+    source: goalEvaluations.some((item) => item.basis === 'ai_inference' && item.status.startsWith('inferred_')) ? 'ai_inference' : 'host_rule',
+  } : { actionKey: 'current-next-action', title: nextAction, reason: gaps[0] || '补足当前项目证据缺口。',
+    suggestedOwner: '项目成员', suggestedTiming: '本周', completionEvidence: '提交可核验的测试、观察或成果记录。', source: 'host_rule' };
   const report = { reportType: 'overall', policyVersion: M2_POLICY_VERSION,
     summary: { currentStage: statusLabel(snapshot.project.status),
       changes: previousReport ? `新增内容 ${changes.added.length} 项、调整内容 ${changes.revised.length} 项、移除内容 ${changes.withdrawn.length} 项。` : '首次生成项目进展与成果报告。',
       representativeResults, nextAction },
     sections, claims: finalClaims, changes, gaps,
+    ...(PROJECT_REPORT_VALUE_ENABLED ? { goalEvaluations, iterationEvents, participation, nextActionDraft, inferenceRun } : {}),
     personalContributions: (snapshot.confirmedContributions || []).map((item) => ({ ...item,
       claimKey: `confirmed-contribution-${sha256(`${snapshot.projectId}\n${item.studentId}\n${stableJson(item.evidenceIds)}`).slice(0, 20)}` })),
     disclaimer: '本报告根据当前项目资料整理；“待确认”内容不代表项目目标已经完成，团队成果也不等同于个人贡献。' };

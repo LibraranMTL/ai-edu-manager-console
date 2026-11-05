@@ -60,7 +60,7 @@ function createCloudReportRuntime({ dataDir, protect, unprotect, resolveReportDi
   let materialFlushRunning = false;
   let state = { version: 1, serverUrl: '', sourceToken: '', sourceDeviceId: '', viewerToken: '', bindings: {},
     cloudBindings: {}, pendingReceipts: [], syncCursors: {}, bindingIssues: {}, uploadScopePreferences: {}, sourceBindingKeys: {},
-    healthObjectScopes: {}, materialOutbox: [] };
+    healthObjectScopes: {}, materialOutbox: [], expertConsultationDrafts: {} };
   let saveChain = Promise.resolve();
   let closed = false;
 
@@ -112,6 +112,7 @@ function createCloudReportRuntime({ dataDir, protect, unprotect, resolveReportDi
     state.sourceBindingKeys ||= {};
     state.healthObjectScopes ||= {};
     state.materialOutbox ||= [];
+    state.expertConsultationDrafts ||= {};
     for (const [studentId, binding] of Object.entries(state.bindings)) {
       if (usesV2UploadScope(binding)) {
         binding.profileFields = DEFAULT_PROFILE_FIELDS.filter(field => (binding.profileFields || DEFAULT_PROFILE_FIELDS).includes(field));
@@ -335,6 +336,7 @@ function createCloudReportRuntime({ dataDir, protect, unprotect, resolveReportDi
       binding.lastUnchanged = result.unchanged.length;
       binding.lastReady = result.readyCount;
       binding.skipped = result.skipped;
+      if (result.uploaded.length > 0) delete state.expertConsultationDrafts?.[studentId];
       await save();
     } catch (error) {
       binding.lastError = String(error.message || error);
@@ -843,6 +845,44 @@ function createCloudReportRuntime({ dataDir, protect, unprotect, resolveReportDi
         profileFields: DEFAULT_PROFILE_FIELDS, materialCategories: DEFAULT_MATERIAL_CATEGORIES, healthObjectScope: state.healthObjectScopes?.[studentId] || [], savedUploadScope,
         uploadScopePersistence: savedUploadScope ? 'local_requires_enrollment' : 'default' };
   }
+  function expertAuthorizationVersion(studentId) {
+    const id = String(studentId || '');
+    const profile = v2ProfileEnabled ? resolveStudentProfile(id) : null;
+    if (!profile || profile.archived === true || profile.status === 'archived') return '';
+    const binding = state.bindings[id];
+    if (!binding || binding.sourceDeviceId !== state.sourceDeviceId || !binding.enabled) return '';
+    return `cloud-upload:${binding.cloudStudentId || ''}:${binding.serverVerifiedAt || 0}:${binding.pendingUploadScope ? 'pending' : 'confirmed'}`;
+  }
+  function normalizeExpertDraft(studentId, input = {}) {
+    const id = String(studentId || '').trim();
+    if (!id) throw new Error('当前学生不存在');
+    const profileFields = DEFAULT_PROFILE_FIELDS.filter((field) => (Array.isArray(input.profileFields) ? input.profileFields : []).includes(field));
+    if (!profileFields.includes('displayName')) profileFields.unshift('displayName');
+    const materialCategories = MATERIAL_CATEGORIES.filter((category) => (Array.isArray(input.materialCategories) ? input.materialCategories : []).includes(category));
+    return { schema: 'edu-manager.expert-consultation-draft.v1', studentId: id, purpose: 'expert_learning_interpretation',
+      profileFields, materialCategories, updatedAt: new Date().toISOString(),
+      ...(input.reviewedAuthorizationVersion ? { reviewedAuthorizationVersion: String(input.reviewedAuthorizationVersion).slice(0, 160) } : {}) };
+  }
+  function getExpertConsultationDraft(studentId) {
+    const id = String(studentId || '').trim();
+    const draft = state.expertConsultationDrafts?.[id] || null;
+    const authorizationVersion = expertAuthorizationVersion(id);
+    return { draft, authorizationVersion, authorizationValid: Boolean(authorizationVersion),
+      reviewed: Boolean(draft && authorizationVersion && draft.reviewedAuthorizationVersion === authorizationVersion) };
+  }
+  async function saveExpertConsultationDraft(studentId, input = {}) {
+    const draft = normalizeExpertDraft(studentId, input);
+    state.expertConsultationDrafts[draft.studentId] = draft;
+    await save();
+    return getExpertConsultationDraft(draft.studentId);
+  }
+  async function clearExpertConsultationDraft(studentId) {
+    const id = String(studentId || '').trim();
+    const existed = Boolean(state.expertConsultationDrafts?.[id]);
+    delete state.expertConsultationDrafts[id];
+    await save();
+    return { cleared: existed, studentId: id };
+  }
   function close() {
     closed = true;
     for (const timer of timers.values()) clearTimeout(timer);
@@ -857,7 +897,8 @@ function createCloudReportRuntime({ dataDir, protect, unprotect, resolveReportDi
     uploadCloudMaterial, queueCloudMaterial, flushMaterialOutbox, listCloudMaterials, downloadCloudMaterial,
     setHealthUploadScope, uploadHealthRecord, listCloudHealthRecords,
     cloudStudentIdsForLocalStudents, issueRemoteAgentSession, remoteAgentSessionStatus, revokeRemoteAgentSession, listCloudInbox,
-    leaseCloudInboxSubmission, downloadCloudInboxAttachment, settleCloudInboxSubmission };
+    leaseCloudInboxSubmission, downloadCloudInboxAttachment, settleCloudInboxSubmission,
+    getExpertConsultationDraft, saveExpertConsultationDraft, clearExpertConsultationDraft };
 }
 
 module.exports = { createCloudReportRuntime, checkedServerUrl, DEFAULT_PROFILE_FIELDS, MATERIAL_CATEGORIES, DEFAULT_MATERIAL_CATEGORIES,

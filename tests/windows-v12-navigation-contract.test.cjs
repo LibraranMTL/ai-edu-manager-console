@@ -13,7 +13,7 @@ const capability = fs.readFileSync(path.join(root, 'electron', 'agent-capability
 const planning = fs.readFileSync(path.join(root, 'electron', 'planning-guidance.cjs'), 'utf8');
 
 test('Windows v1.2 exposes exactly eight fixed first-level menu labels', () => {
-  const labels = ['首页', '收集与整理', '学情与学习', '项目与成果', '规划与指导', '知识与协作', '精选课程', '系统设置'];
+  const labels = ['学情工作台', '收集与整理', '学情与学习', '项目与成果', '规划与指导', '知识与协作', '精选课程', '系统设置'];
   labels.forEach((label) => assert.match(renderer, new RegExp(`label: '${label}'|>${label}<`)));
   assert.match(renderer, /v12-fixed-navigation/);
   assert.match(renderer, /项目知识管理/);

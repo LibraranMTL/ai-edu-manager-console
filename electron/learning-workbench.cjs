@@ -18,7 +18,7 @@ function dimensionSummary(key, dimension = {}) {
 }
 
 function buildLearningWorkbenchProjection({ student, learningState = {}, fiveDimensions = {}, tasks = [], projects = [], reportStatus = null,
-  expertConsultation = null, expertEntryEnabled = true, updatedAt = new Date().toISOString() } = {}) {
+  materialStats = {}, expertConsultation = null, expertEntryEnabled = true, updatedAt = new Date().toISOString() } = {}) {
   if (!student?.id) throw Object.assign(new Error('学情工作台缺少学生范围。'), { code: 'student_scope_missing' });
   const pendingTasks = tasks.filter((item) => String(item.status) === 'pending');
   const actions = (learningState.actions || []).filter((item) => !['completed', 'cancelled'].includes(String(item.status))).slice(0, 3);
@@ -27,18 +27,34 @@ function buildLearningWorkbenchProjection({ student, learningState = {}, fiveDim
   const primary = weeklyActions[0] || null;
   const project = projects.find((item) => !['archived', 'completed'].includes(String(item.status))) || projects[0] || null;
   const dimensions = fiveDimensions.dimensions || {};
+  const assetTotal = Math.max(0, Number(materialStats.assetTotal || 0));
+  const processedCount = Math.max(0, Number(materialStats.processedCount || 0));
+  const evidenceCount = (learningState.evidence || []).length;
+  const findingCount = (learningState.findings || []).length;
+  const reportCount = reportStatus?.status === 'ready' ? 1 : 0;
+  const weeklyMaterials = {
+    available: materialStats.available !== false,
+    assetTotal,
+    weeklyUploadedMaterials: Math.max(0, Number(materialStats.weeklyUploadedMaterials || 0)),
+    weekStart: text(materialStats.weekStart), weekEnd: text(materialStats.weekEnd), currentDate: text(materialStats.currentDate),
+    undatedAssetCount: Math.max(0, Number(materialStats.undatedAssetCount || 0)),
+    days: Array.isArray(materialStats.days) ? materialStats.days.slice(0, 7).map((item) => ({
+      date: text(item?.date), label: text(item?.label), uploads: item?.uploads === null ? null : Math.max(0, Number(item?.uploads || 0)),
+    })) : [],
+  };
   return {
     schema: 'edu-manager.learning-workbench.v1', student: { id: text(student.id), name: text(student.name) }, updatedAt,
     todayBestAction: primary ? { title: primary.title, reason: primary.source === 'task' ? '这是当前待完成任务中优先级最高的一项。' : '这是现有学情行动中优先级最高的一项。', actionKey: primary.actionKey || primary.id } : {
       title: '补充一条本周学习反馈', reason: '当前没有可执行行动，先补充事实记录再形成建议。', actionKey: 'learning-check-in' },
     loop: [
-      { key: 'ingest', label: '资料进入', status: 'available' },
-      { key: 'digest', label: '整理消化', status: 'unknown' },
-      { key: 'verify', label: '证据核验', status: (learningState.evidence || []).length ? 'available' : 'waiting' },
-      { key: 'change', label: '学情变化', status: (learningState.findings || []).length ? 'available' : 'unknown' },
-      { key: 'action', label: '行动项目', status: weeklyActions.length ? 'available' : 'waiting' },
-      { key: 'communicate', label: '报告沟通', status: reportStatus?.status === 'ready' ? 'available' : 'waiting' },
+      { key: 'ingest', label: '资料进入', status: assetTotal ? 'available' : 'waiting', count: assetTotal, metric: `已收录 ${assetTotal} 份资料` },
+      { key: 'digest', label: '整理消化', status: processedCount ? 'available' : 'waiting', count: processedCount, metric: `已完成处理 ${processedCount} 份资料` },
+      { key: 'verify', label: '证据核验', status: evidenceCount ? 'available' : 'waiting', count: evidenceCount, metric: `已核验 ${evidenceCount} 条证据` },
+      { key: 'change', label: '学情变化', status: findingCount ? 'available' : 'waiting', count: findingCount, metric: `已记录 ${findingCount} 项变化` },
+      { key: 'action', label: '行动项目', status: weeklyActions.length ? 'available' : 'waiting', count: weeklyActions.length, metric: `本周 ${weeklyActions.length} 项行动` },
+      { key: 'communicate', label: '报告沟通', status: reportCount ? 'available' : 'waiting', count: reportCount, metric: reportCount ? '已有 1 份可用报告' : '暂无可用报告' },
     ],
+    weeklyMaterials,
     dimensions: ['goals', 'mindset', 'problems', 'methods', 'efficiency'].map((key) => dimensionSummary(key, dimensions[key])),
     weeklyActions,
     focusProject: project ? { id: text(project.id), name: text(project.name), status: text(project.status),

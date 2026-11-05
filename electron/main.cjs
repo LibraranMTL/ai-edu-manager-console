@@ -13968,8 +13968,24 @@ async function getLearningWorkbenchProjection(studentId) {
     if (process.env.EDU_EXPERT_CONSULTATION_ENTRY_V1 !== '0') {
       try { expertConsultation = (await getCloudReportRuntime()).getExpertConsultationDraft(String(student.id)); } catch { expertConsultation = null; }
     }
+    const processedCount = readStudentMaterials(student).filter((item) => normalizeUploadStatus(item.status) === 'processed').length;
+    let materialStats = { available: false, processedCount, assetTotal: 0, weeklyUploadedMaterials: 0, days: [] };
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const before = assetStore().statisticsState();
+      const snapshot = assetStore().statisticsSnapshot({ studentId: String(student.id) });
+      const after = assetStore().statisticsState();
+      if (Number(before.generation) !== Number(after.generation) || Number(snapshot.generation) !== Number(after.generation)) continue;
+      const trend = snapshot.overallWeeklyUploadTrend || snapshot.weeklyUploadTrend;
+      if (!trend || !Array.isArray(trend.days) || trend.days.length !== 7) break;
+      materialStats = { available: true, processedCount, assetTotal: Number(snapshot.total || 0),
+        weeklyUploadedMaterials: Number(trend.uploadedTotal || 0), weekStart: String(trend.weekStart || ''),
+        weekEnd: String(trend.weekEnd || ''), currentDate: String(trend.currentDate || ''),
+        undatedAssetCount: Number(trend.undatedAssets || 0), days: trend.days };
+      break;
+    }
     return boundedProjectIpcJson({ ok: true, projection: buildLearningWorkbenchProjection({ student, learningState, fiveDimensions,
-      tasks, projects, reportStatus, expertConsultation, expertEntryEnabled: process.env.EDU_EXPERT_CONSULTATION_ENTRY_V1 !== '0', updatedAt: asOf }) });
+      tasks, projects, reportStatus, materialStats, expertConsultation,
+      expertEntryEnabled: process.env.EDU_EXPERT_CONSULTATION_ENTRY_V1 !== '0', updatedAt: asOf }) });
   } catch (error) { return JSON.stringify({ ok: false, code: error.code || 'learning_workbench_failed', message: error.message }); }
 }
 
@@ -14341,16 +14357,16 @@ function availableCompanionProject(studentId, projectId) {
   return summary.id && summary.name ? summary : null;
 }
 
-function companionProjects() {
-  const studentId = String(quickCaptureStudentId || '');
+function companionProjects(studentScopeId = quickCaptureStudentId) {
+  const studentId = String(studentScopeId || '');
   if (!studentId) return [];
   return readProjectMetadata().filter(project => project.status !== 'sealed' && (project.studentIds || []).map(String).includes(studentId))
     .map(normalizeProjectSummary)
     .filter(project => project.id && project.name);
 }
 
-function companionNativeCapabilities() {
-  const student = readStudentsIndex().find(item => String(item.id) === String(quickCaptureStudentId || ''));
+function companionNativeCapabilities(studentScopeId = quickCaptureStudentId) {
+  const student = readStudentsIndex().find(item => String(item.id) === String(studentScopeId || ''));
   if (!student) return {};
   // Inbound MCP authorization is independent of outbound automatic-task authorization.
   // Use the live effective policy so paused/revoked/excluded students cannot inherit legacy grants.
@@ -14392,14 +14408,36 @@ function companionNativeCapabilities() {
   } catch { return managed; }
 }
 
-function companionTargets() {
+function companionTargets(studentScopeId = quickCaptureStudentId) {
   const settings = readCompanionSettings(companionSettingsPath());
-  return companionTargetCatalog({ capabilities: registeredAdapterCapabilities(), native: companionNativeCapabilities(), customTargets: settings.customTargets });
+  return companionTargetCatalog({ capabilities: registeredAdapterCapabilities(), native: companionNativeCapabilities(studentScopeId), customTargets: settings.customTargets });
 }
 
 function companionPublicState() {
   // Capture counters refresh frequently. The bar needs no disk-backed target/project discovery.
   return { popoverMode: quickCapturePopoverMode, projectMentorEnabled: projectMentorEnabled() };
+}
+
+function companionLearningPageState(studentId) {
+  const student = readStudentsIndex().find(item => String(item.id) === String(studentId || ''));
+  if (!student) return { ok: false, message: '请先选择有效学生。' };
+  const targets = companionTargets(student.id);
+  const projects = companionProjects(student.id);
+  const settings = currentCompanionSettings(targets, projects);
+  const target = targets.find(item => item.id === settings.selectedTargetId) || targets[0];
+  const project = settings.scope === 'project' ? projects.find(item => item.id === settings.projectId) : null;
+  const actionIds = new Set(COMPANION_MODE_GROUPS.flatMap(group => group.actions));
+  return { ok: true, student: { id: String(student.id), name: String(student.name || '') },
+    selectedTarget: target ? { id: target.id, displayName: target.displayName, verified: Boolean(target.verified), capabilities: target.capabilities || {} } : null,
+    scope: settings.scope, project: project ? { id: project.id, name: project.name } : null,
+    modeGroups: COMPANION_MODE_GROUPS,
+    actions: Object.fromEntries(Object.entries(COMPANION_ACTIONS).filter(([id]) => actionIds.has(id)).map(([id, item]) => [id, {
+      label: item.label, summary: String(item.summary || item.task || '').slice(0, 100),
+      configMode: item.configMode || (COMPANION_MODE_GROUPS.some(group => ['verify', 'plan'].includes(group.id) && group.actions.includes(id)) ? 'goal' : 'session'),
+    }])),
+    boundary: target?.capabilities?.query
+      ? '复制本身不会读取资料；粘贴后仍须建立受控会话并确认当前学生授权。'
+      : '当前为剪贴板模式；不会读取教育管家资料，需在 Agent 对话中提供所需材料。' };
 }
 
 function quickCapturePreferredWidth(workArea, active = false) {
@@ -14576,12 +14614,12 @@ function selectedCompanionTarget() {
   return targets.find(item => item.id === settings.selectedTargetId) || targets[0];
 }
 
-function prepareCompanionAction(actionId, config = {}) {
-  const student = readStudentsIndex().find(item => String(item.id) === String(quickCaptureStudentId || ''));
+function prepareCompanionAction(actionId, config = {}, studentScopeId = quickCaptureStudentId) {
+  const student = readStudentsIndex().find(item => String(item.id) === String(studentScopeId || ''));
   if (!student) return { ok: false, message: '请先在教育管家选择学生。' };
   const isProjectMentor = PROJECT_MENTOR_ACTION_IDS.includes(actionId);
   if (isProjectMentor && !projectMentorEnabled()) return { ok: false, message: '项目导师功能已由环境开关关闭。' };
-  const targets = companionTargets(), projects = companionProjects();
+  const targets = companionTargets(student.id), projects = companionProjects(student.id);
   const settings = currentCompanionSettings(targets, projects);
   const target = targets.find(item => item.id === settings.selectedTargetId) || targets[0];
   const lockedProjectId = isProjectMentor ? String(quickCaptureProjectMentorContext?.lockedProjectId || '') : '';
@@ -44034,6 +44072,19 @@ ipcMain.handle('bridge:showQuickCapture', async (event) => {
   if (!mainWindow || mainWindow.isDestroyed() || event.sender !== mainWindow.webContents) return JSON.stringify({ ok: false, message: '主窗口范围无效。' });
   const locked = licenseRequiredJson('快捷采集工具条');
   return locked || JSON.stringify(await showQuickCaptureNearMainWindow());
+});
+ipcMain.handle('bridge:getCompanionLearningPage', (event, studentId) => {
+  if (!mainWindow || mainWindow.isDestroyed() || event.sender !== mainWindow.webContents) return JSON.stringify({ ok: false, message: '主窗口范围无效。' });
+  const locked = licenseRequiredJson('学习模式');
+  return locked || JSON.stringify(companionLearningPageState(studentId));
+});
+ipcMain.handle('bridge:copyCompanionLearningPrompt', (event, studentId, actionId, config = {}) => {
+  if (!mainWindow || mainWindow.isDestroyed() || event.sender !== mainWindow.webContents) return JSON.stringify({ ok: false, message: '主窗口范围无效。' });
+  const locked = licenseRequiredJson('学习模式');
+  if (locked) return locked;
+  const allowed = new Set(COMPANION_MODE_GROUPS.flatMap(group => group.actions));
+  if (!allowed.has(String(actionId || ''))) return JSON.stringify({ ok: false, message: '学习模式动作无效。' });
+  return JSON.stringify(prepareCompanionAction(String(actionId), config && typeof config === 'object' ? config : {}, studentId));
 });
 ipcMain.handle('bridge:getProjectMentorAvailability', (event) => Boolean(mainWindow && !mainWindow.isDestroyed() && event.sender === mainWindow.webContents && projectMentorEnabled()));
 ipcMain.handle('bridge:showProjectMentor', async (event, studentId, projectId) => {

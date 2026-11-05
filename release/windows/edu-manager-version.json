@@ -1,10 +1,10 @@
 {
   "versionCode": 94,
   "versionName": "0.6.24",
-  "windowsVersionCode": 270,
-  "windowsVersionName": "0.23.1",
+  "windowsVersionCode": 272,
+  "windowsVersionName": "0.23.3",
   "windowsReleaseStatus": "stable",
-  "windowsUrl": "https://www.greatbg.com/download/AI-edu-manager-console-Windows-0.23.1.zip",
+  "windowsUrl": "https://www.greatbg.com/download/AI-edu-manager-console-Windows-0.23.3.zip",
   "windowsTerminalVersionCode": 236,
   "windowsTerminalVersionName": "0.18.6",
   "windowsTerminalReleaseStatus": "stable",
@@ -29,5 +29,5 @@
   "managerApkReleaseStatus": "internal",
   "managerApkNotes": "旧 Android 控制台仅供内部装机和测试，当前不提供公网安装包。",
   "apkUrl": "https://www.greatbg.com/download/AI-edu-manager-tablet-terminal-0.6.24.apk",
-  "notes": "Windows 0.23.1 优化项目综合报告的客户化表达：页面、学生端、教师端以及文字版和网页版导出统一使用清晰自然的项目语言，历史报告无需重新生成；报告版本、来源依据、权限和任务逻辑保持不变。Windows 包仍未进行 Authenticode 签名，升级前请退出旧版并创建状态备份。Android 终端版本保持不变。"
+  "notes": "Windows 0.23.3 升级项目综合报告与学情工作台：增加结构化成功标准、带证据和反例的 AI 描述性推定、迭代时间线、参与分层和下一行动转任务；学习闭环展示真实处理数量与本周资料统计，学情与学习新增独立学习模式页面，并修复推荐选题更新时无法采用的问题。Windows 包仍未进行 Authenticode 签名，升级前请退出旧版并创建状态备份。Android 终端版本保持不变。"
 }

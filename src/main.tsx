@@ -88,6 +88,7 @@ import { DigestStatusCard, type DigestWorkflowStatus } from './DigestStatusCard'
 const ProjectMaterialsPanel = React.lazy(() => import('./ProjectMaterialsPanel').then(module => ({ default: module.ProjectMaterialsPanel })));
 const ProjectOverallReportPanel = React.lazy(() => import('./ProjectOverallReportPanel').then(module => ({ default: module.ProjectOverallReportPanel })));
 const LearningWorkbenchPanel = React.lazy(() => import('./LearningWorkbenchPanel').then(module => ({ default: module.LearningWorkbenchPanel })));
+const LearningCompanionPanel = React.lazy(() => import('./LearningCompanionPanel').then(module => ({ default: module.LearningCompanionPanel })));
 
 function MarkdownView(props: { content: string; onMermaidNodeClick?: (nodeId: string) => boolean | void }) {
   return <React.Suspense fallback={<article className="markdown-content"><div className="md-space" />正在加载内容…</article>}>
@@ -98,7 +99,7 @@ function MarkdownView(props: { content: string; onMermaidNodeClick?: (nodeId: st
 const studentLoginQrDataUrlCache = new Map<string, string>();
 const loadQrCode = () => import('qrcode').then((module) => module.default);
 
-type Section = 'home' | 'student-overview' | 'collection-overview' | 'photo-upload' | 'audio-capture' | 'share-capture' | 'learning-cards' | 'knowledge-mastery' | 'topic-suggestions' | 'competition-recommendations' | 'guidance' | 'courses' | 'init' | 'inbox' | 'assets' | 'projects-new' | 'projects-existing' | 'growth' | 'reports' | 'cloud-reports' | 'cloud-learning-materials' | 'cloud-documents' | 'archive' | 'qa' | 'memory' | 'capture' | 'agent-capabilities' | 'soul' | 'rules' | 'conversation' | 'tasks' | 'settings';
+type Section = 'home' | 'student-overview' | 'collection-overview' | 'photo-upload' | 'audio-capture' | 'share-capture' | 'learning-cards' | 'learning-companion' | 'knowledge-mastery' | 'topic-suggestions' | 'competition-recommendations' | 'guidance' | 'courses' | 'init' | 'inbox' | 'assets' | 'projects-new' | 'projects-existing' | 'growth' | 'reports' | 'cloud-reports' | 'cloud-learning-materials' | 'cloud-documents' | 'archive' | 'qa' | 'memory' | 'capture' | 'agent-capabilities' | 'soul' | 'rules' | 'conversation' | 'tasks' | 'settings';
 type NavigationGroup = 'home' | 'collection' | 'learning' | 'projects' | 'guidance' | 'knowledge' | 'courses' | 'settings';
 type CourseSubmenu = 'learning' | 'management';
 type SettingsSubmenu = 'basic' | 'connection' | 'collaboration' | 'agent-qa';
@@ -1226,6 +1227,8 @@ type AndroidBridge = {
   removeMaterialImportRecords?: (studentId: string, recordIdsJson: string) => Promise<string>;
   getCaptureCenterState?: () => Promise<string>;
   showQuickCapture?: () => Promise<string>;
+  getCompanionLearningPage?: (studentId: string) => Promise<string>;
+  copyCompanionLearningPrompt?: (studentId: string, actionId: string, config: Record<string, unknown>) => Promise<string>;
   showProjectMentor?: (studentId: string, projectId: string) => Promise<string>;
   getProjectMentorAvailability?: () => Promise<boolean>;
   setQuickCaptureContext?: (studentId: string, context?: { connectionPrompts?: Record<string, string> }) => Promise<string>;
@@ -7154,7 +7157,7 @@ function App() {
   );
   const platformCourseEditAllowed = !isWindows || licenseCapability('platform_course_edit');
   const platformCoursePublishAllowed = !isWindows || licenseCapability('platform_course_publish');
-  const restrictedSections = new Set<Section>(['student-overview', 'collection-overview', 'photo-upload', 'audio-capture', 'share-capture', 'learning-cards', 'knowledge-mastery', 'topic-suggestions', 'competition-recommendations', 'guidance', 'init', 'inbox', 'assets', 'projects-new', 'projects-existing', 'growth', 'cloud-reports', 'cloud-learning-materials', 'cloud-documents', 'qa', 'memory', 'capture', 'agent-capabilities', 'soul', 'rules', 'conversation', 'tasks']);
+  const restrictedSections = new Set<Section>(['student-overview', 'collection-overview', 'photo-upload', 'audio-capture', 'share-capture', 'learning-cards', 'learning-companion', 'knowledge-mastery', 'topic-suggestions', 'competition-recommendations', 'guidance', 'init', 'inbox', 'assets', 'projects-new', 'projects-existing', 'growth', 'cloud-reports', 'cloud-learning-materials', 'cloud-documents', 'qa', 'memory', 'capture', 'agent-capabilities', 'soul', 'rules', 'conversation', 'tasks']);
   const isLicenseRestrictedSection = isWindows && !windowsLicenseActive && (restrictedSections.has(activeSection) || (activeSection === 'settings' && settingsSubmenu === 'agent-qa'));
   const licenseRestrictionText = effectiveLicenseStatus?.message || 'Windows 主机尚未激活。未激活状态仅支持首页、系统设置和已有档案/报告的只读浏览。';
   // The knowledge manager remains usable without a local Agent. Web tools and
@@ -16571,6 +16574,7 @@ ${JSON.stringify(items, null, 2)}
       { id: 'learning-materials', label: '学习资料', section: 'archive' },
       { id: 'knowledge-mastery', label: '知识点掌握', section: 'knowledge-mastery', action: () => setGrowthView('learning') },
       { id: 'learning-cards', label: '学习卡片', section: 'learning-cards' },
+      { id: 'learning-companion', label: '学习模式', section: 'learning-companion' },
     ],
     projects: [
       { id: 'project-new', label: '新建项目', section: 'projects-new' },
@@ -16641,6 +16645,7 @@ ${JSON.stringify(items, null, 2)}
     if (section === 'audio-capture') return '录音采集';
     if (section === 'share-capture') return '资料收件箱';
     if (section === 'learning-cards') return '学习卡片';
+    if (section === 'learning-companion') return '学习模式';
     if (section === 'reports' && activePageTab === 'learning-state') return '学习状态';
     if (section === 'knowledge-mastery') return '知识点掌握';
     if (section === 'topic-suggestions') return '选题建议';
@@ -16663,6 +16668,7 @@ ${JSON.stringify(items, null, 2)}
       'audio-capture': 'nav.inbox',
       'share-capture': 'nav.inbox',
       'learning-cards': 'nav.archive',
+      'learning-companion': 'nav.archive',
       'knowledge-mastery': 'nav.growth',
       'topic-suggestions': 'nav.projects',
       'competition-recommendations': 'nav.projects',
@@ -16701,6 +16707,7 @@ ${JSON.stringify(items, null, 2)}
     if (activeSection === 'share-capture') return '归集自选文件夹中的下载文件及当前学生分享资料，明确选择学生和目标后投递。';
     if (activeSection === 'audio-capture') return '保存录音，配置本地或云端转写引擎；转写后核对并选择目标投递。';
     if (activeSection === 'learning-cards') return '根据正式学情依据生成练习卡，支持文件作答、图片/PDF分享与打印；练习记录待审核，不自动判定掌握。';
+    if (activeSection === 'learning-companion') return '复用工具条的学习、互动、测验、核验与计划提示词，复制后在当前 Agent 中开始。';
     if (activeSection === 'photo-upload') return '打开本机摄像头拍照，原件先进入当前学生收件箱，确认目标后再投递。';
     if (activeSection === 'projects-new' || activeSection === 'projects-existing') return t('projects.subtitle');
     if (activeSection === 'courses') return courseSubmenu === 'learning' ? '查看机构已启用并分配给当前学生的课程。' : '导入、维护并向当前机构学生分发课程。';
@@ -17290,7 +17297,7 @@ ${JSON.stringify(items, null, 2)}
               onPrimaryAction={runHomePrimaryAction}
               onProject={(projectId) => openProjectDetail(projectId)}
               onExpert={() => { setExpertConsultationIntent(true); setNavigationGroup('settings'); setSettingsSubmenu('agent-qa'); setAgentSettingsTab('cloud'); setActiveSection('settings'); }}
-              onMore={() => setActiveSection('collection-overview')} onUnavailable={() => setLearningWorkbenchAvailable(false)} />
+              onUnavailable={() => setLearningWorkbenchAvailable(false)} />
           </React.Suspense>
         )}
 
@@ -17481,7 +17488,10 @@ ${JSON.stringify(items, null, 2)}
         {!shouldBlockForAgentInstall && !isLicenseRestrictedSection && activeSection === 'learning-cards' && selectedStudent && (
           <React.Suspense fallback={<section className="panel">正在加载学习卡片…</section>}><PracticeCardsPanel key={selectedStudent.id} initialPublication={publicationEdit} onPublicationConsumed={()=>setPublicationEdit(null)} studentId={selectedStudent.id} languageRevision={`${selectedStudent.languageProfile?.primaryLanguage || ''}:${selectedStudent.languageProfile?.supportLanguage || ''}`} onOpenStudentProfile={() => { setNavigationGroup('home'); setActivePageTab('student-profile'); setActiveSection('archive'); }} api={bridge() as PracticeApi} /></React.Suspense>
         )}
-        {!shouldBlockForAgentInstall && !isLicenseRestrictedSection && ['photo-upload', 'audio-capture', 'learning-cards'].includes(activeSection) && !selectedStudent && (
+        {!shouldBlockForAgentInstall && !isLicenseRestrictedSection && activeSection === 'learning-companion' && selectedStudent && (
+          <React.Suspense fallback={<section className="panel">正在加载学习模式…</section>}><LearningCompanionPanel key={selectedStudent.id} studentId={selectedStudent.id} studentName={selectedStudent.name} api={bridge() || {}} /></React.Suspense>
+        )}
+        {!shouldBlockForAgentInstall && !isLicenseRestrictedSection && ['photo-upload', 'audio-capture', 'learning-cards', 'learning-companion'].includes(activeSection) && !selectedStudent && (
           <section className="panel feature-under-construction">
             <div className="construction-icon"><Sparkles size={28} /></div>
             <h2>{sectionTitle(activeSection)}</h2>
@@ -17493,7 +17503,7 @@ ${JSON.stringify(items, null, 2)}
         {!shouldBlockForAgentInstall && !isLicenseRestrictedSection && activeSection === 'topic-suggestions' && selectedStudent && (
           <React.Suspense fallback={<section className="panel">正在加载选题建议…</section>}><TopicSuggestionsPanel key={selectedStudent.id} studentId={selectedStudent.id} studentName={selectedStudent.name}
             current={topicSuggestionSet} busy={topicSuggestionBusy} message={topicSuggestionMessage} api={bridge()}
-            onRefresh={() => void refreshTopicSuggestionPage(true)} onAdopt={(suggestion, versionId) => void adoptTopicSuggestion(suggestion, versionId)} onProfile={() => setStudentPanelOpen(true)} /></React.Suspense>
+            onRefresh={() => void refreshTopicSuggestionPage(true)} onAdopt={(suggestion, versionId) => adoptTopicSuggestion(suggestion, versionId)} onProfile={() => setStudentPanelOpen(true)} /></React.Suspense>
         )}
 
         {!shouldBlockForAgentInstall && !isLicenseRestrictedSection && activeSection === 'competition-recommendations' && selectedStudent && (

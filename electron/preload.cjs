@@ -14,6 +14,8 @@ contextBridge.exposeInMainWorld('AndroidBridge', {
     return () => ipcRenderer.removeListener('subsystem:progress', listener);
   },
   showQuickCapture() { return ipcRenderer.invoke('bridge:showQuickCapture'); },
+  getCompanionLearningPage(studentId) { return ipcRenderer.invoke('bridge:getCompanionLearningPage', studentId); },
+  copyCompanionLearningPrompt(studentId, actionId, config) { return ipcRenderer.invoke('bridge:copyCompanionLearningPrompt', studentId, actionId, config || {}); },
   showProjectMentor(studentId, projectId) { return ipcRenderer.invoke('bridge:showProjectMentor', studentId, projectId); },
   getProjectMentorAvailability() { return ipcRenderer.invoke('bridge:getProjectMentorAvailability'); },
   setQuickCaptureContext(studentId, context) { return ipcRenderer.invoke('bridge:setQuickCaptureContext', studentId, context); },

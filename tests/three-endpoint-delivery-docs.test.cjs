@@ -31,7 +31,7 @@ test('download page presents four product families and five client builds', () =
     'android-student-manual.html',
     'android-teacher-manual.html',
     'android-standalone-manual.html',
-    '完整功能，支持主机—多终端部署',
+    '完整功能 · 主机与多终端',
     '搜集上传、主机连接、教育档案、学习行动',
     '完整功能 · 家庭平板单机',
   ]) {

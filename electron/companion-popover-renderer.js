@@ -6,6 +6,8 @@ const hint = document.getElementById('hint');
 let state = {};
 let activeGroup = 'study';
 let activeAction = 'flashcards';
+let activeMentorStage = 'define';
+let activeMentorAction = 'project_first_principles';
 
 function el(tag, className, text) { const node = document.createElement(tag); if (className) node.className = className; if (text) node.textContent = text; return node; }
 function button(className, text, command, input = {}) { const node = el('button', className, text); node.type = 'button'; node.dataset.command = command; node.dataset.input = JSON.stringify(input); return node; }
@@ -50,6 +52,7 @@ function renderScopes() {
 }
 function renderLearning(){
   title.textContent='学习模式'; hint.textContent='提示词复制后直接在当前 Agent 中使用；教育管家不代替 Agent 自动发送。';
+  const mentorEntry=state.projectMentorEnabled===false?null:button('mentor-entry','项目导师 · 6 阶段 24 动作','open-project-mentor');
   const groups=el('div','groups'); state.modeGroups.forEach(group=>groups.append(button(`group ${activeGroup===group.id?'active':''}`,group.label,'group',{id:group.id})));
   const grid=el('div','action-grid'); const group=state.modeGroups.find(item=>item.id===activeGroup)||state.modeGroups[0]; group.actions.forEach(id=>{const action=state.actions[id];const item=button(`mode-action ${activeAction===id?'active':''}`,'','choose-action',{id});item.append(el('strong','',action.label),el('span','',action.summary));grid.append(item)});
   const form=el('div','form'); const selectedAction=state.actions[activeAction]||{};
@@ -67,7 +70,43 @@ function renderLearning(){
     const durationLabel=el('label','','时长');const duration=el('select');duration.id='duration';['5分钟','10分钟','15分钟','30分钟'].forEach(value=>duration.append(option(value,value)));duration.value='15分钟';durationLabel.append(duration);row.append(diffLabel,durationLabel);form.append(row);
   }
   const goalLabel=el('label','','本次目标（可选）');const goal=el('textarea');goal.id='goal';goal.maxLength=180;goal.placeholder=selectedAction.configMode==='visual'?'例如：突出核心概念，适合课堂打印':activeGroup==='plan'?'例如：规划未来四周的学习行动':activeGroup==='verify'?'例如：核验关键数据和来源时效':'例如：练习用三分钟讲清项目价值';goalLabel.append(goal);
-  form.append(goalLabel,button('primary','复制并开始','copy-mode'));content.replaceChildren(groups,grid,form);
+  form.append(goalLabel,button('primary','复制并开始','copy-mode'));content.replaceChildren(...(mentorEntry?[mentorEntry]:[]),groups,grid,form);
+}
+
+function renderProjectMentor(){
+  title.textContent='项目导师';
+  const selectedTarget=(state.targets||[]).find(item=>item.id===state.selectedTargetId);
+  hint.textContent=state.targetCapabilities?.query
+    ? `目标 Agent：${selectedTarget?.displayName||'当前 Agent'}。复制动作不会查询；粘贴后仍须建立受控会话并确认授权。`
+    : `目标 Agent：${selectedTarget?.displayName||'当前 Agent'}。剪贴板模式，不会读取项目资料。`;
+  const wrap=el('div','mentor-wrap');
+  if(state.projectMentorScopeInvalid){wrap.append(el('div','empty','项目范围已变化，请返回项目页面确认。'));content.replaceChildren(wrap);return}
+  const projectBlock=el('section','mentor-project');
+  if(state.projectMentorLocked&&state.projectMentorProject){
+    projectBlock.append(el('span','section-title','已锁定当前项目'),el('strong','',state.projectMentorProject.name));
+  }else{
+    const projectLabel=el('label','mentor-project-label','当前项目');
+    const select=el('select','project-choices');select.id='mentor-project';select.append(new Option('请选择当前学生项目',''));
+    (state.projects||[]).forEach(project=>select.add(new Option(`${project.name}${project.status?` · ${project.status}`:''}`,project.id)));
+    select.value=state.scope==='project'?state.projectId:'';
+    select.addEventListener('change',async()=>{status.textContent='';try{const result=await window.CompanionPopover.invoke('select-scope',{scope:select.value?'project':'conversation',projectId:select.value});status.textContent=result?.message||''}catch(error){status.textContent=error.message}});
+    projectLabel.append(select);projectBlock.append(projectLabel);
+  }
+  const project=state.projectMentorProject;
+  if(project){const summary=el('div','mentor-project-summary');summary.append(el('span','',`类型：${project.type||'待提供'}`),el('span','',`状态：${project.status||'待提供'}`),el('span','',`目标：${project.objective||'待提供'}`),el('span','',`预期成果：${project.deliverables?.length?project.deliverables.join('；'):'待提供'}`));projectBlock.append(summary)}
+  if(!(state.projects||[]).length&&!state.projectMentorLocked)projectBlock.append(el('div','empty','当前学生暂无可用项目。请先在项目与成果中创建或绑定项目。'));
+  wrap.append(projectBlock);
+  const stages=state.projectMentorStages||[];
+  if(!stages.some(item=>item.id===activeMentorStage))activeMentorStage=stages[0]?.id||'define';
+  const stage=stages.find(item=>item.id===activeMentorStage)||stages[0];
+  if(stage&&!stage.actions.includes(activeMentorAction))activeMentorAction=stage.actions[0];
+  const stageTabs=el('div','mentor-stages');stages.forEach(item=>stageTabs.append(button(`mentor-stage ${item.id===activeMentorStage?'active':''}`,item.label,'mentor-stage',{id:item.id})));
+  wrap.append(stageTabs);
+  const actions=el('div','action-grid mentor-actions');(stage?.actions||[]).forEach(id=>{const action=state.actions[id];if(!action)return;const item=button(`mode-action ${id===activeMentorAction?'active':''}`,'','mentor-action',{id});item.append(el('strong','',action.label),el('span','',action.summary));actions.append(item)});wrap.append(actions);
+  const form=el('div','form');const goalLabel=el('label','','本次目标（可选）');const goal=el('textarea');goal.id='mentor-goal';goal.maxLength=180;goal.placeholder='例如：把当前方案收敛为本周可验证的一步';goalLabel.append(goal);
+  const targetLabel=el('label','','目标 Agent');const targetSelect=el('select');targetSelect.id='mentor-target';(state.targets||[]).forEach(item=>targetSelect.add(new Option(`${item.displayName}${item.verified?' · 已验证':' · 剪贴板'}`,item.id)));targetSelect.value=state.selectedTargetId||'generic';targetSelect.addEventListener('change',async()=>{try{const result=await window.CompanionPopover.invoke('select-target',{id:targetSelect.value});status.textContent=result?.message||''}catch(error){status.textContent=error.message}});targetLabel.append(targetSelect);
+  const copy=button('primary','复制项目导师提示词','copy-project-mentor');copy.disabled=!project||state.projectMentorScopeInvalid;
+  form.append(targetLabel,goalLabel,copy);wrap.append(form);content.replaceChildren(wrap);
 }
 function learningConfig(){
   const goal=document.getElementById('goal')?.value||'';
@@ -90,7 +129,7 @@ function renderSettings(){
   list.append(button('more-action','智能体人设','copy-persona'),button('more-action','目标智能体','open-targets'));
   content.replaceChildren(list);
 }
-function render(next){state=next||{};status.textContent=''; if(state.mode==='targets')renderTargets();else if(state.mode==='settings')renderSettings();else if(state.mode==='scope')renderScopes();else if(state.mode==='learning')renderLearning();else if(state.mode==='collect')renderCollect();else renderOrganize();}
+function render(next){state=next||{};status.textContent=''; if(state.mode==='targets')renderTargets();else if(state.mode==='settings')renderSettings();else if(state.mode==='scope')renderScopes();else if(state.mode==='project-mentor')renderProjectMentor();else if(state.mode==='learning')renderLearning();else if(state.mode==='collect')renderCollect();else renderOrganize();}
 let measuredHeight=0;
 new ResizeObserver(()=>{const height=Math.ceil(document.querySelector('.panel').getBoundingClientRect().height);if(height!==measuredHeight){measuredHeight=height;window.CompanionPopover.invoke('resize',{height,mode:state.mode}).catch(()=>{})}}).observe(document.querySelector('.panel'));
 window.CompanionPopover.onState(render);
@@ -99,7 +138,10 @@ document.addEventListener('click',async event=>{
   const node=event.target.closest('button[data-command]');if(!node||node.disabled)return;const command=node.dataset.command;let input={};try{input=JSON.parse(node.dataset.input||'{}')}catch{}
   if(command==='group'){activeGroup=input.id;activeAction=(state.modeGroups.find(group=>group.id===activeGroup)||state.modeGroups[0]).actions[0];renderLearning();return}
   if(command==='choose-action'){activeAction=input.id;renderLearning();return}
+  if(command==='mentor-stage'){activeMentorStage=input.id;const stage=(state.projectMentorStages||[]).find(item=>item.id===activeMentorStage);activeMentorAction=stage?.actions?.[0]||'';renderProjectMentor();return}
+  if(command==='mentor-action'){activeMentorAction=input.id;renderProjectMentor();return}
   if(command==='copy-mode')input={actionId:activeAction,config:learningConfig()};
+  if(command==='copy-project-mentor')input={actionId:activeMentorAction,config:{goal:document.getElementById('mentor-goal')?.value||'',projectRevision:state.projectMentorProject?.projectRevision||''}};
   if(command==='add-custom')input={displayName:document.getElementById('custom-name').value,surface:document.getElementById('custom-surface').value,homeUrl:document.getElementById('custom-url').value};
-  try{const result=await window.CompanionPopover.invoke(command,input);if(!result?.ok){status.textContent=result?.message||'操作未完成';return}if(result.message)status.textContent=result.message}catch(error){status.textContent=error?.message||'操作未完成'}
+  try{const result=await window.CompanionPopover.invoke(command==='copy-project-mentor'?'copy-mode':command,input);if(!result?.ok){status.textContent=result?.message||'操作未完成';return}if(result.message)status.textContent=result.message}catch(error){status.textContent=error?.message||'操作未完成'}
 });

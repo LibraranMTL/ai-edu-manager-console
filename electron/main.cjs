@@ -7,7 +7,8 @@ const { routeForAction, clampQuickCaptureBounds, locateQuickCaptureBounds, publi
 const { createQuickCaptureDirect } = require('./quick-capture-direct.cjs');
 const { ACTIONS: COMPANION_ACTIONS, MODE_GROUPS: COMPANION_MODE_GROUPS, readSettings: readCompanionSettings,
   writeSettings: writeCompanionSettings, targetCatalog: companionTargetCatalog, normalizeCustomTarget,
-  createCompanionPromptPacket, genericConnectionPrompt, validTargetId } = require('./companion-toolbar.cjs');
+  createCompanionPromptPacket, genericConnectionPrompt, validTargetId, normalizeProjectSummary, projectSummaryRevision } = require('./companion-toolbar.cjs');
+const { PROJECT_MENTOR_STAGES, PROJECT_MENTOR_ACTION_IDS } = require('./project-mentor-actions.cjs');
 const { powerMonitor } = require('electron');
 const { desktopCapturer, globalShortcut, Menu, Tray } = require('electron');
 const path = require('path');
@@ -1561,6 +1562,7 @@ let quickCapturePopoverLoaded = false;
 let quickCapturePopoverMode = '';
 let quickCaptureConnectionPrompts = Object.create(null);
 const quickCapturePreparedPrompts = new Map();
+let quickCaptureProjectMentorContext = null;
 let quickPhotoWindow = null;
 let quickPhotoContext = null;
 let quickCaptureDirect = null;
@@ -1570,7 +1572,8 @@ let captureStartPending = false;
 // 30px rendered content height verified from the packaged executable.
 const QUICK_CAPTURE_COLLAPSED_HEIGHT = 29;
 const QUICK_CAPTURE_EXPANDED_HEIGHT = 29;
-const QUICK_CAPTURE_PREFERRED_WIDTH = 252;
+const QUICK_CAPTURE_MIN_WIDTH = 252;
+const QUICK_CAPTURE_PREFERRED_WIDTH = 288;
 let quickCaptureStudentId = '';
 let quickCaptureStudentName = '';
 let quickCaptureDismissedSessionId = '';
@@ -14294,11 +14297,25 @@ function saveCompanionSettings(patch = {}) {
   return writeCompanionSettings(companionSettingsPath(), { ...current, ...patch });
 }
 
+function projectMentorEnabled() {
+  return process.env.EDU_PROJECT_MENTOR_COPY_V1 !== '0';
+}
+
+function availableCompanionProject(studentId, projectId) {
+  const targetStudentId = String(studentId || '');
+  const targetProjectId = String(projectId || '');
+  if (!targetStudentId || !targetProjectId) return null;
+  const project = readProjectMetadata().find(item => String(item.id || '') === targetProjectId);
+  if (!project || project.status === 'sealed' || !(project.studentIds || []).map(String).includes(targetStudentId)) return null;
+  const summary = normalizeProjectSummary(project);
+  return summary.id && summary.name ? summary : null;
+}
+
 function companionProjects() {
   const studentId = String(quickCaptureStudentId || '');
   if (!studentId) return [];
-  return readProjectMetadata().filter(project => (project.studentIds || []).map(String).includes(studentId))
-    .map(project => ({ id: String(project.id || ''), name: String(project.name || project.id || '').slice(0, 80) }))
+  return readProjectMetadata().filter(project => project.status !== 'sealed' && (project.studentIds || []).map(String).includes(studentId))
+    .map(normalizeProjectSummary)
     .filter(project => project.id && project.name);
 }
 
@@ -14352,14 +14369,14 @@ function companionTargets() {
 
 function companionPublicState() {
   // Capture counters refresh frequently. The bar needs no disk-backed target/project discovery.
-  return { popoverMode: quickCapturePopoverMode };
+  return { popoverMode: quickCapturePopoverMode, projectMentorEnabled: projectMentorEnabled() };
 }
 
 function quickCapturePreferredWidth(workArea, active = false) {
   const available = Number(workArea?.width) || QUICK_CAPTURE_PREFERRED_WIDTH;
   if (quickCaptureSetupOpen) return Math.min(610, Math.max(360, available));
-  if (active) return Math.min(288, Math.max(252, available));
-  return Math.min(QUICK_CAPTURE_PREFERRED_WIDTH, Math.max(252, available));
+  if (active) return Math.min(QUICK_CAPTURE_PREFERRED_WIDTH, Math.max(QUICK_CAPTURE_MIN_WIDTH, available));
+  return Math.min(QUICK_CAPTURE_PREFERRED_WIDTH, Math.max(QUICK_CAPTURE_MIN_WIDTH, available));
 }
 
 function loadQuickCaptureSettings() {
@@ -14403,11 +14420,27 @@ function sendQuickCaptureState() {
   }
 }
 
-function closeQuickCapturePopover() {
+function clearProjectMentorSession() {
+  quickCaptureProjectMentorContext = null;
+  for (const [id, packet] of quickCapturePreparedPrompts) {
+    if (PROJECT_MENTOR_ACTION_IDS.includes(packet.actionId)) quickCapturePreparedPrompts.delete(id);
+  }
+}
+
+function invalidateProjectMentorSession() {
+  if (quickCaptureProjectMentorContext) quickCaptureProjectMentorContext = { ...quickCaptureProjectMentorContext, invalid: true };
+  for (const [id, packet] of quickCapturePreparedPrompts) {
+    if (PROJECT_MENTOR_ACTION_IDS.includes(packet.actionId)) quickCapturePreparedPrompts.delete(id);
+  }
+}
+
+function closeQuickCapturePopover({ preserveProjectMentorContext = false } = {}) {
+  const wasProjectMentor = quickCapturePopoverMode === 'project-mentor';
   quickCapturePopoverMode = '';
   const window = quickCapturePopoverWindow;
   quickCapturePopoverWindow = null; quickCapturePopoverLoaded = false;
   if (window && !window.isDestroyed()) window.close();
+  if (wasProjectMentor && !preserveProjectMentorContext) clearProjectMentorSession();
   sendQuickCaptureState();
 }
 
@@ -14417,14 +14450,26 @@ function companionPopoverState() {
   const projects = companionProjects();
   const settings = currentCompanionSettings(targets, projects);
   const selected = targets.find(item => item.id === settings.selectedTargetId) || targets[0];
+  const mentorContext = quickCapturePopoverMode === 'project-mentor' ? quickCaptureProjectMentorContext : null;
+  const lockedProject = mentorContext?.lockedProjectId
+    ? availableCompanionProject(quickCaptureStudentId, mentorContext.lockedProjectId)
+    : null;
+  if (mentorContext?.lockedProjectId && !lockedProject) invalidateProjectMentorSession();
+  const mentorProjectId = lockedProject?.id || (quickCapturePopoverMode === 'project-mentor' && settings.scope === 'project' ? settings.projectId : '');
+  const mentorProject = projects.find(item => item.id === mentorProjectId) || lockedProject || null;
   return {
     mode: quickCapturePopoverMode,
     selectedTargetId: selected.id,
     targetCapabilities: selected.capabilities,
     targets,
-    scope: settings.scope,
-    projectId: settings.projectId,
+    scope: lockedProject ? 'project' : settings.scope,
+    projectId: lockedProject?.id || settings.projectId,
     projects,
+    projectMentorEnabled: projectMentorEnabled(),
+    projectMentorStages: PROJECT_MENTOR_STAGES,
+    projectMentorLocked: Boolean(lockedProject),
+    projectMentorProject: mentorProject ? { ...mentorProject, projectRevision: projectSummaryRevision(mentorProject) } : null,
+    projectMentorScopeInvalid: Boolean(mentorContext?.invalid || (mentorContext?.lockedProjectId && !lockedProject)),
     modeGroups: COMPANION_MODE_GROUPS,
     actions: Object.fromEntries(Object.entries(COMPANION_ACTIONS).map(([id, item]) => [id, {
       label: item.label,
@@ -14441,17 +14486,23 @@ function sendCompanionPopoverState() {
   sendQuickCaptureState();
 }
 
-function showQuickCapturePopover(mode) {
+function showQuickCapturePopover(mode, options = {}) {
   if (!quickCaptureWindow || quickCaptureWindow.isDestroyed()) return { ok: false, message: '工具条窗口已失效。' };
-  const allowed = new Set(['targets', 'scope', 'learning', 'collect', 'organize', 'settings']);
+  const allowed = new Set(['targets', 'scope', 'learning', 'project-mentor', 'collect', 'organize', 'settings']);
   if (!allowed.has(mode)) return { ok: false, message: '未知面板。' };
+  if (mode === 'project-mentor' && !projectMentorEnabled()) return { ok: false, message: '项目导师功能已由环境开关关闭。' };
   if (quickCapturePopoverWindow && !quickCapturePopoverWindow.isDestroyed() && quickCapturePopoverMode === mode) {
+    if (options.lockedProjectId) quickCaptureProjectMentorContext = { entrySource: 'project-detail', lockedProjectId: String(options.lockedProjectId) };
     quickCapturePopoverWindow.show(); quickCapturePopoverWindow.focus(); sendCompanionPopoverState(); return { ok: true };
   }
-  closeQuickCapturePopover(); quickCapturePopoverMode = mode;
+  closeQuickCapturePopover();
+  if (mode === 'project-mentor') quickCaptureProjectMentorContext = options.lockedProjectId
+    ? { entrySource: 'project-detail', lockedProjectId: String(options.lockedProjectId) }
+    : { entrySource: 'toolbar', lockedProjectId: '' };
+  quickCapturePopoverMode = mode;
   const anchor = quickCaptureWindow.getBounds();
   const area = screen.getDisplayMatching(anchor).workArea;
-  const size = mode === 'learning' ? { width: 350, height: 310 } : mode === 'targets' ? { width: 300, height: 350 }
+  const size = mode === 'project-mentor' ? { width: 430, height: 520 } : mode === 'learning' ? { width: 350, height: 310 } : mode === 'targets' ? { width: 300, height: 350 }
     : mode === 'scope' ? { width: 280, height: 230 } : { width: 240, height: mode === 'settings' ? 110 : 210 };
   size.width = Math.min(size.width, area.width); size.height = Math.min(size.height, area.height);
   const below = anchor.y + anchor.height + 6;
@@ -14473,7 +14524,7 @@ function showQuickCapturePopover(mode) {
   if (['collect', 'organize', 'settings'].includes(mode)) {
     window.on('blur', () => setTimeout(() => { if (quickCapturePopoverWindow === window && !window.isDestroyed() && !window.webContents.isDevToolsOpened()) closeQuickCapturePopover(); }, 140));
   }
-  window.on('closed', () => { if (quickCapturePopoverWindow === window) { quickCapturePopoverWindow = null; quickCapturePopoverLoaded = false; quickCapturePopoverMode = ''; sendQuickCaptureState(); } });
+  window.on('closed', () => { if (quickCapturePopoverWindow === window) { const wasProjectMentor = quickCapturePopoverMode === 'project-mentor'; quickCapturePopoverWindow = null; quickCapturePopoverLoaded = false; quickCapturePopoverMode = ''; if (wasProjectMentor) clearProjectMentorSession(); sendQuickCaptureState(); } });
   void window.loadFile(path.join(__dirname, 'companion-popover.html')).catch(() => closeQuickCapturePopover());
   return { ok: true };
 }
@@ -14498,15 +14549,30 @@ function selectedCompanionTarget() {
 function prepareCompanionAction(actionId, config = {}) {
   const student = readStudentsIndex().find(item => String(item.id) === String(quickCaptureStudentId || ''));
   if (!student) return { ok: false, message: '请先在教育管家选择学生。' };
+  const isProjectMentor = PROJECT_MENTOR_ACTION_IDS.includes(actionId);
+  if (isProjectMentor && !projectMentorEnabled()) return { ok: false, message: '项目导师功能已由环境开关关闭。' };
   const targets = companionTargets(), projects = companionProjects();
   const settings = currentCompanionSettings(targets, projects);
   const target = targets.find(item => item.id === settings.selectedTargetId) || targets[0];
-  const project = settings.scope === 'project' ? projects.find(item => item.id === settings.projectId) : null;
+  const lockedProjectId = isProjectMentor ? String(quickCaptureProjectMentorContext?.lockedProjectId || '') : '';
+  const projectId = lockedProjectId || (settings.scope === 'project' ? settings.projectId : '');
+  const project = projectId ? availableCompanionProject(student.id, projectId) : null;
+  const scope = isProjectMentor ? 'project' : settings.scope;
+  if (isProjectMentor && !project) {
+    if (lockedProjectId || quickCaptureProjectMentorContext?.invalid) {
+      invalidateProjectMentorSession();
+      sendCompanionPopoverState();
+    }
+    return { ok: false, message: lockedProjectId ? '项目范围已变化，请返回项目页面确认。' : '请选择当前学生已绑定且未封存的项目。' };
+  }
+  if (isProjectMentor && config.projectRevision && config.projectRevision !== projectSummaryRevision(project)) {
+    return { ok: false, message: '项目摘要已变化，请确认最新项目范围后再复制。' };
+  }
   try {
     for (const [id, item] of quickCapturePreparedPrompts) if (Date.parse(item.expiresAt) <= Date.now()) quickCapturePreparedPrompts.delete(id);
-    const packet = createCompanionPromptPacket({ actionId, student, target, scope: settings.scope, project, config });
-    quickCapturePreparedPrompts.set(packet.promptId, packet);
+    const packet = createCompanionPromptPacket({ actionId, student, target, scope, project, config });
     const result = copyCompanionText(packet.promptText);
+    if (result.ok) quickCapturePreparedPrompts.set(packet.promptId, packet);
     return { ...result, ...(result.ok ? { promptId: packet.promptId, expiresAt: packet.expiresAt } : {}) };
   }
   catch (error) { return { ok: false, message: error.message }; }
@@ -14719,6 +14785,7 @@ async function handleQuickCaptureAction(event, action, input = {}) {
   if (action === 'hide') { setQuickCaptureEnabled(false); return { ok: true }; }
   if (action === 'close-popover') { closeQuickCapturePopover(); return { ok: true }; }
   if (action === 'learning') return showQuickCapturePopover('learning');
+  if (action === 'project-mentor') return showQuickCapturePopover('project-mentor');
   if (action === 'collect-menu') return showQuickCapturePopover('collect');
   if (action === 'organize-menu') return showQuickCapturePopover('organize');
   if (action === 'ai-settings') return showQuickCapturePopover('settings');
@@ -43857,6 +43924,28 @@ ipcMain.handle('bridge:showQuickCapture', async (event) => {
   const locked = licenseRequiredJson('快捷采集工具条');
   return locked || JSON.stringify(await showQuickCaptureNearMainWindow());
 });
+ipcMain.handle('bridge:getProjectMentorAvailability', (event) => Boolean(mainWindow && !mainWindow.isDestroyed() && event.sender === mainWindow.webContents && projectMentorEnabled()));
+ipcMain.handle('bridge:showProjectMentor', async (event, studentId, projectId) => {
+  if (!mainWindow || mainWindow.isDestroyed() || event.sender !== mainWindow.webContents) return JSON.stringify({ ok: false, message: '主窗口范围无效。' });
+  if (!projectMentorEnabled()) return JSON.stringify({ ok: false, message: '项目导师功能已由环境开关关闭。' });
+  const locked = licenseRequiredJson('学习模式');
+  if (locked) return locked;
+  const student = readStudentsIndex().find(item => String(item.id) === String(studentId || ''));
+  if (!student) return JSON.stringify({ ok: false, message: '当前学生已不存在，请重新选择学生。' });
+  const project = availableCompanionProject(student.id, projectId);
+  if (!project) return JSON.stringify({ ok: false, message: '该项目已不可用、未绑定当前学生或已经封存，请返回项目与成果确认项目范围。' });
+  if (quickCaptureStudentId !== String(student.id)) {
+    closeQuickCapturePopover();
+    quickCapturePreparedPrompts.clear();
+    quickCaptureConnectionPrompts = Object.create(null);
+  }
+  quickCaptureStudentId = String(student.id);
+  quickCaptureStudentName = String(student.name || '');
+  const shown = await showQuickCaptureNearMainWindow();
+  if (!shown.ok) return JSON.stringify(shown);
+  const opened = showQuickCapturePopover('project-mentor', { lockedProjectId: project.id });
+  return JSON.stringify({ ...opened, studentId: String(student.id), projectId: project.id });
+});
 ipcMain.handle('bridge:setQuickCaptureContext', (event, studentId, context = {}) => {
   if (!mainWindow || mainWindow.isDestroyed() || event.sender !== mainWindow.webContents) return JSON.stringify({ ok: false, message: '主窗口范围无效。' });
   const student = readStudentsIndex().find(item => String(item.id) === String(studentId || ''));
@@ -43891,6 +43980,7 @@ ipcMain.handle('companion-popover:action', async (event, action, input = {}) => 
     return { ok: true };
   }
   if (action === 'open-targets') return showQuickCapturePopover('targets');
+  if (action === 'open-project-mentor') return showQuickCapturePopover('project-mentor');
   if (action === 'copy-persona') {
     const locked = licenseRequiredJson('智能体人设');
     return locked ? JSON.parse(locked) : copyCompanionSetupInstruction();
@@ -43898,10 +43988,11 @@ ipcMain.handle('companion-popover:action', async (event, action, input = {}) => 
   if (action === 'select-target') {
     const id = validTargetId(input.id);
     if (!id || !companionTargets().some(item => item.id === id)) return { ok: false, message: '目标 Agent 不存在。' };
-    saveCompanionSettings({ selectedTargetId: id, scope: 'conversation', projectId: '' });
-    sendCompanionPopoverState(); return { ok: true, message: '已切换目标 Agent；资料范围已重置为当前对话。' };
+    saveCompanionSettings({ selectedTargetId: id });
+    sendCompanionPopoverState(); return { ok: true, message: '已切换目标 Agent；请以当前连接能力声明为准。' };
   }
   if (action === 'select-scope') {
+    if (quickCapturePopoverMode === 'project-mentor' && quickCaptureProjectMentorContext?.lockedProjectId) return { ok: false, message: '项目详情入口已锁定当前项目，不能在此切换。' };
     const scope = ['conversation', 'student', 'project'].includes(input.scope) ? input.scope : '';
     if (!scope) return { ok: false, message: '资料范围无效。' };
     if (!readStudentsIndex().some(item => String(item.id) === String(quickCaptureStudentId))) return { ok: false, message: '请先选择学生。' };
@@ -43913,7 +44004,7 @@ ipcMain.handle('companion-popover:action', async (event, action, input = {}) => 
     try {
       const target = normalizeCustomTarget(input);
       const settings = readCompanionSettings(companionSettingsPath());
-      saveCompanionSettings({ customTargets: [...settings.customTargets, target].slice(-20), selectedTargetId: target.id, scope: 'conversation', projectId: '' });
+      saveCompanionSettings({ customTargets: [...settings.customTargets, target].slice(-20), selectedTargetId: target.id });
       sendCompanionPopoverState(); return { ok: true, message: '已添加；自定义 Agent 仅启用复制模式。' };
     } catch (error) { return { ok: false, message: error.message }; }
   }

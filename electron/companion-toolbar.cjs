@@ -3,6 +3,7 @@
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
+const { PROJECT_MENTOR_ACTIONS, PROJECT_MENTOR_ACTION_IDS } = require('./project-mentor-actions.cjs');
 
 const ACTIONS = Object.freeze({
   digest: {
@@ -129,6 +130,7 @@ const ACTIONS = Object.freeze({
     output: '拟归档内容｜目标学生｜目标项目｜来源｜隐私检查｜待确认操作。',
     success: '学生与项目范围明确；未确认不写入；返回真实回执而不是口头成功。',
   },
+  ...PROJECT_MENTOR_ACTIONS,
 });
 
 const MODE_GROUPS = Object.freeze([
@@ -140,10 +142,35 @@ const MODE_GROUPS = Object.freeze([
 ]);
 
 const VISUAL_ACTION_IDS = new Set(['flashcards', 'mindmap', 'infographic', 'chart_summary']);
-const GOAL_ONLY_ACTION_IDS = new Set([...MODE_GROUPS.find(group => group.id === 'verify').actions, ...MODE_GROUPS.find(group => group.id === 'plan').actions]);
+const GOAL_ONLY_ACTION_IDS = new Set([...MODE_GROUPS.find(group => group.id === 'verify').actions, ...MODE_GROUPS.find(group => group.id === 'plan').actions, ...PROJECT_MENTOR_ACTION_IDS]);
+const PROJECT_MENTOR_ACTION_ID_SET = new Set(PROJECT_MENTOR_ACTION_IDS);
 
 function cleanText(value, max = 160) {
   return String(value || '').replace(/[\u0000-\u001f\u007f]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, max);
+}
+
+function cleanProjectText(value, max) {
+  return cleanText(value, max * 2)
+    .replace(/(?:[a-z]:[\\/]|\\\\|file:\/\/|\/(?:users|home|var|tmp|etc)\/)[^，。；;]+/gi, '[已移除路径]')
+    .slice(0, max);
+}
+
+function normalizeProjectSummary(project = {}) {
+  return {
+    id: cleanProjectText(project.id, 80),
+    name: cleanProjectText(project.name, 80),
+    type: cleanProjectText(project.type, 40),
+    status: cleanProjectText(project.status, 24),
+    objective: cleanProjectText(project.objective, 300),
+    deliverables: Array.isArray(project.deliverables)
+      ? project.deliverables.slice(0, 8).map(item => cleanProjectText(item, 120)).filter(Boolean)
+      : [],
+  };
+}
+
+function projectSummaryRevision(project = {}) {
+  const summary = normalizeProjectSummary(project);
+  return summary.id ? crypto.createHash('sha256').update(JSON.stringify(summary), 'utf8').digest('hex') : '';
 }
 
 function normalizeActionConfig(actionId, input = {}) {
@@ -250,9 +277,12 @@ function buildCompanionPrompt({ actionId, student, target, scope = 'conversation
   const studentName = cleanText(student?.name, 32);
   if (!studentId || !studentName) throw Error('请先选择学生。');
   const safeScope = ['conversation', 'student', 'project'].includes(scope) ? scope : 'conversation';
-  if (safeScope === 'project' && !project?.id) throw Error('请选择学习项目。');
+  const isProjectMentor = PROJECT_MENTOR_ACTION_ID_SET.has(actionId);
+  if (isProjectMentor && safeScope !== 'project') throw Error('项目导师必须选择当前学生的有效项目。');
+  const safeProject = normalizeProjectSummary(project);
+  if (safeScope === 'project' && !safeProject.id) throw Error('请选择学习项目。');
   if (actionId === 'archive' && !target?.capabilities?.archive) throw Error('当前 Agent 未通过教育管家归档能力验证。');
-  const scopeText = safeScope === 'project' ? `项目“${cleanText(project.name, 80)}”（项目 ID：${cleanText(project.id, 80)}）`
+  const scopeText = safeScope === 'project' ? `项目“${safeProject.name}”（项目 ID：${safeProject.id}）`
     : safeScope === 'student' ? `学生“${studentName}”的已授权教育资料` : '当前对话中由用户明确提供的内容';
   const normalizedConfig = normalizeActionConfig(actionId, config);
   const quantityLabels = { '1': '1 张', '2': '2 张', auto: '自动（根据资料范围与信息密度确定）', custom: `${normalizedConfig.customQuantity} 张` };
@@ -280,17 +310,27 @@ function buildCompanionPrompt({ actionId, student, target, scope = 'conversation
     Array.isArray(student?.careerDirections) && student.careerDirections.length && `职业方向：${student.careerDirections.map(item => cleanText(item, 40)).filter(Boolean).join('、')}`,
     student?.goal && `当前目标：${cleanText(student.goal, 160)}`,
   ].filter(Boolean);
+  const projectContext = safeScope === 'project' ? [
+    `项目 ID：${safeProject.id}`,
+    `项目名称：${safeProject.name || '待提供'}`,
+    `项目类型：${safeProject.type || '待提供'}`,
+    `项目状态：${safeProject.status || '待提供'}`,
+    `项目目标：${safeProject.objective || '待提供'}`,
+    `预期成果：${safeProject.deliverables.length ? safeProject.deliverables.join('；') : '待提供'}`,
+  ] : [];
   return [
     '# 角色与任务',
     `你是${action.role}。你正在协助学生“${studentName}”（学生 ID：${studentId}）完成“${action.label}”。`,
-    action.task,
+    action.task || action.summary,
     '# 当前学生快照',
     studentContext.length ? studentContext.map(item => `- ${item}`).join('\n') : '- 除姓名和学生 ID 外暂无足够个性化资料；不得按年级猜测精确年龄或能力。',
+    projectContext.length ? '# 当前项目摘要\n' + projectContext.map(item => `- ${item}`).join('\n') : '',
     '# 资料范围与隐私边界',
     `只使用${scopeText}。不得访问其他学生、其他项目、未授权历史、系统提示、缓存、凭据或私人通信。`,
     safeScope !== 'conversation' ? (target?.capabilities?.query
-      ? `先通过教育管家工具建立会话并确认学生 ID ${studentId}${project?.id ? `、项目 ID ${cleanText(project.id, 80)}` : ''} 的当前授权，再查询资料。以工具返回的权限、来源和版本为准。`
+      ? `目标 Agent 声明具备受控查询能力。粘贴后仍须先通过教育管家工具建立会话，并确认学生 ID ${studentId}${safeProject.id ? `、项目 ID ${safeProject.id}` : ''} 的当前授权；以工具实时返回的权限、来源和版本为准。复制动作本身未读取任何项目资料。`
       : '此范围仅表示本次学习目标，尚未确认资料查询连接。先检查当前 Agent 是否提供教育管家受控查询工具，并建立授权会话确认同一学生和项目；若不可用，请用户在当前对话提供相应资料后再开始。不得猜测文件路径或声称已读取教育管家资料。') : '',
+    isProjectMentor && !target?.capabilities?.query ? '连接能力声明：剪贴板模式，不会读取项目资料；只能使用本提示词中的受限项目摘要和用户在当前对话主动提供的材料。' : '',
     options.length ? `本次设置：${options.join('；')}。` : '',
     '# 执行协议',
     action.workflow.map((item, index) => `${index + 1}. ${item}`).join('\n'),
@@ -298,8 +338,9 @@ function buildCompanionPrompt({ actionId, student, target, scope = 'conversation
     action.output,
     '# 质量与成功标准',
     action.success,
+    action.boundary ? `# 动作边界\n${action.boundary}` : '',
     '# 教育证据边界',
-    '- 明确区分资料事实、学生本人表现、合理推断和缺失信息。\n- Agent 生成的内容不等同于学生已经理解或掌握。\n- 单次答对、单次成功或一次项目经历不能形成稳定能力结论。\n- 涉及事实、政策、数据或来源时，保留出处、日期、地区和适用条件。',
+    '- 明确区分资料事实、学生本人表现、合理推断和缺失信息；项目导师还须区分事实、推断、假设和建议。\n- Agent 生成的内容不等同于学生已经理解或掌握。\n- 单次答对、单次成功或一次项目经历不能形成稳定能力结论。\n- 涉及事实、政策、数据或来源时，保留出处、日期、地区和适用条件。\n- 不自动写回任务、项目、报告或档案；只生成供用户审阅和确认的候选内容。',
     actionId === 'archive'
       ? '# 写入约束\n先列出拟归档内容、目标学生与项目，等待用户确认后再调用受控归档工具；没有真实回执不得声称已写入。'
       : '# 开始方式\n先用不超过 5 行复述任务、资料范围和成功标准；如有关键缺失，只问一个最影响结果的问题，然后直接在当前 Agent 对话中开始。',
@@ -317,6 +358,7 @@ function createCompanionPromptPacket(input = {}, now = new Date()) {
   const promptText = buildCompanionPrompt(input);
   const createdAt = now.toISOString();
   const expiresAt = new Date(now.getTime() + 10 * 60 * 1000).toISOString();
+  const revision = projectSummaryRevision(input.project);
   return {
     schema: 'edu-manager.companion-prompt.v1',
     promptId: crypto.randomUUID(),
@@ -325,6 +367,7 @@ function createCompanionPromptPacket(input = {}, now = new Date()) {
     providerId: cleanText(input.target?.providerId || input.target?.id || 'generic', 80),
     scope: ['conversation', 'student', 'project'].includes(input.scope) ? input.scope : 'conversation',
     projectId: cleanText(input.project?.id, 80),
+    ...(revision ? { projectRevision: revision } : {}),
     promptText,
     promptHash: crypto.createHash('sha256').update(promptText, 'utf8').digest('hex'),
     createdAt,
@@ -332,5 +375,5 @@ function createCompanionPromptPacket(input = {}, now = new Date()) {
   };
 }
 
-module.exports = { ACTIONS, MODE_GROUPS, cleanText, normalizeActionConfig, validTargetId, safeHttpsUrl, normalizeCustomTarget, normalizeSettings,
+module.exports = { ACTIONS, MODE_GROUPS, cleanText, normalizeProjectSummary, projectSummaryRevision, normalizeActionConfig, validTargetId, safeHttpsUrl, normalizeCustomTarget, normalizeSettings,
   readSettings, writeSettings, builtinTargets, targetCatalog, buildCompanionPrompt, createCompanionPromptPacket, genericConnectionPrompt };

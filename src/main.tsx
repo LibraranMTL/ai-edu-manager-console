@@ -1223,6 +1223,8 @@ type AndroidBridge = {
   removeMaterialImportRecords?: (studentId: string, recordIdsJson: string) => Promise<string>;
   getCaptureCenterState?: () => Promise<string>;
   showQuickCapture?: () => Promise<string>;
+  showProjectMentor?: (studentId: string, projectId: string) => Promise<string>;
+  getProjectMentorAvailability?: () => Promise<boolean>;
   setQuickCaptureContext?: (studentId: string, context?: { connectionPrompts?: Record<string, string> }) => Promise<string>;
   onQuickCaptureNavigate?: (callback: (payload: { tabId: string; studentId: string; inboxTab?: 'shares' }) => void) => () => void;
   setCaptureVisionConsent?: (inputJson: string) => Promise<string>;
@@ -6373,6 +6375,7 @@ function App() {
   const projectListRequestRef = useRef(0);
   const projectDetailAbortRef = useRef<AbortController | null>(null);
   const [projectMessage, setProjectMessage] = useState('');
+  const [projectMentorAvailable, setProjectMentorAvailable] = useState(false);
   const [projectListError, setProjectListError] = useState<ProjectListLoadError | null>(null);
   const [projectStageFeedback, setProjectStageFeedback] = useState<Partial<Record<ProjectWorkflowTarget, string>>>({});
   const [projectBusyAction, setProjectBusyAction] = useState('');
@@ -6977,6 +6980,10 @@ function App() {
     }).filter(([, prompt]) => Boolean(prompt))) : {};
     void bridge()?.setQuickCaptureContext?.(selectedStudent?.id || '', { connectionPrompts });
   }, [selectedStudent]);
+  useEffect(() => {
+    if (!isWindows) return;
+    void bridge()?.getProjectMentorAvailability?.().then(setProjectMentorAvailable).catch(() => setProjectMentorAvailable(false));
+  }, []);
   useEffect(() => {
     if (!isWindows) return;
     const sectionByTab: Record<string, Section> = {
@@ -12727,6 +12734,35 @@ ${sourceText}`;
     setProjectKnowledgeContent('');
     setProjectKnowledgeCategory('all');
     refreshProjectKnowledgeBrowser(projectId);
+  };
+
+  const openProjectMentor = async () => {
+    const project = selectedProject;
+    const student = selectedStudent;
+    if (!project || !student) {
+      setProjectMessage('请先选择学生和项目。');
+      return;
+    }
+    if (project.status === 'sealed') {
+      setProjectMessage('项目已封存，请恢复为进行中后再使用项目导师。');
+      return;
+    }
+    if (!(project.studentIds || []).includes(student.id)) {
+      setProjectMessage('当前项目未绑定所选学生，请先确认项目范围。');
+      return;
+    }
+    const api = bridge()?.showProjectMentor;
+    if (!api) {
+      setProjectMessage('当前版本不支持项目导师。');
+      return;
+    }
+    setProjectMessage('正在打开项目导师…');
+    try {
+      const result = JSON.parse(await api(student.id, project.id)) as { ok?: boolean; message?: string };
+      setProjectMessage(result.ok ? `已为“${project.name}”打开项目导师；项目范围已锁定。` : result.message || '项目导师暂不可用。');
+    } catch {
+      setProjectMessage('项目导师启动结果无法解析，请重试。');
+    }
   };
 
   const backToProjectList = () => {
@@ -18919,6 +18955,24 @@ ${JSON.stringify(items, null, 2)}
                 <button className="secondary compact" disabled={!selectedProject} onClick={() => openSelectedProjectSpace('knowledge')}><BookOpen size={16} />打开项目知识空间</button>
               </div>
             </section>
+            {projectMentorAvailable && projectPageMode === 'detail' && selectedProject && <section className="material-source-panel project-mentor-entry" aria-label="项目导师入口">
+              <div className="mini-heading">
+                <strong><Bot size={18} />项目导师</strong>
+                <span>按定义问题、方案比较、制定计划、研究与原型、阶段复盘、成果展示交流六个阶段，选择 24 项指导动作；只复制提示词，不自动调用 Agent 或写回项目。</span>
+              </div>
+              <div className="project-mentor-entry-summary">
+                <span>当前项目：<strong>{selectedProject.name}</strong></span>
+                <span>当前学生：<strong>{selectedStudent?.name || '未选择'}</strong></span>
+                <span>状态：<strong>{projectStatusLabel(selectedProject.status)}</strong></span>
+              </div>
+              <button
+                className="primary compact"
+                type="button"
+                disabled={!selectedStudent || selectedProject.status === 'sealed' || !(selectedProject.studentIds || []).includes(selectedStudent.id)}
+                title={selectedProject.status === 'sealed' ? '封存项目不能使用项目导师' : !(selectedProject.studentIds || []).includes(selectedStudent?.id || '') ? '当前项目未绑定所选学生' : '锁定当前项目并打开项目导师'}
+                onClick={() => void openProjectMentor()}
+              ><Bot size={16} />打开项目导师</button>
+            </section>}
             {projectPageMode === 'detail' && selectedProject && <div className="project-detail-tabs" role="tablist" aria-label="项目详情视图">
               <button
                 id="project-report-tab"

@@ -56,7 +56,7 @@ test('learning report navigation and compact controls match the requested layout
   const mastery = renderer.slice(masteryStart, renderer.indexOf("activeSection === 'cloud-documents'", masteryStart));
   assert.match(mastery, /activeSection === 'growth' && <div className="actions growth-primary-action">/);
   assert.equal((mastery.match(/刷新轨迹/g) || []).length, 1);
-  const reports = renderer.slice(renderer.indexOf("activeSection === 'reports' && selectedStudent"), renderer.indexOf('learning-report-layout'));
+  const reports = renderer.slice(renderer.indexOf("activeSection === 'reports' && activePageTab !== 'learning-state' && selectedStudent"), renderer.indexOf('learning-report-layout'));
   assert.match(reports, /<details className="advanced-options reports-advanced-options">\s*<summary>高级<\/summary>\s*<div className="archive-grid">/);
 });
 

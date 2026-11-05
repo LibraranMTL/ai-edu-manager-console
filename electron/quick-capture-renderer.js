@@ -117,6 +117,8 @@ function render(state) {
   $('collect').setAttribute('aria-expanded', String(popover === 'collect'));
   $('organize').setAttribute('aria-expanded', String(popover === 'organize'));
   $('learning').setAttribute('aria-expanded', String(popover === 'learning'));
+  $('project-mentor').setAttribute('aria-expanded', String(popover === 'project-mentor'));
+  $('project-mentor').hidden = state.companion?.projectMentorEnabled === false;
   $('ai-settings').setAttribute('aria-expanded', String(popover === 'settings'));
   const capture = state.capture;
   $('idle-actions').hidden = Boolean(capture);
@@ -133,11 +135,11 @@ function render(state) {
 
 window.QuickCapture.onState(render);
 
-for (const id of ['collect', 'organize', 'learning']) {
+for (const id of ['collect', 'organize', 'learning', 'project-mentor']) {
   $(id).addEventListener('mouseenter', () => {
     clearTimeout(hoverTimer);
     hoverTimer = setTimeout(() => {
-      const action = id === 'collect' ? 'collect-menu' : id === 'organize' ? 'organize-menu' : 'learning';
+      const action = id === 'collect' ? 'collect-menu' : id === 'organize' ? 'organize-menu' : id === 'project-mentor' ? 'project-mentor' : 'learning';
       window.QuickCapture.invoke(action).catch(() => {});
     }, 90);
   });

@@ -4155,16 +4155,53 @@ pre {
   min-width: 0;
 }
 
-.projects-mode-existing > .project-detail-tabs {
+.projects-mode-existing > .project-mentor-entry {
   order: 1;
 }
 
-.projects-mode-existing > .project-detail-tab-panel {
+.projects-mode-existing > .project-detail-tabs {
   order: 2;
 }
 
-.projects-mode-existing > .project-detail-page {
+.projects-mode-existing > .project-detail-tab-panel {
   order: 3;
+}
+
+.projects-mode-existing > .project-detail-page {
+  order: 4;
+}
+
+.project-mentor-entry {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  border-color: color-mix(in srgb, var(--accent) 34%, var(--panel-border));
+  background: linear-gradient(135deg, color-mix(in srgb, var(--accent-soft) 72%, white), white);
+}
+
+.project-mentor-entry .mini-heading {
+  flex: 1 1 360px;
+  margin: 0;
+}
+
+.project-mentor-entry .mini-heading strong {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.project-mentor-entry-summary {
+  display: grid;
+  gap: 3px;
+  min-width: 220px;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+@media (max-width: 900px) {
+  .project-mentor-entry { align-items: stretch; flex-direction: column; }
+  .project-mentor-entry .mini-heading { flex-basis: auto; }
+  .project-mentor-entry-summary { min-width: 0; }
 }
 
 .project-detail-tabs {

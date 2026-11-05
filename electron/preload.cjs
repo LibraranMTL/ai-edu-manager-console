@@ -14,6 +14,8 @@ contextBridge.exposeInMainWorld('AndroidBridge', {
     return () => ipcRenderer.removeListener('subsystem:progress', listener);
   },
   showQuickCapture() { return ipcRenderer.invoke('bridge:showQuickCapture'); },
+  showProjectMentor(studentId, projectId) { return ipcRenderer.invoke('bridge:showProjectMentor', studentId, projectId); },
+  getProjectMentorAvailability() { return ipcRenderer.invoke('bridge:getProjectMentorAvailability'); },
   setQuickCaptureContext(studentId, context) { return ipcRenderer.invoke('bridge:setQuickCaptureContext', studentId, context); },
   onQuickCaptureNavigate(callback) {
     const listener = (_event, payload) => callback(payload);

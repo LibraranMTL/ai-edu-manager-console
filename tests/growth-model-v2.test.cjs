@@ -46,7 +46,7 @@ test('growth index v2 separates abilities, contributions and evidence', () => {
 
 test('growth page owns growth data and does not render report cards', () => {
   const growthStart = ui.indexOf("isWindows && (activeSection === 'growth' || activeSection === 'knowledge-mastery') && selectedStudent");
-  const reportsStart = ui.indexOf("activeSection === 'reports' && selectedStudent", growthStart);
+  const reportsStart = ui.indexOf("activeSection === 'reports' && activePageTab !== 'learning-state' && selectedStudent", growthStart);
   assert.ok(growthStart >= 0 && reportsStart > growthStart, 'growth and report pages should remain distinct');
   const growthPage = ui.slice(growthStart, reportsStart);
   assert.match(growthPage, /title="成长模型目录"/);

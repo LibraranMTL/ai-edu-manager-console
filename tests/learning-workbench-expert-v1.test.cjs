@@ -9,10 +9,21 @@ test('learning workbench keeps unknown dimensions and never creates a composite 
   const projection = buildLearningWorkbenchProjection({ student: { id: 'a', name: 'A' }, learningState: {}, fiveDimensions: { dimensions: {
     goals: { status: 'insufficient_evidence' }, mindset: { status: 'insufficient_evidence' }, problems: { status: 'insufficient_evidence' }, methods: { status: 'insufficient_evidence' }, efficiency: { status: 'descriptive_only', metrics: {} },
   } }, tasks: [], projects: [] });
-  assert.equal(projection.dimensions.filter(item => item.status === 'unknown').length, 4);
+  assert.equal(projection.dimensions.filter(item => item.status === 'unknown').length, 5);
+  assert.match(projection.dimensions.find(item => item.key === 'efficiency').summary, /没有可评价样本/);
   assert.equal(projection.boundaries.noCompositeScore, true);
   assert.equal('score' in projection, false); assert.equal(projection.weeklyActions.length, 0);
   assert.equal(projection.loop.length, 6);
+});
+
+test('learning workbench only marks efficiency observed when a comparable sample exists', () => {
+  const projection = buildLearningWorkbenchProjection({ student: { id: 'a', name: 'A' }, learningState: {}, fiveDimensions: { dimensions: {
+    goals: { status: 'insufficient_evidence' }, mindset: { status: 'insufficient_evidence' }, problems: { status: 'insufficient_evidence' }, methods: { status: 'insufficient_evidence' },
+    efficiency: { status: 'descriptive_only', metrics: { independentCompletion: { numerator: 1, denominator: 1, sampleSize: 1 } } },
+  } }, tasks: [], projects: [] });
+  const efficiency = projection.dimensions.find(item => item.key === 'efficiency');
+  assert.equal(efficiency.status, 'descriptive_only');
+  assert.equal(efficiency.summary, '已有描述性效率记录。');
 });
 
 test('workbench and expert draft bridges are wired with retained-draft copy', () => {

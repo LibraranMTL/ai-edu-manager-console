@@ -1,13 +1,20 @@
 'use strict';
 
 function text(value) { return String(value ?? '').trim(); }
+function hasEfficiencyEvidence(metrics = {}) {
+  const sampledMetrics = ['dueGoalAttainment', 'evidenceBackedOutputs', 'independentCompletion', 'comparableKnownAssistance', 'delayedRetention'];
+  return sampledMetrics.some((key) => Number(metrics[key]?.sampleSize || 0) > 0)
+    || Number(metrics.rework?.sampleSize || 0) > 0
+    || Number(metrics.effort?.sampleSize || 0) > 0;
+}
 function dimensionSummary(key, dimension = {}) {
   if (dimension.status === 'insufficient_evidence') return { key, status: 'unknown', label: '待观察', summary: '当前没有足够证据形成结论。' };
   if (key === 'goals') return { key, status: dimension.status, label: '目标', summary: dimension.items?.[0]?.title || '已有目标记录' };
   if (key === 'mindset') return { key, status: dimension.status, label: '心态', summary: dimension.selfReport ? '已有学生自述，需结合后续观察。' : '待观察' };
   if (key === 'problems') return { key, status: dimension.status, label: '问题', summary: dimension.items?.[0]?.title || '当前没有登记中的问题' };
   if (key === 'methods') return { key, status: dimension.status, label: '方法', summary: dimension.items?.[0]?.title || '方法效果待验证' };
-  return { key, status: dimension.status, label: '效率', summary: Object.keys(dimension.metrics || {}).length ? '已有描述性效率记录。' : '暂无可比较记录，不合成总分。' };
+  if (!hasEfficiencyEvidence(dimension.metrics)) return { key, status: 'unknown', label: '效率', summary: '当前没有可评价样本，保持待观察且不合成总分。' };
+  return { key, status: dimension.status, label: '效率', summary: '已有描述性效率记录。' };
 }
 
 function buildLearningWorkbenchProjection({ student, learningState = {}, fiveDimensions = {}, tasks = [], projects = [], reportStatus = null,

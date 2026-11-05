@@ -2,10 +2,14 @@ package com.qxmatrix.edumanager.standalone
 
 import android.content.Context
 import android.net.Uri
+import android.util.Base64
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.ByteArrayOutputStream
 import java.security.MessageDigest
+import java.security.KeyFactory
+import java.security.Signature
+import java.security.spec.X509EncodedKeySpec
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -110,7 +114,7 @@ data class PlatformCourse(
 
         fun normalizeUrl(value: String, allowedHosts: List<String>): String {
             val uri = Uri.parse(value.trim())
-            require(uri.scheme in setOf("https", "http") && uri.userInfo == null) { "课程链接必须是无账号信息的 HTTP/HTTPS URL" }
+            require(uri.scheme == "https" && uri.userInfo == null) { "课程链接必须是无账号信息的 HTTPS URL" }
             require(normalizeHost(uri.host ?: "") in allowedHosts) { "课程链接域名不在允许列表" }
             return uri.buildUpon().fragment(null).build().toString()
         }
@@ -128,6 +132,7 @@ class CourseCatalogService(private val context: Context) {
         val coverPayloads = linkedMapOf<String, ByteArray>()
         var manifestBytes: ByteArray? = null
         var catalogBytes: ByteArray? = null
+        var signatureBytes: ByteArray? = null
         var total = 0L
         context.contentResolver.openInputStream(uri)?.use { input ->
             ZipInputStream(input).use { zip ->
@@ -144,6 +149,7 @@ class CourseCatalogService(private val context: Context) {
                     when {
                         name == "manifest.json" -> manifestBytes = bytes
                         name == "catalog.json" -> catalogBytes = bytes
+                        name == "signature.json" -> signatureBytes = bytes
                         name.startsWith("assets/") -> {
                             require(coverPayloads.values.sumOf { it.size.toLong() } + bytes.size <= MAX_COVER_TOTAL_BYTES) { "课程封面合计不能超过 50 MB" }
                             coverPayloads[name] = bytes
@@ -155,7 +161,9 @@ class CourseCatalogService(private val context: Context) {
         } ?: error("无法读取课程包")
 
         val manifest = JSONObject(requireNotNull(manifestBytes) { "课程包缺少 manifest.json" }.toString(Charsets.UTF_8))
-        require(manifest.optString("schema") in setOf(ProtocolBaseline.COURSE_PACKAGE_SCHEMA, "edu-manager.course-package.v2")) { "课程包 Schema 不受支持" }
+        require(manifest.optString("schema") == ProtocolBaseline.COURSE_PACKAGE_SCHEMA) { "仅允许导入发布者签名的 v3 课程包" }
+        val signatureRecord = JSONObject(requireNotNull(signatureBytes) { "v3 课程包缺少 signature.json" }.toString(Charsets.UTF_8))
+        verifyPackageSignature(manifest, signatureRecord)
         val declared = manifest.getJSONArray("files")
         val declaredNames = linkedSetOf<String>()
         for (index in 0 until declared.length()) {
@@ -168,6 +176,7 @@ class CourseCatalogService(private val context: Context) {
         require(declaredNames == entries.keys.filter { it !in setOf("manifest.json", "signature.json") }.toSet()) { "课程包文件清单与归档内容不一致" }
         val catalog = JSONObject(requireNotNull(catalogBytes) { "课程包缺少 catalog.json" }.toString(Charsets.UTF_8))
         validateCatalog(catalog, setOf("platform_standard"))
+        require(catalog.getString("keyId") == signatureRecord.getString("keyId")) { "目录与课程包签名 keyId 不一致" }
         val courses = catalog.getJSONArray("courses")
         for (index in 0 until courses.length()) {
             val cover = courses.getJSONObject(index).getString("coverAsset").substringAfterLast('/')
@@ -243,6 +252,9 @@ class CourseCatalogService(private val context: Context) {
         require(compareVersions(APP_PROTOCOL_VERSION, catalog.optString("minHostVersion", "0.0.0")) >= 0) { "当前 APK 版本低于课程目录要求" }
         val expected = sha256(CourseCatalogCanonicalJson.canonicalize(unsignedCatalog(catalog)).toByteArray(Charsets.UTF_8))
         require(expected == catalog.getString("checksum")) { "课程目录校验值不匹配" }
+        val keyId = catalog.getString("keyId")
+        val signedPayload = "$expected\n${CourseCatalogCanonicalJson.canonicalize(unsignedCatalog(catalog))}".toByteArray(Charsets.UTF_8)
+        require(verifyRsaSha256(keyId, signedPayload, catalog.getString("signature"))) { "课程目录发布者签名验证失败" }
         val ids = linkedSetOf<String>(); val courses = catalog.getJSONArray("courses")
         for (index in 0 until courses.length()) {
             val course = PlatformCourse.fromJson(courses.getJSONObject(index))
@@ -254,6 +266,23 @@ class CourseCatalogService(private val context: Context) {
 
     private fun unsignedCatalog(value: JSONObject): JSONObject = JSONObject().also { output ->
         value.keys().forEach { key -> if (key !in setOf("checksum", "signature")) output.put(key, value.get(key)) }
+    }
+
+    private fun verifyPackageSignature(manifest: JSONObject, record: JSONObject) {
+        require(record.getString("schema") == "edu-manager.course-package-signature.v1" && record.getString("algorithm") == "RSA-SHA256") { "课程包签名格式不受支持" }
+        val canonical = CourseCatalogCanonicalJson.canonicalize(manifest).toByteArray(Charsets.UTF_8)
+        require(sha256(canonical) == record.getString("manifestSha256")) { "课程包清单签名哈希不匹配" }
+        require(verifyRsaSha256(record.getString("keyId"), canonical, record.getString("signature"))) { "课程包发布者签名验证失败" }
+    }
+
+    private fun verifyRsaSha256(keyId: String, payload: ByteArray, encodedSignature: String): Boolean {
+        require(keyId == TRUSTED_COURSE_KEY_ID) { "课程发布密钥不受信任：$keyId" }
+        val pem = context.resources.openRawResource(R.raw.course_catalog_public_key).bufferedReader().use { it.readText() }
+        val der = Base64.decode(pem.replace("-----BEGIN PUBLIC KEY-----", "").replace("-----END PUBLIC KEY-----", "").replace("\n", "").trim(), Base64.DEFAULT)
+        val publicKey = KeyFactory.getInstance("RSA").generatePublic(X509EncodedKeySpec(der))
+        return Signature.getInstance("SHA256withRSA").run {
+            initVerify(publicKey); update(payload); verify(Base64.decode(encodedSignature, Base64.DEFAULT))
+        }
     }
 
     private fun safeEntry(input: String, directory: Boolean): String {
@@ -299,5 +328,6 @@ class CourseCatalogService(private val context: Context) {
         const val OFFLINE_ROOT = "courses/offline"
         const val OFFLINE_COVER_ROOT = "courses/offline-covers"
         const val OFFLINE_SNAPSHOT_SCHEMA = "edu-manager.student-course-snapshot.v1"
+        const val TRUSTED_COURSE_KEY_ID = "course-catalog-primary-2026"
     }
 }

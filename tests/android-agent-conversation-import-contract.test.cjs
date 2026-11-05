@@ -84,9 +84,9 @@ test('student public link preview is host mediated and bounded before submit', (
 });
 
 test('student candidate and teacher release expose their expected Android versions', () => {
-  assert.match(student, /VERSION_NAME = "0\.6\.26"/u);
-  assert.match(student, /VERSION_CODE = 96/u);
-  assert.match(studentManifest, /android:versionName="0\.6\.26"/u);
+  assert.match(student, /VERSION_NAME = "0\.6\.27"/u);
+  assert.match(student, /VERSION_CODE = 97/u);
+  assert.match(studentManifest, /android:versionName="0\.6\.27"/u);
   assert.match(teacher, /VERSION_NAME = "0\.1\.4"/u);
   assert.match(teacher, /VERSION_CODE = 5/u);
   assert.match(teacherManifest, /android:versionName="0\.1\.4"/u);

@@ -52,8 +52,8 @@ type TerminalConfig = {
 type CaptureSource = { id: string; name: string; type: 'screen' | 'window'; available?: boolean; blocked?: boolean; blockReason?: string };
 type CaptureItem = { id: string; path: string; filename: string; capturedAt: string; sequence: number };
 type CaptureSession = { id: string; status: string; sourceName: string; sourceType?: 'screen' | 'window'; count: number; files: string[]; items?: CaptureItem[]; target?: UploadTarget; startedAt?: string; plannedEndAt?: string; endedAt?: string; endReason?: string; deliveryStatus?: string; options?: CaptureOptions; candidateFrameCount?: number; deduplicatedCount?: number; highlightedCount?: number; courseId?: string; courseProvider?: string; courseUrl?: string; courseStartedAt?: string; courseCompletedAt?: string };
-type Course = { courseId: string; name: string; provider: string; url: string; allowedHosts: string[]; coverUrl: string; summary: string; gradeRange: string[]; languages: string[]; accountRequirement: string; legalNotice: string };
-type CourseCatalogResponse = { ok: boolean; catalogVersion?: string; studentId?: string; courses?: Course[]; disclaimer?: string };
+type Course = { courseId: string; name: string; provider: string; url: string; allowedHosts: string[]; coverUrl: string; summary: string; gradeRange: string[]; languages: string[]; accountRequirement: string; legalNotice: string; offlineOpenUntil: string };
+type CourseCatalogResponse = { ok: boolean; schemaVersion?: 2; hostId?: string; projectionRevision?: string; manifestRevision?: string; policyRevision?: string; studentId?: string; courses?: Course[]; disclaimer?: string };
 type Progress = { status: string; current?: number; total?: number; filename?: string; success?: number; failed?: number; pending?: number; delivered?: number };
 type UploadQueueItem = { queueId: string; uploadId: string; state: 'queued' | 'uploading' | 'receipt_unknown' | 'received'; hostId: string; dataGeneration: string; studentId: string; target: UploadTarget; filename: string; size: number; sourceType: string; attempt: number; createdAt?: string; updatedAt?: string; receivedAt?: string; lastError?: string; pauseCode?: string; receipt?: { materialId?: string; materialVersion?: number; receivedAt?: string } | null };
 type UploadQueueState = { version: number; updatedAt?: string; total: number; counts: Record<string, number>; items: UploadQueueItem[]; hostScope?: { hostId?: string; dataGeneration?: string }; observedHostScope?: { hostId?: string; dataGeneration?: string } };
@@ -542,7 +542,7 @@ function TerminalApp() {
     try {
       const payload = await api.listCourses();
       setCourses(payload.courses || []);
-      setCourseCatalogVersion(payload.catalogVersion || '');
+      setCourseCatalogVersion(payload.manifestRevision || '');
       setCourseDisclaimer(payload.disclaimer || '');
     } catch (error) {
       setCourses([]);
@@ -550,6 +550,12 @@ function TerminalApp() {
       setMessage(`精选课程暂不可用：${(error as Error).message}`);
     }
   };
+
+  useEffect(() => {
+    if (!api || !selectedStudentId) return undefined;
+    const timer = window.setInterval(() => { void loadCourses(); }, 60_000);
+    return () => window.clearInterval(timer);
+  }, [api, selectedStudentId]);
 
   const refresh = async () => {
     if (!api) return;

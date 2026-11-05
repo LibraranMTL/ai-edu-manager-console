@@ -24,6 +24,7 @@ const productionFiles = [
   'model-gateway-pilot.cjs',
   'model-gateway-runtime.cjs',
   'product-license.cjs',
+  'public-content.cjs',
   'remote-mcp.cjs',
   'remote-result-contract.cjs',
   'service.cjs',

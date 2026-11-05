@@ -33,12 +33,12 @@ test('candidate builds preserve the stable manifest, while a formal build aligns
   const windowsManifest = JSON.parse(fs.readFileSync(path.join(root, 'release', 'windows', 'edu-manager-version.json'), 'utf8'));
   const terminalVersion = JSON.parse(fs.readFileSync(path.join(root, 'windows-terminal-version.json'), 'utf8'));
   const downloadPage = fs.readFileSync(path.join(root, 'release', '网站文件', 'download.html'), 'utf8');
-  assert.equal(packageJson.version, '0.23.3');
+  assert.equal(packageJson.version, '0.23.4');
   const candidateTag = String(process.env.EDU_WINDOWS_CANDIDATE_TAG || '').trim();
   const sourceAheadOfStable = releaseManifest.windowsVersionName !== packageJson.version;
   if (candidateTag || sourceAheadOfStable) {
     assert.notEqual(releaseManifest.windowsVersionName, packageJson.version);
-    assert.equal(releaseManifest.windowsVersionName, '0.23.1');
+    assert.equal(releaseManifest.windowsVersionName, '0.23.3');
   } else {
     assert.equal(releaseManifest.windowsVersionName, packageJson.version);
     assert.equal(releaseManifest.windowsVersionCode, 272);
@@ -46,10 +46,13 @@ test('candidate builds preserve the stable manifest, while a formal build aligns
   assert.equal(releaseManifest.windowsReleaseStatus, 'stable');
   assert.equal(windowsManifest.windowsVersionName, releaseManifest.windowsVersionName);
   assert.equal(releaseManifest.windowsTerminalVersionName, windowsManifest.windowsTerminalVersionName);
-  assert.equal(releaseManifest.windowsTerminalVersionName, terminalVersion.versionName);
-  assert.equal(releaseManifest.windowsTerminalVersionCode, terminalVersion.versionCode);
-  assert.equal(releaseManifest.windowsTerminalReleaseStatus, terminalVersion.releaseStatus);
-  assert.equal(JSON.parse(fs.readFileSync(path.join(root, 'release', '网站文件', 'edu-manager-version.json'), 'utf8')).windowsTerminalVersionName, terminalVersion.versionName);
+  assert.equal(terminalVersion.versionName, '0.18.7');
+  assert.equal(terminalVersion.versionCode, 237);
+  assert.equal(terminalVersion.releaseStatus, 'candidate');
+  assert.equal(releaseManifest.windowsTerminalVersionName, '0.18.6');
+  assert.equal(releaseManifest.windowsTerminalVersionCode, 236);
+  assert.equal(releaseManifest.windowsTerminalReleaseStatus, 'stable');
+  assert.equal(JSON.parse(fs.readFileSync(path.join(root, 'release', '网站文件', 'edu-manager-version.json'), 'utf8')).windowsTerminalVersionName, '0.18.6');
   const isCandidate = releaseManifest.windowsReleaseStatus === 'candidate';
   const terminalIsCandidate = releaseManifest.windowsTerminalReleaseStatus === 'candidate';
   assert.equal(windowsManifest.windowsReleaseStatus, releaseManifest.windowsReleaseStatus);

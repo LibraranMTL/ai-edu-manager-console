@@ -72,6 +72,7 @@ const deliveryPath = () => path.join(terminalUserData(), 'delivery-ledger.json')
 const terminalUploadQueuePath = () => path.join(terminalUserData(), 'terminal-upload-queue.json');
 const terminalUploadStagingRoot = () => path.join(terminalUserData(), 'terminal-upload-staging');
 const practiceAttemptQueuePath = () => path.join(terminalUserData(), 'practice-attempt-queue.json');
+const courseProjectionCachePath = () => path.join(terminalUserData(), 'course-projection-cache-v2.json');
 const captureRoot = () => path.join(terminalUserData(), 'screen-captures');
 const captureDeliveryQueuePath = () => path.join(terminalUserData(), 'capture-delivery-queue.json');
 const captureSampleLogPath = (session) => path.join(String(session?.folder || ''), 'capture-samples.jsonl');
@@ -383,6 +384,7 @@ async function requestJson(route, options = {}) {
     headers: {
       ...(options.token || (options.deviceToken ? config.token : (config.sessionToken || config.token)) ? { Authorization: `Bearer ${options.token || (options.deviceToken ? config.token : (config.sessionToken || config.token))}` } : {}),
       ...(options.body ? { 'Content-Type': 'application/json' } : {}),
+      ...(options.headers || {}),
     },
     body: options.body ? JSON.stringify(options.body) : undefined,
     ...(options.timeoutMs ? { signal: AbortSignal.timeout(Number(options.timeoutMs)) } : {}),
@@ -391,6 +393,7 @@ async function requestJson(route, options = {}) {
   let payload = {};
   try { payload = text ? JSON.parse(text) : {}; }
   catch { payload = { ok: false, message: text || `HTTP ${response.status}` }; }
+  if (response.status === 304 && options.allowNotModified === true) return { __notModified: true, __etag: response.headers.get('etag') || '' };
   if (!response.ok || payload.ok === false) {
     const error = new Error(payload.message || `HTTP ${response.status}`);
     error.status = response.status;
@@ -399,7 +402,7 @@ async function requestJson(route, options = {}) {
     error.payload = payload;
     throw error;
   }
-  return payload;
+  return options.returnResponseMeta ? { ...payload, __etag: response.headers.get('etag') || '' } : payload;
 }
 
 function normalizedHostScope(value = {}, hostUrl = '') {
@@ -1331,7 +1334,38 @@ async function submitTerminalInbox(input) {
 
 async function loadEffectiveCourses() {
   const { config, studentId } = currentStudentSession();
-  const payload = await requestJson(`/api/students/${encodeURIComponent(studentId)}/courses`, { token: config.sessionToken });
+  const hostId = String(config.hostScope?.hostId || '');
+  if (!hostId) throw new Error('主机身份尚未核实，不能读取课程投影。');
+  const namespace = JSON.stringify([hostId, studentId]);
+  const cache = readJson(courseProjectionCachePath(), { schema: 'edu-manager.course-projection-cache.v2', entries: {} });
+  const cached = cache?.entries?.[namespace];
+  let payload;
+  try {
+    const remote = await requestJson(`/api/v2/students/${encodeURIComponent(studentId)}/courses`, {
+      token: config.sessionToken,
+      headers: cached?.etag ? { 'If-None-Match': cached.etag } : {},
+      allowNotModified: true,
+      returnResponseMeta: true,
+    });
+    if (remote.__notModified) payload = cached?.projection;
+    else {
+      const { __etag: _etag, ...projection } = remote;
+      payload = projection;
+    }
+    if (!payload) throw new Error('主机返回304但当前主机和学生没有投影缓存。');
+    if (Number(payload.schemaVersion) !== 2 || String(payload.hostId || '') !== hostId || String(payload.studentId || '') !== studentId) {
+      throw new Error('课程投影的主机或学生范围不匹配。');
+    }
+    if (!remote.__notModified) {
+      cache.schema = 'edu-manager.course-projection-cache.v2';
+      cache.entries = cache.entries && typeof cache.entries === 'object' ? cache.entries : {};
+      cache.entries[namespace] = { hostId, studentId, etag: remote.__etag || `"${payload.projectionRevision}"`, projection: payload, cachedAt: new Date().toISOString() };
+      writeJson(courseProjectionCachePath(), cache);
+    }
+  } catch (error) {
+    payload = cached?.projection;
+    if (!payload || Number(payload.schemaVersion) !== 2 || String(payload.hostId || '') !== hostId || String(payload.studentId || '') !== studentId) throw error;
+  }
   effectiveCourseCache = Array.isArray(payload.courses) ? payload.courses : [];
   return payload;
 }
@@ -1359,6 +1393,10 @@ async function openTerminalCourse(courseId) {
   const payload = await loadEffectiveCourses();
   let course = (payload.courses || []).find((item) => item.courseId === String(courseId || ''));
   if (!course || String(payload.studentId || '') !== studentId) throw new Error('该课程未分配给当前学生或已下架。');
+  const leaseUntil = Date.parse(String(course.offlineOpenUntil || ''));
+  if (!Number.isFinite(leaseUntil) || leaseUntil <= Date.now()) throw new Error('课程离线打开租约已到期，请联网刷新后重试。');
+  const courseUrl = new URL(String(course.url || ''));
+  if (courseUrl.protocol !== 'https:' || courseUrl.username || courseUrl.password) throw new Error('课程入口不是受信任的 HTTPS 地址。');
   try {const pinned=await requestJson('/api/student-session/course-start',{method:'POST',body:{courseId},token:config.sessionToken});course={...course,...pinned.course};}
   catch(error){if(error.status!==404)throw error;}
   if(currentStudentSession().config.sessionToken!==config.sessionToken)throw Error('学生已切换，请重新打开课程');

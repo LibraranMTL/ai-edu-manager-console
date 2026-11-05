@@ -1,8 +1,8 @@
 {
   "schema": "edu-manager.android-candidate.v1",
-  "versionName": "1.3.4",
-  "versionCode": 38,
+  "versionName": "1.3.5",
+  "versionCode": 39,
   "releaseStatus": "candidate",
-  "previousFormalVersion": "1.3.3",
-  "purpose": "Split material digestion into independently receipted bounded batches; recover legacy unknown-result associations safely; expose direct batch recovery without automatic retry; correct processing counts; sort education archive documents newest first"
+  "previousFormalVersion": "1.3.4",
+  "purpose": "Require publisher-signed v3 course packages, reject unknown signing keys and HTTP course entry points, and preserve the existing 1.3.4 public release until device verification is complete"
 }

@@ -1,0 +1,64 @@
+openapi: 3.1.0
+info:
+  title: AI Education Manager Public Course MVP
+  version: 1.0.0
+paths:
+  /v2/public-content/manifest:
+    get:
+      summary: Read the active signed public course manifest
+      parameters:
+        - in: header
+          name: If-None-Match
+          schema: { type: string }
+      responses:
+        '200': { description: Signed manifest, headers: { ETag: { schema: { type: string } } } }
+        '304': { description: Manifest unchanged }
+        '404': { description: No active manifest }
+  /v2/public-content/assets/{assetRevisionId}:
+    get:
+      summary: Read an immutable public content asset
+      parameters:
+        - in: path
+          name: assetRevisionId
+          required: true
+          schema: { type: string, pattern: '^asset-rev-[a-f0-9]{64}$' }
+        - in: header
+          name: Range
+          schema: { type: string }
+      responses:
+        '200': { description: Complete asset }
+        '206': { description: Asset byte range }
+        '304': { description: Asset unchanged }
+        '416': { description: Invalid range }
+  /v2/public-content/revocations:
+    get:
+      summary: Read the signed emergency revocation delta
+      responses:
+        '200': { description: Signed tombstones }
+        '304': { description: Revocations unchanged }
+        '404': { description: No emergency revocations }
+  /v2/admin/releases/validate:
+    post:
+      summary: Persist a signed release candidate
+      security: [{ adminSession: [] }]
+      responses: { '200': { description: Candidate and expected manifest hash } }
+  /v2/admin/releases/publish:
+    post:
+      summary: Atomically activate a validated candidate
+      security: [{ adminSession: [] }]
+      responses: { '200': { description: Active or idempotent result }, '409': { description: Candidate hash changed } }
+  /v2/admin/releases/rollback:
+    post:
+      summary: Create a new active release from a verified historical manifest
+      security: [{ adminSession: [] }]
+      responses: { '200': { description: Rollback release active } }
+  /v2/admin/releases/emergency-withdraw:
+    post:
+      summary: Atomically publish a signed tombstone and replacement manifest
+      security: [{ adminSession: [] }]
+      responses: { '200': { description: Withdrawal active } }
+components:
+  securitySchemes:
+    adminSession:
+      type: http
+      scheme: bearer

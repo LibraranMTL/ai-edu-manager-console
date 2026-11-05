@@ -7,12 +7,12 @@ const app = path.join(__dirname, '..', 'android-standalone-manager', 'app');
 const java = path.join(app, 'src', 'main', 'java', 'com', 'qxmatrix', 'edumanager', 'standalone');
 const read = (name) => fs.readFileSync(path.join(java, name), 'utf8');
 
-test('1.3.4 code 38 keeps assistant and gateway removed while preserving conversation intake', () => {
+test('1.3.5 code 39 keeps assistant and gateway removed while preserving conversation intake', () => {
   const build = fs.readFileSync(path.join(app, 'build.gradle.kts'), 'utf8');
   const main = read('MainActivity.kt');
   const manifest = fs.readFileSync(path.join(app, 'src', 'main', 'AndroidManifest.xml'), 'utf8');
-  assert.match(build, /versionCode = 38/);
-  assert.match(build, /versionName = "1\.3\.4"/);
+  assert.match(build, /versionCode = 39/);
+  assert.match(build, /versionName = "1\.3\.5"/);
   assert.doesNotMatch(main, /AI助手问答|AppSection\.ASSISTANT|renderAssistant|Agent 工具适配|getLaunchIntentForPackage/);
   assert.doesNotMatch(manifest, /com\.palmclaw|com\.openai\.chatgpt|QUERY_ALL_PACKAGES/);
   assert.match(manifest, /<queries>[\s\S]*android\.media\.action\.IMAGE_CAPTURE[\s\S]*<\/queries>/);

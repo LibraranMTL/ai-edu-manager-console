@@ -9,6 +9,7 @@ const { receiveDocument } = require('./document-stream.cjs');
 const { diskStatus } = require('./maintenance.cjs');
 const { createRemoteMcpHandler } = require('./remote-mcp.cjs');
 const { startMaterialIndexer } = require('./material-indexer.cjs');
+const { createPublicContentService } = require('./public-content.cjs');
 
 // A C5 result can contain up to 2 MiB of bounded, base64-encoded attachments
 // plus the Markdown body and envelope. Four MiB keeps the public request
@@ -75,6 +76,17 @@ function json(res, status, body) {
   res.end(JSON.stringify(body));
 }
 
+function publicJson(res, status, body, etag = '', cacheControl = 'public, max-age=60') {
+  const headers = {
+    'content-type': 'application/json; charset=utf-8',
+    'cache-control': cacheControl,
+    'x-content-type-options': 'nosniff',
+  };
+  if (etag) headers.etag = etag;
+  res.writeHead(status, headers);
+  res.end(status === 304 ? undefined : JSON.stringify(body));
+}
+
 function bearer(req) {
   const match = String(req.headers.authorization || '').match(/^Bearer ([A-Za-z0-9_-]{24,256})$/);
   return match ? match[1] : '';
@@ -86,6 +98,15 @@ function createHttpServer(options) {
     throw new Error('Model gateway requires an explicitly configured authenticated adapter');
   }
   const service = createService(options);
+  const publicContent = createPublicContentService({
+    db: service.db,
+    dataDir: options.dataDir,
+    isAdmin: service.isAdmin,
+    now: options.now,
+    keyId: options.publicContentKeyId,
+    privateKey: options.publicContentPrivateKey,
+    publicKey: options.publicContentPublicKey,
+  });
   const handleRemoteMcp = createRemoteMcpHandler(service);
   let backupScheduler, materialIndexer;
   try {
@@ -137,12 +158,73 @@ function createHttpServer(options) {
         }
         return json(res, 404, { error: '模型网关接口不存在' });
       }
+      if (req.method === 'GET' && route === '/v2/public-content/manifest') {
+        const item = publicContent.activeManifest();
+        if (String(req.headers['if-none-match'] || '') === item.etag) return publicJson(res, 304, null, item.etag);
+        res.setHeader('x-content-sha256', item.sha256);
+        return publicJson(res, 200, item.manifest, item.etag, 'public, max-age=60, stale-if-error=300');
+      }
+      if (req.method === 'GET' && route === '/v2/public-content/revocations') {
+        const item = publicContent.signedRevocations();
+        if (String(req.headers['if-none-match'] || '') === item.etag) return publicJson(res, 304, null, item.etag, 'public, max-age=30');
+        return publicJson(res, 200, item.payload, item.etag, 'public, max-age=30');
+      }
+      const publicReleaseMatch = route.match(/^\/v2\/public-content\/releases\/(manifest-rev-[a-f0-9]{32})$/);
+      if (req.method === 'GET' && publicReleaseMatch) {
+        return publicJson(res, 200, publicContent.releaseByRevision(publicReleaseMatch[1]), '', 'public, max-age=60');
+      }
+      const publicAssetMatch = route.match(/^\/v2\/public-content\/assets\/(asset-rev-[a-f0-9]{64})$/);
+      if (req.method === 'GET' && publicAssetMatch) {
+        const item = publicContent.asset(publicAssetMatch[1]);
+        const etag = `"${item.sha256}"`;
+        if (String(req.headers['if-none-match'] || '') === etag) {
+          res.writeHead(304, { etag, 'cache-control': 'public, max-age=31536000, immutable' }); return res.end();
+        }
+        let start = 0; let end = item.bytes - 1; let status = 200;
+        const range = String(req.headers.range || '').match(/^bytes=(\d*)-(\d*)$/);
+        if (req.headers.range && !range) {
+          res.writeHead(416, { 'content-range': `bytes */${item.bytes}` }); return res.end();
+        }
+        if (range) {
+          if (range[1]) start = Number(range[1]);
+          if (range[2]) end = Number(range[2]);
+          if (!range[1] && range[2]) { const suffix = Number(range[2]); start = Math.max(0, item.bytes - suffix); end = item.bytes - 1; }
+          if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start < 0 || end < start || start >= item.bytes) {
+            res.writeHead(416, { 'content-range': `bytes */${item.bytes}` }); return res.end();
+          }
+          end = Math.min(end, item.bytes - 1); status = 206;
+        }
+        const headers = { 'content-type': item.mimeType, 'content-length': end - start + 1,
+          'accept-ranges': 'bytes', etag, 'x-content-sha256': item.sha256,
+          'cache-control': 'public, max-age=31536000, immutable', 'x-content-type-options': 'nosniff' };
+        if (status === 206) headers['content-range'] = `bytes ${start}-${end}/${item.bytes}`;
+        res.writeHead(status, headers);
+        return fs.createReadStream(item.filePath, { start, end }).pipe(res);
+      }
       service.verifyViewerProof(token, req.method, req.url, req.headers);
       req.verifyBody = bytes => service.verifyBody(token, bytes, req.headers);
       if (['GET', 'DELETE'].includes(req.method)) req.verifyBody(Buffer.alloc(0));
-      if (req.method === 'GET' && route === '/health') return json(res, 200, { ok: true, service: 'edu-cloud-documents', version: '2.2.0-candidate.2', contracts: [1, 2], schema: service.schemaStatus(),
+      if (req.method === 'GET' && route === '/health') return json(res, 200, { ok: true, service: 'edu-cloud-documents', version: '2.3.0-candidate.1', contracts: [1, 2], schema: { ...service.schemaStatus(), publicContent: publicContent.schemaStatus() },
         materialIndex: materialIndexer?.status() || { enabled: false }, capabilities: ['profile-sync', 'material-sync', 'remote-agent-mcp', 'cloud-inbox', 'student-archive',
-          'viewer-student-relinquish', 'current-revision-index', 'async-pdf-docx-extraction', 'oauth-pkce'] });
+          'viewer-student-relinquish', 'current-revision-index', 'async-pdf-docx-extraction', 'oauth-pkce', 'public-course-manifest', 'public-course-revocations'] });
+      if (req.method === 'POST' && route === '/v2/admin/content/assets') {
+        return json(res, 201, publicContent.putAsset(token, await readJson(req)));
+      }
+      if (req.method === 'POST' && route === '/v2/admin/courses') {
+        return json(res, 201, publicContent.saveCourse(token, await readJson(req)));
+      }
+      if (req.method === 'POST' && route === '/v2/admin/releases/validate') {
+        return json(res, 200, publicContent.validateRelease(token, await readJson(req)));
+      }
+      if (req.method === 'POST' && route === '/v2/admin/releases/publish') {
+        return json(res, 200, publicContent.publishRelease(token, await readJson(req)));
+      }
+      if (req.method === 'POST' && route === '/v2/admin/releases/rollback') {
+        return json(res, 200, publicContent.rollbackRelease(token, await readJson(req)));
+      }
+      if (req.method === 'POST' && route === '/v2/admin/releases/emergency-withdraw') {
+        return json(res, 200, publicContent.emergencyWithdraw(token, await readJson(req)));
+      }
       if (req.method === 'POST' && route === '/oauth/clients') {
         return json(res, 201, service.registerOAuthClient(token, await readJson(req)));
       }
@@ -520,7 +602,7 @@ function createHttpServer(options) {
       if (!res.headersSent && !res.destroyed) json(res, error.status || 500, { error: error.status ? error.message : '服务内部错误' });
     }
   });
-  return { server, service, materialIndexer, close: async () => {
+  return { server, service, publicContent, materialIndexer, close: async () => {
     await new Promise(resolve => server.close(resolve));
     await backupScheduler?.stop();
     await materialIndexer?.stop();
@@ -541,6 +623,8 @@ if (require.main === module) {
   const port = Number(process.env.CLOUD_REPORT_PORT || 8755);
   const publicOrigin = process.env.CLOUD_REPORT_PUBLIC_ORIGIN || 'https://www.greatbg.com/edu-cloud';
   const licenseTrustPath = process.env.CLOUD_REPORT_LICENSE_TRUST_PATH || path.join(__dirname, 'trusted-license-issuers.json');
+  const publicContentPrivateKeyPath = process.env.CLOUD_PUBLIC_CONTENT_PRIVATE_KEY_PATH || '';
+  const publicContentPublicKeyPath = process.env.CLOUD_PUBLIC_CONTENT_PUBLIC_KEY_PATH || '';
   if (!dataDir || !adminToken) throw new Error('Set CLOUD_REPORT_DATA_DIR and CLOUD_REPORT_ADMIN_TOKEN');
   if (host !== '127.0.0.1' && host !== '::1' && process.env.CLOUD_REPORT_BEHIND_HTTPS_PROXY !== '1') {
     throw new Error('Non-local binding requires CLOUD_REPORT_BEHIND_HTTPS_PROXY=1 and a real TLS reverse proxy');
@@ -549,6 +633,9 @@ if (require.main === module) {
   const trustedLicenseIssuers = JSON.parse(fs.readFileSync(licenseTrustPath, 'utf8'));
   const materialOcrArgs = process.env.CLOUD_MATERIAL_OCR_ARGS_JSON ? JSON.parse(process.env.CLOUD_MATERIAL_OCR_ARGS_JSON) : [];
   const app = createHttpServer({ dataDir, adminToken, maxStudentBytes, backupRoot, backupIntervalMs, modelGateway: gateway, publicOrigin, trustedLicenseIssuers,
+    publicContentKeyId: process.env.CLOUD_PUBLIC_CONTENT_KEY_ID || 'course-catalog-primary-2026',
+    publicContentPrivateKey: publicContentPrivateKeyPath ? fs.readFileSync(publicContentPrivateKeyPath, 'utf8') : '',
+    publicContentPublicKey: publicContentPublicKeyPath ? fs.readFileSync(publicContentPublicKeyPath, 'utf8') : '',
     materialOcrCommand: process.env.CLOUD_MATERIAL_OCR_COMMAND || '', materialOcrArgs,
     auditRoot: process.env.CLOUD_REPORT_AUDIT_ROOT, auditKey: process.env.CLOUD_REPORT_AUDIT_KEY,
     pruneBackups: process.env.CLOUD_REPORT_PRUNE_BACKUPS === '1',

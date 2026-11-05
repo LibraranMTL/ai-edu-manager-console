@@ -2045,7 +2045,7 @@ function createService({ dataDir, adminToken, now = () => Date.now(), maxStudent
     });
     return { documentId, displayName: displayName === undefined ? row.display_name : String(displayName).trim(), deleted: deleted === undefined ? row.deleted_at !== null : deleted };
   }
-  return { db, close: () => db.close(), schemaStatus, loginAdmin, logoutAdmin, rotateAdmin, rotateDevice, revokeDevice, recordDenied, verifyBody, verifyBodyHash, prepareDocument, deleteReport, listAudit, studentStorage, verifyViewerProof, createStudent, registerSource, allowWrite, createPairing,
+  return { db, close: () => db.close(), schemaStatus, isAdmin, loginAdmin, logoutAdmin, rotateAdmin, rotateDevice, revokeDevice, recordDenied, verifyBody, verifyBodyHash, prepareDocument, deleteReport, listAudit, studentStorage, verifyViewerProof, createStudent, registerSource, allowWrite, createPairing,
     createSourceEnrollment, redeemSourceEnrollment, autoEnrollSource, approvePairing, revoke, listGrants, setOwnWrite, setOwnUploadScope, setOwnHealthScope, listStudents,
     studentRemovalPreview, archiveStudent, restoreStudent, relinquishViewerStudent, uploadReport, checkSourceReports, listReports, getReport,
     uploadDocument, listDocuments, getDocument, updateDocument,

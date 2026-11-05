@@ -104,6 +104,8 @@ const { pathToFileURL } = require('url');
 const { WebContentsView, session } = require('electron');
 const { createCourseCatalogStore } = require('./course-catalog-store.cjs');
 const { safeCourseNavigation } = require('./course-catalog.cjs');
+const { createStudentCourseProjection } = require('./student-course-projection.cjs');
+const { syncPublicCourses } = require('./public-course-sync.cjs');
 const { createPlatformCourseDraftStore } = require('./platform-course-drafts.cjs');
 const { createCoursePackage } = require('./course-package-v2.cjs');
 const { createLicenseTrustStore } = require('./license-trust-store.cjs');
@@ -1414,6 +1416,7 @@ let courseCaptureSetupVisible = false;
 let courseSidebarCollapsed = false;
 let courseFullscreen = false;
 let courseCatalogStoreInstance = null;
+let publicCourseSyncTimer = null;
 let platformCourseDraftStoreInstance = null;
 let licenseTrustStoreInstance = null;
 const pendingCustomCourseImages = new Map();
@@ -1631,6 +1634,27 @@ function courseCatalogStore() {
     });
   }
   return courseCatalogStoreInstance;
+}
+async function refreshPublicCourses() {
+  const store = courseCatalogStore();
+  const result = await syncPublicCourses({
+    baseUrl: process.env.EDU_PUBLIC_CONTENT_BASE_URL || 'https://www.greatbg.com/edu-cloud',
+    cacheDir: store.publicContentCacheDir,
+    publicKeys: store.publicKeys(),
+    timeoutMs: 15_000,
+  });
+  if (!result.notModified) {
+    notify('onNativeCourseCatalogChanged', { action: 'public_content_synchronized', ok: true, manifestRevision: result.manifest.manifestRevision });
+  }
+  return result;
+}
+
+function startPublicCourseSync() {
+  if (publicCourseSyncTimer) clearInterval(publicCourseSyncTimer);
+  const run = () => { void refreshPublicCourses().catch(error => console.warn(`公共课程同步未更新：${error.message}`)); };
+  setTimeout(run, 15_000).unref?.();
+  publicCourseSyncTimer = setInterval(run, 60_000);
+  publicCourseSyncTimer.unref?.();
 }
 function platformCourseDraftStore() {
   if (!platformCourseDraftStoreInstance) {
@@ -12040,6 +12064,8 @@ function importOfflineCourseCatalog() {
 let platformLocalPublishPending;
 function platformPublishItems(){return [...platformCourseDraftStore().list().map(d=>({id:d.courseId,title:d.course.name,kind:'draft',draft:d})),...platformCourseDraftStore().listDeletions().map(d=>({id:d.courseId,title:d.courseId,kind:'deletion',deletion:d}))];}
 async function publishPlatformCoursesLocally(input={}) {
+  throw Error('旧课程本地发布已进入只读观察期；请在云端课程发布管理中校验并发布。');
+  /* istanbul ignore next -- retained for 30-day rollback observation only. */
   if(platformLocalPublishPending)throw Error('平台课程正在发布，请等待当前发布完成');
   const locked=platformCourseCapabilityRequiredJson('platform_course_publish','PLATFORM_COURSE_PUBLISH_REQUIRED');
   if(locked)throw Error(JSON.parse(locked).message);
@@ -12078,6 +12104,9 @@ async function publishPlatformCoursesLocally(input={}) {
   })().finally(()=>{platformLocalPublishPending=null;});return platformLocalPublishPending;
 }
 function publishPlatformCourseCatalog(releaseNotes = '') {
+  return JSON.stringify({ ok: false, code: 'CLOUD_COURSE_PUBLISH_REQUIRED', readOnly: true,
+    message: '旧课程管理已进入30天只读观察期。新增、修改、撤回和回滚请使用云端课程发布管理。' });
+  /* istanbul ignore next -- retained for 30-day rollback observation only. */
   const locked = platformCourseCapabilityRequiredJson('platform_course_publish', 'PLATFORM_COURSE_PUBLISH_REQUIRED');
   if (locked) return locked;
   const drafts = platformCourseDraftStore().list();
@@ -37962,12 +37991,13 @@ function resetUploadCounterIfNeeded() {
   }
 }
 
-function sendJson(response, statusCode, body) {
+function sendJson(response, statusCode, body, extraHeaders = {}) {
   response.writeHead(statusCode, {
     'Content-Type': 'application/json; charset=utf-8',
     'Access-Control-Allow-Origin': '*',
     'Access-Control-Allow-Headers': 'Authorization, Content-Type, X-Upload-Id, X-Edu-Data-Generation, X-Edu-Binding-Id, X-Edu-Node-Id, X-Edu-Timestamp, X-Edu-Nonce, X-Edu-Content-Sha256, X-Edu-Signature',
     'Access-Control-Allow-Methods': 'GET, POST, PUT, OPTIONS',
+    ...extraHeaders,
   });
   response.end(JSON.stringify(body));
 }
@@ -38610,6 +38640,55 @@ function handleStudentCourses(request, response, studentId) {
     studentId: String(student.id),
     courses,
     disclaimer: '打开第三方课程或采集屏幕资料不代表课程完成、正确率或学情结论。',
+  });
+}
+
+function handleStudentCoursesV2(request, response, studentId) {
+  if (!requireStudentAccess(request, response, studentId)) return;
+  const student = findStudentByKey(studentId);
+  if (!student) {
+    sendJson(response, 404, { ok: false, message: '未找到当前学生。' });
+    return;
+  }
+  const state = courseCatalogStore().state();
+  const courses = courseCatalogStore().coursesForStudent(student)
+    .filter(courseAllowedByCurrentPlan)
+    .map((course) => ({
+      ...course,
+      coverUrl: `/api/course-assets/${encodeURIComponent(path.basename(course.coverAsset))}`,
+    }));
+  // Renew leases in a stable five-minute window: clients can receive 304s inside
+  // the window, while a later 200 response extends offline access deliberately.
+  const leaseWindowMs = 5 * 60 * 1000;
+  const generatedAt = new Date(Math.floor(Date.now() / leaseWindowMs) * leaseWindowMs);
+  const declaredFreshUntil = Date.parse(state.platformCatalog?.cloudFreshUntil || state.catalog?.cloudFreshUntil || '');
+  const cloudFreshUntil = new Date(Number.isFinite(declaredFreshUntil) ? declaredFreshUntil : generatedAt.getTime() + 15 * 60 * 1000);
+  const projection = createStudentCourseProjection({
+    hostId: getHostIdentity().hostId,
+    studentId: String(student.id),
+    manifestRevision: String(state.platformCatalog?.manifestRevision || state.platformCatalog?.catalogVersion || state.catalog?.catalogVersion || ''),
+    policyRevision: String(state.policy?.policyVersion || ''),
+    generatedAt: generatedAt.toISOString(),
+    cloudFreshUntil: cloudFreshUntil.toISOString(),
+    expiresAt: new Date(generatedAt.getTime() + 6 * 60 * 60 * 1000).toISOString(),
+    courses,
+    tombstones: Array.isArray(state.platformCatalog?.tombstones) ? state.platformCatalog.tombstones : [],
+  });
+  const etag = `"${projection.projectionRevision}"`;
+  if (String(request.headers['if-none-match'] || '').split(',').map((item) => item.trim()).includes(etag)) {
+    response.writeHead(304, {
+      ETag: etag,
+      'Cache-Control': 'private, no-cache',
+      Vary: 'Authorization',
+      'Access-Control-Allow-Origin': '*',
+    });
+    response.end();
+    return;
+  }
+  sendJson(response, 200, { ok: true, ...projection }, {
+    ETag: etag,
+    'Cache-Control': 'private, no-cache',
+    Vary: 'Authorization',
   });
 }
 
@@ -42734,6 +42813,10 @@ function handleHostRequest(request, response) {
   if (request.method === 'POST' && remoteCaptureCompleteMatch) {
     return handleRemoteCaptureSessionComplete(request, response, remoteCaptureCompleteMatch[1], remoteCaptureCompleteMatch[2]);
   }
+  const studentCoursesV2Match = pathname.match(/^\/api\/v2\/students\/([^/]+)\/courses$/);
+  if (request.method === 'GET' && studentCoursesV2Match) {
+    return handleStudentCoursesV2(request, response, studentCoursesV2Match[1]);
+  }
   const studentCoursesMatch = pathname.match(/^\/api\/students\/([^/]+)\/courses$/);
   if (request.method === 'GET' && studentCoursesMatch) {
     return handleStudentCourses(request, response, studentCoursesMatch[1]);
@@ -44420,6 +44503,7 @@ if (practicePrintHelperMode) {
         if (tasksReady) setTimeout(() => { startDigestWorkflowMonitor(); }, 10_000);
         if (tasksReady) setTimeout(() => { startGrowthRefreshMonitor(); startDirectDeliveryMonitor(); }, 20_000);
         if (tasksReady) setTimeout(() => { startAgentLifecycleDrainMonitor(); startAgentLifecycleInstallMonitor(); }, 30_000);
+        startPublicCourseSync();
 
         const collaboration = readCollaborationState();
         const collaborationNeedsHost = collaboration.enabled && collaboration.bindings.some((item) => item.status === 'active' && !item.revokedAt);

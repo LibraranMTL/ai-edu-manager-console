@@ -137,22 +137,14 @@ test('image-only personal card preparation reuses bytes and preserves layout',as
 });
 test('corrupt course publication index fails closed instead of exposing every student',async t=>{const e=await fixture(t),directory=path.join(e.root,'broken');await fs.mkdir(directory);await fs.writeFile(path.join(directory,'course-publications.json'),'{broken');assert.throws(()=>createCoursePublications(directory).project([course()],people[0]));});
 
-test('platform publish worker builds and installs in background, retries identical input and rejects changed content',async t=>{
+test('legacy platform publish worker fails closed without a deployment signing key',async t=>{
  const e=await fixture(t),worker=require('../electron/course-publish-worker.cjs').runCoursePublishWorker;
  const content={...course(),courseId:'platform:worker',type:'platform_standard'},d={courseId:content.courseId,course:content,validation:{ok:true}};
  const input={options:{drafts:[d],deletedCourseIds:[],baseCatalog:{courses:[],catalogVersion:''},issuedAt:'2026-10-11T00:00:00.000Z',hostVersion:'0.21.1',minHostVersion:'0.21.1',outputPath:path.join(e.root,'worker','package.edu-coursepkg')},storeOptions:{userDataDir:e.root,appVersion:'0.21.1',resourceRoots:[path.resolve(__dirname,'../public')]},assets:{[content.coverAsset]:path.resolve(__dirname,'../public/catalog-assets/starfall-k5-math.png')}};
  input.options.baseCatalog=createCourseCatalogStore(input.storeOptions).state().platformCatalog||{courses:[],catalogVersion:''};
  for(const c of input.options.baseCatalog.courses)input.assets[c.coverAsset]=path.resolve(__dirname,'../public',c.coverAsset);
- assert.equal((await worker(input)).ok,true);assert.equal((await worker(input)).ok,true);
- const store=createCourseCatalogStore(input.storeOptions);assert(store.combinedCatalog().courses.some(c=>c.courseId===content.courseId));
- const second={...content,courseId:'platform:worker-second',name:'Second successful item'};
- const nextInput={...input,options:{...input.options,drafts:[{courseId:second.courseId,course:second,validation:{ok:true}}],baseCatalog:store.state().platformCatalog,outputPath:path.join(e.root,'worker','second.edu-coursepkg')},assets:{...input.assets}};
- for(const c of nextInput.options.baseCatalog.courses)nextInput.assets[c.coverAsset]=store.assetPath(c.coverAsset);
- await worker(nextInput);
- // Replaying an earlier successful package must not erase a later success.
- await worker(input);
- assert(createCourseCatalogStore(input.storeOptions).combinedCatalog().courses.some(c=>c.courseId===second.courseId));
- await assert.rejects(worker({...input,options:{...input.options,drafts:[{...d,course:{...content,name:'Changed'}}]}}),/变化/);
+ await assert.rejects(worker(input),/RSA 私钥|keyId/);
+ assert.equal(sync.existsSync(input.options.outputPath),false);
 });
 
 test('withdrawal serialized before a new start blocks the new instance',async t=>{

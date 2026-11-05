@@ -67,16 +67,23 @@ test('structured planning is capability gated and rendered from host sections on
   for (const section of ['pathways', 'majors', 'careers']) assert.match(planning, new RegExp(section));
 });
 
-test('0.6.26 is the formal Android student release while other public platforms stay unchanged', () => {
+test('0.6.27 is an Android student source candidate while all public release manifests stay unchanged', () => {
   const manifest = read('android-tablet-terminal/AndroidManifest.xml');
   const build = read('android-tablet-terminal/build.ps1');
   const formal = read('release/edu-manager-version.json');
-  assert.match(manifest, /android:versionCode="96"/u);
-  assert.match(manifest, /android:versionName="0\.6\.26"/u);
-  assert.match(build, /AI-edu-manager-tablet-terminal-0\.6\.26\.apk/u);
+  assert.match(manifest, /android:versionCode="97"/u);
+  assert.match(manifest, /android:versionName="0\.6\.27"/u);
+  assert.match(build, /AI-edu-manager-tablet-terminal-0\.6\.27\.apk/u);
   assert.match(formal, /"tabletTerminalVersionCode": 96/u);
   assert.match(formal, /"tabletTerminalVersionName": "0\.6\.26"/u);
   assert.match(formal, /AI-edu-manager-tablet-terminal-0\.6\.26\.apk/u);
-  assert.match(formal, /"windowsVersionName": "0\.21\.6"/u);
+  assert.match(formal, /"windowsVersionName": "0\.23\.3"/u);
   assert.match(formal, /"standaloneVersionName": "1\.3\.4"/u);
+});
+
+test('Android student refreshes its scoped v2 course projection every sixty seconds', () => {
+  assert.match(activity, /COURSE_PROJECTION_PREFIX = "course_projection_v2_"/u);
+  assert.match(activity, /courseRefreshHandler\.postDelayed\(courseRefreshRunnable, 60_000L\)/u);
+  assert.match(activity, /courseRefreshHandler\.removeCallbacks\(courseRefreshRunnable\)/u);
+  assert.match(activity, /\/api\/v2\/students\//u);
 });

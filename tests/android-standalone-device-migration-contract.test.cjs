@@ -71,6 +71,6 @@ test('Android student keeps small-library upgrade and diverts large libraries to
   assert.match(main, /从 Windows 主机升级到单机版（少量资料）/);
   assert.match(main, /rawFileCount >= 1000/);
   assert.match(main, /rawTotalBytes >= 3L \* 1024L \* 1024L \* 1024L/);
-  assert.match(manifest, /versionCode="96"/);
-  assert.match(manifest, /versionName="0\.6\.26"/);
+  assert.match(manifest, /versionCode="97"/);
+  assert.match(manifest, /versionName="0\.6\.27"/);
 });

@@ -94,7 +94,11 @@ test('Windows host and student terminal expose scoped course catalog contracts',
   assert.match(hostUi, /删除平台课程/);
   assert.match(hostUi, /待发布删除/);
   assert.match(hostUi, /平台精选课程由平台版维护/);
-  assert.match(terminal, /\/api\/students\/\$\{encodeURIComponent\(studentId\)\}\/courses/);
+  assert.match(terminal, /\/api\/v2\/students\/\$\{encodeURIComponent\(studentId\)\}\/courses/);
+  assert.match(terminal, /course-projection-cache-v2\.json/);
+  assert.match(terminal, /If-None-Match/);
+  assert.match(terminal, /offlineOpenUntil/);
+  assert.match(terminal, /courseUrl\.protocol !== 'https:'/);
   assert.match(terminal, /String\(payload\.studentId \|\| ''\) !== studentId/);
   assert.match(browser, /nodeIntegration: false/);
   assert.match(browser, /contextIsolation: true/);
@@ -113,7 +117,11 @@ test('Android course WebView denies native capabilities and keeps capture user i
   assert.match(activity, /setMixedContentMode\(WebSettings\.MIXED_CONTENT_NEVER_ALLOW\)/);
   assert.match(activity, /request\.deny\(\)/);
   assert.doesNotMatch(activity, /addJavascriptInterface/);
-  assert.match(activity, /"https"\.equalsIgnoreCase\(uri\.getScheme\(\)\)[\s\S]*"http"\.equalsIgnoreCase\(uri\.getScheme\(\)\)/);
+  assert.match(activity, /return "https"\.equalsIgnoreCase\(uri\.getScheme\(\)\)/);
+  assert.doesNotMatch(activity, /"http"\.equalsIgnoreCase\(uri\.getScheme\(\)\)/);
+  assert.match(activity, /\/api\/v2\/students\//);
+  assert.match(activity, /If-None-Match/);
+  assert.match(activity, /offlineOpenUntil/);
   assert.match(activity, /courseCaptureButton\.setText\(active/);
   assert.match(activity, /handleCapturePrimary\(\)/);
   assert.match(activity, /REQUEST_SCREEN_CAPTURE/);
@@ -123,7 +131,7 @@ test('Android course WebView denies native capabilities and keeps capture user i
   assert.match(capture, /courseCompletedAt = courseId\.length\(\) == 0 \? 0L : endedAt/);
 });
 
-test('first-party release payload includes both covers and the integrity catalog', () => {
+test('first-party release payload includes both covers and the signed catalog trust anchor', () => {
   for (const relativePath of [
     ['public', 'course-catalog', 'catalog.json'],
     ['public', 'course-catalog', 'public-key.pem'],

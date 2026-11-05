@@ -30,6 +30,8 @@ import android.media.projection.MediaProjectionManager;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Environment;
+import android.os.Handler;
+import android.os.Looper;
 import android.provider.MediaStore;
 import android.provider.OpenableColumns;
 import android.provider.Settings;
@@ -125,8 +127,8 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
     static final int REQUEST_DIRECT_UPLOAD = 8112;
     static final int REQUEST_DIRECT_IMAGE_UPLOAD = 8113;
     static final int REQUEST_IMPORT_CONVERSATION_FILE = 8114;
-    static final String VERSION_NAME = "0.6.26";
-    static final int VERSION_CODE = 96;
+    static final String VERSION_NAME = "0.6.27";
+    static final int VERSION_CODE = 97;
     static final String CONNECTION_BACKUP_KIND = "ai-edu-manager-tablet-connection-backup";
     static final int CONNECTION_BACKUP_VERSION = 1;
     static final String UPDATE_MANIFEST_URL = "https://www.greatbg.com/download/edu-manager-version.json";
@@ -177,6 +179,8 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
     private static final String CACHE_MARKDOWN_PREFIX = "markdown_";
     private static final String CACHE_MARKDOWN_TITLE_PREFIX = "markdown_title_";
     private static final String CACHE_TIME_PREFIX = "cache_time_";
+    private static final String COURSE_PROJECTION_PREFIX = "course_projection_v2_";
+    private static final String COURSE_ETAG_PREFIX = "course_projection_etag_v2_";
 
     EditText serverInput;
     EditText tokenInput;
@@ -322,6 +326,13 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
     final List<Uri> pendingSharedUris = new ArrayList<Uri>();
     final List<Uri> failedUploadUris = new ArrayList<Uri>();
     final List<Course> courses = new ArrayList<Course>();
+    final Handler courseRefreshHandler = new Handler(Looper.getMainLooper());
+    final Runnable courseRefreshRunnable = new Runnable() {
+        @Override public void run() {
+            if (selectedStudent == null || isFinishing()) return;
+            loadCourses();
+        }
+    };
     final Set<String> activeCourseAllowedHosts = new HashSet<String>();
     Uri pendingCameraUri = null;
     Uri pendingPairQrUri = null;
@@ -432,12 +443,20 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
     @Override
     protected void onStop() {
         stopWaitingForHostInvite();
+        courseRefreshHandler.removeCallbacks(courseRefreshRunnable);
         super.onStop();
+    }
+
+    @Override
+    protected void onStart() {
+        super.onStart();
+        if (selectedStudent != null) loadCourses();
     }
 
     @Override
     protected void onDestroy() {
         stopWaitingForHostInvite();
+        courseRefreshHandler.removeCallbacks(courseRefreshRunnable);
         disposeUiWebViews();
         super.onDestroy();
     }
@@ -1336,7 +1355,7 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
         try {
             Uri uri = Uri.parse(url == null ? "" : url.trim());
             String host = uri.getHost();
-            return ("https".equalsIgnoreCase(uri.getScheme()) || "http".equalsIgnoreCase(uri.getScheme()))
+            return "https".equalsIgnoreCase(uri.getScheme())
                 && host != null
                 && uri.getUserInfo() == null
                 && activeCourseAllowedHosts.contains(host.toLowerCase(Locale.US));
@@ -1346,7 +1365,7 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
     }
 
     void openCourseBrowser(Course course) {
-        if (course == null || !course.isSafe()) {
+        if (course == null || !course.isSafe() || !course.leaseValid(System.currentTimeMillis())) {
             toast("课程链接或白名单无效，已停止打开。");
             return;
         }
@@ -6225,6 +6244,8 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
     }
 
     void loadCourses() {
+        courseRefreshHandler.removeCallbacks(courseRefreshRunnable);
+        if (selectedStudent != null) courseRefreshHandler.postDelayed(courseRefreshRunnable, 60_000L);
         courses.clear();
         renderCourses();
         if (selectedStudent == null) {
@@ -6244,7 +6265,7 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
                 JSONObject payload = null;
                 String error = null;
                 try {
-                    payload = getJson(base + "/api/students/" + encode(studentId) + "/courses", token);
+                    payload = fetchCourseProjection(base, studentId, token, true);
                 } catch (Exception failure) {
                     error = failure.getMessage();
                 }
@@ -6267,7 +6288,10 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
             renderCourses();
             return;
         }
-        if (!expectedStudentId.equals(payload == null ? "" : payload.optString("studentId", ""))) {
+        String expectedHostId = getSharedPreferences(PREFS, MODE_PRIVATE).getString(PREF_HOST_DEVICE_ID, "").trim();
+        if (payload == null || payload.optInt("schemaVersion", 0) != 2
+            || !expectedStudentId.equals(payload.optString("studentId", ""))
+            || expectedHostId.length() == 0 || !expectedHostId.equals(payload.optString("hostId", ""))) {
             courseStatusText.setText("课程目录学生范围不匹配，已停止展示。");
             renderCourses();
             return;
@@ -6283,7 +6307,7 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
         }
         courseStatusText.setText(courses.isEmpty()
             ? "当前学生没有已启用且已分配的课程。"
-            : "目录版本 " + payload.optString("catalogVersion", "") + " · " + courses.size() + " 门课程");
+            : "目录版本 " + payload.optString("manifestRevision", "") + " · " + courses.size() + " 门课程");
         renderCourses();
     }
 
@@ -6327,7 +6351,7 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
             Button open = button("安全打开课程", true);
             open.setOnClickListener(new View.OnClickListener() {
                 @Override public void onClick(View view) {
-                    openCourseBrowser(course);
+                    revalidateAndOpenCourse(course);
                 }
             });
             LinearLayout action = row();
@@ -6336,6 +6360,76 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
             courseListContainer.addView(item);
             loadCourseCover(course, cover);
         }
+    }
+
+    String courseProjectionNamespace(String studentId) {
+        String hostId = getSharedPreferences(PREFS, MODE_PRIVATE).getString(PREF_HOST_DEVICE_ID, "").trim();
+        return hostId + "_" + studentId;
+    }
+
+    JSONObject cachedCourseProjection(String studentId) {
+        String value = getSharedPreferences(PREFS, MODE_PRIVATE).getString(COURSE_PROJECTION_PREFIX + courseProjectionNamespace(studentId), "");
+        try { return value.length() == 0 ? null : new JSONObject(value); } catch (Exception ignored) { return null; }
+    }
+
+    JSONObject fetchCourseProjection(String base, String studentId, String token, boolean allowOffline) throws Exception {
+        String namespace = courseProjectionNamespace(studentId);
+        SharedPreferences preferences = getSharedPreferences(PREFS, MODE_PRIVATE);
+        HttpURLConnection connection = null;
+        try {
+            connection = (HttpURLConnection) new URL(base + "/api/v2/students/" + encode(studentId) + "/courses").openConnection();
+            connection.setConnectTimeout(8000); connection.setReadTimeout(15000);
+            connection.setRequestProperty("Accept", "application/json");
+            if (token.length() > 0) connection.setRequestProperty("Authorization", "Bearer " + token);
+            String etag = preferences.getString(COURSE_ETAG_PREFIX + namespace, "");
+            if (etag.length() > 0) connection.setRequestProperty("If-None-Match", etag);
+            int code = connection.getResponseCode();
+            if (code == 304) {
+                JSONObject cached = cachedCourseProjection(studentId);
+                if (cached == null) throw new Exception("主机返回304但本机没有对应学生缓存");
+                return cached;
+            }
+            String body = readStream(code >= 200 && code < 300 ? connection.getInputStream() : connection.getErrorStream());
+            JSONObject payload = body.length() > 0 ? new JSONObject(body) : new JSONObject();
+            if (code < 200 || code >= 300 || !payload.optBoolean("ok", true)) throw new Exception("HTTP " + code + ": " + payload.optString("message", "请求失败"));
+            String hostId = preferences.getString(PREF_HOST_DEVICE_ID, "").trim();
+            if (payload.optInt("schemaVersion", 0) != 2 || !studentId.equals(payload.optString("studentId", "")) || !hostId.equals(payload.optString("hostId", ""))) {
+                throw new Exception("课程投影的主机或学生范围不匹配");
+            }
+            preferences.edit().putString(COURSE_PROJECTION_PREFIX + namespace, payload.toString())
+                .putString(COURSE_ETAG_PREFIX + namespace, connection.getHeaderField("ETag") == null ? "" : connection.getHeaderField("ETag")).commit();
+            return payload;
+        } catch (Exception error) {
+            JSONObject cached = allowOffline ? cachedCourseProjection(studentId) : null;
+            if (cached != null) return cached;
+            throw error;
+        } finally { if (connection != null) connection.disconnect(); }
+    }
+
+    void revalidateAndOpenCourse(final Course selected) {
+        if (selectedStudent == null) return;
+        final String studentId = selectedStudent.id, base = normalizedBaseUrl(), token = dataToken();
+        if (courseStatusText != null) courseStatusText.setText("正在复核课程授权与撤回状态…");
+        new Thread(new Runnable() {
+            @Override public void run() {
+                Course accepted = null; String failure = null;
+                try {
+                    JSONObject projection = fetchCourseProjection(base, studentId, token, true);
+                    JSONArray items = projection.optJSONArray("courses");
+                    if (items != null) for (int index = 0; index < items.length(); index++) {
+                        Course candidate = new Course(items.getJSONObject(index));
+                        if (selected.id.equals(candidate.id) && candidate.isSafe() && candidate.leaseValid(System.currentTimeMillis())) { accepted = candidate; break; }
+                    }
+                    if (accepted == null) failure = "课程已撤回、未分配或离线租约已到期";
+                } catch (Exception error) { failure = error.getMessage(); }
+                final Course current = accepted; final String message = failure;
+                runOnUiThread(new Runnable() { @Override public void run() {
+                    if (selectedStudent == null || !studentId.equals(selectedStudent.id)) return;
+                    if (current == null) { courseStatusText.setText("课程打开已停止：" + message); toast("课程授权复核未通过。"); return; }
+                    openCourseBrowser(current);
+                }});
+            }
+        }).start();
     }
 
     void loadCourseCover(final Course course, final ImageView cover) {
@@ -7300,6 +7394,7 @@ class Course {
     final String summary;
     final String accountRequirement;
     final String legalNotice;
+    final String offlineOpenUntil;
     final Set<String> allowedHosts = new HashSet<String>();
     String currentUrl;
 
@@ -7313,6 +7408,7 @@ class Course {
         this.summary = json.optString("summary", "");
         this.accountRequirement = json.optString("accountRequirement", "账号与收费要求以课程提供方页面为准。");
         this.legalNotice = json.optString("legalNotice", "AI教育管家仅提供访问入口和用户主动发起的资料采集。");
+        this.offlineOpenUntil = json.optString("offlineOpenUntil", "");
         JSONArray hosts = json.optJSONArray("allowedHosts");
         if (hosts != null) {
             for (int i = 0; i < hosts.length(); i++) {
@@ -7327,13 +7423,25 @@ class Course {
             Uri uri = Uri.parse(url);
             String host = uri.getHost();
             return id.length() > 0
-                && ("https".equalsIgnoreCase(uri.getScheme()) || "http".equalsIgnoreCase(uri.getScheme()))
+                && "https".equalsIgnoreCase(uri.getScheme())
                 && host != null
                 && uri.getUserInfo() == null
                 && allowedHosts.contains(host.toLowerCase(Locale.US));
         } catch (Exception ignored) {
             return false;
         }
+    }
+
+    boolean leaseValid(long now) {
+        if (offlineOpenUntil.length() == 0) return false;
+        for (String pattern : new String[] { "yyyy-MM-dd'T'HH:mm:ss.SSSX", "yyyy-MM-dd'T'HH:mm:ssX" }) {
+            try {
+                java.text.SimpleDateFormat format = new java.text.SimpleDateFormat(pattern, Locale.US);
+                format.setLenient(false);
+                return format.parse(offlineOpenUntil).getTime() > now;
+            } catch (Exception ignored) { }
+        }
+        return false;
     }
 }
 

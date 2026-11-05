@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
+import { PublicContentPanel } from './PublicContentPanel';
 import './style.css';
 const serviceUrl = (route: string) => new URL(`.${route}`, new URL('.', window.location.href)).toString();
 
@@ -74,6 +75,7 @@ function App() {
   const [preview, setPreview] = useState('');
   const [message, setMessage] = useState('');
   const [busy, setBusy] = useState(false);
+  const [workspaceArea, setWorkspaceArea] = useState<'students' | 'public-content'>('students');
   const [operations, setOperations] = useState<{ storage: { freeBytes: number; warning: boolean }; backup: { enabled: boolean; lastSuccessAt?: number; lastError?: string } } | null>(null);
   const [storage, setStorage] = useState<{ usedBytes: number; maxBytes: number } | null>(null);
   const selected = students.find(item => item.id === selectedId);
@@ -184,11 +186,14 @@ function App() {
   </section></main>;
 
   return <div className="app-shell">
-    <header className="topbar"><h1>云端文档</h1><button onClick={() => {
+    <header className="topbar"><div className="brand-and-nav"><h1>云端文档与课程</h1><nav aria-label="管理区域">
+      <button className={workspaceArea === 'students' ? 'active' : ''} onClick={() => { setWorkspaceArea('students'); setMessage(''); }}>学生私有文档</button>
+      <button className={workspaceArea === 'public-content' ? 'active' : ''} onClick={() => { setWorkspaceArea('public-content'); setMessage(''); }}>精品课程发布</button>
+    </nav></div><div className="topbar-actions"><button onClick={() => {
       const current = token; setToken('');
       setPdfUrl('');
       void fetch(serviceUrl('/v1/admin/sessions/current'), { method: 'DELETE', headers: { authorization: `Bearer ${current}` }, cache: 'no-store' }).catch(() => setMessage('本页已退出；服务器会话将在到期后失效。'));
-    }}>退出管理</button><button disabled={busy} onClick={() => setCredentialForm(current => !current)}>更换管理凭据</button></header>
+    }}>退出管理</button><button disabled={busy} onClick={() => setCredentialForm(current => !current)}>更换管理凭据</button></div></header>
     {credentialForm && <form className="permission-panel" onSubmit={event => { event.preventDefault(); void act(async () => {
       await api('/v1/admin/credential', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ oldCredential, newCredential }) });
       setOldCredential(''); setNewCredential(''); setCredentialForm(false);
@@ -203,7 +208,7 @@ function App() {
         {operations.backup.lastSuccessAt ? `最近成功：${new Date(operations.backup.lastSuccessAt).toLocaleString('zh-CN')}` : ''}
         {operations.backup.lastError || ''}</p>}
     </details>
-    <div className="workspace">
+    {workspaceArea === 'students' ? <div className="workspace">
       <aside className="student-sidebar"><div className="sidebar-title"><strong>学生</strong><span>{students.length}</span></div>
         <label className="trash-toggle"><input type="checkbox" checked={showArchived} onChange={event => setShowArchived(event.target.checked)} />显示已停用学生</label>
         {students.map(student => <button className={`${student.id === selectedId ? 'selected' : ''}${student.archivedAt ? ' archived' : ''}`} key={student.id} onClick={() => { selectedIdRef.current = student.id; setSelectedId(student.id); setReports([]); setDocuments([]); setGrants([]); setV2Grants([]); setCloudProfile(null); setAuditEvents([]); setAuditCursor(''); setSelectedReportId(''); setEnrollmentCode(''); setPairingCode(''); }}>{student.displayName}{student.archivedAt ? '（已停用）' : ''}</button>)}
@@ -376,7 +381,8 @@ function App() {
           </section>}
         </>) : <p className="empty">请先添加或选择学生。</p>}
       </main>
-    </div>
+    </div> : <><div className="public-notice-wrap">{message && <div className="notice" role="status">{message}</div>}</div>
+      <PublicContentPanel request={api} busy={busy} execute={act} setMessage={setMessage} /></>}
   </div>;
 }
 

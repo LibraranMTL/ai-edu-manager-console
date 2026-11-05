@@ -37,21 +37,69 @@ paths:
         '200': { description: Signed tombstones }
         '304': { description: Revocations unchanged }
         '404': { description: No emergency revocations }
+  /v2/public-content/releases/{manifestRevision}:
+    get:
+      summary: Read one immutable public content release
+      parameters:
+        - in: path
+          name: manifestRevision
+          required: true
+          schema: { type: string }
+      responses:
+        '200': { description: Signed release metadata and manifest }
+        '404': { description: Release not found }
+  /v2/admin/content/assets:
+    get:
+      summary: List public content assets
+      security: [{ adminSession: [] }]
+      responses: { '200': { description: Asset inventory } }
+    post:
+      summary: Upload and register a public image asset
+      description: The JSON envelope is limited to 8 MiB; decoded assets are limited to 5 MiB.
+      security: [{ adminSession: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [assetId, mimeType, contentBase64]
+              properties:
+                assetId: { type: string }
+                mimeType: { type: string, enum: [image/png, image/jpeg, image/webp] }
+                contentBase64: { type: string, contentEncoding: base64 }
+      responses:
+        '201': { description: Immutable asset revision created or reused }
+        '413': { description: JSON envelope exceeds 8 MiB }
+  /v2/admin/courses:
+    get:
+      summary: List public course drafts
+      security: [{ adminSession: [] }]
+      responses: { '200': { description: Course draft inventory } }
+    post:
+      summary: Create or update a public course draft
+      security: [{ adminSession: [] }]
+      responses: { '201': { description: Course draft saved } }
+  /v2/admin/releases:
+    get:
+      summary: List immutable release records
+      security: [{ adminSession: [] }]
+      responses: { '200': { description: Release history } }
   /v2/admin/releases/validate:
     post:
       summary: Persist a signed release candidate
       security: [{ adminSession: [] }]
-      responses: { '200': { description: Candidate and expected manifest hash } }
+      responses: { '200': { description: Candidate and expected manifest hash }, '409': { description: Candidate contains an emergency-revoked course } }
   /v2/admin/releases/publish:
     post:
       summary: Atomically activate a validated candidate
       security: [{ adminSession: [] }]
-      responses: { '200': { description: Active or idempotent result }, '409': { description: Candidate hash changed } }
+      responses: { '200': { description: Active or idempotent result }, '409': { description: Candidate hash changed or now contains an emergency-revoked course } }
   /v2/admin/releases/rollback:
     post:
       summary: Create a new active release from a verified historical manifest
       security: [{ adminSession: [] }]
-      responses: { '200': { description: Rollback release active } }
+      responses: { '200': { description: Rollback release active }, '409': { description: Target changed or contains an emergency-revoked course } }
   /v2/admin/releases/emergency-withdraw:
     post:
       summary: Atomically publish a signed tombstone and replacement manifest

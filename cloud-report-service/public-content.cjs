@@ -218,6 +218,45 @@ function createPublicContentService(options = {}) {
     return { course, status: 'draft' };
   }
 
+  function listAssets(token) {
+    requireAdmin(token);
+    return { assets: db.prepare(`SELECT asset_id AS assetId,asset_revision_id AS assetRevisionId,sha256,
+      byte_size AS bytes,mime_type AS mimeType,created_at AS createdAt FROM public_content_assets
+      ORDER BY created_at DESC,asset_revision_id DESC LIMIT 500`).all() };
+  }
+
+  function listCourses(token) {
+    requireAdmin(token);
+    return { courses: db.prepare(`SELECT course_id AS courseId,draft_json AS draftJson,updated_at AS updatedAt
+      FROM public_course_drafts ORDER BY course_id LIMIT 500`).all()
+      .map(row => ({ ...JSON.parse(row.draftJson), updatedAt: row.updatedAt })) };
+  }
+
+  function listReleases(token) {
+    requireAdmin(token);
+    const revoked = revokedCourseIds();
+    return { releases: db.prepare(`SELECT release_id AS releaseId,manifest_revision AS manifestRevision,status,
+      manifest_sha256 AS manifestSha256,created_at AS createdAt,effective_at AS effectiveAt,
+      activated_at AS activatedAt,previous_revision AS previousRevision,manifest_json AS manifestJson FROM public_content_releases
+      ORDER BY created_at DESC,release_id DESC LIMIT 200`).all()
+      .map(row => {
+        const manifest = JSON.parse(row.manifestJson);
+        const containsRevokedCourse = (manifest.courses || []).some(course => revoked.has(course.courseId));
+        const { manifestJson, ...release } = row;
+        return { ...release, containsRevokedCourse };
+      }) };
+  }
+
+  function revokedCourseIds() {
+    return new Set(db.prepare('SELECT DISTINCT course_id AS courseId FROM public_content_revocations').all().map(row => row.courseId));
+  }
+
+  function rejectRevokedCourses(courses, action) {
+    const revoked = revokedCourseIds();
+    const blocked = (courses || []).map(course => course.courseId).filter(courseId => revoked.has(courseId));
+    if (blocked.length) fail(409, `${action}包含已紧急撤回课程：${blocked.join('、')}；必须使用独立的解除撤回流程`);
+  }
+
   function buildCandidate(input = {}) {
     const releaseId = cleanText(input.releaseId, 160, '发布ID');
     if (!validId(releaseId, 'release[:_-]?')) fail(400, '发布ID无效');
@@ -230,6 +269,7 @@ function createPublicContentService(options = {}) {
       if (!row) fail(400, `课程草稿不存在：${courseId}`);
       return normalizeCourse(JSON.parse(row.draft_json));
     }).sort((left, right) => left.courseId.localeCompare(right.courseId, 'en'));
+    rejectRevokedCourses(courses, '候选清单');
     const assets = [...new Set(courses.map(course => course.coverAssetRevisionId))].map(assetRevisionId => {
       const row = db.prepare(`SELECT asset_id AS assetId,asset_revision_id AS assetRevisionId,sha256,
         byte_size AS bytes,mime_type AS mimeType FROM public_content_assets WHERE asset_revision_id=?`).get(assetRevisionId);
@@ -288,6 +328,7 @@ function createPublicContentService(options = {}) {
     if (expected !== row.manifest_sha256) fail(409, '候选清单已经变化，请重新校验');
     if (row.status === 'active') return { releaseId, status: 'active', manifestRevision: row.manifest_revision, duplicate: true };
     if (row.status !== 'validated') fail(409, '发布单状态不允许生效');
+    rejectRevokedCourses(JSON.parse(row.manifest_json).courses, '待发布清单');
     db.exec('BEGIN IMMEDIATE');
     try {
       db.prepare("UPDATE public_content_releases SET status='superseded' WHERE status='active'").run();
@@ -348,6 +389,7 @@ function createPublicContentService(options = {}) {
     if (expected !== target.manifest_sha256) fail(409, '回滚目标已经变化');
     const current = activeManifest().manifest;
     const source = JSON.parse(target.manifest_json);
+    rejectRevokedCourses(source.courses, '回滚目标');
     const timestamp = now();
     const issuedAt = new Date(timestamp).toISOString();
     const manifestRevision = `manifest-rev-${sha256(`${releaseId}:${targetRevision}:${timestamp}`).slice(0, 32)}`;
@@ -408,7 +450,7 @@ function createPublicContentService(options = {}) {
     return { releaseId, status: 'active', manifestRevision, revocationRevision, duplicate: false };
   }
 
-  return { schemaStatus, putAsset, saveCourse, validateRelease, publishRelease, rollbackRelease, emergencyWithdraw,
+  return { schemaStatus, putAsset, saveCourse, listAssets, listCourses, listReleases, validateRelease, publishRelease, rollbackRelease, emergencyWithdraw,
     activeManifest, releaseByRevision, asset, signedRevocations, verifySignedObject: value => verifySignedObject(value, publicKey),
     publicKey: publicKey ? publicKey.export({ type: 'spki', format: 'pem' }).toString() : '' };
 }

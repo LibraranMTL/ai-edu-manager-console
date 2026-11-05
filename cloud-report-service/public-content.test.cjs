@@ -75,6 +75,17 @@ test('public course release is signed, idempotent and withdrawable', () => {
       releaseId: validated.releaseId, expectedManifestSha256: validated.manifestSha256,
     }).duplicate, true);
     assert.equal(fx.publicContent.activeManifest().manifest.courses.length, 1);
+    const replacement = fx.publicContent.validateRelease(fx.session, {
+      releaseId: 'release:course-mvp-2', courseIds: ['platform:starfall-k5-math'],
+      issuedAt: '2026-11-05T01:00:00.000Z', effectiveAt: '2026-11-05T01:00:00.000Z', expiresAt: '2026-11-06T01:00:00.000Z',
+    });
+    fx.publicContent.publishRelease(fx.session, { releaseId: replacement.releaseId, expectedManifestSha256: replacement.manifestSha256 });
+    const rolledBack = fx.publicContent.rollbackRelease(fx.session, {
+      releaseId: 'release:course-mvp-rollback-1', targetManifestRevision: validated.manifest.manifestRevision,
+      expectedTargetManifestSha256: validated.manifestSha256,
+    });
+    assert.equal(rolledBack.status, 'active');
+    assert.equal(fx.publicContent.activeManifest().manifest.courses.length, 1);
     const withdrawn = fx.publicContent.emergencyWithdraw(fx.session, {
       releaseId: 'release:course-mvp-withdraw-1', courseId: 'platform:starfall-k5-math', reasonCode: 'content_risk', severity: 'high',
     });
@@ -83,12 +94,16 @@ test('public course release is signed, idempotent and withdrawable', () => {
     const revocations = fx.publicContent.signedRevocations();
     assert.equal(revocations.payload.tombstones[0].courseId, 'platform:starfall-k5-math');
     assert.equal(verifySignedObject(revocations.payload, fx.keys.publicKey), true);
-    const rolledBack = fx.publicContent.rollbackRelease(fx.session, {
-      releaseId: 'release:course-mvp-rollback-1', targetManifestRevision: validated.manifest.manifestRevision,
+    assert.throws(() => fx.publicContent.rollbackRelease(fx.session, {
+      releaseId: 'release:course-mvp-rollback-blocked', targetManifestRevision: validated.manifest.manifestRevision,
       expectedTargetManifestSha256: validated.manifestSha256,
-    });
-    assert.equal(rolledBack.status, 'active');
-    assert.equal(fx.publicContent.activeManifest().manifest.courses.length, 1);
+    }), /已紧急撤回课程/);
+    assert.throws(() => fx.publicContent.validateRelease(fx.session, {
+      releaseId: 'release:course-mvp-republish-blocked', courseIds: ['platform:starfall-k5-math'],
+      issuedAt: '2026-11-05T02:00:00.000Z', expiresAt: '2026-11-06T02:00:00.000Z',
+    }), /已紧急撤回课程/);
+    const blockedRelease = fx.publicContent.listReleases(fx.session).releases.find(item => item.releaseId === validated.releaseId);
+    assert.equal(blockedRelease.containsRevokedCourse, true);
   } finally { fx.close(); }
 });
 
@@ -117,6 +132,24 @@ test('public content uses a separate migration and object root', () => {
     assert.equal(fx.publicContent.schemaStatus().migrationId, 'cloud-public-content-v1');
     assert.equal(fs.existsSync(path.join(fx.root, 'public-content-objects')), true);
     assert.ok(fx.service.db.prepare('SELECT 1 FROM schema_migrations WHERE id=?').get('cloud-public-content-v1'));
+  } finally { fx.close(); }
+});
+
+test('admin inventory lists assets, course drafts and immutable release hashes', () => {
+  const fx = fixture();
+  try {
+    const asset = fx.publicContent.putAsset(fx.session, {
+      assetId: 'asset:list-cover', mimeType: 'image/png', contentBase64: pngFixture('list-fixture').toString('base64'),
+    });
+    fx.publicContent.saveCourse(fx.session, course(asset.assetRevisionId));
+    const validated = fx.publicContent.validateRelease(fx.session, {
+      releaseId: 'release:list-001', courseIds: ['platform:starfall-k5-math'],
+      issuedAt: '2026-11-05T00:00:00.000Z', expiresAt: '2026-11-06T00:00:00.000Z',
+    });
+    assert.equal(fx.publicContent.listAssets(fx.session).assets[0].assetRevisionId, asset.assetRevisionId);
+    assert.equal(fx.publicContent.listCourses(fx.session).courses[0].locale, 'en-US');
+    assert.equal(fx.publicContent.listReleases(fx.session).releases[0].manifestSha256, validated.manifestSha256);
+    assert.throws(() => fx.publicContent.listReleases('not-admin'), /管理员/);
   } finally { fx.close(); }
 });
 
@@ -151,6 +184,32 @@ test('public HTTP endpoints support ETag, 304 and byte ranges', async () => {
     assert.equal(ranged.status, 206);
     assert.equal(Buffer.from(await ranged.arrayBuffer()).equals(bytes.subarray(0, 5)), true);
     assert.equal(ranged.headers.get('content-range'), `bytes 0-4/${bytes.length}`);
+  } finally {
+    await app.close();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('public asset HTTP upload accepts a base64 envelope larger than the default JSON limit', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'edu-public-http-large-'));
+  const adminToken = 'admin-token-that-is-longer-than-24-characters';
+  const keys = crypto.generateKeyPairSync('rsa', { modulusLength: 2048 });
+  const app = createHttpServer({ dataDir: root, adminToken, materialIndexer: false,
+    publicContentPrivateKey: keys.privateKey, publicContentKeyId: 'course-catalog-primary-2026' });
+  await new Promise(resolve => app.server.listen(0, '127.0.0.1', resolve));
+  const base = `http://127.0.0.1:${app.server.address().port}`;
+  try {
+    const session = app.service.loginAdmin(adminToken).sessionToken;
+    const bytes = Buffer.alloc(4 * 1024 * 1024 + 256, 0x2a);
+    pngFixture().copy(bytes, 0, 0, 8);
+    const response = await fetch(`${base}/v2/admin/content/assets`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${session}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ assetId: 'asset:large-http-cover', mimeType: 'image/png', contentBase64: bytes.toString('base64') }),
+    });
+    const responseText = await response.text();
+    assert.equal(response.status, 201, responseText);
+    assert.equal(JSON.parse(responseText).bytes, bytes.length);
   } finally {
     await app.close();
     fs.rmSync(root, { recursive: true, force: true });

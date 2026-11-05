@@ -15,15 +15,18 @@ const { createPublicContentService } = require('./public-content.cjs');
 // plus the Markdown body and envelope. Four MiB keeps the public request
 // bounded while allowing the documented attachment contract to fit.
 const MAX_JSON_BYTES = 4 * 1024 * 1024;
+// A 5 MiB public image expands to roughly 6.7 MiB when carried as base64 JSON.
+// Keep the larger allowance isolated to the public asset endpoint.
+const MAX_PUBLIC_ASSET_JSON_BYTES = 8 * 1024 * 1024;
 const WEB_ROOT = path.join(__dirname, 'web-dist');
 
-function readJson(req) {
+function readJson(req, maxBytes = MAX_JSON_BYTES) {
   return new Promise((resolve, reject) => {
     let size = 0;
     const chunks = [];
     req.on('data', chunk => {
       size += chunk.length;
-      if (size > MAX_JSON_BYTES) {
+      if (size > maxBytes) {
         const error = new Error('请求过大');
         error.status = 413;
         reject(error);
@@ -208,10 +211,19 @@ function createHttpServer(options) {
         materialIndex: materialIndexer?.status() || { enabled: false }, capabilities: ['profile-sync', 'material-sync', 'remote-agent-mcp', 'cloud-inbox', 'student-archive',
           'viewer-student-relinquish', 'current-revision-index', 'async-pdf-docx-extraction', 'oauth-pkce', 'public-course-manifest', 'public-course-revocations'] });
       if (req.method === 'POST' && route === '/v2/admin/content/assets') {
-        return json(res, 201, publicContent.putAsset(token, await readJson(req)));
+        return json(res, 201, publicContent.putAsset(token, await readJson(req, MAX_PUBLIC_ASSET_JSON_BYTES)));
+      }
+      if (req.method === 'GET' && route === '/v2/admin/content/assets') {
+        return json(res, 200, publicContent.listAssets(token));
       }
       if (req.method === 'POST' && route === '/v2/admin/courses') {
         return json(res, 201, publicContent.saveCourse(token, await readJson(req)));
+      }
+      if (req.method === 'GET' && route === '/v2/admin/courses') {
+        return json(res, 200, publicContent.listCourses(token));
+      }
+      if (req.method === 'GET' && route === '/v2/admin/releases') {
+        return json(res, 200, publicContent.listReleases(token));
       }
       if (req.method === 'POST' && route === '/v2/admin/releases/validate') {
         return json(res, 200, publicContent.validateRelease(token, await readJson(req)));

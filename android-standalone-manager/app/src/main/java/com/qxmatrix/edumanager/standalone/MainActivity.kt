@@ -119,6 +119,14 @@ class MainActivity : ComponentActivity() {
     private var offlineMigrationReceiverRegistered = false
     private var offlineMigrationCompletedRefreshId: String? = null
     private val offlineMigrationHandler = Handler(Looper.getMainLooper())
+    private val publicCourseSyncHandler = Handler(Looper.getMainLooper())
+    @Volatile private var publicCourseSyncRunning = false
+    private val publicCourseSyncPoll = object : Runnable {
+        override fun run() {
+            if (::courseCatalogService.isInitialized && licenseManager.status().active) refreshPublicCourses(showResult = false)
+            publicCourseSyncHandler.postDelayed(this, PUBLIC_COURSE_SYNC_INTERVAL_MS)
+        }
+    }
     private val offlineMigrationPoll = object : Runnable {
         override fun run() {
             if (offlineMigrationReceiverRegistered) {
@@ -187,6 +195,7 @@ class MainActivity : ComponentActivity() {
         runCatching { ProjectMaterialMaintenanceWorker.schedule(this) }
         runCatching { StudioAutomation.schedule(this) }
         runCatching { HighGrowthMigrationWorker.schedule(this) }
+        runCatching { PublicCourseSyncWorker.schedule(this) }
         lifecycleScope.launch(Dispatchers.IO) {
             runCatching { BusinessDatabase.get(this@MainActivity).ledger().recoverInterruptedCalls(BusinessDatabase.processSession) }
         }
@@ -250,10 +259,13 @@ class MainActivity : ComponentActivity() {
         offlineMigrationReceiverRegistered = true
         offlineMigrationHandler.removeCallbacks(offlineMigrationPoll)
         offlineMigrationHandler.post(offlineMigrationPoll)
+        publicCourseSyncHandler.removeCallbacks(publicCourseSyncPoll)
+        publicCourseSyncHandler.post(publicCourseSyncPoll)
     }
 
     override fun onStop() {
         offlineMigrationHandler.removeCallbacks(offlineMigrationPoll)
+        publicCourseSyncHandler.removeCallbacks(publicCourseSyncPoll)
         if (offlineMigrationReceiverRegistered) {
             unregisterReceiver(offlineMigrationReceiver)
             offlineMigrationReceiverRegistered = false
@@ -1035,7 +1047,7 @@ class MainActivity : ComponentActivity() {
         ), preferredColumns = 4)
         sectionHeading("课程与分析")
         sectionContent.addView(statusCard().apply {
-            text = if (catalog == null && assigned == 0) "尚未导入离线课程，不影响学习卡片和复测。" else "课程目录 ${catalog?.optString("catalogVersion").orEmpty().ifBlank { "本机快照" }} · 已为 $assigned 名学生保存课程快照"
+            text = if (catalog == null && assigned == 0) "尚未同步到云端课程；联网后会自动重试，离线课程包仍可作为灾备导入。" else "课程目录 ${catalog?.optString("catalogVersion").orEmpty().ifBlank { "本机快照" }} · 已为 $assigned 名学生保存课程快照"
         }, matchWrap())
         addActionGrid(listOf(
             YouthAction("▶", "课程", "查看课程封面、介绍和学习选项") { chooseStudentForCourses() },
@@ -1220,7 +1232,8 @@ class MainActivity : ComponentActivity() {
             YouthAction("✓", "连接测试", "测试文本和视觉处理服务是否可用") { testAgentConfiguration() },
             YouthAction("☰", "任务回执", "查看当前学生的后台任务、异常和处理记录") { withCurrentStudent { startActivity(Intent(this, TaskCenterActivity::class.java).putExtra(TaskCenterActivity.EXTRA_STUDENT_ID, it.id)) } },
             YouthAction("⚙", "模型任务诊断", "查看当前学生的本机模型任务记录") { withCurrentStudent { showModelCallDiagnostics(it) } },
-            YouthAction("↓", "导入离线课程包", "导入 Windows 平台发布的课程文件") { startPlatformCourseImport() },
+            YouthAction("↻", "同步云端课程", "立即复核签名清单、撤回状态和课程封面") { refreshPublicCourses(showResult = true) },
+            YouthAction("↓", "导入离线课程包", "断网灾备：导入发布者签名的课程文件") { startPlatformCourseImport() },
         ), preferredColumns = 2, colorful = false)
     }
 
@@ -3345,7 +3358,7 @@ class MainActivity : ComponentActivity() {
     private fun chooseStudentForCourses() {
         withCurrentStudent("请先建立学生档案。课程学习与采集必须绑定一个明确学生。") { student ->
             val courses = runCatching { courseCatalogService.effectiveCourses(student.id) }.getOrElse { showMessage("课程目录不可用", it.message ?: "未知错误"); return@withCurrentStudent }
-            if (courses.isEmpty()) showMessage("没有可学习课程", "请导入平台发放的 .edu-coursepkg，或从 Windows 主机为该学生导入 U 盘迁移目录。")
+            if (courses.isEmpty()) showMessage("没有可学习课程", "请先联网同步云端课程；持续离线时可导入平台签名的 .edu-coursepkg，或从 Windows 主机导入 U 盘迁移目录。")
             else showPlatformCourses(student, courses)
         }
     }
@@ -3388,6 +3401,27 @@ class MainActivity : ComponentActivity() {
             .putExtra(CourseLearningActivity.EXTRA_STUDENT_ID, student.id)
             .putExtra(CourseLearningActivity.EXTRA_COURSE_JSON, course.toJson().toString())
             .putExtra(CourseLearningActivity.EXTRA_AUTO_START_CAPTURE, autoStartCapture))
+    }
+
+    private fun refreshPublicCourses(showResult: Boolean) {
+        if (publicCourseSyncRunning) {
+            if (showResult) showMessage("课程正在同步", "当前同步完成后会自动保留最后可用目录。")
+            return
+        }
+        publicCourseSyncRunning = true
+        val progress = if (showResult) showProgress("正在同步云端课程", "正在复核发布者签名、撤回清单和资源哈希；失败不会覆盖最后可用目录。") else null
+        Thread {
+            val result = runCatching { PublicCourseSyncService(this).sync() }
+            runOnUiThread {
+                publicCourseSyncRunning = false
+                progress?.dismiss()
+                if (showResult) result.onSuccess {
+                    showMessage("云端课程已同步", "修订 ${it.getString("manifestRevision")} · ${it.getInt("courseCount")} 门课程。撤回状态和离线租约已复核。")
+                }.onFailure {
+                    showMessage("本次同步未采用", "${it.message ?: "网络或校验失败"}\n\n原有最后可用课程目录未被替换。")
+                }
+            }
+        }.start()
     }
 
     private fun passwordFields(): Pair<LinearLayout, Pair<EditText, EditText>> {
@@ -3507,6 +3541,7 @@ class MainActivity : ComponentActivity() {
         const val REQUEST_DEVICE_MIGRATION_NOTIFICATION = 2120
         const val REQUEST_PROJECT_PACKAGE_SOURCE = 2121
         const val OFFLINE_MIGRATION_POLL_MS = 1_000L
+        const val PUBLIC_COURSE_SYNC_INTERVAL_MS = 60_000L
         const val UI_CONTEXT_PREFS = "standalone_ui_context"
         const val KEY_CURRENT_STUDENT_ID = "current_student_id"
         const val KEY_CURRENT_PROJECT_ID = "current_project_id"

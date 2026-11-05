@@ -19,6 +19,10 @@ test('standalone cloud sync preserves the deployment prefix and accepts only sig
   assert.match(service, /304 -> verifiedActive/u);
   assert.match(service, /verifyCoursePublisherSignature/u);
   assert.match(service, /sniffImageMime\(bytes\) == asset\.getString\("mimeType"\)/u);
+  assert.match(service, /SYNC_RECEIPTS_PATH = "v2\/public-content\/sync-receipts"/u);
+  assert.match(service, /clientInstanceId[\s\S]*?UUID\.randomUUID/u);
+  assert.match(service, /"clientType", "android_standalone"/u);
+  assert.match(service, /runCatching \{ submitReceipt\(baseUrl, result, nowMillis\) \}/u);
 });
 
 test('withdrawals are checked before active cache promotion and cloud cache fails closed', () => {

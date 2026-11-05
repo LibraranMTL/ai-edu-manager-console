@@ -14,6 +14,10 @@ class PublicCourseContractTest {
             "https://www.greatbg.com/edu-cloud/v2/public-content/assets/asset-rev-${"a".repeat(64)}",
             PublicCourseContract.endpoint("https://www.greatbg.com/edu-cloud/", "/v2/public-content/assets/asset-rev-${"a".repeat(64)}"),
         )
+        assertEquals(
+            "https://www.greatbg.com/edu-cloud/v2/public-content/sync-receipts",
+            PublicCourseContract.endpoint("https://www.greatbg.com/edu-cloud", PublicCourseContract.SYNC_RECEIPTS_PATH),
+        )
     }
 
     @Test fun publicCourseTransportRejectsHttpCredentialsAndUnknownPaths() {

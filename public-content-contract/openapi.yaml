@@ -48,6 +48,32 @@ paths:
       responses:
         '200': { description: Signed release metadata and manifest }
         '404': { description: Release not found }
+  /v2/public-content/sync-receipts:
+    post:
+      summary: Submit a privacy-bounded client synchronization receipt
+      description: Stores only a SHA-256 hash of the high-entropy client instance ID. Receipts are unverified telemetry and never device-verification evidence.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [receiptId, clientInstanceId, clientType, clientVersion, outcome]
+              properties:
+                receiptId: { type: string }
+                clientInstanceId: { type: string }
+                clientType: { type: string, enum: [windows_host, windows_student, android_student, android_standalone] }
+                clientVersion: { type: string }
+                outcome: { type: string, enum: [applied, not_modified, network_failed, blocked_signature, blocked_hash, blocked_revocation, lease_expired, incompatible_client] }
+                manifestRevision: { type: string }
+                revocationRevision: { type: string }
+                detailCode: { type: string }
+                attemptCount: { type: integer, minimum: 1, maximum: 100 }
+                observedAt: { type: string, format: date-time }
+      responses:
+        '201': { description: Receipt classified and stored }
+        '200': { description: Idempotent duplicate receipt }
+        '429': { description: Per-source rate limit exceeded }
   /v2/admin/content/assets:
     get:
       summary: List public content assets
@@ -85,6 +111,15 @@ paths:
       summary: List immutable release records
       security: [{ adminSession: [] }]
       responses: { '200': { description: Release history } }
+  /v2/admin/public-content/operations:
+    get:
+      summary: Read public content delivery metrics, sync reconciliation and alerts
+      security: [{ adminSession: [] }]
+      parameters:
+        - in: query
+          name: windowHours
+          schema: { type: integer, minimum: 1, maximum: 720, default: 24 }
+      responses: { '200': { description: Aggregated privacy-bounded operations status } }
   /v2/admin/releases/validate:
     post:
       summary: Persist a signed release candidate

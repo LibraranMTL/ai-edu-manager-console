@@ -1642,6 +1642,9 @@ async function refreshPublicCourses() {
     cacheDir: store.publicContentCacheDir,
     publicKeys: store.publicKeys(),
     timeoutMs: 15_000,
+    clientInstanceId: getHostIdentity().hostId,
+    clientType: 'windows_host',
+    clientVersion: APP_VERSION,
   });
   if (!result.notModified) {
     notify('onNativeCourseCatalogChanged', { action: 'public_content_synchronized', ok: true, manifestRevision: result.manifest.manifestRevision });

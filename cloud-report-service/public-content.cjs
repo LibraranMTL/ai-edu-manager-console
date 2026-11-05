@@ -10,6 +10,8 @@ const SIGNATURE_ALGORITHM = 'RSA-SHA256';
 const ALLOWED_LOCALES = new Set(['zh-CN', 'zh-TW', 'en-US', 'en-GB', 'fr', 'es', 'es-419', 'ja', 'ko', 'vi', 'ms']);
 const ALLOWED_MIME = new Set(['image/png', 'image/jpeg', 'image/webp']);
 const MAX_ASSET_BYTES = 5 * 1024 * 1024;
+const SYNC_CLIENT_TYPES = new Set(['windows_host', 'windows_student', 'android_student', 'android_standalone']);
+const SYNC_OUTCOMES = new Set(['applied', 'not_modified', 'network_failed', 'blocked_signature', 'blocked_hash', 'blocked_revocation', 'lease_expired', 'incompatible_client']);
 
 function fail(status, message) {
   const error = new Error(message);
@@ -158,10 +160,29 @@ function createPublicContentService(options = {}) {
       withdrawn_at INTEGER NOT NULL, reason_code TEXT NOT NULL, severity TEXT NOT NULL,
       replacement_course_id TEXT NOT NULL DEFAULT '', created_at INTEGER NOT NULL
     );
+    CREATE TABLE IF NOT EXISTS public_content_delivery_metrics (
+      bucket_start INTEGER NOT NULL, action TEXT NOT NULL, status TEXT NOT NULL,
+      target_id TEXT NOT NULL DEFAULT '', request_count INTEGER NOT NULL DEFAULT 0,
+      byte_count INTEGER NOT NULL DEFAULT 0,
+      PRIMARY KEY(bucket_start,action,status,target_id)
+    );
+    CREATE INDEX IF NOT EXISTS public_content_delivery_metrics_time ON public_content_delivery_metrics(bucket_start);
+    CREATE TABLE IF NOT EXISTS public_content_sync_receipts (
+      receipt_id TEXT PRIMARY KEY, client_hash TEXT NOT NULL, client_type TEXT NOT NULL,
+      client_version TEXT NOT NULL, outcome TEXT NOT NULL, manifest_revision TEXT NOT NULL DEFAULT '',
+      revocation_revision TEXT NOT NULL DEFAULT '', detail_code TEXT NOT NULL DEFAULT '',
+      attempt_count INTEGER NOT NULL DEFAULT 1, disposition TEXT NOT NULL,
+      observed_at INTEGER NOT NULL, received_at INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS public_content_sync_receipts_time ON public_content_sync_receipts(received_at);
+    CREATE INDEX IF NOT EXISTS public_content_sync_receipts_disposition ON public_content_sync_receipts(disposition,received_at);
     INSERT OR IGNORE INTO public_content_state(channel,updated_at) VALUES('stable',0);
     INSERT OR IGNORE INTO schema_migrations(id,applied_at,detail_json)
       VALUES('cloud-public-content-v1',${Number(now())},'{"contractId":"${CONTRACT_ID}","separateObjectRoot":true}');
+    INSERT OR IGNORE INTO schema_migrations(id,applied_at,detail_json)
+      VALUES('cloud-public-content-observability-v1',${Number(now())},'{"privacy":"hashed-client-id","studentData":false,"receiptAttestation":"unverified"}');
   `);
+  let lastMetricsPruneAt = 0;
 
   function requireAdmin(token) {
     if (!isAdmin(token)) fail(401, '管理员会话无效');
@@ -173,7 +194,102 @@ function createPublicContentService(options = {}) {
   }
 
   function schemaStatus() {
-    return { migrationId: 'cloud-public-content-v1', applied: true, contractId: CONTRACT_ID, signingReady: Boolean(privateKey), keyId };
+    return { migrationId: 'cloud-public-content-v1', observabilityMigrationId: 'cloud-public-content-observability-v1',
+      applied: true, contractId: CONTRACT_ID, signingReady: Boolean(privateKey), keyId };
+  }
+
+  function pruneObservability(timestamp) {
+    if (timestamp - lastMetricsPruneAt < 6 * 60 * 60 * 1000) return;
+    lastMetricsPruneAt = timestamp;
+    db.prepare('DELETE FROM public_content_delivery_metrics WHERE bucket_start<?').run(timestamp - 90 * 24 * 60 * 60 * 1000);
+    db.prepare('DELETE FROM public_content_sync_receipts WHERE received_at<?').run(timestamp - 90 * 24 * 60 * 60 * 1000);
+    db.prepare(`DELETE FROM public_content_sync_receipts WHERE rowid NOT IN
+      (SELECT rowid FROM public_content_sync_receipts ORDER BY received_at DESC,rowid DESC LIMIT 100000)`).run();
+  }
+
+  function recordDelivery(action, status, targetId = '', bytes = 0) {
+    const timestamp = now();
+    const bucket = Math.floor(timestamp / 3600000) * 3600000;
+    const normalizedAction = cleanText(action, 80, '公共内容指标动作');
+    const normalizedStatus = cleanText(status, 40, '公共内容指标状态');
+    const normalizedTarget = cleanText(targetId || '', 180, '公共内容指标对象', false);
+    const byteCount = Number.isSafeInteger(Number(bytes)) && Number(bytes) >= 0 ? Number(bytes) : 0;
+    db.prepare(`INSERT INTO public_content_delivery_metrics(bucket_start,action,status,target_id,request_count,byte_count)
+      VALUES(?,?,?,?,1,?) ON CONFLICT(bucket_start,action,status,target_id) DO UPDATE SET
+      request_count=request_count+1,byte_count=byte_count+excluded.byte_count`)
+      .run(bucket, normalizedAction, normalizedStatus, normalizedTarget, byteCount);
+    pruneObservability(timestamp);
+  }
+
+  function activeRevisionOrEmpty() {
+    return String(db.prepare("SELECT active_manifest_revision AS value FROM public_content_state WHERE channel='stable'").get()?.value || '');
+  }
+
+  function revocationRevisionOrEmpty() {
+    return String(db.prepare("SELECT revocation_revision AS value FROM public_content_state WHERE channel='stable'").get()?.value || '');
+  }
+
+  function receiptDisposition(input, currentManifestRevision, currentRevocationRevision) {
+    if (input.outcome === 'blocked_revocation') return 'reconciled';
+    if (input.outcome === 'blocked_signature' || input.outcome === 'blocked_hash' || input.outcome === 'incompatible_client') return 'needs_handling';
+    if (input.outcome === 'network_failed') return input.attemptCount >= 5 ? 'needs_handling' : 'auto_retry';
+    if (input.outcome === 'lease_expired') return 'auto_refresh';
+    if (input.manifestRevision !== currentManifestRevision || (currentRevocationRevision && input.revocationRevision !== currentRevocationRevision)) return 'auto_refresh';
+    return 'reconciled';
+  }
+
+  function recordSyncReceipt(input = {}) {
+    const receiptId = cleanText(input.receiptId, 160, '同步回执ID');
+    if (!/^receipt:[A-Za-z0-9._:-]{8,150}$/.test(receiptId)) fail(400, '同步回执ID无效');
+    const prior = db.prepare(`SELECT receipt_id AS receiptId,disposition,outcome,received_at AS receivedAt
+      FROM public_content_sync_receipts WHERE receipt_id=?`).get(receiptId);
+    if (prior) return { ...prior, duplicate: true, attestation: 'unverified_telemetry' };
+    const clientInstanceId = cleanText(input.clientInstanceId, 180, '客户端实例ID');
+    if (!/^[A-Za-z0-9._:-]{8,180}$/.test(clientInstanceId)) fail(400, '客户端实例ID无效');
+    const clientType = cleanText(input.clientType, 40, '客户端类型');
+    if (!SYNC_CLIENT_TYPES.has(clientType)) fail(400, '客户端类型无效');
+    const clientVersion = cleanText(input.clientVersion, 40, '客户端版本');
+    const outcome = cleanText(input.outcome, 40, '同步结果');
+    if (!SYNC_OUTCOMES.has(outcome)) fail(400, '同步结果无效');
+    const manifestRevision = cleanText(input.manifestRevision || '', 180, '清单修订', false);
+    const revocationRevision = cleanText(input.revocationRevision || '', 180, '撤回修订', false);
+    const detailCode = cleanText(input.detailCode || '', 80, '同步详情代码', false);
+    const attemptCount = Number(input.attemptCount || 1);
+    if (!Number.isInteger(attemptCount) || attemptCount < 1 || attemptCount > 100) fail(400, '同步尝试次数无效');
+    const observedAt = normalizeDate(input.observedAt || new Date(now()).toISOString(), '同步观察时间');
+    const receivedAt = now();
+    if (Math.abs(receivedAt - Date.parse(observedAt)) > 7 * 24 * 60 * 60 * 1000) fail(400, '同步观察时间超出允许范围');
+    const disposition = receiptDisposition({ outcome, manifestRevision, revocationRevision, attemptCount }, activeRevisionOrEmpty(), revocationRevisionOrEmpty());
+    db.prepare(`INSERT INTO public_content_sync_receipts
+      (receipt_id,client_hash,client_type,client_version,outcome,manifest_revision,revocation_revision,detail_code,attempt_count,disposition,observed_at,received_at)
+      VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`).run(receiptId, sha256(clientInstanceId), clientType, clientVersion, outcome,
+      manifestRevision, revocationRevision, detailCode, attemptCount, disposition, Date.parse(observedAt), receivedAt);
+    pruneObservability(receivedAt);
+    return { receiptId, outcome, disposition, receivedAt, duplicate: false, attestation: 'unverified_telemetry' };
+  }
+
+  function operations(token, windowHours = 24) {
+    requireAdmin(token);
+    const hours = Math.max(1, Math.min(24 * 30, Number(windowHours) || 24));
+    const since = now() - hours * 60 * 60 * 1000;
+    const deliveryRows = db.prepare(`SELECT action,status,SUM(request_count) AS requestCount,SUM(byte_count) AS byteCount
+      FROM public_content_delivery_metrics WHERE bucket_start>=? GROUP BY action,status ORDER BY action,status`).all(since);
+    const receiptRows = db.prepare(`SELECT client_type AS clientType,outcome,disposition,COUNT(*) AS count,
+      MAX(received_at) AS lastReceivedAt FROM public_content_sync_receipts WHERE received_at>=?
+      GROUP BY client_type,outcome,disposition ORDER BY client_type,outcome,disposition`).all(since);
+    const currentManifestRevision = activeRevisionOrEmpty();
+    const currentRevocationRevision = revocationRevisionOrEmpty();
+    const summary = receiptRows.reduce((value, row) => {
+      value.total += Number(row.count); value[row.disposition] = (value[row.disposition] || 0) + Number(row.count); return value;
+    }, { total: 0, reconciled: 0, auto_refresh: 0, auto_retry: 0, needs_handling: 0 });
+    const alerts = [];
+    if (!privateKey) alerts.push({ severity: 'critical', code: 'signing_not_ready', message: '公共内容签名密钥未配置。' });
+    if (!currentManifestRevision) alerts.push({ severity: 'critical', code: 'no_active_manifest', message: '尚无生效公共课程清单。' });
+    if (summary.needs_handling) alerts.push({ severity: 'warning', code: 'sync_needs_handling', message: `${summary.needs_handling}条同步回执需要处理。` });
+    const serverFailures = deliveryRows.filter(row => row.status === 'server_error').reduce((sum, row) => sum + Number(row.requestCount), 0);
+    if (serverFailures) alerts.push({ severity: 'warning', code: 'delivery_server_error', message: `${serverFailures}次公共内容读取发生服务端错误。` });
+    return { windowHours: hours, generatedAt: now(), currentManifestRevision, currentRevocationRevision,
+      receiptAttestation: 'unverified_telemetry', delivery: deliveryRows, receipts: receiptRows, summary, alerts };
   }
 
   function putAsset(token, input = {}) {
@@ -450,7 +566,7 @@ function createPublicContentService(options = {}) {
     return { releaseId, status: 'active', manifestRevision, revocationRevision, duplicate: false };
   }
 
-  return { schemaStatus, putAsset, saveCourse, listAssets, listCourses, listReleases, validateRelease, publishRelease, rollbackRelease, emergencyWithdraw,
+  return { schemaStatus, recordDelivery, recordSyncReceipt, operations, putAsset, saveCourse, listAssets, listCourses, listReleases, validateRelease, publishRelease, rollbackRelease, emergencyWithdraw,
     activeManifest, releaseByRevision, asset, signedRevocations, verifySignedObject: value => verifySignedObject(value, publicKey),
     publicKey: publicKey ? publicKey.export({ type: 'spki', format: 'pem' }).toString() : '' };
 }

@@ -126,6 +126,7 @@ function createHttpServer(options) {
   const pairingRates = new Map();
   const adminLoginRates = new Map();
   const gatewayIssueRates = new Map();
+  const publicReceiptRates = new Map();
   const server = http.createServer(async (req, res) => {
     try {
       const url = new URL(req.url, 'http://localhost');
@@ -163,24 +164,46 @@ function createHttpServer(options) {
       }
       if (req.method === 'GET' && route === '/v2/public-content/manifest') {
         const item = publicContent.activeManifest();
-        if (String(req.headers['if-none-match'] || '') === item.etag) return publicJson(res, 304, null, item.etag);
+        if (String(req.headers['if-none-match'] || '') === item.etag) {
+          publicContent.recordDelivery('manifest.read', 'not_modified', item.manifest.manifestRevision);
+          return publicJson(res, 304, null, item.etag);
+        }
+        publicContent.recordDelivery('manifest.read', 'success', item.manifest.manifestRevision, Buffer.byteLength(JSON.stringify(item.manifest)));
         res.setHeader('x-content-sha256', item.sha256);
         return publicJson(res, 200, item.manifest, item.etag, 'public, max-age=60, stale-if-error=300');
       }
       if (req.method === 'GET' && route === '/v2/public-content/revocations') {
         const item = publicContent.signedRevocations();
-        if (String(req.headers['if-none-match'] || '') === item.etag) return publicJson(res, 304, null, item.etag, 'public, max-age=30');
+        if (String(req.headers['if-none-match'] || '') === item.etag) {
+          publicContent.recordDelivery('revocations.read', 'not_modified', item.payload.revocationRevision);
+          return publicJson(res, 304, null, item.etag, 'public, max-age=30');
+        }
+        publicContent.recordDelivery('revocations.read', 'success', item.payload.revocationRevision, Buffer.byteLength(JSON.stringify(item.payload)));
         return publicJson(res, 200, item.payload, item.etag, 'public, max-age=30');
+      }
+      if (req.method === 'POST' && route === '/v2/public-content/sync-receipts') {
+        const ip = req.socket.remoteAddress || 'unknown'; const timestamp = Date.now();
+        for (const [key, entry] of publicReceiptRates) if (entry.until <= timestamp) publicReceiptRates.delete(key);
+        if (!publicReceiptRates.has(ip) && publicReceiptRates.size >= 4096) return json(res, 429, { error: '同步回执入口繁忙' });
+        const current = publicReceiptRates.get(ip) || { until: timestamp + 60000, count: 0 };
+        publicReceiptRates.set(ip, current);
+        if (++current.count > 30) return json(res, 429, { error: '同步回执提交过于频繁' });
+        const result = publicContent.recordSyncReceipt(await readJson(req, 64 * 1024));
+        publicContent.recordDelivery('sync-receipt.write', result.duplicate ? 'duplicate' : 'success', result.disposition);
+        return json(res, result.duplicate ? 200 : 201, result);
       }
       const publicReleaseMatch = route.match(/^\/v2\/public-content\/releases\/(manifest-rev-[a-f0-9]{32})$/);
       if (req.method === 'GET' && publicReleaseMatch) {
-        return publicJson(res, 200, publicContent.releaseByRevision(publicReleaseMatch[1]), '', 'public, max-age=60');
+        const release = publicContent.releaseByRevision(publicReleaseMatch[1]);
+        publicContent.recordDelivery('release.read', 'success', publicReleaseMatch[1], Buffer.byteLength(JSON.stringify(release)));
+        return publicJson(res, 200, release, '', 'public, max-age=60');
       }
       const publicAssetMatch = route.match(/^\/v2\/public-content\/assets\/(asset-rev-[a-f0-9]{64})$/);
       if (req.method === 'GET' && publicAssetMatch) {
         const item = publicContent.asset(publicAssetMatch[1]);
         const etag = `"${item.sha256}"`;
         if (String(req.headers['if-none-match'] || '') === etag) {
+          publicContent.recordDelivery('asset.read', 'not_modified', item.assetRevisionId);
           res.writeHead(304, { etag, 'cache-control': 'public, max-age=31536000, immutable' }); return res.end();
         }
         let start = 0; let end = item.bytes - 1; let status = 200;
@@ -201,6 +224,7 @@ function createHttpServer(options) {
           'accept-ranges': 'bytes', etag, 'x-content-sha256': item.sha256,
           'cache-control': 'public, max-age=31536000, immutable', 'x-content-type-options': 'nosniff' };
         if (status === 206) headers['content-range'] = `bytes ${start}-${end}/${item.bytes}`;
+        publicContent.recordDelivery('asset.read', status === 206 ? 'partial' : 'success', item.assetRevisionId, end - start + 1);
         res.writeHead(status, headers);
         return fs.createReadStream(item.filePath, { start, end }).pipe(res);
       }
@@ -209,7 +233,8 @@ function createHttpServer(options) {
       if (['GET', 'DELETE'].includes(req.method)) req.verifyBody(Buffer.alloc(0));
       if (req.method === 'GET' && route === '/health') return json(res, 200, { ok: true, service: 'edu-cloud-documents', version: '2.3.0-candidate.1', contracts: [1, 2], schema: { ...service.schemaStatus(), publicContent: publicContent.schemaStatus() },
         materialIndex: materialIndexer?.status() || { enabled: false }, capabilities: ['profile-sync', 'material-sync', 'remote-agent-mcp', 'cloud-inbox', 'student-archive',
-          'viewer-student-relinquish', 'current-revision-index', 'async-pdf-docx-extraction', 'oauth-pkce', 'public-course-manifest', 'public-course-revocations'] });
+          'viewer-student-relinquish', 'current-revision-index', 'async-pdf-docx-extraction', 'oauth-pkce', 'public-course-manifest', 'public-course-revocations',
+          'public-course-sync-receipts', 'public-course-operations'] });
       if (req.method === 'POST' && route === '/v2/admin/content/assets') {
         return json(res, 201, publicContent.putAsset(token, await readJson(req, MAX_PUBLIC_ASSET_JSON_BYTES)));
       }
@@ -224,6 +249,9 @@ function createHttpServer(options) {
       }
       if (req.method === 'GET' && route === '/v2/admin/releases') {
         return json(res, 200, publicContent.listReleases(token));
+      }
+      if (req.method === 'GET' && route === '/v2/admin/public-content/operations') {
+        return json(res, 200, publicContent.operations(token, url.searchParams.get('windowHours')));
       }
       if (req.method === 'POST' && route === '/v2/admin/releases/validate') {
         return json(res, 200, publicContent.validateRelease(token, await readJson(req)));
@@ -610,6 +638,16 @@ function createHttpServer(options) {
       }
       return json(res, 404, { error: '接口不存在' });
     } catch (error) {
+      try {
+        const failedRoute = new URL(req.url, 'http://localhost').pathname;
+        const action = failedRoute === '/v2/public-content/manifest' ? 'manifest.read'
+          : failedRoute === '/v2/public-content/revocations' ? 'revocations.read'
+            : failedRoute === '/v2/public-content/sync-receipts' ? 'sync-receipt.write'
+              : failedRoute.startsWith('/v2/public-content/assets/') ? 'asset.read'
+                : failedRoute.startsWith('/v2/public-content/releases/') ? 'release.read' : '';
+        const failedStatus = Number(error.status || 500);
+        if (action) publicContent.recordDelivery(action, failedStatus >= 500 ? 'server_error' : failedStatus === 404 ? 'not_found' : 'client_error');
+      } catch { /* Observability must not replace the original response. */ }
       try { service.recordDenied(bearer(req), error.status); } catch { /* Preserve the original failure. */ }
       if (!res.headersSent && !res.destroyed) json(res, error.status || 500, { error: error.status ? error.message : '服务内部错误' });
     }

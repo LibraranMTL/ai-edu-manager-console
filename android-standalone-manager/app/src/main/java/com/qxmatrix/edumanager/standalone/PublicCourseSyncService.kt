@@ -9,11 +9,13 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import java.util.TimeZone
+import java.util.UUID
 
 internal object PublicCourseContract {
     const val CONTRACT_ID = "edu-manager.public-course-mvp.v1"
     const val MANIFEST_PATH = "v2/public-content/manifest"
     const val REVOCATIONS_PATH = "v2/public-content/revocations"
+    const val SYNC_RECEIPTS_PATH = "v2/public-content/sync-receipts"
     const val DEFAULT_BASE_URL = "https://www.greatbg.com/edu-cloud"
     const val MAX_MANIFEST_BYTES = 2L * 1024 * 1024
     const val MAX_ASSET_BYTES = 5L * 1024 * 1024
@@ -27,7 +29,7 @@ internal object PublicCourseContract {
         require(base.query == null && base.fragment == null) { "公共课程基址不能包含查询或片段" }
         val prefix = base.path.orEmpty().trimEnd('/')
         val relative = relativePath.trim().removePrefix("/")
-        require(relative.matches(Regex("^v2/public-content/(manifest|revocations|assets/asset-rev-[a-f0-9]{64})$"))) { "公共课程接口路径不受支持" }
+        require(relative.matches(Regex("^v2/public-content/(manifest|revocations|sync-receipts|assets/asset-rev-[a-f0-9]{64})$"))) { "公共课程接口路径不受支持" }
         return URI(base.scheme, null, base.host, base.port, "$prefix/$relative", null, null).toString()
     }
 
@@ -74,6 +76,7 @@ class PublicCourseSyncService(context: Context) {
             .put("courseCount", catalog.getJSONArray("courses").length()).put("notModified", manifestResponse.status == 304)
             .put("synchronizedAt", iso(nowMillis))
         state.writeBytes(SYNC_STATUS, result.toString(2).toByteArray())
+        runCatching { submitReceipt(baseUrl, result, nowMillis) }
         return result
     }
 
@@ -208,6 +211,29 @@ class PublicCourseSyncService(context: Context) {
         require(PublicCourseContract.sniffImageMime(bytes) == asset.getString("mimeType")) { "公共课程资源内容类型不匹配" }
     }
 
+    private fun submitReceipt(baseUrl: String, result: JSONObject, nowMillis: Long) {
+        val clientInstanceId = preferences.getString(KEY_CLIENT_INSTANCE_ID, "").orEmpty().ifBlank {
+            "client:android-standalone:${UUID.randomUUID()}".also { preferences.edit().putString(KEY_CLIENT_INSTANCE_ID, it).apply() }
+        }
+        val revocationRevision = state.readIfPresent(CLOUD_REVOCATIONS)?.let {
+            JSONObject(it.toString(Charsets.UTF_8)).optString("revocationRevision")
+        }.orEmpty()
+        val observedAt = iso(nowMillis)
+        val outcome = if (result.optBoolean("notModified")) "not_modified" else "applied"
+        val manifestRevision = result.getString("manifestRevision")
+        val receiptSeed = "$clientInstanceId|$observedAt|$outcome|$manifestRevision|$revocationRevision"
+        val receiptId = "receipt:${sha256(receiptSeed.toByteArray()).take(40)}"
+        val body = JSONObject().put("receiptId", receiptId).put("clientInstanceId", clientInstanceId)
+            .put("clientType", "android_standalone").put("clientVersion", BuildConfig.VERSION_NAME)
+            .put("outcome", outcome).put("manifestRevision", manifestRevision).put("revocationRevision", revocationRevision)
+            .put("attemptCount", 1).put("observedAt", observedAt).toString().toByteArray(Charsets.UTF_8)
+        val response = UnifiedNetworkClient.execute(NetworkRequest(
+            url = PublicCourseContract.endpoint(baseUrl, PublicCourseContract.SYNC_RECEIPTS_PATH), method = "POST",
+            headers = mapOf("Content-Type" to "application/json"), body = body, readTimeoutMs = 15_000, maxResponseBytes = 64 * 1024,
+        ))
+        require(response.status == 200 || response.status == 201) { "公共课程同步回执提交失败：HTTP ${response.status}" }
+    }
+
     private fun header(response: NetworkResponse, name: String): String? = response.headers.entries.firstOrNull { it.key.equals(name, true) }?.value?.firstOrNull()
     private fun jsonObjects(array: JSONArray?): List<JSONObject> = if (array == null) emptyList() else (0 until array.length()).map { array.getJSONObject(it) }
     private fun parseTime(value: String): Long {
@@ -229,6 +255,7 @@ class PublicCourseSyncService(context: Context) {
         private const val PREFERENCES = "public-course-sync-v1"
         private const val KEY_MANIFEST_ETAG = "manifest-etag"
         private const val KEY_REVOCATIONS_ETAG = "revocations-etag"
+        private const val KEY_CLIENT_INSTANCE_ID = "client-instance-id"
         private val SUPPORTED_LOCALES = setOf("zh-CN", "zh-TW", "en-US", "en-GB", "fr", "es", "es-419", "ja", "ko", "vi", "ms")
     }
 }

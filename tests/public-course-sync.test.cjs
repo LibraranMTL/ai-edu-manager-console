@@ -24,6 +24,7 @@ test('Windows public course sync verifies signature and assets then uses ETag ca
   const requested = [];
   const fetchImpl = async (url) => {
     requested.push(String(url));
+    if (String(url).endsWith('/revocations')) return new Response(null, { status: 404 });
     if (String(url).endsWith('/manifest')) return notModified ? new Response(null, { status: 304 }) : Response.json(value.manifest, { headers: { etag: '"manifest-rev-test"' } });
     return new Response(value.png, { status: 200, headers: { 'content-type': 'image/png' } });
   };
@@ -36,8 +37,9 @@ test('Windows public course sync verifies signature and assets then uses ETag ca
   assert.equal(store.coursesForStudent({ id: 'student-a', grade: '9' })[0].courseId, 'platform:igsce');
   assert.equal(fs.existsSync(store.assetPath(store.state().platformCatalog.courses[0].coverAsset)), true);
   notModified = true;
-  assert.equal(requested[0], 'http://localhost/edu-cloud/v2/public-content/manifest');
-  assert.equal(requested[1], 'http://localhost/edu-cloud/v2/public-content/assets/asset-rev-test');
+  assert.equal(requested[0], 'http://localhost/edu-cloud/v2/public-content/revocations');
+  assert.equal(requested[1], 'http://localhost/edu-cloud/v2/public-content/manifest');
+  assert.equal(requested[2], 'http://localhost/edu-cloud/v2/public-content/assets/asset-rev-test');
   const second = await syncPublicCourses({ baseUrl: 'http://localhost/edu-cloud', allowHttpForTests: true, cacheDir, fetchImpl, publicKeys: value.publicKeys, now: () => Date.parse('2026-11-05T01:01:00Z') });
   assert.equal(second.notModified, true);
 });
@@ -45,5 +47,40 @@ test('Windows public course sync verifies signature and assets then uses ETag ca
 test('Windows public course sync rejects a changed signature and non-HTTPS production URL', async () => {
   const value = fixture(); value.manifest.courses[0].title = 'tampered';
   await assert.rejects(syncPublicCourses({ baseUrl: 'http://localhost', cacheDir: os.tmpdir(), fetchImpl: async () => Response.json(value.manifest), publicKeys: value.publicKeys }), /HTTPS/);
-  await assert.rejects(syncPublicCourses({ baseUrl: 'http://localhost', allowHttpForTests: true, cacheDir: fs.mkdtempSync(path.join(os.tmpdir(), 'public-course-sync-bad-')), fetchImpl: async () => Response.json(value.manifest), publicKeys: value.publicKeys, now: () => Date.parse('2026-11-05T01:00:00Z') }), /签名验证失败/);
+  await assert.rejects(syncPublicCourses({ baseUrl: 'http://localhost', allowHttpForTests: true, cacheDir: fs.mkdtempSync(path.join(os.tmpdir(), 'public-course-sync-bad-')), fetchImpl: async url => String(url).endsWith('/revocations') ? new Response(null, { status: 404 }) : Response.json(value.manifest), publicKeys: value.publicKeys, now: () => Date.parse('2026-11-05T01:00:00Z') }), /签名验证失败/);
+});
+
+test('Windows host applies signed revocations before cache promotion and submits a privacy-bounded receipt', async () => {
+  const value = fixture();
+  const unsignedRevocations = { contractId: 'edu-manager.public-course-mvp.v1', schemaVersion: 1,
+    revocationRevision: 'revocations-test-001', issuedAt: '2026-11-05T00:30:00.000Z',
+    tombstones: [{ courseId: 'platform:igsce', withdrawnAt: '2026-11-05T00:30:00.000Z', reasonCode: 'content_risk', severity: 'high', replacementCourseId: '' }],
+    keyId: 'test-key', signatureAlgorithm: 'RSA-SHA256' };
+  // Re-sign with the fixture key by creating a second fixture whose private key is exposed only inside this test.
+  const keys = crypto.generateKeyPairSync('rsa', { modulusLength: 2048 });
+  const publicKeys = new Map([['test-key', keys.publicKey]]);
+  const manifestUnsigned = { ...value.manifest }; delete manifestUnsigned.signature;
+  const manifest = { ...manifestUnsigned, signature: crypto.sign('RSA-SHA256', Buffer.from(canonicalize(manifestUnsigned)), keys.privateKey).toString('base64') };
+  const revocations = { ...unsignedRevocations, signature: crypto.sign('RSA-SHA256', Buffer.from(canonicalize(unsignedRevocations)), keys.privateKey).toString('base64') };
+  const requests = [];
+  let receiptBody = null;
+  const fetchImpl = async (url, options = {}) => {
+    requests.push({ url: String(url), method: options.method || 'GET' });
+    if (String(url).endsWith('/revocations')) return Response.json(revocations, { headers: { etag: '"revocations-test-001"' } });
+    if (String(url).endsWith('/manifest')) return Response.json(manifest, { headers: { etag: '"manifest-rev-test"' } });
+    if (String(url).endsWith('/sync-receipts')) { receiptBody = JSON.parse(options.body); return Response.json({ disposition: 'reconciled' }, { status: 201 }); }
+    return new Response(value.png, { status: 200, headers: { 'content-type': 'image/png' } });
+  };
+  const cacheDir = fs.mkdtempSync(path.join(os.tmpdir(), 'public-course-sync-revoked-'));
+  try {
+    const result = await syncPublicCourses({ baseUrl: 'http://localhost/edu-cloud', allowHttpForTests: true, cacheDir, fetchImpl,
+      publicKeys, clientInstanceId: 'host:fixture-high-entropy-001', clientType: 'windows_host', clientVersion: '0.23.4',
+      now: () => Date.parse('2026-11-05T01:00:00Z') });
+    assert.equal(result.catalog.courses.length, 0);
+    assert.equal(result.revocationRevision, 'revocations-test-001');
+    assert.equal(result.receiptSubmitted, true);
+    assert.equal(receiptBody.clientInstanceId, 'host:fixture-high-entropy-001');
+    assert.equal(receiptBody.revocationRevision, 'revocations-test-001');
+    assert.ok(requests.find(item => item.url.endsWith('/sync-receipts') && item.method === 'POST'));
+  } finally { fs.rmSync(cacheDir, { recursive: true, force: true }); }
 });

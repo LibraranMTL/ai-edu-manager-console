@@ -6,6 +6,9 @@ type Course = { courseId: string; title: string; locale: string; provider: strin
 type Release = { releaseId: string; manifestRevision: string; manifestSha256: string; status: string; createdAt: number; effectiveAt: number; activatedAt?: number | null; previousRevision: string; containsRevokedCourse?: boolean };
 type Candidate = { releaseId: string; status: string; manifestSha256: string; manifest: { manifestRevision: string; courses: Course[]; issuedAt: string; expiresAt: string } };
 type ActiveManifest = { manifestRevision: string; courses: Course[]; tombstones: Array<{ courseId: string; reasonCode: string; withdrawnAt: string }> };
+type Operations = { generatedAt: number; receiptAttestation: string; summary: { total: number; reconciled: number; auto_refresh: number; auto_retry: number; needs_handling: number };
+  delivery: Array<{ action: string; status: string; requestCount: number; byteCount: number }>;
+  alerts: Array<{ severity: string; code: string; message: string }> };
 
 const locales = ['zh-CN', 'zh-TW', 'en-US', 'en-GB', 'fr', 'es', 'es-419', 'ja', 'ko', 'vi', 'ms'];
 const initialCourse = {
@@ -29,6 +32,7 @@ export function PublicContentPanel({ request, busy, execute, setMessage }: {
   const [courses, setCourses] = useState<Course[]>([]);
   const [releases, setReleases] = useState<Release[]>([]);
   const [active, setActive] = useState<ActiveManifest | null>(null);
+  const [operations, setOperations] = useState<Operations | null>(null);
   const [assetId, setAssetId] = useState('asset:course-cover');
   const [assetFile, setAssetFile] = useState<File | null>(null);
   const [course, setCourse] = useState(initialCourse);
@@ -41,12 +45,13 @@ export function PublicContentPanel({ request, busy, execute, setMessage }: {
   const [withdrawReason, setWithdrawReason] = useState('content_risk');
 
   async function refresh() {
-    const [assetResult, courseResult, releaseResult] = await Promise.all([
+    const [assetResult, courseResult, releaseResult, operationsResult] = await Promise.all([
       request('/v2/admin/content/assets').then(response => response.json()),
       request('/v2/admin/courses').then(response => response.json()),
       request('/v2/admin/releases').then(response => response.json()),
+      request('/v2/admin/public-content/operations?windowHours=24').then(response => response.json()),
     ]);
-    setAssets(assetResult.assets || []); setCourses(courseResult.courses || []); setReleases(releaseResult.releases || []);
+    setAssets(assetResult.assets || []); setCourses(courseResult.courses || []); setReleases(releaseResult.releases || []); setOperations(operationsResult);
     setSelectedCourses(current => current.filter(id => (courseResult.courses || []).some((item: Course) => item.courseId === id)));
     const manifest = (releaseResult.releases || []).some((item: Release) => item.status === 'active')
       ? await request('/v2/public-content/manifest').then(response => response.json()).catch(() => null)
@@ -120,6 +125,16 @@ export function PublicContentPanel({ request, busy, execute, setMessage }: {
 
     <section className="release-status"><div><span>当前生效修订</span><strong>{active?.manifestRevision || '尚无生效清单'}</strong></div>
       <div><span>当前课程</span><strong>{active?.courses?.length || 0} 门</strong></div><div><span>历史发布单</span><strong>{releases.length}</strong></div></section>
+
+    <section className="operations-card"><div><div className="step-label">同步与失败对账 · 最近24小时</div><h3>客户端回执与交付状态</h3>
+      <p>回执只保存客户端随机标识的哈希，不含学生信息；当前为未认证遥测，不能替代真机验收。</p></div>
+      <div className="operations-counts"><span>回执<strong>{operations?.summary.total || 0}</strong></span><span>已对账<strong>{operations?.summary.reconciled || 0}</strong></span>
+        <span>自动刷新/重试<strong>{(operations?.summary.auto_refresh || 0) + (operations?.summary.auto_retry || 0)}</strong></span>
+        <span className={(operations?.summary.needs_handling || 0) ? 'attention' : ''}>需要处理<strong>{operations?.summary.needs_handling || 0}</strong></span></div>
+      {!!operations?.alerts?.length && <div className="operations-alerts">{operations.alerts.map(item => <p key={item.code} data-severity={item.severity}>{item.message}</p>)}</div>}
+      <small>交付请求 {operations?.delivery.reduce((sum, item) => sum + Number(item.requestCount || 0), 0) || 0} 次
+        {operations?.generatedAt ? ` · 更新于 ${new Date(operations.generatedAt).toLocaleString('zh-CN')}` : ''}</small>
+    </section>
 
     <div className="content-grid">
       <section className="content-card"><div className="step-label">01 · 资源</div><h3>上传课程封面</h3><p>服务端会复核文件魔数、5MB上限和SHA-256。</p>

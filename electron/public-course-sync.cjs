@@ -59,7 +59,7 @@ function endpointUrl(baseUrl, endpointPath) {
   return new URL(String(endpointPath || '').replace(/^\/+/, ''), base);
 }
 
-function manifestToCatalog(manifest, assetFiles) {
+function manifestToCatalog(manifest, assetFiles, revokedCourseIds = new Set()) {
   return {
     schemaVersion: 1,
     catalogVersion: manifest.manifestRevision,
@@ -69,7 +69,7 @@ function manifestToCatalog(manifest, assetFiles) {
     keyId: manifest.keyId,
     cloudFreshUntil: manifest.expiresAt,
     tombstones: Array.isArray(manifest.tombstones) ? manifest.tombstones : [],
-    courses: manifest.courses.map(course => ({
+    courses: manifest.courses.filter(course => !revokedCourseIds.has(course.courseId)).map(course => ({
       courseId: course.courseId,
       type: course.courseId.startsWith('tenant:') ? 'tenant_custom' : 'platform_standard',
       name: course.title,
@@ -91,7 +91,60 @@ function manifestToCatalog(manifest, assetFiles) {
   };
 }
 
-async function syncPublicCourses(options = {}) {
+async function syncRevocations(options, baseUrl, cacheDir, metadata, fetchImpl) {
+  const cachePath = path.join(cacheDir, 'revocations.json');
+  const headers = metadata.revocationsEtag ? { 'If-None-Match': metadata.revocationsEtag } : {};
+  const response = await fetchImpl(endpointUrl(baseUrl, 'v2/public-content/revocations'), { headers, signal: AbortSignal.timeout(options.timeoutMs || 15_000) });
+  if (response.status === 304) {
+    const cached = readJson(cachePath);
+    if (!cached) throw new Error('服务端返回304但本机没有公共课程撤回清单。');
+    verifySigned(cached, options.publicKeys);
+    return { payload: cached, etag: metadata.revocationsEtag || '', notModified: true };
+  }
+  if (response.status === 404) {
+    const cached = readJson(cachePath);
+    if (cached) verifySigned(cached, options.publicKeys);
+    return { payload: cached, etag: metadata.revocationsEtag || '', notModified: true };
+  }
+  if (!response.ok) throw new Error(`公共课程撤回清单读取失败：HTTP ${response.status}`);
+  const payload = verifySigned(await response.json(), options.publicKeys);
+  if (!Array.isArray(payload.tombstones) || !String(payload.revocationRevision || '')) throw new Error('公共课程撤回清单结构无效。');
+  atomicJson(cachePath, payload);
+  return { payload, etag: response.headers.get('etag') || `"${payload.revocationRevision}"`, notModified: false };
+}
+
+function receiptOutcome(error) {
+  const message = String(error?.message || '');
+  if (message.includes('签名')) return 'blocked_signature';
+  if (message.includes('哈希') || message.includes('资源校验')) return 'blocked_hash';
+  if (message.includes('过期') || message.includes('租约')) return 'lease_expired';
+  if (message.includes('版本')) return 'incompatible_client';
+  return 'network_failed';
+}
+
+async function submitSyncReceipt(options, baseUrl, cacheDir, result, error) {
+  const clientInstanceId = String(options.clientInstanceId || '').trim();
+  if (!clientInstanceId) return false;
+  if (baseUrl.protocol !== 'https:' && options.allowHttpForTests !== true) return false;
+  try {
+    const metadata = readJson(path.join(cacheDir, 'sync-metadata.json'), {});
+    const observedAt = new Date(Number(options.now?.() ?? Date.now())).toISOString();
+    const outcome = error ? receiptOutcome(error) : result.notModified ? 'not_modified' : 'applied';
+    const manifestRevision = String(result?.manifest?.manifestRevision || metadata.manifestRevision || '');
+    const revocationRevision = String(result?.revocationRevision || metadata.revocationRevision || '');
+    const receiptId = `receipt:${sha256(`${clientInstanceId}|${observedAt}|${outcome}|${manifestRevision}|${revocationRevision}`).slice(0, 40)}`;
+    const fetchImpl = options.fetchImpl || fetch;
+    const response = await fetchImpl(endpointUrl(baseUrl, 'v2/public-content/sync-receipts'), {
+      method: 'POST', headers: { 'content-type': 'application/json' }, signal: AbortSignal.timeout(options.timeoutMs || 15_000),
+      body: JSON.stringify({ receiptId, clientInstanceId, clientType: options.clientType || 'windows_host',
+        clientVersion: String(options.clientVersion || '0.0.0'), outcome, manifestRevision, revocationRevision,
+        detailCode: error ? String(error.code || outcome).slice(0, 80) : '', attemptCount: Number(options.attemptCount || 1), observedAt }),
+    });
+    return response.ok;
+  } catch { return false; }
+}
+
+async function syncPublicCoursesCore(options = {}) {
   const baseUrl = new URL(String(options.baseUrl || ''));
   if (baseUrl.protocol !== 'https:' && options.allowHttpForTests !== true) throw new Error('公共课程同步地址必须使用HTTPS。');
   const cacheDir = path.resolve(options.cacheDir);
@@ -100,13 +153,20 @@ async function syncPublicCourses(options = {}) {
   const metadataPath = path.join(cacheDir, 'sync-metadata.json');
   const metadata = readJson(metadataPath, {});
   const fetchImpl = options.fetchImpl || fetch;
+  const revocations = await syncRevocations(options, baseUrl, cacheDir, metadata, fetchImpl);
+  const revokedCourseIds = new Set((revocations.payload?.tombstones || []).map(item => String(item.courseId || '')).filter(Boolean));
   const headers = metadata.manifestEtag ? { 'If-None-Match': metadata.manifestEtag } : {};
   const response = await fetchImpl(endpointUrl(baseUrl, 'v2/public-content/manifest'), { headers, signal: AbortSignal.timeout(options.timeoutMs || 15_000) });
   if (response.status === 304) {
     const cached = readJson(activePath);
     if (!cached) throw new Error('服务端返回304但本机没有最后可用公共课程清单。');
     verifySigned(cached.manifest, options.publicKeys);
-    return { ok: true, notModified: true, ...cached };
+    const catalog = { ...cached.catalog, tombstones: revocations.payload?.tombstones || cached.catalog.tombstones || [],
+      courses: (cached.catalog.courses || []).filter(course => !revokedCourseIds.has(course.courseId)) };
+    const active = { ...cached, catalog, revocationRevision: String(revocations.payload?.revocationRevision || '') };
+    atomicJson(activePath, active);
+    atomicJson(metadataPath, { ...metadata, revocationsEtag: revocations.etag, revocationRevision: active.revocationRevision });
+    return { ok: true, notModified: true, ...active };
   }
   if (!response.ok) throw new Error(`公共课程清单读取失败：HTTP ${response.status}`);
   const manifest = verifySigned(await response.json(), options.publicKeys);
@@ -132,13 +192,30 @@ async function syncPublicCourses(options = {}) {
     }
     assetFiles.set(asset.assetRevisionId, `cloud-assets/${filename}`);
   }
-  const catalog = manifestToCatalog(manifest, assetFiles);
+  for (const tombstone of manifest.tombstones || []) revokedCourseIds.add(String(tombstone.courseId || ''));
+  const catalog = manifestToCatalog(manifest, assetFiles, revokedCourseIds);
+  catalog.tombstones = [...(manifest.tombstones || []), ...(revocations.payload?.tombstones || [])];
   catalog.synchronizedAt = new Date(now).toISOString();
-  const active = { schema: 'edu-manager.public-course-cache.v1', manifest, catalog, synchronizedAt: catalog.synchronizedAt };
+  const active = { schema: 'edu-manager.public-course-cache.v1', manifest, catalog, synchronizedAt: catalog.synchronizedAt,
+    revocationRevision: String(revocations.payload?.revocationRevision || '') };
   atomicJson(path.join(cacheDir, `manifest-${manifest.manifestRevision}.json`), active);
   atomicJson(activePath, active);
-  atomicJson(metadataPath, { manifestEtag: response.headers.get('etag') || `"${manifest.manifestRevision}"`, manifestRevision: manifest.manifestRevision, synchronizedAt: active.synchronizedAt });
+  atomicJson(metadataPath, { manifestEtag: response.headers.get('etag') || `"${manifest.manifestRevision}"`, manifestRevision: manifest.manifestRevision,
+    revocationsEtag: revocations.etag, revocationRevision: active.revocationRevision, synchronizedAt: active.synchronizedAt });
   return { ok: true, notModified: false, ...active };
 }
 
-module.exports = { canonicalize, endpointUrl, manifestToCatalog, syncPublicCourses, verifySigned };
+async function syncPublicCourses(options = {}) {
+  const baseUrl = new URL(String(options.baseUrl || ''));
+  const cacheDir = path.resolve(options.cacheDir);
+  try {
+    const result = await syncPublicCoursesCore(options);
+    result.receiptSubmitted = await submitSyncReceipt(options, baseUrl, cacheDir, result, null);
+    return result;
+  } catch (error) {
+    await submitSyncReceipt(options, baseUrl, cacheDir, null, error);
+    throw error;
+  }
+}
+
+module.exports = { canonicalize, endpointUrl, manifestToCatalog, syncPublicCourses, syncRevocations, verifySigned };

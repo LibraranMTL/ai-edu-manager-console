@@ -153,6 +153,43 @@ test('admin inventory lists assets, course drafts and immutable release hashes',
   } finally { fx.close(); }
 });
 
+test('public content observability hashes client identity and reconciles bounded receipts', () => {
+  const fx = fixture();
+  try {
+    const asset = fx.publicContent.putAsset(fx.session, {
+      assetId: 'asset:metrics-cover', mimeType: 'image/png', contentBase64: pngFixture('metrics-fixture').toString('base64'),
+    });
+    fx.publicContent.saveCourse(fx.session, course(asset.assetRevisionId));
+    const validated = fx.publicContent.validateRelease(fx.session, {
+      releaseId: 'release:metrics-001', courseIds: ['platform:starfall-k5-math'],
+      issuedAt: '2026-11-05T00:00:00.000Z', expiresAt: '2026-11-06T00:00:00.000Z',
+    });
+    fx.publicContent.publishRelease(fx.session, { releaseId: validated.releaseId, expectedManifestSha256: validated.manifestSha256 });
+    fx.publicContent.recordDelivery('manifest.read', 'success', validated.manifest.manifestRevision, 1234);
+    const clientId = 'host:high-entropy-installation-id-001';
+    const applied = fx.publicContent.recordSyncReceipt({ receiptId: 'receipt:metrics-applied-001', clientInstanceId: clientId,
+      clientType: 'windows_host', clientVersion: '0.23.4', outcome: 'applied', manifestRevision: validated.manifest.manifestRevision,
+      observedAt: new Date().toISOString() });
+    assert.equal(applied.disposition, 'reconciled');
+    assert.equal(fx.publicContent.recordSyncReceipt({ receiptId: 'receipt:metrics-applied-001', clientInstanceId: clientId,
+      clientType: 'windows_host', clientVersion: '0.23.4', outcome: 'applied', manifestRevision: validated.manifest.manifestRevision }).duplicate, true);
+    assert.equal(fx.publicContent.recordSyncReceipt({ receiptId: 'receipt:metrics-retry-001', clientInstanceId: clientId,
+      clientType: 'windows_host', clientVersion: '0.23.4', outcome: 'network_failed', attemptCount: 2 }).disposition, 'auto_retry');
+    assert.equal(fx.publicContent.recordSyncReceipt({ receiptId: 'receipt:metrics-blocked-001', clientInstanceId: clientId,
+      clientType: 'windows_host', clientVersion: '0.23.4', outcome: 'blocked_signature' }).disposition, 'needs_handling');
+    const stored = fx.service.db.prepare('SELECT client_hash AS clientHash FROM public_content_sync_receipts WHERE receipt_id=?').get('receipt:metrics-applied-001');
+    assert.equal(stored.clientHash, crypto.createHash('sha256').update(clientId).digest('hex'));
+    assert.equal(JSON.stringify(fx.publicContent.operations(fx.session, 24)).includes(clientId), false);
+    const operations = fx.publicContent.operations(fx.session, 24);
+    assert.equal(operations.summary.total, 3);
+    assert.equal(operations.summary.needs_handling, 1);
+    assert.equal(operations.delivery[0].requestCount, 1);
+    assert.equal(operations.receiptAttestation, 'unverified_telemetry');
+    assert.ok(operations.alerts.some(item => item.code === 'sync_needs_handling'));
+    assert.ok(fx.service.db.prepare('SELECT 1 FROM schema_migrations WHERE id=?').get('cloud-public-content-observability-v1'));
+  } finally { fx.close(); }
+});
+
 test('public HTTP endpoints support ETag, 304 and byte ranges', async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'edu-public-http-'));
   const adminToken = 'admin-token-that-is-longer-than-24-characters';
@@ -184,6 +221,14 @@ test('public HTTP endpoints support ETag, 304 and byte ranges', async () => {
     assert.equal(ranged.status, 206);
     assert.equal(Buffer.from(await ranged.arrayBuffer()).equals(bytes.subarray(0, 5)), true);
     assert.equal(ranged.headers.get('content-range'), `bytes 0-4/${bytes.length}`);
+    const receipt = await fetch(`${base}/v2/public-content/sync-receipts`, { method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ receiptId: 'receipt:http-applied-001', clientInstanceId: 'host:http-fixture-instance-001', clientType: 'windows_host',
+        clientVersion: '0.23.4', outcome: 'applied', manifestRevision: validated.manifest.manifestRevision, observedAt: new Date().toISOString() }) });
+    assert.equal(receipt.status, 201);
+    assert.equal((await receipt.json()).disposition, 'reconciled');
+    const operations = await fetch(`${base}/v2/admin/public-content/operations?windowHours=24`, { headers: { authorization: `Bearer ${session}` } });
+    assert.equal(operations.status, 200);
+    assert.equal((await operations.json()).summary.reconciled, 1);
   } finally {
     await app.close();
     fs.rmSync(root, { recursive: true, force: true });

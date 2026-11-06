@@ -664,7 +664,6 @@ class MainActivity : ComponentActivity() {
             }
             textSize = 16f; setTextColor(palette.text); setPadding(dp(18), dp(16), dp(18), dp(16)); YouthUi.applyStatusCard(this, palette)
         }, matchWrap())
-        addExpertConsultationCard("android_home")
         sectionHeading("学习闭环")
         val stages = listOf(
             PipelineStageUiState(
@@ -713,6 +712,7 @@ class MainActivity : ComponentActivity() {
             YouthAction("◆", "项目进展", if (projects > 0) "查看 $projects 个项目的阶段、待办和成果" else "建立学习项目并汇总资料与成果", if (projects > 0) "$projects 个项目" else "尚无项目") { renderSection(AppSection.PROJECTS) },
             YouthAction("↗", "成长变化", "查看自动生成且可追溯的成长模型", "项目成果末尾") { renderSection(AppSection.PROJECTS) },
         ), preferredColumns = 2, colorful = false)
+        addExpertConsultationCard("android_home")
     }
 
     private fun renderArchives() {
@@ -1090,13 +1090,12 @@ class MainActivity : ComponentActivity() {
         val queue = student?.let { materialQueueItems(listOf(it)) }.orEmpty()
         val waiting = queue.count(::materialPending) + queue.count(::materialProcessing) + queue.count(::materialAutomaticRecovery)
         val needsHelp = queue.count(::materialNeedsHelp)
-        sectionNote("四份报告继续引用同一有效成长快照整组更新；打开本页不会调用模型或覆盖旧报告。")
         student?.let { runCatching { ReportScheduleStore(this).ensureDefaults(it.id) } }
         sectionHeading("最新学情报告")
         val reportRevision = student?.let { current -> runCatching {
             LearningInsightsStore(this).reportRevisions(current.id).firstOrNull()?.optString("contentFingerprint").orEmpty()
         }.getOrDefault("") }.orEmpty()
-        addExpertConsultationCard("android_report", "learning_report", reportRevision)
+        sectionNote("四份报告继续引用同一有效成长快照整组更新；打开本页不会调用模型或覆盖旧报告。")
         sectionContent.addView(statusCard().apply {
             text = when {
                 student == null -> "请先建立或接管学生档案。"
@@ -1126,6 +1125,7 @@ class MainActivity : ComponentActivity() {
             YouthAction("⇩", "导出、分享与打印", "输出正式报告、简明报告或成长卡片") { withCurrentStudent { chooseReportForPublication(it) } },
             YouthAction("⋯", "更多", "周期设置、手动重新生成和云端报告") { withCurrentStudent { showReportMore(it) } },
         ), preferredColumns = 2, colorful = false)
+        addExpertConsultationCard("android_report", "learning_report", reportRevision)
     }
 
     private fun openPublishedReport(student: StudentRecord, definition: LearningReportDefinition) {
@@ -3168,32 +3168,51 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun addExpertConsultationCard(sourcePage: String, reportType: String = "", reportRevision: String = "") {
+        val compactLandscape = resources.configuration.orientation == android.content.res.Configuration.ORIENTATION_LANDSCAPE
         val card = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(dp(22), dp(18), dp(22), dp(18))
+            orientation = if (compactLandscape) LinearLayout.HORIZONTAL else LinearLayout.VERTICAL
+            gravity = if (compactLandscape) Gravity.CENTER_VERTICAL else Gravity.NO_GRAVITY
+            setPadding(dp(22), if (compactLandscape) dp(10) else dp(18), dp(22), if (compactLandscape) dp(10) else dp(18))
             contentDescription = "真人专家解读咨询入口"
             YouthUi.applyExpertCard(this, palette)
         }
-        card.addView(TextView(this).apply {
+        val copy = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+        }
+        copy.addView(TextView(this).apply {
             text = "▣　真人专家"
-            textSize = 15f
-            setTextColor(Color.rgb(151, 101, 0))
+            textSize = if (compactLandscape) 13f else 15f
+            setTextColor(Color.rgb(128, 76, 0))
         }, matchWrap())
-        card.addView(TextView(this).apply {
+        copy.addView(TextView(this).apply {
             text = "请求真人专家解读咨询"
-            textSize = 23f
-            setTextColor(palette.heading)
+            textSize = if (compactLandscape) 18f else 23f
+            setTextColor(Color.rgb(25, 50, 74))
             typeface = android.graphics.Typeface.create("sans-serif-medium", android.graphics.Typeface.BOLD)
-            setPadding(0, dp(7), 0, dp(5))
+            setPadding(0, if (compactLandscape) dp(3) else dp(7), 0, if (compactLandscape) dp(2) else dp(5))
         }, matchWrap())
-        card.addView(TextView(this).apply {
+        copy.addView(TextView(this).apply {
             text = "先核对准备上传的学情范围。点击本身不会上传、创建咨询单或改变授权。"
-            textSize = 15f
-            setTextColor(palette.text)
+            textSize = if (compactLandscape) 13f else 15f
+            setTextColor(Color.rgb(55, 65, 81))
+            if (compactLandscape) maxLines = 2
         }, matchWrap())
-        card.addView(themedButton("授权上传学情资料　→", YouthButtonRole.PRIMARY) {
+        val action = themedButton("授权上传学情资料　→", YouthButtonRole.PRIMARY) {
             openExpertAuthorization(sourcePage, reportType, reportRevision)
-        }, matchWrap().apply { topMargin = dp(10) })
+        }.apply {
+            if (compactLandscape) {
+                textSize = 15f
+                minHeight = dp(52)
+                setPadding(dp(14), dp(8), dp(14), dp(8))
+            }
+        }
+        if (compactLandscape) {
+            card.addView(copy, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+            card.addView(action, LinearLayout.LayoutParams(dp(300), ViewGroup.LayoutParams.WRAP_CONTENT).apply { marginStart = dp(18) })
+        } else {
+            card.addView(copy, matchWrap())
+            card.addView(action, matchWrap().apply { topMargin = dp(10) })
+        }
         sectionContent.addView(card, matchWrap().apply { topMargin = dp(10); bottomMargin = dp(6) })
     }
 

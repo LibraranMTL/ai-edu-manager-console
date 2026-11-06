@@ -51,5 +51,20 @@ if ($WhatIfPreference) {
 }
 
 if ($PSCmdlet.ShouldProcess($resolvedExe, "以隔离目录和候选课程基址启动 (port $RemoteDebuggingPort)")) {
-  Start-Process -FilePath $resolvedExe -ArgumentList $arguments -Environment $environment -PassThru -WindowStyle Normal
+  # Windows PowerShell 5.1 has no Start-Process -Environment parameter. Set
+  # only this launcher process's environment long enough for the child to
+  # inherit it, then restore it even if the process fails to start.
+  $previousEnvironment = @{}
+  try {
+    foreach ($entry in $environment.GetEnumerator()) {
+      $previousEnvironment[$entry.Key] = [Environment]::GetEnvironmentVariable($entry.Key, 'Process')
+      [Environment]::SetEnvironmentVariable($entry.Key, $entry.Value, 'Process')
+    }
+    Start-Process -FilePath $resolvedExe -ArgumentList $arguments -PassThru -WindowStyle Normal
+  }
+  finally {
+    foreach ($entry in $previousEnvironment.GetEnumerator()) {
+      [Environment]::SetEnvironmentVariable($entry.Key, $entry.Value, 'Process')
+    }
+  }
 }

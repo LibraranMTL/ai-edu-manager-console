@@ -20,6 +20,11 @@ android {
     namespace = "com.qxmatrix.edumanager.standalone"
     compileSdk = 34
 
+    buildFeatures {
+        // PublicCourseSyncService reports the installed client version in privacy-bounded sync receipts.
+        buildConfig = true
+    }
+
     defaultConfig {
         applicationId = "com.qxmatrix.edumanager.standalone"
         minSdk = 23

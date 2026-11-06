@@ -20,11 +20,12 @@
 - 固定首批四门课程的语言映射，永久保留 `platform:igsce` 原 ID，并提供只读迁移预览与孤儿资产候选清单。
 - 增加课程发布双信任过渡策略：Windows 主机和 Android 单机版按 `keyId` 精确选择旧/新公钥，拒绝未知、撤销、指纹篡改和同 ID 冲突；两个学生端把发布者和信任策略修订纳入学生投影复核。
 - 云端已发布课程的当前卡片、详情弹窗和不可变历史版本增加封面预览，编辑仍只创建新草稿，不修改已发布快照。
+- Android 单机版显式生成 `BuildConfig`，使公共课程同步回执可携带真实客户端版本；共享 JDK/SDK 环境的完整 Gradle `check` 已通过。
 
 ### 候选边界
 
 - 本条仅代表源码候选：公网正式清单继续保持 Windows `0.23.3`、Windows 学生端 `0.18.6`、Android 学生端 `0.6.26/96`、Android 单机版 `1.3.4/38`。
-- Android 尚未完成目标真机验证；Windows 尚未完成 Authenticode、候选公网环境、制品 SHA-256 和回滚演练，因此不得标记为 `device_verified`、`canary` 或 `released`。
+- Android 单机版已完成 JVM/编译/Lint 检查，但当前华为设备仅以 HDB 模式连接，尚未开放 ADB 安装和调试；Windows 尚未完成 Authenticode、正式候选制品和目标设备回滚证据，因此不得标记为 `device_verified`、`canary` 或 `released`。
 
 ## [0.23.3] - 2026-11-05（项目综合报告价值升级与学情工作台正式版）
 

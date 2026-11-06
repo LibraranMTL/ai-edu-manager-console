@@ -132,6 +132,10 @@ class ScopedContentRepository(private val context: Context,
         event.put("contentFingerprint", ScopedContentPolicy.fingerprint(event))
         HighGrowthRoomStore(context).mirrorAsync(studentId, HighGrowthRoomStore.LEARNING_EVENT, listOf(event))
         StudioAutomation.enqueueCheck(context, studentId)
+        runCatching {
+            AutomationOrchestrator(context).emit(AutomationEventType.LEARNING_CARD_ANSWERED, studentId,
+                ScopedContentPolicy.fingerprint(JSONObject(row.payload)), listOf(row.id))
+        }
         return row
     }
     fun draft(studentId: String, versionId: String, itemIndex: Int): ScopedContentEntity = transaction(studentId) {

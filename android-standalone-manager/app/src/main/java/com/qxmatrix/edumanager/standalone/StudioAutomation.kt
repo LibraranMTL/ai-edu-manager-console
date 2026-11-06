@@ -48,8 +48,8 @@ class StudioAutomation(private val context: Context) {
     }
 
     /** Refreshes the two non-research modules. Time-sensitive modules are handled by ResearchUpdateService. */
-    fun check(studentId: String): String = synchronized(StudentWorkLocks.forStudent(studentId)) {
-        if (!enabled(studentId)) return@synchronized "智能参考建议未开启"
+    fun check(studentId: String, requireEnabled: Boolean = true): String = synchronized(StudentWorkLocks.forStudent(studentId)) {
+        if (requireEnabled && !enabled(studentId)) return@synchronized "智能参考建议未开启"
         require(LicenseManager(context).status().active) { "产品尚未激活，已有建议继续保留" }
         val config = requireNotNull(AgentConfigurationStore(context).load()) { "AI处理服务尚未配置，已有建议继续保留" }
         val repository = ScopedContentRepository(context)

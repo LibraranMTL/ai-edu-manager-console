@@ -152,6 +152,10 @@ class StudentDigestOrchestrator(private val context: Context) {
             val result = resultPayload(task.getString("id"), executionId, true, "已消化 ${eligible.size} 份资料", artifactPath)
             tasks.acceptResult(task.getString("id"), result)
             runCatching { StudioAutomation.enqueueCheck(context, studentId) }
+            runCatching {
+                AutomationOrchestrator(context).emit(AutomationEventType.DIGEST_COMPLETED, studentId, cacheKey,
+                    eligible.map { it.getString("id") })
+            }
             JSONObject().put("ok", true).put("task", tasks.requireExact(task.getString("id"))).put("artifactPath", artifactPath).put("processed", eligible.size)
         } catch (error: Throwable) {
             unknownMarkerKey?.let { marker ->

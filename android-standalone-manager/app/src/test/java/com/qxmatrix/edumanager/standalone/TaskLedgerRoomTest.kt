@@ -83,4 +83,28 @@ class TaskLedgerRoomTest {
         val eventCount = db.tasks().events().size
         repo.list(); assertEquals(eventCount, db.tasks().events().size)
     }
+    @Test fun automationBusinessKeysAreIdempotentAndConflictsDoNotOverwrite() = database { context, db ->
+        PrivateStateStore(context).writeBytes(RoomTaskLedgerStore.TASKS,
+            JSONObject().put("protocolVersion", "1.2").put("tasks", JSONArray()).toString().toByteArray())
+        val repo = TaskRepository(RoomTaskLedgerStore(context, db))
+        fun input(source: String) = JSONObject().put("id", "automation-stable").put("kind", "automation_validate_facts")
+            .put("sourceType", "student").put("sourceId", "student-a").put("status", "queued")
+            .put("idempotencyKey", "stable-key").put("input", JSONObject().put("studentId", "student-a").put("sourceFingerprint", source))
+        assertEquals("automation-stable", repo.createOrGet(input("source-a")).getString("id"))
+        assertEquals("automation-stable", repo.createOrGet(input("source-a")).getString("id"))
+        assertEquals(1, repo.list().size)
+        assertThrows(IllegalArgumentException::class.java) { repo.createOrGet(input("source-b")) }
+        assertEquals("source-a", repo.list().single().getJSONObject("input").getString("sourceFingerprint"))
+    }
+    @Test fun interruptedAutomationWaitsForReceiptProbeInsteadOfBlindRetry() = database { context, db ->
+        val old = task("automation-interrupted").put("kind", "automation_generate_learning_outputs")
+            .put("status", "running").put("executionId", "old")
+        PrivateStateStore(context).writeBytes(RoomTaskLedgerStore.TASKS,
+            JSONObject().put("protocolVersion", "1.2").put("tasks", JSONArray().put(old)).toString().toByteArray())
+        val recovered = TaskRepository(RoomTaskLedgerStore(context, db)).list().single()
+        assertEquals("waiting_result", recovered.getString("status"))
+        assertEquals("execution_unknown", recovered.getJSONObject("error").getString("classification"))
+        assertFalse(recovered.getBoolean("autoRetry"))
+        assertEquals(AutomationReconciliationDecision.PROBE_UNKNOWN, AutomationReconciliationPolicy.decide(recovered))
+    }
 }

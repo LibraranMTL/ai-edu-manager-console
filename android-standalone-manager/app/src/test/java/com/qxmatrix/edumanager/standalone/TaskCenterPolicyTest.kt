@@ -19,7 +19,8 @@ class TaskCenterPolicyTest {
         assertEquals("running", TaskCenterPolicy.viewState(JSONObject().put("status", "reviewing")))
         assertEquals("failed", TaskCenterPolicy.viewState(JSONObject().put("status", "failed").put("error", JSONObject().put("code", "process_interrupted"))))
         assertEquals("needs_user", TaskCenterPolicy.viewState(JSONObject().put("status", "failed").put("error", JSONObject().put("code", "student_scope_mismatch"))))
-        listOf("queued", "running", "waiting_network", "waiting_quota", "needs_user", "succeeded", "failed", "cancelled", "superseded").forEach {
+        assertEquals("需要处理", TaskCenterPolicy.label("needs_user"))
+        listOf("queued", "running", "waiting_network", "waiting_quota", "succeeded", "failed", "cancelled", "superseded").forEach {
             assertNotEquals("需要处理", TaskCenterPolicy.label(it))
         }
     }

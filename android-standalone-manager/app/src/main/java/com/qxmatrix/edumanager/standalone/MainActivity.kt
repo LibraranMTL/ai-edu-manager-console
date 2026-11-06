@@ -25,6 +25,7 @@ import android.view.View
 import android.view.ViewGroup
 import android.widget.Button
 import android.widget.CheckBox
+import android.widget.ArrayAdapter
 import android.widget.EditText
 import android.widget.FrameLayout
 import android.widget.GridLayout
@@ -32,6 +33,7 @@ import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ProgressBar
 import android.widget.ScrollView
+import android.widget.Spinner
 import android.widget.TextView
 import androidx.core.content.FileProvider
 import androidx.core.content.ContextCompat
@@ -196,6 +198,7 @@ class MainActivity : ComponentActivity() {
         runCatching { StudioAutomation.schedule(this) }
         runCatching { HighGrowthMigrationWorker.schedule(this) }
         runCatching { PublicCourseSyncWorker.schedule(this) }
+        runCatching { AutomationReconciliationWorker.schedule(this) }
         lifecycleScope.launch(Dispatchers.IO) {
             runCatching { BusinessDatabase.get(this@MainActivity).ledger().recoverInterruptedCalls(BusinessDatabase.processSession) }
         }
@@ -1193,7 +1196,7 @@ class MainActivity : ComponentActivity() {
         sectionHeading("AI 与自动处理")
         agentStatus = statusCard(); sectionContent.addView(agentStatus, matchWrap()); updateAgentStatus()
         addActionGrid(listOf(
-            YouthAction("◷", "资料自动处理", "当前：${if (AutoDigestSettingsStore(this).load().enabled) "已开启" else "已关闭"}；控制识别、理解和整理") { showAutoDigestSettings() },
+            YouthAction("◷", "资料自动处理", AutoDigestSettingsStore(this).load().let { "消化：${if (it.enabled) "已开启" else "已关闭"}；编排：${AutomationMode.from(it.automationMode).label}" }) { showAutoDigestSettings() },
             YouthAction("✦", "AI 处理服务", "查看服务状态，必要时配置、测试或停用") { showAiProcessingServiceMenu() },
             YouthAction("▶", "智能参考建议", "设置自动更新、联网许可和学习提醒") { openLearningStudio("suggestions") },
         ), preferredColumns = 3, colorful = false)
@@ -2463,7 +2466,12 @@ class MainActivity : ComponentActivity() {
         val wifi = CheckBox(this).apply { text = "仅在 Wi-Fi 下运行"; isChecked = current.wifiOnly; fields.addView(this, matchWrap()) }
         val charging = CheckBox(this).apply { text = "仅在充电时运行"; isChecked = current.chargingOnly; fields.addView(this, matchWrap()) }
         val maximum = EditText(this).apply { hint = "每名学生单次最多处理份数"; inputType = InputType.TYPE_CLASS_NUMBER; setText(current.maximumPerStudent.toString()); fields.addView(this, matchWrap()) }
-        fields.addView(TextView(this).apply { text = "只处理已准备好的待消化资料；图片/PDF 必须先完成 OCR。失败资料保留在待处理队列，不会静默删除。\n\n${store.summary()}"; setTextColor(palette.muted); setPadding(0, dp(8), 0, 0) }, matchWrap())
+        val modes = AutomationMode.entries
+        val mode = Spinner(this).apply {
+            adapter = ArrayAdapter(this@MainActivity, android.R.layout.simple_spinner_dropdown_item, modes.map { it.label })
+            setSelection(modes.indexOf(AutomationMode.from(current.automationMode))); fields.addView(this, matchWrap())
+        }
+        fields.addView(TextView(this).apply { text = "关闭：只登记资料；保守自动：消化并生成候选，不自动发布报告；完整自动：通过质量门后自动生成并发布。未知结果不会盲目重试。\n\n${store.summary()}"; setTextColor(palette.muted); setPadding(0, dp(8), 0, 0) }, matchWrap())
         val dialog = AlertDialog.Builder(this).setTitle("自动消化资料").setView(fields).setNegativeButton("取消", null).setPositiveButton("保存", null).create()
         dialog.setOnShowListener {
             dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
@@ -2472,7 +2480,7 @@ class MainActivity : ComponentActivity() {
                 val count = maximum.text.toString().toIntOrNull()
                 if (hour !in 0..23 || minute !in 0..59) { time.error = "请输入 00:00 到 23:59"; return@setOnClickListener }
                 if (count !in 1..100) { maximum.error = "请输入 1 到 100"; return@setOnClickListener }
-                store.save(AutoDigestSettings(enabled.isChecked, requireNotNull(hour), requireNotNull(minute), wifi.isChecked, charging.isChecked, requireNotNull(count)))
+                store.save(AutoDigestSettings(enabled.isChecked, requireNotNull(hour), requireNotNull(minute), wifi.isChecked, charging.isChecked, requireNotNull(count), modes[mode.selectedItemPosition].wireValue))
                 dialog.dismiss(); showMessage("自动消化设置已保存", store.summary())
                 if (activeSection == AppSection.SETTINGS) renderSection(AppSection.SETTINGS)
             }

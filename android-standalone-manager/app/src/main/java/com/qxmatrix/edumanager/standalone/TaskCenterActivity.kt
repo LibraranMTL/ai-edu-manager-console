@@ -31,9 +31,9 @@ class TaskCenterActivity : Activity() {
         val ui = UiPreferences(this); palette = ui.palette(); ui.applyOrientation(this)
         val root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(16), dp(14), dp(16), dp(12)); setBackgroundColor(palette.page) }
         status = text("正在读取当前学生任务…", 20f); root.addView(status)
-        root.addView(text("仅显示当前学生及其关联项目。技术异常保留在历史记录中，只有学生或项目归属冲突需要用户确认。", 13f))
+        root.addView(text("仅显示当前学生及其关联项目。系统会先自动重试、降级或核对回执；只有归属不明、不可消解冲突、未知结果或永久失败才需要处理。", 13f))
         val controls = LinearLayout(this)
-        listOf("active" to "处理中", "help" to "归属待确认", "history" to "历史记录").forEach { (id, label) ->
+        listOf("active" to "处理中", "help" to "需要处理", "history" to "历史记录").forEach { (id, label) ->
             controls.addView(button(label) { filter = id; offset = 0; refresh() }, LinearLayout.LayoutParams(0, -2, 1f))
         }
         root.addView(controls)
@@ -45,6 +45,18 @@ class TaskCenterActivity : Activity() {
         paging.addView(button("下一页") { offset += PAGE_SIZE; refresh() }, LinearLayout.LayoutParams(0, -2, 1f))
         root.addView(paging)
         root.addView(button("刷新本机状态") { refresh() })
+        root.addView(button("立即检查并续跑可恢复任务") {
+            status.text = "正在核对原任务、回执和重试时间…"
+            worker.execute {
+                val result = runCatching { AutomationReconciliationService(this).reconcile() }
+                runOnUiThread {
+                    if (!currentScope()) return@runOnUiThread
+                    status.text = result.fold({ "对账完成：续跑 ${it.optInt("requeued")}，补回执 ${it.optInt("recovered")}，需要处理 ${it.optInt("needsAttention")}" },
+                        { "对账未完成，原任务和资料均已保留：${it.message}" })
+                    refresh()
+                }
+            }
+        })
         root.addView(button("高级详情（技术回执与安全上限）") {
             showTechnicalDetails()
         })

@@ -78,8 +78,11 @@ internal class RoomTaskLedgerStore(context: Context, private val db: BusinessDat
         dao.interrupted(BusinessDatabase.processSession).forEach { row ->
             val current = JSONObject(row.payload)
             // Unknown model/write results are never automatically retried after process loss.
-            val next = TaskProtocol.envelope(JSONObject(current.toString()).put("status", "failed")
-                .put("error", JSONObject().put("code", "process_interrupted").put("message", "上次进程中断，结果未知；请核对已有产物后从原入口恢复"))
+            val automation = current.optString("kind").startsWith("automation_")
+            val next = TaskProtocol.envelope(JSONObject(current.toString()).put("status", if (automation) "waiting_result" else "failed")
+                .put("error", JSONObject().put("code", "process_interrupted")
+                    .put("classification", if (automation) "execution_unknown" else "interrupted")
+                    .put("message", "上次进程中断，结果未知；先核对已有产物和回执，不会自动重试"))
                 .put("autoRetry", false).put("completedAt", Timestamp.now()), current)
             replace(current, next)
             event(JSONObject().put("id", "event-${java.util.UUID.randomUUID()}").put("taskId", row.id)

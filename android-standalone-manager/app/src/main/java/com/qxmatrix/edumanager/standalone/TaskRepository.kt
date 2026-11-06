@@ -21,6 +21,22 @@ class TaskRepository internal constructor(private val store: TaskLedgerStore) {
         require(store.exact(task.getString("id")) == null) { "任务 ID 已存在" }
         store.insert(task); appendEvent(task, "task_created", JSONObject()); task
     }
+    /** Stable business keys make trigger replay idempotent without hiding conflicting payloads. */
+    fun createOrGet(input: JSONObject): JSONObject = store.transaction {
+        val task = TaskProtocol.envelope(input); LegacyTaskCodec.validateTask(task)
+        val key = task.getString("idempotencyKey")
+        val matches = store.all().filter { it.optString("idempotencyKey") == key }
+        require(matches.size <= 1) { "任务账本存在重复业务键，停止自动写入" }
+        matches.singleOrNull()?.let { existing ->
+            require(existing.optString("kind") == task.optString("kind") &&
+                existing.optJSONObject("input")?.toString() == task.optJSONObject("input")?.toString()) {
+                "同一业务键对应不同自动化输入，原任务保留"
+            }
+            return@transaction existing
+        }
+        require(store.exact(task.getString("id")) == null) { "任务 ID 已存在" }
+        store.insert(task); appendEvent(task, "task_created", JSONObject().put("idempotent", true)); task
+    }
     fun approve(taskId: String): JSONObject = store.transaction {
         transition(taskId, "approved", JSONObject().put("approval", JSONObject().put("required", true).put("status", "approved").put("reviewerRole", "administrator").put("reviewerId", "local-user").put("approvedAt", Timestamp.now())))
     }
@@ -36,6 +52,50 @@ class TaskRepository internal constructor(private val store: TaskLedgerStore) {
         transition(taskId, "reviewing", JSONObject().put("result", payload))
         val passed = payload.optJSONObject("validation")?.optBoolean("passed") == true
         transition(taskId, if (passed) "succeeded" else "failed", JSONObject().put("result", payload).put("completedAt", Timestamp.now()))
+    }
+    fun completeInternal(taskId: String, result: JSONObject): JSONObject = store.transaction {
+        val task = requireExact(taskId)
+        require(task.optString("kind").startsWith("automation_")) { "仅内部自动化任务可使用自动完成" }
+        require(task.optString("status") in setOf("running", "waiting_result")) { "自动化任务当前不能完成" }
+        transition(taskId, "reviewing", JSONObject().put("result", result))
+        transition(taskId, "succeeded", JSONObject().put("result", result).put("completedAt", Timestamp.now()).put("autoRetry", false))
+    }
+    fun failInternal(taskId: String, error: JSONObject, nextRetryAt: String = "", autoRetry: Boolean = false,
+        resultUnknown: Boolean = false): JSONObject = store.transaction {
+        val task = requireExact(taskId)
+        require(task.optString("kind").startsWith("automation_")) { "仅内部自动化任务可使用自动失败" }
+        require(task.optString("status") in setOf("running", "waiting_result")) { "自动化任务当前不能失败" }
+        transition(taskId, if (resultUnknown) "waiting_result" else "failed", JSONObject()
+            .put("error", error).put("nextRetryAt", nextRetryAt).put("autoRetry", autoRetry && !resultUnknown)
+            .put("completedAt", if (resultUnknown) "" else Timestamp.now()))
+    }
+    fun requeueInternal(taskId: String): JSONObject = store.transaction {
+        val task = requireExact(taskId)
+        require(task.optString("kind").startsWith("automation_")) { "仅内部自动化任务可自动续跑" }
+        require(task.optBoolean("autoRetry") && task.optInt("attempt") < task.optInt("maxAttempts")) { "任务不允许自动重试" }
+        require(task.optString("status") in setOf("failed", "blocked", "timed_out")) { "任务当前不能重新排队" }
+        transition(taskId, "approved", JSONObject().put("error", JSONObject.NULL).put("nextRetryAt", ""))
+        transition(taskId, "queued")
+    }
+    fun recoverInternal(taskId: String, result: JSONObject): JSONObject = store.transaction {
+        val task = requireExact(taskId)
+        require(task.optString("kind").startsWith("automation_") && task.optString("status") == "waiting_result") { "任务不处于回执核对状态" }
+        transition(taskId, "reviewing", JSONObject().put("result", result))
+        transition(taskId, "succeeded", JSONObject().put("result", result).put("completedAt", Timestamp.now()).put("autoRetry", false))
+    }
+    fun markInternalAttention(taskId: String, message: String): JSONObject = store.transaction {
+        val task = requireExact(taskId)
+        require(task.optString("kind").startsWith("automation_")) { "仅内部自动化任务可进入需要处理" }
+        val error = JSONObject(task.optJSONObject("error")?.toString() ?: "{}")
+            .put("attentionRequired", true).put("message", message.take(600))
+        val patch = JSONObject().put("error", error).put("autoRetry", false).put("nextRetryAt", "")
+        when (task.optString("status")) {
+            "waiting_result", "running" -> transition(taskId, "failed", patch.put("completedAt", Timestamp.now()))
+            "failed" -> transition(taskId, "failed", patch)
+            "blocked" -> transition(taskId, "blocked", patch)
+            "timed_out" -> transition(taskId, "timed_out", patch)
+            else -> error("任务当前不能进入需要处理")
+        }
     }
     fun requireExact(taskId: String): JSONObject = store.transaction { store.exact(taskId) ?: throw NoSuchElementException("未找到指定任务 ID：$taskId") }
     fun authorize(taskId: String, executionId: String, operation: String, logicalPath: String, write: Boolean): JSONObject = store.transaction {

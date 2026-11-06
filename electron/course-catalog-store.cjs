@@ -10,6 +10,20 @@ const {
 } = require('./course-catalog.cjs');
 const { imageExtension, sha256Buffer, verifyCoursePackage } = require('./course-package-v2.cjs');
 const { verifySigned: verifyPublicCourseManifest } = require('./public-course-sync.cjs');
+
+function mergeCoursesByStableId(platformCourses = [], customCourses = []) {
+  const merged = new Map();
+  for (const course of Array.isArray(platformCourses) ? platformCourses : []) {
+    merged.set(course.courseId, course);
+  }
+  for (const course of Array.isArray(customCourses) ? customCourses : []) {
+    // A signed cloud course is authoritative when the same stable ID is still
+    // present in the legacy local custom catalog. Keep the local entry only as
+    // an offline fallback until its ID has appeared in the signed catalog.
+    if (!merged.has(course.courseId)) merged.set(course.courseId, course);
+  }
+  return [...merged.values()];
+}
 const { loadCourseTrustPolicy } = require('./course-trust-policy.cjs');
 
 function readJson(filePath, fallback = null) {
@@ -186,7 +200,7 @@ function createCourseCatalogStore(options = {}) {
       keyId: platformCatalog?.keyId || '',
       checksum: platformCatalog?.checksum || '',
       signature: platformCatalog?.signature || '',
-      courses: [...(platformCatalog?.courses || []), ...customCatalog.courses],
+      courses: mergeCoursesByStableId(platformCatalog?.courses || [], customCatalog.courses),
     };
   }
 
@@ -513,6 +527,7 @@ function createCourseCatalogStore(options = {}) {
 
 module.exports = {
   createCourseCatalogStore,
+  mergeCoursesByStableId,
   readJson,
   writeJsonAtomic,
 };

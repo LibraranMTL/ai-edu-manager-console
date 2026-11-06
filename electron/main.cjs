@@ -105,6 +105,7 @@ const { WebContentsView, session } = require('electron');
 const { createCourseCatalogStore } = require('./course-catalog-store.cjs');
 const { safeCourseNavigation } = require('./course-catalog.cjs');
 const { createStudentCourseProjection } = require('./student-course-projection.cjs');
+const { applyQaOfflineLease } = require('./student-course-lease-qa.cjs');
 const { syncPublicCourses } = require('./public-course-sync.cjs');
 const { createPlatformCourseDraftStore } = require('./platform-course-drafts.cjs');
 const { createCoursePackage } = require('./course-package-v2.cjs');
@@ -38676,7 +38677,7 @@ function handleStudentCoursesV2(request, response, studentId) {
     generatedAt: generatedAt.toISOString(),
     cloudFreshUntil: cloudFreshUntil.toISOString(),
     expiresAt: new Date(generatedAt.getTime() + 6 * 60 * 60 * 1000).toISOString(),
-    courses,
+    courses: applyQaOfflineLease(courses, { argv: process.argv, env: process.env }),
     tombstones: Array.isArray(state.platformCatalog?.tombstones) ? state.platformCatalog.tombstones : [],
   });
   const etag = `"${projection.projectionRevision}"`;

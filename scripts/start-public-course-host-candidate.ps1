@@ -10,7 +10,10 @@ param(
   [ValidateRange(1024, 65535)]
   [int]$RemoteDebuggingPort = 9231,
 
-  [string]$PublicContentBaseUrl = 'https://www.greatbg.com/edu-cloud-candidate'
+  [string]$PublicContentBaseUrl = 'https://www.greatbg.com/edu-cloud-candidate',
+
+  [ValidateRange(1, 300)]
+  [int]$QaStudentCourseOfflineLeaseSeconds = 0
 )
 
 $ErrorActionPreference = 'Stop'
@@ -43,12 +46,16 @@ $environment = @{
   EDU_PUBLIC_CONTENT_BASE_URL = $canonicalCandidateBaseUrl
   EDU_DISABLE_TASK_SCHEDULER = '1'
 }
+if ($QaStudentCourseOfflineLeaseSeconds -gt 0) {
+  $environment.EDU_QA_STUDENT_COURSE_OFFLINE_LEASE_SECONDS = [string]$QaStudentCourseOfflineLeaseSeconds
+}
 
 $plan = [pscustomobject]@{
   candidateExe = $resolvedExe
   userDataDir = $resolvedUserData
   publicContentBaseUrl = $environment.EDU_PUBLIC_CONTENT_BASE_URL
   remoteDebuggingPort = $RemoteDebuggingPort
+  qaStudentCourseOfflineLeaseSeconds = $QaStudentCourseOfflineLeaseSeconds
   arguments = $arguments
   isolated = $true
 }

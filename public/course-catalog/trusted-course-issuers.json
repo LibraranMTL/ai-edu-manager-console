@@ -1,0 +1,19 @@
+{
+  "schema": "edu-manager.course-trust-policy.v1",
+  "policyRevision": "course-trust-transition-2026-11-06-v1",
+  "issuedAt": "2026-11-06T00:00:00.000Z",
+  "issuers": [
+    {
+      "keyId": "course-catalog-primary-2026",
+      "status": "transition",
+      "fingerprint": "92b75a570a3913da111bd116202c3bdcee8adde652261a4dcbfe011206091a75",
+      "publicKey": "-----BEGIN PUBLIC KEY-----\nMIIBojANBgkqhkiG9w0BAQEFAAOCAY8AMIIBigKCAYEAwo+yrT3G9xky8wdZIoPB\nRC8xwERyN0uBijgK1xdUnZgfBOVQ+UTDqorwVMuLU9PHpmIV2Y3y2c/LzOb/sOHh\nu4nYHb7IrjhE4v0rqkoYBVjHIJeN/dzIgzPGF/Kvyrtvr4Aqf/2yx035l089LMJ3\nCw641344U8rJlbmNo8LSoUkjXJGIqhwsa7nJsMdZmBSuC4sqt/0mDLFMX9t0wXOo\nJCb0EJ6mEflWADejWUkfJZEoNbMaSZMvE2a0CLa/tlPw/VdaagW1aUOWyOpq8mP6\nGbvhhUcEzC+WSU1gSiVRQ158oSUsMRbFMYVE5mDzeTrQjQMUlsRgsyUjxUXhvUGD\nLhWtmbOMxsrCE9FTQ9aVAjTuqoy5hKphf6ufop0RrSZArCz1fYWhVRU0zkZ+H3tH\nnEub5HU9BAK2mu9xeRh9NLnxeq6GB+Dq1lC9SnRAwrR0TFCRgkKwI0sSXRlsATNB\n9YZbDIwW7ZFrhEiQhlP31R66w0cF5V+HlIKVKOSfC/xzAgMBAAE=\n-----END PUBLIC KEY-----\n"
+    },
+    {
+      "keyId": "course-catalog-candidate-20261106",
+      "status": "active",
+      "fingerprint": "f16f9b2028b74ef2360db56ef35a4db4f8d64396467a6d3b8414381f38dda60d",
+      "publicKey": "-----BEGIN PUBLIC KEY-----\nMIIBojANBgkqhkiG9w0BAQEFAAOCAY8AMIIBigKCAYEAnBodAu2xGdZzk+rVu7Eo\n+h1hsFtjt1oiXYn7XLFKWKg6EEp8iyHj7k1mw+WRWDHljhZKBUDrx2kMS3wyDy35\nzVEjzP+aJXbBRx34pWt1gBVtHVNiOZj5BB/pyAlg7qagWUkObqCagEo/rIu5WZBw\nc0A+7Df+DAQ7umpDuTCCx7hz9gQx9uc9BpscKte9Z7ohY/ewkNRrtRcfo/08YFEo\nU2aP+yx5w7Xwl5EXvKlU2FzBJVZyZT3Z9xH+fBQQ0LGKYr+PQqEemq9PHbc0NkP+\numGlnF0uIcI5GgS08Wq0o9S+uvlzdkDTOdUGmjWDJ8i8m4YokhhpsdLmuqgJXJjE\n2XkIWFuLoG+rxV1Y6o75gxaz4uteUviiZs/QkKv+k28IXxqgJwD0JRieHa43vgSa\nxw7b2Y+hP8i5on7EYEImDKXNw9nUDWWmfeDWh6e58ZIq747BPVMfyGn7wNVTaCfH\nX/lrPiDF5+7dph7P7ntg1SU3QsLfjvTBTUGwCaRHutulAgMBAAE=\n-----END PUBLIC KEY-----\n"
+    }
+  ]
+}

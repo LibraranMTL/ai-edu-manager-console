@@ -10,6 +10,7 @@ const worker = read('android-standalone-manager/app/src/main/java/com/qxmatrix/e
 const catalog = read('android-standalone-manager/app/src/main/java/com/qxmatrix/edumanager/standalone/CourseCatalogService.kt');
 const learning = read('android-standalone-manager/app/src/main/java/com/qxmatrix/edumanager/standalone/CourseLearningActivity.kt');
 const main = read('android-standalone-manager/app/src/main/java/com/qxmatrix/edumanager/standalone/MainActivity.kt');
+const trustPolicy = JSON.parse(read('android-standalone-manager/app/src/main/res/raw/trusted_course_issuers.json'));
 
 test('standalone cloud sync preserves the deployment prefix and accepts only signed HTTPS public content', () => {
   assert.match(service, /DEFAULT_BASE_URL = "https:\/\/www\.greatbg\.com\/edu-cloud"/u);
@@ -23,6 +24,11 @@ test('standalone cloud sync preserves the deployment prefix and accepts only sig
   assert.match(service, /clientInstanceId[\s\S]*?UUID\.randomUUID/u);
   assert.match(service, /"clientType", "android_standalone"/u);
   assert.match(service, /runCatching \{ submitReceipt\(baseUrl, result, nowMillis\) \}/u);
+  assert.match(service, /"publisherKeyId"/u);
+  assert.match(service, /"trustPolicyRevision"/u);
+  assert.match(catalog, /R\.raw\.trusted_course_issuers/u);
+  assert.match(catalog, /status in acceptedStatuses/u);
+  assert.deepEqual(trustPolicy.issuers.map(item => item.keyId), ['course-catalog-primary-2026', 'course-catalog-candidate-20261106']);
 });
 
 test('withdrawals are checked before active cache promotion and cloud cache fails closed', () => {

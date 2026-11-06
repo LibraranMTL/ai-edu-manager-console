@@ -50,9 +50,42 @@ private fun jsonStrings(array: JSONArray?): List<String> = buildList {
     if (array != null) for (index in 0 until array.length()) add(array.optString(index).trim())
 }.filter { it.isNotBlank() }
 
+internal object CoursePublisherTrustPolicy {
+    const val SCHEMA = "edu-manager.course-trust-policy.v1"
+    const val EXPECTED_REVISION = "course-trust-transition-2026-11-06-v1"
+    private val acceptedStatuses = setOf("active", "transition")
+
+    data class TrustedIssuer(val keyId: String, val status: String, val publicKey: String, val fingerprint: String)
+
+    fun load(context: Context): Map<String, TrustedIssuer> {
+        val payload = context.resources.openRawResource(R.raw.trusted_course_issuers).bufferedReader().use { JSONObject(it.readText()) }
+        require(payload.getString("schema") == SCHEMA && payload.getString("policyRevision") == EXPECTED_REVISION) { "课程信任策略合同或修订无效" }
+        val result = linkedMapOf<String, TrustedIssuer>()
+        val issuers = payload.getJSONArray("issuers")
+        for (index in 0 until issuers.length()) {
+            val issuer = issuers.getJSONObject(index)
+            val keyId = issuer.getString("keyId").trim()
+            val status = issuer.getString("status").trim()
+            val pem = issuer.getString("publicKey").trim() + "\n"
+            require(keyId.matches(Regex("^[A-Za-z0-9][A-Za-z0-9_-]{2,79}$")) && status in setOf("active", "transition", "revoked")) { "课程信任策略发布者无效" }
+            val der = Base64.decode(pem.replace("-----BEGIN PUBLIC KEY-----", "").replace("-----END PUBLIC KEY-----", "").replace("\n", "").trim(), Base64.DEFAULT)
+            val actualFingerprint = MessageDigest.getInstance("SHA-256").digest(der).joinToString("") { "%02x".format(it) }
+            require(actualFingerprint == issuer.getString("fingerprint").lowercase(Locale.US)) { "课程发布密钥指纹不一致：$keyId" }
+            require(result.put(keyId, TrustedIssuer(keyId, status, pem, actualFingerprint)) == null) { "课程信任策略包含重复 keyId：$keyId" }
+        }
+        require(result.values.any { it.status in acceptedStatuses }) { "课程信任策略没有可用发布者" }
+        return result
+    }
+
+    fun trustedIssuer(context: Context, keyId: String): TrustedIssuer {
+        val issuer = load(context)[keyId]
+        require(issuer != null && issuer.status in acceptedStatuses) { "课程发布密钥不受信任：$keyId" }
+        return issuer
+    }
+}
+
 internal fun verifyCoursePublisherSignature(context: Context, keyId: String, payload: ByteArray, encodedSignature: String): Boolean {
-    require(keyId == CourseCatalogService.TRUSTED_COURSE_KEY_ID) { "课程发布密钥不受信任：$keyId" }
-    val pem = context.resources.openRawResource(R.raw.course_catalog_public_key).bufferedReader().use { it.readText() }
+    val pem = CoursePublisherTrustPolicy.trustedIssuer(context, keyId).publicKey
     val der = Base64.decode(pem.replace("-----BEGIN PUBLIC KEY-----", "").replace("-----END PUBLIC KEY-----", "").replace("\n", "").trim(), Base64.DEFAULT)
     val publicKey = KeyFactory.getInstance("RSA").generatePublic(X509EncodedKeySpec(der))
     return Signature.getInstance("SHA256withRSA").run {
@@ -338,6 +371,6 @@ class CourseCatalogService(private val context: Context) {
         const val OFFLINE_ROOT = "courses/offline"
         const val OFFLINE_COVER_ROOT = "courses/offline-covers"
         const val OFFLINE_SNAPSHOT_SCHEMA = "edu-manager.student-course-snapshot.v1"
-        const val TRUSTED_COURSE_KEY_ID = "course-catalog-primary-2026"
+        const val TRUSTED_COURSE_KEY_ID = "course-catalog-primary-2026" // v2 compatibility metadata only; v3 uses the trust policy bundle.
     }
 }

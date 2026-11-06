@@ -1,14 +1,14 @@
 import React, { useEffect, useMemo, useState } from 'react';
 
 type RequestFn = (route: string, options?: RequestInit) => Promise<Response>;
-type Asset = { assetId: string; assetRevisionId: string; sha256: string; bytes: number; mimeType: string; createdAt: number };
+type Asset = { assetId: string; assetRevisionId: string; sha256: string; bytes: number; mimeType: string; createdAt?: number; downloadPath?: string };
 type Course = { courseId: string; title: string; locale: string; provider: string; launchUrl: string; coverAssetRevisionId: string; offlineOpenTtlSeconds: number; updatedAt: number;
   summary?: string; allowedHosts?: string[]; gradeBands?: string[]; ageRange?: string; legalNotice?: string; accountRequirement?: string; [key: string]: unknown };
 type Release = { releaseId: string; manifestRevision: string; manifestSha256: string; status: string; createdAt: number; effectiveAt: number; activatedAt?: number | null; previousRevision: string; containsRevokedCourse?: boolean };
 type Candidate = { releaseId: string; status: string; manifestSha256: string; manifest: { manifestRevision: string; courses: Course[]; issuedAt: string; expiresAt: string } };
-type ActiveManifest = { releaseId: string; manifestRevision: string; issuedAt: string; courses: Course[]; tombstones: Array<{ courseId: string; reasonCode: string; withdrawnAt: string }> };
+type ActiveManifest = { releaseId: string; manifestRevision: string; issuedAt: string; courses: Course[]; assets: Asset[]; tombstones: Array<{ courseId: string; reasonCode: string; withdrawnAt: string }> };
 type ReleaseDetail = Release & { manifest: ActiveManifest & { expiresAt: string } };
-type PreviewCourse = { course: Course; sourceRevision: string; releaseCourses: Course[] };
+type PreviewCourse = { course: Course; sourceRevision: string; releaseCourses: Course[]; releaseAssets: Asset[] };
 type Operations = { generatedAt: number; receiptAttestation: string; summary: { total: number; reconciled: number; auto_refresh: number; auto_retry: number; needs_handling: number };
   delivery: Array<{ action: string; status: string; requestCount: number; byteCount: number }>;
   alerts: Array<{ severity: string; code: string; message: string }> };
@@ -28,6 +28,16 @@ function createReleaseId(now = new Date()) {
 
 function stringList(value: unknown) {
   return Array.isArray(value) ? value.map(String).join(', ') : String(value || '');
+}
+
+function courseCoverAsset(course: Course, assets: Asset[] = []) {
+  return assets.find(item => item.assetRevisionId === course.coverAssetRevisionId);
+}
+
+function publicAssetUrl(asset?: Asset) {
+  const downloadPath = String(asset?.downloadPath || '');
+  if (!/^\/v2\/public-content\/assets\/asset-rev-[a-f0-9]{64}$/.test(downloadPath)) return '';
+  return new URL(`.${downloadPath}`, new URL('.', window.location.href)).toString();
 }
 
 function publishedCourseToDraft(course: Course) {
@@ -100,6 +110,7 @@ export function PublicContentPanel({ request, busy, execute, setMessage }: {
   const activeCourseIds = useMemo(() => active?.courses?.map(item => item.courseId) || [], [active]);
   const activeIssuedAt = Date.parse(active?.issuedAt || '');
   const draftUpdatedAt = useMemo(() => new Map(courses.map(item => [item.courseId, Number(item.updatedAt || 0)])), [courses]);
+  const previewCoverUrl = previewCourse ? publicAssetUrl(courseCoverAsset(previewCourse.course, previewCourse.releaseAssets)) : '';
 
   function clearCandidate() {
     setCandidate(null);
@@ -197,9 +208,11 @@ export function PublicContentPanel({ request, busy, execute, setMessage }: {
       <button className="outline" disabled={busy || !active?.courses?.length} onClick={() => prepareRevision()}>以当前版本创建修订</button></div>
       {active?.courses?.length ? <div className="published-course-grid">{active.courses.map(item => {
         const hasPendingDraft = Number(draftUpdatedAt.get(item.courseId) || 0) > activeIssuedAt;
+        const coverUrl = publicAssetUrl(courseCoverAsset(item, active.assets));
         return <article key={item.courseId}><div className="published-course-state"><span>线上生效</span>{hasPendingDraft && <em>有待发布草稿</em>}</div>
+          {coverUrl && <img className="published-course-cover" src={coverUrl} alt={`${item.title}课程封面`} loading="lazy" referrerPolicy="no-referrer" />}
           <h4>{item.title}</h4><p>{item.summary || '暂无课程简介'}</p><small>{item.courseId} · {item.locale} · {item.provider}</small>
-          <div className="published-course-actions"><button className="outline" onClick={() => setPreviewCourse({ course: item, sourceRevision: active.manifestRevision, releaseCourses: active.courses })}>预览课程</button>
+          <div className="published-course-actions"><button className="outline" onClick={() => setPreviewCourse({ course: item, sourceRevision: active.manifestRevision, releaseCourses: active.courses, releaseAssets: active.assets || [] })}>预览课程</button>
             <button onClick={() => editPublishedCourse(item, active.manifestRevision, active.courses)}>编辑并创建修订</button></div></article>;
       })}</div> : <p className="empty-compact">尚无已发布课程。</p>}
     </section>
@@ -269,6 +282,7 @@ export function PublicContentPanel({ request, busy, execute, setMessage }: {
     {previewCourse && <div className="course-preview-backdrop" role="presentation" onMouseDown={event => { if (event.currentTarget === event.target) setPreviewCourse(null); }}>
       <section className="course-preview-dialog" role="dialog" aria-modal="true" aria-labelledby="course-preview-title"><button className="dialog-close" aria-label="关闭课程预览" onClick={() => setPreviewCourse(null)}>×</button>
         <div className="step-label">已发布课程预览</div><h3 id="course-preview-title">{previewCourse.course.title}</h3><p className="preview-summary">{previewCourse.course.summary || '暂无课程简介'}</p>
+        {previewCoverUrl && <img className="course-preview-cover" src={previewCoverUrl} alt={`${previewCourse.course.title}课程封面`} referrerPolicy="no-referrer" />}
         <dl><div><dt>稳定课程ID</dt><dd>{previewCourse.course.courseId}</dd></div><div><dt>来源修订</dt><dd>{previewCourse.sourceRevision}</dd></div>
           <div><dt>语言 / 提供方</dt><dd>{previewCourse.course.locale} / {previewCourse.course.provider}</dd></div><div><dt>年级 / 年龄</dt><dd>{stringList(previewCourse.course.gradeBands) || '未设置'} / {previewCourse.course.ageRange || '未设置'}</dd></div>
           <div><dt>允许域名</dt><dd>{stringList(previewCourse.course.allowedHosts) || '未设置'}</dd></div><div><dt>离线租约</dt><dd>{previewCourse.course.offlineOpenTtlSeconds} 秒</dd></div>
@@ -280,9 +294,9 @@ export function PublicContentPanel({ request, busy, execute, setMessage }: {
     {releasePreview && <div className="course-preview-backdrop" role="presentation" onMouseDown={event => { if (event.currentTarget === event.target) setReleasePreview(null); }}>
       <section className="course-preview-dialog release-preview-dialog" role="dialog" aria-modal="true" aria-labelledby="release-preview-title"><button className="dialog-close" aria-label="关闭版本预览" onClick={() => setReleasePreview(null)}>×</button>
         <div className="step-label">不可变发布快照</div><h3 id="release-preview-title">{releasePreview.releaseId}</h3><p className="preview-summary">{releasePreview.status} · {releasePreview.manifestRevision} · {releasePreview.manifest.courses.length} 门课程</p>
-        <div className="release-preview-courses">{releasePreview.manifest.courses.map(item => <article key={item.courseId}><div><strong>{item.title}</strong><small>{item.courseId} · {item.locale} · {item.provider}</small></div>
-          <div><button className="outline" onClick={() => { setReleasePreview(null); setPreviewCourse({ course: item, sourceRevision: releasePreview.manifestRevision, releaseCourses: releasePreview.manifest.courses }); }}>查看详情</button>
-            <button onClick={() => editPublishedCourse(item, releasePreview.manifestRevision, releasePreview.manifest.courses)}>载入编辑</button></div></article>)}</div>
+        <div className="release-preview-courses">{releasePreview.manifest.courses.map(item => { const coverUrl = publicAssetUrl(courseCoverAsset(item, releasePreview.manifest.assets)); return <article key={item.courseId}>{coverUrl && <img src={coverUrl} alt={`${item.title}课程封面`} loading="lazy" referrerPolicy="no-referrer" />}<div><strong>{item.title}</strong><small>{item.courseId} · {item.locale} · {item.provider}</small></div>
+          <div><button className="outline" onClick={() => { setReleasePreview(null); setPreviewCourse({ course: item, sourceRevision: releasePreview.manifestRevision, releaseCourses: releasePreview.manifest.courses, releaseAssets: releasePreview.manifest.assets || [] }); }}>查看详情</button>
+            <button onClick={() => editPublishedCourse(item, releasePreview.manifestRevision, releasePreview.manifest.courses)}>载入编辑</button></div></article>; })}</div>
       </section></div>}
   </main>;
 }

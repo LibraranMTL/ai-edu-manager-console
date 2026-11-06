@@ -7,6 +7,8 @@ function projection(overrides = {}) {
     hostId: 'host-a',
     studentId: 'student-a',
     manifestRevision: 'manifest-1',
+    publisherKeyId: 'course-catalog-primary-2026',
+    trustPolicyRevision: 'course-trust-transition-2026-11-06-v1',
     policyRevision: 'policy-1',
     generatedAt: '2026-11-05T00:00:00.000Z',
     expiresAt: '2026-11-05T08:00:00.000Z',
@@ -23,7 +25,14 @@ test('projection revision is deterministic and representation-bound', () => {
   assert.equal(first.projectionRevision, second.projectionRevision);
   assert.match(first.projectionRevision, /^[a-f0-9]{64}$/);
   assert.notEqual(first.projectionRevision, projection({ policyRevision: 'policy-2' }).projectionRevision);
+  assert.notEqual(first.projectionRevision, projection({ publisherKeyId: 'course-catalog-candidate-20261106' }).projectionRevision);
+  assert.notEqual(first.projectionRevision, projection({ trustPolicyRevision: 'course-trust-transition-next' }).projectionRevision);
   assert.notEqual(first.projectionRevision, projection({ courses: [{ courseId: 'platform:igsce', name: 'Changed' }] }).projectionRevision);
+});
+
+test('publisher key and trust policy are mandatory projection fields', () => {
+  assert.throws(() => projection({ publisherKeyId: '' }), /publisherKeyId/);
+  assert.throws(() => projection({ trustPolicyRevision: '' }), /trustPolicyRevision/);
 });
 
 test('student and host are part of the cache namespace and revision', () => {

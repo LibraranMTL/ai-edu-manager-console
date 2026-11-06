@@ -26,7 +26,10 @@ function clampOfflineSeconds(value) {
 function createStudentCourseProjection(input = {}) {
   const hostId = String(input.hostId || '').trim();
   const studentId = String(input.studentId || '').trim();
+  const publisherKeyId = String(input.publisherKeyId || '').trim();
+  const trustPolicyRevision = String(input.trustPolicyRevision || '').trim();
   if (!hostId || !studentId) throw new Error('hostId and studentId are required');
+  if (!publisherKeyId || !trustPolicyRevision) throw new Error('publisherKeyId and trustPolicyRevision are required');
 
   const generatedAt = asIso(input.generatedAt, 'generatedAt');
   const expiresAt = asIso(input.expiresAt, 'expiresAt');
@@ -48,6 +51,8 @@ function createStudentCourseProjection(input = {}) {
     hostId,
     studentId,
     manifestRevision: String(input.manifestRevision || ''),
+    publisherKeyId,
+    trustPolicyRevision,
     policyRevision: String(input.policyRevision || ''),
     generatedAt,
     expiresAt,

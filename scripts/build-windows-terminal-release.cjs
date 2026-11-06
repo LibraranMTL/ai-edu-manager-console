@@ -117,7 +117,7 @@ function writeRuntimePackage() {
       compression: 'normal',
       electronLanguages,
       directories: { output: 'out' },
-      files: ['dist-terminal/**/*', 'electron/**/*', 'package.json'],
+      files: ['dist-terminal/**/*', 'electron/**/*', 'public/course-catalog/trusted-course-issuers.json', 'package.json'],
       win: {
         artifactName: `${artifactBase}.\${ext}`,
         icon: 'public/brand/robogala.ico',
@@ -161,6 +161,9 @@ function build() {
     'electron/windows-tailscale.cjs',
     'electron/course-browser.cjs',
     'electron/course-catalog.cjs',
+    'electron/course-trust-policy.cjs',
+    'electron/student-course-trust.cjs',
+    'public/course-catalog/trusted-course-issuers.json',
     'public/brand/robogala.ico',
   ]) copyFile(relative);
   compileLifecycleHook(path.join(stageRoot, 'electron', 'agent-lifecycle-hook.cs'), path.join(stageRoot, 'electron', 'agent-lifecycle-hook.exe'));
@@ -213,6 +216,9 @@ function build() {
     '\\electron\\windows-tailscale.cjs',
     '\\electron\\course-browser.cjs',
     '\\electron\\course-catalog.cjs',
+    '\\electron\\course-trust-policy.cjs',
+    '\\electron\\student-course-trust.cjs',
+    '\\public\\course-catalog\\trusted-course-issuers.json',
     '\\dist-terminal\\terminal.html',
   ]) {
     if (!asarFiles.includes(expected)) throw new Error(`Terminal package is missing ${expected}.`);

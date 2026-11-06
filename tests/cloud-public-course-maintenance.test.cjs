@@ -14,6 +14,10 @@ test('published courses remain previewable and edits create drafts instead of mu
   assert.match(source, /当前已发布版本保持不变/);
   assert.match(source, /重新校验和确认SHA-256后才会替换线上版本/);
   assert.match(source, /request\(`\/v2\/public-content\/releases\/\$\{item\.manifestRevision\}`\)/);
+  assert.match(source, /published-course-cover/);
+  assert.match(source, /course-preview-cover/);
+  assert.match(source, /releasePreview\.manifest\.assets/);
+  assert.match(source, /public-content\\\/assets\\\/asset-rev-/);
 });
 
 test('selection and release identity changes invalidate stale frozen candidates', () => {

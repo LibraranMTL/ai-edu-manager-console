@@ -74,6 +74,8 @@ class PublicCourseSyncService(context: Context) {
         val catalog = catalogFromActive(active, nowMillis)
         val result = JSONObject().put("ok", true).put("manifestRevision", active.getJSONObject("manifest").getString("manifestRevision"))
             .put("courseCount", catalog.getJSONArray("courses").length()).put("notModified", manifestResponse.status == 304)
+            .put("publisherKeyId", active.getJSONObject("manifest").getString("keyId"))
+            .put("trustPolicyRevision", CoursePublisherTrustPolicy.EXPECTED_REVISION)
             .put("synchronizedAt", iso(nowMillis))
         state.writeBytes(SYNC_STATUS, result.toString(2).toByteArray())
         runCatching { submitReceipt(baseUrl, result, nowMillis) }

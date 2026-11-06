@@ -20,6 +20,8 @@ const {
   installCourseGuards,
   secureCourseWebPreferences,
 } = require('./course-browser.cjs');
+const { loadCourseTrustPolicy } = require('./course-trust-policy.cjs');
+const { validateStudentCourseProjection } = require('./student-course-trust.cjs');
 const { parseGrowthIndexMarkdown } = require('./growth-markdown-summary.cjs');
 const {
   buildTargetUploadPath,
@@ -73,6 +75,9 @@ const terminalUploadQueuePath = () => path.join(terminalUserData(), 'terminal-up
 const terminalUploadStagingRoot = () => path.join(terminalUserData(), 'terminal-upload-staging');
 const practiceAttemptQueuePath = () => path.join(terminalUserData(), 'practice-attempt-queue.json');
 const courseProjectionCachePath = () => path.join(terminalUserData(), 'course-projection-cache-v2.json');
+const courseTrustPolicy = loadCourseTrustPolicy({
+  resourceRoots: [path.join(__dirname, '..', 'dist'), path.join(__dirname, '..', 'public')],
+});
 const captureRoot = () => path.join(terminalUserData(), 'screen-captures');
 const captureDeliveryQueuePath = () => path.join(terminalUserData(), 'capture-delivery-queue.json');
 const captureSampleLogPath = (session) => path.join(String(session?.folder || ''), 'capture-samples.jsonl');
@@ -1353,9 +1358,7 @@ async function loadEffectiveCourses() {
       payload = projection;
     }
     if (!payload) throw new Error('主机返回304但当前主机和学生没有投影缓存。');
-    if (Number(payload.schemaVersion) !== 2 || String(payload.hostId || '') !== hostId || String(payload.studentId || '') !== studentId) {
-      throw new Error('课程投影的主机或学生范围不匹配。');
-    }
+    validateCourseProjection(payload, hostId, studentId);
     if (!remote.__notModified) {
       cache.schema = 'edu-manager.course-projection-cache.v2';
       cache.entries = cache.entries && typeof cache.entries === 'object' ? cache.entries : {};
@@ -1364,10 +1367,15 @@ async function loadEffectiveCourses() {
     }
   } catch (error) {
     payload = cached?.projection;
-    if (!payload || Number(payload.schemaVersion) !== 2 || String(payload.hostId || '') !== hostId || String(payload.studentId || '') !== studentId) throw error;
+    if (!payload) throw error;
+    try { validateCourseProjection(payload, hostId, studentId); } catch { throw error; }
   }
   effectiveCourseCache = Array.isArray(payload.courses) ? payload.courses : [];
   return payload;
+}
+
+function validateCourseProjection(payload, hostId, studentId) {
+  return validateStudentCourseProjection(payload, { hostId, studentId }, courseTrustPolicy);
 }
 
 function terminalCourseViewBounds() {

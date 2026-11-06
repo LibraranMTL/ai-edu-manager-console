@@ -38670,6 +38670,8 @@ function handleStudentCoursesV2(request, response, studentId) {
     hostId: getHostIdentity().hostId,
     studentId: String(student.id),
     manifestRevision: String(state.platformCatalog?.manifestRevision || state.platformCatalog?.catalogVersion || state.catalog?.catalogVersion || ''),
+    publisherKeyId: String(state.platformCatalog?.keyId || state.catalog?.keyId || 'course-catalog-primary-2026'),
+    trustPolicyRevision: courseCatalogStore().trustPolicyRevision(),
     policyRevision: String(state.policy?.policyVersion || ''),
     generatedAt: generatedAt.toISOString(),
     cloudFreshUntil: cloudFreshUntil.toISOString(),

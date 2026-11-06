@@ -10,6 +10,7 @@ const {
 } = require('./course-catalog.cjs');
 const { imageExtension, sha256Buffer, verifyCoursePackage } = require('./course-package-v2.cjs');
 const { verifySigned: verifyPublicCourseManifest } = require('./public-course-sync.cjs');
+const { loadCourseTrustPolicy } = require('./course-trust-policy.cjs');
 
 function readJson(filePath, fallback = null) {
   try {
@@ -50,6 +51,7 @@ function createCourseCatalogStore(options = {}) {
   const packagedCatalogPath = existingPath(resourceRoots.map((item) => path.join(item, 'course-catalog', 'catalog.json')));
   const publicKey = publicKeyPath ? fs.readFileSync(publicKeyPath, 'utf8') : '';
   const configuredTrustKeys = Array.isArray(options.trustedCourseKeys) ? options.trustedCourseKeys : [];
+  const trustPolicy = loadCourseTrustPolicy({ resourceRoots, required: false });
 
   function keyFingerprint(pem) {
     const der = crypto.createPublicKey(pem).export({ type: 'spki', format: 'der' });
@@ -62,7 +64,8 @@ function createCourseCatalogStore(options = {}) {
     if (!/^[a-z0-9][a-z0-9_-]{2,79}$/i.test(keyId) || !pem.includes('PUBLIC KEY')) throw new Error('课程公钥 keyId 或格式无效。');
     const fingerprint = keyFingerprint(pem);
     if (input.fingerprint && String(input.fingerprint).toLowerCase() !== fingerprint) throw new Error(`课程公钥 ${keyId} 的指纹不一致。`);
-    return { keyId, publicKey: `${pem}\n`, fingerprint, status: input.status === 'revoked' ? 'revoked' : 'active', importedAt: String(input.importedAt || new Date().toISOString()) };
+    const status = ['active', 'transition', 'revoked'].includes(input.status) ? input.status : 'active';
+    return { keyId, publicKey: `${pem}\n`, fingerprint, status, importedAt: String(input.importedAt || new Date().toISOString()) };
   }
 
   function trustedCourseKeys() {
@@ -71,16 +74,21 @@ function createCourseCatalogStore(options = {}) {
     if (publicKey && packagedCatalog?.keyId) {
       try { keys.push(normalizeCourseTrustKey({ keyId: packagedCatalog.keyId, publicKey, importedAt: 'packaged' })); } catch { /* Fail closed. */ }
     }
+    for (const issuer of trustPolicy?.issuers || []) keys.push(normalizeCourseTrustKey({ ...issuer, importedAt: trustPolicy.policyRevision }));
     for (const configured of configuredTrustKeys) {
       try { keys.push(normalizeCourseTrustKey(configured)); } catch { /* Invalid explicit anchors fail closed. */ }
     }
     const byId = new Map();
-    for (const item of keys) byId.set(item.keyId, item);
+    for (const item of keys) {
+      const current = byId.get(item.keyId);
+      if (current && current.fingerprint !== item.fingerprint) throw new Error(`课程公钥 ${item.keyId} 存在冲突，已拒绝加载。`);
+      if (!current || item.status === 'revoked' || current.status === 'active') byId.set(item.keyId, item);
+    }
     return [...byId.values()];
   }
 
   function publicKeys() {
-    return new Map(trustedCourseKeys().filter((item) => item.status !== 'revoked').map((item) => [item.keyId, item.publicKey]));
+    return new Map(trustedCourseKeys().filter((item) => ['active', 'transition'].includes(item.status)).map((item) => [item.keyId, item.publicKey]));
   }
 
   function publicKeyFor(keyId) {
@@ -95,7 +103,7 @@ function createCourseCatalogStore(options = {}) {
   }
 
   function checkedCatalog(candidate) {
-    return validateCatalogPackage(candidate || {}, { hostVersion: appVersion, publicKey: publicKeyFor(candidate?.keyId) || publicKey, requireSignature: true });
+    return validateCatalogPackage(candidate || {}, { hostVersion: appVersion, publicKey: publicKeyFor(candidate?.keyId), requireSignature: true });
   }
 
   function loadLastGood() {
@@ -125,7 +133,7 @@ function createCourseCatalogStore(options = {}) {
     let lastGood = loadLastGood();
     const packaged = readJson(packagedCatalogPath);
     if (packaged) {
-      const result = applyCatalogCandidate(packaged, { lastGood }, { hostVersion: appVersion, publicKey: publicKeyFor(packaged.keyId) || publicKey, requireSignature: true });
+      const result = applyCatalogCandidate(packaged, { lastGood }, { hostVersion: appVersion, publicKey: publicKeyFor(packaged.keyId), requireSignature: true });
       if (result.ok && (!lastGood || result.catalog.catalogVersion !== lastGood.catalogVersion)) {
         writeJsonAtomic(lastGoodPath, result.catalog);
         lastGood = result.catalog;
@@ -226,7 +234,7 @@ function createCourseCatalogStore(options = {}) {
     const lastGood = loadLastGood();
     const result = applyCatalogCandidate(candidate, { lastGood }, {
       hostVersion: appVersion,
-      publicKey: publicKeyFor(candidate?.keyId) || publicKey,
+      publicKey: publicKeyFor(candidate?.keyId),
       requireSignature: true,
       allowRollback: importOptions.allowRollback === true,
     });
@@ -493,6 +501,7 @@ function createCourseCatalogStore(options = {}) {
     publicKey,
     publicKeyFor,
     trustedCourseKeys: () => trustedCourseKeys().map(({ publicKey: _publicKey, ...item }) => item),
+    trustPolicyRevision: () => trustPolicy?.policyRevision || 'packaged-single-key-legacy',
     readCustomCatalog,
     readPolicy,
     savePolicy,

@@ -179,8 +179,13 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
     private static final String CACHE_MARKDOWN_PREFIX = "markdown_";
     private static final String CACHE_MARKDOWN_TITLE_PREFIX = "markdown_title_";
     private static final String CACHE_TIME_PREFIX = "cache_time_";
-    private static final String COURSE_PROJECTION_PREFIX = "course_projection_v2_";
-    private static final String COURSE_ETAG_PREFIX = "course_projection_etag_v2_";
+    private static final String COURSE_PROJECTION_PREFIX = "course_projection_v2_trust1_";
+    private static final String COURSE_ETAG_PREFIX = "course_projection_etag_v2_trust1_";
+    private static final String COURSE_TRUST_POLICY_REVISION = "course-trust-transition-2026-11-06-v1";
+    private static final Set<String> TRUSTED_COURSE_PUBLISHER_KEYS = Collections.unmodifiableSet(new HashSet<String>(Arrays.asList(
+        "course-catalog-primary-2026",
+        "course-catalog-candidate-20261106"
+    )));
 
     EditText serverInput;
     EditText tokenInput;
@@ -6372,6 +6377,13 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
         try { return value.length() == 0 ? null : new JSONObject(value); } catch (Exception ignored) { return null; }
     }
 
+    void validateCourseProjectionTrust(JSONObject payload) throws Exception {
+        String revision = payload.optString("trustPolicyRevision", "");
+        String keyId = payload.optString("publisherKeyId", "");
+        if (!COURSE_TRUST_POLICY_REVISION.equals(revision)) throw new Exception("课程投影信任策略与学生端版本不一致，请升级或刷新主机");
+        if (!TRUSTED_COURSE_PUBLISHER_KEYS.contains(keyId)) throw new Exception("课程投影发布密钥不受信任：" + (keyId.length() == 0 ? "空" : keyId));
+    }
+
     JSONObject fetchCourseProjection(String base, String studentId, String token, boolean allowOffline) throws Exception {
         String namespace = courseProjectionNamespace(studentId);
         SharedPreferences preferences = getSharedPreferences(PREFS, MODE_PRIVATE);
@@ -6387,6 +6399,7 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
             if (code == 304) {
                 JSONObject cached = cachedCourseProjection(studentId);
                 if (cached == null) throw new Exception("主机返回304但本机没有对应学生缓存");
+                validateCourseProjectionTrust(cached);
                 return cached;
             }
             String body = readStream(code >= 200 && code < 300 ? connection.getInputStream() : connection.getErrorStream());
@@ -6396,12 +6409,13 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
             if (payload.optInt("schemaVersion", 0) != 2 || !studentId.equals(payload.optString("studentId", "")) || !hostId.equals(payload.optString("hostId", ""))) {
                 throw new Exception("课程投影的主机或学生范围不匹配");
             }
+            validateCourseProjectionTrust(payload);
             preferences.edit().putString(COURSE_PROJECTION_PREFIX + namespace, payload.toString())
                 .putString(COURSE_ETAG_PREFIX + namespace, connection.getHeaderField("ETag") == null ? "" : connection.getHeaderField("ETag")).commit();
             return payload;
         } catch (Exception error) {
             JSONObject cached = allowOffline ? cachedCourseProjection(studentId) : null;
-            if (cached != null) return cached;
+            if (cached != null) { validateCourseProjectionTrust(cached); return cached; }
             throw error;
         } finally { if (connection != null) connection.disconnect(); }
     }

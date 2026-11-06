@@ -16,7 +16,7 @@ internal object PublicCourseContract {
     const val MANIFEST_PATH = "v2/public-content/manifest"
     const val REVOCATIONS_PATH = "v2/public-content/revocations"
     const val SYNC_RECEIPTS_PATH = "v2/public-content/sync-receipts"
-    const val DEFAULT_BASE_URL = "https://www.greatbg.com/edu-cloud"
+    val DEFAULT_BASE_URL: String = BuildConfig.PUBLIC_CONTENT_BASE_URL
     const val MAX_MANIFEST_BYTES = 2L * 1024 * 1024
     const val MAX_ASSET_BYTES = 5L * 1024 * 1024
     const val MAX_TOTAL_ASSET_BYTES = 50L * 1024 * 1024

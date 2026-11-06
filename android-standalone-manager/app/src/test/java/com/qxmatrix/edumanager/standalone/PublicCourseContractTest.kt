@@ -5,6 +5,10 @@ import org.junit.Assert.assertThrows
 import org.junit.Test
 
 class PublicCourseContractTest {
+    @Test fun defaultBaseUrlComesFromTheAuditableBuildConfiguration() {
+        assertEquals(BuildConfig.PUBLIC_CONTENT_BASE_URL, PublicCourseContract.DEFAULT_BASE_URL)
+    }
+
     @Test fun deploymentPrefixIsPreservedForEveryPublicEndpoint() {
         assertEquals(
             "https://www.greatbg.com/edu-cloud/v2/public-content/manifest",

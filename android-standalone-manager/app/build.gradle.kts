@@ -1,3 +1,5 @@
+import java.net.URI
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
@@ -9,6 +11,15 @@ val releaseStorePassword = providers.environmentVariable("EDU_ANDROID_KEYSTORE_P
 val releaseKeyAlias = providers.environmentVariable("EDU_ANDROID_KEY_ALIAS").orNull
 val releaseKeyPassword = providers.environmentVariable("EDU_ANDROID_KEY_PASSWORD").orNull
 val releaseSigningReady = listOf(releaseStoreFile, releaseStorePassword, releaseKeyAlias, releaseKeyPassword).all { !it.isNullOrBlank() }
+val publicContentBaseUrl = providers.gradleProperty("eduPublicContentBaseUrl")
+    .orElse(providers.environmentVariable("EDU_PUBLIC_CONTENT_BASE_URL"))
+    .orElse("https://www.greatbg.com/edu-cloud")
+    .get()
+    .trimEnd('/')
+val publicContentUri = URI(publicContentBaseUrl)
+require(publicContentUri.scheme == "https" && publicContentUri.userInfo == null && publicContentUri.host != null && publicContentUri.query == null && publicContentUri.fragment == null) {
+    "eduPublicContentBaseUrl must be an HTTPS base URL without credentials, query, or fragment"
+}
 
 kapt {
     arguments {
@@ -31,6 +42,10 @@ android {
         targetSdk = 34
         versionCode = 39
         versionName = "1.3.5"
+
+        // Candidate/device builds must bind to their explicit public-content environment.
+        // Production remains the default; secrets and runtime student data are never embedded here.
+        buildConfigField("String", "PUBLIC_CONTENT_BASE_URL", "\"$publicContentBaseUrl\"")
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }

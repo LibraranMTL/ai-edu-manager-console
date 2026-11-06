@@ -31,7 +31,7 @@ class AutomationTriggerAdapters(private val context: Context) {
 
     fun runOcrOrParser(studentId: String, sourceIds: List<String>): JSONObject {
         val selected = selectedMaterials(studentId, sourceIds)
-        var ready = 0; var ocr = 0; var unsupported = 0; var skipped = 0
+        var ready = 0; var ocr = 0; var office = 0; var unsupported = 0; var skipped = 0
         selected.forEach { material ->
             require(!MaterialProcessingPolicy.attributionConflict(material)) { "资料归属仍不明确" }
             if (MaterialStatus.normalize(material.optString("status")) != MaterialStatus.PENDING_DIGEST) {
@@ -49,14 +49,18 @@ class AutomationTriggerAdapters(private val context: Context) {
                         message = "OCR 未识别到可消化正文；原件和识别候选均已保留",
                     )
                 }
+                AutomationMaterialPolicy.supportsOfficeParser(material) -> {
+                    OfficeDocumentParserService(context).parse(studentId, id); office++
+                }
                 else -> unsupported++
             }
         }
         if (unsupported > 0) throw AutomationExecutionException(
             "document_parser_unavailable", AutomationFailureClass.CAPABILITY_MISSING,
-            message = "$unsupported 份资料需要尚未接入的 Office/音视频解析器；原件已保留",
+            message = "$unsupported 份资料需要用户授权音频转写或转换为受支持格式；原件已保留",
         )
-        return JSONObject().put("ready", ready).put("ocrCompleted", ocr).put("unsupported", unsupported).put("skipped", skipped)
+        return JSONObject().put("ready", ready).put("ocrCompleted", ocr).put("officeParsed", office)
+            .put("unsupported", unsupported).put("skipped", skipped)
     }
 
     fun resolveAttribution(studentId: String, sourceIds: List<String>): JSONObject {
@@ -196,6 +200,7 @@ object AutomationMaterialPolicy {
     private val attributionMessage = Regex("归属(?:冲突|不一致|不明确)|不属于当前学生|未绑定当前学生|不得跨学生|学生范围不一致|项目范围不一致")
     private val sourceMessage = Regex("来源(?:冲突|不一致|已变化)|原件(?:哈希|内容).*(?:不一致|变化)|哈希不一致")
     private val ocrExtensions = setOf("jpg", "jpeg", "png", "webp", "bmp", "pdf")
+    private val officeExtensions = setOf("docx", "pptx", "xlsx")
 
     fun isAttributionCode(value: String) = value.trim().lowercase() in attributionCodes
     fun isSourceCode(value: String) = value.trim().lowercase() in sourceCodes
@@ -204,6 +209,7 @@ object AutomationMaterialPolicy {
     fun sourceConflict(material: JSONObject): Boolean = material.optBoolean("sourceConflict") || material.optBoolean("hashConflict") ||
         sourceCodeFields.any { isSourceCode(material.optString(it)) } || messageFields.any { isSourceMessage(material.optString(it)) }
     fun supportsLocalOcr(material: JSONObject) = material.optString("fileName").substringAfterLast('.', "").lowercase() in ocrExtensions
+    fun supportsOfficeParser(material: JSONObject) = material.optString("fileName").substringAfterLast('.', "").lowercase() in officeExtensions
     fun isQualityFailure(error: Throwable): Boolean {
         val message = error.message.orEmpty()
         return listOf("校验", "Schema", "schema", "候选摘录", "真实原文摘录", "来源未在输入", "缺少决策字段", "题目重复")

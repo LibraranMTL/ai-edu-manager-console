@@ -65,7 +65,7 @@ powershell -ExecutionPolicy Bypass -File android-standalone-manager\build.ps1 -T
 
 日常发布直接运行 `android-standalone-manager\发布正式版.ps1`。首次运行只需填写一次 keystore 完整路径和 key alias；它们作为非秘密信息保存在当前 Windows 用户的 `%LOCALAPPDATA%\QxMatrix\EduManager\android-signing-location.json`。以后发布只安全输入密码，不需要重启 Codex 或手工设置四项环境变量。密码只注入当前签名子流程，流程结束后恢复原进程环境，不会写入配置、仓库或日志。需要更换证书位置时运行 `android-standalone-manager\publish-release.ps1 -ResetSigningLocation`。
 
-底层 `sign-release.ps1` 仍只接受四项进程环境变量，并继续拒绝仓库内 keystore 和 Android Debug 证书，强制验证 v2 签名、包名、版本、证书指纹和 SHA-256，再生成 `delivery/*-release.apk` 与不含秘密的发布元数据。需要安装到指定设备复核时运行 `android-standalone-manager\publish-release.ps1 -DeviceSerial <序列号>`。
+底层 `sign-release.ps1` 仍只接受四项进程环境变量，并继续拒绝仓库内 keystore 和 Android Debug 证书，强制验证 v2 签名、包名、版本、证书指纹和 SHA-256，再生成 `delivery/*-release.apk` 与不含秘密的发布元数据。需要安装到指定设备复核时运行 `android-standalone-manager\publish-release.ps1 -DeviceSerial <序列号>`。如果 HiSuite 的旧版 ADB 占用默认 5037 端口，可追加 `-AdbServerPort 5038` 使用隔离的 SDK ADB 服务；该参数会贯穿签名发布和实体设备验收流程。
 
 正式 APK 生成后，使用实体家庭平板执行：
 

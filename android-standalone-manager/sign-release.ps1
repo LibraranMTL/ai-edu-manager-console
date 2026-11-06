@@ -1,5 +1,7 @@
 param(
   [string]$DeviceSerial = '',
+  [ValidateRange(1, 65535)]
+  [int]$AdbServerPort = 5037,
   [string]$OutputDirectory = '',
   [string]$CandidateTag = '',
   [string]$PerformanceBaselinePath = '',
@@ -189,7 +191,7 @@ try {
 
   $deviceVerification = $null
   if (-not [string]::IsNullOrWhiteSpace($DeviceSerial)) {
-    $deviceVerification = & (Join-Path $projectRoot 'verify-physical-device.ps1') -ApkPath $finalPath -DeviceSerial $DeviceSerial
+    $deviceVerification = & (Join-Path $projectRoot 'verify-physical-device.ps1') -ApkPath $finalPath -DeviceSerial $DeviceSerial -AdbServerPort $AdbServerPort
   }
 
   [pscustomobject]@{

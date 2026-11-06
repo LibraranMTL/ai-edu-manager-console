@@ -13,4 +13,13 @@ function validateStudentCourseProjection(payload, scope = {}, trustPolicy) {
   return payload;
 }
 
-module.exports = { validateStudentCourseProjection };
+// A verified projection can be opened until its local lease expires when the
+// host is temporarily unreachable.  A response that proves the token or
+// assignment is invalid must still fail closed; 404 is retained solely for
+// older hosts which predate the optional course-start pinning endpoint.
+function isCourseStartFallbackAllowed(error) {
+  const status = Number(error?.status || 0);
+  return status === 404 || !status || status >= 500;
+}
+
+module.exports = { validateStudentCourseProjection, isCourseStartFallbackAllowed };

@@ -5,7 +5,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { parseCourseTrustPolicy } = require('../electron/course-trust-policy.cjs');
 const { createCourseCatalogStore } = require('../electron/course-catalog-store.cjs');
-const { validateStudentCourseProjection } = require('../electron/student-course-trust.cjs');
+const { validateStudentCourseProjection, isCourseStartFallbackAllowed } = require('../electron/student-course-trust.cjs');
 
 const root = path.resolve(__dirname, '..');
 const read = relative => fs.readFileSync(path.join(root, relative), 'utf8');
@@ -74,6 +74,17 @@ test('Windows student rejects unknown, revoked, mismatched-policy and cross-stud
   assert.throws(() => validateStudentCourseProjection(valid, { hostId: 'host-a', studentId: 'student-b' }, policy), /范围不匹配/);
   const revokedJson = structuredClone(windowsPolicyJson); revokedJson.issuers[1].status = 'revoked';
   assert.throws(() => validateStudentCourseProjection(valid, { hostId: 'host-a', studentId: 'student-a' }, parseCourseTrustPolicy(revokedJson)), /不受信任/);
+});
+
+test('Windows student permits offline course start only after a locally valid lease and only for transient pinning failures', () => {
+  assert.equal(isCourseStartFallbackAllowed({ status: 404 }), true);
+  assert.equal(isCourseStartFallbackAllowed(new Error('connect ECONNREFUSED')), true);
+  assert.equal(isCourseStartFallbackAllowed({ status: 503 }), true);
+  assert.equal(isCourseStartFallbackAllowed({ status: 400 }), false);
+  assert.equal(isCourseStartFallbackAllowed({ status: 401 }), false);
+  assert.equal(isCourseStartFallbackAllowed({ status: 403 }), false);
+  assert.match(windowsStudent, /if\(!isCourseStartFallbackAllowed\(error\)\)throw error;/);
+  assert.match(windowsStudent, /leaseUntil <= Date\.now\(\).*课程离线打开租约已到期/s);
 });
 
 test('Windows student minimal package carries the trust modules and policy bundle', () => {

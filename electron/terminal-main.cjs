@@ -21,7 +21,7 @@ const {
   secureCourseWebPreferences,
 } = require('./course-browser.cjs');
 const { loadCourseTrustPolicy } = require('./course-trust-policy.cjs');
-const { validateStudentCourseProjection } = require('./student-course-trust.cjs');
+const { validateStudentCourseProjection, isCourseStartFallbackAllowed } = require('./student-course-trust.cjs');
 const { parseGrowthIndexMarkdown } = require('./growth-markdown-summary.cjs');
 const {
   buildTargetUploadPath,
@@ -1406,7 +1406,7 @@ async function openTerminalCourse(courseId) {
   const courseUrl = new URL(String(course.url || ''));
   if (courseUrl.protocol !== 'https:' || courseUrl.username || courseUrl.password) throw new Error('课程入口不是受信任的 HTTPS 地址。');
   try {const pinned=await requestJson('/api/student-session/course-start',{method:'POST',body:{courseId},token:config.sessionToken});course={...course,...pinned.course};}
-  catch(error){if(error.status!==404)throw error;}
+  catch(error){if(!isCourseStartFallbackAllowed(error))throw error;}
   if(currentStudentSession().config.sessionToken!==config.sessionToken)throw Error('学生已切换，请重新打开课程');
   closeTerminalCourse('switch');
   const partition = coursePartition(course.courseId);

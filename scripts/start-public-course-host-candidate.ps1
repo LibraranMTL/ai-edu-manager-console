@@ -17,13 +17,21 @@ $ErrorActionPreference = 'Stop'
 
 $resolvedExe = (Resolve-Path -LiteralPath $CandidateExe).Path
 $resolvedUserData = [System.IO.Path]::GetFullPath($UserDataDir)
-if ($resolvedUserData -eq [System.IO.Path]::GetPathRoot($resolvedUserData)) {
-  throw 'UserDataDir 必须是非根目录的隔离候选目录。'
+$userDataRoot = [System.IO.Path]::GetPathRoot($resolvedUserData)
+if ($resolvedUserData -eq $userDataRoot) {
+  throw 'UserDataDir must be a non-root isolated candidate directory.'
 }
 
-$uri = [Uri]$PublicContentBaseUrl
-if ($uri.Scheme -ne 'https' -or $uri.UserInfo -or $uri.Query -or $uri.Fragment -or $uri.Host -ne 'www.greatbg.com' -or $uri.AbsolutePath.TrimEnd('/') -ne '/edu-cloud-candidate') {
-  throw 'PublicContentBaseUrl 仅允许候选 HTTPS 基址 https://www.greatbg.com/edu-cloud-candidate。'
+$canonicalCandidateBaseUrl = 'https://www.greatbg.com/edu-cloud-candidate'
+switch ([string]$PublicContentBaseUrl) {
+  'https://www.greatbg.com/edu-cloud-candidate' { break }
+  'https://www.greatbg.com/edu-cloud-candidate/' { break }
+  default {
+    throw "PublicContentBaseUrl must be $canonicalCandidateBaseUrl."
+  }
+}
+if ([string]::IsNullOrWhiteSpace($PublicContentBaseUrl)) {
+  throw 'PublicContentBaseUrl must be the candidate HTTPS base URL.'
 }
 
 $arguments = @(
@@ -32,7 +40,7 @@ $arguments = @(
   "--remote-debugging-port=$RemoteDebuggingPort"
 )
 $environment = @{
-  EDU_PUBLIC_CONTENT_BASE_URL = $uri.AbsoluteUri.TrimEnd('/')
+  EDU_PUBLIC_CONTENT_BASE_URL = $canonicalCandidateBaseUrl
   EDU_DISABLE_TASK_SCHEDULER = '1'
 }
 
@@ -50,7 +58,7 @@ if ($WhatIfPreference) {
   return
 }
 
-if ($PSCmdlet.ShouldProcess($resolvedExe, "以隔离目录和候选课程基址启动 (port $RemoteDebuggingPort)")) {
+if ($PSCmdlet.ShouldProcess($resolvedExe, "Start with isolated user data and candidate course base URL (port $RemoteDebuggingPort)")) {
   # Windows PowerShell 5.1 has no Start-Process -Environment parameter. Set
   # only this launcher process's environment long enough for the child to
   # inherit it, then restore it even if the process fails to start.

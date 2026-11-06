@@ -156,13 +156,41 @@ try {
   if (Test-Path -LiteralPath $finalPath) {
     throw "正式发布目标已存在，请先提升版本号，避免覆盖既有正式安装包：$finalPath"
   }
-  # A same-directory rename has intermittently failed on this Unicode workspace.
-  # Copy the already-verified staged artifact, verify it again, and only then
-  # remove the staging file.
-  # Windows PowerShell Copy-Item can return to the prompt without producing the
-  # destination for these signed APK paths. Use the .NET API so failure is
-  # synchronous and explicit; overwrite stays disabled by design.
-  [IO.File]::Copy($stagedPath, $finalPath, $false)
+  # A same-directory rename and File.Copy have both failed intermittently on
+  # long Unicode candidate paths. Stream the already-verified staged artifact
+  # into a CreateNew destination, flush it to disk, verify it again, and only
+  # then remove the staging file. A partial destination is removed on failure;
+  # the verified .new file remains available for diagnosis and retry.
+  $sourceStream = $null
+  $destinationStream = $null
+  try {
+    $sourceStream = [IO.FileStream]::new(
+      $stagedPath,
+      [IO.FileMode]::Open,
+      [IO.FileAccess]::Read,
+      [IO.FileShare]::Read
+    )
+    $destinationStream = [IO.FileStream]::new(
+      $finalPath,
+      [IO.FileMode]::CreateNew,
+      [IO.FileAccess]::Write,
+      [IO.FileShare]::None
+    )
+    $sourceStream.CopyTo($destinationStream)
+    $destinationStream.Flush($true)
+  } catch {
+    if ($null -ne $destinationStream) {
+      $destinationStream.Dispose()
+      $destinationStream = $null
+    }
+    if (Test-Path -LiteralPath $finalPath -PathType Leaf) {
+      [IO.File]::Delete($finalPath)
+    }
+    throw "Unable to promote the verified staged APK: $($_.Exception.Message)"
+  } finally {
+    if ($null -ne $destinationStream) { $destinationStream.Dispose() }
+    if ($null -ne $sourceStream) { $sourceStream.Dispose() }
+  }
   if ((Get-FileHash -LiteralPath $finalPath -Algorithm SHA256).Hash -ne $verifiedSha256) {
     throw 'The final delivery APK does not match the verified staged APK.'
   }

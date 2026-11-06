@@ -82,8 +82,16 @@ test('0.6.27 is an Android student source candidate while all public release man
 });
 
 test('Android student refreshes its scoped v2 course projection every sixty seconds', () => {
-  assert.match(activity, /COURSE_PROJECTION_PREFIX = "course_projection_v2_"/u);
+  assert.match(activity, /COURSE_PROJECTION_PREFIX = "course_projection_v2_trust1_"/u);
   assert.match(activity, /courseRefreshHandler\.postDelayed\(courseRefreshRunnable, 60_000L\)/u);
   assert.match(activity, /courseRefreshHandler\.removeCallbacks\(courseRefreshRunnable\)/u);
   assert.match(activity, /\/api\/v2\/students\//u);
+});
+
+test('Android student release build fails closed without its existing upgrade certificate', () => {
+  const build = read('android-tablet-terminal/build.ps1');
+  assert.match(build, /EDU_ANDROID_STUDENT_KEYSTORE/u);
+  assert.match(build, /EDU_ANDROID_STUDENT_KEYSTORE_PASSWORD/u);
+  assert.match(build, /42FF27472C21FD214C17A9DFB153DA0454489D4E2AD70CE823F3369118A5F1CB/u);
+  assert.doesNotMatch(build, /-genkeypair/u);
 });

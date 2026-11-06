@@ -4,10 +4,10 @@
 
 - 应用名称：AI教育管家平板终端
 - 包名：com.qxmatrix.eduterminal
-- 当前测试候选版本：0.6.26（code 96）
-- 当前测试候选 APK：AI-edu-manager-tablet-terminal-0.6.26.apk
-- 候选 APK SHA-256：750199A5D9FD578162793B6914EDBE3E5660427D2F297F5604C7A66D1964871D
-- 签名状态：沿用 Android 学生端既有升级证书，v1/v2/v3 校验通过；已完成覆盖安装与真机验收。
+- 当前源码测试候选版本：0.6.27（code 97）；公开正式版本仍保持0.6.26（code 96）。
+- 当前设备测试 APK：AI-edu-manager-tablet-terminal-0.6.27-device-test.apk
+- 设备测试 APK SHA-256：8AB27A63F053C68C5A71CF6A8D7E17AA55760B5C211E17F679F335B977792ACE
+- 签名状态：沿用 Android 学生端既有升级证书，证书SHA-256为 `42FF27472C21FD214C17A9DFB153DA0454489D4E2AD70CE823F3369118A5F1CB`，v1/v2/v3 校验和 `TAS-AL00` 保留数据覆盖安装通过；当前设备未进入学生空间，尚未完成真实学生投影和课程打开验收。
 - 本次试构建曾覆盖同目录下的 0.6.18 文件；该旧文件当前哈希与既有记录不一致，不再作为有效历史候选使用。
 
 ## 客户版功能
@@ -69,11 +69,17 @@
 
 0.6.26 正式版要求主动上传时明确选择学生原始资料库或具体项目，不再默认代选目标；在线时立即开始发送，网络中断时由本机可靠副本自动重试。项目上传目标统一显示为“项目资料”，与主机“项目工作空间/收件箱后续整理”的实际落点保持一致；仅“主机已确认接收并登记”表示主机完成接收。系统标题在手机大字体下固定单行显示。该版本已完成华为 NAM-AL00 覆盖安装验收并作为 Android 学生端正式更新发布。
 
+0.6.27 源码候选接入课程投影v2、`hostId + studentId`缓存隔离、ETag/304、打开前复核和课程发布者双信任策略。构建脚本不再在缺少证书时自动生成新密钥；必须通过 `EDU_ANDROID_STUDENT_KEYSTORE`、`EDU_ANDROID_STUDENT_KEYSTORE_PASSWORD`、`EDU_ANDROID_STUDENT_KEY_ALIAS` 和 `EDU_ANDROID_STUDENT_KEY_PASSWORD` 提供既有升级证书，并强制核对固定证书指纹，否则拒绝生成APK。该版本尚未进入公开更新清单。
+
 0.6.7 在连接旧版主机时继续自动读取成长模型 Markdown，但只显示面向学生的成长摘要、能力画像和项目贡献，不再展示 Schema、原始表格或本机路径。
 
 ## 构建
 
 ```powershell
+$env:EDU_ANDROID_STUDENT_KEYSTORE='<既有学生端升级keystore绝对路径>'
+$env:EDU_ANDROID_STUDENT_KEYSTORE_PASSWORD='<仅当前进程使用>'
+$env:EDU_ANDROID_STUDENT_KEY_ALIAS='<既有alias>'
+$env:EDU_ANDROID_STUDENT_KEY_PASSWORD='<仅当前进程使用>'
 powershell -ExecutionPolicy Bypass -File android-tablet-terminal\build.ps1
 ```
 

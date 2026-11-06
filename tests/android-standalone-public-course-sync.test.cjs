@@ -10,10 +10,14 @@ const worker = read('android-standalone-manager/app/src/main/java/com/qxmatrix/e
 const catalog = read('android-standalone-manager/app/src/main/java/com/qxmatrix/edumanager/standalone/CourseCatalogService.kt');
 const learning = read('android-standalone-manager/app/src/main/java/com/qxmatrix/edumanager/standalone/CourseLearningActivity.kt');
 const main = read('android-standalone-manager/app/src/main/java/com/qxmatrix/edumanager/standalone/MainActivity.kt');
+const gradle = read('android-standalone-manager/app/build.gradle.kts');
 const trustPolicy = JSON.parse(read('android-standalone-manager/app/src/main/res/raw/trusted_course_issuers.json'));
 
 test('standalone cloud sync preserves the deployment prefix and accepts only signed HTTPS public content', () => {
-  assert.match(service, /DEFAULT_BASE_URL = "https:\/\/www\.greatbg\.com\/edu-cloud"/u);
+  assert.match(service, /DEFAULT_BASE_URL: String = BuildConfig\.PUBLIC_CONTENT_BASE_URL/u);
+  assert.match(gradle, /environmentVariable\("EDU_PUBLIC_CONTENT_BASE_URL"\)/u);
+  assert.match(gradle, /orElse\("https:\/\/www\.greatbg\.com\/edu-cloud"\)/u);
+  assert.match(gradle, /publicContentUri\.scheme == "https"/u);
   assert.match(service, /base\.scheme == "https"/u);
   assert.match(service, /"If-None-Match"/u);
   assert.match(service, /200 -> adoptManifest/u);

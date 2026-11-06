@@ -151,7 +151,7 @@ function createService({ dataDir, adminToken, now = () => Date.now(), maxStudent
     CREATE TABLE IF NOT EXISTS v2_grants (
       device_id TEXT NOT NULL REFERENCES devices(id), student_id TEXT NOT NULL REFERENCES students(id),
       scope TEXT NOT NULL, category TEXT NOT NULL DEFAULT '', fields_json TEXT NOT NULL DEFAULT '[]',
-      object_scope_json TEXT NOT NULL DEFAULT '[]', created_at INTEGER NOT NULL, expires_at INTEGER,
+      object_scope_json TEXT NOT NULL DEFAULT '[]', purpose TEXT NOT NULL DEFAULT 'document_sync', created_at INTEGER NOT NULL, expires_at INTEGER,
       revoked_at INTEGER, policy_version INTEGER NOT NULL DEFAULT 1,
       PRIMARY KEY(device_id, student_id, scope, category)
     );
@@ -281,6 +281,8 @@ function createService({ dataDir, adminToken, now = () => Date.now(), maxStudent
   if (!documentColumns.has('idempotency_key')) db.exec("ALTER TABLE documents ADD COLUMN idempotency_key TEXT NOT NULL DEFAULT ''");
   if (!documentColumns.has('project_id')) db.exec("ALTER TABLE documents ADD COLUMN project_id TEXT NOT NULL DEFAULT ''");
   if (!documentColumns.has('scope_fingerprint')) db.exec("ALTER TABLE documents ADD COLUMN scope_fingerprint TEXT NOT NULL DEFAULT ''");
+  const v2GrantColumns = new Set(db.prepare('PRAGMA table_info(v2_grants)').all().map(column => column.name));
+  if (!v2GrantColumns.has('purpose')) db.exec("ALTER TABLE v2_grants ADD COLUMN purpose TEXT NOT NULL DEFAULT 'document_sync'");
   db.exec('CREATE INDEX IF NOT EXISTS documents_v2_material ON documents(student_id,material_category,material_id,created_at,revision_id)');
   const remoteSessionColumns = new Set(db.prepare('PRAGMA table_info(remote_agent_sessions)').all().map(column => column.name));
   for (const [column, sql] of [
@@ -509,7 +511,7 @@ function createService({ dataDir, adminToken, now = () => Date.now(), maxStudent
     return { revoked: true };
   }
   function hasGrant(deviceId, studentId, scope) {
-    return Boolean(db.prepare("SELECT 1 FROM grants g JOIN students s ON s.id=g.student_id WHERE g.device_id=? AND g.student_id=? AND g.scope=? AND g.revoked_at IS NULL AND s.archived_at IS NULL AND (g.scope!='cloud_document.read' OR (g.expires_at IS NOT NULL AND g.expires_at>?))")
+    return Boolean(db.prepare("SELECT 1 FROM grants g JOIN students s ON s.id=g.student_id WHERE g.device_id=? AND g.student_id=? AND g.scope=? AND g.revoked_at IS NULL AND g.enabled=1 AND s.archived_at IS NULL AND (g.expires_at IS NULL OR g.expires_at>?)")
       .get(deviceId, studentId, scope, now()));
   }
   function requireGrant(deviceId, studentId, scope) {
@@ -545,7 +547,7 @@ function createService({ dataDir, adminToken, now = () => Date.now(), maxStudent
     audit(actorId, `grant.issue.${scope}`, studentId, deviceId);
     return { deviceId, studentId, scope, active: true, expiresAt };
   }
-  function grantV2(deviceId, studentId, scope, { category = '', fields = [], objectScope = [], actorId = 'admin_local' } = {}) {
+  function grantV2(deviceId, studentId, scope, { category = '', fields = [], objectScope = [], purpose = 'document_sync', expiresAt: requestedExpiresAt = null, actorId = 'admin_local' } = {}) {
     if (!studentExists(studentId)) fail(404, '学生不存在');
     if (!V2_SCOPES.includes(scope)) fail(400, 'v2 许可范围无效');
     const device = db.prepare('SELECT kind FROM devices WHERE id=? AND revoked_at IS NULL').get(deviceId);
@@ -556,15 +558,23 @@ function createService({ dataDir, adminToken, now = () => Date.now(), maxStudent
     if (!scope.startsWith('material.') && category) fail(400, '该许可不接受资料类别');
     const normalizedFields = scope.startsWith('student_profile.') ? checkedFields(fields) : [];
     const normalizedObjects = [...new Set((Array.isArray(objectScope) ? objectScope : []).map(String).filter(Boolean))].sort();
-    const expiresAt = scope.endsWith('.read') ? now() + READ_GRANT_LIFETIME_MS : null;
-    db.prepare(`INSERT INTO v2_grants(device_id,student_id,scope,category,fields_json,object_scope_json,created_at,expires_at,revoked_at,policy_version)
-      VALUES(?,?,?,?,?,?,?,?,NULL,1)
+    const normalizedPurpose = String(purpose || 'document_sync');
+    if (!['document_sync', 'expert_interpretation'].includes(normalizedPurpose)) fail(400, '授权用途无效');
+    let expiresAt = scope.endsWith('.read') ? now() + READ_GRANT_LIFETIME_MS : null;
+    if (scope.endsWith('.write') && requestedExpiresAt !== null && requestedExpiresAt !== undefined) {
+      expiresAt = Number(requestedExpiresAt);
+      if (!Number.isSafeInteger(expiresAt) || expiresAt <= now() + 5 * 60 * 1000 || expiresAt > now() + 365 * 24 * 60 * 60 * 1000) {
+        fail(400, '上传授权有效期无效');
+      }
+    }
+    db.prepare(`INSERT INTO v2_grants(device_id,student_id,scope,category,fields_json,object_scope_json,purpose,created_at,expires_at,revoked_at,policy_version)
+      VALUES(?,?,?,?,?,?,?,?,?,NULL,1)
       ON CONFLICT(device_id,student_id,scope,category) DO UPDATE SET fields_json=excluded.fields_json,
-      object_scope_json=excluded.object_scope_json,created_at=excluded.created_at,expires_at=excluded.expires_at,revoked_at=NULL,
+      object_scope_json=excluded.object_scope_json,purpose=excluded.purpose,created_at=excluded.created_at,expires_at=excluded.expires_at,revoked_at=NULL,
       policy_version=v2_grants.policy_version+1`)
-      .run(deviceId, studentId, scope, category, JSON.stringify(normalizedFields), JSON.stringify(normalizedObjects), now(), expiresAt);
+      .run(deviceId, studentId, scope, category, JSON.stringify(normalizedFields), JSON.stringify(normalizedObjects), normalizedPurpose, now(), expiresAt);
     audit(actorId, `grant.v2.issue.${scope}${category ? `.${category}` : ''}`, studentId, deviceId);
-    return { deviceId, studentId, scope, category, fields: normalizedFields, objectScope: normalizedObjects, expiresAt };
+    return { deviceId, studentId, scope, category, fields: normalizedFields, objectScope: normalizedObjects, purpose: normalizedPurpose, expiresAt };
   }
   function v2Grant(deviceId, studentId, scope, category = '') {
     const row = db.prepare(`SELECT g.* FROM v2_grants g JOIN students s ON s.id=g.student_id
@@ -815,7 +825,7 @@ function createService({ dataDir, adminToken, now = () => Date.now(), maxStudent
   function listV2Grants(token, studentId) {
     if (!isAdmin(token)) fail(401, '管理员凭据无效');
     if (!studentExists(studentId)) fail(404, '学生不存在');
-    return db.prepare(`SELECT device_id AS deviceId,scope,category,fields_json AS fieldsJson,
+    return db.prepare(`SELECT device_id AS deviceId,scope,category,fields_json AS fieldsJson,purpose,
       object_scope_json AS objectScopeJson,created_at AS createdAt,expires_at AS expiresAt,
       revoked_at AS revokedAt,policy_version AS policyVersion FROM v2_grants
       WHERE student_id=? ORDER BY created_at DESC,device_id,scope,category`).all(studentId).map(row => ({
@@ -848,24 +858,38 @@ function createService({ dataDir, adminToken, now = () => Date.now(), maxStudent
   function setOwnUploadScope(token, input) {
     const source = requireDevice(token, 'source');
     const studentId = String(input?.cloudStudentId || '');
-    if (!validId(studentId) || !hasGrant(source.id, studentId, 'report.write')) {
+    const knownWriteGrant = validId(studentId) && db.prepare(`SELECT 1 FROM grants
+      WHERE device_id=? AND student_id=? AND scope='report.write' AND revoked_at IS NULL`).get(source.id, studentId);
+    if (!knownWriteGrant) {
       fail(403, '该设备没有有效的学生上传许可');
     }
-    if (!v2Grant(source.id, studentId, 'student_profile.write')) {
+    const knownV2Grant = db.prepare(`SELECT 1 FROM v2_grants WHERE device_id=? AND student_id=?
+      AND scope IN ('student_profile.write','material.write') AND revoked_at IS NULL LIMIT 1`).get(source.id, studentId);
+    if (!knownV2Grant) {
       fail(403, '旧版上传许可不能直接扩大为新版资料授权，请重新开通');
     }
-    const profileFields = checkedFields(input?.profileFields);
+    const requestedProfileFields = Array.isArray(input?.profileFields) ? input.profileFields : [];
+    const profileFields = checkedFields(requestedProfileFields, { requireDisplayName: requestedProfileFields.length > 0 });
     const materialCategories = checkedCategories(input?.materialCategories);
+    const authorizationPurpose = String(input?.authorizationPurpose || 'document_sync');
+    const authorizationExpiresAt = Number(input?.authorizationExpiresAt);
+    if (!['document_sync', 'expert_interpretation'].includes(authorizationPurpose)) fail(400, '授权用途无效');
+    if (!Number.isSafeInteger(authorizationExpiresAt) || authorizationExpiresAt <= now() + 5 * 60 * 1000 ||
+        authorizationExpiresAt > now() + 365 * 24 * 60 * 60 * 1000) fail(400, '上传授权有效期无效');
     return atomic(() => {
       db.prepare(`UPDATE v2_grants SET revoked_at=?,policy_version=policy_version+1
         WHERE device_id=? AND student_id=? AND scope IN ('student_profile.write','material.write') AND revoked_at IS NULL`)
         .run(now(), source.id, studentId);
-      grantV2(source.id, studentId, 'student_profile.write', { fields: profileFields, actorId: source.id });
+      if (profileFields.length) grantV2(source.id, studentId, 'student_profile.write', { fields: profileFields,
+        purpose: authorizationPurpose, expiresAt: authorizationExpiresAt, actorId: source.id });
       for (const category of materialCategories) {
-        grantV2(source.id, studentId, 'material.write', { category, actorId: source.id });
+        grantV2(source.id, studentId, 'material.write', { category, purpose: authorizationPurpose,
+          expiresAt: authorizationExpiresAt, actorId: source.id });
       }
+      db.prepare(`UPDATE grants SET expires_at=?,enabled=1 WHERE device_id=? AND student_id=? AND scope='report.write' AND revoked_at IS NULL`)
+        .run(authorizationExpiresAt, source.id, studentId);
       audit(source.id, 'source.upload-scope.replace', studentId, source.id);
-      return { cloudStudentId: studentId, profileFields, materialCategories };
+      return { cloudStudentId: studentId, profileFields, materialCategories, authorizationPurpose, authorizationExpiresAt };
     });
   }
   function setOwnHealthScope(token, input) {

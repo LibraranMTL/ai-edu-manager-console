@@ -77,7 +77,8 @@ class CloudSyncActivity : Activity() {
                 list.removeAllViews()
                 result.onSuccess { (student, cloud, receipts) ->
                     status.text = "${student.name} · 云同步"
-                    list.addView(text("自动同步：${if (cloud.enabled) "已开启" else "已关闭"}\n许可范围：${cloud.materialCategories.map(::categoryLabel).joinToString("、").ifBlank { "未选择资料" }}\n最近送达：${if (cloud.lastSyncAt > 0) java.text.DateFormat.getDateTimeInstance().format(java.util.Date(cloud.lastSyncAt)) else "尚无"}${if (cloud.lastError.isBlank()) "" else "\n最近同步未完成：${cloud.lastError}"}", 15f))
+                    val expiry = if (cloud.authorizationExpiresAt > 0) java.text.DateFormat.getDateTimeInstance().format(java.util.Date(cloud.authorizationExpiresAt)) else "尚未确认"
+                    list.addView(text("自动同步：${if (cloud.enabled) "已开启" else "已关闭"}\n基础字段：${cloud.profileFields.map(::profileFieldLabel).joinToString("、").ifBlank { "未选择" }}\n资料类别：${cloud.materialCategories.map(::categoryLabel).joinToString("、").ifBlank { "未选择" }}\n用途：${if (cloud.authorizationPurpose == "expert_interpretation") "真人专家解读咨询" else "云端文档同步"}\n有效至：$expiry\n最近送达：${if (cloud.lastSyncAt > 0) java.text.DateFormat.getDateTimeInstance().format(java.util.Date(cloud.lastSyncAt)) else "尚无"}${if (cloud.lastError.isBlank()) "" else "\n最近同步未完成：${cloud.lastError}"}", 15f))
                     list.addView(text("同步结果", 18f))
                     if (receipts.isEmpty()) list.addView(text("暂无回执。", 14f))
                     receipts.forEach { row -> list.addView(text("${receiptLabel(row.optString("status"))} · ${row.optString("time")}\n${row.optString("detail")}", 14f)) }
@@ -90,9 +91,11 @@ class CloudSyncActivity : Activity() {
         worker.execute {
             val result = runCatching {
                 val student = StudentIndexRepository(this).requireExact(studentId)
-                listOf("姓名" to student.name, "年级" to student.grade, "学校" to student.school, "学习目标" to student.goal,
-                    "当前地区" to student.planningProfile.currentRegion, "生日" to student.planningProfile.birthDate)
-                    .filter { it.second.isNotBlank() }.joinToString("\n") { "${it.first}：${it.second}" }
+                val allowed = CloudReportSync(this).status(studentId).profileFields
+                listOf("displayName" to student.name, "grade" to student.grade, "school" to student.school, "learningGoal" to student.goal,
+                    "currentRegion" to student.planningProfile.currentRegion, "birthday" to student.planningProfile.birthDate)
+                    .filter { it.first in allowed }
+                    .filter { it.second.isNotBlank() }.joinToString("\n") { "${profileFieldLabel(it.first)}：${it.second}" }
             }
             runOnUiThread { AlertDialog.Builder(this).setTitle("开启云同步后发送的基础字段")
                 .setMessage(result.getOrElse { "读取失败：${it.message}" }.ifBlank { "当前没有可发送的非空基础字段。健康资料不在此范围，仍需独立许可。" } + "\n\n健康资料默认关闭，不随这些字段发送。")
@@ -103,15 +106,36 @@ class CloudSyncActivity : Activity() {
     private fun showScopeDialog() {
         val sync = CloudReportSync(this); val cloud = sync.status(studentId)
         if (!cloud.configured) { message("尚未开通", "请先从学情报告的云端菜单开通当前学生。") ; return }
-        val ids = CATEGORY_ORDER
+        val fieldIds = CloudUploadAuthorizationPolicy.PROFILE_FIELDS
+        val ids = fieldIds.map { "profile:$it" } + CATEGORY_ORDER.map { "category:$it" }
         val checked = BooleanArray(ids.size) { ids[it] in cloud.materialCategories }
-        AlertDialog.Builder(this).setTitle("分别选择同步资料")
-            .setMultiChoiceItems(ids.map(::categoryLabel).toTypedArray(), checked) { _, which, value -> checked[which] = value }
-            .setMessage("取消某类只停止后续发送，不自动删除云端既有版本。学习资料原件还需逐项选择。")
+        ids.forEachIndexed { index, id -> checked[index] = when {
+            id.startsWith("profile:") -> id.removePrefix("profile:") in cloud.profileFields
+            else -> id.removePrefix("category:") in cloud.materialCategories
+        } }
+        AlertDialog.Builder(this).setTitle("选择本次授权范围")
+            .setMultiChoiceItems(ids.map { id -> if (id.startsWith("profile:")) "基础信息 · ${profileFieldLabel(id.removePrefix("profile:"))}" else "资料 · ${categoryLabel(id.removePrefix("category:"))}" }.toTypedArray(), checked) { _, which, value -> checked[which] = value }
+            .setMessage("仅发送勾选范围。学习资料原件还需逐项选择；缩小范围只停止后续发送，不自动删除云端既有版本。")
             .setNegativeButton("取消", null).setPositiveButton("确认许可") { _, _ ->
-                val selected = ids.filterIndexed { index, _ -> checked[index] }.toSet()
+                val selectedFields = ids.filterIndexed { index, id -> checked[index] && id.startsWith("profile:") }
+                    .map { it.removePrefix("profile:") }.toMutableSet().apply { if (isNotEmpty()) add("displayName") }
+                val selectedCategories = ids.filterIndexed { index, id -> checked[index] && id.startsWith("category:") }
+                    .map { it.removePrefix("category:") }.toSet()
+                chooseAuthorizationExpiry(sync, selectedFields, selectedCategories)
+            }.show()
+    }
+
+    private fun chooseAuthorizationExpiry(sync: CloudReportSync, fields: Set<String>, categories: Set<String>) {
+        val days = listOf(7L, 30L, 90L)
+        AlertDialog.Builder(this).setTitle("选择授权有效期")
+            .setSingleChoiceItems(arrayOf("7天", "30天（推荐）", "90天"), 1, null)
+            .setMessage(if (expertIntent) "用户授权后，平台将派遣专家一对一解读咨询。本期不展示专家分配、进度或结果回传。" else "到期后本机和云端都会拒绝继续上传；需要继续时须重新确认范围。")
+            .setNegativeButton("取消", null).setPositiveButton("授权并开始上传") { dialog, _ ->
+                val selected = (dialog as AlertDialog).listView.checkedItemPosition.takeIf { it in days.indices } ?: 1
+                val expiresAt = System.currentTimeMillis() + days[selected] * 24 * 60 * 60 * 1_000
+                val purpose = if (expertIntent) "expert_interpretation" else "document_sync"
                 worker.execute {
-                    val result = runCatching { sync.setUploadScope(studentId, selected) }
+                    val result = runCatching { sync.setUploadScope(studentId, fields, categories, purpose, expiresAt) }
                     runOnUiThread { result.onSuccess { refresh() }.onFailure { message("许可未更新", it.message ?: "原许可保持不变") } }
                 }
             }.show()
@@ -249,6 +273,7 @@ class CloudSyncActivity : Activity() {
     }
 
     private fun categoryLabel(id: String) = when (id) { "learning_report" -> "学情报告"; "learning_material" -> "学习资料"; "topic_suggestion" -> "选题建议"; "competition_recommendation" -> "比赛推荐"; "learning_card" -> "学习卡片"; else -> id }
+    private fun profileFieldLabel(id: String) = when (id) { "displayName" -> "姓名"; "grade" -> "年级"; "school" -> "学校"; "learningGoal" -> "学习目标"; "currentRegion" -> "地区"; "phone" -> "电话"; "email" -> "邮箱"; "birthday" -> "生日"; "address" -> "地址"; "guardian" -> "监护人"; else -> id }
     private fun receiptLabel(status: String) = when (status) { "queued" -> "等待发送"; "network_recovered" -> "网络恢复"; "delivered" -> "已送达"; "withdrawn" -> "已撤回后续发送"; "failed" -> "同步未完成"; else -> status }
     private fun message(title: String, body: String) { AlertDialog.Builder(this).setTitle(title).setMessage(body).setPositiveButton("知道了", null).show() }
     private fun text(value: String, size: Float) = TextView(this).apply { text = value; textSize = size; setTextColor(palette.text); setPadding(0, dp(8), 0, dp(8)) }

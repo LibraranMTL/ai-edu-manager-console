@@ -859,8 +859,14 @@ function createCloudReportRuntime({ dataDir, protect, unprotect, resolveReportDi
     const profileFields = DEFAULT_PROFILE_FIELDS.filter((field) => (Array.isArray(input.profileFields) ? input.profileFields : []).includes(field));
     if (!profileFields.includes('displayName')) profileFields.unshift('displayName');
     const materialCategories = MATERIAL_CATEGORIES.filter((category) => (Array.isArray(input.materialCategories) ? input.materialCategories : []).includes(category));
+    const sourcePage = ['windows_home', 'windows_report'].includes(String(input.sourcePage || '')) ? String(input.sourcePage) : '';
+    const suggestedMaterialCategories = MATERIAL_CATEGORIES.filter((category) => (Array.isArray(input.suggestedMaterialCategories) ? input.suggestedMaterialCategories : []).includes(category));
     return { schema: 'edu-manager.expert-consultation-draft.v1', studentId: id, purpose: 'expert_learning_interpretation',
       profileFields, materialCategories, updatedAt: new Date().toISOString(),
+      ...(sourcePage ? { sourcePage } : {}),
+      ...(input.reportType ? { reportType: String(input.reportType).slice(0, 80) } : {}),
+      ...(input.reportRevision ? { reportRevision: String(input.reportRevision).slice(0, 160) } : {}),
+      ...(suggestedMaterialCategories.length ? { suggestedMaterialCategories } : {}),
       ...(input.reviewedAuthorizationVersion ? { reviewedAuthorizationVersion: String(input.reviewedAuthorizationVersion).slice(0, 160) } : {}) };
   }
   function getExpertConsultationDraft(studentId) {

@@ -116,6 +116,19 @@ object YouthUi {
         view.elevation = dp(view.context, 2).toFloat()
     }
 
+    fun applyExpertCard(view: View, palette: UiPalette) {
+        val ivory = Color.rgb(255, 250, 235)
+        val warm = Color.rgb(255, 244, 214)
+        view.background = gradient(
+            intArrayOf(mix(ivory, palette.card, 0.16f), mix(warm, palette.accentSoft, 0.10f)),
+            dp(view.context, 26).toFloat(),
+            Color.rgb(235, 190, 94),
+            1,
+            view.context,
+        )
+        view.elevation = dp(view.context, 5).toFloat()
+    }
+
     fun applyBadge(view: View, palette: UiPalette, onColor: Boolean) {
         val fill = if (onColor) withAlpha(Color.BLACK, 42) else mix(palette.accentSoft, palette.card, 0.24f)
         val border = if (onColor) withAlpha(Color.WHITE, 118) else palette.border

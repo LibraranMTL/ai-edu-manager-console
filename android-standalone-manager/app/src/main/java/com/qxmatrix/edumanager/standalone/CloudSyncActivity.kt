@@ -17,16 +17,37 @@ class CloudSyncActivity : Activity() {
     private lateinit var palette: UiPalette
     private lateinit var status: TextView
     private lateinit var list: LinearLayout
+    private var expertIntent = false
+    private var sourcePage = ""
+    private var reportType = ""
+    private var reportRevision = ""
+    private var suggestedCategories = emptyList<String>()
     private val worker = Executors.newSingleThreadExecutor()
     private var generation = 0
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         studentId = intent.getStringExtra(EXTRA_STUDENT_ID).orEmpty()
+        expertIntent = intent.getBooleanExtra(EXTRA_EXPERT_INTENT, false)
+        sourcePage = intent.getStringExtra(EXTRA_SOURCE_PAGE).orEmpty()
+        reportType = intent.getStringExtra(EXTRA_REPORT_TYPE).orEmpty()
+        reportRevision = intent.getStringExtra(EXTRA_REPORT_REVISION).orEmpty()
+        suggestedCategories = intent.getStringArrayListExtra(EXTRA_SUGGESTED_CATEGORIES).orEmpty().filter { it in CATEGORY_ORDER }
         if (studentId.isBlank()) { finish(); return }
         val ui = UiPreferences(this); ui.applyOrientation(this); palette = ui.palette()
         val root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(16), dp(14), dp(16), dp(12)); setBackgroundColor(palette.page) }
         status = text("正在读取云同步状态…", 21f); root.addView(status)
+        if (expertIntent) {
+            root.addView(LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                setPadding(dp(18), dp(14), dp(18), dp(14))
+                YouthUi.applyExpertCard(this, palette)
+                addView(text("请求真人专家解读咨询", 20f))
+                val reportContext = if (reportType.isBlank()) "" else "\n报告：$reportType · 修订：${reportRevision.ifBlank { "尚未生成" }}"
+                val suggested = if (suggestedCategories.isEmpty()) "" else "\n建议资料范围：${suggestedCategories.joinToString("、", transform = ::categoryLabel)}"
+                addView(text("来自${if (sourcePage == "android_report") "学情报告页" else "学情工作台首页"}。请核对当前学生和五类资料范围；平台会在用户授权后派遣专家一对一解读咨询。本页不会自动创建咨询单。$reportContext$suggested", 14f))
+            })
+        }
         root.addView(text("五类资料分别授权；默认仅学情报告。原始照片、录音、视频和本地知识库不会自动镜像。", 13f))
         root.addView(button("学生基础信息字段预览") { showProfilePreview() })
         root.addView(button("选择五类同步范围") { showScopeDialog() })
@@ -37,6 +58,7 @@ class CloudSyncActivity : Activity() {
         root.addView(ScrollView(this).apply { addView(list) }, LinearLayout.LayoutParams(-1, 0, 1f))
         root.addView(button("返回") { finish() })
         setContentView(root)
+        if (expertIntent) root.post { showScopeDialog() }
     }
 
     override fun onResume() { super.onResume(); refresh() }
@@ -235,6 +257,11 @@ class CloudSyncActivity : Activity() {
 
     companion object {
         const val EXTRA_STUDENT_ID = "student_id"
+        const val EXTRA_EXPERT_INTENT = "expert_intent"
+        const val EXTRA_SOURCE_PAGE = "source_page"
+        const val EXTRA_REPORT_TYPE = "report_type"
+        const val EXTRA_REPORT_REVISION = "report_revision"
+        const val EXTRA_SUGGESTED_CATEGORIES = "suggested_categories"
         private val CATEGORY_ORDER = listOf("learning_report", "learning_material", "topic_suggestion", "competition_recommendation", "learning_card")
     }
 }

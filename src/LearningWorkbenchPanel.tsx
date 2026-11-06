@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
-import { ArrowRight, BriefcaseBusiness, CircleAlert, FolderKanban, RefreshCw, ShieldCheck, Sparkles } from 'lucide-react';
+import { ArrowRight, CircleAlert, FolderKanban, RefreshCw, ShieldCheck, Sparkles } from 'lucide-react';
+import { ExpertConsultationCard } from './ExpertConsultationCard';
 import './learning-workbench.css';
 
 type Projection = {
@@ -64,7 +65,7 @@ export function LearningWorkbenchPanel({ api, studentId, studentName, onPrimaryA
     </div>
     <div className="workbench-bottom-grid">
       <section className="panel workbench-project"><FolderKanban size={24} /><div><span className="eyebrow">重点项目</span><h2>{projection.focusProject?.name || '暂无关联项目'}</h2>{projection.focusProject ? <><p>里程碑：{projection.focusProject.milestone}</p><p className="risk">主要风险：{projection.focusProject.risk}</p><button className="secondary" onClick={() => onProject(projection.focusProject!.id)}>查看项目与报告</button></> : <p>可从“项目与成果”建立项目。</p>}</div></section>
-      {projection.expertEntryEnabled !== false && <section className="panel workbench-expert"><BriefcaseBusiness size={24} /><div><span className="eyebrow">真人专家</span><h2>请求真人专家解读咨询</h2><p>先核对准备上传的学情范围。点击本身不会上传、创建咨询单或改变授权。</p><button className="primary" onClick={onExpert}>授权上传学情资料<ArrowRight size={18} /></button></div></section>}
+      {projection.expertEntryEnabled !== false && <ExpertConsultationCard sourcePage="windows_home" onAuthorize={onExpert} />}
     </div>
   </div>;
 }

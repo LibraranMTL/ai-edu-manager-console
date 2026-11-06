@@ -664,6 +664,7 @@ class MainActivity : ComponentActivity() {
             }
             textSize = 16f; setTextColor(palette.text); setPadding(dp(18), dp(16), dp(18), dp(16)); YouthUi.applyStatusCard(this, palette)
         }, matchWrap())
+        addExpertConsultationCard("android_home")
         sectionHeading("学习闭环")
         val stages = listOf(
             PipelineStageUiState(
@@ -1092,6 +1093,10 @@ class MainActivity : ComponentActivity() {
         sectionNote("四份报告继续引用同一有效成长快照整组更新；打开本页不会调用模型或覆盖旧报告。")
         student?.let { runCatching { ReportScheduleStore(this).ensureDefaults(it.id) } }
         sectionHeading("最新学情报告")
+        val reportRevision = student?.let { current -> runCatching {
+            LearningInsightsStore(this).reportRevisions(current.id).firstOrNull()?.optString("contentFingerprint").orEmpty()
+        }.getOrDefault("") }.orEmpty()
+        addExpertConsultationCard("android_report", "learning_report", reportRevision)
         sectionContent.addView(statusCard().apply {
             text = when {
                 student == null -> "请先建立或接管学生档案。"
@@ -3140,7 +3145,7 @@ class MainActivity : ComponentActivity() {
             }.show()
     }
 
-    private fun showCloudEnrollmentDialog(student: StudentRecord) {
+    private fun showCloudEnrollmentDialog(student: StudentRecord, onSuccess: (() -> Unit)? = null) {
         val fields = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(40, 12, 40, 0) }
         val sync = CloudReportSync(this)
         fields.addView(TextView(this).apply {
@@ -3153,10 +3158,78 @@ class MainActivity : ComponentActivity() {
                 val value = code.text.toString().trim()
                 Thread {
                     val result = runCatching { CloudReportSync(this).enrollOfficial(student.id, value) }
-                    runOnUiThread { result.onSuccess { showMessage("已开启自动上传", "当前正式报告及以后更新将由后台自动上传；无需逐份确认。") }
+                    runOnUiThread { result.onSuccess {
+                        if (onSuccess == null) showMessage("已开启自动上传", "当前正式报告及以后更新将由后台自动上传；无需逐份确认。")
+                        else onSuccess.invoke()
+                    }
                         .onFailure { showMessage("开通失败", it.message ?: "请检查阿里云服务和开通码") } }
                 }.start()
             }.show()
+    }
+
+    private fun addExpertConsultationCard(sourcePage: String, reportType: String = "", reportRevision: String = "") {
+        val card = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(22), dp(18), dp(22), dp(18))
+            contentDescription = "真人专家解读咨询入口"
+            YouthUi.applyExpertCard(this, palette)
+        }
+        card.addView(TextView(this).apply {
+            text = "▣　真人专家"
+            textSize = 15f
+            setTextColor(Color.rgb(151, 101, 0))
+        }, matchWrap())
+        card.addView(TextView(this).apply {
+            text = "请求真人专家解读咨询"
+            textSize = 23f
+            setTextColor(palette.heading)
+            typeface = android.graphics.Typeface.create("sans-serif-medium", android.graphics.Typeface.BOLD)
+            setPadding(0, dp(7), 0, dp(5))
+        }, matchWrap())
+        card.addView(TextView(this).apply {
+            text = "先核对准备上传的学情范围。点击本身不会上传、创建咨询单或改变授权。"
+            textSize = 15f
+            setTextColor(palette.text)
+        }, matchWrap())
+        card.addView(themedButton("授权上传学情资料　→", YouthButtonRole.PRIMARY) {
+            openExpertAuthorization(sourcePage, reportType, reportRevision)
+        }, matchWrap().apply { topMargin = dp(10) })
+        sectionContent.addView(card, matchWrap().apply { topMargin = dp(10); bottomMargin = dp(6) })
+    }
+
+    private fun openExpertAuthorization(sourcePage: String, reportType: String = "", reportRevision: String = "") {
+        withCurrentStudent { student ->
+            val sync = CloudReportSync(this)
+            if (!sync.usesOfficialService()) {
+                AlertDialog.Builder(this).setTitle("先切换到阿里云正式服务")
+                    .setMessage("专家解读资料必须按当前学生和授权范围发送。请先在云端文档设置中切换正式服务；本次点击不会上传资料或创建咨询单。")
+                    .setNegativeButton("取消", null)
+                    .setPositiveButton("打开云端设置") { _, _ -> showCloudReportActions(student) }
+                    .show()
+                return@withCurrentStudent
+            }
+            val status = sync.status(student.id)
+            if (!status.configured) {
+                AlertDialog.Builder(this).setTitle("开通 ${student.name} 的云端授权")
+                    .setMessage("下一步需要填写当前学生的一次性开通码。只有再次确认开通后才会启用自动上传；本次点击不会上传资料或创建咨询单。")
+                    .setNegativeButton("取消", null)
+                    .setPositiveButton("填写开通码") { _, _ ->
+                        showCloudEnrollmentDialog(student) { launchExpertAuthorization(student, sourcePage, reportType, reportRevision) }
+                    }.show()
+                return@withCurrentStudent
+            }
+            launchExpertAuthorization(student, sourcePage, reportType, reportRevision)
+        }
+    }
+
+    private fun launchExpertAuthorization(student: StudentRecord, sourcePage: String, reportType: String, reportRevision: String) {
+        startActivity(Intent(this, CloudSyncActivity::class.java)
+            .putExtra(CloudSyncActivity.EXTRA_STUDENT_ID, student.id)
+            .putExtra(CloudSyncActivity.EXTRA_EXPERT_INTENT, true)
+            .putExtra(CloudSyncActivity.EXTRA_SOURCE_PAGE, sourcePage)
+            .putExtra(CloudSyncActivity.EXTRA_REPORT_TYPE, reportType)
+            .putExtra(CloudSyncActivity.EXTRA_REPORT_REVISION, reportRevision)
+            .putStringArrayListExtra(CloudSyncActivity.EXTRA_SUGGESTED_CATEGORIES, arrayListOf("learning_report")))
     }
 
     private fun showCloudPairingApprovalDialog(student: StudentRecord) {

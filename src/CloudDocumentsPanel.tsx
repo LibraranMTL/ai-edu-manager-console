@@ -13,7 +13,8 @@ type UploadScope = { profileFields: string[]; materialCategories: string[] };
 type UploadStatus = { configured: boolean; enabled: boolean; cloudStudentId?: string; lastSyncAt?: number; serverVerifiedAt?: number; syncing?: boolean; lastError?: string; pendingServerWriteState?: boolean | null; pendingUploadScope?: UploadScope | null; savedUploadScope?: UploadScope | null; uploadScopePersistence?: 'default' | 'local_requires_enrollment' | 'local_requires_upgrade' | 'pending_cloud' | 'cloud_confirmed'; profileFields?: string[]; materialCategories?: string[]; healthObjectScope?: string[]; lastUploaded?: number; lastUnchanged?: number; lastReady?: number; skipped?: { filename: string; reason: string }[] };
 type CloudInboxItem = { submissionId: string; provider: string; projectId: string; status: string; updatedAt: number; quarantinedReason?: string };
 type RemoteAgentStatus = { sessionId: string; provider?: string; status?: string; expiresAt?: number; revokedAt?: number; projectId?: string; taskId?: string };
-type ExpertDraft = { schema: 'edu-manager.expert-consultation-draft.v1'; studentId: string; purpose: 'expert_learning_interpretation'; profileFields: string[]; materialCategories: string[]; updatedAt: string; reviewedAuthorizationVersion?: string };
+type ExpertContext = { sourcePage?: 'windows_home' | 'windows_report'; reportType?: string; reportRevision?: string; suggestedMaterialCategories?: string[] };
+type ExpertDraft = { schema: 'edu-manager.expert-consultation-draft.v1'; studentId: string; purpose: 'expert_learning_interpretation'; profileFields: string[]; materialCategories: string[]; updatedAt: string; reviewedAuthorizationVersion?: string; sourcePage?: ExpertContext['sourcePage']; reportType?: string; reportRevision?: string; suggestedMaterialCategories?: string[] };
 type ExpertDraftStatus = { draft: ExpertDraft | null; authorizationVersion: string; authorizationValid: boolean; reviewed: boolean };
 
 export type CloudReportApi = {
@@ -72,7 +73,7 @@ async function unwrap<T>(work: Promise<string> | undefined): Promise<T> {
   return result.data as T;
 }
 
-export function CloudDocumentsPanel({ api, localStudents, mode = 'settings', focusedStudentId = '', expertIntent = false }: { api?: CloudReportApi; localStudents: Student[]; mode?: 'settings' | 'reports' | 'materials'; focusedStudentId?: string; expertIntent?: boolean }) {
+export function CloudDocumentsPanel({ api, localStudents, mode = 'settings', focusedStudentId = '', expertIntent = false, expertSourcePage, expertContext }: { api?: CloudReportApi; localStudents: Student[]; mode?: 'settings' | 'reports' | 'materials'; focusedStudentId?: string; expertIntent?: boolean; expertSourcePage?: 'windows_home' | 'windows_report'; expertContext?: ExpertContext }) {
   const [page, setPage] = useState<'connection' | 'results' | 'agents' | 'inbox'>(mode === 'settings' ? 'connection' : 'results');
   const [serverUrl, setServerUrl] = useState('https://www.greatbg.com/edu-cloud');
   const [serverBound, setServerBound] = useState(false);
@@ -169,8 +170,13 @@ export function CloudDocumentsPanel({ api, localStudents, mode = 'settings', foc
   }
   async function persistExpertDraft(studentId: string, nextProfileFields: string[], nextMaterialCategories: string[], reviewedAuthorizationVersion?: string) {
     if (!api?.cloudReportSaveExpertConsultationDraft || !studentId) return;
+    const retainedContext = expertContext || expertDraftStatus?.draft || {};
     const status = await unwrap<ExpertDraftStatus>(api.cloudReportSaveExpertConsultationDraft(studentId, {
       profileFields: nextProfileFields, materialCategories: nextMaterialCategories, reviewedAuthorizationVersion,
+      sourcePage: retainedContext.sourcePage || expertSourcePage,
+      reportType: retainedContext.reportType,
+      reportRevision: retainedContext.reportRevision,
+      suggestedMaterialCategories: retainedContext.suggestedMaterialCategories,
     }));
     if (selectedLocalIdRef.current === studentId) setExpertDraftStatus(status);
   }
@@ -253,7 +259,7 @@ export function CloudDocumentsPanel({ api, localStudents, mode = 'settings', foc
       </details>
       <details className="cloud-setup" open><summary>授权上传学情资料</summary>
         <p><strong>授权上传学情资料，平台将派遣专属真人专家进行分析提供建议</strong></p>
-        {expertIntent && <div className="cloud-expert-intent" role="note"><strong>真人专家解读咨询草稿</strong><span>这里只准备授权范围；进入页面不会上传资料、创建咨询单或改变授权。</span></div>}
+        {expertIntent && <div className="cloud-expert-intent" role="note" data-expert-source={expertSourcePage}><strong>真人专家解读咨询草稿</strong><span>这里只准备授权范围；进入页面不会上传资料、创建咨询单或改变授权。</span><small>{expertSourcePage === 'windows_report' ? '来自学情报告页' : '来自学情工作台首页'}{expertContext?.reportType ? ` · 报告 ${expertContext.reportType}` : ''}{expertContext?.reportRevision ? ` · 修订 ${expertContext.reportRevision}` : ''}</small></div>}
         <p>资料按类别授权，不按单文件授权；勾选的类别包含当前有效内容及后续更新，可随时关闭后续上传。</p>
         {localStudents.length ? <>
           <label>本机学生<select value={selectedLocalId} disabled={busy} onChange={event => { setUploadStatus({ configured: false, enabled: false }); setExpertDraftStatus(null); setSelectedLocalId(event.target.value); }}>

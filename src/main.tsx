@@ -10,6 +10,7 @@ import type { CaptureApi } from './CaptureInboxPanel';
 import type { DownloadInboxApi } from './DownloadInboxPanel';
 import type { AgentControlApi } from './AgentControlCenter';
 import { AgentHandoffChoice } from './AgentHandoffChoice';
+import { ExpertConsultationCard, type ExpertConsultationSource } from './ExpertConsultationCard';
 const AgentControlCenter = React.lazy(() => import('./AgentControlCenter').then(module => ({ default: module.AgentControlCenter })));
 const ExternalAgentConnector = React.lazy(() => import('./ExternalAgentConnector'));
 const SkillManagementPanel = React.lazy(() => import('./SkillManagementPanel'));
@@ -6193,7 +6194,8 @@ function App() {
   const [activePageTab, setActivePageTab] = useState('home');
   const [studentPanelOpen, setStudentPanelOpen] = useState(false);
   const [agentSettingsTab, setAgentSettingsTab] = useState<AgentSettingsTab>('tools');
-  const [expertConsultationIntent, setExpertConsultationIntent] = useState(false);
+  const [expertConsultationSource, setExpertConsultationSource] = useState<ExpertConsultationSource | ''>('');
+  const [expertConsultationContext, setExpertConsultationContext] = useState<{ reportType?: string; reportRevision?: string; suggestedMaterialCategories?: string[] }>({});
   const [learningWorkbenchAvailable, setLearningWorkbenchAvailable] = useState(true);
   const [agentControlSubtab, setAgentControlSubtab] = useState<AgentControlSubtab>('tool-control');
   const [agentDataTab, setAgentDataTab] = useState<AgentDataTab>('memory');
@@ -6218,6 +6220,12 @@ function App() {
     const saved = localStorage.getItem('edu-manager-settings-submenu');
     return saved === 'connection' || saved === 'collaboration' || saved === 'agent-qa' ? saved : 'basic';
   });
+  useEffect(() => {
+    if (!expertConsultationSource) return;
+    if (activeSection === 'settings' && settingsSubmenu === 'agent-qa' && agentSettingsTab === 'cloud') return;
+    setExpertConsultationSource('');
+    setExpertConsultationContext({});
+  }, [activeSection, agentSettingsTab, expertConsultationSource, settingsSubmenu]);
   const [selectedInitStep, setSelectedInitStep] = useState<InitStepId>('full');
   const [copied, setCopied] = useState(false);
   const [exported, setExported] = useState(false);
@@ -7158,7 +7166,12 @@ function App() {
   const platformCourseEditAllowed = !isWindows || licenseCapability('platform_course_edit');
   const platformCoursePublishAllowed = !isWindows || licenseCapability('platform_course_publish');
   const restrictedSections = new Set<Section>(['student-overview', 'collection-overview', 'photo-upload', 'audio-capture', 'share-capture', 'learning-cards', 'learning-companion', 'knowledge-mastery', 'topic-suggestions', 'competition-recommendations', 'guidance', 'init', 'inbox', 'assets', 'projects-new', 'projects-existing', 'growth', 'cloud-reports', 'cloud-learning-materials', 'cloud-documents', 'qa', 'memory', 'capture', 'agent-capabilities', 'soul', 'rules', 'conversation', 'tasks']);
-  const isLicenseRestrictedSection = isWindows && !windowsLicenseActive && (restrictedSections.has(activeSection) || (activeSection === 'settings' && settingsSubmenu === 'agent-qa'));
+  const expertAuthorizationFlow = Boolean(expertConsultationSource)
+    && activeSection === 'settings'
+    && settingsSubmenu === 'agent-qa'
+    && agentSettingsTab === 'cloud';
+  const isLicenseRestrictedSection = isWindows && !windowsLicenseActive && !expertAuthorizationFlow
+    && (restrictedSections.has(activeSection) || (activeSection === 'settings' && settingsSubmenu === 'agent-qa'));
   const licenseRestrictionText = effectiveLicenseStatus?.message || 'Windows 主机尚未激活。未激活状态仅支持首页、系统设置和已有档案/报告的只读浏览。';
   // The knowledge manager remains usable without a local Agent. Web tools and
   // later installation are valid paths, so installation is guidance, not a gate.
@@ -16806,6 +16819,15 @@ ${JSON.stringify(items, null, 2)}
     setActiveSection('inbox');
   };
 
+  const openExpertConsultation = useCallback((source: ExpertConsultationSource, context: { reportType?: string; reportRevision?: string; suggestedMaterialCategories?: string[] } = {}) => {
+    setExpertConsultationSource(source);
+    setExpertConsultationContext(context);
+    setNavigationGroup('settings');
+    setSettingsSubmenu('agent-qa');
+    setAgentSettingsTab('cloud');
+    setActiveSection('settings');
+  }, []);
+
   const navigateHomeEntry = (entryId: string) => {
     if (entryId === 'weekly-actions' || entryId === 'daily-routine') {
       setNavigationGroup('learning');
@@ -17296,7 +17318,7 @@ ${JSON.stringify(items, null, 2)}
             <LearningWorkbenchPanel api={bridge() || {}} studentId={String(selectedStudent?.id || '')} studentName={selectedStudent?.name || ''}
               onPrimaryAction={runHomePrimaryAction}
               onProject={(projectId) => openProjectDetail(projectId)}
-              onExpert={() => { setExpertConsultationIntent(true); setNavigationGroup('settings'); setSettingsSubmenu('agent-qa'); setAgentSettingsTab('cloud'); setActiveSection('settings'); }}
+              onExpert={() => openExpertConsultation('windows_home')}
               onUnavailable={() => setLearningWorkbenchAvailable(false)} />
           </React.Suspense>
         )}
@@ -20378,6 +20400,14 @@ ${JSON.stringify(items, null, 2)}
               </div>
               <FileText size={22} />
             </div>
+            {isWindows && <ExpertConsultationCard sourcePage="windows_report" className="report-expert-consultation" onAuthorize={() => {
+              const report = learningReports.find((item) => item.id === selectedLearningReportId);
+              openExpertConsultation('windows_report', {
+                reportType: selectedLearningReportId,
+                reportRevision: report?.updatedAt || 'not_generated',
+                suggestedMaterialCategories: ['learning_report'],
+              });
+            }} />}
             <details className="advanced-options reports-advanced-options">
               <summary>高级</summary>
               <div className="archive-grid">
@@ -20956,7 +20986,7 @@ ${JSON.stringify(items, null, 2)}
           </section>
         )}
 
-        {!shouldBlockForAgentInstall && !isLicenseRestrictedSection && activeSection === 'settings' && settingsSubmenu === 'agent-qa' && (
+        {!shouldBlockForAgentInstall && !isLicenseRestrictedSection && (!expertAuthorizationFlow || windowsLicenseActive) && activeSection === 'settings' && settingsSubmenu === 'agent-qa' && (
           <nav className="agent-settings-tabs" aria-label="Agent 设置管理">
             {([
               ['tools', 'AI 接入与调度中心'], ['data', 'Agent 数据管理'], ['connection', 'Agent连接管理'], ['cloud', '云端同步设置'], ['skills', 'Skills管理'],
@@ -21038,7 +21068,7 @@ ${JSON.stringify(items, null, 2)}
         )}
 
         {!shouldBlockForAgentInstall && !isLicenseRestrictedSection && isWindows && activeSection === 'settings' && settingsSubmenu === 'agent-qa' && agentSettingsTab === 'cloud' && (
-          <React.Suspense fallback={<section className="panel">正在加载云端同步设置…</section>}><CloudDocumentsPanel api={bridge()} focusedStudentId={String(selectedStudent?.id || '')} expertIntent={expertConsultationIntent} localStudents={students.map((student) => ({
+          <React.Suspense fallback={<section className="panel">正在加载云端同步设置…</section>}><CloudDocumentsPanel api={bridge()} focusedStudentId={String(selectedStudent?.id || '')} expertIntent={Boolean(expertConsultationSource)} expertSourcePage={expertConsultationSource || undefined} expertContext={{ sourcePage: expertConsultationSource || undefined, ...expertConsultationContext }} localStudents={students.map((student) => ({
             id: student.id, name: student.name, grade: student.grade, school: student.school, goal: student.goal,
             currentRegion: student.currentRegion, phone: student.phone, email: student.email, birthDate: student.birthDate,
             address: student.address, guardian: student.guardian,

@@ -4,9 +4,12 @@ type RequestFn = (route: string, options?: RequestInit) => Promise<Response>;
 type Asset = { assetId: string; assetRevisionId: string; sha256: string; bytes: number; mimeType: string; createdAt?: number; downloadPath?: string };
 type Course = { courseId: string; title: string; locale: string; provider: string; launchUrl: string; coverAssetRevisionId: string; offlineOpenTtlSeconds: number; updatedAt: number;
   summary?: string; allowedHosts?: string[]; gradeBands?: string[]; ageRange?: string; legalNotice?: string; accountRequirement?: string; [key: string]: unknown };
+type CardTemplate = { templateId: string; templateRevision?: string; templateType: string; subject: string; knowledgePointIds: string[]; difficulty: string; gradeBands: string[]; ageRange?: string; locale: string;
+  prompt: string; answerPolicy: string; answer?: string; rubric?: string; explanation?: string; hintPolicy?: string; sourceRefs: string[]; courseIds: string[]; tags: string[]; generatorVersion?: string; updatedAt?: number };
+type CardPack = { packId: string; packRevision?: string; title: string; summary: string; locale: string; gradeBands: string[]; ageRange?: string; courseIds: string[]; tags: string[]; templateIds: string[]; templates?: CardTemplate[]; updatedAt?: number };
 type Release = { releaseId: string; manifestRevision: string; manifestSha256: string; status: string; createdAt: number; effectiveAt: number; activatedAt?: number | null; previousRevision: string; containsRevokedCourse?: boolean };
-type Candidate = { releaseId: string; status: string; manifestSha256: string; manifest: { manifestRevision: string; courses: Course[]; issuedAt: string; expiresAt: string } };
-type ActiveManifest = { releaseId: string; manifestRevision: string; issuedAt: string; courses: Course[]; assets: Asset[]; tombstones: Array<{ courseId: string; reasonCode: string; withdrawnAt: string }> };
+type Candidate = { releaseId: string; status: string; manifestSha256: string; manifest: { manifestRevision: string; courses: Course[]; cardPacks?: CardPack[]; issuedAt: string; expiresAt: string } };
+type ActiveManifest = { releaseId: string; manifestRevision: string; issuedAt: string; courses: Course[]; cardPacks?: CardPack[]; assets: Asset[]; tombstones: Array<{ courseId: string; reasonCode: string; withdrawnAt: string }> };
 type ReleaseDetail = Release & { manifest: ActiveManifest & { expiresAt: string } };
 type PreviewCourse = { course: Course; sourceRevision: string; releaseCourses: Course[]; releaseAssets: Asset[] };
 type Operations = { generatedAt: number; receiptAttestation: string; summary: { total: number; reconciled: number; auto_refresh: number; auto_retry: number; needs_handling: number };
@@ -18,6 +21,11 @@ const initialCourse = {
   courseId: '', locale: 'en-US', title: '', summary: '', provider: '', launchUrl: '', allowedHosts: '', coverAssetRevisionId: '',
   gradeBands: '', ageRange: '', legalNotice: '', accountRequirement: '', offlineOpenTtlSeconds: '21600',
 };
+const initialCardTemplate = {
+  templateId: '', templateType: 'single_choice', subject: '', knowledgePointIds: '', difficulty: 'basic', gradeBands: '', ageRange: '', locale: 'en-US',
+  prompt: '', answerPolicy: 'exact', answer: '', rubric: '', explanation: '', hintPolicy: 'on_request', sourceRefs: '', courseIds: '', tags: '', generatorVersion: 'human-authored',
+};
+const initialCardPack = { packId: '', title: '', summary: '', locale: 'en-US', gradeBands: '', ageRange: '', courseIds: '', tags: '', templateIds: '' };
 
 function createReleaseId(now = new Date()) {
   const two = (value: number) => String(value).padStart(2, '0');
@@ -72,13 +80,18 @@ export function PublicContentPanel({ request, busy, execute, setMessage }: {
 }) {
   const [assets, setAssets] = useState<Asset[]>([]);
   const [courses, setCourses] = useState<Course[]>([]);
+  const [cardTemplates, setCardTemplates] = useState<CardTemplate[]>([]);
+  const [cardPacks, setCardPacks] = useState<CardPack[]>([]);
   const [releases, setReleases] = useState<Release[]>([]);
   const [active, setActive] = useState<ActiveManifest | null>(null);
   const [operations, setOperations] = useState<Operations | null>(null);
   const [assetId, setAssetId] = useState('asset:course-cover');
   const [assetFile, setAssetFile] = useState<File | null>(null);
   const [course, setCourse] = useState(initialCourse);
+  const [cardTemplate, setCardTemplate] = useState(initialCardTemplate);
+  const [cardPack, setCardPack] = useState(initialCardPack);
   const [selectedCourses, setSelectedCourses] = useState<string[]>([]);
+  const [selectedCardPacks, setSelectedCardPacks] = useState<string[]>([]);
   const [releaseId, setReleaseId] = useState(createReleaseId);
   const [candidate, setCandidate] = useState<Candidate | null>(null);
   const [confirmHash, setConfirmHash] = useState('');
@@ -90,14 +103,17 @@ export function PublicContentPanel({ request, busy, execute, setMessage }: {
   const [withdrawReason, setWithdrawReason] = useState('content_risk');
 
   async function refresh() {
-    const [assetResult, courseResult, releaseResult, operationsResult] = await Promise.all([
+    const [assetResult, courseResult, templateResult, packResult, releaseResult, operationsResult] = await Promise.all([
       request('/v2/admin/content/assets').then(response => response.json()),
       request('/v2/admin/courses').then(response => response.json()),
+      request('/v2/admin/card-templates').then(response => response.json()),
+      request('/v2/admin/card-packs').then(response => response.json()),
       request('/v2/admin/releases').then(response => response.json()),
       request('/v2/admin/public-content/operations?windowHours=24').then(response => response.json()),
     ]);
-    setAssets(assetResult.assets || []); setCourses(courseResult.courses || []); setReleases(releaseResult.releases || []); setOperations(operationsResult);
+    setAssets(assetResult.assets || []); setCourses(courseResult.courses || []); setCardTemplates(templateResult.templates || []); setCardPacks(packResult.packs || []); setReleases(releaseResult.releases || []); setOperations(operationsResult);
     setSelectedCourses(current => current.filter(id => (courseResult.courses || []).some((item: Course) => item.courseId === id)));
+    setSelectedCardPacks(current => current.filter(id => (packResult.packs || []).some((item: CardPack) => item.packId === id)));
     const manifest = (releaseResult.releases || []).some((item: Release) => item.status === 'active')
       ? await request('/v2/public-content/manifest').then(response => response.json()).catch(() => null)
       : null;
@@ -162,17 +178,34 @@ export function PublicContentPanel({ request, busy, execute, setMessage }: {
     setMessage(`课程修改已保存为草稿：${course.courseId}。当前已发布版本保持不变，请用新的发布ID校验后再发布。`); clearCandidate(); await refresh();
   }
 
+  function splitValues(value: string) { return value.split(/[,，\s]+/).map(item => item.trim()).filter(Boolean); }
+
+  async function saveCardTemplate() {
+    const payload = { ...cardTemplate, knowledgePointIds: splitValues(cardTemplate.knowledgePointIds), gradeBands: splitValues(cardTemplate.gradeBands),
+      sourceRefs: splitValues(cardTemplate.sourceRefs), courseIds: splitValues(cardTemplate.courseIds), tags: splitValues(cardTemplate.tags) };
+    await request('/v2/admin/card-templates', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(payload) });
+    setCardPack(current => ({ ...current, templateIds: current.templateIds || cardTemplate.templateId }));
+    setMessage(`学习卡模板已保存为草稿：${cardTemplate.templateId}。它不含任何学生数据，需随卡片包进入签名发布单。`); clearCandidate(); await refresh();
+  }
+
+  async function saveCardPack() {
+    const payload = { ...cardPack, gradeBands: splitValues(cardPack.gradeBands), courseIds: splitValues(cardPack.courseIds), tags: splitValues(cardPack.tags), templateIds: splitValues(cardPack.templateIds) };
+    await request('/v2/admin/card-packs', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(payload) });
+    setSelectedCardPacks(current => [...new Set([...current, cardPack.packId])]);
+    setMessage(`卡片包已保存为草稿：${cardPack.packId}。请选择关联课程并校验候选后再发布。`); clearCandidate(); await refresh();
+  }
+
   async function validateCandidate() {
-    if (!selectedCourses.length) throw new Error('至少选择一门课程。');
+    if (!selectedCourses.length && !selectedCardPacks.length) throw new Error('至少选择一门课程或一个卡片包。');
     const result = await (await request('/v2/admin/releases/validate', { method: 'POST', headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ releaseId: releaseId.trim(), courseIds: selectedCourses, audienceKey: 'global', audienceRevision: 'audience-global-v1', selectionReason: 'stable-public-course-release',
+      body: JSON.stringify({ releaseId: releaseId.trim(), courseIds: selectedCourses, cardPackIds: selectedCardPacks, audienceKey: 'global', audienceRevision: 'audience-global-v1', selectionReason: 'stable-public-content-release',
         minClientVersions: { windowsHost: '0.23.4', windowsStudent: '0.18.7', androidStudent: '0.6.27', androidStandalone: '1.3.5' } }) })).json();
     setCandidate(result); setConfirmHash(''); setMessage('候选清单已冻结。请逐项核对并完整输入候选SHA-256后发布。'); await refresh();
   }
 
   async function publishCandidate() {
     if (!candidate || !canPublish) throw new Error('完整候选SHA-256尚未确认。');
-    if (!window.confirm(`确认发布 ${candidate.releaseId}？\n\n课程 ${candidate.manifest.courses.length} 门\n修订 ${candidate.manifest.manifestRevision}\n此操作会替换当前公共清单。`)) return;
+    if (!window.confirm(`确认发布 ${candidate.releaseId}？\n\n课程 ${candidate.manifest.courses.length} 门 · 卡片包 ${candidate.manifest.cardPacks?.length || 0} 个\n修订 ${candidate.manifest.manifestRevision}\n此操作会替换当前公共清单。`)) return;
     const result = await (await request('/v2/admin/releases/publish', { method: 'POST', headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ releaseId: candidate.releaseId, expectedManifestSha256: candidate.manifestSha256 }) })).json();
     setMessage(`公共课程已生效：${result.manifestRevision}`); clearCandidate(); setEditorSource(''); await refresh();
@@ -201,7 +234,7 @@ export function PublicContentPanel({ request, busy, execute, setMessage }: {
       <button className="outline" disabled={busy} onClick={() => void execute(refresh)}>刷新全部状态</button></div>
 
     <section className="release-status"><div><span>当前生效修订</span><strong>{active?.manifestRevision || '尚无生效清单'}</strong></div>
-      <div><span>当前课程</span><strong>{active?.courses?.length || 0} 门</strong></div><div><span>历史发布单</span><strong>{releases.length}</strong></div></section>
+      <div><span>课程 / 卡片包</span><strong>{active?.courses?.length || 0} / {active?.cardPacks?.length || 0}</strong></div><div><span>历史发布单</span><strong>{releases.length}</strong></div></section>
 
     <section className="content-card published-library"><div className="published-library-heading"><div><div className="step-label">当前已发布课程</div>
       <h3>预览与修订</h3><p>已发布清单保持不可变。编辑操作会载入一个新草稿，重新校验和确认SHA-256后才会替换线上版本。</p></div>
@@ -255,15 +288,35 @@ export function PublicContentPanel({ request, busy, execute, setMessage }: {
       </section>
     </div>
 
+    <section className="content-card"><div className="step-label">学习卡公共模板</div><h3>模板、卡片包与课程关联</h3>
+      <p>模板和卡片包只允许发布通用学习内容；不得录入学生资料、作答、画像或个性化结论。精确答案或评分规则是自动发布的质量门。</p>
+      <div className="content-grid"><div className="form-grid"><label>稳定模板ID<input value={cardTemplate.templateId} placeholder="platform:card-template:math-topic" onChange={event => setCardTemplate({ ...cardTemplate, templateId: event.target.value })} /></label>
+        <label>语言<select value={cardTemplate.locale} onChange={event => setCardTemplate({ ...cardTemplate, locale: event.target.value })}>{locales.map(value => <option key={value}>{value}</option>)}</select></label>
+        <label>题型<select value={cardTemplate.templateType} onChange={event => setCardTemplate({ ...cardTemplate, templateType: event.target.value })}>{['single_choice','multiple_choice','true_false','short_answer','self_check','feynman','task'].map(value => <option key={value}>{value}</option>)}</select></label>
+        <label>答案策略<select value={cardTemplate.answerPolicy} onChange={event => setCardTemplate({ ...cardTemplate, answerPolicy: event.target.value })}>{['exact','rubric','self_review'].map(value => <option key={value}>{value}</option>)}</select></label>
+        <label>学科<input value={cardTemplate.subject} onChange={event => setCardTemplate({ ...cardTemplate, subject: event.target.value })} /></label><label>难度<input value={cardTemplate.difficulty} onChange={event => setCardTemplate({ ...cardTemplate, difficulty: event.target.value })} /></label>
+        <label>知识点ID（逗号分隔）<input value={cardTemplate.knowledgePointIds} onChange={event => setCardTemplate({ ...cardTemplate, knowledgePointIds: event.target.value })} /></label><label>关联课程ID（逗号分隔）<input value={cardTemplate.courseIds} onChange={event => setCardTemplate({ ...cardTemplate, courseIds: event.target.value })} /></label>
+        <label className="wide">题干<textarea value={cardTemplate.prompt} onChange={event => setCardTemplate({ ...cardTemplate, prompt: event.target.value })} /></label><label className="wide">精确答案 / 评分规则<textarea value={cardTemplate.answerPolicy === 'rubric' ? cardTemplate.rubric : cardTemplate.answer} onChange={event => setCardTemplate(cardTemplate.answerPolicy === 'rubric' ? { ...cardTemplate, rubric: event.target.value } : { ...cardTemplate, answer: event.target.value })} /></label>
+        <label className="wide">来源引用（逗号分隔）<input value={cardTemplate.sourceRefs} onChange={event => setCardTemplate({ ...cardTemplate, sourceRefs: event.target.value })} /></label></div>
+        <div><button disabled={busy} onClick={() => void execute(saveCardTemplate)}>保存模板草稿</button><div className="compact-list">{cardTemplates.map(item => <button key={item.templateId} onClick={() => setCardPack(current => ({ ...current, templateIds: current.templateIds ? `${current.templateIds}, ${item.templateId}` : item.templateId }))}><strong>{item.templateId}</strong><small>{item.subject} · {item.locale} · {item.templateType}</small></button>)}</div></div>
+      </div>
+      <div className="form-grid"><label>稳定卡片包ID<input value={cardPack.packId} placeholder="platform:card-pack:math-unit" onChange={event => setCardPack({ ...cardPack, packId: event.target.value })} /></label><label>语言<select value={cardPack.locale} onChange={event => setCardPack({ ...cardPack, locale: event.target.value })}>{locales.map(value => <option key={value}>{value}</option>)}</select></label>
+        <label>卡片包标题<input value={cardPack.title} onChange={event => setCardPack({ ...cardPack, title: event.target.value })} /></label><label>关联课程ID（逗号分隔）<input value={cardPack.courseIds} onChange={event => setCardPack({ ...cardPack, courseIds: event.target.value })} /></label>
+        <label className="wide">模板ID（逗号分隔）<input value={cardPack.templateIds} onChange={event => setCardPack({ ...cardPack, templateIds: event.target.value })} /></label><label className="wide">简介<textarea value={cardPack.summary} onChange={event => setCardPack({ ...cardPack, summary: event.target.value })} /></label></div>
+      <button disabled={busy} onClick={() => void execute(saveCardPack)}>保存卡片包草稿</button>
+    </section>
+
     <section className="content-card release-builder"><div className="step-label">03 · 校验与发布</div><h3>构建签名候选</h3>
       <div className="selection-summary"><span>已选择 <strong>{selectedCourses.length}</strong> / {courses.length} 门</span>
         <button className="outline" disabled={!courses.length} onClick={() => { setSelectedCourses(courses.map(item => item.courseId)); clearCandidate(); }}>全选草稿课程</button></div>
       <div className="course-select">{courses.map(item => <label key={item.courseId}><input type="checkbox" checked={selectedCourses.includes(item.courseId)} onChange={event => { setSelectedCourses(current => event.target.checked ? [...new Set([...current, item.courseId])] : current.filter(id => id !== item.courseId)); clearCandidate(); }} />
         <span><strong>{item.title}</strong><small>{item.courseId} · {item.locale} · {item.provider}</small></span></label>)}</div>
+      {!!cardPacks.length && <div className="course-select">{cardPacks.map(item => <label key={item.packId}><input type="checkbox" checked={selectedCardPacks.includes(item.packId)} onChange={event => { setSelectedCardPacks(current => event.target.checked ? [...new Set([...current, item.packId])] : current.filter(id => id !== item.packId)); clearCandidate(); }} />
+        <span><strong>{item.title}</strong><small>学习卡包 · {item.packId} · {item.locale} · {item.templateIds.length} 张模板</small></span></label>)}</div>}
       {!courses.length && <p className="empty-compact">请先保存课程草稿。</p>}
       <div className="release-row"><label>唯一发布ID<input value={releaseId} onChange={event => { setReleaseId(event.target.value); clearCandidate(); }} /></label>
-        <button disabled={busy || !selectedCourses.length} onClick={() => void execute(validateCandidate)}>校验并冻结候选</button></div>
-      {candidate && <div className="candidate-box"><div><span>候选修订</span><strong>{candidate.manifest.manifestRevision}</strong></div><div><span>课程与有效期</span><strong>{candidate.manifest.courses.length}门 · 至 {new Date(candidate.manifest.expiresAt).toLocaleString('zh-CN')}</strong></div>
+        <button disabled={busy || (!selectedCourses.length && !selectedCardPacks.length)} onClick={() => void execute(validateCandidate)}>校验并冻结候选</button></div>
+      {candidate && <div className="candidate-box"><div><span>候选修订</span><strong>{candidate.manifest.manifestRevision}</strong></div><div><span>内容与有效期</span><strong>{candidate.manifest.courses.length}门课程 · {candidate.manifest.cardPacks?.length || 0}个卡片包 · 至 {new Date(candidate.manifest.expiresAt).toLocaleString('zh-CN')}</strong></div>
         <label>候选SHA-256（完整输入以确认）<code>{candidate.manifestSha256}</code><input value={confirmHash} onChange={event => setConfirmHash(event.target.value)} placeholder="粘贴上方完整64位哈希" /></label>
         <button className="publish-button" disabled={busy || !canPublish} onClick={() => void execute(publishCandidate)}>二次确认并原子发布</button></div>}
     </section>

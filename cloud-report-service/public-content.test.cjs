@@ -50,6 +50,44 @@ function course(assetRevisionId, overrides = {}) {
   };
 }
 
+function cardTemplate(overrides = {}) {
+  return {
+    templateId: 'platform:card-template:math-place-value-01',
+    templateType: 'single_choice',
+    subject: 'Mathematics',
+    knowledgePointIds: ['kp:place-value'],
+    difficulty: 'basic',
+    gradeBands: ['3'],
+    ageRange: '8-9',
+    locale: 'en-US',
+    prompt: 'Which digit represents the tens place in 245?',
+    answerPolicy: 'exact',
+    answer: '4',
+    explanation: 'The tens digit is the second digit from the right.',
+    hintPolicy: 'on_request',
+    sourceRefs: ['public:math-place-value-v1'],
+    courseIds: ['platform:starfall-k5-math'],
+    tags: ['place-value'],
+    generatorVersion: 'human-authored',
+    ...overrides,
+  };
+}
+
+function cardPack(overrides = {}) {
+  return {
+    packId: 'platform:card-pack:math-place-value-01',
+    title: 'Place Value Practice',
+    summary: 'Short practice for the tens and ones places.',
+    locale: 'en-US',
+    gradeBands: ['3'],
+    ageRange: '8-9',
+    courseIds: ['platform:starfall-k5-math'],
+    tags: ['place-value'],
+    templateIds: ['platform:card-template:math-place-value-01'],
+    ...overrides,
+  };
+}
+
 test('public course release is signed, idempotent and withdrawable', () => {
   const fx = fixture();
   try {
@@ -153,6 +191,47 @@ test('admin inventory lists assets, course drafts and immutable release hashes',
   } finally { fx.close(); }
 });
 
+test('public learning-card template and pack drafts enter the signed release without student data', () => {
+  const fx = fixture();
+  try {
+    const asset = fx.publicContent.putAsset(fx.session, {
+      assetId: 'asset:card-pack-cover', mimeType: 'image/png', contentBase64: pngFixture('card-pack-fixture').toString('base64'),
+    });
+    fx.publicContent.saveCourse(fx.session, course(asset.assetRevisionId));
+    const savedTemplate = fx.publicContent.saveCardTemplate(fx.session, cardTemplate());
+    assert.equal(savedTemplate.status, 'draft');
+    const savedPack = fx.publicContent.saveCardPack(fx.session, cardPack());
+    assert.equal(savedPack.status, 'draft');
+    assert.equal(fx.publicContent.listCardTemplates(fx.session).templates[0].templateId, cardTemplate().templateId);
+    assert.equal(fx.publicContent.listCardPacks(fx.session).packs[0].packId, cardPack().packId);
+    const validated = fx.publicContent.validateRelease(fx.session, {
+      releaseId: 'release:cards-001', courseIds: ['platform:starfall-k5-math'], cardPackIds: [cardPack().packId],
+      issuedAt: '2026-11-06T00:00:00.000Z', expiresAt: '2026-11-07T00:00:00.000Z',
+    });
+    assert.equal(validated.manifest.cardPacks.length, 1);
+    assert.equal(validated.manifest.cardPacks[0].templates[0].templateId, cardTemplate().templateId);
+    assert.equal(verifySignedObject(validated.manifest, fx.keys.publicKey), true);
+    assert.equal(JSON.stringify(validated.manifest).includes('studentId'), false);
+    fx.publicContent.publishRelease(fx.session, { releaseId: validated.releaseId, expectedManifestSha256: validated.manifestSha256 });
+    assert.equal(fx.publicContent.activeManifest().manifest.cardPacks[0].packId, cardPack().packId);
+    assert.ok(fx.service.db.prepare('SELECT 1 FROM schema_migrations WHERE id=?').get('cloud-public-learning-card-v1'));
+  } finally { fx.close(); }
+});
+
+test('public learning-card drafts reject unverifiable answers, mixed locales and missing release courses', () => {
+  const fx = fixture();
+  try {
+    assert.throws(() => fx.publicContent.saveCardTemplate(fx.session, cardTemplate({ answer: '' })), /必须提供答案/);
+    fx.publicContent.saveCardTemplate(fx.session, cardTemplate());
+    assert.throws(() => fx.publicContent.saveCardPack(fx.session, cardPack({ locale: 'en-GB' })), /语言必须一致/);
+    fx.publicContent.saveCardPack(fx.session, cardPack());
+    assert.throws(() => fx.publicContent.validateRelease(fx.session, {
+      releaseId: 'release:cards-missing-course', cardPackIds: [cardPack().packId],
+      issuedAt: '2026-11-06T00:00:00.000Z', expiresAt: '2026-11-07T00:00:00.000Z',
+    }), /关联课程未纳入同一发布/);
+  } finally { fx.close(); }
+});
+
 test('public content observability hashes client identity and reconciles bounded receipts', () => {
   const fx = fixture();
   try {
@@ -235,6 +314,46 @@ test('public HTTP endpoints support ETag, 304 and byte ranges', async () => {
     const operations = await fetch(`${base}/v2/admin/public-content/operations?windowHours=24`, { headers: { authorization: `Bearer ${session}` } });
     assert.equal(operations.status, 200);
     assert.equal((await operations.json()).summary.reconciled, 1);
+  } finally {
+    await app.close();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('public learning-card draft HTTP endpoints require an administrator and publish signed card packs', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'edu-public-card-http-'));
+  const adminToken = 'admin-token-that-is-longer-than-24-characters';
+  const keys = crypto.generateKeyPairSync('rsa', { modulusLength: 2048 });
+  const app = createHttpServer({ dataDir: root, adminToken, materialIndexer: false,
+    publicContentPrivateKey: keys.privateKey, publicContentKeyId: 'course-catalog-primary-2026' });
+  await new Promise(resolve => app.server.listen(0, '127.0.0.1', resolve));
+  const base = `http://127.0.0.1:${app.server.address().port}`;
+  try {
+    const denied = await fetch(`${base}/v2/admin/card-templates`);
+    assert.equal(denied.status, 401);
+    const session = app.service.loginAdmin(adminToken).sessionToken;
+    const asset = app.publicContent.putAsset(session, {
+      assetId: 'asset:card-http-cover', mimeType: 'image/png', contentBase64: pngFixture('card-http').toString('base64'),
+    });
+    app.publicContent.saveCourse(session, course(asset.assetRevisionId));
+    const headers = { authorization: `Bearer ${session}`, 'content-type': 'application/json' };
+    const template = await fetch(`${base}/v2/admin/card-templates`, { method: 'POST', headers, body: JSON.stringify(cardTemplate()) });
+    assert.equal(template.status, 201);
+    const pack = await fetch(`${base}/v2/admin/card-packs`, { method: 'POST', headers, body: JSON.stringify(cardPack()) });
+    assert.equal(pack.status, 201);
+    const validate = await fetch(`${base}/v2/admin/releases/validate`, { method: 'POST', headers, body: JSON.stringify({
+      releaseId: 'release:cards-http-001', courseIds: ['platform:starfall-k5-math'], cardPackIds: [cardPack().packId],
+      issuedAt: '2026-11-06T00:00:00.000Z', expiresAt: '2026-11-07T00:00:00.000Z',
+    }) });
+    assert.equal(validate.status, 200);
+    const candidate = await validate.json();
+    assert.equal(candidate.manifest.cardPacks[0].templates[0].answer, '4');
+    const publish = await fetch(`${base}/v2/admin/releases/publish`, { method: 'POST', headers, body: JSON.stringify({
+      releaseId: candidate.releaseId, expectedManifestSha256: candidate.manifestSha256,
+    }) });
+    assert.equal(publish.status, 200);
+    const manifest = await fetch(`${base}/v2/public-content/manifest`);
+    assert.equal((await manifest.json()).cardPacks[0].packId, cardPack().packId);
   } finally {
     await app.close();
     fs.rmSync(root, { recursive: true, force: true });

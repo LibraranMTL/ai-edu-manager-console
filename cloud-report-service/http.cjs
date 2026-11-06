@@ -234,7 +234,7 @@ function createHttpServer(options) {
       if (req.method === 'GET' && route === '/health') return json(res, 200, { ok: true, service: 'edu-cloud-documents', version: '2.3.0-candidate.1', contracts: [1, 2], schema: { ...service.schemaStatus(), publicContent: publicContent.schemaStatus() },
         materialIndex: materialIndexer?.status() || { enabled: false }, capabilities: ['profile-sync', 'material-sync', 'remote-agent-mcp', 'cloud-inbox', 'student-archive',
           'viewer-student-relinquish', 'current-revision-index', 'async-pdf-docx-extraction', 'oauth-pkce', 'public-course-manifest', 'public-course-revocations',
-          'public-course-sync-receipts', 'public-course-operations'] });
+          'public-course-sync-receipts', 'public-course-operations', 'public-learning-card-packs'] });
       if (req.method === 'POST' && route === '/v2/admin/content/assets') {
         return json(res, 201, publicContent.putAsset(token, await readJson(req, MAX_PUBLIC_ASSET_JSON_BYTES)));
       }
@@ -246,6 +246,18 @@ function createHttpServer(options) {
       }
       if (req.method === 'GET' && route === '/v2/admin/courses') {
         return json(res, 200, publicContent.listCourses(token));
+      }
+      if (req.method === 'POST' && route === '/v2/admin/card-templates') {
+        return json(res, 201, publicContent.saveCardTemplate(token, await readJson(req)));
+      }
+      if (req.method === 'GET' && route === '/v2/admin/card-templates') {
+        return json(res, 200, publicContent.listCardTemplates(token));
+      }
+      if (req.method === 'POST' && route === '/v2/admin/card-packs') {
+        return json(res, 201, publicContent.saveCardPack(token, await readJson(req)));
+      }
+      if (req.method === 'GET' && route === '/v2/admin/card-packs') {
+        return json(res, 200, publicContent.listCardPacks(token));
       }
       if (req.method === 'GET' && route === '/v2/admin/releases') {
         return json(res, 200, publicContent.listReleases(token));

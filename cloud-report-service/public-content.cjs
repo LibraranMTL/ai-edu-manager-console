@@ -12,6 +12,8 @@ const ALLOWED_MIME = new Set(['image/png', 'image/jpeg', 'image/webp']);
 const MAX_ASSET_BYTES = 5 * 1024 * 1024;
 const SYNC_CLIENT_TYPES = new Set(['windows_host', 'windows_student', 'android_student', 'android_standalone']);
 const SYNC_OUTCOMES = new Set(['applied', 'not_modified', 'network_failed', 'blocked_signature', 'blocked_hash', 'blocked_revocation', 'lease_expired', 'incompatible_client']);
+const CARD_TEMPLATE_TYPES = new Set(['single_choice', 'multiple_choice', 'true_false', 'short_answer', 'self_check', 'feynman', 'task']);
+const CARD_ANSWER_POLICIES = new Set(['exact', 'rubric', 'self_review']);
 
 function fail(status, message) {
   const error = new Error(message);
@@ -101,6 +103,85 @@ function normalizeCourse(input = {}) {
   };
 }
 
+function normalizedStrings(value, maximumItems, maximumLength, label, required = false) {
+  const items = [...new Set((Array.isArray(value) ? value : []).map(item => cleanText(item, maximumLength, label, false)).filter(Boolean))];
+  if (items.length > maximumItems || (required && !items.length)) fail(400, `${label}无效`);
+  return items.sort((left, right) => left.localeCompare(right, 'en'));
+}
+
+function normalizeCardTemplate(input = {}) {
+  const templateId = cleanText(input.templateId, 160, '学习卡模板ID');
+  if (!/^(platform|tenant):card-template:[a-z0-9][a-z0-9-]{2,120}$/.test(templateId)) fail(400, '学习卡模板ID无效');
+  const templateType = cleanText(input.templateType, 40, '学习卡题型');
+  if (!CARD_TEMPLATE_TYPES.has(templateType)) fail(400, '学习卡题型不受支持');
+  const locale = cleanText(input.locale, 20, '学习卡语言');
+  if (!ALLOWED_LOCALES.has(locale)) fail(400, '学习卡语言不在允许的11种locale中');
+  const answerPolicy = cleanText(input.answerPolicy, 40, '学习卡答案策略');
+  if (!CARD_ANSWER_POLICIES.has(answerPolicy)) fail(400, '学习卡答案策略无效');
+  const answer = cleanText(input.answer || '', 4000, '学习卡答案', false);
+  const rubric = cleanText(input.rubric || '', 4000, '学习卡评分规则', false);
+  if (answerPolicy === 'exact' && !answer) fail(400, '精确答案卡必须提供答案');
+  if (answerPolicy === 'rubric' && !rubric) fail(400, '评分规则卡必须提供评分规则');
+  const prompt = cleanText(input.prompt, 8000, '学习卡题干');
+  const sourceRefs = normalizedStrings(input.sourceRefs, 16, 240, '学习卡来源', true);
+  const courseIds = normalizedStrings(input.courseIds, 16, 160, '关联课程');
+  for (const courseId of courseIds) {
+    if (!/^(platform|tenant):[a-z0-9][a-z0-9-]{2,120}$/.test(courseId)) fail(400, '关联课程无效');
+  }
+  const draft = {
+    templateId,
+    templateType,
+    subject: cleanText(input.subject, 100, '学习卡学科'),
+    knowledgePointIds: normalizedStrings(input.knowledgePointIds, 24, 160, '学习卡知识点', true),
+    difficulty: cleanText(input.difficulty, 40, '学习卡难度'),
+    gradeBands: normalizedStrings(input.gradeBands, 16, 40, '学习卡年级'),
+    ageRange: cleanText(input.ageRange || '', 80, '学习卡年龄范围', false),
+    locale,
+    prompt,
+    answerPolicy,
+    answer,
+    rubric,
+    explanation: cleanText(input.explanation || '', 8000, '学习卡解释', false),
+    hintPolicy: cleanText(input.hintPolicy || 'on_request', 80, '学习卡提示策略'),
+    sourceRefs,
+    courseIds,
+    tags: normalizedStrings(input.tags, 24, 80, '学习卡标签'),
+    generatorVersion: cleanText(input.generatorVersion || 'human-authored', 120, '学习卡生成版本'),
+  };
+  return { ...draft, templateRevision: cleanText(input.templateRevision || `card-template-rev-${sha256(canonicalize(draft)).slice(0, 24)}`, 120, '学习卡模板修订') };
+}
+
+function normalizeCardPack(input = {}, templatesById = new Map()) {
+  const packId = cleanText(input.packId, 160, '卡片包ID');
+  if (!/^(platform|tenant):card-pack:[a-z0-9][a-z0-9-]{2,120}$/.test(packId)) fail(400, '卡片包ID无效');
+  const locale = cleanText(input.locale, 20, '卡片包语言');
+  if (!ALLOWED_LOCALES.has(locale)) fail(400, '卡片包语言不在允许的11种locale中');
+  const templateIds = normalizedStrings(input.templateIds, 64, 160, '卡片包模板', true);
+  const templates = templateIds.map(templateId => {
+    const template = templatesById.get(templateId);
+    if (!template) fail(400, `卡片包模板草稿不存在：${templateId}`);
+    if (template.locale !== locale) fail(400, '卡片包与模板语言必须一致');
+    return template;
+  });
+  const courseIds = normalizedStrings(input.courseIds, 16, 160, '卡片包关联课程');
+  for (const courseId of courseIds) {
+    if (!/^(platform|tenant):[a-z0-9][a-z0-9-]{2,120}$/.test(courseId)) fail(400, '卡片包关联课程无效');
+  }
+  const draft = {
+    packId,
+    title: cleanText(input.title, 160, '卡片包标题'),
+    summary: cleanText(input.summary, 1600, '卡片包简介'),
+    locale,
+    gradeBands: normalizedStrings(input.gradeBands, 16, 40, '卡片包年级'),
+    ageRange: cleanText(input.ageRange || '', 80, '卡片包年龄范围', false),
+    courseIds,
+    tags: normalizedStrings(input.tags, 24, 80, '卡片包标签'),
+    templateIds,
+    templates,
+  };
+  return { ...draft, packRevision: cleanText(input.packRevision || `card-pack-rev-${sha256(canonicalize(draft)).slice(0, 24)}`, 120, '卡片包修订') };
+}
+
 function unsigned(value) {
   const output = { ...value };
   delete output.signature;
@@ -145,6 +226,12 @@ function createPublicContentService(options = {}) {
     CREATE TABLE IF NOT EXISTS public_course_drafts (
       course_id TEXT PRIMARY KEY, draft_json TEXT NOT NULL, updated_at INTEGER NOT NULL
     );
+    CREATE TABLE IF NOT EXISTS public_learning_card_template_drafts (
+      template_id TEXT PRIMARY KEY, draft_json TEXT NOT NULL, updated_at INTEGER NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS public_learning_card_pack_drafts (
+      pack_id TEXT PRIMARY KEY, draft_json TEXT NOT NULL, updated_at INTEGER NOT NULL
+    );
     CREATE TABLE IF NOT EXISTS public_content_releases (
       release_id TEXT PRIMARY KEY, manifest_revision TEXT NOT NULL UNIQUE, status TEXT NOT NULL,
       manifest_json TEXT NOT NULL, manifest_sha256 TEXT NOT NULL,
@@ -181,6 +268,8 @@ function createPublicContentService(options = {}) {
       VALUES('cloud-public-content-v1',${Number(now())},'{"contractId":"${CONTRACT_ID}","separateObjectRoot":true}');
     INSERT OR IGNORE INTO schema_migrations(id,applied_at,detail_json)
       VALUES('cloud-public-content-observability-v1',${Number(now())},'{"privacy":"hashed-client-id","studentData":false,"receiptAttestation":"unverified"}');
+    INSERT OR IGNORE INTO schema_migrations(id,applied_at,detail_json)
+      VALUES('cloud-public-learning-card-v1',${Number(now())},'{"studentData":false,"releaseManifestField":"cardPacks"}');
   `);
   let lastMetricsPruneAt = 0;
 
@@ -195,6 +284,7 @@ function createPublicContentService(options = {}) {
 
   function schemaStatus() {
     return { migrationId: 'cloud-public-content-v1', observabilityMigrationId: 'cloud-public-content-observability-v1',
+      learningCardMigrationId: 'cloud-public-learning-card-v1',
       applied: true, contractId: CONTRACT_ID, signingReady: Boolean(privateKey), keyId };
   }
 
@@ -334,6 +424,45 @@ function createPublicContentService(options = {}) {
     return { course, status: 'draft' };
   }
 
+  function cardTemplateDrafts() {
+    return db.prepare(`SELECT template_id AS templateId,draft_json AS draftJson,updated_at AS updatedAt
+      FROM public_learning_card_template_drafts ORDER BY template_id LIMIT 1000`).all()
+      .map(row => ({ ...JSON.parse(row.draftJson), updatedAt: row.updatedAt }));
+  }
+
+  function saveCardTemplate(token, input = {}) {
+    requireAdmin(token);
+    const template = normalizeCardTemplate(input);
+    db.prepare(`INSERT INTO public_learning_card_template_drafts(template_id,draft_json,updated_at) VALUES(?,?,?)
+      ON CONFLICT(template_id) DO UPDATE SET draft_json=excluded.draft_json,updated_at=excluded.updated_at`)
+      .run(template.templateId, JSON.stringify(template), now());
+    audit('public_content.card_template.save', template.templateId);
+    return { template, status: 'draft' };
+  }
+
+  function listCardTemplates(token) {
+    requireAdmin(token);
+    return { templates: cardTemplateDrafts() };
+  }
+
+  function saveCardPack(token, input = {}) {
+    requireAdmin(token);
+    const templates = new Map(cardTemplateDrafts().map(item => [item.templateId, item]));
+    const pack = normalizeCardPack(input, templates);
+    db.prepare(`INSERT INTO public_learning_card_pack_drafts(pack_id,draft_json,updated_at) VALUES(?,?,?)
+      ON CONFLICT(pack_id) DO UPDATE SET draft_json=excluded.draft_json,updated_at=excluded.updated_at`)
+      .run(pack.packId, JSON.stringify(pack), now());
+    audit('public_content.card_pack.save', pack.packId);
+    return { pack, status: 'draft' };
+  }
+
+  function listCardPacks(token) {
+    requireAdmin(token);
+    return { packs: db.prepare(`SELECT pack_id AS packId,draft_json AS draftJson,updated_at AS updatedAt
+      FROM public_learning_card_pack_drafts ORDER BY pack_id LIMIT 500`).all()
+      .map(row => ({ ...JSON.parse(row.draftJson), updatedAt: row.updatedAt })) };
+  }
+
   function listAssets(token) {
     requireAdmin(token);
     return { assets: db.prepare(`SELECT asset_id AS assetId,asset_revision_id AS assetRevisionId,sha256,
@@ -379,13 +508,25 @@ function createPublicContentService(options = {}) {
     const existing = db.prepare('SELECT * FROM public_content_releases WHERE release_id=?').get(releaseId);
     if (existing) return { existing, manifest: JSON.parse(existing.manifest_json), duplicate: true };
     const courseIds = [...new Set((Array.isArray(input.courseIds) ? input.courseIds : []).map(String))];
-    if (!courseIds.length) fail(400, '发布必须包含课程');
+    const cardPackIds = [...new Set((Array.isArray(input.cardPackIds) ? input.cardPackIds : []).map(String))];
+    if (!courseIds.length && !cardPackIds.length) fail(400, '发布必须包含课程或卡片包');
     const courses = courseIds.map(courseId => {
       const row = db.prepare('SELECT draft_json FROM public_course_drafts WHERE course_id=?').get(courseId);
       if (!row) fail(400, `课程草稿不存在：${courseId}`);
       return normalizeCourse(JSON.parse(row.draft_json));
     }).sort((left, right) => left.courseId.localeCompare(right.courseId, 'en'));
     rejectRevokedCourses(courses, '候选清单');
+    const templateDrafts = new Map(cardTemplateDrafts().map(item => [item.templateId, item]));
+    const cardPacks = cardPackIds.map(packId => {
+      const row = db.prepare('SELECT draft_json FROM public_learning_card_pack_drafts WHERE pack_id=?').get(packId);
+      if (!row) fail(400, `卡片包草稿不存在：${packId}`);
+      return normalizeCardPack(JSON.parse(row.draft_json), templateDrafts);
+    }).sort((left, right) => left.packId.localeCompare(right.packId, 'en'));
+    for (const pack of cardPacks) {
+      for (const courseId of pack.courseIds) {
+        if (!courses.some(course => course.courseId === courseId)) fail(400, `卡片包关联课程未纳入同一发布：${courseId}`);
+      }
+    }
     const assets = [...new Set(courses.map(course => course.coverAssetRevisionId))].map(assetRevisionId => {
       const row = db.prepare(`SELECT asset_id AS assetId,asset_revision_id AS assetRevisionId,sha256,
         byte_size AS bytes,mime_type AS mimeType FROM public_content_assets WHERE asset_revision_id=?`).get(assetRevisionId);
@@ -399,7 +540,7 @@ function createPublicContentService(options = {}) {
       fail(400, '清单有效期必须大于0且不超过24小时');
     }
     const state = db.prepare("SELECT active_manifest_revision AS activeManifestRevision FROM public_content_state WHERE channel='stable'").get();
-    const manifestRevision = `manifest-rev-${sha256(`${releaseId}:${issuedAt}:${canonicalize(courses)}`).slice(0, 32)}`;
+    const manifestRevision = `manifest-rev-${sha256(`${releaseId}:${issuedAt}:${canonicalize({ courses, cardPacks })}`).slice(0, 32)}`;
     const manifest = signObject({
       contractId: CONTRACT_ID,
       schemaVersion: SCHEMA_VERSION,
@@ -415,6 +556,7 @@ function createPublicContentService(options = {}) {
       previousRevision: state?.activeManifestRevision || '',
       minClientVersions: input.minClientVersions && typeof input.minClientVersions === 'object' ? input.minClientVersions : {},
       courses,
+      cardPacks,
       assets,
       tombstones: [],
     }, privateKey, keyId);
@@ -568,10 +710,10 @@ function createPublicContentService(options = {}) {
     return { releaseId, status: 'active', manifestRevision, revocationRevision, duplicate: false };
   }
 
-  return { schemaStatus, recordDelivery, recordSyncReceipt, operations, putAsset, saveCourse, listAssets, listCourses, listReleases, validateRelease, publishRelease, rollbackRelease, emergencyWithdraw,
+  return { schemaStatus, recordDelivery, recordSyncReceipt, operations, putAsset, saveCourse, listAssets, listCourses, saveCardTemplate, listCardTemplates, saveCardPack, listCardPacks, listReleases, validateRelease, publishRelease, rollbackRelease, emergencyWithdraw,
     activeManifest, releaseByRevision, asset, signedRevocations, verifySignedObject: value => verifySignedObject(value, publicKey),
     publicKey: publicKey ? publicKey.export({ type: 'spki', format: 'pem' }).toString() : '' };
 }
 
 module.exports = { createPublicContentService, canonicalize, sha256, signObject, verifySignedObject,
-  normalizeCourse, CONTRACT_ID, SCHEMA_VERSION, SIGNATURE_ALGORITHM, ALLOWED_LOCALES };
+  normalizeCourse, normalizeCardTemplate, normalizeCardPack, CONTRACT_ID, SCHEMA_VERSION, SIGNATURE_ALGORITHM, ALLOWED_LOCALES };

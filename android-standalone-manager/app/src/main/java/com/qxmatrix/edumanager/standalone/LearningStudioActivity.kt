@@ -74,6 +74,7 @@ class LearningStudioActivity : Activity() {
             status.text = "已安排更新；可以继续使用应用，完成后会自动显示"
         }, LinearLayout.LayoutParams(0, -2, 1f))
         root.addView(controls)
+        root.addView(button("从公共模板添加学习卡") { showPublicLearningCards() })
 
         list = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         root.addView(list)
@@ -297,6 +298,33 @@ class LearningStudioActivity : Activity() {
             }.show()
     }
 
+    private fun showPublicLearningCards() {
+        if (running) { status.text = "已有操作处理中"; return }
+        running = true; status.text = "正在读取已签名的公共学习卡…"
+        worker.execute {
+            val result = runCatching { PublicLearningCardService(this).available(studentId) }
+            runOnUiThread {
+                running = false
+                if (!current()) return@runOnUiThread
+                result.onFailure { status.text = "暂时无法读取公共学习卡：${it.message}" }.onSuccess { choices ->
+                    if (choices.isEmpty()) {
+                        status.text = "当前语言和年级暂无适用的公共学习卡"
+                        return@onSuccess
+                    }
+                    AlertDialog.Builder(this).setTitle("选择公共学习卡")
+                        .setItems(choices.map { "${it.subject} · ${it.prompt}" }.toTypedArray()) { _, index ->
+                            val choice = choices[index]
+                            mode = MODE_TODAY; offset = 0
+                            background("正在创建学生专属学习卡…", refreshAfter = true) {
+                                PublicLearningCardService(this).instantiate(studentId, choice.templateRevision)
+                                "学习卡已加入今日学习；公共模板本身未写入学生档案"
+                            }
+                        }.setNegativeButton("取消", null).show()
+                }
+            }
+        }
+    }
+
     private fun progressAction(row: ScopedContentEntity) {
         val panel = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         val states = arrayOf("planned", "doing", "done", "paused")
@@ -421,8 +449,10 @@ class LearningStudioActivity : Activity() {
         for (i in 0 until items.length()) {
             appendLine("\n${i + 1}.")
             val item = items.getJSONObject(i)
-            LearningStudioPolicy.fields[module].orEmpty().forEach { field -> appendLine("$field：${item.optString(field)}") }
+            val visibleFields = if (module == "cards") listOf("question") else LearningStudioPolicy.fields[module].orEmpty()
+            visibleFields.forEach { field -> appendLine("$field：${item.optString(field)}") }
         }
+        if (module == "cards") appendLine("\n答案与解析不会在作答前显示。")
         appendLine("\n查看依据与历史")
         val sources = payload.optJSONArray("sources")
         if (sources != null) for (i in 0 until sources.length()) {

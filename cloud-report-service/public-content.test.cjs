@@ -224,6 +224,15 @@ test('public learning-card drafts reject unverifiable answers, mixed locales and
     assert.throws(() => fx.publicContent.saveCardTemplate(fx.session, cardTemplate({ answer: '' })), /必须提供答案/);
     fx.publicContent.saveCardTemplate(fx.session, cardTemplate());
     assert.throws(() => fx.publicContent.saveCardPack(fx.session, cardPack({ locale: 'en-GB' })), /语言必须一致/);
+    const foreignCourseTemplate = cardTemplate({
+      templateId: 'platform:card-template:math-foreign-course-01',
+      courseIds: ['platform:codeorg-k12-computing'],
+    });
+    fx.publicContent.saveCardTemplate(fx.session, foreignCourseTemplate);
+    assert.throws(() => fx.publicContent.saveCardPack(fx.session, cardPack({
+      packId: 'platform:card-pack:math-foreign-course-01',
+      templateIds: [foreignCourseTemplate.templateId],
+    })), /关联课程必须属于卡片包/);
     fx.publicContent.saveCardPack(fx.session, cardPack());
     assert.throws(() => fx.publicContent.validateRelease(fx.session, {
       releaseId: 'release:cards-missing-course', cardPackIds: [cardPack().packId],

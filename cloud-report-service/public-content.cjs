@@ -167,6 +167,11 @@ function normalizeCardPack(input = {}, templatesById = new Map()) {
   for (const courseId of courseIds) {
     if (!/^(platform|tenant):[a-z0-9][a-z0-9-]{2,120}$/.test(courseId)) fail(400, '卡片包关联课程无效');
   }
+  for (const template of templates) {
+    if (!template.courseIds.every(courseId => courseIds.includes(courseId))) {
+      fail(400, '学习卡模板关联课程必须属于卡片包');
+    }
+  }
   const draft = {
     packId,
     title: cleanText(input.title, 160, '卡片包标题'),

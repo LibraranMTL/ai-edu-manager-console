@@ -74,6 +74,7 @@ class PublicCourseSyncService(context: Context) {
         val catalog = catalogFromActive(active, nowMillis)
         val result = JSONObject().put("ok", true).put("manifestRevision", active.getJSONObject("manifest").getString("manifestRevision"))
             .put("courseCount", catalog.getJSONArray("courses").length()).put("notModified", manifestResponse.status == 304)
+            .put("cardPackCount", active.getJSONObject("manifest").optJSONArray("cardPacks")?.length() ?: 0)
             .put("publisherKeyId", active.getJSONObject("manifest").getString("keyId"))
             .put("trustPolicyRevision", CoursePublisherTrustPolicy.EXPECTED_REVISION)
             .put("synchronizedAt", iso(nowMillis))
@@ -84,6 +85,16 @@ class PublicCourseSyncService(context: Context) {
 
     fun cloudCatalog(nowMillis: Long = System.currentTimeMillis()): JSONObject? =
         verifiedActive(nowMillis, requireLease = true)?.let { catalogFromActive(it, nowMillis) }
+
+    /** Public templates remain outside every student namespace until the user creates an instance. */
+    fun cloudLearningCardManifest(nowMillis: Long = System.currentTimeMillis()): JSONObject? =
+        verifiedActive(nowMillis, requireLease = true)?.getJSONObject("manifest")?.let { manifest ->
+            JSONObject().put("manifestRevision", manifest.getString("manifestRevision"))
+                .put("issuedAt", manifest.getString("issuedAt"))
+                .put("expiresAt", manifest.getString("expiresAt"))
+                .put("courses", JSONArray(manifest.optJSONArray("courses")?.toString() ?: "[]"))
+                .put("cardPacks", JSONArray(manifest.optJSONArray("cardPacks")?.toString() ?: "[]"))
+        }
 
     fun hasCloudCache(): Boolean = state.readIfPresent(CLOUD_ACTIVE) != null
 
@@ -157,6 +168,7 @@ class PublicCourseSyncService(context: Context) {
             require(course.getString("launchUrl").startsWith("https://")) { "公共课程入口必须使用HTTPS" }
             require(course.getInt("offlineOpenTtlSeconds") in 0..21_600) { "公共课程离线租约不受支持" }
         }
+        PublicLearningCardPolicy.validateManifest(manifest)
     }
 
     private fun verifySigned(payload: JSONObject) {

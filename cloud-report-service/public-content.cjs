@@ -467,9 +467,11 @@ function createPublicContentService(options = {}) {
   function releaseByRevision(revision) {
     const row = db.prepare(`SELECT release_id AS releaseId,manifest_revision AS manifestRevision,status,
       manifest_sha256 AS manifestSha256,created_at AS createdAt,effective_at AS effectiveAt,
-      activated_at AS activatedAt,previous_revision AS previousRevision FROM public_content_releases WHERE manifest_revision=?`).get(revision);
+      activated_at AS activatedAt,previous_revision AS previousRevision,manifest_json AS manifestJson
+      FROM public_content_releases WHERE manifest_revision=?`).get(revision);
     if (!row) fail(404, '发布修订不存在');
-    return row;
+    const { manifestJson, ...metadata } = row;
+    return { ...metadata, manifest: JSON.parse(manifestJson) };
   }
 
   function asset(revision) {

@@ -217,6 +217,12 @@ test('public HTTP endpoints support ETag, 304 and byte ranges', async () => {
     assert.equal((await manifest.json()).releaseId, 'release:http-1');
     const unchanged = await fetch(`${base}/v2/public-content/manifest`, { headers: { 'if-none-match': etag } });
     assert.equal(unchanged.status, 304);
+    const immutableRelease = await fetch(`${base}/v2/public-content/releases/${validated.manifest.manifestRevision}`);
+    assert.equal(immutableRelease.status, 200);
+    const releaseSnapshot = await immutableRelease.json();
+    assert.equal(releaseSnapshot.manifestSha256, validated.manifestSha256);
+    assert.equal(releaseSnapshot.manifest.manifestRevision, validated.manifest.manifestRevision);
+    assert.deepEqual(releaseSnapshot.manifest.courses.map(item => item.courseId), ['platform:starfall-k5-math']);
     const ranged = await fetch(`${base}/v2/public-content/assets/${asset.assetRevisionId}`, { headers: { range: 'bytes=0-4' } });
     assert.equal(ranged.status, 206);
     assert.equal(Buffer.from(await ranged.arrayBuffer()).equals(bytes.subarray(0, 5)), true);

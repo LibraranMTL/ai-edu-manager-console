@@ -26,7 +26,7 @@ enum class AutomationAction(val wireValue: String, val label: String, val remote
     CLASSIFY_MATERIAL("classify_material", "资料分类", false), OCR_MATERIAL("ocr_material", "OCR与文档解析", false),
     DIGEST_MATERIAL("digest_material", "资料消化", true),
     VALIDATE_FACTS("validate_facts", "事实与来源校验", false), GENERATE_LEARNING_OUTPUTS("generate_learning_outputs", "学习卡与行动更新", true),
-    GENERATE_REPORTS("generate_reports", "学情报告更新", true), GENERATE_PROJECT_OUTPUTS("generate_project_outputs", "项目进展快照更新", true),
+    GENERATE_REPORTS("generate_reports", "学情报告更新", true), GENERATE_PROJECT_OUTPUTS("generate_project_outputs", "项目进展报告更新", false),
     RECONCILE_LEARNING_CARD("reconcile_learning_card", "学习卡作答回流", true), RESOLVE_SOURCE_CONFLICT("resolve_source_conflict", "来源冲突处理", false),
     RESOLVE_ATTRIBUTION("resolve_attribution", "资料归属处理", false), REDACT_PROJECTION("redact_projection", "敏感内容脱敏", false),
     REPAIR_OUTPUT("repair_output", "质量修复", false), RECONCILE_ALL("reconcile_all", "失败对账", false),

@@ -13,6 +13,7 @@ class AutomationTriggerAdaptersPolicyTest {
         )
         assertFalse(AutomationAction.OCR_MATERIAL.remote)
         assertFalse(AutomationAction.REPAIR_OUTPUT.remote)
+        assertFalse(AutomationAction.GENERATE_PROJECT_OUTPUTS.remote)
     }
 
     @Test fun sourceConflictRequiresExplicitFlagOrKnownCode() {

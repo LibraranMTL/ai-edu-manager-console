@@ -174,7 +174,9 @@ class AutomationTriggerAdapters(private val context: Context) {
             val row = ScopedContentRepository(context).insertVersion(studentId, key, "${project.name}项目进展快照", payload, project.id)
             versions.put(JSONObject().put("studentId", studentId).put("versionId", row.id))
         }
+        val report = ProjectOutcomeService(context).generateProgressReport(project.id, triggerFingerprint)
         return JSONObject().put("projectId", project.id).put("versions", versions).put("metrics", metrics)
+            .put("progressReport", report)
     }
 
     private fun selectedMaterials(studentId: String, sourceIds: List<String>): List<JSONObject> {

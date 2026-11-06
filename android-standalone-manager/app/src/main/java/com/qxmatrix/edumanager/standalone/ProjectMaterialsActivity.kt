@@ -16,7 +16,7 @@ import android.widget.ScrollView
 import android.widget.TextView
 import org.json.JSONObject
 
-/** Local four-view project material center. No Windows host or network API is involved. */
+/** Local project material, report and outcome center. No Windows host API is involved. */
 class ProjectMaterialsActivity : Activity() {
     private lateinit var project: ProjectRecord
     private lateinit var service: LocalProjectMaterialService
@@ -37,8 +37,8 @@ class ProjectMaterialsActivity : Activity() {
         window.statusBarColor = palette.page; window.navigationBarColor = palette.page
 
         val root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(16), dp(14), dp(16), dp(12)); setBackgroundColor(palette.page) }
-        root.addView(TextView(this).apply { text = "${project.name} · 项目资料中心"; textSize = 23f; setTextColor(palette.heading) }, matchWrap())
-        root.addView(TextView(this).apply { text = "同一份原件可按项目分类、知识来源和贡献证据查看；本机是该单机项目的权威节点。"; textSize = 13f; setTextColor(palette.muted); setPadding(0, dp(4), 0, dp(8)) }, matchWrap())
+        root.addView(TextView(this).apply { text = "${project.name} · 项目工作台"; textSize = 23f; setTextColor(palette.heading) }, matchWrap())
+        root.addView(TextView(this).apply { text = "统一管理项目资料、知识、进展报告、导师建议和成果；本机是该单机项目的权威节点。"; textSize = 13f; setTextColor(palette.muted); setPadding(0, dp(4), 0, dp(8)) }, matchWrap())
         status = TextView(this).apply { textSize = 13f; setTextColor(palette.text); setPadding(dp(10), dp(8), dp(10), dp(8)) }
         root.addView(status, matchWrap())
         val actions = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
@@ -72,7 +72,8 @@ class ProjectMaterialsActivity : Activity() {
         third.addView(button("导出显式项目包") { confirmProjectExport() }, weighted())
         root.addView(third, matchWrap())
         tabs = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; setPadding(0, dp(8), 0, dp(6)) }
-        listOf("dashboard" to "项目仪表盘", "materials" to "项目资料", "pending" to "待整理", "knowledge" to "项目知识", "contributions" to "贡献证据").forEach { (id, label) ->
+        listOf("dashboard" to "项目仪表盘", "materials" to "项目资料", "pending" to "待整理", "knowledge" to "项目知识",
+            "outcomes" to "报告成果", "contributions" to "贡献证据").forEach { (id, label) ->
             tabs.addView(button(label) { view = id; refresh() }.apply { tag = id }, weighted())
         }
         root.addView(tabs, matchWrap())
@@ -157,6 +158,7 @@ class ProjectMaterialsActivity : Activity() {
             "materials", "pending" -> runCatching { service.list(project.id, view, searchText) }
                 .onSuccess(::renderMaterials).onFailure { empty("资料读取失败：${it.message}；原件未修改。") }
             "knowledge" -> renderKnowledge()
+            "outcomes" -> renderOutcomes()
             else -> renderContributions()
         }
     }
@@ -290,6 +292,46 @@ class ProjectMaterialsActivity : Activity() {
         }
     }
 
+    private fun renderOutcomes() {
+        val outcomes = ProjectOutcomeService(this)
+        val actions = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        actions.addView(button("生成最新报告") { background("正在根据固定项目证据生成报告") {
+            val result = outcomes.generateProgressReport(project.id)
+            if (result.optBoolean("reused")) "当前证据未变化，已保留原报告版本" else "新的项目进展报告候选已生成"
+        } }, weighted())
+        actions.addView(button("项目导师") { mentorDialog() }, weighted())
+        actions.addView(button("查看报告原文") { openProjectKnowledge() }, weighted())
+        list.addView(actions, matchWrap())
+        list.addView(TextView(this).apply {
+            text = "项目报告只汇总本机固定证据；成果文件存在不代表成果质量或个人贡献已确认。项目导师建议也必须引用同一证据快照。"
+            textSize = 14f; setTextColor(palette.muted); setPadding(dp(10), dp(10), dp(10), dp(12))
+        }, matchWrap())
+        val entries = runCatching { outcomes.listOutcomes(project.id) }.getOrElse { empty("成果库读取失败：${it.message}"); return }
+        if (entries.isEmpty()) { empty("当前没有项目报告或成果文件。资料完成消化后，完整自动模式会生成项目进展报告候选。") ; return }
+        entries.forEach { entry ->
+            val kind = when (entry.optString("kind")) { "progress_report" -> "进展报告"; "mentor_advice" -> "导师建议"; else -> "成果文件" }
+            val card = button("${entry.optString("title")}\n$kind · ${entry.optString("status")}\n${entry.optString("path")}") {
+                if (entry.optString("kind") == "output_file") openProjectOutput(entry.optString("path")) else openProjectKnowledge()
+            }
+            card.textAlignment = View.TEXT_ALIGNMENT_VIEW_START; list.addView(card, matchWrap())
+        }
+    }
+
+    private fun mentorDialog() {
+        val input = EditText(this).apply {
+            hint = "例如：下一步优先做什么？（可留空）"; setTextColor(palette.text); minLines = 2
+        }
+        AlertDialog.Builder(this).setTitle("项目导师")
+            .setMessage("导师只读取当前项目报告和固定证据。没有配置Agent时使用本机保守建议；不会确认成果质量或个人贡献。")
+            .setView(input).setNegativeButton("取消", null).setPositiveButton("生成建议") { _, _ ->
+                val question = input.text.toString()
+                background("正在生成证据约束的项目导师建议") {
+                    val result = ProjectOutcomeService(this).mentorAdvice(project.id, question)
+                    if (result.optBoolean("reused")) "相同问题和证据已存在，未重复调用" else "项目导师建议候选已生成"
+                }
+            }.show()
+    }
+
     private fun organizationMenu() {
         val enabled = runCatching { service.status(project.id).optBoolean("organizationEnabled") }.getOrDefault(false)
         val choices = if (enabled) arrayOf("立即整理一次", "关闭自动整理授权", "核对中断整理", "撤销最近整理批次")
@@ -397,6 +439,19 @@ class ProjectMaterialsActivity : Activity() {
                 .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION), "打开项目原件")) }
             catch (_: ActivityNotFoundException) { message("没有查看应用", "设备上没有能够打开此文件类型的应用。原件保持不变。") }
         }.onFailure { message("原件不可用", it.message ?: "请重新授权项目目录") }
+    }
+
+    private fun openProjectOutput(path: String) {
+        runCatching {
+            require(path == project.paths.outputPath || path.startsWith("${project.paths.outputPath.trimEnd('/')}/")) { "成果路径超出当前项目" }
+            val document = requireNotNull(SafWorkspaceStore(this, Uri.parse(project.projectRootUri)).document(path)) { "成果文件不存在" }
+            require(document.isFile) { "成果记录不是文件" }
+            document.uri to document.type.orEmpty().ifBlank { "application/octet-stream" }
+        }.onSuccess { (uri, mime) ->
+            try { startActivity(Intent.createChooser(Intent(Intent.ACTION_VIEW).setDataAndType(uri, mime)
+                .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION), "打开项目成果")) }
+            catch (_: ActivityNotFoundException) { message("没有查看应用", "设备上没有能够打开此成果类型的应用。") }
+        }.onFailure { message("成果不可用", it.message ?: "请重新授权项目目录") }
     }
 
     private fun openProjectKnowledge() { startActivity(Intent(this, MarkdownBrowserActivity::class.java)

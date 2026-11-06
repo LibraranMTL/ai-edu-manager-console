@@ -23,12 +23,13 @@ enum class AutomationEventType(val wireValue: String) {
 }
 
 enum class AutomationAction(val wireValue: String, val label: String, val remote: Boolean) {
-    CLASSIFY_MATERIAL("classify_material", "资料分类", false), DIGEST_MATERIAL("digest_material", "资料消化", true),
+    CLASSIFY_MATERIAL("classify_material", "资料分类", false), OCR_MATERIAL("ocr_material", "OCR与文档解析", false),
+    DIGEST_MATERIAL("digest_material", "资料消化", true),
     VALIDATE_FACTS("validate_facts", "事实与来源校验", false), GENERATE_LEARNING_OUTPUTS("generate_learning_outputs", "学习卡与行动更新", true),
-    GENERATE_REPORTS("generate_reports", "学情报告更新", true), GENERATE_PROJECT_OUTPUTS("generate_project_outputs", "项目报告更新", true),
+    GENERATE_REPORTS("generate_reports", "学情报告更新", true), GENERATE_PROJECT_OUTPUTS("generate_project_outputs", "项目进展快照更新", true),
     RECONCILE_LEARNING_CARD("reconcile_learning_card", "学习卡作答回流", true), RESOLVE_SOURCE_CONFLICT("resolve_source_conflict", "来源冲突处理", false),
     RESOLVE_ATTRIBUTION("resolve_attribution", "资料归属处理", false), REDACT_PROJECTION("redact_projection", "敏感内容脱敏", false),
-    REPAIR_OUTPUT("repair_output", "质量修复", true), RECONCILE_ALL("reconcile_all", "失败对账", false),
+    REPAIR_OUTPUT("repair_output", "质量修复", false), RECONCILE_ALL("reconcile_all", "失败对账", false),
     SYNC_PUBLIC_CONTENT("sync_public_content", "公共内容同步", true);
     companion object { fun from(value: String) = entries.single { it.wireValue == value } }
 }
@@ -40,7 +41,7 @@ object AutomationTriggerPolicy {
         if (event == AutomationEventType.PUBLIC_CONTENT_CHANGED) return listOf(AutomationAction.SYNC_PUBLIC_CONTENT)
         if (mode == AutomationMode.OFF) return emptyList()
         val common = when (event) {
-            AutomationEventType.MATERIAL_IMPORTED -> listOf(AutomationAction.CLASSIFY_MATERIAL)
+            AutomationEventType.MATERIAL_IMPORTED -> listOf(AutomationAction.CLASSIFY_MATERIAL, AutomationAction.OCR_MATERIAL)
             AutomationEventType.OCR_COMPLETED -> listOf(AutomationAction.DIGEST_MATERIAL)
             AutomationEventType.DIGEST_COMPLETED -> listOf(AutomationAction.VALIDATE_FACTS, AutomationAction.GENERATE_LEARNING_OUTPUTS)
             AutomationEventType.SOURCE_CONFLICT -> listOf(AutomationAction.RESOLVE_SOURCE_CONFLICT)
@@ -170,8 +171,10 @@ class AutomationActionExecutor(private val context: Context) {
         val studentId = input.optString("studentId")
         val action = AutomationAction.from(input.getString("actionType"))
         val sourceIds = input.optJSONArray("sourceIds")?.let { array -> (0 until array.length()).map(array::getString) }.orEmpty()
+        val adapters = AutomationTriggerAdapters(context)
         val result = when (action) {
-            AutomationAction.CLASSIFY_MATERIAL -> classifyMaterials(studentId, sourceIds)
+            AutomationAction.CLASSIFY_MATERIAL -> adapters.classify(studentId, sourceIds)
+            AutomationAction.OCR_MATERIAL -> adapters.runOcrOrParser(studentId, sourceIds)
             AutomationAction.VALIDATE_FACTS -> validateMaterials(studentId, sourceIds)
             AutomationAction.DIGEST_MATERIAL -> StudentDigestOrchestrator(context).digestSelected(studentId, sourceIds.toSet(), explicitUserAction = false)
             AutomationAction.GENERATE_LEARNING_OUTPUTS, AutomationAction.RECONCILE_LEARNING_CARD ->
@@ -179,21 +182,13 @@ class AutomationActionExecutor(private val context: Context) {
             AutomationAction.GENERATE_REPORTS -> GrowthModelService(context).generateAndPublishReports(studentId)
             AutomationAction.RECONCILE_ALL -> AutomationReconciliationService(context).reconcile()
             AutomationAction.SYNC_PUBLIC_CONTENT -> PublicCourseSyncService(context).sync()
-            AutomationAction.GENERATE_PROJECT_OUTPUTS -> throw AutomationExecutionException("project_report_not_ready", AutomationFailureClass.CAPABILITY_MISSING, message = "项目报告自动生成能力尚未接入")
-            AutomationAction.RESOLVE_SOURCE_CONFLICT, AutomationAction.RESOLVE_ATTRIBUTION,
-            AutomationAction.REDACT_PROJECTION, AutomationAction.REPAIR_OUTPUT -> throw AutomationExecutionException(
-                "remediation_requires_adapter", AutomationFailureClass.CAPABILITY_MISSING, message = "该自动修复适配器尚不可用")
+            AutomationAction.GENERATE_PROJECT_OUTPUTS -> adapters.generateProjectSnapshot(input.getString("projectId"), input.getString("sourceFingerprint"))
+            AutomationAction.RESOLVE_SOURCE_CONFLICT -> adapters.resolveSourceConflict(studentId, sourceIds)
+            AutomationAction.RESOLVE_ATTRIBUTION -> adapters.resolveAttribution(studentId, sourceIds)
+            AutomationAction.REDACT_PROJECTION -> adapters.redactProjection(studentId, sourceIds, input.getString("sourceFingerprint"))
+            AutomationAction.REPAIR_OUTPUT -> adapters.repairQuality(studentId, sourceIds)
         }
         return JSONObject().put("action", action.wireValue).put("completedAt", Timestamp.now()).put("result", result)
-    }
-
-    private fun classifyMaterials(studentId: String, sourceIds: List<String>): JSONObject {
-        require(studentId.isNotBlank() && sourceIds.isNotEmpty()) { "资料分类缺少学生或来源" }
-        val indexed = FileAssetService(context).materials(studentId).associateBy { it.getString("id") }
-        val selected = sourceIds.map { requireNotNull(indexed[it]) { "来源资料不存在" } }
-        if (selected.any(MaterialProcessingPolicy::attributionConflict)) throw AutomationExecutionException(
-            "attribution_unresolved", AutomationFailureClass.INPUT_PROBLEM, message = "资料归属仍不明确")
-        return JSONObject().put("classified", selected.size).put("studentId", studentId)
     }
 
     private fun validateMaterials(studentId: String, sourceIds: List<String>): JSONObject {

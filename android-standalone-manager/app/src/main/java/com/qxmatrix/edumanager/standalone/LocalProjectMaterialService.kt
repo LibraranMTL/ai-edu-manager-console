@@ -671,6 +671,14 @@ class LocalProjectMaterialService(private val context: Context) {
         context.getSharedPreferences("reference-suggestion-project-changes", Context.MODE_PRIVATE).edit()
             .putString(project.id, registry.optString("updatedAt")).apply()
         project.studentIds.forEach { StudioAutomation.enqueueCheck(context, it) }
+        runCatching {
+            AutomationOrchestrator(context).emit(
+                AutomationEventType.PROJECT_SNAPSHOT_CHANGED,
+                studentId = "",
+                sourceFingerprint = AutomationMaterialPolicy.projectFingerprint(registry),
+                projectId = project.id,
+            )
+        }
     }
 
     private fun emptyRegistry(project: ProjectRecord) = JSONObject().put("schema", LocalProjectMaterialPolicy.SCHEMA)

@@ -91,7 +91,10 @@ class AudioTranscriptionService(private val context: Context) {
         val output = JSONObject(result.toString()).put("studentId", studentId).put("materialId", materialId).put("sourcePath", material.getString("absolutePath"))
         store.writeBytesSafely(path, output.toString(2).toByteArray(), "application/json")
         store.writeBytesSafely(markdown, "# 音频转写候选\n\n机器观察／待审核；不是学习掌握结论。\n来源 $materialId · SHA256 $hash\n\n${result.getString("text")}\n".toByteArray(), "text/markdown")
-        files.patchMaterial(studentId, materialId, JSONObject().put("ocrStatus", "completed").put("ocrPath", path).put("ocrMarkdownPath", markdown).put("asrStatus", "pending_review"))
+        files.patchMaterial(studentId, materialId, JSONObject().put("ocrStatus", "completed").put("ocrPath", path)
+            .put("ocrMarkdownPath", markdown).put("digestReady", true).put("digestInputKind", "asr")
+            .put("asrStatus", "pending_review"))
+        runCatching { AutomationEventEmitter.ocrResult(context, studentId, material, output) }
         output
     }
 }

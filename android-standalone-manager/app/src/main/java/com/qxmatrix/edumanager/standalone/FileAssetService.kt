@@ -54,6 +54,7 @@ class FileAssetService(private val context: Context) {
             val existing = StudentMaterialRepository(context, student).list().singleOrNull { it.getString("id") == materialId } ?: error("导入已提交但登记缺失，请核对，不重复创建")
             val asset = assets.forStudent(studentId).singleOrNull { it.optString("sha1") == existing.getString("sha1") } ?: error("导入资产登记缺失，请核对")
             IntakeRegistry(context).register(studentId, sourceName, "$sourceRef:${sourceEventId.ifBlank { hash }}", hash, logicalPath, student.storageRootUri, existing.getString("uploadedAt"))
+            runCatching { AutomationEventEmitter.imported(context, studentId, existing) }
             return@synchronized JSONObject().put("ok", true).put("reused", true).put("material", existing).put("asset", asset)
         }
         val sha1 = digest("SHA-1", bytes)
@@ -99,6 +100,7 @@ class FileAssetService(private val context: Context) {
         val indexed = assets.upsertBySha1(asset)
         IntakeRegistry(context).register(studentId, sourceName, "$sourceRef:${sourceEventId.ifBlank { hash }}", hash, logicalPath, student.storageRootUri, now)
         require(db.ledger().compareAndSetIntent(operationId, studentId, "prepared", "committed", System.currentTimeMillis()) == 1) { "导入登记状态已变化，原件保留" }
+        runCatching { AutomationEventEmitter.imported(context, studentId, material) }
         JSONObject().put("ok", true).put("material", material).put("asset", indexed)
     }
 
@@ -232,7 +234,9 @@ class FileAssetService(private val context: Context) {
             .put("sourceType", if (courseCapture) "course_screen_capture" else "android_screenshot").put("captureSessionId", captureSessionId).put("captureItemId", captureItemId)
             .put("courseId", courseId).put("courseProvider", courseProvider).put("courseUrl", courseUrl).put("courseStartedAt", "").put("courseCompletedAt", "")
             .put("uploadedAt", now).put("updatedAt", now).put("status", "active")
-        return JSONObject().put("ok", true).put("material", material).put("asset", assets.upsertBySha1(asset))
+        val indexed = assets.upsertBySha1(asset)
+        runCatching { AutomationEventEmitter.imported(context, studentId, prior ?: material) }
+        return JSONObject().put("ok", true).put("material", prior ?: material).put("asset", indexed)
     }
 
     fun readMaterialBytes(studentId: String, materialId: String, maximum: Int = MAX_FILE_BYTES.toInt()): ByteArray {

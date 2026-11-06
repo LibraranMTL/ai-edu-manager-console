@@ -178,6 +178,9 @@ class StudentDigestOrchestrator(private val context: Context) {
                     .put("digestRecoveryAuthorizationId", ""))
                 files.transitionMaterial(studentId, material.getString("id"), MaterialStatus.FAILED)
             } }
+            if (!unknownOutcome && AutomationMaterialPolicy.isQualityFailure(error)) runCatching {
+                AutomationEventEmitter.qualityFailure(context, studentId, eligible, "digest_validation_failed")
+            }
             val result = resultPayload(task.getString("id"), executionId, false, error.message ?: "资料消化失败", "")
             runCatching { tasks.acceptResult(task.getString("id"), result) }
             throw error

@@ -652,6 +652,9 @@ function createService({ dataDir, adminToken, now = () => Date.now(), maxStudent
         for (const category of checkedCategories(options.materialCategories)) {
           grantV2(deviceId, record.student_id, 'material.write', { category, actorId: deviceId });
         }
+        // Contract v2 enrollment establishes identity only. Upload starts after a bounded scope is confirmed.
+        db.prepare(`UPDATE grants SET enabled=0 WHERE device_id=? AND student_id=? AND scope='report.write' AND revoked_at IS NULL`)
+          .run(deviceId, record.student_id);
       }
       audit(deviceId, 'source.enrollment.redeem', record.student_id);
     });
@@ -997,6 +1000,7 @@ function createService({ dataDir, adminToken, now = () => Date.now(), maxStudent
   }
   function uploadStudentProfile(token, studentId, input) {
     const source = requireDevice(token, 'source');
+    requireGrant(source.id, studentId, 'report.write');
     const grant = requireV2Grant(source.id, studentId, 'student_profile.write');
     const requested = checkedFields(input?.fields?.length ? input.fields : Object.keys(input?.profile || {}));
     if (requested.some(field => !grant.fields.includes(field))) fail(403, '学生基础信息字段超出授权范围');
@@ -1284,6 +1288,7 @@ function createService({ dataDir, adminToken, now = () => Date.now(), maxStudent
   function prepareV2Material(token, studentId, metadata) {
     const source = requireDevice(token, 'source');
     const category = String(metadata?.category || '');
+    requireGrant(source.id, studentId, 'report.write');
     requireV2Grant(source.id, studentId, 'material.write', category);
     const materialId = String(metadata?.materialId || '');
     const idempotencyKey = String(metadata?.idempotencyKey || '');
@@ -1302,6 +1307,7 @@ function createService({ dataDir, adminToken, now = () => Date.now(), maxStudent
     const tempPath = path.join(objectDir, `material-${crypto.randomUUID()}.tmp`);
     return { tempPath, commit({ sha, size, head }) {
       if (!deviceFor(token)) fail(401, '上传凭据已失效');
+      requireGrant(source.id, studentId, 'report.write');
       requireV2Grant(source.id, studentId, 'material.write', category);
       if (size < 1 || size > MAX_DOCUMENT_BYTES || !/^[a-f0-9]{64}$/.test(sha)) fail(413, '资料大小无效');
       if (suffix === '.pdf' && !head.subarray(0, 5).equals(Buffer.from('%PDF-'))) fail(400, 'PDF 内容与类型不符');

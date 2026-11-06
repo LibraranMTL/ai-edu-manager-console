@@ -400,6 +400,9 @@ test('source upload authorization limits fields, purpose and expiry across legac
     enrollmentCode: issued.body.enrollmentCode, contractVersion: 2,
     profileFields: ['displayName'], materialCategories: ['learning_report'],
   })).body;
+  const report = { cloudStudentId: student.id, originPlatform: 'android', reportType: 'learning_profile', sourceStatus: 'active',
+    content: CONTENT, contentSha256: crypto.createHash('sha256').update(CONTENT).digest('hex'), publishedAt: '2026-09-25' };
+  assert.equal((await call('POST', '/v1/reports', source.deviceToken, report)).status, 403);
   const expiresAt = Date.parse('2026-09-25T00:00:00Z') + 7 * 24 * 60 * 60 * 1000;
   const scoped = await call('POST', '/v2/source-upload-scope', source.deviceToken, {
     cloudStudentId: student.id, profileFields: ['displayName', 'grade'],
@@ -413,8 +416,6 @@ test('source upload authorization limits fields, purpose and expiry across legac
   const grants = (await call('GET', `/v2/students/${student.id}/grants`, ADMIN)).body.grants;
   assert.ok(grants.filter(grant => grant.scope.endsWith('.write')).every(grant =>
     grant.purpose === 'expert_interpretation' && grant.expiresAt === expiresAt));
-  const report = { cloudStudentId: student.id, originPlatform: 'android', reportType: 'learning_profile', sourceStatus: 'active',
-    content: CONTENT, contentSha256: crypto.createHash('sha256').update(CONTENT).digest('hex'), publishedAt: '2026-09-25' };
   assert.equal((await call('POST', '/v1/reports', source.deviceToken, report)).status, 201);
   advance(7 * 24 * 60 * 60 * 1000 + 1);
   assert.equal((await call('POST', '/v1/reports', source.deviceToken, report)).status, 403);

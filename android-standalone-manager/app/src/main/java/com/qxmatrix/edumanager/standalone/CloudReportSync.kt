@@ -55,6 +55,15 @@ class CloudReportSync(private val context: Context) {
         privateState.writeBytes("cloud-report/$studentId.pending", ByteArray(0))
     }
 
+    /** Repairs only the already active publication; it never creates a second publication id. */
+    fun reconcilePublication(studentId: String, publicationId: String, contents: List<String>): Boolean {
+        val pending = privateTextOrNull("cloud-report/$studentId.pending").orEmpty()
+        if (pending.isBlank()) return false
+        require(pending == publicationId) { "待提交报告与当前活动版本不一致，停止自动对账" }
+        commitPublication(studentId, publicationId, contents)
+        return true
+    }
+
     private fun storeManifest(studentId: String, publicationId: String, contents: List<String>) {
         val reports = validateSet(studentId, contents)
         val manifest = JSONObject().put("version", 1).put("studentId", studentId).put("publicationId", publicationId)

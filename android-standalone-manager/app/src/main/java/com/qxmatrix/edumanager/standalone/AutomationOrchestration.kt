@@ -179,7 +179,7 @@ class AutomationActionExecutor(private val context: Context) {
             AutomationAction.DIGEST_MATERIAL -> StudentDigestOrchestrator(context).digestSelected(studentId, sourceIds.toSet(), explicitUserAction = false)
             AutomationAction.GENERATE_LEARNING_OUTPUTS, AutomationAction.RECONCILE_LEARNING_CARD ->
                 JSONObject().put("message", StudioAutomation(context).check(studentId, requireEnabled = false))
-            AutomationAction.GENERATE_REPORTS -> GrowthModelService(context).generateAndPublishReports(studentId)
+            AutomationAction.GENERATE_REPORTS -> GrowthModelService(context).generateAndPublishReportsIfChanged(studentId)
             AutomationAction.RECONCILE_ALL -> AutomationReconciliationService(context).reconcile()
             AutomationAction.SYNC_PUBLIC_CONTENT -> PublicCourseSyncService(context).sync()
             AutomationAction.GENERATE_PROJECT_OUTPUTS -> adapters.generateProjectSnapshot(input.getString("projectId"), input.getString("sourceFingerprint"))
@@ -263,6 +263,8 @@ class AutomationReconciliationService(private val context: Context) {
                     marker.optString("state") == "succeeded" && marker.optString("completedAt") >= task.optString("startedAt")
                 } == true
             }
+            AutomationAction.GENERATE_REPORTS -> LearningInsightsStore(context).reportRevisions(studentId)
+                .any { it.optString("time") >= task.optString("startedAt") && it.optJSONArray("reports")?.length() == GrowthModelService.REPORTS.size }
             else -> false
         }
         return if (proven) JSONObject().put("reconciled", true).put("checkedAt", Timestamp.now()).put("action", action.wireValue) else null

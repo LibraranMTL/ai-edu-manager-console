@@ -10,7 +10,8 @@ class LearningInsightsStore(private val context: Context) {
     private val state = PrivateStateStore(context)
     private val content = ScopedContentRepository(context)
 
-    fun archiveReportSet(studentId: String, publicationId: String, reports: List<Pair<LearningReportDefinition, String>>): JSONObject {
+    fun archiveReportSet(studentId: String, publicationId: String, reports: List<Pair<LearningReportDefinition, String>>,
+        evidenceFingerprint: String = ""): JSONObject {
         StudentIndexRepository(context).requireExact(studentId)
         require(reports.size == GrowthModelService.REPORTS.size) { "四份报告必须作为一组归档" }
         val now = Timestamp.now()
@@ -29,7 +30,8 @@ class LearningInsightsStore(private val context: Context) {
             .put("cloudStatus", CloudReportSync(context).status(studentId).let { cloud ->
                 when { !cloud.configured -> "not_configured"; !cloud.enabled -> "disabled"; cloud.lastError.isNotBlank() -> "needs_help"; else -> "enabled" }
             })
-        val revision = fingerprintInput.put("contentFingerprint", ScopedContentPolicy.fingerprint(fingerprintInput))
+        val revision = fingerprintInput.put("evidenceFingerprint", evidenceFingerprint)
+            .put("contentFingerprint", ScopedContentPolicy.fingerprint(fingerprintInput))
         synchronized(LOCK) {
             val root = reportRoot(studentId)
             val revisions = root.getJSONArray("revisions")

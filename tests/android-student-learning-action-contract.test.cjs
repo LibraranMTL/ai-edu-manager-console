@@ -9,17 +9,25 @@ const activity = read('android-tablet-terminal/src/com/qxmatrix/eduterminal/Main
 const learning = read('android-shared/src/com/qxmatrix/terminallearning/TerminalLearningDialog.java');
 const host = read('electron/main.cjs');
 
-test('student terminal exposes the four revised primary actions and keeps courses out of More', () => {
+test('student terminal exposes five primary actions, with project content separated from education archive', () => {
   const dashboard = activity.slice(activity.indexOf('private LinearLayout buildStudentDashboard'), activity.indexOf('private View addDashboardAction'));
-  assert.equal((dashboard.match(/addDashboardAction\(/g) || []).length, 4);
-  for (const label of ['搜集上传', '主机连接', '教育档案', '学习行动']) assert.match(dashboard, new RegExp(label));
+  assert.equal((dashboard.match(/addDashboardAction\(/g) || []).length, 5);
+  for (const label of ['搜集上传', '主机连接', '教育档案', '项目管理', '学习行动']) assert.match(dashboard, new RegExp(label));
   assert.doesNotMatch(dashboard, /资料收集|资料上传|课程学习/);
   const assembly = activity.slice(activity.indexOf('collectionPage = workspacePage'), activity.indexOf('FrameLayout.LayoutParams topParams'));
+  const archivePage = assembly.slice(assembly.indexOf('archivePage = workspacePage'), assembly.indexOf('projectPage = workspacePage'));
+  const projectPage = assembly.slice(assembly.indexOf('projectPage = workspacePage'), assembly.indexOf('learningActionPage = workspacePage'));
   const learningPage = assembly.slice(assembly.indexOf('learningActionPage = workspacePage'), assembly.indexOf('morePage = workspacePage'));
   const morePage = assembly.slice(assembly.indexOf('morePage = workspacePage'));
+  assert.match(archivePage, /知识点跟踪/);
+  assert.doesNotMatch(archivePage, /项目资料与知识/);
+  assert.match(projectPage, /项目资料与知识/);
+  assert.match(projectPage, /项目综合报告/);
+  assert.match(projectPage, /项目导师/);
   assert.match(learningPage, /精选课程/);
   assert.match(learningPage, /学习卡片/);
-  assert.match(learningPage, /知识点跟踪/);
+  assert.match(learningPage, /学习导师/);
+  assert.doesNotMatch(learningPage, /collapsiblePanel\("知识点跟踪"/);
   assert.doesNotMatch(morePage, /精选课程|学习卡片与规划|项目知识/);
 });
 

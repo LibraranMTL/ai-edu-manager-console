@@ -35,7 +35,8 @@ test('Windows student terminal lists only current-student projects and reads pro
 
 test('Android student terminal offers current-student project knowledge without technical configuration', () => {
   const android = read('android-tablet-terminal/src/com/qxmatrix/eduterminal/MainActivity.java');
-  assert.match(android, /collapsiblePanel\("项目资料"/);
+  assert.match(android, /workspacePage\("项目管理"/);
+  assert.match(android, /collapsiblePanel\("项目资料与知识"/);
   assert.match(android, /button\("项目资料与知识", true\)/);
   assert.match(android, /只显示当前学生自己的档案，以及本人关联项目中的公开 Markdown 知识/);
   assert.match(android, /if \(!project\.studentIds\.contains\(selectedStudent\.id\)\) continue/);

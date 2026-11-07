@@ -7,6 +7,12 @@ $studentKeystorePassword = [Environment]::GetEnvironmentVariable('EDU_ANDROID_ST
 $studentKeyAlias = [Environment]::GetEnvironmentVariable('EDU_ANDROID_STUDENT_KEY_ALIAS', 'Process')
 $studentKeyPassword = [Environment]::GetEnvironmentVariable('EDU_ANDROID_STUDENT_KEY_PASSWORD', 'Process')
 $expectedCertificateSha256 = '42FF27472C21FD214C17A9DFB153DA0454489D4E2AD70CE823F3369118A5F1CB'
+$versionName = '0.6.32'
+$candidateTag = [Environment]::GetEnvironmentVariable('EDU_ANDROID_STUDENT_CANDIDATE_TAG', 'Process')
+if (-not [string]::IsNullOrWhiteSpace($candidateTag)) {
+  $candidateTag = ($candidateTag.Trim() -replace '[^A-Za-z0-9._-]+', '-').Trim('-')
+  if ([string]::IsNullOrWhiteSpace($candidateTag)) { throw 'EDU_ANDROID_STUDENT_CANDIDATE_TAG is invalid.' }
+}
 
 $missingSigningEnvironment = @(
   'EDU_ANDROID_STUDENT_KEYSTORE',
@@ -66,11 +72,20 @@ try {
   $dexDir = Join-Path $buildDir 'dex'
   $classesJar = Join-Path $buildDir 'classes.jar'
   $zxingJar = Join-Path $scriptRoot 'libs\zxing-core-3.5.3.jar'
-  $releaseDir = Join-Path $projectRoot 'release\tablet-terminal'
+  $releaseDir = if ($candidateTag) {
+    Join-Path $projectRoot "release\tablet-terminal\candidates\$candidateTag"
+  } else {
+    Join-Path $projectRoot 'release\tablet-terminal'
+  }
   $unsignedApk = Join-Path $buildDir 'tablet-terminal-unsigned.apk'
   $alignedApk = Join-Path $buildDir 'tablet-terminal-aligned.apk'
   $signedCandidateApk = Join-Path $buildDir 'tablet-terminal-signed.apk'
-  $finalApk = Join-Path $releaseDir 'AI-edu-manager-tablet-terminal-0.6.27.apk'
+  $artifactName = if ($candidateTag) {
+    "AI-edu-manager-tablet-terminal-$versionName-$candidateTag.apk"
+  } else {
+    "AI-edu-manager-tablet-terminal-$versionName.apk"
+  }
+  $finalApk = Join-Path $releaseDir $artifactName
 
   Remove-Item -LiteralPath $buildDir -Recurse -Force -ErrorAction SilentlyContinue
   New-Item -ItemType Directory -Force -Path $genDir, $classesDir, $dexDir, $releaseDir | Out-Null
@@ -84,8 +99,10 @@ try {
 
   $javaFiles = @(
     (Join-Path $scriptRoot 'src\com\qxmatrix\eduterminal\MainActivity.java'),
+    (Join-Path $scriptRoot 'src\com\qxmatrix\eduterminal\ConversationDraftStore.java'),
     (Join-Path $projectRoot 'android-shared\src\com\qxmatrix\projectmaterials\ProjectMaterialsDialog.java'),
     (Join-Path $projectRoot 'android-shared\src\com\qxmatrix\terminallearning\TerminalLearningDialog.java'),
+    (Join-Path $projectRoot 'android-shared\src\com\qxmatrix\markdown\MarkdownReadOnlyDialog.java'),
     (Join-Path $scriptRoot 'src\com\qxmatrix\eduterminal\ProjectMaterialUploadQueue.java'),
     (Join-Path $scriptRoot 'src\com\qxmatrix\eduterminal\StudentCollectionInbox.java'),
     (Join-Path $scriptRoot 'src\com\qxmatrix\eduterminal\ProjectMaterialUploadJobService.java'),
@@ -156,9 +173,13 @@ try {
   }
   Copy-Item -LiteralPath $signedCandidateApk -Destination $finalApk -Force
 
-  $realReleaseDir = Join-Path $realProjectRoot 'release\tablet-terminal'
+  $realReleaseDir = if ($candidateTag) {
+    Join-Path $realProjectRoot "release\tablet-terminal\candidates\$candidateTag"
+  } else {
+    Join-Path $realProjectRoot 'release\tablet-terminal'
+  }
   New-Item -ItemType Directory -Force -Path $realReleaseDir | Out-Null
-  $realFinalApk = Join-Path $realReleaseDir 'AI-edu-manager-tablet-terminal-0.6.27.apk'
+  $realFinalApk = Join-Path $realReleaseDir $artifactName
   Get-Item -LiteralPath $realFinalApk | Format-List FullName,Length,LastWriteTime
 } finally {
   cmd /c "subst $drive /d" | Out-Null

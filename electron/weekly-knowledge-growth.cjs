@@ -22,6 +22,18 @@ function currentTimezone() {
   catch { return 'UTC'; }
 }
 
+function isoWeekKey(value = new Date().toISOString()) {
+  const source = /^\d{4}-\d{2}-\d{2}$/.test(String(value || ''))
+    ? new Date(`${String(value)}T12:00:00.000Z`) : new Date(value);
+  if (Number.isNaN(source.getTime())) return '';
+  const date = new Date(Date.UTC(source.getUTCFullYear(), source.getUTCMonth(), source.getUTCDate()));
+  const weekday = date.getUTCDay() || 7;
+  date.setUTCDate(date.getUTCDate() + 4 - weekday);
+  const yearStart = new Date(Date.UTC(date.getUTCFullYear(), 0, 1));
+  const week = Math.ceil((((date.getTime() - yearStart.getTime()) / 86400000) + 1) / 7);
+  return `${date.getUTCFullYear()}-W${String(week).padStart(2, '0')}`;
+}
+
 function getWeeklyKnowledgeGrowth(options = {}) {
   const studentId = String(options.studentId || '').trim();
   if (!studentId || studentId === 'all') return { ok: false, code: 'student_scope_required', message: '请选择一名学生查看周图。' };
@@ -198,5 +210,5 @@ function createWeeklyKnowledgeGrowthImageCache({ maxEntries = 8 } = {}) {
 
 module.exports = {
   HEIGHT, MAX_PNG_BYTES, WIDTH, createWeeklyKnowledgeGrowthImageCache, currentTimezone,
-  getWeeklyKnowledgeGrowth, renderWeeklyKnowledgeGrowthPng, resolveCanvasRuntime,
+  getWeeklyKnowledgeGrowth, isoWeekKey, renderWeeklyKnowledgeGrowthPng, resolveCanvasRuntime,
 };

@@ -315,6 +315,7 @@ const {
   MAX_PNG_BYTES: WEEKLY_GROWTH_MAX_PNG_BYTES,
   createWeeklyKnowledgeGrowthImageCache,
   currentTimezone: weeklyGrowthTimezone,
+  isoWeekKey: weeklyGrowthIsoWeekKey,
 } = require('./weekly-knowledge-growth.cjs');
 const {
   SCHEMA_VERSION: LEARNING_STATE_SCHEMA_VERSION,
@@ -40468,14 +40469,15 @@ async function handleTerminalKnowledgeGrowth(request, response, week = '', teach
   try {
     const result = JSON.parse(await weeklyKnowledgeGrowthJson(String(student.id)));
     if (!result.ok) return sendJson(response, 400, result);
-    const currentWeek = String(result.currentDate || result.asOf || new Date().toISOString()).slice(0, 10);
-    if (!week) return sendJson(response, 200, { ok: true, studentId: String(student.id), weeks: [currentWeek] });
+    const currentWeek = weeklyGrowthIsoWeekKey(result.currentDate || result.asOf || new Date().toISOString());
+    if (!currentWeek) return sendJson(response, 500, { ok: false, code: 'KNOWLEDGE_GROWTH_WEEK_INVALID', message: '资料上传图周次无效，请重新读取。' });
+    if (!week) return sendJson(response, 200, { ok: true, studentId: String(student.id), weeks: [currentWeek], currentWeek });
     if (String(week) !== currentWeek) {
       return sendJson(response, 409, { ok: false, code: 'KNOWLEDGE_GROWTH_CHANGED', message: '资料上传图已更新，请刷新周次。' });
     }
     return sendJson(response, 200, { ok: true, studentId: String(student.id), week: currentWeek,
       imageBase64: String(result.pngBase64 || ''), mimeType: 'image/png', sha256: String(result.sha256 || ''),
-      generatedAt: String(result.generatedAt || result.asOf || ''), summary: result.summary || null });
+      generatedAt: String(result.generatedAt || result.asOf || ''), status: `已生成 ${result.weekStart || ''} 至 ${result.weekEnd || ''} 的单学生资料统计图。`, summary: result.summary || null });
   } catch (error) {
     return sendJson(response, 500, { ok: false, code: 'KNOWLEDGE_GROWTH_READ_FAILED', message: String(error.message || error).slice(0, 240) });
   }

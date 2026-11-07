@@ -6,7 +6,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { createLearningStateStore } = require('../electron/learning-state-store.cjs');
-const { getWeeklyKnowledgeGrowth, resolveCanvasRuntime } = require('../electron/weekly-knowledge-growth.cjs');
+const { getWeeklyKnowledgeGrowth, isoWeekKey, resolveCanvasRuntime } = require('../electron/weekly-knowledge-growth.cjs');
 const { appendLearningEvents, removeLearningEventsBySource } = require('../electron/learning-analytics.cjs');
 
 function fixture(t) {
@@ -37,6 +37,12 @@ test('packaged weekly growth loads the audited canvas extra resource', (t) => {
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   assert.equal(resolveCanvasRuntime(root), canvasRoot);
   assert.match(resolveCanvasRuntime(''), /@napi-rs[\\/]canvas[\\/]index\.js$/u);
+});
+
+test('weekly growth uses stable ISO week keys at the terminal HTTP boundary', () => {
+  assert.equal(isoWeekKey('2026-11-02'), '2026-W45');
+  assert.equal(isoWeekKey('2027-01-01'), '2026-W53');
+  assert.equal(isoWeekKey('not-a-date'), '');
 });
 
 test('first reliable registration is idempotent and survives withdrawal and re-import', (t) => {

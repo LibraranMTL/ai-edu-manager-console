@@ -61,6 +61,8 @@ const { AUTOMATIC_TASK_KINDS, automaticTaskDispatchDecision, automaticWakeDecisi
 const { staggeredScheduleTime } = require('./task-schedule-window.cjs');
 const { resultIdentityFeedback } = require('./task-resolution.cjs');
 const { createTaskStoreService } = require('./task-store-service.cjs');
+const { planConvergenceSlice, finishConvergenceSlice } = require('./task-backlog-convergence.cjs');
+const { planDigestArtifactRepair, artifactRepairPatch } = require('./digest-artifact-repair.cjs');
 const { createTaskSourceQueue } = require('./task-source-queue.cjs');
 const taskIoClient = createTaskIoClient({ onSourceChanged: source => {
   if(!taskReadMaintenanceStopped)markTaskSourceDirty(source.sourceType,source.sourceId,'external_source_changed');
@@ -208,6 +210,8 @@ const { selectReusableAssetPath } = require('./project-asset-reuse.cjs');
 let projectUploadRecoveryIssues = [];
 const activeProjectUploadIds = new Set();
 const projectMaterialAutomationJobs = new Map();
+let backlogConvergenceTimer = null;
+let backlogConvergenceRunning = false;
 let projectMaterialReadClientInstance = null;
 const { projectMaterialPromotionItems, canonicalPromotionSelection, prepareProjectMaterialPromotion,
   requirePreparedProjectPromotion } = require('./project-material-promotion.cjs');
@@ -374,6 +378,9 @@ const {
 } = require('./qclaw-runtime.cjs');
 const { buildWorkBuddyTaskDeepLink, discoverWorkBuddyRuntime, createWorkBuddyProbeCache,
   probeWorkBuddyConnection } = require('./workbuddy-runtime.cjs');
+const { createWorkBuddyRuntimeStatusProbe } = require('./workbuddy-runtime-status.cjs');
+const { resolveAutomationFeatureFlags } = require('./automation-feature-flags.cjs');
+const AUTOMATION_FEATURES = resolveAutomationFeatureFlags();
 const workBuddyProbeCache = createWorkBuddyProbeCache();
 const { createWorkBuddyQualification, createWorkBuddyStructuredAdapter, executeMaterialWorkBuddy } = require('./workbuddy-controlled.cjs');
 const workBuddyQualification = createWorkBuddyQualification();
@@ -840,6 +847,7 @@ function getSmartInbox() {
         } catch (error) { if (error.code === 'ENOENT' || error instanceof SyntaxError) return null; throw error; }
       },
       projects: () => readProjectMetadata().map(normalizeProjectMetadata), isWorkspace: isWorkspaceMaterialProject,
+      studentActive: id => !studentConversationCaptureBlocked(findStudentByKey(id)),
       canWrite: () => publicLicenseStatus().active && projectArchiveRuntime.status().ready && !taskStoreGuard.status(),
       externalReferences(project, material, originalPath) {
         const reasons = [];
@@ -888,6 +896,8 @@ function getSmartInbox() {
       },
       materialHost: createProjectMaterialHost,
       materialCategories: project => projectMaterialReadClient().request('categories', { project }),
+      materialRoutingContext: project => projectMaterialReadClient().request('routing_context', { project }),
+      routingV2Enabled: AUTOMATION_FEATURES.routingDecisionV2,
       capture: getCaptureInbox,
       legacySettings: () => getDownloadInbox().getSettings(),
       forbiddenRoots: () => [app.getPath('userData'), process.env.SystemRoot, process.env.ProgramFiles, process.env['ProgramFiles(x86)'],
@@ -1429,6 +1439,7 @@ let hohuOpened = false;
 let openclawOpened = false;
 let imaCopilotOpened = false;
 let workbuddyOpened = false;
+let workbuddyStartedByManager = false;
 let codexOpened = false;
 let claudeCodeOpened = false;
 let hermesOpened = false;
@@ -22729,6 +22740,27 @@ function taskCommandFor(task) {
     const normalized = toHostStudent(student);
     const batch = readDigestBatch(studentDigestBatchPath(normalized));
     if (!batch || batch.batchId !== String(task.input?.digestBatchId || batch.batchId)) return '当前学生消化批次无效，请返回控制台重新开始处理。';
+    if (task.input?.artifactRepair?.enabled) {
+      const required = Array.isArray(task.input.artifactRepair.requiredArtifacts)
+        ? task.input.artifactRepair.requiredArtifacts : [];
+      return `/消化产物修复
+
+本批逐文件回执已经由教育管家核验通过。不要重新投递、重新分类或重新处理原始资料；只修复缺失的知识产物。
+
+学生 ID：${normalized.id}
+消化批次：${batch.batchId}
+批次文件：${studentDigestBatchPath(normalized)}
+知识库根目录：${normalized.rootPath || getStudentRootDir(normalized.name)}
+必须更新的知识产物：
+${required.length ? required.map((item) => `- ${item}`).join('\n') : `- ${path.join(normalized.rootPath || getStudentRootDir(normalized.name), 'index.md')}\n- ${path.join(normalized.rootPath || getStudentRootDir(normalized.name), 'log.md')}`}
+
+修复要求：
+1. 只使用当前批次、已有知识文件和已经验证的回执，不扩大资料范围。
+2. 为本批内容补齐可追溯的摘要、索引与处理日志；保留资料来源和批次号。
+3. 不移动、删除或覆盖原始资料，不改写正式学情报告、教育档案或成长结论。
+4. 必须实际写入上述知识产物；仅返回“完成”文字不会结案。
+5. 完成后直接返回简短说明。教育管家将再次核验文件更新时间、批次和来源版本。`;
+    }
     return `/消化\n\n请按照 ${normalized.agentPath || path.join(normalized.rootPath || getStudentRootDir(normalized.name), 'AGENT.md')} 的规则，只处理本批清单中的资料。\n\n批次文件：${studentDigestBatchPath(normalized)}\n学生 ID：${normalized.id}\n消化批次：${batch.batchId}\n原始资料目录：${normalized.rawPath || getRawDir(normalized.name)}\n知识库根目录：${normalized.rootPath || getStudentRootDir(normalized.name)}\n回执文件：${studentDigestReceiptPath(normalized)}\n\n处理要求：\n1. 读取批次文件 files，只处理其中列出的资料，不扩大到其他资料。\n2. 更新现有 LLM Wiki 的摘要、概念、实体、问答、综合汇总、index.md 和 log.md。\n3. 不移动、删除或覆盖原始资料。\n4. 新的能力判断、项目贡献和成长证据不得直接发布；不得自动改写正式学情报告或教育档案。\n5. 文件无法读取时列入 failed 或在完成说明中指出。\n6. 完成后优先写入回执文件；JSON、Markdown、纯文本完成说明均可。文件清单可使用 processed、digestedFiles、digestFiles、processedFiles、items 或 files，提供 materialId、相对路径、文件名或 SHA-1 中任一可唯一对应字段即可。\n7. 若无法写回回执文件，直接在最终回复中说明“消化完成”并列出处理过的文件。控制台会自动读取 Agent 输出、index.md、log.md 和本批次后更新的知识产物，不需要用户复制粘贴。\n\n推荐但非强制的简化格式：\n{\n  "status": "completed",\n  "processed": ["文件名1", "文件名2"],\n  "message": "消化完成"\n}\n\n完成知识写入后直接返回结果；批次号、学生 ID、SHA-1 和缺失字段由控制台结合当前任务自动补齐。${captureDigestContract(batch.files)}`;
   }
   if (task.kind === 'maintenance_lint' && student) {
@@ -23314,6 +23346,63 @@ function classificationAuth() {
     openUrl: url => shell.openExternal(url),
     changed: () => { if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('smart-inbox:changed'); },
   });
+}
+let workBuddyRuntimeStatusProbe;
+let workBuddyRuntimeStatus = {
+  installed: false, processRunning: false, desktopSessionFound: false,
+  ipcReachable: false, authorized: false, dispatchReady: false,
+  startedByManager: false, reasonCode: 'probing', lastSeenAt: '', workbuddyOpened: false,
+};
+let workBuddyStatusMonitor = null;
+let workBuddyStatusMonitorStopped = false;
+function ensureWorkBuddyRuntimeStatusProbe() {
+  return workBuddyRuntimeStatusProbe ||= createWorkBuddyRuntimeStatusProbe({
+    findInstall: async () => findAgentToolInstall('workbuddy'),
+    findExecutable: findExecutableInPath,
+    hostNodePath: process.execPath,
+    readAuthorization: () => classificationAuth().read('workbuddy'),
+    applyAuthorization: (runtime, descriptor) => classificationAuth().apply(runtime, descriptor),
+    readTaskRuntime: () => readTaskStore({ taskIds: [] }).runtime || {},
+    startedByManager: () => workbuddyStartedByManager,
+  });
+}
+async function refreshWorkBuddyRuntimeStatus({ force = false, notifyRenderer = true } = {}) {
+  const previous = JSON.stringify({ ...workBuddyRuntimeStatus, lastSeenAt: '' });
+  try {
+    workBuddyRuntimeStatus = await ensureWorkBuddyRuntimeStatusProbe()({ force });
+    workbuddyOpened = workBuddyRuntimeStatus.workbuddyOpened;
+  } catch (error) {
+    workBuddyRuntimeStatus = { ...workBuddyRuntimeStatus, reasonCode: 'probe_failed',
+      lastSeenAt: taskNow(), message: String(error.message || error) };
+  }
+  const changed = previous !== JSON.stringify({ ...workBuddyRuntimeStatus, lastSeenAt: '' });
+  if (changed && notifyRenderer && mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send('app-status:changed', JSON.stringify(appStatusPayload()));
+  }
+  return workBuddyRuntimeStatus;
+}
+function appStatusPayload() {
+  return { qclawOpened, marvisOpened, hohuOpened, openclawOpened, imaCopilotOpened,
+    workbuddyOpened: AUTOMATION_FEATURES.workBuddyRuntimeStatusV2
+      ? Boolean(workBuddyRuntimeStatus.workbuddyOpened) : Boolean(workbuddyOpened),
+    workbuddyStatus: AUTOMATION_FEATURES.workBuddyRuntimeStatusV2 ? workBuddyRuntimeStatus : null,
+    codexOpened, claudeCodeOpened, hermesOpened, traeOpened, qoderWorkOpened, obsidianOpened };
+}
+function startWorkBuddyStatusMonitor() {
+  if (!AUTOMATION_FEATURES.workBuddyRuntimeStatusV2) return;
+  if (workBuddyStatusMonitor) return;
+  workBuddyStatusMonitorStopped = false;
+  void refreshWorkBuddyRuntimeStatus({ force: true });
+  const schedule = () => {
+    const foreground = Boolean(mainWindow && !mainWindow.isDestroyed() && mainWindow.isVisible());
+    workBuddyStatusMonitor = setTimeout(async () => {
+      workBuddyStatusMonitor = null;
+      await refreshWorkBuddyRuntimeStatus({ force: true });
+      if (!workBuddyStatusMonitorStopped) schedule();
+    }, foreground ? 5_000 : 60_000);
+    workBuddyStatusMonitor.unref?.();
+  };
+  schedule();
 }
 async function restorePersistedAgentAuthorization() {
   persistedAuthorizationRestore = { phase: 'restoring', restored: {}, message: '正在恢复已保存的 Agent 与 API 授权…' };
@@ -27213,14 +27302,60 @@ async function finalizeAdapterExecution(taskId, executionId, adapterId, code, ou
     logReference: task.result?.logPath || '',
     failureReason: successful ? null : { category: runtimeFailure ? 'compatibility' : Number(code) === 0 ? 'validation' : code === -1 ? 'launch' : 'process', code: failureCode, detail: String(completionFailure || errorOutput || validation.message || '').slice(-2000) },
   }, validation, { estimatedCost: estimatedAdapterCost(adapterId, task.startedAt ? Date.now() - Date.parse(task.startedAt) : 0) });
-  const retryPlan = successful ? null : taskRetryDecision(task, {
+  const artifactRepair = AUTOMATION_FEATURES.digestArtifactRepair && !successful && Number(code) === 0 && !completionFailure
+    ? planDigestArtifactRepair(task, validation) : { eligible: false };
+  if (artifactRepair.eligible) {
+    commitValidatedTaskResult(store, task, result, validation, {
+      successful: false,
+      error: { code: 'DIGEST_ARTIFACTS_MISSING', message: validation.message },
+      event: 'digest_artifact_repair_required',
+    });
+    await writeTaskStoreDurably(store);
+    // The original execution has a verified matching receipt. Settle that
+    // attempt before reusing the same business task for an artifact-only run.
+    await settlePersistentTaskAttempt(taskId, { knownResult: true, resultKind: 'artifact_missing' });
+    const repairStore = readTaskStore({ taskIds: [taskId] });
+    const failedTask = repairStore.tasks.find((item) => item.id === taskId);
+    if (failedTask) {
+      const student = findStudentByKey(failedTask.sourceId);
+      const normalized = student ? toHostStudent(student) : null;
+      const requiredArtifacts = normalized ? [
+        path.join(normalized.rootPath || getStudentRootDir(normalized.name), 'index.md'),
+        path.join(normalized.rootPath || getStudentRootDir(normalized.name), 'log.md'),
+      ] : [];
+      const prepared = transitionTaskInStore(repairStore, taskId, 'pending',
+        artifactRepairPatch(failedTask, artifactRepair, requiredArtifacts),
+        'digest_artifact_repair_queued');
+      if (prepared.ok) {
+        await writeTaskStoreDurably(repairStore);
+        automaticTaskWakeQueue.schedule(taskId, 'digest_artifact_repair', artifactRepair.delayMs);
+        notify('onNativeTaskCenterChanged', JSON.stringify({ taskId, status: 'pending' }));
+        notify('onNativeDigestWorkflowChanged', JSON.stringify({ scopeType: task.sourceType,
+          scopeId: task.sourceId, status: 'artifact_repair_pending', taskId }));
+        return;
+      }
+    }
+  }
+  // A receipt-backed artifact repair is deliberately bounded.  Once its two
+  // attempts are used, retain the verified receipt and surface a single
+  // repair exception instead of turning the same task back into a generic
+  // Agent retry loop.
+  const artifactRepairExhausted = !successful && artifactRepair.exhausted === true;
+  if (artifactRepairExhausted) {
+    result.summary = '消化回执已核验，但知识产物连续修复失败；已停止自动重试。';
+    result.failureReason = {
+      category: 'validation', code: 'DIGEST_ARTIFACT_REPAIR_EXHAUSTED',
+      detail: String(validation.message || '知识产物未更新。').slice(-2000),
+    };
+  }
+  const retryPlan = successful || artifactRepairExhausted ? null : taskRetryDecision(task, {
     code: failureCode, message: `${completionFailure || errorOutput || ''}\n${validation.message || ''}`,
     category: Number(code) === 0 ? 'validation' : '',
   }, { stopConfirmed: executionStopped, retryAfter: /(?:^|\n)\s*Retry-After:\s*([^\r\n]+)/i.exec(errorOutput)?.[1] });
   const inputHash = String(task.sourceVersion || task.input?.sourceVersion || task.input?.inputFingerprint
     || task.input?.digestBatchId || '');
   const executionUnknown = retryPlan?.recoveryState === 'unknown';
-  const budgetResult = !successful && !executionUnknown
+  const budgetResult = !successful && !executionUnknown && !artifactRepairExhausted
     ? await taskStoreGuard.recordExecutionBudget({
       budgetKey: executionBudgetKey(task, failureCode, inputHash), workKey: task.workKey,
       errorSignature: failureCode, inputHash, maxAttempts: 2,
@@ -27231,7 +27366,7 @@ async function finalizeAdapterExecution(taskId, executionId, adapterId, code, ou
   const committed = commitValidatedTaskResult(store, task, result, validation, {
     successful,
     recoveryUnresolved: retryPlan?.recoveryState === 'unknown',
-    error: successful ? null : { code: failureCode, message: result.summary },
+    error: successful ? null : { code: artifactRepairExhausted ? 'DIGEST_ARTIFACT_REPAIR_EXHAUSTED' : failureCode, message: result.summary },
     event: 'adapter_completed',
     autoSummary: isAutoPublishReportTask(task) ? '报告已通过自动校验。' : '资料处理完成并已通过自动校验。',
   });
@@ -27239,9 +27374,9 @@ async function finalizeAdapterExecution(taskId, executionId, adapterId, code, ou
   if (!successful) {
     const failedTask = store.tasks.find((item) => item.id === taskId);
     if (failedTask) Object.assign(failedTask, retryPlan, {
-      settlementState: executionUnknown ? 'reconciling' : budgetTerminal ? 'terminal' : 'failed',
-      businessOutcome: executionUnknown ? 'execution_unknown' : budgetTerminal ? 'failed_terminal' : 'failed_retryable',
-      ...(budgetTerminal ? { autoRetry: false, nextRetryAt: '' } : {}),
+      settlementState: executionUnknown ? 'reconciling' : (budgetTerminal || artifactRepairExhausted) ? 'terminal' : 'failed',
+      businessOutcome: executionUnknown ? 'execution_unknown' : (budgetTerminal || artifactRepairExhausted) ? 'failed_terminal' : 'failed_retryable',
+      ...((budgetTerminal || artifactRepairExhausted) ? { autoRetry: false, nextRetryAt: '' } : {}),
     });
   }
   (await writeTaskStoreDurably(store));
@@ -30545,6 +30680,81 @@ function repairDigestTaskClosure(store, task, patch, eventType, detail) {
   const next = applyDigestTaskClosureRepair(store, task, patch, eventType, detail);
   if (next) writeTaskStore(store);
   return next;
+}
+
+// This is intentionally a task-ledger recovery, not a historical-material
+// backfill. It only advances rows whose existing execution evidence proves a
+// safe next state; unknown sends remain in receipt reconciliation.
+const backlogConvergenceCheckpointPath = () => path.join(taskCenterDirPath(), 'backlog-convergence-checkpoint.json');
+
+function readBacklogConvergenceCheckpoint() {
+  try {
+    const value = JSON.parse(fs.readFileSync(backlogConvergenceCheckpointPath(), 'utf8'));
+    return value && value.schema === 'edu-manager.backlog-convergence.v1' ? value : {};
+  } catch {
+    return {};
+  }
+}
+
+function writeBacklogConvergenceCheckpoint(checkpoint) {
+  fs.mkdirSync(taskCenterDirPath(), { recursive: true });
+  writeJsonAtomic(backlogConvergenceCheckpointPath(), checkpoint);
+}
+
+async function runTaskBacklogConvergenceSlice() {
+  if (!AUTOMATION_FEATURES.backlogConvergence || backlogConvergenceRunning || taskReadMaintenanceStopped || !taskStoreGuard.ready()
+    || !projectArchiveRuntime.status().ready || taskStoreGuard.status()) return { ok: true, skipped: true };
+  backlogConvergenceRunning = true;
+  try {
+    const checkpoint = readBacklogConvergenceCheckpoint();
+    const preview = await taskStoreGuard.previewTaskRecovery({ cursor: checkpoint.cursor || '', limit: 20 });
+    const plan = planConvergenceSlice(preview, checkpoint);
+    const results = [];
+    for (const row of plan.safeRows) {
+      try {
+        const result = await taskStoreGuard.applyTaskRecovery({
+          taskId: row.taskId,
+          action: row.action,
+          expectedTaskRevision: row.expectedTaskRevision,
+          evidenceRevision: row.evidenceRevision,
+          jobId: plan.checkpoint.jobId,
+        });
+        results.push(result);
+        if (!result?.applied) continue;
+        if (row.action === 'requeue_proven_not_sent') {
+          automaticTaskWakeQueue.schedule(row.taskId, 'backlog_convergence', 2_000);
+        } else if (row.action === 'reconcile_original') {
+          // This obtains a result/receipt only; it never re-sends an
+          // execution whose outcome is not known.
+          void syncAgentTaskResults();
+          if (row.sourceType === 'student') scheduleDigestWorkflowMonitor(5_000, 'backlog_convergence');
+        }
+      } catch (error) {
+        results.push({ ok: false, code: error.code || 'TASK_BACKLOG_CONVERGENCE_FAILED' });
+      }
+    }
+    const next = finishConvergenceSlice(plan, results);
+    writeBacklogConvergenceCheckpoint(next);
+    return { ok: true, scanned: plan.checkpoint.scanned, applied: next.applied,
+      conflicts: next.conflicts, more: (preview.rows || []).length >= 20, checkpoint: next };
+  } finally {
+    backlogConvergenceRunning = false;
+  }
+}
+
+function scheduleTaskBacklogConvergence(delayMs = 15_000) {
+  if (backlogConvergenceTimer || taskReadMaintenanceStopped) return;
+  backlogConvergenceTimer = setTimeout(async () => {
+    backlogConvergenceTimer = null;
+    try {
+      const result = await runTaskBacklogConvergenceSlice();
+      if (!taskReadMaintenanceStopped) scheduleTaskBacklogConvergence(result?.more ? 5_000 : 5 * 60_000);
+    } catch (error) {
+      console.warn('Task backlog convergence deferred:', error.message);
+      if (!taskReadMaintenanceStopped) scheduleTaskBacklogConvergence(5 * 60_000);
+    }
+  }, Math.max(1_000, Number(delayMs) || 15_000));
+  backlogConvergenceTimer.unref?.();
 }
 
 async function repairDigestClosureHistory() {
@@ -36051,11 +36261,15 @@ function openApp(appName) {
   }
   if (appName === 'workbuddy') {
     const exe = findAgentToolInstall('workbuddy').exePath;
-    workbuddyOpened = true;
+    if (AUTOMATION_FEATURES.workBuddyRuntimeStatusV2) workbuddyStartedByManager = true;
+    else workbuddyOpened = true;
     if (exe && fs.existsSync(exe)) {
       spawn(exe, [], { detached: true, stdio: 'ignore' }).unref();
     } else {
       shell.openExternal('https://www.workbuddy.ai/').catch(() => {});
+    }
+    if (AUTOMATION_FEATURES.workBuddyRuntimeStatusV2) {
+      setTimeout(() => { void refreshWorkBuddyRuntimeStatus({ force: true }); }, 500);
     }
     return true;
   }
@@ -36486,17 +36700,17 @@ async function classifyAmbiguousProjectMaterials(project, store, request, job) {
       const classification = await resourceCoordinator.run('network', () => smartInboxHostRuntime.routing.classify({
         context, text, executionId: `project-material-ai-${crypto.randomUUID()}`,
       }), { priority: 10, key: `project-material-ai:${project.id}:${material.materialId}:${material.version}` });
-      if (classification.sensitive || classification.conflict) {
+      if (classification.sensitive) {
         failed.push({ materialId: material.materialId,
-          code: classification.sensitive ? 'sensitive_confirmation_required' : 'classification_conflict',
+          code: 'sensitive_confirmation_required',
           message: classification.reason || '资料需要人工确认。' });
         continue;
       }
       const [first, second] = classification.candidates || [];
-      if (!first || first.type !== 'project' || String(first.id) !== String(project.id)
+      // The controlled workspace already proves project ownership. Category
+      // uncertainty stays reversible and must not create an approval task.
+      if (classification.conflict || !first || first.type !== 'project' || String(first.id) !== String(project.id)
         || !allowedCategoryIds.has(String(first.categoryId || ''))) {
-        failed.push({ materialId: material.materialId, code: 'classification_uncertain',
-          message: classification.reason || 'AI 未给出项目范围内的有效分类。' });
         continue;
       }
       const evidence = String(first.evidence || '').trim();
@@ -36613,7 +36827,10 @@ function startProjectMaterialAutomation(project, request = {}) {
       resume.unref?.();
     }
   };
-  resourceCoordinator.run(['disk', 'cpu'], work, { priority: request.reason === 'manual' ? 100 : 12,
+  const priority = request.reason === 'manual' ? 100
+    : ['workspace_change', 'smart_inbox_delivery'].includes(String(request.reason || '')) ? 50
+      : request.reason === 'startup_repair' ? 1 : 10;
+  resourceCoordinator.run(['disk', 'cpu'], work, { priority,
     background: request.reason !== 'manual', projectId: project.id,
     key: `project-material-automation:${project.id}` }).catch((error) => {
     job.status = 'failed'; job.phase = 'failed'; job.completedAt = new Date().toISOString();
@@ -43418,9 +43635,13 @@ ipcMain.on('bridge:initStudentWorkspace', (event, studentName, agentMd, indexMd,
 ipcMain.on('bridge:openApp', (event, appName) => { event.returnValue = openApp(appName); });
 ipcMain.on('bridge:openExternalUrl', (event, url) => { event.returnValue = openExternalUrl(url); });
 ipcMain.on('bridge:getAppStatus', (event) => {
-  event.returnValue = JSON.stringify({ qclawOpened, marvisOpened, hohuOpened, openclawOpened, imaCopilotOpened, workbuddyOpened, codexOpened, claudeCodeOpened, hermesOpened, traeOpened, qoderWorkOpened, obsidianOpened });
+  event.returnValue = JSON.stringify(appStatusPayload());
+  if (AUTOMATION_FEATURES.workBuddyRuntimeStatusV2) void refreshWorkBuddyRuntimeStatus();
 });
-ipcMain.handle('bridge:getAppStatusAsync', () => JSON.stringify({ qclawOpened, marvisOpened, hohuOpened, openclawOpened, imaCopilotOpened, workbuddyOpened, codexOpened, claudeCodeOpened, hermesOpened, traeOpened, qoderWorkOpened, obsidianOpened }));
+ipcMain.handle('bridge:getAppStatusAsync', async () => {
+  if (AUTOMATION_FEATURES.workBuddyRuntimeStatusV2) await refreshWorkBuddyRuntimeStatus();
+  return JSON.stringify(appStatusPayload());
+});
 ipcMain.handle('bridge:getStorageConfig', () => deferredInvoke(() => getStorageConfig()));
 ipcMain.handle('bridge:getTemplateCenter', (_event, systemTemplatesJson) => deferredInvoke(() => getTemplateCenter(systemTemplatesJson)));
 ipcMain.on('bridge:saveCustomTemplates', (event, templatesJson) => { licensedIpc(event, '模板管理', () => saveCustomTemplates(templatesJson)); });
@@ -44394,6 +44615,7 @@ if (practicePrintHelperMode) {
     // Paint the shell before database migration, integrity checks and recovery.
     // Business writes remain gated until the protected startup sequence ends.
     createWindow();
+    startWorkBuddyStatusMonitor();
     const beginInitialization = () => { setTimeout(() => {
       void (async () => {
         if (!await prepareHostMigrationStateStartup()) return;
@@ -44474,6 +44696,7 @@ if (practicePrintHelperMode) {
           void repairDigestClosureHistory().then((result) => {
             if (result.repaired) console.info(`资料任务业务结算修复完成：${result.repaired} 项。`);
           }).catch((error) => console.error('资料任务业务结算修复失败：', error.message));
+          if (AUTOMATION_FEATURES.backlogConvergence) scheduleTaskBacklogConvergence(15_000);
         }
         await restorePersistedAgentAuthorization();
         businessStartupReady = true;
@@ -44552,6 +44775,10 @@ let materialQuitPending = false;
 let taskStoreQuitReady = false;
 let smartInboxQuitReady = false, smartInboxQuitPending = false;
 app.on('before-quit', (event) => {
+  if (typeof workBuddyStatusMonitorStopped !== 'undefined') workBuddyStatusMonitorStopped = true;
+  if (typeof workBuddyStatusMonitor !== 'undefined' && workBuddyStatusMonitor) {
+    clearTimeout(workBuddyStatusMonitor); workBuddyStatusMonitor = null;
+  }
   if(typeof dispatchCapabilityGate!=='undefined')dispatchCapabilityGate?.close();
   if(typeof capabilityWaiters!=='undefined')capabilityWaiters.clear();
   if (app.commandLine?.getSwitchValue?.('practice-print-helper')) return;
@@ -44607,6 +44834,8 @@ app.on('before-quit', (event) => {
   taskSourceQueue.close();
   if (taskReadMaintenanceTimer) clearTimeout(taskReadMaintenanceTimer);
   taskReadMaintenanceTimer = null;
+  if (backlogConvergenceTimer) clearTimeout(backlogConvergenceTimer);
+  backlogConvergenceTimer = null;
   if (taskInboxTimer) clearTimeout(taskInboxTimer);
   taskInboxTimer = null;
   if (taskProgressTimer) clearTimeout(taskProgressTimer);

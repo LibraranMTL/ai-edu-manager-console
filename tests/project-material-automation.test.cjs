@@ -162,7 +162,7 @@ test('explicit unified automation settings override legacy authorization and pre
   assert.equal(normalized.maxBatch, 12);
 });
 
-test('manual locks and unclassified files remain exceptions while digest work is not attention', async (t) => {
+test('manual locks remain exceptions while unclassified project files enter the provisional inbox', async (t) => {
   const f = await fixture(t);
   const locked = await f.add('参考资料/locked.md', 'locked');
   const loose = await f.add('loose.md', 'loose');
@@ -174,17 +174,17 @@ test('manual locks and unclassified files remain exceptions while digest work is
   }], { actorId: 'host-admin', source: 'manual' });
   const result = await runProjectMaterialAutomation(f.project, f.store, { reason: 'manual',
     idempotencyKey: 'auto-run-2' });
-  assert.equal(result.adopted, 0);
+  assert.equal(result.adopted, 1);
   const index = await f.store.read();
   const overview = projectMaterialAutomationOverview(f.project, index);
-  assert.equal(overview.needsConfirmation, 2);
+  assert.equal(overview.needsConfirmation, 1);
   const exceptions = listProjectMaterialExceptions(f.project, index, { limit: 100 });
-  assert.equal(exceptions.total, 2);
+  assert.equal(exceptions.total, 1);
   assert.ok(exceptions.items.some((item) => item.reasons.includes('manual_locked')));
-  assert.ok(exceptions.items.some((item) => item.reasons.includes('needs_classification')));
+  assert.equal(index.materials.find((item) => item.materialId === loose.materialId).adoption.state, 'accepted');
 });
 
-test('ambiguous paths use bounded AI suggestions while only host-validated high confidence is adopted', async (t) => {
+test('ambiguous paths use bounded AI suggestions while category uncertainty does not block project adoption', async (t) => {
   const f = await fixture(t);
   await f.add('high-confidence.md', '这是一份内容充分且可安全分类的参考资料。');
   await f.add('medium-confidence.md', '分类线索仍需确认。');
@@ -212,7 +212,7 @@ test('ambiguous paths use bounded AI suggestions while only host-validated high 
   assert.equal(result.ai.attempted, 2);
   assert.equal(result.ai.recorded, 2);
   assert.equal(result.ai.needsConfirmation, 1);
-  assert.equal(result.adopted, 1);
+  assert.equal(result.adopted, 2);
 
   const index = await f.store.read({ fresh: true });
   const accepted = index.materials.find((item) => item.location.relativePath === 'high-confidence.md');
@@ -220,11 +220,11 @@ test('ambiguous paths use bounded AI suggestions while only host-validated high 
   assert.equal(accepted.adoption.state, 'accepted');
   assert.equal(accepted.classification.source, 'ai');
   assert.equal(accepted.classification.hostValidated, true);
-  assert.equal(pending.adoption.state, 'candidate');
+  assert.equal(pending.adoption.state, 'accepted');
   assert.equal(pending.classification.categoryId, '');
   assert.ok(index.classificationSuggestions.some((item) => item.materialId === pending.materialId
     && item.status === 'pending' && item.confidence === 'medium'));
-  assert.equal(listProjectMaterialExceptions(f.project, index, { limit: 100 }).total, 1);
+  assert.equal(listProjectMaterialExceptions(f.project, index, { limit: 100 }).total, 0);
 });
 
 test('directory-classified materials never invoke the AI callback', async (t) => {

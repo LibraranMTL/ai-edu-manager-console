@@ -171,7 +171,7 @@ function createSmartInbox(host) {
       if (old && !['folder', 'download'].includes(type) && studentId !== old.studentId) throw Error('采集来源不能改绑学生');
       if (studentId) await host.context(studentId);
       const selectedTarget = input.target === null ? null : input.target ? P.target(input.target) : old?.target || null;
-      if (selectedTarget && selectedTarget.studentId !== studentId) throw Error('投递目标与来源学生不一致');
+      if (selectedTarget && studentId && selectedTarget.studentId !== studentId) throw Error('投递目标与来源学生不一致');
       if (selectedTarget) await host.validateTarget(selectedTarget);
       const folder = ['folder', 'download'].includes(type) ? await folderAllowed(old?.folder || input.folder) : '';
       if (folder && [...sources.values()].some(s => s.id !== old?.id && s.folder?.toLowerCase() === folder.toLowerCase() && !s.detached)) throw Error('此目录已经是资料来源');
@@ -184,6 +184,8 @@ function createSmartInbox(host) {
       const record = { ...old, id: old?.id || (trusted && input.id) || crypto.randomUUID(), type, folder,
         name: String(input.name || old?.name || path.basename(folder) || type).slice(0, 120), studentId, target: selectedTarget,
         enabled: Boolean(enabled), automatic, detached: false,
+        autoAttributeShared: host.routingV2Enabled !== false
+          && Boolean(input.autoAttributeShared ?? old?.autoAttributeShared ?? false),
         managedRouting: Boolean(input.managedRouting ?? old?.managedRouting),
         activationAt: String(input.activationAt ?? old?.activationAt ?? ''),
         staging: Boolean(input.staging ?? old?.staging), originalMode: mode, schedule,
@@ -308,7 +310,7 @@ function createSmartInbox(host) {
       const ext = path.extname(entry.name).toLowerCase();
       if (!ALLOWED.has(ext) && !P.EXTRACTABLE.has(ext)) return;
       const supported = stat.size > 0 && stat.size <= MAX_BYTES;
-      const unassigned = !source.studentId && !source.target;
+      const unassigned = !source.studentId && !source.target && !(source.automatic && source.autoAttributeShared);
       await save('items', { id: key, sourceId: source.id, sourceRevision: generation, sourceType: source.type,
         locator: entry.locator, name: entry.name, size: stat.size, identity: identity(stat), modifiedAt: new Date(stat.mtimeMs).toISOString(),
         studentId: source.studentId, revision: 1, createdAt: iso(), status: supported && !unassigned ? 'pending' : 'review',
@@ -480,9 +482,11 @@ function createSmartInbox(host) {
     else await verifyReceipt(item, item.receipt);
     const previous = item.receipt ? { target: item.target, receipt: item.receipt } : null;
     const deliveryInput = previous?.receipt.path || item.snapshotPath;
-    const operationId = P.digest([item.id, selected, item.revision]);
+    const deliveryWorkKey = P.digest([item.fingerprint.sha256, selected.type, selected.id,
+      selected.categoryId, 'intake-association-v2']);
+    const operationId = P.digest([item.id, deliveryWorkKey, item.revision]);
     item = await save('items', { ...item, previous, target: selected, operationId, status: 'delivering', receipt: null, associationChange: null,
-      destinationPath: '', executionId: operationId, automatic, message: '', blockReason: null });
+      destinationPath: '', executionId: operationId, deliveryWorkKey, automatic, message: '', blockReason: null });
     try {
       await host.prepareAssociation?.(item);
       const operation = { ...item, folder: source.folder || path.dirname(item.snapshotPath), name: path.basename(item.name) };
@@ -506,12 +510,15 @@ function createSmartInbox(host) {
   }
   async function analyze(item, source, remainingBytes = 200 * 1024) {
     if (!P.studentScopeMatches(item, source)) return save('items', { ...item, status: 'review', message: '来源学生已修改，历史资料须人工核对' });
-    if (!item.studentId) return save('items', { ...item, status: 'review', message: '请勾选资料，在“仅确认学生，由AI分类”中选择学生；未发送正文给Agent。也可手动指定位置投递。' });
-    const routingSource = { ...source, studentId: item.studentId, target: source.target?.studentId === item.studentId ? source.target : null };
+    if (!item.studentId && (!source.automatic || !source.autoAttributeShared)) return save('items', { ...item, status: 'review',
+      message: '共享来源未开启自动投递；可确认学生后由 AI 分类。' });
+    const routingSource = { ...source, studentId: item.studentId,
+      target: source.target && (!item.studentId || source.target.studentId === item.studentId) ? source.target : null };
     await checkCurrent(item, source);
+    item = await snapshot(item, source);
     const context = await host.context(item.studentId);
     if (context.studentId !== item.studentId) throw Error('分类上下文超出已确认学生范围');
-    item = await snapshot(item, source);
+    const routingWorkKey = P.digest([source.id, item.fingerprint.sha256, P.ROUTING_POLICY_VERSION]);
     const data = await extraction(item);
     const textBytes = Buffer.byteLength(data.text);
     if (textBytes > remainingBytes) return { deferred: true, textBytes: 0 };
@@ -519,10 +526,13 @@ function createSmartInbox(host) {
       extractionWarnings: data.warnings, extractionPartial: data.partial, extractionBlocked: data.blocked });
     const review = async message => ({ ...await save('items', { ...item, status: 'review', message }), textBytes });
     if (!data.text.trim() || data.truncated || data.blocked) return review('正文为空、被截断或提取异常，未发送给Agent，请人工确认');
-    if (P.risks(data.text)) return review('包含敏感资料线索，未发送给Agent，请人工确认');
     if (Buffer.byteLength(JSON.stringify(context)) > 100 * 1024) return review('项目上下文过多，请指定来源投递项目');
     let suggestion = { candidates: [], sensitive: false, conflict: false, reason: '' };
-    let decision = P.automaticTarget({ source: routingSource, item, context, text: data.text, suggestion, rules: [...rules.values()] });
+    const sensitiveLocalOnly = P.risks(data.text);
+    let decision = P.automaticTarget({ source: routingSource, item, context, text: data.text, suggestion,
+      rules: [...rules.values()], routingV2Enabled: host.routingV2Enabled !== false,
+      classificationAttempted: false, sensitiveLocalOnly });
+    if (!decision && sensitiveLocalOnly) return review('包含敏感资料线索；仅允许本机同一学生范围内的明确项目或学生资料库归属，未跨学生自动发送。');
     if (!decision) {
       const examples = [...rules.values()].filter(r => r.sourceId === source.id && r.studentId === item.studentId).slice(-8)
         .map(r => ({ identifier: r.identifier, target: r.target, confirmations: r.count, active: r.active, suspended: r.suspended, version: r.version }));
@@ -549,13 +559,26 @@ function createSmartInbox(host) {
         const { cacheFile, ...extracted } = data;
         await putCache(data.cacheFile, { schema: 3, sha256: item.fingerprint.sha256, result: extracted, suggestion, contextHash });
       }
-      decision = P.automaticTarget({ source: routingSource, item, context, text: data.text, suggestion, rules: [...rules.values()] });
+      decision = P.automaticTarget({ source: routingSource, item, context, text: data.text, suggestion,
+        rules: [...rules.values()], routingV2Enabled: host.routingV2Enabled !== false,
+        classificationAttempted: true });
     }
-    item = await save('items', { ...item, status: 'review', suggestion, blockReason: null,
-      execution: item.execution ? { ...item.execution, stage: 'host_committed' } : null, message: data.partial ? '已基于可读正文判断；图片、公式未完整识别，不影响有充分正文证据的分类投递' : suggestion.reason || '请确认投递位置',
+    const sharedUnresolved = !decision && !item.studentId && source.automatic && source.autoAttributeShared;
+    item = await save('items', { ...item, status: sharedUnresolved ? 'retry' : 'review', suggestion, blockReason: null,
+      routingWorkKey, nextRetryAt: sharedUnresolved ? new Date(now() + 6 * 60 * 60 * 1000).toISOString() : '',
+      execution: item.execution ? { ...item.execution, stage: 'host_committed' } : null,
       identifier: P.identifiers(data.text, context.projects).length === 1 ? P.identifiers(data.text, context.projects)[0].id : '',
       proposedTarget: decision?.target || suggestion.candidates[0] || routingSource.target || null, ruleId: decision?.ruleId || '',
-      ruleVersion: rules.get(decision?.ruleId)?.version || 0, basis: decision?.basis || 'agent_suggestion' });
+      ruleVersion: rules.get(decision?.ruleId)?.version || 0, basis: decision?.basis || 'agent_suggestion',
+      routingDecision: decision ? { primaryTarget: decision.target, matchedProjectId: decision.matchedProjectId || '',
+        primaryStudentId: decision.primaryStudentId || decision.target.studentId,
+        linkedStudentIds: decision.linkedStudentIds || [decision.target.studentId],
+        categoryDecision: decision.target.categoryId || '', confidence: decision.confidence ?? null,
+        evidence: decision.evidence || '', resolutionBasis: decision.resolutionBasis || decision.basis || '',
+        provisional: decision.provisional === true, policyVersion: decision.policyVersion || P.ROUTING_POLICY_VERSION } : null,
+      message: sharedUnresolved ? '共享资料已进入自动暂存池；当前无可信项目，项目上下文变化后将自动重试。'
+        : data.partial ? '已基于可读正文判断；图片、公式未完整识别，不影响有充分正文证据的分类投递'
+          : suggestion.reason || '请确认投递位置' });
     if (decision && source.enabled && host.automaticAllowed(item.studentId)) item = await deliverItem(item, source, decision.target, true);
     return { ...item, textBytes: Buffer.byteLength(data.text) };
   }

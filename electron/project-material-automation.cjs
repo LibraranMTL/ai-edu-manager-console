@@ -4,6 +4,8 @@ const { invariant } = require('./project-material-contract.cjs');
 const { unchanged } = require('./project-materials.cjs');
 const { createProjectMaterialClassification,
   reconcileWorkspacePathClassifications } = require('./project-material-classification.cjs');
+const { resolveAutomationFeatureFlags } = require('./automation-feature-flags.cjs');
+const AUTOMATION_FEATURES = resolveAutomationFeatureFlags();
 
 const MATERIAL_AUTOMATION_PIPELINE_VERSION = 'project-material-v1';
 const SYSTEM_GENERATED_NAMES = new Set([
@@ -85,10 +87,10 @@ function automationDisposition(project, record) {
     return { state: 'confirmation', reasons: [record.fingerprintConflict ? 'fingerprint_conflict' : 'fingerprint_incomplete'] };
   }
   if (record.adoption?.state === 'accepted') {
-    if (!record.classification?.categoryId) return { state: 'confirmation', reasons: ['needs_classification'] };
     const complete = record.processing?.state === 'completed'
       && record.processing?.processedVersion === record.version;
-    return { state: complete ? 'completed' : 'processing', reasons: complete ? [] : ['pending_digest'] };
+    return { state: complete ? 'completed' : 'processing', reasons: complete ? []
+      : [record.classification?.categoryId ? 'pending_digest' : 'pending_digest_provisional_category'] };
   }
   if (record.adoption?.state === 'excluded') return { state: 'completed', reasons: [] };
   if (record.classification?.manualLocked) return { state: 'confirmation', reasons: ['manual_locked'] };
@@ -100,6 +102,12 @@ function automationDisposition(project, record) {
     && !projectStudents.has(String(source.studentId)));
   if (crossScope) return { state: 'confirmation', reasons: ['scope_conflict'] };
   const classification = record.classification || {};
+  // The workspace already proves project ownership. Category uncertainty is a
+  // reversible local decision, so it must not block project adoption/digestion;
+  // the file remains in the project inbox and may be reclassified later.
+  if (!classification.categoryId) return AUTOMATION_FEATURES.provisionalProjectInbox
+    ? { state: 'auto_ready', reasons: ['provisional_project_inbox'] }
+    : { state: 'confirmation', reasons: ['needs_classification'] };
   const pathReady = classification.source === 'workspace_path' && Boolean(classification.categoryId);
   const aiReady = classification.source === 'ai' && classification.confidence === 'high'
     && Boolean(classification.categoryId) && classification.hostValidated === true;
@@ -257,7 +265,9 @@ function aiClassificationCandidates(project, index, limit) {
       || record.classification?.categoryId) return false;
     if (record.location?.kind !== 'workspace' || record.location?.rootId !== 'workspace') return false;
     if (!/^[a-f0-9]{64}$/i.test(String(record.sha256 || '')) || record.fingerprintConflict === true) return false;
-    return automationDisposition(project, record).reasons.includes('needs_classification');
+    const disposition = automationDisposition(project, record);
+    return disposition.reasons.includes('needs_classification')
+      || disposition.reasons.includes('provisional_project_inbox');
   }).slice(0, limit);
 }
 

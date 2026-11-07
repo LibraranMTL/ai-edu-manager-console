@@ -26,7 +26,7 @@ test('visible periodic status prefers asynchronous IPC and permits only one pend
   assert.equal(calls, 1); assert.equal(f.changes.length, 0);
   resolve(JSON.stringify({ codexOpened: true })); await first;
   assert.equal(f.changes.find(c => c.name === 'setCodexOpened').value, true);
-  assert.equal(f.changes.length, 12);
+  assert.equal(f.changes.length, 13);
 });
 test('hidden/disposed views do not poll or apply stale asynchronous responses', async () => {
   let resolve, calls = 0;
@@ -40,7 +40,7 @@ test('legacy synchronous bridge remains supported and failed requests can retry'
   await legacy.tick(); assert.equal(legacy.changes.find(c => c.name === 'setSharedInboxCount').value, 4);
   let count = 0;
   const retry = fixture({ async getAppStatusAsync() { if (++count === 1) throw Error('temporary'); return '{}'; } });
-  await retry.tick(); assert.equal(retry.changes.length, 0); await retry.tick(); assert.equal(retry.changes.length, 12);
+  await retry.tick(); assert.equal(retry.changes.length, 0); await retry.tick(); assert.equal(retry.changes.length, 13);
 });
 test('async and legacy main-process app status have identical fields', () => {
   const main = fs.readFileSync(path.join(root, 'electron/main.cjs'), 'utf8');

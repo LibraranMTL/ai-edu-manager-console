@@ -3,7 +3,14 @@ const path = require('node:path');
 const { hashStableFile, unchanged } = require('./project-materials.cjs');
 const { digest } = require('./smart-inbox-policy.cjs');
 const { invariant } = require('./project-material-contract.cjs');
-const key = (item, target) => digest([item.id, target.studentId, item.fingerprint.sha256]);
+const ASSOCIATION_VERSION = 2;
+const key = (item, target) => digest([item.id,
+  target.type === 'project' ? `project:${target.id}` : `student:${target.studentId}`,
+  item.fingerprint.sha256]);
+const legacyKey = (item, target) => digest([item.id, target.studentId, item.fingerprint.sha256]);
+const findAssociation = (index, item, target, materialId = '') => (index.intakeAssociations || []).find(a =>
+  [key(item, target), legacyKey(item, target)].includes(a.key)
+  && (!materialId || a.materialId === materialId));
 const at = () => new Date().toISOString();
 
 // Check under the registry commit lock, not against an earlier UI snapshot.
@@ -43,13 +50,15 @@ function createIntakeAssociations(h) {
       invariant(m?.adoption.state === 'accepted' && m.sha256 === item.fingerprint.sha256, 'receipt_changed', '新目标登记未通过范围及采用核验');
       const resolved = await store.resolve(m.materialId);
       invariant(path.resolve(resolved.path).toLowerCase() === path.resolve(item.receipt.path).toLowerCase(), 'receipt_changed', '新目标回执路径不属于该登记');
-      if (requireAssociation) invariant((index.intakeAssociations || []).some(a => a.key === key(item, item.target) && a.active && a.materialId === m.materialId && a.version === m.version), 'association_missing', '新目标归集关联未完成');
+      if (requireAssociation) invariant(Boolean(findAssociation(index, item, item.target, m.materialId)?.active
+        && findAssociation(index, item, item.target, m.materialId)?.version === m.version), 'association_missing', '新目标归集关联未完成');
     }
   }
   async function prepare(item) {
     const p = scope(item.target); if (!p || !h.isWorkspace(p)) return;
     const store = h.materialHost(p).store, index = await store.read();
-    const association = (index.intakeAssociations || []).find(a => a.key === key(item, item.target) && !a.active && a.ownsAdoption);
+    const association = findAssociation(index, item, item.target);
+    if (association?.active || !association?.ownsAdoption) return;
     const material = index.materials.find(m => m.materialId === association?.materialId);
     if (!material || material.adoption.state !== 'excluded' || material.adoption.actorId !== 'smart-inbox-reroute') return;
     const current = await store.resolve(material.materialId);
@@ -77,11 +86,22 @@ function createIntakeAssociations(h) {
       const m = index.materials.find(m => m.materialId === item.receipt.recordId);
       invariant(m?.sha256 === item.fingerprint.sha256 && m.version === current.version && m.adoption.state === 'accepted', 'receipt_changed', '目标资料尚未采用或版本已变化');
       index.intakeAssociations ||= [];
-      const existing = index.intakeAssociations.find(a => a.key === key(item, item.target));
+      const existing = findAssociation(index, item, item.target);
       if (existing?.active && existing.materialId === m.materialId && existing.version === m.version) return unchanged(existing);
       invariant(index.intakeAssociations.length < 10000 || existing, 'capacity', '项目归集关联记录已达到上限');
       const ownsAdoption = m.intakeOrigin?.itemId === item.id && m.intakeOrigin?.studentId === item.target.studentId;
-      const value = { key: key(item, item.target), itemId: item.id, studentId: item.target.studentId, materialId: m.materialId,
+      const projectStudents = p ? [...new Set((p.studentIds || []).map(String).filter(studentId => {
+        if (typeof h.studentActive === 'function') return h.studentActive(studentId) !== false;
+        const candidate = h.student(studentId);
+        return Boolean(candidate && !candidate.archived && candidate.status !== 'archived');
+      }))].sort() : [String(item.target.studentId)];
+      const linkedStudentIds = p ? projectStudents : [String(item.target.studentId)];
+      invariant(linkedStudentIds.length > 0, 'forbidden', '项目没有可见的活动学生账户');
+      const primaryStudentId = linkedStudentIds.includes(String(item.target.studentId))
+        ? String(item.target.studentId) : linkedStudentIds[0];
+      const value = { key: key(item, item.target), associationVersion: ASSOCIATION_VERSION,
+        itemId: item.id, projectId: p?.id || '', studentId: primaryStudentId, primaryStudentId,
+        linkedStudentIds, materialId: m.materialId,
         version: m.version, sha256: m.sha256, active: true, ownsAdoption, operationId: item.operationId, updatedAt: at() };
       if (existing) Object.assign(existing, value); else index.intakeAssociations.push(value);
       // Only tag an untouched intake-owned record. Later classification changes
@@ -104,7 +124,7 @@ function createIntakeAssociations(h) {
       invariant(index.intakeReroutes.length < 10000, 'capacity', '项目改投回执已达上限');
       const m = index.materials.find(m => m.materialId === previous.receipt.recordId);
       invariant(m, 'material_missing', '旧项目登记缺失，保留新投递等待核对');
-      const association = (index.intakeAssociations || []).find(a => a.key === key(item, previous.target) && a.materialId === m.materialId);
+      const association = findAssociation(index, item, previous.target, m.materialId);
       const external = h.externalReferences ? h.externalReferences(p, m, previous.receipt.path) : ['external_reference_audit_unavailable'];
       invariant(Array.isArray(external), 'reference_audit_failed', '外部引用核对失败');
       const reasons = retentionReasons(index, m, association, item, external);
@@ -125,4 +145,4 @@ function createIntakeAssociations(h) {
   }
   return { prepare, bind, withdraw };
 }
-module.exports = { createIntakeAssociations, retentionReasons };
+module.exports = { ASSOCIATION_VERSION, createIntakeAssociations, retentionReasons };

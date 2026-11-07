@@ -6,6 +6,7 @@ const { spawnSync } = require('node:child_process');
 const { validateWindowsVersion } = require('./version-policy.cjs');
 const { compileLifecycleHook } = require('./compile-lifecycle-hook.cjs');
 const { resolvePnpmVirtualStore } = require('./pnpm-virtual-store.cjs');
+const { createSourceControlAudit } = require('./source-control-audit.cjs');
 
 const repoRoot = path.resolve(__dirname, '..');
 const terminalVersion = JSON.parse(fs.readFileSync(path.join(repoRoot, 'windows-terminal-version.json'), 'utf8'));
@@ -142,6 +143,10 @@ function writeRuntimePackage() {
 }
 
 function build() {
+  const sourceControl = createSourceControlAudit(repoRoot);
+  if (sourceControl.dirty) {
+    throw new Error(`Windows student candidate requires a clean source commit; found ${sourceControl.changedPathCount} changed paths.`);
+  }
   assertInside(stageRoot, stageBase);
   fs.mkdirSync(stageBase, { recursive: true });
   fs.rmSync(stageRoot, { recursive: true, force: true });
@@ -271,6 +276,18 @@ function build() {
     version,
     candidateTag,
     builtAt: new Date().toISOString(),
+    sourceControl,
+    baseline: {
+      version: '0.18.8',
+      versionCode: 238,
+      candidateTag: 'windows-student-learning-cockpit-r4-20261105',
+      exeSha256: 'D9947CB3067C1259A967B7E2DBCE7825D22D89498D8630076C5B315061B549AC',
+    },
+    publicCourseContract: {
+      manifest: 'edu-manager.public-course-manifest.v1',
+      projection: 'student-course-projection.v2',
+      trustPolicyRevision: 'course-trust-transition-2026-11-06-v1',
+    },
     stagingRoot: stageRoot,
     electronLanguages,
     package: { asarBytes, asarFiles: asarFiles.length, nodeModuleFiles: nodeModuleFiles.length },

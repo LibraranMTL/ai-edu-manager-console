@@ -277,6 +277,41 @@ function createZip(exePath, zipPath) {
   run('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', command]);
 }
 
+function verifyPackagedCanvasRuntime(unpackedRoot) {
+  const executable = fs.readdirSync(unpackedRoot).map((name) => path.join(unpackedRoot, name))
+    .find((file) => /\.exe$/i.test(file) && fs.statSync(file).isFile() && path.basename(file).toLowerCase() !== 'elevate.exe');
+  if (!executable) throw new Error('Packaged Windows executable is missing for Canvas runtime verification.');
+  const resourcesRoot = path.join(unpackedRoot, 'resources');
+  const expectedCanvasRoot = path.join(resourcesRoot, 'material-pdf-runtime', 'canvas');
+  const probePath = path.join(stageRoot, 'packaged-canvas-runtime-probe.cjs');
+  const probe = [
+    "'use strict';",
+    "const fs = require('node:fs');",
+    "const path = require('node:path');",
+    "const expected = path.resolve(process.argv[2]);",
+    "const canvasRoot = path.join(process.resourcesPath, 'material-pdf-runtime', 'canvas');",
+    "if (path.resolve(canvasRoot) !== expected || !fs.existsSync(path.join(canvasRoot, 'package.json'))) throw new Error('packaged_canvas_root_missing');",
+    "const { createCanvas } = require(canvasRoot);",
+    "const canvas = createCanvas(8, 8); const context = canvas.getContext('2d'); context.fillStyle = '#1e8f78'; context.fillRect(0, 0, 8, 8);",
+    "const png = canvas.toBuffer('image/png'); context.reset?.(); canvas.width = 1; canvas.height = 1;",
+    "if (png.subarray(0, 8).toString('hex') !== '89504e470d0a1a0a') throw new Error('packaged_canvas_png_invalid');",
+    "process.stdout.write(JSON.stringify({ canvasRoot, resolved: require.resolve(canvasRoot), pngBytes: png.length }));",
+  ].join('\n');
+  fs.writeFileSync(probePath, probe, 'utf8');
+  const result = run(executable, [probePath, expectedCanvasRoot], {
+    capture: true,
+    env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
+  });
+  let report;
+  try { report = JSON.parse(String(result.stdout || '').trim()); }
+  catch { throw new Error('Packaged Canvas runtime probe did not return valid JSON.'); }
+  if (path.resolve(String(report.canvasRoot || '')) !== path.resolve(expectedCanvasRoot)
+    || !String(report.resolved || '').startsWith(path.resolve(expectedCanvasRoot))) {
+    throw new Error('Packaged Canvas runtime probe escaped the audited extra resource.');
+  }
+  return { executable, canvasRoot: expectedCanvasRoot, resolved: report.resolved, pngBytes: Number(report.pngBytes || 0) };
+}
+
 function publishFile(source, destination) {
   const temporary = `${destination}.new`;
   if (fs.existsSync(temporary)) fs.unlinkSync(temporary);
@@ -417,8 +452,11 @@ function build() {
 
     recordPhase('audit-package');
     const asar = locateAsarModule();
-    const pdfRuntimeAudit = require('./build-project-material-pdf.cjs').auditPdfRuntime(
+    const pdfRuntime = require('./build-project-material-pdf.cjs');
+    const pdfRuntimeAudit = pdfRuntime.auditPdfRuntime(
       path.join(unpackedRoot, 'resources', 'material-pdf-runtime'), path.join(stageRoot, 'material-pdf-runtime'));
+    const stagedCanvasRuntime = pdfRuntime.verifyCanvasRuntime(path.join(stageRoot, 'material-pdf-runtime'));
+    const packagedCanvasRuntime = verifyPackagedCanvasRuntime(unpackedRoot);
     const asarFiles = asar.listPackage(appAsar);
     const packagedNodeModules = asarFiles.filter((name) => /^\\node_modules(?:\\|$)/.test(name));
     if (packagedNodeModules.length) throw new Error(`Minimal runtime package unexpectedly contains node_modules (${packagedNodeModules.length} entries).`);
@@ -677,6 +715,7 @@ function build() {
       package: {
         asarBytes,
         pdfRuntime: pdfRuntimeAudit,
+        canvasRuntime: { staged: stagedCanvasRuntime, packaged: packagedCanvasRuntime },
         asarFiles: asarFiles.length,
         nodeModuleFiles: packagedNodeModules.length,
         agentBridge: unpackedAgentBridge,

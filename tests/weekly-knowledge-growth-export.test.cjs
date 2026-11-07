@@ -31,14 +31,14 @@ const snapshot = {
   ],
 };
 
-test('weekly PNG is 1080x1920, deidentified, and preview/save reuse the same bytes', () => {
+test('weekly PNG is 1080x1440, deidentified, and preview/save reuse the same bytes', () => {
   const cache = createWeeklyKnowledgeGrowthImageCache({ maxEntries: 2 });
   const image = cache.create(snapshot);
   assert.equal(image.width, 1080);
-  assert.equal(image.height, 1920);
+  assert.equal(image.height, 1440);
   assert.equal(image.bytes.subarray(0, 8).toString('hex'), '89504e470d0a1a0a');
   assert.equal(image.bytes.readUInt32BE(16), 1080);
-  assert.equal(image.bytes.readUInt32BE(20), 1920);
+  assert.equal(image.bytes.readUInt32BE(20), 1440);
   assert.equal(image.previewBase64, image.bytes.toString('base64'));
   assert.equal(cache.get(image.snapshotId).bytes, image.bytes);
   assert.equal(
@@ -62,7 +62,7 @@ test('Windows bridge and asset card expose scoped load, stale invalidation, and 
   assert.match(preload, /invalidateWeeklyKnowledgeGrowth/);
   assert.match(ui, /请选择一名学生查看周图/);
   assert.match(ui, /本周资料上传/);
-  assert.match(ui, /保存 1080×1920 PNG/);
+  assert.match(ui, /保存 1080×1440 PNG/);
   assert.match(ui, /累计文件资产/);
   assert.match(ui, /weekly-knowledge-growth-report-actions/);
   assert.doesNotMatch(ui, /weekly-knowledge-growth-summary/);

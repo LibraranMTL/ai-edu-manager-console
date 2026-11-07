@@ -45,7 +45,7 @@ test('weekly growth uses stable ISO week keys at the terminal HTTP boundary', ()
   assert.equal(isoWeekKey('not-a-date'), '');
 });
 
-test('weekly growth renders the portable landscape chart used by student home', () => {
+test('weekly growth renders the complete 7-day portrait chart used by mobile preview and sharing', () => {
   const png = renderWeeklyKnowledgeGrowthPng({
     ok: true, weekStart: '2026-11-02', weekEnd: '2026-11-08', currentDate: '2026-11-07', timezone: 'Asia/Shanghai',
     assetTotal: 253, weeklyUploadedMaterials: 5, undatedAssetCount: 0,
@@ -56,8 +56,11 @@ test('weekly growth renders the portable landscape chart used by student home', 
       { label: '周日', date: '2026-11-08', uploads: null },
     ],
   });
-  assert.ok(WIDTH > HEIGHT, 'student home requires a landscape chart');
+  assert.equal(WIDTH, 1080);
+  assert.equal(HEIGHT, 1440);
   assert.equal(png.subarray(0, 8).toString('hex'), '89504e470d0a1a0a');
+  assert.equal(png.readUInt32BE(16), 1080);
+  assert.equal(png.readUInt32BE(20), 1440);
 });
 
 test('first reliable registration is idempotent and survives withdrawal and re-import', (t) => {

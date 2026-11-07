@@ -50,6 +50,7 @@ test('staged runtime is dependency-free after Vite has bundled renderer dependen
   assert.match(releaseScript, /stagePdfRuntime\(stageRoot\)/);
   assert.match(releaseScript, /extraResources: \[\{ from: 'material-pdf-runtime', to: 'material-pdf-runtime' \}\]/);
   assert.match(releaseScript, /pdfRuntime: pdfRuntimeAudit/);
+  assert.match(releaseScript, /verifyPackagedCanvasRuntime\(unpackedRoot\)/);
   assert.match(releaseScript, /'cloud-report-service\/remote-result-contract\.cjs'/);
   assert.match(releaseScript, /'cloud-report-service\/v2-contract\.cjs'/);
   assert.match(releaseScript, /Packaged cloud result runtime is missing/);

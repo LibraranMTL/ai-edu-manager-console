@@ -23,7 +23,7 @@ export const WeeklyKnowledgeGrowthCard = memo(function WeeklyKnowledgeGrowthCard
         <small>图片已包含完整统计；截至 {snapshot.currentDate || snapshot.asOf.slice(0, 10)} · {snapshot.timezone}。</small>
         <div className="actions compact-actions">
           <button className="secondary compact" type="button" disabled={m.weeklyKnowledgeGrowthLoading || m.weeklyKnowledgeGrowthSaving} onClick={() => void a.refreshWeeklyKnowledgeGrowth()}><RefreshCw size={16} />重新读取</button>
-          <button className="primary compact" type="button" disabled={m.weeklyKnowledgeGrowthLoading || m.weeklyKnowledgeGrowthSaving} onClick={() => void a.saveWeeklyKnowledgeGrowth()}><Download size={16} />{m.weeklyKnowledgeGrowthSaving ? '保存窗口已打开…' : '保存 1080×1920 PNG'}</button>
+          <button className="primary compact" type="button" disabled={m.weeklyKnowledgeGrowthLoading || m.weeklyKnowledgeGrowthSaving} onClick={() => void a.saveWeeklyKnowledgeGrowth()}><Download size={16} />{m.weeklyKnowledgeGrowthSaving ? '保存窗口已打开…' : '保存 1080×1440 PNG'}</button>
         </div>
       </div>
     </div>}

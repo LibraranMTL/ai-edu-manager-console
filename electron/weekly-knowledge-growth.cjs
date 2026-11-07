@@ -13,8 +13,11 @@ function resolveCanvasRuntime(resourcesPath = process.resourcesPath) {
 
 const { createCanvas } = require(resolveCanvasRuntime());
 
-const WIDTH = 1280;
-const HEIGHT = 720;
+// This image is consumed directly by Android.  Keep the 7-day snapshot and
+// student scope in the host; the mobile client only previews/shares these
+// exact bytes and must not re-aggregate a "last 7 days + today" summary.
+const WIDTH = 1080;
+const HEIGHT = 1440;
 const MAX_PNG_BYTES = 12 * 1024 * 1024;
 
 function currentTimezone() {
@@ -102,71 +105,72 @@ function renderWeeklyKnowledgeGrowthPng(snapshot) {
   const pale = '#e4f2ee';
   ctx.fillStyle = ink;
   ctx.textAlign = 'left';
-  ctx.font = '600 26px "Microsoft YaHei", "Noto Sans CJK SC", sans-serif';
-  ctx.fillText('单学生资料统计', 56, 56);
-  ctx.font = '700 46px "Microsoft YaHei", "Noto Sans CJK SC", sans-serif';
-  ctx.fillText('本周资料上传', 56, 108);
+  ctx.font = '600 30px "Microsoft YaHei", "Noto Sans CJK SC", sans-serif';
+  ctx.fillText('单学生资料统计', 60, 80);
+  ctx.font = '700 58px "Microsoft YaHei", "Noto Sans CJK SC", sans-serif';
+  ctx.fillText('本周资料上传', 60, 150);
   ctx.font = '400 26px "Microsoft YaHei", "Noto Sans CJK SC", sans-serif';
   ctx.fillStyle = muted;
   ctx.textAlign = 'right';
-  ctx.fillText(`${snapshot.weekStart} 至 ${snapshot.weekEnd}`, 1224, 104);
+  ctx.fillText(`${snapshot.weekStart} 至 ${snapshot.weekEnd}`, 1020, 144);
   ctx.textAlign = 'left';
 
-  roundedRect(ctx, 56, 138, 552, 108, 22, '#ffffff');
-  roundedRect(ctx, 628, 138, 596, 108, 22, '#ffffff');
-  ctx.font = '500 22px "Microsoft YaHei", "Noto Sans CJK SC", sans-serif';
+  roundedRect(ctx, 60, 204, 456, 188, 28, '#ffffff');
+  roundedRect(ctx, 564, 204, 456, 188, 28, '#ffffff');
+  ctx.font = '500 26px "Microsoft YaHei", "Noto Sans CJK SC", sans-serif';
   ctx.fillStyle = muted;
-  ctx.fillText('累计文件资产', 84, 174);
-  ctx.fillText('本周新上传', 656, 174);
+  ctx.fillText('累计文件资产', 92, 254);
+  ctx.fillText('本周新上传', 596, 254);
   ctx.fillStyle = ink;
-  ctx.font = '700 54px "Segoe UI", "Microsoft YaHei", sans-serif';
-  ctx.fillText(String(snapshot.assetTotal), 84, 222);
-  ctx.fillText(String(snapshot.weeklyUploadedMaterials), 656, 222);
-  ctx.font = '500 20px "Microsoft YaHei", sans-serif';
+  ctx.font = '700 72px "Segoe UI", "Microsoft YaHei", sans-serif';
+  ctx.fillText(String(snapshot.assetTotal), 92, 338);
+  ctx.fillText(String(snapshot.weeklyUploadedMaterials), 596, 338);
+  ctx.font = '500 26px "Microsoft YaHei", sans-serif';
   ctx.fillStyle = muted;
-  ctx.fillText('项', 184, 220);
-  ctx.fillText('份', 756, 220);
+  ctx.fillText('项', 232, 334);
+  ctx.fillText('份', 736, 334);
 
-  roundedRect(ctx, 56, 266, 1168, 336, 24, '#ffffff');
+  roundedRect(ctx, 60, 438, 960, 706, 28, '#ffffff');
   ctx.fillStyle = ink;
-  ctx.font = '700 24px "Microsoft YaHei", sans-serif';
-  ctx.fillText('每日新上传资料', 84, 306);
+  ctx.font = '700 30px "Microsoft YaHei", sans-serif';
+  ctx.fillText('每日新上传资料', 96, 496);
   const known = snapshot.days.filter((day) => day.uploads !== null).map((day) => Number(day.uploads || 0));
   const max = Math.max(1, ...known);
-  const chartTop = 346;
-  const chartBottom = 520;
+  const chartTop = 566;
+  const chartBottom = 988;
   const chartHeight = chartBottom - chartTop;
-  const slot = 158;
+  const slot = 126;
   snapshot.days.forEach((day, index) => {
-    const x = 82 + index * slot;
+    const x = 92 + index * slot;
     const count = day.uploads;
-    const barHeight = count === null ? 0 : Math.max(count === 0 ? 7 : 14, (Number(count) / max) * chartHeight);
+    const barHeight = count === null ? 0 : Math.max(count === 0 ? 10 : 18, (Number(count) / max) * chartHeight);
     ctx.fillStyle = count === null ? '#edf1f0' : pale;
-    roundedRect(ctx, x, chartTop, 116, chartHeight, 10, ctx.fillStyle);
+    roundedRect(ctx, x, chartTop, 92, chartHeight, 12, ctx.fillStyle);
     if (count !== null) {
       ctx.fillStyle = green;
-      roundedRect(ctx, x, chartBottom - barHeight, 116, barHeight, 10, green);
+      roundedRect(ctx, x, chartBottom - barHeight, 92, barHeight, 12, green);
     }
-    ctx.font = '700 22px "Segoe UI", "Microsoft YaHei", sans-serif';
+    ctx.font = '700 26px "Segoe UI", "Microsoft YaHei", sans-serif';
     ctx.fillStyle = count === null ? '#9aabaa' : ink;
-    drawCentered(ctx, count === null ? '—' : count, x + 58, chartBottom - barHeight - 12);
-    ctx.font = '600 20px "Microsoft YaHei", sans-serif';
+    drawCentered(ctx, count === null ? '—' : count, x + 46, chartBottom - barHeight - 18);
+    ctx.font = '600 23px "Microsoft YaHei", sans-serif';
     ctx.fillStyle = ink;
-    drawCentered(ctx, day.label, x + 58, 552);
-    ctx.font = '400 17px "Segoe UI", sans-serif';
+    drawCentered(ctx, day.label, x + 46, 1042);
+    ctx.font = '400 19px "Segoe UI", sans-serif';
     ctx.fillStyle = muted;
-    drawCentered(ctx, String(day.date).slice(5), x + 58, 578);
+    drawCentered(ctx, String(day.date).slice(5), x + 46, 1074);
   });
 
-  roundedRect(ctx, 56, 620, 1168, 60, 18, '#e7f1ef');
+  roundedRect(ctx, 60, 1190, 960, 144, 24, '#e7f1ef');
   ctx.textAlign = 'left';
   ctx.fillStyle = ink;
-  ctx.font = '400 18px "Microsoft YaHei", sans-serif';
-  ctx.fillText('文件数量用于呈现资料流转，不代表掌握度或学习效果。', 80, 657);
+  ctx.font = '400 22px "Microsoft YaHei", sans-serif';
+  ctx.fillText('文件数量用于呈现资料流转，不代表掌握度或学习效果。', 92, 1248);
+  ctx.fillStyle = muted;
+  ctx.font = '400 20px "Microsoft YaHei", sans-serif';
+  ctx.fillText('完整展示本周 7 个逐日统计；仅限当前授权学生。', 92, 1294);
   if (Number(snapshot.undatedAssetCount) > 0) {
-    ctx.fillStyle = muted;
-    ctx.textAlign = 'right';
-    ctx.fillText(`另有 ${snapshot.undatedAssetCount} 份资料上传日期不明，未计入本周趋势。`, 1202, 657);
+    ctx.fillText(`另有 ${snapshot.undatedAssetCount} 份资料上传日期不明，未计入本周趋势。`, 92, 1318);
   }
   const bytes = canvas.toBuffer('image/png');
   ctx.reset();

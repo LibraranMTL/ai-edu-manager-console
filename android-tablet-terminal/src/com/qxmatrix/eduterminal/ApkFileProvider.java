@@ -20,6 +20,9 @@ public class ApkFileProvider extends ContentProvider {
 
     @Override
     public String getType(Uri uri) {
+        String name = uri == null ? "" : String.valueOf(uri.getLastPathSegment()).toLowerCase(java.util.Locale.ROOT);
+        if (name.endsWith(".svg")) return "image/svg+xml";
+        if (name.endsWith(".png")) return "image/png";
         return "application/vnd.android.package-archive";
     }
 

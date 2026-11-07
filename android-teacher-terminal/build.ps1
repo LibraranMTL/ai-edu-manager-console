@@ -50,7 +50,7 @@ try {
   $releaseDir = Join-Path $projectRoot 'release\teacher-terminal'
   $unsignedApk = Join-Path $buildDir 'teacher-terminal-unsigned.apk'
   $alignedApk = Join-Path $buildDir 'teacher-terminal-aligned.apk'
-  $finalApk = Join-Path $releaseDir 'AI-edu-manager-teacher-terminal-0.1.4.apk'
+  $finalApk = Join-Path $releaseDir 'AI-edu-manager-teacher-terminal-0.1.5.apk'
   $keystore = Join-Path $scriptRoot 'teacher-debug.keystore'
 
   Remove-Item -LiteralPath $buildDir -Recurse -Force -ErrorAction SilentlyContinue
@@ -65,8 +65,10 @@ try {
 
   $javaFiles = @(
     (Join-Path $scriptRoot 'src\com\qxmatrix\eduteacher\MainActivity.java'),
+    (Join-Path $scriptRoot 'src\com\qxmatrix\eduteacher\ConversationDraftStore.java'),
     (Join-Path $projectRoot 'android-shared\src\com\qxmatrix\projectmaterials\ProjectMaterialsDialog.java'),
     (Join-Path $projectRoot 'android-shared\src\com\qxmatrix\terminallearning\TerminalLearningDialog.java'),
+    (Join-Path $projectRoot 'android-shared\src\com\qxmatrix\markdown\MarkdownReadOnlyDialog.java'),
     (Join-Path $scriptRoot 'src\com\qxmatrix\eduteacher\ProjectMaterialUploadQueue.java'),
     (Join-Path $scriptRoot 'src\com\qxmatrix\eduteacher\ApkFileProvider.java'),
     (Join-Path $scriptRoot 'src\com\qxmatrix\eduteacher\CaptureProjectionService.java'),
@@ -139,7 +141,7 @@ try {
 
   $realReleaseDir = Join-Path $realProjectRoot 'release\teacher-terminal'
   New-Item -ItemType Directory -Force -Path $realReleaseDir | Out-Null
-  $realFinalApk = Join-Path $realReleaseDir 'AI-edu-manager-teacher-terminal-0.1.4.apk'
+  $realFinalApk = Join-Path $realReleaseDir 'AI-edu-manager-teacher-terminal-0.1.5.apk'
   Get-Item -LiteralPath $realFinalApk | Format-List FullName,Length,LastWriteTime
 } finally {
   cmd /c "subst $drive /d" | Out-Null

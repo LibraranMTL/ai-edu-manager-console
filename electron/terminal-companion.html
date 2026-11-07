@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'self'">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>学生端学习工具条</title>
+  <style>
+    *{box-sizing:border-box}html,body{margin:0;width:100%;height:100%;overflow:hidden;background:transparent;font-family:"Microsoft YaHei UI",system-ui,sans-serif;color:#18332d}
+    .bar{height:52px;display:flex;align-items:center;gap:5px;padding:5px 6px;border:1px solid #b9d8d0;border-radius:14px;background:rgba(248,252,250,.98);box-shadow:0 7px 24px rgba(17,70,57,.18);-webkit-app-region:drag}
+    .brand{width:38px;height:38px;display:grid;place-items:center;border-radius:11px;background:#087f73;color:#fff;font-size:11px;font-weight:900;line-height:1.05;text-align:center}
+    .student{min-width:70px;max-width:110px;display:grid;gap:1px;padding:0 5px}.student small{color:#6d817c;font-size:8px}.student strong{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11px}
+    button{height:36px;display:inline-flex;align-items:center;gap:3px;padding:0 8px;border:0;border-radius:10px;color:#19594c;background:#e7f2ef;font-size:10px;font-weight:800;white-space:nowrap;cursor:pointer;-webkit-app-region:no-drag}button:hover{background:#d4eae4}button:disabled{opacity:.45;cursor:not-allowed}.primary{color:#fff;background:#087f73}.primary:hover{background:#066a60}.icon{width:30px;padding:0;justify-content:center;background:transparent;color:#6b7e79}.spacer{flex:1}.offline{color:#9b5e24}
+  </style>
+</head>
+<body>
+  <main class="bar">
+    <div class="brand">AI<br>学习</div>
+    <div class="student"><small id="status">学生空间</small><strong id="student">尚未进入</strong></div>
+    <button class="primary requires-session" data-action="collection">采集</button>
+    <button class="requires-session" data-action="queue">整理</button>
+    <button class="requires-session" id="learning" data-action="learning" aria-expanded="false">学习</button>
+    <button class="requires-session" id="project-tutor" data-action="project-tutor" aria-expanded="false">项目导师</button>
+    <button class="requires-session" data-action="agents">AI设置</button>
+    <span class="spacer"></span>
+    <button class="icon" data-action="hide" aria-label="隐藏工具条" title="隐藏工具条">×</button>
+  </main>
+  <script src="terminal-companion-renderer.js"></script>
+</body>
+</html>

@@ -61,6 +61,19 @@ function copyFile(relativePath) {
   fs.copyFileSync(source, destination);
 }
 
+function minifyStagedMainProcess() {
+  const esbuild = require('node:module').createRequire(require.resolve('vite/package.json'))('esbuild');
+  const target = path.join(stageRoot, 'electron', 'terminal-main.cjs');
+  const source = fs.readFileSync(target, 'utf8');
+  const transformed = esbuild.transformSync(source, {
+    loader: 'js',
+    minify: true,
+    target: 'node20',
+    legalComments: 'none',
+  });
+  fs.writeFileSync(target, transformed.code, 'utf8');
+}
+
 function locateAsarModule() {
   const pnpmRoot = resolvePnpmVirtualStore(repoRoot);
   const packageDir = fs.readdirSync(pnpmRoot).find((name) => name.startsWith('@electron+asar@'));
@@ -141,6 +154,15 @@ function build() {
   for (const relative of [
     'electron/terminal-main.cjs',
     'electron/terminal-preload.cjs',
+    'electron/terminal-companion.html',
+    'electron/terminal-companion-preload.cjs',
+    'electron/terminal-companion-renderer.js',
+    'electron/companion-popover.html',
+    'electron/companion-popover-preload.cjs',
+    'electron/companion-popover-renderer.js',
+    'electron/companion-toolbar.cjs',
+    'electron/terminal-agent-bridge.cjs',
+    'electron/terminal-agent-mcp.cjs',
     'electron/terminal-practice-drafts.cjs',
     'electron/practice-card-export.cjs',
     'electron/practice-language-labels.json',
@@ -166,6 +188,7 @@ function build() {
     'public/course-catalog/trusted-course-issuers.json',
     'public/brand/robogala.ico',
   ]) copyFile(relative);
+  minifyStagedMainProcess();
   compileLifecycleHook(path.join(stageRoot, 'electron', 'agent-lifecycle-hook.cs'), path.join(stageRoot, 'electron', 'agent-lifecycle-hook.exe'));
   require('./build-practice-runtime.cjs').bundlePracticeRuntime(stageRoot, require('node:module').createRequire(require.resolve('vite/package.json'))('esbuild'), {minify:true});
   writeRuntimePackage();
@@ -196,6 +219,15 @@ function build() {
   for (const expected of [
     '\\electron\\terminal-main.cjs',
     '\\electron\\terminal-preload.cjs',
+    '\\electron\\terminal-companion.html',
+    '\\electron\\terminal-companion-preload.cjs',
+    '\\electron\\terminal-companion-renderer.js',
+    '\\electron\\companion-popover.html',
+    '\\electron\\companion-popover-preload.cjs',
+    '\\electron\\companion-popover-renderer.js',
+    '\\electron\\companion-toolbar.cjs',
+    '\\electron\\terminal-agent-bridge.cjs',
+    '\\electron\\terminal-agent-mcp.cjs',
     '\\electron\\terminal-practice-drafts.cjs',
     '\\electron\\practice-card-export.cjs',
     '\\electron\\practice-print-window.cjs',

@@ -12,12 +12,26 @@ const main = read('electron', 'terminal-main.cjs');
 test('manual upload remains available in personal and shared student terminal modes', () => {
   const gridStart = ui.indexOf('<section className="student-action-grid"');
   const grid = ui.slice(gridStart, ui.indexOf('</section>', gridStart));
-  const uploadIndex = grid.indexOf('title="上传学习资料"');
+  const uploadIndex = grid.indexOf('title="上传资料"');
   const modeSpecificIndex = grid.indexOf("config.terminalMode === 'personal'");
   assert.ok(uploadIndex > 0, 'manual upload tile should stay in the shared action grid');
   assert.ok(modeSpecificIndex > uploadIndex, 'manual upload must not be conditional on personal-terminal mode');
   assert.match(grid, /title="自动投递"/);
   assert.match(ui, /共享终端不会持续监测文件夹/);
+});
+
+test('Windows student terminal groups functions under the same four primary modules as Android', () => {
+  assert.match(ui, /type StudentPrimaryModule = 'collection' \| 'connection' \| 'archive' \| 'learning'/);
+  assert.match(ui, /aria-label="学生端四个模块"/);
+  assert.match(ui, /资料搜集/);
+  assert.match(ui, /主机连接/);
+  assert.match(ui, /教育档案/);
+  assert.match(ui, /学习行动/);
+  assert.match(ui, /aria-label="资料搜集功能"/);
+  assert.match(ui, /aria-label="教育档案功能"/);
+  assert.match(ui, /aria-label="学习行动功能"/);
+  assert.match(ui, /主机连接与学生空间/);
+  assert.match(ui, /学生端四个模块/);
 });
 
 test('Windows student terminal reads reports and archives through the scoped student session', () => {

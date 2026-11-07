@@ -23,7 +23,7 @@ test('Windows student terminal lists only current-student projects and reads pro
   const terminalMain = read('electron/terminal-main.cjs');
 
   assert.match(renderer, /projects\.filter\(\(project\) => \(project\.studentIds \|\| \[\]\)\.includes\(selectedStudentId\)\)/);
-  assert.match(renderer, /查看关联项目知识/);
+  assert.match(renderer, /title="项目资料"/);
   assert.match(renderer, /当前学生还没有关联学习项目/);
   assert.match(preload, /listProjectKnowledgeFiles/);
   assert.match(preload, /readProjectKnowledgeFile/);

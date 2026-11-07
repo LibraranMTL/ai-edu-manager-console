@@ -49,17 +49,31 @@ test('Windows student terminal reads reports and archives through the scoped stu
   assert.match(ui, /只读取当前学生/);
 });
 
-test('Windows student home provides a bounded learning workbench and clickable material-statistics share image', () => {
+test('Windows student home provides a bounded learning workbench and uses the host-issued weekly material chart', () => {
   assert.match(ui, /我的学情工作台/);
   assert.match(ui, /今天最值得推进的一件事/);
   assert.match(ui, /本周行动/);
   assert.match(ui, /重点项目/);
   assert.match(ui, /五维学情/);
   assert.match(ui, /我的资料统计图/);
-  assert.match(ui, /materialStatsSvg\(selectedStudent, knowledgeProjects\.length, dashboardWeek\)/);
-  assert.match(ui, /exportStudentMaterialStatsImage/);
-  assert.match(preload, /exportStudentMaterialStatsImage/);
-  assert.match(main, /terminal:export-student-material-stats-image/);
+  assert.match(ui, /student-weekly-growth-chart-button/);
+  assert.match(ui, /getKnowledgeGrowthImage/);
+  assert.match(ui, /exportKnowledgeGrowthImage\(growthImage, 'share'\)/);
+  assert.doesNotMatch(ui, /materialStatsSvg/);
+});
+
+test('Windows student keeps learning status available when the weekly chart cannot be read', () => {
+  assert.match(ui, /Promise\.allSettled\(\[api\.getLearningStatus\(\), api\.listKnowledgeGrowthWeeks\(\)\]\)/);
+  assert.match(ui, /学习状态仍可正常记录/);
+  assert.match(ui, /setGrowthImageLoadError/);
+});
+
+test('Windows student renders growth and project knowledge in the right-side reader', () => {
+  assert.match(ui, /# 我的成长模型/);
+  assert.match(ui, /## 能力画像/);
+  assert.match(ui, /student-growth-reader/);
+  const projectReader = ui.slice(ui.indexOf('const readProjectKnowledgeFile'), ui.indexOf('const openCourse'));
+  assert.match(projectReader, /setReaderDialogOpen\(false\)/);
 });
 
 test('Windows student exposes existing companion modes from their appropriate workspaces', () => {

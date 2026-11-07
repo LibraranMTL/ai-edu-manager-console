@@ -106,28 +106,6 @@ function currentIsoWeekKey(date = new Date()) {
   return `${value.getUTCFullYear()}-W${String(week).padStart(2, '0')}`;
 }
 
-function base64FromUtf8(value: string) {
-  const bytes = new TextEncoder().encode(value);
-  let binary = '';
-  bytes.forEach((byte) => { binary += String.fromCharCode(byte); });
-  return window.btoa(binary);
-}
-
-function materialStatsSvg(student: Student, projectCount: number, week: string) {
-  const rows = [
-    ['原始资料', student.rawFileCount || 0, '#0c8b7a'],
-    ['已整理资料', student.processedDigestCount || 0, '#2f80ed'],
-    ['档案条目', student.archiveFileCount || 0, '#9b51e0'],
-    ['关联项目', projectCount, '#f2994a'],
-  ] as const;
-  const max = Math.max(1, ...rows.map(([, value]) => value));
-  const bars = rows.map(([label, value, color], index) => {
-    const y = 88 + index * 54;
-    const width = Math.max(value ? 10 : 0, Math.round((value / max) * 270));
-    return `<text x="34" y="${y + 17}" fill="#38504b" font-size="14" font-family="Microsoft YaHei, sans-serif">${label}</text><rect x="150" y="${y}" width="270" height="26" rx="13" fill="#edf4f2"/><rect x="150" y="${y}" width="${width}" height="26" rx="13" fill="${color}"/><text x="440" y="${y + 18}" fill="#173531" font-size="15" font-weight="700" font-family="Arial, Microsoft YaHei, sans-serif">${value}</text>`;
-  }).join('');
-  return `<svg xmlns="http://www.w3.org/2000/svg" width="520" height="360" viewBox="0 0 520 360"><rect width="520" height="360" rx="28" fill="#f7fbfa"/><text x="34" y="48" fill="#173531" font-size="24" font-weight="700" font-family="Microsoft YaHei, sans-serif">我的资料统计</text><text x="34" y="72" fill="#6b817b" font-size="13" font-family="Microsoft YaHei, sans-serif">${week} · 仅统计当前学生本人资料</text>${bars}<line x1="34" y1="322" x2="486" y2="322" stroke="#dce9e5"/><text x="34" y="345" fill="#6b817b" font-size="12" font-family="Microsoft YaHei, sans-serif">AI教育管家 · 学生端</text></svg>`;
-}
 type PracticeCard = { id: string; studentId: string; status: string; content: { title: string; subject: string; knowledgePoint: string; prompt: string; hint?: string; answer?: string; explanation?: string; rationale?: string }; createdAt?: string };
 type PracticeDashboard = { current?: PracticeCard | null; history?: PracticeCard[] };
 type PlanningKind = 'guidance' | 'topics' | 'competitions';
@@ -209,7 +187,7 @@ type TerminalBridge = {
   submitLearningStatus: (input: LearningStatusInput & { submissionId: string }) => Promise<{ entry: LearningStatusEntry }>;
   getProjectComprehensiveReport: (projectId: string) => Promise<{ title: string; status: string; content: string; updatedAt?: string }>;
   listKnowledgeGrowthWeeks: () => Promise<{ weeks?: string[]; currentWeek?: string }>;
-  getKnowledgeGrowthImage: (week: string) => Promise<{ week: string; mimeType: string; imageBase64: string; status: string }>;
+  getKnowledgeGrowthImage: (week: string) => Promise<{ week: string; mimeType: string; imageBase64: string; status?: string }>;
   getLearningTrajectory: () => Promise<{ status: string; message?: string; taxonomyVersion?: string; states?: LearningTrajectoryState[] }>;
   uploadCapturedMedia: (input: { kind: 'photo' | 'audio'; mimeType: string; base64: string; sourceEventId: string }, target: UploadTarget) => Promise<{ success?: number; failed?: number; pending?: number; total?: number; localRecoveryPath?: string }>;
   quickScreenshot: (sourceId: string, target: UploadTarget) => Promise<{ success?: number; failed?: number; pending?: number; total?: number }>;
@@ -265,25 +243,46 @@ function targetKey(target?: UploadTarget | null) {
   return target?.id ? `${target.type}:${target.id}` : '';
 }
 
+function growthLabel(value: unknown, fallback = '待标注') {
+  const normalized = String(value || '').replace(/[\r\n\t]+/g, ' ').trim();
+  if (!normalized) return fallback;
+  const segments = normalized.replace(/\\/g, '/').split('/').filter(Boolean);
+  const compact = segments.length > 1 && /^[a-z]:$/i.test(segments[0] || '') ? segments.at(-1) || normalized : normalized;
+  return compact.replace(/[|]/g, '／').trim().slice(0, 110) || fallback;
+}
+
 function formatGrowthSummary(payload: GrowthSummary) {
   const summary = payload.summary || {};
   const abilities = payload.abilities || [];
   const projects = payload.projects || [];
   const evidence = payload.recentEvidence || [];
+  const number = (value: unknown) => Number(value || 0);
+  const tableCell = (value: unknown, fallback = '—') => growthLabel(value, fallback).replace(/\|/g, '／');
   const lines = [
-    `更新时间：${payload.updatedAt ? payload.updatedAt.replace('T', ' ').slice(0, 16) : '等待主机更新'}`,
+    '# 我的成长模型',
     '',
-    `成长证据 ${summary.evidenceCount || 0} 条 · 已确认 ${summary.confirmedCount || 0} 条 · 观察中 ${summary.watchingCount || 0} 条`,
-    `能力维度 ${summary.abilityCount || 0} 个 · 关联项目 ${summary.projectCount || 0} 个`,
+    `> 更新于 ${payload.updatedAt ? payload.updatedAt.replace('T', ' ').slice(0, 16) : '等待主机更新'}。此页呈现资料和项目的成长证据状态，**不等同于学习掌握度或能力结论**。`,
     '',
-    '能力画像',
-    ...(abilities.length ? abilities.map((item) => `• ${item.name || '待标注'}：${item.maturityLabel || '证据不足'}，${item.trendLabel || '尚不足以判断'}；证据 ${item.evidenceCount || 0} 条${item.projectNames?.length ? `；项目 ${item.projectNames.join('、')}` : ''}`) : ['暂无已形成的能力画像。']),
+    '| 成长证据 | 已确认 | 观察中 | 能力维度 | 关联项目 |',
+    '| ---: | ---: | ---: | ---: | ---: |',
+    `| ${number(summary.evidenceCount)} 条 | ${number(summary.confirmedCount)} 条 | ${number(summary.watchingCount)} 条 | ${number(summary.abilityCount)} 个 | ${number(summary.projectCount)} 个 |`,
     '',
-    '项目贡献',
-    ...(projects.length ? projects.map((item) => `• ${item.projectName || '未命名项目'}：${item.reviewStatusLabel || '积累中'}；已确认 ${item.confirmedEvidenceCount || 0}/${item.evidenceCount || 0} 条${item.abilityNames?.length ? `；能力 ${item.abilityNames.join('、')}` : ''}`) : ['暂无项目贡献记录。']),
+    '## 能力画像',
+    ...(abilities.length ? [
+      '| 能力维度 | 当前状态 | 变化趋势 | 证据 | 关联项目 |',
+      '| --- | --- | --- | ---: | --- |',
+      ...abilities.map((item) => `| ${tableCell(item.name)} | ${tableCell(item.maturityLabel, '证据不足')} | ${tableCell(item.trendLabel, '尚不足以判断')} | ${number(item.evidenceCount)} 条 | ${(item.projectNames || []).map((name) => tableCell(name)).join('、') || '—'} |`),
+    ] : ['暂无已形成的能力画像。']),
     '',
-    '近期成长证据',
-    ...(evidence.length ? evidence.map((item) => `• ${item.title || '成长证据'}（${item.statusLabel || '观察中'}${item.ability ? ` · ${item.ability}` : ''}${item.projectName ? ` · ${item.projectName}` : ''}）`) : ['暂无已确认或观察中的成长证据。']),
+    '## 项目贡献',
+    ...(projects.length ? [
+      '| 项目 | 当前状态 | 已确认 / 证据 | 关联能力 |',
+      '| --- | --- | ---: | --- |',
+      ...projects.map((item) => `| ${tableCell(item.projectName, '未命名项目')} | ${tableCell(item.reviewStatusLabel, '积累中')} | ${number(item.confirmedEvidenceCount)} / ${number(item.evidenceCount)} 条 | ${(item.abilityNames || []).map((name) => tableCell(name)).join('、') || '—'} |`),
+    ] : ['暂无项目贡献记录。']),
+    '',
+    '## 近期成长证据',
+    ...(evidence.length ? evidence.map((item) => `- **${growthLabel(item.title, '成长证据')}** · ${growthLabel(item.statusLabel, '观察中')}${item.ability ? ` · ${growthLabel(item.ability)}` : ''}${item.projectName ? ` · ${growthLabel(item.projectName)}` : ''}`) : ['暂无已确认或观察中的成长证据。']),
   ];
   return lines.join('\n');
 }
@@ -480,7 +479,8 @@ function TerminalApp() {
   const [collaborationProjectId, setCollaborationProjectId] = useState('');
   const [projectReport, setProjectReport] = useState<{ title: string; status: string; content: string; updatedAt?: string } | null>(null);
   const [growthWeeks, setGrowthWeeks] = useState<string[]>([]);
-  const [growthImage, setGrowthImage] = useState<{ week: string; mimeType: string; imageBase64: string; status: string } | null>(null);
+  const [growthImage, setGrowthImage] = useState<{ week: string; mimeType: string; imageBase64: string; status?: string } | null>(null);
+  const [growthImageLoadError, setGrowthImageLoadError] = useState('');
   const [learningTrajectory, setLearningTrajectory] = useState<{ status: string; message?: string; taxonomyVersion?: string; states: LearningTrajectoryState[] } | null>(null);
   const [mediaCaptureMode, setMediaCaptureMode] = useState<'photo' | 'audio' | null>(null);
   const [mediaCaptureBlob, setMediaCaptureBlob] = useState<Blob | null>(null);
@@ -513,6 +513,34 @@ function TerminalApp() {
   }, [api, selectedStudentId]);
 
   useEffect(() => {
+    let current = true;
+    setGrowthWeeks([]);
+    setGrowthImage(null);
+    setGrowthImageLoadError('');
+    if (!api || !selectedStudentId || !learningCapabilities.weeklyKnowledgeGrowthImage) return () => { current = false; };
+    void (async () => {
+      try {
+        const payload = await api.listKnowledgeGrowthWeeks();
+        if (!current) return;
+        const weeks = payload.weeks || [];
+        setGrowthWeeks(weeks);
+        const week = payload.currentWeek || weeks[0];
+        if (!week) {
+          setGrowthImageLoadError('家庭主机没有返回可用的本周资料统计。');
+          return;
+        }
+        const image = await api.getKnowledgeGrowthImage(week);
+        if (!current) return;
+        setGrowthImage(image);
+      } catch (error) {
+        if (!current) return;
+        setGrowthImageLoadError(`本周资料统计暂不可用：${(error as Error).message}`);
+      }
+    })();
+    return () => { current = false; };
+  }, [api, selectedStudentId, learningCapabilities.weeklyKnowledgeGrowthImage]);
+
+  useEffect(() => {
     if (!api?.getAgentBridge || !selectedStudentId) { setAgentBridge({ enabled: false, port: 0 }); return; }
     void api.getAgentBridge().then(setAgentBridge).catch(() => setAgentBridge({ enabled: false, port: 0 }));
   }, [api, selectedStudentId, config?.terminalMode]);
@@ -531,14 +559,20 @@ function TerminalApp() {
 
   const openCollaboration = async () => {
     if (!api) return;
-    setActiveWorkspace('collaboration'); setLearningBusy(true); setProjectReport(null); setGrowthImage(null);
+    setActiveWorkspace('collaboration'); setLearningBusy(true); setProjectReport(null);
     try {
-      const [status, weeks] = await Promise.all([api.getLearningStatus(), api.listKnowledgeGrowthWeeks()]);
-      setLearningStatusEntries(status.entries || []); setGrowthWeeks(weeks.weeks || []);
+      const [statusResult, growthResult] = await Promise.allSettled([api.getLearningStatus(), api.listKnowledgeGrowthWeeks()]);
+      if (statusResult.status === 'fulfilled') setLearningStatusEntries(statusResult.value.entries || []);
+      else setMessage(`学习状态暂不可用：${statusResult.reason instanceof Error ? statusResult.reason.message : String(statusResult.reason)}`);
+      if (growthResult.status === 'fulfilled') {
+        setGrowthWeeks(growthResult.value.weeks || []);
+        setGrowthImageLoadError('');
+      } else {
+        setGrowthImageLoadError(`本周资料统计暂不可用：${growthResult.reason instanceof Error ? growthResult.reason.message : String(growthResult.reason)}`);
+      }
       const linked = projects.filter(project => project.studentIds?.includes(selectedStudentId));
       setCollaborationProjectId(current => linked.some(project => project.id === current) ? current : linked[0]?.id || '');
-    } catch (error) { setMessage(`学习状态与成长数据暂不可用：${(error as Error).message}`); }
-    finally { setLearningBusy(false); }
+    } finally { setLearningBusy(false); }
   };
 
   const saveLearningStatus = async () => {
@@ -575,8 +609,8 @@ function TerminalApp() {
 
   const openGrowthImage = async (week: string) => {
     if (!api) return; setLearningBusy(true);
-    try { setGrowthImage(await api.getKnowledgeGrowthImage(week)); }
-    catch (error) { setMessage(`每周知识增长图读取失败：${(error as Error).message}`); }
+    try { setGrowthImage(await api.getKnowledgeGrowthImage(week)); setGrowthImageLoadError(''); }
+    catch (error) { setGrowthImageLoadError(`本周资料统计暂不可用：${(error as Error).message}`); }
     finally { setLearningBusy(false); }
   };
 
@@ -756,11 +790,14 @@ function TerminalApp() {
   };
 
   const exportMaterialStatsImage = async () => {
-    if (!api || !selectedStudent) return;
+    if (!api) return;
+    if (!growthImage) {
+      setMessage(growthImageLoadError || '本周资料统计正在从家庭主机读取，请稍后重试。');
+      return;
+    }
     try {
-      const imageBase64 = base64FromUtf8(materialStatsSvg(selectedStudent, knowledgeProjects.length, dashboardWeek));
-      const result = await api.exportStudentMaterialStatsImage({ week: dashboardWeek, mimeType: 'image/svg+xml', imageBase64 }, 'share');
-      if (!result.cancelled) setMessage(result.message || '资料统计图已导出并定位，可选择应用分享。');
+      const result = await api.exportKnowledgeGrowthImage(growthImage, 'share');
+      if (!result.cancelled) setMessage(result.message || '本周资料上传统计图已导出并定位，可选择应用分享。');
     } catch (error) { setMessage(`资料统计图导出失败：${(error as Error).message}`); }
   };
 
@@ -1491,7 +1528,7 @@ function TerminalApp() {
       const project = knowledgeProjects.find((item) => item.id === selectedKnowledgeProjectId);
       setDocumentTitle(`${project?.name || payload.projectName || '关联项目'} · ${file.name || file.path.split('/').pop() || '项目知识'}`);
       setDocumentContent(payload.content || '当前项目知识暂无正文。');
-      setReaderDialogOpen(true);
+      setReaderDialogOpen(false);
     } catch (error) {
       setMessage(`读取项目知识失败：${(error as Error).message}`);
     } finally {
@@ -1754,7 +1791,7 @@ function TerminalApp() {
           <select value={selectedTarget ? targetKey(selectedTarget) : ''} onChange={(event) => setSelectedTargetKey(event.target.value)} disabled={captureSession?.status === 'capturing'}>
             {targets.map((target) => <option value={targetKey(target)} key={targetKey(target)}>{target.name}</option>)}
           </select>
-          <button className="terminal-secondary" onClick={loadCaptureSources} disabled={busy || captureSession?.status === 'capturing'}>选择采集屏幕</button>
+          <button className="terminal-secondary" onClick={loadCaptureSources} disabled={busy || captureSession?.status === 'capturing'} title="选择采集屏幕" aria-label="选择采集屏幕">选择屏幕</button>
           <select value={captureSourceId} onChange={(event) => setCaptureSourceId(event.target.value)} disabled={captureSession?.status === 'capturing'}>
             <option value="">选择屏幕或窗口</option>
             {captureSources.map((source) => <option value={source.id} key={source.id} disabled={source.blocked || source.available === false}>{source.name}</option>)}
@@ -1765,10 +1802,10 @@ function TerminalApp() {
           <select value={captureDuration} onChange={(event) => setCaptureDuration(Number(event.target.value))} disabled={captureSession?.status === 'capturing'} aria-label="采集时长">
             {[15, 30, 45, 60, 90, 120].map((minutes) => <option value={minutes} key={minutes}>最长 {minutes} 分钟</option>)}
           </select>
-          <button className={captureSession?.status === 'capturing' ? 'terminal-danger' : 'terminal-primary'} onClick={toggleCapture} disabled={busy || !selectedTarget}>
+          <button className={captureSession?.status === 'capturing' ? 'terminal-danger' : 'terminal-primary'} onClick={toggleCapture} disabled={busy || !selectedTarget} title={captureSession?.status === 'capturing' ? '结束采集' : '开始采集'}>
             {captureSession?.status === 'capturing' ? '结束采集' : '开始采集'}
           </button>
-          <button className="terminal-secondary" onClick={uploadCapture} disabled={busy || captureSession?.status !== 'completed' || captureSession.courseId !== openedCourse?.courseId || !captureSession.files?.length}>提前重试送达</button>
+          <button className="terminal-secondary" onClick={uploadCapture} disabled={busy || captureSession?.status !== 'completed' || captureSession.courseId !== openedCourse?.courseId || !captureSession.files?.length} title="提前重试送达" aria-label="提前重试送达">重试送达</button>
         </section>
         <div ref={courseBrowserAnchorRef} className="terminal-course-browser-placeholder">课程网页在下方隔离视图中加载。上方采集控制始终保持可见；非白名单跳转、下载、弹窗和权限申请会被阻止。</div>
         {message ? <div className="terminal-toast" role="status">{message}</div> : null}
@@ -1882,7 +1919,7 @@ function TerminalApp() {
           </div>
           <div className="student-workbench-grid student-workbench-bottom-grid">
             <article className="student-workbench-card student-five-dimensions"><div className="student-workbench-card-heading"><span>五维学情</span><small>统计与活动记录，不等同于掌握结论</small></div><div>{materialStats.map((item) => <div className="student-dimension-row" key={item.label}><span>{item.label}</span><strong>{item.value}</strong><small>{item.note}</small></div>)}</div></article>
-            <article className="student-workbench-card student-material-chart"><div className="student-workbench-card-heading"><span>我的资料统计图</span><small>{dashboardWeek} · 点击图片即可准备分享</small></div><button className="student-material-chart-button" onClick={() => void exportMaterialStatsImage()} title="导出并定位资料统计图，可选择应用分享"><svg viewBox="0 0 420 180" role="img" aria-label="当前学生资料统计图">{materialStats.slice(0, 4).map((item, index) => { const max = Math.max(1, ...materialStats.map(value => value.value)); const width = Math.max(item.value ? 12 : 0, Math.round((item.value / max) * 240)); return <g key={item.label}><text x="0" y={27 + index * 40}>{item.label}</text><rect x="112" y={12 + index * 40} width="240" height="18" rx="9" /><rect className={`student-material-bar bar-${index}`} x="112" y={12 + index * 40} width={width} height="18" rx="9" /><text x="366" y={27 + index * 40}>{item.value}</text></g>; })}</svg><span>点击导出并分享图片</span></button></article>
+            <article className="student-workbench-card student-material-chart"><div className="student-workbench-card-heading"><span>我的资料统计图</span><small>{growthImage?.week || dashboardWeek} · 单学生本周资料上传</small></div>{growthImage ? <button className="student-material-chart-button student-weekly-growth-chart-button" onClick={() => void exportMaterialStatsImage()} title="导出并定位本周资料上传统计图，可选择应用分享"><img src={`data:${growthImage.mimeType};base64,${growthImage.imageBase64}`} alt={`${growthImage.week} 单学生本周资料上传统计图`} /><span>点击导出并分享本周资料上传统计图</span></button> : <div className="student-weekly-growth-pending"><strong>{growthImageLoadError ? '本周资料统计暂不可用' : '正在读取本周资料上传统计…'}</strong><small>{growthImageLoadError ? '请确认 Windows 主机已更新到包含资料图表运行时的候选版本后重试。' : '统计仅包含当前学生成功写入资产索引的去重资料。'}</small>{growthImageLoadError ? <button className="terminal-secondary" type="button" onClick={() => void openGrowthImage(dashboardWeek)} disabled={learningBusy}>重新读取</button> : null}</div>}</article>
           </div>
           <section className="student-action-grid student-home-module-grid" aria-label="学生端主要模块">
             <StudentActionTile icon={Upload} title="资料搜集" description="文件、图片、拍照、录音与对话" meta={queuedUploadCount ? `${queuedUploadCount} 份待发送` : '立即收集'} tone="tone-upload" onClick={() => selectPrimaryModule('collection')} />
@@ -2116,7 +2153,7 @@ function TerminalApp() {
           <button className="terminal-primary" onClick={() => void saveLearningStatus()} disabled={learningBusy}>提交学习状态</button>
           <article className="terminal-card"><h3>最近学习状态</h3>{learningStatusEntries.slice(0, 5).map(entry => <p key={entry.id}><strong>{entry.recordedByRole === 'teacher' ? '教师谈话代填' : '学生自填'}</strong> · {entry.createdAt?.slice(0, 16).replace('T', ' ')}<br />{entry.currentContent || entry.notes || '已记录状态'}</p>)}{!learningStatusEntries.length ? <p>暂无记录。</p> : null}</article>
           {learningCapabilities.projectComprehensiveReport ? <article className="terminal-card"><h3>项目综合报告</h3><div className="folder-row"><select value={collaborationProjectId} onChange={event => setCollaborationProjectId(event.target.value)}>{projects.filter(project => project.studentIds?.includes(selectedStudentId)).map(project => <option key={project.id} value={project.id}>{project.name}</option>)}</select><button onClick={() => void openProjectReport()} disabled={!collaborationProjectId || learningBusy}>查看报告</button></div>{projectReport ? <small>{projectReport.status} · {projectReport.updatedAt || '未记录更新时间'} · 已在只读弹窗打开</small> : null}</article> : null}
-          {learningCapabilities.weeklyKnowledgeGrowthImage ? <article className="terminal-card"><h3>每周知识增长图</h3><div className="document-actions">{growthWeeks.map(week => <button className="terminal-secondary" key={week} onClick={() => void openGrowthImage(week)}>{week}</button>)}</div>{growthImage ? <><p>{growthImage.status}</p><img style={{ width: '100%', maxWidth: 760 }} src={`data:${growthImage.mimeType};base64,${growthImage.imageBase64}`} alt={`${growthImage.week} 每周知识增长图`} /><div className="document-actions"><button className="terminal-secondary" onClick={() => void exportGrowthImage('copy')}><Copy size={16} />复制图片</button><button className="terminal-secondary" onClick={() => void exportGrowthImage('save')}><Download size={16} />导出图片</button><button className="terminal-primary" onClick={() => void exportGrowthImage('share')}>准备分享</button></div></> : null}</article> : null}
+          {learningCapabilities.weeklyKnowledgeGrowthImage ? <article className="terminal-card student-weekly-growth-card"><h3>每周资料增长图</h3><p>仅统计当前学生成功写入资产索引的去重资料；文件数量不代表掌握度或学习效果。</p><div className="document-actions">{growthWeeks.map(week => <button className={`terminal-secondary${growthImage?.week === week ? ' active' : ''}`} key={week} onClick={() => void openGrowthImage(week)}>{week}</button>)}</div>{growthImageLoadError ? <div className="student-weekly-growth-error" role="status">{growthImageLoadError}<small>学习状态仍可正常记录。请升级 Windows 主机候选包后再读取资料图。</small></div> : null}{growthImage ? <><img className="student-weekly-growth-image" src={`data:${growthImage.mimeType};base64,${growthImage.imageBase64}`} alt={`${growthImage.week} 单学生每周资料增长图`} /><div className="document-actions"><button className="terminal-secondary" onClick={() => void exportGrowthImage('copy')}><Copy size={16} />复制图片</button><button className="terminal-secondary" onClick={() => void exportGrowthImage('save')}><Download size={16} />导出图片</button><button className="terminal-primary" onClick={() => void exportGrowthImage('share')}>准备分享</button></div></> : null}</article> : null}
         </div> : null}
 
         {activeWorkspace === 'documents' ? <div className="student-documents-workspace">
@@ -2149,7 +2186,7 @@ function TerminalApp() {
               {documentMode === 'project-knowledge' && knowledgeProjects.length === 0 ? <small>当前学生还没有关联学习项目。</small> : null}
               {documentMode === 'project-knowledge' && knowledgeProjects.length > 0 && projectKnowledgeFiles.length === 0 ? <small>当前项目还没有可查看的知识文件。</small> : null}
             </div>
-            <article className="document-reader student-document-reader-inline"><h3>{documentTitle || '请选择一份内容查看'}</h3>{documentContent ? <><p className="student-document-reader-caption">来自家庭主机 · 只读渲染</p><div className="student-reader-scroll"><MarkdownDocument content={documentContent} /></div><div className="document-actions"><button className="terminal-secondary" type="button" onClick={() => void copyOpenDocument()}><Copy size={16} />复制正文</button><button className="terminal-secondary" type="button" onClick={() => window.print()}><Download size={16} />打印 / 保存 PDF</button></div></> : <p>选择左侧条目后，正文会在此右侧阅读区按 Markdown 格式渲染。</p>}</article>
+            <article className={`document-reader student-document-reader-inline${documentMode === 'growth' ? ' student-growth-reader' : ''}`}><h3>{documentTitle || '请选择一份内容查看'}</h3>{documentContent ? <><p className="student-document-reader-caption">来自家庭主机 · 只读渲染</p><div className="student-reader-scroll"><MarkdownDocument content={documentContent} /></div><div className="document-actions"><button className="terminal-secondary" type="button" onClick={() => void copyOpenDocument()}><Copy size={16} />复制正文</button><button className="terminal-secondary" type="button" onClick={() => window.print()}><Download size={16} />打印 / 保存 PDF</button></div></> : <p>选择左侧条目后，正文会在此右侧阅读区按 Markdown 格式渲染。</p>}</article>
           </div> : null}
         </div> : null}
       </section> : null}

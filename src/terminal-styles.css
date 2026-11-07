@@ -175,9 +175,10 @@ footer { padding: 22px 0 0; text-align: center; color: #78908a; font-size: 12px;
 .terminal-course-card details { color: #526a64; }
 .terminal-empty-state { padding: 24px; border: 1px dashed rgba(24, 91, 78, .24); border-radius: 16px; color: #526a64; text-align: center; }
 .terminal-course-shell { min-height: 100vh; padding-bottom: 0; overflow: hidden; }
-.terminal-course-toolbar { display: flex; align-items: center; gap: 8px; min-height: 58px; padding: 8px 18px; border: 1px solid rgba(24, 91, 78, .14); border-radius: 16px; background: #fff; box-shadow: 0 10px 28px rgba(24, 67, 59, .08); }
-.terminal-course-toolbar strong { white-space: nowrap; color: #17604f; }
-.terminal-course-toolbar select { min-width: 150px; max-width: 230px; }
+.terminal-course-toolbar { display: flex; align-items: center; gap: 6px; min-height: 48px; height: 48px; padding: 5px 10px; overflow-x: auto; overflow-y: hidden; border: 1px solid rgba(24, 91, 78, .14); border-radius: 14px; background: #fff; box-shadow: 0 10px 28px rgba(24, 67, 59, .08); scrollbar-width: thin; }
+.terminal-course-toolbar strong { flex: 0 1 170px; min-width: 0; overflow: hidden; color: #17604f; font-size: 13px; line-height: 1.2; text-overflow: ellipsis; white-space: nowrap; }
+.terminal-course-toolbar select { flex: 1 1 140px; min-width: 116px; max-width: 208px; height: 36px; padding: 0 29px 0 10px; border-radius: 10px; font-size: 13px; line-height: 1; text-overflow: ellipsis; white-space: nowrap; }
+.terminal-course-toolbar > button { flex: 0 0 auto; min-height: 36px; margin: 0; padding: 0 11px; border-radius: 10px; font-size: 13px; line-height: 1; white-space: nowrap; word-break: keep-all; writing-mode: horizontal-tb; }
 .terminal-course-browser-placeholder { margin-top: 10px; padding: 12px 18px; color: #58706a; text-align: center; }
 
 /* Windows 学生端横屏学习工作台 */
@@ -270,15 +271,14 @@ button:focus-visible { outline: 4px solid rgba(23, 111, 206, .24); outline-offse
 .student-dimension-row span, .student-dimension-row small { display: block; overflow: hidden; color: #718883; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
 .student-dimension-row strong { display: block; margin: 5px 0; color: #0b766a; font-size: 22px; font-variant-numeric: tabular-nums; }
 .student-material-chart-button { width: 100%; padding: 4px 0 0; border: 0; color: #38504b; text-align: left; background: transparent; cursor: pointer; }
-.student-material-chart-button:hover svg { filter: drop-shadow(0 5px 10px rgba(26, 108, 90, .12)); transform: translateY(-1px); }
-.student-material-chart-button svg { width: 100%; transition: transform .16s ease, filter .16s ease; }
-.student-material-chart-button svg text { fill: #526a64; font-size: 12px; font-family: "Microsoft YaHei", sans-serif; }
-.student-material-chart-button svg rect { fill: #e9f2ef; }
-.student-material-chart-button svg .bar-0 { fill: #0c8b7a; }
-.student-material-chart-button svg .bar-1 { fill: #2f80ed; }
-.student-material-chart-button svg .bar-2 { fill: #9b51e0; }
-.student-material-chart-button svg .bar-3 { fill: #f2994a; }
-.student-material-chart-button > span { display: block; color: #087f73; font-size: 11px; font-weight: 800; }
+.student-material-chart-button > span { display: block; margin-top: 7px; color: #087f73; font-size: 11px; font-weight: 800; }
+.student-weekly-growth-chart-button { display: block; }
+.student-weekly-growth-chart-button:hover img { filter: drop-shadow(0 5px 10px rgba(26, 108, 90, .12)); transform: translateY(-1px); }
+.student-weekly-growth-chart-button img { display: block; width: min(100%, 410px); max-height: 242px; margin: 0 auto; border: 1px solid #dce9e5; border-radius: 12px; background: #f5f9f8; object-fit: cover; object-position: top; transition: transform .16s ease, filter .16s ease; }
+.student-weekly-growth-pending { display: grid; min-height: 196px; align-content: center; gap: 9px; padding: 18px; border: 1px dashed #b8d8d0; border-radius: 14px; color: #4c6962; background: #f4faf8; }
+.student-weekly-growth-pending strong { color: #17604f; }
+.student-weekly-growth-pending small { line-height: 1.55; }
+.student-weekly-growth-pending button { justify-self: start; margin-top: 4px; }
 
 .student-primary-nav { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 8px; margin: 0 0 12px; padding: 6px; border: 1px solid #dce8e5; border-radius: 17px; background: #f4f8f7; }
 .student-primary-nav button { min-width: 0; min-height: 58px; display: grid; grid-template-columns: 24px minmax(0, 1fr); grid-template-rows: auto auto; column-gap: 8px; align-items: center; padding: 8px 10px; border: 0; border-radius: 12px; color: #526a64; text-align: left; background: transparent; cursor: pointer; }
@@ -403,6 +403,21 @@ button:focus-visible { outline: 4px solid rgba(23, 111, 206, .24); outline-offse
 .student-document-reader-inline .student-document-reader-caption { margin: -5px 0 8px; color: #5d7a73; font-size: 13px; }
 .student-document-reader-inline .student-reader-scroll { max-height: 680px; padding: 8px 4px 18px; }
 .student-document-reader-inline .document-actions { padding-top: 13px; border-top: 1px solid #dce8e5; }
+.student-growth-reader { border-color: #c9e4dc; background: linear-gradient(145deg, #fbfefd, #f2f9f6); }
+.student-growth-reader .student-reader-scroll { padding: 10px 10px 20px; }
+.student-growth-reader .terminal-markdown { max-width: 920px; margin: 0 auto; font-size: 15px; line-height: 1.82; }
+.student-growth-reader .terminal-markdown > blockquote:first-of-type { margin-top: 0; color: #38665c; background: #e8f6f1; }
+.student-growth-reader .terminal-markdown h2 { margin-top: 1.8em; padding: 8px 12px; border-left: 4px solid #1b927b; border-radius: 0 10px 10px 0; background: #e8f5f1; }
+.student-growth-reader .terminal-markdown .markdown-table-wrap { margin: 12px 0 24px; box-shadow: 0 7px 16px rgba(24, 83, 69, .06); }
+.student-growth-reader .terminal-markdown th { background: #dff1eb; }
+.student-weekly-growth-card { display: grid; gap: 12px; }
+.student-weekly-growth-card > h3, .student-weekly-growth-card > p { margin: 0; }
+.student-weekly-growth-card > p { color: #607a73; line-height: 1.6; }
+.student-weekly-growth-card .document-actions { margin: 0; }
+.student-weekly-growth-card .terminal-secondary.active { border-color: #16826e; color: #075e54; background: #e4f5ef; }
+.student-weekly-growth-image { display: block; width: min(100%, 560px); max-height: 520px; margin: 0 auto; border: 1px solid #d6e7e2; border-radius: 16px; background: #f4f8f7; object-fit: contain; }
+.student-weekly-growth-error { display: grid; gap: 5px; padding: 12px 14px; border: 1px solid #f0cfa3; border-radius: 12px; color: #7a4b19; background: #fff8ee; line-height: 1.55; }
+.student-weekly-growth-error small { color: #805f38; }
 
 .student-reader-backdrop { position: fixed; z-index: 140; inset: 0; display: grid; place-items: center; padding: 24px; background: rgba(7, 35, 40, .48); backdrop-filter: blur(6px); }
 .student-reader-dialog { width: min(1080px, calc(100vw - 48px)); max-height: calc(100vh - 48px); display: grid; grid-template-rows: auto minmax(0, 1fr) auto; overflow: hidden; border: 1px solid #bed6d0; border-radius: 24px; background: #fbfdfc; box-shadow: 0 30px 90px rgba(4, 31, 36, .34); }
@@ -470,6 +485,9 @@ button:focus-visible { outline: 4px solid rgba(23, 111, 206, .24); outline-offse
 }
 
 @media (max-width: 900px) {
+  .terminal-course-toolbar { height: auto; min-height: 48px; flex-wrap: wrap; overflow: visible; }
+  .terminal-course-toolbar strong { flex-basis: 100%; }
+  .terminal-course-toolbar select { flex: 1 1 150px; max-width: none; }
   .student-home-topbar { align-items: stretch; flex-direction: column; }
   .student-home-controls { flex-wrap: wrap; }
   .student-dashboard-heading { align-items: stretch; flex-direction: column; }

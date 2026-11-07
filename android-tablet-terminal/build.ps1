@@ -2,6 +2,31 @@
 
 $realScriptRoot = $PSScriptRoot
 $realProjectRoot = Split-Path -Parent $realScriptRoot
+$studentKeystore = [Environment]::GetEnvironmentVariable('EDU_ANDROID_STUDENT_KEYSTORE', 'Process')
+$studentKeystorePassword = [Environment]::GetEnvironmentVariable('EDU_ANDROID_STUDENT_KEYSTORE_PASSWORD', 'Process')
+$studentKeyAlias = [Environment]::GetEnvironmentVariable('EDU_ANDROID_STUDENT_KEY_ALIAS', 'Process')
+$studentKeyPassword = [Environment]::GetEnvironmentVariable('EDU_ANDROID_STUDENT_KEY_PASSWORD', 'Process')
+$expectedCertificateSha256 = '42FF27472C21FD214C17A9DFB153DA0454489D4E2AD70CE823F3369118A5F1CB'
+$versionName = '0.6.28'
+$candidateTag = [Environment]::GetEnvironmentVariable('EDU_ANDROID_STUDENT_CANDIDATE_TAG', 'Process')
+if (-not [string]::IsNullOrWhiteSpace($candidateTag)) {
+  $candidateTag = ($candidateTag.Trim() -replace '[^A-Za-z0-9._-]+', '-').Trim('-')
+  if ([string]::IsNullOrWhiteSpace($candidateTag)) { throw 'EDU_ANDROID_STUDENT_CANDIDATE_TAG is invalid.' }
+}
+
+$missingSigningEnvironment = @(
+  'EDU_ANDROID_STUDENT_KEYSTORE',
+  'EDU_ANDROID_STUDENT_KEYSTORE_PASSWORD',
+  'EDU_ANDROID_STUDENT_KEY_ALIAS',
+  'EDU_ANDROID_STUDENT_KEY_PASSWORD'
+) | Where-Object { [string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable($_, 'Process')) }
+if ($missingSigningEnvironment.Count -gt 0) {
+  throw "Android student signing environment is incomplete: $($missingSigningEnvironment -join ', '). Refusing to create a non-upgradeable APK."
+}
+$studentKeystore = [IO.Path]::GetFullPath($studentKeystore)
+if (-not (Test-Path -LiteralPath $studentKeystore -PathType Leaf)) {
+  throw "Android student upgrade keystore does not exist: $studentKeystore"
+}
 
 function Assert-LastExitCode {
   param([string]$Step)
@@ -40,7 +65,6 @@ try {
   $apksigner = Join-Path $buildTools 'apksigner.bat'
   $javac = Join-Path $jdkBin 'javac.exe'
   $jar = Join-Path $jdkBin 'jar.exe'
-  $keytool = Join-Path $jdkBin 'keytool.exe'
 
   $buildDir = Join-Path $scriptRoot 'build'
   $genDir = Join-Path $buildDir 'gen'
@@ -48,11 +72,20 @@ try {
   $dexDir = Join-Path $buildDir 'dex'
   $classesJar = Join-Path $buildDir 'classes.jar'
   $zxingJar = Join-Path $scriptRoot 'libs\zxing-core-3.5.3.jar'
-  $releaseDir = Join-Path $projectRoot 'release\tablet-terminal'
+  $releaseDir = if ($candidateTag) {
+    Join-Path $projectRoot "release\tablet-terminal\candidates\$candidateTag"
+  } else {
+    Join-Path $projectRoot 'release\tablet-terminal'
+  }
   $unsignedApk = Join-Path $buildDir 'tablet-terminal-unsigned.apk'
   $alignedApk = Join-Path $buildDir 'tablet-terminal-aligned.apk'
-  $finalApk = Join-Path $releaseDir 'AI-edu-manager-tablet-terminal-0.6.27.apk'
-  $keystore = Join-Path $scriptRoot 'debug.keystore'
+  $signedCandidateApk = Join-Path $buildDir 'tablet-terminal-signed.apk'
+  $artifactName = if ($candidateTag) {
+    "AI-edu-manager-tablet-terminal-$versionName-$candidateTag.apk"
+  } else {
+    "AI-edu-manager-tablet-terminal-$versionName.apk"
+  }
+  $finalApk = Join-Path $releaseDir $artifactName
 
   Remove-Item -LiteralPath $buildDir -Recurse -Force -ErrorAction SilentlyContinue
   New-Item -ItemType Directory -Force -Path $genDir, $classesDir, $dexDir, $releaseDir | Out-Null
@@ -118,33 +151,35 @@ try {
   & $zipalign -f 4 $unsignedApk $alignedApk
   Assert-LastExitCode 'zipalign'
 
-  if (-not (Test-Path -LiteralPath $keystore)) {
-    & $keytool -genkeypair `
-      -keystore $keystore `
-      -storepass android `
-      -keypass android `
-      -alias androiddebugkey `
-      -keyalg RSA `
-      -keysize 2048 `
-      -validity 10000 `
-      -dname 'CN=AI Education Tablet Terminal,O=QXMatrix,C=CN'
-    Assert-LastExitCode 'keytool'
-  }
-
   & $apksigner sign `
-    --ks $keystore `
-    --ks-pass pass:android `
-    --key-pass pass:android `
-    --out $finalApk `
+    --ks $studentKeystore `
+    --ks-key-alias $studentKeyAlias `
+    --ks-pass 'env:EDU_ANDROID_STUDENT_KEYSTORE_PASSWORD' `
+    --key-pass 'env:EDU_ANDROID_STUDENT_KEY_PASSWORD' `
+    --out $signedCandidateApk `
     $alignedApk
   Assert-LastExitCode 'apksigner sign'
 
-  & $apksigner verify --verbose $finalApk
+  $signatureOutput = (& $apksigner verify --verbose --print-certs $signedCandidateApk 2>&1 | Out-String)
   Assert-LastExitCode 'apksigner verify'
+  if ($signatureOutput -notmatch 'Verified using v1 scheme \(JAR signing\): true' -or
+      $signatureOutput -notmatch 'Verified using v2 scheme \(APK Signature Scheme v2\): true' -or
+      $signatureOutput -notmatch 'Verified using v3 scheme \(APK Signature Scheme v3\): true') {
+    throw 'Android student APK is missing a required v1/v2/v3 signature.'
+  }
+  $certificateSha256 = [regex]::Match($signatureOutput, 'Signer #1 certificate SHA-256 digest:\s*([a-fA-F0-9]{64})').Groups[1].Value.ToUpperInvariant()
+  if ($certificateSha256 -ne $expectedCertificateSha256) {
+    throw "Android student certificate continuity check failed: $certificateSha256"
+  }
+  Copy-Item -LiteralPath $signedCandidateApk -Destination $finalApk -Force
 
-  $realReleaseDir = Join-Path $realProjectRoot 'release\tablet-terminal'
+  $realReleaseDir = if ($candidateTag) {
+    Join-Path $realProjectRoot "release\tablet-terminal\candidates\$candidateTag"
+  } else {
+    Join-Path $realProjectRoot 'release\tablet-terminal'
+  }
   New-Item -ItemType Directory -Force -Path $realReleaseDir | Out-Null
-  $realFinalApk = Join-Path $realReleaseDir 'AI-edu-manager-tablet-terminal-0.6.27.apk'
+  $realFinalApk = Join-Path $realReleaseDir $artifactName
   Get-Item -LiteralPath $realFinalApk | Format-List FullName,Length,LastWriteTime
 } finally {
   cmd /c "subst $drive /d" | Out-Null

@@ -33,3 +33,14 @@ test('historical project backfill remains explicit opt-in in the corrective cand
   assert.match(flags, /EDU_ENABLE_PROJECT_HISTORY_BACKFILL/);
   assert.doesNotMatch(flags, /projectHistoryBackfill:\s*true/);
 });
+
+test('host keeps public-course sync while local platform authoring UI stays hidden', () => {
+  const ui = read('src', 'main.tsx');
+  const main = read('electron', 'main.cjs');
+  assert.match(ui, /LOCAL_PLATFORM_COURSE_AUTHORING_VISIBLE = false/);
+  assert.match(ui, /平台精选课程由云端课程发布管理维护/);
+  assert.match(ui, /LOCAL_PLATFORM_COURSE_AUTHORING_VISIBLE && platformCourseEditAllowed/);
+  assert.match(ui, /LOCAL_PLATFORM_COURSE_AUTHORING_VISIBLE && platformCoursePublishAllowed/);
+  assert.match(main, /syncPublicCourses/);
+  assert.match(main, /createStudentCourseProjection/);
+});

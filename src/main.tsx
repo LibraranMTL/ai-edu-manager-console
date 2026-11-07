@@ -6196,6 +6196,11 @@ function AgentMemorySessionList({ sessions, onManage, onClearEmpty }: {
   </div>;
 }
 
+// Platform courses are authored and published in the cloud. Keep the legacy
+// bridge and draft store during the observation window for compatibility and
+// recovery, but do not expose local authoring or publishing controls.
+const LOCAL_PLATFORM_COURSE_AUTHORING_VISIBLE = false;
+
 function App() {
   const [students, setStudents] = useState<Student[]>(loadStudents);
   const [theme, setTheme] = useState<ThemeName>(loadTheme);
@@ -8088,7 +8093,7 @@ function App() {
   const [publicationEdit,setPublicationEdit]=useState<any>(null);
   const editPublication=(item:any)=>{
     if(item.kind==='card'){setPublicationEdit(item);setActiveSection('learning-cards');setActivePageTab('learning-cards');}
-    else {const course=courseCatalogState?.catalog?.courses?.find((c:any)=>c.courseId===item.id);if(course){if(course.type==='tenant_custom')editCustomCourse(course);else editPlatformCourse(course);}}
+    else {const course=courseCatalogState?.catalog?.courses?.find((c:any)=>c.courseId===item.id);if(course){if(course.type==='tenant_custom')editCustomCourse(course);else setCourseCatalogMessage('平台精选课程由云端课程发布管理维护，本机只同步、预览和分配课程。');}}
   };
   const editCustomCourse = (course: CourseCatalogItem) => {
     if (course.type !== 'tenant_custom') {
@@ -17621,10 +17626,10 @@ ${JSON.stringify(items, null, 2)}
                 <p>
                   {courseSubmenu === 'learning'
                     ? '选择已启用的课程并在隔离浏览器中学习。第三方提供方负责课程内容、账号与服务条款；打开页面或采集资料不代表课程完成率、正确率或学情结论。'
-                    : '机构精选课程用于本机构学生；平台精选课程由平台版制作课程包供其他主机导入。两类课程均可设置启用、顺序、年级与学生分配。'}
+                    : '机构精选课程仍可在本机维护；平台精选课程由云端发布管理同步到本机。本机可设置启用、顺序、年级与学生分配。'}
                 </p>
-                {courseSubmenu === 'management' && courseManagementAllowed && !platformCoursePublishAllowed ? (
-                  <small className="course-package-permission-note">当前{courseCatalogState?.management?.planLabel || '版本'}可以导入平台课程包；只有平台版可以生成或导出平台课程包。</small>
+                {courseSubmenu === 'management' && courseManagementAllowed ? (
+                  <small className="course-package-permission-note">平台精选课程由云端课程发布管理维护；Windows 主机只负责安全同步、课程预览和学生分配。</small>
                 ) : null}
               </div>
               <div className="actions compact-actions">
@@ -17643,7 +17648,7 @@ ${JSON.stringify(items, null, 2)}
                       <FileDown size={17} />导入自选课程Excel
                     </button>
                     <button className="secondary" onClick={importCourseCatalog}><ShieldCheck size={17} />导入平台课程包</button>
-                    {platformCoursePublishAllowed ? (
+                    {LOCAL_PLATFORM_COURSE_AUTHORING_VISIBLE && platformCoursePublishAllowed ? (
                       <button className="secondary" onClick={generateOrExportPlatformCoursePackage} disabled={platformPublishing} title="有待发布修改时生成新版；没有修改时重新导出当前已发布版本">
                         <FileDown size={17} />生成/导出平台课程包
                       </button>
@@ -17693,7 +17698,7 @@ ${JSON.stringify(items, null, 2)}
               </section>
             ) : null}
 
-            {!courseBrowser.open && courseSubmenu === 'management' && courseManagementAllowed && isWindows ? <React.Suspense fallback={<p>正在加载发布管理…</p>}><PublicationManager onEdit={editPublication} key={selectedStudent?.id} platformDrafts={platformCoursePublishAllowed&&Boolean(courseCatalogState?.platformDrafts?.length||courseCatalogState?.platformDeletions?.length)} studentId={selectedStudent?.id||''} action={(id,name,input)=>(bridge() as any).publicationAction(id,name,input)}/></React.Suspense> : null}
+            {!courseBrowser.open && courseSubmenu === 'management' && courseManagementAllowed && isWindows ? <React.Suspense fallback={<p>正在加载发布管理…</p>}><PublicationManager onEdit={editPublication} key={selectedStudent?.id} platformDrafts={LOCAL_PLATFORM_COURSE_AUTHORING_VISIBLE && platformCoursePublishAllowed&&Boolean(courseCatalogState?.platformDrafts?.length||courseCatalogState?.platformDeletions?.length)} studentId={selectedStudent?.id||''} action={(id,name,input)=>(bridge() as any).publicationAction(id,name,input)}/></React.Suspense> : null}
             {!courseBrowser.open ? (
               courseSubmenu === 'learning' ? (
                 <>
@@ -17836,7 +17841,7 @@ ${JSON.stringify(items, null, 2)}
                       </div>
                     </div>
                   </section>
-                  {platformCourseEditAllowed ? (
+                  {LOCAL_PLATFORM_COURSE_AUTHORING_VISIBLE && platformCourseEditAllowed ? (
                     <section className="panel course-direct-upload-panel platform-course-authoring-panel" aria-labelledby="platform-course-authoring-title">
                       <div className="course-direct-upload-heading">
                         <div>
@@ -17963,7 +17968,7 @@ ${JSON.stringify(items, null, 2)}
                                     <Trash2 size={17} />删除课程
                                   </button>
                                 </>
-                              ) : platformCourseEditAllowed ? (
+                              ) : LOCAL_PLATFORM_COURSE_AUTHORING_VISIBLE && platformCourseEditAllowed ? (
                                 pendingPlatformDeletion ? (
                                   <button className="secondary" type="button" onClick={() => cancelPlatformCourseDeletion(course.courseId)}>取消待删除</button>
                                 ) : (
@@ -17976,7 +17981,7 @@ ${JSON.stringify(items, null, 2)}
                                     </button>
                                   </>
                                 )
-                              ) : <span className="inline-hint">平台精选课程由平台版维护；当前 License 只能设置启用和分配。</span>}
+                              ) : <span className="inline-hint">平台精选课程由云端课程发布管理维护；本机只提供预览、启用和学生分配。</span>}
                               <button className="primary" onClick={() => openHostCourse(course)}>
                                 <ExternalLink size={17} />预览课程
                               </button>

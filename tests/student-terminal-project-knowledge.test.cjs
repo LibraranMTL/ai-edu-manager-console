@@ -24,6 +24,8 @@ test('Windows student terminal lists only current-student projects and reads pro
 
   assert.match(renderer, /projects\.filter\(\(project\) => \(project\.studentIds \|\| \[\]\)\.includes\(selectedStudentId\)\)/);
   assert.match(renderer, /title="项目资料"/);
+  assert.match(renderer, /aria-label="项目管理功能"/);
+  assert.match(renderer, /项目资料与知识只读取当前学生本人已关联项目/);
   assert.match(renderer, /当前学生还没有关联学习项目/);
   assert.match(preload, /listProjectKnowledgeFiles/);
   assert.match(preload, /readProjectKnowledgeFile/);

@@ -238,7 +238,49 @@ button:focus-visible { outline: 4px solid rgba(23, 111, 206, .24); outline-offse
 .student-progress-strip strong { color: #176957; font-size: 19px; font-variant-numeric: tabular-nums; }
 .student-progress-strip small { margin-left: auto; overflow: hidden; color: #81918e; font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
 
-.student-primary-nav { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; margin: 0 0 12px; padding: 6px; border: 1px solid #dce8e5; border-radius: 17px; background: #f4f8f7; }
+.student-workbench { display: grid; gap: 16px; }
+.student-today-focus { display: flex; align-items: center; justify-content: space-between; gap: 24px; padding: 22px 24px; border: 1px solid #cde9df; border-radius: 20px; color: #163d37; background: linear-gradient(116deg, #e4f8f2 0%, #f9fffd 60%, #eaf5ff 100%); }
+.student-today-focus > div { min-width: 0; }
+.student-today-focus span { color: #087f73; font-size: 12px; font-weight: 900; letter-spacing: .05em; }
+.student-today-focus h2 { margin: 6px 0; font-size: clamp(20px, 2vw, 28px); letter-spacing: -.03em; }
+.student-today-focus p { margin: 0; color: #58736d; line-height: 1.55; }
+.student-today-focus .terminal-primary { flex: 0 0 auto; display: inline-flex; align-items: center; gap: 7px; }
+.student-workbench-grid { display: grid; grid-template-columns: 1.12fr .88fr; gap: 16px; }
+.student-workbench-bottom-grid { grid-template-columns: .93fr 1.07fr; }
+.student-workbench-card { min-width: 0; padding: 18px; border: 1px solid #dbe9e5; border-radius: 18px; background: #fff; box-shadow: 0 8px 24px rgba(18, 59, 50, .05); }
+.student-workbench-card-heading { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin-bottom: 14px; }
+.student-workbench-card-heading > span { color: #173531; font-size: 16px; font-weight: 900; }
+.student-workbench-card-heading small { color: #78908a; font-size: 11px; text-align: right; }
+.student-weekly-actions ol { display: grid; gap: 8px; margin: 0; padding: 0; list-style: none; }
+.student-weekly-actions li { display: grid; grid-template-columns: minmax(95px, .55fr) minmax(0, 1.45fr) auto; gap: 10px; align-items: center; padding: 10px 0; border-top: 1px solid #eef4f2; }
+.student-weekly-actions li:first-child { padding-top: 0; border-top: 0; }
+.student-weekly-actions strong { color: #24443e; font-size: 13px; }
+.student-weekly-actions span { color: #66807a; font-size: 12px; line-height: 1.45; }
+.student-weekly-actions button, .student-project-list button { border: 0; color: #087f73; font-weight: 800; background: transparent; cursor: pointer; }
+.student-project-focus > p { min-height: 102px; color: #66807a; line-height: 1.6; }
+.student-project-list { display: grid; gap: 8px; }
+.student-project-list button { display: grid; grid-template-columns: minmax(0, 1fr) auto; grid-template-rows: auto auto; gap: 2px 8px; padding: 10px; border: 1px solid #dcebe7; border-radius: 12px; text-align: left; }
+.student-project-list button:hover { border-color: #89cfc0; background: #f4fbf9; }
+.student-project-list strong { overflow: hidden; color: #24443e; text-overflow: ellipsis; white-space: nowrap; }
+.student-project-list span { overflow: hidden; color: #718883; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+.student-project-list svg { grid-column: 2; grid-row: 1 / 3; align-self: center; }
+.student-project-manage-button { width: 100%; margin-top: 12px; }
+.student-five-dimensions > div { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 8px; }
+.student-dimension-row { min-width: 0; padding: 11px 9px; border-radius: 13px; background: #f4f9f7; }
+.student-dimension-row span, .student-dimension-row small { display: block; overflow: hidden; color: #718883; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+.student-dimension-row strong { display: block; margin: 5px 0; color: #0b766a; font-size: 22px; font-variant-numeric: tabular-nums; }
+.student-material-chart-button { width: 100%; padding: 4px 0 0; border: 0; color: #38504b; text-align: left; background: transparent; cursor: pointer; }
+.student-material-chart-button:hover svg { filter: drop-shadow(0 5px 10px rgba(26, 108, 90, .12)); transform: translateY(-1px); }
+.student-material-chart-button svg { width: 100%; transition: transform .16s ease, filter .16s ease; }
+.student-material-chart-button svg text { fill: #526a64; font-size: 12px; font-family: "Microsoft YaHei", sans-serif; }
+.student-material-chart-button svg rect { fill: #e9f2ef; }
+.student-material-chart-button svg .bar-0 { fill: #0c8b7a; }
+.student-material-chart-button svg .bar-1 { fill: #2f80ed; }
+.student-material-chart-button svg .bar-2 { fill: #9b51e0; }
+.student-material-chart-button svg .bar-3 { fill: #f2994a; }
+.student-material-chart-button > span { display: block; color: #087f73; font-size: 11px; font-weight: 800; }
+
+.student-primary-nav { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 8px; margin: 0 0 12px; padding: 6px; border: 1px solid #dce8e5; border-radius: 17px; background: #f4f8f7; }
 .student-primary-nav button { min-width: 0; min-height: 58px; display: grid; grid-template-columns: 24px minmax(0, 1fr); grid-template-rows: auto auto; column-gap: 8px; align-items: center; padding: 8px 10px; border: 0; border-radius: 12px; color: #526a64; text-align: left; background: transparent; cursor: pointer; }
 .student-primary-nav button:hover { color: #176957; background: #e6f2ef; }
 .student-primary-nav button.active { color: #075e54; background: #fff; box-shadow: 0 2px 9px rgba(26, 67, 58, .1); }
@@ -428,10 +470,11 @@ button:focus-visible { outline: 4px solid rgba(23, 111, 206, .24); outline-offse
   .student-reminder-strip { align-items: stretch; flex-wrap: wrap; }
   .student-reminder-strip > div { width: 100%; }
   .student-app-frame { width: calc(100% - 24px); grid-template-columns: 1fr; margin-top: 12px; }
-  .student-primary-nav { position: static; grid-template-columns: repeat(4, minmax(0, 1fr)); padding: 7px; }
+  .student-primary-nav { position: static; grid-template-columns: repeat(5, minmax(0, 1fr)); padding: 7px; }
   .student-primary-nav button { min-height: 58px; grid-template-columns: 24px minmax(0, 1fr); padding: 8px; }
   .student-primary-nav small { display: none; }
   .student-progress-strip, .student-action-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .student-workbench-grid, .student-workbench-bottom-grid { grid-template-columns: 1fr; }
   .student-trajectory-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .student-trajectory-grid article { display: grid; grid-template-columns: 1fr; gap: 7px; border: 1px solid #dbe9e5; border-radius: 16px; }
   .student-trajectory-grid article > span { justify-self: start; }
@@ -449,6 +492,11 @@ button:focus-visible { outline: 4px solid rgba(23, 111, 206, .24); outline-offse
   .student-home-dashboard { padding: 18px; }
   .student-home-module-grid { grid-template-columns: 1fr; }
   .student-home-module-grid .student-action-tile { aspect-ratio: auto; min-height: 145px; }
+  .student-today-focus { align-items: stretch; flex-direction: column; }
+  .student-today-focus .terminal-primary { justify-content: center; }
+  .student-weekly-actions li { grid-template-columns: 1fr auto; }
+  .student-weekly-actions li span { grid-column: 1 / -1; grid-row: 2; }
+  .student-five-dimensions > div { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .student-reader-backdrop { padding: 10px; }
   .student-reader-dialog { width: calc(100vw - 20px); max-height: calc(100vh - 20px); border-radius: 18px; }
   .student-reader-dialog > header, .student-reader-scroll, .student-reader-dialog > footer { padding: 14px; }

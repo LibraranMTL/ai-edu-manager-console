@@ -75,7 +75,7 @@ type PendingPairRequest = { requestId: string; status: string; hostId: string; h
 type TailscaleStatus = { installed: boolean; canOpen: boolean; version?: string; downloadUrl: string };
 type ConnectionMethod = 'lan' | 'tailscale';
 type StudentWorkspace = 'courses' | 'auto-delivery' | 'capture' | 'documents' | 'project-report' | 'practice' | 'planning' | 'inbox' | 'collaboration' | 'conversation' | 'trajectory' | null;
-type StudentPrimaryModule = 'collection' | 'connection' | 'archive' | 'learning';
+type StudentPrimaryModule = 'collection' | 'connection' | 'archive' | 'learning' | 'project';
 type StudentPrimaryView = 'home' | StudentPrimaryModule;
 type LearningStatusInput = { overallState: 'smooth' | 'normal' | 'difficult'; currentContent: string; completed: string; difficulties: string; nextPlan: string; helpNeeded: string; notes: string };
 type LearningStatusEntry = LearningStatusInput & { id: string; submissionId: string; recordedByRole: 'student' | 'teacher'; recordingMode: string; createdAt: string };
@@ -95,6 +95,38 @@ function durableSubmissionId(storageKey: string, fingerprint: string, prefix: st
 
 function clearDurableSubmission(storageKey: string) {
   try { window.localStorage.removeItem(storageKey); } catch { /* app storage unavailable */ }
+}
+
+function currentIsoWeekKey(date = new Date()) {
+  const value = new Date(Date.UTC(date.getFullYear(), date.getMonth(), date.getDate()));
+  const day = value.getUTCDay() || 7;
+  value.setUTCDate(value.getUTCDate() + 4 - day);
+  const yearStart = new Date(Date.UTC(value.getUTCFullYear(), 0, 1));
+  const week = Math.ceil((((value.getTime() - yearStart.getTime()) / 86400000) + 1) / 7);
+  return `${value.getUTCFullYear()}-W${String(week).padStart(2, '0')}`;
+}
+
+function base64FromUtf8(value: string) {
+  const bytes = new TextEncoder().encode(value);
+  let binary = '';
+  bytes.forEach((byte) => { binary += String.fromCharCode(byte); });
+  return window.btoa(binary);
+}
+
+function materialStatsSvg(student: Student, projectCount: number, week: string) {
+  const rows = [
+    ['原始资料', student.rawFileCount || 0, '#0c8b7a'],
+    ['已整理资料', student.processedDigestCount || 0, '#2f80ed'],
+    ['档案条目', student.archiveFileCount || 0, '#9b51e0'],
+    ['关联项目', projectCount, '#f2994a'],
+  ] as const;
+  const max = Math.max(1, ...rows.map(([, value]) => value));
+  const bars = rows.map(([label, value, color], index) => {
+    const y = 88 + index * 54;
+    const width = Math.max(value ? 10 : 0, Math.round((value / max) * 270));
+    return `<text x="34" y="${y + 17}" fill="#38504b" font-size="14" font-family="Microsoft YaHei, sans-serif">${label}</text><rect x="150" y="${y}" width="270" height="26" rx="13" fill="#edf4f2"/><rect x="150" y="${y}" width="${width}" height="26" rx="13" fill="${color}"/><text x="440" y="${y + 18}" fill="#173531" font-size="15" font-weight="700" font-family="Arial, Microsoft YaHei, sans-serif">${value}</text>`;
+  }).join('');
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="520" height="360" viewBox="0 0 520 360"><rect width="520" height="360" rx="28" fill="#f7fbfa"/><text x="34" y="48" fill="#173531" font-size="24" font-weight="700" font-family="Microsoft YaHei, sans-serif">我的资料统计</text><text x="34" y="72" fill="#6b817b" font-size="13" font-family="Microsoft YaHei, sans-serif">${week} · 仅统计当前学生本人资料</text>${bars}<line x1="34" y1="322" x2="486" y2="322" stroke="#dce9e5"/><text x="34" y="345" fill="#6b817b" font-size="12" font-family="Microsoft YaHei, sans-serif">AI教育管家 · 学生端</text></svg>`;
 }
 type PracticeCard = { id: string; studentId: string; status: string; content: { title: string; subject: string; knowledgePoint: string; prompt: string; hint?: string; answer?: string; explanation?: string; rationale?: string }; createdAt?: string };
 type PracticeDashboard = { current?: PracticeCard | null; history?: PracticeCard[] };
@@ -182,7 +214,9 @@ type TerminalBridge = {
   uploadCapturedMedia: (input: { kind: 'photo' | 'audio'; mimeType: string; base64: string; sourceEventId: string }, target: UploadTarget) => Promise<{ success?: number; failed?: number; pending?: number; total?: number; localRecoveryPath?: string }>;
   quickScreenshot: (sourceId: string, target: UploadTarget) => Promise<{ success?: number; failed?: number; pending?: number; total?: number }>;
   exportKnowledgeGrowthImage: (input: { week: string; mimeType: string; imageBase64: string }, action: 'save' | 'copy' | 'share') => Promise<{ ok: boolean; cancelled?: boolean; message?: string; path?: string }>;
+  exportStudentMaterialStatsImage: (input: { week: string; mimeType: string; imageBase64: string }, action: 'save' | 'share') => Promise<{ ok: boolean; cancelled?: boolean; message?: string; path?: string }>;
   showCompanion: () => Promise<{ ok: boolean }>;
+  showCompanionPanel: (mode: 'learning' | 'project-tutor') => Promise<{ ok: boolean; message?: string }>;
   chooseConversationFile: () => Promise<{ cancelled?: boolean; name?: string; text?: string }>;
   previewConversationLink: (url: string) => Promise<{ content: string; finalUrl?: string; title?: string }>;
   submitConversation: (input: { text: string; title?: string; target: UploadTarget; submissionId: string }) => Promise<{ message?: string; receipt?: { status?: string } }>;
@@ -692,6 +726,23 @@ function TerminalApp() {
     } catch (error) { setMessage(`知识增长图导出失败：${(error as Error).message}`); }
   };
 
+  const exportMaterialStatsImage = async () => {
+    if (!api || !selectedStudent) return;
+    try {
+      const imageBase64 = base64FromUtf8(materialStatsSvg(selectedStudent, knowledgeProjects.length, dashboardWeek));
+      const result = await api.exportStudentMaterialStatsImage({ week: dashboardWeek, mimeType: 'image/svg+xml', imageBase64 }, 'share');
+      if (!result.cancelled) setMessage(result.message || '资料统计图已导出并定位，可选择应用分享。');
+    } catch (error) { setMessage(`资料统计图导出失败：${(error as Error).message}`); }
+  };
+
+  const openCompanionPanel = async (mode: 'learning' | 'project-tutor') => {
+    if (!api) return;
+    try {
+      const result = await api.showCompanionPanel(mode);
+      if (!result.ok) setMessage(result.message || '导师工具暂不可用。');
+    } catch (error) { setMessage(`打开${mode === 'learning' ? '学习导师' : '项目导师'}失败：${(error as Error).message}`); }
+  };
+
   useEffect(() => {
     if (!api?.onCompanionNavigate) return;
     return api.onCompanionNavigate(({ action }) => {
@@ -844,6 +895,20 @@ function TerminalApp() {
   const newSinceLastDigestCount = progress.newSinceLastDigestCount ?? selectedStudent?.newSinceLastDigestCount ?? 0;
   const queuedUploadCount = (uploadQueue.counts.queued || 0) + (uploadQueue.counts.uploading || 0);
   const unknownUploadCount = uploadQueue.counts.receipt_unknown || 0;
+  const dashboardWeek = growthWeeks[0] || currentIsoWeekKey();
+  const materialStats = useMemo(() => [
+    { label: '资料积累', value: recentUploadCount7, note: '近 7 日新增资料' },
+    { label: '学习投入', value: activeDays30, note: '近 30 日有记录天数' },
+    { label: '知识证据', value: knowledgeAssetCount, note: '已登记知识资产' },
+    { label: '资料整理', value: selectedStudent?.processedDigestCount || 0, note: '已完成处理资料' },
+    { label: '项目参与', value: knowledgeProjects.length, note: '当前关联项目' },
+  ], [recentUploadCount7, activeDays30, knowledgeAssetCount, selectedStudent?.processedDigestCount, knowledgeProjects.length]);
+  const todayPriority = useMemo(() => {
+    if (newSinceLastDigestCount > 0) return { title: `核对并补充 ${newSinceLastDigestCount} 份待整理资料`, detail: '资料已进入当前学生空间，补充归属或来源后可继续整理。', action: 'collection' as const };
+    if (practiceDashboard?.current) return { title: `完成“${practiceDashboard.current.content.title || '今日学习卡片'}”`, detail: '提交后由主机依据过程与证据进行反馈。', action: 'learning' as const };
+    if (courses.length > 0) return { title: `继续学习“${courses[0].name}”`, detail: '打开课程不会自动认定完成；需要时可主动采集学习资料。', action: 'learning' as const };
+    return { title: '补充一次今日学习状态', detail: '记录当前内容、困难和下一步，帮助主机形成后续建议。', action: 'learning' as const };
+  }, [newSinceLastDigestCount, practiceDashboard?.current, courses]);
   const uploadGenerationChanged = Boolean(uploadQueue.hostScope?.hostId
     && uploadQueue.hostScope.hostId === uploadQueue.observedHostScope?.hostId
     && uploadQueue.hostScope.dataGeneration !== uploadQueue.observedHostScope?.dataGeneration);
@@ -1530,8 +1595,14 @@ function TerminalApp() {
   const openProjectReportWorkspace = () => {
     const linkedProjects = projects.filter(project => project.studentIds?.includes(selectedStudentId));
     setCollaborationProjectId(current => linkedProjects.some(project => project.id === current) ? current : linkedProjects[0]?.id || '');
-    setActivePrimaryModule('archive');
+    setActivePrimaryModule('project');
     revealWorkspace('project-report');
+  };
+
+  const openProjectKnowledgeWorkspace = (projectId?: string) => {
+    setActivePrimaryModule('project');
+    revealWorkspace('documents');
+    void showProjectKnowledge(projectId);
   };
 
   if (!config?.connected) {
@@ -1694,11 +1765,12 @@ function TerminalApp() {
       </header>
 
       <div className="student-app-frame">
-        <nav className="student-primary-nav" aria-label="学生端四个模块">
+        <nav className="student-primary-nav" aria-label="学生端五个模块">
           <button className={activePrimaryModule === 'collection' ? 'active' : ''} onClick={() => selectPrimaryModule('collection')}><Upload size={21} /><span>资料搜集</span><small>上传、采集与导入</small></button>
           <button className={activePrimaryModule === 'connection' ? 'active' : ''} onClick={() => selectPrimaryModule('connection')}><Wifi size={21} /><span>主机连接</span><small>连接与学生空间</small></button>
           <button className={activePrimaryModule === 'archive' ? 'active' : ''} onClick={() => selectPrimaryModule('archive')}><Archive size={21} /><span>教育档案</span><small>报告、知识点与规划</small></button>
           <button className={activePrimaryModule === 'learning' ? 'active' : ''} onClick={() => selectPrimaryModule('learning')}><BookOpen size={21} /><span>学习行动</span><small>课程、练习与状态</small></button>
+          <button className={activePrimaryModule === 'project' ? 'active' : ''} onClick={() => selectPrimaryModule('project')}><LibraryBig size={21} /><span>项目管理</span><small>资料、报告与项目导师</small></button>
         </nav>
         <div className="student-app-stage">
 
@@ -1746,7 +1818,7 @@ function TerminalApp() {
 
       {activePrimaryModule !== 'connection' ? <section className="student-home-dashboard" aria-labelledby="student-home-title">
         <div className="student-dashboard-heading">
-          <div><span className="student-dashboard-eyebrow">{selectedStudent.grade ? `${selectedStudent.grade} · ` : ''}我的学习工作台</span><h1 id="student-home-title">{activePrimaryModule === 'home' ? '今天想做什么？' : activePrimaryModule === 'collection' ? '资料搜集' : activePrimaryModule === 'archive' ? '教育档案' : '学习行动'}</h1><p>{activePrimaryModule === 'home' ? '四项核心操作都可以在两次点击内到达。' : activePrimaryModule === 'collection' ? '主动提交的资料只会进入当前学生本人或已关联项目。' : activePrimaryModule === 'archive' ? '查看报告、知识点证据、规划建议与项目资料。' : '从课程、练习到学习状态，推进今天的学习。'}</p></div>
+          <div><span className="student-dashboard-eyebrow">{selectedStudent.grade ? `${selectedStudent.grade} · ` : ''}我的学习工作台</span><h1 id="student-home-title">{activePrimaryModule === 'home' ? '我的学情工作台' : activePrimaryModule === 'collection' ? '资料搜集' : activePrimaryModule === 'archive' ? '教育档案' : activePrimaryModule === 'project' ? '项目管理' : '学习行动'}</h1><p>{activePrimaryModule === 'home' ? '从一件最值得推进的事开始，再查看本周行动、项目和资料变化。' : activePrimaryModule === 'collection' ? '主动提交的资料只会进入当前学生本人或已关联项目。' : activePrimaryModule === 'archive' ? '查看报告、知识点证据与规划建议。' : activePrimaryModule === 'project' ? '查看本人关联项目的资料、综合报告，并使用项目导师推进下一步。' : '从课程、学习卡片、导师到学习状态，推进今天的学习。'}</p></div>
           {activePrimaryModule === 'collection' ? <label className="student-target-picker">
             <span className="student-target-icon" aria-hidden="true"><Target size={20} /></span>
             <span className="student-target-copy"><small>当前资料目标</small><select value={selectedTarget ? targetKey(selectedTarget) : ''} onChange={(event) => setSelectedTargetKey(event.target.value)} aria-label="当前资料目标">{targets.map((target) => <option value={targetKey(target)} key={targetKey(target)}>{target.name}</option>)}</select></span>
@@ -1766,11 +1838,29 @@ function TerminalApp() {
           <div><span>近 30 天学习</span><strong>{activeDays30} 天</strong><small>{newSinceLastDigestCount} 份待整理</small></div>
         </section>
 
-        {activePrimaryModule === 'home' ? <section className="student-action-grid student-home-module-grid" aria-label="四个核心操作">
-          <StudentActionTile icon={Upload} title="资料搜集" description="文件、图片、拍照、录音与对话" meta={queuedUploadCount ? `${queuedUploadCount} 份待发送` : '立即收集'} tone="tone-upload" onClick={() => selectPrimaryModule('collection')} />
-          <StudentActionTile icon={Wifi} title="主机连接" description="连接状态、学生空间与设备" meta="家庭主机已连接" tone="tone-course" onClick={() => selectPrimaryModule('connection')} />
-          <StudentActionTile icon={Archive} title="教育档案" description="报告、知识点、规划与项目资料" meta={`${selectedStudent.archiveFileCount || 0} 份档案`} tone="tone-archive" onClick={() => selectPrimaryModule('archive')} />
-          <StudentActionTile icon={BookOpen} title="学习行动" description="精选课程、学习卡片与学习状态" meta={`${courses.length} 门课程`} tone="tone-growth" onClick={() => selectPrimaryModule('learning')} />
+        {activePrimaryModule === 'home' ? <section className="student-workbench" aria-label="学情工作台">
+          <article className="student-today-focus">
+            <div><span>今天最值得推进的一件事</span><h2>{todayPriority.title}</h2><p>{todayPriority.detail}</p></div>
+            <button className="terminal-primary" onClick={() => selectPrimaryModule(todayPriority.action)}>现在推进<ArrowRight size={17} /></button>
+          </article>
+          <div className="student-workbench-grid">
+            <article className="student-workbench-card student-weekly-actions"><div className="student-workbench-card-heading"><span>本周行动</span><small>只显示当前学生范围内的资料与任务</small></div><ol>
+              <li><strong>整理资料</strong><span>{newSinceLastDigestCount ? `${newSinceLastDigestCount} 份待整理，先核对来源和归属` : '本周暂无待整理资料'}</span><button onClick={() => selectPrimaryModule('collection')}>去查看</button></li>
+              <li><strong>保持学习节奏</strong><span>近 30 天已有 {activeDays30} 天学习记录，本周新增 {recentUploadCount7} 份资料</span><button onClick={() => selectPrimaryModule('learning')}>去学习</button></li>
+              <li><strong>回顾学习证据</strong><span>当前已登记 {knowledgeAssetCount} 项知识资产，结论仍以主机证据审核为准</span><button onClick={() => selectPrimaryModule('archive')}>看档案</button></li>
+            </ol></article>
+            <article className="student-workbench-card student-project-focus"><div className="student-workbench-card-heading"><span>重点项目</span><small>{knowledgeProjects.length ? `${knowledgeProjects.length} 个本人关联项目` : '尚未关联项目'}</small></div>{knowledgeProjects.length ? <div className="student-project-list">{knowledgeProjects.slice(0, 3).map((project) => <button key={project.id} onClick={() => openProjectKnowledgeWorkspace(project.id)}><strong>{project.name}</strong><span>{project.status === 'sealed' ? '已封存，只读查看' : '查看项目资料与下一步'}</span><ArrowRight size={16} /></button>)}</div> : <p>当主机将你关联到项目后，这里会显示项目资料、综合报告和项目导师入口。</p>}<button className="terminal-secondary student-project-manage-button" onClick={() => selectPrimaryModule('project')}>进入项目管理</button></article>
+          </div>
+          <div className="student-workbench-grid student-workbench-bottom-grid">
+            <article className="student-workbench-card student-five-dimensions"><div className="student-workbench-card-heading"><span>五维学情</span><small>统计与活动记录，不等同于掌握结论</small></div><div>{materialStats.map((item) => <div className="student-dimension-row" key={item.label}><span>{item.label}</span><strong>{item.value}</strong><small>{item.note}</small></div>)}</div></article>
+            <article className="student-workbench-card student-material-chart"><div className="student-workbench-card-heading"><span>我的资料统计图</span><small>{dashboardWeek} · 点击图片即可准备分享</small></div><button className="student-material-chart-button" onClick={() => void exportMaterialStatsImage()} title="导出并定位资料统计图，可选择应用分享"><svg viewBox="0 0 420 180" role="img" aria-label="当前学生资料统计图">{materialStats.slice(0, 4).map((item, index) => { const max = Math.max(1, ...materialStats.map(value => value.value)); const width = Math.max(item.value ? 12 : 0, Math.round((item.value / max) * 240)); return <g key={item.label}><text x="0" y={27 + index * 40}>{item.label}</text><rect x="112" y={12 + index * 40} width="240" height="18" rx="9" /><rect className={`student-material-bar bar-${index}`} x="112" y={12 + index * 40} width={width} height="18" rx="9" /><text x="366" y={27 + index * 40}>{item.value}</text></g>; })}</svg><span>点击导出并分享图片</span></button></article>
+          </div>
+          <section className="student-action-grid student-home-module-grid" aria-label="学生端主要模块">
+            <StudentActionTile icon={Upload} title="资料搜集" description="文件、图片、拍照、录音与对话" meta={queuedUploadCount ? `${queuedUploadCount} 份待发送` : '立即收集'} tone="tone-upload" onClick={() => selectPrimaryModule('collection')} />
+            <StudentActionTile icon={Archive} title="教育档案" description="报告、知识点与规划" meta={`${selectedStudent.archiveFileCount || 0} 份档案`} tone="tone-archive" onClick={() => selectPrimaryModule('archive')} />
+            <StudentActionTile icon={BookOpen} title="学习行动" description="课程、学习卡片与学习导师" meta={`${courses.length} 门课程`} tone="tone-growth" onClick={() => selectPrimaryModule('learning')} />
+            <StudentActionTile icon={LibraryBig} title="项目管理" description="项目资料、报告与项目导师" meta={`${knowledgeProjects.length} 个关联项目`} tone="tone-knowledge" onClick={() => selectPrimaryModule('project')} />
+          </section>
         </section> : null}
 
         {activePrimaryModule === 'collection' ? <section className="student-action-grid" aria-label="资料搜集功能">
@@ -1787,16 +1877,21 @@ function TerminalApp() {
           <StudentActionTile icon={TrendingUp} title="成长模型" description="查看能力与项目成长证据" meta="只读查看" tone="tone-growth" active={activeWorkspace === 'documents' && documentMode === 'growth'} disabled={busy} onClick={() => openDocumentWorkspace('growth')} />
           <StudentActionTile icon={FileText} title="学情报告" description="查看掌握情况和学习建议" meta="只读查看" tone="tone-report" active={activeWorkspace === 'documents' && documentMode === 'reports'} disabled={busy} onClick={() => openDocumentWorkspace('reports')} />
           <StudentActionTile icon={Archive} title="学情档案" description="查找本人已公开的档案内容" meta={`${selectedStudent.archiveFileCount || 0} 份档案`} tone="tone-archive" active={activeWorkspace === 'documents' && documentMode === 'archive'} disabled={busy} onClick={() => openDocumentWorkspace('archive')} />
-          <StudentActionTile icon={LibraryBig} title="项目资料" description="阅读本人关联项目的知识资料" meta={`${knowledgeProjects.length} 个关联项目`} tone="tone-knowledge" active={activeWorkspace === 'documents' && documentMode === 'project-knowledge'} disabled={busy} onClick={() => openDocumentWorkspace('project-knowledge')} />
-          {learningCapabilities.projectComprehensiveReport ? <StudentActionTile icon={FileText} title="项目综合报告" description="查看阶段、证据、成果与下一步建议" meta="主机生成 · 只读" tone="tone-report" active={activeWorkspace === 'project-report'} disabled={busy} onClick={openProjectReportWorkspace} /> : null}
           {learningCapabilities.learningTrajectory ? <StudentActionTile icon={TrendingUp} title="知识点跟踪" description="按学科查看证据和复习优先级" meta="主机只读数据" tone="tone-growth" active={activeWorkspace === 'trajectory'} disabled={busy} onClick={() => void openLearningTrajectory()} /> : null}
           {learningCapabilities.planningRead ? <StudentActionTile icon={TrendingUp} title="规划指导" description="查看规划、选题和比赛" meta="建议与来源只读" tone="tone-knowledge" active={activeWorkspace === 'planning'} disabled={busy} onClick={() => void openPlanning()} /> : null}
+        </section> : null}
+
+        {activePrimaryModule === 'project' ? <section className="student-action-grid" aria-label="项目管理功能">
+          <StudentActionTile icon={LibraryBig} title="项目资料" description="阅读本人关联项目的资料与知识" meta={`${knowledgeProjects.length} 个关联项目`} tone="tone-knowledge" active={activeWorkspace === 'documents' && documentMode === 'project-knowledge'} disabled={busy} onClick={openProjectKnowledgeWorkspace} />
+          {learningCapabilities.projectComprehensiveReport ? <StudentActionTile icon={FileText} title="项目综合报告" description="查看阶段、证据、成果与下一步建议" meta="主机生成 · 只读" tone="tone-report" active={activeWorkspace === 'project-report'} disabled={busy} onClick={openProjectReportWorkspace} /> : null}
+          <StudentActionTile icon={Bot} title="项目导师" description="使用工具条中的项目引导与资料梳理模式" meta={knowledgeProjects.length ? '仅限本人关联项目' : '需要先关联项目'} tone="tone-growth" disabled={!knowledgeProjects.length} onClick={() => void openCompanionPanel('project-tutor')} />
         </section> : null}
 
         {activePrimaryModule === 'learning' ? <section className="student-action-grid" aria-label="学习行动功能">
           <StudentActionTile icon={BookOpen} title="精选课程" description="继续已分配的课程" meta={`${courses.length} 门可用课程`} tone="tone-course" active={activeWorkspace === 'courses'} onClick={() => revealWorkspace('courses')} />
           {learningCapabilities.practice ? <StudentActionTile icon={Target} title="学习卡片" description="完成主机为我准备的练习" meta="作答后明确提交" tone="tone-report" active={activeWorkspace === 'practice'} disabled={busy} onClick={() => void openPractice()} /> : null}
           {learningCapabilities.learningStatus ? <StudentActionTile icon={TrendingUp} title="学习状态与每周成长" description="填写状态并查看、分享每周知识增长图" meta="一个入口" tone="tone-growth" active={activeWorkspace === 'collaboration'} disabled={busy} onClick={() => void openCollaboration()} /> : null}
+          <StudentActionTile icon={Bot} title="学习导师" description="使用工具条中的学习模式，生成受控学习提示词" meta="不直接代写或认定掌握" tone="tone-knowledge" onClick={() => void openCompanionPanel('learning')} />
         </section> : null}
       </section> : null}
 
@@ -1995,12 +2090,13 @@ function TerminalApp() {
         </div> : null}
 
         {activeWorkspace === 'documents' ? <div className="student-documents-workspace">
-          <p className="student-workspace-description">成长模型、学情报告、教育档案与项目知识只读取当前学生自己的内容，不显示其他学生或未关联项目。</p>
+          <p className="student-workspace-description">{activePrimaryModule === 'project' ? '项目资料与知识只读取当前学生本人已关联项目的内容，不显示其他学生或未关联项目。' : '成长模型、学情报告与教育档案只读取当前学生自己的内容，不显示其他学生内容。'}</p>
           <div className="document-actions">
-            <button className={documentMode === 'growth' ? 'terminal-primary' : 'terminal-secondary'} onClick={showGrowthSummary} disabled={busy}>查看成长模型</button>
-            <button className={documentMode === 'reports' ? 'terminal-primary' : 'terminal-secondary'} onClick={showLearningReports} disabled={busy}>学情报告</button>
-            <button className={documentMode === 'archive' ? 'terminal-primary' : 'terminal-secondary'} onClick={showArchiveFiles} disabled={busy}>教育档案</button>
-            <button className={documentMode === 'project-knowledge' ? 'terminal-primary' : 'terminal-secondary'} onClick={() => showProjectKnowledge()} disabled={busy}>项目资料与知识</button>
+            {activePrimaryModule === 'project' ? <button className={documentMode === 'project-knowledge' ? 'terminal-primary' : 'terminal-secondary'} onClick={() => showProjectKnowledge()} disabled={busy}>项目资料与知识</button> : <>
+              <button className={documentMode === 'growth' ? 'terminal-primary' : 'terminal-secondary'} onClick={showGrowthSummary} disabled={busy}>查看成长模型</button>
+              <button className={documentMode === 'reports' ? 'terminal-primary' : 'terminal-secondary'} onClick={showLearningReports} disabled={busy}>学情报告</button>
+              <button className={documentMode === 'archive' ? 'terminal-primary' : 'terminal-secondary'} onClick={showArchiveFiles} disabled={busy}>教育档案</button>
+            </>}
           </div>
           {documentMode === 'project-knowledge' && knowledgeProjects.length > 0 ? <label className="project-knowledge-selector">
             <span>关联项目</span>

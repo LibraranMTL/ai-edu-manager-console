@@ -88,31 +88,40 @@ test('external conversation shares are durable, single-instance and confirmation
   assert.match(ui, /conversationImportActiveRef/);
 });
 
-test('learning-cockpit UI keeps four modules, a home view and wide read-only document dialogs', () => {
+test('learning-cockpit UI keeps five modules, a learning workbench and wide read-only document dialogs', () => {
   const ui = read('src', 'terminal-main.tsx');
   const css = read('src', 'terminal-styles.css');
-  assert.match(ui, /type StudentPrimaryModule = 'collection' \| 'connection' \| 'archive' \| 'learning'/);
+  assert.match(ui, /type StudentPrimaryModule = 'collection' \| 'connection' \| 'archive' \| 'learning' \| 'project'/);
   assert.match(ui, /type StudentPrimaryView = 'home' \| StudentPrimaryModule/);
-  assert.match(ui, /今天想做什么？/);
+  assert.match(ui, /我的学情工作台/);
+  assert.match(ui, /今天最值得推进的一件事/);
   assert.match(ui, /student-app-frame/);
   assert.match(ui, /student-reader-dialog/);
   assert.match(ui, /项目综合报告/);
+  assert.match(css, /\.student-primary-nav \{ display: grid; grid-template-columns: repeat\(5, minmax\(0, 1fr\)\)/);
   assert.match(css, /grid-template-columns: 214px minmax\(0, 1fr\)/);
   assert.match(css, /\.student-reader-backdrop/);
   assert.match(css, /@media print/);
 });
 
-test('archive owns knowledge tracking and planning while weekly growth has one learning entry', () => {
+test('archive owns knowledge tracking and planning; project material and mentor are in the project workspace', () => {
   const ui = read('src', 'terminal-main.tsx');
   const archiveStart = ui.indexOf("activePrimaryModule === 'archive' ? <section");
-  const learningStart = ui.indexOf("activePrimaryModule === 'learning' ? <section", archiveStart);
+  const projectStart = ui.indexOf("activePrimaryModule === 'project' ? <section", archiveStart);
+  const learningStart = ui.indexOf("activePrimaryModule === 'learning' ? <section", projectStart);
   const learningEnd = ui.indexOf('</section> : null}', learningStart);
-  const archive = ui.slice(archiveStart, learningStart);
+  const archive = ui.slice(archiveStart, projectStart);
+  const project = ui.slice(projectStart, learningStart);
   const learning = ui.slice(learningStart, learningEnd);
   assert.match(archive, /title="知识点跟踪"/);
   assert.match(archive, /title="规划指导"/);
   assert.doesNotMatch(learning, /title="知识点跟踪"|title="规划指导"/);
+  assert.doesNotMatch(archive, /title="项目资料"|title="项目综合报告"/);
+  assert.match(project, /title="项目资料"/);
+  assert.match(project, /title="项目综合报告"/);
+  assert.match(project, /title="项目导师"/);
   assert.match(learning, /title="学习状态与每周成长"/);
+  assert.match(learning, /title="学习导师"/);
   assert.doesNotMatch(learning, /title="每周知识增长图"/);
 });
 

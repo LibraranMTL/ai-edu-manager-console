@@ -1659,29 +1659,33 @@ async function takeQuickScreenshot(sourceId, target) {
   });
 }
 
-async function exportKnowledgeGrowthImage(input = {}, action = 'save') {
+async function exportKnowledgeGrowthImage(input = {}, action = 'save', label = '知识增长图') {
   const week = String(input.week || '');
   if (!/^\d{4}-W\d{2}$/.test(week)) throw new Error('周次无效');
   const mimeType = String(input.mimeType || '').split(';')[0].toLowerCase();
   const extension = mimeType === 'image/svg+xml' ? 'svg' : mimeType === 'image/png' ? 'png' : '';
-  if (!extension) throw new Error('增长图格式不受支持。');
+  if (!extension) throw new Error(`${label}格式不受支持。`);
   const bytes = Buffer.from(String(input.imageBase64 || ''), 'base64');
-  if (!bytes.length || bytes.length > 12 * 1024 * 1024) throw new Error('增长图内容无效。');
+  if (!bytes.length || bytes.length > 12 * 1024 * 1024) throw new Error(`${label}内容无效。`);
   if (action === 'copy') {
     const image = nativeImage.createFromBuffer(bytes);
     if (image.isEmpty()) throw new Error('当前图片格式不能直接复制，请保存后分享。');
     clipboard.writeImage(image);
-    return { ok: true, action, message: '知识增长图已复制到剪贴板。' };
+    return { ok: true, action, message: `${label}已复制到剪贴板。` };
   }
   const result = await dialog.showSaveDialog(mainWindow, {
-    title: '导出每周知识增长图',
-    defaultPath: `知识增长图-${week}.${extension}`,
-    filters: [{ name: '知识增长图', extensions: [extension] }],
+    title: `导出${label}`,
+    defaultPath: `${label}-${week}.${extension}`,
+    filters: [{ name: label, extensions: [extension] }],
   });
   if (result.canceled || !result.filePath) return { ok: false, cancelled: true };
   fs.writeFileSync(result.filePath, bytes);
   if (action === 'share') shell.showItemInFolder(result.filePath);
-  return { ok: true, action, path: result.filePath, message: action === 'share' ? '图片已导出并定位，可选择应用发送。' : '图片已导出。' };
+  return { ok: true, action, path: result.filePath, message: action === 'share' ? `${label}已导出并定位，可选择应用发送。` : `${label}已导出。` };
+}
+
+function exportStudentMaterialStatsImage(input = {}, action = 'save') {
+  return exportKnowledgeGrowthImage(input, action, '学生资料统计图');
 }
 
 async function chooseConversationFile() {
@@ -2870,6 +2874,12 @@ function showTerminalCompanion() {
   return { ok: true, state: terminalCompanionState() };
 }
 
+function showTerminalCompanionPanel(mode) {
+  const shown = showTerminalCompanion();
+  if (!shown.ok) return shown;
+  return showTerminalCompanionPopover(mode);
+}
+
 function registerIpc() {
   ipcMain.handle('terminal:get-config', () => publicConfig());
   ipcMain.handle('terminal:get-tailscale-status', () => publicTailscaleStatus());
@@ -2918,6 +2928,7 @@ function registerIpc() {
   ipcMain.handle('terminal:set-agent-bridge', (_event, enabled) => setTerminalAgentBridge(Boolean(enabled)));
   ipcMain.handle('terminal:copy-agent-bridge-config', () => copyTerminalAgentBridgeConfig());
   ipcMain.handle('terminal:show-companion', () => showTerminalCompanion());
+  ipcMain.handle('terminal:show-companion-panel', (_event, mode) => showTerminalCompanionPanel(String(mode || '')));
   ipcMain.handle('terminal:companion-action', (event, action) => {
     if (!companionWindow || companionWindow.isDestroyed() || event.sender !== companionWindow.webContents) throw new Error('工具条来源无效。');
     const value = String(action || '');
@@ -3062,6 +3073,7 @@ function registerIpc() {
   ipcMain.handle('terminal:upload-captured-media', (_event, input, target) => uploadCapturedMedia(input, target));
   ipcMain.handle('terminal:quick-screenshot', (_event, sourceId, target) => takeQuickScreenshot(sourceId, target));
   ipcMain.handle('terminal:export-knowledge-growth-image', (_event, input, action) => exportKnowledgeGrowthImage(input, action));
+  ipcMain.handle('terminal:export-student-material-stats-image', (_event, input, action) => exportStudentMaterialStatsImage(input, action));
   ipcMain.handle('terminal:choose-conversation-file', () => chooseConversationFile());
   ipcMain.handle('terminal:take-conversation-import', () => {
     const draft = pendingConversationImports.shift() || null;

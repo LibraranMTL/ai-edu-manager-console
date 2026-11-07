@@ -6,7 +6,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { createLearningStateStore } = require('../electron/learning-state-store.cjs');
-const { getWeeklyKnowledgeGrowth, isoWeekKey, resolveCanvasRuntime } = require('../electron/weekly-knowledge-growth.cjs');
+const { HEIGHT, WIDTH, getWeeklyKnowledgeGrowth, isoWeekKey, renderWeeklyKnowledgeGrowthPng, resolveCanvasRuntime } = require('../electron/weekly-knowledge-growth.cjs');
 const { appendLearningEvents, removeLearningEventsBySource } = require('../electron/learning-analytics.cjs');
 
 function fixture(t) {
@@ -43,6 +43,21 @@ test('weekly growth uses stable ISO week keys at the terminal HTTP boundary', ()
   assert.equal(isoWeekKey('2026-11-02'), '2026-W45');
   assert.equal(isoWeekKey('2027-01-01'), '2026-W53');
   assert.equal(isoWeekKey('not-a-date'), '');
+});
+
+test('weekly growth renders the portable landscape chart used by student home', () => {
+  const png = renderWeeklyKnowledgeGrowthPng({
+    ok: true, weekStart: '2026-11-02', weekEnd: '2026-11-08', currentDate: '2026-11-07', timezone: 'Asia/Shanghai',
+    assetTotal: 253, weeklyUploadedMaterials: 5, undatedAssetCount: 0,
+    days: [
+      { label: '周一', date: '2026-11-02', uploads: 0 }, { label: '周二', date: '2026-11-03', uploads: 4 },
+      { label: '周三', date: '2026-11-04', uploads: 0 }, { label: '周四', date: '2026-11-05', uploads: 1 },
+      { label: '周五', date: '2026-11-06', uploads: 0 }, { label: '周六', date: '2026-11-07', uploads: 0 },
+      { label: '周日', date: '2026-11-08', uploads: null },
+    ],
+  });
+  assert.ok(WIDTH > HEIGHT, 'student home requires a landscape chart');
+  assert.equal(png.subarray(0, 8).toString('hex'), '89504e470d0a1a0a');
 });
 
 test('first reliable registration is idempotent and survives withdrawal and re-import', (t) => {

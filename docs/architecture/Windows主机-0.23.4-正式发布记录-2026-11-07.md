@@ -24,3 +24,12 @@ ZIP 内 EXE 的 SHA-256 与便携 EXE 相同：`BC77A7CF260796B9EAF7A37280CA8D9F
 - 平台精选课程的本地创作和发布 UI 已收起；机构本地课程管理仍保留。
 - 三个 Windows 制品的 Authenticode 状态均为 `NotSigned`。发布状态为官网稳定下载可用，不代表 Authenticode 签名或真实设备验收已完成。
 - 发布操作必须保留服务器备份，按“二进制 → 清单 → 下载页”同目录临时文件原子切换，并以公网 HTTPS 再核验哈希与内容。
+
+## 生产发布验证
+
+- 回滚备份：`/www/backups/windows-0.23.4-20261107-7cc2ef1`，保留发布前的下载清单、教育站清单和下载页；旧 `0.23.3` 三种包仍保留在下载目录。
+- 服务器端正式文件、两个清单和下载页的 SHA-256 均与本地暂存值一致。
+- 公网 HTTPS 已验证返回 `200`：
+  - `https://www.greatbg.com/download/edu-manager-version.json`：`0.23.4/273/stable`，SHA-256 `96559c2304492aa64b17f4454262ce00f057196cc2e94caf4395af1fa8ebe5ed`。
+  - `https://www.greatbg.com/education/download.html`：SHA-256 `8356bc4b29218375324e963739649ef19f0198559cab125fbd50b71481500724`，包含三种 `0.23.4` 下载链接。
+  - 便携 EXE、ZIP、安装器的公网 `Content-Length` 分别为 `99143136`、`99153570`、`99784207` 字节。

@@ -108,6 +108,7 @@ let companionSelectedProjectId = '';
 let courseView = null;
 let activeCourse = null;
 let courseViewTop = 300;
+let courseLearningFullscreen = false;
 let effectiveCourseCache = [];
 let effectiveProjectCache = [];
 let terminalDiscoverySocket = null;
@@ -1504,10 +1505,24 @@ function validateCourseProjection(payload, hostId, studentId) {
 }
 
 function terminalCourseViewBounds() {
-  if (!mainWindow || mainWindow.isDestroyed()) return { x: 24, y: courseViewTop, width: 1000, height: Math.max(260, 738 - courseViewTop) };
+  const focused = courseLearningFullscreen;
+  const inset = focused ? 0 : 24;
+  const minimumTop = focused ? 52 : 96;
+  const minimumHeight = focused ? 160 : 260;
+  if (!mainWindow || mainWindow.isDestroyed()) return { x: inset, y: courseViewTop, width: 1000 - inset * 2, height: Math.max(minimumHeight, 738 - courseViewTop - inset) };
   const [width, height] = mainWindow.getContentSize();
-  const top = Math.min(Math.max(160, Math.round(courseViewTop)), Math.max(160, height - 260));
-  return { x: 24, y: top, width: Math.max(360, width - 48), height: Math.max(260, height - top - 24) };
+  const top = Math.min(Math.max(minimumTop, Math.round(courseViewTop)), Math.max(minimumTop, height - minimumHeight));
+  return { x: inset, y: top, width: Math.max(360, width - inset * 2), height: Math.max(minimumHeight, height - top - inset) };
+}
+
+function setTerminalCourseLearningFullscreen(enabled) {
+  if (!mainWindow || mainWindow.isDestroyed() || !courseView) return { ok: false, message: '当前没有可全屏显示的课程。' };
+  courseLearningFullscreen = Boolean(enabled);
+  courseViewTop = courseLearningFullscreen ? 52 : 96;
+  mainWindow.setFullScreen(courseLearningFullscreen);
+  courseView.setBounds(terminalCourseViewBounds());
+  notify('terminal:course-learning-fullscreen', { enabled: courseLearningFullscreen });
+  return { ok: true, enabled: courseLearningFullscreen };
 }
 
 function closeTerminalCourse(reason = 'user') {
@@ -1517,8 +1532,12 @@ function closeTerminalCourse(reason = 'user') {
   }
   courseView = null;
   courseViewTop = 300;
+  const wasFullscreen = courseLearningFullscreen;
+  courseLearningFullscreen = false;
+  if (wasFullscreen && mainWindow && !mainWindow.isDestroyed()) mainWindow.setFullScreen(false);
   const closed = activeCourse;
   activeCourse = null;
+  if (wasFullscreen) notify('terminal:course-learning-fullscreen', { enabled: false });
   notify('terminal:course-browser-changed', { open: false, reason, courseId: closed?.courseId || '' });
   return { ok: true, open: false };
 }
@@ -1544,6 +1563,7 @@ async function openTerminalCourse(courseId) {
   catch(error){if(!isCourseStartFallbackAllowed(error))throw error;}
   if(currentStudentSession().config.sessionToken!==config.sessionToken)throw Error('学生已切换，请重新打开课程');
   closeTerminalCourse('switch');
+  courseLearningFullscreen = false;
   const partition = coursePartition(course.courseId);
   const courseSession = session.fromPartition(partition, { cache: true });
   courseView = new WebContentsView({ webPreferences: secureCourseWebPreferences(partition) });
@@ -1559,6 +1579,12 @@ async function openTerminalCourse(courseId) {
   });
   courseView.webContents.on('did-navigate-in-page', (_event, url) => {
     if (activeCourse?.courseId === course.courseId) activeCourse.currentUrl = url;
+  });
+  courseView.webContents.on('before-input-event', (event, input) => {
+    if (courseLearningFullscreen && input.type === 'keyDown' && input.key === 'Escape') {
+      event.preventDefault();
+      setTerminalCourseLearningFullscreen(false);
+    }
   });
   courseView.webContents.on('render-process-gone', () => closeTerminalCourse('render_process_gone'));
   await courseView.webContents.loadURL(course.url);
@@ -3120,12 +3146,18 @@ function registerIpc() {
   ipcMain.handle('terminal:list-courses', () => loadEffectiveCourses());
   ipcMain.handle('terminal:open-course', (_event, courseId) => openTerminalCourse(courseId));
   ipcMain.handle('terminal:close-course', () => closeTerminalCourse());
+  ipcMain.handle('terminal:set-course-learning-fullscreen', (event, enabled) => {
+    if (!mainWindow || mainWindow.isDestroyed() || event.sender !== mainWindow.webContents) throw new Error('课程窗口来源无效。');
+    return setTerminalCourseLearningFullscreen(enabled);
+  });
   ipcMain.handle('terminal:set-course-view-top', (event, top) => {
     if (!mainWindow || mainWindow.isDestroyed() || event.sender !== mainWindow.webContents) throw new Error('课程窗口来源无效。');
     const value = Number(top);
     if (!Number.isFinite(value)) throw new Error('课程视图位置无效。');
     const [, height] = mainWindow.getContentSize();
-    courseViewTop = Math.min(Math.max(160, Math.round(value)), Math.max(160, height - 260));
+    const minimumTop = courseLearningFullscreen ? 52 : 96;
+    const minimumHeight = courseLearningFullscreen ? 160 : 260;
+    courseViewTop = Math.min(Math.max(minimumTop, Math.round(value)), Math.max(minimumTop, height - minimumHeight));
     if (courseView) courseView.setBounds(terminalCourseViewBounds());
     if (captureControlWindow && !captureControlWindow.isDestroyed()) {
       captureControlWindow.setAlwaysOnTop(true, 'screen-saver');
@@ -3222,12 +3254,20 @@ function createWindow() {
   mainWindow.on('resize', () => {
     if (courseView) courseView.setBounds(terminalCourseViewBounds());
   });
+  mainWindow.on('leave-full-screen', () => {
+    if (!courseLearningFullscreen) return;
+    courseLearningFullscreen = false;
+    courseViewTop = 96;
+    if (courseView) courseView.setBounds(terminalCourseViewBounds());
+    notify('terminal:course-learning-fullscreen', { enabled: false });
+  });
   mainWindow.on('closed', () => {
     if (courseView) {
       try { courseView.webContents.close(); } catch {}
       courseView = null;
       activeCourse = null;
     }
+    courseLearningFullscreen = false;
     mainWindow = null;
   });
 }

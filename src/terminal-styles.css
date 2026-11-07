@@ -175,11 +175,20 @@ footer { padding: 22px 0 0; text-align: center; color: #78908a; font-size: 12px;
 .terminal-course-card details { color: #526a64; }
 .terminal-empty-state { padding: 24px; border: 1px dashed rgba(24, 91, 78, .24); border-radius: 16px; color: #526a64; text-align: center; }
 .terminal-course-shell { min-height: 100vh; padding-bottom: 0; overflow: hidden; }
+.terminal-course-header { min-height: 42px; margin: 0 0 8px; padding: 2px 0; }
+.terminal-course-header .terminal-host-state { margin-left: auto; }
+.terminal-course-focusbar { display: none; align-items: center; justify-content: space-between; gap: 12px; min-height: 44px; padding: 4px 12px; color: #f4fffc; background: #123e35; }
+.terminal-course-focusbar strong { font-size: 14px; }
+.terminal-course-focusbar > div { display: flex; align-items: center; gap: 8px; }
+.terminal-course-focusbar button { min-height: 34px; margin: 0; padding: 0 10px; border-radius: 9px; font-size: 12px; }
 .terminal-course-toolbar { display: flex; align-items: center; gap: 6px; min-height: 48px; height: 48px; padding: 5px 10px; overflow-x: auto; overflow-y: hidden; border: 1px solid rgba(24, 91, 78, .14); border-radius: 14px; background: #fff; box-shadow: 0 10px 28px rgba(24, 67, 59, .08); scrollbar-width: thin; }
 .terminal-course-toolbar strong { flex: 0 1 170px; min-width: 0; overflow: hidden; color: #17604f; font-size: 13px; line-height: 1.2; text-overflow: ellipsis; white-space: nowrap; }
 .terminal-course-toolbar select { flex: 1 1 140px; min-width: 116px; max-width: 208px; height: 36px; padding: 0 29px 0 10px; border-radius: 10px; font-size: 13px; line-height: 1; text-overflow: ellipsis; white-space: nowrap; }
 .terminal-course-toolbar > button { flex: 0 0 auto; min-height: 36px; margin: 0; padding: 0 11px; border-radius: 10px; font-size: 13px; line-height: 1; white-space: nowrap; word-break: keep-all; writing-mode: horizontal-tb; }
-.terminal-course-browser-placeholder { margin-top: 10px; padding: 12px 18px; color: #58706a; text-align: center; }
+.terminal-course-browser-anchor { height: 0; margin: 8px 0 0; }
+.terminal-course-shell.is-learning-fullscreen { width: 100%; max-width: none; margin: 0; padding: 0; background: #123e35; }
+.terminal-course-shell.is-learning-fullscreen .terminal-course-header, .terminal-course-shell.is-learning-fullscreen .terminal-course-toolbar { display: none; }
+.terminal-course-shell.is-learning-fullscreen .terminal-course-focusbar { display: flex; }
 
 /* Windows 学生端横屏学习工作台 */
 button:focus-visible { outline: 4px solid rgba(23, 111, 206, .24); outline-offset: 3px; }

@@ -103,3 +103,18 @@ test('Windows student terminal capture opens a floating setup panel and a native
   assert.match(build, /capture-protocol\.cjs/);
   assert.match(build, /capture-control-window\.cjs/);
 });
+
+test('Windows student course learning has a compact controls row and an escapable focus mode', () => {
+  assert.match(ui, /terminal-course-header/);
+  assert.match(ui, /全屏学习/);
+  assert.match(ui, /退出全屏（Esc）/);
+  assert.match(ui, /terminal-course-focusbar/);
+  assert.doesNotMatch(ui, /课程网页在下方隔离视图中加载/);
+  assert.match(ui, /setCourseLearningFullscreen/);
+  assert.match(preload, /terminal:set-course-learning-fullscreen/);
+  assert.match(preload, /terminal:course-learning-fullscreen/);
+  assert.match(main, /terminal:set-course-learning-fullscreen/);
+  assert.match(main, /setTerminalCourseLearningFullscreen/);
+  assert.match(main, /input\.key === 'Escape'/);
+  assert.match(read('src', 'terminal-styles.css'), /\.terminal-course-shell\.is-learning-fullscreen/);
+});

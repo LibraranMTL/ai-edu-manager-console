@@ -79,6 +79,7 @@ contextBridge.exposeInMainWorld('terminalBridge', {
   openCourse: (courseId) => ipcRenderer.invoke('terminal:open-course', courseId),
   closeCourse: () => ipcRenderer.invoke('terminal:close-course'),
   setCourseViewTop: (top) => ipcRenderer.invoke('terminal:set-course-view-top', top),
+  setCourseLearningFullscreen: (enabled) => ipcRenderer.invoke('terminal:set-course-learning-fullscreen', Boolean(enabled)),
   listCaptureSources: () => ipcRenderer.invoke('terminal:list-capture-sources'),
   startCapture: (input) => ipcRenderer.invoke('terminal:start-capture', input),
   stopCapture: () => ipcRenderer.invoke('terminal:stop-capture'),
@@ -93,6 +94,11 @@ contextBridge.exposeInMainWorld('terminalBridge', {
   onAutoDelivery: (handler) => ipcRenderer.on('terminal:auto-delivery', (_event, payload) => handler(payload)),
   onCaptureChanged: (handler) => ipcRenderer.on('terminal:capture-changed', (_event, payload) => handler(payload)),
   onCourseBrowserChanged: (handler) => ipcRenderer.on('terminal:course-browser-changed', (_event, payload) => handler(payload)),
+  onCourseLearningFullscreen: (handler) => {
+    const listener = (_event, payload) => handler(payload || { enabled: false });
+    ipcRenderer.on('terminal:course-learning-fullscreen', listener);
+    return () => ipcRenderer.removeListener('terminal:course-learning-fullscreen', listener);
+  },
   onAgentCaptureChanged: (handler) => {
     const listener = (_event, payload) => handler(payload);
     ipcRenderer.on('terminal:agent-capture-changed', listener);

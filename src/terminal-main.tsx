@@ -220,6 +220,7 @@ type TerminalBridge = {
   openCourse: (courseId: string) => Promise<{ ok: boolean; open?: boolean; course?: Course; message?: string }>;
   closeCourse: () => Promise<{ ok: boolean; open?: boolean }>;
   setCourseViewTop: (top: number) => Promise<{ ok: boolean; top: number }>;
+  setCourseLearningFullscreen: (enabled: boolean) => Promise<{ ok: boolean; enabled?: boolean; message?: string }>;
   listCaptureSources: () => Promise<CaptureSource[]>;
   startCapture: (input: Record<string, unknown>) => Promise<CaptureSession>;
   stopCapture: () => Promise<CaptureSession | null>;
@@ -229,6 +230,7 @@ type TerminalBridge = {
   onAutoDelivery: (handler: (payload: Progress) => void) => void;
   onCaptureChanged: (handler: (payload: CaptureSession) => void) => void;
   onCourseBrowserChanged: (handler: (payload: { open: boolean; courseId?: string; name?: string; blocked?: boolean; message?: string }) => void) => void;
+  onCourseLearningFullscreen: (handler: (payload: { enabled: boolean }) => void) => () => void;
   onAgentCaptureChanged: (handler: (payload: AgentCaptureState) => void) => () => void;
   onPairingChanged: (handler: (payload: { state: PairingState; config: TerminalConfig }) => void) => () => void;
   onCompanionNavigate: (handler: (payload: { action: string }) => void) => () => void;
@@ -453,6 +455,7 @@ function TerminalApp() {
   const [courseCatalogVersion, setCourseCatalogVersion] = useState('');
   const [courseDisclaimer, setCourseDisclaimer] = useState('');
   const [courseBrowser, setCourseBrowser] = useState<{ open: boolean; courseId?: string; name?: string }>({ open: false });
+  const [courseLearningFullscreen, setCourseLearningFullscreen] = useState(false);
   const [activeWorkspace, setActiveWorkspace] = useState<StudentWorkspace>(null);
   const [activePrimaryModule, setActivePrimaryModule] = useState<StudentPrimaryView>('home');
   const [agentCapture, setAgentCapture] = useState<AgentCaptureState>({ enabled: false, active: false, registrations: {}, warnings: [], installedCount: 0, connectedCount: 0, pending: 0 });
@@ -849,7 +852,7 @@ function TerminalApp() {
       observer.disconnect();
       window.removeEventListener('resize', syncCourseViewport);
     };
-  }, [api, courseBrowser.open, courseBrowser.courseId, captureSession?.status, captureSources.length]);
+  }, [api, courseBrowser.open, courseBrowser.courseId, courseLearningFullscreen, captureSession?.status, captureSources.length]);
 
   const openPractice = async () => {
     if (!api || !selectedStudentId) return;
@@ -1048,8 +1051,10 @@ function TerminalApp() {
     api.onCaptureChanged(setCaptureSession);
     api.onCourseBrowserChanged((payload) => {
       setCourseBrowser({ open: payload.open, courseId: payload.courseId, name: payload.name });
+      if (!payload.open) setCourseLearningFullscreen(false);
       if (payload.blocked) setMessage(payload.message || '已阻止课程页面跳转到非白名单域名。');
     });
+    const removeCourseFullscreenListener = api.onCourseLearningFullscreen((payload) => setCourseLearningFullscreen(Boolean(payload.enabled)));
     const removeAgentCaptureListener = api.onAgentCaptureChanged(setAgentCapture);
     const removeUploadQueueListener = api.onUploadQueueChanged(setUploadQueue);
     const removePairingListener = api.onPairingChanged((payload) => {
@@ -1062,12 +1067,14 @@ function TerminalApp() {
       removeAgentCaptureListener();
       removeUploadQueueListener();
       removePairingListener();
+      removeCourseFullscreenListener();
     };
   }, [api]);
 
   useEffect(() => {
     setCourses([]);
     setCourseBrowser({ open: false });
+    setCourseLearningFullscreen(false);
     setActiveWorkspace(null);
     setSelectedKnowledgeProjectId('');
     setProjectKnowledgeFiles([]);
@@ -1543,6 +1550,7 @@ function TerminalApp() {
       const result = await api.openCourse(course.courseId);
       if (!result.ok) throw new Error(result.message || '课程暂不可用。');
       setCourseBrowser({ open: true, courseId: course.courseId, name: course.name });
+      setCourseLearningFullscreen(false);
       setMessage(`已在隔离浏览器中打开 ${course.name}。课程内容由 ${course.provider} 提供。`);
     } catch (error) {
       setMessage(`打开课程失败：${(error as Error).message}`);
@@ -1555,6 +1563,21 @@ function TerminalApp() {
     if (!api) return;
     await api.closeCourse();
     setCourseBrowser({ open: false });
+    setCourseLearningFullscreen(false);
+  };
+
+  const toggleCourseLearningFullscreen = async (enabled: boolean) => {
+    if (!api) return;
+    const previous = courseLearningFullscreen;
+    setCourseLearningFullscreen(enabled);
+    try {
+      const result = await api.setCourseLearningFullscreen(enabled);
+      if (!result.ok) throw new Error(result.message || '无法切换全屏学习模式。');
+      setCourseLearningFullscreen(Boolean(result.enabled));
+    } catch (error) {
+      setCourseLearningFullscreen(previous);
+      setMessage(`切换全屏学习模式失败：${(error as Error).message}`);
+    }
   };
 
   const toggleCapture = async () => {
@@ -1781,10 +1804,13 @@ function TerminalApp() {
         ? `已完成 · ${captureSession.count} 张待确认`
         : '待开始 · 不会自动录屏';
     return (
-      <main className="terminal-shell terminal-course-shell">
-        <header className="terminal-topbar">
-          <div><div className="terminal-brand">精选课程</div><h1>{openedCourse?.name || courseBrowser.name}</h1></div>
-          <div className="terminal-host-state"><span className="online-dot" />{openedCourse?.provider || '第三方提供方'}<button onClick={closeCourse}>返回课程列表</button></div>
+      <main className={`terminal-shell terminal-course-shell${courseLearningFullscreen ? ' is-learning-fullscreen' : ''}`}>
+        <header className="terminal-topbar terminal-course-header" aria-label="课程操作">
+          <div className="terminal-host-state"><span className="online-dot" />{openedCourse?.provider || '第三方提供方'}<button onClick={() => void toggleCourseLearningFullscreen(true)}>全屏学习</button><button onClick={closeCourse}>返回课程列表</button></div>
+        </header>
+        <header className="terminal-course-focusbar" aria-label="全屏学习操作">
+          <strong>专注学习</strong>
+          <div><button className="terminal-secondary" onClick={() => void toggleCourseLearningFullscreen(false)}>退出全屏（Esc）</button><button onClick={closeCourse}>返回课程列表</button></div>
         </header>
         <section className="terminal-course-toolbar" aria-label="课程浏览与主动采集控制">
           <strong>{captureState}</strong>
@@ -1807,7 +1833,7 @@ function TerminalApp() {
           </button>
           <button className="terminal-secondary" onClick={uploadCapture} disabled={busy || captureSession?.status !== 'completed' || captureSession.courseId !== openedCourse?.courseId || !captureSession.files?.length} title="提前重试送达" aria-label="提前重试送达">重试送达</button>
         </section>
-        <div ref={courseBrowserAnchorRef} className="terminal-course-browser-placeholder">课程网页在下方隔离视图中加载。上方采集控制始终保持可见；非白名单跳转、下载、弹窗和权限申请会被阻止。</div>
+        <div ref={courseBrowserAnchorRef} className="terminal-course-browser-anchor" aria-hidden="true" />
         {message ? <div className="terminal-toast" role="status">{message}</div> : null}
       </main>
     );

@@ -26,6 +26,17 @@ test('Windows student terminal is packaged separately from the host', () => {
   }
 });
 
+test('Windows student candidates isolate their Electron single-instance scope without changing formal releases', () => {
+  const releaseScript = read('scripts', 'build-windows-terminal-release.cjs');
+  const main = read('electron', 'terminal-main.cjs');
+  assert.match(releaseScript, /candidateTag \? \{ eduCandidateTag: candidateTag \} : \{\}/);
+  assert.match(main, /function packagedCandidateTag\(\)/);
+  assert.match(main, /AI Education Student Terminal Candidates/);
+  assert.match(main, /app\.setPath\('userData', candidateUserData\)/);
+  assert.match(main, /if \(isolatedUserData\)[\s\S]*else if \(candidateRuntimeTag\)/);
+  assert.match(main, /const hasSingleInstanceLock = app\.requestSingleInstanceLock\(\)/);
+});
+
 test('host validates project uploads and records traceable terminal provenance', () => {
   const source = read('electron', 'main.cjs');
   assert.match(source, /handleProjectMaterialUpload\(request, response, projectId, url\)/);

@@ -126,6 +126,10 @@ function writeRuntimePackage() {
   const runtimePackage = {
     name: 'edu-manager-student-terminal',
     version,
+    // Present only in non-production candidates.  The main process consumes
+    // this before acquiring Electron's single-instance lock, isolating each
+    // candidate from installed and earlier candidate user-data directories.
+    ...(candidateTag ? { eduCandidateTag: candidateTag } : {}),
     private: true,
     description: 'AI Education Manager Windows student terminal',
     author: 'Robogala',

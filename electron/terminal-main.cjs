@@ -7,12 +7,27 @@ const http = require('http');
 const https = require('https');
 const os = require('os');
 const path = require('path');
-// Explicit isolation for candidate acceptance; normal installations are unchanged.
+function packagedCandidateTag() {
+  try {
+    const manifest = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'package.json'), 'utf8'));
+    return String(manifest.eduCandidateTag || '').trim().replace(/[^a-zA-Z0-9._-]+/g, '-').replace(/^-+|-+$/g, '');
+  } catch {
+    return '';
+  }
+}
+
+// Candidate packages must never be captured by a previously launched candidate.
+// Formal packages retain the established user-data location and behaviour.
+const candidateRuntimeTag = packagedCandidateTag();
 const isolatedUserData = app.commandLine.getSwitchValue('user-data-dir');
 if (isolatedUserData) {
   if (!path.isAbsolute(isolatedUserData) || path.resolve(isolatedUserData) === path.parse(path.resolve(isolatedUserData)).root) throw Error('隔离用户目录必须为非根目录的绝对路径');
   fs.mkdirSync(isolatedUserData, { recursive: true });
   app.setPath('userData', path.resolve(isolatedUserData));
+} else if (candidateRuntimeTag) {
+  const candidateUserData = path.join(app.getPath('appData'), 'AI Education Student Terminal Candidates', candidateRuntimeTag);
+  fs.mkdirSync(candidateUserData, { recursive: true });
+  app.setPath('userData', candidateUserData);
 }
 const { WebContentsView, session } = require('electron');
 const {

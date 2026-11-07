@@ -24,7 +24,7 @@ test('download page presents four product families and five client builds', () =
     'Android 单机版',
     `v${publicManifest.windowsReleaseStatus === 'candidate' ? publishedHostVersion : publicManifest.windowsVersionName}`,
     `v${publicManifest.tabletTerminalVersionName}`,
-    'v0.1.4',
+    `v${publicManifest.teacherTerminalVersionName}`,
     `v${publicManifest.standaloneVersionName}`,
     'windows-host-manual.html',
     'windows-student-manual.html',
@@ -74,7 +74,7 @@ test('download page links the current artifacts and canonical web manuals exist'
     [`../download/${hostArtifact}`, path.join('release', 'windows', hostArtifact)],
     ['../download/AI-edu-manager-student-terminal-Windows-0.18.6.exe', path.join('release', 'windows-terminal', 'AI-edu-manager-student-terminal-Windows-0.18.6.exe')],
     [`../download/${new URL(publicManifest.tabletTerminalApkUrl).pathname.split('/').pop()}`, path.join('release', 'tablet-terminal', new URL(publicManifest.tabletTerminalApkUrl).pathname.split('/').pop())],
-    ['../download/AI-edu-manager-teacher-terminal-0.1.4.apk', path.join('release', 'teacher-terminal', 'AI-edu-manager-teacher-terminal-0.1.4.apk')],
+    [`../download/${new URL(publicManifest.teacherTerminalUrl).pathname.split('/').pop()}`, path.join('release', 'teacher-terminal', new URL(publicManifest.teacherTerminalUrl).pathname.split('/').pop())],
     [`../download/${standaloneArtifact}`, path.join('android-standalone-manager', 'delivery', standaloneArtifact)],
   ]) {
     assert.match(download, new RegExp(artifact[0].replaceAll('.', '\\.')));
@@ -173,7 +173,7 @@ test('web manuals are synchronized to the current product workflows', () => {
   assert.match(androidStudent, /配套主机：Windows 主机端需开启学生终端协作服务/u);
   assert.match(androidStudent, new RegExp(`适用版本：Android 学生端 ${publicManifest.tabletTerminalVersionName.replaceAll('.', '\\.')}（versionCode ${publicManifest.tabletTerminalVersionCode}）`, 'u'));
   assert.match(androidStudent, /拍照 \/ 上传图片或文件/u);
-  assert.match(androidTeacher, /适用版本：Android 教师端 0\.1\.4/u);
+  assert.match(androidTeacher, new RegExp(`适用版本：Android 教师端 ${publicManifest.teacherTerminalVersionName.replaceAll('.', '\\.')}（versionCode ${publicManifest.teacherTerminalVersionCode}）`, 'u'));
   assert.match(androidStudent, /导入智能体对话/u);
   assert.match(androidTeacher, /导入智能体对话/u);
   assert.match(androidTeacher, /不是把文件发送到学生设备/u);

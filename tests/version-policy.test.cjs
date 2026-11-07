@@ -41,7 +41,7 @@ test('candidate builds preserve the stable manifest, while a formal build aligns
     assert.equal(releaseManifest.windowsVersionName, '0.23.3');
   } else {
     assert.equal(releaseManifest.windowsVersionName, packageJson.version);
-    assert.equal(releaseManifest.windowsVersionCode, 272);
+    assert.equal(releaseManifest.windowsVersionCode, 273);
   }
   assert.equal(releaseManifest.windowsReleaseStatus, 'stable');
   assert.equal(windowsManifest.windowsVersionName, releaseManifest.windowsVersionName);
@@ -53,6 +53,11 @@ test('candidate builds preserve the stable manifest, while a formal build aligns
   assert.equal(releaseManifest.windowsTerminalVersionCode, 236);
   assert.equal(releaseManifest.windowsTerminalReleaseStatus, 'stable');
   assert.equal(JSON.parse(fs.readFileSync(path.join(root, 'release', '网站文件', 'edu-manager-version.json'), 'utf8')).windowsTerminalVersionName, '0.18.6');
+  const publicWebsiteManifest = JSON.parse(fs.readFileSync(path.join(root, 'release', '网站文件', 'edu-manager-version.json'), 'utf8'));
+  assert.match(downloadPage, new RegExp(`Android v${releaseManifest.tabletTerminalVersionName.replaceAll('.', '\\.')}`));
+  assert.match(downloadPage, new RegExp(new URL(releaseManifest.tabletTerminalApkUrl).pathname.split('/').pop().replaceAll('.', '\\.')));
+  assert.match(downloadPage, new RegExp(`v${publicWebsiteManifest.teacherTerminalVersionName.replaceAll('.', '\\.')}`));
+  assert.match(downloadPage, new RegExp(new URL(publicWebsiteManifest.teacherTerminalUrl).pathname.split('/').pop().replaceAll('.', '\\.')));
   const isCandidate = releaseManifest.windowsReleaseStatus === 'candidate';
   const terminalIsCandidate = releaseManifest.windowsTerminalReleaseStatus === 'candidate';
   assert.equal(windowsManifest.windowsReleaseStatus, releaseManifest.windowsReleaseStatus);

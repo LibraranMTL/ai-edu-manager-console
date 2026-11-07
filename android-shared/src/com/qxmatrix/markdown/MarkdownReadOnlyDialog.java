@@ -67,9 +67,26 @@ public final class MarkdownReadOnlyDialog {
             root.addView(meta, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
         }
 
+        // Keep the primary copy action above the scrollable reader.  On narrow phones a
+        // bottom toolbar can otherwise fall behind the platform dialog button strip.
+        final Button copy = new Button(activity);
+        copy.setText("复制正文");
+        copy.setTextSize(15);
+        copy.setTextColor(Color.WHITE);
+        copy.setAllCaps(false);
+        copy.setContentDescription("复制正文到剪贴板");
+        copy.setMinHeight(dp(activity, 48));
+        android.graphics.drawable.GradientDrawable copyBackground = new android.graphics.drawable.GradientDrawable();
+        copyBackground.setColor(accent);
+        copyBackground.setCornerRadius(dp(activity, 10));
+        copy.setBackground(copyBackground);
+        LinearLayout.LayoutParams copyParams = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(activity, 48));
+        copyParams.setMargins(0, dp(activity, 10), 0, dp(activity, 4));
+        root.addView(copy, copyParams);
+
         FrameLayout content = new FrameLayout(activity);
         int screenHeight = activity.getResources().getDisplayMetrics().heightPixels;
-        int contentHeight = Math.max(dp(activity, 300), Math.min(dp(activity, 620), screenHeight * 62 / 100));
+        int contentHeight = Math.max(dp(activity, 260), Math.min(dp(activity, 520), screenHeight * 48 / 100));
         root.addView(content, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, contentHeight));
 
         final WebView reader = new WebView(activity);
@@ -93,11 +110,9 @@ public final class MarkdownReadOnlyDialog {
         final Button mode = compactButton(activity, "查看原文", accent);
         Button smaller = compactButton(activity, "A−", accent);
         Button larger = compactButton(activity, "A+", accent);
-        Button copy = compactButton(activity, "复制", accent);
         toolbar.addView(mode, weighted());
         toolbar.addView(smaller, weighted());
         toolbar.addView(larger, weighted());
-        toolbar.addView(copy, weighted());
         root.addView(toolbar);
 
         final ScrollView rawScroll = sourceScroll;

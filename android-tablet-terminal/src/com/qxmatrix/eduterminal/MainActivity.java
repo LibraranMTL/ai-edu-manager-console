@@ -127,8 +127,8 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
     static final int REQUEST_DIRECT_UPLOAD = 8112;
     static final int REQUEST_DIRECT_IMAGE_UPLOAD = 8113;
     static final int REQUEST_IMPORT_CONVERSATION_FILE = 8114;
-    static final String VERSION_NAME = "0.6.28";
-    static final int VERSION_CODE = 98;
+    static final String VERSION_NAME = "0.6.32";
+    static final int VERSION_CODE = 102;
     static final String CONNECTION_BACKUP_KIND = "ai-edu-manager-tablet-connection-backup";
     static final int CONNECTION_BACKUP_VERSION = 1;
     static final String UPDATE_MANIFEST_URL = "https://www.greatbg.com/download/edu-manager-version.json";
@@ -216,8 +216,18 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
     LinearLayout collectionPage;
     LinearLayout connectionPage;
     LinearLayout archivePage;
+    LinearLayout projectPage;
     LinearLayout learningActionPage;
     LinearLayout morePage;
+    TextView dashboardPriorityText;
+    TextView dashboardWeeklyActionText;
+    TextView dashboardProjectText;
+    TextView dashboardFiveDimensionsText;
+    TextView dashboardMaterialStatsText;
+    ImageView dashboardMaterialStatsImage;
+    String dashboardStatsWeek = "";
+    String dashboardStatsImageBase64 = "";
+    String dashboardStatsMimeType = "image/png";
     String activeWorkspace = "home";
     final Map<String, LinearLayout> panelBodies = new Hashtable<String, LinearLayout>();
     final Map<String, Button> panelToggles = new Hashtable<String, Button>();
@@ -1108,11 +1118,14 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
         projectKnowledgeEntryRow.addView(quickProjectKnowledgeButton);
         projectKnowledgeEntryCard.addView(projectKnowledgeEntryRow);
         quickProjectKnowledgeButton.setOnClickListener(this);
+        LinearLayout projectReportEntryCard = card();
+        projectReportEntryCard.addView(label("项目综合报告"));
+        projectReportEntryCard.addView(label("只读查看当前学生关联项目的阶段、证据、成果、待补证据和下一步建议。"));
         Button projectReportButton = button("项目综合报告", false);
         projectReportButton.setOnClickListener(new View.OnClickListener() {
             @Override public void onClick(View view) { chooseProjectComprehensiveReport(false); }
         });
-        projectKnowledgeEntryCard.addView(projectReportButton);
+        projectReportEntryCard.addView(projectReportButton);
 
         collectionPage = workspacePage("搜集上传", "选择资料并确认当前学生与目标后立即上传；网络中断或发送失败时由本机安全保留并重试。");
         collectionInboxStatusText = new TextView(this);
@@ -1197,14 +1210,35 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
             @Override public void onClick(View view) { openTerminalLearningAction("guidance:careers"); }
         });
 
-        archivePage = workspacePage("教育档案", "学情报告、成长模型、学情档案、项目资料和规划指导均为当前学生只读内容。断网时优先显示已缓存内容。 ");
+        archivePage = workspacePage("教育档案", "学情报告、成长模型、学情档案、知识点跟踪和规划指导均为当前学生只读内容。断网时优先显示已缓存内容。 ");
         archivePage.addView(collapsiblePanel("学情报告", "整体画像、行动建议、历史变化和阶段总结。", reportCard));
         archivePage.addView(collapsiblePanel("成长模型", "成长概览、推荐选题和推荐比赛。", growthCard));
         archivePage.addView(collapsiblePanel("学情档案", "打开当前学生自己的学情档案。", archiveEntryCard));
-        archivePage.addView(collapsiblePanel("项目资料", "查看当前学生关联项目的知识文件与综合报告。", projectKnowledgeEntryCard));
+        LinearLayout trajectoryEntry = card();
+        trajectoryEntry.addView(label("知识点跟踪"));
+        trajectoryEntry.addView(label("按学科查看证据数量、近期表现、复习优先级和建议复习时间；状态不是确定性掌握结论。"));
+        Button trajectoryButton = button("查看知识点跟踪", true);
+        trajectoryEntry.addView(trajectoryButton);
+        trajectoryButton.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View view) { openTerminalLearningAction("trajectory"); }
+        });
+        archivePage.addView(collapsiblePanel("知识点跟踪", "只读查看当前学生的学习证据投影。", trajectoryEntry));
         archivePage.addView(collapsiblePanel("规划指导", "升学路径、专业探索和职业发展。", planningCard));
         archiveCard.setVisibility(View.GONE);
         archivePage.addView(archiveCard);
+
+        projectPage = workspacePage("项目管理", "仅显示当前学生关联项目的资料、报告和项目导师；项目范围在每次打开时重新核验。 ");
+        projectPage.addView(collapsiblePanel("项目资料与知识", "以只读弹窗查看关联项目的资料与知识文件。", projectKnowledgeEntryCard));
+        projectPage.addView(collapsiblePanel("项目综合报告", "查看主机已发布的项目阶段、证据和下一步建议。", projectReportEntryCard));
+        LinearLayout projectMentorEntry = card();
+        projectMentorEntry.addView(label("项目导师"));
+        projectMentorEntry.addView(label("沿用工具条的六阶段、二十四项行动。选择当前关联项目后生成范围受限的提示词；只复制，不自动发送、查询或写入。"));
+        Button projectMentorButton = button("打开项目导师", true);
+        projectMentorEntry.addView(projectMentorButton);
+        projectMentorButton.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View view) { showProjectMentorDialog(); }
+        });
+        projectPage.addView(collapsiblePanel("项目导师", "定义问题、比较方案、制定计划、研究原型、阶段复盘和成果展示。", projectMentorEntry));
 
         learningActionPage = workspacePage("学习行动", "从已分配课程、学习卡片和知识点证据出发，安排当前学生的下一步学习。 ");
         learningActionPage.addView(collapsiblePanel("精选课程", "仅显示机构启用并分配给当前学生的课程。", courseCard));
@@ -1217,25 +1251,25 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
             @Override public void onClick(View view) { openTerminalLearningAction("practice"); }
         });
         learningActionPage.addView(collapsiblePanel("学习卡片", "练习、作答、反馈与离线恢复。", practiceEntry));
-        LinearLayout trajectoryEntry = card();
-        trajectoryEntry.addView(label("知识点跟踪"));
-        trajectoryEntry.addView(label("按学科查看证据数量、近期表现、复习优先级和建议复习时间；状态不是确定性掌握结论。"));
-        Button trajectoryButton = button("查看知识点跟踪", true);
-        trajectoryEntry.addView(trajectoryButton);
-        trajectoryButton.setOnClickListener(new View.OnClickListener() {
-            @Override public void onClick(View view) { openTerminalLearningAction("trajectory"); }
-        });
-        learningActionPage.addView(collapsiblePanel("知识点跟踪", "只读查看当前学生的学习证据投影。", trajectoryEntry));
         LinearLayout collaborationEntry = card();
         collaborationEntry.addView(label("学习状态与成长回顾"));
-        collaborationEntry.addView(label("填写当前学习状态，查看每周知识增长图。项目综合报告在“项目资料”中查看。"));
+        collaborationEntry.addView(label("填写当前学习状态，查看按最近7天计算的资料统计图；资料数量不代表掌握度或能力。"));
         Button learningStatusButton = button("填写学习状态", true);
-        Button weeklyGrowthButton = button("每周知识增长图", false);
+        Button weeklyGrowthButton = button("最近7天资料统计图", false);
         LinearLayout collaborationRow = row(); collaborationRow.addView(learningStatusButton); collaborationRow.addView(weeklyGrowthButton);
         collaborationEntry.addView(collaborationRow);
         learningStatusButton.setOnClickListener(new View.OnClickListener() { @Override public void onClick(View view) { showLearningStatusDialog(false); } });
         weeklyGrowthButton.setOnClickListener(new View.OnClickListener() { @Override public void onClick(View view) { openWeeklyKnowledgeGrowth(false); } });
-        learningActionPage.addView(collapsiblePanel("学习状态与成长", "学习状态、项目报告和每周知识增长图。", collaborationEntry));
+        learningActionPage.addView(collapsiblePanel("学习状态与成长", "学习状态和可分享的最近7天资料统计图。", collaborationEntry));
+        LinearLayout learningMentorEntry = card();
+        learningMentorEntry.addView(label("学习导师"));
+        learningMentorEntry.addView(label("沿用工具条“学习模式”的学习、互动、测验、核验和计划内容。提示词只复制到剪贴板，不会自动发送或写回档案。"));
+        Button learningMentorButton = button("打开学习导师", true);
+        learningMentorEntry.addView(learningMentorButton);
+        learningMentorButton.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View view) { showLearningMentorDialog(); }
+        });
+        learningActionPage.addView(collapsiblePanel("学习导师", "选择学习模式并复制受学生范围约束的提示词。", learningMentorEntry));
 
         morePage = workspacePage("更多", "外观、更新、诊断和其他辅助设置。 ");
         morePage.addView(collapsiblePanel("外观、更新与诊断", "页面布局、皮肤、更新检查与诊断工具。", settingsCard));
@@ -1244,6 +1278,7 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
         root.addView(collectionPage);
         root.addView(connectionPage);
         root.addView(archivePage);
+        root.addView(projectPage);
         root.addView(learningActionPage);
         root.addView(morePage);
         showWorkspace(activeWorkspace);
@@ -4016,42 +4051,61 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
 
     void openWeeklyKnowledgeGrowth(final boolean teacher) {
         if (selectedStudent == null) { toast(teacher ? "请先选择学生。" : "请先进入学生空间。"); return; }
-        final String studentId = selectedStudent.id, base = normalizedBaseUrl(), token = dataToken();
-        final String weeksPath = teacher ? "/api/teacher-session/students/" + safeEncode(studentId) + "/knowledge-growth/weeks" : "/api/student-session/knowledge-growth/weeks";
+        final String base = normalizedBaseUrl(), token = dataToken();
         new Thread(new Runnable() { @Override public void run() {
             JSONObject result = null; String error = null;
-            try { result = getJson(base + weeksPath, token); } catch (Exception failure) { error = collaborationFeatureError(failure.getMessage()); }
+            try { result = readHostWeeklyMaterialImage(base, token); }
+            catch (Exception failure) { error = collaborationFeatureError(failure.getMessage()); }
             final JSONObject payload = result; final String failure = error;
             runOnUiThread(new Runnable() { @Override public void run() {
-                if (failure != null) { toast("知识增长图读取失败：" + failure); return; }
-                JSONArray weeks = payload.optJSONArray("weeks"); if (weeks == null || weeks.length() == 0) { toast("主机尚未生成知识增长图。"); return; }
-                final String[] labels = new String[weeks.length()]; for (int i = 0; i < weeks.length(); i++) labels[i] = weeks.optString(i);
-                new AlertDialog.Builder(MainActivity.this).setTitle("选择周次").setItems(labels, new DialogInterface.OnClickListener() {
-                    @Override public void onClick(DialogInterface dialog, int which) { loadWeeklyKnowledgeGrowthImage(teacher, studentId, labels[which]); }
-                }).show();
+                if (failure != null) {
+                    showWeeklyStatsReadErrorDialog(failure); return;
+                }
+                String imageBase64 = payload == null ? "" : payload.optString("imageBase64", "").trim();
+                if (imageBase64.length() == 0) {
+                    showWeeklyStatsEmptyDialog(); return;
+                }
+                showWeeklyKnowledgeGrowthImage(payload.optString("week", "最近7天"), imageBase64,
+                    payload.optString("mimeType", "image/png"));
             }});
         }}).start();
     }
 
-    void loadWeeklyKnowledgeGrowthImage(final boolean teacher, final String studentId, final String week) {
-        final String base = normalizedBaseUrl(), token = dataToken();
-        final String path = teacher ? "/api/teacher-session/students/" + safeEncode(studentId) + "/knowledge-growth/" + safeEncode(week) + "/image"
-            : "/api/student-session/knowledge-growth/" + safeEncode(week) + "/image";
-        new Thread(new Runnable() { @Override public void run() {
-            JSONObject result = null; String error = null;
-            try { result = getJson(base + path, token); } catch (Exception failure) { error = collaborationFeatureError(failure.getMessage()); }
-            final JSONObject payload = result; final String failure = error;
-            runOnUiThread(new Runnable() { @Override public void run() {
-                if (failure != null) { toast("知识增长图读取失败：" + failure); return; }
-                showWeeklyKnowledgeGrowthImage(week, payload.optString("imageBase64", ""), payload.optString("mimeType", "image/svg+xml"));
-            }});
-        }}).start();
+    JSONObject readHostWeeklyMaterialImage(String base, String token) throws Exception {
+        JSONObject weeks = getJson(base + "/api/student-session/knowledge-growth/weeks", token);
+        String week = weeks.optString("currentWeek", "").trim();
+        if (week.length() == 0) {
+            JSONArray values = weeks.optJSONArray("weeks");
+            week = values == null ? "" : weeklyGrowthWeekValue(values.opt(0));
+        }
+        if (week.length() == 0) throw new Exception("主机未返回当前七日统计周期。 ");
+        JSONObject image = getJson(base + "/api/student-session/knowledge-growth/" + safeEncode(week) + "/image", token);
+        if (!image.optBoolean("ok", true) || image.optString("imageBase64", "").trim().length() == 0) {
+            throw new Exception(image.optString("message", "主机未生成当前学生的七日资料统计图。"));
+        }
+        return image;
+    }
+
+    void showWeeklyStatsEmptyDialog() {
+        MarkdownReadOnlyDialog.show(this, "最近7天资料统计图", "主机没有可计入的完整七日资料统计。",
+            "# 最近7天暂无可统计资料\n\n主机目前没有可计入七日趋势的资料记录，因此未生成图片。\n\n"
+                + "这不代表没有学习进展，也不表示知识、能力或掌握度发生了变化。上传或整理资料后，可重新打开本页读取主机统计。", false);
+    }
+
+    void showWeeklyStatsReadErrorDialog(String error) {
+        String detail = conciseDashboardError(error);
+        String message = "# 单学生资料统计读取失败\n\n"
+            + "学生端读取主机已经生成的当前学生完整七日资料统计 PNG，不会把总数拆分或自行推测逐日数据。"
+            + "请确认主机连接、学生空间和主机统计服务仍然有效后重试。\n\n"
+            + "资料统计只反映文件流转数量，不代表学习掌握度。";
+        if (detail.length() > 0 && !detail.contains("HTTP 404")) message += "\n\n读取说明：" + detail;
+        MarkdownReadOnlyDialog.show(this, "最近7天资料统计图", "仅使用当前学生会话的主机生成图片。", message, false);
     }
 
     void showWeeklyKnowledgeGrowthImage(final String week, final String imageBase64, final String mimeType) {
         WebView preview = new WebView(this); preview.getSettings().setJavaScriptEnabled(false); preview.setBackgroundColor(Color.WHITE);
         preview.loadDataWithBaseURL(null, "<html><body style='margin:0'><img style='width:100%;height:auto' src='data:" + mimeType + ";base64," + imageBase64 + "'/></body></html>", "text/html", "UTF-8", null);
-        final AlertDialog dialog = new AlertDialog.Builder(this).setTitle("每周知识增长 · " + week).setView(preview)
+        final AlertDialog dialog = new AlertDialog.Builder(this).setTitle("最近7天资料统计 · " + week).setView(preview)
             .setPositiveButton("关闭", null).setNeutralButton("分享", null).create();
         dialog.setOnShowListener(new DialogInterface.OnShowListener() { @Override public void onShow(DialogInterface ignored) {
             dialog.getButton(AlertDialog.BUTTON_NEUTRAL).setOnClickListener(new View.OnClickListener() { @Override public void onClick(View view) { shareKnowledgeGrowthImage(week, imageBase64, mimeType); }});
@@ -4067,8 +4121,92 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
             FileOutputStream output = new FileOutputStream(file); output.write(android.util.Base64.decode(imageBase64, android.util.Base64.DEFAULT)); output.close();
             Uri uri = Uri.parse("content://" + APK_PROVIDER_AUTHORITY + "/" + file.getName());
             Intent share = new Intent(Intent.ACTION_SEND).setType(png ? "image/png" : "image/svg+xml").putExtra(Intent.EXTRA_STREAM, uri).addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
-            startActivity(Intent.createChooser(share, "分享每周知识增长图"));
+            startActivity(Intent.createChooser(share, "分享最近7天资料统计图"));
         } catch (Exception error) { toast("分享失败：" + error.getMessage()); }
+    }
+
+    void showProjectMentorDialog() {
+        if (selectedStudent == null) { toast("请先进入学生空间。 "); return; }
+        final ArrayList<LearningProject> available = new ArrayList<LearningProject>(projectsForSelectedStudent());
+        if (available.isEmpty()) { toast("当前学生没有关联的进行中项目。 "); return; }
+        String[] labels = new String[available.size()];
+        for (int i = 0; i < available.size(); i++) labels[i] = available.get(i).name;
+        new AlertDialog.Builder(this).setTitle("选择项目").setItems(labels, new DialogInterface.OnClickListener() {
+            @Override public void onClick(DialogInterface dialog, int which) { showProjectMentorStageDialog(available.get(which)); }
+        }).setNegativeButton("取消", null).show();
+    }
+
+    void showProjectMentorStageDialog(final LearningProject project) {
+        final String[] stages = new String[] {
+            "定义问题 · 4 项行动", "方案比较 · 4 项行动", "制定计划 · 4 项行动",
+            "研究与原型 · 4 项行动", "阶段复盘 · 4 项行动", "成果展示交流 · 4 项行动"
+        };
+        new AlertDialog.Builder(this).setTitle(project.name + " · 项目导师").setItems(stages, new DialogInterface.OnClickListener() {
+            @Override public void onClick(DialogInterface dialog, int which) { showProjectMentorActionDialog(project, stages[which], projectMentorActions()[which]); }
+        }).setNegativeButton("取消", null).show();
+    }
+
+    void showProjectMentorActionDialog(final LearningProject project, final String stage, final String[] actions) {
+        new AlertDialog.Builder(this).setTitle(stage).setItems(actions, new DialogInterface.OnClickListener() {
+            @Override public void onClick(DialogInterface dialog, int which) {
+                String action = actions[which];
+                String label = action.contains("｜") ? action.substring(0, action.indexOf("｜")) : action;
+                String summary = action.contains("｜") ? action.substring(action.indexOf("｜") + 1) : "";
+                String markdown = "# 项目导师 · " + label + "\n\n"
+                    + "## 当前范围\n- 学生：" + selectedStudent.name + "（" + selectedStudent.id + "）\n- 项目：" + project.name + "（" + project.id + "）\n- 阶段：" + stage + "\n\n"
+                    + "## 本次任务\n" + summary + "\n\n"
+                    + "## 使用边界\n- 仅使用用户在当前对话主动提供的项目资料，或先在受控工具中确认同一学生和项目的授权。\n- 明确区分资料事实、合理推断、假设与缺失信息。\n- 不自动发送、查询或写回项目资料；任何归档均须另行确认并取得真实回执。\n- 不把一次尝试、项目经历或 Agent 文本表述为学生已掌握的能力。\n\n"
+                    + "## 开始方式\n先用不超过 5 行复述任务、当前资料范围和成功标准；如缺少关键信息，只问一个最影响结果的问题，然后给出可核验的下一步。";
+                MarkdownReadOnlyDialog.show(MainActivity.this, "项目导师 · " + label,
+                    "点击上方“复制正文”可粘贴到当前 Agent；复制本身不会读取或写入主机资料。", markdown, false);
+            }
+        }).setNegativeButton("返回", null).show();
+    }
+
+    String[][] projectMentorActions() {
+        return new String[][] {
+            {"第一性原理拆解与重建｜从硬约束、已验证事实、假设与未知项向上重建可测试路径。", "使用者与场景澄清｜把宽泛主题转换为可观察、可描述和可验证的真实情境。", "范围与研究问题收敛｜在当前资源内形成可完成、可留证的问题。", "假设与验证设计｜把方向、效果和价值主张拆成可证伪假设与最小验证。"},
+            {"SWOT 与决策矩阵｜让方案取舍可追溯、可反驳，不用伪精确总分替代判断。", "决策准则与证据检查｜先审查为什么这样比较，再审查每个判断的依据。", "取舍实验与反例｜把方案争论转换为能区分路径的最小测试。", "决策备忘与撤销条件｜记录当前选择依据、强度和重新决策条件。"},
+            {"项目计划：里程碑与风险｜把确认方向转成有产出、完成标志和现实依赖的项目路径。", "资源、角色与关键路径｜识别真正阻塞交付的资源、角色、批准和任务依赖。", "研究与证据计划｜建立项目判断到来源、数据、观察和记录的证据路线。", "风险登记与预案｜把影响项目的事件转成可监测、可应对的风险条目。"},
+            {"研究问题与资料质量审查｜审查资料能回答什么、适用于谁、可信度如何以及仍缺什么。", "原型/实验设计｜设计回答一个明确问题的最小原型或实验。", "测试数据与观察记录｜把原始结果、直接观察、反馈、异常与解释分开整理。", "迭代诊断与下一轮测试｜从现有结果提出可检验诊断，并只改变一个关键因素。"},
+            {"周复盘与下一步｜把完成事实、计划变化、阻塞、证据和下一步分开。", "计划偏差与根因复盘｜解释计划与实际差异并提出可验证改进，不归咎个人。", "学习与决策日志｜记录当时知道什么、为何改变以及改变后要验证什么。", "优先级重排｜按交付价值、依赖、证据缺口和剩余资源重排工作。"},
+            {"受众与核心主张｜明确向特定受众表达一个能被现有证据支持的主张。", "证据链与展品选择｜让每个展示主张追溯到合适证据并删去无效材料。", "叙事、演示与讲稿｜把问题、选择、验证、结果、限制和下一步组织成证据驱动表达。", "质询与答辩演练｜用分层追问训练诚实、简洁、可追溯的回答。"}
+        };
+    }
+
+    void showLearningMentorDialog() {
+        final String[] groups = new String[] { "学习", "互动", "测验", "核验", "计划" };
+        new AlertDialog.Builder(this).setTitle("学习导师 · 学习模式").setItems(groups, new DialogInterface.OnClickListener() {
+            @Override public void onClick(DialogInterface dialog, int which) { showLearningMentorActionDialog(groups[which], learningMentorActions()[which]); }
+        }).setNegativeButton("取消", null).show();
+    }
+
+    void showLearningMentorActionDialog(final String group, final String[] actions) {
+        new AlertDialog.Builder(this).setTitle("学习导师 · " + group).setItems(actions, new DialogInterface.OnClickListener() {
+            @Override public void onClick(DialogInterface dialog, int which) {
+                String action = actions[which];
+                String label = action.contains("｜") ? action.substring(0, action.indexOf("｜")) : action;
+                String summary = action.contains("｜") ? action.substring(action.indexOf("｜") + 1) : "";
+                String student = selectedStudent == null ? "当前学生（进入学生空间后请重新确认）" : selectedStudent.name + "（" + selectedStudent.id + "）";
+                String markdown = "# 学习导师 · " + label + "\n\n"
+                    + "## 当前范围\n- 学生：" + student + "\n- 学习模式：" + group + "\n\n"
+                    + "## 本次任务\n" + summary + "\n\n"
+                    + "## 使用边界\n- 只使用当前对话中用户主动提供的内容；如需查询主机资料，先确认当前学生授权。\n- 资料数量、单次答题或一次项目经历都不直接等同于掌握、能力或成长结论。\n- 不自动发送、归档或改写主机资料。\n\n"
+                    + "## 开始方式\n先用不超过 5 行确认本次目标、难度、时长和资料范围；若信息不足，只问一个最影响学习效果的问题。";
+                MarkdownReadOnlyDialog.show(MainActivity.this, "学习导师 · " + label,
+                    "点击上方“复制正文”可粘贴到当前 Agent；复制本身不会读取或写入主机资料。", markdown, false);
+            }
+        }).setNegativeButton("返回", null).show();
+    }
+
+    String[][] learningMentorActions() {
+        return new String[][] {
+            {"学习卡片｜把当前内容整理成可复习的问答卡片。", "思维导图｜梳理概念、关系、前提和待核实项。", "信息图｜将已知资料转成边界清楚的图文摘要。", "图表总结｜选择合适图表呈现资料中的数量与趋势。"},
+            {"学习辅导｜按当前难度与时长进行分步讲解和追问。", "费曼讲解｜用自己的话讲清概念，再暴露理解缺口。", "游戏化学习｜把明确知识点转成小挑战，不把得分当掌握结论。", "动画视频脚本｜生成服务于一个明确学习目标的短脚本。"},
+            {"分步测验｜从诊断到反馈，保留每一步依据。", "错题复盘｜区分错误类型、证据和下一次验证。"},
+            {"来源核验｜检查资料来源、日期、适用条件和可访问性。", "事实核查｜区分事实、推断、观点和待核实信息。", "反例检查｜主动寻找会削弱当前结论的条件或证据。", "论证审查｜检查主张、证据、假设和推理跳跃。"},
+            {"目标设定｜把愿望转成可观察、可复盘的短期目标。", "学习计划｜按时间、资源和已知困难安排下一步。", "本周行动｜形成不超过三项、带完成标志的行动。", "学习总结｜按事实、证据、困难和下一步回顾。"}
+        };
     }
 
     String safeEncode(String value) {
@@ -6621,6 +6759,278 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
         }
         resumeProjectMaterialUploadQueue();
         refreshCollectionInboxUi();
+        refreshLearningWorkbenchHome();
+    }
+
+    void refreshLearningWorkbenchHome() {
+        if (dashboardPriorityText == null || dashboardWeeklyActionText == null || dashboardProjectText == null
+            || dashboardFiveDimensionsText == null || dashboardMaterialStatsText == null) return;
+        if (selectedStudent == null) {
+            dashboardPriorityText.setText("请先在“主机连接”进入自己的学生空间。 ");
+            dashboardWeeklyActionText.setText("进入学生空间后读取主机已发布的行动建议。 ");
+            dashboardProjectText.setText("进入学生空间后显示本人关联项目。 ");
+            dashboardFiveDimensionsText.setText("进入学生空间后读取证据摘要。 ");
+            dashboardMaterialStatsText.setText("进入学生空间后读取最近7天资料统计。 ");
+            if (dashboardMaterialStatsImage != null) dashboardMaterialStatsImage.setVisibility(View.GONE);
+            return;
+        }
+        final String expectedStudentId = selectedStudent.id;
+        final String base = normalizedBaseUrl();
+        final String token = dataToken();
+        if (base.length() == 0 || token.length() == 0) {
+            dashboardPriorityText.setText("主机未连接；连接后再读取当前学生的行动。 ");
+            dashboardWeeklyActionText.setText("主机未连接。 ");
+            dashboardProjectText.setText(projectSummaryForDashboard());
+            dashboardFiveDimensionsText.setText("主机未连接。 ");
+            dashboardMaterialStatsText.setText("主机未连接。 ");
+            if (dashboardMaterialStatsImage != null) dashboardMaterialStatsImage.setVisibility(View.GONE);
+            return;
+        }
+        dashboardPriorityText.setText("正在读取当前学生的下一步行动…");
+        dashboardWeeklyActionText.setText("正在读取本周行动…");
+        dashboardProjectText.setText(projectSummaryForDashboard());
+        dashboardFiveDimensionsText.setText("正在读取五维学情…");
+        dashboardMaterialStatsText.setText("正在读取最近7天资料统计图…");
+        if (dashboardMaterialStatsImage != null) dashboardMaterialStatsImage.setVisibility(View.GONE);
+        new Thread(new Runnable() { @Override public void run() {
+            JSONObject learningState = null, learningStatus = null, sessionState = null, weeklyMaterialImage = null;
+            String learningStateError = null, sessionStateError = null, weeklyMaterialImageError = null;
+            try { learningState = getJson(base + "/api/student-session/learning-state", token); }
+            catch (Exception error) { learningStateError = collaborationFeatureError(error.getMessage()); }
+            try { learningStatus = getJson(base + "/api/student-session/learning-status", token); }
+            catch (Exception ignored) {}
+            try { sessionState = getJson(base + "/api/student-session/me", token); }
+            catch (Exception error) { sessionStateError = collaborationFeatureError(error.getMessage()); }
+            try { weeklyMaterialImage = readHostWeeklyMaterialImage(base, token); }
+            catch (Exception error) { weeklyMaterialImageError = collaborationFeatureError(error.getMessage()); }
+            final JSONObject finalLearningState = learningState, finalLearningStatus = learningStatus, finalSessionState = sessionState,
+                finalWeeklyMaterialImage = weeklyMaterialImage;
+            final String finalLearningStateError = learningStateError, finalSessionStateError = sessionStateError,
+                finalWeeklyMaterialImageError = weeklyMaterialImageError;
+            runOnUiThread(new Runnable() { @Override public void run() {
+                if (selectedStudent == null || !expectedStudentId.equals(selectedStudent.id)) return;
+                applyLearningWorkbenchHome(finalLearningState, finalLearningStatus, finalSessionState,
+                    finalLearningStateError, finalSessionStateError, finalWeeklyMaterialImage, finalWeeklyMaterialImageError);
+            }});
+        }}).start();
+    }
+
+    void applyLearningWorkbenchHome(JSONObject learningStatePayload, JSONObject learningStatusPayload, JSONObject sessionPayload,
+                                    String learningStateError, String sessionStateError, JSONObject weeklyMaterialImage,
+                                    String weeklyMaterialImageError) {
+        if (dashboardPriorityText == null) return;
+        JSONObject learningState = learningStatePayload == null ? null : learningStatePayload.optJSONObject("data");
+        ArrayList<String> actions = dashboardWorkbenchActions(learningState, learningStatusPayload, sessionPayload);
+        if (actions.isEmpty()) {
+            String summary = learningStateError == null ? "当前学生尚未记录具体行动。" : conciseDashboardError(learningStateError);
+            dashboardPriorityText.setText("暂时没有可核验的下一步行动。\n\n" + summary
+                + " 可在“学习行动 → 填写学习状态”的“下一步计划”中记录具体任务。");
+            dashboardWeeklyActionText.setText("主机尚无本周行动记录；学生端不会用空泛模板替代真实任务。");
+        } else {
+            dashboardPriorityText.setText(actions.get(0) + "\n\n这是当前学生已记录行动中的首项；完成后请更新任务进度或学习状态。");
+            StringBuilder weekly = new StringBuilder();
+            for (int i = 0; i < actions.size() && i < 3; i++) {
+                if (weekly.length() > 0) weekly.append("\n\n");
+                weekly.append(i + 1).append(". ").append(actions.get(i));
+            }
+            dashboardWeeklyActionText.setText(weekly.toString());
+        }
+        dashboardProjectText.setText(dashboardWorkbenchProject(sessionPayload));
+        dashboardFiveDimensionsText.setText(dashboardWorkbenchDimensions(learningState));
+        updateDashboardWeeklyMaterialChart(weeklyMaterialImage, weeklyMaterialImageError);
+    }
+
+    ArrayList<String> dashboardWorkbenchActions(JSONObject learningState, JSONObject learningStatus, JSONObject sessionPayload) {
+        ArrayList<String> result = new ArrayList<String>();
+        HashSet<String> seen = new HashSet<String>();
+        JSONArray actions = learningState == null ? null : learningState.optJSONArray("actions");
+        if (actions != null) for (int i = 0; i < actions.length() && result.size() < 3; i++) {
+            JSONObject action = actions.optJSONObject(i); if (action == null) continue;
+            String status = action.optString("status", "");
+            if ("completed".equals(status) || "cancelled".equals(status)) continue;
+            String title = action.optString("title", "").trim(); if (title.length() == 0) continue;
+            JSONObject detailPayload = action.optJSONObject("payload");
+            String detail = firstNonEmpty(detailPayload, "nextStep", "description", "task", "successCriteria", "goal", "instruction");
+            String line = title + (detail.length() == 0 || detail.equals(title) ? "" : " — " + limitDashboardText(detail, 120));
+            if (seen.add(line)) result.add(line);
+        }
+        JSONArray entries = learningStatus == null ? null : learningStatus.optJSONArray("entries");
+        JSONObject latest = entries == null ? null : entries.optJSONObject(0);
+        if (latest != null && result.size() < 3) {
+            String plan = latest.optString("nextPlan", "").trim();
+            if (plan.length() > 0) {
+                String line = limitDashboardText(plan, 150);
+                if (seen.add(line)) result.add(line);
+            }
+        }
+        JSONArray projectsPayload = sessionPayload == null ? null : sessionPayload.optJSONArray("projects");
+        if (projectsPayload != null && result.size() < 3) for (int i = 0; i < projectsPayload.length() && result.size() < 3; i++) {
+            JSONObject project = projectsPayload.optJSONObject(i); if (project == null) continue;
+            if ("archived".equals(project.optString("status", "")) || "completed".equals(project.optString("status", ""))) continue;
+            String name = project.optString("name", "").trim(); if (name.length() == 0) continue;
+            String line = name + " · 进入项目管理核对资料、综合报告和下一步任务";
+            if (seen.add(line)) result.add(line);
+        }
+        return result;
+    }
+
+    String firstNonEmpty(JSONObject source, String... keys) {
+        if (source == null) return "";
+        for (String key : keys) {
+            String value = source.optString(key, "").trim();
+            if (value.length() > 0) return value;
+        }
+        return "";
+    }
+
+    String limitDashboardText(String value, int max) {
+        String clean = String.valueOf(value == null ? "" : value).replace('\n', ' ').replace('\r', ' ').trim();
+        return clean.length() <= max ? clean : clean.substring(0, max) + "…";
+    }
+
+    String dashboardWorkbenchProject(JSONObject sessionPayload) {
+        JSONArray projectsPayload = sessionPayload == null ? null : sessionPayload.optJSONArray("projects");
+        JSONObject project = null;
+        if (projectsPayload != null) {
+            for (int i = 0; i < projectsPayload.length(); i++) {
+                JSONObject candidate = projectsPayload.optJSONObject(i); if (candidate == null) continue;
+                if (!"archived".equals(candidate.optString("status", "")) && !"completed".equals(candidate.optString("status", ""))) { project = candidate; break; }
+                if (project == null) project = candidate;
+            }
+        }
+        if (project == null) return projectSummaryForDashboard();
+        String name = project.optString("name", "重点项目").trim();
+        JSONArray deliverables = project.optJSONArray("deliverables");
+        String milestone = deliverables == null ? "" : deliverables.optString(0, "").trim();
+        return (name.length() == 0 ? "重点项目" : name) + (milestone.length() > 0
+            ? "\n当前里程碑：" + limitDashboardText(milestone, 140)
+            : "\n下一步：进入项目管理查看项目资料、综合报告并确认具体任务。");
+    }
+
+    String dashboardWorkbenchDimensions(JSONObject learningState) {
+        JSONObject snapshot = learningState == null ? null : learningState.optJSONObject("fiveDimensionSnapshot");
+        JSONObject dimensions = snapshot == null ? null : snapshot.optJSONObject("dimensions");
+        if (dimensions == null) return "主机尚未形成可展示的五维证据摘要。";
+        StringBuilder out = new StringBuilder();
+        String[] keys = new String[] { "goals", "mindset", "problems", "methods", "efficiency" };
+        String[] labels = new String[] { "目标", "心态", "问题", "方法", "效率" };
+        for (int i = 0; i < keys.length; i++) {
+            JSONObject item = dimensions.optJSONObject(keys[i]);
+            String summary = dashboardDimensionSummary(keys[i], item);
+            if (out.length() > 0) out.append("\n");
+            out.append(labels[i]).append("：").append(summary);
+        }
+        return out.toString();
+    }
+
+    String dashboardDimensionSummary(String key, JSONObject item) {
+        if (item == null || "insufficient_evidence".equals(item.optString("status", ""))) return "证据不足，保持待观察";
+        if ("goals".equals(key) || "problems".equals(key) || "methods".equals(key)) {
+            JSONArray items = item.optJSONArray("items"); JSONObject first = items == null ? null : items.optJSONObject(0);
+            String title = firstNonEmpty(first, "title", "statement", "description");
+            if (title.length() > 0) return limitDashboardText(title, 90);
+        }
+        if ("mindset".equals(key)) return item.optJSONObject("selfReport") == null ? "证据不足，保持待观察" : "已有学生自述，需结合后续观察";
+        if ("efficiency".equals(key)) return "仅展示描述性记录，不合成总分";
+        return "已有记录，等待更多证据核验";
+    }
+
+    void updateDashboardWeeklyMaterialChart(JSONObject hostImage, String error) {
+        dashboardStatsWeek = ""; dashboardStatsImageBase64 = ""; dashboardStatsMimeType = "image/png";
+        String imageBase64 = hostImage == null ? "" : hostImage.optString("imageBase64", "").trim();
+        if (imageBase64.length() == 0) {
+            if (dashboardMaterialStatsImage != null) dashboardMaterialStatsImage.setVisibility(View.GONE);
+            dashboardMaterialStatsText.setText(error == null || error.length() == 0
+                ? "主机尚未生成当前学生的完整七日资料统计图。"
+                : "完整七日资料统计读取失败：" + conciseDashboardError(error));
+            return;
+        }
+        try {
+            byte[] png = android.util.Base64.decode(imageBase64, android.util.Base64.DEFAULT);
+            Bitmap bitmap = BitmapFactory.decodeByteArray(png, 0, png.length);
+            if (bitmap == null) throw new Exception("主机返回的统计图片无效。 ");
+            dashboardStatsWeek = hostImage.optString("week", "最近7天");
+            dashboardStatsImageBase64 = imageBase64;
+            dashboardStatsMimeType = hostImage.optString("mimeType", "image/png");
+            dashboardMaterialStatsImage.setImageBitmap(bitmap);
+            dashboardMaterialStatsImage.setVisibility(View.VISIBLE);
+            dashboardMaterialStatsText.setText("主机已生成当前学生完整七日逐日资料统计图；点击图片可查看和分享。资料数量不代表学习掌握度。 ");
+        } catch (Exception decodeError) {
+            if (dashboardMaterialStatsImage != null) dashboardMaterialStatsImage.setVisibility(View.GONE);
+            dashboardMaterialStatsText.setText("主机已返回七日统计图，但安卓无法读取图片；可点击下方按钮重试。 ");
+        }
+    }
+
+    String dashboardPriorityFromStatus(JSONObject payload) {
+        JSONArray entries = payload == null ? null : payload.optJSONArray("entries");
+        JSONObject latest = entries == null ? null : entries.optJSONObject(0);
+        if (latest == null) return "";
+        String plan = latest.optString("nextPlan", "").trim();
+        if (plan.length() > 0) return plan.length() > 160 ? plan.substring(0, 160) + "…" : plan;
+        String current = latest.optString("currentContent", "").trim();
+        return current.length() == 0 ? "" : "围绕“" + current + "”完成一项可核验的小行动。";
+    }
+
+    String dashboardWeeklyAction(JSONObject daily, JSONObject learningStatus) {
+        String content = daily == null ? "" : daily.optString("content", "");
+        String line = firstReadableMarkdownLine(content);
+        if (line.length() > 0) return line;
+        return dashboardPriorityFromStatus(learningStatus);
+    }
+
+    String firstReadableMarkdownLine(String value) {
+        String[] lines = String.valueOf(value == null ? "" : value).replace("\r", "").split("\n");
+        for (String raw : lines) {
+            String line = raw == null ? "" : raw.trim().replaceFirst("^(?:[-*+]\\s+|\\d+[.、]\\s+|#{1,6}\\s+)", "").trim();
+            if (line.length() == 0 || line.startsWith(">") || line.startsWith("|") || line.startsWith("---")) continue;
+            return line.length() > 180 ? line.substring(0, 180) + "…" : line;
+        }
+        return "";
+    }
+
+    String dashboardFiveDimensions(JSONObject payload) {
+        JSONArray abilities = payload == null ? null : payload.optJSONArray("abilities");
+        if (abilities == null || abilities.length() == 0) return "";
+        StringBuilder text = new StringBuilder();
+        int count = Math.min(5, abilities.length());
+        for (int i = 0; i < count; i++) {
+            JSONObject item = abilities.optJSONObject(i);
+            if (item == null) continue;
+            if (text.length() > 0) text.append("\n");
+            text.append(i + 1).append(". ").append(item.optString("name", "待标注"))
+                .append("：").append(item.optString("maturityLabel", "证据不足"))
+                .append(" · ").append(item.optString("trendLabel", "尚不足以判断"));
+        }
+        return text.toString();
+    }
+
+    String projectSummaryForDashboard() {
+        List<LearningProject> available = projectsForSelectedStudent();
+        if (available.isEmpty()) return "当前学生暂未关联进行中的项目。";
+        LearningProject project = available.get(0);
+        String suffix = available.size() > 1 ? "；另有 " + (available.size() - 1) + " 个关联项目。" : "。";
+        return "当前重点：" + project.name + suffix;
+    }
+
+    String weeklyGrowthWeekValue(Object value) {
+        if (value instanceof JSONObject) {
+            JSONObject item = (JSONObject) value;
+            return item.optString("week", item.optString("id", item.optString("weekKey", ""))).trim();
+        }
+        return String.valueOf(value == null ? "" : value).trim();
+    }
+
+    String weeklyStatsEmptyMessage(String error) {
+        String value = error == null ? "" : error;
+        if (value.contains("资料上传统计暂不可用") || value.contains("weekly_upload_trend_unavailable") || value.contains("尚未生成")) {
+            return "本周暂无可计入统计的资料；这不代表没有学习进展，也不会把“无资料”表述为能力结论。";
+        }
+        return value.length() == 0 ? "主机尚未生成最近7天资料统计图。" : "资料统计图暂不可用：" + conciseDashboardError(value);
+    }
+
+    String conciseDashboardError(String value) {
+        String cleaned = String.valueOf(value == null ? "请求失败" : value).replace('\n', ' ').trim();
+        return cleaned.length() > 100 ? cleaned.substring(0, 100) + "…" : cleaned;
     }
 
     void loadCourses() {
@@ -7185,8 +7595,8 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
         bar.setGravity(Gravity.CENTER);
         bar.setPadding(dp(4), dp(5), dp(4), dp(5));
         bar.setBackgroundColor(Color.rgb(8, 48, 67));
-        String[] labels = new String[] {"搜集上传", "主机连接", "教育档案", "学习行动"};
-        final String[] ids = new String[] {"collection", "connection", "archive", "learning"};
+        String[] labels = new String[] {"搜集", "连接", "档案", "项目", "行动"};
+        final String[] ids = new String[] {"collection", "connection", "archive", "project", "learning"};
         for (int i = 0; i < labels.length; i++) {
             final int index = i;
             Button item = navigationButton(labels[i], new View.OnClickListener() {
@@ -7208,10 +7618,12 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
         if (collectionPage != null) collectionPage.setVisibility("collection".equals(workspace) ? View.VISIBLE : View.GONE);
         if (connectionPage != null) connectionPage.setVisibility("connection".equals(workspace) ? View.VISIBLE : View.GONE);
         if (archivePage != null) archivePage.setVisibility("archive".equals(workspace) ? View.VISIBLE : View.GONE);
+        if (projectPage != null) projectPage.setVisibility("project".equals(workspace) ? View.VISIBLE : View.GONE);
         if (learningActionPage != null) learningActionPage.setVisibility("learning".equals(workspace) ? View.VISIBLE : View.GONE);
         if (morePage != null) morePage.setVisibility("more".equals(workspace) ? View.VISIBLE : View.GONE);
         if (rootScroll != null) rootScroll.scrollTo(0, 0);
         if ("collection".equals(workspace)) refreshCollectionInboxUi();
+        if ("home".equals(workspace)) refreshLearningWorkbenchHome();
         refreshCockpitStatus();
     }
 
@@ -7276,6 +7688,9 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
         rail.addView(navigationButton("▤  教育档案", new View.OnClickListener() {
             @Override public void onClick(View view) { showWorkspace("archive"); }
         }));
+        rail.addView(navigationButton("▦  项目管理", new View.OnClickListener() {
+            @Override public void onClick(View view) { showWorkspace("project"); }
+        }));
         rail.addView(navigationButton("✓  学习行动", new View.OnClickListener() {
             @Override public void onClick(View view) { showWorkspace("learning"); }
         }));
@@ -7332,6 +7747,75 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
         heading.setPadding(0, dp(3), 0, dp(12));
         section.addView(heading);
 
+        TextView dashboardHint = label("以下内容只读取当前学生在已连接主机中的已发布数据；资料统计不等同于学习掌握或能力结论。 ");
+        dashboardHint.setTextSize(13);
+        dashboardHint.setPadding(0, 0, 0, dp(8));
+        section.addView(dashboardHint);
+
+        LinearLayout priorityCard = dashboardInsightCard("今天最值得推进的一件事", "进入学生空间后读取本人的下一步行动。", Color.rgb(229, 243, 239));
+        dashboardPriorityText = dashboardInsightText("请先连接主机并进入学生空间。", 16, Color.rgb(16, 72, 67));
+        priorityCard.addView(dashboardPriorityText);
+        Button priorityButton = button("去学习行动", false);
+        priorityButton.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View view) { showWorkspace("learning"); }
+        });
+        priorityCard.addView(priorityButton);
+        section.addView(priorityCard);
+
+        LinearLayout weeklyCard = dashboardInsightCard("本周行动", "来自主机已发布的行动建议或最近一次学习状态。", Color.rgb(238, 246, 252));
+        dashboardWeeklyActionText = dashboardInsightText("等待主机数据。", 14, Color.rgb(25, 72, 108));
+        weeklyCard.addView(dashboardWeeklyActionText);
+        Button weeklyButton = button("查看学情报告", false);
+        weeklyButton.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View view) { openPanelPath("教育档案", "学情报告"); loadLearningReport("daily"); }
+        });
+        weeklyCard.addView(weeklyButton);
+        section.addView(weeklyCard);
+
+        LinearLayout projectCard = dashboardInsightCard("重点项目", "只显示当前学生关联且未封存的项目。", Color.rgb(246, 239, 251));
+        dashboardProjectText = dashboardInsightText("等待学生空间。", 14, Color.rgb(86, 50, 112));
+        projectCard.addView(dashboardProjectText);
+        Button projectButton = button("打开项目管理", false);
+        projectButton.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View view) { showWorkspace("project"); }
+        });
+        projectCard.addView(projectButton);
+        section.addView(projectCard);
+
+        LinearLayout dimensionsCard = dashboardInsightCard("五维学情", "仅呈现主机当前形成的证据摘要；证据不足会明确显示。", Color.rgb(255, 247, 228));
+        dashboardFiveDimensionsText = dashboardInsightText("等待主机成长模型。", 14, Color.rgb(98, 72, 22));
+        dimensionsCard.addView(dashboardFiveDimensionsText);
+        Button dimensionsButton = button("查看成长模型", false);
+        dimensionsButton.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View view) { openPanelPath("教育档案", "成长模型"); loadGrowthSummary(); }
+        });
+        dimensionsCard.addView(dimensionsButton);
+        section.addView(dimensionsCard);
+
+        LinearLayout materialsCard = dashboardInsightCard("最近7天资料统计图", "按最近7天的当前学生资料计数生成；点击图片可查看和分享。", Color.rgb(235, 243, 248));
+        dashboardMaterialStatsText = dashboardInsightText("等待主机资料统计。", 14, Color.rgb(29, 64, 83));
+        materialsCard.addView(dashboardMaterialStatsText);
+        dashboardMaterialStatsImage = new ImageView(this);
+        dashboardMaterialStatsImage.setAdjustViewBounds(true);
+        dashboardMaterialStatsImage.setScaleType(ImageView.ScaleType.CENTER_INSIDE);
+        dashboardMaterialStatsImage.setMaxHeight(dp(isPhoneLayout() ? 720 : 900));
+        dashboardMaterialStatsImage.setContentDescription("最近7天资料统计图，点击查看或分享");
+        dashboardMaterialStatsImage.setPadding(0, dp(8), 0, dp(4));
+        dashboardMaterialStatsImage.setVisibility(View.GONE);
+        dashboardMaterialStatsImage.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View view) {
+                if (dashboardStatsImageBase64.length() > 0) showWeeklyKnowledgeGrowthImage(dashboardStatsWeek, dashboardStatsImageBase64, dashboardStatsMimeType);
+                else openWeeklyKnowledgeGrowth(false);
+            }
+        });
+        materialsCard.addView(dashboardMaterialStatsImage, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT));
+        Button materialsButton = button("查看或分享最近7天统计图", false);
+        materialsButton.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View view) { openWeeklyKnowledgeGrowth(false); }
+        });
+        materialsCard.addView(materialsButton);
+        section.addView(materialsCard);
+
         final GridLayout grid = new GridLayout(this);
         final int columns = isPhoneLayout() && getResources().getConfiguration().screenWidthDp < 360 ? 1 : 2;
         grid.setColumnCount(columns);
@@ -7344,14 +7828,46 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
         addDashboardAction(grid, 1, columns, "⌁", "主机连接", "发现主机 · 扫码连接 · 学生空间", Color.rgb(14, 83, 118), new View.OnClickListener() {
             @Override public void onClick(View view) { showWorkspace("connection"); }
         });
-        quickReportButton = addDashboardAction(grid, 2, columns, "▤", "教育档案", "学情 · 成长 · 项目 · 规划", Color.rgb(25, 72, 108), new View.OnClickListener() {
+        quickReportButton = addDashboardAction(grid, 2, columns, "▤", "教育档案", "学情 · 成长 · 知识点 · 规划", Color.rgb(25, 72, 108), new View.OnClickListener() {
             @Override public void onClick(View view) { showWorkspace("archive"); }
         });
-        addDashboardAction(grid, 3, columns, "✓", "学习行动", "课程 · 卡片 · 知识点复习", Color.rgb(15, 119, 104), new View.OnClickListener() {
+        addDashboardAction(grid, 3, columns, "▦", "项目管理", "资料 · 综合报告 · 项目导师", Color.rgb(98, 70, 136), new View.OnClickListener() {
+            @Override public void onClick(View view) { showWorkspace("project"); }
+        });
+        addDashboardAction(grid, 4, columns, "✓", "学习行动", "课程 · 卡片 · 学习导师", Color.rgb(15, 119, 104), new View.OnClickListener() {
             @Override public void onClick(View view) { showWorkspace("learning"); }
         });
         section.addView(grid, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT));
         return section;
+    }
+
+    private LinearLayout dashboardInsightCard(String title, String subtitle, int color) {
+        LinearLayout card = card();
+        card.setPadding(dp(14), dp(13), dp(14), dp(12));
+        card.setBackground(roundedSolid(color, dp(18), mixColor(color, Color.rgb(168, 197, 191), 0.35f)));
+        TextView titleView = label(title);
+        titleView.setTextSize(17);
+        titleView.setTextColor(Color.rgb(17, 53, 65));
+        card.addView(titleView);
+        TextView subtitleView = label(subtitle);
+        subtitleView.setTextSize(12);
+        subtitleView.setTextColor(Color.rgb(81, 105, 107));
+        subtitleView.setPadding(0, dp(3), 0, dp(8));
+        card.addView(subtitleView);
+        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+        params.setMargins(0, dp(5), 0, dp(5));
+        card.setLayoutParams(params);
+        return card;
+    }
+
+    private TextView dashboardInsightText(String value, int size, int color) {
+        TextView text = new TextView(this);
+        text.setText(value);
+        text.setTextSize(size);
+        text.setTextColor(color);
+        text.setLineSpacing(dp(2), 1.1f);
+        text.setPadding(0, dp(2), 0, dp(8));
+        return text;
     }
 
     private View addDashboardAction(GridLayout grid, int index, int columns, String icon, String title, String description, int color, View.OnClickListener listener) {
@@ -7432,8 +7948,9 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
         for (String title : titles) {
             if (title.contains("收集") || title.contains("采集") || title.contains("搜集") || title.contains("上传")) destination = "collection";
             else if (title.contains("连接") || title.contains("主机") || title.contains("学生空间") || title.contains("终端")) destination = "connection";
-            else if (title.contains("档案") || title.contains("报告") || title.contains("成长模型") || title.contains("项目资料") || title.contains("规划指导")) destination = "archive";
-            else if (title.contains("学习行动") || title.contains("精选课程") || title.contains("学习卡片") || title.contains("知识点")) destination = "learning";
+            else if (title.contains("项目资料") || title.contains("项目综合报告") || title.contains("项目导师") || title.contains("项目管理")) destination = "project";
+            else if (title.contains("档案") || title.contains("报告") || title.contains("成长模型") || title.contains("规划指导") || title.contains("知识点")) destination = "archive";
+            else if (title.contains("学习行动") || title.contains("精选课程") || title.contains("学习卡片") || title.contains("学习导师")) destination = "learning";
         }
         showWorkspace(destination);
         View target = null;

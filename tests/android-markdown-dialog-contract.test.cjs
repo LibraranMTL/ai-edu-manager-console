@@ -23,8 +23,10 @@ test('shared Markdown reader is network isolated and offers readable source cont
     'settings.setAllowFileAccess(false)',
     'settings.setAllowContentAccess(false)',
     'settings.setBlockNetworkLoads(true)',
-    '查看原文', '阅读模式', '正文已复制', 'A−', 'A+'
+    '查看原文', '阅读模式', '复制正文', '复制正文到剪贴板', '正文已复制', 'A−', 'A+'
   ]) assert.ok(shared.includes(marker), marker);
+  assert.match(shared, /root\.addView\(copy, copyParams\);/);
+  assert.match(shared, /screenHeight \* 48 \/ 100/);
   assert.match(shared, /confirmExternalLink/);
   assert.match(shared, /打开外部链接？/);
   assert.match(shared, /ORDERED_ITEM/);

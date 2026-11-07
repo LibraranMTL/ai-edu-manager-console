@@ -158,7 +158,9 @@ async function main() {
   const manifestPath = path.join(outputRoot, 'release-manifest.json');
   fs.writeFileSync(manifestPath, `${JSON.stringify({
     ...(formalRelease ? { releaseTag: tag } : { candidateTag: tag }),
-    version: JSON.parse(fs.readFileSync(path.join(repoRoot, 'package.json'), 'utf8')).version,
+    // The desktop package has an independent version. Cloud releases are
+    // identified by their immutable candidate/release tag.
+    version: tag,
     createdAt: new Date().toISOString(),
     formalRelease,
     files: manifest,

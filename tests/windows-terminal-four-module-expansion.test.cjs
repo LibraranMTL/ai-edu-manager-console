@@ -91,6 +91,7 @@ test('external conversation shares are durable, single-instance and confirmation
 test('learning-cockpit UI keeps five modules, a learning workbench and wide read-only document dialogs', () => {
   const ui = read('src', 'terminal-main.tsx');
   const css = read('src', 'terminal-styles.css');
+  const build = read('scripts', 'build-windows-terminal-release.cjs');
   assert.match(ui, /type StudentPrimaryModule = 'collection' \| 'connection' \| 'archive' \| 'learning' \| 'project'/);
   assert.match(ui, /type StudentPrimaryView = 'home' \| StudentPrimaryModule/);
   assert.match(ui, /我的学情工作台/);
@@ -102,6 +103,8 @@ test('learning-cockpit UI keeps five modules, a learning workbench and wide read
   assert.match(css, /grid-template-columns: 214px minmax\(0, 1fr\)/);
   assert.match(css, /\.student-reader-backdrop/);
   assert.match(css, /@media print/);
+  assert.match(build, /const terminalAsarBudgetBytes = 5 \* 1024 \* 1024 \+ 64 \* 1024/);
+  assert.match(build, /nodeModuleFiles\.length/);
 });
 
 test('archive owns knowledge tracking and planning; project material and mentor are in the project workspace', () => {

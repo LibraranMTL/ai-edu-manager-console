@@ -22,6 +22,10 @@ const releaseDir = candidateTag
   ? path.join(repoRoot, 'release', 'windows-terminal', 'candidates', candidateTag)
   : path.join(repoRoot, 'release', 'windows-terminal');
 const electronLanguages = ['zh-CN', 'en-US'];
+// Keep the student terminal bounded and dependency-free. The original 5 MiB
+// ceiling was reached by the published-course reader baseline (83 bytes left);
+// this fixed 64 KiB allowance covers the rendered learning workbench only.
+const terminalAsarBudgetBytes = 5 * 1024 * 1024 + 64 * 1024;
 
 function assertInside(target, parent) {
   const resolvedTarget = path.resolve(target);
@@ -262,8 +266,8 @@ function build() {
   }
   const asarBytes = fs.statSync(asarPath).size;
   // Publication reader adds lazy PDF.js (~1.7 MiB) and bundled offline math fonts.
-  // Keep a bounded 5 MiB budget and the independent no-node_modules check above.
-  if (asarBytes > 5 * 1024 * 1024) throw new Error(`Terminal app.asar exceeds 5 MiB: ${asarBytes}`);
+  // The independently enforced no-node_modules check above remains the dependency boundary.
+  if (asarBytes > terminalAsarBudgetBytes) throw new Error(`Terminal app.asar exceeds ${(terminalAsarBudgetBytes / 1024 / 1024).toFixed(4)} MiB: ${asarBytes}`);
   for (const pattern of [/StudentPublishedCards-.*\.js$/, /pdf\.worker.*\.mjs$/, /KaTeX_Main-Regular.*\.woff2$/]) {
     if (!asarFiles.some(name=>pattern.test(name))) throw new Error(`Terminal publication reader asset missing: ${pattern}`);
   }

@@ -40,3 +40,10 @@ ZIP 内 EXE 的 SHA-256 与便携 EXE 相同：`BC77A7CF260796B9EAF7A37280CA8D9F
 - 已恢复并以 HTTPS 逐页 SHA-256 验证：下载页 `66571f1fdbf0d9b6bb94a62882f388aa772d0f3cc20e83de74a806839ba08973`、Android 学生端手册及 `tablet-manual.html` `27142f69ae93984598c8bbbc5c98d616c4f6f245fcbca1e63d31af5f85dd2b53`、Android 教师端手册 `04904212a73a25a7bf52baaf469df856f15ed4ca8fdafe390e230644c29c1a05`。两个 APK 下载端点均返回 `200`。
 - 本次静态页修复回滚备份：`/www/backups/website-mobile-version-repair-20261107-1215`；服务器暂存目录已删除。
 - 防复发：新增 `verify:release-website`，对三个版本清单、下载页、两份 Android 手册和学生端兼容手册强制比对；`build:win` 与 Windows 发布构建脚本均会先执行该检查。另提供 `sync:web-manuals:android`，只生成 Android 两个产品族的手册，避免范围外页面被重写。
+
+## Windows 主机手册纠正（2026-11-07）
+
+- 发现官网 `windows-host-manual.html` 和兼容入口 `windows-manual.html` 仍由 2026-10-23 的旧手册生成，标注 `0.21.6`，并保留已退出的本机平台课程草稿、发布和导出操作。
+- 已将源码手册更新为 Windows `0.23.4/273`：说明平台课程由云端发布管理维护、主机只负责安全同步/预览/学生分配，并补充课程签名、撤回、投影隔离与自动化纠偏边界。
+- 两个官网入口的 HTTPS SHA-256 均为 `68a9c6e5bea29b0337165725d56e3415fa5aa5bbfa6c81ad0ce9914a93a7d81b`，返回 `200`；回滚备份保留于 `/www/backups/windows-host-manual-0234-repair-20261107-1230`。
+- 文档测试现在同时断言 `0.23.4/273` 与云端课程发布说明，并拒绝旧的“保存平台草稿”“发布并导出平台课程包”指引。

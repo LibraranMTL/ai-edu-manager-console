@@ -121,12 +121,17 @@ test('manual sources describe target selection and terminal-specific workflows',
   assert.match(host, /Android 学生端/u);
   assert.match(host, /课程学习/u);
   assert.match(host, /课程管理/u);
+  assert.match(host, /Windows 主机 0\.23\.4（版本码 273）公开稳定版/u);
+  assert.doesNotMatch(host, /Windows 主机 0\.21\.6 公开稳定版/u);
   assert.match(host, /单门课程 · 直接上传/u);
   assert.match(host, /上传课程图片/u);
   assert.match(host, /相同课程链接再次保存会更新同一门自选课程/u);
   assert.match(host, /文件大小不超过 10 MB/u);
   assert.match(host, /一次最多导入 200 门课程/u);
-  assert.match(host, /导入平台离线目录/u);
+  assert.match(host, /平台课程同步与异常处理/u);
+  assert.match(host, /云端课程发布管理/u);
+  assert.doesNotMatch(host, /保存平台草稿/u);
+  assert.doesNotMatch(host, /发布并导出平台课程包/u);
   assert.match(host, /允许本机团队知识查询/u);
   assert.match(host, /允许远程协作团队知识查询/u);
   assert.match(host, /本机没有命中时，才向已经建立有效知识协作关系/u);

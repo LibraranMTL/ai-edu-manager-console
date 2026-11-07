@@ -167,3 +167,30 @@ test('course isolation view follows the rendered capture toolbar and keeps nativ
   assert.match(main, /courseViewTop = 300/);
   assert.match(main, /captureControlWindow\.setAlwaysOnTop\(true, 'screen-saver'\)/);
 });
+
+test('student terminal preserves its signed course entry and waits for the companion before opening mentors', () => {
+  const main = read('electron', 'terminal-main.cjs');
+  assert.match(main, /const trustedCourseUrl = courseUrl\.toString\(\)/);
+  assert.match(main, /url: trustedCourseUrl, allowedHosts: trustedAllowedHosts/);
+  assert.match(main, /async function showTerminalCompanion\(\)/);
+  assert.match(main, /await companionWindow\.loadFile\(path\.join\(__dirname, 'terminal-companion\.html'\)\)/);
+  assert.match(main, /async function showTerminalCompanionPanel\(mode\)/);
+  assert.match(main, /const shown = await showTerminalCompanion\(\)/);
+});
+
+test('student terminal keeps capture recovery visible and renders reading views in the requested place', () => {
+  const ui = read('src', 'terminal-main.tsx');
+  const css = read('src', 'terminal-styles.css');
+  const publication = read('src', 'StudentPublishedCards.tsx');
+  assert.match(ui, /mediaCaptureRequestRef/);
+  assert.match(ui, /授权或设备尚未就绪/);
+  assert.match(ui, /重新尝试/);
+  assert.match(ui, /setReaderDialogOpen\(false\)/);
+  assert.match(ui, /student-document-reader-inline/);
+  assert.match(ui, /<MarkdownDocument content=\{item\.fitReason\}/);
+  assert.match(css, /student-media-capture-error/);
+  assert.match(css, /student-document-reader-inline/);
+  assert.match(publication, /function PublicationDialog/);
+  assert.match(publication, /title=\{selected\.content\.title\|\|'学习卡片'\}/);
+  assert.match(publication, /title=\{feedback\.title\|\|'作答与反馈'\}/);
+});

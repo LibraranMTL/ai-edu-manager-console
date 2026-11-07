@@ -331,6 +331,9 @@ button:focus-visible { outline: 4px solid rgba(23, 111, 206, .24); outline-offse
 .student-media-capture video, .student-media-capture > img { width: 100%; max-height: 430px; object-fit: contain; border-radius: 15px; background: #14201d; }
 .student-media-capture audio { width: 100%; }
 .student-audio-status { min-height: 150px; display: grid; place-items: center; border: 1px dashed #bed7d0; border-radius: 15px; color: #176957; background: #edf7f4; font-size: 18px; font-weight: 850; }
+.student-media-capture-error { display: grid; gap: 7px; padding: 13px 15px; border: 1px solid #e7b875; border-radius: 13px; color: #714116; background: #fff7e8; }
+.student-media-capture-error p { margin: 0; overflow-wrap: anywhere; }
+.student-media-capture-error button { justify-self: start; }
 .student-trajectory-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
 .student-trajectory-grid article { min-width: 0; display: grid; gap: 7px; padding: 15px; border: 1px solid #dbe9e5; border-radius: 16px; background: #f8fbfa; }
 .student-trajectory-grid article > span { color: #087f73; font-size: 10px; font-weight: 900; }
@@ -396,6 +399,10 @@ button:focus-visible { outline: 4px solid rgba(23, 111, 206, .24); outline-offse
 .student-project-report-launcher label { max-width: 620px; }
 .student-document-preview-hint { display: grid; place-content: center; min-height: 260px; text-align: center; }
 .student-document-preview-hint p { max-width: 440px; }
+.student-document-reader-inline { display: grid; grid-template-rows: auto auto minmax(0, 1fr) auto; min-height: 430px; text-align: left; }
+.student-document-reader-inline .student-document-reader-caption { margin: -5px 0 8px; color: #5d7a73; font-size: 13px; }
+.student-document-reader-inline .student-reader-scroll { max-height: 680px; padding: 8px 4px 18px; }
+.student-document-reader-inline .document-actions { padding-top: 13px; border-top: 1px solid #dce8e5; }
 
 .student-reader-backdrop { position: fixed; z-index: 140; inset: 0; display: grid; place-items: center; padding: 24px; background: rgba(7, 35, 40, .48); backdrop-filter: blur(6px); }
 .student-reader-dialog { width: min(1080px, calc(100vw - 48px)); max-height: calc(100vh - 48px); display: grid; grid-template-rows: auto minmax(0, 1fr) auto; overflow: hidden; border: 1px solid #bed6d0; border-radius: 24px; background: #fbfdfc; box-shadow: 0 30px 90px rgba(4, 31, 36, .34); }
@@ -418,11 +425,11 @@ button:focus-visible { outline: 4px solid rgba(23, 111, 206, .24); outline-offse
 
 @media print {
   body * { visibility: hidden; }
-  .student-reader-dialog, .student-reader-dialog * { visibility: visible; }
+  .student-reader-dialog, .student-reader-dialog *, .student-document-reader-inline, .student-document-reader-inline * { visibility: visible; }
   .student-reader-backdrop { position: static; display: block; padding: 0; background: #fff; }
-  .student-reader-dialog { width: 100%; max-height: none; border: 0; box-shadow: none; }
-  .student-reader-dialog > header button, .student-reader-dialog > footer { display: none; }
-  .student-reader-scroll { overflow: visible; }
+  .student-reader-dialog, .student-document-reader-inline { width: 100%; max-height: none; min-height: 0; border: 0; box-shadow: none; background: #fff; }
+  .student-reader-dialog > header button, .student-reader-dialog > footer, .student-document-reader-inline .document-actions { display: none; }
+  .student-reader-scroll, .student-document-reader-inline .student-reader-scroll { max-height: none; overflow: visible; }
 }
 
 @media (max-width: 1120px) {

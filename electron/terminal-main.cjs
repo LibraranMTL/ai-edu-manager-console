@@ -1532,7 +1532,15 @@ async function openTerminalCourse(courseId) {
   if (!Number.isFinite(leaseUntil) || leaseUntil <= Date.now()) throw new Error('课程离线打开租约已到期，请联网刷新后重试。');
   const courseUrl = new URL(String(course.url || ''));
   if (courseUrl.protocol !== 'https:' || courseUrl.username || courseUrl.password) throw new Error('课程入口不是受信任的 HTTPS 地址。');
-  try {const pinned=await requestJson('/api/student-session/course-start',{method:'POST',body:{courseId},token:config.sessionToken});course={...course,...pinned.course};}
+  // The signed course projection is the authority for the navigation target.
+  // `course-start` only records the launch on the host; it must never replace
+  // the already-validated URL (older hosts serialized https as `https\\://`).
+  const trustedCourseUrl = courseUrl.toString();
+  const trustedAllowedHosts = Array.isArray(course.allowedHosts) ? [...course.allowedHosts] : [];
+  try {
+    const pinned = await requestJson('/api/student-session/course-start', { method: 'POST', body: { courseId }, token: config.sessionToken });
+    course = { ...course, ...(pinned?.course || {}), url: trustedCourseUrl, allowedHosts: trustedAllowedHosts };
+  }
   catch(error){if(!isCourseStartFallbackAllowed(error))throw error;}
   if(currentStudentSession().config.sessionToken!==config.sessionToken)throw Error('学生已切换，请重新打开课程');
   closeTerminalCourse('switch');
@@ -2839,7 +2847,7 @@ function sendTerminalCompanionState() {
   if (companionWindow && !companionWindow.isDestroyed()) companionWindow.webContents.send('terminal-companion:state', terminalCompanionState());
 }
 
-function showTerminalCompanion() {
+async function showTerminalCompanion() {
   if (!companionWindow || companionWindow.isDestroyed()) {
     const display = screen.getDisplayMatching(mainWindow?.getBounds() || screen.getPrimaryDisplay().workArea);
     const width = 590, height = 54;
@@ -2864,18 +2872,26 @@ function showTerminalCompanion() {
       },
     });
     companionWindow.setAlwaysOnTop(true, 'screen-saver');
-    companionWindow.webContents.on('did-finish-load', () => { sendTerminalCompanionState(); companionWindow?.showInactive(); });
     companionWindow.on('closed', () => { closeTerminalCompanionPopover(); companionWindow = null; });
-    void companionWindow.loadFile(path.join(__dirname, 'terminal-companion.html'));
-  } else {
-    companionWindow.showInactive();
-    sendTerminalCompanionState();
+    try {
+      await companionWindow.loadFile(path.join(__dirname, 'terminal-companion.html'));
+    } catch (error) {
+      if (companionWindow && !companionWindow.isDestroyed()) companionWindow.close();
+      return { ok: false, message: `学习工具条加载失败：${error.message}` };
+    }
   }
+  if (!companionWindow || companionWindow.isDestroyed()) return { ok: false, message: '学习工具条窗口已失效。' };
+  companionWindow.show();
+  companionWindow.focus();
+  sendTerminalCompanionState();
   return { ok: true, state: terminalCompanionState() };
 }
 
-function showTerminalCompanionPanel(mode) {
-  const shown = showTerminalCompanion();
+async function showTerminalCompanionPanel(mode) {
+  // Do not create the child panel until the toolbar document and preload have
+  // finished loading. This removes the first-click race that made both mentor
+  // buttons look unresponsive on a fresh student-terminal launch.
+  const shown = await showTerminalCompanion();
   if (!shown.ok) return shown;
   return showTerminalCompanionPopover(mode);
 }
@@ -2927,8 +2943,8 @@ function registerIpc() {
   ipcMain.handle('terminal:get-agent-bridge', () => getTerminalAgentBridge().snapshot());
   ipcMain.handle('terminal:set-agent-bridge', (_event, enabled) => setTerminalAgentBridge(Boolean(enabled)));
   ipcMain.handle('terminal:copy-agent-bridge-config', () => copyTerminalAgentBridgeConfig());
-  ipcMain.handle('terminal:show-companion', () => showTerminalCompanion());
-  ipcMain.handle('terminal:show-companion-panel', (_event, mode) => showTerminalCompanionPanel(String(mode || '')));
+  ipcMain.handle('terminal:show-companion', async () => showTerminalCompanion());
+  ipcMain.handle('terminal:show-companion-panel', async (_event, mode) => showTerminalCompanionPanel(String(mode || '')));
   ipcMain.handle('terminal:companion-action', (event, action) => {
     if (!companionWindow || companionWindow.isDestroyed() || event.sender !== companionWindow.webContents) throw new Error('工具条来源无效。');
     const value = String(action || '');

@@ -485,6 +485,8 @@ function TerminalApp() {
   const [mediaCaptureMode, setMediaCaptureMode] = useState<'photo' | 'audio' | null>(null);
   const [mediaCaptureBlob, setMediaCaptureBlob] = useState<Blob | null>(null);
   const [mediaCaptureUrl, setMediaCaptureUrl] = useState('');
+  const [mediaCaptureReady, setMediaCaptureReady] = useState(false);
+  const [mediaCaptureError, setMediaCaptureError] = useState('');
   const [mediaRecording, setMediaRecording] = useState<'idle' | 'recording' | 'paused'>('idle');
   const [conversationText, setConversationText] = useState('');
   const [conversationLink, setConversationLink] = useState('');
@@ -493,6 +495,7 @@ function TerminalApp() {
   const mediaStreamRef = useRef<MediaStream | null>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const mediaChunksRef = useRef<Blob[]>([]);
+  const mediaCaptureRequestRef = useRef(0);
   const conversationImportActiveRef = useRef(false);
   const courseBrowserAnchorRef = useRef<HTMLDivElement | null>(null);
 
@@ -627,7 +630,7 @@ function TerminalApp() {
     finally { setLearningBusy(false); }
   };
 
-  const closeMediaCapture = () => {
+  const releaseMediaCapture = () => {
     if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') mediaRecorderRef.current.stop();
     mediaRecorderRef.current = null;
     mediaStreamRef.current?.getTracks().forEach(track => track.stop());
@@ -636,20 +639,44 @@ function TerminalApp() {
     setMediaCaptureUrl('');
     setMediaCaptureBlob(null);
     setMediaRecording('idle');
+    setMediaCaptureReady(false);
+  };
+
+  const closeMediaCapture = () => {
+    mediaCaptureRequestRef.current += 1;
+    releaseMediaCapture();
+    setMediaCaptureError('');
     setMediaCaptureMode(null);
   };
 
   const openMediaCapture = async (mode: 'photo' | 'audio') => {
-    closeMediaCapture();
+    const requestId = mediaCaptureRequestRef.current + 1;
+    mediaCaptureRequestRef.current = requestId;
+    releaseMediaCapture();
     setActivePrimaryModule('collection');
     setMediaCaptureMode(mode);
+    setMediaCaptureError('');
     try {
+      if (!navigator.mediaDevices?.getUserMedia) throw new Error('当前运行环境不支持摄像头或麦克风授权。');
       const stream = await navigator.mediaDevices.getUserMedia(mode === 'photo' ? { video: true, audio: false } : { video: false, audio: true });
+      if (mediaCaptureRequestRef.current !== requestId) {
+        stream.getTracks().forEach(track => track.stop());
+        return;
+      }
       mediaStreamRef.current = stream;
-      window.requestAnimationFrame(() => { if (mediaVideoRef.current) mediaVideoRef.current.srcObject = stream; });
+      setMediaCaptureReady(true);
+      window.requestAnimationFrame(() => {
+        if (mediaCaptureRequestRef.current === requestId && mediaVideoRef.current) mediaVideoRef.current.srcObject = stream;
+      });
     } catch (error) {
-      setMediaCaptureMode(null);
-      setMessage(`${mode === 'photo' ? '摄像头' : '麦克风'}不可用：${(error as Error).message}`);
+      if (mediaCaptureRequestRef.current !== requestId) return;
+      const detail = `${mode === 'photo' ? '摄像头' : '麦克风'}不可用：${(error as Error).message}`;
+      // Keep the dialog open: the student can read the reason, retry after
+      // granting Windows permission, or cancel deliberately instead of seeing
+      // a flash-close with no recovery path.
+      setMediaCaptureReady(false);
+      setMediaCaptureError(detail);
+      setMessage(detail);
     }
   };
 
@@ -673,7 +700,9 @@ function TerminalApp() {
     const recorder = new MediaRecorder(stream, preferred ? { mimeType: preferred } : undefined);
     mediaChunksRef.current = [];
     recorder.ondataavailable = event => { if (event.data.size) mediaChunksRef.current.push(event.data); };
+    const requestId = mediaCaptureRequestRef.current;
     recorder.onstop = () => {
+      if (mediaCaptureRequestRef.current !== requestId) return;
       const blob = new Blob(mediaChunksRef.current, { type: recorder.mimeType || 'audio/webm' });
       if (mediaCaptureUrl) URL.revokeObjectURL(mediaCaptureUrl);
       const url = URL.createObjectURL(blob);
@@ -1376,7 +1405,7 @@ function TerminalApp() {
       setDocumentTitle('我的成长模型');
       setDocumentContent(formatGrowthSummary(payload));
       setDocumentMode('growth');
-      setReaderDialogOpen(true);
+      setReaderDialogOpen(false);
     } catch (error) {
       setMessage(`读取成长模型失败：${(error as Error).message}`);
     } finally {
@@ -1431,7 +1460,7 @@ function TerminalApp() {
       const payload = await api.readLearningReport(report.id);
       setDocumentTitle(payload.title || report.title);
       setDocumentContent(payload.content || '当前报告暂无正文。');
-      setReaderDialogOpen(true);
+      setReaderDialogOpen(false);
     } catch (error) {
       setMessage(`读取学情报告失败：${(error as Error).message}`);
     } finally {
@@ -1446,7 +1475,7 @@ function TerminalApp() {
       const payload = await api.readArchiveFile(file.path);
       setDocumentTitle(file.name || file.path.split('/').pop() || '教育档案');
       setDocumentContent(payload.content || '当前档案暂无正文。');
-      setReaderDialogOpen(true);
+      setReaderDialogOpen(false);
     } catch (error) {
       setMessage(`读取教育档案失败：${(error as Error).message}`);
     } finally {
@@ -1898,12 +1927,13 @@ function TerminalApp() {
       {mediaCaptureMode ? <aside className="student-media-capture" role="dialog" aria-modal="true" aria-labelledby="student-media-capture-title">
         <header><div><span>资料搜集</span><h2 id="student-media-capture-title">{mediaCaptureMode === 'photo' ? '拍照上传' : '录音采集'}</h2></div><button className="student-workspace-close" onClick={closeMediaCapture} aria-label="关闭采集"><X size={19} /></button></header>
         <p>当前学生：{selectedStudent.name} · 资料目标：{selectedTarget?.name || '尚未选择'}。确认后直接进入可靠上传队列。</p>
+        {mediaCaptureError ? <div className="student-media-capture-error" role="alert"><strong>授权或设备尚未就绪</strong><p>{mediaCaptureError}</p><button className="terminal-secondary" type="button" onClick={() => void openMediaCapture(mediaCaptureMode)}>重新尝试</button></div> : null}
         {mediaCaptureMode === 'photo' ? <>
           {!mediaCaptureBlob ? <video ref={mediaVideoRef} autoPlay playsInline muted /> : <img src={mediaCaptureUrl} alt="拍照预览" />}
-          <div className="document-actions"><button className="terminal-secondary" onClick={() => { setMediaCaptureBlob(null); if (mediaCaptureUrl) URL.revokeObjectURL(mediaCaptureUrl); setMediaCaptureUrl(''); }}>重拍</button><button className="terminal-primary" onClick={() => void takePhoto()} disabled={Boolean(mediaCaptureBlob)}>拍照</button></div>
+          <div className="document-actions"><button className="terminal-secondary" onClick={() => { setMediaCaptureBlob(null); if (mediaCaptureUrl) URL.revokeObjectURL(mediaCaptureUrl); setMediaCaptureUrl(''); }}>重拍</button><button className="terminal-primary" onClick={() => void takePhoto()} disabled={!mediaCaptureReady || Boolean(mediaCaptureBlob)}>拍照</button></div>
         </> : <>
-          {mediaCaptureUrl ? <audio controls src={mediaCaptureUrl} /> : <div className="student-audio-status">{mediaRecording === 'recording' ? '正在录音' : mediaRecording === 'paused' ? '录音已暂停' : '麦克风已准备'}</div>}
-          <div className="document-actions"><button className="terminal-primary" onClick={startAudioRecording} disabled={mediaRecording !== 'idle' || Boolean(mediaCaptureBlob)}>开始录音</button><button className="terminal-secondary" onClick={toggleAudioPause} disabled={mediaRecording === 'idle'}>{mediaRecording === 'paused' ? '继续' : '暂停'}</button><button className="terminal-secondary" onClick={stopAudioRecording} disabled={mediaRecording === 'idle'}>结束并预览</button></div>
+          {mediaCaptureUrl ? <audio controls src={mediaCaptureUrl} /> : <div className="student-audio-status">{mediaRecording === 'recording' ? '正在录音' : mediaRecording === 'paused' ? '录音已暂停' : mediaCaptureReady ? '麦克风已准备' : '正在等待麦克风授权'}</div>}
+          <div className="document-actions"><button className="terminal-primary" onClick={startAudioRecording} disabled={!mediaCaptureReady || mediaRecording !== 'idle' || Boolean(mediaCaptureBlob)}>开始录音</button><button className="terminal-secondary" onClick={toggleAudioPause} disabled={mediaRecording === 'idle'}>{mediaRecording === 'paused' ? '继续' : '暂停'}</button><button className="terminal-secondary" onClick={stopAudioRecording} disabled={mediaRecording === 'idle'}>结束并预览</button></div>
         </>}
         <footer><button className="terminal-secondary" onClick={closeMediaCapture}>取消</button><button className="terminal-primary" onClick={() => void submitCapturedMedia()} disabled={busy || !mediaCaptureBlob || !selectedTarget}>{busy ? '正在提交…' : '确认并上传'}</button></footer>
       </aside> : null}
@@ -2015,7 +2045,7 @@ function TerminalApp() {
             <h3>{planningKind === 'guidance' ? '当前规划' : planningKind === 'topics' ? '选题建议' : '推荐比赛'} · 第 {planningView.current.version || 1} 版</h3>
             <small>核验时间：{planningView.current.verifiedAt || planningView.current.createdAt || '未记录'}</small>
             {planningKind === 'guidance' ? <><h4>规划依据与发现</h4><ul>{(planningView.current.findings || []).map((item, index) => <li key={index}>{item}</li>)}</ul><h4>近期行动</h4><ul>{(planningView.current.nearTermActions || []).map((item, index) => <li key={index}>{item}</li>)}</ul></> : null}
-            {(planningView.current.candidates || []).map(item => <section key={item.id}><h4>{item.title || item.name}</h4>{item.fitReason ? <p>{item.fitReason}</p> : null}{item.matchReasons?.length ? <p>{item.matchReasons.join('；')}</p> : null}{item.deadline ? <small>截止时间：{item.deadline}</small> : null}{item.officialUrl ? <p><a href={item.officialUrl} target="_blank" rel="noreferrer">官方来源</a></p> : null}{learningCapabilities.planningFavorites && planningKind !== 'guidance' ? <button className="terminal-secondary" disabled={learningBusy} onClick={() => void togglePlanningFavorite(item.id, !planningFavorites.some(favorite => favorite.candidateId === item.id))}>{planningFavorites.some(favorite => favorite.candidateId === item.id) ? '取消收藏' : '收藏建议'}</button> : null}</section>)}
+            {(planningView.current.candidates || []).map(item => <section key={item.id}><h4>{item.title || item.name}</h4>{item.fitReason ? <MarkdownDocument content={item.fitReason} /> : null}{item.matchReasons?.length ? <div className="student-planning-reasons">{item.matchReasons.map((reason, index) => <MarkdownDocument key={index} content={`- ${reason}`} />)}</div> : null}{item.deadline ? <small>截止时间：{item.deadline}</small> : null}{item.officialUrl ? <p><a href={item.officialUrl} target="_blank" rel="noreferrer">官方来源</a></p> : null}{learningCapabilities.planningFavorites && planningKind !== 'guidance' ? <button className="terminal-secondary" disabled={learningBusy} onClick={() => void togglePlanningFavorite(item.id, !planningFavorites.some(favorite => favorite.candidateId === item.id))}>{planningFavorites.some(favorite => favorite.candidateId === item.id) ? '取消收藏' : '收藏建议'}</button> : null}</section>)}
           </article> : null}
           {planningFavorites.length > 0 && planningKind !== 'guidance' ? <article className="terminal-card"><h3>已收藏的历史建议</h3>{planningFavorites.map(item => <section key={item.candidateId}><h4>{item.candidate.title || item.candidate.name}</h4><small>保存于 {item.savedAt}</small><button className="terminal-secondary" disabled={learningBusy} onClick={() => void togglePlanningFavorite(item.candidateId, false)}>取消收藏</button></section>)}</article> : null}
         </div> : null}
@@ -2119,7 +2149,7 @@ function TerminalApp() {
               {documentMode === 'project-knowledge' && knowledgeProjects.length === 0 ? <small>当前学生还没有关联学习项目。</small> : null}
               {documentMode === 'project-knowledge' && knowledgeProjects.length > 0 && projectKnowledgeFiles.length === 0 ? <small>当前项目还没有可查看的知识文件。</small> : null}
             </div>
-            <article className="document-reader student-document-preview-hint"><h3>{documentTitle || '请选择一份内容查看'}</h3><p>{documentTitle ? '正文已在只读弹窗中打开；关闭弹窗后可继续选择其他内容。' : '选择左侧条目后，将在更宽的只读弹窗中渲染 Markdown 正文。'}</p></article>
+            <article className="document-reader student-document-reader-inline"><h3>{documentTitle || '请选择一份内容查看'}</h3>{documentContent ? <><p className="student-document-reader-caption">来自家庭主机 · 只读渲染</p><div className="student-reader-scroll"><MarkdownDocument content={documentContent} /></div><div className="document-actions"><button className="terminal-secondary" type="button" onClick={() => void copyOpenDocument()}><Copy size={16} />复制正文</button><button className="terminal-secondary" type="button" onClick={() => window.print()}><Download size={16} />打印 / 保存 PDF</button></div></> : <p>选择左侧条目后，正文会在此右侧阅读区按 Markdown 格式渲染。</p>}</article>
           </div> : null}
         </div> : null}
       </section> : null}

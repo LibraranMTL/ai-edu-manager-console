@@ -67,18 +67,33 @@ function createSmartInboxHost(h) {
     return await h.materialHost(project).store.readCategories?.() || [];
   }
   async function context(id) {
-    const s = student(id), projects = [];
-    for (const p of h.projects().filter(p => p.studentIds?.map(String).includes(String(id)) && !['sealed', 'archived'].includes(p.status))) {
-      const categories = h.isWorkspace(p) ? await readProjectCategories(p) : [];
+    const s = id ? student(id) : null, projects = [];
+    const candidates = h.projects().filter(p => !['sealed', 'archived'].includes(p.status)
+      && (!id || p.studentIds?.map(String).includes(String(id))));
+    for (const p of candidates) {
+      const activeStudentIds = [...new Set((p.studentIds || []).map(String).filter(studentId => {
+        if (typeof h.studentActive === 'function') return h.studentActive(studentId) !== false;
+        try { student(studentId); return true; } catch { return false; }
+      }))].sort();
+      if (!activeStudentIds.length || id && !activeStudentIds.includes(String(id))) continue;
+      const routingContext = h.isWorkspace(p) && typeof h.materialRoutingContext === 'function'
+        ? await h.materialRoutingContext(p) : null;
+      const categories = routingContext?.categories || (h.isWorkspace(p) ? await readProjectCategories(p) : []);
       const index = { categories };
-      projects.push({ id: String(p.id), name: p.name, summary: String(p.description || p.goal || '').slice(0, 600), identifiers: [],
-        categories: h.isWorkspace(p) ? categoryDefinitions(p, index).map(c => ({ categoryId: c.categoryId, name: c.name })) : [] });
+      projects.push({ id: String(p.id), name: p.name, summary: String(p.description || p.goal || '').slice(0, 600),
+        studentIds: activeStudentIds,
+        identifiers: [...new Set([String(p.id), String(p.name || '')].filter(value => value.length >= 3))],
+        categories: h.isWorkspace(p) ? categoryDefinitions(p, index).map(c => ({ categoryId: c.categoryId, name: c.name })) : [],
+        materialTerms: (routingContext?.materialTerms || []).slice(0, 200),
+        knowledgeTerms: (routingContext?.knowledgeTerms || []).slice(0, 100),
+        historicalAssociations: (routingContext?.historicalAssociations || []).slice(0, 200),
+        recentActivityAt: String(p.updatedAt || routingContext?.updatedAt || '') });
     }
     // Explicit account fields only; never send a full student record, raw paths,
     // credentials or another student's profile to the classifier.
-    return { studentId: String(s.id), basic: { grade: String(s.grade || ''), curriculum: String(s.curriculum || '') }, projects,
-      profile: { summary: String(s.interests || '').slice(0, 600), source: 'student_account', confirmed: false,
-        growth: await h.profile?.(s) || null } };
+    return { studentId: String(s?.id || ''), basic: { grade: String(s?.grade || ''), curriculum: String(s?.curriculum || '') }, projects,
+      profile: s ? { summary: String(s.interests || '').slice(0, 600), source: 'student_account', confirmed: false,
+        growth: await h.profile?.(s) || null } : { summary: '', source: 'shared_intake', confirmed: false, growth: null } };
   }
   async function resolveEvent(source, locator) {
     student(source.studentId);
@@ -93,6 +108,7 @@ function createSmartInboxHost(h) {
   }
   const engine = createSmartInbox({
     directory: h.directory, forbiddenRoots: h.forbiddenRoots, context, automaticAllowed: h.automaticAllowed,
+    routingV2Enabled: h.routingV2Enabled !== false,
     acquire: h.acquire, waitingReason: h.waitingReason, beginBatch: h.beginBatch, endBatch: h.endBatch,
     settleItems: h.settleItems, changed: h.changed, onError: h.onError,
     extractorVersion: EXTRACTOR_VERSION,

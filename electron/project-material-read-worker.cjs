@@ -31,6 +31,28 @@ function perform(op, input = {}) {
   if (!project?.id) throw fail('project_required', '项目资料读取缺少项目。');
   if (op === 'categories') return readProjectMaterialCategoriesSync(project);
   const index = readProjectMaterialIndexSync(project);
+  if (op === 'routing_context') {
+    const categories = categoryDefinitions(project, index).filter(item => item.active !== false)
+      .slice(0, 100);
+    const materialTerms = (index.materials || []).filter(item => item.adoption?.state !== 'excluded')
+      .sort((left, right) => String(right.updatedAt || right.createdAt || '').localeCompare(String(left.updatedAt || left.createdAt || '')))
+      .slice(0, 200).map(item => ({
+        materialId: item.materialId,
+        title: require('node:path').posix.basename(String(item.location?.relativePath || '')),
+        categoryId: String(item.classification?.categoryId || ''),
+        sha256: String(item.sha256 || ''),
+      }));
+    const knowledgeTerms = (index.knowledge || []).filter(item => item.status !== 'recovery_conflict')
+      .slice(-100).map(item => require('node:path').posix.basename(String(item.relativePath || item.title || item.knowledgeId || '')));
+    const historicalAssociations = (index.intakeAssociations || []).filter(item => item.active !== false)
+      .sort((left, right) => String(right.updatedAt || '').localeCompare(String(left.updatedAt || '')))
+      .slice(0, 200).map(item => ({
+        sha256: String(item.sha256 || ''),
+        primaryStudentId: String(item.primaryStudentId || item.studentId || ''),
+        linkedStudentIds: [...new Set((item.linkedStudentIds || []).map(String))].sort(),
+      }));
+    return { categories, materialTerms, knowledgeTerms, historicalAssociations, registryRevision: index.revision };
+  }
   if (op === 'workspace_view') return projectMaterialWorkspaceView(project, index, input.query || {});
   if (op === 'overview') return projectMaterialAutomationOverview(project, index, input.activeJob || null);
   if (op === 'exceptions') return listProjectMaterialExceptions(project, index, input.request || {});

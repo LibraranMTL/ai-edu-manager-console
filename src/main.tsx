@@ -1515,6 +1515,7 @@ type AndroidBridge = {
   openApp?: (app: AgentToolId | 'obsidian' | 'tailscale') => Promise<boolean>;
   getAppStatus?: () => Promise<string>;
   getAppStatusAsync?: () => Promise<string>;
+  onAppStatusChanged?: (callback: (payload: string) => void) => () => void;
   getStudents?: () => Promise<string>;
   syncStudents?: (studentsJson: string) => Promise<string>;
   selectKnowledgeBaseRoot?: () => Promise<string>;
@@ -2732,6 +2733,18 @@ type AgentToolInstallStatus = {
   tailscale?: AgentToolInstall;
   anyInstalled: boolean;
   recommendedTool: AgentToolId;
+};
+
+type WorkBuddyRuntimeStatus = {
+  installed: boolean;
+  processRunning: boolean;
+  desktopSessionFound: boolean;
+  ipcReachable: boolean;
+  authorized: boolean;
+  dispatchReady: boolean;
+  startedByManager: boolean;
+  reasonCode: string;
+  lastSeenAt: string;
 };
 
 type CandidateImportReview = {
@@ -6246,6 +6259,7 @@ function App() {
   const [openclawOpened, setOpenclawOpened] = useState(false);
   const [imaCopilotOpened, setImaCopilotOpened] = useState(false);
   const [workbuddyOpened, setWorkbuddyOpened] = useState(false);
+  const [workbuddyRuntimeStatus, setWorkbuddyRuntimeStatus] = useState<WorkBuddyRuntimeStatus | null>(null);
   const [codexOpened, setCodexOpened] = useState(false);
   const [claudeCodeOpened, setClaudeCodeOpened] = useState(false);
   const [hermesOpened, setHermesOpened] = useState(false);
@@ -9965,6 +9979,43 @@ ${sourceText}`;
 
     let appStatusPending = false;
     let appStatusDisposed = false;
+    const applyAppStatusPayload = (raw: string) => {
+      try {
+        const status = JSON.parse(raw) as { qclawOpened?: boolean; marvisOpened?: boolean; hohuOpened?: boolean;
+          openclawOpened?: boolean; imaCopilotOpened?: boolean; workbuddyOpened?: boolean;
+          workbuddyStatus?: WorkBuddyRuntimeStatus; codexOpened?: boolean; claudeCodeOpened?: boolean;
+          hermesOpened?: boolean; traeOpened?: boolean; qoderWorkOpened?: boolean; obsidianOpened?: boolean };
+        setQclawOpened(Boolean(status.qclawOpened));
+        setMarvisOpened(Boolean(status.marvisOpened));
+        setHohuOpened(Boolean(status.hohuOpened));
+        setOpenclawOpened(Boolean(status.openclawOpened));
+        setImaCopilotOpened(Boolean(status.imaCopilotOpened));
+        setWorkbuddyOpened(Boolean(status.workbuddyOpened));
+        setWorkbuddyRuntimeStatus(status.workbuddyStatus || null);
+        setCodexOpened(Boolean(status.codexOpened));
+        setClaudeCodeOpened(Boolean(status.claudeCodeOpened));
+        setHermesOpened(Boolean(status.hermesOpened));
+        setTraeOpened(Boolean(status.traeOpened));
+        setQoderWorkOpened(Boolean(status.qoderWorkOpened));
+        setObsidianOpened(Boolean(status.obsidianOpened));
+      } catch {
+        // Ignore bridge JSON parse errors.
+      }
+    };
+    const unsubscribeAppStatus = bridge()?.onAppStatusChanged?.(payload => {
+      if (!appStatusDisposed) applyAppStatusPayload(payload);
+    });
+    void Promise.resolve().then(() => { void (async () => {
+      if (document.hidden || appStatusPending || appStatusDisposed) return;
+      appStatusPending = true;
+      try {
+        const api = bridge();
+        const raw = api?.getAppStatusAsync ? await api.getAppStatusAsync() : await api?.getAppStatus?.();
+        if (raw && !appStatusDisposed) applyAppStatusPayload(raw);
+      } catch {
+        // The periodic read and main-process change event remain available.
+      } finally { appStatusPending = false; }
+    })(); });
     const timer = window.setInterval(async () => {
       if (document.hidden) return;
       const visibleSection = activeSectionRef.current;
@@ -9977,25 +10028,7 @@ ${sourceText}`;
           const statusApi = bridge();
           const raw = statusApi?.getAppStatusAsync ? await statusApi.getAppStatusAsync() : await statusApi?.getAppStatus?.();
           if (appStatusDisposed) return;
-          if (raw) {
-            try {
-              const status = JSON.parse(raw) as { qclawOpened?: boolean; marvisOpened?: boolean; hohuOpened?: boolean; openclawOpened?: boolean; imaCopilotOpened?: boolean; workbuddyOpened?: boolean; codexOpened?: boolean; claudeCodeOpened?: boolean; hermesOpened?: boolean; traeOpened?: boolean; qoderWorkOpened?: boolean; obsidianOpened?: boolean };
-              setQclawOpened(Boolean(status.qclawOpened));
-              setMarvisOpened(Boolean(status.marvisOpened));
-              setHohuOpened(Boolean(status.hohuOpened));
-              setOpenclawOpened(Boolean(status.openclawOpened));
-              setImaCopilotOpened(Boolean(status.imaCopilotOpened));
-              setWorkbuddyOpened(Boolean(status.workbuddyOpened));
-              setCodexOpened(Boolean(status.codexOpened));
-              setClaudeCodeOpened(Boolean(status.claudeCodeOpened));
-              setHermesOpened(Boolean(status.hermesOpened));
-              setTraeOpened(Boolean(status.traeOpened));
-              setQoderWorkOpened(Boolean(status.qoderWorkOpened));
-              setObsidianOpened(Boolean(status.obsidianOpened));
-            } catch {
-              // Ignore bridge JSON parse errors.
-            }
-          }
+          if (raw) applyAppStatusPayload(raw);
         }
         const inboxRaw = visibleSection === 'inbox' ? await bridge()?.getSharedInboxStatus?.() : '';
         if (inboxRaw) {
@@ -10015,6 +10048,7 @@ ${sourceText}`;
     }, 60000);
     return () => {
       appStatusDisposed = true;
+      unsubscribeAppStatus?.();
       window.clearInterval(timer);
       window.clearInterval(hostTimer);
       delete (window as unknown as { onNativeImportResult?: (payload: string | NativeImportResult) => void }).onNativeImportResult;
@@ -11480,7 +11514,8 @@ ${sourceText}`;
     if (app === 'hohu') setHohuOpened((value) => value || Boolean(ok));
     if (app === 'openclaw') setOpenclawOpened((value) => value || Boolean(ok));
     if (app === 'ima.copilot') setImaCopilotOpened((value) => value || Boolean(ok));
-    if (app === 'workbuddy') setWorkbuddyOpened((value) => value || Boolean(ok));
+    // WorkBuddy's opened state comes from the process/IPC probe. A successful
+    // launch request only records intent and must not become runtime truth.
     if (app === 'codex') setCodexOpened((value) => value || Boolean(ok));
     if (app === 'claude-code') setClaudeCodeOpened((value) => value || Boolean(ok));
     if (app === 'hermes') setHermesOpened((value) => value || Boolean(ok));
@@ -21029,6 +21064,11 @@ ${JSON.stringify(items, null, 2)}
                     const tool = getAgentToolProfile(baseTool.id);
                     const install = installForTool(tool.id);
                     const opened = toolOpenState[tool.id];
+                    const workbuddyLabel = tool.id !== 'workbuddy' ? ''
+                      : workbuddyRuntimeStatus?.dispatchReady ? '自动通道就绪'
+                        : workbuddyRuntimeStatus?.ipcReachable ? '已打开并连接'
+                          : workbuddyRuntimeStatus?.processRunning ? '已打开，连接检测中'
+                            : workbuddyRuntimeStatus?.installed ? '已安装，未运行' : '未检测到安装';
                     return (
                       <article className="agent-status-line" key={tool.id}>
                         <div className="agent-status-main">
@@ -21037,7 +21077,7 @@ ${JSON.stringify(items, null, 2)}
                           {(install?.appPath || install?.exePath) && <small>{install.appPath || install.exePath}</small>}
                         </div>
                         <span className={tool.openMode === 'url' ? 'status ok' : opened ? 'status ok' : 'status warn'}>
-                          {tool.openMode === 'url' ? (tool.category === 'platform' ? '平台入口' : '网页入口') : opened ? '已打开' : '未打开'}
+                          {workbuddyLabel || (tool.openMode === 'url' ? (tool.category === 'platform' ? '平台入口' : '网页入口') : opened ? '已打开' : '未打开')}
                         </span>
                         <div className="agent-status-actions">
                           <button className="primary compact" onClick={() => getAgentToolAdapter(tool.id).open(openExternal)}>

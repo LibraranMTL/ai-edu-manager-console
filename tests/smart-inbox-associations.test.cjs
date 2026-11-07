@@ -4,9 +4,9 @@ const { createProjectMaterialHost, projectMaterialDigestProjection } = require('
 const { hashStableFile } = require('../electron/project-materials.cjs');
 const { createIntakeAssociations } = require('../electron/smart-inbox-associations.cjs');
 
-async function fixture(t, { preexisting = false } = {}) {
+async function fixture(t, { preexisting = false, multiStudent = false, inactiveStudentB = false } = {}) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'intake-associations-'));
-  const projects = ['project-a', 'project-b'].map(id => ({ id, name: id, studentIds: ['student-a'], materialStorageMode: 'workspace-v1',
+  const projects = ['project-a', 'project-b'].map(id => ({ id, name: id, studentIds: multiStudent ? ['student-b', 'student-a'] : ['student-a'], materialStorageMode: 'workspace-v1',
     workspacePath: path.join(root, id, 'workspace'), rawPath: path.join(root, id, 'raw'), managerPath: path.join(root, id, 'manager') }));
   const hosts = new Map(projects.map(p => [p.id, createProjectMaterialHost(p)]));
   const item = { id: 'intake-item', sourceId: 'source', operationId: 'first', target: { studentId: 'student-a', type: 'project', id: projects[0].id }, fingerprint: null };
@@ -19,7 +19,8 @@ async function fixture(t, { preexisting = false } = {}) {
     receipts.push({ ok: true, recordId: registered.material.materialId, path: file });
   }
   let allowed = true; const projections = [];
-  const h = { student: id => id === 'student-a' ? { id } : null, projects: () => projects, isWorkspace: () => true, materialHost: p => hosts.get(p.id),
+  const h = { student: id => ['student-a', 'student-b'].includes(id) ? { id } : null, projects: () => projects, isWorkspace: () => true, materialHost: p => hosts.get(p.id),
+    studentActive: id => id !== 'student-b' || !inactiveStudentB,
     canWrite: () => allowed, externalReferences: () => [], projectAssociationChanged: async (p, result) => projections.push(result) };
   const service = createIntakeAssociations(h);
   item.receipt = receipts[0]; await service.bind(item);
@@ -29,6 +30,23 @@ async function fixture(t, { preexisting = false } = {}) {
   t.after(async () => { await fs.rm(root, { recursive: true, force: true }); });
   return { root, projects, hosts, item, previous, service, h, projections, revoke: () => { allowed = false; } };
 }
+
+test('one project material records all associated students without duplicating bytes', async t => {
+  const f = await fixture(t, { multiStudent: true });
+  const index = await f.hosts.get('project-a').store.read();
+  assert.equal(index.materials.length, 1);
+  assert.equal(index.intakeAssociations.length, 1);
+  assert.equal(index.intakeAssociations[0].associationVersion, 2);
+  assert.equal(index.intakeAssociations[0].primaryStudentId, 'student-a');
+  assert.deepEqual(index.intakeAssociations[0].linkedStudentIds, ['student-a', 'student-b']);
+});
+
+test('archived or inactive project students are excluded from new visibility references', async t => {
+  const f = await fixture(t, { multiStudent: true, inactiveStudentB: true });
+  const association = (await f.hosts.get('project-a').store.read()).intakeAssociations[0];
+  assert.equal(association.primaryStudentId, 'student-a');
+  assert.deepEqual(association.linkedStudentIds, ['student-a']);
+});
 
 test('unreferenced intake-owned association withdraws only after new receipt; bytes and snapshots remain', async t => {
   const f = await fixture(t), store = f.hosts.get('project-a').store;

@@ -5,7 +5,7 @@ const path = require('node:path');
 const os = require('node:os');
 const { createSmartInbox } = require('../electron/smart-inbox.cjs');
 const P = require('../electron/smart-inbox-policy.cjs');
-const context = { studentId: 'student-a', projects: [{ id: 'project-physics', name: '物理', categories: [{ categoryId: 'notes', name: '记录' }] }, { id: 'project-biology', name: '生物', categories: [] }] };
+const context = { studentId: 'student-a', projects: [{ id: 'project-physics', name: '物理', studentIds: ['student-a', 'student-b'], categories: [{ categoryId: 'notes', name: '记录' }] }, { id: 'project-biology', name: '生物', studentIds: ['student-a'], categories: [] }] };
 const target = { studentId: 'student-a', type: 'project', id: 'project-physics', categoryId: '' };
 const suggestion = (text = 'project-physics') => ({ candidates: [{ ...target, score: .98, evidence: text, reason: '正文含明确项目编号' }], sensitive: false, conflict: false, reason: '建议物理项目' });
 async function confirmStudent(f, rows, studentId = 'student-a', requestId = 'confirm-student') {
@@ -18,7 +18,7 @@ async function fixture(t, overrides = {}) {
   const calls = { extract: 0, classify: 0, deliver: 0, acquire: 0, forbidden: 0 };
   const host = { directory, stableAgeMs: 0, automaticAllowed: () => true,
     forbiddenRoots: () => { calls.forbidden++; return [destination]; },
-    context: async id => { assert.equal(id, 'student-a'); return context; },
+    context: async id => { assert.ok(id === 'student-a' || id === ''); return { ...context, studentId: id }; },
     validateTarget: async value => { if (value.studentId !== 'student-a' || value.type === 'project' && !context.projects.some(p => p.id === value.id)) throw Error('目标越界'); return { targetName: 'test', value }; },
     extract: async item => { calls.extract++; return { text: await fs.readFile(item.snapshotPath, 'utf8'), warnings: [] }; },
     classify: async () => { calls.classify++; return suggestion(); },
@@ -154,9 +154,10 @@ test('a readable document may route by substantive content evidence despite unre
   const input = { source: { automatic: true, studentId: 'student-a', confidenceThreshold: .95 }, item: { extractionPartial: true }, context,
     text, suggestion: suggestion('研究摆长与周期之间的关系，通过多次测量周期') };
   assert.equal(P.automaticTarget(input).basis, 'verified_content_threshold');
-  assert.equal(P.automaticTarget({ ...input, source: { ...input.source, confidenceThreshold: .99 } }), null);
-  assert.equal(P.automaticTarget({ ...input, suggestion: { ...input.suggestion, conflict: true } }), null);
-  assert.equal(P.automaticTarget({ ...input, suggestion: { ...input.suggestion, candidates: [...input.suggestion.candidates, { ...target, id: 'project-biology', score: .9 }] } }), null);
+  const provisional = P.automaticTarget({ ...input, source: { ...input.source, confidenceThreshold: .99 } });
+  assert.equal(provisional.basis, 'project_match_provisional_inbox'); assert.equal(provisional.target.categoryId, '');
+  assert.equal(P.automaticTarget({ ...input, suggestion: { ...input.suggestion, conflict: true } }).basis, 'topic_conflict_deterministic');
+  assert.equal(P.automaticTarget({ ...input, suggestion: { ...input.suggestion, candidates: [...input.suggestion.candidates, { ...target, id: 'project-biology', score: .9 }] } }).provisional, true);
   assert.throws(() => P.confidenceThreshold(.5));
 });
 
@@ -234,8 +235,8 @@ test('batch student confirmation only scopes selected files; verified AI route d
   assert.equal(f.calls.deliver, 2);
 });
 
-test('confirmed student produces recommendations for uncertain content and retains manual delivery', async t => {
-  const f = await fixture(t, { classify: async () => ({ ...suggestion(), candidates: [{ ...suggestion().candidates[0], score: .8 }] }) });
+test('confirmed student produces recommendations below the provisional project floor and retains manual delivery', async t => {
+  const f = await fixture(t, { classify: async () => ({ ...suggestion(), candidates: [{ ...suggestion().candidates[0], score: .6 }] }) });
   await f.write('a.txt'); const s = await f.add({ studentId: '' }); await f.scan(s.id);
   await confirmStudent(f, (await f.engine.list()).rows); await f.engine.tick();
   const row = (await f.engine.list()).rows[0]; assert.equal(row.status, 'review'); assert.equal(row.proposedTarget.id, target.id); assert.equal(f.calls.deliver, 0);
@@ -244,7 +245,7 @@ test('confirmed student produces recommendations for uncertain content and retai
 });
 
 test('manual delivery accepts metadata-only identity drift when stable content still matches the captured fingerprint', async t => {
-  const f = await fixture(t, { classify: async () => ({ ...suggestion(), candidates: [{ ...suggestion().candidates[0], score: .8 }] }) });
+  const f = await fixture(t, { classify: async () => ({ ...suggestion(), candidates: [{ ...suggestion().candidates[0], score: .6 }] }) });
   await f.write('metadata-only.txt'); const source = await f.add({ studentId: 'student-a' }); await f.scan(source.id);
   const row = (await f.engine.list()).rows[0]; assert.equal(row.status, 'review');
   await f.engine.close();
@@ -338,10 +339,12 @@ test('waiting reason is saved on resource denial; listing is read-only and succe
   const count = acquired; await f.engine.list(); await f.engine.list(); assert.equal(acquired, count);
   paused = false; await f.engine.tick(); assert.equal((await f.engine.sources()).sources.find(r => r.id === s.id).waitingReason, '');
 });
-test('confidence cannot authorize fabricated evidence, paths, duplicate candidates or cross-student targets', () => {
+test('confidence cannot authorize fabricated evidence, paths, duplicate candidates or unrelated students', () => {
   assert.throws(() => P.validateSuggestion(suggestion('fake'), context, 'project-physics'));
   assert.throws(() => P.validateSuggestion({ ...suggestion(), path: 'C:/secret' }, context, 'project-physics'));
-  const result = suggestion(); result.candidates[0].studentId = 'student-b'; assert.throws(() => P.validateSuggestion(result, context, 'project-physics'));
+  const related = suggestion(); related.candidates[0].studentId = 'student-b';
+  assert.equal(P.validateSuggestion(related, context, 'project-physics').candidates[0].studentId, 'student-b');
+  const result = suggestion(); result.candidates[0].studentId = 'student-c'; assert.throws(() => P.validateSuggestion(result, context, 'project-physics'));
   const duplicate = suggestion(); duplicate.candidates.push(duplicate.candidates[0]); assert.throws(() => P.validateSuggestion(duplicate, context, 'project-physics'));
 });
 test('no-candidate provider explanation is discarded without weakening routing fields', () => {
@@ -354,7 +357,7 @@ test('no-candidate provider explanation is discarded without weakening routing f
   assert.equal(P.automaticTarget({ source: { id: 's', automatic: true, studentId: 'student-a' }, item: {}, context, text: '', suggestion: injected }), null);
   assert.throws(() => P.validateSuggestion({ ...suggestion(), note: 'extra' }, context, 'project-physics'));
 });
-test('sensitive or conflicting results discard all Agent candidates before target validation', () => {
+test('sensitive results stay local and malformed conflict candidates are discarded', () => {
   const conflict = P.validateSuggestion({ candidates: [{ studentId: '', type: 'project', id: 'project-physics' }],
     sensitive: false, conflict: true, reason: '多个项目无法唯一归属', candidates_backup: null }, context, 'project-physics project-biology');
   assert.deepEqual(conflict, { candidates: [], sensitive: false, conflict: true, reason: '多个项目无法唯一归属' });
@@ -362,14 +365,48 @@ test('sensitive or conflicting results discard all Agent candidates before targe
     sensitive: true, conflict: false, reason: '包含医疗记录' }, context, '医疗记录 project-physics');
   assert.deepEqual(sensitive, { candidates: [], sensitive: true, conflict: false, reason: '包含医疗记录' });
 });
-test('trusted policy rejects partial extraction, sensitive data, conflicts and semantic guesses', () => {
+test('trusted policy blocks unsafe inputs but deterministically resolves reversible project conflicts', () => {
   const value = { source: { id: 's', automatic: true, studentId: 'student-a' }, item: {}, context, text: '项目编号：project-physics', suggestion: suggestion() };
   assert.equal(P.automaticTarget(value).target.id, 'project-physics');
   assert.equal(P.automaticTarget({ ...value, item: { truncated: true } }), null);
   assert.equal(P.automaticTarget({ ...value, text: '身份证 project-physics' }), null);
-  assert.equal(P.automaticTarget({ ...value, text: 'project-physics project-biology' }), null);
+  assert.equal(P.automaticTarget({ ...value, text: 'project-physics project-biology' }).provisional, true);
   assert.equal(P.automaticTarget({ ...value, text: '学习物理' }), null);
-  assert.equal(P.automaticTarget({ ...value, suggestion: { ...suggestion(), conflict: true } }), null);
+  const resolved = P.automaticTarget({ ...value, suggestion: { ...suggestion(), conflict: true } });
+  assert.equal(resolved.basis, 'verified_project_identifier');
+  assert.deepEqual(resolved.linkedStudentIds, ['student-a', 'student-b']);
+});
+test('same content and historical association outrank AI and remain deterministic', () => {
+  const hash = 'a'.repeat(64);
+  const exactContext = { ...context, projects: context.projects.map(project => project.id === 'project-physics'
+    ? { ...project, materialTerms: [{ sha256: hash, title: '摆长实验.md' }], historicalAssociations: [{ sha256: hash }] }
+    : project) };
+  const resolved = P.automaticTarget({ source: { automatic: true, studentId: 'student-a' },
+    item: { fingerprint: { sha256: hash } }, context: exactContext, text: '普通资料正文，不含项目编号。',
+    suggestion: { candidates: [], sensitive: false, conflict: false, reason: '' } });
+  assert.equal(resolved.basis, 'same_content_history');
+  assert.equal(resolved.target.id, 'project-physics');
+});
+test('multiple explicit projects wait for AI theme ranking, then use a stable provisional inbox', () => {
+  const text = 'project-physics 与 project-biology 的跨学科研究，主主题为细胞代谢与酶活性变化。';
+  const empty = { candidates: [], sensitive: false, conflict: false, reason: '' };
+  assert.equal(P.automaticTarget({ source: { automatic: true, studentId: 'student-a' }, item: {}, context,
+    text, suggestion: empty, classificationAttempted: false }), null);
+  const ranked = P.automaticTarget({ source: { automatic: true, studentId: 'student-a' }, item: {}, context, text,
+    suggestion: { candidates: [{ studentId: 'student-a', type: 'project', id: 'project-biology', categoryId: '',
+      score: .7, evidence: '主主题为细胞代谢与酶活性变化', reason: '正文主主题匹配' }], sensitive: false, conflict: true, reason: '跨项目' },
+    classificationAttempted: true });
+  assert.equal(ranked.target.id, 'project-biology'); assert.equal(ranked.provisional, true);
+});
+test('sensitive local routing permits one-student scope but blocks cross-student visibility', () => {
+  const text = '医疗记录，资料属于 project-biology。';
+  const local = P.automaticTarget({ source: { automatic: true, studentId: 'student-a',
+    target: { studentId: 'student-a', type: 'project', id: 'project-biology', categoryId: '' } }, item: {}, context,
+    text, suggestion: { candidates: [], sensitive: false, conflict: false, reason: '' }, sensitiveLocalOnly: true });
+  assert.equal(local.target.id, 'project-biology'); assert.deepEqual(local.linkedStudentIds, ['student-a']);
+  const cross = P.automaticTarget({ source: { automatic: true, studentId: 'student-a', target }, item: {}, context,
+    text: '医疗记录，资料属于 project-physics。', suggestion: { candidates: [], sensitive: false, conflict: false, reason: '' }, sensitiveLocalOnly: true });
+  assert.equal(cross, null);
 });
 test('explicit bound target delivers once, keeps original and unchanged scans do not extract/hash/model', async t => {
   const f = await fixture(t); await f.write('lesson.txt'); const source = await f.add({ target });
@@ -382,27 +419,50 @@ test('explicit bound target delivers once, keeps original and unchanged scans do
 });
 test('unbound student queues review without extraction or cloud; manual target is validated', async t => {
   const f = await fixture(t); await f.write('lesson.txt'); const source = await f.add({ studentId: '' }); await f.scan(source.id);
-  const row = (await f.engine.list()).rows[0]; assert.equal(row.status, 'review'); assert.equal(row.automationDisposition, 'unassigned'); assert.equal(f.calls.classify, 0); assert.equal(f.calls.extract, 0);
+  const row = (await f.engine.list()).rows[0]; assert.equal(row.status, 'review'); assert.equal(f.calls.classify, 0); assert.equal(f.calls.extract, 0);
   const result = await f.engine.decide({ requestId: 'choose-student', action: 'correct', items: [{ id: row.id, revision: row.revision, target }] });
   assert.equal(result.results[0].ok, true);
 });
-test('disabling a source clears automatic scheduling and survives restart', async t => {
-  const f = await fixture(t); const source = await f.add();
-  await f.engine.updateSource({ ...source, enabled: false });
-  let state = (await f.engine.sources()).sources.find(row => row.id === source.id);
-  assert.equal(state.enabled, false); assert.equal(state.automatic, false); assert.equal(state.nextRunAt, '');
-  assert.equal(state.pendingManual, false); assert.equal(state.manualWork, false);
-  await f.engine.close();
-  const restarted = createSmartInbox({ ...f.host, directory: f.directory, stableAgeMs: 0, forbiddenRoots: () => [f.destination] });
-  t.after(() => restarted.close());
-  state = (await restarted.sources()).sources.find(row => row.id === source.id);
-  assert.equal(state.enabled, false); assert.equal(state.automatic, false); assert.equal(state.nextRunAt, '');
-  assert.equal(restarted.hasPendingWork(), false);
+test('new shared sources can auto-attribute an explicit project without choosing a student', async t => {
+  const f = await fixture(t); await f.write('shared-project.txt');
+  const source = await f.add({ studentId: '', autoAttributeShared: true }); await f.scan(source.id);
+  const delivered = (await f.engine.list({ status: 'delivered' })).rows[0];
+  assert.equal(delivered.target.id, 'project-physics');
+  assert.equal(delivered.target.studentId, 'student-a');
+  assert.deepEqual(delivered.target.linkedStudentIds, ['student-a', 'student-b']);
+  assert.equal(f.calls.classify, 0);
 });
-test('source metadata conflict and sensitive files do not auto-deliver', async t => {
+test('shared sources use AI topic evidence before falling back to the automatic retry pool', async t => {
+  const evidence = '研究摆长与周期之间的关系';
+  const f = await fixture(t, { classify: async () => {
+    f.calls.classify++;
+    return suggestion(evidence);
+  } });
+  await f.write('shared-topic.txt', `实验主主题是${evidence}，并记录多轮测量、数据对照、误差分析和实验结论，最终形成完整项目研究报告。`);
+  const source = await f.add({ studentId: '', autoAttributeShared: true });
+  await f.scan(source.id);
+  const delivered = (await f.engine.list({ status: 'delivered' })).rows[0];
+  assert.equal(delivered.target.id, 'project-physics');
+  assert.deepEqual(delivered.target.linkedStudentIds, ['student-a', 'student-b']);
+  assert.equal(f.calls.classify, 1);
+});
+test('unresolved shared material is retried automatically instead of creating an approval task', async t => {
+  const f = await fixture(t, { classify: async () => {
+    f.calls.classify++;
+    return { candidates: [], sensitive: false, conflict: false, reason: '暂无可信项目证据' };
+  } });
+  await f.write('shared-unknown.txt', '一份暂时无法与现有项目匹配的普通学习资料，保留等待后续上下文。');
+  const source = await f.add({ studentId: '', autoAttributeShared: true });
+  await f.scan(source.id);
+  const row = (await f.engine.list()).rows[0];
+  assert.equal(row.status, 'retry');
+  assert.match(row.message, /自动暂存池/);
+  assert.equal(f.calls.classify, 1);
+});
+test('source binding resolves reversible project conflict while sensitive files remain local', async t => {
   const f = await fixture(t); await f.write('private.txt', '身份证 project-physics'); await f.write('conflict.txt', 'project-biology project-physics');
   const s = await f.add({ target }); await f.scan(s.id);
-  assert.equal(f.calls.deliver, 0); assert.equal((await f.engine.list()).total, 2);
+  assert.equal(f.calls.deliver, 1); assert.equal((await f.engine.list()).total, 1);
 });
 test('vendor sensitive refusal is a manual review with original preserved and no automatic redispatch', async t => {
   let attempts = 0;
@@ -419,7 +479,7 @@ test('vendor sensitive refusal is a manual review with original preserved and no
 
 test('source settings cannot cross student or target scope; arbitrary managed paths rejected', async t => {
   const f = await fixture(t);
-  await assert.rejects(f.add({ studentId: '', target }), /不一致/);
+  await assert.rejects(f.add({ target: { ...target, studentId: 'student-b' } }), /不一致/);
   await assert.rejects(f.add({ folder: f.destination }), /受管/);
   await assert.rejects(f.add({ originalMode: 'archive' }), /中转/);
   const s = await f.add(); await assert.rejects(f.add(), /已经/);

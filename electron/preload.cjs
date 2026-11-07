@@ -554,6 +554,11 @@ contextBridge.exposeInMainWorld('AndroidBridge', {
   getAppStatusAsync() {
     return ipcRenderer.invoke('bridge:getAppStatusAsync');
   },
+  onAppStatusChanged(callback) {
+    const listener = (_event, payload) => callback(payload);
+    ipcRenderer.on('app-status:changed', listener);
+    return () => ipcRenderer.removeListener('app-status:changed', listener);
+  },
   getStorageConfig() {
     return ipcRenderer.invoke('bridge:getStorageConfig');
   },

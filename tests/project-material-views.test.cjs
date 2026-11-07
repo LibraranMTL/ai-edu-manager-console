@@ -19,7 +19,7 @@ test('four-view projection keeps logical relationships without exposing host abs
     evidenceBindings: [{ bindingId: 'binding-1', materials: [{ materialId: 'm2', version: 1, sha256: 'a'.repeat(64) }] }] };
   const view = projectMaterialWorkspaceView(project, index, { view: 'materials', limit: 20 });
   assert.deepEqual(view.counts, { materials: 2, uniqueContents: 1, systemGenerated: 0,
-    pending: 1, knowledge: 1, contributions: 1,
+    pending: 0, knowledge: 1, contributions: 1,
     candidates: 0, unclassified: 1, pathClassified: 0, unavailable: 0 });
   assert.equal(view.categories[1].categoryId, 'workspace-slot-02');
   assert.equal(view.items[1].classification.categoryName, '方案设计');
@@ -38,9 +38,9 @@ test('pending view groups independent adoption classification availability and p
   assert.deepEqual(pendingReasons(items[0]), ['needs_adoption', 'needs_classification']);
   const view = projectMaterialWorkspaceView(project, { projectId: 'p1', revision: 1,
     categories: [], materials: items }, { view: 'pending', limit: 10 });
-  assert.equal(view.total, 3);
-  assert.deepEqual(view.items[1].pendingReasons, ['source_missing']);
-  assert.deepEqual(view.items[2].pendingReasons, ['processing_failed']);
+  assert.equal(view.total, 2);
+  assert.deepEqual(view.items[0].pendingReasons, ['source_missing']);
+  assert.deepEqual(view.items[1].pendingReasons, ['processing_failed']);
 });
 
 test('known workspace folders provide an immediate inherited classification without hiding adoption review', () => {

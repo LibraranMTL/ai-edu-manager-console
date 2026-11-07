@@ -4,13 +4,17 @@ const path = require('node:path');
 const { spawn } = require('node:child_process');
 
 const repoRoot = path.resolve(__dirname, '..');
-const rawTag = String(process.argv[2] || '').trim();
+const rawArgs = process.argv.slice(2);
+const formalRelease = rawArgs.includes('--formal');
+const tagArgs = rawArgs.filter((value) => value !== '--formal');
+if (tagArgs.length !== 1) throw new Error('请提供一个仅含字母、数字、点、下划线或连字符的云端发布标识。');
+const rawTag = String(tagArgs[0] || '').trim();
 const tag = rawTag.replace(/[^a-zA-Z0-9._-]+/g, '-').replace(/^-+|-+$/g, '');
-if (!tag || tag !== rawTag) throw new Error('请提供仅含字母、数字、点、下划线或连字符的云端候选标识。');
+if (!tag || tag !== rawTag) throw new Error('云端发布标识仅可包含字母、数字、点、下划线或连字符。');
 
-const outputRoot = path.join(repoRoot, 'release', 'cloud', 'candidates', tag);
+const outputRoot = path.join(repoRoot, 'release', 'cloud', formalRelease ? 'releases' : 'candidates', tag);
 const packageRoot = path.join(outputRoot, 'package');
-if (fs.existsSync(outputRoot)) throw new Error(`云端候选目录已存在，拒绝覆盖：${outputRoot}`);
+if (fs.existsSync(outputRoot)) throw new Error(`云端发布目录已存在，拒绝覆盖：${outputRoot}`);
 
 const productionFiles = [
   'backup-scheduler.cjs',
@@ -153,10 +157,10 @@ async function main() {
   }));
   const manifestPath = path.join(outputRoot, 'release-manifest.json');
   fs.writeFileSync(manifestPath, `${JSON.stringify({
-    candidateTag: tag,
+    ...(formalRelease ? { releaseTag: tag } : { candidateTag: tag }),
     version: JSON.parse(fs.readFileSync(path.join(repoRoot, 'package.json'), 'utf8')).version,
     createdAt: new Date().toISOString(),
-    formalRelease: false,
+    formalRelease,
     files: manifest,
   }, null, 2)}\n`, 'utf8');
 
@@ -164,7 +168,7 @@ async function main() {
   const archivePath = path.join(outputRoot, archiveName);
   await run('tar.exe', ['-czf', archivePath, '-C', packageRoot, '.']);
   const summary = {
-    candidateTag: tag,
+    ...(formalRelease ? { releaseTag: tag } : { candidateTag: tag }),
     packageDirectory: packageRoot,
     archive: archivePath,
     archiveBytes: fs.statSync(archivePath).size,
@@ -173,9 +177,9 @@ async function main() {
     manifestSha256: sha256(manifestPath),
     fileCount: manifest.length,
     runtimeModules: [...copiedRuntimeModules].sort(),
-    formalRelease: false,
+    formalRelease,
   };
-  fs.writeFileSync(path.join(outputRoot, 'candidate-summary.json'), `${JSON.stringify(summary, null, 2)}\n`, 'utf8');
+  fs.writeFileSync(path.join(outputRoot, formalRelease ? 'release-summary.json' : 'candidate-summary.json'), `${JSON.stringify(summary, null, 2)}\n`, 'utf8');
   process.stdout.write(`${JSON.stringify(summary, null, 2)}\n`);
 }
 

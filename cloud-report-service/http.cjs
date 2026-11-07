@@ -231,7 +231,7 @@ function createHttpServer(options) {
       service.verifyViewerProof(token, req.method, req.url, req.headers);
       req.verifyBody = bytes => service.verifyBody(token, bytes, req.headers);
       if (['GET', 'DELETE'].includes(req.method)) req.verifyBody(Buffer.alloc(0));
-      if (req.method === 'GET' && route === '/health') return json(res, 200, { ok: true, service: 'edu-cloud-documents', version: '2.3.0-candidate.1', contracts: [1, 2], schema: { ...service.schemaStatus(), publicContent: publicContent.schemaStatus() },
+      if (req.method === 'GET' && route === '/health') return json(res, 200, { ok: true, service: 'edu-cloud-documents', version: '2.3.0', contracts: [1, 2], schema: { ...service.schemaStatus(), publicContent: publicContent.schemaStatus() },
         materialIndex: materialIndexer?.status() || { enabled: false }, capabilities: ['profile-sync', 'material-sync', 'remote-agent-mcp', 'cloud-inbox', 'student-archive',
           'viewer-student-relinquish', 'current-revision-index', 'async-pdf-docx-extraction', 'oauth-pkce', 'public-course-manifest', 'public-course-revocations',
           'public-course-sync-receipts', 'public-course-operations', 'public-learning-card-packs'] });
